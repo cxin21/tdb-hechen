@@ -11,6 +11,12 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 📄 README 重写为 fork 导向（2026-09-14）
+
+- 原上游英文版 README 移至 `docs/upstream/README.en.md`（README_CN.md 保留为原仓库中文文档）；
+  新 `README.md` 声明基线（上游 v2.0.1）、四模块职责、fork 增量总表与同步上游协议。
+- 对比基线实测（diff -rq，排除 node_modules/运行时配置）：新增 131 文件 / 修改 937 文件 / 删除 0 文件。
+
 ### 💰 Credit 上报总开关（creditReport.enabled，2026-09-14）
 
 - **背景**：云端部署 upstream 非 TokenHub，`computeCreditDelta` 恒 0，上报链路只产噪音
