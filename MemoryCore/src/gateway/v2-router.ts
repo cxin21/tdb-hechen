@@ -1262,8 +1262,8 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
   if (iso?.taskId) filtered = filtered.filter((r) => r.task_id === iso.taskId);
   // TIMEFIX-v2 对齐（P1 债务③，2026-09-15）：快慢路同键——业务时间 occurred_at；
   // occurred_at 为空串的行在过滤激活时不命中（同 fast path 语义，宁缺毋滥）。
-  if (time_start) filtered = filtered.filter((r) => (r.occurred_at || "") !== "" && r.occurred_at >= time_start);
-  if (time_end) filtered = filtered.filter((r) => (r.occurred_at || "") !== "" && r.occurred_at <= time_end);
+  if (time_start) filtered = filtered.filter((r) => ((r as { occurred_at?: string }).occurred_at || "") !== "" && (r as { occurred_at?: string }).occurred_at! >= time_start);
+  if (time_end) filtered = filtered.filter((r) => ((r as { occurred_at?: string }).occurred_at || "") !== "" && (r as { occurred_at?: string }).occurred_at! <= time_end);
   const total = filtered.length;
   const page = filtered.slice(offset, offset + limit);
   const items: AtomicDetail[] = page.map((r) => ({
