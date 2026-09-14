@@ -113,7 +113,7 @@ describe("runAnchorGrowth 触发双门", () => {
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
     expect(res.ran).toBe(true);
     expect(runner.calls).toHaveLength(1);
-    expect(store.setAnchorGrowthState).toHaveBeenCalledWith({ lastDiscoveryAt: NOW.toISOString(), lastCorpusCount: 9 });
+    expect(store.setAnchorGrowthState).toHaveBeenCalledWith({ lastDiscoveryAt: NOW.toISOString(), lastCorpusCount: 9, lastAttemptAt: NOW.toISOString() });
   });
 });
 
@@ -290,5 +290,71 @@ describe("runAnchorGrowth 杂项裁定", () => {
     expect(String(runner.calls[0]!.maxTokens)).toBe(String(8192));
     expect(String(runner.calls[0]!.prompt)).toContain("已否决主题");
     expect(String(runner.calls[0]!.taskId)).toBe("core-values-discover-growth");
+  });
+});
+
+
+describe("runAnchorGrowth 自维护与冷却分级（GROW-MAINT）", () => {
+  /** 可回写状态的 store：setAnchorGrowthState 合并进 fixture（跨轮冷却测试需要）。 */
+  function persistentStore(rows: unknown[], anyState: AnyRow[] = []) {
+    const state = { lastDiscoveryAt: null as string | null, lastCorpusCount: null as number | null, lastAttemptAt: null as string | null, lastAdoptedAt: null as string | null };
+    const store = makeStore({ rows, anyState, growthState: state });
+    (store.setAnchorGrowthState as unknown as { mockImplementation: (f: (s: Record<string, unknown>) => Promise<void>) => void })
+      .mockImplementation(async (s: Record<string, unknown>) => { Object.assign(state, s); });
+    return { store, state };
+  }
+
+  it("0 采纳轮：写 lastAttemptAt、不写 lastAdoptedAt；1h 内重跑被 attempt-cooldown 挡", async () => {
+    const { store } = persistentStore(corpusFor("增量对账", 6));
+    const runner = makeRunner("[]");
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res.ran).toBe(true);
+    expect(res.adopted).toBe(0);
+    expect(store.setAnchorGrowthState).toHaveBeenCalledWith({ lastDiscoveryAt: NOW.toISOString(), lastCorpusCount: 6, lastAttemptAt: NOW.toISOString() });
+    const now2 = () => new Date(NOW.getTime() + 30 * 60_000);
+    const res2 = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now: now2 });
+    expect(res2).toMatchObject({ ran: false, reason: "attempt-cooldown" });
+    expect(runner.calls).toHaveLength(1); // 冷却期内零 LLM
+  });
+
+  it("有采纳轮：写 lastAdoptedAt；1h 后 <24h 重跑被 interval 挡（尝试冷却先放行）", async () => {
+    const { store } = persistentStore(corpusFor("增量对账", 6));
+    const runner = makeRunner(JSON.stringify([{ label: "增量对账", rationale: "r" }]));
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res.adopted).toBe(1);
+    expect(store.setAnchorGrowthState).toHaveBeenCalledWith({ lastDiscoveryAt: NOW.toISOString(), lastCorpusCount: 6, lastAttemptAt: NOW.toISOString(), lastAdoptedAt: NOW.toISOString() });
+    const now2 = () => new Date(NOW.getTime() + 2 * 3600_000);
+    const res2 = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now: now2 });
+    expect(res2).toMatchObject({ ran: false, reason: "interval" });
+  });
+
+  it("自维护退场：低证据 auto-growth 锚 retire；manual 锚与 pinned auto 锚豁免", async () => {
+    const store = makeStore({
+      rows: corpusFor("别的主题", 6),
+      growthState: { lastDiscoveryAt: null, lastCorpusCount: null },
+      anyState: [
+        row("a-auto", "失效主题", { origin: "auto", created_by: "auto-growth" }),
+        row("a-manual", "失效主题", { origin: "manual" }),
+        row("a-pin", "失效主题", { origin: "auto", created_by: "auto-growth", pinned: 1 }),
+      ],
+    });
+    const runner = makeRunner("[]");
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res.retired).toBe(1);
+    expect(store.retireValue).toHaveBeenCalledTimes(1);
+    expect(store.retireValue).toHaveBeenCalledWith("a-auto", DEFAULT_TENANT);
+  });
+
+  it("自维护权重：auto-growth 锚按全量语料证据密度重算（Δ≥0.05 才写；同 id 同标签 origin='auto'）", async () => {
+    const store = makeStore({
+      rows: corpusFor("增长主题", 6),
+      growthState: { lastDiscoveryAt: null, lastCorpusCount: null },
+      anyState: [row("a-grow", "增长主题", { origin: "auto", created_by: "auto-growth", weight: 0.5 })],
+    });
+    const runner = makeRunner("[]");
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res.reweighted).toBe(1);
+    expect(res.retired).toBe(0);
+    expect(store.upsertValue).toHaveBeenCalledWith("a-grow", "增长主题", suggestAnchorWeight(6, 6), "auto-growth", DEFAULT_TENANT, undefined, "auto");
   });
 });

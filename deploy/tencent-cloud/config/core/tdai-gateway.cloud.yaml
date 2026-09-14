@@ -146,13 +146,13 @@ memory:
     writeEnabled: true # 鍏佽缁?/v3/core-memory/write 鍐欙紙slot 鐧藉悕鍗曞唴锛?
     allowedSlots: [identity, core_value, strict_rule]
     maxContentLength: 2000
-    seedValues: # B1锛歝ore_values 琛ㄧ┖鏃剁亴鍏ワ紙涓?MemoryProxy config.yaml appraisal.values 瀵归綈锛?
-      - { id: correctness, label: 姝ｇ‘, weight: 0.8 }
-      - { id: reliability, label: 鍙潬, weight: 0.8 }
-      - { id: usable, label: 鍙敤, weight: 0.8 }
-      - { id: efficiency, label: 鎬ц兘, weight: 0.7 }
-      - { id: local, label: 绉佹湁閮ㄧ讲, weight: 0.7 }
-      - { id: require, label: 鏈湴, weight: 0.7 }
+    # GROW-MAINT（2026-09-15）：B1 种子已退役——价值锚纯自发现+自维护，不再灌 seedValues。
+    anchorDiscovery:
+      enabled: true
+      minEvidence: 3
+      maxPerPass: 2
+      maxTotal: 15
+      intervalHours: 24
   lifecycle:
     enabled: true # H+I锛氬珐鍥?+ 閬楀繕鐨勫懆鏈熻皟搴︼紙姣?10 鍒嗛挓涓€杞紝best-effort锛?
     intervalMs: 600000

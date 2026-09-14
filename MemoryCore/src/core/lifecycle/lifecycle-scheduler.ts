@@ -122,7 +122,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
         logger: deps.logger,
       });
       if (res.ran) {
-        deps.logger?.info?.(`[lifecycle] anchor-growth adopted=${res.adopted} displaced=${res.displaced} skipped=${res.skipped}`);
+        deps.logger?.info?.(`[lifecycle] anchor-growth adopted=${res.adopted} retired=${res.retired} reweighted=${res.reweighted} displaced=${res.displaced} skipped=${res.skipped}`);
       }
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] anchor-growth failed: ${err instanceof Error ? err.message : String(err)}`);

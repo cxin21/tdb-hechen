@@ -172,7 +172,7 @@ describe("runAnchorGrowth per-agent 化（PA）", () => {
     const runner = makeRunner("[]");
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
     expect(res.ran).toBe(true);
-    expect(store.setAnchorGrowthState).toHaveBeenCalledWith({ lastDiscoveryAt: NOW.toISOString(), lastCorpusCount: 1 }); // 旧调用形状（无 tenant）
+    expect(store.setAnchorGrowthState).toHaveBeenCalledWith({ lastDiscoveryAt: NOW.toISOString(), lastCorpusCount: 1, lastAttemptAt: NOW.toISOString() }); // 旧调用形状（无 tenant）
   });
 
   it("无任何有记忆的 agent（三元组空）→ 不跑（no-corpus），零 LLM", async () => {

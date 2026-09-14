@@ -1853,7 +1853,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
    * GROW：自生长调度状态读委托伴生库同源实现。
    * PA：tenant 透传（default/缺省 = aux 旧键；非 default = per-tenant 键）。
    */
-  async getAnchorGrowthState(tenant?: CoreTenant): Promise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null }> {
+  async getAnchorGrowthState(tenant?: CoreTenant): Promise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null }> {
     try {
       await this._ensureInit();
       const aux = this._auxReady();
@@ -1866,7 +1866,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
   }
 
   /** GROW：自生长调度状态写委托伴生库同源实现。PA：tenant 透传同读侧。 */
-  async setAnchorGrowthState(state: { lastDiscoveryAt: string; lastCorpusCount: number }, tenant?: CoreTenant): Promise<void> {
+  async setAnchorGrowthState(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string }, tenant?: CoreTenant): Promise<void> {
     try {
       await this._ensureInit();
       const aux = this._auxReady();

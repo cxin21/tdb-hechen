@@ -11,6 +11,24 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🌱 价值锚纯自发现 + 自维护（GROW-MAINT，2026-09-15）
+
+- **拍板**：取消预制种子——价值锚（标签与权重）全部 LLM 自发现 + 自维护，不再灌 `seedValues`/扇出 default 锚。
+- **自维护**：每轮 GROW 对 auto 锚（`created_by='auto-growth'`）按**全量语料**重算证据：
+  `< minEvidence` → retire（pinned/manual 豁免）；权重 = suggestAnchorWeight(证据, 全量语料条数)，
+  |Δw|≥0.05 才落库；标签不原地改写（coreRefs/dedup 身份锚点），主题演化 = 退场 + 新标签再入。
+- **证据重算语料口径 v3**：候选证据重算从 50 采样窗改为全量语料（消除"支撑记忆老化出
+  recent 窗 → 证据假衰减 → 误退场"）；LLM prompt 仍为 50×200 字预算。
+- **冷却分级**：有采纳 intervalHours（24h）/ 0 采纳 1h（`lastAttemptAt`/`lastAdoptedAt` 落
+  `anchor_growth_state` kv 四键；存量 `lastDiscoveryAt` 兼容映射为采纳时刻，保守等价旧行为）。
+  语料增长期发现节奏跟随语料（最密 1h 一试），锚稳后回到 24h。
+- **可观测**：`[anchor-growth] ran:` 汇总行带 adopted/retired/reweighted；per-agent 明细
+  （corpus/candidates/retired/reweighted）上 info/debug。
+- **配置**：生产 yaml 删 `seedValues`，`anchorDiscovery.minEvidence` 显式 3；存量 default 桶
+  6 行 seed **物理删除**（不用 veto——dedup 查全态清单，veto 会"永不重提"误杀同 label 新提案）。
+- **升级须知**：老部署无需动作；fork 部署若 default 桶仍有 seed 行，须**先删行再重启**（顺序反了
+  会被构造期扇出复制进 agent 桶）。store 接口 get/setAnchorGrowthState 签名扩展（可选字段，向后兼容）。
+
 ### 📄 README 重写为 fork 导向（2026-09-14）
 
 - 原上游英文版 README 移至 `docs/upstream/README.en.md`（README_CN.md 保留为原仓库中文文档）；

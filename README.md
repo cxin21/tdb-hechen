@@ -35,7 +35,7 @@
 | ✚ R7 分层召回 · 结论层 | `conclusionLayer`：经验层之上产出结论层，CAL C1 截断 + 幂等结论缓存 |
 | ✚ 结构感知九通道召回 + RV2-2 精排 | 完整实现（R1-R9 通道、compositeScore 精排），并按 golden A/B 实证**裁决关断**（结构信号 on 0.325 / off 0.345，降精度即退役），能力保留、配置一键可重开；现行验收线 P@5 ≥ 0.325 |
 | ✚ E1-E3 性能缓存 | query 向量 60s 复用、价值锚缓存、同 session 同 query 注入块 5 分钟复用 |
-| ✚ 真记忆 G–M 全家 | 记忆图 `links`（similar/evolve 建边）、`coreMemory` 写入口信任边界 + 价值锚种子、`lifecycle` 巩固/遗忘周期调度、`search.neighborExpand` 重构式回忆（图邻居扩展） |
+| ✚ 真记忆 G–M 全家 | 记忆图 `links`（similar/evolve 建边）、`coreMemory` 写入口信任边界、价值锚自发现/自维护（GROW-MAINT：证据重算采纳/退场、权重随语料演化）、`lifecycle` 巩固/遗忘周期调度、`search.neighborExpand` 重构式回忆（图邻居扩展） |
 
 ### 二、记忆可信性（M1-M4 修复系列）
 
