@@ -8,7 +8,7 @@
  *   - 生产 tdai-gateway.yaml 全程只读——本脚本只 readFileSync 读取，绝不写入；
  *     临时 yaml（TDAI_GATEWAY_CONFIG 指向，os.tmpdir 内）承载十开关改写与结伴生关闭。
  *   - 临时网关端口 8422（避开生产 8420 / MemoryKnowledge 8421 / Panel 8123），自起自停。
- *   - 生产 DB（D:/tdai-data/vectors.db）只用 DatabaseSync readOnly（语料快照 / FTS 交叉自检 /
+ *   - 生产 DB 路径 = 生产 yaml data.baseDir 派生（GOLD-FIX 2026-09-15：原硬编码 D:/tdai-data 随本地迁移已失效），TDAI_ANCHOR_DB 可覆盖；只用 DatabaseSync readOnly（语料快照 / FTS 交叉自检 /
  *     bump 清单前后照），与排序路径零交集。
  *   - 结伴生关闭：临时 yaml 中 lifecycle/capture/extraction/skill.extraction 全部置 false，
  *     最小化临时网关对生产库的写入面（召回本身的 reconsolidation bump 如实记录）。
@@ -42,7 +42,18 @@ const CORE_DIR = path.resolve(__dirname, "..");
 const GOLD_DIR = path.resolve(CORE_DIR, "..", "docs", "superpowers", "evals", "memory-recall-golden");
 const RUNS_DIR = path.join(GOLD_DIR, "runs");
 const PROD_YAML = path.join(CORE_DIR, "tdai-gateway.yaml"); // 只读
-const DB_PATH = "D:/tdai-data/vectors.db";                  // 只读
+// GOLD-FIX（2026-09-15）：DB 路径不再硬编码盘符——本地迁移后 D:/tdai-data 已不存在，
+// 硬编码使锚点静默指向不存在的库。解析顺序：TDAI_ANCHOR_DB 环境变量（评估快照副本
+// 时显式覆盖）> 生产 yaml data.baseDir。库文件缺失 → loud 报错退出，绝不静默跑空。
+const PROD_YAML_CFG = YAML.parse(fs.readFileSync(PROD_YAML, "utf8"));
+const ANCHOR_BASE_DIR = PROD_YAML_CFG?.data?.baseDir ?? "";
+const DB_PATH = process.env.TDAI_ANCHOR_DB ?? path.resolve(ANCHOR_BASE_DIR, "vectors.db");
+if (!fs.existsSync(DB_PATH)) {
+  console.error(`[anchor] FATAL: 生产 DB 不存在: ${DB_PATH}`);
+  console.error(`[anchor] 来源: tdai-gateway.yaml data.baseDir="${ANCHOR_BASE_DIR}"${process.env.TDAI_ANCHOR_DB ? "（TDAI_ANCHOR_DB 覆盖）" : ""}`);
+  console.error("[anchor] 修复: 检查 tdai-gateway.yaml 的 data.baseDir，或设 TDAI_ANCHOR_DB=<vectors.db 路径>");
+  process.exit(1);
+}
 const PORT = 8422;
 const API_BASE = `http://127.0.0.1:${PORT}`;
 // 与生产同源（生产 yaml server.apiKey 已随仓入库；归档 JSON 不落 key）
