@@ -11,7 +11,7 @@
  *   session       构造式真值硬门：同主题跨 session query → 去重 session 数 ≥ minSessions
  *   update        构造式真值硬门（expectedRed=true，P1 known-FAIL）：new 应排 old 之前
  *                 ——P1 无失效语义，基线预期红；归档记录 new/old 实际名次作基线
- *   abstain       拒答软门：噪声 query 零结果，或 top1 分 < 真实 query top1 中位数（top1P50）
+ *   abstain       拒答软门（GOLD-EVO 修正）：域外（零语料交集）query 零结果，或 top1 < ABSTAIN_FLOOR=0.5 绝对地板
  *   determinism   不变量：同 query 双跑（各自独立 session）投影逐位一致
  *   tenantClosure 不变量：跨租户三元组 query → 0 结果（正控：fixture 租户 > 0）
  *
@@ -316,15 +316,27 @@ async function main() {
     }
     mark(`update 探针：${updateOrdered ? "PASS（基线翻绿）" : `known-FAIL（new=${newRank}, old=${oldRank}）`}`);
 
-    // ④ abstain 探针（拒答软门）：stats.top1P50 = 真实 query（time×2 + session + update）top1 中位数
+    // ④ abstain 探针（拒答软门，GOLD-EVO 修正 2026-09-15）：语义 = 与全语料零交集的
+    // 域外 query 应空/低分。首版误用 noiseQueries（噪声主题在 fixture 里有对应记录，
+    // BM25 强命中 ~0.9，相对门结构上不可过）——改 OOC 域外 query + 绝对地板分；
+    // top1P50 降级为信息字段。
+    // 候选均经临时库实测零 BM25 命中（词级零交集；更换 query 须先实测，2026-09-15）
+    const OOC_QUERIES = [
+      "量子引力波探测的最新进展",
+      "深海热液喷口的化能合成生态",
+      "马丘比丘遗址的海拔高度",
+      "候鸟地磁导航的机制假说",
+      "宋代汝窑天青釉的烧制工艺",
+    ];
+    const ABSTAIN_FLOOR = 0.5; // 绝对地板分：域外命中应为零或极低分（强词面命中恒 ~0.9）
     const top1s = [
       ...time.map((t, idx) => firstByQuery.get(TIME_QUERIES[idx])[0]?.score).filter((v) => typeof v === "number"),
       sItems[0]?.score,
       uItems[0]?.score,
     ].filter((v) => typeof v === "number");
-    const top1P50 = median(top1s);
+    const top1P50 = median(top1s); // 信息字段（不作门槛）
     const abstain = [];
-    for (const q of expectations.noiseQueries) {
+    for (const q of OOC_QUERIES) {
       const items = await search(q, p1, FIXTURE_TENANT, apiKey);
       firstByQuery.set(q, items);
       const top1 = items[0]?.score ?? null;
@@ -332,12 +344,12 @@ async function main() {
         query: q,
         hitCount: items.length,
         top1,
-        passed: !items.length || top1 < top1P50,
+        passed: !items.length || (typeof top1 === "number" && top1 < ABSTAIN_FLOOR),
       });
     }
     const abstainPassed = abstain.every((a) => a.passed);
-    if (!abstainPassed) loud(`abstain 探针失败：${JSON.stringify(abstain)}（top1P50=${top1P50}）`);
-    mark(`abstain 探针：${abstainPassed ? "PASS" : "FAIL"}（top1P50=${top1P50}，${abstain.filter((a) => a.passed).length}/${abstain.length} query 过）`);
+    if (!abstainPassed) loud(`abstain 探针失败：${JSON.stringify(abstain)}（ABSTAIN_FLOOR=${ABSTAIN_FLOOR}）`);
+    mark(`abstain 探针：${abstainPassed ? "PASS" : "FAIL"}（FLOOR=${ABSTAIN_FLOOR}，${abstain.filter((a) => a.passed).length}/${abstain.length} query 过）`);
 
     // ⑤ tenantClosure 不变量：跨租户 query → 0 结果（正控已由 pc 承担）
     const crossItems = await search(sq, `eval-cap-cross-${ts}`, CROSS_TENANT, apiKey);
