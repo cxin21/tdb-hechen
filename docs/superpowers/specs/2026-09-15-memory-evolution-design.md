@@ -39,13 +39,13 @@
 `valid_start/valid_end`（l1_records 已有列）对齐 Graphiti bi-temporal 语义：valid 区间 = 事实在现实世界成立的区间；`valid_end` 非空 = 已被取代/过期。**失效 ≠ 归档**：归档是遗忘（软删不可见），失效是知识更新（可见、标注"已被取代@date"、默认不进召回）。
 
 ### 2.2 写入方（三个）
-1. **conflict 自动失效**：l1-dedup 判 conflict 且 action=store → 被推翻旧记忆写 `valid_end = 新记忆.occurred_at`。现状只建 conflict 边（l1-extractor.ts:842 附近）不落失效列——补"边→失效"落库。只失效、不改正文（正文合并归 P4）。
+1. **conflict 自动失效**：l1-dedup 判 conflict 且 action=store → 被推翻旧记忆写 `valid_end = 新记忆.occurred_at`。现状只建 conflict 边（l1-extractor.ts:842 附近）不落失效列——补"边→失效"落库。只失效、不改正文（正文合并归 P4）。**方向性守卫（自审 v1.1）**：仅当新记忆 `certainty='observed'` 才自动失效旧记忆；新记忆为 `inferred` → 只记 conflict 边、不动 valid_end（推断不许冒充事实）。守卫为协议硬编码。
 2. **durative 效期提取**：l1-extraction prompt 增加判定——持续型事实（状态而非事件，如"用户用 X 仓库"）标 `durative: true`，`valid_start = occurred_at`，`valid_end` 留空（开放区间）。一次性事件不填（宁缺毋滥）。
 3. **手动失效**：`/v3/atomic/update` 支持显式 `valid_end`（agent/人主动纠错），过租户校验。
 
 ### 2.3 读取语义（关键决策：进过滤层不进排序层）
-- 召回默认：排除已失效（`valid_end IS NULL OR valid_end > now`）
-- 时间旅行：查询时间窗早于失效点 → 按"当时有效"包含失效行（复用 content-time-window 解析）
+- 召回默认：排除已失效（`valid_end IS NULL OR valid_end > now`），**/health 暴露 excluded 计数**（误排除必须是可观测事件，不是无声行为）
+- 时间旅行：查询时间窗与 valid 区间**相交**（`window ∩ [valid_start, valid_end) ≠ ∅`）→ 包含失效行（复用 content-time-window 解析）
 - R1 valid 区间相交信号（recall-signals.ts:104，已实现 gated）**保持关断**——基线语料无失效行时过滤层逐位不变，零 golden 风险
 - 修语义分裂：工具路 `inTimeWindow`（content-time-window.ts:100-107）从只看 occurred_at 升级为 valid 区间感知
 
@@ -67,6 +67,7 @@
 
 ### 3.1 arousal → 遗忘调制（闪光灯记忆）
 `effectiveλ = λ × (1 - k × arousal)`，k = `memory.lifecycle.forgetting.arousalRetention`（yaml，**缺省 0 = 逐位现状**；生产建议 0.3）。不对称衰减（|valence|×arousal 联合）留可选项暂不做。
+**漂移观察条款（自审 v1.1）**：significance 与 arousal 在 LLM 打分时天然正相关，乘法公式存在双重加成的"情感记忆囤积"风险——上线后观察遗忘候选归档率，漂移超出基线 ±30% 即回 k=0 重新评估。
 配置判定：k → yaml；调制公式 → 硬编码。
 
 ### 3.2 R10 emotionSalience 实验登记（不开启）
@@ -96,7 +97,7 @@ LLM 单次重写（输入双方全文+灵魂字段+rationale → 合并单条）
 | 五条件门、审计边协议、evolved_from 边类型 | 硬编码（协议不变量） |
 
 ### 4.5 前置：conflict 频率观察期
-P2 上线后观察两周：conflict 边 < 5 条 → 先修 dedup conflict 判定召回率（判定太保守），**不放宽演化门**。此决策点预登记。
+P2 上线后观察两周：conflict 边 < 5 条 → 先修 dedup conflict 判定召回率（判定太保守），**不放宽演化门**。观察期遥测按**门条件逐项计数**（五条件各拦多少），将来若放宽有数据依据。此决策点预登记。
 
 ### 4.6 验收
 单测（五条件门、重写流程、审计边、上限护栏、回滚）+ golden（离线新增记录不改 golden 快照 sha）+ Panel 演化链渲染（graph 加 evolved_from 边类型）。
@@ -107,7 +108,7 @@ P2 上线后观察两周：conflict 边 < 5 条 → 先修 dedup conflict 判定
 `scripts/calibrate-recall-weights.ts`：特征向量（RRF 名次、BM25、cosine、occurred_at 时近、significance、certainty、PPR、coreRef、valence×arousal、recall_count、valid 命中、type 匹配——全部已有实现）× golden 逐 query 相关性标签 → 离线逻辑回归拟合 → **产出写入 yaml**（rerankWeights + 通道旋钮）。服务仍跑现有 RankSignals 管线。
 
 ### 5.2 触发门槛（硬性）
-L1 语料 ≥ 500 且 P1 扩展 golden 就绪且重锚协议完成。触发前只交付脚本（合成语料验证工具正确性，不投产权重——合成分布过拟合风险）。
+L1 语料 ≥ **1200**（对齐自家 A/B 实证先例的语料量级：结构信号 1168 / 三刀复测 1246）且 P1 扩展 golden 就绪且重锚协议完成。触发前只交付脚本（合成语料验证工具正确性，不投产权重——合成分布过拟合风险）。
 
 ### 5.3 护栏
 预注册 A/B（§4.1 判据）；权重冻结期（两次重锚之间不改）；不做 per-query 动态权重；先修 searchL1ByCoreRefs LIKE 全表扫描（R5 复开前置）。
@@ -140,6 +141,13 @@ L1 语料 ≥ 500 且 P1 扩展 golden 就绪且重锚协议完成。触发前�
 4. D 五条件门可能过严 → 预登记 conflict 频率观察期（§4.5）。
 5. 遗漏排查：跨 agent 共享（已拍板 per-agent 排除）；skill/procedural 一致性（out of scope 登记）；注入展示变化影响 KV cache（设计避开）；失效行空间增长（远期物理清理策略登记）。
 6. 结论：结构维持，吸收两修正——C=离线工具产出 yaml（非新运行时组件）；D 增加 conflict 频率观察期。
+
+### 7.1 拍板点复审（自审 v1.1，2026-09-15，用户授权"取最优方案"）
+1. `excludeInvalidated` 缺省 true：**维持**（升级安全：新旧库均无失效行；false 会造成"写状态读不理"的静默陷阱）+ 新增失效排除计数遥测（§2.3）。
+2. `arousalRetention` 0.3：**维持** + 新增归档率漂移观察条款（±30% 带宽，§3.1）——significance 与 arousal 的 LLM 打分正相关，乘法公式有"情感记忆囤积"双重加成风险。
+3. P4 严门：**维持**（错误不对称：门严=不触发，良性；门松=错误改写正文，污染难恢复）+ 观察期遥测按门条件逐项计数（§4.5）。
+4. P5 触发门槛 500 → **修正为 1200**（对齐自家 A/B 先例语料量级 1168/1246；500 无先例支撑）。
+5. 新修正（P2）：conflict 自动失效增加 certainty 方向性守卫（新 inferred 不失效旧 observed，§2.2）；时间旅行语义精确化（窗口与 valid 区间相交，§2.3）。
 
 ## 8. 与前沿项目的映射备查
 
