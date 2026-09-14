@@ -1,0 +1,166 @@
+# Dependencies
+node_modules/
+
+# Runtime workspace
+workspace/
+
+# Environment variables
+.env
+
+# Test caches
+__tests__/soak/.model-cache/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Migration build output
+scripts/export-tencent-vdb/dist/
+scripts/migrate-sqlite-to-tcvdb/dist/
+scripts/read-local-memory/dist/
+
+# Root-level build output (not used at runtime, not published)
+dist/
+
+node_modules/
+benchmark-runs/
+.codebuddy
+.ai_assets
+
+# Dev-only scripts & lockfile (not shipped in MR)
+install-plugin.sh
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+test-offload.sh
+test-offload-mmd.sh
+test-offload-sessions.sh
+
+# npm pack / release tarballs (never commit packaged outputs)
+dist-pack/
+*.tgz
+*.tar.gz
+*.whl
+
+# TypeScript build intermediates
+*.tsbuildinfo
+*.js.map
+
+# SDK build output (source is .ts/.py, not compiled output)
+sdk/typescript/dist/
+sdk/python/dist/
+sdk/python/*.egg-info/
+
+# Vitest cache
+.vite/
+
+# Environment (already covered above, explicit for clarity)
+.env.*
+!.env.example
+
+# offload_server 真值配置（含 tdai kernel Bearer），按 .example 自建
+__tests__/offload_server/remote-config.json
+
+# start-all.sh 运行时生成，含 admin user_key 与上游 LLM API key
+deploy/global-images/.admin-key
+deploy/global-images/.proxy-config/
+deploy/global-images/.memory-core-config/
+
+# Eval scripts output
+scripts/eval-report.json
+
+# OS files
+.DS_Store
+
+# Generated binaries
+vectors.db
+
+# Office temp files
+~$*
+
+# Generated docs (HTML/PDF)
+docs/*.html
+docs/*.pdf
+docs/*.png
+docs/*.pptx
+docs/*.mmd
+
+# Log files
+*.log
+scene_blocks/
+gateway.log
+
+# 可观测性私人文档（不上传git）
+docs/开发环境说明.md
+docs/可观测性开发规范.md
+docs/插件埋点列表.md
+
+# DevCloud multipod test runtime artifact (contains real credentials, never commit)
+__tests__/devcloud-multipod/.env.devcloud
+
+# Local-only diagnostic / convention scripts (not shipped)
+__tests__/devcloud-multipod/diag-instance.sh
+scripts/COMMIT_CONVENTION.md
+scripts/pre-commit-check.sh
+
+# OpenClaw 安装脚本 env 单测（本地保留，不入库）
+MemoryCore/scripts/tests/
+
+# Backup files
+*.bak
+
+# self-implement-wiki e2e 产物（人工查看用，不入库）
+docs/knowledge/self-implement-wiki/_e2e-output/
+
+# Development databases and runtime data (never commit)
+data/skills.db
+data/tdai-memory.db
+**/data/vectors.db
+**/data/.metadata/
+**/data/scene_blocks/
+**/data/knowledge.db
+**/data/knowledge.db-shm
+**/data/knowledge.db-wal
+**/data/_wiki_engines/
+**/data/mem-*/
+
+# Test coverage output
+coverage/
+**/coverage/
+
+# Local project docs (generated, not for VCS)
+.local-docs/
+
+# Local-only: parity snapshots & runtime configs (never commit)
+MemoryProxy/.archive-tmp/
+z_config/
+
+# ── 云端部署追加（2026-09-14，推 GitHub 前审计）：含真实密钥/运行时产物，永不入库 ──
+# 生产网关配置（ark key + 网关 key 明文；云端配置从 deploy/tencent-cloud 模板派生）
+MemoryCore/tdai-gateway.yaml
+MemoryCore/tdai-gateway.standalone.yaml
+# Panel 实例配置（admin user_key + 服务器 IP）
+MemoryPanel/config/metadata-instances.json
+# 本地运维脚本（硬编码 ark/网关 key）
+MemoryCore/scripts/calibrate-recall-scale.ps1
+MemoryCore/scripts/reanchor-p5.ps1
+# 运行时日志与构建产物
+MemoryProxy/logs/
+MemoryPanel/dist/
+MemoryPanel/web/dist/
+# 本地 tsc/vitest 一次性验证产物
+MemoryProxy/baseline-recallmerge-pre-tsc.txt
+MemoryProxy/recallmerge-final-tsc.txt
+MemoryProxy/recallmerge-full-vitest.txt
+
+# ── 追加（2026-09-14 GitHub push protection 后二次审计）──
+# 评估产物 runs/ 语料含私有团队记忆内容与历史 ark key，公开仓库不入库
+# （harness 脚本与 README 保留；证据锚点路径以 CHANGELOG 登记为准）
+MemoryCore/runs/
+docs/superpowers/evals/*/runs/
+# Windows 路径事故目录（脚本 bug 产物，内含 metadata.db）
+MemoryCore/D:/
+# opik 导入样例含真实 uuid 形态 id
+MemoryCore/scripts/import-opik-to-memory-core/README.md

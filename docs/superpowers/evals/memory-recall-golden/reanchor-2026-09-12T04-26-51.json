@@ -1,0 +1,92 @@
+{
+    "task":  "Task P5-1 P@5 acceptance-line reanchor A/B (rerank off vs relevance-dominant on)",
+    "specId":  "DS-P5-REANCHOR-001",
+    "executedAt":  "2026-09-12T04:32:22.5992432Z",
+    "dryRun":  false,
+    "method":  "line-level yaml edit (rerankWeights four keys; off = all 0 shutdown identity per repo convention, on = current values verbatim) + YAML.parse verify + golden replay via recall-anchor.mjs (:8422 self-managed) + layeredMetrics backfill via eval-layered-recall.ts + per-config restore + final sha256 verify (UTF-8 no BOM)",
+    "yamlDiscipline":  "line-level exact edit + YAML.parse verify + per-config restore + final sha256 verify (UTF-8 no BOM); structural switches untouched in both configs",
+    "baselineYamlSha256":  "0db9ae29d5723afb9547121d1542655199598446f23a45d0e7b09ffb6d0c3bf3",
+    "gitSha":  "d0fd7a69c7a4bcab6fb15bb08381f872e4b32e3a",
+    "gitShaMatch":  true,
+    "corpusMatch":  true,
+    "configs":  {
+                    "off":  {
+                                "archive":  "2026-09-12T04-26-52.json",
+                                "p5Mean":  0.28500000000000003,
+                                "perQueryP5":  [
+                                                   0.25,
+                                                   0.8,
+                                                   0.2,
+                                                   0,
+                                                   0.2,
+                                                   0.4,
+                                                   0.6,
+                                                   0.4,
+                                                   0,
+                                                   0
+                                               ],
+                                "cc":  1,
+                                "ccConditional":  1,
+                                "ctr":  0.5699058146748632,
+                                "sdEntropy":  0.6500224216483542,
+                                "corpus":  {
+                                               "scopeCount":  1123,
+                                               "byType":  {
+                                                              "episodic":  831,
+                                                              "instruction":  133,
+                                                              "persona":  158,
+                                                              "work_fact":  1
+                                                          },
+                                               "scope":  {
+                                                             "team_id":  "team-2j92u63hre",
+                                                             "user_id":  "usr-2t8126nehp",
+                                                             "agent_id":  "agt-2t81sh9zdz"
+                                                         }
+                                           }
+                            },
+                    "on":  {
+                               "archive":  "2026-09-12T04-29-40.json",
+                               "p5Mean":  0.16,
+                               "perQueryP5":  [
+                                                  0,
+                                                  0.4,
+                                                  0,
+                                                  0,
+                                                  0,
+                                                  0.2,
+                                                  0.6,
+                                                  0.4,
+                                                  0,
+                                                  0
+                                              ],
+                               "cc":  1,
+                               "ccConditional":  1,
+                               "ctr":  0.5424775197960006,
+                               "sdEntropy":  0.6500224216483542,
+                               "corpus":  {
+                                              "scopeCount":  1123,
+                                              "byType":  {
+                                                             "episodic":  831,
+                                                             "instruction":  133,
+                                                             "persona":  158,
+                                                             "work_fact":  1
+                                                         },
+                                              "scope":  {
+                                                            "team_id":  "team-2j92u63hre",
+                                                            "user_id":  "usr-2t8126nehp",
+                                                            "agent_id":  "agt-2t81sh9zdz"
+                                                        }
+                                          }
+                           }
+                },
+    "adjudication":  {
+                         "criterion":  "diff = p5Mean(on) - p5Mean(off); |diff| \u003c 0.02 -\u003e tie (take off, simplicity first, shutdown-matrix precedent); else higher P@5 wins",
+                         "margin":  0.02,
+                         "p5MeanOff":  0.28500000000000003,
+                         "p5MeanOn":  0.16,
+                         "diff":  -0.125000,
+                         "workingPoint":  "off",
+                         "corpusMatch":  true,
+                         "gitShaMatch":  true
+                     }
+}

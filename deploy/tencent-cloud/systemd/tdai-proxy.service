@@ -1,0 +1,17 @@
+[Unit]
+Description=tdai MemoryProxy injection pipeline (8096)
+After=network-online.target tdai-core.service
+Wants=network-online.target tdai-core.service
+
+[Service]
+Type=simple
+User=tdai
+WorkingDirectory=/opt/tdai/td-agemem/MemoryProxy
+EnvironmentFile=/opt/tdai/etc/env
+ExecStart=/usr/bin/node --import tsx/esm src/index.ts --config /opt/tdai/etc/proxy-config.yaml
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=tdai MemoryKnowledge service (8421)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tdai
+WorkingDirectory=/opt/tdai/td-agemem/MemoryKnowledge
+EnvironmentFile=/opt/tdai/etc/env
+ExecStart=/usr/bin/node --import tsx src/server.ts
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+._llm-provider-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+._llm-provider-section {
+  width: 100%;
+}
+
+._llm-provider-section > .tea-card {
+  width: 100%;
+}
+
+._llm-provider-card {
+  width: 100%;
+}
+
+._llm-provider-card-body {
+  padding-bottom: 16px !important;
+}
+
+._llm-provider-card:not(:last-child) {
+  margin-bottom: 12px;
+}
+
+._llm-provider-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+._llm-provider-form {
+  max-width: 560px;
+  margin-bottom: 4px;
+}
+
+._llm-provider-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+._llm-provider-meta {
+  color: var(--tea-color-text-secondary);
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+._llm-provider-note {
+  font-size: 12px;
+}

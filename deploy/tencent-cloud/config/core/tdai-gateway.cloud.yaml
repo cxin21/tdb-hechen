@@ -1,0 +1,200 @@
+# ============================================================
+# TDAI Gateway 鈥?Windows 鏈湴瀹夎閰嶇疆 (MemoryCore standalone)
+# 姝ゆ枃浠跺悕 tdai-gateway.yaml 浼氳鑷姩鍙戠幇鍔犺浇锛屾棤闇€璁?TDAI_GATEWAY_CONFIG
+# 鍚姩锛?cd D:\TDB\td-agemem\MemoryCore && node --import tsx src/gateway/server.ts
+# ============================================================
+
+deployMode: standalone
+stateBackend: "local"
+
+server:
+  port: 8420
+  host: "0.0.0.0"
+  # P2-T13 閴存潈蹇呭～锛堟媿鏉库憿锛夛細涓嶉厤鍒欐瘡娆″惎鍔ㄧ敓鎴愪复鏃跺瘑閽ワ紙鏈繘绋嬫湁鏁堬紝閲嶅惎鏇存崲锛夛紝
+  # 骞跺湪鍚姩鏃ュ織 loud 鎵撳嵃銆傝法杩涚▼璋冪敤鏂癸紙MemoryProxy / Panel / 鎺㈤拡鑴氭湰锛夊繀椤婚厤缃?
+  # 鍚屼竴鎶?key锛坋nv TDAI_GATEWAY_APIKEY 鎴栧悇鑷厤缃枃浠讹級锛屽惁鍒欎竴寰?401銆?
+  # apiKey: "your-key"  # 涓嶉厤鍒欐瘡娆″惎鍔ㄧ敓鎴愪复鏃跺瘑閽?
+  apiKey: "${TDAI_GATEWAY_API_KEY}"  # 鐢熶骇婵€娲?2026-09-09锛氫笌 MemoryProxy tdai.apiKey / Panel api_key 涓夊鍚屾簮
+
+# 鏁版嵁钀藉埌 D 鐩橈紙閬垮紑 C 鐩樻弧闂锛?
+data:
+  baseDir: "/data/tdai-memory"
+
+# 鈹€鈹€ LLM (蹇呭～; new-api 涓浆, 妯″瀷 scm-flash) 鈹€鈹€
+llm:
+  baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3"
+  apiKey: "${TDAI_LLM_API_KEY}"
+  model: "ark-code-latest"
+  maxTokens: 4096
+  timeoutMs: 120000
+
+# 鈹€鈹€ Memory 寮曟搸 (绾蹇? 涓嶄緷璧?Skill) 鈹€鈹€
+memory:
+  promptMode: chat
+
+  capture:
+    enabled: true
+
+  extraction:
+    enabled: true
+    enableDedup: true
+    maxMemoriesPerSession: 20
+
+  persona:
+    triggerEveryN: 50
+    maxScenes: 15
+
+  pipeline:
+    everyNConversations: 5
+    enableWarmup: true
+    l1IdleTimeoutSeconds: 600
+    l2DelayAfterL1Seconds: 90
+    l2MinIntervalSeconds: 900
+    l2MaxIntervalSeconds: 3600
+
+  recall:
+    enabled: true
+    maxResults: 5
+    scoreThreshold: 0.3
+    strategy: "hybrid"
+    timeoutMs: 5000
+    # 鈹€鈹€ 缁撴瀯鎰熺煡鍙洖涔濋€氶亾锛圖S-RECALL-STRUCTURE-AWARE-001锛夆啋 2026-09-12 瀹炴祴鍏虫柇 鈹€鈹€
+    # 鍏虫柇瑁佸喅锛堢粨鏋勪俊鍙?on/off A/B锛宺uns/2026-09-12T12-08-44 vs 12-11-49锛屽悓璇枡 1168 鍚?sha 92c4c8bc锛夛細
+    # on P@5=0.285 / off P@5=0.325锛屽樊 0.04 > 骞虫墜绾?0.02锛涢€?query 褰掑洜锛?0 鏉′腑 8 鏉￠€愪綅涓€с€?
+    # 2 鏉℃湁瀹筹紙q9/q10 鍚勮鎸ゆ帀 1 鏉＄浉鍏宠蹇嗭級銆? 鏉℃湁鐩婏紱鍒嗗眰鏃佽瘉闆跺弽鍚戞紓绉伙紙CC/SD 閫愪綅鍚岋紝CTR off 鐣ラ珮锛夈€?
+    # 渚濇嵁"golden 瀹炶瘉闄嶇簿搴﹀嵆鍏虫柇"鍏堜緥锛坆eb2022 / router 閫€褰?C3 鍚屾锛夊叏閲忕疆 0锛?
+    # 鑳藉姏淇濈暀鍙噸寮€锛堝巻鍙查噺绾ф牎鍑嗚褰曪細RV2-1 梅170 鍥?tiebreak 鏈綅 2e-4~3e-4锛汣AL C2 鍏。锛夈€?
+    # 閲嶅紑鍓嶇疆锛氫慨澶嶄激瀹虫ā寮忓悗鎸夋紓绉诲崗璁噸璺?on/off A/B锛堥娉ㄥ唽鍒ゆ嵁瑙?DS-P5-REANCHOR-001 搂4.1锛夈€?
+    timeBoost: 0               # R1 鏃堕棿绐楋紙鍏虫柇瀹炴祴鏈夊锛歲9/q10 鎸や綅锛?
+    recencyBoost: 0            # R1 鏃惰繎鎬э紙鍏虫柇锛?
+    sigWeight: 0               # R2 閲嶈鎬э紙鍏虫柇锛?
+    inferredPenalty: 0.1       # R3 缃俊搴﹀垎灞傦細inferred 鎺ㄦ柇璁板繂涔?(1-0.1) 闄嶆潈锛坥bserved 涓嶅姩锛涗箻娉曞彛寰勪笉灞炲姞鎬?tiebreak锛屼繚鎸侊級
+    reinforcementWeight: 0     # R8 寮哄寲闂幆锛堝叧鏂級
+    moodBoost: 0               # R9 mood-congruent 寮卞亸缃紙鍏虫柇锛?
+    graphMinStrength: 0.5      # R4 鍥句竴璺抽槇鍊兼棆閽紙graphDiscount=0 鏃堕浂璋冪敤锛涗繚鐣欏閲嶅紑锛?
+    graphDiscount: 0           # R4 鍥句竴璺宠ˉ姹狅紙鍏虫柇瀹炴祴鏈夊锛?
+    coreRefBoost: 0            # R5 浠峰€奸┍鍔紙鍏虫柇锛汣1 coreRef 钀界洏涓庡睍绀轰笉鍙楀奖鍝嶏級
+    sceneBoost: 0              # R6 鍦烘櫙璺敱锛堝叧鏂級
+    # 鎬ц兘閫熻耽锛圱TL 缃?0 = 鍏抽棴锛?
+    queryEmbeddingCacheTtlMs: 60000   # E1锛氬悓 query 鏂囨湰 60s 鍐呭鐢ㄥ悜閲忥紙鍏嶉噸澶嶅鍛硷級
+    valuesCacheTtlMs: 60000           # E2锛氫环鍊奸敋缂撳瓨锛堜簲涓啓璺緞鎸傚け鏁堥挬瀛愶紱璺ㄨ繘绋嬪啓婕傜Щ绐楀彛=TTL锛?
+    sessionReuseTtlMs: 300000         # E3锛氬悓 session 鍚?query 澶嶇敤涓婅疆娉ㄥ叆鍧楋紙5 鍒嗛挓锛岀┖缁撴灉涓嶇紦瀛橈級
+    # 鈹€鈹€ RV2-2 绮炬帓閲嶈璁★紙2026-09-11锛夆啋 P5 閲嶉敋瑁佸喅鍏虫柇锛?026-09-12锛孌S-P5-REANCHOR-001锛夆攢鈹€
+    # compositeScore = wRel脳relevanceNorm + wTime脳timeProx + wSig脳sigNorm + wCore脳coreRefHit銆?
+    # relevanceNorm锛氬€欓€夌浉鍏冲害鍒嗘睜鍐?max 褰掍竴锛堢洿鎺ュ懡涓?fused score锛涘浘鍊欓€?娲剧敓鍒?
+    # maxHitScore脳graphDiscount脳pprNorm鈥斺€斿悓涓€閲忕翰鍚屽昂搴︼紝E2.1 娲剧敓鍒嗗嵆鐩稿叧搴︽姌鎵ｅ垎锛夈€?
+    # 濂戠害锛氳礋鍊?clamp 0锛涘叏 0 = 鍏虫柇鎭掔瓑锛堝熀绾胯瀺鍚堟帓搴忥級锛況elevance=0 = 閫€鍖栫函鏃堕棿/鏄捐憲鎺掑簭銆?
+    # 鍘嗗彶锛氱孩鐗岃建杩?0.325鈫?.210鈫?.125鈫?.105锛堥噺绾插け閰嶉檷绮惧害锛夛紱RV2-2 鐩稿叧搴︿富瀵间慨澶嶅悗
+    # 閲嶉敋瀹炴祴锛坮eanchor-2026-09-12T04-26-51.json锛宑orpus/gitSha 鍙屼竴鑷达級浠嶉檷绮惧害锛?
+    # 绮炬帓 off P@5=0.285 / on P@5=0.160锛屽樊 0.125 > 骞虫墜绾?0.02 鈫?宸ヤ綔鐐硅鍐?= off锛堝叧鏂級銆?
+    # 鏂伴獙鏀剁嚎 = 閲嶉敋鍩虹嚎 0.285 鈭?margin 0.02 = P@5 鈮?0.265锛堝钩闈㈠眰浣撶郴锛?
+    # 婕傜Щ閲嶉敋鍗忚瑙?docs/superpowers/evals/memory-recall-golden/README.md锛夈€?
+    # 鈹€鈹€ 涓夋閲嶉敋锛?026-09-12 鏅氾紝鎺掑簭涓夊垁 5fc7962 钀藉湴鍚?A/B锛岃Е鍙戞潯浠?2锛氭帓搴忚涔夊彉鏇达級鈹€鈹€
+    # 瀛楀吀搴忔柊璇箟涓嬪娴嬶細缁撴瀯淇″彿 on 0.325 / off 0.345锛坬9 鎸や綅宸茶鍒€涓€淇銆乹10 骞冲眬缁勫唴
+    # 閲嶆帓浠嶆湁鍑€浼ゅ锛屾瘡鏉?query off 鍧囦笉鍔ｄ簬 on锛夆啋 淇″彿缁存寔閫€褰逛笉鍥炲矖锛坰pec 搂8.3锛夈€?
+    # 宸ヤ綔鐐?= 绾熀绾匡紱閲嶉敋鍩虹嚎 0.345锛坈orpus 1176锛宺uns/13-33-14锛涒懀 瀹岀粨閲嶉敋 runs/19-46-39
+    # corpus 1246 绮剧‘澶嶇幇 0.345锛屽啓鍓湰 sidecar 棣栬窇瀹炶瘉锛岀嚎 0.325 閲嶇‘璁わ級銆?
+    # 鐜拌楠屾敹绾匡細**P@5 鈮?0.325**锛? 0.345 鈭?0.02锛涘悓鏃ヤ笁娆℃崲绾垮潎鏈夋嵁鐧昏锛屾暟瀛楀阀鍚堥潪澶嶆棫锛夈€?
+    rerankWeights:
+      relevance: 0
+      timeProx: 0
+      significance: 0
+      coreRef: 0
+    # 鈹€鈹€ R7 鍒嗗眰鍙洖 路 缁撹灞傦紙瀹℃煡淇ˉ 2026-09-12 鐧昏锛?026-09-12 鏄惧紡鎵撳紑 = 缂虹渷鍊煎師鏍疯惤鐩橈級鈹€鈹€
+    conclusionLayer:
+      enabled: true            # I鈶?缁撹灞傛€诲紑鍏筹紙false = 缁撹灞傛暣浣撻€€鍑猴紝杈撳嚭涓?R7 鍓嶅熀绾块€愪綅涓€鑷达級
+      maxCharsPerMemory: 2000  # 鍗曟潯缁撹娉ㄥ叆鍓嶆埅鏂瓧绗︽暟锛? = 涓嶆埅鏂紱Task CAL C1锛?
+      cacheTtlMs: 300000       # I鈶?骞傜瓑缁撹灞傜紦瀛?TTL 姣锛? = 鍏筹紱鏄惧紡钀界洏 = 鍘?鍥炶惤 sessionReuseTtlMs"鐨勭瓑浠峰€硷級
+
+    # 鈹€鈹€ 鍚堝苟鍙洖 路 /v3/recall 鏍稿績鍗曠偣锛圖S-RECALL-MERGE-001锛?026-09-12锛夆攢鈹€
+    # 绔偣杩斿洖涓?auto-recall 閽╁瓙鍚屼竴鏉＄粍瑁呰矾寰勶紙鍒嗗眰 + 棰勭畻 + 骞傜瓑缁撹灞傦級浜у嚭鐨勬敞鍏ュ潡锛?
+    # MemoryProxy TdaiL1RecallInjector 鏀硅皟鏈鐐圭槮浼犺緭锛堝潡鐩存帴鍓嶆彃锛夛紝娑堢伃涓ゅ缁勮閫昏緫銆?
+    # 浠ｇ悊渚?404/5xx/瓒呮椂鑷姩闄嶇骇鏃ц矾锛?v3/atomic/search 鑷缁勮锛? loud 鏃ュ織銆?
+    v3Recall:
+      enabled: true        # 浠ｇ爜缂虹渷 false锛堥€愪綅鐜扮姸锛岀鐐?404锛夛紱true = 鐦︿紶杈撻摼璺惎鐢?
+      timeoutMs: 5000      # 绔偣鍐呭彫鍥炶秴鏃舵绉掞紙涓?recall.timeoutMs 鍚屾棌锛涜秴鏃?鈫?504 鈫?浠ｇ悊闄嶇骇锛?
+
+    # 鈹€鈹€ 鍦烘櫙鍧楁不鐞嗭紙DS-SCENE-GOV-001锛?026-09-12 鐢熶骇鍚敤锛夆攢鈹€
+    # 鎻愬彇鎵规鍚庝唬鐮佺骇瓒呴檺瀹堝崼锛氬潡浣?> maxBlockChars 瑙﹀彂 LLM 钂搁閲嶅啓锛岃捀棣忓け璐ョ爜鐐瑰畨鍏ㄧ‖鎴柇鍏滃簳銆?
+    # 鍚敤渚濇嵁锛欸OV-4 澶嶆牳瀹炶瘉鈥斺€斿畧鍗叧闂椂淇鍚?~10 鍒嗛挓鍐呮椿璺冩彁鍙栫绾挎妸鍧椾綋澶嶆定鐮撮檺
+    # 锛?,728鈫?,754 涓旀寔缁闀匡級锛屾椂鐐逛慨澶嶄笉鍙寔缁紱瀹堝崼鍚敤鏄璁捐闂幆鐨勫畬鎴愬姩浣溿€?
+    # 鐢熶骇瀹炶瘉搴曞骇锛氬垎娈佃捀棣?6000 鐮佺偣/鐗?+ seg-cache + 绌鸿緭鍑洪噸璇曠ǔ瀹氳窇閫氾紙spec 搂6 娉ㄨ锛夈€?
+    sceneGovernance:
+      enabled: true           # 鎬诲紑鍏筹紙浠ｇ爜缂虹渷 false = 閫愪綅鐜扮姸锛涙澶勭敓浜ф樉寮忓紑鍚級
+      maxBlockChars: 8000     # 鍧椾綋瓒呴檺闃堝€硷紙鐮佺偣鏁帮紱clamp [500, 100000]锛汫OV-4 瀹氭。瑙?spec 搂6锛?
+      distillTimeoutMs: 60000 # 钂搁 LLM 璋冪敤瓒呮椂姣锛堣礋鍊?clamp 0锛? = runner 缂虹渷瓒呮椂锛?
+      hardCapChars: 20000     # 钂搁澶辫触鍏滃簳纭埅鏂笂闄愶紙clamp 涓嬮檺 = maxBlockChars锛?
+
+  storeBackend: "sqlite"
+
+  embedding:
+    provider: "openai_compatible"
+    baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3"
+    apiKey: "${TDAI_LLM_API_KEY}"
+    model: "doubao-embedding-vision"
+    dimensions: 2048
+
+  bm25:
+    enabled: true
+    language: "zh"
+
+  # 鈹€鈹€ 鐪熻蹇?G鈥揗 鏂板閰嶇疆锛坈onfig-first锛屽叏閮ㄥ紑鍚級 鈹€鈹€
+  links:
+    enabled: true # G 璁板繂鍥撅細鎺ュ叆鏃朵负 l1_links 寤鸿竟锛坢erge鈫抯imilar / update鈫抏volve锛?
+    minSimilarity: 0.3  # similar 杈规渶浣庣浉浼煎害闂ㄦ锛圫1锛氱己鐪?0.3锛岃秺鐣?clamp [0,1]锛涙樉寮忚惤鐩?= 缂虹渷鍊煎師鏍凤級
+  coreMemory: # K 鏍稿績璁板繂鍐欏叆鍙ｄ俊浠昏竟鐣岋紙瀹¤ F2锛?+ 浠峰€奸敋绉嶅瓙锛圔1 鍗曚竴婧愶級
+    writeEnabled: true # 鍏佽缁?/v3/core-memory/write 鍐欙紙slot 鐧藉悕鍗曞唴锛?
+    allowedSlots: [identity, core_value, strict_rule]
+    maxContentLength: 2000
+    seedValues: # B1锛歝ore_values 琛ㄧ┖鏃剁亴鍏ワ紙涓?MemoryProxy config.yaml appraisal.values 瀵归綈锛?
+      - { id: correctness, label: 姝ｇ‘, weight: 0.8 }
+      - { id: reliability, label: 鍙潬, weight: 0.8 }
+      - { id: usable, label: 鍙敤, weight: 0.8 }
+      - { id: efficiency, label: 鎬ц兘, weight: 0.7 }
+      - { id: local, label: 绉佹湁閮ㄧ讲, weight: 0.7 }
+      - { id: require, label: 鏈湴, weight: 0.7 }
+  lifecycle:
+    enabled: true # H+I锛氬珐鍥?+ 閬楀繕鐨勫懆鏈熻皟搴︼紙姣?10 鍒嗛挓涓€杞紝best-effort锛?
+    intervalMs: 600000
+    consolidation:
+      enabled: true
+      persist: true # H锛氭妸宸╁浐鍑虹殑鎸佺画鎬佸啓涓轰竴涓?observed/work_fact L1 璁板綍
+      minCount: 3
+      minSpanDays: 1
+      subjectStrategy: llm # P3-T17锛堟媿鏉库懀锛夛細subject 褰掔粍绛栫暐闂ㄢ€斺€攍lm=dedup 椤哄甫鎶藉彇鐨勮涔?subject 浼樺厛銆佽瘝娉曞厹搴曪紙榛樿锛夛紱lexical=绾瘝娉曞墠缂€
+    forgetting:
+      enabled: true # I锛氶仐蹇樺垽瀹氾紙瀹佹紡鍕垮锛涘綊妗ｆ爣杞垹锛屼笉鐪熷垹锛?
+      minAgeDays: 30
+      lowThreshold: 0.12
+  search:
+    neighborExpand: # J锛氶噸鏋勫紡鍥炲繂鈥斺€斿浘閭诲眳鎵╁睍锛堝畞缂烘瘚婊ワ紝浠呭苟鍏?top 绉嶅瓙涔嬮偦锛?
+      enabled: true
+      maxHop: 1
+      maxAdd: 3
+
+# Skill 妯″潡锛坰tandalone 鏈湴鍚敤锛?
+#  - contentBackend: local 鈫?鏁版嵁瀛?{baseDir}/skills/锛屾棤闇€ COS銆?
+#  - routing.mode: bm25     鈫?embedding 涓嶅彲鐢?none)鏃惰嚜鍔ㄩ檷绾?bm25锛岄潪闃诲銆?
+#  - extraction.enabled: true 鈫?鍚敤 LLM 鑷姩鎶藉彇锛堟娊鍙栧櫒+LLM 閮藉湪璺戞墠鏈変骇鍑猴紝瑙佸畼鏂规枃妗ｏ級銆?
+skill:
+  enabled: true
+  storeBackend: "sqlite"
+  contentBackend: "local"
+  routing:
+    mode: "bm25"
+    searchTopK: 20
+  extraction:
+    enabled: true # 瀹樻柟锛氬紑鍚?LLM 鑷姩鎶藉彇锛堜箣鍓嶄负 false 瀵艰嚧 0 浜у嚭锛?
+    maxIterations: 16 # review agent 鏈€澶ц凯浠ｏ紙瀹樻柟妯℃澘榛樿 16锛?
+    archiveBytes: 40960 # 40KB 褰掓。闃堝€硷紙宸ュ叿璋冪敤 鈮?0 鎴?瀛楄妭 鈮?0KB 瑙﹀彂褰掓。锛?
+
+# 鍙娴嬫€ф湰鍦板叧闂?
+observability:
+  otel:
+    enabled: false
+  clickhouse:
+    enabled: false
+  kafka:
+    enabled: false
+  langfuse:
+    enabled: false

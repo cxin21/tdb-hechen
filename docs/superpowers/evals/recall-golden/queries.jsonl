@@ -1,0 +1,19 @@
+﻿{"id":"q1","query":"所有的设计方案和算法你都调研好了么，是最优的么","domain":"coding,meta","should_recall":["wiki/concepts\\方案决策框架.md"],"should_not_recall":["wiki/concepts\\多层嵌套循环复杂度.md","wiki/entities\\领域服务.md","wiki/entities\\报表语义模型.md"]}
+{"id":"q2","query":"网上有可用的rerank接口么，你帮我搜搜","domain":"coding,web,meta","should_recall":[],"should_not_recall":["wiki/entities\\OpenAPI.md","wiki/entities\\领域服务.md","wiki/concepts\\接口场景化设计.md"]}
+{"id":"q3","query":"如果不加新的模型还有什么方案能提高召回和检索的准确度么","domain":"coding,meta","should_recall":[],"should_not_recall":["wiki/entities\\复合语义模型.md"]}
+{"id":"q4","query":"当前机器能挂rerank模型么，需要多大内存跑","domain":"coding,infra,meta","should_recall":[],"should_not_recall":["wiki/entities\\报表语义模型.md","wiki/entities\\复合语义模型.md"]}
+{"id":"q6","query":"哪个融合算法最优，rrf还是convex？","domain":"coding,meta","should_recall":[],"should_not_recall":["wiki/entities\\复合语义模型.md","wiki/entities\\领域服务.md"]}
+{"id":"q7","query":"帮我把这个python脚本跑一下看有没有报错","domain":"meta,ops","should_recall":[],"should_not_recall":["销售订单毛利分析报表逻辑分析","BaseAgentAction","IBatchRunScriptService","脚本流复用"]}
+{"id":"q8","query":"你觉得我该买哪个笔记本电脑","domain":"meta,irrelevant","should_recall":[],"should_not_recall":["聚合弹窗的语义局限","YonBIP","复合语义模型","PurchaseInPrecisionHandler","SqlBuilder"]}
+{"id":"p1","query":"发票结算时暂估应收金额怎么冲回","domain":"coding,business","kb":"Coding-WiKi","should_recall":["wiki/concepts\\暂估应收回冲机制.md","wiki/concepts\\回冲应收机制.md","wiki/concepts\\暂估应收恢复机制.md"],"obs_recall5":3}
+{"id":"p2","query":"能不能提供万能接口服务给所有模块用","domain":"standards,design","kb":"Standards-WiKi","should_recall":["wiki/concepts\\万能接口服务.md","wiki/concepts\\接口场景化设计.md"],"obs_recall5":2}
+{"id":"p3","query":"报表查询一次最多返回多少条","domain":"agentskill,perf","kb":"AgentSkill-WiKi","should_recall":["wiki/concepts\\报表-top-上限.md"],"obs_recall5":1}
+{"id":"p4","query":"金额双口径怎么算的","domain":"coding,business","kb":"Coding-WiKi","should_recall":["wiki/concepts\\approver-双口径金额计算.md","wiki/concepts\\金额口径规则.md"],"obs_recall5":2}
+{"id":"p5","query":"列表查询怎么避免N+1","domain":"agentskill,perf","kb":"AgentSkill-WiKi","should_recall":["wiki/concepts\\n-1-查询禁令.md"],"obs_recall5":1}
+{"id":"p6","query":"出库暂估回冲什么时候会触发","domain":"coding,business","kb":"Coding-WiKi","should_recall":["wiki/concepts\\暂估应收回冲机制.md","wiki/concepts\\回冲应收机制.md"],"obs_recall5":1}
+{"id":"p7","query":"临时表做数据中转的机制是怎么样的","domain":"coding,business","kb":"Coding-WiKi","should_recall":["wiki/concepts\\临时表中转聚合机制.md","wiki/concepts\\arap侧中转临时表机制.md","wiki/concepts\\临时表-分页处理的数据流水线.md"],"obs_recall5":3}
+{"id":"p8","query":"跨模块调用接口有什么规范注意点","domain":"coding,design","kb":"Coding-WiKi","should_recall":["wiki/concepts\\跨模块调用规范.md","wiki/concepts\\nc-跨模块接口调用规范.md"],"obs_recall5":2}
+{"id":"p9","query":"金额精度怎么处理 会不会丢尾差","domain":"coding,business","kb":"Coding-WiKi","should_recall":["wiki/concepts\\尾差处理机制.md","wiki/concepts\\先进先出尾差处理.md","wiki/concepts\\尾差校准机制.md"],"obs_recall5":3}
+{"id":"p10","query":"Begin End 事务差量模式","domain":"coding,business","kb":"Coding-WiKi","should_recall":["wiki/concepts\\信用占用-begin-end-成对调用模式.md","wiki/concepts\\begin-end-差量计算模式.md","wiki/concepts\\begin-end-双阶段模式.md"],"obs_recall5":3}
+{"id":"p11","query":"数据库分库要考虑什么","domain":"standards,infra","kb":"Standards-WiKi","should_recall":["wiki/concepts\\分库.md","wiki/concepts\\分库同步.md"],"obs_recall5":2}
+{"id":"p12","query":"权限与安全规范有哪些要求","domain":"agentskill,security","kb":"AgentSkill-WiKi","should_recall":["wiki/concepts\\接口权限.md","wiki/concepts\\登录与租户鉴权机制.md","wiki/concepts\\sql-防注入规范.md","wiki/concepts\\权限与安全规范.md"],"obs_recall5":4}

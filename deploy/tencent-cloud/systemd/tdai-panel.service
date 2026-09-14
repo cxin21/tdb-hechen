@@ -1,0 +1,17 @@
+[Unit]
+Description=tdai MemoryPanel / TMC console (8123, 内网/隧道访问)
+After=network-online.target tdai-core.service
+Wants=network-online.target tdai-core.service
+
+[Service]
+Type=simple
+User=tdai
+WorkingDirectory=/opt/tdai/td-agemem/MemoryPanel
+EnvironmentFile=/opt/tdai/etc/env
+ExecStart=/usr/bin/node --import tsx src/index.ts
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

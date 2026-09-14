@@ -1,0 +1,1738 @@
+/**
+ * ChatMemoryPanel — Memory 页面特有样式。
+ *
+ * 通用列表容器 / 分栏布局 / 骨架屏 已由
+ * ResourcePage/components/asset-list-panel.css 统一提供。
+ * 此处：
+ *   1. 在 _asset-memory-page 作用域下把通用 ALP 列表项改写为「无边框纯背景卡片」样式
+ *      （对齐 Skills 页成熟风格：无边框 + 圆角 + 纯背景，hover 浅灰、选中浅蓝）
+ *   2. 提供 Memory 专属的卡片内部 4 行结构样式（标题+计数 / id / 作者+时间·解绑 / 共享·私密）
+ */
+
+/* ============================================================
+ * L1 Design tokens（taste 重设计 preserve 档，Task U-D）
+ * 间距 / 圆角 / 字号 / 语义通道色 / 深度（hairline + 投影）/ 强调色。
+ * 明值定义于 :root；暗色对等覆盖见下方 .dark 块（沿 login-gate.css
+ * 的 .dark 祖先作用域先例，html 或 body 挂 dark 均生效）。
+ * wiki-sources-panel.css 同步消费本块 token。
+ * ============================================================ */
+:root {
+  /* 间距 */
+  --mem-sp-1: 4px;
+  --mem-sp-2: 8px;
+  --mem-sp-3: 12px;
+  --mem-sp-4: 16px;
+  --mem-sp-5: 24px;
+  /* 圆角（形锁） */
+  --mem-radius-card: 8px;
+  --mem-radius-control: 6px;
+  --mem-radius-badge: 4px;
+  /* 字号阶梯 */
+  --mem-fs-meta: 12px;
+  --mem-fs-body: 13px;
+  --mem-fs-section: 15px;
+  --mem-fs-page: 20px;
+  /* 语义通道色（数据通道，与 MemoryGraphView EDGE_KIND_COLOR 调色板对齐） */
+  --mem-sem-similar: #5b6bff;
+  --mem-sem-evolve: #1a9d63;
+  --mem-sem-conflict: #e5484d;
+  --mem-sem-causal: #e8872a;
+  --mem-sem-part_of: #8b5cf6;
+  --mem-sem-coreref-gold: #f5c542;
+  --mem-sem-valence-pos: #5c9a1e;
+  --mem-sem-valence-neg: #c2541a;
+  /* 灵魂区状态色（持续 / 观察 / 推断） */
+  --mem-sem-durative: #4f7cff;
+  --mem-sem-observed: #1a9d63;
+  --mem-sem-inferred: #b58a2f;
+  /* 健康环档位色 */
+  --mem-health-low: #e05a5a;
+  --mem-health-mid: #e6a23c;
+  --mem-health-high: #1a9d63;
+  /* 中性墨色 */
+  --mem-ink-muted: #5a5a66;
+  --mem-ink-faint: #9898a3;
+  --mem-ink-strong: #3d3d4e;
+  /* 强调色（单一主强调，色锁） */
+  --mem-accent: var(--tea-color-bg-brand-default);
+  /* 深度体系：hairline / 两档投影 / 面板底色 */
+  --mem-line: rgba(0, 0, 0, 0.06);
+  --mem-shadow-rest: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --mem-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --mem-surface: #fafafa;
+  /* 软底与分隔（chip 背景 / 进度轨道 / 灰阶描边） */
+  --mem-soft-neutral: rgba(120, 121, 141, 0.12);
+  --mem-soft-gray-track: rgba(120, 121, 141, 0.18);
+  --mem-soft-gray-line: rgba(120, 121, 141, 0.25);
+  --mem-soft-gray-line-strong: rgba(120, 121, 141, 0.2);
+  --mem-soft-gray-line-faint: rgba(120, 121, 141, 0.15);
+  --mem-soft-gray-wash: rgba(120, 121, 141, 0.04);
+  --mem-soft-similar: rgba(91, 107, 255, 0.1);
+  --mem-soft-similar-hover: rgba(91, 107, 255, 0.18);
+  --mem-soft-similar-line: rgba(91, 107, 255, 0.15);
+  --mem-soft-durative: rgba(79, 124, 255, 0.12);
+  --mem-soft-observed: rgba(26, 157, 99, 0.12);
+  --mem-soft-inferred: rgba(181, 138, 47, 0.12);
+  /* valence 双色条（负左正右，低透明端色 + 零点分隔线） */
+  --mem-valence-neg-soft: rgba(224, 90, 90, 0.35);
+  --mem-valence-pos-soft: rgba(26, 157, 99, 0.35);
+  --mem-valbar-divider: rgba(0, 0, 0, 0.25);
+  /* 图详情浮层 */
+  --mem-graph-pop-bg: #fff;
+  --mem-graph-pop-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* L5 暗色对等：金/绿/橙等语义色在暗底提亮一档；hairline/投影换暗色变体；
+   底色遵循 off-black 原则（不用纯黑，沿用 #0f172a）。 */
+.dark {
+  --mem-sem-similar: #8b96ff;
+  --mem-sem-evolve: #3ecf8e;
+  --mem-sem-conflict: #ff6b70;
+  --mem-sem-causal: #ffa14f;
+  --mem-sem-part_of: #b18cff;
+  --mem-sem-coreref-gold: #ffd966;
+  --mem-sem-valence-pos: #8fce4e;
+  --mem-sem-valence-neg: #ff9d5c;
+  --mem-sem-durative: #7d9bff;
+  --mem-sem-observed: #3ecf8e;
+  --mem-sem-inferred: #d9b05e;
+  --mem-health-low: #ff7b7b;
+  --mem-health-mid: #ffc266;
+  --mem-health-high: #3ecf8e;
+  --mem-ink-muted: #b4b4c2;
+  --mem-ink-faint: #8f8f9e;
+  --mem-ink-strong: #e8e8f0;
+  --mem-line: rgba(255, 255, 255, 0.08);
+  --mem-shadow-rest: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --mem-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --mem-surface: #0f172a;
+  --mem-soft-neutral: rgba(150, 151, 171, 0.16);
+  --mem-soft-gray-track: rgba(150, 151, 171, 0.22);
+  --mem-soft-gray-line: rgba(150, 151, 171, 0.3);
+  --mem-soft-gray-line-strong: rgba(150, 151, 171, 0.28);
+  --mem-soft-gray-line-faint: rgba(150, 151, 171, 0.22);
+  --mem-soft-gray-wash: rgba(150, 151, 171, 0.06);
+  --mem-soft-similar: rgba(139, 150, 255, 0.16);
+  --mem-soft-similar-hover: rgba(139, 150, 255, 0.26);
+  --mem-soft-similar-line: rgba(139, 150, 255, 0.22);
+  --mem-soft-durative: rgba(125, 155, 255, 0.18);
+  --mem-soft-observed: rgba(62, 207, 142, 0.16);
+  --mem-soft-inferred: rgba(217, 176, 94, 0.18);
+  --mem-valence-neg-soft: rgba(255, 122, 122, 0.4);
+  --mem-valence-pos-soft: rgba(62, 207, 142, 0.4);
+  --mem-valbar-divider: rgba(255, 255, 255, 0.3);
+  --mem-graph-pop-bg: #1a2433;
+  --mem-graph-pop-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+._asset-memory-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-4);
+}
+
+/* ============================================================
+ * Memory 页面下：把通用 ALP 列表项改写为「无边框纯背景卡片」
+ * （对齐项目 Skills 页 `_memory-personal-asset` 的成熟风格：
+ *   无边框 + 圆角 + 纯背景；hover 浅灰、选中浅蓝）
+ * 仅作用于本页面，不影响 Skills 等复用同一面板的页面。
+ *
+ * 关键：AssetListPanel 结构是 li > button，视觉必须只落在 button 上
+ * （li 保持透明），否则 button 的直角背景会盖住 li 圆角 → 四角被覆盖。
+ * ============================================================ */
+._asset-memory-page ._alp-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-2);
+  padding: var(--mem-sp-1) 0;
+}
+
+/* li：去掉 ALP 默认下分隔线，只做圆角定位，不承载背景/边框 */
+._asset-memory-page ._alp-item {
+  border-bottom: none;
+  border-radius: var(--mem-radius-card);
+}
+
+/* 视觉全部落在 button：圆角 + 纯背景，hover/选中色统一由 button 呈现 */
+._asset-memory-page ._alp-item-btn {
+  padding: var(--mem-sp-3) 14px;
+  border-radius: var(--mem-radius-card);
+  background-color: var(--tea-color-bg-primary-default);
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease,
+    border-color 0.15s ease;
+}
+
+._asset-memory-page ._alp-item-btn:hover {
+  background-color: var(--tea-color-bg-secondary-default);
+  box-shadow: var(--mem-shadow-hover);
+  transform: translateY(-1px);
+}
+
+._asset-memory-page ._alp-item--selected ._alp-item-btn {
+  background-color: var(--tea-color-bg-brand-lighten-default);
+}
+
+._asset-memory-page ._alp-item--selected ._alp-item-btn:hover {
+  background-color: var(--tea-color-bg-brand-lighten-default);
+}
+
+._asset-memory-page ._alp-item--disabled {
+  opacity: 0.6;
+}
+
+/* ============================================================
+ * Memory 卡片内部 4 行结构
+ * ============================================================ */
+
+/* 第 1 行：标题 + 蓝色计数徽章 */
+._memory-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mem-sp-2);
+  min-height: 22px;
+}
+
+._memory-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tea-color-text-primary);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 右上角蓝色计数徽章（如 L0 消息数） */
+._memory-card-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tea-color-text-brand-default);
+  background-color: var(--tea-color-bg-brand-lighten-default);
+  padding: 2px var(--mem-sp-2);
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+/* 第 2 行：资产真实 id，等宽灰色 */
+._memory-card-id {
+  margin-top: var(--mem-sp-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 第 3 行：用户名 + 时间 / 解绑（复用通用 AssetItemBadges 容器，与 Skills 页同构）
+   时间戳走通用 ._alp-item-time（已声明 12px / secondary + margin-left:auto 靠右），
+   此处只对 memory 特有部分做覆盖。 */
+
+/* 用户名徽章：与时间戳统一字号（覆盖通用 ._alp-badge 的 11px） */
+._memory-card ._alp-badge {
+  font-size: var(--mem-fs-meta);
+}
+
+/* 「解绑」红色链接文字按钮：靠右对齐（对齐 AssetItemTime 的 margin-left:auto） */
+._memory-card-unbind {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-warning-default);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s ease-in-out;
+}
+
+._memory-card-unbind:hover {
+  opacity: 0.75;
+  text-decoration: underline;
+}
+
+/* 第 4 行：共享/私密切换 */
+._memory-card-scope {
+  margin-top: 10px;
+}
+
+/* ===== Memory 特有：已私密警告徽章 ===== */
+._memory-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--tea-color-text-secondary);
+  white-space: nowrap;
+}
+
+._memory-badge svg {
+  flex-shrink: 0;
+}
+
+._memory-badge--warning {
+  color: var(--tea-color-text-warning-default);
+  font-weight: 500;
+  margin-left: 6px;
+}
+
+/* ===== 详情面板容器 ===== */
+._memory-detail-panel {
+  min-height: 480px;
+  padding: var(--mem-sp-4);
+  border: 1px solid var(--mem-line);
+  border-radius: var(--mem-radius-control);
+  background: var(--mem-surface);
+  box-shadow: var(--mem-shadow-rest);
+}
+
+/* ===== Memory 详情区 ===== */
+._memory-detail-head {
+  border-bottom: 1px solid var(--tea-color-border-secondary-default);
+  padding-bottom: var(--mem-sp-3);
+  margin-bottom: var(--mem-sp-4);
+}
+
+/* ===== BlockDetail 头部 ===== */
+._memory-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--mem-sp-4);
+  margin-bottom: var(--mem-sp-4);
+}
+
+/* 左侧标题 + meta 信息列，占据剩余宽度 */
+._memory-detail-header-info {
+  min-width: 0;
+  flex: 1;
+}
+
+._memory-detail-title {
+  font-size: var(--mem-fs-section);
+  font-weight: 600;
+  color: var(--tea-color-text-primary);
+  line-height: 1.4;
+  word-break: break-all;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--mem-sp-2);
+}
+
+._memory-detail-title-name {
+  font-weight: 600;
+}
+
+/* 名字旁弱化展示的真实 id */
+._memory-detail-title-id {
+  font-size: var(--mem-fs-meta);
+  font-weight: 400;
+  font-family: var(--font-mono);
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mem-sp-2);
+  margin-top: 6px;
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+._memory-detail-mono {
+  font-family: var(--font-mono);
+  color: var(--tea-color-text-secondary);
+}
+
+/* ===== 层级选择器 ===== */
+._memory-detail-layers {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--mem-sp-2);
+  margin-bottom: var(--mem-sp-4);
+}
+
+@media (min-width: 768px) {
+  ._memory-detail-layers {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+._memory-detail-layer-btn {
+  display: block;
+  text-align: left;
+  padding: 10px var(--mem-sp-3);
+  border: 1px solid var(--mem-line);
+  border-radius: var(--mem-radius-control);
+  background: var(--tea-color-bg-primary-default);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+  font: inherit;
+  color: inherit;
+}
+
+._memory-detail-layer-btn:hover {
+  background-color: var(--tea-color-bg-secondary-default);
+  box-shadow: var(--mem-shadow-hover);
+  transform: translateY(-1px);
+}
+
+._memory-detail-layer-btn--active {
+  border-color: var(--tea-color-border-brand-default);
+  background-color: var(--tea-color-bg-brand-lighten-default);
+}
+
+._memory-detail-layer-btn--active:hover {
+  background-color: var(--tea-color-bg-brand-lighten-default);
+}
+
+._memory-detail-layer-btn-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+._memory-detail-layer-label {
+  font-size: var(--mem-fs-meta);
+  font-weight: 600;
+}
+
+._memory-detail-layer-count {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-layer-desc {
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+  margin-top: 2px;
+}
+
+/* ===== 详情高度链：让 L0 滚动区撑满右栏剩余空间 ===== */
+/* 分栏行内左右等高（覆盖 ResourcePage 的 align-items: start） */
+._asset-memory-page ._asset-split {
+  align-items: stretch;
+}
+
+._asset-memory-page ._asset-split-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+._memory-detail {
+  display: flex;
+  flex-direction: column;
+  /* 撑满右栏高度（外层 _asset-split-detail 已限定视口高度），内部body滚动，头部固定 */
+  height: 100%;
+  min-height: 0;
+  /* 卡片外框：与左栏列表（_alp）、Skills 右栏详情（_memory-skill-detail-card）视觉统一 */
+  padding: var(--mem-sp-4);
+  border: 1px solid var(--mem-line);
+  border-radius: var(--mem-radius-control);
+  background: var(--mem-surface);
+  box-shadow: var(--mem-shadow-rest);
+}
+
+/* 详情空态：同样套卡片外框并撑满高度，避免"贴边灰底"与留白 */
+._memory-detail-empty-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 480px;
+  padding: var(--mem-sp-4);
+  border: 1px solid var(--mem-line);
+  border-radius: var(--mem-radius-control);
+  background: var(--mem-surface);
+  box-shadow: var(--mem-shadow-rest);
+  font-size: var(--mem-fs-body);
+  color: var(--tea-color-text-tertiary);
+}
+
+/* 窄屏堆叠布局下（AssetSplitLayout 取消高度限制），卡片也回归文档流高度 */
+@media (max-width: 960px) {
+  ._memory-detail {
+    height: auto;
+    min-height: 480px;
+  }
+
+  ._memory-detail-empty-card {
+    height: auto;
+  }
+}
+
+/* ===== 层内容区 ===== */
+/* 唯一滚动容器：L1/L2/L3 列表在此滚动；L0 由内部 _memory-chat-scroll 自管滚动锚点，
+   两者不会同时出现（互斥渲染），故不会产生双层滚动条 */
+._memory-detail-body {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* L0 聊天滚动容器：需自管"滚到底 / 加载更早"的锚点，作为独立滚动容器 */
+._memory-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+._memory-detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-2);
+}
+
+._memory-detail-skeleton-row {
+  height: 56px;
+  border-radius: var(--mem-radius-control);
+  background: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes _memory-detail-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* 通用骨架元素：圆角矩形 + 呼吸动画（行级文字骨架用） */
+._memory-detail-skel-line {
+  height: 12px;
+  border-radius: var(--mem-radius-badge);
+  background: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+}
+
+._memory-detail-skel-line--xs {
+  width: 60px;
+  height: 10px;
+}
+
+/* ===== 进入 L0（聊天流）的加载骨架 ===== */
+._memory-detail-skeleton--l0 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-3);
+  padding: var(--mem-sp-2) var(--mem-sp-1);
+}
+
+._memory-detail-skel-chat-row {
+  display: flex;
+  gap: var(--mem-sp-2);
+  align-items: flex-start;
+}
+
+._memory-detail-skel-chat-row--user {
+  flex-direction: row-reverse;
+}
+
+._memory-detail-skel-chat-avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+}
+
+._memory-detail-skel-chat-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  max-width: 70%;
+  padding: 10px var(--mem-sp-3);
+  border-radius: 10px;
+  background: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+}
+
+/* flex column 子项默认按 content 尺寸收缩（无文字内容 → 0 宽），
+   显式 width: 100% 让骨架线撑满气泡列宽，避免气泡被压窄成竖条。 */
+._memory-detail-skel-chat-bubble ._memory-detail-skel-line {
+  width: 100%;
+}
+
+._memory-detail-skel-chat-row--user ._memory-detail-skel-chat-bubble {
+  background: var(--tea-color-bg-brand-lighten-default);
+}
+
+/* system 行（居中通栏胶囊） */
+._memory-detail-skel-chat-system {
+  align-self: center;
+  padding: var(--mem-sp-1) 10px;
+  border-radius: 999px;
+  background: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+}
+
+/* ===== 进入 L1/L2/L3（原子记忆）的加载骨架 ===== */
+._memory-detail-skeleton--l1,
+._memory-detail-skeleton--l2,
+._memory-detail-skeleton--l3 {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+._memory-detail-skel-atomic {
+  /* 与真实 _memory-detail-atomic-item 一致：padding 12px 14px，圆角 8px，浅边 + 微阴影 */
+  padding: var(--mem-sp-3) 14px;
+  border: 1px solid var(--mem-line);
+  border-radius: var(--mem-radius-card);
+  background: var(--tea-color-bg-primary-default);
+  box-shadow: var(--mem-shadow-rest);
+}
+
+/* 进入 L2 时只有标题行：去掉底部 padding / 阴影，让卡片高度贴合 head 实际高度 */
+._memory-detail-skel-atomic--headonly {
+  padding-bottom: var(--mem-sp-3);
+}
+
+._memory-detail-skel-atomic--headonly ._memory-detail-skel-atomic-head {
+  padding-bottom: 0;
+  box-shadow: none;
+}
+
+._memory-detail-skel-atomic-head {
+  display: flex;
+  align-items: center;
+  gap: var(--mem-sp-2);
+  /* head 不再占 margin-bottom；间距由 body 的 padding-top + head 的 box-shadow 1px 承担，
+     与真实条目 head(padding-bottom: 8px) + body(margin-top: 8px) 的 16px 呼吸空间对齐 */
+  padding-bottom: var(--mem-sp-2);
+  box-shadow: 0 1px 0 var(--tea-color-border-secondary-default);
+}
+
+._memory-detail-skel-block {
+  background: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+  border-radius: var(--mem-radius-badge);
+}
+
+._memory-detail-skel-block--layer {
+  flex-shrink: 0;
+  /* 真实 _memory-detail-atomic-layer 高度 ≈ 16px（10px 字号 + 3+3 padding + 2 line-height） */
+  width: 24px;
+  height: 16px;
+}
+
+/* 头部层级徽章配色（与真实原子条目 _memory-detail-atomic-layer--* 对齐） */
+._memory-detail-skel-block--layer._memory-detail-skel-block--brand {
+  background: var(--tea-color-bg-brand-lighten-default);
+}
+._memory-detail-skel-block--layer._memory-detail-skel-block--success {
+  background: var(--tea-color-bg-success-lighten-default);
+}
+._memory-detail-skel-block--layer._memory-detail-skel-block--warning {
+  background: var(--tea-color-bg-warning-lighten-default);
+}
+
+._memory-detail-skel-block--title {
+  flex: 1;
+  min-width: 60px;
+  /* 真实标题 13px 字号 + 1.5 line-height ≈ 19.5px；骨架用 16px 居中 */
+  height: 16px;
+}
+
+._memory-detail-skel-block--time {
+  flex-shrink: 0;
+  width: 56px;
+  height: 12px;
+}
+
+._memory-detail-skel-block--more {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+
+._memory-detail-skel-block--chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+._memory-detail-skel-body {
+  /* 与真实 body 区对齐：margin-top: 8px + padding-top: 8px = 16px 间距（上沿分隔由 head box-shadow 提供） */
+  margin-top: var(--mem-sp-2);
+  padding-top: var(--mem-sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-2);
+}
+
+/* L3 正文骨架首行高一点，贴合 MarkdownView 标题级字号 */
+._memory-detail-skeleton--l3 ._memory-detail-skel-body {
+  padding-top: var(--mem-sp-2);
+}
+
+._memory-detail-empty {
+  padding: 32px var(--mem-sp-4);
+  text-align: center;
+  font-size: var(--mem-fs-body);
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-empty--warn {
+  color: var(--tea-color-text-warning-default);
+}
+
+/* ===== 时间筛选器（L0 / L1，使用 Tea RangePicker）===== */
+/* 置于详情头部右上角，随标题行顶部对齐，不随内容宽度收缩 */
+._memory-detail-timefilter {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+/* ===== 浏览 / 搜索 模式切换（详情头部右上角）===== */
+._memory-detail-mode {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--mem-sp-2);
+}
+
+/* 分段控件容器：两个互斥按钮 */
+._memory-detail-mode-switch {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--mem-radius-control);
+  background: var(--tea-color-bg-secondary-default);
+  border: 1px solid var(--tea-color-border-primary-default);
+}
+
+._memory-detail-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mem-sp-1);
+  padding: 3px var(--mem-sp-3);
+  border: none;
+  border-radius: var(--mem-radius-badge);
+  background: transparent;
+  color: var(--tea-color-text-secondary);
+  font-size: var(--mem-fs-meta);
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+._memory-detail-mode-btn:hover:not(:disabled):not(._memory-detail-mode-btn--active) {
+  color: var(--tea-color-text-primary);
+}
+
+._memory-detail-mode-btn--active {
+  background: var(--tea-color-bg-primary-default);
+  color: var(--tea-color-text-brand-default);
+  font-weight: 500;
+  box-shadow: var(--mem-shadow-rest);
+}
+
+._memory-detail-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== L0 对话原文（IM 聊天布局：头像 + 气泡）===== */
+/*顶部「加载更早」区 */
+._memory-chat-more {
+  display: flex;
+  justify-content: center;
+  padding: var(--mem-sp-1) 0 14px;
+}
+
+._memory-chat-more-btn {
+  padding: var(--mem-sp-1) 14px;
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 999px;
+  background: var(--tea-color-bg-primary-default);
+  cursor: pointer;
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-secondary);
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+._memory-chat-more-btn:hover {
+  color: var(--tea-color-text-brand-default);
+  border-color: var(--tea-color-border-brand-default);
+  background: var(--tea-color-bg-brand-lighten-default);
+  box-shadow: var(--mem-shadow-hover);
+  transform: translateY(-1px);
+}
+
+._memory-chat-more-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-chat-more-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--tea-color-border-primary-default);
+  border-top-color: var(--tea-color-text-brand-default);
+  border-radius: 50%;
+  animation: _memory-chat-spin 0.7s linear infinite;
+}
+
+@keyframes _memory-chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+._memory-chat-more-end {
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+/* 消息流：整体纵向排布，行间距稍大让气泡有呼吸感 */
+._memory-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 2px;
+}
+
+/* 单行：主体左右分列，assistant 左、user 右 */
+._memory-chat-row {
+  display: flex;
+  align-items: flex-start;
+  max-width: 100%;
+}
+
+._memory-chat-row--user {
+  justify-content: flex-end;
+}
+
+/* 主体：meta（角色 + 时间）在气泡上方，气泡随行左右靠 */
+._memory-chat-main {
+  min-width: 0;
+  max-width: 85%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-1);
+}
+
+._memory-chat-row--user ._memory-chat-main {
+  align-items: flex-end;
+}
+
+._memory-chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--mem-sp-2);
+  padding: 0 2px;
+}
+
+._memory-chat-row--user ._memory-chat-meta {
+  flex-direction: row-reverse;
+}
+
+._memory-chat-role {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--tea-color-text-secondary);
+}
+
+._memory-chat-time {
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+  white-space: nowrap;
+}
+
+/* 气泡：柔和圆角 + 细边+ 轻阴影 + hover 抬升；尾部小缺角贴合头像侧 */
+._memory-chat-bubble {
+  position: relative;
+  max-width: 100%;
+  padding: 9px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--mem-line);
+  background: var(--tea-color-bg-primary-default);
+  box-shadow: var(--mem-shadow-rest);
+  transition: box-shadow 0.15s ease-in-out;
+}
+
+._memory-chat-bubble:hover {
+  box-shadow: var(--mem-shadow-hover);
+}
+
+/* assistant / tool：左侧，左上角收一个尖角贴向头像 */
+._memory-chat-bubble--assistant,
+._memory-chat-bubble--tool {
+  border-top-left-radius: 3px;
+}
+
+/* user：右侧，品牌浅底、无边、右上角收尖角 */
+._memory-chat-bubble--user {
+  border-top-right-radius: 3px;
+  border-color: transparent;
+  background: var(--tea-color-bg-brand-lighten-default);
+}
+
+._memory-chat-body {
+  margin: 0;
+  font-size: var(--mem-fs-body);
+  line-height: 1.65;
+  color: var(--tea-color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+/* system：居中通栏胶囊提示 */
+._memory-chat-system {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 90%;
+  padding: 5px var(--mem-sp-3);
+  border-radius: 999px;
+  background: var(--tea-color-bg-secondary-default);
+  color: var(--tea-color-text-tertiary);
+  font-size: var(--mem-fs-meta);
+}
+
+._memory-chat-system svg {
+  flex-shrink: 0;
+}
+
+._memory-chat-system-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+._memory-chat-system-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* ===== L1/L2/L3 原子列表 ===== */
+._memory-detail-atomic-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 条目卡片：标题行与正文同处一张白底卡片，避免「标题浮在灰底、正文另起白盒」的割裂感。
+   li 自身不设内边距——间距全部交给 head（12px）与正文区（expand-inner / md）各自负责，
+   这样收起态（只有 head）时卡片高度恰好贴合 head，不会因 li padding 与 head margin
+   叠加/抵消不当导致标题贴顶或卡片偏矮。 */
+._memory-detail-atomic-item {
+  padding: 0;
+  border: 1px solid var(--mem-line);
+  border-radius: var(--mem-radius-card);
+  background: var(--tea-color-bg-primary-default);
+  box-shadow: var(--mem-shadow-rest);
+  /* 不要在此设 overflow:hidden——它会让 head 的 position:sticky 吸顶失效
+     （overflow 会将 li 变成 sticky 的滚动容器，而 li 本身无额外滚动空间，故无法吸附）。
+     head 现已与卡片边缘对齐、无越界溢出，无需裁切；圆角由 head 自身的 border-radius 保证。 */
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+._memory-detail-atomic-item:hover {
+  border-color: var(--tea-color-border-brand-default);
+  box-shadow: var(--mem-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* 标题行：层级徽章 + 标题 + 右侧（loading/时间/展开箭头）。
+   作为条目头部 sticky 固定：滚动时当前可见记忆的标题行吸顶，便于长列表中定位。
+   sticky 范围受每条记忆卡片（li）约束——当该记忆滚出视口时头部随之释放，不会被下一条顶住。
+   li 无内边距，head 自带 12px padding 并与卡片边缘对齐，故无需负 margin。
+   顶部圆角继承 li 的 8px，避免白底方块遮住卡片左上/右上角。
+   分隔线（底部 box-shadow）不在这里画——只有有正文时（--with-body）才显示，
+   L2 未展开时下方无内容，直接展示标题、无横线。
+   注：L0 聊天流走独立滚动容器（_memory-chat-scroll），不经过此列表，故天然不受影响。 */
+._memory-detail-atomic-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--mem-sp-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--mem-sp-3);
+  background: var(--tea-color-bg-primary-default);
+  border-radius: var(--mem-radius-card) var(--mem-radius-card) 0 0;
+}
+
+/* 有正文时：head 底部画 1px 分隔线，衔接下方正文（或加载骨架）。
+   L2 未展开（无正文）不加此 class，故无横线；展开 / 加载中才加。 */
+._memory-detail-atomic-head--with-body {
+  box-shadow: 0 1px 0 var(--tea-color-border-secondary-default);
+}
+
+._memory-detail-atomic-head--btn {
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+._memory-detail-atomic-head--btn:disabled {
+  cursor: default;
+}
+
+._memory-detail-atomic-layer {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: var(--mem-radius-badge);
+}
+
+._memory-detail-atomic-layer--default {
+  color: var(--tea-color-text-secondary);
+  background-color: var(--tea-color-bg-secondary-default);
+}
+
+._memory-detail-atomic-layer--brand {
+  color: var(--tea-color-text-brand-default);
+  background-color: var(--tea-color-bg-brand-lighten-default);
+}
+
+._memory-detail-atomic-layer--success {
+  color: var(--tea-color-text-success-default);
+  background-color: var(--tea-color-bg-success-lighten-default);
+}
+
+._memory-detail-atomic-layer--warning {
+  color: var(--tea-color-text-warning-default);
+  background-color: var(--tea-color-bg-warning-lighten-default);
+}
+
+._memory-detail-atomic-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--mem-fs-body);
+  font-weight: 600;
+  color: var(--tea-color-text-primary);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+._memory-detail-atomic-head-right {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--mem-sp-2);
+}
+
+._memory-detail-atomic-soul {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+._soul-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: var(--mem-radius-card);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--mem-ink-muted);
+  background: var(--mem-soft-neutral);
+}
+._soul-chip--durative {
+  color: var(--mem-sem-durative);
+  background: var(--mem-soft-durative);
+  font-weight: 600;
+}
+._soul-chip--observed {
+  color: var(--mem-sem-observed);
+  background: var(--mem-soft-observed);
+}
+._soul-chip--inferred {
+  color: var(--mem-sem-inferred);
+  background: var(--mem-soft-inferred);
+}
+
+/* ── U-A1 灵魂区（SoulSection）：valence 双色条 / 强度·重要性进度条 ──
+   双色条：负红左、正绿右，中线为零点，深色标记 = 当前值落点（-1..1 → 0..100%）。 */
+._soul-valbar {
+  position: relative;
+  width: 64px;
+  height: 8px;
+  border-radius: var(--mem-radius-badge);
+  overflow: hidden;
+  flex-shrink: 0;
+  background: linear-gradient(
+    to right,
+    var(--mem-valence-neg-soft) 0 50%,
+    var(--mem-valence-pos-soft) 50% 100%
+  );
+}
+._soul-valbar::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--mem-valbar-divider);
+}
+._soul-valbar-mark {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--mem-ink-strong);
+}
+._soul-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--mem-ink-muted);
+}
+._soul-meter-track {
+  position: relative;
+  width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--mem-soft-gray-track);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+._soul-meter-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 3px;
+  background: var(--mem-sem-similar);
+}
+._soul-meter-fill--significance {
+  background: var(--mem-sem-inferred);
+}
+
+._memory-detail-atomic-timeline-date {
+  margin: 10px 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.4px;
+  color: var(--mem-ink-faint);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+._memory-detail-atomic-timeline-date::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mem-sem-similar);
+  flex-shrink: 0;
+}
+._memory-detail-atomic-timeline-date::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--mem-soft-similar-line);
+}
+
+._memory-detail-atomic-neighbors {
+  margin: 4px 0 2px;
+}
+._soul-chip--neighbors {
+  cursor: pointer;
+  color: var(--mem-sem-similar);
+  background: var(--mem-soft-similar);
+}
+._soul-chip--neighbors:hover {
+  background: var(--mem-soft-similar-hover);
+}
+._memory-detail-atomic-neighbors-list {
+  margin: 4px 0 0;
+  padding-left: 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+._memory-detail-atomic-neighbor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mem-fs-meta);
+  line-height: 18px;
+  color: var(--mem-ink-muted);
+}
+._nb-edge {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 0 var(--mem-sp-1);
+  border-radius: var(--mem-radius-control);
+  color: var(--mem-sem-similar);
+  background: var(--mem-soft-similar);
+}
+._nb-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+._nb-strength {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--mem-ink-faint);
+}
+._nb-muted {
+  font-size: var(--mem-fs-meta);
+  color: var(--mem-ink-faint);
+  padding: 2px 0;
+}
+
+/* ── U-A3 关联链（RelatedSection）：getPath 两节点最短路径可视化 ── */
+._nb-pathlink {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--mem-sem-similar);
+  cursor: pointer;
+  opacity: 0.75;
+}
+._nb-pathlink:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+._nb-path {
+  margin: 4px 0 0;
+  padding: 4px 0 4px 14px;
+}
+._nb-path-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--mem-sem-similar);
+  margin-bottom: 2px;
+}
+._nb-path-list {
+  margin: 0;
+  padding-left: 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+._nb-path-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--mem-fs-meta);
+  line-height: 18px;
+  color: var(--mem-ink-muted);
+}
+._nb-path-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+._memory-l1-view {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+._memory-view-toggle {
+  display: inline-flex;
+  gap: var(--mem-sp-1);
+  align-self: flex-start;
+}
+._memory-view-toggle button {
+  padding: 2px 10px;
+  font-size: var(--mem-fs-meta);
+  border: 1px solid var(--mem-soft-gray-line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--mem-ink-muted);
+  cursor: pointer;
+}
+._memory-view-toggle button._active {
+  color: var(--tea-color-text-on-bg-brand-default);
+  background: var(--mem-sem-similar);
+  border-color: var(--mem-sem-similar);
+}
+._graph-wrap {
+  border: 1px solid var(--mem-soft-gray-line-faint);
+  border-radius: 10px;
+  background: var(--mem-soft-gray-wash);
+}
+._graph-svg { display: block; width: 100%; height: auto; }
+._graph-node { cursor: pointer; }
+._graph-node circle { transition: opacity 0.15s; }
+._graph-node:hover circle { opacity: 1; }
+._graph-detail {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 260px;
+  max-height: 80%;
+  overflow: auto;
+  background: var(--mem-graph-pop-bg);
+  border: 1px solid var(--mem-soft-gray-line-strong);
+  border-radius: 10px;
+  box-shadow: var(--mem-graph-pop-shadow);
+  padding: 10px;
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-primary);
+}
+._graph-detail-close {
+  float: right;
+  cursor: pointer;
+  color: var(--mem-ink-faint);
+}
+._graph-detail-title { font-weight: 600; margin-bottom: 4px; }
+._graph-detail-content { color: var(--mem-ink-muted); margin-bottom: 6px; white-space: pre-wrap; }
+._graph-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+._graph-detail-meta span {
+  padding: 1px 6px; border-radius: var(--mem-radius-card); font-size: 11px;
+  background: var(--mem-soft-similar); color: var(--mem-sem-similar);
+}
+._graph-detail-neighbors { display: flex; flex-direction: column; gap: 3px; }
+._graph-nb em { font-style: normal; margin-right: 4px; }
+
+._memory-detail-atomic-loading {
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+/* 正文行骨架（多行堆叠，仿 MarkdownView 的文本行形态）。
+   用于 L2 展开加载正文 / L1、L3 加载正文时，标题保持真实展示，仅正文区进入骨架。
+   分隔线由 head 的 box-shadow 承担，此处不重复。 */
+._memory-detail-atomic-body-skel {
+  margin-top: var(--mem-sp-2);
+  padding: var(--mem-sp-2) var(--mem-sp-3) var(--mem-sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-2);
+}
+
+._memory-detail-atomic-body-skel-line {
+  height: 12px;
+  border-radius: var(--mem-radius-badge);
+  background-color: var(--tea-color-bg-secondary-default);
+  animation: _memory-detail-pulse 1.5s ease-in-out infinite;
+}
+
+._memory-detail-atomic-time {
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+  white-space: nowrap;
+}
+
+._memory-detail-atomic-chevron {
+  color: var(--tea-color-text-tertiary);
+  transition: transform 0.15s ease-in-out;
+}
+
+/* chevron 独立可点击区域：扩大热区、给出手势与 hover 反馈 */
+._memory-detail-atomic-chevron-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: var(--mem-radius-badge);
+  cursor: pointer;
+}
+
+._memory-detail-atomic-chevron-btn:hover {
+  background-color: var(--tea-color-bg-secondary-default);
+}
+
+._memory-detail-atomic-chevron-btn:hover ._memory-detail-atomic-chevron {
+  color: var(--tea-color-text-secondary);
+}
+
+._memory-detail-atomic-chevron--open {
+  transform: rotate(180deg);
+}
+
+/* 正文区：与标题行同属一张卡片。head 的 box-shadow 1px 已作为正文上分隔线，
+   此处不再重复 border-top，避免双线。 */
+._memory-detail-atomic-body {
+  margin: var(--mem-sp-2) 0 0;
+  padding: var(--mem-sp-2) var(--mem-sp-3) var(--mem-sp-3);
+  font-size: var(--mem-fs-body);
+  line-height: 1.6;
+  color: var(--tea-color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+/* L2 正文逐渐展开/收起：外层 grid 0fr↔1fr 过渡高度，配合透明度淡入淡出。
+   内容常驻 DOM（未展开时 0fr 高度为 0），展开时高度与透明度一起平滑过渡。 */
+._memory-detail-atomic-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.25s ease-out,
+    opacity 0.25s ease-out;
+}
+
+._memory-detail-atomic-expand--open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* 内层裁剪容器：0fr 时裁掉内容，保证高度为 0 且正文不溢出 */
+._memory-detail-atomic-expand-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* L2/L3 正文使用共享 MarkdownView（bare 变体），head 已画分隔线，此处不重复 border-top。
+   li 无内边距，正文自带左右/底部 12px 内边距，顶部 8px 与 head 分隔线留白。 */
+._memory-detail-atomic-md {
+  margin-top: var(--mem-sp-2);
+  padding: var(--mem-sp-2) var(--mem-sp-3) var(--mem-sp-3);
+}
+
+._memory-detail-atomic-no-body {
+  margin-top: var(--mem-sp-2);
+  padding: var(--mem-sp-2) var(--mem-sp-3) var(--mem-sp-3);
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-atomic-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mem-sp-2);
+  margin-top: var(--mem-sp-2);
+  padding: 0 var(--mem-sp-3) var(--mem-sp-3);
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-atomic-ref {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+._memory-detail-atomic-tag {
+  font-weight: 500;
+}
+
+/* ===== 分页器（与任务看板一致，居中的 Tea Pagination） ===== */
+._memory-detail-pager {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--mem-sp-3);
+}
+
+/* ===== L1 语义搜索框 ===== */
+._memory-detail-search {
+  display: flex;
+  align-items: center;
+  gap: var(--mem-sp-2);
+  margin-bottom: var(--mem-sp-3);
+}
+
+._memory-detail-search-input {
+  flex: 1;
+  min-width: 0;
+}
+
+._memory-detail-search-count {
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-tertiary);
+  white-space: nowrap;
+}
+
+._memory-detail-search-score {
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-tertiary);
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 原子条目操作入口（三个点下拉：编辑 / 复制）===== */
+/* 三点按钮容器：位于时间右侧，阻止冒泡避免触发 L2 折叠 */
+._memory-detail-atomic-actions {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 三点触发按钮（tea Button type=text）：紧凑尺寸，与时间/chevron 对齐 */
+._memory-detail-atomic-more.tea-btn {
+  min-width: auto;
+  height: 20px;
+  padding: 0 var(--mem-sp-1);
+  line-height: 1;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-atomic-more.tea-btn:hover {
+  color: var(--tea-color-text-primary);
+}
+
+/* L2 展开加载态：复用 chat spinner 动画，占位与 chevron 相同 */
+._memory-detail-atomic-spinner {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* ===== 编辑 Modal ===== */
+._memory-detail-edit-name {
+  margin-bottom: var(--mem-sp-2);
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-tertiary);
+  word-break: break-all;
+}
+
+._memory-detail-edit-textarea,
+._memory-detail-edit-textarea textarea {
+  width: 100%;
+  min-height: 360px;
+  font-family: var(--font-mono);
+  font-size: var(--mem-fs-body);
+  line-height: 1.6;
+}
+
+/* 内容区域 — 无边框，纯背景 + 圆角 */
+._memory-item-content {
+  padding: var(--mem-sp-4);
+  background: var(--tea-color-bg-secondary-default);
+  border-radius: var(--mem-radius-control);
+  font-size: var(--mem-fs-body);
+  line-height: 1.7;
+  color: var(--tea-color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ===== 记忆健康条（Task 3，DS-PANEL-UI-WIKI-SOURCE-001 §2.3）===== */
+._memory-page-switch {
+  margin-bottom: var(--mem-sp-2);
+}
+
+._memory-health-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 12px;
+  margin-bottom: var(--mem-sp-2);
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+  background: var(--tea-color-bg-secondary-default);
+  border-radius: var(--mem-radius-badge);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+._memory-health-bar--unknown {
+  font-style: italic;
+}
+
+._memory-health-sep {
+  color: var(--tea-color-border-level-2, var(--tea-color-text-disabled, var(--mem-ink-faint)));
+}
+
+._memory-health-bar--degraded {
+  color: var(--tea-color-text-warning-default);
+  background: var(--tea-color-bg-warning-lighten-default);
+}
+
+._memory-health-banner {
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+/* ── U-C1 覆盖率迷你进度环（36px 弧形，DS-PANEL-UI-VISUAL-001 §2 S5）──
+   弧长 = 覆盖率，色随阈值档位：<70 红 / 70-90 黄 / >90 绿（healthRingTone）。
+   数值在环心，"向量覆盖 xx%" 完整文案在 svg <title> 悬浮可见。 */
+._memory-health-ring {
+  display: block;
+  flex-shrink: 0;
+  font-size: 9px;
+}
+
+._memory-health-ring-track {
+  stroke: var(--tea-color-border-level-2, var(--mem-line));
+}
+
+._memory-health-ring-fill {
+  transition: stroke-dashoffset 0.3s ease-in-out;
+}
+
+._memory-health-ring-fill--low {
+  stroke: var(--mem-health-low);
+}
+
+._memory-health-ring-fill--mid {
+  stroke: var(--mem-health-mid);
+}
+
+._memory-health-ring-fill--high {
+  stroke: var(--mem-health-high);
+}
+
+._memory-health-ring-text {
+  fill: var(--tea-color-text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 价值锚 / 回忆统计徽章（Task 4，BlockDetail L1 soul 区）===== */
+._soul-chip--anchor {
+  color: var(--tea-color-text-brand-default);
+}
+
+/* ===== 归档区（Task 4，L1 时间轴下方；默认隐藏，开关打开才渲染）===== */
+._memory-archived {
+  margin-top: var(--mem-sp-3);
+  padding-top: var(--mem-sp-2);
+  border-top: 1px dashed var(--tea-color-border-level-2, var(--mem-line));
+}
+
+._memory-archived-title {
+  font-size: var(--mem-fs-meta);
+  font-weight: 500;
+  color: var(--tea-color-text-secondary);
+  margin-bottom: 6px;
+}
+
+._memory-archived-empty {
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-tertiary);
+  padding: 4px 0 8px;
+}
+
+._memory-archived-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+._memory-archived-item {
+  padding: var(--mem-sp-2) var(--mem-sp-3);
+  margin-bottom: var(--mem-sp-2);
+  background: var(--tea-color-bg-secondary-default);
+  border-radius: var(--mem-radius-control);
+}
+
+._memory-archived-head {
+  display: flex;
+  align-items: center;
+  gap: var(--mem-sp-2);
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-archived-record {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+._memory-archived-time {
+  white-space: nowrap;
+}
+
+._memory-archived-reason {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+._memory-archived-item button {
+  margin-left: auto;
+}
+
+._memory-archived-body {
+  margin: 6px 0 0;
+  font-size: var(--mem-fs-meta);
+  line-height: 1.5;
+  color: var(--tea-color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+/* ===== L4 微动效：键盘焦点环（仅本页作用域，不改 tea 组件内部样式）===== */
+._asset-memory-page :focus-visible {
+  outline: 2px solid var(--mem-accent);
+  outline-offset: 2px;
+}

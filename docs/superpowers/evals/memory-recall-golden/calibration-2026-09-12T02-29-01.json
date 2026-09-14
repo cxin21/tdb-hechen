@@ -1,0 +1,369 @@
+{
+    "task":  "Task CAL C2 structural signal scale calibration (golden A/B x 6 tiers)",
+    "calibratedAt":  "2026-09-12T02:44:39.0497620Z",
+    "method":  "base 0.01 x {0.01, 0.03, 0.1, 0.3, 1.0, 3.0}; seven switches uniformly set to tier value (timeBoost/recencyBoost/sigWeight/reinforcementWeight/moodBoost/coreRefBoost/sceneBoost)",
+    "yamlDiscipline":  "line-level exact edit + YAML.parse verify + per-tier restore + final sha256 verify (UTF-8 no BOM)",
+    "baselineYamlSha256":  "576e59365482fd644ff4fe3b772eb165ed36823d4641893d016c34a5f59c3f02",
+    "tiers":  [
+                  {
+                      "base":  0.01,
+                      "multiplier":  0.01,
+                      "tierValue":  0.0001,
+                      "metrics":  {
+                                      "gitShaResolved":  "216639ebaf9e2584b9fb5d686e5476bb8e9fb5c6",
+                                      "p5Mean":  0.13999999999999999,
+                                      "p5GatePassed":  false,
+                                      "perQueryP5":  [
+                                                         0,
+                                                         0.4,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0.6,
+                                                         0.4,
+                                                         0,
+                                                         0
+                                                     ],
+                                      "cc":  1,
+                                      "ccConditional":  1,
+                                      "ctr":  0.5574557290230043,
+                                      "ald":  604.2333333333333,
+                                      "sdH":  0.6500224216483542,
+                                      "sdDist":  {
+                                                     "L2结论":  0.16666666666666669,
+                                                     "L1九通道":  0.8333333333333333,
+                                                     "scene补池":  0,
+                                                     "value补池":  0,
+                                                     "graph补池":  0
+                                                 },
+                                      "switches":  {
+                                                       "enabled":  true,
+                                                       "maxResults":  5,
+                                                       "scoreThreshold":  0.3,
+                                                       "strategy":  "hybrid",
+                                                       "timeoutMs":  5000,
+                                                       "timeBoost":  0.0001,
+                                                       "recencyBoost":  0.0001,
+                                                       "sigWeight":  0.0001,
+                                                       "inferredPenalty":  0.1,
+                                                       "reinforcementWeight":  0.0001,
+                                                       "moodBoost":  0.0001,
+                                                       "graphMinStrength":  0.5,
+                                                       "graphDiscount":  0.15,
+                                                       "coreRefBoost":  0.0001,
+                                                       "sceneBoost":  0.0001,
+                                                       "queryEmbeddingCacheTtlMs":  60000,
+                                                       "valuesCacheTtlMs":  60000,
+                                                       "sessionReuseTtlMs":  300000,
+                                                       "rerankWeights":  {
+                                                                             "relevance":  0.7,
+                                                                             "timeProx":  0.15,
+                                                                             "significance":  0.1,
+                                                                             "coreRef":  0.05
+                                                                         }
+                                                   }
+                                  }
+                  },
+                  {
+                      "base":  0.01,
+                      "multiplier":  0.03,
+                      "tierValue":  0.0003,
+                      "metrics":  {
+                                      "gitShaResolved":  "216639ebaf9e2584b9fb5d686e5476bb8e9fb5c6",
+                                      "p5Mean":  0.1,
+                                      "p5GatePassed":  false,
+                                      "perQueryP5":  [
+                                                         0,
+                                                         0.4,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0.2,
+                                                         0.4,
+                                                         0,
+                                                         0
+                                                     ],
+                                      "cc":  1,
+                                      "ccConditional":  1,
+                                      "ctr":  0.5629056067738072,
+                                      "ald":  608.5254237288135,
+                                      "sdH":  0.657212988972255,
+                                      "sdDist":  {
+                                                     "L2结论":  0.17,
+                                                     "L1九通道":  0.8299999999999998,
+                                                     "scene补池":  0,
+                                                     "value补池":  0,
+                                                     "graph补池":  0
+                                                 },
+                                      "switches":  {
+                                                       "enabled":  true,
+                                                       "maxResults":  5,
+                                                       "scoreThreshold":  0.3,
+                                                       "strategy":  "hybrid",
+                                                       "timeoutMs":  5000,
+                                                       "timeBoost":  0.0003,
+                                                       "recencyBoost":  0.0003,
+                                                       "sigWeight":  0.0003,
+                                                       "inferredPenalty":  0.1,
+                                                       "reinforcementWeight":  0.0003,
+                                                       "moodBoost":  0.0003,
+                                                       "graphMinStrength":  0.5,
+                                                       "graphDiscount":  0.15,
+                                                       "coreRefBoost":  0.0003,
+                                                       "sceneBoost":  0.0003,
+                                                       "queryEmbeddingCacheTtlMs":  60000,
+                                                       "valuesCacheTtlMs":  60000,
+                                                       "sessionReuseTtlMs":  300000,
+                                                       "rerankWeights":  {
+                                                                             "relevance":  0.7,
+                                                                             "timeProx":  0.15,
+                                                                             "significance":  0.1,
+                                                                             "coreRef":  0.05
+                                                                         }
+                                                   }
+                                  }
+                  },
+                  {
+                      "base":  0.01,
+                      "multiplier":  0.1,
+                      "tierValue":  0.001,
+                      "metrics":  {
+                                      "gitShaResolved":  "216639ebaf9e2584b9fb5d686e5476bb8e9fb5c6",
+                                      "p5Mean":  0.1,
+                                      "p5GatePassed":  false,
+                                      "perQueryP5":  [
+                                                         0,
+                                                         0.4,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0.2,
+                                                         0.4,
+                                                         0,
+                                                         0
+                                                     ],
+                                      "cc":  1,
+                                      "ccConditional":  1,
+                                      "ctr":  0.5563048803985796,
+                                      "ald":  615.7457627118644,
+                                      "sdH":  0.657212988972255,
+                                      "sdDist":  {
+                                                     "L2结论":  0.17,
+                                                     "L1九通道":  0.8299999999999998,
+                                                     "scene补池":  0,
+                                                     "value补池":  0,
+                                                     "graph补池":  0
+                                                 },
+                                      "switches":  {
+                                                       "enabled":  true,
+                                                       "maxResults":  5,
+                                                       "scoreThreshold":  0.3,
+                                                       "strategy":  "hybrid",
+                                                       "timeoutMs":  5000,
+                                                       "timeBoost":  0.001,
+                                                       "recencyBoost":  0.001,
+                                                       "sigWeight":  0.001,
+                                                       "inferredPenalty":  0.1,
+                                                       "reinforcementWeight":  0.001,
+                                                       "moodBoost":  0.001,
+                                                       "graphMinStrength":  0.5,
+                                                       "graphDiscount":  0.15,
+                                                       "coreRefBoost":  0.001,
+                                                       "sceneBoost":  0.001,
+                                                       "queryEmbeddingCacheTtlMs":  60000,
+                                                       "valuesCacheTtlMs":  60000,
+                                                       "sessionReuseTtlMs":  300000,
+                                                       "rerankWeights":  {
+                                                                             "relevance":  0.7,
+                                                                             "timeProx":  0.15,
+                                                                             "significance":  0.1,
+                                                                             "coreRef":  0.05
+                                                                         }
+                                                   }
+                                  }
+                  },
+                  {
+                      "base":  0.01,
+                      "multiplier":  0.3,
+                      "tierValue":  0.003,
+                      "metrics":  {
+                                      "gitShaResolved":  "216639ebaf9e2584b9fb5d686e5476bb8e9fb5c6",
+                                      "p5Mean":  0.16,
+                                      "p5GatePassed":  false,
+                                      "perQueryP5":  [
+                                                         0,
+                                                         0.4,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0.6,
+                                                         0.6,
+                                                         0,
+                                                         0
+                                                     ],
+                                      "cc":  1,
+                                      "ccConditional":  1,
+                                      "ctr":  0.5561364887176665,
+                                      "ald":  605.6666666666666,
+                                      "sdH":  0.6500224216483542,
+                                      "sdDist":  {
+                                                     "L2结论":  0.16666666666666669,
+                                                     "L1九通道":  0.8333333333333333,
+                                                     "scene补池":  0,
+                                                     "value补池":  0,
+                                                     "graph补池":  0
+                                                 },
+                                      "switches":  {
+                                                       "enabled":  true,
+                                                       "maxResults":  5,
+                                                       "scoreThreshold":  0.3,
+                                                       "strategy":  "hybrid",
+                                                       "timeoutMs":  5000,
+                                                       "timeBoost":  0.003,
+                                                       "recencyBoost":  0.003,
+                                                       "sigWeight":  0.003,
+                                                       "inferredPenalty":  0.1,
+                                                       "reinforcementWeight":  0.003,
+                                                       "moodBoost":  0.003,
+                                                       "graphMinStrength":  0.5,
+                                                       "graphDiscount":  0.15,
+                                                       "coreRefBoost":  0.003,
+                                                       "sceneBoost":  0.003,
+                                                       "queryEmbeddingCacheTtlMs":  60000,
+                                                       "valuesCacheTtlMs":  60000,
+                                                       "sessionReuseTtlMs":  300000,
+                                                       "rerankWeights":  {
+                                                                             "relevance":  0.7,
+                                                                             "timeProx":  0.15,
+                                                                             "significance":  0.1,
+                                                                             "coreRef":  0.05
+                                                                         }
+                                                   }
+                                  }
+                  },
+                  {
+                      "base":  0.01,
+                      "multiplier":  1,
+                      "tierValue":  0.01,
+                      "metrics":  {
+                                      "gitShaResolved":  "216639ebaf9e2584b9fb5d686e5476bb8e9fb5c6",
+                                      "p5Mean":  0.08,
+                                      "p5GatePassed":  false,
+                                      "perQueryP5":  [
+                                                         0,
+                                                         0.2,
+                                                         0,
+                                                         0,
+                                                         0.2,
+                                                         0,
+                                                         0.2,
+                                                         0.2,
+                                                         0,
+                                                         0
+                                                     ],
+                                      "cc":  1,
+                                      "ccConditional":  1,
+                                      "ctr":  0.6139311643731583,
+                                      "ald":  621.1132075471698,
+                                      "sdH":  0.7108676714534821,
+                                      "sdDist":  {
+                                                     "L2结论":  0.2033333333333333,
+                                                     "L1九通道":  0.7966666666666666,
+                                                     "scene补池":  0,
+                                                     "value补池":  0,
+                                                     "graph补池":  0
+                                                 },
+                                      "switches":  {
+                                                       "enabled":  true,
+                                                       "maxResults":  5,
+                                                       "scoreThreshold":  0.3,
+                                                       "strategy":  "hybrid",
+                                                       "timeoutMs":  5000,
+                                                       "timeBoost":  0.01,
+                                                       "recencyBoost":  0.01,
+                                                       "sigWeight":  0.01,
+                                                       "inferredPenalty":  0.1,
+                                                       "reinforcementWeight":  0.01,
+                                                       "moodBoost":  0.01,
+                                                       "graphMinStrength":  0.5,
+                                                       "graphDiscount":  0.15,
+                                                       "coreRefBoost":  0.01,
+                                                       "sceneBoost":  0.01,
+                                                       "queryEmbeddingCacheTtlMs":  60000,
+                                                       "valuesCacheTtlMs":  60000,
+                                                       "sessionReuseTtlMs":  300000,
+                                                       "rerankWeights":  {
+                                                                             "relevance":  0.7,
+                                                                             "timeProx":  0.15,
+                                                                             "significance":  0.1,
+                                                                             "coreRef":  0.05
+                                                                         }
+                                                   }
+                                  }
+                  },
+                  {
+                      "base":  0.01,
+                      "multiplier":  3,
+                      "tierValue":  0.03,
+                      "metrics":  {
+                                      "gitShaResolved":  "216639ebaf9e2584b9fb5d686e5476bb8e9fb5c6",
+                                      "p5Mean":  0.06000000000000001,
+                                      "p5GatePassed":  false,
+                                      "perQueryP5":  [
+                                                         0,
+                                                         0.2,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0,
+                                                         0.2,
+                                                         0.2,
+                                                         0,
+                                                         0
+                                                     ],
+                                      "cc":  1,
+                                      "ccConditional":  1,
+                                      "ctr":  0.6335621806326217,
+                                      "ald":  637.98,
+                                      "sdH":  0.7341838090584607,
+                                      "sdDist":  {
+                                                     "L2结论":  0.21500000000000002,
+                                                     "L1九通道":  0.7849999999999999,
+                                                     "scene补池":  0,
+                                                     "value补池":  0,
+                                                     "graph补池":  0
+                                                 },
+                                      "switches":  {
+                                                       "enabled":  true,
+                                                       "maxResults":  5,
+                                                       "scoreThreshold":  0.3,
+                                                       "strategy":  "hybrid",
+                                                       "timeoutMs":  5000,
+                                                       "timeBoost":  0.03,
+                                                       "recencyBoost":  0.03,
+                                                       "sigWeight":  0.03,
+                                                       "inferredPenalty":  0.1,
+                                                       "reinforcementWeight":  0.03,
+                                                       "moodBoost":  0.03,
+                                                       "graphMinStrength":  0.5,
+                                                       "graphDiscount":  0.15,
+                                                       "coreRefBoost":  0.03,
+                                                       "sceneBoost":  0.03,
+                                                       "queryEmbeddingCacheTtlMs":  60000,
+                                                       "valuesCacheTtlMs":  60000,
+                                                       "sessionReuseTtlMs":  300000,
+                                                       "rerankWeights":  {
+                                                                             "relevance":  0.7,
+                                                                             "timeProx":  0.15,
+                                                                             "significance":  0.1,
+                                                                             "coreRef":  0.05
+                                                                         }
+                                                   }
+                                  }
+                  }
+              ]
+}

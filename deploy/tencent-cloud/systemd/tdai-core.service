@@ -1,0 +1,18 @@
+[Unit]
+Description=tdai MemoryCore gateway (8420)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tdai
+WorkingDirectory=/opt/tdai/td-agemem/MemoryCore
+EnvironmentFile=/opt/tdai/etc/env
+ExecStart=/usr/bin/node --import tsx src/gateway/server.ts
+Restart=always
+RestartSec=3
+# 优雅停机：SIGTERM 让 pipeline/scanner 落盘退出
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

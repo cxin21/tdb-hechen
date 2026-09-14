@@ -1,0 +1,28 @@
+# ═══ Caddy 反代 · 唯一公网入口 ═══
+# ── 域名版（推荐，Let's Encrypt 自动签发续期）──────────────
+{$CADDY_DOMAIN} {
+	encode zstd gzip
+
+	# Agent 注入/工具链路 → MemoryProxy
+	handle {
+		reverse_proxy proxy:8096
+	}
+}
+
+# Panel（TMC 管控台）不对公网暴露：
+#   服务器上 SSH 隧道访问 → ssh -L 8123:panel:8123 <server>
+#   浏览器开 http://127.0.0.1:8123
+# 若必须公网访问 Panel，取消下行注释并自行加 IP 白名单/BasicAuth：
+# panel.{$CADDY_DOMAIN} {
+# 	reverse_proxy panel:8123
+# }
+
+# ── IP 裸奔版（无域名时替换上面整个域名块；慎用）────────────
+# :443 {
+# 	tls internal
+# 	encode zstd gzip
+# 	# 建议配合腾讯云安全组 IP 白名单使用
+# 	handle {
+# 		reverse_proxy proxy:8096
+# 	}
+# }

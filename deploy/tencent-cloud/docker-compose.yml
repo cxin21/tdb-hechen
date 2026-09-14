@@ -1,0 +1,103 @@
+# ══════════════════════════════════════════════════════════════════
+# TencentDB-Agent-Memory · 腾讯云部署编排（fork 全量四模块 + Caddy 反代）
+# 见同目录 DEPLOY.md（运维手册）与 DS-RECALL-MERGE 体系说明
+# 用法：cp .env.template .env && 编辑密钥 → docker compose up -d --build
+# ══════════════════════════════════════════════════════════════════
+name: tdai-cloud
+
+services:
+  # ── 记忆核心（L0-L3 / 召回 / 治理 / /v3/recall）──────────────────
+  core:
+    build:
+      context: ../../MemoryCore
+      args:
+        APT_MIRROR: mirrors.tencent.com   # 腾讯云内网 apt 加速
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TDAI_GATEWAY_CONFIG: /data/config/tdai-gateway.yaml
+      TDAI_GATEWAY_HOST: "0.0.0.0"
+      TDAI_DATA_DIR: /data/tdai-memory
+      NODE_OPTIONS: --max-old-space-size=1536
+    volumes:
+      - ./config/core/tdai-gateway.cloud.yaml:/data/config/tdai-gateway.yaml:ro
+      - tdai-core-data:/data/tdai-memory
+    networks: [internal]
+    # 不对宿主机暴露端口——仅 caddy/proxy/panel 经 internal 网络访问
+
+  # ── 注入代理（wiki 召回 / L1 注入 / current_feeling / 瘦传输）────
+  proxy:
+    build:
+      context: ../../MemoryProxy
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PROXY_DB_PATH: /data/tdai-memory-proxy/proxy.db
+      TDAI_GATEWAY_APIKEY: ${TDAI_GATEWAY_API_KEY}   # 跨进程组件读 env 透传同一把 key
+      TDAI_PROXY_ADMIN_API_KEY: ${PROXY_ADMIN_API_KEY}
+      NODE_OPTIONS: --max-old-space-size=1536
+    volumes:
+      - ./config/proxy/config.yaml:/data/config.yaml:ro
+      - tdai-proxy-data:/data/tdai-memory-proxy
+    depends_on:
+      core: { condition: service_healthy }
+    networks: [internal]
+    ports:
+      - "127.0.0.1:8096:8096"   # 仅本机调试用；外部流量走 caddy
+
+  # ── 知识服务（wiki / code-graph；LLM_MODE=custom 直连 ark）────────
+  knowledge:
+    build:
+      context: ../../MemoryKnowledge
+    restart: unless-stopped
+    env_file:
+      - .env
+      - ./config/knowledge/.env
+    volumes:
+      - tdai-knowledge-data:/data/knowledge
+    depends_on:
+      core: { condition: service_healthy }
+    networks: [internal]
+
+  # ── 管控台（TMC：wiki 注册 / 实例管理；不对公网暴露）──────────────
+  panel:
+    build:
+      context: ../../MemoryPanel
+      dockerfile: docker/local/Dockerfile.local
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - tdai-panel-data:/data/panel
+    depends_on:
+      core: { condition: service_healthy }
+    networks: [internal]
+
+  # ── TLS 反代（唯一公网入口）────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN}
+      CADDY_EMAIL: ${CADDY_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - proxy
+      - panel
+    networks: [internal]
+
+volumes:
+  tdai-core-data:
+  tdai-proxy-data:
+  tdai-knowledge-data:
+  tdai-panel-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal: {}
