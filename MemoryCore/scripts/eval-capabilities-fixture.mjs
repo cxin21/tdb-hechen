@@ -215,7 +215,7 @@ export function buildFixtures(themeIndex = 0) {
       records.push(mkRecord({
         id: `fx${themeIndex}-sess-${i + 1}-${k + 1}`,
         content,
-        occurredAt: T(7 + (i % 2), 5 + k * 2 + i), // 同主题条目时间就近、跨 session 交错
+        occurredAt: T(7 + (i % 2), 5 + i * 3 + k * 2), // 全局唯一日（P1 Task 2 裁定 Minor①）：跨 session 不再重复 occurred_at
         sessionId: grp.session,
       }));
     });

@@ -11,6 +11,23 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🧪 三信号 Lane2 能力道评估脚本（P1 Task 2，2026-09-15）
+
+- 新增 `MemoryCore/scripts/eval-capabilities.mjs`：四能力探针（时间推理 / 多会话 / 知识更新 /
+  弃答）+ 不变量组（确定性 / 租户封闭），走临时网关 :8423 + hermetic 临时库（BM25-only 确定性道）
+  的 `/v3/atomic/search` 生产同构链路；fixture 语料复用 `eval-capabilities-fixture.mjs`
+  （multiSession 时间公式改全局唯一日——P1 Task 2 裁定 Minor①，36 条结构不变，Task 1 冒烟复跑通过）。
+- 执行顺序：boot 网关建 schema → 停 → seedStore 直写 temp DB（租户三元组注入）→ 再 boot →
+  HTTP 探针 → 归档 → 自停；生产 yaml 全程只读，临时 yaml/dataDir os.tmpdir 自清理。
+- 基线（runs/2026-09-14T23-47-44.capabilities.json；runs/ 不入库）：time / session /
+  determinism / tenantClosure PASS；update known-FAIL（old 0.895 > new 0.843，P1 无失效语义，
+  P2 `excludeInvalidated` 目标翻绿）；abstain FAIL 0/5（真实 query top1 P50=0.811 vs 噪声
+  query top1 0.890–0.912——brief 弃答探针与 fixture 噪声 query 语义错位：短词面精确命中在
+  bm25RankToScore 下恒 ~0.9，P50 相对门结构上不可过，待弃答探针重设计）。
+- exit code 契约：全过=0；仅 expectedRed 失败=0（baseline:true）；意外失败=1。
+- 临时 yaml 偏离生产（归档 deviations 登记）：结伴生四开关 + queryExpansion（确定性）+
+  exploreSlot（recall_count 跨 pass 漂移）关断。
+
 ### 🌱 价值锚纯自发现 + 自维护（GROW-MAINT，2026-09-15）
 
 - **拍板**：取消预制种子——价值锚（标签与权重）全部 LLM 自发现 + 自维护，不再灌 `seedValues`/扇出 default 锚。
