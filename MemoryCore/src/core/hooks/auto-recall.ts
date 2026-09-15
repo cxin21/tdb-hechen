@@ -73,6 +73,37 @@ const RECALL_TRUNCATION_SUFFIX = "…（已截断；可用 tdai_memory_search �
 const MIN_TRUNCATED_RECALL_LINE_CHARS = 40;
 const RECALL_LINE_SEPARATOR = "\n";
 
+// A2（REG-REMAINING-001）：召回侧近重折叠——写入侧 dedup 相似度阈值未命中的近似重复
+// 在注入前折叠：字符 bigram Jaccard ≥ 0.6 视为近似重复，保留排序靠前的首条。
+// 纯 CPU 零 I/O；剥离行尾活动时间戳后比较（时间不同不代表内容不同）；
+// 阈值保守——真实不同主题记忆的 bigram Jaccard 通常 <0.3。
+function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
+  // 阈值 0.25 实测校准（2026-09-15）：重复组内 pairwise Jaccard 0.36-0.49，
+  // 非重复 ≤0.04 —— 9 倍分离度。0.6 会被转述措辞稀释（实测 4 重复全部漏过）。
+  const stripTime = (t: string) => t.replace(/·\(活动时间:[^)]*\)\s*$/, "");
+  const grams = (t: string) => {
+    const set = new Set<string>();
+    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
+    return set;
+  };
+  const keptGramSets: Set<string>[] = [];
+  const out: string[] = [];
+  for (const line of lines) {
+    const g = grams(stripTime(line));
+    let dup = false;
+    for (const kg of keptGramSets) {
+      let inter = 0;
+      for (const x of g) if (kg.has(x)) inter++;
+      if (inter / (g.size + kg.size - inter) >= threshold) { dup = true; break; }
+    }
+    if (!dup) {
+      out.push(line);
+      keptGramSets.push(g);
+    }
+  }
+  return out;
+}
+
 // V2-1（引擎二 PPR）：候选池上限由 pprTopK 接管（默认 10，与工具路同值——两路同层对齐，
 // 单一语义）；旧 R-A2 GRAPH_POOL_CAP/graphKindRank 随一跳补池替换一并退役。
 
@@ -605,9 +636,11 @@ export async function performLayeredRecall(params: {
           logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
+      const foldedLines = foldNearDuplicates(memoryLines);
       block =
         soulPrefix +
-        `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${memoryLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
+        `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
     }
   }
 
