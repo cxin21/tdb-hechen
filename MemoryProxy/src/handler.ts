@@ -748,6 +748,29 @@ export async function handleChatCompletions(
     console.log(`[request-classify] session=${sessionKey} agent=dsh headless/no-preset (no ask_user_question tool) → bypass session-init, direct passthrough`);
   }
 
+  // C4-dsh Phase 2：one-shot 子 agent 显式标识——dsh harness 会给 spawn 的子 agent
+  // 也自动挂 ask_user_question（工具声明存在但运行时无处理器），tools 启发式失效
+  // （声明≠可执行）。改用显式 prompt 标记：插件在子 agent 系统提示词里加
+  // [[one-shot-subagent]]，proxy 据此跳过 session-init 与全部注入。
+  const _oneShotSubagent = agentSource === "dsh" && (() => {
+    try {
+      const msgs = (body as { messages?: Array<{ content?: unknown }> }).messages ?? [];
+      for (const m of msgs) {
+        const c = m.content;
+        const text = typeof c === "string"
+          ? c
+          : Array.isArray(c)
+            ? c.map((p) => (p as { text?: string })?.text ?? "").join("\n")
+            : "";
+        if (text.includes("[[one-shot-subagent]]")) return true;
+      }
+    } catch { /* non-fatal */ }
+    return false;
+  })();
+  if (_oneShotSubagent) {
+    console.log(`[request-classify] session=${sessionKey} agent=dsh one-shot-subagent (prompt marker) → bypass session-init/mem/injection`);
+  }
+
   // ── mem:session-reset pre-hook ──
   // hermes / openclaw 走 header 预选身份, dsh headless 无 ask_user_question tool —
   // 三者都没有交互式 form UI 可以弹,reset 后 session 会永远卡在 pending_asset_confirm。
@@ -831,7 +854,7 @@ export async function handleChatCompletions(
   //   extraction（L1804）等其它地方的过滤作用 —— 仅会话初始化阶段放开。
   let sessionInfo: Record<string, unknown> | null | undefined;
   let assetCapabilities: import("./injection/types.js").AssetCapabilityFlags | undefined;
-  let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless;
+  let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless || _oneShotSubagent;
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
