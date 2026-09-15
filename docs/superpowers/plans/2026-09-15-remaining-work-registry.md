@@ -19,14 +19,14 @@
 - [x] **B1 · LLM 空响应 fail-loud**（✅ ac0899f + fd44634 对抗性审查收窄：仅纯文本任务（enableTools=false）抛错——工具流最终步合法无文本不误伤；空 text 抛错带 finishReason/completionTokens 上下文）
 - [x] **B2 · 插桩清理**（✅ ac0899f：DEBUG-CFG 移除；DEBUG-GROW 保留为发现链路观测点，随 P4 清理）
 - [ ] **B3 · Lane 2 时间探针弱断言**：0hits 空集 vacuous pass → 补非空断言
-- [ ] **B4 · proxy 注释化妆**：proxy-config.yaml:495 过期 10.4.100.30 注释
+- [ ] **B4 · proxy 注释乱码修复**（⚠️ 升级认知：proxy-config.yaml 全文件中文注释预存乱码 299+ 行（部署时编码链损伤，注释不影响功能）。恢复尝试已逆转。**正确方案已明确**：从 MemoryProxy/config.yaml 模板重灌注释段（生产=模板+6 处差异，见 deploy/tencent-cloud/config/proxy/CLOUD-DIFF.md）——精细运维操作，择机独立执行）
 
 ## 分组 C · SOUL 迭代
 
 - [ ] **C1 · 身份 GROW-MAINT**：slots 重验证/退场/演化（identity 内容含"P1–P3"类时效内容会过时）
 - [ ] **C2 · 红线 pending 采纳**：4 项 strict_rule/core_value 提案待人工采纳（Panel 或 API）
 - [ ] **C3 · 身份常驻注入**：无记忆轮次也注入身份段（当前 gating = 有记忆才有块）
-- [ ] **C4 · 钩子路径租户贯通**：内部钩子路径 soul 前缀为空（端点路径已覆盖真实注入）
+- [x] **C4 · 钩子路径租户贯通**（✅ 证伪关闭 2026-09-15：MemoryProxy 注入器明示"主链路（瘦传输）调 /v3/recall 拿组装好的注入块"——**生产注入仅端点路径**，内部钩子（tdai-core.recall）无产线调用方；其全局召回隔离缺口登记为潜在项（仅当未来启用进程内召回才需修））
 
 ## 分组 D · 等外部条件（观察期，不主动）
 
