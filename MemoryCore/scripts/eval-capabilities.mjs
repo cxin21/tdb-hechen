@@ -279,7 +279,9 @@ async function main() {
         ids: items.map((i) => i.id),
       });
     }
-    const timePassed = time.every((t) => t.passed);
+    // B3（REG-REMAINING-001）：家族级非空断言——单 query 空集 allIn 恒真（vacuous），
+    // 但两个时间 query 合计必须 ≥1 hit（fixture 跨月分布，全 0 = 时间过滤失效而非无数据）。
+    const timePassed = time.every((t) => t.passed) && time.some((t) => t.hitCount > 0);
     if (!timePassed) loud(`time 探针失败：${JSON.stringify(time)}`);
     mark(`time 探针：${timePassed ? "PASS" : "FAIL"}（${time.map((t) => `${t.query}→${t.hitCount}hits`).join(" / ")}）`);
 
