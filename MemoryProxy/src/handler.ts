@@ -872,7 +872,7 @@ export async function handleChatCompletions(
       : Array.isArray(sysMsg?.content)
         ? (sysMsg!.content as Array<{ text?: string }>).map((p) => p?.text ?? "").join(" ")
         : "";
-    const hdrsAll = req.headers as Record<string, unknown>;
+    const hdrsAll = (lcHeaders ?? {}) as Record<string, unknown>;
     const interestingHdrs: Record<string, unknown> = {};
     for (const [hk, hv] of Object.entries(hdrsAll)) {
       if (/^x-/i.test(hk)) interestingHdrs[hk] = hv;
