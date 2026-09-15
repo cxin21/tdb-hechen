@@ -1411,6 +1411,7 @@ export async function searchHybrid(
   }
 
   // RRF merge: k=60 is a standard constant from the RRF paper
+  // RRF K=60：Cormack et al. (2009) 原论文标准常数——协议不变量，硬编码不配置化（GOLD-EVO 判定 2026-09-15）
   const RRF_K = 60;
 
   // Map: record_id → MergedPoolValue（V2-3：coreRefCount/recallCount 供组合分精排/探索位消费）

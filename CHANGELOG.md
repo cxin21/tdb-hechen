@@ -11,6 +11,22 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🧪 P1 验收底座 + 口径还债（GROW-EVO Phase 1，2026-09-15）
+
+- **背景**：DS-MEMORY-EVO-001 v3——本地 golden 语料丢失，人工标注退出；验收转为三信号分层
+  （构造式真值 + 不变量断言硬门，LLM 判官软参考轨）。
+- **Lane 2 能力道上线**：`scripts/eval-capabilities-fixture.mjs`（hermetic fixture 36 条×双主题包
+  可轮换，BM25-only 确定性）+ `scripts/eval-capabilities.mjs`（临时网关 8423，四能力探针：
+  时间推理/多会话/知识更新 known-FAIL 基线/弃答（域外零交集 query 实测选型 + ABSTAIN_FLOOR=0.5）
+  + 不变量（确定性双跑/租户封闭）），归档 `docs/superpowers/evals/capabilities/`（runs 不入库）。
+- **口径还债**：① `handleAtomicQuery` legacy fallback 时间过滤对齐 occurred_at（快慢路统一，
+  soul 列 cast 访问）；② `bumpRecallCount` 增 `touchUpdatedTime` 选项（缺省 true = 逐位现状），
+  auto-recall 钩子路补 recall_count 计数（top-3 observed，只加计数不刷 updated_time——R8 复开
+  数据前提成立）；③ 维度口径对照表 `MemoryCore/docs/memory-dimensions-dict.md`（时间三代/
+  valence 同名异义/硬编码常数判定）；④ RRF_K=60 协议常数注释化。
+- **升级须知**：钩子路 recall_count 开始积累属预期行为变化（遗忘 recallCountBoost 数据源），
+  排序语义零变更；重锚纪律——排序代码未变，无需重锚。
+
 ### 🧪 三信号 Lane2 能力道评估脚本（P1 Task 2，2026-09-15）
 
 - 新增 `MemoryCore/scripts/eval-capabilities.mjs`：四能力探针（时间推理 / 多会话 / 知识更新 /

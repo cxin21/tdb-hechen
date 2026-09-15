@@ -163,6 +163,7 @@ function triggerReconsolidation(
 // ============================
 
 /** Standard RRF constant from the original RRF paper. */
+// RRF K=60：Cormack et al. (2009) 原论文标准常数——协议不变量，硬编码不配置化（GOLD-EVO 判定 2026-09-15）
 const RRF_K = 60;
 
 /**
