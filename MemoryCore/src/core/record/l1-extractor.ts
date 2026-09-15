@@ -133,6 +133,8 @@ export async function extractL1Memories(params: {
     embeddingService?: EmbeddingService;
     /** Top-K candidates for conflict recall (default: 5) */
     conflictRecallTopK?: number;
+    /** GROW-EVO P2（§2.2）：durative 效期提取开关——false = 提取侧不写 valid_start（逐位现状） */
+    durativeEnabled?: boolean;
     /** Override embedding timeout for capture-path calls (milliseconds) */
     embeddingTimeoutMs?: number;
     /**
@@ -238,8 +240,11 @@ export async function extractL1Memories(params: {
         scene_name: scene.scene_name,
         // 灵魂记忆字段必须透传（此前重建时遗漏，导致写好却全空）
         occurred_at: mem.occurred_at,
-        valid_start: mem.valid_start,
-        valid_end: mem.valid_end,
+        // GROW-EVO P2（§2.2）：valid_start 仅在开关开且 LLM 判 durative 时落库；
+        // valid_end 提取侧永不写（只能 conflict/手动失效）——开放区间语义。
+        //（cast 访问：scene.memories 推断类型无 soul 字段——预存量口径，不新增错误）
+        valid_start: options.durativeEnabled === true && (mem as { durative?: boolean }).durative === true ? ((mem as { valid_start?: string }).valid_start || (mem as { occurred_at?: string }).occurred_at) : undefined,
+        valid_end: undefined,
         certainty: mem.certainty ?? "observed",
         source: mem.source,
         valence: mem.valence,
@@ -325,6 +330,7 @@ export async function extractL1Memories(params: {
         vectorStore: options.vectorStore,
         embeddingService: options.embeddingService,
         conflictRecallTopK: options.conflictRecallTopK,
+        durativeEnabled: options.durativeEnabled,
         embeddingTimeoutMs: options.embeddingTimeoutMs,
         llmRunner: options.llmRunner,
         // S1：similar 建边门槛配置化（memory.links.minSimilarity），缺省 0.3

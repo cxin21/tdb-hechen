@@ -41,6 +41,8 @@ export interface ExtractionConfig {
   enableDedup: boolean;
   /** Max memories per session (default: 20) */
   maxMemoriesPerSession: number;
+  /** GROW-EVO P2（§2.2）：durative 效期提取开关（缺省 false = 提取侧不写 valid_start） */
+  durativeEnabled: boolean;
   /** LLM model for extraction, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
   /** Prompt family for L1 extraction (default: chat). */
@@ -947,6 +949,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       enabled: bool(extractionGroup, "enabled") ?? true,
       enableDedup: bool(extractionGroup, "enableDedup") ?? true,
       maxMemoriesPerSession: num(extractionGroup, "maxMemoriesPerSession") ?? 20,
+      // GROW-EVO P2（§2.2）：durative 效期提取开关（缺省 false = 逐位现状）
+      durativeEnabled: bool(extractionGroup, "durativeEnabled") ?? false,
       model: optStr(extractionGroup, "model"),
       promptMode: normalizePromptMode(str(extractionGroup, "promptMode"), globalPromptMode),
     },

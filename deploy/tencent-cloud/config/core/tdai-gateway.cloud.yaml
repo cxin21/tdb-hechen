@@ -39,6 +39,7 @@ memory:
     enabled: true
     enableDedup: true
     maxMemoriesPerSession: 20
+    durativeEnabled: true # GROW-EVO P2（§2.2）：持续状态事实写 valid_start
 
   persona:
     triggerEveryN: 50
