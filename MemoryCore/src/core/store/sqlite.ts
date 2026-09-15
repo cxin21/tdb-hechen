@@ -2607,6 +2607,35 @@ export class VectorStore implements IMemoryStore {
    * PA：tenant 可选——default/缺省保持旧键（last_discovery_at / last_corpus_count，旧行为
    * 与旧调用形状不变）；非 default 三元组用 per-tenant 独立键（双门基线按 agent 隔离）。
    */
+  /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
+  getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null } {
+    try {
+      const t = normalizeCoreTenant(tenant);
+      const suffix = (t.teamId === "default" && t.userId === "default" && t.agentId === "default") ? "" : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
+      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?)").all(`identity_last_attempt_at${suffix}`, `identity_last_corpus_count${suffix}`) as unknown as Array<{ k: string; v: string }>;
+      const map = new Map(rows.map((r) => [r.k, r.v]));
+      const countRaw = map.get(`identity_last_corpus_count${suffix}`);
+      const count = countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
+      return { lastAttemptAt: map.get(`identity_last_attempt_at${suffix}`) ?? null, lastCorpusCount: count };
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [identity_discovery] getState failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { lastAttemptAt: null, lastCorpusCount: null };
+    }
+  }
+
+  /** SOUL：身份自发现状态写（独立键族——与锚状态互不覆盖）。 */
+  setIdentityDiscoveryState(state: { lastAttemptAt: string; lastCorpusCount: number }, tenant?: CoreTenant): void {
+    try {
+      const t = normalizeCoreTenant(tenant);
+      const suffix = (t.teamId === "default" && t.userId === "default" && t.agentId === "default") ? "" : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
+      const up = "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
+      this.db.prepare(up).run(`identity_last_attempt_at${suffix}`, state.lastAttemptAt);
+      this.db.prepare(up).run(`identity_last_corpus_count${suffix}`, String(Math.max(0, Math.floor(state.lastCorpusCount))));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [identity_discovery] setState failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   getAnchorGrowthState(tenant?: CoreTenant): { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null } {
     try {
       const keys = this.growthStateKeys(tenant);

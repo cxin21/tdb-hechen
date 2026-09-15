@@ -13,6 +13,7 @@
  */
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
+import { escapeXmlTags } from "../../utils/sanitize.js";
 
 export interface IdentityDiscoveryConfig {
   enabled: boolean;
@@ -135,26 +136,32 @@ export async function runIdentityDiscovery(deps: {
         let adoptedThis = 0;
         let pendingThis = 0;
 
+        // 分级门（用户裁定 A 2026-09-15）：identity 描述类跳过证据重算——综合提炼 content
+        // 无法逐字匹配语料（与锚的 label 不同形态）；escapeXmlTags 消毒在写入路径，
+        // GROW-MAINT 类重验证为后续纠偏层。core_value/strict_rule（红线类）→ pending 永不自动写入。
+        const identityProps: string[] = [];
         for (const p of proposals) {
-          const ev = recountEvidence(p.content, corpus);
-          if (ev < cfg.minEvidence) continue;
-          // 分级门：identity → 自动；core_value/strict_rule → pending
           if (p.slot === "identity") {
-            const ok = store.upsertCore("identity", p.content, "identity-discovery", tenant);
-            if (ok) { adoptedThis++; pendingThis++; logger?.info?.(`[identity-discovery] adopted identity: ${p.content.slice(0, 60)}`); }
+            identityProps.push(p.content);
           } else {
+            const ev = recountEvidence(p.content, corpus);
             pendingThis++;
             logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev})`);
+          }
+        }
+        // identity slot 单行语义：多提案合并为 bulleted 身份描述，version++ 演化
+        if (identityProps.length > 0) {
+          const merged = identityProps.map((c) => "- " + c).join("\n");
+          const ok = store.upsertCore("identity", escapeXmlTags(merged), "identity-discovery", tenant);
+          if (ok) {
+            adoptedThis = 1;
+            logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
           }
         }
         adopted += adoptedThis;
         pending += pendingThis;
 
-        writeState(store, tenant, {
-          lastDiscoveryAt: now().toISOString(),
-          lastCorpusCount: corpusCount,
-          lastAttemptAt: now().toISOString(),
-        });
+        writeState(store, tenant, { lastAttemptAt: now().toISOString(), lastCorpusCount: corpusCount });
         ranAny = true;
         logger?.info?.(`[identity-discovery] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} proposals=${proposals.length} adopted=${adoptedThis}`);
       } catch (err) {
@@ -208,15 +215,17 @@ function recountEvidence(content: string, corpus: string[]): number {
 }
 
 // ── state helpers ──
-function readState(store: IMemoryStore, tenant: CoreTenant): { lastDiscoveryAt?: string; lastCorpusCount?: number; lastAttemptAt?: string } {
+// GROW-EVO：独立键族（identity_* 前缀）——与 anchor-growth 的状态互不覆盖
+// （共用 getAnchorGrowthState 会让身份写入清掉锚的 lastAdoptedAt → 锚 24h 冷却失效）。
+function readState(store: IMemoryStore, tenant: CoreTenant): { lastAttemptAt?: string; lastCorpusCount?: number } {
   try {
-    const raw = (store as unknown as { getAnchorGrowthState?: (t?: CoreTenant) => unknown }).getAnchorGrowthState?.(tenant);
-    if (raw && typeof raw === "object") return raw as { lastDiscoveryAt?: string; lastCorpusCount?: number; lastAttemptAt?: string };
+    const raw = (store as unknown as { getIdentityDiscoveryState?: (t?: CoreTenant) => unknown }).getIdentityDiscoveryState?.(tenant);
+    if (raw && typeof raw === "object") return raw as { lastAttemptAt?: string; lastCorpusCount?: number };
   } catch { /* fall through */ }
   return {};
 }
-function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt: string }): void {
+function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: { lastAttemptAt: string; lastCorpusCount: number }): void {
   try {
-    (store as unknown as { setAnchorGrowthState?: (s: unknown, t?: CoreTenant) => void }).setAnchorGrowthState?.(state, tenant);
+    (store as unknown as { setIdentityDiscoveryState?: (s: unknown, t?: CoreTenant) => void }).setIdentityDiscoveryState?.(state, tenant);
   } catch { /* best-effort */ }
 }

@@ -718,6 +718,9 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   /** GROW：自生长调度状态写（发现轮次完成后调用）。PA：tenant 语义同 getAnchorGrowthState。
    *  GROW-MAINT：lastAttemptAt/lastAdoptedAt 可选——冷却分级（0 采纳 1h 短冷却 / 有采纳 intervalHours）。 */
   setAnchorGrowthState?(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string }, tenant?: CoreTenant): MaybePromise<void>;
+  /** SOUL：身份自发现状态（identity_* 前缀键族，与锚状态独立） */
+  getIdentityDiscoveryState?(tenant?: CoreTenant): MaybePromise<{ lastAttemptAt: string | null; lastCorpusCount: number | null }>;
+  setIdentityDiscoveryState?(state: { lastAttemptAt: string; lastCorpusCount: number }, tenant?: CoreTenant): MaybePromise<void>;
   /**
    * PA（价值锚 per-agent 严格独立）：l1_records 的 distinct (team,user,agent) 三元组——
    * "有记忆的 agent"清单（default 锚扇出迁移与自生长 per-agent 化共用来源，单源禁第二份）。
