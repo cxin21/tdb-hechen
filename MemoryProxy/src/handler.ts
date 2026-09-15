@@ -862,7 +862,7 @@ export async function handleChatCompletions(
   // 历史阻塞（skip → sessionInfo 空 → 空注入 tool_call → unknown tool）已被
   // injectedSkipped 的 _dshHeadless bypass 消除（本函数上方，无头请求永不注入），
   // 现在跳过 init 是安全的：无头会话直接放行，不弹表单、不注册资产。
-  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless) {
+  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless && !_oneShotSubagent) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
