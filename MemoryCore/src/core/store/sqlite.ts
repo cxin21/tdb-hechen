@@ -3382,10 +3382,16 @@ export class VectorStore implements IMemoryStore {
   invalidateL1(id: string, validEndIso: string): boolean {
     if (this.degraded) return false;
     try {
+      // 主表 + l1_fts 副本同步（soul 8 列在 FTS 表有副本，只改主表会让 FTS 路
+      // 召回读到 stale valid_end——P2 验证实测踩过）。主表 0 行 = 行不存在/已失效 → false。
       const res = this.db.prepare(
         "UPDATE l1_records SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
       ).run(validEndIso, id);
-      return ((res as unknown as { changes?: number }).changes ?? 0) > 0;
+      if (((res as unknown as { changes?: number }).changes ?? 0) === 0) return false;
+      this.db.prepare(
+        "UPDATE l1_fts SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
+      ).run(validEndIso, id);
+      return true;
     } catch (err) {
       this.logger?.warn?.(`${TAG} [invalidation] invalidateL1 failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
       return false;

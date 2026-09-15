@@ -227,6 +227,17 @@ async function main() {
     let seeded = 0;
     try {
       seeded = await seedStore(store, records);
+      // GROW-EVO P2 不变量数据：fx0-noise-01 预失效（valid_end=2026-01-01，默认召回必须排除）
+      const invOk = store.invalidateL1?.("fx0-noise-01", "2026-01-01T00:00:00.000Z");
+      if (!invOk) throw new Error("invalidation seed failed（fx0-noise-01）");
+      // Task 5：冲突对 old 预失效——模拟 dedup conflict 的生产等价效果（§2.2 方向性守卫下
+      // 新 observed 记忆会自动失效旧记忆；fixture 直写 store 故显式模拟）
+      for (const r of records) {
+        if (!/-conflict-[123]-old$/.test(r.id)) continue;
+        const newRec = records.find((x) => x.id === r.id.replace(/-old$/, "-new"));
+        const ve = newRec?.occurred_at ?? "2026-09-01T00:00:00.000Z";
+        if (!store.invalidateL1?.(r.id, ve)) throw new Error(`invalidation seed failed（${r.id}）`);
+      }
     } finally {
       store.close();
     }
@@ -290,31 +301,32 @@ async function main() {
     if (!sessionProbe.passed) loud(`session 探针失败：${JSON.stringify(sessionProbe)}`);
     mark(`session 探针：${sessionProbe.passed ? "PASS" : "FAIL"}（${distinctSessions} sessions ≥ ${expectations.sessionProbe.minSessions}）`);
 
-    // ③ update 探针（expectedRed=true：P1 known-FAIL 基线，无失效语义 → 预期红）
+    // ③ update 探针（GROW-EVO P2 转硬门）：失效语义闭环判据 = old 被失效排除（不在
+    // 结果中）、new 在列。P1 时代的"new 排 old 前"判据退役（排除语义下 old 恒 -1）。
     const uq = expectations.updateProbe.query;
     const uItems = await search(uq, p1, FIXTURE_TENANT, apiKey);
     firstByQuery.set(uq, uItems);
     const newRank = uItems.findIndex((i) => i.id === expectations.updateProbe.newId);
     const oldRank = uItems.findIndex((i) => i.id === expectations.updateProbe.oldId);
-    const updateOrdered = newRank !== -1 && oldRank !== -1 && newRank < oldRank;
+    const updateOrdered = newRank !== -1 && oldRank === -1;
     const updateProbe = {
       query: uq,
       newId: expectations.updateProbe.newId,
       oldId: expectations.updateProbe.oldId,
       newRank, // -1 = 未进前 SEARCH_LIMIT
-      oldRank,
-      expectedRed: true,
+      oldRank, // -1 = 已被失效排除（预期）
+      expectedRed: false,
       ordered: updateOrdered,
       knownFAIL: !updateOrdered, // 红牌 = 与 P1 基线一致（无失效语义）
       passed: updateOrdered,
       items: uItems.map((i) => ({ id: i.id, score: i.score, occurred_at: i.occurred_at, content: i.content })),
     };
     if (updateOrdered) {
-      log(`update 探针：PASS（known-FAIL 基线翻绿——P1 后失效语义已落地的信号）`);
+      log(`update 探针：PASS（失效语义闭环：old 被排除、new 在列）`);
     } else {
-      log(`update 探针：known-FAIL（与 P1 基线一致：new=${newRank} old=${oldRank}，无失效语义）`);
+      log(`update 探针：FAIL（new=${newRank} old=${oldRank}——失效排除未生效）`);
     }
-    mark(`update 探针：${updateOrdered ? "PASS（基线翻绿）" : `known-FAIL（new=${newRank}, old=${oldRank}）`}`);
+    mark(`update 探针：${updateOrdered ? "PASS" : `FAIL（new=${newRank}, old=${oldRank}）`}`);
 
     // ④ abstain 探针（拒答软门，GOLD-EVO 修正 2026-09-15）：语义 = 与全语料零交集的
     // 域外 query 应空/低分。首版误用 noiseQueries（噪声主题在 fixture 里有对应记录，
@@ -362,6 +374,19 @@ async function main() {
     if (!tenantClosure.passed) loud(`tenantClosure 不变量失败：${JSON.stringify(tenantClosure)}`);
     mark(`tenantClosure 不变量：${tenantClosure.passed ? "PASS" : "FAIL"}（跨租户 ${crossItems.length} hits，正控 ${pc.length} hits）`);
 
+    // ⑤b invalidationExclusion 不变量（GROW-EVO P2 §2.3）：已失效记忆（fx0-noise-01，
+    // valid_end=2026-01-01）必须被默认召回排除——按其内容前缀检索 → 0 hits
+    const invRec = records.find((r) => r.id === "fx0-noise-01");
+    const invQuery = (invRec?.content ?? "").slice(0, 6);
+    const invItems = await search(invQuery, p1, FIXTURE_TENANT, apiKey);
+    const invalidationExclusion = {
+      query: invQuery,
+      hitCount: invItems.length,
+      passed: invItems.length === 0,
+    };
+    if (!invalidationExclusion.passed) loud(`invalidationExclusion 不变量失败：失效记录仍被召回 ${JSON.stringify(invItems.slice(0, 2))}`);
+    mark(`invalidationExclusion 不变量：${invalidationExclusion.passed ? "PASS" : "FAIL"}（${invQuery} → ${invItems.length} hits）`);
+
     // ⑥ determinism 不变量：同 query 双跑（pass2 独立 session）逐位一致
     const p2 = `eval-cap-p2-${ts}`;
     const detMismatches = [];
@@ -394,6 +419,7 @@ async function main() {
     if (!abstainPassed) unexpectedFails.push("abstain");
     if (!determinism.passed) unexpectedFails.push("determinism");
     if (!tenantClosure.passed) unexpectedFails.push("tenantClosure");
+    if (!invalidationExclusion.passed) unexpectedFails.push("invalidationExclusion");
     const allPass = unexpectedFails.length === 0 && !knownFAIL;
     const baselineOnly = unexpectedFails.length === 0 && knownFAIL;
     exitCode = allPass || baselineOnly ? 0 : 1;
@@ -419,7 +445,7 @@ async function main() {
         session: sessionProbe,
         update: updateProbe,
         abstain,
-        invariants: { determinism, tenantClosure },
+        invariants: { determinism, tenantClosure, invalidationExclusion },
       },
       verdict: {
         allPass,

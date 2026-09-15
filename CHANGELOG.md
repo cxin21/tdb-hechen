@@ -11,6 +11,25 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔄 P2 失效语义闭环（GROW-EVO Phase 2，2026-09-15）
+
+- **写入三口**：① dedup conflict 自动失效（方向性守卫：仅新记忆 observed 才失效旧记忆，
+  inferred 只记边——`invalidateL1` 新 store 方法，不覆盖已失效行）；② durative 效期提取
+  （prompt 第 6 条判定 + `memory.extraction.durativeEnabled` 缺省 false、生产显式 true——
+  持续状态写 valid_start，valid_end 提取侧永不写）；③ `/v3/atomic/update` 显式失效
+  （raw body valid_end，ISO 校验，upsertL1 之后写防 soul 回写清除）。
+- **读侧排除**：`filterInvalidated` 纯函数 + `memory.recall.excludeInvalidated`（缺省 true，
+  spec 拍板①——现存库无失效行 = 逐位不变）三消费点（工具路两裁剪点 + 钩子路 hybrid tail，
+  失效记忆连 recall_count 都不积累）；解析失败保留（宁缺毋滥）。
+- **API**：`/v3/atomic/search` 的 `time_start/end` schema 死参数激活（显式时间窗，occurred_at
+  语义）；`timeWindow:"auto"` 与显式窗共存（无显式参数回落 auto）。
+- **Lane 2 转绿**：update 探针判据改为"old 被失效排除、new 在列"（P1 known-FAIL 基线闭环）；
+  新增 invalidationExclusion 不变量（预失效噪声记录必须被排除）。
+- **升级须知**：`ExtractionConfig.durativeEnabled` / `RecallConfig.excludeInvalidated` 新增
+  （缺省值 = 逐位现状）；`invalidateL1` 为 IMemoryStore 可选方法（旧后端安静跳过）；
+  `/v3/recall` time_point 时间旅行推迟至 P2.1（三层管道成本，失效数据已可经 atomic/query
+  时间窗查询）——相对 A/B 与判官软轨不受影响。
+
 ### 🧪 P1 验收底座 + 口径还债（GROW-EVO Phase 1，2026-09-15）
 
 - **背景**：DS-MEMORY-EVO-001 v3——本地 golden 语料丢失，人工标注退出；验收转为三信号分层

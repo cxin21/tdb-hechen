@@ -1195,6 +1195,20 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
 
   await store.upsertL1(updated, emb);
 
+  // GROW-EVO P2（§2.4）：显式失效——raw body 的 valid_end（ISO）→ invalidateL1。
+  // 必须在 upsertL1 之后（update 的 soul 回写会原样写回 valid_end，先失效会被清掉）。
+  // zod schema 为生成文件——raw body 旁路 + 手动 ISO 校验。
+  const rawValidEnd = (body as { valid_end?: unknown } | null)?.valid_end;
+  let invalidatedAt: string | undefined;
+  if (typeof rawValidEnd === "string" && rawValidEnd.trim()) {
+    if (!Number.isFinite(Date.parse(rawValidEnd))) {
+      return errorEnvelope(400, `valid_end 不是合法 ISO 时间: ${rawValidEnd}`, requestId);
+    }
+    const ok = store.invalidateL1?.(id, rawValidEnd);
+    if (!ok) return errorEnvelope(500, `失效写入失败（行不存在或已失效不覆盖）: ${id}`, requestId);
+    invalidatedAt = rawValidEnd;
+  }
+
   // 审计：L1 update — 用外部请求的 IdFields 而非 record 原值（per user 决策）
   await recordAudit(store, {
     record_id: id,
@@ -1206,7 +1220,9 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     logger: deps.logger,
   });
 
-  return successEnvelope<AtomicUpdateData>({ id, version: `v${updatedVersion}`, updated_at: now }, requestId);
+  const updateData: AtomicUpdateData = { id, version: `v${updatedVersion}`, updated_at: now };
+  if (invalidatedAt) (updateData as { invalidated_at?: string }).invalidated_at = invalidatedAt;
+  return successEnvelope<AtomicUpdateData>(updateData, requestId);
 }
 
 async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
@@ -1355,7 +1371,7 @@ export async function handleArchiveRestore(body: unknown, _auth: V2AuthContext, 
 async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = atomicSearchRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { query, type } = parsed.data;
+  const { query, type, time_start: explicitStart, time_end: explicitEnd } = parsed.data;
   const limit = parsed.data.limit ?? 5;
 
   const tStart = performance.now();
@@ -1378,10 +1394,13 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     logger: deps.logger,
     // 重构式回忆（J）：图邻居扩展，配置门（默认关，宁缺毋滥；按配置 memory.search.neighborExpand.enabled 开启）
     neighborExpand: (deps as { config?: { memory?: { search?: { neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number } } } } }).config?.memory?.search?.neighborExpand,
+    // GROW-EVO P2（§2.4）：schema 死参数激活——显式时间窗（occurred_at 语义，TIMEFIX-v2 同键）
+    timeWindow: explicitStart || explicitEnd
+      ? { start: explicitStart ?? "1970-01-01T00:00:00.000Z", end: explicitEnd ?? "9999-12-31T23:59:59.999Z", label: "explicit" }
+      : "auto",
     // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
     excludeInvalidated: (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
     // 重构式回忆（J 设计§3）：query 时间锚自动解析（今天/上周/N天前等→时间窗过滤；解析不出不过滤）
-    timeWindow: "auto",
     // C1 + R-A1：coreRef 与排序层结构信号配置透传（缺省由 executeMemorySearch 内部
     // 回落 spec §2 默认值；价值锚由其内部从 store.listValues 租户读取——两路咽喉同生效）
     ...(() => {
