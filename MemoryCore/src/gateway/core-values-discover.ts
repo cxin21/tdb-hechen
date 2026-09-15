@@ -39,8 +39,15 @@ export const DISCOVER_HIGH_SIG_THRESHOLD = 0.8;
  * sampleSize <= 0 / 非有穷 → 守卫返回下限 0.3（流程不可达：无语料必无提案）。
  */
 export function suggestAnchorWeight(evidenceCount: number, sampleSize: number): number {
-  if (!Number.isFinite(evidenceCount) || !Number.isFinite(sampleSize) || sampleSize <= 0) return 0.3;
-  const raw = (3 + (5 * evidenceCount) / sampleSize) / 10;
+  // D6 密度语义裁决（2026-09-15，REG-REMAINING-001）：**绝对证据+饱和**取代密度归一。
+  // 密度公式（e/S）的语料增长稀释实证：SDD e=101 在 S=189 时 w=0.567，S=1200 时同一
+  // 证据贬值至 0.342（-45%，重要性无真实变化）。锚权重的语义 = 主题对本 agent 的
+  // 绝对支持强度 → 语料规模退出公式。E_REF=50 为"充分确立"饱和点（e≥50 → 0.8 封顶，
+  // 防巨锚锁死；挤出压力仍由 retirement/演化路径承担）。
+  void sampleSize; // D6 后语料规模不再参与（签名保留兼容调用方）
+  if (!Number.isFinite(evidenceCount) || evidenceCount <= 0) return 0.3;
+  const E_REF = 50;
+  const raw = (3 + (5 * Math.min(evidenceCount, E_REF)) / E_REF) / 10;
   return Math.min(0.8, Math.max(0.3, raw));
 }
 
