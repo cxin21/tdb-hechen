@@ -417,6 +417,10 @@ export class TdaiCore {
       messages: turn.messages,
       sessionKey: turn.sessionKey,
       sessionId: turn.sessionId,
+      // A6：租户贯通（L0 归属 → 提取 dedup 候选租户 → coreRefs 标注全链）
+      teamId: turn.teamId,
+      userId: turn.userId,
+      agentId: turn.agentId,
       cfg: this.cfg,
       pluginDataDir: this.dataDir,
       logger: this.logger,

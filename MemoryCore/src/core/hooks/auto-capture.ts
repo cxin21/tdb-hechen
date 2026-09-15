@@ -47,6 +47,10 @@ export async function performAutoCapture(params: {
   messages: unknown[];
   sessionKey: string;
   sessionId?: string;
+  /** A6（REG-REMAINING-001）：租户隔离（L0 归属 + 提取 dedup 候选租户） */
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
   cfg: MemoryTdaiConfig;
   pluginDataDir: string;
   logger?: Logger;
@@ -185,6 +189,10 @@ export async function performAutoCapture(params: {
           id: generateL0RecordId(sessionKey, i),
           sessionKey,
           sessionId: sessionId || DEFAULT_ISOLATION_ID,
+          // A6：租户归属（缺省由 upsert 层回落 default——既有行为不变）
+          teamId: params.teamId,
+          userId: params.userId,
+          agentId: params.agentId,
           role: msg.role,
           messageText: msg.content,
           recordedAt: now,

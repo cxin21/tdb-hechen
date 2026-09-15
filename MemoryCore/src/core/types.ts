@@ -265,6 +265,10 @@ export interface CompletedTurn {
   sessionKey: string;
   /** Session ID within the session key (optional, for sub-session grouping). */
   sessionId?: string;
+  /** A6（REG-REMAINING-001）：租户隔离（capture 链贯通——L0/L1/提取 traceContext 全链继承） */
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
   /** Epoch ms when this turn started. */
   startedAt?: number;
   /**

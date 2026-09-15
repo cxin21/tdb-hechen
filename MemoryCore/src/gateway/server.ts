@@ -1640,6 +1640,12 @@ export class TdaiGateway {
     }
 
     const startMs = Date.now();
+    // A6（REG-REMAINING-001）：租户隔离贯通——/capture 此前忽略租户头（P2-T14 矩阵漏项）
+    const tenant = {
+      teamId: (req.headers["x-tdai-team-id"] as string) || undefined,
+      userId: (req.headers["x-tdai-user-id"] as string) || undefined,
+      agentId: (req.headers["x-tdai-agent-id"] as string) || undefined,
+    };
     const result = await this.core.handleTurnCommitted({
       userText: body.user_content,
       assistantText: body.assistant_content,
@@ -1649,6 +1655,9 @@ export class TdaiGateway {
       ],
       sessionKey: body.session_key,
       sessionId: body.session_id,
+      teamId: tenant.teamId,
+      userId: tenant.userId,
+      agentId: tenant.agentId,
     });
     const elapsed = Date.now() - startMs;
 
