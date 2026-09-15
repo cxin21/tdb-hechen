@@ -11,6 +11,24 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 💗 P3 情感维度激活（GROW-EVO Phase 3，2026-09-15）
+
+- **arousal 遗忘调制（§3.1 闪光灯记忆）**：`effectiveλ = λ×(1-k×arousal)`——高唤醒记忆
+  衰减更慢。`memory.lifecycle.forgetting.arousalRetention` 缺省 0 = 逐位现状；生产显式 0.3；
+  config 解析层 clamp [0, 0.9]。**归档率漂移观察条款**：`forgetting ran: archiveCandidates=N`
+  为观察点，漂移超基线 ±30% → k 回 0 重评（significance 与 arousal LLM 打分正相关，
+  乘法公式有情感记忆囤积双重加成风险）。
+- **R10 emotionSalience 实验轨（§3.2）**：`|valence|×arousal` 纯函数
+  （`emotionSalienceOf`，recall-signals.ts）+ 双链平局接线（工具侧 secondaryOf 五元组 +
+  钩子侧 compareLex 项）。`memory.recall.emotionSalienceWeight` 缺省 0 = 可证恒等
+  （全 0 项比较）；进预注册 A/B 队列，未过 A/B 不得置正——判官/抽取器同源偏差，
+  永不单独放行排序变更。
+- **债务清偿**：yaml inferredPenalty 注释修正（三刀后实为平局组内旗标）；valence 同名
+  异义已于 P1 口径对照表覆盖。
+- **升级须知**：`ForgettingConfig.arousalRetention` / `RankSignals.emotionSalienceWeight`
+  / `RecallConfig.emotionSalienceWeight` 新增（缺省值 = 逐位现状）；RankSignals 构造点
+  需补字段（DEFAULT/ZERO 已带）。
+
 ### 🔄 P2 失效语义闭环（GROW-EVO Phase 2，2026-09-15）
 
 - **写入三口**：① dedup conflict 自动失效（方向性守卫：仅新记忆 observed 才失效旧记忆，
