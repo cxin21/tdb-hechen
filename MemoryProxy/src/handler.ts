@@ -835,7 +835,11 @@ export async function handleChatCompletions(
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
-  if (config.sessionInit?.enabled && conversationId && !isAuxiliary) {
+  // C4-dsh（用户 2026-09-15）：子 agent（一次性无头会话）跳过 session-init——
+  // 历史阻塞（skip → sessionInfo 空 → 空注入 tool_call → unknown tool）已被
+  // injectedSkipped 的 _dshHeadless bypass 消除（本函数上方，无头请求永不注入），
+  // 现在跳过 init 是安全的：无头会话直接放行，不弹表单、不注册资产。
+  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
