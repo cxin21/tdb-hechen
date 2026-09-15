@@ -49,6 +49,9 @@
   不可复用）；`/v3/conversation/search` 的 `time_start/end` 死参数激活（recorded_at
   后过滤，L0 无 soul 列口径）。Lane 2 增 timeTravel 探针（tp 过去含 old / 现在排除 old）
   GREEN——原推迟裁定退役。
+- **边界发现（登记 P4）**：L1 失效语义闭环（经验层 + 结论层记录路径），但 **L2
+  scene_blocks 蒸馏摘要无失效机制**——已失效事实可经结论层 scene 命中路径回流注入块
+  （流程测试实测）。L2 失效传播（触发受影响 scene_blocks 重蒸馏）归入 P4 受控正文演化。
 - **升级须知**：`ExtractionConfig.durativeEnabled` / `RecallConfig.excludeInvalidated` 新增
   （缺省值 = 逐位现状）；`invalidateL1` 为 IMemoryStore 可选方法（旧后端安静跳过）；
   `/v3/recall` time_point 时间旅行推迟至 P2.1（三层管道成本，失效数据已可经 atomic/query

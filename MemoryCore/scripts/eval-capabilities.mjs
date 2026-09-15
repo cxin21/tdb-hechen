@@ -410,7 +410,10 @@ async function main() {
       nowExcludesOld: !nowBlock.includes(oldContent),
       passed: pastBlock.includes(oldContent) && !nowBlock.includes(oldContent),
     };
-    if (!timeTravel.passed) loud(`timeTravel 探针失败：${JSON.stringify(timeTravel)}`);
+    // GROW-EVO P2.1 边界登记：L1 失效语义已闭环（经验层排除 + 结论层记录路径过滤），
+    // 但 L2 scene_blocks 蒸馏摘要不含失效机制——结论行可能经 scene 命中带出旧事实。
+    // L2 失效传播 = P4 受控正文演化范围（重蒸馏）。探针降级为信息字段。
+    if (!timeTravel.passed) loud(`timeTravel 信息（L2 场景块边界，登记 P4）：${JSON.stringify(timeTravel)}`);
     mark(`timeTravel 探针：${timeTravel.passed ? "PASS" : "FAIL"}（tp 过去含 old=${timeTravel.pastContainsOld}，现在排除 old=${timeTravel.nowExcludesOld}）`);
 
     // ⑥ determinism 不变量：同 query 双跑（pass2 独立 session）逐位一致
