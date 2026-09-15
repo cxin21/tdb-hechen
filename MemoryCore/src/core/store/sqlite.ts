@@ -2607,6 +2607,30 @@ export class VectorStore implements IMemoryStore {
    * PA：tenant 可选——default/缺省保持旧键（last_discovery_at / last_corpus_count，旧行为
    * 与旧调用形状不变）；非 default 三元组用 per-tenant 独立键（双门基线按 agent 隔离）。
    */
+  /** GROW-EVO P2.1（锚↔记忆双向链路）：coreRefs 回填（读改写 + 双表同步——invalidateL1 教训）。 */
+  backfillCoreRef(recordId: string, label: string, tenant?: CoreTenant): boolean {
+    try {
+      const t = normalizeCoreTenant(tenant);
+      const row = this.db.prepare(
+        "SELECT metadata_json FROM l1_records WHERE record_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+      ).get(recordId, t.teamId, t.userId, t.agentId) as { metadata_json?: string } | undefined;
+      if (!row) return false;
+      const meta = row.metadata_json && row.metadata_json !== "{}" ? JSON.parse(row.metadata_json) : {};
+      const refs = Array.isArray(meta.coreRefs) ? meta.coreRefs : [];
+      if (refs.includes(label)) return false;
+      refs.push(label);
+      const updated = JSON.stringify({ ...meta, coreRefs: refs });
+      this.db.prepare("UPDATE l1_records SET metadata_json = ? WHERE record_id = ?").run(updated, recordId);
+      if (this.ftsAvailable) {
+        this.db.prepare("UPDATE l1_fts SET metadata_json = ? WHERE record_id = ?").run(updated, recordId);
+      }
+      return true;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_values] backfillCoreRef failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
   getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null } {
     try {

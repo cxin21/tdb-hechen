@@ -307,7 +307,17 @@ export async function runAnchorGrowth(deps: {
           }
           if (adoptedThis) {
             const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto"));
-            if (ok) { adopted++; adoptedThisAgent++; }
+            if (ok) {
+              adopted++; adoptedThisAgent++;
+              // GROW-EVO P2.1（锚↔记忆双向链路）：采纳时把 label 回填进证据记录的 coreRefs
+              // （证据口径 = recount 同款内容包含；R5 反查补池/Panel 金色节点/遗忘 salience 的数据前提）
+              for (const r of rows) {
+                if (String((r as { content?: string }).content ?? "").includes(c.label)) {
+                  const rid = String((r as { record_id?: string }).record_id ?? "");
+                  if (rid) store.backfillCoreRef?.(rid, c.label, tenant);
+                }
+              }
+            }
             else { skipped++; logger?.warn?.(`[anchor-growth] adopt upsert failed: ${c.label}`); }
           }
         }
