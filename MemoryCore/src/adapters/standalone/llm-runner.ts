@@ -439,6 +439,15 @@ export class StandaloneLLMRunner implements LLMRunner {
         });
       }
 
+      // B1（REG-REMAINING-001）：空响应 fail-loud——thinking 耗尽输出预算（finishReason=length）
+      // 或上游异常的静默空串，曾让发现轮空转两天（rawLen=0 → parsed=0 → adopted=0 无任何告警）。
+      // 空 text 对所有调用方（提取/发现/判定）都是失败形态；调用方 catch 会显式呈现。
+      if (!text) {
+        const lastReason = steps.length > 0 ? (steps[steps.length - 1] as { finishReason?: string } | undefined)?.finishReason : undefined;
+        throw new Error(
+          `LLM empty response (taskId=${params.taskId}, steps=${steps.length}, finishReason=${lastReason ?? "unknown"}, completionTokens=${this.lastUsage?.completionTokens ?? "?"})`,
+        );
+      }
       return text;
     } catch (err) {
       const totalMs = Date.now() - runStartMs;

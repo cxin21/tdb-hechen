@@ -2131,7 +2131,7 @@ export class TdaiGateway {
       }
 
       if (lifecycle.enabled !== false && lifecycleStore) {
-        this.logger.info(`[DEBUG-CFG] anchorDiscovery=${JSON.stringify(this.config.memory?.coreMemory?.anchorDiscovery ?? null)}`);
+
         startLifecycleScheduler({
           store: lifecycleStore as never,
           llmRunner: runner as never,
