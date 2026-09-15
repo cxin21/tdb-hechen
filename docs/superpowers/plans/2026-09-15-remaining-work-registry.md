@@ -8,7 +8,7 @@
 
 - [x] **A1 · FTS 复合词分词错位**（✅ 证伪关闭 2026-09-15：API 全链 buildFtsQuery 分词两侧一致，"组装器"实测命中——此前为裸 SQL 绕过查询分词的误报）
 - [x] **A2 · dedup 召回率**（✅ cfe9eba：召回侧近重折叠 bigram Jaccard，阈值 0.25 实测校准——重复组 0.36-0.49 vs 非重复 ≤0.04 九倍分离；实测 6 行→2 行，Lane 2 全绿）
-- [x] **A3 · soul 标注透出覆盖率**（⚙️ 主修复 76b1813 + recordToFormatable 补齐 d2dd15e 前身：native-hybrid merged pool 路径 soul 透传补齐——全部 FormatableMemory 构造点已遍历（vector/fts/record 三映射齐）；最终验证待下一轮注入块目视）
+- [x] **A3 · soul 标注透出覆盖率**（✅ 终极闭环 2026-09-15：R-A1 分离携带的 soul 从未并回 keyword 通道 formatable——三处构造点全部补齐（fts 76b1813 / record+池插入 66cdca0），**用户产线注入块目视 4/4 全标注**；终极根因 = 分离携带设计未在池插入并回）
 - [x] **C2 · 红线 pending 采纳**（✅ 2026-09-15：core_value 1 条 + strict_rule 3 条合并经 API 写入，source=human-adoption，注入块实时呈现）
 - [x] **C1 · 身份 GROW-MAINT 修订制**（✅ 5872811：prompt 修订制 + slots 全文透出；staleness 场景实证 v3 修订采纳；**产线自然演化实证**——identity 内容自动更新至"P0–P2.1 与 P3 已全部落地…剩余 P4/P5 处于自然观察期"v2）
 - [x] **A4 · 11 组真实数据测试套件**（✅ 2026-09-15：11/11 ALL PASS——G1 身份段/G2 感受段宁缺毋滥/G3 锚方向/G4 折叠/G5 无误伤/G6 失效排除/G7 时间旅行双向/G8 租户隔离/G9 FTS 复合词/G10 durative/G11 valence 持久。套件自身两处预期修正均实锤系统语义正确：①tp 在记忆创建前→正确排除（bi-temporal）②time_point 仅 /v3/recall 贯通（P2.1 范围））
