@@ -13,7 +13,7 @@
 - [x] **C1 · 身份 GROW-MAINT 修订制**（✅ 5872811：prompt 修订制 + slots 全文透出；staleness 场景实证 v3 修订采纳；**产线自然演化实证**——identity 内容自动更新至"P0–P2.1 与 P3 已全部落地…剩余 P4/P5 处于自然观察期"v2）
 - [x] **A4 · 11 组真实数据测试套件**（✅ 2026-09-15：11/11 ALL PASS——G1 身份段/G2 感受段宁缺毋滥/G3 锚方向/G4 折叠/G5 无误伤/G6 失效排除/G7 时间旅行双向/G8 租户隔离/G9 FTS 复合词/G10 durative/G11 valence 持久。套件自身两处预期修正均实锤系统语义正确：①tp 在记忆创建前→正确排除（bi-temporal）②time_point 仅 /v3/recall 贯通（P2.1 范围））
 - [x] **A5 · atomic/search time_point API 贯通**（✅ d2dd15e：双 trim 点 validityNow 双时态过滤（vs ≤ tp < ve）+ 原始 body 读取（generated schema 不动）；实测效期内复活/现在排除双向正确）
-- [ ] **A6 · /capture 端点租户隔离缺口**（🔴 本轮 coreRefs 排查的终极根因：/capture 忽略 x-tdai-* 租户头（CaptureRequest 无租户字段、handleTurnCommitted 不传隔离）→ 直接 API capture 全落 default 桶 → 提取 dedup 的 listValues(default)=0 锚 → coreRefs 永不标注。**真实会话不受影响**（proxy 自有隔离机制，L2 日志实锤其 pipeline 带租户）。修复 = capture 处理器解析租户头/body 字段 → 贯通 pipeline。P2-T14 隔离矩阵漏项）
+- [ ] **A6 · /capture 端点租户隔离缺口**（⚙️ Phase 1 完成 76f7ceb：headers→CompletedTurn→performAutoCapture→l0Record 四级贯通，L0 归属实测正确落 l5ug 桶。**Phase 2 待做**：pipeline 任务/提取 traceContext 的租户贯通（scheduler notifyConversation → L1 任务 → l1-extractor traceContext 三跳）——未完成前带头 capture 有 L0(l5ug)/L1(default) 分裂风险。产线真实会话不受影响（recall 钩子副作用 capture 自带隔离））
 - [x] **A7 · coreRefs 机制三层验证 + 回填**（✅ 0324f9b：①机制全链在位（l1-dedup:190 loadValueCandidates→prompt 候选清单→parse 过滤→attach）②存量 7 锚→90 记忆一次性回填（双表同步）③90/90 零误标（70 字面回填+20 语义标注互补——LLM 捕获大小写变体 sdd→SDD）④新提取的自动标注待 A6 修复后生效）
 
 ## 分组 B · 鲁棒性（小而高价值）
