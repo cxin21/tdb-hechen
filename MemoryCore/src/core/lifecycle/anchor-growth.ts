@@ -264,6 +264,10 @@ export async function runAnchorGrowth(deps: {
           maxTokens: DISCOVER_MAX_TOKENS_OVERRIDE, // 推理模型输出预算（DISC 同款覆写）
         });
         // ── 护栏（per-agent 独立计数）：证据门槛 → 强者优先 → 每轮上限 ──
+        // [DEBUG-GROW] 临时插桩：定位 candidates=0 归零环节（解析/去重/证据重算）
+        const rawParsed = parseProposalsJson(String(raw ?? ""));
+        const rawDeduped = dedupProposals(rawParsed, existingLabels);
+        logger?.warn?.(`[DEBUG-GROW] rawLen=${String(raw ?? "").length} parsed=${rawParsed.length} deduped=${rawDeduped.length} labels=${JSON.stringify(rawDeduped.map((c) => c.label))} recounts=${JSON.stringify(rawDeduped.map((c) => recountEvidence(c.label, corpus)))}`);
         const candidates = dedupProposals(parseProposalsJson(String(raw ?? "")), existingLabels)
           .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus) }))
           .filter((p) => p.evidenceCount >= cfg.minEvidence)
