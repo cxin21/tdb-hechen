@@ -2124,5 +2124,11 @@ function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     activity_start_time: activityStart,
     activity_end_time: activityEnd,
     timestamp: r.timestamp_str || undefined,
+    // A3（REG-REMAINING-001）修复：灵魂字段透传——与 vectorResultToFormatable 对齐。
+    // 此前 FTS 通道结果丢失 soul 字段 → soul 标注只在向量通道出现（实测 1/5 行）。
+    occurred_at: r.occurred_at || undefined,
+    certainty: r.certainty || undefined,
+    valence: r.valence,
+    significance: r.significance,
   };
 }
