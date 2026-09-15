@@ -771,6 +771,16 @@ export async function handleChatCompletions(
     console.log(`[request-classify] session=${sessionKey} agent=dsh one-shot-subagent (prompt marker) → bypass session-init/mem/injection`);
   }
 
+  // C4-dsh Phase 3（指纹实测 2026-09-15 21:18）：spawn 子 agent 的判别字段 =
+  // toolNames 为空（SESSION-INIT-FP 实测：主会话工具齐全，one-shot spawn 不带工具）。
+  // 独立判据——不改 _dshHeadless 的“tools 空数组=纯对话”旧语义。
+  const _emptyToolsSubagent = agentSource === "dsh"
+    && Array.isArray((body as { tools?: unknown[] }).tools)
+    && (body as { tools?: unknown[] }).tools!.length === 0;
+  if (_emptyToolsSubagent) {
+    console.log(`[request-classify] session=${sessionKey} agent=dsh empty-tools subagent (spawn one-shot) → bypass session-init/mem/injection`);
+  }
+
   // ── mem:session-reset pre-hook ──
   // hermes / openclaw 走 header 预选身份, dsh headless 无 ask_user_question tool —
   // 三者都没有交互式 form UI 可以弹,reset 后 session 会永远卡在 pending_asset_confirm。
@@ -854,7 +864,7 @@ export async function handleChatCompletions(
   //   extraction（L1804）等其它地方的过滤作用 —— 仅会话初始化阶段放开。
   let sessionInfo: Record<string, unknown> | null | undefined;
   let assetCapabilities: import("./injection/types.js").AssetCapabilityFlags | undefined;
-  let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless || _oneShotSubagent;
+  let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless || _oneShotSubagent || _emptyToolsSubagent;
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
