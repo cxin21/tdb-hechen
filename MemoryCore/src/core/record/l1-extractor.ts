@@ -629,6 +629,7 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
                 metadata: (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>,
                 // 灵魂记忆字段（可选，防御解析）：时空 / 观察推断 / 情感
                 occurred_at: typeof m.occurred_at === "string" ? m.occurred_at : undefined,
+                durative: m.durative === true,
                 valid_start: typeof m.valid_start === "string" ? m.valid_start : undefined,
                 valid_end: typeof m.valid_end === "string" ? m.valid_end : undefined,
                 certainty: m.certainty === "inferred" ? "inferred" : "observed",

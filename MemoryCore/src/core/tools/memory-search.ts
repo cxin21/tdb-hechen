@@ -1289,6 +1289,10 @@ export async function executeMemorySearch(params: {
             created_at: nr.timestamp_start,
             updated_at: nr.timestamp_end,
             occurred_at: nr.occurred_at,
+            // GROW-EVO P2.1：邻居条目补 soul 有效期字段——否则失效排除过滤器对
+            // 邻居项失明（归档+已失效记忆经 archive-aware 邻居解析回流注入块，实测）。
+            valid_start: nr.valid_start,
+            valid_end: nr.valid_end,
             certainty: nr.certainty,
             valence: nr.valence,
             arousal: nr.arousal,

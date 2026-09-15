@@ -44,6 +44,7 @@ import { emotionSalienceOf, buildRankContext,
   type RankSignalItem,
   type RankSignals,
   type ValueRowLike, } from "../tools/recall-signals.js";
+import { isInvalidated } from "../recall/filter-invalidated.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
 import {
@@ -381,6 +382,8 @@ export async function performLayeredRecall(params: {
             // 端点路 = 三元组收窄，store 层 P2-T14 家族既有能力，不改打分语义）
             const wfRows = await vectorStore.searchL1Fts(wfQuery, r7HalfLimit * 2, params.isolationFilter);
             for (const r of wfRows ?? []) {
+              // GROW-EVO P2（§2.3）：失效记忆不进结论层候选（流程测试实测泄漏点）
+              if (isInvalidated(r as { valid_end?: string })) continue;
               if (r.type === "work_fact") {
                 r7Candidates.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
               }
@@ -406,6 +409,8 @@ export async function performLayeredRecall(params: {
           const relaxed: L2ConclusionCandidate[] = [];
           for (const r of relaxedRows) {
             if (relaxed.length >= 5) break;
+            // GROW-EVO P2（§2.3）：失效记忆不进结论层候选（V2-3 放宽通道同款过滤）
+            if (isInvalidated(r as { valid_end?: string })) continue;
             if (!r || typeof r.record_id !== "string" || !r.content?.trim()) continue;
             if (selectedIds.has(r.record_id)) continue;
             relaxed.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });

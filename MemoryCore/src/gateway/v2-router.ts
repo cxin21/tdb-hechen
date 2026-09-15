@@ -1146,7 +1146,13 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
   if (!store) return errorEnvelope(503, "Store not available", requestId);
 
   // Read existing record by primary key
-  const existing = await store.queryL1Records({ recordIds: [id] });
+  // GROW-EVO P2.1 修复：queryL1Records 不支持 recordIds 过滤（静默返回全表）——
+  // 旧行取错 → 归属 403 误判 + 跨行篡改风险（流程测试实测逮到的预存量缺陷）。
+  // 改用 getL1ByIds 精确取行。
+  const existing = (await store.getL1ByIds?.([id])) ?? [];
+  if (!existing || existing.length === 0) {
+    return errorEnvelope(404, `Atomic note not found: ${id}`, requestId);
+  }
   if (!existing || existing.length === 0) {
     return errorEnvelope(404, `Atomic note not found: ${id}`, requestId);
   }

@@ -625,6 +625,9 @@ export function createL1Runner(opts: {
             vectorStore,
             embeddingService,
             conflictRecallTopK: cfg.embedding.conflictRecallTopK,
+            // GROW-EVO P2（§2.2）：durative 效期提取开关透传（此前漏传 → 门恒关，
+            // LLM 输出的 valid_start 被丢弃——P2 流程测试实测发现）。
+            durativeEnabled: cfg.extraction.durativeEnabled === true,
             embeddingTimeoutMs: cfg.embedding.captureTimeoutMs ?? cfg.embedding.timeoutMs,
             llmRunner,
           },

@@ -83,6 +83,7 @@ export const EXTRACT_MEMORIES_SYSTEM_PROMPT = `你是专业的"情境切分与�
         "valence": 0.6,
         "arousal": 0.5,
         "significance": 0.8,
+        "durative": false,
         "source_message_ids": ["消息ID_1", "消息ID_2"],
         "metadata": {}
       }
@@ -93,9 +94,9 @@ export const EXTRACT_MEMORIES_SYSTEM_PROMPT = `你是专业的"情境切分与�
 metadata 字段说明：
 - episodic 类型：如能确定活动时间，填入 {"activity_start_time": "ISO8601", "activity_end_time": "ISO8601"}
 
-> **硬性要求（必须遵守）：每条 memory 必须包含 occurred_at、certainty、valence、arousal、significance 五个字段，缺一不可。** occurred_at 无法确定可用空字符串；certainty 默认 observed；valence/arousal/significance 尽力按其语义填（无法判断给中性 0.5 / 0 / 0.5）。宁可给出这些字段并在合理范围内取值，也不要省略字段。
+> **硬性要求（必须遵守）：每条 memory 必须包含 occurred_at、certainty、valence、arousal、significance、durative 六个字段，缺一不可。** occurred_at 无法确定可用空字符串；certainty 默认 observed；valence/arousal/significance 尽力按其语义填（无法判断给中性 0.5 / 0 / 0.5）。宁可给出这些字段并在合理范围内取值，也不要省略字段。
 
-> **灵魂字段语义**：occurred_at（发生时刻 ISO8601，对话有时间就填）、certainty（observed 客观 / inferred 推断，推断不许冒充 observed）、valence（情感色调 -1..1）、arousal（强度 0..1）、significance（重要程度 0..1）。
+> **灵魂字段语义**：occurred_at（发生时刻 ISO8601，对话有时间就填）、certainty（observed 客观 / inferred 推断，推断不许冒充 observed）、valence（情感色调 -1..1）、arousal（强度 0..1）、significance（重要程度 0..1）、durative（是否持续状态——见下方判定指令）。
 - 其他类型或无法确定时间：occurred_at 可为空字符串，但 certainty/valence/arousal/significance 仍必填。
 - durative 判定（GROW-EVO P2）：该记忆是"持续状态"（如"服务部署在 X"、"用户使用 Y 仓库"——一段时间内保持为真）还是"一次性事件"。持续状态输出 "durative": true 且填 "valid_start"（= occurred_at）；一次性事件输出 "durative": false、不填 valid_start。判定不了给 false（宁缺毋滥）。
 

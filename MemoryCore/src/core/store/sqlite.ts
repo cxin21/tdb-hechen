@@ -3579,7 +3579,7 @@ export class VectorStore implements IMemoryStore {
       return [];
     }
     try {
-      const { sessionKey, sessionId, taskId, updatedAfter } = filter ?? {};
+      const { sessionKey, sessionId, taskId, updatedAfter, recordIds } = filter ?? {};
 
       let raw: Record<string, unknown>[];
 
@@ -3617,6 +3617,12 @@ export class VectorStore implements IMemoryStore {
       if (filter?.userId !== undefined) rows = rows.filter((r) => r.user_id === filter.userId);
       if (filter?.agentId !== undefined) rows = rows.filter((r) => r.agent_id === filter.agentId);
       if (taskId !== undefined) rows = rows.filter((r) => r.task_id === taskId);
+      // GROW-EVO P2.1（契约修复）：recordIds 精确过滤——types.ts:150 声明但实现此前忽略，
+      // atomic/update 与 dedup-update 取回全表首行（归属 403 误判 + version 虚高的根因）。
+      if (recordIds && recordIds.length > 0) {
+        const idSet = new Set(recordIds);
+        rows = rows.filter((r) => idSet.has(r.record_id));
+      }
 
       this.logger?.info(
         `${TAG} [L1-query] filter={sessionKey=${sessionKey ?? "(all)"}, sessionId=${sessionId ?? "(all)"}, teamId=${filter?.teamId ?? "(all)"}, userId=${filter?.userId ?? "(all)"}, agentId=${filter?.agentId ?? "(all)"}, taskId=${taskId ?? "(all)"}, updatedAfter=${updatedAfter ?? "(none)"}}, ` +
