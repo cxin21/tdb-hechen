@@ -862,6 +862,35 @@ export async function handleChatCompletions(
   // 历史阻塞（skip → sessionInfo 空 → 空注入 tool_call → unknown tool）已被
   // injectedSkipped 的 _dshHeadless bypass 消除（本函数上方，无头请求永不注入），
   // 现在跳过 init 是安全的：无头会话直接放行，不弹表单、不注册资产。
+  // [SESSION-INIT-FP]（C4-dsh 诊断）：记录到达 gate 的每个请求的属性指纹——
+  // 主会话 vs one-shot 子 agent 各留一份，diff 出可用的判别字段。诊断日志永不阻塞。
+  try {
+    const bfp = body as { model?: string; tools?: Array<{ function?: { name?: string }; name?: string }>; messages?: Array<{ role?: string; content?: unknown }> };
+    const sysMsg = (bfp.messages ?? []).find((m) => m?.role === "system");
+    const sysText = typeof sysMsg?.content === "string"
+      ? sysMsg.content
+      : Array.isArray(sysMsg?.content)
+        ? (sysMsg!.content as Array<{ text?: string }>).map((p) => p?.text ?? "").join(" ")
+        : "";
+    const hdrsAll = req.headers as Record<string, unknown>;
+    const interestingHdrs: Record<string, unknown> = {};
+    for (const [hk, hv] of Object.entries(hdrsAll)) {
+      if (/^x-/i.test(hk)) interestingHdrs[hk] = hv;
+    }
+    console.log(`[SESSION-INIT-FP] ${JSON.stringify({
+      sessionKey,
+      conversationId,
+      agentSource,
+      kind: _requestKind,
+      model: bfp.model,
+      toolNames: (bfp.tools ?? []).map((t) => t?.function?.name ?? (t as { name?: string })?.name).filter(Boolean).slice(0, 25),
+      msgCount: (bfp.messages ?? []).length,
+      sysHead: sysText.slice(0, 160),
+      dshHeadless: _dshHeadless,
+      oneShotSubagent: _oneShotSubagent,
+      xHeaders: interestingHdrs,
+    })}`);
+  } catch { /* 诊断日志永不阻塞 */ }
   if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless && !_oneShotSubagent) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
