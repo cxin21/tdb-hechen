@@ -805,6 +805,8 @@ export async function executeMemorySearch(params: {
   neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number };
   /** GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；由调用方 cfg 透传） */
   excludeInvalidated?: boolean;
+  /** A5（REG-REMAINING-001）：time_point 时间旅行——提供时切换"当时有效"双时态过滤 */
+  validityNow?: Date;
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；由调用方 cfg 透传） */
   emotionSalienceWeight?: number;
   /**
@@ -1030,8 +1032,8 @@ export async function executeMemorySearch(params: {
     }
     // ── C1：priority/coreRef 轻度 tiebreak（native-hybrid 与双路同语义）+ R-A1 结构信号 + R-A2 R6 场景路由 ──
     items = applyCoreRefTiebreak(items, firedLabels, coreRefBoost, rankArgOf(items));
-    // GROW-EVO P2（§2.3）：失效排除（excludeInvalidated 缺省 true；由调用方 cfg 透传）
-    const exclItems = params.excludeInvalidated === false ? items : items.filter((i) => !isInvalidated(i as { valid_end?: string }));
+    // GROW-EVO P2（§2.3）+ A5：失效排除 / time_point 时间旅行（validityNow 提供时切换双时态）
+    const exclItems = filterByValidity(items, params.validityNow, params.excludeInvalidated);
     const trimmed = exclItems.slice(0, limit);
     // T1-D（F7 收官）：native-hybrid 早退前同样执行重巩固 —— 此前提前 return
     // 跳过了主路径尾部的 reconsolidation 块（T17.5 审计确认缺口）。
@@ -1340,8 +1342,8 @@ export async function executeMemorySearch(params: {
   }
 
   // ── Trim to requested limit ──
-  // GROW-EVO P2（§2.3）：失效排除（native-hybrid 早退分支同款）
-  const exclResults = params.excludeInvalidated === false ? results : results.filter((r) => !isInvalidated(r as { valid_end?: string }));
+  // GROW-EVO P2（§2.3）+ A5：失效排除 / time_point 时间旅行（native-hybrid 早退分支同款）
+  const exclResults = filterByValidity(results, params.validityNow, params.excludeInvalidated);
   const trimmed = exclResults.slice(0, limit);
 
   // ── 重巩固（T1-D：提取为 triggerReconsolidation，native-hybrid 分支复用同一函数）──
@@ -1450,4 +1452,22 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
   }
 
   return lines.join("\n");
+}
+
+
+// A5（REG-REMAINING-001）：time_point 时间旅行过滤——validityNow 提供时切换"当时有效"
+// 双时态过滤（vs ≤ tp < ve；vs 缺省 0 / ve 缺省 ∞，与 soul 效期语义一致）；
+// 未提供时维持失效排除（excludeInvalidated 缺省 true）。两 trim 点（native-hybrid/双路）共用。
+function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(items: T[], validityNow?: Date, excludeInvalidated?: boolean): T[] {
+  if (validityNow) {
+    const tp = validityNow.getTime();
+    return items.filter((i) => {
+      const vsRaw = i.valid_start ? Date.parse(i.valid_start) : 0;
+      const veRaw = i.valid_end ? Date.parse(i.valid_end) : Number.POSITIVE_INFINITY;
+      const vs = Number.isFinite(vsRaw) ? vsRaw : 0;
+      const ve = Number.isFinite(veRaw) ? veRaw : Number.POSITIVE_INFINITY;
+      return vs <= tp && tp < ve;
+    });
+  }
+  return excludeInvalidated === false ? items : items.filter((i) => !isInvalidated(i as { valid_end?: string }));
 }

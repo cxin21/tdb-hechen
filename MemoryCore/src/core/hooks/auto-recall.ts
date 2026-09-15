@@ -2071,6 +2071,12 @@ function recordToFormatable(record: MemoryRecord): FormatableMemory {
     activity_start_time: meta?.activity_start_time || undefined,
     activity_end_time: meta?.activity_end_time || undefined,
     timestamp: (record.timestamps && record.timestamps.length > 0) ? record.timestamps[0] : undefined,
+    // A3（REG-REMAINING-001）补齐：native-hybrid 路径（merged pool 1520）soul 透传——
+    // R-A1 时代信号单独携带，但 B4 行内标注需要 formatable 携带；额外字段不破坏信号路径。
+    occurred_at: (record as { occurred_at?: string }).occurred_at || undefined,
+    certainty: (record as { certainty?: string }).certainty || undefined,
+    valence: (record as { valence?: number }).valence,
+    significance: (record as { significance?: number }).significance,
   };
 }
 

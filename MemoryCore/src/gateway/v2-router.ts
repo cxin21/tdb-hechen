@@ -1390,6 +1390,9 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
   const parsed = atomicSearchRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { query, type, time_start: explicitStart, time_end: explicitEnd } = parsed.data;
+  // A5（REG-REMAINING-001）：time_point 时间旅行贯通（generated schema 不动——从原始 body 读取）
+  const tpRaw = (body as { time_point?: string }).time_point;
+  const validityNow = tpRaw && !Number.isNaN(Date.parse(tpRaw)) ? new Date(tpRaw) : undefined;
   const limit = parsed.data.limit ?? 5;
 
   const tStart = performance.now();
@@ -1418,6 +1421,8 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
       : "auto",
     // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
     excludeInvalidated: (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
+    // A5：time_point 时间旅行（handleRecall 同款语义）
+    validityNow,
     // GROW-EVO P3 R10（§3.2）：情感显著度权重（cfg 透传——缺省 0 = 恒等）
     emotionSalienceWeight: (deps as { config?: { memory?: { recall?: { emotionSalienceWeight?: number } } } }).config?.memory?.recall?.emotionSalienceWeight,
     // 重构式回忆（J 设计§3）：query 时间锚自动解析（今天/上周/N天前等→时间窗过滤；解析不出不过滤）
