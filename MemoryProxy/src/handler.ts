@@ -775,8 +775,8 @@ export async function handleChatCompletions(
   // toolNames 为空（SESSION-INIT-FP 实测：主会话工具齐全，one-shot spawn 不带工具）。
   // 独立判据——不改 _dshHeadless 的“tools 空数组=纯对话”旧语义。
   const _emptyToolsSubagent = agentSource === "dsh"
-    && Array.isArray((body as { tools?: unknown[] }).tools)
-    && (body as { tools?: unknown[] }).tools!.length === 0;
+    && (!Array.isArray((body as { tools?: unknown[] }).tools)
+      || (body as { tools?: unknown[] }).tools!.length === 0);
   if (_emptyToolsSubagent) {
     console.log(`[request-classify] session=${sessionKey} agent=dsh empty-tools subagent (spawn one-shot) → bypass session-init/mem/injection`);
   }
