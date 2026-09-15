@@ -3320,7 +3320,7 @@ export class VectorStore implements IMemoryStore {
    *     下方 WHERE 的 json_valid 过滤兜底防竞态半写）；
    *   - metadata_json 合法但非对象态（如 '[]'、'5'）→ 去重 warn + 显式 false（拒绝写入）。
    */
-  bumpRecallCount(id: string, now?: string): boolean {
+  bumpRecallCount(id: string, now?: string, opts?: { touchUpdatedTime?: boolean }): boolean {
     if (this.degraded) return false;
     try {
       const nowIso = now ?? new Date().toISOString();
@@ -3344,8 +3344,11 @@ export class VectorStore implements IMemoryStore {
           return false;
         }
       }
-      const res = this.db.prepare(
-        `UPDATE l1_records SET
+      // GROW-EVO P1：touchUpdatedTime 缺省 true = 逐位现状；false = 钩子路只加计数
+      // 不刷 updated_time（防扰动 ORDER BY updated_time 的既有排序）。
+      const touch = opts?.touchUpdatedTime !== false;
+      const updateSql = touch
+        ? `UPDATE l1_records SET
           metadata_json = json_set(
             COALESCE(metadata_json,'{}'),
             '$.recall_count', COALESCE(json_extract(metadata_json,'$.recall_count'), 0) + 1,
@@ -3353,8 +3356,16 @@ export class VectorStore implements IMemoryStore {
           ),
           updated_time = ?
         WHERE record_id = ?
-          AND (metadata_json IS NULL OR json_valid(metadata_json))`,
-      ).run(nowIso, nowIso, id);
+          AND (metadata_json IS NULL OR json_valid(metadata_json))`
+        : `UPDATE l1_records SET
+          metadata_json = json_set(
+            COALESCE(metadata_json,'{}'),
+            '$.recall_count', COALESCE(json_extract(metadata_json,'$.recall_count'), 0) + 1,
+            '$.last_recalled_at', ?
+          )
+        WHERE record_id = ?
+          AND (metadata_json IS NULL OR json_valid(metadata_json))`;
+      const res = this.db.prepare(updateSql).run(...(touch ? [nowIso, nowIso, id] : [nowIso, id]));
       return ((res as unknown as { changes?: number }).changes ?? 0) > 0;
     } catch (err) {
       this.logger?.warn?.(`${TAG} [reconsolidation] bumpRecallCount failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);

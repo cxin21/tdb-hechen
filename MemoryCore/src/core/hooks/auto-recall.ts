@@ -866,6 +866,8 @@ interface MergedPoolValue {
   coreRefHit: number;
   signal: number;
   mult: number;
+  /** GROW-EVO P1：重巩固白名单 observed-only（工具路红线同款）需要 certainty 随池携带。 */
+  certainty?: string;
   channel?: string;
   coreRefCount: number;
   recallCount: number;
@@ -1438,6 +1440,7 @@ export async function searchHybrid(
       const kwMeta = (r.record.metadata ?? {}) as Record<string, unknown>;
       mergedMap.set(id, {
         rrfScore,
+        certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
         formatable: recordToFormatable(r.record),
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
         signal,
@@ -1471,6 +1474,7 @@ export async function searchHybrid(
     } else {
       mergedMap.set(id, {
         rrfScore,
+        certainty: r.certainty,
         formatable: vectorResultToFormatable(r),
         coreRefHit: coreRefHitOf(embMeta),
         signal,
@@ -1739,6 +1743,19 @@ export async function searchHybrid(
       `${TAG} Hybrid search found ${top.length} results ` +
       `(keyword=${keywordResults.length}, embedding=${embeddingResults.length})`,
     );
+    // GROW-EVO P1（R8 数据前提）：钩子路 recall_count 计数补齐——top-3 observed
+    // （工具路重巩固白名单同款红线），只加计数、不刷 updated_time（防扰动既有排序）。
+    // best-effort：失败静默（计数非排序语义）；bumpRecallCount 缺失的后端安静跳过。
+    try {
+      const bumpStore = vectorStore as { bumpRecallCount?: (id: string, now?: string, opts?: { touchUpdatedTime?: boolean }) => boolean } | undefined;
+      if (bumpStore && typeof bumpStore.bumpRecallCount === "function") {
+        const recallNow = new Date().toISOString();
+        for (const [bumpId, bumpVal] of top.slice(0, 3)) {
+          if (bumpVal.certainty !== "observed") continue;
+          void Promise.resolve(bumpStore.bumpRecallCount(bumpId, recallNow, { touchUpdatedTime: false })).catch(() => {});
+        }
+      }
+    } catch { /* bookkeeping best-effort */ }
     return { lines: top.map(([, { formatable }]) => formatMemoryLine(formatable)), timing };
   }
 
