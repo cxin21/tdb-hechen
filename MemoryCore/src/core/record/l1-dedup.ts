@@ -523,8 +523,6 @@ export function parseBatchResult(
       }
     }
 
-    // [DEBUG-CR] 临时插桩：coreRefs 标注链路观测（A7 验证）
-    logger?.debug?.(`${TAG} [DEBUG-CR] candidates=${valueCandidates.length} decisions=${JSON.stringify(decisions.map((d) => ({ id: d.record_id.slice(-8), action: d.action, coreRefs: d.coreRefs })))}`);
     return decisions;
   } catch (err) {
     logger?.warn?.(`${TAG} Failed to parse conflict detection result: ${err instanceof Error ? err.message : String(err)}`);
