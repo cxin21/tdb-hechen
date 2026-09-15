@@ -168,6 +168,7 @@ memory:
       enabled: true # I锛氶仐蹇樺垽瀹氾紙瀹佹紡鍕垮锛涘綊妗ｆ爣杞垹锛屼笉鐪熷垹锛?
       minAgeDays: 30
       lowThreshold: 0.12
+      arousalRetention: 0.3 # GROW-EVO P3（§3.1）：闪光灯调制 k（缺省 0 = 逐位现状）
   search:
     neighborExpand: # J锛氶噸鏋勫紡鍥炲繂鈥斺€斿浘閭诲眳鎵╁睍锛堝畞缂烘瘚婊ワ紝浠呭苟鍏?top 绉嶅瓙涔嬮偦锛?
       enabled: true

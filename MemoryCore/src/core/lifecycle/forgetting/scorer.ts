@@ -9,6 +9,9 @@ export interface ForgettingConfig {
   enabled: boolean;
   /** 时间衰减 λ（越大忘得越快）。保守默认，宁漏不多忘 */
   lambda: number;
+  /** GROW-EVO P3（§3.1）：闪光灯记忆调制 k——effectiveλ = λ×(1-k×arousal)。
+   *  缺省 0 = 逐位现状；生产 0.3。config 解析层 clamp [0, 0.9]（防 λ→0/负）。 */
+  arousalRetention: number;
   /** 归档分数阈值：低于此值且 age 超 minAgeDays 才归档 */
   lowThreshold: number;
   /** 至少经过多少天才可归档（防刚写就归档） */
@@ -20,6 +23,7 @@ export interface ForgettingConfig {
 export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
   enabled: true,
   lambda: 0.01,
+  arousalRetention: 0,
   lowThreshold: 0.12,
   minAgeDays: 30,
   maxPerRun: 100,
@@ -59,6 +63,16 @@ export function recallCountBoost(m: MemoryRecord): number {
   return Math.min(c, 5) * 0.02;
 }
 
+/** GROW-EVO P3（§3.1）：arousal 双源读取（顶层优先、metadata 兜底、clamp [0,1]）——significanceOf 同款。 */
+function arousalOf(m: MemoryRecord): number {
+  const top = m as unknown as { arousal?: number };
+  if (typeof top.arousal === "number") return Math.min(Math.max(top.arousal, 0), 1);
+  const meta = m.metadata && typeof m.metadata === "object" ? (m.metadata as Record<string, unknown>) : {};
+  const a = meta.arousal;
+  if (typeof a === "number") return Math.min(Math.max(a, 0), 1);
+  return 0;
+}
+
 /** 时间衰减（天） */
 export function decay(ageDays: number, lambda: number): number {
   if (ageDays <= 0) return 1;
@@ -82,7 +96,10 @@ function ageDaysOf(m: MemoryRecord & { timestamp_start?: string; occurred_at?: s
 }
 
 export function scoreFor(m: MemoryRecord, cfg: ForgettingConfig = DEFAULT_FORGETTING_CONFIG, now = Date.now()): number {
-  return Math.min(1, significanceOf(m) * priorityOf(m) * decay(ageDaysOf(m, now), cfg.lambda) + recallCountBoost(m));
+  // GROW-EVO P3（§3.1）：闪光灯调制——effectiveλ = λ×(1-k×arousal)，高唤醒衰减更慢。
+  // k 缺省 0 → 恒等（逐位现状）；双 0.9 上限防 λ→0/负（clamp 在 config 解析层，此处再防）。
+  const effectiveLambda = cfg.lambda * (1 - Math.min(0.9, cfg.arousalRetention) * arousalOf(m));
+  return Math.min(1, significanceOf(m) * priorityOf(m) * decay(ageDaysOf(m, now), effectiveLambda) + recallCountBoost(m));
 }
 
 export type ForgetAction = "keep" | "archive";

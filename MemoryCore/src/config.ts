@@ -330,6 +330,8 @@ export interface MemoryLifecycleConfig {
     enabled: boolean;
     /** 时间衰减 λ（每天）。 */
     lambda: number;
+    /** GROW-EVO P3（§3.1）：闪光灯调制 k（缺省 0；clamp [0, 0.9]） */
+    arousalRetention: number;
     /** 低于该分且超期才归档。 */
     lowThreshold: number;
     /** 至少经过多少天才可归档。 */
@@ -904,6 +906,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     forgetting: {
       enabled: bool(lifecycleForgettingGroup, "enabled") ?? true,
       lambda: num(lifecycleForgettingGroup, "lambda") ?? 0.01,
+      arousalRetention: Math.min(0.9, Math.max(0, num(lifecycleForgettingGroup, "arousalRetention") ?? 0)),
       lowThreshold: num(lifecycleForgettingGroup, "lowThreshold") ?? 0.12,
       minAgeDays: num(lifecycleForgettingGroup, "minAgeDays") ?? 30,
     },
