@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-16",
+  "note": "D3 判官软轨查询集 v1——从会话历史自然意图种子；标注随语料增长持续积累",
+  "queries": [
+    {"id": "q01", "query": "SDD 计划的执行流程和验收方式", "intent": "SDD 工作流"},
+    {"id": "q02", "query": "价值锚是怎么被发现和维护的", "intent": "锚自生长"},
+    {"id": "q03", "query": "记忆失效后召回怎么处理", "intent": "失效语义"},
+    {"id": "q04", "query": "系统部署在哪个环境用什么数据库", "intent": "部署事实"},
+    {"id": "q05", "query": "回归测试的结果和覆盖", "intent": "回归验证"},
+    {"id": "q06", "query": "proxy 配置遇到过什么问题", "intent": "proxy 运维"},
+    {"id": "q07", "query": "capture 的租户隔离是怎么修的", "intent": "A6 隔离"},
+    {"id": "q08", "query": "coreRefs 双向关联怎么建立", "intent": "锚记忆关联"},
+    {"id": "q09", "query": "权重公式为什么从密度改成绝对证据", "intent": "D6 裁决"},
+    {"id": "q10", "query": "身份槽的内容从哪里来", "intent": "身份自发现"},
+    {"id": "q11", "query": "提取 LLM 为什么会返回空记忆", "intent": "提取行为"},
+    {"id": "q12", "query": "灵魂注入块的三段结构", "intent": "SOUL 组装"},
+    {"id": "q13", "query": "子 agent 为什么会触发 unknown tool", "intent": "C4-dsh"},
+    {"id": "q14", "query": "时间旅行查询怎么用", "intent": "bi-temporal"},
+    {"id": "q15", "query": "ComfyUI 相机工作流怎么调用", "intent": "子 agent 域外（负例）"}
+  ]
+}
