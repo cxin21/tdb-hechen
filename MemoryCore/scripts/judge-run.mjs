@@ -16,11 +16,18 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const QUERIES_PATH = path.join(ROOT, "..", "docs/superpowers/evals/judge/queries.json");
 const OUT_DIR = path.join(ROOT, "..", "docs/superpowers/evals/judge");
 
-// ── 配置：从 gateway yaml 读 ark 三元组（与产线同源） ──
+// ── 配置：config-override.json（spec §3.2 最高优先级，与产线网关同源）> yaml ──
+const OVERRIDE_PATH = "/data/tdai-memory/config-override.json";
 const gwYaml = fs.readFileSync(path.join(ROOT, "tdai-gateway.yaml"), "utf8");
-const baseUrl = gwYaml.match(/baseUrl:\s*"([^"]+)"/)?.[1];
-const apiKey = gwYaml.match(/apiKey:\s*"([^"]+)"/)?.[1];
-const model = gwYaml.match(/model:\s*"([^"]+)"/)?.[1];
+let baseUrl = gwYaml.match(/baseUrl:\s*"([^"]+)"/)?.[1];
+let apiKey = gwYaml.match(/apiKey:\s*"([^"]+)"/)?.[1];
+let model = gwYaml.match(/model:\s*"([^"]+)"/)?.[1];
+try {
+  const ov = JSON.parse(fs.readFileSync(OVERRIDE_PATH, "utf8"));
+  baseUrl = ov?.llm?.baseUrl || baseUrl;
+  apiKey = ov?.llm?.apiKey || apiKey;
+  model = ov?.llm?.model || model;
+} catch { /* override 不可读 → yaml 兜底 */ }
 if (!baseUrl || !apiKey || !model) {
   console.error("[judge] gateway yaml 缺 llm 配置");
   process.exit(1);
