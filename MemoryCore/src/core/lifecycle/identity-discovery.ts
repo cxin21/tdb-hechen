@@ -47,7 +47,8 @@ const DISCOVERY_SYSTEM_PROMPT = [
   "",
   "硬约束：",
   "1. 只提炼身份层面的持续事实（我是谁/我信什么/我绝不做什么），不提一次性任务或事件。",
-  "2. 已有身份事实不得重复。",
+  "2. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如阶段推进、环境变化），提出修订版——",
+  "   content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
   "3. 宁缺毋滥：证据不足的主题不要提。",
   "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
 ].join("\n");
@@ -122,7 +123,7 @@ export async function runIdentityDiscovery(deps: {
 
         // 已有 slots（去重）
         const existing = (store.readCore(tenant) ?? []) as Array<{ slot: string; content: string }>;
-        const existingSummaries = existing.map((s) => `${s.slot}: ${s.content.slice(0, 100)}`);
+        const existingSummaries = existing.map((s) => `[${s.slot}] ${s.content}`);
 
         const prompt = buildIdentityPrompt(sample, existingSummaries);
         const raw = await deps.llmRunner.run({
