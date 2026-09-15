@@ -824,6 +824,13 @@ async function applyDecisions(params: {
             } else if (decision.action === "conflict") {
               // P4：冲突边（矛盾双方都保留），无 observed 限制——冲突是关系事实
               for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, "conflict", 1);
+              // GROW-EVO P2（§2.2 方向性守卫）：仅新记忆 observed 才自动失效旧记忆；
+              // inferred → 只记 conflict 边（推断不许冒充事实——红线对称应用）。
+              // 失效 = 写 valid_end（失效不删除）；best-effort 不阻塞写入。
+              if ((record as { certainty?: string }).certainty === "observed") {
+                const invalidEnd = record.occurred_at || new Date().toISOString();
+                for (const t of decision.target_ids) vectorStore.invalidateL1?.(t, invalidEnd);
+              }
             }
           } catch (err) {
             logger?.warn?.(`${TAG} Edge creation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);

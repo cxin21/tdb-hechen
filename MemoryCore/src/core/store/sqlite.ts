@@ -3373,6 +3373,25 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /**
+   * GROW-EVO P2（§2.2）：失效回写——conflict 自动失效与手动失效共用。
+   * 只写 valid_end（失效不删除、不改写正文）；已失效行不覆盖（首次失效时间权威，
+   * WHERE 过滤防覆盖）；行不存在显式 false（同 bumpRecallCount 纪律，不静默）。
+   * 不触碰 updated_time（P1 簿记分离教训）。
+   */
+  invalidateL1(id: string, validEndIso: string): boolean {
+    if (this.degraded) return false;
+    try {
+      const res = this.db.prepare(
+        "UPDATE l1_records SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
+      ).run(validEndIso, id);
+      return ((res as unknown as { changes?: number }).changes ?? 0) > 0;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [invalidation] invalidateL1 failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   deleteL1Expired(cutoffIso: string): number {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [deleteExpired] SKIPPED (degraded mode)`);

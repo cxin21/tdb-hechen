@@ -651,6 +651,8 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
 
   // ── 记忆图（G）：L1↔L1 显式边 ──
   addLink?(sourceId: string, targetId: string, type: string, strength?: number, now?: string): MaybePromise<boolean>;
+  /** GROW-EVO P2（§2.2）：失效回写——只写 valid_end，不覆盖已失效行（失效不删除）。可选：旧后端安静跳过。 */
+  invalidateL1?(id: string, validEndIso: string): MaybePromise<boolean>;
   /** P2-T14（G2）：可选租户 filter——缺省 undefined=旧行为；传入时两步过滤（rowMatchesIsolation 复核）。 */
   getNeighbors?(id: string, types?: string[], maxHop?: number, filter?: IsolationFilter): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }>>;
   /**
