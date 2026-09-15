@@ -109,6 +109,24 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       deps.logger?.warn?.(`[lifecycle] forgetting failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // SOUL（身份自发现）：anchor-growth 同款模式——扫描对话→LLM 提案→分级门→core_memory slots。
+  // GROW-EVO P2.1：与价值锚共用 llmRunner；identity slot 自动采纳，core_value/strict_rule pending。
+  if (deps.config.anchorDiscovery?.enabled !== false) {
+    try {
+      const { runIdentityDiscovery } = await import("./identity-discovery.js");
+      const res = await runIdentityDiscovery({
+        store: deps.store,
+        llmRunner: deps.llmRunner,
+        config: deps.config.anchorDiscovery,
+        logger: deps.logger,
+      });
+      if (res.ran) {
+        deps.logger?.info?.(`[lifecycle] identity-discovery adopted=${res.adopted} pending=${res.pending}`);
+      }
+    } catch (err) {
+      deps.logger?.warn?.(`[lifecycle] identity-discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   // GROW（价值锚自生长）：巩固周期后挂钩。触发双门（interval 24h + 语料新增）在
   // runAnchorGrowth 内部短路——未到点零 LLM 调用零额外语料查询；LLM runner 缺失
   // （consolidation 同款门）安静跳过。PA：per-agent 化——逐有记忆 agent 三元组跑发现

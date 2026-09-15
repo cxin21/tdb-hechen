@@ -2131,6 +2131,7 @@ export class TdaiGateway {
       }
 
       if (lifecycle.enabled !== false && lifecycleStore) {
+        this.logger.info(`[DEBUG-CFG] anchorDiscovery=${JSON.stringify(this.config.memory?.coreMemory?.anchorDiscovery ?? null)}`);
         startLifecycleScheduler({
           store: lifecycleStore as never,
           llmRunner: runner as never,
@@ -2141,6 +2142,7 @@ export class TdaiGateway {
           // GROW（价值锚自生长）：护栏配置从 memory.coreMemory.anchorDiscovery 接线
           //（解析+clamp+默认在 parseConfig；LLM 缺失时 anchor-growth 内部安静跳过）。
           anchorDiscovery: this.config.memory?.coreMemory?.anchorDiscovery,
+
           logger: this.logger,
         });
         this.logger.info(`Lifecycle scheduler (H+I) started (forgetting active; consolidation ${runner ? "active" : "gated off (no LLM)"}; anchor-growth ${this.config.memory?.coreMemory?.anchorDiscovery?.enabled !== false ? "active" : "off"})`);

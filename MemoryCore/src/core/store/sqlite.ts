@@ -2407,7 +2407,7 @@ export class VectorStore implements IMemoryStore {
    */
   async deriveValueValences(
     tenant?: CoreTenant,
-    llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number }): Promise<string> },
+    llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> },
   ): Promise<{ derived: number; skipped: number }> {
     const t = normalizeCoreTenant(tenant);
     try {
@@ -2426,7 +2426,7 @@ export class VectorStore implements IMemoryStore {
         "价值锚清单：\n" +
         rows.map((r) => `- ${r.value_id}（${r.label}）`).join("\n") +
         "\n\n判定每个价值锚的动机方向。";
-      const raw = await llmRunner.run({ prompt, systemPrompt, taskId: "core-values-valence-derive", timeoutMs: 30_000 });
+      const raw = await llmRunner.run({ prompt, systemPrompt, taskId: "core-values-valence-derive", timeoutMs: 0, maxTokens: 0 });
       let parsed: { valences?: unknown };
       try {
         parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, ""));
