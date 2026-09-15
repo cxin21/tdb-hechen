@@ -152,6 +152,8 @@ export interface RecallConfig {
   sessionReuseTtlMs: number;
   /** GROW-EVO P2（§2.3）：召回默认排除失效记忆（valid_end ≤ now）。缺省 true（spec 拍板①：现存库无失效行 = 逐位不变）。 */
   excludeInvalidated: boolean;
+  /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）。 */
+  emotionSalienceWeight?: number;
   /**
    * V2-1（引擎二 PPR spec E2.1）：PPR 阻尼系数 d（默认 0.85，clamp [0,1]）。
    * r^(t+1) = d·M·r^(t) + (1-d)·p；0 = r 恒等于种子分布（无非种子质量 = 图通道退化关断）。
@@ -1008,6 +1010,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
       // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
       excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
+      // GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）
+      emotionSalienceWeight: Math.max(0, num(recallGroup, "emotionSalienceWeight") ?? 0),
       sessionReuseTtlMs: recallSignalBoost(recallGroup, "sessionReuseTtlMs", 300_000),
       // V2-1（引擎二 PPR spec E2.1）：PPR 三旋钮（recallSignalBoost clamp 模式，0 可设）。
       // damping 比值 clamp [0,1]（0 = 图通道退化关断）；topK/iterations 取整，topK 0 = 零图候选。

@@ -17,6 +17,7 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
 import { isInvalidated } from "../recall/filter-invalidated.js";
+import { emotionSalienceOf } from "./recall-signals.js";
 import {
   buildRankContext,
   DEFAULT_RANK_SIGNALS,
@@ -272,7 +273,7 @@ function applyCoreRefTiebreak(
     sceneBoost?: number;
   },
 ): MemorySearchResultItem[] {
-  const secondaryOf = (r: MemorySearchResultItem): [number, number, number, number] => [
+  const secondaryOf = (r: MemorySearchResultItem): [number, number, number, number, number] => [
     typeof r.priority === "number" && Number.isFinite(r.priority) ? r.priority : 0,
     resolveCoreRefBoost(r, firedLabels, coreRefBoost),
     // R3 inferred 殿后旗标（升序消费：observed=0 在前，inferred=1 殿后）。
@@ -282,6 +283,8 @@ function applyCoreRefTiebreak(
     rankCtx
       ? structuralSignalOf(r, rankCtx) + sceneSignalOf(r, rankCtx.sceneHit, rankCtx.sceneBoost ?? 0)
       : 0,
+    // GROW-EVO P3 R10（§3.2）：情感显著度（weight>0 时参与平局链；0 = 恒 0 恒等）
+    rankCtx && rankCtx.signals.emotionSalienceWeight > 0 ? emotionSalienceOf(r) * rankCtx.signals.emotionSalienceWeight : 0,
   ];
   const sorted = [...items].sort((a, b) => {
     // primary：fused score 降序——任何信号都不得改动这一层。
@@ -292,6 +295,7 @@ function applyCoreRefTiebreak(
     if (sb[1] !== sa[1]) return sb[1] - sa[1]; // coreRef 降序
     if (sb[2] !== sa[2]) return sa[2] - sb[2]; // inferred 殿后（升序旗标）
     return sb[3] - sa[3]; // 结构信号和降序
+    if (sb[4] !== sa[4]) return sb[4] - sa[4]; // GROW-EVO P3 R10：情感显著度降序（weight>0 时）
   });
   return sorted.map((r) => {
     const touches = touchedCoreRefs(r, firedLabels);
@@ -801,6 +805,8 @@ export async function executeMemorySearch(params: {
   neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number };
   /** GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；由调用方 cfg 透传） */
   excludeInvalidated?: boolean;
+  /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；由调用方 cfg 透传） */
+  emotionSalienceWeight?: number;
   /**
    * 重构式回忆（J 设计§3）：query 时间锚窗过滤。
    * "auto" = 从 query 解析（今天/上周/N天前等），解析不出→不过滤；显式传窗则直接用。
@@ -904,9 +910,10 @@ export async function executeMemorySearch(params: {
     queryEmbeddingCacheTtlMs = 60_000,
     queryExpansion,
     exploreSlot = true,
+    emotionSalienceWeight = 0,
     rerankWeights,
   } = params;
-  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost };
+  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight };
 
   logger?.debug?.(
     `${TAG} CALLED: query="${query.slice(0, 100)}", limit=${limit}, ` +

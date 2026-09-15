@@ -102,7 +102,8 @@ memory:
       significance: 0
       coreRef: 0
     # 鈹€鈹€ R7 鍒嗗眰鍙洖 路 缁撹灞傦紙瀹℃煡淇ˉ 2026-09-12 鐧昏锛?026-09-12 鏄惧紡鎵撳紑 = 缂虹渷鍊煎師鏍疯惤鐩橈級鈹€鈹€
-    excludeInvalidated: true # GROW-EVO P2（§2.3）：召回默认排除失效记忆（spec 拍板①）
+    excludeInvalidated: true
+    emotionSalienceWeight: 0 # GROW-EVO P3 R10 实验轨：进预注册 A/B 队列，未过 A/B 不得置正 # GROW-EVO P2（§2.3）：召回默认排除失效记忆（spec 拍板①）
     conclusionLayer:
       enabled: true            # I鈶?缁撹灞傛€诲紑鍏筹紙false = 缁撹灞傛暣浣撻€€鍑猴紝杈撳嚭涓?R7 鍓嶅熀绾块€愪綅涓€鑷达級
       maxCharsPerMemory: 2000  # 鍗曟潯缁撹娉ㄥ叆鍓嶆埅鏂瓧绗︽暟锛? = 涓嶆埅鏂紱Task CAL C1锛?

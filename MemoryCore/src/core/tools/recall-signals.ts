@@ -51,6 +51,9 @@ export interface RankSignals {
   reinforcementWeight: number;
   /** R9：mood-congruent 对称弱偏置（默认 0 = 关；开启建议 0.03） */
   moodBoost: number;
+  /** GROW-EVO P3 R10（§3.2）：情感显著度 |valence|×arousal 加成权重（实验轨——缺省 0 =
+   *  恒等；进预注册 A/B 队列，未过 A/B 不得置正。判官/抽取器同源偏差 → 永不单独放行）。 */
+  emotionSalienceWeight: number;
 }
 
 export const DEFAULT_RANK_SIGNALS: RankSignals = {
@@ -60,6 +63,7 @@ export const DEFAULT_RANK_SIGNALS: RankSignals = {
   inferredPenalty: 0.1,
   reinforcementWeight: 0.03,
   moodBoost: 0,
+  emotionSalienceWeight: 0,
 };
 
 /** 全 0 常量：关断矩阵锚点（结构上即"所有通道退出"）。 */
@@ -70,6 +74,7 @@ export const ZERO_RANK_SIGNALS: RankSignals = {
   inferredPenalty: 0,
   reinforcementWeight: 0,
   moodBoost: 0,
+  emotionSalienceWeight: 0,
 };
 
 const DAY_MS = 86_400_000;
@@ -158,6 +163,16 @@ export function reinforcementSignalOf(item: RankSignalItem, weight: number): num
   const c = item.metadata?.recall_count;
   if (typeof c !== "number" || !Number.isFinite(c) || c <= 0) return 0;
   return Math.log10(1 + c) * weight;
+}
+
+/** GROW-EVO P3 R10（§3.2）：情感显著度 = |valence| × arousal（0..1，双 0 = 恒 0）。
+ *  实验轨纯函数——weight 由 cfg.recall.emotionSalienceWeight 承载（缺省 0 = 恒等）；
+ *  判官/抽取器同源偏差 → 该信号永不单独放行排序变更，仅进预注册 A/B 队列。 */
+export function emotionSalienceOf(src: { valence?: number; arousal?: number } | undefined): number {
+  if (!src) return 0;
+  const v = typeof src.valence === "number" ? Math.min(Math.abs(src.valence), 1) : 0;
+  const a = typeof src.arousal === "number" ? Math.min(Math.max(src.arousal, 0), 1) : 0;
+  return v * a;
 }
 
 // ============================

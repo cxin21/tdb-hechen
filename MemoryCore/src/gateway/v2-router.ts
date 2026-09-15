@@ -1400,6 +1400,8 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
       : "auto",
     // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
     excludeInvalidated: (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
+    // GROW-EVO P3 R10（§3.2）：情感显著度权重（cfg 透传——缺省 0 = 恒等）
+    emotionSalienceWeight: (deps as { config?: { memory?: { recall?: { emotionSalienceWeight?: number } } } }).config?.memory?.recall?.emotionSalienceWeight,
     // 重构式回忆（J 设计§3）：query 时间锚自动解析（今天/上周/N天前等→时间窗过滤；解析不出不过滤）
     // C1 + R-A1：coreRef 与排序层结构信号配置透传（缺省由 executeMemorySearch 内部
     // 回落 spec §2 默认值；价值锚由其内部从 store.listValues 租户读取——两路咽喉同生效）

@@ -34,8 +34,7 @@ import {
   resolveQueryExpansionRunner,
 } from "../recall/query-expand.js";
 import { PPR_DEFAULTS, runPPRDetail } from "../recall/ppr.js";
-import {
-  buildRankContext,
+import { emotionSalienceOf, buildRankContext,
   certaintyMultiplierOf,
   DEFAULT_RANK_SIGNALS,
   detectSceneHit,
@@ -44,8 +43,7 @@ import {
   ZERO_RANK_SIGNALS,
   type RankSignalItem,
   type RankSignals,
-  type ValueRowLike,
-} from "../tools/recall-signals.js";
+  type ValueRowLike, } from "../tools/recall-signals.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
 import {
@@ -487,6 +485,7 @@ export async function performLayeredRecall(params: {
         inferredPenalty: cfg.recall?.inferredPenalty ?? DEFAULT_RANK_SIGNALS.inferredPenalty,
         reinforcementWeight: cfg.recall?.reinforcementWeight ?? DEFAULT_RANK_SIGNALS.reinforcementWeight,
         moodBoost: cfg.recall?.moodBoost ?? DEFAULT_RANK_SIGNALS.moodBoost,
+        emotionSalienceWeight: cfg.recall?.emotionSalienceWeight ?? DEFAULT_RANK_SIGNALS.emotionSalienceWeight,
       };
       const signalsActive =
         signals.timeBoost > 0 ||
@@ -494,7 +493,8 @@ export async function performLayeredRecall(params: {
         signals.sigWeight > 0 ||
         signals.inferredPenalty > 0 ||
         signals.reinforcementWeight > 0 ||
-        signals.moodBoost > 0;
+        signals.moodBoost > 0 ||
+        signals.emotionSalienceWeight > 0;
       const needValues = coreRefBoost > 0 || signals.moodBoost > 0;
       // R-A2：候选池通道开关（cfg.recall；缺省 = spec §2 默认值，0 = 通道退出）
       const graphDiscount = cfg.recall?.graphDiscount ?? 0.6;
@@ -870,6 +870,9 @@ interface MergedPoolValue {
   certainty?: string;
   /** GROW-EVO P2（§2.3）：失效排除需要 valid_end 随池携带。 */
   validEnd?: string;
+  /** GROW-EVO P3 R10（§3.2）：情感显著度需要 valence/arousal 随池携带。 */
+  valence?: number;
+  arousal?: number;
   channel?: string;
   coreRefCount: number;
   recallCount: number;
@@ -1452,6 +1455,8 @@ export async function searchHybrid(
         rrfScore,
         certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
         validEnd: (r.soul as { valid_end?: string } | undefined)?.valid_end,
+        valence: (r.soul as { valence?: number } | undefined)?.valence,
+        arousal: (r.soul as { arousal?: number } | undefined)?.arousal,
         formatable: recordToFormatable(r.record),
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
         signal,
@@ -1487,6 +1492,8 @@ export async function searchHybrid(
         rrfScore,
         certainty: r.certainty,
         validEnd: r.valid_end,
+        valence: r.valence,
+        arousal: r.arousal,
         formatable: vectorResultToFormatable(r),
         coreRefHit: coreRefHitOf(embMeta),
         signal,
@@ -1503,6 +1510,8 @@ export async function searchHybrid(
   // ── R-A2（R6 场景路由）：sceneHit 在候选池（mergedMap）就绪后按池内 scene_name
   // 计算（与工具侧同一 detectSceneHit 实现，单一源）；sceneBoost=0 → null（零开销）。 ──
   const sceneBoostVal = rankSignal?.sceneBoost ?? 0;
+  // GROW-EVO P3 R10（§3.2）：情感显著度权重——缺省 0 = 不计算不比较（可证恒等）。
+  const emotionWeight = rankSignal?.signals.emotionSalienceWeight ?? 0;
   const sceneHit = sceneBoostVal > 0
     ? detectSceneHit(userText, [...mergedMap.values()].map((v) => v.formatable.scene_name))
     : null;
@@ -1515,8 +1524,8 @@ export async function searchHybrid(
   //    组内旗标（mult 仅平局组内生效，与工具侧 R3 平移一致）。 ──
   const sceneSignalOfEntry = (v: FormatableMemory) => sceneSignalOf(v, sceneHit, sceneBoostVal);
   const compareLex = (
-    a: { rrfScore: number; coreRefHit: number; signal: number; mult: number; formatable: FormatableMemory },
-    b: { rrfScore: number; coreRefHit: number; signal: number; mult: number; formatable: FormatableMemory },
+    a: { rrfScore: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
+    b: { rrfScore: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
   ): number => {
     if (b.rrfScore !== a.rrfScore) return b.rrfScore - a.rrfScore;
     if (b.coreRefHit !== a.coreRefHit) return b.coreRefHit - a.coreRefHit;
@@ -1524,6 +1533,11 @@ export async function searchHybrid(
     const bScene = sceneSignalOfEntry(b.formatable);
     if (bScene !== aScene) return bScene - aScene;
     if (b.signal !== a.signal) return b.signal - a.signal;
+    if (emotionWeight > 0) {
+      const aEmo = emotionSalienceOf({ valence: a.valence, arousal: a.arousal }) * emotionWeight;
+      const bEmo = emotionSalienceOf({ valence: b.valence, arousal: b.arousal }) * emotionWeight;
+      if (bEmo !== aEmo) return bEmo - aEmo;
+    }
     return b.mult - a.mult;
   };
   const sortEntries = () =>
