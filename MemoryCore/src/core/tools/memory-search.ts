@@ -16,6 +16,7 @@ import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
+import { isInvalidated } from "../recall/filter-invalidated.js";
 import {
   buildRankContext,
   DEFAULT_RANK_SIGNALS,
@@ -798,6 +799,8 @@ export async function executeMemorySearch(params: {
   logger?: Logger;
   /** 重构式回忆（J）：图邻居扩展默认关闭；开启时按 getNeighbors 扩点（default off，宁缺毋滥）。 */
   neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number };
+  /** GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；由调用方 cfg 透传） */
+  excludeInvalidated?: boolean;
   /**
    * 重构式回忆（J 设计§3）：query 时间锚窗过滤。
    * "auto" = 从 query 解析（今天/上周/N天前等），解析不出→不过滤；显式传窗则直接用。
@@ -1020,7 +1023,9 @@ export async function executeMemorySearch(params: {
     }
     // ── C1：priority/coreRef 轻度 tiebreak（native-hybrid 与双路同语义）+ R-A1 结构信号 + R-A2 R6 场景路由 ──
     items = applyCoreRefTiebreak(items, firedLabels, coreRefBoost, rankArgOf(items));
-    const trimmed = items.slice(0, limit);
+    // GROW-EVO P2（§2.3）：失效排除（excludeInvalidated 缺省 true；由调用方 cfg 透传）
+    const exclItems = params.excludeInvalidated === false ? items : items.filter((i) => !isInvalidated(i as { valid_end?: string }));
+    const trimmed = exclItems.slice(0, limit);
     // T1-D（F7 收官）：native-hybrid 早退前同样执行重巩固 —— 此前提前 return
     // 跳过了主路径尾部的 reconsolidation 块（T17.5 审计确认缺口）。
     triggerReconsolidation(trimmed, vectorStore, logger);
@@ -1324,7 +1329,9 @@ export async function executeMemorySearch(params: {
   }
 
   // ── Trim to requested limit ──
-  const trimmed = results.slice(0, limit);
+  // GROW-EVO P2（§2.3）：失效排除（native-hybrid 早退分支同款）
+  const exclResults = params.excludeInvalidated === false ? results : results.filter((r) => !isInvalidated(r as { valid_end?: string }));
+  const trimmed = exclResults.slice(0, limit);
 
   // ── 重巩固（T1-D：提取为 triggerReconsolidation，native-hybrid 分支复用同一函数）──
   triggerReconsolidation(trimmed, vectorStore, logger);

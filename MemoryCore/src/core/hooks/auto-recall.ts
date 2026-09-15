@@ -868,6 +868,8 @@ interface MergedPoolValue {
   mult: number;
   /** GROW-EVO P1：重巩固白名单 observed-only（工具路红线同款）需要 certainty 随池携带。 */
   certainty?: string;
+  /** GROW-EVO P2（§2.3）：失效排除需要 valid_end 随池携带。 */
+  validEnd?: string;
   channel?: string;
   coreRefCount: number;
   recallCount: number;
@@ -1069,6 +1071,8 @@ async function searchMemories(
       cfg.recall?.exploreSlot !== false, cfg.recall?.rerankWeights,
       // DS-RECALL-MERGE-001：租户收窄 filter（钩子路缺省 undefined = 旧行为逐位）
       isolationFilter,
+      // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
+      cfg.recall?.excludeInvalidated,
     );
   } catch (err) {
     logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
@@ -1268,6 +1272,11 @@ export async function searchHybrid(
    * /v3/atomic/search 工具路同形；不改打分/门槛/RRF/字典序。
    */
   isolationFilter?: IsolationFilter,
+  /**
+   * GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；false = 通道退出）。
+   * 由 searchMemories 自 cfg.recall.excludeInvalidated 透传。
+   */
+  excludeInvalidated?: boolean,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -1442,6 +1451,7 @@ export async function searchHybrid(
       mergedMap.set(id, {
         rrfScore,
         certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
+        validEnd: (r.soul as { valid_end?: string } | undefined)?.valid_end,
         formatable: recordToFormatable(r.record),
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
         signal,
@@ -1476,6 +1486,7 @@ export async function searchHybrid(
       mergedMap.set(id, {
         rrfScore,
         certainty: r.certainty,
+        validEnd: r.valid_end,
         formatable: vectorResultToFormatable(r),
         coreRefHit: coreRefHitOf(embMeta),
         signal,
@@ -1744,6 +1755,20 @@ export async function searchHybrid(
       `${TAG} Hybrid search found ${top.length} results ` +
       `(keyword=${keywordResults.length}, embedding=${embeddingResults.length})`,
     );
+    // GROW-EVO P2（§2.3）：召回默认排除失效记忆（excludeInvalidated，spec 拍板①缺省
+    // true；现存库无失效行 = 逐位不变）。过滤在 bump 之前——失效记忆连 recall_count
+    // 都不积累（宁缺毋滥）。解析失败的 valid_end 保留（同 filter-invalidated 口径）。
+    const applyExclusion = excludeInvalidated !== false;
+    let visibleTop = top;
+    if (applyExclusion) {
+      const nowMs = Date.now();
+      visibleTop = visibleTop.filter(([, v]) => {
+        const ve = v.validEnd;
+        if (!ve) return true;
+        const t = Date.parse(ve);
+        return !Number.isFinite(t) || t > nowMs;
+      });
+    }
     // GROW-EVO P1（R8 数据前提）：钩子路 recall_count 计数补齐——top-3 observed
     // （工具路重巩固白名单同款红线），只加计数、不刷 updated_time（防扰动既有排序）。
     // best-effort：失败静默（计数非排序语义）；bumpRecallCount 缺失的后端安静跳过。
@@ -1751,13 +1776,13 @@ export async function searchHybrid(
       const bumpStore = vectorStore as { bumpRecallCount?: (id: string, now?: string, opts?: { touchUpdatedTime?: boolean }) => boolean } | undefined;
       if (bumpStore && typeof bumpStore.bumpRecallCount === "function") {
         const recallNow = new Date().toISOString();
-        for (const [bumpId, bumpVal] of top.slice(0, 3)) {
+        for (const [bumpId, bumpVal] of visibleTop.slice(0, 3)) {
           if (bumpVal.certainty !== "observed") continue;
           void Promise.resolve(bumpStore.bumpRecallCount(bumpId, recallNow, { touchUpdatedTime: false })).catch(() => {});
         }
       }
     } catch { /* bookkeeping best-effort */ }
-    return { lines: top.map(([, { formatable }]) => formatMemoryLine(formatable)), timing };
+    return { lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)), timing };
   }
 
   logger?.debug?.(`${TAG} Hybrid search: no results after merge`);

@@ -1378,6 +1378,8 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     logger: deps.logger,
     // 重构式回忆（J）：图邻居扩展，配置门（默认关，宁缺毋滥；按配置 memory.search.neighborExpand.enabled 开启）
     neighborExpand: (deps as { config?: { memory?: { search?: { neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number } } } } }).config?.memory?.search?.neighborExpand,
+    // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
+    excludeInvalidated: (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
     // 重构式回忆（J 设计§3）：query 时间锚自动解析（今天/上周/N天前等→时间窗过滤；解析不出不过滤）
     timeWindow: "auto",
     // C1 + R-A1：coreRef 与排序层结构信号配置透传（缺省由 executeMemorySearch 内部

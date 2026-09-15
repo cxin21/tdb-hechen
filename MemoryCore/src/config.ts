@@ -150,6 +150,8 @@ export interface RecallConfig {
    * 确定性：上轮 query 与本轮**全等**才复用（不做模糊匹配）。
    */
   sessionReuseTtlMs: number;
+  /** GROW-EVO P2（§2.3）：召回默认排除失效记忆（valid_end ≤ now）。缺省 true（spec 拍板①：现存库无失效行 = 逐位不变）。 */
+  excludeInvalidated: boolean;
   /**
    * V2-1（引擎二 PPR spec E2.1）：PPR 阻尼系数 d（默认 0.85，clamp [0,1]）。
    * r^(t+1) = d·M·r^(t) + (1-d)·p；0 = r 恒等于种子分布（无非种子质量 = 图通道退化关断）。
@@ -1001,6 +1003,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // R-A3（性能速赢 E1/E2/E3）：TTL 缓存开关（毫秒，缺省默认开；<=0 = 关；负值 clamp 0）
       queryEmbeddingCacheTtlMs: recallSignalBoost(recallGroup, "queryEmbeddingCacheTtlMs", 60_000),
       valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
+      // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
+      excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
       sessionReuseTtlMs: recallSignalBoost(recallGroup, "sessionReuseTtlMs", 300_000),
       // V2-1（引擎二 PPR spec E2.1）：PPR 三旋钮（recallSignalBoost clamp 模式，0 可设）。
       // damping 比值 clamp [0,1]（0 = 图通道退化关断）；topK/iterations 取整，topK 0 = 零图候选。
