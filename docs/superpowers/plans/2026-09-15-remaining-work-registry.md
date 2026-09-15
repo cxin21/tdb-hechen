@@ -8,6 +8,7 @@
 
 - [x] **A1 · FTS 复合词分词错位**（✅ 证伪关闭 2026-09-15：API 全链 buildFtsQuery 分词两侧一致，"组装器"实测命中——此前为裸 SQL 绕过查询分词的误报）
 - [x] **A2 · dedup 召回率**（✅ cfe9eba：召回侧近重折叠 bigram Jaccard，阈值 0.25 实测校准——重复组 0.36-0.49 vs 非重复 ≤0.04 九倍分离；实测 6 行→2 行，Lane 2 全绿）
+- [ ] **A3 · soul 标注透出覆盖率**（⚙️ 主修复已提交 76b1813：ftsResultToFormatable 补 soul 透传（与 vector 映射对齐）——但实测仍有路径缺标注（疑似 native-hybrid 分支的 FormatableMemory 构造点），需遍历全部构造点补齐；存量 soul 字段零 NULL（153/153 满列）已实锤，纯映射层问题）
 - [x] **A4 · 11 组真实数据测试套件**（✅ 2026-09-15：11/11 ALL PASS——G1 身份段/G2 感受段宁缺毋滥/G3 锚方向/G4 折叠/G5 无误伤/G6 失效排除/G7 时间旅行双向/G8 租户隔离/G9 FTS 复合词/G10 durative/G11 valence 持久。套件自身两处预期修正均实锤系统语义正确：①tp 在记忆创建前→正确排除（bi-temporal）②time_point 仅 /v3/recall 贯通（P2.1 范围））
 - [ ] **A5 · atomic/search time_point API 贯通**（本轮套件发现：时间旅行仅 /v3/recall 支持，atomic/search 忽略 time_point——管理面查询的时间旅行缺口，低优先）
 
