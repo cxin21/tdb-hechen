@@ -21,10 +21,13 @@ export const DISCOVER_MIN_EVIDENCE = 3;
 export const DISCOVER_HIGH_SIG_THRESHOLD = 0.8;
 /**
  * 推理模型输出预算覆写：ark-code-latest 的 thinking 占输出预算，
- * config 默认 4096 可能被思考耗尽导致 JSON 截断 → 本路由内部覆写 8192。
+ * config 默认 4096 → 8192 仍被思考耗尽（finishReason=length、text 空——
+ * 2026-09-15 DEBUG-GROW 插桩实锤）→ 本路由覆写 16384。
  * （runner 链：params.maxTokens ?? config.maxTokens ?? 4096，llm-runner.ts:286）
  */
-export const DISCOVER_MAX_TOKENS_OVERRIDE = 8192;
+// GROW-EVO P2.1（用户裁定 2026-09-15）：不再控制 maxTokens 与超时——发现调用传
+// timeoutMs: 0 / maxTokens: 0（llm-runner 0 = 不限制语义），推理模型 thinking 不设上限。
+// （历史：4096 → 8192 → 16384 均被 thinking 耗尽或撞超时——调参追不上，故解除控制。）
 
 // ── weight 公式（纯函数）────────────────────────────────────────
 

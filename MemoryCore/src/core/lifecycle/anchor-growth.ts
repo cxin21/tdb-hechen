@@ -42,7 +42,6 @@ import {
   recountEvidence,
   suggestAnchorWeight,
   DISCOVER_SAMPLE_CAP,
-  DISCOVER_MAX_TOKENS_OVERRIDE,
 } from "../../gateway/core-values-discover.js";
 
 /** GROW：自生长配置（memory.coreMemory.anchorDiscovery；解析+clamp+默认见 config.ts）。 */
@@ -260,8 +259,10 @@ export async function runAnchorGrowth(deps: {
           prompt: buildDiscoverPrompt(sampleContents, existingLabels),
           systemPrompt: DISCOVER_SYSTEM_PROMPT,
           taskId: "core-values-discover-growth",
-          timeoutMs: 120_000,
-          maxTokens: DISCOVER_MAX_TOKENS_OVERRIDE, // 推理模型输出预算（DISC 同款覆写）
+          // GROW-EVO P2.1（用户裁定）：不控制 maxTokens 与超时——0 = 不限制（llm-runner 语义），
+          // 推理模型 thinking 不设预算/时延上限（成本与时延风险已向用户明示并接受）。
+          timeoutMs: 0,
+          maxTokens: 0,
         });
         // ── 护栏（per-agent 独立计数）：证据门槛 → 强者优先 → 每轮上限 ──
         // [DEBUG-GROW] 临时插桩：定位 candidates=0 归零环节（解析/去重/证据重算）

@@ -33,7 +33,6 @@ import { executeConversationSearch } from "../core/tools/conversation-search.js"
 import { validateCoreWrite } from "../core/core-memory/guard.js";
 // Task DISC（提议制）：价值锚发现纯函数集（证据重算/weight 公式/去重/宽松解析/prompt 形状）
 import {
-  DISCOVER_MAX_TOKENS_OVERRIDE,
   DISCOVER_MIN_EVIDENCE,
   DISCOVER_SAMPLE_CAP,
   DISCOVER_SYSTEM_PROMPT,
@@ -2093,15 +2092,15 @@ async function handleCoreMemoryValuesDiscover(_body: unknown, _auth: V2AuthConte
   const corpus = sample.map((r) => String((r as { content?: string }).content ?? ""));
   deps.logger?.info?.(
     `[core-values] discover (requestId=${requestId}): sample=${sample.length}, existing=${existingLabels.length}, ` +
-    `maxTokens override=${DISCOVER_MAX_TOKENS_OVERRIDE} (推理模型输出预算)`,
+    `maxTokens: unrestricted (GROW-EVO P2.1 user decision)`,
   );
   const raw = await Promise.resolve(
     runner.run({
       prompt: buildDiscoverPrompt(corpus, existingLabels),
       systemPrompt: DISCOVER_SYSTEM_PROMPT,
       taskId: "core-values-discover",
-      timeoutMs: 120_000,
-      maxTokens: DISCOVER_MAX_TOKENS_OVERRIDE,
+      timeoutMs: 0,
+      maxTokens: 0,
     } as never),
   );
   // 证据重算在 parse + dedup 之后：sampleSize = 样本条数（weight 公式分母）

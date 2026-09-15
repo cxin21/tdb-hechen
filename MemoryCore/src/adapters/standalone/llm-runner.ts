@@ -331,9 +331,11 @@ export class StandaloneLLMRunner implements LLMRunner {
       // H-11 Step 2: combine internal timeout with caller-provided abortSignal
       // (e.g. pipeline-worker lost its lock and wants the LLM call to bail out).
       // AbortSignal.any (Node 20+) aborts when ANY of the listed signals abort.
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      // GROW-EVO P2.1：timeoutMs <= 0 = 不限制（不挂 abort 信号——调用方显式选择无超时，
+      // 供推理模型 thinking 不设时延上限的场景；其余调用方缺省行为不变）。
+      const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
       const combinedSignal = params.abortSignal
-        ? AbortSignal.any([timeoutSignal, params.abortSignal])
+        ? (timeoutSignal ? AbortSignal.any([timeoutSignal, params.abortSignal]) : params.abortSignal)
         : timeoutSignal;
 
       const callParams = {
@@ -346,7 +348,8 @@ export class StandaloneLLMRunner implements LLMRunner {
         ...(tools && Object.keys(tools).length > 0
           ? { tools, stopWhen: stepCountIs(maxIterations) }
           : {}),
-        maxOutputTokens: maxTokens,
+        // GROW-EVO P2.1：maxTokens <= 0 = 不限制（不传 maxOutputTokens——由上游缺省承载）
+        ...(maxTokens > 0 ? { maxOutputTokens: maxTokens } : {}),
         abortSignal: combinedSignal,
         experimental_telemetry: {
           isEnabled: true,
