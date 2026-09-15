@@ -6,14 +6,14 @@
 
 ## 分组 A · 召回质量（用户注入块可见，优先）
 
-- [ ] **A1 · FTS 复合词分词错位**：查询"组装器"不命中（写入侧 token 流为 组装+器 类序列，查询侧切为整词）→ FTS5 隐式 AND 整查询失败。实测：`MATCH '组装器'`=0 但 `MATCH '三段式'`=3。方向：查询/写入分词一致性（诊断 tokenizer 实现）
-- [ ] **A2 · dedup 召回率**：注入块 4 条近似重复的 P2.1 验证指令记忆未合并（写入侧相似度阈值未命中）。方向：召回侧近重折叠（MMR 式）或写入侧阈值校准
+- [x] **A1 · FTS 复合词分词错位**（✅ 证伪关闭 2026-09-15：API 全链 buildFtsQuery 分词两侧一致，"组装器"实测命中——此前为裸 SQL 绕过查询分词的误报）
+- [x] **A2 · dedup 召回率**（✅ cfe9eba：召回侧近重折叠 bigram Jaccard，阈值 0.25 实测校准——重复组 0.36-0.49 vs 非重复 ≤0.04 九倍分离；实测 6 行→2 行，Lane 2 全绿）
 - [ ] **A3 · soul 标注透出覆盖率**：5 条记忆行仅 1 条带 `·soul[发生·实见·情感·重要度]` 后缀——确认 soul 字段不全的行是"设计如此"还是提取质量问题
 
 ## 分组 B · 鲁棒性（小而高价值）
 
-- [ ] **B1 · LLM 空响应 fail-loud**：StandaloneLLMRunner 空 text 静默返回改抛错（曾静默两天才被发现）
-- [ ] **B2 · 插桩清理**：[DEBUG-GROW]/[DEBUG-CFG] 转正式日志或移除
+- [x] **B1 · LLM 空响应 fail-loud**（✅ ac0899f：空 text 抛错带 finishReason/completionTokens 上下文，静默故障变即时告警）
+- [x] **B2 · 插桩清理**（✅ ac0899f：DEBUG-CFG 移除；DEBUG-GROW 保留为发现链路观测点，随 P4 清理）
 - [ ] **B3 · Lane 2 时间探针弱断言**：0hits 空集 vacuous pass → 补非空断言
 - [ ] **B4 · proxy 注释化妆**：proxy-config.yaml:495 过期 10.4.100.30 注释
 
