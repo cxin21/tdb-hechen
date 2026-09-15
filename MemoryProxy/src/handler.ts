@@ -901,7 +901,7 @@ export async function handleChatCompletions(
       xHeaders: interestingHdrs,
     })}`);
   } catch { /* 诊断日志永不阻塞 */ }
-  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless && !_oneShotSubagent) {
+  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless && !_oneShotSubagent && !_emptyToolsSubagent) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
