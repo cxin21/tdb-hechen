@@ -617,30 +617,31 @@ export async function performLayeredRecall(params: {
       !!vectorStore && !!embeddingService &&
       searchTiming.ftsHits > 0 && searchTiming.embeddingHits === 0 &&
       effectiveStrategy !== "keyword";
+    // SOUL C3（REG-REMAINING-001）：身份段常驻——soul 前缀组装与记忆有无解耦。
+    let soulPrefix = "";
+    if (params.isolationFilter && vectorStore?.readCore) {
+      try {
+        const { buildSoulPrefix } = await import("./soul-assembler.js");
+        const it = params.isolationFilter;
+        soulPrefix = await buildSoulPrefix(vectorStore, { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" }, logger);
+      } catch (err) {
+        logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (memoryLines.length > 0) {
       const degradedNote = recallDegradedFtsOnly
         // I-1 复核修补：两义措辞 —— ftsHits>0∧embeddingHits=0 只证明"本轮向量召回无贡献"，
         // 无法区分向量层降级与相关度门滤除，禁止假警报式单因断言。
         ? "[degraded: fts-only] 本轮记忆召回仅来自关键词检索（FTS），向量召回无贡献（向量层降级或相关度门滤除），召回质量可能不完整。\n\n"
         : "";
-      // SOUL（P2.1 Phase 1）：灵魂组装器前缀——身份段+感受段（isolationFilter 有租户时）。
-      // 钩子路径 undefined → 缺省桶无材料 → 前缀空串（逐位不变）。非致命。
-      // 身份常驻注入（无记忆也注入）为后续升级——本 Phase 保持既有 gating（有记忆才有块）。
-      let soulPrefix = "";
-      if (params.isolationFilter && vectorStore?.readCore) {
-        try {
-          const { buildSoulPrefix } = await import("./soul-assembler.js");
-          const it = params.isolationFilter;
-          soulPrefix = await buildSoulPrefix(vectorStore, { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" }, logger);
-        } catch (err) {
-          logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
       // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
       const foldedLines = foldNearDuplicates(memoryLines);
       block =
         soulPrefix +
         `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
+    } else if (soulPrefix) {
+      // C3：无记忆轮次——身份段常驻（"此刻的你"不因零召回而缺席）
+      block = soulPrefix;
     }
   }
 
