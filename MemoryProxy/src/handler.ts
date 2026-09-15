@@ -887,12 +887,16 @@ export async function handleChatCompletions(
     for (const [hk, hv] of Object.entries(hdrsAll)) {
       if (/^x-/i.test(hk)) interestingHdrs[hk] = hv;
     }
+    const toolsDump = !("tools" in (body as Record<string, unknown>))
+      ? "<absent>"
+      : JSON.stringify((body as { tools?: unknown }).tools)?.slice(0, 400);
     console.log(`[SESSION-INIT-FP] ${JSON.stringify({
       sessionKey,
       conversationId,
       agentSource,
       kind: _requestKind,
       model: bfp.model,
+      toolsDump,
       toolNames: (bfp.tools ?? []).map((t) => t?.function?.name ?? (t as { name?: string })?.name).filter(Boolean).slice(0, 25),
       msgCount: (bfp.messages ?? []).length,
       sysHead: sysText.slice(0, 160),
