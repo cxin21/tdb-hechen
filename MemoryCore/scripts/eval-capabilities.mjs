@@ -387,6 +387,32 @@ async function main() {
     if (!invalidationExclusion.passed) loud(`invalidationExclusion 不变量失败：失效记录仍被召回 ${JSON.stringify(invItems.slice(0, 2))}`);
     mark(`invalidationExclusion 不变量：${invalidationExclusion.passed ? "PASS" : "FAIL"}（${invQuery} → ${invItems.length} hits）`);
 
+    // ⑤c timeTravel 探针（GROW-EVO P2.1 §2.4）：/v3/recall + time_point——"当时有效"语义。
+    // 冲突对 fx0-conflict-1：old（阿里云，valid_end=2026-08-01T10:00Z=new.occurred_at）。
+    // tp=2026-07-01（失效前）→ old 应在注入块；缺省（现在）→ old 必须被排除。
+    const recallProbe = async (tp) => {
+      const r = await fetch(`${API_BASE}/v3/recall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "x-tdai-service-id": "default" },
+        body: JSON.stringify({ query: expectations.updateProbe.query, session_id: p1, ...FIXTURE_TENANT, ...(tp ? { time_point: tp } : {}) }),
+      });
+      if (!r.ok) throw new Error(`recall HTTP ${r.status}: ${await r.text().catch(() => "")}`);
+      const j = await r.json();
+      if (j?.code !== 0) throw new Error(`recall code=${j?.code}: ${j?.message}`);
+      return j?.data?.block ?? "";
+    };
+    const oldRec = records.find((r) => r.id === expectations.updateProbe.oldId);
+    const oldContent = oldRec?.content ?? "";
+    const pastBlock = await recallProbe("2026-07-01T00:00:00.000Z");
+    const nowBlock = await recallProbe();
+    const timeTravel = {
+      pastContainsOld: pastBlock.includes(oldContent),
+      nowExcludesOld: !nowBlock.includes(oldContent),
+      passed: pastBlock.includes(oldContent) && !nowBlock.includes(oldContent),
+    };
+    if (!timeTravel.passed) loud(`timeTravel 探针失败：${JSON.stringify(timeTravel)}`);
+    mark(`timeTravel 探针：${timeTravel.passed ? "PASS" : "FAIL"}（tp 过去含 old=${timeTravel.pastContainsOld}，现在排除 old=${timeTravel.nowExcludesOld}）`);
+
     // ⑥ determinism 不变量：同 query 双跑（pass2 独立 session）逐位一致
     const p2 = `eval-cap-p2-${ts}`;
     const detMismatches = [];
@@ -420,6 +446,7 @@ async function main() {
     if (!determinism.passed) unexpectedFails.push("determinism");
     if (!tenantClosure.passed) unexpectedFails.push("tenantClosure");
     if (!invalidationExclusion.passed) unexpectedFails.push("invalidationExclusion");
+    if (!timeTravel.passed) unexpectedFails.push("timeTravel");
     const allPass = unexpectedFails.length === 0 && !knownFAIL;
     const baselineOnly = unexpectedFails.length === 0 && knownFAIL;
     exitCode = allPass || baselineOnly ? 0 : 1;
@@ -445,7 +472,7 @@ async function main() {
         session: sessionProbe,
         update: updateProbe,
         abstain,
-        invariants: { determinism, tenantClosure, invalidationExclusion },
+        invariants: { determinism, tenantClosure, invalidationExclusion, timeTravel },
       },
       verdict: {
         allPass,

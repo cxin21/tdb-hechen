@@ -998,7 +998,7 @@ async function handleConversationCount(body: unknown, _auth: V2AuthContext, requ
 async function handleConversationSearch(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = conversationSearchRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { query, session_id } = parsed.data;
+  const { query, session_id, time_start: convStart, time_end: convEnd } = parsed.data;
   const limit = parsed.data.limit ?? 5;
 
   const tStart = performance.now();
@@ -1023,12 +1023,25 @@ async function handleConversationSearch(body: unknown, auth: V2AuthContext, requ
   });
   const recallLatencyMs = performance.now() - tStart;
 
+  // GROW-EVO P2.1（§2.4）：schema 死参数激活——recorded_at 时间后过滤
+  //（L0 无 soul 列，业务时间 = recorded_at；非法 recorded_at 行在过滤激活时不命中）。
+  let convResults = result.results;
+  if (convStart || convEnd) {
+    convResults = convResults.filter((r) => {
+      const t = r.recorded_at ? Date.parse(r.recorded_at) : NaN;
+      if (!Number.isFinite(t)) return false;
+      if (convStart && t < Date.parse(convStart)) return false;
+      if (convEnd && t > Date.parse(convEnd)) return false;
+      return true;
+    });
+  }
+
   // 非侵入式上报召回指标（service 模式，静默失败，绝不影响业务返回）
   // L0 conversation search 同样属于"召回"行为，strategy 映射逻辑与 L1 相同
   try {
     reportRecallMetrics({
       instanceId: auth.serviceId,
-      recalledL1Memories: result.results.map((r) => ({ content: r.content, score: r.score, type: "conversation" })),
+      recalledL1Memories: convResults.map((r) => ({ content: r.content, score: r.score, type: "conversation" })),
       recallStrategy: result.strategy === "fts" ? "keyword" : result.strategy === "none" ? "skipped" : result.strategy,
       recallLatencyMs,
       hasError: false,
@@ -1043,12 +1056,12 @@ async function handleConversationSearch(body: unknown, auth: V2AuthContext, requ
     const activeSpan = otelApi.trace.getSpan(otelApi.context.active());
     if (activeSpan) {
       activeSpan.setAttribute("tdai.recall.query", query);
-      activeSpan.setAttribute("tdai.recall.hitCount", result.results.length);
+      activeSpan.setAttribute("tdai.recall.hitCount", convResults.length);
       activeSpan.setAttribute("tdai.recall.strategy", result.strategy || "unknown");
       activeSpan.setAttribute("tdai.recall.level", "l0");
       if (result.results.length > 0) {
-        activeSpan.setAttribute("tdai.recall.topScore", Math.max(...result.results.map(r => r.score)));
-        const truncatedResults = result.results.slice(0, 5).map(r => ({
+        activeSpan.setAttribute("tdai.recall.topScore", Math.max(...convResults.map(r => r.score)));
+        const truncatedResults = convResults.slice(0, 5).map(r => ({
           content: r.content.substring(0, 200),
           score: r.score,
         }));
@@ -1061,7 +1074,7 @@ async function handleConversationSearch(body: unknown, auth: V2AuthContext, requ
     // 静默失败
   }
 
-  const messages: ConversationSearchHit[] = result.results.map((r) => ({
+  const messages: ConversationSearchHit[] = convResults.map((r) => ({
     id: r.id, role: r.role as ConversationSearchHit["role"], content: r.content, timestamp: r.recorded_at, score: r.score,
   }));
 
@@ -1568,7 +1581,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       requestId,
     );
   }
-  const b = (body ?? {}) as { query?: unknown; maxResults?: unknown };
+  const b = (body ?? {}) as { query?: unknown; maxResults?: unknown; time_point?: unknown };
   if (typeof b.query !== "string" || b.query.trim().length === 0) {
     return errorEnvelope(400, "query (non-empty string) required", requestId);
   }
@@ -1579,6 +1592,15 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       return errorEnvelope(400, "maxResults must be a positive integer", requestId);
     }
     maxResultsOverride = Math.floor(n);
+  }
+  // GROW-EVO P2.1（§2.4 时间旅行）：time_point（ISO）——失效排除与时间窗解析以该时点
+  // 为"当前"（当时有效语义）；缺省 = 现在。同时旁路会话复用缓存（不同时点不可复用）。
+  let validityNow: Date | undefined;
+  if (b.time_point !== undefined && b.time_point !== null && b.time_point !== "") {
+    if (typeof b.time_point !== "string" || !Number.isFinite(Date.parse(b.time_point))) {
+      return errorEnvelope(400, `time_point 不是合法 ISO 时间: ${String(b.time_point)}`, requestId);
+    }
+    validityNow = new Date(b.time_point);
   }
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
@@ -1627,6 +1649,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       storage: deps.getStorage(),
       profileIsolation,
       isolationFilter: searchFilter,
+      validityNow,
     }).finally(() => {
       if (timer) clearTimeout(timer);
     }),

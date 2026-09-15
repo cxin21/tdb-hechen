@@ -43,6 +43,12 @@
   语义）；`timeWindow:"auto"` 与显式窗共存（无显式参数回落 auto）。
 - **Lane 2 转绿**：update 探针判据改为"old 被失效排除、new 在列"（P1 known-FAIL 基线闭环）；
   新增 invalidationExclusion 不变量（预失效噪声记录必须被排除）。
+- **P2.1 时间旅行补全（2026-09-15 同日）**：`/v3/recall` 增 `time_point`（ISO）——
+  三层管道（handleRecall → performLayeredRecall → searchHybrid）透传 `validityNow`，
+  失效排除与时间窗解析以该时点为"当前"；会话复用缓存对 time_point 查询旁路（不同时点
+  不可复用）；`/v3/conversation/search` 的 `time_start/end` 死参数激活（recorded_at
+  后过滤，L0 无 soul 列口径）。Lane 2 增 timeTravel 探针（tp 过去含 old / 现在排除 old）
+  GREEN——原推迟裁定退役。
 - **升级须知**：`ExtractionConfig.durativeEnabled` / `RecallConfig.excludeInvalidated` 新增
   （缺省值 = 逐位现状）；`invalidateL1` 为 IMemoryStore 可选方法（旧后端安静跳过）；
   `/v3/recall` time_point 时间旅行推迟至 P2.1（三层管道成本，失效数据已可经 atomic/query

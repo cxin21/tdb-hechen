@@ -316,6 +316,9 @@ export async function performLayeredRecall(params: {
   storage?: StorageAdapter;
   profileIsolation?: ProfileIsolation;
   isolationFilter?: IsolationFilter;
+  /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点——失效排除与时间窗解析以此为"当前"；
+   *  缺省 = new Date()。同时旁路会话复用缓存（不同时点的结果不可复用）。 */
+  validityNow?: Date;
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
 
@@ -463,7 +466,7 @@ export async function performLayeredRecall(params: {
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
     const sessionReuseTtlMs = cfg.recall?.sessionReuseTtlMs ?? 300_000;
     let searchResult: { lines: string[]; timing: SearchTiming; scores?: number[] } | undefined;
-    if (sessionReuseTtlMs > 0) {
+    if (sessionReuseTtlMs > 0 && !params.validityNow) {
       const entry = sessionReuseCache.get(params.sessionKey);
       if (entry && entry.query === userText && entry.vectorStore === vectorStore && entry.embeddingService === embeddingService &&
           Date.now() - entry.at < sessionReuseTtlMs) {
@@ -505,7 +508,7 @@ export async function performLayeredRecall(params: {
         const { firedLabels, moodSign } = needValues
           ? await computeRecallValueSignals(sanitizeText(userText), vectorStore, params.profileIsolation, logger)
           : { firedLabels: [] as string[], moodSign: 0 };
-        const now = new Date(); // R-A1 确定性锚点：本轮排序时快照
+        const now = params.validityNow ?? new Date(); // R-A1 确定性锚点（P2.1：time_point 时间旅行时=查询时点）
         rank = {
           boost: coreRefBoost,
           firedLabels,
@@ -528,10 +531,10 @@ export async function performLayeredRecall(params: {
           logger?.debug?.(`${TAG} [coreRef-boost] fired=${JSON.stringify(firedLabels)}, boost=${coreRefBoost}`);
         }
       }
-      searchResult = await searchMemories(userText, pluginDataDir, cfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter);
+      searchResult = await searchMemories(userText, pluginDataDir, cfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
       // 审查 #3 修补：空结果不入复用缓存——瞬时失败（如外呼抖动/瞬时空召回）不放大成
       // TTL 窗口内的持续空召回；lines.length>0 才视为可用注入块。
-      if (sessionReuseTtlMs > 0 && searchResult.lines.length > 0) {
+      if (sessionReuseTtlMs > 0 && searchResult.lines.length > 0 && !params.validityNow) {
         sessionReuseCache.set(params.sessionKey, { query: userText, result: searchResult, at: Date.now(), vectorStore, embeddingService });
         if (sessionReuseCache.size > SESSION_REUSE_MAX) {
           const oldest = sessionReuseCache.keys().next().value;
@@ -954,6 +957,8 @@ async function searchMemories(
    * 仅收窄候选集（store 层 IsolationFilter 既有能力），不改打分/门槛/RRF/字典序。
    */
   isolationFilter?: IsolationFilter,
+  /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点透传（失效排除以该时点为"当前"）。 */
+  validityNow?: Date,
 ): Promise<SearchResult> {
   const emptyResult: SearchResult = { lines: [], timing: { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 } };
   // Strip gateway-injected inbound metadata (Sender, timestamps, media markers,
@@ -1076,6 +1081,7 @@ async function searchMemories(
       isolationFilter,
       // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
       cfg.recall?.excludeInvalidated,
+      validityNow,
     );
   } catch (err) {
     logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
@@ -1280,6 +1286,8 @@ export async function searchHybrid(
    * 由 searchMemories 自 cfg.recall.excludeInvalidated 透传。
    */
   excludeInvalidated?: boolean,
+  /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点——失效排除以该时点为"当前"。 */
+  validityNow?: Date,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -1775,7 +1783,7 @@ export async function searchHybrid(
     const applyExclusion = excludeInvalidated !== false;
     let visibleTop = top;
     if (applyExclusion) {
-      const nowMs = Date.now();
+      const nowMs = (validityNow ?? new Date()).getTime();
       visibleTop = visibleTop.filter(([, v]) => {
         const ve = v.validEnd;
         if (!ve) return true;
