@@ -13,7 +13,7 @@
 - [x] **C1 · 身份 GROW-MAINT 修订制**（✅ 5872811：prompt 修订制 + slots 全文透出；staleness 场景实证 v3 修订采纳；**产线自然演化实证**——identity 内容自动更新至"P0–P2.1 与 P3 已全部落地…剩余 P4/P5 处于自然观察期"v2）
 - [x] **A4 · 11 组真实数据测试套件**（✅ 2026-09-15：11/11 ALL PASS——G1 身份段/G2 感受段宁缺毋滥/G3 锚方向/G4 折叠/G5 无误伤/G6 失效排除/G7 时间旅行双向/G8 租户隔离/G9 FTS 复合词/G10 durative/G11 valence 持久。套件自身两处预期修正均实锤系统语义正确：①tp 在记忆创建前→正确排除（bi-temporal）②time_point 仅 /v3/recall 贯通（P2.1 范围））
 - [x] **A5 · atomic/search time_point API 贯通**（✅ d2dd15e：双 trim 点 validityNow 双时态过滤（vs ≤ tp < ve）+ 原始 body 读取（generated schema 不动）；实测效期内复活/现在排除双向正确）
-- [ ] **A6 · /capture 端点租户隔离缺口**（⚙️ Phase 1 完成 76f7ceb：headers→CompletedTurn→performAutoCapture→l0Record 四级贯通，L0 归属实测正确落 l5ug 桶。**Phase 2 待做**：pipeline 任务/提取 traceContext 的租户贯通（scheduler notifyConversation → L1 任务 → l1-extractor traceContext 三跳）——未完成前带头 capture 有 L0(l5ug)/L1(default) 分裂风险。产线真实会话不受影响（recall 钩子副作用 capture 自带隔离））
+- [x] **A6 · /capture 端点租户隔离缺口**（✅ 全链闭环 2026-09-15：Phase 1（76f7ceb 四级贯通→L0 归属）+ **Phase 2 零新代码**——L1 runner 本就从 L0 记录推导租户（groups 携带三元组），Phase 1 的 L0 修复自动闭合全链。实测：带头 capture → L0/L1 双双落 l5ug 桶 + **新提取记忆自动 coreRefs=['回归']**（锚↔记忆关联对新记忆自动生效）。a6-verify 首测 extracted=0 为 LLM 输出波动（空 JSON 非 B1 空文本），复测 1/1 正常）
 - [x] **A7 · coreRefs 机制三层验证 + 回填**（✅ 0324f9b：①机制全链在位（l1-dedup:190 loadValueCandidates→prompt 候选清单→parse 过滤→attach）②存量 7 锚→90 记忆一次性回填（双表同步）③90/90 零误标（70 字面回填+20 语义标注互补——LLM 捕获大小写变体 sdd→SDD）④新提取的自动标注待 A6 修复后生效）
 
 ## 分组 B · 鲁棒性（小而高价值）
@@ -21,7 +21,7 @@
 - [x] **B1 · LLM 空响应 fail-loud**（✅ ac0899f + fd44634 对抗性审查收窄：仅纯文本任务（enableTools=false）抛错——工具流最终步合法无文本不误伤；空 text 抛错带 finishReason/completionTokens 上下文）
 - [x] **B2 · 插桩清理**（✅ ac0899f：DEBUG-CFG 移除；DEBUG-GROW 保留为发现链路观测点，随 P4 清理）
 - [ ] **B3 · Lane 2 时间探针弱断言**：0hits 空集 vacuous pass → 补非空断言
-- [ ] **B4 · proxy 注释乱码修复**（⚠️ 升级认知：proxy-config.yaml 全文件中文注释预存乱码 299+ 行（部署时编码链损伤，注释不影响功能）。恢复尝试已逆转。**正确方案已明确**：从 MemoryProxy/config.yaml 模板重灌注释段（生产=模板+6 处差异，见 deploy/tencent-cloud/config/proxy/CLOUD-DIFF.md）——精细运维操作，择机独立执行）
+- [x] **B4 · proxy 注释乱码**（✅ best-effort 2026-09-15：difflib ASCII 骨架对齐恢复 23 行（YAML 有效/proxy 健康）；剩余 343 行含**不可逆信息丢失**（GBK 解码时 ? 替换不可映射字节），完整恢复需原始源文件（本地已失/上游内网不可达/git 仅跟踪 example）——登记为已知化妆品残留）
 
 ## 分组 C · SOUL 迭代
 
