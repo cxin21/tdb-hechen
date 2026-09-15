@@ -1511,13 +1511,25 @@ export async function searchHybrid(
       existing.rrfScore += rrfScore;
     } else {
       const kwMeta = (r.record.metadata ?? {}) as Record<string, unknown>;
+      // A3（REG-REMAINING-001）终极修复：keyword 通道的 soul 单独携带（R-A1 设计）但池插入
+      // 只用 r.record 构造 formatable → 分离的 soul 从未并回 → FTS 通道行无 soul 标注。
+      // 修复：并回标注所需四字段（与 embedding 通道 vectorResultToFormatable 对齐）。
+      const kwSoul = r.soul as { occurred_at?: string; certainty?: string; valence?: number; significance?: number } | undefined;
       mergedMap.set(id, {
         rrfScore,
         certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
         validEnd: (r.soul as { valid_end?: string } | undefined)?.valid_end,
         valence: (r.soul as { valence?: number } | undefined)?.valence,
         arousal: (r.soul as { arousal?: number } | undefined)?.arousal,
-        formatable: recordToFormatable(r.record),
+        formatable: {
+          ...recordToFormatable(r.record),
+          ...(kwSoul ? {
+            occurred_at: kwSoul.occurred_at || undefined,
+            certainty: kwSoul.certainty || undefined,
+            valence: kwSoul.valence,
+            significance: kwSoul.significance,
+          } : {}),
+        },
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
         signal,
         mult,
