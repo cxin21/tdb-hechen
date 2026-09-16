@@ -907,14 +907,22 @@ export function createL2Runner(opts: {
       // 只增不重写：增量蒸馏语义下 scene block 是累积蒸馏，边记录"曾贡献"，失效传播
       // 沿 getLinksByTarget 反查。同 (block,record) 幂等（addLink ON CONFLICT 更新）。
       if (vectorStore?.addLink) {
+        // P4a-P2 对抗性审查修正：sqlite（无 pullProfiles）下进程基线恒空，
+        // changedProfiles 每轮上报全部块——建边若直接采用会退化为近似完全二部图，
+        // 失效传播精确定位被稀释。权威变更集 = extractor 自身正文 diff
+        // （changedSceneFiles：created + content-updated）；仅 META 变化不建边。
+        const changedSet = new Set(extractResult.changedSceneFiles ?? []);
+        const edgeProfiles = extractResult.changedSceneFiles
+          ? changedProfiles.filter((p) => changedSet.has(p.filename))
+          : changedProfiles;
         let derivedEdges = 0;
-        for (const profile of changedProfiles) {
+        for (const profile of edgeProfiles) {
           for (const r of activeGroupRecords) {
             if (vectorStore.addLink(profile.id, r.id, "derived_from", 1) === true) derivedEdges++;
           }
         }
         if (derivedEdges > 0) {
-          logger.debug?.(`${TAG} [L2] derived_from edges: ${derivedEdges} (${changedProfiles.length} block(s) ← ${activeGroupRecords.length} record(s), scope=${groupScope})`);
+          logger.debug?.(`${TAG} [L2] derived_from edges: ${derivedEdges} (${edgeProfiles.length}/${changedProfiles.length} block(s) ← ${activeGroupRecords.length} record(s), scope=${groupScope})`);
         }
       }
       const l2Identity = buildGenerationLogIdentity("l2", l2FinishedAt, changedProfiles[0]?.id);

@@ -47,6 +47,11 @@ A1-A7（召回质量+隔离+capture 租户+coreRefs 三层验证）、B1-B4（fa
 >   自动重建会静默丢掉建边前贡献——精确失效传播本步交付"沿边定位 + `[P4a-P2]` 宣告"，
 >   重蒸馏等边覆盖成熟（P4a Phase 2）。
 > - 验证：tsc 244 持平；新增 5 测试全绿；既有失败集与 stash 基线逐位一致（零回归）。
+> - **全流程验证轮修正（2026-09-16 下午）**：对抗性审查发现 sqlite（无 pullProfiles）下
+>   进程内 profileBaseline 恒空 → changedProfiles 每轮过度上报全部块；建边改为按
+>   extractor 权威变更集 `changedSceneFiles`（正文 diff）过滤（scene-extractor.ts +
+>   pipeline-factory.ts）。flowtest 租户全流程实测：7 输入 × 1 变更块 = 7 边精确连接；
+>   显式失效 2 条探针记忆，12 组召回中失效记录全部正确排除（excludeInvalidated 实证）。
 
 ---
 

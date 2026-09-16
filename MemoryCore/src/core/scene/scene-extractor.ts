@@ -46,6 +46,13 @@ export interface ExtractionResult {
   error?: string;
   /** True if LLM ran but produced no file changes (scene_index unchanged). */
   emptyExtraction?: boolean;
+  /**
+   * P4a-P2（层级边，对抗性审查修正）：本次提取实际产生正文变更的场景文件名
+   * （created + content-updated，仅 META 变化不算）。权威变更集——pipeline 侧
+   * changedProfiles 在 sqlite（无 pullProfiles）下基线恒空，每轮过度上报全部块，
+   * 不能作为建边依据。
+   */
+  changedSceneFiles?: string[];
 }
 
 export interface SceneExtractorOptions {
@@ -453,15 +460,14 @@ export class SceneExtractor {
     const totalMs = Date.now() - extractStartMs;
     this.logger?.info(`${TAG} extract() completed: ${memories.length} memories processed in ${totalMs}ms`);
 
-    // ── l2_extraction metric ──
-    if (this.instanceId && this.logger) {
-      // Read updated scene index to report final state + diff against pre-extract snapshot
-      let resultScenes: Array<{ title: string; summary: string; content: string; status: "created" | "updated" }> = [];
-      let scenesCreated = 0;
-      let scenesUpdated = 0;
-      let scenesDeleted = 0;
-      try {
-        const finalIndex = await readSceneIndex(this.dataDir, this.storage);
+    // ── 变更集 diff（无条件计算——P4a-P2 层级边需要权威"本次实际变更"集，
+    //    不依赖 pipeline 侧基线；metrics 沿用同一份结果）──
+    let resultScenes: Array<{ title: string; summary: string; content: string; status: "created" | "updated" }> = [];
+    let scenesCreated = 0;
+    let scenesUpdated = 0;
+    let scenesDeleted = 0;
+    try {
+      const finalIndex = await readSceneIndex(this.dataDir, this.storage);
         const postFilenames = new Set<string>();
         for (const e of finalIndex) {
           postFilenames.add(e.filename);
@@ -513,8 +519,10 @@ export class SceneExtractor {
             scenesDeleted++;
           }
         }
-      } catch { /* non-fatal */ }
+    } catch { /* non-fatal */ }
 
+    // ── l2_extraction metric ──
+    if (this.instanceId && this.logger) {
       report("l2_extraction", {
         inputMemoryCount: memories.length,
         resultSceneCount: resultScenes.length,
@@ -554,7 +562,12 @@ export class SceneExtractor {
       this.logger?.warn(`${TAG} extract() empty extraction detected: LLM produced no file changes`);
     }
 
-    return { memoriesProcessed: memories.length, success: true, emptyExtraction };
+    return {
+      memoriesProcessed: memories.length,
+      success: true,
+      emptyExtraction,
+      changedSceneFiles: resultScenes.map((s) => `${s.title}.md`),
+    };
   }
 
   /**

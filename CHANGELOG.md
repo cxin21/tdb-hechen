@@ -30,6 +30,27 @@
 - 测试：`l1-links-derived-from.test.ts` 5 例（建边反查/对偶/type 隔离/幂等/失效
   定位）；tsc 244 持平；既有测试失败集与 stash 前基线逐位一致（零回归）。
 
+### 🔬 P4a-P2 全流程验证修正：权威变更集 + 参数实证（2026-09-16 验证轮）
+
+- **建边过度上报修正（对抗性审查发现）**：sqlite（无 pullProfiles）下 L2 进程内
+  profileBaseline 恒空 → changedProfiles 每轮上报全部 scene block，建边若直接采用会
+  退化为近似完全二部图，失效传播精确定位被稀释。修正：SceneExtractor 的正文 diff
+  （created + content-updated，仅 META 变化不算）提升为无条件计算并随 ExtractionResult
+  以 `changedSceneFiles` 返回；建边据此过滤。生产实测：flowtest 租户 7 条输入 × 1 个
+  实际变更块 = 7 条边，精确连接。
+- **llm.maxTokens 参数实证调整**：config-override.json 4096 → 0（解除限制）——真实数据
+  实测 9 消息批次 `LLM empty response (finishReason=length, completionTokens=4096)`，
+  推理模型 thinking 耗尽输出预算（交接避坑清单已知坑的产线复现）。调整后提取正常。
+- **运维发现（登记）**：tdai-core 产线 DEBUG 级刷屏触发 journald 限流
+  （`Suppressed 41132 messages`/30s 窗口）——日志诊断不可靠，建议产线提升日志级别；
+  `MemoryCore/D:/tdai-data/`（历史 Windows 路径误配产物，空库 0 行）建议清理。
+- **全流程实测（flowtest 独立租户，零污染产线）**：12 条真实消息注入 → L1 提取 7 条
+  （提取判据"主体必须为用户/AI"实测确认，通用世界知识不提取——设计如此）→ L2 蒸馏
+  生成 scene block + derived_from 精确建边 → 显式失效 2 条探针记忆（valid_end 落库 +
+  沿边定位逻辑隔离实测通过 `[P4a-P2] invalidation … → 1 scene block(s) affected`）→
+  12 组召回查询：5 组精确命中、2 组失效记录正确排除（excludeInvalidated 实证）。
+  多租户身份自发现隔离实证：flowtest identity v1 独立落槽，kfyn v4 / l5ug v3 零污染。
+
 ### 🛡️ 身份采纳门第二轮：结构校验替代枚举（REG-REMAINING-002 #2，2026-09-16）
 
 - **枚举 → 结构双道**：第一轮枚举剥离（（当前…）/（截至…）/已全部落地/进入观察期）
