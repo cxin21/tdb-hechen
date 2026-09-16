@@ -1,0 +1,16 @@
+{
+  "mode": "pilot（试跑——不部署 yaml）",
+  "trainedAt": "2026-09-16T00:35:37.482Z",
+  "samples": 54,
+  "accuracy": "47/54",
+  "coefficients": {
+    "intercept": -2.0921,
+    "rrfScore": -1.6259,
+    "recencyDays": 0.1042,
+    "significance": -0.8583,
+    "certainty": 0.8543,
+    "valence": 0.9474,
+    "arousal": -0.6881
+  },
+  "note": "产线替换条件：标注 ≥300 且人工复核拟合合理性（REG-REMAINING-001 D2）"
+}
