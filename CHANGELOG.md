@@ -11,6 +11,17 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 📋 剩余工作 v4（REG-REMAINING-004）——验证轮后重排 + 新增提取覆盖性项
+
+- **取代 v3 待办部分**。结构：8 项真正待办（新增 #5 提取覆盖性与批次/重试实证、恢复继承项 D7
+  recordIds 索引、#7 门静默 debug 化）+ 相对 v3 的增量不做/已关闭判定 + 配置审计新增
+  **接线连通性**维度（anchorDiscovery 假阳性教训制度化）。
+- **关键新证据**：session-e 的 m11/m12 因窗口截断（`l1-extractor.ts:190` slice(-10)）未被提取且无后续
+  批次——月食记忆缺失使时间旅行用例改用既有记忆；待办 #5 要求插桩实证游标是否保证尾段最终消费。
+- **关闭两项**：溯源 best-effort warn 补加（`best-effort.ts:13/:23` 已有 warn，v3 前提双重推翻）、
+  提取 prompt 判据修改（#3 实证判据无恙）。
+- 文档：`docs/superpowers/plans/2026-09-16-remaining-work-v4.md`。
+
 ### 🔌 anchorDiscovery 配置接线修复 + SOP 验证轮实证（REG-REMAINING-003 验证轮，2026-09-16）
 
 - **验证轮重大发现（12 项配置审计的对抗性复核 + 完整流程测试）**：`anchorDiscovery` yaml 段**从未生效**——
