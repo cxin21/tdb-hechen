@@ -664,6 +664,9 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   invalidateL1?(id: string, validEndIso: string): MaybePromise<boolean>;
   /** P2-T14（G2）：可选租户 filter——缺省 undefined=旧行为；传入时两步过滤（rowMatchesIsolation 复核）。 */
   getNeighbors?(id: string, types?: string[], maxHop?: number, filter?: IsolationFilter): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }>>;
+  /** P4a-P2（层级边，REG-REMAINING-002 #1）：沿边反查（target←sources）/正查（source→targets）；可选 type 过滤。derived_from 边 source=L2 scene block（profile:v1:* 稳定租户唯一）、target=L1 record。可选方法——旧后端可不实现，调用方 feature-detect。 */
+  getLinksByTarget?(targetId: string, type?: string): MaybePromise<Array<{ sourceId: string; type: string; strength: number; createdAt: string }>>;
+  getLinksBySource?(sourceId: string, type?: string): MaybePromise<Array<{ targetId: string; type: string; strength: number; createdAt: string }>>;
   /**
    * C6（graph 设计 §4 / spec §6.4 #1）：两节点间 BFS 最短路径；不可达返回 null，
    * 起点即终点返回 []。可选租户 filter（T14 同形：新图接口第一天即带 isolation）。

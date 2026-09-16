@@ -1741,6 +1741,44 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * 记忆图：沿边反查（G）。返回指向 targetId 的边（谁指向它）；可选 type 过滤。
+   * P4a-P2（层级边，REG-REMAINING-002 #1）：derived_from 边 source=L2 scene block
+   * （profile:v1:* 稳定 id，租户唯一）、target=L1 record——失效一条 L1 时由此定位
+   * 受影响 scene block（精确失效传播的查询基础）。
+   */
+  getLinksByTarget(targetId: string, type?: string): Array<{ sourceId: string; type: string; strength: number; createdAt: string }> {
+    try {
+      const rows = (
+        type
+          ? this.db.prepare("SELECT source_id, type, strength, created_at FROM l1_links WHERE target_id = ? AND type = ? ORDER BY created_at").all(targetId, type)
+          : this.db.prepare("SELECT source_id, type, strength, created_at FROM l1_links WHERE target_id = ? ORDER BY created_at").all(targetId)
+      ) as Array<{ source_id: string; type: string; strength: number; created_at: string }>;
+      return rows.map((r) => ({ sourceId: r.source_id, type: r.type, strength: r.strength, createdAt: r.created_at }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [l1_links] getLinksByTarget failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
+   * 记忆图：沿边正查（G）。返回 sourceId 发出的边（它指向谁）；可选 type 过滤。
+   * 与 getLinksByTarget 对偶——L2 侧身世查询："这个 scene block 由哪些 L1 蒸馏而来"。
+   */
+  getLinksBySource(sourceId: string, type?: string): Array<{ targetId: string; type: string; strength: number; createdAt: string }> {
+    try {
+      const rows = (
+        type
+          ? this.db.prepare("SELECT target_id, type, strength, created_at FROM l1_links WHERE source_id = ? AND type = ? ORDER BY created_at").all(sourceId, type)
+          : this.db.prepare("SELECT target_id, type, strength, created_at FROM l1_links WHERE source_id = ? ORDER BY created_at").all(sourceId)
+      ) as Array<{ target_id: string; type: string; strength: number; created_at: string }>;
+      return rows.map((r) => ({ targetId: r.target_id, type: r.type, strength: r.strength, createdAt: r.created_at }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [l1_links] getLinksBySource failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
    * 记忆图：两节点间最短路径查询（C6，graph 设计 §4 / spec §6.4 #1）。BFS
    * （复用 getNeighbors 的 seen/frontier 双向边扩展 + 父指针回溯），返回起点→终点
    * 路径上的中间+终点节点 [{id,type,strength,hop}]（不含起点，hop 从 1 计）；
@@ -3463,6 +3501,18 @@ export class VectorStore implements IMemoryStore {
       this.db.prepare(
         "UPDATE l1_fts SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
       ).run(validEndIso, id);
+      // P4a-P2（层级边，REG-REMAINING-002 #1）：失效沿 derived_from 边定位受影响
+      // scene block 并宣告（精确失效传播的定位步）。逐块自动重蒸馏按分析文档分期：
+      // 存量块无溯源日志可回填输入史，自动重建会静默丢掉建边前的贡献——等边覆盖
+      // 成熟后启用（P4a Phase 2），本步只做 O(边数) 定位 + 日志，不影响失效回写。
+      try {
+        const affected = this.getLinksByTarget(id, "derived_from");
+        if (affected.length > 0) {
+          this.logger?.info?.(
+            `${TAG} [P4a-P2] invalidation ${id} → ${affected.length} scene block(s) affected: ${affected.map((a) => a.sourceId).join(", ")}`,
+          );
+        }
+      } catch { /* 定位失败不影响失效回写 */ }
       return true;
     } catch (err) {
       this.logger?.warn?.(`${TAG} [invalidation] invalidateL1 failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);

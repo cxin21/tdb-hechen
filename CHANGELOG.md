@@ -11,6 +11,25 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔗 P4a-P2 层级边：derived_from 跨层关联（REG-REMAINING-002 #1，2026-09-16）
+
+- **L2→L1 派生边落库**：L2 场景提取完成时，按 `changedProfiles × 本次蒸馏输入记录`
+  写 `l1_links` 新边类型 `derived_from`（source=L2 scene block 的 `profile:v1:*` 稳定
+  id，租户唯一；target=L1 record_id）。边只增不重写——增量蒸馏语义下 scene block 是
+  累积蒸馏，边记录"曾贡献"；同 (block,record) 幂等（addLink ON CONFLICT）。
+- **沿边反查接口**：`getLinksByTarget(id, type?)` / `getLinksBySource(id, type?)`
+  （sqlite 实现 + IMemoryStore 可选声明，旧后端 feature-detect）——失效传播定位与
+  scene block 身世查询（"这段 persona 由哪些记忆塑造"）的数据基础。
+- **失效传播定位步**：`invalidateL1` 成功后沿 `derived_from` 边定位受影响 scene
+  block 并 `[P4a-P2]` 日志宣告。**逐块自动重蒸馏暂缓**（P4a Phase 2）：生产无溯源
+  日志存量（generation-logs 实测 0 份），建边前贡献不可回填，自动重建会静默丢失——
+  等边覆盖成熟后启用。
+- **P4a-2 混合窗口缺口修正**（对抗性审查发现）：失效排除此前只挡"全失效早退"，
+  混合窗口（失效+活跃并存）时失效记录仍混入提取 prompt，scene_blocks 会重新吸收
+  已失效内容。现按组过滤蒸馏输入；cursor 仍取全窗口，失效 bump 不造成重查询循环。
+- 测试：`l1-links-derived-from.test.ts` 5 例（建边反查/对偶/type 隔离/幂等/失效
+  定位）；tsc 244 持平；既有测试失败集与 stash 前基线逐位一致（零回归）。
+
 ### 💗 P3 情感维度激活（GROW-EVO Phase 3，2026-09-15）
 
 - **arousal 遗忘调制（§3.1 闪光灯记忆）**：`effectiveλ = λ×(1-k×arousal)`——高唤醒记忆

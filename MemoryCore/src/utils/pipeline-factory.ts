@@ -734,7 +734,7 @@ export function createL2Runner(opts: {
       return;
     }
 
-    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string }>;
+    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string; valid_end?: string }>;
 
     if (vectorStore && !vectorStore.isDegraded()) {
       const { queryMemoryRecords } = await import("../core/record/l1-reader.js");
@@ -773,6 +773,7 @@ export function createL2Runner(opts: {
         agentId: r.agentId,
         sessionId: r.sessionId,
         taskId: r.taskId,
+        valid_end: r.valid_end,
       }));
     } else {
       throw new Error(`${TAG} [L2] VectorStore unavailable — cannot read L1 memories for scene extraction (session=${sessionKey})`);
@@ -831,7 +832,16 @@ export function createL2Runner(opts: {
         traceContext: { teamId: ctx.teamId, userId: ctx.userId, agentId: ctx.agentId, sessionId: ctx.sessionId },
       });
 
-      const memories = groupRecords.map((r) => ({
+      // P4a-2 修正（REG-REMAINING-002 #1 审查发现）：失效排除此前只挡"全失效早退"，
+      // 混合窗口（失效+活跃并存）时失效记录仍混入提取 prompt——scene_blocks 会重新
+      // 吸收已失效内容。此处按组过滤，对齐上方注释块自述语义；cursor 仍取全窗口
+      // （失效记录 bump 推进游标，不会造成重查询循环）。
+      const activeGroupRecords = groupRecords.filter((r) => !r.valid_end);
+      if (activeGroupRecords.length === 0) {
+        logger.debug?.(`${TAG} [L2] Group all-invalidated (scope=${groupScope}), skipping extraction`);
+        continue;
+      }
+      const memories = activeGroupRecords.map((r) => ({
         content: r.content,
         created_at: r.created_at,
         id: r.id,
@@ -890,6 +900,22 @@ export function createL2Runner(opts: {
         await checkpoint.incrementScenesProcessed();
         processedTotal += extractResult.memoriesProcessed;
         continue;
+      }
+
+      // P4a-P2（层级边，REG-REMAINING-002 #1）：derived_from —— scene block → 本次
+      // 蒸馏输入的 L1 记录。source 用 profile.id（profile:v1:* 稳定、租户唯一）；边
+      // 只增不重写：增量蒸馏语义下 scene block 是累积蒸馏，边记录"曾贡献"，失效传播
+      // 沿 getLinksByTarget 反查。同 (block,record) 幂等（addLink ON CONFLICT 更新）。
+      if (vectorStore?.addLink) {
+        let derivedEdges = 0;
+        for (const profile of changedProfiles) {
+          for (const r of activeGroupRecords) {
+            if (vectorStore.addLink(profile.id, r.id, "derived_from", 1) === true) derivedEdges++;
+          }
+        }
+        if (derivedEdges > 0) {
+          logger.debug?.(`${TAG} [L2] derived_from edges: ${derivedEdges} (${changedProfiles.length} block(s) ← ${activeGroupRecords.length} record(s), scope=${groupScope})`);
+        }
       }
       const l2Identity = buildGenerationLogIdentity("l2", l2FinishedAt, changedProfiles[0]?.id);
       const l2Provenance = buildGenerationProvenance(l2Identity, l2PromptRef);
