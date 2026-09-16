@@ -294,8 +294,12 @@ function applyCoreRefTiebreak(
     if (sb[0] !== sa[0]) return sb[0] - sa[0]; // priority 降序
     if (sb[1] !== sa[1]) return sb[1] - sa[1]; // coreRef 降序
     if (sb[2] !== sa[2]) return sa[2] - sb[2]; // inferred 殿后（升序旗标）
-    return sb[3] - sa[3]; // 结构信号和降序
-    if (sb[4] !== sa[4]) return sb[4] - sa[4]; // GROW-EVO P3 R10：情感显著度降序（weight>0 时）
+    // D5 R10 修复（REG-REMAINING-002 #5 审查发现）：此比较原位于下方无条件 return 之后
+    // ——不可达死代码，工具侧 R10 项从未生效（钩子侧 compareLex 接线正确）。移入链内；
+    // weight=0 时五元组第 5 位恒 0 → 行为逐位不变，A/B 预注册（2026-09-16-r10-ab-design）
+    // 依赖双链可达。
+    if (sb[3] !== sa[3]) return sb[3] - sa[3]; // 结构信号和降序
+    return sb[4] - sa[4]; // GROW-EVO P3 R10：情感显著度降序（weight>0 时）
   });
   return sorted.map((r) => {
     const touches = touchedCoreRefs(r, firedLabels);

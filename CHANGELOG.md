@@ -44,6 +44,21 @@
 - 测试：`identity-gate.test.ts` 7 例（枚举剥离/日期句/阶段编号句/年月形式/干净保留/
   整体拒收/混合叠加）；tsc 244 持平。
 
+### 📋 D5 R10 A/B 预注册（REG-R10-AB-001，2026-09-16）
+
+- **预注册文档入库**：`docs/superpowers/specs/2026-09-16-r10-ab-design.md`——假设
+  （weight=0.3 提升情感查询 P@5，判官 rel≥2 口径）/ A/B 设计（0 vs 0.3，config 层
+  切换 + Lane 2 hermetic 同构，同标注池 + 标注固定法）/ 情感查询集选集规则（≥20 组，
+  queryId 升序不得挑优）/ 终止条件（+5pp 通过 · 连续 3 批无差异终止 · 100 组判负）/
+  判官同源偏差声明（判官与 R10 同源 LLM 打分，主检验标注固定 + 双口径敏感性分析）。
+  判据/样本/终止条件 commit 即冻结——防 p-hacking 纪律，偏离须修订版登记。
+- **R10 工具侧死代码修复**：`memory-search.ts` secondaryOf 第 5 位（情感显著度）比较
+  原位于无条件 `return sb[3]` 之后——不可达，工具侧 R10 项从未生效（钩子侧接线正确）。
+  移入比较链；weight=0 时第 5 位恒 0，行为逐位不变（tsc 244 持平，tools 域 103 测试
+  通过）。此修复为 A/B 双链覆盖前提。
+- 登记修订：计划文档所记 `MEMORY_R10_ABILITY_WEIGHT` 环境变量实测不存在，A/B 切换
+  以 config-override.json 每臂独立 boot 为准。
+
 ### 💗 P3 情感维度激活（GROW-EVO Phase 3，2026-09-15）
 
 - **arousal 遗忘调制（§3.1 闪光灯记忆）**：`effectiveλ = λ×(1-k×arousal)`——高唤醒记忆
