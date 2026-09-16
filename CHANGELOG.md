@@ -11,6 +11,28 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔌 anchorDiscovery 配置接线修复 + SOP 验证轮实证（REG-REMAINING-003 验证轮，2026-09-16）
+
+- **验证轮重大发现（12 项配置审计的对抗性复核 + 完整流程测试）**：`anchorDiscovery` yaml 段**从未生效**——
+  server 把它作为 `startLifecycleScheduler` 的顶层兄弟键传入，而调度器只读 `deps.config.anchorDiscovery`，
+  产线恒跑缺省（24h/5/2）。yaml 内"FLOW-TEST 调参演示（2→3）"等历史观察全部无效；此前配置审计该项 ✓
+  为假阳性。tsc 基线里 `anchorDiscovery does not exist in type` 即本 bug 的影子（修复后 244→243）。
+- **修复**：anchorDiscovery 并入 `config` 对象传入调度器。运行时 debug 实证：
+  `anchorDiscovery={"enabled":true,"minEvidence":3,"maxPerPass":3,"maxTotal":15,"intervalHours":1}`（调参值）正确到达。
+- **链式发现（配置贯通后）**：① runAnchorGrowth 门 1a/1b 静默 `continue` 无任何日志——又一处静默跳过
+  （与待办 #1 同类；本轮临时插桩定位后已移除，gate 原因 debug 化未实施）；② identity-discovery 同链同解——
+  flowtest agent 首次采纳 identity（proposals=8 adopted=1）；③ **价值锚自发现全链路首次在 flowtest 跑通**：
+  新锚"深空"/"每周"（origin=auto）采纳，**采纳路径 valence derive 钩子（946b6d9）在真实数据上生效**——
+  两锚 valence=0（LLM 判定）而非 NULL。
+- **12 组对抗性新数据完整流程测试（session-e，真实入口 /v3/conversation/add + 调参加速流水线）**：
+  提取质量实证——m1+m2 归纳合并、m6+m7 矛盾归纳消解（新旧值同条呈现，无独立旧记录残留；conflict 路径
+  未触发属 LLM 合并判断，非缺陷）、durative valid_start 正确推导（"下个月"→2026-10-01）、纯知识噪声
+  （1344 光年）正确拒提、dedup 将新 persona 与既有天文兴趣合并增强；溯源日志 raw_output/input_refs 实证
+  assistant 帮办 m4/m8 在窗口内未提取 = LLM 竞争方差（与判据无关）。FTS 238/238 同步、vec 双写 0 跳过、
+  溯源日志 668+ 持续落盘、召回注入 5/5（装备事实/反转后主镜在场，噪声不在场，persona/价值锚段在场）、
+  跨 agent 隔离（DB+API 双层）✓、时间旅行召回（既有记忆 time_point）✓。
+- **回归**：tsc 243（-1）、vitest 462/462 全绿；调参（pipeline 5 键 / anchorDiscovery.intervalHours /
+  lifecycle.intervalMs / MEMORY_LOG_LEVEL）全部还原，临时插桩全部移除，四服务稳态（valence 稳态零 LLM）。
 ### 📊 assistant 提取漏损实证 + 探针脚本（REG-REMAINING-003 #3，2026-09-16）
 
 - **观测设计**：新增 `MemoryCore/scripts/extraction-loss-probe.mjs`——对 flowtest session-d 的 12 条消息按

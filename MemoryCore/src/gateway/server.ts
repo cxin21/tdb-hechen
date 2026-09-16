@@ -2151,10 +2151,12 @@ export class TdaiGateway {
           // P2-T14（H-B2）：租户 filter 接线——config 显式解析的 memory.lifecycle.filter
           // （缺省 undefined = 不传 = 兼容单机）。巩固/遗忘读侧按此收窄，
           // 数据级组校验由 grouping 的组内租户一致性检查兜底。
-          config: { ...lifecycle, filter: lifecycle.filter, consolidation: runner ? (lifecycle.consolidation ?? {}) : { enabled: false } } as never,
+          config: { ...lifecycle, filter: lifecycle.filter, consolidation: runner ? (lifecycle.consolidation ?? {}) : { enabled: false },
+            // GROW 接线修复（FLOW-E 实证）：anchorDiscovery 必须并入 config——原作为兄弟键传入，
+            // 调度器只读 deps.config.anchorDiscovery，yaml 段全程死配置（产线恒跑缺省 24h/5/2）。
+            anchorDiscovery: this.config.memory?.coreMemory?.anchorDiscovery } as never,
           // GROW（价值锚自生长）：护栏配置从 memory.coreMemory.anchorDiscovery 接线
           //（解析+clamp+默认在 parseConfig；LLM 缺失时 anchor-growth 内部安静跳过）。
-          anchorDiscovery: this.config.memory?.coreMemory?.anchorDiscovery,
 
           logger: this.logger,
         });
@@ -2193,8 +2195,8 @@ export class TdaiGateway {
     // C2（spec §3.2）：种子灌入后 fire-and-forget 判一次动机方向（生产 6 值首次获得方向）。
     // 放在种子块之外每次启动跑：deriveValueValences 先查 NULL 行——全部已判定时零 LLM
     // 调用直接返回 {0,0}（稳态启动零成本）；首启或存在未判定值时才判一次。
-    // 只判 default 桶（种子写入桶，tenant 缺省语义）；非 default 租户由 values/upsert
-    // 钩子与 /values/derive 显式重判覆盖。LLM 不可用安静跳过（R3：值保持 NULL）。
+    // REG-REMAINING-003 #1（本轮复审修订）：逐租户 derive 覆盖全部租户——原 default 桶语义
+    // 是 NULL 锚永不补值的根因之一；/values/derive 仍为显式重判入口。LLM 不可用安静跳过（R3）。
     try {
       const valenceStore = this.core.getVectorStore?.();
       const valenceRunner = await this.buildValenceLlmRunner();
@@ -2210,8 +2212,13 @@ export class TdaiGateway {
         if (!triplets || triplets.length === 0) {
           this.logger.info?.("[core-memory] valence derive (boot): 全租户无 valence IS NULL 锚，零 LLM 调用");
         }
+        // 顺序链式（与注释一致）：不阻塞 boot，但同刻最多 1 个租户的 LLM 调用在飞（拒并发突发）。
+        // TS：可选方法在闭包内丢失收窄——循环前绑定一次（此处已被 typeof 守卫收窄）。
+        const deriveFn = valenceStore.deriveValueValences.bind(valenceStore);
+        let chain = Promise.resolve();
         for (const t of triplets ?? []) {
-          void Promise.resolve(valenceStore.deriveValueValences(t, valenceRunner))
+          chain = chain
+            .then(() => Promise.resolve(deriveFn(t, valenceRunner)))
             .then((r) => {
               this.logger.info?.(`[core-memory] valence derive (boot): team=${t.teamId} user=${t.userId} agent=${t.agentId} derived=${r?.derived ?? 0} skipped=${r?.skipped ?? 0}`);
             })

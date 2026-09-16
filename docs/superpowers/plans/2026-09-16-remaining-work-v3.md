@@ -192,7 +192,7 @@
 
 ## 第三部分 · 配置项审计结论（2026-09-16 13:30 更新，12/12 全部落地且开启）
 
-anchorDiscovery(5 字段/enabled/minEvidence 3/maxPerPass 3/maxTotal 15/intervalHours 24) ✓ · durativeEnabled: true ✓ · excludeInvalidated: true ✓ · arousalRetention: 0.3 ✓ · emotionSalienceWeight: 0（实验轨红线，A/B 未过不得置正）✓ · enableDedup: true ✓ · creditReport（provider 策略承载，无双重计费路径）✓ · MEMORY_LOG_LEVEL=info（/opt/tdai/etc/env 独立行，/proc/environ 已确认）✓ · lifecycle（consolidation/forgetting/archiveBytes 40960）✓ · FTS（l1_fts/l1_records 218/218 同步 + jieba 分词检索实测）✓ · 向量（vectorCoverage=1.0，vecRows=metaRows=218，embedding ok，bm25 降级路径在位）✓ · 无 seedValues/P4P5 残留 ✓
+anchorDiscovery(5 字段/enabled/minEvidence 3/maxPerPass 3/maxTotal 15/intervalHours 24) ✓【2026-09-16 验证轮修正：yaml 段此前因 server→scheduler 接线断线从未生效（产线恒跑缺省 24h/5/2），已修复并运行时实证贯通——详见 CHANGELOG「anchorDiscovery 配置接线修复」】 · durativeEnabled: true ✓ · excludeInvalidated: true ✓ · arousalRetention: 0.3 ✓ · emotionSalienceWeight: 0（实验轨红线，A/B 未过不得置正）✓ · enableDedup: true ✓ · creditReport（provider 策略承载，无双重计费路径）✓ · MEMORY_LOG_LEVEL=info（/opt/tdai/etc/env 独立行，/proc/environ 已确认）✓ · lifecycle（consolidation/forgetting/archiveBytes 40960）✓ · FTS（l1_fts/l1_records 218/218 同步 + jieba 分词检索实测）✓ · 向量（vectorCoverage=1.0，vecRows=metaRows=218，embedding ok，bm25 降级路径在位）✓ · 无 seedValues/P4P5 残留 ✓
 
 ## 执行时间线
 
@@ -206,3 +206,5 @@ anchorDiscovery(5 字段/enabled/minEvidence 3/maxPerPass 3/maxTotal 15/interval
 | 等 | D5 A/B 执行 | cohort ≥20 | ~50 行 |
 | 等 | 溯源日志落盘修复 → P4a Phase 2 | ✅ 前提修正：落盘一直正常（622/582/10 文件）| 重蒸馏仍等边覆盖成熟 |
 | 择机 | flowtest 探针退役 | D5 A/B 后 | ~30 行 |
+
+> **验证轮补记（2026-09-16 下午，SOP 完整执行）**：三项改动（valence 修复 / A2-R1 / 提取漏损探针）经第一性原理复审 + 12 组新数据完整流程测试 + 配置审计对抗复核。复审修订 1 处（boot 逐租户 derive 由并发改顺序链式）；**新发现并修复 anchorDiscovery 配置接线断线**（yaml 段全程死配置）；12 组测试全项 PASS。详见 CHANGELOG「anchorDiscovery 配置接线修复 + SOP 验证轮实证」。
