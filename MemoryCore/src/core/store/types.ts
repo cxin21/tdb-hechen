@@ -179,6 +179,15 @@ export interface L1RecordRow {
   created_time: string;
   updated_time: string;
   metadata_json: string;
+  /** soul 8 列（P4a：rowToMemoryRecord 的 valid_end 透传所需；SELECT 已带出、类型此前未声明） */
+  occurred_at?: string;
+  valid_start?: string;
+  valid_end?: string;
+  certainty?: string;
+  source?: string;
+  valence?: number;
+  arousal?: number;
+  significance?: number;
 }
 
 // ============================
