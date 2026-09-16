@@ -11,6 +11,21 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔬 GROW-RACE/QUOTA 验证轮（SOP 全流程）+ 停滞告警硬化 + 游标缺口三重实证（2026-09-16 晚）
+
+- **对抗性复审**：① retireValue 缓存失效疑点排除（`sqlite.ts:2620` 已有 invalidateValuesCache，写路径 4/8）；
+  ② 互斥引入的**停滞面**识别并硬化——一次挂起的 LLM 调用（timeoutMs=0）会静默阻塞全部生命周期且 skip 仅
+  debug 不可见：新增连续跳过计数，每 10 次 warn 一次「生命周期停滞告警」，run 完成清零（6 行）。
+- **12 组新数据完整流程测试（session-f，无人机航拍主题族，真实入口）**：API 召回组 8/8（Air 3/4K 60 帧反转值
+  在场、噪声不在场、persona 在场、旧主题不串、时间旅行、跨 agent 隔离、3 锚 valence 非 NULL）；锚机制
+  l5ug 挤出换位守恒（adopted=4 displaced=3，15 不变）+ flowtest 新锚采纳 + 采纳 valence 钩子 4/4 生效；
+  FTS 241/241；derived_from 122；提取质量（矛盾合并 4K30→60、durative、persona 增强）落库 5 条。
+- **重大发现（v4 #5 游标缺口三重实证升级为实锤缺陷）**：① 注入 12 条后重启（调参）→ add 触发的提取调度
+  丢失，13 条全部滞留（40 分钟 0 条 flowtest 提取代）；② 一次 nudge 触发提取 → 溯源 input_refs 实证窗口
+  仅含前 10 条（`l1-extractor.ts:190` slice(-10)），尾段 3 条未进窗口；③ 二次 nudge 后尾段仍无消费——
+  **重启吞调度 + 尾窗截断 + 续批不完整**三环齐实证。修复方案按 v4 #5 设计推进（插桩游标语义后修"尾窗续批"）。
+- **回归**：tsc 243 持平、vitest 465/465（49 文件）；调参（intervalHours/intervalMs/pipeline 5 键）与 kv
+  回拨全部还原；四服务稳态（valence 稳态零 LLM）。
 ### 🛡️ GROW-RACE 互斥 + GROW-QUOTA 名额回归守卫（用户发现超限 → 拍板 A+B，2026-09-16）
 
 - **问题（用户发现）**：l5ug agent 价值锚 18 个（全部 origin=auto、pinned=0）超出 maxTotal=15 三个，

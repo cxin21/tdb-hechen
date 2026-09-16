@@ -36,6 +36,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 // timeoutMs=0 慢调用）+ intervalMs 短 → 多个 run 重叠，各自基于过期快照算采纳名额 free →
 // 超额采纳（实测 l5ug 11→18，maxTotal=15 被击穿）。进程级互斥：上一轮在飞则跳过本轮 tick。
 let runOnceInFlight = false;
+let stallSkips = 0; // 连续跳过计数：≥10 次 warn 一次（互斥引入的停滞面必须可见）
 
 /**
  * P3-T17.5（R5 第四实例源头修复）：queryL1 行 → MemoryRecord 消费形状的映射。
@@ -160,13 +161,15 @@ export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: 
   // GROW-RACE 互斥 tick：上一轮未完成则跳过（debug 可见，不留静默）。
   const tick = (): void => {
     if (runOnceInFlight) {
+      stallSkips++;
       deps.logger?.debug?.("[lifecycle] previous tick still in flight, skipping (GROW-RACE 互斥)");
+      if (stallSkips > 0 && stallSkips % 10 === 0) deps.logger?.warn?.(`[lifecycle] ticks skipped ${stallSkips} consecutively (previous run still in flight) — 生命周期停滞告警`);
       return;
     }
     runOnceInFlight = true;
     void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger })
       .catch(() => {})
-      .finally(() => { runOnceInFlight = false; });
+      .finally(() => { runOnceInFlight = false; stallSkips = 0; });
   };
   void tick();
   timer = setInterval(tick, cfg.intervalMs);
