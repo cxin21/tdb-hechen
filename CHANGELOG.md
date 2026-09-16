@@ -11,6 +11,27 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🛡️ GROW-RACE 互斥 + GROW-QUOTA 名额回归守卫（用户发现超限 → 拍板 A+B，2026-09-16）
+
+- **问题（用户发现）**：l5ug agent 价值锚 18 个（全部 origin=auto、pinned=0）超出 maxTotal=15 三个，
+  且无任何自愈处理。
+- **根因一（GROW-RACE 并发竞态）**：`lifecycle-scheduler.ts` 的 `setInterval(() => void runOnce(...))`
+  不等待上一轮完成；发现 LLM timeoutMs=0 慢调用 + intervalMs 短 → 多个 runAnchorGrowth 重叠，各自基于
+  **pass 开始时的状态快照**计算采纳名额 free → 超额采纳。时间戳实锤：9 秒内三个 run 相继完成
+  （adopted=8/6/3），l5ug 21 秒内三轮发现各采 3（11+7=18）。
+- **根因二（名额无自愈）**：maxTotal 在代码中仅是采纳名额门（anchor-growth.ts 采纳循环的 free 计算），
+  GROW-MAINT 自维护只有证据退场（ev < minEvidence）——存量超限无任何回归路径。
+- **修复 A（互斥）**：scheduler 进程级 `runOnceInFlight` 标志——上一轮在飞则跳过本轮 tick（debug 可见，
+  不留静默）。覆盖 consolidation/forgetting/identity-discovery/anchor-growth 全部生命周期路径。
+- **修复 B（GROW-QUOTA 名额回归守卫）**：GROW-MAINT 增加名额回归——超限（非钉 auto + 全部钉住 >
+  maxTotal）时按强度（weight × 证据）升序 retire 超出部分（可恢复非删除）；manual/钉住豁免（信任边界）。
+  守卫口径：非钉 auto 单列——free 计算的 pinned-auto 双计为保守方向无害，登记不改（改动影响挤出逻辑，
+  另行裁定）。
+- **真实数据回归**：强制维护轮 l5ug 18→15（按强度升序退"第一性原理"1.360/"Cloudflare"1.667/"确定性"
+  2.160，state=retired 可恢复）；全 agent 名额达标（flowtest 2 / kfyn 10 / l5ug 15），活跃锚 valence
+  0 NULL；测试手段（intervalHours/intervalMs 调参、冷却戳与语料基线回拨）已全部还原。
+- **测试**：+3 golden（quota 超限按强度升序退场且 manual/钉住豁免、名额内零触发、互斥 skip 日志断言）——
+  vitest 465/465（49 文件）；tsc 243 持平。
 ### 📋 剩余工作 v4（REG-REMAINING-004）——验证轮后重排 + 新增提取覆盖性项
 
 - **取代 v3 待办部分**。结构：8 项真正待办（新增 #5 提取覆盖性与批次/重试实证、恢复继承项 D7

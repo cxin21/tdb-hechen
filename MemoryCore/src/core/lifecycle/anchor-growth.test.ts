@@ -358,3 +358,44 @@ describe("runAnchorGrowth 自维护与冷却分级（GROW-MAINT）", () => {
     expect(store.upsertValue).toHaveBeenCalledWith("a-grow", "增长主题", suggestAnchorWeight(6, 6), "auto-growth", DEFAULT_TENANT, undefined, "auto");
   });
 });
+
+// ═════════════ GROW-QUOTA 名额回归守卫（REG-REMAINING-004 #9）═════════════
+// 第一性原理：maxTotal = soul-feeling 注入预算保护；存量超限（竞态超采/名额下调遗留）
+// 必须回归名额——GROW-MAINT 只有证据退场，超限无自愈路径。超出部分按强度升序 retire
+//（可恢复）；manual/钉住豁免（信任边界）。名额口径与 free 计算一致：auto 活跃 + 钉住。
+describe('runAnchorGrowth GROW-QUOTA 名额回归守卫', () => {
+  it('存量超限 → 强度升序 retire 超出部分（manual/钉住豁免）', async () => {
+    const anyState = [
+      row('v1', '弱主题甲', { origin: 'auto', created_by: 'auto-growth', weight: 0.3 }),
+      row('v2', '弱主题乙', { origin: 'auto', created_by: 'auto-growth', weight: 0.35 }),
+      row('v3', '弱主题丙', { origin: 'auto', created_by: 'auto-growth', weight: 0.4 }),
+      row('v4', '强主题甲', { origin: 'auto', created_by: 'auto-growth', weight: 0.5 }),
+      row('v5', '强主题乙', { origin: 'auto', created_by: 'auto-growth', weight: 0.55 }),
+      row('vp', '钉住锚', { origin: 'auto', created_by: 'auto-growth', weight: 0.6, pinned: 1 }),
+      row('vm', '手工锚', { origin: 'manual', created_by: 'verify', weight: 0.7 }),
+    ];
+    // 语料：每个 label 恰 1 条命中（ev=1 ≥ minEvidence 1 → 证据退场不触发，隔离名额守卫）
+    const rows = ['弱主题甲', '弱主题乙', '弱主题丙', '强主题甲', '强主题乙', '钉住锚', '手工锚']
+      .map((label, i) => corpusRow('r' + i, '第' + i + '条 关于' + label + '的记忆'));
+    const store = makeStore({ rows, anyState, growthState: { lastDiscoveryAt: '2026-09-01T00:00:00.000Z', lastCorpusCount: 0 } });
+    const runner = makeRunner('[]');
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24 }, logger: LOG, now });
+    expect(res.retired).toBe(3);
+    const retiredIds = (store.retireValue as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(retiredIds).toEqual(['v1', 'v2', 'v3']); // 强度升序 = weight 升序（同证据）
+    expect(retiredIds).not.toContain('vp'); // 钉住豁免
+    expect(retiredIds).not.toContain('vm'); // manual 豁免
+  });
+
+  it('名额内不触发守卫（retireValue 零调用）', async () => {
+    const anyState = [
+      row('v1', '主题甲', { origin: 'auto', created_by: 'auto-growth', weight: 0.4 }),
+      row('v2', '主题乙', { origin: 'auto', created_by: 'auto-growth', weight: 0.5 }),
+    ];
+    const rows = ['主题甲', '主题乙'].map((label, i) => corpusRow('r' + i, '第' + i + '条 关于' + label + '的记忆'));
+    const store = makeStore({ rows, anyState, growthState: { lastDiscoveryAt: '2026-09-01T00:00:00.000Z', lastCorpusCount: 0 } });
+    const runner = makeRunner('[]');
+    await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxTotal: 3, intervalHours: 24 }, logger: LOG, now });
+    expect(store.retireValue).not.toHaveBeenCalled();
+  });
+});

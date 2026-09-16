@@ -159,3 +159,16 @@ anchorDiscovery 5 字段 ✓（**2c76af2 接线修复后运行时实证贯通**�
 | 等 | P4a Phase 2 重蒸馏（#4） | 边覆盖成熟（derived_from 121 积累中） | ~150 行 |
 | 等 | D7 recordIds 索引（#6） | L1 ≥5k 或 P95 劣化 | ~40 行 |
 | 择机 | flowtest 探针退役（#8） | D5 A/B 后 | ~30 行 |
+
+---
+
+## 验证轮二补记（2026-09-16 晚，用户发现锚超限 → 拍板 A+B）
+
+**新增第 9 项并当日完成：GROW-RACE 互斥 + GROW-QUOTA 名额回归守卫 ✅**——用户发现 l5ug 锚 18 个超
+maxTotal=15 且无自愈。根因二重：① scheduler `void runOnce` 无互斥 + 慢 LLM + intervalMs 短 → 重叠 run
+基于过期快照超额采纳（9 秒内三个 run，adopted=8/6/3）；② maxTotal 仅是采纳名额门，GROW-MAINT 只有证据
+退场，存量超限无自愈路径。修复：scheduler 进程级互斥（全生命周期路径覆盖）+ GROW-QUOTA 名额回归守卫
+（非钉 auto + 钉住 > maxTotal → 强度升序 retire，可恢复，manual/钉住豁免）。真实数据回归：l5ug 18→15、
+全 agent 名额达标、valence 0 NULL。+3 golden，vitest 465/465，tsc 243。详见 CHANGELOG
+「GROW-RACE 互斥 + GROW-QUOTA 名额回归守卫」。登记未改：free 计算的 pinned-auto 双计（保守方向无害）。
+本项发现再次印证方法论：**配置/护栏类机制的"存在"必须以不变量的持续满足为准，而非代码路径存在**。

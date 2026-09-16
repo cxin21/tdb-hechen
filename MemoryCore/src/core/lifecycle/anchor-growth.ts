@@ -231,6 +231,7 @@ export async function runAnchorGrowth(deps: {
         // 标签不原地改写（coreRefs/dedup 身份锚点）；主题演化 = 退场 + 新提案以新标签再入。
         let retiredA = 0;
         let reweightedA = 0;
+        let quotaRetiredA = 0; // GROW-QUOTA：名额回归守卫退场数（并入 retired 计数）
         for (const a of anyState0) {
           if (a.state !== "active" || a.origin !== "auto" || a.created_by !== "auto-growth") continue;
           const ev = recountEvidence(a.label, corpus);
@@ -254,6 +255,32 @@ export async function runAnchorGrowth(deps: {
         const anyState = retiredA + reweightedA > 0
           ? (((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
           : anyState0;
+        // ── GROW-QUOTA（名额回归守卫，REG-REMAINING-004 #9）：maxTotal 的第一性目的 =
+        // soul-feeling 注入预算保护——存量超限（并发竞态超采/名额下调遗留）必须回归名额，
+        // 否则注入面失控且永无自愈路径（GROW-MAINT 只有证据退场）。超出部分按强度
+        //（weight × 证据）升序 retire（可恢复非删除）；manual/钉住豁免（信任边界）。
+        // 名额口径与 free 计算一致：限额对象 = origin=auto 活跃锚 + 钉住。
+        const activeNow = anyState.filter((r) => r.state === "active");
+        const pinnedNow = activeNow.filter((r) => r.pinned === 1).length;
+        const autoNow = activeNow.filter((r) => r.origin === "auto" && r.pinned !== 1); // 非钉 auto（钉住单列，避免 free 口径的 pinned-auto 双计）
+        const overLimit = autoNow.length + pinnedNow - cfg.maxTotal;
+        if (overLimit > 0) {
+          const victims = autoNow
+            .filter((r) => r.pinned !== 1 && r.created_by === "auto-growth")
+            .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus) }))
+            .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)))
+            .slice(0, overLimit);
+          for (const v of victims) {
+            const ok = await Promise.resolve(store.retireValue(v.row.value_id, tenant));
+            if (ok) {
+              quotaRetiredA++;
+              logger?.warn?.(`[anchor-growth] quota guard retire: ${v.row.value_id} (${v.row.label}) strength=${v.strength.toFixed(3)} over=${overLimit} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+            } else {
+              logger?.warn?.(`[anchor-growth] quota guard retire failed: ${v.row.value_id} (${v.row.label}) (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+            }
+          }
+        }
+        retired += quotaRetiredA; // GROW-QUOTA 退场并入（守卫块之后汇总）
         const existingLabels = anyState.map((v) => v.label); // 全态清单进 dedup 指令（veto 永不重提）
         const raw = await deps.llmRunner!.run({
           prompt: buildDiscoverPrompt(sampleContents, existingLabels),

@@ -32,6 +32,10 @@ export const DEFAULT_LIFECYCLE_CONFIG: LifecycleConfig = {
 };
 
 let timer: ReturnType<typeof setInterval> | null = null;
+// GROW-RACE（REG-REMAINING-004 #9，FLOW-E 实证）：runOnce 无互斥时，上一轮未完成（LLM
+// timeoutMs=0 慢调用）+ intervalMs 短 → 多个 run 重叠，各自基于过期快照算采纳名额 free →
+// 超额采纳（实测 l5ug 11→18，maxTotal=15 被击穿）。进程级互斥：上一轮在飞则跳过本轮 tick。
+let runOnceInFlight = false;
 
 /**
  * P3-T17.5（R5 第四实例源头修复）：queryL1 行 → MemoryRecord 消费形状的映射。
@@ -153,8 +157,19 @@ export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: 
   const cfg = { ...DEFAULT_LIFECYCLE_CONFIG, ...(deps.config ?? {}) };
   if (!cfg.enabled) return () => {};
   if (timer) clearInterval(timer);
-  void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger }).catch(() => {});
-  timer = setInterval(() => void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger }).catch(() => {}), cfg.intervalMs);
+  // GROW-RACE 互斥 tick：上一轮未完成则跳过（debug 可见，不留静默）。
+  const tick = (): void => {
+    if (runOnceInFlight) {
+      deps.logger?.debug?.("[lifecycle] previous tick still in flight, skipping (GROW-RACE 互斥)");
+      return;
+    }
+    runOnceInFlight = true;
+    void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger })
+      .catch(() => {})
+      .finally(() => { runOnceInFlight = false; });
+  };
+  void tick();
+  timer = setInterval(tick, cfg.intervalMs);
   timer.unref?.();
   return () => { if (timer) { clearInterval(timer); timer = null; } };
 }
