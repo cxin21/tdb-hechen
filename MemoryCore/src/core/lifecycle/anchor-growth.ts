@@ -332,6 +332,25 @@ export async function runAnchorGrowth(deps: {
         firstBlockReason ??= "error";
       }
     }
+    // ── 自维护观测（D8）：系统自计数 + 阈值旗标（P4 门槛 / arousal 漂移）──
+    try {
+      const obs = (store as { getSelfObsStats?: () => { l1: number; conflict: number; evolve: number; similar: number; archived: number; anchors: number } }).getSelfObsStats?.();
+      if (obs) {
+        const prevRaw = (store as { getAnchorGrowthState?: () => unknown }).getAnchorGrowthState?.();
+        const prev = (prevRaw && typeof prevRaw === "object" ? prevRaw : {}) as { obs_archive_total?: number; obs_l1_total?: number };
+        const totalMem = obs.l1 + obs.archived;
+        const archiveRate = totalMem > 0 ? obs.archived / totalMem : 0;
+        const prevTotal = (prev.obs_l1_total ?? 0) + (prev.obs_archive_total ?? 0);
+        const prevRate = prevTotal > 0 ? (prev.obs_archive_total ?? 0) / prevTotal : archiveRate;
+        const drift = prevRate > 0 ? Math.abs(archiveRate - prevRate) / prevRate : 0;
+        const flags: string[] = [];
+        if (obs.conflict >= 5) flags.push(`[P4-GATE] conflict 边 ${obs.conflict} ≥5——P4 观察期门槛到达，evolution-worker 可立项`);
+        if (prevTotal > 0 && drift >= 0.3) flags.push(`[AROUSAL-GATE] 归档率漂移 ${(drift * 100).toFixed(0)}% ≥30%——arousalRetention 建议回 0`);
+        logger?.info?.(`[self-obs] l1=${obs.l1} anchors=${obs.anchors} conflict=${obs.conflict} evolve=${obs.evolve} similar=${obs.similar} archived=${obs.archived} archiveRate=${archiveRate.toFixed(3)} flags=${flags.length > 0 ? flags.join(" | ") : "none"}`);
+      }
+    } catch (err) {
+      logger?.warn?.(`[self-obs] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
     logger?.info?.(`[anchor-growth] ran: agents=${tenants.length} adopted=${adopted} retired=${retired} reweighted=${reweighted} displaced=${displaced} skipped=${skipped}`);
     return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
   } catch (err) {

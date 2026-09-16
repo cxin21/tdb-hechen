@@ -721,6 +721,8 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   /** SOUL：身份自发现状态（identity_* 前缀键族，与锚状态独立） */
   getIdentityDiscoveryState?(tenant?: CoreTenant): MaybePromise<{ lastAttemptAt: string | null; lastCorpusCount: number | null }>;
   setIdentityDiscoveryState?(state: { lastAttemptAt: string; lastCorpusCount: number }, tenant?: CoreTenant): MaybePromise<void>;
+  /** 自维护观测（REG-REMAINING-001 D8）：系统自计数（conflict 边/归档/锚/语料）。 */
+  getSelfObsStats?(): MaybePromise<{ l1: number; conflict: number; evolve: number; similar: number; archived: number; anchors: number }>;
   /** GROW-EVO P2.1（锚↔记忆双向链路）：锚采纳时把 label 回填进支持记录的 metadata.coreRefs（双表同步）。 */
   backfillCoreRef?(recordId: string, label: string, tenant?: CoreTenant): MaybePromise<boolean>
   /**

@@ -2607,6 +2607,23 @@ export class VectorStore implements IMemoryStore {
    * PA：tenant 可选——default/缺省保持旧键（last_discovery_at / last_corpus_count，旧行为
    * 与旧调用形状不变）；非 default 三元组用 per-tenant 独立键（双门基线按 agent 隔离）。
    */
+  /** 自维护观测（D8）：一次查询返回全部自计数（每 tick 一次，成本可忽略）。 */
+  getSelfObsStats(): { l1: number; conflict: number; evolve: number; similar: number; archived: number; anchors: number } {
+    try {
+      const one = (sql: string) => Number(this.db.prepare(sql).get()?.n ?? 0);
+      return {
+        l1: one("SELECT COUNT(*) AS n FROM l1_records"),
+        conflict: one("SELECT COUNT(*) AS n FROM l1_links WHERE type = 'conflict'"),
+        evolve: one("SELECT COUNT(*) AS n FROM l1_links WHERE type = 'evolve'"),
+        similar: one("SELECT COUNT(*) AS n FROM l1_links WHERE type = 'similar'"),
+        archived: one("SELECT COUNT(*) AS n FROM l1_archive"),
+        anchors: one("SELECT COUNT(*) AS n FROM core_values WHERE state = 'active'"),
+      };
+    } catch {
+      return { l1: 0, conflict: 0, evolve: 0, similar: 0, archived: 0, anchors: 0 };
+    }
+  }
+
   /** GROW-EVO P2.1（锚↔记忆双向链路）：coreRefs 回填（读改写 + 双表同步——invalidateL1 教训）。 */
   backfillCoreRef(recordId: string, label: string, tenant?: CoreTenant): boolean {
     try {
