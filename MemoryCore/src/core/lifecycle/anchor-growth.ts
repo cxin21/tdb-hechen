@@ -317,6 +317,20 @@ export async function runAnchorGrowth(deps: {
             else { skipped++; logger?.warn?.(`[anchor-growth] adopt upsert failed: ${c.label}`); }
           }
         }
+        // REG-REMAINING-003 #1：采纳路径 valence 补值钩子——自生长直调 store.upsertValue，
+        // 不经 v2-router values/upsert 钩子（deriveValueValences 只在 API 路径触发），NULL valence
+        // 原地落库后无人补判（boot derive 只兜重启）。本租户有采纳时 fire-and-forget 逐租户 derive
+        //（写回带 valence IS NULL 守卫，与 boot / 用户微调三方幂等，LLM 永不覆盖非 NULL）。
+        if (adoptedThisAgent > 0 && deps.llmRunner && typeof store.deriveValueValences === "function") {
+          const deriveRunner = deps.llmRunner;
+          void Promise.resolve(store.deriveValueValences(tenant, deriveRunner))
+            .then((r) => {
+              logger?.info?.(`[anchor-growth] valence derive (adopt): tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} derived=${r?.derived ?? 0} skipped=${r?.skipped ?? 0}`);
+            })
+            .catch((err) => {
+              logger?.warn?.(`[anchor-growth] valence derive (adopt) failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+            });
+        }
         // ── 消费轮次（per-agent；LLM 成功即持久化该 agent 的基线，0 候选也消费）──
         await writeState({
           lastDiscoveryAt: new Date(nowMs).toISOString(),

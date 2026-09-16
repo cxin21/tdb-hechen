@@ -756,6 +756,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number }): Promise<string> },
   ): MaybePromise<{ derived: number; skipped: number }>;
   /**
+   * REG-REMAINING-003 #1：列出存在 valence IS NULL 活跃锚的租户三元组（boot 逐租户 derive 的输入）。
+   * 可选方法——旧后端缺失时 boot 回退 default 单桶（feature-detect 家族先例）。
+   * 隔离口径：triplet 源与 deriveValueValences 消费过滤同表，消费方按三元组参数回传，无跨租户聚合写。
+   */
+  listNullValenceTenantTriplets?(): MaybePromise<CoreTenant[]>;
+  /**
    * Important-1（C2 复审，apply-after-success）：重置本租户 valence（重判入口专用）。
    * 快照现有非 NULL (value_id, valence) 对并置 NULL，快照由调用方持有；LLM 判定完成后
    * 失败/不可判定行用 restoreValueValences 从快照恢复原值（微调值不永久丢失）。

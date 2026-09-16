@@ -1925,6 +1925,20 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
+  /** REG-REMAINING-003 #1：列出 valence IS NULL 活跃锚的租户三元组。委托伴生库同源实现（缺方法→[]，non-fatal）。 */
+  async listNullValenceTenantTriplets(): Promise<CoreTenant[]> {
+    try {
+      await this._ensureInit();
+      const aux = this._auxReady();
+      if (!aux) return [];
+      const fn = (aux as unknown as { listNullValenceTenantTriplets?: () => CoreTenant[] }).listNullValenceTenantTriplets;
+      if (typeof fn !== "function") return [];
+      return fn.call(aux);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_values] listNullValenceTenantTriplets failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
   async resetValueValences(tenant?: CoreTenant): Promise<Array<{ value_id: string; valence: number }>> {
     try {
       await this._ensureInit();

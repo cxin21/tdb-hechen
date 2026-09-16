@@ -229,3 +229,34 @@ describe("E2 valuesCacheMisses 语义（S7：SQL 异常路径不计数）", () =
     }
   });
 });
+
+// REG-REMAINING-003 #1：listNullValenceTenantTriplets——boot 逐租户 derive 的输入（多用户/多 agent 隔离）。
+describe('REG-REMAINING-003 #1 listNullValenceTenantTriplets', () => {
+  it('只列存在 valence IS NULL 活跃锚的租户；非 NULL 锚租户与其它 agent 不混入', () => {
+    const { store, dir } = makeStore();
+    try {
+      store.upsertValue("v1", "正确性", 0.8, "t1", { teamId: "t1", userId: "u", agentId: "a1" }, 1);
+      store.upsertValue("v2", "安全", 0.5, "t1", { teamId: "t1", userId: "u", agentId: "a2" }, undefined);
+      store.upsertValue("v3", "高效", 0.5, "t2", { teamId: "t2", userId: "u", agentId: "a3" }, undefined);
+      const triplets = store.listNullValenceTenantTriplets()
+        .sort((a, b) => a.teamId.localeCompare(b.teamId) || a.agentId.localeCompare(b.agentId));
+      expect(triplets).toEqual([
+        { teamId: "t1", userId: "u", agentId: "a2" },
+        { teamId: "t2", userId: "u", agentId: "a3" },
+      ]);
+      expect(triplets.some((t) => t.agentId === "a1")).toBe(false);
+    } finally {
+      try { store.close(); fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 无害 */ }
+    }
+  });
+
+  it('全租户无 NULL 锚时返回空数组（boot 稳态零 LLM 前提）', () => {
+    const { store, dir } = makeStore();
+    try {
+      store.upsertValue("v1", "正确性", 0.8, "t1", undefined, 1);
+      expect(store.listNullValenceTenantTriplets()).toEqual([]);
+    } finally {
+      try { store.close(); fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 无害 */ }
+    }
+  });
+});

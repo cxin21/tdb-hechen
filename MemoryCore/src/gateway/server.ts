@@ -2198,10 +2198,32 @@ export class TdaiGateway {
     try {
       const valenceStore = this.core.getVectorStore?.();
       const valenceRunner = await this.buildValenceLlmRunner();
-      if (valenceStore?.deriveValueValences && valenceRunner) {
+      // REG-REMAINING-003 #1：skip 分支带原因日志（原缺口：守卫不满足时完全静默，NULL 锚永远等不到补值）。
+      if (!valenceStore?.deriveValueValences) {
+        this.logger.warn?.("[core-memory] boot valence derive skipped: store 不支持 deriveValueValences");
+      } else if (!valenceRunner) {
+        this.logger.warn?.("[core-memory] boot valence derive skipped: LLM runner 不可用（llm.baseUrl 未配置或构造失败）");
+      } else if (typeof valenceStore.listNullValenceTenantTriplets === "function") {
+        // 多用户/多 agent：逐租户顺序 derive——仅存在 NULL 锚的租户产生 LLM 调用（稳态零成本）；
+        // triplet 源与 deriveValueValences 过滤同表，无跨租户泄漏；写回带 valence IS NULL 守卫，重复触发幂等。
+        const triplets = await Promise.resolve(valenceStore.listNullValenceTenantTriplets());
+        if (!triplets || triplets.length === 0) {
+          this.logger.info?.("[core-memory] valence derive (boot): 全租户无 valence IS NULL 锚，零 LLM 调用");
+        }
+        for (const t of triplets ?? []) {
+          void Promise.resolve(valenceStore.deriveValueValences(t, valenceRunner))
+            .then((r) => {
+              this.logger.info?.(`[core-memory] valence derive (boot): team=${t.teamId} user=${t.userId} agent=${t.agentId} derived=${r?.derived ?? 0} skipped=${r?.skipped ?? 0}`);
+            })
+            .catch((err2: unknown) => {
+              this.logger.warn?.(`[core-memory] boot valence derive failed (team=${t.teamId} agent=${t.agentId}): ` + (err2 instanceof Error ? err2.message : String(err2)));
+            });
+        }
+      } else {
+        // 旧后端回退：default 单桶（旧行为，feature-detect 家族先例）。
         void Promise.resolve(valenceStore.deriveValueValences(undefined, valenceRunner))
           .then((r) => {
-            this.logger.info?.(`[core-memory] valence derive (boot): derived=${r?.derived ?? 0} skipped=${r?.skipped ?? 0}`);
+            this.logger.info?.(`[core-memory] valence derive (boot, legacy default-bucket): derived=${r?.derived ?? 0} skipped=${r?.skipped ?? 0}`);
           })
           .catch((err2: unknown) => {
             this.logger.warn?.("[core-memory] boot valence derive skipped: " + (err2 instanceof Error ? err2.message : String(err2)));

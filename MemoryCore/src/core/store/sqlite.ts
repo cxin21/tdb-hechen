@@ -2787,6 +2787,25 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * REG-REMAINING-003 #1：列出存在 valence IS NULL 活跃锚的租户三元组。
+   * 与 listL1TenantTriplets 同族（degraded → []；SQL COALESCE 归一化空串 → default）；
+   * 仅读：跨租户聚合写不存在——消费方（server boot / anchor-growth）逐三元组回传
+   * deriveValueValences，其 SQL 按同一三元组过滤，无跨租户泄漏。
+   */
+  listNullValenceTenantTriplets(): CoreTenant[] {
+    if (this.degraded) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM core_values WHERE valence IS NULL AND state='active'",
+      ).all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
+      return rows.map((r) => normalizeCoreTenant({ teamId: r.team_id, userId: r.user_id, agentId: r.agent_id }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_values-null-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
    * 重构式回忆（J）：按 id 批量取回 L1 完整记录（含灵魂字段），供邻居扩展组装。
    */
   getL1ByIds(ids: string[]): Array<import("./types.js").L1SearchResult> {

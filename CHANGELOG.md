@@ -11,6 +11,25 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🧭 锚 valence 漂移修复：boot 逐租户 derive + 采纳路径补值钩子（REG-REMAINING-003 #1，2026-09-16）
+
+- **根因（三层实证）**：① DB 探针——15 活跃锚全部位于非 default 租户（team-kcjjqzkxks，kfyn 2 NULL + l5ug 4 NULL）；
+  ② journalctl——每次重启 boot derive 日志都在（`derived=0 skipped=0`），守卫实际满足，交接快照"零 derive 日志"为口径误记；
+  ③ 代码——boot derive 只判 default 桶（`normalizeCoreTenant(undefined)`），非 default 租户锚永不覆盖；且自生长采纳直调
+  `store.upsertValue` 不经 v2-router values/upsert 钩子（derive 只在 API 路径触发），NULL valence 原地落库后无人补判。
+  真缺口 = "default 桶语义 + 采纳路径绕钩子"的双重静默，非守卫失效。
+- **修复**：`IMemoryStore.listNullValenceTenantTriplets?()`（types 可选声明 + sqlite 实现 + tcvdb 伴生库委托，feature-detect
+  家族先例，旧后端回退 default 单桶）；server boot 从"仅 default 桶"改为**逐租户顺序 derive**——仅存在 NULL 锚的租户产生
+  LLM 调用（稳态零成本），triplet 源与 deriveValueValences 过滤同表（无跨租户泄漏），写回带 `valence IS NULL` 守卫（与
+  用户微调/采纳钩子三方幂等，LLM 永不覆盖非 NULL）；每个 skip 分支带原因日志（store 不支持 / LLM runner 不可用 / 无 NULL 锚）；
+  anchor-growth 采纳路径补 fire-and-forget derive 钩子（重启之间也有补值闭环，不再只兜重启）。
+- **多用户/多 agent 对抗性审查**：逐租户顺序 derive（拒并发 LLM 突发）；`/values/derive` 是全租户重判入口（reset→derive→
+  restore），不用于补 NULL——已判值不重掷。
+- **回归（实测）**：重启后 boot 日志 `agent=agt-kfynybx0ly derived=2 skipped=0` / `agent=agt-l5ugn6urg4 derived=2 skipped=2`，
+  二次重启补齐剩余 2（LLM 首轮未给出有效判定，NULL-only 重试幂等收敛）；DB 探针 NULL=0，**15/15 valence 全覆盖**；
+  `/v3/core-memory/read` API 实证 l5ug 11 锚全带方向；soul-feeling 感受段组装覆盖全部锚（valenceDir 消费无 NULL）；
+  tsc 244 持平；全量 vitest 14 例失败与预存量分类清单逐位一致（零回归）；新增 `values-cache` 2 例（多租户隔离/空集稳态）。
+- 注：l5ug `anima`/`judge` 判 0（中性/无法判定——"宁缺毋滥给 0" prompt 约定语义，非故障）。
 ### 🔗 P4a-P2 层级边：derived_from 跨层关联（REG-REMAINING-002 #1，2026-09-16）
 
 - **L2→L1 派生边落库**：L2 场景提取完成时，按 `changedProfiles × 本次蒸馏输入记录`

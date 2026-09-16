@@ -12,6 +12,11 @@
 
 ### 1. 锚 valence 漂移排查与修复（优先级 1 · 现在做）
 
+> **状态（2026-09-16）：✅ 已完成**——根因/修复/回归实测详见 CHANGELOG「锚 valence 漂移修复」。要点修正：boot derive
+> 本在跑但只判 default 桶（快照"零 derive 日志"为口径误记，日志恒 {0,0}）；真因 = 15 锚全在非 default 租户 + 采纳路径
+> 绕过 upsert 钩子的双重静默。修复 = listNullValenceTenantTriplets + boot 逐租户 derive + 采纳钩子 + skip 带原因日志；
+> 回归 15/15 + 全量 vitest 零回归。
+
 **背景**：快照口径"15 活跃锚全部有 valence"；验证轮实测仅 9/15 有值（kfyn 的"配置项""根因"两锚为 NULL，l5ug 侧 4 个 NULL）。
 
 **原因（第一性原理）**：valence 是 soul-feeling 段的输入（"驱动我/提醒我"），NULL 锚等于该价值的情感方向缺失——不是显示问题，是感受组装的功能性缺口。漂移机制：valence **不在锚采纳时决定**（`anchor-growth.ts:18` 注释明示"valence 落 NULL（C2 钩子自动判）"；`:248` 采纳时 `upsertValue(..., a.valence ?? undefined, "auto")` 即 NULL 落库），而是依赖 **C2 boot 时 derive**（`server.ts:2201`：`if (valenceStore?.deriveValueValences && valenceRunner)` → `deriveValueValences(undefined, valenceRunner)`，成功打 `derived=X skipped=Y`，异常才 warn）。**实证缺口：2026-09-16 12:07 重启后 journalctl 无任何 valence derive 日志**——条件不满足时完全静默，NULL 锚永远等不到补值。这是"等人操作/等人发现"型设计缺口：静默失败没有任何宣告。
@@ -181,7 +186,7 @@ anchorDiscovery(5 字段/enabled/minEvidence 3/maxPerPass 3/maxTotal 15/interval
 
 | 优先级 | 项 | 触发 | 量级 |
 |---|---|---|---|
-| **1** | 锚 valence 漂移排查修复 | 现在 | ~40 行 |
+| **1** | 锚 valence 漂移排查修复 | ✅ 已完成（2026-09-16） | ~110 行（含测试） |
 | **2** | 14 例测试口径还债 | 现在 | ~2-4h |
 | **3** | assistant 提取漏损实证 | 现在（观测） | ~80 行 |
 | 等 | D2 产线替换 | 标注 ≥300 | ~100 行 |
