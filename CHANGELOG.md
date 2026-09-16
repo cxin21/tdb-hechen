@@ -11,6 +11,21 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 📋 剩余工作 v5 落盘（REG-REMAINING-005，取代 v4 待办部分；2026-09-16 深夜）
+
+- 按方法论将未完成待办逐项对照真实代码（file:line 按 64dd815 刷新）做第一性原理分析后写入
+  `docs/superpowers/plans/2026-09-16-remaining-work-v5.md`，v4 头部标记取代（留档不删）。
+- **第一部分·真正要做的**：① P4b evolution-worker——**门槛已到（conflict=6，[P4-GATE] 自动宣告），
+  待拍板**；新增硬要求 = 合并/失效边界 golden（session-h CMAS→PADI 归并叙事 fixture，防 P4b 推翻
+  extractor 合并决定）+ evolution.enabled config-first 缺省关；② D2 产线替换——标注 142/300
+  （tdai-judge.timer 实证每日 04:00，预计 09-18/19），rerankWeights 为改值非新增键（yaml:99）。
+- **等门槛**：D5 R10 A/B、P4a Phase 2 重蒸馏（溯源 ROOT 实盘实证）、D7 recordIds（:3723）。
+- **择机**：flowtest 退役；maxPerPass 工作点定格（3 采纳节奏正常，待拍板，1 行）。
+- **不做/关闭增量**：extractor 窗口全量消费（续批已收敛）、运行时 persister（游标治理更优）、
+  executor 去重整体移除（窄豁免已达目的）。
+- 观察登记 O1-O6（新增 O5 遗忘×P2a 语义对抗修复留档 + 复发监测点、O6 flowtest 归档率高位）；
+  配置审计全绿含 rerankWeights 表述修正。
+
 ### 🔬 修复后全量验证轮（SOP 四步）——对抗性审查实锤并修复两缺陷：遗忘年龄语义 + boot recovery 边界（2026-09-16 深夜）
 
 - **① 复审**：c35a3e6 双修复 7 项红队候选全核销（TimerScanner legacy 解析、L2 级联隔离、双定时器
