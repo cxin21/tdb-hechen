@@ -100,7 +100,7 @@ metadata 字段说明：
 > **灵魂字段语义**：occurred_at（发生时刻 ISO8601，对话有时间就填）、certainty（observed 客观 / inferred 推断，推断不许冒充 observed）、valence（情感色调 -1..1）、arousal（强度 0..1）、significance（重要程度 0..1）、durative（是否持续状态——见下方判定指令）。
 - 其他类型或无法确定时间：occurred_at 可为空字符串，但 certainty/valence/arousal/significance 仍必填。
 - durative 判定（GROW-EVO P2）：该记忆是"持续状态"（如"服务部署在 X"、"用户使用 Y 仓库"——一段时间内保持为真）还是"一次性事件"。持续状态输出 "durative": true 且填 "valid_start"（= occurred_at）；一次性事件输出 "durative": false、不填 valid_start。判定不了给 false（宁缺毋滥）。
-- coreRefs（A8，价值锚引用——**仅当用户提示给出候选清单时输出**）：该记忆明显触动的价值锚 label 数组，只能从候选清单中选（禁止编造清单外的值）；无明显触动给 [] 或省略（宁缺毋滥）。清单为空时不要输出 coreRefs 字段。
+- coreRefs（A8，价值锚引用——**仅当用户提示给出候选清单时输出**）：该记忆明显触动的价值锚 label 数组，只能从候选清单中选（禁止编造清单外的值）。**显著性门槛**：仅当记忆内容本身在讨论该价值的践行/违背时才标注；同一项目/流程的泛化上下文（如提及回归测试但不涉及价值本身）**不标注**。无明显触动给 [] 或省略（宁缺毋滥）。清单为空时不要输出 coreRefs 字段。
 
 如果整段对话无有意义的记忆，也要输出情境分割结果，memories 为空数组：
 [
