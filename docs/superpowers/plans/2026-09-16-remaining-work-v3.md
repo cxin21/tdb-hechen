@@ -66,6 +66,9 @@
 
 ### 3. assistant 消息提取漏损实证（优先级 3 · 现在做，先观测后决定）
 
+> **状态（2026-09-16）：✅ 观测完成，判定为随机漏损**——assistant 3 条 2/3 命中（判据不排斥 assistant），
+> run2 精确复现生产 7/10 丢失集；按决策树走"批次大小/重试策略评估"而非修 prompt。基线与探针用法见
+> CHANGELOG「assistant 提取漏损实证」；探针：`MemoryCore/scripts/extraction-loss-probe.mjs`。
 **背景**：flowtest session-d 注入 12 条（3 条 assistant"我帮用户…"+ 9 条 user），L1 仅提取 7 条；未提取的 5 条中 3 条是 assistant 消息（咖啡参数表/马拉松复盘/观鸟清单）+ 2 条 user（颈椎操/茶馆随笔）。
 
 **原因（第一性原理）**：提取判据（`src/core/prompts/l1-extraction.ts:34`）"提取主体必须以'用户（姓名）'或'AI'为核心"——assistant 消息主体恰是 AI，**不满足排除条件**，理论上应可提取。所以漏损不是判据排斥，而是：LLM 批次抽取的随机性 / 10 消息大批次下的归纳合并丢失 / "宁缺毋滥"倾向。漏损率若无量化，L1 完整性就是黑盒——记忆系统的"记全"是第一性承诺。
@@ -138,6 +141,11 @@
 
 ### 7. P4a Phase 2 逐块重蒸馏（等边覆盖成熟；前置 = 修溯源日志落盘缺口）
 
+> **前提修正（2026-09-16 实证）**：溯源日志**一直在正常落盘**——
+> `/data/tdai-memory/instances/default/memory-generation-logs/` 实测 layer=l1 622 / l2 582 / l3 10 个文件
+> （自当日 06 时起每小时持续新增，schema 完整含 input_refs）。v3 原"0 文件、best-effort 静默吞错"的
+> 观察不成立（疑为观察时点/路径错误）。前置缺口 ① 不存在；best-effort 失败可见性 warn 降级为可选加固
+> （无失败实证，暂不实施）；缺口 ②（建边前存量块输入史不可回填）维持——重蒸馏仍等边覆盖成熟。
 **背景**：层级边（derived_from）+ 沿边定位已闭环（`[P4a-P2]` 产线可见，84 条）。精确传播的最后一环"失效 → 受影响块 → 逐块重蒸馏（剔除失效内容）"按设计暂缓。
 
 **原因（第一性原理）**：重蒸馏 = 用块的 derived_from 输入集（排除失效者）重建该块。两个前置缺口：① **溯源日志落盘为 0**——`MemoryGenerationLogStore` ROOT=`memory-generation-logs/v1`（store.ts:14），生产实际目录 `/data/tdai-memory/instances/default/memory-generation-logs/` **存在但 0 文件**（`writeGenerationProvenanceBestEffort` 静默失败，失败原因不可见）；② **存量块输入史不可回填**——建边（2026-09-16）前蒸馏的块没有边，自动重建会静默丢掉历史贡献。无 ① 则新块的边覆盖也不可信（无法审计"边是否完整"），无 ② 则重建必错——两者都满足前启用重建是错误的。
@@ -192,9 +200,9 @@ anchorDiscovery(5 字段/enabled/minEvidence 3/maxPerPass 3/maxTotal 15/interval
 |---|---|---|---|
 | **1** | 锚 valence 漂移排查修复 | ✅ 已完成（2026-09-16） | ~110 行（含测试） |
 | **2** | 14 例测试口径还债 | ✅ 已完成（2026-09-16，462/462 全绿） | 实际 ~3h + A2-R1 产品修复 |
-| **3** | assistant 提取漏损实证 | 现在（观测） | ~80 行 |
+| **3** | assistant 提取漏损实证 | ✅ 观测完成（判定：随机漏损，不修 prompt） | ~110 行探针 |
 | 等 | D2 产线替换 | 标注 ≥300 | ~100 行 |
 | 等 | P4b evolution-worker | conflict ≥5 | ~150 行 |
 | 等 | D5 A/B 执行 | cohort ≥20 | ~50 行 |
-| 等 | 溯源日志落盘修复 → P4a Phase 2 | 现在修落盘 / 重蒸馏等覆盖 | ~30 + ~150 行 |
+| 等 | 溯源日志落盘修复 → P4a Phase 2 | ✅ 前提修正：落盘一直正常（622/582/10 文件）| 重蒸馏仍等边覆盖成熟 |
 | 择机 | flowtest 探针退役 | D5 A/B 后 | ~30 行 |

@@ -11,6 +11,23 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 📊 assistant 提取漏损实证 + 探针脚本（REG-REMAINING-003 #3，2026-09-16）
+
+- **观测设计**：新增 `MemoryCore/scripts/extraction-loss-probe.mjs`——对 flowtest session-d 的 12 条消息按
+  生产平价（maxMessagesPerExtraction=10、maxMemoriesPerSession=20、enableDedup、同 LLM 同判据）重复 N 次
+  完整提取，逐消息统计命中率；隔离写入临时 baseDir（records JSONL），不触碰生产存储。
+- **基线（runs=3，内容锚判定）**：生产观测的"漏损重灾区"assistant 3 条（咖啡/马拉松/观鸟）在本实验
+  **2/3 命中**——提取判据不排斥 assistant 主体；生产中已提取的书法/多肉反而 0/3；run2 精确复现生产的
+  7/10（丢的正是生产丢失的 3 条 assistant 消息）。轮次间丢失集合不同、与生产观测互斥 → **判定：随机
+  （竞争性）漏损，非系统性排除**。无跨消息合并（dedup 非漏损源）。
+- **机制补充**：单次 extractL1Memories 只取 10 条窗口，其余降为 background（上下文非提取目标）；
+  批次内 LLM 对"值得记"存在竞争方差。窗口头部两条（书法/多肉）0/3 存在"批次头部弱势"嫌疑，
+  样本不足不下结论。
+- **判定与后续**：按 v3 决策树走"随机 → 评估批次大小与重试策略"，**不修 prompt 判据**；本表作为
+  后续提取改动的对照锚（复跑：`npx tsx scripts/extraction-loss-probe.mjs --runs 3`）。
+- **探针自身坑（登记防复发）**：① 消息对象必须带 timestamp（否则 Invalid time value 静默失败）；
+  ② runner 必须显式传 `maxTokens: 0`（缺省 4096 被推理模型 thinking 吃满返回空文本——产线红线的
+  再验证）。
 ### 🔁 A2-R1 近重折叠剥离回归修复（REG-REMAINING-003 #2 排查中实证，2026-09-16）
 
 - **发现路径**：待办#2 断言还债中 auto-recall-assembly（4 例）/explore-relax（1 例）失败实证追查——
