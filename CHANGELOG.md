@@ -39,10 +39,17 @@
   **空转事件降级**：`skill.worker.suppressed_skip` 与 `consume_done(outcome=
   lock_contended)` 降 debug——空转/争锁重试不是完成事件（产线 INFO 刷屏主源，
   实测 5382 行/分钟）。
-- **产线部署**：`/opt/tdai/etc/env` 追加 `MEMORY_LOG_LEVEL=info`。实测日志量
-  **~35000 行/分钟 → 89 行/分钟**（99.7% 削减），journald 限流解除，
-  `[P4a-P2] invalidation … → 1 scene block(s) affected` 产线日志现场可见——
-  层级边失效传播定位端到端闭环。
+- **产线部署（含一次写入事故与恢复，如实登记）**：`/opt/tdai/etc/env` 追加
+  `MEMORY_LOG_LEVEL=info` 时因原文件无结尾换行发生**粘连**——`tee -a` 把新行拼进
+  `PROXY_ADMIN_API_KEY` 的值（首验 `tail -c 1`/`awk` 给出假阴性；对抗性审查经
+  `/proc/<pid>/environ` 实证）。恢复：从污染前启动的 proxy 进程 environ 提取原始值
+  重建 env 文件（4 行，键值独立），重启后 `^MEMORY_LOG_LEVEL=info$` 独立 entry 确认。
+  **教训**：追加写前必须校验结尾换行；单点验证不可靠，用独立证据源交叉确认。
+  修复期间 core 带污染 key 运行约 15 分钟（proxy 侧进程环境始终为原值，无实际损害）。
+  实测日志量 **~35000 行/分钟 → ~20 行/分钟**（99.9% 削减），journald 限流解除，
+  `[P4a-P2] invalidation … → 1 scene block(s) affected` 产线日志现场可见——层级边
+  失效传播定位端到端闭环。级别门行为断言：REQUEST_END(INFO) 可见 / REQUEST_START
+  (DEBUG) 归零。
 - **遗留清理**：`MemoryCore/D:/tdai-data/`（历史 Windows 路径误配产物，1.1M）整目录
   归档至 `/opt/tdai/backup/tdai-data-legacy-D-20260916.tar.gz`（含 default 租户早期
   种子锚 6 枚：正确/可靠/可用/性能/私有部署/本地——与产线真实锚无重叠）后删除。
