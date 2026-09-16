@@ -292,7 +292,7 @@ export class SkillWorkerPool {
       // 短抑制: 本 loop 刚失败过这个 agent, 短时间内跳过。别的 loop 抑制状态独立,
       // 会拿到别的 agent, 天然让位。
       if (isSuppressed(agent)) {
-        obsLogger.info("skill.worker.suppressed_skip", {
+        obsLogger.debug("skill.worker.suppressed_skip", {
           worker_id: workerId,
           instance_id: agent.instance_id,
           agent_id: agent.agent_id,

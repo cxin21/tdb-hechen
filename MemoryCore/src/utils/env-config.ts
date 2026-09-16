@@ -47,6 +47,27 @@ const ENV: Record<string, string | undefined> =
 
 export const DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024;
 
+/** Console 日志级别（memory-tdai 网关/可观测性后端共用判据）。 */
+export type MemoryLogLevel = "debug" | "info" | "warn" | "error";
+
+const LOG_LEVEL_RANK: Record<MemoryLogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+
+/**
+ * Resolve the minimum console log level.
+ *
+ * Source: `MEMORY_LOG_LEVEL` (`debug` | `info` | `warn` | `error`, case-insensitive).
+ * Default: `debug` — preserves the historical all-levels behavior bit-for-bit.
+ * Production may set `info` to bound journald volume (DEBUG chatter previously
+ * suppressed ~40k messages / 30s, making diagnostics unreliable).
+ */
+export function resolveMemoryLogLevel(): { rank: number; atLeast(lv: MemoryLogLevel): boolean } {
+  const raw = (ENV.MEMORY_LOG_LEVEL ?? "").trim().toLowerCase();
+  const lv: MemoryLogLevel =
+    raw === "debug" || raw === "info" || raw === "warn" || raw === "error" ? raw : "debug";
+  const rank = LOG_LEVEL_RANK[lv];
+  return { rank, atLeast: (check: MemoryLogLevel) => LOG_LEVEL_RANK[check] >= rank };
+}
+
 /**
  * Resolve the maximum allowed request body size in bytes.
  *

@@ -30,6 +30,24 @@
 - 测试：`l1-links-derived-from.test.ts` 5 例（建边反查/对偶/type 隔离/幂等/失效
   定位）；tsc 244 持平；既有测试失败集与 stash 前基线逐位一致（零回归）。
 
+### 🔇 产线日志级别门 + 遗留清理（P4a 运维，2026-09-16）
+
+- **MEMORY_LOG_LEVEL 级别门**：`env-config.ts` 新增统一读取器（缺省 `debug` = 逐位
+  现状），应用到 gateway `createConsoleLogger`（debug/info 门控，warn/error 恒通）、
+  `ConsoleLogBackend`（info/debug 门控）、`ConsoleTraceMiddleware` REQUEST_START
+  （debug 门控）；`ILogBackend` 接口补可选 `debug?`，`obsLogger` 补 `debug` 方法。
+  **空转事件降级**：`skill.worker.suppressed_skip` 与 `consume_done(outcome=
+  lock_contended)` 降 debug——空转/争锁重试不是完成事件（产线 INFO 刷屏主源，
+  实测 5382 行/分钟）。
+- **产线部署**：`/opt/tdai/etc/env` 追加 `MEMORY_LOG_LEVEL=info`。实测日志量
+  **~35000 行/分钟 → 89 行/分钟**（99.7% 削减），journald 限流解除，
+  `[P4a-P2] invalidation … → 1 scene block(s) affected` 产线日志现场可见——
+  层级边失效传播定位端到端闭环。
+- **遗留清理**：`MemoryCore/D:/tdai-data/`（历史 Windows 路径误配产物，1.1M）整目录
+  归档至 `/opt/tdai/backup/tdai-data-legacy-D-20260916.tar.gz`（含 default 租户早期
+  种子锚 6 枚：正确/可靠/可用/性能/私有部署/本地——与产线真实锚无重叠）后删除。
+  `.gitignore` 原已覆盖该路径。
+
 ### 🔬 P4a-P2 全流程验证修正：权威变更集 + 参数实证（2026-09-16 验证轮）
 
 - **建边过度上报修正（对抗性审查发现）**：sqlite（无 pullProfiles）下 L2 进程内

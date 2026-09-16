@@ -186,10 +186,14 @@ function nowLocalIso(): string {
   return dayjs().format("YYYY-MM-DDTHH:mm:ss.SSSZ");
 }
 
+const consoleLogLevel = resolveMemoryLogLevel();
+
 function createConsoleLogger(): Logger {
+  // P4a 运维（2026-09-16）：DEBUG 刷屏曾触发 journald 限流（Suppressed 41k msgs/30s）
+  // 导致产线日志不可靠。MEMORY_LOG_LEVEL 缺省 debug = 逐位现状；产线设 info 收敛。
   return {
-    debug: (msg: string) => console.debug(`${nowLocalIso()} DEBUG ${TAG} ${msg}`),
-    info: (msg: string) => console.info(`${nowLocalIso()} INFO  ${TAG} ${msg}`),
+    debug: (msg: string) => { if (consoleLogLevel.atLeast("debug")) console.debug(`${nowLocalIso()} DEBUG ${TAG} ${msg}`); },
+    info: (msg: string) => { if (consoleLogLevel.atLeast("info")) console.info(`${nowLocalIso()} INFO  ${TAG} ${msg}`); },
     warn: (msg: string) => console.warn(`${nowLocalIso()} WARN  ${TAG} ${msg}`),
     error: (msg: string) => console.error(`${nowLocalIso()} ERROR ${TAG} ${msg}`),
   };
@@ -212,7 +216,7 @@ function createConsoleLogger(): Logger {
  * triggered by the combination of env reads and the documented route
  * comments above.
  */
-import { resolveMaxBodyBytes } from "../utils/env-config.js";
+import { resolveMaxBodyBytes, resolveMemoryLogLevel } from "../utils/env-config.js";
 
 const MAX_BODY_BYTES = resolveMaxBodyBytes();
 

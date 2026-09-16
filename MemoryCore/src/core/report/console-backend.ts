@@ -6,6 +6,7 @@
  */
 
 import type http from "node:http";
+import { resolveMemoryLogLevel } from "../../utils/env-config.js";
 import type {
   ITraceBackend,
   ILogBackend,
@@ -24,6 +25,9 @@ import type {
 } from "./types.js";
 
 const TAG = "[observability][console]";
+
+// P4a 运维（2026-09-16）：MEMORY_LOG_LEVEL 门（缺省 debug = 逐位现状，产线设 info 收敛）。
+const logLevel = resolveMemoryLogLevel();
 
 // ============================
 // Console Span
@@ -126,7 +130,7 @@ export class ConsoleLogBackend implements ILogBackend {
   readonly type = "console";
 
   info(eventName: string, attrs: LogAttrs = {}): void {
-    console.info(`${TAG}[log][INFO] ${eventName}`, attrs);
+    if (logLevel.atLeast("info")) console.info(`${TAG}[log][INFO] ${eventName}`, attrs);
   }
 
   warn(eventName: string, attrs: LogAttrs = {}): void {
@@ -142,7 +146,7 @@ export class ConsoleLogBackend implements ILogBackend {
   }
 
   debug(eventName: string, attrs: LogAttrs = {}): void {
-    console.debug(`${TAG}[log][DEBUG] ${eventName}`, attrs);
+    if (logLevel.atLeast("debug")) console.debug(`${TAG}[log][DEBUG] ${eventName}`, attrs);
   }
 }
 
@@ -217,7 +221,7 @@ export class ConsoleTraceMiddleware implements ITraceMiddleware {
     const url = req.url ?? "/";
     const startTime = Date.now();
 
-    console.log(`${TAG}[middleware] REQUEST_START ${method} ${url}`);
+    if (logLevel.atLeast("debug")) console.log(`${TAG}[middleware] REQUEST_START ${method} ${url}`);
 
     try {
       await handler();

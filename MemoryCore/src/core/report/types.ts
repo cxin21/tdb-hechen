@@ -114,6 +114,9 @@ export interface ILogBackend {
   /** 后端标识 */
   readonly type: string;
 
+  /** DEBUG 级别日志（可选——仅 console 后端实现；空转/轮询类事件，P4a 运维 2026-09-16） */
+  debug?(eventName: string, attrs?: LogAttrs): void;
+
   /** INFO 级别日志 */
   info(eventName: string, attrs?: LogAttrs): void;
 

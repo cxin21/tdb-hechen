@@ -266,7 +266,8 @@ export class SkillConversationExtractWorker {
       }
       const jitter = Math.floor(Math.random() * (this.opts.lockContentionSleepJitterMs ?? 500));
       await sleep((this.opts.lockContentionSleepMs ?? 2000) + jitter);
-      obsLogger.info("skill.worker.consume_done", {
+      // P4a 运维（2026-09-16）：争锁重试不是完成的消费——空转事件降 debug（产线 INFO 刷屏主源）。
+      obsLogger.debug("skill.worker.consume_done", {
         worker_id: workerId, agent_key: agentKey, instance_id: instanceId,
         outcome: "lock_contended", dur_ms: Date.now() - t0Consume,
       });

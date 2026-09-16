@@ -47,6 +47,18 @@ export const obsLogger = {
   },
 
   /**
+   * DEBUG 级别日志 — 空转/轮询类事件（P4a 运维 2026-09-16：idle 事件不得打 INFO）。
+   */
+  debug(eventName: string, attrs: LogAttrs = {}): void {
+    try {
+      getObservabilityBackend().log.debug?.(eventName, attrs);
+      obsFileLogger.write("DEBUG", eventName, attrs as Record<string, unknown>);
+    } catch {
+      // 静默失败，不影响业务
+    }
+  },
+
+  /**
    * WARN 级别日志 — 用于记录可恢复的异常（如重试、降级）。
    */
   warn(eventName: string, attrs: LogAttrs = {}): void {
