@@ -749,9 +749,12 @@ export function createL2Runner(opts: {
         updatedAfter: cursor,
       }, logger);
 
-      if (memRecords.length === 0) {
+      // P4a-2：失效记忆排除出蒸馏输入——scene_blocks 重写不含失效内容
+      // （失效记录经 bump updated_time 进入增量视野，但被过滤 → 触发重跑而内容被剔除）
+      const activeRecords = memRecords.filter((r) => !(r as { valid_end?: string }).valid_end);
+      if (activeRecords.length === 0) {
         logger.debug?.(
-          `${TAG} [L2] No new L1 records since cursor (session=${sessionKey}, updatedAfter=${cursor ?? "(full)"}), skipping scene extraction`,
+          `${TAG} [L2] All new records invalidated — skipping scene extraction (no active content)`,
         );
         return { skipped: true };
       }

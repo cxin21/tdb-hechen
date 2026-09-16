@@ -145,7 +145,14 @@ export async function runIdentityDiscovery(deps: {
         const identityProps: string[] = [];
         for (const p of proposals) {
           if (p.slot === "identity") {
-            identityProps.push(p.content);
+            // 身份采纳门（硬约束执行）：状态模式剥离——prompt 软判据三轮复发后升级为代码执行
+            const cleaned = p.content
+              .replace(/（当前[^）]*）|\(当前[^)]*\)/g, "")
+              .replace(/（截至[^）]*）|\(截至[^)]*\)/g, "")
+              .replace(/已全部落地[^。；\n]*[。；]?/g, "")
+              .replace(/进入观察期[^。；\n]*[。；]?/g, "")
+              .replace(/\n{2,}/g, "\n").trim();
+            if (cleaned) identityProps.push(cleaned);
           } else {
             const ev = recountEvidence(p.content, corpus);
             pendingThis++;

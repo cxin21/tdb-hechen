@@ -3447,7 +3447,9 @@ export class VectorStore implements IMemoryStore {
    * GROW-EVO P2（§2.2）：失效回写——conflict 自动失效与手动失效共用。
    * 只写 valid_end（失效不删除、不改写正文）；已失效行不覆盖（首次失效时间权威，
    * WHERE 过滤防覆盖）；行不存在显式 false（同 bumpRecallCount 纪律，不静默）。
-   * 不触碰 updated_time（P1 簿记分离教训）。
+   * P4a（D8 裁决 2026-09-16）：失效 **bump updated_time**——L2 增量（updatedAfter 游标）
+   * 由此感知失效并重蒸馏（scene_blocks 陈旧自愈）。安全性：失效记忆已被召回排除
+   * （排序扰动无消费者）；L1 增量处理 L0 不受 L1 记录 updated_time 影响（无连锁）。
    */
   invalidateL1(id: string, validEndIso: string): boolean {
     if (this.degraded) return false;
@@ -3455,8 +3457,8 @@ export class VectorStore implements IMemoryStore {
       // 主表 + l1_fts 副本同步（soul 8 列在 FTS 表有副本，只改主表会让 FTS 路
       // 召回读到 stale valid_end——P2 验证实测踩过）。主表 0 行 = 行不存在/已失效 → false。
       const res = this.db.prepare(
-        "UPDATE l1_records SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
-      ).run(validEndIso, id);
+        "UPDATE l1_records SET valid_end = ?, updated_time = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
+      ).run(validEndIso, new Date().toISOString(), id);
       if (((res as unknown as { changes?: number }).changes ?? 0) === 0) return false;
       this.db.prepare(
         "UPDATE l1_fts SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",

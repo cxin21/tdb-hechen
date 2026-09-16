@@ -89,6 +89,7 @@ function rowToMemoryRecord(row: L1RecordRow): MemoryRecord {
     teamId: row.team_id,
     userId: row.user_id,
     agentId: row.agent_id,
+    valid_end: row.valid_end || undefined,
   };
 }
 
