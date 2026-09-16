@@ -11,6 +11,42 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🩹 提取覆盖性与游标缺陷修复（boot recovery + L1_drain 续批豁免）+ 锚门静默 debug 化（2026-09-16 深夜）
+
+- **问题（v4 #5 实锤缺陷的机制定位，双重根因）**：
+  - **根因 A（重启触发丢失）**：`LocalStateBackend` 的 conversation_count 与 L1_idle 定时器全在进程内，
+    重启即失；而 gateway 路径从不把 checkpoint 状态恢复回 backend（`setStatefulPipelineManager` 把
+    `ensureSchedulerStarted` 变 no-op，`statefulManager.start` 无调用方；checkpoint `pipeline_states`
+    在盘上恒空——StatefulPipelineManager 无运行时 persister）。重启前已捕获、尚未过阈值的会话在无新
+    消息时**永久滞留**。实证：session-e 游标停在提取窗口第 10 条，尾段 2 条（月食/窄带）十几小时无消费。
+  - **根因 B（续批定时器被去重饿死）**：`hasMore` 尾段续批靠 `armL1IdleAfterDrain` 挂定时器，但到期任务带
+    `triggeredBy=timer_scanner`，executor 对 `conversation_count===0` 的 timer 任务按"已处理完"跳过——
+    续批场景下 count 几乎总是 0（阈值触发后已清零），且续批定时器复用 `L1_idle` 成员无差别命中该去重。
+    游标尾段因此只有 nudge 阈值触发这一条侥幸路径（session-f 实证）。
+- **修复（3 文件，~100 行，config-first 无新开关）**：
+  - `stateful-pipeline-manager.ts`：① `armL1IdleAfterDrain` 改挂独立 `L1_drain` timer member
+    （`classifyTimerType` startsWith("L1")→L1 兼容，与 L1_idle 键分离可共存）；② 新增
+    `recoverPendingSessions(sessionKeys)`——按 checkpoint `runner_states` 会话键逐会话重挂 L1_drain
+    定时器（service mode `__unset__` 跳过；SessionFilter 生效；destroy 后 no-op）。
+  - `gateway/server.ts`：① boot 时调 recoverPendingSessions（读 checkpoint runner_states，失败
+    non-fatal warn）；② executor 的 count===0 去重对 `timerMember` 以 `L1_drain` 结尾的任务豁免。
+  - 不变量：到期 L1 任务由**游标治理**——无积压时空跑即返回（零 LLM 成本，不推进游标），有积压
+    hasMore→再次续批 / hasFullBacklog→立即重入队，逐批收敛。
+- **真实数据验证（生产管线，idle 临时调 60s 逐键还原）**：
+  - 历史滞留清账：boot recovery 48 会话重挂 → session-c/e/f 尾段全部消费（颈椎操/茶馆/月食→归纳合并落
+    L1，session-e 游标 914→916 收敛）；
+  - 事故完整复演（session-g，围棋主题族 12 条）：首轮提取窗口=前 10 条 → `hasMore=true` → **重启**
+    （杀掉续批定时器）→ boot recovery 重挂 → 60s 后 drain 到期 → 游标后 2 条（象棋起源/友谊赛）被提取
+    落库，游标收敛至第 12 条。事故场景从"永久滞留"变为"闲置超时自愈"。
+- **锚门静默 debug 化（v4 #7，~7 行）**：`anchor-growth.ts` 门 1a/1b 拦截 continue 前各加一行 debug
+  （agent/reason/时间戳），summary 行 ran=false 时追加 `firstBlockReason`——重启日志即见
+  `firstBlockReason=interval`，"为什么锚没长出来"不再需要插桩考古。零行为变更。
+- **回归**：tsc 243 持平（改动文件零新增）；vitest 472/472（50 文件，基线 465 + 新增 7）。
+  **受影响测试（新增 golden：`src/utils/stateful-pipeline-drain.test.ts`）**：L1_drain member 解析为 L1
+  任务（plain+scoped）、与 L1_idle 键分离、armL1IdleAfterDrain 挂 L1_drain、recoverPendingSessions
+  逐会话挂载/SessionFilter/destroy/service-mode 四语义。调参（l1IdleTimeoutSeconds 600→60）已逐键还原
+  并 diff 验证 byte-identical；四服务健康。
+
 ### 🔬 GROW-RACE/QUOTA 验证轮（SOP 全流程）+ 停滞告警硬化 + 游标缺口三重实证（2026-09-16 晚）
 
 - **对抗性复审**：① retireValue 缓存失效疑点排除（`sqlite.ts:2620` 已有 invalidateValuesCache，写路径 4/8）；

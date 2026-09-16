@@ -2081,6 +2081,23 @@ export class TdaiGateway {
       this.logger.info(`Core switched to StatefulPipelineManager (instance=${instanceId})`);
     }
 
+    // ── v4#5：boot recovery——重启后恢复待提取队列 ──
+    // LocalStateBackend 的 count+timer 重启即失，且 gateway 路径从不把 checkpoint
+    // 状态恢复回 backend（setStatefulPipelineManager 把 ensureSchedulerStarted 变
+    // no-op，statefulManager.start 无调用方）。按 checkpoint runner_states 的会话
+    // 键逐会话重挂 L1_drain 定时器：到期 L1 任务由游标治理，无积压空跑即返回，
+    // 有积压续批收敛（REG-REMAINING-004 #5 触发丢失面修复，session-e 实锤）。
+    try {
+      const recoveryStorage = await this.resolveStorageForInstance(instanceId);
+      const { CheckpointManager } = await import("../utils/checkpoint.js");
+      const bootCheckpoint = new CheckpointManager(this.config.data.baseDir, this.logger, recoveryStorage);
+      const bootCp = await bootCheckpoint.read();
+      const recovered = await statefulManager.recoverPendingSessions(Object.keys(bootCp.runner_states));
+      if (recovered > 0) this.logger.info(`[pipeline-v2] boot recovery done: ${recovered} session(s) re-armed`);
+    } catch (err) {
+      this.logger.warn(`[pipeline-v2] boot recovery failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // 2. Start Timer Scanner (Scheme D: leaderless, scans sharded global ZSETs)
     const { TimerScanner } = await import("../services/timer-scanner.js");
     const defaultInstances = this.config.scanner.instances.split(",").filter(Boolean);
@@ -3079,8 +3096,16 @@ export class TdaiGateway {
         // before we even started, bail out without doing any work.
         if (signal?.aborted) throw signal.reason ?? new Error("executeL1: aborted before start");
 
-        // Dedup: if triggered by timer but session already processed (count=0), skip
-        if (task.data?.triggeredBy === "timer_scanner" && gateway.stateBackend) {
+        // Dedup: if triggered by timer but session already processed (count=0), skip.
+        //
+        // v4#5 豁免：L1_drain 续批定时器（armL1IdleAfterDrain / boot recovery 挂）
+        // 到期时 conversation_count 几乎总是 0（阈值触发后已清零），若一并跳过，
+        // 游标尾段将永久滞留（session-e 实锤：13 条注入后尾段 2 条十几小时无消费）。
+        // drain 任务交由 L1 游标治理：无积压时空跑即返回（零 LLM 成本），有积压
+        // 逐批续跑收敛。
+        const drainTimerMember = typeof task.data?.timerMember === "string" ? task.data.timerMember : "";
+        const isDrainTimer = drainTimerMember.endsWith("L1_drain");
+        if (!isDrainTimer && task.data?.triggeredBy === "timer_scanner" && gateway.stateBackend) {
           const state = await gateway.stateBackend.getSessionState(instanceId, task.sessionId, teamId, agentId);
           if (state && state.conversation_count === 0) {
             gateway.logger.debug?.(`[executor] L1 skipped: session ${task.sessionId} already processed (count=0)`);

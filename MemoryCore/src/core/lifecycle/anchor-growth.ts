@@ -194,6 +194,8 @@ export async function runAnchorGrowth(deps: {
         // 1a 尝试冷却：上次跑过 LLM 不足 ATTEMPT_COOLDOWN → 不跑（最密 1h 一试）
         const lastAttempt = state.lastAttemptAt ? Date.parse(state.lastAttemptAt) : NaN;
         if (Number.isFinite(lastAttempt) && nowMs - lastAttempt < ATTEMPT_COOLDOWN_MS) {
+          // v4#7：拦截静默 debug 化——"为什么锚没长出来"不再需要插桩考古
+          logger?.debug?.(`[anchor-growth] gate block agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} reason=attempt-cooldown lastAttempt=${state.lastAttemptAt} now=${new Date(nowMs).toISOString()}`);
           firstBlockReason ??= "attempt-cooldown";
           continue;
         }
@@ -203,6 +205,8 @@ export async function runAnchorGrowth(deps: {
         const lastAdoptedRaw = state.lastAdoptedAt ?? state.lastDiscoveryAt;
         const lastAdopted = lastAdoptedRaw ? Date.parse(lastAdoptedRaw) : NaN;
         if (Number.isFinite(lastAdopted) && nowMs - lastAdopted < cfg.intervalHours * 3600_000) {
+          // v4#7：拦截静默 debug 化（同 1a）
+          logger?.debug?.(`[anchor-growth] gate block agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} reason=interval lastAdopted=${String(lastAdoptedRaw)} intervalHours=${cfg.intervalHours} now=${new Date(nowMs).toISOString()}`);
           firstBlockReason ??= "interval";
           continue;
         }
@@ -392,7 +396,8 @@ export async function runAnchorGrowth(deps: {
     } catch (err) {
       logger?.warn?.(`[self-obs] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
-    logger?.info?.(`[anchor-growth] ran: agents=${tenants.length} adopted=${adopted} retired=${retired} reweighted=${reweighted} displaced=${displaced} skipped=${skipped}`);
+    // v4#7：summary 行补 firstBlockReason——ran=false 时对外宣告拦截原因（此前只有 agents/adopted 计数）
+    logger?.info?.(`[anchor-growth] ran: agents=${tenants.length} adopted=${adopted} retired=${retired} reweighted=${reweighted} displaced=${displaced} skipped=${skipped}${!ranAny && firstBlockReason ? ` firstBlockReason=${firstBlockReason}` : ""}`);
     return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
   } catch (err) {
     logger?.warn?.(`[anchor-growth] failed: ${err instanceof Error ? err.message : String(err)}`);

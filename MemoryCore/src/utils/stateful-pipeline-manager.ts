@@ -385,15 +385,17 @@ export class StatefulPipelineManager {
   }
 
   /**
-   * Arm the L1 idle timer to drain a known small tail of L0 rows. Called by
+   * Arm the L1 drain timer to consume a known small tail of L0 rows. Called by
    * the Worker's executor when `runL1WithStore` returns `hasMore=true` but
    * not `hasFullBacklog` (i.e. < 2N rows residual; cheap to defer).
    *
-   * Reuses the standard `{sessionId}:L1_idle` timer member so the existing
-   * TimerScanner picks it up and enqueues a regular L1 task on expiry. If a
-   * later `notifyConversation` arrives in the meantime and re-arms the timer
-   * earlier (via `setTimerIfEarlier`), that's fine — backlog will still get
-   * drained on the next L1 round.
+   * v4#5（2026-09-16）：timer member 用独立的 `L1_drain` 后缀，不再复用 `L1_idle`。
+   * 定时器到期入队的任务带 `triggeredBy=timer_scanner`，而 executor 会把
+   * `conversation_count===0` 的 timer 任务当"已处理完"跳过——续批场景下 count
+   * 恰恰几乎总是 0（阈值触发后已清零），复用 L1_idle 曾使游标尾段被该去重
+   * 永久饿死（session-e 实锤，见 REG-REMAINING-004 #5）。L1_drain 成员在
+   * executor 的 isDrainTimer 豁免面内；任务本身由游标治理：无积压时空跑即
+   * 返回（零 LLM 成本），有积压则逐批续跑收敛。
    */
   async armL1IdleAfterDrain(sessionKey: string, instanceId?: string, teamId?: string, agentId?: string): Promise<void> {
     if (this.destroyed) return;
@@ -407,12 +409,69 @@ export class StatefulPipelineManager {
     // If no timer is pending, this sets it unconditionally.
     await this.stateBackend.setTimerIfEarlier(
       effectiveId,
-      buildPipelineTimerMember(sessionKey, "L1_idle", { teamId, agentId }),
+      buildPipelineTimerMember(sessionKey, "L1_drain", { teamId, agentId }),
       fireAtMs,
     );
     this.logger?.debug?.(
-      `${TAG} [${effectiveId}/${sessionKey}] L1 idle timer armed for drain (fires in ${Math.round(this.l1IdleTimeoutMs / 1000)}s)`,
+      `${TAG} [${effectiveId}/${sessionKey}] L1 drain timer armed (fires in ${Math.round(this.l1IdleTimeoutMs / 1000)}s)`,
     );
+  }
+
+  // ============================
+  // Boot recovery（v4#5：重启后恢复待提取队列）
+  // ============================
+
+  /**
+   * Re-arm a drain timer per checkpointed session after a process restart.
+   *
+   * LocalStateBackend 的 conversation_count 与 L1_idle timer 全在进程内，重启即失；
+   * 且 gateway 路径从不把 checkpoint 状态恢复回 backend（setStatefulPipelineManager
+   * 把 ensureSchedulerStarted 变 no-op，start() 无调用方）。重启前已捕获、尚未
+   * 过阈值的会话在无新消息时将永久滞留（session-e 实锤：游标停在提取窗口第 10
+   * 条，尾段 2 条十几小时无消费——REG-REMAINING-004 #5）。
+   *
+   * 每个会话键挂一枚 `L1_drain` 定时器（闲置超时后到期）：到期 L1 任务由游标
+   * 治理——无积压时空跑即返回（零 LLM 成本），有积压则续批收敛（hasMore →
+   * 再次续批 / hasFullBacklog → 立即重入队）。调用方传 checkpoint
+   * `runner_states` 的会话键集合（游标所在，唯一可靠的"哪些会话在管线里"清单；
+   * pipeline_states 在 disk 上恒空——本类无运行时 persister）。
+   *
+   * service 模式（defaultInstanceId="__unset__"）无法定位 per-instance 定时器键，
+   * 跳过（standalone 单机部署为主场景）。
+   *
+   * @returns armed timer count
+   */
+  async recoverPendingSessions(sessionKeys: readonly string[]): Promise<number> {
+    if (this.destroyed) return 0;
+    if (this.defaultInstanceId === "__unset__") {
+      this.logger?.debug?.(`${TAG} recoverPendingSessions skipped: service mode requires explicit instanceId`);
+      return 0;
+    }
+    const fireAtMs = Date.now() + this.l1IdleTimeoutMs;
+    let armed = 0;
+    for (const sessionKey of sessionKeys) {
+      if (this.sessionFilter.shouldSkip(sessionKey)) continue;
+      try {
+        await this.stateBackend.setTimerIfEarlier(
+          this.defaultInstanceId,
+          buildPipelineTimerMember(sessionKey, "L1_drain"),
+          fireAtMs,
+        );
+        armed++;
+      } catch (err) {
+        this.logger?.warn?.(
+          `${TAG} recoverPendingSessions: failed to arm drain timer for ${sessionKey}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (armed > 0) {
+      this.logger?.info?.(
+        `${TAG} Boot recovery: armed L1_drain timer(s) for ${armed} checkpointed session(s) ` +
+        `(fires in ${Math.round(this.l1IdleTimeoutMs / 1000)}s)`,
+      );
+    }
+    return armed;
   }
 
   // ============================
