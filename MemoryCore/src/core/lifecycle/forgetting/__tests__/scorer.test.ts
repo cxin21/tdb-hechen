@@ -102,4 +102,38 @@ describe("forgetting scorer (I 遗忘)", () => {
     const rec = mk(40, 30, { significance: 0.2 });
     expect(classifyWithValues(rec, [], cfg, now)).toBe(classify(rec, cfg, now));
   });
+
+  // ── v4#5 验证轮修复（2026-09-16 深夜）：遗忘年龄 = 系统年龄 ──────────
+  // session-h 实锤：occurred_at=2025-06 的新记忆（createdAt=刚出生 4 分钟）被
+  // forgetting tick 归档——事件时间被误当记忆年龄，P2a 溯源越准忘得越快。
+  describe("遗忘年龄 = 记忆系统年龄（v4#5 session-h 实锤修复）", () => {
+    it("occurred_at 是久远事件、createdAt 刚入库 → 新记忆不归档", () => {
+      const cfg = { ...DEFAULT_FORGETTING_CONFIG, minAgeDays: 1, lowThreshold: 0.3 };
+      const now = Date.now();
+      const rec = mk(80, 472, { significance: 0.9 }); // occurred_at = 472 天前
+      // 记忆 12h 前入库：系统年龄 < minAgeDays → keep（修复前按事件年龄 472d → decay≈0 → archive）
+      (rec as unknown as { createdAt: string }).createdAt = new Date(now - 0.5 * 86_400_000).toISOString();
+      expect(classify(rec, cfg, now)).toBe("keep");
+      // 即便越过 minAgeDays，decay(0.99d)≈1，高价值记忆也远高于阈值
+      const cfg2 = { ...DEFAULT_FORGETTING_CONFIG, minAgeDays: 0.1, lowThreshold: 0.3 };
+      expect(classify(rec, cfg2, now)).toBe("keep");
+    });
+
+    it("L1RecordRow 行形状（created_time）同样生效", () => {
+      const cfg = { ...DEFAULT_FORGETTING_CONFIG, minAgeDays: 0.1, lowThreshold: 0.3 };
+      const now = Date.now();
+      const rec = mk(80, 472, { significance: 0.9 });
+      const shadow = rec as unknown as Record<string, unknown>;
+      shadow.createdAt = ""; // 行形状无 createdAt
+      shadow.created_time = new Date(now - 0.5 * 86_400_000).toISOString();
+      expect(classify(rec, cfg, now)).toBe("keep");
+    });
+
+    it("无系统时间的旧形状回退 occurred_at 链（A2 语义逐位保持）", () => {
+      const cfg = { ...DEFAULT_FORGETTING_CONFIG, minAgeDays: 1, lowThreshold: 0.3 };
+      // mk() fixture createdAt="" → 回退旧链 → 既有 A2 断言语义不变
+      expect(classify(mk(40, 30, { significance: 0.2 }), cfg, Date.now())).toBe("archive");
+      expect(classify(mk(80, 30, { significance: 1.0 }), cfg, Date.now())).toBe("keep");
+    });
+  });
 });

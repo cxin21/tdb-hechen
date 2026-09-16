@@ -11,6 +11,41 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔬 修复后全量验证轮（SOP 四步）——对抗性审查实锤并修复两缺陷：遗忘年龄语义 + boot recovery 边界（2026-09-16 深夜）
+
+- **① 复审**：c35a3e6 双修复 7 项红队候选全核销（TimerScanner legacy 解析、L2 级联隔离、双定时器
+  并存、锁丢失重放、endsWith 边界、worker 启动时序、阈值双跑幂等）；更优方案四项排除（运行时
+  persister / boot 直接入队 / 全量去 skip / 窗口全量消费）。
+- **② 配置审计**：全绿——anchorDiscovery 5 字段、durativeEnabled、excludeInvalidated、
+  arousalRetention 0.3、emotionSalienceWeight 0（恒等位红线）、MEMORY_LOG_LEVEL=info、FTS 同步、
+  向量双写 0 跳过、无 seedValues 残留。**修正 v4 审计表述一处**：recall.rerankWeights 键实为显式
+  落盘全 0 恒等（非"键不存在"），行为等价、红线无恙。**[P4-GATE] conflict=6 ≥5 自动宣告**（v4 #2
+  立项条件到达，待用户拍板，勿抢跑）。
+- **③ 完整流程测试（session-h，潜水主题族 12 组新数据，真实入口 + 对抗面）**：提取 12→两轮
+  （前 10 + 续批 2）自愈闭环；纯知识噪声（珊瑚白化）拒提；CMAS→PADI 矛盾归纳合并；durative
+  valid_start 落库（游泳/装备/入坑）；LLM 时间推导（"周末"→2026-09-19）；valence 8/8 非 NULL；
+  召回 11 组 PASS（含时间旅行 2025-06、跨 agent 隔离、噪声禁现）。
+- **③ 对抗性发现·缺陷一（boot recovery 边界缺口）**：飞行中提取被重启打断 → 游标未落 checkpoint →
+  会话对 recovery 不可见（session-h 12 条滞留复现）。修复：store 新增可选能力 `listL0SessionIds()`
+  （sqlite DISTINCT，degraded→[]），boot recovery 数据源改 **runner_states ∪ L0 全会话**并集，扩面键
+  由游标治理空跑兜底。重启实证 53 会话覆盖、h 自愈。
+- **③ 对抗性发现·缺陷二（系统性：遗忘年龄语义）**：`forgetting/scorer.ts ageDaysOf` 沿用 A2 的
+  occurred_at 优先链——**事件时间被误当记忆年龄**：P2a 溯源越准（occurred_at 越精确指向过去），刚
+  出生的记忆 decay 越低、越快被归档。session-h 实锤：occurred_at=2025-06 的高价值溯源锚记忆
+  （Koh Tao 浮潜，valence 0.8）**出生 4 分钟被 forgetting tick 归档**，时间旅行召回失灵——两个子系统
+  在真实数据上互相对抗。修复：**遗忘年龄 = 记忆系统年龄**（createdAt/created_time 优先，occurred_at
+  旧链仅作无系统时间形状的回退，A2 语义保持）；语义边界 = occurred_at 描述"事件多老"（检索时间相关
+  性），衰减输入是"记忆多老"（Ebbinghaus 自形成起算）。**误归档 2 条经 /v3/atomic/archive/restore
+  全部回滚**（L1/FTS 重新同步），召回复验转绿。
+- **③ 价值锚全链验证**：kv 冷却回拨（快照留档）触发发现轮——adopted=3（潜水/航拍/围棋，valence
+  derive 3/3 非 NULL）；GROW-MAINT 深空 evidence=2<3 退场；coreRefs 双向回填实证（AOW/装备/愿望单
+  记忆挂 ["计划","潜水"]）；名额 5/15，GROW-QUOTA 未触发。kv 回拨已被发现轮合法状态覆写（还原反而
+  伪造状态，不还原）。
+- **回归**：tsc 243 持平（改动文件零新增）；vitest **475/475**（50 文件 = 472 + 遗忘 golden 3）。
+  **受影响测试（新增：`forgetting/__tests__/scorer.test.ts` +3）**：occurred_at 久远+createdAt 新 →
+  keep；L1RecordRow created_time 行形状生效；无系统时间旧形状回退 occurred_at 链（A2 逐位保持）。
+  调参（l1IdleTimeoutSeconds 60）byte-identical 还原；四服务健康。
+
 ### 🩹 提取覆盖性与游标缺陷修复（boot recovery + L1_drain 续批豁免）+ 锚门静默 debug 化（2026-09-16 深夜）
 
 - **问题（v4 #5 实锤缺陷的机制定位，双重根因）**：

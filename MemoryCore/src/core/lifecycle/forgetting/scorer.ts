@@ -79,7 +79,19 @@ export function decay(ageDays: number, lambda: number): number {
   return Math.exp(-lambda * ageDays);
 }
 
-function ageDaysOf(m: MemoryRecord & { timestamp_start?: string; occurred_at?: string }, now = Date.now()): number {
+function ageDaysOf(m: MemoryRecord & { timestamp_start?: string; occurred_at?: string; created_time?: string }, now = Date.now()): number {
+  // v4#5 验证轮修复（2026-09-16 深夜，session-h 实锤）：遗忘年龄 = **记忆系统年龄**
+  // （createdAt/created_time 起），非事件年龄。此前沿用 A2 的 occurred_at 优先链——
+  // P2a 溯源落地后，occurred_at 越精确指向过去的事件，刚出生的记忆 decay 越低、越快
+  // 被归档（occurred_at=2025-06 的新记忆出生 4 分钟被 forgetting tick 归档），两个
+  // 子系统互相对抗、时间旅行召回失灵。语义边界：occurred_at 描述"事件多老"（检索的
+  // 时间相关性维度），衰减输入是"记忆多老"（Ebbinghaus：自记忆形成起算）。
+  // 无系统时间的旧形状回退旧链（A2 语义保持，逐位现状）。
+  const sys = (m as unknown as { createdAt?: string }).createdAt || (m as unknown as { created_time?: string }).created_time;
+  if (typeof sys === "string" && sys) {
+    const ts = new Date(sys).getTime();
+    if (!Number.isNaN(ts)) return Math.max(0, (now - ts) / 86_400_000);
+  }
   // 审计修复 A2（时间锚同源）：顶层 occurred_at 是 P2a 权威字段，优先于 metadata/timestamps。
   const top = m as unknown as { occurred_at?: string };
   const meta = m.metadata && typeof m.metadata === "object" ? (m.metadata as Record<string, unknown>) : {};

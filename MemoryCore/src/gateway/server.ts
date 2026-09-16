@@ -2092,7 +2092,14 @@ export class TdaiGateway {
       const { CheckpointManager } = await import("../utils/checkpoint.js");
       const bootCheckpoint = new CheckpointManager(this.config.data.baseDir, this.logger, recoveryStorage);
       const bootCp = await bootCheckpoint.read();
-      const recovered = await statefulManager.recoverPendingSessions(Object.keys(bootCp.runner_states));
+      // v4#5 验证轮补口：仅凭 runner_states 会漏掉"飞行中提取被重启打断"的会话
+      // （游标未落 checkpoint，session-h 实锤 12 条滞留）。数据源取并集：
+      // runner_states ∪ L0 全会话键；扩面键由游标治理空跑兜底（无积压零成本）。
+      // listL0SessionIds 为可选能力，缺失时回退 runner_states（现状语义）。
+      const recoveryStore = (await this.storePool.getStore(instanceId, null)).store as { listL0SessionIds?: () => string[] };
+      const l0SessionKeys = recoveryStore.listL0SessionIds?.() ?? [];
+      const recoveryKeys = [...new Set([...Object.keys(bootCp.runner_states), ...l0SessionKeys])];
+      const recovered = await statefulManager.recoverPendingSessions(recoveryKeys);
       if (recovered > 0) this.logger.info(`[pipeline-v2] boot recovery done: ${recovered} session(s) re-armed`);
     } catch (err) {
       this.logger.warn(`[pipeline-v2] boot recovery failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);

@@ -21,7 +21,7 @@
 - `MemoryCore/scripts/calibrate-fit.mjs`：拟合器（逻辑回归 + 7 特征）；**产线替换需扩展**：coreRefHit / channel one-hot / type one-hot
 - `MemoryCore/scripts/judge-run.mjs` + `docs/superpowers/evals/judge/labels-*.jsonl`（当前 142 条，timer 每日 04:00 积累）
 - `src/core/hooks/auto-recall.ts:1143,1341,1825-1834`：`applyCompositeRerank` 消费 `cfg.recall?.rerankWeights`（关断态，RV2-2 复合精排）
-- `tdai-gateway.yaml`：`recall.rerankWeights` 键**当前不存在**（D2 部署时新增——config-first：缺省缺键 = 全 0 恒等）
+- `tdai-gateway.yaml`：`recall.rerankWeights` 键显式落盘全 0 恒等（验证轮四审计修正：此前"键不存在"表述与盘面不符，行为等价；D2 部署时改值）
 
 **设计思路**：标注达标 → 扩展特征重跑拟合 → 精度人工复核 → **预注册 A/B**（拟合权重 vs 全 0 基线，同标注池，标注固定法）→ 通过后 yaml 新增 `recall.rerankWeights`、九通道按系数逐步解禁（先高系数通道，非一次全开）→ Lane 2 回归精度 ≥ 基线 → CHANGELOG 登记并列名受影响测试（v3 教训）。
 
@@ -184,6 +184,14 @@ maxTotal=15 且无自愈。根因二重：① scheduler `void runOnce` 无互斥
 > 提取调度（13 条滞留，40 分钟 0 提取代）；② 溯源 input_refs 实证单窗口仅前 10 条；③ 两次 nudge 后尾段
 > 仍无消费。#5 从"待实证"转为"实锤，按设计思路①②推进修复"。另：互斥硬化（连续跳过 10 次 warn 停滞
 > 告警）已落地；A+B 主体验证全 PASS（API 8/8、锚挤出守恒、采纳钩子 4/4、FTS/溯源/隔离/时间旅行）
+
+> **验证轮四补记（2026-09-16 深夜，SOP 四步全绿 + 对抗性实锤两缺陷修复）**：① 复审 7 项红队核销；
+> ② 配置审计全绿，修正本文件第三部分 rerankWeights 表述（键显式落盘全 0 恒等，非"不存在"）；③
+> session-h 潜水主题族 12 组完整流程（续批自愈/噪声拒提/归纳合并/durative/valence 8/8/召回 11 组）；
+> 对抗性实锤并修复：boot recovery 边界缺口（飞行中提取被重启打断 → L0 会话并集补口）+ **遗忘年龄
+> 语义缺陷（occurred_at 误作记忆年龄 → 溯源越准忘得越快，session-h 溯源锚出生 4 分钟被归档，时间旅
+> 行召回失灵）**，误归档 2 条 restore 回滚，+3 golden，vitest 475/475；④ 锚全链：发现轮 adopted=3、
+> 深空 GROW-MAINT 退场、coreRefs 回填实证。详见 CHANGELOG「修复后全量验证轮」。
 
 > **修复补记（2026-09-16 深夜，#5/#7 收口）**：#5 双根因修复上线并通过生产管线复演（详见 CHANGELOG
 > 「提取覆盖性与游标缺陷修复」条）：boot recovery 按 checkpoint runner_states 逐会话重挂 L1_drain

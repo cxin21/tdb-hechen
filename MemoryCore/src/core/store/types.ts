@@ -823,6 +823,13 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
   queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
   getAllL0Texts(): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
+  /**
+   * v4#5 验证轮补口（2026-09-16 深夜）：枚举 L0 会话键（boot recovery 数据源二）。
+   * 可选能力：未实现时调用方回退 checkpoint runner_states（现状语义）。
+   * 动机：飞行中提取被重启打断的会话游标未落 checkpoint，仅凭 runner_states 不可见
+   * （session-h 实锤：12 条全部滞留）。
+   */
+  listL0SessionIds?(): MaybePromise<string[]>;
 
   // ── L0 Search ────────────────────────────────────────────
 

@@ -4370,6 +4370,23 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * v4#5 验证轮补口：枚举 L0 会话键（DISTINCT session_id，boot recovery 数据源二）。
+   * degraded → []；空串剔除。游标治理保证扩面键空跑零成本。
+   */
+  listL0SessionIds(): string[] {
+    if (this.degraded) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT DISTINCT session_id FROM l0_conversations WHERE session_id != ''",
+      ).all() as Array<{ session_id: string }>;
+      return rows.map((r) => r.session_id);
+    } catch (err) {
+      this.logger?.warn(`${TAG} [L0-sessions] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
    * Query L0 messages for a given session key, grouped by session_id.
    * Each group's messages are in chronological order (recorded_at ASC).
    * Groups are sorted by earliest message timestamp.
