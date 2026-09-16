@@ -14,7 +14,7 @@
 
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
-import { batchDedup, MIN_SIMILAR_STRENGTH } from "./l1-dedup.js";
+import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
@@ -210,6 +210,7 @@ export async function extractL1Memories(params: {
       memoryPrompt: options.memoryPrompt,
       traceContext: { teamId, userId, agentId, sessionId },
       llmRunner: options.llmRunner,
+      vectorStore: options.vectorStore,
     });
     scenes = out.scenes;
     llmRaw = { systemPrompt: out.systemPrompt, userPrompt: out.userPrompt, rawOutput: out.rawOutput };
@@ -509,16 +510,21 @@ async function callLlmExtraction(params: {
   memoryPrompt?: ResolvedMemoryPrompt;
   /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
   llmRunner?: LLMRunner;
+  /** A8：锚候选加载需要 vectorStore（listValues 按租户读锚） */
+  vectorStore?: IMemoryStore;
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
 }): Promise<{ scenes: SceneSegment[]; systemPrompt: string; userPrompt: string; rawOutput: string }> {
-  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext } = params;
+  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore } = params;
 
   const systemPrompt = composeMemorySystemPrompt(getExtractMemoriesSystemPrompt(promptMode), memoryPrompt);
+  // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取
+  const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
   const userPrompt = formatExtractionPrompt({
     newMessages,
     backgroundMessages,
     previousSceneName,
+    valueCandidates,
   });
 
   // [l1-debug] ENTRY — what are we about to ask the LLM to extract?
@@ -562,7 +568,7 @@ async function callLlmExtraction(params: {
   // [l1-debug] RAW OUTPUT — 定位模型到底吐了哪些字段（用于 R4 实证）
   logger?.debug?.(`${TAG} [l1-debug] RAW_OUTPUT:\n${result}`);
 
-  const _scenes = parseExtractionResult(result, logger);
+  const _scenes = parseExtractionResult(result, logger, valueCandidates);
   return { scenes: _scenes, systemPrompt, userPrompt, rawOutput: result };
 }
 
@@ -570,7 +576,7 @@ async function callLlmExtraction(params: {
  * Parse the LLM's JSON response into SceneSegment array.
  * Expected format: [{scene_name, message_ids, memories: [...]}]
  */
-function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
+function parseExtractionResult(raw: string, logger?: Logger, valueCandidates: Array<{ id: string; label: string }> = []): SceneSegment[] {
   try {
     // Strip markdown code block wrappers if present
     let cleaned = raw.trim();
@@ -626,13 +632,18 @@ function parseExtractionResult(raw: string, logger?: Logger): SceneSegment[] {
                 type: String(m.type ?? "episodic"),
                 priority: typeof m.priority === "number" ? m.priority : 50,
                 source_message_ids: Array.isArray(m.source_message_ids) ? m.source_message_ids.map(String) : [],
-                metadata: (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>,
+                metadata: (() => {
+                  const base = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
+                  const refs = parseCoreRefs(m.coreRefs, valueCandidates);
+                  return refs && refs.length > 0 ? { ...base, coreRefs: refs } : base;
+                })(),
                 // 灵魂记忆字段（可选，防御解析）：时空 / 观察推断 / 情感
                 occurred_at: typeof m.occurred_at === "string" ? m.occurred_at : undefined,
                 durative: m.durative === true,
                 valid_start: typeof m.valid_start === "string" ? m.valid_start : undefined,
                 valid_end: typeof m.valid_end === "string" ? m.valid_end : undefined,
                 certainty: m.certainty === "inferred" ? "inferred" : "observed",
+                // A8：coreRefs 原样透传（parseCoreRefs 过滤在调用方——候选清单在其作用域）
                 source: typeof m.source === "string" ? m.source : undefined,
                 valence: typeof m.valence === "number" ? m.valence : undefined,
                 arousal: typeof m.arousal === "number" ? m.arousal : undefined,
