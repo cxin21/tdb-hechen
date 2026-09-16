@@ -80,7 +80,18 @@ const RECALL_LINE_SEPARATOR = "\n";
 function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
   // 阈值 0.25 实测校准（2026-09-15）：重复组内 pairwise Jaccard 0.36-0.49，
   // 非重复 ≤0.04 —— 9 倍分离度。0.6 会被转述措辞稀释（实测 4 重复全部漏过）。
-  const stripTime = (t: string) => t.replace(/·\(活动时间:[^)]*\)\s*$/, "");
+  // A2-R1（2026-09-16 对抗性审查回归修复，两步）：相似度必须在**内容**上比较——
+  // ① 原实现剥时间戳的正则锚定 $，行尾为 "·soul[...]" 时时间戳不剥离，同日行的时间+灵魂
+  // 后缀公共 bigram 主导相似度（实测：完全异主题同日活动记忆 Jaccard 0.50 ≥ 0.25 被误折）；
+  // ② 行首 tag（type|session）也是元数据：同 tag 行恒共享 20+ bigram，短行对仅凭 tag 即逼近
+  // 阈值（实测 ④-1 fixture：仅共享"召回专项"3 个内容 bigram 的两行仍被折，jaccard 0.254）。
+  // A2 校准"非重复 ≤0.04"只在内容口径下成立——剥离行首 tag、行尾 soul 与时间段后比较。
+  const stripMeta = (t: string) =>
+    t
+      .replace(/^- \[[^\]]*\]\s*/, "")
+      .replace(/·soul\[[^\]]*\]\s*$/, "")
+      .replace(/·\(活动时间:[^)]*\)\s*$/, "")
+      .trimEnd();
   const grams = (t: string) => {
     const set = new Set<string>();
     for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
@@ -89,7 +100,7 @@ function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
   const keptGramSets: Set<string>[] = [];
   const out: string[] = [];
   for (const line of lines) {
-    const g = grams(stripTime(line));
+    const g = grams(stripMeta(line));
     let dup = false;
     for (const kg of keptGramSets) {
       let inter = 0;

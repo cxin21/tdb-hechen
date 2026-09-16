@@ -29,21 +29,23 @@ import { handleCoreMemoryValuesDiscover } from "./v2-router.js";
 
 // ── 纯函数：weight 公式边界 ──────────────────────────────────────
 
-describe("suggestAnchorWeight（0.3..0.8，0.3 + 0.5*e/sampleSize）", () => {
+// D6 密度语义裁决（2026-09-15，REG-REMAINING-001）：绝对证据+饱和取代密度归一——
+// weight = 0.3 + 0.5*min(e, E_REF=50)/50，语料规模退出公式（sampleSize 仅守卫用）。
+describe("suggestAnchorWeight（0.3..0.8，绝对证据+饱和：0.3 + 0.5*min(e,50)/50）", () => {
   it("e=0 → 下限 0.3", () => {
     expect(suggestAnchorWeight(0, 10)).toBe(0.3);
   });
-  it("e=3, sample=10 → 0.45", () => {
-    expect(suggestAnchorWeight(3, 10)).toBeCloseTo(0.45, 10);
+  it("e=3 → 0.33（语料规模不参与：D6 后 sampleSize 不再稀释）", () => {
+    expect(suggestAnchorWeight(3, 10)).toBeCloseTo(0.33, 10);
   });
-  it("e=sampleSize → 上限 0.8（不被超出）", () => {
-    expect(suggestAnchorWeight(10, 10)).toBe(0.8);
+  it("e=E_REF=50 → 上限 0.8（饱和点）", () => {
+    expect(suggestAnchorWeight(50, 10)).toBe(0.8);
   });
-  it("e>sampleSize（幻觉重算后不可能但公式守卫）→ clamp 0.8", () => {
-    expect(suggestAnchorWeight(20, 10)).toBe(0.8);
+  it("e>50 → clamp 0.8（防巨锚锁死）", () => {
+    expect(suggestAnchorWeight(80, 10)).toBe(0.8);
   });
-  it("sampleSize=0 → 守卫返回下限 0.3（流程不可达：无语料必无提案）", () => {
-    expect(suggestAnchorWeight(5, 0)).toBe(0.3);
+  it("sampleSize=0 但 e>0 → 仍按绝对证据判（D6 后语料规模退出公式）", () => {
+    expect(suggestAnchorWeight(5, 0)).toBe(0.35);
   });
 });
 
@@ -284,15 +286,18 @@ describe("POST /core-memory/values/discover（提议制 handler）", () => {
     expect(res.code).toBe(0);
     const data = (res as { data: { proposals: Array<{ label: string; rationale: string; evidenceCount: number; suggestedWeight: number }>; sampleSize: number } }).data;
     expect(data.sampleSize).toBe(4);
-    // 提案1：重算 999 → 实际命中 3（r1/r2/r3），weight = 0.3 + 0.5*3/4 = 0.675
-    expect(data.proposals[0]).toEqual({ label: "增量对账", rationale: "反复出现", evidenceCount: 3, suggestedWeight: 0.675 });
+    // 提案1：重算 999 → 实际命中 3（r1/r2/r3），D6 绝对证据：weight = 0.3 + 0.5*3/50 = 0.33
+    expect(data.proposals[0].label).toBe("增量对账");
+    expect(data.proposals[0].rationale).toBe("反复出现");
+    expect(data.proposals[0].evidenceCount).toBe(3);
+    expect(data.proposals[0].suggestedWeight).toBeCloseTo(0.33, 10);
     // 提案2：重算 1 < 3 → 宁缺毋滥丢弃
     expect(data.proposals.length).toBe(1);
     // K1：discover 全程只读——upsertValue 永不被调用
     expect(store.upsertValue).not.toHaveBeenCalled();
-    // maxTokens 覆写 8192（推理模型输出预算）+ taskId
+    // maxTokens 不设限（GROW-EVO P2.1 裁定：0 = 不限制，推理模型 thinking 不设预算）+ taskId
     expect(runner.calls.length).toBe(1);
-    expect(runner.calls[0].params.maxTokens).toBe(8192);
+    expect(runner.calls[0].params.maxTokens).toBe(0);
     expect(runner.calls[0].params.taskId).toBe("core-values-discover");
   });
 

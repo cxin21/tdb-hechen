@@ -278,7 +278,7 @@ describe("runAnchorGrowth 杂项裁定", () => {
     expect(res).toMatchObject({ ran: false, reason: "store-unsupported" });
   });
 
-  it("prompt 注入全态已有锚清单（veto 主题进 dedup 指令）+ maxTokens 覆写 8192", async () => {
+  it("prompt 注入全态已有锚清单（veto 主题进 dedup 指令）+ maxTokens 不设限（GROW-EVO P2.1 裁定：0=不限制）", async () => {
     const store = makeStore({
       rows: corpusFor("增量对账", 6),
       anyState: [row("v1", "已否决主题", { state: "vetoed" })],
@@ -287,7 +287,7 @@ describe("runAnchorGrowth 杂项裁定", () => {
     const runner = makeRunner("[]");
     await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
     expect(runner.calls).toHaveLength(1);
-    expect(String(runner.calls[0]!.maxTokens)).toBe(String(8192));
+    expect(String(runner.calls[0]!.maxTokens)).toBe(String(0));
     expect(String(runner.calls[0]!.prompt)).toContain("已否决主题");
     expect(String(runner.calls[0]!.taskId)).toBe("core-values-discover-growth");
   });

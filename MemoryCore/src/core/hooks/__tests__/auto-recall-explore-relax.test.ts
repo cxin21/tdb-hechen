@@ -169,9 +169,13 @@ async function recall(
 describe("V2-3 E3.2 结论层放宽（performAutoRecall 真链路，临时库）", () => {
   // 结论行（durative work_fact，按 significance 分层；内容避开 query token——无需命中即可浮出）
   const WF_ROWS = [
-    mk("wf-a", { type: "work_fact", content: "红牌诊断结论条目甲", significance: 0.9 }),
-    mk("wf-b", { type: "work_fact", content: "利用率矩阵结论条目乙", significance: 0.7 }),
-    mk("wf-c", { type: "work_fact", content: "全面性基线结论条目丙", significance: 0.1 }),
+    // A2-R1 口径：行内容须真实可区分且足够长（结论行 tag 公共 bigram 恒定共享，
+    // 内容过短会被 foldNearDuplicates 误折，预算裁剪语义不可观测）。
+    // 结论行 tag 含 scene_name：每行独立 scene（tag 公共 bigram 降至前缀"- [结论"）+
+    // 足够长且不相交的内容——否则同 tag 的行首公共 bigram 主导相似度被 foldNearDuplicates 误折。
+    mk("wf-a", { type: "work_fact", scene_name: "红牌诊断", content: "红牌诊断的根因结论已经闭环：网卡驱动挂死在USB总线，重载固件并更换M.2槽位后连续72小时无复发——结论条目甲", significance: 0.9 }),
+    mk("wf-b", { type: "work_fact", scene_name: "利用率矩阵", content: "利用率矩阵的分位数结论已经定稿：P99延迟按调用链聚合后出现衰减拐点，告警基线需要按新窗口重算——结论条目乙", significance: 0.7 }),
+    mk("wf-c", { type: "work_fact", scene_name: "全面性基线", content: "全面性基线的覆盖结论已经更新：长尾场景抽样占比不足，扩采样窗口与人工复核流程同步生效——结论条目丙", significance: 0.1 }),
     // 注入锚（episodic，query token 命中——保证注入块非空；不参与结论候选）
     mk("anchor", { content: "V2BAL 锚点：召回质量问题记录" }),
   ];

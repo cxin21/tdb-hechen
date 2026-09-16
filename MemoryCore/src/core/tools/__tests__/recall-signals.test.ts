@@ -154,7 +154,7 @@ describe("structuralSignalOf 关断矩阵（全 0 → 恒 0）", () => {
     const ctx = { timeWindow: WIN, moodSign: 1, signals: ZERO_RANK_SIGNALS, now: NOW };
     expect(structuralSignalOf(hot, ctx)).toBe(0);
   });
-  it("DEFAULT_RANK_SIGNALS 默认值与 spec §2 一致（R9 默认关）", () => {
+  it("DEFAULT_RANK_SIGNALS 默认值与 spec §2 一致（R9 默认关 + R10 情感显著度默认关断）", () => {
     expect(DEFAULT_RANK_SIGNALS).toEqual({
       timeBoost: 0.05,
       recencyBoost: 0.03,
@@ -162,6 +162,8 @@ describe("structuralSignalOf 关断矩阵（全 0 → 恒 0）", () => {
       inferredPenalty: 0.1,
       reinforcementWeight: 0.03,
       moodBoost: 0,
+      // R10（REG-R10-AB-001）：情感显著度信号默认关断（A/B 未过不得置正，实验轨红线）。
+      emotionSalienceWeight: 0,
     });
   });
 });

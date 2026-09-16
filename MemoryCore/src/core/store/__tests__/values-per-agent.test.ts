@@ -176,12 +176,12 @@ describe("PA 第 4 步：anchor growth state per-tenant（自生长双门的 per
       // A / B 独立
       store.setAnchorGrowthState!({ lastDiscoveryAt: "2026-09-11T00:00:00.000Z", lastCorpusCount: 5 }, TENANT_A);
       store.setAnchorGrowthState!({ lastDiscoveryAt: "2026-09-12T00:00:00.000Z", lastCorpusCount: 7 }, TENANT_B);
-      expect(store.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: "2026-09-10T00:00:00.000Z", lastCorpusCount: 9 });
-      expect(store.getAnchorGrowthState!(TENANT_A)).toEqual({ lastDiscoveryAt: "2026-09-11T00:00:00.000Z", lastCorpusCount: 5 });
-      expect(store.getAnchorGrowthState!(TENANT_B)).toEqual({ lastDiscoveryAt: "2026-09-12T00:00:00.000Z", lastCorpusCount: 7 });
+      expect(store.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: "2026-09-10T00:00:00.000Z", lastCorpusCount: 9, lastAttemptAt: null, lastAdoptedAt: null });
+      expect(store.getAnchorGrowthState!(TENANT_A)).toEqual({ lastDiscoveryAt: "2026-09-11T00:00:00.000Z", lastCorpusCount: 5, lastAttemptAt: null, lastAdoptedAt: null });
+      expect(store.getAnchorGrowthState!(TENANT_B)).toEqual({ lastDiscoveryAt: "2026-09-12T00:00:00.000Z", lastCorpusCount: 7, lastAttemptAt: null, lastAdoptedAt: null });
       // 未写过的租户 → 空状态
       const empty = store.getAnchorGrowthState!(TENANT_C);
-      expect(empty).toEqual({ lastDiscoveryAt: null, lastCorpusCount: null });
+      expect(empty).toEqual({ lastDiscoveryAt: null, lastCorpusCount: null, lastAttemptAt: null, lastAdoptedAt: null });
       // 持久化在 kv 表（重启不失忆语义保持）：显式键可见
       const rawKeys = (store.getRawDb().prepare("SELECT k FROM anchor_growth_state ORDER BY k").all() as Array<{ k: string }>).map((r) => r.k);
       expect(rawKeys).toContain("last_discovery_at"); // 旧键保留

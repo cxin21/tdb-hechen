@@ -11,6 +11,46 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔁 A2-R1 近重折叠剥离回归修复（REG-REMAINING-003 #2 排查中实证，2026-09-16）
+
+- **发现路径**：待办#2 断言还债中 auto-recall-assembly（4 例）/explore-relax（1 例）失败实证追查——
+  非交接快照所判的"断言滞后"，而是**真实产品回归**（A2 cfe9eba 引入，stash 对照未覆盖到语义层）。
+- **两步根因**：① stripTime 正则锚定 `# Changelog
+
+本文件记录 **TencentDB Agent Memory** 的显著变更，格式遵循
+[Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
+[Semantic Versioning](https://semver.org/)。
+
+覆盖仓库全部开源模块：`MemoryCore` / `MemoryPanel` / `MemoryKnowledge` /
+`MemoryProxy` / SDK。
+
+---
+
+，行尾为 "·soul[...]" 时时间戳不剥离——同日行的时间+灵魂
+  后缀公共 bigram 主导相似度，**完全异主题同日活动记忆 Jaccard 0.50 ≥ 0.25 被误折**；② 行首 tag
+  （type|session）同为元数据，同 tag 行恒共享 20+ bigram——仅共享 3 个内容 bigram 的行对仍被折
+  （实测 jaccard 0.254）。A2 校准"重复组 0.36-0.49 vs 非重复 ≤0.04"只在**内容口径**下成立，
+  实现却对整行（tag+时间+灵魂）计算，校准前提被元数据污染失效。
+- **修复（A2-R1）**：`foldNearDuplicates` 相似度改为内容口径——剥离行首 tag、行尾 soul、时间段
+  （stripMeta）后比较。阈值 0.25 不变；真实近重复（跨通道同内容/转述）内容高度重叠不受影响，
+  A2 原始动机（重复指令收敛）保持。
+- **实证**：单元探针三组数值——I① 行对 0.45→0.143、异主题同日行对 0.50→内容口径 <0.1、
+  ④-1 行对 0.254→内容口径 <0.05；受影响套件 13/13 绿。
+
+### ✅ 14 例预存量测试口径还债收口（REG-REMAINING-003 #2，2026-09-16）
+
+- **结果**：全量 vitest **462/462 全绿**（48 文件），回归底线恢复判别力；tsc 244 持平；
+  四服务重启后健康（valence 稳态零 LLM 日志正确宣告）。
+- **逐例处置**（每例对照裁定登记）：anchor-growth maxTokens 8192→0 ×2（GROW-EVO P2.1：0=不限制）；
+  recall-signals DEFAULT_RANK_SIGNALS 快照补 `emotionSalienceWeight: 0`（R10 REG-R10-AB-001 实验轨
+  红线）；values-state / values-per-agent growth state 断言补 lastAttemptAt/lastAdoptedAt（GROW-MAINT
+  冷却分级落 kv）；core-values-discover 5 例 → D6 绝对证据+饱和公式（0.3 + 0.5*min(e,50)/50，
+  REG-REMAINING-001，commit 41ca707）；auto-recall-assembly Critical metric 断言改 A2 语义
+  （recalledL1Memories = 未折叠全集，注入块 = 折叠行集；对齐性改证：每条注入行源自某未折叠记忆）。
+- **fixture 去近重**：④-1 / ④-3 / explore-relax 三处"仅尾字符不同"的近重复 fixture 改为真实可区分
+  内容——行首 tag 公共 bigram 恒定共享，近重复 fixture 会使 slice 对齐与预算裁剪语义不可观测。
+- **教训登记**：今后排序/配置类裁定在 CHANGELOG 登记时**同步列名受影响测试**（A2 cfe9eba 未登记
+  CHANGELOG，导致本轮需逆向考古才能区分"断言滞后"与"回归 bug"）。
 ### 🧭 锚 valence 漂移修复：boot 逐租户 derive + 采纳路径补值钩子（REG-REMAINING-003 #1，2026-09-16）
 
 - **根因（三层实证）**：① DB 探针——15 活跃锚全部位于非 default 租户（team-kcjjqzkxks，kfyn 2 NULL + l5ug 4 NULL）；

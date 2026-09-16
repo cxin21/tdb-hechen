@@ -121,8 +121,13 @@ describe("审查修补 Critical · V2-3 溢出 → 最终注入总行数 ≤ max
       const lines = injectedLines(res?.prependContext);
       // 预算模型硬断言：结论 + 经验总行数不得突破 maxResults
       expect(lines.length).toBeLessThanOrEqual(5);
-      // metric 对齐：recalledL1Memories 与注入行一一对应
-      expect(res?.recalledL1Memories?.length).toBe(lines.length);
+      // A2 metric 语义（2026-09-16 口径还债）：recalledL1Memories = 未折叠全集（metric 完整性），
+      // 注入块 = foldNearDuplicates 折叠行集——"一一对应"已被 A2"块内折叠、metric 保全集"取代；
+      // 对齐性改证：每条注入行都源自某个未折叠记忆。
+      expect(res?.recalledL1Memories?.length).toBeGreaterThanOrEqual(lines.length);
+      for (const l of lines) {
+        expect(res?.recalledL1Memories?.some((m) => l.includes(m.content))).toBe(true);
+      }
       // 裁剪不是清空：结论层仍在场（保留命中优先的头部），经验锚也在场
       expect(lines.filter((l) => l.startsWith("- [结论")).length).toBeGreaterThan(0);
       expect(lines.some((l) => l.includes("讨论记录"))).toBe(true);
@@ -171,8 +176,14 @@ describe("审查修补 Important④-1 · slice 对齐（experienceLimit = maxRes
   it("结论 1 条 + 经验 4 条 → 总 5 行（生产 maxResults=5 口径）", async () => {
     // 结论走 scene_block 通道（scene index，确定性命中，不受 FTS 候选窗排序影响）
     const ROWS = [
-      ...["甲", "乙", "丙", "丁"].map((c, i) =>
-        mk(`anchor-${i}`, { content: `召回专项最近有什么新进展的讨论记录${c}` })),
+      // A2-R1 口径：行内容须真实可区分且足够长（行首 tag 公共 bigram 恒定共享，
+      // 内容过短时 tag 主导相似度被误折）——共享词面仅保留 query 可命中的"召回专项"。
+      ...[
+        "召回专项背景下的索引评审：本次分片键选择结合热点访问路径完成冲突概率评估，容量推演与归档动作全部收尾",
+        "召回专项相关的缓存压测：命中率曲线在峰值并发出现衰减拐点，失效风暴应对的灰度开关与排期表已经定稿",
+        "召回专项延伸的回滚演练：双写切换与数据对账步骤全部通过验证，残留风险项登记进跟进清单并指派负责人",
+        "召回专项配套的告警治理：分级通知策略与静默窗口写入运行手册，值班表完成同步并开始按新阈值运行",
+      ].map((content, i) => mk(`anchor-${i}`, { content })),
     ];
     const { store, dir } = makeStore(ROWS);
     try {
@@ -267,10 +278,11 @@ describe("审查修补 Important④-3 · metric scores 前插对齐（结论 0 �
     });
     const hybridRows = [
       hitRow("wf-c1", 0.99, { type: "work_fact", scene_name: "召回专项", content: "召回专项的持续结论条目" }),
-      hitRow("exp-1", 0.9),
-      hitRow("exp-2", 0.8),
-      hitRow("exp-3", 0.7),
-      hitRow("exp-4", 0.6),
+      // A2-R1 口径：mock 行内容须真实可区分且足够长（同 tag 公共 bigram 主导会被误折）。
+      hitRow("exp-1", 0.9, { content: "索引设计评审完成：本次分片键选择结合热点访问路径的冲突概率评估与容量推演记录已全部归档备查（exp-1）" }),
+      hitRow("exp-2", 0.8, { content: "缓存策略压测报告定稿：命中率曲线在峰值并发下的衰减拐点与失效风暴应对开关已完成评审签发（exp-2）" }),
+      hitRow("exp-3", 0.7, { content: "回滚方案演练日志归档：双写切换与数据对账步骤全部通过验证，残留风险项已登记进跟进清单（exp-3）" }),
+      hitRow("exp-4", 0.6, { content: "监控告警阈值调整生效：分级通知策略与静默窗口的配置说明已写入运行手册并同步到值班表（exp-4）" }),
     ];
     const vectorStore = {
       isFtsAvailable: () => true,

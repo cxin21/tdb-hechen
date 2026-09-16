@@ -39,6 +39,10 @@
 
 ### 2. 14 例预存量测试失败 · 口径还债（优先级 2 · 现在做）
 
+> **状态（2026-09-16）：✅ 已完成**——全量 vitest 462/462 全绿，tsc 244 持平。过程中的重大发现：
+> assembly/explore-relax 5 例不是断言滞后而是**真实产品回归（A2-R1）**——foldNearDuplicates 对整行
+> （tag+时间+灵魂后缀）算相似度，同日异主题记忆被误折（Jaccard 0.50）；已修为内容口径。详见
+> CHANGELOG「A2-R1 近重折叠剥离回归修复」与「14 例预存量测试口径还债收口」。
 **背景**：全量 vitest 47 文件 453 测试中 14 例失败，分布：core-values-discover(5)、auto-recall-assembly(4)、anchor-growth(1)、auto-recall-explore-relax(1)、values-per-agent(1)、values-state(1)、recall-signals(1)。stash 对照实证为预存量（非近期改动引入），但它们使"全量回归"失去底线意义——回归基线必须是全绿才有判别力。
 
 **原因（第一性原理）**：错误样本逐例分类后，全部是**测试断言滞后于已裁定的行为变更**，不是产品代码缺陷：
@@ -187,7 +191,7 @@ anchorDiscovery(5 字段/enabled/minEvidence 3/maxPerPass 3/maxTotal 15/interval
 | 优先级 | 项 | 触发 | 量级 |
 |---|---|---|---|
 | **1** | 锚 valence 漂移排查修复 | ✅ 已完成（2026-09-16） | ~110 行（含测试） |
-| **2** | 14 例测试口径还债 | 现在 | ~2-4h |
+| **2** | 14 例测试口径还债 | ✅ 已完成（2026-09-16，462/462 全绿） | 实际 ~3h + A2-R1 产品修复 |
 | **3** | assistant 提取漏损实证 | 现在（观测） | ~80 行 |
 | 等 | D2 产线替换 | 标注 ≥300 | ~100 行 |
 | 等 | P4b evolution-worker | conflict ≥5 | ~150 行 |
