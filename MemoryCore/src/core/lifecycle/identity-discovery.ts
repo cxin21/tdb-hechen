@@ -145,14 +145,15 @@ export async function runIdentityDiscovery(deps: {
         const identityProps: string[] = [];
         for (const p of proposals) {
           if (p.slot === "identity") {
-            // 身份采纳门（硬约束执行）：状态模式剥离——prompt 软判据三轮复发后升级为代码执行
-            const cleaned = p.content
-              .replace(/（当前[^）]*）|\(当前[^)]*\)/g, "")
-              .replace(/（截至[^）]*）|\(截至[^)]*\)/g, "")
-              .replace(/已全部落地[^。；\n]*[。；]?/g, "")
-              .replace(/进入观察期[^。；\n]*[。；]?/g, "")
-              .replace(/\n{2,}/g, "\n").trim();
-            if (cleaned) identityProps.push(cleaned);
+            // 身份采纳门（硬约束执行）：状态模式剥离——prompt 软判据三轮复发后升级为
+            // 代码执行（第一轮枚举式 + 第二轮结构式，stripIdentityStateResidue 单一源）。
+            const cleaned = stripIdentityStateResidue(p.content);
+            if (!cleaned) {
+              // 整条提案全是状态陈述 → 整体拒收（不静默，留痕）
+              logger?.info?.(`[identity-discovery] identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
+            } else {
+              identityProps.push(cleaned);
+            }
           } else {
             const ev = recountEvidence(p.content, corpus);
             pendingThis++;
@@ -184,6 +185,40 @@ export async function runIdentityDiscovery(deps: {
     logger?.warn?.(`[identity-discovery] failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ran: false, adopted: 0, pending: 0, reason: "error" };
   }
+}
+
+// ── 身份采纳门：状态残留剥离（单一源，导出供测试） ──
+// 第一轮（枚举式，2026-09-15）：已知状态表述的字面剥离。
+// 第二轮（结构式，REG-REMAINING-002 #2，2026-09-16）：枚举可被 LLM 发明的新表述绕过
+// （三轮复发实证）——升级为结构判据：日期引用（\d{4}[-年]）与阶段编号（P\d）是状态
+// 陈述的结构标志，身份内容（角色/职责/关系/纪律）不应含时间坐标；命中 → 剥离所在句。
+// 人工清洗（Panel / core-memory write API）保持最后兜底（单行内容，清洗成本 30 秒）。
+const STATE_PHRASE_RES = [
+  /（当前[^）]*）|\(当前[^)]*\)/g,
+  /（截至[^）]*）|\(截至[^)]*\)/g,
+  /已全部落地[^。；\n]*[。；]?/g,
+  /进入观察期[^。；\n]*[。；]?/g,
+];
+const STATE_DATE_RE = /\d{4}[-年]\d{0,2}/;
+const STATE_PHASE_RE = /P\d/;
+
+export function stripIdentityStateResidue(content: string): string {
+  const s = String(content ?? "");
+  if (!s) return "";
+  // 切分先于枚举（审查实测修正）：枚举模式的 [。；]? 会吞句界，若先枚举后切分，
+  // 相邻干净句会被并入状态句遭过度剥离。顺序：按句切分（保留分隔符）→ 逐句枚举
+  // 剥离 → 结构判据（日期/阶段编号）→ 空句/状态句丢弃。
+  return s
+    .split(/(?<=[。；;！？\n])/)
+    .map((seg) => {
+      let t = seg;
+      for (const re of STATE_PHRASE_RES) t = t.replace(re, "");
+      return t;
+    })
+    .filter((t) => t.trim() !== "" && !STATE_DATE_RE.test(t) && !STATE_PHASE_RE.test(t))
+    .join("")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
 }
 
 // ── helpers ──
