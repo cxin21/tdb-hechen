@@ -411,3 +411,16 @@ CREATE TABLE IF NOT EXISTS core_pending (
 - 配置审计全绿：selfIdentity(1h)/anchorDiscovery(person 3/2/8 分池)/soulRender(600/900/5)/refProtection=true/allowedSlots×4；identityMaintain 节点被并入 anchorDiscovery（yaml 兼容，非缺陷）
 - env 恢复 MEMORY_LOG_LEVEL=info（debug 仅为取证临时值）
 **顺带修复**：R4-2b file-logger（/data/log 预建+chown tdai）——取证通道恢复。
+
+## Round5 R4-5 修复记录（2026-09-18，A6 四级贯通召回级 P0 闭环）
+**设计裁决（第一性原理+spec 对照）**：profile-sync.ts 旧注释声明 profiles"有意忽略 userId（agent 记忆跨用户累积）"——但 spec §2.3"L2 内容主语=agent 会话场景+用户事实 / L3 内容主语=用户"、§10 D-R3-1（跨 user 串味登记为缺陷需修）、§7-P3 拍板"品格随关系分化 per-三元组，接受无跨用户共享"三处一致裁定 user 级隔离优先；ev10 Q 租户 /recall 直证跨 user 注入（"导师为林岚"串入陈教授用户）为决定性实证。
+**实现**：
+| 层 | 改动 | 提交 |
+|---|---|---|
+| scope 构造 | buildProfileIsolationScope 三元组化 team\|user\|agent；缺 user→user:default 兜底桶（钩子无租户路径连续）；DEFAULT_PROFILE_SCOPE 不变 | cceded3 |
+| 解析 | parseProfileIsolationScope 三段格式+旧两格式兼容（team\|agent / user\|agent） | cceded3 |
+| 匹配 | profileMatchesScope user 参与比对 | cceded3 |
+| 读取端 | handleRecall profileIsolation 随行 userId | ff65f10 |
+| 迁移 | 真实租户单用户目录迁入 user 桶（kcjjqzkxks 两 agent→usr-kfym3ajzme；hook default 桶改名保连续）；混写/无属主测试目录删除（场景块按新 scope 重建） | 本次运维 |
+**验证**：TDD 红（6 败）→绿；vitest 600/600（+8 scope 用例）、tsc 243；ev10 复验 **Q 隔离无林岚=True（修复前 False）/ 含陈教授=True**；装配测试夹具随 scope 三元组化更新。
+**方法学沉淀**：设计注释≠设计文档——"有意忽略"的旧注释与 spec 缺陷登记冲突时，以 spec 三处一致性裁决；迁移脚本用 L0/L1 distinct user 反推目录属主，混写目录（多用户）不可自动拆分直接删（场景蒸馏层可再生）。
