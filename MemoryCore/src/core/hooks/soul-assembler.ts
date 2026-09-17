@@ -22,10 +22,18 @@ function valenceDir(v: number | null | undefined): string {
   return "";
 }
 
+/** DS-SOUL-MEMORY-002 P1（F17）：段级渲染选项。缺省（undefined）= 旧渲染字节级一致。 */
+export interface SoulRenderOptions {
+  selfIdentityEnabled?: boolean;
+  budgetSelfChars?: number;
+  budgetIdentityChars?: number;
+}
+
 export async function buildSoulPrefix(
   store: IMemoryStore,
   tenant: CoreTenant,
   logger?: Logger,
+  opts?: SoulRenderOptions,
 ): Promise<string> {
   const parts: string[] = [];
   try {
@@ -36,8 +44,30 @@ export async function buildSoulPrefix(
     // ── 身份段：此刻的你 ──
     if (slots.length > 0 || active.length > 0) {
       const lines: string[] = [];
-      for (const s of slots) {
-        lines.push(`- [${s.slot}] ${s.content}`);
+      // DS-SOUL-MEMORY-002 P1 四段渲染（gated）：非 dual 路径保持 `- [slot] content`
+      // 原样且不做截断——逐位现状；dual 路径 self/identity 行分别带（我是谁）/（我心中的他）
+      // 前缀（multi-line content 仅首行带前缀），F17 预算超限 slice 截断（宁缺毋滥，无省略号）。
+      const dual = opts?.selfIdentityEnabled === true;
+      const budgetFor = (slot: string): number | undefined =>
+        !dual ? undefined
+          : slot === "self_identity" ? (opts?.budgetSelfChars ?? 600)
+          : slot === "identity" ? (opts?.budgetIdentityChars ?? 900)
+          : undefined;
+      const labelFor = (slot: string): string =>
+        slot === "self_identity" ? "我是谁" : slot === "identity" ? "我心中的他" : "";
+      // 渲染顺序=spec §2.7 不变量（:143-144：self 段在 identity 段前），不依赖 readCore 返回序；
+      // stable 分区保持其余 slot 原相对序。legacy 路径（dual=false）保持原序逐位现状。
+      const ordered = dual
+        ? [...slots].sort((a, b) => {
+            const rank = (slot: string) => (slot === "self_identity" ? 0 : slot === "identity" ? 1 : 2);
+            return rank(a.slot) - rank(b.slot);
+          })
+        : slots;
+      for (const s of ordered) {
+        const budget = budgetFor(s.slot);
+        const content = budget !== undefined && s.content.length > budget ? s.content.slice(0, budget) : s.content;
+        const label = labelFor(s.slot);
+        lines.push(dual && label ? `（${label}）- [${s.slot}] ${content}` : `- [${s.slot}] ${s.content}`);
       }
       if (active.length > 0) {
         lines.push(

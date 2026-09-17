@@ -634,7 +634,17 @@ export async function performLayeredRecall(params: {
       try {
         const { buildSoulPrefix } = await import("./soul-assembler.js");
         const it = params.isolationFilter;
-        soulPrefix = await buildSoulPrefix(vectorStore, { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" }, logger);
+        soulPrefix = await buildSoulPrefix(
+          vectorStore,
+          { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
+          logger,
+          {
+            // DS-SOUL-MEMORY-002 P1（F17）：四段渲染开关与段级预算（缺省 undefined=逐位现状）。
+            selfIdentityEnabled: cfg.coreMemory?.selfIdentity?.enabled === true,
+            budgetSelfChars: cfg.coreMemory?.soulRender?.budgetSelfChars,
+            budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
+          },
+        );
       } catch (err) {
         logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
