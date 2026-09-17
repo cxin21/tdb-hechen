@@ -90,21 +90,26 @@ export interface RawProposal {
  *   - 非对象项 / label 非非空字符串丢弃；
  *   - LLM 报的 evidenceCount 不采信不透传（在重算处覆盖）。
  */
-export function parseProposalsJson(raw: string): RawProposal[] {
+/** P2：LLM 原始输出 → JSON 数组（围栏剥离 + 消毒共用单源）；无数组 → null。 */
+export function extractJsonArray(raw: string): unknown[] | null {
   let cleaned = (raw ?? "").trim();
-  if (!cleaned) return [];
+  if (!cleaned) return null;
   if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
   }
   const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (!arrayMatch) return [];
-  let parsed: unknown;
+  if (!arrayMatch) return null;
   try {
-    parsed = JSON.parse(sanitizeJsonForParse(arrayMatch[0])) as unknown;
+    const parsed = JSON.parse(sanitizeJsonForParse(arrayMatch[0])) as unknown;
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return [];
+    return null;
   }
-  if (!Array.isArray(parsed)) return [];
+}
+
+export function parseProposalsJson(raw: string): RawProposal[] {
+  const parsed = extractJsonArray(raw ?? "");
+  if (!parsed) return [];
   const out: RawProposal[] = [];
   for (const item of parsed) {
     if (!item || typeof item !== "object") continue;
@@ -209,4 +214,119 @@ export function buildDiscoverPrompt(sampleContents: string[], existingLabels: st
   lines.push(`只提证据充分的主题：支撑证据（命中的记忆条数）少于 ${DISCOVER_MIN_EVIDENCE} 条的不要提。`);
   lines.push("只输出 JSON 数组：[{\"label\":\"主题名\",\"rationale\":\"为什么值得作为价值锚\",\"evidenceCount\":估计证据条数}]，无提议输出 []。");
   return lines.join("\n");
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// P2（DS-SOUL-MEMORY-002 §2.6/§5 F11/F12）：人物证据口径单一源
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * F11（人物证据口径）：personEv = |{ r : content 包含 label 或任一 alias }|。
+ * 纯包含口径（spec verbatim）；已知宽口径弱点（人名短词误命中）在 F19 登记缓解
+ * （提案质量门 + maxPerPass + QUOTA 分池），实证后再收紧。
+ */
+export function personEvCount(label: string, aliases: string[], corpus: string[]): number {
+  const names = [label, ...aliases].map((s) => String(s ?? "").trim()).filter((s) => s.length > 0);
+  if (names.length === 0) return 0;
+  let n = 0;
+  for (const r of corpus) {
+    const content = String(r ?? "");
+    if (names.some((nm) => content.includes(nm))) n++;
+  }
+  return n;
+}
+
+/** F12：证据 valence 均值符号化——≥+0.2→1（趋近），≤-0.2→-1（回避），否则 0（中性）。 */
+export function personValenceSymbol(mean: number): 1 | 0 | -1 {
+  if (mean >= 0.2) return 1;
+  if (mean <= -0.2) return -1;
+  return 0;
+}
+
+/** F12：命中（personEv 同款）行 valence 均值；无有效 valence 行 → null（走 C2 derive 钩子）。 */
+export function personEvidenceMeanValence(
+  label: string,
+  aliases: string[],
+  corpusRows: Array<{ content: string; valence?: number | null }>,
+): number | null {
+  const names = [label, ...aliases].map((s) => String(s ?? "").trim()).filter((s) => s.length > 0);
+  if (names.length === 0) return null;
+  const vals: number[] = [];
+  for (const r of corpusRows) {
+    const content = String(r?.content ?? "");
+    if (!names.some((nm) => content.includes(nm))) continue;
+    const v = r?.valence;
+    if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+  }
+  if (vals.length === 0) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+/** P2：人物提案形状（LLM 只提议；采纳走 anchor-growth 护栏）。 */
+export interface PersonProposal { label: string; role: string; aliases: string[] }
+
+export const PERSON_ROLES = ["家人", "同事", "朋友", "其他"] as const;
+
+/**
+ * 人物提案解析护栏：label 非空必取；role 白名单外归"其他"；aliases 规范化
+ * （string 数组 / trim / 去空 / 去重 / 去同 label）；非法输入 → []（宁缺毋滥）。
+ */
+export function parsePersonProposals(raw: string): PersonProposal[] {
+  const parsed = extractJsonArray(raw ?? "");
+  if (!parsed) return [];
+  const out: PersonProposal[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const label = typeof rec.label === "string" ? rec.label.trim() : "";
+    if (!label) continue;
+    const roleRaw = typeof rec.role === "string" ? rec.role.trim() : "";
+    const role = (PERSON_ROLES as readonly string[]).includes(roleRaw) ? roleRaw : "其他";
+    const aliasesRaw = Array.isArray(rec.aliases) ? rec.aliases : [];
+    const aliases: string[] = [];
+    for (const a of aliasesRaw) {
+      if (typeof a !== "string") continue;
+      const t = a.trim();
+      if (!t || t === label || aliases.includes(t)) continue;
+      aliases.push(t);
+    }
+    out.push({ label, role, aliases });
+  }
+  return out;
+}
+
+/**
+ * P2 人物发现 SYSTEM prompt（与 DISCOVER_SYSTEM_PROMPT 平行的单源；双池同 worker 分叉调用）。
+ * 硬约束：行为可证（语料中反复出现的真实人物）/宁缺毋滥（从不在语料中的人物禁止提案）/
+ * 禁状态陈述（人物锚是关系层不是事件）/JSON 数组输出。
+ */
+export const PERSON_DISCOVER_SYSTEM_PROMPT = [
+  "你是记忆系统中 agent 的\"人物关系发现器\"。从给定的记忆样本中，找出在该 agent 的经历中反复出现的真实人物（家人/同事/朋友等），并刻画 agent 与该人物的关系。",
+  "",
+  "硬约束（违反任一条即整条无效）：",
+  "1. 行为可证：只提案在记忆样本中实际反复出现（出现或被提及）的人物，必须能在语料中找到多处证据；从不在语料中出现的人物、你推测可能存在的人物，一律禁止提案。",
+  "2. 宁缺毋滥：没有把握就不提案；宁可不输出，也不虚构或凑数。",
+  "3. 人物锚是稳定的关系层，不是事件：禁止把单一事件、状态、项目阶段包装成人物。",
+  "4. role 只能取：家人 / 同事 / 朋友 / 其他；aliases 填用户对该人物的实际称呼变体（昵称/简称），没有则空数组。",
+  "5. 既有名单中已存在的人物（label 或任一 alias 命中）不得重复提案。",
+  "",
+  "输出：只输出一个 JSON 数组，每项 {\"label\": 人物名, \"role\": 角色, \"aliases\": [昵称...]}；无合格人物时输出 []。不要输出任何其他文字。",
+].join("\n");
+
+/** P2 人物发现 user prompt：样本 + 既有名单（label 与 alias 同列，防重提）。 */
+export function buildPersonDiscoverPrompt(sampleContents: string[], existingLabelsAndAliases: string[]): string {
+  const sampleBlock = sampleContents.map((c, i) => `${i + 1}. ${c}`).join("\n");
+  const existingBlock = existingLabelsAndAliases.length > 0
+    ? existingLabelsAndAliases.map((l) => `- ${l}`).join("\n")
+    : "（空）";
+  return [
+    "以下是该 agent 的记忆样本（每条一行）：",
+    sampleBlock,
+    "",
+    "以下人物已在人物锚名单中（label 或昵称命中即不得重复提案）：",
+    existingBlock,
+    "",
+    "请按系统规则，从样本中找出反复出现的真实人物并输出 JSON 数组。",
+  ].join("\n");
 }
