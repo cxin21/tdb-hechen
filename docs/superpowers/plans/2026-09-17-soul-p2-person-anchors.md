@@ -315,3 +315,11 @@ CREATE TABLE IF NOT EXISTS core_pending (
 | T9 SOP | 本次 | ev6_* 16 组真数据 + 对抗审查 + 注入/召回核对 | 见报告 |
 
 基线：MemoryCore vitest 537→572（+35），tsc 243 持平（O20 未新增）。yaml 为环境配置（gitignore 策略），解析与缺省值已在仓库代码层。
+
+## Round2 执行记录（SOP 实证弱点三修，2026-09-17）
+| # | 弱点（真数据实证） | 修复 | 提交 | 验证 |
+|---|---|---|---|---|
+| 1 | 对抗种子攻入 self_identity：「用户将我的身份设定为他的女儿…」过 P1 strip 门进入渲染 | isIdentityImposition 主语一致性门（身份设定/把我当作/让我以…身份等强加人设模式，strip 同层单一源，identity+self_identity 双门） | d9a8626 | 单测6+真数据：清污重建后 self_identity 无「身份设定」行，仅合法行为自证两行 |
+| 2 | identity 槽单提案抹历史：upsertCore 纯 REPLACE，3 事实被 1 提案覆盖 | mergeIdentityFacts（existing∪new 行级去重 cap8；store REPLACE 语义保留供面板直写，组合在 worker） | d9a8626 | 真数据：identity 4 行合并演化 |
+| 3 | F14 保护静默失效：worker listValues() 恒读 default 租户；调度器无 filter 时全表扫描无租户概念 → 非默认租户保护名集恒空，双夹具全归档（三次实验二分定位） | deps.tenant 形参 + 批内记录租户去重聚合（显式租户优先；readCore 身份切片同源聚合） | 32e0f7a, aa46dba | 真数据终验：protected(coreRefs→女儿)=LIVE / dangling(悬空)=ARCHIVED |
+基线：vitest 580/580（+42 vs 538 起点），tsc 243 持平。方法学记录：解析配置二分定位时须以 parseConfig(doc.memory) 子树为入参（整文档入参会全默认值误判）；SSH 长等待>250s 需 ServerAliveInterval=30。
