@@ -302,6 +302,16 @@ export interface MemoryNeighborExpandConfig {
   maxAdd: number;
 }
 
+/** P4b 受控正文演化（GROW-EVO §4.4）设置。config-first：enabled 缺省 false = 逐位现状。 */
+export interface MemoryEvolutionConfig {
+  /** 总开关（默认 false——全系统唯一允许改写已固化正文的路径，必须显式开启）。 */
+  enabled: boolean;
+  /** 单轮最多重写多少对（LLM 成本护栏，缺省 3）。 */
+  maxRewrites: number;
+  /** 进程内节流毫秒（缺省 3600000 = 1 小时；重启归零多做一次幂等扫描，无害）。 */
+  intervalMs: number;
+}
+
 /** H+I 生命周期 worker（巩固/遗忘）设置。结构复用各 worker 的 config 形状（宽松解析，worker 内再校验）。 */
 export interface MemoryLifecycleConfig {
   /** 总开关（默认 true）。 */
@@ -602,6 +612,8 @@ export interface MemoryTdaiConfig {
   coreMemory: MemoryCoreMemoryConfig;
   /** H+I 生命周期（巩固/遗忘）配置（config-first：yaml 值真实生效）。 */
   lifecycle: MemoryLifecycleConfig;
+  /** P4b 受控正文演化（GROW-EVO §4.4；enabled 缺省 false = 逐位现状）。 */
+  evolution: MemoryEvolutionConfig;
   /** J 图邻居扩展（memory.search.neighborExpand）。 */
   search: {
     neighborExpand: MemoryNeighborExpandConfig;
@@ -914,6 +926,14 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     },
   };
 
+  // --- P4b 受控正文演化（GROW-EVO §4.4；config-first：enabled 缺省 false = 逐位现状） ---
+  const evolutionGroup = obj(c, "evolution");
+  const evolution: MemoryEvolutionConfig = {
+    enabled: bool(evolutionGroup, "enabled") ?? false,
+    maxRewrites: Math.min(20, Math.max(1, Math.floor(num(evolutionGroup, "maxRewrites") ?? 3))),
+    intervalMs: Math.max(60_000, num(evolutionGroup, "intervalMs") ?? 3_600_000),
+  };
+
   const search: MemoryTdaiConfig["search"] = {
     neighborExpand: {
       enabled: bool(neighborExpandGroup, "enabled") ?? false,
@@ -1132,6 +1152,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     links,
     coreMemory,
     lifecycle,
+    evolution,
     search,
     // 场景块治理（DS-SCENE-GOV-001）：enabled 缺省 false，生产零变化
     sceneGovernance,

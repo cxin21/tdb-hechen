@@ -170,6 +170,10 @@ memory:
       minAgeDays: 30
       lowThreshold: 0.12
       arousalRetention: 0.3 # GROW-EVO P3（§3.1）：闪光灯调制 k（缺省 0 = 逐位现状）
+  evolution: # P4b 受控正文演化（GROW-EVO §4，REG-REMAINING-005 #1）——全系统唯一允许改写已固化正文的路径
+    enabled: true # 2026-09-17 拍板启用（五条件门+单轮上限护栏，门严=不触发良性；代码缺省仍为 false=config-first）
+    maxRewrites: 3 # 单轮 LLM 调用与重写总量上限（成本护栏）
+    intervalMs: 3600000 # 进程内节流（1 小时）；幂等由 evolved_from 审计边保证
   search:
     neighborExpand: # J锛氶噸鏋勫紡鍥炲繂鈥斺€斿浘閭诲眳鎵╁睍锛堝畞缂烘瘚婊ワ紝浠呭苟鍏?top 绉嶅瓙涔嬮偦锛?
       enabled: true

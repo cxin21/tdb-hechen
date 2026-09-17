@@ -32,6 +32,8 @@
 
 **触发条件**：**已到达（conflict=6 ≥5），待用户拍板后执行。量级：~150 行。**
 
+> **【2026-09-17 实施完成 ✅】** 五条件门 + evolved_from 审计边 + 单轮上限护栏全部 live 实证（两轮：rewrites=1 → 0；门遥测逐项命中；归纳合并对真实 LLM skip；召回核查合并记录可召回、失效旧记录被排除）。设计最优性审查 5 处实现级修正全部向门更严偏置（幂等标记=evolved_from 参与集、门①降级为“conflict 边存在”+LLM skip 分支再验证、getLinksByType 单查、subject 严格口径、pin/veto 协议位）；spec 偏差与 O7 登记见 CHANGELOG 2026-09-17 条。产线 yaml + cloud 模板 enabled=true 拍板启用。
+
 ---
 
 ### 2. D2 产线替换——九通道校准拟合 → yaml 部署（预计 09-18/19 到达）
@@ -141,6 +143,7 @@ anchorDiscovery 5 字段 ✓（enabled/minEvidence=3/maxPerPass=3/maxTotal=15/in
 | O4 | 窗口头部弱势嫌疑 | 续批修复后批次按游标分轮（10+2 两轮实证），头部消息进入次轮窗口头部 | 并入 #5 已收口语义，暂无新模式 |
 | O5 | **遗忘年龄 × P2a 溯源语义对抗（已修复留档）**：occurred_at 权威字段曾被 forgetting 当记忆年龄 → 溯源越准忘得越快 | session-h 实锤（64dd815 修复 + 3 golden） | 修复已落地；**复发监测点**：若未来再出现"刚提取即归档"，优先排查 ageDaysOf 语义链 |
 | O6 | flowtest 归档率高位（archiveRate≈0.47，archived 244） | self-obs 日志 | 遗忘机制正常工作（含本轮 dedup-merge 归档），非缺陷；若 D2 校准期标注池受影响再评估 |
+| O7 | 合并记录向量召回覆盖缺口：evolution 产物 metadata-only（无 embedding，lifecycle 无 embedding 接线） | live 实证（upsertL1(rec,undefined)，consolidation 持续态同款先例） | 接受：FTS 路召回不受损、量级受门严控制（两轮 1 条）；若 D2 校准期实测漏召回再评估（前置=embedding 接入 lifecycle 装配） |
 
 触发立项条件：任一观察出现可复现的系统性模式（≥2 轮独立实证）。
 
@@ -148,7 +151,7 @@ anchorDiscovery 5 字段 ✓（enabled/minEvidence=3/maxPerPass=3/maxTotal=15/in
 
 | 优先级 | 项 | 触发 | 量级 |
 |---|---|---|---|
-| **1（待拍板）** | P4b evolution-worker（#1） | **已到达（conflict=6）** | ~150 行 |
+| **1 ✅（2026-09-17 完成）** | P4b evolution-worker（#1） | 已到达（conflict=6） | 实施完成（worker+16 用例+two-pass live 实证） |
 | **1（临近）** | D2 产线替换（#2） | 标注 ≥300 且正例 ≥50（现 142，预计 09-18/19） | ~100 行 |
 | 等 | D5 R10 A/B（#3） | 情感 cohort ≥20（随 D2） | ~50 行 |
 | 等 | P4a Phase 2 重蒸馏（#4） | 边覆盖成熟（derived_from 146 积累中） | ~150 行 |

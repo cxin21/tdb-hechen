@@ -1779,6 +1779,21 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * P4b（GROW-EVO §4，REG-REMAINING-005 #1）：按 type 全量取边——evolution-worker 的
+   * conflict 边扫描底座。单条索引查询（O(边数)），取代"逐 id getLinksByTarget/Source"
+   * 的 O(N) 逐条扫描（设计最优性审查定案 #3）。与上两方法同款模式。
+   */
+  getLinksByType(type: string): Array<{ sourceId: string; targetId: string; type: string; strength: number; createdAt: string }> {
+    try {
+      const rows = this.db.prepare("SELECT source_id, target_id, type, strength, created_at FROM l1_links WHERE type = ? ORDER BY created_at").all(type) as Array<{ source_id: string; target_id: string; type: string; strength: number; created_at: string }>;
+      return rows.map((r) => ({ sourceId: r.source_id, targetId: r.target_id, type: r.type, strength: r.strength, createdAt: r.created_at }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [l1_links] getLinksByType failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
    * 记忆图：两节点间最短路径查询（C6，graph 设计 §4 / spec §6.4 #1）。BFS
    * （复用 getNeighbors 的 seen/frontier 双向边扩展 + 父指针回溯），返回起点→终点
    * 路径上的中间+终点节点 [{id,type,strength,hop}]（不含起点，hop 从 1 计）；

@@ -11,6 +11,17 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🧬 P4b 受控正文演化上线：evolution-worker（GROW-EVO §4，REG-REMAINING-005 #1；2026-09-17）
+
+- **新组件** `MemoryCore/src/core/lifecycle/evolution-worker.ts`：离线 worker 挂 lifecycle tick（consolidation/forgetting/anchor-growth 同款互斥 tick），扫描 conflict 边 → 五条件门 → LLM 单次受控重写 → 合并单条（`source='evolution'`、`metadata.created_by='evolution'`、`metadata.evolution={from,reason}`）+ `evolved_from` 审计边×2 + 双旧失效（旧值 valid_end=新观察时刻对齐 P2 内联语义、新值 valid_end=演化时刻）。全系统唯一允许改写已固化正文的路径，宁缺毋滥。
+- **设计最优性审查（实施前置红队 10 问，全部真实代码/数据实证）**，5 处实现级修正全部向“门更严”偏置：① 幂等标记 = evolved_from 审计边参与集——**valid_end 不能当幂等标记**（P2 内联失效实测已把真矛盾对旧值置位，拿它当标记 = worker 永不触发）；② spec 门①“dedup 给了 rationale”降级为“conflict 边存在”（rationale 从未落盘，全库 grep 零命中），再验证职责移交 worker LLM 单次调用的 skip 分支（spec §4.3“低置信→只留 conflict 边”预留分支，语义等价，登记 spec 偏差）；③ 新增 `store.getLinksByType(type)` 单条索引查询（取代逐 id `getLinksByTarget/Source` 的 O(N) 扫描，sqlite.ts/types.ts 同款模式）；④ 门② subject 双侧非空且严格相等（null≠null；danbooru 假阳性边实证拦截）；⑤ 门③ pin/veto 实现为 L1 `metadata.pinned/vetoed` 协议位（当前 L1 无 pin 机制，前瞻位）。
+- **合并/失效边界 golden（v5 硬要求）**：`evolution-worker.test.ts` 16 用例——CMAS→PADI 归并叙事 fixture（skip→零写路径 + prompt 反例指令断言，防系统性推翻 extractor 合并决定）、真矛盾对 rewrite 全链断言（bi-temporal：occurred_at=新值/valid_start=旧值起点/valid_end 开放）、五条件门逐项拦截、悬挂边容错、maxRewrites 护栏、进程内节流。
+- **live 验证两轮（flowtest 11 组播种场景 + 产线 8 条真实边，真实 Ark LLM）**：首轮 rewrites=1（“主力手机 iPhone 13→16 Pro”合并质量人工复核通过：保留最新值+沿革一句），门遥测逐项命中（dangling=5/certainty=1/subject=4 含产线假阳性对/pin=1/newerInvalid=1/timeOrder=1/crossTenant=1）；次轮 rewrites=0、归并合并对真实 LLM skip、已演化对被 newerInvalid 拦截（evolved_from 幂等集为三角冲突防御）、maxRewrites 精确护栏。召回核查：合并记录可召回、失效旧记录被排除；FTS 副本同步实证；LLM 调用 maxTokens=0/timeoutMs=0（GROW-EVO P2.1 裁定）。
+- **配置**：`memory.evolution`（enabled/maxRewrites=3/intervalMs=3600000）config-first，代码缺省 false=逐位现状；产线 yaml（部署本地）与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 模板同步落盘 enabled=true（拍板启用）；server 接线 evolution 配置透传，LLM runner 缺失时 worker 安静跳过。
+- **受影响测试**：新增 `src/core/lifecycle/evolution-worker.test.ts`（16 用例）；全量 vitest 491/491（基线 475+16，50→51 文件）；tsc 243 持平零新增。判定类变更：无（排序/golden 快照未触碰）。
+- **观察登记 O7**：合并记录 metadata-only（无 embedding——lifecycle scheduler 无 embedding 接线，upsertL1(rec, undefined) 与 consolidation 持续态同款先例）：FTS 路召回不受损，向量通道对合并知识有覆盖缺口，量级受门严控制；若 D2 校准期实测漏召回再评估（前置 = embedding 接入 lifecycle 装配）。
+- 附：判官标注积累 labels-2026-09-16.jsonl +75（09-17 04:00 timer 自动，总量 217/300——D2 门槛预计 09-18/19 到达，未抢跑）。
+
 ### 📋 剩余工作 v5 落盘（REG-REMAINING-005，取代 v4 待办部分；2026-09-16 深夜）
 
 - 按方法论将未完成待办逐项对照真实代码（file:line 按 64dd815 刷新）做第一性原理分析后写入

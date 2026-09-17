@@ -7,6 +7,7 @@ import type { LLMRunner, Logger } from "../types.js";
 import { runConsolidation, type ConsolidationConfigX } from "./consolidation/consolidation-worker.js";
 import { runForgetting, type ForgettingConfig } from "./forgetting/forgetting-worker.js";
 import { runAnchorGrowth, type AnchorDiscoveryConfig } from "./anchor-growth.js";
+import { runEvolution, type EvolutionWorkerConfig } from "./evolution-worker.js";
 
 export interface LifecycleConfig {
   enabled: boolean;
@@ -21,6 +22,12 @@ export interface LifecycleConfig {
    * 枚举，不受本 filter 影响；旧 store 无枚举能力时回退 default 单桶）。
    */
   anchorDiscovery?: AnchorDiscoveryConfig;
+  /**
+   * P4b（GROW-EVO §4，REG-REMAINING-005 #1）：受控正文演化 worker 配置。
+   * 缺省 undefined → 关（config-first：memory.evolution.enabled 缺省 false = 逐位现状；
+   * 这是全系统唯一允许改写已固化正文的路径，必须显式开启）。
+   */
+  evolution?: EvolutionWorkerConfig;
   /** 审计 C：租户隔离 filter。缺省不传（退化为全部数据，保持兼容）；多租户部署应显式传入。
    *  P2-T14（H-B2）：字段全可选 + 增 taskId，与 MemoryLifecycleConfig.filter 同形。 */
   filter?: { teamId?: string; userId?: string; agentId?: string; taskId?: string };
@@ -149,6 +156,26 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       }
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] anchor-growth failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  // P4b（GROW-EVO §4）：受控正文演化——conflict 边扫描 → 五条件门 → LLM 单次重写 + evolved_from 审计边。
+  // 间隔节流与幂等（evolved_from 边）在 worker 内部；config-first：enabled 缺省 false = 逐位现状。
+  if (deps.config.evolution?.enabled === true) {
+    try {
+      const res = await runEvolution({
+        queryL1: async () => (await queryL1()) as never,
+        llmRunner: deps.llmRunner,
+        config: deps.config.evolution,
+        store: deps.store,
+        logger: deps.logger,
+      });
+      if (res.ran) {
+        deps.logger?.info?.(`[lifecycle] evolution scanned=${res.scanned} candidates=${res.candidates} rewrites=${res.rewrites}`);
+      } else if (res.skipped && res.skipped !== "interval") {
+        deps.logger?.debug?.(`[lifecycle] evolution skipped: ${res.skipped}`);
+      }
+    } catch (err) {
+      deps.logger?.warn?.(`[lifecycle] evolution failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
