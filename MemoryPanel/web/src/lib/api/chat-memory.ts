@@ -336,6 +336,13 @@ export const chatMemoryApi = {
       ...(opts?.includeRetired ? { include_retired: true } : {}),
     }),
 
+  /** agent 身份区只读（U1，DS-SOUL-MEMORY-002 P1）：复用 /v3/core-memory/read 的 slots
+   *  （values/list 丢 slots 的既有注释即此缺口；BFF 透传零新端点）。 */
+  identityRead: (blockId: string) =>
+    chatMemoryCall<{ slots: Array<{ slot: string; content: string; version?: number }> }>('identity/read', {
+      block_id: blockId,
+    }),
+
   /** 价值锚 upsert：valence 显式传入 = 用户微调；不传 = plain 新建（落 NULL 待 LLM 判） */
   valuesUpsert: (
     blockId: string,

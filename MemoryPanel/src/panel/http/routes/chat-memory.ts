@@ -1667,6 +1667,63 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     },
   );
 
+  // POST /chat-memory/identity/read  body: { block_id }
+  // DS-SOUL-MEMORY-002 P1（U1）：身份区只读透传——/v3/core-memory/read 返回的 slots 在
+  // values/list 被丢弃（原注释即此缺口）。复用既有网关路由（零新端点），P1 只读；
+  // ACL 与 idFields（owner 借用语义）与 values/list 同款。
+  api.post(
+    "/chat-memory/identity/read",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      const canRead = await authorizeChatMemoryRead(
+        deps,
+        ctx,
+        asset,
+        meUserId,
+        blockId,
+      );
+      if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      const env = await deps.kernelHttp.postEnvelope<{ slots?: unknown }>(
+        "/v3/core-memory/read",
+        {
+          team_id: parsed.teamId,
+          agent_id: parsed.agentId,
+          user_id: asset.owner_user_id,
+          session_id: "default",
+        },
+        cred,
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      const slots = env.data?.slots ?? [];
+      return respondEnvelope(c, okEnvelope(c, { slots }));
+    },
+  );
+
   // POST /chat-memory/values/upsert  body: { block_id, value_id, label, weight, valence? }
   api.post(
     "/chat-memory/values/upsert",

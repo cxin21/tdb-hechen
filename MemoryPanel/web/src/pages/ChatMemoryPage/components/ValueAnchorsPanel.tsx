@@ -29,6 +29,7 @@ import { useAgents, useTeams } from '@/services';
 import { tea, confirmThenRun } from '@/lib/tea-bridge';
 import { chatMemoryApi, type ValueAnchor, type ValueProposal } from '@/lib/teamApi';
 import './chat-memory-anchors.css';
+import { IdentitySection } from './IdentitySection';
 
 /** valence → 方向徽标视图（0 = 中性：store 合法值，brief 三态外如实展示） */
 function valenceBadge(v: number | null): { key: string; cls: string } {
@@ -434,6 +435,9 @@ export default function ValueAnchorsPanel() {
           </Button>
         </div>
       </div>
+
+      {/* DS-SOUL-MEMORY-002 P1（U1）：agent 身份区（只读；宁缺毋滥——双槽空/读失败整段不渲染） */}
+      <IdentitySection blockId={blockId} />
 
       {loading ? (
         <div className="_va-empty">{t('memory.detail.loading')}</div>

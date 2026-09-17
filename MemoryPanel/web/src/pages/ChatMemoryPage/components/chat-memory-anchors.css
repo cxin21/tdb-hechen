@@ -241,3 +241,30 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+
+/* ===== agent 身份区（U1，DS-SOUL-MEMORY-002 P1）===== */
+._id-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+._id-block {
+  border: 1px solid var(--tdai-border, #e0e0e0);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+._id-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+._id-content {
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
