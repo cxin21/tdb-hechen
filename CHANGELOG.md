@@ -9,6 +9,18 @@
 
 ---
 
+## 🪞 灵魂 P2：人物锚双池与人工采纳闭环（DS-SOUL-MEMORY-002，2026-09-17）
+
+### Added（MemoryCore）
+- **人物锚双池**（spec §2.6）：`core_values` 增 `node_type`（theme/person）与 `attrs_json`（role/aliases）列（幂等 ALTER，缺省=逐位现状）；anchor-growth 同一 worker 策略化分叉 person 池——`p-` 前缀跨类命名空间、F11 别名维度证据口径（label∨alias 包含去重）、F12 valence 符号（±0.2 阈值）+ personRefs 证据链回填、F19 别名维度去重（提案 label/alias 命中既有人物 label/alias 全态即拒）、F15 QUOTA 分池（主题 15 / 人物 8 独立计数与阈值，防人物锚挤占主题名额）。
+- **identity GROW-MAINT**（F15 身份分支/F20 红线）：`identityFactSlice` 20 字切片弱口径单源；身份事实全量语料重验——失撑**只告警永不自动退场**；identityRefs 采纳路径回填。
+- **F14 遗忘保护**：`forgetting.refProtection`——coreRefs/personRefs 命中仍 active 锚（含人物 alias）、identityRefs 命中现行身份事实切片的记忆不进归档候选；保护前重验 refs 有效性（悬空不保护，防永生记忆）。
+- **O13 人工采纳闭环**：`core_pending` 表（pending→adopted/rejected 单向状态机，同 (slot,content,tenant) 幂等，不复活）+ 三 store 方法 + `/v3/core-memory/pending/list|decide` 路由——identity-discovery 的 core_value/strict_rule 红线类提案落 pending（永不自动写入），Panel 采纳：strict_rule→validateCoreWrite+消毒+upsertCore('panel-adopt')；core_value→upsertValue('panel-adopt','manual')。
+- **灵魂渲染 person 分流**（spec §2.7）：新增「重要的人：女儿(家人·趋近)、老周(棋友·中性)」行（weight DESC cap 5，数据驱动空则省略）；价值锚/感受段过滤人物锚（关系方向「回避」与价值方向「审慎」语义分离）。
+- **配置**（config-first，全部缺省=现状，yaml 显式开启）：`anchorDiscovery.person.{enabled,maxPerPass,maxTotal}`、`anchorDiscovery.identityMaintain.enabled`、`lifecycle.forgetting.refProtection`。
+
+---
+
 ## 🪞 灵魂 P1：agent 自我层双槽落地（DS-SOUL-MEMORY-002，2026-09-17）
 
 - **双槽制（spec §2.5）**：core_memory 新增 `self_identity` 槽（agent 自我第一人称：职责模式/承诺/红线执行/工作风格），identity 槽语义收敛为用户身份（我心中的他）——零 schema 变更，信任边界 allowedSlots 缺省 +self_identity（写入仍由开关门控）。
