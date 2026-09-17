@@ -386,8 +386,21 @@ metadata 字段说明：
 
 请严格按上述 JSON 数组格式输出，不要输出任何额外的 Markdown 代码块修饰符（如 \`\`\`json）或解释文本。`;
 
-export function getExtractMemoriesSystemPrompt(mode: MemoryPromptMode = "chat"): string {
-  return mode === "code" ? EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT : EXTRACT_MEMORIES_SYSTEM_PROMPT;
+// DS-SOUL-MEMORY-002 P1：agent 行为事实视角（仅内置 chat prompt 追加；自定义 memoryPrompt
+// 策略为用户权威，不篡改——见 l1-extractor.ts 组装点 composeMemorySystemPrompt）。
+export const AGENT_ACT_BLOCK = [
+  "",
+  "## agent 行为事实（可选类别，宁缺毋滥）",
+  "样本中若有 agent 自己的行为证据——我做出的承诺、我执行的红线、我反复承担的职责、我稳定的工作风格——以第一人称提取为独立记忆（如「我在对话中承诺每周五出周报并坚持执行」）。",
+  "硬约束：必须有 agent 侧行为或对话文本支撑；纯用户侧事实不要写成 agent 行为；证据不足不要提取。",
+].join("\n");
+
+export function getExtractMemoriesSystemPrompt(
+  mode: MemoryPromptMode = "chat",
+  opts?: { selfIdentityEnabled?: boolean },
+): string {
+  const base = mode === "code" ? EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT : EXTRACT_MEMORIES_SYSTEM_PROMPT;
+  return opts?.selfIdentityEnabled && mode !== "code" ? base + AGENT_ACT_BLOCK : base;
 }
 
 // ============================

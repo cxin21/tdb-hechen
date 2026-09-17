@@ -517,7 +517,15 @@ async function callLlmExtraction(params: {
 }): Promise<{ scenes: SceneSegment[]; systemPrompt: string; userPrompt: string; rawOutput: string }> {
   const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore } = params;
 
-  const systemPrompt = composeMemorySystemPrompt(getExtractMemoriesSystemPrompt(promptMode), memoryPrompt);
+  // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
+  // 自定义 memoryPrompt 策略优先级不变——自定义时内置 base 被其覆盖，agentAct 块随之
+  // 不生效（自定义策略=用户权威，不篡改）。config 形参为 host-neutral unknown，窄化读取。
+  const selfIdentityEnabled = (config as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
+    ?.coreMemory?.selfIdentity?.enabled === true;
+  const systemPrompt = composeMemorySystemPrompt(
+    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled }),
+    memoryPrompt,
+  );
   // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取
   const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
   const userPrompt = formatExtractionPrompt({
