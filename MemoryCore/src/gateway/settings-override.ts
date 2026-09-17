@@ -71,8 +71,9 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
     for (const intField of ["maxTokens", "timeoutMs"] as const) {
       if (b.llm[intField] !== undefined) {
         const n = Number(b.llm[intField]);
-        if (Number.isInteger(n) && n > 0) llm[intField] = n;
-        else errors.push(`llm.${intField} 必须是正整数`);
+        // 0 = 不限制（2026-09-16 拍板：Ark 推理模型 thinking 需解除输出预算；避坑清单 #1）
+        if (Number.isInteger(n) && n >= 0) llm[intField] = n;
+        else errors.push(`llm.${intField} 必须是非负整数（0=不限制）`);
       }
     }
     if (Object.keys(llm).length) out.llm = llm;

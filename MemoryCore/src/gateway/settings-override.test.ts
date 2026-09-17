@@ -83,3 +83,18 @@ describe("settings-override (core)", () => {
     }
   });
 });
+
+describe("maxTokens/timeoutMs=0（不限制语义，2026-09-16 拍板；UI 需可保存 0）", () => {
+  it("0 合法且保留（不被拒收）", () => {
+    const r = validateOverride({ llm: { maxTokens: 0, timeoutMs: 0 } });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.llm?.maxTokens).toBe(0);
+      expect(r.value.llm?.timeoutMs).toBe(0);
+    }
+  });
+  it("负数仍拒收", () => {
+    const r = validateOverride({ llm: { maxTokens: -1 } });
+    expect(r.ok).toBe(false);
+  });
+});
