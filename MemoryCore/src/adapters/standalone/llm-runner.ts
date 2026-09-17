@@ -18,6 +18,7 @@
 
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { generateText, streamText, tool, stepCountIs, jsonSchema } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { report } from "../../core/report/reporter.js";
@@ -252,6 +253,27 @@ function createReadOnlyTools(_workspaceDir: string, _logger?: Logger) {
 // StandaloneLLMRunner
 // ============================
 
+/** OpenCode Go 客户端标识头（host 作用域）：
+ *  Go 要求自标识 UA + x-opencode-session（每段对话稳定 id）用于路由/提示缓存优化。
+ *  仅当 baseUrl 指向 opencode.ai 时附加——切其他模型/供应商零额外头、零行为差异。
+ *  session id 部署稳定派生（sha256(baseUrl|model) 截断）：跨重启稳定，Go 侧缓存命中最优。 */
+export function isGoEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).host === "opencode.ai";
+  } catch {
+    return false;
+  }
+}
+
+export function goSessionId(baseUrl: string, model: string): string {
+  return createHash("sha256").update(`tdb|${baseUrl}|${model}`).digest("hex").slice(0, 32);
+}
+
+export function goClientHeaders(baseUrl: string, model: string): Record<string, string> {
+  if (!isGoEndpoint(baseUrl)) return {};
+  return { "User-Agent": "tdb-memory/1.0", "x-opencode-session": goSessionId(baseUrl, model) };
+}
+
 export class StandaloneLLMRunner implements LLMRunner {
   private config: StandaloneLLMConfig;
   private model: string;
@@ -305,6 +327,7 @@ export class StandaloneLLMRunner implements LLMRunner {
       baseURL: this.config.baseUrl,
       apiKey: this.config.apiKey,
       compatibility: "compatible",
+      headers: goClientHeaders(this.config.baseUrl, this.model),
     });
 
     // Select tools based on mode + storage
