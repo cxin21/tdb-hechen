@@ -131,15 +131,15 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 
 ### 2.7 soul-assembler 注入组装层（P1 重构）
 
-- **渲染形态**（四段分段 + 段级预算）：
+- **渲染形态**：两个 XML 块 + 召回块；**soul-identity 块内四个小节**（下述"四段"即此四小节）：
 
 ```
 <soul-identity>
 ## 此刻的你
 （我是谁）- [self_identity] 我在这个团队负责……        ← P1，空则整小节省略
 （我心中的他）- [identity] 用户是家里的首席厨师……      ← 现有内容，行前缀标注
-价值锚：计划(中性)、咖啡(趋近)……                        ← 现有行，theme 锚
-重要的人：女儿(家人)、老周(棋友)……                      ← P2，空则省略
+价值锚：计划(中性)、咖啡(趋近)……                        ← 现有行，theme 锚，weight 降序
+重要的人：女儿(家人·趋近)、老周(棋友·中性)……            ← P2，空则省略；方向内联标注
 </soul-identity>
 <soul-feeling>
 ## 当下的感受
@@ -150,8 +150,9 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 ```
 
 - **主语**：整段标题"此刻的你"=agent；四个小节各自内容主语分明（见上）；escapeXmlTags 消毒不变。
-- **预算（F17）**：每小节字符上限 + 行数上限（config），超限按强度/序截断，宁缺毋滥。
-- **逐位现状保证**：selfIdentity.enabled=false 时渲染与今天逐位一致（新小节不出现）；enabled=true 但槽空时该小节省略。
+- **预算（F17）**：每小节字符上限 + 行数上限（config；chars 为 token 的粗粒度近似，精算后置），超限按强度/序截断（锚行=weight 降序，从尾部截），宁缺毋滥。
+- **人物方向渲染**：内联标注于"重要的人"行（`女儿(家人·趋近)`），**soul-feeling 保持仅主题锚**——最小渲染变更。
+- **逐位现状保证**：selfIdentity.enabled=false 时**渲染与 prompt 双双逐位**——identity-discovery 走旧单视角 prompt（LLM 行为不变）、渲染不出新小节；enabled=true 才切双视角 prompt。调度门结构不变（anchorDiscovery 门控 worker 调用），self 路由在 worker 内部按 selfIdentity.enabled 判断。
 - **使用场景**：每次 /v3/recall 注入（C3 身份段常驻语义不变）。
 
 ### 2.8 工序层（GROW 家族）
@@ -203,7 +204,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | certainty | TEXT | agent（认识论） | — | 渲染"实见/推断"、演化门② | observed/inferred——**agent 的知识状态** |
 | source | TEXT | agent 系统 | — | 审计 | extraction/consolidation/evolution/auto-growth |
 | valence | REAL | agent（归档评价） | 信号多来自用户表达 | F4 情感显著度、锚方向聚合、渲染 | 情感效价 ∈[-1,1] |
-| arousal | TEXT/REAL | agent | 同上 | F4、遗忘 | 唤醒度 |
+| arousal | REAL（以 schema 为准） | agent | 同上 | F4、遗忘 | 唤醒度 |
 | significance | REAL | agent（重要性判断） | — | 召回排序、遗忘保留、F13 反思触发 | [0,1] |
 | priority | REAL | agent 系统 | — | 工序调度 | — |
 | scene_name | TEXT | agent | 会话场景 | FTS 快照、L2 关联 | UNINDEXED 列 |
@@ -271,14 +272,14 @@ metadata_json 子结构：
 | F10 | 身份采纳门：状态残留结构剥离（\d{4}[-年] 日期、P\d 阶段号→剥离所在句；整条全状态→拒收） | 单一源导出 | 身份双槽 | 已有 |
 | F11 | 人物证据口径（P2）：personEv = \|{r: content 包含 label 或任一 alias}\| | — | 人物锚 GROW | 新增 |
 | F12 | 关系权重（P2）：strength = F5(personEv)·personEv；valence=证据 valence 均值符号化（≥+0.2→1，≤-0.2→-1，否则 0，存锚 valence 列）；role/aliases=提案入 attrs_json | — | 人物锚/渲染/遗忘保护 | 新增 |
-| F13 | 反思触发（P3）：自上次反思起新入库记录 significance 累计 > R_REF（缺省 150，Generative Agents 对标）→ 下 tick 优先反思通道；interval 兜底不变 | R_REF config | lifecycle 调度 | 新增 |
-| F14 | 遗忘保护（P2）：forget 候选排除 coreRefs/personRefs/identityRefs 非空的记录 | — | forgetting | 新增 |
+| F13 | 反思触发（P3）：自上次反思起新入库记录 significance 累计 > R_REF（缺省 150，Generative Agents 对标）→ 下 tick **提前+强制**执行一次反思式 L3 蒸馏（Generative Agents 三问式：从近期记录提"最显著的高层问题"→检索证据→合成结论卡写入 L3，引用证据指针）；固定 interval 兜底不变——语义=触发生成时机增强，不新增管道 | R_REF config | lifecycle 调度 | 新增 |
+| F14 | 遗忘保护（P2）：forget 候选排除 coreRefs/personRefs/identityRefs **指向仍 active 的锚或现行身份事实**的记录——排除前重验 refs 有效性（锚 state=active、事实仍在现行槽内容中）；悬空 refs（锚已退休/事实已被修订替换）不保护——**防"永生记忆"违背自维护** | — | forgetting | 新增 |
 | **F14-bis** | **回音室禁令：身份相关性禁止参与召回排序**（召回只由查询驱动） | — | 设计红线 | 永久 |
-| F15 | GROW-MAINT（主题/人物/身份）：全量语料重算；ev<minEvidence→retire（pinned/manual 豁免）；\|Δw\|≥0.05→reweight；QUOTA：autoNow+pinnedNow>maxTotal→强度升序 retire。**身份事实只警告不自动退场** | — | 自维护 | 已有（身份分支 P2） |
+| F15 | GROW-MAINT（主题/人物/身份）：全量语料重算；ev<minEvidence→retire（pinned/manual 豁免）；\|Δw\|≥0.05→reweight；QUOTA 守卫**按 node_type 分池**（maxTotalTheme=15 / maxTotalPerson=8 各自独立：autoNow(该类)+pinnedNow(该类)>maxTotal(该类)→该类内强度升序 retire）——防人物锚挤占主题锚名额。**身份事实只警告不自动退场** | 分池配置 | 自维护 | 已有（身份/人物分支 P2） |
 | F16 | 漂移旗标：drift=\|rate−prevRate\|/prevRate ≥0.3→AROUSAL-GATE；基线首轮落盘不误报 | — | self-obs | 已有（本轮修复） |
 | F17 | 段级注入预算（P1）：soulRender.budgetSelfChars/budgetIdentityChars/maxRelationLines，超限按强度/序截断，宁缺毋滥；valenceDir 渲染映射：1→趋近、-1→审慎、0→中性、NULL→无标注 | config | soul-assembler | 新增 |
 | F18 | 检索过滤：isInvalidated(r) = ve 非空且 ve≤now；租户三元组硬隔离 | — | 召回池组装 | 已有 |
-| F19 | 采纳双门（锚/人物）：attempt 冷却 1h + adopted 冷却 24h + 语料增量门 + 空语料短路；护栏四件：ev≥minEvidence、maxPerPass、maxTotal、全态去重（veto/retired 永不重提；**人物锚去重另含别名维度**——提案 label 或任一 alias 命中既有 label/alias → 拒） | config | GROW 家族 | 已有（人物实例化 P2） |
+| F19 | 采纳双门（锚/人物）：attempt 冷却 1h + adopted 冷却 24h + 语料增量门 + 空语料短路；护栏四件：ev≥minEvidence、maxPerPass、maxTotal（**按 node_type 分池，同 F15**）、全态去重（veto/retired 永不重提；去重键=**（node_type, label）复合**；人物锚另含别名维度——提案 label 或任一 alias 命中同类型既有 label/alias → 拒）。已知弱点（诚实登记）：F11 人物名宽口径（"女儿"出现在无关记录）会虚增 personEv——缓解=提案质量门+maxPerPass+QUOTA 分池，实证后再收紧口径 | config | GROW 家族 | 已有（人物实例化 P2） |
 | F20 | 演进守卫红线：身份事实 retire 永不自动（P2 GROW-MAINT 仅警告+人工确认） | — | 自维护 | 新增 |
 
 ---
@@ -310,12 +311,13 @@ metadata_json 子结构：
 
 ### P2 人物锚 + 维护链（关系自我）
 - core_values 加 `node_type`/`attrs_json`（ADD COLUMN 缺省 'theme'/'{}'——**sqlite 不可删列，回滚策略=列保留无害、缺省值即逐位现状**）；person-growth worker（GROW 骨架实例 2，F11/F12）；personRefs/identityRefs 回填；identity GROW-MAINT 重验证（F15 身份分支：只警告）+ F14 遗忘保护；strict_rule Panel 落点（O13 闭环）。
-- 配置：`memory.coreMemory.personAnchors.{enabled=false,minEvidence=3,maxPerPass=2,maxTotal=15,intervalHours=24}`。
+- 配置：`memory.coreMemory.personAnchors.{enabled=false,minEvidence=3,maxPerPass=2,maxTotal=8,intervalHours=24}`——maxTotal 为**人物分池**独立预算（F15 分池制），主题锚 maxTotal=15 不变。
 - 验收：人物锚 12 组真数据 SOP（别名归并/关系情感方向/挤出/维护退场/反查/遗忘保护实测）+ 回归全量。
 
 ### P3 品格锚 + 反思公式（远期收口）
-- 品格锚双源（agent 行为聚合，与主题锚共享池独立 maxTotal 配置）；F13 反思触发；sensitivity 若拍板实施。
-- 验收：品格锚与主题锚并存不互挤；反思触发真数据实测（累计阈值 vs 固定 tick 对比）。
+- **数据来源链（前置依赖）**：现有 L1 提取是用户视角，语料中 agent 行为记录稀缺——品格锚启用前需 L1 提取 prompt 增加 agent 行为事实视角（type/metadata.agentAct 标注，如"我在对话中承诺每周五出周报"），或以 self_identity 槽演化史为品格聚合源（二选一在 P3 设计期 spike 定案，先查证 L1 中 agent 主语记录占比）。
+- 品格锚双源（与主题锚**共享注入预算、独立 maxTotal 分池**，F15）；F13 反思触发；sensitivity 若拍板实施。
+- 验收：品格锚与主题锚并存不互挤（分池断言）；反思触发真数据实测（累计阈值 vs 固定 tick 对比）。
 
 ---
 
@@ -349,9 +351,9 @@ metadata_json 子结构：
 
 ## 附录 A：业界调研摘要（2026-09-17）
 
-- **Letta/MemGPT**：core memory = human 块（用户模型）+ persona 块（agent 自我）——O16 双槽的直接对标；sleep-time agent 独占记忆编辑（= 我们 lifecycle workers 的结构）；"记忆形成是增量的，会变乱——后台持续重组为 learned context"。
-- **Generative Agents**：score=α·recency+β·importance+γ·relevance（min-max 归一、等权、recency=0.995^h）；importance 写入时 LLM 打分；反思=importance 累计>150 触发、洞见引用证据指针——F13 的出处；我们的 RRF+四信号是同构工程化。
-- **Zep/Graphiti**：双时态四时间戳、矛盾边失效（t_invalid=新边 t_valid）——与 F7/F8 完全同构；"不能表示何时为真的图会把矛盾事实都端给 agent"。
-- **A-MEM**：新记忆触发既有记忆上下文更新——我们的演化是其门控保守版（门严不触发良性、门松污染难恢复的拍板被反向印证）。
-- **Mem0**：ADD/UPDATE/DELETE/NOOP 由 LLM 工具调用裁决——我们坚持"LLM 提议、确定性门裁决"的分界。
-- **CoALA**：semantic memory = "关于世界**和它自己**的知识"——self_identity 的学理定位；procedural = 我们的 skill worker。
+- **Letta/MemGPT**：core memory = human 块（用户模型）+ persona 块（agent 自我）——O16 双槽的直接对标；sleep-time agent 独占记忆编辑（= 我们 lifecycle workers 的结构）；"记忆形成是增量的，会变乱——后台持续重组为 learned context"。（https://www.letta.com/blog/memory-blocks/ 、https://www.letta.com/blog/sleep-time-compute/）
+- **Generative Agents**：score=α·recency+β·importance+γ·relevance（min-max 归一、等权、recency=0.995^h）；importance 写入时 LLM 打分；反思=importance 累计>150 触发、洞见引用证据指针——F13 的出处；我们的 RRF+四信号是同构工程化。（https://arxiv.org/abs/2304.03442）
+- **Zep/Graphiti**：双时态四时间戳、矛盾边失效（t_invalid=新边 t_valid）——与 F7/F8 完全同构；"不能表示何时为真的图会把矛盾事实都端给 agent"。（https://arxiv.org/abs/2501.13956 、https://github.com/getzep/graphiti）
+- **A-MEM**：新记忆触发既有记忆上下文更新——我们的演化是其门控保守版（门严不触发良性、门松污染难恢复的拍板被反向印证）。（https://arxiv.org/abs/2502.12110）
+- **Mem0**：ADD/UPDATE/DELETE/NOOP 由 LLM 工具调用裁决——我们坚持"LLM 提议、确定性门裁决"的分界。（https://arxiv.org/abs/2504.19413）
+- **CoALA**：semantic memory = "关于世界**和它自己**的知识"——self_identity 的学理定位；procedural = 我们的 skill worker。（https://arxiv.org/abs/2309.02427）
