@@ -643,6 +643,7 @@ export async function performLayeredRecall(params: {
             selfIdentityEnabled: cfg.coreMemory?.selfIdentity?.enabled === true,
             budgetSelfChars: cfg.coreMemory?.soulRender?.budgetSelfChars,
             budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
+            maxRelationLines: cfg.coreMemory?.soulRender?.maxRelationLines,
           },
         );
       } catch (err) {

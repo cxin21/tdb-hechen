@@ -314,6 +314,8 @@ export interface MemoryCoreMemoryConfig {
   soulRender: {
     budgetSelfChars: number;
     budgetIdentityChars: number;
+    /** F17（审计补齐）：重要的人 行数上限（1..20，缺省 5）。 */
+    maxRelationLines: number;
   };
 }
 
@@ -958,6 +960,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       return {
         budgetSelfChars: clamp("budgetSelfChars", 600, 100, 2000),
         budgetIdentityChars: clamp("budgetIdentityChars", 900, 100, 2000),
+        maxRelationLines: clamp("maxRelationLines", 5, 1, 20),
       };
     })(),
   };

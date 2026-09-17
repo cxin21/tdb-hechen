@@ -48,6 +48,8 @@ export interface SoulRenderOptions {
   selfIdentityEnabled?: boolean;
   budgetSelfChars?: number;
   budgetIdentityChars?: number;
+  /** F17（审计补齐）：重要的人 行数上限（weight DESC 截断）；缺省 5=原行为。 */
+  maxRelationLines?: number;
 }
 
 export async function buildSoulPrefix(
@@ -62,12 +64,12 @@ export async function buildSoulPrefix(
     const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
     const activeAll = values.filter((v) => v.state === undefined || v.state === "active");
     // P2（spec §2.7）：person 锚分流——主题锚渲染不变（undefined → theme 旧库兼容）；
-    // 人物锚进「重要的人」行（weight DESC cap 5），不与价值审慎/趋近语义混淆。
+    // 人物锚进「重要的人」行（weight DESC，行数上限 opts.maxRelationLines 缺省 5），不与价值审慎/趋近语义混淆。
     const active = activeAll.filter((v) => v.node_type !== "person");
     const personRows = activeAll
       .filter((v) => v.node_type === "person")
       .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
-      .slice(0, 5);
+      .slice(0, opts?.maxRelationLines ?? 5);
 
     // ── 身份段：此刻的你 ──
     if (slots.length > 0 || activeAll.length > 0) {

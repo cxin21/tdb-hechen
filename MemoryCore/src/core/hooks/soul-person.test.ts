@@ -67,3 +67,23 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     expect(out).not.toContain("重要的人：");
   });
 });
+
+describe("F17 maxRelationLines（审计补齐：spec 要求行数上限 config 化，缺省 5=逐位现状）", () => {
+  const mk = () => [
+    person("甲", 0.9, 1, "家人"), person("乙", 0.85, 1, "朋友"), person("丙", 0.8, -1, "同事"),
+    person("丁", 0.75, 0, "棋友"), person("戊", 0.7, 1, "朋友"), person("己", 0.65, 1, "朋友"),
+  ];
+  it("opts.maxRelationLines=2 → 只渲染 weight 前二", async () => {
+    const out = await buildSoulPrefix(makeStore([], mk()) as never, TENANT, undefined, { maxRelationLines: 2 });
+    const line = out.split("\n").find((l) => l.startsWith("重要的人："))!;
+    expect(line).toContain("甲(家人·趋近)");
+    expect(line).toContain("乙(朋友·趋近)");
+    expect(line).not.toContain("丙");
+  });
+  it("缺省不传 → cap 5（原行为不变）", async () => {
+    const out = await buildSoulPrefix(makeStore([], mk()) as never, TENANT);
+    const line = out.split("\n").find((l) => l.startsWith("重要的人："))!;
+    expect(line).toContain("戊(朋友·趋近)");
+    expect(line).not.toContain("己");
+  });
+});
