@@ -365,3 +365,20 @@ CREATE TABLE IF NOT EXISTS core_pending (
 - D-R3-1 租户串味（重要）：L1 抽取产物混入跨 user 租户事实（R(ev8-user-c,agent-d) 的 L1 含 Q(user-d) 的"数据仓库方向研究生"）；疑 l1-extractor 冲突/相似候选召回 team 级过滤缺口（L1 锁为会话级 pipeline:{inst:tid:aid}:s:{sess}，分组正确，泄漏在候选召回/消息源）；需核实 l1-extractor.ts 候选召回租户过滤并修复（涉 A6 四级贯通召回级）。
 - D-R3-2 管线韧性：重启丢未完成抽取任务（Q/R 首发种子 L1=0，重发后恢复）；attempt 重排队 15 次后任务去向需排查。
 基线：vitest 592/592、tsc 243。
+
+## 测试数据清理记录（2026-09-17，用户指令：清理测试数据防污染记忆向量覆盖率，全程不重启网关）
+**清除范围**（全部测试租户：ev6/ev7/ev8 及早期命名变体 team-flowtest/vp2-team）：
+| 项 | 数量 | 说明 |
+|---|---|---|
+| l1_records | 171（52+119） | ev* 与 flowtest/vp2 两批命名变体 |
+| l1_archive | 26（15+11） | 含 F14 夹具 |
+| l0_conversations+l0_vec | 160（71+89） | 原始对话与向量 |
+| l1_vec | 95（50+45） | 向量索引同步删除 |
+| l1_links | 174（指向测试记录）+909（历史悬空，含 ev5 清理遗留与归档引用） | 悬空 links 全清（终态 0） |
+| core_memory/values/pending | 11+3 / 7+10 / 15+3 | 槽/锚/待办 |
+| memory_audit | 6 | 审计行 |
+| anchor_growth_state | 26 键 | 发现状态（含 team-flowtest/vp2-team 变体） |
+| 文件存储 | scene_blocks/records/conversations/metadata 下 ev*/flowtest/vp2 匹配 | -delete |
+**方法学**：① 租户 id 命名变体（team-flowtest/vp2-team）会绕过精确匹配——清理须 LIKE 模糊兜底+状态键明细回查；② node:sqlite 需 `{allowExtension:true}` 才能加载 sqlite-vec；③ FTS external-content 用 `INSERT INTO fts(fts) VALUES('rebuild')` 同步；④ 删除前备份 vectors.db.bak-purge-20260917（113MB，保留）。
+**终态**：八表残留全 0、悬空 links 0、状态键 0、/recall 块无任何已删测试人物（林教授/朵朵/秘书/陈导师），默认租户真实记忆召回正常；health 200，服务未重启。
+**存量备注（非测试污染，不动）**：l1_vec_rowids 264 vs l1_records 265 差 1（单条记录缺向量为存量行为）；fts count(*) 为索引内部计数非行数指标，以功能召回为准。
