@@ -123,7 +123,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | `node_type` | TEXT | 'theme' | 'theme'=主题锚（现状逐位）；'person'=人物锚（P2） |
 | `attrs_json` | TEXT | '{}' | 人物锚属性：`{ role, aliases[] }`（role=家人/同事/朋友/其他；aliases=昵称数组并入证据重算）；关系情感方向**不重复存**——由 valence 列承载（与主题锚同列同义） |
 
-- **数据来源**：主题锚=anchor-growth（LLM 提案→护栏四件）；人物锚=**person-growth worker（GROW 骨架实例 2）**——同一状态机骨架（双门/护栏四件/挤出/GROW-MAINT/QUOTA 守卫），证据口径策略化注入（F11），发现 prompt 人物视角（"谁在该 agent 的经历中反复出现、关系如何"）。
+- **数据来源**：主题锚=anchor-growth theme 池（LLM 提案→护栏四件）；人物锚=anchor-growth worker 内 **person 池**（双池扩展，非新 worker）——同一状态机骨架（双门/护栏四件/挤出/GROW-MAINT/QUOTA 守卫），证据口径策略化注入（F11），发现 prompt 人物视角（"谁在该 agent 的经历中反复出现、关系如何"）。
 - **主语**：所有者=agent；label 内容主语=用户的价值主题/用户生活中的人物；**功能主语=agent**（价值参照系与关系参照系，都是行动方针）。
 - **人物锚独有属性**（attrs_json）：role（家人/同事/朋友/其他，LLM 提案）、aliases（昵称数组，证据重算并入）；关系情感方向由 valence 列承载（不另设 direction，防双源漂移）。
 - **公式**：F5（强度）、F6（挤出）、F11（人物证据口径）、F12（关系权重派生）、F15（维护）。
@@ -182,7 +182,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | L1 情景记忆 | L0 双方消息 | l1-extractor（质量门+LLM） | 落库读回 |
 | L2/L3 | L1 记录 | consolidation 分组+LLM | 宁缺毋滥 |
 | 主题锚 | L1 语料（全量证据重算） | anchor-growth 提案 | 护栏四件+QUOTA |
-| 人物锚（P2） | L1 语料（提及口径） | person-growth 提案 | 同骨架+口径注入 |
+| 人物锚（P2） | L1 语料（提及口径） | anchor-growth person 池提案 | 同骨架+口径注入 |
 | identity（用户身份） | L1 样本窗（用户侧事实） | identity-discovery 双视角 | 分级门+状态残留剥离 |
 | self_identity（P1） | L1 样本窗（agent 侧行为文本）+ **l1-extractor agentAct 视角增补（P1 同步，否则语料稀缺）** | 同上（第二视角） | 同门+"行为可证"要求 |
 | 感受段 | 主题锚 valence | soul-assembler 渲染 | IS NULL 守卫（derive 后渲染） |
@@ -242,7 +242,7 @@ metadata_json 子结构：
 | value_id | agent | — | pin/retire/delete 路由 | slug；纯 CJK→auto-<sha256[:10]> |
 | label | agent | 用户价值主题/用户生活中人物 | 渲染、证据重算、反查 | — |
 | **node_type（P2）** | agent | — | GROW 口径策略化、渲染分行 | 'theme'（缺省）/‘person' |
-| **attrs_json（P2）** | agent | — | 人物 role/aliases/direction | 主题锚 '{}' |
+| **attrs_json（P2）** | agent | — | 人物 role/aliases（方向由 valence 列承载） | 主题锚 '{}' |
 | weight | agent（信念强度） | — | F5/F6/F12、渲染排序 | D6 绝对证据+饱和 |
 | valence | agent（方针方向） | 聚合自证据情感 | 感受段渲染 | 趋近/审慎 |
 | origin | agent | — | QUOTA 豁免判定 | seed/manual/auto |
@@ -301,7 +301,7 @@ metadata_json 子结构：
 | S7 | 身份修订 | Panel/API 人工清洗 → upsertCore（**UI 入口见 §6.5 U1：P1 只读展示，编辑入口 P2**） | — | 人工兜底；版本留痕 |
 | S8 | 多租户隔离 | 三元组硬隔离；self_identity per-三元组 | F18 | 换 agent 测试可过；品格随关系分化（拍板） |
 | S9 | 降级路径 | fts-only 横幅/无身份省段/无锚省行/基线首轮不误报 | F16、F17 | 诚实降级，宁缺毋滥 |
-| S10 | 灵魂验收 | 换用户测试/换 agent 测试 | — | 见 §9 验收 |
+| S10 | 灵魂验收 | 换用户测试/换 agent 测试 | — | 见 §8 验收 |
 
 ---
 
@@ -334,13 +334,13 @@ UI 视觉重构 spec（2026-09-10）确立 Surface S1-S6 与"零后端新增"原
 - 顺手：identity 提取 prompt 主语修正（O15 遗留）。
 
 ### P2 人物锚 + 维护链（关系自我）
-- core_values 加 `node_type`/`attrs_json`（ADD COLUMN 缺省 'theme'/'{}'——**sqlite 不可删列，回滚策略=列保留无害、缺省值即逐位现状**）；person-growth worker（GROW 骨架实例 2，F11/F12）；personRefs/identityRefs 回填；identity GROW-MAINT 重验证（F15 身份分支：只警告）+ F14 遗忘保护；strict_rule Panel 落点（O13 闭环）。
+- core_values 加 `node_type`/`attrs_json`（ADD COLUMN 缺省 'theme'/'{}'——**sqlite 不可删列，回滚策略=列保留无害、缺省值即逐位现状**）；anchor-growth worker 双池扩展（person 池，F11/F12）；personRefs/identityRefs 回填；identity GROW-MAINT 重验证（F15 身份分支：只警告）+ F14 遗忘保护；strict_rule Panel 落点（O13 闭环）。
 - 配置：`memory.coreMemory.personAnchors.{enabled=false,minEvidence=3,maxPerPass=2,maxTotal=8,intervalHours=24}`——maxTotal 为**人物分池**独立预算（F15 分池制），主题锚 maxTotal=15 不变。
 - 验收：人物锚 12 组真数据 SOP（别名归并/关系情感方向/挤出/维护退场/反查/遗忘保护实测）+ 回归全量。
 - **UI（§6.5 U2-U4）**：ValueAnchorsPanel 类型徽标+分池配额+attrs(role/aliases)行内编辑+aliases 反查计数；S2 灵魂区 personRefs/identityRefs chips；S3 人物节点图例；人物行"查看关联记忆"跳转。
 
 ### P3 品格锚 + 反思公式（远期收口）
-- **数据来源链（前置依赖）**：现有 L1 提取是用户视角，语料中 agent 行为记录稀缺——品格锚启用前需 L1 提取 prompt 增加 agent 行为事实视角（type/metadata.agentAct 标注，如"我在对话中承诺每周五出周报"），或以 self_identity 槽演化史为品格聚合源（二选一在 P3 设计期 spike 定案，先查证 L1 中 agent 主语记录占比）。
+- **数据来源链**：P1 已给 l1-extractor 增补 agent 行为事实视角（metadata.agentAct）——P3 设计期仅需查证 L1 中 agentAct 记录占比是否足以支撑品格锚证据重算；不足则改用 self_identity 槽演化史为品格聚合源（spike 定案）。
 - 品格锚双源（与主题锚**共享注入预算、独立 maxTotal 分池**，F15）；F13 反思触发；sensitivity 若拍板实施。
 - 验收：品格锚与主题锚并存不互挤（分池断言）；反思触发真数据实测（累计阈值 vs 固定 tick 对比）。
 
