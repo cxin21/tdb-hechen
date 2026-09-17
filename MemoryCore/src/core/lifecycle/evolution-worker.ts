@@ -152,7 +152,7 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
 
   const gate: Record<string, number> = {
     dangling: 0, crossTenant: 0, certainty: 0, subject: 0, timeOrder: 0,
-    pin: 0, newerInvalid: 0, idempotent: 0, maxRewrites: 0, llmSkip: 0, llmError: 0,
+    pin: 0, newerInvalid: 0, idempotent: 0, staleLineage: 0, maxRewrites: 0, llmSkip: 0, llmError: 0,
   };
   const log = deps.logger;
   try {
@@ -201,7 +201,16 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
       const newer = oa < ob ? rb : ra;
       if ((newer.valid_end ?? "") !== "") { gate.newerInvalid++; continue; }
       if (isPinnedOrVetoed(ra) || isPinnedOrVetoed(rb)) { gate.pin++; continue; }
-      if (evolved.has(older.id!) || evolved.has(newer.id!)) { gate.idempotent++; continue; }
+      if (evolved.has(older.id!) || evolved.has(newer.id!)) {
+        // 链式残差遥测（O10 预登记，spec §4.5 同款"数据先行、不松门"）：链式同主题观测
+        // （B(t1)→C(t2)→A(t3)，dedup 按到达时序建边）合并 (B,C) 后，(A,*) 对因老端已入
+        // evolved_from 参与集被跳过，终态 = 新端（最新真值）与谱系叙事（断言被推翻的中间值）
+        // 双 valid 并存——可能的残差张力。此计数 >0 即触发预留的 lineage-remap 方案（把老端
+        // 解析到谱系产物再合并，收敛为单条），当前不松门（spec §7.1 拍板③：门松=污染难恢复；
+        // 产线尚无链式实例，先立观察）。注意：新端已失效或已演化时不计（无残差）。
+        if (!evolved.has(newer.id!) && (newer.valid_end ?? "") === "") gate.staleLineage++;
+        gate.idempotent++; continue;
+      }
       if (attempts >= maxRewrites) { gate.maxRewrites++; continue; }
       attempts++;
       candidates++;

@@ -72,6 +72,57 @@ const PADI_NEW = row("m_padi_new", {
   metadata: { subject: "潜水考证" },
 });
 
+
+describe("P4b evolution-worker：链式同主题观测（自审 v2 对抗推演，O10 预登记）", () => {
+  it("3 链：单次合并收敛、最新真值不被触碰、staleLineage 遥测命中、不失控", async () => {
+    const b = row("m_chain_b", {
+      content: "用户计划 10 月 3 日去千岛湖潜水。",
+      occurred_at: "2026-09-16T08:00:00.000Z",
+      metadata: { subject: "千岛湖计划" },
+    });
+    const c = row("m_chain_c", {
+      content: "用户计划 10 月 5 日去千岛湖潜水。",
+      occurred_at: "2026-09-16T10:00:00.000Z",
+      metadata: { subject: "千岛湖计划" },
+    });
+    const a = row("m_chain_a", {
+      content: "用户改计划 10 月 6 日去千岛湖深潜。",
+      occurred_at: "2026-09-16T14:00:00.000Z",
+      metadata: { subject: "千岛湖计划" },
+    });
+    // dedup 到达时序建边：(B,C) 最早，(A,B)/(A,C) 随 A 到达
+    const { store, upserts, links, invalidated } = makeStore({
+      edges: [edge("m_chain_b", "m_chain_c"), edge("m_chain_a", "m_chain_b"), edge("m_chain_a", "m_chain_c")],
+    });
+    const { runner, calls } = makeRunner(JSON.stringify({
+      action: "rewrite",
+      content: "用户计划 10 月 5 日去千岛湖潜水（原计划 10 月 3 日，后改期）。",
+      reason: "同字段计划时间变更",
+    }));
+    const res = await runEvolution({
+      queryL1: async () => [b, c, a],
+      llmRunner: runner as never,
+      config: { ...DEFAULT_EVOLUTION_CONFIG, enabled: true, intervalMs: 0, maxRewrites: 3 },
+      store: store as never,
+    });
+    expect(res.ran).toBe(true);
+    // 恰一次重写（(B,C) 首对）；(A,*) 对被幂等门拦下——不连锁、不失控、不无界
+    expect(res.rewrites).toBe(1);
+    expect(res.candidates).toBe(1);
+    expect(res.gate?.idempotent).toBe(2);
+    // O10 预登记遥测：新端 fresh+valid 的幂等跳过（链式残差信号）
+    expect(res.gate?.staleLineage).toBe(2);
+    // 最新真值 A 绝不被触碰（不失效、不参与合并）
+    expect(invalidated.find((i) => i.id === "m_chain_a")).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    // 双旧失效 + evolved_from×2 审计边
+    expect(invalidated.find((i) => i.id === "m_chain_b")).toBeDefined();
+    expect(invalidated.find((i) => i.id === "m_chain_c")).toBeDefined();
+    expect(links.filter((l) => l.type === "evolved_from")).toHaveLength(2);
+    expect(upserts).toHaveLength(1);
+  });
+});
+
 describe("P4b evolution-worker：合并/失效边界 golden（v5 硬要求）", () => {
   it("归纳合并叙事（CMAS→PADI 改意）：LLM 判 skip → 零写路径，且 prompt 内置反例指令", async () => {
     const { store, upserts, links, invalidated } = makeStore({ edges: [edge("m_padi_new", "m_cmas_old")] });
