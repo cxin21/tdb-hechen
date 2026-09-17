@@ -69,8 +69,9 @@ async function recall(
     if (sceneIndex && sceneIndex.length > 0) {
       // 结论候选走 scene_block 通道（scene index 单一源，无 FTS 候选窗排序不确定性）。
       // 未传 profileIsolation → 默认 {default,default} → scoped profile 目录（与生产同构）。
+      // R4-5：scope 三元组化后默认桶为 team:default|user:default|agent:default。
       const profileDir = path.join(
-        dataDir, "profiles", encodeURIComponent("team:default|agent:default"),
+        dataDir, "profiles", encodeURIComponent("team:default|user:default|agent:default"),
       );
       fs.mkdirSync(path.join(profileDir, ".metadata"), { recursive: true });
       fs.writeFileSync(

@@ -19,12 +19,17 @@ export interface ProfileScopeOptions {
 
 export function buildProfileIsolationScope(ctx?: ProfileIsolation): string {
   if (!ctx) return DEFAULT_PROFILE_SCOPE;
-  const teamId = ctx.teamId || ctx.userId || "default";
+  const teamId = ctx.teamId || "default";
+  const userId = ctx.userId || "default";
   const agentId = ctx.agentId || "default";
-  // L2/L3 are team+agent-level memories. L0/L1 keep user/session/task-level
-  // isolation, but profiles intentionally ignore userId/sessionId/taskId so
-  // one team's agent memory can accumulate across multiple sessions/users.
-  return `team:${teamId}|agent:${agentId}`;
+  // R4-5（A6 四级贯通召回级，P0 修复）：L2/L3 scope 加 user 维度。旧实现"有意忽略
+  // userId（agent 记忆跨用户累积）"在多用户 agent 下把 A 用户的身份事实注入 B 用户
+  // 的 soul 块（ev10 Q 租户 /recall 实证"导师为林岚"串入陈教授用户），spec §2.3
+  // "内容主语=用户事实"、§10 D-R3-1 缺陷登记、§7-P3 拍板（品格 per-三元组）三处
+  // 一致裁定：user 级隔离优先于跨用户共享。ctx 缺 userId（无租户上下文路径）→
+  // user:default 兜底桶（migration 将单用户存量目录迁入对应桶；钩子无租户路径不变）。
+  // sessionId/taskId 仍不进 scope（L2/L3 聚合于三元组，会话只做写入边界）。
+  return `team:${teamId}|user:${userId}|agent:${agentId}`;
 }
 
 export function parseProfileIsolationScope(scope: string): ProfileIsolation | undefined {
@@ -37,6 +42,10 @@ export function parseProfileIsolationScope(scope: string): ProfileIsolation | un
   }
   if (!values.agent) return undefined;
   const sessionId = values.session ? safeDecodeURIComponent(values.session) : undefined;
+  // R4-5：三段格式（team|user|agent）完整恢复；旧两段格式兼容（存量 scope 迁移期共存）
+  if (values.team && values.user) {
+    return { teamId: values.team, userId: values.user, agentId: values.agent, ...(sessionId ? { sessionId } : {}) };
+  }
   if (values.team) return { teamId: values.team, agentId: values.agent, ...(sessionId ? { sessionId } : {}) };
   if (values.user) return { userId: values.user, agentId: values.agent, ...(sessionId ? { sessionId } : {}) };
   return undefined;
@@ -59,8 +68,11 @@ function profileMatchesScope(record: ProfileRecord, scope: string, isolation?: P
   if (scope === DEFAULT_PROFILE_SCOPE && !isolation) return true;
   if (record.id === buildProfileStableId(scope, record.type, record.filename)) return true;
   if (!isolation) return false;
+  // R4-5：scope 三元组化后，record 侧 userId 参与比对（store 侧 records 带 user 字段时）
   if (isolation.teamId) {
-    return record.teamId === isolation.teamId && record.agentId === isolation.agentId;
+    if (record.teamId !== isolation.teamId || record.agentId !== isolation.agentId) return false;
+    if (isolation.userId && record.userId !== undefined && record.userId !== isolation.userId) return false;
+    return true;
   }
   return record.userId === isolation.userId
     && record.agentId === isolation.agentId;
