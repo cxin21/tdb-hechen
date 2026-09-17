@@ -91,33 +91,23 @@ Expected: FAIL（`selfIdentity`/`soulRender` undefined；allowedSlots 断言失�
 
 - [ ] **Step 3: 实现**
 
-3a. 类型：在 `MemoryCoreMemoryConfig` 接口（config.ts，锚点：`/** K 核心记忆写入口信任边界… */ coreMemory: MemoryCoreMemoryConfig;` 上方的接口定义块）内新增两字段声明，并在同文件类型区新增：
+3a. 类型：`MemoryCoreMemoryConfig` 接口在 config.ts:270（实证）——**沿既有内联对象类型风格**（anchorDiscovery 即内联，不另立 interface），在接口体内 `anchorDiscovery: {...};` 字段后追加：
 
 ```typescript
-export interface SelfIdentityDiscoveryConfig {
-  /** P1 双槽总开关；缺省 false=逐位现状（含 LLM prompt 行为）。 */
-  enabled: boolean;
-  /** 单轮 self 提案采纳上限（clamp 1..10）。 */
-  maxPerPass: number;
-  /** 冷却小时数（与 anchorDiscovery 同门语义；clamp 1..168）。 */
-  intervalHours: number;
-}
-
-export interface SoulRenderConfig {
-  /** self_identity 小节字符预算（F17；超限截断，宁缺毋滥）。 */
-  budgetSelfChars: number;
-  /** identity 小节字符预算。 */
-  budgetIdentityChars: number;
-}
-```
-
-并在 `MemoryCoreMemoryConfig` 中加：
-
-```typescript
-  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状）。 */
-  selfIdentity: SelfIdentityDiscoveryConfig;
-  /** F17 段级注入预算（chars 为 token 粗粒度近似）。 */
-  soulRender: SoulRenderConfig;
+  /**
+   * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
+   * 含 LLM prompt 行为）。maxPerPass clamp 1..10；intervalHours clamp 1..168。
+   */
+  selfIdentity: {
+    enabled: boolean;
+    maxPerPass: number;
+    intervalHours: number;
+  };
+  /** F17 段级注入预算（chars 为 token 粗粒度近似；clamp 100..2000）。 */
+  soulRender: {
+    budgetSelfChars: number;
+    budgetIdentityChars: number;
+  };
 ```
 
 3b. 解析：在 parseConfig 的 coreMemory 块（锚点：`anchorDiscovery: (() => {` 之前）加同款 IIFE：
@@ -291,6 +281,16 @@ Expected: FAIL（`selfIdentity` 未在 deps 中；双槽断言失败）
   selfIdentity?: { enabled: boolean; maxPerPass: number };
 ```
 
+3a-bis. **导出既有常量**（测试需断言旧 prompt 字节级）：`const DISCOVERY_SYSTEM_PROMPT = [` 改为 `export const DISCOVERY_SYSTEM_PROMPT = [`（仅加 export，内容零改动）。
+
+3a-ter. **parseProposals slot 白名单扩展（计划 v2 实证关键项，:250）**：parseProposals 内硬编码 `const valid = new Set(["identity", "core_value", "strict_rule"]);`——**self_identity 提案会在解析层被直接丢弃**，不加此步 Task 2 全部双槽测试必失败。改为：
+
+```typescript
+  const valid = new Set(["identity", "core_value", "strict_rule", "self_identity"]);
+```
+
+（无条件扩展是安全的：enabled=false 时 LLM 走旧 prompt 不产 self 提案；若 LLM 幻觉产出，落入 else 分支 → recountEvidence + pending log——无害且诚实。）
+
 3b. 常量区（DISCOVERY_SYSTEM_PROMPT 之后）新增双视角 prompt——**legacy prompt 一个字节都不改**：
 
 ```typescript
@@ -405,12 +405,12 @@ sudo -H -u tdai git commit -m "feat(soul): P1 identity-discovery 双视角（gat
 
 **Files:**
 - Modify: `MemoryCore/src/core/prompts/l1-extraction.ts`（`getExtractMemoriesSystemPrompt` / `formatExtractionPrompt` 所在文件）
-- Modify: `MemoryCore/src/core/record/l1-extractor.ts`（调用处传入 gated 开关）
+- Modify: `MemoryCore/src/core/record/l1-extractor.ts:520`（composeMemorySystemPrompt 组装点传 gated 开关）
 - Test: Create `MemoryCore/src/core/prompts/l1-extraction.agentact.test.ts`
 
 **Interfaces:**
 - Consumes: Task 1 的 `selfIdentity.enabled`。
-- Produces: enabled=true 时提取 prompt 含「agent 行为事实」指令段（LLM 会把 agent 的承诺/红线执行/稳定风格提为 L1 正文，第一人称）；enabled=false 时 prompt 与现状**字符串相等**。`metadata.agentAct` 字段本任务不落（无消费方，防死字段——见 Global Constraints 精化 2）。
+- Produces: `getExtractMemoriesSystemPrompt(mode: MemoryPromptMode = "chat", opts?: { selfIdentityEnabled?: boolean })`（v2 实证对齐真实签名——现签名 `(mode = "chat")` 只是常量选择器）；enabled=true 且 mode!=="code" 时返回 base+AGENT_ACT_BLOCK（块追加在 prompt **末尾**，不改既有常量体）；enabled=false 时返回值与现状**字符串相等**。`metadata.agentAct` 字段本任务不落（无消费方，防死字段——见 Global Constraints 精化 2）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -420,45 +420,72 @@ import { describe, it, expect } from "vitest";
 import { getExtractMemoriesSystemPrompt } from "./l1-extraction.js";
 
 describe("l1 提取 prompt 的 agent 行为视角（P1 gated）", () => {
-  it("开关关：prompt 与现状字符串相等（逐位现状）", () => {
+  it("开关关（缺省）：prompt 与现状字符串相等（逐位现状）", () => {
     const legacy = getExtractMemoriesSystemPrompt();
     expect(legacy).not.toContain("agent 行为事实");
+    expect(legacy).toBe(getExtractMemoriesSystemPrompt("chat", {}));
   });
 
-  it("开关开：prompt 含 agent 行为事实指令段（第一人称、宁缺毋滥）", () => {
-    const p = getExtractMemoriesSystemPrompt({ selfIdentityEnabled: true });
+  it("开关开（mode=chat）：prompt 含 agent 行为事实指令段（第一人称、宁缺毋滥）", () => {
+    const p = getExtractMemoriesSystemPrompt("chat", { selfIdentityEnabled: true });
     expect(p).toContain("agent 行为事实");
     expect(p).toContain("第一人称");
     expect(p).toContain("宁缺毋滥");
+    expect(p.startsWith(getExtractMemoriesSystemPrompt("chat"))).toBe(true); // 块=追加，常量体零改动
+  });
+
+  it("mode=code：即使开关开也不注入（work 记忆与自我层无关）", () => {
+    expect(getExtractMemoriesSystemPrompt("code", { selfIdentityEnabled: true })).not.toContain("agent 行为事实");
   });
 });
 ```
 
-（若 `getExtractMemoriesSystemPrompt` 现签名带必选参数，按其真实签名补齐缺省实参后再断言——以文件内现状签名为准，不改其既有调用方语义。）
-
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run src/core/prompts/l1-extraction.agentact.test.ts`
-Expected: FAIL（签名无 opts / 内容不含指令段）
+Expected: FAIL（第二用例：现签名只收 mode，对象被当 mode→返回 chat prompt 不含块）
 
 - [ ] **Step 3: 实现**
 
-3a. `getExtractMemoriesSystemPrompt` 增加可选尾参 `opts?: { selfIdentityEnabled?: boolean }`；在返回模板的**记忆类别列表之后**追加：
+3a. `l1-extraction.ts` 新增导出常量（文件尾部）：
 
 ```typescript
-  const agentActBlock = opts?.selfIdentityEnabled
-    ? [
-        "",
-        "## agent 行为事实（可选类别，宁缺毋滥）",
-        "样本中若有 agent 自己的行为证据——我做出的承诺、我执行的红线、我反复承担的职责、我稳定的工作风格——以第一人称提取为独立记忆（如「我在对话中承诺每周五出周报并坚持执行」）。",
-        "硬约束：必须有 agent 侧行为或对话文本支撑；纯用户侧事实不要写成 agent 行为；证据不足不要提取。",
-      ].join("\n")
-    : "";
+// DS-SOUL-MEMORY-002 P1：agent 行为事实视角（仅内置 chat prompt 追加；自定义 memoryPrompt
+// 策略为用户权威，不篡改——见 l1-extractor.ts:520 组装点）。
+export const AGENT_ACT_BLOCK = [
+  "",
+  "## agent 行为事实（可选类别，宁缺毋滥）",
+  "样本中若有 agent 自己的行为证据——我做出的承诺、我执行的红线、我反复承担的职责、我稳定的工作风格——以第一人称提取为独立记忆（如「我在对话中承诺每周五出周报并坚持执行」）。",
+  "硬约束：必须有 agent 侧行为或对话文本支撑；纯用户侧事实不要写成 agent 行为；证据不足不要提取。",
+].join("\n");
 ```
 
-并把它拼进既有返回模板（拼接点=类别列表段落末尾）。
+3b. selector 加尾参（:389）：
 
-3b. `l1-extractor.ts` 的 prompt 组装处（:209 附近 `promptMode` 传入链）透传开关：从 `params.config.coreMemory?.selfIdentity?.enabled` 取值传入（沿既有 config 流动路径，不新增第二份解析）。
+```typescript
+export function getExtractMemoriesSystemPrompt(
+  mode: MemoryPromptMode = "chat",
+  opts?: { selfIdentityEnabled?: boolean },
+): string {
+  const base = mode === "code" ? EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT : EXTRACT_MEMORIES_SYSTEM_PROMPT;
+  return opts?.selfIdentityEnabled && mode !== "code" ? base + AGENT_ACT_BLOCK : base;
+}
+```
+
+3c. 注入点（**实证：l1-extractor.ts:520**——`const systemPrompt = composeMemorySystemPrompt(getExtractMemoriesSystemPrompt(promptMode), memoryPrompt);`）改为：
+
+```typescript
+  // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
+  // 自定义 memoryPrompt 策略优先级不变——自定义时内置 base 被其覆盖，agentAct 块随之
+  // 不生效（自定义策略=用户权威，不篡改）。
+  const selfIdentityEnabled = params.config?.coreMemory?.selfIdentity?.enabled === true;
+  const systemPrompt = composeMemorySystemPrompt(
+    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled }),
+    memoryPrompt,
+  );
+```
+
+（`params.config` 为 callLlmExtraction 入参既有字段——:206 实证调用处已传 `config`；若 :502 形参名不同，按其真实形参名对齐。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -589,19 +616,21 @@ export async function buildSoulPrefix(
           : slot === "identity" ? (opts?.budgetIdentityChars ?? 900)
           : undefined;
       const labelFor = (slot: string): string =>
-        slot === "self_identity" ? "（我是谁）" : slot === "identity" ? "（我心中的他）" : "";
+        slot === "self_identity" ? "我是谁" : slot === "identity" ? "我心中的他" : "";
       for (const s of slots) {
         const budget = budgetFor(s.slot);
         const content = budget !== undefined && s.content.length > budget ? s.content.slice(0, budget) : s.content;
-        const body = dual ? `（${labelFor(s.slot).slice(1, -1)}）- [${s.slot}] ${content}` : `- [${s.slot}] ${s.content}`;
+        const body = dual && labelFor(s.slot)
+          ? `（${labelFor(s.slot)}）- [${s.slot}] ${content}`
+          : `- [${s.slot}] ${s.content}`;
         // multi-line：仅首行带前缀（label 拼在首行），后续行已在 content 内原样跟随
         lines.push(body);
       }
 ```
 
-（注意：非 dual 路径保持 `- [${s.slot}] ${s.content}` 原样且**不做截断**——逐位现状。）
+（注意：非 dual 路径保持 `- [${s.slot}] ${s.content}` 原样且**不做截断**——逐位现状。dual 路径对非 identity/self_identity 槽（未来扩展）回落原样渲染。）
 
-3b. 调用点（auto-recall.ts:635-637）：
+3b. 调用点（auto-recall.ts:635-637，实证：该处位于 performLayeredRecall 内，作用域已有全量配置 `cfg`——:530 `cfg.recall` 同源）：
 
 ```typescript
         const { buildSoulPrefix } = await import("./soul-assembler.js");
@@ -610,14 +639,14 @@ export async function buildSoulPrefix(
           { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
           logger,
           {
-            selfIdentityEnabled: config.coreMemory?.selfIdentity?.enabled === true,
-            budgetSelfChars: config.coreMemory?.soulRender?.budgetSelfChars,
-            budgetIdentityChars: config.coreMemory?.soulRender?.budgetIdentityChars,
+            selfIdentityEnabled: cfg.coreMemory?.selfIdentity?.enabled === true,
+            budgetSelfChars: cfg.coreMemory?.soulRender?.budgetSelfChars,
+            budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
           },
         );
 ```
 
-（以调用点作用域内 config 的真实变量名为准——`grep -n "config" src/core/hooks/auto-recall.ts | head` 确认后替换 `config`。）
+（若作用域内真实变量名非 `cfg`——执行时 `grep -n "cfg\b\|config" src/core/hooks/auto-recall.ts | sed -n '1,20p'` 就近确认，语义=全量 MemoryTdaiConfig。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -699,8 +728,9 @@ sudo -H -u tdai git commit -m "feat(soul): P1 身份修订旧文留痕（O14 缓
 
 **Files:**
 - Modify: `MemoryPanel/src/panel/http/routes/chat-memory.ts`（values 面板路由区 :1590 附近新增 identity/read BFF 路由）
-- Create: `MemoryPanel/web/src/pages/ChatMemoryPage/components/IdentitySection.tsx`
-- Modify: `MemoryPanel/web/src/pages/ChatMemoryPage/index.tsx`（挂载 IdentitySection，与 ValueAnchorsPanel 同区）
+- Modify: `MemoryPanel/web/src/lib/teamApi.ts`（`chatMemoryApi` 增 `identityRead`，与 `valuesList` :222 同型）
+- Create: `MemoryPanel/web/src/pages/ChatMemoryPage/components/IdentitySection.tsx` + `identity-utils.ts`
+- Modify: `MemoryPanel/web/src/pages/ChatMemoryPage/components/ValueAnchorsPanel.tsx`（挂载 IdentitySection——实证：ValueAnchorsPanel 是独立视图（index.tsx:28 视图切换），且已有 blockId（:211 `chat_memory-${activeTeamId}-${agentId}`）与取数助手（:222 `chatMemoryApi.valuesList`））
 - Test: Create `MemoryPanel/tests/identity-section.test.ts`
 
 **Interfaces:**
@@ -765,41 +795,72 @@ export function identityEmpty(user: string[], self: string[]): boolean {
 }
 ```
 
-3b. BFF 路由（chat-memory.ts，插在 values/list 路由之后，**镜像其模式**：authorize → 租户反解 → 网关读 → 透传）：
+3b. BFF 路由（chat-memory.ts，插在 values/list 路由之后，**镜像其真实 ctx 风格**（v2 实证：本文件路由为 `api.post(path, validatePanelMetaHeaders(deps), async (c) => {...})` + buildCtx/readJson/requiredBlockId/parseChatMemoryAssetId/resolveCallerUserId/asset/get/authorizeChatMemoryRead 前奏，非 express 风格））：
 
 ```typescript
   // POST /chat-memory/identity/read  body: { block_id }
-  // DS-SOUL-MEMORY-002 U1：身份区只读透传——/v3/core-memory/read 的 slots
-  // （values/list 丢弃 slots 的既有注释即此缺口）。零新端点（复用既有 read），P1 只读。
-  api.post("/chat-memory/identity/read", async (req, reply) => {
-    const body = (req.body ?? {}) as { block_id?: string };
-    const blockId = String(body.block_id ?? "");
-    if (!blockId) return reply.code(400).send({ error: "block_id required" });
-    if (!(await authorizeChatMemoryRead(req))) return reply.code(403).send({ error: "forbidden" });
-    const tenant = coreTenantFromBlockId(blockId); // 与 values/list 同款反解；以该路由真实实现替换此行
-    const read = await gatewayPost("/v3/core-memory/read", tenant); // 与 values/list 同款网关调用；以真实 helper 替换
-    return reply.send({ slots: read?.slots ?? [] });
-  });
+  // DS-SOUL-MEMORY-002 U1：身份区只读透传——/v3/core-memory/read 返回的 slots
+  // 被 values/list 丢弃（:1594 注释实证即此缺口）。零新端点（复用既有 read），P1 只读。
+  api.post(
+    "/chat-memory/identity/read",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke("asset/get", { asset_id: blockId }, ctx);
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory") return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      const canRead = await authorizeChatMemoryRead(deps, ctx, asset, meUserId, blockId);
+      if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+
+      // 数据面 user_id = asset owner（values/list 同款借用场景语义）
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      const read = await /* 照抄 values/list 路由内 /v3/core-memory/read 的调用段：
+        同 helper、同 idFields={team_id: parsed.teamId, agent_id: parsed.agentId,
+        user_id: asset.owner_user_id, session_id: "default"}、同 cred；取其返回的 slots */;
+      return respondEnvelope(c, { code: 0, data: { slots: read?.slots ?? [] } });
+    },
+  );
 ```
 
-（两处「以真实实现替换」：打开 values/list 路由 :1606-1660 照抄其 authorize/租户反解/网关调用三段的真实代码形态——模式实证存在，禁止另发明。）
+（网关调用段：打开本文件 values/list 路由，复制其 `/v3/core-memory/read` 调用语句（idFields 形状已在上注释给出）——**这是唯一需要照抄的段落**，禁止另发明 helper。若 respondEnvelope 形状与实际不符，以同文件相邻路由的返回形态对齐。）
 
-3c. `IdentitySection.tsx`（只读，复用面板徽标风格）：
+3c-1. `teamApi.ts`：`chatMemoryApi` 对象内加（与 `valuesList` 同型）：
+
+```typescript
+  async identityRead(blockId: string): Promise<{ slots: Array<{ slot: string; content: string; version?: number; updated_at?: string; source?: string }> }> {
+    return this.post("/chat-memory/identity/read", { block_id: blockId });
+  },
+```
+
+（`this.post` 以 valuesList 的真实 HTTP 助手形态对齐——打开 valuesList 实现照抄其请求方式。）
+
+3c. `IdentitySection.tsx`（只读，取数走 chatMemoryApi.identityRead）：
 
 ```tsx
-import { useEffect, useState } from "react";
-import { splitIdentitySlots, identityEmpty, type CoreSlotRow } from "./identity-utils.js";
+import { useEffect, useState } from 'react';
+import { chatMemoryApi } from '@/lib/teamApi';
+import { splitIdentitySlots, identityEmpty, type CoreSlotRow } from './identity-utils';
 
 export function IdentitySection(props: { blockId: string }) {
   const [slots, setSlots] = useState<CoreSlotRow[]>([]);
   useEffect(() => {
     let alive = true;
-    fetch("/api/chat-memory/identity/read", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ block_id: props.blockId }),
-    })
-      .then((r) => r.json())
+    chatMemoryApi
+      .identityRead(props.blockId)
       .then((d) => { if (alive) setSlots(Array.isArray(d.slots) ? d.slots : []); })
       .catch(() => {});
     return () => { alive = false; };
@@ -825,7 +886,13 @@ export function IdentitySection(props: { blockId: string }) {
 }
 ```
 
-3d. `ChatMemoryPage/index.tsx`：在 ValueAnchorsPanel 挂载点旁加 `<IdentitySection blockId={selectedBlockId} />`（以该页真实的选中 block state 变量名传入——grep `ValueAnchorsPanel` 的挂载行对齐）。CSS：`chat-memory-panel.css` 追加 `.identity-section/.identity-block/.identity-content` 三条（复用现有徽标/面板配色变量，不新造色板）。
+3d. 挂载（`ValueAnchorsPanel.tsx`：blockId 派生 :211 之后、values 列表渲染之前）：
+
+```tsx
+      {blockId ? <IdentitySection blockId={blockId} /> : null}
+```
+
+（import 行加 `import { IdentitySection } from './IdentitySection';`。）CSS：`chat-memory-anchors.css` 追加 `.identity-section/.identity-block/.identity-content` 三条（复用现有徽标/面板配色变量，不新造色板）。
 
 - [ ] **Step 4: 跑测试确认通过 + 人工核**
 
@@ -835,8 +902,8 @@ Expected: PASS。人工核：MemoryPanel dev 页面选中 flowtest 任意记忆�
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /opt/tdai/td-agemem && sudo -H -u tdai git add MemoryPanel/src/panel/http/routes/chat-memory.ts MemoryPanel/web/src/pages/ChatMemoryPage/components/IdentitySection.tsx MemoryPanel/web/src/pages/ChatMemoryPage/components/identity-utils.ts MemoryPanel/web/src/pages/ChatMemoryPage/index.tsx MemoryPanel/web/src/pages/ChatMemoryPage/styles/chat-memory-panel.css MemoryPanel/tests/identity-section.test.ts
-sudo -H -u tdai git commit -m "feat(panel): P1 身份区只读展示（U1 slots 透传零新端点；identity/self_identity 分组渲染）"
+cd /opt/tdai/td-agemem && sudo -H -u tdai git add MemoryPanel/src/panel/http/routes/chat-memory.ts MemoryPanel/web/src/lib/teamApi.ts MemoryPanel/web/src/pages/ChatMemoryPage/components/IdentitySection.tsx MemoryPanel/web/src/pages/ChatMemoryPage/components/identity-utils.ts MemoryPanel/web/src/pages/ChatMemoryPage/components/ValueAnchorsPanel.tsx MemoryPanel/web/src/pages/ChatMemoryPage/styles/chat-memory-anchors.css MemoryPanel/tests/identity-section.test.ts
+sudo -H -u tdai git commit -m "feat(panel): P1 身份区只读展示（U1 slots 透传零新端点；identity/self_identity 分组渲染；挂载于价值锚管理视图）"
 ```
 
 ---
@@ -859,16 +926,16 @@ Expected: tsc 0 错误；vitest 全绿（≥500 tests 基线 + 本计划新增�
 
 - [ ] **Step 2: flowtest 开启 + 重启**
 
-`tdai-gateway.yaml` memory.coreMemory 组追加（yaml 缩进对齐 anchorDiscovery）：
+`tdai-gateway.yaml` memory.coreMemory 组追加（**实证缩进：与 anchorDiscovery 同级=4 空格**，yaml 150-159 行实证；追加在 `anchorDiscovery:` 块之后）：
 
 ```yaml
-      selfIdentity:
-        enabled: true
-        maxPerPass: 2
-        intervalHours: 1   # 验收期缩短冷却；验收后回 24
-      soulRender:
-        budgetSelfChars: 600
-        budgetIdentityChars: 900
+    selfIdentity:
+      enabled: true
+      maxPerPass: 2
+      intervalHours: 1   # 验收期缩短冷却；验收后回 24
+    soulRender:
+      budgetSelfChars: 600
+      budgetIdentityChars: 900
 ```
 
 ```bash
@@ -900,5 +967,23 @@ sudo -H -u tdai git commit -m "docs(soul): P1 验收 SOP 实测回写（换用�
 ## 计划自审记录（writing-plans Self-Review）
 
 1. **Spec 覆盖**：spec §7 P1 六项——self_identity slot（Task 2/1）、双视角 prompt+主语修正（Task 2，O15 顺手闭环）、四段渲染+F17（Task 4）、旧文留痕（Task 5）、UI U1（Task 6）、验收双测试（Task 7）——全部有任务；agentAct 视角（Task 3）。两处精化（minEvidence/agentAct 字段推迟）已在 Global Constraints 显式声明。
-2. **占位符扫描**：Task 6 两处「以真实实现替换」为显式锚点指令（照抄既有路由真实代码形态），非 TBD；其余步骤均含实际代码/命令。
+2. **占位符扫描**：Task 6 网关调用段为显式照抄指令（idFields 形状已实证给出），非 TBD；其余步骤均含实际代码/命令。
 3. **类型一致性**：`SoulRenderOptions`/`selfIdentity`/`splitIdentitySlots` 命名各 Task 间一致；`buildSoulPrefix` 第四参在 Task 4 定义、调用点同形；fake store 方法名与 store/types.ts:736-737 实证一致。
+
+## 计划 v2 实证复审记录（2026-09-17，结合 spec 与真实代码的第二轮计划审核）
+
+审核方法：把计划中每段「将要写」的代码当假命题，对真实代码逐条验证（D1-D8/E1-E7/F1-F3 三批）。**抓出 9 处问题并已全部修入**——其中 2 处若不修，执行时测试必失败：
+
+| # | 级别 | 发现（实证出处） | 修正 |
+|---|---|---|---|
+| 1 | **致命** | `parseProposals` 硬编码 slot 白名单 `Set(["identity","core_value","strict_rule"])`（:250）——self_identity 提案在**解析层即被丢弃**，原计划 Task 2 所有双槽测试必失败 | Task 2 增 3a-ter：valid 集合 +self_identity（无条件扩展安全：disabled 时幻觉提案落 else→pending log，无害且诚实） |
+| 2 | **高** | `getExtractMemoriesSystemPrompt(mode)` 是常量选择器（:389-391），原计划的 opts 注入方式对不上真实签名 | Task 3 重写：selector 加尾参 + `AGENT_ACT_BLOCK` 运行时追加（常量体零改动）+ 注入点定为 **l1-extractor.ts:520**（composeMemorySystemPrompt 组装处，config 经 :206 既有入参流入）；mode=code 不注入；自定义 memoryPrompt 策略优先级不变（用户权威不篡改） |
+| 3 | 高 | `DISCOVERY_SYSTEM_PROMPT` 未导出（C2 实证 `const`）——Task 2 测试 import 会编译失败 | Task 2 增 3a-bis：加 export（内容零改动） |
+| 4 | 中 | BFF 路由真实风格是**自定义 ctx**（`api.post(path, validatePanelMetaHeaders(deps), async (c) => …)` + buildCtx/readJson/requiredBlockId/parseChatMemoryAssetId/…，E4 实证）——原计划 express 风格草稿全错 | Task 6 重写：前奏代码按实证逐行对齐；网关调用段为唯一照抄段（idFields 形状已给出） |
+| 5 | 中 | ValueAnchorsPanel 是**独立视图**（index.tsx:28 视图切换）而非块详情内组件；取数走 `chatMemoryApi.valuesList`（:222）+ blockId 派生（:211） | Task 6 挂载点改为 ValueAnchorsPanel 内（blockId 现成）；前端取数改 `chatMemoryApi.identityRead`（teamApi 增 helper，与 valuesList 同型） |
+| 6 | 中 | `MemoryCoreMemoryConfig` 既有风格是**内联对象类型**（anchorDiscovery 内联，D1 实证）——原计划引入两个新 interface 与仓库风格冲突 | Task 1 改内联字段 |
+| 7 | 低 | yaml 实证缩进：anchorDiscovery 在 coreMemory 下 4 空格（:154） | Task 7 yaml 改 4 空格 |
+| 8 | 低 | auto-recall 调用点作用域变量为全量 `cfg`（:530 `cfg.recall` 同源实证），非 `config` | Task 4 3b 改 `cfg.coreMemory?.…` |
+| 9 | 低 | strip 分句语义（D2）：split `/(?<=[。；;！？\n])/` + P\d 结构判据——Task 2 测试用例「P1 阶段已完成，当前正在做收尾」整句命中→拒收，**预期成立**（复核通过，无需改） | 无（复核记录） |
+
+结论：计划与 spec/真实代码的对齐问题已清零；v2 可执行。
