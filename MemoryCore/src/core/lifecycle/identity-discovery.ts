@@ -200,10 +200,15 @@ export async function runIdentityDiscovery(deps: {
             } else {
               selfProps.push(cleaned);
             }
-          } else {
+          } else if (p.slot === "core_value" || p.slot === "strict_rule") {
+            // O13（P2）：pending 落点——红线类提案永不自动写入，持久化到 core_pending 供
+            // Panel 人工采纳/拒绝（feature-detect：无方法的 store 保持纯计数现状）。
             const ev = recountEvidence(p.content, corpus);
+            const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant);
             pendingThis++;
-            logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev})`);
+            logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev}${persisted ? ", persisted" : ""})`);
+          } else {
+            pendingThis++;
           }
         }
         // identity slot 单行语义：多提案合并为 bulleted 身份描述，version++ 演化

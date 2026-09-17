@@ -20,7 +20,7 @@
  * - Thread-safe via WAL mode.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -870,6 +870,20 @@ export class VectorStore implements IMemoryStore {
     // 缺省 'theme'/'{}' = 逐位现状；sqlite 不可删列，回滚策略=列保留无害、缺省值即现状。
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN node_type TEXT NOT NULL DEFAULT 'theme'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN attrs_json TEXT NOT NULL DEFAULT '{}'"); } catch { /* exists */ }
+    // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
+    // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS core_pending (
+      pending_id TEXT PRIMARY KEY,
+      slot TEXT NOT NULL,
+      content TEXT NOT NULL,
+      evidence INTEGER NOT NULL DEFAULT 0,
+      state TEXT NOT NULL DEFAULT 'pending',
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      created_at TEXT NOT NULL,
+      decided_at TEXT
+    )`);
     // GROW：自生长调度状态 kv（last_discovery_at / last_corpus_count）——重启不失忆，
     // 避免每次重启后 interval 门失效白烧一次发现 LLM 调用。
     this.db.exec("CREATE TABLE IF NOT EXISTS anchor_growth_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -2717,6 +2731,53 @@ export class VectorStore implements IMemoryStore {
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_values] backfillMemoryRef failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
+    }
+  }
+
+  // ── O13（P2）：core_pending 三方法（同步——与 upsertCore/listValues 同款 sqlite 语义）────
+
+  upsertPendingCore(slot: string, content: string, evidence: number, tenant?: CoreTenant): boolean {
+    try {
+      const teamId = tenant?.teamId || "default";
+      const userId = tenant?.userId || "default";
+      const agentId = tenant?.agentId || "default";
+      const pid = "pd-" + createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
+      this.db.prepare(`INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        ON CONFLICT(pending_id) DO UPDATE SET evidence = excluded.evidence, created_at = excluded.created_at
+        WHERE core_pending.state = 'pending'`).run(pid, slot, content, Math.max(0, Math.floor(evidence)), teamId, userId, agentId, new Date().toISOString());
+      return true;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] upsertPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  listPendingCore(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null }> {
+    try {
+      const teamId = tenant?.teamId || "default";
+      const userId = tenant?.userId || "default";
+      const agentId = tenant?.agentId || "default";
+      const stateFilter = opts?.includeDecided ? "" : " AND state = 'pending'";
+      return this.db.prepare(`SELECT pending_id, slot, content, evidence, state, created_at, decided_at FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`).all(teamId, userId, agentId) as Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null }>;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] listPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  decidePendingCore(pendingId: string, decision: "adopted" | "rejected", tenant?: CoreTenant): { slot: string; content: string } | null {
+    try {
+      const row = this.db.prepare("SELECT slot, content, state, team_id, user_id, agent_id FROM core_pending WHERE pending_id = ?").get(pendingId) as { slot: string; content: string; state: string; team_id: string; user_id: string; agent_id: string } | undefined;
+      if (!row || row.state !== "pending") return null;
+      if (tenant) {
+        if (row.team_id !== (tenant.teamId || "default") || row.user_id !== (tenant.userId || "default") || row.agent_id !== (tenant.agentId || "default")) return null;
+      }
+      const r = this.db.prepare("UPDATE core_pending SET state = ?, decided_at = ? WHERE pending_id = ? AND state = 'pending'").run(decision, new Date().toISOString(), pendingId);
+      return Number(r.changes) > 0 ? { slot: row.slot, content: row.content } : null;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] decidePendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
     }
   }
 

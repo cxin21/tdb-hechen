@@ -111,6 +111,7 @@ import {
 } from "./v2-schemas.js";
 import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
+import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
 import { performLayeredRecall } from "../core/hooks/auto-recall.js";
@@ -199,6 +200,9 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/core-memory/values/derive",
   // DISC（提议制）：价值锚发现（LLM 蒸馏提案，只提议不落库；无 body）
   "/core-memory/values/discover",
+  // O13（P2）：红线类提案人工采纳落点（v3-only；422/401 由 v3 dispatch 层统一执行）
+  "/core-memory/pending/list",
+  "/core-memory/pending/decide",
   "/atomic/delete",
   "/atomic/count",
   "/scenario/ls",
@@ -488,6 +492,9 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/core-memory/values/upsert": handleCoreMemoryValuesUpsert,
   "/core-memory/values/delete": handleCoreMemoryValuesDelete,
   // GROW：钉住/退休/恢复
+  // O13（P2）：pending 人工采纳
+  "/core-memory/pending/list": handleCoreMemoryPendingList,
+  "/core-memory/pending/decide": handleCoreMemoryPendingDecide,
   "/core-memory/values/pin": handleCoreMemoryValuesPin,
   "/core-memory/values/retire": handleCoreMemoryValuesRetire,
   "/core-memory/values/restore": handleCoreMemoryValuesRestore,
@@ -1795,6 +1802,49 @@ function coreTenantFromIsolation(iso?: { teamId?: string; userId?: string; agent
     userId: iso?.userId || DEFAULT_ISOLATION_ID,
     agentId: iso?.agentId || DEFAULT_ISOLATION_ID,
   };
+}
+
+// ── O13（P2）：pending 人工采纳落点（spec §7；租户隔离同 core-memory read/write）────
+
+async function handleCoreMemoryPendingList(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  if (!store.listPendingCore) return errorEnvelope(503, "core_pending not supported", requestId);
+  const b = (body ?? {}) as { include_decided?: unknown };
+  const tenant = coreTenantFromIsolation(deps.requestIsolation);
+  const pending = (await Promise.resolve(store.listPendingCore(tenant, { includeDecided: b.include_decided === true }))) ?? [];
+  return successEnvelope<{ pending: typeof pending }>({ pending }, requestId);
+}
+
+async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const b = (body ?? {}) as { pending_id?: unknown; decision?: unknown };
+  if (typeof b.pending_id !== "string" || !b.pending_id.trim()) return errorEnvelope(400, "pending_id required", requestId);
+  if (b.decision !== "adopted" && b.decision !== "rejected") return errorEnvelope(400, "decision must be 'adopted' | 'rejected'", requestId);
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  if (!store.decidePendingCore) return errorEnvelope(503, "core_pending not supported", requestId);
+  const tenant = coreTenantFromIsolation(deps.requestIsolation);
+  const decided = await Promise.resolve(store.decidePendingCore(b.pending_id, b.decision, tenant));
+  if (!decided) return errorEnvelope(404, "pending item not found or already decided", requestId);
+  // O13 采纳语义：strict_rule → validateCoreWrite + escapeXmlTags + upsertCore('strict_rule',…,'panel-adopt')
+  //               core_value → upsertValue(growthValueId(content), content, 0.5, 'panel-adopt', tenant, undefined, 'manual')
+  if (b.decision === "adopted") {
+    if (decided.slot === "strict_rule") {
+      const cfg = deps.config?.memory?.coreMemory;
+      if (!cfg) return errorEnvelope(503, "coreMemory config not available", requestId);
+      const decision = validateCoreWrite({ slot: "strict_rule", content: decided.content, source: "panel-adopt" }, cfg);
+      if (!decision.ok) return errorEnvelope(400, decision.reason ?? "invalid", requestId);
+      if (!store.upsertCore) return errorEnvelope(503, "core_memory not supported", requestId);
+      // 写入路径单点消毒（P-B 咽喉模式，同 handleCoreMemoryWrite）
+      const ok = await Promise.resolve(store.upsertCore("strict_rule", escapeXmlTags(decided.content), "panel-adopt", tenant));
+      if (!ok) return errorEnvelope(503, "strict_rule adopt failed", requestId);
+    } else if (decided.slot === "core_value") {
+      if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);
+      const ok = await Promise.resolve(store.upsertValue(growthValueId(decided.content), decided.content, 0.5, "panel-adopt", tenant, undefined, "manual"));
+      if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
+    }
+  }
+  return successEnvelope<{ pending_id: string; decision: string; slot: string }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot }, requestId);
 }
 
 async function handleCoreMemoryRead(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
@@ -3121,6 +3171,9 @@ export {
   handleAtomicCount,
   // P2-T12：core-memory handler 导出（同形 verify 脚本直调；与 T14 neighbors 同惯例）
   handleCoreMemoryRead,
+  // O13（P2）：pending 人工采纳 handler 导出（pending-routes.test 直调）
+  handleCoreMemoryPendingList,
+  handleCoreMemoryPendingDecide,
   handleCoreMemoryWrite,
   // S1：core_values 写 API handler 导出（verify-s1 直调）
   handleCoreMemoryValuesUpsert,

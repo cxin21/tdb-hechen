@@ -713,6 +713,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   upsertValue?(valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person", attrs?: { role?: string; aliases?: string[] }): MaybePromise<boolean>;
   /** P2：通用 refs 回填键族（coreRefs/personRefs/identityRefs 单源；旧后端可缺省）。 */
   backfillMemoryRef?(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): MaybePromise<boolean>
+  /** O13（P2）：core_pending——红线类提案人工采纳落点（三方法，缺省=store 不支持时调用方安静跳过）。 */
+  upsertPendingCore?(slot: string, content: string, evidence: number, tenant?: CoreTenant): MaybePromise<boolean>;
+  listPendingCore?(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): MaybePromise<Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null }>>;
+  decidePendingCore?(pendingId: string, decision: "adopted" | "rejected", tenant?: CoreTenant): MaybePromise<{ slot: string; content: string } | null>;
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。
