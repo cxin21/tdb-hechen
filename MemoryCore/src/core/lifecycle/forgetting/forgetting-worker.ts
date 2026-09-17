@@ -23,6 +23,9 @@ export interface ForgettingWorkerDeps {
   /** P2（F14）：现行身份事实切片集（identityRefs 重验基准）。runForgettingOnStore 自动从
    *  store.readCore(filter) 的 identity 槽提取；直连 runForgetting 的调用方需显式传入。 */
   identitySlices?: string[];
+  /** P2 SOP 实证修正：锚扫描租户——缺省 undefined=default 租户，非默认租户的保护名集
+   *  会恒空（保护静默失效）；调度器/OnStore 路径传 deps.config.filter。 */
+  tenant?: { teamId?: string; userId?: string; agentId?: string };
   values?: Array<{ id: string; label: string; weight: number }>;
   /** 审计 B1：appraisal 配置（enabled/firedThreshold）。缺省用默认（enabled, 0.4）。 */
   appraisalConfig?: AppraisalConfig;
@@ -45,7 +48,8 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
   let values = deps.values;
   if (values === undefined && deps.store?.listValues) {
     try {
-      const rows = await deps.store.listValues();
+      const t = deps.tenant;
+      const rows = await deps.store.listValues(t ? { teamId: t.teamId || "default", userId: t.userId || "default", agentId: t.agentId || "default" } : undefined);
       rawRows = (rows ?? []) as Array<{ value_id: string; label: string; weight: number; attrs_json?: string }>;
       values = rawRows.map((r) => ({ id: r.value_id, label: r.label, weight: r.weight }));
     } catch {
@@ -116,5 +120,5 @@ export async function runForgettingOnStore(
       }
     } catch { identitySlices = []; }
   }
-  return runForgetting({ queryL1: () => records as never, config: opts.config, logger: opts.logger, store, appraisalConfig: opts.appraisalConfig, identitySlices });
+  return runForgetting({ queryL1: () => records as never, config: opts.config, logger: opts.logger, store, appraisalConfig: opts.appraisalConfig, identitySlices, tenant: opts.filter });
 }

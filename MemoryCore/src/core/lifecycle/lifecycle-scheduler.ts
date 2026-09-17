@@ -118,7 +118,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
   }
   if (deps.config.forgetting?.enabled !== false) {
     try {
-      const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store });
+      const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });
       deps.logger?.info?.(`[lifecycle] forgetting candidates=${res.candidates.length} archived=${res.archived}`);
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] forgetting failed: ${err instanceof Error ? err.message : String(err)}`);

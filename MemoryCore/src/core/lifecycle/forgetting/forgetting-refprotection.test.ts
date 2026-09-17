@@ -78,3 +78,24 @@ describe("worker 集成（refProtection）", () => {
     expect(res.candidates.length).toBe(6);
   });
 });
+
+describe("F14 租户作用域（SOP 实证修正）", () => {
+  it("worker 把租户传给 listValues（非默认租户锚可见，保护名集不恒空）", async () => {
+    const listValues = vi.fn(async () => [{ value_id: "v1", label: "数据隐私", weight: 0.5, node_type: "theme", attrs_json: "{}" }]);
+    const archiveL1 = vi.fn(() => true);
+    const TENANT = { teamId: "teamA", userId: "userA", agentId: "agentA" };
+    await runForgetting({
+      queryL1: () => [rec("prot-core", { coreRefs: ["数据隐私"] })],
+      config: { ...DEFAULT_FORGETTING_CONFIG, refProtection: true },
+      store: { listValues, archiveL1 } as never,
+      identitySlices: [],
+      tenant: TENANT,
+    });
+    expect(listValues).toHaveBeenCalledWith(TENANT);
+    expect(res_candidates_empty(archiveL1));
+  });
+  function res_candidates_empty(archiveL1: ReturnType<typeof vi.fn>): boolean {
+    expect(archiveL1).not.toHaveBeenCalled();
+    return true;
+  }
+});
