@@ -323,3 +323,23 @@ CREATE TABLE IF NOT EXISTS core_pending (
 | 2 | identity 槽单提案抹历史：upsertCore 纯 REPLACE，3 事实被 1 提案覆盖 | mergeIdentityFacts（existing∪new 行级去重 cap8；store REPLACE 语义保留供面板直写，组合在 worker） | d9a8626 | 真数据：identity 4 行合并演化 |
 | 3 | F14 保护静默失效：worker listValues() 恒读 default 租户；调度器无 filter 时全表扫描无租户概念 → 非默认租户保护名集恒空，双夹具全归档（三次实验二分定位） | deps.tenant 形参 + 批内记录租户去重聚合（显式租户优先；readCore 身份切片同源聚合） | 32e0f7a, aa46dba | 真数据终验：protected(coreRefs→女儿)=LIVE / dangling(悬空)=ARCHIVED |
 基线：vitest 580/580（+42 vs 538 起点），tsc 243 持平。方法学记录：解析配置二分定位时须以 parseConfig(doc.memory) 子树为入参（整文档入参会全默认值误判）；SSH 长等待>250s 需 ServerAliveInterval=30。
+
+## 全面审计记录（2026-09-17，用户指令：逐文件逐功能第一性原理复核）
+**代码/配置面审计（完成）**：
+| 项 | spec 条款 | 代码证据 | 结论 |
+|---|---|---|---|
+| F11 personEv | §F11 label∨alias 包含 | anchor-growth.ts:318-323 personEvCount(label,aliases,corpus) 分叉 | ✓ |
+| F12 关系权重 | strength=F5·personEv; valence 均值符号化 | :339 upsertValue valence 落列 + :509 均值符号化 + :536 NULL 守卫 | ✓ |
+| F15/F19 分池 | maxTotalTheme=15/person=8; 复合去重键 | :378-380 quotaEvict 双池 + person 独立 maxTotal 8 | ✓ |
+| F17 预算 | chars 上限+行数上限 config | budgetSelf/Identity ✓; **maxRelationLines 缺失→已补齐**（opts 透传,clamp 1..20 缺省5） | 修复 aa4814f |
+| F20 红线 | 身份永不自动退场 | anchor-growth.ts:126-129 "只告警,upsertCore/retire 零调用" | ✓ |
+| O13 | 单向状态机+双路径采纳+信任边界 | sqlite.ts:873 DDL; v2-router.ts:1829 validateCoreWrite+escapeXmlTags | ✓ |
+| F14-bis | 回音室禁令 | 召回/排序代码无 identity 项 | ✓ |
+| 配置面 | 全开启 | yaml: person 分池/refProtection/identityMaintain/selfIdentity/soulRender×3/allowedSlots×4 全就位 | ✓ |
+基线：vitest 582/582、tsc 243。
+
+**ev7 全新对抗数据真流程（26 组种子：林教授×4含别名老林/王某负向×3/串味×2/身份×3/状态残留×2/人设注入×1/自证×2/红线×2/主题×2/换用户×3/换agent×2）**：
+- 21+5 全部受理；L1 抽取完成 14/26 后**停滞**。
+- 根因（journalctl 19:11 实证）：**LLM 供应商周配额耗尽**（reset 2026-09-21 00:00 +0800）——identity/anchor 抽取全部 "Failed after 3 attempts"，管线降级正确（不崩溃/留痕/attempt-cooldown 防风暴）。
+- 已得真数据：identity 槽单事实演化合并 ✓；F15 maintain 对 ev6 报 unsupported=1 warning-only ✓（F20 实证）。
+- 待配额恢复后补测：林教授锚采纳（ev=3 达门）、王某 ev=2 不采纳（F11 护栏）、对抗人设拒收、隔离断言、F14 ev7 夹具、/recall 全块核对。
