@@ -343,3 +343,10 @@ CREATE TABLE IF NOT EXISTS core_pending (
 - 根因（journalctl 19:11 实证）：**LLM 供应商周配额耗尽**（reset 2026-09-21 00:00 +0800）——identity/anchor 抽取全部 "Failed after 3 attempts"，管线降级正确（不崩溃/留痕/attempt-cooldown 防风暴）。
 - 已得真数据：identity 槽单事实演化合并 ✓；F15 maintain 对 ev6 报 unsupported=1 warning-only ✓（F20 实证）。
 - 待配额恢复后补测：林教授锚采纳（ev=3 达门）、王某 ev=2 不采纳（F11 护栏）、对抗人设拒收、隔离断言、F14 ev7 夹具、/recall 全块核对。
+
+## 全面验证记录（阶段收口 SOP，2026-09-17）
+- 对抗性审查三命中三修（dc709c5）：A1 mergeIdentityFacts 饥饿（早退 cap→slice(-8) 保最新）；A2 主语门绕过（补 [说称]我[是为]+误报面断言）；A3 F14 错锚边界（无 deps.tenant 批内单租户批误用 default 锚 rawRows→显式租户守卫）。vitest 586/586、tsc 243。
+- 配置项审计：anchorDiscovery(person.minEvidence3/maxPerPass2/maxTotal8)/identityMaintain/selfIdentity(1h 验收期)/refProtection/durativeEnabled/excludeInvalidated/emotionSalienceWeight=0(实验轨红线合规)/enableDedup/config-override(maxTokens=0) 全部开启。
+- 全新隔离租户 vp2 完整流程（15 组新对抗数据）：14 条→9 条 L1（归纳合并符合设计）；p-妈妈 val=1 person 锚；identity 4 行全行为自证；对抗 s13(身份设定)/s14(说你是) 均被主语门拦截（/recall 无泄漏）；隔离 user-b 独立（李姐）；O13 pending×2（strict_rule 导出二次确认 ev=1 / core_value 孝顺健康）；/recall 注入「重要的人：妈妈(家人·趋近)」来源主语属性正确；F14 全新租户复验 protected=LIVE/dangling=ARCHIVED。
+- 已知非缺陷记录：alias 归并依赖 LLM 提案（老妈未并入，ev6/vp2 一致）；老赵×2/周报×1 不足 minEvidence=3 不上锚（F11 宁缺毋滥）；self_identity 无证据不提（主语归属正确）。
+- 待授权清理：ev6_*/ev6f14*/vp2f14*/vp2 测试租户与夹具。
