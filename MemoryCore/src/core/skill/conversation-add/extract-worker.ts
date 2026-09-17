@@ -91,7 +91,8 @@ export interface SkillConversationExtractWorkerOptions {
   //
   //   A) transient (401/403/429/5xx/网络/timeout/fetch)
   //      → sleep(failureRequeueSleepMs) → requeue
-  //      → retry_count 不变，不入 DLQ，无限重试等外部恢复
+  //      → retry_count 不变；但连续 transientMaxRetries（缺省 5）次后转 B 路径
+  //        （LIVENESS-CAP 2026-09-17：确定性失败不允许无界重试，见选项注释）
   //      → warn 采样：每 transientLogSampleEvery 次打一条 warn
   //   B) permanent (400/422/JSON parse/schema)
   //      → sleep → retry_count++ 回写 _tasks.json → requeue
@@ -111,6 +112,14 @@ export interface SkillConversationExtractWorkerOptions {
    * 之后每 N 次打一条 warn，防日志刷屏。默认 60。
    */
   transientLogSampleEvery?: number;
+  /**
+   * LIVENESS-CAP（2026-09-17 实证修复）：同一 task 连续 transient 失败达上限后
+   * 按永久失败路径处理（retry_count++ → DLQ，数据保留可重放）。缺省 5；0 = 关闭
+   * （不推荐——无界重试违反"任何排队任务必须到达终态（完成|DLQ）"的活性不变量：
+   * 2026-09-17 03:13 起三个确定性超时任务重跑 154 次 / 5+ 小时，extract-lock 被
+   * 长期占住拖垮整个 agent 队列，并派生产线 info 日志洪水 ~2 万行/分钟）。
+   */
+  transientMaxRetries?: number;
 }
 
 export class SkillConversationExtractWorker {
@@ -246,23 +255,28 @@ export class SkillConversationExtractWorker {
     obsLogger.info("skill.worker.consume_start", {
       worker_id: workerId, agent_key: agentKey, instance_id: instanceId,
     });
-    this.logger.info(`[skill-conv-worker] dequeued agent=${agentKey}`);
+    // 空转/轮询事件降 debug（P4a 同款纪律补全：consume_done 已降，本行与争锁
+    // 两行是剩余 info 刷屏源——60 worker 池 × 积压 agent ≈ 2 万行/分钟）。
+    this.logger.debug?.(`[skill-conv-worker] dequeued agent=${agentKey}`);
 
     // ② 抢 extract-lock
     const t0Lock = Date.now();
     const handle = await q.acquireExtractLock(agent, extractLockTtl);
-    obsLogger.info("skill.worker.acquire_lock", {
+    // LIVENESS-LOG（2026-09-17）：争锁轮询是空转事件——未抢到降 debug（抢到仍 info）。
+    const lockEvt = {
       worker_id: workerId, agent_key: agentKey, instance_id: instanceId,
       dur_ms: Date.now() - t0Lock, acquired: !!handle,
-    });
+    };
+    if (handle) obsLogger.info("skill.worker.acquire_lock", lockEvt);
+    else obsLogger.debug("skill.worker.acquire_lock", lockEvt);
     if (!handle) {
       // 2026-08-03: 原子路径下 agent 已在 List (peek 保证), 不需要 requeue;
       // 降级路径下走 v1 语义, mutex 外 requeue 保证 agent 不丢。
       if (isDowngrade) {
-        this.logger.info(`[skill-conv-worker] extract-lock contended agent=${agentKey}, requeue+sleep (downgrade)`);
+        this.logger.debug?.(`[skill-conv-worker] extract-lock contended agent=${agentKey}, requeue+sleep (downgrade)`);
         await q.requeueAgent(agent);
       } else {
-        this.logger.info(`[skill-conv-worker] extract-lock contended agent=${agentKey}, sleep (peek keeps agent in queue)`);
+        this.logger.debug?.(`[skill-conv-worker] extract-lock contended agent=${agentKey}, sleep (peek keeps agent in queue)`);
       }
       const jitter = Math.floor(Math.random() * (this.opts.lockContentionSleepJitterMs ?? 500));
       await sleep((this.opts.lockContentionSleepMs ?? 2000) + jitter);
@@ -429,6 +443,25 @@ export class SkillConversationExtractWorker {
           const category = classifyError(err as Error);
           if (category === "transient") {
             this.logTransientFailure(head.task_id, errMsg);
+            // LIVENESS-CAP（2026-09-17 实证修复）：transient 是错误类的统计性质，
+            // 不保证单任务自愈——同一 task 连续 N 次同因失败（如超大对话必然超出
+            // 提取超时预算）即事实确定性失败。达上限 → 永久失败路径（retry_count++
+            // → DLQ，数据保留可重放）。streak 不在此处清零：转永久路径后的后续
+            // transient 失败继续直通，总尝试次数有界（≈ cap + permanentMaxRetries）。
+            const streak = this.transientFailStreak.get(head.task_id) ?? 0;
+            const cap = this.opts.transientMaxRetries ?? 5;
+            if (cap > 0 && streak >= cap) {
+              this.logger.error(
+                `[skill-conv-worker] transient streak ${streak} >= cap ${cap} → route to permanent path task=${head.task_id}: ${errMsg.slice(0, 256)}`,
+              );
+              obsLogger.info("skill.worker.task_done", {
+                worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
+                outcome: "dlq_or_retry", dur_ms: Date.now() - t0Task,
+              });
+              await sleep(this.opts.failureRequeueSleepMs ?? 2000);
+              await this.handlePermanentFailure(agent, head, errMsg, mutexOpts, isDowngrade);
+              break;
+            }
             // 注意：outcome 用 `retry_transient` 简写，不含 "transient" 关键字 ——
             // DLQ 单测用 .includes("transient") 判定 transient 采样计数，
             // 避免 obsLogger 事件也被算进去。
@@ -512,6 +545,8 @@ export class SkillConversationExtractWorker {
           dur_ms: Date.now() - t0Task,
         });
 
+        // LIVENESS-CAP 配套：成功即清 transient 计数（防陈旧计数误伤后续重试语义）
+        this.transientFailStreak.delete(head.task_id);
         if (isGhost) dropped.push(head.task_id);
         else processedTaskIds.push(head.task_id);
       }

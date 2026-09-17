@@ -11,6 +11,42 @@
 
 ## [Unreleased] — 2026-09-09
 
+### 🔧 skill 提取工人活性修复：transient 无界重试封顶 + 争锁轮询日志降级（2026-09-17）
+
+- **现场实证**：09-17 03:13:53 起三个 skill 提取任务（超大对话，必然超出提取超时预算）以
+  "operation was aborted due to timeout" 被 classifyError 判 transient → **无限重试**（79/50/25 次，
+  5+ 小时）：retry_count 永不增长→永不入 DLQ，extract-lock 被长期占住拖垮两个产线 agent
+  队列；同时 60 worker 池对积压 agent 以 ~2s 周期热轮询，每轮 3 组 info 日志
+  （dequeued + acquire_lock 块 + contended）≈ **2 万行/分钟** 日志洪水（基线 ~20 行/分钟）。
+- **第一性原理定性**：两个不变量被破坏——① 活性：任何排队任务必须到达终态
+  （完成|DLQ），transient 是错误类的统计性质不保证单任务自愈，同 task 连续同因
+  失败即事实确定性失败；② 可观测性：空转/轮询事件不得 info 刷屏（P4a 已降
+  consume_done，本次补全剩余三处）。
+- **修正**（extract-worker.ts 7 处 + 超时/输出上限解除 6 文件）：① `transientMaxRetries`（缺省 5，0=关不推荐）——
+  同 task 连续 transient 达上限→转永久路径（retry_count++ → 达 permanentMaxRetries 入 DLQ，
+  数据保留可重放）；streak 转路后不清零（后续失败直通，总尝试次数有界≈
+  cap + permanentMaxRetries）；② 成功即清 streak；③ dequeued/acquire_lock(未抢到)/contended
+  三处轮询日志 info → debug（抢到锁仍 info）。
+- **验证**：新增 `extract-worker.test.ts` 4 用例（cap 封顶入 DLQ / 未达 cap 逐位不变 /
+  成功清 streak / 争锁降 debug）；全量 vitest 495/495（491+4），tsc 243 持平（stash 基线
+  对比法证明零新增）；重启后日志速率 20000 → **38 行/分钟**，contended 刷屏归零，
+  四服务健康；**端到端实证**：向 flowtest 注入 46.7KB/62 条中性载荷，
+  提取以 dur_ms=144480（>120s 旧死亡线）success=true 完成（旧预算下必然
+  超时进入无界重试）；另登记 O9（懒启动 pool + 内存队列重启孤儿化，择机项）。
+- **根治拍板（同日追加，用户指示"不限制超时、要功能可用"）**：skill 提取
+  解除固定预算——`skill.extraction.timeoutMs: 0` + `skill.extraction.maxTokens: 0`
+  （两新旋钮，llm-runner GROW-EVO P2.1 同款语义：params 显式 0 覆盖 runner 级
+  llm.timeoutMs/maxTokens 缺省；0 = 不挂 abort / 不传 maxOutputTokens）。链路：yaml
+  → config.ts skill 段透传 → resolveSkillConfig → SkillExtractor（新增 timeoutMs
+  选项）→ review runner.run；tdai-core 单例与 server per-instance 工厂双装配点同步。
+  关键语义：超大对话超 120s 是确定性失败而非瞬时故障，不应被当作瞬时
+  错误反复重试；提取锁续约机制（TTL/4）已支持任意长跑。真挂死连接由
+  undici 层超时兜底 + LIVENESS-CAP 最终入 DLQ。关键字调用（maxTokens: 64）不变。
+- **观察登记 O8**（v5 第六部分）：超大对话（接近 40KB 归档阈值）的提取超时为
+  确定性失败，现由 cap 入 DLQ 保护；根治已拍板实施（超时/输出上限解除）。
+- 产线影响面：DLQ 中任务可手工/工具化重放（_buffer DLQ 条目含原始 archive_key）；
+  真实瞬断故障（网络闪断 <10 分钟）仍在 cap 容忍带内自愈，不受影响。
+
 ### 🧬 P4b 受控正文演化上线：evolution-worker（GROW-EVO §4，REG-REMAINING-005 #1；2026-09-17）
 
 - **新组件** `MemoryCore/src/core/lifecycle/evolution-worker.ts`：离线 worker 挂 lifecycle tick（consolidation/forgetting/anchor-growth 同款互斥 tick），扫描 conflict 边 → 五条件门 → LLM 单次受控重写 → 合并单条（`source='evolution'`、`metadata.created_by='evolution'`、`metadata.evolution={from,reason}`）+ `evolved_from` 审计边×2 + 双旧失效（旧值 valid_end=新观察时刻对齐 P2 内联语义、新值 valid_end=演化时刻）。全系统唯一允许改写已固化正文的路径，宁缺毋滥。

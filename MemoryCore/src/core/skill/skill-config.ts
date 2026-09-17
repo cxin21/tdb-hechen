@@ -240,6 +240,7 @@ export function resolveSkillConfig(
       maxIterations: input.extraction?.maxIterations ?? 16,
       archiveBytes,
       maxTokens: input.extraction?.maxTokens,
+      timeoutMs: input.extraction?.timeoutMs,
       prefixSkillsLimit: validPositiveInteger(
         input.extraction?.prefixSkillsLimit,
         20,

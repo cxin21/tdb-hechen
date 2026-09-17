@@ -35,6 +35,8 @@ export interface SkillConfigInput {
     toolCallThreshold?: number;
     model?: string;
     maxIterations?: number;
+    /** Skill review 单次 LLM 调用超时 ms；缺省 → runner 继承 llm.timeoutMs；0 = 不限制（llm-runner GROW-EVO P2.1 语义）。 */
+    timeoutMs?: number;
     /**
      * 单一"归档尺寸"旋钮（字节）。默认 40960 (40KB)。派生 7 个内部字段:
      *   • Handler 的 bytesThreshold / requestCompressThresholdBytes = archiveBytes
@@ -118,8 +120,10 @@ export interface ResolvedSkillConfig {
     maxIterations: number;
     /** 归档尺寸旋钮 (字节)。用户可见配置源；下面 7 个字段由它派生。 */
     archiveBytes: number;
-    /** Skill review 单次 LLM 调用输出 token 上限；不填 → 由 runner 继承 llm.maxTokens。 */
+    /** Skill review 单次 LLM 调用输出 token 上限；不填 → 由 runner 继承 llm.maxTokens；0 = 不限制（P2.1 语义）。 */
     maxTokens?: number;
+    /** Skill review 单次 LLM 调用超时 ms；缺省 → runner 继承 llm.timeoutMs；0 = 不限制（P2.1 语义）。 */
+    timeoutMs?: number;
     /**
      * Extractor 预检索 skill 列表条数上限 (relevant BM25 检索 & recent 兜底共用)。
      * 默认 20。

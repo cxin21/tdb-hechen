@@ -65,6 +65,12 @@ export interface ExtractorOptions {
    */
   maxTokens?: number;
   /**
+   * Skill review 单次 LLM 调用超时 ms。缺省 undefined → runner 继承 llm.timeoutMs；
+   * 显式 0 = 不限制（llm-runner 语义，GROW-EVO P2.1：推理模型 thinking 不设时延
+   * 上限——超大对话必然超出固定 120s 预算，属确定性失败而非瞬时故障，O8 实证）。
+   */
+  timeoutMs?: number;
+  /**
    * 预检索 skill 列表条数上限 (relevant BM25 search & recent 兜底共用)。
    * 构造器默认 0 (关闭); 生产 wiring 层 (tdai-core / server) 从 skill-config
    * 拿 resolved.extraction.prefixSkillsLimit (默认 20) 显式传入。测试构造无参
@@ -103,6 +109,7 @@ export class SkillExtractor {
   private readonly headChars: number;
   private readonly tailChars: number;
   private readonly maxTokens?: number;
+  private readonly timeoutMs?: number;
   private readonly prefixSkillsLimit: number;
   private readonly logger?: ExtractorOptions["logger"];
 
@@ -114,6 +121,7 @@ export class SkillExtractor {
     this.headChars = opts.headChars ?? 8000;
     this.tailChars = opts.tailChars ?? 32000;
     this.maxTokens = opts.maxTokens;
+    this.timeoutMs = opts.timeoutMs;
     // 构造器默认 0 (关闭前缀注入 → 不会触发额外的 query-gen LLM 调用);
     // 生产 wiring 会显式传入 resolved.extraction.prefixSkillsLimit (默认 20)。
     // <0 或非数字回落到 0 (等价于关闭), 而不是静默改到 20 —— 不想让配置错误
@@ -239,6 +247,9 @@ export class SkillExtractor {
         enableTools: true,
         maxIterations: input.options?.max_iterations ?? this.maxIterations,
         maxTokens: this.maxTokens,
+        // O8 拍板 2026-09-17：timeoutMs 由配置显式传入（0=不限制）。params 显式 0
+        // 会覆盖 runner 级 llm.timeoutMs 缺省（`??` 只跳过 null/undefined）。
+        timeoutMs: this.timeoutMs,
         taskId: `skill-extract-${input.task_id ?? "unknown"}`,
         // Langfuse trace 语义：让此次抽取在 Langfuse UI 有稳定 name / 可筛选 tags。
         // 详见 core/types.ts LLMRunParams 的 traceName/tags/sessionId/userId 注释。

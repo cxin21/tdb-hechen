@@ -2425,6 +2425,7 @@ export class TdaiGateway {
       headChars: cfg?.extraction.headChars,
       tailChars: cfg?.extraction.tailChars,
       maxTokens: cfg?.extraction.maxTokens,
+      timeoutMs: cfg?.extraction.timeoutMs,
       prefixSkillsLimit: cfg?.extraction.prefixSkillsLimit,
       logger: this.logger,
     } as import("../core/skill/skill-extractor.js").ExtractorOptions);

@@ -984,6 +984,7 @@ export class TdaiCore {
             headChars: resolved.extraction.headChars,
             tailChars: resolved.extraction.tailChars,
             maxTokens: resolved.extraction.maxTokens,
+            timeoutMs: resolved?.extraction.timeoutMs,
             prefixSkillsLimit: resolved.extraction.prefixSkillsLimit,
             logger: this.logger,
           });

@@ -195,6 +195,11 @@ skill:
     enabled: true # 瀹樻柟锛氬紑鍚?LLM 鑷姩鎶藉彇锛堜箣鍓嶄负 false 瀵艰嚧 0 浜у嚭锛?
     maxIterations: 16 # review agent 鏈€澶ц凯浠ｏ紙瀹樻柟妯℃澘榛樿 16锛?
     archiveBytes: 40960 # 40KB 褰掓。闃堝€硷紙宸ュ叿璋冪敤 鈮?0 鎴?瀛楄妭 鈮?0KB 瑙﹀彂褰掓。锛?
+    # O8 拍板 2026-09-17：超大对话（~40KB 归档阈值）提取超 120s 为确定性失败而非瞬时故障，
+    # 曾被无界 transient 重试。以下两旋钮 0 = 不限制（llm-runner GROW-EVO P2.1 语义，
+    # params 显式 0 覆盖 runner 级 llm.timeoutMs/maxTokens 缺省）。
+    timeoutMs: 0
+    maxTokens: 0
 
 # 鍙娴嬫€ф湰鍦板叧闂?
 observability:
