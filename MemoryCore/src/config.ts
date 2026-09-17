@@ -373,6 +373,8 @@ export interface MemoryLifecycleConfig {
     lowThreshold: number;
     /** 至少经过多少天才可归档。 */
     minAgeDays: number;
+    /** P2（F14）：refs 遗忘保护——coreRefs/personRefs/identityRefs 命中仍有效锚或现行身份事实的记录不进归档候选（缺省 false=逐位现状）。 */
+    refProtection: boolean;
   };
 }
 
