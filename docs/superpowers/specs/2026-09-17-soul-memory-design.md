@@ -298,10 +298,28 @@ metadata_json 子结构：
 | S4 | 记忆演化 | 冲突边→五条件门→合并+双失效 | F7、F8 | 门严不触发良性；lineage 可审计 |
 | S5 | 遗忘与保留 | forgetting 扫描→保护排除→衰减回收 | F14 | 支撑灵魂的记忆幸存 |
 | S6 | 人物相关查询 | "我女儿…"→FTS/向量+personRefs 反查 | F11、F12 | 人物维度召回与"重要的人"注入 |
-| S7 | 身份修订 | Panel/API 人工清洗 → upsertCore | — | 人工兜底；版本留痕 |
+| S7 | 身份修订 | Panel/API 人工清洗 → upsertCore（**UI 入口见 §6.5 U1：P1 只读展示，编辑入口 P2**） | — | 人工兜底；版本留痕 |
 | S8 | 多租户隔离 | 三元组硬隔离；self_identity per-三元组 | F18 | 换 agent 测试可过；品格随关系分化（拍板） |
 | S9 | 降级路径 | fts-only 横幅/无身份省段/无锚省行/基线首轮不误报 | F16、F17 | 诚实降级，宁缺毋滥 |
 | S10 | 灵魂验收 | 换用户测试/换 agent 测试 | — | 见 §9 验收 |
+
+---
+
+## 6.5 Memory Hub UI 适配（终审 2026-09-17 增补；UI 现状实证：MemoryPanel/web/src/pages/ChatMemoryPage）
+
+UI 视觉重构 spec（2026-09-10）确立 Surface S1-S6 与"零后端新增"原则。本节判定：本设计的数据在 **read API 已返回或随列扩展自动带出，适配=纯前端透传，无新端点**——与"零后端新增"精神兼容。
+
+| # | UI 现状（实证） | 适配需求 | 分期 |
+|---|---|---|---|
+| U1 | `/v3/core-memory/read` 的 **slots 被 UI 丢弃**（chat-memory.ts:1594 注释实证"丢 slots"）——identity 槽内容在 Hub 完全不可见，**S7 人工清洗无入口**（spec 依赖 Panel 兜底却无入口=真缺口） | ChatMemoryPage 增**身份区**：identity + self_identity 两槽内容只读展示（+version/updated_at/source 徽标）——用户可审读 agent 灵魂、发现 O14 类丢事实；slots 写路由缺位，编辑入口 P2 | **P1** |
+| U2 | ValueAnchorsPanel（S4）列表**不识 node_type**：人物锚上线后会与主题锚混排无区分；行内编辑三态(label/weight/valence)不含 attrs；关联记忆数反查不含 aliases 维度（计数偏低） | 类型徽标（人物/主题）+ **分池配额显示**（theme 15 / person 8，可入 S5 健康条）；人物行编辑含 role/aliases；反查计数并入 aliases；"重新总结方向"(derive) 对人物=valence 聚合重算，语义一致复用 | **P2** |
+| U3 | S2 灵魂区 chips 仅 coreRefs；S3 记忆图金色描边=coreRef 命中、无人物通道 | chips 扩展：personRefs（人物徽标）、identityRefs（身份徽标）——复用现有 chip 机制；S3 加人物节点色/图例扩展 | **P2** |
+| U4 | S4 已有"关联记忆数 via coreRef 反查"交互 | 人物行"查看关联记忆"跳转——复用同款反查交互（S6 人物查询场景的 UI 入口） | **P2** |
+| U5 | L3 结论卡在记忆卡片/详情已有渲染 | reflection（F13）产物=普通 L3 结论卡，**零适配** | P3 零成本 |
+| U6 | sensitivity 预留位无 UI | 预留徽章位（不实施，拍板后启用） | P3 |
+| U7 | S5 健康条无锚池配额概念 | 分池配额迷你显示（可并入 U2，非独立必做） | P2 可选 |
+
+**裁决**：UI 适配是本设计的**一等公民交付物**（不是附带）——灵魂对用户可见、可审、可清洗是"自维护"闭环的最后一环（用户看到 agent 的自我认知错了 → Panel 修 → 留痕）。U1 缺口若不补，O13/O14/O16 的人工兜底路径全部落空。
 
 ---
 
@@ -309,6 +327,7 @@ metadata_json 子结构：
 
 ### P1 双槽 + 四段渲染（灵魂骨架）
 - core_memory `self_identity` slot（零 schema 变更）；identity-discovery 双视角（user prompt 主语修正"他是谁" + self prompt "行为可证"）；soul-assembler 四段渲染+F17 预算；旧文留痕。
+- **UI（§6.5 U1）**：ChatMemoryPage 身份区只读展示（identity/self_identity 槽内容 + version/source 徽标）——slots 透传，零新端点。
 - 配置：`memory.coreMemory.selfIdentity.{enabled=false,minEvidence=3,maxPerPass=2,intervalHours=24}`、`memory.coreMemory.soulRender.{budgetSelfChars=600,budgetIdentityChars=900}`。
 - 写入口：allowedSlots 缺省白名单 +self_identity（信任边界扩展，config.ts:872）；maxContentLength=2000 与 F17 预算联动校验；**l1-extractor prompt 增补 agent 行为事实视角（metadata.agentAct 标注）——self_identity 语料前提**；enabled=false 时 identity-discovery 走旧单视角 prompt（逐位现状含 LLM 行为）。
 - 验收：开关关=逐位现状回归；开=flowtest 真数据 SOP（自我事实从对话长出、换用户/换 agent 测试、渲染预算截断、identity 主语修正后 soul 块人工审读）。
@@ -318,6 +337,7 @@ metadata_json 子结构：
 - core_values 加 `node_type`/`attrs_json`（ADD COLUMN 缺省 'theme'/'{}'——**sqlite 不可删列，回滚策略=列保留无害、缺省值即逐位现状**）；person-growth worker（GROW 骨架实例 2，F11/F12）；personRefs/identityRefs 回填；identity GROW-MAINT 重验证（F15 身份分支：只警告）+ F14 遗忘保护；strict_rule Panel 落点（O13 闭环）。
 - 配置：`memory.coreMemory.personAnchors.{enabled=false,minEvidence=3,maxPerPass=2,maxTotal=8,intervalHours=24}`——maxTotal 为**人物分池**独立预算（F15 分池制），主题锚 maxTotal=15 不变。
 - 验收：人物锚 12 组真数据 SOP（别名归并/关系情感方向/挤出/维护退场/反查/遗忘保护实测）+ 回归全量。
+- **UI（§6.5 U2-U4）**：ValueAnchorsPanel 类型徽标+分池配额+attrs(role/aliases)行内编辑+aliases 反查计数；S2 灵魂区 personRefs/identityRefs chips；S3 人物节点图例；人物行"查看关联记忆"跳转。
 
 ### P3 品格锚 + 反思公式（远期收口）
 - **数据来源链（前置依赖）**：现有 L1 提取是用户视角，语料中 agent 行为记录稀缺——品格锚启用前需 L1 提取 prompt 增加 agent 行为事实视角（type/metadata.agentAct 标注，如"我在对话中承诺每周五出周报"），或以 self_identity 槽演化史为品格聚合源（二选一在 P3 设计期 spike 定案，先查证 L1 中 agent 主语记录占比）。
@@ -360,6 +380,7 @@ metadata_json 子结构：
   - **D2 产线替换（labels≥300 & 正例≥50）**：主题锚产线化门槛，P2/P3 产线启用继承该拍板；
   - **O7（lifecycle 嵌入接线，择机）**：evo_/dur_ 产物 metadata-only 无向量——S2"召回准确完整"对演化产物仅 FTS 层生效（S4 场景同理），已知限制；
   - O9（eager pool）/L2 300s 预算：与本 spec 无交叉。
+- **UI redesign spec（2026-09-10）兼容性裁决**："零后端新增"原则成立——U1-U7 全部为纯前端透传（read API 已返回 slots、列扩展后 values 自动带出 node_type/attrs_json），无新端点；UI 适配为本设计一等公民交付物（§6.5），身份区缺口不补则 O13/O14/O16 人工兜底路径落空。
 
 ## 附录 A：业界调研摘要（2026-09-17）
 
