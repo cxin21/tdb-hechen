@@ -392,6 +392,7 @@ const IDENTITY_IMPOSITION_PATTERNS: RegExp[] = [
   /(认|视)\s*我\s*(为|作)/,
   /让\s*我\s*以.{0,8}身份/,
   /(叫我|让我)\s*扮演/,
+  /(说|称)\s*我\s*(是|为)/,
 ];
 
 /**
@@ -414,12 +415,13 @@ export function mergeIdentityFacts(existingContent: string | undefined, newFacts
   const seen = new Set<string>();
   const out: string[] = [];
   const existingLines = (existingContent ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1);
+  // 对抗审查A1（饥饿修复）：先收集全部去重，再 slice(-cap) 保留最新——existing 在前的
+  // 早退式 cap 会让槽满后新事实永不进入（演化停滞）。
   for (const line of [...existingLines, ...newFacts.filter(Boolean).map((f) => (f.startsWith("- ") ? f : "- " + f))]) {
     const key = norm(line);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(line);
-    if (out.length >= IDENTITY_MAX_FACTS) break;
   }
-  return out.join("\n");
+  return out.slice(-IDENTITY_MAX_FACTS).join("\n");
 }

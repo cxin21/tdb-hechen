@@ -13,6 +13,10 @@ describe("isIdentityImposition 主语一致性门（B）", () => {
     expect(isIdentityImposition("用户将我的身份设定为他的女儿，并要求我以此身份相处")).toBe(true);
     expect(isIdentityImposition("把我当成他的秘书")).toBe(true);
     expect(isIdentityImposition("用户让我以助手的身份汇报")).toBe(true);
+    expect(isIdentityImposition("用户坚持说我是他的专属项目管理助理")).toBe(true);  // 对抗审查A2：说我是
+    expect(isIdentityImposition("他称我为团队的数据守门人")).toBe(true);            // 对抗审查A2：称我为
+    expect(isIdentityImposition("用户问我是不是他的助手")).toBe(false);            // 误报面：问我是≠说我是
+    expect(isIdentityImposition("用户夸我是靠谱的伙伴")).toBe(false);              // 误报面：夸我是
   });
   it("合法行为自证 → false", () => {
     expect(isIdentityImposition("我承诺每周五下班前输出周报")).toBe(false);
@@ -38,6 +42,15 @@ describe("mergeIdentityFacts 演化合并（A）", () => {
     const existing = Array.from({ length: 6 }, (_, i) => `- 旧事实${i}`).join("\n");
     const merged = mergeIdentityFacts(existing, ["新事实甲", "新事实乙"]);
     expect(merged.split("\n").length).toBe(8);
+  });
+  it("对抗审查A1（饥饿）：槽满后新事实仍进入——保留最新 8 条（行为漂移=新事实更优）", () => {
+    const existing = Array.from({ length: 8 }, (_, i) => `- 满槽事实${i}`).join("\n");
+    const merged = mergeIdentityFacts(existing, ["新事实甲"]);
+    const lines = merged.split("\n");
+    expect(lines.length).toBe(8);
+    expect(merged).toContain("新事实甲");       // 新事实必须进入
+    expect(merged).not.toContain("满槽事实0"); // 最旧者让位
+    expect(merged).toContain("满槽事实7");     // 最新旧行保留
   });
 });
 

@@ -81,7 +81,9 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
     }
     const readCoreOf = deps.store as unknown as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }>> } | undefined;
     for (const t of tenants.values()) {
-      const rowsForTenant = tenants.size === 1 && rawRows.length > 0
+      // 对抗审查A3：rawRows 来自 listValues(deps.tenant)——仅显式单租户路径可复用；
+      // 无 deps.tenant 的批内单租户批也必须按批内租户取锚（rawRows=default 锚=取错）。
+      const rowsForTenant = deps.tenant && tenants.size === 1 && rawRows.length > 0
         ? (rawRows as unknown as Array<{ label?: string; attrs_json?: string }>)
         : (((await Promise.resolve(deps.store?.listValues?.(t)).catch(() => [])) ?? []) as Array<{ label?: string; attrs_json?: string }>);
       for (const v of rowsForTenant) {

@@ -99,3 +99,21 @@ describe("F14 租户作用域（SOP 实证修正）", () => {
     return true;
   }
 });
+
+describe("对抗审查A3：无 deps.tenant 的批内单租户批按批内租户取锚", () => {
+  it("listValues 以批内租户调用（不用 default 锚）", async () => {
+    const listValues = vi.fn(async () => [{ value_id: "v1", label: "数据隐私", weight: 0.5, node_type: "theme", attrs_json: "{}" }]);
+    const archiveL1 = vi.fn(() => true);
+    const r = rec("prot-a3", { coreRefs: ["数据隐私"] });
+    (r as unknown as { teamId?: string }).teamId = "teamX";
+    await runForgetting({
+      queryL1: () => [r],
+      config: { ...DEFAULT_FORGETTING_CONFIG, refProtection: true },
+      store: { listValues, archiveL1 } as never,
+      identitySlices: [],
+      // 不传 tenant
+    });
+    expect(listValues).toHaveBeenCalledWith({ teamId: "teamX", userId: "default", agentId: "default" });
+    expect(archiveL1).not.toHaveBeenCalled();
+  });
+});
