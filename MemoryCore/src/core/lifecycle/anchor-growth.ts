@@ -285,7 +285,13 @@ export async function runAnchorGrowth(deps: {
           }
         }
         retired += quotaRetiredA; // GROW-QUOTA 退场并入（守卫块之后汇总）
-        const existingLabels = anyState.map((v) => v.label); // 全态清单进 dedup 指令（veto 永不重提）
+        // GROW-MAINT v2（SOP 2026-09-17 修复）：守卫退场后刷新快照——dedup/名额/挤出必须
+        // 基于退场后的真实状态（陈旧快照把已退场锚当 active：free 低估 + 挤出打已退场空炮）。
+        // retired 行仍带 label，全态 dedup 集不变（veto/retire 永不重提语义不受影响）。
+        const anyState2 = quotaRetiredA > 0
+          ? (((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
+          : anyState;
+        const existingLabels = anyState2.map((v) => v.label); // 全态清单进 dedup 指令（veto 永不重提）
         const raw = await deps.llmRunner!.run({
           prompt: buildDiscoverPrompt(sampleContents, existingLabels),
           systemPrompt: DISCOVER_SYSTEM_PROMPT,
@@ -302,13 +308,16 @@ export async function runAnchorGrowth(deps: {
           .sort((a, b) => b.evidenceCount - a.evidenceCount)
           .slice(0, cfg.maxPerPass);
         // ── 名额（per-agent 桶内）：maxTotal = 钉住数 + 自生长活跃数 ──
-        const pinnedCount = anyState.filter((r) => r.pinned === 1).length;
-        const autoActive = anyState.filter((r) => r.state === "active" && r.origin === "auto");
-        let free = Math.max(0, cfg.maxTotal - pinnedCount - autoActive.length);
+        // GROW-MAINT v2（SOP 2026-09-17 修复）：名额口径与 GROW-QUOTA 守卫对齐——
+        // 限额对象 = active 钉住（含钉 auto，只占一席）+ active 非钉 auto。旧口径把钉 auto
+        // 在 pinnedCount 与 autoActive 各减一次（双计），并把 retired 钉住也计入占席——
+        // 偏保守方向（少采纳），但与守卫口径不一致，统一之。
+        const pinnedActive = anyState2.filter((r) => r.state === "active" && r.pinned === 1).length;
+        const autoActiveNonPinned = anyState2.filter((r) => r.state === "active" && r.origin === "auto" && r.pinned !== 1);
+        let free = Math.max(0, cfg.maxTotal - pinnedActive - autoActiveNonPinned.length);
         // 可挤出自生长锚列表（该 agent 的；pinned 豁免）：weight × 语料实际命中
         //（与候选同刻度，确定性），弱者优先被挤出；单轮多候选挤出时逐个弹出。
-        const displaceable = autoActive
-          .filter((r) => r.pinned !== 1)
+        const displaceable = autoActiveNonPinned
           .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus) }))
           .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
         let adoptedThisAgent = 0;
@@ -381,17 +390,22 @@ export async function runAnchorGrowth(deps: {
     try {
       const obs = (store as { getSelfObsStats?: () => { l1: number; conflict: number; evolve: number; similar: number; archived: number; anchors: number } }).getSelfObsStats?.();
       if (obs) {
-        const prevRaw = (store as { getAnchorGrowthState?: () => unknown }).getAnchorGrowthState?.();
-        const prev = (prevRaw && typeof prevRaw === "object" ? prevRaw : {}) as { obs_archive_total?: number; obs_l1_total?: number };
+        // GROW-MAINT v2（SOP 2026-09-17 修复）：漂移基线经专用 kv（get/setSelfObsBaseline）
+        // 持久化——此前 obs_* 键全库只有读者没有写入者，且 getAnchorGrowthState 的键集根本
+        // 不含它们：±30% 归档率漂移旗标（P3.1 拍板②）是永不触发的死代码，违背自维护原则。
+        // 基线全局单键组（self-obs 统计为全局口径，不 per-tenant）；首轮无基线 → drift=0 不误报。
+        const baseline = (store as { getSelfObsBaseline?: () => { l1: number; archived: number } | null }).getSelfObsBaseline?.() ?? null;
         const totalMem = obs.l1 + obs.archived;
         const archiveRate = totalMem > 0 ? obs.archived / totalMem : 0;
-        const prevTotal = (prev.obs_l1_total ?? 0) + (prev.obs_archive_total ?? 0);
-        const prevRate = prevTotal > 0 ? (prev.obs_archive_total ?? 0) / prevTotal : archiveRate;
+        const prevTotal = baseline ? baseline.l1 + baseline.archived : 0;
+        const prevRate = prevTotal > 0 ? baseline!.archived / prevTotal : archiveRate;
         const drift = prevRate > 0 ? Math.abs(archiveRate - prevRate) / prevRate : 0;
         const flags: string[] = [];
         if (obs.conflict >= 5) flags.push(`[P4-GATE] conflict 边 ${obs.conflict} ≥5——P4 观察期门槛到达，evolution-worker 可立项`);
         if (prevTotal > 0 && drift >= 0.3) flags.push(`[AROUSAL-GATE] 归档率漂移 ${(drift * 100).toFixed(0)}% ≥30%——arousalRetention 建议回 0`);
         logger?.info?.(`[self-obs] l1=${obs.l1} anchors=${obs.anchors} conflict=${obs.conflict} evolve=${obs.evolve} similar=${obs.similar} archived=${obs.archived} archiveRate=${archiveRate.toFixed(3)} flags=${flags.length > 0 ? flags.join(" | ") : "none"}`);
+        // 本轮基线落盘（下一轮 drift 由此计算——自维护条款必须能自证）
+        (store as { setSelfObsBaseline?: (b: { l1: number; archived: number }) => void }).setSelfObsBaseline?.({ l1: obs.l1, archived: obs.archived });
       }
     } catch (err) {
       logger?.warn?.(`[self-obs] failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);

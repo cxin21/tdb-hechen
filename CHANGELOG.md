@@ -9,6 +9,16 @@
 
 ---
 
+## ⚓ 价值锚自生长自维护修复：漂移基线死代码激活 + 名额口径对齐 + 快照新鲜度（2026-09-17）
+
+- **背景**：锚子系统 SOP 对抗审查（自生长/自维护原则专项）发现三处实现级问题，全部修复并 live 实证。
+- **修复 1（自维护核心）**：P3.1 拍板②的归档率漂移旗标（±30% AROUSAL-GATE）是**死代码**——`obs_archive_total`/`obs_l1_total` 全库只有读者没有写入者，且 `getAnchorGrowthState` 键集根本不含它们。新增 `store.getSelfObsBaseline/setSelfObsBaseline`（anchor_growth_state 全局单键组，与调度状态四键分立防 clobber），self-obs 块读基线算 drift、写本轮基线；首轮无基线 drift=0 不误报。
+- **修复 2（名额口径）**：采纳 free 计算（旧）= maxTotal − 全态钉住数 − 含钉 auto 的 auto 活跃数——钉 auto 被**双计**、retired 钉住被计入占席；与 GROW-QUOTA 守卫口径（active 钉 + active 非钉 auto）不一致（偏保守方向）。统一为守卫口径。
+- **修复 3（快照新鲜度）**：GROW-QUOTA 守卫退场后 anyState 未刷新——陈旧快照导致 free 低估、挤出可打已退场空炮。quotaRetiredA>0 时重查全态。
+- **测试**：anchor-growth.test.ts 23→27 用例（+漂移基线点火/不误报双断言、+名额口径对齐、+快照新鲜度防空炮——后两者用**有状态假件**（retire/upsert 真实变更行集）才能观察刷新路径）。vitest 496→500，tsc 243 持平。
+- **实机 SOP（12 组新鲜对抗种子 ev3_*，31 条，flowtest 桶）**：adopted=3（maxPerPass=3 封顶）、reweighted=2（每周 0.33→0.41、计划 0.40→0.47，与 |Δw|≥0.05 防抖对账）、displaced=0、valence derive=3（体检=-1 渲染"审慎"）、backfillCoreRef 与独立重算精确一致（咖啡 7/7、体检 4/4、家庭烹饪 4/4）、围棋(active)/深空(retired) 双去重守恒、垂直园艺(ev=2)/泰拳(ev=1) 被门槛拒、钉住锚证据豁免 live、状态自愈重写、注入面 soul-identity 价值锚行含全部新锚。基线 kv 首轮落盘（obs_l1_total=352），次轮起 AROUSAL-GATE 具备数据基础。
+- **登记**：v5 O12（锚证据口径无 certainty 门槛——inferred 内容同权参与锚强度，本轮未观察到实际采纳，等产线实例再评估）。测试夹具（状态回移/钉住）已回滚或自愈；ev2_/ev3_ 测试种子留存待授权清理。
+
 ## [Unreleased] — 2026-09-09
 
 ### 🔧 skill 提取工人活性修复：transient 无界重试封顶 + 争锁轮询日志降级（2026-09-17）

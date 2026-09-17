@@ -2783,6 +2783,35 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /** GROW-MAINT v2（SOP 2026-09-17）：自维护漂移基线 kv——全局单键组（self-obs 统计为
+   *  全局口径，非 per-tenant）。读无行 → null（首轮无基线，drift=0 不误报）。
+   *  与 growth state 四键分立：写入方（self-obs 块）不得 clobber 调度状态。 */
+  getSelfObsBaseline(): { l1: number; archived: number } | null {
+    try {
+      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN ('obs_l1_total', 'obs_archive_total')").all() as unknown as Array<{ k: string; v: string }>;
+      const map = new Map(rows.map((r) => [r.k, r.v]));
+      const l1 = Number(map.get("obs_l1_total"));
+      const archived = Number(map.get("obs_archive_total"));
+      if (!Number.isFinite(l1) || !Number.isFinite(archived)) return null;
+      return { l1, archived };
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [anchor_growth] getSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  setSelfObsBaseline(baseline: { l1: number; archived: number }): void {
+    try {
+      for (const pair of [["obs_l1_total", baseline.l1], ["obs_archive_total", baseline.archived]] as const) {
+        this.db.prepare(
+          "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        ).run(pair[0], String(Math.max(0, Math.floor(pair[1]))));
+      }
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [anchor_growth] setSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /**
    * PA：l1_records 的 distinct (team_id,user_id,agent_id) 三元组——价值锚扇出迁移与
    * 自生长 per-agent 化共用的"有记忆的 agent"清单来源（SELECT DISTINCT，单源禁第二份）。

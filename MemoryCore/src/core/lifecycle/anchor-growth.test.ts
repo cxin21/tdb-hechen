@@ -359,6 +359,96 @@ describe("runAnchorGrowth 自维护与冷却分级（GROW-MAINT）", () => {
   });
 });
 
+// ═════════════ GROW-MAINT v2（SOP 2026-09-17）：自维护三项修复 ═════════════
+
+describe("runAnchorGrowth 漂移基线持久化（修复死代码：obs_* 此前无写入者）", () => {
+  function makeObsStore(opts: { baseline?: { l1: number; archived: number } | null } = {}) {
+    const store = makeStore({ rows: corpusFor("增量对账", 9), growthState: { lastDiscoveryAt: null, lastCorpusCount: null } });
+    return Object.assign(store, {
+      getSelfObsStats: vi.fn(() => ({ l1: 100, conflict: 0, evolve: 0, similar: 0, archived: 10, anchors: 3 })),
+      getSelfObsBaseline: vi.fn(() => opts.baseline ?? null),
+      setSelfObsBaseline: vi.fn(),
+    });
+  }
+  it("首轮无基线：不误报 AROUSAL-GATE，且本轮基线落盘", async () => {
+    const store = makeObsStore();
+    const infos: string[] = [];
+    const log = { debug() {}, info(m?: string) { infos.push(String(m)); }, warn() {}, error() {} };
+    await runAnchorGrowth({ store: store as never, llmRunner: makeRunner("[]") as never, config: { intervalHours: 24 }, logger: log, now });
+    expect(store.setSelfObsBaseline).toHaveBeenCalledWith({ l1: 100, archived: 10 });
+    expect(infos.some((m) => m.includes("AROUSAL-GATE"))).toBe(false);
+  });
+  it("次轮漂移 ≥30%：旗标点火（自维护条款可自证）", async () => {
+    // 基线 l1=100/archived=10 → rate 0.0909；现势 l1=60/archived=40 → rate 0.4 → drift=3.4 ≥0.3
+    const store = makeObsStore({ baseline: { l1: 100, archived: 10 } });
+    (store.getSelfObsStats as ReturnType<typeof vi.fn>).mockReturnValue({ l1: 60, conflict: 0, evolve: 0, similar: 0, archived: 40, anchors: 3 });
+    const infos: string[] = [];
+    const log = { debug() {}, info(m?: string) { infos.push(String(m)); }, warn() {}, error() {} };
+    await runAnchorGrowth({ store: store as never, llmRunner: makeRunner("[]") as never, config: { intervalHours: 24 }, logger: log, now });
+    expect(infos.some((m) => m.includes("AROUSAL-GATE"))).toBe(true);
+    expect(store.setSelfObsBaseline).toHaveBeenCalledWith({ l1: 60, archived: 40 });
+  });
+});
+
+describe("runAnchorGrowth 名额口径对齐（free 与 GROW-QUOTA 守卫同口径）", () => {
+  // 有状态假件：retireValue/upsertValue 真实变更行集，listValuesAnyState 反映最新状态
+  //（刷新路径的正确性只有在此才能被观察——无状态假件永远返回同一陈旧数组）。
+  function makeStatefulStore(rows: unknown[], initial: AnyRow[]) {
+    const values = initial.map((r) => ({ ...r }));
+    return {
+      queryL1Records: vi.fn(async () => rows),
+      listValuesAnyState: vi.fn(async () => values.map((r) => ({ ...r }))),
+      upsertValue: vi.fn(async (valueId: string, label: string, weight: number, createdBy?: string) => {
+        const v = values.find((x) => x.value_id === valueId);
+        if (v) { v.weight = weight; v.created_by = createdBy ?? v.created_by; }
+        else values.push({ value_id: valueId, label, weight, created_by: createdBy ?? "verify", valence: null, origin: "auto", pinned: 0, state: "active" });
+        return true;
+      }),
+      retireValue: vi.fn(async (valueId: string) => {
+        const v = values.find((x) => x.value_id === valueId);
+        if (v) v.state = "retired";
+        return true;
+      }),
+      getAnchorGrowthState: vi.fn(async () => ({ lastDiscoveryAt: "2026-09-01T00:00:00.000Z", lastCorpusCount: 0 })),
+      setAnchorGrowthState: vi.fn(),
+    };
+  }
+  it("钉 auto 只占一席 + retired 钉住不占席：free 不再双计（多出的名额可采纳）", async () => {
+    const initial = [
+      row("vp", "钉住自生长", { origin: "auto", created_by: "auto-growth", weight: 0.6, pinned: 1 }),
+      row("v1", "普通自生长", { origin: "auto", created_by: "auto-growth", weight: 0.5 }),
+      row("vr", "已退役钉住", { origin: "auto", created_by: "auto-growth", weight: 0.9, pinned: 1, state: "retired" }),
+    ];
+    const rows = ["钉住自生长", "普通自生长", "已退役钉住", "新主题甲"].map((label, i) => corpusRow("r" + i, "第" + i + "条 关于" + label + "的记忆"));
+    const store = makeStatefulStore(rows, initial);
+    const runner = makeRunner(JSON.stringify([{ label: "新主题甲", rationale: "r" }]));
+    // maxTotal=3：旧口径 free = 3 - 2(钉住含 retired) - 2(auto 含钉 auto) = 0 → skip；
+    // 新口径 free = 3 - 1(active 钉) - 1(active 非钉 auto) = 1 → 直接采纳，无挤出。
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24 }, logger: LOG, now });
+    expect(res.adopted).toBe(1);
+    expect(res.displaced).toBe(0);
+    expect(store.retireValue).not.toHaveBeenCalled();
+  });
+  it("QUOTA 守卫退场后快照刷新：挤出不再打已退场空炮（次候选正确 skip）", async () => {
+    const initial = [
+      row("v1", "弱主题甲", { origin: "auto", created_by: "auto-growth", weight: 0.1 }),
+      row("v2", "强主题乙", { origin: "auto", created_by: "auto-growth", weight: 0.6 }),
+    ];
+    const rows = ["弱主题甲", "强主题乙", "候选丙", "候选丁"].map((label, i) => corpusRow("r" + i, "第" + i + "条 关于" + label + "的记忆"));
+    const store = makeStatefulStore(rows, initial);
+    const runner = makeRunner(JSON.stringify([{ label: "候选丙", rationale: "r" }, { label: "候选丁", rationale: "r" }]));
+    // maxTotal=1：守卫先退场 v1（强度升序）→ 快照刷新后 active 非钉 auto 只剩 v2 → free=0；
+    // 候选强度 suggest(1,4)=0.31 < v2 强度 0.31*?…（v2 被 GROW-MAINT 重算为同刻度 0.31，
+    // tie 判严格 > 不成立）→ 两个候选都 skip；旧快照则会把已退场的 v1 再挤一次（retire×2）。
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 1, intervalHours: 24 }, logger: LOG, now });
+    expect(res.retired).toBe(1);
+    const retiredIds = (store.retireValue as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(retiredIds).toEqual(["v1"]); // 只有守卫退场；无对已退场锚的二次 retire
+    expect(res.adopted).toBe(0);
+    expect(res.skipped).toBe(2);
+  });
+});
+
 // ═════════════ GROW-QUOTA 名额回归守卫（REG-REMAINING-004 #9）═════════════
 // 第一性原理：maxTotal = soul-feeling 注入预算保护；存量超限（竞态超采/名额下调遗留）
 // 必须回归名额——GROW-MAINT 只有证据退场，超限无自愈路径。超出部分按强度升序 retire
