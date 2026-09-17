@@ -290,6 +290,20 @@ export interface MemoryCoreMemoryConfig {
     maxTotal: number;
     intervalHours: number;
   };
+  /**
+   * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
+   * 含 LLM prompt 行为）。maxPerPass clamp 1..10；intervalHours clamp 1..168。
+   */
+  selfIdentity: {
+    enabled: boolean;
+    maxPerPass: number;
+    intervalHours: number;
+  };
+  /** F17 段级注入预算（chars 为 token 粗粒度近似；clamp 100..2000）。 */
+  soulRender: {
+    budgetSelfChars: number;
+    budgetIdentityChars: number;
+  };
 }
 
 /** J 重构式回忆 · 图邻居扩展设置（宁缺毋滥：仅并入 top 种子之邻）。 */
@@ -869,7 +883,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   const coreMemory: MemoryCoreMemoryConfig = {
     writeEnabled: bool(coreMemoryGroup, "writeEnabled") ?? true,
     // K 设计 §2 默认三槽；空数组=拒绝全部（宁缺毋滥）
-    allowedSlots: coreMemoryAllowedSlots ?? ["identity", "core_value", "strict_rule"],
+    // P1（DS-SOUL-MEMORY-002）：+self_identity（agent 自我层）。信任边界扩展无害——
+    // 实际写入仍由 selfIdentity.enabled 门控；显式配置 allowedSlots 时不注入（用户白名单权威）。
+    allowedSlots: coreMemoryAllowedSlots ?? ["identity", "core_value", "strict_rule", "self_identity"],
     maxContentLength: num(coreMemoryGroup, "maxContentLength") ?? 2000,
     seedValues: coreMemorySeedValues ?? [],
     // GROW（价值锚自生长）：解析+clamp+默认。clamp 上界防配置手滑（宁缺毋滥）；
@@ -887,6 +903,33 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         maxPerPass: clamp("maxPerPass", 2, 1, 10),
         maxTotal: clamp("maxTotal", 15, 1, 100),
         intervalHours: clamp("intervalHours", 24, 1, 24 * 30),
+      };
+    })(),
+    // DS-SOUL-MEMORY-002 P1：agent 自我层（enabled 缺省 false=逐位现状；yaml 值真实生效+clamp）。
+    selfIdentity: (() => {
+      const g = obj(coreMemoryGroup, "selfIdentity");
+      const clamp = (key: string, dflt: number, lo: number, hi: number) => {
+        const raw = num(g, key);
+        if (raw === undefined || !Number.isFinite(raw)) return dflt;
+        return Math.min(hi, Math.max(lo, Math.floor(raw)));
+      };
+      return {
+        enabled: bool(g, "enabled") ?? false,
+        maxPerPass: clamp("maxPerPass", 2, 1, 10),
+        intervalHours: clamp("intervalHours", 24, 1, 168),
+      };
+    })(),
+    // F17 段级注入预算（chars 为 token 粗粒度近似；超限截断，宁缺毋滥）。
+    soulRender: (() => {
+      const g = obj(coreMemoryGroup, "soulRender");
+      const clamp = (key: string, dflt: number, lo: number, hi: number) => {
+        const raw = num(g, key);
+        if (raw === undefined || !Number.isFinite(raw)) return dflt;
+        return Math.min(hi, Math.max(lo, Math.floor(raw)));
+      };
+      return {
+        budgetSelfChars: clamp("budgetSelfChars", 600, 100, 2000),
+        budgetIdentityChars: clamp("budgetIdentityChars", 900, 100, 2000),
       };
     })(),
   };
