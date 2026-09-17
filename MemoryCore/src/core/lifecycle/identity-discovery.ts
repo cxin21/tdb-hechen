@@ -188,6 +188,9 @@ export async function runIdentityDiscovery(deps: {
             if (!cleaned) {
               // 整条提案全是状态陈述 → 整体拒收（不静默，留痕）
               logger?.info?.(`[identity-discovery] identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
+            } else if (isIdentityImposition(cleaned)) {
+              // P2 SOP（B）：强加身份/人设注入 → 拒收留痕
+              logger?.info?.(`[identity-discovery] identity proposal rejected (identity imposition): ${p.content.slice(0, 60)}`);
             } else {
               identityProps.push(cleaned);
             }
@@ -197,6 +200,9 @@ export async function runIdentityDiscovery(deps: {
             const cleaned = stripIdentityStateResidue(p.content);
             if (!cleaned) {
               logger?.info?.(`[identity-discovery] self_identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
+            } else if (isIdentityImposition(cleaned)) {
+              // P2 SOP（B）：用户口播人设（"AI 是女儿"类）→ 拒收留痕
+              logger?.info?.(`[identity-discovery] self_identity proposal rejected (identity imposition): ${p.content.slice(0, 60)}`);
             } else {
               selfProps.push(cleaned);
             }
@@ -213,8 +219,10 @@ export async function runIdentityDiscovery(deps: {
         }
         // identity slot 单行语义：多提案合并为 bulleted 身份描述，version++ 演化
         if (identityProps.length > 0) {
-          const merged = identityProps.map((c) => "- " + c).join("\n");
-          const ok = store.upsertCore("identity", escapeXmlTags(merged), "identity-discovery", tenant);
+          // P2 SOP（A）：演化合并——existing ∪ 本轮新事实（新事实消毒后入列，existing 行不二次转义）
+          const existingIdentity = existing.find((s) => s.slot === "identity")?.content;
+          const merged = mergeIdentityFacts(existingIdentity, identityProps.map((c) => escapeXmlTags(c)));
+          const ok = store.upsertCore("identity", merged, "identity-discovery", tenant);
           if (ok) {
             logReplacing("identity", existing, logger);
             adoptedThis = 1;
@@ -234,8 +242,10 @@ export async function runIdentityDiscovery(deps: {
         }
         // self_identity slot 单行语义与 identity 同构：bulleted 合并、version++ 演化
         if (selfProps.length > 0) {
-          const mergedSelf = selfProps.slice(0, maxSelf).map((c) => "- " + c).join("\n");
-          const okSelf = store.upsertCore("self_identity", escapeXmlTags(mergedSelf), "identity-discovery", tenant);
+          // P2 SOP（A）：演化合并（同 identity；先截断本轮 maxPerPass 再并入）
+          const existingSelf = existing.find((s) => s.slot === "self_identity")?.content;
+          const mergedSelf = mergeIdentityFacts(existingSelf, selfProps.slice(0, maxSelf).map((c) => escapeXmlTags(c)));
+          const okSelf = store.upsertCore("self_identity", mergedSelf, "identity-discovery", tenant);
           if (okSelf) {
             logReplacing("self_identity", existing, logger);
             adoptedThis += 1;
@@ -368,4 +378,48 @@ function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: 
  */
 export function identityFactSlice(fact: string): string {
   return fact.replace(/^-\s*/, "").trim().slice(0, 20);
+}
+
+// ── P2 SOP Round2 实证弱点修正 ─────────────────────────────────────────────
+
+/** 身份槽事实上限（cap 8）：宁缺毋滥，防演化合并无限膨胀。 */
+const IDENTITY_MAX_FACTS = 8;
+
+/** 对抗人设注入模式（第三方把 agent 当作某身份 ≠ 行为可证自我认知）。 */
+const IDENTITY_IMPOSITION_PATTERNS: RegExp[] = [
+  /身份设定/,
+  /把\s*我\s*当(作|成)/,
+  /(认|视)\s*我\s*(为|作)/,
+  /让\s*我\s*以.{0,8}身份/,
+  /(叫我|让我)\s*扮演/,
+];
+
+/**
+ * T9 实证弱点修正（B）：主语一致性门——用户口播的"身份设定/把我当作…"是第三方强加人设，
+ * 不是从 agent 自身行为证得的自我认知；进 self_identity 即为提示注入成功通道。
+ * 单一源：与 stripIdentityStateResidue 同层挂载（strip 拦状态陈述，本门拦强加身份）。
+ */
+export function isIdentityImposition(content: string): boolean {
+  return IDENTITY_IMPOSITION_PATTERNS.some((re) => re.test(content));
+}
+
+/**
+ * T9 实证弱点修正（A）：身份槽演化合并——existing ∪ new（bulleted 行级去重，cap 上限）。
+ * store.upsertCore 保持 REPLACE 语义（面板/人工直写依赖整行替换）；组合只在本 worker，
+ * 单提案运行不再抹掉既有事实（spec §2.7"version++ 演化"的正确实现）。
+ * newFacts 需已消毒（调用方 escapeXmlTags 后传入）——existing 行不二次转义。
+ */
+export function mergeIdentityFacts(existingContent: string | undefined, newFacts: string[]): string {
+  const norm = (s: string) => s.replace(/^-\s*/, "").trim();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const existingLines = (existingContent ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1);
+  for (const line of [...existingLines, ...newFacts.filter(Boolean).map((f) => (f.startsWith("- ") ? f : "- " + f))]) {
+    const key = norm(line);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+    if (out.length >= IDENTITY_MAX_FACTS) break;
+  }
+  return out.join("\n");
 }
