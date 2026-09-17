@@ -84,7 +84,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 ### 2.2 L1 情景记忆层
 
 - **定义**：agent 的经历记录。**记忆的主语 = agent**（"我的记忆是关于你的，但它是我的记忆"——per-agent 隔离的第一性依据）。
-- **数据来源**：l1-extractor 从 L0 提取（质量门过滤 → LLM 提取 → 确定性落库）； consolidation 合并；evolution 改写。
+- **数据来源**：l1-extractor 从 L0 提取（质量门过滤 → LLM 提取 → 确定性落库；**P1 起 prompt 增补 agent 行为事实视角，metadata.agentAct 标注——self_identity/品格锚的语料前提**）；consolidation 合并；evolution 改写。
 - **主语**：见属性总表（§4）逐列标注；核心：certainty=agent 认识论、valence/arousal=agent 归档的情感评价、significance=agent 的重要性判断、双时态=事实本身（agent 维护）。
 - **属性**：全表见 §4.1（19 列 + metadata 子结构 8 项）。
 - **公式**：F1-F4（召回融合）、F7-F8（演化门/首次权威）、F18（检索过滤）。
@@ -105,11 +105,12 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | `identity`（现有，语义收敛） | **我心中的他**——用户身份 | 用户 | 分级门（identity 描述类自动采纳；core_value/strict_rule→pending） |
 | `self_identity`（P1 新增） | **我是谁**——agent 自我：职责模式/承诺/红线执行/工作风格 | **agent**（第一人称产出） | 同分级门 + 提取 prompt 要求"行为可证"（样本中须有 agent 侧行为文本支撑）。确定性守卫=F10 剥离 + F15 警告制；"行为可证"为提案 prompt 硬约束，确定性侧只做弱校验（20 字切片重算入 F15 警告制）——已知弱点：LLM 可能串味（self 路混入用户事实），缓解=第一人称硬约束 + 渲染层 self 小节"用户"字样超比例告警 + Panel 人工兜底 |
 
-- **数据来源**：identity-discovery worker **双视角扩展**——同一样本窗（selectSampleRows，updated 降序+高显著优先，cap 50）一次 LLM 调用同时产出两组提案：用户事实（现 prompt 改"他是谁/他的职责/他的红线"）+ 自我事实（"我反复承担的职责/我做出的承诺/我执行过的红线/我稳定的工作风格，须有 agent 侧行为文本支撑"）。两路分别过采纳门、分别落槽。
+- **数据来源**：identity-discovery worker **双视角扩展**——同一样本窗（selectSampleRows，updated 降序+高显著优先，cap 50）一次 LLM 调用同时产出两组提案：用户事实（现 prompt 改"他是谁/他的职责/他的红线"）+ 自我事实（"我反复承担的职责/我做出的承诺/我执行过的红线/我稳定的工作风格，须有 agent 侧行为文本支撑"）。两路分别过采纳门、分别落槽。**语料前提**：样本=L1 记录，agent 行为事实在现状语料中稀缺——P1 同步给 l1-extractor prompt 增补 agent 行为事实视角（metadata.agentAct 标注），否则 self_identity 长期无料（与 P3 品格锚同一前置）。
 - **主语**：所有者=agent；内容主语如上表；功能主语=agent 的自我模型。
 - **作用域取舍（拍板记录）**：三元组各存一份——品格随关系分化（经历库 per-三元组 → 从经历长出的品格 per-三元组）；先天使命仍在系统提示词作不变核。代价：同 agent 跨用户品格无共享——接受，理由是因果链自洽。
 - **属性**：slot、content（bulleted 多事实合并，version++ 演化）、source、updated_at。
 - **修订留痕（O14 缓解）**：upsertCore 成功后旧内容整行写入 logger.info（审计可查），不建 history 表（避免双源）；GROW-MAINT 身份重验证（P2）永不自动 retire 身份事实——只发失撑警告+人工确认（身份红线）。
+- **写入口信任边界（config.ts:872 实证）**：allowedSlots 缺省 `["identity","core_value","strict_rule"]`——**self_identity 不在名单，写入会被信任边界直接拒绝**。P1 必须扩展缺省白名单加入 self_identity（白名单扩展无害：实际写入仍由 selfIdentity.enabled 门控）；maxContentLength=2000 为槽内容硬上限，F17 预算（600/900）已在其内，联动校验进测试。
 - **公式**：F9（证据重算）、F10（状态残留剥离）、F15（GROW-MAINT 身份重验证，P2）。
 - **使用场景**：灵魂注入（四段渲染）、身份问答、Panel 人工清洗兜底。
 
@@ -128,6 +129,9 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 - **公式**：F5（强度）、F6（挤出）、F11（人物证据口径）、F12（关系权重派生）、F15（维护）。
 - **使用场景**：灵魂注入（"价值锚：…"/"重要的人：…"两行）、人物反查记忆（searchL1ByCoreRefs 同款）、遗忘保护（F14）、关系演化追踪。
 - **单一源声明**：一份 GROW worker 按 node_type 分叉证据口径（if 策略化），**不是**两个 worker 复制状态机（O12 类口径分叉事故的预防）。
+- **跨类命名空间（growthValueId/ON CONFLICT 实证）**：`growthValueId(label)` 无类型区分，而 upsertValue 冲突键=(value_id,team,user,agent)——人物"咖啡"与主题"咖啡"会**同 id 互相覆盖**。P2：growthValueId 增加 nodeType 参数（person 域独立 hash 盐或 `p-` 前缀），去重键同步 (node_type,label)。
+- **状态键族（identity_* 分立先例）**：theme 池沿用现有 anchor_growth_state 键（逐位现状）；person 池用独立前缀 `anchor_person_*`——防"共用键族清掉对方冷却"的 identity 事故重演（sqlite.ts identity_last_* 先例）。
+- **读路径扩列**：listValues 现返回结构无 node_type/attrs_json（B3 实证）——P2 扩展返回列，分池统计与渲染分行依赖它；upsertValue INSERT 枚举列不含新列→缺省值兼容、DO UPDATE 不碰 node_type→保留（A8 实证 ✓）；DO UPDATE SET state='active'（重发现复活语义）逐位保持。
 
 ### 2.7 soul-assembler 注入组装层（P1 重构）
 
@@ -161,13 +165,13 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 |---|---|---|---|
 | consolidation | 10min tick | L1→L2/L3 蒸馏 | sleep-time agent |
 | anchor-growth | tick+双门 | 主题锚发现/挤出/维护 | — |
-| person-growth（P2） | tick+双门 | 人物锚发现/维护（骨架实例 2） | Zep 实体层（轻量版） |
+| anchor-growth 双池（P2 扩展） | tick+双门 | **同一 worker 内 theme/person 双池**（证据口径策略化注入，非新 worker——消解 v1 稿"骨架实例 2"的表述矛盾，见 §2.6 单一源声明） | Zep 实体层（轻量版） |
 | identity-discovery | tick+双门 | 双槽身份自发现（P1 双视角） | Letta persona/human 块 |
 | evolution | tick+五条件门 | 矛盾合并/双时态失效 | A-MEM 演化（保守版）、Mem0 UPDATE（门控版） |
 | forgetting | tick | 遗忘（F14 保护钩子 P2） | — |
 | skill-extraction | 事件 | 程序性记忆（CoALA procedural） | Voyager skill library |
 
-调度顺序保持：consolidation → forgetting → anchor-growth → identity-discovery → evolution（evolution 最后）；person-growth 插在 anchor-growth 后（P2）。反思触发（F13，P3）作为 evolution/consolidation 的优先级增强，tick 兜底不变。
+调度顺序（lifecycle-scheduler.ts 实证，v1 稿写反、本稿修正）：consolidation → forgetting → **identity-discovery → anchor-growth** → evolution（evolution 最后）；人物锚为 anchor-growth 内部双池（P2），**无新调度点**。反思触发（F13，P3）作为 evolution/consolidation 的优先级增强，tick 兜底不变。
 
 ---
 
@@ -180,7 +184,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | 主题锚 | L1 语料（全量证据重算） | anchor-growth 提案 | 护栏四件+QUOTA |
 | 人物锚（P2） | L1 语料（提及口径） | person-growth 提案 | 同骨架+口径注入 |
 | identity（用户身份） | L1 样本窗（用户侧事实） | identity-discovery 双视角 | 分级门+状态残留剥离 |
-| self_identity（P1） | L1 样本窗（agent 侧行为文本） | 同上（第二视角） | 同门+"行为可证"要求 |
+| self_identity（P1） | L1 样本窗（agent 侧行为文本）+ **l1-extractor agentAct 视角增补（P1 同步，否则语料稀缺）** | 同上（第二视角） | 同门+"行为可证"要求 |
 | 感受段 | 主题锚 valence | soul-assembler 渲染 | IS NULL 守卫（derive 后渲染） |
 | 证据回填链 | 锚/人物/身份事实 ↔ L1 | backfill 同款 | 重算精确一致（已验证 7/7 先例） |
 | 漂移基线 | self-obs 统计 | get/setSelfObsBaseline | 首轮不误报 |
@@ -213,7 +217,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | task_id | TEXT | agent | — | 任务关联 | — |
 | version | INT | agent | — | 演化守恒 | — |
 | created_time/updated_time | TEXT | agent 系统 | — | updated 降序采样（selectSampleRows） | 系统时钟 |
-| timestamps[] | TEXT[] | agent | 事件 | 渲染"活动时间"、事件跨度 | 多时钟 |
+| timestamp_str/timestamp_start/timestamp_end | TEXT×3 | agent | 事件 | 渲染"活动时间"、事件跨度 | 事件名/起/止三列（B1 PRAGMA 实证；无 timestamps 数组列） |
 
 metadata_json 子结构：
 
@@ -278,7 +282,7 @@ metadata_json 子结构：
 | F15 | GROW-MAINT（主题/人物/身份）：全量语料重算；ev<minEvidence→retire（pinned/manual 豁免）；\|Δw\|≥0.05→reweight；QUOTA 守卫**按 node_type 分池**（maxTotalTheme=15 / maxTotalPerson=8 各自独立：autoNow(该类)+pinnedNow(该类)>maxTotal(该类)→该类内强度升序 retire）——防人物锚挤占主题锚名额。**身份事实只警告不自动退场** | 分池配置 | 自维护 | 已有（身份/人物分支 P2） |
 | F16 | 漂移旗标：drift=\|rate−prevRate\|/prevRate ≥0.3→AROUSAL-GATE；基线首轮落盘不误报 | — | self-obs | 已有（本轮修复） |
 | F17 | 段级注入预算（P1）：soulRender.budgetSelfChars/budgetIdentityChars/maxRelationLines，超限按强度/序截断，宁缺毋滥；valenceDir 渲染映射：1→趋近、-1→审慎、0→中性、NULL→无标注 | config | soul-assembler | 新增 |
-| F18 | 检索过滤：isInvalidated(r) = ve 非空且 ve≤now；租户三元组硬隔离 | — | 召回池组装 | 已有 |
+| F18 | 检索过滤：isInvalidated(r) = ve 非空字符串且 Date.parse 成功且 ≤now（**解析失败保留——宁缺毋滥不误删**，filter-invalidated.ts 实证）；租户三元组硬隔离 | — | 召回池组装 | 已有 |
 | F19 | 采纳双门（锚/人物）：attempt 冷却 1h + adopted 冷却 24h + 语料增量门 + 空语料短路；护栏四件：ev≥minEvidence、maxPerPass、maxTotal（**按 node_type 分池，同 F15**）、全态去重（veto/retired 永不重提；去重键=**（node_type, label）复合**；人物锚另含别名维度——提案 label 或任一 alias 命中同类型既有 label/alias → 拒）。已知弱点（诚实登记）：F11 人物名宽口径（"女儿"出现在无关记录）会虚增 personEv——缓解=提案质量门+maxPerPass+QUOTA 分池，实证后再收紧口径 | config | GROW 家族 | 已有（人物实例化 P2） |
 | F20 | 演进守卫红线：身份事实 retire 永不自动（P2 GROW-MAINT 仅警告+人工确认） | — | 自维护 | 新增 |
 
@@ -306,6 +310,7 @@ metadata_json 子结构：
 ### P1 双槽 + 四段渲染（灵魂骨架）
 - core_memory `self_identity` slot（零 schema 变更）；identity-discovery 双视角（user prompt 主语修正"他是谁" + self prompt "行为可证"）；soul-assembler 四段渲染+F17 预算；旧文留痕。
 - 配置：`memory.coreMemory.selfIdentity.{enabled=false,minEvidence=3,maxPerPass=2,intervalHours=24}`、`memory.coreMemory.soulRender.{budgetSelfChars=600,budgetIdentityChars=900}`。
+- 写入口：allowedSlots 缺省白名单 +self_identity（信任边界扩展，config.ts:872）；maxContentLength=2000 与 F17 预算联动校验；**l1-extractor prompt 增补 agent 行为事实视角（metadata.agentAct 标注）——self_identity 语料前提**；enabled=false 时 identity-discovery 走旧单视角 prompt（逐位现状含 LLM 行为）。
 - 验收：开关关=逐位现状回归；开=flowtest 真数据 SOP（自我事实从对话长出、换用户/换 agent 测试、渲染预算截断、identity 主语修正后 soul 块人工审读）。
 - 顺手：identity 提取 prompt 主语修正（O15 遗留）。
 
@@ -348,6 +353,13 @@ metadata_json 子结构：
 - O17（属性扩展）→ §4/§5 全量盘点落地（人物→关系权重→身份维护链）；
 - O12（certainty 无门槛）→ 维持现状（证据门槛+maxPerPass 已是两道闸），留产线实例观察；
 - O11（缓存隔离指纹）→ 不在本期，已登记。
+- **台账 gated 项依赖（2026-09-17 对照 v5 全量）**：
+  - **flowtest retirement（gated）**：P1/P2/P3 全部验收依赖 flowtest 桶——retirement 拍板前须完成各期验收或迁移验证租户；
+  - **maxPerPass 定格（gated）**：anchorDiscovery.maxPerPass=3 为 FLOW-TEST 演示值——人物分池独立参数后互不影响，登记依赖；
+  - **D5 R10 A/B**：F4 情感显著度缺省 0=恒等，A/B 结论回填 F4 参数；
+  - **D2 产线替换（labels≥300 & 正例≥50）**：主题锚产线化门槛，P2/P3 产线启用继承该拍板；
+  - **O7（lifecycle 嵌入接线，择机）**：evo_/dur_ 产物 metadata-only 无向量——S2"召回准确完整"对演化产物仅 FTS 层生效（S4 场景同理），已知限制；
+  - O9（eager pool）/L2 300s 预算：与本 spec 无交叉。
 
 ## 附录 A：业界调研摘要（2026-09-17）
 
