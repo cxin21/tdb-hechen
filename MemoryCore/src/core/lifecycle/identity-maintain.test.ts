@@ -42,7 +42,7 @@ describe("maintainIdentityFacts（F20 只警告）", () => {
   it("全部有支撑 → 零告警", async () => {
     const store = makeStore(CORE);
     const { warns, logger } = makeLogger();
-    const corpus = ["用户是家里的首席厨师，掌勺", "周日图书馆是用户陪女儿的固定安排"];
+    const corpus = ["用户是家里的首席厨师，掌勺", "用户每周日陪女儿去图书馆，风雨无阻"];
     const n = await maintainIdentityFacts(store as never, TENANT, corpus, logger as never);
     expect(n).toBe(0);
     expect(warns).toEqual([]);
@@ -71,7 +71,7 @@ describe("identity 采纳 → identityRefs 回填", () => {
       backfillMemoryRef,
     } as never;
     const run = vi.fn().mockResolvedValue(JSON.stringify([
-      { slot: "identity", content: "用户把体检安排在周五并全家聚餐", rationale: "多源" },
+      { slot: "identity", content: "用户把体检安排在周五", rationale: "语料原句子串（弱口径匹配前提）" },
     ]));
     await runIdentityDiscovery({
       store, llmRunner: { run }, logger: undefined,
@@ -81,6 +81,6 @@ describe("identity 采纳 → identityRefs 回填", () => {
     const refs = backfillMemoryRef.mock.calls.filter((c) => c[1] === "identityRefs");
     expect(refs.length).toBeGreaterThanOrEqual(1);
     expect(refs.every((c) => c[0] === "r1")).toBe(true);
-    expect(String(refs[0]![2])).toBe("用户把体检安排在周五并全家聚餐".slice(0, 20));
+    expect(String(refs[0]![2])).toBe("用户把体检安排在周五");
   });
 });

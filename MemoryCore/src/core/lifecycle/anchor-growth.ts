@@ -133,8 +133,8 @@ export async function maintainIdentityFacts(
   tenant: CoreTenant,
   corpus: string[],
   logger?: Logger,
-): number {
-  // sqlite store readCore 为同步（v2 实证教训）；Promise.resolve 兼容两种形态
+): Promise<number> {
+  // sqlite store readCore 为同步（v2 实证教训）；await Promise.resolve 兼容两种形态
   const core = ((await Promise.resolve(store.readCore?.(tenant))) as unknown as Array<{ slot: string; content: string }> | undefined) ?? [];
   const identity = core.find((s) => s.slot === "identity");
   if (!identity || !identity.content) return 0;
