@@ -204,6 +204,7 @@ export async function runIdentityDiscovery(deps: {
           const merged = identityProps.map((c) => "- " + c).join("\n");
           const ok = store.upsertCore("identity", escapeXmlTags(merged), "identity-discovery", tenant);
           if (ok) {
+            logReplacing("identity", existing, logger);
             adoptedThis = 1;
             logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
           }
@@ -213,6 +214,7 @@ export async function runIdentityDiscovery(deps: {
           const mergedSelf = selfProps.slice(0, maxSelf).map((c) => "- " + c).join("\n");
           const okSelf = store.upsertCore("self_identity", escapeXmlTags(mergedSelf), "identity-discovery", tenant);
           if (okSelf) {
+            logReplacing("self_identity", existing, logger);
             adoptedThis += 1;
             logger?.info?.(`[identity-discovery] adopted self_identity (${Math.min(selfProps.length, maxSelf)} facts)`);
           }
@@ -249,6 +251,18 @@ const STATE_PHRASE_RES = [
 ];
 const STATE_DATE_RE = /\d{4}[-年]\d{0,2}/;
 const STATE_PHASE_RE = /P\d/;
+
+// DS-SOUL-MEMORY-002 P1（O14）：身份修订旧文留痕——merge 成功后打一行 replacing 日志。
+// 非结构化、诚实低成本：旧文仅在日志层可回溯（upsertCore 自带 version++ 演化）；
+// 截断 200 字防日志膨胀；旧槽为空（首次写入）不打。
+function logReplacing(
+  slot: string,
+  existing: Array<{ slot: string; content: string }>,
+  logger?: Logger,
+): void {
+  const old = existing.find((s) => s.slot === slot);
+  if (old?.content) logger?.info?.(`[identity-discovery] replacing ${slot} (old content): ${old.content.slice(0, 200)}`);
+}
 
 export function stripIdentityStateResidue(content: string): string {
   const s = String(content ?? "");
