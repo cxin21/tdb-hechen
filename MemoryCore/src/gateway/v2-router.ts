@@ -1649,7 +1649,9 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
     : undefined;
   // profile scope（scene index / L2 结论层 scene_block 通道基底）：team+agent 粒度（与
   // 钩子路 performAutoRecallCore 缺省派生同式）。
-  const profileIsolation = { teamId: iso?.teamId || "default", agentId: iso?.agentId || "default" };
+  // R4-5（A6 召回级）：L2/L3 profile scope 三元组化——userId 必须随行，否则同 team+agent
+  // 的跨 user 场景块互串（ev10 Q 租户实证）。缺省 user:default（钩子无租户路径同桶）。
+  const profileIsolation = { teamId: iso?.teamId || "default", userId: iso?.userId || "default", agentId: iso?.agentId || "default" };
 
   const tStart = performance.now();
   const timeoutMs = v3Recall.timeoutMs ?? 5000;
