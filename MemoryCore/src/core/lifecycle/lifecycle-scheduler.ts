@@ -174,6 +174,17 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       deps.logger?.warn?.(`[lifecycle] evolution failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // P2 SOP Round3 对抗修正（次序）：遗忘判定放 pass 末尾——锚发现/身份发现在同轮先行，
+  // 保护上下文（active 锚名集/身份切片）取到本轮最新状态（引导期同轮 forgetting 先跑
+  // 会因锚未诞生致 F14 保护名集为空，受保护记录被当场归档，ev8 实证）。
+  if (deps.config.forgetting?.enabled !== false) {
+    try {
+      const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });
+      deps.logger?.info?.(`[lifecycle] forgetting candidates=${res.candidates.length} archived=${res.archived}`);
+    } catch (err) {
+      deps.logger?.warn?.(`[lifecycle] forgetting failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 /** 启动周期调度（幂等）。返回 stop 函数。 */
