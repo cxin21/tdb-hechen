@@ -22,6 +22,27 @@ function valenceDir(v: number | null | undefined): string {
   return "";
 }
 
+/** P2（spec §2.7）：人物锚关系方向词——与主题价值方向（审慎）区分（回避≠审慎）。 */
+function personDir(v: number | null | undefined): string {
+  if (v === 1) return "趋近";
+  if (v === -1) return "回避";
+  if (v === 0) return "中性";
+  return "";
+}
+
+/** P2：attrs_json 宽松解析（损坏/缺失 → {}，只损失 role 维度）。 */
+function personAttrs(v: { attrs_json?: string }): { role?: string; aliases?: string[] } {
+  try {
+    const p = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : {};
+    return {
+      role: typeof p?.role === "string" ? p.role : undefined,
+      aliases: Array.isArray(p?.aliases) ? p.aliases.map(String) : [],
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** DS-SOUL-MEMORY-002 P1（F17）：段级渲染选项。缺省（undefined）= 旧渲染字节级一致。 */
 export interface SoulRenderOptions {
   selfIdentityEnabled?: boolean;
@@ -38,11 +59,18 @@ export async function buildSoulPrefix(
   const parts: string[] = [];
   try {
     const slots = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
-    const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ label: string; weight?: number; valence?: number | null; state?: string }>;
-    const active = values.filter((v) => v.state === undefined || v.state === "active");
+    const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
+    const activeAll = values.filter((v) => v.state === undefined || v.state === "active");
+    // P2（spec §2.7）：person 锚分流——主题锚渲染不变（undefined → theme 旧库兼容）；
+    // 人物锚进「重要的人」行（weight DESC cap 5），不与价值审慎/趋近语义混淆。
+    const active = activeAll.filter((v) => v.node_type !== "person");
+    const personRows = activeAll
+      .filter((v) => v.node_type === "person")
+      .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+      .slice(0, 5);
 
     // ── 身份段：此刻的你 ──
-    if (slots.length > 0 || active.length > 0) {
+    if (slots.length > 0 || activeAll.length > 0) {
       const lines: string[] = [];
       // DS-SOUL-MEMORY-002 P1 四段渲染（gated）：非 dual 路径保持 `- [slot] content`
       // 原样且不做截断——逐位现状；dual 路径 self/identity 行分别带（我是谁）/（我心中的他）
@@ -72,6 +100,17 @@ export async function buildSoulPrefix(
       if (active.length > 0) {
         lines.push(
           `价值锚：${active.map((v) => `${escapeXmlTags(v.label)}${valenceDir(v.valence) ? `(${valenceDir(v.valence)})` : ""}`).join("、")}`,
+        );
+      }
+      // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段
+      if (personRows.length > 0) {
+        lines.push(
+          `重要的人：${personRows.map((v) => {
+            const a = personAttrs(v);
+            const d = personDir(v.valence);
+            const role = a.role ? `${escapeXmlTags(a.role)}·` : "";
+            return `${escapeXmlTags(v.label)}(${role}${d})`;
+          }).join("、")}`,
         );
       }
       if (lines.length > 0) parts.push(`<soul-identity>\n## 此刻的你\n${lines.join("\n")}\n</soul-identity>`);
