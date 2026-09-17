@@ -116,14 +116,6 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       deps.logger?.warn?.(`[lifecycle] consolidation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  if (deps.config.forgetting?.enabled !== false) {
-    try {
-      const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });
-      deps.logger?.info?.(`[lifecycle] forgetting candidates=${res.candidates.length} archived=${res.archived}`);
-    } catch (err) {
-      deps.logger?.warn?.(`[lifecycle] forgetting failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
   // SOUL（身份自发现）：anchor-growth 同款模式——扫描对话→LLM 提案→分级门→core_memory slots。
   // GROW-EVO P2.1：与价值锚共用 llmRunner；identity slot 自动采纳，core_value/strict_rule pending。
   if (deps.config.anchorDiscovery?.enabled !== false) {
