@@ -37,7 +37,7 @@ export interface IdentityDiscoveryResult {
   reason?: "disabled" | "no-llm" | "store-unsupported" | "interval" | "no-new-corpus" | "no-corpus" | "error";
 }
 
-const DISCOVERY_SYSTEM_PROMPT = [
+export const DISCOVERY_SYSTEM_PROMPT = [
   "你是团队身份提炼顾问。从样本记忆中提炼\"这个 agent/团队是谁\"的身份事实。",
   "你只提案，不落库：你的输出只是候选提案。",
   "",
@@ -56,6 +56,26 @@ const DISCOVERY_SYSTEM_PROMPT = [
   "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
 ].join("\n");
 
+// DS-SOUL-MEMORY-002 P1 双视角：user prompt 主语修正（O15：「他是谁」）+ agent 自我层
+// （行为可证=提案必须能被样本中的 agent 侧行为/对话文本支撑）。仅 selfIdentity.enabled
+// 时使用；legacy prompt 保留原样（逐位现状含 LLM 行为）。
+const DISCOVERY_SYSTEM_PROMPT_DUAL = [
+  "你是团队身份提炼顾问。从样本记忆中同时提炼两组身份事实：用户身份（他是谁）与 agent 自我（我是谁）。",
+  "你只提案，不落库：你的输出只是候选提案。",
+  "",
+  "每个提案包含：",
+  '- slot: "identity"（用户身份：他是谁/他的职责/他的角色）或 "self_identity"（agent 自我：我反复承担的职责/我做出的承诺/我执行过的红线/我稳定的工作风格）或 "core_value"（价值观：什么是对的/什么最重要）或 "strict_rule"（红线：绝不做的事/必须遵守的规则）',
+  "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
+  "- rationale: 提炼理由",
+  "",
+  "硬约束：",
+  "1. identity 只提炼用户身份层面的持续事实（他是谁/他信什么/他的纪律）；self_identity 只提炼 agent 自我的持续事实，第一人称产出（我……），且必须能在样本中找到 agent 侧行为或对话文本支撑——纯用户侧事实不要写成 self_identity。",
+  "2. 【身份判据】会随任务完成/阶段推进而过时的内容（项目进度、阶段状态、当前待办）不是身份——不要写入；只提炼跨状态持续的事实（角色、职责、关系、工作纪律）。",
+  "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
+  "4. 宁缺毋滥：证据不足的主题不要提。",
+  "5. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"},…]（slot 取 identity/self_identity/core_value/strict_rule），无提议输出 []。",
+].join("\n");
+
 // 采样/截断常量与采样器复用 core-values-discover 导出（GROW-IDENT v2，禁第二份）。
 
 /** 身份事实演化状态键（per-agent） */
@@ -70,6 +90,8 @@ export async function runIdentityDiscovery(deps: {
   store: IMemoryStore;
   llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> };
   config?: Partial<IdentityDiscoveryConfig>;
+  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角开关（scheduler 传 coreMemory.selfIdentity）。 */
+  selfIdentity?: { enabled: boolean; maxPerPass: number };
   logger?: Logger;
   now?: () => Date;
 }): Promise<IdentityDiscoveryResult> {
@@ -130,9 +152,10 @@ export async function runIdentityDiscovery(deps: {
         const existingSummaries = existing.map((s) => `[${s.slot}] ${s.content}`);
 
         const prompt = buildIdentityPrompt(sample, existingSummaries);
+        const dual = deps.selfIdentity?.enabled === true;
         const raw = await deps.llmRunner.run({
           prompt,
-          systemPrompt: DISCOVERY_SYSTEM_PROMPT,
+          systemPrompt: dual ? DISCOVERY_SYSTEM_PROMPT_DUAL : DISCOVERY_SYSTEM_PROMPT,
           taskId: "identity-discovery",
           // GROW-EVO P2.1（用户裁定）对齐（SOP 2026-09-17）：0 = 不限制 maxTokens/超时
           //（llm-runner 语义）——此前 16384 + 缺省 120s 超时是 O8 同款确定性失败病。
@@ -148,6 +171,8 @@ export async function runIdentityDiscovery(deps: {
         // 无法逐字匹配语料（与锚的 label 不同形态）；escapeXmlTags 消毒在写入路径，
         // GROW-MAINT 类重验证为后续纠偏层。core_value/strict_rule（红线类）→ pending 永不自动写入。
         const identityProps: string[] = [];
+        const selfProps: string[] = [];
+        const maxSelf = dual ? Math.max(1, deps.selfIdentity?.maxPerPass ?? 2) : 0;
         for (const p of proposals) {
           if (p.slot === "identity") {
             // 身份采纳门（硬约束执行）：状态模式剥离——prompt 软判据三轮复发后升级为
@@ -158,6 +183,15 @@ export async function runIdentityDiscovery(deps: {
               logger?.info?.(`[identity-discovery] identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
             } else {
               identityProps.push(cleaned);
+            }
+          } else if (p.slot === "self_identity" && dual) {
+            // P1（DS-SOUL-MEMORY-002）：agent 自我层——同一 strip 门（单一源）；
+            // 「行为可证」为双视角 prompt 硬约束，确定性侧只做状态剥离弱校验。
+            const cleaned = stripIdentityStateResidue(p.content);
+            if (!cleaned) {
+              logger?.info?.(`[identity-discovery] self_identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
+            } else {
+              selfProps.push(cleaned);
             }
           } else {
             const ev = recountEvidence(p.content, corpus);
@@ -172,6 +206,15 @@ export async function runIdentityDiscovery(deps: {
           if (ok) {
             adoptedThis = 1;
             logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
+          }
+        }
+        // self_identity slot 单行语义与 identity 同构：bulleted 合并、version++ 演化
+        if (selfProps.length > 0) {
+          const mergedSelf = selfProps.slice(0, maxSelf).map((c) => "- " + c).join("\n");
+          const okSelf = store.upsertCore("self_identity", escapeXmlTags(mergedSelf), "identity-discovery", tenant);
+          if (okSelf) {
+            adoptedThis += 1;
+            logger?.info?.(`[identity-discovery] adopted self_identity (${Math.min(selfProps.length, maxSelf)} facts)`);
           }
         }
         adopted += adoptedThis;
@@ -243,7 +286,8 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
   let parsed: unknown;
   try { parsed = JSON.parse(match[0]); } catch { return []; }
   if (!Array.isArray(parsed)) return [];
-  const valid = new Set(["identity", "core_value", "strict_rule"]);
+  // P1（DS-SOUL-MEMORY-002）：+self_identity。enabled=false 时幻觉提案落 else→pending（无害且诚实）。
+  const valid = new Set(["identity", "core_value", "strict_rule", "self_identity"]);
   const out: Array<{ slot: string; content: string; rationale: string }> = [];
   for (const item of parsed) {
     if (!item || typeof item !== "object") continue;

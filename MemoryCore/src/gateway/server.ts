@@ -2179,6 +2179,8 @@ export class TdaiGateway {
             // GROW 接线修复（FLOW-E 实证）：anchorDiscovery 必须并入 config——原作为兄弟键传入，
             // 调度器只读 deps.config.anchorDiscovery，yaml 段全程死配置（产线恒跑缺省 24h/5/2）。
             anchorDiscovery: this.config.memory?.coreMemory?.anchorDiscovery,
+            // DS-SOUL-MEMORY-002 P1：双视角开关接线（FLOW-E 同款教训——不接线即死配置）。
+            selfIdentity: this.config.memory?.coreMemory?.selfIdentity,
             // P4b（GROW-EVO §4）：evolution 配置接线（config-first：memory.evolution.enabled
             // 缺省 false；LLM runner 缺失时 worker 内部安静跳过，无需在此门控）。
             evolution: this.config.memory?.evolution } as never,
