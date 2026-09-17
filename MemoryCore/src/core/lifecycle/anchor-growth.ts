@@ -42,15 +42,30 @@ import {
   recountEvidence,
   suggestAnchorWeight,
   DISCOVER_SAMPLE_CAP,
+  personEvCount,
+  personValenceSymbol,
+  personEvidenceMeanValence,
+  parsePersonProposals,
+  PERSON_DISCOVER_SYSTEM_PROMPT,
+  buildPersonDiscoverPrompt,
 } from "../../gateway/core-values-discover.js";
 
 /** GROW：自生长配置（memory.coreMemory.anchorDiscovery；解析+clamp+默认见 config.ts）。 */
+/** P2（spec §2.6/§5 F15/F19）：人物锚池独立护栏（QUOTA/护栏四件按 node_type 分池）。 */
+export interface AnchorDiscoveryPersonConfig {
+  enabled: boolean;
+  minEvidence: number;
+  maxPerPass: number;
+  maxTotal: number;
+}
+
 export interface AnchorDiscoveryConfig {
   enabled: boolean;
   minEvidence: number;
   maxPerPass: number;
   maxTotal: number;
   intervalHours: number;
+  person: AnchorDiscoveryPersonConfig;
 }
 
 export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
@@ -59,6 +74,8 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   maxPerPass: 2,
   maxTotal: 15,
   intervalHours: 24,
+  // P2：人物池缺省关闭=逐位现状（config-first 铁律）；yaml 显式开启后生效。
+  person: { enabled: false, minEvidence: 5, maxPerPass: 1, maxTotal: 8 },
 };
 
 /** 旧 store（缺 listL1TenantTriplets）回退用的 default 桶三元组；PA 起自生长默认遍历全部有记忆 agent。 */
@@ -74,12 +91,29 @@ const ATTEMPT_COOLDOWN_MS = 3600_000;
 /** GROW-MAINT：权重重写防抖阈值（|Δw| 低于此不落库）。 */
 const REWEIGHT_DELTA = 0.05;
 
-type CoreValueRow = { value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" };
+type CoreValueRow = { value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type?: "theme" | "person"; attrs_json?: string };
 
-/** 自生长锚 value_id：slug(label)；纯 CJK（slug 化为空）→ auto-<sha256[:10]>。 */
-export function growthValueId(label: string): string {
+/** P2：attrs_json 宽松解析单源（损坏/缺失 → {aliases:[]}——人物锚维护/去重/挤出共用）。 */
+function attrsOf(row: { attrs_json?: string }): { role?: string; aliases: string[] } {
+  try {
+    const parsed = row.attrs_json && row.attrs_json !== "{}" ? JSON.parse(row.attrs_json) : {};
+    return {
+      role: typeof parsed?.role === "string" ? parsed.role : undefined,
+      aliases: Array.isArray(parsed?.aliases) ? parsed.aliases.map(String).filter((s: string) => s.length > 0) : [],
+    };
+  } catch {
+    return { aliases: [] };
+  }
+}
+
+/** 自生长锚 value_id：slug(label)；纯 CJK（slug 化为空）→ auto-<sha256[:10]>。
+ *  P2（spec §2.6 跨类命名空间）：person 域加 p- 前缀（人物"咖啡"与主题"咖啡"不再同 id 互覆）。 */
+export function growthValueId(label: string, nodeType: "theme" | "person" = "theme"): string {
   const normalized = label.trim().toLowerCase();
   const slug = normalized.replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "");
+  if (nodeType === "person") {
+    return slug ? "p-" + slug : "p-auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
+  }
   if (slug) return slug;
   return "auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
 }
@@ -139,6 +173,8 @@ export async function runAnchorGrowth(deps: {
   now?: () => Date;
 }): Promise<AnchorGrowthResult> {
   const cfg: AnchorDiscoveryConfig = { ...DEFAULT_ANCHOR_DISCOVERY_CONFIG, ...(deps.config ?? {}) };
+  // P2：person 子配置深合并（调用方传 Partial 且缺 person 键时不落 undefined）。
+  cfg.person = { ...DEFAULT_ANCHOR_DISCOVERY_CONFIG.person, ...(deps.config?.person ?? {}) };
   const logger = deps.logger;
   if (!cfg.enabled) return { ran: false, adopted: 0, retired: 0, reweighted: 0, displaced: 0, skipped: 0, reason: "disabled" };
   if (!deps.llmRunner || typeof deps.llmRunner.run !== "function") {
@@ -147,7 +183,8 @@ export async function runAnchorGrowth(deps: {
   const store = deps.store as IMemoryStore & {
     listValuesAnyState?: (tenant?: CoreTenant) => Promise<CoreValueRow[]> | CoreValueRow[];
     retireValue?: (valueId: string, tenant?: CoreTenant) => Promise<boolean> | boolean;
-    upsertValue?: (valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto") => Promise<boolean> | boolean;
+    upsertValue?: (valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person", attrs?: { role?: string; aliases?: string[] }) => Promise<boolean> | boolean;
+    backfillMemoryRef?: (recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant) => Promise<boolean> | boolean;
     getAnchorGrowthState?: (tenant?: CoreTenant) => Promise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null }> | { lastDiscoveryAt: string | null; lastCorpusCount: number | null };
     setAnchorGrowthState?: (state: { lastDiscoveryAt: string; lastCorpusCount: number }, tenant?: CoreTenant) => Promise<void> | void;
     listL1TenantTriplets?: () => Promise<CoreTenant[]> | CoreTenant[];
@@ -211,7 +248,11 @@ export async function runAnchorGrowth(deps: {
           continue;
         }
         // ── 门 2（per-agent）：语料有新增（该桶条数 > 上轮基线；首轮无基线 → 放行建立基线）──
-        const corpusCount = await resolveCorpusCount(store, tenant);
+        // P2：cast 交集扩展后 TS 对 resolveCorpusCount 结构参数失守（TS2345）——局部结构化 cast，零行为。
+        const corpusCount = await resolveCorpusCount(
+          store as unknown as { countL1?: (filter?: unknown) => Promise<number> | number; queryL1Records: (filter?: unknown) => Promise<unknown[]> | unknown[] },
+          tenant,
+        );
         if (state.lastCorpusCount !== null && corpusCount <= state.lastCorpusCount) {
           firstBlockReason ??= "no-new-corpus";
           continue;
@@ -238,8 +279,16 @@ export async function runAnchorGrowth(deps: {
         let quotaRetiredA = 0; // GROW-QUOTA：名额回归守卫退场数（并入 retired 计数）
         for (const a of anyState0) {
           if (a.state !== "active" || a.origin !== "auto" || a.created_by !== "auto-growth") continue;
-          const ev = recountEvidence(a.label, corpus);
-          if (ev < cfg.minEvidence) {
+          // P2：person 行分叉 personEv 口径（label+alias）；person 池关闭时不参与维护
+          //（冻结而非误退——theme 口径会把 alias 支撑的人物锚误判零证据）。
+          const isPerson = a.node_type === "person";
+          if (isPerson && !cfg.person.enabled) continue;
+          const aliases = isPerson ? attrsOf(a).aliases : [];
+          const ev = isPerson ? personEvCount(a.label, aliases, corpus) : recountEvidence(a.label, corpus);
+          // P2：分池阈值——人物锚退场门槛用 cfg.person.minEvidence（F15/F19 护栏四件分池），
+          // 沿用 theme 阈值会把别名支撑的人物锚误退（TDD QUOTA 分池用例实证）。
+          const minEv = isPerson ? cfg.person.minEvidence : cfg.minEvidence;
+          if (ev < minEv) {
             if (a.pinned === 1) continue; // 钉住豁免（人拍板常驻）
             const ok = await Promise.resolve(store.retireValue!(a.value_id, tenant));
             if (ok) {
@@ -250,7 +299,8 @@ export async function runAnchorGrowth(deps: {
           }
           const newW = suggestAnchorWeight(ev, corpus.length);
           if (Math.abs(newW - a.weight) >= REWEIGHT_DELTA) {
-            const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto"));
+            // P2：person reweight 保留 node_type/attrs（重写不丢人物属性，A8 语义）
+            const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto", isPerson ? "person" : "theme", isPerson ? attrsOf(a) : undefined));
             if (ok) reweightedA++;
           }
         }
@@ -264,25 +314,34 @@ export async function runAnchorGrowth(deps: {
         // 否则注入面失控且永无自愈路径（GROW-MAINT 只有证据退场）。超出部分按强度
         //（weight × 证据）升序 retire（可恢复非删除）；manual/钉住豁免（信任边界）。
         // 名额口径与 free 计算一致：限额对象 = origin=auto 活跃锚 + 钉住。
+        // P2（F15 QUOTA 分池）：theme/person 各自独立计数与 maxTotal——防人物锚挤占主题锚名额。
+        // theme 池行集 = 非 person 行（无 person 行时与旧口径逐位一致）；person 池仅 enabled 时守卫。
         const activeNow = anyState.filter((r) => r.state === "active");
-        const pinnedNow = activeNow.filter((r) => r.pinned === 1).length;
-        const autoNow = activeNow.filter((r) => r.origin === "auto" && r.pinned !== 1); // 非钉 auto（钉住单列，避免 free 口径的 pinned-auto 双计）
-        const overLimit = autoNow.length + pinnedNow - cfg.maxTotal;
-        if (overLimit > 0) {
+        const themeActive = activeNow.filter((r) => r.node_type !== "person");
+        const personActive = activeNow.filter((r) => r.node_type === "person");
+        const quotaEvict = async (poolRows: CoreValueRow[], maxTotal: number, evOf: (r: CoreValueRow) => number, tag: string) => {
+          const pinnedNow = poolRows.filter((r) => r.pinned === 1).length;
+          const autoNow = poolRows.filter((r) => r.origin === "auto" && r.pinned !== 1); // 非钉 auto（钉住单列，避免 free 口径的 pinned-auto 双计）
+          const overLimit = autoNow.length + pinnedNow - maxTotal;
+          if (overLimit <= 0) return;
           const victims = autoNow
             .filter((r) => r.pinned !== 1 && r.created_by === "auto-growth")
-            .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus) }))
+            .map((r) => ({ row: r, strength: r.weight * evOf(r) }))
             .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)))
             .slice(0, overLimit);
           for (const v of victims) {
             const ok = await Promise.resolve(store.retireValue(v.row.value_id, tenant));
             if (ok) {
               quotaRetiredA++;
-              logger?.warn?.(`[anchor-growth] quota guard retire: ${v.row.value_id} (${v.row.label}) strength=${v.strength.toFixed(3)} over=${overLimit} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+              logger?.warn?.(`[anchor-growth] quota guard retire (${tag}): ${v.row.value_id} (${v.row.label}) strength=${v.strength.toFixed(3)} over=${overLimit} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
             } else {
-              logger?.warn?.(`[anchor-growth] quota guard retire failed: ${v.row.value_id} (${v.row.label}) (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+              logger?.warn?.(`[anchor-growth] quota guard retire failed (${tag}): ${v.row.value_id} (${v.row.label}) (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
             }
           }
+        };
+        await quotaEvict(themeActive, cfg.maxTotal, (r) => recountEvidence(r.label, corpus), "theme");
+        if (cfg.person.enabled) {
+          await quotaEvict(personActive, cfg.person.maxTotal, (r) => personEvCount(r.label, attrsOf(r).aliases, corpus), "person");
         }
         retired += quotaRetiredA; // GROW-QUOTA 退场并入（守卫块之后汇总）
         // GROW-MAINT v2（SOP 2026-09-17 修复）：守卫退场后刷新快照——dedup/名额/挤出必须
@@ -355,6 +414,82 @@ export async function runAnchorGrowth(deps: {
               }
             }
             else { skipped++; logger?.warn?.(`[anchor-growth] adopt upsert failed: ${c.label}`); }
+          }
+        }
+        // ── P2：person 池（同一 worker 策略化分叉，spec §2.6 单一源声明；非新 worker）──────
+        // 复用已过的双门与语料；独立 LLM 调用（人物视角 prompt）+ 独立护栏（F19 别名维度去重）
+        // + 独立名额（cfg.person.maxTotal，QUOTA 分池同口径）+ F12 valence 符号落列。
+        if (cfg.person.enabled) {
+          const personAll = anyState2.filter((r) => r.node_type === "person");
+          const personNames = Array.from(new Set(personAll.flatMap((r) => [r.label, ...attrsOf(r).aliases]).map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0)));
+          const personRaw = await deps.llmRunner!.run({
+            prompt: buildPersonDiscoverPrompt(sampleContents, personNames),
+            systemPrompt: PERSON_DISCOVER_SYSTEM_PROMPT,
+            taskId: "person-discover-growth",
+            timeoutMs: 0,
+            maxTokens: 0,
+          });
+          const personRowsForValence = rows.map((r) => ({
+            content: String((r as { content?: string }).content ?? ""),
+            valence: ((r as { valence?: number | null }).valence ?? null) as number | null,
+          }));
+          const personCandidates = parsePersonProposals(String(personRaw ?? ""))
+            .filter((p) => {
+              // F19 别名维度去重：提案 label 或任一 alias 命中既有 person label/alias（全态）→ 拒
+              const names = [p.label, ...p.aliases].map((s) => s.trim().toLowerCase());
+              return !names.some((nm) => personNames.includes(nm));
+            })
+            .map((p) => ({ ...p, evidenceCount: personEvCount(p.label, p.aliases, corpus) }))
+            .filter((p) => p.evidenceCount >= cfg.person.minEvidence)
+            .sort((a, b) => b.evidenceCount - a.evidenceCount)
+            .slice(0, cfg.person.maxPerPass);
+          const personPinnedActive = personAll.filter((r) => r.state === "active" && r.pinned === 1).length;
+          const personAutoNonPinned = personAll.filter((r) => r.state === "active" && r.origin === "auto" && r.pinned !== 1);
+          let freeP = Math.max(0, cfg.person.maxTotal - personPinnedActive - personAutoNonPinned.length);
+          const displaceableP = personAutoNonPinned
+            .map((r) => ({ row: r, strength: r.weight * personEvCount(r.label, attrsOf(r).aliases, corpus) }))
+            .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
+          for (const c of personCandidates) {
+            const candidateStrength = suggestAnchorWeight(c.evidenceCount, corpus.length) * c.evidenceCount;
+            let adoptedP = false;
+            if (freeP > 0) {
+              adoptedP = true;
+              freeP--;
+            } else if (displaceableP.length > 0 && candidateStrength > displaceableP[0]!.strength) {
+              const weakest = displaceableP.shift()!;
+              const retiredOk = await Promise.resolve(store.retireValue(weakest.row.value_id, tenant));
+              if (!retiredOk) {
+                skipped++;
+                logger?.warn?.(`[anchor-growth] retire weakest person anchor failed: ${weakest.row.value_id} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+                continue;
+              }
+              displaced++;
+              adoptedP = true;
+            } else {
+              skipped++;
+              continue;
+            }
+            if (adoptedP) {
+              // F12：证据 valence 均值符号化（无 valence 证据 → undefined 走 C2 derive 钩子，IS NULL 守卫不覆盖非空）
+              const meanV = personEvidenceMeanValence(c.label, c.aliases, personRowsForValence);
+              const vSymbol = meanV === null ? undefined : personValenceSymbol(meanV);
+              const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label, "person"), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, vSymbol, "auto", "person", { role: c.role, aliases: c.aliases }));
+              if (ok) {
+                adopted++;
+                adoptedThisAgent++;
+                // F12 证据链：personRefs 回填（命中口径 = personEv 同款 label/alias 包含）
+                for (const r of rows) {
+                  const content = String((r as { content?: string }).content ?? "");
+                  if ([c.label, ...c.aliases].some((nm) => content.includes(nm))) {
+                    const rid = String((r as { record_id?: string }).record_id ?? "");
+                    if (rid) store.backfillMemoryRef?.(rid, "personRefs", c.label, tenant);
+                  }
+                }
+              } else {
+                skipped++;
+                logger?.warn?.(`[anchor-growth] person adopt upsert failed: ${c.label}`);
+              }
+            }
           }
         }
         // REG-REMAINING-003 #1：采纳路径 valence 补值钩子——自生长直调 store.upsertValue，

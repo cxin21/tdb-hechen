@@ -289,6 +289,13 @@ export interface MemoryCoreMemoryConfig {
     maxPerPass: number;
     maxTotal: number;
     intervalHours: number;
+    /** DS-SOUL-MEMORY-002 P2：人物锚池（spec §2.6 双池；enabled 缺省 false=逐位现状）。 */
+    person: {
+      enabled: boolean;
+      minEvidence: number;
+      maxPerPass: number;
+      maxTotal: number;
+    };
   };
   /**
    * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
@@ -897,12 +904,24 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         if (raw === undefined || !Number.isFinite(raw)) return dflt;
         return Math.min(hi, Math.max(lo, Math.floor(raw)));
       };
+      const pg = obj(g, "person");
+      const clampP = (key: string, dflt: number, lo: number, hi: number) => {
+        const rawP = num(pg, key);
+        if (rawP === undefined || !Number.isFinite(rawP)) return dflt;
+        return Math.min(hi, Math.max(lo, Math.floor(rawP)));
+      };
       return {
         enabled: bool(g, "enabled") ?? true,
         minEvidence: clamp("minEvidence", 5, 1, 50),
         maxPerPass: clamp("maxPerPass", 2, 1, 10),
         maxTotal: clamp("maxTotal", 15, 1, 100),
         intervalHours: clamp("intervalHours", 24, 1, 24 * 30),
+        person: {
+          enabled: bool(pg, "enabled") ?? false,
+          minEvidence: clampP("minEvidence", 5, 1, 50),
+          maxPerPass: clampP("maxPerPass", 1, 1, 5),
+          maxTotal: clampP("maxTotal", 8, 1, 50),
+        },
       };
     })(),
     // DS-SOUL-MEMORY-002 P1：agent 自我层（enabled 缺省 false=逐位现状；yaml 值真实生效+clamp）。

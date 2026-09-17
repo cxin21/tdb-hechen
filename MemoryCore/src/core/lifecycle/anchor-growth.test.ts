@@ -355,7 +355,8 @@ describe("runAnchorGrowth 自维护与冷却分级（GROW-MAINT）", () => {
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
     expect(res.reweighted).toBe(1);
     expect(res.retired).toBe(0);
-    expect(store.upsertValue).toHaveBeenCalledWith("a-grow", "增长主题", suggestAnchorWeight(6, 6), "auto-growth", DEFAULT_TENANT, undefined, "auto");
+    // P2：签名扩展（nodeType/attrs 尾参）——theme 行重写显式传 "theme" 且 attrs undefined（行为不变）
+    expect(store.upsertValue).toHaveBeenCalledWith("a-grow", "增长主题", suggestAnchorWeight(6, 6), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", undefined);
   });
 });
 
