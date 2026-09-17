@@ -388,6 +388,7 @@ async function forwardWithRetry(
     });
   }
   try {
+    fetchOpts.body = stripNonStandardFieldsForGo(target.url, String(fetchOpts.body));
     upstreamResp = await fetch(target.url, fetchOpts);
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "TimeoutError") {
@@ -428,7 +429,7 @@ async function forwardWithRetry(
       const retryFetchOpts: RequestInit = {
         method: "POST",
         headers: retryHeaders,
-        body: JSON.stringify(retryBody),
+        body: stripNonStandardFieldsForGo(target.retryTarget.url, JSON.stringify(retryBody)),
       };
       if (forwardTimeoutMs > 0) {
         retryFetchOpts.signal = AbortSignal.timeout(forwardTimeoutMs);
@@ -460,6 +461,30 @@ async function forwardWithRetry(
   }
 
   return { resp: upstreamResp, retried: false };
+}
+
+/** OpenAI chat/completions 白名单（SOP 实证 OpenCode Go 接受的完整字段集）：
+ *  核心 8 项为 OpenAI 标准；reasoning_effort/max_tokens 为实测接受。
+ *  任何非标扩展（DSH 私有 dsh_plugin_packages、Zhipu 私有 thinking 等）一律剥离。 */
+const GO_ALLOWED_BODY_FIELDS: readonly string[] = [
+  "model", "messages", "stream", "stream_options", "tools", "tool_choice",
+  "temperature", "top_p", "n", "stop", "user", "seed", "response_format",
+  "reasoning_effort", "max_tokens", "max_completion_tokens", "frequency_penalty", "presence_penalty",
+];
+
+/** P2 运维（协议归一化）：OpenCode Go（opencode.ai）端点为白名单式严格 JSON 解码
+ *  （SOP 实证逐个点名拒收 thinking → dsh_plugin_packages），host 作用域按白名单
+ *  重建请求体；其他上游零改动。 */
+function stripNonStandardFieldsForGo(url: string, body: string): string {
+  try {
+    if (new URL(url).host !== "opencode.ai") return body;
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return body;
+    const out: Record<string, unknown> = {};
+    for (const k of GO_ALLOWED_BODY_FIELDS) if (k in parsed) out[k] = parsed[k];
+    return JSON.stringify(out);
+  } catch { /* 归一化失败回退原 body，不影响转发 */ }
+  return body;
 }
 
 /** Main handler for POST /v1/chat/completions (OpenAI compat). */
