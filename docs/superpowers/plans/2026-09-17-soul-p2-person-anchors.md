@@ -382,3 +382,14 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **方法学**：① 租户 id 命名变体（team-flowtest/vp2-team）会绕过精确匹配——清理须 LIKE 模糊兜底+状态键明细回查；② node:sqlite 需 `{allowExtension:true}` 才能加载 sqlite-vec；③ FTS external-content 用 `INSERT INTO fts(fts) VALUES('rebuild')` 同步；④ 删除前备份 vectors.db.bak-purge-20260917（113MB，保留）。
 **终态**：八表残留全 0、悬空 links 0、状态键 0、/recall 块无任何已删测试人物（林教授/朵朵/秘书/陈导师），默认租户真实记忆召回正常；health 200，服务未重启。
 **存量备注（非测试污染，不动）**：l1_vec_rowids 264 vs l1_records 265 差 1（单条记录缺向量为存量行为）；fts count(*) 为索引内部计数非行数指标，以功能召回为准。
+
+## Round4 阶段收口复测记录（2026-09-17 深夜，ev9 全新租户——中期发现）
+**复测中断点**：SOP 复测启动后暴露 4 项实锤，修复前不继续断言。
+| # | 发现（第一性原理） | 实证 | 定性 |
+|---|---|---|---|
+| R4-1 | **测试口径缺陷（我方）**：v3 /conversation/add 的 session_id 只认 body（v2-router:815 `sessionKey: session_id`，:912 注释明示），header x-tdai-session-id 不生效 → 种子脚本全部落在 session_key=default，**17 条跨 3 租户 5 会话的种子合并成 1 个会话**。回查 ev6/ev7/ev8 历史种子同样如此——"换会话"维度从未被真实测试过（租户三键正确，租户隔离测试有效，但会话隔离维度缺失） | ev9 L0 全部 session_key=default | 测试脚本修正项：种子须在 body 传 session_id |
+| R4-2 | **D-R3-1 串味复现且传播路径收窄**：唯一 L1（agent-a）内容含 R(agent-b) 的 s17 事实（数据仓库研究生），activity_end_time=s3（16:14:22.772）→ 提取窗口只覆盖 s1-s3，跨组事实必然来自 LLM 输入而非消息分组。静态链路逐层排除：分组按 tuple（sqlite.ts:4536 groupKey 五元组）✓、dedup 召回 filter 传递（l1-extractor:346 {teamId,userId,agentId}）✓、searchL1Vector/searchL1Fts 均经 rowMatchesIsolation 复核（isolation.ts:159）✓、SQL 下推 buildIsolationWhere ✓。**取证通道缺陷**：prompt_text 未持久化（sqlite 无该列）+ file-logger `mkdir /data/log/ EACCES`（服务日志实证）→ l1-debug ENTRY 级证据丢失。传播通道锁定在"提取 LLM 输入"但注入点未定，需先修 file-logger 拿 debug 日志 | l1_records 实测 + journalctl | 缺陷（未修，待证据） |
+| R4-2b | **file-logger EACCES**：`mkdir /data/log/` 权限拒绝——调试日志全丢（服务仍运行，stdout 日志正常） | journalctl 00:14:45 | 缺陷（待修） |
+| R4-3 | **D-R3-2 死任务风暴实锤**：清理删了八表数据但 checkpoint.json runner_states 62 键 + L0 会话键并集每次重启 re-armed 64-65 会话；已删租户（flowtest/ev5）的 L2 任务以 pipeline:{default:_:_} 锁反复 Lock conflict timeout → requeue 洪水占用 worker 槽 → **ev9 17 条种子 300s 仅提取 1 条** | journalctl 00:14:39（30+ 条 requeue）、checkpoint 62 键（8 个测试租户残留）、boot recovery 65 sessions | 缺陷（未修；修复方向=恢复前过滤已无 L0 数据的会话键 + 清理脚本纳入 checkpoint 治理） |
+| R4-4 | consolidation queryL1Records 无 filter 全库扫描（270 行）系**设计内**（无 yaml filter 时全局巩固），非缺陷；但与 R4-3 死任务叠加拖慢管线 | journalctl 00:14:50 | 非缺陷记录 |
+**复测执行状态**：ev9 种子 17/17 受理（P 11+Q 3+R 3）；F14 夹具未投（等待管线恢复后与本轮同测）；配置审计/渲染/recall 断言顺延。
