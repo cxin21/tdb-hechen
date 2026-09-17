@@ -90,14 +90,21 @@ export async function runIdentityDiscovery(deps: {
   store: IMemoryStore;
   llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> };
   config?: Partial<IdentityDiscoveryConfig>;
-  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角开关（scheduler 传 coreMemory.selfIdentity）。 */
-  selfIdentity?: { enabled: boolean; maxPerPass: number };
+  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角开关（scheduler 传 coreMemory.selfIdentity）。
+   *  intervalHours：enabled=true 时覆盖本 worker 冷却（灵魂节奏独立于锚发现节奏，F15 分池；
+   *  enabled=false 时绝不读取——逐位现状）。 */
+  selfIdentity?: { enabled: boolean; maxPerPass: number; intervalHours?: number };
   logger?: Logger;
   now?: () => Date;
 }): Promise<IdentityDiscoveryResult> {
   const cfg: IdentityDiscoveryConfig = { ...DEFAULT_IDENTITY_DISCOVERY_CONFIG, ...(deps.config ?? {}) };
   if (cfg.enabled === false) {
     return { ran: false, adopted: 0, pending: 0, reason: "disabled" };
+  }
+  // DS-SOUL-MEMORY-002 P1：灵魂自发现节奏独立于锚发现（F15 分池）——enabled=true 时
+  // selfIdentity.intervalHours 覆盖冷却；enabled=false 不读（逐位现状）。
+  if (deps.selfIdentity?.enabled === true && deps.selfIdentity.intervalHours !== undefined) {
+    cfg.intervalHours = deps.selfIdentity.intervalHours;
   }
   const store = deps.store;
   const logger = deps.logger;

@@ -22,8 +22,9 @@ export interface LifecycleConfig {
    * 枚举，不受本 filter 影响；旧 store 无枚举能力时回退 default 单桶）。
    */
   anchorDiscovery?: AnchorDiscoveryConfig;
-  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角（gateway 接线自 coreMemory.selfIdentity，缺省 undefined=关）。 */
-  selfIdentity?: { enabled: boolean; maxPerPass: number };
+  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角（gateway 接线自 coreMemory.selfIdentity，缺省 undefined=关）。
+   *  intervalHours：enabled=true 时覆盖 identity worker 冷却（F15 分池节奏）。 */
+  selfIdentity?: { enabled: boolean; maxPerPass: number; intervalHours?: number };
   /**
    * P4b（GROW-EVO §4，REG-REMAINING-005 #1）：受控正文演化 worker 配置。
    * 缺省 undefined → 关（config-first：memory.evolution.enabled 缺省 false = 逐位现状；
