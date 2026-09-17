@@ -149,6 +149,8 @@ anchorDiscovery 5 字段 ✓（enabled/minEvidence=3/maxPerPass=3/maxTotal=15/in
 | O10 | 链式同主题观测残差：3 链 B(t1)→C(t2)→A(t3) 合并 (B,C) 后 (A,*) 对被幂等门跳过，终态=新端真值与谱系叙事（断言被推翻的中间值）双 valid 并存 | 自审 v2 对抗推演（实现逐行仿真 + dedup 到达时序建边分析）；传递闭包失效方案被否定（现实拓扑下无可达触发路径，死复杂度） | 预登记遥测 gate.staleLineage（幂等跳过中新端 fresh+valid 计数，已实施+golden）；>0 即触发预设计 lineage-remap（老端解析到谱系产物再合并）；当前不松门（§7.1 拍板③，产线尚无链式实例） |【2026-09-17 SOP 实机】staleLineage=2 live 命中（3 链 G11 组：单次合并收敛、最新真值未触碰、不失控）；同轮 SOP 另实证 bi-temporal 三种时钟配置下行为均正确（ve 在未来=失效窗口未开=不排除，§2.4 时间旅行语义）+ invalidateL1 首次权威不覆盖 + FTS 行 soul 列快照依赖双表同步纪律（绕过 store 层的裸写会失同步——测试手法教训，非产品缺陷） |
 | O11 | recall 会话复用缓存键缺少隔离域身份（sessionReuseCache 以 sessionKey 为键，同 session 同 query 同 store 实例即 HIT，不含 isolationFilter 指纹） | 理论推演：l遗产 /recall（无过滤）与 /v3/recall（三元组收窄）共享缓存时，同键命中可能跨域复用未过滤结果；本部署实测未触发（两路 store 实例不同，C5-2a/2b 身份检查拦截；注入块内容经核实均为合法同租户记录） | 择机项：缓存键或 HIT 校验加入 isolationFilter 指纹（一行修改+单测）；触发条件=出现同 sessionKey 跨路调用方的部署形态 |
 | O12 | 锚证据口径无 certainty 门槛：recountEvidence 只看语料包含，inferred 内容与 observed 同权参与锚强度与采纳——推断性内容可能结晶进灵魂层身份 | 锚 SOP 对抗种子实测：量子计算组（3 条全 inferred，ev=3）够格参选，但本轮 LLM 未提名/败于 tie，未观察到实际采纳；设计（brief §0.4）对此静默 | 择机项：等产线出现 inferred 主导的锚采纳实例再评估是否给证据口径加 certainty 权重（宁可先不动——证据门槛 3 与 maxPerPass 已是两道闸） |
+| O13 | identity 分级门的 core_value/strict_rule 提案只计数+日志，无 pending 持久化落点（Panel 人工采纳无原料）；upsertCore 只留 version 号不留旧文，prompt 承诺"旧版本留痕"与实现不符 | 锚/身份 SOP 2026-09-17：pending=1 仅出现在日志 | 择机项：pending 表 + Panel 采纳路由，或 core_memory_history；红线类是信任边界材料，值得优先于锦上添花项 |
+| O14 | 身份演化是全量替换语义：LLM 修订版可静默丢弃旧事实——实机实证（v3→v4 时蜜蜂/日语两条旧事实出局），样本窗（最新 50 条）不含旧证据时无辩护机制 | 身份 SOP 2026-09-17 | 择机项：合并采纳策略（新提案 ∪ 仍有语料支撑的旧事实）或修订时强制携带未淘汰旧事实；当前缓解=身份事实可由语料再生（自愈），观察产线实例再动 |
 
 触发立项条件：任一观察出现可复现的系统性模式（≥2 轮独立实证）。
 

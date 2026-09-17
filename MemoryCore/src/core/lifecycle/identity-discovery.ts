@@ -14,6 +14,7 @@
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
+import { selectSampleRows, DISCOVER_SAMPLE_CAP, DISCOVER_TRUNCATE_CHARS } from "../../gateway/core-values-discover.js";
 
 export interface IdentityDiscoveryConfig {
   enabled: boolean;
@@ -55,9 +56,7 @@ const DISCOVERY_SYSTEM_PROMPT = [
   "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
 ].join("\n");
 
-const DISCOVER_SAMPLE_CAP = 50;
-const DISCOVER_TRUNCATE_CHARS = 200;
-const DISCOVER_MAX_TOKENS = 16384;
+// 采样/截断常量与采样器复用 core-values-discover 导出（GROW-IDENT v2，禁第二份）。
 
 /** 身份事实演化状态键（per-agent） */
 function stateKey(tenant: CoreTenant | undefined, kind: string): string {
@@ -69,7 +68,7 @@ function stateKey(tenant: CoreTenant | undefined, kind: string): string {
 
 export async function runIdentityDiscovery(deps: {
   store: IMemoryStore;
-  llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; maxTokens?: number }): Promise<string> };
+  llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> };
   config?: Partial<IdentityDiscoveryConfig>;
   logger?: Logger;
   now?: () => Date;
@@ -117,11 +116,14 @@ export async function runIdentityDiscovery(deps: {
         const corpusCount = typeof store.countL1 === "function" ? Number(store.countL1(tenant)) || 0 : 0;
         if (corpusCount === 0 || (state.lastCorpusCount !== null && state.lastCorpusCount !== undefined && corpusCount <= state.lastCorpusCount)) continue;
 
-        const rows = (store.queryL1Records(tenant) ?? []) as Array<{ content?: string }>;
-        const sample = rows
-          .slice(0, DISCOVER_SAMPLE_CAP)
-          .map((r) => String((r as { content?: string }).content ?? "").slice(0, 200));
-        const corpus = rows.map((r) => String((r as { content?: string }).content ?? ""));
+        // GROW-IDENT v2（SOP 2026-09-17 修复）：采样复用 selectSampleRows——此前裸
+        // slice(0,50) 建立在无过滤查询 ASC 序上，取的是最旧 50 条：语料超上限后新记忆
+        // 永远进不了样本窗（身份自生长对新语料失明，违背自生长原则）。采样器语义 =
+        // updated 降序 + 高显著（≥0.8）优先 + cap 截断；证据重算语料仍走全量不变。
+        const rows = (store.queryL1Records(tenant) ?? []) as Parameters<typeof selectSampleRows>[0];
+        const sample = selectSampleRows(rows, DISCOVER_SAMPLE_CAP)
+          .map((r) => String(r.content ?? "").slice(0, DISCOVER_TRUNCATE_CHARS));
+        const corpus = rows.map((r) => String(r.content ?? ""));
 
         // 已有 slots（去重）
         const existing = (store.readCore(tenant) ?? []) as Array<{ slot: string; content: string }>;
@@ -132,7 +134,10 @@ export async function runIdentityDiscovery(deps: {
           prompt,
           systemPrompt: DISCOVERY_SYSTEM_PROMPT,
           taskId: "identity-discovery",
-          maxTokens: DISCOVER_MAX_TOKENS,
+          // GROW-EVO P2.1（用户裁定）对齐（SOP 2026-09-17）：0 = 不限制 maxTokens/超时
+          //（llm-runner 语义）——此前 16384 + 缺省 120s 超时是 O8 同款确定性失败病。
+          timeoutMs: 0,
+          maxTokens: 0,
         });
 
         const proposals = parseProposals(String(raw ?? ""));
