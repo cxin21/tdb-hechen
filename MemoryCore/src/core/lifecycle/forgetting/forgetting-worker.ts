@@ -60,19 +60,49 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
 
   const records = typeof deps.queryL1 === "function" ? await deps.queryL1() : (deps.queryL1 as unknown as Array<unknown>);
   let scanned = 0;
-  // P2（F14）：保护上下文——active 锚名集（theme label ∪ person label/alias）+ 现行身份事实切片集
+  // P2（F14）：保护上下文——active 锚名集（theme label ∪ person label/alias）+ 现行身份事实切片集。
+  // P2 SOP 实证修正：租户聚合——显式 deps.tenant 优先（单租户路径）；否则按批内记录租户去重
+  // （调度器无 filter 时全表扫描，单租户取锚=非默认租户保护名集恒空=保护静默失效）。
   const refProtectionOn = cfg.refProtection === true;
   const anchorNames = new Set<string>();
+  const identitySliceSet = new Set<string>(refProtectionOn ? (deps.identitySlices ?? []) : []);
   if (refProtectionOn) {
-    for (const v of rawRows) {
-      if (typeof v.label === "string" && v.label) anchorNames.add(v.label);
+    type TenantTriple = { teamId: string; userId: string; agentId: string };
+    const tenants = new Map<string, TenantTriple>();
+    if (deps.tenant) {
+      tenants.set(`${deps.tenant.teamId ?? "default"}|${deps.tenant.userId ?? "default"}|${deps.tenant.agentId ?? "default"}`, { teamId: deps.tenant.teamId ?? "default", userId: deps.tenant.userId ?? "default", agentId: deps.tenant.agentId ?? "default" });
+    } else {
+      for (const m of (records as Array<{ teamId?: string; userId?: string; agentId?: string; team_id?: string; user_id?: string; agent_id?: string }>)) {
+        const teamId = m.teamId ?? m.team_id ?? "default";
+        const userId = m.userId ?? m.user_id ?? "default";
+        const agentId = m.agentId ?? m.agent_id ?? "default";
+        tenants.set(`${teamId}|${userId}|${agentId}`, { teamId, userId, agentId });
+      }
+    }
+    const readCoreOf = deps.store as unknown as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }>> } | undefined;
+    for (const t of tenants.values()) {
+      const rowsForTenant = tenants.size === 1 && rawRows.length > 0
+        ? (rawRows as unknown as Array<{ label?: string; attrs_json?: string }>)
+        : (((await Promise.resolve(deps.store?.listValues?.(t)).catch(() => [])) ?? []) as Array<{ label?: string; attrs_json?: string }>);
+      for (const v of rowsForTenant) {
+        if (typeof v.label === "string" && v.label) anchorNames.add(v.label);
+        try {
+          const p = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : {};
+          if (Array.isArray(p?.aliases)) for (const a of p.aliases.map(String)) if (a) anchorNames.add(a);
+        } catch { /* 宽松解析：损坏 attrs 只损失 alias 维度保护 */ }
+      }
       try {
-        const p = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : {};
-        if (Array.isArray(p?.aliases)) for (const a of p.aliases.map(String)) if (a) anchorNames.add(a);
-      } catch { /* 宽松解析：损坏 attrs 只损失 alias 维度保护 */ }
+        const core = ((await Promise.resolve(readCoreOf?.readCore?.(t))) ?? []) as Array<{ slot: string; content: string }>;
+        const identity = core.find((s) => s.slot === "identity");
+        if (identity?.content) {
+          for (const l of identity.content.split("\n").filter((l) => l.trim().startsWith("-"))) {
+            const s = identityFactSlice(l);
+            if (s) identitySliceSet.add(s);
+          }
+        }
+      } catch { /* 身份切片缺失只损失 identityRefs 保护维度 */ }
     }
   }
-  const identitySliceSet = new Set(refProtectionOn ? (deps.identitySlices ?? []) : []);
   for (const m of (records as Array<{ id?: string; record_id?: string; priority: number; metadata?: unknown; timestamps?: string[]; certainty?: string; content?: string }>)) {
     const rec = m as unknown as Parameters<typeof classify>[0] & { content?: string };
     const action = values.length > 0
