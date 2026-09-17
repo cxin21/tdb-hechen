@@ -393,3 +393,21 @@ CREATE TABLE IF NOT EXISTS core_pending (
 | R4-3 | **D-R3-2 死任务风暴实锤**：清理删了八表数据但 checkpoint.json runner_states 62 键 + L0 会话键并集每次重启 re-armed 64-65 会话；已删租户（flowtest/ev5）的 L2 任务以 pipeline:{default:_:_} 锁反复 Lock conflict timeout → requeue 洪水占用 worker 槽 → **ev9 17 条种子 300s 仅提取 1 条** | journalctl 00:14:39（30+ 条 requeue）、checkpoint 62 键（8 个测试租户残留）、boot recovery 65 sessions | 缺陷（未修；修复方向=恢复前过滤已无 L0 数据的会话键 + 清理脚本纳入 checkpoint 治理） |
 | R4-4 | consolidation queryL1Records 无 filter 全库扫描（270 行）系**设计内**（无 yaml filter 时全局巩固），非缺陷；但与 R4-3 死任务叠加拖慢管线 | journalctl 00:14:50 | 非缺陷记录 |
 **复测执行状态**：ev9 种子 17/17 受理（P 11+Q 3+R 3）；F14 夹具未投（等待管线恢复后与本轮同测）；配置审计/渲染/recall 断言顺延。
+
+## Round4 终验记录（2026-09-18 凌晨，ev10 正确口径全流程）
+**口径修正（R4-1 修复后）**：种子 body 传 session_id；重启一律带 health 就绪探针（READY 后才投喂）；发现状态重置用于触发 boot 轮。
+**验证通过（ev1 全套 21 L1/10+6 组种子）**：
+- 人物锚×2：林岚（val=1，aliases=[林老师,导师]——别名归并真数据产出）/ 陈教授（Q 租户独立）；钱峰 ev=1 未上锚（F11 护栏）
+- pending×5 分级正确：P 手机号红线+导师要求×2、R 压测200ms、Q core_value——全部落待人工决策
+- 对抗零命中（身份设定/尊称驯化/状态残留/猎头/老板大人/秘书 全形态）+ self_identity 从红线语料长出行为自证事实（主语正确）
+- 换用户/换agent 灵魂分化：R 独立（压测红线自证）、Q 独立（陈教授×3行）
+- F14 完整闭环：prot2(coreRefs→active锚林岚)=LIVE / dang(悬空)=ARCHIVED / 引用未上锚词=ARCHIVED（隔离语义正确）
+- GROW-MAINT F20 warning-only 实证；identity 演化合并行级正确；/recall 四段渲染+重要的人行+预算内
+**新确诊 P0（A6 召回级缺口实锤）**：
+| # | 发现 | 实证 |
+|---|---|---|
+| R4-5 | **召回层跨 user 泄漏**：Q 租户（ev10-user-b）/recall soul 块第 11 行返回 P 租户（ev10-user-a）的 L2 结论记忆「[结论\|研究生开题与导师沟通]…导师为林岚」——A6 四级贯通的召回级缺口实锤，即 D-R3-1 历史串味的真正传播通道（此前静态取证排除了提取层全部过滤点，本次渲染层直证） | /recall Q 块逐行取证 |
+| R4-6 | **召回摘要主语错置**：P 块 persona 行「用户（林岚）的工作风格…」——LLM 摘要把导师名标为用户姓名括号（主语三层法的摘要层缺主语一致性检查） | /recall P 块行取证 |
+- 配置审计全绿：selfIdentity(1h)/anchorDiscovery(person 3/2/8 分池)/soulRender(600/900/5)/refProtection=true/allowedSlots×4；identityMaintain 节点被并入 anchorDiscovery（yaml 兼容，非缺陷）
+- env 恢复 MEMORY_LOG_LEVEL=info（debug 仅为取证临时值）
+**顺带修复**：R4-2b file-logger（/data/log 预建+chown tdai）——取证通道恢复。
