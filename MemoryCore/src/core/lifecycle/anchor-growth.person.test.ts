@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { runAnchorGrowth, growthValueId } from "./anchor-growth.js";
+import { DISCOVER_SYSTEM_PROMPT } from "../../gateway/core-values-discover.js";
 
 const NOW = new Date("2026-09-10T12:00:00.000Z");
 const LOG = { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} };
@@ -195,5 +196,12 @@ describe("person.enabled=false（缺省）逐位现状", () => {
     expect(runner.calls.filter((c) => c.taskId === "person-discover-growth").length).toBe(0);
     expect(res.adopted).toBe(0);
     expect(res.retired).toBe(0); // 孤锚（零语料命中）不被 theme 口径误退
+  });
+});
+
+describe("theme prompt 人物排除（T9 实证弱点修正：主语错置防分叉）", () => {
+  it("DISCOVER_SYSTEM_PROMPT 明确人物归 person 池", () => {
+    expect(DISCOVER_SYSTEM_PROMPT).toContain("人物锚由 person 池负责");
+    expect(DISCOVER_SYSTEM_PROMPT).toContain("不要提议任何人名");
   });
 });
