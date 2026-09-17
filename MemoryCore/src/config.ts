@@ -296,6 +296,10 @@ export interface MemoryCoreMemoryConfig {
       maxPerPass: number;
       maxTotal: number;
     };
+    /** P2：GROW-MAINT 身份分支（F15 身份分支/F20 只警告；enabled 缺省 false=逐位现状）。 */
+    identityMaintain: {
+      enabled: boolean;
+    };
   };
   /**
    * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
@@ -921,6 +925,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           minEvidence: clampP("minEvidence", 5, 1, 50),
           maxPerPass: clampP("maxPerPass", 1, 1, 5),
           maxTotal: clampP("maxTotal", 8, 1, 50),
+        },
+        identityMaintain: {
+          enabled: bool(obj(g, "identityMaintain"), "enabled") ?? false,
         },
       };
     })(),

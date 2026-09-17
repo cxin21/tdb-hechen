@@ -49,6 +49,7 @@ import {
   PERSON_DISCOVER_SYSTEM_PROMPT,
   buildPersonDiscoverPrompt,
 } from "../../gateway/core-values-discover.js";
+import { identityFactSlice } from "./identity-discovery.js";
 
 /** GROW：自生长配置（memory.coreMemory.anchorDiscovery；解析+clamp+默认见 config.ts）。 */
 /** P2（spec §2.6/§5 F15/F19）：人物锚池独立护栏（QUOTA/护栏四件按 node_type 分池）。 */
@@ -66,6 +67,8 @@ export interface AnchorDiscoveryConfig {
   maxTotal: number;
   intervalHours: number;
   person: AnchorDiscoveryPersonConfig;
+  /** P2：GROW-MAINT 身份分支开关（F15 身份分支；缺省 false=逐位现状）。 */
+  identityMaintain: { enabled: boolean };
 }
 
 export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
@@ -76,6 +79,7 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   intervalHours: 24,
   // P2：人物池缺省关闭=逐位现状（config-first 铁律）；yaml 显式开启后生效。
   person: { enabled: false, minEvidence: 5, maxPerPass: 1, maxTotal: 8 },
+  identityMaintain: { enabled: false },
 };
 
 /** 旧 store（缺 listL1TenantTriplets）回退用的 default 桶三元组；PA 起自生长默认遍历全部有记忆 agent。 */
@@ -116,6 +120,37 @@ export function growthValueId(label: string, nodeType: "theme" | "person" = "the
   }
   if (slug) return slug;
   return "auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
+}
+
+/**
+ * P2（spec §5 F15 身份分支 / F20 红线）：身份事实全量语料重验——失撑**只告警**，
+ * 永不自动退场（身份红线=人工确认路径；upsertCore/retire 零调用）。
+ * 弱口径 = identityFactSlice 20 字切片（identity-discovery 单源导出）。
+ * 返回失撑事实数（0 = 全部有支撑或无身份槽）。
+ */
+export async function maintainIdentityFacts(
+  store: { readCore?: (tenant?: CoreTenant) => Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }>> },
+  tenant: CoreTenant,
+  corpus: string[],
+  logger?: Logger,
+): number {
+  // sqlite store readCore 为同步（v2 实证教训）；Promise.resolve 兼容两种形态
+  const core = ((await Promise.resolve(store.readCore?.(tenant))) as unknown as Array<{ slot: string; content: string }> | undefined) ?? [];
+  const identity = core.find((s) => s.slot === "identity");
+  if (!identity || !identity.content) return 0;
+  let unsupported = 0;
+  for (const line of identity.content.split("\n")) {
+    const fact = line.trim();
+    if (!fact.startsWith("-") || fact.length <= 1) continue;
+    const slice = identityFactSlice(fact);
+    if (!slice) continue;
+    const ev = corpus.filter((c) => c.includes(slice)).length;
+    if (ev === 0) {
+      unsupported++;
+      logger?.warn?.(`[GROW-MAINT] identity fact unsupported (warning-only, F20): ${slice}… (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+    }
+  }
+  return unsupported;
 }
 
 export interface AnchorGrowthResult {
@@ -175,6 +210,7 @@ export async function runAnchorGrowth(deps: {
   const cfg: AnchorDiscoveryConfig = { ...DEFAULT_ANCHOR_DISCOVERY_CONFIG, ...(deps.config ?? {}) };
   // P2：person 子配置深合并（调用方传 Partial 且缺 person 键时不落 undefined）。
   cfg.person = { ...DEFAULT_ANCHOR_DISCOVERY_CONFIG.person, ...(deps.config?.person ?? {}) };
+  cfg.identityMaintain = { ...DEFAULT_ANCHOR_DISCOVERY_CONFIG.identityMaintain, ...(deps.config?.identityMaintain ?? {}) };
   const logger = deps.logger;
   if (!cfg.enabled) return { ran: false, adopted: 0, retired: 0, reweighted: 0, displaced: 0, skipped: 0, reason: "disabled" };
   if (!deps.llmRunner || typeof deps.llmRunner.run !== "function") {
@@ -491,6 +527,11 @@ export async function runAnchorGrowth(deps: {
               }
             }
           }
+        }
+        // ── P2：identity GROW-MAINT（F15 身份分支；F20 红线——只警告永不自动退场）──────
+        if (cfg.identityMaintain?.enabled) {
+          const unsupported = await maintainIdentityFacts(store, tenant, corpus, logger);
+          if (unsupported > 0) logger?.info?.(`[anchor-growth] identity maintain: unsupported=${unsupported} (warning-only)`);
         }
         // REG-REMAINING-003 #1：采纳路径 valence 补值钩子——自生长直调 store.upsertValue，
         // 不经 v2-router values/upsert 钩子（deriveValueValences 只在 API 路径触发），NULL valence

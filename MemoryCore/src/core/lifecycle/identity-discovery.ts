@@ -214,6 +214,17 @@ export async function runIdentityDiscovery(deps: {
             logReplacing("identity", existing, logger);
             adoptedThis = 1;
             logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
+            // P2：identityRefs 回填（20 字切片弱口径；F14 遗忘保护/GROW-MAINT 重验证的数据前提）
+            for (const fact of identityProps) {
+              const slice = identityFactSlice(fact);
+              if (!slice) continue;
+              for (const r of rows) {
+                if (String((r as { content?: string }).content ?? "").includes(slice)) {
+                  const rid = String((r as { record_id?: string }).record_id ?? "");
+                  if (rid) (store as { backfillMemoryRef?: (rid: string, key: "identityRefs", label: string, t?: unknown) => boolean }).backfillMemoryRef?.(rid, "identityRefs", slice, tenant);
+                }
+              }
+            }
           }
         }
         // self_identity slot 单行语义与 identity 同构：bulleted 合并、version++ 演化
@@ -343,4 +354,13 @@ function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: 
   try {
     (store as unknown as { setIdentityDiscoveryState?: (s: unknown, t?: CoreTenant) => void }).setIdentityDiscoveryState?.(state, tenant);
   } catch { /* best-effort */ }
+}
+
+
+/**
+ * P2（spec §5 F15 身份分支/F14）：身份事实 20 字切片弱口径单源——identityRefs 回填
+ * 与 GROW-MAINT 身份重验证共用（20 字足以锚定事实、又不因长句改写而失配）。
+ */
+export function identityFactSlice(fact: string): string {
+  return fact.replace(/^-\s*/, "").trim().slice(0, 20);
 }
