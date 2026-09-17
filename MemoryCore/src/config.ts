@@ -992,6 +992,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       arousalRetention: Math.min(0.9, Math.max(0, num(lifecycleForgettingGroup, "arousalRetention") ?? 0)),
       lowThreshold: num(lifecycleForgettingGroup, "lowThreshold") ?? 0.12,
       minAgeDays: num(lifecycleForgettingGroup, "minAgeDays") ?? 30,
+      // P2（F14）：refs 遗忘保护开关（缺省 false=逐位现状）
+      refProtection: bool(lifecycleForgettingGroup, "refProtection") ?? false,
     },
   };
 

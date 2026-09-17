@@ -18,6 +18,10 @@ export interface ForgettingConfig {
   minAgeDays: number;
   /** 单次最多归档条数（护栏） */
   maxPerRun: number;
+  /** P2（spec F14）：refs 遗忘保护——coreRefs/personRefs 指向仍 active 锚、identityRefs 指向
+   *  现行身份事实切片的记录不进归档候选；保护前重验 refs 有效性（悬空不保护，防永生记忆）。
+   *  缺省 false = 逐位现状。 */
+  refProtection: boolean;
 }
 
 export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
@@ -27,7 +31,25 @@ export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
   lowThreshold: 0.12,
   minAgeDays: 30,
   maxPerRun: 100,
+  refProtection: false,
 };
+
+/**
+ * P2（spec F14）：遗忘保护 refs 重验——metadata.coreRefs/personRefs 命中 active 锚名集
+ * （theme label ∪ person label/alias）或 identityRefs 命中现行身份事实切片集 → true。
+ * 悬空 refs（锚已退休/身份事实已被修订替换）不保护——F14 的排除必须以重验后的有效引用为准。
+ */
+export function isRefProtected(metadata: unknown, anchorNames: ReadonlySet<string>, identitySlices: ReadonlySet<string>): boolean {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const meta = metadata as Record<string, unknown>;
+  for (const key of ["coreRefs", "personRefs"] as const) {
+    const refs = meta[key];
+    if (Array.isArray(refs) && refs.some((r) => typeof r === "string" && anchorNames.has(r))) return true;
+  }
+  const irefs = meta.identityRefs;
+  if (Array.isArray(irefs) && irefs.some((r) => typeof r === "string" && identitySlices.has(r))) return true;
+  return false;
+}
 
 function priorityOf(m: MemoryRecord): number {
   // -1 = 全局死规则（绝不归档）；0..100 正常
