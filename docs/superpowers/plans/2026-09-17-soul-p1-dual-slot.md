@@ -987,3 +987,31 @@ sudo -H -u tdai git commit -m "docs(soul): P1 验收 SOP 实测回写（换用�
 | 9 | 低 | strip 分句语义（D2）：split `/(?<=[。；;！？\n])/` + P\d 结构判据——Task 2 测试用例「P1 阶段已完成，当前正在做收尾」整句命中→拒收，**预期成立**（复核通过，无需改） | 无（复核记录） |
 
 结论：计划与 spec/真实代码的对齐问题已清零；v2 可执行。
+
+
+## 计划执行记录（Task 7 验收 · 2026-09-17 实机）
+
+**过程（全程无子代理，逐位实证）**：
+
+1. **配置落地**：yaml `coreMemory.selfIdentity{enabled:true,maxPerPass:2,intervalHours:1}` + `soulRender{600,900}`（4 空格缩进实证）+ `allowedSlots` 显式扩展 +self_identity；重启 tdai-core active。
+2. **死配置预警修正**（1 commit）：`selfIdentity.intervalHours` 原计划无消费方——identity worker 冷却走 anchorDiscovery 组的 24h。补 gated override（enabled=true 覆盖、false 逐位现状）+ 2 用例（TDD 红绿）。
+3. **调参**：lifecycle.intervalMs 600000→60000（验收期，验收后还原并重启核验）。
+4. **种子**（ev5_* 前缀，幂等直插 sqlite）：租户 A=用户事实×6（每条 3 证据对齐 minEvidence=3）+agent 行为×4+对抗×3；租户 B（换用户）=异事实×3+1；租户 C（换 agent）=仅 agent 行为×3。
+5. **首轮 tick 实测**（14:45）：identity worker corpus=25 proposals=9 adopted=2；三租户双槽齐落（A：identity 5 事实+self 2 事实；B：围棋教练；C：逐条步骤+复述确认）。
+6. **对抗判定**：串味提案（"AI 是连锁书店创始人"）未进 self（行为可证硬约束生效）；纯状态"P3 阶段已完成"被 strip 拒；C 的"部署前必须备份"→**pending strict_rule (evidence=0)**（分级门实锤）；XML 注入零残留（读面 escapeXmlTags 单点消毒）。
+7. **recall 注入终验**：`<soul-identity>`（我是谁）self 段在前+（我心中的他）identity 段+价值锚（anchor-growth 自生长）+`<soul-feeling>` 四段完整；换用户 B（围棋有/书店零泄漏/无（我是谁））与换 agent C（逐条列出有/无用户身份幻觉）双判据过。
+8. **AGENT_ACT 全管线**：conversation/add→提取 L1 四条全为用户侧事实（agent 承诺已入 self_identity 不重复入 L1——宁缺毋滥符合设计）。
+9. **逐位回归**：全量 MemoryCore 521/521（基线 500+21）、MemoryPanel 106/106、tsc 243 持平（O20）；intervalMs 还原 600000 重启 active。
+10. **前端**：web build 成功（IdentitySection 入 bundle）、tdai-panel 重启 active。
+
+**过程抓出并修复的 3 处实现/流程问题**：
+
+| # | 问题 | 处置 |
+|---|---|---|
+| 1 | `selfIdentity.intervalHours` 死配置（无消费方） | gated override 接线（60352b6） |
+| 2 | 补丁锚子串匹配致 `export` 错位（stripIdentityStateResidue 丢导出，7 测试连败） | 恢复导出（6c8af9a）；锚必须含完整声明行（含修饰符） |
+| 3 | 补丁脚本 newline 翻译翻转 MemoryPanel CRLF（4423/4064 假 diff） | CRLF 恢复（e80c995）；后续二进制安全（O19） |
+
+**架构发现（O18）**：per-instance store——`x-tdai-service-id` 分实例库，lifecycle 自发现 worker 只覆盖 default 实例；单实例部署（当前产线）不受影响，多实例覆盖面留 P2 评估。
+
+**测试数据**：ev5_* 全部留存待授权清理（O21）；生产租户数据未触碰。

@@ -9,6 +9,20 @@
 
 ---
 
+## 🪞 灵魂 P1：agent 自我层双槽落地（DS-SOUL-MEMORY-002，2026-09-17）
+
+- **双槽制（spec §2.5）**：core_memory 新增 `self_identity` 槽（agent 自我第一人称：职责模式/承诺/红线执行/工作风格），identity 槽语义收敛为用户身份（我心中的他）——零 schema 变更，信任边界 allowedSlots 缺省 +self_identity（写入仍由开关门控）。
+- **双视角自发现**：identity-discovery 单次 LLM 调用同窗产出用户事实 + agent 自我提案（gated：`memory.coreMemory.selfIdentity.enabled` 缺省 false=逐位现状，含 prompt 行为）；agent 侧提案复用 stripIdentityStateResidue 单一源（状态剥离门），「行为可证」为提案 prompt 硬约束；maxPerPass 截断；`selfIdentity.intervalHours` gated 覆盖冷却（F15 分池节奏，enabled=false 不读取）。
+- **四段渲染（F17）**：soul-assembler gated 渲染（我是谁）self 段在前 +（我心中的他）identity 段 + 价值锚 + soul-feeling；multi-line 仅首行带前缀；段级预算超限截断（宁缺毋滥）；legacy 路径（开关关）字节级一致。
+- **提取视角（l1）**：AGENT_ACT_BLOCK 运行时追加（常量体零改动），仅内置 chat prompt 且开关开时生效；mode=code 隔离；自定义 memoryPrompt 策略权威保持。
+- **旧文留痕（O14 缓解）**：身份 merge 成功后 replacing 日志（旧文 200 字切片），首次写入不打。
+- **Panel（U1）**：`/chat-memory/identity/read` BFF 只读透传（复用 /v3/core-memory/read 零新端点，ACL/idFields 与 values/list 同款）+ IdentitySection（宁缺毋滥，双槽空/读失败不渲染）挂载于价值锚管理视图。
+- **测试**：MemoryCore vitest 500→521（+config 5/双视角 4/冷却 2/四段渲染 5/留痕 2），MemoryPanel 106（+BFF 透传 3）；tsc 基线 243 持平。
+- **实机 SOP（ev5_* 32 条种子 + 2 轮全管线对话，3 租户）**：首轮 tick 双槽采纳（identity 5 事实+self 2 事实）；对抗全挡——串味提案（用户事实伪装 agent 自我）未进 self、纯状态陈述被 strip 拒、strict_rule 走 pending（分级门，evidence=0）、XML 注入零残留；换用户 B（围棋教练 vs 书店创始人零泄漏）/换 agent C（self 换、用户身份不幻觉）双判据过；/v3/recall 注入 soul 前缀四段完整（（我是谁）在前）；AGENT_ACT 提取宁缺毋滥（agent 承诺入 self_identity 不重复入 L1）。
+- **登记**：v5 O18（per-instance store：lifecycle 自发现只覆盖 default 实例库）、O19（MemoryPanel CRLF 行尾——补丁须二进制安全）、O20（typecheck 基线 243 行预存债务）、O21（ev5_* 测试数据留存待授权清理）。O15/O16 的 P1 部分落地（主语修正+双槽）见 v5 行内标注。
+
+---
+
 ## 🧬 身份自发现两修复：采样窗口失明 + LLM 预算对齐（2026-09-17）
 
 - **修复 1（自生长核心）**：identity-discovery 裸 `rows.slice(0,50)` 建立在 queryL1Records 无过滤路径 `ORDER BY updated_time ASC` 之上——采样的是**最旧 50 条**：语料超上限后新记忆永远进不了样本窗，身份自生长对新语料失明。改用 `selectSampleRows`（updated 降序 + 高显著 ≥0.8 优先 + cap 截断，锚同款禁第二份），证据重算语料仍走全量。
