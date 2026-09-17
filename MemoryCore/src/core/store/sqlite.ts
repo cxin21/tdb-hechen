@@ -513,7 +513,7 @@ export class VectorStore implements IMemoryStore {
   // ── R-A3（E2 性能速赢）：listValues 租户级缓存（GROW 写路径 upsert/delete/pin/
   // retire/restore/derive/restoreValence/resetValence 八处统一失效；TTL 仅作跨进程写
   // 漂移防御，默认 60s，0=缓存关）──
-  private valuesCache = new Map<string, { rows: Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>; at: number }>();
+  private valuesCache = new Map<string, { rows: Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }>; at: number }>();
   private valuesCacheTtlMs = 60_000;
   /** E2 观测计数器（miss=真实 DB 查询次数；hit=缓存命中次数）——测试与运维诊断共用。 */
   valuesCacheHits = 0;
@@ -866,6 +866,10 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN origin TEXT NOT NULL DEFAULT 'seed'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN state TEXT NOT NULL DEFAULT 'active'"); } catch { /* exists */ }
+    // DS-SOUL-MEMORY-002 P2（spec §2.6）：人物锚双节点列——幂等 ALTER（T12 模式），
+    // 缺省 'theme'/'{}' = 逐位现状；sqlite 不可删列，回滚策略=列保留无害、缺省值即现状。
+    try { this.db.exec("ALTER TABLE core_values ADD COLUMN node_type TEXT NOT NULL DEFAULT 'theme'"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE core_values ADD COLUMN attrs_json TEXT NOT NULL DEFAULT '{}'"); } catch { /* exists */ }
     // GROW：自生长调度状态 kv（last_discovery_at / last_corpus_count）——重启不失忆，
     // 避免每次重启后 interval 门失效白烧一次发现 LLM 调用。
     this.db.exec("CREATE TABLE IF NOT EXISTS anchor_growth_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -2349,15 +2353,21 @@ export class VectorStore implements IMemoryStore {
    *     （retired → 即恢复；vetoed → 即撤销否决）；自动管道的 veto 不可重提由
    *     自生长去重查全态保证，与本写路径正交。origin/pinned 冲突不改写（裁定 3）。
    */
-  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual"): boolean {
+  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" = "theme", attrs?: { role?: string; aliases?: string[] }): boolean {
     const t = normalizeCoreTenant(tenant);
     const v = valence === undefined ? null : Math.min(1, Math.max(-1, Math.round(valence)));
+    // P2（spec §2.6）：attrs_json 序列化单点——role/aliases 可选字段按需并入；
+    // DO UPDATE 不碰 node_type（A8：类型归属写定后不随重写漂移），attrs_json 仅显式传入时更新。
+    const attrsJson = attrs === undefined
+      ? "{}"
+      : JSON.stringify({ ...(attrs.role === undefined ? {} : { role: attrs.role }), ...(attrs.aliases === undefined ? {} : { aliases: attrs.aliases }) });
     try {
       this.db.prepare(
-        "INSERT INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?) " +
+        "INSERT INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id, node_type, attrs_json) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?) " +
         "ON CONFLICT(value_id, team_id, user_id, agent_id) DO UPDATE SET label=excluded.label, weight=excluded.weight, state='active'" +
-        (v === null ? "" : ", valence=excluded.valence"),
-      ).run(valueId, label, weight, createdBy, v, origin, t.teamId, t.userId, t.agentId);
+        (v === null ? "" : ", valence=excluded.valence") +
+        (attrs === undefined ? "" : ", attrs_json=excluded.attrs_json"),
+      ).run(valueId, label, weight, createdBy, v, origin, t.teamId, t.userId, t.agentId, nodeType, attrsJson);
       this.invalidateValuesCache(); // E2 失效钩子（写路径 1/8）
       return true;
     } catch (err) {
@@ -2381,7 +2391,7 @@ export class VectorStore implements IMemoryStore {
    *  （GROW：两个读面是独立缓存条目）；全部 core_values 写路径（八处，见类字段注释）
    *  统一挂 invalidateValuesCache 钩子，TTL 仅作跨进程写漂移防御（默认 60s，0=缓存关）。
    *  缓存命中返回行克隆（防调用方就地改写缓存）。 */
-  listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }> {
+  listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }> {
     const t = normalizeCoreTenant(tenant);
     const includeRetired = opts?.includeRetired === true;
     // S7 第 9 项（批 2 审查 M-6）：JSON.stringify 取代 `|` 裸拼接（沿 S2 模式）——
@@ -2402,8 +2412,8 @@ export class VectorStore implements IMemoryStore {
       const stateFilter = includeRetired ? " AND state IN ('active','retired')" : " AND state='active'";
       const readRows = (teamId: string, userId: string, agentId: string) =>
         (this.db.prepare(
-          `SELECT value_id, label, weight, created_by, valence, origin, pinned, state FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY weight DESC`,
-        ).all(teamId, userId, agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>) ?? [];
+          `SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY weight DESC`,
+        ).all(teamId, userId, agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }>) ?? [];
       const rows = readRows(t.teamId, t.userId, t.agentId);
       // PA：严格无兜底——空桶返回 []，不再读时回退 default 桶（原 S6 第 5 项分支移除）。
       // S7 第 9 项（批 2 审查 M-6）：miss 计数移到真实读成功之后——计数器语义是
@@ -2425,12 +2435,12 @@ export class VectorStore implements IMemoryStore {
    * 专用两个调用方：① 自生长去重（veto 永不重提 + 名额计数）；② server 种子判空
    * （全种子被 veto 后重启不得复活——active-only 判空会误判空桶重灌）。
    */
-  listValuesAnyState(tenant?: CoreTenant): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }> {
+  listValuesAnyState(tenant?: CoreTenant): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }> {
     const t = normalizeCoreTenant(tenant);
     try {
       return (this.db.prepare(
-        "SELECT value_id, label, weight, created_by, valence, origin, pinned, state FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>) ?? [];
+        "SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
+      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }>) ?? [];
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_values] listValuesAnyState failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -2679,6 +2689,15 @@ export class VectorStore implements IMemoryStore {
 
   /** GROW-EVO P2.1（锚↔记忆双向链路）：coreRefs 回填（读改写 + 双表同步——invalidateL1 教训）。 */
   backfillCoreRef(recordId: string, label: string, tenant?: CoreTenant): boolean {
+    return this.backfillMemoryRef(recordId, "coreRefs", label, tenant);
+  }
+
+  /**
+   * P2（spec §2.6）：通用记忆↔锚/身份 refs 回填键族单源——coreRefs（主题锚）/personRefs
+   * （人物锚，F12 证据链）/identityRefs（身份事实 20 字切片弱口径，GROW-MAINT F15/F14 数据前提）。
+   * 同键去重（已含 label → 幂等 false）；metadata + l1_fts 双写（与 backfillCoreRef 同款）。
+   */
+  backfillMemoryRef(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): boolean {
     try {
       const t = normalizeCoreTenant(tenant);
       const row = this.db.prepare(
@@ -2686,17 +2705,17 @@ export class VectorStore implements IMemoryStore {
       ).get(recordId, t.teamId, t.userId, t.agentId) as { metadata_json?: string } | undefined;
       if (!row) return false;
       const meta = row.metadata_json && row.metadata_json !== "{}" ? JSON.parse(row.metadata_json) : {};
-      const refs = Array.isArray(meta.coreRefs) ? meta.coreRefs : [];
+      const refs = Array.isArray(meta[key]) ? meta[key] : [];
       if (refs.includes(label)) return false;
       refs.push(label);
-      const updated = JSON.stringify({ ...meta, coreRefs: refs });
+      const updated = JSON.stringify({ ...meta, [key]: refs });
       this.db.prepare("UPDATE l1_records SET metadata_json = ? WHERE record_id = ?").run(updated, recordId);
       if (this.ftsAvailable) {
         this.db.prepare("UPDATE l1_fts SET metadata_json = ? WHERE record_id = ?").run(updated, recordId);
       }
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] backfillCoreRef failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(`${TAG} [core_values] backfillMemoryRef failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }

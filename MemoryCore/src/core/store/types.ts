@@ -710,7 +710,9 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * GROW：origin（seed|manual|auto，来源徽标；缺省 manual）。冲突路径 state='active'
    * （显式重建=撤销退休/否决；自动管道的 veto 不可重提由自生长去重查全态保证）。
    */
-  upsertValue?(valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto"): MaybePromise<boolean>;
+  upsertValue?(valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person", attrs?: { role?: string; aliases?: string[] }): MaybePromise<boolean>;
+  /** P2：通用 refs 回填键族（coreRefs/personRefs/identityRefs 单源；旧后端可缺省）。 */
+  backfillMemoryRef?(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): MaybePromise<boolean>
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。
