@@ -1135,3 +1135,9 @@ cp .env.example .env && $EDITOR .env    # 填入两组 LLM 参数
   from tencentdb_agent_memory import MemoryClient                     # 默认（v2 兼容）
   from tencentdb_agent_memory.v3 import MemoryClient, MetadataClient, SkillClient
   ```
+
+## 2026-09-17 运维：内核 LLM 切换 OpenCode Go GLM-5.3-Flash
+- runner 新增 host 作用域客户端标识头（`e4cc31c`）：仅 opencode.ai 端点附加自标识 UA（tdb-memory/1.0）+ x-opencode-session（部署稳定 sha256(baseUrl|model)）；其他模型/供应商零额外头零行为差异（Go 文档客户端要求，防风控）。测试 +4（llm-go-headers.test.ts）。
+- 环境配置（config-override.json，仓库外）：llm.baseUrl=https://opencode.ai/zen/go/v1、model=glm-5.3-flash、maxTokens=0；原方舟配置备份于 config-override.json.bak-ark-20260917（回滚：恢复备份+重启）。
+- 真实数据验证：vp3 探针租户 3/3 播种→3/3 L1 提取（GLM 真实驱动抽取管线，零报错）；直接端点探针 200（注意：glm-5.3-flash 为推理型输出，带 reasoning_content，max_tokens 需给足）。
+- 已知观察：GLM-5.3-Flash 为 flash 档推理模型，抽取/发现质量待长周期观察；对抗身份设定种子由身份提案主语门拦截（L1 记录层保留原文为设计行为）。
