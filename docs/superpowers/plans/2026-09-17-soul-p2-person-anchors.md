@@ -350,3 +350,18 @@ CREATE TABLE IF NOT EXISTS core_pending (
 - 全新隔离租户 vp2 完整流程（15 组新对抗数据）：14 条→9 条 L1（归纳合并符合设计）；p-妈妈 val=1 person 锚；identity 4 行全行为自证；对抗 s13(身份设定)/s14(说你是) 均被主语门拦截（/recall 无泄漏）；隔离 user-b 独立（李姐）；O13 pending×2（strict_rule 导出二次确认 ev=1 / core_value 孝顺健康）；/recall 注入「重要的人：妈妈(家人·趋近)」来源主语属性正确；F14 全新租户复验 protected=LIVE/dangling=ARCHIVED。
 - 已知非缺陷记录：alias 归并依赖 LLM 提案（老妈未并入，ev6/vp2 一致）；老赵×2/周报×1 不足 minEvidence=3 不上锚（F11 宁缺毋滥）；self_identity 无证据不提（主语归属正确）。
 - 待授权清理：ev6_*/ev6f14*/vp2f14*/vp2 测试租户与夹具。
+
+## Round3 全面验证记录（2026-09-17，配额恢复后补测+新数据对抗）
+**新数据**：ev8 租户 17+5 组（朵朵×3含别名/李某负向×2/主题×2/红线×2/自证×2/对抗×3/Q换用户×3/R换agent×2）+ ev7 补测。
+**验证通过**：朵朵 p-锚(val=1,aliases[女儿])/李某 ev=2 不上锚(F11 护栏)/identity 5 事实合并/self_identity 先结论+周报/红线落 pending（2 条）/Q 陈导师 identity（Q 无朵朵锚，隔离✓）/R self_identity 演练专员（隔离✓）/ev7 秘书人设提案被 C2 门拒收留痕✓。
+**对抗命中三修**：
+| # | 发现（第一性原理） | 修复 | 提交 |
+|---|---|---|---|
+| C1 | 引导期同轮 forgetting 先于锚发现跑（次序：consolidation→forgetting→…），保护名集空，受保护记录被当场归档 | forgetting 移至 pass 末尾（判据输入须在清理动作前最新） | a2626fd |
+| C2 | 秘书人设（指定专属秘书/称呼他为老板大人/无条件执行）绕过 A2 门进渲染 | 主语门补三形态模式 | a2626fd |
+| C3 | 自伤：插入锚用条件三元 count!=1 静默跳过→遗忘块被删未插回，pass 无遗忘判定 | 重插+教训：补丁禁静默条件分支 | ca284ed |
+**F14 终态（次序修复后）**：candidates=1 archived=1；protected(coreRefs→朵朵)=LIVE / dangling=ARCHIVED ✓
+**登记缺陷（未修，待办）**：
+- D-R3-1 租户串味（重要）：L1 抽取产物混入跨 user 租户事实（R(ev8-user-c,agent-d) 的 L1 含 Q(user-d) 的"数据仓库方向研究生"）；疑 l1-extractor 冲突/相似候选召回 team 级过滤缺口（L1 锁为会话级 pipeline:{inst:tid:aid}:s:{sess}，分组正确，泄漏在候选召回/消息源）；需核实 l1-extractor.ts 候选召回租户过滤并修复（涉 A6 四级贯通召回级）。
+- D-R3-2 管线韧性：重启丢未完成抽取任务（Q/R 首发种子 L1=0，重发后恢复）；attempt 重排队 15 次后任务去向需排查。
+基线：vitest 592/592、tsc 243。
