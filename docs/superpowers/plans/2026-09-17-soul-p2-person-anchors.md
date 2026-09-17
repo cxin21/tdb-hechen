@@ -296,3 +296,22 @@ CREATE TABLE IF NOT EXISTS core_pending (
 1. **Spec 覆盖**：§2.6（双列/双池/跨类命名空间/读路扩列/单一源）→T1/T3；§2.7 渲染→T7；F11/F12→T2/T3；F14→T5；F15 分池+身份分支→T3/T4；F19 双门实例化→T3；F20→T4；O13→T6；U2-U4→T7；U1 编辑入口（P2）→T7 身份区 pending+槽编辑（pending 采纳即人工写入入口；槽直编辑仍走既有 core-memory/write 面板通道，不新增）。✓
 2. **占位符扫描**：无 TBD/TODO；所有代码块可编译级。
 3. **类型一致性**：node_type `"theme"|"person"` 贯穿 T1/T3/T5/T7；`attrsOf` 单源 T3；`backfillMemoryRef` 键族枚举 `"coreRefs"|"personRefs"|"identityRefs"` 贯穿 T1/T4/T3。✓
+
+---
+
+## 执行记录（P2，2026-09-17）
+
+| Task | Commit | 内容 | 验证 |
+|---|---|---|---|
+| T1 store 扩列 | 4d4c9c0 | node_type/attrs_json 幂等 ALTER + upsertValue 签名 + backfillMemoryRef 三键族 | +5 测试 |
+| T2 person 口径单一源 | c924d92 | personEvCount/personValenceSymbol/personEvidenceMeanValence/parse/双 prompt | +11 测试 |
+| T3 双池 | 3550092 | growthValueId p- 前缀 / person LLM 独立调用 / F19 别名去重 / F12 valence / QUOTA 分池 / GROW-MAINT personEv+分池阈值（TDD 实证修复） | +7 测试 |
+| T4 identity GROW-MAINT | 0994963+12e94f8 | identityFactSlice 单源 / identityRefs 回填 / 失撑只警告（F20） | +5 测试 |
+| T5 F14 遗忘保护 | 6874764+7aa7b72 | isRefProtected 单源 / worker 排除段 / 悬空不保护 / refProtection 配置 | +7 测试 |
+| T6 O13 | 09698ef | core_pending 三方法 / identity-discovery 持久化 / /v3 pending list+decide | +12 测试 |
+| T7a 渲染 person 分流 | 0233a2b | 重要的人 行 / 价值锚·感受段过滤 / P1 字节级回归通过 | +4 测试 |
+| T8 配置+文档 | e184ac2+本次 | yaml person/identityMaintain/refProtection 全开 + CHANGELOG P2 + 本记录 | 重启验证 |
+| T7b Panel U2-U4 | 待续轮 | BFF pending 路由 + web api + PendingSection + ValueAnchorsPanel 徽标；图 S3 chips/U4 跳转顺延（上下文预算裁决） | — |
+| T9 SOP | 本次 | ev6_* 16 组真数据 + 对抗审查 + 注入/召回核对 | 见报告 |
+
+基线：MemoryCore vitest 537→572（+35），tsc 243 持平（O20 未新增）。yaml 为环境配置（gitignore 策略），解析与缺省值已在仓库代码层。
