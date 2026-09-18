@@ -464,3 +464,10 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **测试**：vitest 611/611（+5）：触发（写卡带租户/证据指针/反思元数据）、未触发零调用、disabled 零调用、幂等（反思史即状态）、解析宽松提取。
 **过程实证**：版本漂移一次（服务器残留旧 5 参 rec 测试版），以本地最新版重传+锚点修 rRef 触发口径（150→2 测试口径）闭环；tsc 级联计数仍不稳定（D-R5-2 已登记，stash 对照为权威方法）。
 **P3 剩余**：config parser（reflection 组）+ yaml 开启（收口轮配置审计）+ 品格锚/F13 真数据实测（ev11 全流程收口）。
+
+## Round5 配置重写事故记录（2026-09-18 09:24，yaml 解析崩→env-only 降级，已闭环）
+**现象**：tdai-core 重启报 `[config] Gateway config file failed to parse … line 207`（All mapping items must start at the same column），降级 env-only 配置运行。
+**根因（用户诊断，AI 复核确认）**：patch_f14d.py 的锚 `  evolution: # P4b` **只匹配行前缀**，替换时吞掉了行尾注释——原行 `evolution: # 受控正文演化…路径` 被替换后残留尾巴，第 206 行变成 `evolution: 受控正文演化…`（注释成为标量值），子键无处安放 → 整份 yaml 解析崩。mtime 09:24:01 与重启同秒。
+**处置**：用户自查修 1 行（注释归位 `evolution: # …`）；AI 探针验证 anchor=0（坏行已不存在）+ 网关同款 yaml 库解析全绿；重启（就绪探针 READY 8s）后 journal 无 parse 报错，**运行时配置审计六项全开**：person(3/2/8)/character(3/2/8)/identityMaintain/reflection(rRef=150)/refProtection/selfIdentity(1h)。
+**教训（固化为补丁铁律）**：行内注释行的锚**必须匹配完整行（含行尾注释）**；替换文本必须原样保留行尾——锚只匹配前缀会把行尾变成孤立值（本事故的直接根因）。此教训与"补丁脚本锚点唯一显式 ABORT"同档固化：**锚=完整行**。
+**状态**：yaml 好行已由用户修复；服务以正确配置运行（非 env-only）；character/reflection 已在启动轮被调度（firstBlockReason=interval 属 24h 冷却门正常语义）。
