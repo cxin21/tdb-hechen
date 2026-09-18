@@ -1724,6 +1724,114 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     },
   );
 
+  // DS-SOUL-MEMORY-002 P2（O13 UI）：待办列表透传——/v3/core-memory/pending/list。
+  // ACL 与 identity/read 同款（owner 借用语义读）；零业务覆写，只换端点与返回键。
+  api.post(
+    "/chat-memory/pending/list",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      const canRead = await authorizeChatMemoryRead(
+        deps,
+        ctx,
+        asset,
+        meUserId,
+        blockId,
+      );
+      if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      const env = await deps.kernelHttp.postEnvelope<{ pending?: unknown }>(
+        "/v3/core-memory/pending/list",
+        {
+          team_id: parsed.teamId,
+          agent_id: parsed.agentId,
+          user_id: asset.owner_user_id,
+          session_id: "default",
+        },
+        cred,
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      return respondEnvelope(c, okEnvelope(c, { pending: env.data?.pending ?? [] }));
+    },
+  );
+
+  // POST /chat-memory/pending/decide  body: { block_id, pending_id, decision }
+  // O13 单向状态机的人工裁决入口（adopted/rejected）；写路径 owner 校验与 values/upsert 同款。
+  api.post(
+    "/chat-memory/pending/decide",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      const pendingId = typeof body?.pending_id === "string" ? body.pending_id.trim() : "";
+      const decision = typeof body?.decision === "string" ? body.decision.trim() : "";
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+      if (!pendingId) return respondControlError(c, 400, "MISSING_PENDING_ID");
+      if (!decision) return respondControlError(c, 400, "MISSING_DECISION");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      if (asset.owner_user_id !== meUserId)
+        return respondControlError(c, 403, "NOT_ASSET_OWNER");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      const env = await deps.kernelHttp.postEnvelope<Record<string, unknown>>(
+        "/v3/core-memory/pending/decide",
+        {
+          team_id: parsed.teamId,
+          agent_id: parsed.agentId,
+          user_id: asset.owner_user_id,
+          session_id: "default",
+          pending_id: pendingId,
+          decision,
+        },
+        cred,
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      return respondEnvelope(c, okEnvelope(c, env.data ?? {}));
+    },
+  );
+
   // POST /chat-memory/values/upsert  body: { block_id, value_id, label, weight, valence? }
   api.post(
     "/chat-memory/values/upsert",

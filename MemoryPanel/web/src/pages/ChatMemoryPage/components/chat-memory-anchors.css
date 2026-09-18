@@ -268,3 +268,20 @@
   line-height: 1.6;
   white-space: pre-wrap;
 }
+
+/* P2（U2/O13 UI）：锚类型徽标 + 待办裁决区 */
+._va-nodetype { padding: 1px 6px; border-radius: 4px; font-size: 11px; line-height: 1.5; }
+._va-nodetype--person { background: #eef6ff; color: #1677ff; border: 1px solid #91caff; }
+._va-nodetype--theme { background: #f5f5f5; color: #555; border: 1px solid #e0e0e0; }
+._pending-list { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+._pending-row { border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 10px; }
+._pending-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+._pending-slot { font-weight: 600; font-size: 12px; }
+._pending-id { font-size: 11px; opacity: 0.7; }
+._pending-content { margin: 0 0 6px; font-family: inherit; font-size: 12px; white-space: pre-wrap; }
+._pending-actions { display: flex; gap: 8px; }
+._pending-btn { cursor: pointer; border: 1px solid #d0d0d0; border-radius: 4px; padding: 2px 10px; font-size: 12px; background: #fff; }
+._pending-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+._pending-btn.adopt { color: #1677ff; }
+._pending-btn.reject { color: #666; }
+._pending-error { margin-top: 6px; color: #d4380d; font-size: 12px; }

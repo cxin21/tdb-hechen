@@ -30,6 +30,20 @@ export interface ValueAnchor {
   pinned?: 0 | 1;
   /** GROW 状态机：active 活跃 / retired 退休（退休区）/ vetoed 永久否决（任何读面不可见） */
   state?: 'active' | 'retired' | 'vetoed';
+  /** P2（U2）：锚类型（theme 主题 / person 人物双节点）；旧网关缺省 → undefined（前向兼容） */
+  node_type?: 'theme' | 'person';
+  /** P2（U2）：人物锚属性 JSON（{role, aliases}）；主题锚为 '{}' */
+  attrs_json?: string;
+}
+
+/** P2 待办项（O13）：/v3/core-memory/pending/list 的行（core_value/strict_rule 分级提案） */
+export interface PendingItem {
+  pending_id: string;
+  slot: string;
+  content: string;
+  version?: number;
+  state?: string;
+  evidence_count?: number;
 }
 
 /** 价值锚提案（Task DISC，提议制）：/v3/core-memory/values/discover 返回，只提议不落库 */
@@ -341,6 +355,18 @@ export const chatMemoryApi = {
   identityRead: (blockId: string) =>
     chatMemoryCall<{ slots: Array<{ slot: string; content: string; version?: number }> }>('identity/read', {
       block_id: blockId,
+    }),
+
+  /** P2（O13 UI）：待办列表（core_value/strict_rule 分级提案，人工裁决后生效） */
+  pendingList: (blockId: string) =>
+    chatMemoryCall<{ pending: PendingItem[] }>('pending/list', { block_id: blockId }),
+
+  /** 待办决策（Owner-only）：adopted 采纳（落槽）/ rejected 拒绝（O13 单向状态机，复决 404） */
+  pendingDecide: (blockId: string, pendingId: string, decision: 'adopted' | 'rejected') =>
+    chatMemoryCall<{ pending_id: string; decision: string; slot?: string }>('pending/decide', {
+      block_id: blockId,
+      pending_id: pendingId,
+      decision,
     }),
 
   /** 价值锚 upsert：valence 显式传入 = 用户微调；不传 = plain 新建（落 NULL 待 LLM 判） */

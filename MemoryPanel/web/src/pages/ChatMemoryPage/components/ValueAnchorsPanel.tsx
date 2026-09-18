@@ -30,6 +30,14 @@ import { tea, confirmThenRun } from '@/lib/tea-bridge';
 import { chatMemoryApi, type ValueAnchor, type ValueProposal } from '@/lib/teamApi';
 import './chat-memory-anchors.css';
 import { IdentitySection } from './IdentitySection';
+import { PendingSection } from './PendingSection';
+
+/** P2（U2）：锚类型徽标（person 人物 / theme 主题双节点）；旧网关缺省 → null 不显示（前向兼容） */
+function nodeTypeBadge(nodeType: ValueAnchor['node_type']): { label: string; cls: string } | null {
+  if (nodeType === 'person') return { label: '人物', cls: 'person' };
+  if (nodeType === 'theme') return { label: '主题', cls: 'theme' };
+  return null;
+}
 
 /** valence → 方向徽标视图（0 = 中性：store 合法值，brief 三态外如实展示） */
 function valenceBadge(v: number | null): { key: string; cls: string } {
@@ -79,6 +87,7 @@ function ValueRow({
       clampWeight(parsedWeight) !== anchor.weight);
   const badge = valenceBadge(anchor.valence);
   const origin = originBadge(anchor.origin);
+  const nodeBadge = nodeTypeBadge(anchor.node_type);
   const isPinned = anchor.pinned === 1;
 
   async function save() {
@@ -90,6 +99,7 @@ function ValueRow({
   return (
     <div className="_va-row">
       <span className={`_va-badge _va-badge--${badge.cls}`}>{t(badge.key)}</span>
+      {nodeBadge && <span className={`_va-nodetype _va-nodetype--${nodeBadge.cls}`}>{nodeBadge.label}</span>}
       {origin && <span className={`_va-origin _va-origin--${origin.cls}`}>{t(origin.key)}</span>}
       {isPinned && (
         <span className="_va-pin-icon" title={t('memory.anchors.pinned')}>
@@ -438,6 +448,9 @@ export default function ValueAnchorsPanel() {
 
       {/* DS-SOUL-MEMORY-002 P1（U1）：agent 身份区（只读；宁缺毋滥——双槽空/读失败整段不渲染） */}
       <IdentitySection blockId={blockId} />
+
+      {/* P2（O13 UI）：待办裁决区（宁缺毋滥——空列表/读失败整段不渲染） */}
+      <PendingSection blockId={blockId} />
 
       {loading ? (
         <div className="_va-empty">{t('memory.detail.loading')}</div>
