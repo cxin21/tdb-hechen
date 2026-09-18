@@ -509,3 +509,9 @@ CREATE TABLE IF NOT EXISTS core_pending (
 根因链：probe mock store 掩盖真实 upsertL1 静默 false（卡片 record 缺 sessionKey/sessionId/version/certainty 必填字段）→ 补齐与 consolidation 持续态同形 → 21ac952。
 **F14 双向闭环 ✓**：prot(引用 active 锚苏教授)=LIVE / dang(悬空)=ARCHIVED。
 **ev11 self_identity**：重建冷却待 identity pass（门新形态将在重建时拦人设回显——D-R5-3 修复待该 pass 验证）。
+
+## Round5 终测闭环补录（2026-09-18 13:xx，61fb33a/9a20c22）
+**D-R5-7 蒸馏层身份门**：consolidation 持久化前 subject/content 过 isIdentityImposition+stripIdentityStateResidue 单一源（对抗人设/指令/定时状态经 L1 承载后被蒸馏成「用户偏好」结论卡固化 L3，绕过 identity-discovery 全部身份门——ev11 实证 [结论|日常] 含老板大人/秘书/冥想提醒），命中整条拒收留痕（61fb33a）；门尾词补「其」代词（"与其交流"绕过，9a20c22）。
+**存量治理（测试数据范围内）**：ev11 污染源 L1 两行（老板大人/冥想指令记录）+ scene_blocks/日常-AI协作与私人事务.md + scene_index 条目（scene_index 为 list 结构——首次清洗脚本 .get 崩溃未写入，二修完成）+ persona.md 引用——清除后 /recall **对抗词 False ✓ 隔离 True ✓ 块长 1150**。
+**三级贯通确认**：对抗内容的传播链 = 用户口播 → L1（如实，合法）→ **consolidation 蒸馏（非法→已门）** → scene_block/L3 卡（文件态）→ 注入块；现在蒸馏层与 scene 块均为已治理面（R4-5 三元组 scope + 本轮蒸馏门）。scene-extractor L2 蒸馏 prompt 层软约束同源加固留待下一轮（确定性门已覆盖 work_fact 通道）。
+**F14 终态**：prot(苏教授 active 锚)=LIVE / dang=ARCHIVED ✓；苏教授 person 锚 p-auto-9ead7 val=1 保持。
