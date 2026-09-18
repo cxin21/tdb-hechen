@@ -9,7 +9,7 @@
  * 租户：批内记录租户去重聚合（与 forgetting 同式——全表扫描路径无单租户概念）；
  * work_fact 不入触发累计（防"反思的反思"自我 reinforce，与 consolidation 分组同原则）。
  */
-import type { Logger } from "../../types.js";
+import type { Logger } from "../types.js";
 
 export interface ReflectionConfig {
   enabled: boolean;
@@ -139,6 +139,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
     promptLines.push("");
     promptLines.push("请按三问式输出反思结论 JSON 数组（字段：question/conclusion/evidence）。无合格结论输出 []。");
     const raw = await deps.llmRunner.run({ prompt: promptLines.join("\n"), systemPrompt: REFLECTION_SYSTEM_PROMPT, taskId: "reflection-l3", timeoutMs: 0, maxTokens: 0 });
+    deps.logger?.debug?.(`[reflection] tenant=${JSON.stringify([triple.teamId, triple.userId, triple.agentId])} rawLen=${String(raw ?? "").length} rawPreview=${String(raw ?? "").slice(0, 200)}`);
     const proposals = parseReflectionProposals(String(raw ?? "")).slice(0, maxConclusions);
     const now = new Date().toISOString();
     for (const pr of proposals) {

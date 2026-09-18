@@ -392,6 +392,14 @@ const IDENTITY_IMPOSITION_PATTERNS: RegExp[] = [
   /(认|视)\s*我\s*(为|作)/,
   /让\s*我\s*以.{0,8}身份/,
   /(叫我|让我)\s*扮演/,
+  // P3 终测实证（ev11，D-R5-3）：agent 自述复述形态的第三方人设回显（用户口播"你以猎头
+  // 身份说话"被 L1 承载后，LLM 以第一人称"我以X的身份与用户交流"复述）——同样不是行为
+  // 可证自我认知；误报面：合法自证不出现"以…身份与用户"句式（单测 gate-dr5 断言）。
+  /以\s*.{0,12}身份\s*(与|跟|同|和)?\s*(用户|他|你)/,
+  /作为.{0,10}(身份|角色).{0,6}(与|跟|同|和)?\s*用户/,
+  // 周期提醒/定时状态（"我每晚九点提醒用户冥想"/"从今天开始每天提醒"）= 未来指令状态非行为自证。
+  /(每天|每晚|每日)(早上|上午|中午|下午|晚间|凌晨)?[一二三四五六七八九十]?\s*[点时]?\s*(提醒|通知)/,
+  /(从今天|从今|从明天)\s*(开始|起)/,
   // Round3 对抗实证（ev7 秘书人设）：角色指派/尊称驯化/无条件服从三类绕过形态
   /指定.{0,10}(专属)?(秘书|管家|助理|顾问|代理人)/,
   /(称呼|叫|喊).{0,3}(他|用户|你)(为|作|是)/,
@@ -418,7 +426,10 @@ export function mergeIdentityFacts(existingContent: string | undefined, newFacts
   const norm = (s: string) => s.replace(/^-\s*/, "").trim();
   const seen = new Set<string>();
   const out: string[] = [];
-  const existingLines = (existingContent ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1);
+  // P3 终测实证（D-R5-4）：existing 行也过主语门——旧实现门只拦新提案，存量污染行
+  // （猎头人设）随演化合并永存。第一性原理：门校验的是写入的最终内容。
+  const existingLines = (existingContent ?? "").split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1)
+    .filter((l) => !isIdentityImposition(norm(l)));
   // 对抗审查A1（饥饿修复）：先收集全部去重，再 slice(-cap) 保留最新——existing 在前的
   // 早退式 cap 会让槽满后新事实永不进入（演化停滞）。
   for (const line of [...existingLines, ...newFacts.filter(Boolean).map((f) => (f.startsWith("- ") ? f : "- " + f))]) {

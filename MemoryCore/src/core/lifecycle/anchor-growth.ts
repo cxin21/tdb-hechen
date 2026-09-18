@@ -282,7 +282,11 @@ export async function runAnchorGrowth(deps: {
         // 1b 采纳冷却：上次「有采纳」不足 intervalHours → 不跑。
         //    兼容映射：存量状态只有 lastDiscoveryAt（旧语义=每次消费轮都写）→ 视作
         //    lastAdoptedAt（保守 24h，与旧行为等价）；新写入双字段后语义精确。
-        const lastAdoptedRaw = state.lastAdoptedAt ?? state.lastDiscoveryAt;
+        // D-R5-5：双字段行（有 lastAttemptAt）0 采纳轮不写 lastAdoptedAt → interval 门由
+        // attempt-cooldown(1h) 承担（头部注释"0 采纳 1h"语义）；存量行（无 lastAttemptAt）
+        // 仍用 lastDiscoveryAt 兜底保守 24h（与旧行为等价）。否则首轮失败也拉满 24h 冷却，
+        // 新租户永远只有一次机会（ev11 实证：苏教授锚 ev=3 被 24h 门锁死永无第二次）。
+        const lastAdoptedRaw = state.lastAdoptedAt ?? (state.lastAttemptAt != null ? undefined : state.lastDiscoveryAt);
         const lastAdopted = lastAdoptedRaw ? Date.parse(lastAdoptedRaw) : NaN;
         if (Number.isFinite(lastAdopted) && nowMs - lastAdopted < cfg.intervalHours * 3600_000) {
           // v4#7：拦截静默 debug 化（同 1a）
@@ -374,7 +378,8 @@ export async function runAnchorGrowth(deps: {
             .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)))
             .slice(0, overLimit);
           for (const v of victims) {
-            const ok = await Promise.resolve(store.retireValue(v.row.value_id, tenant));
+            // D-R5-2 家族：retireValue 可选方法在守卫后调用——非空断言（quotaEvict 闭包内 TS 不收窄）
+            const ok = await Promise.resolve(store.retireValue!(v.row.value_id, tenant));
             if (ok) {
               quotaRetiredA++;
               logger?.warn?.(`[anchor-growth] quota guard retire (${tag}): ${v.row.value_id} (${v.row.label}) strength=${v.strength.toFixed(3)} over=${overLimit} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);

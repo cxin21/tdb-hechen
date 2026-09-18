@@ -9,7 +9,9 @@ import { runReflection, parseReflectionProposals } from "./reflection.js";
 const NOW = "2026-09-18T00:00:00.000Z";
 const LOG = { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} };
 
-function rec(id: string, content: string, significance: number, tenant: string, opts: { workFact?: boolean; updatedAt?: string } = {}) {
+type RecOpts = { workFact?: boolean; updatedAt?: string; tenantTriple?: [string, string, string] };
+
+function rec(id: string, content: string, significance: number, opts: RecOpts = {}) {
   const [teamId, userId, agentId] = (opts.tenantTriple ?? ["t1", "u1", "a1"]);
   return {
     id,
