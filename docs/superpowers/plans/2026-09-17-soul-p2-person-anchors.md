@@ -628,3 +628,13 @@ HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）�
 15 项全通过：health 200 / vitest 615:615 / tsc 249 / 配置八开（selfIdentity+person+character+identityMaintain+reflection+refProtection+soulRender+maxTokensLimit）/ LLM provider openai-compatible 全 11 调用面 / proxy max_tokens 钳制 A/B 3:3 / F14 双向 / F13 反思卡 6 张真数据 / D-R5-1 memoryConfig 四链段 / T7b UI 全链 / 多提供商 maxTokensLimit / 测试数据全零（L0=0/L1=0/links=0/状态键=0）/ HEAD 推送 / 工作区干净。
 
 遗留登记：D-R5-2 类型层（tsc 249 存量，运行时正常）/ T7b Claude Code 场景实测 / P3 sensitivity 未拍板 / 旧网关进程 141730（ubuntu 用户，不占端口，建议清理）/ MemoryProxy per-agent ceiling（YAGNI）。
+
+## 剩余未完成项清单（2026-09-18 深夜登记，goal-5efef2ae 按序执行）
+| # | 项 | 依据 | 优先级 | 验收标准 |
+|---|---|---|---|---|
+| T-A | agentAct 真数据复验 | D-R5-1 memoryConfig 接线已提交未验证（工作区 l1-extractor/pipeline-factory 两文件变更） | P1 | 重启+新提取后 agentAct 占比 >0% |
+| T-B | U7 分池配额迷你显示 | spec §6.5 P2 可选 | P2 | S5 健康条/锚面板显示 theme/person/character 配额 |
+| T-C | U6 sensitivity 预留徽章位 | spec "拍板后启用"（只做预留 UI 不实施逻辑） | P2 | 徽章位渲染，无逻辑 |
+| T-D | scene_block 文件通道确定性门 | 当前门仅覆盖 work_fact 通道，scene_block 文件经 /recall 注入无门 | P2 | scene 块持久化前过 identity 门 |
+| T-E | D-R5-2 依赖漂移治理 | @ai-sdk/openai v3 移除旧 API → adapters 5 错 + cli 2 错 | P3 | tsc 归零或依实证降档；endpoint 真数据验证 |
+执行序：T-A → T-D → T-B → T-C → T-E。每项完成后：SOP 复核（重启+真数据+配置审计+注入召回核对）。
