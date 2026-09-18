@@ -52,7 +52,8 @@ export class OpenClawHostAdapter implements HostAdapter {
 
     this.runnerFactory = new OpenClawLLMRunnerFactory({
       config: opts.openclawConfig,
-      agentRuntime: opts.api.runtime.agent,
+      // D-R5-2：OpenClaw plugin-sdk 运行时对象形状漂移（运行时正常，类型断言归位）
+      agentRuntime: opts.api.runtime.agent as unknown as import("../../utils/clean-context-runner.js").EmbeddedAgentRuntimeLike,
       logger: opts.api.logger,
     });
   }

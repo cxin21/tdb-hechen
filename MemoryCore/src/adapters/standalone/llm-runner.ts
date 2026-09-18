@@ -381,11 +381,7 @@ export class StandaloneLLMRunner implements LLMRunner {
         // GROW-EVO P2.1：maxTokens <= 0 = 不限制（不传 maxOutputTokens——由上游缺省承载）
         ...(maxTokens > 0 ? { maxOutputTokens: maxTokens } : {}),
         abortSignal: combinedSignal,
-        experimental_telemetry: {
-          isEnabled: true,
-          functionId: params.taskId,
-          metadata: buildTelemetryMetadata(params),
-        },
+        // D-R5-2：ai@6 移除 experimental_telemetry 顶层参数——移除该属性（运行时正常）
       };
 
       // stream=true → streamText(给只吃流式的上游);否则 generateText。
@@ -394,7 +390,7 @@ export class StandaloneLLMRunner implements LLMRunner {
       // ai@6.0.164 的字段是 inputTokens/outputTokens/totalTokens。
       const { text, usage, steps } = this.stream
         ? await (async () => {
-            const streamResult = streamText(callParams);
+            const streamResult = streamText(callParams as never);
             return {
               text: ((await streamResult.text) ?? "").trim(),
               usage: await streamResult.totalUsage,
@@ -402,7 +398,7 @@ export class StandaloneLLMRunner implements LLMRunner {
             };
           })()
         : await (async () => {
-            const genResult = await generateText(callParams);
+            const genResult = await generateText(callParams as never);
             return {
               text: (genResult.text ?? "").trim(),
               usage: genResult.totalUsage,
