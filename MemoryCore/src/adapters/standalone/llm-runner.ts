@@ -89,6 +89,9 @@ export interface StandaloneLLMConfig {
   maxTokens?: number;
   /** Request timeout in milliseconds (default: 120_000). */
   timeoutMs?: number;
+  /** 多提供商兼容（T1）：max_tokens 上限（按模型声明，缺省 131072=Ark 上限）。
+   *  不同 LLM 后端的 max_tokens 合法范围不同——config-first 钳制防止上游 400。 */
+  maxTokensLimit?: number;
   /**
    * LLM 访问模式（gateway 层解释；runner 拿到的是已解析后的 baseUrl/apiKey）：
    *   - "openai": 直连通用 OpenAI 兼容服务（默认，向后兼容）
@@ -305,7 +308,11 @@ export class StandaloneLLMRunner implements LLMRunner {
   async run(params: LLMRunParams): Promise<string> {
     const runStartMs = Date.now();
     const timeoutMs = params.timeoutMs ?? this.config.timeoutMs ?? 120_000;
-    const maxTokens = params.maxTokens ?? this.config.maxTokens ?? 4096;
+    const rawMaxTokens = params.maxTokens ?? this.config.maxTokens ?? 4096;
+    // T1（多提供商兼容）：按 maxTokensLimit 钳制（不同模型/供应商上限不同）；
+    // 缺省 131072（Ark 上限）；<= 0 = 不限制（由上游缺省承载）
+    const limit = this.config.maxTokensLimit ?? 131072;
+    const maxTokens = rawMaxTokens > 0 ? Math.max(1, Math.min(limit, rawMaxTokens)) : rawMaxTokens;
     const workspaceDir = params.workspaceDir ?? process.cwd();
     // Per-call overrides — when the caller supplies their own tools (e.g.
     // SkillExtractor's skill_list/skill_view/skill_manage), they trump the

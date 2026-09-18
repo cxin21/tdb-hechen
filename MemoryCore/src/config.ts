@@ -505,6 +505,8 @@ export interface StandaloneLLMOverrideConfig {
   maxTokens: number;
   /** Request timeout in milliseconds (default: 120000). */
   timeoutMs: number;
+  /** 多提供商兼容（T2）：max_tokens 上限（按模型声明，缺省 131072=Ark 上限）。 */
+  maxTokensLimit?: number;
   /**
    * LLM 访问模式：
    *   - "openai": 直连 OpenAI 兼容服务（默认）
@@ -1246,6 +1248,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         model: str(llmGroup, "model") ?? "gpt-4o",
         maxTokens: num(llmGroup, "maxTokens") ?? 4096,
         timeoutMs: num(llmGroup, "timeoutMs") ?? 120_000,
+        // T2（多提供商兼容）：max_tokens 上限（缺省 131072=Ark 上限；config-first 钳制）
+        maxTokensLimit: num(llmGroup, "maxTokensLimit") ?? 131072,
         provider,
         stream: bool(llmGroup, "stream") ?? false,
         proxy: {
