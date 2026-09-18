@@ -622,3 +622,9 @@ HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）�
 2. 查表命中 → 自动解析；查不到 → 回退 maxTokensLimit 配置；都没有 → 缺省 131072
 3. 不需要现在实现——当前 maxTokensLimit 已解决实际问题，扩展路径清晰
 
+
+## 全项最终核验报告（2026-09-18 晚，b1edb0e）
+
+15 项全通过：health 200 / vitest 615:615 / tsc 249 / 配置八开（selfIdentity+person+character+identityMaintain+reflection+refProtection+soulRender+maxTokensLimit）/ LLM provider openai-compatible 全 11 调用面 / proxy max_tokens 钳制 A/B 3:3 / F14 双向 / F13 反思卡 6 张真数据 / D-R5-1 memoryConfig 四链段 / T7b UI 全链 / 多提供商 maxTokensLimit / 测试数据全零（L0=0/L1=0/links=0/状态键=0）/ HEAD 推送 / 工作区干净。
+
+遗留登记：D-R5-2 类型层（tsc 249 存量，运行时正常）/ T7b Claude Code 场景实测 / P3 sensitivity 未拍板 / 旧网关进程 141730（ubuntu 用户，不占端口，建议清理）/ MemoryProxy per-agent ceiling（YAGNI）。
