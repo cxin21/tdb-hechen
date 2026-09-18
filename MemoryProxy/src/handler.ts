@@ -519,6 +519,19 @@ export async function handleChatCompletions(
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
+  // D-R5-7b：max_tokens 钳制——Ark API 限制 [1,131072]，客户端（DSH/Codex 等）
+  // 可能发送超出范围的值（如 200000 或 0），原样透传会被上游 400 拒绝。
+  // 钳制到 [1,131072] 并删除 0/负值/非数字（让上游走缺省）。
+  if (typeof body.max_tokens === "number") {
+    if (body.max_tokens <= 0 || !Number.isFinite(body.max_tokens)) {
+      delete body.max_tokens;
+    } else if (body.max_tokens > 131072) {
+      body.max_tokens = 131072;
+    }
+  } else if ("max_tokens" in body) {
+    delete body.max_tokens;
+  }
+
   // ── Optional inbound body dump (dev only) ─────────────────────────
   // 打开: PROXY_DEBUG_DUMP_INBOUND=/tmp/proxy-inbound
   // 每个入站请求落一个文件,方便排查客户端 replay 时到底带没带某个字段。
