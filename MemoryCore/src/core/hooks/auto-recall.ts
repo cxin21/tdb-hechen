@@ -12,6 +12,7 @@
 
 import type { MemoryTdaiConfig } from "../../config.js";
 import { readSceneIndex } from "../scene/scene-index.js";
+import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
 import type { MemoryRecord } from "../record/l1-reader.js";
@@ -435,7 +436,17 @@ export async function performLayeredRecall(params: {
       } catch (err) {
         logger?.debug?.(`${TAG} [layered] work_fact conclusion candidates unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
+      // T-D（第一性原理）：scene_block 注入门——对抗内容三级传播链的最后无门通道
+      // （L1 → consolidation 蒸馏[已门] → scene_block 文件 → 注入块）。scene_index.json
+      // 的 summary 若含对抗人设/指令/定时状态，直接进注入块（ev11 [结论|日常] 污染实证）。
+      // 门 = identity 单一源（isIdentityImposition 拦人设回显；strip 拦状态陈述/指令），
+      // 命中即拒收留痕（宁缺毋滥）；与其他 r7 通道（work_fact 已门）语义一致。
       for (const e of sceneIndexEntries) {
+        const gateText = `${e.filename}\n${e.summary}`;
+        if (isIdentityImposition(gateText) || stripIdentityStateResidue(gateText) === "") {
+          logger?.debug?.(`${TAG} [layered] scene_block gate rejected "${e.filename}" (identity gate)`);
+          continue;
+        }
         r7Candidates.push({ sceneName: e.filename.replace(/\.md$/i, ""), content: e.summary, source: "scene_block" });
       }
       r7Conclusions = selectL2Conclusions(r7CleanQuery, r7Candidates, { ftsTokens: r7FtsTokens }, r7HalfLimit);
