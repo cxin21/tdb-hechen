@@ -710,7 +710,7 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * GROW：origin（seed|manual|auto，来源徽标；缺省 manual）。冲突路径 state='active'
    * （显式重建=撤销退休/否决；自动管道的 veto 不可重提由自生长去重查全态保证）。
    */
-  upsertValue?(valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person", attrs?: { role?: string; aliases?: string[] }): MaybePromise<boolean>;
+  upsertValue?(valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person" | "character", attrs?: { role?: string; aliases?: string[]; source?: string; facts?: string[] }): MaybePromise<boolean>;
   /** P2：通用 refs 回填键族（coreRefs/personRefs/identityRefs 单源；旧后端可缺省）。 */
   backfillMemoryRef?(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): MaybePromise<boolean>
   /** O13（P2）：core_pending——红线类提案人工采纳落点（三方法，缺省=store 不支持时调用方安静跳过）。 */

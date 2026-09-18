@@ -67,6 +67,8 @@ export interface AnchorDiscoveryConfig {
   maxTotal: number;
   intervalHours: number;
   person: AnchorDiscoveryPersonConfig;
+  /** P3：品格锚池（spike 定案：聚合源=self_identity 槽事实；enabled 缺省 false=逐位现状）。 */
+  character: { enabled: boolean; minEvidence: number; maxPerPass: number; maxTotal: number };
   /** P2：GROW-MAINT 身份分支开关（F15 身份分支；缺省 false=逐位现状）。 */
   identityMaintain: { enabled: boolean };
 }
@@ -79,8 +81,10 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   intervalHours: 24,
   // P2：人物池缺省关闭=逐位现状（config-first 铁律）；yaml 显式开启后生效。
   person: { enabled: false, minEvidence: 5, maxPerPass: 1, maxTotal: 8 },
+  // P3：品格池缺省关闭=逐位现状（config-first 铁律）；聚合源=self_identity 槽事实（spike 定案）。
+  character: { enabled: false, minEvidence: 2, maxPerPass: 1, maxTotal: 8 },
   identityMaintain: { enabled: false },
-};
+}
 
 /** 旧 store（缺 listL1TenantTriplets）回退用的 default 桶三元组；PA 起自生长默认遍历全部有记忆 agent。 */
 export const ANCHOR_GROWTH_TENANT: CoreTenant = { teamId: "default", userId: "default", agentId: "default" };
@@ -95,7 +99,7 @@ const ATTEMPT_COOLDOWN_MS = 3600_000;
 /** GROW-MAINT：权重重写防抖阈值（|Δw| 低于此不落库）。 */
 const REWEIGHT_DELTA = 0.05;
 
-type CoreValueRow = { value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type?: "theme" | "person"; attrs_json?: string };
+type CoreValueRow = { value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type?: "theme" | "person" | "character"; attrs_json?: string };
 
 /** P2：attrs_json 宽松解析单源（损坏/缺失 → {aliases:[]}——人物锚维护/去重/挤出共用）。 */
 function attrsOf(row: { attrs_json?: string }): { role?: string; aliases: string[] } {
@@ -112,11 +116,14 @@ function attrsOf(row: { attrs_json?: string }): { role?: string; aliases: string
 
 /** 自生长锚 value_id：slug(label)；纯 CJK（slug 化为空）→ auto-<sha256[:10]>。
  *  P2（spec §2.6 跨类命名空间）：person 域加 p- 前缀（人物"咖啡"与主题"咖啡"不再同 id 互覆）。 */
-export function growthValueId(label: string, nodeType: "theme" | "person" = "theme"): string {
+export function growthValueId(label: string, nodeType: "theme" | "person" | "character" = "theme"): string {
   const normalized = label.trim().toLowerCase();
   const slug = normalized.replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "");
   if (nodeType === "person") {
     return slug ? "p-" + slug : "p-auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
+  }
+  if (nodeType === "character") {
+    return slug ? "c-" + slug : "c-auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
   }
   if (slug) return slug;
   return "auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
@@ -353,7 +360,8 @@ export async function runAnchorGrowth(deps: {
         // P2（F15 QUOTA 分池）：theme/person 各自独立计数与 maxTotal——防人物锚挤占主题锚名额。
         // theme 池行集 = 非 person 行（无 person 行时与旧口径逐位一致）；person 池仅 enabled 时守卫。
         const activeNow = anyState.filter((r) => r.state === "active");
-        const themeActive = activeNow.filter((r) => r.node_type !== "person");
+        // P3：口径收紧——theme 池 = 显式 theme（缺省无 node_type 行=theme）；person/character 各自独立。
+        const themeActive = activeNow.filter((r) => (r.node_type ?? "theme") === "theme");
         const personActive = activeNow.filter((r) => r.node_type === "person");
         const quotaEvict = async (poolRows: CoreValueRow[], maxTotal: number, evOf: (r: CoreValueRow) => number, tag: string) => {
           const pinnedNow = poolRows.filter((r) => r.pinned === 1).length;
@@ -528,6 +536,63 @@ export async function runAnchorGrowth(deps: {
             }
           }
         }
+        // ── P3：character 池（品格锚；聚合源=self_identity 槽事实——spike 定案 agentAct 占比 0%，
+        // spec §7-P3 fallback 分支）。per-三元组（§110 拍板）；F15 独立 maxTotal 分池；
+        // 证据=提案 fact 切片在语料的逐字包含（identityFactSlice 单一源复用）。
+        if (cfg.character?.enabled) {
+          const characterAll = anyState2.filter((r) => (r.node_type ?? "theme") === "character");
+          const charNames = characterAll.map((r) => String(r.label).trim().toLowerCase()).filter((s) => s.length > 0);
+          const selfFacts = (((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>)
+            .find((s) => s.slot === "self_identity")?.content
+            ?.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1) ?? [];
+          if (selfFacts.length > 0) {
+            const factSlices = selfFacts.map((l) => identityFactSlice(l)).filter((s): s is string => typeof s === "string" && s.length > 0);
+            const charRaw = await deps.llmRunner!.run({
+              prompt: buildCharacterDiscoverPrompt(selfFacts, charNames),
+              systemPrompt: CHARACTER_DISCOVER_SYSTEM_PROMPT,
+              taskId: "character-discover-growth",
+              timeoutMs: 0,
+              maxTokens: 0,
+            });
+            const characterCandidates = parseCharacterProposals(String(charRaw ?? ""))
+              .filter((p) => !charNames.includes(p.label.trim().toLowerCase()))
+              .map((p) => {
+                const slices = p.fact
+                  ? selfFacts.filter((f) => f.includes(p.fact!)).map((l) => identityFactSlice(l)).filter((s): s is string => typeof s === "string" && s.length > 0)
+                  : factSlices;
+                return { ...p, evidenceCount: characterEvCount(slices.length > 0 ? slices : factSlices, corpus) };
+              })
+              .filter((p) => p.evidenceCount >= cfg.character!.minEvidence)
+              .sort((a, b) => b.evidenceCount - a.evidenceCount)
+              .slice(0, cfg.character!.maxPerPass);
+            const characterPinnedActive = characterAll.filter((r) => r.state === "active" && r.pinned === 1).length;
+            const characterAutoNonPinned = characterAll.filter((r) => r.state === "active" && r.origin === "auto" && r.pinned !== 1);
+            let freeC = Math.max(0, cfg.character!.maxTotal - characterPinnedActive - characterAutoNonPinned.length);
+            const displaceableC = characterAutoNonPinned
+              .map((r) => ({ row: r, strength: r.weight * characterEvCount(factSlices, corpus) }))
+              .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
+            for (const c of characterCandidates) {
+              const candidateStrength = suggestAnchorWeight(c.evidenceCount, corpus.length) * c.evidenceCount;
+              let adoptedC = false;
+              if (freeC > 0) { adoptedC = true; freeC--; }
+              else if (displaceableC.length > 0 && candidateStrength > displaceableC[0]!.strength) {
+                const weakest = displaceableC.shift()!;
+                const retiredOk = await Promise.resolve(store.retireValue(weakest.row.value_id, tenant));
+                if (!retiredOk) { skipped++; continue; }
+                displaced++;
+                adoptedC = true;
+              } else { skipped++; continue; }
+              if (adoptedC) {
+                const ok = await Promise.resolve(store.upsertValue(
+                  growthValueId(c.label, "character"), c.label,
+                  suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant,
+                  undefined, "auto", "character", { source: "self_identity", facts: factSlices.slice(0, 3) },
+                ));
+                if (ok) { adopted++; adoptedThisAgent++; } else { skipped++; logger?.warn?.(`[anchor-growth] character adopt upsert failed: ${c.label}`); }
+              }
+            }
+          }
+        }
         // ── P2：identity GROW-MAINT（F15 身份分支；F20 红线——只警告永不自动退场）──────
         if (cfg.identityMaintain?.enabled) {
           const unsupported = await maintainIdentityFacts(store, tenant, corpus, logger);
@@ -593,4 +658,64 @@ export async function runAnchorGrowth(deps: {
     logger?.warn?.(`[anchor-growth] failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ran: false, adopted: 0, retired: 0, reweighted: 0, displaced: 0, skipped: 0, reason: "error" };
   }
+}
+
+// ── P3：character 池辅助（品格锚单一源）──────────────────────────────────────────
+
+/** P3：品格锚 LLM 视角——只从给定自我事实归纳品格标签（宁缺毋滥；label ≤6 字）。 */
+export const CHARACTER_DISCOVER_SYSTEM_PROMPT = [
+  "你是团队记忆的品格锚提炼顾问。你只提议，不落库：你的输出只是候选提案，采纳与否由证据门决定。",
+  "硬约束：",
+  "1. 只从给定【自我事实】归纳品格标签（如 严谨/守诺/坦诚/复盘）；一次性任务、单次行为不提。",
+  "2. 已有品格锚清单中的标签不得重复提议（去重）。",
+  "3. 宁缺毋滥：估计支撑证据少于门槛的不要提；label 为品格词（≤6 字），不是事实复述。",
+  "4. 每条提案标注其依据的自我事实原文（fact 字段，逐字摘自给定事实）。",
+  "5. 只输出一个 JSON 数组，不要输出任何其它文字：[\"label\":\"…\",\"rationale\":\"…\",\"fact\":\"…\"]，无提议输出 []。",
+].join("\n");
+
+/** P3：user prompt——自我事实清单 + 既有品格锚清单 + 输出格式。 */
+export function buildCharacterDiscoverPrompt(selfFacts: string[], existing: string[]): string {
+  const lines: string[] = [];
+  lines.push("【自我事实（agent 自我层，行为可证）】");
+  for (const f of selfFacts) lines.push("- " + f);
+  if (existing.length > 0) {
+    lines.push("");
+    lines.push("【已有品格锚（去重，不得重复提议）】");
+    for (const e of existing) lines.push("- " + e);
+  }
+  lines.push("");
+  lines.push("请输出品格提案 JSON 数组（字段：label/rationale/fact）。无合格提议输出 []。");
+  return lines.join("\n");
+}
+
+/** P3：解析品格提案（宽松 JSON 提取，与 person/theme 解析同风格）。 */
+export function parseCharacterProposals(raw: string): Array<{ label: string; rationale: string; fact?: string }> {
+  const text = String(raw ?? "").trim();
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start < 0 || end <= start) return [];
+  try {
+    const arr = JSON.parse(text.slice(start, end + 1)) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((p): p is Record<string, unknown> => !!p && typeof p === "object")
+      .map((p) => ({
+        label: typeof p.label === "string" ? p.label.trim() : "",
+        rationale: typeof p.rationale === "string" ? p.rationale.trim() : "",
+        fact: typeof p.fact === "string" ? p.fact.trim() : undefined,
+      }))
+      .filter((p) => p.label.length > 0 && p.label.length <= 12);
+  } catch {
+    return [];
+  }
+}
+
+/** P3：品格证据计数——语料记录命中任一事实切片（逐字包含）的去重计数。 */
+export function characterEvCount(slices: string[], corpus: string[]): number {
+  let n = 0;
+  for (const content of corpus) {
+    const text = String(content ?? "");
+    if (slices.some((s) => s.length > 0 && text.includes(s))) n++;
+  }
+  return n;
 }

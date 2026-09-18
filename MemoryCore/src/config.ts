@@ -300,6 +300,13 @@ export interface MemoryCoreMemoryConfig {
     identityMaintain: {
       enabled: boolean;
     };
+    /** P3：品格锚池（聚合源=self_identity 槽事实；enabled 缺省 false=逐位现状）。 */
+    character: {
+      enabled: boolean;
+      minEvidence: number;
+      maxPerPass: number;
+      maxTotal: number;
+    };
   };
   /**
    * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
@@ -933,6 +940,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         identityMaintain: {
           enabled: bool(obj(g, "identityMaintain"), "enabled") ?? false,
         },
+        character: (() => {
+          const cg = obj(g, "character");
+          const clampC = (key: string, dflt: number, lo: number, hi: number) => {
+            const rawC = num(cg, key);
+            if (rawC === undefined || !Number.isFinite(rawC)) return dflt;
+            return Math.min(hi, Math.max(lo, Math.floor(rawC)));
+          };
+          return {
+            enabled: bool(cg, "enabled") ?? false,
+            minEvidence: clampC("minEvidence", 2, 1, 50),
+            maxPerPass: clampC("maxPerPass", 1, 1, 5),
+            maxTotal: clampC("maxTotal", 8, 1, 50),
+          };
+        })(),
       };
     })(),
     // DS-SOUL-MEMORY-002 P1：agent 自我层（enabled 缺省 false=逐位现状；yaml 值真实生效+clamp）。
