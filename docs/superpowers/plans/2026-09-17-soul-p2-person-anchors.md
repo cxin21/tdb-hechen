@@ -526,3 +526,13 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **D-R5-2 处置（本轮定案）**：根因=依赖漂移——package.json `@ai-sdk/openai@^3.0.53` + `ai@^6.0.164`（OpenAIProviderSettings 移除 compatibility/createOpenAI 签名变更）vs 代码按旧 API 书写；运行时全功能实证正常（锚/身份/反思全链真数据工作），类型层漂移登记为 D-R5-2 存量债（修复须独立验证 endpoint 行为，不在本 goal 范围）。
 **待授权清单（本 goal 范围外）**：① 测试数据清理 ev10/ev11（ev9 已在 Round3 授权批内清过同型租户，本轮新租户待授权）② T7b attrs 编辑/aliases 反查/S2/S3 顺延项 ③ P3 sensitivity（spec"若拍板实施"未拍板）④ D-R5-2 依赖升级治理。
 **基线**：vitest 615/615（P2 起点 521 → +94）、tsc 249（含 adapters/cli 存量漂移 10 错，D-R5-2）、全部推送。
+
+## 测试数据清理记录（2026-09-18 13:5x，用户指令：测试数据清理——ev9/ev10/ev11 + vp3 遗漏补清）
+**授权范围**：本轮测试租户 ev9/ev10/ev11 + 顺带盘点发现的 vp3 遗漏（Round3 清单外，同批测试数据）。
+**方法**：备份先行（vectors.db.bak-purge-20260918，115MB）→ node:sqlite（.cjs 后缀 + allowExtension + sqlite-vec vec0.so 0.1.9 加载）→ 八表按 team 删 + l1_links 按 record 双向删（无 team_id 列）+ l1_vec/l0_vec 按行删（vec0 虚表需扩展加载）+ 悬空 links 兜底清零（15+1003+15）+ anchor_growth_state 46+5 键 + FTS external-content rebuild（l1_fts/l0_fts）+ profiles 三元组目录/vp3 目录删除（scene_blocks/persona.md/scene_index）。全程**未重启网关**。
+**过程坑（方法学沉淀）**：① package.json "type":"module" 下临时脚本必须 .cjs；② fts5 external-content 删行靠主表删除+rebuild，索引内部计数非验收指标（功能召回为准）；③ vec0 虚表访问必须加载扩展，shadow 表不可直接操作。
+**终验收（只读，未重启网关）**：
+- 主表全零：八表按三租户+vp3 全 0；动态全表扫描（列值含测试 team id）残留 0（l1_fts 虚表索引计数 55 为索引内部计数非行数，以功能召回为准——Round3 同款教训）
+- 悬空 links=0；状态键=0；profiles 残留仅真实租户+default 桶
+- 功能召回：苏教授/林岚/陈教授/钱院长/老板大人 五项测试人物命中全 0；真实租户 /recall 正常（块长 4086）
+- health 200；服务未重启
