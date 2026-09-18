@@ -508,6 +508,7 @@ async function callLlmExtraction(params: {
   backgroundMessages: ConversationMessage[];
   previousSceneName?: string;
   config: unknown;
+  memoryConfig?: unknown;
   logger?: Logger;
   model?: string;
   promptMode?: MemoryPromptMode;
