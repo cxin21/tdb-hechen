@@ -608,6 +608,9 @@ export function createL1Runner(opts: {
           agentId: group.agentId,
           baseDir: pluginDataDir,
           config,
+          // D-R5-1：MemoryTdaiConfig 权威接线（selfIdentity gating 读取源）——
+          // openclawConfig 无 coreMemory 子树（宿主配置），AGENT_ACT_BLOCK 恒死配置。
+          memoryConfig: cfg,
           options: {
             enableDedup: cfg.extraction.enableDedup,
             enableMemoryLinks: cfg.links.enabled,

@@ -102,6 +102,9 @@ export async function extractL1Memories(params: {
   agentId?: string;
   baseDir: string;
   config: unknown;
+  /** host-neutral MemoryTdaiConfig（parsed）——selfIdentity gating 权威读取源（D-R5-1 实证：
+   * config 形参收 openclawConfig 无 coreMemory 子树 → AGENT_ACT_BLOCK gating 恒 false）。 */
+  memoryConfig?: unknown;
   options?: {
     /** Max new messages to send in one extraction call */
     maxMessagesPerExtraction?: number;
@@ -156,7 +159,7 @@ export async function extractL1Memories(params: {
    */
   storage?: StorageAdapter;
 }): Promise<L1ExtractionResult> {
-  const { messages, sessionKey, sessionId, taskId, teamId, userId, agentId, baseDir, config, logger, instanceId: metricInstanceId, storage } = params;
+  const { messages, sessionKey, sessionId, taskId, teamId, userId, agentId, baseDir, config, memoryConfig, logger, instanceId: metricInstanceId, storage } = params;
   const options = params.options ?? {};
   const maxNewMessages = options.maxMessagesPerExtraction ?? 10;
   const maxBgMessages = options.maxBackgroundMessages ?? 5;
@@ -203,6 +206,7 @@ export async function extractL1Memories(params: {
       newMessages,
       backgroundMessages,
       previousSceneName: options.previousSceneName,
+      memoryConfig,
       config,
       logger,
       model: options.model,
@@ -515,13 +519,17 @@ async function callLlmExtraction(params: {
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
 }): Promise<{ scenes: SceneSegment[]; systemPrompt: string; userPrompt: string; rawOutput: string }> {
-  const { newMessages, backgroundMessages, previousSceneName, config, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore } = params;
+  const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore } = params;
 
   // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
   // 自定义 memoryPrompt 策略优先级不变——自定义时内置 base 被其覆盖，agentAct 块随之
   // 不生效（自定义策略=用户权威，不篡改）。config 形参为 host-neutral unknown，窄化读取。
-  const selfIdentityEnabled = (config as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
-    ?.coreMemory?.selfIdentity?.enabled === true;
+  // D-R5-1：memoryConfig（MemoryTdaiConfig）优先——openclawConfig 无 coreMemory 子树
+  const selfIdentityEnabled =
+    (memoryConfig as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
+      ?.coreMemory?.selfIdentity?.enabled === true ||
+    (config as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
+      ?.coreMemory?.selfIdentity?.enabled === true;
   const systemPrompt = composeMemorySystemPrompt(
     getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled }),
     memoryPrompt,
@@ -701,7 +709,7 @@ function buildEnrichPrompt(memories: Array<{ m: ExtractedMemory; i: number }>): 
  */
 async function enrichSoulFields(
   memories: ExtractedMemory[],
-  deps: { config: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; traceContext?: TraceContext },
+  deps: { config: unknown; memoryConfig?: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; traceContext?: TraceContext },
 ): Promise<void> {
   if (!memories || memories.length === 0) return;
   const missing = memories
