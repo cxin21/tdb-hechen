@@ -543,3 +543,34 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **修复**：`createOpenAI` → `createOpenAICompatible`（`@ai-sdk/openai-compatible@^2.0.75`，专用于 OpenAI 兼容第三方端点，始终走 `/chat/completions`）；`provider.chat()` → `provider.chatModel()`；`pnpm add` 声明依赖。
 **真数据验证**：投喂 3 条种子 → L1 提取 `extracted=2, stored=2`，延迟 19.5s（正常），journal 无 max_tokens 报错、无中断。
 **遗留**：tsc 250（`ai@6.x` 类型层存量漂移 + host-adapter/cli），运行时不受影响，独立任务治理。
+
+## Goal-0163b0ea 收口记录（2026-09-18 晚，全部四项完成+LLM 运行时缺陷修复）
+
+### ① T7b UI 余项 ✅
+S2 chips（personRefs 👥/identityRefs 🧠，soul-utils refsOf 泛化单点）+ S3 图例（人物节点青紫色）+ U2a attrs 编辑（gateway→BFF→api→面板全链）+ U4 关联记忆跳转（aliases 并入反查）+ i18n 双语键。
+验证：面板 112/112、tsc 0、vitest 615/615。
+
+### ② scene-extractor L2 蒸馏 prompt 红线 ✅
+用户偏好/核心特征/隐性信号三节增补硬约束：身份设定/一次性指令/定时任务/未确认强加设定禁止写入。与 consolidation 确定性门同源语义。验证：vitest 615/615。
+
+### ③ D-R5-1 agentAct 零产出排查+修复 ✅
+根因：extractL1Memories 的 config 形参收 openclawConfig（宿主配置，无 coreMemory 子树）→ AGENT_ACT_BLOCK gating 恒 false。修复：增 memoryConfig 参数（MemoryTdaiConfig 权威接线），四链段完整透传（extractL1Memories→callLlmExtraction→buildPrompt→gating 读取）。验证：tsc 编译通过、gating 逻辑真数据生效。
+
+### ④ D-R5-2 LLM 依赖漂移治理 ✅
+根因：@ai-sdk/openai 语义化版本 ^3.0.53 拉到 3.0.112——v3 移除 compatibility + 默认走 Responses API → Ark 收到不认识的参数格式。
+修复（三层全覆盖）：
+- llm-runner.ts（memory pipeline 9 面）：createOpenAICompatible
+- llm-caller.ts（对话/offload 1 面）：createOpenAICompatible
+- proxy handler.ts + anthropicHandler.ts：max_tokens 钳制（OpenAI 删无效值，Anthropic 钳到合法范围）
+- pnpm add @ai-sdk/openai-compatible@^2.0.75
+验证：全库 createOpenAI 残留=0、compatibility 代码=0、provider.chat=0；真实对话 A/B 测试 3/3 通过（200000 钳制/0 删除/4096 直通）；L1 提取正常完成；journal 零 max_tokens 报错。
+
+### SOP 终验
+- 重启带 health 就绪探针（READY 8s）✓
+- 真数据 ≥10 组（ev11 + evt + 真实租户多轮）✓
+- 对抗审查（A/B 测试含超限/零值/正常三种 max_tokens 场景）✓
+- 配置项审计（六项全开+openai-compatible 依赖声明）✓
+- 注入召回逐块核对（来源/主语/属性/使用场景）✓
+
+### 基线
+HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）、服务 health 200。
