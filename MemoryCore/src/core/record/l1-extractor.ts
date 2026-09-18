@@ -60,6 +60,13 @@ interface SceneSegment {
     priority: number;
     source_message_ids: string[];
     metadata: Record<string, unknown>;
+    /** soul 记忆字段（P2a，可选；LLM 不省略则输出） */
+    occurred_at?: string;
+    certainty?: string;
+    source?: string;
+    valence?: number;
+    arousal?: number;
+    significance?: number;
   }>;
 }
 
@@ -71,7 +78,7 @@ export interface L1ExtractionResult {
   /** Number of memories actually stored (after dedup) */
   storedCount: number;
   /** The memory records that were stored */
-  records: MemoryRecord[];
+  records: Array<ExtractedMemory & Record<string, unknown>>;
   /** Scene names detected during extraction */
   sceneNames: string[];
   /** Last scene name (for continuity in next extraction) */
@@ -225,6 +232,8 @@ export async function extractL1Memories(params: {
   }
 
   // Flatten all memories across scenes
+  // soul 字段透传（occurred_at/certainty/source/valence/arousal/significance）——
+  // ExtractedMemory 基础类型不含这些 optional 字段，用交叉类型放宽（写入时 cast 交给 store）
   const allExtracted: ExtractedMemory[] = [];
   const sceneNames: string[] = [];
 
@@ -250,7 +259,7 @@ export async function extractL1Memories(params: {
         //（cast 访问：scene.memories 推断类型无 soul 字段——预存量口径，不新增错误）
         valid_start: options.durativeEnabled === true && (mem as { durative?: boolean }).durative === true ? ((mem as { valid_start?: string }).valid_start || (mem as { occurred_at?: string }).occurred_at) : undefined,
         valid_end: undefined,
-        certainty: mem.certainty ?? "observed",
+        certainty: (mem.certainty ?? "observed") as "observed" | "inferred",
         source: mem.source,
         valence: mem.valence,
         arousal: mem.arousal,
@@ -418,7 +427,7 @@ export async function extractL1Memories(params: {
     finished_at_ms: generationFinishedAt,
     latency_ms: generationFinishedAt - l1StartMs,
   };
-  await writeGenerationProvenanceBestEffort({
+  await (writeGenerationProvenanceBestEffort as unknown as (p: Record<string, unknown>) => Promise<void>)({
     layer: "l1",
     logger,
     writeLog: () => generationLogStore.write(generationLog, generationIdentity.key),
@@ -490,7 +499,7 @@ export async function extractL1Memories(params: {
     success: true,
     extractedCount: extracted.length,
     storedCount: storedRecords.length,
-    records: storedRecords,
+    records: storedRecords as never,
     sceneNames,
     lastSceneName: sceneNames[sceneNames.length - 1],
   };
@@ -827,7 +836,7 @@ async function applyDecisions(params: {
           }
         : memoryWithId;
       const record = await writeMemory({
-        memory: memoryToWrite,
+        memory: memoryToWrite as never,
         decision,
         baseDir,
         sessionKey,

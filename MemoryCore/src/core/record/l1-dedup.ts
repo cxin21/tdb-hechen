@@ -209,9 +209,9 @@ export async function loadValueCandidates(
     if (typeof listValues !== "function") return [];
     // core 租户三元组（P2-T12 同形）：缺维度 → default 桶（不允许"缺省=跨租户读"）
     const tenant: CoreTenant = normalizeCoreTenant({
-      teamId: traceContext?.teamId,
-      userId: traceContext?.userId,
-      agentId: traceContext?.agentId,
+      teamId: traceContext?.teamId ?? "",
+      userId: traceContext?.userId ?? "",
+      agentId: traceContext?.agentId ?? "",
     });
     const rows = await listValues.call(vectorStore, tenant);
     return (rows ?? [])

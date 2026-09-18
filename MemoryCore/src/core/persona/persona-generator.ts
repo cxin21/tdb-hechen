@@ -202,10 +202,10 @@ export class PersonaGenerator {
       personaFilePath,
       checkpointPath,
     });
-    const systemPrompt = composeMemorySystemPrompt(baseSystemPrompt, this.memoryPrompt);
+    const systemPrompt = composeMemorySystemPrompt(baseSystemPrompt ?? "", this.memoryPrompt ?? undefined);
 
     // 7. Backup before LLM run (LLM writes persona.md via tools)
-    const bm = new BackupManager(this.storage
+    const bm = new BackupManager(this.storage as string | undefined
       ? undefined  // COS mode: BackupManager not used (TODO: adapt BackupManager for StorageAdapter)
       : await (async () => { const path = await import("node:path"); return path.default.join(this.dataDir, ".backup"); })()
     );

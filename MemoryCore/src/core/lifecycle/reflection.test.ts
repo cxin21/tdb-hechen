@@ -31,7 +31,7 @@ function makeStore() {
 
 describe("F13 反思触发", () => {
   it("触发：累计 significance > rRef → LLM 三问式 → 写 work_fact 结论卡（带租户+证据指针）", async () => {
-    const rows = [
+    const rows: Record<string, unknown>[] = [
       rec("r1", "用户坚持先给结论", 0.9),
       rec("r2", "用户每周五复盘", 0.8),
       rec("r3", "用户偏好清单式评审", 0.7),
@@ -46,7 +46,7 @@ describe("F13 反思触发", () => {
     expect(res.triggered).toBe(1);
     expect(res.cardsWritten).toBe(1);
     expect(llmRunner.run).toHaveBeenCalled();
-    const card = store.upsertL1.mock.calls[0]![0] as { type?: string; scene_name?: string; metadata?: Record<string, unknown>; teamId?: string; agentId?: string; content?: string };
+    const card = (store.upsertL1.mock.calls[0] as unknown[])[0] as { type?: string; scene_name?: string; metadata?: Record<string, unknown>; teamId?: string; agentId?: string; content?: string };
     expect(card.type).toBe("work_fact");
     expect(card.scene_name).toBe("reflection");
     expect(card.metadata?.reflection).toBe(true);
@@ -57,7 +57,7 @@ describe("F13 反思触发", () => {
   });
 
   it("未触发：累计 <= rRef → 零 LLM 调用", async () => {
-    const rows = [rec("r1", "低显著", 0.1)];
+    const rows: Record<string, unknown>[] = [rec("r1", "低显著", 0.1)];
     const store = { upsertL1: vi.fn(async () => true) };
     const llmRunner = { run: vi.fn(async () => "[]") };
     const res = await runReflection({
@@ -81,9 +81,9 @@ describe("F13 反思触发", () => {
   });
 
   it("幂等：上次反思结论卡的 updatedAt 为阈值 → 新增累计清零不再触发", async () => {
-    const rows = [
+    const rows: Record<string, unknown>[] = [
       rec("r1", "旧事实", 0.9, { updatedAt: "2026-09-10T00:00:00.000Z" }),
-      { ...rec("rf0", "上次反思结论", 0, { workFact: true, updatedAt: "2026-09-12T00:00:00.000Z" }), metadata: { reflection: true } },
+      { ...rec("rf0", "上次反思结论", 0, { workFact: true, updatedAt: "2026-09-12T00:00:00.000Z" }), metadata: { reflection: true } } as unknown as typeof rows[0],
       rec("r2", "阈值后低显著", 0.1),
     ];
     const store = { upsertL1: vi.fn(async () => true) };
