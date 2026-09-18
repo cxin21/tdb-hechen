@@ -596,3 +596,12 @@ HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）�
 - MemoryProxy 侧同理（per-agent maxTokensCeiling）
 - 实施蓝图已入本文档 §多提供商，待用户确认后执行
 
+
+## 多提供商 agent 处理方案实施记录（2026-09-18 晚，6143c18）
+**T1/T2/T3 完成**：llm-runner.ts + config.ts + tdai-gateway.yaml 三文件联动——
+- `llm.maxTokensLimit` 配置驱动 max_tokens 钳制（缺省 131072=Ark 上限；不同模型/供应商上限不同）
+- llm-runner 的 maxTokens 计算从硬编码改为 `Math.max(1, Math.min(limit, rawMaxTokens))`
+- config.ts 接口 + 解析同步扩展（StandaloneLLMOverrideConfig.maxTokensLimit）
+- yaml `maxTokensLimit: 131072` 落地（env 配置）
+- MemoryProxy 侧已有 max_tokens 钳制（D-R5-7b/c），per-agent ceiling 待多上游场景实际需要时实施（YAGNI）
+验证：vitest 615/615、tsc 249、config 解析读回（maxTokensLimit: 131072）。
