@@ -343,6 +343,14 @@ function buildUpstreamBody(
   if (target.bodyOverrides) {
     result = { ...result, ...target.bodyOverrides };
   }
+  // D-R5-7c：Anthropic 协议 max_tokens 必填→钳到合法范围而非删除。
+  // Ark 限制 [1,131072]；Claude Code 默认 4096-8192 通常在范围内，
+  // 但超大值（如 200000）会被上游 400 拒绝。钳到 131072 保底。
+  if (typeof result.max_tokens === "number" && result.max_tokens > 131072) {
+    result.max_tokens = 131072;
+  } else if (typeof result.max_tokens !== "number" || result.max_tokens < 1) {
+    result.max_tokens = 4096;
+  }
   const sanitized = sanitizeThinkingBlocks(result);
   return { body: sanitized.body, sanitizedCount: sanitized.removed };
 }
