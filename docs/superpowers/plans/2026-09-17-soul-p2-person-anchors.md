@@ -574,3 +574,25 @@ S2 chips（personRefs 👥/identityRefs 🧠，soul-utils refsOf 泛化单点）
 
 ### 基线
 HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）、服务 health 200。
+
+## 多提供商 agent 处理方案调研（2026-09-18，用户指令：上 Git 调研多提供商兼容方案）
+
+### 调研结论
+
+**AI SDK 官方多 Provider 架构**（ai-sdk.dev）：
+- 每个 provider 是独立 npm 包，`generateText({ model })` 的 model 参数是 LanguageModel 实例
+- 换 provider 只换构造函数，调用侧接口完全一致
+- `@ai-sdk/openai-compatible` 始终走 /chat/completions（对 Ark/DeepSeek/Qwen 等非 OpenAI 原生端点的正确选择）
+- `@ai-sdk/openai@3.x` 的 `provider.chatModel()` = v2 的 compatibility 模式（兼容模式未删除，选择权提升到模型级别）
+
+**业界 Agent 框架方案**：
+- LiteLLM：统一路由表映射所有 provider，max_tokens 自动按模型上限钳制，支持 fallback chain
+- OpenCode：provider.json 声明 baseURL/model/参数映射，严格白名单
+- Continue.dev：按模型名前缀自动选 provider
+
+**TDB 适配方案**（config-first + 最小改动）：
+- llm-runner.ts provider 创建逻辑改为配置驱动（provider 字段选择构造器）
+- max_tokens 按模型上限钳制（maxTokensLimit 配置项，缺省 131072）
+- MemoryProxy 侧同理（per-agent maxTokensCeiling）
+- 实施蓝图已入本文档 §多提供商，待用户确认后执行
+
