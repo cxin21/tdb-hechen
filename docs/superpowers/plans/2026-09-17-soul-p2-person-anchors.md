@@ -485,3 +485,18 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **已修（本轮提交 0c65d6b）**：reflection 触发时间戳键双兼容——裸行 updated_time 键缺失致空串比较恒 false、永不触发（探针 sigSum 9.15>2 实证；修复后 triggered=2/2 租户正确分组）。
 **F14 prot=ARCHIVED 归因**：苏教授锚未上（interval 门锁死）→ 保护名集无该词 → 归档系机制正确、前置未满足（与 ev10 同型）。
 **回滚纪律**：门 patterns 编辑致 identity-gate 5 用例回归（python 补丁 `\\s` 双反斜杠写坏 + tsc 级联未收敛）→ 本轮已 git checkout 回滚 anchor-growth/identity-discovery/reflection 三文件至 HEAD（0c65d6b），vitest 611/611 基线恢复；三修内容重新设计后下一轮再入（先单测正则字面）。
+
+## Round5 D-R5-3/4/5/6 四修执行记录（2026-09-18，7bb1859）
+**四修内容**（TDD 红3→绿，vitest 615/615、tsc 249、我的文件零残留错误）：
+| # | 修复 | 提交 |
+|---|---|---|
+| D-R5-3 | identity 门补 agent 自述复述形态（我以X的身份与用户交流）+ 周期提醒/定时状态形态（时段词全覆盖：每天/每晚/每日+早上/上午/中午/下午/晚间/凌晨+数字+点+提醒）；误报面单测锁定（4 合法自证断言不误杀） | 7bb1859 |
+| D-R5-4 | mergeIdentityFacts existing 行同过主语门——门校验写入的最终内容而非仅新提案（存量污染随演化清除） | 7bb1859 |
+| D-R5-5 | interval 门双字段语义精确化：`lastAdoptedAt ?? (lastAttemptAt != null ? undefined : lastDiscoveryAt)`——双字段新行 0 采纳回 1h attempt-cooldown（头部注释"0 采纳 1h"语义落地）；存量行保守 24h 不变（逐位现状）；附带 quotaEvict retireValue 非空断言（D-R5-2 家族） | 7bb1859 |
+| D-R5-6 | reflection raw 响应 debug 取证日志 + Logger import 深度修正（../../→../，src/types 不存在致 TS2307 级联 10 错） + 测试文件 rec 口径统一（tenantTriple 入 opts 类型） | 7bb1859 |
+**真数据复核（ev11 清状态重跑）**：
+- ✅ **苏教授 person 锚采纳**：`p-auto-9ead7 | 苏教授 | val=1 person`（首轮 pass 证据链全对——LLM 提案 parse ✓ personEv=3 ✓ 证据门 ✓；此前零采纳全因 interval 门锁死，D-R5-5 修复后一次通过）
+- ✅ person LLM raw 取证：`[{"label": "苏教授", ...}]`（GLM 输出正常含空格，宽松解析兼容）
+- ✅ self_identity 污染槽删除后待 1h 冷却重建（门新形态将在重建时拦截人设回显）
+- ⏳ 反思卡/F14 prot/character 锚：待 1h 冷却后下一 pass（reflection raw debug 已就位；ev10/default 租户 reflection rawLen 930-1211 已见 ```json fence 包裹输出——parse 兼容验证通过）
+**方法学沉淀**：① python 补丁写正则必须用 raw 字符串（r'''…'''），`\\s` 双反斜杠会让正则匹配字面反斜杠（上轮回滚根因）；② 零采纳取证=给 worker 加 raw 响应 debug（reflection 同款先行）；③ state 语义修复前先读设计注释对照（"0 采纳 1h"与实现兜底矛盾即缺陷）。
