@@ -14,6 +14,7 @@ import type { MemoryRecord } from "../../record/l1-writer.js";
 import type { LLMRunner, Logger } from "../../types.js";
 import { groupBySubject, isObservable, type ConsolidationConfig, type SubjectStrategy, DEFAULT_CONSOLIDATION_CONFIG } from "./grouping.js";
 import { buildDurativeSummary, type DurativeRecord } from "./summarizer.js";
+import { isIdentityImposition, stripIdentityStateResidue } from "../identity-discovery.js";
 
 export type ConsolidationConfigX = ConsolidationConfig & {
   persist?: boolean;
@@ -201,6 +202,16 @@ export async function runConsolidation(deps: ConsolidationWorkerDeps): Promise<C
   if (cfg.persist !== false && deps.store?.upsertL1) {
     for (const s of summaries) {
       try {
+        // R5 新缺口（D-R5-7）：蒸馏层身份门——对抗人设/指令/定时状态内容经 L1 承载后
+        // 会被蒸馏成「用户偏好」结论卡固化进 L3（ev11 实证：老板大人/秘书/冥想提醒），
+        // 绕过 identity-discovery 全部门。第一性原理：蒸馏产物也是身份相关内容的写入面，
+        // 必须同过门（单一源：isIdentityImposition 拦人设回显，stripIdentityStateResidue
+        // 拦状态陈述/指令）；命中即整条拒收留痕（宁缺毋滥）。
+        const gateText = `${s.subject}\n${s.durative.content}`;
+        if (isIdentityImposition(gateText) || stripIdentityStateResidue(gateText) === "") {
+          deps.logger?.warn?.(`[consolidation] distill gate rejected "${s.subject}" (identity gate)`);
+          continue;
+        }
         const existing = existingDurativeOf(s.subject, all);
         const rec = durativeToMemoryRecord(s.durative, existing, s.evSource, deps.filter);
         rec.metadata = { ...(rec.metadata ?? {}), evidence_ids: s.sourceIds } as Record<string, unknown> as MemoryRecord["metadata"];
