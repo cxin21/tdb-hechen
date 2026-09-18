@@ -458,3 +458,9 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **测试**：vitest 606/606（+4）：c- 前缀、happy path 采纳+attrs、disabled 零调用（逐位现状）、证据门宁缺毋滥。
 **过程实证（诚实记录）**：首轮实现两处缺陷被 TDD/探针抓出——① characterEvCount 误把 corpus 当对象数组（实际是 string[] 内容数组，读 .content 恒 undefined → 证据恒 0）；② config.ts 解析块插入吞掉外层闭合致 TS1005（补丁锚含闭合行，替换时未复加）。均以隔离探针+verbatim 取证定位修复。
 **基线漂移登记（D-R5-2）**：stash 对照实证 HEAD（98b42e6）tsc 实为 **254**——此前多轮"243 持平"是 config.ts 解析破损状态下的遮蔽读数（破损吞掉自身+下游 11 个错误）。adapters 层 5 错（host-adapter EmbeddedAgentRuntimeLike / llm-runner compatibility+experimental_telemetry / api-trace ApiTraceProfile）为依赖状态漂移的存量错误，与 P3 改动无因果（stash 对照）。本次改动后 248（<254，顺带消除 upsertValue 相关错误）。**待修：D-R5-2 adapters 类型漂移 5 错 + 基线计数方法改为 stash 对照**。
+
+## Round5 P3-t2 F13 反思触发执行记录（2026-09-18，b776a2b）
+**实现**：reflection.ts（新 worker）——importance 累计 > R_REF（config，缺省 150，Generative Agents 对标）→ 强制三问式反思式 L3 蒸馏（近期记录样本 significance 降序 → LLM 提高层问题+检索证据+合成结论卡）→ 产物=普通 L3 结论卡（type=work_fact，scene_name=reflection，metadata {reflection:true, question, evidence_record_ids}，certainty 走合成物先例=observed 同 consolidation 持续态）；**反思史即状态**（上次反思时间=最新反思结论卡 updatedAt，零 schema 变更）；work_fact 不入触发累计（防"反思的反思"自我 reinforce）；租户批内聚合（与 forgetting 同式）；config-first 全 gated 缺省 off（`lifecycle.reflection.{enabled,rRef}`——**config.ts 解析器接线与 yaml 开启顺延至阶段收口轮**，当前 undefined=关安全）；调度器接线（consolidation 后、forgetting 前）。
+**测试**：vitest 611/611（+5）：触发（写卡带租户/证据指针/反思元数据）、未触发零调用、disabled 零调用、幂等（反思史即状态）、解析宽松提取。
+**过程实证**：版本漂移一次（服务器残留旧 5 参 rec 测试版），以本地最新版重传+锚点修 rRef 触发口径（150→2 测试口径）闭环；tsc 级联计数仍不稳定（D-R5-2 已登记，stash 对照为权威方法）。
+**P3 剩余**：config parser（reflection 组）+ yaml 开启（收口轮配置审计）+ 品格锚/F13 真数据实测（ev11 全流程收口）。
