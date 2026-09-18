@@ -500,3 +500,12 @@ CREATE TABLE IF NOT EXISTS core_pending (
 - ✅ self_identity 污染槽删除后待 1h 冷却重建（门新形态将在重建时拦截人设回显）
 - ⏳ 反思卡/F14 prot/character 锚：待 1h 冷却后下一 pass（reflection raw debug 已就位；ev10/default 租户 reflection rawLen 930-1211 已见 ```json fence 包裹输出——parse 兼容验证通过）
 **方法学沉淀**：① python 补丁写正则必须用 raw 字符串（r'''…'''），`\\s` 双反斜杠会让正则匹配字面反斜杠（上轮回滚根因）；② 零采纳取证=给 worker 加 raw 响应 debug（reflection 同款先行）；③ state 语义修复前先读设计注释对照（"0 采纳 1h"与实现兜底矛盾即缺陷）。
+
+## Round5 终测闭环记录（2026-09-18 12:xx，21ac952）
+**F13 反思真数据落库 ✓**：真实租户（team-kcjjqzkxks usr-kfym3ajzme）三张三问式结论卡（苏教授…agl/agt-l5 各一张）：
+- 「用户反复确立并升级了常设验证 SOP 与铁律…」（高显著指令模式）
+- 「高频 defect 多为管道集成/调度/配置层边缘型 bug，而非核心算法错误」（跨事故模式综合——真实洞见质量）
+- 「TDB 验收体系正向自生长自维护演进…」（证据指针引用）
+根因链：probe mock store 掩盖真实 upsertL1 静默 false（卡片 record 缺 sessionKey/sessionId/version/certainty 必填字段）→ 补齐与 consolidation 持续态同形 → 21ac952。
+**F14 双向闭环 ✓**：prot(引用 active 锚苏教授)=LIVE / dang(悬空)=ARCHIVED。
+**ev11 self_identity**：重建冷却待 identity pass（门新形态将在重建时拦人设回显——D-R5-3 修复待该 pass 验证）。
