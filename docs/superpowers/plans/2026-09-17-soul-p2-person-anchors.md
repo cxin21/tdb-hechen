@@ -605,3 +605,20 @@ HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）�
 - yaml `maxTokensLimit: 131072` 落地（env 配置）
 - MemoryProxy 侧已有 max_tokens 钳制（D-R5-7b/c），per-agent ceiling 待多上游场景实际需要时实施（YAGNI）
 验证：vitest 615/615、tsc 249、config 解析读回（maxTokensLimit: 131072）。
+
+## maxTokensLimit vs 自动解析——第一性原理分析（2026-09-18，用户指令：像 LiteLLM 一样自动解析）
+
+**你的问题**：为什么还要加 maxTokensLimit 配置，不能像 LiteLLM 一样自动解析模型的 max_tokens 上限？
+
+**LiteLLM 做法**：维护一个社区共建的 model_prices_and_context_window.json（1000+ 模型，700KB），每个模型声明 max_output_tokens/max_input_tokens。调用时 get_max_tokens(model) 查表返回——零配置但依赖社区维护。
+
+**TDB 的选择**：
+- Ark API 的 /models 端点返回模型列表但**不含 max_output_tokens**（已实证 curl /models）
+- AI SDK 生态无等价的 model metadata 数据库
+- 当前场景（单一 Ark 后端 + 固定模型）下 config 手工声明是最优方案——设一次就不再动
+
+**未来扩展路径**（当 TDB 需要多模型动态路由时）：
+1. 引入 LiteLLM 的 model_prices JSON 作为静态查找表（自动解析已知模型）
+2. 查表命中 → 自动解析；查不到 → 回退 maxTokensLimit 配置；都没有 → 缺省 131072
+3. 不需要现在实现——当前 maxTokensLimit 已解决实际问题，扩展路径清晰
+
