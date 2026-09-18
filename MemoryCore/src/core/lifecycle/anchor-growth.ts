@@ -478,6 +478,7 @@ export async function runAnchorGrowth(deps: {
             timeoutMs: 0,
             maxTokens: 0,
           });
+          logger?.debug?.(`[anchor-growth] person rawLen=${String(personRaw ?? "").length} rawPreview=${String(personRaw ?? "").slice(0, 200)} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
           const personRowsForValence = rows.map((r) => ({
             content: String((r as { content?: string }).content ?? ""),
             valence: ((r as { valence?: number | null }).valence ?? null) as number | null,
@@ -552,13 +553,14 @@ export async function runAnchorGrowth(deps: {
             ?.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1) ?? [];
           if (selfFacts.length > 0) {
             const factSlices = selfFacts.map((l) => identityFactSlice(l)).filter((s): s is string => typeof s === "string" && s.length > 0);
-            const charRaw = await deps.llmRunner!.run({
-              prompt: buildCharacterDiscoverPrompt(selfFacts, charNames),
-              systemPrompt: CHARACTER_DISCOVER_SYSTEM_PROMPT,
-              taskId: "character-discover-growth",
-              timeoutMs: 0,
-              maxTokens: 0,
-            });
+          const charRaw = await deps.llmRunner!.run({
+            prompt: buildCharacterDiscoverPrompt(selfFacts, charNames),
+            systemPrompt: CHARACTER_DISCOVER_SYSTEM_PROMPT,
+            taskId: "character-discover-growth",
+            timeoutMs: 0,
+            maxTokens: 0,
+          });
+          logger?.debug?.(`[anchor-growth] character rawLen=${String(charRaw ?? "").length} rawPreview=${String(charRaw ?? "").slice(0, 200)}`);
             const characterCandidates = parseCharacterProposals(String(charRaw ?? ""))
               .filter((p) => !charNames.includes(p.label.trim().toLowerCase()))
               .map((p) => {
