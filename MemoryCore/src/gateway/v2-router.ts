@@ -1910,7 +1910,7 @@ function normalizeValueId(raw: string): string {
 }
 
 async function handleCoreMemoryValuesUpsert(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { value_id?: unknown; label?: unknown; weight?: unknown; valence?: unknown };
+  const b = (body ?? {}) as { value_id?: unknown; label?: unknown; weight?: unknown; valence?: unknown; attrs?: unknown };
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
   if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);
@@ -1930,10 +1930,28 @@ async function handleCoreMemoryValuesUpsert(body: unknown, _auth: V2AuthContext,
   const weight = Math.min(Math.max(b.weight, 0), 1);
   // P-B 咽喉消毒：core_values.label 会进注入块，落库前转义（同 handleCoreMemoryWrite content）
   const label = escapeXmlTags(b.label.trim());
+  // U2（spec §6.5）：可选 attrs（人物锚 role/aliases 行内编辑）——显式传入才更新
+  // （store ON CONFLICT "attrs_json 仅显式传入时更新"语义），theme 锚传入忽略为无害；
+  // 逐项校验（role 非空字符串；aliases 字符串数组逐项非空），非法 → 400 不静默丢。
+  let attrs: { role?: string; aliases?: string[] } | undefined;
+  if (b.attrs !== undefined) {
+    if (b.attrs === null || typeof b.attrs !== "object" || Array.isArray(b.attrs)) {
+      return errorEnvelope(400, "attrs must be an object {role?, aliases?}", requestId);
+    }
+    const a = b.attrs as { role?: unknown; aliases?: unknown };
+    const role = typeof a.role === "string" && a.role.trim() ? escapeXmlTags(a.role.trim()) : undefined;
+    const aliases = Array.isArray(a.aliases)
+      ? a.aliases.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => escapeXmlTags(x.trim()))
+      : undefined;
+    if (a.role !== undefined && role === undefined) return errorEnvelope(400, "attrs.role must be a non-empty string", requestId);
+    if (a.aliases !== undefined && !Array.isArray(a.aliases)) return errorEnvelope(400, "attrs.aliases must be an array of strings", requestId);
+    if (role === undefined && aliases === undefined) return errorEnvelope(400, "attrs requires role or aliases", requestId);
+    attrs = { ...(role !== undefined ? { role } : {}), ...(aliases !== undefined ? { aliases } : {}) };
+  }
   // 租户（照抄 handleCoreMemoryWrite 的 coreTenantFromIsolation 模式）
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
   // M-1 教训：不吞失败——upsertValue false（SQL 失败）必须 5xx，不伪成功
-  const ok = await store.upsertValue(valueId, label, weight, "agent", tenant, valence);
+  const ok = await store.upsertValue(valueId, label, weight, "agent", tenant, valence, undefined, undefined, attrs);
   if (!ok) return errorEnvelope(503, "core_values upsert failed", requestId);
   // C2（spec §3.2）：新建/更新 value 后 fire-and-forget 判一次方向（仅 plain upsert 触发；
   // 显式 valence 的微调不需要判）。deriveValueValences 只判 valence IS NULL 行 →
