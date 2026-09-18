@@ -471,3 +471,17 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **处置**：用户自查修 1 行（注释归位 `evolution: # …`）；AI 探针验证 anchor=0（坏行已不存在）+ 网关同款 yaml 库解析全绿；重启（就绪探针 READY 8s）后 journal 无 parse 报错，**运行时配置审计六项全开**：person(3/2/8)/character(3/2/8)/identityMaintain/reflection(rRef=150)/refProtection/selfIdentity(1h)。
 **教训（固化为补丁铁律）**：行内注释行的锚**必须匹配完整行（含行尾注释）**；替换文本必须原样保留行尾——锚只匹配前缀会把行尾变成孤立值（本事故的直接根因）。此教训与"补丁脚本锚点唯一显式 ABORT"同档固化：**锚=完整行**。
 **状态**：yaml 好行已由用户修复；服务以正确配置运行（非 env-only）；character/reflection 已在启动轮被调度（firstBlockReason=interval 属 24h 冷却门正常语义）。
+
+## Round5 终测执行记录（2026-09-18，ev11 全新租户 16 组真数据——部分通过+四项登记）
+**SOP 终测实况（ev11 16 条种子，P10+Q3+R3，body session_id 正确口径）**：
+✅ 通过：提取 13 条 L1（8+3+2）；identity/self_identity 双槽三租户分化+隔离（P 无钱院长、Q 无苏教授）；identity 层对抗零命中（身份设定/尊称/状态残留全拦）；pending×4 分级正确（P 红线/R 红线+core_value/Q core_value）；F14 dang(悬空)=ARCHIVED；rRef 刻度换算（0-1 刻度 vs Generative Agents 0-100 的 150，调参 rRef=2.0）。
+❌ 登记缺陷（修复批次未收敛已回滚，下一轮主任务）：
+| # | 发现（真数据实证） | 根因分析 |
+|---|---|---|
+| D-R5-3 | **identity 门两处绕过**：① agent 自述形态「我以专业资深猎头顾问的身份与用户交流」（无"让我以"前缀，`.filter` 缺该形态）② 周期提醒类（"我每晚九点提醒用户冥想"——strip 门未拦周期性未来指令）→ self_identity 槽被污染且 merge 永存 | 门 patterns 缺自述复述形态；修复方向：门 patterns 追加（须控误报面：隔离探针先行全量合法行测试后再落） |
+| D-R5-4 | **mergeIdentityFacts 不清洗 existing**：门只拦新提案，存量污染行随演化合并永存 | 门应作用于写入的最终内容（本轮尝试 filter existing 行因补丁正则双反斜杠写坏+5 用例回归回滚；重做须先单测正则字面） |
+| D-R5-5 | **ev11 锚零采纳+24h 门锁死**：首轮 pass adopted=0 但 lastDiscoveryAt=02:48 落 kv，存量行无 lastAdoptedAt → interval 门以 lastDiscoveryAt 兜底 24h → 苏教授锚（ev=3）永远无第二次机会 | gate 判定 `lastAdoptedAt ?? lastDiscoveryAt` 对双字段新行不精确（头部注释"0 采纳 1h"被兜底覆盖）；修法=lastAttemptAt 存在时不兜底（由 attempt-cooldown 承担），须核对 quotaEvict 段 verbatim 后再改（本轮 TS2722 级联未收敛） |
+| D-R5-6 | **reflection triggered=3 cards=0**：真 LLM 返回不可见（已证触发机制在时间戳双兼容修复 0c65d6b 后工作：探针 triggered=2 cards=2 假 LLM），真 LLM 输出 "[]"（宁缺毋滥合法）或解析失败未取证 | reflection.ts 加 raw 响应 debug 日志（本轮随回滚撤销，下轮重加） |
+**已修（本轮提交 0c65d6b）**：reflection 触发时间戳键双兼容——裸行 updated_time 键缺失致空串比较恒 false、永不触发（探针 sigSum 9.15>2 实证；修复后 triggered=2/2 租户正确分组）。
+**F14 prot=ARCHIVED 归因**：苏教授锚未上（interval 门锁死）→ 保护名集无该词 → 归档系机制正确、前置未满足（与 ev10 同型）。
+**回滚纪律**：门 patterns 编辑致 identity-gate 5 用例回归（python 补丁 `\\s` 双反斜杠写坏 + tsc 级联未收敛）→ 本轮已 git checkout 回滚 anchor-growth/identity-discovery/reflection 三文件至 HEAD（0c65d6b），vitest 611/611 基线恢复；三修内容重新设计后下一轮再入（先单测正则字面）。
