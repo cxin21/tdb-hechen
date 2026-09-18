@@ -432,3 +432,23 @@ CREATE TABLE IF NOT EXISTS core_pending (
 | L1 提取 prompt | 通用原则第 4 条：括号姓名仅限**用户本人自称**；第三方（导师/老师/同事等）姓名**不得当作**用户姓名；未确定时一律（姓名未提供）；第三方以身份词引出（"用户的导师林岚"） | c132ef8 | TDD 红2→绿；真数据对照（新 s7 种子零（林岚）错置，旧污染记录留存待清理授权） |
 | L2 scene 蒸馏 prompt | 用户基础信息-姓名字段同源约束（仅自称时填写，未确定留空） | 8fcbf4c | 602/602 + tsc 243 |
 **基线**：vitest 602/602、tsc 243、HEAD 8fcbf4c、全部推送。
+
+## Round5 T7b Panel U2-U4 执行记录（2026-09-18）
+| 项 | 实现 | 测试 |
+|---|---|---|
+| BFF pending/list | 镜像 identity-read（owner 借用读 ACL；透传 /v3/core-memory/pending/list） | chat-memory-pending.test.ts 3/3 |
+| BFF pending/decide | owner 校验（非属主 403 NOT_ASSET_OWNER）+ 透传 pending_id/decision | 同上（含 403 用例） |
+| web api | ValueAnchor 扩 node_type/attrs_json + PendingItem 类型 + pendingList/pendingDecide | 面板全量 109/109（106 基线不破） |
+| PendingSection | 分级提案列表 + 采纳/拒绝按钮（O13 单向状态机；幂等复决由网关 404 兜底，刷新自然消失）；宁缺毋滥空态不渲染 | vitest 全量 |
+| U2 类型徽标 | 锚行 node_type 徽标（人物/主题，前向兼容缺省不显示）+ valence 徽标既有 | — |
+| S2/S3 顺延 | attrs 行内编辑/aliases 反查/图例 chips 按余量裁决（待续轮） | — |
+
+## Round5 P3 数据源 spike 定案（2026-09-18，spec §7-P3 前置）
+**Spike 实测**：agentAct 占比——真实租户（kcjjqzkxks/usr-kfym3ajzme/agt-kfynybx0ly）119 条 L1 中 **0%**；全库 312 条（含最新 ev10 提取批次，R4-6 修复后 prompt）**0%**。
+**裁决（spec 预设分支）**：agentAct 语料不足以支撑品格锚证据重算 → **品格聚合源 = self_identity 槽演化史**（spec §7-P3 预设 fallback）。理由：① self_identity 事实已过主语门（isIdentityImposition/strip 双门）与"行为可证"验证，因果链更干净；② GROW-MAINT identity 失撑警告（F20）天然约束其演化。
+**顺带登记缺陷 D-R5-1**：P1 的 l1-extractor agentAct 标注全库零落地（需查 prompt 组装链是否真的注入 AGENT_ACT_BLOCK 或 LLM 从未输出该字段）——不阻塞 P3（走 fallback 分支），留待 P3 实现期顺手排查。
+**P3 实现蓝图（下一轮）**：
+1. character 池（anchor-growth 第三池）：聚合源=self_identity 槽事实（per-三元组，spec §110 拍板）；与主题锚共享注入预算、独立 maxTotal 分池（F15）；node_type='character'；证据计数=语料对身份事实切片的逐字包含（identityFactSlice 单一源复用）。
+2. F13 反思触发：累计 significance > R_REF（config，缺省 150）→ 下 tick 提前+强制反思式 L3 蒸馏（Generative Agents 三问式，产物=普通 L3 结论卡，U5 零适配）；固定 interval 兜底不变。
+3. 配置：anchorDiscovery.character.{enabled=false 缺省,minEvidence,maxPerPass,maxTotal}；reflection.{rRef=150}。
+4. 验收：品格锚与主题锚并存不互挤（分池断言）+ 反思触发真数据实测。
