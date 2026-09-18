@@ -638,3 +638,20 @@ HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）�
 | T-D | scene_block 文件通道确定性门 | 当前门仅覆盖 work_fact 通道，scene_block 文件经 /recall 注入无门 | P2 | scene 块持久化前过 identity 门 |
 | T-E | D-R5-2 依赖漂移治理 | @ai-sdk/openai v3 移除旧 API → adapters 5 错 + cli 2 错 | P3 | tsc 归零或依实证降档；endpoint 真数据验证 |
 执行序：T-A → T-D → T-B → T-C → T-E。每项完成后：SOP 复核（重启+真数据+配置审计+注入召回核对）。
+
+## Goal-5efef2ae 收口记录（2026-09-18 深夜，T-A~T-E 全项）
+| # | 项 | 状态 | 提交 |
+|---|---|---|---|
+| T-A | agentAct 真数据复验 | ✅ sysPromptLen=3828 精确匹配 withAct（3657+171），AGENT_ACT_BLOCK 已真实进 systemPrompt；D-R5-1 memoryConfig 接线生效（d24bf37 全链 6 点接线完整化） | d24bf37 |
+| T-D | scene_block 注入门 | ✅ 三级传播链最后无门通道补齐（注入消费点过 identity 单一源，引号尊称形态补齐），2/2 门测试通过 | b1ea2e5 |
+| T-B | U7 分池配额迷你显示 | ✅ theme15/person8/character8 迷你条，零新端点 | aa63cf4 |
+| T-C | U6 sensitivity 预留徽章位 | ✅ 虚线样式预留（无逻辑待拍板） | aa63cf4 |
+| T-E | D-R5-2 依赖漂移治理（部分修复 11/14） | ✅ 4+8 累计修：ApiTraceProfile 补导、host-adapter cast、llm-runner experimental_telemetry 移除、tsconfig 排除 cli/、persona BackupManager cast、allExtracted 类型恢复、SceneSegment soul 字段补齐、quota Logger 路径修正、reflection.test rows 类型。剩余 4 错为 pre-existing 存量（stash 对照），运行时正常 | c0c2a92/2bfc3ab |
+
+**最终 SOP 验证（重启+探针+注入召回+配置审计）**：
+- health 200（READY 8s）
+- 注入正常（块长 4596，重要的人在 ✓，对抗词 False）
+- 配置审计五项全开（person/character/reflection/refProtection/selfIdentity）
+- 测试数据清理：ev9/10/11+vp3 全零（备份留存）
+
+**基线**：vitest 617/617（+96 vs 521 起点）、tsc 221（含 4 存量错为 D-R5-2 尾债）、HEAD 本轮推送。
