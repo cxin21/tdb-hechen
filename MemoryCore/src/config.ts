@@ -385,6 +385,11 @@ export interface MemoryLifecycleConfig {
     /** P2（F14）：refs 遗忘保护——coreRefs/personRefs/identityRefs 命中仍有效锚或现行身份事实的记录不进归档候选（缺省 false=逐位现状）。 */
     refProtection: boolean;
   };
+  /** P3-F13：反思触发（Generative Agents 对标；enabled 缺省 false=逐位现状）。 */
+  reflection: {
+    enabled: boolean;
+    rRef: number;
+  };
 }
 
 /** Embedding service configuration for vector search. */
@@ -1020,6 +1025,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       minAgeDays: num(lifecycleForgettingGroup, "minAgeDays") ?? 30,
       // P2（F14）：refs 遗忘保护开关（缺省 false=逐位现状）
       refProtection: bool(lifecycleForgettingGroup, "refProtection") ?? false,
+    },
+    // P3-F13：反思触发（Generative Agents 对标；enabled 缺省 false=逐位现状）
+    reflection: {
+      enabled: bool(obj(lifecycleGroup, "reflection"), "enabled") ?? false,
+      rRef: Math.min(100000, Math.max(10, Math.floor(num(obj(lifecycleGroup, "reflection"), "rRef") ?? 150))),
     },
   };
 
