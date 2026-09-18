@@ -369,10 +369,11 @@ export const chatMemoryApi = {
       decision,
     }),
 
-  /** 价值锚 upsert：valence 显式传入 = 用户微调；不传 = plain 新建（落 NULL 待 LLM 判） */
+  /** 价值锚 upsert：valence 显式传入 = 用户微调；不传 = plain 新建（落 NULL 待 LLM 判）。
+   *  U2：可选 attrs（人物锚 role/aliases 行内编辑；显式传入才更新，theme 锚忽略无害）。 */
   valuesUpsert: (
     blockId: string,
-    params: { value_id: string; label: string; weight: number; valence?: number },
+    params: { value_id: string; label: string; weight: number; valence?: number; attrs?: { role?: string; aliases?: string[] } },
   ) =>
     chatMemoryCall<{ ok: boolean; value_id: string }>('values/upsert', {
       block_id: blockId,
@@ -380,6 +381,7 @@ export const chatMemoryApi = {
       label: params.label,
       weight: params.weight,
       ...(params.valence !== undefined ? { valence: params.valence } : {}),
+      ...(params.attrs !== undefined ? { attrs: params.attrs } : {}),
     }),
 
   /** 价值锚删除（Owner-only；不存在/失败 404） */

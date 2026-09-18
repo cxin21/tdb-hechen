@@ -1880,6 +1880,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         return respondControlError(c, 403, "NOT_ASSET_OWNER");
 
       const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      // U2（spec §6.5）：可选 attrs 透传（人物锚 role/aliases 行内编辑；gateway 侧逐项校验）
+      const attrs = body?.attrs !== undefined ? body.attrs : undefined;
       const env = await deps.kernelHttp.postEnvelope<{
         ok?: boolean;
         value_id?: string;
@@ -1894,6 +1896,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
           label,
           weight,
           ...(valence !== undefined ? { valence } : {}),
+          ...(attrs !== undefined ? { attrs } : {}),
         },
         cred,
       );

@@ -69,22 +69,37 @@ function ValueRow({
   onDelete,
 }: {
   anchor: ValueAnchor;
-  onSave: (valueId: string, patch: { label: string; weight: number }) => Promise<void>;
+  onSave: (valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } }) => Promise<void>;
   onValenceChange: (anchor: ValueAnchor, valence: number) => Promise<void>;
   onPin: (anchor: ValueAnchor, pinned: boolean) => Promise<void>;
   onRetire: (anchor: ValueAnchor) => Promise<void>;
   onDelete: (anchor: ValueAnchor) => void;
+  onViewRelated: (anchor: ValueAnchor) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(anchor.label);
   const [weightText, setWeightText] = useState(String(anchor.weight));
+  // U2（spec §6.5）：人物锚 attrs 行内编辑初值（attrs_json 宽松解析；theme 锚不渲染）
+  const isPerson = anchor.node_type === 'person';
+  const parsedAttrs: { role?: string; aliases?: string[] } = (() => {
+    try {
+      const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as { role?: string; aliases?: string[] }) : {};
+      return { role: typeof p.role === 'string' ? p.role : undefined, aliases: Array.isArray(p.aliases) ? p.aliases : [] };
+    } catch {
+      return {};
+    }
+  })();
+  const [roleText, setRoleText] = useState(parsedAttrs.role ?? '');
+  const [aliasesText, setAliasesText] = useState((parsedAttrs.aliases ?? []).join('、'));
   const parsedWeight = parseFloat(weightText);
   const dirty =
     editing &&
     (label.trim() !== anchor.label ||
       !Number.isFinite(parsedWeight) ||
-      clampWeight(parsedWeight) !== anchor.weight);
+      clampWeight(parsedWeight) !== anchor.weight ||
+      (isPerson && roleText.trim() !== (parsedAttrs.role ?? '')) ||
+      (isPerson && aliasesText.trim() !== (parsedAttrs.aliases ?? []).join('、')));
   const badge = valenceBadge(anchor.valence);
   const origin = originBadge(anchor.origin);
   const nodeBadge = nodeTypeBadge(anchor.node_type);
@@ -92,7 +107,20 @@ function ValueRow({
 
   async function save() {
     if (!dirty) return;
-    await onSave(anchor.value_id, { label: label.trim(), weight: clampWeight(parsedWeight) });
+    // U2：person 行编辑保存带 attrs（显式传入才更新；theme 锚不传）
+    const attrs = isPerson
+      ? {
+          ...(roleText.trim() ? { role: roleText.trim() } : {}),
+          ...(aliasesText.trim()
+            ? { aliases: aliasesText.split(/[,、]/).map((s) => s.trim()).filter((s) => s.length > 0) }
+            : {}),
+        }
+      : undefined;
+    await onSave(anchor.value_id, {
+      label: label.trim(),
+      weight: clampWeight(parsedWeight),
+      ...(attrs !== undefined ? { attrs } : {}),
+    });
     setEditing(false);
   }
 
@@ -120,6 +148,22 @@ function ValueRow({
             onChange={setWeightText}
             placeholder={t('memory.anchors.weight')}
           />
+          {isPerson && (
+            <>
+              <Input
+                className="_va-input-role"
+                value={roleText}
+                onChange={setRoleText}
+                placeholder="角色（如 家人/导师）"
+              />
+              <Input
+                className="_va-input-aliases"
+                value={aliasesText}
+                onChange={setAliasesText}
+                placeholder="别名（顿号/逗号分隔）"
+              />
+            </>
+          )}
           <Button type="primary" disabled={!dirty} onClick={() => void save()}>
             {t('memory.anchors.save')}
           </Button>
@@ -128,6 +172,8 @@ function ValueRow({
             onClick={() => {
               setLabel(anchor.label);
               setWeightText(String(anchor.weight));
+              setRoleText(parsedAttrs.role ?? '');
+              setAliasesText((parsedAttrs.aliases ?? []).join('、'));
               setEditing(false);
             }}
           >
@@ -165,6 +211,11 @@ function ValueRow({
               { value: 'undecided', text: t('memory.anchors.valence.unjudged') },
             ]}
           />
+          {isPerson && (
+            <Button type="text" onClick={() => void onViewRelated(anchor)}>
+              🔍 关联记忆
+            </Button>
+          )}
           <Button type="text" onClick={() => setEditing(true)}>
             {t('memory.anchors.edit')}
           </Button>
@@ -262,7 +313,7 @@ export default function ValueAnchorsPanel() {
     setProposals([]);
   }, [blockId]);
 
-  async function handleSave(valueId: string, patch: { label: string; weight: number }) {
+  async function handleSave(valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } }) {
     if (!blockId) return;
     try {
       await chatMemoryApi.valuesUpsert(blockId, { value_id: valueId, ...patch });
@@ -270,6 +321,37 @@ export default function ValueAnchorsPanel() {
       await load();
     } catch (e) {
       tea.notify.error(e instanceof Error ? e.message : t('memory.notify.anchorSaveFailed'));
+    }
+  }
+
+  // U4（spec §6.5）：人物锚"查看关联记忆"——aliases 维度并入反查（label + 每个 alias
+  // 各查一次 L1，按 record_id 去重计数；S6 人物查询场景的反查交互复用，零新端点）。
+  async function handleViewRelated(anchor: ValueAnchor) {
+    if (!blockId) return;
+    const aliases: string[] = (() => {
+      try {
+        const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as { aliases?: string[] }) : {};
+        return Array.isArray(p.aliases) ? p.aliases : [];
+      } catch {
+        return [];
+      }
+    })();
+    const queries = [anchor.label, ...aliases];
+    try {
+      const all = await Promise.all(queries.map((q) => chatMemoryApi.searchLayer(blockId, 'L1', q, 30)));
+      const seen = new Set<string>();
+      for (const r of all) {
+        for (const item of r.items ?? []) {
+          const refs = [
+            ...((item.metadata as { coreRefs?: unknown })?.coreRefs ?? []),
+            ...((item.metadata as { personRefs?: unknown[] })?.personRefs ?? []),
+          ].map(String);
+          if (queries.some((q) => refs.includes(q))) seen.add(String(item.id ?? item.record_id ?? ''));
+        }
+      }
+      tea.notify.info(t('memory.notify.relatedCount', { count: seen.size, label: anchor.label }));
+    } catch {
+      tea.notify.error(t('memory.notify.relatedFailed'));
     }
   }
 
@@ -467,6 +549,7 @@ export default function ValueAnchorsPanel() {
               onPin={handlePin}
               onRetire={handleRetire}
               onDelete={handleDelete}
+              onViewRelated={handleViewRelated}
             />
           ))}
         </div>
