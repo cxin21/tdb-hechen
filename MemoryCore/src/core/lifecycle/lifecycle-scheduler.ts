@@ -6,6 +6,7 @@ import type { IMemoryStore } from "../store/types.js";
 import type { LLMRunner, Logger } from "../types.js";
 import { runConsolidation, type ConsolidationConfigX } from "./consolidation/consolidation-worker.js";
 import { runForgetting, type ForgettingConfig } from "./forgetting/forgetting-worker.js";
+import { runReflection, type ReflectionConfig } from "./reflection.js";
 import { runAnchorGrowth, type AnchorDiscoveryConfig } from "./anchor-growth.js";
 import { runEvolution, type EvolutionWorkerConfig } from "./evolution-worker.js";
 
@@ -14,6 +15,8 @@ export interface LifecycleConfig {
   intervalMs: number;
   consolidation?: ConsolidationConfigX;
   forgetting?: ForgettingConfig;
+  /** P3-F13：反思触发（Generative Agents 对标；缺省 undefined=关）。 */
+  reflection?: ReflectionConfig;
   /**
    * GROW（价值锚自生长）：巩固周期后挂钩的自发现+自动采纳。
    * 缺省 undefined → 默认开（DEFAULT_ANCHOR_DISCOVERY_CONFIG，enabled=true）——
@@ -177,6 +180,16 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
   // P2 SOP Round3 对抗修正（次序）：遗忘判定放 pass 末尾——锚发现/身份发现在同轮先行，
   // 保护上下文（active 锚名集/身份切片）取到本轮最新状态（引导期同轮 forgetting 先跑
   // 会因锚未诞生致 F14 保护名集为空，受保护记录被当场归档，ev8 实证）。
+  // P3-F13：反思触发——importance 累计 > R_REF → 强制反思式 L3 蒸馏（产物=普通 L3 结论卡）。
+  // 语义=触发生成时机增强（spec §2.8）；固定 interval 兜底由 consolidation 既有节拍承担。
+  if (deps.config.reflection?.enabled) {
+    try {
+      const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter });
+      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten}`);
+    } catch (err) {
+      deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   if (deps.config.forgetting?.enabled !== false) {
     try {
       const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });
