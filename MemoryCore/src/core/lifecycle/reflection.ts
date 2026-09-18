@@ -71,6 +71,8 @@ interface Rec {
   significance?: number;
   createdAt?: string;
   updatedAt?: string;
+  created_time?: string;
+  updated_time?: string;
   teamId?: string;
   userId?: string;
   agentId?: string;
@@ -113,16 +115,18 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   let cardsWritten = 0;
   for (const { triple, rows } of byTenant.values()) {
     // 反思史即状态：最新反思结论卡的 updatedAt = 上次反思时间戳
+    // 时间戳键：camelCase（MemoryRecord 形）与 snake_case（裸行）双兼容——
+    // scheduler 的 mapL1RowToRecord 只展开原始行，updatedAt/createdAt 可能缺位。
+    const rowUpdated = (r: Rec): string => String(r.updatedAt ?? r.updated_time ?? r.createdAt ?? r.created_time ?? "");
     const lastReflectionAt = rows
       .filter((r) => r.type === "work_fact" && (r as { metadata?: { reflection?: boolean } }).metadata?.reflection === true)
-      .map((r) => String(r.updatedAt ?? r.createdAt ?? ""))
+      .map((r) => rowUpdated(r))
       .filter((s) => s.length > 0)
       .sort()
       .at(-1) ?? "";
     const newRows = rows.filter((r) => {
       if (r.type === "work_fact") return false; // 持续态不入触发累计（防自我 reinforce）
-      const t = String(r.updatedAt ?? r.createdAt ?? "");
-      return t > lastReflectionAt;
+      return rowUpdated(r) > lastReflectionAt;
     });
     const sumSig = newRows.reduce((acc, r) => acc + (Number(r.significance) || 0), 0);
     if (sumSig <= rRef) continue;
