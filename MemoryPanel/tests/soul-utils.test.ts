@@ -176,3 +176,27 @@ describe('buildSoulCardView（U-A2 卡片摘要变体；批 2 图详情卡复用
     expect(buildSoulCardView({}).hasCard).toBe(false);
   });
 });
+
+/**
+ * S2/S3 扩展（U3）：personRefs/identityRefs 解析 + 人物节点语义色。
+ */
+describe('S2/S3：personRefs/identityRefs 解析（U3 chips 扩展）', () => {
+  it('buildSoulView 解析 personRefs/identityRefs（宽松校验同 coreRefs）', () => {
+    const view = buildSoulView({
+      metadata: { personRefs: ['苏教授'], identityRefs: ['先给结论'], coreRefs: ['排查'] },
+    });
+    expect(view.personRefs).toEqual(['苏教授']);
+    expect(view.identityRefs).toEqual(['先给结论']);
+    expect(view.coreRefs).toEqual(['排查']);
+    expect(view.hasSoul).toBe(true);
+  });
+  it('损坏/缺失 → 空数组（宁缺毋滥）', () => {
+    const view = buildSoulView({ metadata: { personRefs: 'bad', identityRefs: 42 } });
+    expect(view.personRefs).toEqual([]);
+    expect(view.identityRefs).toEqual([]);
+  });
+  it('hasSoul：仅 personRefs 在场即 true', () => {
+    const view = buildSoulView({ metadata: { personRefs: ['苏教授'] } });
+    expect(view.hasSoul).toBe(true);
+  });
+});

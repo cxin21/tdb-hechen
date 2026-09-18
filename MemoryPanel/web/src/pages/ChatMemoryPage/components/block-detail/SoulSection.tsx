@@ -28,6 +28,18 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
           🎯 #{label}
         </span>
       ))}
+      {/* 👥 人物锚 chips（S2/U3：metadata.personRefs；人物徽标） */}
+      {soul.personRefs.map((label) => (
+        <span key={`person:${label}`} className="_soul-chip _soul-chip--person" title={`人物锚：${label}`}>
+          👥 @{label}
+        </span>
+      ))}
+      {/* 🧠 身份事实 chips（S2/U3：identityRefs 切片徽标） */}
+      {soul.identityRefs.map((label) => (
+        <span key={`identity:${label}`} className="_soul-chip _soul-chip--identity" title={`身份事实：${label}`}>
+          🧠 {label}
+        </span>
+      ))}
       {/* ⏱ 时间行：发生时刻（title 存原始 ISO 便于核对）+ 有效期 */}
       {soul.occurredText && (
         <span className="_soul-chip" title={`发生时刻 ${soul.occurredAt ?? ''}`}>⏱ {soul.occurredText}</span>

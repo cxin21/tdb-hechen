@@ -120,10 +120,15 @@ export function valenceHueShift(baseHex: string, valence?: number | null): strin
  *   coreRefs 非空（有价值观锚）→ 金色（优先，图例注明）；
  *   否则 → valence 色相偏移色（无 valence → 基色）。
  */
+/** S3（U3）：人物节点语义色（与金色价值锚区分——青紫调）。 */
+export const PERSON_REF_COLOR = '#7c6cff';
+
+/** U3：语义着色扩展——coreRefs 金色（价值锚）优先，personRefs 人物色次之，否则 valence 色相。 */
 export function nodeSemanticColor(
   baseHex: string,
-  opts: { valence?: number | null; hasCoreRefs: boolean },
+  opts: { valence?: number | null; hasCoreRefs: boolean; hasPersonRefs?: boolean },
 ): string {
   if (opts.hasCoreRefs) return GOLD_CORE_REF_COLOR;
+  if (opts.hasPersonRefs) return PERSON_REF_COLOR;
   return valenceHueShift(baseHex, opts.valence ?? null);
 }

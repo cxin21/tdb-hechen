@@ -22,6 +22,8 @@ export interface SoulInput {
   significance?: unknown;
   metadata?: {
     coreRefs?: unknown;
+    personRefs?: unknown;
+    identityRefs?: unknown;
     recall_count?: unknown;
     last_recalled_at?: unknown;
   } | null;
@@ -55,6 +57,10 @@ export interface SoulView {
   source?: string;
   /** 🎯 价值锚 label 数组（损坏/缺失 → []）。 */
   coreRefs: string[];
+  /** 👥 人物锚 label 数组（S2 chips 扩展，U3；损坏/缺失 → []）。 */
+  personRefs: string[];
+  /** 🧠 身份事实切片数组（identityRefs；损坏/缺失 → []）。 */
+  identityRefs: string[];
   /** 🔥 回忆计数 + 上次回忆时间。 */
   recallCount: number | null;
   lastRecalledAt?: string;
@@ -101,7 +107,11 @@ export function formatSoulTime(v: unknown): string | null {
 
 /** 提取价值锚 label 数组；缺失/损坏 → []。与 anchor-utils.coreRefsOf 同规（此处零 import 自含）。 */
 function coreRefsOf(m: SoulInput['metadata']): string[] {
-  const refs = m?.coreRefs;
+  return refsOf(m?.coreRefs);
+}
+
+/** S2（U3）：refs 数组宽松提取泛化——coreRefs/personRefs/identityRefs 同一校验单点。 */
+function refsOf(refs: unknown): string[] {
   if (!Array.isArray(refs)) return [];
   return refs.filter((r): r is string => typeof r === 'string' && r.length > 0);
 }
@@ -139,6 +149,8 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
   const arousalPct = ratio01Percent(item?.arousal);
   const significancePct = ratio01Percent(item?.significance);
   const coreRefs = coreRefsOf(item?.metadata);
+  const personRefs = refsOf(item?.metadata?.personRefs);
+  const identityRefs = refsOf(item?.metadata?.identityRefs);
   const recallCount = recallCountOf(item?.metadata);
   const lastRecalledAt =
     typeof item?.metadata?.last_recalled_at === 'string' && item.metadata.last_recalled_at
@@ -160,6 +172,8 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
     arousalPct !== null ||
     significancePct !== null ||
     coreRefs.length > 0 ||
+    personRefs.length > 0 ||
+    identityRefs.length > 0 ||
     recallCount !== null;
 
   return {
@@ -179,6 +193,8 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
     certaintyLabel: certainty.label,
     source,
     coreRefs,
+    personRefs,
+    identityRefs,
     recallCount,
     lastRecalledAt,
     lastRecalledText: formatSoulTime(lastRecalledAt),
