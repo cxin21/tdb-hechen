@@ -536,3 +536,10 @@ CREATE TABLE IF NOT EXISTS core_pending (
 - 悬空 links=0；状态键=0；profiles 残留仅真实租户+default 桶
 - 功能召回：苏教授/林岚/陈教授/钱院长/老板大人 五项测试人物命中全 0；真实租户 /recall 正常（块长 4086）
 - health 200；服务未重启
+
+## LLM 依赖漂移运行时缺陷修复记录（2026-09-18，34e1ca2）
+**现象**：tdb 网关 LLM 调用回复中断 + max_tokens 参数非法（限制 [1,131072]）。
+**根因**：`@ai-sdk/openai` 语义化版本 `^3.0.53` 被 pnpm 拉到 `3.0.112`——v3 移除了 `compatibility` 选项 + 默认走 OpenAI Responses API（非 `/chat/completions`）→ Ark API 收到不认识的参数名/格式 → max_tokens 校验失败 + 回复截断。
+**修复**：`createOpenAI` → `createOpenAICompatible`（`@ai-sdk/openai-compatible@^2.0.75`，专用于 OpenAI 兼容第三方端点，始终走 `/chat/completions`）；`provider.chat()` → `provider.chatModel()`；`pnpm add` 声明依赖。
+**真数据验证**：投喂 3 条种子 → L1 提取 `extracted=2, stored=2`，延迟 19.5s（正常），journal 无 max_tokens 报错、无中断。
+**遗留**：tsc 250（`ai@6.x` 类型层存量漂移 + host-adapter/cli），运行时不受影响，独立任务治理。
