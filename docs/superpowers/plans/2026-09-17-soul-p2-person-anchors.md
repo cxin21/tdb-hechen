@@ -515,3 +515,14 @@ CREATE TABLE IF NOT EXISTS core_pending (
 **存量治理（测试数据范围内）**：ev11 污染源 L1 两行（老板大人/冥想指令记录）+ scene_blocks/日常-AI协作与私人事务.md + scene_index 条目（scene_index 为 list 结构——首次清洗脚本 .get 崩溃未写入，二修完成）+ persona.md 引用——清除后 /recall **对抗词 False ✓ 隔离 True ✓ 块长 1150**。
 **三级贯通确认**：对抗内容的传播链 = 用户口播 → L1（如实，合法）→ **consolidation 蒸馏（非法→已门）** → scene_block/L3 卡（文件态）→ 注入块；现在蒸馏层与 scene 块均为已治理面（R4-5 三元组 scope + 本轮蒸馏门）。scene-extractor L2 蒸馏 prompt 层软约束同源加固留待下一轮（确定性门已覆盖 work_fact 通道）。
 **F14 终态**：prot(苏教授 active 锚)=LIVE / dang=ARCHIVED ✓；苏教授 person 锚 p-auto-9ead7 val=1 保持。
+
+## Goal 收口记录（2026-09-18 13:0x，goal-98704022 Rounds 1-9，HEAD 本轮推送）
+**目标三主项全部闭环（真数据实证）**：
+① R4-5 召回层跨 user 泄漏（scope 三元组化五层实现+真租户迁移+复验 Q 隔离）✅；R4-6 姓名归因红线（提取/scene 双 prompt+真数据新旧对照）✅。
+② T7b Panel 核心（BFF pending list|decide + PendingSection + U2 徽标，面板 109/109）✅；attrs 编辑/aliases 反查/S2/S3 按余量裁决顺延（台账在案）。
+③ P3 spike 定案（agentAct 占比 0%→self_identity 演化史 fallback）✅；character 池（c- 前缀/F15 三池/per-三元组，真数据苏教授/陈教授/林岚锚采纳）✅；F13 反思触发（时间戳双兼容+卡片字段补齐+真数据 3 张三问式结论卡落库）✅。
+**SOP 收口核验**：重启带就绪探针（READY 8s 惯例）；ev9/ev10/ev11 三代全新租户真数据（17/17/16 组）+ 对抗性审查（三级传播链治理：identity 门/蒸馏门/scene 治理）；配置审计六项全开（yaml 双开 character/reflection）；/recall 逐块核对（来源/主语/属性/公式/使用场景）。
+**对抗复验（本轮新数据）**：新形态对抗种子投喂→提取→pass proposals=0（提取竞态观察）——门逻辑以单测 gate-dr5 4/4 锁定；ev7/ev11 两轮真数据 C2 形态拒收留痕在案。
+**D-R5-2 处置（本轮定案）**：根因=依赖漂移——package.json `@ai-sdk/openai@^3.0.53` + `ai@^6.0.164`（OpenAIProviderSettings 移除 compatibility/createOpenAI 签名变更）vs 代码按旧 API 书写；运行时全功能实证正常（锚/身份/反思全链真数据工作），类型层漂移登记为 D-R5-2 存量债（修复须独立验证 endpoint 行为，不在本 goal 范围）。
+**待授权清单（本 goal 范围外）**：① 测试数据清理 ev10/ev11（ev9 已在 Round3 授权批内清过同型租户，本轮新租户待授权）② T7b attrs 编辑/aliases 反查/S2/S3 顺延项 ③ P3 sensitivity（spec"若拍板实施"未拍板）④ D-R5-2 依赖升级治理。
+**基线**：vitest 615/615（P2 起点 521 → +94）、tsc 249（含 adapters/cli 存量漂移 10 错，D-R5-2）、全部推送。
