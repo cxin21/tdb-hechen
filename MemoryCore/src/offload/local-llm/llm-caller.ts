@@ -5,7 +5,7 @@
  * to support any OpenAI-compatible backend.
  */
 import { generateText, streamText } from "ai";
-import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { PluginLogger } from "../types.js";
 
 const TAG = "[context-offload] [local-llm]";
@@ -55,15 +55,17 @@ export async function callLlm(
     `systemLen=${opts.systemPrompt.length}, userLen=${opts.userPrompt.length}`,
   );
 
-  const provider = createOpenAI({
+  // D-R5-2（运行时缺陷修复）：@ai-sdk/openai v3 移除 compatibility + 默认走 Responses API
+  // → Ark 收到不认识的参数格式（max_tokens 非法 + 回复中断）。改用 openai-compatible。
+  const provider = createOpenAICompatible({
+    name: "tdai-offload",
     baseURL: config.baseUrl,
     apiKey: config.apiKey,
-    compatibility: "compatible",
   });
 
   try {
     const callParams = {
-      model: provider.chat(config.model),
+      model: provider.chatModel(config.model),
       system: opts.systemPrompt,
       prompt: opts.userPrompt,
       temperature,
