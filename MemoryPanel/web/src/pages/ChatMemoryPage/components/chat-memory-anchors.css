@@ -285,3 +285,8 @@
 ._pending-btn.adopt { color: #1677ff; }
 ._pending-btn.reject { color: #666; }
 ._pending-error { margin-top: 6px; color: #d4380d; font-size: 12px; }
+
+/* U7/T-C：分池配额迷你显示 + sensitivity 预留徽章位 */
+._va-quota { display: flex; gap: 10px; align-items: center; padding: 4px 0; font-size: 11px; color: var(--td-text-color-secondary, #666); }
+._va-quota-item { padding: 1px 8px; border-radius: 4px; border: 1px solid var(--td-component-stroke, #e0e0e0); background: var(--td-color-bg-container, #fafafa); }
+._va-quota-sensitivity { opacity: 0.6; border-style: dashed; }
