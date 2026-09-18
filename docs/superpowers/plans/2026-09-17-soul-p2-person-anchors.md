@@ -452,3 +452,9 @@ CREATE TABLE IF NOT EXISTS core_pending (
 2. F13 反思触发：累计 significance > R_REF（config，缺省 150）→ 下 tick 提前+强制反思式 L3 蒸馏（Generative Agents 三问式，产物=普通 L3 结论卡，U5 零适配）；固定 interval 兜底不变。
 3. 配置：anchorDiscovery.character.{enabled=false 缺省,minEvidence,maxPerPass,maxTotal}；reflection.{rRef=150}。
 4. 验收：品格锚与主题锚并存不互挤（分池断言）+ 反思触发真数据实测。
+
+## Round5 P3-t1 character 池执行记录（2026-09-18，d2d5a6a）
+**实现**：anchor-growth 第三池——聚合源=self_identity 槽事实（readCore 单一源）→ CHARACTER_DISCOVER_SYSTEM_PROMPT LLM 提案 → 证据门（提案 fact 切片在语料逐字包含，identityFactSlice 单一源）→ c- 前缀独立 id（growthValueId character 分支）→ upsertValue node_type='character' attrs={source:"self_identity",facts:切片快照}；F15 独立 maxTotal 分池（与 theme/person 互不挤占，theme 池口径同步收紧为显式 theme）；config anchorDiscovery.character 全 gated 缺省 off（逐位现状）；per-三元组（spec §110 拍板）。
+**测试**：vitest 606/606（+4）：c- 前缀、happy path 采纳+attrs、disabled 零调用（逐位现状）、证据门宁缺毋滥。
+**过程实证（诚实记录）**：首轮实现两处缺陷被 TDD/探针抓出——① characterEvCount 误把 corpus 当对象数组（实际是 string[] 内容数组，读 .content 恒 undefined → 证据恒 0）；② config.ts 解析块插入吞掉外层闭合致 TS1005（补丁锚含闭合行，替换时未复加）。均以隔离探针+verbatim 取证定位修复。
+**基线漂移登记（D-R5-2）**：stash 对照实证 HEAD（98b42e6）tsc 实为 **254**——此前多轮"243 持平"是 config.ts 解析破损状态下的遮蔽读数（破损吞掉自身+下游 11 个错误）。adapters 层 5 错（host-adapter EmbeddedAgentRuntimeLike / llm-runner compatibility+experimental_telemetry / api-trace ApiTraceProfile）为依赖状态漂移的存量错误，与 P3 改动无因果（stash 对照）。本次改动后 248（<254，顺带消除 upsertValue 相关错误）。**待修：D-R5-2 adapters 类型漂移 5 错 + 基线计数方法改为 stash 对照**。
