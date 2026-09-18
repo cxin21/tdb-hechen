@@ -20,7 +20,7 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { generateText, streamText, tool, stepCountIs, jsonSchema } from "ai";
-import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { report } from "../../core/report/reporter.js";
 import type {
   LLMRunner,
@@ -320,13 +320,13 @@ export class StandaloneLLMRunner implements LLMRunner {
       `tools=${effectiveEnableTools}${callerProvidedTools ? "(caller)" : ""}, timeout=${timeoutMs}ms`,
     );
 
-    // Create OpenAI-compatible provider via AI SDK
-    // Use "compatible" mode to call /chat/completions (not Responses API),
-    // which works with all OpenAI-compatible backends (DeepSeek, Qwen, etc.)
-    const provider = createOpenAI({
+    // D-R5-2（运行时缺陷修复）：@ai-sdk/openai v3 移除 compatibility + 默认走 Responses
+    // API → Ark 收到不认识的参数格式（max_tokens 非法 + 回复中断）。改用
+    // @ai-sdk/openai-compatible（专用于 OpenAI 兼容第三方端点），始终走 /chat/completions。
+    const provider = createOpenAICompatible({
+      name: "tdai-memory",
       baseURL: this.config.baseUrl,
       apiKey: this.config.apiKey,
-      compatibility: "compatible",
       headers: goClientHeaders(this.config.baseUrl, this.model),
     });
 
@@ -362,7 +362,7 @@ export class StandaloneLLMRunner implements LLMRunner {
         : timeoutSignal;
 
       const callParams = {
-        model: provider.chat(this.model),
+        model: provider.chatModel(this.model),
         system: params.systemPrompt,
         prompt: params.prompt,
         // Only attach tools when actually enabled — passing an empty object
