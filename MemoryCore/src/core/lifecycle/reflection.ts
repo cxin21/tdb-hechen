@@ -143,6 +143,9 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
     const proposals = parseReflectionProposals(String(raw ?? "")).slice(0, maxConclusions);
     const now = new Date().toISOString();
     for (const pr of proposals) {
+      // 终测实证（D-R5-6 续）：真实 store.upsertL1 静默返回 false——MemoryRecord 必填
+      // 会话/版本/确信度字段缺位（probe 的 mock store 掩盖）。补齐与 consolidation
+      // 持续态同形（work_fact/observed 先例）：sessionKey/sessionId/version/certainty。
       const rec = {
         id: `rf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         content: pr.conclusion,
@@ -157,6 +160,11 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
         teamId: triple.teamId,
         userId: triple.userId,
         agentId: triple.agentId,
+        sessionKey: `reflection:${triple.teamId}:${triple.userId}:${triple.agentId}`,
+        sessionId: `reflection-${Date.now()}`,
+        taskId: "",
+        version: 1,
+        certainty: "observed",
       };
       const ok = await Promise.resolve(deps.store.upsertL1(rec));
       if (ok) cardsWritten++;
