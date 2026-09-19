@@ -584,7 +584,8 @@ export function createL1Runner(opts: {
 
       let totalExtracted = 0;
       let totalStored = 0;
-      let lastSceneName: string | undefined;
+      let lastSceneName: string | undefined;      // F-EV12-1（REG-REMAINING-006 A-1）：LLM 失败批次不得推进游标（批次级旗标）。
+      let extractionFailed = false;
       const profileScopes = new Set<string>();
       const l1PromptTargets = groups.map((group) => ({
         teamId: group.teamId,
@@ -640,7 +641,7 @@ export function createL1Runner(opts: {
         });
 
         totalExtracted += l1Result.extractedCount;
-        totalStored += l1Result.storedCount;
+        totalStored += l1Result.storedCount;        if (l1Result.success === false) extractionFailed = true;
         if (l1Result.storedCount > 0) {
           // L2/L3 output is team+agent scoped, but each L2 extraction input must
           // stay bounded to the source session that just produced L1. Encode the
@@ -661,6 +662,18 @@ export function createL1Runner(opts: {
       // Use maxRecordedAtMs (write time) of the **processed** slice as cursor —
       // always positive, TCVDB-safe. Boundary alignment guarantees we will not
       // skip same-ms siblings on the next round.
+      // F-EV12-1（REG-REMAINING-006 A-1）：LLM 失败批次不得推进游标。
+      // extractL1Memories 吞错返回 success:false（l1-extractor.ts:231）——游标语义 =
+      // 「已确定提取成功的消息边界」，失败即不推进：下次对话触发 / l1Idle 600s /
+      // boot L1_drain 自愈重试（c35a3e6 机制）。部分成功组的产出保留（重提取由
+      // extraction.enableDedup 兜底）。hasMore/hasFullBacklog 压平：防
+      // pipeline-manager hasFullBacklog→enqueueL1 立即重入队在配额死期形成重试风暴。
+      if (extractionFailed) {
+        logger.error(
+          `${TAG} [l1] L1 extraction FAILED — cursor NOT advanced (session=${sessionKey}, stored=${totalStored}); retry on next conversation/idle/drain trigger`,
+        );
+        return { processedCount: 0, storedCount: totalStored, hasMore: false, hasFullBacklog: false, profileScopes: Array.from(profileScopes) };
+      }
       await checkpoint.markL1ExtractionComplete(sessionKey, totalStored, maxRecordedAtMs || undefined, lastSceneName);
       logger.info(
         `${TAG} [l1] L1 complete: extracted=${totalExtracted}, stored=${totalStored} (${groups.length} group(s))`,

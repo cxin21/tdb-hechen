@@ -523,9 +523,17 @@ export async function performLayeredRecall(params: {
     // R-A3（E3）：同 session 上轮 query 与本轮全等 → 复用上轮搜索结果（免搜索免外呼）。
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
     const sessionReuseTtlMs = cfg.recall?.sessionReuseTtlMs ?? 300_000;
+    // F-EV12-2（REG-REMAINING-006 A-2）：E3 缓存租户隔离——
+    // ①空 sessionKey（/v3/recall body 缺 session_id 的端点路）→ 通道整体关断
+    //   （与 v2-router 端点注释宣称的「空 sessionKey→通道退出」语义对齐；此前仅结论层有守卫）；
+    // ②缓存键并入租户三元组——sessionKey 单键会让同 query 的不同租户在 TTL 内
+    //   互相复用注入记忆列表（A桶→P桶 跨用户泄漏活体实证 2026-09-19）。
+    const reuseCacheKey = params.isolationFilter
+      ? JSON.stringify([params.isolationFilter.teamId ?? "", params.isolationFilter.userId ?? "", params.isolationFilter.agentId ?? "", params.sessionKey])
+      : params.sessionKey;
     let searchResult: { lines: string[]; timing: SearchTiming; scores?: number[] } | undefined;
-    if (sessionReuseTtlMs > 0 && !params.validityNow) {
-      const entry = sessionReuseCache.get(params.sessionKey);
+    if (sessionReuseTtlMs > 0 && !params.validityNow && params.sessionKey) {
+      const entry = sessionReuseCache.get(reuseCacheKey);
       if (entry && entry.query === userText && entry.vectorStore === vectorStore && entry.embeddingService === embeddingService &&
           Date.now() - entry.at < sessionReuseTtlMs) {
         searchResult = entry.result;
@@ -592,8 +600,8 @@ export async function performLayeredRecall(params: {
       searchResult = await searchMemories(userText, pluginDataDir, cfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
       // 审查 #3 修补：空结果不入复用缓存——瞬时失败（如外呼抖动/瞬时空召回）不放大成
       // TTL 窗口内的持续空召回；lines.length>0 才视为可用注入块。
-      if (sessionReuseTtlMs > 0 && searchResult.lines.length > 0 && !params.validityNow) {
-        sessionReuseCache.set(params.sessionKey, { query: userText, result: searchResult, at: Date.now(), vectorStore, embeddingService });
+      if (sessionReuseTtlMs > 0 && params.sessionKey && searchResult.lines.length > 0 && !params.validityNow) {
+        sessionReuseCache.set(reuseCacheKey, { query: userText, result: searchResult, at: Date.now(), vectorStore, embeddingService });
         if (sessionReuseCache.size > SESSION_REUSE_MAX) {
           const oldest = sessionReuseCache.keys().next().value;
           if (oldest !== undefined) sessionReuseCache.delete(oldest);
