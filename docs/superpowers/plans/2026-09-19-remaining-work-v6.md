@@ -3,7 +3,7 @@
 > 取代 v5（2026-09-16-remaining-work-v5.md）的**待办部分**；v5"不做项"判定与 O1-O6 观察继承有效。
 > 来源：2026-09-19 设计↔代码↔真数据三方交叉审计（33 项：✅22 / ⚠️8 / ❌3，报告见 `2026-09-19-soul-audit-report.md`；HEAD 1d8b19e，运行代码 1d03a37）。
 > 执行纪律：TDD（RED 先行）→ 补丁（锚点唯一+读回验证）→ tsc 222 基线持平 + vitest 617+ 全绿 → CHANGELOG 同步 → 密钥扫描 → `sudo -H -u tdai git` commit/push → 重启 → 真数据验证。
-> **进度（2026-09-19 批次一）**：A-1（F-EV12-1）/ A-2（F-EV12-2）/ A-4（F-EV12-4）已修复——vitest 617→623 全绿、tsc 222 基线持平，CHANGELOG 已登记；批次 1.5 = A-2b 结论层缓存键硬化（vitest 624）；批次二 = A-5 三处不对称修复 + A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951）+ A-6 spec 同步（vitest 627）
+> **进度（2026-09-19 批次一）**：A-1（F-EV12-1）/ A-2（F-EV12-2）/ A-4（F-EV12-4）已修复——vitest 617→623 全绿、tsc 222 基线持平，CHANGELOG 已登记；批次 1.5 = A-2b 结论层缓存键硬化（vitest 624）；批次二 = A-5 三处不对称修复 + A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951）+ A-6 spec 同步（vitest 627）；批次三（ev13 重放轮）= A-7 F-EV13-1 措辞断链修复（identityFactMatchesCorpus 单一源 12 字滑窗，四消费面统一；vitest 636）
 ；A-3 / A-5 下一批；B-2 真数据重放待 LLM 配额重置。
 
 ## 数据门槛快照（2026-09-19 10:5x 实取）

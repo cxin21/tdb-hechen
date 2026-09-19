@@ -49,7 +49,7 @@ import {
   PERSON_DISCOVER_SYSTEM_PROMPT,
   buildPersonDiscoverPrompt,
 } from "../../gateway/core-values-discover.js";
-import { identityFactSlice } from "./identity-discovery.js";
+import { identityFactMatchesCorpus, identityFactSlice } from "./identity-discovery.js";
 
 /** GROW：自生长配置（memory.coreMemory.anchorDiscovery；解析+clamp+默认见 config.ts）。 */
 /** P2（spec §2.6/§5 F15/F19）：人物锚池独立护栏（QUOTA/护栏四件按 node_type 分池）。 */
@@ -149,12 +149,12 @@ export async function maintainIdentityFacts(
   for (const line of identity.content.split("\n")) {
     const fact = line.trim();
     if (!fact.startsWith("-") || fact.length <= 1) continue;
-    const slice = identityFactSlice(fact);
-    if (!slice) continue;
-    const ev = corpus.filter((c) => c.includes(slice)).length;
+    // F-EV13-1：重验判定换 identityFactMatchesCorpus（措辞断链修复——ev13 实测旧口径把有支撑
+    // 的事实全判 unsupported 假阳）。
+    const ev = corpus.filter((c) => identityFactMatchesCorpus(fact.replace(/^-/, ""), c)).length;
     if (ev === 0) {
       unsupported++;
-      logger?.warn?.(`[GROW-MAINT] identity fact unsupported (warning-only, F20): ${slice}… (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+      logger?.warn?.(`[GROW-MAINT] identity fact unsupported (warning-only, F20): ${fact.replace(/^-/, "").slice(0, 20)}… (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
     }
   }
   return unsupported;
@@ -320,9 +320,10 @@ export async function runAnchorGrowth(deps: {
         // F-EV12-5（REG-REMAINING-006 A-5①）：现行 self_identity 槽事实切片——character
         // 维护/守卫与采纳同源口径（identityFactSlice 单一源）；无槽/无切片 → 冻结不误退。
         const selfSlotRows = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
-        const currentFactSlices = ((selfSlotRows.find((s) => s.slot === "self_identity")?.content ?? "")
+        const currentSelfFacts = (selfSlotRows.find((s) => s.slot === "self_identity")?.content ?? "")
           .split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1)
-          .map((l) => identityFactSlice(l))).filter((s) => s.length > 0);
+          .map((l) => l.replace(/^-\s*/, "")).filter((s) => s.length > 0);
+        const currentFactSlices = currentSelfFacts.map((l) => identityFactSlice(l)).filter((s) => s.length > 0);
 
         // ── 自维护（GROW-MAINT）：auto 锚权重重算 + 低证据退场 ──────────
         // 只管自己生的锚（created_by='auto-growth'）；pinned 豁免；manual/seed 永不自动动。
@@ -339,12 +340,12 @@ export async function runAnchorGrowth(deps: {
           // F-EV12-5（A-5①）：character 行分叉事实切片口径（与采纳同源）；池关闭或无现行
           // 切片 → 冻结（宁缺毋滥）。theme 口径的字面 label 计数会把品格锚误判零证据。
           const isCharacter = a.node_type === "character";
-          if (isCharacter && (!cfg.character?.enabled || currentFactSlices.length === 0)) continue;
+          if (isCharacter && (!cfg.character?.enabled || currentSelfFacts.length === 0)) continue;
           const aliases = isPerson ? attrsOf(a).aliases : [];
           const ev = isPerson
             ? personEvCount(a.label, aliases, corpus)
             : isCharacter
-              ? characterEvCount(currentFactSlices, corpus)
+              ? characterEvidenceCount(currentSelfFacts, corpus)
               : recountEvidence(a.label, corpus);
           // P2：分池阈值——人物锚退场门槛用 cfg.person.minEvidence（F15/F19 护栏四件分池），
           // 沿用 theme 阈值会把别名支撑的人物锚误退（TDD QUOTA 分池用例实证）。
@@ -411,7 +412,7 @@ export async function runAnchorGrowth(deps: {
           await quotaEvict(personActive, cfg.person.maxTotal, (r) => personEvCount(r.label, attrsOf(r).aliases, corpus), "person");
         }        if (cfg.character?.enabled) {
           // F-EV12-5（A-5②）：character 池 QUOTA 守卫（与 theme/person 同款，防超限无自愈）。
-          await quotaEvict(characterActive, cfg.character.maxTotal, () => characterEvCount(currentFactSlices, corpus), "character");
+          await quotaEvict(characterActive, cfg.character.maxTotal, () => characterEvidenceCount(currentSelfFacts, corpus), "character");
         }
         retired += quotaRetiredA; // GROW-QUOTA 退场并入（守卫块之后汇总）
         // GROW-MAINT v2（SOP 2026-09-17 修复）：守卫退场后刷新快照——dedup/名额/挤出必须
@@ -585,10 +586,9 @@ export async function runAnchorGrowth(deps: {
             const characterCandidates = parseCharacterProposals(String(charRaw ?? ""))
               .filter((p) => !charNames.includes(p.label.trim().toLowerCase()))
               .map((p) => {
-                const slices = p.fact
-                  ? selfFacts.filter((f) => f.includes(p.fact!)).map((l) => identityFactSlice(l)).filter((s): s is string => typeof s === "string" && s.length > 0)
-                  : factSlices;
-                return { ...p, evidenceCount: characterEvCount(slices.length > 0 ? slices : factSlices, corpus) };
+                // F-EV13-1：证据口径换 facts 模糊匹配（提案 fact 与语料措辞断链修复）。
+                const facts = p.fact ? selfFacts.filter((f) => f.includes(p.fact!)) : selfFacts;
+                return { ...p, evidenceCount: characterEvidenceCount(facts.length > 0 ? facts : selfFacts, corpus) };
               })
               .filter((p) => p.evidenceCount >= cfg.character!.minEvidence)
               .sort((a, b) => b.evidenceCount - a.evidenceCount)
@@ -597,7 +597,7 @@ export async function runAnchorGrowth(deps: {
             const characterAutoNonPinned = characterAll.filter((r) => r.state === "active" && r.origin === "auto" && r.pinned !== 1);
             let freeC = Math.max(0, cfg.character!.maxTotal - characterPinnedActive - characterAutoNonPinned.length);
             const displaceableC = characterAutoNonPinned
-              .map((r) => ({ row: r, strength: r.weight * characterEvCount(factSlices, corpus) }))
+              .map((r) => ({ row: r, strength: r.weight * characterEvidenceCount(currentSelfFacts, corpus) }))
               .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
             for (const c of characterCandidates) {
               const candidateStrength = suggestAnchorWeight(c.evidenceCount, corpus.length) * c.evidenceCount;
@@ -744,6 +744,15 @@ export function characterEvCount(slices: string[], corpus: string[]): number {
   for (const content of corpus) {
     const text = String(content ?? "");
     if (slices.some((s) => s.length > 0 && text.includes(s))) n++;
+  }
+  return n;
+}
+/** F-EV13-1（A-7）：品格证据计数——事实全行 × identityFactMatchesCorpus 模糊口径（措辞断链修复）。 */
+export function characterEvidenceCount(facts: string[], corpus: string[]): number {
+  let n = 0;
+  for (const content of corpus) {
+    const text = String(content ?? "");
+    if (facts.some((f) => identityFactMatchesCorpus(f, text))) n++;
   }
   return n;
 }

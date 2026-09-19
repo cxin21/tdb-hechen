@@ -4,6 +4,7 @@
  */
 import type { MemoryRecord } from "../../record/l1-writer.js";
 import { salienceBoostWithRefs } from "../feeling/appraisal.js";
+import { identityFactMatchesCorpus } from "../identity-discovery.js";
 
 export interface ForgettingConfig {
   enabled: boolean;
@@ -39,15 +40,18 @@ export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
  * （theme label ∪ person label/alias）或 identityRefs 命中现行身份事实切片集 → true。
  * 悬空 refs（锚已退休/身份事实已被修订替换）不保护——F14 的排除必须以重验后的有效引用为准。
  */
-export function isRefProtected(metadata: unknown, anchorNames: ReadonlySet<string>, identitySlices: ReadonlySet<string>): boolean {
+export function isRefProtected(metadata: unknown, anchorNames: ReadonlySet<string>, identityFacts: ReadonlySet<string>): boolean {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
   const meta = metadata as Record<string, unknown>;
   for (const key of ["coreRefs", "personRefs"] as const) {
     const refs = meta[key];
     if (Array.isArray(refs) && refs.some((r) => typeof r === "string" && anchorNames.has(r))) return true;
   }
+  // F-EV13-1：identityRefs 对现行事实行模糊匹配（措辞断链修复）；旧 20 字切片引用向后兼容
+  //（fact[0:12] ⊂ ref 恒真）。双向匹配：引用可能是事实片段或含事实的行。
   const irefs = meta.identityRefs;
-  if (Array.isArray(irefs) && irefs.some((r) => typeof r === "string" && identitySlices.has(r))) return true;
+  if (Array.isArray(irefs) && irefs.some((r) => typeof r === "string" &&
+    [...identityFacts].some((f) => identityFactMatchesCorpus(f, r) || identityFactMatchesCorpus(r, f)))) return true;
   return false;
 }
 

@@ -16,6 +16,7 @@
 - **F-EV12-2（高危）E3 session-reuse 缓存租户隔离**：`auto-recall.ts` 缓存键并入租户三元组（teamId/userId/agentId）+ 空 sessionKey（/v3/recall 缺 body session_id）整体关断复用通道。此前 sessionKey 单键使同 query 不同租户在 TTL 内互相复用注入记忆列表（A桶→P桶 跨用户泄漏活体实证）。
 - **F-EV12-2-b（A-2 硬化）结论层幂等缓存键并入租户三元组**：端点 sessionKey 被 resolveIsolation 缺省填充为 `"default"`（v2-schemas.ts:393，此前 v2-router 注释宣称空串——已同步修正），sessionKey 单键会跨租户共享结论层 LRU（同指纹才复用=内容良性，但 LRU 互相驱逐 + reused 标志失真；活体 P桶-b/Q桶 sessionReused=true 实证）。硬化后隔离完整。
 
+- **F-EV13-1（A-7，ev13 真数据发现）身份事实↔语料措辞断链修复**：槽事实（identity-discovery 提炼措辞）与 L1 语料（提取器措辞）必然微差 → identityFactSlice 20 字逐字包含结构性零命中——identityRefs 回填 0 / GROW-MAINT unsupported 全假阳 / character 提案恒拒采（三处共用断链口径，违反自生长/自维护）。修复=单一源匹配器 `identityFactMatchesCorpus`（12 字滑窗，确定性纯函数，统一 strip 列表前缀；<4 字宁缺毋滥不命中；完全相等命中），四消费面统一换用（identityRefs 回填/GROW-MAINT/character 证据门/isRefProtected——旧切片引用向后兼容）。
 - **F-EV12-5（A-5）character 池三处不对称修复**：GROW-MAINT 维护口径改事实切片 characterEvCount（与采纳同源，theme 字面计数误退消除；无切片冻结）+ 分池阈值 cfg.character.minEvidence + QUOTA 守卫补 character 分池 + reweight 不漂 node_type；soul-feeling 过滤收窄 theme-only（spec §2.7「仅主题锚」代码化）。
 - **F-EV12-4 rRef clamp 下限 10→1**：`config.ts` yaml `rRef: 2` 曾被静默钳到 10（配置值与生效值背离）。
 
@@ -23,6 +24,7 @@
 
 - 新增 golden：`l1-runner-failure.test.ts`（游标不变量）/ `recall-e3-tenant.test.ts`（跨租户不复用 + 空 sessionKey 关断 + 复用语义正向控制）/ `config.rref.test.ts`。vitest 617→627 全绿（批次一 623 + A-2b 1）；tsc 222 基线持平。
 - 批次二：+`anchor-growth.character-maint.test.ts`（3 用例：维护口径/QUOTA 守卫/感受段过滤）；A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951-1954，审计报告勘误段）；A-6 spec §2.2/§2.7/§2.8/§7-P3 同步。
+- 批次三（ev13 重放轮）：+`identity-fact-match.test.ts`（9 用例）；vitest 627→636 全绿；tsc 222 基线持平。
 
 
 ## 🪞 灵魂 P2：人物锚双池与人工采纳闭环（DS-SOUL-MEMORY-002，2026-09-17）

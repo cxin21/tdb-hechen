@@ -229,10 +229,12 @@ export async function runIdentityDiscovery(deps: {
             logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
             // P2：identityRefs 回填（20 字切片弱口径；F14 遗忘保护/GROW-MAINT 重验证的数据前提）
             for (const fact of identityProps) {
+              // F-EV13-1：回填判定换 identityFactMatchesCorpus（措辞断链修复）；引用仍存 20 字切片
+              //（isRefProtected 端模糊匹配向后兼容）。
               const slice = identityFactSlice(fact);
               if (!slice) continue;
               for (const r of rows) {
-                if (String((r as { content?: string }).content ?? "").includes(slice)) {
+                if (identityFactMatchesCorpus(fact, String((r as { content?: string }).content ?? ""))) {
                   const rid = String((r as { record_id?: string }).record_id ?? "");
                   if (rid) (store as { backfillMemoryRef?: (rid: string, key: "identityRefs", label: string, t?: unknown) => boolean }).backfillMemoryRef?.(rid, "identityRefs", slice, tenant);
                 }
@@ -378,6 +380,30 @@ function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: 
  */
 export function identityFactSlice(fact: string): string {
   return fact.replace(/^-\s*/, "").trim().slice(0, 20);
+}
+
+// F-EV13-1（REG-REMAINING-006 A-7）：身份事实↔语料匹配器（单一源）。
+// identityFactSlice 20 字前缀逐字包含在真实数据上结构性零命中（ev13 实测：槽事实=LLM 提炼
+// 措辞，语料=提取器措辞，必然微差 → identityRefs 回填 0 / GROW-MAINT unsupported 全假阳 /
+// character 提案恒拒采）。改用滑窗匹配：fact 的 ≥12 连续汉字窗在语料行任一命中即判定——
+// 确定性纯函数，无需信任 LLM；12+ 连续汉字为强信号（误报面：无关记录雷同 12 字，罕见）。
+// <4 字短事实回退整串包含；匹配方向双向使用（isRefProtected 对旧切片引用向后兼容）。
+export const IDENTITY_FACT_MATCH_MIN_CHARS = 12;
+
+export function identityFactMatchesCorpus(fact: string, content: string, minChars = IDENTITY_FACT_MATCH_MIN_CHARS): boolean {
+  // 统一 strip 列表前缀（"- "/"- "变体）——character 块 selfFacts 带前缀而提案 fact 不带，
+  // 前缀差异会造成滑窗假阴（probe 实证 2026-09-19）。
+  const f = String(fact ?? "").trim().replace(/^-/, "").trim();
+  const c = String(content ?? "").trim().replace(/^-/, "").trim();
+  if (!f || !c) return false;
+  if (f === c) return true; // 完全相等 = 合法引用形态（含 <4 字短事实）。
+  // F-EV13-1 裁定：<4 字"事实"裸包含误报面过大（品格词随处出现），宁缺毋滥直接不命中。
+  if (f.length < 4) return false;
+  const win = Math.min(minChars, f.length);
+  for (let i = 0; i + win <= f.length; i++) {
+    if (c.includes(f.slice(i, i + win))) return true;
+  }
+  return false;
 }
 
 // ── P2 SOP Round2 实证弱点修正 ─────────────────────────────────────────────
