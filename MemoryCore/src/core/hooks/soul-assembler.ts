@@ -119,7 +119,9 @@ export async function buildSoulPrefix(
     }
 
     // ── 感受段：当下的感受 ──
-    const directional = active.filter((v) => v.valence === 1 || v.valence === -1);
+    // F-EV12-5（A-5③，spec §2.7「soul-feeling 保持仅主题锚」）：character 锚不入感受段
+    //（价值锚行保留 = §7「与主题锚共享注入预算」）；node_type 缺省 theme 旧库兼容。
+    const directional = active.filter((v) => (v.node_type ?? "theme") === "theme" && (v.valence === 1 || v.valence === -1));
     if (directional.length > 0) {
       const pos = directional.filter((v) => v.valence === 1).map((v) => escapeXmlTags(v.label));
       const neg = directional.filter((v) => v.valence === -1).map((v) => escapeXmlTags(v.label));

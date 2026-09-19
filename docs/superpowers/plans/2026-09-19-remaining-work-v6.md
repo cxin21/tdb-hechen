@@ -3,7 +3,7 @@
 > 取代 v5（2026-09-16-remaining-work-v5.md）的**待办部分**；v5"不做项"判定与 O1-O6 观察继承有效。
 > 来源：2026-09-19 设计↔代码↔真数据三方交叉审计（33 项：✅22 / ⚠️8 / ❌3，报告见 `2026-09-19-soul-audit-report.md`；HEAD 1d8b19e，运行代码 1d03a37）。
 > 执行纪律：TDD（RED 先行）→ 补丁（锚点唯一+读回验证）→ tsc 222 基线持平 + vitest 617+ 全绿 → CHANGELOG 同步 → 密钥扫描 → `sudo -H -u tdai git` commit/push → 重启 → 真数据验证。
-> **进度（2026-09-19 批次一）**：A-1（F-EV12-1）/ A-2（F-EV12-2）/ A-4（F-EV12-4）已修复——vitest 617→623 全绿、tsc 222 基线持平，CHANGELOG 已登记；批次 1.5 = A-2b 结论层缓存键硬化（端点 sessionKey 实为 "default" 占位——发现于活体复测，vitest 624）
+> **进度（2026-09-19 批次一）**：A-1（F-EV12-1）/ A-2（F-EV12-2）/ A-4（F-EV12-4）已修复——vitest 617→623 全绿、tsc 222 基线持平，CHANGELOG 已登记；批次 1.5 = A-2b 结论层缓存键硬化（vitest 624）；批次二 = A-5 三处不对称修复 + A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951）+ A-6 spec 同步（vitest 627）
 ；A-3 / A-5 下一批；B-2 真数据重放待 LLM 配额重置。
 
 ## 数据门槛快照（2026-09-19 10:5x 实取）
@@ -34,10 +34,9 @@
 - **设计思路**：①空 sessionKey 直接退通道——get（:527）与 set（:595）双侧加 `params.sessionKey` 真值门（与 v2-router 已宣称语义对齐，/v3/recall 无 session_id 场景零缓存）；②缓存键并入租户三元组（`isolationFilter.teamId/userId/agentId`，params 字段已存在 :362）——防未来同 sessionKey 字符串跨租户碰撞。E3 原语义（**同租户**同 session 同 query 复用）完整保留。
 - **验证**：RED 两用例（recall-perf-cache.test.ts E3 组：跨租户不复用 embedCalls=2；空 sessionKey 不复用 embedCalls=2）→ 修复 GREEN → 门禁 → 活体复测（与配额无关，立即可做：A桶召回→P桶同 query 期望空块）。
 
-### A-3 · P1-C F-EV12-3：悬空 l1_links 治理（存量 363：derived_from 349 / similar 13 / evolve 1）
-- **原因**：archiveL1 路径（dedup-merge 352 / evolve / forgetting 归档）不级联清理相邻边→悬空持续积累；ghost=0（端点均在 l1_archive，可恢复型）。
-- **设计思路（自维护，非"清理用户数据"授权范畴——边是派生索引非记忆本体）**：①`sqlite.archiveL1` 内级联 `DELETE FROM l1_links WHERE source_id=? OR target_id=?`（写路径闭环，防新增）；②boot 或 self-obs 轮 gc 一次悬空边 + 计数日志（存量自愈，`NOT EXISTS l1_records` 判悬空）。保留归档记录本体不动。
-- **验证**：golden（归档带边记录→相邻边清零）+ 活体（gc 后悬空计数=0、neighborExpand 消费面 health）。
+### A-3 · P1-C F-EV12-3：悬空 l1_links ——【批次二改判：非缺陷，撤销治理】
+
+- **改判依据（第一性复查）**：sqlite.ts:1951-1954（审计 B3 裁决）明确归档不级联删边是有意设计——边指向 l1_archive 可解析（getL1ByIdsWithArchive 证据链），ghost=0；「悬空=0」正确口径=两端均不可解析。原审计 #27 口径（l1_records 缺失即悬空）误判，已勘误（见审计报告勘误段）。级联删边/gc 方案撤销（会断证据链、误伤 dedup 时序）。附带观察登记：neighborExpand 重开前需拍板归档节点回流注入面问题。
 
 ### A-4 · P1-D F-EV12-4：reflection.rRef clamp 下限 10 → 1
 - **原因**：`config.ts:1034` `Math.max(10, …)` 使 yaml `rRef: 2`（注释意图"2.0≈3 条高显著记录"）被静默钳到 10——配置值与生效值背离（审计 G-31 发现）。

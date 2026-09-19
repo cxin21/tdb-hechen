@@ -317,6 +317,12 @@ export async function runAnchorGrowth(deps: {
         // 记忆老化出 recent 窗 → 证据假衰减 → 误退场"；候选与维护同刻度（§0.4 v3）。
         const corpus = rows.map((r) => String((r as { content?: string }).content ?? ""));
         const anyState0 = ((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[];
+        // F-EV12-5（REG-REMAINING-006 A-5①）：现行 self_identity 槽事实切片——character
+        // 维护/守卫与采纳同源口径（identityFactSlice 单一源）；无槽/无切片 → 冻结不误退。
+        const selfSlotRows = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
+        const currentFactSlices = ((selfSlotRows.find((s) => s.slot === "self_identity")?.content ?? "")
+          .split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1)
+          .map((l) => identityFactSlice(l))).filter((s) => s.length > 0);
 
         // ── 自维护（GROW-MAINT）：auto 锚权重重算 + 低证据退场 ──────────
         // 只管自己生的锚（created_by='auto-growth'）；pinned 豁免；manual/seed 永不自动动。
@@ -330,11 +336,22 @@ export async function runAnchorGrowth(deps: {
           //（冻结而非误退——theme 口径会把 alias 支撑的人物锚误判零证据）。
           const isPerson = a.node_type === "person";
           if (isPerson && !cfg.person.enabled) continue;
+          // F-EV12-5（A-5①）：character 行分叉事实切片口径（与采纳同源）；池关闭或无现行
+          // 切片 → 冻结（宁缺毋滥）。theme 口径的字面 label 计数会把品格锚误判零证据。
+          const isCharacter = a.node_type === "character";
+          if (isCharacter && (!cfg.character?.enabled || currentFactSlices.length === 0)) continue;
           const aliases = isPerson ? attrsOf(a).aliases : [];
-          const ev = isPerson ? personEvCount(a.label, aliases, corpus) : recountEvidence(a.label, corpus);
+          const ev = isPerson
+            ? personEvCount(a.label, aliases, corpus)
+            : isCharacter
+              ? characterEvCount(currentFactSlices, corpus)
+              : recountEvidence(a.label, corpus);
           // P2：分池阈值——人物锚退场门槛用 cfg.person.minEvidence（F15/F19 护栏四件分池），
           // 沿用 theme 阈值会把别名支撑的人物锚误退（TDD QUOTA 分池用例实证）。
-          const minEv = isPerson ? cfg.person.minEvidence : cfg.minEvidence;
+          // F-EV12-5：品格锚门槛用 cfg.character.minEvidence（分池同款）。
+          const minEv = isPerson
+            ? cfg.person.minEvidence
+            : (isCharacter ? (cfg.character?.minEvidence ?? cfg.minEvidence) : cfg.minEvidence);
           if (ev < minEv) {
             if (a.pinned === 1) continue; // 钉住豁免（人拍板常驻）
             const ok = await Promise.resolve(store.retireValue!(a.value_id, tenant));
@@ -347,7 +364,8 @@ export async function runAnchorGrowth(deps: {
           const newW = suggestAnchorWeight(ev, corpus.length);
           if (Math.abs(newW - a.weight) >= REWEIGHT_DELTA) {
             // P2：person reweight 保留 node_type/attrs（重写不丢人物属性，A8 语义）
-            const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto", isPerson ? "person" : "theme", isPerson ? attrsOf(a) : undefined));
+            // F-EV12-5：character reweight 不漂 node_type；attrs 传 undefined（不碰原 attrs_json）
+            const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto", isPerson ? "person" : (isCharacter ? "character" : "theme"), isPerson ? attrsOf(a) : undefined));
             if (ok) reweightedA++;
           }
         }
@@ -366,7 +384,7 @@ export async function runAnchorGrowth(deps: {
         const activeNow = anyState.filter((r) => r.state === "active");
         // P3：口径收紧——theme 池 = 显式 theme（缺省无 node_type 行=theme）；person/character 各自独立。
         const themeActive = activeNow.filter((r) => (r.node_type ?? "theme") === "theme");
-        const personActive = activeNow.filter((r) => r.node_type === "person");
+        const personActive = activeNow.filter((r) => r.node_type === "person");        const characterActive = activeNow.filter((r) => r.node_type === "character");
         const quotaEvict = async (poolRows: CoreValueRow[], maxTotal: number, evOf: (r: CoreValueRow) => number, tag: string) => {
           const pinnedNow = poolRows.filter((r) => r.pinned === 1).length;
           const autoNow = poolRows.filter((r) => r.origin === "auto" && r.pinned !== 1); // 非钉 auto（钉住单列，避免 free 口径的 pinned-auto 双计）
@@ -391,6 +409,9 @@ export async function runAnchorGrowth(deps: {
         await quotaEvict(themeActive, cfg.maxTotal, (r) => recountEvidence(r.label, corpus), "theme");
         if (cfg.person.enabled) {
           await quotaEvict(personActive, cfg.person.maxTotal, (r) => personEvCount(r.label, attrsOf(r).aliases, corpus), "person");
+        }        if (cfg.character?.enabled) {
+          // F-EV12-5（A-5②）：character 池 QUOTA 守卫（与 theme/person 同款，防超限无自愈）。
+          await quotaEvict(characterActive, cfg.character.maxTotal, () => characterEvCount(currentFactSlices, corpus), "character");
         }
         retired += quotaRetiredA; // GROW-QUOTA 退场并入（守卫块之后汇总）
         // GROW-MAINT v2（SOP 2026-09-17 修复）：守卫退场后刷新快照——dedup/名额/挤出必须

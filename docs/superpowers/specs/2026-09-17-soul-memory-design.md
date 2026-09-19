@@ -85,6 +85,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 
 - **定义**：agent 的经历记录。**记忆的主语 = agent**（"我的记忆是关于你的，但它是我的记忆"——per-agent 隔离的第一性依据）。
 - **数据来源**：l1-extractor 从 L0 提取（质量门过滤 → LLM 提取 → 确定性落库；**P1 起 prompt 增补 agent 行为事实视角，metadata.agentAct 标注——self_identity/品格锚的语料前提**）；consolidation 合并；evolution 改写。
+  - 【2026-09-19 审计注记】prompt 视角已接线（AGENT_ACT_BLOCK，仅 selfIdentity.enabled 时注入）；metadata.agentAct 字段未实施（全库 0 落地）——P3 按 §7-P3 fallback 以 self_identity 槽为品格聚合源，本行「标注」表述以本注记为准。
 - **主语**：见属性总表（§4）逐列标注；核心：certainty=agent 认识论、valence/arousal=agent 归档的情感评价、significance=agent 的重要性判断、双时态=事实本身（agent 维护）。
 - **属性**：全表见 §4.1（19 列 + metadata 子结构 8 项）。
 - **公式**：F1-F4（召回融合）、F7-F8（演化门/首次权威）、F18（检索过滤）。
@@ -156,6 +157,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 - **主语**：整段标题"此刻的你"=agent；四个小节各自内容主语分明（见上）；escapeXmlTags 消毒不变。
 - **预算（F17）**：每小节字符上限 + 行数上限（config；chars 为 token 的粗粒度近似，精算后置），超限按强度/序截断（锚行=weight 降序，从尾部截），宁缺毋滥。
 - **人物方向渲染**：内联标注于"重要的人"行（`女儿(家人·趋近)`），**soul-feeling 保持仅主题锚**——最小渲染变更。
+  - 【2026-09-19 A-5 注记】P3 品格锚渲染口径：价值锚行与主题锚共享注入预算（§7），感受段仍仅主题锚（node_type=theme 过滤，character 不入）——F-EV12-5③ 代码化。
 - **逐位现状保证**：selfIdentity.enabled=false 时**渲染与 prompt 双双逐位**——identity-discovery 走旧单视角 prompt（LLM 行为不变）、渲染不出新小节；enabled=true 才切双视角 prompt。调度门结构不变（anchorDiscovery 门控 worker 调用），self 路由在 worker 内部按 selfIdentity.enabled 判断。
 - **使用场景**：每次 /v3/recall 注入（C3 身份段常驻语义不变）。
 
@@ -172,6 +174,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 | skill-extraction | 事件 | 程序性记忆（CoALA procedural） | Voyager skill library |
 
 调度顺序（lifecycle-scheduler.ts 实证，v1 稿写反、本稿修正）：consolidation → forgetting → **identity-discovery → anchor-growth** → evolution（evolution 最后）；人物锚为 anchor-growth 内部双池（P2），**无新调度点**。反思触发（F13，P3）作为 evolution/consolidation 的优先级增强，tick 兜底不变。
+> 【2026-09-19 实况注记（C1，a2626fd）】运行顺序以 lifecycle-scheduler.ts 为准：consolidation → identity-discovery → anchor-growth → evolution → reflection → **forgetting（pass 末尾）**——遗忘判定后置（ev8 实证：引导期 forgetting 先跑会因锚未诞生致 F14 保护名集为空，受保护记录被当场归档）；保护判据的输入必须先于清理动作达到最新。
 
 ---
 
@@ -340,7 +343,7 @@ UI 视觉重构 spec（2026-09-10）确立 Surface S1-S6 与"零后端新增"原
 - **UI（§6.5 U2-U4）**：ValueAnchorsPanel 类型徽标+分池配额+attrs(role/aliases)行内编辑+aliases 反查计数；S2 灵魂区 personRefs/identityRefs chips；S3 人物节点图例；人物行"查看关联记忆"跳转。
 
 ### P3 品格锚 + 反思公式（远期收口）
-- **数据来源链**：P1 已给 l1-extractor 增补 agent 行为事实视角（metadata.agentAct）——P3 设计期仅需查证 L1 中 agentAct 记录占比是否足以支撑品格锚证据重算；不足则改用 self_identity 槽演化史为品格聚合源（spike 定案）。
+- **数据来源链（2026-09-19 落定）**：P1 的 prompt 视角已接线（AGENT_ACT_BLOCK，l1-extraction.ts），但 metadata.agentAct 字段未实施（审计 #6：全库 0 落地）；P3 spike 实测 agentAct 占比 0% → **按本节 fallback 定案：品格聚合源 = self_identity 槽演化史**（已实现，anchor-growth character 池）。
 - 品格锚双源（与主题锚**共享注入预算、独立 maxTotal 分池**，F15）；F13 反思触发；sensitivity 若拍板实施。
 - 验收：品格锚与主题锚并存不互挤（分池断言）；反思触发真数据实测（累计阈值 vs 固定 tick 对比）。
 

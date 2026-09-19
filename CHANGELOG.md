@@ -16,11 +16,13 @@
 - **F-EV12-2（高危）E3 session-reuse 缓存租户隔离**：`auto-recall.ts` 缓存键并入租户三元组（teamId/userId/agentId）+ 空 sessionKey（/v3/recall 缺 body session_id）整体关断复用通道。此前 sessionKey 单键使同 query 不同租户在 TTL 内互相复用注入记忆列表（A桶→P桶 跨用户泄漏活体实证）。
 - **F-EV12-2-b（A-2 硬化）结论层幂等缓存键并入租户三元组**：端点 sessionKey 被 resolveIsolation 缺省填充为 `"default"`（v2-schemas.ts:393，此前 v2-router 注释宣称空串——已同步修正），sessionKey 单键会跨租户共享结论层 LRU（同指纹才复用=内容良性，但 LRU 互相驱逐 + reused 标志失真；活体 P桶-b/Q桶 sessionReused=true 实证）。硬化后隔离完整。
 
+- **F-EV12-5（A-5）character 池三处不对称修复**：GROW-MAINT 维护口径改事实切片 characterEvCount（与采纳同源，theme 字面计数误退消除；无切片冻结）+ 分池阈值 cfg.character.minEvidence + QUOTA 守卫补 character 分池 + reweight 不漂 node_type；soul-feeling 过滤收窄 theme-only（spec §2.7「仅主题锚」代码化）。
 - **F-EV12-4 rRef clamp 下限 10→1**：`config.ts` yaml `rRef: 2` 曾被静默钳到 10（配置值与生效值背离）。
 
 ### Tests
 
-- 新增 golden：`l1-runner-failure.test.ts`（游标不变量）/ `recall-e3-tenant.test.ts`（跨租户不复用 + 空 sessionKey 关断 + 复用语义正向控制）/ `config.rref.test.ts`。vitest 617→623 全绿；tsc 222 基线持平。
+- 新增 golden：`l1-runner-failure.test.ts`（游标不变量）/ `recall-e3-tenant.test.ts`（跨租户不复用 + 空 sessionKey 关断 + 复用语义正向控制）/ `config.rref.test.ts`。vitest 617→627 全绿（批次一 623 + A-2b 1）；tsc 222 基线持平。
+- 批次二：+`anchor-growth.character-maint.test.ts`（3 用例：维护口径/QUOTA 守卫/感受段过滤）；A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951-1954，审计报告勘误段）；A-6 spec §2.2/§2.7/§2.8/§7-P3 同步。
 
 
 ## 🪞 灵魂 P2：人物锚双池与人工采纳闭环（DS-SOUL-MEMORY-002，2026-09-17）
