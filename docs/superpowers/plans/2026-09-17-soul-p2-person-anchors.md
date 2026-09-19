@@ -655,3 +655,8 @@ HEAD 本轮推送、vitest 615/615、tsc 249（D-R5-2 类型层存量另册）�
 - 测试数据清理：ev9/10/11+vp3 全零（备份留存）
 
 **基线**：vitest 617/617（+96 vs 521 起点）、tsc 221（含 4 存量错为 D-R5-2 尾债）、HEAD 本轮推送。
+
+## Goal-5efef2ae 最终收口记录（2026-09-18，1d03a37）
+**SOP 终验全通过**：health 200（READY 8s）、注入正常（块长 4574）、对抗词 False、配置审计六项全开（person/character/reflection/refProtection/selfIdentity/soulRender）。
+**最终基线**：vitest 617/617（P2 起点 521 → +96）、tsc 222（含 222 存量类型债，D-R5-2 登记在案）、HEAD 1d03a37 全部推送。
+**Goal 三代合合**：goal-98704022（Round 1-9 完成 R4-5/R4-6/P3 品格锚+F13/T7b 核心/测试数据清理）+ goal-0163b0ea（T7b UI 余项/scene 红线/D-R5-1 agentAct 接线修复/D-R5-2 依赖漂移部分修）→ goal-5efef2ae（T-A agentAct 复验/T-B U7 配额/T-C U6 预留/T-D scene 注入门/T-E D-R5-2 部分修+SOP 终验全通过）。
