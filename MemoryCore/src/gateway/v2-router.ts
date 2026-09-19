@@ -1632,9 +1632,10 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
 
   const iso = deps.requestIsolation;
   // 会话标识（结论层幂等缓存 / 会话复用缓存的 sessionKey）：body session_id 或
-  // x-tdai-session-id 头（resolveIsolation 已统一解析）。缺省（非严格模式未传）→ ""：
-  // 幂等结论层与检索复用缓存通道退出（resolveIdempotentConclusionLines 对空 sessionKey
-  // 恒 fresh，退化安全），检索照常。
+  // x-tdai-session-id 头（resolveIsolation 已统一解析）。【F-EV12-2-b 修正】未传时
+  // resolveIsolation 会把 sessionId 缺省填充为 "default"（v2-schemas.ts:393），
+  // 并非本注释此前宣称的空串——缓存共享面由缓存键侧的租户三元组并入防御
+  // （auto-recall reuseCacheKey / conclusionCacheKey，REG-REMAINING-006 A-2）。
   const sessionKey = iso?.sessionId ?? "";
   // 检索租户收窄：与 handleAtomicSearch 同形——(team,user,agent,task) 不含 session
   // （L1 召回跨 session，agent 维度）。三元组缺失已在 /v3 闸门 422（严格模式）；

@@ -501,8 +501,16 @@ export async function performLayeredRecall(params: {
     // 解析层 clamp 0（同 maxCharsPerMemory 模式）。
     const r7ConclusionTtlMs = cfg.recall?.conclusionLayer?.cacheTtlMs ?? (cfg.recall?.sessionReuseTtlMs ?? 300_000);
     // DS-RECALL-MERGE-001：reused 标志上浮为端点 meta.sessionReused 的一部分（行为零变化）
+    // F-EV12-2-b（REG-REMAINING-006 A-2 硬化）：结论层幂等缓存键并入租户三元组——
+    // 端点路 sessionKey 被 resolveIsolation 缺省填充为 "default"（v2-schemas.ts:393，
+    // 非其注释宣称的空串），sessionKey 单键会跨租户共享 LRU：命中需 fingerprint 相等
+    // （内容良性），但 LRU 互相驱逐 + reused 标志语义失真（活体 P桶-b/Q桶
+    // sessionReused=true 实证 2026-09-19）。
+    const conclusionCacheKey = params.isolationFilter
+      ? `${params.sessionKey}#${params.isolationFilter.teamId ?? ""}#${params.isolationFilter.userId ?? ""}#${params.isolationFilter.agentId ?? ""}`
+      : params.sessionKey;
     const r7ConclusionResolved = resolveIdempotentConclusionLines(
-      params.sessionKey,
+      conclusionCacheKey,
       conclusionFingerprint(r7Conclusions),
       r7Conclusions.map(formatConclusionLine),
       r7ConclusionTtlMs,

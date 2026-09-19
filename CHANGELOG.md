@@ -14,6 +14,8 @@
 
 - **F-EV12-1（高危）L1 提取失败不再推进游标**：`pipeline-factory.ts` 组循环累计 `extractionFailed`，失败批次跳过 `markL1ExtractionComplete`（游标不动 → 下次对话触发 / l1Idle 600s / boot L1_drain 自愈重试），并压平 `hasMore/hasFullBacklog`（防 hasFullBacklog 立即重入队在供应商故障期形成重试风暴）。此前 LLM 失败被吞错后游标照进，故障期对话记忆静默丢失（journal 实证）。
 - **F-EV12-2（高危）E3 session-reuse 缓存租户隔离**：`auto-recall.ts` 缓存键并入租户三元组（teamId/userId/agentId）+ 空 sessionKey（/v3/recall 缺 body session_id）整体关断复用通道。此前 sessionKey 单键使同 query 不同租户在 TTL 内互相复用注入记忆列表（A桶→P桶 跨用户泄漏活体实证）。
+- **F-EV12-2-b（A-2 硬化）结论层幂等缓存键并入租户三元组**：端点 sessionKey 被 resolveIsolation 缺省填充为 `"default"`（v2-schemas.ts:393，此前 v2-router 注释宣称空串——已同步修正），sessionKey 单键会跨租户共享结论层 LRU（同指纹才复用=内容良性，但 LRU 互相驱逐 + reused 标志失真；活体 P桶-b/Q桶 sessionReused=true 实证）。硬化后隔离完整。
+
 - **F-EV12-4 rRef clamp 下限 10→1**：`config.ts` yaml `rRef: 2` 曾被静默钳到 10（配置值与生效值背离）。
 
 ### Tests
