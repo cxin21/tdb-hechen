@@ -101,7 +101,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
     // 而 consolidation 的租户继承（inheritTenancy）与 grouping 的组内租户校验读 camelCase；
     // 缺了这三个字段，持续态归属会退化为空（跨租户摘要无法被隔离查询召回）。
     // P3-T17.5：行映射根治（id + metadata_json 解析 + 空串不盖真值），见 mapL1RowToRecord。
-    return (recs ?? []).map((r) => mapL1RowToRecord(r as Record<string, unknown>));
+    return (recs ?? []).map((r) => mapL1RowToRecord(r as unknown as Record<string, unknown>));
   };
   if (deps.config.consolidation?.enabled !== false) {
     try {

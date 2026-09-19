@@ -21,7 +21,7 @@ function makeStore(opts: { rows?: unknown[] } = {}) {
   return {
     queryL1Records: vi.fn(async () => opts.rows ?? []),
     listValuesAnyState: vi.fn(async () => []),
-    upsertValue: vi.fn(async () => true),
+    upsertValue: vi.fn(async (...args: unknown[]) => true) as unknown as { mock: { calls: unknown[][] } } & ((...args: unknown[]) => Promise<boolean>),
     retireValue: vi.fn(async () => true),
     getAnchorGrowthState: vi.fn(async () => ({ lastDiscoveryAt: null, lastCorpusCount: null })),
     setAnchorGrowthState: vi.fn(),
