@@ -57,7 +57,7 @@
 
 | # | 项 | 门槛/条件 | 动作 |
 |---|---|---|---|
-| B-1 | D2 产线替换 | 标注 367≥300 ✓；**正例 ≥50 待核** | 核对正例数 → 达标后按 v5 预注册 A/B 流程（calibrate-fit.mjs 扩特征 → A/B → yaml rerankWeights 改值） |
+| B-1 | D2 产线替换 | **门槛已到（2026-09-19 核对）：总量 367≥300 ✓，正例（rel=1）82≥50 ✓**（另有 rel=2:28/-1:160/0:97） | 待用户拍板启动预注册 A/B（calibrate-fit.mjs 扩特征 → 预注册判据 → A/B → yaml rerankWeights 先高系数通道逐步解禁） |
 | B-2 | **H 组真数据重放**（审计 #33 补闭环） | LLM 配额重置（~1 天） | 重置 ev12 四会话 `last_l1_cursor`（checkpoint runner_states）或重投 32 条种子 → 完整对抗验证：身份门四道拦截面/张三人物锚 p- 前缀+attrs/周报主题锚/character 锚（A-5 修复后）/跨用户隔离/E3 修复后复测/agentAct 记忆占比 → 补审计 #33 判定 |
 | B-3 | D-R5-2 尾债 4 错（adapters 存量类型） | 运行时正常（审计复核） | 择机，随依赖升级治理 |
 | B-4 | 继承 v5 | — | D5 R10 A/B（cohort≥20）· P4a Phase 2 重蒸馏 · D7 recordIds 索引（L1≥5k）· skill-conv-worker 重试退避（F-EV12-6，低） |
@@ -65,6 +65,7 @@
 ## C Gated（待用户拍板，勿自行执行）
 
 - 测试数据清理：ev12 种子（32 L0）+ 老化夹具 2 条 + 旧 ev*/ta-team/xtest 租户八表（铁律 6：删除必拍板）。
+- D2 预注册 A/B 启动拍板（门槛已到，读数见 B-1）
 - P3 sensitivity 拍板 · selfIdentity.intervalHours 1→24 回归（yaml 自注"验收后回 24"）· anchorDiscovery.maxPerPass 3→2 定格（yaml:159 演示值）· T7b Claude Code 场景实测。
 
 ## D 不做 / 关闭（继承 v5 + 本轮关闭）
