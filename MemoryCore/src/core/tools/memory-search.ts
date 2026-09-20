@@ -458,8 +458,10 @@ async function expandCandidatePool(
     // ── V2-1 引擎二：PPR 全图扩散（E2.1；graphDiscount=0 → 通道完全退出，getNeighbors 零调用）──
     if (opts.graphDiscount > 0 && pool.length > 0 && typeof store.getNeighbors === "function" &&
         (typeof store.getL1ByIdsWithArchive === "function" || typeof store.getL1ByIds === "function")) {
+      // 拍板①（P0-F2 处置 C：归档不回流）：候选池扩散同款只解析活跃记录——归档=软删（遗忘语义），
+      // 图通道不得复活已遗忘记忆；旧 store 无 getL1ByIds 回退 WithArchive（逐位兼容）。
       const resolveByIds = (ids: string[]) =>
-        store.getL1ByIdsWithArchive ? store.getL1ByIdsWithArchive(ids) : store.getL1ByIds!(ids);
+        store.getL1ByIds ? store.getL1ByIds(ids) : store.getL1ByIdsWithArchive!(ids);
       // 种子 = 门槛后命中全集（E2.1 种子向量段）；权重 = hit.score（runPPR 内部归一化）。
       // Σscore=0（ pathological 全零分命中）→ 无扩散（E2.4 天然退化）。
       const seedScoreSum = pool.reduce((s, r) => s + (r.score > 0 ? r.score : 0), 0);
@@ -1264,10 +1266,13 @@ export async function executeMemorySearch(params: {
   // fix1 I-4：getL1ByIds/WithArchive/getNeighbors 类型放宽为 MaybePromise（tcvdb 异步取行）
   // ——统一 await，sqlite 同步路径 await 数组零语义变化；不 await 则 tcvdb 后端本段是死代码。
   if (neighborExpand?.enabled && vectorStore?.getNeighbors && (vectorStore?.getL1ByIdsWithArchive || vectorStore?.getL1ByIds)) {
+    // 拍板①（P0-F2 处置 C：归档不回流）：邻居扩展只解析活跃记录（getL1ByIds 查 l1_records）——
+    // 归档=软删（遗忘语义），图扩展不得复活已遗忘记忆；仅旧 store 无 getL1ByIds 时回退
+    // WithArchive（行为逐位兼容）。租户复核与失效排除不变（b91f4d5）。
     const resolveByIds = (ids: string[]) =>
-      vectorStore!.getL1ByIdsWithArchive
-        ? vectorStore!.getL1ByIdsWithArchive(ids)
-        : vectorStore!.getL1ByIds!(ids);
+      vectorStore!.getL1ByIds
+        ? vectorStore!.getL1ByIds(ids)
+        : vectorStore!.getL1ByIdsWithArchive!(ids);
     try {
       const seedIds = results.slice(0, 3).map((r) => r.id);
       const maxHop = neighborExpand.maxHop ?? 1;

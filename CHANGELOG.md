@@ -8,6 +8,17 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🔒 neighborExpand 归档不回流（用户拍板 C，2026-09-20）
+
+### Fixed（MemoryCore）
+
+- **executeMemorySearch 两条图通道邻居解析统一改 `getL1ByIds` 优先**（仅 l1_records 活跃表）：V2-1 PPR 候选池（graphDiscount 缺省 0.6=active）与 J 邻居扩展两处此前均 WithArchive 优先，归档记录可经图扩散/扩展回流工具路结果（活体 RED：归档邻居 b2 复现于结果）。归档=软删（遗忘语义），图通道不得复活已遗忘记忆；旧 store 无 getL1ByIds 回退 WithArchive（逐位兼容）；租户复核与失效排除不变（b91f4d5）。登记：auto-recall 注入路 PPR/R7-2 通道（产线 graphDiscount=0 关断中）在 gated 重开时须同步本语义。
+
+### Tests
+
+- 新增 golden `neighbor-expand-archive.test.ts`（归档邻居不回流 + 活跃邻居能力保留控制组）。vitest 643→645 全绿；tsc 222 持平。
+
+---
 ## 📋 P0 收口轮：审计报告入库 + 死导出清理 + v7 台账（2026-09-20）
 
 - **审计报告入库**：`docs/superpowers/plans/2026-09-20-soul-p0-audit-report.md`——P0 对照复查 53 行判定表（§5 公式+§4 骨架 23 行、层结构场景 15 行、P0.5 公式六面+提示词九面 15 面）+ ev14 F-EV13-1 残余量化（GROW-MAINT unsupported 假阳 1/1、identityRefs 回填漏 1/8、身份门/pending 修复/隔离 ✅）。
