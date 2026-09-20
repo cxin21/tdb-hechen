@@ -339,6 +339,7 @@ UI 视觉重构 spec（2026-09-10）确立 Surface S1-S6 与"零后端新增"原
 ### P2 人物锚 + 维护链（关系自我）
 - core_values 加 `node_type`/`attrs_json`（ADD COLUMN 缺省 'theme'/'{}'——**sqlite 不可删列，回滚策略=列保留无害、缺省值即逐位现状**）；anchor-growth worker 双池扩展（person 池，F11/F12）；personRefs/identityRefs 回填；identity GROW-MAINT 重验证（F15 身份分支：只警告）+ F14 遗忘保护；strict_rule Panel 落点（O13 闭环）。
 - 配置：`memory.coreMemory.personAnchors.{enabled=false,minEvidence=3,maxPerPass=2,maxTotal=8,intervalHours=24}`——maxTotal 为**人物分池**独立预算（F15 分池制），主题锚 maxTotal=15 不变。
+  - 【2026-09-20 P0 审计注记（P0-F4）】代码缺省为 minEvidence=5/maxPerPass=1（宁缺毋滥方向有意从严）；产线 tdai-gateway.yaml 显式 3/2/8 为运行真值——缺省差异非文档-代码脱节，运行口径以 yaml 为准。
 - 验收：人物锚 12 组真数据 SOP（别名归并/关系情感方向/挤出/维护退场/反查/遗忘保护实测）+ 回归全量。
 - **UI（§6.5 U2-U4）**：ValueAnchorsPanel 类型徽标+分池配额+attrs(role/aliases)行内编辑+aliases 反查计数；S2 灵魂区 personRefs/identityRefs chips；S3 人物节点图例；人物行"查看关联记忆"跳转。
 
