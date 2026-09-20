@@ -742,15 +742,6 @@ export function parseCharacterProposals(raw: string): Array<{ label: string; rat
   }
 }
 
-/** P3：品格证据计数——语料记录命中任一事实切片（逐字包含）的去重计数。 */
-export function characterEvCount(slices: string[], corpus: string[]): number {
-  let n = 0;
-  for (const content of corpus) {
-    const text = String(content ?? "");
-    if (slices.some((s) => s.length > 0 && text.includes(s))) n++;
-  }
-  return n;
-}
 /** F-EV13-1（A-7）：品格证据计数——事实全行 × identityFactMatchesCorpus 模糊口径（措辞断链修复）。 */
 export function characterEvidenceCount(facts: string[], corpus: string[]): number {
   let n = 0;

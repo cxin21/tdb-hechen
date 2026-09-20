@@ -8,6 +8,13 @@
 `MemoryProxy` / SDK。
 
 ---
+## 📋 P0 收口轮：审计报告入库 + 死导出清理 + v7 台账（2026-09-20）
+
+- **审计报告入库**：`docs/superpowers/plans/2026-09-20-soul-p0-audit-report.md`——P0 对照复查 53 行判定表（§5 公式+§4 骨架 23 行、层结构场景 15 行、P0.5 公式六面+提示词九面 15 面）+ ev14 F-EV13-1 残余量化（GROW-MAINT unsupported 假阳 1/1、identityRefs 回填漏 1/8、身份门/pending 修复/隔离 ✅）。
+- **characterEvCount 死导出清理**：anchor-growth.ts 零生产引用（F-EV12-5 后被 characterEvidenceCount 取代），按铁律 2 单一源精神删除；vitest 643/643、tsc 222 持平。
+- **v7 台账**：`2026-09-20-remaining-work-v7.md`（A-1 A-7b / A-2 UI 2.0 / A-3 ev14 终验余项；gated 继承+ev14 数据登记；neighborExpand A/B/C 拍板项）。
+
+---
 ## 🔍 P0 对照复查轮一：四处缺陷修复（REG-REMAINING v7 审计，2026-09-20）
 
 ### Fixed（MemoryCore）
