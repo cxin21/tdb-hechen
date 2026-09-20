@@ -6,10 +6,10 @@
 
 ## A 真正要做的（按序）
 
-### A-1 · P1 A-7b 证据指针（设计级，设计小节已呈用户确认）
-- identity-discovery 提案协议增补"支撑样本指针"：LLM 输出支撑样本编号→确定性校验在样本窗内→identityRefs 记 record_id 引用；GROW-MAINT=引用行仍 active 即支撑；F14 保护=引用行在即保护。
-- 量化输入（批次 3 ev14 实测）：12 字滑窗残余=摘要式改写 unsupported 假阳 1/1 + 回填漏 1/8——指针方案把该面变为确定性行为。
-- 流程：用户确认设计小节 → TDD（协议 RED：编号越窗/幻觉编号拒收）→ 对抗审查 → 门禁 → 真数据复验。
+### A-1 · P1 A-7b 证据指针——【已完成 2026-09-20，用户拍板后实施】
+- commits `d0a5a37`（协议+校验门+精确回填+GROW-MAINT 映射重验）+ `e4351b2`（store 层 supportMap 第三键持久化修复——ev15 实证 getter/setter 静默丢弃）。
+- 门禁：vitest 645→652→654 全绿（+9 golden）· tsc 222 持平。
+- 真数据：ev15（回填全覆盖+暴露 store 丢弃）+ ev16 决定性（6 键 map 落 kv、同 pass MAINT 零假阳告警、self_identity 长出）。观察登记：身份诱饵实为用户自称角色（路由正确）；character evidence 联动暂缓；wave-1 map 遗留告警随时间自然消退（warning-only）。
 
 ### A-2 · P2 UI 2.0 重设计（用户明确不满：太丑、信息不全）
 - 硬需求：①灵魂页签独立一级页（双槽/三池/品格锚/重要的人/感受段完整呈现）；②记忆属性与关系全景（19 列属性、l1_links 关系图、refs 反向链、pending 裁决流、锚池配额健康条 15/8/8）；③对照 UI redesign spec（2026-09-10）视觉升级。

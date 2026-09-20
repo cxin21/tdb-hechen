@@ -19,9 +19,14 @@
 - **GROW-MAINT 确定性重验**：映射命中且引用行仍 active → 支撑（ev14 量化 unsupported 假阳 1/1 的正解）；映射悬空/未命中 → 滑窗兜底；悬空+滑窗漏 → 仍告警（防永生事实，F20 不变）。identityRefs 切片引用/-isRefProtected 全兼容。
 - 登记：character 池 evidence 的 support 联动暂缓（ev14 该拒采面未触发；self_identity 有料后随 A-3 终验复评）。
 
+### Verified（ev15/ev16 全新租户真数据）
+
+- **ev15（18 种子）**：identityRefs 回填 7/8→（kv 修复后 wave-2）18 行全覆盖；暴露 store 层 supportMap 静默丢弃（getter/setter 仅两键）→ `e4351b2` 第三键 JSON 持久化修复 + store 级 roundtrip golden（RED 证据=生产实况：adoption 写/MAINT 读丢）。
+- **ev16（10 种子，决定性）**：首轮 pass 6 事实采纳→supportMap 6 键全落 kv（精确 record_id）→同 pass anchor-growth MAINT 读 map→**零 unsupported 假阳告警**（ev14 基线 1/1 假阳归零）；self_identity 经 AGENT_ACT 视角长出 1 条。观察登记：'以产品总监身份要求你' 诱饵实为用户自称角色→正确落 identity 槽（门语义未破、主语路由正确、证据链可审计）；'强加 AI 人设'形态留 A-3 终验。
+
 ### Tests
 
-- 新增 golden `identity-support-pointer.test.ts`（7 用例：精确回填/非法弃用滑窗兜底/上限 5/supportMap 落 kv/MAINT 映射支撑/悬空仍告警/无 support 逐位现状）。vitest 645→652 全绿；tsc 222 持平。ev15 全新租户摘要式改写重放验证随后执行（期望：回填 8/8、unsupported 假阳 0）。
+- 新增 golden `identity-support-pointer.test.ts`（7 用例：精确回填/非法弃用滑窗兜底/上限 5/supportMap 落 kv/MAINT 映射支撑/悬空仍告警/无 support 逐位现状）。vitest 645→652 全绿；tsc 222 持平。
 
 ---
 ## 🔒 neighborExpand 归档不回流（用户拍板 C，2026-09-20）
