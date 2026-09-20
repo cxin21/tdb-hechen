@@ -2782,15 +2782,22 @@ export class VectorStore implements IMemoryStore {
   }
 
   /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
-  getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null } {
+  getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null; supportMap?: Record<string, string[]> } {
     try {
       const t = normalizeCoreTenant(tenant);
       const suffix = (t.teamId === "default" && t.userId === "default" && t.agentId === "default") ? "" : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
-      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?)").all(`identity_last_attempt_at${suffix}`, `identity_last_corpus_count${suffix}`) as unknown as Array<{ k: string; v: string }>;
+      // A-7b：supportMap（事实→支撑 record_ids）随身份状态持久化（第三键 JSON）——此前仅两键，
+      // 写入侧 supportMap 被静默丢弃，GROW-MAINT 确定性重验无从读取（ev15 实证）。
+      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?)").all(`identity_last_attempt_at${suffix}`, `identity_last_corpus_count${suffix}`, `identity_support_map${suffix}`) as unknown as Array<{ k: string; v: string }>;
       const map = new Map(rows.map((r) => [r.k, r.v]));
       const countRaw = map.get(`identity_last_corpus_count${suffix}`);
       const count = countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
-      return { lastAttemptAt: map.get(`identity_last_attempt_at${suffix}`) ?? null, lastCorpusCount: count };
+      let supportMap: Record<string, string[]> | undefined;
+      try {
+        const rawSupport = map.get(`identity_support_map${suffix}`);
+        if (rawSupport) supportMap = JSON.parse(rawSupport) as Record<string, string[]>;
+      } catch { /* 损坏 supportMap 视同缺失（宁缺毋滥，回退滑窗） */ }
+      return { lastAttemptAt: map.get(`identity_last_attempt_at${suffix}`) ?? null, lastCorpusCount: count, supportMap };
     } catch (err) {
       this.logger?.warn?.(`${TAG} [identity_discovery] getState failed: ${err instanceof Error ? err.message : String(err)}`);
       return { lastAttemptAt: null, lastCorpusCount: null };
@@ -2798,13 +2805,16 @@ export class VectorStore implements IMemoryStore {
   }
 
   /** SOUL：身份自发现状态写（独立键族——与锚状态互不覆盖）。 */
-  setIdentityDiscoveryState(state: { lastAttemptAt: string; lastCorpusCount: number }, tenant?: CoreTenant): void {
+  setIdentityDiscoveryState(state: { lastAttemptAt: string; lastCorpusCount: number; supportMap?: Record<string, string[]> }, tenant?: CoreTenant): void {
     try {
       const t = normalizeCoreTenant(tenant);
       const suffix = (t.teamId === "default" && t.userId === "default" && t.agentId === "default") ? "" : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
       const up = "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
       this.db.prepare(up).run(`identity_last_attempt_at${suffix}`, state.lastAttemptAt);
       this.db.prepare(up).run(`identity_last_corpus_count${suffix}`, String(Math.max(0, Math.floor(state.lastCorpusCount))));
+      if (state.supportMap && Object.keys(state.supportMap).length > 0) {
+        this.db.prepare(up).run(`identity_support_map${suffix}`, JSON.stringify(state.supportMap));
+      }
     } catch (err) {
       this.logger?.warn?.(`${TAG} [identity_discovery] setState failed: ${err instanceof Error ? err.message : String(err)}`);
     }
