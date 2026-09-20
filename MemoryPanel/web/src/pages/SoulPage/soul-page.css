@@ -1,0 +1,12 @@
+/* SoulPage（UI 2.0 拍板③）：灵魂一级页布局。_soul- 前缀自定义区，配色沿 tea 体系。 */
+._soul-page { display: flex; flex-direction: column; gap: 12px; }
+._soul-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+._soul-title { font-size: 18px; font-weight: 600; }
+._soul-desc { font-size: 12px; color: #86909c; margin-top: 2px; }
+._soul-card { border: 1px solid #e5e6eb; border-radius: 6px; padding: 12px 16px; background: #fff; }
+._soul-card-title { font-size: 13px; font-weight: 600; color: #4e5969; margin-bottom: 8px; }
+._soul-feeling-line { font-size: 13px; line-height: 1.8; }
+._soul-feeling-pos { color: #00b42a; }
+._soul-feeling-neg { color: #f77234; }
+._soul-muted { font-size: 12px; color: #86909c; }
+._soul-empty { font-size: 13px; color: #86909c; padding: 24px 0; text-align: center; }

@@ -236,7 +236,7 @@ function ValueRow({
   );
 }
 
-export default function ValueAnchorsPanel() {
+export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hideIdentityPending?: boolean } = {}) {
   const { t } = useTranslation();
   const auth = readAuth();
   const currentUserId = auth?.user_id ?? '';
@@ -272,7 +272,9 @@ export default function ValueAnchorsPanel() {
     }
   }, [ownedAgents, agentId]);
 
-  const blockId = activeTeamId && agentId ? `chat_memory-${activeTeamId}-${agentId}` : '';
+  // UI 2.0（拍板③）：SoulPage 页级选择器可注入 blockIdOverride（隐藏内置选择器语义由页级承担）；
+  // 缺省逐位现状（ChatMemoryPage 挂载不变）。
+  const blockId = props.blockIdOverride ?? (activeTeamId && agentId ? `chat_memory-${activeTeamId}-${agentId}` : '');
 
   const load = useCallback(async () => {
     if (!blockId) {
@@ -531,10 +533,14 @@ export default function ValueAnchorsPanel() {
       </div>
 
       {/* DS-SOUL-MEMORY-002 P1（U1）：agent 身份区（只读；宁缺毋滥——双槽空/读失败整段不渲染） */}
-      <IdentitySection blockId={blockId} />
+      {/* UI 2.0（拍板③）：SoulPage 以 blockIdOverride+hideIdentityPending 复用本面板时，身份/裁决由页级渲染避免重复 */}
+      {!props.hideIdentityPending && (
+        <>
+          <IdentitySection blockId={blockId} />
 
-      {/* P2（O13 UI）：待办裁决区（宁缺毋滥——空列表/读失败整段不渲染） */}
-      <PendingSection blockId={blockId} />
+          <PendingSection blockId={blockId} />
+        </>
+      )}
 
       {loading ? (
         <div className="_va-empty">{t('memory.detail.loading')}</div>

@@ -8,6 +8,19 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🎨 UI 2.0 Phase 1：灵魂一级页（用户拍板③，2026-09-20）
+
+### Added（MemoryPanel/web）
+
+- **`/soul` 独立一级页（SoulPage）**：页级 Agent 选择器 + 身份双槽卡（IdentitySection 复用）+ 当下的感受（FeelingCard 新组件：theme ∧ valence=±1，与 soul-assembler 注入块同构渲染——「驱动我行动的价值/提醒我审慎的价值」）+ 待裁决流（PendingSection 复用）+ 三池锚面板（ValueAnchorsPanel 复用）。空态宁缺毋滥。
+- **ValueAnchorsPanel 复用改造**：新增可选 `blockIdOverride`（页级注入 blockId）与 `hideIdentityPending`（SoulPage 页级渲染身份/裁决避免重复）；缺省逐位现状（ChatMemoryPage 挂载不变）。
+- 路由 `/soul` + 菜单「灵魂 Soul」（资产组 order 6）+ i18n（zh/en）soul.* 键族。数据零新端点（blockId=chat_memory-{team}-{agent} 确定性组合）。
+
+### Verified
+
+- 面板 vitest 112/112 持平；web vite build 成功；web tsc 2 存量错不新增（SoulPage ResourcePage import 漏项即修）。
+
+---
 ## 🧬 A-7b 证据指针（用户拍板，2026-09-20）——身份支撑从"字面找回"升级为"确定性引用"
 
 ### Added（MemoryCore）
