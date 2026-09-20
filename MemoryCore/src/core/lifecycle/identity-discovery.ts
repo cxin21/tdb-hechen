@@ -209,7 +209,9 @@ export async function runIdentityDiscovery(deps: {
           } else if (p.slot === "core_value" || p.slot === "strict_rule") {
             // O13（P2）：pending 落点——红线类提案永不自动写入，持久化到 core_pending 供
             // Panel 人工采纳/拒绝（feature-detect：无方法的 store 保持纯计数现状）。
-            const ev = recountEvidence(p.content, corpus);
+            // P0-F1：pending 证据展示单一源化——identityFactMatchesCorpus 同源口径
+            // （旧本地 recountEvidence=20 字前缀逐字，提炼措辞 vs 语料结构性假 0，违铁律 2）。
+            const ev = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
             const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant);
             pendingThis++;
             logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev}${persisted ? ", persisted" : ""})`);
@@ -347,14 +349,6 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
     out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "" });
   }
   return out;
-}
-
-function recountEvidence(content: string, corpus: string[]): number {
-  let hits = 0;
-  for (const c of corpus) {
-    if (c.includes(content.slice(0, Math.min(content.length, 20)))) hits++;
-  }
-  return hits;
 }
 
 // ── state helpers ──

@@ -3043,7 +3043,7 @@ export class VectorStore implements IMemoryStore {
           `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
                   version, timestamp_str, timestamp_start, timestamp_end, metadata_json,
                   ${SOUL_SELECT_FRAGMENT}
-           FROM l1_records WHERE metadata_json LIKE '%coreRefs%' ORDER BY updated_time DESC LIMIT ?`,
+           FROM l1_records WHERE (metadata_json LIKE '%coreRefs%' OR metadata_json LIKE '%personRefs%') ORDER BY updated_time DESC LIMIT ?`,
         )
         .all(retrieveLimit) as Array<{
         record_id: string;
@@ -3078,7 +3078,12 @@ export class VectorStore implements IMemoryStore {
         let refs: unknown;
         try {
           const parsed = JSON.parse(r.metadata_json || "{}") as Record<string, unknown>;
-          refs = parsed.coreRefs;
+          // P0-F7（spec §2.6/S6）：反查键族扩 personRefs——人物锚证据链可反查；
+          // identityRefs 不并入（20 字切片语义非 label，消费方=GROW-MAINT/F14）。
+          refs = [
+            ...(Array.isArray(parsed.coreRefs) ? parsed.coreRefs : []),
+            ...(Array.isArray(parsed.personRefs) ? parsed.personRefs : []),
+          ];
         } catch {
           continue; // metadata 损坏 → 无法验证归属，宁缺毋滥跳过
         }

@@ -8,6 +8,20 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🔍 P0 对照复查轮一：四处缺陷修复（REG-REMAINING v7 审计，2026-09-20）
+
+### Fixed（MemoryCore）
+
+- **P0-F1（中）pending 证据展示单一源化**：删除 identity-discovery.ts 本地第二份 `recountEvidence`（20 字前缀逐字、无 lowercase，与 F9 token 口径同名不同义，违铁律 2），core_value/strict_rule→pending 的 evidence 改与 `identityFactMatchesCorpus` 同源（≥12 字滑窗）——旧口径对提炼措辞结构性假 0（F-EV13-1 同族），pending 裁决流人工证据数失真。identity/self 提案按 09-15 裁定本就跳过证据重算，不受影响。
+- **P0-F3（低）theme 去重清单跨类型收窄**：anchor-growth existingLabels 收窄 theme 池（spec §2.6 复合键——人物/品格与主题同名可并存）；同类型全态 veto/retired 永不重提语义保留（audit #11 闭环）。顺手：GROW-MAINT 退场日志阈值改分池 minEv。
+- **P0-F7（中）反查键族扩 personRefs**：searchL1ByCoreRefs SQL/JS 双层扩 personRefs（spec §2.6/S6"searchL1ByCoreRefs 同款"）——人物锚证据链反查恢复（R5 补池/工具路/Panel 计数三个消费面受益）；identityRefs 不并入（20 字切片语义，消费方=GROW-MAINT/F14）。
+- **P0-F2 硬化（防御纵深）**：neighborExpand 扩展路径补租户复核——getNeighbors 透传 isolationFilter + resolveByIds 后 rowMatchesIsolation 复核（T14 两步过滤同款）。跨租户邻居边泄漏 RED 活体复现后 GREEN（同租户建边不变量下零行为差）；归档回流产品开/关仍属 gated 待拍板。
+
+### Tests
+
+- 新增 golden：`identity-pending-evidence.test.ts`（2）/ `anchor-growth-dedup-scope.test.ts`（2，跨类型去重+veto 控制组）/ `store.personrefs-reverse.test.ts`（2，personRefs 反查+coreRefs 回归）/ `neighbor-expand-tenant.test.ts`（1，跨租户邻居不泄漏——RED 阶段活体复现 b1 入 t1 结果）。vitest 636→643 全绿；tsc 222 基线持平（stash 对照法确认唯一新增 TS2352 已修）。
+
+---
 ## 🛡️ 审计修复轮一：F-EV12-1/2/4（REG-REMAINING-006，2026-09-19）
 
 ### Fixed（MemoryCore）

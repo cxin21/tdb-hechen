@@ -358,7 +358,7 @@ export async function runAnchorGrowth(deps: {
             const ok = await Promise.resolve(store.retireValue!(a.value_id, tenant));
             if (ok) {
               retiredA++;
-              logger?.warn?.(`[anchor-growth] maintain retire: ${a.value_id} (${a.label}) evidence=${ev}<${cfg.minEvidence} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+              logger?.warn?.(`[anchor-growth] maintain retire: ${a.value_id} (${a.label}) evidence=${ev}<${minEv} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
             }
             continue;
           }
@@ -421,7 +421,11 @@ export async function runAnchorGrowth(deps: {
         const anyState2 = quotaRetiredA > 0
           ? (((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
           : anyState;
-        const existingLabels = anyState2.map((v) => v.label); // 全态清单进 dedup 指令（veto 永不重提）
+        // P0-F3（spec §2.6 复合键）：去重清单收窄 theme 池——人物/品格同名不再误挡主题提案；
+        // 同类型全态（veto/retired 永不重提）语义保留；person/character 池各有独立去重清单。
+        const existingLabels = anyState2
+          .filter((v) => (v.node_type ?? "theme") === "theme")
+          .map((v) => v.label);
         const raw = await deps.llmRunner!.run({
           prompt: buildDiscoverPrompt(sampleContents, existingLabels),
           systemPrompt: DISCOVER_SYSTEM_PROMPT,

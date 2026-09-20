@@ -17,6 +17,7 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
 import { isInvalidated } from "../recall/filter-invalidated.js";
+import { rowMatchesIsolation } from "../store/isolation.js";
 import { emotionSalienceOf } from "./recall-signals.js";
 import {
   buildRankContext,
@@ -1273,7 +1274,7 @@ export async function executeMemorySearch(params: {
       const maxAdd = neighborExpand.maxAdd ?? 3;
       const extra = new Set<string>();
       for (const sid of seedIds) {
-        for (const nb of await vectorStore.getNeighbors(sid, undefined, maxHop) as Array<{ id: string }>) {
+        for (const nb of await vectorStore.getNeighbors(sid, undefined, maxHop, isolationFilter) as Array<{ id: string }>) {
           if (results.some((r) => r.id === nb.id)) continue;
           extra.add(nb.id);
           if (extra.size >= maxAdd) break;
@@ -1281,7 +1282,8 @@ export async function executeMemorySearch(params: {
         if (extra.size >= maxAdd) break;
       }
       if (extra.size > 0) {
-        const neighborRecords = await resolveByIds([...extra]);
+        // P0-F2：扩展邻居租户复核（T14 两步过滤同款——同租户不变量下零行为差，防跨租户边泄漏）。
+        const neighborRecords = (await resolveByIds([...extra])).filter((nr) => rowMatchesIsolation(nr as unknown as Record<string, unknown>, isolationFilter));
         for (const nr of neighborRecords) {
           if (results.some((r) => r.id === nr.record_id)) continue;
           results.push({
