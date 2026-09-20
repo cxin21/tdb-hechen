@@ -36,6 +36,28 @@
 - web tsc 残余 2 存量错；ev13 character 采纳待 A-7b 后活体复验
 - 自生长/自维护视角全面扫描：凡"等人操作/等人发现"环节=缺口；所有身份写入面是否都有门
 
+### P0.5 提示词工程与评分公式专项审计（用户 2026-09-19 深夜追加，与 P0 同级）
+对既有提取/身份/关联/评分的**方式、公式与提示词**逐面审计：是否明确、是否符合优秀提示词工程规范。
+
+**提示词面清单**（逐个审计八维度：角色与任务边界可判定 / 输出契约严格性（JSON-枚举-字段-非法输出兜底）/ 硬约束可验证性（软话术→可判定判据）/ 上下文工程（样本编号-分隔符-截断预算声明）/ 少样示例有无与过拟合风险 / 反注入假设（样本内容不可信）/ 参数语义（maxTokens=0-timeout 三供应商差异）/ 改动必配新旧对照真实数据测试）：
+1. `core/prompts/l1-extraction.ts` EXTRACT_MEMORIES_SYSTEM_PROMPT + AGENT_ACT_BLOCK + formatExtractionPrompt（L1 提取：主语/类型判据/soul 字段）
+2. `core/lifecycle/identity-discovery.ts` DISCOVERY_SYSTEM_PROMPT(_DUAL) + buildIdentityPrompt（身份双视角）
+3. `gateway/core-values-discover.ts` DISCOVER_SYSTEM_PROMPT / PERSON_DISCOVER_SYSTEM_PROMPT + build*Prompt（主题/人物锚提案）
+4. `core/lifecycle/anchor-growth.ts` CHARACTER_DISCOVER_SYSTEM_PROMPT + buildCharacterDiscoverPrompt（品格锚）
+5. `core/lifecycle/consolidation/`（summarizer/grouping）——L2/L3 蒸馏与 subject 归组（subjectStrategy=llm）
+6. `core/lifecycle/reflection.ts`——F13 三问式反思
+7. `core/store/sqlite.ts` deriveValueValences——valence 方向判定 prompt
+8. `core/lifecycle/evolution-worker.ts`——受控正文重写提案
+9. `core/record/l1-dedup.ts`——相似去重口径与阈值
+
+**评分公式清单**（逐个审计：定义/参数来源与依据/边界条件/golden 覆盖/可解释性）：
+- F5 suggestAnchorWeight（D6 绝对证据+饱和 E_REF=50，clamp 0.3-0.8）
+- F11 personEvCount（label∨alias 逐字）· F12 personEvidenceMeanValence ±0.2 符号化 · characterEvCount/characterEvidenceCount（12 字滑窗，新修）
+- identityFactMatchesCorpus（12 字滑窗——刚修，须评估阈值合理性与残余误报/漏报面，衔接 A-7b）
+- scorer.scoreFor（λ=0.01/arousalRetention=0.3 调制/salienceBoostWithRefs/recallCountBoost/decay）+ classify 阈值 0.12/30d
+- 召回 RRF+九通道信号（现状全 0 恒等；解禁需 D2 A/B）· appraisal firedThreshold 0.4
+
+**产出**：每面判定表（明确性/规范符合度/问题/改进建议）+ 发现问题修复。纪律：改提示词=行为变更，必须真实数据新旧对照（同种子提取质量对比，≥10 组）；改公式=golden 更新+门禁；纯文档性建议登记不改。
 ### P1 UI 2.0 重设计（用户明确不满：太丑、信息不全）
 硬需求：①**灵魂页签从 Chat_Memory 独立成一级页**（身份双槽/价值锚三池/品格锚/重要的人/感受段完整呈现）；②**记忆属性与关系全景**：19 列属性（certainty/valence/arousal/significance/双时态 valid_start-end/来源/scene/版本演化）、l1_links 关系图（similar/evolve/conflict/derived_from/part_of）、refs 反向链（coreRefs/personRefs/identityRefs 反查）、pending 裁决流、锚池配额健康条（15/8/8 用量）；③对照 UI redesign spec（2026-09-10）规范做视觉升级。
 流程：**先出设计稿**（信息架构/分区/组件/数据映射/交互）→用户确认→再实施（TDD+面板基线）。
