@@ -44,6 +44,7 @@ export const DISCOVERY_SYSTEM_PROMPT = [
   "每个提案包含：",
   '- slot: "identity"（描述类：我是谁/我的职责/我的角色）或 "core_value"（价值观：什么是对的/什么最重要）或 "strict_rule"（红线：绝不做的事/必须遵守的规则）',
   "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
+  "- support: [样本行号,…]（可选：支撑该事实的样本行号，1..N；只列真实支撑的 1-3 行，宁缺毋滥，不确定不给）",
   "- rationale: 提炼理由",
   "",
   "硬约束：",
@@ -66,6 +67,7 @@ const DISCOVERY_SYSTEM_PROMPT_DUAL = [
   "每个提案包含：",
   '- slot: "identity"（用户身份：他是谁/他的职责/他的角色）或 "self_identity"（agent 自我：我反复承担的职责/我做出的承诺/我执行过的红线/我稳定的工作风格）或 "core_value"（价值观：什么是对的/什么最重要）或 "strict_rule"（红线：绝不做的事/必须遵守的规则）',
   "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
+  "- support: [样本行号,…]（可选：支撑该事实的样本行号，1..N；只列真实支撑的 1-3 行，宁缺毋滥，不确定不给）",
   "- rationale: 提炼理由",
   "",
   "硬约束：",
@@ -150,8 +152,11 @@ export async function runIdentityDiscovery(deps: {
         // 永远进不了样本窗（身份自生长对新语料失明，违背自生长原则）。采样器语义 =
         // updated 降序 + 高显著（≥0.8）优先 + cap 截断；证据重算语料仍走全量不变。
         const rows = (store.queryL1Records(tenant) ?? []) as Parameters<typeof selectSampleRows>[0];
-        const sample = selectSampleRows(rows, DISCOVER_SAMPLE_CAP)
+        const sampleRows = selectSampleRows(rows, DISCOVER_SAMPLE_CAP);
+        const sample = sampleRows
           .map((r) => String(r.content ?? "").slice(0, DISCOVER_TRUNCATE_CHARS));
+        // A-7b：样本编号→record_id 确定性映射（与 buildIdentityPrompt 的 1..N 编号同序）。
+        const sampleIds = sampleRows.map((r) => String((r as { record_id?: string }).record_id ?? ""));
         const corpus = rows.map((r) => String(r.content ?? ""));
 
         // 已有 slots（去重）
@@ -173,12 +178,13 @@ export async function runIdentityDiscovery(deps: {
         const proposals = parseProposals(String(raw ?? ""));
         let adoptedThis = 0;
         let pendingThis = 0;
+        const identitySupportBatch: Record<string, string[]> = {};
 
         // 分级门（用户裁定 A 2026-09-15）：identity 描述类跳过证据重算——综合提炼 content
         // 无法逐字匹配语料（与锚的 label 不同形态）；escapeXmlTags 消毒在写入路径，
         // GROW-MAINT 类重验证为后续纠偏层。core_value/strict_rule（红线类）→ pending 永不自动写入。
-        const identityProps: string[] = [];
-        const selfProps: string[] = [];
+        const identityProps: Array<{ content: string; support?: number[] }> = [];
+        const selfProps: Array<{ content: string; support?: number[] }> = [];
         const maxSelf = dual ? Math.max(1, deps.selfIdentity?.maxPerPass ?? 2) : 0;
         for (const p of proposals) {
           if (p.slot === "identity") {
@@ -192,7 +198,7 @@ export async function runIdentityDiscovery(deps: {
               // P2 SOP（B）：强加身份/人设注入 → 拒收留痕
               logger?.info?.(`[identity-discovery] identity proposal rejected (identity imposition): ${p.content.slice(0, 60)}`);
             } else {
-              identityProps.push(cleaned);
+              identityProps.push({ content: cleaned, support: sanitizeSupportIndices(p.support, sampleIds.length) });
             }
           } else if (p.slot === "self_identity" && dual) {
             // P1（DS-SOUL-MEMORY-002）：agent 自我层——同一 strip 门（单一源）；
@@ -204,7 +210,7 @@ export async function runIdentityDiscovery(deps: {
               // P2 SOP（B）：用户口播人设（"AI 是女儿"类）→ 拒收留痕
               logger?.info?.(`[identity-discovery] self_identity proposal rejected (identity imposition): ${p.content.slice(0, 60)}`);
             } else {
-              selfProps.push(cleaned);
+              selfProps.push({ content: cleaned, support: sanitizeSupportIndices(p.support, sampleIds.length) });
             }
           } else if (p.slot === "core_value" || p.slot === "strict_rule") {
             // O13（P2）：pending 落点——红线类提案永不自动写入，持久化到 core_pending 供
@@ -223,20 +229,28 @@ export async function runIdentityDiscovery(deps: {
         if (identityProps.length > 0) {
           // P2 SOP（A）：演化合并——existing ∪ 本轮新事实（新事实消毒后入列，existing 行不二次转义）
           const existingIdentity = existing.find((s) => s.slot === "identity")?.content;
-          const merged = mergeIdentityFacts(existingIdentity, identityProps.map((c) => escapeXmlTags(c)));
+          const merged = mergeIdentityFacts(existingIdentity, identityProps.map((c) => escapeXmlTags(c.content)));
           const ok = store.upsertCore("identity", merged, "identity-discovery", tenant);
           if (ok) {
             logReplacing("identity", existing, logger);
             adoptedThis = 1;
             logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
             // P2：identityRefs 回填（20 字切片弱口径；F14 遗忘保护/GROW-MAINT 重验证的数据前提）
+            // A-7b：支撑指针优先（确定性精确回填——摘要式改写不再依赖滑窗）；无指针/指针落空 →
+            // 滑窗兜底（F-EV13-1 修复保留，向后兼容）。supportMap 供 GROW-MAINT 确定性重验。
             for (const fact of identityProps) {
-              // F-EV13-1：回填判定换 identityFactMatchesCorpus（措辞断链修复）；引用仍存 20 字切片
-              //（isRefProtected 端模糊匹配向后兼容）。
-              const slice = identityFactSlice(fact);
+              const slice = identityFactSlice(fact.content);
               if (!slice) continue;
+              const supportIds = (fact.support ?? []).map((i) => sampleIds[i - 1] ?? "").filter((s) => s !== "");
+              if (supportIds.length > 0) {
+                for (const rid of supportIds) {
+                  (store as { backfillMemoryRef?: (rid: string, key: "identityRefs", label: string, t?: unknown) => boolean }).backfillMemoryRef?.(rid, "identityRefs", slice, tenant);
+                }
+                identitySupportBatch[fact.content.replace(/^-/, "").trim()] = supportIds;
+                continue;
+              }
               for (const r of rows) {
-                if (identityFactMatchesCorpus(fact, String((r as { content?: string }).content ?? ""))) {
+                if (identityFactMatchesCorpus(fact.content, String((r as { content?: string }).content ?? ""))) {
                   const rid = String((r as { record_id?: string }).record_id ?? "");
                   if (rid) (store as { backfillMemoryRef?: (rid: string, key: "identityRefs", label: string, t?: unknown) => boolean }).backfillMemoryRef?.(rid, "identityRefs", slice, tenant);
                 }
@@ -248,7 +262,7 @@ export async function runIdentityDiscovery(deps: {
         if (selfProps.length > 0) {
           // P2 SOP（A）：演化合并（同 identity；先截断本轮 maxPerPass 再并入）
           const existingSelf = existing.find((s) => s.slot === "self_identity")?.content;
-          const mergedSelf = mergeIdentityFacts(existingSelf, selfProps.slice(0, maxSelf).map((c) => escapeXmlTags(c)));
+          const mergedSelf = mergeIdentityFacts(existingSelf, selfProps.slice(0, maxSelf).map((c) => escapeXmlTags(c.content)));
           const okSelf = store.upsertCore("self_identity", mergedSelf, "identity-discovery", tenant);
           if (okSelf) {
             logReplacing("self_identity", existing, logger);
@@ -259,7 +273,12 @@ export async function runIdentityDiscovery(deps: {
         adopted += adoptedThis;
         pending += pendingThis;
 
-        writeState(store, tenant, { lastAttemptAt: now().toISOString(), lastCorpusCount: corpusCount });
+        // A-7b：支撑映射并入身份状态 kv（上限 64 键防膨胀；GROW-MAINT 确定性重验的数据前提）。
+        const prevState = readState(store, tenant);
+        const mergedSupport: Record<string, string[]> = { ...(prevState.supportMap ?? {}), ...identitySupportBatch };
+        const supportKeys = Object.keys(mergedSupport);
+        if (supportKeys.length > 64) for (const k of supportKeys.slice(0, supportKeys.length - 64)) delete mergedSupport[k];
+        writeState(store, tenant, { lastAttemptAt: now().toISOString(), lastCorpusCount: corpusCount, ...(Object.keys(mergedSupport).length > 0 ? { supportMap: mergedSupport } : {}) });
         ranAny = true;
         logger?.info?.(`[identity-discovery] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} proposals=${proposals.length} adopted=${adoptedThis}`);
       } catch (err) {
@@ -325,10 +344,10 @@ export function stripIdentityStateResidue(content: string): string {
 function buildIdentityPrompt(samples: string[], existing: string[]): string {
   const sampleText = samples.map((s, i) => `${i + 1}. ${s}`).join("\n");
   const existingText = existing.length > 0 ? existing.map((e) => `- ${e}`).join("\n") : "（空，无已有身份事实）";
-  return `## 样本记忆（最近 ${samples.length} 条）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}\n\n请提炼身份事实提案。`;
+  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}\n\n请提炼身份事实提案。`;
 }
 
-function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string }> {
+function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[] }> {
   let cleaned = (raw ?? "").trim();
   if (!cleaned) return [];
   if (cleaned.startsWith("```")) cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
@@ -346,22 +365,42 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
     const slot = typeof o.slot === "string" ? o.slot : "";
     const content = typeof o.content === "string" ? o.content.trim() : "";
     if (!slot || !content || !valid.has(slot)) continue;
-    out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "" });
+    // A-7b：支撑样本指针（可选；整数保留，范围校验在消费侧按样本窗做）。
+    const support = Array.isArray(o.support)
+      ? o.support.map((n) => (typeof n === "number" && Number.isInteger(n) ? n : NaN)).filter((n) => !Number.isNaN(n))
+      : undefined;
+    out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "", ...(support && support.length > 0 ? { support } : {}) });
   }
   return out;
+}
+
+// ── A-7b：支撑样本编号确定性校验门（LLM 只提议，门裁决）──────────
+// 整数、1..sampleCount、去重、上限 IDENTITY_SUPPORT_MAX（F20 红线下身份永不自动退场，
+// 投机全选=永生事实风险，故门必须收口）；非法编号丢弃；全非法 → []（消费侧回退滑窗）。
+export const IDENTITY_SUPPORT_MAX = 5;
+
+export function sanitizeSupportIndices(raw: unknown, sampleCount: number): number[] {
+  if (!Array.isArray(raw) || sampleCount <= 0) return [];
+  const seen = new Set<number>();
+  for (const v of raw) {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > sampleCount) continue;
+    seen.add(v);
+    if (seen.size >= IDENTITY_SUPPORT_MAX) break;
+  }
+  return [...seen];
 }
 
 // ── state helpers ──
 // GROW-EVO：独立键族（identity_* 前缀）——与 anchor-growth 的状态互不覆盖
 // （共用 getAnchorGrowthState 会让身份写入清掉锚的 lastAdoptedAt → 锚 24h 冷却失效）。
-function readState(store: IMemoryStore, tenant: CoreTenant): { lastAttemptAt?: string; lastCorpusCount?: number } {
+function readState(store: IMemoryStore, tenant: CoreTenant): { lastAttemptAt?: string; lastCorpusCount?: number; supportMap?: Record<string, string[]> } {
   try {
     const raw = (store as unknown as { getIdentityDiscoveryState?: (t?: CoreTenant) => unknown }).getIdentityDiscoveryState?.(tenant);
-    if (raw && typeof raw === "object") return raw as { lastAttemptAt?: string; lastCorpusCount?: number };
+    if (raw && typeof raw === "object") return raw as { lastAttemptAt?: string; lastCorpusCount?: number; supportMap?: Record<string, string[]> };
   } catch { /* fall through */ }
   return {};
 }
-function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: { lastAttemptAt: string; lastCorpusCount: number }): void {
+function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: { lastAttemptAt: string; lastCorpusCount: number; supportMap?: Record<string, string[]> }): void {
   try {
     (store as unknown as { setIdentityDiscoveryState?: (s: unknown, t?: CoreTenant) => void }).setIdentityDiscoveryState?.(state, tenant);
   } catch { /* best-effort */ }

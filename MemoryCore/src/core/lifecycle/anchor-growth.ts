@@ -140,6 +140,7 @@ export async function maintainIdentityFacts(
   tenant: CoreTenant,
   corpus: string[],
   logger?: Logger,
+  opts?: { supportMap?: Record<string, string[]>; activeRecordIds?: Set<string> },
 ): Promise<number> {
   // sqlite store readCore 为同步（v2 实证教训）；await Promise.resolve 兼容两种形态
   const core = ((await Promise.resolve(store.readCore?.(tenant))) as unknown as Array<{ slot: string; content: string }> | undefined) ?? [];
@@ -151,6 +152,10 @@ export async function maintainIdentityFacts(
     if (!fact.startsWith("-") || fact.length <= 1) continue;
     // F-EV13-1：重验判定换 identityFactMatchesCorpus（措辞断链修复——ev13 实测旧口径把有支撑
     // 的事实全判 unsupported 假阳）。
+    // A-7b：支撑映射确定性重验——映射命中且引用行仍 active → 支撑（摘要式改写滑窗漏报由此收敛）；
+    // 映射悬空/未命中 → 回退滑窗（向后兼容；悬空+滑窗漏 → 仍告警，防永生事实）。
+    const supportIds = opts?.supportMap?.[fact.replace(/^-/, "").trim()];
+    if (supportIds && supportIds.length > 0 && opts?.activeRecordIds && supportIds.some((id) => opts.activeRecordIds!.has(id))) continue;
     const ev = corpus.filter((c) => identityFactMatchesCorpus(fact.replace(/^-/, ""), c)).length;
     if (ev === 0) {
       unsupported++;
@@ -627,7 +632,10 @@ export async function runAnchorGrowth(deps: {
         }
         // ── P2：identity GROW-MAINT（F15 身份分支；F20 红线——只警告永不自动退场）──────
         if (cfg.identityMaintain?.enabled) {
-          const unsupported = await maintainIdentityFacts(store, tenant, corpus, logger);
+          // A-7b：支撑映射（identity 状态 kv）+ 活跃记录集 → 确定性重验；滑窗兜底不变。
+          const identityState = (store as { getIdentityDiscoveryState?: (t?: CoreTenant) => { supportMap?: Record<string, string[]> } }).getIdentityDiscoveryState?.(tenant);
+          const activeRecordIds = new Set(rows.map((r) => String((r as { record_id?: string }).record_id ?? "")).filter((s) => s !== ""));
+          const unsupported = await maintainIdentityFacts(store, tenant, corpus, logger, { supportMap: identityState?.supportMap, activeRecordIds });
           if (unsupported > 0) logger?.info?.(`[anchor-growth] identity maintain: unsupported=${unsupported} (warning-only)`);
         }
         // REG-REMAINING-003 #1：采纳路径 valence 补值钩子——自生长直调 store.upsertValue，

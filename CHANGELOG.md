@@ -8,6 +8,22 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🧬 A-7b 证据指针（用户拍板，2026-09-20）——身份支撑从"字面找回"升级为"确定性引用"
+
+### Added（MemoryCore）
+
+- **提案协议扩展**：DISCOVERY(_DUAL) 输出契约增可选 `support: [样本行号,…]`（1..N，只列真实支撑 1-3 行，宁缺毋滥）；buildIdentityPrompt 样本行号声明可作 support 引用；无 support 行为逐位现状。
+- **确定性校验门**：`sanitizeSupportIndices`——整数/样本窗内/去重/上限 5（F20 红线下投机全选=永生事实风险，门必须收口）；非法编号丢弃；全非法→回退滑窗路径（协议失败不降级）。
+- **identityRefs 精确回填**：有合法指针 → 逐 record_id 直填支撑行（摘要式改写不再依赖 12 字滑窗——ev14 量化残余回填漏 1/8 的正解）；无指针 → 滑窗兜底（F-EV13-1 修复保留）。
+- **supportMap 并入身份状态 kv**（上限 64 键）：事实→支撑 record_ids 映射。
+- **GROW-MAINT 确定性重验**：映射命中且引用行仍 active → 支撑（ev14 量化 unsupported 假阳 1/1 的正解）；映射悬空/未命中 → 滑窗兜底；悬空+滑窗漏 → 仍告警（防永生事实，F20 不变）。identityRefs 切片引用/-isRefProtected 全兼容。
+- 登记：character 池 evidence 的 support 联动暂缓（ev14 该拒采面未触发；self_identity 有料后随 A-3 终验复评）。
+
+### Tests
+
+- 新增 golden `identity-support-pointer.test.ts`（7 用例：精确回填/非法弃用滑窗兜底/上限 5/supportMap 落 kv/MAINT 映射支撑/悬空仍告警/无 support 逐位现状）。vitest 645→652 全绿；tsc 222 持平。ev15 全新租户摘要式改写重放验证随后执行（期望：回填 8/8、unsupported 假阳 0）。
+
+---
 ## 🔒 neighborExpand 归档不回流（用户拍板 C，2026-09-20）
 
 ### Fixed（MemoryCore）
