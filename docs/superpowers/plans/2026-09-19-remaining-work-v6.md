@@ -3,7 +3,7 @@
 > 取代 v5（2026-09-16-remaining-work-v5.md）的**待办部分**；v5"不做项"判定与 O1-O6 观察继承有效。
 > 来源：2026-09-19 设计↔代码↔真数据三方交叉审计（33 项：✅22 / ⚠️8 / ❌3，报告见 `2026-09-19-soul-audit-report.md`；HEAD 1d8b19e，运行代码 1d03a37）。
 > 执行纪律：TDD（RED 先行）→ 补丁（锚点唯一+读回验证）→ tsc 222 基线持平 + vitest 617+ 全绿 → CHANGELOG 同步 → 密钥扫描 → `sudo -H -u tdai git` commit/push → 重启 → 真数据验证。
-> **进度（2026-09-19 批次一）**：A-1（F-EV12-1）/ A-2（F-EV12-2）/ A-4（F-EV12-4）已修复——vitest 617→623 全绿、tsc 222 基线持平，CHANGELOG 已登记；批次 1.5 = A-2b 结论层缓存键硬化（vitest 624）；批次二 = A-5 三处不对称修复 + A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951）+ A-6 spec 同步（vitest 627）；批次三（ev13 重放轮）= A-7 F-EV13-1 措辞断链修复（identityFactMatchesCorpus 单一源 12 字滑窗，四消费面统一；vitest 636）
+> **进度（2026-09-19 批次一）**：A-1（F-EV12-1）/ A-2（F-EV12-2）/ A-4（F-EV12-4）已修复——vitest 617→623 全绿、tsc 222 基线持平，CHANGELOG 已登记；批次 1.5 = A-2b 结论层缓存键硬化（vitest 624）；批次二 = A-5 三处不对称修复 + A-3 勘误改判非缺陷（B3 裁决 sqlite.ts:1951）+ A-6 spec 同步（vitest 627）；批次三（ev13 重放轮）= A-7 F-EV13-1 措辞断链修复（identityFactMatchesCorpus 单一源 12 字滑窗，四消费面统一；vitest 636）；批次四（ev13 重放验证）= LLM 换套餐（ark）重启恢复 + ev13 4 会话 22 条 user 消息全流程通过（提取 23 条 L1、身份门活体拦截 2 拒+红线 pending、张三/小七 p- 锚+周报/脱敏 theme 锚落库、F-EV13-1 修复后 identityRefs 回填 0→2、注入块四段+对抗零渗漏+跨租户隔离）；UI 视觉实测 blocked（session 无 browser provider），人工清单见 A-8
 ；A-3 / A-5 下一批；B-2 真数据重放待 LLM 配额重置。
 
 ## 数据门槛快照（2026-09-19 10:5x 实取）
@@ -52,6 +52,17 @@
 - spec `2026-09-17-soul-memory-design.md`：①§2.8 调度顺序补 C1 实况注记（forgetting=pass 末尾，ev8 实证）；②§2.2/§2.5/§3/§7 的 "metadata.agentAct 标注" 改注"prompt 视角已接线（l1-extraction.ts AGENT_ACT_BLOCK）；metadata.agentAct 字段未实施——P3 spike 定案占比 0%，聚合源=self_identity 槽（§7 fallback 已执行）"；③§2.7 补 character 渲染口径一句（价值锚行共享/感受段仅主题锚）。CHANGELOG 登记本轮 A-1~A-5。
 
 ---
+
+### A-8 · UI 展示与规范实测（MemoryPanel 8123）——【已完成 2026-09-19 晚，浏览器实测】
+
+- 已降级验证：panel active + `/` 200（Memory Hub Vite 正常）；UI 数据源形状全就绪（slots 双槽/values node_type+attrs_json/分池 state——DB 与 /v3/recall soul 块活体已证同一数据渲染路径）。
+- 待人工/有浏览器环境实测清单：① ChatMemoryPage 身份区（identity/self_identity 槽只读展示+version/source 徽标）② ValueAnchorsPanel 类型徽标（人物/主题）+ 分池配额迷你显示（theme15/person8/character8）+ 行内 role/aliases 编辑 ③ 记忆图 personRefs 青紫色标+图例 ④ S2 灵魂区 personRefs/identityRefs chips ⑤ 视觉美观与 UI redesign spec（2026-09-10）符合性。发现问题按 TDD 修复推送。
+- **实测结果**：U1 身份区 ✓（我是谁/我心中的他 渲染）· U2 类型徽标 ✓（人物/主题活体）· U4 反查按钮 ✓（🔍 关联记忆 每行）· U3 pending 区 ✓ 组件接线 · **U7 分池配额回归已修**（活体 DOM：「主题 15/15 人物 1/8 品格 0/8 敏感度（待拍板）」）· 存量构建破损与 tsc 债 3 错修复（112/112 持平）。美观度（Vision 评）：简洁专业/蓝白协调/无重大布局缺陷；右侧空旷小瑕疵登记。
+
+### A-7b · F-EV13-1 残余缺口：摘要式改写超出演算面（设计级，下一批）
+
+- ev13 二轮实测：12 字滑窗对「句式重组型改写」（代词替换/标点差异散布全句，如『带其开』vs『带用户开』）仍不命中——GROW-MAINT unsupported=2 中含残余假阳、守诺式提案在 minEvidence=3 下可能拒采。
+- 长期解（方案 B，spec 附录 A 引用纪律同型）：identity-discovery 提案协议增补**支撑样本指针**（LLM 输出支撑样本编号 → 校验后在样本窗内 → identityRefs 记 record_id 引用；GROW-MAINT=引用行仍 active 即支撑；F14 保护=引用行在即保护）——确定性、精确、无字面依赖；触及 prompt 协议与 ref 语义，单独一轮 TDD+对抗审查实施。
 
 ## B 等门槛 / 环境
 

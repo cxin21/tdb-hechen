@@ -790,7 +790,7 @@ export const enUS = {
   'memory.notify.anchorPinFailed': 'Failed to update pin',
   'memory.notify.anchorRetireFailed': 'Failed to retire anchor',
   'memory.notify.anchorRestoreFailed': 'Failed to restore anchor',
-  'memory.notify.relatedCount': "{{count}} related memories for {{label}}',
+  'memory.notify.relatedCount': '{{count}} related memories for {{label}}',
   'memory.notify.anchorAutoGrown': 'Auto-grown anchor(s): {{labels}}',
   'memory.anchors.empty': 'No value anchors yet; new anchors are auto-judged by LLM and can be fine-tuned manually',
   'memory.notify.anchorSaved': 'Value anchor saved',

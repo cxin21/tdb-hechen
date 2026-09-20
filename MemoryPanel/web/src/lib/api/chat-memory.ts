@@ -31,7 +31,7 @@ export interface ValueAnchor {
   /** GROW 状态机：active 活跃 / retired 退休（退休区）/ vetoed 永久否决（任何读面不可见） */
   state?: 'active' | 'retired' | 'vetoed';
   /** P2（U2）：锚类型（theme 主题 / person 人物双节点）；旧网关缺省 → undefined（前向兼容） */
-  node_type?: 'theme' | 'person';
+  node_type?: 'theme' | 'person' | 'character'; // F-EV13-1 轮：P3 品格锚类型补齐（面板徽标/配额过滤消费）
   /** P2（U2）：人物锚属性 JSON（{role, aliases}）；主题锚为 '{}' */
   attrs_json?: string;
 }

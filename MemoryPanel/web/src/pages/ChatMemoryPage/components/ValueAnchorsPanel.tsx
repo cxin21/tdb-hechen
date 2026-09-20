@@ -36,6 +36,7 @@ import { PendingSection } from './PendingSection';
 function nodeTypeBadge(nodeType: ValueAnchor['node_type']): { label: string; cls: string } | null {
   if (nodeType === 'person') return { label: '人物', cls: 'person' };
   if (nodeType === 'theme') return { label: '主题', cls: 'theme' };
+  if (nodeType === 'character') return { label: '品格', cls: 'character' };
   return null;
 }
 
@@ -67,6 +68,7 @@ function ValueRow({
   onPin,
   onRetire,
   onDelete,
+  onViewRelated,
 }: {
   anchor: ValueAnchor;
   onSave: (valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } }) => Promise<void>;
@@ -539,6 +541,14 @@ export default function ValueAnchorsPanel() {
       ) : values.length === 0 ? (
         <div className="_va-empty">{t('memory.anchors.empty')}</div>
       ) : (
+        <>
+        {/* U7（T-C 回归修复 2026-09-19）：分池配额迷你显示（F15 三池；上限与 yaml anchorDiscovery 对齐）+ U6 sensitivity 预留徽章位 */}
+        <div className="_va-quota">
+          <span className="_va-quota-item">主题 {values.filter((v) => (v.node_type ?? 'theme') === 'theme').length}/15</span>
+          <span className="_va-quota-item">人物 {values.filter((v) => v.node_type === 'person').length}/8</span>
+          <span className="_va-quota-item">品格 {values.filter((v) => v.node_type === 'character').length}/8</span>
+          <span className="_va-quota-item _va-quota-sensitivity">敏感度（待拍板）</span>
+        </div>
         <div className="_va-list">
           {values.map((v) => (
             <ValueRow
@@ -553,6 +563,7 @@ export default function ValueAnchorsPanel() {
             />
           ))}
         </div>
+        </>
       )}
 
       {/* GROW 退休区折叠段：retired 列表 + [恢复][钉住]；空时不渲染 */}

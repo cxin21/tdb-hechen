@@ -84,6 +84,7 @@ export {
   type ChatMemoryLayerItem,
   type ChatMemoryLayerMetadata,
   type ChatMemorySearchHit,
+  type PendingItem,
   type ValueAnchor,
   type ValueProposal,
 } from './api/chat-memory';

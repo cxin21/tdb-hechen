@@ -18,7 +18,7 @@ import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { chatMemoryApi } from '@/lib/teamApi';
 import type { AtomicItem } from '../constants/types';
 import { buildSoulView } from './block-detail/soul-utils';
-import { directedEdgeType, isDirectedKind, nodeSemanticColor, GOLD_CORE_REF_COLOR } from './memory-graph-semantic';
+import { directedEdgeType, isDirectedKind, nodeSemanticColor, GOLD_CORE_REF_COLOR, PERSON_REF_COLOR } from './memory-graph-semantic';
 
 interface MemNode {
   id: string; label: string; type: string; linkCount: number; community: number; significance?: number; t: number;
