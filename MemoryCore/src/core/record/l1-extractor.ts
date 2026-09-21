@@ -615,7 +615,7 @@ async function callLlmExtraction(params: {
  * Parse the LLM's JSON response into SceneSegment array.
  * Expected format: [{scene_name, message_ids, memories: [...]}]
  */
-function parseExtractionResult(raw: string, logger?: Logger, valueCandidates: Array<{ id: string; label: string }> = []): SceneSegment[] {
+export function parseExtractionResult(raw: string, logger?: Logger, valueCandidates: Array<{ id: string; label: string }> = []): SceneSegment[] {
   try {
     // Strip markdown code block wrappers if present
     let cleaned = raw.trim();
@@ -687,6 +687,8 @@ function parseExtractionResult(raw: string, logger?: Logger, valueCandidates: Ar
                 valence: typeof m.valence === "number" ? m.valence : undefined,
                 arousal: typeof m.arousal === "number" ? m.arousal : undefined,
                 significance: typeof m.significance === "number" ? m.significance : undefined,
+                // D-3：敏感性透传（枚举门在主映射处统一裁决——此处只带原始值）
+                sensitivity: typeof m.sensitivity === "string" ? m.sensitivity : undefined,
               }))
           : [],
       });

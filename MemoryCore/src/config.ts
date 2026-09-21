@@ -667,6 +667,10 @@ export interface MemoryTdaiConfig {
   };
   /** 场景块治理（DS-SCENE-GOV-001；enabled 缺省 false = 生产行为零变化）。 */
   sceneGovernance: SceneGovernanceConfig;
+  /** D-3（2026-09-21）：敏感性标注门（extractionEnabled 缺省 false = 逐位现状）。 */
+  sensitivity: {
+    extractionEnabled: boolean;
+  };
   /**
    * Optional Skill module config. Pass-through to `resolveSkillConfig()` at
    * the host wiring layer; defaults are applied there. When absent, the
@@ -1277,6 +1281,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     search,
     // 场景块治理（DS-SCENE-GOV-001）：enabled 缺省 false，生产零变化
     sceneGovernance,
+    // D-3：敏感性标注门（yaml memory.sensitivity.extractionEnabled；缺省 false）
+    sensitivity: {
+      extractionEnabled: bool((c.sensitivity ?? {}) as Record<string, unknown>, "extractionEnabled") ?? false,
+    },
     // Skill: passthrough — let the host wiring call resolveSkillConfig() with
     // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply
     // defaults here so the resolver remains the single source of truth.
