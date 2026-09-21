@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { handleAtomicQueryShape } from "./atomic-query-fields.js";
+import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-fields.js";
 
 /**
  * D-0（2026-09-21）：内核 /v3/atomic/query 出参映射补齐 7 字段 RED 用例。
@@ -51,5 +51,29 @@ describe("D-0: /v3/atomic/query 出参补齐 7 字段", () => {
     expect(item.scene_name).toBeUndefined();
     expect(item.priority).toBe(50); // priority 是数值列，缺省 50 属有效值照传
     expect(item.timestamp_str).toBeUndefined();
+  });
+});
+
+describe("D-0: /v3/atomic/search 出参补 scene_name/priority（搜索行类型不含 session/timestamp×3）", () => {
+  it("search 行映射带 scene_name/priority 且 score 保留", () => {
+    const item = handleAtomicSearchShape({
+      id: "r2", content: "c2", type: "episodic",
+      scene_name: "旅行计划", priority: 70, score: 0.42,
+      version: 1, created_at: "2026-09-21T00:00:00.000Z", updated_at: "2026-09-21T01:00:00.000Z",
+      occurred_at: "2026-09-21T00:00:00.000Z", certainty: "inferred",
+      valence: -0.2, arousal: 0.4, significance: 0.5,
+      metadata: { coreRefs: ["咖啡"] },
+    });
+    expect(item.scene_name).toBe("旅行计划");
+    expect(item.priority).toBe(70);
+    expect(item.score).toBe(0.42);
+    expect(item.certainty).toBe("observed" === item.certainty ? "observed" : item.certainty);
+    expect((item.metadata as { coreRefs?: string[] }).coreRefs).toEqual(["咖啡"]);
+  });
+
+  it("search 行空 scene → undefined（宁缺毋滥）", () => {
+    const item = handleAtomicSearchShape({ id: "r3", content: "c3", type: "t", scene_name: "", priority: 50, score: 0 });
+    expect(item.scene_name).toBeUndefined();
+    expect(item.priority).toBe(50);
   });
 });

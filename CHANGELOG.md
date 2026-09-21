@@ -16,6 +16,7 @@
 - **TDD**：RED 3 用例先行（七字段/既有字段逐位回归/空值 undefined）→ GREEN 3/3。
 - 门禁：MemoryCore vitest 654→657 全绿（+3 golden）· tsc 222 持平（stash 对照法实证：改动前 222/改动中 226/双跳转修复后 222）· 面板 vitest 112 持平 · vite build 成功 · web tsc 存量 2 不新增。
 - 活体验证（生产三元组 team-kcjjqzkxks/usr-kfym3ajzme/agt-kfynybx0ly）：`/v3/atomic/query` 出参七字段实值在场（scene_name=生产场景名/priority=98/session×2/timestamp×3）；四服务重启后 health=200。
+- **D-0b（彻底覆盖路径面）**：`/v3/atomic/search` 映射第三份内联拷贝同走单一源——`handleAtomicSearchShape`（scene_name/priority 补齐；搜索行类型 MemorySearchResultItem 不含 session/timestamp×3，诚实缺列）+ BFF /chat-memory/search 透传同补。RED 2 用例先行→GREEN 5/5；vitest 654→659 全绿、tsc 222 持平、面板 112+build。活体：search 出参 scene_name/priority 实值在场。教训登记：补丁 python 重写整文件时 newline="" 将 CRLF 文件统一为 LF（chat-memory.ts 等 3 文件 6155/866/876 行重写）——e8e0651 按 O19 铁律恢复 CRLF，diff vs HEAD~1 仅剩 27 行真实改动。
 
 ---
 ## 🎨 UI 2.0 Phase 1：灵魂一级页（用户拍板③，2026-09-20）

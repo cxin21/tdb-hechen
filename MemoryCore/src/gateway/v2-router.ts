@@ -111,7 +111,7 @@ import {
 } from "./v2-schemas.js";
 import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 // D-0（2026-09-21）：/v3/atomic/query 出参映射单一源——7 字段补齐 + 既有字段逐位。
-import { handleAtomicQueryShape } from "./atomic-query-fields.js";
+import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-fields.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
@@ -1513,27 +1513,11 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     // 静默失败
   }
 
-  const items: AtomicSearchHit[] = result.results.map((r) => ({
-    id: r.id, type: r.type, content: r.content,
-    background: r.scene_name || undefined,
-    version: r.version ?? 0,
-    team_id: r.team_id,
-    user_id: r.user_id,
-    agent_id: r.agent_id,
-    task_id: r.task_id,
-    created_at: r.created_at, updated_at: r.updated_at, score: r.score,
-    // 灵魂记忆字段透传（P2a/R4/J）
-    occurred_at: r.occurred_at,
-    valid_start: r.valid_start,
-    valid_end: r.valid_end,
-    certainty: r.certainty,
-    source: r.source,
-    valence: r.valence,
-    arousal: r.arousal,
-    significance: r.significance,
-    // C1 面板透传：metadata.coreRefs/recall_count 供 UI 价值标签与徽标（纯增量）
-    metadata: r.metadata,
-  }));
+  // D-0：search 映射同走单一源（scene_name/priority 补齐；session/timestamp×3
+  // 属查询路七字段，搜索行类型不含——诚实缺列）。
+  const items = result.results.map((r) =>
+    handleAtomicSearchShape(r as unknown as Record<string, unknown>),
+  ) as unknown as AtomicSearchHit[];
 
   return successEnvelope<AtomicSearchData>({ items }, requestId);
 }

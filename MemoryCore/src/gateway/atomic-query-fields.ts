@@ -72,3 +72,37 @@ function parseMetadata(raw: unknown): Record<string, unknown> | undefined {
     return undefined;
   }
 }
+
+/**
+ * D-0b（2026-09-21）：/v3/atomic/search 出参 shape——同族补 scene_name/priority。
+ * 注意：搜索行类型（MemorySearchResultItem）不含 session_key/session_id/timestamp×3
+ *（其 SELECT 面不含），故此处不透传这三组——诚实缺列，UI 宁缺毋滥。
+ * 与 query shape 的差异：行含 score/created_at（ISO）且 metadata 已解析对象。
+ */
+export function handleAtomicSearchShape(r: RowLike): Record<string, unknown> {
+  return {
+    id: r.id,
+    type: r.type,
+    content: r.content,
+    background: text(r.scene_name) ?? undefined,
+    version: r.version ?? 0,
+    team_id: r.team_id,
+    user_id: r.user_id,
+    agent_id: r.agent_id,
+    task_id: r.task_id,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    score: r.score,
+    occurred_at: r.occurred_at,
+    valid_start: r.valid_start,
+    valid_end: r.valid_end,
+    certainty: r.certainty,
+    source: r.source,
+    valence: r.valence,
+    arousal: r.arousal,
+    significance: r.significance,
+    metadata: r.metadata,
+    scene_name: text(r.scene_name),
+    priority: numOrUndef(r.priority),
+  };
+}

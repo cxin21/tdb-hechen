@@ -2792,7 +2792,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         valence: r.valence,
         arousal: r.arousal,
         significance: r.significance,
-        // Phase 2（UI 2.0 拍板③）：属性全景透传（同 layer；内核今日不出参的字段诚实缺列）。
+        // Phase 2（UI 2.0 拍板③）+ D-0b：scene_name/priority 透传（内核 search 路已补齐；
+        // session/timestamp×3 属查询路七字段，搜索行类型不含——诚实缺列）。
         task_id: r.task_id,
         team_id: r.team_id,
         user_id: r.user_id,
@@ -2800,6 +2801,9 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         version: r.version,
         updated_at: (typeof r.updated_at === "string" && r.updated_at) || msToIso(r.updated_time_ms) || undefined,
         metadata: r.metadata,
+        // D-0b：search 行可得字段透传（同查询路语义）
+        scene_name: r.scene_name,
+        priority: r.priority,
         created_at:
           (typeof r.created_at === "string" && r.created_at) ||
           msToIso(r.created_time_ms) ||
