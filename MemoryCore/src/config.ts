@@ -116,6 +116,8 @@ export interface RecallConfig {
   recencyBoost: number;
   sigWeight: number;
   inferredPenalty: number;
+  /** D-3：敏感性召回降权乘子（R11，clamp [0,1]；缺省 0=关断恒等）。 */
+  sensitivityPenalty: number;
   reinforcementWeight: number;
   moodBoost: number;
   /**
@@ -384,6 +386,8 @@ export interface MemoryLifecycleConfig {
     minAgeDays: number;
     /** P2（F14）：refs 遗忘保护——coreRefs/personRefs/identityRefs 命中仍有效锚或现行身份事实的记录不进归档候选（缺省 false=逐位现状）。 */
     refProtection: boolean;
+    /** D-3：敏感偏置——敏感记忆（≠none）整体分值 ×(1-bias)，缺省 0=逐位现状。 */
+    sensitivityBias: number;
   };
   /** P3-F13：反思触发（Generative Agents 对标；enabled 缺省 false=逐位现状）。 */
   reflection: {
@@ -1023,6 +1027,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       enabled: bool(lifecycleForgettingGroup, "enabled") ?? true,
       lambda: num(lifecycleForgettingGroup, "lambda") ?? 0.01,
       arousalRetention: Math.min(0.9, Math.max(0, num(lifecycleForgettingGroup, "arousalRetention") ?? 0)),
+      // D-3（2026-09-21）：敏感性遗忘偏置——敏感记忆（≠none）整体分值 ×(1-bias)，更早归档。缺省 0=逐位现状。
+      sensitivityBias: Math.min(1, Math.max(0, num(lifecycleForgettingGroup, "sensitivityBias") ?? 0)),
       lowThreshold: num(lifecycleForgettingGroup, "lowThreshold") ?? 0.12,
       minAgeDays: num(lifecycleForgettingGroup, "minAgeDays") ?? 30,
       // P2（F14）：refs 遗忘保护开关（缺省 false=逐位现状）
@@ -1130,6 +1136,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       recencyBoost: recallSignalBoost(recallGroup, "recencyBoost", 0.03),
       sigWeight: recallSignalBoost(recallGroup, "sigWeight", 0.03),
       inferredPenalty: recallSignalBoost(recallGroup, "inferredPenalty", 0.1, 1),
+      // D-3（2026-09-21）：敏感性召回降权乘子（R11）——缺省 0=关断恒等（逐位现状）。
+      sensitivityPenalty: recallSignalBoost(recallGroup, "sensitivityPenalty", 0, 1),
       reinforcementWeight: recallSignalBoost(recallGroup, "reinforcementWeight", 0.03),
       moodBoost: recallSignalBoost(recallGroup, "moodBoost", 0),
       // R-A2（spec §2 R4/R6）：候选池通道开关（clamp 模式；graph 两旋钮为比值 clamp [0,1]）

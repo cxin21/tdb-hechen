@@ -1268,6 +1268,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
               timestamp_str: r.timestamp_str,
               timestamp_start: r.timestamp_start,
               timestamp_end: r.timestamp_end,
+              // D-3：敏感性枚举透传（内核 atomic/query 已返回）
+              sensitivity: r.sensitivity,
               updated_at: (typeof r.updated_at === "string" && r.updated_at) || msToIso(r.updated_time_ms) || undefined,
               // metadata 透传（C1：coreRefs / recall_count 落库在 metadata_json）。
               // 前向兼容：网关 /v3/atomic/query 今日出参映射不含 metadata（见任务报告

@@ -32,6 +32,8 @@ export interface RankSignalItem {
   metadata?: Record<string, unknown>;
   /** R-A2（R6）：场景路由检测源（buildRankContext items 合同）。 */
   scene_name?: string | null;
+  /** D-3：敏感性枚举（none/health/finance/relationship；缺省 none=无降权）。 */
+  sensitivity?: string;
 }
 
 /**
@@ -54,6 +56,8 @@ export interface RankSignals {
   /** GROW-EVO P3 R10（§3.2）：情感显著度 |valence|×arousal 加成权重（实验轨——缺省 0 =
    *  恒等；进预注册 A/B 队列，未过 A/B 不得置正。判官/抽取器同源偏差 → 永不单独放行）。 */
   emotionSalienceWeight: number;
+  /** D-3（R11）：敏感记忆 rankKey 乘法降权（缺省 0=关断恒等）。 */
+  sensitivityPenalty: number;
 }
 
 export const DEFAULT_RANK_SIGNALS: RankSignals = {
@@ -64,6 +68,7 @@ export const DEFAULT_RANK_SIGNALS: RankSignals = {
   reinforcementWeight: 0.03,
   moodBoost: 0,
   emotionSalienceWeight: 0,
+  sensitivityPenalty: 0,
 };
 
 /** 全 0 常量：关断矩阵锚点（结构上即"所有通道退出"）。 */
@@ -75,6 +80,7 @@ export const ZERO_RANK_SIGNALS: RankSignals = {
   reinforcementWeight: 0,
   moodBoost: 0,
   emotionSalienceWeight: 0,
+  sensitivityPenalty: 0,
 };
 
 const DAY_MS = 86_400_000;
@@ -151,6 +157,17 @@ export function significanceSignalOf(item: RankSignalItem, weight: number): numb
 export function certaintyMultiplierOf(item: RankSignalItem, penalty: number): number {
   if (!(penalty > 0)) return 1;
   return item.certainty === "inferred" ? 1 - penalty : 1;
+}
+
+/**
+ * D-3（2026-09-21）：敏感性召回降权乘子（R11）——sensitivity≠none 的记忆 rankKey 乘
+ * (1 - penalty)。penalty=0 → 恒 1（缺省关断=逐位现状）；none/缺失 → 1。
+ * 语义=敏感记忆在非直接相关查询中默认殿后（产品红线：健康/财务/关系信息不当外泄面）。
+ */
+export function sensitivityMultiplierOf(item: RankSignalItem, penalty: number): number {
+  if (!(penalty > 0)) return 1;
+  const s = item.sensitivity;
+  return s && s !== "none" ? 1 - penalty : 1;
 }
 
 // ============================

@@ -37,6 +37,7 @@ import {
 import { PPR_DEFAULTS, runPPRDetail } from "../recall/ppr.js";
 import { emotionSalienceOf, buildRankContext,
   certaintyMultiplierOf,
+  sensitivityMultiplierOf,
   DEFAULT_RANK_SIGNALS,
   detectSceneHit,
   sceneSignalOf,
@@ -563,6 +564,8 @@ export async function performLayeredRecall(params: {
         reinforcementWeight: cfg.recall?.reinforcementWeight ?? DEFAULT_RANK_SIGNALS.reinforcementWeight,
         moodBoost: cfg.recall?.moodBoost ?? DEFAULT_RANK_SIGNALS.moodBoost,
         emotionSalienceWeight: cfg.recall?.emotionSalienceWeight ?? DEFAULT_RANK_SIGNALS.emotionSalienceWeight,
+        // D-3：敏感性降权（缺省 0=关断恒等）
+        sensitivityPenalty: cfg.recall?.sensitivityPenalty ?? DEFAULT_RANK_SIGNALS.sensitivityPenalty,
       };
       const signalsActive =
         signals.timeBoost > 0 ||
@@ -571,7 +574,8 @@ export async function performLayeredRecall(params: {
         signals.inferredPenalty > 0 ||
         signals.reinforcementWeight > 0 ||
         signals.moodBoost > 0 ||
-        signals.emotionSalienceWeight > 0;
+        signals.emotionSalienceWeight > 0 ||
+        signals.sensitivityPenalty > 0;
       const needValues = coreRefBoost > 0 || signals.moodBoost > 0;
       // R-A2：候选池通道开关（cfg.recall；缺省 = spec §2 默认值，0 = 通道退出）
       const graphDiscount = cfg.recall?.graphDiscount ?? 0.6;
@@ -1516,7 +1520,9 @@ export async function searchHybrid(
     signalCtx && src
       ? {
           signal: structuralSignalOf(src, signalCtx),
-          mult: certaintyMultiplierOf(src, signalCtx.signals.inferredPenalty),
+          mult:
+            certaintyMultiplierOf(src, signalCtx.signals.inferredPenalty) *
+            sensitivityMultiplierOf(src, signalCtx.signals.sensitivityPenalty ?? 0),
         }
       : { signal: 0, mult: 1 };
 
@@ -1578,6 +1584,7 @@ export async function searchHybrid(
             certainty: kwSoul.certainty || undefined,
             valence: kwSoul.valence,
             significance: kwSoul.significance,
+            sensitivity: (kwSoul as { sensitivity?: string }).sensitivity,
           } : {}),
         },
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
@@ -1604,6 +1611,7 @@ export async function searchHybrid(
       certainty: r.certainty,
       valence: r.valence,
       significance: r.significance,
+      sensitivity: (r as { sensitivity?: string }).sensitivity,
       metadata: embMeta,
     });
     const existing = mergedMap.get(id);
@@ -1964,6 +1972,8 @@ interface FormatableMemory {
   certainty?: string;
   valence?: number;
   significance?: number;
+  /** D-3：敏感性（none 不标注；health/finance/relationship → 徽章）。 */
+  sensitivity?: string;
   /** R-A2：候选池通道标注（"graph:kind" / "value:锚"；主检索命中恒缺省）。 */
   recall_channel?: string;
 }
@@ -2009,6 +2019,11 @@ export function formatMemoryLine(m: FormatableMemory): string {
   if (m.certainty) soul.push(m.certainty === "inferred" ? "推断" : "实见");
   if (m.valence != null) soul.push(`情感 ${m.valence.toFixed(1)}`);
   if (m.significance != null) soul.push(`重要度 ${m.significance.toFixed(2)}`);
+  // D-3：敏感性徽章（none/缺失 → 不标注；宁缺毋滥）
+  const SENS_LABEL: Record<string, string> = { health: "健康", finance: "财务", relationship: "关系" };
+  if (m.sensitivity && m.sensitivity !== "none" && SENS_LABEL[m.sensitivity]) {
+    soul.push(`敏感:${SENS_LABEL[m.sensitivity]}`);
+  }
   if (soul.length > 0) line += ` ·soul[${soul.join(" · ")}]`;
 
   // R-A2：候选池通道标注（诚实原则——关联召回自证身份，LLM 可见）。

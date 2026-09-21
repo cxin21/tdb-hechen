@@ -110,6 +110,8 @@ export interface L1SearchResult {
   valence?: number;
   arousal?: number;
   significance?: number;
+  /** D-3：敏感性枚举（none/health/finance/relationship）。 */
+  sensitivity?: string;
 }
 
 /** Result from an L1 FTS keyword search. */
@@ -188,6 +190,7 @@ export interface L1RecordRow {
   valence?: number;
   arousal?: number;
   significance?: number;
+  sensitivity?: string;
 }
 
 // ============================

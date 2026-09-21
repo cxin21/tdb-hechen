@@ -9,6 +9,9 @@ export const SOUL_COLUMNS = [
   { name: "valence",      sqlType: "REAL", ftsSuffix: "UNINDEXED" },
   { name: "arousal",      sqlType: "REAL", ftsSuffix: "UNINDEXED" },
   { name: "significance", sqlType: "REAL", ftsSuffix: "UNINDEXED" },
+  // D-3（2026-09-21，用户拍板"全做"）：敏感性枚举 none/health/finance/relationship（缺省 none）。
+  // 消费方=召回降权门（sensitivityPenalty）/遗忘敏感偏置（sensitivityBias）/注入行徽章/UI 属性表。
+  { name: "sensitivity", sqlType: "TEXT", ftsSuffix: "UNINDEXED" },
 ] as const;
 export type SoulColumnName = (typeof SOUL_COLUMNS)[number]["name"];
 export const SOUL_COL_NAMES: SoulColumnName[] = SOUL_COLUMNS.map((c) => c.name);

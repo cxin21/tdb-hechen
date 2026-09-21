@@ -55,6 +55,8 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
     push('timestamp_str', item.timestamp_str);
     push('timestamp_start', item.timestamp_start);
     push('timestamp_end', item.timestamp_end);
+    // D-3：敏感性枚举（none/health/finance/relationship）
+    push('sensitivity', item.sensitivity);
     push('recall_count', meta.recall_count);
     push('last_recalled_at', meta.last_recalled_at);
     push('subject', meta.subject);

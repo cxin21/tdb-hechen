@@ -164,6 +164,8 @@ describe("structuralSignalOf 关断矩阵（全 0 → 恒 0）", () => {
       moodBoost: 0,
       // R10（REG-R10-AB-001）：情感显著度信号默认关断（A/B 未过不得置正，实验轨红线）。
       emotionSalienceWeight: 0,
+      // D-3（R11）：敏感降权默认关断（gated，缺省 0=逐位现状）。
+      sensitivityPenalty: 0,
     });
   });
 });

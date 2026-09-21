@@ -13,6 +13,8 @@ export interface ForgettingConfig {
   /** GROW-EVO P3（§3.1）：闪光灯记忆调制 k——effectiveλ = λ×(1-k×arousal)。
    *  缺省 0 = 逐位现状；生产 0.3。config 解析层 clamp [0, 0.9]（防 λ→0/负）。 */
   arousalRetention: number;
+  /** D-3（2026-09-21）：敏感偏置——敏感记忆（≠none）整体分值 ×(1-bias)，缺省 0=关断。 */
+  sensitivityBias?: number;
   /** 归档分数阈值：低于此值且 age 超 minAgeDays 才归档 */
   lowThreshold: number;
   /** 至少经过多少天才可归档（防刚写就归档） */
@@ -29,6 +31,7 @@ export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
   enabled: true,
   lambda: 0.01,
   arousalRetention: 0,
+  sensitivityBias: 0,
   lowThreshold: 0.12,
   minAgeDays: 30,
   maxPerRun: 100,
@@ -137,7 +140,14 @@ export function scoreFor(m: MemoryRecord, cfg: ForgettingConfig = DEFAULT_FORGET
   // GROW-EVO P3（§3.1）：闪光灯调制——effectiveλ = λ×(1-k×arousal)，高唤醒衰减更慢。
   // k 缺省 0 → 恒等（逐位现状）；双 0.9 上限防 λ→0/负（clamp 在 config 解析层，此处再防）。
   const effectiveLambda = cfg.lambda * (1 - Math.min(0.9, cfg.arousalRetention) * arousalOf(m));
-  return Math.min(1, significanceOf(m) * priorityOf(m) * decay(ageDaysOf(m, now), effectiveLambda) + recallCountBoost(m));
+  const base = significanceOf(m) * priorityOf(m) * decay(ageDaysOf(m, now), effectiveLambda) + recallCountBoost(m);
+  // D-3：敏感偏置（gated；bias=0 或 none → 恒等）
+  const bias = cfg.sensitivityBias ?? 0;
+  if (bias > 0) {
+    const s = (m as unknown as { sensitivity?: string }).sensitivity;
+    if (s && s !== "none") return Math.min(1, base * (1 - bias));
+  }
+  return Math.min(1, base);
 }
 
 export type ForgetAction = "keep" | "archive";

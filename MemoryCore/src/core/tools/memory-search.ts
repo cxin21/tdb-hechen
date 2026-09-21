@@ -922,7 +922,8 @@ export async function executeMemorySearch(params: {
     emotionSalienceWeight = 0,
     rerankWeights,
   } = params;
-  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight };
+  // D-3：敏感性降权（缺省 0=关断恒等）
+  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight, sensitivityPenalty: DEFAULT_RANK_SIGNALS.sensitivityPenalty };
 
   logger?.debug?.(
     `${TAG} CALLED: query="${query.slice(0, 100)}", limit=${limit}, ` +

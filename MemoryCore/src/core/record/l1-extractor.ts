@@ -13,6 +13,9 @@
  */
 
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
+
+// D-3（2026-09-21）：敏感性枚举白名单（确定性门——LLM 只提议，非法值裁决为 none）
+const SENSITIVITY_ENUM = new Set(["none", "health", "finance", "relationship"]);
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
@@ -67,6 +70,8 @@ interface SceneSegment {
     valence?: number;
     arousal?: number;
     significance?: number;
+    /** D-3：敏感性枚举（提取门缺省关=不输出；开启时经确定性校验）。 */
+    sensitivity?: string;
   }>;
 }
 
@@ -264,6 +269,10 @@ export async function extractL1Memories(params: {
         valence: mem.valence,
         arousal: mem.arousal,
         significance: mem.significance,
+        // D-3 确定性枚举门：仅白名单放行，非法/缺失 → none（LLM 只提议，代码裁决）
+        sensitivity: SENSITIVITY_ENUM.has(String((mem as { sensitivity?: string }).sensitivity ?? "none"))
+          ? (String((mem as { sensitivity?: string }).sensitivity) as "none" | "health" | "finance" | "relationship")
+          : "none",
       });
     }
   }
@@ -540,8 +549,12 @@ async function callLlmExtraction(params: {
       ?.coreMemory?.selfIdentity?.enabled === true ||
     (config as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
       ?.coreMemory?.selfIdentity?.enabled === true;
+  // D-3（2026-09-21）：敏感性标注（gated，缺省关闭=逐位现状）
+  const sensitivityEnabled =
+    (memoryConfig as { sensitivity?: { extractionEnabled?: boolean } } | undefined)
+      ?.sensitivity?.extractionEnabled === true;
   const systemPrompt = composeMemorySystemPrompt(
-    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled }),
+    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled }),
     memoryPrompt,
   );
   // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取

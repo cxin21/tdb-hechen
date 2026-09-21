@@ -115,6 +115,8 @@ export interface ChatMemoryLayerItem {
   timestamp_str?: string;
   timestamp_start?: string;
   timestamp_end?: string;
+  /** D-3：敏感性枚举（内核 atomic/query 已返回；缺省 = 上游未返回） */
+  sensitivity?: string;
 }
 
 /** L1 语义搜索命中项：在分层条目基础上附带相关度 score（越大越相关） */

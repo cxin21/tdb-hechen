@@ -57,6 +57,8 @@ export function handleAtomicQueryShape(r: RowLike): Record<string, unknown> {
     timestamp_str: text(r.timestamp_str),
     timestamp_start: text(r.timestamp_start),
     timestamp_end: text(r.timestamp_end),
+    // D-3：敏感性枚举透传（UI 属性表/徽章）
+    sensitivity: text(r.sensitivity),
   };
 }
 
@@ -104,5 +106,6 @@ export function handleAtomicSearchShape(r: RowLike): Record<string, unknown> {
     metadata: r.metadata,
     scene_name: text(r.scene_name),
     priority: numOrUndef(r.priority),
+    sensitivity: text(r.sensitivity),
   };
 }

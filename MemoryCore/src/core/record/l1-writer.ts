@@ -137,6 +137,8 @@ export interface ExtractedMemory {
   valence?: number;
   arousal?: number;
   significance?: number;
+  /** D-3：敏感性枚举（确定性门裁决后值）。 */
+  sensitivity?: string;
 }
 
 export type DedupAction = "store" | "update" | "merge" | "skip" | "conflict";

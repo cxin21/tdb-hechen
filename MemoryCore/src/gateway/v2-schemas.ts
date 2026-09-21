@@ -164,6 +164,8 @@ export interface AtomicDetail extends GeneratedAtomicDetail {
   timestamp_str?: string;
   timestamp_start?: string;
   timestamp_end?: string;
+  /** D-3：敏感性枚举。 */
+  sensitivity?: string;
 }
 
 export interface AtomicQueryData {
