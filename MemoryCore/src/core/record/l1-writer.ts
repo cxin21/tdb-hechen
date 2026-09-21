@@ -312,6 +312,8 @@ export async function writeMemory(params: {
   if (soulPatch.arousal != null) record.arousal = soulPatch.arousal;
   if (soulPatch.significance != null) record.significance = soulPatch.significance;
 
+  // D-3：敏感缺省合标（undefined→none，防 update/merge 路径旁路产生 NULL）
+  if (!record.sensitivity) record.sensitivity = "none";
   // P0 · soul 字段 100% 合标（设计 §7 要求每条必填）：无显式时间→取提取时刻；
   // source 缺→'extraction'；情感/重要度缺→中性默认。放在写入唯一 choke point，保证满列。
   if (!record.occurred_at) record.occurred_at = record.createdAt || new Date().toISOString();
