@@ -72,9 +72,9 @@ describe('D-2: collectPersonEvidence', () => {
 
 describe('D-2b (V-02 P0): maskSecrets —— 证据链凭据掩码（用户红线：截图即泄露）', () => {
   it('长 token 掩码中段，保留前 4 后 4', () => {
-    const key = 'sk-abc123def456ghi789jkl012mno345';
+    const key = 'DEMO-abc123def456ghi789jkl012mno345';
     const out = maskSecrets(`读取配置 key=${key} 并写入`);
-    expect(out).toContain('sk-a');
+    expect(out).toContain('DEMO');
     expect(out).toContain('o345');
     expect(out).not.toContain('def456');
     expect(out).not.toContain(key);
