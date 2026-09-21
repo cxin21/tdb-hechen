@@ -541,15 +541,20 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
   return (
     <div className="_va-panel">
       <div className="_va-header">
-        <Select
-          appearance="button"
-          matchButtonWidth
-          value={agentId}
-          onChange={setAgentId}
-          disabled={ownedAgents.length === 0}
-          placeholder={t('memory.noAgent')}
-          options={ownedAgents.map((a) => ({ value: a.agent_id, text: `${a.name}（${a.agent_id}）` }))}
-        />
+        {/* UI 2.1c（2026-09-22，用户指令"直接去掉"）：SoulPage 复用（blockIdOverride）时内嵌
+            agent 下拉为死控件——页级选择器接管 blockId，内嵌 setAgentId 不再驱动任何数据面。
+            去除之，agent 切换唯一入口=页级选择器；ChatMemoryPage 缺省挂载逐位保留。 */}
+        {!props.blockIdOverride && (
+          <Select
+            appearance="button"
+            matchButtonWidth
+            value={agentId}
+            onChange={setAgentId}
+            disabled={ownedAgents.length === 0}
+            placeholder={t('memory.noAgent')}
+            options={ownedAgents.map((a) => ({ value: a.agent_id, text: `${a.name}（${a.agent_id}）` }))}
+          />
+        )}
         <div className="_va-header-actions">
           <Button
             type="primary"
