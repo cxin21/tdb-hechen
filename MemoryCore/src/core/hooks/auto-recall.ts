@@ -2217,5 +2217,7 @@ function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     certainty: r.certainty || undefined,
     valence: r.valence,
     significance: r.significance,
+    // D-3：敏感性透传（FTS 路 formatable——SELECT 已带出、此前映射丢弃）
+    sensitivity: (r as { sensitivity?: string }).sensitivity || undefined,
   };
 }

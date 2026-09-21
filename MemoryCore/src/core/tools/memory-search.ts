@@ -1454,6 +1454,10 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
     if (m.certainty) soul.push(m.certainty === "inferred" ? "推断" : "实见");
     if (m.valence != null) soul.push(`情感 ${m.valence.toFixed(1)}`);
     if (m.significance != null) soul.push(`重要 ${m.significance.toFixed(2)}`);
+    // D-3：敏感性徽章（工具路 summary 行；与注入行同语义）
+    const sens = (item as { sensitivity?: string }).sensitivity;
+    const SENS_LABEL: Record<string, string> = { health: "健康", finance: "财务", relationship: "关系" };
+    if (sens && sens !== "none" && SENS_LABEL[sens]) soul.push(`敏感:${SENS_LABEL[sens]}`);
     if (soul.length > 0) lines.push(`  · ${soul.join(" · ")}`);
     // C1（灵魂记忆 spec §2.2 展示层）：`·触[价值]` 尾注——只显示本轮 appraisal
     // 相关的 coreRefs（executeMemorySearch 已算好交集；空/缺省不输出，宁缺毋滥）。
