@@ -2183,6 +2183,8 @@ function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     certainty: r.certainty || undefined,
     valence: r.valence,
     significance: r.significance,
+    // D-3：敏感性透传（向量路徽章渲染——与 FTS 路 kwSoul spread 对齐）
+    sensitivity: (r as { sensitivity?: string }).sensitivity || undefined,
   };
 }
 
