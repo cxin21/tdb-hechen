@@ -14,6 +14,12 @@ import { chatMemoryApi } from '@/lib/teamApi';
 import { createPathRequestController } from './path-request';
 import type { PathState } from './path-request';
 
+/** Phase 2（拍板③）：边类型着色白名单（与记忆图 EDGE_COLORS 同 hex；未知类型默认灰）。 */
+const EDGE_CLS: Record<string, string> = { similar: 'similar', evolve: 'evolve', conflict: 'conflict', derived_from: 'derived_from', part_of: 'part_of', causal: 'causal' };
+function edgeCls(t: string): string {
+  return EDGE_CLS[t] ?? 'other';
+}
+
 export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: string }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -63,6 +69,16 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
       <button type="button" className="_soul-chip _soul-chip--neighbors" onClick={() => setOpen((v) => !v)}>
         🔗 相关记忆{neighbors.length > 0 ? ` (${neighbors.length})` : ''}
       </button>
+      {/* Phase 2：边类型图例（与记忆图配色一致；derived_from 绿为 Phase 2 增补） */}
+      {open && (
+        <div className="_nb-legend">
+          <span><i className="_nb-dot" style={{ background: '#5b6bff' }} />similar</span>
+          <span><i className="_nb-dot" style={{ background: '#1a9d63' }} />evolve</span>
+          <span><i className="_nb-dot" style={{ background: '#e5484d' }} />conflict</span>
+          <span><i className="_nb-dot" style={{ background: '#16a34a' }} />derived_from</span>
+          <span><i className="_nb-dot" style={{ background: '#8b5cf6' }} />part_of</span>
+        </div>
+      )}
       {open && (
         <ul className="_memory-detail-atomic-neighbors-list">
           {loading ? (
@@ -72,7 +88,7 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
           ) : (
             neighbors.map((n) => (
               <li key={n.id} className="_memory-detail-atomic-neighbor">
-                <span className="_nb-edge">{n.type}</span>
+                <span className={`_nb-edge _nb-edge--${edgeCls(n.type)}`}>{n.type}</span>
                 <span className="_nb-content">{n.content ?? n.id}</span>
                 {typeof n.strength === 'number' ? (
                   <span className="_nb-strength">{n.strength.toFixed(1)}</span>
@@ -99,7 +115,7 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
           <ol className="_nb-path-list">
             {path.chain.map((node, i) => (
               <li key={`${node.id}-${i}`} className="_nb-path-node">
-                <span className="_nb-edge">
+                <span className={`_nb-edge _nb-edge--${edgeCls(node.type)}`}>
                   {node.type}
                   {typeof node.strength === 'number' ? ` · ${node.strength.toFixed(1)}` : ''}
                 </span>

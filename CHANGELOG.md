@@ -16,6 +16,13 @@
 - **ValueAnchorsPanel 复用改造**：新增可选 `blockIdOverride`（页级注入 blockId）与 `hideIdentityPending`（SoulPage 页级渲染身份/裁决避免重复）；缺省逐位现状（ChatMemoryPage 挂载不变）。
 - 路由 `/soul` + 菜单「灵魂 Soul」（资产组 order 6）+ i18n（zh/en）soul.* 键族。数据零新端点（blockId=chat_memory-{team}-{agent} 确定性组合）。
 
+### Phase 2（记忆页属性与关系全景）
+
+- **BFF 属性全景透传**：/chat-memory/layer|search 出参补 `task_id/team_id/user_id/agent_id/version/updated_at`（内核 atomic/query 已返回；scene_name/priority/session/timestamp×3 内核今日不出参——诚实缺列，内核补映射后自动呈现）。
+- **AttributesSection（新）**：L1 详情「🧬 属性」折叠表——双时态/认识论/情感与重要度/版本与演化（evolution.from·reason）/租户与任务/召回统计/主题与证据（subject/evidence_ids）分组键值表 + 「复制 JSON」（clipboard 缺省时 execCommand 兜底，http 面板可用）。
+- **RelatedSection 边类型着色+图例**：邻居行/关联链 type 色标（similar 蓝 #5b6bff / evolve 绿 #1a9d63 / conflict 红 #e5484d / **derived_from 绿 #16a34a（Phase 2 增补）** / part_of 紫 #8b5cf6 / causal 橙）+ 展开段图例，与记忆图配色一致；记忆图本体已有五色边映射+图例（U-B1）——登记勿重做。
+- 门禁：web tsc 2 存量错不新增；vite build 成功；面板 vitest 112/112 持平。
+
 ### Verified
 
 - 面板 vitest 112/112 持平；web vite build 成功；web tsc 2 存量错不新增（SoulPage ResourcePage import 漏项即修）。

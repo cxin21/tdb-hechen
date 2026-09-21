@@ -1252,6 +1252,14 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
               valence: r.valence,
               arousal: r.arousal,
               significance: r.significance,
+              // Phase 2（UI 2.0 拍板③）：属性全景透传（内核 atomic/query 已返回）——
+              // scene_name/priority/session/timestamp×3 内核今日不出参，诚实缺列（UI 宁缺毋滥）。
+              task_id: r.task_id,
+              team_id: r.team_id,
+              user_id: r.user_id,
+              agent_id: r.agent_id,
+              version: r.version,
+              updated_at: (typeof r.updated_at === "string" && r.updated_at) || msToIso(r.updated_time_ms) || undefined,
               // metadata 透传（C1：coreRefs / recall_count 落库在 metadata_json）。
               // 前向兼容：网关 /v3/atomic/query 今日出参映射不含 metadata（见任务报告
               // concern-1），此处拿到即带出、拿不到为 undefined，UI 侧宁缺毋滥。
@@ -2775,6 +2783,13 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         valence: r.valence,
         arousal: r.arousal,
         significance: r.significance,
+        // Phase 2（UI 2.0 拍板③）：属性全景透传（同 layer；内核今日不出参的字段诚实缺列）。
+        task_id: r.task_id,
+        team_id: r.team_id,
+        user_id: r.user_id,
+        agent_id: r.agent_id,
+        version: r.version,
+        updated_at: (typeof r.updated_at === "string" && r.updated_at) || msToIso(r.updated_time_ms) || undefined,
         metadata: r.metadata,
         created_at:
           (typeof r.created_at === "string" && r.created_at) ||

@@ -100,6 +100,13 @@ export interface ChatMemoryLayerItem {
   significance?: number;
   /** L1 行 metadata（价值锚 coreRefs / 回忆统计 recall_count）；缺省 = 上游未返回 */
   metadata?: ChatMemoryLayerMetadata;
+  // Phase 2（UI 2.0 拍板③）：属性全景透传（内核 atomic/query 已返回；缺省 = 上游未返回）
+  task_id?: string;
+  team_id?: string;
+  user_id?: string;
+  agent_id?: string;
+  version?: number;
+  updated_at?: string;
 }
 
 /** L1 语义搜索命中项：在分层条目基础上附带相关度 score（越大越相关） */

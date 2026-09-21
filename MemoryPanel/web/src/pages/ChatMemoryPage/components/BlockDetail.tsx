@@ -9,6 +9,7 @@ import { useLayers } from '../constants/constants';
 import { getLayerCount, stripAtMention, extractRole, formatDisplayTime } from '../utils/utils';
 import { stripScenarioMeta, copyToClipboard } from '../utils/memory-utils';
 import { SoulSection } from './block-detail/SoulSection';
+import { AttributesSection } from './block-detail/AttributesSection';
 import { RelatedSection } from './block-detail/RelatedSection';
 import { buildSoulView } from './block-detail/soul-utils';
 import { useUserDisplayName } from '@/services/user-profile-store';
@@ -198,6 +199,8 @@ function AtomicHead({
       {/* 灵魂区（U-A1，S2 拆分）：灵魂数据展示段平移至 SoulSection 组件，
           行为不变、渲染重排（补 valence 双色条/强度·重要性进度条/有效期/上次回忆）。 */}
       <SoulSection soul={buildSoulView(item)} durative={item.title === 'work_fact'} />
+      {/* UI 2.0 Phase 2（拍板③）：19 列属性表（可得字段全透传，缺列诚实；折叠段宁缺毋滥） */}
+      {layer === 'L1' ? <AttributesSection item={item} /> : null}
       {blockId && layer === 'L1' ? <RelatedSection blockId={blockId} itemId={item.id} /> : null}
       <span className="_memory-detail-atomic-head-right">
         {time && (
