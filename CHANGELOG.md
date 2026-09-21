@@ -19,6 +19,7 @@
 ### Verified
 
 - 面板 vitest 112/112 持平；web vite build 成功；web tsc 2 存量错不新增（SoulPage ResourcePage import 漏项即修）。
+- **页签无响应修复（用户实测反馈）**：ConsoleLayout `PATH_TO_PAGE` 缺 `/soul` 注册 → 菜单点击 `PAGE_TO_PATH['soul']`=undefined 不导航、activePage 回退 chat_memory。补 `/soul`+legacy 别名，重建重启后活体 DOM 断言全绿（页头/三卡/双槽三标题/感受段真实数据「驱动：SDD、管线、spec · 审慎：审计、回归、评审」/配额 15/15·1/8·0/8/VAP 16 行/pending 20 对）。教训：**新增一级页完整注册面 = routes + menu(union/meta/icon) + ConsoleLayout PATH_TO_PAGE 四处，缺一即页签无响应**。
 
 ---
 ## 🧬 A-7b 证据指针（用户拍板，2026-09-20）——身份支撑从"字面找回"升级为"确定性引用"
