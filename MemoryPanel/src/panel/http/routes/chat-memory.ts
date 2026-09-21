@@ -1252,13 +1252,22 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
               valence: r.valence,
               arousal: r.arousal,
               significance: r.significance,
-              // Phase 2（UI 2.0 拍板③）：属性全景透传（内核 atomic/query 已返回）——
-              // scene_name/priority/session/timestamp×3 内核今日不出参，诚实缺列（UI 宁缺毋滥）。
+              // Phase 2（UI 2.0 拍板③）+ D-0（2026-09-21）：属性全景透传。
+              // 内核 /v3/atomic/query 已补齐 7 字段（atomic-query-fields.ts 单一源），
+              // BFF 同步透传——诚实缺列注释作废，UI 属性表全列呈现。
               task_id: r.task_id,
               team_id: r.team_id,
               user_id: r.user_id,
               agent_id: r.agent_id,
               version: r.version,
+              // D-0：七列透传（scene_name/priority/session×2/timestamp×3）
+              scene_name: r.scene_name,
+              priority: r.priority,
+              session_key: r.session_key,
+              session_id: r.session_id,
+              timestamp_str: r.timestamp_str,
+              timestamp_start: r.timestamp_start,
+              timestamp_end: r.timestamp_end,
               updated_at: (typeof r.updated_at === "string" && r.updated_at) || msToIso(r.updated_time_ms) || undefined,
               // metadata 透传（C1：coreRefs / recall_count 落库在 metadata_json）。
               // 前向兼容：网关 /v3/atomic/query 今日出参映射不含 metadata（见任务报告

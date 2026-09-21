@@ -107,6 +107,14 @@ export interface ChatMemoryLayerItem {
   agent_id?: string;
   version?: number;
   updated_at?: string;
+  // D-0（2026-09-21）：内核出参 7 字段补齐后的透传列（缺省 = 上游未返回）
+  scene_name?: string;
+  priority?: number;
+  session_key?: string;
+  session_id?: string;
+  timestamp_str?: string;
+  timestamp_start?: string;
+  timestamp_end?: string;
 }
 
 /** L1 语义搜索命中项：在分层条目基础上附带相关度 score（越大越相关） */

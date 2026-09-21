@@ -156,6 +156,14 @@ export interface AtomicDetail extends GeneratedAtomicDetail {
   task_id?: string;
   /** C1 面板透传：metadata（coreRefs/recall_count 等）供 UI 价值标签与徽标。 */
   metadata?: Record<string, unknown>;
+  /** D-0（2026-09-21，spec §4.1 十九列补齐）：映射单一源 atomic-query-fields.ts 同步七列。 */
+  scene_name?: string;
+  priority?: number;
+  session_key?: string;
+  session_id?: string;
+  timestamp_str?: string;
+  timestamp_start?: string;
+  timestamp_end?: string;
 }
 
 export interface AtomicQueryData {

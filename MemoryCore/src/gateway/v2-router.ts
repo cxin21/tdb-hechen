@@ -28,7 +28,7 @@ import { StoragePaths } from "../core/storage/types.js";
 import type { Logger } from "../core/types.js";
 import type { IStateBackend } from "../core/state/types.js";
 import type { PipelineWorker } from "../services/pipeline-worker.js";
-import { executeMemorySearch, parseMetadata } from "../core/tools/memory-search.js";
+import { executeMemorySearch } from "../core/tools/memory-search.js";
 import { executeConversationSearch } from "../core/tools/conversation-search.js";
 import { validateCoreWrite } from "../core/core-memory/guard.js";
 // Task DISC（提议制）：价值锚发现纯函数集（证据重算/weight 公式/去重/宽松解析/prompt 形状）
@@ -110,6 +110,8 @@ import {
   type TaskData,
 } from "./v2-schemas.js";
 import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
+// D-0（2026-09-21）：/v3/atomic/query 出参映射单一源——7 字段补齐 + 既有字段逐位。
+import { handleAtomicQueryShape } from "./atomic-query-fields.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
@@ -1269,27 +1271,11 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
       type, timeStart: time_start, timeEnd: time_end, limit, offset,
       teamId: iso?.teamId, userId: iso?.userId, agentId: iso?.agentId, taskId: iso?.taskId,
     });
-    const items: AtomicDetail[] = result.rows.map((r) => ({
-      id: r.record_id, type: r.type, content: r.content,
-      background: r.scene_name || undefined,
-      version: r.version ?? 0,
-      team_id: r.team_id,
-      user_id: r.user_id,
-      agent_id: r.agent_id,
-      task_id: r.task_id,
-      created_at: r.created_time, updated_at: r.updated_time,
-      // 灵魂字段透传（时空网格 UI 依赖）
-      occurred_at: (r as { occurred_at?: string }).occurred_at,
-      valid_start: (r as { valid_start?: string }).valid_start,
-      valid_end: (r as { valid_end?: string }).valid_end,
-      certainty: (r as { certainty?: string }).certainty,
-      source: (r as { source?: string }).source,
-      valence: (r as { valence?: number }).valence,
-      arousal: (r as { arousal?: number }).arousal,
-      significance: (r as { significance?: number }).significance,
-      // C1 面板透传：metadata.coreRefs/recall_count 供 UI 价值标签与徽标（纯增量）
-      metadata: parseMetadata((r as { metadata_json?: string }).metadata_json),
-    }));
+    // D-0：映射抽单一源 atomic-query-fields.ts（7 字段补齐 + 既有字段逐位），
+    // legacy fallback 同款共用（消双份内联映射漂移面）。
+    const items = result.rows.map((r) =>
+      handleAtomicQueryShape(r as unknown as Record<string, unknown>),
+    ) as unknown as AtomicDetail[];
     return successEnvelope<AtomicQueryData>({ items, total: result.total }, requestId);
   }
 
@@ -1307,27 +1293,10 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
   if (time_end) filtered = filtered.filter((r) => ((r as { occurred_at?: string }).occurred_at || "") !== "" && (r as { occurred_at?: string }).occurred_at! <= time_end);
   const total = filtered.length;
   const page = filtered.slice(offset, offset + limit);
-  const items: AtomicDetail[] = page.map((r) => ({
-    id: r.record_id, type: r.type, content: r.content,
-    background: r.scene_name || undefined,
-    version: r.version ?? 0,
-    team_id: r.team_id,
-    user_id: r.user_id,
-    agent_id: r.agent_id,
-    task_id: r.task_id,
-    created_at: r.created_time, updated_at: r.updated_time,
-    // 灵魂字段透传（时空网格 UI 依赖）
-    occurred_at: (r as { occurred_at?: string }).occurred_at,
-    valid_start: (r as { valid_start?: string }).valid_start,
-    valid_end: (r as { valid_end?: string }).valid_end,
-    certainty: (r as { certainty?: string }).certainty,
-    source: (r as { source?: string }).source,
-    valence: (r as { valence?: number }).valence,
-    arousal: (r as { arousal?: number }).arousal,
-    significance: (r as { significance?: number }).significance,
-    // C1 面板透传：metadata.coreRefs/recall_count 供 UI 价值标签与徽标（纯增量）
-    metadata: parseMetadata((r as { metadata_json?: string }).metadata_json),
-  }));
+  // D-0：legacy fallback 映射同走单一源（同 7 字段补齐，快慢路同契约）。
+  const items = page.map((r) =>
+    handleAtomicQueryShape(r as unknown as Record<string, unknown>),
+  ) as unknown as AtomicDetail[];
 
   return successEnvelope<AtomicQueryData>({ items, total }, requestId);
 }

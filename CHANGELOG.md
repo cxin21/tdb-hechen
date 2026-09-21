@@ -8,6 +8,16 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🔢 D-0：内核 atomic/query 出参七字段补齐——UI 属性表全列呈现（2026-09-21）
+
+### Fixed（MemoryCore + MemoryPanel）
+
+- **内核出参映射补齐 7 字段（spec §4.1 十九列硬令收口）**：`/v3/atomic/query` 出参补 `scene_name/priority/session_key/session_id/timestamp_str/timestamp_start/timestamp_end`——此前 `queryL1Paginated` SELECT（sqlite.ts:4766）已含全部列（真数据填充率 519-520/520）但 v2-router AtomicDetail 映射丢弃。修复=映射抽单一源 `atomic-query-fields.ts`（空串文本→undefined 宁缺毋滥；priority 数值照传），fast path（1276）与 legacy fallback（1297）双路同函数共用；v2-schemas AtomicDetail override 接口同步 7 可选字段。**审计纠错：移交文档"BFF 已前向兼容"假设不成立**——BFF chat-memory.ts 非 spread 映射，本轮三段同补（内核映射/BFF 透传/AttributesSection 补列），scene/priority/session/事件时间三组进属性表+复制 JSON。
+- **TDD**：RED 3 用例先行（七字段/既有字段逐位回归/空值 undefined）→ GREEN 3/3。
+- 门禁：MemoryCore vitest 654→657 全绿（+3 golden）· tsc 222 持平（stash 对照法实证：改动前 222/改动中 226/双跳转修复后 222）· 面板 vitest 112 持平 · vite build 成功 · web tsc 存量 2 不新增。
+- 活体验证（生产三元组 team-kcjjqzkxks/usr-kfym3ajzme/agt-kfynybx0ly）：`/v3/atomic/query` 出参七字段实值在场（scene_name=生产场景名/priority=98/session×2/timestamp×3）；四服务重启后 health=200。
+
+---
 ## 🎨 UI 2.0 Phase 1：灵魂一级页（用户拍板③，2026-09-20）
 
 ### Added（MemoryPanel/web）

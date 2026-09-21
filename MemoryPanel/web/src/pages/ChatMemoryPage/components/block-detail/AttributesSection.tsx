@@ -2,9 +2,10 @@
  * AttributesSection —— L1 记忆属性表（UI 2.0 Phase 2，拍板③；spec §4.1 十九列对齐）。
  *
  * 数据源：/chat-memory/layer|search 出参（896ee5d soul 字段 + Phase 2 BFF 补透传
- * task_id/team_id/user_id/agent_id/version/updated_at）。宁缺毋滥：内核出参映射今日
- * 不含 scene_name/priority/session_key/session_id/timestamp_str/start/end —— 诚实缺列
- *（内核补映射后自动呈现，前端不造假值）。折叠段默认收起；「复制 JSON」导出全部在场属性。
+ * task_id/team_id/user_id/agent_id/version/updated_at + D-0（2026-09-21）补透传
+ * scene_name/priority/session_key/session_id/timestamp_str/start/end——内核
+ * atomic-query-fields.ts 单一源已补齐七字段，全列呈现）。折叠段默认收起；
+ * 「复制 JSON」导出全部在场属性。
  */
 import { useMemo, useState } from 'react';
 import type { ChatMemoryLayerItem } from '@/lib/api/chat-memory';
@@ -46,6 +47,14 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
     push('task_id', item.task_id);
     push('created_at', item.created_at);
     push('updated_at', item.updated_at);
+    // D-0（spec §4.1 补齐七列）：场景/会话归属/事件时间三组
+    push('scene_name', item.scene_name);
+    push('priority', item.priority);
+    push('session_key', item.session_key);
+    push('session_id', item.session_id);
+    push('timestamp_str', item.timestamp_str);
+    push('timestamp_start', item.timestamp_start);
+    push('timestamp_end', item.timestamp_end);
     push('recall_count', meta.recall_count);
     push('last_recalled_at', meta.last_recalled_at);
     push('subject', meta.subject);
@@ -69,6 +78,10 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
       valence: item.valence, arousal: item.arousal, significance: item.significance,
       version: item.version, team_id: item.team_id, user_id: item.user_id,
       agent_id: item.agent_id, task_id: item.task_id,
+      scene_name: item.scene_name, priority: item.priority,
+      session_key: item.session_key, session_id: item.session_id,
+      timestamp_str: item.timestamp_str, timestamp_start: item.timestamp_start,
+      timestamp_end: item.timestamp_end,
       created_at: item.created_at, updated_at: item.updated_at, metadata: item.metadata,
     };
     const text = JSON.stringify(payload, null, 2);
