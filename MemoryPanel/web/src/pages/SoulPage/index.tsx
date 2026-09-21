@@ -110,7 +110,7 @@ export function SoulPage() {
               <div className="_soul-section-head">
                 <span className="_soul-section-title">价值锚（三池）</span>
               </div>
-              <ValueAnchorsPanel blockIdOverride={blockId} hideIdentityPending />
+              <ValueAnchorsPanel blockIdOverride={blockId} hideIdentityPending variant="soul" />
             </section>
           </>
         )}

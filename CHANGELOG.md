@@ -23,6 +23,8 @@
 
 ### Changed（MemoryPanel/web）
 
+- **三池锚 Tab 化 + kebab 收纳（P0 尾批，同轮追加）**：ValueAnchorsPanel 增 `variant?: 'panel'|'soul'` prop——`panel` 缺省逐位现状（ChatMemoryPage 活体回归零变化：quota 条+16 行四按钮+零 kebab/零 vtab DOM 断言）；`soul` 变体（仅 SoulPage 消费）：配额并入三池 Tab 标签（主题 15/15·人物 1/8·品格 0/8 计数内嵌）+ 每池行过滤 + 每行四操作（编辑/钉住/退休/删除）收 kebab ⋯ 菜单（危险项红色），敏感度预留位右置。真实浏览器双页验收+活体 DOM 断言。
+
 - **触发**：用户明示对 /soul 视觉不满意；并行召唤「UI 设计师 + UI 视觉验收设计师」双专家（设计重方案 + NO-GO 整改清单），P0 批由 AI 亲自编码实施（共享组件 IdentitySection/PendingSection 零改动——ChatMemoryPage 逐位现状）。
 - **IA 重排（信息零丢失映射）**：紧凑页头 56px（标题 18px + 副标题升维为 5 个锚点导航 pill + Agent 下拉同行居中）→ 全宽感受状态条 44px（原两行大卡降级；语义 pill 深色文字 #0a7f2e/#a04e0f 对 chip 底 ≥4.5:1——验收 V-01 整改）→ 12 栅格主列(8)+右栏(4, sticky)：身份双槽**双栏并排**（色点+徽标+bullet 首句加粗+行高 1.75+>12 行渐隐折叠「展开全文(n 字)」）与重要的人单卡行列表（32px 头像圆+role/方向/别名 chips+w 迷你条）+ 待裁决右栏分组折叠队列（采纳=蓝色小主按钮/拒绝=text 级 hover 红——20+ 对等权按钮轰炸整改）→ 全宽三池锚面板（本批复用零改动，Tab 化属下一批）。
 - **V-02（P0 安全）凭据掩码**：`maskSecrets` 单一源（显式 key=value/Bearer/长 token ≥24 位三规则，留前 4 后 4），PersonSection 证据链正文渲染前统一过掩码——**渲染即脱敏**（截图/快照/导出同步生效）。活体验证：证据行 10 条渲染、1 行含 ****** 掩码、零明文 sk- 泄漏。

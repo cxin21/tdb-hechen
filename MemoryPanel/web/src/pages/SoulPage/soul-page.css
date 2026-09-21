@@ -175,3 +175,31 @@
 ._spending-content { margin: 0; font-family: inherit; font-size: var(--soul-fz-meta); line-height: var(--soul-lh-body); color: var(--soul-text-1); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
 ._spending-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--soul-sp-2); margin-top: 6px; }
 ._spending-error { font-size: var(--soul-fz-meta); color: var(--soul-avoid); margin-top: var(--soul-sp-2); }
+
+/* ── UI 2.1 下一批（2026-09-21）：三池 Tab + kebab 收纳（soul 变体专用类；ChatMemoryPage 不加载本文件） ── */
+._va-vtab { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+._va-vtab-pill {
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--soul-border); background: var(--soul-card-bg); color: var(--soul-text-2);
+  font-size: var(--soul-fz-meta); cursor: pointer; transition: 150ms ease;
+}
+._soul-root ._va-vtab-pill:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+._soul-root ._va-vtab-pill--active { background: var(--soul-fill-muted); color: var(--soul-text-1); border-color: var(--soul-border); font-weight: 600; }
+._va-vtab-count { color: var(--soul-text-3); font-weight: 500; }
+._soul-root ._va-kebab {
+  width: 24px; height: 24px; border-radius: var(--soul-radius-btn); border: none; background: none;
+  color: var(--soul-text-3); font-size: 14px; cursor: pointer; line-height: 1;
+}
+._soul-root ._va-kebab:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+._va-kebab-menu {
+  display: flex; flex-direction: column; min-width: 96px; padding: 4px;
+  background: #fff; border: 1px solid var(--soul-border); border-radius: var(--soul-radius-inset);
+  box-shadow: 0 4px 12px rgba(23, 26, 31, 0.08);
+}
+._va-kebab-menu > button {
+  background: none; border: none; text-align: left; padding: 6px 10px; font-size: var(--soul-fz-meta);
+  color: var(--soul-text-2); cursor: pointer; border-radius: var(--soul-radius-btn); white-space: nowrap;
+}
+._va-kebab-menu > button:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+._va-kebab-menu > ._va-kebab-danger { color: var(--soul-avoid); }
+._va-kebab-menu > ._va-kebab-danger:hover { background: var(--soul-avoid-bg); color: var(--soul-avoid); }

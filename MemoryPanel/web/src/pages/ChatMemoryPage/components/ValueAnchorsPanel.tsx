@@ -23,7 +23,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Select } from 'tea-component';
+import { Button, Dropdown, Input, Select } from 'tea-component';
 import { readAuth } from '@/components/LoginGate';
 import { useAgents, useTeams } from '@/services';
 import { tea, confirmThenRun } from '@/lib/tea-bridge';
@@ -63,6 +63,7 @@ function clampWeight(n: number): number {
 /** 单行：来源徽标 + 钉住图标 + label/weight 行内编辑 + valence 微调 + 钉住/退休/删除。 */
 function ValueRow({
   anchor,
+  variant = 'panel',
   onSave,
   onValenceChange,
   onPin,
@@ -71,6 +72,8 @@ function ValueRow({
   onViewRelated,
 }: {
   anchor: ValueAnchor;
+  /** UI 2.1（2026-09-21）：'panel'=四 text 按钮逐位现状；'soul'=kebab 收纳（SoulPage 消费）。 */
+  variant?: 'panel' | 'soul';
   onSave: (valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } }) => Promise<void>;
   onValenceChange: (anchor: ValueAnchor, valence: number) => Promise<void>;
   onPin: (anchor: ValueAnchor, pinned: boolean) => Promise<void>;
@@ -218,25 +221,51 @@ function ValueRow({
               🔍 关联记忆
             </Button>
           )}
-          <Button type="text" onClick={() => setEditing(true)}>
-            {t('memory.anchors.edit')}
-          </Button>
-          <Button type="text" onClick={() => void onPin(anchor, !isPinned)}>
-            {isPinned ? t('memory.anchors.unpin') : t('memory.anchors.pin')}
-          </Button>
-          <Button type="text" onClick={() => void onRetire(anchor)}>
-            {t('memory.anchors.retire')}
-          </Button>
-          <Button type="text" className="_va-delete" onClick={() => onDelete(anchor)}>
-            {t('memory.anchors.delete')}
-          </Button>
+          {variant === 'soul' ? (
+            <Dropdown
+              appearance="pure"
+              button={<button type="button" className="_va-kebab" title="更多操作">⋯</button>}
+            >
+              {(close: () => void) => (
+                <div className="_va-kebab-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => { close(); setEditing(true); }}>
+                    {t('memory.anchors.edit')}
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { close(); void onPin(anchor, !isPinned); }}>
+                    {isPinned ? t('memory.anchors.unpin') : t('memory.anchors.pin')}
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { close(); void onRetire(anchor); }}>
+                    {t('memory.anchors.retire')}
+                  </button>
+                  <button type="button" role="menuitem" className="_va-kebab-danger" onClick={() => { close(); onDelete(anchor); }}>
+                    {t('memory.anchors.delete')}
+                  </button>
+                </div>
+              )}
+            </Dropdown>
+          ) : (
+            <>
+              <Button type="text" onClick={() => setEditing(true)}>
+                {t('memory.anchors.edit')}
+              </Button>
+              <Button type="text" onClick={() => void onPin(anchor, !isPinned)}>
+                {isPinned ? t('memory.anchors.unpin') : t('memory.anchors.pin')}
+              </Button>
+              <Button type="text" onClick={() => void onRetire(anchor)}>
+                {t('memory.anchors.retire')}
+              </Button>
+              <Button type="text" className="_va-delete" onClick={() => onDelete(anchor)}>
+                {t('memory.anchors.delete')}
+              </Button>
+            </>
+          )}
         </>
       )}
     </div>
   );
 }
 
-export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hideIdentityPending?: boolean } = {}) {
+export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hideIdentityPending?: boolean; variant?: 'panel' | 'soul' } = {}) {
   const { t } = useTranslation();
   const auth = readAuth();
   const currentUserId = auth?.user_id ?? '';
@@ -259,6 +288,8 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
   const [adoptingLabel, setAdoptingLabel] = useState('');
   // 新增行
   const [newLabel, setNewLabel] = useState('');
+  // UI 2.1 soul 变体：三池 Tab 活跃池
+  const [pool, setPool] = useState<'theme' | 'person' | 'character'>('theme');
   // GROW 自生长可视化：已知自生长锚 id 集（null = 尚未首载，首载不通知存量）
   const knownAutoIds = useRef<Set<string> | null>(null);
 
@@ -273,7 +304,9 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
   }, [ownedAgents, agentId]);
 
   // UI 2.0（拍板③）：SoulPage 页级选择器可注入 blockIdOverride（隐藏内置选择器语义由页级承担）；
-  // 缺省逐位现状（ChatMemoryPage 挂载不变）。
+  // 缺省逐位现状（ChatMemoryPage 挂载不变）。UI 2.1（2026-09-21）：variant='soul' 启用三池 Tab 行列表
+  // + kebab 收纳（仅 SoulPage 消费；'panel' 缺省逐位现状）。
+  const soulMode = props.variant === 'soul';
   const blockId = props.blockIdOverride ?? (activeTeamId && agentId ? `chat_memory-${activeTeamId}-${agentId}` : '');
 
   const load = useCallback(async () => {
@@ -549,17 +582,39 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
       ) : (
         <>
         {/* U7（T-C 回归修复 2026-09-19）：分池配额迷你显示（F15 三池；上限与 yaml anchorDiscovery 对齐）+ U6 sensitivity 预留徽章位 */}
-        <div className="_va-quota">
-          <span className="_va-quota-item">主题 {values.filter((v) => (v.node_type ?? 'theme') === 'theme').length}/15</span>
-          <span className="_va-quota-item">人物 {values.filter((v) => v.node_type === 'person').length}/8</span>
-          <span className="_va-quota-item">品格 {values.filter((v) => v.node_type === 'character').length}/8</span>
-          <span className="_va-quota-item _va-quota-sensitivity">敏感度（待拍板）</span>
-        </div>
+        {soulMode ? (
+          <div className="_va-vtab" role="tablist" aria-label="价值锚三池切换">
+            {([['theme', '主题', 15], ['person', '人物', 8], ['character', '品格', 8]] as const).map(([key, label, cap]) => {
+              const n = values.filter((v) => (v.node_type ?? 'theme') === key).length;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={pool === key}
+                  className={`_va-vtab-pill${pool === key ? ' _va-vtab-pill--active' : ''}`}
+                  onClick={() => setPool(key)}
+                >
+                  {label} <span className="_va-vtab-count">{n}/{cap}</span>
+                </button>
+              );
+            })}
+            <span className="_va-quota-item _va-quota-sensitivity">敏感度（待拍板）</span>
+          </div>
+        ) : (
+          <div className="_va-quota">
+            <span className="_va-quota-item">主题 {values.filter((v) => (v.node_type ?? 'theme') === 'theme').length}/15</span>
+            <span className="_va-quota-item">人物 {values.filter((v) => v.node_type === 'person').length}/8</span>
+            <span className="_va-quota-item">品格 {values.filter((v) => v.node_type === 'character').length}/8</span>
+            <span className="_va-quota-item _va-quota-sensitivity">敏感度（待拍板）</span>
+          </div>
+        )}
         <div className="_va-list">
-          {values.map((v) => (
+          {values.filter((v) => !soulMode || (v.node_type ?? 'theme') === pool).map((v) => (
             <ValueRow
               key={v.value_id}
               anchor={v}
+              variant={props.variant ?? 'panel'}
               onSave={handleSave}
               onValenceChange={handleValenceChange}
               onPin={handlePin}
