@@ -114,6 +114,8 @@ export interface MemoryRecord {
   arousal?: number;
   /** 对核心价值的意义 0..1 */
   significance?: number;
+  /** D-3：敏感性枚举（写入层 record 类型补齐）。 */
+  sensitivity?: string;
 }
 
 /**
@@ -298,6 +300,8 @@ export async function writeMemory(params: {
     valence: memory.valence,
     arousal: memory.arousal,
     significance: memory.significance,
+    // D-3（2026-09-21）：敏感性随记录透传至 soulBindValues（store 按 SOUL_COL_NAMES 单源取键）
+    sensitivity: memory.sensitivity,
   };
 
   // 数据可靠性兜底（确定性规则，零 LLM）：模型没吐时从 content 抽时间锚/情感/重要性，只填空字段。
