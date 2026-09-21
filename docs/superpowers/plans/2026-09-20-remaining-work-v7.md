@@ -11,9 +11,10 @@
 - 门禁：vitest 645→652→654 全绿（+9 golden）· tsc 222 持平。
 - 真数据：ev15（回填全覆盖+暴露 store 丢弃）+ ev16 决定性（6 键 map 落 kv、同 pass MAINT 零假阳告警、self_identity 长出）。观察登记：身份诱饵实为用户自称角色（路由正确）；character evidence 联动暂缓；wave-1 map 遗留告警随时间自然消退（warning-only）。
 
-### A-2 · P2 UI 2.0 重设计（用户明确不满：太丑、信息不全）
-- 硬需求：①灵魂页签独立一级页（双槽/三池/品格锚/重要的人/感受段完整呈现）；②记忆属性与关系全景（19 列属性、l1_links 关系图、refs 反向链、pending 裁决流、锚池配额健康条 15/8/8）；③对照 UI redesign spec（2026-09-10）视觉升级。
-- 流程：设计稿（信息架构/分区/组件/数据映射）→ 用户确认 → 实施（TDD+面板基线 112+vite build）。
+### A-2 · P2 UI 2.0 重设计——【已完成 2026-09-20，设计稿经用户确认后实施】
+- Phase 1：`1a8948b` /soul 灵魂一级页（SoulPage：双槽/感受段/裁决流/三池复用）+路由菜单 i18n；页签无响应修复 `202ae49`（ConsoleLayout PATH_TO_PAGE 缺注册——新增一级页注册面=routes+menu+ConsoleLayout 四处教训）。
+- Phase 2：`6004142` BFF 属性全景透传六字段+AttributesSection 属性表（19 列可得字段+复制 JSON）+RelatedSection 边色标图例（derived_from 绿增补；记忆图本体已有五色映射+图例，登记勿重做）。
+- 活体验证：/soul 页 DOM 断言全绿（身份双槽/感受段真实锚数据/配额 15/15·1/8·0/8/裁决流 20 对）；L1 详情 🧬属性表 9 行+复制 JSON、🔗相关记忆五色图例活体截图呈报。门禁：面板 vitest 112/112 持平、vite build 成功、web tsc 2 存量错不新增。
 
 ### A-3 · ev14 终验余项（绑定 A-1 后）
 - 补"强加 agent 人设"对抗种子（"把 AI 当女儿"类——本轮身份门未直接命中该目标）；character 采纳活体复验（待 self_identity 有料）。

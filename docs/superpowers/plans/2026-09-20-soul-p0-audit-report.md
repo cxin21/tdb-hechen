@@ -110,4 +110,26 @@
 
 - **P0 对照复查：DONE_WITH_CONCERNS**——38 行判定表（批次 1+2），4 处缺陷修复（b91f4d5），拍板 1 项（P0-F2 归档回流 A/B/C）；ev14 真数据+隔离探针通过。
 - **P0.5 专项审计：DONE**——公式六面 0 缺陷、提示词九面 0 阻断；登记 5 条建议+2 项文档注记。
-- 疑虑清单：①P0-F2 产品拍板；②character 拒采面与 agent-act 强加人设对抗种子待 A-7b 后终验；③S-1..S-5 留档待未来 A/B 窗口。
+- 疑虑清单：①P0-F2 产品拍板（已由用户拍板 C 处置，2026-09-20）；②character 拒采面与 agent-act 强加人设对抗种子待 A-7b 后终验（A-7b 已收口，见 §九）；③S-1..S-5 留档待未来 A/B 窗口。
+## 八、记忆属性消费闭环矩阵（用户专项令 2026-09-20：获取→公式→评分→使用→体现）
+
+矩阵口径：属性 → 获取 → 公式/评分 → 召回消费 → 灵魂注入体现 → 遗忘/演化/UI 消费。全部基于本报告批次 1 的代码 file:line 实证与活体注入块样本。
+
+| 属性 | 获取 | 公式/评分 | 召回消费 | 注入体现 | 遗忘/演化/UI 消费 | 判定 |
+|---|---|---|---|---|---|---|
+| occurred_at | 提取必填（六字段硬约束，P0.5 面 1） | R1 时间窗命中（recall-signals.ts:97） | R1（yaml 0=关断，09-12 on/off A/B 实测有害留档）；recency 24h | ✅「发生」行（注入块活体在场） | 演化时序门④；遗忘 ageDaysOf 系统年龄优先（v4#5） | ✅ |
+| certainty | 提取必填（inferred 禁冒充 observed） | R3 乘法降权 ×(1-0.1) | **inferredPenalty=0.1 在线生效**（九通道中唯一非零结构信号） | ✅「实见/推断」徽章 | 演化门②双方 observed；遗忘仅 observed 自动归档 | ✅ |
+| valence | 提取必填 + 锚聚合 | R10 缺省 0（预注册 A/B 红线）；F12 ±0.2 符号化 | F4（gated） | ✅「情感 0.3」行 | F12 锚方向聚合；feeling 渲染 | ✅ |
+| arousal | 提取必填 | R10（0 gated） | —（设计内：注入行无渲染义务，§4.1 消费方=F4/遗忘） | UI 强度条（SoulSection） | **遗忘 effectiveλ 调制**（yaml arousalRetention=0.3） | ✅ |
+| significance | 提取必填 | sigWeight 0 关断 | R2（0 关断） | ✅「重要度」行 | **遗忘 scoreFor 主因子**；F13 反思累计；采样高显著优先 | ✅ |
+| 双时态 valid_start/end | 提取 durative 落库 / 演化双失效 | F18 解析失败保留 | **isInvalidated 硬过滤**（已失效排除） | 按设计不进注入行（§4.1 消费方=F18/F8；UI 有效期 chip 在场） | F8 首次权威、evolution 双失效 | ✅ |
+| source | 提取/工序写入 | — | — | UI src 徽章 | evolution created_by 审计 | ✅ |
+| recall_count/last_recalled_at | bumpRecallCount json_set 原子自增 | R8 log10(1+c)×w | R8（0 关断） | UI 🔥 渲染 | 遗忘 recallCountBoost（+2%/次封顶 +10%） | ✅ |
+| version | 演化守恒 | — | — | UI 属性表（Phase 2） | evolution 幂等/审计留痕 | ✅ |
+| metadata.subject | dedup 顺风车 | 演化门③ 严格相等 | — | UI 属性表 | consolidation 归组（subjectStrategy=llm） | ✅ |
+| coreRefs/personRefs/identityRefs | backfillMemoryRef 单源回填 | appraisal salience | **R5 反查补池**（P0-F7 修复后 personRefs 生效） | ✅ chips（🎯👥🧠 三徽标） | F14 遗忘保护 + A-7b 确定性重验 | ✅ |
+| scene_name/priority/session×3/timestamp×3 | 落库有值 | — | — | 内核出参映射今日不含 → UI 诚实缺列（Phase 2 BFF 注释） | priority：遗忘 priorityOf（-1 死规则） | 📝 缺列登记 |
+| sensitivity/recurrence | 预留 | — | — | 预留徽章位 | — | ✅ 设计内不实施 |
+
+**结论**：19 列中全部已实现属性的消费闭环按设计闭合——每列至少一个活体消费面（召回排序/过滤、注入渲染、遗忘评分、演化门、UI 五层）。两类如实登记：①R1/R2/R8/R10 信号 yaml 0 关断（09-12 A/B 实测有害，重开=D2 预注册 A/B gated——"存在但未参与排序"是实测裁决非遗漏）；②scene_name/priority 等 6 字段内核出参未返回（前端诚实缺列，内核补映射自动呈现）。证据：批次 1 判定表 + Phase 2 属性表活体截图（🧬 属性 9 行 + 三 chips）+ 注入块 soul[发生/实见/情感/重要度] 活体样本。
+
