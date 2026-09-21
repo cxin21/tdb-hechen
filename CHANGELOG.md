@@ -19,6 +19,20 @@
 - **D-0b（彻底覆盖路径面）**：`/v3/atomic/search` 映射第三份内联拷贝同走单一源——`handleAtomicSearchShape`（scene_name/priority 补齐；搜索行类型 MemorySearchResultItem 不含 session/timestamp×3，诚实缺列）+ BFF /chat-memory/search 透传同补。RED 2 用例先行→GREEN 5/5；vitest 654→659 全绿、tsc 222 持平、面板 112+build。活体：search 出参 scene_name/priority 实值在场。教训登记：补丁 python 重写整文件时 newline="" 将 CRLF 文件统一为 LF（chat-memory.ts 等 3 文件 6155/866/876 行重写）——e8e0651 按 O19 铁律恢复 CRLF，diff vs HEAD~1 仅剩 27 行真实改动。
 
 ---
+## 🎨 UI 2.1：灵魂页重排（用户反馈"不满意"→ 双专家设计评审 → P0 批实施，2026-09-21）
+
+### Changed（MemoryPanel/web）
+
+- **触发**：用户明示对 /soul 视觉不满意；并行召唤「UI 设计师 + UI 视觉验收设计师」双专家（设计重方案 + NO-GO 整改清单），P0 批由 AI 亲自编码实施（共享组件 IdentitySection/PendingSection 零改动——ChatMemoryPage 逐位现状）。
+- **IA 重排（信息零丢失映射）**：紧凑页头 56px（标题 18px + 副标题升维为 5 个锚点导航 pill + Agent 下拉同行居中）→ 全宽感受状态条 44px（原两行大卡降级；语义 pill 深色文字 #0a7f2e/#a04e0f 对 chip 底 ≥4.5:1——验收 V-01 整改）→ 12 栅格主列(8)+右栏(4, sticky)：身份双槽**双栏并排**（色点+徽标+bullet 首句加粗+行高 1.75+>12 行渐隐折叠「展开全文(n 字)」）与重要的人单卡行列表（32px 头像圆+role/方向/别名 chips+w 迷你条）+ 待裁决右栏分组折叠队列（采纳=蓝色小主按钮/拒绝=text 级 hover 红——20+ 对等权按钮轰炸整改）→ 全宽三池锚面板（本批复用零改动，Tab 化属下一批）。
+- **V-02（P0 安全）凭据掩码**：`maskSecrets` 单一源（显式 key=value/Bearer/长 token ≥24 位三规则，留前 4 后 4），PersonSection 证据链正文渲染前统一过掩码——**渲染即脱敏**（截图/快照/导出同步生效）。活体验证：证据行 10 条渲染、1 行含 ****** 掩码、零明文 sk- 泄漏。
+- **C11 整改**：证据链按钮折叠态带计数（「证据链 · n」）；展开默认 10 条 +「展开其余 n 条」（37 条时实测）。
+- 新组件：SoulIdentityDual/SoulFeelingBar/SoulPendingRail（SoulPage 局部，数据同源 identityRead/pendingList/valuesList 零新端点）；PersonSection 重排（原 D-2 功能全保留：chips 可达/定位展开）。
+- 门禁：面板 vitest 117→120 全绿（+3 maskSecrets golden，RED 先行）· vite build ✓ · web tsc 存量 2 不新增。
+- 真实浏览器验收（DOM 断言+截图双证）：五分区全在场（feeling/identity/person/pending/anchors）· 行高 22.75px/13px=1.75 · pill 文字色 rgb(10,127,46)·折叠态展开全文(809 字)·裁决 20 行分 2 组。
+- 残余（下一批）：三池锚 Tab 化+kebab 收纳+退休区折叠（设计师 §4.6）；裁决批量操作条（P1）；Anchor 面板四按钮 kebab 化。
+
+---
 ## 👥 D-2：人物锚专视图 + chips 可达性（P2 硬令"设计有的全部可见"，2026-09-21）
 
 ### Added（MemoryPanel/web）

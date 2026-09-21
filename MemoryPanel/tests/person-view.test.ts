@@ -6,7 +6,7 @@
  * 与 VAP handleViewRelated 同口径收敛单一源）。
  */
 import { describe, it, expect } from 'vitest';
-import { buildPersonRows, directionLabel, collectPersonEvidence } from '../web/src/pages/SoulPage/person-view';
+import { buildPersonRows, directionLabel, collectPersonEvidence, maskSecrets } from '../web/src/pages/SoulPage/person-view';
 
 const anchor = (over: Record<string, unknown> = {}) => ({
   value_id: 'p-1',
@@ -67,5 +67,26 @@ describe('D-2: collectPersonEvidence', () => {
       ['女儿'],
     );
     expect(ev).toEqual([]);
+  });
+});
+
+describe('D-2b (V-02 P0): maskSecrets —— 证据链凭据掩码（用户红线：截图即泄露）', () => {
+  it('长 token 掩码中段，保留前 4 后 4', () => {
+    const key = 'sk-abc123def456ghi789jkl012mno345';
+    const out = maskSecrets(`读取配置 key=${key} 并写入`);
+    expect(out).toContain('sk-a');
+    expect(out).toContain('o345');
+    expect(out).not.toContain('def456');
+    expect(out).not.toContain(key);
+  });
+
+  it('短词与普通 URL 不误伤', () => {
+    expect(maskSecrets('访问 https://danbooru.donmai.us 查询 tags')).toBe('访问 https://danbooru.donmai.us 查询 tags');
+    expect(maskSecrets('w=0.80 趋近')).toBe('w=0.80 趋近');
+  });
+
+  it('显式模式 api_key=xxx / Bearer xxx 掩码', () => {
+    expect(maskSecrets('api_key=AbCdEf1234567890123456')).not.toContain('AbCdEf123456');
+    expect(maskSecrets('Bearer ZxYwVuTsRqOn987654321')).not.toContain('ZxYwVuTs');
   });
 });

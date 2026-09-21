@@ -89,3 +89,25 @@ export function collectPersonEvidence(
   }
   return out;
 }
+
+/**
+ * D-2b（V-02 P0 安全，2026-09-21）：凭据掩码——证据链正文入 UI 前统一过本函数。
+ * 规则：① 长 token（≥24 位连续字母数字，含 -/_）掩中段留前 4 后 4；
+ * ② 显式键值模式（api_key=xxx / secret=xxx / Bearer xxx）整值掩码留前 4；
+ * ③ 域名/短词/数值/普通标点不误伤（宁缺毋滥反向：宁可漏掩不可破文）。
+ * 用途：PersonSection 证据行渲染（截图/快照/导出均走渲染层——渲染即脱敏）。
+ */
+export function maskSecrets(text: string): string {
+  if (!text) return text;
+  let out = text;
+  // 显式 key=value 形态（值 ≥16 位，字母数字下划线混合）
+  out = out.replace(/((?:api[_-]?key|secret|token|password|passwd)\s*[=:]\s*)([A-Za-z0-9_-]{16,})/gi,
+    (_m, p1: string, v: string) => `${p1}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}`);
+  // Bearer 形态
+  out = out.replace(/(Bearer\s+)([A-Za-z0-9._-]{16,})/gi,
+    (_m, p1: string, v: string) => `${p1}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}`);
+  // 通用长 token（≥24 位）：避免误伤 URL 里的单词与中文——仅匹配独立词
+  out = out.replace(/(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]{24,})([^A-Za-z0-9_-]|$)/g,
+    (_m, pre: string, v: string, post: string) => `${pre}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}${post}`);
+  return out;
+}

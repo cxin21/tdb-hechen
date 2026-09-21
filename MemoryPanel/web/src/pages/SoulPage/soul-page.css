@@ -1,27 +1,177 @@
-/* SoulPage（UI 2.0 拍板③）：灵魂一级页布局。_soul- 前缀自定义区，配色沿 tea 体系。 */
-._soul-page { display: flex; flex-direction: column; gap: 12px; }
-._soul-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-._soul-title { font-size: 18px; font-weight: 600; }
-._soul-desc { font-size: 12px; color: #86909c; margin-top: 2px; }
-._soul-card { border: 1px solid #e5e6eb; border-radius: 6px; padding: 12px 16px; background: #fff; }
-._soul-card-title { font-size: 13px; font-weight: 600; color: #4e5969; margin-bottom: 8px; }
-._soul-feeling-line { font-size: 13px; line-height: 1.8; }
-._soul-feeling-pos { color: #00b42a; }
-._soul-feeling-neg { color: #f77234; }
-._soul-muted { font-size: 12px; color: #86909c; }
-._soul-empty { font-size: 13px; color: #86909c; padding: 24px 0; text-align: center; }
+/* SoulPage —— UI 2.1（2026-09-21，设计师方案 token 体系；_soul- 前缀区，tea 兼容）。 */
+._soul-root {
+  /* 层面 */
+  --soul-page-bg: transparent;
+  --soul-card-bg: #ffffff;
+  --soul-border: #e5e6eb;
+  --soul-border-soft: #f0f1f3;
+  --soul-fill-hover: #f7f8fa;
+  --soul-fill-muted: #f2f3f5;
+  /* 文字 */
+  --soul-text-1: #171a1f;
+  --soul-text-2: #4e5261;
+  --soul-text-3: #86909c;
+  /* 语义（valence 沿用，深色文字达标 C01 ≥4.5:1） */
+  --soul-pos: #0a7f2e;
+  --soul-pos-bg: rgba(0, 180, 42, 0.09);
+  --soul-cau: #a04e0f;
+  --soul-cau-bg: rgba(247, 114, 52, 0.10);
+  --soul-avoid: #c02929;
+  --soul-avoid-bg: rgba(245, 63, 63, 0.08);
+  --soul-person: #5b46d6;
+  --soul-person-bg: rgba(124, 108, 255, 0.10);
+  --soul-gold: #8a6a10;
+  --soul-gold-bg: rgba(245, 197, 66, 0.14);
+  /* 字号 */
+  --soul-fz-title: 18px;
+  --soul-fz-section: 14px;
+  --soul-fz-sub: 13px;
+  --soul-fz-body: 13px;
+  --soul-fz-meta: 12px;
+  --soul-fz-badge: 11px;
+  /* 行高 */
+  --soul-lh-body: 1.6;
+  --soul-lh-long: 1.75;
+  /* 间距 */
+  --soul-sp-2: 8px; --soul-sp-3: 12px; --soul-sp-4: 16px; --soul-sp-5: 20px;
+  /* 圆角 */
+  --soul-radius-card: 8px;
+  --soul-radius-inset: 6px;
+  --soul-radius-btn: 4px;
 
-/* ── D-2（2026-09-21）：人物锚专视图 ── */
-._soul-person { border-top: 1px dashed #f0f1f3; padding: 10px 0; }
-._soul-person:first-of-type { border-top: none; }
-._soul-person--highlight { background: #fff7e6; border-radius: 6px; padding: 10px 8px; }
-._soul-person-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-._soul-person-name { font-size: 14px; font-weight: 600; color: #1d2129; }
-._soul-person-dir--趋近 { color: #00b42a; }
-._soul-person-dir--回避 { color: #f53f3f; }
-._soul-person-evidence { margin-top: 8px; padding: 8px 10px; background: #f7f8fa; border-radius: 6px; display: flex; flex-direction: column; gap: 6px; }
-._soul-person-evidence-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
-._soul-person-evidence-time { color: #86909c; white-space: nowrap; }
-._soul-person-evidence-body { color: #4e5969; line-height: 1.6; }
-._soul-chip--clickable { cursor: pointer; border: 1px solid transparent; }
-._soul-chip--clickable:hover { border-color: #7c6cff; }
+  display: flex; flex-direction: column; gap: var(--soul-sp-4);
+  max-width: 1240px; margin: 0 auto; padding: 0 24px 40px;
+}
+
+/* ── 页头（56px flex 居中；副标题升维为锚点 pills——C09 首屏 ≥3 分区可达） ── */
+._soul-header { display: flex; align-items: center; justify-content: space-between; gap: var(--soul-sp-4); min-height: 56px; }
+._soul-header-left { display: flex; align-items: center; gap: var(--soul-sp-4); flex-wrap: wrap; }
+._soul-title { font-size: var(--soul-fz-title); font-weight: 600; color: var(--soul-text-1); line-height: 1.4; }
+._soul-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+._soul-nav-pill {
+  border: 1px solid var(--soul-border); background: var(--soul-card-bg); color: var(--soul-text-2);
+  font-size: var(--soul-fz-meta); padding: 3px 10px; border-radius: 999px; cursor: pointer; transition: 150ms ease;
+}
+._soul-nav-pill:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+._soul-header-right { flex-shrink: 0; }
+
+/* ── 通用分区/卡/徽标/按钮（token 体系） ── */
+._soul-section { display: flex; flex-direction: column; gap: var(--soul-sp-3); }
+._soul-section-head { display: flex; align-items: center; gap: var(--soul-sp-2); }
+._soul-section-title { font-size: var(--soul-fz-section); font-weight: 600; color: var(--soul-text-1); }
+._soul-meta { font-size: var(--soul-fz-meta); color: var(--soul-text-3); }
+._soul-empty { font-size: var(--soul-fz-body); color: var(--soul-text-3); padding: 32px 0; text-align: center; }
+
+._soul-chip {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 2px;
+  font-size: var(--soul-fz-badge); font-weight: 600; white-space: nowrap;
+  background: var(--soul-fill-muted); color: var(--soul-text-2);
+}
+._soul-chip--green { background: var(--soul-pos-bg); color: var(--soul-pos); }
+._soul-chip--red { background: var(--soul-avoid-bg); color: var(--soul-avoid); }
+._soul-chip--gold { background: var(--soul-gold-bg); color: var(--soul-gold); }
+._soul-chip--person { background: var(--soul-person-bg); color: var(--soul-person); }
+._soul-chip--neutral { background: var(--soul-fill-muted); color: var(--soul-text-2); }
+
+._soul-btn-primary { background: var(--tea-color-primary, #1677ff); color: #fff; border: none; border-radius: var(--soul-radius-btn); cursor: pointer; }
+._soul-btn-sm { height: 24px; padding: 0 10px; font-size: var(--soul-fz-meta); }
+._soul-btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+._soul-btn-text { background: none; border: none; color: var(--soul-text-3); font-size: var(--soul-fz-meta); cursor: pointer; padding: 0 8px; height: 24px; }
+._soul-btn-text:hover { color: var(--soul-avoid); }
+._soul-btn-ghost { background: none; border: 1px solid var(--soul-border); color: var(--soul-text-2); font-size: var(--soul-fz-meta); height: 24px; padding: 0 10px; border-radius: var(--soul-radius-btn); cursor: pointer; transition: 150ms ease; }
+._soul-btn-ghost:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+
+/* ── 感受状态条（44px 全宽；V-01 深语义 pill；超 3 收 +n） ── */
+._soul-feelbar {
+  display: flex; align-items: center; gap: var(--soul-sp-3); min-height: 44px; padding: 0 20px;
+  background: var(--soul-card-bg); border: 1px solid var(--soul-border); border-radius: var(--soul-radius-card);
+  flex-wrap: wrap; row-gap: 6px;
+}
+._soul-feelbar-title { font-size: var(--soul-fz-sub); font-weight: 600; color: var(--soul-text-1); flex-shrink: 0; }
+._soul-feelgroup { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+._soul-feelgroup-label { font-size: var(--soul-fz-badge); color: var(--soul-text-3); }
+._soul-pill {
+  display: inline-flex; align-items: center; height: 22px; padding: 0 10px; border-radius: 999px;
+  font-size: var(--soul-fz-meta); font-weight: 600;
+}
+._soul-pill--pos { background: var(--soul-pos-bg); color: var(--soul-pos); }
+._soul-pill--neg { background: var(--soul-cau-bg); color: var(--soul-cau); }
+._soul-feel-more { background: var(--soul-fill-muted); color: var(--soul-text-2); border: none; border-radius: 999px; height: 22px; padding: 0 8px; font-size: var(--soul-fz-meta); cursor: pointer; }
+
+/* ── 12 栅格：主列 8 + 右栏 4 sticky（<1024 降级单列） ── */
+._soul-grid { display: grid; grid-template-columns: 8fr 4fr; gap: var(--soul-sp-4); align-items: start; }
+._soul-main { display: flex; flex-direction: column; gap: var(--soul-sp-4); min-width: 0; }
+._soul-rail { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow-y: auto; min-width: 0; }
+._soul-railcard { background: var(--soul-card-bg); border: 1px solid var(--soul-border); border-radius: var(--soul-radius-card); padding: var(--soul-sp-4); }
+@media (max-width: 1023px) {
+  ._soul-grid { grid-template-columns: 1fr; }
+  ._soul-rail { position: static; max-height: none; overflow-y: visible; }
+}
+
+/* ── 身份双槽双栏 + 折叠渐隐（V-03/04/05/06 整改） ── */
+._soul-idgrid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--soul-sp-4); }
+@media (max-width: 1023px) { ._soul-idgrid { grid-template-columns: 1fr; } }
+._soul-idcard {
+  background: var(--soul-card-bg); border: 1px solid var(--soul-border); border-radius: var(--soul-radius-card);
+  padding: var(--soul-sp-4) 20px; display: flex; flex-direction: column; gap: var(--soul-sp-3); min-width: 0;
+}
+._soul-idcard-head { display: flex; align-items: center; gap: var(--soul-sp-2); }
+._soul-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+._soul-dot--person { background: var(--soul-person); }
+._soul-dot--gold { background: #d9a416; }
+._soul-idcard-title { font-size: var(--soul-fz-sub); font-weight: 600; color: var(--soul-text-1); }
+._soul-idcard-body { position: relative; }
+._soul-idcard-body--collapsed { max-height: 264px; overflow: hidden; }
+._soul-idcard-body--collapsed::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 32px; background: linear-gradient(to bottom, rgba(255,255,255,0), #fff); }
+._soul-idlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--soul-sp-2); }
+._soul-idline {
+  font-size: var(--soul-fz-body); line-height: var(--soul-lh-long); color: var(--soul-text-2);
+  padding-left: 14px; position: relative; overflow-wrap: anywhere;
+}
+._soul-idline::before { content: ''; position: absolute; left: 2px; top: 10px; width: 5px; height: 5px; border-radius: 50%; background: var(--soul-text-3); }
+._soul-idline::first-line { color: var(--soul-text-1); font-weight: 500; }
+._soul-idcard-toggle {
+  align-self: center; background: none; border: none; color: var(--soul-text-2); font-size: var(--soul-fz-meta);
+  cursor: pointer; padding: 6px 12px; border-radius: var(--soul-radius-btn);
+}
+._soul-idcard-toggle:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+
+/* ── 重要的人：单卡行列表 + 头像圆 + w 迷你条 + 时间轴证据（V-09/C11 整改） ── */
+._soul-personcard {
+  background: var(--soul-card-bg); border: 1px solid var(--soul-border); border-radius: var(--soul-radius-card); padding: 4px 0;
+}
+._soul-personrow { border-top: 1px solid var(--soul-border-soft); }
+._soul-personrow:first-child { border-top: none; }
+._soul-personrow--highlight { background: #fff7e6; border-radius: var(--soul-radius-inset); }
+._soul-personrow-head { display: flex; align-items: center; gap: var(--soul-sp-2); padding: 10px 16px; flex-wrap: wrap; }
+._soul-personrow-head:hover { background: var(--soul-fill-hover); }
+._soul-avatar {
+  width: 32px; height: 32px; border-radius: 50%; background: var(--soul-person-bg); color: var(--soul-person);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; flex-shrink: 0;
+}
+._soul-personrow-name { font-size: var(--soul-fz-body); font-weight: 600; color: var(--soul-text-1); }
+._soul-personrow-aliases { flex: 1 1 auto; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+._soul-wmeter { display: inline-flex; align-items: center; gap: 6px; }
+._soul-wbar { width: 64px; height: 4px; border-radius: 2px; background: var(--soul-fill-muted); overflow: hidden; display: inline-block; }
+._soul-wbar-fill { display: block; height: 100%; background: var(--soul-person); border-radius: 2px; }
+._soul-evidence { margin: 0 16px 12px 48px; background: var(--soul-fill-hover); border-radius: var(--soul-radius-inset); padding: var(--soul-sp-3) var(--soul-sp-4); }
+._soul-timeline { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 1px solid var(--soul-border); display: flex; flex-direction: column; gap: var(--soul-sp-2); }
+._soul-timeline-row { position: relative; }
+._soul-timeline-dot { position: absolute; left: -16px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--soul-person); }
+._soul-timeline-meta { display: flex; gap: 8px; font-size: var(--soul-fz-meta); color: var(--soul-text-3); }
+._soul-timeline-body { font-size: var(--soul-fz-body); color: var(--soul-text-2); line-height: var(--soul-lh-body); overflow-wrap: anywhere; }
+
+/* ── 待裁决右栏（V-07：分组折叠 + 按钮权重分级 + 红左竖条） ── */
+._spending-group { margin-top: var(--soul-sp-3); }
+._spending-group-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; background: none; border: none;
+  padding: 6px 0; cursor: pointer; border-bottom: 1px solid var(--soul-border-soft);
+}
+._spending-group-title { font-size: var(--soul-fz-meta); font-weight: 600; color: var(--soul-text-2); }
+._spending-list { list-style: none; margin: var(--soul-sp-2) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--soul-sp-3); }
+._spending-row { border-left: 3px solid var(--soul-avoid); padding: 8px 0 8px 10px; background: var(--soul-card-bg); }
+._spending-meta { display: flex; align-items: center; gap: var(--soul-sp-2); margin-bottom: 6px; }
+._spending-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; display: inline-block; }
+._spending-content { margin: 0; font-family: inherit; font-size: var(--soul-fz-meta); line-height: var(--soul-lh-body); color: var(--soul-text-1); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+._spending-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--soul-sp-2); margin-top: 6px; }
+._spending-error { font-size: var(--soul-fz-meta); color: var(--soul-avoid); margin-top: var(--soul-sp-2); }

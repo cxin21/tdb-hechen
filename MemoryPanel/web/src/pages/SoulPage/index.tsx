@@ -1,14 +1,11 @@
 /**
- * SoulPage —— 灵魂一级页（UI 2.0 拍板③；设计稿 2026-09-20 经用户确认）。
+ * SoulPage —— 灵魂一级页（UI 2.1 重排 2026-09-21；设计师方案 §一/§二）。
  *
- * 分区（自上而下）：
- *   1. 身份双槽（IdentitySection 复用：我是谁 / 我心中的他）
- *   2. 当下的感受（FeelingCard：theme ∧ valence=±1，与 soul-assembler 注入块同构渲染）
- *   3. 待裁决流（PendingSection 复用：core_value/strict_rule 红线提案 + evidence 展示）
- *   4. 三池锚面板（ValueAnchorsPanel 复用：blockIdOverride + hideIdentityPending——
- *      身份/裁决已由页级渲染，面板内不再重复；类型徽标/配额条/行内编辑/反查全量继承）
+ * IA：紧凑页头（标题+锚点 pills ‖ Agent 切换器，56px flex 居中）
+ *   → 全宽感受状态条 → 主列(身份双槽双栏 + 重要的人) + 右栏(sticky 待裁决队列)
+ *   → 全宽三池锚面板（ValueAnchorsPanel 复用，本批零改动——Tab 化属下一批）。
+ * 信息零丢失：五分区功能与文案全部保留（红线：看不到=没做）。
  * 数据零新端点：blockId = `chat_memory-{teamId}-{agentId}` 确定性组合（VAP 同款）。
- * 空态宁缺毋滥：无自有 Agent → 引导文案；感受段无定向锚 → 弱化说明行。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -16,67 +13,28 @@ import { Select } from 'tea-component';
 import { ResourcePage } from '@/pages/ResourcePage';
 import { readAuth } from '@/components/LoginGate';
 import { useAgents, useTeams } from '@/services';
-import { chatMemoryApi, type ValueAnchor } from '@/lib/teamApi';
-import { IdentitySection } from '@/pages/ChatMemoryPage/components/IdentitySection';
-import { PendingSection } from '@/pages/ChatMemoryPage/components/PendingSection';
-import ValueAnchorsPanel from '@/pages/ChatMemoryPage/components/ValueAnchorsPanel';
+import { chatMemoryApi } from '@/lib/teamApi';
+import { SoulIdentityDual } from './SoulIdentityDual';
+import { SoulFeelingBar } from './SoulFeelingBar';
+import { SoulPendingRail } from './SoulPendingRail';
 import { PersonSection } from './PersonSection';
-import { useLocation } from 'react-router-dom';
+import ValueAnchorsPanel from '@/pages/ChatMemoryPage/components/ValueAnchorsPanel';
 import './soul-page.css';
 
-/** 感受段：theme ∧ valence=±1（与 soul-assembler directional 过滤同构；person/character 不入）。 */
-function FeelingCard(props: { blockId: string }) {
-  const { t } = useTranslation();
-  const [values, setValues] = useState<ValueAnchor[]>([]);
-  const [loaded, setLoaded] = useState(false);
+const NAV_ITEMS = [
+  { id: '_soul-sec-feeling', label: '感受' },
+  { id: '_soul-sec-identity', label: '身份双槽' },
+  { id: '_soul-person-section', label: '重要的人' },
+  { id: '_soul-sec-pending', label: '待裁决' },
+  { id: '_soul-sec-anchors', label: '价值锚' },
+];
 
-  const load = useCallback(async () => {
-    if (!props.blockId) {
-      setValues([]);
-      setLoaded(true);
-      return;
-    }
-    try {
-      const res = await chatMemoryApi.valuesList(props.blockId);
-      setValues(res.values ?? []);
-    } catch {
-      setValues([]);
-    } finally {
-      setLoaded(true);
-    }
-  }, [props.blockId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const directional = values.filter(
-    (v) => (v.node_type ?? 'theme') === 'theme' && (v.valence === 1 || v.valence === -1),
-  );
-  const pos = directional.filter((v) => v.valence === 1).map((v) => v.label);
-  const neg = directional.filter((v) => v.valence === -1).map((v) => v.label);
-
-  return (
-    <section className="_soul-card" aria-label={t('soul.feeling.title')}>
-      <div className="_soul-card-title">{t('soul.feeling.title')}</div>
-      {pos.length > 0 && (
-        <div className="_soul-feeling-line _soul-feeling-pos">{t('soul.feeling.pos')}：{pos.join('、')}</div>
-      )}
-      {neg.length > 0 && (
-        <div className="_soul-feeling-line _soul-feeling-neg">{t('soul.feeling.neg')}：{neg.join('、')}</div>
-      )}
-      {loaded && pos.length === 0 && neg.length === 0 && (
-        <div className="_soul-muted">{t('soul.feeling.empty')}</div>
-      )}
-    </section>
-  );
+function scroll_to_section(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 export function SoulPage() {
   const { t } = useTranslation();
-  const location = useLocation();
-  // D-2：记忆详情人物 chips 点击跳转 /soul 的定位目标（state.person = 锚 label）
-  const highlightPerson = (location.state as { person?: string } | null)?.person;
   const auth = readAuth();
   const currentUserId = auth?.user_id ?? '';
   const { activeTeamId } = useTeams();
@@ -99,44 +57,61 @@ export function SoulPage() {
 
   const blockId = activeTeamId && agentId ? `chat_memory-${activeTeamId}-${agentId}` : '';
 
+  const loadValues = useCallback(async (id: string) => {
+    const res = await chatMemoryApi.valuesList(id);
+    return res.values ?? [];
+  }, []);
+  void loadValues;
+
   return (
     <ResourcePage>
-      <div className="_soul-page">
-        <div className="_soul-header">
-          <div className="_soul-header-text">
+      <div className="_soul-root">
+        <header className="_soul-header" id="_soul-sec-top">
+          <div className="_soul-header-left">
             <div className="_soul-title">{t('soul.title')}</div>
-            <div className="_soul-desc">{t('soul.desc')}</div>
+            <nav className="_soul-nav" aria-label="分区导航">
+              {NAV_ITEMS.map((n) => (
+                <button key={n.id} type="button" className="_soul-nav-pill" onClick={() => scroll_to_section(n.id)}>
+                  {n.label}
+                </button>
+              ))}
+            </nav>
           </div>
-          <Select
-            appearance="button"
-            matchButtonWidth
-            value={agentId}
-            onChange={setAgentId}
-            disabled={ownedAgents.length === 0}
-            placeholder={t('soul.noAgent')}
-            options={ownedAgents.map((a) => ({ value: a.agent_id, text: `${a.name}（${a.agent_id}）` }))}
-          />
-        </div>
+          <div className="_soul-header-right">
+            <Select
+              appearance="button"
+              matchButtonWidth
+              value={agentId}
+              onChange={setAgentId}
+              disabled={ownedAgents.length === 0}
+              placeholder={t('soul.noAgent')}
+              options={ownedAgents.map((a) => ({ value: a.agent_id, text: `${a.name}（${a.agent_id}）` }))}
+            />
+          </div>
+        </header>
 
         {!blockId ? (
           <div className="_soul-empty">{t('soul.noAgent')}</div>
         ) : (
           <>
-            <section className="_soul-card" aria-label={t('soul.identity.title')}>
-              <div className="_soul-card-title">{t('soul.identity.title')}</div>
-              <IdentitySection blockId={blockId} />
+            <SoulFeelingBar blockId={blockId} />
+
+            <div className="_soul-grid">
+              <div className="_soul-main">
+                <SoulIdentityDual blockId={blockId} />
+                <PersonSection blockId={blockId} />
+              </div>
+              <aside className="_soul-rail">
+                <SoulPendingRail blockId={blockId} />
+              </aside>
+            </div>
+
+            <section className="_soul-section" id="_soul-sec-anchors" aria-label={t('soul.desc')}>
+              <div className="_soul-section-head">
+                <span className="_soul-section-title">价值锚（三池）</span>
+              </div>
+              <ValueAnchorsPanel blockIdOverride={blockId} hideIdentityPending />
             </section>
-
-            <FeelingCard blockId={blockId} />
-
-            <PersonSection blockId={blockId} highlight={highlightPerson} />
-
-            <section className="_soul-card" aria-label={t('soul.pending.title')}>
-              <div className="_soul-card-title">{t('soul.pending.title')}</div>
-              <PendingSection blockId={blockId} />
-            </section>
-
-            <ValueAnchorsPanel blockIdOverride={blockId} hideIdentityPending />
           </>
         )}
       </div>
