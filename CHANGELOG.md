@@ -21,6 +21,10 @@
 ---
 ## 🎨 UI 2.1：灵魂页重排（用户反馈"不满意"→ 双专家设计评审 → P0 批实施，2026-09-21）
 
+### Fixed（MemoryCore）
+
+- **D-1（行为变更，用户拍板"全做"，2026-09-21）：F17 slot 正文截断改按行（事实）边界**——`truncateByLines` 单一源（soul-assembler.ts 导出）：旧行为字符 slice 截在事实句中间（活体实证：self 600 字符截于"如 identit"），注入块以残句喂 LLM 破损主语完整性；新行为逐行累积预算内整行、超限行整体丢弃、无一行可用时首行字符截断兜底（槽不空）。TDD：RED 3 用例（多行无残句/短内容逐字节回归/单行超预算兜底）→ GREEN 8/8。**A/B 新旧对照 12 组真实生产槽内容（≥10 组硬令）**：唯一超预算组（self 838 字 8 行）oldResidual=true→newResidual=false（整行保留 500 字符、丢 3 条超限行）；其余 11 组 ≤ 预算逐字节一致（零回归面）。spec §2.7 F17 注记同步。门禁：core vitest 659→662（+3）· tsc 222 持平。
+
 ### Changed（MemoryPanel/web）
 
 - **三池锚 Tab 化 + kebab 收纳（P0 尾批，同轮追加）**：ValueAnchorsPanel 增 `variant?: 'panel'|'soul'` prop——`panel` 缺省逐位现状（ChatMemoryPage 活体回归零变化：quota 条+16 行四按钮+零 kebab/零 vtab DOM 断言）；`soul` 变体（仅 SoulPage 消费）：配额并入三池 Tab 标签（主题 15/15·人物 1/8·品格 0/8 计数内嵌）+ 每池行过滤 + 每行四操作（编辑/钉住/退休/删除）收 kebab ⋯ 菜单（危险项红色），敏感度预留位右置。真实浏览器双页验收+活体 DOM 断言。

@@ -56,6 +56,55 @@ describe("soul-assembler 四段渲染（P1）", () => {
     expect((out.match(/我负责技术评审/g) ?? []).length).toBeLessThan(200);
   });
 
+  it("D-1：多行内容截断按行边界——超限行整行丢弃，无断句残行", async () => {
+    const lines = [
+      "- 我负责技术评审与验收门禁（第一条较长的事实陈述）",
+      "- 我承诺每周五输出周报",
+      "- 我执行过『先审计后动手』的协作铁律",
+      "- 我在批次六收口事故后固化了双写防护纪律",
+      "- 我对 gated 待拍板事项坚持不抢跑",
+    ];
+    const content = lines.join("\n");
+    const out = await buildSoulPrefix(
+      makeStore([{ slot: "self_identity", content }]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true, budgetSelfChars: 100 },
+    );
+    const body = out.split("（我是谁）- [self_identity] ")[1] ?? "";
+    const outLines = body.split("\n").filter((l) => l.trim() && !l.startsWith("##") && !l.startsWith("</soul-identity>"));
+    // 可判定判据：任何输出正文行要么是某源行整行，要么与所有源行无前缀关系（残句=断句铁证）
+    for (const l of outLines) {
+      const isWhole = lines.includes(l);
+      const isPartial = lines.some((src) => src.startsWith(l) && l.length < src.length);
+      expect(isWhole).toBe(true);
+      expect(isPartial).toBe(false);
+    }
+  });
+
+  it("D-1：短内容（≤预算）逐字节不变（回归）", async () => {
+    const content = "- 我负责技术评审\n- 我承诺每周五出周报";
+    const out = await buildSoulPrefix(
+      makeStore([{ slot: "self_identity", content }]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true, budgetSelfChars: 600 },
+    );
+    expect(out).toContain(content);
+  });
+
+  it("D-1：单行超预算（无行边界可用）→ 首行字符截断兜底（槽不空）", async () => {
+    const long = "我负责技术评审".repeat(200); // 1400 chars 单行
+    const out = await buildSoulPrefix(
+      makeStore([{ slot: "self_identity", content: long }]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true, budgetSelfChars: 600 },
+    );
+    expect(out.length).toBeGreaterThan(0);
+    expect((out.match(/我负责技术评审/g) ?? []).length).toBeLessThan(200);
+  });
+
   it("enabled=true 但 self 槽空：（我是谁）小节整段省略（宁缺毋滥）", async () => {
     const out = await buildSoulPrefix(makeStore(IDENTITY_ONLY) as never, TENANT, undefined, { selfIdentityEnabled: true });
     expect(out).not.toContain("（我是谁）");

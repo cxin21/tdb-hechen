@@ -15,6 +15,29 @@ import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 
+/**
+ * D-1（2026-09-21，用户拍板"全做"）：F17 截断改按行（事实）边界。
+ *
+ * 旧行为（§2.7 F17 字符 slice）截在事实句中间——注入块以残句喂 LLM，主语完整性破损
+ *（2026-09-21 活体实证：self 600 字符截于"如 identit"）。新行为：逐行累积预算内整行、
+ * 超限行整体丢弃（宁缺毋滥）；无一行可用时退回首行字符截断（槽不空，避免整段注入丢失）。
+ * A/B 新旧对照 ≥10 组（真实生产槽内容）见 UI 对话验收记录与 spec §2.7 注记。
+ */
+export function truncateByLines(content: string, budget: number): string {
+  if (budget <= 0 || content.length <= budget) return content;
+  const lines = content.split("\n");
+  if (lines.length <= 1) return content.slice(0, budget);
+  let acc = "";
+  for (const line of lines) {
+    const next = acc ? `${acc}\n${line}` : line;
+    if (next.length > budget) break;
+    acc = next;
+  }
+  // 无任何完整行可用（首行即超预算）→ 首行字符截断兜底（宁缺毋滥不等于整段清空）
+  if (!acc) return content.slice(0, budget);
+  return acc;
+}
+
 function valenceDir(v: number | null | undefined): string {
   if (v === 1) return "趋近";
   if (v === -1) return "审慎";
@@ -95,7 +118,7 @@ export async function buildSoulPrefix(
         : slots;
       for (const s of ordered) {
         const budget = budgetFor(s.slot);
-        const content = budget !== undefined && s.content.length > budget ? s.content.slice(0, budget) : s.content;
+        const content = budget !== undefined ? truncateByLines(s.content, budget) : s.content;
         const label = labelFor(s.slot);
         lines.push(dual && label ? `（${label}）- [${s.slot}] ${content}` : `- [${s.slot}] ${s.content}`);
       }

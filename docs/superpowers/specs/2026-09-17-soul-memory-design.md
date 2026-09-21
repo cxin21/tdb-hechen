@@ -156,6 +156,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 
 - **主语**：整段标题"此刻的你"=agent；四个小节各自内容主语分明（见上）；escapeXmlTags 消毒不变。
 - **预算（F17）**：每小节字符上限 + 行数上限（config；chars 为 token 的粗粒度近似，精算后置），超限按强度/序截断（锚行=weight 降序，从尾部截），宁缺毋滥。
+  - 【2026-09-21 D-1 注记（用户拍板"全做"）】slot 正文截断改**按行（事实）边界**（truncateByLines 单一源，soul-assembler.ts）：逐行累积预算内整行、超限行整体丢弃；无一行可用时首行字符截断兜底（槽不空）。A/B 真实数据 12 组：唯一超预算组（self 838 字 8 行）旧行为残句实证→新行为整行保留；其余 11 组 ≤ 预算逐字节一致（零回归）。
 - **人物方向渲染**：内联标注于"重要的人"行（`女儿(家人·趋近)`），**soul-feeling 保持仅主题锚**——最小渲染变更。
   - 【2026-09-19 A-5 注记】P3 品格锚渲染口径：价值锚行与主题锚共享注入预算（§7），感受段仍仅主题锚（node_type=theme 过滤，character 不入）——F-EV12-5③ 代码化。
 - **逐位现状保证**：selfIdentity.enabled=false 时**渲染与 prompt 双双逐位**——identity-discovery 走旧单视角 prompt（LLM 行为不变）、渲染不出新小节；enabled=true 才切双视角 prompt。调度门结构不变（anchorDiscovery 门控 worker 调用），self 路由在 worker 内部按 selfIdentity.enabled 判断。
