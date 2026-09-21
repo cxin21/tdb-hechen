@@ -63,6 +63,8 @@ export interface MemorySearchResultItem {
   valence?: number;
   arousal?: number;
   significance?: number;
+  /** D-3：敏感性枚举（向量路徽章/R11 信号源）。 */
+  sensitivity?: string;
   /**
    * C1（灵魂记忆 spec §2.2）：行 metadata 读回（metadata_json 解析）。
    * coreRefBoost 消费 metadata.coreRefs；FTS 行此前不携带 metadata（coreRefs 死读）。
@@ -552,6 +554,8 @@ async function expandCandidatePool(
           valence: r.valence,
           arousal: r.arousal,
           significance: r.significance,
+          // D-3：敏感性透传（向量路 formatable/信号源）
+          sensitivity: (r as { sensitivity?: string }).sensitivity,
           metadata: parseMetadata(r.metadata_json),
           recall_channel: `value:${refs[0]}`,
         });
@@ -1156,6 +1160,8 @@ export async function executeMemorySearch(params: {
           valence: r.valence,
           arousal: r.arousal,
           significance: r.significance,
+          // D-3：敏感性透传（向量路 formatable/信号源）
+          sensitivity: (r as { sensitivity?: string }).sensitivity,
           metadata: parseMetadata(r.metadata_json),
         }));
       } catch (err) {
