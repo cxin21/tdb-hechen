@@ -22,6 +22,11 @@
 - 门禁：core vitest 657 全绿（+3 golden，RED 3 先行）· tsc 222 持平（stash 对照法）· 面板 112+build · web tsc 存量 2。
 - 活体：生产三元组 /v3/atomic/query 七字段实值在场；commit 见 CHANGELOG「D-0」节。
 
+### A-5 · D-2 人物锚专视图——【已完成 2026-09-21】
+- P2 硬令收口：SoulPage 人物专视图（role·方向·aliases·w·证据链溯源到 L1 行）+ 记忆详情人物 chips 点击可达（navigate /soul state 定位展开）。
+- 门禁：面板 vitest 117 全绿（+5 golden，RED 先行+parsePersonAttrs 兜底缺陷实测修复）· build ✓ · web tsc 存量 2。
+- 活体验证：panel 浏览器实测（见本轮对话截图）；commit 见 CHANGELOG「D-2」节。
+
 ### A-3 · ev14 终验余项（绑定 A-1 后）
 - 补"强加 agent 人设"对抗种子（"把 AI 当女儿"类——本轮身份门未直接命中该目标）；character 采纳活体复验（待 self_identity 有料）。
 

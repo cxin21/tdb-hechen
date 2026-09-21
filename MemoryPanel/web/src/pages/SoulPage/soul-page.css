@@ -10,3 +10,18 @@
 ._soul-feeling-neg { color: #f77234; }
 ._soul-muted { font-size: 12px; color: #86909c; }
 ._soul-empty { font-size: 13px; color: #86909c; padding: 24px 0; text-align: center; }
+
+/* ── D-2（2026-09-21）：人物锚专视图 ── */
+._soul-person { border-top: 1px dashed #f0f1f3; padding: 10px 0; }
+._soul-person:first-of-type { border-top: none; }
+._soul-person--highlight { background: #fff7e6; border-radius: 6px; padding: 10px 8px; }
+._soul-person-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+._soul-person-name { font-size: 14px; font-weight: 600; color: #1d2129; }
+._soul-person-dir--趋近 { color: #00b42a; }
+._soul-person-dir--回避 { color: #f53f3f; }
+._soul-person-evidence { margin-top: 8px; padding: 8px 10px; background: #f7f8fa; border-radius: 6px; display: flex; flex-direction: column; gap: 6px; }
+._soul-person-evidence-row { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
+._soul-person-evidence-time { color: #86909c; white-space: nowrap; }
+._soul-person-evidence-body { color: #4e5969; line-height: 1.6; }
+._soul-chip--clickable { cursor: pointer; border: 1px solid transparent; }
+._soul-chip--clickable:hover { border-color: #7c6cff; }

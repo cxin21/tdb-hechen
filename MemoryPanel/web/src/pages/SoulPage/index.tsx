@@ -20,6 +20,8 @@ import { chatMemoryApi, type ValueAnchor } from '@/lib/teamApi';
 import { IdentitySection } from '@/pages/ChatMemoryPage/components/IdentitySection';
 import { PendingSection } from '@/pages/ChatMemoryPage/components/PendingSection';
 import ValueAnchorsPanel from '@/pages/ChatMemoryPage/components/ValueAnchorsPanel';
+import { PersonSection } from './PersonSection';
+import { useLocation } from 'react-router-dom';
 import './soul-page.css';
 
 /** 感受段：theme ∧ valence=±1（与 soul-assembler directional 过滤同构；person/character 不入）。 */
@@ -72,6 +74,9 @@ function FeelingCard(props: { blockId: string }) {
 
 export function SoulPage() {
   const { t } = useTranslation();
+  const location = useLocation();
+  // D-2：记忆详情人物 chips 点击跳转 /soul 的定位目标（state.person = 锚 label）
+  const highlightPerson = (location.state as { person?: string } | null)?.person;
   const auth = readAuth();
   const currentUserId = auth?.user_id ?? '';
   const { activeTeamId } = useTeams();
@@ -123,6 +128,8 @@ export function SoulPage() {
             </section>
 
             <FeelingCard blockId={blockId} />
+
+            <PersonSection blockId={blockId} highlight={highlightPerson} />
 
             <section className="_soul-card" aria-label={t('soul.pending.title')}>
               <div className="_soul-card-title">{t('soul.pending.title')}</div>

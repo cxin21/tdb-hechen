@@ -10,11 +10,14 @@
  * soul-utils.buildSoulView（纯函数，根 vitest 单测；批 2 图详情卡复用）。
  * 宁缺毋滥：无灵魂数据且非持续态 → 返回 null（不打扰）。
  */
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { type SoulView } from './soul-utils';
 
 export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boolean }) {
   const { t } = useTranslation();
+  // D-2：人物 chips 点击 → /soul 人物专卡定位（state.person=label）
+  const navigate = useNavigate();
   if (!soul.hasSoul && !durative) return null;
 
   return (
@@ -28,11 +31,17 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
           🎯 #{label}
         </span>
       ))}
-      {/* 👥 人物锚 chips（S2/U3：metadata.personRefs；人物徽标） */}
+      {/* 👥 人物锚 chips（S2/U3 + D-2：点击 → /soul 人物专卡定位——设计有的全部可见） */}
       {soul.personRefs.map((label) => (
-        <span key={`person:${label}`} className="_soul-chip _soul-chip--person" title={`人物锚：${label}`}>
+        <button
+          key={`person:${label}`}
+          type="button"
+          className="_soul-chip _soul-chip--person _soul-chip--clickable"
+          title={`人物锚：${label}（点击前往灵魂页人物专视图）`}
+          onClick={() => void navigate('/soul', { state: { person: label } })}
+        >
           👥 @{label}
-        </span>
+        </button>
       ))}
       {/* 🧠 身份事实 chips（S2/U3：identityRefs 切片徽标） */}
       {soul.identityRefs.map((label) => (

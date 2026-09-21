@@ -19,6 +19,19 @@
 - **D-0b（彻底覆盖路径面）**：`/v3/atomic/search` 映射第三份内联拷贝同走单一源——`handleAtomicSearchShape`（scene_name/priority 补齐；搜索行类型 MemorySearchResultItem 不含 session/timestamp×3，诚实缺列）+ BFF /chat-memory/search 透传同补。RED 2 用例先行→GREEN 5/5；vitest 654→659 全绿、tsc 222 持平、面板 112+build。活体：search 出参 scene_name/priority 实值在场。教训登记：补丁 python 重写整文件时 newline="" 将 CRLF 文件统一为 LF（chat-memory.ts 等 3 文件 6155/866/876 行重写）——e8e0651 按 O19 铁律恢复 CRLF，diff vs HEAD~1 仅剩 27 行真实改动。
 
 ---
+## 👥 D-2：人物锚专视图 + chips 可达性（P2 硬令"设计有的全部可见"，2026-09-21）
+
+### Added（MemoryPanel/web）
+
+- **SoulPage 人物专视图（PersonSection 新组件）**：每人物一卡——👥徽标 + label + role + 方向徽标（趋近/回避/中性，personDir 同语义）+ aliases + 信念强度 + **证据链展开**（label+aliases 反查 → personRefs 命中过滤 → record_id 去重 → L1 行列表逐行展示：时间/实见推断/正文——溯源到具体 L1 行）。置于感受段与裁决流之间；无人物锚宁缺毋滥不渲染。
+- **记忆详情人物 chips 点击可达**：SoulSection 人物 chips 由 span 升级为 button——点击 navigate('/soul', state:{person:label})，SoulPage PersonSection 自动展开该人物证据链并滚动定位（高亮卡）。
+- **纯逻辑单一源 `person-view.ts`**：buildPersonRows（active 人物筛选+attrs 解析）/ directionLabel / collectPersonEvidence（与 VAP handleViewRelated 反查口径收敛同源）。
+- TDD：`tests/person-view.test.ts` RED 先行（5 用例：筛选/attrs 损坏降级/方向词映射/证据 personRefs 过滤去重/空 refs 全滤）→ GREEN 5/5。**RED 阶段修复：parsePersonAttrs catch 返回 {} 致下游 aliases=undefined（宁缺毋滥语义应为 []）——单测实测暴露。**
+- i18n：soul.person.* 六键（zh/en）；CSS：_soul-person-* 族+chips hover 可达 affordance。
+- 门禁：面板 vitest 112→117 全绿（+5 golden）· vite build 成功 · web tsc 存量 2 不新增。
+- 教训登记：CRLF 文件补丁锚须显式 \r\n 形态（首版锚未转行尾被 ABORT 拦截零写入，二版修复）；vitest transform 缓存曾致"磁盘与执行面不符"假象，清 node_modules/.vite 后排除。
+
+---
 ## 🎨 UI 2.0 Phase 1：灵魂一级页（用户拍板③，2026-09-20）
 
 ### Added（MemoryPanel/web）
