@@ -3388,6 +3388,7 @@ export class VectorStore implements IMemoryStore {
               valence?: number;
               arousal?: number;
               significance?: number;
+              sensitivity?: string;
             }
           | undefined;
 
@@ -3431,6 +3432,8 @@ export class VectorStore implements IMemoryStore {
           valence: meta.valence ?? undefined,
           arousal: meta.arousal ?? undefined,
           significance: meta.significance ?? undefined,
+          // D-3：敏感性透传（向量路 L1SearchResult 数据面——徽章/R11 信号源）
+          sensitivity: meta.sensitivity ?? undefined,
         });
       }
 
