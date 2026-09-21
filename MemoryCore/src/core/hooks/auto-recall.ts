@@ -1454,6 +1454,8 @@ export async function searchHybrid(
                     certainty: r.certainty,
                     valence: r.valence,
                     significance: r.significance,
+                    // D-3：敏感性透传（分层候选池 soul 源——徽章/R11）
+                    sensitivity: (r as { sensitivity?: string }).sensitivity,
                     metadata,
                   },
                 };
