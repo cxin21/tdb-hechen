@@ -65,3 +65,22 @@ describe("D-3b: parseExtractionResult sensitivity 透传（丢值根因修复回
     expect(scenes[0]?.memories[0]?.sensitivity).toBe("health");
   });
 });
+
+
+import { normalizeSensitivity } from "./record/l1-extractor.js";
+
+describe("D-3c: sensitivity 确定性枚举门单一源（F-T1-1 修复回归）", () => {
+  it("undefined → 'none'（不得串化 'undefined'——DB 已实测 4 行污染）", () => {
+    expect(normalizeSensitivity(undefined)).toBe("none");
+  });
+  it("null → 'none'", () => {
+    expect(normalizeSensitivity(null)).toBe("none");
+  });
+  it("非法值 'secret' → 'none'（确定性枚举门）", () => {
+    expect(normalizeSensitivity("secret")).toBe("none");
+  });
+  it("'health'/'none' 合法透传", () => {
+    expect(normalizeSensitivity("health")).toBe("health");
+    expect(normalizeSensitivity("none")).toBe("none");
+  });
+});

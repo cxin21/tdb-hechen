@@ -16,6 +16,14 @@ import type { ConversationMessage } from "../conversation/l0-recorder.js";
 
 // D-3（2026-09-21）：敏感性枚举白名单（确定性门——LLM 只提议，非法值裁决为 none）
 const SENSITIVITY_ENUM = new Set(["none", "health", "finance", "relationship"]);
+/** F-T1-1（2026-09-22 任务1复查发现）：sensitivity 确定性枚举门单一源——
+ *  undefined/null/缺失/非法一律归 "none"，禁止串化（此前 String(undefined)="undefined"
+ *  落库 4 行污染：生产 2 + ev17e 2）。消费方=主映射 sensitivity 行（写路面）。 */
+export function normalizeSensitivity(raw: unknown): "none" | "health" | "finance" | "relationship" {
+  const s = typeof raw === "string" ? raw : raw == null ? "none" : String(raw);
+  return (SENSITIVITY_ENUM.has(s) ? s : "none") as "none" | "health" | "finance" | "relationship";
+}
+
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
@@ -270,9 +278,7 @@ export async function extractL1Memories(params: {
         arousal: mem.arousal,
         significance: mem.significance,
         // D-3 确定性枚举门：仅白名单放行，非法/缺失 → none（LLM 只提议，代码裁决）
-        sensitivity: SENSITIVITY_ENUM.has(String((mem as { sensitivity?: string }).sensitivity ?? "none"))
-          ? (String((mem as { sensitivity?: string }).sensitivity) as "none" | "health" | "finance" | "relationship")
-          : "none",
+        sensitivity: normalizeSensitivity((mem as { sensitivity?: string }).sensitivity),
       });
     }
   }
