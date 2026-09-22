@@ -8,6 +8,18 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🧬 F-T4-1：L1 列表路属性表 D-0 七列/归属五列/sensitivity 丢值修复（任务4 全量展示验收发现，2026-09-22）
+
+### Fixed（MemoryPanel/web）
+
+- **发现链（用户看不到=没做红线命中）**：任务4 活体复核中，L1 列表路展开 `🧬 属性 (10)` 仅现 10 个基础键——**scene_name/priority/session×2/timestamp×3（D-0 七列）+ task_id/team_id/user_id/agent_id/version + sensitivity（D-3）全缺**；逐环取证：DB 实值全在场（`l1_records` 行 scene_name=生产场景名/priority=88/session×2/timestamp×3/task_id/version=2）→ 内核 `/v3/atomic/query` 直探七字段实值在场 → BFF `/chat-memory/layer` 出参透传全在场（页面 fetch 实锚 firstKeys 29 项）→ **丢值环=`mapLayerItem`**（memory-utils.ts 只透传 13 字段，列表路 `res.items.map(mapLayerItem)` 把其余列全部丢弃）。D-0 轮验收走的是 atomic/query 详情与搜索路（`ChatMemorySearchHit` 直传不经此映射），列表路漏列至今未被发现。
+- **修复**：`mapLayerItem` 抽单一源 `utils/map-layer-item.ts`（纯函数、零运行时 import 仅 type——可被根 vitest node 环境直测），透传列补齐（D-0 七列+task/team/user/agent/version+sensitivity），缺失字段 undefined 保持（宁缺毋滥）；`memory-utils.ts` 原地 re-export 保持既有 import 面不变。
+- **TDD**：`tests/memory-utils-maplayer.test.ts` RED 1 failed/1 passed（透传断言 failed 钉住缺口）→ 修复后 GREEN 2/2；vitest **129**/129（+2）。
+- **测试基建（随批）**：根 `vitest.config.ts` 增 `@` → `web/src` 别名（web 源码 `@/` 在根 vitest 默认不解析；仅测试解析用，web 自身 tsconfig 别名不动）；`memory-utils.ts` 清理抽取后残留的未用类型 import（web tsc 3→**存量 2 持平**）。
+- **活体验证**：搜索路 AttributesSection 属性表 DOM 断言 19 键在场（`scene_name`=生产场景名/priority/team×3/version/occurred_at/certainty/source/valence/arousal/significance/created_at/updated_at/recall_count/last_recalled_at/subject/id/type）——D-0 列实值渲染能力确证；列表路=纯函数测试+re-export 链（Browser 驱动 agent 下拉在本会话反复失败未能现场展开列表路属性表，登记为验收遗留观察项，代码+测试证据完整）。
+- 门禁：面板 vitest **129/129** · web tsc 存量 2 持平 · vite build ✓ · tdai-panel 重启 200 · 密钥扫描 0。事故登记：vitest 别名解析/导入链（memory-utils→teamApi→i18n 不可 node 载入）→拆纯函数解决；脚本中文又两次被 ASCII 编码毁（py heredoc/测试文件正则替换）→**固化为 UTF-8 无 BOM 手势**；浏览器 agent 下拉与截屏陈旧帧按既有手势处理。
+
+---
 ## ⚖️ 任务6② UI P1：裁决批量操作条（双面）+ 证据链折叠计数预取（2026-09-22）
 
 ### Added（MemoryPanel/web）

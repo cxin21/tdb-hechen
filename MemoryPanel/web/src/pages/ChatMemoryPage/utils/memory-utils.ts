@@ -2,7 +2,7 @@
  * memory-utils —— Chat Memory 页的常量、纯工具函数与类型。
  * 从 ChatMemoryPanel.tsx 拆出。
  */
-import { ApiError, type ChatMemoryLayerItem } from '@/lib/teamApi';
+import { ApiError } from '@/lib/teamApi';
 import type { MemoryBlock, MemoryLayer } from '../constants/types';
 
 export const LAYER_PAGE_SIZE: Record<MemoryLayer, number> = { L0: 20, L1: 20, L2: 50, L3: 50 };
@@ -28,27 +28,9 @@ export function isRangeTooLargeError(e: unknown): boolean {
   return e instanceof ApiError && e.message === 'RANGE_TOO_LARGE';
 }
 
-export function mapLayerItem(i: ChatMemoryLayerItem) {
-  return {
-    id: i.id,
-    title: i.title,
-    body: i.body,
-    refs: i.refs,
-    tags: i.tags,
-    created_at: i.created_at,
-    // 灵魂记忆字段透传（时空网格 / 记忆图 UI）
-    occurred_at: i.occurred_at,
-    valid_start: i.valid_start,
-    valid_end: i.valid_end,
-    certainty: i.certainty,
-    source: i.source,
-    valence: i.valence,
-    arousal: i.arousal,
-    significance: i.significance,
-    // L1 metadata 透传（价值锚 coreRefs / 回忆统计 recall_count）
-    metadata: i.metadata,
-  };
-}
+// mapLayerItem 已抽单一源 map-layer-item.ts（F-T4-1：纯函数需 node vitest 直测；
+// 此处 re-export 保持既有 import 面不变）。
+export { mapLayerItem } from './map-layer-item';
 
 /**
  * 剥掉 scenario（L2）markdown 的 META 头。
