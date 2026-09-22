@@ -8,20 +8,28 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { chatMemoryApi, type PendingItem } from '@/lib/teamApi';
+import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
   core_value: '价值锚提案',
   strict_rule: '行为红线提案',
 };
 
-function PendingRow({ id, slot, content, busy, onDecide }: {
-  id: string; slot: string; content: string; busy: string;
+function PendingRow({ id, slot, content, busy, batchBusy, checked, onToggle, onDecide }: {
+  id: string; slot: string; content: string; busy: string; batchBusy: boolean;
+  checked: boolean; onToggle: (id: string) => void;
   onDecide: (id: string, d: 'adopted' | 'rejected') => void;
 }) {
   return (
     <li className="_spending-row">
       <div className="_spending-body">
         <div className="_spending-meta">
+          <input
+            type="checkbox"
+            className="_spending-check"
+            checked={checked}
+            onChange={() => onToggle(id)}
+          />
           <span className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`}>
             {SLOT_LABEL[slot] ?? slot}
           </span>
@@ -32,7 +40,7 @@ function PendingRow({ id, slot, content, busy, onDecide }: {
           <button
             type="button"
             className="_soul-btn-primary _soul-btn-sm"
-            disabled={busy === id}
+            disabled={batchBusy || busy === id}
             onClick={() => onDecide(id, 'adopted')}
           >
             采纳
@@ -40,7 +48,7 @@ function PendingRow({ id, slot, content, busy, onDecide }: {
           <button
             type="button"
             className="_soul-btn-text"
-            disabled={busy === id}
+            disabled={batchBusy || busy === id}
             onClick={() => onDecide(id, 'rejected')}
           >
             拒绝
@@ -57,6 +65,9 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // 任务6② P1：批量裁决操作条（O13 单向状态机——批量操作 tea.confirm 二次确认）。
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const refresh = useCallback(() => {
     setItems(null);
@@ -68,6 +79,14 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  function toggleSel(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
   async function decide(id: string, decision: 'adopted' | 'rejected') {
     setBusy(id);
     setError('');
@@ -77,6 +96,30 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     } catch {
       setError('决策失败，请重试');
     } finally { setBusy(''); }
+  }
+
+  async function batchDecide(decision: 'adopted' | 'rejected') {
+    if (selected.size === 0 || batchBusy) return;
+    const ok = await tea.confirm({
+      message: decision === 'adopted' ? '批量采纳所选提案？' : '批量拒绝所选提案？',
+      description: `共 ${selected.size} 条；O13 单向状态机，操作后不可复决`,
+      okText: '确认',
+    });
+    if (!ok) return;
+    setBatchBusy(true);
+    setError('');
+    const failedIds: string[] = [];
+    for (const id of Array.from(selected)) {
+      try {
+        await chatMemoryApi.pendingDecide(blockId, id, decision);
+      } catch {
+        failedIds.push(id);
+      }
+    }
+    setBatchBusy(false);
+    setSelected(new Set());
+    if (failedIds.length > 0) setError(`批量决策部分失败（${failedIds.length} 条），请重试`);
+    refresh();
   }
 
   if (items === null || items.length === 0) return null;
@@ -93,6 +136,36 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
       <div className="_soul-section-head">
         <span className="_soul-section-title">{t('soul.pending.title')}</span>
         <span className="_soul-chip _soul-chip--red">{items.length} 待裁决</span>
+      </div>
+      <div className="_spending-batch">
+        <label className="_spending-selall">
+          <input
+            type="checkbox"
+            checked={selected.size === items.length && items.length > 0}
+            onChange={() =>
+              setSelected(
+                selected.size === items.length ? new Set() : new Set(items.map((q) => q.pending_id)),
+              )
+            }
+          />
+          全选
+        </label>
+        <button
+          type="button"
+          className="_soul-btn-primary _soul-btn-sm"
+          disabled={batchBusy || selected.size === 0}
+          onClick={() => void batchDecide('adopted')}
+        >
+          批量采纳（{selected.size}）
+        </button>
+        <button
+          type="button"
+          className="_soul-btn-text"
+          disabled={batchBusy || selected.size === 0}
+          onClick={() => void batchDecide('rejected')}
+        >
+          批量拒绝（{selected.size}）
+        </button>
       </div>
       {[...groups.entries()].map(([slot, list]) => {
         const collapsed = collapsedGroups.has(slot);
@@ -119,6 +192,9 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
                     slot={p.slot}
                     content={p.content}
                     busy={busy}
+                    batchBusy={batchBusy}
+                    checked={selected.has(p.pending_id)}
+                    onToggle={toggleSel}
                     onDecide={decide}
                   />
                 ))}

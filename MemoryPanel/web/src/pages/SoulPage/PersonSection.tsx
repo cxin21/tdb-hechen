@@ -5,7 +5,7 @@
  * 证据链折叠态计数（「证据链 · 37」——C11 判据：折叠态可见条数）+ 展开时间轴
  * （默认 10 条 +「展开其余 n 条」）。正文过 maskSecrets（V-02 P0 凭据掩码）。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { chatMemoryApi } from '@/lib/teamApi';
 import {
@@ -28,6 +28,8 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
   const [evidenceLoading, setEvidenceLoading] = useState<Set<string>>(new Set());
   const [failed, setFailed] = useState<Set<string>>(new Set());
   const [evidenceLimit, setEvidenceLimit] = useState<Record<string, number>>({});
+  // 任务6② P1：证据链折叠计数预取——rows 到位后逐行预取（与展开共用缓存）。
+  const prefetchedRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!props.blockId) { setRows([]); setLoaded(true); return; }
@@ -55,15 +57,19 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.highlight, rows]);
 
-  async function toggleEvidence(row: PersonRow) {
-    if (evidence[row.value_id] || evidenceLoading.has(row.value_id)) {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(row.value_id)) next.delete(row.value_id); else next.add(row.value_id);
-        return next;
-      });
-      return;
+  /** 证据链取证（预取与展开共用同一缓存；失败置空数组=诚实空态）。 */
+  // P1（任务6②）：折叠态计数预取——prefetchedRef 防重；失败由 fetchEvidence 落空态。
+  useEffect(() => {
+    if (!loaded || !props.blockId || rows.length === 0) return;
+    for (const r of rows) {
+      if (prefetchedRef.current.has(r.value_id)) continue;
+      prefetchedRef.current.add(r.value_id);
+      void fetchEvidence(r);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, rows, props.blockId]);
+
+  async function fetchEvidence(row: PersonRow) {
     setEvidenceLoading((prev) => new Set(prev).add(row.value_id));
     try {
       const queries = [row.label, ...row.aliases];
@@ -72,7 +78,6 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
       for (const r of all) merged.push(...((r.items ?? []) as unknown as Array<Record<string, unknown>>));
       const ev = collectPersonEvidence(merged, queries);
       setEvidence((prev) => ({ ...prev, [row.value_id]: ev }));
-      setExpanded((prev) => new Set(prev).add(row.value_id));
     } catch {
       setEvidence((prev) => ({ ...prev, [row.value_id]: [] }));
       setFailed((prev) => new Set(prev).add(row.value_id));
@@ -83,6 +88,19 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
         return next;
       });
     }
+  }
+
+  async function toggleEvidence(row: PersonRow) {
+    if (evidence[row.value_id] || evidenceLoading.has(row.value_id)) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(row.value_id)) next.delete(row.value_id); else next.add(row.value_id);
+        return next;
+      });
+      return;
+    }
+    await fetchEvidence(row);
+    setExpanded((prev) => new Set(prev).add(row.value_id));
   }
 
   if (!loaded) return null;
@@ -123,7 +141,7 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
                   <span className="_soul-meta">w {(r.weight ?? 0).toFixed(2)}</span>
                 </span>
                 <button type="button" className="_soul-btn-ghost _soul-personrow-toggle" onClick={() => void toggleEvidence(r)}>
-                  {loading ? t('soul.person.loading') : isOpen ? t('soul.person.collapse') : `${t('soul.person.expand')} · ${ev ? ev.length : '—'}`}
+                  {loading ? t('soul.person.loading') : isOpen ? t('soul.person.collapse') : `${t('soul.person.expand')} · ${ev ? ev.length : '…'}`}
                 </button>
               </div>
               {isOpen && (

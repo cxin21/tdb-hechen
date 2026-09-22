@@ -306,3 +306,16 @@
   border-radius: 8px;
   padding: 0 8px;
 }
+
+/* 任务6② P1：裁决批量操作条 */
+._pending-batch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+._pending-check {
+  margin-right: 6px;
+}

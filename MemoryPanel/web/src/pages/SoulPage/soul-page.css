@@ -203,3 +203,16 @@
 ._va-kebab-menu > button:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
 ._va-kebab-menu > ._va-kebab-danger { color: var(--soul-avoid); }
 ._va-kebab-menu > ._va-kebab-danger:hover { background: var(--soul-avoid-bg); color: var(--soul-avoid); }
+
+/* 任务6② P1：待裁决批量操作条（右栏队列） */
+._spending-batch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 10px;
+  flex-wrap: wrap;
+}
+
+._spending-check {
+  margin-right: 6px;
+}
