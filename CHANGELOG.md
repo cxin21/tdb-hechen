@@ -8,6 +8,16 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🔍 任务1 收口轮：§4.1/§6.5 余条款判定 + U1 徽标/U6 占位文案修复（2026-09-22）
+
+### Fixed（MemoryPanel/web）
+
+- **§6.5 U1 收口（spec 原文：「identity + self_identity 两槽内容只读展示（+version/updated_at/source 徽标）」）**：此前 `IdentitySection` 只渲双槽正文、丢三徽标——内核 `/v3/core-memory/read` slots 本就返回全字段（`sqlite.ts:2355` readCore SELECT `slot,content,source,version,updated_at`；BFF `identity/read` 纯透传），纯 UI 消费缺口。修=新增纯函数 `identityMetaOf`（同槽首行三字段，缺失/非法一律 undefined 不造假值）+ 双槽徽标行（`v{n}` / `source: …` / 本地时间，全缺不渲染）；`identityRead` 出参类型同步三可选字段。TDD：RED 3（`tests/identity-meta.test.ts`，跨包 import 前例=`../web/src/…`）→ GREEN 3/3。活体：价值锚页身份区徽标 `v4 / v7 / source: identity-discovery / 2026/9/19 21:39:50` 截图+DOM 双证。
+- **§6.5 U6 收口（spec 原文：「预留徽章位（不实施，拍板后启用）」→ D-3 已实施，占位残迹误导）**：锚池配额条两处 `敏感度（待拍板）` 改如实 `敏感度（L1 行已实施）`；注释同步。活体：配额条 OCR（主题 15/15 · 人物 1/8 · 品格 0/8 · 敏感度 (L1 行已实施)）+DOM 双证。
+- **判定表摘要（§4.1 三层体现）**：19 列 + metadata 8 项逐列对照（召回注入徽章=§2.7 round 3 活体；灵魂注入=soul[发生/实见/情感/重要度]+活动时间；Panel UI=AttributesSection 全列+SoulSection chips personRefs/identityRefs+memory-graph 语义着色）——除 recurrence 行（D-4 gated 设计已呈等拍板 📝）与 spec §4.1 L237/L238 文本滞后（任务6① 已案）外全 ✅；§6.5 U2（node_type 徽标/三池配额/role+aliases 行内编辑/aliases 并入反查计数 `queries=[label,...aliases]`）、U3（refsOf 单点泛化三 refs）、U4（handleViewRelated 人物反查）、U5（零适配）、U7（配额条并入锚面板）全 ✅。
+- 门禁：面板 vitest 124→**127**（+3）全绿 · web tsc 存量 2 持平 · vite build ✓ · tdai-panel 重启 200 · 密钥扫描 0。事故登记：脚本内含中文锚点需按目标文件行尾转换（`双组皆空` 注释实锚在 identity-utils.ts 而非 IdentitySection.tsx——锚选错文件 ABORT 1 次，取证后改锚重跑）。
+
+---
 ## 📓 T5 召回/灵魂注入日志系统（用户 2026-09-22 新令·拍板定案）——采集点单一源 + BFF 直读 + ChatMemory「召回日志」UI 全链（2026-09-22）
 
 ### Added（MemoryCore + MemoryPanel）
