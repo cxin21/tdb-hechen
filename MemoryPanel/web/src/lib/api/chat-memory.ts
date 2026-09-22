@@ -124,6 +124,33 @@ export interface ChatMemorySearchHit extends ChatMemoryLayerItem {
   score?: number;
 }
 
+/** 任务5（D-8 拍板定案，2026-09-22）：召回/灵魂注入日志单条——与 writer 侧
+ *  MemoryCore RecallJournalEntry 对齐（BFF 直读 /data/tdai-memory/logs/recall）。
+ *  前向兼容：可选字段缺失一律 undefined 不渲染（宁缺毋滥）。 */
+export interface RecallJournalEntry {
+  ts: string;
+  query: string;
+  strategy: string;
+  teamId: string;
+  userId?: string;
+  agentId?: string;
+  sessionKey?: string;
+  sessionReused: boolean;
+  layered: boolean;
+  conclusionCount: number;
+  experienceCount: number;
+  searchTiming?: {
+    ftsMs: number;
+    embeddingMs: number;
+    ftsHits: number;
+    embeddingHits: number;
+  };
+  /** 灵魂注入块原文（该轮注入的 soul 段；缺省=上游未携带） */
+  block?: string;
+  /** 召回记忆行（formatMemoryLine 输出原文） */
+  memoryLines?: string[];
+}
+
 const CHAT_MEMORY_PREFIX = '/api/v1/chat-memory';
 
 async function chatMemoryCall<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
@@ -165,6 +192,21 @@ export const chatMemoryApi = {
   /** 我的资产分配（owner=me 的 agent 列表） */
   myAgents: (teamId: string) =>
     chatMemoryCall<{ items: ChatMemoryBlock[] }>('my-agents', { team_id: teamId }),
+
+  /** 召回/灵魂注入日志（D-8 拍板定案）：BFF 直读日志文件，分页倒序+租户过滤 */
+  recallJournal: (teamId: string, agentId: string, page = 1, pageSize = 20) =>
+    chatMemoryCall<{
+      items: RecallJournalEntry[];
+      total: number;
+      page: number;
+      page_size: number;
+      has_more: boolean;
+    }>('recall-journal', {
+      team_id: teamId,
+      agent_id: agentId,
+      page,
+      page_size: pageSize,
+    }),
 
   /** L0/L1/L2/L3 分层懒加载；L2 可传 path 懒读单个 Markdown 原文。
    *  L0 游标分页：第一页传 offset=0；后续页传 beforeTs（最后一条消息的 created_at），

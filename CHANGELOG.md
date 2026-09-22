@@ -8,6 +8,17 @@
 `MemoryProxy` / SDK。
 
 ---
+## 📓 T5 召回/灵魂注入日志系统（用户 2026-09-22 新令·拍板定案）——采集点单一源 + BFF 直读 + ChatMemory「召回日志」UI 全链（2026-09-22）
+
+### Added（MemoryCore + MemoryPanel）
+
+- **内核 writer（`0271d82`）**：采集点=`performLayeredRecall` 返回点单一源（钩子路+路由路两路共用，禁第二采集点防 O12 双计重演）；entry=`ts/query/strategy/租户三元组/sessionReused/layered/conclusionCount/experienceCount/searchTiming/block/memoryLines`；best-effort 双层吞错=日志失败零影响召回热路径；写入 `<dataDir>/logs/recall/recall-journal-{team}-{agent}.jsonl`，大小轮转缺省 5MB、数量上限缺省 5（`.1.jsonl` stem 命名，logrotate 惯例）；config=`memory.recallJournal.{enabled,rotationSizeMB,maxFiles}` 挂 memory 层级，clamp (0,100]/[1,100]，**缺省 enabled=false=逐位现状**。TDD RED 6→GREEN 6/6（轮转命名约定错位直调诊断脚本实锚后按测试契约修）；vitest 677（+6）/tsc 222 持平；enabled=false 下 `logs/recall/` 目录不存在=逐位现状实证。
+- **BFF 读面（`c9a9261`）**：`/chat-memory/recall-journal` 直读路由（分页倒序+租户过滤+轮转聚合；目录=env `TDAI_RECALL_JOURNAL_DIR` ?? `/data/tdai-memory/logs/recall`，与 core writer 同源语义）；零改内核；RED 4→GREEN 4，Panel vitest 124/124。事故登记：路由插桩吞上一路由收尾 `});`→接缝两次修复（插入型补丁接缝检查已录入 SOP）。
+- **UI 段（本批）**：ChatMemoryPage 第三视图「召回日志」=`RecallJournalView`（每轮一卡：时间+query 原文+meta 徽标（策略/分层召回/会话复用/结论/经历/FTS·向量耗时）+灵魂注入块 details 折叠+召回记忆行列表；agent 下拉+刷新+共 N 轮；分页 prev/next；zh/en 双语）。防御渲染：可选字段缺失一律不渲染；错误态诚实文案不造数据；memory/anchors 两既有视图逐位现状（_rj-* 零泄漏 DOM 断言）。事故登记：i18n 插值 key 误用单 `{x}`（仓库惯例 `{{x}}`）→8 key 修正重验。
+- **ev18 真数据**：生产 yaml 开 `enabled: true`+双重启后 12 轮真实召回（生产租户双 agent，覆盖同 session 同 query/新 session/无 session 三形态）逐轮核验：租户分文件成立（两 agent 两文件）、entry 14 字段齐全、sessionReused 活体语义正确（同 session 同 query→true，其余 false）、钩子路与路由路双路均被单一采集点捕获。UI 真数据验收=截图+DOM 断言并用：真实徽标数值/灵魂块折叠展开（`<soul-identity>` 原文在场）/分页（共 N 轮+has_more+页码切换）。
+- 门禁：面板 vitest 124 持平 · web tsc 存量 2 持平 · vite build ✓ · tdai-panel 重启 200 · 密钥扫描 0。事故登记：浏览器截屏流陈旧帧×3（像素 diff=0 实锚）→ 刷新+强制重绘恢复，DOM+裁剪 OCR 双通道交叉确认后收口。
+
+---
 ## 🔢 D-0：内核 atomic/query 出参七字段补齐——UI 属性表全列呈现（2026-09-21）
 
 ### Fixed（MemoryCore + MemoryPanel）

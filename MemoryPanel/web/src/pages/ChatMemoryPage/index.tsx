@@ -4,6 +4,7 @@ import { Segment } from 'tea-component';
 import { ResourcePage } from '@/pages/ResourcePage';
 import ChatMemoryPanel from './components/ChatMemoryPanel';
 import ValueAnchorsPanel from './components/ValueAnchorsPanel';
+import RecallJournalView from './components/RecallJournalView';
 
 /**
  * ChatMemoryPage —— 页级视图切换（DS-PANEL-UI-WIKI-SOURCE-001 §2.4，Task 5）：
@@ -12,20 +13,27 @@ import ValueAnchorsPanel from './components/ValueAnchorsPanel';
  */
 export function ChatMemoryPage() {
   const { t } = useTranslation();
-  const [view, setView] = useState<'memory' | 'anchors'>('memory');
+  const [view, setView] = useState<'memory' | 'anchors' | 'journal'>('memory');
   return (
     <ResourcePage>
       <div className="_memory-page-switch">
         <Segment
           value={view}
-          onChange={(v) => setView(v as 'memory' | 'anchors')}
+          onChange={(v) => setView(v as 'memory' | 'anchors' | 'journal')}
           options={[
             { value: 'memory', text: t('memory.view.memory') },
             { value: 'anchors', text: t('memory.view.anchors') },
+            { value: 'journal', text: t('memory.view.journal') },
           ]}
         />
       </div>
-      {view === 'memory' ? <ChatMemoryPanel /> : <ValueAnchorsPanel />}
+      {view === 'memory' ? (
+        <ChatMemoryPanel />
+      ) : view === 'journal' ? (
+        <RecallJournalView />
+      ) : (
+        <ValueAnchorsPanel />
+      )}
     </ResourcePage>
   );
 }

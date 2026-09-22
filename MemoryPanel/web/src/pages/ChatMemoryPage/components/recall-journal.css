@@ -1,0 +1,150 @@
+/* 召回日志（任务5 D-8 拍板定案，2026-09-22）——每轮一卡样式 */
+._rj-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 24px;
+}
+
+._rj-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+._rj-total {
+  color: var(--td-text-color-secondary, #86909c);
+  font-size: 13px;
+}
+
+._rj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+._rj-card {
+  border: 1px solid var(--td-border-color, #e5e6eb);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--td-bg-color-container, #fff);
+}
+
+._rj-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+._rj-time {
+  color: var(--td-text-color-secondary, #86909c);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+._rj-query {
+  font-weight: 600;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+._rj-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+._rj-badge {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--td-brand-color-1, #e8f3ff);
+  color: var(--td-brand-color, #0052d9);
+}
+
+._rj-badge--warn {
+  background: var(--td-warning-color-1, #fff3e1);
+  color: var(--td-warning-color, #ed7b2f);
+}
+
+._rj-badge--muted {
+  background: var(--td-gray-color-2, #f2f3f5);
+  color: var(--td-text-color-secondary, #86909c);
+}
+
+._rj-soul {
+  margin-top: 10px;
+}
+
+._rj-soul summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--td-brand-color, #0052d9);
+  user-select: none;
+}
+
+._rj-soul-pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--td-gray-color-1, #f7f8fa);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+._rj-lines {
+  margin-top: 10px;
+}
+
+._rj-lines-title {
+  font-size: 12px;
+  color: var(--td-text-color-secondary, #86909c);
+  margin-bottom: 4px;
+}
+
+._rj-lines ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+._rj-line {
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+._rj-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+._rj-page-no {
+  font-size: 13px;
+  color: var(--td-text-color-secondary, #86909c);
+}
+
+._rj-tenant {
+  font-size: 12px;
+  color: var(--td-text-color-secondary, #86909c);
+}
+
+._rj-empty {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--td-text-color-secondary, #86909c);
+  font-size: 13px;
+}
+
+._rj-empty--error {
+  color: var(--td-error-color, #d54941);
+}
