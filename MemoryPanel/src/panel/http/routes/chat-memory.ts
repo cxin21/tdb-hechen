@@ -32,6 +32,8 @@
  *   POST /chat-memory/import          导入历史对话到 agent 的 L0
  */
 import type { Hono } from "hono";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { validatePanelMetaHeaders } from "../middleware/validate-panel-headers.js";
 import { respondControlError, respondEnvelope } from "../envelope.js";
 import type { PanelDeps } from "../../panel-deps.js";
@@ -2822,7 +2824,61 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         `SEARCH_FAILED: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  });
+  }
+  );
+
+  // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志直读——分页倒序+租户过滤，零改内核。
+  // ACL=validatePanelMetaHeaders+resolveCallerUserId（面板登录身份）；租户参数必填；
+  // 目录=env TDAI_RECALL_JOURNAL_DIR ?? /data/tdai-memory/logs/recall（core writer 同源语义）。
+  api.post(
+    "/chat-memory/recall-journal",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const teamId = typeof body?.team_id === "string" ? body.team_id : "";
+      const agentId = typeof body?.agent_id === "string" ? body.agent_id : "";
+      if (!teamId || !agentId) return respondControlError(c, 400, "MISSING_TENANT");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const page = Math.max(1, Math.floor(Number(body?.page) || 1));
+      const pageSize = Math.min(Math.max(Math.floor(Number(body?.page_size) || 20), 1), 100);
+
+      const dir = process.env.TDAI_RECALL_JOURNAL_DIR ?? "/data/tdai-memory/logs/recall";
+      const stem = path.join(dir, `recall-journal-${encodeURIComponent(teamId)}-${encodeURIComponent(agentId)}`);
+      const items: Array<Record<string, unknown>> = [];
+      try {
+        const files = [`${stem}.jsonl`, ...[1, 2, 3, 4, 5].map((n) => `${stem}.${n}.jsonl`)].filter((f) => existsSync(f));
+        for (const f of files) {
+          const text = readFileSync(f, "utf8");
+          for (const line of text.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const e = JSON.parse(trimmed) as Record<string, unknown>;
+              if (e.teamId === teamId && ((e.agentId ?? "default") === agentId)) items.push(e);
+            } catch { /* 坏行跳过（best-effort 读面） */ }
+          }
+        }
+      } catch { /* 目录/文件缺失=空结果（宁缺毋滥，不报错） */ }
+
+      items.sort((a, b) => String(b.ts ?? "").localeCompare(String(a.ts ?? "")));
+      const total = items.length;
+      const start = (page - 1) * pageSize;
+      return respondEnvelope(
+        c,
+        okEnvelope(c, {
+          items: items.slice(start, start + pageSize),
+          total,
+          page,
+          page_size: pageSize,
+          has_more: start + pageSize < total,
+        }),
+      );
+    },
+  );
 }
 
 /**
