@@ -47,6 +47,7 @@ import { emotionSalienceOf, buildRankContext,
   type RankSignals,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isInvalidated } from "../recall/filter-invalidated.js";
+import { appendRecallJournal } from "../recall/recall-journal.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
 import {
@@ -697,6 +698,38 @@ export async function performLayeredRecall(params: {
       block = soulPrefix;
     }
   }
+
+  // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——采集点单一源（钩子与路由两路
+  // 共用于本函数返回点，禁第二份）。best-effort：writer 自吞错 + 本 try 兜底，零影响主链路。
+  try {
+    const journalCfg = cfg.recallJournal ?? { enabled: false, rotationSizeMB: 5, maxFiles: 5 };
+    if (journalCfg.enabled) {
+      appendRecallJournal(
+        path.join(pluginDataDir, "logs", "recall"),
+        {
+          teamId: params.isolationFilter?.teamId ?? profileIsolation.teamId ?? "default",
+          agentId: params.isolationFilter?.agentId ?? profileIsolation.agentId ?? "default",
+        },
+        {
+          ts: new Date().toISOString(),
+          query: userText,
+          strategy: effectiveStrategy,
+          teamId: params.isolationFilter?.teamId ?? profileIsolation.teamId ?? "default",
+          userId: params.isolationFilter?.userId,
+          agentId: params.isolationFilter?.agentId ?? profileIsolation.agentId ?? "default",
+          sessionKey: params.sessionKey,
+          sessionReused,
+          layered,
+          conclusionCount,
+          experienceCount,
+          searchTiming,
+          block,
+          memoryLines,
+        },
+        journalCfg,
+      );
+    }
+  } catch { /* 兜底：writer 已吞错，此处再兜一层 */ }
 
   return {
     memoryLines,

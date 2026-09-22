@@ -625,6 +625,13 @@ export interface OffloadConfig {
   compactionTimeoutMs?: number;
 }
 
+/** T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志旋钮（缺省 enabled=false=逐位现状）。 */
+export interface RecallJournalConfig {
+  enabled: boolean;
+  rotationSizeMB: number;
+  maxFiles: number;
+}
+
 /** Fully resolved plugin configuration (v3). */
 export interface MemoryTdaiConfig {
   /** Global prompt family; group-level promptMode can override it. */
@@ -634,6 +641,8 @@ export interface MemoryTdaiConfig {
   persona: PersonaConfig;
   pipeline: PipelineTriggerConfig;
   recall: RecallConfig;
+  /** T5（2026-09-22 拍板）：召回/灵魂注入日志（缺省关闭=逐位现状）。 */
+  recallJournal?: RecallJournalConfig;
   embedding: EmbeddingConfig;
   /** Storage backend: "sqlite" (default) or "tcvdb" */
   storeBackend: StoreBackend;
@@ -734,6 +743,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
 
   // --- Recall ---
   const recallGroup = obj(c, "recall");
+  const recallJournalGroup = obj(c, "recallJournal");
 
   // --- Embedding ---
   const embeddingGroup = obj(c, "embedding");
@@ -1209,6 +1219,21 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           enabled: bool(vr, "enabled") ?? false,
           timeoutMs: Math.max(0, num(vr, "timeoutMs") ?? 5000),
         };
+      })(),
+    },
+    // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——memory 层级独立组（缺省 false=逐位现状）；
+    // 大小轮转/数量上限全可配（clamp：rotationSizeMB (0,100]、maxFiles [1,100]）。
+    recallJournal: {
+      enabled: bool(recallJournalGroup, "enabled") ?? false,
+      rotationSizeMB: (() => {
+        const raw = num(recallJournalGroup, "rotationSizeMB");
+        if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return 5;
+        return Math.min(raw, 100);
+      })(),
+      maxFiles: (() => {
+        const raw = num(recallJournalGroup, "maxFiles");
+        if (raw === undefined || !Number.isFinite(raw) || raw < 1) return 5;
+        return Math.min(Math.floor(raw), 100);
       })(),
     },
     embedding: {
