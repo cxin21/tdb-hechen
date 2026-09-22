@@ -8,7 +8,30 @@
  */
 import { useEffect, useState } from 'react';
 import { chatMemoryApi } from '@/lib/teamApi';
-import { identityEmpty, splitIdentitySlots, type CoreSlotRow } from './identity-utils';
+import { identityEmpty, identityMetaOf, splitIdentitySlots, type CoreSlotRow, type IdentityMeta } from './identity-utils';
+
+/** U1 徽标（spec §6.5）：version/source/updated_at——数据内核已返回，纯 UI 消费补齐；
+  * 空对象/全缺 → 不渲染徽标行（宁缺毋滥）。 */
+function identityMetaBadges(meta: IdentityMeta | null) {
+  if (!meta) return null;
+  const items: string[] = [];
+  if (typeof meta.version === 'number') items.push(`v${meta.version}`);
+  if (meta.source) items.push(`source: ${meta.source}`);
+  if (meta.updated_at) {
+    const d = new Date(meta.updated_at);
+    items.push(Number.isNaN(d.getTime()) ? meta.updated_at : d.toLocaleString());
+  }
+  if (items.length === 0) return null;
+  return (
+    <div className="_id-meta">
+      {items.map((t) => (
+        <span className="_id-badge" key={t}>
+          {t}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export function IdentitySection(props: { blockId: string }) {
   const [slots, setSlots] = useState<CoreSlotRow[]>([]);
@@ -34,6 +57,8 @@ export function IdentitySection(props: { blockId: string }) {
   if (failed) return null;
   const { user, self } = splitIdentitySlots(slots);
   if (identityEmpty(user, self)) return null;
+  const metaSelf = identityMetaOf(slots, 'self_identity');
+  const metaUser = identityMetaOf(slots, 'identity');
 
   return (
     <section className="_id-section" aria-label="agent 身份区（只读）">
@@ -41,12 +66,14 @@ export function IdentitySection(props: { blockId: string }) {
         <div className="_id-block">
           <div className="_id-title">我是谁（agent 自我）</div>
           <pre className="_id-content">{self.join('\n')}</pre>
+          {identityMetaBadges(metaSelf)}
         </div>
       )}
       {user.length > 0 && (
         <div className="_id-block">
           <div className="_id-title">我心中的他（用户身份）</div>
           <pre className="_id-content">{user.join('\n')}</pre>
+          {identityMetaBadges(metaUser)}
         </div>
       )}
     </section>

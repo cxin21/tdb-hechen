@@ -10,6 +10,32 @@ export interface CoreSlotRow {
   slot: string;
   content: string;
   version?: number;
+  /** U1 徽标三字段（spec §6.5）：内核 readCore SELECT 已返回（sqlite.ts:2355）。 */
+  source?: string;
+  updated_at?: string;
+}
+
+/** U1 徽标数据形状：仅列 UI 消费的三字段（宁缺毋滥）。 */
+export interface IdentityMeta {
+  version?: number;
+  source?: string;
+  updated_at?: string;
+}
+
+/** U1 徽标数据纯函数：取同槽**首行**的 version/source/updated_at；
+  * 非数组/无匹配槽 → null；匹配行缺字段 → 空对象（诚实缺列，不造假值）。 */
+export function identityMetaOf(
+  slots: CoreSlotRow[] | null | undefined,
+  slot: string,
+): IdentityMeta | null {
+  if (!Array.isArray(slots)) return null;
+  const row = (slots ?? []).find((s) => s && s.slot === slot);
+  if (!row) return null;
+  const meta: IdentityMeta = {};
+  if (typeof row.version === 'number') meta.version = row.version;
+  if (typeof row.source === 'string' && row.source.trim() !== '') meta.source = row.source;
+  if (typeof row.updated_at === 'string' && row.updated_at.trim() !== '') meta.updated_at = row.updated_at;
+  return meta;
 }
 
 export interface SplitIdentitySlots {

@@ -286,7 +286,23 @@
 ._pending-btn.reject { color: #666; }
 ._pending-error { margin-top: 6px; color: #d4380d; font-size: 12px; }
 
-/* U7/T-C：分池配额迷你显示 + sensitivity 预留徽章位 */
+/* U7/T-C：分池配额迷你显示 + sensitivity 状态徽章（D-3 已实施，占位文案 2026-09-22 修正） */
 ._va-quota { display: flex; gap: 10px; align-items: center; padding: 4px 0; font-size: 11px; color: var(--td-text-color-secondary, #666); }
 ._va-quota-item { padding: 1px 8px; border-radius: 4px; border: 1px solid var(--td-component-stroke, #e0e0e0); background: var(--td-color-bg-container, #fafafa); }
 ._va-quota-sensitivity { opacity: 0.6; border-style: dashed; }
+
+/* U1 徽标（spec §6.5 U1）：version/source/updated_at —— 内核 readCore SELECT 已返回，纯 UI 消费补齐 */
+._id-meta {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+._id-badge {
+  font-size: 11px;
+  color: var(--td-text-color-secondary, #86909c);
+  background: var(--td-gray-color-2, #f2f3f5);
+  border-radius: 8px;
+  padding: 0 8px;
+}

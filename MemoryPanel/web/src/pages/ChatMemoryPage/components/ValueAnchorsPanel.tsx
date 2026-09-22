@@ -604,14 +604,14 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
                 </button>
               );
             })}
-            <span className="_va-quota-item _va-quota-sensitivity">敏感度（待拍板）</span>
+            <span className="_va-quota-item _va-quota-sensitivity">敏感度（L1 行已实施）</span>
           </div>
         ) : (
           <div className="_va-quota">
             <span className="_va-quota-item">主题 {values.filter((v) => (v.node_type ?? 'theme') === 'theme').length}/15</span>
             <span className="_va-quota-item">人物 {values.filter((v) => v.node_type === 'person').length}/8</span>
             <span className="_va-quota-item">品格 {values.filter((v) => v.node_type === 'character').length}/8</span>
-            <span className="_va-quota-item _va-quota-sensitivity">敏感度（待拍板）</span>
+            <span className="_va-quota-item _va-quota-sensitivity">敏感度（L1 行已实施）</span>
           </div>
         )}
         <div className="_va-list">
