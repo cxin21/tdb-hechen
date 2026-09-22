@@ -8,6 +8,23 @@
 `MemoryProxy` / SDK。
 
 ---
+## 📚 D-3 sensitivity 全链实施 + 丢值点 #1-#8 收口（用户拍板「全做」，2026-09-21/22）——文档-代码脱节补案（任务6①）
+
+### Added（MemoryCore）
+
+- **全链实施（`9925f3f`）**：SOUL_COLUMNS 第 9 列 + 幂等迁移 + FTS 26 列重建门 + 提取 SENSITIVITY_BLOCK（gated 缺省关=逐位现状）+ 确定性枚举门 + 注入行敏感徽章 + R11 召回降权乘子（缺省 0）+ 遗忘 sensitivityBias（缺省 0）+ atomic/search 出参 + BFF/UI 属性表。core vitest 666/tsc 222 持平 + 面板 120/build ✓。
+- **丢值点 #1/#2（`4dfe49d`）**：`parseExtractionResult` 字段映射未透传 sensitivity（LLM 输出被解析层丢弃→确定性门兜底 none）；config `parseConfig` 补 sensitivity 子树解析（yaml 门此前静默丢弃未知键）；导出 `parseExtractionResult` 供测试（+2 golden，core vitest 667）+ yaml extractionEnabled 开启。
+- **丢值点 #3（`01afbb3`）+ 旁路防护（`36fa56b`）**：writeMemory record 构造与本地类型补透传（soulBindValues 按 SOUL_COL_NAMES 取键但记录未携带）；update/merge 路径敏感缺省合标 undefined→none（旁路 NULL 防护）。
+- **向量/FTS/工具路丢值点 #4-#7（`02fe1a0`/`620c10b`/`40f0e2c`/`8806cfd`/`0597ed1`）**：vectorResultToFormatable→searchL1Vector push（+meta 内联类型）→R7 分层候选池 soul 源→ftsResultToFormatable→工具路 summary 行徽章——双路召回行徽章渲染数据面逐环补齐，每笔 vitest 667/tsc 222 持平。
+- **第 8 处（F-T1-1，`0ad0ed5`）**：`l1-extractor.ts:273-274` 非对称空值合并（条件侧 `?? "none"` 枚举命中、后果侧裸 `String(undefined)` 串化落库）→ 枚举门抽单一源导出纯函数 **normalizeSensitivity**（undefined/null/缺失/非法一律 "none"），l1-writer falsy 兜底保留；DB 实锤 4 行存量 "undefined"（生产 2+ev17e 2，created 2026-09-21T23:16）——**存量值修正提案单独 gated 待拍板**（不批维持现状：SENS_LABEL 不识别即不渲染徽章=诚实降级，代码已拦新增）。RED 4/4→GREEN 9/9；vitest 671/tsc 222。
+- **终验证据**：生产租户有效 sensitivity 标注=0（6 行有效标注全在测试租户——生产实效依赖真实数据自然累积，不建议人为播种）；徽章渲染=召回行+属性表双层活体在场；SENS_LABEL 双份（auto-recall.ts:2025 / memory-search.ts:1459）单一源收敛候选登记（属任务1 整改面，改前 RED）。
+
+### Fixed（docs / UI 2.1c）
+
+- **UI 2.1c 节补案（`1811851`，此前无 CHANGELOG 案）**：价值锚面板内嵌 agent 下拉在 SoulPage 复用（blockIdOverride）时隐藏——死控件去除（用户指令「直接去掉」），ChatMemoryPage 缺省挂载逐位保留（面板 vitest 120 / web tsc 存量 2 / build ✓）。
+- **spec §4.1 sensitivity 行状态同步**：L237「预留拍板项（不实施）」→「D-3 已实施（2026-09-22 收口）」+ 机制一行（normalizeSensitivity 单一源枚举门；三层体现=注入徽章/出参/属性表）；L238 recurrence 行按既定口径待 D-4 收口后一并更新，本轮不动。
+
+---
 ## 🔍 任务1 收口轮：§4.1/§6.5 余条款判定 + U1 徽标/U6 占位文案修复（2026-09-22）
 
 ### Fixed（MemoryPanel/web）
