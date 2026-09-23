@@ -123,11 +123,11 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
 
   return (
     <div className="_memory-detail-atomic-attrs">
-      <button type="button" className="_soul-chip _soul-chip--attrs" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="_soul-chip _soul-chip--attrs" aria-expanded={open} aria-controls={`_attr-tbl-${item.id}`} onClick={() => setOpen((v) => !v)}>
         🧬 属性{open ? '' : ` (${rows.length})`}
       </button>
       {open && (
-        <div className="_attr-table">
+        <div className="_attr-table" id={`_attr-tbl-${item.id}`}>
           {rows.map((r) => (
             <div key={r.k} className="_attr-row">
               <span className="_attr-key" title={r.k}>{r.k}</span>

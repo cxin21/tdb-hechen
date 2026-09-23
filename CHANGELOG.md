@@ -8,6 +8,18 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🖥️ V6-批次二 UI：注入徽章组 + 锚行注入形态预览 + 感受段首要段（用户拍板「做」，2026-09-23）
+
+### Added（MemoryPanel/web，零后端新增）
+
+- **注入徽章组（记忆页 BlockDetail L1 行）**：`attribute-badges.ts` 纯函数 deriveAttributeBadges（阈值与内核 formatMemoryLine 一致：arousal≥0.7/recallCount≥3/identityRefs 非空/evolution 存在/valid_start）+ `attribute-badges.tsx` 五徽章渲染（核心事实紫/验证×N 蓝/强烈橙/已演化绿/自 date 起灰，颜色+图标+文字三通道；tooltip 只读判定依据；零命中不渲染）。
+- **锚行注入形态预览（ValueAnchorsPanel）**：display 态行下 `注入形态 label(方向·w0.8)：描述`（anchorInjectPreview 与 soul-assembler 逐字同构）+ description 展示行（>80 字截断 hover 全文）；无 description/weight≤0 宁缺毋滥。
+- **感受段首要段（SoulPage SoulFeelingBar）**：pos/neg 组尾「；首要 X：描述≤30字」（pickPrimeAnchor 按 weight 最高选取与渲染序解耦；调用侧按 valence 分组过滤——首轮 bug neg 组错取 pos 首要，已修）。
+- **W3C disclosure 补齐**：AttributesSection 触发钮 aria-expanded/aria-controls + 表格 id（此前缺失）。
+- i18n zh-CN/en-US 八键（{{n}}/{{date}}/{{label}}/{{desc}}/{{preview}} 插值）。
+- 门禁：面板 vitest **140/140**（129+11，新增 attribute-badges 纯函数单测）· web tsc 存量 2 持平 · vite build ✓ + bundle 内容断言（核心事实/注入形态）· tdai-panel 重启 200 · 双页活体截图+DOM 断言（徽章 11 枚/预览 21 条/首要段 pos=根因 neg=审计）。
+- **登记两项（不粉饰）**：F-U1 列表路出参 metadata 不齐（recall_count/identityRefs 部分行缺）→ 验证×N/核心事实徽章在多数列表行不显示，待 BFF 透传补齐；F-U2 并列 weight 时首要选取两端数组序不同（Panel=weight DESC 序 vs 注入=value_id 序）可能不同根——低优先展示一致性。
+---
 ## 🗃️ V6-数据面：P0 提案存量清理 + sensitivity 存量修复（用户整句授权「你自己拍板吧」，2026-09-23）
 
 ### Changed（生产数据面，零代码）

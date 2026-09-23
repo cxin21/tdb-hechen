@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { chatMemoryApi, type ValueAnchor } from '@/lib/teamApi';
+import { pickPrimeAnchor } from '../ChatMemoryPage/utils/attribute-badges';
 
 function Pill({ label, kind }: { label: string; kind: 'pos' | 'neg' }) {
   return <span className={`_soul-pill _soul-pill--${kind}`}>{label}</span>;
@@ -35,6 +36,9 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
   );
   const pos = directional.filter((v) => v.valence === 1).map((v) => v.label);
   const neg = directional.filter((v) => v.valence === -1).map((v) => v.label);
+  // V6-批次二：首要锚（weight 最高选取与渲染序解耦，描述≤30字——与 soul-assembler 同构）
+  const primePos = pickPrimeAnchor(values.filter((v) => v.valence === 1));
+  const primeNeg = pickPrimeAnchor(values.filter((v) => v.valence === -1));
   const cap = 3;
   const posShow = showAll ? pos : pos.slice(0, cap);
   const negShow = showAll ? neg : neg.slice(0, cap);
@@ -52,6 +56,11 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
               {!showAll && pos.length > cap && (
                 <button type="button" className="_soul-feel-more" onClick={() => setShowAll(true)}>+{pos.length - cap}</button>
               )}
+              {primePos && (
+                <span style={{ fontSize: 11, color: '#4338ca' }}>
+                  {t('soul.feeling.prime', { label: primePos.label, desc: primePos.desc })}
+                </span>
+              )}
             </span>
           )}
           {negShow.length > 0 && (
@@ -60,6 +69,11 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
               {negShow.map((l) => <Pill key={`neg:${l}`} label={l} kind="neg" />)}
               {!showAll && neg.length > cap && (
                 <button type="button" className="_soul-feel-more" onClick={() => setShowAll(true)}>+{neg.length - cap}</button>
+              )}
+              {primeNeg && (
+                <span style={{ fontSize: 11, color: '#4338ca' }}>
+                  {t('soul.feeling.prime', { label: primeNeg.label, desc: primeNeg.desc })}
+                </span>
               )}
             </span>
           )}

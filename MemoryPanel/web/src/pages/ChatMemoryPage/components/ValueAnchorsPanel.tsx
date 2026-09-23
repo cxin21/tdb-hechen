@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Dropdown, Input, Select } from 'tea-component';
+import { anchorInjectPreview } from '../utils/attribute-badges';
 import { readAuth } from '@/components/LoginGate';
 import { useAgents, useTeams } from '@/services';
 import { tea, confirmThenRun } from '@/lib/tea-bridge';
@@ -238,6 +239,24 @@ function ValueRow({
               🔍 关联记忆
             </Button>
           )}
+          {/* V6-批次二：注入形态预览（与 soul-assembler 锚行逐字同构）+ description 展示行（宁缺毋滥） */}
+          {(() => {
+            const prev = anchorInjectPreview(anchor);
+            const desc = parsedAttrs.description && parsedAttrs.description.trim() !== ''
+              ? (parsedAttrs.description.trim().length > 80 ? parsedAttrs.description.trim().slice(0, 80) + '…' : parsedAttrs.description.trim())
+              : null;
+            if (!prev && !desc) return null;
+            return (
+              <div style={{ flexBasis: '100%', fontSize: 11, color: '#6b7280', lineHeight: 1.5 }}>
+                {prev && (
+                  <div style={{ fontFamily: 'ui-monospace, Consolas, monospace', color: '#4338ca' }}>
+                    {t('memory.anchors.injectPreview', { preview: prev })}
+                  </div>
+                )}
+                {desc && <div title={parsedAttrs.description}>{desc}</div>}
+              </div>
+            );
+          })()}
           {variant === 'soul' ? (
             <Dropdown
               appearance="pure"

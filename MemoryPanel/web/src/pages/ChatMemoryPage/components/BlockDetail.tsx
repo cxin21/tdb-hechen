@@ -10,6 +10,7 @@ import { getLayerCount, stripAtMention, extractRole, formatDisplayTime } from '.
 import { stripScenarioMeta, copyToClipboard } from '../utils/memory-utils';
 import { SoulSection } from './block-detail/SoulSection';
 import { AttributesSection } from './block-detail/AttributesSection';
+import { AttributeBadges } from './block-detail/attribute-badges';
 import { RelatedSection } from './block-detail/RelatedSection';
 import { buildSoulView } from './block-detail/soul-utils';
 import { useUserDisplayName } from '@/services/user-profile-store';
@@ -196,6 +197,8 @@ function AtomicHead({
       <span className="_memory-detail-atomic-title" title={item.title}>
         {item.title}
       </span>
+      {/* V6-批次二：注入徽章组（与 /v3/recall 注入行同构；零命中不渲染） */}
+      {layer === 'L1' ? <AttributeBadges item={item} /> : null}
       {/* 灵魂区（U-A1，S2 拆分）：灵魂数据展示段平移至 SoulSection 组件，
           行为不变、渲染重排（补 valence 双色条/强度·重要性进度条/有效期/上次回忆）。 */}
       <SoulSection soul={buildSoulView(item)} durative={item.title === 'work_fact'} />
