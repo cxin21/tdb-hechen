@@ -37,3 +37,15 @@
 - HEAD=12c8e46 · core vitest 755/755 · tsc 222 · panel 140/140 · web tsc 2 · 四服务 200
 - DB /data/tdai-memory/vectors.db；备份 /data/tdai-memory/backups/；pending 72/37 rejected
 - 属性基数：arousal≥0.7=10 / rc≥3=225 / identityRefs=141 / valid_start=208 / evolution=0
+
+## 四、UI 批次三任务（2026-09-23 深夜 v7 轮开工补登，按序执行，逐项过信息完整性硬标准）
+
+| 编号 | 任务 | 状态 | 收口证据 / 缺口 |
+|---|---|---|---|
+| UI-3.1 | 信息完整性专项巡检（先于视觉美化）：逐页逐组件排查三类违规——①长文本溢出/省略号截断（嫌疑：ValueAnchorsPanel 注入形态预览/锚行 description/AttributesSection 属性长文本/SoulPendingRail 提案内容）②同行元素过多挤压（嫌疑：记忆行 tag+徽章组同行、_va-row 徽标+label+weight+下拉+按钮）③空值行占位。每处违规换展示形态，改前 mini-mockup 对比呈拍板，改后长文本/多元素/空值三形态截图验收 | TODO | v7 开工 |
+| UI-3.2 | 验证×N 徽章点亮复核：rc=101 真实行 m_1789437830444_473d770a 记忆页搜索/翻页复核（预期即亮；不亮=新丢值点取证修复） | TODO | v7 开工 |
+| UI-3.3 | RelatedSection 相关记忆展开区视觉走查+整改（截图+DOM 双验收，密度/对齐/边界逐项列问题） | TODO | v7 开工 |
+| UI-3.4 | 全按钮逐项测试+三套按钮风格归一（soul pill vs 记忆页白底黑字 vs 蓝填充主按钮→tea-component 语义体系），出 NO-GO 清单分批修 | TODO | v7 开工 |
+| UI-3.5 | F-U2 并列 weight 首要选取两端序统一（Panel=weight DESC vs 注入=value_id，建议两端均 value_id 次级键） | TODO | v7 开工 |
+| UI-3.6 | UI 2.1 整改 NO-GO 清单（2 P0+8 P1+4 P2）溯源落地 | TODO | v7 开工 |
+| UI-3.7 | CHANGELOG 补记：UI 三连整改（2aa481f/89eda93/12c8e46）+批次三全部 | TODO | v7 开工 |
