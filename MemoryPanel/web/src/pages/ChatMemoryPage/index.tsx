@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { Segment } from 'tea-component';
 import { ResourcePage } from '@/pages/ResourcePage';
 import ChatMemoryPanel from './components/ChatMemoryPanel';
-import ValueAnchorsPanel from './components/ValueAnchorsPanel';
 import RecallJournalView from './components/RecallJournalView';
 
 /**
@@ -13,16 +12,15 @@ import RecallJournalView from './components/RecallJournalView';
  */
 export function ChatMemoryPage() {
   const { t } = useTranslation();
-  const [view, setView] = useState<'memory' | 'anchors' | 'journal'>('memory');
+  const [view, setView] = useState<'memory' | 'journal'>('memory');
   return (
     <ResourcePage>
       <div className="_memory-page-switch">
         <Segment
           value={view}
-          onChange={(v) => setView(v as 'memory' | 'anchors' | 'journal')}
+          onChange={(v) => setView(v as 'memory' | 'journal')}
           options={[
             { value: 'memory', text: t('memory.view.memory') },
-            { value: 'anchors', text: t('memory.view.anchors') },
             { value: 'journal', text: t('memory.view.journal') },
           ]}
         />
@@ -31,9 +29,7 @@ export function ChatMemoryPage() {
         <ChatMemoryPanel />
       ) : view === 'journal' ? (
         <RecallJournalView />
-      ) : (
-        <ValueAnchorsPanel />
-      )}
+      ) : null}
     </ResourcePage>
   );
 }
