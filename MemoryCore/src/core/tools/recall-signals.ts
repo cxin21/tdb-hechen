@@ -36,6 +36,8 @@ export interface RankSignalItem {
   sensitivity?: string;
   /** D-4：周期性事实（normalize 形状；kwSoul/soul 源透传，徽章链消费）。 */
   recurrence?: { cadence: string; anchor: string | null; note: string } | null;
+  /** V6-1a：唤醒度（kw 路 soul 源透传，徽章链消费；排序信号不动——批次四 A/B 裁决）。 */
+  arousal?: number;
 }
 
 /**

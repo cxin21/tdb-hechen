@@ -8,6 +8,17 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🧬 V6-1a/1b/1d/1e：属性信号徽章 + 锚行 weight 显示 + 感受段方案B + 人物锚行描述（用户授权「严格自审通过即开工」，2026-09-23）
+
+### Added（MemoryCore）
+
+- **注入行属性信号徽章（V6-1a）**：formatMemoryLine soul[] 在「敏感:/周期:」之后按固定序追加 `·强烈`（arousal≥0.7）/`·验证×N`（recallCount≥3，N=实际次数）/`·核心事实`（identityRefs 非空）/`·已演化`（evolution 存在）/`·自 date 起`（valid_start，日期精度与「发生」同 slice(0,10)）——全部宁缺毋滥、字段缺省输出逐字节不变；MEMORY_LINE_RE 行首结构不破坏（守卫用例）。生产基数实证（只读探针 838 行 L1）：验证×225 行/核心事实 141 行/自 date 起 208 行/强烈 10 行/已演化 0 行（休眠保留）。
+- **三构造点透传成对补齐（丢值点防线）**：vectorResultToFormatable / ftsResultToFormatable（metadata_json recall_count/identityRefs/evolution + 顶层 arousal/valid_start）+ recordToFormatable（metadata 对象，sigMeta 局部宽松读取）+ kwSoul 条件并回扩展（arousal/valid_start，F-R12 防抹值同款）+ 分层候选池 soul 源补 arousal + RankSignalItem 扩 arousal。每点测试断言字段在场（D-3 丢值点④⑥同族纪律）。
+- **锚行 weight 显示（V6-1b）**：价值锚行 `label(方向·w0.9)：描述`（weightLabel 两位小数去尾零；仅展示信念强度，渲染序仍 value_id 稳定=立项②不变；weight≤0 视为未测量不展示）。存量快照断言 3 处合法波及更新（soul-person 1 + anchor-semantics 2，非回归）。
+- **感受段语义增强·方案B（V6-1d，与立项②冲突裁决=方案B）**：渲染序保持 value_id 稳定；「首要」锚按 weight 最高选取（选取与排序解耦）附 description ≤30 字；首要锚无 description 不回退次锚（宁缺毋滥）。
+- **人物锚行描述（V6-1e）**：`label(role·方向)：description`（attrsOf 统一解析替代 personAttrs 并删除冗余函数；当前生产 person 锚无 description=描述段休眠；数据面回填另行拍板）。subject/source 不入注入徽章（subject 与 type 标签语义重叠且「反思结论」占多数、source 仅 extraction/空两态无判别信号）——出参/Panel 层已体现，诚实登记。
+- 门禁：RED 18 failed/9 守卫 passed → GREEN；core vitest **746/746**（99 文件，+27）· tsc **222 精确持平**（+6 即修：recordToFormatable meta 窄类型 → sigMeta 局部宽松读取）· 文档同步=本节+spec §2.7 V6 注记。
+
 ## 🧠 立项补丁：锚语义持久化（rationale）+ 锚行排序稳定化 + soulVersion 人格指纹（用户拍板「立项，直接做了吧，记得测试」，2026-09-23）
 
 ### Added（MemoryCore + MemoryPanel/web）

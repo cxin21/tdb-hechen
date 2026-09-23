@@ -159,6 +159,12 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
   - 【2026-09-21 D-1 注记（用户拍板"全做"）】slot 正文截断改**按行（事实）边界**（truncateByLines 单一源，soul-assembler.ts）：逐行累积预算内整行、超限行整体丢弃；无一行可用时首行字符截断兜底（槽不空）。A/B 真实数据 12 组：唯一超预算组（self 838 字 8 行）旧行为残句实证→新行为整行保留；其余 11 组 ≤ 预算逐字节一致（零回归）。
 - **人物方向渲染**：内联标注于"重要的人"行（`女儿(家人·趋近)`），**soul-feeling 保持仅主题锚**——最小渲染变更。
   - 【2026-09-19 A-5 注记】P3 品格锚渲染口径：价值锚行与主题锚共享注入预算（§7），感受段仍仅主题锚（node_type=theme 过滤，character 不入）——F-EV12-5③ 代码化。
+- **【2026-09-23 V6-1a/1b/1d/1e 注记（用户授权自审开工）】属性信号全链升级**：
+  ①记忆行 soul[] 追加属性信号徽章（formatMemoryLine 单一源，宁缺毋滥、字段缺省逐字节不变）：`·强烈`（arousal≥0.7）/`·验证×N`（recallCount≥3）/`·核心事实`（identityRefs 非空）/`·已演化`（evolution 存在，当前休眠）/`·自 date 起`（valid_start，日期精度）；三构造点（vector/fts/recordToFormatable + kwSoul 条件并回 + 分层池 soul 源扩 arousal + RankSignalItem 扩 arousal）透传成对补齐（D-3 丢值点④⑥同族纪律）。
+  ②锚行 weight 显示：`label(方向·w0.9)：描述`（仅展示信念强度；渲染序仍 value_id 稳定=立项②不变；weight≤0 视为未测量不展示）。
+  ③感受段方案B：渲染序保持 value_id 稳定，「首要」锚按 weight 最高选取附 description ≤30 字（选取与排序解耦）。
+  ④人物锚行同构升级：`label(role·方向)：description`（当前 person 锚无 description=段休眠，数据面回填另行拍板）。
+  subject/source 不入注入徽章（subject 与 type 标签语义重叠、source 仅 extraction/空两态无判别信号）——出参/Panel 层已体现。
 - **逐位现状保证**：selfIdentity.enabled=false 时**渲染与 prompt 双双逐位**——identity-discovery 走旧单视角 prompt（LLM 行为不变）、渲染不出新小节；enabled=true 才切双视角 prompt。调度门结构不变（anchorDiscovery 门控 worker 调用），self 路由在 worker 内部按 selfIdentity.enabled 判断。
 - **使用场景**：每次 /v3/recall 注入（C3 身份段常驻语义不变）。
 

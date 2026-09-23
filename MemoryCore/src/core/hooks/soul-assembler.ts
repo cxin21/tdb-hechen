@@ -45,25 +45,17 @@ function valenceDir(v: number | null | undefined): string {
   return "";
 }
 
+/** V6-1b：weight 显示值（两位小数去尾零：0.33→"0.33"、0.8→"0.8"、1→"1"）。 */
+function weightLabel(w: number): string {
+  return w.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 /** P2（spec §2.7）：人物锚关系方向词——与主题价值方向（审慎）区分（回避≠审慎）。 */
 function personDir(v: number | null | undefined): string {
   if (v === 1) return "趋近";
   if (v === -1) return "回避";
   if (v === 0) return "中性";
   return "";
-}
-
-/** P2：attrs_json 宽松解析（损坏/缺失 → {}，只损失 role 维度）。 */
-function personAttrs(v: { attrs_json?: string }): { role?: string; aliases?: string[] } {
-  try {
-    const p = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : {};
-    return {
-      role: typeof p?.role === "string" ? p.role : undefined,
-      aliases: Array.isArray(p?.aliases) ? p.aliases.map(String) : [],
-    };
-  } catch {
-    return {};
-  }
 }
 
 /** DS-SOUL-MEMORY-002 P1（F17）：段级渲染选项。缺省（undefined）= 旧渲染字节级一致。 */
@@ -184,7 +176,13 @@ export async function buildSoulPrefix(
           `价值锚：${activeStable.map((v) => {
             const desc = attrsOf(v.attrs_json)?.description;
             const descSeg = typeof desc === "string" && desc.trim() !== "" ? `：${escapeXmlTags(desc.trim())}` : "";
-            return `${escapeXmlTags(v.label)}${valenceDir(v.valence) ? `(${valenceDir(v.valence)})` : ""}${descSeg}`;
+            // V6-1b：weight 显示（仅展示信念强度，不改渲染序——立项② value_id 稳定排序不变；
+            // weight ≤0 视为未测量不展示，宁缺毋滥）
+            const dir = valenceDir(v.valence);
+            const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
+              ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
+              : "";
+            return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
           }).join("、")}`,
         );
       }
@@ -192,10 +190,13 @@ export async function buildSoulPrefix(
       if (personRows.length > 0) {
         lines.push(
           `重要的人：${personRows.map((v) => {
-            const a = personAttrs(v);
+            // V6-1e：attrsOf 统一解析（含 description）——「label(role·方向)：描述」与价值锚行同构；
+            // 当前生产 person 锚无 description=描述段休眠（数据面回填另行拍板）。
+            const a = attrsOf(v.attrs_json) ?? {};
             const d = personDir(v.valence);
             const role = a.role ? `${escapeXmlTags(a.role)}·` : "";
-            return `${escapeXmlTags(v.label)}(${role}${d})`;
+            const pDesc = a.description && a.description.trim() !== "" ? `：${escapeXmlTags(a.description.trim())}` : "";
+            return `${escapeXmlTags(v.label)}(${role}${d})${pDesc}`;
           }).join("、")}`,
         );
       }
@@ -213,8 +214,16 @@ export async function buildSoulPrefix(
       const pos = directional.filter((v) => v.valence === 1).map((v) => escapeXmlTags(v.label));
       const neg = directional.filter((v) => v.valence === -1).map((v) => escapeXmlTags(v.label));
       const feel: string[] = [];
-      if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("、")}`);
-      if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("、")}`);
+      // V6-1d（方案B，2026-09-23 用户授权自审定案）：渲染序保持 value_id 稳定（立项②）；
+      // 「首要」锚按 weight 最高选取（选取与排序解耦），附 description 短句 ≤30 字（宁缺毋滥）。
+      const topDescSeg = (rows: typeof directional): string => {
+        const top = [...rows].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))[0];
+        if (!top || !((top.weight ?? 0) > 0)) return "";
+        const d = attrsOf(top.attrs_json)?.description?.trim();
+        return d ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d.slice(0, 30))}` : "";
+      };
+      if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("、")}${topDescSeg(directional.filter((v) => v.valence === 1))}`);
+      if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("、")}${topDescSeg(directional.filter((v) => v.valence === -1))}`);
       if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的感受\n${feel.join("\n")}\n</soul-feeling>`);
     }
   } catch (err) {

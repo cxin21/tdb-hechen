@@ -35,7 +35,7 @@ describe("锚行语义升级（rationale 持久化）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("根因(趋近)：所有结论须以真实代码与测试取证背书");
+    expect(out).toContain("根因(趋近·w0.5)：所有结论须以真实代码与测试取证背书"); // V6-1b：weight 显示（合法波及更新）
   });
 
   it("无 description → 逐位现状「label(方向)」（不加空冒号）", async () => {
@@ -45,8 +45,8 @@ describe("锚行语义升级（rationale 持久化）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("根因(趋近)");
-    expect(out).not.toContain("根因(趋近)：");
+    expect(out).toContain("根因(趋近·w0.5)"); // V6-1b：weight 显示（合法波及更新）
+    expect(out).not.toContain("根因(趋近·w0.5)：");
   });
 
   it("description 含 XML 注入样文本 → escapeXmlTags 消毒（咽喉原则）", async () => {

@@ -57,7 +57,7 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     const values: VRow[] = [{ label: "诚实", weight: 0.9, valence: 1, state: "active" }];
     const out = await buildSoulPrefix(makeStore([{ slot: "identity", content: "x" }], values) as never, TENANT);
     expect(out).not.toContain("重要的人：");
-    expect(out).toContain("价值锚：诚实(趋近)");
+    expect(out).toContain("价值锚：诚实(趋近·w0.9)"); // V6-1b：weight 显示（合法波及更新）
   });
 
   it("node_type undefined → theme（旧库行兼容，不误入重要的人）", async () => {

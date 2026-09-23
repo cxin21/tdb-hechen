@@ -1502,6 +1502,8 @@ export async function searchHybrid(
                     recurrence: isRecurrenceMeta((metadata as { recurrence?: unknown } | undefined)?.recurrence)
                       ? (metadata as { recurrence: { cadence: string; anchor: string | null; note: string } }).recurrence
                       : undefined,
+                    // V6-1a：唤醒度透传（kw 路 ·强烈 徽章源——RankSignalItem 已扩 arousal）
+                    arousal: (r as { arousal?: number }).arousal,
                   },
                 };
               });
@@ -1639,6 +1641,13 @@ export async function searchHybrid(
             // D-4：周期性事实透传（kwSoul→formatable 徽章链）
             ...((kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence !== undefined
               ? { recurrence: (kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence }
+              : {}),
+            // V6-1a：唤醒度/时效起点（分层池 soul 源透传；条件并回防 undefined 抹值——F-R12 同教训）
+            ...((kwSoul as { arousal?: number }).arousal !== undefined
+              ? { arousal: (kwSoul as { arousal?: number }).arousal }
+              : {}),
+            ...((kwSoul as { valid_start?: string }).valid_start !== undefined
+              ? { valid_start: (kwSoul as { valid_start?: string }).valid_start }
               : {}),
           } : {}),
         },
@@ -2033,6 +2042,16 @@ interface FormatableMemory {
   sensitivity?: string;
   /** D-4：周期性事实（normalize 形状；徽章渲染，note 首选/中文映射）。 */
   recurrence?: { cadence: string; anchor: string | null; note: string } | null;
+  /** V6-1a：唤醒度（≥0.7 → ·强烈 徽章；宁缺毋滥）。 */
+  arousal?: number;
+  /** V6-1a：召回验证次数（≥3 → ·验证×N 徽章）。 */
+  recallCount?: number;
+  /** V6-1a：身份引用（非空 → ·核心事实 徽章）。 */
+  identityRefs?: string[];
+  /** V6-1a：演化结论（存在 → ·已演化 徽章；当前管道无产出=徽章休眠）。 */
+  evolution?: unknown;
+  /** V6-1a：持续状态事实生效起点（→ ·自 date 起 徽章）。 */
+  valid_start?: string;
   /** R-A2：候选池通道标注（"graph:kind" / "value:锚"；主检索命中恒缺省）。 */
   recall_channel?: string;
 }
@@ -2086,6 +2105,12 @@ export function formatMemoryLine(m: FormatableMemory): string {
   // D-4：周期徽章（normalize 形状重验；note 首选、缺省中文映射；宁缺毋滥）
   const recLabel = recurrenceLabel(m.recurrence);
   if (recLabel) soul.push(`周期:${recLabel}`);
+  // V6-1a：属性信号徽章（全部宁缺毋滥、字段缺省输出逐字节不变；顺序固定在周期之后）
+  if (m.arousal != null && m.arousal >= 0.7) soul.push("强烈");
+  if (m.recallCount != null && m.recallCount >= 3) soul.push(`验证×${m.recallCount}`);
+  if (Array.isArray(m.identityRefs) && m.identityRefs.length > 0) soul.push("核心事实");
+  if (m.evolution != null) soul.push("已演化");
+  if (m.valid_start) soul.push(`自 ${m.valid_start.slice(0, 10)} 起`);
   if (soul.length > 0) line += ` ·soul[${soul.join(" · ")}]`;
 
   // R-A2：候选池通道标注（诚实原则——关联召回自证身份，LLM 可见）。
@@ -2203,6 +2228,16 @@ function formatTimestamp(ts: string | undefined): string | undefined {
  */
 export function recordToFormatable(record: MemoryRecord): FormatableMemory {
   const meta = record.metadata as { activity_start_time?: string; activity_end_time?: string } | undefined;
+  // V6-1a：属性信号宽松读取（只认合法形状，宁缺毋滥；tsc 修复——meta 是窄类型别名）
+  const sigMeta = (meta ?? {}) as Record<string, unknown>;
+  const sigRecallCount =
+    typeof sigMeta.recall_count === "number" && Number.isFinite(sigMeta.recall_count) && sigMeta.recall_count > 0
+      ? sigMeta.recall_count
+      : undefined;
+  const sigIdentityRefs = Array.isArray(sigMeta.identityRefs)
+    ? (sigMeta.identityRefs as unknown[]).filter((s): s is string => typeof s === "string")
+    : undefined;
+  const sigEvolution = sigMeta.evolution ?? undefined;
   return {
     type: record.type,
     content: record.content,
@@ -2222,6 +2257,13 @@ export function recordToFormatable(record: MemoryRecord): FormatableMemory {
     recurrence: isRecurrenceMeta((meta as { recurrence?: unknown } | undefined)?.recurrence)
       ? (meta as { recurrence: { cadence: string; anchor: string | null; note: string } }).recurrence
       : undefined,
+    // V6-1a：属性信号透传（kwSoul 路基座——recall_count/identityRefs/evolution 读 metadata；
+    // arousal/valid_start 读 record 顶层，kw 路由 kwSoul 条件并回补齐——F-R12 同教训）
+    arousal: (record as { arousal?: number }).arousal,
+    valid_start: (record as { valid_start?: string }).valid_start,
+    recallCount: sigRecallCount,
+    identityRefs: sigIdentityRefs,
+    evolution: sigEvolution,
   };
 }
 
@@ -2233,6 +2275,10 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
   let activityStart: string | undefined;
   let activityEnd: string | undefined;
   let activityRec: { cadence: string; anchor: string | null; note: string } | undefined;
+  // V6-1a：属性信号暂存（metadata 解析后回填；非法/缺失保持 undefined）
+  let recCount: number | undefined;
+  let identRefs: string[] | undefined;
+  let evo: unknown;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -2240,6 +2286,13 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
       activityEnd = meta?.activity_end_time || undefined;
       // D-4：周期性事实透传（normalize 形状重验，防垃圾入库渲染）
       if (isRecurrenceMeta(meta?.recurrence)) activityRec = meta.recurrence;
+      // V6-1a：属性信号透传（recall_count 数值合法才收；identityRefs 过滤非字符串、空则不透传）
+      if (typeof meta?.recall_count === "number" && Number.isFinite(meta.recall_count) && meta.recall_count > 0) recCount = meta.recall_count;
+      if (Array.isArray(meta?.identityRefs)) {
+        const refs = (meta.identityRefs as unknown[]).filter((s): s is string => typeof s === "string");
+        if (refs.length > 0) identRefs = refs;
+      }
+      if (meta?.evolution != null) evo = meta.evolution;
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -2258,6 +2311,12 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     sensitivity: (r as { sensitivity?: string }).sensitivity || undefined,
     // D-4：周期性事实透传（向量路徽章）
     recurrence: activityRec || undefined,
+    // V6-1a：属性信号徽章源透传（向量路——顶层列 + metadata 解析）
+    arousal: r.arousal,
+    valid_start: r.valid_start,
+    recallCount: recCount,
+    identityRefs: identRefs,
+    evolution: evo,
   };
 }
 
@@ -2269,6 +2328,10 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
   let activityStart: string | undefined;
   let activityEnd: string | undefined;
   let activityRec: { cadence: string; anchor: string | null; note: string } | undefined;
+  // V6-1a：属性信号暂存（与向量路成对——丢一个=徽章单通道）
+  let recCount: number | undefined;
+  let identRefs: string[] | undefined;
+  let evo: unknown;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -2276,6 +2339,13 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
       activityEnd = meta?.activity_end_time || undefined;
       // D-4：周期性事实透传（FTS 路——与向量路成对，丢一个=徽章单通道）
       if (isRecurrenceMeta(meta?.recurrence)) activityRec = meta.recurrence;
+      // V6-1a：属性信号透传（与向量路成对）
+      if (typeof meta?.recall_count === "number" && Number.isFinite(meta.recall_count) && meta.recall_count > 0) recCount = meta.recall_count;
+      if (Array.isArray(meta?.identityRefs)) {
+        const refs = (meta.identityRefs as unknown[]).filter((s): s is string => typeof s === "string");
+        if (refs.length > 0) identRefs = refs;
+      }
+      if (meta?.evolution != null) evo = meta.evolution;
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -2295,5 +2365,11 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     sensitivity: (r as { sensitivity?: string }).sensitivity || undefined,
     // D-4：周期性事实透传（FTS 路徽章）
     recurrence: activityRec || undefined,
+    // V6-1a：属性信号徽章源透传（FTS 路——顶层列 + metadata 解析）
+    arousal: r.arousal,
+    valid_start: r.valid_start,
+    recallCount: recCount,
+    identityRefs: identRefs,
+    evolution: evo,
   };
 }
