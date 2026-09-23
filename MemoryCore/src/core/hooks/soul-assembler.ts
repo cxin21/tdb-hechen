@@ -75,16 +75,48 @@ export interface SoulRenderOptions {
   maxRelationLines?: number;
 }
 
+/** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
+function attrsOf(attrsJson?: string): { description?: string; role?: string; aliases?: string[] } | undefined {
+  if (!attrsJson || attrsJson === "{}") return undefined;
+  try {
+    const p = JSON.parse(attrsJson);
+    return p && typeof p === "object" ? (p as { description?: string; role?: string; aliases?: string[] }) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 立项③：灵魂指纹（soulVersion）——双槽内容 ∪ 锚集合的稳定哈希（fnv-1a 32bit，零依赖）。
+ *  未变化=桥接端可复用上轮 soul 字节（KV cache 连续性）；变化=立即重注入（人格不冻结）。 */
+export function computeSoulVersion(
+  slots: Array<{ slot: string; content: string }>,
+  values: Array<{ value_id?: string; label?: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>,
+): string {
+  const payload = JSON.stringify({
+    s: slots.map((x) => [x.slot, x.content]),
+    v: values
+      .map((x) => [x.value_id ?? x.label, x.label, x.weight ?? 0, x.valence ?? null, x.state ?? "active", x.node_type ?? "theme", x.attrs_json ?? "{}"])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  });
+  let h = 0x811c9dc5;
+  for (let i = 0; i < payload.length; i++) {
+    h ^= payload.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return `sv-${h.toString(16).padStart(8, "0")}`;
+}
+
 export async function buildSoulPrefix(
   store: IMemoryStore,
   tenant: CoreTenant,
   logger?: Logger,
   opts?: SoulRenderOptions,
+  metaOut?: { soulVersion?: string },
 ): Promise<string> {
   const parts: string[] = [];
   try {
     const slots = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
-    const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
+    const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ value_id?: string; label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
     const activeAll = values.filter((v) => v.state === undefined || v.state === "active");
     // P2（spec §2.7）：person 锚分流——主题锚渲染不变（undefined → theme 旧库兼容）；
     // 人物锚进「重要的人」行（weight DESC，行数上限 opts.maxRelationLines 缺省 5），不与价值审慎/趋近语义混淆。
@@ -92,8 +124,11 @@ export async function buildSoulPrefix(
     const personRows = activeAll
       .filter((v) => v.node_type === "person")
       .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
-      .slice(0, opts?.maxRelationLines ?? 5);
+      .slice(0, opts?.maxRelationLines ?? 5)
+      // 立项②（2026-09-23 拍板）：取舍按 weight、渲染按 value_id 稳定排序（KV cache 前缀连续性）
+      .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
 
+    if (metaOut) metaOut.soulVersion = computeSoulVersion(slots, activeAll);
     // ── 身份段：此刻的你 ──
     if (slots.length > 0 || activeAll.length > 0) {
       const lines: string[] = [];
@@ -123,8 +158,14 @@ export async function buildSoulPrefix(
         lines.push(dual && label ? `（${label}）- [${s.slot}] ${content}` : `- [${s.slot}] ${s.content}`);
       }
       if (active.length > 0) {
+        // 立项②：渲染顺序按 value_id 稳定排序（weight 只用于取舍/排序上限，不决定注入序）
+        const activeStable = [...active].sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
         lines.push(
-          `价值锚：${active.map((v) => `${escapeXmlTags(v.label)}${valenceDir(v.valence) ? `(${valenceDir(v.valence)})` : ""}`).join("、")}`,
+          `价值锚：${activeStable.map((v) => {
+            const desc = attrsOf(v.attrs_json)?.description;
+            const descSeg = typeof desc === "string" && desc.trim() !== "" ? `：${escapeXmlTags(desc.trim())}` : "";
+            return `${escapeXmlTags(v.label)}${valenceDir(v.valence) ? `(${valenceDir(v.valence)})` : ""}${descSeg}`;
+          }).join("、")}`,
         );
       }
       // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段
@@ -144,7 +185,10 @@ export async function buildSoulPrefix(
     // ── 感受段：当下的感受 ──
     // F-EV12-5（A-5③，spec §2.7「soul-feeling 保持仅主题锚」）：character 锚不入感受段
     //（价值锚行保留 = §7「与主题锚共享注入预算」）；node_type 缺省 theme 旧库兼容。
-    const directional = active.filter((v) => (v.node_type ?? "theme") === "theme" && (v.valence === 1 || v.valence === -1));
+    // 立项②：感受段与价值锚行同序（value_id 稳定）——pos/neg 清单不再随 weight 漂移
+    const directional = [...active]
+      .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))
+      .filter((v) => (v.node_type ?? "theme") === "theme" && (v.valence === 1 || v.valence === -1));
     if (directional.length > 0) {
       const pos = directional.filter((v) => v.valence === 1).map((v) => escapeXmlTags(v.label));
       const neg = directional.filter((v) => v.valence === -1).map((v) => escapeXmlTags(v.label));

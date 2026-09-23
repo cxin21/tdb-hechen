@@ -8,6 +8,31 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🧠 立项补丁：锚语义持久化（rationale）+ 锚行排序稳定化 + soulVersion 人格指纹（用户拍板「立项，直接做了吧，记得测试」，2026-09-23）
+
+### Added（MemoryCore + MemoryPanel/web）
+
+- **锚语义通道（rationale 持久化，三闸全通）**：①存储=upsertValue attrs 增 `description`（attrs_json 序列化并入，role/aliases 保留）+ `IMemoryStore` 接口签名同步；②网关=v2-router attrs 守卫与构造补 description（≤80 字、P-B 咽喉消毒 escape 同款；错误文案升级为 `attrs requires role or aliases or description`——首版部署后活体探针抓到旧守卫拒收 400，第二闸定位修复）；③注入=soul-assembler 锚行升级 `label(方向)：描述`（attrsOf 安全解析，损坏 attrs_json → 不渲染宁缺毋滥；描述过 escapeXmlTags 同咽喉原则）。来源=提案制 ValueProposal.rationale——此前采纳即丢（全库 grep 实锚）。RED：store 面测试（description+role+aliases 全量保留/仅 description/不传逐位现状三例）。
+- **锚行排序稳定化（KV cache 前缀连续性）**：listValues=ORDER BY weight DESC → weight 漂移会让注入前缀抖动；修=价值锚行/感受段驱动+审慎清单/人物锚行（weight DESC 取 top-N 后）**渲染序统一按 value_id 稳定排序**（weight 只管取舍与上限）。TDD：RED 双锚错位权重→value_id 序断言。
+- **soulVersion 人格指纹（出参透传）**：`computeSoulVersion(双槽∪锚集合)` fnv-1a 32bit 稳定哈希（零依赖）；buildSoulPrefix 增可选 `metaOut`（不破坏既有调用面）；/v3/recall 响应 meta 透传 `soulVersion`。消费端语义：未变化=复用上轮 soul 字节（KV cache 满命中），变化=立即重注入（人格不冻结）。活体：sv-8d42f498 两次幂等 → description upsert 后 sv-9c9895ec（指纹随锚数据变化）。
+- 门禁：core vitest **710/710**（95 文件，+12：锚语义 3+排序 3+指纹 3+存储 attrs 3）· tsc **222 精确持平**（归因修：soulVersion 作用域误置块内→提升至函数级与 outcome 四变量同位）· 面板 vitest 129 · web tsc 存量 2 持平 · vite build ✓ · 双重启 health 200（MainPID=3484203 登记）· 密钥扫描 0。事故登记：①新增测试自身笔误 4 处（escapeXmlTags 名单实锚 core_memory/system 两 tag/label 断言错字）——取证修正；②full-suite 首跑 13 项失败=陈旧转换缓存假象（复跑自愈，与 D-4 批同款）；③重启批误用 tdai 身份内嵌 sudo→router 补丁未加载（400 旧错误消息暴露）→ubuntu 身份重启复测。
+- **遗留说明**：现有锚（auto-growth 产出）无 description——注入行对存量锚逐位现状；语义随新提案采纳/手工编辑逐步累积。DSH 插件消费端复用 soulVersion 的接线属插件面（仓库外），已登记为集成观察项。
+
+---
+## 🔁 D-4：recurrence 周期性事实结构化实施（用户拍板「自己选最优方案·配置全开·实现完整」，2026-09-22）
+
+### Added（MemoryCore + MemoryPanel/web）
+
+- **确定性门单一源**：`normalizeRecurrence`（l1-extractor.ts 导出，normalizeSensitivity 同族）——cadence 六枚举（weekly/biweekly/daily/monthly/quarterly/yearly）+anchor 形状门（weekly/biweekly→三字母星期必填；monthly→月内日可选；quarterly/yearly→MM-DD 可选；daily→无锚）+note 可省略（>20 字整体拒绝）；`isRecurrenceMeta`（形状重验守卫）+`recurrenceLabel`（note 首选，缺省 cadence+anchor 中文映射）。TDD：`src/core/record/__tests__/recurrence.test.ts`（RED 19 failed→GREEN）。
+- **提取块（LLM 只提议）**：`RECURRENCE_BLOCK` prompt 运行时追加（l1-extraction.ts，AGENT_ACT/SENSITIVITY_BLOCK 同先例），开关 `memory.extraction.recurrenceEnabled` 缺省 false=逐位现状——落点=**既有 memory.extraction 组（ExtractionConfig）**（首版误开新子树撞 TS2300 duplicate，落点勘误已改并入）。直调取证：prompt 组装 4617 字符含块 ✓。
+- **落库**：主映射 metadata.recurrence=normalizeRecurrence(mem.recurrence)（丢值点 #3 writeMemory 构造位；零 schema 变更，metadata_json 子结构）。
+- **遗忘保护（拍板 2=true 生产启用）**：forgetting-worker 候选扫描 normalize 形状重验后 continue（防提取侧绕过）；`memory.lifecycle.forgetting.recurrenceProtection` 缺省 false；生产 yaml 已置 true。
+- **三层体现**：①注入行徽章 `周期:…`（formatMemoryLine，与 D-3 敏感徽章同位；note 首选/中文映射 WED→每周三）；双通道 formatable 透传成对补齐（vectorResultToFormatable/ftsResultToFormatable 导出供测+metadata_json.recurrence 提取——D-3 丢值点④⑥同族）；分层候选池 soul 源+kwSoul spread+工具路 summary 行（丢值点⑤⑦同位）。②atomic/query 出参 metadata 既有单一源透传（探针核验无需改）。③UI AttributesSection「周期」键值行（recurrenceText 与内核同语义）。
+- **生产 yaml**：`memory.extraction.recurrenceEnabled: true` + `lifecycle.forgetting.recurrenceProtection: true` 双重启生效（MainPID=3223911 登记）。
+- **ev19 真数据（阶段性）**：全新租户 team-ev19 播 11 组（10 周期事实+1 阴性）→ 提取 11 行 1:1 落库（valid_start 全对齐、阴性双行零过标）→ DB 只读：**1 行落 metadata.recurrence（biweekly）**——提取层 LLM 提议方差（其余 9 行周期语义未落结构化），prompt 组装/门/写入链经直调+落库实锚完好；**登记观察项=ev19 复验发射率与 prompt 位置调优**（A/B 直打曾 10/10，生产链路发射率待复测）。
+- 门禁：core vitest **698/698**（+21：门 10+徽章 7+遗忘钩子 2+其余）· tsc **222 精确持平**（stash 对照法：新错误 6 处归因修复——extraction 落点重复/`RankSignalItem` 补 recurrence 字段）· 面板 vitest 129 · web tsc 存量 2 持平 · vite build ✓ · 双重启 health 200 · 密钥扫描 0。事故登记：①D-3 丢值点排查清单 7 处全查（落点勘误=extraction 组并入既有）；②测试自身口径错 4 处（99-99 按 MM-DD 正则本合法/weekly 无锚断言反/两处期望笔误）+实现 WEEKDAY_ZH 全称致「每周周三」——双侧修正后 GREEN；③README 级自查：脚本中文两次被 ASCII 编码毁（固化 UTF-8 无 BOM 手势）。
+
+---
 ## 🧬 F-T4-1：L1 列表路属性表 D-0 七列/归属五列/sensitivity 丢值修复（任务4 全量展示验收发现，2026-09-22）
 
 ### Fixed（MemoryPanel/web）

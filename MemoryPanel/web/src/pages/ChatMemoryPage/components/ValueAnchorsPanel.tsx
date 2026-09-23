@@ -522,6 +522,8 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
         value_id: p.label,
         label: p.label,
         weight: clampWeight(p.suggestedWeight),
+        // 立项①：rationale 持久化（提案理由→attrs_json.description，注入行语义升级的数据源）
+        attrs: { description: p.rationale },
       });
       tea.notify.success(t('memory.notify.anchorSaved'));
       setProposals((prev) => prev.filter((x) => x.label !== p.label));

@@ -432,7 +432,7 @@ export const chatMemoryApi = {
    *  U2：可选 attrs（人物锚 role/aliases 行内编辑；显式传入才更新，theme 锚忽略无害）。 */
   valuesUpsert: (
     blockId: string,
-    params: { value_id: string; label: string; weight: number; valence?: number; attrs?: { role?: string; aliases?: string[] } },
+    params: { value_id: string; label: string; weight: number; valence?: number; attrs?: { role?: string; aliases?: string[]; description?: string } },
   ) =>
     chatMemoryCall<{ ok: boolean; value_id: string }>('values/upsert', {
       block_id: blockId,

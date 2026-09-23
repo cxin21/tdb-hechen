@@ -2372,14 +2372,19 @@ export class VectorStore implements IMemoryStore {
    *     （retired → 即恢复；vetoed → 即撤销否决）；自动管道的 veto 不可重提由
    *     自生长去重查全态保证，与本写路径正交。origin/pinned 冲突不改写（裁定 3）。
    */
-  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" = "theme", attrs?: { role?: string; aliases?: string[] }): boolean {
+  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" = "theme", attrs?: { role?: string; aliases?: string[]; description?: string }): boolean {
     const t = normalizeCoreTenant(tenant);
     const v = valence === undefined ? null : Math.min(1, Math.max(-1, Math.round(valence)));
     // P2（spec §2.6）：attrs_json 序列化单点——role/aliases 可选字段按需并入；
     // DO UPDATE 不碰 node_type（A8：类型归属写定后不随重写漂移），attrs_json 仅显式传入时更新。
+    // 立项①（2026-09-23 拍板）：rationale 通道——description 并入 attrs_json（锚语义持久化）
     const attrsJson = attrs === undefined
       ? "{}"
-      : JSON.stringify({ ...(attrs.role === undefined ? {} : { role: attrs.role }), ...(attrs.aliases === undefined ? {} : { aliases: attrs.aliases }) });
+      : JSON.stringify({
+          ...(attrs.role === undefined ? {} : { role: attrs.role }),
+          ...(attrs.aliases === undefined ? {} : { aliases: attrs.aliases }),
+          ...(attrs.description === undefined ? {} : { description: attrs.description }),
+        });
     try {
       this.db.prepare(
         "INSERT INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id, node_type, attrs_json) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?) " +

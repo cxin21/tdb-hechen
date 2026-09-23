@@ -341,6 +341,8 @@ export interface LayeredRecallOutcome {
   experienceCount: number;
   /** R7 meta：本轮是否命中复用（幂等结论层复用 ∨ 同 session 同 query 检索复用）。 */
   sessionReused: boolean;
+  /** 立项③：灵魂指纹（双槽∪锚集合 hash；未变化=消费端可复用上轮 soul 字节）。 */
+  soulVersion?: string;
   /** R7 meta：分层组装是否生效（结论层非空）。 */
   layered: boolean;
   /** scene index 条目（钩子后续 scene navigation 复用——一次读取两处消费，现状保持）。 */
@@ -396,6 +398,8 @@ export async function performLayeredRecall(params: {
   let experienceCount = 0;
   let sessionReused = false;
   let layered = false;
+  // 立项③：灵魂指纹（函数级——hook/端点双路共享）
+  let soulVersion: string | undefined;
   let block: string | undefined;
   let searchCacheHit = false;
   if (!userText || userText.length === 0) {
@@ -666,6 +670,7 @@ export async function performLayeredRecall(params: {
       try {
         const { buildSoulPrefix } = await import("./soul-assembler.js");
         const it = params.isolationFilter;
+        const soulMeta: { soulVersion?: string } = {};
         soulPrefix = await buildSoulPrefix(
           vectorStore,
           { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
@@ -677,7 +682,9 @@ export async function performLayeredRecall(params: {
             budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
             maxRelationLines: cfg.coreMemory?.soulRender?.maxRelationLines,
           },
+          soulMeta,
         );
+        soulVersion = soulMeta.soulVersion;
       } catch (err) {
         logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -741,6 +748,7 @@ export async function performLayeredRecall(params: {
     experienceCount,
     sessionReused,
     layered,
+    soulVersion,
     sceneIndexEntries,
     profileDataDir,
     profileStorage,
@@ -1490,6 +1498,10 @@ export async function searchHybrid(
                     // D-3：敏感性透传（分层候选池 soul 源——徽章/R11）
                     sensitivity: (r as { sensitivity?: string }).sensitivity,
                     metadata,
+                    // D-4：周期性事实透传（分层候选池 soul 源——丢值点⑤同位）
+                    recurrence: isRecurrenceMeta((metadata as { recurrence?: unknown } | undefined)?.recurrence)
+                      ? (metadata as { recurrence: { cadence: string; anchor: string | null; note: string } }).recurrence
+                      : undefined,
                   },
                 };
               });
@@ -1620,6 +1632,8 @@ export async function searchHybrid(
             valence: kwSoul.valence,
             significance: kwSoul.significance,
             sensitivity: (kwSoul as { sensitivity?: string }).sensitivity,
+            // D-4：周期性事实透传（kwSoul→formatable 徽章链）
+            recurrence: (kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence,
           } : {}),
         },
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
@@ -1992,6 +2006,8 @@ export async function searchHybrid(
  * 歧义为旧格式已知限制）。解析正则统一定义为本文件导出的 MEMORY_LINE_RE（:560/:910 两
  * 处 metric 解析共用单一源）。
  */
+import { isRecurrenceMeta, recurrenceLabel } from "../record/l1-extractor.js";
+
 interface FormatableMemory {
   type: string;
   content: string;
@@ -2009,6 +2025,8 @@ interface FormatableMemory {
   significance?: number;
   /** D-3：敏感性（none 不标注；health/finance/relationship → 徽章）。 */
   sensitivity?: string;
+  /** D-4：周期性事实（normalize 形状；徽章渲染，note 首选/中文映射）。 */
+  recurrence?: { cadence: string; anchor: string | null; note: string } | null;
   /** R-A2：候选池通道标注（"graph:kind" / "value:锚"；主检索命中恒缺省）。 */
   recall_channel?: string;
 }
@@ -2059,6 +2077,9 @@ export function formatMemoryLine(m: FormatableMemory): string {
   if (m.sensitivity && m.sensitivity !== "none" && SENS_LABEL[m.sensitivity]) {
     soul.push(`敏感:${SENS_LABEL[m.sensitivity]}`);
   }
+  // D-4：周期徽章（normalize 形状重验；note 首选、缺省中文映射；宁缺毋滥）
+  const recLabel = recurrenceLabel(m.recurrence);
+  if (recLabel) soul.push(`周期:${recLabel}`);
   if (soul.length > 0) line += ` ·soul[${soul.join(" · ")}]`;
 
   // R-A2：候选池通道标注（诚实原则——关联召回自证身份，LLM 可见）。
@@ -2196,14 +2217,17 @@ function recordToFormatable(record: MemoryRecord): FormatableMemory {
  * Build a FormatableMemory from a VectorSearchResult (embedding search path).
  * Handles empty/invalid metadata_json, empty timestamp_str gracefully.
  */
-function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
+export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
   let activityStart: string | undefined;
   let activityEnd: string | undefined;
+  let activityRec: { cadence: string; anchor: string | null; note: string } | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
       activityStart = meta?.activity_start_time || undefined;
       activityEnd = meta?.activity_end_time || undefined;
+      // D-4：周期性事实透传（normalize 形状重验，防垃圾入库渲染）
+      if (isRecurrenceMeta(meta?.recurrence)) activityRec = meta.recurrence;
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -2220,6 +2244,8 @@ function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     significance: r.significance,
     // D-3：敏感性透传（向量路徽章渲染——与 FTS 路 kwSoul spread 对齐）
     sensitivity: (r as { sensitivity?: string }).sensitivity || undefined,
+    // D-4：周期性事实透传（向量路徽章）
+    recurrence: activityRec || undefined,
   };
 }
 
@@ -2227,14 +2253,17 @@ function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
  * Build a FormatableMemory from an FtsSearchResult (FTS5 keyword search path).
  * Handles empty/invalid metadata_json, empty timestamp_str gracefully.
  */
-function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
+export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
   let activityStart: string | undefined;
   let activityEnd: string | undefined;
+  let activityRec: { cadence: string; anchor: string | null; note: string } | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
       activityStart = meta?.activity_start_time || undefined;
       activityEnd = meta?.activity_end_time || undefined;
+      // D-4：周期性事实透传（FTS 路——与向量路成对，丢一个=徽章单通道）
+      if (isRecurrenceMeta(meta?.recurrence)) activityRec = meta.recurrence;
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -2252,5 +2281,7 @@ function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     significance: r.significance,
     // D-3：敏感性透传（FTS 路 formatable——SELECT 已带出、此前映射丢弃）
     sensitivity: (r as { sensitivity?: string }).sensitivity || undefined,
+    // D-4：周期性事实透传（FTS 路徽章）
+    recurrence: activityRec || undefined,
   };
 }

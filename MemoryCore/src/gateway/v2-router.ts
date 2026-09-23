@@ -1651,7 +1651,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
 
   return successEnvelope<{
     block: string;
-    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean };
+    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; soulVersion?: string };
   }>(
     {
       block: outcome.block ?? "",
@@ -1660,6 +1660,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
         experienceCount: outcome.experienceCount,
         sessionReused: outcome.sessionReused,
         layered: outcome.layered,
+        soulVersion: outcome.soulVersion,
       },
     },
     requestId,
@@ -1887,20 +1888,33 @@ async function handleCoreMemoryValuesUpsert(body: unknown, _auth: V2AuthContext,
   // U2（spec §6.5）：可选 attrs（人物锚 role/aliases 行内编辑）——显式传入才更新
   // （store ON CONFLICT "attrs_json 仅显式传入时更新"语义），theme 锚传入忽略为无害；
   // 逐项校验（role 非空字符串；aliases 字符串数组逐项非空），非法 → 400 不静默丢。
-  let attrs: { role?: string; aliases?: string[] } | undefined;
+  // 立项①（2026-09-23 拍板）：attrs.description 通道——提案 rationale 落库为锚语义
+  // （≤80 字，P-B 咽喉消毒同款 escape；注入行「label(方向)：描述」渲染的数据源）。
+  let attrs: { role?: string; aliases?: string[]; description?: string } | undefined;
   if (b.attrs !== undefined) {
     if (b.attrs === null || typeof b.attrs !== "object" || Array.isArray(b.attrs)) {
-      return errorEnvelope(400, "attrs must be an object {role?, aliases?}", requestId);
+      return errorEnvelope(400, "attrs must be an object {role?, aliases?, description?}", requestId);
     }
-    const a = b.attrs as { role?: unknown; aliases?: unknown };
+    const a = b.attrs as { role?: unknown; aliases?: unknown; description?: unknown };
     const role = typeof a.role === "string" && a.role.trim() ? escapeXmlTags(a.role.trim()) : undefined;
     const aliases = Array.isArray(a.aliases)
       ? a.aliases.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => escapeXmlTags(x.trim()))
       : undefined;
+    const description =
+      typeof a.description === "string" && a.description.trim() && a.description.trim().length <= 80
+        ? escapeXmlTags(a.description.trim())
+        : undefined;
     if (a.role !== undefined && role === undefined) return errorEnvelope(400, "attrs.role must be a non-empty string", requestId);
     if (a.aliases !== undefined && !Array.isArray(a.aliases)) return errorEnvelope(400, "attrs.aliases must be an array of strings", requestId);
-    if (role === undefined && aliases === undefined) return errorEnvelope(400, "attrs requires role or aliases", requestId);
-    attrs = { ...(role !== undefined ? { role } : {}), ...(aliases !== undefined ? { aliases } : {}) };
+    if (a.description !== undefined && description === undefined)
+      return errorEnvelope(400, "attrs.description must be a non-empty string (<=80 chars)", requestId);
+    if (role === undefined && aliases === undefined && description === undefined)
+      return errorEnvelope(400, "attrs requires role or aliases or description", requestId);
+    attrs = {
+      ...(role !== undefined ? { role } : {}),
+      ...(aliases !== undefined ? { aliases } : {}),
+      ...(description !== undefined ? { description } : {}),
+    };
   }
   // 租户（照抄 handleCoreMemoryWrite 的 coreTenantFromIsolation 模式）
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
