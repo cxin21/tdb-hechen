@@ -319,3 +319,8 @@
 ._pending-check {
   margin-right: 6px;
 }
+
+/* ===== V6-Batch Three: anchor rows fill the whole line + row spacing/skan readability (vision review real-fix) ===== */
+._va-row { align-items: flex-start; padding: 10px 12px; }
+._va-label { flex: 1 1 auto; }
+._va-inject-preview { flex-basis: 100%; }
