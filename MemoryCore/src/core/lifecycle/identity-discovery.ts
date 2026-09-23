@@ -15,6 +15,7 @@ import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { selectSampleRows, DISCOVER_SAMPLE_CAP, DISCOVER_TRUNCATE_CHARS } from "../../gateway/core-values-discover.js";
+import { findDuplicateProposal } from "./proposal-dedup.js";
 
 export interface IdentityDiscoveryConfig {
   enabled: boolean;
@@ -162,8 +163,12 @@ export async function runIdentityDiscovery(deps: {
         // 已有 slots（去重）
         const existing = (store.readCore(tenant) ?? []) as Array<{ slot: string; content: string }>;
         const existingSummaries = existing.map((s) => `[${s.slot}] ${s.content}`);
+        // V6-任务8 P2：上下文注入——LLM 看到已有 pending 列表，从生成层避免换措辞重复
+        //（P1 闸门是执行层兜底，两层互补；feature-detect，无方法 store 逐位现状）。
+        const pendingRowsForPrompt = ((store as { listPendingCore?: (t?: unknown) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant) ?? []).filter((r) => r.state === "pending");
+        const pendingSummaries = pendingRowsForPrompt.slice(0, 30).map((r) => `[${r.slot}] ${r.content.slice(0, 60)}`);
 
-        const prompt = buildIdentityPrompt(sample, existingSummaries);
+        const prompt = buildIdentityPrompt(sample, existingSummaries, pendingSummaries);
         const dual = deps.selfIdentity?.enabled === true;
         const raw = await deps.llmRunner.run({
           prompt,
@@ -217,6 +222,16 @@ export async function runIdentityDiscovery(deps: {
             // Panel 人工采纳/拒绝（feature-detect：无方法的 store 保持纯计数现状）。
             // P0-F1：pending 证据展示单一源化——identityFactMatchesCorpus 同源口径
             // （旧本地 recountEvidence=20 字前缀逐字，提炼措辞 vs 语料结构性假 0，违铁律 2）。
+            // V6-任务8 P1：提案语义去重闸门——换措辞重复不再入队（store 层精确守卫挡不住
+            // 语义重复；阈值 0.75 生产全行标定，宁漏勿错杀——误杀=真实规则静默丢失，
+            // 漏放由 Panel 人工采纳兜底；跳过留痕不计数）。P0 存量清理属数据面另行拍板。
+            const pendingRowsForGate = ((store as { listPendingCore?: (t?: unknown) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant) ?? []).filter((r) => r.state === "pending");
+            const redlineExisting = existing.filter((s) => s.slot === "core_value" || s.slot === "strict_rule");
+            const dup = findDuplicateProposal(p.content, p.slot, [...pendingRowsForGate, ...redlineExisting]);
+            if (dup) {
+              logger?.info?.(`[identity-discovery] pending skipped (duplicate ${dup.similarity.toFixed(2)} vs: ${dup.content.slice(0, 50)}): ${p.content.slice(0, 60)}`);
+              continue;
+            }
             const ev = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
             const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant);
             pendingThis++;
@@ -341,10 +356,14 @@ export function stripIdentityStateResidue(content: string): string {
 
 // ── helpers ──
 
-function buildIdentityPrompt(samples: string[], existing: string[]): string {
+function buildIdentityPrompt(samples: string[], existing: string[], pendingList: string[] = []): string {
   const sampleText = samples.map((s, i) => `${i + 1}. ${s}`).join("\n");
   const existingText = existing.length > 0 ? existing.map((e) => `- ${e}`).join("\n") : "（空，无已有身份事实）";
-  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}\n\n请提炼身份事实提案。`;
+  // V6-任务8 P2：pending 列表注入（30 条 × 60 字预算；空列表逐位现状）。
+  const pendingText = pendingList.length > 0
+    ? `\n\n## 已有待拍板提案（语义相近者不要再提——换措辞重复是噪声，不是新发现）\n\n${pendingList.slice(0, 30).map((e) => `- ${e}`).join("\n")}`
+    : "";
+  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}${pendingText}\n\n请提炼身份事实提案。`;
 }
 
 function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[] }> {

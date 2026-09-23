@@ -8,6 +8,15 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🔁 V6-任务8：红线提案语义去重（P1 入队闸门 + P2 生成层上下文注入）（用户令提前开工，2026-09-23）
+
+### Added（MemoryCore）
+
+- **P1 提案语义去重闸门**：identity-discovery core_value/strict_rule 入队前经 `findDuplicateProposal`（新模块 proposal-dedup.ts 单一源：字符 bigram Jaccard，零依赖零 LLM 纯函数）比对 pending∪已采纳红线 slot，同 slot 相似度 ≥0.75 → 跳过留痕不计数。阈值生产全行标定（102 条实测：网关簇 pairwise 0.790 真重复命中；同簇 0.692 改写幅度大的同族规则不并——宁漏勿错杀，漏放由 Panel 人工兜底）。store 层精确守卫（同 slot+content，sqlite.ts:2755）保持不变——两层互补。
+- **P2 生成层上下文注入**：buildIdentityPrompt 增可选第三参 pendingList（30 条×60 字预算），prompt 增「已有待拍板提案（语义相近者不要再提——换措辞重复是噪声，不是新发现）」段；feature-detect 无 listPendingCore 的 store 逐位现状（向后兼容守卫）。
+- 根因实锚：生产 102 条 pending 重复全部为换措辞语义重复（最大簇 9-15 条），精确匹配守卫无法拦截。**P0 存量清理（102→N 批量拒绝）属生产数据面变更，逐项呈报拍板后执行（双方案：bigram 0.5→102→65 保守 / embedding 语义级→预期 ~15），未拍板不动。**
+- 门禁：RED 3 failed（闸门×2+prompt×1）/6 守卫 passed → GREEN；core vitest **755/755**（+9）· tsc **222 精确持平** · 文档同步=本节+spec V6-任务8 注记。
+
 ## 🧬 V6-1a/1b/1d/1e：属性信号徽章 + 锚行 weight 显示 + 感受段方案B + 人物锚行描述（用户授权「严格自审通过即开工」，2026-09-23）
 
 ### Added（MemoryCore）

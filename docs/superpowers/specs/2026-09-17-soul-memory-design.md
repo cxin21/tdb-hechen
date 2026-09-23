@@ -165,6 +165,7 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
   ③感受段方案B：渲染序保持 value_id 稳定，「首要」锚按 weight 最高选取附 description ≤30 字（选取与排序解耦）。
   ④人物锚行同构升级：`label(role·方向)：description`（当前 person 锚无 description=段休眠，数据面回填另行拍板）。
   subject/source 不入注入徽章（subject 与 type 标签语义重叠、source 仅 extraction/空两态无判别信号）——出参/Panel 层已体现。
+- **【2026-09-23 V6-任务8 注记（用户令提前开工）】红线提案语义去重（P1 闸门 + P2 上下文注入）**：根因=identity-discovery 生成→入队链无语义闸门，store 层精确守卫（同 slot+content）挡不住换措辞重复（生产 102 条 pending 实测最大簇 9-15 条）。修法两层代码面：①P1 入队前语义闸门（proposal-dedup.ts 单一源，字符 bigram Jaccard，阈值 0.75 生产全行标定——0.790 真重复命中/0.692 同簇不并「宁漏勿错杀」，比对域=pending∪已采纳红线 slot，跳过留痕不计数）；②P2 prompt 注入已有 pending 列表（30 条×60 字预算）+「换措辞重复是噪声不是新发现」指令。P0 存量清理（102→N 批量拒绝）属生产数据面——逐项呈报拍板后执行，不随代码顺手做。
 - **逐位现状保证**：selfIdentity.enabled=false 时**渲染与 prompt 双双逐位**——identity-discovery 走旧单视角 prompt（LLM 行为不变）、渲染不出新小节；enabled=true 才切双视角 prompt。调度门结构不变（anchorDiscovery 门控 worker 调用），self 路由在 worker 内部按 selfIdentity.enabled 判断。
 - **使用场景**：每次 /v3/recall 注入（C3 身份段常驻语义不变）。
 
