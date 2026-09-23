@@ -1775,3 +1775,11 @@
   flex-wrap: wrap;
   row-gap: 2px;
 }
+
+/* ===== V7-UI-3.3: 属性/相关记忆弹出卡（全宽呈现，信息完整性硬标准①；拍板「不行就改成弹出卡片」） ===== */
+._attr-table--modal { max-width: none; max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+._attr-table--modal ._attr-key { width: 150px; flex: none; color: #6b7280; }
+._attr-table--modal ._attr-val { flex: 1; white-space: normal; word-break: break-word; }
+._nb-modal { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow-y: auto; }
+._nb-modal ._nb-content { white-space: normal; word-break: break-word; }
+._nb-modal ._memory-detail-atomic-neighbors-list { margin: 0; padding: 0; list-style: none; }

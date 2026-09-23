@@ -4,10 +4,11 @@
  * 数据源：/chat-memory/layer|search 出参（896ee5d soul 字段 + Phase 2 BFF 补透传
  * task_id/team_id/user_id/agent_id/version/updated_at + D-0（2026-09-21）补透传
  * scene_name/priority/session_key/session_id/timestamp_str/start/end——内核
- * atomic-query-fields.ts 单一源已补齐七字段，全列呈现）。折叠段默认收起；
+ * atomic-query-fields.ts 单一源已补齐七字段，全列呈现）。V7-UI-3.3 起「属性」改弹出卡呈现（全宽防挤压，拍板「不行就改成弹出卡片」）；
  * 「复制 JSON」导出全部在场属性。
  */
 import { useMemo, useState } from 'react';
+import { Button, Modal } from 'tea-component';
 import type { ChatMemoryLayerItem } from '@/lib/api/chat-memory';
 
 type Row = { k: string; v: string };
@@ -123,23 +124,30 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
 
   return (
     <div className="_memory-detail-atomic-attrs">
-      <button type="button" className="_soul-chip _soul-chip--attrs" aria-expanded={open} aria-controls={`_attr-tbl-${item.id}`} onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="_soul-chip _soul-chip--attrs" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((v) => !v)}>
         🧬 属性{open ? '' : ` (${rows.length})`}
       </button>
       {open && (
-        <div className="_attr-table" id={`_attr-tbl-${item.id}`}>
-          {rows.map((r) => (
-            <div key={r.k} className="_attr-row">
-              <span className="_attr-key" title={r.k}>{r.k}</span>
-              <span className="_attr-val" title={r.v}>{r.v}</span>
+        <Modal visible caption={`记忆属性（${rows.length} 列）`} size="l" onClose={() => setOpen(false)}>
+          <Modal.Body>
+            <div className="_attr-table _attr-table--modal" id={`_attr-tbl-${item.id}`}>
+              {rows.map((r) => (
+                <div key={r.k} className="_attr-row">
+                  <span className="_attr-key">{r.k}</span>
+                  <span className="_attr-val">{r.v}</span>
+                </div>
+              ))}
             </div>
-          ))}
-          <div className="_attr-actions">
+          </Modal.Body>
+          <Modal.Footer>
             <button type="button" className="_nb-pathlink" onClick={handleCopy}>
               {copied ? '已复制 ✓' : '复制 JSON'}
             </button>
-          </div>
-        </div>
+            <Button type="primary" onClick={() => setOpen(false)}>
+              关闭
+            </Button>
+          </Modal.Footer>
+        </Modal>
       )}
     </div>
   );
