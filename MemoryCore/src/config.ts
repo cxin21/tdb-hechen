@@ -43,6 +43,9 @@ export interface ExtractionConfig {
   maxMemoriesPerSession: number;
   /** GROW-EVO P2（§2.2）：durative 效期提取开关（缺省 false = 提取侧不写 valid_start） */
   durativeEnabled: boolean;
+  /** D-4（2026-09-22 拍板）：周期性事实提取块（RECURRENCE_BLOCK 门；缺省 false = 逐位现状）。
+   *  落点=既有 memory.extraction 组（ExtractionConfig）——勿另开子树（混合行尾教训再现）。 */
+  recurrenceEnabled: boolean;
   /** LLM model for extraction, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
   /** Prompt family for L1 extraction (default: chat). */
@@ -386,6 +389,8 @@ export interface MemoryLifecycleConfig {
     minAgeDays: number;
     /** P2（F14）：refs 遗忘保护——coreRefs/personRefs/identityRefs 命中仍有效锚或现行身份事实的记录不进归档候选（缺省 false=逐位现状）。 */
     refProtection: boolean;
+    /** D-4（2026-09-22 拍板）：周期性事实遗忘保护（缺省 false = 逐位现状）。 */
+    recurrenceProtection: boolean;
     /** D-3：敏感偏置——敏感记忆（≠none）整体分值 ×(1-bias)，缺省 0=逐位现状。 */
     sensitivityBias: number;
   };
@@ -1047,6 +1052,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       minAgeDays: num(lifecycleForgettingGroup, "minAgeDays") ?? 30,
       // P2（F14）：refs 遗忘保护开关（缺省 false=逐位现状）
       refProtection: bool(lifecycleForgettingGroup, "refProtection") ?? false,
+      recurrenceProtection: bool(lifecycleForgettingGroup, "recurrenceProtection") ?? false,
     },
     // P3-F13：反思触发（Generative Agents 对标；enabled 缺省 false=逐位现状）
     reflection: {
@@ -1109,6 +1115,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       maxMemoriesPerSession: num(extractionGroup, "maxMemoriesPerSession") ?? 20,
       // GROW-EVO P2（§2.2）：durative 效期提取开关（缺省 false = 逐位现状）
       durativeEnabled: bool(extractionGroup, "durativeEnabled") ?? false,
+      // D-4：周期性事实提取块门（RECURRENCE_BLOCK；缺省 false = 逐位现状）
+      recurrenceEnabled: bool(extractionGroup, "recurrenceEnabled") ?? false,
       model: optStr(extractionGroup, "model"),
       promptMode: normalizePromptMode(str(extractionGroup, "promptMode"), globalPromptMode),
     },

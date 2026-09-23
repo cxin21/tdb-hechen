@@ -25,6 +25,9 @@ export interface ForgettingConfig {
    *  现行身份事实切片的记录不进归档候选；保护前重验 refs 有效性（悬空不保护，防永生记忆）。
    *  缺省 false = 逐位现状。 */
   refProtection: boolean;
+  /** D-4（2026-09-22 拍板）：周期性事实遗忘保护——metadata.recurrence（normalize 形状）
+   *  的记录不进归档候选；缺省 false = 逐位现状。 */
+  recurrenceProtection: boolean;
 }
 
 export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
@@ -36,6 +39,7 @@ export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
   minAgeDays: 30,
   maxPerRun: 100,
   refProtection: false,
+  recurrenceProtection: false,
 };
 
 /**

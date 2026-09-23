@@ -235,7 +235,7 @@ metadata_json 子结构：
 | evidence_ids | agent | — | 合并溯源 | 引用纪律（Generative Agents 同型） |
 | recall_count/last_recalled_at | agent | — | F3 强化、R1 时近性 | P0-T4 原子自增 |
 | **sensitivity（D-3 已实施，2026-09-22 收口）** | agent | — | 召回门控/遗忘优先（已实施：R11 缺省 0/遗忘 bias 缺省 0） | 枚举 none/health/finance/relationship；枚举门单一源 normalizeSensitivity（l1-extractor.ts 导出，undefined/非法一律 none）；三层体现=注入徽章/出参/属性表 |
-| **recurrence（预留）** | agent | 事件 | 遗忘保护（周期性事实不按单次过期） | "每周三例会"类；先留正文表达，结构化待实证 |
+| **recurrence（D-4 已实施，2026-09-22 收口）** | agent | 事件 | 遗忘保护（recurrenceProtection 生产已启用） | cadence 六枚举+anchor 形状门 normalizeRecurrence（LLM 只提议、门裁决）；落 metadata_json.recurrence 零 schema；三层体现=注入徽章·周期:…/出参 metadata/UI 属性表「周期」行 |
 
 **明确不建**：类别情绪（渲染时从 valence/arousal 派生，防双源漂移）；身份相关性-召回向（F14-bis 回音室禁令）。
 

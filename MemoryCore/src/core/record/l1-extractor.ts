@@ -24,6 +24,53 @@ export function normalizeSensitivity(raw: unknown): "none" | "health" | "finance
   return (SENSITIVITY_ENUM.has(s) ? s : "none") as "none" | "health" | "finance" | "relationship";
 }
 
+/** D-4（2026-09-22 拍板）：recurrence 确定性门单一源——LLM 只提议（cadence/anchor/note），
+ *  代码裁决：任一形状非法 → 整体 undefined 不落库（宁缺毋滥）。消费方=主映射
+ *  metadata.recurrence、遗忘保护守卫 isRecurrenceMeta、徽章渲染 recurrenceLabel。 */
+export interface RecurrenceMeta {
+  cadence: "weekly" | "biweekly" | "daily" | "monthly" | "quarterly" | "yearly";
+  anchor: string | null;
+  note: string;
+}
+const RECURRENCE_CADENCE = new Set(["weekly", "biweekly", "daily", "monthly", "quarterly", "yearly"]);
+const WEEKDAY_RE = /^(MON|TUE|WED|THU|FRI|SAT|SUN)$/;
+const MONTH_DAY_RE = /^([1-9]|[12]\d|3[01])$/;
+const MM_DD_RE = /^\d{2}-\d{2}$/;
+export function normalizeRecurrence(raw: unknown): RecurrenceMeta | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as { cadence?: unknown; anchor?: unknown; note?: unknown };
+  const cadence = typeof r.cadence === "string" ? r.cadence : "";
+  if (!RECURRENCE_CADENCE.has(cadence)) return undefined;
+  const anchor = typeof r.anchor === "string" && r.anchor.trim() !== "" ? r.anchor.trim() : null;
+  const note = typeof r.note === "string" ? r.note.trim() : "";
+  if (note.length > 20) return undefined;
+  if ((cadence === "weekly" || cadence === "biweekly") && !(anchor && WEEKDAY_RE.test(anchor))) return undefined;
+  if (cadence === "monthly" && anchor !== null && !MONTH_DAY_RE.test(anchor)) return undefined;
+  if ((cadence === "quarterly" || cadence === "yearly") && anchor !== null && !MM_DD_RE.test(anchor)) return undefined;
+  if (cadence === "daily" && anchor !== null) return undefined;
+  return { cadence: cadence as RecurrenceMeta["cadence"], anchor, note };
+}
+
+/** 形状重验（遗忘保护守卫/徽章渲染共用；防提取侧绕过）。 */
+export function isRecurrenceMeta(v: unknown): v is RecurrenceMeta {
+  return normalizeRecurrence(v) !== undefined;
+}
+
+const WEEKDAY_ZH: Record<string, string> = { MON: "一", TUE: "二", WED: "三", THU: "四", FRI: "五", SAT: "六", SUN: "日" };
+/** 徽章文本：note 首选；省略时回退 cadence+anchor 中文映射。 */
+export function recurrenceLabel(rec: unknown): string | undefined {
+  if (!isRecurrenceMeta(rec)) return undefined;
+  const r = rec as RecurrenceMeta;
+  if (r.note) return r.note;
+  if (r.cadence === "daily") return "每天";
+  if (r.cadence === "monthly") return r.anchor ? `每月${r.anchor}日` : "每月";
+  if (r.cadence === "quarterly") return "每季度";
+  if (r.cadence === "yearly") return "每年";
+  if ((r.cadence === "weekly" || r.cadence === "biweekly") && r.anchor && WEEKDAY_ZH[r.anchor])
+    return `${r.cadence === "weekly" ? "每周" : "每两周"}${WEEKDAY_ZH[r.anchor]}`;
+  return undefined;
+}
+
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
@@ -263,7 +310,12 @@ export async function extractL1Memories(params: {
         type: memType,
         priority: typeof mem.priority === "number" ? mem.priority : 50,
         source_message_ids: Array.isArray(mem.source_message_ids) ? mem.source_message_ids : [],
-        metadata: mem.metadata ?? {},
+        metadata: (() => {
+          // D-4 确定性门（丢值点 #3 同位）：合法 recurrence 形状才并入 metadata_json（零 schema 变更）
+          const rec = normalizeRecurrence((mem as { recurrence?: unknown }).recurrence);
+          const base = (mem.metadata ?? {}) as Record<string, unknown>;
+          return rec ? { ...base, recurrence: rec } : base;
+        })(),
         scene_name: scene.scene_name,
         // 灵魂记忆字段必须透传（此前重建时遗漏，导致写好却全空）
         occurred_at: mem.occurred_at,
@@ -559,8 +611,12 @@ async function callLlmExtraction(params: {
   const sensitivityEnabled =
     (memoryConfig as { sensitivity?: { extractionEnabled?: boolean } } | undefined)
       ?.sensitivity?.extractionEnabled === true;
+  // D-4（2026-09-22 拍板）：周期性事实提取块（gated，缺省关闭=逐位现状）
+  const recurrenceEnabled =
+    (memoryConfig as { extraction?: { recurrenceEnabled?: boolean } } | undefined)
+      ?.extraction?.recurrenceEnabled === true;
   const systemPrompt = composeMemorySystemPrompt(
-    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled }),
+    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled, recurrenceEnabled }),
     memoryPrompt,
   );
   // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取

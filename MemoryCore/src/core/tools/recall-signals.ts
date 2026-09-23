@@ -34,6 +34,8 @@ export interface RankSignalItem {
   scene_name?: string | null;
   /** D-3：敏感性枚举（none/health/finance/relationship；缺省 none=无降权）。 */
   sensitivity?: string;
+  /** D-4：周期性事实（normalize 形状；kwSoul/soul 源透传，徽章链消费）。 */
+  recurrence?: { cadence: string; anchor: string | null; note: string } | null;
 }
 
 /**

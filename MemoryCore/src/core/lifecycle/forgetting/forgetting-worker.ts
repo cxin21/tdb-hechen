@@ -7,6 +7,7 @@ import type { IMemoryStore } from "../../store/types.js";
 import type { Logger } from "../../types.js";
 import { classify, classifyWithValues, DEFAULT_FORGETTING_CONFIG, isRefProtected } from "./scorer.js";
 import { identityFactSlice } from "../identity-discovery.js";
+import { isRecurrenceMeta } from "../../record/l1-extractor.js";
 import type { ForgettingConfig } from "./scorer.js";
 import type { AppraisalConfig } from "../feeling/appraisal.js";
 
@@ -64,6 +65,8 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
   // P2 SOP 实证修正：租户聚合——显式 deps.tenant 优先（单租户路径）；否则按批内记录租户去重
   // （调度器无 filter 时全表扫描，单租户取锚=非默认租户保护名集恒空=保护静默失效）。
   const refProtectionOn = cfg.refProtection === true;
+  // D-4（2026-09-22 拍板）：周期性事实遗忘保护（缺省 false=逐位现状）。
+  const recurrenceProtectionOn = cfg.recurrenceProtection === true;
   const anchorNames = new Set<string>();
   const identitySliceSet = new Set<string>(refProtectionOn ? (deps.identitySlices ?? []) : []);
   if (refProtectionOn) {
@@ -116,6 +119,8 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
       const id = m.id ?? m.record_id;
       // P2（F14）：refs 遗忘保护——排除前重验（悬空 refs 不保护，防永生记忆）；缺省关闭=逐位现状
       if (refProtectionOn && isRefProtected((m as { metadata?: unknown }).metadata, anchorNames, identitySliceSet)) continue;
+      // D-4：周期性事实遗忘保护——normalize 形状重验后才保护（防提取侧绕过）。
+      if (recurrenceProtectionOn && isRecurrenceMeta((m as { metadata?: Record<string, unknown> }).metadata?.recurrence)) continue;
       if (id) candidates.push(id);
     }
     scanned++;

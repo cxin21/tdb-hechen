@@ -19,6 +19,24 @@ function str(v: unknown): string | null {
   return null;
 }
 
+/** D-4：周期徽章文本（note 首选；缺省 cadence+anchor 中文映射——与内核 recurrenceLabel 同语义）。 */
+function recurrenceText(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as { cadence?: string; anchor?: string | null; note?: string };
+  const ZH: Record<string, string> = { MON: '一', TUE: '二', WED: '三', THU: '四', FRI: '五', SAT: '六', SUN: '日' };
+  if (typeof r.note === 'string' && r.note.trim() !== '') return r.note;
+  const c = r.cadence;
+  const a = r.anchor || null;
+  if (c === 'daily') return '每天';
+  if (c === 'monthly') return a ? `每月${a}日` : '每月';
+  if (c === 'quarterly') return '每季度';
+  if (c === 'yearly') return '每年';
+  if ((c === 'weekly' || c === 'biweekly') && a && ZH[a]) {
+    return `${c === 'weekly' ? '每周' : '每两周'}${ZH[a]}`;
+  }
+  return null;
+}
+
 export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -60,6 +78,8 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
     push('recall_count', meta.recall_count);
     push('last_recalled_at', meta.last_recalled_at);
     push('subject', meta.subject);
+    // D-4：周期性事实（metadata_json.recurrence；normalize 形状）
+    push('周期', recurrenceText(meta.recurrence));
     const eids = meta.evidence_ids;
     push('evidence_ids', Array.isArray(eids) ? (eids as unknown[]).join('、') : eids);
     const evo = meta.evolution as { from?: unknown; reason?: unknown } | null | undefined;

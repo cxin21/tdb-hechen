@@ -10,6 +10,7 @@
  * The tool is registered via `api.registerTool()` in index.ts.
  */
 
+import { recurrenceLabel } from "../record/l1-extractor.js";
 import type { IMemoryStore, IsolationFilter, L1SearchResult, MaybePromise } from "../store/types.js";
 import { normalizeCoreTenant, type CoreTenant } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
@@ -1458,6 +1459,9 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
     const sens = (item as { sensitivity?: string }).sensitivity;
     const SENS_LABEL: Record<string, string> = { health: "健康", finance: "财务", relationship: "关系" };
     if (sens && sens !== "none" && SENS_LABEL[sens]) soul.push(`敏感:${SENS_LABEL[sens]}`);
+    // D-4：周期徽章（工具路 summary 行；normalize 形状重验）
+    const recLabel = recurrenceLabel((item as { metadata?: { recurrence?: unknown } }).metadata?.recurrence);
+    if (recLabel) soul.push(`周期:${recLabel}`);
     if (soul.length > 0) lines.push(`  · ${soul.join(" · ")}`);
     // C1（灵魂记忆 spec §2.2 展示层）：`·触[价值]` 尾注——只显示本轮 appraisal
     // 相关的 coreRefs（executeMemorySearch 已算好交集；空/缺省不输出，宁缺毋滥）。
