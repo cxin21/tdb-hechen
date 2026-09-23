@@ -106,6 +106,12 @@ export function computeSoulVersion(
   return `sv-${h.toString(16).padStart(8, "0")}`;
 }
 
+/** 立项③ TDB 内部完整实现（2026-09-23 拍板）：soul 前缀会话级缓存——指纹未变化跳过渲染，
+ *  变化时重渲染并打「人格变更」日志（审计面）。Map 按租户隔离，上限 100 条。
+ *  零外部依赖——整个优化闭环在 TDB 内核完成。 */
+const soulPrefixCache = new Map<string, { version: string; text: string }>();
+const SOUL_CACHE_MAX = 100;
+
 export async function buildSoulPrefix(
   store: IMemoryStore,
   tenant: CoreTenant,
@@ -114,6 +120,8 @@ export async function buildSoulPrefix(
   metaOut?: { soulVersion?: string },
 ): Promise<string> {
   const parts: string[] = [];
+  let soulVer = '';
+  let cacheKey = '';
   try {
     const slots = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
     const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ value_id?: string; label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
@@ -128,7 +136,19 @@ export async function buildSoulPrefix(
       // 立项②（2026-09-23 拍板）：取舍按 weight、渲染按 value_id 稳定排序（KV cache 前缀连续性）
       .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
 
-    if (metaOut) metaOut.soulVersion = computeSoulVersion(slots, activeAll);
+    soulVer = computeSoulVersion(slots, activeAll);
+    if (metaOut) metaOut.soulVersion = soulVer;
+
+    // 立项③：指纹→缓存命中跳渲染 / 变更重渲染+人格变更日志
+    cacheKey = `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`;
+    const cached = soulPrefixCache.get(cacheKey);
+    if (cached && cached.version === soulVer) {
+      logger?.debug?.(`[soul] prefix cache hit ${soulVer}`);
+      return cached.text;
+    }
+    if (cached) {
+      logger?.info?.(`[soul] 人格变更 ${cacheKey}: ${cached.version} → ${soulVer}`);
+    }
     // ── 身份段：此刻的你 ──
     if (slots.length > 0 || activeAll.length > 0) {
       const lines: string[] = [];
@@ -200,5 +220,13 @@ export async function buildSoulPrefix(
   } catch (err) {
     logger?.warn?.(`[soul] assemble failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
-  return parts.length > 0 ? parts.join("\n\n") + "\n\n" : "";
+  const result = parts.length > 0 ? parts.join("\n\n") + "\n\n" : "";
+  if (soulVer) {
+    if (soulPrefixCache.size >= SOUL_CACHE_MAX) {
+      const oldest = soulPrefixCache.keys().next().value;
+      if (oldest !== undefined) soulPrefixCache.delete(oldest);
+    }
+    soulPrefixCache.set(cacheKey, { version: soulVer, text: result });
+  }
+  return result;
 }
