@@ -74,7 +74,7 @@ function ValueRow({
   anchor: ValueAnchor;
   /** UI 2.1（2026-09-21）：'panel'=四 text 按钮逐位现状；'soul'=kebab 收纳（SoulPage 消费）。 */
   variant?: 'panel' | 'soul';
-  onSave: (valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } }) => Promise<void>;
+  onSave: (valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[]; description?: string } }) => Promise<void>;
   onValenceChange: (anchor: ValueAnchor, valence: number) => Promise<void>;
   onPin: (anchor: ValueAnchor, pinned: boolean) => Promise<void>;
   onRetire: (anchor: ValueAnchor) => Promise<void>;
@@ -87,16 +87,23 @@ function ValueRow({
   const [weightText, setWeightText] = useState(String(anchor.weight));
   // U2（spec §6.5）：人物锚 attrs 行内编辑初值（attrs_json 宽松解析；theme 锚不渲染）
   const isPerson = anchor.node_type === 'person';
-  const parsedAttrs: { role?: string; aliases?: string[] } = (() => {
+  const parsedAttrs: { role?: string; aliases?: string[]; description?: string } = (() => {
     try {
-      const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as { role?: string; aliases?: string[] }) : {};
-      return { role: typeof p.role === 'string' ? p.role : undefined, aliases: Array.isArray(p.aliases) ? p.aliases : [] };
+      const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as { role?: string; aliases?: string[]; description?: string }) : {};
+      return {
+        role: typeof p.role === 'string' ? p.role : undefined,
+        aliases: Array.isArray(p.aliases) ? p.aliases : [],
+        // 对抗审查修复（2026-09-23）：description 读回——否则 U2 编辑保存会全量替换 attrs_json 丢语义
+        description: typeof p.description === 'string' ? p.description : undefined,
+      };
     } catch {
       return {};
     }
   })();
   const [roleText, setRoleText] = useState(parsedAttrs.role ?? '');
   const [aliasesText, setAliasesText] = useState((parsedAttrs.aliases ?? []).join('、'));
+  // 立项①回写面：description 编辑态（全部锚可编辑——存量锚语义补录的手工通道）
+  const [descriptionText, setDescriptionText] = useState(parsedAttrs.description ?? '');
   const parsedWeight = parseFloat(weightText);
   const dirty =
     editing &&
@@ -104,7 +111,8 @@ function ValueRow({
       !Number.isFinite(parsedWeight) ||
       clampWeight(parsedWeight) !== anchor.weight ||
       (isPerson && roleText.trim() !== (parsedAttrs.role ?? '')) ||
-      (isPerson && aliasesText.trim() !== (parsedAttrs.aliases ?? []).join('、')));
+      (isPerson && aliasesText.trim() !== (parsedAttrs.aliases ?? []).join('、')) ||
+      descriptionText.trim() !== (parsedAttrs.description ?? ''));
   const badge = valenceBadge(anchor.valence);
   const origin = originBadge(anchor.origin);
   const nodeBadge = nodeTypeBadge(anchor.node_type);
@@ -112,19 +120,21 @@ function ValueRow({
 
   async function save() {
     if (!dirty) return;
-    // U2：person 行编辑保存带 attrs（显式传入才更新；theme 锚不传）
-    const attrs = isPerson
-      ? {
-          ...(roleText.trim() ? { role: roleText.trim() } : {}),
-          ...(aliasesText.trim()
-            ? { aliases: aliasesText.split(/[,、]/).map((s) => s.trim()).filter((s) => s.length > 0) }
-            : {}),
-        }
-      : undefined;
+    // U2：person 行编辑保存带 attrs（显式传入才更新）
+    // 对抗审查修复（2026-09-23）：description 回写——编辑 role/aliases 时不再丢已落的锚语义
+    //（store ON CONFLICT=attrs 显式传入即全量替换）；空值=用户显式清除，合法。
+    const descTrim = descriptionText.trim();
+    const attrs: { role?: string; aliases?: string[]; description?: string } = {
+      ...(isPerson && roleText.trim() ? { role: roleText.trim() } : {}),
+      ...(isPerson && aliasesText.trim()
+        ? { aliases: aliasesText.split(/[,、]/).map((s) => s.trim()).filter((s) => s.length > 0) }
+        : {}),
+      ...(descTrim ? { description: descTrim } : {}),
+    };
     await onSave(anchor.value_id, {
       label: label.trim(),
       weight: clampWeight(parsedWeight),
-      ...(attrs !== undefined ? { attrs } : {}),
+      ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
     });
     setEditing(false);
   }
@@ -153,6 +163,12 @@ function ValueRow({
             onChange={setWeightText}
             placeholder={t('memory.anchors.weight')}
           />
+          <Input
+            className="_va-input-description"
+            value={descriptionText}
+            onChange={setDescriptionText}
+            placeholder="语义描述（可选一句话——注入为锚的释义）"
+          />
           {isPerson && (
             <>
               <Input
@@ -179,6 +195,7 @@ function ValueRow({
               setWeightText(String(anchor.weight));
               setRoleText(parsedAttrs.role ?? '');
               setAliasesText((parsedAttrs.aliases ?? []).join('、'));
+              setDescriptionText(parsedAttrs.description ?? '');
               setEditing(false);
             }}
           >

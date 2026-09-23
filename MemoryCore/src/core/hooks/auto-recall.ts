@@ -1631,9 +1631,15 @@ export async function searchHybrid(
             certainty: kwSoul.certainty || undefined,
             valence: kwSoul.valence,
             significance: kwSoul.significance,
-            sensitivity: (kwSoul as { sensitivity?: string }).sensitivity,
+            // F-R12 修补：kwSoul 缺值不再抹掉 recordToFormatable 已透传的 sensitivity/recurrence
+            //（原无条件 spread 用 undefined 覆盖=徽章丢失根因）
+            ...((kwSoul as { sensitivity?: string }).sensitivity !== undefined
+              ? { sensitivity: (kwSoul as { sensitivity?: string }).sensitivity }
+              : {}),
             // D-4：周期性事实透传（kwSoul→formatable 徽章链）
-            recurrence: (kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence,
+            ...((kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence !== undefined
+              ? { recurrence: (kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence }
+              : {}),
           } : {}),
         },
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
@@ -2195,7 +2201,7 @@ function formatTimestamp(ts: string | undefined): string | undefined {
  * Build a FormatableMemory from a full MemoryRecord (keyword search path).
  * Handles empty metadata, empty timestamps array gracefully.
  */
-function recordToFormatable(record: MemoryRecord): FormatableMemory {
+export function recordToFormatable(record: MemoryRecord): FormatableMemory {
   const meta = record.metadata as { activity_start_time?: string; activity_end_time?: string } | undefined;
   return {
     type: record.type,
@@ -2210,6 +2216,12 @@ function recordToFormatable(record: MemoryRecord): FormatableMemory {
     certainty: (record as { certainty?: string }).certainty || undefined,
     valence: (record as { valence?: number }).valence,
     significance: (record as { significance?: number }).significance,
+    // F-R12（flowtest 发现）：sensitivity（D-3）+ recurrence（D-4）透传——native-hybrid
+    // 是丢值点排查清单外的第三通道（D-3 排查清单漏项，flowtest 活体实锚 finance 行无徽章）。
+    sensitivity: (record as { sensitivity?: string }).sensitivity || undefined,
+    recurrence: isRecurrenceMeta((meta as { recurrence?: unknown } | undefined)?.recurrence)
+      ? (meta as { recurrence: { cadence: string; anchor: string | null; note: string } }).recurrence
+      : undefined,
   };
 }
 
