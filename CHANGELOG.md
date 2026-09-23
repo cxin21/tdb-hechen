@@ -8,6 +8,15 @@
 `MemoryProxy` / SDK。
 
 ---
+## 🗃️ V6-数据面：P0 提案存量清理 + sensitivity 存量修复（用户整句授权「你自己拍板吧」，2026-09-23）
+
+### Changed（生产数据面，零代码）
+
+- **拍板依据**：用户整句授权「你自己拍板吧，找最优方案落地…同时清理一下之前的错误数据和提案」——AI 自主拍板记录在案（09-22 gated 整句授权同款先例）。
+- **P0 提案存量清理（104→67）**：方案①=bigram th=0.5 同 slot 确定性并簇、每簇保留 created_at 最早、其余 decide rejected（不删行、可审计）。备份先行：core_pending 全表 170 行 + l1 3 行 → /data/tdai-memory/backups/。结果：67 簇 / reject 37 / 最大簇 13 条（网关不重启簇）收敛；残留 th=0.5 dup 对=0。0.5-0.75 区间深度改写保留（宁漏勿错杀——与 P1 闸门同哲学），方案②（embedding 语义级，预期 ~15 簇）登记待后续评估。
+- **sensitivity 存量修复（3 行）**：'undefined'→'none'（ev17-agent×2 + 生产×1，与移交台账口径一致）；normalizeSensitivity 代码单一源已堵新增（D-3），修复后值域全合法（none 853/finance 5/health 4/relationship 2）。
+- **自测（用户令「严谨一点」）**：soulVersion 双调用幂等 PASS（sv-355b893e×2）· 锚行 w 段/首要段/核心事实徽章活体在场 · /v3/atomic/search 出参 24 字段全量实锚（sensitivity=finance 正确返回——F-R12b 已由出参补 7 字段批收口，登记项结案）· 门禁复跑 vitest 755/755（100 文件）+ tsc 222 持平。
+
 ## 🔁 V6-任务8：红线提案语义去重（P1 入队闸门 + P2 生成层上下文注入）（用户令提前开工，2026-09-23）
 
 ### Added（MemoryCore）
