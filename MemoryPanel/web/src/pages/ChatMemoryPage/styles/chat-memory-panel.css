@@ -1760,3 +1760,18 @@
 ._attr-row { line-height: 1.55; padding: 3px 0; }
 ._attr-key { width: 170px; flex: none; color: #6b7280; }
 ._attr-val { word-break: break-all; }
+
+/* ===== V7-UI-3.1: 信息完整性修复（实例 id 全文可读 + atomic title 恢复可见） ===== */
+._memory-card-id {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+._memory-detail-atomic-title {
+  flex: 0 0 auto;
+  max-width: 200px;
+}
+._memory-detail-atomic-head {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
