@@ -39,7 +39,7 @@ function IdentitySlotCard({ slotKey, lines, expanded, onToggle }: {
         </ul>
       </div>
       {collapsible && (
-        <button type="button" className="_soul-idcard-toggle" onClick={onToggle}>
+        <button type="button" className="_soul-idcard-toggle" aria-expanded={expanded} onClick={onToggle}>
           {expanded ? '收起' : `展开全文（共 ${fullText.length} 字）`}
         </button>
       )}

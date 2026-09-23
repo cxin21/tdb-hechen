@@ -53,6 +53,7 @@
   font-size: var(--soul-fz-meta); padding: 3px 10px; border-radius: 999px; cursor: pointer; transition: 150ms ease;
 }
 ._soul-nav-pill:hover { background: var(--soul-fill-hover); color: var(--soul-text-1); }
+._soul-nav-pill--active { background: var(--soul-fill-hover); color: var(--soul-text-1); border-color: #0052d9; }
 ._soul-header-right { flex-shrink: 0; }
 
 /* ── 通用分区/卡/徽标/按钮（token 体系） ── */
@@ -73,7 +74,7 @@
 ._soul-chip--person { background: var(--soul-person-bg); color: var(--soul-person); }
 ._soul-chip--neutral { background: var(--soul-fill-muted); color: var(--soul-text-2); }
 
-._soul-btn-primary { background: var(--tea-color-primary, #1677ff); color: #fff; border: none; border-radius: var(--soul-radius-btn); cursor: pointer; }
+._soul-btn-primary { background: var(--tea-color-primary, #0052d9); color: #fff; border: none; border-radius: var(--soul-radius-btn); cursor: pointer; }
 ._soul-btn-sm { height: 24px; padding: 0 10px; font-size: var(--soul-fz-meta); }
 ._soul-btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
 ._soul-btn-text { background: none; border: none; color: var(--soul-text-3); font-size: var(--soul-fz-meta); cursor: pointer; padding: 0 8px; height: 24px; }

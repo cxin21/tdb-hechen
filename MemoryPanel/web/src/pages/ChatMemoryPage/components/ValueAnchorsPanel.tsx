@@ -673,7 +673,7 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
       {/* GROW 退休区折叠段：retired 列表 + [恢复][钉住]；空时不渲染 */}
       {retired.length > 0 && (
         <div className="_va-retired">
-          <button type="button" className="_va-retired-toggle" onClick={() => setShowRetired((s) => !s)}>
+          <button type="button" className="_va-retired-toggle" aria-expanded={showRetired} onClick={() => setShowRetired((s) => !s)}>
             {showRetired ? '▾' : '▸'} {t('memory.anchors.retiredSection', { count: retired.length })}
           </button>
           {showRetired && (
