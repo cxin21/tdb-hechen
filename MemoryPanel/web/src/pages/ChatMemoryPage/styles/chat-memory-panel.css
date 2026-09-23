@@ -1754,3 +1754,9 @@
 ._nb-edge--other { color: #86909c; }
 ._nb-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #4e5969; padding: 2px 0 6px; }
 ._nb-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+
+/* ===== V6-Batch Three: 属性表可读性整改（vision 审查：列宽窄/密度高/对齐） ===== */
+._attr-table { border-radius: 8px; overflow: hidden; }
+._attr-row { line-height: 1.55; padding: 3px 0; }
+._attr-key { width: 170px; flex: none; color: #6b7280; }
+._attr-val { word-break: break-all; }
