@@ -6,6 +6,24 @@
 
 覆盖仓库全部开源模块：`MemoryCore` / `MemoryPanel` / `MemoryKnowledge` /
 `MemoryProxy` / SDK。
+---
+## 🎨 V7-UI 批次三：信息完整性专项 + 按钮语义归一 + 属性/相关记忆弹出卡（2026-09-23/24）
+
+### Fixed（MemoryPanel/web）
+
+- **UI 三连整改补记（v6 会话 2aa481f/89eda93/12c8e46，此前未入账）**：ChatMemory 移除价值锚 tab（锚唯一入口=/soul）/ soul 锚行整宽 / 属性表可读性（key 170px/行距 1.55/圆角 8）。
+- **信息完整性专项（b327e00）**：① _va-row 补 flex-wrap:wrap，批次二注入形态预览独占第二行，_va-label 截断 15→0（根因=预览 flexBasis:100% 与 nowrap 容器同行挤占）；② 实例卡 id/_alp-item-id 省略号改 overflow-wrap:anywhere 全文可读；③ _memory-detail-atomic-title flex:1(basis 0) 缩到 0 宽不可见→不缩+头行 wrap，30 行活体 title 30/30 可见·截断 0·硬溢出 0。
+
+### Changed（MemoryPanel/web）
+
+- **按钮语义归一（8452250，NO-GO N1-N4）**：N1 双主蓝归一 #1677FF→#0052D9（tea primary 单一语义蓝）；N2 soul 导航 pill 补选中态（--active 双通道+aria-current）；N3 禁用主钮灰字浅底替换 tea 缺省白字浅蓝底（对比度 1.6:1→达标）；N4 disclosure 补 aria-expanded。N5 退休区图标经活体取证为误报撤销（第三例登记≠真实）；N6（tab 切换丢选中）N7（两页文本钮色差）诚实缓议。
+
+### Refactored（MemoryPanel/web）
+
+- **属性/相关记忆改弹出卡（bb5ccf5，拍板「不行就改成弹出卡片」）**：取证展开态 _attr-table 被塞 head 行内 349px 窄列（键值换行错乱、布局失衡）→ AttributesSection/RelatedSection 内联展开改 tea Modal size=l 全宽弹卡（750-800px，零新依赖）；chip 留作触发器+aria-haspopup=dialog；记忆行头不再被展开内容撑爆（行高恒 122px），密度问题同步缓解。
+
+- 门禁：三批 panel vitest 140/140 · web tsc 存量 2 持平 · vite build ✓+bundle 断言 · 双页活体 DOM 断言+截图验收。
+
 
 ---
 ## 🖥️ V6-批次二 UI：注入徽章组 + 锚行注入形态预览 + 感受段首要段（用户拍板「做」，2026-09-23）

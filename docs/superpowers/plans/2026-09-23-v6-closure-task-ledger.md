@@ -42,10 +42,10 @@
 
 | 编号 | 任务 | 状态 | 收口证据 / 缺口 |
 |---|---|---|---|
-| UI-3.1 | 信息完整性专项巡检（先于视觉美化）：逐页逐组件排查三类违规——①长文本溢出/省略号截断（嫌疑：ValueAnchorsPanel 注入形态预览/锚行 description/AttributesSection 属性长文本/SoulPendingRail 提案内容）②同行元素过多挤压（嫌疑：记忆行 tag+徽章组同行、_va-row 徽标+label+weight+下拉+按钮）③空值行占位。每处违规换展示形态，改前 mini-mockup 对比呈拍板，改后长文本/多元素/空值三形态截图验收 | TODO | v7 开工 |
-| UI-3.2 | 验证×N 徽章点亮复核：rc=101 真实行 m_1789437830444_473d770a 记忆页搜索/翻页复核（预期即亮；不亮=新丢值点取证修复） | TODO | v7 开工 |
-| UI-3.3 | RelatedSection 相关记忆展开区视觉走查+整改（截图+DOM 双验收，密度/对齐/边界逐项列问题） | TODO | v7 开工 |
-| UI-3.4 | 全按钮逐项测试+三套按钮风格归一（soul pill vs 记忆页白底黑字 vs 蓝填充主按钮→tea-component 语义体系），出 NO-GO 清单分批修 | TODO | v7 开工 |
+| UI-3.1 | 信息完整性专项巡检（先于视觉美化）：逐页逐组件排查三类违规——①长文本溢出/省略号截断（嫌疑：ValueAnchorsPanel 注入形态预览/锚行 description/AttributesSection 属性长文本/SoulPendingRail 提案内容）②同行元素过多挤压（嫌疑：记忆行 tag+徽章组同行、_va-row 徽标+label+weight+下拉+按钮）③空值行占位。每处违规换展示形态，改前 mini-mockup 对比呈拍板，改后长文本/多元素/空值三形态截图验收 | DONE | b327e00：_va-row wrap+预览独占行（截断 15→0）/实例卡 id 全文可读/atomic-title 恢复可见+头行 wrap；30 行活体截断 0溢出 0+双页截图 |
+| UI-3.2 | 验证×N 徽章点亮复核：rc=101 真实行 m_1789437830444_473d770a 记忆页搜索/翻页复核（预期即亮；不亮=新丢值点取证修复） | NEEDS_CONTEXT | 徽章三层链活体正常（搜索路 8 行点亮）；rc=101 行属 agt-kfynybx0ly（L1=504）在 Panel 记忆块列表不可达=平台资产层缺口，处置待拍板 |
+| UI-3.3 | RelatedSection 相关记忆展开区视觉走查+整改（截图+DOM 双验收，密度/对齐/边界逐项列问题） | DONE | bb5ccf5：取证 349px 窄列根因→属性/相关记忆改 tea Modal 弹卡（750-800px 全宽 0 溢出，用户拍板授权）；行高恒定不膨胀 |
+| UI-3.4 | 全按钮逐项测试+三套按钮风格归一（soul pill vs 记忆页白底黑字 vs 蓝填充主按钮→tea-component 语义体系），出 NO-GO 清单分批修 | DONE_WITH_CONCERNS | 8452250：227 钮枚举+逐项点击；N1-N4 落地/N5 误报撤销（第三例登记≠真实）/N6 N7 诚实缓议（N6=状态提升单独批；N7=语义角色不同归 UI-3.6） |
 | UI-3.5 | F-U2 并列 weight 首要选取两端序统一（Panel=weight DESC vs 注入=value_id，建议两端均 value_id 次级键） | TODO | v7 开工 |
-| UI-3.6 | UI 2.1 整改 NO-GO 清单（2 P0+8 P1+4 P2）溯源落地 | TODO | v7 开工 |
-| UI-3.7 | CHANGELOG 补记：UI 三连整改（2aa481f/89eda93/12c8e46）+批次三全部 | TODO | v7 开工 |
+| UI-3.6 | UI 2.1 整改 NO-GO 清单（2 P0+8 P1+4 P2）溯源落地 | TODO | v7 待开（含 chip/徽章体系审与 N7 收口） |
+| UI-3.7 | CHANGELOG 补记：UI 三连整改（2aa481f/89eda93/12c8e46）+批次三全部 | DONE | 本 commit（UI 三连整改 2aa481f/89eda93/12c8e46 补记 + b327e00/8452250/bb5ccf5 全入 CHANGELOG） |
