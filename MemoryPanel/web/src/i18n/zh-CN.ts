@@ -34,6 +34,8 @@ export const zhCN = {
   'soul.feeling.pos': '驱动我行动的价值',
   'soul.feeling.neg': '提醒我审慎的价值',
   'soul.feeling.prime': '；首要 {{label}}：{{desc}}',
+  'soul.feeling.primeTag': '首要',
+  'soul.feeling.collapse': '收起',
   'memory.badges.core': '核心事实',
   'memory.badges.verify': '验证×{{n}}',
   'memory.badges.strong': '强烈',

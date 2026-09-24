@@ -127,3 +127,31 @@ describe("V7 F-U2：感受段首要锚并列 weight 两端序统一", () => {
     expect(out).toContain("；首要 甲：甲描述");
   });
 });
+
+describe("V7 方案A：首要描述句边界截取（消残句，宁缺毋滥）", () => {
+  const longDesc = "用户长期偏好：文本类成果（含移交提示词、分析报告、文档）一律在对话框直接输出可复制全文，不得落成文档文件。后续补充句。";
+  it("首句在预算内：完整首句呈现至句号（非 30 字硬截）", async () => {
+    const out = await buildSoulPrefix(
+      makeStore(
+        [{ slot: "identity", content: "用户是家里的首席厨师" }],
+        [{ label: "文档", value_id: "v-d", weight: 0.8, valence: 1, attrs_json: JSON.stringify({ description: longDesc }) }],
+      ) as never,
+      TENANT,
+    );
+    // 注：断言限定感受段——价值锚行另有描述渲染（V6-1b，全量存储描述），不在本断言范围
+    const feel = out.match(/<soul-feeling>[\s\S]*?<\/soul-feeling>/)?.[0] ?? "";
+    expect(feel).toContain("首要 文档：" + longDesc.split("。")[0] + "。");
+    expect(feel).not.toContain("后续");
+  });
+  it("无句边界且超预算：省略描述（宁缺毋滥，不产残句）", async () => {
+    const noBound = "表层现象与真实根因多次背离：" + "长长长长长".repeat(30);
+    const out = await buildSoulPrefix(
+      makeStore(
+        [{ slot: "identity", content: "用户是家里的首席厨师" }],
+        [{ label: "根因", value_id: "v-r", weight: 0.8, valence: 1, attrs_json: JSON.stringify({ description: noBound }) }],
+      ) as never,
+      TENANT,
+    );
+    expect(out).not.toContain("；首要");
+  });
+});

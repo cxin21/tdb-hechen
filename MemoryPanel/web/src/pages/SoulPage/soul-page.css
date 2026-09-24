@@ -217,3 +217,16 @@
 ._spending-check {
   margin-right: 6px;
 }
+
+/* ===== V7 方案A：感受段主副结构（首要卡 + 长尾抽屉；信息完整性硬标准②） ===== */
+._soul-feelbody { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+._soul-feelprime { display: flex; gap: 10px; flex-wrap: wrap; row-gap: 4px; }
+._soul-prime-card { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; border-radius: 6px; background: var(--soul-fill-muted); min-width: 0; }
+._soul-prime-card--pos { border-left: 3px solid var(--soul-pos); }
+._soul-prime-card--neg { border-left: 3px solid var(--soul-cau); }
+._soul-prime-tag { flex-shrink: 0; font-size: var(--soul-fz-badge); font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+._soul-prime-tag--pos { background: var(--soul-pos-bg); color: var(--soul-pos); }
+._soul-prime-tag--neg { background: var(--soul-cau-bg); color: var(--soul-cau); }
+._soul-prime-name { font-size: var(--soul-fz-body); font-weight: 600; color: var(--soul-text-1); flex-shrink: 0; }
+._soul-prime-w { font-size: var(--soul-fz-meta); color: var(--soul-text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+._soul-prime-desc { font-size: 12px; color: var(--soul-text-2); min-width: 0; word-break: break-word; }

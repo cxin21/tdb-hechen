@@ -89,6 +89,15 @@ export function anchorInjectPreview(
 }
 
 /** 感受段首要锚（方案B：组内 weight 最高选取，与渲染序解耦；描述 ≤30 字；无描述→null）。 */
+/** V7 方案A：首句提取（句边界截取，预算 80；无完整句则空=宁缺毋滥；与内核 topDescSeg 同构） */
+export function firstSentenceDesc(s: string, budget = 80): string {
+  const t = s.trim();
+  if (!t) return '';
+  const m = /[。！？；!?\n]/.exec(t);
+  if (m) return m.index + 1 <= budget ? t.slice(0, m.index + 1).trim() : '';
+  return t.length <= budget ? t : '';
+}
+
 export function pickPrimeAnchor(
   rows: Array<{ label: string; value_id?: string; weight?: number; attrs_json?: string }>,
 ): { label: string; desc: string } | null {
@@ -102,5 +111,8 @@ export function pickPrimeAnchor(
     if (p && typeof p.description === 'string') desc = p.description.trim();
   } catch { /* 宁缺毋滥 */ }
   if (!desc) return null;
-  return { label: top.label, desc: desc.slice(0, 30) };
+  // V7 方案A：首句完整呈现（句边界，无完整句则 null=宁缺毋滥；与内核 topDescSeg 同构）
+  const s = firstSentenceDesc(desc);
+  if (!s) return null;
+  return { label: top.label, desc: s };
 }

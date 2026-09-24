@@ -52,10 +52,10 @@ describe('pickPrimeAnchor（感受段方案B：weight 选取与渲染序解耦�
     ], 1)).toEqual({ label: '甲', desc: '首要描述' });
     expect(pickPrimeAnchor([{ label: '甲', weight: 0.9 }, { label: '乙', weight: 0.3 }])).toBeNull();
   });
-  it('描述 >30 字截断；weight≤0 视为未测量不入选', () => {
+  it('V7 方案A：描述无句界且≤80 预算→全量（替换 V6 的 30 字硬截）；weight≤0 视为未测量不入选', () => {
     const d40 = '一二三四五六七八九十'.repeat(4);
     expect(pickPrimeAnchor([{ label: '甲', weight: 0.9, attrs_json: `{"description":"${d40}"}` }])!.desc)
-      .toBe('一二三四五六七八九十'.repeat(3));
+      .toBe(d40);
     expect(pickPrimeAnchor([{ label: '甲', weight: 0, attrs_json: '{"description":"x"}' }])).toBeNull();
   });
 });
@@ -91,5 +91,18 @@ describe('pickPrimeAnchor V7 F-U2（并列 weight 两端序统一）', () => {
       { label: '高', value_id: 'v-b', weight: 0.9, attrs_json: '{"description":"高描述"}' },
     ];
     expect(pickPrimeAnchor(rows as never)).toEqual({ label: '高', desc: '高描述' });
+  });
+});
+
+describe('pickPrimeAnchor V7 方案A（句边界描述）', () => {
+  it('首句在预算内：完整首句（非 30 字硬截）', () => {
+    const d = '用户长期偏好：文本类成果一律在对话框直接输出可复制全文，不得落成文档文件。后续句。';
+    const rows = [{ label: '文档', value_id: 'v-d', weight: 0.8, attrs_json: JSON.stringify({ description: d }) }];
+    expect(pickPrimeAnchor(rows as never)).toEqual({ label: '文档', desc: d.split('。')[0] + '。' });
+  });
+  it('无句边界且超预算：返回 null（宁缺毋滥）', () => {
+    const d = '表层现象与真实根因多次背离：' + '长长长长长'.repeat(30);
+    const rows = [{ label: '根因', value_id: 'v-r', weight: 0.8, attrs_json: JSON.stringify({ description: d }) }];
+    expect(pickPrimeAnchor(rows as never)).toBeNull();
   });
 });

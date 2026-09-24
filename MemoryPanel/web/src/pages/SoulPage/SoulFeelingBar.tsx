@@ -34,8 +34,9 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
   const directional = values.filter(
     (v) => (v.node_type ?? 'theme') === 'theme' && (v.valence === 1 || v.valence === -1),
   );
-  const pos = directional.filter((v) => v.valence === 1).map((v) => v.label);
-  const neg = directional.filter((v) => v.valence === -1).map((v) => v.label);
+  // V7 方案A：UI pill 按 weight 降序（程度梯度；注入侧保持 value_id 稳定序=KV cache 契约，首要选取两端同键已由 F-U2 统一）
+  const pos = directional.filter((v) => v.valence === 1).sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).map((v) => v.label);
+  const neg = directional.filter((v) => v.valence === -1).sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).map((v) => v.label);
   // V6-批次二：首要锚（weight 最高选取与渲染序解耦，描述≤30字——与 soul-assembler 同构）
   const primePos = pickPrimeAnchor(values.filter((v) => v.valence === 1));
   const primeNeg = pickPrimeAnchor(values.filter((v) => v.valence === -1));
@@ -48,36 +49,57 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
     <div className="_soul-feelbar" aria-label={t('soul.feeling.title')} id="_soul-sec-feeling">
       <span className="_soul-feelbar-title">{t('soul.feeling.title')}</span>
       {hasAny ? (
-        <>
-          {posShow.length > 0 && (
-            <span className="_soul-feelgroup">
-              <span className="_soul-feelgroup-label">{t('soul.feeling.pos')}</span>
-              {posShow.map((l) => <Pill key={`p:${l}`} label={l} kind="pos" />)}
-              {!showAll && pos.length > cap && (
-                <button type="button" className="_soul-feel-more" onClick={() => setShowAll(true)}>+{pos.length - cap}</button>
-              )}
-              {primePos && (
-                <span style={{ fontSize: 11, color: '#4338ca' }}>
-                  {t('soul.feeling.prime', { label: primePos.label, desc: primePos.desc })}
-                </span>
-              )}
-            </span>
+        <div className="_soul-feelbody">
+          {(primePos || primeNeg) && (
+            <div className="_soul-feelprime">
+              {primePos && (() => {
+                const w = values.find((v) => v.label === primePos.label)?.weight;
+                return (
+                  <div className="_soul-prime-card _soul-prime-card--pos">
+                    <span className="_soul-prime-tag _soul-prime-tag--pos">{t('soul.feeling.primeTag')}·{t('soul.feeling.pos')}</span>
+                    <span className="_soul-prime-name">{primePos.label}</span>
+                    {typeof w === 'number' && <span className="_soul-prime-w">w{w.toFixed(2).replace(/0$/, '')}</span>}
+                    <span className="_soul-prime-desc">{primePos.desc}</span>
+                  </div>
+                );
+              })()}
+              {primeNeg && (() => {
+                const w = values.find((v) => v.label === primeNeg.label)?.weight;
+                return (
+                  <div className="_soul-prime-card _soul-prime-card--neg">
+                    <span className="_soul-prime-tag _soul-prime-tag--neg">{t('soul.feeling.primeTag')}·{t('soul.feeling.neg')}</span>
+                    <span className="_soul-prime-name">{primeNeg.label}</span>
+                    {typeof w === 'number' && <span className="_soul-prime-w">w{w.toFixed(2).replace(/0$/, '')}</span>}
+                    <span className="_soul-prime-desc">{primeNeg.desc}</span>
+                  </div>
+                );
+              })()}
+            </div>
           )}
-          {negShow.length > 0 && (
-            <span className="_soul-feelgroup">
-              <span className="_soul-feelgroup-label">{t('soul.feeling.neg')}</span>
-              {negShow.map((l) => <Pill key={`neg:${l}`} label={l} kind="neg" />)}
-              {!showAll && neg.length > cap && (
-                <button type="button" className="_soul-feel-more" onClick={() => setShowAll(true)}>+{neg.length - cap}</button>
-              )}
-              {primeNeg && (
-                <span style={{ fontSize: 11, color: '#4338ca' }}>
-                  {t('soul.feeling.prime', { label: primeNeg.label, desc: primeNeg.desc })}
-                </span>
-              )}
-            </span>
-          )}
-        </>
+          <div className="_soul-feelrows">
+            {posShow.length > 0 && (
+              <span className="_soul-feelgroup">
+                <span className="_soul-feelgroup-label">{t('soul.feeling.pos')}</span>
+                {posShow.map((l) => <Pill key={`p:${l}`} label={l} kind="pos" />)}
+                {!showAll && pos.length > cap && (
+                  <button type="button" className="_soul-feel-more" aria-expanded={showAll} onClick={() => setShowAll(true)}>+{pos.length - cap}</button>
+                )}
+                {showAll && (pos.length > cap || neg.length > cap) && (
+                  <button type="button" className="_soul-feel-more" aria-expanded={showAll} onClick={() => setShowAll(false)}>{t('soul.feeling.collapse')}</button>
+                )}
+              </span>
+            )}
+            {negShow.length > 0 && (
+              <span className="_soul-feelgroup">
+                <span className="_soul-feelgroup-label">{t('soul.feeling.neg')}</span>
+                {negShow.map((l) => <Pill key={`neg:${l}`} label={l} kind="neg" />)}
+                {!showAll && neg.length > cap && (
+                  <button type="button" className="_soul-feel-more" aria-expanded={showAll} onClick={() => setShowAll(true)}>+{neg.length - cap}</button>
+                )}
+              </span>
+            )}
+          </div>
+        </div>
       ) : (
         loaded && <span className="_soul-meta">{t('soul.feeling.empty')}</span>
       )}

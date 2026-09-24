@@ -23,6 +23,7 @@
 - **属性/相关记忆改弹出卡（bb5ccf5，拍板「不行就改成弹出卡片」）**：取证展开态 _attr-table 被塞 head 行内 349px 窄列（键值换行错乱、布局失衡）→ AttributesSection/RelatedSection 内联展开改 tea Modal size=l 全宽弹卡（750-800px，零新依赖）；chip 留作触发器+aria-haspopup=dialog；记忆行头不再被展开内容撑爆（行高恒 122px），密度问题同步缓解。
 
 - **F-U2 并列 weight 首要选取两端序统一（UI-3.5）**：Panel pickPrimeAnchor 补 value_id 次级键（原输入=listValues weight DESC 序，并列时可能与注入端异根）；内核 topDescSeg 显式化同键（原承载于输入序的隐式行为，无行为变化）。生产活体：0.80 并列 ×7 真实重 tie 下首要=文档(pos)/审计(neg)，双调用字节幂等；RED（得乙 expect 甲）→ GREEN 756/756+142/142，tsc 222 持平。
+- **感受段方案A：主副结构+句边界描述（用户整句授权「自选最优方案」）**：概念审计坐实两处偏离（①首要 description=30 字硬截残句「…一律」；②长尾清单无程度感）→ 内核 topDescSeg 与 Panel firstSentenceDesc 同构改首句完整呈现（句边界截取，预算 80；无完整句或首句超预算则省略=宁缺毋滥）；SoulFeelingBar 改两行主副：首要卡主位（方向色条+锚名+w+完整首句）+长尾 pills weight 降序（程度梯度）cap3+抽屉带 aria-expanded；A/B 真数据 14/14 全部改善（30 字残句→55-60 字完整句）、非首要部分渲染逐字节不变；登记：锚行 description 残句根因=v2-router 写入时 80 字硬截（数据面，另行呈报）；门禁 core 758/758·panel 144/144·tsc 222/2 持平·build ✓
 - 门禁：三批 panel vitest 140/140 · web tsc 存量 2 持平 · vite build ✓+bundle 断言 · 双页活体 DOM 断言+截图验收。
 
 

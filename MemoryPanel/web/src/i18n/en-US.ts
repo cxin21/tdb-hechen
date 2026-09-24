@@ -34,6 +34,8 @@ export const enUS = {
   'soul.feeling.pos': 'Values that drive me',
   'soul.feeling.neg': 'Values that caution me',
   'soul.feeling.prime': '; primary {{label}}: {{desc}}',
+  'soul.feeling.primeTag': 'Prime',
+  'soul.feeling.collapse': 'Collapse',
   'memory.badges.core': 'Core fact',
   'memory.badges.verify': 'Verified ×{{n}}',
   'memory.badges.strong': 'Intense',

@@ -112,7 +112,7 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     expect(fm![1]).toBe("乙、甲");
     expect(out).not.toContain("首要");
   });
-  it("description 超 30 字 → 截断 30 字（第 31 字不出现）", async () => {
+  it("V7 方案A：描述无句界且≤80 预算→全量（替换 V6-1d 的 30 字硬截）", async () => {
     const d40 = "一二三四五六七八九十".repeat(4);
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "a", label: "甲", weight: 0.9, attrs_json: `{"description":"${d40}"}` })]) as never,
@@ -123,8 +123,7 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
     expect(m![1]).toContain("首要 甲：一二三四五六七八九十".slice(0, 6));
-    expect(m![1]).toContain("一二三四五六七八九十".repeat(3));
-    expect(m![1]).not.toContain(d40);
+    expect(m![1]).toContain(d40);
   });
   it("审慎组（valence=-1）同样生效", async () => {
     const out = await buildSoulPrefix(

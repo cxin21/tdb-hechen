@@ -220,7 +220,13 @@ export async function buildSoulPrefix(
         const top = [...rows].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))[0];
         if (!top || !((top.weight ?? 0) > 0)) return "";
         const d = attrsOf(top.attrs_json)?.description?.trim();
-        return d ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d.slice(0, 30))}` : "";
+        if (!d) return "";
+        // V7 方案A：首句优先（句边界截取；首句超预算或无句界且超 80 则省略=宁缺毋滥；与 Panel firstSentenceDesc 同构）
+        const m = /[。！？；!?\n]/.exec(d);
+        if (m) {
+          return m.index + 1 <= 80 ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d.slice(0, m.index + 1).trim())}` : "";
+        }
+        return d.length <= 80 ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d)}` : "";
       };
       if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("、")}${topDescSeg(directional.filter((v) => v.valence === 1))}`);
       if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("、")}${topDescSeg(directional.filter((v) => v.valence === -1))}`);
