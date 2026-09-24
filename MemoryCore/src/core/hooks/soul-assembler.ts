@@ -217,7 +217,7 @@ export async function buildSoulPrefix(
       // V6-1d（方案B，2026-09-23 用户授权自审定案）：渲染序保持 value_id 稳定（立项②）；
       // 「首要」锚按 weight 最高选取（选取与排序解耦），附 description 短句 ≤30 字（宁缺毋滥）。
       const topDescSeg = (rows: typeof directional): string => {
-        const top = [...rows].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))[0];
+        const top = [...rows].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))[0];
         if (!top || !((top.weight ?? 0) > 0)) return "";
         const d = attrsOf(top.attrs_json)?.description?.trim();
         return d ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d.slice(0, 30))}` : "";

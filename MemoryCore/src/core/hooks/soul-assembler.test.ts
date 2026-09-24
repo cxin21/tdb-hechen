@@ -3,7 +3,7 @@ import { buildSoulPrefix } from "./soul-assembler.js";
 
 const TENANT = { teamId: "flowtest", userId: "ev5", agentId: "agent-l5ug" };
 
-function makeStore(slots: Array<{ slot: string; content: string }>, values: Array<{ label: string; weight?: number; valence?: number | null; state?: string }> = []) {
+function makeStore(slots: Array<{ slot: string; content: string }>, values: Array<{ label: string; value_id?: string; weight?: number; valence?: number | null; state?: string; attrs_json?: string }> = []) {
   return {
     readCore: async () => slots,
     listValues: async () => values,
@@ -109,5 +109,21 @@ describe("soul-assembler 四段渲染（P1）", () => {
     const out = await buildSoulPrefix(makeStore(IDENTITY_ONLY) as never, TENANT, undefined, { selfIdentityEnabled: true });
     expect(out).not.toContain("（我是谁）");
     expect(out).toContain("（我心中的他）");
+  });
+});
+
+describe("V7 F-U2：感受段首要锚并列 weight 两端序统一", () => {
+  it("并列 weight：value_id 次级键（与 Panel pickPrimeAnchor 同键；输入序不承载语义的显式化守占）", async () => {
+    const out = await buildSoulPrefix(
+      makeStore(
+        [{ slot: "identity", content: "用户是家里的首席厨师" }],
+        [
+          { label: "乙", value_id: "v-b", weight: 0.8, valence: 1, attrs_json: '{"description":"乙描述"}' },
+          { label: "甲", value_id: "v-a", weight: 0.8, valence: 1, attrs_json: '{"description":"甲描述"}' },
+        ],
+      ) as never,
+      TENANT,
+    );
+    expect(out).toContain("；首要 甲：甲描述");
   });
 });

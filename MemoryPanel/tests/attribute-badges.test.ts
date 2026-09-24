@@ -76,3 +76,20 @@ describe('anchorInjectPreview（与 soul-assembler 锚行逐字同构）', () =>
     expect(weightLabel(1)).toBe('1');
   });
 });
+
+describe('pickPrimeAnchor V7 F-U2（并列 weight 两端序统一）', () => {
+  it('并列 weight：value_id 次级键定序，输入 weight-DESC 序不承载语义（RED）', () => {
+    const rows = [
+      { label: '乙', value_id: 'v-b', weight: 0.8, attrs_json: '{"description":"乙描述"}' },
+      { label: '甲', value_id: 'v-a', weight: 0.8, attrs_json: '{"description":"甲描述"}' },
+    ];
+    expect(pickPrimeAnchor(rows as never)).toEqual({ label: '甲', desc: '甲描述' });
+  });
+  it('守卫：weight 不同时仍按 weight 最高（回归不变）', () => {
+    const rows = [
+      { label: '低', value_id: 'v-a', weight: 0.5, attrs_json: '{"description":"低描述"}' },
+      { label: '高', value_id: 'v-b', weight: 0.9, attrs_json: '{"description":"高描述"}' },
+    ];
+    expect(pickPrimeAnchor(rows as never)).toEqual({ label: '高', desc: '高描述' });
+  });
+});

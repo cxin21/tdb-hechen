@@ -90,10 +90,11 @@ export function anchorInjectPreview(
 
 /** 感受段首要锚（方案B：组内 weight 最高选取，与渲染序解耦；描述 ≤30 字；无描述→null）。 */
 export function pickPrimeAnchor(
-  rows: Array<{ label: string; weight?: number; attrs_json?: string }>,
+  rows: Array<{ label: string; value_id?: string; weight?: number; attrs_json?: string }>,
 ): { label: string; desc: string } | null {
   const group = rows.filter((r) => typeof r.weight === 'number' && r.weight > 0);
-  const top = group.sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))[0];
+  // V7 F-U2：并列 weight 时 value_id 次级键定序（与内核 topDescSeg 同键；输入序不承载语义）
+  const top = group.sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))[0];
   if (!top) return null;
   let desc = '';
   try {
