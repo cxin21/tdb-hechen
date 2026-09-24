@@ -1,7 +1,7 @@
 # 灵魂演化层设计（DS-SOUL-EVOLUTION-001）——2026-09-17-soul-memory-design.md 补充
 
 - 日期：2026-09-24
-- 状态：设计定稿（用户令「你自己分析然后写设计文档，作为 2026-09-17-soul-memory-design.md 的补充，注意自生长和自维护的原则」——2026-09-24 对话直出授权；全部机制缺省关断，启用逐期经 A/B 验收后呈报）
+- 状态：设计定稿 v2（v1=2026-09-24 对话直出授权；v2=用户令「设计需结合已有的设计和实现，重点注意明确怎么提取、怎么维护、怎么生长、怎么使用、怎么召回、怎么展示」——逐机制补六链矩阵（§1.7/§2.7/§3.7）+既有实现接线清单（§7）+反耦合红线（§8）；全部机制缺省关断，启用逐期经 A/B 验收后呈报）
 - 关联：`2026-09-17-soul-memory-design.md`（本设计的母 spec；本补充修订其 O14 裁决的适用边界，见 §3.4）、`2026-09-15-soul-pipeline-design.md`、v7 工作流 B/C
 - 调研输入：Sentipolis（arXiv 2601.18027，PAD 三维情绪状态）、How Emotion Shapes the Behavior of LLMs and Agents（arXiv 2604.00005，情绪状态显著改变推理行为的机制实证）、Emergence of Self-Identity in AI（arXiv 2411.18530，自我同一性量化）、Emotional Memory for LLM Agents / AFT（2022-2026 综述）、Cognee/Zep/Mem0/Letta 2026 格式对比
 
@@ -160,3 +160,55 @@ O14 裁决「不建 history 表（旧文 logger.info 留痕）」**维持不变*
 - 情绪污染（单一强事件拉偏）→ 半衰期加权+minSamples 双门。
 - KV 前缀抖动 → 三值化+档位翻转频率实测入 A/B 观察项；实测超阈值（>3 次/日）回退登记。
 - 主语越界（拟人化断言）→ 渲染格式硬约束（§1.5）+存量快照断言守卫。
+---
+
+## 7. 六链矩阵（v2 增补：提取→维护→生长→使用→召回→展示，逐机制钉死到既有实现锚点）
+
+锚点基线=HEAD 2df2d39。六链纪律是母 spec「四链生产级」（获取→评分→使用→展示）的完整展开：维护与召回两环在 v1 中未逐条钉死，本节补齐。**六链任一环缺失即整体不启用（与四链同判据：用户看不到/用不到=没做）。**
+
+### 7.1 S-FEEL-1 近期情绪基调行——六链
+
+| 链 | 机制 | 实现锚点（既有/新增） |
+|---|---|---|
+| 提取 | 零新增提取工序：复用 L1 既有 valence/arousal 列（l1-extractor 提取时 LLM 归档+确定性校验，normalizeSensitivity 同族门） | 既有：l1-extractor.ts；新增：store 只读查询 `recentAffectSignals(tenant, windowHours, maxSamples)`（l1_records WHERE valence IS NOT NULL AND occurred_at ≥ 窗口 ORDER BY occurred_at DESC LIMIT maxSamples） |
+| 维护 | 无状态导出量：每次 /v3/recall 组装时确定性重算（O(maxSamples) 纯内存，零写库零新表）；数据质量由既有提取门负责，本机制不重复校验 | 新增：mood-line.ts 纯函数（单一源） |
+| 生长 | 无累积结构；时间窗自滚动=自生长的无状态形式（样本随经历自然进出）；档位翻转频率为 A/B 观察项（>3 次/日回退登记） | 既有：occurred_at 时间列 |
+| 使用 | soul-feeling 段尾新行 `<近期基调：…>`；soulVersion 纳入 mood 档位（档位翻转=立即重注入） | 既有：soul-assembler.ts 感受段（topDescSeg 同函数族）、computeSoulVersion（输入扩展） |
+| 召回 | **红线：mood 不参与任何召回排序/加权**（F14-bis 同族——情绪不得喂自身：基调承压→召回偏负→更承压的自增强回路必须封死）；仅与 R10 共享 valence 数据源（单一源：mood-line.ts 导出聚合函数，R10 复用或反向，禁第二份实现） | 既有：R10 情感显著度权重（召回排序）、RankSignalItem（已扩 arousal） |
+| 展示 | SoulFeelingBar 分区卡「近期基调」副行（三态徽标+样本数+阈值/窗口 tooltip）；/v3/recall 出参 meta.mood（插件层可消费） | 既有：SoulFeelingBar.tsx v2 分区卡；新增：出参 meta 扩展（soulVersion 同位） |
+
+### 7.2 S-CHAR-2 品格张力检测——六链
+
+| 链 | 机制 | 实现锚点（既有/新增） |
+|---|---|---|
+| 提取 | 双检测器（确定性）：T1 演化反向=upsertCore version++ 时对修订前后内容做价值域 label 匹配+极性对照；T2 证据分裂=GROW-MAINT recountEvidence 时同锚 valence 方向分裂统计。LLM 仅将候选张力实例提炼为品格提案（identity-discovery worker 第三产出字段） | 既有：identity-discovery.ts 双视角 worker（提案 JSON 格式行 49-79）、recountEvidence（F9）、upsertCore version++ 旧文留痕；新增：character-tension.ts（单一源） |
+| 维护 | 品格锚落 core_values（node_type='character'）→ 进入既有 GROW-MAINT 全量证据重算循环（ev<min→retire、\|Δw\|≥0.05→reweight）；状态键族用独立前缀 anchor_char_*（沿用 person 池 anchor_person_* 分键先例，防共用键族互清） | 既有：anchor-growth.ts GROW-MAINT（:237-247 维护退场）、anchor_growth_state 键族 |
+| 生长 | 护栏四件 F19（ev≥minEvidence/maxPerPass/maxTotal 分池/全态去重 (node_type,label) 复合键）+张力实例数只增不减；weight 按 F5 证据饱和生长；品格分池配额 maxTotalCharacter=6（独立预算，防挤占主题/人物池） | 既有：F19/F5/F15 分池制（maxTotalTheme=15/maxTotalPerson=8 先例）、growthValueId |
+| 使用 | 「我是谁」小节尾部新行 `我的品格：label(方向·w)：描述`（enabled+存在时；宁缺毋滥）；**不入感受段**（F-EV12-5③ 维持）；soulVersion 纳入（新行出现=指纹变化） | 既有：soul-assembler.ts 身份小节渲染、escapeXmlTags 消毒 |
+| 召回 | 品格锚证据链走 coreRefs 同款双向回填（characterRef）；记忆召回侧 searchL1ByCoreRefs 同款反查扩展；F14 遗忘保护扩展：指向 active character 锚的记忆受保护（重验 refs 有效性同款——防永生记忆条款不变） | 既有：coreRefs backfill（重算精确一致 7/7 先例）、searchL1ByCoreRefs、F14 保护钩子 |
+| 展示 | 三池锚面板品格池 tab（已在场：vtab 品格 1/8 实锚）+分池配额显示+「查看关联记忆」复用；出参 attrs/labels 自动带出（列扩展已在场） | 既有：ValueAnchorsPanel vtab 三池、node_type='character' 类型徽标位、mapLayerItem |
+
+### 7.3 S-NARR-3 身份叙事行——六链
+
+| 链 | 机制 | 实现锚点（既有/新增） |
+|---|---|---|
+| 提取 | identity-discovery 双视角 worker prompt 增第三产出字段 narrative（样本窗=既有 selectSampleRows：updated 降序+高显著 cap 50）；触发时机=self_identity 采纳修订（version++）时 | 既有：identity-discovery.ts selectSampleRows/双视角 prompt/分级门 |
+| 维护 | 确定性门（单一源 narr-gate.ts）：长度≤maxChars、第一人称校验、「我」在场且非「用户」主语开头、F10 状态残留剥离同款扫描、槽尾 narrative 行幂等替换；落库走既有 upsertCore+allowedSlots 信任边界（self_identity 已在白名单） | 既有：upsertCore（version++/旧文 logger.info 留痕）、config.ts:872 allowedSlots、F10 剥离单一源 |
+| 生长 | 叙事随每次 self_identity 修订重蒸馏（生长=叙事随身份演化更新）；无独立累积结构（O14 边界维持：不建史表不解析日志） | 既有：version++ 演化链 |
+| 使用 | self_identity 槽尾固定行 `- 我如何到这里：…`→「我是谁」小节自然携带；soulVersion 纳入（槽内容变化已计入） | 既有：soul-assembler.ts 身份小节、F17 槽预算（900 字符内） |
+| 召回 | **红线：narrative 行不产生 identityRefs**——蒸馏物非事实，防蒸馏叙事被当行为证据反查/受遗忘保护（防叙事自我强化）；identityRefs 证据链只挂事实行 | 既有：identityRefs 回填与 GROW-MAINT 重算 |
+| 展示 | Panel 身份双槽卡随槽内容展示（行高 1.75/渐隐折叠既有机制承载）；可选：narrative 行加「叙事」小徽标与事实行诚实区分（实施期决定，不阻塞） | 既有：ChatMemoryPage 身份双槽卡（渐隐折叠/展开全文） |
+
+## 8. 反耦合红线（三机制×既有系统的隔离边界——每条都有事故原型）
+
+| 红线 | 理由（事故原型） |
+|---|---|
+| R-A：mood 不参与召回排序/加权 | 回音室变体：情绪喂自身（承压→负向召回→更承压）。F14-bis 是身份版防线，R-A 是情绪版同构 |
+| R-B：character 不入感受段 | F-EV12-5③ 既有拍板维持；品格是「我是谁」的属性不是「此刻的感受」——混入即重蹈 G1 名实错位 |
+| R-C：narrative 不产生 identityRefs | 蒸馏物当事实=叙事自我强化+遗忘保护误伤真事实（F14 保护判据输入被污染） |
+| R-D：三机制全部走既有确定性门族（F10/F15/F19/分级门），不新造第二套门 | 单一源铁律：第二套门=口径分叉（O12/G13 事故族） |
+
+## 9. v2 后的启用路径（不变，重申依赖）
+
+M1（S-FEEL-1）数据源全在场可立即开工（RED→门禁→A/B ≥10 组→呈报启用）；M2（S-CHAR-2）须先跑张力燃料 spike（T1+T2 基数实测，<2 例则不启用——止损条款 §2.4）；M3（S-NARR-3）依赖 M1/M2 数据积累。三机制的 store 层新查询/新键族全部走 config 缺省关断，yaml 未开启前运行时逐位现状。
+
