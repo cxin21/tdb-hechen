@@ -65,7 +65,7 @@
 | 编号 | 任务 | 状态 | 收口证据 / 缺口 | 下一步 |
 |---|---|---|---|---|
 | M1 | S-FEEL-1 近期情绪基调行（S1→S10 串行） | DONE_WITH_CONCERNS | v8 轮实施收口（S1-S10 全过；core 780/780·tsc 222·panel 144/144·build+bundle 断言；A/B 13/13；生产 disabled 逐位现状 3749=3749 byte_equal）；红线 R-A 落实（mood 不参与召回排序）；缺口=生产租户 enabled=true 属行为变更启用待拍板（gated），UI 副行点亮活体验证随启用执行 | 拍板后改 yaml+UI 活体 |
-| M2 | S-CHAR-2 燃料 spike（T2 证据分裂 SQL 实测+5 条人工候选抽验；T1 演化反向无史表推迟正式立项） | SPIKE_DONE | spike 收口：83 active 锚中 18 个张力锚（pos≥2∧neg≥2）+5 条人工候选抽验方向语义合理——燃料 18 >> 止损线 2，S-CHAR-2 可立项呈报拍板；意外发现 character 锚 6 条真实在场（3 active/3 retired, origin=auto）=「品格池零数据休眠」登记≠真实新例；T1 检测器实现按计划推迟 M2 正式立项 | spike 报告呈报拍板 |
+| M2 | S-CHAR-2 燃料 spike（T2 证据分裂 SQL 实测+5 条人工候选抽验；T1 演化反向无史表推迟正式立项） | SPIKE_DONE→立项 | spike 收口：83 active 锚中 18 个张力锚（pos≥2∧neg≥2）+5 条人工候选抽验方向语义合理——燃料 18 >> 止损线 2，何晨 2026-09-24 拍板立项；character 锚来源核查=生产 yaml character.enabled=true（:185-189）池已活跃生长（登记≠真实第 5 例根因定责）；实施计划=docs/superpowers/plans/2026-09-24-character-tension-m2-plan.md（P1-P6） | 新会话按计划执行 |
 | M3 | S-NARR-3 身份叙事行 | TODO（依赖 M1/M2 数据积累） | O14 边界维持（不建史表不解析日志）；依赖明示不提前 | M1/M2 收口后另写实施计划 |
 
 ## 七、v8 轮执行记录（2026-09-24）
@@ -76,4 +76,9 @@
 - A/B：隔离临时实例（8430+VACUUM 副本+合成租户播种）同种子对照 13/13 全过；生产 yaml 全程未动（enabled=false 零抢跑）；生产 disabled 逐位现状=新旧代码活体 3749=3749。临时实例与副本已清理。
 - M2 spike（并行）：T2 张力锚 18 例 + 5 条人工候选抽验 + character 锚 6 条真实在场发现；报告呈报拍板（§2.4 止损线远未触发）。
 - 门禁终态：core vitest 780/780（758+22 新增）· tsc typecheck 222 持平 · panel vitest 144/144 · web tsc 存量 2 · vite build ✓ + bundle 断言（_soul-mood/近期基调）· 密钥扫描 \b 词边界=仅 i18n 占位符存量假阳性（新增行 0 命中）。
-- 教训新增：① VS $(...) 内联第 4-6 次翻车——bash 语法含 $() 的命令即使单行也一律脚本文件；② YAML flip 后重跑必须显式回切（守卫插入只防缺段不防值残留）；③ FP 边界种子用同时间戳（异龄样本加权均值 0.15±ε 会两侧漂移）；④ 比对断言要考虑「空壳块」（mood-only 时 feel 包装壳在 enabled 块在场、disabled 块无）。
+- 教训新增：① VS $(...) 内联第 4-6 次翻车——bash 语法含 $() 的命令即使单行也一律脚本文件；② YAML flip 后重跑必须显式回切（守卫插入只防缺段不防值残留）；③ FP 边界种子用同时间戳（异龄样本加权均值 0.15±ε 会两侧漂移）；④ 比对断言要考虑「空壳块」（mood-only 时 feel 包装壳在 enabled 块在场、disabled 块无）；⑤ 截屏陈旧帧复判武器=fullPage:true 捕获路径（viewport 路径连续三帧同 sha，fullPage 出新帧）。
+
+## 八、拍板执行记录（2026-09-24 何晨拍板「拍板了，你继续吧」）
+
+- **拍板项 1（M1 生产启用）DONE**：tdai-gateway.yaml coreMemory 下插入 moodLine.enabled=true（gitignored 不入 git）；tdai-core+tdai-panel 双重启（8s/2s 健康恢复）；活体=生产租户 /v3/recall meta.mood=positive+基调行「近期基调：偏积极（近 20 条经历的情感聚合）」在 soul-feeling 块尾+/v3/memory/mood 全参返回；UI 点亮活体=浏览器 DOM 断言（_soul-mood 徽标 --positive/偏积极/近 20 条/tooltip 判定依据=真实 config 72h/48h/±0.15/5）+fullPage 视觉验收（绿色徽标、无溢出无挤压）；宁缺毋滥反向验证=agt-l5ugn6urg4 sampleCount=0 不渲染 ✓。
+- **拍板项 2（M2 立项）**：character 锚来源核查收口——生产 yaml anchorDiscovery.character.enabled=true（:185-189，minEvidence 3/maxPerPass 2/maxTotal 8）=品格池早已在生产活跃生长（6 条 c-auto-* 锚 origin=auto created_by=auto-growth，journal 2026-09-23 rationale 采纳痕迹）；「品格池零数据休眠」根因=设计取证只查代码缺省（anchor-growth.ts:71/85 false）未查生产 yaml 覆盖——登记≠真实第 5 例根因定责完成。S-CHAR-2 真实增量=张力检测喂提案燃料（现有池聚合源=self_identity 槽事实），实施计划见 docs/superpowers/plans/2026-09-24-character-tension-m2-plan.md。
