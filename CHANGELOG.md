@@ -56,6 +56,14 @@
 
 - 生产租户 moodLine enabled=true 属行为变更启用：A/B 已全过，**等拍板后改 yaml + UI 副行点亮活体验证**（「用户看不到=没做」的最终闭环步骤）。SoulPage 需登录态+选中资产，本轮浏览器活体未及（登记疑虑清单）。
 
+## 🔧 V9-M2 修复线：D-R3-2 boot recovery 死任务键过滤（2026-09-24）
+
+### Fixed（MemoryCore）
+
+- **任务6 D-R3-2**：boot recovery 的 recoveryKeys（checkpoint runner_states ∪ L0 全会话键）新增死键过滤——新增 store 可选方法 `hasL0Session(sessionId)`（与 listL0SessionIds 同族语义，session_id 跨租户全局键；degraded/空串/异常 → false 宁缺毋滥），server.ts recovery 前剔除无 L0 数据的 runner_states 残留键，不再白挂 L1_drain 定时器；hasL0Session 缺实现的旧 store → 不过滤=现状语义。3 用例（存在性/与 listL0SessionIds 一致性/退化输入）。
+- **活体实锚（2026-09-24）**：单次 boot re-arm **156 会话中 28 键无 L0 数据**（flow-test-20260915、session-flowtest-20260916-c..h、ev5-live-s1 等 09-15/16 测试残留，readOnly 探针 runner_states∩L0 实测 151∩129→123/28）。
+- **机制级归因修正（登记≠真实第 6 例）**：锁风暴主因不是死键——journal 风暴样本 4 会话 L0 均有数据（23/186/387/148 行）；**主因=旧版产生的 L2 任务无租户元数据**（锁键全部塌缩到 `pipeline:{default:_:_}` 一把实例锁互相冲突退避，retry 100+ 与 `-lrN` requeue 链滞留）。死键过滤消除 boot 空跑面（28/151）；L2 任务租户元数据/锁粒度修复属行为变更另行立项呈报。
+
 ## 🎨 V7-UI 批次三：信息完整性专项 + 按钮语义归一 + 属性/相关记忆弹出卡（2026-09-23/24）
 
 ### Fixed（MemoryPanel/web）

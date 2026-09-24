@@ -4590,6 +4590,24 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /** D-R3-2（任务6，2026-09-24）：L0 会话键存在性查询——boot recovery 死键过滤数据前提。
+   *  与 listL0SessionIds 同族语义（session_id 跨租户全局键，无租户参数）；只读零写库；
+   *  degraded/空串/异常 → false（宁缺毋滥不误挂定时器）。 */
+  hasL0Session(sessionId: string): boolean {
+    if (this.degraded) return false;
+    const sid = String(sessionId ?? "");
+    if (sid === "") return false;
+    try {
+      const row = this.db.prepare(
+        "SELECT 1 FROM l0_conversations WHERE session_id = ? LIMIT 1",
+      ).get(sid);
+      return row !== undefined;
+    } catch (err) {
+      this.logger?.warn(`${TAG} [L0-sessions] hasL0Session failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   /**
    * Query L0 messages for a given session key, grouped by session_id.
    * Each group's messages are in chronological order (recorded_at ASC).

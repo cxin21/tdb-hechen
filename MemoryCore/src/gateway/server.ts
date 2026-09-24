@@ -2098,7 +2098,13 @@ export class TdaiGateway {
       // listL0SessionIds 为可选能力，缺失时回退 runner_states（现状语义）。
       const recoveryStore = (await this.storePool.getStore(instanceId, null)).store as { listL0SessionIds?: () => string[] };
       const l0SessionKeys = recoveryStore.listL0SessionIds?.() ?? [];
-      const recoveryKeys = [...new Set([...Object.keys(bootCp.runner_states), ...l0SessionKeys])];
+      // D-R3-2（任务6，2026-09-24）：boot recovery 前过滤无 L0 数据的死键——runner_states
+      // 残留键（测试会话清理/游标终结后）不再白挂 L1_drain（活体实锚 2026-09-24：单次 boot
+      // re-arm 156 会话中 28 键无 L0 数据）。listL0SessionIds 出源键天然有数据不受影响；
+      // hasL0Session 缺实现（旧 store）→ 不过滤=现状语义。
+      const hasL0Session = (recoveryStore as { hasL0Session?: (sessionId: string) => boolean }).hasL0Session?.bind(recoveryStore);
+      const recoveryKeys = [...new Set([...Object.keys(bootCp.runner_states), ...l0SessionKeys])]
+        .filter((sessionKey) => (hasL0Session ? hasL0Session(sessionKey) : true));
       const recovered = await statefulManager.recoverPendingSessions(recoveryKeys);
       if (recovered > 0) this.logger.info(`[pipeline-v2] boot recovery done: ${recovered} session(s) re-armed`);
     } catch (err) {

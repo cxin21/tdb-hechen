@@ -849,6 +849,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * （session-h 实锤：12 条全部滞留）。
    */
   listL0SessionIds?(): MaybePromise<string[]>;
+  /** D-R3-2（任务6，2026-09-24）：L0 会话键存在性查询——boot recovery 死键过滤数据前提。
+   *  与 listL0SessionIds 同族语义（session_id 跨租户全局键，无租户参数）；只读零写库；
+   *  可选签名：缺实现时调用侧不过滤=现状语义（少滤不少挂）。 */
+  hasL0Session?(sessionId: string): boolean;
 
   // ── L0 Search ────────────────────────────────────────────
 
