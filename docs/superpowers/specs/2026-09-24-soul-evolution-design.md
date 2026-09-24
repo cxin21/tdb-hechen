@@ -183,7 +183,7 @@ O14 裁决「不建 history 表（旧文 logger.info 留痕）」**维持不变*
 |---|---|---|
 | 提取 | 双检测器（确定性）：T1 演化反向=upsertCore version++ 时对修订前后内容做价值域 label 匹配+极性对照；T2 证据分裂=GROW-MAINT recountEvidence 时同锚 valence 方向分裂统计。LLM 仅将候选张力实例提炼为品格提案（identity-discovery worker 第三产出字段） | 既有：identity-discovery.ts 双视角 worker（提案 JSON 格式行 49-79）、recountEvidence（F9）、upsertCore version++ 旧文留痕；新增：character-tension.ts（单一源） |
 | 维护 | 品格锚落 core_values（node_type='character'）→ 进入既有 GROW-MAINT 全量证据重算循环（ev<min→retire、\|Δw\|≥0.05→reweight）；状态键族用独立前缀 anchor_char_*（沿用 person 池 anchor_person_* 分键先例，防共用键族互清） | 既有：anchor-growth.ts GROW-MAINT（:237-247 维护退场）、anchor_growth_state 键族 |
-| 生长 | 护栏四件 F19（ev≥minEvidence/maxPerPass/maxTotal 分池/全态去重 (node_type,label) 复合键）+张力实例数只增不减；weight 按 F5 证据饱和生长；品格分池配额 maxTotalCharacter=6（独立预算，防挤占主题/人物池） | 既有：F19/F5/F15 分池制（maxTotalTheme=15/maxTotalPerson=8 先例）、growthValueId |
+| 生长 | 护栏四件 F19（ev≥minEvidence/maxPerPass/maxTotal 分池/全态去重 (node_type,label) 复合键）+张力实例数只增不减；weight 按 F5 证据饱和生长；品格池配置**已在代码缺省在场**（anchor-growth.ts:71/85 `character:{enabled:false,minEvidence:2,maxPerPass:1,maxTotal:8}`——第三池是「启用」非「新建」）；设计值 maxTotal=6 经 yaml 配置覆盖（不改代码缺省） | 既有：F19/F5/F15 分池制（maxTotalTheme=15/maxTotalPerson=8 先例）、growthValueId |
 | 使用 | 「我是谁」小节尾部新行 `我的品格：label(方向·w)：描述`（enabled+存在时；宁缺毋滥）；**不入感受段**（F-EV12-5③ 维持）；soulVersion 纳入（新行出现=指纹变化） | 既有：soul-assembler.ts 身份小节渲染、escapeXmlTags 消毒 |
 | 召回 | 品格锚证据链走 coreRefs 同款双向回填（characterRef）；记忆召回侧 searchL1ByCoreRefs 同款反查扩展；F14 遗忘保护扩展：指向 active character 锚的记忆受保护（重验 refs 有效性同款——防永生记忆条款不变） | 既有：coreRefs backfill（重算精确一致 7/7 先例）、searchL1ByCoreRefs、F14 保护钩子 |
 | 展示 | 三池锚面板品格池 tab（已在场：vtab 品格 1/8 实锚）+分池配额显示+「查看关联记忆」复用；出参 attrs/labels 自动带出（列扩展已在场） | 既有：ValueAnchorsPanel vtab 三池、node_type='character' 类型徽标位、mapLayerItem |
@@ -211,4 +211,20 @@ O14 裁决「不建 history 表（旧文 logger.info 留痕）」**维持不变*
 ## 9. v2 后的启用路径（不变，重申依赖）
 
 M1（S-FEEL-1）数据源全在场可立即开工（RED→门禁→A/B ≥10 组→呈报启用）；M2（S-CHAR-2）须先跑张力燃料 spike（T1+T2 基数实测，<2 例则不启用——止损条款 §2.4）；M3（S-NARR-3）依赖 M1/M2 数据积累。三机制的 store 层新查询/新键族全部走 config 缺省关断，yaml 未开启前运行时逐位现状。
+
+
+---
+
+## 10. 融合面影响清单（v3 增补：与当前实现的真实接缝——用户问「和当前的设计实现融合了么」现场取证后补）
+
+取证基线=HEAD 0f286d39 前后同日实锚（anchor-growth.ts:71/85、soul-assembler.ts:83-89、store/types.ts:727、identity-discovery.ts:376）。**结论：文档/设计层已融合（六链逐环钉既有锚点+主 spec 交叉引用+既有裁决显式衔接）；实现层刻意零融合（设计先行，全缺省关断，一行未写）。**下列四条是 v2 未点明的真实接缝，M1 开工时按此计改动面：
+
+| # | 接缝 | 机制 | 融合方式（先例手法） | 影响面 |
+|---|---|---|---|---|
+| IF-1 | IMemoryStore 接口扩展：`recentAffectSignals?(tenant, opts)` 可选方法（只读查询） | S-FEEL-1 | 可选签名先例（ILogBackend debug?/listValues opts 同款）——不破坏既有实现面，缺方法时基调行静默省略（宁缺毋滥） | store/types.ts 签名+sqlite 实现+测试 fake store 各 1 处 |
+| IF-2 | computeSoulVersion 签名扩展：增可选第三参 moodTier（缺省 undefined=指纹逐位不变） | S-FEEL-1 | 可选参数先例（buildSoulPrefix 增可选 metaOut 同款）——enabled=false 时不传参，指纹与现状逐位一致 | soul-assembler.ts 签名+调用点 1 处+快照断言波及 |
+| IF-3 | identity-discovery 提案解析扩字段：narrative / characterProposal（宽松读取，feature-detect） | S-NARR-3 / S-CHAR-2 | 宽松读取先例（sigMeta 局部宽松读取同款）——旧 LLM 输出无新字段时逐位现状 | 解析函数+prompt 2 处 |
+| IF-4 | P1 语义去重比对域边界：narrative 行与 characterProposal **不入** proposal-dedup 比对域（比对域维持 pending∪已采纳红线 slot）——蒸馏物/品格提案与身份事实去重是两个语义，混入会误拦 | S-NARR-3 / S-CHAR-2 | 比对域显式白名单化（现状=slot in {core_value, strict_rule}，行为不变，仅文档钉死） | proposal-dedup.ts 注释+守卫用例 1 处 |
+
+勘正记录：v2 §7.2 曾把 S-CHAR-2 的融合写成「沿用分池制先例」而未点明接缝——现场取证发现 character 池配置**已在代码缺省在场**（第三池是启用非新建），融合深度低于 v2 评估，§7.2 已同步修正。本清单本身即「自生长自维护」的执行样例：设计文档在自己的融合面被问及时现场取证并自我修正。
 
