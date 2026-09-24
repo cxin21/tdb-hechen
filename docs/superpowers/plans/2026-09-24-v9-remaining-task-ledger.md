@@ -1,0 +1,59 @@
+# v9 剩余任务台账（2026-09-24，v8 轮收口态 HEAD=072c9bb）——新会话对账权威底册
+
+> 用法：新会话开工先读本表核对口径（登记≠真实，采信前现场核验），逐项独立收口后回写本表状态。
+> 四态：DONE/DONE_WITH_CONCERNS/NEEDS_CONTEXT/BLOCKED；原则=自生长自维护+四链生产级+用户看不到=没做=不合格。
+> 关联底册：2026-09-23-v6-closure-task-ledger.md（§六/七/八=演化层登记与 v8 执行记录）、2026-09-24-character-tension-m2-plan.md（M2 实施计划 P1-P6）。
+
+## 一、灵魂演化层（最高优先）
+
+| 编号 | 任务 | 状态 | 收口证据 / 缺口 | 下一步 |
+|---|---|---|---|---|
+| M1 | S-FEEL-1 近期情绪基调行（S1-S10+生产启用） | DONE | d12af34（代码 18 files +660/−10，A/B 13/13，生产 disabled 逐位现状 3749=3749）+ 拍板后 yaml moodLine.enabled=true 启用（注入/端点/UI 三层活体全绿；UI 点亮截图已呈）；门禁 core 780/780·tsc 222·panel 144/144 | 观察项：档位翻转频率 >3 次/日回退登记（指纹只含 tier，sampleCount 有陈旧窗口=已登记取舍） |
+| M2 | S-CHAR-2 品格张力检测（T1 演化反向+T2 证据分裂） | 立项 DONE→待实施 | spike 18 张力锚>>止损线 2+5 条人工抽验语义合理；**前提勘正：character 池已在生产活跃**（yaml :185-189 enabled=true，6 条 c-auto-* 锚 3 active/3 retired）；实施计划=2026-09-24-character-tension-m2-plan.md P1→P6（P5 品格行渲染迁移=行为变更 A/B 主对象） | 新会话按 P1→P6 串行执行（RED 先行，A/B ≥10 组） |
+| M3 | S-NARR-3 身份叙事行（蒸馏门 narr-gate.ts+第三产出字段+槽尾行） | TODO（依赖 M1/M2 数据积累） | O14 边界维持（不建史表）；R-C 红线（narrative 不产生 identityRefs） | M1/M2 收口后另写实施计划，勿提前 |
+
+## 二、三大工作流（用户 2026-09-23 三段式定义，2026-09-24 重申）
+
+| 流 | 内容 | 原则 | 状态 |
+|---|---|---|---|
+| A | 设计↔实现全面复查：对照母 spec（2026-09-17-soul-memory-design.md+头部交叉引用）逐条款三步强制（设计基线清单→file:line 取证→四态判定表）；遗漏/错误修改、未完成完成 | 自生长自维护 | TODO（切入=台账未完项+spec 未实施条款扫描；M1/M2/M3 即第一批产出已收 M1） |
+| B | 属性四链生产级+灵魂组成重分析：每属性（19 列+metadata 8 项+锚/人物）获取→评分→使用→展示四链审计；灵魂组成=当前 vs 正确 vs 公式（内容/提取/拼接/主语/人物说明）；Panel UI 全量展示美观易用+展开 UI 划定边界 | 不允许遗漏/未完成/未使用/预留；用户看不到=没做=不合格 | TODO（人物锚 description 休眠=gated 回填待拍板；UI 全量展示查 UI-3.2/NO-GO v2 尾巴） |
+| C | 逐属性讨论（交互式）：每属性出「现状四链取证+设计原文+真数据+改进提案」材料，一次 2-3 个属性等用户意见 | 须用户参与 | TODO（取证材料与 A 复用） |
+
+## 三、修复线独立任务（各自 RED 先行）
+
+| 编号 | 任务 | 状态 | 依据 / 缺口 | 下一步 |
+|---|---|---|---|---|
+| 任务5 | F-DUP-1：/v3/conversation/add 入口幂等（同 session+role+content <5min 跳过）+L1 提取合并 | TODO | 设计全文在技能 td-agemem-fdup1-l0-dedup；幂等窗口/键粒度/连发边界三问先呈拍板；存量 L0 清理含 vec/FTS 一致性方案随设计呈报 | RED 先行 |
+| 任务6 | D-R3-2：boot recovery 前过滤无 L0 数据会话键 | TODO | 活体证据已捕获（journalctl pipeline:{default:_:_} retry 86 锁风暴） | RED 先行 |
+| 任务2 | 召回新信号 A/B（R-recall/R-identity/R-arousal） | TODO | golden 基建重建（docs/superpowers/evals/memory-recall-golden/ 桶已清空，复用技能 td-agemem-recall-golden-anchor）；F14-bis 与 R-identity 张力正面回答；与 M1 共享 valence 数据源（单一源：复用 mood-line.ts computeMoodValence，禁第二份实现）；**注意生产 moodLine 已启用=A/B 基线须以启用后状态为准** | 设计小节先呈拍板 |
+| 任务7 | 灵魂真伪判定（量化判据） | TODO | 依赖任务 2 产出 | 任务 2 后 |
+
+## 四、UI 尾巴与微项
+
+| 编号 | 任务 | 状态 | 缺口 | 下一步 |
+|---|---|---|---|---|
+| UI-3.2 | rc=101 行 m_1789437830444_473d770a（agt-kfynybx0ly，L1=504）Panel 记忆块列表不可达 | NEEDS_CONTEXT | 平台资产层在仓外——需用户平台侧共享该 chat_memory 或批准 Panel 增「本 agent 记忆直读」入口 | 等用户动作/拍板，勿自行实施 |
+| NO-GO v2 微项 | G1 68% svg 文本 3px 微溢出 / G3 感受条首要卡 tag 冗长 / G4 弹卡 key 列 sticky / 窄屏单行长描述换行控制 / 待裁决红线提案卡与分区卡风格统一 | TODO（P2/P3 可选） | NO-GO v2 无 P0/P1 | 可选穿插 |
+
+## 五、gated 待拍板清单（全部维持不动，勿抢跑）
+
+D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）/ audit #11/#16 / person 锚 description 数据面回填 / 方案② embedding 提案深清理 / 锚行 description 未来写入策略（存量已修）/ 感受段近期基调行生产租户启用（**已拍板执行完毕 2026-09-24，从清单注销**）。
+
+## 六、基线与门禁（2026-09-24 v8 轮收口态，全部实锚勿重查）
+
+- HEAD=072c9bb · main · 已推 origin；本日链：6b448f9（台账补登演化层）→ d12af34（M1 全链）→ 072c9bb（拍板执行记录+M2 计划）。
+- 门禁：core vitest **780/780**（v4 裸跑禁 --reporter=basic）· typecheck **222**（`tsc --noEmit -p tsconfig.typecheck.json`，-p . 是 TS5057 假错）· panel **144/144**（v2.1.9 可 basic）· web tsc 存量 2 · vite build ✓ + bundle 断言（_soul-mood/近期基调）· 密钥扫描 \bsk-[A-Za-z0-9] 词边界（i18n 占位符 sk-mem-xxx 存量假阳性 6 处不在改动行）。
+- 生产态：四服务健康；**moodLine enabled=true 已生效**（近期基调行生产在场）；character 池 enabled=true（yaml :185-189，品格锚 3 active 在生长）；character 锚 6 条（c-auto-*，登记≠真实第 5 例已定责）。
+- M1 已知取舍：soulVersion 指纹只含 mood tier 不含 sampleCount（三值化控 KV 抖动）——注入文本样本数随任一指纹变化才刷新。
+
+## 七、本会话新增教训（2026-09-24 实锚，固化）
+
+1. 含 `$(...)` 的 bash 命令即使单行也一律本地脚本→scp→bash 执行（本会话 4-6 次内联翻车）。
+2. YAML flip 后重跑必须显式回切开关值（守卫插入只防缺段不防值残留）。
+3. FP 边界测试种子用同时间戳（异龄样本加权均值恰在阈值 ±ε 会两侧漂移）。
+4. 块比对断言考虑「空壳块」（mood-only 时 soul-feeling 包装壳 enabled 在场/disabled 无）。
+5. 截屏陈旧帧复判武器=fullPage:true 捕获路径（viewport 路径可连续三帧同 sha；DOM 直读+CDP 真点击优先于视觉单点）。
+6. v2-router 新端点两处登记：handler 路由表 + V3_ALLOWED_SUBPATHS 白名单，漏一处=404。
+7. EOL 自适应补丁脚本（锚点 \n/\r\n 双试+插入按文件行尾生成）——MemoryPanel 源多为 CRLF/混合。
+8. 「登记≠真实」第 5 例：设计文档取证必须同时查代码缺省与生产 yaml 覆盖（character 池「休眠」误判根因）。
