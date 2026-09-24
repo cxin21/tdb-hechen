@@ -230,3 +230,13 @@
 ._soul-prime-name { font-size: var(--soul-fz-body); font-weight: 600; color: var(--soul-text-1); flex-shrink: 0; }
 ._soul-prime-w { font-size: var(--soul-fz-meta); color: var(--soul-text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 ._soul-prime-desc { font-size: 12px; color: var(--soul-text-2); min-width: 0; word-break: break-word; }
+
+/* ===== V7 方案A v2：感受段分区卡（两列网格+首要卡两行主副；用户令布局返工） ===== */
+._soul-feel-section { min-width: 0; }
+._soul-feel-cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px; align-items: start; }
+._soul-feel-cols--single { grid-template-columns: minmax(0, 1fr); }
+._soul-feel-col { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--soul-card-bg); border: 1px solid var(--soul-border); border-radius: var(--soul-radius-card); min-width: 0; }
+._soul-feel-col-head { font-size: var(--soul-fz-badge); color: var(--soul-text-3); }
+._soul-feel-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+._soul-prime-card { flex-direction: column; align-items: flex-start; gap: 4px; }
+._soul-prime-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }

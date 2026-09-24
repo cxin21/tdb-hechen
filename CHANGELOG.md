@@ -25,6 +25,7 @@
 - **F-U2 并列 weight 首要选取两端序统一（UI-3.5）**：Panel pickPrimeAnchor 补 value_id 次级键（原输入=listValues weight DESC 序，并列时可能与注入端异根）；内核 topDescSeg 显式化同键（原承载于输入序的隐式行为，无行为变化）。生产活体：0.80 并列 ×7 真实重 tie 下首要=文档(pos)/审计(neg)，双调用字节幂等；RED（得乙 expect 甲）→ GREEN 756/756+142/142，tsc 222 持平。
 - **感受段方案A：主副结构+句边界描述（用户整句授权「自选最优方案」）**：概念审计坐实两处偏离（①首要 description=30 字硬截残句「…一律」；②长尾清单无程度感）→ 内核 topDescSeg 与 Panel firstSentenceDesc 同构改首句完整呈现（句边界截取，预算 80；无完整句或首句超预算则省略=宁缺毋滥）；SoulFeelingBar 改两行主副：首要卡主位（方向色条+锚名+w+完整首句）+长尾 pills weight 降序（程度梯度）cap3+抽屉带 aria-expanded；A/B 真数据 14/14 全部改善（30 字残句→55-60 字完整句）、非首要部分渲染逐字节不变；登记：锚行 description 残句根因=v2-router 写入时 80 字硬截（数据面，另行呈报）；门禁 core 758/758·panel 144/144·tsc 222/2 持平·build ✓
 - **N6 tab 切换丢选中 + NO-GO v2 收口（UI-3.6）**：ChatMemoryPage 记忆视图常挂载+display 隐藏（条件渲染卸载丢选中实例；零新依赖，无组件测试基建故以活体 DOM 双向断言验收）；当前态重生审查：Soul 页 0/0/0·Memory L1 30 行·L0 干净，NO-GO v2 无 P0/P1（G1 68% 微溢出/G2 文本钮两页灰度=语义角色差异保留/G3 tag 冗长登记不改/G4 弹卡 sticky 可选）；锚行 description 残句根因勘正（v2-router 系 400 拒绝守卫非截断器，真因=存量数据生成时 60 字切片产物）→ 5 条括号失衡残句确定性修剪（备份 core_values_desc_fix-20260924.json+读回 5/5，排查过狠自纠）
+- **感受段 v2 布局返工（用户令「布局太难看，都挤到一起」）**：从 44px 状态条升维为分区卡（与三池锚面板同卡片语言）：两列网格（驱动 3fr/审慎 2fr，单列占满）+首要卡两行主副（结构行 tag+锚名+w / 描述独立行）+长尾 pills 每列 weight 降序 cap5 流式+per-col +n/收起抽屉；活体：default agent 满数据（19 锚）展开态 15 pills 0 溢出·无描述实例首要卡省略正确；vision 验收 5/5（两列卡片边框/分层清晰/流式不挤/间距正常/整体优）
 - 门禁：三批 panel vitest 140/140 · web tsc 存量 2 持平 · vite build ✓+bundle 断言 · 双页活体 DOM 断言+截图验收。
 
 
