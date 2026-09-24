@@ -25,11 +25,11 @@ export function ChatMemoryPage() {
           ]}
         />
       </div>
-      {view === 'memory' ? (
+      {/* N6（UI-3.4 NO-GO v2）：记忆视图常挂载+display 隐藏——修复 tab 切换丢失选中实例（条件渲染会卸载 ChatMemoryPanel 丢内部态）；零新依赖，无组件测试基建故以活体 DOM 双向断言验收 */}
+      <div style={{ display: view === 'memory' ? undefined : 'none' }}>
         <ChatMemoryPanel />
-      ) : view === 'journal' ? (
-        <RecallJournalView />
-      ) : null}
+      </div>
+      {view === 'journal' && <RecallJournalView />}
     </ResourcePage>
   );
 }
