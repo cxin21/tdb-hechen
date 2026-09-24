@@ -2471,6 +2471,40 @@ export class VectorStore implements IMemoryStore {
       return [];
     }
   }
+  /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 证据分裂检测数据源（单一源检测在 character-tension.ts，本方法只做取数）。
+   *  只读零写库；租户三元组硬隔离（F18 同款）；metadata_json 含 coreRefs/identityRefs 键族且 valence IS NOT NULL；
+   *  node 侧 JSON.parse 后按 label 展开（单查询全量+进程内聚合）；损坏 metadata_json 行跳过（宽松解析不造假值，C5 同款）。 */
+  anchorEvidenceValences(tenant?: CoreTenant): Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const rows = this.db.prepare(
+        "SELECT metadata_json, valence FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND (metadata_json LIKE '%coreRefs%' OR metadata_json LIKE '%identityRefs%')",
+      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ metadata_json: string | null; valence: number }>;
+      const out: Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> = [];
+      for (const row of rows) {
+        let meta: unknown;
+        try {
+          meta = row.metadata_json && row.metadata_json !== "{}" ? JSON.parse(row.metadata_json) : {};
+        } catch {
+          continue; // 损坏 metadata_json：跳过该行（宁缺毋滥，不造假值）
+        }
+        if (typeof meta !== "object" || meta === null) continue;
+        const obj = meta as Record<string, unknown>;
+        for (const kind of ["coreRefs", "identityRefs"] as const) {
+          const refs = obj[kind];
+          if (!Array.isArray(refs)) continue;
+          for (const ref of refs) {
+            if (typeof ref !== "string" || ref.length === 0) continue;
+            out.push({ label: ref, valence: row.valence, ref_kind: kind });
+          }
+        }
+      }
+      return out;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [anchorEvidenceValences] failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
 
   /**
    * GROW：全态读（active/retired/vetoed 不过滤、不走缓存、不做 S6 兜底）。

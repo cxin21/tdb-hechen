@@ -50,6 +50,8 @@ import {
   buildPersonDiscoverPrompt,
 } from "../../gateway/core-values-discover.js";
 import { identityFactMatchesCorpus, identityFactSlice } from "./identity-discovery.js";
+// S-CHAR-2（M2/P3）：品格张力 T2 检测单一源（检测纯函数+内存注册表；enabled 门控零行为差异）。
+import { computeT2Candidates, recordTensionCandidates } from "../hooks/character-tension.js";
 
 /** GROW：自生长配置（memory.coreMemory.anchorDiscovery；解析+clamp+默认见 config.ts）。 */
 /** P2（spec §2.6/§5 F15/F19）：人物锚池独立护栏（QUOTA/护栏四件按 node_type 分池）。 */
@@ -216,6 +218,8 @@ export async function runAnchorGrowth(deps: {
   store: IMemoryStore;
   llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> } | null;
   config?: Partial<AnchorDiscoveryConfig>;
+  /** S-CHAR-2（M2/P3）：品格张力检测配置（coreMemory.characterTension 接线；缺省 undefined=关=逐位现状）。 */
+  characterTension?: { enabled: boolean; minInstances: number; maxCandidatesPerPass: number };
   logger?: Logger;
   now?: () => Date;
 }): Promise<AnchorGrowthResult> {
@@ -377,6 +381,23 @@ export async function runAnchorGrowth(deps: {
         }
         retired += retiredA;
         reweighted += reweightedA;
+        // ── S-CHAR-2（M2/P3，T2 挂点）：GROW-MAINT 证据重算周期同步产出证据分裂候选──
+        // enabled 门控；非 person 活跃锚逐个 detectEvidenceSplit；候选只入内存注册表
+        // （消费方=identity-discovery worker drain → prompt → characterProposal 确定性门），
+        // 不落表（O14 边界）。anchorEvidenceValences 缺实现（旧 store）→ 静默跳过（宁缺毋滥）。
+        if (deps.characterTension?.enabled === true && typeof (store as { anchorEvidenceValences?: unknown }).anchorEvidenceValences === "function") {
+          try {
+            const valences = await Promise.resolve((store as { anchorEvidenceValences: (t?: CoreTenant) => Array<{ label: string; valence: number; recordId?: string }> }).anchorEvidenceValences(tenant));
+            const t2Labels = anyState0.filter((r) => r.state === "active" && (r.node_type ?? "theme") !== "person").map((r) => String(r.label));
+            const t2Candidates = computeT2Candidates(t2Labels, valences, deps.characterTension.minInstances, new Date(nowMs).toISOString());
+            if (t2Candidates.length > 0) {
+              recordTensionCandidates(tenant, t2Candidates);
+              logger?.info?.(`[anchor-growth] character tension T2 candidates: ${t2Candidates.map((c) => c.label).join("、")} (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+            }
+          } catch (err) {
+            logger?.warn?.(`[anchor-growth] character tension T2 failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         const anyState = retiredA + reweightedA > 0
           ? (((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
           : anyState0;

@@ -12,6 +12,12 @@
  * 逐项呈报拍板后执行），不在本闸门。
  */
 
+/**
+ * IF-4（DS-SOUL-EVOLUTION-001 比对域边界钉死）：narrative 行与 characterProposal（slot=character）
+ * 永不入本函数比对域（调用侧仅对 core_value/strict_rule 红线类调用）——品格/蒸馏提案与身份事实
+ * 去重是两个语义，混入会误拦（守卫用例：identity-discovery.character-tension.test.ts ⑨）。
+ */
+
 /** 清洗（去空白/中英文标点，lowercase）后取字符 bigram 集合。 */
 export function charBigrams(s: string): Set<string> {
   const t = s.toLowerCase().replace(/[\s，。；：、“”‘’（）【】\[\]…·—!?,.;:'"()]+/g, "");

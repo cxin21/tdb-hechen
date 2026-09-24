@@ -69,6 +69,9 @@ export interface SoulRenderOptions {
    *  soulVersion 指纹只纳入 tier 不纳入 sampleCount（三值化控 KV 抖动——设计 §1.3；
    *  count 文本随任一指纹变化刷新，陈旧性为已登记取舍）。 */
   moodTier?: { tier: "positive" | "neutral" | "strained"; sampleCount: number } | null;
+  /** S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚混渲染于价值锚行）。
+   *  开启：价值锚行排除 character（与感受段 theme-only filter 对齐）+「我是谁」小节尾部「我的品格：」行。 */
+  characterTensionEnabled?: boolean;
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -128,7 +131,10 @@ export async function buildSoulPrefix(
     const activeAll = values.filter((v) => v.state === undefined || v.state === "active");
     // P2（spec §2.7）：person 锚分流——主题锚渲染不变（undefined → theme 旧库兼容）；
     // 人物锚进「重要的人」行（weight DESC，行数上限 opts.maxRelationLines 缺省 5），不与价值审慎/趋近语义混淆。
-    const active = activeAll.filter((v) => v.node_type !== "person");
+    // S-CHAR-2（M2/P5）：渲染门开启时价值锚行排除 character（品格迁「我的品格：」行）；关断=逐位现状。
+    const active = opts?.characterTensionEnabled === true
+      ? activeAll.filter((v) => v.node_type !== "person" && v.node_type !== "character")
+      : activeAll.filter((v) => v.node_type !== "person");
     const personRows = activeAll
       .filter((v) => v.node_type === "person")
       .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
@@ -205,6 +211,27 @@ export async function buildSoulPrefix(
             const role = a.role ? `${escapeXmlTags(a.role)}·` : "";
             const pDesc = a.description && a.description.trim() !== "" ? `：${escapeXmlTags(a.description.trim())}` : "";
             return `${escapeXmlTags(v.label)}(${role}${d})${pDesc}`;
+          }).join("、")}`,
+        );
+      }
+      // S-CHAR-2（M2/P5）：品格行——「我是谁」小节尾部（数据驱动，无品格锚 → 省略宁缺毋滥）；
+      // 渲染门=opts.characterTensionEnabled（M2 缺省关断）。A/B 对象：开启时价值锚行不再含品格锚。
+      const characterRows = opts?.characterTensionEnabled === true
+        ? activeAll
+            .filter((v) => v.node_type === "character")
+            // 立项②同款：渲染按 value_id 稳定排序（KV cache 前缀连续性）
+            .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))
+        : [];
+      if (characterRows.length > 0) {
+        lines.push(
+          `我的品格：${characterRows.map((v) => {
+            const desc = attrsOf(v.attrs_json)?.description;
+            const descSeg = typeof desc === "string" && desc.trim() !== "" ? `：${escapeXmlTags(desc.trim())}` : "";
+            const dir = valenceDir(v.valence);
+            const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
+              ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
+              : "";
+            return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
           }).join("、")}`,
         );
       }

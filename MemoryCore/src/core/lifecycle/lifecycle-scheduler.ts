@@ -28,6 +28,8 @@ export interface LifecycleConfig {
   /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角（gateway 接线自 coreMemory.selfIdentity，缺省 undefined=关）。
    *  intervalHours：enabled=true 时覆盖 identity worker 冷却（F15 分池节奏）。 */
   selfIdentity?: { enabled: boolean; maxPerPass: number; intervalHours?: number };
+  /** S-CHAR-2（M2/P3+P4）：品格张力检测配置（gateway 接线自 coreMemory.characterTension，缺省 undefined=关）。 */
+  characterTension?: { enabled: boolean; minInstances: number; maxCandidatesPerPass: number };
   /**
    * P4b（GROW-EVO §4，REG-REMAINING-005 #1）：受控正文演化 worker 配置。
    * 缺省 undefined → 关（config-first：memory.evolution.enabled 缺省 false = 逐位现状；
@@ -129,6 +131,9 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
         llmRunner: deps.llmRunner,
         config: deps.config.anchorDiscovery,
         selfIdentity: deps.config.selfIdentity,
+        // S-CHAR-2（M2/P4）：品格张力检测接线（FLOW-E 同款教训——不接线即死配置）。
+        characterTension: deps.config.characterTension,
+        characterPool: deps.config.anchorDiscovery?.character,
         logger: deps.logger,
       });
       if (res.ran) {
@@ -148,6 +153,8 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
         store: deps.store,
         llmRunner: deps.llmRunner,
         config: deps.config.anchorDiscovery,
+        // S-CHAR-2（M2/P3）：T2 挂点接线（缺省 undefined=关）。
+        characterTension: deps.config.characterTension,
         logger: deps.logger,
       });
       if (res.ran) {

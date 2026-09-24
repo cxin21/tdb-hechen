@@ -16,6 +16,9 @@ import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { selectSampleRows, DISCOVER_SAMPLE_CAP, DISCOVER_TRUNCATE_CHARS } from "../../gateway/core-values-discover.js";
 import { findDuplicateProposal } from "./proposal-dedup.js";
+// S-CHAR-2（M2/P3+P4）：张力检测单一源（T1 对照纯函数+内存注册表；enabled 门控零行为差异）。
+// 注：不静态 import anchor-growth（它静态 import 本模块——环）；采纳门内动态 import 复用其导出。
+import { detectEvolutionReversal, recordTensionCandidates, drainTensionCandidates } from "../hooks/character-tension.js";
 
 export interface IdentityDiscoveryConfig {
   enabled: boolean;
@@ -97,6 +100,10 @@ export async function runIdentityDiscovery(deps: {
    *  intervalHours：enabled=true 时覆盖本 worker 冷却（灵魂节奏独立于锚发现节奏，F15 分池；
    *  enabled=false 时绝不读取——逐位现状）。 */
   selfIdentity?: { enabled: boolean; maxPerPass: number; intervalHours?: number };
+  /** S-CHAR-2（M2/P4）：品格张力检测配置（coreMemory.characterTension 接线；缺省 undefined=关=逐位现状）。 */
+  characterTension?: { enabled: boolean; minInstances: number; maxCandidatesPerPass: number };
+  /** S-CHAR-2（M2/P4）：character 池护栏（F19/F15，接线自 anchorDiscovery.character；缺省 undefined=门不启用）。 */
+  characterPool?: { enabled: boolean; minEvidence: number; maxPerPass: number; maxTotal: number };
   logger?: Logger;
   now?: () => Date;
 }): Promise<IdentityDiscoveryResult> {
@@ -162,13 +169,40 @@ export async function runIdentityDiscovery(deps: {
 
         // 已有 slots（去重）
         const existing = (store.readCore(tenant) ?? []) as Array<{ slot: string; content: string }>;
+        // S-CHAR-2（M2/P3，T1 挂点）：identity/self_identity 采纳（version++）时对「旧槽内容 vs
+        // 本轮新事实」做价值域极性对照（character-tension.ts 单一源）；命中 → 张力候选入内存
+        // 注册表（下一轮 worker drain 消费），不落表（O14）。enabled=false 时零调用=逐位现状。
+        const recordT1 = (beforeContent: string | undefined, newFacts: string[]): void => {
+          if (deps.characterTension?.enabled !== true || !beforeContent) return;
+          const valueLabels = ((store as unknown as { listValues?: (t?: unknown) => Array<{ label?: string; state?: string; node_type?: string }> | undefined }).listValues?.(tenant) ?? [])
+            .filter((v) => (v.state ?? "active") === "active" && (v.node_type ?? "theme") !== "person")
+            .map((v) => String(v.label ?? ""))
+            .filter((s) => s.length > 0);
+          if (valueLabels.length === 0) return;
+          for (const fact of newFacts) {
+            const rev = detectEvolutionReversal(beforeContent, fact, valueLabels);
+            if (rev.tension && rev.reversed) {
+              recordTensionCandidates(tenant, rev.reversed.map((label) => ({
+                source: "T1" as const,
+                label,
+                rationale: `演化反向：身份修订极性翻转（→ ${fact.slice(0, 30)}）`,
+                tensionRefs: [{ at: now().toISOString() }],
+                detectedAt: now().toISOString(),
+              })));
+              logger?.info?.(`[identity-discovery] T1 evolution reversal candidates: ${rev.reversed.join("、")}`);
+            }
+          }
+        };
         const existingSummaries = existing.map((s) => `[${s.slot}] ${s.content}`);
         // V6-任务8 P2：上下文注入——LLM 看到已有 pending 列表，从生成层避免换措辞重复
         //（P1 闸门是执行层兜底，两层互补；feature-detect，无方法 store 逐位现状）。
         const pendingRowsForPrompt = ((store as { listPendingCore?: (t?: unknown) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant) ?? []).filter((r) => r.state === "pending");
         const pendingSummaries = pendingRowsForPrompt.slice(0, 30).map((r) => `[${r.slot}] ${r.content.slice(0, 60)}`);
 
-        const prompt = buildIdentityPrompt(sample, existingSummaries, pendingSummaries);
+        // S-CHAR-2（M2/P4）：张力候选 drain（enabled 门控；一次性消费）→ prompt 张力段（无候选=逐位现状字节）。
+        const tensionCandidates = deps.characterTension?.enabled === true ? drainTensionCandidates(tenant) : [];
+        const tensionBlock = buildTensionPromptBlock(tensionCandidates);
+        const prompt = buildIdentityPrompt(sample, existingSummaries, pendingSummaries, tensionBlock);
         const dual = deps.selfIdentity?.enabled === true;
         const raw = await deps.llmRunner.run({
           prompt,
@@ -188,7 +222,7 @@ export async function runIdentityDiscovery(deps: {
         // 分级门（用户裁定 A 2026-09-15）：identity 描述类跳过证据重算——综合提炼 content
         // 无法逐字匹配语料（与锚的 label 不同形态）；escapeXmlTags 消毒在写入路径，
         // GROW-MAINT 类重验证为后续纠偏层。core_value/strict_rule（红线类）→ pending 永不自动写入。
-        const identityProps: Array<{ content: string; support?: number[] }> = [];
+        const identityProps: Array<{ content: string; support?: number[] }> = [];        const charProps: Array<{ slot: string; content: string; rationale: string; label?: string; tensionRefs?: string[] }> = [];
         const selfProps: Array<{ content: string; support?: number[] }> = [];
         const maxSelf = dual ? Math.max(1, deps.selfIdentity?.maxPerPass ?? 2) : 0;
         for (const p of proposals) {
@@ -236,6 +270,10 @@ export async function runIdentityDiscovery(deps: {
             const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant);
             pendingThis++;
             logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev}${persisted ? ", persisted" : ""})`);
+          } else if (p.slot === "character") {
+            // S-CHAR-2（M2/P4）：品格张力提案收集——确定性门在采纳段统一裁决；
+            // enabled=false 时静默丢弃（宽松读取不改变现状计数=逐位现状）。
+            if (deps.characterTension?.enabled === true) charProps.push(p);
           } else {
             pendingThis++;
           }
@@ -249,7 +287,7 @@ export async function runIdentityDiscovery(deps: {
           if (ok) {
             logReplacing("identity", existing, logger);
             adoptedThis = 1;
-            logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);
+            logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);            recordT1(existingIdentity, identityProps.map((f) => f.content));
             // P2：identityRefs 回填（20 字切片弱口径；F14 遗忘保护/GROW-MAINT 重验证的数据前提）
             // A-7b：支撑指针优先（确定性精确回填——摘要式改写不再依赖滑窗）；无指针/指针落空 →
             // 滑窗兜底（F-EV13-1 修复保留，向后兼容）。supportMap 供 GROW-MAINT 确定性重验。
@@ -282,7 +320,64 @@ export async function runIdentityDiscovery(deps: {
           if (okSelf) {
             logReplacing("self_identity", existing, logger);
             adoptedThis += 1;
-            logger?.info?.(`[identity-discovery] adopted self_identity (${Math.min(selfProps.length, maxSelf)} facts)`);
+            logger?.info?.(`[identity-discovery] adopted self_identity (${Math.min(selfProps.length, maxSelf)} facts)`);            recordT1(existingSelf, selfProps.slice(0, maxSelf).map((f) => f.content));
+          }
+        }
+        // ── S-CHAR-2（M2/P4）：characterProposal 确定性门（F19 四件 + F15 池配额；R-D 不新造门）──
+        // IF-4：本门不调用 findDuplicateProposal——character 提案不入 proposal-dedup 比对域
+        // （品格提案与身份事实去重是两个语义，混入会误拦）。
+        if (deps.characterTension?.enabled === true && charProps.length > 0) {
+          const ctCfg = deps.characterTension;
+          const poolCfg = deps.characterPool;
+          const storeEx = store as unknown as { upsertValue?: (...a: unknown[]) => boolean | Promise<boolean>; listValuesAnyState?: (t?: unknown) => Array<{ label: string; state?: string; node_type?: string; pinned?: number; origin?: string }> };
+          if (poolCfg && typeof storeEx.upsertValue === "function" && typeof storeEx.listValuesAnyState === "function") {
+            // 真实候选 ref 集合（recordId ?? at）——LLM 引用必须命中真实检测实例，编造 id 门即拒
+            const known = new Map<string, Set<string>>();
+            for (const c of tensionCandidates) {
+              if (!known.has(c.label)) known.set(c.label, new Set());
+              const refSet = known.get(c.label)!;
+              for (const r of c.tensionRefs) { const k = r.recordId ?? r.at; if (k) refSet.add(k); }
+            }
+            const anyStateRows = ((await Promise.resolve(storeEx.listValuesAnyState(tenant))) ?? []) as Array<{ label: string; state?: string; node_type?: string; pinned?: number; origin?: string }>;
+            const charAll = anyStateRows.filter((r) => (r.node_type ?? "theme") === "character");
+            const charNames = charAll.map((r) => String(r.label).trim().toLowerCase()).filter((s) => s.length > 0);
+            // ev 门：character 池证据口径 = self_identity 槽事实 × 语料（与池维护同刻度；单一源复用 anchor-growth 导出）
+            const selfFacts = (existing.find((s) => s.slot === "self_identity")?.content ?? "")
+              .split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1)
+              .map((l) => l.replace(/^-\s*/, "")).filter((s) => s.length > 0);
+            const ag = await import("./anchor-growth.js");
+            const ev = selfFacts.length > 0 ? ag.characterEvidenceCount(selfFacts, corpus) : 0;
+            if (ev < poolCfg.minEvidence) {
+              logger?.info?.(`[identity-discovery] character proposals rejected (ev=${ev} < minEvidence=${poolCfg.minEvidence})`);
+            } else {
+              const charActive = charAll.filter((r) => (r.state ?? "active") === "active");
+              const pinnedNow = charActive.filter((r) => r.pinned === 1).length;
+              const autoNonPinned = charActive.filter((r) => r.origin === "auto" && r.pinned !== 1).length;
+              let free = Math.max(0, poolCfg.maxTotal - pinnedNow - autoNonPinned);
+              let adoptedChar = 0;
+              for (const p of charProps) {
+                const label = (p.label ?? "").trim();
+                if (!label || label.length > 12) { logger?.info?.(`[identity-discovery] character proposal rejected (label invalid): ${label.slice(0, 12)}`); continue; }
+                if (adoptedChar >= ctCfg.maxCandidatesPerPass) { logger?.info?.(`[identity-discovery] character proposal skipped (per-pass cap=${ctCfg.maxCandidatesPerPass}): ${label}`); break; }
+                if (free <= 0) { logger?.info?.(`[identity-discovery] character proposal skipped (pool quota full): ${label}`); break; }
+                if (charNames.includes(label.toLowerCase())) { logger?.info?.(`[identity-discovery] character proposal rejected (duplicate ${label})`); continue; }
+                const seen = new Set<string>();
+                const validRefs = (p.tensionRefs ?? []).filter((r) => { if (seen.has(r)) return false; seen.add(r); return known.get(label)?.has(r) ?? false; });
+                if (validRefs.length < ctCfg.minInstances) { logger?.info?.(`[identity-discovery] character proposal rejected (tensionRefs ${validRefs.length} < minInstances=${ctCfg.minInstances} or unknown ref): ${label}`); continue; }
+                const cvd = await import("../../gateway/core-values-discover.js");
+                const ok = await Promise.resolve(storeEx.upsertValue!(
+                  ag.growthValueId(label, "character"), label, cvd.suggestAnchorWeight(ev, corpus.length), "auto-growth", tenant, undefined, "auto", "character",
+                  { source: "character_tension", tensionRefs: validRefs.slice(0, 10) },
+                ));
+                if (ok) {
+                  adoptedChar++;
+                  charNames.push(label.toLowerCase());
+                  logger?.info?.(`[identity-discovery] adopted character anchor (tension): ${label} refs=${validRefs.length} ev=${ev}`);
+                } else {
+                  logger?.warn?.(`[identity-discovery] character anchor upsert failed: ${label}`);
+                }
+              }
+            }
           }
         }
         adopted += adoptedThis;
@@ -356,17 +451,17 @@ export function stripIdentityStateResidue(content: string): string {
 
 // ── helpers ──
 
-function buildIdentityPrompt(samples: string[], existing: string[], pendingList: string[] = []): string {
+function buildIdentityPrompt(samples: string[], existing: string[], pendingList: string[] = [], tensionBlock: string = ""): string {
   const sampleText = samples.map((s, i) => `${i + 1}. ${s}`).join("\n");
   const existingText = existing.length > 0 ? existing.map((e) => `- ${e}`).join("\n") : "（空，无已有身份事实）";
   // V6-任务8 P2：pending 列表注入（30 条 × 60 字预算；空列表逐位现状）。
   const pendingText = pendingList.length > 0
     ? `\n\n## 已有待拍板提案（语义相近者不要再提——换措辞重复是噪声，不是新发现）\n\n${pendingList.slice(0, 30).map((e) => `- ${e}`).join("\n")}`
     : "";
-  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}${pendingText}\n\n请提炼身份事实提案。`;
+  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}${pendingText}${tensionBlock}\n\n请提炼身份事实提案。`;
 }
 
-function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[] }> {
+function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[]; label?: string; tensionRefs?: string[] }> {
   let cleaned = (raw ?? "").trim();
   if (!cleaned) return [];
   if (cleaned.startsWith("```")) cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
@@ -377,11 +472,29 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
   if (!Array.isArray(parsed)) return [];
   // P1（DS-SOUL-MEMORY-002）：+self_identity。enabled=false 时幻觉提案落 else→pending（无害且诚实）。
   const valid = new Set(["identity", "core_value", "strict_rule", "self_identity"]);
-  const out: Array<{ slot: string; content: string; rationale: string }> = [];
+  const out: Array<{ slot: string; content: string; rationale: string; label?: string; tensionRefs?: string[] }> = [];
   for (const item of parsed) {
     if (!item || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
     const slot = typeof o.slot === "string" ? o.slot : "";
+    // S-CHAR-2（M2/P4/IF-3 宽松读取）：第三产出字段 characterProposal（slot=character）——
+    // 旧 LLM 输出无此 slot 时逐位现状；解析层不做门裁决（门在采纳段）。
+    if (slot === "character") {
+      const label = typeof o.label === "string" ? o.label.trim() : "";
+      if (!label) continue;
+      const refs = Array.isArray(o.tensionRefs)
+        ? (o.tensionRefs as unknown[]).map((r): string => {
+            if (typeof r === "string") return r;
+            if (r && typeof r === "object") {
+              const rid = (r as { recordId?: unknown }).recordId;
+              return typeof rid === "string" ? rid : "";
+            }
+            return "";
+          }).filter((s: string) => s !== "")
+        : [];
+      out.push({ slot, content: label, rationale: typeof o.rationale === "string" ? o.rationale : "", label, ...(refs.length > 0 ? { tensionRefs: refs } : {}) });
+      continue;
+    }
     const content = typeof o.content === "string" ? o.content.trim() : "";
     if (!slot || !content || !valid.has(slot)) continue;
     // A-7b：支撑样本指针（可选；整数保留，范围校验在消费侧按样本窗做）。
@@ -520,4 +633,18 @@ export function mergeIdentityFacts(existingContent: string | undefined, newFacts
     out.push(line);
   }
   return out.slice(-IDENTITY_MAX_FACTS).join("\n");
+}
+
+// ── S-CHAR-2（M2/P4）：张力候选 prompt 段（确定性检测器产出 → LLM 只提炼不裁决；空候选=空串=逐位现状字节）──
+function buildTensionPromptBlock(candidates: Array<{ source: string; label: string; rationale: string; tensionRefs: Array<{ recordId?: string; valence?: number; at?: string }>; detectedAt: string }>): string {
+  if (candidates.length === 0) return "";
+  const lines = candidates.slice(0, 10).map((c) => {
+    const refs = c.tensionRefs.slice(0, 10).map((r) => {
+      const rid = r.recordId ?? r.at ?? "";
+      const v = typeof r.valence === "number" ? `(${r.valence > 0 ? "+" : ""}${r.valence})` : "";
+      return `${rid}${v}`;
+    }).join("、");
+    return `- [${c.source}] ${c.label}：${c.rationale}；refs: ${refs}`;
+  });
+  return `\n\n## 品格张力候选（确定性检测器产出，非事实——仅当样本中有 agent 行为可证时，才输出品格提案 {"slot":"character","label":"候选label","rationale":"…","tensionRefs":[引用上方 ref id]}；无把握输出 []）\n\n${lines.join("\n")}`;
 }

@@ -2180,7 +2180,8 @@ export class TdaiGateway {
             // 调度器只读 deps.config.anchorDiscovery，yaml 段全程死配置（产线恒跑缺省 24h/5/2）。
             anchorDiscovery: this.config.memory?.coreMemory?.anchorDiscovery,
             // DS-SOUL-MEMORY-002 P1：双视角开关接线（FLOW-E 同款教训——不接线即死配置）。
-            selfIdentity: this.config.memory?.coreMemory?.selfIdentity,
+            selfIdentity: this.config.memory?.coreMemory?.selfIdentity,            // S-CHAR-2（M2/P3）：品格张力检测接线（FLOW-E 同款教训——不接线即死配置）。
+            characterTension: this.config.memory?.coreMemory?.characterTension,
             // P4b（GROW-EVO §4）：evolution 配置接线（config-first：memory.evolution.enabled
             // 缺省 false；LLM runner 缺失时 worker 内部安静跳过，无需在此门控）。
             evolution: this.config.memory?.evolution } as never,

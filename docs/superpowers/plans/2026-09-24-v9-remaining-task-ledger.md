@@ -9,7 +9,7 @@
 | 编号 | 任务 | 状态 | 收口证据 / 缺口 | 下一步 |
 |---|---|---|---|---|
 | M1 | S-FEEL-1 近期情绪基调行（S1-S10+生产启用） | DONE | d12af34（代码 18 files +660/−10，A/B 13/13，生产 disabled 逐位现状 3749=3749）+ 拍板后 yaml moodLine.enabled=true 启用（注入/端点/UI 三层活体全绿；UI 点亮截图已呈）；门禁 core 780/780·tsc 222·panel 144/144 | 观察项：档位翻转频率 >3 次/日回退登记（指纹只含 tier，sampleCount 有陈旧窗口=已登记取舍） |
-| M2 | S-CHAR-2 品格张力检测（T1 演化反向+T2 证据分裂） | 立项 DONE→待实施 | spike 18 张力锚>>止损线 2+5 条人工抽验语义合理；**前提勘正：character 池已在生产活跃**（yaml :185-189 enabled=true，6 条 c-auto-* 锚 3 active/3 retired）；实施计划=2026-09-24-character-tension-m2-plan.md P1→P6（P5 品格行渲染迁移=行为变更 A/B 主对象） | 新会话按 P1→P6 串行执行（RED 先行，A/B ≥10 组） |
+| M2 | S-CHAR-2 品格张力检测（T1 演化反向+T2 证据分裂） | **实施收口 DONE_WITH_CONCERNS**（2026-09-24）：P1-P6 全链落盘，生产启用 gated 待拍板 | core vitest **819/819**（+39）·tsc 222 持平·密扫 0·缺省关断活体探针 ✓·A/B 10 组：旧版==新版off 逐字节+指纹三模式一致+品格迁移 8/8+零噪声 2/2·生产快照 17 租户（2 品格锚租户迁移实证/15 租户零噪声）·新发现：「取证先行」theme+character 同 label 双行=复合去重设计内 | gated：yaml characterTension.enabled=true 拍板后一体启用（渲染迁移+检测+提案链）；启用后观察品格行翻转频率/T1 命中率/采纳率 |
 | M3 | S-NARR-3 身份叙事行（蒸馏门 narr-gate.ts+第三产出字段+槽尾行） | TODO（依赖 M1/M2 数据积累） | O14 边界维持（不建史表）；R-C 红线（narrative 不产生 identityRefs） | M1/M2 收口后另写实施计划，勿提前 |
 
 ## 二、三大工作流（用户 2026-09-23 三段式定义，2026-09-24 重申）
@@ -42,7 +42,7 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 
 ## 六、基线与门禁（2026-09-24 v8 轮收口态，全部实锚勿重查）
 
-- HEAD=072c9bb · main · 已推 origin；本日链：6b448f9（台账补登演化层）→ d12af34（M1 全链）→ 072c9bb（拍板执行记录+M2 计划）。
+- HEAD=51dda84（v9 台账）→ M2 收口 commit（本表提交后即 HEAD，见 git log）· main；本日链：6b448f9（台账补登演化层）→ d12af34（M1 全链）→ 072c9bb（拍板执行记录+M2 计划）→ 51dda84（v9 台账）→ M2 feat+docs。
 - 门禁：core vitest **780/780**（v4 裸跑禁 --reporter=basic）· typecheck **222**（`tsc --noEmit -p tsconfig.typecheck.json`，-p . 是 TS5057 假错）· panel **144/144**（v2.1.9 可 basic）· web tsc 存量 2 · vite build ✓ + bundle 断言（_soul-mood/近期基调）· 密钥扫描 \bsk-[A-Za-z0-9] 词边界（i18n 占位符 sk-mem-xxx 存量假阳性 6 处不在改动行）。
 - 生产态：四服务健康；**moodLine enabled=true 已生效**（近期基调行生产在场）；character 池 enabled=true（yaml :185-189，品格锚 3 active 在生长）；character 锚 6 条（c-auto-*，登记≠真实第 5 例已定责）。
 - M1 已知取舍：soulVersion 指纹只含 mood tier 不含 sampleCount（三值化控 KV 抖动）——注入文本样本数随任一指纹变化才刷新。

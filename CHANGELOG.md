@@ -8,6 +8,30 @@
 `MemoryProxy` / SDK。
 ---
 
+## 🧬 V9-M2 灵魂演化层 S-CHAR-2 品格张力检测（2026-09-24，DS-SOUL-EVOLUTION-001 §2 配套）
+
+### Added（MemoryCore）
+
+- **M2 品格张力全链（P1-P6）**：
+  - P1 store 只读接口 `anchorEvidenceValences?(tenant)`（IF-1 同族可选签名；l1_records metadata_json coreRefs/identityRefs 键族 × valence IS NOT NULL，node 侧 JSON.parse 按 label 展开；损坏行跳过宁缺毋滥；6 用例）。
+  - P2 `character-tension.ts` 单一源纯函数：`detectEvidenceSplit`（T2 证据分裂：同锚 valence 正负各 ≥ minInstances，tensionRefs 带 recordId）/`detectEvolutionReversal`（T1 演化反向：极性词表确定性对照「不做X→做X」，零 LLM 零随机；13 用例）。
+  - P3 接线+config：T2 挂点=GROW-MAINT 证据重算周期（anchor-growth）、T1 挂点=identity/self_identity 采纳 version++（identity-discovery）；张力候选只入内存注册表（record/drain，cap 50 一次性消费，O14 不落表）；config `memory.coreMemory.characterTension.{enabled=false, minInstances=2, maxCandidatesPerPass=2}`（clamp 同族；缺省关断=逐位现状）。
+  - P4 identity-discovery 第三产出字段 `characterProposal`（IF-3 宽松读取：slot=character，旧输出无字段=逐位现状）+ 确定性门（tensionRefs 必须命中真实检测实例 ≥ minInstances + ev≥minEvidence（characterEvidenceCount 同刻度单一源）+ per-pass cap + (node_type,label) 全态去重 + F15 池配额不挤出；R-D 不新造门）；IF-4 钉死：characterProposal 不入 proposal-dedup 比对域（文档+守卫用例）；R-C 断言：品格提案采纳路径零 identityRefs 回填（11 用例）。
+  - P5 渲染迁移（行为变更 A/B 主对象）：`opts.characterTensionEnabled` 渲染门（缺省关断=品格锚保持现状混渲染于价值锚行）；开启=价值锚行排除 character（与感受段 theme-only filter 对齐）+「我是谁」小节尾「我的品格：label(方向·w)：描述」（value_id 稳定排序）；soulVersion 不变（指纹=数据不含渲染门，node_type/attrs 本就在指纹内）；R-B 断言：品格锚 valence=±1 也不入感受段（4 用例）。
+- **红线落实**：R-B（品格不入感受段）断言化；R-C 扩展（品格张力不产生 identityRefs——蒸馏物非事实）断言化；R-D（全部走既有 F19/F15 门族，不新造第二套门）。
+
+### Verified
+
+- 门禁：core vitest **819/819**（780+39）/ typecheck **222** 持平 / 密扫 \bsk-[A-Za-z0-9] 词边界 0 命中 / MemoryPanel 零改动（panel 144/144 基线不适用）。
+- 配置缺省关断活体探针：parseConfig({}) → `characterTension {enabled:false, minInstances:2, maxCandidatesPerPass:2}`。
+- A/B（同种子 10 组 × 三模式：旧版 51dda84 渲染 vs 新版 off vs 新版 on；临时 VectorStore，逐模式独立租户键防指纹缓存污染）：**旧版==新版 off 10/10 逐字节一致**（逐位现状）；指纹三模式一致 10/10（渲染门不入指纹）；品格迁移 8/8（价值锚行排除+「我的品格」行在场）；无品格锚组零噪声 2/2。
+- 生产租户真实数据快照（readOnly，17 租户全量）：2 个品格锚租户（agt-kfynybx0ly：取证先行 0.37/复盘 0.33；agt-l5ugn6urg4：求精 0.33）开启渲染门后「我的品格」行全部在场、指纹不变、字节 3471→3476；**15 个无品格锚租户 off==on 逐字节零噪声**。数据面新发现：「取证先行」同 label 同时存在 theme（active）与 character（active）两行——(node_type,label) 复合去重设计内行为，启用后主题行合法保留、不误伤。
+
+### Pending（gated）
+
+- 生产 yaml 增 `characterTension.enabled=true`（渲染迁移+张力检测+提案链一体启用）属行为变更：A/B 已全过，**等拍板后改 yaml + 重启 + 活体验证**（当前运行进程仍跑 M1 代码行为等价；下次重启自然加载 M2 全缺省关断代码，无需立即重启）。
+- 启用后观察项：品格行翻转频率（KV 抖动）、T1 极性词表命中率、characterProposal 采纳率。
+
 ## ✨ V8-M1 灵魂演化层 S-FEEL-1 近期情绪基调行（2026-09-24，DS-SOUL-EVOLUTION-001 配套）
 
 ### Added（MemoryCore + MemoryPanel）

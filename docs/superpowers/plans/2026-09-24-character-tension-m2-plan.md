@@ -1,7 +1,7 @@
 # S-CHAR-2 品格张力检测 M2 实施计划（DS-SOUL-EVOLUTION-001 §2 配套）
 
 - 日期：2026-09-24
-- 状态：实施计划定稿（spike 已过=燃料 18 张力锚 >> 止损线 2；何晨已拍板立项；执行会话按 P1→P6 串行，RED 先行，禁子代理）
+- 状态：**已实施收口（2026-09-24，P1→P6 全链，见 CHANGELOG V9-M2 与 v9 台账 M2 行；生产启用 gated 待拍板）**。原定稿记录：spike 已过=燃料 18 张力锚 >> 止损线 2；何晨已拍板立项；执行会话按 P1→P6 串行，RED 先行，禁子代理
 - 关键勘正（本计划与设计文档的前提差异）：**character 池已在生产活跃**（生产 yaml anchorDiscovery.character.enabled=true @tdai-gateway.yaml:185-189，minEvidence 3/maxPerPass 2/maxTotal 8；6 条 c-auto-* 锚 3 active/3 retired，origin=auto created_by=auto-growth，journal 2026-09-23 rationale 采纳痕迹）。设计 §2.1「给休眠池接燃料」前提修正为：**现有池聚合源=self_identity 槽事实（P3 品格锚分支），S-CHAR-2 增量=张力实例燃料 T1/T2 + 确定性门收紧**。池启用开关（character.enabled）已开；张力检测自身新增独立开关缺省关断。
 
 ## §0 开工前核验

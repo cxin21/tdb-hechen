@@ -313,6 +313,13 @@ export interface MemoryCoreMemoryConfig {
       maxTotal: number;
     };
   };
+  /** S-CHAR-2（M2/P3，DS-SOUL-EVOLUTION-001 §2）：品格张力检测。enabled 缺省 false=逐位现状；
+   *  检测器确定性（character-tension.ts 单一源）；提案落库走既有 F19/F15 门族（R-D 不新造门）。 */
+  characterTension: {
+    enabled: boolean;
+    minInstances: number;
+    maxCandidatesPerPass: number;
+  };
   /**
    * S-FEEL-1（M1/DS-SOUL-EVOLUTION-001 §1.4）：近期情绪基调行。enabled 缺省 false=逐位现状；
    * 红线 R-A：mood 不参与召回排序/加权（情绪不得喂自身回路）。窗口/样本数/阈值 clamp 防配置手滑。
@@ -999,6 +1006,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         })(),
       };
     })(),
+        // S-CHAR-2（M2/P3）：品格张力检测（enabled 缺省 false=逐位现状；clamp 同族防手滑）。
+        characterTension: (() => {
+          const ct = obj(coreMemoryGroup, "characterTension");
+          const clampT = (key: string, dflt: number, lo: number, hi: number) => {
+            const rawT = num(ct, key);
+            if (rawT === undefined || !Number.isFinite(rawT)) return dflt;
+            return Math.min(hi, Math.max(lo, Math.floor(rawT)));
+          };
+          return {
+            enabled: bool(ct, "enabled") ?? false,
+            minInstances: clampT("minInstances", 2, 1, 50),
+            maxCandidatesPerPass: clampT("maxCandidatesPerPass", 2, 1, 10),
+          };
+        })(),
     // DS-SOUL-MEMORY-002 P1：agent 自我层（enabled 缺省 false=逐位现状；yaml 值真实生效+clamp）。
     selfIdentity: (() => {
       const g = obj(coreMemoryGroup, "selfIdentity");

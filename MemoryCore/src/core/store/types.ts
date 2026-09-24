@@ -728,6 +728,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *  缺实现时调用侧静默省略基调行（宁缺毋滥）。租户三元组硬隔离（F18 同款）；样本窗=occurred_at ≥ now−windowHours
    *  （UTC ISO 字典序比较），occurred_at DESC 取 ≤maxSamples；valence IS NOT NULL。只读、零写库、零 LLM。 */
   recentAffectSignals?(tenant?: CoreTenant, opts?: { windowHours: number; maxSamples: number }): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string }>>;
+  /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 数据源。可选签名（recentAffectSignals 同位先例）：
+   *  缺实现时调用侧静默省略张力候选（宁缺毋滥）。租户三元组硬隔离（F18 同款）；metadata_json coreRefs/identityRefs
+   *  键族展开为 {label, valence, ref_kind} 行（identityRefs=20 字切片弱口径，如实透传由消费方匹配）；只读、零写库、零 LLM。 */
+  anchorEvidenceValences?(tenant?: CoreTenant): MaybePromise<Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }>>;
 
   /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
   listValuesAnyState?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
