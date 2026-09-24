@@ -4,6 +4,7 @@
 - 状态：设计定稿（方案 A 槽位扩展制，全景分期实施）
 - 上游拍板：全景分期（2026-09-17）；self_identity 作用域=三元组各存一份（2026-09-17）；集成策略=方案 A（2026-09-17，对比裁决）；分级门纪律（2026-09-15）；记忆主语三层法（2026-09-17 用户纠正后确立）
 - 关联：`2026-09-15-soul-pipeline-design.md`（DS-SOUL-PIPELINE-001 前作）、v5 台账 O12-O17、`2026-09-08-agent-soul-memory-spec.md`（灵魂公式原始出处）
+- 补充设计（2026-09-24）：`2026-09-24-soul-evolution-design.md`（DS-SOUL-EVOLUTION-001：近期情绪基调行 S-FEEL-1 / 品格张力检测 S-CHAR-2 / 身份叙事行 S-NARR-3——用户令「你自己分析然后写设计文档」对话直出授权，全部机制缺省关断，启用逐期 A/B 验收后呈报）
 - 业界对标：Letta/MemGPT memory blocks、Generative Agents 检索评分与反思、Zep/Graphiti 双时态、A-MEM 记忆演化、Mem0 两阶段、CoALA 记忆分类（调研见附录 A）
 
 ---
