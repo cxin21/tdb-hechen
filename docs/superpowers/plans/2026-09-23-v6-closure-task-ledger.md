@@ -49,3 +49,12 @@
 | UI-3.5 | F-U2 并列 weight 首要选取两端序统一（Panel=weight DESC vs 注入=value_id，建议两端均 value_id 次级键） | TODO | v7 开工 |
 | UI-3.6 | UI 2.1 整改 NO-GO 清单（2 P0+8 P1+4 P2）溯源落地 | TODO | v7 待开（含 chip/徽章体系审与 N7 收口） |
 | UI-3.7 | CHANGELOG 补记：UI 三连整改（2aa481f/89eda93/12c8e46）+批次三全部 | DONE | 本 commit（UI 三连整改 2aa481f/89eda93/12c8e46 补记 + b327e00/8452250/bb5ccf5 全入 CHANGELOG） |
+
+## 五、v7 轮执行记录（2026-09-24 收口，新会话勿重查）
+
+- 基线终态：HEAD=2bab3b9 · main · core vitest 758/758 · tsc typecheck.json 口径 222 持平 · panel vitest 144/144 · web tsc 存量 2 · build ✓ · 四服务活。
+- 当日 commit 链：6fcd383（台账补登 UI-3.1~3.7）→ b327e00（UI-3.1 信息完整性三处修复）→ 8452250（NO-GO 归一批 N1-N4，N5 误报撤销）→ bb5ccf5（属性/相关记忆弹卡改造）→ 84260ad（台账回写+CHANGELOG）→ 9115484（F-U2 两端序统一）→ 2bab3b9（感受段方案A）。
+- 收口：UI-3.1/3.3/3.4/3.5/3.7 DONE；UI-3.2 NEEDS_CONTEXT（平台资产层，需用户动作）；UI-3.6 改制=V-01..V-14 原文不可恢复（V-01/V-02 已落地），改为对当前 UI 重生成 NO-GO 清单（下轮新上下文执行）。
+- 数据面：锚行 description 残句 5 条确定性修剪（备份 core_values_desc_fix-20260924.json；修正原错误登记：v2-router 系 400 拒绝守卫非截断器，残句系存量 60 字切片产物）。
+- 感受段方案A：内核句边界+首要卡主副结构，A/B 14/14 改善，存量 30 字断言断言合法波及更新 3 处。
+- 剩余队列：工作流 A（spec↔实现复查判定表）→ B/C 交叉 → 任务 5/6/2/7；gated 十项维持不动。
