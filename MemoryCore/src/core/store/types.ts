@@ -724,7 +724,11 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。
    */
-  listValues?(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
+  listValues?(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;  /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源。可选签名（ILogBackend debug? 先例）：
+   *  缺实现时调用侧静默省略基调行（宁缺毋滥）。租户三元组硬隔离（F18 同款）；样本窗=occurred_at ≥ now−windowHours
+   *  （UTC ISO 字典序比较），occurred_at DESC 取 ≤maxSamples；valence IS NOT NULL。只读、零写库、零 LLM。 */
+  recentAffectSignals?(tenant?: CoreTenant, opts?: { windowHours: number; maxSamples: number }): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string }>>;
+
   /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
   listValuesAnyState?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
   /** GROW（钉住）：pinned 翻转；只作用 active|retired（vetoed 拒绝）。 */

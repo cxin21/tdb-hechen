@@ -64,6 +64,16 @@
 
 | 编号 | 任务 | 状态 | 收口证据 / 缺口 | 下一步 |
 |---|---|---|---|---|
-| M1 | S-FEEL-1 近期情绪基调行（S1→S10 串行） | TODO→开工 | 计划 file:line 级别定稿 @d1e30e8；红线 R-A（mood 不参与召回排序/加权）；IF-1/IF-2 融合面按 §10 清单实施；全链缺省关断，生产租户 enabled=true=A/B 后呈报（gated） | 本轮执行 |
-| M2 | S-CHAR-2 燃料 spike（T2 证据分裂 SQL 实测+5 条人工候选抽验；T1 演化反向无史表推迟正式立项） | TODO（与 M1 并行） | 止损条款 §2.4：真实张力 <2 例不启用、禁硬造；character 池配置已在代码缺省在场（anchor-growth.ts:71/85 enabled:false——启用非新建） | spike 报告呈报拍板 |
+| M1 | S-FEEL-1 近期情绪基调行（S1→S10 串行） | DONE_WITH_CONCERNS | v8 轮实施收口（S1-S10 全过；core 780/780·tsc 222·panel 144/144·build+bundle 断言；A/B 13/13；生产 disabled 逐位现状 3749=3749 byte_equal）；红线 R-A 落实（mood 不参与召回排序）；缺口=生产租户 enabled=true 属行为变更启用待拍板（gated），UI 副行点亮活体验证随启用执行 | 拍板后改 yaml+UI 活体 |
+| M2 | S-CHAR-2 燃料 spike（T2 证据分裂 SQL 实测+5 条人工候选抽验；T1 演化反向无史表推迟正式立项） | SPIKE_DONE | spike 收口：83 active 锚中 18 个张力锚（pos≥2∧neg≥2）+5 条人工候选抽验方向语义合理——燃料 18 >> 止损线 2，S-CHAR-2 可立项呈报拍板；意外发现 character 锚 6 条真实在场（3 active/3 retired, origin=auto）=「品格池零数据休眠」登记≠真实新例；T1 检测器实现按计划推迟 M2 正式立项 | spike 报告呈报拍板 |
 | M3 | S-NARR-3 身份叙事行 | TODO（依赖 M1/M2 数据积累） | O14 边界维持（不建史表不解析日志）；依赖明示不提前 | M1/M2 收口后另写实施计划 |
+
+## 七、v8 轮执行记录（2026-09-24）
+
+- 基线核验：HEAD=d1e30e8 与移交一致；§0 清单全过（core 758/758·tsc 222·panel 144/144·web tsc 2）。
+- 台账补登：397cd19（§六 演化层三行+剩余队列置顶）。
+- M1 实施（S1-S10 全链）：store recentAffectSignals（IF-1 可选签名）→ mood-line.ts 单一源纯函数（RED 16 用例）→ soul-assembler 接线（IF-2 第三参+feel 块尾 mood 行+门控修正 directional||moodTier）→ auto-recall 调用点+config moodLine 段（缺省关断+clamp）→ v2-router meta.mood+/v3/memory/mood 新端点（V3_ALLOWED_SUBPATHS 登记——首轮 404 教训=路由表与白名单两处都要登记）→ Panel BFF /chat-memory/mood+UI 副行+i18n+CSS 纯追加。
+- A/B：隔离临时实例（8430+VACUUM 副本+合成租户播种）同种子对照 13/13 全过；生产 yaml 全程未动（enabled=false 零抢跑）；生产 disabled 逐位现状=新旧代码活体 3749=3749。临时实例与副本已清理。
+- M2 spike（并行）：T2 张力锚 18 例 + 5 条人工候选抽验 + character 锚 6 条真实在场发现；报告呈报拍板（§2.4 止损线远未触发）。
+- 门禁终态：core vitest 780/780（758+22 新增）· tsc typecheck 222 持平 · panel vitest 144/144 · web tsc 存量 2 · vite build ✓ + bundle 断言（_soul-mood/近期基调）· 密钥扫描 \b 词边界=仅 i18n 占位符存量假阳性（新增行 0 命中）。
+- 教训新增：① VS $(...) 内联第 4-6 次翻车——bash 语法含 $() 的命令即使单行也一律脚本文件；② YAML flip 后重跑必须显式回切（守卫插入只防缺段不防值残留）；③ FP 边界种子用同时间戳（异龄样本加权均值 0.15±ε 会两侧漂移）；④ 比对断言要考虑「空壳块」（mood-only 时 feel 包装壳在 enabled 块在场、disabled 块无）。

@@ -23,6 +23,8 @@ import { DEFAULT_ISOLATION_ID, type CoreTenant } from "../core/store/types.js";
 // 不再内联手抄（手抄清单漏抄 = R1 根因）。
 import type { SoulColumnsOf } from "../core/store/soul-columns.js";
 import type { EmbeddingService } from "../core/store/embedding.js";
+// S-FEEL-1（M1）：近期情绪基调聚合单一源（mood-line.ts；R-A：mood 不参与召回排序）。
+import { computeMoodTier } from "../core/hooks/mood-line.js";
 import { createScopedStorageAdapter, type StorageAdapter } from "../core/storage/adapter.js";
 import { StoragePaths } from "../core/storage/types.js";
 import type { Logger } from "../core/types.js";
@@ -191,6 +193,8 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/atomic/archive/restore",
   "/core-memory/read",
   "/core-memory/write",
+  // S-FEEL-1（M1/S6）：近期情绪基调只读端点（Panel BFF /chat-memory/mood 上游；enabled=false 返回 tier:null）
+  "/memory/mood",
   // S1（K7/M-5）：core_values 写 API —— agent 可维护价值锚（照抄 core-memory read|write 模式）
   "/core-memory/values/upsert",
   "/core-memory/values/delete",
@@ -554,6 +558,9 @@ const routeTable: Record<string, RouteHandler> = {
   // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 仅挂 v3 入口（严格 isolation 家族；
   // 新接入方一律 v3——不进 DATAPLANE_HANDLERS 以免自动获得 /v2 孪生路由）。
   [`${V3_PREFIX}/recall`]: handleRecall,
+  // S-FEEL-1（M1/S6）：近期情绪基调只读端点——Panel BFF /chat-memory/mood 上游（不要求完整召回；
+  // enabled=false 时返回 {tier:null}，逐位现状语义）。
+  [`${V3_PREFIX}/memory/mood`]: handleMemoryMood,
 };
 
 export async function handleV2Route(
@@ -1540,6 +1547,37 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
  * 超时：v3Recall.timeoutMs（缺省 5000）→ 504（代理降级旧路）。
  * 无命中：block="" + meta 全零（语义 = 本轮无可注入，非失败——代理零注入不降级）。
  */
+// S-FEEL-1（M1/S6）：近期情绪基调只读端点。三元组头取租户（/v3 严格 isolation 闸门 422 同族）→
+// store.recentAffectSignals（可选方法，缺实现=宁缺毋滥返回 tier:null）→ computeMoodTier（单一源）。
+// 红线 R-A：本端点只读零写库、不参与任何召回排序/加权；不出连续值（防伪精度）。
+async function handleMemoryMood(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const gwCfg = (deps as { config?: { memory?: import("../config.js").MemoryTdaiConfig } }).config;
+  const moodCfg = gwCfg?.memory?.coreMemory?.moodLine;
+  if (!moodCfg?.enabled) return successEnvelope({ tier: null, sampleCount: 0, enabled: false }, requestId);
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  if (typeof store.recentAffectSignals !== "function") return successEnvelope({ tier: null, sampleCount: 0, enabled: true }, requestId);
+  const iso = deps.requestIsolation;
+  try {
+    const samples = await Promise.resolve(store.recentAffectSignals(
+      { teamId: iso?.teamId ?? "default", userId: iso?.userId ?? "default", agentId: iso?.agentId ?? "default" },
+      { windowHours: moodCfg.windowHours, maxSamples: moodCfg.maxSamples },
+    ));
+    const r = computeMoodTier(samples, {
+      minSamples: moodCfg.minSamples,
+      maxSamples: moodCfg.maxSamples,
+      posThreshold: moodCfg.posThreshold,
+      negThreshold: moodCfg.negThreshold,
+      halfLifeHours: moodCfg.halfLifeHours,
+      nowMs: Date.now(),
+    });
+    return successEnvelope({ tier: r.tier, sampleCount: r.sampleCount, enabled: true, windowHours: moodCfg.windowHours, maxSamples: moodCfg.maxSamples, minSamples: moodCfg.minSamples, posThreshold: moodCfg.posThreshold, negThreshold: moodCfg.negThreshold, halfLifeHours: moodCfg.halfLifeHours }, requestId);
+  } catch (err) {
+    return errorEnvelope(500, `mood compute failed: ${err instanceof Error ? err.message : String(err)}`, requestId);
+  }
+}
+
+
 async function handleRecall(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const gwCfg = (deps as { config?: { memory?: import("../config.js").MemoryTdaiConfig } }).config;
   const v3Recall = gwCfg?.memory?.recall?.v3Recall;
@@ -1651,7 +1689,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
 
   return successEnvelope<{
     block: string;
-    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; soulVersion?: string };
+    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; soulVersion?: string; mood?: string };
   }>(
     {
       block: outcome.block ?? "",
@@ -1661,6 +1699,8 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
         sessionReused: outcome.sessionReused,
         layered: outcome.layered,
         soulVersion: outcome.soulVersion,
+        // S-FEEL-1（M1）：enabled=false/样本不足时 outcome.mood=undefined → 条件展开不出键（逐位现状）。
+        ...(outcome.mood !== undefined ? { mood: outcome.mood } : {}),
       },
     },
     requestId,

@@ -314,6 +314,19 @@ export interface MemoryCoreMemoryConfig {
     };
   };
   /**
+   * S-FEEL-1（M1/DS-SOUL-EVOLUTION-001 §1.4）：近期情绪基调行。enabled 缺省 false=逐位现状；
+   * 红线 R-A：mood 不参与召回排序/加权（情绪不得喂自身回路）。窗口/样本数/阈值 clamp 防配置手滑。
+   */
+  moodLine: {
+    enabled: boolean;
+    windowHours: number;
+    maxSamples: number;
+    minSamples: number;
+    posThreshold: number;
+    negThreshold: number;
+    halfLifeHours: number;
+  };
+  /**
    * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
    * 含 LLM prompt 行为）。maxPerPass clamp 1..10；intervalHours clamp 1..168。
    */
@@ -998,6 +1011,25 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         enabled: bool(g, "enabled") ?? false,
         maxPerPass: clamp("maxPerPass", 2, 1, 10),
         intervalHours: clamp("intervalHours", 24, 1, 168),
+      };
+    })(),
+    // S-FEEL-1（M1/DS-SOUL-EVOLUTION-001 §1.4）：近期情绪基调（enabled 缺省 false=逐位现状；
+    // 红线 R-A：mood 不参与召回排序）。阈值 clamp 到 [-1,1] 合法域，窗口/样本数 clamp 防手滑。
+    moodLine: (() => {
+      const g = obj(coreMemoryGroup, "moodLine");
+      const clampM = (key: string, dflt: number, lo: number, hi: number) => {
+      const raw = num(g, key);
+      if (raw === undefined || !Number.isFinite(raw)) return dflt;
+      return Math.min(hi, Math.max(lo, raw));
+      };
+      return {
+        enabled: bool(g, "enabled") ?? false,
+        windowHours: clampM("windowHours", 72, 1, 24 * 30),
+        maxSamples: Math.floor(clampM("maxSamples", 20, 1, 200)),
+        minSamples: Math.floor(clampM("minSamples", 5, 1, 100)),
+        posThreshold: clampM("posThreshold", 0.15, -1, 1),
+        negThreshold: clampM("negThreshold", -0.15, -1, 1),
+        halfLifeHours: clampM("halfLifeHours", 48, 0.5, 24 * 30),
       };
     })(),
     // F17 段级注入预算（chars 为 token 粗粒度近似；超限截断，宁缺毋滥）。

@@ -408,6 +408,12 @@ export const chatMemoryApi = {
       block_id: blockId,
       ...(opts?.includeRetired ? { include_retired: true } : {}),
     }),
+  /** S-FEEL-1（M1/S7）：近期情绪基调（core /v3/memory/mood 只读透传；tier=null 不渲染=宁缺毋滥）。
+   *  windowHours/阈值等判定依据字段随出参回传（信息完整性：tooltip 展示真实配置值）。 */
+  moodRead: (blockId: string) =>
+    chatMemoryCall<{ mood: { tier: 'positive' | 'neutral' | 'strained' | null; sampleCount: number; enabled?: boolean; windowHours?: number; maxSamples?: number; minSamples?: number; posThreshold?: number; negThreshold?: number; halfLifeHours?: number } }>('mood', {
+      block_id: blockId,
+    }),
 
   /** agent 身份区只读（U1，DS-SOUL-MEMORY-002 P1）：复用 /v3/core-memory/read 的 slots
    *  （values/list 丢 slots 的既有注释即此缺口；BFF 透传零新端点）。 */

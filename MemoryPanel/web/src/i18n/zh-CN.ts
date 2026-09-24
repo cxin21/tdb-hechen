@@ -43,6 +43,12 @@ export const zhCN = {
   'memory.badges.since': '自 {{date}} 起',
   'memory.anchors.injectPreview': '注入形态 {{preview}}',
   'soul.feeling.empty': '暂无定向价值锚（valence ±1 的主题锚将在此呈现）',
+  // S-FEEL-1（M1/S7）：近期基调副行
+  'soul.mood.title': '近期基调',
+  'soul.mood.positive': '偏积极',
+  'soul.mood.neutral': '平稳',
+  'soul.mood.strained': '偏承压',
+  'soul.mood.tooltip': '判定依据：近 {{window}} 小时内 {{samples}} 条经历的情感聚合（半衰期 {{halfLife}}h 加权；阈值 +{{pos}}/−{{neg}}；不足 {{min}} 条省略）',
   'soul.person.title': '重要的人（人物锚专视图）',
   'soul.person.expand': '证据链',
   'soul.person.collapse': '收起证据链',

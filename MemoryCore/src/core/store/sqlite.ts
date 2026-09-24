@@ -2454,6 +2454,24 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源（单一源聚合在 mood-line.ts，本方法只做取数）。
+   *  只读零写库；租户三元组硬隔离（F18 同款）；occurred_at ≥ now−windowHours（UTC ISO 字典序）DESC 取 ≤maxSamples；
+   *  valence IS NOT NULL（全 NULL 租户返回 []=基调行静默省略）。 */
+  recentAffectSignals(tenant?: CoreTenant, opts?: { windowHours: number; maxSamples: number }): Array<{ valence: number; arousal: number | null; occurred_at: string }> {
+    const t = normalizeCoreTenant(tenant);
+    const windowHours = Number(opts?.windowHours) > 0 ? Number(opts?.windowHours) : 72;
+    const maxSamples = Number(opts?.maxSamples) > 0 ? Math.min(500, Math.floor(Number(opts?.maxSamples))) : 20;
+    const sinceIso = new Date(Date.now() - windowHours * 3600e3).toISOString();
+    try {
+      return (this.db.prepare(
+        "SELECT valence, arousal, occurred_at FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?",
+      ).all(t.teamId, t.userId, t.agentId, sinceIso, maxSamples) as unknown as Array<{ valence: number; arousal: number | null; occurred_at: string }>) ?? [];
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [recentAffectSignals] failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
   /**
    * GROW：全态读（active/retired/vetoed 不过滤、不走缓存、不做 S6 兜底）。
    * 专用两个调用方：① 自生长去重（veto 永不重提 + 名额计数）；② server 种子判空

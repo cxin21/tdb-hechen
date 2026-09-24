@@ -1687,6 +1687,68 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       return respondEnvelope(c, okEnvelope(c, { values }));
     },
   );
+  // POST /chat-memory/mood  body: { block_id }
+  // S-FEEL-1（M1/S6-S7）：近期情绪基调副行数据源——core /v3/memory/mood 只读透传（零写库）。
+  // ACL 与 values/list 同款（owner 借用语义先例）；本层只做形状透传，不发明语义。
+  // enabled=false 时 core 返回 { tier:null, enabled:false }——UI 侧宁缺毋滥不渲染。
+  api.post(
+    "/chat-memory/mood",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      const canRead = await authorizeChatMemoryRead(
+        deps,
+        ctx,
+        asset,
+        meUserId,
+        blockId,
+      );
+      if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      const env = await deps.kernelHttp.postEnvelope<{
+        tier?: unknown;
+        sampleCount?: unknown;
+        enabled?: unknown;
+      }>(
+        "/v3/memory/mood",
+        {
+          team_id: parsed.teamId,
+          agent_id: parsed.agentId,
+          user_id: asset.owner_user_id,
+          session_id: "default",
+        },
+        cred,
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      return respondEnvelope(
+        c,
+        okEnvelope(c, { mood: env.data ?? { tier: null, sampleCount: 0 } }),
+      );
+    },
+  );
 
   // POST /chat-memory/identity/read  body: { block_id }
   // DS-SOUL-MEMORY-002 P1（U1）：身份区只读透传——/v3/core-memory/read 返回的 slots 在

@@ -33,6 +33,8 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
   const { t } = useTranslation();
   const [values, setValues] = useState<ValueAnchor[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // S-FEEL-1（M1/S7）：近期基调（tier=null/未启用/失败=不渲染，宁缺毋滥）。
+  const [mood, setMood] = useState<{ tier: 'positive' | 'neutral' | 'strained' | null; sampleCount: number; enabled?: boolean; windowHours?: number; maxSamples?: number; minSamples?: number; posThreshold?: number; negThreshold?: number; halfLifeHours?: number } | null>(null);
   const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async () => {
@@ -41,6 +43,12 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
       const res = await chatMemoryApi.valuesList(blockId);
       setValues(res.values ?? []);
     } catch { setValues([]); }
+    finally { setLoaded(true); }
+    // S-FEEL-1（M1/S7）：近期基调副行——与 valuesList 同一 load 时钟；失败/未启用=不渲染。
+    try {
+      const m = await chatMemoryApi.moodRead(blockId);
+      setMood(m.mood ?? null);
+    } catch { setMood(null); }
     finally { setLoaded(true); }
   }, [blockId]);
 
@@ -99,6 +107,16 @@ export function SoulFeelingBar({ blockId }: { blockId: string }) {
         </div>
       ) : (
         loaded && <div className="_soul-meta">{t('soul.feeling.empty')}</div>
+      )}
+      {/* S-FEEL-1（M1/S7）：近期基调全宽副行——三态徽标+样本数；tooltip=判定依据（真实配置值，信息完整性）。 */}
+      {mood?.tier && (
+        <div
+          className="_soul-mood"
+          title={t('soul.mood.tooltip', { window: mood.windowHours ?? 72, samples: mood.sampleCount, halfLife: mood.halfLifeHours ?? 48, pos: mood.posThreshold ?? 0.15, neg: Math.abs(mood.negThreshold ?? -0.15), min: mood.minSamples ?? 5 })}
+        >
+          <span className={`_soul-mood-badge _soul-mood-badge--${mood.tier}`}>{t(`soul.mood.${mood.tier}`)}</span>
+          <span className="_soul-mood-text">{t('soul.mood.title')}（近 {mood.sampleCount} 条经历的情感聚合）</span>
+        </div>
       )}
     </section>
   );

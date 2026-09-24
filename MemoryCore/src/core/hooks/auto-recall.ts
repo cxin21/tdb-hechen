@@ -14,6 +14,7 @@ import type { MemoryTdaiConfig } from "../../config.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
+import { computeMoodTier } from "./mood-line.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
 import type { MemoryRecord } from "../record/l1-reader.js";
 import type { IMemoryStore, L1SearchResult, L1FtsResult, CoreTenant, IsolationFilter } from "../store/types.js";
@@ -343,6 +344,8 @@ export interface LayeredRecallOutcome {
   sessionReused: boolean;
   /** 立项③：灵魂指纹（双槽∪锚集合 hash；未变化=消费端可复用上轮 soul 字节）。 */
   soulVersion?: string;
+  /** S-FEEL-1（M1）：近期情绪基调档位（positive/neutral/strained；enabled=false 时不出键）。 */
+  mood?: string;
   /** R7 meta：分层组装是否生效（结论层非空）。 */
   layered: boolean;
   /** scene index 条目（钩子后续 scene navigation 复用——一次读取两处消费，现状保持）。 */
@@ -400,6 +403,8 @@ export async function performLayeredRecall(params: {
   let layered = false;
   // 立项③：灵魂指纹（函数级——hook/端点双路共享）
   let soulVersion: string | undefined;
+  /** S-FEEL-1（M1）：近期情绪基调档位（enabled=false 或样本不足=undefined=meta 不出键）。 */
+  let mood: string | undefined;
   let block: string | undefined;
   let searchCacheHit = false;
   if (!userText || userText.length === 0) {
@@ -670,6 +675,32 @@ export async function performLayeredRecall(params: {
       try {
         const { buildSoulPrefix } = await import("./soul-assembler.js");
         const it = params.isolationFilter;
+        // S-FEEL-1（M1）：近期情绪基调——enabled=false 时完全跳过（零行为差异=逐位现状）；
+        // store 可选方法缺实现（recentAffectSignals 不在场）→ 静默省略基调行（宁缺毋滥）。
+        // 红线 R-A：mood 只进 soul 前缀与 meta.mood，不参与任何召回排序/加权（情绪不得喂自身）。
+        let moodTierResult: { tier: "positive" | "neutral" | "strained"; sampleCount: number } | null = null;
+        const moodCfg = cfg.coreMemory?.moodLine;
+        if (moodCfg?.enabled === true && typeof vectorStore.recentAffectSignals === "function") {
+          try {
+            const samples = await Promise.resolve(
+              vectorStore.recentAffectSignals(
+                { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
+                { windowHours: moodCfg.windowHours, maxSamples: moodCfg.maxSamples },
+              ),
+            );
+            const moodRes = computeMoodTier(samples, {
+              minSamples: moodCfg.minSamples,
+              maxSamples: moodCfg.maxSamples,
+              posThreshold: moodCfg.posThreshold,
+              negThreshold: moodCfg.negThreshold,
+              halfLifeHours: moodCfg.halfLifeHours,
+              nowMs: Date.now(),
+            });
+            if (moodRes.tier !== null) moodTierResult = { tier: moodRes.tier, sampleCount: moodRes.sampleCount };
+          } catch (err) {
+            logger?.warn?.(`[soul] mood compute failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         const soulMeta: { soulVersion?: string } = {};
         soulPrefix = await buildSoulPrefix(
           vectorStore,
@@ -681,10 +712,13 @@ export async function performLayeredRecall(params: {
             budgetSelfChars: cfg.coreMemory?.soulRender?.budgetSelfChars,
             budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
             maxRelationLines: cfg.coreMemory?.soulRender?.maxRelationLines,
+            // S-FEEL-1（M1）：近期基调行（null/undefined=不渲染=逐位现状）。
+            moodTier: moodTierResult,
           },
           soulMeta,
         );
         soulVersion = soulMeta.soulVersion;
+        mood = moodTierResult?.tier;
       } catch (err) {
         logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -749,6 +783,7 @@ export async function performLayeredRecall(params: {
     sessionReused,
     layered,
     soulVersion,
+    mood,
     sceneIndexEntries,
     profileDataDir,
     profileStorage,

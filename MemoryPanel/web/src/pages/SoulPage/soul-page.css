@@ -240,3 +240,11 @@
 ._soul-feel-pills { display: flex; flex-wrap: wrap; gap: 6px; }
 ._soul-prime-card { flex-direction: column; align-items: flex-start; gap: 4px; }
 ._soul-prime-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+
+/* ===== M1 S-FEEL-1：近期基调全宽副行（纯追加+标记守卫 MOOD-LINE-CSS-MARKER；配色复用 _soul-pill 变量） ===== */
+._soul-mood { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--soul-card-bg); border: 1px solid var(--soul-border); border-radius: 6px; margin-top: 10px; min-width: 0; }
+._soul-mood-badge { flex: none; padding: 2px 8px; border-radius: 999px; font-size: var(--soul-fz-badge); }
+._soul-mood-badge--positive { background: var(--soul-pos-bg); color: var(--soul-pos); }
+._soul-mood-badge--neutral { background: var(--soul-fill-muted, rgba(128, 128, 128, 0.15)); color: var(--soul-text-2, inherit); }
+._soul-mood-badge--strained { background: var(--soul-cau-bg); color: var(--soul-cau); }
+._soul-mood-text { color: var(--soul-text-2, inherit); min-width: 0; overflow-wrap: anywhere; }

@@ -43,6 +43,12 @@ export const enUS = {
   'memory.badges.since': 'Since {{date}}',
   'memory.anchors.injectPreview': 'Inject form {{preview}}',
   'soul.feeling.empty': 'No directional value anchors yet (theme anchors with valence ±1 will appear here)',
+  // S-FEEL-1 (M1/S7): recent mood sub-row
+  'soul.mood.title': 'Recent mood',
+  'soul.mood.positive': 'Positive lean',
+  'soul.mood.neutral': 'Steady',
+  'soul.mood.strained': 'Strained',
+  'soul.mood.tooltip': 'Basis: valence aggregate of {{samples}} experiences within {{window}}h (half-life {{halfLife}}h weighting; thresholds +{{pos}}/−{{neg}}; omitted below {{min}} samples)',
   'soul.person.title': 'Important people (person anchor view)',
   'soul.person.expand': 'Evidence chain',
   'soul.person.collapse': 'Collapse evidence',

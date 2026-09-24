@@ -65,6 +65,10 @@ export interface SoulRenderOptions {
   budgetIdentityChars?: number;
   /** F17（审计补齐）：重要的人 行数上限（weight DESC 截断）；缺省 5=原行为。 */
   maxRelationLines?: number;
+  /** S-FEEL-1（M1）：近期情绪基调（mood-line.ts 聚合产出；缺省 undefined=基调行不渲染=逐位现状）。
+   *  soulVersion 指纹只纳入 tier 不纳入 sampleCount（三值化控 KV 抖动——设计 §1.3；
+   *  count 文本随任一指纹变化刷新，陈旧性为已登记取舍）。 */
+  moodTier?: { tier: "positive" | "neutral" | "strained"; sampleCount: number } | null;
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -83,13 +87,17 @@ function attrsOf(attrsJson?: string): { description?: string; role?: string; ali
 export function computeSoulVersion(
   slots: Array<{ slot: string; content: string }>,
   values: Array<{ value_id?: string; label?: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>,
+  moodTier?: string,
 ): string {
-  const payload = JSON.stringify({
+  // S-FEEL-1（M1/IF-2）：moodTier 缺省 undefined → payload 与现状逐字节一致（快照守卫断言）；
+  // 只纳入档位（三值化控 KV 抖动——设计 §1.3），不纳入样本数。
+  const payloadBase = {
     s: slots.map((x) => [x.slot, x.content]),
     v: values
       .map((x) => [x.value_id ?? x.label, x.label, x.weight ?? 0, x.valence ?? null, x.state ?? "active", x.node_type ?? "theme", x.attrs_json ?? "{}"])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-  });
+  };
+  const payload = JSON.stringify(moodTier !== undefined ? { ...payloadBase, m: moodTier } : payloadBase);
   let h = 0x811c9dc5;
   for (let i = 0; i < payload.length; i++) {
     h ^= payload.charCodeAt(i);
@@ -128,7 +136,7 @@ export async function buildSoulPrefix(
       // 立项②（2026-09-23 拍板）：取舍按 weight、渲染按 value_id 稳定排序（KV cache 前缀连续性）
       .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
 
-    soulVer = computeSoulVersion(slots, activeAll);
+    soulVer = computeSoulVersion(slots, activeAll, opts?.moodTier?.tier);
     if (metaOut) metaOut.soulVersion = soulVer;
 
     // 立项③：指纹→缓存命中跳渲染 / 变更重渲染+人格变更日志
@@ -210,7 +218,9 @@ export async function buildSoulPrefix(
     const directional = [...active]
       .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))
       .filter((v) => (v.node_type ?? "theme") === "theme" && (v.valence === 1 || v.valence === -1));
-    if (directional.length > 0) {
+    // S-FEEL-1（M1）：mood 行独立于方向锚（无 ±1 锚时 soul-feeling 块仍可只含基调行，宁缺毋滥不造空段）；
+    // moodTier 缺省=门控逐位现状。
+    if (directional.length > 0 || opts?.moodTier) {
       const pos = directional.filter((v) => v.valence === 1).map((v) => escapeXmlTags(v.label));
       const neg = directional.filter((v) => v.valence === -1).map((v) => escapeXmlTags(v.label));
       const feel: string[] = [];
@@ -230,6 +240,12 @@ export async function buildSoulPrefix(
       };
       if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("、")}${topDescSeg(directional.filter((v) => v.valence === 1))}`);
       if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("、")}${topDescSeg(directional.filter((v) => v.valence === -1))}`);
+      // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位+样本数，不出连续值防伪精度；
+      // opts.moodTier 缺省=不 push=逐位现状）。文案不含「我感到」字样（§1.5 主语越界防线）。
+      if (opts?.moodTier) {
+        const tierLabel = opts.moodTier.tier === "positive" ? "偏积极" : opts.moodTier.tier === "strained" ? "偏承压" : "平稳";
+        feel.push(`近期基调：${tierLabel}（近 ${opts.moodTier.sampleCount} 条经历的情感聚合）`);
+      }
       if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的感受\n${feel.join("\n")}\n</soul-feeling>`);
     }
   } catch (err) {

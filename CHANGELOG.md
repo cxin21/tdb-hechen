@@ -7,6 +7,31 @@
 覆盖仓库全部开源模块：`MemoryCore` / `MemoryPanel` / `MemoryKnowledge` /
 `MemoryProxy` / SDK。
 ---
+
+## ✨ V8-M1 灵魂演化层 S-FEEL-1 近期情绪基调行（2026-09-24，DS-SOUL-EVOLUTION-001 配套）
+
+### Added（MemoryCore + MemoryPanel）
+
+- **M1 近期基调行全链（S1-S10）**：
+  - S1 store 只读接口 `recentAffectSignals?(tenant, {windowHours, maxSamples})`（IF-1 可选签名先例；l1_records valence IS NOT NULL + occurred_at ≥ 窗口 ISO 字典序 + 三元组硬隔离；sqlite 实现 + 5 用例）。
+  - S2 `mood-line.ts` 单一源纯函数：`computeMoodValence`（半衰期加权 w=2^(-age/halfLife)，导出供任务 2 R10 复用、禁第二份实现）+ `computeMoodTier` 三档映射（±0.15 边界含；样本 <minSamples=null 降级；11 用例）。
+  - S3 soul-assembler：soul-feeling 块尾「近期基调：档位（近 N 条经历的情感聚合）」（无方向锚时块仍可只含基调行，宁缺毋滥不造空段）；computeSoulVersion 可选第三参 moodTier（IF-2：undefined 指纹逐位一致；只入 tier 不入 sampleCount=三值化控 KV 抖动）+ 6 渲染守卫用例。
+  - S4 auto-recall 接线：enabled=false 完全跳过（零行为差异）；config `memory.coreMemory.moodLine.{enabled=false, windowHours=72, maxSamples=20, minSamples=5, posThreshold=0.15, negThreshold=-0.15, halfLifeHours=48}`（clamp 防手滑）；outcome.mood 透传。
+  - S5/S6 v2-router：/v3/recall meta.mood（条件展开，undefined 不出键）+ 新只读端点 `POST /v3/memory/mood`（V3_ALLOWED_SUBPATHS 登记；出参带真实 config 判定依据字段）。
+  - S7 Panel：BFF `POST /chat-memory/mood`（values/list 同款 ACL）+ SoulFeelingBar 全宽副行（三态徽标 积极=绿/平稳=灰/承压=橙 + tooltip 判定依据=真实 config 值）+ i18n zh/en 5 键 + CSS 纯追加（MOOD-LINE-CSS-MARKER 守卫）。
+- **红线 R-A 落实**：mood 不参与任何召回排序/加权（F14-bis 情绪版同构——情绪不得喂自身回路）。BFF 裁决=BFF 直连 core 新端点（不要求完整召回，mood 读取与 recall 解耦）。
+
+### Verified
+
+- 门禁：core vitest **780/780**（758+22）/ typecheck **222** 持平 / panel **144/144** / web tsc 存量 2 / vite build ✓ + bundle 断言（_soul-mood / 近期基调 在场）。
+- A/B（同种子对照，隔离临时实例 8430 + DB VACUUM 副本 + 合成租户播种；生产 yaml 全程 enabled=false 零抢跑）：**13/13 通过**——合成租户字节对照 9 组（enabled 块剥 mood 行与 disabled 逐字节一致）+ 边界组（恰 0.15 同时间戳精确判定 positive）+ 降级组（<5 样本基调行省略）+ 生产租户 3 组（meta.mood 与 DB valence 半衰期加权手算一致，n=20）。临时实例与副本已清理。
+- 生产 disabled 逐位现状：新旧代码同查询 /v3/recall 块 **3749=3749 byte_equal**、meta 无 mood 键；/v3/memory/mood → `{tier:null, enabled:false}`。
+- M2 spike（并行收口）：T2 证据分裂 readOnly 实测 83 active 锚中 **18 个张力锚**（pos≥2∧neg≥2）+ 5 条人工候选抽验（负 valence 全部对应真实逆境事件，方向语义合理非噪声）——燃料 18 >> 止损线 2，S-CHAR-2 可立项（呈报拍板）。意外发现 character 锚 6 条真实在场（3 active/3 retired，origin=auto）——「品格池零数据休眠」登记与真实数据不符（登记≠真实新例，来源待查）。
+
+### Pending（gated）
+
+- 生产租户 moodLine enabled=true 属行为变更启用：A/B 已全过，**等拍板后改 yaml + UI 副行点亮活体验证**（「用户看不到=没做」的最终闭环步骤）。SoulPage 需登录态+选中资产，本轮浏览器活体未及（登记疑虑清单）。
+
 ## 🎨 V7-UI 批次三：信息完整性专项 + 按钮语义归一 + 属性/相关记忆弹出卡（2026-09-23/24）
 
 ### Fixed（MemoryPanel/web）
