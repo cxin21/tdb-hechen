@@ -29,6 +29,8 @@
 
 **自检实锤缺口闭合（2026-09-25 18:58）**：何晨令「真自检」后对全部 DONE 断言现场取证复验（HEAD 链/origin 同步/yaml/四文档/源码/dist/panel/journal/单测复跑 4/4/DB desc 三锚/theme 15/15 全过）——同时实锤一真缺口：PersonSection 对 description 零引用（注入行有/专卡无=「用户看不到」）→ 当场修复（parsePersonAttrs+PersonRow 透传+专卡展示行 2 行 clamp+title；RED 1→GREEN 9/9；panel vitest **145/145**；活体主桶何晨/comfyui 用户双专卡点亮+截图）。教训=「自检」必须对真实代码取证，纸面复述台账=第 8 例候选。
 
+**提案链端到端闭环首跑验证（2026-09-25 23:54，何晨「提案方面任务全部都完成了么」对账补口）**：adopted=0 实锚=采纳→注入链从未实跑。测试租户（ev17-ev17a）闭环验证 PASS：pending 提案 pd-53df411249dc6f98（strict_rule 体检信息标注）经 Panel 同款 API 采纳 → upsertCore 落 strict_rule 槽（source=panel-adopt、version=1）→ soulVersion 刷新 → /v3/recall 注入块 [strict_rule] 行在场；幂等守卫验证（二次裁决 404 正确拒绝）；adopted 0→1。顺带实锚观察项：「提案先入队、槽后直写」时序窗口会产生与槽重复的 pending 行（本例 1 例），处置候选=定期 pending×slot 交叉去重任务（与 theme NO_DESC 策略同批呈报）。**剩余唯一未完成=138 条 pending 裁决（何晨本人行使，工作单 135 组已交付）**。
+
 **任务 2 收口（2026-09-25 22:56，拍板授权执行）**：golden 桶重建（75 条 L0 播种→25 条 L1+3 reflection，提取管线拥堵+300s 超时重试如实经历）→labels.jsonl v2（10 query 重建，旧 09-12 标注随旧语料失效留档 git）→recall-anchor.mjs env 注入补丁→三档运行（基线/R8/R10）全 OFF determinism PASS、**新基线 P@5=0.917（验收线 0.897）**；判定=R8/R10 within-run Δ=0.000（1 query 组内互换无进出）→**维持关断**，D-5 shadow 结论复现；语料漂移 25→28 按纪律改用 within-run 判据（脚本原生 off/off2/on 同运行对照）；runs 2026-09-25T15-05/15-51/16-06 三档归档。任务 7 解锁（方案另行呈报）。
 
 **拍板执行④（2026-09-25 21:05，提案机制对抗复查处置）**：何晨令「针对你的分析最优方案在当前会话处理完」。对抗复查三发现：⚠️A pre-gate 存量语义重复 8 对（闸门 09-23 后零漏=有效性正向证据）/⚠️B 采纳回路零使用（adopted=0/rejected 37/积压 146）/⚠️C rejected 复提行为不一致（近似复提入队 vs 精确复提 pid WHERE 静默吞）。处置：⚠️C=比对域纳入 rejected（commit 本条，RED 1→GREEN 11/11·core vitest **832/832**·tsc 222）；⚠️A=簇去重数据面（7 变体置 rejected+备份先行+清单落盘，strict_rule pending 117→110）；⚠️B=裁决工作单生成（139 条→135 组）交 Panel 批量裁决——红线采纳合法性来自何晨本人，AI 不代拍板。
