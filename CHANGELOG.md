@@ -25,6 +25,8 @@
 
 - **UI NO-GO 微项实施（拍板执行③）**：G3 首要卡「首要 · {label}」合并主标题+描述 2 行截断点击展开；G4 属性弹卡 key 列 sticky；窄屏 <767px 断点（overflow-wrap=anywhere 禁截断省略）；提案卡并入分区卡语言。panel vitest 144/144·web tsc 存量 2 持平·build ✓+bundle 断言·活体 DOM 断言+截图验收。
 
+- **人物专卡 description 展示行（自检实锤缺口闭合）**：自检取证发现 PersonSection 对 description 零引用（注入行有/专卡无=三层缺口）。parsePersonAttrs+PersonRow 透传 description，专卡行内展示（2 行 clamp+title 全文，宁缺毋滥）。RED 1→GREEN 9/9，panel vitest **145/145**、web tsc 存量 2 持平、build+bundle 断言、活体主桶何晨/comfyui 用户双桶点亮。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。

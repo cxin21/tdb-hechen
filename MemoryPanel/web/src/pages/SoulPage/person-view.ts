@@ -15,6 +15,8 @@ export interface PersonRow {
   valence: number | null;
   role?: string;
   aliases: string[];
+  /** V12-PERSONDESC：锚语义（attrs_json.description），PersonSection 渲染行。 */
+  description?: string;
 }
 
 export interface PersonEvidenceItem {
@@ -25,15 +27,17 @@ export interface PersonEvidenceItem {
 }
 
 /** attrs_json 宽松解析（损坏/缺失 → {}，只损失 role/aliases 维度——soul-assembler 同款）。 */
-export function parsePersonAttrs(raw: unknown): { role?: string; aliases: string[] } {
+export function parsePersonAttrs(raw: unknown): { role?: string; aliases: string[]; description?: string } {
   try {
-    const p = typeof raw === 'string' && raw !== '{}' ? (JSON.parse(raw) as { role?: unknown; aliases?: unknown }) : {};
+    const p = typeof raw === 'string' && raw !== '{}' ? (JSON.parse(raw) as { role?: unknown; aliases?: unknown; description?: unknown }) : {};
     return {
       role: typeof p?.role === 'string' ? p.role : undefined,
       aliases: Array.isArray(p?.aliases) ? p.aliases.map(String) : [],
+      // V12-PERSONDESC：锚语义透传（注入行同源；用户看不到=没做）。
+      description: typeof p?.description === 'string' ? p.description : undefined,
     };
   } catch {
-    return { aliases: [] };
+    return { aliases: [], description: undefined };
   }
 }
 
@@ -58,6 +62,7 @@ export function buildPersonRows(values: Array<Record<string, unknown>>): PersonR
         valence: typeof v.valence === 'number' ? v.valence : null,
         role: attrs.role,
         aliases: attrs.aliases,
+        description: attrs.description,
       };
     });
 }

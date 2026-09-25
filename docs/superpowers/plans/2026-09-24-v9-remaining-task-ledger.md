@@ -27,6 +27,8 @@
 
 **拍板执行 ③（2026-09-25 18:30，UI NO-GO 微项实施）**：G3（首要卡「首要 · {label}」合并主标题+描述 2 行 clamp 点击展开）/G4（弹卡 key 列 sticky left:0）/窄屏（<767px overflow-wrap=anywhere+feel-cols 单列，禁截断省略）/提案卡（_spending-row 并入分区卡语言 radius 8px）四项落地；G1 复查自纠关闭。门禁四件套=panel vitest **144/144**·web tsc **存量 2 持平**·build ✓+bundle 真实特征断言（注释标记被 minify 剥离→改真实属性特征配方）·panel 重启 active+HTTP 200；活体 DOM=tagGone/nameText「首要 · 审计」/descClamp=2/点击展开 aria-expanded=true/radius=8px；窄屏 375px 真机实测=实现期遗留复测步骤（内嵌浏览器视口限制，诚实登记）。
 
+**自检实锤缺口闭合（2026-09-25 18:58）**：何晨令「真自检」后对全部 DONE 断言现场取证复验（HEAD 链/origin 同步/yaml/四文档/源码/dist/panel/journal/单测复跑 4/4/DB desc 三锚/theme 15/15 全过）——同时实锤一真缺口：PersonSection 对 description 零引用（注入行有/专卡无=「用户看不到」）→ 当场修复（parsePersonAttrs+PersonRow 透传+专卡展示行 2 行 clamp+title；RED 1→GREEN 9/9；panel vitest **145/145**；活体主桶何晨/comfyui 用户双专卡点亮+截图）。教训=「自检」必须对真实代码取证，纸面复述台账=第 8 例候选。
+
 **v10 会话终态（2026-09-25 18:40，诚实移交）**：HEAD=**196e480**·main·已推 origin；v10/v11 会话 13 commits（d6c3adf 勘误→373251a A 深查→c07f75c B→1ff0211 任务2设计→6e8bd51 UI 设计→2559b73 台账回写→6ab1838 观察项→335e212 ①QUOTA 解耦+c1fa6d3 落账→ea4b9da ②desc 回填落账→196e480 ③UI 微项）。全程密扫逐 commit 0。拍板执行①②③+⑤快答件（A2 保留追认/V2 不做/C 第二批确认）全部收口；**剩余=任务 2 执行（golden 桶重建→P@5 重锚定线→R8/R10 预注册 A/B ≥10 组）与任务 7（依赖）**——数小时工程+临时网关 8422 多轮操作（孤儿网关/误杀产线 pitfalls 密集），本会话上下文接近极限（v7「长会话输出劣化」实锤在案且已入品格层），按「宁可 BLOCKED 不粉饰」纪律移交新会话零损耗接续；接续要点=任务 2 设计小节（1ff0211）+td-agemem-recall-golden-anchor 技能配方+拍板已授权（何晨 2026-09-25「全部按建议」）。
 
 **拍板包（剩余：④任务 2 执行 ⑤快答件）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。

@@ -90,3 +90,14 @@ describe('D-2b (V-02 P0): maskSecrets —— 证据链凭据掩码（用户红�
     expect(maskSecrets('Bearer ZxYwVuTsRqOn987654321')).not.toContain('ZxYwVuTs');
   });
 });
+
+describe('V12-PERSONDESC：人物专卡 description 透传（2026-09-25 何晨拍板「全部按建议」）', () => {
+  it('buildPersonRows 透传 attrs_json.description；缺省=undefined（宁缺毋滥）', () => {
+    const rows = buildPersonRows([
+      { value_id: 'p1', label: '何晨', node_type: 'person', state: 'active', weight: 0.8, valence: 1, attrs_json: '{"role":"同事","aliases":[],"description":"测试人物说明一行"}' },
+      { value_id: 'p2', label: '无desc', node_type: 'person', state: 'active', weight: 0.5, valence: 0, attrs_json: '{"role":"同事"}' },
+    ]);
+    expect(rows[0].description).toBe('测试人物说明一行');
+    expect(rows[1].description).toBeUndefined();
+  });
+});

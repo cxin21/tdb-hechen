@@ -144,6 +144,9 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
                   {loading ? t('soul.person.loading') : isOpen ? t('soul.person.collapse') : `${t('soul.person.expand')} · ${ev ? ev.length : '…'}`}
                 </button>
               </div>
+              {r.description && (
+                <div className="_soul-personrow-desc" title={r.description}>{r.description}</div>
+              )}
               {isOpen && (
                 <div className="_soul-evidence">
                   {err && <div className="_soul-meta">{t('soul.person.failed')}</div>}
