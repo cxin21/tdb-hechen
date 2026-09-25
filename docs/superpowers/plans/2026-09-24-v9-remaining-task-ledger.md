@@ -9,7 +9,7 @@
 | 编号 | 任务 | 状态 | 收口证据 / 缺口 | 下一步 |
 |---|---|---|---|---|
 | M1 | S-FEEL-1 近期情绪基调行（S1-S10+生产启用） | DONE | d12af34（代码 18 files +660/−10，A/B 13/13，生产 disabled 逐位现状 3749=3749）+ 拍板后 yaml moodLine.enabled=true 启用（注入/端点/UI 三层活体全绿；UI 点亮截图已呈）；门禁 core 780/780·tsc 222·panel 144/144 | 观察项：档位翻转频率 >3 次/日回退登记（指纹只含 tier，sampleCount 有陈旧窗口=已登记取舍） |
-| M2 | S-CHAR-2 品格张力检测（T1 演化反向+T2 证据分裂） | **实施收口 DONE_WITH_CONCERNS**（2026-09-24）：P1-P6 全链落盘，生产启用 gated 待拍板 | core vitest **819/819**（+39）·tsc 222 持平·密扫 0·缺省关断活体探针 ✓·A/B 10 组：旧版==新版off 逐字节+指纹三模式一致+品格迁移 8/8+零噪声 2/2·生产快照 17 租户（2 品格锚租户迁移实证/15 租户零噪声）·新发现：「取证先行」theme+character 同 label 双行=复合去重设计内 | gated：yaml characterTension.enabled=true 拍板后一体启用（渲染迁移+检测+提案链）；启用后观察品格行翻转频率/T1 命中率/采纳率 |
+| M2 | S-CHAR-2 品格张力检测（T1 演化反向+T2 证据分裂） | **DONE（2026-09-25 生产启用+活体全绿）**：P1-P6 全链+yaml enabled=true+重启+M2_LIVE_PASS | core vitest **819/819**（+39）·tsc 222 持平·密扫 0·缺省关断活体探针 ✓·A/B 10 组：旧版==新版off 逐字节+指纹三模式一致+品格迁移 8/8+零噪声 2/2·生产快照 17 租户（2 品格锚租户迁移实证/15 租户零噪声）·新发现：「取证先行」theme+character 同 label 双行=复合去重设计内 | gated：yaml characterTension.enabled=true 拍板后一体启用（渲染迁移+检测+提案链）；启用后观察品格行翻转频率/T1 命中率/采纳率 |
 | M3 | S-NARR-3 身份叙事行（蒸馏门 narr-gate.ts+第三产出字段+槽尾行） | TODO（依赖 M1/M2 数据积累） | O14 边界维持（不建史表）；R-C 红线（narrative 不产生 identityRefs） | M1/M2 收口后另写实施计划，勿提前 |
 
 ## 二、三大工作流（用户 2026-09-23 三段式定义，2026-09-24 重申）
@@ -38,7 +38,7 @@
 
 ## 五、gated 待拍板清单（全部维持不动，勿抢跑）
 
-D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）/ audit #11/#16 / person 锚 description 数据面回填 / 方案② embedding 提案深清理 / 锚行 description 未来写入策略（存量已修）/ 感受段近期基调行生产租户启用（**已拍板执行完毕 2026-09-24，从清单注销**）。
+D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）/ audit #11/#16 / person 锚 description 数据面回填 / 方案② embedding 提案深清理 / 锚行 description 未来写入策略（存量已修）/ 感受段近期基调行生产租户启用（已拍板执行完毕 2026-09-24，注销）/ **M2 生产启用（2026-09-25 整句授权执行完毕+活体全绿，注销）/ P3 散项回切（2026-09-25 执行完毕，注销）/ D-R3-2 重启验证（2026-09-25 执行完毕 re-arm 156→129，注销）**。
 
 ## 六、基线与门禁（2026-09-24 v8 轮收口态，全部实锚勿重查）
 

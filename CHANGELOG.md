@@ -27,10 +27,12 @@
 - A/B（同种子 10 组 × 三模式：旧版 51dda84 渲染 vs 新版 off vs 新版 on；临时 VectorStore，逐模式独立租户键防指纹缓存污染）：**旧版==新版 off 10/10 逐字节一致**（逐位现状）；指纹三模式一致 10/10（渲染门不入指纹）；品格迁移 8/8（价值锚行排除+「我的品格」行在场）；无品格锚组零噪声 2/2。
 - 生产租户真实数据快照（readOnly，17 租户全量）：2 个品格锚租户（agt-kfynybx0ly：取证先行 0.37/复盘 0.33；agt-l5ugn6urg4：求精 0.33）开启渲染门后「我的品格」行全部在场、指纹不变、字节 3471→3476；**15 个无品格锚租户 off==on 逐字节零噪声**。数据面新发现：「取证先行」同 label 同时存在 theme（active）与 character（active）两行——(node_type,label) 复合去重设计内行为，启用后主题行合法保留、不误伤。
 
-### Pending（gated）
+### Enabled（2026-09-25 生产启用，何晨整句授权自定最优）
 
-- 生产 yaml 增 `characterTension.enabled=true`（渲染迁移+张力检测+提案链一体启用）属行为变更：A/B 已全过，**等拍板后改 yaml + 重启 + 活体验证**（当前运行进程仍跑 M1 代码行为等价；下次重启自然加载 M2 全缺省关断代码，无需立即重启）。
-- 启用后观察项：品格行翻转频率（KV 抖动）、T1 极性词表命中率、characterProposal 采纳率。
+- yaml `characterTension.enabled=true`（minInstances=2/maxCandidatesPerPass=2 显式落盘）；同批 P3 散项回切（anchorDiscovery.maxPerPass 3→2、selfIdentity.intervalHours 1→24，均登记在案的临时调参演示值回登记值）。
+- 重启后服务 10s 健康、0 致命错误、yaml 零配置错误。**生产活体探针 M2_LIVE_PASS**：真实 /v3/recall（生产租户 agt-kfynybx0ly）注入块「我的品格：自驱(趋近·w0.33)、取证先行(趋近·w0.44)」在场且位于 soul-identity 段、与 DB active 品格锚（取证先行/自驱）逐 label 一致（GROW 池活体演化：复盘→自驱，品格自生长实证）、感受段无品格行（R-B 生产面）、近期基调行在场（M1 回归）、soulVersion sv-30ba28ed 格式稳定。
+- D-R3-2 同批重启验证收口：boot recovery re-arm **156→129**（27 死键消除）、死键 0 出现于 armed 链路（预测 128，实测 129——1 键偏差在探针样本与活体计数口径差内，诚实登记）。
+- 启用后观察项（已开始）：品格行翻转频率（KV 抖动）、T1 极性词表命中率、characterProposal 采纳率。
 
 ## ✨ V8-M1 灵魂演化层 S-FEEL-1 近期情绪基调行（2026-09-24，DS-SOUL-EVOLUTION-001 配套）
 
