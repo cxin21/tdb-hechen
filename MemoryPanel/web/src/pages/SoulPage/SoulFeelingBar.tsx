@@ -17,14 +17,23 @@ function Pill({ label, kind }: { label: string; kind: 'pos' | 'neg' }) {
 
 function PrimeCard({ prime, weight, kind }: { prime: { label: string; desc: string }; weight?: number; kind: 'pos' | 'neg' }) {
   const { t } = useTranslation();
+  // V10-NOGO-G3：描述 2 行截断+点击展开（展开边界=卡内自身，信息完整不截断丢失）。
+  const [open, setOpen] = useState(false);
   return (
     <div className={`_soul-prime-card _soul-prime-card--${kind}`}>
       <div className="_soul-prime-head">
-        <span className={`_soul-prime-tag _soul-prime-tag--${kind}`}>{t('soul.feeling.primeTag')}</span>
-        <span className="_soul-prime-name">{prime.label}</span>
+        <span className="_soul-prime-name">{t('soul.feeling.primeTag')} · {prime.label}</span>
         {typeof weight === 'number' && <span className="_soul-prime-w">w{weight.toFixed(2).replace(/0$/, '')}</span>}
       </div>
-      <div className="_soul-prime-desc">{prime.desc}</div>
+      <div
+        className={'_soul-prime-desc' + (open ? ' _soul-prime-desc--open' : '')}
+        role="button"
+        aria-expanded={open}
+        title={open ? undefined : prime.desc}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {prime.desc}
+      </div>
     </div>
   );
 }

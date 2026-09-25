@@ -23,6 +23,8 @@
 
 - **锚 description 数据面回填（拍板执行②）**：主 team 双桶 person×2+character×2 按「top-1 支撑记忆首句≤60 字」确定性手法回填（备份先行+逐锚写读回 3/4；自驱零字面证据 SKIP=宁缺毋滥；直接 SQL JSON 合并——upsertValue 为 REPLACE 语义会抹 character source/facts，取证定责）。活体=「何晨(同事·趋近)：…」「取证先行(趋近·w0.44)：…」注入行点亮+soulVersion 刷新。
 
+- **UI NO-GO 微项实施（拍板执行③）**：G3 首要卡「首要 · {label}」合并主标题+描述 2 行截断点击展开；G4 属性弹卡 key 列 sticky；窄屏 <767px 断点（overflow-wrap=anywhere 禁截断省略）；提案卡并入分区卡语言。panel vitest 144/144·web tsc 存量 2 持平·build ✓+bundle 断言·活体 DOM 断言+截图验收。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。

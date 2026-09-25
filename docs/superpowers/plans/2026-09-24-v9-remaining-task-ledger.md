@@ -25,7 +25,9 @@
 
 **拍板执行 ②（2026-09-25 18:15，锚 description 数据面回填）**：备份先行（/tmp/core-values-backup-1790331315878.json 115 行）→ 范围=主 team 双桶 person×2（何晨/用户）+character×2（自驱/取证先行，授权口径；theme 新锚 NO_DESC 属「锚行 description 未来写入策略」gated 登记不越权）→ 手法=直接 SQL JSON 合并更新（取证定责：upsertValue 为 REPLACE 语义、attrs_json 仅由入参三键重建，直接调用会抹 character source/facts）→ 逐锚写读回 **3/4 OK**；自驱 SKIP=抽象品格词零字面证据（attrs.facts 空+L1 无字面命中）宁缺毋滥不手造语义。**活体 PASS**=注入行「何晨(同事·趋近)：…」「取证先行(趋近·w0.44)：用户要求且AI已承诺…」点亮+soulVersion sv-30ba28ed→sv-d3379c50（锚数据变化→指纹刷新=设计意图合法预期）。
 
-**拍板包（剩余：③任务 2 执行 ④UI 微项 ⑤快答件）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
+**拍板执行 ③（2026-09-25 18:30，UI NO-GO 微项实施）**：G3（首要卡「首要 · {label}」合并主标题+描述 2 行 clamp 点击展开）/G4（弹卡 key 列 sticky left:0）/窄屏（<767px overflow-wrap=anywhere+feel-cols 单列，禁截断省略）/提案卡（_spending-row 并入分区卡语言 radius 8px）四项落地；G1 复查自纠关闭。门禁四件套=panel vitest **144/144**·web tsc **存量 2 持平**·build ✓+bundle 真实特征断言（注释标记被 minify 剥离→改真实属性特征配方）·panel 重启 active+HTTP 200；活体 DOM=tagGone/nameText「首要 · 审计」/descClamp=2/点击展开 aria-expanded=true/radius=8px；窄屏 375px 真机实测=实现期遗留复测步骤（内嵌浏览器视口限制，诚实登记）。
+
+**拍板包（剩余：④任务 2 执行 ⑤快答件）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
 
 ## 一、灵魂演化层（最高优先）
 

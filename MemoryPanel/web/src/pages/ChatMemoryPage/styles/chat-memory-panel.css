@@ -1783,3 +1783,12 @@
 ._nb-modal { display: flex; flex-direction: column; gap: 8px; max-height: 62vh; overflow-y: auto; }
 ._nb-modal ._nb-content { white-space: normal; word-break: break-word; }
 ._nb-modal ._memory-detail-atomic-neighbors-list { margin: 0; padding: 0; list-style: none; }
+
+/* ===== V10-NOGO-G4：属性弹卡 key 列 sticky（横向溢出时不丢 key 上下文；2026-09-25） ===== */
+._attr-table--modal { overflow-x: auto; }
+._attr-table--modal ._attr-key { position: sticky; left: 0; background: #ffffff; box-shadow: 1px 0 0 0 #e5e6eb; }
+
+/* ===== V10-NOGO-NARROW：窄屏属性行长值换行（2026-09-25） ===== */
+@media (max-width: 767px) {
+  ._attr-val { overflow-wrap: anywhere; }
+}
