@@ -21,7 +21,9 @@
 
 **观察项首批量化（2026-09-25 16:10，v10 会话）**：①KV 抖动=人格指纹变更事件 **0 次/48h**（journalctl --grep「人格变更」实锚；重启清缓存窗口诚实披露）→ M1 moodLine 档位翻转频率 0<3 次/日阈值=不触发回退登记，M2 品格行翻转同判；②characterProposal 采纳=**0 事件/48h**（anchor-growth 全部 tick adopted=0；主桶品格锚 2 active 无变化）；③T1 命中=无张力检测日志/24h（无 self_identity 采纳事件驱动）；④QUOTA 守卫窗口未到（20:46 CST）持续跟踪。观察继续。
 
-**拍板包（等何晨裁决，设计全部已呈）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
+**拍板执行 ①（2026-09-25 18:09，V10-MAINT-DECOUPLE）**：何晨「全部按建议」整批授权。commit **335e212**（9 files +205/−60：anchor-growth 门布尔化+统一门/maintainIntervalHours 配置/types+sqlite lastMaintAt 新 kv 键/anchor-maint-decouple.test.ts 4 用例+既有 9 处断言随新语义更新）——RED 3 failed→GREEN 4/4·core vitest **830/830**（826+4）·tsc 222 持平·密扫 0。yaml maintainIntervalHours: 6 显式落盘+重启；**活体自愈 PASS**=重启首 tick 全租户 maint=run adoption=skip、retired=3 reweighted=3、主双桶 theme active **17/16→15/15** 名额精确回归（journal maint=run adoption=skip 实锚）。
+
+**拍板包（剩余：②personDesc 回填 ③任务 2 执行 ④UI 微项 ⑤快答件）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
 
 ## 一、灵魂演化层（最高优先）
 

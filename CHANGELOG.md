@@ -17,6 +17,10 @@
 - **任务 2 召回新信号设计小节**（1ff0211）：R-identity 裁定不实施（F14-bis 回音室张力正面回答）；R-recall/R-arousal 预注册 A/B（golden 桶重建先行+P@5 重锚定线+≥10 组同种子+负增益诚实回退）。
 - **UI NO-GO v2 微项设计**（6e8bd51）：G1 健康环溢出复查自纠不可复现建议关闭；G3 首要卡信息层级降维/G4 弹卡 key 列 sticky/窄屏 <768 断点/提案卡并入分区卡体系，实施序与复测配方成文。
 
+### Fixed（行为变更，2026-09-25 何晨拍板「全部按建议」）
+
+- **GROW-QUOTA 守卫被采纳冷却饿死**（335e212）：`runAnchorGrowth` 四门改布尔化+统一门——维护面（证据重算+名额回归+品格张力 T2）按 `anchorDiscovery.maintainIntervalHours`（缺省 6h，clamp 0..168）独立调度并持久化 `lastMaintAt`（新 kv 键 `last_maint_at`，per-tenant 后缀同族）；采纳面四门节奏不变，纯维护轮保留采纳门状态。活体自愈=重启首 tick 主双桶 theme active 17/16→15/15（retired=3）。新增 `anchor-maint-decouple.test.ts` 4 用例（RED 3 failed→GREEN 4/4），core vitest **830/830**、tsc 222 持平。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。
