@@ -318,6 +318,11 @@ export function createApp(config: ProxyConfig): Hono {
   // 的 classifyRequest 按 header + body 特征判(见其 doc)。
   app.post("/dsh/:spaceId/v1/chat/completions", (c) => handleChatCompletions(c, config));
   app.post("/dsh/:spaceId/chat/completions", (c) => handleChatCompletions(c, config));
+  // V12-DSH-SSE-FIX（2026-09-26 何晨报 DSH 更新后 SSE mismatch）：dsh-llm-deepseek 适配器
+  // POST {baseURL}/messages（Anthropic Messages 协议），此前落入 chat/completions fallback
+  // 返回 OpenAI 格式 SSE——新适配器 :1780 强校验拒绝无 type 字段的帧。
+  // 修复=挂到 handleAnthropicMessages（注入管线+Anthropic SSE 输出）。
+  app.post("/dsh/:spaceId/messages", (c) => handleAnthropicMessages(c, config));
   // dsh 目前抓包未见 embeddings/moderations/completions,预留 aux 端点(与 CC/CB 对称)
   app.post("/dsh/:spaceId/v1/embeddings", (c) => handleAuxiliaryEndpoint(c, config));
   app.post("/dsh/:spaceId/v1/completions", (c) => handleAuxiliaryEndpoint(c, config));
