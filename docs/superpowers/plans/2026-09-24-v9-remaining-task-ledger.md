@@ -4,6 +4,23 @@
 > 四态：DONE/DONE_WITH_CONCERNS/NEEDS_CONTEXT/BLOCKED；原则=自生长自维护+四链生产级+用户看不到=没做=不合格。
 > 关联底册：2026-09-23-v6-closure-task-ledger.md（§六/七/八=演化层登记与 v8 执行记录）、2026-09-24-character-tension-m2-plan.md（M2 实施计划 P1-P6）。
 
+## 〇、v10 会话进度回写（2026-09-25，v10 会话收口态 HEAD=6e8bd51）
+
+> 本节由 v10 会话回写；判定表详见同目录 2026-09-25-v10-workflow-a-deepcheck.md（A 深查总表）/ 2026-09-25-v10-workflow-b-soul-composition.md（B 灵魂组成）/ 2026-09-25-task2-recall-signals-design.md（任务 2 设计）/ 2026-09-25-v10-ui-nogo-microitems-design.md（UI NO-GO 设计）。
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| A 深查（19列+8项+锚9列+双槽+F1-F20 全量三步强制） | DONE_WITH_CONCERNS | 373251a：13✅+1⚠️+2📝，0❌；⚠️=GROW-QUOTA 守卫被采纳 interval 门饿死（主桶 theme active 17/16>15，journal 实锤 gate block reason=interval），修复设计小节呈拍板未实施 |
+| B 灵魂组成重分析+四链生产级 | DONE_WITH_CONCERNS | c07f75c：四段×五维矩阵无组成级缺口；换用户/换 agent 双测试真实数据通过；person 锚 8 active 零 description=gated 重申呈报 |
+| C 首批材料（valence/arousal/coreRefs） | DONE（等意见停点） | 对话直出判定表+真数据（/v3/recall 活体×3+DB 探针×7）；A2/V2/第二批三问在案 |
+| 文档勘误（演化设计 §1.2/§5） | DONE | d6c3adf：arousal 轴聚合未实现+遗忘闪光灯调制已启用（读回 verified+密扫 0） |
+| 任务 2 设计小节 | DONE（呈拍板） | 1ff0211：R-identity 裁定不实施（F14-bis 张力正面回答）；R-recall/R-arousal 预注册 A/B=golden 桶重建先行+重锚定线+≥10 组同种子 |
+| UI 线 NO-GO v2 微项设计先行 | DONE（呈拍板） | 6e8bd51：G1 复查自纠不可复现建议关闭；G3/G4/窄屏/提案卡设计+实施序；UI-3.2 实机复证维持 NEEDS_CONTEXT |
+| 任务 7 灵魂真伪判定 | 排队 | 依赖任务 2 执行收口 |
+| 「登记≠真实」第 7 例候选 | 已登记 | 部署技能「无存量超限回归守卫」记载过时（quotaEvict 在场但被门饿死）；技能库只读待维护通道更新 |
+
+**拍板包（等何晨裁决，设计全部已呈）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
+
 ## 一、灵魂演化层（最高优先）
 
 | 编号 | 任务 | 状态 | 收口证据 / 缺口 | 下一步 |

@@ -8,6 +8,25 @@
 `MemoryProxy` / SDK。
 ---
 
+## 📋 V10 会话（2026-09-25）：三大工作流深查收口+待拍板设计包
+
+### Added（文档，零代码）
+
+- **工作流 A 深查判定总表**（373251a）：19 列+metadata 8 项+锚层 9 列+core_memory 双槽+F1-F20 全量三步强制，13✅+1⚠️+2📝/0❌；唯一 ⚠️=GROW-QUOTA 回归守卫（anchor-growth.ts quotaEvict）被采纳 interval 门饿死——维护面与采纳面共用 24h 冷却，主租户 theme active 17/16 超 maxTotal=15 无自愈（journal 实锤），修复设计小节呈拍板。
+- **工作流 B 灵魂组成重分析**（c07f75c）：四段×五维矩阵（内容/提取/拼接/主语/人物说明）对照母 spec 无组成级缺口；换用户/换 agent 双测试真实数据通过；person/character 锚 description 数据面休眠=gated 呈报。
+- **任务 2 召回新信号设计小节**（1ff0211）：R-identity 裁定不实施（F14-bis 回音室张力正面回答）；R-recall/R-arousal 预注册 A/B（golden 桶重建先行+P@5 重锚定线+≥10 组同种子+负增益诚实回退）。
+- **UI NO-GO v2 微项设计**（6e8bd51）：G1 健康环溢出复查自纠不可复现建议关闭；G3 首要卡信息层级降维/G4 弹卡 key 列 sticky/窄屏 <768 断点/提案卡并入分区卡体系，实施序与复测配方成文。
+
+### Changed（文档勘误）
+
+- 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。
+
+### Verified
+
+- 全程零代码零行为零数据面变更；密扫 \bsk-[A-Za-z0-9] 词边界逐 commit 0 命中；活体证据=/v3/recall 探针×3（sv-30ba28ed）+node:sqlite readOnly 探针×8+生产 Panel DOM 实测。
+
+---
+
 ## 🧬 V9-M2 灵魂演化层 S-CHAR-2 品格张力检测（2026-09-24，DS-SOUL-EVOLUTION-001 §2 配套）
 
 ### Added（MemoryCore）
