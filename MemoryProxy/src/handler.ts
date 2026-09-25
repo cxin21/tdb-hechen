@@ -773,7 +773,9 @@ export async function handleChatCompletions(
   // 但走独立的 header-driven session-init 分支(见下方 opencode 特化块),
   // 因此不需要走这里的 headless bypass —— opencode 能吃 mem 命令纯文本响应,
   // 也需要 injection / L0 / skill 提取,只是不能弹 form。
-  const _dshHeadless = agentSource === "dsh" && (() => {
+  // V12-PROVIDER：_dshHeadless 仅对带 DSH 专有 header 的客户端生效——自定义 provider
+  // 不走 DSH preset 体系，ask_user_question 的有无与「有无 UI 能力」无关。
+  const _dshHeadless = agentSource === "dsh" && !!conversationId && (() => {
     const tools = (body as { tools?: unknown }).tools;
     if (!Array.isArray(tools) || tools.length === 0) return false;
     return !tools.some((t) => {
@@ -910,7 +912,9 @@ export async function handleChatCompletions(
   // 仅 dsh-llm-deepseek 适配器注入；自定义 provider（llm-pi-ai 等）适配器不带此 header，
   // 导致注入被跳过（用户看不到=没做）。sessionKey 已有 fallback 链（resolveSessionKey），
   // 无专有 header 时也能从路径/请求体派生，保证任意 provider 路由注入不跳过。
-  let injectedSkipped = !sessionKey || isAuxiliary || _dshHeadless || _oneShotSubagent || _emptyToolsSubagent;
+  // V12-PROVIDER（何晨令「不要有遗留问题」）：注入门槛只看 sessionKey+isAuxiliary。
+  // _dshHeadless/_emptyToolsSubagent 控制的是 form 弹出（session-init），不应连坐注入——
+  // 注入（灵魂+记忆上下文）不依赖 UI 能力，headless 客户端同样需要灵魂在场。
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
@@ -918,7 +922,8 @@ export async function handleChatCompletions(
   // 历史阻塞（skip → sessionInfo 空 → 空注入 tool_call → unknown tool）已被
   // injectedSkipped 的 _dshHeadless bypass 消除（本函数上方，无头请求永不注入），
   // 现在跳过 init 是安全的：无头会话直接放行，不弹表单、不注册资产。
-  if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless && !_oneShotSubagent && !_emptyToolsSubagent) {
+  // V12-PROVIDER: session-init gate widened (conversationId -> sessionKey)
+  if (config.sessionInit?.enabled && sessionKey && !isAuxiliary && !_dshHeadless && !_oneShotSubagent && !_emptyToolsSubagent) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
