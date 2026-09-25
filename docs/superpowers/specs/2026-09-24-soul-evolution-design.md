@@ -44,7 +44,7 @@
 
 - 输入：L1 记忆 `valence`、`arousal` 列（已有，无 schema 变更），租户三元组硬隔离。
 - 样本窗：occurred_at ≥ now − windowHours（缺省 72h），按 occurred_at 降序取 ≤ maxSamples（缺省 20）；样本数 < minSamples（缺省 5）→ 基调行省略（宁缺毋滥）。
-- 加权聚合：`w_i = 2^(-age_hours_i / halfLifeHours)`（缺省半衰期 48h）；`mood_valence = clamp(Σ(valence_i·w_i)/Σw_i, -1, 1)`；arousal 同法。
+- 加权聚合：`w_i = 2^(-age_hours_i / halfLifeHours)`（缺省半衰期 48h）；`mood_valence = clamp(Σ(valence_i·w_i)/Σw_i, -1, 1)`；【2026-09-25 勘误（v10 会话 A 深查，实锚 mood-line.ts MoodResult={tier,sampleCount}）：M1 实现仅覆盖 valence 轴聚合——arousal 轴聚合无消费方（渲染 §1.3 仅出 valence 档位），按「不允许预留逻辑/宁缺毋滥」裁定不实现；MoodSample.arousal 字段保留（与 store recentAffectSignals 返回结构对称，非活跃预留），PAD 全量状态机触发条件出现再立项（§5 同步勘误）。】
 - 档位映射（三值化——天然低频翻转，控 KV 前缀抖动）：mood_valence ≥ posThreshold（缺省 +0.15）→ `偏积极`；≤ negThreshold（缺省 −0.15）→ `偏承压`；否则 `平稳`。
 - 确定性：同输入逐字节同输出（纯函数，零 LLM、零随机）。
 
@@ -150,7 +150,7 @@ O14 裁决「不建 history 表（旧文 logger.info 留痕）」**维持不变*
 | 项 | 触发条件 | 去向 |
 |---|---|---|
 | 连续值 mood 注入 | 三档粒度被证明不足的实证 | 另立设计（伪精度风险先行评估） |
-| PAD 三维全量状态机 | arousal/dominance 出现消费方 | 另立设计（当前仅 valence 轴有消费） |
+| PAD 三维全量状态机 | arousal/dominance 出现消费方 | 另立设计（【2026-09-25 勘误（v10 会话 A 深查）】遗忘闪光灯调制 arousalRetention=0.3 已生产启用（tdai-gateway.yaml forgetting 段实锚）=arousal 已有独立生产消费方；近期基调聚合仍仅 valence 轴——§1.2 勘误同源） |
 | 结构化 identity_history 表 | O14 边界修订的独立拍板 | 另立设计 |
 | 情绪调节策略仿真（ACM 3789692） | 社会仿真场景需求实证 | 超出 TDB 范围 |
 
