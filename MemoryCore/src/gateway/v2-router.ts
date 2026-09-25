@@ -115,6 +115,7 @@ import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 // D-0（2026-09-21）：/v3/atomic/query 出参映射单一源——7 字段补齐 + 既有字段逐位。
 import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-fields.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
+import { mergeStrictRuleContent } from "./pending-adopt-merge.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
@@ -1857,8 +1858,12 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
       const decision = validateCoreWrite({ slot: "strict_rule", content: decided.content, source: "panel-adopt" }, cfg);
       if (!decision.ok) return errorEnvelope(400, decision.reason ?? "invalid", requestId);
       if (!store.upsertCore) return errorEnvelope(503, "core_memory not supported", requestId);
-      // 写入路径单点消毒（P-B 咽喉模式，同 handleCoreMemoryWrite）
-      const ok = await Promise.resolve(store.upsertCore("strict_rule", escapeXmlTags(decided.content), "panel-adopt", tenant));
+      // V12-ADJ（拍板执行④续）：合并语义——原整槽替换会把既有红线挤出槽（P0 缺陷：5 次采纳
+      // 使 strict_rule 槽仅剩最后一条、原 3 条红线丢失）。既有行全保留+采纳行追加+行体去重；
+      // 消毒保持 P-B 咽喉语义（escape 仅作用于新采纳行，由 merge 输出保证既有行原样）。
+      const existingStrict = ((store as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> }).readCore?.(tenant) ?? []).find((s) => s.slot === "strict_rule")?.content;
+      const merged = mergeStrictRuleContent(existingStrict, escapeXmlTags(decided.content));
+      const ok = await Promise.resolve(store.upsertCore("strict_rule", merged, "panel-adopt", tenant));
       if (!ok) return errorEnvelope(503, "strict_rule adopt failed", requestId);
     } else if (decided.slot === "core_value") {
       if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);

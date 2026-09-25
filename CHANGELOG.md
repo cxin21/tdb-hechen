@@ -31,6 +31,8 @@
 
 - **任务 2 召回新信号 A/B 收口（拍板授权执行）**：golden 桶重建（10 主题×事实化对话 75 条 L0→25 条 L1+3 条 reflection，隔离租户 team-2j92u63hre）+labels.jsonl v2（10 query×2-3 正例，产标零检索）+recall-anchor.mjs 加 TDAI_ANCHOR_ON_OVERRIDES env 注入（ON 相位开关覆盖，归档留痕）。三档锚定运行（基线/R8=0.03/R10=0.03）全 OFF determinism PASS、新基线 **P@5=0.917**（线 0.897）。判定：R8/R10 within-run ΔP@5=0.000、仅 1 query 组内位次互换无进出=**零增益证据，维持关断**（D-5 shadow 结论在新语料复现）；runs 三档归档+labels v2+脚本改动入库。
 
+- **V12-ADJ：pending 采纳 strict_rule 合并语义（P0 缺陷修复）**：原整槽替换使 5 次采纳后槽仅剩最后一条、原 3 条红线被挤出注入（生产实锚）。修复=pending-adopt-merge.ts 纯函数（既有行全保留+采纳行追加+行体去重+'- ' 前缀规范化）+router 采纳分支接入（escape 保持 P-B 咽喉语义）。RED（模块缺失加载失败+旧语义断言红）→GREEN 4/4+pending-routes 集成断言更新；core vitest **836/836**、tsc 222 持平。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。

@@ -29,19 +29,21 @@ describe("POST /core-memory/pending/list", () => {
 });
 
 describe("POST /core-memory/pending/decide", () => {
-  function storeWith(slot: string) {
+  function storeWith(slot: string, existing?: string) {
     return {
       decidePendingCore: vi.fn((_pid: string, _d: string, _t?: unknown) => ({ slot, content: "绝不泄露用户隐私数据" })),
       upsertCore: vi.fn((_slot: string, _content: string, _by: string, _t?: unknown) => true),
+      // V12-ADJ：readCore 供采纳合并语义（既有行保留+新行追加）
+      readCore: vi.fn(() => (existing ? [{ slot, content: existing }] : [])),
       upsertValue: vi.fn((_id: string, _label: string, _w: number, _by: string, _t?: unknown, _v?: number, _o?: string) => true),
     };
   }
-  it("adopt strict_rule → validateCoreWrite 通过后 upsertCore('strict_rule', 消毒内容, 'panel-adopt')", async () => {
-    const store = storeWith("strict_rule");
+  it("adopt strict_rule → 合并语义：既有红线保留+采纳行追加（V12-ADJ）", async () => {
+    const store = storeWith("strict_rule", "- 既有红线甲");
     const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-1", decision: "adopted" }, AUTH, "r4", depsFor(store));
     expect(res.code).toBe(0);
     expect(store.decidePendingCore).toHaveBeenCalledWith("pd-1", "adopted", expect.objectContaining({ teamId: "teamA" }));
-    expect(store.upsertCore).toHaveBeenCalledWith("strict_rule", "绝不泄露用户隐私数据", "panel-adopt", expect.objectContaining({ teamId: "teamA" }));
+    expect(store.upsertCore).toHaveBeenCalledWith("strict_rule", "- 既有红线甲\n- 绝不泄露用户隐私数据", "panel-adopt", expect.objectContaining({ teamId: "teamA" }));
     expect(store.upsertValue).not.toHaveBeenCalled();
   });
   it("adopt core_value → upsertValue(growthValueId, content, 0.5, 'panel-adopt', tenant, undefined, 'manual')", async () => {
