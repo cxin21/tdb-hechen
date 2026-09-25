@@ -59,16 +59,16 @@ const API_BASE = `http://127.0.0.1:${PORT}`;
 // 与生产同源（生产 yaml server.apiKey 已随仓入库；归档 JSON 不落 key）
 const ISO = { team_id: "team-2j92u63hre", user_id: "usr-2t8126nehp", agent_id: "agt-2t81sh9zdz" };
 const QUERIES = [
-  "私有部署的考虑",
-  "yaml 编码导致的登录问题",
-  "价值锚方向怎么定",
-  "性能优化的考虑",
-  "测试断言的边界",
-  "记忆的归档和恢复",
-  "记忆召回的排序机制",
-  "信任边界与租户隔离",
-  "归档与遗忘的语义",
-  "结构感知的九通道",
+  "网关重启和安全操作纪律",
+  "密钥与敏感信息管理要求",
+  "记忆是怎么从对话里提取出来的",
+  "召回排序的信号和规则",
+  "灵魂注入的格式与预算",
+  "面板 UI 展示要求",
+  "数据库操作规范",
+  "提案与待裁决机制",
+  "测试与验收纪律",
+  "多租户隔离保障",
 ];
 /** Precision@5 粗门阈值：mean P@5 < 0.6 → 红牌（不阻塞）。阈值与 wiki golden 诚实基线 0.66 同量级。 */
 const P5_GATE_THRESHOLD = 0.6;
@@ -91,6 +91,12 @@ function buildTempYaml(phase, ts) {
     const r = cfg.memory.recall;
     if (r.coreRefBoost === undefined) r.coreRefBoost = r.valueBoost ?? 0.05;
     delete r.valueBoost;
+    // V12-任务2（2026-09-25 何晨拍板）：TDAI_ANCHOR_ON_OVERRIDES（JSON）注入 ON 相位开关
+    // 覆盖（R8/R10 A/B 用）；未设=生产值逐位现状。覆盖值随归档 onOverrides 留痕。
+    if (process.env.TDAI_ANCHOR_ON_OVERRIDES) {
+      const ov = JSON.parse(process.env.TDAI_ANCHOR_ON_OVERRIDES);
+      for (const [k, v] of Object.entries(ov)) cfg.memory.recall[k] = v;
+    }
   }
   // 结伴生关闭（最小化临时网关写入面；召回 bump 属排序链路本身，另行照单）
   cfg.server.port = PORT;
@@ -372,6 +378,7 @@ async function main() {
     configSnapshot: {
       tenSwitchesOn: onSignals,
       tenSwitchesOff: Object.fromEntries(SWITCH_KEYS.map((k) => [k, 0])),
+      onOverrides: process.env.TDAI_ANCHOR_ON_OVERRIDES ?? null,
       embeddingFingerprint: embFingerprint,
       embedding: { baseUrl: emb.baseUrl, model: emb.model, dimensions: emb.dimensions },
       tempGatewayPort: PORT,

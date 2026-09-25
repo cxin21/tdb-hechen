@@ -29,6 +29,8 @@
 
 - **V12-REPRO：红线提案比对域纳入 rejected（拍板执行④）**：对抗复查实证 rejected 同义复提 1 例（比对域不含 rejected）+精确复提被 pid WHERE 静默吞——比对域纳入 rejected（identity-discovery.ts，低相似仍放行=宁漏勿错杀）。RED 1→GREEN 11/11，core vitest **832/832**、tsc 222 持平。配套：pre-gate 存量语义重复簇去重（7 变体置 rejected，备份先行+变更清单落盘，strict_rule pending 117→110）；裁决工作单生成（139 条→135 组）交 Panel 批量裁决。
 
+- **任务 2 召回新信号 A/B 收口（拍板授权执行）**：golden 桶重建（10 主题×事实化对话 75 条 L0→25 条 L1+3 条 reflection，隔离租户 team-2j92u63hre）+labels.jsonl v2（10 query×2-3 正例，产标零检索）+recall-anchor.mjs 加 TDAI_ANCHOR_ON_OVERRIDES env 注入（ON 相位开关覆盖，归档留痕）。三档锚定运行（基线/R8=0.03/R10=0.03）全 OFF determinism PASS、新基线 **P@5=0.917**（线 0.897）。判定：R8/R10 within-run ΔP@5=0.000、仅 1 query 组内位次互换无进出=**零增益证据，维持关断**（D-5 shadow 结论在新语料复现）；runs 三档归档+labels v2+脚本改动入库。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。
