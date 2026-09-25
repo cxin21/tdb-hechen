@@ -745,10 +745,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * PA：自生长调度状态读（interval/语料基线；重启不失忆）。
    * tenant 缺省/default 桶 = 旧键旧行为；非 default 三元组 = per-agent 独立基线。
    */
-  getAnchorGrowthState?(tenant?: CoreTenant): MaybePromise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null }>;
+  getAnchorGrowthState?(tenant?: CoreTenant): MaybePromise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null; lastMaintAt?: string | null }>;
   /** GROW：自生长调度状态写（发现轮次完成后调用）。PA：tenant 语义同 getAnchorGrowthState。
    *  GROW-MAINT：lastAttemptAt/lastAdoptedAt 可选——冷却分级（0 采纳 1h 短冷却 / 有采纳 intervalHours）。 */
-  setAnchorGrowthState?(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string }, tenant?: CoreTenant): MaybePromise<void>;
+  setAnchorGrowthState?(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string; lastMaintAt?: string }, tenant?: CoreTenant): MaybePromise<void>;
   /** SOUL：身份自发现状态（identity_* 前缀键族，与锚状态独立） */
   getIdentityDiscoveryState?(tenant?: CoreTenant): MaybePromise<{ lastAttemptAt: string | null; lastCorpusCount: number | null }>;
   setIdentityDiscoveryState?(state: { lastAttemptAt: string; lastCorpusCount: number }, tenant?: CoreTenant): MaybePromise<void>;

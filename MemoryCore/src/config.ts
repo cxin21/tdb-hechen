@@ -294,6 +294,9 @@ export interface MemoryCoreMemoryConfig {
     maxPerPass: number;
     maxTotal: number;
     intervalHours: number;
+    /** V10-MAINT-DECOUPLE：维护面独立调度节奏小时数（0=每 tick；clamp 0..168，缺省 6）。 */
+    maintainIntervalHours: number;
+
     /** DS-SOUL-MEMORY-002 P2：人物锚池（spec §2.6 双池；enabled 缺省 false=逐位现状）。 */
     person: {
       enabled: boolean;
@@ -981,6 +984,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         maxPerPass: clamp("maxPerPass", 2, 1, 10),
         maxTotal: clamp("maxTotal", 15, 1, 100),
         intervalHours: clamp("intervalHours", 24, 1, 24 * 30),
+        maintainIntervalHours: clamp("maintainIntervalHours", 6, 0, 24 * 7),
         person: {
           enabled: bool(pg, "enabled") ?? false,
           minEvidence: clampP("minEvidence", 5, 1, 50),

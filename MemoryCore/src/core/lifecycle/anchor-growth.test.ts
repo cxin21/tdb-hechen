@@ -42,7 +42,7 @@ function makeStore(opts: {
   rows?: unknown[];
   anyState?: AnyRow[];
   active?: AnyRow[];
-  growthState?: { lastDiscoveryAt: string | null; lastCorpusCount: number | null };
+  growthState?: { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastMaintAt?: string | null };
 } = {}) {
   const setGrowth = vi.fn();
   return {
@@ -83,20 +83,22 @@ describe("runAnchorGrowth 触发双门", () => {
     expect(res).toMatchObject({ ran: false, reason: "no-llm" });
   });
 
-  it("interval 未到（上次发现 23h 前 < 24h）→ 不跑；语料/LLM 零触碰", async () => {
+  it("interval 未到（上次发现 23h 前 < 24h）→ 采纳不跑、维护未到期跳过；LLM 零触碰（语料计数预查=调度只读）", async () => {
     const twentyThreeHAgo = new Date(NOW.getTime() - 23 * 3600_000).toISOString();
-    const store = makeStore({ rows: corpusFor("增量对账", 9), growthState: { lastDiscoveryAt: twentyThreeHAgo, lastCorpusCount: 9 } });
+    const store = makeStore({ rows: corpusFor("增量对账", 9), growthState: { lastDiscoveryAt: twentyThreeHAgo, lastCorpusCount: 9, lastMaintAt: NOW.toISOString() } });
     const runner = makeRunner("[]");
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
     expect(res).toMatchObject({ ran: false, reason: "interval" });
     expect(runner.calls).toHaveLength(0);
     expect(store.setAnchorGrowthState).not.toHaveBeenCalled();
-    expect(store.queryL1Records).not.toHaveBeenCalled();
+    // V10-MAINT-DECOUPLE：维护调度需 corpusCount 预查（只读计数触碰，零 LLM 零写）——
+    // 旧行为「语料零触碰」随维护面独立调度语义更新。
+    expect(store.queryL1Records).toHaveBeenCalledTimes(1);
   });
 
   it("interval 已到但语料无新增（count ≤ 基线）→ 不跑；lastDiscoveryAt 不被消费（下 tick 重查）", async () => {
     const twentyFiveHAgo = new Date(NOW.getTime() - 25 * 3600_000).toISOString();
-    const state = { lastDiscoveryAt: twentyFiveHAgo, lastCorpusCount: 9 };
+    const state = { lastDiscoveryAt: twentyFiveHAgo, lastCorpusCount: 9, lastMaintAt: NOW.toISOString() };
     const store = makeStore({ rows: corpusFor("增量对账", 9), growthState: state });
     const runner = makeRunner("[]");
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
@@ -108,7 +110,7 @@ describe("runAnchorGrowth 触发双门", () => {
   it("interval 已到且语料新增 → 跑；状态持久化（lastDiscoveryAt=now / lastCorpusCount=当前条数）", async () => {
     const twentyFiveHAgo = new Date(NOW.getTime() - 25 * 3600_000).toISOString();
     const rows = corpusFor("增量对账", 9);
-    const store = makeStore({ rows, growthState: { lastDiscoveryAt: twentyFiveHAgo, lastCorpusCount: 8 } });
+    const store = makeStore({ rows, growthState: { lastDiscoveryAt: twentyFiveHAgo, lastCorpusCount: 8, lastMaintAt: NOW.toISOString() } });
     const runner = makeRunner("[]");
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
     expect(res.ran).toBe(true);
@@ -297,7 +299,7 @@ describe("runAnchorGrowth 杂项裁定", () => {
 describe("runAnchorGrowth 自维护与冷却分级（GROW-MAINT）", () => {
   /** 可回写状态的 store：setAnchorGrowthState 合并进 fixture（跨轮冷却测试需要）。 */
   function persistentStore(rows: unknown[], anyState: AnyRow[] = []) {
-    const state = { lastDiscoveryAt: null as string | null, lastCorpusCount: null as number | null, lastAttemptAt: null as string | null, lastAdoptedAt: null as string | null };
+    const state = { lastDiscoveryAt: null as string | null, lastCorpusCount: null as number | null, lastAttemptAt: null as string | null, lastAdoptedAt: null as string | null, lastMaintAt: NOW.toISOString() };
     const store = makeStore({ rows, anyState, growthState: state });
     (store.setAnchorGrowthState as unknown as { mockImplementation: (f: (s: Record<string, unknown>) => Promise<void>) => void })
       .mockImplementation(async (s: Record<string, unknown>) => { Object.assign(state, s); });

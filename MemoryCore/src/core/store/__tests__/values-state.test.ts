@@ -258,16 +258,16 @@ describe("GROW anchor_growth_state kv 持久化", () => {
     const initRes = store.init();
     if (store.isDegraded()) throw new Error(`临时库初始化降级（环境问题）：${initRes.reason}`);
     try {
-      expect(store.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: null, lastCorpusCount: null, lastAttemptAt: null, lastAdoptedAt: null });
+      expect(store.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: null, lastCorpusCount: null, lastAttemptAt: null, lastAdoptedAt: null, lastMaintAt: null });
       store.setAnchorGrowthState({ lastDiscoveryAt: "2026-09-10T08:00:00.000Z", lastCorpusCount: 42 });
-      expect(store.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: "2026-09-10T08:00:00.000Z", lastCorpusCount: 42, lastAttemptAt: null, lastAdoptedAt: null });
+      expect(store.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: "2026-09-10T08:00:00.000Z", lastCorpusCount: 42, lastAttemptAt: null, lastAdoptedAt: null, lastMaintAt: null });
     } finally {
       try { store.close(); } catch { /* 无害 */ }
     }
     const store2 = new VectorStore(dbPath, 0);
     store2.init();
     try {
-      expect(store2.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: "2026-09-10T08:00:00.000Z", lastCorpusCount: 42, lastAttemptAt: null, lastAdoptedAt: null });
+      expect(store2.getAnchorGrowthState()).toEqual({ lastDiscoveryAt: "2026-09-10T08:00:00.000Z", lastCorpusCount: 42, lastAttemptAt: null, lastAdoptedAt: null, lastMaintAt: null });
     } finally { cleanup(store2, dir); }
   });
 });

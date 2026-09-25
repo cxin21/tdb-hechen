@@ -166,7 +166,7 @@ describe("runAnchorGrowth per-agent 化（PA）", () => {
       listValuesAnyState: vi.fn(async () => []),
       upsertValue: vi.fn(async () => true),
       retireValue: vi.fn(async () => true),
-      getAnchorGrowthState: vi.fn(async () => ({ lastDiscoveryAt: null, lastCorpusCount: null })),
+      getAnchorGrowthState: vi.fn(async () => ({ lastDiscoveryAt: null, lastCorpusCount: null, lastMaintAt: NOW.toISOString() })),
       setAnchorGrowthState: vi.fn(),
     };
     const runner = makeRunner("[]");

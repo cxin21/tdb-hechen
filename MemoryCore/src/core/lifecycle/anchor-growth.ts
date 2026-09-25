@@ -68,6 +68,8 @@ export interface AnchorDiscoveryConfig {
   maxPerPass: number;
   maxTotal: number;
   intervalHours: number;
+  /** V10-MAINT-DECOUPLE：维护面（证据重算+QUOTA 回归+T2）独立调度节奏小时数；0=每 tick（缺省 6）。 */
+  maintainIntervalHours: number;
   person: AnchorDiscoveryPersonConfig;
   /** P3：品格锚池（spike 定案：聚合源=self_identity 槽事实；enabled 缺省 false=逐位现状）。 */
   character: { enabled: boolean; minEvidence: number; maxPerPass: number; maxTotal: number };
@@ -81,6 +83,7 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   maxPerPass: 2,
   maxTotal: 15,
   intervalHours: 24,
+  maintainIntervalHours: 6,
   // P2：人物池缺省关闭=逐位现状（config-first 铁律）；yaml 显式开启后生效。
   person: { enabled: false, minEvidence: 5, maxPerPass: 1, maxTotal: 8 },
   // P3：品格池缺省关闭=逐位现状（config-first 铁律）；聚合源=self_identity 槽事实（spike 定案）。
@@ -92,9 +95,9 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
 export const ANCHOR_GROWTH_TENANT: CoreTenant = { teamId: "default", userId: "default", agentId: "default" };
 
 /** GROW-MAINT：自生长状态读形状（lastAttemptAt/lastAdoptedAt 新增可选；存量行缺省 undefined）。 */
-export type AnchorGrowthStateRead = { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null };
+export type AnchorGrowthStateRead = { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null; lastMaintAt?: string | null };
 /** GROW-MAINT：自生长状态写形状（lastAdoptedAt 仅在有采纳轮写入）。 */
-export type AnchorGrowthStateWrite = { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string };
+export type AnchorGrowthStateWrite = { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string; lastMaintAt?: string };
 
 /** GROW-MAINT：0 采纳轮短冷却——语料增长期发现节奏跟随语料（最密 1h 一试），防 10min tick 空烧 LLM。 */
 const ATTEMPT_COOLDOWN_MS = 3600_000;
@@ -282,12 +285,8 @@ export async function runAnchorGrowth(deps: {
         const nowMs = now().getTime();
         // 1a 尝试冷却：上次跑过 LLM 不足 ATTEMPT_COOLDOWN → 不跑（最密 1h 一试）
         const lastAttempt = state.lastAttemptAt ? Date.parse(state.lastAttemptAt) : NaN;
-        if (Number.isFinite(lastAttempt) && nowMs - lastAttempt < ATTEMPT_COOLDOWN_MS) {
-          // v4#7：拦截静默 debug 化——"为什么锚没长出来"不再需要插桩考古
-          logger?.debug?.(`[anchor-growth] gate block agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} reason=attempt-cooldown lastAttempt=${state.lastAttemptAt} now=${new Date(nowMs).toISOString()}`);
-          firstBlockReason ??= "attempt-cooldown";
-          continue;
-        }
+        const attemptBlocked = Number.isFinite(lastAttempt) && nowMs - lastAttempt < ATTEMPT_COOLDOWN_MS;
+        //（attempt 拦截并入 V10-MAINT-DECOUPLE 统一门——维护面不再被采纳冷却连带跳过）
         // 1b 采纳冷却：上次「有采纳」不足 intervalHours → 不跑。
         //    兼容映射：存量状态只有 lastDiscoveryAt（旧语义=每次消费轮都写）→ 视作
         //    lastAdoptedAt（保守 24h，与旧行为等价）；新写入双字段后语义精确。
@@ -297,27 +296,31 @@ export async function runAnchorGrowth(deps: {
         // 新租户永远只有一次机会（ev11 实证：苏教授锚 ev=3 被 24h 门锁死永无第二次）。
         const lastAdoptedRaw = state.lastAdoptedAt ?? (state.lastAttemptAt != null ? undefined : state.lastDiscoveryAt);
         const lastAdopted = lastAdoptedRaw ? Date.parse(lastAdoptedRaw) : NaN;
-        if (Number.isFinite(lastAdopted) && nowMs - lastAdopted < cfg.intervalHours * 3600_000) {
-          // v4#7：拦截静默 debug 化（同 1a）
-          logger?.debug?.(`[anchor-growth] gate block agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} reason=interval lastAdopted=${String(lastAdoptedRaw)} intervalHours=${cfg.intervalHours} now=${new Date(nowMs).toISOString()}`);
-          firstBlockReason ??= "interval";
-          continue;
-        }
+        const intervalBlocked = Number.isFinite(lastAdopted) && nowMs - lastAdopted < cfg.intervalHours * 3600_000;
+        //（interval 拦截同上——并入统一门）
         // ── 门 2（per-agent）：语料有新增（该桶条数 > 上轮基线；首轮无基线 → 放行建立基线）──
         // P2：cast 交集扩展后 TS 对 resolveCorpusCount 结构参数失守（TS2345）——局部结构化 cast，零行为。
         const corpusCount = await resolveCorpusCount(
           store as unknown as { countL1?: (filter?: unknown) => Promise<number> | number; queryL1Records: (filter?: unknown) => Promise<unknown[]> | unknown[] },
           tenant,
         );
-        if (state.lastCorpusCount !== null && corpusCount <= state.lastCorpusCount) {
-          firstBlockReason ??= "no-new-corpus";
+        const corpusStale = state.lastCorpusCount !== null && corpusCount <= state.lastCorpusCount;
+        // ── V10-MAINT-DECOUPLE（2026-09-25 何晨拍板「全部按建议」）：维护面与采纳面解耦 ──
+        // 旧行为：四门（attempt 1h/interval 24h/语料增量/空语料）任一拦截 → continue 跳过
+        // 整个 per-agent 轮次 → GROW-MAINT+GROW-QUOTA 被采纳冷却饿死（主租户 theme active
+        // 17/16 超 maxTotal 无自愈，journal「gate block reason=interval」实锚；v10 会话 A
+        // 深查唯一 ⚠️）。新行为：维护面（证据重算+QUOTA 回归+T2）按 maintainIntervalHours
+        // 独立调度；采纳面四门节奏不变（单一源：维护实现仍只有一份，未复制状态机）。
+        const lastMaint = state.lastMaintAt ? Date.parse(state.lastMaintAt) : NaN;
+        const doMaint = corpusCount > 0
+          && (!Number.isFinite(lastMaint) || nowMs - lastMaint >= Math.max(0, cfg.maintainIntervalHours) * 3600_000);
+        const doAdoption = !attemptBlocked && !intervalBlocked && !corpusStale && corpusCount > 0;
+        if (!doMaint && !doAdoption) {
+          firstBlockReason ??= attemptBlocked ? "attempt-cooldown" : intervalBlocked ? "interval" : corpusStale ? "no-new-corpus" : "no-corpus";
+          logger?.debug?.(`[anchor-growth] gate block agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} reason=${firstBlockReason} now=${new Date(nowMs).toISOString()}`);
           continue;
         }
-        // ── 门 3（per-agent）：该桶无语料 → 短路（宁缺毋滥，零 LLM 成本）──
-        if (corpusCount === 0) {
-          firstBlockReason ??= "no-corpus";
-          continue;
-        }
+
         // ── 发现（该 agent 自己的记忆；DISC 导出复用，禁第二份）────────
         const rows = ((await Promise.resolve(store.queryL1Records(tenant as never))) ?? []) as unknown[];
         const sample = selectSampleRows(rows as never, DISCOVER_SAMPLE_CAP);
@@ -340,6 +343,8 @@ export async function runAnchorGrowth(deps: {
         let retiredA = 0;
         let reweightedA = 0;
         let quotaRetiredA = 0; // GROW-QUOTA：名额回归守卫退场数（并入 retired 计数）
+        let anyState = anyState0; // V10-MAINT-DECOUPLE：快照变量提升（维护/采纳双路径共享）
+        if (doMaint) {
         for (const a of anyState0) {
           if (a.state !== "active" || a.origin !== "auto" || a.created_by !== "auto-growth") continue;
           // P2：person 行分叉 personEv 口径（label+alias）；person 池关闭时不参与维护
@@ -398,7 +403,7 @@ export async function runAnchorGrowth(deps: {
             logger?.warn?.(`[anchor-growth] character tension T2 failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           }
         }
-        const anyState = retiredA + reweightedA > 0
+        anyState = retiredA + reweightedA > 0
           ? (((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
           : anyState0;
         // ── GROW-QUOTA（名额回归守卫，REG-REMAINING-004 #9）：maxTotal 的第一性目的 =
@@ -441,12 +446,15 @@ export async function runAnchorGrowth(deps: {
           await quotaEvict(characterActive, cfg.character.maxTotal, () => characterEvidenceCount(currentSelfFacts, corpus), "character");
         }
         retired += quotaRetiredA; // GROW-QUOTA 退场并入（守卫块之后汇总）
+        } // V10-MAINT-DECOUPLE：if (doMaint) 收尾
         // GROW-MAINT v2（SOP 2026-09-17 修复）：守卫退场后刷新快照——dedup/名额/挤出必须
         // 基于退场后的真实状态（陈旧快照把已退场锚当 active：free 低估 + 挤出打已退场空炮）。
         // retired 行仍带 label，全态 dedup 集不变（veto/retire 永不重提语义不受影响）。
         const anyState2 = quotaRetiredA > 0
           ? (((await Promise.resolve(store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
           : anyState;
+        let adoptedThisAgent = 0;
+        if (doAdoption) {
         // P0-F3（spec §2.6 复合键）：去重清单收窄 theme 池——人物/品格同名不再误挡主题提案；
         // 同类型全态（veto/retired 永不重提）语义保留；person/character 池各有独立去重清单。
         const existingLabels = anyState2
@@ -480,7 +488,7 @@ export async function runAnchorGrowth(deps: {
         const displaceable = autoActiveNonPinned
           .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus) }))
           .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
-        let adoptedThisAgent = 0;
+        //（adoptedThisAgent 声明上移至 doAdoption 块外——V10-MAINT-DECOUPLE）
         for (const c of candidates) {
           const candidateStrength = suggestAnchorWeight(c.evidenceCount, corpus.length) * c.evidenceCount;
           let adoptedThis = false;
@@ -651,6 +659,7 @@ export async function runAnchorGrowth(deps: {
             }
           }
         }
+        } // V10-MAINT-DECOUPLE：if (doAdoption) 收尾（identityMaintain/derive 双路径共享）
         // ── P2：identity GROW-MAINT（F15 身份分支；F20 红线——只警告永不自动退场）──────
         if (cfg.identityMaintain?.enabled) {
           // A-7b：支撑映射（identity 状态 kv）+ 活跃记录集 → 确定性重验；滑窗兜底不变。
@@ -673,15 +682,18 @@ export async function runAnchorGrowth(deps: {
               logger?.warn?.(`[anchor-growth] valence derive (adopt) failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
             });
         }
-        // ── 消费轮次（per-agent；LLM 成功即持久化该 agent 的基线，0 候选也消费）──
+        // ── 消费轮次（per-agent；V10-MAINT-DECOUPLE：采纳轮写全量状态，纯维护轮保留
+        // 采纳门状态只刷 lastMaintAt——防 lastDiscoveryAt/lastAttemptAt 被维护轮污染）──
         await writeState({
-          lastDiscoveryAt: new Date(nowMs).toISOString(),
-          lastCorpusCount: corpusCount,
-          lastAttemptAt: new Date(nowMs).toISOString(),
+          lastDiscoveryAt: state.lastDiscoveryAt ?? new Date(nowMs).toISOString(),
+          lastCorpusCount: state.lastCorpusCount ?? corpusCount,
+          ...(state.lastAttemptAt ? { lastAttemptAt: state.lastAttemptAt } : {}),
+          ...(doMaint ? { lastMaintAt: new Date(nowMs).toISOString() } : {}),
+          ...(doAdoption ? { lastDiscoveryAt: new Date(nowMs).toISOString(), lastCorpusCount: corpusCount, lastAttemptAt: new Date(nowMs).toISOString() } : {}),
           ...(adoptedThisAgent > 0 ? { lastAdoptedAt: new Date(nowMs).toISOString() } : {}),
         });
         ranAny = true;
-        logger?.debug?.(`[anchor-growth] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} candidates=${candidates.length} retired=${retiredA} reweighted=${reweightedA}`);
+        logger?.debug?.(`[anchor-growth] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} maint=${doMaint ? "run" : "skip"} adoption=${doAdoption ? "run" : "skip"} retired=${retiredA} reweighted=${reweightedA} adoptedThis=${adoptedThisAgent}`);
       } catch (err) {
         // per-agent 容错：单个 agent 失败不阻断其它 agent（loud warn，继续下一个）
         logger?.warn?.(`[anchor-growth] agent ${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} failed: ${err instanceof Error ? err.message : String(err)}`);

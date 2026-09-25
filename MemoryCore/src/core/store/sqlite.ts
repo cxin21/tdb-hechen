@@ -2882,14 +2882,14 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
-  getAnchorGrowthState(tenant?: CoreTenant): { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null } {
+  getAnchorGrowthState(tenant?: CoreTenant): { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null; lastMaintAt?: string | null } {
     try {
       const keys = this.growthStateKeys(tenant);
-      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?, ?)").all(keys.at, keys.count, keys.attempt, keys.adopted) as unknown as Array<{ k: string; v: string }>;
+      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?, ?, ?)").all(keys.at, keys.count, keys.attempt, keys.adopted, keys.maint) as unknown as Array<{ k: string; v: string }>;
       const map = new Map(rows.map((r) => [r.k, r.v]));
       const countRaw = map.get(keys.count);
       const count = countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
-      return { lastDiscoveryAt: map.get(keys.at) ?? null, lastCorpusCount: count, lastAttemptAt: map.get(keys.attempt) ?? null, lastAdoptedAt: map.get(keys.adopted) ?? null };
+      return { lastDiscoveryAt: map.get(keys.at) ?? null, lastCorpusCount: count, lastAttemptAt: map.get(keys.attempt) ?? null, lastAdoptedAt: map.get(keys.adopted) ?? null, lastMaintAt: map.get(keys.maint) ?? null };
     } catch (err) {
       this.logger?.warn?.(`${TAG} [anchor_growth] getAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`);
       return { lastDiscoveryAt: null, lastCorpusCount: null };
@@ -2898,19 +2898,19 @@ export class VectorStore implements IMemoryStore {
 
   /** PA：growth state kv 键——default/缺省 = 旧键（兼容存量状态）；非 default 三元组 = per-tenant 后缀键。
    *  后缀用 JSON.stringify 编码三元组（段内含分隔符也不碰撞，同 listValues cacheKey 的 S7 M-6 教训）。 */
-  private growthStateKeys(tenant?: CoreTenant): { at: string; count: string; attempt: string; adopted: string } {
-    if (!tenant) return { at: "last_discovery_at", count: "last_corpus_count", attempt: "last_attempt_at", adopted: "last_adopted_at" };
+  private growthStateKeys(tenant?: CoreTenant): { at: string; count: string; attempt: string; adopted: string; maint: string } {
+    if (!tenant) return { at: "last_discovery_at", count: "last_corpus_count", attempt: "last_attempt_at", adopted: "last_adopted_at", maint: "last_maint_at" };
     const t = normalizeCoreTenant(tenant);
     if (t.teamId === "default" && t.userId === "default" && t.agentId === "default") {
-      return { at: "last_discovery_at", count: "last_corpus_count", attempt: "last_attempt_at", adopted: "last_adopted_at" };
+      return { at: "last_discovery_at", count: "last_corpus_count", attempt: "last_attempt_at", adopted: "last_adopted_at", maint: "last_maint_at" };
     }
     const suffix = JSON.stringify([t.teamId, t.userId, t.agentId]);
-    return { at: `last_discovery_at:${suffix}`, count: `last_corpus_count:${suffix}`, attempt: `last_attempt_at:${suffix}`, adopted: `last_adopted_at:${suffix}` };
+    return { at: `last_discovery_at:${suffix}`, count: `last_corpus_count:${suffix}`, attempt: `last_attempt_at:${suffix}`, adopted: `last_adopted_at:${suffix}`, maint: `last_maint_at:${suffix}` };
   }
 
   /** GROW：自生长调度状态写（发现轮次完成后调用；失败重抛——由自生长模块整体 catch）。
    *  PA：tenant 语义同 getAnchorGrowthState（default/缺省旧键，非 default per-tenant 键）。 */
-  setAnchorGrowthState(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string }, tenant?: CoreTenant): void {
+  setAnchorGrowthState(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string; lastMaintAt?: string }, tenant?: CoreTenant): void {
     try {
       const keys = this.growthStateKeys(tenant);
       this.db.prepare(
@@ -2928,6 +2928,11 @@ export class VectorStore implements IMemoryStore {
         this.db.prepare(
           "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
         ).run(keys.adopted, state.lastAdoptedAt);
+      }
+      if (state.lastMaintAt !== undefined) {
+        this.db.prepare(
+          "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        ).run(keys.maint, state.lastMaintAt);
       }
     } catch (err) {
       this.logger?.warn?.(`${TAG} [anchor_growth] setAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`);
