@@ -37,6 +37,8 @@
 
 **提案链端到端闭环首跑验证（2026-09-25 23:54，何晨「提案方面任务全部都完成了么」对账补口）**：adopted=0 实锚=采纳→注入链从未实跑。测试租户（ev17-ev17a）闭环验证 PASS：pending 提案 pd-53df411249dc6f98（strict_rule 体检信息标注）经 Panel 同款 API 采纳 → upsertCore 落 strict_rule 槽（source=panel-adopt、version=1）→ soulVersion 刷新 → /v3/recall 注入块 [strict_rule] 行在场；幂等守卫验证（二次裁决 404 正确拒绝）；adopted 0→1。顺带实锚观察项：「提案先入队、槽后直写」时序窗口会产生与槽重复的 pending 行（本例 1 例），处置候选=定期 pending×slot 交叉去重任务（与 theme NO_DESC 策略同批呈报）。**剩余唯一未完成=138 条 pending 裁决（何晨本人行使，工作单 135 组已交付）**。
 
+**V12-PROVIDER 全链修复收口（2026-09-26 05:20）**：两层修复落地。①handler.ts:910 注入门槛 conversationId→sessionKey（已 commit）；②handler.ts _emptyToolsSubagent 加 conversationId 前置条件（自定义 provider 无 tools 数组不再误判 spawn subagent）。活体：injectedSkipped=**false** 实锚（journal injection-debug），Proxy 重启生效。
+
 **V12-PROVIDER 注入门槛修复+深层根因移交（2026-09-26 02:15）**：何晨报 DSH 更新后 llm-pi-ai 路由注入跳过。取证：①x-deepseek-harness-session-id 仅 dsh-llm-deepseek 适配器注入（grep 实锚），llm-pi-ai（openai-completions）不带→conversationId=null→injectedSkipped=true。②修复=handler.ts:910 注入门槛从 conversationId 放宽为 sessionKey（resolveSessionKey fallback 链），proxy 重启生效，活体 sessionKey 已解析。③**深层根因移交**：session-init 状态机（handler.ts:1045 bypass/:1174 error）仍将 injectedSkipped 设回 true——bypass 触发条件待取证（handleSessionInit 的 initResult.bypassed），需 RED 先行修。④Proxy /dsh 路由已加 /messages 端点（handleAnthropicMessages）。⑤core_value 采纳转换层设计呈报（29 条全拒待重采）。
 
 **任务 2 收口（2026-09-25 22:56，拍板授权执行）**：golden 桶重建（75 条 L0 播种→25 条 L1+3 reflection，提取管线拥堵+300s 超时重试如实经历）→labels.jsonl v2（10 query 重建，旧 09-12 标注随旧语料失效留档 git）→recall-anchor.mjs env 注入补丁→三档运行（基线/R8/R10）全 OFF determinism PASS、**新基线 P@5=0.917（验收线 0.897）**；判定=R8/R10 within-run Δ=0.000（1 query 组内互换无进出）→**维持关断**，D-5 shadow 结论复现；语料漂移 25→28 按纪律改用 within-run 判据（脚本原生 off/off2/on 同运行对照）；runs 2026-09-25T15-05/15-51/16-06 三档归档。任务 7 解锁（方案另行呈报）。

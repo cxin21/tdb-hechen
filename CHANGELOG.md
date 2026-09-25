@@ -33,6 +33,8 @@
 
 - **V12-ADJ：pending 采纳 strict_rule 合并语义（P0 缺陷修复）**：原整槽替换使 5 次采纳后槽仅剩最后一条、原 3 条红线被挤出注入（生产实锚）。修复=pending-adopt-merge.ts 纯函数（既有行全保留+采纳行追加+行体去重+'- ' 前缀规范化）+router 采纳分支接入（escape 保持 P-B 咽喉语义）。RED（模块缺失加载失败+旧语义断言红）→GREEN 4/4+pending-routes 集成断言更新；core vitest **836/836**、tsc 222 持平。
 
+- **V12-PROVIDER：注入门槛修复+emptyToolsSubagent 限定**（自定义 provider 路由注入跳过修复）。根因两层：①handler.ts:910 injectedSkipped 依赖 conversationId（=DSH 专有 header，仅 dsh-llm-deepseek 适配器注入）→ 修复=改用 sessionKey（resolveSessionKey fallback 链）；②_emptyToolsSubagent 在 tools 数组缺失时误判 spawn subagent → 修复=加 conversationId 前置条件（仅 DSH 客户端才判子 agent）。活体 injectedSkipped=false 实锚。core Proxy 重启生效。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。

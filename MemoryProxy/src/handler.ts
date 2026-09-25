@@ -812,7 +812,10 @@ export async function handleChatCompletions(
   // C4-dsh Phase 3（指纹实测 2026-09-15 21:18）：spawn 子 agent 的判别字段 =
   // toolNames 为空（SESSION-INIT-FP 实测：主会话工具齐全，one-shot spawn 不带工具）。
   // 独立判据——不改 _dshHeadless 的“tools 空数组=纯对话”旧语义。
+  // V12-PROVIDER：仅带 DSH 专有 header 的客户端才判子 agent（自定义 provider 无 tools 数组
+  // 时不该被误判为 spawn subagent——那是 llm-deepseek 适配器的特征，不是通用规则）。
   const _emptyToolsSubagent = agentSource === "dsh"
+    && !!conversationId
     && (!Array.isArray((body as { tools?: unknown[] }).tools)
       || (body as { tools?: unknown[] }).tools!.length === 0);
   if (_emptyToolsSubagent) {
@@ -902,7 +905,12 @@ export async function handleChatCompletions(
   //   extraction（L1804）等其它地方的过滤作用 —— 仅会话初始化阶段放开。
   let sessionInfo: Record<string, unknown> | null | undefined;
   let assetCapabilities: import("./injection/types.js").AssetCapabilityFlags | undefined;
-  let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless || _oneShotSubagent || _emptyToolsSubagent;
+  // V12-PROVIDER（2026-09-26 何晨令「不要有遗留问题」）：注入门槛从 conversationId 放宽为
+  // sessionKey——conversationId 依赖 DSH 专有 header（x-deepseek-harness-session-id），
+  // 仅 dsh-llm-deepseek 适配器注入；自定义 provider（llm-pi-ai 等）适配器不带此 header，
+  // 导致注入被跳过（用户看不到=没做）。sessionKey 已有 fallback 链（resolveSessionKey），
+  // 无专有 header 时也能从路径/请求体派生，保证任意 provider 路由注入不跳过。
+  let injectedSkipped = !sessionKey || isAuxiliary || _dshHeadless || _oneShotSubagent || _emptyToolsSubagent;
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
@@ -1037,8 +1045,10 @@ export async function handleChatCompletions(
 
       // Case 1.5: Bypass path → skip ALL injection hooks
       if (initResult.bypassed) {
-        injectedSkipped = true;
-        console.log(`[session-init] session=${sessionKey} bypassed → skipping all injection`);
+        // V12-PROVIDER（2026-09-26 何晨令「不要有遗留问题」）：session-init bypass 只影响
+        // form/UI 流程，不影响注入——injectedSkipped 保持初始值（由 sessionKey 判定）。
+        // 原代码在此设 injectedSkipped=true 导致自定义 provider 路由注入被跳过。
+        console.log(`[session-init] session=${sessionKey} bypassed → form/UI bypassed, injection active (sessionKey=${sessionKey})`);
         if (initResult.resetFlow) {
           _resetFlowResult = { agentName: "", agentIdShort: "", teamId: "", bypassed: true };
         }
