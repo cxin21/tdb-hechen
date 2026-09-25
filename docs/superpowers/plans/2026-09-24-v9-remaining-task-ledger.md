@@ -23,7 +23,9 @@
 
 **拍板执行 ①（2026-09-25 18:09，V10-MAINT-DECOUPLE）**：何晨「全部按建议」整批授权。commit **335e212**（9 files +205/−60：anchor-growth 门布尔化+统一门/maintainIntervalHours 配置/types+sqlite lastMaintAt 新 kv 键/anchor-maint-decouple.test.ts 4 用例+既有 9 处断言随新语义更新）——RED 3 failed→GREEN 4/4·core vitest **830/830**（826+4）·tsc 222 持平·密扫 0。yaml maintainIntervalHours: 6 显式落盘+重启；**活体自愈 PASS**=重启首 tick 全租户 maint=run adoption=skip、retired=3 reweighted=3、主双桶 theme active **17/16→15/15** 名额精确回归（journal maint=run adoption=skip 实锚）。
 
-**拍板包（剩余：②personDesc 回填 ③任务 2 执行 ④UI 微项 ⑤快答件）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
+**拍板执行 ②（2026-09-25 18:15，锚 description 数据面回填）**：备份先行（/tmp/core-values-backup-1790331315878.json 115 行）→ 范围=主 team 双桶 person×2（何晨/用户）+character×2（自驱/取证先行，授权口径；theme 新锚 NO_DESC 属「锚行 description 未来写入策略」gated 登记不越权）→ 手法=直接 SQL JSON 合并更新（取证定责：upsertValue 为 REPLACE 语义、attrs_json 仅由入参三键重建，直接调用会抹 character source/facts）→ 逐锚写读回 **3/4 OK**；自驱 SKIP=抽象品格词零字面证据（attrs.facts 空+L1 无字面命中）宁缺毋滥不手造语义。**活体 PASS**=注入行「何晨(同事·趋近)：…」「取证先行(趋近·w0.44)：用户要求且AI已承诺…」点亮+soulVersion sv-30ba28ed→sv-d3379c50（锚数据变化→指纹刷新=设计意图合法预期）。
+
+**拍板包（剩余：③任务 2 执行 ④UI 微项 ⑤快答件）**：①QUOTA 守卫/采纳解耦 ②person/character description 回填 ③任务 2 执行 ④UI 微项 G3→G4→窄屏→提案卡 ⑤A2 追认/V2 不做/C 第二批确认。
 
 ## 一、灵魂演化层（最高优先）
 

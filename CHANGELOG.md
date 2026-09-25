@@ -21,6 +21,8 @@
 
 - **GROW-QUOTA 守卫被采纳冷却饿死**（335e212）：`runAnchorGrowth` 四门改布尔化+统一门——维护面（证据重算+名额回归+品格张力 T2）按 `anchorDiscovery.maintainIntervalHours`（缺省 6h，clamp 0..168）独立调度并持久化 `lastMaintAt`（新 kv 键 `last_maint_at`，per-tenant 后缀同族）；采纳面四门节奏不变，纯维护轮保留采纳门状态。活体自愈=重启首 tick 主双桶 theme active 17/16→15/15（retired=3）。新增 `anchor-maint-decouple.test.ts` 4 用例（RED 3 failed→GREEN 4/4），core vitest **830/830**、tsc 222 持平。
 
+- **锚 description 数据面回填（拍板执行②）**：主 team 双桶 person×2+character×2 按「top-1 支撑记忆首句≤60 字」确定性手法回填（备份先行+逐锚写读回 3/4；自驱零字面证据 SKIP=宁缺毋滥；直接 SQL JSON 合并——upsertValue 为 REPLACE 语义会抹 character source/facts，取证定责）。活体=「何晨(同事·趋近)：…」「取证先行(趋近·w0.44)：…」注入行点亮+soulVersion 刷新。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。
