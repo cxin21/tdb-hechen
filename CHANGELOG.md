@@ -27,6 +27,8 @@
 
 - **人物专卡 description 展示行（自检实锤缺口闭合）**：自检取证发现 PersonSection 对 description 零引用（注入行有/专卡无=三层缺口）。parsePersonAttrs+PersonRow 透传 description，专卡行内展示（2 行 clamp+title 全文，宁缺毋滥）。RED 1→GREEN 9/9，panel vitest **145/145**、web tsc 存量 2 持平、build+bundle 断言、活体主桶何晨/comfyui 用户双桶点亮。
 
+- **V12-REPRO：红线提案比对域纳入 rejected（拍板执行④）**：对抗复查实证 rejected 同义复提 1 例（比对域不含 rejected）+精确复提被 pid WHERE 静默吞——比对域纳入 rejected（identity-discovery.ts，低相似仍放行=宁漏勿错杀）。RED 1→GREEN 11/11，core vitest **832/832**、tsc 222 持平。配套：pre-gate 存量语义重复簇去重（7 变体置 rejected，备份先行+变更清单落盘，strict_rule pending 117→110）；裁决工作单生成（139 条→135 组）交 Panel 批量裁决。
+
 ### Changed（文档勘误）
 
 - 演化设计 §1.2/§5 勘误（d6c3adf）：M1 仅实现 valence 轴聚合（arousal 轴无消费方裁定不实现）；遗忘闪光灯调制 arousalRetention=0.3 已生产启用（原「仅 valence 轴有消费」表述过时）。

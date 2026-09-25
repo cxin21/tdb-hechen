@@ -259,7 +259,10 @@ export async function runIdentityDiscovery(deps: {
             // V6-任务8 P1：提案语义去重闸门——换措辞重复不再入队（store 层精确守卫挡不住
             // 语义重复；阈值 0.75 生产全行标定，宁漏勿错杀——误杀=真实规则静默丢失，
             // 漏放由 Panel 人工采纳兜底；跳过留痕不计数）。P0 存量清理属数据面另行拍板。
-            const pendingRowsForGate = ((store as { listPendingCore?: (t?: unknown) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant) ?? []).filter((r) => r.state === "pending");
+            // V12-REPRO（2026-09-25 何晨拍板「在当前会话处理完」）：比对域纳入 rejected——被拒红线
+            // 同义复提同样拦截（实证 1 例 TDAI 环境铁律变体 ≥0.75 复提；被拒内容留库可查，
+            // 真有新证据走 core-memory/write 人工通道；低相似仍放行=宁漏勿错杀不变）。
+            const pendingRowsForGate = ((store as { listPendingCore?: (t?: unknown, o?: { includeDecided?: boolean }) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant, { includeDecided: true }) ?? []).filter((r) => r.state === "pending" || r.state === "rejected");
             const redlineExisting = existing.filter((s) => s.slot === "core_value" || s.slot === "strict_rule");
             const dup = findDuplicateProposal(p.content, p.slot, [...pendingRowsForGate, ...redlineExisting]);
             if (dup) {

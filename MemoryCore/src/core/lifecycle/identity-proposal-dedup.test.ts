@@ -134,3 +134,18 @@ describe("P2 上下文注入（prompt 携带 pending 列表，生成层预防）
     expect(prompt).toContain("请提炼身份事实提案。");
   });
 });
+
+describe("V12-REPRO（拍板执行④）：rejected 纳入语义比对域——被拒红线同义复提拦截", () => {
+  it("与 rejected 提案换措辞重复 → 同样不入队（比对域含 rejected）", async () => {
+    const store = makeStoreDedup([], [{ slot: "strict_rule", content: GATE_ROW_A, state: "rejected" }]);
+    const { res } = await runWith(store, [{ slot: "strict_rule", content: GATE_ROW_B, rationale: "r" }]);
+    expect(caps(store)).toHaveLength(0);
+    expect(res.pending).toBe(0);
+  });
+  it("守卫：rejected 但低相似（0.692 同簇）→ 不拦截（宁漏勿错杀不变）", async () => {
+    const store = makeStoreDedup([], [{ slot: "strict_rule", content: GATE_ROW_A, state: "rejected" }]);
+    const { res } = await runWith(store, [{ slot: "strict_rule", content: GATE_ROW_C, rationale: "r" }]);
+    expect(caps(store)).toHaveLength(1);
+    expect(res.pending).toBe(1);
+  });
+});
