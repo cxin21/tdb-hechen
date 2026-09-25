@@ -24,7 +24,7 @@
 
 | 编号 | 任务 | 状态 | 依据 / 缺口 | 下一步 |
 |---|---|---|---|---|
-| 任务5 | F-DUP-1：/v3/conversation/add 入口幂等（同 session+role+content <5min 跳过）+L1 提取合并 | TODO | 设计全文在技能 td-agemem-fdup1-l0-dedup；幂等窗口/键粒度/连发边界三问先呈拍板；存量 L0 清理含 vec/FTS 一致性方案随设计呈报 | RED 先行 |
+| 任务5 | F-DUP-1：/v3/conversation/add 入口幂等+L1 提取合并 | **DONE_WITH_CONCERNS**（2026-09-25）：入口幂等第一层收口（10min 窗口自定最优），L1 归纳合并第二层登记观察 | 设计全文在技能 td-agemem-fdup1-l0-dedup；幂等窗口/键粒度/连发边界三问先呈拍板；存量 L0 清理含 vec/FTS 一致性方案随设计呈报 | RED 先行 |
 | 任务6 | D-R3-2：boot recovery 前过滤无 L0 数据会话键 | **DONE_WITH_CONCERNS**（2026-09-24）：hasL0Session 死键过滤落地，代码待下次重启生效 | 实锚：单 boot 156 re-arm 中 28 死键（flow-test/session-flowtest-*/ev5-live，readOnly 探针 151∩129→123/28）；3 用例·vitest 822/822·tsc 222 持平·密扫 0；**归因修正（登记≠真实第 6 例）**：锁风暴主因=旧 L2 任务无租户元数据共享单锁 `pipeline:{default:_:_}`（非死键驱动） | 重启验证待拍板；L2 锁元数据修复另立任务呈报 |
 | 任务2 | 召回新信号 A/B（R-recall/R-identity/R-arousal） | TODO | golden 基建重建（docs/superpowers/evals/memory-recall-golden/ 桶已清空，复用技能 td-agemem-recall-golden-anchor）；F14-bis 与 R-identity 张力正面回答；与 M1 共享 valence 数据源（单一源：复用 mood-line.ts computeMoodValence，禁第二份实现）；**注意生产 moodLine 已启用=A/B 基线须以启用后状态为准** | 设计小节先呈拍板 |
 | 任务7 | 灵魂真伪判定（量化判据） | TODO | 依赖任务 2 产出 | 任务 2 后 |

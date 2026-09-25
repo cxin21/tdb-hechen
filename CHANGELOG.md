@@ -66,6 +66,14 @@
 - **活体实锚（2026-09-24）**：单次 boot re-arm **156 会话中 28 键无 L0 数据**（flow-test-20260915、session-flowtest-20260916-c..h、ev5-live-s1 等 09-15/16 测试残留，readOnly 探针 runner_states∩L0 实测 151∩129→123/28）。
 - **机制级归因修正（登记≠真实第 6 例）**：锁风暴主因不是死键——journal 风暴样本 4 会话 L0 均有数据（23/186/387/148 行）；**主因=旧版产生的 L2 任务无租户元数据**（锁键全部塌缩到 `pipeline:{default:_:_}` 一把实例锁互相冲突退避，retry 100+ 与 `-lrN` requeue 链滞留）。死键过滤消除 boot 空跑面（28/151）；L2 任务租户元数据/锁粒度修复属行为变更另行立项呈报。
 
+## 🛡️ V9 修复线：F-DUP-1 L0 入口幂等（任务5，2026-09-25，何晨整句授权自定最优）
+
+### Fixed（MemoryCore）
+
+- **入口幂等（第一层）**：store 新增可选方法 `hasRecentL0Duplicate(sessionKey, role, content, windowMs)`（session_key+role+message_text 逐字比对 + recorded_at 窗口；degraded/空参数/非法窗口 → false 宁缺毋滥不误跳）；`/v3/conversation/add` 消息循环内对 10min 窗口内重复提交跳过（feature-detect：store 缺实现=现状逐条照收）；响应契约不动（generated/types.ts 为 Kubb 生成禁手改），跳过以 journal info 留痕。
+- **三问自定最优（设计小节结论）**：①窗口=10min（实测 DSH 单回合 12 连发跨约 5min → 窗口×2 余量；真实重发为小时级照存）；②键=session+role+content 逐字（role 维度隔离助手回声）；③边界=窗口内重复跳过+留痕、第二层 L1 提取归纳合并登记后续观察（存量重复行随 F14 衰减稀释；技能自钉「存量清理勿随代码顺手删」纪律，数据面清理维持 gated）。
+- **4 用例 RED 先行**（窗口内命中/窗口外放行/维度隔离/退化输入）+ **生产活体 FDUP1_LIVE_PASS**：隔离租户连发实测 ①首条 accepted=1 ②同条重发 accepted=0 ③不同 content accepted=1 ④DB 恰 2 行无重复；且上线即时在生产会话拦截真实重复提交（journal「你自己拍板吧…」×2 duplicate skipped——DSH 每轮重提交污染面当场止血）。
+
 ## 🎨 V7-UI 批次三：信息完整性专项 + 按钮语义归一 + 属性/相关记忆弹出卡（2026-09-23/24）
 
 ### Fixed（MemoryPanel/web）

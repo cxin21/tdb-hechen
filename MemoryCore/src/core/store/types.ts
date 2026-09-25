@@ -853,6 +853,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *  与 listL0SessionIds 同族语义（session_id 跨租户全局键，无租户参数）；只读零写库；
    *  可选签名：缺实现时调用侧不过滤=现状语义（少滤不少挂）。 */
   hasL0Session?(sessionId: string): boolean;
+  /** F-DUP-1（任务5，2026-09-25）：L0 入口幂等查重——同 session+role+content 在 windowMs
+   *  窗口内已有落库行则 true。与 listL0SessionIds/hasL0Session 同族（跨租户键，无租户参数——
+   *  session_key 全局唯一）。可选签名：缺实现=调用侧逐条照收（现状语义）。 */
+  hasRecentL0Duplicate?(sessionKey: string, role: string, content: string, windowMs: number): MaybePromise<boolean>;
 
   // ── L0 Search ────────────────────────────────────────────
 

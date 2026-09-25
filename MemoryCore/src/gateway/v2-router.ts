@@ -812,6 +812,7 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   const acceptedIds: string[] = [];
   const acceptedRecords: L0Record[] = [];
   const ingestBaseMs = Date.now();
+  let dedupSkipped = 0; // F-DUP-1：窗口内重复跳过计数（journal 留痕，响应契约不动）
 
   for (const [index, msg] of messages.entries()) {
     const id = `msg-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -834,6 +835,24 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
       timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : recordedAtMs,
     };
 
+    // F-DUP-1（任务5，2026-09-25）：入口幂等——同 session+role+content 在 10min 窗口内
+    // 重复提交跳过（根因=DSH 插件按每轮 LLM 调用重复提交同条用户消息：一次「继续」存 12 条、
+    // 20-30s 间隔跨约 5 分钟）。窗口 10min=单回合连发上限×2 余量、远小于真实重发间隔
+    // （隔小时级照存）；store 缺实现=现状逐条照收（feature-detect）。响应契约不动
+    // （gateway/generated/types.ts 为 Kubb 生成禁手改），跳过以 journal info 留痕。
+    if (typeof (store as { hasRecentL0Duplicate?: unknown }).hasRecentL0Duplicate === "function") {
+      const isDup = await Promise.resolve(
+        (store as { hasRecentL0Duplicate: (sk: string, r: string, c: string, w: number) => boolean | Promise<boolean> })
+          .hasRecentL0Duplicate(session_id, msg.role, msg.content, 600000),
+      );
+      if (isDup) {
+        dedupSkipped++;
+        deps.logger.info(
+          `${TAG} [F-DUP-1] duplicate skipped (session=${session_id}, role=${msg.role}, window=10min): ${msg.content.slice(0, 40)}`,
+        );
+        continue;
+      }
+    }
     let emb: Float32Array | undefined;
     if (embedding) {
       try { emb = await embedding.embed(msg.content); } catch (e) { console.warn(`[v2-router] L0 embedding failed:`, e); }
@@ -842,6 +861,12 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
     await store.upsertL0(record, emb);
     acceptedIds.push(id);
     acceptedRecords.push(record);
+  }
+
+  if (dedupSkipped > 0) {
+    deps.logger.info(
+      `${TAG} [F-DUP-1] ${session_id}: ${dedupSkipped} duplicate(s) skipped, ${acceptedIds.length} accepted (window=10min)`,
+    );
   }
 
   // Notify pipeline: trigger async L1 extraction (service mode).

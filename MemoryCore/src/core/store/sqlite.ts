@@ -4608,6 +4608,30 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /** F-DUP-1（任务5，2026-09-25）：L0 入口幂等查重——同 session+role+content 在 windowMs
+   *  窗口内已有落库行则 true（DSH 插件按每轮 LLM 调用重复提交同条用户消息的污染面修复）。
+   *  键=逐字比对（session_key+role+message_text）；时间基准=recorded_at；只读零写库；
+   *  degraded/空参数/异常/非法窗口 → false（宁缺毋滥不误跳真实消息）。 */
+  hasRecentL0Duplicate(sessionKey: string, role: string, content: string, windowMs: number): boolean {
+    if (this.degraded) return false;
+    const sk = String(sessionKey ?? "");
+    const r = String(role ?? "");
+    const c = String(content ?? "");
+    if (sk === "" || r === "" || c === "") return false;
+    const w = Number(windowMs) > 0 ? Number(windowMs) : 0;
+    if (w <= 0) return false;
+    const sinceIso = new Date(Date.now() - w).toISOString();
+    try {
+      const row = this.db.prepare(
+        "SELECT 1 FROM l0_conversations WHERE session_key = ? AND role = ? AND message_text = ? AND recorded_at >= ? LIMIT 1",
+      ).get(sk, r, c, sinceIso);
+      return row !== undefined;
+    } catch (err) {
+      this.logger?.warn(`${TAG} [L0-dup] hasRecentL0Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   /**
    * Query L0 messages for a given session key, grouped by session_id.
    * Each group's messages are in chronological order (recorded_at ASC).
