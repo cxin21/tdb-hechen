@@ -714,9 +714,16 @@ export async function handleChatCompletions(
   }
 
   // ── Session key: prefer conversation header, fallback to agent profile ───────────
-  const { resolveConversationId } = await import("./session/session-key.js");
+  const { resolveConversationId, deriveConversationKey } = await import("./session/session-key.js");
   const conversationId = resolveConversationId(c);
-  const sessionKey = conversationId ?? resolveSessionKey(config, lcHeaders, c.req.path, body, keyId);
+  // V12-PROVIDER Phase 3: header-less dsh clients (llm-pi-ai) get a
+  // per-conversation key derived from the first user message — same
+  // semantics the session-header agents already get (see session-key.ts).
+  const sessionKey = conversationId
+    ?? (agentSource === "dsh"
+        ? deriveConversationKey((body as { messages?: Array<Record<string, unknown>> }).messages ?? [])
+        : null)
+    ?? resolveSessionKey(config, lcHeaders, c.req.path, body, keyId);
 
   // ── Auth verification (user_key → user_id) ──────────────────────────────────────
   // Reuse the early verify result — it ran before body parse to decide the
@@ -915,6 +922,7 @@ export async function handleChatCompletions(
   // V12-PROVIDER（何晨令「不要有遗留问题」）：注入门槛只看 sessionKey+isAuxiliary。
   // _dshHeadless/_emptyToolsSubagent 控制的是 form 弹出（session-init），不应连坐注入——
   // 注入（灵魂+记忆上下文）不依赖 UI 能力，headless 客户端同样需要灵魂在场。
+  let injectedSkipped = !sessionKey || isAuxiliary;
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
