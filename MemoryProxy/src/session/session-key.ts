@@ -15,6 +15,11 @@ export function resolveConversationId(c: Context): string | null {
     c.req.header("x-deepseek-harness-session-id") ?? // dsh (deepseek-harness) CLI/web sends this
     c.req.header("x-chat-id") ??
     c.req.header("x-thread-id") ??
+    // V12-PROVIDER Phase 5: pi-ai session-affinity headers (patched
+    // sendSessionAffinityHeaders=true carries the DSH conversation GUID).
+    c.req.header("x-session-affinity") ??
+    c.req.header("x-client-request-id") ??
+    c.req.header("session_id") ??
     null;
   return id && id.length > 0 ? id : null;
 }

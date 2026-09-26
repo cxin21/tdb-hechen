@@ -82,3 +82,41 @@ describe("deriveConversationKey", () => {
     expect(deriveConversationKey([])).toBeNull();
   });
 });
+
+// ── Phase 5: pi-ai session-affinity headers feed resolveConversationId ──────
+// Patched pi-ai (sendSessionAffinityHeaders=true) sends the DSH conversation
+// GUID as session_id / x-client-request-id / x-session-affinity headers
+// ("openai" affinity format). resolveConversationId must pick them up so the
+// per-conversation key comes from the client GUID instead of the content hash
+// fallback. x-session-id (openrouter format) was already parsed.
+import { resolveConversationId } from "../session-key.js";
+
+function ctxWithHeaders(headers: Record<string, string>): Parameters<typeof resolveConversationId>[0] {
+  return {
+    req: { header: (name: string) => headers[name.toLowerCase()] },
+  } as unknown as Parameters<typeof resolveConversationId>[0];
+}
+
+describe("resolveConversationId session-affinity headers", () => {
+  it("parses x-session-affinity", () => {
+    expect(resolveConversationId(ctxWithHeaders({ "x-session-affinity": "guid-1" }))).toBe("guid-1");
+  });
+
+  it("parses x-client-request-id", () => {
+    expect(resolveConversationId(ctxWithHeaders({ "x-client-request-id": "guid-2" }))).toBe("guid-2");
+  });
+
+  it("parses session_id", () => {
+    expect(resolveConversationId(ctxWithHeaders({ session_id: "guid-3" }))).toBe("guid-3");
+  });
+
+  it("still prefers the DSH dedicated header over affinity headers", () => {
+    expect(
+      resolveConversationId(ctxWithHeaders({ "x-deepseek-harness-session-id": "dsh-1", "x-session-affinity": "aff-1" })),
+    ).toBe("dsh-1");
+  });
+
+  it("returns null with no session headers", () => {
+    expect(resolveConversationId(ctxWithHeaders({}))).toBeNull();
+  });
+});
