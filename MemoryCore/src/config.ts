@@ -96,6 +96,8 @@ export interface RecallConfig {
   maxCharsPerMemory: number;
   /** Max total characters injected for all recalled L1 memories. 0 disables the total limit. */
   maxTotalRecallChars: number;
+  /** F-CLUSTER v2（2026-09-26 拍板）：召回注入行折叠（持续态优先+同文；缺省关=golden A/B 通过后拍板开启） */
+  foldClusterEnabled?: boolean;
   /** Minimum score threshold (default: 0.3) */
   scoreThreshold: number;
   /** Search strategy (default: "hybrid") */

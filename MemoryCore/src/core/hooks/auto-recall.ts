@@ -11,8 +11,7 @@
  */
 
 import type { MemoryTdaiConfig } from "../../config.js";
-import { stripMemoryLineMeta } from "./memory-line-meta.js";
-import { foldSameSourceDuplicates } from "./recall-fold-cluster.js";
+import { foldClusterAware } from "./recall-fold-cluster.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
@@ -733,7 +732,7 @@ export async function performLayeredRecall(params: {
         ? "[degraded: fts-only] 本轮记忆召回仅来自关键词检索（FTS），向量召回无贡献（向量层降级或相关度门滤除），召回质量可能不完整。\n\n"
         : "";
       // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
-      const foldedLines = foldNearDuplicates(foldSameSourceDuplicates(memoryLines));
+      const foldedLines = foldNearDuplicates(memoryLines);
       block =
         soulPrefix +
         `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
@@ -1251,8 +1250,14 @@ async function searchMemories(
       })) ?? []) as L1SearchResult[]).filter((r) => !excludeIds || !excludeIds.has(r.record_id));
       const nativeMs = performance.now() - tNative;
       logger?.debug?.(`${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`);
-      const lines = results.map((r) => formatMemoryLine(vectorResultToFormatable(r)));
+      const fmts = results.map((r) => vectorResultToFormatable(r));
+      const linesRaw = fmts.map((f) => formatMemoryLine(f));
+      const linesMeta = fmts.map((f) => ({ recordId: f.recordId, evidenceIds: f.evidenceIds }));
       const scores = results.map((r) => r.score);
+      // F-CLUSTER v2：折叠点=搜索路返回前（budget 之前去冗余，更多信息存活）；cfg.recall.foldClusterEnabled 缺省关
+      const lines = cfg?.recall?.foldClusterEnabled === true
+        ? foldClusterAware(linesRaw, linesMeta)
+        : linesRaw;
       return { lines, scores, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length } };
     }
 
@@ -2076,6 +2081,9 @@ interface FormatableMemory {
   certainty?: string;
   valence?: number;
   significance?: number;
+  /** F-CLUSTER v2：行折叠元数据透传（recordId=记忆 id；evidenceIds=持续态证据源列表） */
+  recordId?: string;
+  evidenceIds?: string[];
   /** D-3：敏感性（none 不标注；health/finance/relationship → 徽章）。 */
   sensitivity?: string;
   /** D-4：周期性事实（normalize 形状；徽章渲染，note 首选/中文映射）。 */
@@ -2317,6 +2325,7 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
   let recCount: number | undefined;
   let identRefs: string[] | undefined;
   let evo: unknown;
+  let evIds: string[] | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -2331,6 +2340,11 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
         if (refs.length > 0) identRefs = refs;
       }
       if (meta?.evolution != null) evo = meta.evolution;
+      // F-CLUSTER v2：证据源透传（evidence_record_ids=consolidation 持续态源列表，生产 99.2% 覆盖实测）
+      if (Array.isArray(meta?.evidence_record_ids)) {
+        const evs = (meta.evidence_record_ids as unknown[]).filter((s): s is string => typeof s === "string");
+        if (evs.length > 0) evIds = evs;
+      }
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -2341,6 +2355,9 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     activity_end_time: activityEnd,
     timestamp: r.timestamp_str || undefined,
     // 审计 B4：灵魂字段透传（P2a 顶层列）
+    // F-CLUSTER v2：折叠元数据透传
+    recordId: r.record_id,
+    evidenceIds: evIds,
     occurred_at: r.occurred_at || undefined,
     certainty: r.certainty || undefined,
     valence: r.valence,

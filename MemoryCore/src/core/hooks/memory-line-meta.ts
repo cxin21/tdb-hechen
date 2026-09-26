@@ -19,6 +19,8 @@ export function stripMemoryLineMeta(t: string): string {
       .replace(/^- \[[^\]]*\]\s*/, "")
       .replace(/·soul\[[^\]]*\]\s*$/, "")
       .replace(/·\(活动时间:[^)]*\)\s*$/, "")
+      // F-CLUSTER 折叠注记属视图层元数据（·同源×n / ·源×n），非内容——同文判定前必须剥离
+      .replace(/·(?:同源|源)×\d+\s*$/, "")
       .trimEnd();
     if (next === prev) break;
     prev = next;
