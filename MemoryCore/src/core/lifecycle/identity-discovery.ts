@@ -50,6 +50,7 @@ export const DISCOVERY_SYSTEM_PROMPT = [
   "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
   "- support: [样本行号,…]（可选：支撑该事实的样本行号，1..N；只列真实支撑的 1-3 行，宁缺毋滥，不确定不给）",
   "- rationale: 提炼理由",
+  '- core_value 提案额外必带两个字段：label（≤8 字核心词，如"取证先行"；不要 JSON/结构符号残留）与 description（≤60 字价值观一句话说明）。其他 slot 不需要这两个字段。',
   "",
   "硬约束：",
   "1. 只提炼身份层面的持续事实（我是谁/我信什么/我绝不做什么），不提一次性任务或事件。",
@@ -58,7 +59,7 @@ export const DISCOVERY_SYSTEM_PROMPT = [
   "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——",
   "   content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
   "3. 宁缺毋滥：证据不足的主题不要提。",
-  "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
+  "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"},{\"slot\":\"core_value\",\"content\":\"…\",\"label\":\"…\",\"description\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
 ].join("\n");
 
 // DS-SOUL-MEMORY-002 P1 双视角：user prompt 主语修正（O15：「他是谁」）+ agent 自我层
@@ -73,13 +74,14 @@ const DISCOVERY_SYSTEM_PROMPT_DUAL = [
   "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
   "- support: [样本行号,…]（可选：支撑该事实的样本行号，1..N；只列真实支撑的 1-3 行，宁缺毋滥，不确定不给）",
   "- rationale: 提炼理由",
+  '- core_value 提案额外必带两个字段：label（≤8 字核心词，如"取证先行"；不要 JSON/结构符号残留）与 description（≤60 字价值观一句话说明）。其他 slot 不需要这两个字段。',
   "",
   "硬约束：",
   "1. identity 只提炼用户身份层面的持续事实（他是谁/他信什么/他的纪律）；self_identity 只提炼 agent 自我的持续事实，第一人称产出（我……），且必须能在样本中找到 agent 侧行为或对话文本支撑——纯用户侧事实不要写成 self_identity。",
   "2. 【身份判据】会随任务完成/阶段推进而过时的内容（项目进度、阶段状态、当前待办）不是身份——不要写入；只提炼跨状态持续的事实（角色、职责、关系、工作纪律）。",
   "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
   "4. 宁缺毋滥：证据不足的主题不要提。",
-  "5. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"},…]（slot 取 identity/self_identity/core_value/strict_rule），无提议输出 []。",
+  "5. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"},{\"slot\":\"core_value\",\"content\":\"…\",\"label\":\"…\",\"description\":\"…\",\"rationale\":\"…\"},…]（slot 取 identity/self_identity/core_value/strict_rule），无提议输出 []。",
 ].join("\n");
 
 // 采样/截断常量与采样器复用 core-values-discover 导出（GROW-IDENT v2，禁第二份）。
@@ -270,7 +272,7 @@ export async function runIdentityDiscovery(deps: {
               continue;
             }
             const ev = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
-            const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant);
+            const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string }) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant, { label: p.label, description: p.description });
             pendingThis++;
             logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev}${persisted ? ", persisted" : ""})`);
           } else if (p.slot === "character") {
@@ -464,7 +466,7 @@ function buildIdentityPrompt(samples: string[], existing: string[], pendingList:
   return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}${pendingText}${tensionBlock}\n\n请提炼身份事实提案。`;
 }
 
-function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[]; label?: string; tensionRefs?: string[] }> {
+function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[]; label?: string; description?: string; tensionRefs?: string[] }> {
   let cleaned = (raw ?? "").trim();
   if (!cleaned) return [];
   if (cleaned.startsWith("```")) cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
@@ -475,7 +477,7 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
   if (!Array.isArray(parsed)) return [];
   // P1（DS-SOUL-MEMORY-002）：+self_identity。enabled=false 时幻觉提案落 else→pending（无害且诚实）。
   const valid = new Set(["identity", "core_value", "strict_rule", "self_identity"]);
-  const out: Array<{ slot: string; content: string; rationale: string; label?: string; tensionRefs?: string[] }> = [];
+  const out: Array<{ slot: string; content: string; rationale: string; label?: string; description?: string; tensionRefs?: string[] }> = [];
   for (const item of parsed) {
     if (!item || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
@@ -504,7 +506,10 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
     const support = Array.isArray(o.support)
       ? o.support.map((n) => (typeof n === "number" && Number.isInteger(n) ? n : NaN)).filter((n) => !Number.isNaN(n))
       : undefined;
-    out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "", ...(support && support.length > 0 ? { support } : {}) });
+    // V12-CV：core_value 提案 label/description 透传（生成端产出、采纳端确定性门消费）。
+    const cvLabel = typeof o.label === "string" ? o.label.trim() : "";
+    const cvDesc = typeof o.description === "string" ? o.description.trim() : "";
+    out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "", ...(support && support.length > 0 ? { support } : {}), ...(cvLabel ? { label: cvLabel } : {}), ...(cvDesc ? { description: cvDesc } : {}) });
   }
   return out;
 }

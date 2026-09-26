@@ -59,7 +59,7 @@ describe("core_pending store 方法（O13）", () => {
     s.upsertPendingCore("strict_rule", "必须先给结论再给细节", 3, T_A);
     const row = s.listPendingCore(T_A).find((r) => r.content === "必须先给结论再给细节")!;
     const decided = s.decidePendingCore(row.pending_id, "adopted", T_A);
-    expect(decided).toEqual({ slot: "strict_rule", content: "必须先给结论再给细节" });
+    expect(decided).toEqual({ slot: "strict_rule", content: "必须先给结论再给细节", label: null, description: null });
     expect(s.listPendingCore(T_A).some((r) => r.content === "必须先给结论再给细节")).toBe(false);
     // includeDecided 可见 adopted
     const all = s.listPendingCore(T_A, { includeDecided: true });
@@ -79,7 +79,7 @@ describe("core_pending store 方法（O13）", () => {
     };
     s.upsertPendingCore("core_value", "透明优先", 0, T_A);
     const row = s.listPendingCore(T_A).find((r) => r.content === "透明优先")!;
-    expect(s.decidePendingCore(row.pending_id, "rejected", T_A)).toEqual({ slot: "core_value", content: "透明优先" });
+    expect(s.decidePendingCore(row.pending_id, "rejected", T_A)).toEqual({ slot: "core_value", content: "透明优先", label: null, description: null });
     expect(s.listPendingCore(T_A, { includeDecided: true }).find((r) => r.content === "透明优先")?.state).toBe("rejected");
     expect(s.decidePendingCore("pd-nonexistent", "adopted", T_A)).toBe(null);
   });

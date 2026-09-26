@@ -115,7 +115,7 @@ import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 // D-0（2026-09-21）：/v3/atomic/query 出参映射单一源——7 字段补齐 + 既有字段逐位。
 import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-fields.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
-import { mergeStrictRuleContent } from "./pending-adopt-merge.js";
+import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
@@ -1850,7 +1850,7 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
   const decided = await Promise.resolve(store.decidePendingCore(b.pending_id, b.decision, tenant));
   if (!decided) return errorEnvelope(404, "pending item not found or already decided", requestId);
   // O13 采纳语义：strict_rule → validateCoreWrite + escapeXmlTags + upsertCore('strict_rule',…,'panel-adopt')
-  //               core_value → upsertValue(growthValueId(content), content, 0.5, 'panel-adopt', tenant, undefined, 'manual')
+  //               core_value（V12-CV 转换层）→ coerceCoreValueAnchor 确定性门 → upsertValue(growthValueId(label,'theme'), label, 0.5, 'panel-adopt', tenant, undefined, 'manual','theme',{description})
   if (b.decision === "adopted") {
     if (decided.slot === "strict_rule") {
       const cfg = deps.config?.memory?.coreMemory;
@@ -1867,7 +1867,14 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
       if (!ok) return errorEnvelope(503, "strict_rule adopt failed", requestId);
     } else if (decided.slot === "core_value") {
       if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);
-      const ok = await Promise.resolve(store.upsertValue(growthValueId(decided.content), decided.content, 0.5, "panel-adopt", tenant, undefined, "manual"));
+      // V12-CV（拍板执行⑤）：转换层——旧路径以整段 content 当锚 label（锚行灾难性污染，29 条
+      // core_value 提案因此全拒）。现语义：生成端 label/description（identity-discovery 双视角
+      // 调用顺带产出）+ 采纳端 coerceCoreValueAnchor 确定性门；门不过 → 422（pending 保持
+      // pending，不暗箱替用户裁决）。label/description 经 escapeXmlTags 消毒（对齐 core_values
+      // 写 API P-B 咽喉语义）。
+      const anchor = coerceCoreValueAnchor({ label: decided.label, description: decided.description, content: decided.content });
+      if (!anchor) return errorEnvelope(422, "core_value adopt blocked: proposal lacks a valid short label (regenerate or reject the proposal)", requestId);
+      const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
       if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
     }
   }

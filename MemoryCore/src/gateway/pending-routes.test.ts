@@ -29,13 +29,13 @@ describe("POST /core-memory/pending/list", () => {
 });
 
 describe("POST /core-memory/pending/decide", () => {
-  function storeWith(slot: string, existing?: string) {
+  function storeWith(slot: string, existing?: string, cv?: { label: string; description: string }) {
     return {
-      decidePendingCore: vi.fn((_pid: string, _d: string, _t?: unknown) => ({ slot, content: "绝不泄露用户隐私数据" })),
+      decidePendingCore: vi.fn((_pid: string, _d: string, _t?: unknown) => ({ slot, content: "绝不泄露用户隐私数据", label: cv?.label, description: cv?.description })),
       upsertCore: vi.fn((_slot: string, _content: string, _by: string, _t?: unknown) => true),
       // V12-ADJ：readCore 供采纳合并语义（既有行保留+新行追加）
       readCore: vi.fn(() => (existing ? [{ slot, content: existing }] : [])),
-      upsertValue: vi.fn((_id: string, _label: string, _w: number, _by: string, _t?: unknown, _v?: number, _o?: string) => true),
+      upsertValue: vi.fn((_id: string, _label: string, _w: number, _by: string, _t?: unknown, _v?: number, _o?: string, _nt?: string, _attrs?: { description?: string }) => true),
     };
   }
   it("adopt strict_rule → 合并语义：既有红线保留+采纳行追加（V12-ADJ）", async () => {
@@ -46,16 +46,25 @@ describe("POST /core-memory/pending/decide", () => {
     expect(store.upsertCore).toHaveBeenCalledWith("strict_rule", "- 既有红线甲\n- 绝不泄露用户隐私数据", "panel-adopt", expect.objectContaining({ teamId: "teamA" }));
     expect(store.upsertValue).not.toHaveBeenCalled();
   });
-  it("adopt core_value → upsertValue(growthValueId, content, 0.5, 'panel-adopt', tenant, undefined, 'manual')", async () => {
-    const store = storeWith("core_value");
+  it("adopt core_value → V12-CV 转换层：label 落锚+theme 池+description attrs", async () => {
+    const store = storeWith("core_value", undefined, { label: "取证先行", description: "任何结论必须有证据支撑" });
     const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r5", depsFor(store));
     expect(res.code).toBe(0);
     const call = store.upsertValue.mock.calls[0]!;
-    expect(call[1]).toBe("绝不泄露用户隐私数据");
+    expect(call[0]).toMatch(/^auto-/);
+    expect(call[1]).toBe("取证先行");
     expect(call[2]).toBe(0.5);
     expect(call[3]).toBe("panel-adopt");
     expect(call[6]).toBe("manual");
+    expect(call[7]).toBe("theme");
+    expect(call[8]).toEqual({ description: "任何结论必须有证据支撑" });
     expect(store.upsertCore).not.toHaveBeenCalled();
+  });
+  it("adopt core_value 无 label（旧格式提案）→ 422 门拦截，不落锚不暗箱裁决（V12-CV）", async () => {
+    const store = storeWith("core_value");
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2b", decision: "adopted" }, AUTH, "r5b", depsFor(store));
+    expect(res.code).toBe(422);
+    expect(store.upsertValue).not.toHaveBeenCalled();
   });
   it("reject → 只标记，不写任何核心对象", async () => {
     const store = storeWith("strict_rule");
