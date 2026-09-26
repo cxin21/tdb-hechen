@@ -116,6 +116,12 @@ describe("resolveConversationId session-affinity headers", () => {
     ).toBe("dsh-1");
   });
 
+  it("prefers session-scoped affinity over per-request client id when they disagree", () => {
+    expect(
+      resolveConversationId(ctxWithHeaders({ "x-session-affinity": "sess-1", "x-client-request-id": "req-9" })),
+    ).toBe("sess-1");
+  });
+
   it("returns null with no session headers", () => {
     expect(resolveConversationId(ctxWithHeaders({}))).toBeNull();
   });

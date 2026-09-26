@@ -17,9 +17,12 @@ export function resolveConversationId(c: Context): string | null {
     c.req.header("x-thread-id") ??
     // V12-PROVIDER Phase 5: pi-ai session-affinity headers (patched
     // sendSessionAffinityHeaders=true carries the DSH conversation GUID).
+    // Order: session-scoped affinity headers outrank x-client-request-id,
+    // which is per-request by name — if a future pi-ai drifts them apart,
+    // a per-request id must never steer the per-conversation key.
     c.req.header("x-session-affinity") ??
-    c.req.header("x-client-request-id") ??
     c.req.header("session_id") ??
+    c.req.header("x-client-request-id") ??
     null;
   return id && id.length > 0 ? id : null;
 }
