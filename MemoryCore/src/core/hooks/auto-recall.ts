@@ -11,6 +11,8 @@
  */
 
 import type { MemoryTdaiConfig } from "../../config.js";
+import { stripMemoryLineMeta } from "./memory-line-meta.js";
+import { foldSameSourceDuplicates } from "./recall-fold-cluster.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
@@ -731,7 +733,7 @@ export async function performLayeredRecall(params: {
         ? "[degraded: fts-only] 本轮记忆召回仅来自关键词检索（FTS），向量召回无贡献（向量层降级或相关度门滤除），召回质量可能不完整。\n\n"
         : "";
       // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
-      const foldedLines = foldNearDuplicates(memoryLines);
+      const foldedLines = foldNearDuplicates(foldSameSourceDuplicates(memoryLines));
       block =
         soulPrefix +
         `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
