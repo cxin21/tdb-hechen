@@ -19,6 +19,7 @@ import type {
   TeamOption,
 } from "../types.js";
 import { DEFAULT_TASK_LABEL } from "../types.js";
+import type { SessionInitStatus } from "../types.js";
 import { SessionStore } from "../store.js";
 import { buildSessionInfo } from "../registrar.js";
 import { injectSessionContextWithToggles } from "../context-injector.js";
@@ -39,6 +40,7 @@ import {
   BYPASS_MARKER,
 } from "./extractor.js";
 import { getLastUserMessageText, stripInitArtifacts, type RawMessage } from "./cleaner.js";
+import { isFreshConversation } from "../session-key.js";
 import { emitSessionInitTelemetryIfCompleted } from "../init-telemetry.js";
 import { isDshRuntimeContextSnapshot } from "../../common/user-query-extractor.js";
 import {
@@ -519,6 +521,26 @@ export async function completeRegistration(
  * 埋点装饰绝不改动状态机；失败/异常静默，业务链路零感知。
  * 详见 docs/design/2026-08-03-internal-usage-telemetry-plan.md §7.2。
  */
+
+/**
+ * Map a pending session-init status to its dsh form stage.
+ * Returns null for terminal / non-pending statuses.
+ * (V12-PROVIDER Phase 4: extracted so the fresh-duplicate guard can re-pop
+ * the current stage form without burning attemptCount — see the guard at
+ * the pending-state dispatch below, and session/__tests__/cb-fresh-dup.test.ts.)
+ */
+export function mapPendingStatusToStage(
+  status: SessionInitStatus | undefined,
+): FormData["stage"] | null {
+  switch (status) {
+    case "pending_asset_confirm": return "asset_confirm";
+    case "pending_team_select": return "team";
+    case "pending_agent_select": return "agent_select";
+    case "pending_task_select": return "task_select";
+    case "pending_agent_task": return "agent_task";
+    default: return null;
+  }
+}
 export async function handleSessionInit(
   sessionKey: string,
   userId: string | null,
@@ -998,6 +1020,38 @@ async function handleSessionInitInner(
       modelId: reqCtx.modelId,
       protocol: reqCtx.protocol,
     };
+    return { intercepted: true, response: buildFormResponse(fd), formData: fd };
+  }
+
+  // ── V12-PROVIDER Phase 4: fresh duplicate conversation guard ──────────────
+  // Header-less dsh clients key sessions by first-user-message hash, so two
+  // conversations starting with the SAME text share one state machine. While
+  // the machine is pending_*, a fresh turn from the duplicate conversation
+  // must NOT burn attemptCount (it would poison the shared machine into a
+  // sticky abandon). A form-answer turn always carries a tool message
+  // (never fresh), so isFreshConversation cleanly separates "new duplicate
+  // conversation" from "the same conversation answering the form".
+  // Re-pop the current stage form for the newcomer without a retry penalty.
+  if (
+    agentSource === "dsh" &&
+    state &&
+    mapPendingStatusToStage(state.status as SessionInitStatus) &&
+    isFreshConversation(messages as Array<{ role?: string }>)
+  ) {
+    const dupStage = mapPendingStatusToStage(state.status as SessionInitStatus)!;
+    const fd: FormData = {
+      teams: state.cachedTeams ?? [],
+      stage: dupStage,
+      selectedTeamId: state.selectedTeamId,
+      selectedAgentId: state.selectedAgentId,
+      stream: reqCtx.stream,
+      questionsAsArray: reqCtx.questionsAsArray,
+      modelId: reqCtx.modelId,
+      protocol: reqCtx.protocol,
+    };
+    console.log(
+      `[session-init:cb] session=${compositeKey} fresh duplicate conversation → re-pop ${dupStage} form (no attempt penalty)`,
+    );
     return { intercepted: true, response: buildFormResponse(fd), formData: fd };
   }
 
