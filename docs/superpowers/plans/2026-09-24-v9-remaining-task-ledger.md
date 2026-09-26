@@ -16,7 +16,7 @@
 | 文档勘误（演化设计 §1.2/§5） | DONE | d6c3adf：arousal 轴聚合未实现+遗忘闪光灯调制已启用（读回 verified+密扫 0） |
 | 任务 2 设计小节 | DONE（呈拍板） | 1ff0211：R-identity 裁定不实施（F14-bis 张力正面回答）；R-recall/R-arousal 预注册 A/B=golden 桶重建先行+重锚定线+≥10 组同种子 |
 | UI 线 NO-GO v2 微项设计先行 | DONE（呈拍板） | 6e8bd51：G1 复查自纠不可复现建议关闭；G3/G4/窄屏/提案卡设计+实施序；UI-3.2 实机复证维持 NEEDS_CONTEXT |
-| 任务 7 灵魂真伪判定 | 排队 | 依赖任务 2 执行收口 |
+| 任务 7 灵魂真伪判定 | 方案 DONE（呈拍板） | 2026-09-26-task7-soul-authenticity-plan.md（三维量化：溯源率 ≥95% 行级明细/换用户换 agent 分化率 ≥10 组/反自强化零触发三红线断言）；实施 gated 待拍板 |
 | 「登记≠真实」第 7 例候选 | 已登记 | 部署技能「无存量超限回归守卫」记载过时（quotaEvict 在场但被门饿死）；技能库只读待维护通道更新 |
 
 **观察项首批量化（2026-09-25 16:10，v10 会话）**：①KV 抖动=人格指纹变更事件 **0 次/48h**（journalctl --grep「人格变更」实锚；重启清缓存窗口诚实披露）→ M1 moodLine 档位翻转频率 0<3 次/日阈值=不触发回退登记，M2 品格行翻转同判；②characterProposal 采纳=**0 事件/48h**（anchor-growth 全部 tick adopted=0；主桶品格锚 2 active 无变化）；③T1 命中=无张力检测日志/24h（无 self_identity 采纳事件驱动）；④QUOTA 守卫窗口未到（20:46 CST）持续跟踪。观察继续。
@@ -36,6 +36,8 @@
 **裁决执行+两缺陷登记（2026-09-26 00:15，何晨「你帮我裁决吧」「列计划本会话做完」）**：①146 条 pending 全量裁决执行完毕（何晨委托）：strict_rule 采纳 5 条最高频核心（环境铁律 ev=19/密钥双保险 ev=9/verify-before-kill ev=5/先审计后动码 ev=5/A-B 十组 ev=4），其余 141 条拒绝（测试租户衍生物 36/簇冗余变体/细节由铁律覆盖）；pending 清零（adopted 6/rejected 185）。备份 /tmp/core-pending-backup-pre-adjudicate-*.json。②**P0 缺陷实锚+已恢复**：采纳路径 upsertCore 为整槽替换语义，5 次采纳将原 3 条红线挤出槽（RECALL 实锚 [strict_rule] 仅剩 1 行）——已从备份恢复合并 8 行写回（version=7 source=panel-adopt-recovery，DB 层零丢失）；**根因修复（采纳合并语义）未完成=移交新会话 RED 先行**（方案：mergeStrictRuleContent 纯函数+router 采纳分支改合并，RED 用例=既有行保留+新行追加+去重）。③**P1 改判撤销（2026-09-26 02:05，复查自纠）**：「渲染截断 8→1 行」=探针断言误报——soul-assembler multi-line content 仅首行带 [strict_rule] 标签、7 行为 continuation 裸行，探针 includes 过滤只数到首行；当前对话注入块 8 行全在场实证（产品渲染零缺陷）。教训入册：多行槽渲染的探针断言必须数「- 」continuation 行而非标签行。④core_value 提案采纳路径设计缺陷呈报：upsertValue 以整段内容为 label 落锚（锚行灾难性污染），缺「提炼短 label+description」转换层——29 条 core_value 提案本轮全部拒绝，转换层设计后另行采纳。
 
 **提案链端到端闭环首跑验证（2026-09-25 23:54，何晨「提案方面任务全部都完成了么」对账补口）**：adopted=0 实锚=采纳→注入链从未实跑。测试租户（ev17-ev17a）闭环验证 PASS：pending 提案 pd-53df411249dc6f98（strict_rule 体检信息标注）经 Panel 同款 API 采纳 → upsertCore 落 strict_rule 槽（source=panel-adopt、version=1）→ soulVersion 刷新 → /v3/recall 注入块 [strict_rule] 行在场；幂等守卫验证（二次裁决 404 正确拒绝）；adopted 0→1。顺带实锚观察项：「提案先入队、槽后直写」时序窗口会产生与槽重复的 pending 行（本例 1 例），处置候选=定期 pending×slot 交叉去重任务（与 theme NO_DESC 策略同批呈报）。**剩余唯一未完成=138 条 pending 裁决（何晨本人行使，工作单 135 组已交付）**。
+
+**任务 7 方案成文+gated 三件登记（2026-09-26 13:05，拍板执行⑤续）**：①任务 7 灵魂真伪判定方案落笔 docs/superpowers/plans/2026-09-26-task7-soul-authenticity-plan.md——三维量化判据（溯源率 ≥95% 行级明细口径+换用户换 agent 分化率 ≥10 组复用任务 2 golden 桶与 B 工作流双测试+反自强化审计 R-A/F14-bis/红线唯一写通道三断言），实施边界=纯测量面（脚本入库+首轮基线快照），行为零变更 gated 待拍板；②gated 新登记三件（G-ANCHORDESC-WRITE/G-SELFDESC/G-PENDING-XSLOT）见 §五；③Excel 双写 TDB-v13-未完成任务台账.xlsx（29 号 V12-CV DONE 行+最新基线行）。
 
 **V12-CV core_value 采纳转换层收口（2026-09-26 12:50，拍板执行⑤——何晨「不要让我拍板，你自己给一个最优方案」委托）**：起 6ed49bb（V12-PROVIDER 系 9 commits 工作面零重叠审计后接续）。commit **07912ce**（10 files +229/−31）。缺陷=采纳分支 upsertValue(growthValueId(content), content,…) 以整段描述当锚 label（v2-router.ts:1870 实锚，29 条 core_value 全拒根因）。设计定稿（第一性重审呈报方案）：LLM 提炼移到生成端（identity-discovery 双视角 prompt 必带 label≤8 字/description≤60 字；router 无 LLM 通道，不在采纳时调）+core_pending 新增 label/description 两列（幂等 ALTER T12，存量 NULL=逐位现状）+采纳端 coerceCoreValueAnchor 确定性门（非空/≤8 字/无 JSON 结构残留；description 缺省回退 content 前 60 字；门不过 422=pending 不动不暗箱裁决）+escapeXmlTags 咽喉消毒。RED（4 文件 10 failed：coerce 模块缺失=加载失败形态如实登记+透传 undefined+缺列+422 得 0）→GREEN **846/846**（836+10）·tsc **222 持平**·密扫 0·07912ce 推 origin·core 重启（MainPID 527236，重启前身份核实）。活体 E2E 全链 PASS：测试租户播种 pd-v12cv-litmus→Panel 同款 decide API 200 code=0→core_values 落锚 auto-ed47308c28/label=取证先行/attrs.description 完整/panel-adopt+manual/theme/weight 0.5→二次 decide 404 幂等→pending adopted。登记：cv-fix3.py 写回未累积脚本缺陷（同文件双替换互相覆盖）被读回断言捕获即修——写盘必读回纪律再次生效。29 条历史拒绝提案无需重采（已终态），转换层服务未来新提案（自下轮 identity-discovery 起自带 label）。
 
@@ -74,7 +76,7 @@
 | 任务5 | F-DUP-1：/v3/conversation/add 入口幂等+L1 提取合并 | **DONE_WITH_CONCERNS**（2026-09-25）：入口幂等第一层收口（10min 窗口自定最优），L1 归纳合并第二层登记观察 | 设计全文在技能 td-agemem-fdup1-l0-dedup；幂等窗口/键粒度/连发边界三问先呈拍板；存量 L0 清理含 vec/FTS 一致性方案随设计呈报 | RED 先行 |
 | 任务6 | D-R3-2：boot recovery 前过滤无 L0 数据会话键 | **DONE_WITH_CONCERNS**（2026-09-24）：hasL0Session 死键过滤落地，代码待下次重启生效 | 实锚：单 boot 156 re-arm 中 28 死键（flow-test/session-flowtest-*/ev5-live，readOnly 探针 151∩129→123/28）；3 用例·vitest 822/822·tsc 222 持平·密扫 0；**归因修正（登记≠真实第 6 例）**：锁风暴主因=旧 L2 任务无租户元数据共享单锁 `pipeline:{default:_:_}`（非死键驱动） | 重启验证待拍板；L2 锁元数据修复另立任务呈报 |
 | 任务2 | 召回新信号 A/B（R-recall/R-identity/R-arousal） | TODO（设计要点已定：R-A 红线+单一源复用 computeMoodValence+基线=启用后状态；golden 重建+≥10 组 A/B 属数小时工程，2026-09-25 会话上下文边界诚实移交下轮执行） | golden 基建重建（docs/superpowers/evals/memory-recall-golden/ 桶已清空，复用技能 td-agemem-recall-golden-anchor）；F14-bis 与 R-identity 张力正面回答；与 M1 共享 valence 数据源（单一源：复用 mood-line.ts computeMoodValence，禁第二份实现）；**注意生产 moodLine 已启用=A/B 基线须以启用后状态为准** | 设计小节先呈拍板 |
-| 任务7 | 灵魂真伪判定（量化判据） | TODO | 依赖任务 2 产出 | 任务 2 后 |
+| 任务7 | 灵魂真伪判定（量化判据） | 方案 DONE（呈拍板） | 三维量化方案成文 2026-09-26 | 实施 gated |
 | L2-LOCK | L2 任务无元数据锁塌缩风暴（2026-09-25 新登记→当日定案） | **DONE_WITH_CONCERNS（无需代码修复）** | 机制已被历史迭代覆盖：getLockKey 三级元数据解析链（显式/data 兼容/sessionId profile 解析，instance 退化显式标注不推荐）实锚 v2-router.ts:700-715；风暴本体随重启结构性消灭——LocalStateBackend 任务/定时器纯内存态（local-backend.ts:27 timers=Map 实锚），重启即清且无持久重建通道 | journal 实锚：09-24 18:00→重启前 default:_:_ 冲突 34896 次（全天在烧）；重启后 0 复发；11:52 的 129 个 L1_drain 到期波 0 任务产生（游标治理空跑零成本实证）；当前可见冲突=同会话 L1 串行退避（session 级锁设计内行为） | 观测项：若再现 default:_:_ 塌缩=新 producer 缺元数据，立即归因；同会话 L1 退避日志噪音如需降噪另行微项 |
 
 ## 四、UI 尾巴与微项
@@ -86,7 +88,9 @@
 
 ## 五、gated 待拍板清单（全部维持不动，勿抢跑）
 
-D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）/ audit #11/#16 / person 锚 description 数据面回填 / 方案② embedding 提案深清理 / 锚行 description 未来写入策略（存量已修）/ 感受段近期基调行生产租户启用（已拍板执行完毕 2026-09-24，注销）/ **M2 生产启用（2026-09-25 整句授权执行完毕+活体全绿，注销）/ P3 散项回切（2026-09-25 执行完毕，注销）/ D-R3-2 重启验证（2026-09-25 执行完毕 re-arm 156→129，注销）/ L2-LOCK 定案无需修复（2026-09-25 取证定案，注销）/ DUEL-LABEL「取证先行」双行裁决=维持（2026-09-25：(node_type,label) 复合去重设计内行为，theme=价值域与 character=品格语义不同，M2 活体已证不误伤，注销）**。其余维持项（D-5/R11/种子清理/D2/neighborExpand/T7b/audit#11#16/personDesc/方案②/锚行写入策略）经整句授权逐项复核后**裁决维持现状**——各项无新证据支持变更，种子清理与 personDesc 回填为数据面删除/写入，守「删除必拍板」安全边界维持 gated。
+D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）/ audit #11
+
+**gated 新登记三件（2026-09-26，V12-CV 轮呈报，全部勿抢跑）**：①**G-ANCHORDESC-WRITE**（theme 锚 description 写入策略）：V12-CV 后 core_value 采纳链已带 attrs.description（07912ce），残余=种子锚+GROW 周期采纳锚无 description；最优方案=写入端一次到位（anchor-growth adoption 分支透传 rationale→description）+存量一次性确定性回填（datafix-sop 口径）——两步均行为变更待拍板；②**G-SELFDESC**（自驱 description 零字面证据）：identity 锚 attrs=[] 维持宁缺毋滥，随 C 工作流逐属性讨论处置；③**G-PENDING-XSLOT**（pending×slot 交叉去重）：同 content 先入队槽后直写产生 pending+core 双行（1 案例实锚），方案=入队前查 core 同 slot+content 已在场行即跳过——闸门位置与误杀风险（改判撤销场景）待拍板。/#16 / person 锚 description 数据面回填 / 方案② embedding 提案深清理 / 锚行 description 未来写入策略（存量已修）/ 感受段近期基调行生产租户启用（已拍板执行完毕 2026-09-24，注销）/ **M2 生产启用（2026-09-25 整句授权执行完毕+活体全绿，注销）/ P3 散项回切（2026-09-25 执行完毕，注销）/ D-R3-2 重启验证（2026-09-25 执行完毕 re-arm 156→129，注销）/ L2-LOCK 定案无需修复（2026-09-25 取证定案，注销）/ DUEL-LABEL「取证先行」双行裁决=维持（2026-09-25：(node_type,label) 复合去重设计内行为，theme=价值域与 character=品格语义不同，M2 活体已证不误伤，注销）**。其余维持项（D-5/R11/种子清理/D2/neighborExpand/T7b/audit#11#16/personDesc/方案②/锚行写入策略）经整句授权逐项复核后**裁决维持现状**——各项无新证据支持变更，种子清理与 personDesc 回填为数据面删除/写入，守「删除必拍板」安全边界维持 gated。
 
 ## 六、基线与门禁（2026-09-24 v8 轮收口态，全部实锚勿重查）
 
