@@ -8,6 +8,13 @@
 `MemoryProxy` / SDK。
 ---
 
+## 📋 V12-CV core_value 采纳转换层（2026-09-26，拍板执行⑤）
+
+### Fixed（行为变更，2026-09-26 何晨委托「你自己给一个最优方案」）
+
+- **core_value 提案采纳转换层**（07912ce）：修复采纳分支以整段提案描述当锚 label 的锚行污染（29 条 core_value 提案因此全拒、采纳链从未对 core_value 闭合）。生成端：identity-discovery 双视角 prompt 要求 core_value 提案必带 label（≤8 字核心词）/description（≤60 字一句话），parseProposals 普通分支透传、core_pending 新增 label/description 两列（幂等 ALTER T12，存量 NULL=逐位现状）；采纳端：coerceCoreValueAnchor 确定性门（非空/≤8 字/无 JSON 结构残留，description 缺省回退 content 前 60 字）+escapeXmlTags 咽喉消毒，落锚=growthValueId(label,'theme')+'panel-adopt'/'manual'+node_type='theme'+attrs.description；门不过=422（pending 保持 pending，不暗箱替用户裁决）。
+- RED（4 文件 10 failed，模块缺失/透传/缺列/422 四形态）→GREEN core vitest **846/846**（836+10）· tsc **222 持平** · 密扫 0；活体 E2E：播种→decide 200 code=0→落锚断言（label=取证先行/attrs.description 完整/node_type=theme/origin=panel-adopt/value_id=auto-）→二次 decide 404 幂等全链 PASS。
+
 ## 📋 V10 会话（2026-09-25）：三大工作流深查收口+待拍板设计包
 
 ### Added（文档，零代码）
