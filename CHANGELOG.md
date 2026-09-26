@@ -8,6 +8,15 @@
 `MemoryProxy` / SDK。
 ---
 
+## [Unreleased] - 2026-09-26
+
+### Added（MemoryCore·F-CLUSTER 记忆事实聚合 v1+v2，2026-09-26 何晨委托自主拍板）
+
+- 召回注入行折叠：同源折叠（strip 内容口径逐字相同→保留首现行+「·同源×n」计数，v1 2cba420）+ 持续态优先折叠（批内 work_fact 行吸收其 metadata.evidence_record_ids 指向且同批在场的源行+「·源×n」，v2 bb6dc13）——排序零变更，注入行冗余真数据对照 -60.9%（10 组）
+- 折叠开关 `memory.recall.foldClusterEnabled`（缺省关=golden A/B 通过后拍板开启）；折叠点位于 vector 搜索路返回前（budget 之前去冗余）；fts 降级路不接线（宁漏勿错杀）
+- 折叠元数据透传：`FormatableMemory.recordId/evidenceIds`（vectorResultToFormatable 解析 evidence_record_ids，生产覆盖 99.2%）
+- 设计与撤销项、转产前置（重启+golden P@5 回归+开关置 on）详见 docs/superpowers/specs/2026-09-26-fcluster-design.md
+
 ## 📋 任务 7 灵魂真伪判定方案（2026-09-26，拍板执行⑤续）
 
 ### Added（文档，零代码）
