@@ -652,6 +652,11 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * degraded / vec0 表未就绪时返回 0。旧后端可不实现（调用方 feature-detect 回退 countL1）。
    */
   countL1VectorRows?(): MaybePromise<number>;
+  backfillL1Vectors?(
+    embedFn: (text: string) => Promise<Float32Array>,
+    limit?: number,
+  ): Promise<{ scanned: number; backfilled: number; failed: number }>;
+
   /**
    * T15-B（向量健康三件套）：最近一次成功向量写入的 ISO 时间戳。
    * 进程内内存值（非持久化，重启归零为 null）；upsertL1 成功写向量时更新。

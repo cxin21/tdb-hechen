@@ -389,6 +389,11 @@ export interface MemoryLifecycleConfig {
    */
   filter?: { teamId?: string; userId?: string; agentId?: string; taskId?: string };
   /** H 巩固（默认 enabled）。persist：把持续态写回 L1。 */
+  embedBackfill: {
+    enabled: boolean;
+    intervalMinutes: number;
+    batchLimit: number;
+  };
   consolidation: {
     enabled: boolean;
     persist: boolean;
@@ -928,6 +933,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   const linksGroup = obj(c, "links");
   const lifecycleGroup = obj(c, "lifecycle");
   const lifecycleConsolidationGroup = obj(lifecycleGroup, "consolidation");
+  const lifecycleEmbedBackfillGroup = obj(lifecycleGroup, "embedBackfill");
   const lifecycleForgettingGroup = obj(lifecycleGroup, "forgetting");
   const searchGroup = obj(c, "search");
   const neighborExpandGroup = obj(searchGroup, "neighborExpand");
@@ -1090,6 +1096,14 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       };
       return Object.values(parsed).some((v) => v !== undefined) ? parsed : undefined;
     })(),
+    embedBackfill: {
+      // EMBED-BACKFILL R2（09-27 根治）：向量缺口补偿器——生命周期产物（reflection/
+      // consolidation/evolution 结构性不传 embedding）与主链 embed 失败遗留的
+      // metadata-only 行周期补嵌。缺省开。
+      enabled: bool(lifecycleEmbedBackfillGroup, "enabled") ?? true,
+      intervalMinutes: num(lifecycleEmbedBackfillGroup, "intervalMinutes") ?? 30,
+      batchLimit: num(lifecycleEmbedBackfillGroup, "batchLimit") ?? 50,
+    },
     consolidation: {
       enabled: bool(lifecycleConsolidationGroup, "enabled") ?? true,
       persist: bool(lifecycleConsolidationGroup, "persist") ?? true,

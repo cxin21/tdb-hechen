@@ -421,7 +421,7 @@ export async function writeMemory(params: {
       if (embeddingService) {
         try {
           embedding = await embeddingService.embed(record.content);
-          logger?.debug?.(
+          logger?.warn?.(
             `${TAG} [vec-dual-write] Embedding OK: dims=${embedding.length}, ` +
             `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
           );

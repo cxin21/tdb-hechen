@@ -2198,6 +2198,33 @@ export class TdaiGateway {
         });
         this.logger.info(`Lifecycle scheduler (H+I) started (forgetting active; consolidation ${runner ? "active" : "gated off (no LLM)"}; anchor-growth ${this.config.memory?.coreMemory?.anchorDiscovery?.enabled !== false ? "active" : "off"})`);
       }
+        // EMBED-BACKFILL R2（09-27 根治）：向量缺口补偿器——周期补嵌 metadata-only 行。
+        // 根因：reflection/consolidation/evolution 写链结构性不传 embedding（缺口 380 行全 rf_）。
+        const embedBackfillCfg = (lifecycle as { embedBackfill?: { enabled?: boolean; intervalMinutes?: number; batchLimit?: number } }).embedBackfill;
+        if (embedBackfillCfg?.enabled !== false && typeof (lifecycleStore as { backfillL1Vectors?: unknown }).backfillL1Vectors === "function") {
+          const embedSvc = this.core.getEmbeddingService() as { embed: (t: string) => Promise<Float32Array> } | undefined;
+          if (embedSvc?.embed) {
+            const bfMs = Math.max(5, embedBackfillCfg?.intervalMinutes ?? 30) * 60_000;
+            const bfLimit = embedBackfillCfg?.batchLimit ?? 50;
+            const bfTick = async (): Promise<void> => {
+              try {
+                const r = await (lifecycleStore as { backfillL1Vectors: (fn: (t: string) => Promise<Float32Array>, n?: number) => Promise<{ scanned: number; backfilled: number; failed: number }> })
+                  .backfillL1Vectors((t) => embedSvc.embed(t), bfLimit);
+                if (r.backfilled > 0 || r.failed > 0) {
+                  this.logger.info(`[embed-backfill] scanned=${r.scanned} backfilled=${r.backfilled} failed=${r.failed}`);
+                }
+              } catch (err) {
+                this.logger.warn?.("[embed-backfill] tick failed: " + (err instanceof Error ? err.message : String(err)));
+              }
+            };
+            setTimeout(() => { void bfTick(); }, 20_000);
+            const bfTimer = setInterval(() => { void bfTick(); }, bfMs);
+            bfTimer.unref?.();
+            this.logger.info(`[embed-backfill] scheduler started (every ${bfMs / 60_000}min, batch=${bfLimit})`);
+          } else {
+            this.logger.warn?.("[embed-backfill] skipped: embedding service unavailable");
+          }
+        }
     } catch (err) {
       this.logger.warn?.("[lifecycle] scheduler start skipped/failed: " + (err instanceof Error ? err.message : String(err)));
     }

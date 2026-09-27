@@ -3833,6 +3833,52 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /**
+   * EMBED-BACKFILL R2（09-27 根治）：向量缺口补偿器。
+   * 列出无向量 L1（metadata-only 行）→ 逐条 embed → 事务 delete+insert vec → 销账。
+   * 失败行保留待下轮重试；维度不匹配拒写（防脏向量入库）。
+   * 根因登记：reflection/consolidation/evolution 写链结构性不传 embedding（缺口 380 行全 rf_/consolidated）。
+   */
+  async backfillL1Vectors(
+    embedFn: (text: string) => Promise<Float32Array>,
+    limit = 50,
+  ): Promise<{ scanned: number; backfilled: number; failed: number }> {
+    if (this.degraded || !this.vecTablesReady) return { scanned: 0, backfilled: 0, failed: 0 };
+    const rows = this.db
+      .prepare(
+        "SELECT record_id, content, updated_time FROM l1_records WHERE record_id NOT IN (SELECT id FROM l1_vec_rowids) LIMIT ?",
+      )
+      .all(limit) as Array<{ record_id: string; content: string; updated_time: string }>;
+    let backfilled = 0;
+    let failed = 0;
+    for (const { record_id, content, updated_time } of rows) {
+      try {
+        const embedding = await embedFn(content);
+        if (!embedding || embedding.length !== this.dimensions) {
+          failed++;
+          continue;
+        }
+        this.db.exec("BEGIN");
+        try {
+          this.stmtDeleteVec!.run(record_id);
+          this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer), updated_time);
+          this.db.exec("COMMIT");
+          backfilled++;
+        } catch (txErr) {
+          try {
+            this.db.exec("ROLLBACK");
+          } catch {
+            /* ignore */
+          }
+          failed++;
+        }
+      } catch {
+        failed++;
+      }
+    }
+    return { scanned: rows.length, backfilled, failed };
+  }
+
   /** T15-B（向量健康）：最近一次成功向量写入的 ISO 时间（进程内值）；从未写过 → null。 */
   getLastVecWriteAt(): string | null {
     return this.lastVecWriteAt;

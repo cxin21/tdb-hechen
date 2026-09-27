@@ -12,6 +12,16 @@
 
 ### Added（MemoryCore·F-CLUSTER 记忆事实聚合 v1+v2，2026-09-26 何晨委托自主拍板）
 
+### Added（MemoryCore·EMBED-BACKFILL 向量缺口补偿器 R2，2026-09-27 何晨令「找根本原因根治」）
+
+- `backfillL1Vectors`（store 层）：列无向量 L1→逐条 embed→事务 delete+insert→销账；失败保留重试；维度不匹配拒脏写。
+- 调度接线（config-first）：`memory.lifecycle.embedBackfill`（缺省开/30min/批 50），server lifecycle 装配周期补偿。
+- 根因登记：reflection/consolidation/evolution 写链结构性不传 embedding（缺口 380 行全 rf_/consolidated）；主链 embed 失败 debug 级静默（l1-writer 已升 warn）。
+- 口径注记：向量行数÷记录数在多 chunk 场景高估（79.2% 实为条数 59.5%），补齐后行数口径 >100%；Panel 状态灯改条数口径待二期。
+- 生产活体（09-27）：flip 1min/批400 首跑 scanned=380 backfilled=380 failed=0，有向量 L1 条数 558/938 → 938/938（100%），已回切缺省常驻。
+- 测试：store.embed-backfill.test.ts 6 用例（补齐/幂等/失败保留/limit/空缺/维度）RED→GREEN，vitest 862/862，tsc 222 持平。
+
+
 - 召回注入行折叠：同源折叠（strip 内容口径逐字相同→保留首现行+「·同源×n」计数，v1 2cba420）+ 持续态优先折叠（批内 work_fact 行吸收其 metadata.evidence_record_ids 指向且同批在场的源行+「·源×n」，v2 bb6dc13）——排序零变更，注入行冗余真数据对照 -60.9%（10 组）
 - 折叠开关 `memory.recall.foldClusterEnabled`（缺省关=golden A/B 通过后拍板开启）；折叠点位于 vector 搜索路返回前（budget 之前去冗余）；fts 降级路不接线（宁漏勿错杀）
 - 折叠元数据透传：`FormatableMemory.recordId/evidenceIds`（vectorResultToFormatable 解析 evidence_record_ids，生产覆盖 99.2%）
