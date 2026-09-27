@@ -3879,6 +3879,19 @@ export class VectorStore implements IMemoryStore {
     return { scanned: rows.length, backfilled, failed };
   }
 
+  /** EMBED-BACKFILL R2-2（09-27 口径根治）：有向量的 L1 条数（记录粒度，多 chunk 不重复计）。 */
+  countL1WithVectors(): number {
+    try {
+      const row = this.db
+        .prepare("SELECT COUNT(*) AS n FROM l1_records WHERE record_id IN (SELECT DISTINCT id FROM l1_vec_rowids)")
+        .get() as { n: number };
+      return row?.n ?? 0;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} countL1WithVectors failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
   /** T15-B（向量健康）：最近一次成功向量写入的 ISO 时间（进程内值）；从未写过 → null。 */
   getLastVecWriteAt(): string | null {
     return this.lastVecWriteAt;

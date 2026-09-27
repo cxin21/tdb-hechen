@@ -652,6 +652,7 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * degraded / vec0 表未就绪时返回 0。旧后端可不实现（调用方 feature-detect 回退 countL1）。
    */
   countL1VectorRows?(): MaybePromise<number>;
+  countL1WithVectors?(): MaybePromise<number>;
   backfillL1Vectors?(
     embedFn: (text: string) => Promise<Float32Array>,
     limit?: number,

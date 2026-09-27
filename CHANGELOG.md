@@ -21,6 +21,15 @@
 - 生产活体（09-27）：flip 1min/批400 首跑 scanned=380 backfilled=380 failed=0，有向量 L1 条数 558/938 → 938/938（100%），已回切缺省常驻。
 - 测试：store.embed-backfill.test.ts 6 用例（补齐/幂等/失败保留/limit/空缺/维度）RED→GREEN，vitest 862/862，tsc 222 持平。
 
+### Fixed（MemoryCore·R2-2 覆盖度口径根治，2026-09-27 何晨令「不要写临时补丁」）
+
+- 根因：覆盖度=向量行数÷元数据行数——两种粒度相除（多 chunk 行虚增，79.2% 实为条数 59.5%，补齐后 1.197 荒谬显示）；错误口径不止显示一处，l1-dedup 部分死亡判据同款（多 chunk 场景漏报）。
+- `countL1WithVectors()`（store 层记录粒度统计能力）：有向量 L1 条数；VDB 后端未实现时消费方回退行数口径（守卫式）。
+- 消费点全链修正：server `buildMemoryHealth`（显示，Panel 环形归正 ≤1）+ `l1-dedup` 部分死亡 warn 判据（行为）；`hasVectorData` 布尔判据（vecRows>0）粒度无害保留；vecRows/metaRows 原始计数透传不丢。
+- 测试：gateway/memory-health.test.ts 4 用例（半覆盖/全覆盖/除零/透传）RED→GREEN（RED 2 失败恰为口径缺陷本体），vitest 866/866，tsc 222 持平。
+- 生产活体：/health `vectorCoverage=1`（945 条全覆盖，vecRows=1130 原始行数保留），恒 ≤1。
+
+
 
 - 召回注入行折叠：同源折叠（strip 内容口径逐字相同→保留首现行+「·同源×n」计数，v1 2cba420）+ 持续态优先折叠（批内 work_fact 行吸收其 metadata.evidence_record_ids 指向且同批在场的源行+「·源×n」，v2 bb6dc13）——排序零变更，注入行冗余真数据对照 -60.9%（10 组）
 - 折叠开关 `memory.recall.foldClusterEnabled`（缺省关=golden A/B 通过后拍板开启）；折叠点位于 vector 搜索路返回前（budget 之前去冗余）；fts 降级路不接线（宁漏勿错杀）

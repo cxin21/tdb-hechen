@@ -27,7 +27,7 @@ import { buildTraceParams } from "../types.js";
 const TAG = "[memory-tdai][l1-dedup]";
 
 // ── T15-A（向量健康）进程级 warn-once 标记（R3：部分降级也要可见，但不刷屏）──
-/** 覆盖率分级 warn（vecRows/metaRows < 0.9）：每进程只发一次。 */
+/** 覆盖率分级 warn（coveredRows/metaRows < 0.9，R2-2 条数口径）：每进程只发一次。 */
 let vectorCoverageWarned = false;
 /** 旧后端回退 warn（无 countL1VectorRows 走 countL1）：每进程只发一次。 */
 let legacyCountWarned = false;
@@ -134,8 +134,14 @@ export async function batchDedup(params: {
       // 但 warn 一次/进程（R3：部分降级也要可见——dedup 候选可能不全）。
       if (hasVectorData) {
         const metaRows = await vectorStore.countL1();
-        if (metaRows > 0 && vecRows / metaRows < 0.9) {
-          warnVectorCoverageOnce(logger, vecRows, metaRows);
+        // R2-2 口径根治：部分死亡检测用记录粒度——行数比值在多 chunk 场景漏报
+        //（例：300/500 条有向量但 vecRows=450 → 0.9 误判健康）。
+        let coveredRows = vecRows;
+        if (typeof vectorStore.countL1WithVectors === "function") {
+          coveredRows = await vectorStore.countL1WithVectors();
+        }
+        if (metaRows > 0 && coveredRows / metaRows < 0.9) {
+          warnVectorCoverageOnce(logger, coveredRows, metaRows);
         }
       }
     } else {

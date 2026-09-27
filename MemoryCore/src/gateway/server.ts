@@ -141,12 +141,14 @@ export interface MemoryHealthStats {
   /** 进入当前 embedding 状态的时刻（ISO）；从未翻转 → null。 */
   degradedSince: string | null;
   /** 最近一次成功向量写入时刻（进程内内存值）；从未写过 → null。 */
+  /** R2-2：有向量 L1 条数（记录粒度，多 chunk 不重复计）。后端未实现时回退 vecRows。 */
+  coveredRows: number;
   lastVecWriteAt: string | null;
 }
 
 /** /health 响应里的 memory 子对象。 */
 export interface MemoryHealthInfo {
-  /** vecRows / max(metaRows, 1) —— <0.9 即部分死亡（G1：104/203≈0.51）。 */
+  /** coveredRows / max(metaRows, 1)（R2-2 条数口径）—— <0.9 即部分死亡（G1：104/203≈0.51）；恒 ≤1。 */
   vectorCoverage: number;
   vecRows: number;
   metaRows: number;
@@ -160,7 +162,7 @@ export interface MemoryHealthInfo {
  */
 export function buildMemoryHealth(stats: MemoryHealthStats): MemoryHealthInfo {
   return {
-    vectorCoverage: stats.vecRows / Math.max(stats.metaRows, 1),
+    vectorCoverage: stats.coveredRows / Math.max(stats.metaRows, 1),
     vecRows: stats.vecRows,
     metaRows: stats.metaRows,
     embedding: stats.embeddingStatus,
@@ -342,6 +344,7 @@ export class TdaiGateway {
     at: number;
     vecRows: number;
     metaRows: number;
+    coveredRows: number;
     lastVecWriteAt: string | null;
   } | null = null;
   /** Guards against concurrent / repeated stop() invocations (e.g. multiple SIGINT). */
@@ -854,6 +857,7 @@ export class TdaiGateway {
       const store = this.core.getVectorStore();
       let vecRows = 0;
       let metaRows = 0;
+      let coveredRows = 0;
       let lastVecWriteAt: string | null = null;
       if (store) {
         try {
@@ -861,6 +865,11 @@ export class TdaiGateway {
             vecRows = await store.countL1VectorRows();
           }
           metaRows = await store.countL1();
+          // R2-2 口径根治：条数口径；后端未实现时回退行数（VDB 等旧后端）。
+          coveredRows = vecRows;
+          if (typeof store.countL1WithVectors === "function") {
+            coveredRows = await store.countL1WithVectors();
+          }
         } catch (err) {
           this.logger.warn(
             `${TAG} [vector-health] count collection failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
@@ -870,12 +879,13 @@ export class TdaiGateway {
           lastVecWriteAt = store.getLastVecWriteAt();
         }
       }
-      this.memoryHealthStatsCache = { at: now, vecRows, metaRows, lastVecWriteAt };
+      this.memoryHealthStatsCache = { at: now, vecRows, metaRows, coveredRows, lastVecWriteAt };
     }
     const c = this.memoryHealthStatsCache;
     return {
       vecRows: c.vecRows,
       metaRows: c.metaRows,
+      coveredRows: c.coveredRows,
       lastVecWriteAt: c.lastVecWriteAt,
       embeddingStatus: this.embeddingProbe.status,
       degradedSince: this.embeddingProbe.since,
