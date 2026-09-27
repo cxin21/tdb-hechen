@@ -36,7 +36,6 @@ export interface ConsolidationWorkerDeps {
   /** 持久化用 store（供 upsertL1）。缺省不持久化/仅返回。 */
   store?: IMemoryStore;
   /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
-
   embeddingService?: { embed(t: string): Promise<Float32Array> } | null;
   /** P2-T14（H-B2）：租户 filter——源记忆租户字段缺失时，持续态归属兜底为 filter 值（与读侧同一租户）。 */
   filter?: { teamId?: string; userId?: string; agentId?: string; taskId?: string };
