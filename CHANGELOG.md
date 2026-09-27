@@ -29,6 +29,16 @@
 - 测试：gateway/memory-health.test.ts 4 用例（半覆盖/全覆盖/除零/透传）RED→GREEN（RED 2 失败恰为口径缺陷本体），vitest 866/866，tsc 222 持平。
 - 生产活体：/health `vectorCoverage=1`（945 条全覆盖，vecRows=1130 原始行数保留），恒 ≤1。
 
+### Fixed（MemoryCore·R1 生命周期写链源头嵌入，2026-09-27 何晨拍板开做——嵌入覆盖根治最后一块）
+
+- 根因收口：reflection/consolidation/evolution 三写链 `upsertL1(rec[, undefined])` 结构性不传 embedding → 产物（rf_/consolidated）生来无向量，仅靠补偿器 30min 窗口兜底。
+- `embed-helpers.ts` 单一源 `embedForLifecycle`：写入前嵌入；embed 失败回退 metadata-only + warn（不阻塞写链，产物不丢，补偿器兜底）；无 service 时原行为（向后兼容）。
+- 三 worker deps +`embeddingService`（结构类型最小耦合）→ scheduler 分发三处接线 → `startLifecycleScheduler` 签名 → server 装配 `this.core.getEmbeddingService()`。
+- 补丁策略：全子串替换（consolidation-worker.ts 为 CRLF 文件，整行替换会毁行尾——子串替换行尾天然保留）；插入行 EOL 自适应。
+- 测试：lifecycle-embed.test.ts 5 用例（helper 成功/失败回退/无 service + reflection 集成 spy 捕获第二参 Float32Array + embed 失败仍写入）RED（模块不存在）→GREEN 5/5，vitest 871/871，tsc 222 持平。
+- 生产活体：重启后 vectorCoverage=1（953 条全覆盖）、无新增启动错误、补偿器常驻；自然周期产物带向量随下一轮 consolidation/reflection 运行观察确认（登记观察项）。
+
+
 
 
 - 召回注入行折叠：同源折叠（strip 内容口径逐字相同→保留首现行+「·同源×n」计数，v1 2cba420）+ 持续态优先折叠（批内 work_fact 行吸收其 metadata.evidence_record_ids 指向且同批在场的源行+「·源×n」，v2 bb6dc13）——排序零变更，注入行冗余真数据对照 -60.9%（10 组）

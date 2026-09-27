@@ -2188,6 +2188,8 @@ export class TdaiGateway {
         startLifecycleScheduler({
           store: lifecycleStore as never,
           llmRunner: runner as never,
+          // R1（09-27 源头嵌入）：生命周期产物写入即嵌入；失败回退 metadata-only（补偿器兜底）。
+          embeddingService: this.core.getEmbeddingService(),
           // P2-T14（H-B2）：租户 filter 接线——config 显式解析的 memory.lifecycle.filter
           // （缺省 undefined = 不传 = 兼容单机）。巩固/遗忘读侧按此收窄，
           // 数据级组校验由 grouping 的组内租户一致性检查兜底。

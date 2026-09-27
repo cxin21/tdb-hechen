@@ -92,7 +92,7 @@ export function mapL1RowToRecord(r: Record<string, unknown>): Record<string, unk
   };
 }
 
-async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config: LifecycleConfig; logger?: Logger }): Promise<void> {
+async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config: LifecycleConfig; logger?: Logger; embeddingService?: { embed(t: string): Promise<Float32Array> } | null }): Promise<void> {
   const now = new Date().toISOString();
   deps.logger?.info?.(`[lifecycle] tick ${now}`);
   const queryL1 = async () => {
@@ -113,6 +113,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
         config: deps.config.consolidation,
         logger: deps.logger,
         store: deps.store,
+        embeddingService: deps.embeddingService,
         // P2-T14（H-B2）：写路径带同一 filter——源记忆租户缺失时，持续态归属兜底为 filter 值
         filter: deps.config.filter,
       });
@@ -173,6 +174,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
         llmRunner: deps.llmRunner,
         config: deps.config.evolution,
         store: deps.store,
+        embeddingService: deps.embeddingService,
         logger: deps.logger,
       });
       if (res.ran) {
@@ -191,7 +193,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
   // 语义=触发生成时机增强（spec §2.8）；固定 interval 兜底由 consolidation 既有节拍承担。
   if (deps.config.reflection?.enabled) {
     try {
-      const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter });
+      const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter, embeddingService: deps.embeddingService });
       deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten}`);
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -208,7 +210,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
 }
 
 /** 启动周期调度（幂等）。返回 stop 函数。 */
-export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: LLMRunner; config?: Partial<LifecycleConfig>; logger?: Logger }): () => void {
+export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: LLMRunner; config?: Partial<LifecycleConfig>; logger?: Logger; embeddingService?: { embed(t: string): Promise<Float32Array> } | null }): () => void {
   const cfg = { ...DEFAULT_LIFECYCLE_CONFIG, ...(deps.config ?? {}) };
   if (!cfg.enabled) return () => {};
   if (timer) clearInterval(timer);
@@ -221,7 +223,7 @@ export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: 
       return;
     }
     runOnceInFlight = true;
-    void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger })
+    void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger, embeddingService: deps.embeddingService })
       .catch(() => {})
       .finally(() => { runOnceInFlight = false; stallSkips = 0; });
   };

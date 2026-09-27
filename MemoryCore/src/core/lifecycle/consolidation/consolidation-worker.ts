@@ -9,6 +9,7 @@
  *   - 租户继承：持续态必须继承源记忆的 team/user/agent，否则隔离查询召不回自己的巩固产物。
  *   - work_fact 不参与源分组（防"摘要的摘要"自我 reinforce，且让 minCount/可用 subject 计数真实）。
  */
+import { embedForLifecycle } from "../embed-helpers.js";
 import type { IMemoryStore } from "../../store/types.js";
 import type { MemoryRecord } from "../../record/l1-writer.js";
 import type { LLMRunner, Logger } from "../../types.js";
@@ -34,6 +35,9 @@ export interface ConsolidationWorkerDeps {
   logger?: Logger;
   /** 持久化用 store（供 upsertL1）。缺省不持久化/仅返回。 */
   store?: IMemoryStore;
+  /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
+
+  embeddingService?: { embed(t: string): Promise<Float32Array> } | null;
   /** P2-T14（H-B2）：租户 filter——源记忆租户字段缺失时，持续态归属兜底为 filter 值（与读侧同一租户）。 */
   filter?: { teamId?: string; userId?: string; agentId?: string; taskId?: string };
 }
@@ -215,7 +219,7 @@ export async function runConsolidation(deps: ConsolidationWorkerDeps): Promise<C
         const existing = existingDurativeOf(s.subject, all);
         const rec = durativeToMemoryRecord(s.durative, existing, s.evSource, deps.filter);
         rec.metadata = { ...(rec.metadata ?? {}), evidence_ids: s.sourceIds } as Record<string, unknown> as MemoryRecord["metadata"];
-        if (deps.store.upsertL1(rec, undefined)) {
+        if (deps.store.upsertL1(rec, await embedForLifecycle(deps.embeddingService, String(rec.content ?? ""), "[consolidation]", deps.logger))) {
           persisted++;
           // 时空网络/回忆：持续态(work_fact) → 其点状证据，建 part_of 边（记忆图可见"证据链"）
           if (deps.store.addLink && s.sourceIds.length > 0) {

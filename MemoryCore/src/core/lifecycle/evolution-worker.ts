@@ -30,6 +30,7 @@
  *
  * 观察期遥测（spec §4.5）：门条件逐项计数，日志行 gate={...}。
  */
+import { embedForLifecycle } from "./embed-helpers.js";
 import type { IMemoryStore } from "../store/types.js";
 import type { Logger } from "../types.js";
 
@@ -132,6 +133,9 @@ export interface EvolutionWorkerDeps {
   llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> } | null;
   config?: Partial<EvolutionWorkerConfig>;
   store?: IMemoryStore;
+  /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
+
+  embeddingService?: { embed(t: string): Promise<Float32Array> } | null;
   logger?: Logger;
 }
 
@@ -282,7 +286,7 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
         arousal: newer.arousal ?? null,
         significance: sigOld !== null || sigNew !== null ? Math.max(sigOld ?? 0, sigNew ?? 0) : null,
       };
-      if (!store.upsertL1(merged as never, undefined)) {
+      if (!store.upsertL1(merged as never, await embedForLifecycle(deps.embeddingService, String(merged.content ?? ""), "[evolution]", log))) {
         gate.llmError++;
         log?.warn?.(`[evolution] upsertL1 failed for merged record of ${older.id}/${newer.id} — 只留 conflict 边（宁缺毋滥）`);
         continue;

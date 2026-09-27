@@ -9,6 +9,7 @@
  * 租户：批内记录租户去重聚合（与 forgetting 同式——全表扫描路径无单租户概念）；
  * work_fact 不入触发累计（防"反思的反思"自我 reinforce，与 consolidation 分组同原则）。
  */
+import { embedForLifecycle } from "./embed-helpers.js";
 import type { Logger } from "../types.js";
 
 export interface ReflectionConfig {
@@ -25,6 +26,9 @@ export interface ReflectionDeps {
   queryL1: () => Promise<Array<Record<string, unknown>>>;
   config?: ReflectionConfig;
   store?: { upsertL1(record: unknown, embedding?: unknown): boolean | Promise<boolean> };
+  /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
+
+  embeddingService?: { embed(t: string): Promise<Float32Array> } | null;
   llmRunner?: { run(p: { prompt: string; systemPrompt: string; taskId: string; timeoutMs: number; maxTokens: number }): Promise<string | undefined> | string | undefined };
   logger?: Logger;
   filter?: { teamId?: string; userId?: string; agentId?: string; taskId?: string };
@@ -166,7 +170,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
         version: 1,
         certainty: "observed",
       };
-      const ok = await Promise.resolve(deps.store.upsertL1(rec));
+      const ok = await Promise.resolve(deps.store.upsertL1(rec, await embedForLifecycle(deps.embeddingService, String(rec.content ?? ""), "[reflection]", deps.logger)));
       if (ok) cardsWritten++;
     }
   }
