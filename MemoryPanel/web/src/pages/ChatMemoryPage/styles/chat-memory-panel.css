@@ -1791,6 +1791,8 @@
 /* ===== V10-NOGO-NARROW：窄屏属性行长值换行（2026-09-25） ===== */
 @media (max-width: 767px) {
   ._attr-val { overflow-wrap: anywhere; }
+  /* V15-NARROW-2（2026-09-30）：记忆块标题窄屏禁省略号截断，换行撑开（信息完整性硬标准；活体实测 375px 截断 75/208px） */
+  ._memory-card-title { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 }
 
 /* F-CLUSTER v5 evidence drawer (2026-09-30): 簇视图证据源展开（信息完整性：换行撑开，禁省略号截断） */

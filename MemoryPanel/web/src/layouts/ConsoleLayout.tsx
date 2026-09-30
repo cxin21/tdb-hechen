@@ -85,7 +85,7 @@ export function ConsoleLayout() {
     setOpenPages((prev) => (prev.includes(activePage) ? prev : [...prev, activePage]));
   }, [activePage, isGuide]);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 768 : false)); // V15-NARROW-1（2026-09-30）窄屏默认折叠侧栏 200px->48px 图标轨（375px 活体实证视口越界 20->0），桌面不变
 
   // 首次使用引导：登录后按「每用户仅首次」判定自动弹出
   const currentUserId = auth?.user_id;
