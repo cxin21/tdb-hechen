@@ -114,6 +114,7 @@ import {
 import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 // D-0（2026-09-21）：/v3/atomic/query 出参映射单一源——7 字段补齐 + 既有字段逐位。
 import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-fields.js";
+import { handleAtomicByIds } from "./atomic-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
@@ -188,6 +189,7 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   // C6（graph 设计 §4 / spec §6.4 #1）：两节点间 BFS 最短路径（requestIsolation 消费同 neighbors）
   "/atomic/path",
   "/atomic/search",
+  "/atomic/by-ids",
   // DS-RECALL-MERGE-001（合并召回 · 核心单点）：组装好的注入块返回端点（v3-only，不挂 /v2 孪生）
   "/recall",
   "/atomic/archive/list",
@@ -491,6 +493,7 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/atomic/neighbors": handleAtomicNeighbors,
   "/atomic/path": handleAtomicPath,
   "/atomic/search": handleAtomicSearch,
+  "/atomic/by-ids": handleAtomicByIds,
   "/atomic/archive/list": handleArchiveList,
   "/atomic/archive/restore": handleArchiveRestore,
   "/core-memory/read": handleCoreMemoryRead,
