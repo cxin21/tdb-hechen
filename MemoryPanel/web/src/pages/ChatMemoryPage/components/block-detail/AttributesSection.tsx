@@ -7,9 +7,9 @@
  * atomic-query-fields.ts 单一源已补齐七字段，全列呈现）。V7-UI-3.3 起「属性」改弹出卡呈现（全宽防挤压，拍板「不行就改成弹出卡片」）；
  * 「复制 JSON」导出全部在场属性。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Modal } from 'tea-component';
-import type { ChatMemoryLayerItem } from '@/lib/api/chat-memory';
+import { chatMemoryApi, type ChatMemoryLayerItem } from '@/lib/api/chat-memory';
 
 type Row = { k: string; v: string };
 
@@ -41,6 +41,25 @@ function recurrenceText(v: unknown): string | null {
 export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // F-CLUSTER §5 簇视图：证据源展开抽屉（按 id 回读内核 /v3/atomic/by-ids——
+  // B3 归档回退 + archived 标记；源内容在此可见（用户看不到=没做）。
+  const evIds = useMemo(() => {
+    const raw = (item.metadata ?? {}) as Record<string, unknown>;
+    const v = raw.evidence_ids;
+    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string' && x.length > 0);
+    if (typeof v === 'string' && v.trim()) return [v.trim()];
+    return [];
+  }, [item]);
+  const [evOpen, setEvOpen] = useState(false);
+  const [evItems, setEvItems] = useState<Array<Record<string, unknown>> | null>(null);
+  const [evError, setEvError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!evOpen || evItems !== null) return;
+    chatMemoryApi.evidenceByIds(item.id, evIds)
+      .then((r) => setEvItems(r.items))
+      .catch((e) => setEvError(e instanceof Error ? e.message : String(e)));
+  }, [evOpen, evItems, item.id, evIds]);
 
   const rows = useMemo<Row[]>(() => {
     const meta = (item.metadata ?? {}) as Record<string, unknown>;
@@ -138,6 +157,32 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
                 </div>
               ))}
             </div>
+            {evIds.length > 0 && (
+              <div className="_ev-drawer">
+                <button type="button" className="_ev-toggle" aria-expanded={evOpen} onClick={() => setEvOpen(!evOpen)}>
+                  {evOpen ? '▾' : '▸'} 证据源（{evIds.length} 条）
+                </button>
+                {evOpen && (
+                  <div className="_ev-list">
+                    {evError && <div className="_ev-state _ev-state--error">读取失败：{evError}</div>}
+                    {!evError && evItems === null && <div className="_ev-state">读取中…</div>}
+                    {!evError && evItems !== null && evItems.length === 0 && (
+                      <div className="_ev-state">无匹配源记录（可能已物理清理）</div>
+                    )}
+                    {evItems?.map((s) => (
+                      <div key={String(s.record_id ?? s.id ?? '')} className="_ev-item">
+                        <div className="_ev-item-head">
+                          <span className="_ev-item-type">{String(s.type ?? '')}</span>
+                          {s.archived ? <span className="_ev-archived">已归档</span> : null}
+                          <span className="_ev-item-id">{String(s.record_id ?? '')}</span>
+                        </div>
+                        <div className="_ev-item-content">{String(s.content ?? '')}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </Modal.Body>
           <Modal.Footer>
             <button type="button" className="_nb-pathlink" onClick={handleCopy}>

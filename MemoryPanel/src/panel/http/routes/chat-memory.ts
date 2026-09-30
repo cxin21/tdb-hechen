@@ -2736,6 +2736,52 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   // 权限：读权限（owner / team-shared / borrowed，与 /chat-memory/layer 一致，
   // 搜索属于读操作）。统一返回 { items, total }，item 附带 score（相关度）。
   // ==========================================================================
+  // F-CLUSTER §5 Panel 簇视图：证据源按 id 批量回读（经内核 /v3/atomic/by-ids——
+  // B3 归档回退 + archived 标记；行级租户过滤在内核侧纵深双保险，d73e8f9a 缺头拒绝）。
+  api.post("/chat-memory/evidence-by-ids", validatePanelMetaHeaders(deps), async (c) => {
+    const ctx = buildCtx(c);
+    const body = await readJson(c);
+    const blockId = requiredBlockId(body);
+    const ids = Array.isArray(body?.ids)
+      ? body.ids.filter((x: unknown): x is string => typeof x === "string" && x.length > 0)
+      : [];
+    if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+    if (ids.length === 0 || ids.length > 100) return respondControlError(c, 400, "INVALID_IDS");
+
+    const parsed = parseChatMemoryAssetId(blockId);
+    if (!parsed) return respondEnvelope(c, okEnvelope(c, { items: [] }));
+    const meUserId = await resolveCallerUserId(deps, ctx);
+    if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+    const assetEnv = await deps.metaKernel.invoke("asset/get", { asset_id: blockId }, ctx);
+    if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data))
+      return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+    if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+    const asset = assetEnv.data as AssetRaw;
+    if (asset.asset_type !== "chat_memory") return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+    const canRead = await authorizeChatMemoryRead(deps, ctx, asset, meUserId, blockId);
+    if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+
+    const idFields = {
+      team_id: parsed.teamId,
+      agent_id: parsed.agentId,
+      user_id: asset.owner_user_id,
+      session_id: "default",
+    };
+    const cred = toKernelCredentials(ctx, { timeoutMs: 30_000 });
+    try {
+      const env = await deps.kernelHttp.postEnvelope<{ items?: unknown[] }>(
+        "/v3/atomic/by-ids",
+        { ...idFields, ids },
+        cred,
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      const items = (env.data as { items?: unknown[] } | null)?.items ?? [];
+      return respondEnvelope(c, okEnvelope(c, { items }));
+    } catch {
+      return respondControlError(c, 502, "KERNEL_UNAVAILABLE");
+    }
+  });
+
   api.post("/chat-memory/search", validatePanelMetaHeaders(deps), async (c) => {
     const ctx = buildCtx(c);
     const body = await readJson(c);

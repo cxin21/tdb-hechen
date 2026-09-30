@@ -194,6 +194,9 @@ export const chatMemoryApi = {
     chatMemoryCall<{ items: ChatMemoryBlock[] }>('my-agents', { team_id: teamId }),
 
   /** 召回/灵魂注入日志（D-8 拍板定案）：BFF 直读日志文件，分页倒序+租户过滤 */
+  // F-CLUSTER §5：证据源按 id 批量回读（/chat-memory/evidence-by-ids，含归档回退）
+  evidenceByIds: (blockId: string, ids: string[]) =>
+    chatMemoryCall<{ items: Array<Record<string, unknown>> }>('evidence-by-ids', { blockId, ids }),
   recallJournal: (teamId: string, agentId: string, page = 1, pageSize = 20) =>
     chatMemoryCall<{
       items: RecallJournalEntry[];

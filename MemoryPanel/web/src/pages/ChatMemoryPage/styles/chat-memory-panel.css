@@ -1792,3 +1792,17 @@
 @media (max-width: 767px) {
   ._attr-val { overflow-wrap: anywhere; }
 }
+
+/* F-CLUSTER v5 evidence drawer (2026-09-30): 簇视图证据源展开（信息完整性：换行撑开，禁省略号截断） */
+._ev-drawer { margin-top: 8px; border-top: 1px solid rgba(127, 127, 127, 0.25); padding-top: 6px; }
+._ev-toggle { border: none; background: transparent; color: #2b7de9; cursor: pointer; font-size: 13px; padding: 2px 0; }
+._ev-list { max-height: 340px; overflow-y: auto; margin-top: 6px; }
+._ev-item { border-top: 1px dashed rgba(127, 127, 127, 0.3); padding: 6px 0; }
+._ev-item:first-child { border-top: none; }
+._ev-item-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; opacity: 0.75; }
+._ev-item-type { font-weight: 600; }
+._ev-archived { background: rgba(230, 150, 0, 0.15); color: #b06f00; border-radius: 3px; padding: 0 6px; }
+._ev-item-id { font-family: monospace; font-size: 11px; }
+._ev-item-content { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; line-height: 1.55; }
+._ev-state { padding: 6px 0; font-size: 13px; opacity: 0.7; }
+._ev-state--error { color: #c0392b; }
