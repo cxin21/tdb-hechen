@@ -109,3 +109,10 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 6. v2-router 新端点两处登记：handler 路由表 + V3_ALLOWED_SUBPATHS 白名单，漏一处=404。
 7. EOL 自适应补丁脚本（锚点 \n/\r\n 双试+插入按文件行尾生成）——MemoryPanel 源多为 CRLF/混合。
 8. 「登记≠真实」第 5 例：设计文档取证必须同时查代码缺省与生产 yaml 覆盖（character 池「休眠」误判根因）。
+
+## 八、2026-09-30「遗漏的全做」+设计全景审查轮收口（对应 Excel TDB-v14）
+
+- **主件 P1-P7 全闭环（5 commits 已推 origin，密扫 0）**：P1 Jaccard 观察项 strip 单一源迁移+P4 golden 重标重锚（42bbe94：A/B 5 形态 3/5→0/5；labels v3 11q/46 正例零死 id；新基线 P@5=0.653 线 0.633 gate passed）→ P2 源在场率 37.3% 非缺陷（488/492 在 l1_archive）/P3 逐字簇目标集=0 条件触发/P5 批容量 cap10 注入+58% 换折叠+1=不调生产（85f39a4 §6.6 落档）→ P6 Panel 簇视图全链（b215df2 core /v3/atomic/by-ids RED6/6→GREEN6/6·881/881·临时网关三态活体 + 8eb780a BFF evidence-by-ids+前端抽屉：门禁四件套 145/145·tsc2·bundle 三断言·双服务 200·生产 curl code=0 1live+1archive）→ P7 文档（9129fa1 CHANGELOG）。
+- **设计全景审查（本地全文分析，代码镜像 D:\Projects\temp\td-agemem，push=Everything up-to-date）**：specs 目录 39 份设计全景；六域/数据流/生命周期七批现场取证（每条 file:line）**无新发现缺口**（上轮 skill-extraction 假阴性修正=实为 skill/skill-extractor.ts）；soul-evolution 补充设计 M1✅M2✅（072c9bb 拍板执行记录链完整）M3=设计 §9 合规排队；backlog 6 项=「待讨论非承诺」性质（#2 coreRef 已闭环=GROW-EVO P2.1）；UI spec S1-S6 批 1-3 全落位（U-C1 进度环/U-C2 stale 徽标带 spec 引用注释）；**灵魂双测试执行记录在库**（v9 台账:14「真实数据通过」+v10 工作流:32+P1 SOP:945-962 实测回写）。
+- **门禁**：core **881/881** · tsc **222** · panel **145/145** · web tsc 存量 2 · vite build+bundle 三断言 · 密扫每 commit 0；生产 core+panel 双 200（MainPID 1942122，重启前 verify-before-kill 身份核实 1886628）。
+- **遗留/新登记**：①双页活体 DOM=**BLOCKED（环境受限非拍板）**——DSH browser provider 三连 no usable provider+服务器无 headless（chromium/puppeteer which 全空）+不引新依赖，替代证据=bundle 三断言+生产 curl 双过，provider 恢复即补；②**KEY-ROTATE 新登记 gated**——本轮排查 systemctl show 曾输出 TDAI_GATEWAY_API_KEY 明文一次（未入任何文档/记忆/commit）+systemd env 与 yaml server.apiKey 双密钥并存疑点（401 定责实证），轮换待拍板；③台账版本倒挂修正（上轮误导导出 v12→本轮 v14 接续 v13 为止 31 号）；④UI 裁决登记项（sigma 描边/金节点通道让位图例说明）未核实施低优在册。
