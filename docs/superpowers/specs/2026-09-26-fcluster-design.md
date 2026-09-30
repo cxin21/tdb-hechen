@@ -30,3 +30,30 @@
 - v3 逐字簇边回填（datafix-sop：备份先行+拍板执行窗）——使图查询/Panel 簇视图有边可依。
 - Panel 簇视图（主卡+「n 源」展开抽屉，二期设计呈报；组件路径先精确定位）。
 - 观察项：注记对 :736 既有 Jaccard 折叠的 bigram 影响（A2 分离度 9 倍余量下低风险，golden 覆盖）。
+
+
+## 6. 实施修正与转产实录（2026-09-30，0b7ef5a + f3dd273）
+
+> 本节修正/取代 §2 接线段声明与 §1/§4 基线；三层断点逐层现场取证（五点诊断探针走线 + 运行时 cfg.recall 键集打印），非推测定责。
+
+### 6.1 三层断点修复（本节取代 §2「fts 降级路不接线」）
+- **接线层**：折叠此前仅接 TCVDB nativeHybridSearch 分支，SQLite 主形态走 searchHybrid fallback 无折叠（结构性不可达，on=合闸无电线的开关）。修复=SearchResult 增 metas + fallback 同款三元接 foldClusterAware（auto-recall.ts:1261/:1279 双接线）。**「fts 降级路不接线」作废——现双路同接**。
+- **数据层**：FTS keyword 通道基座 recordToFormatable（:2289-2317）不带 recordId/evidenceIds（vectorResultToFormatable :2363-64 有）→ FTS 行 metas 全 undefined → foldByDurative 引用图建不起来。修复=基座补两字段（空 evidence→undefined 语义对齐）。
+- **配置层**：config.ts:100 类型声明自 09-26 存在，但 parseConfig 逐键手动装载遗漏 foldClusterEnabled → yaml true 装不进运行时（实锤 fcVal=undefined）。修复=bool(recallGroup, ...) ?? false（config.ts:1271）。
+
+### 6.2 数据面漂移（§1 基线过期，以本节数字为准，2026-09-30 只读实测）
+- work_fact 432/438=98.6% 带 evidence_record_ids（§1 的 366/369=99.2% 口径持平）；引用总数 1131（§1: 991）。
+- **源在场率 48.3%→37.3%**（1131 引用中 422 目标在 l1）——持续态增速快于其源写入，折叠触发上限被此约束。
+- **exact 同 content 组=0** → v1 foldSameSourceDuplicates 在真实库零原料零触发（§2 的 9/10 函数级对照为构造数据；动机样例「×5」已不存在）；保留无害，防未来。
+- 语义差异登记：设计「work_fact 行吸收」vs 实现「带 evidenceIds 行吸收」（超集）——当前数据面 anytype_with_evidence=432=wf 全集，语义等价。
+
+### 6.3 漏斗实测（2026-09-30，10 组真实查询，双网关 8422 on/8423 off 同种子）
+- 两级漏斗：级1 批内引用对（pairs）=召回同批带源，5/10；级2 有料触发折叠，**pairs>0 的 5/5 全部触发**（pairs=1→src=1 线性），零「有料不折」缺陷。
+- 注入块差异 5/10、5 行 ·源×2、off=65/on=64；无信息丢失（持续态行+计数可见）。批容量 4-5 行（maxResults=5）是级1 同批率 50% 的主要约束。
+- 对照 §2「10 组函数级 9 组折叠 23→9」：口径差=函数级构造批（源必在场）vs 真实查询批（源同批率 50%），非实现回归。
+
+### 6.4 转产状态（对照 §4 前置三项）
+1. 重启 core 加载折叠代码：**已完成**（2026-09-30 MainPID 1886628，active，health=200）。
+2. golden P@5 回归（验收线 0.897）：**未做——欠账**。前置已知阻塞：golden 桶语料漂移 + labels v2 过期（需先重标再重锚新基线），登记为独立任务；§5 观察项（Jaccard bigram 影响）同样待此验证。
+3. foldClusterEnabled 置 on+活体：**已完成**（tdai-gateway.yaml memory.recall.foldClusterEnabled:true，备份 /tmp/tdai-gateway.yaml.pre-flip；读回 fold=True；活体 A/B 5/10 触发、·源×2 在场）。
+   - 时序如实登记：③ 先于② 执行，依据=何晨 2026-09-29「继续执行」转产窗拍板 + 2026-09-30「修复，本会话完成」；② 欠账在册，golden 重锚完成后补回归。
