@@ -57,3 +57,7 @@
 2. golden P@5 回归（验收线 0.897）：**未做——欠账**。前置已知阻塞：golden 桶语料漂移 + labels v2 过期（需先重标再重锚新基线），登记为独立任务；§5 观察项（Jaccard bigram 影响）同样待此验证。
 3. foldClusterEnabled 置 on+活体：**已完成**（tdai-gateway.yaml memory.recall.foldClusterEnabled:true，备份 /tmp/tdai-gateway.yaml.pre-flip；读回 fold=True；活体 A/B 5/10 触发、·源×2 在场）。
    - 时序如实登记：③ 先于② 执行，依据=何晨 2026-09-29「继续执行」转产窗拍板 + 2026-09-30「修复，本会话完成」；② 欠账在册，golden 重锚完成后补回归。
+
+### 6.5 golden 重锚 + Jaccard 观察项闭环（2026-09-30，「遗漏的全做」执行轮）
+- **golden P@5 重锚（§4② 欠账清偿）**：labels v3（11 query/46 正例/零死 id/口径修正三处：rf_ 纳入+同语义簇整标+persona 不标+死 id 2c875ed7 剔除；备份 labels.jsonl.bak-v2）→ recall-anchor.mjs QUERIES 补第 11 条（硬编码集与 labels 一致性）→ 重跑 runs/2026-09-30T03-19-08.json：**corpus=48 labels=11、OFF determinism PASS、gate mean P@5=0.653 (pass) → 新基线 0.653、新验收线 0.633**（0.6183/0.5983 十 query 中间口径作废）。0.917/0.897 旧线正式由本节取代。
+- **§5 观察项（注记对 :735 Jaccard 的 bigram 影响）闭环**：foldNearDuplicates stripMeta 不剥折叠注记（memory-line-meta:23 剥=两套口径）+单遍链缺陷经 A/B 矩阵（5 形态近似对，/tmp/jaccard-ab.mjs 留证）实锤：S3 残留 soul、S4 生产折叠行 soul+时间全残留（注记顶掉 $ 锚）、S5 短行伪相似误折（分组差异 1/5）、S1/S2 纯内容两口径逐位一致。修复走 TDD：export foldNearDuplicates + RED-11（零内容交+同注记：闭包 J=4/11≈0.364 误折 vs 剥后 0；首版构造 union 算错未跨阈经数学复核修正）/RED-12（真近似护栏）→ 步1 注记剥离 → 步2 单一源迁移（memory-line-meta:13 登记的 v2 计划执行）。**迁移后复跑分组差异 0/5**；门禁 vitest **875/875**（+2）、tsc 222 持平。§2「A2 行为逐位不变」红线经矩阵实证保全：纯内容行零变更，差异组全部为 A2-R1 同类元数据缺陷修正。

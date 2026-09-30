@@ -12,6 +12,7 @@
 
 import type { MemoryTdaiConfig } from "../../config.js";
 import { foldClusterAware } from "./recall-fold-cluster.js";
+import { stripMemoryLineMeta } from "./memory-line-meta.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
@@ -82,7 +83,7 @@ const RECALL_LINE_SEPARATOR = "\n";
 // 在注入前折叠：字符 bigram Jaccard ≥ 0.6 视为近似重复，保留排序靠前的首条。
 // 纯 CPU 零 I/O；剥离行尾活动时间戳后比较（时间不同不代表内容不同）；
 // 阈值保守——真实不同主题记忆的 bigram Jaccard 通常 <0.3。
-function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
+export function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
   // 阈值 0.25 实测校准（2026-09-15）：重复组内 pairwise Jaccard 0.36-0.49，
   // 非重复 ≤0.04 —— 9 倍分离度。0.6 会被转述措辞稀释（实测 4 重复全部漏过）。
   // A2-R1（2026-09-16 对抗性审查回归修复，两步）：相似度必须在**内容**上比较——
@@ -91,12 +92,11 @@ function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
   // ② 行首 tag（type|session）也是元数据：同 tag 行恒共享 20+ bigram，短行对仅凭 tag 即逼近
   // 阈值（实测 ④-1 fixture：仅共享"召回专项"3 个内容 bigram 的两行仍被折，jaccard 0.254）。
   // A2 校准"非重复 ≤0.04"只在内容口径下成立——剥离行首 tag、行尾 soul 与时间段后比较。
-  const stripMeta = (t: string) =>
-    t
-      .replace(/^- \[[^\]]*\]\s*/, "")
-      .replace(/·soul\[[^\]]*\]\s*$/, "")
-      .replace(/·\(活动时间:[^)]*\)\s*$/, "")
-      .trimEnd();
+  // 单一源迁移（2026-09-30，memory-line-meta:13 登记的 v2 计划执行）：循环剥离到不动点 + 折叠注记。
+  // A/B 矩阵实证（5 形态近似对，/tmp/jaccard-ab.mjs）：单遍链在生产折叠行（注记顶掉 $ 锚）残留
+  // soul+时间段（S4）、短行伪相似误折（S5 分组差异 1/5）；循环侧全剥且纯内容行（S1/S2）两口径
+  // 逐位一致——迁移=修正 A2-R1 同类「元数据 bigram 主导」缺陷，非校准漂移。
+  const stripMeta = (t: string) => stripMemoryLineMeta(t);
   const grams = (t: string) => {
     const set = new Set<string>();
     for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));

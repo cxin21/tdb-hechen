@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { foldSameSourceDuplicates, foldByDurative, foldClusterAware } from "../recall-fold-cluster.js";
+import { foldNearDuplicates } from "../auto-recall.js";
 import { stripMemoryLineMeta } from "../memory-line-meta.js";
 
 /**
@@ -113,5 +114,22 @@ describe("F-CLUSTER v2 foldByDurative", () => {
     expect(out[0]).toContain("（巩固）");
     expect(out[0]).toContain("·同源×2"); // durative 吸收源后，残余同文行再并入
     expect(out[0].match(/·源×/g)?.length ?? 0).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("F-CLUSTER Jaccard 注记口径（RED-11/12，2026-09-30 观察项闭环）", () => {
+  // 数学构造（2026-09-30 修正版，首版 union 算错致未跨阈）：内容 bigram 零交（A=推进/进折/折叠，
+  // B=完成/成收/收口），双侧同「 ·源×2」注记共享 4 bigram（「 ·」「·源」「源×」「×2」）——
+  // 不剥注记 J=4/11≈0.364 ≥0.25 被误折；剥注记 J=0 不折。A2「相似度必须在内容上比较」红线的注记版。
+  it("RED-11 折叠注记不得进 Jaccard 口径：低内容重叠+双侧 ·源×2 → 不折", () => {
+    const a = "- [work_fact|s1] 推进折叠 ·源×2";
+    const b = "- [work_fact|s2] 完成收口 ·源×2";
+    expect(foldNearDuplicates([a, b])).toHaveLength(2);
+  });
+
+  it("RED-12 内容真近似（高 Jaccard）带注记仍折（护栏：修复不得过度剥离内容）", () => {
+    const a = "- [work_fact|s1] 推进折叠设计与验收流程 ·源×2";
+    const b = "- [work_fact|s2] 推进折叠设计与验收规范 ·源×3";
+    expect(foldNearDuplicates([a, b])).toHaveLength(1);
   });
 });

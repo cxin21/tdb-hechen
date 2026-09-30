@@ -69,6 +69,7 @@ const QUERIES = [
   "提案与待裁决机制",
   "测试与验收纪律",
   "多租户隔离保障",
+  "部署与脚本执行规范",
 ];
 /** Precision@5 粗门阈值：mean P@5 < 0.6 → 红牌（不阻塞）。阈值与 wiki golden 诚实基线 0.66 同量级。 */
 const P5_GATE_THRESHOLD = 0.6;
