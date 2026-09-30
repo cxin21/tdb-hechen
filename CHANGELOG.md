@@ -10,6 +10,13 @@
 
 ## [Unreleased] - 2026-09-26
 
+### Fixed — F-CLUSTER v2 SQLite fallback 折叠接线修复（2026-09-30，0b7ef5a）
+
+- **三层断点根治（逐层现场取证，非猜测）**：①接线层——折叠此前仅接 TCVDB nativeHybridSearch 分支，SQLite 主形态走 searchHybrid fallback 无折叠（结构性不可达）→ SearchResult 增 metas、fallback 同款三元接 foldClusterAware；②数据层——FTS keyword 通道基座 recordToFormatable 不带 recordId/evidenceIds（vectorResultToFormatable 有）→ metas 全 undefined → foldByDurative 引用图建不起来 → 补同名两字段；③配置层——config.ts:100 类型声明自 09-26 存在但 parseConfig 逐键装载遗漏 foldClusterEnabled → yaml true 装不进运行时（实锤 fcVal=undefined）→ 补 bool(recallGroup, ...) ?? false。
+- **RED→GREEN**：T5（searchHybrid 返回 metas 契约）+ T6（FTS 基座折叠元数据）先行失败后转绿。门禁：vitest 873/873（+2）、tsc 222 持平。
+- **活体 A/B**：双临时网关（8422 on / 8423 off）10 组同种子对照——5/10 query 触发折叠、5 行 ·源×2 标记、「交付测试先行 RED」off=7→on=6 源行真吸收减行；无信息丢失（持续态行+计数可见）。诊断探针全部移除（residual=NONE）后终验一致（off=65/on=64）。
+- **生产转产**：tdai-gateway.yaml `memory.recall.foldClusterEnabled: true`（改前备份 /tmp/tdai-gateway.yaml.pre-flip）→ 重启 core MainPID 1886628、service active、health=200、配置读回 fold=True。
+
 ### Added（MemoryCore·F-CLUSTER 记忆事实聚合 v1+v2，2026-09-26 何晨委托自主拍板）
 
 ### Added（MemoryCore·EMBED-BACKFILL 向量缺口补偿器 R2，2026-09-27 何晨令「找根本原因根治」）
