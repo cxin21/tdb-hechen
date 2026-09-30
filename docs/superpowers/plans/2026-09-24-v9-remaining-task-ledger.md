@@ -84,7 +84,7 @@
 | 编号 | 任务 | 状态 | 缺口 | 下一步 |
 |---|---|---|---|---|
 | UI-3.2 | rc=101 行 m_1789437830444_473d770a（agt-kfynybx0ly，L1=504）Panel 记忆块列表不可达 | NEEDS_CONTEXT | 平台资产层在仓外——需用户平台侧共享该 chat_memory 或批准 Panel 增「本 agent 记忆直读」入口 | 等用户动作/拍板，勿自行实施 |
-| NO-GO v2 微项 | G1 68% svg 文本 3px 微溢出 / G3 感受条首要卡 tag 冗长 / G4 弹卡 key 列 sticky / 窄屏单行长描述换行控制 / 待裁决红线提案卡与分区卡风格统一 | **DONE_WITH_CONCERNS（2026-09-30 对账补正）**：196e480（2026-09-25 拍板执行③）已落地 G3/G4/窄屏/提案卡四项，G1 复查自纠关闭 | 2026-09-30 真实浏览器 375px 活体复测（ui-live-check5/6）=0 隐藏裁切（越界全在可横滚祖先内），但登记 3 项窄屏体验缺陷：侧栏占 200px=53% 视口 / `_memory-card-title` 省略号截断 75/208px / tabstrip 需横滚 | 窄屏 3 项修复实施（验收探针=ui-live-check5/6 几何扫描） |
+| NO-GO v2 微项 | G1 68% svg 文本 3px 微溢出 / G3 感受条首要卡 tag 冗长 / G4 弹卡 key 列 sticky / 窄屏单行长描述换行控制 / 待裁决红线提案卡与分区卡风格统一 | **DONE（2026-09-30 窄屏收口 323f4d3）**：196e480（拍板执行③）已落地 G3/G4/窄屏/提案卡四项，G1 复查自纠关闭；后登记窄屏 3 缺陷已收口——①`<768px` 默认折叠侧栏 200→48px（ConsoleLayout innerWidth 初态）②`_memory-card-title` 窄屏 white-space:normal+text-overflow:clip 禁截断 ③tabstrip 横滚裁定=tab 溢出标准形态设计内（隐藏反丢信息） | 2026-09-30 活体双视口（ui-live-check8/9，Playwright 真实浏览器）：1440 侧栏 200 不变、几何全净；375 侧栏 48 默认折叠、真裁切 0（越界 11+7 处全在可横滚祖先内可达）、标题省略号 0、整页横滚 0；门禁 panel vitest **145/145**·web tsc **存量 2 持平**·build ✓+bundle 双断言（css text-overflow:clip=1/js innerWidth<768=1）·panel 重启 active+HTTP 200 | 无（登记观测项：soul 内容框窄屏 28-48px 可横滚=设计内可达，不另修） |
 
 ## 五、gated 待拍板清单（全部维持不动，勿抢跑）
 

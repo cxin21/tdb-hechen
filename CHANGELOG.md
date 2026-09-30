@@ -6,6 +6,7 @@
 - Panel 证据源展开抽屉（F-CLUSTER §5 簇视图）：BFF /api/v1/chat-memory/evidence-by-ids（blockId ACL 同 search）→ chatMemoryApi.evidenceByIds → 属性 Modal 内「证据源（n 条）」展开（type+已归档徽章+content 换行撑开禁截断）；门禁 145/145·tsc 2·build+bundle 三断言·双服务重启 200·生产 curl 双过（8eb780a）。
 - P5 批容量 A/B：maxResults 5→10 注入 +58%（66→104 行）仅换折叠 +1（5→6，噪声量级）→ 评估结论不调生产 maxResults（漏斗级1 主约束=源在场率 37.3% 非批容量）。
 - P2/P3 定责收口（§6.6）：源在场率 37.3%=dedup-merge 归档 B3 设计内非缺陷；v3 逐字簇目标集双口径 0 转条件触发。
+- V15 窄屏修复（323f4d3）：ConsoleLayout `<768px` 默认折叠侧栏（200→48px 图标轨，tea `fit-content` 实证）+ `_memory-card-title` 窄屏禁省略号换行（375px 实测 75/208px 截断归零）；门禁 panel vitest 145/145·web tsc 存量 2 持平·vite build ✓+bundle 双断言·tdai-panel 重启 200；活体双视口=1440 侧栏 200 不变几何全净、375 侧栏 48 默认折叠+真裁切 0+标题截断 0+整页横滚 0（ui-live-check8/9）；tabstrip 横滚裁定=tab 溢出标准形态设计内。
 # Changelog
 
 本文件记录 **TencentDB Agent Memory** 的显著变更，格式遵循
