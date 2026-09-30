@@ -1265,6 +1265,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // V2-3（引擎三 E3.1/E3.2）注意力平衡旋钮（默认开）+ RV2-2 精排重设计（相关度主导）
       exploreSlot: bool(recallGroup, "exploreSlot") ?? true,
       conclusionRelaxedForAnalytical: bool(recallGroup, "conclusionRelaxedForAnalytical") ?? true,
+      // F-CLUSTER v2：召回折叠总开关（缺省 false = 现行为）。类型声明 config.ts:100
+      // 自 09-26 存在，但逐键装载遗漏 → yaml true 装不进运行时（2026-09-30 实锤 fcVal=undefined）。
+      foldClusterEnabled: bool(recallGroup, "foldClusterEnabled") ?? false,
       // Task CAL C1：结论层注入前截断（默认 2000，0=不截断；负值/非有限沿 recallSignalBoost clamp 模式）
       // 审查修补 I①：enabled 总开关（缺省 true=现行为）；I③：cacheTtlMs 独立 TTL
       // （缺省 undefined → 运行期回落 sessionReuseTtlMs；显式 0=关；负值 clamp 0）

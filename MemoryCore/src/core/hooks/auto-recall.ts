@@ -1076,6 +1076,8 @@ export interface SearchTiming {
 interface SearchResult {
   lines: string[];
   timing: SearchTiming;
+  /** 折叠元数据（与 lines 平行）：持续态吸收所需 recordId/evidenceIds。 */
+  metas?: { recordId?: string; evidenceIds?: string[] }[];
   /** Per-line similarity scores (parallel to `lines`). Only populated on TCVDB nativeHybridSearch path. */
   scores?: number[];
 }
@@ -1262,7 +1264,7 @@ async function searchMemories(
     }
 
     // Fallback: run keyword + embedding in parallel, merge with client-side RRF (SQLite path)
-    return await searchHybrid(
+    const hybrid = await searchHybrid(
       cleanText, pluginDataDir, maxResults, threshold, vectorStore!, embeddingService!, logger,
       embeddingCallOpts, rank, embedCacheTtlMs, layered, await getExpansionTerms(),
       // V2-3（引擎三）：探索位 + 组合分精排（config 透传——缺省默认开/均等权重）
@@ -1273,6 +1275,8 @@ async function searchMemories(
       cfg.recall?.excludeInvalidated,
       validityNow,
     );
+    // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
+    return { lines: cfg?.recall?.foldClusterEnabled === true ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines, timing: hybrid.timing };
   } catch (err) {
     logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
     return emptyResult;
@@ -1627,7 +1631,7 @@ export async function searchHybrid(
 
   if (keywordResults.length === 0 && embeddingResults.length === 0) {
     logger?.debug?.(`${TAG} Hybrid search: both strategies returned 0 results`);
-    return { lines: [], timing };
+    return { lines: [], metas: [], timing };
   }
 
   // RRF merge: k=60 is a standard constant from the RRF paper
@@ -2033,11 +2037,11 @@ export async function searchHybrid(
         }
       }
     } catch { /* bookkeeping best-effort */ }
-    return { lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)), timing };
+    return { lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)), metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds })), timing };
   }
 
   logger?.debug?.(`${TAG} Hybrid search: no results after merge`);
-  return { lines: [], timing };
+  return { lines: [], metas: [], timing };
 }
 
 // ============================
@@ -2310,6 +2314,15 @@ export function recordToFormatable(record: MemoryRecord): FormatableMemory {
     recallCount: sigRecallCount,
     identityRefs: sigIdentityRefs,
     evolution: sigEvolution,
+    // F-CLUSTER 折叠接线（2026-09-29）：FTS keyword 通道补折叠元数据——与
+    // vectorResultToFormatable(:2363) 对齐；缺此二字段 foldByDurative 引用图建不起来。
+    recordId: record.id,
+    evidenceIds: (() => {
+      const evs = Array.isArray(sigMeta.evidence_record_ids)
+        ? (sigMeta.evidence_record_ids as unknown[]).filter((s): s is string => typeof s === "string")
+        : [];
+      return evs.length > 0 ? evs : undefined;
+    })(),
   };
 }
 
