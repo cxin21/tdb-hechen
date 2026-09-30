@@ -74,7 +74,7 @@
 | 编号 | 任务 | 状态 | 依据 / 缺口 | 下一步 |
 |---|---|---|---|---|
 | 任务5 | F-DUP-1：/v3/conversation/add 入口幂等+L1 提取合并 | **DONE_WITH_CONCERNS**（2026-09-25）：入口幂等第一层收口（10min 窗口自定最优），L1 归纳合并第二层登记观察 | 设计全文在技能 td-agemem-fdup1-l0-dedup；幂等窗口/键粒度/连发边界三问先呈拍板；存量 L0 清理含 vec/FTS 一致性方案随设计呈报 | RED 先行 |
-| 任务6 | D-R3-2：boot recovery 前过滤无 L0 数据会话键 | **DONE_WITH_CONCERNS**（2026-09-24）：hasL0Session 死键过滤落地，代码待下次重启生效 | 实锚：单 boot 156 re-arm 中 28 死键（flow-test/session-flowtest-*/ev5-live，readOnly 探针 151∩129→123/28）；3 用例·vitest 822/822·tsc 222 持平·密扫 0；**归因修正（登记≠真实第 6 例）**：锁风暴主因=旧 L2 任务无租户元数据共享单锁 `pipeline:{default:_:_}`（非死键驱动） | 重启验证待拍板；L2 锁元数据修复另立任务呈报 |
+| 任务6 | D-R3-2：boot recovery 前过滤无 L0 数据会话键 | **DONE_WITH_CONCERNS**（2026-09-24 落地；2026-09-25 重启生效+验证执行完毕，2026-09-30 对账补正） | hasL0Session 死键过滤落地；实锚：单 boot 156 re-arm 中 28 死键（flow-test/session-flowtest-*/ev5-live，readOnly 探针 151∩129→123/28）；3 用例·vitest 822/822·tsc 222 持平·密扫 0；**归因修正（登记≠真实第 6 例）**：锁风暴主因=旧 L2 任务无租户元数据共享单锁 `pipeline:{default:_:_}`（非死键驱动） | 重启验证已执行完毕（2026-09-25，re-arm 156→129，§五尾注销）；L2-LOCK 同步定案无需修复（见 L2-LOCK 行） |
 | 任务2 | 召回新信号 A/B（R-recall/R-identity/R-arousal） | TODO（设计要点已定：R-A 红线+单一源复用 computeMoodValence+基线=启用后状态；golden 重建+≥10 组 A/B 属数小时工程，2026-09-25 会话上下文边界诚实移交下轮执行） | golden 基建重建（docs/superpowers/evals/memory-recall-golden/ 桶已清空，复用技能 td-agemem-recall-golden-anchor）；F14-bis 与 R-identity 张力正面回答；与 M1 共享 valence 数据源（单一源：复用 mood-line.ts computeMoodValence，禁第二份实现）；**注意生产 moodLine 已启用=A/B 基线须以启用后状态为准** | 设计小节先呈拍板 |
 | 任务7 | 灵魂真伪判定（量化判据） | 方案 DONE（呈拍板） | 三维量化方案成文 2026-09-26 | 实施 gated |
 | L2-LOCK | L2 任务无元数据锁塌缩风暴（2026-09-25 新登记→当日定案） | **DONE_WITH_CONCERNS（无需代码修复）** | 机制已被历史迭代覆盖：getLockKey 三级元数据解析链（显式/data 兼容/sessionId profile 解析，instance 退化显式标注不推荐）实锚 v2-router.ts:700-715；风暴本体随重启结构性消灭——LocalStateBackend 任务/定时器纯内存态（local-backend.ts:27 timers=Map 实锚），重启即清且无持久重建通道 | journal 实锚：09-24 18:00→重启前 default:_:_ 冲突 34896 次（全天在烧）；重启后 0 复发；11:52 的 129 个 L1_drain 到期波 0 任务产生（游标治理空跑零成本实证）；当前可见冲突=同会话 L1 串行退避（session 级锁设计内行为） | 观测项：若再现 default:_:_ 塌缩=新 producer 缺元数据，立即归因；同会话 L1 退避日志噪音如需降噪另行微项 |
@@ -84,11 +84,13 @@
 | 编号 | 任务 | 状态 | 缺口 | 下一步 |
 |---|---|---|---|---|
 | UI-3.2 | rc=101 行 m_1789437830444_473d770a（agt-kfynybx0ly，L1=504）Panel 记忆块列表不可达 | NEEDS_CONTEXT | 平台资产层在仓外——需用户平台侧共享该 chat_memory 或批准 Panel 增「本 agent 记忆直读」入口 | 等用户动作/拍板，勿自行实施 |
-| NO-GO v2 微项 | G1 68% svg 文本 3px 微溢出 / G3 感受条首要卡 tag 冗长 / G4 弹卡 key 列 sticky / 窄屏单行长描述换行控制 / 待裁决红线提案卡与分区卡风格统一 | TODO（P2/P3 可选） | NO-GO v2 无 P0/P1 | 可选穿插 |
+| NO-GO v2 微项 | G1 68% svg 文本 3px 微溢出 / G3 感受条首要卡 tag 冗长 / G4 弹卡 key 列 sticky / 窄屏单行长描述换行控制 / 待裁决红线提案卡与分区卡风格统一 | **DONE_WITH_CONCERNS（2026-09-30 对账补正）**：196e480（2026-09-25 拍板执行③）已落地 G3/G4/窄屏/提案卡四项，G1 复查自纠关闭 | 2026-09-30 真实浏览器 375px 活体复测（ui-live-check5/6）=0 隐藏裁切（越界全在可横滚祖先内），但登记 3 项窄屏体验缺陷：侧栏占 200px=53% 视口 / `_memory-card-title` 省略号截断 75/208px / tabstrip 需横滚 | 窄屏 3 项修复实施（验收探针=ui-live-check5/6 几何扫描） |
 
 ## 五、gated 待拍板清单（全部维持不动，勿抢跑）
 
-D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）/ audit #11
+D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种子清理（11 桶 244 行）/ D2 预注册 A 启动 / neighborExpand 处置 / T7b Claude Code 场景实测 / audit #11
+
+> 2026-09-30 对账补正：原列此清单的「P3 散项（maxPerPass 3→2、intervalHours 1→24 回切）」已执行注销（生产 yaml:176/178/201 实锚自标「P3 散项回切」，详见 §五尾），不再属 gated。
 
 **gated 新登记三件（2026-09-26，V12-CV 轮呈报，全部勿抢跑）**：①**G-ANCHORDESC-WRITE**（theme 锚 description 写入策略）：V12-CV 后 core_value 采纳链已带 attrs.description（07912ce），残余=种子锚+GROW 周期采纳锚无 description；最优方案=写入端一次到位（anchor-growth adoption 分支透传 rationale→description）+存量一次性确定性回填（datafix-sop 口径）——两步均行为变更待拍板；②**G-SELFDESC**（自驱 description 零字面证据）：identity 锚 attrs=[] 维持宁缺毋滥，随 C 工作流逐属性讨论处置；③**G-PENDING-XSLOT**（pending×slot 交叉去重）：同 content 先入队槽后直写产生 pending+core 双行（1 案例实锚），方案=入队前查 core 同 slot+content 已在场行即跳过——闸门位置与误杀风险（改判撤销场景）待拍板。/#16 / person 锚 description 数据面回填 / 方案② embedding 提案深清理 / 锚行 description 未来写入策略（存量已修）/ 感受段近期基调行生产租户启用（已拍板执行完毕 2026-09-24，注销）/ **M2 生产启用（2026-09-25 整句授权执行完毕+活体全绿，注销）/ P3 散项回切（2026-09-25 执行完毕，注销）/ D-R3-2 重启验证（2026-09-25 执行完毕 re-arm 156→129，注销）/ L2-LOCK 定案无需修复（2026-09-25 取证定案，注销）/ DUEL-LABEL「取证先行」双行裁决=维持（2026-09-25：(node_type,label) 复合去重设计内行为，theme=价值域与 character=品格语义不同，M2 活体已证不误伤，注销）**。其余维持项（D-5/R11/种子清理/D2/neighborExpand/T7b/audit#11#16/personDesc/方案②/锚行写入策略）经整句授权逐项复核后**裁决维持现状**——各项无新证据支持变更，种子清理与 personDesc 回填为数据面删除/写入，守「删除必拍板」安全边界维持 gated。
 
