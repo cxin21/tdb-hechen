@@ -61,3 +61,12 @@
 ### 6.5 golden 重锚 + Jaccard 观察项闭环（2026-09-30，「遗漏的全做」执行轮）
 - **golden P@5 重锚（§4② 欠账清偿）**：labels v3（11 query/46 正例/零死 id/口径修正三处：rf_ 纳入+同语义簇整标+persona 不标+死 id 2c875ed7 剔除；备份 labels.jsonl.bak-v2）→ recall-anchor.mjs QUERIES 补第 11 条（硬编码集与 labels 一致性）→ 重跑 runs/2026-09-30T03-19-08.json：**corpus=48 labels=11、OFF determinism PASS、gate mean P@5=0.653 (pass) → 新基线 0.653、新验收线 0.633**（0.6183/0.5983 十 query 中间口径作废）。0.917/0.897 旧线正式由本节取代。
 - **§5 观察项（注记对 :735 Jaccard 的 bigram 影响）闭环**：foldNearDuplicates stripMeta 不剥折叠注记（memory-line-meta:23 剥=两套口径）+单遍链缺陷经 A/B 矩阵（5 形态近似对，/tmp/jaccard-ab.mjs 留证）实锤：S3 残留 soul、S4 生产折叠行 soul+时间全残留（注记顶掉 $ 锚）、S5 短行伪相似误折（分组差异 1/5）、S1/S2 纯内容两口径逐位一致。修复走 TDD：export foldNearDuplicates + RED-11（零内容交+同注记：闭包 J=4/11≈0.364 误折 vs 剥后 0；首版构造 union 算错未跨阈经数学复核修正）/RED-12（真近似护栏）→ 步1 注记剥离 → 步2 单一源迁移（memory-line-meta:13 登记的 v2 计划执行）。**迁移后复跑分组差异 0/5**；门禁 vitest **875/875**（+2）、tsc 222 持平。§2「A2 行为逐位不变」红线经矩阵实证保全：纯内容行零变更，差异组全部为 A2-R1 同类元数据缺陷修正。
+
+### 6.6 遗留取证定责（2026-09-30「遗漏的全做」轮，P2/P3 收口）
+- **P2 源在场率 37.3%（设计基线 48.3%）判定=非缺陷，不改写链**：缺失引用 492 唯一目标中 488 在
+  l1_archive（取证 SQL 实测）——归档主因 dedup-merge 1198 条（l1-writer.ts:355-390 B3 审计：归档
+  优先于删除红线，recall 不扫 archive=设计内「旧证据不进检索面」）；桥接 similar/evolve 边仅
+  31% 覆盖+similar 边语义不可靠+恢复归档违背设计。**不做写链变更**；Panel 溯源经
+  getL1ByIdsWithArchive 回溯兜底（§6.5 起的 /v3/atomic/by-ids 即其 HTTP 面）。
+- **P3 逐字簇（v3）目标集双口径=0**：exact 同 content 组=0（SQL 实测）、样例前缀=0——**v3 转
+  条件触发**（出现同 content 组再启动），不排期。

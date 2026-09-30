@@ -1,3 +1,10 @@
+## 2026-09-30
+
+- golden 重锚（fcluster §4②/§6.5）：labels v3（11 query/46 正例/零死 id/口径修正三处）+ recall-anchor QUERIES 补第 11 条 → 新基线 P@5=0.653、新验收线 0.633（0.917/0.897 作废）；runs/2026-09-30T03-19-08.json。
+- F-CLUSTER Jaccard 观察项闭环（§5/§6.5）：A/B 矩阵 5 形态实锤单遍 strip 在生产折叠行残留 soul+时间致伪相似误折 → TDD RED-11/12 → 步1 注记剥离 → 步2 stripMeta 单一源迁移（memory-line-meta:13 v2 计划执行），迁移后分组差异 0/5；vitest 875、tsc 222。
+- core 新端点 /v3/atomic/by-ids（§5 Panel 簇视图数据端）：getL1ByIdsWithArchive HTTP 面（B3 归档回退+archived 标记+租户行过滤+缺头写明拒绝）；vitest 881、tsc 222、临时网关活体三态过（b215df2）。
+- P5 批容量 A/B：maxResults 5→10 注入 +58%（66→104 行）仅换折叠 +1（5→6，噪声量级）→ 评估结论不调生产 maxResults（漏斗级1 主约束=源在场率 37.3% 非批容量）。
+- P2/P3 定责收口（§6.6）：源在场率 37.3%=dedup-merge 归档 B3 设计内非缺陷；v3 逐字簇目标集双口径 0 转条件触发。
 # Changelog
 
 本文件记录 **TencentDB Agent Memory** 的显著变更，格式遵循
