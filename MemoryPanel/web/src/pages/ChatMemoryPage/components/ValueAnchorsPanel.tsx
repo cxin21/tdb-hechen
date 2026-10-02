@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Dropdown, Input, Select } from 'tea-component';
-import { anchorInjectPreview } from '../utils/attribute-badges';
+import { anchorInjectPreview, createdByBadge } from '../utils/attribute-badges';
 import { readAuth } from '@/components/LoginGate';
 import { useAgents, useTeams } from '@/services';
 import { tea, confirmThenRun } from '@/lib/tea-bridge';
@@ -116,6 +116,7 @@ function ValueRow({
       descriptionText.trim() !== (parsedAttrs.description ?? ''));
   const badge = valenceBadge(anchor.valence);
   const origin = originBadge(anchor.origin);
+  const createdBy = createdByBadge(anchor.created_by);
   const nodeBadge = nodeTypeBadge(anchor.node_type);
   const isPinned = anchor.pinned === 1;
 
@@ -145,6 +146,9 @@ function ValueRow({
       <span className={`_va-badge _va-badge--${badge.cls}`}>{t(badge.key)}</span>
       {nodeBadge && <span className={`_va-nodetype _va-nodetype--${nodeBadge.cls}`}>{nodeBadge.label}</span>}
       {origin && <span className={`_va-origin _va-origin--${origin.cls}`}>{t(origin.key)}</span>}
+      {createdBy && (
+        <span className="_va-origin _va-origin--by">{t('memory.anchors.createdBy', { v: createdBy })}</span>
+      )}
       {isPinned && (
         <span className="_va-pin-icon" title={t('memory.anchors.pinned')}>
           📌

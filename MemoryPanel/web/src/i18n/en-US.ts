@@ -827,6 +827,7 @@ export const enUS = {
   'memory.anchors.origin.seed': 'Seed',
   'memory.anchors.origin.manual': 'Manual',
   'memory.anchors.origin.auto': 'Auto-grown',
+  'memory.anchors.createdBy': 'Created by {{v}}',
   'memory.anchors.pinned': 'Pinned (exempt from displacement)',
   'memory.anchors.pin': 'Pin',
   'memory.anchors.unpin': 'Unpin',

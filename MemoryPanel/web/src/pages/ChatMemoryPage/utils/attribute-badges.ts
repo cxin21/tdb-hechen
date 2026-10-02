@@ -116,3 +116,13 @@ export function pickPrimeAnchor(
   if (!s) return null;
   return { label: top.label, desc: s };
 }
+
+/**
+ * §4.2 core_values.created_by 展示徽标（第二令四链核验 GAP-1：使用链
+ * anchor-growth QUOTA/维护豁免在场、展示链缺失）——非空原样返回，
+ * 空/空白/undefined -> null 宁缺毋滥。
+ */
+export function createdByBadge(createdBy?: string | null): string | null {
+  const v = (createdBy ?? '').trim();
+  return v ? v : null;
+}

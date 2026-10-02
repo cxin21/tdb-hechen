@@ -1,3 +1,8 @@
+._va-origin--by {
+  color: var(--tea-color-text-secondary, #666);
+  background: var(--tea-color-bg-primary-default, #f3f3f3);
+}
+
 /* ===== 价值锚编辑面板（Task 5，DS-PANEL-UI-WIKI-SOURCE-001 §2.4）===== */
 ._va-panel {
   display: flex;

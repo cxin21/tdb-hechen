@@ -804,6 +804,7 @@ export const zhCN = {
   'memory.anchors.origin.seed': '种子',
   'memory.anchors.origin.manual': '手工',
   'memory.anchors.origin.auto': '自生长',
+  'memory.anchors.createdBy': '创建方：{{v}}',
   'memory.anchors.pinned': '已钉住（不被挤出）',
   'memory.anchors.pin': '钉住',
   'memory.anchors.unpin': '取消钉住',

@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  deriveAttributeBadges, pickPrimeAnchor, anchorInjectPreview, weightLabel,
+  deriveAttributeBadges, pickPrimeAnchor, anchorInjectPreview, weightLabel, createdByBadge,
 } from '../web/src/pages/ChatMemoryPage/utils/attribute-badges';
 import type { ChatMemoryLayerItem } from '../web/src/lib/api/chat-memory';
 
@@ -104,5 +104,17 @@ describe('pickPrimeAnchor V7 方案A（句边界描述）', () => {
     const d = '表层现象与真实根因多次背离：' + '长长长长长'.repeat(30);
     const rows = [{ label: '根因', value_id: 'v-r', weight: 0.8, attrs_json: JSON.stringify({ description: d }) }];
     expect(pickPrimeAnchor(rows as never)).toBeNull();
+  });
+});
+
+describe('createdByBadge（§4.2 core_values.created_by 展示徽标 · 第二令 GAP-1）', () => {
+  it('auto-growth / verify 原样返回', () => {
+    expect(createdByBadge('auto-growth')).toBe('auto-growth');
+    expect(createdByBadge('verify')).toBe('verify');
+  });
+  it('空串 / 纯空白 / undefined → null（宁缺毋滥）', () => {
+    expect(createdByBadge('')).toBeNull();
+    expect(createdByBadge('   ')).toBeNull();
+    expect(createdByBadge(undefined)).toBeNull();
   });
 });
