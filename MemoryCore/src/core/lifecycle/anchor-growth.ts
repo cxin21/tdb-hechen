@@ -238,7 +238,7 @@ export async function runAnchorGrowth(deps: {
   const store = deps.store as IMemoryStore & {
     listValuesAnyState?: (tenant?: CoreTenant) => Promise<CoreValueRow[]> | CoreValueRow[];
     retireValue?: (valueId: string, tenant?: CoreTenant) => Promise<boolean> | boolean;
-    upsertValue?: (valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person", attrs?: { role?: string; aliases?: string[] }) => Promise<boolean> | boolean;
+    upsertValue?: (valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person" | "character", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] }) => Promise<boolean> | boolean;
     backfillMemoryRef?: (recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant) => Promise<boolean> | boolean;
     getAnchorGrowthState?: (tenant?: CoreTenant) => Promise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null }> | { lastDiscoveryAt: string | null; lastCorpusCount: number | null };
     setAnchorGrowthState?: (state: { lastDiscoveryAt: string; lastCorpusCount: number }, tenant?: CoreTenant) => Promise<void> | void;
@@ -378,9 +378,11 @@ export async function runAnchorGrowth(deps: {
           }
           const newW = suggestAnchorWeight(ev, corpus.length);
           if (Math.abs(newW - a.weight) >= REWEIGHT_DELTA) {
-            // P2：person reweight 保留 node_type/attrs（重写不丢人物属性，A8 语义）
-            // F-EV12-5：character reweight 不漂 node_type；attrs 传 undefined（不碰原 attrs_json）
-            const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto", isPerson ? "person" : (isCharacter ? "character" : "theme"), isPerson ? attrsOf(a) : undefined));
+            // F1（UR-09，2026-10-02）：reweight 一律 attrs=undefined——不碰原 attrs_json
+            //（description/source/facts 原样保留；旧 person 分支传 attrsOf(a) 会经 sqlite
+            // upsertValue 全量替换丢 description=GAP 复发机制）。node_type 冲突路径本就不漂
+            //（DO UPDATE 不含 node_type 列），显式传参仅服务新建行。
+            const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto", isPerson ? "person" : (isCharacter ? "character" : "theme"), undefined));
             if (ok) reweightedA++;
           }
         }

@@ -168,7 +168,7 @@ describe("QUOTA 分池（F15）", () => {
 });
 
 describe("GROW-MAINT personEv 口径（F15）", () => {
-  it("alias 独立支撑的 person 锚不误退场；reweight 保留 attrs", async () => {
+  it("alias 独立支撑的 person 锚不误退场；reweight 不触碰 attrs（F1 语义=undefined 透传）", async () => {
     const rows = Array.from({ length: 6 }, (_, i) => corpusRow(`r${i}`, `闺女第${i}次出现`));
     const store = makeStore({
       rows,
@@ -179,7 +179,7 @@ describe("GROW-MAINT personEv 口径（F15）", () => {
     expect(res.retired).toBe(0); // theme 口径 recount("女儿")=0 会误退；personEv=6 保住
     const up = store.upsertValue.mock.calls.find((c) => c[0] === "p-nver")!;
     expect(up).toBeTruthy(); // reweight 发生
-    expect(JSON.parse(JSON.stringify(up[8]))).toEqual({ role: "家人", aliases: ["闺女"] }); // attrs 保留
+    expect(up[8]).toBeUndefined(); // F1（2026-10-02）：reweight 不触碰 attrs_json——attrs=undefined 透传，原 attrs_json（role/aliases/description）原样保留
     expect(up[7]).toBe("person");
   });
 });
