@@ -126,3 +126,10 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - **本轮教训补登（七.7 反面实锤）**：①python 补丁必须 newline="" 读写保 EOL（universal-newlines 把 CRLF 翻成 LF=全文 diff 噪音）；②补丁脚本写盘禁止重读原文（v1 实锤 WROTE 假象：mtime 变内容不变 diff 空）；③核心补丁每锚 count 校验+盘上读回验证（GREEN_PATCH_OK_VERIFIED）。
 - **门禁**：core vitest 887/887 · typecheck 222 全存量零新增 · panel 147/147（本轮未动 Panel）· golden gate 0.653/线 0.633 passed · web tsc 存量 2 持平 · 密扫见 commit 链。
 - **遗留/待拍板**：R2（v2-router attrs 全量替换）归属待拍板⑭默认不动；web tsc 存量 2（ValueAnchorsPanel.tsx:423 TS2488/:426 TS2339）；8421 监听进程待查（judge oneshot inactive=预期非故障）；golden 复测豁免（活体锚审现存归档）。
+
+## 十、2026-10-04 自主拍板轮（何晨 m00845 令：AI 按设计本源自主拍板）
+- 拍板①T7 测量面启动（纯测量面零行为变更）：首轮基线快照 dim3 全量=core_values 130（theme 76/person 9/character 0/NoDesc 96），dim1 curl 通道待修登记；脚本入库 MemoryCore/scripts/audit/soul-authenticity-audit.mjs
+- 拍板②character maxTotal 回归设计值 6：yaml :186/:196 8→6（备份 tdai-gateway.yaml.bak-maxtotal-20261004；漂移定性=池空零行为影响故无 A/B 负担）；重启 MainPID 3672422 health=200；yaml :181 注释「人物 maxTotal=8」与注释同步待勘
+- 拍板③M3-NARR/64 号维持勿提前（设计顺序即意图）
+- 遗留：dim1 溯源率首轮未完成（curl -sfk 静默失败待修）；character 池 0 行=容量拍板无即时对比数据；yaml :181 注释 8 未同步
+
