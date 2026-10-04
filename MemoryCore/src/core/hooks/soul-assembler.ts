@@ -205,7 +205,8 @@ export async function buildSoulPrefix(
         lines.push(
           `重要的人：${personRows.map((v) => {
             // V6-1e：attrsOf 统一解析（含 description）——「label(role·方向)：描述」与价值锚行同构；
-            // 当前生产 person 锚无 description=描述段休眠（数据面回填另行拍板）。
+            // 2026-10-04 勘误（UR-15，台账 61 号）：生产 active person 锚 2/2 有 description（cdcfe5c 终判），
+            // 描述段=活跃路径；空 desc 行走下方三元回退为无描述形态（G-ANCHORDESC-WRITE 策略另行拍板）。
             const a = attrsOf(v.attrs_json) ?? {};
             const d = personDir(v.valence);
             const role = a.role ? `${escapeXmlTags(a.role)}·` : "";

@@ -1,4 +1,9 @@
-## 2026-09-30
+## 2026-10-04
+
+- F1/F2 attrs 通道缺陷修复（技术方案评审团 UR-09/UR-10，70bb050）：① GROW-MAINT reweight 一律透传 attrs=undefined——修 anchor-growth.ts:383 经 sqlite.ts:2399 DO UPDATE 全量替换 attrs_json 致 person 锚 description 被 GROW-MAINT 周期性静默清空的活性缺陷（RED 3failed/1passed→GREEN；legacy anchor-growth.person.test.ts:182 契约同步）；② attrs 序列化白名单补 source/facts——character 采纳通道（anchor-growth.ts:652）写入的 {source,facts} 此前落库 "{}"（真 VectorStore 3 用例含冲突护栏）；anchor-growth.ts:241 port 类型同步扩 nodeType "character"+attrs 五字段。门禁 core vitest 885/885（881+4）、tsc 223 全存量零新增；生产重启 MainPID 3265978 + /health 200 + /v3/recall 200 活体（生产租户 soul 注入段命中）。
+- secret-scan.sh v2 仓库级重写（评审 UR-05/UR-07，22bb28e）：R2 全模块显式 TARGETS+必需集缺失 exit 2（修 pre-commit CWD=仓库根静默扫空）；R3 移除 `\.md:` 全豁免（md 只走高置信规则 1/2/5）；实装 secret-scan-ignore 行内豁免；新增 ghp_/AKIA/AIza/xox/PEM 规则+sk- 词前界+loud gitignored-skip 计数+git 不可用 WARN。canary RED 两轮→GREEN（tdai 身份 exit 0：inline豁免=1 gitignored-skip=4；ubuntu 身份 3 命中+WARN=fail-loud）。发现登记：两个生产 yaml+MemoryPanel/config/metadata-instances.json 真 key 均 UNTRACKED+IGNORED 不入 git 历史，暴露面=工作区+tar 镜像（KEY-ROTATE gated 关联）；MemoryCore/scripts/verify-v2-bal.ts:272 合成值行内豁免。
+- 文档勘误双写（台账 60/61 号）：fcluster-design.md §4 加作废指针（0.897 旧线已由 §6.5 重锚 0.633 取代）；soul-assembler.ts:208 陈旧注释勘正（生产 active person 锚 2/2 有 desc=描述段活跃路径，cdcfe5c 终判）。
+
 
 - golden 重锚（fcluster §4②/§6.5）：labels v3（11 query/46 正例/零死 id/口径修正三处）+ recall-anchor QUERIES 补第 11 条 → 新基线 P@5=0.653、新验收线 0.633（0.917/0.897 作废）；runs/2026-09-30T03-19-08.json。
 - F-CLUSTER Jaccard 观察项闭环（§5/§6.5）：A/B 矩阵 5 形态实锤单遍 strip 在生产折叠行残留 soul+时间致伪相似误折 → TDD RED-11/12 → 步1 注记剥离 → 步2 stripMeta 单一源迁移（memory-line-meta:13 v2 计划执行），迁移后分组差异 0/5；vitest 875、tsc 222。
