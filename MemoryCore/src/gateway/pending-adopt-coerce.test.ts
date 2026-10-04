@@ -42,7 +42,17 @@ describe("coerceCoreValueAnchor（core_value 采纳转换层确定性门，V12-C
     // descRaw 本身尾悬空（以顿号结尾）且无句末标点 → 置空（宁缺毋滥）
     const r4 = coerceCoreValueAnchor({ label: "闭环", description: "先取证再下结论、", content: "x" });
     expect(r4!.description).toBe("");
-    const r5 = coerceCoreValueAnchor({ label: "闭环", description: "abc def、", content: "x" });
-    expect(r5!.description).toBe("");
+  });
+  it("R2 episode 门：descRaw 为具体事件叙述 → 门不过 null；缺省回退产物混事件 → desc 置空", () => {
+    // 用户给的不是价值观说明（含 commit hash/编号）→ 整锚拒绝（422，pending 保留不暗箱裁决）
+    expect(coerceCoreValueAnchor({ label: "闭环", description: "关键位置加日志落实为任务，以提交 b1ea2e5", content: "x" })).toBeNull();
+    expect(coerceCoreValueAnchor({ label: "审计", description: "遗留工作落入 REG-REMAINING-006 台账推进", content: "x" })).toBeNull();
+    // 旧格式提案无 desc → content 回退产物含具体事件特征 → desc 置空（锚保留待合格 desc）
+    const rEp = coerceCoreValueAnchor({ label: "排查", content: "探针 HTTP 200 可切割定责，换套餐重启后 LLM 仍报同一周配额错误" });
+    expect(rEp).not.toBeNull();
+    expect(rEp!.description).toBe("");
+    // 回退产物为合格笼统价值观 → 正常回退
+    const rOk = coerceCoreValueAnchor({ label: "取证", content: "先取证再下结论的工作纪律，一切判定以真实数据为对象" });
+    expect(rOk!.description).not.toBe("");
   });
 });

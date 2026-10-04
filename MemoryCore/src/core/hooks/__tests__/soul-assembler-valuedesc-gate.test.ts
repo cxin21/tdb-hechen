@@ -97,4 +97,24 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
     expect(m![1]).toContain("诚实");
     expect(m![1]).not.toContain("审慎");
   });
+
+  it("R2 episode 门：desc 为具体事件叙述（commit hash/编号/HTTP）→ 锚不入行（灵魂禁混记忆内容）", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "e-1", label: "闭环", attrs_json: '{"description":"用户需求被转化为可验证任务并闭环收口：关键位置加日志的要求落实为任务，以提交 b1ea2e5"}' }),
+        row({ value_id: "e-2", label: "审计", attrs_json: '{"description":"遗留工作依主指令落入台账 REG-REMAINING-006 按序推进"}' }),
+        row({ value_id: "e-3", label: "根因优先", attrs_json: '{"description":"解决问题必须从第一性原理出发，先定位根本原因并从根源根治，拒绝临时补丁式修复。"}' }),
+      ]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true },
+    );
+    const m = out.match(/价值锚：([^\n]+)/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toContain("根因优先"); // 合格价值观锚照常
+    expect(m![1]).not.toContain("闭环"); // 混事件锚（commit hash）整条消失
+    expect(m![1]).not.toContain("审计"); // 混事件锚（登记号）整条消失
+    expect(m![1]).not.toContain("b1ea2e5");
+    expect(m![1]).not.toContain("REG-REMAINING");
+  });
 });

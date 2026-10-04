@@ -31,6 +31,8 @@ export function mergeStrictRuleContent(existing: string | undefined | null, adop
  * 采纳端（本函数）：label 门（非空/≤8 字/无 JSON 结构残留）+description 回退链（缺省 → content 前 60 字）。
  * 返回 null = 门不过（router 422，pending 保持 pending，不暗箱替用户裁决）。
  */
+import { looksLikeEpisode } from "../core/hooks/episode-gate.js";
+
 const CV_LABEL_MAX = 8;
 const CV_DESC_MAX = 60;
 
@@ -59,7 +61,13 @@ export function coerceCoreValueAnchor(input: { label?: string | null; descriptio
   if (/[{}\[\]":]/.test(label)) return null;
   const descRaw = String(input.description ?? "").trim();
   const content = String(input.content ?? "");
+  // R2 episode 门（灵魂禁混记忆内容）：用户显式给的 desc 为具体事件叙述（commit hash/编号/
+  // HTTP 状态/日期等硬特征）→ 不是价值观说明，整锚拒绝（门不过 422，pending 保留不暗箱裁决）。
+  if (descRaw && looksLikeEpisode(descRaw)) return null;
   // 2026-10-04 句边界化：原 60 字硬切产半句入库存活（「A-5 达 GRE、」形态全量渲染）→ sanitize。
-  const description = sanitizeDescription(descRaw || content, CV_DESC_MAX);
+  let description = sanitizeDescription(descRaw || content, CV_DESC_MAX);
+  // R2 episode 门（回退链）：旧格式提案无 desc → content 回退产物为具体事件叙述 → desc 置空
+  // （锚保留待合格 desc，渲染端宁缺毋滥跳过；不整锚拒——旧格式提案的 content 本就是事件事实）。
+  if (!descRaw && looksLikeEpisode(description)) description = "";
   return { valueIdSeed: label, label, description };
 }

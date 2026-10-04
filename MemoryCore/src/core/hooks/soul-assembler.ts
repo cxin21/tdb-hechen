@@ -14,6 +14,7 @@
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
+import { looksLikeEpisode } from "./episode-gate.js";
 
 /**
  * D-1（2026-09-21，用户拍板"全做"）：F17 截断改按行（事实）边界。
@@ -209,7 +210,11 @@ export async function buildSoulPrefix(
         const decorated = activeStable
           .map((v) => {
             const desc = anchorDescOf(v);
-            return desc === "" ? null : renderAnchor(v, desc);
+            // R2 episode 门（2026-10-04 何晨令「不属于灵魂而是记忆内容的部分不得放入灵魂注入」）：
+            // desc 为具体事件叙述（commit hash/编号/HTTP/日期等硬特征）→ 非灵魂级说明 → 整条跳过
+            //（宁缺毋滥；存量混事件锚随此门即刻退出注入，语义级混入交生成端 prompt 负面清单）。
+            if (desc === "" || looksLikeEpisode(desc)) return null;
+            return renderAnchor(v, desc);
           })
           .filter((x): x is string => x !== null);
         if (decorated.length > 0) lines.push(`价值锚：${decorated.join("、")}`);
@@ -245,7 +250,8 @@ export async function buildSoulPrefix(
             if (!s) return null;
             const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
             const desc = cut >= 0 ? s.slice(0, cut + 1) : (/[，、,]$/.test(s) ? "" : s);
-            if (desc === "") return null;
+            // R2 episode 门：品格锚 desc 同构禁混具体事件叙述（与价值锚行同门）。
+            if (desc === "" || looksLikeEpisode(desc)) return null;
             const dir = valenceDir(v.valence);
             const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
               ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
