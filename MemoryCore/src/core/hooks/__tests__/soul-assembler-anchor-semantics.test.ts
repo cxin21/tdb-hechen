@@ -38,15 +38,15 @@ describe("锚行语义升级（rationale 持久化）", () => {
     expect(out).toContain("根因(趋近·w0.5)：所有结论须以真实代码与测试取证背书"); // V6-1b：weight 显示（合法波及更新）
   });
 
-  it("无 description → 逐位现状「label(方向)」（不加空冒号）", async () => {
+  it("无 description → 该锚不入价值锚行（宁缺毋滥禁裸关键词，2026-10-04 语义）", async () => {
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "root", label: "根因" })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("根因(趋近·w0.5)"); // V6-1b：weight 显示（合法波及更新）
-    expect(out).not.toContain("根因(趋近·w0.5)：");
+    expect(out).not.toContain("根因(趋近·w0.5)"); // 裸关键词形态整条消失
+    expect(out).not.toContain("价值锚："); // 全部锚无 desc → 行省略
   });
 
   it("description 含 XML 注入样文本 → escapeXmlTags 消毒（咽喉原则）", async () => {
@@ -64,8 +64,8 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
   it("价值锚行按 value_id 稳定排序（与 weight 无关）", async () => {
     const out = await buildSoulPrefix(
       makeStore([
-        row({ value_id: "b-x", label: "后锚", weight: 0.9 }),
-        row({ value_id: "a-y", label: "前锚", weight: 0.1 }),
+        row({ value_id: "b-x", label: "后锚", weight: 0.9, attrs_json: '{"description":"后锚描述。"}' }),
+        row({ value_id: "a-y", label: "前锚", weight: 0.1, attrs_json: '{"description":"前锚描述。"}' }),
       ]) as never,
       TENANT,
       undefined,

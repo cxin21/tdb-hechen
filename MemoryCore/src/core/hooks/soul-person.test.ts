@@ -19,7 +19,7 @@ function person(label: string, weight: number, valence: number | null, role?: st
 describe("灵魂渲染 person 行（P2 §2.7）", () => {
   it("重要的人 行：role·dir 形态、weight DESC cap 5、位于价值锚行之后", async () => {
     const values: VRow[] = [
-      { label: "诚实", weight: 0.9, valence: 1, state: "active" },
+      { label: "诚实", weight: 0.9, valence: 1, state: "active", attrs_json: '{"description":"诚实呈现证据与遗留。"}' },
       person("女儿", 0.8, 1, "家人"),
       person("老周", 0.7, 0, "棋友"),
       person("张三", 0.6, -1, "同事"),
@@ -42,28 +42,28 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
 
   it("person 不进 价值锚/感受段：人物回避不与价值审慎混淆", async () => {
     const values: VRow[] = [
-      { label: "诚实", weight: 0.9, valence: -1, state: "active" },
+      { label: "诚实", weight: 0.9, valence: -1, state: "active", attrs_json: '{"description":"诚实呈现证据与遗留。"}' },
       person("张三", 0.8, -1, "同事"),
     ];
     const out = await buildSoulPrefix(makeStore([], values) as never, TENANT);
     expect(out).toContain("重要的人：");
     expect(out).not.toContain("价值锚：张三");
-    expect(out).toContain("价值锚：诚实");
+    expect(out).toContain("价值锚：诚实(审慎·w0.9)：诚实呈现证据与遗留。");
     expect(out).toContain("提醒我审慎的价值：诚实");
     expect(out).not.toContain("提醒我审慎的价值：诚实、张三");
   });
 
   it("无 person 行 → 无 重要的人 行（theme 渲染逐位现状）", async () => {
-    const values: VRow[] = [{ label: "诚实", weight: 0.9, valence: 1, state: "active" }];
+    const values: VRow[] = [{ label: "诚实", weight: 0.9, valence: 1, state: "active", attrs_json: '{"description":"诚实呈现证据与遗留。"}' }];
     const out = await buildSoulPrefix(makeStore([{ slot: "identity", content: "x" }], values) as never, TENANT);
     expect(out).not.toContain("重要的人：");
-    expect(out).toContain("价值锚：诚实(趋近·w0.9)"); // V6-1b：weight 显示（合法波及更新）
+    expect(out).toContain("价值锚：诚实(趋近·w0.9)：诚实呈现证据与遗留。"); // V6-1b：weight 显示（合法波及更新）
   });
 
   it("node_type undefined → theme（旧库行兼容，不误入重要的人）", async () => {
-    const values: VRow[] = [{ label: "旧库锚", weight: 0.9, valence: null, state: "active" }];
+    const values: VRow[] = [{ label: "旧库锚", weight: 0.9, valence: null, state: "active", attrs_json: '{"description":"旧库锚说明。"}' }];
     const out = await buildSoulPrefix(makeStore([], values) as never, TENANT);
-    expect(out).toContain("价值锚：旧库锚");
+    expect(out).toContain("价值锚：旧库锚(w0.9)：旧库锚说明。");
     expect(out).not.toContain("重要的人：");
   });
 });

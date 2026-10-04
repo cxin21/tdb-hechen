@@ -22,7 +22,7 @@ function makeFakeStore(values: Array<Record<string, unknown>>) {
 }
 
 const BASE_VALUES: Array<Record<string, unknown>> = [
-  { value_id: "v-theme", label: "诚实", weight: 0.5, valence: 1, state: "active", node_type: "theme", attrs_json: "{}", created_by: "seed", origin: "seed", pinned: 0 },
+  { value_id: "v-theme", label: "诚实", weight: 0.5, valence: 1, state: "active", node_type: "theme", attrs_json: '{"description":"诚实呈现证据与遗留。"}', created_by: "seed", origin: "seed", pinned: 0 },
   { value_id: "v-person", label: "女儿", weight: 0.8, valence: 1, state: "active", node_type: "person", attrs_json: '{"role":"家人"}', created_by: "auto-growth", origin: "auto", pinned: 0 },
   { value_id: "v-char", label: "守诺", weight: 0.6, valence: 1, state: "active", node_type: "character", attrs_json: '{"description":"承诺必兑现"}', created_by: "auto-growth", origin: "auto", pinned: 0 },
 ];

@@ -34,6 +34,23 @@ export function mergeStrictRuleContent(existing: string | undefined | null, adop
 const CV_LABEL_MAX = 8;
 const CV_DESC_MAX = 60;
 
+/**
+ * 灵魂注入质量轮（2026-10-04 何晨令「禁止无意义、不明确的内容」）：
+ * desc 句边界 sanitizer——60 字窗口内含句末标点（。！？；）→ 截到最后句末标点；
+ * 窗口内无句末标点：尾悬空（以，、, 结尾=写入口截断实锤特征）→ 置空（宁缺毋滥不入半句），
+ * 完整短语（尾非悬空）→ 原样保留。
+ */
+export function sanitizeDescription(raw: string, maxChars: number): string {
+  const full = String(raw ?? "").trim();
+  if (!full) return "";
+  const truncated = [...full].length > maxChars;
+  const s = [...full].slice(0, maxChars).join("");
+  const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
+  if (cut >= 0) return s.slice(0, cut + 1); // 有句末标点 → 截到最后句末标点
+  if (truncated) return ""; // 超长截断且窗口内无句末标点 = 半句实锤 → 置空
+  return /[，、,]$/.test(s) ? "" : s; // 未截断：尾悬空置空（宁缺毋滥）；完整短语保留
+}
+
 export function coerceCoreValueAnchor(input: { label?: string | null; description?: string | null; content: string }): { valueIdSeed: string; label: string; description: string } | null {
   const label = String(input.label ?? "").trim();
   if (!label) return null;
@@ -42,6 +59,7 @@ export function coerceCoreValueAnchor(input: { label?: string | null; descriptio
   if (/[{}\[\]":]/.test(label)) return null;
   const descRaw = String(input.description ?? "").trim();
   const content = String(input.content ?? "");
-  const description = [...(descRaw || content)].slice(0, CV_DESC_MAX).join("");
+  // 2026-10-04 句边界化：原 60 字硬切产半句入库存活（「A-5 达 GRE、」形态全量渲染）→ sanitize。
+  const description = sanitizeDescription(descRaw || content, CV_DESC_MAX);
   return { valueIdSeed: label, label, description };
 }

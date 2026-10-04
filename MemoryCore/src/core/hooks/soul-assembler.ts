@@ -186,19 +186,33 @@ export async function buildSoulPrefix(
       if (active.length > 0) {
         // 立项②：渲染顺序按 value_id 稳定排序（weight 只用于取舍/排序上限，不决定注入序）
         const activeStable = [...active].sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
-        lines.push(
-          `价值锚：${activeStable.map((v) => {
-            const desc = attrsOf(v.attrs_json)?.description;
-            const descSeg = typeof desc === "string" && desc.trim() !== "" ? `：${escapeXmlTags(desc.trim())}` : "";
-            // V6-1b：weight 显示（仅展示信念强度，不改渲染序——立项② value_id 稳定排序不变；
-            // weight ≤0 视为未测量不展示，宁缺毋滥）
-            const dir = valenceDir(v.valence);
-            const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
-              ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
-              : "";
-            return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
-          }).join("、")}`,
-        );
+        // 灵魂注入质量轮（2026-10-04 何晨令「禁止无意义、不明确的内容和仅有关键词无说明的锚点注入」）：
+        // desc 空/空白锚整条跳过（宁缺毋滥禁裸关键词形态）；desc 尾悬空半句清洗（句边界，与
+        // pending-adopt-merge.sanitizeDescription 同语义）；全部锚无 desc → 行省略不造裸串。
+        const anchorDescOf = (v: { attrs_json?: string }): string => {
+          const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
+          if (!s) return "";
+          const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
+          if (cut >= 0) return s.slice(0, cut + 1);
+          return /[，、,]$/.test(s) ? "" : s;
+        };
+        const renderAnchor = (v: (typeof activeStable)[number], desc: string): string => {
+          const descSeg = desc !== "" ? `：${escapeXmlTags(desc)}` : "";
+          // V6-1b：weight 显示（仅展示信念强度，不改渲染序——立项② value_id 稳定排序不变；
+          // weight ≤0 视为未测量不展示，宁缺毋滥）
+          const dir = valenceDir(v.valence);
+          const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
+            ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
+            : "";
+          return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
+        };
+        const decorated = activeStable
+          .map((v) => {
+            const desc = anchorDescOf(v);
+            return desc === "" ? null : renderAnchor(v, desc);
+          })
+          .filter((x): x is string => x !== null);
+        if (decorated.length > 0) lines.push(`价值锚：${decorated.join("、")}`);
       }
       // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段
       if (personRows.length > 0) {
@@ -224,17 +238,22 @@ export async function buildSoulPrefix(
             .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))
         : [];
       if (characterRows.length > 0) {
-        lines.push(
-          `我的品格：${characterRows.map((v) => {
-            const desc = attrsOf(v.attrs_json)?.description;
-            const descSeg = typeof desc === "string" && desc.trim() !== "" ? `：${escapeXmlTags(desc.trim())}` : "";
+        // 灵魂注入质量轮（2026-10-04）：品格行与价值锚行同构 desc 门——空/半句不入行。
+        const charDecorated = characterRows
+          .map((v) => {
+            const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
+            if (!s) return null;
+            const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
+            const desc = cut >= 0 ? s.slice(0, cut + 1) : (/[，、,]$/.test(s) ? "" : s);
+            if (desc === "") return null;
             const dir = valenceDir(v.valence);
             const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
               ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
               : "";
-            return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
-          }).join("、")}`,
-        );
+            return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}：${escapeXmlTags(desc)}`;
+          })
+          .filter((x): x is string => x !== null);
+        if (charDecorated.length > 0) lines.push(`我的品格：${charDecorated.join("、")}`);
       }
       if (lines.length > 0) parts.push(`<soul-identity>\n## 此刻的你\n${lines.join("\n")}\n</soul-identity>`);
     }

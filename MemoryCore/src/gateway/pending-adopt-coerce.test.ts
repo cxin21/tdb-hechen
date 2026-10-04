@@ -30,10 +30,19 @@ describe("coerceCoreValueAnchor（core_value 采纳转换层确定性门，V12-C
     expect(coerceCoreValueAnchor({ label: "含:半角冒号", content: "x" })).toBeNull();
     expect(coerceCoreValueAnchor({ label: "带\"引号\"", content: "x" })).toBeNull();
   });
-  it("description 缺失 → content 前 60 字回退；超 60 字截断", () => {
+  it("description 缺失 → content 句边界回退；无句末标点 → desc 置空（宁缺毋滥禁半句）", () => {
     const r1 = coerceCoreValueAnchor({ label: "闭环", content: "每个批次都四态收口，问题不过夜" });
     expect(r1!.description).toBe("每个批次都四态收口，问题不过夜");
-    const r2 = coerceCoreValueAnchor({ label: "闭环", content: "很".repeat(80) });
-    expect([...r2!.description]).toHaveLength(60);
+    // 句边界：60 字窗口内取最后一个句末标点（。！？；）处截断
+    const r2 = coerceCoreValueAnchor({ label: "闭环", content: "第一句完整收口。" + "很".repeat(80) });
+    expect(r2!.description).toBe("第一句完整收口。");
+    // 窗口内无任何句末标点 → 半句不入库，desc 置空
+    const r3 = coerceCoreValueAnchor({ label: "闭环", content: "很".repeat(80) });
+    expect(r3!.description).toBe("");
+    // descRaw 本身尾悬空（以顿号结尾）且无句末标点 → 置空（宁缺毋滥）
+    const r4 = coerceCoreValueAnchor({ label: "闭环", description: "先取证再下结论、", content: "x" });
+    expect(r4!.description).toBe("");
+    const r5 = coerceCoreValueAnchor({ label: "闭环", description: "abc def、", content: "x" });
+    expect(r5!.description).toBe("");
   });
 });

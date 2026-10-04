@@ -39,36 +39,36 @@ describe("V6-1b 锚行 weight 显示", () => {
   });
   it("weight 两位小数去尾零：0.33 → w0.33、0.5 → w0.5", async () => {
     const out = await buildSoulPrefix(
-      makeStore([row({ value_id: "a", label: "A锚", weight: 0.33 }), row({ value_id: "b", label: "B锚", weight: 0.5 })]) as never,
+      makeStore([row({ value_id: "a", label: "A锚", weight: 0.33, attrs_json: '{"description":"甲锚说明。"}' }), row({ value_id: "b", label: "B锚", weight: 0.5, attrs_json: '{"description":"乙锚说明。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("A锚(趋近·w0.33)");
-    expect(out).toContain("B锚(趋近·w0.5)");
+    expect(out).toContain("A锚(趋近·w0.33)：甲锚说明。");
+    expect(out).toContain("B锚(趋近·w0.5)：乙锚说明。");
   });
   it("weight 缺省/0 → 无 w 段（逐位现状，宁缺毋滥不展示误导值）", async () => {
     const out = await buildSoulPrefix(
-      makeStore([row({ value_id: "a", label: "根因", weight: undefined })]) as never,
+      makeStore([row({ value_id: "a", label: "根因", weight: undefined, attrs_json: '{"description":"根因说明。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("根因(趋近)");
+    expect(out).toContain("根因(趋近)：根因说明。");
     expect(out).not.toContain("根因(趋近·");
   });
-  it("valence null（无方向）但有 weight → 「A(w0.8)」", async () => {
+  it("valence null（无方向）但有 weight → 「A(w0.8)：描述」", async () => {
     const out = await buildSoulPrefix(
-      makeStore([row({ value_id: "a", label: "A锚", weight: 0.8, valence: null })]) as never,
+      makeStore([row({ value_id: "a", label: "A锚", weight: 0.8, valence: null, attrs_json: '{"description":"无向锚说明。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("A锚(w0.8)");
+    expect(out).toContain("A锚(w0.8)：无向锚说明。");
   });
   it("weight 显示不改渲染序（value_id 稳定——立项②守卫）", async () => {
     const out = await buildSoulPrefix(
-      makeStore([row({ value_id: "b-x", label: "后锚", weight: 0.9 }), row({ value_id: "a-y", label: "前锚", weight: 0.1 })]) as never,
+      makeStore([row({ value_id: "b-x", label: "后锚", weight: 0.9, attrs_json: '{"description":"后锚描述。"}' }), row({ value_id: "a-y", label: "前锚", weight: 0.1, attrs_json: '{"description":"前锚描述。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },

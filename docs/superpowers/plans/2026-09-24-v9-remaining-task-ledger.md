@@ -133,3 +133,11 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 拍板③M3-NARR/64 号维持勿提前（设计顺序即意图）
 - 遗留：dim1 溯源率首轮未完成（curl -sfk 静默失败待修）；character 池 0 行=容量拍板无即时对比数据；yaml :181 注释 8 未同步
 
+
+## 十一、2026-10-04 灵魂注入质量轮（何晨令：禁无意义/不明确内容/仅关键词无说明锚点注入）
+- 活体缺陷实锚（本轮 soul 注入自查）：价值锚行三类违规=①裸关键词锚（拍板/收口/门禁/基线/台账/活体等 9+ 锚无 desc，96/130 NoDesc 数据面）②半句截断（「探针 HTTP 200、文档」「A-5 达 GRE、RED」）③w0.5 锚有完整 desc=合法（撤回定性）。
+- 根因：渲染端 soul-assembler.ts:190-201 desc 空→descSeg=""渲染裸关键词；存储端 pending-adopt-merge.ts:45 coerceCoreValueAnchor `[...(descRaw||content)].slice(0,60)` 60 字硬切无句边界（半句入库存活+全量渲染）。
+- 修复：①渲染端价值锚行+品格行 desc 门（空/空白锚整条跳过；尾悬空半句句边界清洗截最后句末标点。！？；全段无句末且尾悬空=按空；全部无 desc 行省略）②存储端 sanitizeDescription（60 字窗口含句末标点截到句末；超长截断且窗口无句末=半句实锤置空；尾悬空置空；完整短语保留）。
+- TDD：RED 7 failed/12 passed（新语义全 failed+回归面全 passed）→GREEN 19/19；全量 vitest 892/892（887+5；波及 fixture 补 desc：soul-attr-inject 4 用例/soul-person 3 用例/character-maint 1/soul-assembler-character 1/anchor-semantics 2 改写）；typecheck 222 持平。
+- 边界登记：感受段方向行（「驱动我行动的价值：label」清单）=设计内形态（§2.7）不动；person 行空 desc 回退=G-ANCHORDESC-WRITE 登记策略不动；存量 96/130 NoDesc 弱语义 desc 数据态回填=登记 gated 关联（渲染端已挡半句形态，弱语义短语=数据遗留）。
+- 门禁：core vitest 892/892 · typecheck 222 全存量零新增 · 活体探针（重启后价值锚行新语义验证）见收口报告。

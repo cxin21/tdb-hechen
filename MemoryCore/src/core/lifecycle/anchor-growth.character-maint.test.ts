@@ -113,14 +113,14 @@ describe("F-EV12-5③ · soul-feeling 仅主题锚（character 不入感受段�
     const store = {
       readCore: async () => [{ slot: "identity", content: "- 用户是团队负责人" }],
       listValues: async () => [
-        { label: "交付质量", weight: 0.7, valence: 1, state: "active", node_type: "theme", attrs_json: "{}" },
-        { label: "守诺", weight: 0.5, valence: 1, state: "active", node_type: "character", attrs_json: JSON.stringify({ source: "self_identity", facts: [FACT] }) },
+        { label: "交付质量", weight: 0.7, valence: 1, state: "active", node_type: "theme", attrs_json: '{"description":"交付质量说明。"}' },
+        { label: "守诺", weight: 0.5, valence: 1, state: "active", node_type: "character", attrs_json: JSON.stringify({ source: "self_identity", description: "守诺品格说明。", facts: [FACT] }) },
       ],
     };
     const out = await buildSoulPrefix(store as never, T, LOG, { selfIdentityEnabled: true, budgetSelfChars: 600, budgetIdentityChars: 900, maxRelationLines: 5 });
     // 价值锚行：character 在场（共享注入预算）
     expect(out).toContain("价值锚：");
-    expect(out).toContain("守诺");
+    expect(out).toContain("守诺(趋近·w0.5)：守诺品格说明。");
     // 感受段：仅主题锚——守诺不得出现
     const feel = out.split("<soul-feeling>")[1] ?? "";
     expect(feel).toContain("交付质量");
