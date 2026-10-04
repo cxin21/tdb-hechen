@@ -142,3 +142,4 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 边界登记：感受段方向行（「驱动我行动的价值：label」清单）=设计内形态（§2.7）不动；person 行空 desc 回退=G-ANCHORDESC-WRITE 登记策略不动；存量 96/130 NoDesc 弱语义 desc 数据态回填=登记 gated 关联（渲染端已挡半句形态，弱语义短语=数据遗留）。
 - 门禁：core vitest 892/892 · typecheck 222 全存量零新增 · 活体探针（重启后价值锚行新语义验证）见收口报告。
 - 收口残留消除（同轮补）：soul-authenticity-audit.mjs v3 dim1 修复（block 路径+meta.soulVersion+environ 取 key+价值锚行 label 正则）——服务器实测溯源率 ratio=1.0（9/9 hits≥95% 门槛）soulVersion sv-f8510ed0；yaml :181 注释同步勘误（character 8→6 拍板留痕）。
+- 2026-10-04 灵魂注入质量轮 R2·episode 门 DONE（1175ed5+1bdf66e）：新增 episode-gate.ts looksLikeEpisode（12 类具体事件硬特征）+采纳端（descRaw 事件→null 拒锚/回退产物事件→desc 置空）+渲染端（价值锚行/品格行命中跳过）+生成端 prompt 负面清单；全量 vitest 896/896 typecheck 222；活体三轮 10→6→5 锚（五混事件锚退出注入）block_len 6813→6461 MainPID 3708730 双 200；遗留=语义级事件叙述（实证/根因两锚）宁漏勿错杀留存。
