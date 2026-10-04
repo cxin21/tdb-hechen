@@ -514,7 +514,7 @@ export class VectorStore implements IMemoryStore {
   // ── R-A3（E2 性能速赢）：listValues 租户级缓存（GROW 写路径 upsert/delete/pin/
   // retire/restore/derive/restoreValence/resetValence 八处统一失效；TTL 仅作跨进程写
   // 漂移防御，默认 60s，0=缓存关）──
-  private valuesCache = new Map<string, { rows: Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }>; at: number }>();
+  private valuesCache = new Map<string, { rows: Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>; at: number }>();
   private valuesCacheTtlMs = 60_000;
   /** E2 观测计数器（miss=真实 DB 查询次数；hit=缓存命中次数）——测试与运维诊断共用。 */
   valuesCacheHits = 0;
@@ -2378,7 +2378,7 @@ export class VectorStore implements IMemoryStore {
    *     （retired → 即恢复；vetoed → 即撤销否决）；自动管道的 veto 不可重提由
    *     自生长去重查全态保证，与本写路径正交。origin/pinned 冲突不改写（裁定 3）。
    */
-  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" = "theme", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] }): boolean {
+  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" | "character" = "theme", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] }): boolean {
     const t = normalizeCoreTenant(tenant);
     const v = valence === undefined ? null : Math.min(1, Math.max(-1, Math.round(valence)));
     // P2（spec §2.6）：attrs_json 序列化单点——role/aliases/description/source/facts 可选字段按需并入（F2：品格采纳通道）；
@@ -2423,7 +2423,7 @@ export class VectorStore implements IMemoryStore {
    *  （GROW：两个读面是独立缓存条目）；全部 core_values 写路径（八处，见类字段注释）
    *  统一挂 invalidateValuesCache 钩子，TTL 仅作跨进程写漂移防御（默认 60s，0=缓存关）。
    *  缓存命中返回行克隆（防调用方就地改写缓存）。 */
-  listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }> {
+  listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }> {
     const t = normalizeCoreTenant(tenant);
     const includeRetired = opts?.includeRetired === true;
     // S7 第 9 项（批 2 审查 M-6）：JSON.stringify 取代 `|` 裸拼接（沿 S2 模式）——
@@ -2445,7 +2445,7 @@ export class VectorStore implements IMemoryStore {
       const readRows = (teamId: string, userId: string, agentId: string) =>
         (this.db.prepare(
           `SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY weight DESC`,
-        ).all(teamId, userId, agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }>) ?? [];
+        ).all(teamId, userId, agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>) ?? [];
       const rows = readRows(t.teamId, t.userId, t.agentId);
       // PA：严格无兜底——空桶返回 []，不再读时回退 default 桶（原 S6 第 5 项分支移除）。
       // S7 第 9 项（批 2 审查 M-6）：miss 计数移到真实读成功之后——计数器语义是
@@ -2519,12 +2519,12 @@ export class VectorStore implements IMemoryStore {
    * 专用两个调用方：① 自生长去重（veto 永不重提 + 名额计数）；② server 种子判空
    * （全种子被 veto 后重启不得复活——active-only 判空会误判空桶重灌）。
    */
-  listValuesAnyState(tenant?: CoreTenant): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }> {
+  listValuesAnyState(tenant?: CoreTenant): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }> {
     const t = normalizeCoreTenant(tenant);
     try {
       return (this.db.prepare(
         "SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person"; attrs_json: string }>) ?? [];
+      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>) ?? [];
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_values] listValuesAnyState failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];

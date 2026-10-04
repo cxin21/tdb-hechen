@@ -5,7 +5,7 @@
 ## 用途
 
 - **排序回归锚点**：每次锚定运行 `MemoryCore/scripts/recall-anchor.mjs`，产出 `runs/<ts>.json`——含十开关配置快照、OFF 双跑确定性断言、OFF/ON per-query top-5 与逐位次变化的通道归因（R1时窗/R1时近/R2/R3/R5价值/R6场景/R8强化/R9，取值来自 `recall-signals.ts` 各信号分量实际计算）、Precision@5 粗门、FTS 交叉自检（warn 级）、重巩固 bump 清单。
-- **非循环主题真值**：`labels.jsonl` 为 10 条 query 的主题相关记忆标注（每条 3-5 个 id + 逐条理由）。标注产自全量语料阅读（896 条 digest 通读 + 关键词全文扫描 + 候选全文复核），**产标时未运行任何检索**，与排序路径零交集（防循环自证）。
+- **非循环主题真值**：`labels.jsonl` 为 11 条 query 的主题相关记忆标注（v3 重锚，11 query / 46 正例，每条 3-5 个 id + 逐条理由；首版 10 query / 896 条 digest 时代口径留痕于 git 历史）。标注产自全量语料阅读 + 关键词全文扫描 + 候选全文复核，**产标时未运行任何检索**，与排序路径零交集（防循环自证）。
 
 ## 触发纪律（重锚时机）
 
@@ -18,7 +18,7 @@
 
 ## P@5 验收线与漂移重锚协议（DS-P5-REANCHOR-001，2026-09-12 重锚 ×4）
 
-- **现行验收线：P@5 ≥ 0.325**（平面层体系）。锚定：重锚基线 0.345 − margin 0.02（④ 完结重锚重确认）。
+- **现行验收线：P@5 ≥ 0.633**（平面层体系）。锚定：F-CLUSTER 重锚基线 0.653 − margin 0.02（2026-09-30 折叠收口重锚，runs/2026-09-30T03-19-08.json，11 query，corpus 48，sha 306c202）；旧线 0.325（基线 0.345 − 0.02，10 query 时代）同日退役留痕。
 - **基准工作点（四次重锚后）：纯基线**（rerank off + 结构信号 off，排序为字典序两段式——5fc7962 + fe6b37ae 全链对齐）。四次同日换线/重确认均按协议有据：
   ① 精排 A/B（reanchor-2026-09-12T04-26-51.json）：off 0.285 / on 0.160 → 精排关断（线 0.265）；
   ② 结构信号 A/B（runs/12-08-44 vs 12-11-49，加法混排时代）：on 0.285 / off 0.325 → 结构信号关断（线 0.305）；
@@ -46,10 +46,13 @@
 
 ## 锚点登记
 
-- **分析型 query 新锚 = runs/2026-09-12T13-33-14.json**（rerank off，sha `5fc79629`，
-  V2-3 预算封顶后注入形态，run corpus 快照 1176；layeredMetrics 全量重放
-  `replayGitSha=5fc79629`、重放快照 1179，corpus.driftVsRun sameCorpus=false 如实在档，
-  CC=0.4 / CC'=1）。分析型 query 的分层指标对锚以本锚为准。
+- **分析型 query 新锚 = runs/2026-09-30T03-19-08.json**（F-CLUSTER 折叠收口后重锚，纯基线
+  工作点，sha `306c202`，11 query，run corpus 快照 48；gate P@5=0.653 / 线 0.633 passed，
+  详见 2026-09-30 fcluster-design §6 与 CHANGELOG）。分析型 query 的对锚以本锚为准。
+- **旧锚退役（v16-r1 T-02）**：runs/2026-09-12T13-33-14.json（rerank off，sha `5fc79629`，
+  V2-3 预算封顶后注入形态，run corpus 快照 1176；layeredMetrics 重放 `replayGitSha=5fc79629`、
+  重放快照 1179，CC=0.4 / CC'=1）——F-CLUSTER 语料重组（corpus 48 全新快照）后不再可比，
+  其换线历史语义见上文 ②-④。
 - **旧锚退役**：runs/2026-09-12T12-11-49.json（及同批 12-08-44，加法混排时代、
   V2-3 预算封顶前形态，corpus 1168）不再作为分析型 query 注入形态的对锚基准；
   其 P@5 换线历史语义见上文 P@5 验收线节 ②。

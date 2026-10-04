@@ -1773,19 +1773,19 @@ export class TcvdbMemoryStore implements IMemoryStore {
     }
   }
 
-  async upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual"): Promise<boolean> {
+  async upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" | "character" = "theme", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] }): Promise<boolean> {
     try {
       await this._ensureInit();
       const aux = this._auxReady();
       if (!aux) return false;
-      return aux.upsertValue(valueId, label, weight, createdBy, tenant, valence, origin);
+      return aux.upsertValue(valueId, label, weight, createdBy, tenant, valence, origin, nodeType, attrs);
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_values] upsertValue failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
-  async listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Promise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>> {
+  async listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Promise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>> {
     try {
       await this._ensureInit();
       const aux = this._auxReady();
@@ -1798,7 +1798,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
   }
 
   /** GROW：全态读委托伴生库同源实现（自生长去重 + 种子判空专用）。 */
-  async listValuesAnyState(tenant?: CoreTenant): Promise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>> {
+  async listValuesAnyState(tenant?: CoreTenant): Promise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>> {
     try {
       await this._ensureInit();
       const aux = this._auxReady();

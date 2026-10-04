@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# secret-scan.sh v2.4 — 仓库级敏感信息扫描（2026-10-02 评审 UR-05/UR-07 整改）
+# secret-scan.sh v2.5 — 仓库级敏感信息扫描（2026-10-02 评审 UR-05/UR-07 整改；2026-10-04 v16-r1 T-01 TARGETS 追加 docs/ MemoryKnowledge/src）
 # 变更（v1→v2）：
 #   R2 修复：默认 TARGETS 从 Panel 视角扩为仓库根全模块显式表；必需集缺失 exit 2（不再静默扫空）。
 #   R3 修复：移除 `\.md:` 全豁免——md 改走高置信规则（1/2/5），宽松规则 3 仅代码/配置。
@@ -15,7 +15,7 @@ STRICT=0
 [[ "${1:-}" == "--strict" ]] && { STRICT=1; shift; }
 
 if [[ $# -eq 0 ]]; then
-  TARGETS=(MemoryCore/src MemoryCore/scripts MemoryCore/tdai-gateway.yaml MemoryCore/tdai-gateway.standalone.yaml MemoryProxy/src MemoryProxy/config MemoryProxy/scripts MemoryPanel/src MemoryPanel/web/src MemoryPanel/scripts MemoryPanel/tests MemoryPanel/config docker sdk deploy README.md)
+  TARGETS=(MemoryCore/src MemoryCore/scripts MemoryCore/tdai-gateway.yaml MemoryCore/tdai-gateway.standalone.yaml MemoryProxy/src MemoryProxy/config MemoryProxy/scripts MemoryPanel/src MemoryPanel/web/src MemoryPanel/scripts MemoryPanel/tests MemoryPanel/config docker sdk deploy docs MemoryKnowledge/src README.md)
 else
   TARGETS=("$@")
 fi
