@@ -16,6 +16,9 @@ describe("looksLikeEpisode（记忆内容混入灵魂门）", () => {
     expect(looksLikeEpisode("事件发生在 2026-10-04 收口")).toBe(true); // 日期
     expect(looksLikeEpisode("根因定位见 sqlite.ts:2381 白名单")).toBe(true); // 文件后缀
     expect(looksLikeEpisode("所有待拍板事项（A-7b小节、neighborExpand选项等）呈")).toBe(true); // A-7b
+    // 2026-10-04 活体漏判修正：全角标点前缀形态（「：D-4」「；A-5」）——\b 在中文标点与字母间成立
+    expect(looksLikeEpisode("移交v4复查遵循多轮迭代模式：D-4 以真实周期性事实种子库定案 A/B 设计")).toBe(true);
+    expect(looksLikeEpisode("按序推进；A-5 达 GRE 口径")).toBe(true);
   });
   it("合格灵魂级价值观说明不误杀", () => {
     expect(looksLikeEpisode("先取证再下结论的工作纪律")).toBe(false);
