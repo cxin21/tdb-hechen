@@ -229,7 +229,16 @@ export async function buildSoulPrefix(
             const a = attrsOf(v.attrs_json) ?? {};
             const d = personDir(v.valence);
             const role = a.role ? `${escapeXmlTags(a.role)}·` : "";
-            const pDesc = a.description && a.description.trim() !== "" ? `：${escapeXmlTags(a.description.trim())}` : "";
+            // R2b person 行 desc 门（2026-10-04 自主拍板·渲染一致性补全）：trim→句边界清洗（半句悬空
+            // 置空，与价值锚行/品格行同构）→episode 门（混具体事件叙述置空）。与价值锚行「整锚跳过」
+            // 不同构：person 锚=灵魂五段成员本身，门只把 desc 段降级为无描述形态（V6-1e 设计内合法
+            // 形态），不抹人；gated G-ANCHORDESC-WRITE 存量回填另行拍板不在此处。
+            const rawDesc = typeof a.description === "string" ? a.description.trim() : "";
+            const cutP = Math.max(rawDesc.lastIndexOf("。"), rawDesc.lastIndexOf("！"), rawDesc.lastIndexOf("？"), rawDesc.lastIndexOf("；"));
+            const pDescClean = rawDesc === ""
+              ? ""
+              : cutP >= 0 ? rawDesc.slice(0, cutP + 1) : /[，、,]$/.test(rawDesc) ? "" : rawDesc;
+            const pDesc = pDescClean !== "" && !looksLikeEpisode(pDescClean) ? `：${escapeXmlTags(pDescClean)}` : "";
             return `${escapeXmlTags(v.label)}(${role}${d})${pDesc}`;
           }).join("、")}`,
         );

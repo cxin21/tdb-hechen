@@ -118,3 +118,50 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
     expect(m![1]).not.toContain("REG-REMAINING");
   });
 });
+
+describe("R2b person 行 desc 门（人保留、desc 降级——与价值锚行整锚跳过不同构）", () => {
+  it("person desc 混具体事件叙述 → 降级为无 desc 形态（人保留不抹除）", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "p-1", label: "何晨", node_type: "person", attrs_json: '{"role":"同事","description":"要求提交 b1ea2e5 后验证并把 REG-2026-001 登记台账"}' }),
+      ]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true },
+    );
+    const m = out.match(/重要的人：([^\n]+)/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toContain("何晨(同事·趋近)"); // 人本身是灵魂五段，门只降 desc 不抹人
+    expect(m![1]).not.toContain("b1ea2e5"); // 混事件 desc 段消失
+    expect(m![1]).not.toContain("REG-2026-001");
+  });
+
+  it("person desc 合格 → 照常渲染（防收窄回归：file:line/三步工序不误杀）", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "p-2", label: "何晨", node_type: "person", attrs_json: '{"role":"同事","description":"要求分析附 file:line 取证并按三步工序后才允许下结论。"}' }),
+      ]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true },
+    );
+    const m = out.match(/重要的人：([^\n]+)/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toContain("何晨(同事·趋近)：要求分析附 file:line 取证并按三步工序后才允许下结论。");
+  });
+
+  it("person desc 尾悬空半句 → 降级为无 desc 形态（句边界清洗同构）", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "p-3", label: "何晨", node_type: "person", attrs_json: '{"role":"同事","description":"要求逐轮记录召回日志、"}' }),
+      ]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true },
+    );
+    const m = out.match(/重要的人：([^\n]+)/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toContain("何晨(同事·趋近)");
+    expect(m![1]).not.toContain("逐轮记录"); // 半句尾巴消失
+  });
+});
