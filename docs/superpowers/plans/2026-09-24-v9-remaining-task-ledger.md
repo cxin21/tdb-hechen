@@ -143,3 +143,4 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 门禁：core vitest 892/892 · typecheck 222 全存量零新增 · 活体探针（重启后价值锚行新语义验证）见收口报告。
 - 收口残留消除（同轮补）：soul-authenticity-audit.mjs v3 dim1 修复（block 路径+meta.soulVersion+environ 取 key+价值锚行 label 正则）——服务器实测溯源率 ratio=1.0（9/9 hits≥95% 门槛）soulVersion sv-f8510ed0；yaml :181 注释同步勘误（character 8→6 拍板留痕）。
 - 2026-10-04 灵魂注入质量轮 R2·episode 门 DONE（1175ed5+1bdf66e）：新增 episode-gate.ts looksLikeEpisode（12 类具体事件硬特征）+采纳端（descRaw 事件→null 拒锚/回退产物事件→desc 置空）+渲染端（价值锚行/品格行命中跳过）+生成端 prompt 负面清单；全量 vitest 896/896 typecheck 222；活体三轮 10→6→5 锚（五混事件锚退出注入）block_len 6813→6461 MainPID 3708730 双 200；遗留=语义级事件叙述（实证/根因两锚）宁漏勿错杀留存。
+- 2026-10-04 灵魂注入质量轮 R2b·person 行 desc 门 DONE（8ce33c6）：gated 三项自主拍板①做=渲染一致性补全（person 行 desc 三步门与价值锚行/品格行同构，降级不抹人）②存量回填不做（渲染门已挡无收益+数据态红线）③召回算法不动（golden 0.653>线 0.633 无证据）；RED 2 failed/7 passed→GREEN 9/9→全量 899/899（896+3）；活体 MainPID 3746448 /health+/v3/recall 双 200，person 合格 desc 保留、混事件零命中。
