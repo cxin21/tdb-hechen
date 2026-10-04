@@ -269,7 +269,7 @@ console.log("=".repeat(72));
     check("D3 conclusionRelaxedForAnalytical=false → 关断",
       !(switchOff?.prependContext ?? "").includes("结论条目甲"));
 
-    const noMethod = await recall(store, ANALYTICAL_Q, "sk-v2bal-d-nomethod", {}, false);
+    const noMethod = await recall(store, ANALYTICAL_Q, "sk-v2bal-d-nomethod", {}, false); // secret-scan-ignore (synthetic fixture id, not a credential)
     check("D4 searchL1ByType 缺失 → 通道退出（feature-detect 降级，不炸不报错）",
       noMethod !== undefined && noMethod.error === undefined,
       `error=${JSON.stringify(noMethod?.error ?? null)}`);
