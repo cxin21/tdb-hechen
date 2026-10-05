@@ -122,8 +122,8 @@ L0 会话转录（role: user|assistant 双方消息）── 数据源总入口
 
 | 列 | 类型 | 缺省 | 语义 |
 |---|---|---|---|
-| `node_type` | TEXT | 'theme' | 'theme'=主题锚（现状逐位）；'person'=人物锚（P2） |
-| `attrs_json` | TEXT | '{}' | 人物锚属性：`{ role, aliases[] }`（role=家人/同事/朋友/其他；aliases=昵称数组并入证据重算）；关系情感方向**不重复存**——由 valence 列承载（与主题锚同列同义） |
+| `node_type` | TEXT | 'theme' | 'theme'=主题锚（现状逐位）；'person'=人物锚（P2）；【2026-10-05 勘误】'character'=品格锚（M2 S-CHAR-2 引入，权威定义见 DS-SOUL-EVOLUTION-001，生产 maxTotal=6） |
+| `attrs_json` | TEXT | '{}' | 人物锚属性：`{ role, aliases[] }`（role=家人/同事/朋友/其他；aliases=昵称数组并入证据重算）；关系情感方向**不重复存**——由 valence 列承载（与主题锚同列同义）；【2026-10-05 勘误】实际键族另含 `description`（锚行说明，V6-1e/R2b 引入：价值锚行与人物行 desc 通用键，主题锚同用） |
 
 - **数据来源**：主题锚=anchor-growth theme 池（LLM 提案→护栏四件）；人物锚=anchor-growth worker 内 **person 池**（双池扩展，非新 worker）——同一状态机骨架（双门/护栏四件/挤出/GROW-MAINT/QUOTA 守卫），证据口径策略化注入（F11），发现 prompt 人物视角（"谁在该 agent 的经历中反复出现、关系如何"）。
 - **主语**：所有者=agent；label 内容主语=用户的价值主题/用户生活中的人物；**功能主语=agent**（价值参照系与关系参照系，都是行动方针）。
@@ -253,12 +253,12 @@ metadata_json 子结构：
 |---|---|---|---|---|
 | value_id | agent | — | pin/retire/delete 路由 | slug；纯 CJK→auto-<sha256[:10]> |
 | label | agent | 用户价值主题/用户生活中人物 | 渲染、证据重算、反查 | — |
-| **node_type（P2）** | agent | — | GROW 口径策略化、渲染分行 | 'theme'（缺省）/‘person' |
-| **attrs_json（P2）** | agent | — | 人物 role/aliases（方向由 valence 列承载） | 主题锚 '{}' |
+| **node_type（P2）** | agent | — | GROW 口径策略化、渲染分行 | 'theme'（缺省）/'person'；【2026-10-05 勘误】另含 'character'（M2，见 §2.6 注记） |
+| **attrs_json（P2）** | agent | — | 人物 role/aliases（方向由 valence 列承载） | 主题锚 '{}'；【2026-10-05 勘误】实际键族含 description（V6-1e/R2b） |
 | weight | agent（信念强度） | — | F5/F6/F12、渲染排序 | D6 绝对证据+饱和 |
 | valence | agent（方针方向） | 聚合自证据情感 | 感受段渲染 | 趋近/审慎 |
 | origin | agent | — | QUOTA 豁免判定 | seed/manual/auto |
-| created_by | agent | — | 维护豁免判定 | verify/auto-growth |
+| created_by | agent | — | 维护豁免判定 | verify/auto-growth；【2026-10-05 勘误】另含 'panel-adopt'（O13/V12-CV Panel 采纳引入）与 L1 面 metadata.created_by='evolution'（spec §4.3 审计三件套） |
 | pinned/state | agent（维护决策） | — | 挤出豁免/全态去重/守卫豁免 | active/retired/vetoed |
 
 ### 4.3 core_memory（身份层）

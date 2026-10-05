@@ -147,3 +147,68 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 2026-10-04 灵魂注入质量轮 R2c·存量 desc 回填 DONE（纯数据运维无代码 commit，何晨令重拍板②=做；备份 vectors.db.bak-20261004-r2b-backfill）：dry-run 命中 6（5 active+1 retired）与 R2 渲染门退出集吻合；双实现对拍 looksLikeEpisode agree=5/5；5 active 锚删 description 键、retired 无收益不动；MainPID 3828264 /health 200 活体=合格锚在位/回填锚退出/person 保留；soulVersion→sv-d5f9a630=数据态指纹更新设计内；语义级 LLM 重写=二期工程项。
 - 2026-10-04 第二令判定表批 2 DONE（significance/sensitivity/source，63 号续批 2/7）：判定表载体 §六 追加（2026-10-04-attr-fourchain-matrix-v2.md）；生产探针 1170 行——significance null=460（旧语料集中面）avg=0.725/high08=264 四链五消费（R2/RV2-2/遗忘/F13 R_REF=150/V2-3+高显著采样）✅；sensitivity 1170 全 none=三缺省门全关 gated 设计内（extractionEnabled false/penalty 0/bias 0）四链在场测试 D-3a/b/c 锚定 ✅；source extraction=706/evolution 写路在案（evolution-worker.ts:284）/consolidation 语义等价登记 ✅；63 号=进行中批 3-4 待续。
 - 2026-10-04 第二令判定表批 3 DONE（task_id/coreRefs/personRefs/identityRefs，63 号续批 3/7）：判定表载体 §七 追加（b87d3c7 后续 commit）；生产探针——task_id 非空 566/1170（48.4%）✅、coreRefs 806 行（68.9%）五消费全活跃 ✅、personRefs 193 行 F12 回填+P0-F7 反查扩族 ✅、identityRefs 88 行切片弱口径+F14 保护+「核心事实」徽章活体在场+R-C 红线测试锚定 ✅；四属性无链路缺口零差异登记；63 号=批 4（recallCount/evolution/valid_start/state/pinned/created_by）待续。
+
+---
+
+## 十二、2026-10-05 v17 轮（判定表批 4-7 全名册收口+第三令四视角与双测试+第四令 S1-S6 落点+48/6 号核验）
+
+### 12.1 63 号 ANCHOR-PRECISION 判定表批 4-7 DONE（全名册收口）
+
+- 载体：2026-10-04-attr-fourchain-matrix-v2.md §八~§十一（批 4 六属性/批 5 四属性/批 6 四属性/批 7 徽章链六件+收口结论节）。
+- **16 属性+6 徽章零 ❌（无断链属性）**：✅ 20 项、⚠️ 2 项（均为文档勘误级非代码缺口）、📝 8 项（休眠/稀疏/零使用/gated 类观察）。五列判定 32 项全过，无「提取不用/用不展示/展示难用」断链——63 号判定表主体 DONE。
+- 关键真数据（生产库 1170 行只读探针）：recall_count 547 行>0 MAX=106（活体「验证×24」）；evolution 0 行=门严休眠（:164 注记逐字一致）；valid_start 189 行（16.2%）；锚层 state active 85/retired 45/vetoed 0（character 9 全 retired=10-04 拍板②清退活体实证）；pinned 130 全 0（端点在位未用）；created_by auto-growth 127/panel-adopt 2/'agent' 1（ev19 测试种子残留，label '?????'=ASCII 毁中文实锤产物，归并 gated 测试种子清理）；weight 值域 0.33-0.8 与 F5 clamp 吻合；valenceDir 四态真数据齐备；slot 四槽全活（identity v50/self v64）。
+- 文档勘误待办（三处，登记不阻收口）：①09-17 :261 created_by 枚举补 panel-adopt（V12-CV 引入）；②:125/:256 node_type 补 character（M2 引入，soul-evolution 为权威）；③:126/:257 attrs_json 键族补 description（R2b/V6-1e 引入）。
+
+### 12.2 第三令·灵魂四视角重析（灵魂组成：现状/设计/应然/差距）
+
+- **现状（HEAD cebd3b0 代码实测）**：注入四段=soul-identity（我是谁 self_identity→（我是谁）前缀+我心中的他 identity→（我心中的他）前缀+价值锚行 theme desc 门+episode 门+value_id 稳定序+V6-1b weight 徽章+重要的人行 person role·方向·desc 三步门）+soul-feeling（主题锚驱动/审慎方向行+M1 近期基调行 mood tier）+品格行（M2 gated，生产 active character 0=数据驱动省略）+relevant-memories（R1-R2c 四层质量门+五徽章）。soulVersion sv-b8b87d38（mood tier 滚动：mood72 17 样本 avg=+0.3529 正档）。
+- **设计（权威基准）**：09-17 §2.7 四小节+F17 预算（truncateByLines 行边界）+F14-bis 回音室禁令；09-24 soul-evolution 三机制 M1 已实施生产/M2 已实施 gated→10-04 拍板启用（maxTotal 6）/M3 排队勿提前+六链矩阵+R-A~R-D 反耦合红线。
+- **应然（对齐后形态）**：=现状+M2 品格行待 character 池重新积累 active 行后自然出现（数据驱动，无需代码变更）+M3 叙事行待依赖期（M1/M2 数据积累）。
+- **差距与修复方案**：①设计文档三处枚举滞后（12.1 勘误项，文档 commit 修复）②G-ANCHORDESC-WRITE 存量 person desc 7 行无 desc=gated 待拍板（UI 手工通道已备 ValueAnchorsPanel.tsx:107+提案 rationale 通道 :565）③语义级混事件两锚留存+LLM 重写=二期工程项（R2 遗留在案）④M3-NARR 维持排队（设计顺序即意图）。**无组成级缺口**。
+
+### 12.3 第三令·recall 双测试（S10/§8 验收，SQL 只读真数据）
+
+- 换用户：`(team-2j92u63hre, usr-2t8126nehp, agt-2t81sh9zdz)` identity v2+self_identity v2（内容=「用户（姓名未提供）是这套 AI 记忆体系…设计者」/「我的自我注入采用四段结构…」）vs 主租户 `(team-kcjjqzkxks, usr-kfym3ajzme, agt-kfynybx0ly)` 四槽全活（core_value v1/identity v50/self_identity v64/strict_rule v13）——两三元组 self_identity 内容零重叠，各 ≥1 条对方没有 ✅
+- 换 agent：同 team 同 user 下 `agt-l5ugn6urg4`（identity v10「我要求结论必须建立在代码事实上…AI 提示词生成插件开发」/self_identity v6）vs `agt-kfynybx0ly`（identity v50「何晨的 TDAI MemoryPanel…」/self_identity v64）——内容完全分化，S8「品格随关系分化」拍板活体实证 ✅
+- 判定：S8 多租户隔离+§8 双测试全过（真数据三租户八行 core_memory 独立演化）。
+
+### 12.4 第四令·S1-S6 落点核验（§6 使用场景总表逐场景）
+
+| 场景 | 代码落点 | 真数据/活体 | 判定 |
+|---|---|---|---|
+| S1 日常对话注入 | soul-assembler.ts:159-245（四小节+预算+门族）+v2-router recall | 本轮会话 soul-identity/soul-feeling/relevant-memories 三块注入实证 | ✅ |
+| S2 记忆召回 | memory-search.ts 双路融合+filterByValidity :1487-1491+auto-recall 排序管线（R1-R8+探索位 :700-730） | /v3/recall 200 code=0+L1-search HIT journal+验证×24 徽章行 | ✅ |
+| S3 灵魂自生长 | identity-discovery 双视角+F10 状态残留剥离+guard.ts allowedSlots 白名单 | self_identity v64 演化留痕+三租户独立 soul（12.3） | ✅ |
+| S4 记忆演化 | evolution-worker.ts:255-303（F7 五条件门+merged+双失效+审计边） | evolution 0 行=门严不触发良性（S4 预期） | ✅📝 |
+| S5 遗忘与保留 | forgetting/scorer.ts:56-69（significance）/ :89-94（recallCountBoost）/ :147+F14 保护三键族（scorer.ts:53-59） | l1_archive 归档为 dedup 设计内（fcluster §6 定案）；保护排除指向 active 锚/现行事实 | ✅ |
+| S6 人物相关查询 | sqlite.ts:3131 searchL1ByCoreRefs 双键族（coreRefs+personRefs）+U4 反查 aliases 并入（ValueAnchorsPanel.tsx:404-416） | personRefs 193 行+person active 9 | ✅ |
+
+### 12.5 48 号 UI-REGITEM 核验（已核实施）
+
+- 登记项：批2审查 I-3 金节点整体覆盖基色（非描边）致节点类型色/valence 色相通道静默失效→图例/hover 需说明；sigma 描边=可选依赖 @sigma/node-border（可选）。
+- 核验结论：**已按登记口径实施**——图例在场（MemoryGraphView.tsx:219 legend 块「金描边/valence 色相/方向箭头」+_nb-legend css chat-memory-panel.css:1740/:1755）+着色实现注释自证（memory-graph-semantic.ts:7「程序无描边属性，取整体着色实现，图例注明金=有价值锚」+:119-126 coreRefs 金色优先/personRefs 青紫次之/valence 色相兜底）。hover 说明以图例承担（登记口径允许）；Excel 行 56 状态更新为已核验。
+
+### 12.6 6 号 WF-C 材料完备度更新
+
+- WF-C（交互式逐属性讨论，须用户逐轮参与）材料三路：A 深查 13 条款判定表（在案）+四链判定表（本日批 4-7 收口后=**全名册 32 项五列判定齐备**）+B 灵魂组成生产级总表（c07f75c 在案）+属性组成四链 map。材料完备度提升为「全名册齐备」；逐属性分批讨论仍待何晨在场启动（用户逐轮意见=唯一阻塞，非材料）。
+
+### 12.7 人物说明 Panel UI 实测（目标 2②，无缺口）
+
+- role/aliases/description 三字段编辑链完整在位：ValueAnchorsPanel.tsx:78 onSave 签名（attrs {role,aliases,description}）+:91-98 parsedAttrs 读回（2026-09-23 对抗审查修复：description 读回防编辑丢语义）+:104-107 三编辑态+:126-134 保存回写（trim+aliases「、」切分+desc 回写）+:172-187 三输入框。
+- 数据链接通：展示←listValues attrs_json（注入形态预览 :246-260 与 soul-assembler 锚行逐字同构+desc>80 字截断有 title 全文悬浮）；写入→upsertValue attrs_json；rationale→description 提案通道（:565-566）；U4 人物反查 label+aliases（:404-416）；pinned/retire/delete kebab 菜单（:270-280）；三池切换 tab（:633-640）。
+- 判定：人物说明 attrs UI 补齐**已全部实施**，四链通三层可见；facts 面=U4 关联记忆反查承担。G-ANCHORDESC-WIELD 手工补录通道即 :107 编辑态。
+
+### 12.8 v17 基线复跑与 soulVersion 差异定性
+
+- 门禁四件套（2026-10-05 服务器实测）：core vitest 899/899（126 文件）✓·tsc 222 全存量零新增 ✓·panel 147/147 ✓·web tsc 存量 2（ValueAnchorsPanel.tsx:423/:426）✓；MainPID 3828264 /health 200 /v3/recall 200。
+- soulVersion sv-b8b87d38≠令中 sv-d5f9a630：anchor-growth journal（10-04 12:00 起）全程 adopted=0/retired=0/no-new-corpus=锚池零写入，排除锚态变更；mood72 探针 17 样本 avg=+0.3529（正档）→**差异=mood tier 滚动（IF-2 computeSoulVersion 第三参，设计内自然演化）**，非缺陷。
+
+### 12.9 v17 轮遗留清单
+
+1. 文档勘误三处（12.1）——随本轮文档 commit 一并修复或登记后续。
+2. G-ANCHORDESC-WRITE 存量 person desc 回填（7 行）——gated 待何晨拍板。
+3. 语义级混事件两锚留存（实证/根因）+LLM 重写——二期工程项（R2 遗留）。
+4. M3-NARR/64 号维持排队勿提前（设计顺序即意图）。
+5. 测试租户种子清理（含 ev19 'test-desc-anchor' label '?????'）——gated 待拍板（v9 §三在案）。
+6. 'agent' created_by 值=测试种子残留非生产缺陷（12.5 探针定责：租户 team-ev19）。
+7. 45 号 LIVE-DOM BLOCKED（环境）——活体 DOM 回归仍待环境复通。
