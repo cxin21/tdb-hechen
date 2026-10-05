@@ -281,3 +281,14 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 门禁：服务器 vitest **907/907 全绿**（899 基线+8 新增，126 文件）；tsc **222 持平基线**（5 改动文件零新增，唯一 config.ts 字样报错在 src/gateway/config.ts:763 存量非本次文件）；core 重启生效 MainPID 3988624→4047303（19:43:11 CST），/health→200。
 - 部署：scp /tmp/v18sync/→sudo cp→chown tdai:tdai（tdai 账号不可登录铁律）；yaml 双侧 4ff5ca1be6d33965；minUniqRatio :122 在位。
 - derive 实测：本节 §13.1-a；零数据丢失三重取证（state 分布 active84/retired45+tenant 48 行 nul=32+valence 域 -1×15/0×35/1×48）。
+
+### §13.3 续令轮实测收口（2026-10-05 何晨令「继续，你自己拍板最优方案，必须经过实测，不要影响其他功能正常运行」+「tdb的LLM套餐已经续费了」）
+
+- **a 项收益落地（derive 重调成功）**：套餐续费后 POST /v2/core-memory/values/derive 重调→**derived=17、active_null 1→0**；active 域 -1×13/0×36/1×36（LLM 判定语义合理：审计=-1 审慎、根因/闭环/文档=1 趋近）；retired_null 保持 31（本轮 reset 租户过滤内 retired 已全 null 无可清）。**渲染活体实锚**：soul 注入「根因优先(趋近·w0.5)：解决问题必须从第一性原理出发」——manual 裸权重锚方向词生产链生效。
+- **c 项 0.35 门生产 A/B 十组实测（只读探针 /v3/recall data.block 字符串解析）**：
+  - 门对逐字重复有效（conclusionUniqRatio 实测路径在产）；Q3/Q5（无场景块查询）注入 4117~4223 字、结论块全 reflection 高质量。
+  - **盲区实锤（V18-C2-GATEBLIND）**：[结论|TDB记忆管线-治理与优化] 自指回放块（10236 字截断 2021 字注入）出现在 5/10 组；uniqRatio_literal=1.000；**前导时间戳归一化剥法证伪**（norm 剥日期后仍 1.000——同构句变量不止前导时间戳，还有句中章节列举「01:55/02:02/02:12/02:27」差异）。伤害定量：2021 字占注入 33~49% 配额；Q4（密钥轮换查询）2/5 结论席被两场景块占，但密钥安全结论以 reflection 形式在场=**配额浪费非信息丢失**。读出端根治需 shingle 相似度（误杀真结论风险，违背「不影响其他功能」）→**本轮不升级**；根治方向=**写入端场景块滚动去重**（追加前骨架比对、同构替换不追加——scene 写入策略 feature），gated 待拍板。
+  - 探针口径备忘：/v3/recall 响应=`data.block` 单字符串（soul-identity+记忆条目拼接），非 blocks 数组；结论行标记 `[结论|` / `[work_fact|`。
+- **G-ANCHORDESC-WRITE 存量定量终版（attrs_json 全量只读探针）**：core_values 129 行带 desc 仅 20 行；len=60 触顶 12 行=60 字截断窗口铁证；逐行语义判读缩范围：**根因/实证/文档 3 行语义完整**（幸运截断无需回填）；**真断尾仅 3 行 active**=何晨(「…何晨一贯要求系统行为」缺尾)/RED(「…以 RED→」箭头悬空)/用户person(「…README 级浅层总结；」分号悬空)。attrs_json 无 source 引用（keys=description/role/aliases）→无法回溯 L1 原文，AI 补写=造数据红线→**3 行回填登记 gated 待拍板**（选项：AI 按会话史忠实补写/置空/维持现状）。
+- **新发现登记（生产库测试残留）**：core_values 存在 value_id=`test-desc-anchor`（label 全乱码「?????」）测试锚行——v15 台账「测试租户种子」同族残留，删除须何晨拍板（只增不删铁律）。
+- 本轮全程只读探针（node:sqlite readOnly + /v3/recall POST 只读端点），零生产状态改动；探针脚本 _probe_v18_fails.sh + v18_ab.js + v18_attrs.js（scp→/tmp 执行）。
