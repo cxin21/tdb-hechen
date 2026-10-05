@@ -203,6 +203,21 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 门禁四件套（2026-10-05 服务器实测）：core vitest 899/899（126 文件）✓·tsc 222 全存量零新增 ✓·panel 147/147 ✓·web tsc 存量 2（ValueAnchorsPanel.tsx:423/:426）✓；MainPID 3828264 /health 200 /v3/recall 200。
 - soulVersion sv-b8b87d38≠令中 sv-d5f9a630：anchor-growth journal（10-04 12:00 起）全程 adopted=0/retired=0/no-new-corpus=锚池零写入，排除锚态变更；mood72 探针 17 样本 avg=+0.3529（正档）→**差异=mood tier 滚动（IF-2 computeSoulVersion 第三参，设计内自然演化）**，非缺陷。
 
+### 12.10 T7-SOUL 三维首轮基线齐备（dim2 补测+dim3 断言，2026-10-05）
+
+- dim1（溯源率）：v3 快照已收（9643eb3）——ratio=1.0（9/9 hits≥95% 门槛）sv-f8510ed0。
+- dim2（换用户/换 agent 分化率）本轮补测 **PASS**：新脚本 `MemoryCore/scripts/audit/soul-dim2-divergence.mjs` 入库（纯只读 recall 注入面探针）；三桶活体——agent 维 A(`agt-kfynybx0ly` 47 行) vs B(`agt-l5ugn6urg4` 30 行) onlyA=38/onlyB=21 identical=false；user 维 A vs C(`team-2j92u63hre/agt-2t81sh9zdz`) 行交集 9 行全为 assembler 模板/结构标记行（`<soul-identity>`/`## 此刻的你` 等），self_identity 段重叠 idSegOverlapAC=0。pass=true。
+- dim3（反自强化）三红线断言齐：R-A `computeMoodValence` 唯一定义（mood-line.ts:41）+`emotionSalienceOf` 唯一定义（recall-signals.ts:192）；F14-bis 零回灌——l1_records.content 探针「驱动我行动的价值」=0/identity 签名=0，「·w0.」命中 2 条=对话原文自然引用锚格式字面量（m_1789980104048 UI 重设计讨论/m_1790146596268 移交复查）非注入结构；红线 3 通道唯一性=V12-CV 采纳链闭合（07912ce 既有判定）。
+- 判定：任务 7 三维首轮基线**齐备且全 PASS**（纯测量零行为变更）；后续按方案 §三——复测溯源率<95% 时逐行定位伪内容根因修复，不以阈值放水。
+- 快照物证：/tmp/t7_dim2_snapshot.json（服务器临时面）+ /tmp/t7_dim2_blockA/B/C.txt 三注入块全文；soulVersion 链 dim1 sv-f8510ed0→12.8 sv-b8b87d38（mood tier 滚动，设计内）。
+
+### 12.11 45 号 LIVE-DOM 定性反转：证据抽屉结构性不可达（2026-10-05，DSH 浏览器活体）
+
+- 活体已达链（全真实交互）：DSH 浏览器登录 Panel(8123)→agent 筛选器 tea `<Select appearance="button">`（ChatMemoryPanel.tsx:216-227）CDP 真实点击切换→实例 `chat_memory-team-kcjjqzkxks-agt-kfynybx0ly`（L0 10376/L1 950/L2 6/L3 1）→L1 搜索视图三组查询各 30 条→逐条🧬属性 Modal（12 列全渲染）。
+- **根因（SQL+BFF 数学闭环）**：全库仅 4 行带 evidence_ids（dur_1790414886275_3d6xub 3 源=2 archived+1 live / dur_1790416679153_qmpe6x / dur_1790517072251_ukxkko / dur_1790734084579_e2eomu），全部 `session_key='consolidation'`；BFF POST /api/v1/chat-memory/layer 翻 0/200/400/600/800 五页共 950 条零 dur_——950=SQL 总数 954−4，**Panel 实例数据面按 chat session 过滤，consolidation 折叠产物结构性不在实例视图**；_ev-drawer 组件链在场（AttributesSection.tsx:160-176，evIds=item.metadata.evidence_ids :103）但当前生产数据下 UI 永不可达。
+- 判定反转：§12.9 第 7 条「环境 BLOCKED」→**结构性不可达（非环境问题）**；行 53 原验收口径（_ev-list+已归档徽章活体）不可达，登记口径修正提案（gated 待拍板三选一：①dur_ 产物进入实例可见 session ②Panel 跨 session 视图 ③抽屉改读 l1_archive 关系）；零代码变更。
+- 附带发现：dur_ 无 embedding（O7-EMBED 结构性复现）不进语义召回——语义搜索不可达的第二重独立证据。
+
 ### 12.9 v17 轮遗留清单
 
 1. 文档勘误三处（12.1）——随本轮文档 commit 一并修复或登记后续。
@@ -211,4 +226,4 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 4. M3-NARR/64 号维持排队勿提前（设计顺序即意图）。
 5. 测试租户种子清理（含 ev19 'test-desc-anchor' label '?????'）——gated 待拍板（v9 §三在案）。
 6. 'agent' created_by 值=测试种子残留非生产缺陷（12.5 探针定责：租户 team-ev19）。
-7. 45 号 LIVE-DOM BLOCKED（环境）——活体 DOM 回归仍待环境复通。
+7. 45 号 LIVE-DOM——**定性反转见 §12.11：非环境问题，结构性不可达；口径修正提案 gated 待拍板**。
