@@ -39,6 +39,7 @@ import {
   DISCOVER_SYSTEM_PROMPT,
   parseProposalsJson,
   dedupProposals,
+  isSimilarLabel,
   recountEvidence,
   suggestAnchorWeight,
   DISCOVER_SAMPLE_CAP,
@@ -75,6 +76,11 @@ export interface AnchorDiscoveryConfig {
   character: { enabled: boolean; minEvidence: number; maxPerPass: number; maxTotal: number };
   /** P2：GROW-MAINT 身份分支开关（F15 身份分支；缺省 false=逐位现状）。 */
   identityMaintain: { enabled: boolean };
+  /** G-SIMMERGE（2026-10-05 何晨令「相似度高→合并做增量更新而非新增」）：采纳前字面相似门——
+   * 候选 label 与既有 active 锚语义相近（归一化包含关系 / 字符 bigram Jaccard ≥ threshold）
+   * 时不新建碎片锚，改为增量更新既有锚（证据重算 weight 走同刻度通道）。
+   * 缺省 false=逐位现状（config-first 铁律）；yaml 显式开启后生效。 */
+  similarMerge: { enabled: boolean; threshold: number };
 }
 
 export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
@@ -89,6 +95,8 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   // P3：品格池缺省关闭=逐位现状（config-first 铁律）；聚合源=self_identity 槽事实（spike 定案）。
   character: { enabled: false, minEvidence: 2, maxPerPass: 1, maxTotal: 8 },
   identityMaintain: { enabled: false },
+  // G-SIMMERGE：缺省关闭=逐位现状（config-first）；threshold=bigram Jaccard 阈值（包含关系无条件命中）。
+  similarMerge: { enabled: false, threshold: 0.5 },
 }
 
 /** 旧 store（缺 listL1TenantTriplets）回退用的 default 桶三元组；PA 起自生长默认遍历全部有记忆 agent。 */
@@ -177,6 +185,8 @@ export interface AnchorGrowthResult {
   reweighted: number;
   displaced: number;
   skipped: number;
+  /** G-SIMMERGE：相似命中并入既有锚（未新建）的候选数；similarMerge.enabled=false 时恒 0。 */
+  similarMerged?: number;
   reason?: "disabled" | "no-llm" | "store-unsupported" | "interval" | "attempt-cooldown" | "no-new-corpus" | "no-corpus" | "error";
 }
 
@@ -269,6 +279,7 @@ export async function runAnchorGrowth(deps: {
     let reweighted = 0;
     let displaced = 0;
     let skipped = 0;
+    let similarMerged = 0; // G-SIMMERGE：相似命中并入既有锚（未新建）的候选数
     let firstBlockReason: NonNullable<AnchorGrowthResult["reason"]> | undefined;
     for (const tenant of tenants) {
       // default 三元组 → 无参调用（旧键/旧调用形状；非 default → per-tenant 键）
@@ -477,6 +488,35 @@ export async function runAnchorGrowth(deps: {
           .filter((p) => p.evidenceCount >= cfg.minEvidence)
           .sort((a, b) => b.evidenceCount - a.evidenceCount)
           .slice(0, cfg.maxPerPass);
+        // ── G-SIMMERGE（2026-10-05 何晨令「相似度高→合并做增量更新而非新增」）──────────
+        // 候选 label 与既有 active theme 锚字面相似（归一化包含 / bigram Jaccard ≥ 阈值，
+        // isSimilarLabel 单一源）→ 不新建碎片锚：候选出队，命中锚按证据重算 weight（与
+        // GROW-MAINT 同刻度同 delta 门）做增量更新；命中即计 mergedSimilar（weight 无变化
+        // 也阻止新建）。F1 教训（UR-09）：upsertValue 一律 attrs=undefined 不碰 attrs_json。
+        let mergedSimilar = 0;
+        let adoptCandidates: Array<{ label: string; rationale: string; evidenceCount: number }> = candidates;
+        if (cfg.similarMerge.enabled) {
+          const themeActiveRows = (anyState2 as CoreValueRow[]).filter((r: CoreValueRow) => r.state === "active" && (r.node_type ?? "theme") === "theme");
+          const kept: Array<{ label: string; rationale: string; evidenceCount: number }> = [];
+          for (const c of candidates) {
+            const hit = themeActiveRows.find((a: CoreValueRow) => a.label !== c.label && isSimilarLabel(c.label, a.label, cfg.similarMerge.threshold));
+            if (!hit) {
+              kept.push(c);
+              continue;
+            }
+            mergedSimilar++;
+            const ev = Math.max(recountEvidence(hit.label, corpus), c.evidenceCount);
+            const newW = suggestAnchorWeight(ev, corpus.length);
+            if (Math.abs(newW - hit.weight) >= REWEIGHT_DELTA) {
+              const ok = await Promise.resolve(store.upsertValue(hit.value_id, hit.label, newW, hit.created_by, tenant, hit.valence ?? undefined, "auto", "theme", undefined));
+              if (ok) reweighted++;
+              else logger?.warn?.(`[anchor-growth] similar-merge reweight failed: ${hit.value_id} (${hit.label})`);
+            }
+            logger?.info?.(`[anchor-growth] similar-merge: candidate "${c.label}" → existing "${hit.label}" (ev=${ev}, w=${hit.weight}) (tenant=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])})`);
+          }
+          adoptCandidates = kept;
+          similarMerged += mergedSimilar;
+        }
         // ── 名额（per-agent 桶内）：maxTotal = 钉住数 + 自生长活跃数 ──
         // GROW-MAINT v2（SOP 2026-09-17 修复）：名额口径与 GROW-QUOTA 守卫对齐——
         // 限额对象 = active 钉住（含钉 auto，只占一席）+ active 非钉 auto。旧口径把钉 auto
@@ -491,7 +531,7 @@ export async function runAnchorGrowth(deps: {
           .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus) }))
           .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
         //（adoptedThisAgent 声明上移至 doAdoption 块外——V10-MAINT-DECOUPLE）
-        for (const c of candidates) {
+        for (const c of adoptCandidates) {
           const candidateStrength = suggestAnchorWeight(c.evidenceCount, corpus.length) * c.evidenceCount;
           let adoptedThis = false;
           if (free > 0) {
@@ -728,7 +768,7 @@ export async function runAnchorGrowth(deps: {
     }
     // v4#7：summary 行补 firstBlockReason——ran=false 时对外宣告拦截原因（此前只有 agents/adopted 计数）
     logger?.info?.(`[anchor-growth] ran: agents=${tenants.length} adopted=${adopted} retired=${retired} reweighted=${reweighted} displaced=${displaced} skipped=${skipped}${!ranAny && firstBlockReason ? ` firstBlockReason=${firstBlockReason}` : ""}`);
-    return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
+    return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, similarMerged, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
   } catch (err) {
     logger?.warn?.(`[anchor-growth] failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ran: false, adopted: 0, retired: 0, reweighted: 0, displaced: 0, skipped: 0, reason: "error" };

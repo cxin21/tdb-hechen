@@ -144,6 +144,35 @@ export function dedupProposals(candidates: RawProposal[], existingLabels: string
   return out;
 }
 
+/**
+ * G-SIMMERGE（2026-10-05 何晨令「相似度高→合并做增量更新而非新增」）：label 字面相似判定。
+ * 判定规则（确定性、零依赖——生产 routing=bm25 无 embedding，语义层由 discover 提示词第一道把关，
+ * 本函数是采纳前的第二道工程兜底）：
+ *   1) 归一化（trim+lowercase+去空白）后相等；
+ *   2) 归一化包含关系（「根因」⊂「根因优先」——生产实锚碎片对）无条件命中；
+ *   3) 字符 bigram Jaccard ≥ threshold（缺省 0.5，中文短 label 的稳健近似语义度量）。
+ */
+export function isSimilarLabel(candidate: string, existing: string, threshold = 0.5): boolean {
+  const norm = (s: string) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  const a = norm(candidate);
+  const b = norm(existing);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
+  const bigrams = (s: string): Set<string> => {
+    const set = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+    return set;
+  };
+  const A = bigrams(a);
+  const B = bigrams(b);
+  if (A.size === 0 || B.size === 0) return false;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union > 0 && inter / union >= threshold;
+}
+
 // ── 样本选取（高 significance 优先 + 最近补齐 + 硬上限 cap）──────
 
 function significanceOf(row: L1RecordRow): number {
@@ -181,7 +210,7 @@ export const DISCOVER_SYSTEM_PROMPT = [
   "你是团队记忆的价值锚（core_values）提炼顾问。你只提议，不落库：你的输出只是候选提案，采纳与否由人决定。",
   "硬约束：",
   "1. 只提炼样本记忆中反复出现、值得长期作为团队价值参照系的主题；一次性任务、具体事件不提。",
-  "2. 已有锚清单中的主题不得重复提议（去重）。",
+  "2. 已有锚清单中的主题不得重复提议（去重）。**语义去重**：近义/同义表达（如已有'根因优先'时再遇'追根溯源'、'治本'）视为同一主题，不得另提新锚；只有当语义上没有任何既有锚可承载时才提议新主题。宁可让既有锚承载新证据，也不要制造碎片锚。",
   "3. 宁缺毋滥：估计支撑证据少于 3 条记忆的主题不要提。",
   "4. label 必须是样本记忆中反复出现的**原文短语**（逐字摘自样本内容，≤12 字）——",
   "   采纳前系统会按 label 在语料中做逐字包含计数来验证证据；抽象概括词（如'部署管理'）",
@@ -205,7 +234,7 @@ export function buildDiscoverPrompt(sampleContents: string[], existingLabels: st
   });
   lines.push("");
   if (existingLabels.length > 0) {
-    lines.push("已有价值锚（这些主题不得重复提议，去重）：");
+    lines.push("已有价值锚（这些主题不得重复提议，去重——语义相近的表达也算重复，如已有'根因优先'就不要再提'治本'）：");
     for (const l of existingLabels) lines.push(`- ${l}`);
   } else {
     lines.push("已有价值锚：无。");
@@ -310,7 +339,8 @@ export const PERSON_DISCOVER_SYSTEM_PROMPT = [
   "2. 宁缺毋滥：没有把握就不提案；宁可不输出，也不虚构或凑数。",
   "3. 人物锚是稳定的关系层，不是事件：禁止把单一事件、状态、项目阶段包装成人物。",
   "4. role 只能取：家人 / 同事 / 朋友 / 其他；aliases 填用户对该人物的实际称呼变体（昵称/简称），没有则空数组。",
-  "5. 既有名单中已存在的人物（label 或任一 alias 命中）不得重复提案。",
+  "5. 既有名单中已存在的人物（label 或任一 alias 命中）不得重复提案。**一人一行**：同一人物只允许一条锚；称呼变体（如\"何晨\"与\"何总\"）视为同一人物，把变体放进 aliases 而不是另提新锚；无法确证两个称呼是同一人时，宁可不提。",
+  "6. role 只作参考描述：同一人物若在既有名单中 role 不同（如既有\"同事\"又想提\"朋友\"），仍属重复提案，不得借 role 差异另立新锚。",
   "",
   "输出：只输出一个 JSON 数组，每项 {\"label\": 人物名, \"role\": 角色, \"aliases\": [昵称...]}；无合格人物时输出 []。不要输出任何其他文字。",
 ].join("\n");

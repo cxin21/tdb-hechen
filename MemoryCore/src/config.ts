@@ -325,6 +325,11 @@ export interface MemoryCoreMemoryConfig {
       maxPerPass: number;
       maxTotal: number;
     };
+    /** G-SIMMERGE：采纳前字面相似门（enabled 缺省 false=逐位现状；threshold bigram Jaccard）。 */
+    similarMerge: {
+      enabled: boolean;
+      threshold: number;
+    };
   };
   /** S-CHAR-2（M2/P3，DS-SOUL-EVOLUTION-001 §2）：品格张力检测。enabled 缺省 false=逐位现状；
    *  检测器确定性（character-tension.ts 单一源）；提案落库走既有 F19/F15 门族（R-D 不新造门）。 */
@@ -1010,6 +1015,15 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         identityMaintain: {
           enabled: bool(obj(g, "identityMaintain"), "enabled") ?? false,
         },
+        similarMerge: (() => {
+          const sg = obj(g, "similarMerge");
+          const rawTh = num(sg, "threshold");
+          return {
+            enabled: bool(sg, "enabled") ?? false,
+            // G-SIMMERGE bigram Jaccard 阈值：0.2~0.95 clamp（过低误并无关锚、过高形同虚设）。
+            threshold: rawTh !== undefined && Number.isFinite(rawTh) ? Math.min(0.95, Math.max(0.2, rawTh)) : 0.5,
+          };
+        })(),
         character: (() => {
           const cg = obj(g, "character");
           const clampC = (key: string, dflt: number, lo: number, hi: number) => {
