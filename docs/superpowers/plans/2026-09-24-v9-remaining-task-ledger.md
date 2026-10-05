@@ -130,7 +130,7 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 ## 十、2026-10-04 自主拍板轮（何晨 m00845 令：AI 按设计本源自主拍板）
 - 拍板①T7 测量面启动（纯测量面零行为变更）：首轮基线快照 dim3 全量=core_values 130（theme 76/person 9/character 0/NoDesc 96），dim1 curl 通道待修登记；脚本入库 MemoryCore/scripts/audit/soul-authenticity-audit.mjs
 - 拍板②character maxTotal 回归设计值 6：yaml :186/:196 8→6（备份 tdai-gateway.yaml.bak-maxtotal-20261004；漂移定性=池空零行为影响故无 A/B 负担）；重启 MainPID 3672422 health=200；yaml :181 注释「人物 maxTotal=8」与注释同步待勘
-- 拍板③M3-NARR/64 号维持勿提前（设计顺序即意图）
+- 拍板③M3-NARR（台账序号 10）维持勿提前（设计顺序即意图；编号勘误 2026-10-05：原稿「64 号」错挂，64 号=FIFTH-CHAIN）
 - 遗留：dim1 溯源率首轮未完成（curl -sfk 静默失败待修）；character 池 0 行=容量拍板无即时对比数据；yaml :181 注释 8 未同步
 
 
@@ -218,12 +218,35 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 - 判定反转：§12.9 第 7 条「环境 BLOCKED」→**结构性不可达（非环境问题）**；行 53 原验收口径（_ev-list+已归档徽章活体）不可达，登记口径修正提案（gated 待拍板三选一：①dur_ 产物进入实例可见 session ②Panel 跨 session 视图 ③抽屉改读 l1_archive 关系）；零代码变更。
 - 附带发现：dur_ 无 embedding（O7-EMBED 结构性复现）不进语义召回——语义搜索不可达的第二重独立证据。
 
+### 12.12 M3-NARR（台账序号 10）叙事阈值拍板材料定稿（2026-10-05，纯取证零行为；编号勘误：原稿「62 号 M3-NARR-THRESHOLD」错挂——10-04 口径登记明载 62 号缺位不补编，M3-NARR=序号 10）
+
+- 设计基线：§3 S-NARR-3 触发时机=self_identity 采纳修订 version++（:116）/确定性门 narr-gate（:117）/输入=当前槽内容+本次修订方向（:126，O14 不建史表维持）/验收 A/B≥10 组「M1/M2 数据积累后实施」（:134）。
+- 真数据（anchor_growth_state+core_memory 只读探针）：主租户 self_identity v64/identity v50，last_adopted=09-30 13:33（副 agent 09-24/第三租户 09-26）——**采纳=周级稀疏事件（5-9 天/租户）**；last_attempt=10-03（corpus 948→950 增长触发，门严采纳率低）；M1 mood72 窗 17 样本正档运行中；M2 已启用但 character 池 active=0（9 全 retired）→M2 张力燃料=0。
+- 拍板点：A/B≥10 组来源三选——A 测试租户制造（推荐，ev 系列种子批量触发，周期 1-2 天）/B 自然事件等待（10-14 周，实测频率外推）/C 历史回溯蒸馏先行（测量面 10 组先验，与运行时形态不完全一致）；推荐实施面=narr-gate.ts 单一源+prompt 第三字段+槽尾幂等替换+IF-3/IF-4 接缝，config-first `narrative.enabled=false` 缺省关。
+- 判定：M3-NARR 材料完备，待何晨三选一拍板；M3 实施计划按拍板结果另写（设计顺序即意图，勿提前）。
+
+### 12.13 O7-EMBED（台账序号 50）D2 依赖取证（2026-10-05，只读；编号勘误：原稿「61 号」错挂——61 号=v16 评审轮文档勘误编号，O7-EMBED=序号 50）
+
+- D2 定义溯源：judge 标注驱动的九通道校准拟合产线替换（scripts/calibrate-fit.mjs，pilot 87% 精度）；门槛=labels≥300 且正例≥50——09-19 核对 367/82 **已达标**（v6 B-1 在案），gated 待何晨拍板启动预注册 A/B，维持勿抢跑。
+- O7 触发条件（「若 D2 校准期实测漏召回再评估」，v5 :147）**未到**——D2 A/B 未启动，演化产物漏召回无从实测。
+- 影响面参考（生产库只读）：l1_records 1170=m_ 706+rf_ 460+dur_ 4+evo_ 0；l1_archive 1360；l1_fts 1398；l1_vec_rowids 1355。dur_ 的 FTS 路在场（l1_fts MATCH 实证 28 行列表）+向量路不进 top30（语义搜索三组查询活体实证）；行级向量归因受 vec0 块表不可直读限制，判定以 09-17 实测（覆盖 91.1%→缺 evo 2+dur_ 2，产线管线零漏网）+本轮活体为准。
+- 判定：O7-EMBED「择机（依赖 D2）」**维持**；与 D2 拍板同批处置（G1-G9 gated 清单在案）。
+
+### 12.14 46/58 号 KEY-ROTATE 执行痕迹只读登记（2026-10-05 17:40，本会话零操作纯观察）
+
+- 定性：46/58 号呈现「已被执行」痕迹，但**执行方未回报、准出判据（旧 key 401 类探针）未见执行记录、台账两行状态未更新**——本会话不代执行方收口，仅只读登记；执行方（用户或并行会话）回报后由其更新 46/58 号状态与本节。
+- 六步面触达证据（文件 mtime + systemd）：/opt/tdai/etc/env 16:28:14（bak=env.bak-keyrotate-20261005，mtime=09-18 旧值留存）；MemoryCore/tdai-gateway.yaml 16:29:07（**vs bak 仅 :17 server.apiKey 一行变更**，bak=tdai-gateway.yaml.bak-keyrotate-20261005）；MemoryPanel/config/metadata-instances.json 16:29；proxy-config.yaml 17:19:59（bak=proxy-config.yaml.bak-keyrotate-20261005）；tdai-core 重启 MainPID 3988624=16:29:50、tdai-proxy 重启=17:21:28、tdai-panel 重启=16:29:50——三服务重启时刻均晚于各自配置修改 ✓；judge inactive=oneshot 预期非故障。/tmp/_kr_diag14.sh+_kr_fix1-8.sh（17:18-17:21）执行脚本在场，**内容未读取（防密钥入上下文）**；服务器 17:21:54 后无新动作。
+- 密钥面哈希对比（sha256[:16] 掩码口径，绝不回显明文）：运行进程 env TDAI_GATEWAY_API_KEY=env 文件=1e4ce2b42ff3ba79（55 号记录旧值 bf384566a68a→已变）；yaml server.apiKey=c1d8a0805f2b3d46（55 号记录旧值 e0263b38273f→已变）——env 主名与 yaml fallback 仍为两个不同值（config.ts:444 三级解析下 env 胜出），46 号「统一口径」的结构性疑点未被轮换消除，登记待执行方说明。
+- 轮换后活体（本会话 17:39 只读探针）：core /health 200（uptime 自 16:29:50，vectorStore+embeddingService true，timerScanner 8881 扫描 leader）；/v3/recall 200（Bearer=进程 env 新密钥，soulVersion=sv-b8b87d38 与 §12.8 记录一致）；panel root 200；四端口 8420/8096/8123/8421 监听在位——**新密钥全链可用**。
+- 待执行方补件：①准出探针（旧 key 打 v2/v3/panel 应 401）②46/58 号台账行状态更新③执行报告留痕。
+
 ### 12.9 v17 轮遗留清单
 
-1. 文档勘误三处（12.1）——随本轮文档 commit 一并修复或登记后续。
+1. 文档勘误三处（12.1）——**已收口**：4c3e307 五处勘误落盘，本会话 2026-10-05 复核 :125/:126/:256/:257/:261【2026-10-05 勘误】注记在场。
 2. G-ANCHORDESC-WRITE 存量 person desc 回填（7 行）——gated 待何晨拍板。
 3. 语义级混事件两锚留存（实证/根因）+LLM 重写——二期工程项（R2 遗留）。
-4. M3-NARR/64 号维持排队勿提前（设计顺序即意图）。
+4. M3-NARR（序号 10）维持排队勿提前（设计顺序即意图；编号勘误：原稿「64 号」错挂，64 号=FIFTH-CHAIN）。
 5. 测试租户种子清理（含 ev19 'test-desc-anchor' label '?????'）——gated 待拍板（v9 §三在案）。
 6. 'agent' created_by 值=测试种子残留非生产缺陷（12.5 探针定责：租户 team-ev19）。
 7. 45 号 LIVE-DOM——**定性反转见 §12.11：非环境问题，结构性不可达；口径修正提案 gated 待拍板**。
+8. 46/58 号 KEY-ROTATE——**执行痕迹只读登记见 §12.14：非本会话执行，准出探针未见、执行方未回报，待执行方回报后由其收口（本会话零操作）**。
