@@ -164,3 +164,9 @@ docs/superpowers/evals/*/runs/
 MemoryCore/D:/
 # opik 导入样例含真实 uuid 形态 id
 MemoryCore/scripts/import-opik-to-memory-core/README.md
+
+# ── 追加（2026-10-05 setup-matt-pocock-skills 初始化轮）：本地 AI 工具缓存与派生图数据，永不入库 ──
+.graphflow-cache/
+.graphflow/
+.dsh-mattskillsdeck-cache/
+graphflow-out/
