@@ -32,6 +32,7 @@ export function mergeStrictRuleContent(existing: string | undefined | null, adop
  * 返回 null = 门不过（router 422，pending 保持 pending，不暗箱替用户裁决）。
  */
 import { looksLikeEpisode } from "../core/hooks/episode-gate.js";
+import { isDanglingTail } from "../core/hooks/soul-assembler.js";
 
 const CV_LABEL_MAX = 8;
 const CV_DESC_MAX = 60;
@@ -50,7 +51,7 @@ export function sanitizeDescription(raw: string, maxChars: number): string {
   const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
   if (cut >= 0) return s.slice(0, cut + 1); // 有句末标点 → 截到最后句末标点
   if (truncated) return ""; // 超长截断且窗口内无句末标点 = 半句实锤 → 置空
-  return /[，、,]$/.test(s) ? "" : s; // 未截断：尾悬空置空（宁缺毋滥）；完整短语保留
+  return isDanglingTail(s) ? "" : s; // v18-d 单一源：尾悬空标点/长句无句读（>12 字）→ 置空；≤12 字完整短语保留
 }
 
 export function coerceCoreValueAnchor(input: { label?: string | null; description?: string | null; content: string }): { valueIdSeed: string; label: string; description: string } | null {

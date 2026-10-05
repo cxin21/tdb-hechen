@@ -461,7 +461,11 @@ export async function performLayeredRecall(params: {
         }
         r7Candidates.push({ sceneName: e.filename.replace(/\.md$/i, ""), content: e.summary, source: "scene_block" });
       }
-      r7Conclusions = selectL2Conclusions(r7CleanQuery, r7Candidates, { ftsTokens: r7FtsTokens }, r7HalfLimit);
+      // v18-c：minUniqRatio 透传（conclusionLayer.minUniqRatio；undefined/0 = 关逐位现状）
+      r7Conclusions = selectL2Conclusions(r7CleanQuery, r7Candidates, {
+        ftsTokens: r7FtsTokens,
+        minUniqRatio: cfg.recall?.conclusionLayer?.minUniqRatio,
+      }, r7HalfLimit);
       // ── V2-3（引擎三 E3.2 结论层放宽）：分析型 query → L2 结论层追加 "significance top-5
       // 的 durative 结论"（无需 scene/text 命中——蒸馏结论对分析问题浮出）。数据源 =
       // store.searchL1ByType("work_fact", 5)（significance DESC；可选方法 feature-detect——

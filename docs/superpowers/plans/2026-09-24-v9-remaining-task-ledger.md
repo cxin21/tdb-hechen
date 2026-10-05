@@ -266,8 +266,18 @@ D-5 九通道关断维持 / R11 sensitivityPenalty 生产值 / 测试租户种�
 
 ### §13.1 v18 轮新增遗留登记
 
+> **拍板轮收口（2026-10-05 何晨令「拍板」→「全做，你自己找最优方案」）**：a-e 处置如下，代码 commit 见 §13.2。
+
 - a. **arousal null 460 行存量回填**——enrichSoulFields（l1-extractor.ts:797）两段补全为 best-effort，历史行未回填；批量回填=行为变更 gated 待拍板。
-- b. **生产租户 theme 锚 16>maxTotal 15 超限定责**——需 origin/pinned 分布探针（若 auto 非钉超限=QUOTA 守卫未跑嫌疑：doMaint 6h 窗口或状态键异常）；只读探针+裁决后处理。
-- c. **结论层低密度自指回放霸占配额**——scene_block 密度门/自指检测为设计缺口，提案级待拍板（sceneGovernance maxBlockChars=8000 限体积不限密度）。
-- d. **desc 断尾透传+「、」歧义**——R2b 门句边界扩展提案（soul-assembler.ts:237-241 对尾非顿号 desc 整段透传），行为变更 gated。
-- e. **yaml :181 注释「maxTotal=8」勘误**（拍板②预告项）——yaml 未 tracked，改动=服务器+本地副本双改同步（本轮一并落盘）。
+  **→ 定案不补（2026-10-05）**：探针#4 实锚 null arousal 430 行全=source='' 旧语料+work_fact 工程结论句，content-soul.ts:15-25 情感词正则对工程语料匹配率≈0，LLM 补值近均值无信息量；消费面 emotionSalienceWeight=0 关断+渲染不用逐行 arousal。收益真目标转为 **manual 锚 valence=null 裸权重 derive 补值**：POST /v2/core-memory/values/derive 实测通道+fail-safe 语义（快照 active 16 行→置 NULL→LLM quota exhausted 安静跳过 derived=0→快照恢复 16/16 零丢失，active null=1 为根因优先原生 null；retired 31 行置 NULL=C6 否决语义设计内 sqlite.ts:2620-2623，deriveValueValences :2563 state='active' 过滤保证 retired 永不重判闭环）。**补值待 LLM 配额恢复**（同端点幂等重调或 boot 自动跑 server.ts:2271），疑虑：TDAI_LLM_API_KEY 配额耗尽 journal 实锤（L1 extraction 同错）——key 操作 gated 待何晨。
+- b. **生产租户 theme 锚 16>maxTotal 15 超限定责**——探针#4 定责反转=**无缺陷**：theme active=auto 15 恰好 maxTotal 满额+manual 1（钉住豁免 anchor-growth.ts:411-449，QUOTA 挤出只清 auto 非钉）。⚠️升级 ✅ 零操作。
+- c. **结论层低密度自指回放霸占配额**——**已实施（2026-10-05）**：recall-layered.ts 新导出 conclusionUniqRatio（句子级去重保留率）+selectL2Conclusions 候选循环内密度门（门不过跳过取下一名=让位语义）+L2MatchInputs.minUniqRatio?: number（undefined/0=关逐位现状）+auto-recall.ts:464 传参+config.ts 类型/解析（clamp [0,1]）+yaml conclusionLayer.minUniqRatio: 0.35 生产开启（双侧 sha256[:16]=4ff5ca1be6d33965）。
+- d. **desc 断尾透传+「、」歧义**——**已实施（2026-10-05，三次修正后定稿）**：soul-assembler.ts 新导出 isDanglingTail（**只判尾悬空标点[，、,]**——两轮 RED 实证长度判据破产：合法锚 desc 17 字与断尾残句 10 字区间重叠，任何阈值双杀/放行；低置信不判=宁缺毋滥）+anchorDescOf/person 行复用+价值锚/person/品格/感受段 join("、")→join("；")+pending-adopt-merge.ts sanitizeDescription 写入口复用（truncated 门：60 字窗口截断无句读=确定性断尾→置空）。存量断尾 desc 回填仍走 G-ANCHORDESC-WRITE gated。
+- e. **yaml :181 注释「maxTotal=8」勘误**（拍板②预告项）——已落盘（v18 轮，双侧同步 sha256 一致）。
+
+### §13.2 拍板轮实施收口（2026-10-05）
+
+- 代码：MemoryCore 5 源码（config.ts / core/hooks/recall-layered.ts / core/hooks/auto-recall.ts / core/hooks/soul-assembler.ts / gateway/pending-adopt-merge.ts）+4 测试（recall-layered.test.ts / soul-assembler-valuedesc-gate.test.ts / soul-attr-inject.test.ts :112 / pending-adopt-merge.test.ts）。
+- 门禁：服务器 vitest **907/907 全绿**（899 基线+8 新增，126 文件）；tsc **222 持平基线**（5 改动文件零新增，唯一 config.ts 字样报错在 src/gateway/config.ts:763 存量非本次文件）；core 重启生效 MainPID 3988624→4047303（19:43:11 CST），/health→200。
+- 部署：scp /tmp/v18sync/→sudo cp→chown tdai:tdai（tdai 账号不可登录铁律）；yaml 双侧 4ff5ca1be6d33965；minUniqRatio :122 在位。
+- derive 实测：本节 §13.1-a；零数据丢失三重取证（state 分布 active84/retired45+tenant 48 行 nul=32+valence 域 -1×15/0×35/1×48）。

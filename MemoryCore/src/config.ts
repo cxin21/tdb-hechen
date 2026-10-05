@@ -212,6 +212,14 @@ export interface RecallConfig {
     enabled: boolean;
     maxCharsPerMemory: number;
     /**
+     * v18-c（何晨拍板「全做」2026-10-05）：结论块低密度门——句子级去重保留率下限（0-1；
+     * undefined/0 = 关 = 逐位现状；>1 clamp 1）。门在 selectL2Conclusions 候选循环内：
+     * conclusionUniqRatio(content) < 阈值 → 跳过取下一名（宁缺毋滥 + 让位语义）。
+     * 背景：低密度自指回放块（「同源再交付无新增仅维护热度」句式高频重复）吃满
+     * halfLimit 结论层配额（v18 取证 §13 ③）。
+     */
+    minUniqRatio?: number;
+    /**
      * 审查修补 I③（TTL 解耦）：幂等结论层缓存 TTL 毫秒。缺省（未配置）= 回落
      * sessionReuseTtlMs 保持现行为；显式 0 = 关（每次重组，不缓存）；负值 clamp 0。
      */
@@ -1276,6 +1284,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         return {
           enabled: bool(cl, "enabled") ?? true,
           maxCharsPerMemory: recallSignalBoost(cl, "maxCharsPerMemory", 2000),
+          // v18-c：结论块低密度门阈值（clamp [0,1]；缺省 undefined = 关逐位现状）
+          minUniqRatio: (() => {
+            const raw = num(cl, "minUniqRatio");
+            return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
+          })(),
           cacheTtlMs: (() => {
             const raw = num(cl, "cacheTtlMs");
             return raw === undefined ? undefined : Math.max(0, Math.floor(raw));

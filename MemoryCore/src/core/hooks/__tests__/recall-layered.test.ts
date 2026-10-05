@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   assembleLayeredLines,
   conclusionFingerprint,
+  conclusionUniqRatio,
   formatConclusionLine,
   parseFtsTokens,
   resolveIdempotentConclusionLines,
@@ -376,5 +377,40 @@ describe("Task CAL C1 config：conclusionLayer.maxCharsPerMemory（默认 2000�
     expect(parseConfig({ recall: { conclusionLayer: { maxCharsPerMemory: 0 } } }).recall.conclusionLayer.maxCharsPerMemory).toBe(0);
     expect(parseConfig({ recall: { conclusionLayer: { maxCharsPerMemory: 500 } } }).recall.conclusionLayer.maxCharsPerMemory).toBe(500);
     expect(parseConfig({ recall: { conclusionLayer: { maxCharsPerMemory: -3 } } }).recall.conclusionLayer.maxCharsPerMemory).toBe(0);
+  });
+});
+
+// ═══════════════ v18-c · 结论块低密度门（何晨拍板「全做」） ═══════════════
+
+describe("v18-c conclusionUniqRatio（结论块信息密度：句子级去重保留率）", () => {
+  it("重复句式自指块 → 低 ratio；正常块/≤2 句 → 1 不判；空串 → 1", () => {
+    const replay = "提取链路状态回放。" + Array.from({ length: 6 }, () => "与既有章节逐项一致无新增仅维护热度。").join("");
+    expect(conclusionUniqRatio(replay)).toBeCloseTo(2 / 7, 5);
+    expect(conclusionUniqRatio("提取链路有质量门。注入层有行级预算。召回层级算法稳定。")).toBe(1);
+    expect(conclusionUniqRatio("短块。两句。")).toBe(1);
+    expect(conclusionUniqRatio("")).toBe(1);
+  });
+});
+
+describe("v18-c 结论块低密度门（minUniqRatio：低密度候选跳过取下一名；undefined/0=关逐位）", () => {
+  const low = cand({ sceneName: "TDB记忆管线", content: "提取链路状态回放。" + Array.from({ length: 6 }, () => "与既有章节逐项一致无新增仅维护热度。").join("") });
+  const hi = cand({ sceneName: "TDB记忆管线", content: "提取链路有质量门。注入层有行级预算。召回层级算法稳定。" });
+
+  it("门关（无 minUniqRatio）：低密度块照常入选（逐位现状）", () => {
+    const out = selectL2Conclusions("提取链路", [low, hi], { ftsTokens: ["提取链路"] }, 2);
+    expect(out).toHaveLength(2);
+  });
+
+  it("门开 0.35：低密度块跳过，高密度递补（让位语义）", () => {
+    const out = selectL2Conclusions("提取链路", [low, hi], { ftsTokens: ["提取链路"], minUniqRatio: 0.35 }, 2);
+    expect(out).toHaveLength(1);
+    expect(out[0].content).toBe(hi.content);
+  });
+
+  it("config 解析：minUniqRatio clamp [0,1]；缺省 undefined=关", () => {
+    expect(parseConfig({ recall: { enabled: true } }).recall.conclusionLayer.minUniqRatio).toBeUndefined();
+    expect(parseConfig({ recall: { conclusionLayer: { minUniqRatio: 0.35 } } }).recall.conclusionLayer.minUniqRatio).toBe(0.35);
+    expect(parseConfig({ recall: { conclusionLayer: { minUniqRatio: 1.5 } } }).recall.conclusionLayer.minUniqRatio).toBe(1);
+    expect(parseConfig({ recall: { conclusionLayer: { minUniqRatio: -0.2 } } }).recall.conclusionLayer.minUniqRatio).toBe(0);
   });
 });

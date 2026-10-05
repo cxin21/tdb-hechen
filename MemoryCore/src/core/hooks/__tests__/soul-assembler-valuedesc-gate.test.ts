@@ -5,7 +5,7 @@
  * ③ 品格行同构。RED 先行。
  */
 import { describe, expect, it } from "vitest";
-import { buildSoulPrefix } from "../soul-assembler.js";
+import { buildSoulPrefix, isDanglingTail } from "../soul-assembler.js";
 
 const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
 
@@ -116,6 +116,35 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
     expect(m![1]).not.toContain("审计"); // 混事件锚（登记号）整条消失
     expect(m![1]).not.toContain("b1ea2e5");
     expect(m![1]).not.toContain("REG-REMAINING");
+  });
+});
+
+// ═══════════════ v18-d · isDanglingTail 悬空尾单一源 + join 分隔符「；」 ═══════════════
+
+describe("v18-d isDanglingTail（断尾半句判定单一源）", () => {
+  it("尾悬空标点=true；句末标点/短语/无句读短语流=false（低置信不判，长度判据已删）", () => {
+    expect(isDanglingTail("证据裁决一切，")).toBe(true); // 尾逗号悬空 = 截断在句读处
+    expect(isDanglingTail("换套餐报错。")).toBe(false); // 句末标点完整
+    expect(isDanglingTail("保持审慎")).toBe(false); // 短语
+    expect(isDanglingTail("何晨一贯要求系统行为")).toBe(false); // 10 字无句读 = 低置信不判（17 字合法 desc 与断尾区间重叠实锤）
+    expect(isDanglingTail("“保持审慎”")).toBe(false); // 剥引号后完整短语
+  });
+
+  it("尾悬空 desc 锚整条跳过（渲染门复用单一源）；双锚分隔改「；」", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "d-4", label: "文档", attrs_json: '{"description":"每次失败都换路绕行，"}' }),
+        row({ value_id: "e-5", label: "收口", attrs_json: '{"description":"残留项逐一消除"}' }),
+        row({ value_id: "f-6", label: "实证", attrs_json: '{"description":"结论须以真实代码与测试取证背书。"}' }),
+      ]) as never,
+      TENANT,
+      undefined,
+      { selfIdentityEnabled: true },
+    );
+    const m = out.match(/价值锚：([^\n]+)/);
+    expect(m).not.toBeNull();
+    expect(m![1]).not.toContain("文档"); // 尾悬空 desc → 置空 → 整锚跳过
+    expect(m![1]).toContain("；"); // join("、")→join("；")（与 desc 内部标点歧义消解）
   });
 });
 

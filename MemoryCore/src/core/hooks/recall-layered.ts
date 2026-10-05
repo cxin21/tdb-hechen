@@ -34,6 +34,13 @@ export type L2Conclusion = L2ConclusionCandidate;
 /** 命中判定输入（query 分词——buildFtsQuery 单一源产物的 token 集）。 */
 export interface L2MatchInputs {
   ftsTokens: readonly string[];
+  /**
+   * v18-c（何晨拍板「全做」2026-10-05）：结论块低密度门——句子级去重保留率下限（0-1）。
+   * undefined/0 = 关（逐位现状）。低密度 = 自指回放块（同一句式高频重复）占满 halfLimit
+   * 配额（v18 取证：10236 字「同源再交付无新增仅维护热度」块吃满 2 块全部结论层名额）。
+   * 门不过的候选跳过、选择器继续取下一名（宁缺毋滥 + 让位语义）。
+   */
+  minUniqRatio?: number;
 }
 
 /**
@@ -52,6 +59,22 @@ export function parseFtsTokens(ftsQuery: string | null | undefined): string[] {
 function textHit(content: string, ftsTokens: readonly string[]): boolean {
   const lower = content.toLowerCase();
   return ftsTokens.some((t) => t.length >= 2 && lower.includes(t.toLowerCase()));
+}
+
+/**
+ * v18-c · 结论块信息密度（句子级去重保留率）：按句末标点/换行分句 → 归一化（trim+去全部空白）
+ * → unique/total。句数 ≤2 = 1（块太小不判，防误杀）。确定性纯函数。
+ * 背景（v18 取证）：低密度自指回放块（同一句式高频重复，如「同源再交付无新增仅维护热度」
+ * 10236 字块）占满 halfLimit 结论层配额。
+ */
+export function conclusionUniqRatio(content: string): number {
+  if (typeof content !== "string") return 1;
+  const sentences = content
+    .split(/[。！？；!?\n]+/)
+    .map((s) => s.trim().replace(/\s+/g, ""))
+    .filter((s) => s.length > 0);
+  if (sentences.length <= 2) return 1;
+  return new Set(sentences).size / sentences.length;
 }
 
 /**
@@ -83,6 +106,14 @@ export function selectL2Conclusions(
     if (!c || typeof c.content !== "string" || c.content.trim().length === 0) continue;
     const sceneHit = c.sceneName ? detectSceneHit(query, [c.sceneName]) : null;
     if (!sceneHit && !textHit(c.content, tokens)) continue;
+    // v18-c：低密度自指回放块跳过（取下一名候选 = 让位语义；undefined/0 = 关，逐位现状）
+    if (
+      inputs.minUniqRatio != null &&
+      inputs.minUniqRatio > 0 &&
+      conclusionUniqRatio(c.content) < inputs.minUniqRatio
+    ) {
+      continue;
+    }
     const key = `${c.sceneName}\u0000${c.content}`;
     if (seen.has(key)) continue;
     seen.add(key);

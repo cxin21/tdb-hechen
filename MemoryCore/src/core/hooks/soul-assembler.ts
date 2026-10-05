@@ -39,6 +39,23 @@ export function truncateByLines(content: string, budget: number): string {
   return acc;
 }
 
+/**
+ * v18-d（何晨拍板「全做」2026-10-05）：desc 悬空尾判定单一源（高置信断尾门）。
+ * 置空判据只留确定性特征：剥尾引号[”"』」']后尾悬空标点[，、,]（截断在句读处 =
+ * 后面还有内容被掐，语义未完态明确）。
+ * 长度判据已删除（复跑实锤：合法锚 desc「所有结论须以真实代码与测试取证背书」17 字与
+ * 断尾残句「何晨一贯要求系统行为」10 字区间完全重叠，任何阈值都同时误杀/放行——低置信
+ * 不判，宁缺毋滥 ≠ 宁枉勿纵）。断尾半句根治面 = ①写入口 sanitizeDescription truncated 门
+ * （60 字窗口截断无句读 = 确定性断尾 → 置空）；②存量断尾 desc 走 G-ANCHORDESC-WRITE
+ * gated 回填。消费方：soul-assembler 渲染两处（价值锚行/person 行）+
+ * pending-adopt-merge.sanitizeDescription 写入口（gateway→core/hooks 引用方向合法）。
+ */
+export function isDanglingTail(s: string): boolean {
+  if (typeof s !== "string") return false;
+  const bare = s.replace(/[”"』」']+/gu, "");
+  return /[，、,]$/.test(bare);
+}
+
 function valenceDir(v: number | null | undefined): string {
   if (v === 1) return "趋近";
   if (v === -1) return "审慎";
@@ -188,14 +205,15 @@ export async function buildSoulPrefix(
         // 立项②：渲染顺序按 value_id 稳定排序（weight 只用于取舍/排序上限，不决定注入序）
         const activeStable = [...active].sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
         // 灵魂注入质量轮（2026-10-04 何晨令「禁止无意义、不明确的内容和仅有关键词无说明的锚点注入」）：
-        // desc 空/空白锚整条跳过（宁缺毋滥禁裸关键词形态）；desc 尾悬空半句清洗（句边界，与
-        // pending-adopt-merge.sanitizeDescription 同语义）；全部锚无 desc → 行省略不造裸串。
+        // desc 空/空白锚整条跳过（宁缺毋滥禁裸关键词形态）；desc 尾悬空半句清洗（句边界，
+        // v18-d 起判定单一源 = isDanglingTail，与 pending-adopt-merge.sanitizeDescription 复用）；
+        // 全部锚无 desc → 行省略不造裸串。
         const anchorDescOf = (v: { attrs_json?: string }): string => {
           const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
           if (!s) return "";
           const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
           if (cut >= 0) return s.slice(0, cut + 1);
-          return /[，、,]$/.test(s) ? "" : s;
+          return isDanglingTail(s) ? "" : s;
         };
         const renderAnchor = (v: (typeof activeStable)[number], desc: string): string => {
           const descSeg = desc !== "" ? `：${escapeXmlTags(desc)}` : "";
@@ -217,7 +235,7 @@ export async function buildSoulPrefix(
             return renderAnchor(v, desc);
           })
           .filter((x): x is string => x !== null);
-        if (decorated.length > 0) lines.push(`价值锚：${decorated.join("、")}`);
+        if (decorated.length > 0) lines.push(`价值锚：${decorated.join("；")}`);
       }
       // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段
       if (personRows.length > 0) {
@@ -237,10 +255,10 @@ export async function buildSoulPrefix(
             const cutP = Math.max(rawDesc.lastIndexOf("。"), rawDesc.lastIndexOf("！"), rawDesc.lastIndexOf("？"), rawDesc.lastIndexOf("；"));
             const pDescClean = rawDesc === ""
               ? ""
-              : cutP >= 0 ? rawDesc.slice(0, cutP + 1) : /[，、,]$/.test(rawDesc) ? "" : rawDesc;
+              : cutP >= 0 ? rawDesc.slice(0, cutP + 1) : isDanglingTail(rawDesc) ? "" : rawDesc;
             const pDesc = pDescClean !== "" && !looksLikeEpisode(pDescClean) ? `：${escapeXmlTags(pDescClean)}` : "";
             return `${escapeXmlTags(v.label)}(${role}${d})${pDesc}`;
-          }).join("、")}`,
+          }).join("；")}`,
         );
       }
       // S-CHAR-2（M2/P5）：品格行——「我是谁」小节尾部（数据驱动，无品格锚 → 省略宁缺毋滥）；
@@ -268,7 +286,7 @@ export async function buildSoulPrefix(
             return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}：${escapeXmlTags(desc)}`;
           })
           .filter((x): x is string => x !== null);
-        if (charDecorated.length > 0) lines.push(`我的品格：${charDecorated.join("、")}`);
+        if (charDecorated.length > 0) lines.push(`我的品格：${charDecorated.join("；")}`);
       }
       if (lines.length > 0) parts.push(`<soul-identity>\n## 此刻的你\n${lines.join("\n")}\n</soul-identity>`);
     }
@@ -300,8 +318,8 @@ export async function buildSoulPrefix(
         }
         return d.length <= 80 ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d)}` : "";
       };
-      if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("、")}${topDescSeg(directional.filter((v) => v.valence === 1))}`);
-      if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("、")}${topDescSeg(directional.filter((v) => v.valence === -1))}`);
+      if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("；")}${topDescSeg(directional.filter((v) => v.valence === 1))}`);
+      if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("；")}${topDescSeg(directional.filter((v) => v.valence === -1))}`);
       // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位+样本数，不出连续值防伪精度；
       // opts.moodTier 缺省=不 push=逐位现状）。文案不含「我感到」字样（§1.5 主语越界防线）。
       if (opts?.moodTier) {

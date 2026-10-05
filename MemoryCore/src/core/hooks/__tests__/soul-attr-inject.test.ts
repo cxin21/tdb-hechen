@@ -109,7 +109,7 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     );
     const fm = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(fm).not.toBeNull();
-    expect(fm![1]).toBe("乙、甲");
+    expect(fm![1]).toBe("乙；甲"); // v18-d：join("、")→join("；")（与 desc 内部标点歧义消解）
     expect(out).not.toContain("首要");
   });
   it("V7 方案A：描述无句界且≤80 预算→全量（替换 V6-1d 的 30 字硬截）", async () => {
