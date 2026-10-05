@@ -91,3 +91,45 @@
 | 真数据 | extraction=706（新语料 +7 全 extraction）/空串=464（旧语料）/evolution=0 行（生产无演化合并发生）、consolidation/auto-growth=0 行 |
 | 判定 | ✅ 获取（双写路）/消费（出参审计）链在场 |
 | 差异 | 📝 设计四枚举 vs 代码两枚举在用：consolidation 无独立写路（合并由 evolution-worker 承担，语义等价）、auto-growth 不产 L1 行（锚层维护）——枚举收窄为设计演进登记，非缺陷 |
+
+## 七、批 3 判定表（task_id / coreRefs / personRefs / identityRefs，2026-10-04）
+
+### task_id
+
+| 列 | 内容 |
+|---|---|
+| 设计摘录 | :229「TEXT，agent；任务关联」 |
+| 代码锚 | 获取=l1-extractor 解析透传+l1-writer 落库+sqlite/tcvdb 列持久化；评分/注入/展示=10-02 四链取证已判 ✅ 完整（task_id 四链完整在案，判定表 v1 前基座）；注入行内上下文关联+出参透传（atomic-query-fields） |
+| 真数据 | 生产库 1170 行 **task_id 非空=566（48.4%）**——任务关联记忆约半数活跃 |
+| 判定 | ✅ 四链在场（10-02 取证+本轮计数双证） |
+| 差异 | 无（约半数行为会话无关记忆，task_id 空=语义内缺省非缺陷） |
+
+### coreRefs
+
+| 列 | 内容 |
+|---|---|
+| 设计摘录 | :239「锚→记忆证据链（双向反查）；backfill 回填，已验证」 |
+| 代码锚 | 获取=A8 提取路（l1-extraction.ts:104 候选清单内选+宁缺毋滥、l1-extractor.ts:622/:738 parseCoreRefs 防幻觉过滤）+C1 dedup 路（l1-dedup.ts:192/:424 同款过滤）+GROW-EVO 采纳回填（anchor-growth.ts:518，backfillMemoryRef 单源 sqlite.ts:2784）；评分使用=R5 反查补池（sqlite.ts:3114 searchL1ByCoreRefs、auto-recall.ts:1862）+coreRefBoost（memory-search.ts:229 +0.05）+RV2-2 coreRef 因子 0.05（memory-search.ts:601）+F14 遗忘保护（scorer.ts:53）+salienceBoostWithRefs（appraisal.ts:72-106 coreRefs 优先/子串兜底）+anchorEvidenceValences（sqlite.ts:2485 品格张力 T2 证据源）；注入=R-A2 补池 [value:锚] 通道标注（auto-recall.ts:1862-1873）+touched_core_refs 尾注（memory-search.ts:1468）；展示=atomic-query-fields.ts:50 metadata 面板透传+ValueAnchorsPanel 反查 |
+| 真数据 | 生产库 **806 行（68.9%）coreRefs 非空**（样本 ['插件','测试']/['管线','anima']）；本轮注入/召回链五消费全部依赖此键族 |
+| 判定 | ✅ 获取（三写路）/评分使用（五消费）/注入/展示四链在场且活跃——全库最高覆盖标注属性 |
+| 差异 | 无 |
+
+### personRefs
+
+| 列 | 内容 |
+|---|---|
+| 设计摘录 | :240「P2 新增：人物锚→记忆证据链；与 coreRefs 同款回填」 |
+| 代码锚 | 获取=GROW 采纳 F12 证据链回填（anchor-growth.ts:592-597 personEv 同款 label/alias 包含口径）；评分使用=P0-F7 反查键族扩 personRefs（store.personrefs-reverse.test.ts RED→GREEN 修复旧死通道；sqlite.ts:3131/:3166-3170 searchL1ByCoreRefs 双键族）+F14 遗忘保护（scorer.ts:53 coreRefs/personRefs 同查）；注入=R5 补池人物通道；展示=反查链出参 |
+| 真数据 | 生产库 **193 行 personRefs 非空**（样本 ['用户']）；F12 回填+P0-F7 反查测试双锚定（anchor-growth.person.test.ts:74） |
+| 判定 | ✅ 四链在场（回填/反查/保护/通道） |
+| 差异 | 无 |
+
+### identityRefs
+
+| 列 | 内容 |
+|---|---|
+| 设计摘录 | :241「P2 新增：身份事实→记忆证据链（GROW-MAINT 重算+遗忘保护 F14）；20 字切片弱口径，仅警告不自动退场」+五徽章「核心事实」（identityRefs 非空） |
+| 代码锚 | 获取=identity-discovery.ts:298-315 回填（identityFactSlice :553-562 措辞断链单源修复+support 精确回填 identity-support-pointer.test）；评分使用=F14 遗忘保护 F-EV13-1 模糊匹配（scorer.ts:57-59）+GROW-MAINT 重验证+四消费面统一（identity-fact-match.test.ts:13）；注入=徽章「核心事实」（auto-recall.ts:2161）；展示=V6-1a 属性透传（attr-signal-badge.test.ts:102-107 三路 formatable 携带） |
+| 真数据 | 生产库 **88 行 identityRefs 非空**（20 字切片弱口径实证：'我的Danbooru用户名是chenxi'）；**活体徽章在场=本轮注入 relevant-memories [5] 行「·soul[实见 · 验证×17 · 核心事实]」**；R-C 红线测试锚定（character-tension 蒸馏零 identityRefs 回填 :194-202） |
+| 判定 | ✅ 四链在场（回填/保护/徽章/透传）+R-C 反耦合红线受测试锚定 |
+| 差异 | 无（切片弱口径=设计明文，非缺陷） |
