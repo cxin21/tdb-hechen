@@ -639,10 +639,10 @@ async function callLlmExtraction(params: {
   // / 可筛选 tags。避免所有记忆抽取都显示为 Unnamed trace。
   const traceParams = buildTraceParams("memory.l1-extract", traceContext);
 
-  // P0-1（2026-10-06）：输出预算——不传时 runner 缺省 maxTokens=4096，20 条记忆×300 字+
-  // 情境开销可被砍成非法 JSON → parse 抠数组失配 → 整批静默丢失（success:true,count:0）。
-  // 8192 给足预算；runner 按 config.maxTokensLimit（缺省 131072）钳制，上游合法。
-  const L1_EXTRACTION_MAX_TOKENS = 8192;
+  // P0-1（2026-10-06）输出预算防线=提示词预算声明（≤20条/≤5情境，l1-extraction.ts 硬规则）
+  // + parse 截断抢救（salvageTruncatedJsonArray）。此处不再覆写 maxTokens（回归 runner 缺省
+  // config.maxTokens ?? 4096）：曾试 8192，生产首小时出现 2 起 finishReason=length@8192
+  // 空响应 + 180s 超时面抬升（重启前 32h 零起 empty-response），按负增益回退铁律撤回。
 
   if (llmRunner) {
     // Use the host-neutral LLMRunner interface
@@ -651,7 +651,12 @@ async function callLlmExtraction(params: {
       systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
-      maxTokens: L1_EXTRACTION_MAX_TOKENS,
+      // 关深度思考（2026-10-06 拍板依据）：探针实证 mimo 端点思考默认开启，
+      // 烧输出预算（8192 被烧空 2 起）+拉长 wall-time（180s 超时面抬升）；
+      // v21 十组 A/B 关思考质量持平、均时延 4923→3354ms。reasoningEffort="none"
+      // 经 StandaloneLLMRunner 透传为请求体 reasoning_effort。OpenClaw 兜底路径
+      // （下方 CleanContextRunner）不透传该参数，保持端点默认。
+      reasoningEffort: "none",
       ...traceParams,
     });
   } else {
@@ -668,7 +673,6 @@ async function callLlmExtraction(params: {
       systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
-      maxTokens: L1_EXTRACTION_MAX_TOKENS,
       ...traceParams,
     });
   }

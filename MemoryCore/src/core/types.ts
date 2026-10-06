@@ -74,6 +74,15 @@ export interface LLMRunParams {
   /** Max output tokens (optional — defaults to model catalog value). */
   maxTokens?: number;
   /**
+   * Per-call reasoning effort for OpenAI-compatible reasoning endpoints
+   * (passed through to providerOptions.openaiCompatible.reasoningEffort →
+   * request body reasoning_effort). "none" disables deep thinking.
+   * 2026-10-06 实测（mimo 端点探针 3 轮 + v21 十组 A/B）：思考默认开启会烧
+   * 输出预算与 wall-time（生产曾现 finishReason=length 空响应+180s 超时面抬升），
+   * 关思考后 reasoning=0、提取质量持平、均时延 -32%。缺省不传 = 端点默认（开思考）。
+   */
+  reasoningEffort?: string;
+  /**
    * Caller-provided tool dict (Vercel AI SDK shape). When set, REPLACES
    * the runner's default sandbox tools for this single call. Used by
    * SkillExtractor to inject skill_list / skill_view / skill_manage

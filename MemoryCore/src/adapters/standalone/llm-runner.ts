@@ -380,6 +380,12 @@ export class StandaloneLLMRunner implements LLMRunner {
           : {}),
         // GROW-EVO P2.1：maxTokens <= 0 = 不限制（不传 maxOutputTokens——由上游缺省承载）
         ...(maxTokens > 0 ? { maxOutputTokens: maxTokens } : {}),
+        // 逐调用思考开关（2026-10-06）：reasoningEffort → openai-compatible
+        // providerOptions → 请求体 reasoning_effort（ai-sdk dist 已核 :555）。
+        // "none"=关深度思考；缺省不传保持端点默认。见 LLMRunParams 注释与探针证据。
+        ...(params.reasoningEffort
+          ? { providerOptions: { openaiCompatible: { reasoningEffort: params.reasoningEffort } } }
+          : {}),
         abortSignal: combinedSignal,
         // D-R5-2：ai@6 移除 experimental_telemetry 顶层参数——移除该属性（运行时正常）
       };
