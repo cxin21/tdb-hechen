@@ -828,10 +828,30 @@ function repairExtractionJson(json: string): string {
 // Write helpers
 // ============================
 
+// R3 收口句（M5，2026-10-06）：对齐 R1 FINAL_FORMAT_SENTENCE / R2 CONFLICT_FINAL_FORMAT_SENTENCE
+// 的单源常量纪律，垫在 system prompt 末尾收口输出格式，杜绝解释文本/markdown 围栏包裹。
+const ENRICH_FINAL_FORMAT_SENTENCE =
+  "只输出一个JSON数组，不含任何解释、markdown代码围栏或其他文本；" +
+  "每项恰好6个键：{index, occurred_at, certainty, valence, arousal, significance}。";
+
 const ENRICH_SYSTEM =
-  "你是记忆字段补全器。从记忆内容里提取5个字段：occurred_at(ISO8601字符串，内容无明确时间就空串)、" +
-  "certainty(observed=客观见到的 / inferred=推断)、valence(情感 -1..1)、arousal(强度 0..1)、significance(重要 0..1)。" +
-  "只输出JSON数组，每项 {index, occurred_at, certainty, valence, arousal, significance}。";
+  "你是记忆字段补全器。逐行从记忆内容提取5个字段并输出补全结果。\n" +
+  // M1：index 数字契约 + 编号不连续说明——缺字段行才进 prompt，编号天然不连续；
+  // 字符串键会绕过消费侧 Map.get(数字) 造成整行静默丢（M2 归一为双保险）。
+  "输入每行形如「编号. 内容」，编号可能不连续（只送仍缺字段的行）；" +
+  "每项必须原样带回该行的数字编号 index（number 类型，不是字符串）。\n" +
+  "字段规则：\n" +
+  // S4：ISO 示例 + 防幻觉（无明确时间必须空串，不编造）
+  "1) occurred_at：ISO8601 字符串，如 2026-10-05T14:30:00；内容无明确时间给空串 \"\"，不要编造时间。\n" +
+  // S3：certainty 两句判定（客观陈述/亲见→observed；推断估计可能→inferred）
+  "2) certainty：内容明确陈述为客观发生/亲见的事实给 observed；含推断、估计、可能给 inferred。\n" +
+  // M4：中性缺省与 l1-writer.ts:322-324 合标层逐字对齐（valence=0/arousal=0/significance=0.5），
+  // LLM 给出的中性值与 writer 兜底值相同 → 终值零漂移（最小行为变更）。
+  "3) valence：情感 -1..1；中性、无情感色彩给 0。\n" +
+  "4) arousal：强度 0..1；平静、常规叙述给 0。\n" +
+  "5) significance：重要 0..1；内容无明显重要性给 0.5。\n" +
+  "所有数值必须落在各自范围内，越界无效。\n" +
+  ENRICH_FINAL_FORMAT_SENTENCE;
 
 function buildEnrichPrompt(memories: Array<{ m: ExtractedMemory; i: number }>): string {
   return memories.map(({ m, i }) => `${i}. ${m.content}`).join("\n\n");
@@ -841,8 +861,10 @@ function buildEnrichPrompt(memories: Array<{ m: ExtractedMemory; i: number }>): 
  * 后置字段补全：对 content 已含时间/情感、但结构化字段因模型省略而缺失的记忆，
  * 用一次 LLM 调用从 content 抽 occurred_at/certainty/valence/arousal/significance 回填。
  * best-effort：任何失败保持原样，不阻塞写入。
+ * 2026-10-06 R3 实施轮加固：规则回填后重过滤（全填行零 LLM）+ 关深度思考（reasoningEffort none）
+ * + index 数字归一 + 数值 clamp + occurred_at ISO 门（对齐 R1 clampNum 口径，宁缺勿错）。
  */
-async function enrichSoulFields(
+export async function enrichSoulFields(
   memories: ExtractedMemory[],
   deps: { config: unknown; memoryConfig?: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; traceContext?: TraceContext },
 ): Promise<void> {
@@ -864,12 +886,24 @@ async function enrichSoulFields(
     if (patch.significance != null) m.significance = patch.significance;
   }
 
-  const prompt = buildEnrichPrompt(missing);
+  // ①.5 重过滤（S1，2026-10-06）：规则回填后字段全齐的行不再送 LLM——消费侧只填空字段，
+  //     全填行的 LLM 产值必然被整体丢弃，白跑一次调用。按原序重判，只送仍缺字段的行。
+  const stillMissing = missing.filter(
+    ({ m }) => !m.occurred_at || !m.certainty || m.valence == null || m.arousal == null || m.significance == null,
+  );
+  if (stillMissing.length === 0) return;
+
+  const prompt = buildEnrichPrompt(stillMissing);
   let result: string;
   try {
     if (deps.llmRunner) {
       result = await deps.llmRunner.run({
         prompt, systemPrompt: ENRICH_SYSTEM, taskId: "l1-enrich", timeoutMs: 30_000,
+        // 关深度思考（2026-10-06 R3，复用 R1 :659 / R2 先例）：字段补全是简单小 JSON 任务，
+        // 且 R3 timeout 仅 30s——思考开启抬升超时面（超时即字段留空）。R1 v21 十组实测关思考
+        // 质量持平、均时延 -32%；R2 v22 三臂 -44%。经 StandaloneLLMRunner 透传为请求体
+        // reasoning_effort。OpenClaw 兜底路径（下方 CleanContextRunner）不透传，保持端点默认。
+        reasoningEffort: "none",
         ...(deps.traceContext ?? {}),
       });
     } else {
@@ -884,20 +918,34 @@ async function enrichSoulFields(
     return;
   }
 
-  let filled: Array<{ index: number; occurred_at?: string; certainty?: string; valence?: number; arousal?: number; significance?: number }> = [];
+  let filled: Array<{ index?: number | string; occurred_at?: string; certainty?: string; valence?: number; arousal?: number; significance?: number }> = [];
   try { filled = JSON.parse(result); } catch {
     const m = result.match(/\[[\s\S]*\]/);
     if (m) { try { filled = JSON.parse(m[0]); } catch { filled = []; } }
   }
-  const byIndex = new Map(filled.map((f) => [f.index, f]));
-  for (const { m, i } of missing) {
+  if (!Array.isArray(filled)) filled = [];
+  // M2（2026-10-06）：index 数字归一——模型常回字符串键（"0"），直接进 Map 会让 get(数字)
+  // 永远 miss、整行静默丢；Number() 归一 + 非有限键跳过（防 NaN 污染）。prompt 侧 M1 数字
+  // 契约为第一道，此处为代码裁决的第二道防线。
+  const byIndex = new Map<number, (typeof filled)[number]>();
+  for (const f of filled) {
+    const k = Number(f.index);
+    if (Number.isFinite(k)) byIndex.set(k, f);
+  }
+  for (const { m, i } of stillMissing) {
     const f = byIndex.get(i);
     if (!f) continue;
-    if (!m.occurred_at && f.occurred_at) m.occurred_at = String(f.occurred_at);
+    // M3：occurred_at 走 ISO 门——非空且 Date.parse 可解析才回填，宁缺勿错（防"昨天下午"
+    // 之类非结构化文本入库）；回填空缺由 l1-writer.ts:319 合标层兜底为提取时刻。
+    if (!m.occurred_at && typeof f.occurred_at === "string") {
+      const t = f.occurred_at.trim();
+      if (t && !Number.isNaN(Date.parse(t))) m.occurred_at = t;
+    }
     if (!m.certainty && f.certainty) m.certainty = String(f.certainty) === "inferred" ? "inferred" : "observed";
-    if (m.valence == null && typeof f.valence === "number") m.valence = f.valence;
-    if (m.arousal == null && typeof f.arousal === "number") m.arousal = f.arousal;
-    if (m.significance == null && typeof f.significance === "number") m.significance = f.significance;
+    // M3：三数值入库前 clamp（复用模块级 clampNum，对齐 R1 消费侧口径）。
+    if (m.valence == null && typeof f.valence === "number") m.valence = clampNum(f.valence, -1, 1);
+    if (m.arousal == null && typeof f.arousal === "number") m.arousal = clampNum(f.arousal, 0, 1);
+    if (m.significance == null && typeof f.significance === "number") m.significance = clampNum(f.significance, 0, 1);
   }
 }
 
