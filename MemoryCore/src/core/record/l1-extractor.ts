@@ -639,6 +639,11 @@ async function callLlmExtraction(params: {
   // / 可筛选 tags。避免所有记忆抽取都显示为 Unnamed trace。
   const traceParams = buildTraceParams("memory.l1-extract", traceContext);
 
+  // P0-1（2026-10-06）：输出预算——不传时 runner 缺省 maxTokens=4096，20 条记忆×300 字+
+  // 情境开销可被砍成非法 JSON → parse 抠数组失配 → 整批静默丢失（success:true,count:0）。
+  // 8192 给足预算；runner 按 config.maxTokensLimit（缺省 131072）钳制，上游合法。
+  const L1_EXTRACTION_MAX_TOKENS = 8192;
+
   if (llmRunner) {
     // Use the host-neutral LLMRunner interface
     result = await llmRunner.run({
@@ -646,6 +651,7 @@ async function callLlmExtraction(params: {
       systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
+      maxTokens: L1_EXTRACTION_MAX_TOKENS,
       ...traceParams,
     });
   } else {
@@ -662,6 +668,7 @@ async function callLlmExtraction(params: {
       systemPrompt,
       taskId: "l1-extraction",
       timeoutMs: 180_000,
+      maxTokens: L1_EXTRACTION_MAX_TOKENS,
       ...traceParams,
     });
   }
@@ -669,15 +676,25 @@ async function callLlmExtraction(params: {
   // [l1-debug] RAW OUTPUT — 定位模型到底吐了哪些字段（用于 R4 实证）
   logger?.debug?.(`${TAG} [l1-debug] RAW_OUTPUT:\n${result}`);
 
-  const _scenes = parseExtractionResult(result, logger, valueCandidates);
+  const _scenes = parseExtractionResult(result, logger, valueCandidates, { promptMode });
   return { scenes: _scenes, systemPrompt, userPrompt, rawOutput: result };
 }
+
+// P0-3（2026-10-06）：范围钳制 helper——LLM 越界值不再原样落库（此前 priority:150 / valence:-5 直通）
+const clampNum = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+// P0-3：chat 模式跨类型门——work_* 是 code 提示词专属枚举，chat 下属枚举门外泄（生产实锤 1.3% 污染）
+const WORK_ONLY_TYPES = new Set(["work_fact", "work_task", "work_method", "work_artifact"]);
 
 /**
  * Parse the LLM's JSON response into SceneSegment array.
  * Expected format: [{scene_name, message_ids, memories: [...]}]
  */
-export function parseExtractionResult(raw: string, logger?: Logger, valueCandidates: Array<{ id: string; label: string }> = []): SceneSegment[] {
+export function parseExtractionResult(
+  raw: string,
+  logger?: Logger,
+  valueCandidates: Array<{ id: string; label: string }> = [],
+  opts?: { promptMode?: MemoryPromptMode },
+): SceneSegment[] {
   try {
     // Strip markdown code block wrappers if present
     let cleaned = raw.trim();
@@ -685,9 +702,10 @@ export function parseExtractionResult(raw: string, logger?: Logger, valueCandida
       cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
     }
 
-    // Try to extract JSON array
+    // Try to extract JSON array；抠不到 = 输出被 maxTokens 砍尾时先走截断抢救（P0-1）
     const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-    if (!arrayMatch) {
+    const jsonSource = arrayMatch ? arrayMatch[0] : salvageTruncatedJsonArray(cleaned);
+    if (!jsonSource) {
       logger?.warn?.(`${TAG} No JSON array found in extraction response`);
       // [l1-debug] NO_JSON — dump the full raw so we can see what the LLM actually said
       const rawPreview = raw.slice(0, 2048);
@@ -696,20 +714,32 @@ export function parseExtractionResult(raw: string, logger?: Logger, valueCandida
       );
       return [];
     }
+    if (!arrayMatch) {
+      logger?.warn?.(`${TAG} Truncated extraction output salvaged: ${jsonSource.length} chars recovered from prefix`);
+    }
 
     // Sanitize control characters inside JSON string literals that LLM may produce.
     // Some weaker OpenAI-compatible models occasionally emit bare identifiers for
     // numeric fields (e.g. `"priority": sheet`). Repair only known safe fields and
     // retry once so one bad scalar does not drop the whole extraction result.
-    const sanitized = sanitizeJsonForParse(arrayMatch[0]);
+    const sanitized = sanitizeJsonForParse(jsonSource);
     let parsed: unknown[];
     try {
       parsed = JSON.parse(sanitized) as unknown[];
     } catch (err) {
       const repaired = repairExtractionJson(sanitized);
-      if (repaired === sanitized) throw err;
-      parsed = JSON.parse(repaired) as unknown[];
-      logger?.warn?.(`${TAG} Repaired non-strict extraction JSON: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        parsed = JSON.parse(repaired) as unknown[];
+        if (repaired !== sanitized) {
+          logger?.warn?.(`${TAG} Repaired non-strict extraction JSON: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } catch {
+        // P0-1：正则片段整体不可解析（常见于截断输出里字符串含 ']' 致截取错位）→ 再走前缀抢救
+        const salvaged = arrayMatch ? salvageTruncatedJsonArray(cleaned) : null;
+        if (!salvaged || salvaged === jsonSource) throw err;
+        parsed = JSON.parse(sanitizeJsonForParse(salvaged)) as unknown[];
+        logger?.warn?.(`${TAG} Salvaged truncated extraction JSON from prefix: ${salvaged.length} chars`);
+      }
     }
 
     if (!Array.isArray(parsed)) {
@@ -727,11 +757,20 @@ export function parseExtractionResult(raw: string, logger?: Logger, valueCandida
         message_ids: Array.isArray(s.message_ids) ? s.message_ids.map(String) : [],
         memories: Array.isArray(s.memories)
           ? (s.memories as Array<Record<string, unknown>>)
-              .filter((m) => m && typeof m === "object" && typeof m.content === "string" && (m.content as string).length > 0)
+              .filter((m) => {
+                if (!m || typeof m !== "object" || typeof m.content !== "string" || (m.content as string).length === 0) return false;
+                // P0-3 chat 跨类型门：提示词枚举门（chat 仅 persona/episodic/instruction）的代码侧双保险
+                if (opts?.promptMode === "chat" && WORK_ONLY_TYPES.has(normalizeType(String(m.type)) ?? "")) {
+                  logger?.warn?.(`${TAG} chat 模式拒绝 work_* 类型（枚举门外泄）: ${String(m.type)}`);
+                  return false;
+                }
+                return true;
+              })
               .map((m) => ({
                 content: String(m.content),
                 type: String(m.type ?? "episodic"),
-                priority: typeof m.priority === "number" ? m.priority : 50,
+                // P0-3：priority 钳制到 [-1,100]（-1 仅 instruction 死命令），非数字缺省 50
+                priority: typeof m.priority === "number" ? clampNum(m.priority, -1, 100) : 50,
                 source_message_ids: Array.isArray(m.source_message_ids) ? m.source_message_ids.map(String) : [],
                 metadata: (() => {
                   const base = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
@@ -739,16 +778,18 @@ export function parseExtractionResult(raw: string, logger?: Logger, valueCandida
                   return refs && refs.length > 0 ? { ...base, coreRefs: refs } : base;
                 })(),
                 // 灵魂记忆字段（可选，防御解析）：时空 / 观察推断 / 情感
-                occurred_at: typeof m.occurred_at === "string" ? m.occurred_at : undefined,
+                // P0-2/P2：空串 occurred_at 归 undefined（此前原样保留 → 下游 falsy 判 missing 口径分裂）
+                occurred_at: typeof m.occurred_at === "string" && m.occurred_at !== "" ? m.occurred_at : undefined,
                 durative: m.durative === true,
                 valid_start: typeof m.valid_start === "string" ? m.valid_start : undefined,
                 valid_end: typeof m.valid_end === "string" ? m.valid_end : undefined,
                 certainty: m.certainty === "inferred" ? "inferred" : "observed",
                 // A8：coreRefs 原样透传（parseCoreRefs 过滤在调用方——候选清单在其作用域）
                 source: typeof m.source === "string" ? m.source : undefined,
-                valence: typeof m.valence === "number" ? m.valence : undefined,
-                arousal: typeof m.arousal === "number" ? m.arousal : undefined,
-                significance: typeof m.significance === "number" ? m.significance : undefined,
+                // P0-3：情感/重要度三值钳制到合法区间（此前 typeof number 即原样放行）
+                valence: typeof m.valence === "number" ? clampNum(m.valence, -1, 1) : undefined,
+                arousal: typeof m.arousal === "number" ? clampNum(m.arousal, 0, 1) : undefined,
+                significance: typeof m.significance === "number" ? clampNum(m.significance, 0, 1) : undefined,
                 // D-3：敏感性透传（枚举门在主映射处统一裁决——此处只带原始值）
                 sensitivity: typeof m.sensitivity === "string" ? m.sensitivity : undefined,
               }))
@@ -774,6 +815,41 @@ function repairExtractionJson(json: string): string {
       (_m, prefix: string) => `${prefix}50`,
     )
     .replace(/,\s*([}\]])/g, "$1");
+}
+
+/**
+ * P0-1 截断抢救：LLM 输出被 maxTokens 砍尾时，首个 '[' 之后的前缀里仍可能有
+ * 若干已闭合的完整情境对象。以栈配对（跳过字符串字面量）找到最后一个回到数组层
+ * 深度的 '}'，截取到该处并补右括号，得到可 JSON.parse 的数组。
+ * 无任何完整对象（或首个字符不是 '['）时返回 null → 调用方走原有 NO_JSON 空返回。
+ */
+function salvageTruncatedJsonArray(s: string): string | null {
+  const start = s.indexOf("[");
+  if (start < 0) return null;
+  const frag = s.slice(start);
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let lastSceneClose = -1;
+  for (let i = 0; i < frag.length; i++) {
+    const c = frag[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "[" || c === "{") { depth++; continue; }
+    if (c === "}" || c === "]") {
+      depth--;
+      // 深度回到 1 且闭合符是 '}' = 一个情境对象完整闭合（其 memories 子数组已闭）
+      if (depth === 1 && c === "}") lastSceneClose = i;
+      if (depth < 0) return null;
+    }
+  }
+  if (lastSceneClose < 0) return null;
+  return frag.slice(0, lastSceneClose + 1) + "]";
 }
 
 // ============================
