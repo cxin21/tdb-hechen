@@ -76,7 +76,7 @@ import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } 
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
-import { sanitizeJsonForParse, shouldExtractL1 } from "../../utils/sanitize.js";
+import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
 import type { L1SearchResult } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
@@ -821,40 +821,8 @@ function repairExtractionJson(json: string): string {
     .replace(/,\s*([}\]])/g, "$1");
 }
 
-/**
- * P0-1 截断抢救：LLM 输出被 maxTokens 砍尾时，首个 '[' 之后的前缀里仍可能有
- * 若干已闭合的完整情境对象。以栈配对（跳过字符串字面量）找到最后一个回到数组层
- * 深度的 '}'，截取到该处并补右括号，得到可 JSON.parse 的数组。
- * 无任何完整对象（或首个字符不是 '['）时返回 null → 调用方走原有 NO_JSON 空返回。
- */
-function salvageTruncatedJsonArray(s: string): string | null {
-  const start = s.indexOf("[");
-  if (start < 0) return null;
-  const frag = s.slice(start);
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  let lastSceneClose = -1;
-  for (let i = 0; i < frag.length; i++) {
-    const c = frag[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === "\\") esc = true;
-      else if (c === '"') inStr = false;
-      continue;
-    }
-    if (c === '"') { inStr = true; continue; }
-    if (c === "[" || c === "{") { depth++; continue; }
-    if (c === "}" || c === "]") {
-      depth--;
-      // 深度回到 1 且闭合符是 '}' = 一个情境对象完整闭合（其 memories 子数组已闭）
-      if (depth === 1 && c === "}") lastSceneClose = i;
-      if (depth < 0) return null;
-    }
-  }
-  if (lastSceneClose < 0) return null;
-  return frag.slice(0, lastSceneClose + 1) + "]";
-}
+// R2（2026-10-06）：salvageTruncatedJsonArray 迁至 utils/sanitize.ts 单一实现
+//（dedup 判定链同需，P-A 禁第二份手写）——此处改为 import 复用，行为逐位不变。
 
 // ============================
 // Write helpers

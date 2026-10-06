@@ -16,7 +16,7 @@ import type { ExtractedMemory, MemoryRecord, DedupDecision, MemoryType } from ".
 import { formatBatchConflictPrompt, getConflictDetectionSystemPrompt, type CoreValueCandidate } from "../prompts/l1-dedup.js";
 import type { CandidateMatch } from "../prompts/l1-dedup.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
-import { sanitizeJsonForParse } from "../../utils/sanitize.js";
+import { sanitizeJsonForParse, salvageTruncatedJsonArray } from "../../utils/sanitize.js";
 import type { IMemoryStore, IsolationFilter, CoreTenant } from "../store/types.js";
 import { normalizeCoreTenant } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
@@ -259,11 +259,16 @@ async function runLlmJudgment(
 
     if (llmRunner) {
       // Use the host-neutral LLMRunner interface
+      // R2 P0-3（关思考）：端点 mimo-v2.6-flash 默认开思考，思考烧时延+输出预算——
+      // 生产 10/138 整批超时降级全属思考所致（2026-10-06 取证），R1 v21 十组 A/B
+      // 证关思考质量持平、时延 −32% → 主调关思考。CleanContextRunner 兜底分支
+      //（OpenClaw 路径，内联参数类型无此字段）不加，维持原样。
       result = await llmRunner.run({
         prompt: userPrompt,
         systemPrompt,
         taskId: "l1-conflict-detection",
         timeoutMs: 180_000,
+        reasoningEffort: "none",
         ...traceParams,
       });
     } else {
@@ -284,7 +289,11 @@ async function runLlmJudgment(
       });
     }
 
-    const decisions = parseBatchResult(result, memories, logger, valueCandidates);
+    // R2 P1-3：统一候选记忆池（幻觉 target 过滤的白名单）——与 prompt 注入同源
+    //（candidates 全集）。缺省不传 = 不过滤（既有调用兼容）。
+    const poolIds = new Set<string>();
+    for (const m of matches) for (const c of m.candidates) if (c.id) poolIds.add(c.id);
+    const decisions = parseBatchResult(result, memories, logger, valueCandidates, poolIds);
     return decisions;
   } catch (err) {
     logger?.warn?.(
@@ -456,7 +465,20 @@ export function parseBatchResult(
   logger?: Logger,
   /** C1：价值锚候选（与 prompt 注入同源）；缺省 = 不解析 coreRefs（全部丢弃，宁缺毋滥）。 */
   valueCandidates: CoreValueCandidate[] = [],
+  /** R2 P1-3：统一候选记忆池（幻觉 target 白名单）；缺省 = 不过滤（既有调用兼容）。 */
+  poolIds?: Set<string>,
 ): DedupDecision[] {
+  // R2 P1-4：硬化统计（任何一条硬化工事发生即在尾部汇总 warn，干净解析保持静默）。
+  const stats = {
+    salvaged: 0,
+    downgraded: 0,
+    invalidAction: 0,
+    targetDropped: 0,
+    priorityFixed: 0,
+    subjectTruncated: 0,
+    typeBackfilled: 0,
+    tsNormalized: 0,
+  };
   try {
     // Strip markdown code block wrappers
     let cleaned = raw.trim();
@@ -464,19 +486,44 @@ export function parseBatchResult(
       cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
     }
 
-    // Extract JSON array
+    const recordTypeById = new Map(memories.map((m) => [m.record_id, m.type]));
+
+    // Extract JSON array；解析失败（砍尾截断等）→ salvage 抢救前缀中已闭合的决策（R2 P1-1）
+    let parsed: unknown[] | undefined;
     const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-    if (!arrayMatch) {
-      logger?.warn?.(`${TAG} No JSON array found in conflict detection response`);
-      return fallbackStoreAll(memories);
+    if (arrayMatch) {
+      try {
+        const candidate = JSON.parse(sanitizeJsonForParse(arrayMatch[0])) as unknown;
+        if (Array.isArray(candidate)) parsed = candidate;
+        else {
+          logger?.warn?.(`${TAG} Conflict detection response is not an array`);
+          return fallbackStoreAll(memories);
+        }
+      } catch {
+        // fall through → salvage
+      }
     }
-
-    // Sanitize control characters inside JSON string literals that LLM may produce
-    const sanitized = sanitizeJsonForParse(arrayMatch[0]);
-    const parsed = JSON.parse(sanitized) as unknown[];
-
-    if (!Array.isArray(parsed)) {
-      logger?.warn?.(`${TAG} Conflict detection response is not an array`);
+    if (!parsed) {
+      const salvaged = salvageTruncatedJsonArray(cleaned);
+      if (salvaged) {
+        try {
+          const candidate = JSON.parse(sanitizeJsonForParse(salvaged)) as unknown;
+          if (Array.isArray(candidate)) {
+            parsed = candidate;
+            stats.salvaged = 1;
+            logger?.warn?.(`${TAG} Conflict detection response truncated, salvaged ${parsed.length} complete decision(s)`);
+          }
+        } catch {
+          // salvage 后仍不可解析 → 下方统一 fallback
+        }
+      }
+    }
+    if (!parsed) {
+      logger?.warn?.(
+        arrayMatch
+          ? `${TAG} Failed to parse conflict detection result`
+          : `${TAG} No JSON array found in conflict detection response`,
+      );
       return fallbackStoreAll(memories);
     }
 
@@ -494,22 +541,90 @@ export function parseBatchResult(
         logger?.debug?.(`${TAG} Skipping decision with empty record_id`);
         continue;
       }
-      const action = String(d.action ?? "store");
-
+      let action = String(d.action ?? "store");
       if (!validActions.includes(action)) {
         logger?.warn?.(`${TAG} Invalid action "${action}" for record ${recordId}, defaulting to store`);
+        stats.invalidAction++;
+        action = "store";
+      }
+
+      // R2 P1-3：target_ids ⊆ 候选池过滤（幻觉指向直接丢弃——prompt 端已声明）。
+      // 过滤后为空不改变 action（宁重复不丢失；merge 缺 target 的后果由 P0-1 兜）。
+      let targetIds = Array.isArray(d.target_ids) ? d.target_ids.map(String) : [];
+      if (poolIds) {
+        const before = targetIds.length;
+        targetIds = targetIds.filter((id) => poolIds.has(id));
+        stats.targetDropped += before - targetIds.length;
+      }
+
+      const mergedContent = typeof d.merged_content === "string" && d.merged_content.trim() ? d.merged_content : undefined;
+
+      // R2 P0-1 假 merge 阻断：merge/update 缺 merged_content → 强制降级 store 并清空
+      // 关联/合并字段——旧记忆不归档（不丢信息），新记忆原样入库；prompt 端已声明违规后果。
+      if ((action === "merge" || action === "update") && !mergedContent) {
+        logger?.warn?.(
+          `${TAG} Decision for record ${recordId} action=${action} missing merged_content, downgraded to store`,
+        );
+        stats.downgraded++;
+        decisions.push({
+          record_id: recordId,
+          action: "store",
+          target_ids: [],
+          subject: typeof d.subject === "string" && d.subject.trim() ? truncateSubject(d.subject.trim(), stats) : undefined,
+          coreRefs: parseCoreRefs(d.coreRefs, valueCandidates),
+        });
+        continue;
+      }
+
+      // R2 P0-1：merge/update 的 merged_type 非法/缺失 → 回填该记录自身 type
+      //（applyDecisions 建边与 writeMemory 版本记录依赖 type，宁回填不落空）。
+      let mergedType: MemoryType | undefined = VALID_TYPES.includes(d.merged_type as MemoryType)
+        ? (d.merged_type as MemoryType)
+        : undefined;
+      if ((action === "merge" || action === "update") && !mergedType) {
+        const own = recordTypeById.get(recordId);
+        if (own) {
+          mergedType = own;
+          stats.typeBackfilled++;
+        }
+      }
+
+      // R2 P0-2：merged_priority 有限数门 + 取整 + clamp [0,100]；字段在场但非法/越界 → 计数。
+      let mergedPriority: number | undefined;
+      if (d.merged_priority !== undefined) {
+        if (typeof d.merged_priority === "number" && Number.isFinite(d.merged_priority)) {
+          const clamped = Math.round(Math.min(100, Math.max(0, d.merged_priority)));
+          if (clamped !== d.merged_priority) stats.priorityFixed++;
+          mergedPriority = clamped;
+        } else {
+          mergedPriority = undefined;
+          stats.priorityFixed++;
+        }
+      }
+
+      // R2 P1-5：merged_timestamps 规范化——ISO 前缀过滤、去重、字典序升序；全非法 → undefined。
+      let mergedTimestamps: string[] | undefined;
+      if (Array.isArray(d.merged_timestamps)) {
+        const rawList = d.merged_timestamps.map(String);
+        const out: string[] = [];
+        for (const ts of rawList) {
+          if (/^\d{4}-\d{2}-\d{2}/.test(ts) && !out.includes(ts)) out.push(ts);
+        }
+        out.sort();
+        if (JSON.stringify(out) !== JSON.stringify(rawList)) stats.tsNormalized++;
+        mergedTimestamps = out.length > 0 ? out : undefined;
       }
 
       decisions.push({
         record_id: recordId,
-        action: validActions.includes(action) ? (action as DedupDecision["action"]) : "store",
-        target_ids: Array.isArray(d.target_ids) ? d.target_ids.map(String) : [],
-        merged_content: typeof d.merged_content === "string" ? d.merged_content : undefined,
-        merged_type: VALID_TYPES.includes(d.merged_type as MemoryType) ? (d.merged_type as MemoryType) : undefined,
-        merged_priority: typeof d.merged_priority === "number" ? d.merged_priority : undefined,
-        merged_timestamps: Array.isArray(d.merged_timestamps) ? d.merged_timestamps.map(String) : undefined,
+        action: action as DedupDecision["action"],
+        target_ids: targetIds,
+        merged_content: mergedContent,
+        merged_type: mergedType,
+        merged_priority: mergedPriority,
+        merged_timestamps: mergedTimestamps,
         // P3-T17（H1，拍板④）：dedup LLM 顺带抽取的语义主题词（归组键）。空串/非字符串 = 无。
-        subject: typeof d.subject === "string" && d.subject.trim() ? d.subject.trim() : undefined,
+        subject: typeof d.subject === "string" && d.subject.trim() ? truncateSubject(d.subject.trim(), stats) : undefined,
         // C1（灵魂记忆 spec §2.1）：顺带标注的价值锚引用，候选清单过滤后attach；
         // 清单为空/LLM 未给/全幻觉 → undefined（不标注）。
         coreRefs: parseCoreRefs(d.coreRefs, valueCandidates),
@@ -529,11 +644,32 @@ export function parseBatchResult(
       }
     }
 
+    // R2 P1-4：硬化统计汇总（任一工事发生才打，干净解析零噪声）。
+    const total =
+      stats.salvaged + stats.downgraded + stats.invalidAction + stats.targetDropped +
+      stats.priorityFixed + stats.subjectTruncated + stats.typeBackfilled + stats.tsNormalized;
+    if (total > 0) {
+      logger?.warn?.(
+        `${TAG} Parse hardening stats: salvaged=${stats.salvaged} downgraded=${stats.downgraded} invalidAction=${stats.invalidAction} targetDropped=${stats.targetDropped} priorityFixed=${stats.priorityFixed} subjectTruncated=${stats.subjectTruncated} typeBackfilled=${stats.typeBackfilled} tsNormalized=${stats.tsNormalized}`,
+      );
+    }
+
     return decisions;
   } catch (err) {
     logger?.warn?.(`${TAG} Failed to parse conflict detection result: ${err instanceof Error ? err.message : String(err)}`);
     return fallbackStoreAll(memories);
   }
+}
+
+/**
+ * R2 P0-2：subject 按 code point 截断 ≤12 字（与提示词「≤12字」声明对齐）；
+ * 截断发生时计入 stats（P1-4 观测）。
+ */
+function truncateSubject(s: string, stats: { subjectTruncated: number }): string {
+  const cps = Array.from(s);
+  if (cps.length <= 12) return s;
+  stats.subjectTruncated++;
+  return cps.slice(0, 12).join("");
 }
 
 /**

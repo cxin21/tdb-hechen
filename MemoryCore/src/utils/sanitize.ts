@@ -409,3 +409,42 @@ function escapeControlCharsInJsonStrings(text: string): string {
 
   return out.join("");
 }
+
+/**
+ * 截断抢救：LLM 输出被 maxTokens 砍尾时，首个 '[' 之后的前缀里仍可能有
+ * 若干已闭合的完整对象。以栈配对（跳过字符串字面量）找到最后一个回到数组层
+ * 深度的 '}'，截取到该处并补右括号，得到可 JSON.parse 的数组。
+ * 无任何完整对象（或首个字符不是 '['）时返回 null → 调用方走原有 fallback。
+ *
+ * R2（2026-10-06）：原居 l1-extractor.ts 私有；dedup 判定链（R2 P1-1）同需 →
+ * 迁至 utils 单一实现（P-A 禁第二份手写）。顶层数组对象结构通用
+ * （提取情境数组 / 决策数组同形），不区分对象语义。
+ */
+export function salvageTruncatedJsonArray(s: string): string | null {
+  const start = s.indexOf("[");
+  if (start < 0) return null;
+  const frag = s.slice(start);
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let lastSceneClose = -1;
+  for (let i = 0; i < frag.length; i++) {
+    const c = frag[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "[" || c === "{") { depth++; continue; }
+    if (c === "}" || c === "]") {
+      depth--;
+      // 深度回到 1 且闭合符是 '}' = 一个顶层对象完整闭合
+      if (depth === 1 && c === "}") lastSceneClose = i;
+      if (depth < 0) return null;
+    }
+  }
+  if (lastSceneClose < 0) return null;
+  return frag.slice(0, lastSceneClose + 1) + "]";
+}
