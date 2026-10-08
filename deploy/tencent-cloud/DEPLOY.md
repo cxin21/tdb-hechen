@@ -65,7 +65,7 @@ PROXY_ADMIN_API_KEY=<openssl rand -hex 32>
 
 - **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。
 - **proxy**：`cp 本地 MemoryProxy/config.yaml → /opt/tdai/etc/proxy-config.yaml`，按同目录 `CLOUD-DIFF.md` 改 6 处（endpoint 指向 core、密钥替换、admin key）。
-- **knowledge**：`cp deploy/tencent-cloud/config/knowledge/.env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。
+- **knowledge**：`cp deploy/tencent-cloud/config/knowledge/env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。
 - **panel**：Panel 的 core 地址/api_key 配置按其 `config/metadata-instances.json` 格式落盘（指向 http://127.0.0.1:8420 + 同一把 gateway key）。
 
 ## 5. 启动与自启

@@ -1,0 +1,16 @@
+{
+  "_comment": "/data/tdai-memory/config-override.json 脱敏示例。优先级高于 TDAI_LLM_* env 与 MemoryCore yaml；仅支持 llm/embedding 两段，勿放 memory 业务配置。apiKey 占位符替换为真实 key；maxTokens 生产现值以服务器文件为准（0 = 不限制）。",
+  "llm": {
+    "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1",
+    "apiKey": "<REPLACE_WITH_LLM_API_KEY>",
+    "model": "mimo-v2.6-flash",
+    "maxTokens": 0,
+    "timeoutMs": 120000
+  },
+  "embedding": {
+    "baseUrl": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "apiKey": "<REPLACE_WITH_EMBEDDING_API_KEY>",
+    "model": "doubao-embedding-vision",
+    "dimensions": 2048
+  }
+}
