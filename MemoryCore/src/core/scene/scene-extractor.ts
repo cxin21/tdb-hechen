@@ -437,7 +437,15 @@ export class SceneExtractor {
           // LLMRunner → 治理 runner 适配：LLMRunParams 必填 taskId（追踪语义），
           // 治理侧最小三字段接口由此闭包补齐，GOV-2/GOV-1 签名零改动。
           runner: {
-            run: (p) => this.runner.run({ ...p, taskId: `scene-govern-${Date.now()}` }),
+            run: (p) =>
+              this.runner.run({
+                ...p,
+                taskId: `scene-govern-${Date.now()}`,
+                // R5-1 修订（2026-10-12 真数据 A/B 负增益回退）：治理蒸馏不透传 reasoningEffort——
+                // 12 组种子×3 臂实测：关思考臂 8/8 需治理组全超时（精确踩 distillTimeoutMs 60s），
+                // 开思考对照臂 8/8 成功（avg≈39s）；产线 persona.reasoningEffort="none" 一旦透传
+                // 将令治理链整批失效（fail-safe 保留原块+每轮白烧超时）。蒸馏保持端点默认。
+              }),
           },
           logger: this.logger,
         });

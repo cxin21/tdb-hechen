@@ -122,3 +122,38 @@ describe("R4 SceneExtractor 接线与 no-progress 契约", () => {
     expect(prompt).toContain("当前场景总数：0 / 15");
   });
 });
+
+describe("R5 治理链接线（Phase 5c scene-governor adapter）", () => {
+  it("R5-1 修订：治理蒸馏不透传 reasoningEffort（真数据 A/B 关思考 8/8 超时负增益回退，保持端点默认）", async () => {
+    const dataDir = makeDataDir(true);
+    await syncSceneIndex(dataDir);
+    // 追加一个正文远超治理阈值的块（maxBlockChars=50），触发 Phase 5c governance
+    const big = [
+      "-----META-START-----",
+      "created: 2026-01-01T00:00:00.000Z",
+      "updated: 2026-01-01T00:00:00.000Z",
+      "summary: oversized block for governance wiring test",
+      "heat: 3",
+      "-----META-END-----",
+      "",
+      "## 核心叙事",
+      "",
+      "长".repeat(120),
+      "",
+    ].join("\n");
+    writeFileSync(join(dataDir, "scene_blocks", "BigBlock.md"), big, "utf-8");
+    const captured: Array<Record<string, unknown>> = [];
+    const ex = new SceneExtractor({
+      dataDir,
+      config: {},
+      maxScenes: 15,
+      reasoningEffort: "none",
+      llmRunner: captureRunner(captured),
+      sceneGovernance: { enabled: true, maxBlockChars: 50, distillTimeoutMs: 1000, hardCapChars: 200 },
+    });
+    await ex.extract(MEMORY);
+    const govCalls = captured.filter((p) => String(p.taskId ?? "").startsWith("scene-govern-"));
+    expect(govCalls.length).toBeGreaterThanOrEqual(1);
+    expect(govCalls[0]!.reasoningEffort).toBeUndefined();
+  });
+});

@@ -35,7 +35,13 @@ import {
  * SceneExtractor 持有的 LLMRunner 天然满足该形状（enableTools 与否不影响纯文本蒸馏）。
  */
 export interface SceneGovernorRunner {
-  run(params: { systemPrompt: string; prompt: string; timeoutMs?: number }): Promise<string>;
+  run(params: {
+    systemPrompt: string;
+    prompt: string;
+    timeoutMs?: number;
+    /** R5-2：蒸馏输出预算 ⌈maxBlockChars×1.6⌉——缺省 4096 tokens 会截断大块产出且 validateDistilled 恰放行残块 */
+    maxTokens?: number;
+  }): Promise<string>;
 }
 
 /** 治理结果报告（每轮 govern 汇总，供调用方日志与验收）。 */
@@ -129,7 +135,7 @@ export class SceneGovernor {
     }
 
     // 蒸馏 pass：独立 LLM 调用（读原块 + §4.1 选择策略 prompt）
-    const { systemPrompt, userPrompt } = buildDistillPrompts(raw, config.maxBlockChars);
+    const { systemPrompt, userPrompt } = buildDistillPrompts(raw, config.maxBlockChars, new Date().toISOString());
     let out: string;
     try {
       out = await this.runner.run({
@@ -137,6 +143,9 @@ export class SceneGovernor {
         prompt: userPrompt,
         // distillTimeoutMs 经 GOV-1 clamp 非负；0 视为「不显式限时」→ 交给 runner 缺省
         timeoutMs: config.distillTimeoutMs > 0 ? config.distillTimeoutMs : undefined,
+        // R5-2：显式输出预算 ⌈maxBlockChars×1.6⌉（llm-runner 侧按 maxTokensLimit 钳制）——
+        // 缺省 4096 tokens 拦腰截断大块产出，validateDistilled 四条件恰放行残块静默写回
+        maxTokens: Math.ceil(config.maxBlockChars * 1.6),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
