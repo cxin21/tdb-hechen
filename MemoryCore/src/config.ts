@@ -66,6 +66,13 @@ export interface PersonaConfig {
   model?: string;
   /** Prompt family for L2/L3 prompts (default: chat; code prompts will be wired as they are added). */
   promptMode: MemoryPromptMode;
+  /**
+   * Per-call reasoning effort for L2 scene extraction (R4 2026-10-06).
+   * "none" disables deep thinking; undefined keeps the endpoint default.
+   * Chain: cfg.persona.reasoningEffort → SceneExtractor → LLMRunParams.reasoningEffort
+   * → providerOptions.openaiCompatible.reasoningEffort.
+   */
+  reasoningEffort?: string;
 }
 
 /** Pipeline trigger settings (L1→L2→L3 scheduling). */
@@ -1222,6 +1229,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       sceneBackupCount: num(personaGroup, "sceneBackupCount") ?? 10,
       model: optStr(personaGroup, "model"),
       promptMode: normalizePromptMode(str(personaGroup, "promptMode"), globalPromptMode),
+      // R4：逐调用思考开关（缺省 undefined=端点默认；"none"=关深度思考）
+      reasoningEffort: optStr(personaGroup, "reasoningEffort"),
     },
     pipeline: {
       everyNConversations: num(pipelineGroup, "everyNConversations") ?? 5,

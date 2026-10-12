@@ -55,6 +55,8 @@ memory:
   persona:
     triggerEveryN: 50
     maxScenes: 15
+    # R4(2026-10-12): L2 场景提取关思考；A/B 30 次真调用 p50 −65%、整合率 2/10→10/10、质量代理持平
+    reasoningEffort: "none"
 
   pipeline:
     everyNConversations: 5

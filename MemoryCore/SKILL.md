@@ -113,7 +113,8 @@ openclaw plugins update memory-tencentdb
       "maxScenes": 15,
       "backupCount": 3,
       "sceneBackupCount": 10,
-      "model": "provider/model"
+      "model": "provider/model",
+      "reasoningEffort": "none"
     },
     "embedding": {
       "enabled": true,
@@ -141,6 +142,7 @@ openclaw plugins update memory-tencentdb
   - `0` 表示不清理
   - 非 `0` 时建议 `>=3`
   - 若设为 `1~2`，需显式开启 `allowAggressiveCleanup`
+- `persona.reasoningEffort`：L2 场景提取的思考开关，经 StandaloneLLMRunner 透传 providerOptions（2026-10-12 R4 定案 `"none"`：A/B 30 次真调用 p50 −65%、场景整合率 2/10→10/10、质量代理持平）；缺省不配置=端点默认（开思考）。
 
 ### 6) 重启并验证生效
 

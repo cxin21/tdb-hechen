@@ -799,6 +799,12 @@ export function createL2Runner(opts: {
       logger.debug?.(`${TAG} [L2] No new L1 records found (session=${sessionKey}), skipping scene extraction`);
       return;
     }
+    // R4 观测面（UR-3 工程侧）：增量窗口无上界，超大批次是 300s 超时/超长 prompt
+    // 的风险源。切片限流涉及 cursor 水位线语义（latestCursor 取全窗口 max(updatedAt)，
+    // 切错=丢数据），本轮只告警不改切片，登记为后续工程项。
+    if (records.length > 100) {
+      logger.warn(`${TAG} [L2] Large incremental batch: ${records.length} records in one L2 run (session=${sessionKey}) — timeout/quality risk, consider cursor backfill paging`);
+    }
 
     const grouped = new Map<string, typeof records>();
     for (const record of records) {
@@ -837,6 +843,9 @@ export function createL2Runner(opts: {
           layer: "l2",
         })),
         maxScenes: cfg.persona.maxScenes,
+        // R4：逐调用思考开关 config-first 接线（yaml persona.reasoningEffort；
+        // 缺省 undefined=端点默认，A/B 实证后再落产线值）
+        reasoningEffort: cfg.persona.reasoningEffort,
         sceneBackupCount: cfg.persona.sceneBackupCount,
         logger,
         instanceId,

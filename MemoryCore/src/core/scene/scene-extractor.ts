@@ -44,8 +44,19 @@ export interface ExtractionResult {
   memoriesProcessed: number;
   success: boolean;
   error?: string;
-  /** True if LLM ran but produced no file changes (scene_index unchanged). */
+  /**
+   * True only when both pre and post scene indexes are empty（首轮空跑：目录无
+   * 任何场景且本批也未产出）。R4 UR-10 修订（对抗性审查）：「输入非空但零文件
+   * 变更」不再计入——L2 是 L1 的派生视图，L1 记录不会因 checkpoint 推进而丢失，
+   * 模型判定"无可整合内容"时以 noOpIntegrated 上报并放行 checkpoint，避免毒批
+   * 无限重试烧真金 LLM 调用。
+   */
   emptyExtraction?: boolean;
+  /**
+   * R4 UR-10：输入非空但本次零文件变更（created/updated/deleted 全 0）。
+   * 仅观测用途（告警/指标上报），不影响 checkpoint 推进。
+   */
+  noOpIntegrated?: boolean;
   /**
    * P4a-P2（层级边，对抗性审查修正）：本次提取实际产生正文变更的场景文件名
    * （created + content-updated，仅 META 变化不算）。权威变更集——pipeline 侧
@@ -84,6 +95,13 @@ export interface SceneExtractorOptions {
    * 门控用 `.enabled`（缺省 false = 生产行为零变化）。
    */
   sceneGovernance?: SceneGovernanceConfig;
+  /**
+   * 逐调用深度思考开关（R4 2026-10-06）：透传 runner.run →
+   * providerOptions.openaiCompatible.reasoningEffort（llm-runner 既有通道）。
+   * "none"=关深度思考；缺省 undefined=不带字段、保持端点默认。
+   * config-first：由 cfg.persona.reasoningEffort 注入，A/B 实证后再落产线值。
+   */
+  reasoningEffort?: string;
 }
 
 /**
@@ -122,6 +140,7 @@ export class SceneExtractor {
   private storage: StorageAdapter | undefined;
   private traceContext: TraceContext | undefined;
   private sceneGovernance: SceneGovernanceConfig | undefined;
+  private reasoningEffort: string | undefined;
 
   constructor(opts: SceneExtractorOptions) {
     this.dataDir = opts.dataDir;
@@ -135,6 +154,7 @@ export class SceneExtractor {
     this.storage = opts.storage;
     this.traceContext = opts.traceContext;
     this.sceneGovernance = opts.sceneGovernance;
+    this.reasoningEffort = opts.reasoningEffort;
 
     // Use injected LLMRunner if available, otherwise fall back to CleanContextRunner
     this.runner = opts.llmRunner ?? new CleanContextRunner({
@@ -278,6 +298,8 @@ export class SceneExtractor {
         // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS
         storage: this.storage,
         storagePrefix: this.storage ? StoragePaths.sceneBlocksDir : undefined,
+        // R4：逐调用思考开关——未配置时不带字段，保持端点默认
+        ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
         ...traceParams,
       }) ?? "";
       llmDurationMs = Date.now() - runnerStartMs;
@@ -555,17 +577,30 @@ export class SceneExtractor {
       }
     }
 
-    // Detect empty extraction: pre and post scene_index both empty means LLM didn't write anything
+    // Detect empty extraction（R4 UR-10 修订，对抗性审查定案）：
+    // ① emptyExtraction 维持旧语义=前后索引皆空（首轮空跑）——无任何场景可召回，
+    //   阻塞 checkpoint 防空转；② 输入非空但零文件变更记 noOpIntegrated 仅观测：
+    //   L1 记录不因 cursor 推进而丢失（L2 为派生视图），模型合法判定"无可整合
+    //   内容"时放行 checkpoint，避免毒批每周期重复真金 LLM 调用。
     const postIndex = await readSceneIndex(this.dataDir, this.storage);
+    const noFileChanges = scenesCreated === 0 && scenesUpdated === 0 && scenesDeleted === 0;
     const emptyExtraction = preExtractIndex.size === 0 && postIndex.length === 0;
+    const noOpIntegrated = memories.length > 0 && noFileChanges;
     if (emptyExtraction) {
-      this.logger?.warn(`${TAG} extract() empty extraction detected: LLM produced no file changes`);
+      this.logger?.warn(
+        `${TAG} extract() empty extraction detected: pre=0, post=0 — checkpoint will not advance`,
+      );
+    } else if (noOpIntegrated) {
+      this.logger?.warn(
+        `${TAG} extract() no-op integrated: input=${memories.length}, created=${scenesCreated}, updated=${scenesUpdated}, deleted=${scenesDeleted} — checkpoint advances (L1 remains recallable)`,
+      );
     }
 
     return {
       memoriesProcessed: memories.length,
       success: true,
       emptyExtraction,
+      noOpIntegrated,
       changedSceneFiles: resultScenes.map((s) => `${s.title}.md`),
     };
   }
@@ -580,7 +615,14 @@ export class SceneExtractor {
   private buildSceneSummaries(
     index: SceneIndexEntry[],
   ): { summaries: string; filenames: string[] } {
-    if (index.length === 0) return { summaries: "", filenames: [] };
+    // R4 UR-8：空目录也注入 0 值容量头——提示词阶段 0 依赖"顶部标注的当前
+    // 场景总数"做判定，空串让冷启动批看不到任何容量语义。
+    if (index.length === 0) {
+      return {
+        summaries: `**当前场景总数：0 / ${this.maxScenes}**\n（暂无场景文件）`,
+        filenames: [],
+      };
+    }
 
     const lines: string[] = [];
     const filenames: string[] = [];
