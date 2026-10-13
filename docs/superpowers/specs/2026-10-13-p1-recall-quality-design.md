@@ -1,7 +1,7 @@
 # P1 召回质量与上下文体积优化设计（MemoryReranker / wiki JIT / worthiness / bi-temporal 补口）
 
 - 日期：2026-10-13
-- 状态：draft（brainstorming 产出，待用户批准；批准前不写产品代码）
+- 状态：draft（brainstorming 产出，builder-check 修订 r2，待用户批准；批准前不写产品代码）
 - 前置：P0 修复已交付（commit b68d167 + 23d4923，issue cxin21/tdb-hechen #1 #2），本设计是其上的 P1 层。
 
 ## 1. 背景与动机
@@ -9,7 +9,7 @@
 P0 之后剩余两个用户可感知痛点（用户原话确认）：
 
 1. **召回不准确有污染**：现排序只有「相似度」（BM25/向量/RRF/规则加权），没有「与当前对话有用度」；字面共现就能把噪音抬进注入块。
-2. **上下文经常爆炸**：每轮注入构成实测——L1 记忆块理论最大 ≈10KB（globalTopK 5 × maxCharsPerMemory 2000，MemoryProxy/src/injection/injectors/tdai-l1-recall-injector.ts:37-44）、wiki 块 ≤1200 chars（etc/proxy-config.yaml:782）、skill listing 预算 8000 chars（session_init，MemoryProxy/src/skill/core-client.ts:201，不在本设计范围）。
+2. **上下文经常爆炸**：每轮注入构成实测——L1 记忆块理论最大 ≈10KB（globalTopK 5 × maxCharsPerMemory 2000，MemoryProxy/src/injection/injectors/tdai-l1-recall-injector.ts:37-44）、wiki 块 ≤1200 chars（本机 etc/proxy-config.yaml:782；仓内对照 deploy/tencent-cloud/config/proxy/proxy-config.cloud.example.yaml）、skill listing 预算 8000 chars（session_init，MemoryProxy/src/skill/core-client.ts:201，不在本设计范围）。
 
 业界参照（调研文件 .scratch/2026-10-13-recall-noise-research.md 与 docs/research/2026-10-13-memory-rag-systems-survey-td-agemem.md）：Mem0（rerank 可选 + 失败降级回原序；本地 cross-encoder 走 Xenova/bge-reranker-base ONNX）、Zep/Graphiti（reranker_min_score 一等公民 + bi-temporal）、Generative Agents（写入时 importance 1-10）、LangMem（记忆须 sufficiently informative in isolation）、HippoRAG 2（结构不得伤 vector 基线）、cuconasu（不相关上下文直接提升幻觉率）。
 
@@ -31,6 +31,7 @@ P0 之后剩余两个用户可感知痛点（用户原话确认）：
 - 不动 skill 注入管线（8KB listing）。
 - 不引入 GPU 依赖；不出 Windows/macOS/Linux 之外的运行面假设。
 - 不回退 P0 已交付门控。
+- validityNow 的 as-of 时间旅行推广到钩子路：**有意收窄**，进 backlog（无产品需求方，见 §7）。
 
 **Anti-goals（出现即失败）**
 
@@ -95,36 +96,40 @@ panel 表单复用 ValueAnchorsPanel/embedding 配置的交互模式：勾选 en
 
 - 文件清单（Xenova/bge-reranker-base）：`config.json`、`tokenizer.json`（17MB）、`tokenizer_config.json`、`special_tokens_map.json`、`onnx/model_quantized.onnx`（266.4MB）。
 - 实现：Node fetch 直链 + 浏览器 UA + 指数退避重试 + Range 断点续传（spike 已验证 curl `-C -` 可行；transformers.js 内建下载器会被 hf-mirror 429，**不要用**）。
-- 源：主 `https://hf-mirror.com`，备 ModelScope；落盘 `dataDir/models/reranker/`；下载完成校验总大小后置 ready 标记；进度事件经 core → proxy → panel 展示。
-- spikes 期间的实测资产（266.4MB 已在 `D:\TDB\data\models\reranker-spike-local\`）可被实现直接搬运/复用。
+- 源：主 `https://hf-mirror.com`，备 ModelScope；落盘 `dataDir/models/reranker/`；下载完成校验总大小后置 ready 标记。
+- 进度展示：panel **轮询**（沿用 wiki ingest 轮询先例；panel 现无 WebSocket/EventSource 推送通道，不按「已有事件通道」估算）。
+- spike 期间已下载的实测资产（266.4MB，位于 `D:\TDB\data\models\reranker-spike-local\`）可被实现直接搬运/复用。
 
 ### 4.5 接入点与失败语义（MemoryCore）
 
 - 位置：`performLayeredRecall`（MemoryCore/src/core/hooks/auto-recall.ts:360）内，searchMemories 返回候选后、foldNearDuplicates/applyRecallBudget 之前；候选池 `recall.maxResults` 扩到 `rerank.candidates`(12) 供精排，精排后取回 `maxResults`(5)。
 - 结构行（R7 结论层行、灵魂行、锚行）不参与精排，始终保留——精排只作用于 L1 经验候选。
 - 失败：超时/429/网络错 → 返回 null → 原序 + 一次 warn；连续 3 次失败熔断 60s（熔断期直接跳过精排，不吃延迟）。
-- journal：recall journal 新增 `gates.rerank: { provider, ms, kept, dropped, topScore, shadow }`（复用 P0 的 gates 通道，MemoryCore/src/core/hooks/recall-journal.ts:35 同级扩展）。
+- journal：recall journal 新增 `gates.rerank: { provider, ms, kept, dropped, topScore, shadow }`（复用 P0 的 gates 通道，MemoryCore/src/core/recall/recall-journal.ts:35 同级扩展）。
 
 ### 4.6 Shadow-first 与验收
 
 - phase-1 `shadowMode: true`：精排照跑，只把「若生效会怎样」写 journal，不改注入。
-- 校准目标（用 golden 回放 + 生产影子数据）：相关 avg score − 噪音 avg score ≥ 3 logit；minScore 定在分界带内。
+- 校准目标（用 golden 回放 + 影子数据）：相关 avg score − 噪音 avg score ≥ 3 logit；minScore 定在分界带内。
 - 验收：① shadow 期间无误杀（会杀掉的行人工复核）；② 切换后 golden 全绿 + 本机 E2E 种子矩阵（spike 用例固化进 MemoryCore 测试）；③ P95 延迟增量 ≤300ms、熔断生效。
+- 里程碑边界（部署/影子收集职责归属）待用户拍板后回填本节。
 
 ## 5. 设计 B：wiki JIT 注入
 
-- 现状：每轮 `<tdai_recalled_wiki>` 注入全文片段 ≤1200 chars（MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:354-355）。
+- 现状：每轮 `<tdai_recalled_wiki>` 注入全文片段 ≤1200 chars（wiki-recall-injector.ts:354-355 applyRecallBudget）。
 - 目标形态：单条 = `标题 + 一行摘要(≤80 chars) + [详情: tool wiki_fetch]`，单条 ≤100 chars、整块 ≤500 chars。
-- 正文通道：新增 TDB tool `wiki_fetch`（knowledge 服务 8421 已有检索面，proxy 出 tool schema）：入参 `{ doc_id | title, section? }`，出参正文（单次 ≤4000 chars 截断）；agent 侧已确认支持 tool。
+- 正文通道（builder-check 定案）：`wiki_fetch` 走 **knowledge tool 面**——knowledge-tools-injector 渲染 KS 8421 的 `/tools/list`、`/tools/call`（wiki 正文在 Knowledge 服务；memory-bridge 面反代的是 MemoryCore，取不到 wiki 正文，故不选；身份/allowlist 语义沿用 knowledge tool 既有模型）。入参 `{ doc_path | title, section? }`——doc_path = KS 页面 path（对应 WikiSearchHit.path；WikiSearchHit 无独立 doc_id 字段）；出参正文（单次 ≤4000 chars 截断）。agent 侧已确认支持 tool。
 - 例外：候选原文本身就短（≤160 chars）直接注全文，不强制 JIT。
-- 降级：per-agent `jit=false` 配置回退现行为（为未来不支持 tool 的接入面留门）。
-- 灰度：按 team 开关逐步放量；journal 记录每次注入的 chars 与「若 JIT 会注入 chars」对比。
+- 降级：per-agent `jit=false` 回退现行为（为未来不支持 tool 的接入面留门）。
+- 灰度：按 team 开关逐步放量；放量开关的配置载体（proxy yaml per-team 列表 vs meta 能力位 + panel UI）待用户拍板后回填；journal 记录每次注入 chars 与「若 JIT 会注入 chars」对比。
 - 验收：注入体积 P50/P95 下降 ≥60%；tool 往返成功率 ≥99%；摘要行足以让 agent 判断「要不要取详情」（人工抽检）。
+- 单轮取文次数：prompt 软指引 ≤3 次（不做 memory-bridge 跨请求硬限流——wiki_fetch 只读、无破坏面，硬限流是独立有状态工程项，收益不成比例）。
 
 ## 6. 设计 C：worthiness 降权存储
 
 - 打分：挂在现有 L0→L1 提取的同一 LLM 调用里（Generative Agents importance 1-10 + 一句理由），**零额外 LLM 调用**；产物存 `l1_records.importance TINYINT NULL` + 理由入 metadata（迁移幂等，参考 l1_fts 17→25 列迁移模式）。
-- 降权语义：recall-signals 增加 `importancePenalty`（importance ≤4 线性惩罚，权重 shadow 校准）；`importance IS NULL`（旧数据、本地无 LLM）→ 不惩罚。
+- 与既有 `significance` 的分工（builder-check 定案）：significance = 提取时显著度（已生效于 sigWeight、引擎三 `significance DESC` 排序 sqlite.ts:3306、遗忘红线 sig≤0.1），**保持不动**；importance = 写入时普适价值评估（与 query 无关）。合成：importancePenalty 仅对 importance≤4 惩罚、sigWeight 原样；shadow 期间 journal 分别记录两分量贡献，校准时再定是否合并——避免两路权重叠加导致 A/B 无法归因。
+- 降权语义：recall-signals 增加 `importancePenalty`；`importance IS NULL`（旧数据、本地无 LLM）→ 不惩罚。
 - 无 LLM 环境（本机 TDAI_LLM_API_KEY 占位符）：字段不写，行为 = P0 现状，不报错。
 - 不丢弃：任何路径不删记忆；遗忘 worker 既有红线不变（仅 observed 自动归档、identitySlices/价值锚/appraisal 保护）。
 - Panel：记忆详情展示 importance + 理由；提供「手动调级」入口（写回 importance，标注来源=manual）。
@@ -132,16 +137,16 @@ panel 表单复用 ValueAnchorsPanel/embedding 配置的交互模式：勾选 en
 
 ## 7. 设计 D：bi-temporal 补口
 
-代码盘点结论（2026-10-13）：valid_start/valid_end/occurred_at 三时间线 + validityNow 已落地（GROW-EVO P2），仅剩两口：
+代码盘点结论（2026-10-13）：valid_start/valid_end/occurred_at 三时间线 + validityNow 已落地（GROW-EVO P2），仅剩两口（validityNow as-of 推广到钩子路 = 有意收窄进 backlog，非遗漏）：
 
-1. **失效 API 补面**：`/v3/atomic/invalidate { record_id, valid_end? }`（缺省 now）→ 复用 invalidateL1 语义写 valid_end（失效不删除）；panel 记忆详情加「标记失效」（可撤销 = 清空 valid_end，对齐 veto 可逆哲学）。
-2. **钩子路区间过滤对齐**：filter-invalidated.ts（MemoryCore/src/core/hooks/filter-invalidated.ts:6）当前只查 valid_end；对齐工具路 filterByValidity 的完整 `valid_start ≤ now ≤ valid_end` 区间语义（解析失败保留，宁漏勿错）。
+1. **失效 API 补面**（写路收敛，builder-check 定案）：`/v3/atomic/invalidate { record_id, valid_end?, mode?: "invalidate"|"restore" }`，缺省 invalidate。实现为 v2-router handleAtomicUpdate 既有 valid_end 写路（v2-router.ts:1263-1275 → invalidateL1）的**语义化薄封装**，不造第三条失效写路；`mode:"restore"` = 清空 valid_end（需放开 update soul 回写对既有 valid_end 的拷贝限制，v2-router.ts:1249 一并处理）；panel 记忆详情加「标记失效/撤销失效」（对齐 veto 可逆哲学）。
+2. **钩子路区间过滤对齐**：filter-invalidated.ts（MemoryCore/src/core/recall/filter-invalidated.ts:6）当前只查 valid_end；对齐工具路 filterByValidity 的完整 `valid_start ≤ now ≤ valid_end` 区间语义（解析失败保留，宁漏勿错）。
 
 验收：失效/未来生效记忆在钩子路与工具路都不召回（E2E 两路断言）。
 
 ## 8. 排期建议
 
-M1 reranker（接口+local provider+下载器+shadow journal+panel）→ M2 wiki JIT（tool+注入瘦身，可与 M1 并行——M1 在 MemoryCore，M2 在 MemoryProxy/Knowledge）→ M3 worthiness → M4 bi-temporal 补口。每项独立 flag、独立回滚，全部 shadow-first 切换。
+M1 reranker（接口+local provider+下载器+shadow journal+panel）→ M2 wiki JIT（knowledge tool+注入瘦身，可与 M1 并行——M1 在 MemoryCore，M2 在 MemoryProxy/Knowledge）→ M3 worthiness → M4 bi-temporal 补口。每项独立 flag、独立回滚，全部 shadow-first 切换。
 
 ## 9. 留给 builder 的决策（已授权自决）
 
@@ -156,6 +161,13 @@ M1 reranker（接口+local provider+下载器+shadow journal+panel）→ M2 wiki
 |---|---|
 | hf-mirror 429 限流（已实测） | 直链+UA+重试+断点续传，备源 ModelScope，模型落盘一次复用 |
 | 精排压掉长尾相关行 | 候选池 5→12 缓冲 + shadow 人工复核 + minScore 分界带内取值 |
-| JIT 使 tool 调用变多 | 单轮 tool 预算（默认 ≤3 次）防循环取文 |
-| 本地模型 614MB RSS | idleUnloadMs 空闲卸载；服务器紧张时换云端 provider |
+| JIT 使 tool 调用变多 | 单轮 ≤3 次 prompt 软指引；wiki_fetch 只读，不做跨请求硬限流 |
+| 本地模型 614MB RSS | idleUnloadMs 空闲卸载；服务器紧张时换云端 provider（档位待用户拍板） |
 | LLM 不可用（本地） | worthiness/rerank 全部可降级，行为=P0 现状 |
+
+## 11. builder-check 勘误记录（2026-10-13 r2）
+
+- recall-journal.ts / filter-invalidated.ts 实际位于 `MemoryCore/src/core/recall/`（初稿误写 core/hooks/，已改；行为断言本身成立）。
+- etc/proxy-config.yaml 为本机运行时物化文件不入仓；仓内对照物 = `deploy/tencent-cloud/config/proxy/proxy-config.cloud.example.yaml`。
+- panel 无推送通道：下载进度按轮询设计（§4.4 已改）。
+- 其余承重断言核实成立：performLayeredRecall 接入点与结构行豁免、gates.rerank 扩展点、memory.recall 命名空间、l1-extractor 单次 LLM 调用可挂 importance、l1_fts 17→25 迁移先例、工具路 filterByValidity 对齐目标存在。
