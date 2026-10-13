@@ -23,7 +23,7 @@ export function sanitizeAnchorDescription(raw: string, maxChars: number): string
   const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
   if (cut >= 0) return s.slice(0, cut + 1); // 有句末标点 → 截到最后句末标点
   if (truncated) return ""; // 超长截断且窗口内无句末标点 = 半句实锤 → 置空
-  return isDanglingTail(s) ? "" : s; // v18-d 单一源：尾悬空标点/长句无句读（>12 字）→ 置空；≤12 字完整短语保留
+  return isDanglingTail(s) ? "" : s; // v18-d 单一源：仅尾悬空标点[，、,]→ 置空（长度判据已删，判据见 isDanglingTail 注释）；完整短语原样保留
 }
 
 /**
