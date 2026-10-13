@@ -1,16 +1,19 @@
 /**
- * P1 召回质量 spec §4.3（task-1）：rerank provider 工厂路由测试。
+ * P1 召回质量 spec §4.3/§4.5（task-1/task-3）：rerank provider 工厂路由测试。
  * 路由合同：enabled=false / provider=none / 未配置 → null（=skip，调用方
- * 降级现状）；siliconflow/dashscope → 对应 adapter 实例；local → null
- * （可插拔 provider id：Task 3 落地前的显式占位，config 合法接受，
- * 工厂集中标注——接线时只改 factory 一处）。
+ * 降级现状）；siliconflow/dashscope → 对应 adapter 实例；local → LocalReranker
+ * （task-3：transformers.js 本地 reranker，进程级单例池 keyed by modelDir）。
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { parseConfig } from "../../../../config.js";
-import { createReranker } from "../factory.js";
+import { createReranker, resolveLocalModelDir } from "../factory.js";
 import { DashscopeReranker } from "../dashscope.js";
 import { SiliconflowReranker } from "../siliconflow.js";
+import { LocalReranker, resetLocalRerankerPoolForTests } from "../local.js";
 
 const rerankConfigOf = (raw: Record<string, unknown>) => parseConfig({ recall: { rerank: raw } }).recall.rerank;
 
@@ -39,8 +42,34 @@ describe("P1 task-1 rerank 工厂：路由", () => {
     expect(typeof rr?.rerank).toBe("function");
   });
 
-  it("provider:'local' → null（Task 3 可插拔占位；config 合法接受、工厂显式关断）", () => {
-    expect(createReranker(rerankConfigOf({ enabled: true, provider: "local" }))).toBeNull();
+  it("provider:'local' → LocalReranker 实例（task-3 落地）；同 modelDir 池内共享同一实例", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk3-fac-"));
+    try {
+      const cfg = rerankConfigOf({ enabled: true, provider: "local", local: { modelDir: dir } });
+      const a = createReranker(cfg);
+      const b = createReranker(cfg);
+      expect(a).toBeInstanceOf(LocalReranker);
+      expect(typeof a?.rerank).toBe("function");
+      expect(b).toBe(a); // 池：同一模型目录只加载一份（wiring 每调用经过工厂）
+    } finally {
+      await resetLocalRerankerPoolForTests();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveLocalModelDir：显式 modelDir > dataDir DI > TDAI_DATA_DIR env", () => {
+    const repo = "Xenova/bge-reranker-base";
+    const cfgExplicit = rerankConfigOf({ enabled: true, provider: "local", local: { modelDir: "D:/models/x" } });
+    expect(resolveLocalModelDir(cfgExplicit, "D:/data")).toBe(path.resolve("D:/models/x"));
+    const cfgEmpty = rerankConfigOf({ enabled: true, provider: "local" });
+    expect(resolveLocalModelDir(cfgEmpty, "D:/data")).toBe(path.join("D:/data", "models", "reranker", repo));
+    vi.stubEnv("TDAI_DATA_DIR", "D:/envdata");
+    try {
+      expect(resolveLocalModelDir(cfgEmpty)).toBe(path.join("D:/envdata", "models", "reranker", repo));
+      expect(resolveLocalModelDir(cfgEmpty, "D:/data")).toBe(path.join("D:/data", "models", "reranker", repo));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("云端 provider 缺 apiKey（config 已强制 enabled=false + configError）→ null 双保险", () => {

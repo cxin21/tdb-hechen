@@ -15,7 +15,7 @@
  * rerankDeps 注入 fake provider/breaker（DI seam），全链走 sqlite fallback 路径（本机形态；
  * native TCVDB 路由单独一测覆盖 scores 对位）。不 mock 被测函数内部。
  */
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +25,7 @@ import {
   performLayeredRecall,
   resetRerankBreakerForTests,
 } from "../auto-recall.js";
+import { getRerankModelStatus } from "../../recall/rerank/downloader.js";
 import type { MemoryReranker, RerankResult } from "../../recall/rerank/types.js";
 import type { IMemoryStore, L1FtsResult, L1SearchResult } from "../../store/types.js";
 import type { EmbeddingService } from "../../store/embedding.js";
@@ -498,25 +499,49 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
     }
   });
 
-  it("⑥b 工厂 null（provider=local 占位，enabled）→ 不可用降级：warn 恰一条、无 provider 调用、journal 降级 gate", async () => {
+  it("⑥b 工厂 local 接入（task-3）：模型缺失 → 触发下载单例（fetch 404 快速失败）→ null 降级：warn 恰一条、journal 降级 gate、下载状态可查", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-localnull-"));
+    const modelDir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-localmodel-"));
+    // 拦截全局 fetch：下载器对全部直链拿到 404（每源致命 → 不退避、快速失败），测试零真实网络
+    let downloadFetchCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        downloadFetchCalls += 1;
+        return new Response("not found", { status: 404 });
+      }) as unknown as typeof fetch,
+    );
     try {
       const rows = episodicRows(5);
       const { logger, warns } = captureLogger();
       const res = await performLayeredRecall(
-        paramsFor(dir, fallbackStore(rows), `${KW} local占位探针`, makeCfg({}, { enabled: true, provider: "local" }), undefined, logger),
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} local占位探针`,
+          makeCfg({}, { enabled: true, provider: "local", local: { modelDir } }),
+          undefined,
+          logger,
+        ),
       );
       expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
       expect(warns.filter((m) => m.includes("[rerank]"))).toHaveLength(1);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
       expect(gate.provider).toBe("local");
-      expect(gate.ms).toBe(0);
+      expect(typeof gate.ms).toBe("number"); // 活动接线：真实测时（不再是工厂 null 的固定 0）
       expect(gate.kept).toBe(5);
       expect(gate.dropped).toBe(0);
       expect(gate.shadow).toBe(true);
       expect(gate.topScore).toBeUndefined();
+      // 下载被 fire-and-forget 触发（404 → failed），状态查询 API 可见（供 Task 4 panel 轮询）
+      expect(downloadFetchCalls).toBeGreaterThanOrEqual(1);
+      await vi.waitFor(() => {
+        expect(getRerankModelStatus().state).toBe("failed");
+      });
     } finally {
+      vi.unstubAllGlobals();
       fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(modelDir, { recursive: true, force: true });
     }
   });
 
