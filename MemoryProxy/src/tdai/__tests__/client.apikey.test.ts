@@ -1,15 +1,19 @@
 /**
- * P2-T13 鉴权必填配套：TdaiClient Bearer token 解析单测。
+ * P2-T13 鉴权必填配套；I-2 统一化：TdaiClient bearerToken 委托
+ * resolveBearerToken（tdai/bearer-token.ts），与 skill/knowledge/meta/
+ * memory-bridge/asset-capability 出站调用同一语义。本单测锁定四级语义：
+ *   1. env `TDAI_GATEWAY_APIKEY` 最高优先（trim 过）
+ *   2. env 未设置 + bootstrap 注入 yaml `tdai.apiKey` → Bearer <yaml 值>
+ *   3. env/注入皆未设置 + config.apiKey 显式值 → 原样透传（历史 serviceToken 层）
+ *   4. 皆空 → 历史行为不变（"local-proxy"，本机无鉴权网关场景）
  *
- * 网关侧翻转"server.apiKey 缺失即生成临时密钥"后（拍板③，行为变更），
- * 跨进程调用方必须配置同一把 key，否则一律 401。本单测锁定 env
- * `TDAI_GATEWAY_APIKEY` 透传语义：
- *   1. env 设置 + yaml apiKey 为空 → 请求头带 `Bearer <env 值>`
- *   2. yaml apiKey 优先于 env（显式配置不被环境变量覆盖）
- *   3. 两者皆空 → 历史行为不变（"local-proxy"，本机无鉴权网关场景）
+ * 变更记录：I-2 前本 client 是 config-first（yaml 显式值覆盖 env）。占位符
+ * `${VAR}` 未被部署物化展开时，config-first 会把字面占位符当真值发出
+ * `Bearer ${...}` → 401，而 env 里明明有正确的 key —— 故统一为 env-first。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TdaiClient } from "../client.js";
+import { resetTdaiGatewayApiKeyForTest, setTdaiGatewayApiKey } from "../bearer-token.js";
 import type { TdaiIdentity, TdaiMemoryConfig } from "../types.js";
 
 const IDENTITY: TdaiIdentity = {
@@ -51,23 +55,32 @@ function stubFetchCapture(): { headers: Record<string, string> } {
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.TDAI_GATEWAY_APIKEY;
+  resetTdaiGatewayApiKeyForTest();
 });
 
-describe("TdaiClient bearer token env 透传（TDAI_GATEWAY_APIKEY）", () => {
-  it("env 设置 + config.apiKey 为空 → 请求头带 Bearer <env>", async () => {
+describe("TdaiClient bearer token 解析（I-2 统一为 resolveBearerToken）", () => {
+  it("env 设置 → Bearer <env>（trim 过）；env 优先于 yaml 配置与 bootstrap 注入", async () => {
     process.env.TDAI_GATEWAY_APIKEY = " env-secret-key ";
+    setTdaiGatewayApiKey("yaml-secret-key");
     const { headers } = stubFetchCapture();
-    const client = new TdaiClient(makeConfig());
+    const client = new TdaiClient(makeConfig({ apiKey: "yaml-secret-key" }));
     await client.listCoreMemories(IDENTITY);
     expect(headers["Authorization"]).toBe("Bearer env-secret-key");
   });
 
-  it("config.apiKey 显式配置 → 优先于 env", async () => {
-    process.env.TDAI_GATEWAY_APIKEY = "env-secret-key";
+  it("env 未设置 + bootstrap 注入 yaml tdai.apiKey → Bearer <yaml 值>", async () => {
+    setTdaiGatewayApiKey("yaml-secret-key");
     const { headers } = stubFetchCapture();
-    const client = new TdaiClient(makeConfig({ apiKey: "yaml-secret-key" }));
+    const client = new TdaiClient(makeConfig());
     await client.listCoreMemories(IDENTITY);
     expect(headers["Authorization"]).toBe("Bearer yaml-secret-key");
+  });
+
+  it("env/注入皆未设置 + config.apiKey 显式值 → 原样透传（历史 serviceToken 层）", async () => {
+    const { headers } = stubFetchCapture();
+    const client = new TdaiClient(makeConfig({ apiKey: "explicit-key" }));
+    await client.listCoreMemories(IDENTITY);
+    expect(headers["Authorization"]).toBe("Bearer explicit-key");
   });
 
   it("两者皆空 → 历史行为不变（Bearer local-proxy）", async () => {

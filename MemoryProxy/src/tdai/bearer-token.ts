@@ -1,17 +1,24 @@
 /**
- * Bearer token 统一解析（P2-T11+13 复核修补 I-1）。
+ * Bearer token 统一解析（P2-T11+13 复核修补 I-1；I-2 单一事实源化）。
  *
  * 背景：鉴权翻转（拍板③）后网关侧 `server.apiKey` 恒有值（缺失即生成临时密钥），
  * 跨进程调用方必须在 env/yaml 配置同一把 key，否则一律 401 断供。
  * skill / knowledge / meta 三条链路原先只读各自的 `serviceToken`（默认空），
  * 不在 `TDAI_GATEWAY_APIKEY` 透传范围内 —— 鉴权翻转后这三条链路会静默 401。
  *
- * 本模块复用 `src/tdai/client.ts` bearerToken 的 env 兜底模式，提供共享解析：
+ * I-2 起本模块是全部出站 Bearer 的单一事实源，以下调用方都经由
+ * `resolveBearerToken`（此前 tdai/client.ts 是 config-first 自实现、
+ * tdai/capabilities.ts 与 memory/memory-bridge.ts 是裸 config 值，语义分裂）：
+ *   - skill / knowledge / meta 三条链路（I-1 补兜底）
+ *   - tdai/client.ts bearerToken（I-2 委托本模块，env-first）
+ *   - tdai/capabilities.ts、memory/memory-bridge.ts（I-2 同批统一）
  *
+ * 解析顺序：
  *   1. env `TDAI_GATEWAY_APIKEY` —— 部署侧透传，优先级最高（对齐 MemoryPanel
  *      "env 覆盖全部实例" 的运维习惯）；
  *   2. `tdai.apiKey` 配置 —— yaml 显式配置（由 bootstrap 经
- *      `setTdaiGatewayApiKey` 注入一次）；
+ *      `setTdaiGatewayApiKey` 注入一次；yaml 里支持 `${VAR}` 占位符加载期
+ *      展开，见 config.ts expandEnv）；
  *   3. 原 `serviceToken` —— 各链路历史配置，行为不变（历史默认空 →
  *      `Bearer ` 与翻转前一致，本机无鉴权网关场景不受影响）。
  */

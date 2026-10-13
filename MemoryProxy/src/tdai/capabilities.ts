@@ -1,4 +1,5 @@
 import type { AssetCapabilityFlags } from "../injection/types.js";
+import { resolveBearerToken } from "./bearer-token.js";
 
 export const DEFAULT_ASSET_CAPABILITIES: AssetCapabilityFlags = {
   skill: true,
@@ -55,7 +56,10 @@ export async function fetchAssetCapabilities(input: FetchAssetCapabilitiesInput)
   const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 5_000);
   try {
     const headers: Record<string, string> = {
-      "Authorization": `Bearer ${input.apiKey}`,
+      // I-2 统一化：与 skill/knowledge/meta/memory-bridge 出站同一解析器
+      // （env TDAI_GATEWAY_APIKEY > bootstrap 注入的 tdai.apiKey > 传入值）。
+      // 此前裸用 input.apiKey，部署侧只配 env 时探针一律 401（非致命但刷屏）。
+      "Authorization": `Bearer ${resolveBearerToken(input.apiKey)}`,
       "x-tdai-service-id": input.serviceIdOverride || input.serviceId,
       "content-type": "application/json",
     };

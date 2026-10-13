@@ -9,6 +9,7 @@ import type {
   TdaiMessage,
 } from "./types.js";
 import { log } from "../report/log.js";
+import { resolveBearerToken } from "./bearer-token.js";
 
 interface TdaiEnvelope<T = unknown> {
   code?: number;
@@ -90,16 +91,24 @@ export class TdaiClient {
   }
 
   /**
-   * Bearer token 解析（P2-T13 鉴权必填配套）：
-   *   1. config.apiKey（yaml `tdai.apiKey`）优先
-   *   2. env `TDAI_GATEWAY_APIKEY` 兜底 —— 网关翻转"apiKey 缺失即生成临时密钥"后，
-   *      跨进程调用方必须在 env/yaml 配置同一把 key，否则一律 401。
-   *      env 透传让部署侧不必把密钥写进 yaml（对齐 core `TDAI_GATEWAY_API_KEY` 的运维习惯）。
-   *   3. 都没有 → 历史 fallback "local-proxy"（本机无鉴权网关场景，行为不变）。
+   * Bearer token 解析（P2-T13 鉴权必填配套；I-2 统一化）：委托
+   * tdai/bearer-token.ts 的 resolveBearerToken —— 与 skill / knowledge / meta /
+   * memory-bridge / asset-capability 全部出站调用同一语义（单一事实源）：
+   *   1. env `TDAI_GATEWAY_APIKEY`（部署侧透传，优先级最高）—— 网关翻转"apiKey
+   *      缺失即生成临时密钥"后，跨进程调用方必须持同一把 key，否则一律 401。
+   *      env 透传让部署侧不必把密钥写进 yaml（对齐 core `TDAI_GATEWAY_API_KEY`
+   *      的运维习惯）。
+   *   2. yaml `tdai.apiKey`（bootstrap 经 setTdaiGatewayApiKey 注入解析器；
+   *      yaml 支持 `${VAR}` 占位符加载期展开，见 config.ts expandEnv）。
+   *   3. 皆空 → 历史 fallback "local-proxy"（本机无鉴权网关场景，行为不变）。
+   *
+   * 注意 env-first 的取舍：此前这里是 config-first。若 yaml 里留的是 `${VAR}`
+   * 占位符且部署物化漏了 tdai 段，config-first 会把字面占位符当真值发出
+   * `Bearer ${...}` → 401，而 env 里明明有正确的 key。env-first 与其余出站
+   * 链路语义一致，占位符/未配置场景都能被 env 兜住。
    */
   private bearerToken(): string {
-    const envKey = (process.env.TDAI_GATEWAY_APIKEY ?? "").trim();
-    return this.config.apiKey?.trim() || envKey || "local-proxy";
+    return resolveBearerToken(this.config.apiKey?.trim() ?? "") || "local-proxy";
   }
 
   /**

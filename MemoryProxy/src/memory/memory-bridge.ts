@@ -28,6 +28,7 @@ import { getMetadataClient } from "../meta/client.js";
 import type { AgentContext } from "../injection/types.js";
 import { resolveFixedAssetCtxs, type FixedAssetCtx } from "../injection/injectors/tdai-fixed-asset.js";
 import type { TdaiIdentity } from "../tdai/types.js";
+import { resolveBearerToken } from "../tdai/bearer-token.js";
 import { emitBridgeToolCallTelemetry, emitBridgeRejectTelemetry, agentSourceFromSessionKey } from "./bridge-telemetry.js";
 
 const TAG = "[memory-bridge]";
@@ -371,8 +372,11 @@ export function createMemoryBridgeHandler(
         : undefined;
 
     const upstreamUrl = `${config.coreSkill.endpoint.replace(/\/$/, "")}/v3/${sub}`;
+    // I-2 统一化：与 skill/knowledge/meta 出站同一解析器（env TDAI_GATEWAY_APIKEY
+    // > bootstrap 注入的 tdai.apiKey > 传入值）；皆空保留历史 "local-proxy"。
     const upstreamToken =
-      config.tdai?.apiKey || config.coreSkill.serviceToken || "local-proxy";
+      resolveBearerToken(config.tdai?.apiKey || config.coreSkill.serviceToken)
+      || "local-proxy";
     const upstreamServiceId =
       ids.space_id || config.tdai?.serviceId || config.coreSkill.serviceId;
     const headers: Record<string, string> = {

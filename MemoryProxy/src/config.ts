@@ -442,7 +442,11 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
     tdai: {
       enabled: yaml.tdai?.enabled ?? DEFAULT_CONFIG.tdai.enabled,
       endpoint: yaml.tdai?.endpoint ?? DEFAULT_CONFIG.tdai.endpoint,
-      apiKey: yaml.tdai?.apiKey ?? DEFAULT_CONFIG.tdai.apiKey,
+      // I-2：`${VAR}`（含 `${VAR:-default}`）加载期由同名环境变量展开（expandEnv），
+      // yaml 可引用 TDAI_GATEWAY_API_KEY 而不落明文。运行期另有 env 优先兜底：
+      // 出站一律经 resolveBearerToken（env TDAI_GATEWAY_APIKEY > 此处值 >
+      // 各链路 serviceToken），部署侧「只配 env」也能通过鉴权。
+      apiKey: expandEnv(yaml.tdai?.apiKey ?? DEFAULT_CONFIG.tdai.apiKey),
       serviceId: yaml.tdai?.serviceId ?? DEFAULT_CONFIG.tdai.serviceId,
       memory: {
         enabled: yaml.tdai?.memory?.enabled ?? DEFAULT_CONFIG.tdai.memory.enabled,
@@ -588,9 +592,12 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
  * Expand `${VAR}` / `${VAR:-default}` references in a string using
  * `process.env`. Missing vars with no default become an empty string.
  *
- * Deliberately scoped narrowly (only called from `systemUsers` today) to
- * avoid changing the semantics of other fields where a literal `${...}`
- * might already be in use (regex-adjacent config, prompts, etc).
+ * Scope note: only credential-ish fields call this today (`systemUsers.*`
+ * and `tdai.apiKey`). Other fields keep literal `${...}` semantics — a
+ * blanket expansion would corrupt regex-adjacent config, prompts, etc.
+ * where a literal `${...}` may already be in use. Unexpanded `${VAR}` in
+ * outbound credentials is still recovered at call time by
+ * `resolveBearerToken`'s env-first fallback (tdai/bearer-token.ts).
  */
 function expandEnv(input: string): string {
   return input.replace(/\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/gi, (_m, name: string, def?: string) => {
