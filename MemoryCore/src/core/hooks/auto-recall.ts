@@ -398,6 +398,9 @@ export async function performLayeredRecall(params: {
   let effectiveStrategy = "skipped";
   let recalledL1Memories: RecalledMemory[] = [];
   let searchTiming: SearchTiming = { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 };
+  // P0-2 journal 观测（issue #2，Spec 终审 a1）：门槛淘汰计数（native 分支捕获 →
+  // journal gates 字段；缺省 undefined = 门未启用/未淘汰，journal 缺字段同义）。
+  let recallGates: SearchResult["gates"];
   let conclusionCount = 0;
   let experienceCount = 0;
   let sessionReused = false;
@@ -462,9 +465,11 @@ export async function performLayeredRecall(params: {
         r7Candidates.push({ sceneName: e.filename.replace(/\.md$/i, ""), content: e.summary, source: "scene_block" });
       }
       // v18-c：minUniqRatio 透传（conclusionLayer.minUniqRatio；undefined/0 = 关逐位现状）
+      // P1（issue #2）：textHitMaxTokenRatio 万词面 token 剔除门透传（同族，缺省 undefined=关）
       r7Conclusions = selectL2Conclusions(r7CleanQuery, r7Candidates, {
         ftsTokens: r7FtsTokens,
         minUniqRatio: cfg.recall?.conclusionLayer?.minUniqRatio,
+        textHitMaxTokenRatio: cfg.recall?.conclusionLayer?.textHitMaxTokenRatio,
       }, r7HalfLimit);
       // ── V2-3（引擎三 E3.2 结论层放宽）：分析型 query → L2 结论层追加 "significance top-5
       // 的 durative 结论"（无需 scene/text 命中——蒸馏结论对分析问题浮出）。数据源 =
@@ -555,7 +560,8 @@ export async function performLayeredRecall(params: {
     const reuseCacheKey = params.isolationFilter
       ? JSON.stringify([params.isolationFilter.teamId ?? "", params.isolationFilter.userId ?? "", params.isolationFilter.agentId ?? "", params.sessionKey])
       : params.sessionKey;
-    let searchResult: { lines: string[]; timing: SearchTiming; scores?: number[] } | undefined;
+    // P0-2 journal 观测：gates 并入 searchResult 载荷类型（与 SearchResult["gates"] 同形）
+    let searchResult: { lines: string[]; timing: SearchTiming; scores?: number[]; gates?: SearchResult["gates"] } | undefined;
     if (sessionReuseTtlMs > 0 && !params.validityNow && params.sessionKey) {
       const entry = sessionReuseCache.get(reuseCacheKey);
       if (entry && entry.query === userText && entry.vectorStore === vectorStore && entry.embeddingService === embeddingService &&
@@ -637,6 +643,7 @@ export async function performLayeredRecall(params: {
     }
     memoryLines = searchResult.lines;
     searchTiming = searchResult.timing;
+    recallGates = searchResult.gates;
     // ── R7 预算对半切（spec §1）：结论层用剩给经验层。无结论 → experienceLimit 全额 →
     // slice 恒等 + 组装恒等 → applyRecallBudget 输入与现状逐位一致（退化安全）。──
     const r7Budget = splitBudget(r7MaxResults, r7ConclusionLines.length);
@@ -770,6 +777,7 @@ export async function performLayeredRecall(params: {
           conclusionCount,
           experienceCount,
           searchTiming,
+          ...(recallGates ? { gates: recallGates } : {}),
           block,
           memoryLines,
         },
@@ -1084,6 +1092,12 @@ interface SearchResult {
   metas?: { recordId?: string; evidenceIds?: string[] }[];
   /** Per-line similarity scores (parallel to `lines`). Only populated on TCVDB nativeHybridSearch path. */
   scores?: number[];
+  /**
+   * P0-2 验证（issue #2，Spec 终审 a1 落实 2026-10-13）：召回门槛观测——门生效且
+   * 有淘汰时记录 kept/dropped（journal `gates` 字段数据源，对比挡下率调参用）。
+   * 缺省缺字段 = 门未启用或未淘汰（journal 侧同样缺字段 = 无门行为）。
+   */
+  gates?: { nativeMinRRF?: { gate: number; kept: number; dropped: number } };
 }
 
 /**
@@ -1248,12 +1262,29 @@ async function searchMemories(
       const tNative = performance.now();
       // R7-1：结论层已收编的记录从经验层排除（防重——命中已存不重组）
       const excludeIds = layered && layered.excludeIds.length > 0 ? new Set(layered.excludeIds) : null;
+      // P0-2（issue #2 打分刻度错配）：native hybrid（TCVDB 服务端 RRF k=60）返回的是
+      // rank-only 融合分——单通道 top1≈1/61≈0.0164、双通道 top1≈0.0328，recall.scoreThreshold
+      // (0.3，余弦刻度) 对其形同虚设。recall.nativeMinRRF（缺省 0=关=逐位现状，config-first
+      // 铁律）生效时丢弃低于门槛的 native 结果（宁缺毋滥）；SQLite fallback 路不在此判，
+      // 其 scoreThreshold 全套精排保留。刻度依据 verify-t1.ts:202-203。
+      const nativeMinRRF = cfg?.recall?.nativeMinRRF ?? 0;
       // DS-RECALL-MERGE-001：filter 透传（isolationFilter 缺省 = 旧行为逐位）
-      const results = (((await vectorStore.searchL1Hybrid?.({
+      const rawNative = (((await vectorStore.searchL1Hybrid?.({
         query: cleanText,
         topK: maxResults,
         ...(isolationFilter ? { filter: isolationFilter } : {}),
-      })) ?? []) as L1SearchResult[]).filter((r) => !excludeIds || !excludeIds.has(r.record_id));
+      })) ?? []) as L1SearchResult[]);
+      const results = rawNative
+        .filter((r) => !(nativeMinRRF > 0) || r.score >= nativeMinRRF)
+        .filter((r) => !excludeIds || !excludeIds.has(r.record_id));
+      // P0-2 可观测性（对抗审查 #7）：门杀召回与"服务端 0 条"不可区分——门槛生效且有
+      // 淘汰时升 info 留痕（门前后计数），调参/事故定位数据源。同一计数进 journal
+      // gates 字段（Spec 终审 a1：挡下率对比的数据闭环）。
+      let nativeGateStat: { gate: number; kept: number; dropped: number } | undefined;
+      if (nativeMinRRF > 0 && results.length < rawNative.length) {
+        nativeGateStat = { gate: nativeMinRRF, kept: results.length, dropped: rawNative.length - results.length };
+        logger?.info?.(`${TAG} [hybrid-native] nativeMinRRF gate: kept=${results.length} dropped=${rawNative.length - results.length}/${rawNative.length} gate=${nativeMinRRF}`);
+      }
       const nativeMs = performance.now() - tNative;
       logger?.debug?.(`${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`);
       const fmts = results.map((r) => vectorResultToFormatable(r));
@@ -1264,7 +1295,7 @@ async function searchMemories(
       const lines = cfg?.recall?.foldClusterEnabled === true
         ? foldClusterAware(linesRaw, linesMeta)
         : linesRaw;
-      return { lines, scores, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length } };
+      return { lines, scores, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length }, ...(nativeGateStat ? { gates: { nativeMinRRF: nativeGateStat } } : {}) };
     }
 
     // Fallback: run keyword + embedding in parallel, merge with client-side RRF (SQLite path)

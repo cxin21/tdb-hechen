@@ -380,6 +380,20 @@ export interface WikiRecallConfig {
   typeWeights?: Record<string, number>;
   /** 绝对相关门控阈值（可选，默认关）：对带 absScore 的候选生效；需先校准刻度。 */
   minInjectAbsScore?: number;
+  /**
+   * 纯 FTS 命中门槛（可选，默认关）：absScore===undefined 的候选最低 score
+   * （hop=0 融合分 [0,1] 刻度）；低于不注入。hop>0 时 score 为 BM25 原始尺度，
+   * 此门不适用应保持关闭。堵"FTS-only 命中无门槛穿透 absGate"（issue #2 P0-3）。
+   */
+  minInjectFtsScore?: number;
+  /**
+   * 短 query / 寒暄 query 整轮跳过 wiki 召回（可选，默认关）。minChars=清洗后
+   * query 码点长度下限；patterns=寒暄词表。命中任一 → 本轮不发检索直接跳过。
+   * 匹配语义（对抗审查 #3 修正，勿按"子串"调参）：CJK 词 = 消息去标点/空白后与
+   * 词项**全等**（"好的，那我们继续评审网关重构方案" 不误杀，"好的" 才跳）；
+   * 纯 ASCII 词 = 词边界正则（"OK" 不误杀 "OKR"）。
+   */
+  skipQuery?: { minChars?: number; patterns?: string[] };
   /** 跨库软定域（可选）：按 wiki 领域词 boost（仅加权不删除）；无命中=现状。 */
   domainRouter?: { boost?: number; keywords: Record<string, string[]> };
 }

@@ -32,7 +32,6 @@ export function mergeStrictRuleContent(existing: string | undefined | null, adop
  * 返回 null = 门不过（router 422，pending 保持 pending，不暗箱替用户裁决）。
  */
 import { looksLikeEpisode } from "../core/hooks/episode-gate.js";
-import { isDanglingTail } from "../core/hooks/soul-assembler.js";
 
 const CV_LABEL_MAX = 8;
 const CV_DESC_MAX = 60;
@@ -42,17 +41,12 @@ const CV_DESC_MAX = 60;
  * desc 句边界 sanitizer——60 字窗口内含句末标点（。！？；）→ 截到最后句末标点；
  * 窗口内无句末标点：尾悬空（以，、, 结尾=写入口截断实锤特征）→ 置空（宁缺毋滥不入半句），
  * 完整短语（尾非悬空）→ 原样保留。
+ *
+ * P0-1A（issue #1，2026-10-13）单一源迁移：实现搬至 core/hooks/anchor-desc.ts
+ * （anchor-growth 自生长采纳端按 core→core 方向复用），此处 re-export 保持公共 API。
  */
-export function sanitizeDescription(raw: string, maxChars: number): string {
-  const full = String(raw ?? "").trim();
-  if (!full) return "";
-  const truncated = [...full].length > maxChars;
-  const s = [...full].slice(0, maxChars).join("");
-  const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
-  if (cut >= 0) return s.slice(0, cut + 1); // 有句末标点 → 截到最后句末标点
-  if (truncated) return ""; // 超长截断且窗口内无句末标点 = 半句实锤 → 置空
-  return isDanglingTail(s) ? "" : s; // v18-d 单一源：尾悬空标点/长句无句读（>12 字）→ 置空；≤12 字完整短语保留
-}
+import { sanitizeAnchorDescription as sanitizeDescription } from "../core/hooks/anchor-desc.js";
+export { sanitizeDescription };
 
 export function coerceCoreValueAnchor(input: { label?: string | null; description?: string | null; content: string }): { valueIdSeed: string; label: string; description: string } | null {
   const label = String(input.label ?? "").trim();

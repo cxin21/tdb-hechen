@@ -730,6 +730,27 @@ wikiRecall:
   # 类型: number | 默认: 未启用（本部署显式设为 1.5）
   minInjectAbsScore: 1.5
 
+  # ▲FTS-only 穿透门（P0-2B，issue #2，2026-10-13）：absGate 只对向量命中生效——
+  #   纯 FTS 命中 absScore===undefined 时历史行为是直接放行（垃圾池顶=1.0 必注入）。
+  #   本键给 FTS-only 命中设独立门槛：hop=0 时 h.score 为融合分（[0,1]，两路各自
+  #   min-max 后 0.6 语义/0.4 字面加权，纯 FTS 命中≈0.4×字面路 min-max），低于此值
+  #   不注入。hop>0 的命中是 BM25 原始尺度，不适用本键（保持历史放行）。
+  #   0 或删掉 = 不启用（逐位旧行为）。初值 0.2 保守（≈字面路 min-max 前 50%），
+  #   待 golden 校准后再收紧。
+  # 类型: number | 默认: 未启用（本地部署显式设为 0.2）
+  # minInjectFtsScore: 0.2
+
+  # ▲短/寒暄 query 跳过（P0-2B）：query 命中 patterns 任一词、或长度 < minChars 时
+  #   直接跳过 wiki 召回（寒暄/短指令没有检索语义，只会注入噪音）。
+  #   匹配语义（对抗审查 #3 修正，勿按"子串"调参）：CJK 词=消息去标点/空白后与词项
+  #   全等（"好的，那我们继续评审网关重构方案"不误杀，"好的"才跳）；纯 ASCII 词走
+  #   词边界（"OK" 不误杀 "OKR"，配一条即可不必大小写成对）。
+  #   minChars 慎设——2 字领域词（"结算""冲回"）是合法 query；建议只配 patterns。
+  #   删掉整段 = 不启用（逐位旧行为）。
+  # 类型: { minChars?: number, patterns?: string[] } | 默认: 未启用
+  # skipQuery:
+  #   patterns: ["你好", "在吗", "在么", "谢谢", "好的", "嗯", "收到", "辛苦了", "麻烦了", "OK"]
+
   # ▲type 降权：entity/concept 是"命名/索引"节点，标题精确命中易被相对归一顶成 1.0
   # 噪音。在跨库并池+归一前乘系数降权。source/other 不配 = 不降权。
   # 调参回归(golden)：concept 0.8 会把真相关概念压到 relGate 下造成 under-recall，

@@ -451,6 +451,8 @@ export class TdaiCore {
       // C1（灵魂记忆 spec §2.2）：coreRef 排序加成配置透传（缺省由 executeMemorySearch
       // 内部回落 0.05）；价值锚由 executeMemorySearch 从 store.listValues 租户读取
       coreRefBoost: this.cfg?.recall?.coreRefBoost,
+      // P0-2（issue #2）：native RRF 共识门槛透传（缺省 undefined → executeMemorySearch 0=关）
+      nativeMinRRF: this.cfg?.recall?.nativeMinRRF,
       // R-A1（结构感知召回 spec §2）：排序层结构信号六开关透传（缺省由
       // executeMemorySearch 内部回落 spec §2 默认值；0=通道完全退出）
       timeBoost: this.cfg?.recall?.timeBoost,

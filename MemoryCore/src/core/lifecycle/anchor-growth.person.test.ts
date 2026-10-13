@@ -103,6 +103,53 @@ describe("person 池采纳（happy path）", () => {
   });
 });
 
+// ═══════════════ P0-1A（issue #1，2026-10-13）：person 提案 description → attrs ═══════════════
+describe("P0-1A：person 提案 description 落 attrs（写入口单一源 anchor-desc）", () => {
+  const baseRows = () => [
+    corpusRow("r1", "女儿今天月考", 0.5),
+    corpusRow("r2", "闺女要去图书馆", 0.1),
+    corpusRow("r3", "女儿的房间"),
+    corpusRow("r4", "女儿喜欢看书"),
+    corpusRow("r5", "陪闺女散步"),
+  ];
+
+  it("合格 description → attrs { role, aliases, description }", async () => {
+    const store = makeStore({ rows: baseRows() });
+    const runner = makeRunnerByTask({
+      "core-values-discover-growth": "[]",
+      "person-discover-growth": '[{"label":"女儿","role":"家人","aliases":["闺女"],"description":"需要持续陪伴与支持的家庭核心。"}]',
+    });
+    const res = await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner as never,
+      logger: LOG,
+      now: () => NOW,
+      config: { person: { enabled: true, minEvidence: 3, maxPerPass: 1, maxTotal: 8 } },
+    });
+    expect(res.adopted).toBe(1);
+    const up = store.upsertValue.mock.calls.find((c) => c[1] === "女儿")!;
+    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"], description: "需要持续陪伴与支持的家庭核心。" });
+  });
+
+  it("episode 特征 description → attrs 仅 { role, aliases }（锚照常采纳）", async () => {
+    const store = makeStore({ rows: baseRows() });
+    const runner = makeRunnerByTask({
+      "core-values-discover-growth": "[]",
+      "person-discover-growth": '[{"label":"女儿","role":"家人","aliases":["闺女"],"description":"2026-09-01 陪女儿面试。"}]',
+    });
+    const res = await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner as never,
+      logger: LOG,
+      now: () => NOW,
+      config: { person: { enabled: true, minEvidence: 3, maxPerPass: 1, maxTotal: 8 } },
+    });
+    expect(res.adopted).toBe(1);
+    const up = store.upsertValue.mock.calls.find((c) => c[1] === "女儿")!;
+    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"] });
+  });
+});
+
 describe("别名维度去重（F19）", () => {
   it("提案 alias 命中既有 person label/alias → 拒", async () => {
     const rows = Array.from({ length: 6 }, (_, i) => corpusRow(`r${i}`, `小女第${i}次出现`));

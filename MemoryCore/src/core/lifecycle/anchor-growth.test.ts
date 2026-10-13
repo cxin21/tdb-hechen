@@ -135,8 +135,9 @@ describe("runAnchorGrowth 护栏四件", () => {
     const runner5 = makeRunner(JSON.stringify([{ label: "增量对账", rationale: "r", evidenceCount: 1 }]));
     const res5 = await runAnchorGrowth({ store: store5 as never, llmRunner: runner5 as never, logger: LOG, now });
     expect(res5).toMatchObject({ ran: true, adopted: 1 });
+    // P0-1A（issue #1）：rationale 经句边界 sanitizer 落 attrs.description（"r" 为合法完整短语）
     expect(store5.upsertValue).toHaveBeenCalledWith(
-      expect.any(String), "增量对账", suggestAnchorWeight(5, 5), "auto-growth", DEFAULT_TENANT, undefined, "auto",
+      expect.any(String), "增量对账", suggestAnchorWeight(5, 5), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", { description: "r" },
     );
   });
 
@@ -215,7 +216,8 @@ describe("runAnchorGrowth 挤出（名额满）", () => {
     const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now, config: { maxTotal: 3 } });
     expect(res).toMatchObject({ ran: true, adopted: 1, displaced: 1 });
     expect(store.retireValue).toHaveBeenCalledWith("a-weak", DEFAULT_TENANT);
-    expect(store.upsertValue).toHaveBeenCalledWith(expect.any(String), "强候选主题", expect.any(Number), "auto-growth", DEFAULT_TENANT, undefined, "auto");
+    // P0-1A（issue #1）：挤出采纳同样落 attrs.description（rationale="r" 合法短语）
+    expect(store.upsertValue).toHaveBeenCalledWith(expect.any(String), "强候选主题", expect.any(Number), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", { description: "r" });
   });
 
   it("候选强度 ≤ 最弱 auto 锚 → 不挤出不采纳（宁缺毋滥）", async () => {
@@ -490,5 +492,40 @@ describe('runAnchorGrowth GROW-QUOTA 名额回归守卫', () => {
     const runner = makeRunner('[]');
     await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxTotal: 3, intervalHours: 24 }, logger: LOG, now });
     expect(store.retireValue).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════ P0-1A（issue #1，2026-10-13）：主题采纳 rationale → attrs.description ═══════════════
+describe("P0-1A：主题采纳 rationale 落 attrs.description（写入口单一源 anchor-desc）", () => {
+  const GROWTH_STATE = { lastDiscoveryAt: new Date(NOW.getTime() - 48 * 3600_000).toISOString(), lastCorpusCount: 4 };
+
+  it("episode 特征 rationale → attrs=undefined（锚照常采纳，desc 不落库）", async () => {
+    const store = makeStore({ rows: corpusFor("增量对账", 5), growthState: { ...GROWTH_STATE, lastCorpusCount: 4 } });
+    const runner = makeRunner(JSON.stringify([{ label: "增量对账", rationale: "2026-09-01 部署完成。", evidenceCount: 5 }]));
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res).toMatchObject({ ran: true, adopted: 1 });
+    expect(store.upsertValue).toHaveBeenCalledWith(
+      expect.any(String), "增量对账", suggestAnchorWeight(5, 5), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", undefined,
+    );
+  });
+
+  it("不合格 rationale（悬空尾/超长无句读）→ attrs=undefined", async () => {
+    const store = makeStore({ rows: corpusFor("增量对账", 5), growthState: { ...GROWTH_STATE, lastCorpusCount: 4 } });
+    const runner = makeRunner(JSON.stringify([{ label: "增量对账", rationale: "证据裁决一切，", evidenceCount: 5 }]));
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res).toMatchObject({ ran: true, adopted: 1 });
+    expect(store.upsertValue).toHaveBeenCalledWith(
+      expect.any(String), "增量对账", suggestAnchorWeight(5, 5), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", undefined,
+    );
+  });
+
+  it("合格 rationale 经句边界 sanitizer 落库（句末标点截断保留）", async () => {
+    const store = makeStore({ rows: corpusFor("增量对账", 5), growthState: { ...GROWTH_STATE, lastCorpusCount: 4 } });
+    const runner = makeRunner(JSON.stringify([{ label: "增量对账", rationale: "证据裁决一切。拒绝粉饰，", evidenceCount: 5 }]));
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, logger: LOG, now });
+    expect(res).toMatchObject({ ran: true, adopted: 1 });
+    expect(store.upsertValue).toHaveBeenCalledWith(
+      expect.any(String), "增量对账", suggestAnchorWeight(5, 5), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", { description: "证据裁决一切。" },
+    );
   });
 });

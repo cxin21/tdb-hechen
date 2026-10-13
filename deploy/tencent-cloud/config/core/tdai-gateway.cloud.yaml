@@ -70,6 +70,14 @@ memory:
     enabled: true
     maxResults: 5
     scoreThreshold: 0.3
+    # ── P0-2（issue #2 打分刻度错配，2026-10-13）──
+    # native hybrid（TCVDB 服务端 RRF rerank k=60）返回 rank-only 融合分：单通道 top1≈
+    # 1/61≈0.0164、双通道 top1≈0.0328（刻度自证 verify-t1.ts:202-203）——scoreThreshold
+    # (0.3, 余弦刻度) 对 native 路形同虚设，结果从未被门槛过滤。nativeMinRRF 只约束
+    # native 路（SQLite fallback 路仍走 scoreThreshold 全套精排）。
+    # 0.016 ≈ 单通道 top-2（1/62≈0.0161 过 / 1/63≈0.0159 不过）或任意双通道融合命中
+    # （≥2/69≈0.029）；0 = 关（逐位现状）。golden replay 校准后再调。
+    nativeMinRRF: 0.016
     strategy: "hybrid"
     foldClusterEnabled: true  # F-CLUSTER v2 召回折叠（2026-09-30 转产：0b7ef5a 三层断点修复+A/B 5/10 触发实证）
     timeoutMs: 5000

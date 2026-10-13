@@ -28,6 +28,11 @@ export interface RecallJournalEntry {
   conclusionCount: number;
   experienceCount: number;
   searchTiming: RecallJournalSearchTiming;
+  /**
+   * P0-2 验证（issue #2，Spec 终审 a1 落实 2026-10-13）：召回门槛观测——门生效且
+   * 有淘汰时记录 kept/dropped（挡下率对比）。缺字段 = 门未启用或未淘汰。
+   */
+  gates?: { nativeMinRRF?: { gate: number; kept: number; dropped: number } };
   block?: string;
   memoryLines: string[];
 }

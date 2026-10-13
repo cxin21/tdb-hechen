@@ -810,6 +810,13 @@ export async function executeMemorySearch(params: {
   scene?: string;
   filter?: IsolationFilter;
   scoreThreshold?: number;
+  /**
+   * P0-2（issue #2 打分刻度错配）：native hybrid（TCVDB RRF k=60）最低融合分门槛
+   * （缺省 0=关=逐位现状，config-first）。RRF 融合分为 rank-only 刻度——单通道
+   * top1≈1/61≈0.0164、双通道 top1≈0.0328——scoreThreshold(0.3, 余弦刻度) 对其无效；
+   * 本参数为 native 路独立门槛，由调用方 cfg.recall.nativeMinRRF 透传（负值=关）。
+   */
+  nativeMinRRF?: number;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
   logger?: Logger;
@@ -903,6 +910,8 @@ export async function executeMemorySearch(params: {
     scene: sceneFilter,
     filter: isolationFilter,
     scoreThreshold = 0.3,
+    // P0-2（issue #2）：native RRF 共识门槛（缺省 0=关=逐位现状）
+    nativeMinRRF = 0,
     vectorStore,
     embeddingService,
     logger,
@@ -1012,7 +1021,14 @@ export async function executeMemorySearch(params: {
     const results = await vectorStore.searchL1Hybrid(
       isolationFilter ? { query, topK: candidateK, filter: isolationFilter } : { query, topK: candidateK },
     );
-    let items: MemorySearchResultItem[] = results.map((r) => ({
+    // P0-2（issue #2）：native RRF 共识门槛（nativeMinRRF 缺省 0=关=逐位现状）——
+    // RRF 融合分 rank-only 刻度（单通道 top1≈0.0164），scoreThreshold 对其无意义（auto-recall 同款）。
+    const gated = results.filter((r) => !(nativeMinRRF > 0) || r.score >= nativeMinRRF);
+    if (nativeMinRRF > 0 && gated.length < results.length) {
+      logger?.info?.(`${TAG} [native-hybrid] nativeMinRRF gate: kept=${gated.length} dropped=${results.length - gated.length}/${results.length} gate=${nativeMinRRF}`);
+    }
+    let items: MemorySearchResultItem[] = gated
+      .map((r) => ({
       id: r.record_id,
       content: r.content,
       type: r.type,

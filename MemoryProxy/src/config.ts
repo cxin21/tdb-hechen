@@ -499,6 +499,15 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
           minInjectNormScore: typeof yaml.wikiRecall.minInjectNormScore === "number" ? yaml.wikiRecall.minInjectNormScore : 0.6,
           typeWeights: yaml.wikiRecall.typeWeights,
           minInjectAbsScore: typeof yaml.wikiRecall.minInjectAbsScore === "number" ? yaml.wikiRecall.minInjectAbsScore : undefined,
+          minInjectFtsScore: typeof yaml.wikiRecall.minInjectFtsScore === "number" ? yaml.wikiRecall.minInjectFtsScore : undefined,
+          skipQuery: yaml.wikiRecall.skipQuery
+            ? {
+                minChars: typeof yaml.wikiRecall.skipQuery.minChars === "number" ? yaml.wikiRecall.skipQuery.minChars : undefined,
+                patterns: Array.isArray(yaml.wikiRecall.skipQuery.patterns)
+                  ? yaml.wikiRecall.skipQuery.patterns.filter((p): p is string => typeof p === "string" && p.length > 0)
+                  : undefined,
+              }
+            : undefined,
           domainRouter: yaml.wikiRecall.domainRouter,
         }
       : undefined,

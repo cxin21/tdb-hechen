@@ -811,6 +811,7 @@ export const enUS = {
   'memory.anchors.delete': 'Delete',
   'memory.anchors.add': 'Add',
   'memory.anchors.addPlaceholder': 'New value anchor label',
+  'memory.anchors.addDescPlaceholder': 'One-sentence attribute description (<=80 chars, ends with period)',
   'memory.anchors.derive': 'Re-derive directions',
   'memory.anchors.deriveDone': 'Re-derived: judged {{derived}}, skipped {{skipped}}',
   // ---- Value anchor discovery (Task DISC, proposal-based) ----

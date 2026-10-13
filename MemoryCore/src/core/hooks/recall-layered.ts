@@ -41,6 +41,13 @@ export interface L2MatchInputs {
    * 门不过的候选跳过、选择器继续取下一名（宁缺毋滥 + 让位语义）。
    */
   minUniqRatio?: number;
+  /**
+   * P1（issue #2 词面匹配器过宽，2026-10-13）：textHit 万词面 token 剔除——batch
+   * 相对 IDF 门。token 命中候选占比 > 此值（0-1）= 万词面通用 token，从 textHit
+   * 匹配集剔除（sceneHit 不受影响）。undefined/0 = 关 = 逐位现状。纯函数、确定性：
+   * IDF 分母 = 本轮传入的候选集（已在调用点按 query 收窄），非全库统计。
+   */
+  textHitMaxTokenRatio?: number;
 }
 
 /**
@@ -98,6 +105,27 @@ export function selectL2Conclusions(
   if (!candidates || candidates.length === 0) return [];
   if (!(limit > 0)) return [];
   const tokens = inputs?.ftsTokens ?? [];
+  // P1（issue #2 词面匹配器过宽）：batch 相对 IDF——token 命中候选占比 > 阈值的
+  // 万词面 token（"项目""工作"级通用词）不参与 textHit 判定（sceneHit 不受影响）。
+  // 未配置/0 = 关 = 逐位现状（matchTokens 即原 tokens，行为逐位一致）。
+  // 对抗审查修复（#5 major）：work_fact 候选经 buildFtsQuery(query) FTS 预筛，候选集
+  // 内 token 占比天然≈1——若全部 token 都被判为万词面（过滤后为空），回落原 token
+  // 集（保持 FTS 预筛通道现状），避免该通道被门静默清空。
+  const ratioGate = inputs?.textHitMaxTokenRatio;
+  let matchTokens = tokens;
+  if (ratioGate != null && ratioGate > 0 && candidates.length > 0) {
+    const lowerCandidates = candidates.map((c) =>
+      typeof c?.content === "string" ? c.content.toLowerCase() : "",
+    );
+    const isCommon = (t: string): boolean => {
+      const lt = t.toLowerCase();
+      let hits = 0;
+      for (const lc of lowerCandidates) if (lc.includes(lt)) hits++;
+      return hits / candidates.length > ratioGate;
+    };
+    const gated = tokens.filter((t) => t.length >= 2 && !isCommon(t));
+    if (gated.length > 0) matchTokens = gated;
+  }
   const rankOf = (c: L2ConclusionCandidate): number => (c.source === "work_fact" ? 0 : 1);
   const seen = new Set<string>();
   const out: L2Conclusion[] = [];
@@ -105,7 +133,7 @@ export function selectL2Conclusions(
     if (out.length >= limit) break;
     if (!c || typeof c.content !== "string" || c.content.trim().length === 0) continue;
     const sceneHit = c.sceneName ? detectSceneHit(query, [c.sceneName]) : null;
-    if (!sceneHit && !textHit(c.content, tokens)) continue;
+    if (!sceneHit && !textHit(c.content, matchTokens)) continue;
     // v18-c：低密度自指回放块跳过（取下一名候选 = 让位语义；undefined/0 = 关，逐位现状）
     if (
       inputs.minUniqRatio != null &&

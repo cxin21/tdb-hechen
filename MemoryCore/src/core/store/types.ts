@@ -87,7 +87,14 @@ export interface L1SearchResult {
   type: string;
   priority: number;
   scene_name: string;
-  /** Similarity score (0–1, higher is better). */
+  /**
+   * Relevance score. Scale depends on the backend and MUST NOT be compared
+   * against a fixed absolute threshold: TCVDB native hybrid returns a fused
+   * RRF score (rerank k=60, rank-only: single-channel top-1 ≈ 1/61 ≈ 0.0164,
+   * dual-channel top-1 ≈ 0.0328), while SQLite/vector fallback paths return a
+   * similarity in 0–1. Use backend-specific thresholds (recall.scoreThreshold
+   * for fallback paths, recall.nativeMinRRF for the native hybrid path).
+   */
   score: number;
   timestamp_str: string;
   timestamp_start: string;

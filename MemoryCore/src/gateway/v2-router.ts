@@ -117,6 +117,8 @@ import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-
 import { handleAtomicByIds } from "./atomic-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
+// P0-1A（issue #1）：description 质量门单一源（core/hooks，gateway→core 引用方向合法）
+import { anchorDescriptionAttr } from "../core/hooks/anchor-desc.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
@@ -1462,6 +1464,8 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
               pprIterations?: number;
               sceneBoost?: number;
               exploreSlot?: boolean;
+              // P0-2（issue #2）：native RRF 共识门槛（0/缺省=关=逐位现状）
+              nativeMinRRF?: number;
               // RV2-2：精排重设计四因子（relevance/timeProx/significance/coreRef，相关度主导）
               rerankWeights?: { relevance: number; timeProx: number; significance: number; coreRef: number };
               queryExpansion?: { enabled?: boolean; maxTerms?: number; ttlMs?: number; timeoutMs?: number };
@@ -1489,6 +1493,8 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
         pprTopK: recallCfg?.pprTopK,
         pprIterations: recallCfg?.pprIterations,
         sceneBoost: recallCfg?.sceneBoost,
+        // P0-2（issue #2）：native RRF 共识门槛透传（缺省 undefined → executeMemorySearch 0=关）
+        nativeMinRRF: recallCfg?.nativeMinRRF,
         // V2 批 2（I2 修补）：引擎三 exploreSlot/rerankWeights + 引擎一 queryExpansion
         // 透传——关断矩阵在工具路成立；runner 由 executeMemorySearch 惰性构造（C1 同源）
         exploreSlot: recallCfg?.exploreSlot,
@@ -1980,20 +1986,28 @@ async function handleCoreMemoryValuesUpsert(body: unknown, _auth: V2AuthContext,
     const aliases = Array.isArray(a.aliases)
       ? a.aliases.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => escapeXmlTags(x.trim()))
       : undefined;
+    const rawDescription = typeof a.description === "string" ? a.description.trim() : undefined;
+    // P0-1A（issue #1，Spec 审查 c1 修正）：description 走单一源 sanitizer 质量门——
+    // 直连 API 不再能绕过清洗落脏描述。合同保持：非空 ≤80；episode 特征/断尾/超长
+    // 无句读 → 显式 400（不静默清空），通过后按句边界截取（≤60 窗口）再 P-B 消毒。
+    // Standards 终审 #2 豁免记录（2026-10-13）：本门常开、无 yaml 开关，系对
+    // CONTRIBUTING config-first 铁律的显式偏离——定性为 issue #1 缺陷修复（与
+    // 2026-10-04 灵魂注入质量轮「禁止无意义不明确内容」同一合同收口），且 400 是
+    // loud 失败（面板 notify 展示），非静默行为变更；如需兼容旧直连写法，走
+    // attrs 缺省（不传 description）即可完全绕开，无存量调用破坏面。
     const description =
-      typeof a.description === "string" && a.description.trim() && a.description.trim().length <= 80
-        ? escapeXmlTags(a.description.trim())
-        : undefined;
+      rawDescription && rawDescription.length <= 80 ? anchorDescriptionAttr(rawDescription)?.description : undefined;
     if (a.role !== undefined && role === undefined) return errorEnvelope(400, "attrs.role must be a non-empty string", requestId);
     if (a.aliases !== undefined && !Array.isArray(a.aliases)) return errorEnvelope(400, "attrs.aliases must be an array of strings", requestId);
     if (a.description !== undefined && description === undefined)
-      return errorEnvelope(400, "attrs.description must be a non-empty string (<=80 chars)", requestId);
+      return errorEnvelope(400, "attrs.description must be a non-empty sentence (<=80 chars, passes quality gate)", requestId);
+    const storedDescription = description !== undefined ? escapeXmlTags(description) : undefined;
     if (role === undefined && aliases === undefined && description === undefined)
       return errorEnvelope(400, "attrs requires role or aliases or description", requestId);
     attrs = {
       ...(role !== undefined ? { role } : {}),
       ...(aliases !== undefined ? { aliases } : {}),
-      ...(description !== undefined ? { description } : {}),
+      ...(storedDescription !== undefined ? { description: storedDescription } : {}),
     };
   }
   // 租户（照抄 handleCoreMemoryWrite 的 coreTenantFromIsolation 模式）

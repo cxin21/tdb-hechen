@@ -788,6 +788,7 @@ export const zhCN = {
   'memory.anchors.delete': '删除',
   'memory.anchors.add': '新增',
   'memory.anchors.addPlaceholder': '新价值锚名称',
+  'memory.anchors.addDescPlaceholder': '一句属性式描述（≤80字，句号结尾。如：技术取舍宁缺毋滥。）',
   'memory.anchors.derive': '重新总结方向',
   'memory.anchors.deriveDone': '重判完成：判定 {{derived}} 条，跳过 {{skipped}} 条',
   // ---- 价值锚发现（Task DISC，提议制）----

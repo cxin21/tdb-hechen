@@ -53,6 +53,22 @@ export interface WikiRecallInjectorConfig {
    */
   minInjectAbsScore?: number;
   /**
+   * P0-3（issue #2 FTS 穿透，可选默认关闭）：纯 FTS 命中（absScore===undefined——向量
+   * 不可用/NON_EMBED_TYPES 结构页）的最低 score 门槛，低于此值不注入（宁缺毋滥）。
+   * 刻度：hop=0 时 server score = weightedFuse 加权融合分（[0,1]；仅 FTS 命中 ≈
+   * 0.4×字面路 min-max，双通道命中不再走此门而走 minInjectAbsScore）；hop>0 时 score
+   * 为 BM25 原始尺度（未归一）与本门刻度不可比——hop!==0 时代码强制关闭本门。
+   * <=0 / 缺失 = 不启用（逐位现状）。
+   */
+  minInjectFtsScore?: number;
+  /**
+   * P0-3（issue #2 短 query 跳过，可选默认关闭）：短 query / 寒暄 query 跳过整轮
+   * wiki 召回——查询本身就是噪音源（bigram 前缀 OR 对 2-4 字 query 几乎全库命中）。
+   * minChars：清洗后 query 码点长度 < minChars 跳过（0=不启用）；patterns：子串命中
+   * 任一即跳过（寒暄词表，如 ["你好","在吗","谢谢","收到"]）。两者独立生效。
+   */
+  skipQuery?: { minChars?: number; patterns?: string[] };
+  /**
    * 跨库软定域（可选，默认不启用）。`keywords` 按 wiki 名给领域词；query 命中某 wiki
    * 的领域词越多，该 wiki 命中在跨库并池前乘的 boost 越大（`1 + hits/3 * boost`）。
    * 仅 boost、不删除；无任何 wiki 命中 = 全部权重 1 = 保持现状（防 under-recall）。
@@ -111,6 +127,35 @@ export class WikiRecallInjector implements InjectionHook {
     // 用「干净的真实 user_query」作检索词而非整条原始消息 blob（去掉 harness 噪声）。
     const query = extractUserQueryText(getMessageText(lastUser)).trim().slice(0, 2048);
     if (!query) return [];
+
+    // P0-3（issue #2）：短 query / 寒暄 query 整轮跳过 wiki 召回（缺省 off=逐位现状，
+    // config-first）。bigram 前缀 OR 检索对超短 query 天然全库命中，寒暄 query 检索
+    // 只产出噪音——直接跳过比事后过滤更省（不发 per-wiki 检索请求）。
+    // 对抗审查修复（#3 major）：CJK 词改「去标点/空白后全等」匹配——子串命中会把
+    // "好的，那我们继续评审网关重构方案" 这类真实任务 query 误杀整轮召回；只有
+    // 消息本身就是寒暄（"好的"/"谢谢，辛苦了"→去标点后≠词表项，不跳）才跳过。
+    // 纯 ASCII 词（"OK"）保持词边界正则（"OKR" 不误杀）。跳过时升 log.info（生产
+    // 可见），带 team/agent/query 片段留遥测痕迹。
+    const skipCfg = this.config.skipQuery;
+    if (skipCfg) {
+      const qLen = [...query].length;
+      const minChars = skipCfg.minChars ?? 0;
+      const normalizedQuery = query.replace(/[\s\p{P}\p{S}]+/gu, "");
+      const hitPattern = (skipCfg.patterns ?? []).find((p) => {
+        if (!p) return false;
+        if (/^[\x20-\x7E]+$/.test(p)) {
+          return new RegExp(`(?:^|[^A-Za-z0-9])${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^A-Za-z0-9])`, "i").test(query);
+        }
+        return normalizedQuery === p;
+      });
+      if ((minChars > 0 && qLen < minChars) || hitPattern) {
+        log.info(
+          `${TAG} skip-query: chars=${qLen} minChars=${minChars} pattern=${hitPattern ?? "-"} team=${identity.teamId} agent=${identity.agentId} ` +
+          `query="${query.slice(0, 60)}${query.length > 60 ? "…" : ""}" → skip wiki recall`,
+        );
+        return [];
+      }
+    }
 
     const session = (ctx.metadata.custom as any)?.session ?? {};
     const userKey = session.user_key as string | undefined;
@@ -219,8 +264,20 @@ export class WikiRecallInjector implements InjectionHook {
     //    absScore 刻度需按实际 embedding 校准，故默认不启用（<=0 = 关）。
     //    （W5：结构页已先拎出，不进本门控池。）
     const absGate = this.config.minInjectAbsScore ?? 0;
-    const pool = absGate > 0
-      ? bodyPool.filter((h) => h.absScore === undefined || h.absScore >= absGate)
+    // P0-3（issue #2 FTS 穿透）：minInjectFtsScore（缺省 0=关=逐位现状，config-first）——
+    // 纯 FTS 命中（absScore===undefined：向量不可用 / NON_EMBED_TYPES 结构页）不再
+    // 无门槛穿透 absGate。门槛刻度 = hop=0 weightedFuse 融合分（[0,1]；仅 FTS 命中
+    // ≈ 0.4×字面路 min-max）；双通道命中走 absGate（1/distance 刻度），两门独立生效。
+    // Spec 审查修正（c2）：hop>0 时 server score 为 BM25 原始尺度（未归一），与本门
+    // [0,1] 刻度不可比——代码显式设防（hop!==0 时强制关），不再仅靠配置注释约束。
+    const ftsGate = (this.config.hop ?? 0) === 0 ? (this.config.minInjectFtsScore ?? 0) : 0;
+    const gateActive = absGate > 0 || ftsGate > 0;
+    const pool = gateActive
+      ? bodyPool.filter(
+          (h) =>
+            (absGate <= 0 || h.absScore === undefined || h.absScore >= absGate) &&
+            (ftsGate <= 0 || h.absScore !== undefined || h.score >= ftsGate),
+        )
       : bodyPool;
 
     // NOTE: order = server order (RRF) per wiki；normalize 仅用于评分。

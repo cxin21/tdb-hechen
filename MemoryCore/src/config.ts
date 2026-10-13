@@ -107,6 +107,14 @@ export interface RecallConfig {
   foldClusterEnabled?: boolean;
   /** Minimum score threshold (default: 0.3) */
   scoreThreshold: number;
+  /**
+   * P0-2（issue #2 打分刻度错配）：native hybrid（TCVDB 服务端 RRF k=60）最低融合分
+   * 门槛。RRF 融合分为 rank-only 刻度（单通道 top1≈1/61≈0.0164、双通道 top1≈0.0328），
+   * scoreThreshold(0.3, 余弦刻度) 对其形同虚设。缺省 undefined/0 = 关（逐位现状，
+   * config-first 铁律）；负值视为关。只约束 native hybrid 路（auto-recall / 工具路
+   * executeMemorySearch），SQLite fallback 路的 scoreThreshold 全套精排不受影响。
+   */
+  nativeMinRRF?: number;
   /** Search strategy (default: "hybrid") */
   strategy: "embedding" | "keyword" | "hybrid";
   /** Overall recall timeout in milliseconds (default: 5000). When exceeded, recall is skipped with a warning. */
@@ -226,6 +234,15 @@ export interface RecallConfig {
      * halfLimit 结论层配额（v18 取证 §13 ③）。
      */
     minUniqRatio?: number;
+    /**
+     * P1（issue #2 词面匹配器过宽，2026-10-13）：textHit 万词面 token 剔除——batch
+     * 相对 IDF 门。token 命中候选占比 > 此值（0-1）视为万词面通用 token，从 textHit
+     * 匹配集剔除（sceneHit 不受影响）。undefined/0 = 关 = 逐位现状；>1 clamp 1。
+     * 背景（:152 注释自认）：任何 query 的 ≥2 字 token 都子串命中 → 通用词（"项目"
+     * "工作"）把无关注结论全部拽进注入层。门开启时 1 字 token 一并退出 textHit
+     * （Standards 终审 #5 声明）：单字词面匹配区分度本就近乎为零。
+     */
+    textHitMaxTokenRatio?: number;
     /**
      * 审查修补 I③（TTL 解耦）：幂等结论层缓存 TTL 毫秒。缺省（未配置）= 回落
      * sessionReuseTtlMs 保持现行为；显式 0 = 关（每次重组，不缓存）；负值 clamp 0。
@@ -1247,6 +1264,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       maxCharsPerMemory: num(recallGroup, "maxCharsPerMemory") ?? 0,
       maxTotalRecallChars: num(recallGroup, "maxTotalRecallChars") ?? 0,
       scoreThreshold: num(recallGroup, "scoreThreshold") ?? 0.3,
+      // P0-2（issue #2）：native RRF 共识门槛（缺省 undefined=关=逐位现状；负值=关）
+      nativeMinRRF: num(recallGroup, "nativeMinRRF"),
       strategy: validateStrategy(str(recallGroup, "strategy")) ?? "hybrid",
       timeoutMs: num(recallGroup, "timeoutMs") ?? 5000,
       // C1：coreRef 排序加成（默认 0.05；0=关；负值 clamp 0——可用性优先，
@@ -1310,6 +1329,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           // v18-c：结论块低密度门阈值（clamp [0,1]；缺省 undefined = 关逐位现状）
           minUniqRatio: (() => {
             const raw = num(cl, "minUniqRatio");
+            return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
+          })(),
+          // P1（issue #2）：textHit 万词面 token 剔除占比门（clamp [0,1]；缺省 undefined=关逐位现状）
+          textHitMaxTokenRatio: (() => {
+            const raw = num(cl, "textHitMaxTokenRatio");
             return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
           })(),
           cacheTtlMs: (() => {

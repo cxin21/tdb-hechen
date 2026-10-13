@@ -548,6 +548,109 @@ describe("WikiRecallInjector", () => {
     });
   });
 
+  // ── P0-3（issue #2）：minInjectFtsScore（FTS 穿透门）行为钉死 ─────────────────
+  // 纯 FTS 命中（absScore===undefined）此前在 absGate 处 fail-open（W7 ③有意设计），
+  // 但 fail-open 同时是"垃圾分布顶部恒 1.0"的注入通道——P0-3 新增独立 ftsGate：
+  // hop=0 融合分刻度（[0,1]，仅 FTS 命中 ≈ 0.4×字面路 min-max）下的最低门槛。
+  describe("minInjectFtsScore FTS 穿透门 (P0-3)", () => {
+    const mk = (title: string, score: number, absScore?: number, type = "concept"): WikiSearchHit => ({
+      path: `wiki/${type}/${title}.md`, title, snippet: "s", score, type, hop: 0,
+      ...(absScore !== undefined ? { absScore } : {}),
+    });
+
+    it("① FTS-only 命中 score >= gate → 注入", async () => {
+      const { injector } = build({
+        config: { minInjectFtsScore: 0.2 },
+        searchImpl: async () => [mk("合格FTS命中页", 0.3)],
+      });
+      const blocks = await injector.execute(mkCtx("暂估应收回冲"));
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].content).toContain("合格FTS命中页");
+    });
+
+    it("② FTS-only 命中 score < gate → 拦截（宁缺毋滥）", async () => {
+      const { injector } = build({
+        config: { minInjectFtsScore: 0.2 },
+        searchImpl: async () => [mk("撞词噪音页", 0.1)],
+      });
+      expect(await injector.execute(mkCtx("暂估应收回冲"))).toEqual([]);
+    });
+
+    it("③ 双通道命中（有 absScore）不走此门——由 absGate 独立判", async () => {
+      const { injector } = build({
+        config: { minInjectFtsScore: 0.9 }, // 刻度不可比的高门
+        searchImpl: async () => [mk("向量强命中页", 0.05, 2.0)],
+      });
+      const blocks = await injector.execute(mkCtx("暂估应收回冲"));
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].content).toContain("向量强命中页");
+    });
+
+    it("④ hop>0 时门强制关闭（BM25 原始尺度不可比，代码级设防）", async () => {
+      const { injector } = build({
+        config: { hop: 1, minInjectFtsScore: 0.9 },
+        searchImpl: async () => [mk("图扩展FTS命中页", 0.1)],
+      });
+      const blocks = await injector.execute(mkCtx("暂估应收回冲"));
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].content).toContain("图扩展FTS命中页");
+    });
+
+    it("⑤ 未配置（缺省 0）= 关：FTS-only 低分照旧注入（逐位现状）", async () => {
+      const { injector } = build({
+        config: {},
+        searchImpl: async () => [mk("未配置低分页", 0.01)],
+      });
+      const blocks = await injector.execute(mkCtx("暂估应收回冲"));
+      expect(blocks).toHaveLength(1);
+    });
+  });
+
+  // ── P0-3（issue #2）：skipQuery 短 query / 寒暄 query 整轮跳过 ─────────────────
+  // bigram 前缀 OR 对超短 query 几乎全库命中；寒暄 query 检索只产出噪音。
+  // CJK 词 = 去标点/空白后全等（子串会误杀真实任务 query）；ASCII 词 = 词边界。
+  describe("skipQuery 短 query / 寒暄 query 跳过 (P0-3)", () => {
+    it("① CJK 寒暄词全等命中 → 跳过且不发检索请求", async () => {
+      const { injector, search } = build({
+        config: { skipQuery: { patterns: ["好的", "谢谢"] } },
+        searchImpl: async () => [hit],
+      });
+      expect(await injector.execute(mkCtx("好的"))).toEqual([]);
+      expect(search).not.toHaveBeenCalled();
+    });
+
+    it("② 真实任务 query 含寒暄词开头 → 不跳（去标点后全等才跳）", async () => {
+      const { injector, search } = build({
+        config: { skipQuery: { patterns: ["好的"] } },
+        searchImpl: async () => [hit],
+      });
+      const blocks = await injector.execute(mkCtx("好的，那我们继续评审网关重构方案"));
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(blocks).toHaveLength(1);
+    });
+
+    it("③ ASCII 词边界：'ok 这版可以发吗' 跳过；'同步 OKR 进展' 不误杀", async () => {
+      const { injector, search } = build({
+        config: { skipQuery: { patterns: ["OK"] } },
+        searchImpl: async () => [hit],
+      });
+      expect(await injector.execute(mkCtx("ok 这版可以发吗"))).toEqual([]);
+      expect(search).not.toHaveBeenCalled();
+      const blocks = await injector.execute(mkCtx("同步 OKR 进展"));
+      expect(search).toHaveBeenCalledTimes(1);
+      expect(blocks).toHaveLength(1);
+    });
+
+    it("④ minChars：码点长度不足 → 跳过且不发检索", async () => {
+      const { injector, search } = build({
+        config: { skipQuery: { minChars: 6 } },
+        searchImpl: async () => [hit],
+      });
+      expect(await injector.execute(mkCtx("总结一下"))).toEqual([]);
+      expect(search).not.toHaveBeenCalled();
+    });
+  });
+
   it("ships the 4 new structural typeWeights in config.yaml (other/log/index/schema = 0.3)", async () => {
     // 部署配置 config.yaml 与代码默认同步（两处都改，W5 验收）。
     const { loadYamlConfig } = await import("../../../config.js");

@@ -51,6 +51,9 @@ import {
   buildPersonDiscoverPrompt,
 } from "../../gateway/core-values-discover.js";
 import { identityFactMatchesCorpus, identityFactSlice } from "./identity-discovery.js";
+// P0-1A（issue #1，2026-10-13）：写入口 description sanitizer 单一源（core/hooks/anchor-desc）——
+// 自生长采纳端与 pending-adopt-merge/coerceCoreValueAnchor 共用同一句边界清洗。
+import { anchorDescriptionAttr, existingDescription } from "../hooks/anchor-desc.js";
 // S-CHAR-2（M2/P3）：品格张力 T2 检测单一源（检测纯函数+内存注册表；enabled 门控零行为差异）。
 import { computeT2Candidates, recordTensionCandidates } from "../hooks/character-tension.js";
 
@@ -552,7 +555,18 @@ export async function runAnchorGrowth(deps: {
             continue;
           }
           if (adoptedThis) {
-            const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto"));
+            // P0-1A（issue #1）：主题采纳补写 attrs.description（rationale 经句边界 sanitizer；
+            // 不合格 → anchorDescriptionAttr 返回 undefined → attrs 传 undefined → attrs_json
+            // 保持 "{}"，与旧行为逐位一致——宁缺毋滥，渲染端 desc 门本就跳过空 desc）。
+            // 对抗审查修复（#1 major）：sqlite upsertValue 在 attrs≠undefined 时冲突整行替换
+            // attrs_json——同名 active 锚已带非空 description（用户面板手写/既有合格语义）时，
+            // LLM rationale 不得静默覆写：置 attrs=undefined（F1 教训同款"不碰"语义）。
+            const priorTheme = (anyState2 as CoreValueRow[]).find(
+              (r) => r.state === "active" && (r.node_type ?? "theme") === "theme" && r.label === c.label,
+            );
+            let themeAttrs = anchorDescriptionAttr(c.rationale);
+            if (priorTheme && existingDescription(priorTheme.attrs_json)) themeAttrs = undefined;
+            const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto", "theme", themeAttrs));
             if (ok) {
               adopted++; adoptedThisAgent++;
               // GROW-EVO P2.1（锚↔记忆双向链路）：采纳时把 label 回填进证据记录的 coreRefs
@@ -625,7 +639,15 @@ export async function runAnchorGrowth(deps: {
               // F12：证据 valence 均值符号化（无 valence 证据 → undefined 走 C2 derive 钩子，IS NULL 守卫不覆盖非空）
               const meanV = personEvidenceMeanValence(c.label, c.aliases, personRowsForValence);
               const vSymbol = meanV === null ? undefined : personValenceSymbol(meanV);
-              const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label, "person"), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, vSymbol, "auto", "person", { role: c.role, aliases: c.aliases }));
+              // P0-1A（issue #1）：人物采纳补写 description（提案 description 经句边界 sanitizer；
+              // 提案未给/不合格 → undefined → attrs_json 仅含 role/aliases，与旧行为一致）。
+              // 对抗审查修复（#1 同款）：同名 active person 锚已存在 → attrs=undefined 整体
+              // 不碰（role/aliases/description 均保留，防 LLM 重提案覆写面板手写值）。
+              const priorPerson = (anyState2 as CoreValueRow[]).find(
+                (r) => r.state === "active" && r.node_type === "person" && r.label === c.label,
+              );
+              const personAttrs = priorPerson ? undefined : { role: c.role, aliases: c.aliases, ...anchorDescriptionAttr(c.description) };
+              const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label, "person"), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, vSymbol, "auto", "person", personAttrs));
               if (ok) {
                 adopted++;
                 adoptedThisAgent++;

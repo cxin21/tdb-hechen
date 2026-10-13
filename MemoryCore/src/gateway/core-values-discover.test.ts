@@ -18,6 +18,7 @@ import {
   suggestAnchorWeight,
   recountEvidence,
   parseProposalsJson,
+  parsePersonProposals,
   dedupProposals,
   buildDiscoverPrompt,
   selectSampleRows,
@@ -355,5 +356,16 @@ describe("POST /core-memory/values/discover（提议制 handler）", () => {
     expect(store.listValues).toHaveBeenCalledWith(
       expect.objectContaining({ teamId: "teamA", userId: "userA", agentId: "agentA" }),
     );
+  });
+});
+
+// ═══════════════ P0-1A（issue #1，2026-10-13）：person 提案 description 解析 ═══════════════
+describe("P0-1A：parsePersonProposals description 字段（可选，trim+200 cap）", () => {
+  it("透传合法 description；缺省不产出键；非字符串忽略", () => {
+    const out = parsePersonProposals('[{"label":"女儿","role":"家人","aliases":["闺女"],"description":"  需要持续陪伴的家庭核心。  "},{"label":"儿子","role":"家人","aliases":[]},{"label":"老王","role":"同事","aliases":[],"description":123}]');
+    expect(out).toHaveLength(3);
+    expect(out[0]!.description).toBe("需要持续陪伴的家庭核心。");
+    expect(out[1]!.description).toBeUndefined();
+    expect(out[2]!.description).toBeUndefined();
   });
 });

@@ -172,7 +172,8 @@ function ValueRow({
             className="_va-input-description"
             value={descriptionText}
             onChange={setDescriptionText}
-            placeholder="语义描述（可选一句话——注入为锚的释义）"
+            maxLength={80}
+            placeholder="语义描述（可选一句话——注入为锚的释义，≤80字）"
           />
           {isPerson && (
             <>
@@ -328,6 +329,9 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
   const [adoptingLabel, setAdoptingLabel] = useState('');
   // 新增行
   const [newLabel, setNewLabel] = useState('');
+  // P0-1A（issue #1，2026-10-13）：新增锚时同步收一句属性式描述——裸关键词锚是本面板
+  // 唯一还在批量产出裸锚的入口（auto-growth/采纳路径已堵）。空描述=不带 attrs（与旧行为逐位一致）。
+  const [newDesc, setNewDesc] = useState('');
   // UI 2.1 soul 变体：三池 Tab 活跃池
   const [pool, setPool] = useState<'theme' | 'person' | 'character'>('theme');
   // GROW 自生长可视化：已知自生长锚 id 集（null = 尚未首载，首载不通知存量）
@@ -420,10 +424,12 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
       for (const r of all) {
         for (const item of r.items ?? []) {
           const refs = [
-            ...((item.metadata as { coreRefs?: unknown })?.coreRefs ?? []),
+            // 顺手修复（pre-existing tsc error，HEAD 即坏）：unknown 不可展开 → unknown[]；
+            // ChatMemorySearchHit 无 record_id 字段（ChatMemoryLayerItem.id 恒有）。
+            ...((item.metadata as { coreRefs?: unknown[] })?.coreRefs ?? []),
             ...((item.metadata as { personRefs?: unknown[] })?.personRefs ?? []),
           ].map(String);
-          if (queries.some((q) => refs.includes(q))) seen.add(String(item.id ?? item.record_id ?? ''));
+          if (queries.some((q) => refs.includes(q))) seen.add(String(item.id ?? ''));
         }
       }
       tea.notify.info(t('memory.notify.relatedCount', { count: seen.size, label: anchor.label }));
@@ -502,13 +508,31 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
     }
   }
 
+  /**
+   * P0-1A（issue #1，两轮审查修正）：不再维护客户端镜像 sanitizer——跨包镜像与
+   * MemoryCore core/hooks/anchor-desc.ts 单一源存在语义漂移（episode 特征列表/
+   * 断尾规则不完全一致）。现只做 trim 透传，质量门统一由服务端
+   * /core-memory/values/upsert 的 anchorDescriptionAttr 校验执行：不合格（episode
+   * 叙述/断尾半句/超长无句读）返回 400 明确报错并经 notify 展示，宁缺毋滥语义
+   * 与写入侧完全单一源。
+   */
+
   async function handleAdd() {
     const label = newLabel.trim();
     if (!label || !blockId) return;
     try {
-      // 新增：plain upsert（不带 valence → 落 NULL 待 LLM 判；不触发微调路径）
-      await chatMemoryApi.valuesUpsert(blockId, { value_id: label, label, weight: 0.5 });
+      // 新增：plain upsert（不带 valence → 落 NULL 待 LLM 判；不触发微调路径）；
+      // P0-1A：描述 trim 后透传，质量门由服务端 anchorDescriptionAttr 执行
+      //（不合格 400 → catch notify 展示原因）。
+      const desc = newDesc.trim();
+      await chatMemoryApi.valuesUpsert(blockId, {
+        value_id: label,
+        label,
+        weight: 0.5,
+        ...(desc ? { attrs: { description: desc } } : {}),
+      });
       setNewLabel('');
+      setNewDesc('');
       tea.notify.success(t('memory.notify.anchorSaved'));
       await load();
     } catch (e) {
@@ -747,6 +771,14 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
           value={newLabel}
           onChange={setNewLabel}
           placeholder={t('memory.anchors.addPlaceholder')}
+          disabled={!blockId}
+        />
+        <Input
+          className="_va-add-input"
+          value={newDesc}
+          onChange={setNewDesc}
+          maxLength={80}
+          placeholder={t('memory.anchors.addDescPlaceholder')}
           disabled={!blockId}
         />
         <Button type="primary" disabled={!newLabel.trim() || !blockId} onClick={() => void handleAdd()}>

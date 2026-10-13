@@ -711,6 +711,22 @@ wikiRecall:
   # 类型: number | 默认: 未启用（本部署显式设为 1.5）
   minInjectAbsScore: 1.5
 
+  # ▲FTS-only 穿透门（issue #2 P0-3，2026-10-13）：纯 FTS 命中（absScore===undefined——
+  #   向量不可用 / NON_EMBED_TYPES 结构页）的最低 score 门槛，低于不注入（宁缺毋滥）。
+  #   刻度 = hop=0 weightedFuse 融合分 [0,1]（仅 FTS 命中 ≈ 0.4×字面路 min-max）；
+  #   hop>0 时 score 为 BM25 原始尺度，代码强制关此门。0.2 ≈ 字面路 min-max 前 50%，
+  #   待生产 golden 校准。删掉 = 不启用（逐位旧行为）。
+  # 类型: number | 默认: 未启用
+  minInjectFtsScore: 0.2
+
+  # ▲短/寒暄 query 跳过（issue #2 P0-3）：query 命中词表任一词时整轮跳过 wiki 召回。
+  #   匹配语义：CJK 词=消息去标点/空白后与词项全等（真实任务 query 不误杀）；ASCII
+  #   词走词边界（"OK" 不误杀 "OKR"）。minChars 慎设——2 字领域词是合法 query。
+  #   删掉整段 = 不启用。
+  # 类型: { minChars?: number, patterns?: string[] } | 默认: 未启用
+  skipQuery:
+    patterns: ["你好", "在吗", "在么", "谢谢", "好的", "嗯", "收到", "辛苦了", "麻烦了", "OK"]
+
   # ▲type 降权：entity/concept 是"命名/索引"节点，标题精确命中易被相对归一顶成 1.0
   # 噪音。在跨库并池+归一前乘系数降权。source/other 不配 = 不降权。
   # 调参回归(golden)：concept 0.8 会把真相关概念压到 relGate 下造成 under-recall，
@@ -761,9 +777,9 @@ wikiRecall:
 
   # 注入块（<tdai_recalled_wiki> 文本）的总字符上限（code points）：0 = 不限制。
   # 用途：控制每轮注入的 token 开销，防止 KB 片段把上下文撑爆（注意这是测试版方向B；
-  #       已知成本点——动态注入会轻微影响 KV/prompt cache 命中）。
+  #       已知成本点——动态注入会轻微影响 KV/prompt cache 命中）。本地部署显式设 1200。
   # 类型: int | 默认: 0（不限制）
-  # maxTotalChars: 0
+  # maxTotalChars: 1200
 
 # ── Skill 运行时 ───────────────────────────────────────────────────────────
 #
