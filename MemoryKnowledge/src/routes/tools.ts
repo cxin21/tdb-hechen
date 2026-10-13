@@ -46,7 +46,7 @@ interface HttpToolDef {
   params: Record<string, HttpToolParam>;
 }
 
-/** Wiki tools (7) — read-only query tools for LLM agents. */
+/** Wiki tools (8) — read-only query tools for LLM agents. */
 const WIKI_TOOLS: HttpToolDef[] = [
   {
     name: "get_info",
@@ -71,6 +71,16 @@ const WIKI_TOOLS: HttpToolDef[] = [
     description: "读取指定页面完整内容。",
     params: {
       refs: { type: "array", required: true, description: "页面引用数组（id 或路径）" },
+    },
+  },
+  {
+    name: "wiki_fetch",
+    description:
+      "按 doc_path（页面路径，来自 wiki search 结果的 path 或召回条目）或 title（精确匹配）读取一篇 wiki 页正文；可选 section 只取某个小节。wiki search/召回注入只含标题+摘要，需要正文时用本工具。单次返回 ≤4000 字符，超长截断并附 [truncated] 标记。未命中≠失败：返回 code=0 且 data.isError=true 附可读 error；只有命中真实页面（可以是空页）才返回 isError=false。只读。",
+    params: {
+      doc_path: { type: "string", required: false, description: "页面路径（wiki/<相对路径>.md，如 wiki/concepts/design.md）；与 title 二选一，优先使用" },
+      title: { type: "string", required: false, description: "页面标题精确匹配（doc_path 缺省时的兜底）" },
+      section: { type: "string", required: false, description: "可选；小节标题精确匹配（忽略大小写），命中时只返回该节" },
     },
   },
   {
@@ -347,6 +357,67 @@ async function executeWikiTool(
       const result = wikiService.pageReadMany(serviceId, team_id, wiki_id, refs as string[]);
       return Response.json(wrapOk({ items: result }));
     }
+    case "wiki_fetch": {
+      const docPath = typeof params.doc_path === "string" ? params.doc_path.trim() : "";
+      const title = typeof params.title === "string" ? params.title.trim() : "";
+      const section = typeof params.section === "string" ? params.section.trim() : "";
+      if (!docPath && !title) {
+        return Response.json(wrapError(400, "doc_path or title is required"), { status: 400 });
+      }
+
+      const miss = (ref0: string | null, title0: string | null, error: string): Response =>
+        Response.json(wrapOk({
+          doc_path: ref0,
+          title: title0,
+          section: section || null,
+          text: "",
+          truncated: false,
+          total_chars: 0,
+          isError: true,
+          error,
+        }));
+
+      if (!wikiCanServeReads(row)) {
+        return miss(docPath || null, title || null, `wiki is not ready to serve reads (status=${row.status})`);
+      }
+
+      // doc_path 优先；title 兜底精确匹配（title 来自 pageLs 的 frontmatter title）。
+      let ref: string;
+      let pageTitle: string | null;
+      if (docPath) {
+        ref = normalizeWikiDocPath(docPath);
+        const items = wikiService.pageLs(serviceId, team_id, wiki_id) ?? [];
+        pageTitle = items.find((p) => p.path === ref)?.title ?? null;
+      } else {
+        const items = wikiService.pageLs(serviceId, team_id, wiki_id) ?? [];
+        const item = items.find((p) => p.title === title);
+        if (!item) return miss(null, title, `wiki page not found by title: '${title}'`);
+        ref = item.path;
+        pageTitle = item.title;
+      }
+
+      const raw = wikiService.pageRead(serviceId, team_id, wiki_id, ref);
+      if (raw === null) return miss(ref, pageTitle, `wiki page not found: '${ref}'`);
+
+      const body = stripFrontmatter(raw).trim();
+      let text = body;
+      if (section) {
+        const sec = extractSection(body, section);
+        if (sec === null) return miss(ref, pageTitle, `section not found in '${ref}': '${section}'`);
+        text = sec;
+      }
+
+      const { text: outText, truncated, total_chars } = truncateForWikiFetch(text);
+      return Response.json(wrapOk({
+        doc_path: ref,
+        title: pageTitle,
+        section: section || null,
+        text: outText,
+        truncated,
+        total_chars,
+        isError: false,
+      }));
+    }
     case "get_graph": {
       if (!wikiCanServeReads(row)) {
         return Response.json(wrapOk({ nodes: [], edges: [], communities: [] }));
@@ -370,6 +441,76 @@ async function executeWikiTool(
     default:
       return Response.json(wrapError(403, `unknown tool: ${toolName}`), { status: 403 });
   }
+}
+
+// ─── wiki_fetch helpers（模块级纯函数，便于单测） ───
+
+/** wiki_fetch 单次返回上限（chars，含截断标记）。 */
+const WIKI_FETCH_MAX_CHARS = 4000;
+
+/** 剥掉文件开头的 YAML frontmatter（--- … ---），只留正文。 */
+function stripFrontmatter(content: string): string {
+  const m = content.match(/^---\n[\s\S]*?\n---\n?/);
+  return m ? content.slice(m[0].length) : content;
+}
+
+/**
+ * doc_path 归一化：接受 "wiki/<rel>.md"（search 命中形态）或 "<rel>.md"/"<rel>"
+ * （剥 leading "/" 与反斜杠）；路径穿越由 pageRead 的 resolvePageRef 拦截。
+ */
+function normalizeWikiDocPath(p: string): string {
+  const trimmed = p.replace(/\\/g, "/").replace(/^\/+/, "");
+  return trimmed.startsWith("wiki/") ? trimmed : `wiki/${trimmed}`;
+}
+
+/**
+ * 按小节标题精确匹配（忽略大小写）截取一节：从该标题行起，到下一个同级或更高级标题前。
+ * 未命中 → null。
+ * 已知取舍：不跳过 ``` 围栏块——围栏内形如标题的行会提前截断该节（4000 上限使误截的
+ * 重试成本很低：agent 换个 section 或整页重取即可）。
+ */
+function extractSection(body: string, section: string): string | null {
+  const want = section.trim().replace(/^#{1,6}\s*/, "").toLowerCase();
+  if (!want) return null;
+  const lines = body.split(/\r?\n/);
+  let start = -1;
+  let level = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+    if (!m) continue;
+    if (start === -1) {
+      if (m[2].trim().toLowerCase() === want) {
+        start = i;
+        level = m[1].length;
+      }
+      continue;
+    }
+    if (m[1].length <= level) return lines.slice(start, i).join("\n").trimEnd();
+  }
+  return start !== -1 ? lines.slice(start).join("\n").trimEnd() : null;
+}
+
+/**
+ * ≤4000 chars 截断：正文超限时切短并附 [truncated] 标记（标记计入总量，整体不超限）。
+ * 标记里的 "showing N" 报实际保留的正文字符数；N 的位数会反过来影响标记自身长度，
+ * 因此解一个不动点（本模板 ≤2 轮收敛，上限 8 轮纯防御），保证 N 与实际 slice 一致。
+ */
+function truncateForWikiFetch(
+  text: string,
+): { text: string; truncated: boolean; total_chars: number } {
+  if (text.length <= WIKI_FETCH_MAX_CHARS) {
+    return { text, truncated: false, total_chars: text.length };
+  }
+  let shown = WIKI_FETCH_MAX_CHARS;
+  let marker = "";
+  for (let i = 0; i < 8; i++) {
+    marker = `\n\n[truncated: showing ${shown} of ${text.length} chars; pass 'section' to narrow]`;
+    const kept = Math.max(0, WIKI_FETCH_MAX_CHARS - marker.length);
+    if (kept === shown) break;
+    shown = kept;
+  }
+  // 收敛时 shown + marker.length === 4000；未收敛（不可达）也按最终 marker 切，整体仍不超限。
+  return { text: text.slice(0, shown) + marker, truncated: true, total_chars: text.length };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
