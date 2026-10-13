@@ -275,6 +275,48 @@ export interface RecallConfig {
     /** 端点内召回超时毫秒（缺省 5000，与 recall.timeoutMs 同族；超时 → 504，代理降级旧路）。 */
     timeoutMs: number;
   };
+  /**
+   * P1 召回质量（spec §4.3，task-1）：召回精排 rerank provider 面（memory.recall.rerank.*）。
+   * 与上方 rerankWeights（RV2-2 进程内组合分四因子）是**不同概念**——本组是云/本地
+   * 精排 provider 配置。铁律：enabled 缺省 false + provider 缺省 none = 逐位现状
+   * （config-first 关断矩阵；yaml 显式开启前任何调用方拿不到精排通道，接线在 Task 2）。
+   */
+  rerank: RecallRerankConfig;
+}
+
+/**
+ * P1 召回质量（spec §4.3，task-1）：rerank provider 配置键集。
+ * 校验沿 embedding 先例（同文件）：云端 provider 缺 apiKey → configError +
+ * enabled 强制 false（不在启动路径抛异常）；非法 provider → 回落 none + configError。
+ */
+export interface RecallRerankConfig {
+  /** 总开关（缺省 false = 逐位现状，Global Constraint 1 shadow-first）。 */
+  enabled: boolean;
+  /** provider（缺省 none = skip）。local 为 Task 3 可插拔 id（落地前工厂显式返回 null）。 */
+  provider: "siliconflow" | "dashscope" | "local" | "none";
+  /** 云端 provider API Key（siliconflow/dashscope 必填；缺失 → configError + enabled 强制 false）。 */
+  apiKey: string;
+  /** 端点覆盖（缺省 "" = provider 官方端点；dashscope 业务空间专属域经此设置）。 */
+  baseUrl: string;
+  /** 模型覆盖（缺省 "" = provider 推荐档：siliconflow Qwen/Qwen3-Reranker-0.6B / dashscope qwen3-rerank）。 */
+  model: string;
+  /** 单次精排 HTTP 超时毫秒（缺省 800；负值 clamp 0——沿 v3Recall「语义自毁不拦 loud 显形」先例）。 */
+  timeoutMs: number;
+  /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 12，clamp [1,100] 取整）。 */
+  candidates: number;
+  /** 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。 */
+  minScore: number;
+  /** provider:"local"（Task 3 transformers.js 本地模型）参数。 */
+  local: {
+    /** 模型目录（缺省 "" = 运行期 dataDir/models/reranker/Xenova/bge-reranker-base）。 */
+    modelDir: string;
+    /** 空闲卸载毫秒（缺省 600000 = 10min；0 = 常驻；负值 clamp 0）。 */
+    idleUnloadMs: number;
+  };
+  /** 影子模式（缺省 true，phase-1 只记录 journal 不改结果——spec §4.3 shadow-first）。 */
+  shadowMode: boolean;
+  /** provider 校验失败说明（云端缺 apiKey / 非法 provider）；caller 负责日志；无错 undefined。 */
+  configError?: string;
 }
 
 /**
@@ -1364,6 +1406,49 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           timeoutMs: Math.max(0, num(vr, "timeoutMs") ?? 5000),
         };
       })(),
+      // P1 召回质量（spec §4.3，task-1）：精排 rerank provider 面（与 rerankWeights 不同概念）。
+      // enabled 缺省 false + provider 缺省 none = 逐位现状；校验沿 embedding 先例
+      // （不抛异常，configError + enabled 强制 false）。timeoutMs 负值 clamp 0（v3Recall
+      // loud 显形先例）；candidates clamp [1,100] 取整（0 抬到 1，关断走 enabled 开关）；
+      // minScore 任意有限数透传（负值合法）；local.idleUnloadMs 负值 clamp 0（0 = 常驻）。
+      rerank: (() => {
+        const rr = obj(recallGroup, "rerank");
+        const providerRaw = str(rr, "provider") ?? "none";
+        let provider: RecallRerankConfig["provider"];
+        let enabled = bool(rr, "enabled") ?? false;
+        let configError: string | undefined;
+        if (VALID_RERANK_PROVIDERS.includes(providerRaw as RecallRerankConfig["provider"])) {
+          provider = providerRaw as RecallRerankConfig["provider"];
+        } else {
+          configError =
+            `Rerank provider '${providerRaw}' is not supported (valid: siliconflow, dashscope, local, none). ` +
+            "Rerank has been disabled.";
+          provider = "none";
+          enabled = false;
+        }
+        const apiKey = str(rr, "apiKey") ?? "";
+        if ((provider === "siliconflow" || provider === "dashscope") && !apiKey) {
+          configError = `Rerank provider '${provider}' requires 'apiKey' to be set. Rerank has been disabled.`;
+          enabled = false;
+        }
+        const localGroup = obj(rr, "local");
+        return {
+          enabled,
+          provider,
+          apiKey,
+          baseUrl: str(rr, "baseUrl") ?? "",
+          model: str(rr, "model") ?? "",
+          timeoutMs: Math.max(0, num(rr, "timeoutMs") ?? 800),
+          candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
+          minScore: num(rr, "minScore") ?? -2.0,
+          local: {
+            modelDir: optStr(localGroup, "modelDir") ?? "",
+            idleUnloadMs: recallSignalBoost(localGroup, "idleUnloadMs", 600_000),
+          },
+          shadowMode: bool(rr, "shadowMode") ?? true,
+          configError,
+        };
+      })(),
     },
     // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——memory 层级独立组（缺省 false=逐位现状）；
     // 大小轮转/数量上限全可配（clamp：rotationSizeMB (0,100]、maxFiles [1,100]）。
@@ -1505,6 +1590,9 @@ function strArray(src: Record<string, unknown>, key: string): string[] | undefin
 }
 
 const VALID_STRATEGIES: RecallConfig["strategy"][] = ["embedding", "keyword", "hybrid"];
+
+/** P1（spec §4.3，task-1）：rerank provider 白名单（local = Task 3 可插拔 id）。 */
+const VALID_RERANK_PROVIDERS: RecallRerankConfig["provider"][] = ["siliconflow", "dashscope", "local", "none"];
 
 /**
  * Validate recall strategy against whitelist.

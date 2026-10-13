@@ -141,6 +141,26 @@ memory:
       enabled: true        # 代码缺省 false（逐位现状，端点 404）；true = 瘦传输链路启用
       timeoutMs: 5000      # 端点内召回超时毫秒（与 recall.timeoutMs 同族；超时 → 504 → 代理降级）
 
+    # ── 召回精排 rerank（P1 召回质量 spec §4.3，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
+    # 在 P0 召回门槛之上加云/本地精排：原 topK 候选扩池至 candidates → provider rerank →
+    # minScore 门槛 → 取回 topK。失败/超时一律降级原序（精排永不阻断召回主链路）；
+    # shadowMode true = 只记 journal 不改结果（先影子观察再放量，Global Constraint 1）。
+    # rerank:
+    #   enabled: false                    # 总开关（缺省 false = 逐位现状）
+    #   provider: "siliconflow"           # siliconflow | dashscope | local(Task 3，暂关) | none
+    #   apiKey: ""                        # 云端 provider 必填；缺失 → configError + 自动关断
+    #   baseUrl: ""                       # 缺省 = provider 官方端点（siliconflow: api.siliconflow.cn；
+    #                                     #   dashscope: dashscope.aliyuncs.com，业务空间专属域经此覆盖）
+    #   model: ""                         # 缺省 = 推荐档（siliconflow: Qwen/Qwen3-Reranker-0.6B；
+    #                                     #   dashscope: qwen3-rerank——gte-rerank v1 2026-05-30 下线勿选）
+    #   timeoutMs: 800                    # 单次精排 HTTP 超时毫秒（负值 clamp 0 = loud 失败）
+    #   candidates: 12                    # 送精排候选池大小（clamp [1,100]）
+    #   minScore: -2.0                    # 相关度门槛（负值合法——local logits 刻度）
+    #   shadowMode: true                  # 影子模式：只记 journal.gates.rerank 不改注入结果
+    #   local:                            # provider:"local"（Task 3 transformers.js）参数
+    #     modelDir: ""                    # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
+    #     idleUnloadMs: 600000            # 空闲卸载毫秒（0 = 常驻）
+
     # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
     # 提取批次后代码级超限守卫：块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败码点安全硬截断兜底。
     # 启用依据：GOV-4 复核实证——守卫关闭时修复后 ~10 分钟内活跃提取管线把块体复涨破限
