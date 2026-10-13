@@ -6,6 +6,10 @@ export const DEFAULT_ASSET_CAPABILITIES: AssetCapabilityFlags = {
   llm_wiki: true,
   code_graph: true,
   chat_memory: true,
+  // Task 6（P1 recall-quality）：wiki JIT 瘦身注入放量位——shadow-first 默认关
+  // （false = 现行全量注入）。meta 未返回该参数（旧内核）时也必须停在 false，
+  // 不得被 parseEnabled(undefined)=true 的兜底语义误开。
+  wiki_jit: false,
 };
 
 interface FetchAssetCapabilitiesInput {
@@ -38,6 +42,8 @@ const PARAM_TO_CAPABILITY: Record<string, keyof AssetCapabilityFlags> = {
   "llm_wiki.enabled": "llm_wiki",
   "code_graph.enabled": "code_graph",
   "chat_memory.enabled": "chat_memory",
+  // Task 6：wiki JIT 瘦身注入放量开关（meta 能力位，同 llm_wiki.enabled 模式）。
+  "wiki_jit.enabled": "wiki_jit",
 };
 
 function parseEnabled(value: string | undefined): boolean {

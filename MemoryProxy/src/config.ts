@@ -513,6 +513,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
               }
             : undefined,
           domainRouter: yaml.wikiRecall.domainRouter,
+          // Task 6：JIT tri-state（true=强制 JIT / false=强制 legacy / 缺省=跟随
+          // meta 能力位 wiki_jit.enabled）。非 boolean 一律视为未设。
+          jit: typeof yaml.wikiRecall.jit === "boolean" ? yaml.wikiRecall.jit : undefined,
         }
       : undefined,
     skillRuntime: {

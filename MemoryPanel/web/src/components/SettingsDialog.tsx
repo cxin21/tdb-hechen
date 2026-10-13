@@ -57,6 +57,13 @@ const RESOURCE_MODULES: ResourceModule[] = [
     icon: <BooksIcon size={16} />,
   },
   {
+    id: 'wiki_jit',
+    paramKey: 'wiki_jit.enabled',
+    labelKey: 'settings.module.wikiJit',
+    descKey: 'settings.module.wikiJit.desc',
+    icon: <BooksIcon size={16} />,
+  },
+  {
     id: 'code',
     paramKey: 'code_graph.enabled',
     labelKey: 'settings.module.code',
@@ -90,6 +97,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     code: true,
     skill: true,
     chat_memory: true,
+    // wiki JIT 精简注入：shadow-first 缺省关（与 proxy DEFAULT_ASSET_CAPABILITIES 一致）
+    wiki_jit: false,
   }));
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<AssetCapabilityKey | null>(null);
@@ -107,6 +116,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           code: cfg['code_graph.enabled'],
           skill: cfg['skill.enabled'],
           chat_memory: cfg['chat_memory.enabled'],
+          wiki_jit: cfg['wiki_jit.enabled'],
         });
       })
       .catch((e) => {

@@ -137,6 +137,9 @@ export const zhCN = {
   'settings.module.code.desc': '关闭后仅停止工具注入',
   'settings.module.skill.desc': '关闭后工具注入与新技能抽取均停止',
   'settings.module.chatMemory.desc': '关闭后工具注入与新对话写入均停止',
+  'settings.module.wikiJit': 'Wiki JIT 精简注入',
+  'settings.module.wikiJit.desc':
+    '开启后 Wiki 召回只注入「标题+摘要」索引（单条 ≤100 字符），全文按需用 wiki_fetch 工具获取；关闭保持全文注入',
   'settings.notify.enabled': '{{label}} 已开启',
   'settings.notify.disabled': '{{label}} 已关闭',
   'settings.notify.saveFailed': '保存失败：{{msg}}',

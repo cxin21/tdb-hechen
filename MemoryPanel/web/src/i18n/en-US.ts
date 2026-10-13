@@ -143,6 +143,9 @@ export const enUS = {
   'settings.module.code.desc': 'Only tool injection stops when disabled',
   'settings.module.skill.desc': 'Tool injection and new skill extraction stop',
   'settings.module.chatMemory.desc': 'Tool injection and new conversation ingestion stop',
+  'settings.module.wikiJit': 'Wiki JIT Compact Injection',
+  'settings.module.wikiJit.desc':
+    'When on, Wiki recall injects a compact title+summary index (≤100 chars per item); fetch full text on demand via the wiki_fetch tool. Off keeps full-text injection',
   'settings.notify.enabled': '{{label}} enabled',
   'settings.notify.disabled': '{{label}} disabled',
   'settings.notify.saveFailed': 'Save failed: {{msg}}',

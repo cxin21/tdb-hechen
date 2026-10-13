@@ -1,10 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WikiRecallInjector, resolveBoundWikiResources, shouldRegisterWikiRecallInjector } from "../wiki-recall-injector.js";
 import type { WikiRecallInjectorDeps, WikiRecallInjectorConfig } from "../wiki-recall-injector.js";
 import type { AgentContext } from "../../types.js";
 import type { WikiRetrieveClient, WikiSearchHit } from "../../../knowledge/wiki-retrieve-client.js";
 import type { KnowledgeItem } from "../../../knowledge/core-client.js";
 import type { TdaiIdentity } from "../../../tdai/types.js";
+import { buildConfig } from "../../../config.js";
+// 静态引入 injection barrel：defaultWikiRecallConfig 定义在 index.ts，而 barrel
+// 模块图很大——静态化让加载成本落在 collection 阶段（不受单测 5s 超时约束），
+// 避免本机高负载时动态 import 冷启动超时（stash bisect 证实干净树同样超时 = 环境争用）。
+import { defaultWikiRecallConfig } from "../../index.js";
+import {
+  buildJitSummary,
+  renderWikiRecallBlockJit,
+  stripFrontmatter,
+  type WikiRecallRenderEntry,
+} from "../../../knowledge/wiki-recall-utils.js";
 import { log } from "../../../report/log.js";
 
 const hit: WikiSearchHit = {
@@ -446,22 +460,21 @@ describe("WikiRecallInjector", () => {
     expect(content.indexOf("跨模块接口调用规范")).toBeLessThan(content.indexOf("杂项页面"));
   });
 
-  it("ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3)", async () => {
+  it("ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3)", () => {
     // 默认值落在 injection/index.ts defaultWikiRecallConfig（config.wikiRecall 缺失时的兜底）。
-    const { defaultWikiRecallConfig } = await import("../../index.js");
+    // barrel 已改静态引入（见文件头 import 处注释）。
     expect(defaultWikiRecallConfig.typeWeights).toMatchObject({
       entity: 0.6, concept: 0.9, overview: 0.6, // 既有 3 项保留
       other: 0.3, log: 0.3, index: 0.3, schema: 0.3, // W5 新增 4 项
     });
   });
 
-  it("C3: code default retires domainRouter explicitly (keywords {} = router off, capability shape kept)", async () => {
+  it("C3: code default retires domainRouter explicitly (keywords {} = router off, capability shape kept)", () => {
     // 2026-09-10 隔离实验（anchor runs/2026-09-10T04-07-38.json）：部署工作点
     // router 对 posRecall 单变量贡献=0（B/E 同 0.66）、negInjected 恒 +2（13 vs 11），
     // 且 W4 boost→归一→门耦合未解 —— router 默认退役。
     // 代码默认层必须**显式**携带退役标记（keywords 空表 = injector 静默 no-op），
     // 而不是靠"字段缺失"隐式关断——显式标记自带退役注释与重开协议，防静默复活。
-    const { defaultWikiRecallConfig } = await import("../../index.js");
     expect(defaultWikiRecallConfig.domainRouter).toEqual({ boost: 1.5, keywords: {} });
     // 行为钉死：默认态下（config.wikiRecall 整段缺失）router 恒 no-op——
     // 即使 query 含领域词，命中分数也不被 boost。
@@ -671,6 +684,240 @@ describe("WikiRecallInjector", () => {
     const yaml = loadYamlConfig("config.yaml");
     expect(yaml.wikiRecall?.domainRouter).toBeUndefined();
   });
+
+
+// ══ Task 6（P1 recall-quality）：wiki JIT 瘦身注入 ══════════════════════════
+// 形态（spec §5）：单条 = 标题 + 一行摘要(≤80) + [详情: tool wiki_fetch]，单条
+// ≤100、整块 ≤500；例外：原文 ≤160 chars 直接注全文（legacy 全格式）；降级：
+// per-agent jit=false 回退现行；放量：meta 能力位 wiki_jit.enabled（同
+// llm_wiki.enabled 模式）+ panel UI；journal 记录 chars 与「若 JIT 会注入 chars」。
+describe("wiki JIT 瘦身注入 (Task 6)", () => {
+  /** >160 码点的长摘要（走 JIT 存根渲染）。 */
+  const longSnippet = "这是一段超过一百六十个码点的长摘要内容，用于验证 JIT 存根渲染与块预算裁剪行为。".repeat(6);
+  // 路由级测试用的长摘要命中。模块级 hit 的 snippet 仅 4 码点，会落进 ≤160 例外
+  // 直注全文路（legacy 全格式），永远不产生 JIT 存根——这是前人 3 个路由级红测试的根因。
+  const longHit: WikiSearchHit = { ...hit, snippet: longSnippet };
+  const jitCaps = { skill: true, llm_wiki: true, code_graph: true, chat_memory: true, wiki_jit: true };
+  const legacyCaps = { skill: true, llm_wiki: true, code_graph: true, chat_memory: true, wiki_jit: false };
+
+  function mkCapsCtx(content: string, caps?: Record<string, boolean>): AgentContext {
+    const ctx = mkCtx(content) as unknown as { metadata: { custom: Record<string, unknown> } };
+    if (caps) ctx.metadata.custom.assetCapabilities = caps;
+    return ctx as unknown as AgentContext;
+  }
+
+  function mkJitEntry(over: Partial<WikiRecallRenderEntry> = {}): WikiRecallRenderEntry {
+    return {
+      wikiName: "Coding-WiKi",
+      type: "concept",
+      title: "应收暂估回冲",
+      score: 3.2,
+      normScore: 1,
+      snippet: longSnippet,
+      path: "wiki/concepts/a.md",
+      hop: 0,
+      ...over,
+    };
+  }
+
+  describe("stripFrontmatter / buildJitSummary（摘要行来源）", () => {
+    it("剥离首部 frontmatter；非首部/未闭合的不动", () => {
+      expect(stripFrontmatter("---\ntitle: x\n---\n正文第一行\n第二行")).toBe("正文第一行\n第二行");
+      expect(stripFrontmatter("没有 frontmatter")).toBe("没有 frontmatter");
+      expect(stripFrontmatter("正文\n---\nx\n---")).toBe("正文\n---\nx\n---");
+      expect(stripFrontmatter("---\nunterminated")).toBe("---\nunterminated");
+    });
+
+    it("摘要 = 剥 frontmatter + 折叠空白 + ≤80 码点截断（CJK/emoji 安全）", () => {
+      expect(buildJitSummary("---\ntitle: x\n---\n\n这是 摘要\n第二段", 80)).toBe("这是 摘要 第二段");
+      const s1 = buildJitSummary("字".repeat(100), 80);
+      expect(Array.from(s1).length).toBe(80);
+      expect(s1.endsWith("…")).toBe(true);
+      const s2 = buildJitSummary("👍".repeat(100), 80);
+      expect(Array.from(s2).length).toBe(80);
+      // 不产生孤立代理对（末尾必须是完整 emoji 或截断后缀；孤立即高位代理结尾）
+      expect(/[\uD800-\uDBFF]$/.test(s2)).toBe(false);
+      expect(buildJitSummary("   ", 80)).toBe("");
+    });
+  });
+
+  describe("renderWikiRecallBlockJit（JIT 渲染形态）", () => {
+    it("单条形状 = 序号+来源+标题+摘要+[详情: tool wiki_fetch]，单条 ≤100、无 path/score 行", () => {
+      const block = renderWikiRecallBlockJit([mkJitEntry()]);
+      expect(block).not.toBeNull();
+      expect(block).toContain("<tdai_recalled_wiki>");
+      expect(block).toContain("</tdai_recalled_wiki>");
+      const line = (block as string).split("\n").find((l) => l.startsWith("1. [wiki:Coding-WiKi]"));
+      expect(line).toBeTruthy();
+      expect(line).toContain("[详情: tool wiki_fetch]");
+      expect(line).toContain("应收暂估回冲：");
+      expect(Array.from(line as string).length).toBeLessThanOrEqual(100);
+      expect(line).not.toContain("path:");
+      expect(line).not.toContain("score=");
+    });
+
+    it("例外：原文 ≤160 直接注全文（沿用 legacy 全格式，含 path/score 行）", () => {
+      const block = renderWikiRecallBlockJit([mkJitEntry({ snippet: "短摘要" })]);
+      expect(block).toContain("1. [wiki:Coding-WiKi] [concept] score=1.00 — 应收暂估回冲");
+      expect(block).toContain("   path: wiki/concepts/a.md");
+      expect(block).toContain("   短摘要");
+      expect(block).not.toContain("[详情: tool wiki_fetch]");
+    });
+
+    it("整块 ≤500：5 条长摘要候选时裁掉装不下的尾部条目，header/footer 必保", () => {
+      const entries = [1, 2, 3, 4, 5].map((i) =>
+        mkJitEntry({ title: `标题${i}`, path: `wiki/p/${i}.md` }),
+      );
+      const block = renderWikiRecallBlockJit(entries) as string;
+      expect(Array.from(block).length).toBeLessThanOrEqual(500);
+      const lines = block.split("\n");
+      expect(lines[0]).toBe("<tdai_recalled_wiki>");
+      expect(lines[lines.length - 1]).toBe("</tdai_recalled_wiki>");
+      // header 的来源说明与取文指引行必保
+      expect(block).toContain("wiki 索引");
+      expect(block).toContain("wiki_fetch");
+    });
+
+    it("软指引恰好一次：doc_path|title、section、≤4000、[truncated]、miss isError=true、单轮 ≤3 次", () => {
+      const block = renderWikiRecallBlockJit([mkJitEntry(), mkJitEntry({ title: "标题2" })]) as string;
+      expect(block.split("单轮取文建议 ≤3 次").length - 1).toBe(1);
+      const guideLine = block.split("\n").find((l) => l.includes("wiki_fetch") && l.includes("doc_path"));
+      expect(guideLine).toBeTruthy();
+      expect(guideLine).toContain("title");
+      expect(guideLine).toContain("section");
+      expect(guideLine).toContain("4000");
+      expect(guideLine).toContain("[truncated]");
+      expect(guideLine).toContain("isError=true");
+    });
+
+    it("空 snippet → 仅标题（无冒号）；超长 title 截断保 ≤100", () => {
+      const empty = renderWikiRecallBlockJit([mkJitEntry({ snippet: "" })]) as string;
+      const line = empty.split("\n").find((l) => l.startsWith("1. ")) as string;
+      expect(line).toBe("1. [wiki:Coding-WiKi] 应收暂估回冲 [详情: tool wiki_fetch]");
+      const longTitle = renderWikiRecallBlockJit([mkJitEntry({ title: "长".repeat(60) })]) as string;
+      const line2 = longTitle.split("\n").find((l) => l.startsWith("1. ")) as string;
+      expect(Array.from(line2).length).toBeLessThanOrEqual(100);
+      expect(line2).toContain("[详情: tool wiki_fetch]");
+    });
+
+    it("空条目列表返回 null（与 legacy 渲染一致）", () => {
+      expect(renderWikiRecallBlockJit([])).toBeNull();
+    });
+  });
+
+  describe("injector JIT 路由（meta 能力位 + jit tri-state）", () => {
+    it("meta wiki_jit=true → JIT 短块（metadata.jitMode=jit，体积对比记录在案）", async () => {
+      const { injector } = build({ searchImpl: async () => [longHit] });
+      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
+      expect(blocks).toHaveLength(1);
+      const content = blocks[0].content;
+      expect(content).toContain("[详情: tool wiki_fetch]");
+      expect(content).not.toContain("score=");
+      expect(blocks[0].metadata).toMatchObject({ jitMode: "jit" });
+      const meta = blocks[0].metadata as { chars: number; jitWouldBeChars: number };
+      expect(meta.chars).toBe(Array.from(content).length);
+      // legacy 全量渲染（长摘要）必然显著长于 JIT 短块
+      expect(meta.jitWouldBeChars).toBeGreaterThan(meta.chars);
+    });
+
+    it("meta 缺省（无 assetCapabilities）→ 现行全量（jitMode=legacy，默认关=shadow-first）", async () => {
+      const { injector } = build();
+      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理"));
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].content).toContain("score=");
+      expect(blocks[0].content).not.toContain("[详情: tool wiki_fetch]");
+      expect(blocks[0].metadata).toMatchObject({ jitMode: "legacy" });
+      const meta = blocks[0].metadata as { chars: number; jitWouldBeChars: number };
+      expect(meta.jitWouldBeChars).toBeLessThan(meta.chars);
+    });
+
+    it("meta wiki_jit=false → 现行全量", async () => {
+      const { injector } = build();
+      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", legacyCaps));
+      expect(blocks[0].metadata).toMatchObject({ jitMode: "legacy" });
+      expect(blocks[0].content).toContain("score=");
+    });
+
+    it("config jit=false 逃生门压过 meta 开关 → 现行全量，且与缺省输出逐字节一致", async () => {
+      const escaped = build({ config: { jit: false } });
+      const baseline = build();
+      const a = await escaped.injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
+      const b = await baseline.injector.execute(mkCapsCtx("应收暂估回冲怎么处理"));
+      expect(a[0].metadata).toMatchObject({ jitMode: "legacy" });
+      expect(a[0].content).toBe(b[0].content);
+    });
+
+    it("config jit=true 强制 JIT（meta 关闭/缺席时——运维/live 验收通道）", async () => {
+      const { injector } = build({ config: { jit: true }, searchImpl: async () => [longHit] });
+      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", legacyCaps));
+      expect(blocks[0].metadata).toMatchObject({ jitMode: "jit" });
+      expect(blocks[0].content).toContain("[详情: tool wiki_fetch]");
+    });
+
+    it("JIT 模式下 [degraded: fts-only] 标注照常生效", async () => {
+      const { injector } = build({ searchImpl: async () => [longHit] });
+      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
+      expect(blocks[0].content).toContain("[degraded: fts-only]");
+      expect(blocks[0].content).toContain("[详情: tool wiki_fetch]");
+    });
+
+    it("journal 行：mode/chars/jitWouldBeChars/entries/team 记入 injector 日志通道", async () => {
+      const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+      try {
+        const { injector } = build();
+        await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
+        const journal = infoSpy.mock.calls
+          .map((c) => String(c[0]))
+          .find((s) => s.includes("journal mode=jit"));
+        expect(journal).toBeTruthy();
+        expect(journal).toContain("chars=");
+        expect(journal).toContain("jitWouldBeChars=");
+        expect(journal).toContain("entries=");
+        expect(journal).toContain("team=team");
+
+        infoSpy.mockClear();
+        const { injector: legacyInjector } = build();
+        await legacyInjector.execute(mkCapsCtx("应收暂估回冲怎么处理"));
+        const legacyJournal = infoSpy.mock.calls
+          .map((c) => String(c[0]))
+          .find((s) => s.includes("journal mode=legacy"));
+        expect(legacyJournal).toBeTruthy();
+      } finally {
+        infoSpy.mockRestore();
+      }
+    });
+  });
+
+  describe("wikiRecall.jit tri-state 配置解析", () => {
+    function writeTempYaml(body: string): string {
+      const dir = mkdtempSync(join(tmpdir(), "wiki-jit-cfg-"));
+      const file = join(dir, "config.yaml");
+      writeFileSync(file, body, "utf8");
+      return file;
+    }
+
+    it("jit: true / jit: false 透传；缺省 → undefined（跟随 meta 能力位）", () => {
+      const p1 = writeTempYaml("wikiRecall:\n  enabled: true\n  jit: true\n");
+      try {
+        expect(buildConfig({ configFile: p1 }).wikiRecall?.jit).toBe(true);
+      } finally {
+        rmSync(p1, { force: true });
+      }
+      const p2 = writeTempYaml("wikiRecall:\n  enabled: true\n  jit: false\n");
+      try {
+        expect(buildConfig({ configFile: p2 }).wikiRecall?.jit).toBe(false);
+      } finally {
+        rmSync(p2, { force: true });
+      }
+      const p3 = writeTempYaml("wikiRecall:\n  enabled: true\n");
+      try {
+        expect(buildConfig({ configFile: p3 }).wikiRecall?.jit).toBeUndefined();
+      } finally {
+        rmSync(p3, { force: true });
+      }
+    });
+  });
+});
 });
 
 describe("resolveBoundWikiResources", () => {
@@ -717,3 +964,4 @@ describe("shouldRegisterWikiRecallInjector", () => {
     expect(shouldRegisterWikiRecallInjector(base as never)).toBe(true);
   });
 });
+

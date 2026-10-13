@@ -4,12 +4,14 @@ import { HOOK_PRIORITY } from "../types.js";
 import { getLastUserMessage, getMessageText } from "../context.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
 import { extractUserQueryText } from "../../tdai/recorder.js";
+import type { AssetCapabilityFlags } from "../types.js";
 import type { CoreKnowledgeClient, KnowledgeItem } from "../../knowledge/core-client.js";
 import type { WikiRetrieveClient, WikiSearchHit } from "../../knowledge/wiki-retrieve-client.js";
 import {
   applyRecallBudget,
   normalizeScores,
   renderWikiRecallBlock,
+  renderWikiRecallBlockJit,
   type WikiRecallRenderEntry,
 } from "../../knowledge/wiki-recall-utils.js";
 // I-4（Task19+20 fix1）：逐轮诊断日志走分级 logger 而非 console.debug。
@@ -19,6 +21,11 @@ import {
 import { log } from "../../report/log.js";
 
 const TAG = "[wiki-recall-injector]";
+
+/** 码点长度（与 applyRecallBudget 的预算口径一致；surrogate-safe）。 */
+function countCodePoints(s: string): number {
+  return Array.from(s).length;
+}
 
 export interface WikiRecallInjectorConfig {
   enabled: boolean;
@@ -75,6 +82,14 @@ export interface WikiRecallInjectorConfig {
    * 例：{ boost: 1.5, keywords: { "Coding-WiKi": ["结算","金额","冲回","合同"], "Standards-WiKi": ["规范","并发","异常"] } }
    */
   domainRouter?: { boost?: number; keywords: Record<string, string[]> };
+  /**
+   * Task 6（P1 recall-quality）：wiki JIT 瘦身注入 tri-state（可选，缺省 undefined）。
+   * - `false`：强制现行全量注入（逃生门——不支持 tool 取文的接入面用）；
+   * - `true`：强制 JIT 短块（运维覆盖 / live 验收通道）；
+   * - 缺省（undefined）：跟随 meta 能力位 `wiki_jit.enabled`
+   *   （ctx.metadata.custom.assetCapabilities.wiki_jit；缺省 false = shadow-first 默认关）。
+   */
+  jit?: boolean;
 }
 
 export interface WikiRecallInjectorDeps {
@@ -340,9 +355,18 @@ export class WikiRecallInjector implements InjectionHook {
       ...structuralEntries,
     ];
     if (entries.length === 0) return [];
-    const rawRendered = renderWikiRecallBlock(entries);
+    // Task 6（P1 recall-quality）：JIT 瘦身注入 —— 双渲染对比 + tri-state 路由。
+    // 缺省（config.jit 未设）跟随 meta 能力位 wiki_jit.enabled（shadow-first 默认
+    // 关 = legacy）；jit:false 是逃生门（不支持 tool 取文的接入面）；jit:true 为
+    // 运维/live 验收强制通道。两种渲染都算（纯字符串拼接，成本可忽略），journal
+    // 记录实际 chars 与「若走另一形态会注入 chars」对比（P50/P95 数据源）。
+    const jitMode = this.resolveJitMode(ctx);
+    const legacyRendered = renderWikiRecallBlock(entries);
+    const jitRendered = renderWikiRecallBlockJit(entries);
+    const rawRendered = jitMode ? jitRendered ?? legacyRendered : legacyRendered;
     if (!rawRendered) return [];
-    // T15-C：降级标注插在块头标签之后（renderWikiRecallBlock 格式锁定，不动 utils）。
+    const jitWouldBe = jitMode ? legacyRendered : jitRendered ?? "";
+    // T15-C：降级标注插在块头标签之后（render 格式锁定，不动 utils）。
     const annotated = degradedFtsOnly
       ? rawRendered.replace(
           "<tdai_recalled_wiki>",
@@ -354,6 +378,16 @@ export class WikiRecallInjector implements InjectionHook {
     const budgeted = applyRecallBudget(annotated.split("\n"), this.config.maxTotalChars, 0);
     const rendered = budgeted.join("\n");
 
+    // Task 6 journal（wiki 注入无既有 journal 钩子——recall journal 属 MemoryCore，
+    // 挂点=injector 日志通道 log.info 单行；chars 按码点计，与预算口径一致）。
+    log.info(
+      `${TAG} journal mode=${jitMode ? "jit" : "legacy"} chars=${countCodePoints(rendered)}`
+      + ` jitWouldBeChars=${countCodePoints(jitWouldBe ?? "")} entries=${entries.length}`
+      + ` wikis=${wikis.map((w) => w.name).join(",")}`
+      + ` team=${identity?.teamId ?? "-"} agent=${identity?.agentId ?? "-"}`
+      + ` degradedFtsOnly=${degradedFtsOnly}`,
+    );
+
     return [
       {
         type: "text",
@@ -363,9 +397,27 @@ export class WikiRecallInjector implements InjectionHook {
           count: entries.length, // W5：含附尾结构页（真实注入条数）
           wikis: wikis.map((w) => w.name),
           degradedFtsOnly,
+          // Task 6：JIT 放量观测字段（mode / 实际 chars / 若另一形态的 chars）
+          jitMode: jitMode ? "jit" : "legacy",
+          chars: countCodePoints(rendered),
+          jitWouldBeChars: countCodePoints(jitWouldBe ?? ""),
         },
       },
     ];
+  }
+
+  /**
+   * Task 6：JIT tri-state 路由。config.jit 显式值优先（false=强制 legacy 逃生门，
+   * true=强制 JIT）；缺省跟随 meta 能力位 `wiki_jit.enabled`
+   * （ctx.metadata.custom.assetCapabilities.wiki_jit；flags 缺省/缺席 = false，
+   * shadow-first 默认关）。
+   */
+  private resolveJitMode(ctx: AgentContext): boolean {
+    if (this.config.jit === false) return false;
+    if (this.config.jit === true) return true;
+    const caps = (ctx.metadata?.custom as { assetCapabilities?: AssetCapabilityFlags } | undefined)
+      ?.assetCapabilities;
+    return caps?.wiki_jit === true;
   }
 }
 

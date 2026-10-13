@@ -805,6 +805,18 @@ wikiRecall:
   # 类型: int | 默认: 0（不限制）
   # maxTotalChars: 0
 
+  # ▲Wiki JIT 精简注入（P1 recall-quality Task 6，shadow-first）：
+  #   开启后注入块瘦身：单条 = 标题 + ≤80 码点摘要 + [详情: tool wiki_fetch]
+  #   （单条 ≤100、整块 ≤500 码点，替换 legacy 的 path/score/全文格式）；
+  #   摘要素材原文 ≤160 码点的条目仍直注全文（沿用 legacy 全格式）。
+  #   三态语义：
+  #     true  = 强制 JIT（meta 能力位关闭/缺席也生效——运维/live 验收通道）；
+  #     false = 逃生门（不支持 tool 取文的接入面强制回退 legacy，逐字节旧行为）；
+  #     缺省（删掉本键）= 跟随 meta 能力位 wiki_jit.enabled（面板"权限管理"可开关，
+  #             能力位缺省关）。journal 每轮记录 mode/chars/jitWouldBeChars 供放量对比。
+  # 类型: boolean | 默认: 未设置（跟随 meta 能力位 wiki_jit.enabled，缺省关）
+  # jit: true
+
 # ── Skill 运行时 ──────────────────────────────────────────────────────────
 #
 # skill 抽取链路: proxy 每轮真人对话结束 (agent 给出无 tool_use 的最终回复)

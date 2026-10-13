@@ -285,6 +285,12 @@ export interface AssetCapabilityFlags {
   llm_wiki: boolean;
   code_graph: boolean;
   chat_memory: boolean;
+  /**
+   * Task 6（P1 recall-quality）：wiki 召回 JIT 瘦身注入放量位（meta 能力位
+   * `wiki_jit.enabled`，同 llm_wiki.enabled 模式）。默认 false = 现行全量注入
+   * （shadow-first）；true = 注入精简索引，正文由 agent 用 wiki_fetch 按需取。
+   */
+  wiki_jit: boolean;
 }
 
 export interface PrewarmInput {

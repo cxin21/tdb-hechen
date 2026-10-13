@@ -82,7 +82,7 @@ export const userKeysApi = {
 
 // ========================= User Config（meta/config/user/*）=========================
 
-export type AssetCapabilityKey = 'skill.enabled' | 'llm_wiki.enabled' | 'code_graph.enabled' | 'chat_memory.enabled';
+export type AssetCapabilityKey = 'skill.enabled' | 'llm_wiki.enabled' | 'code_graph.enabled' | 'chat_memory.enabled' | 'wiki_jit.enabled';
 
 export interface UserConfigItem {
   module: string;
@@ -106,7 +106,19 @@ const ASSET_CAPABILITY_KEYS: AssetCapabilityKey[] = [
   'llm_wiki.enabled',
   'code_graph.enabled',
   'chat_memory.enabled',
+  'wiki_jit.enabled',
 ];
+
+// meta 未返回该参数时的 UI 缺省值。wiki_jit.enabled 必须 false（shadow-first：
+// 能力位缺省关，与 MemoryProxy DEFAULT_ASSET_CAPABILITIES.wiki_jit=false 对齐，
+// 否则面板显示"开"而 proxy 实际关）；其余能力沿用 boolFromConfigValue 的缺省开语义。
+const ASSET_CAPABILITY_DEFAULTS: Record<AssetCapabilityKey, boolean> = {
+  'skill.enabled': true,
+  'llm_wiki.enabled': true,
+  'code_graph.enabled': true,
+  'chat_memory.enabled': true,
+  'wiki_jit.enabled': false,
+};
 
 function boolFromConfigValue(value: string | undefined): boolean {
   return value === undefined ? true : value === '1' || value.toLowerCase() === 'true';
@@ -124,7 +136,10 @@ export const userConfigApi = {
     const view = await userConfigApi.get(me.user_id, 'asset_type');
     const byName = new Map(view.items.map((it) => [it.param_name, it.effective_value]));
     return Object.fromEntries(
-      ASSET_CAPABILITY_KEYS.map((key) => [key, boolFromConfigValue(byName.get(key))]),
+      ASSET_CAPABILITY_KEYS.map((key) => {
+        const raw = byName.get(key);
+        return [key, raw === undefined ? ASSET_CAPABILITY_DEFAULTS[key] : boolFromConfigValue(raw)];
+      }),
     ) as AssetCapabilityConfig;
   },
 

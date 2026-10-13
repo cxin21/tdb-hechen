@@ -9,7 +9,7 @@
  *   → 3. 传入的 apiKey 原样透传。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAssetCapabilities } from "../capabilities.js";
+import { DEFAULT_ASSET_CAPABILITIES, fetchAssetCapabilities } from "../capabilities.js";
 import { resetTdaiGatewayApiKeyForTest, setTdaiGatewayApiKey } from "../bearer-token.js";
 
 /** mock fetch：捕获请求头，返回空 items 的合法 envelope。 */
@@ -68,5 +68,47 @@ describe("fetchAssetCapabilities Bearer token（I-2 统一为 resolveBearerToken
       serviceIdOverride: "space-42",
     });
     expect(headers["x-tdai-service-id"]).toBe("space-42");
+  });
+});
+
+// ── Task 6（P1 recall-quality）：wiki_jit 能力位 ────────────────────────────
+// 放量开关（spec §5 决策 8）：meta 能力位 wiki_jit.enabled，同 llm_wiki.enabled
+// 模式。shadow-first：代码默认 false（旧行为=全量注入），meta 未返回该参数时
+// 也必须停在 false（parseEnabled(undefined)=true 的兜底语义不得误开 JIT）。
+describe("wiki_jit 能力位（Task 6 shadow-first 默认关）", () => {
+  it("DEFAULT_ASSET_CAPABILITIES.wiki_jit === false（缺省=现行全量注入）", () => {
+    expect(DEFAULT_ASSET_CAPABILITIES.wiki_jit).toBe(false);
+  });
+
+  it("meta 返回 wiki_jit.enabled=1 → true；=0 → false", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        code: 0,
+        data: { items: [{ param_name: "wiki_jit.enabled", effective_value: "1" }] },
+      }),
+    }) as unknown as Response));
+    const on = await fetchAssetCapabilities({ ...BASE_INPUT, apiKey: "k" });
+    expect(on.wiki_jit).toBe(true);
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        code: 0,
+        data: { items: [{ param_name: "wiki_jit.enabled", effective_value: "0" }] },
+      }),
+    }) as unknown as Response));
+    const off = await fetchAssetCapabilities({ ...BASE_INPUT, apiKey: "k" });
+    expect(off.wiki_jit).toBe(false);
+  });
+
+  it("meta 未返回该参数（旧内核）→ 保持默认 false（不误开 JIT）", async () => {
+    const { headers } = stubFetchCapture();
+    const flags = await fetchAssetCapabilities({ ...BASE_INPUT, apiKey: "k" });
+    expect(headers["Authorization"]).toBe("Bearer k");
+    expect(flags.wiki_jit).toBe(false);
+    // 其余能力位默认语义不变
+    expect(flags.skill).toBe(true);
+    expect(flags.llm_wiki).toBe(true);
   });
 });

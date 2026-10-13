@@ -46,6 +46,12 @@
           "param_value": "1",
           "description": "是否允许使用 Chat Memory 类资产",
           "allowed_scopes": ["global", "user"]
+        },
+        {
+          "param_name": "wiki_jit.enabled",
+          "param_value": "0",
+          "description": "是否开启 Wiki JIT 精简注入（0=全文注入；1=仅注入标题+摘要索引，全文按需 wiki_fetch 获取）",
+          "allowed_scopes": ["global", "user"]
         }
       ]
     },

@@ -396,6 +396,14 @@ export interface WikiRecallConfig {
   skipQuery?: { minChars?: number; patterns?: string[] };
   /** 跨库软定域（可选）：按 wiki 领域词 boost（仅加权不删除）；无命中=现状。 */
   domainRouter?: { boost?: number; keywords: Record<string, string[]> };
+  /**
+   * Task 6（P1 recall-quality）：wiki JIT 瘦身注入 tri-state（可选，缺省 undefined）。
+   * - `false`：强制现行全量注入（逃生门——不支持 tool 取文的接入面用）；
+   * - `true`：强制 JIT 短块（运维覆盖 / live 验收通道）；
+   * - 缺省（undefined）：跟随 meta 能力位 `wiki_jit.enabled`
+   *   （ctx.metadata.custom.assetCapabilities.wiki_jit；缺省 false = shadow-first 默认关）。
+   */
+  jit?: boolean;
 }
 
 /** Skill runtime-side configuration. */
