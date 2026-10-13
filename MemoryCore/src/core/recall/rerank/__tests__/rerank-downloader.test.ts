@@ -345,3 +345,85 @@ describe("P1 task-3 下载器：单例状态注册表（panel 轮询面）", () 
     expect(getRerankModelStatus().state).not.toBe("ready");
   });
 });
+
+describe("P1 task-4 Part 0：计数器节流发布（mid-file 进度可见）", () => {
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  /** 滴灌 body：chunks 块、每块 total/chunks 字节、块间隔 delayMs（pull 背压节奏，全程密闭零网络）。 */
+  const dripBody = (total: number, chunks: number, delayMs: number): ReadableStream<Uint8Array> => {
+    let i = 0;
+    const per = Math.floor(total / chunks);
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (i >= chunks) {
+          controller.close();
+          return;
+        }
+        await sleep(delayMs);
+        controller.enqueue(new Uint8Array(per));
+        i += 1;
+      },
+    });
+  };
+
+  /** 全程轮询注册表快照（bytes/percent/state），下载结束后返回采样序列。 */
+  const sampleDuring = async (p: Promise<boolean>, fileIdx = 0) => {
+    const obs: Array<{ bytes?: number; percent: number; state: string }> = [];
+    for (;;) {
+      const finished = await Promise.race([
+        p.then(() => true as const),
+        sleep(60).then(() => false as const),
+      ]);
+      const st = getRerankModelStatus();
+      obs.push({ bytes: st.files[fileIdx]?.bytesReceived, percent: st.percent, state: st.state });
+      if (finished) break;
+    }
+    return obs;
+  };
+
+  it("mid-file 发布节奏：下载中注册表字节多次推进（非仅完成一跳），100% 仅在完成时出现", async () => {
+    const TOTAL = 500;
+    const files: RerankModelFileSpec[] = [{ rel: "model.onnx", minBytes: 50 }];
+    const fetchImpl = ((_url: string) =>
+      new Response(dripBody(TOTAL, 10, 90), {
+        status: 200,
+        headers: { "Content-Length": String(TOTAL) },
+      })) as unknown as typeof fetch;
+    const dl = new RerankModelDownloader({ modelDir, fetchImpl, backoffBaseMs: 1, maxRetriesPerSource: 0, modelFiles: files });
+    const p = dl.download();
+    const obs = await sampleDuring(p);
+    expect(await p).toBe(true);
+
+    const mid = obs.filter((o) => o.state === "downloading" && typeof o.bytes === "number" && (o.bytes as number) < TOTAL);
+    const distinctMid = new Set(mid.map((o) => o.bytes)).size;
+    expect(distinctMid).toBeGreaterThanOrEqual(2); // ≥2 个 mid-file 采样点 = 计数器节流发布已接通
+    expect(mid.every((o) => o.percent < 100)).toBe(true); // 100% 只能来自完成路径
+    const st = getRerankModelStatus();
+    expect(st.state).toBe("ready");
+    expect(st.percent).toBe(100);
+    expect(st.files[0]?.bytesReceived).toBe(TOTAL);
+  });
+
+  it("回滚/重试路径：字节回退（received 重置）仍会被发布；最终失败 publish failed 态", async () => {
+    const TOTAL = 900;
+    const files: RerankModelFileSpec[] = [{ rel: "model.onnx", minBytes: 1500 }]; // 恒 below-min → 可重试 → 换源重下
+    const fetchImpl = ((_url: string) =>
+      new Response(dripBody(TOTAL, 10, 80), {
+        status: 200,
+        headers: { "Content-Length": String(TOTAL) },
+      })) as unknown as typeof fetch;
+    const dl = new RerankModelDownloader({ modelDir, fetchImpl, backoffBaseMs: 1, maxRetriesPerSource: 0, modelFiles: files });
+    const p = dl.download();
+    const obs = await sampleDuring(p);
+    expect(await p).toBe(false);
+
+    const mid = obs.filter((o) => o.state === "downloading" && typeof o.bytes === "number");
+    const seq = mid.map((o) => o.bytes as number);
+    const hasReset = seq.some((b, i) => i > 0 && b < seq[i - 1]);
+    expect(hasReset).toBe(true); // 第二源尝试从 0 重下 → 字节回退必须可见（不受节流吞掉）
+    const st = getRerankModelStatus();
+    expect(st.state).toBe("failed");
+    expect(st.error).toContain("too small");
+    expect(st.files[0]?.bytesReceived).toBe(TOTAL);
+  });
+});

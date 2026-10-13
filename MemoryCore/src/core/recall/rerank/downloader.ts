@@ -45,6 +45,9 @@ const DEFAULT_MODELSCOPE_BASE = "https://modelscope.cn";
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 MemoryCore-RerankDownloader/1.0";
 
+/** 计数器节流发布间隔毫秒（Part 0 review I-1：mid-file 进度可见；见 maybePublishFromCounter）。 */
+const COUNTER_PUBLISH_INTERVAL_MS = 500;
+
 export type RerankDownloadFileState = "pending" | "downloading" | "done" | "failed";
 
 export interface RerankDownloadFileStatus {
@@ -168,6 +171,9 @@ export class RerankModelDownloader {
   private readonly files: RerankModelFileSpec[];
   private readonly sources: SourceDef[];
   private progress: RerankDownloadStatus;
+  /* Part 0（review I-1）节流发布状态：计数器驱动的 mid-file 发布。 */
+  private counterLastBytes = -1;
+  private counterLastPublishAt = 0;
 
   constructor(opts: RerankModelDownloaderOptions) {
     this.modelDir = opts.modelDir;
@@ -233,6 +239,32 @@ export class RerankModelDownloader {
 
   private publish(): void {
     registrySnapshot = copySnapshot(this.progress);
+  }
+
+  /**
+   * 计数器节流发布（Part 0，review I-1）：consumeBody 的字节计数此前只改
+   * bytesReceived 从不 publish，面板轮询只能看到文件粒度跳变 + 分钟级字节停滞
+   * （266MB onnx 下载全程 5 段 20% 跳变）。节流规则选「时间阈值」：
+   * 距上次计数器发布 ≥500ms 且期间字节有变化才发布——
+   *   · 面板按 ~1s 轮询（spec §4.4 无推送通道），亚秒级突发对客户端不可见；
+   *     字节阈值（≥256KB）在快管道上会退化为逐 chunk 发布纯增噪音，故不取；
+   *   · 字节无变化（连接真停滞）不发布，避免空转；
+   *   · 字节回退（换源重下 / 回滚重置）视为新事件立即发布，重置必须可见。
+   * 100% 只能来自完成路径（markFile done / markReady）——此处 fraction 按 <1 clamp。
+   * 文件完成/失败/就绪的状态发布仍走 publish()，不受此节流影响。
+   */
+  private maybePublishFromCounter(fileIdx: number): void {
+    const f = this.progress.files[fileIdx];
+    if (typeof f.bytesReceived !== "number") return;
+    if (f.bytesReceived === this.counterLastBytes) return;
+    const now = Date.now();
+    const reset = this.counterLastBytes >= 0 && f.bytesReceived < this.counterLastBytes;
+    if (!reset && now - this.counterLastPublishAt < COUNTER_PUBLISH_INTERVAL_MS) return;
+    this.counterLastBytes = f.bytesReceived;
+    this.counterLastPublishAt = now;
+    const fraction = f.totalBytes && f.totalBytes > 0 ? Math.min(0.999, f.bytesReceived / f.totalBytes) : 0;
+    this.progress.percent = this.computePercent(fileIdx, fraction);
+    this.publish();
   }
 
   private markFile(i: number, patch: Partial<RerankDownloadFileStatus> & { state: RerankDownloadFileState }): void {
@@ -376,6 +408,7 @@ export class RerankModelDownloader {
           bytesReceived: baseReceived + received,
           totalBytes: total,
         };
+        this.maybePublishFromCounter(opts.fileIdx);
       }
     });
     try {

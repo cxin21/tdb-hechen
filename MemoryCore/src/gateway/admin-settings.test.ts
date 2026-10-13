@@ -1,10 +1,11 @@
 // src/gateway/admin-settings.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type http from "node:http";
 import { makeAdminSettingsRouteTable } from "./admin-settings.js";
+import { readSettingsOverride } from "./settings-override.js";
 import { handleV2Route, type V2RouterDeps } from "./v2-router.js";
 
 let dir: string;
@@ -16,6 +17,7 @@ const deps = () => ({
   getEffective: () => ({
     llm: { baseUrl: "https://a.b", apiKey: "sk-12345678", model: "m1", maxTokens: 10, timeoutMs: 20, provider: "openai" as const, proxy: { useMemorySystemUserKey: true }, stream: false },
     embedding: { provider: "openai_compatible", apiKey: "ek-87654321", model: "e1", baseUrl: "https://e.b", dimensions: 8, sendDimensions: true, enabled: true },
+    rerank: { enabled: false, provider: "local", apiKey: "rk-99998888", model: "bge-r", timeoutMs: 800, candidates: 12, minScore: -2, shadowMode: true, configError: null, local: { modelDir: "eff-dir", idleUnloadMs: 600000 } },
   }),
   getReindexState: () => ({ status: "idle" as const }),
 });
@@ -46,6 +48,49 @@ describe("admin settings route table (core)", () => {
     const table = makeAdminSettingsRouteTable(deps());
     const res = await table["/v3/admin/settings/set"]!({ llm: { baseUrl: "ftp://x" } }, {} as any, "req-4", {});
     expect(res.code).not.toBe(0);
+  });
+});
+
+// ── P1 task-4：rerank 段（与 embedding 同款掩码/持久化语义）──
+describe("admin settings rerank 段（P1 task-4）", () => {
+  it("get：rerank 段掩码 apiKey + local 与 effective 深合并 + source 标注", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    // 先落一个只写 local.idleUnloadMs 的 override，验证 get 视图不丢 effective.local.modelDir
+    await table["/v3/admin/settings/set"]!({ rerank: { enabled: true, local: { idleUnloadMs: 0 } } }, {} as any, "rq-a", {});
+    const res = await table["/v3/admin/settings/get"]!({}, {} as any, "rq-b", {});
+    expect(res.code).toBe(0);
+    const d = res.data as any;
+    expect(d.rerank.apiKey).toBeUndefined();
+    expect(d.rerank.apiKeyMasked).toBe("****8888");
+    expect(d.rerank.source).toBe("override");
+    expect(d.rerank.enabled).toBe(true);
+    expect(d.rerank.local.modelDir).toBe("eff-dir");   // effective 值不被局部 override 冲掉
+    expect(d.rerank.local.idleUnloadMs).toBe(0);       // override 值并入视图
+  });
+  it("set：rerank 落盘 + 空 apiKey=保留原值 + 再次 set 局部 local 不冲掉 modelDir", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    await table["/v3/admin/settings/set"]!({ rerank: { provider: "local", local: { modelDir: "D:/rk", idleUnloadMs: 300000 } } }, {} as any, "rq-c", {});
+    const res = await table["/v3/admin/settings/set"]!({ rerank: { apiKey: "", enabled: true, local: { idleUnloadMs: 0 } } }, {} as any, "rq-d", {});
+    expect(res.code).toBe(0);
+    const o = JSON.parse(readFileSync(join(dir, "config-override.json"), "utf-8"));
+    expect(o.rerank.provider).toBe("local");
+    expect(o.rerank.enabled).toBe(true);
+    expect(o.rerank.apiKey).toBeUndefined();           // 空串未落盘
+    expect(o.rerank.local.modelDir).toBe("D:/rk");     // 局部 local 深合并
+    expect(o.rerank.local.idleUnloadMs).toBe(0);
+  });
+  it("set：非法 rerank 值返回 code!=0 且不落盘", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    const res = await table["/v3/admin/settings/set"]!({ rerank: { candidates: -3 } }, {} as any, "rq-e", {});
+    expect(res.code).not.toBe(0);
+    expect(readSettingsOverride(dir)?.rerank).toBeUndefined();
+  });
+  it("get：无 override 时 rerank source=yaml 且 apiKey 掩码", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    const res = await table["/v3/admin/settings/get"]!({}, {} as any, "rq-f", {});
+    const d = res.data as any;
+    expect(d.rerank.source).toBe("yaml");
+    expect(d.rerank.apiKeyMasked).toBe("****8888");
   });
 });
 

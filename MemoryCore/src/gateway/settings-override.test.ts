@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, pickDefined } from "./settings-override.js";
+import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, pickDefined, applyRerankOverrideToRaw } from "./settings-override.js";
 import { loadGatewayConfig } from "./config.js";
 
 let dir: string;
@@ -96,5 +96,119 @@ describe("maxTokens/timeoutMs=0（不限制语义，2026-09-16 拍板；UI 需�
   it("负数仍拒收", () => {
     const r = validateOverride({ llm: { maxTokens: -1 } });
     expect(r.ok).toBe(false);
+  });
+});
+
+// ── P1 task-4：rerank 段（panel rerank 配置与 embedding 同款持久化语义）──
+describe("rerank 段（P1 task-4）", () => {
+  it("validateOverride rerank：合法值收编", () => {
+    const ok = validateOverride({
+      rerank: {
+        enabled: true, provider: "local", baseUrl: "https://a.b", apiKey: "k", model: "m",
+        timeoutMs: 800, candidates: 12, minScore: -2.5, shadowMode: true,
+        local: { modelDir: "D:/models", idleUnloadMs: 0 },
+      },
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.value.rerank?.provider).toBe("local");
+      expect(ok.value.rerank?.minScore).toBe(-2.5);
+      expect(ok.value.rerank?.local?.idleUnloadMs).toBe(0);
+    }
+  });
+  it("validateOverride rerank：非法值逐字段拒收", () => {
+    const bad = validateOverride({
+      rerank: { baseUrl: "nope", model: "  ", enabled: 1, shadowMode: "yes", timeoutMs: -5, candidates: 0, minScore: "x", local: { idleUnloadMs: -1, modelDir: 42 } },
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) {
+      const joined = bad.errors.join(";");
+      for (const frag of ["rerank.baseUrl", "rerank.model", "rerank.enabled", "rerank.shadowMode", "rerank.timeoutMs", "rerank.candidates", "rerank.minScore", "rerank.local.idleUnloadMs", "rerank.local.modelDir"]) {
+        expect(joined).toContain(frag);
+      }
+    }
+  });
+  it("rerank 空对象不落 override", () => {
+    const r = validateOverride({ rerank: {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.rerank).toBeUndefined();
+  });
+  it("round-trip 读写 rerank 段（含 local 子对象）", () => {
+    writeSettingsOverride(dir, { rerank: { enabled: true, provider: "local", shadowMode: true, local: { modelDir: "D:/m", idleUnloadMs: 0 } } });
+    const o = readSettingsOverride(dir)!;
+    expect(o.rerank?.enabled).toBe(true);
+    expect(o.rerank?.local?.modelDir).toBe("D:/m");
+    expect(o.rerank?.local?.idleUnloadMs).toBe(0);
+  });
+  it("applyRerankOverrideToRaw：并入 raw.recall.rerank、local 局部深合并、不改入参", () => {
+    const raw: Record<string, unknown> = { recall: { rerank: { enabled: false, local: { modelDir: "yaml-dir" } } }, version: 1 };
+    const out = applyRerankOverrideToRaw(raw, { enabled: true, local: { idleUnloadMs: 0 } });
+    expect(out).not.toBe(raw);
+    expect(raw.recall).toEqual({ rerank: { enabled: false, local: { modelDir: "yaml-dir" } } }); // 入参不变
+    const rr = (out as { recall: { rerank: Record<string, any> } }).recall.rerank;
+    expect(rr.enabled).toBe(true);
+    expect(rr.local.modelDir).toBe("yaml-dir");   // yaml 值保留（局部深合并）
+    expect(rr.local.idleUnloadMs).toBe(0);        // override 值并入
+    expect(applyRerankOverrideToRaw(raw, undefined)).toBe(raw); // 空 override 原样返回
+  });
+  it("loadGatewayConfig：rerank override 经 parseConfig 校验通道（非法 provider 回退 none + enabled 强制关）", () => {
+    const yamlPath = join(dir, "tdai-gateway.yaml");
+    writeFileSync(yamlPath, [
+      "memory:",
+      "  recall:",
+      "    rerank:",
+      "      enabled: true",
+      "      provider: local",
+      "",
+    ].join("\n"), "utf-8");
+    // override 写入非法 provider —— 必须被 parseConfig 校验拦下（回退 none + enabled=false），
+    // 证明 override 注入发生在 parse 之前而非旁路。
+    writeSettingsOverride(dir, { rerank: { provider: "bogus", enabled: true } });
+    const keys = ["TDAI_GATEWAY_CONFIG", "TDAI_DATA_DIR"];
+    const saved = new Map(keys.map(k => [k, process.env[k]]));
+    process.env.TDAI_GATEWAY_CONFIG = yamlPath;
+    process.env.TDAI_DATA_DIR = dir;
+    try {
+      const cfg = loadGatewayConfig();
+      const rr = cfg.memory.recall.rerank as unknown as Record<string, any>;
+      expect(rr.provider).toBe("none");
+      expect(rr.enabled).toBe(false);
+      expect(String(rr.configError ?? "")).toContain("bogus");
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+  it("loadGatewayConfig：rerank override 覆盖 yaml 值（合法时生效）", () => {
+    const yamlPath = join(dir, "tdai-gateway.yaml");
+    writeFileSync(yamlPath, [
+      "memory:",
+      "  recall:",
+      "    rerank:",
+      "      enabled: false",
+      "      provider: none",
+      "      shadowMode: true",
+      "",
+    ].join("\n"), "utf-8");
+    writeSettingsOverride(dir, { rerank: { enabled: true, provider: "local", shadowMode: false, local: { idleUnloadMs: 0 } } });
+    const keys = ["TDAI_GATEWAY_CONFIG", "TDAI_DATA_DIR"];
+    const saved = new Map(keys.map(k => [k, process.env[k]]));
+    process.env.TDAI_GATEWAY_CONFIG = yamlPath;
+    process.env.TDAI_DATA_DIR = dir;
+    try {
+      const cfg = loadGatewayConfig();
+      const rr = cfg.memory.recall.rerank as unknown as Record<string, any>;
+      expect(rr.enabled).toBe(true);
+      expect(rr.provider).toBe("local");
+      expect(rr.shadowMode).toBe(false);
+      expect(rr.local.idleUnloadMs).toBe(0);
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });

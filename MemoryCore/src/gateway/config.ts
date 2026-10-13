@@ -15,7 +15,7 @@ import { getEnv } from "../utils/env.js";
 import { parseConfig as parseMemoryConfig } from "../config.js";
 import type { MemoryTdaiConfig } from "../config.js";
 import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
-import { readSettingsOverride, pickDefined } from "./settings-override.js";
+import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw } from "./settings-override.js";
 
 // ============================
 // Gateway config types
@@ -488,14 +488,20 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   if (!str(memoryCompatRaw, "promptMode") && topLevelPromptMode) {
     memoryCompatRaw.promptMode = topLevelPromptMode;
   }
-  const memory = parseMemoryConfig(memoryCompatRaw);
 
   // ── Admin settings override（{baseDir}/config-override.json）> TDAI_LLM_* env > yaml（spec §3.2）──
-  // 必须在 shouldSpliceLlm 之前合并，保证 splice 到 memory.llm 的已是 override 后的值。
+  // rerank 段（P1 task-4）必须并入 parse 之前的 raw：rerank 的 provider 校验/
+  // 非法回退 none/enabled 强制关闭/clamp 语义全部在 parseConfig 的 rerank 块内，
+  // parse 后合并会绕过这些不变量（applyRerankOverrideToRaw 只在 memoryCompatRaw
+  // 层做 recall.rerank 的浅/局部合并）。读取提前到此，llm 的 override 合并仍在
+  // parse 之后（见下，保证 splice 到 memory.llm 的已是 override 后的值）。
+  const settingsOverride = readSettingsOverride(baseDir);
+  const memoryCompatWithRerank = applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank);
+  const memory = parseMemoryConfig(memoryCompatWithRerank);
+
   // 注意：embedding 的 override 合并不能放在这里 —— 下方"Standalone embedding
   // override pass-through"兼容 splice 在其后执行，会把 yaml 顶层 embedding 字段
   // 反向盖回 override 值；embedding 合并统一挪到该 splice 块之后（见下）。
-  const settingsOverride = readSettingsOverride(baseDir);
   if (settingsOverride?.llm) Object.assign(llm, pickDefined(settingsOverride.llm));
 
   // ── Standalone LLM override pass-through to MemoryTdaiConfig.llm ──

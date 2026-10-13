@@ -88,6 +88,7 @@ import { readApiTraceEnabled } from "../utils/env-config.js";
 import { makeSkillRouteTable } from "./skill-handlers.js";
 import type { SkillRouterDeps as SkillRouterDeps } from "./skill-handlers.js";
 import { makeAdminSettingsRouteTable } from "./admin-settings.js";
+import { makeRerankModelAdminRouteTable } from "./rerank-model-admin.js";
 import { getReindexState } from "../utils/reindex-state.js";
 import {
   wireConversationAddHandler,
@@ -1228,8 +1229,18 @@ export class TdaiGateway {
           getEffective: () => ({
             llm: this.config.llm as unknown as Record<string, unknown>,
             embedding: this.config.memory.embedding as unknown as Record<string, unknown>,
+            // rerank 生效值（P1 task-4）：override 合并发生在 parseMemoryConfig 之前
+            // （gateway/config.ts rerank 注入块），因此这里读到的已是 override 后值。
+            rerank: this.config.memory.recall.rerank as unknown as Record<string, unknown>,
           }),
           getReindexState: () => getReindexState(),
+        }),
+        // /v3/admin/rerank-model/{status,download}（P1 task-4）— rerank 本地模型
+        // 状态查询与下载触发（fire-and-forget，进度由 panel 轮询 status 获取，
+        // spec §4.4：panel 无推送通道）。内网信任模型，管理员判定在 Panel 层。
+        ...makeRerankModelAdminRouteTable({
+          getRerankConfig: () => this.config.memory.recall.rerank,
+          dataDir: this.config.data.baseDir,
         }),
       } as Record<
         string,

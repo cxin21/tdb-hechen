@@ -35,9 +35,28 @@ export interface SettingsEmbedding {
   [k: string]: unknown;
 }
 
+/** rerank 段（P1 task-4，spec §4.3：memory.recall.rerank.*；与后端 admin-settings get 视图对齐）。 */
+export interface SettingsRerank {
+  enabled?: boolean;
+  provider?: 'siliconflow' | 'dashscope' | 'local' | 'none';
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+  candidates?: number;
+  minScore?: number;
+  shadowMode?: boolean;
+  local?: { modelDir?: string; idleUnloadMs?: number };
+  hasApiKey: boolean;
+  apiKeyMasked: string;
+  source: 'env' | 'override' | 'yaml';
+  configError?: string | null;
+  [k: string]: unknown;
+}
+
 export interface SettingsView {
   llm: SettingsLlm;
   embedding: SettingsEmbedding;
+  rerank?: SettingsRerank;
   rebuildStatus?: {
     status: 'idle' | 'running' | 'done' | 'failed';
     reason?: string;
@@ -97,6 +116,65 @@ export const settingsApi = {
 
   /** 手动触发向量重建（knowledge 侧，失败/完成后可用）。 */
   revectorize: (target: SettingsTarget) => call<{ started: boolean }>(target, 'revectorize'),
+};
+
+// ========================= Rerank 本地模型管理（P1 task-4） =========================
+
+/** Core RerankModelDownloader 注册表快照（getRerankModelStatus 返回拷贝）。 */
+export interface RerankModelStatus {
+  state: 'idle' | 'downloading' | 'ready' | 'failed';
+  percent: number;
+  repo: string;
+  modelDir: string;
+  files: Array<{
+    rel: string;
+    state: 'pending' | 'downloading' | 'done' | 'failed';
+    bytesReceived?: number;
+    totalBytes?: number;
+    error?: string;
+  }>;
+  error: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+/**
+ * Rerank 本地模型状态/下载触发（Panel /api/v1/rerank-model/:action → Core
+ * /v3/admin/rerank-model/*）。download 为异步触发即返（进度走 status 轮询，
+ * panel 无推送通道，spec §4.4）。
+ */
+export const rerankModelApi = {
+  status: async (): Promise<RerankModelStatus> => {
+    const env = await request<Envelope<RerankModelStatus>>(
+      'POST',
+      '/api/v1/rerank-model/status',
+      undefined,
+      authHeaders(),
+    );
+    if (env.code !== 0) {
+      throw new ApiError(200, env.message || 'rerank status request failed', '', {
+        code: env.code,
+        rawMessage: env.message,
+      });
+    }
+    return env.data;
+  },
+
+  download: async (): Promise<RerankModelStatus> => {
+    const env = await request<Envelope<RerankModelStatus>>(
+      'POST',
+      '/api/v1/rerank-model/download',
+      {},
+      authHeaders(),
+    );
+    if (env.code !== 0) {
+      throw new ApiError(200, env.message || 'rerank download request failed', '', {
+        code: env.code,
+        rawMessage: env.message,
+      });
+    }
+    return env.data;
+  },
 };
 
 // ========================= Proxy 计费价目表（spec §9.3） =========================

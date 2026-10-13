@@ -105,6 +105,25 @@ export function registerSettingsRoutes(api: Hono, deps: PanelDeps): void {
   api.post('/settings/knowledge/:action', validatePanelMetaHeaders(deps), handler('knowledge'));
   api.post('/settings/memory/:action', validatePanelMetaHeaders(deps), handler('memory'));
 
+  // ── Rerank 本地模型管理（P1 task-4）：status|download 透传 Core ──
+  //   Core 路由 /v3/admin/rerank-model/{status,download}（rerank-model-admin.ts）。
+  //   download 为异步触发即返（单例去重）；进度走 status 轮询，panel 无推送通道
+  //   （spec §4.4）。内网信任模型，管理员判定在本层（与 settings 同范式）。
+  api.post('/rerank-model/:action', validatePanelMetaHeaders(deps), async (c: Context) => {
+    const action = c.req.param('action') ?? '';
+    if (action !== 'status' && action !== 'download') return respondControlError(c, 400, 'INVALID_ACTION');
+    const ctx = buildCtx(c);
+    if (!(await isCallerSystemAdmin(deps, ctx))) return respondControlError(c, 403, 'FORBIDDEN');
+    const coreBase = (ctx.gatewayEndpoint ?? '').replace(/\/+$/, '');
+    if (!coreBase) return respondControlError(c, 502, 'NO_INSTANCE_ENDPOINT');
+    const headers: Record<string, string> = {
+      // Core 网关强制要求 x-tdai-service-id（缺失 → 401，同 settings/memory）
+      'x-tdai-service-id': ctx.instanceId,
+    };
+    if (ctx.gatewayApiKey) headers.Authorization = `Bearer ${ctx.gatewayApiKey}`;
+    return forwardJson(deps, c, `${coreBase}/v3/admin/rerank-model/${action}`, headers);
+  });
+
   // ── Proxy 计费价目表（spec §9.3）：get|set 透传 MemoryProxy /v3/admin/credit-pricing ──
   // 上游仅有 GET/PUT/DELETE（Task 10），故 Panel 的 POST 必须翻译方法：
   //   get → GET（无 body）；set → PUT（body { models: [...] } 原样透传）。
