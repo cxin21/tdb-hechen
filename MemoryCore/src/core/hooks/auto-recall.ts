@@ -50,7 +50,9 @@ import { emotionSalienceOf, buildRankContext,
   type RankSignals,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isInvalidated } from "../recall/filter-invalidated.js";
-import { appendRecallJournal } from "../recall/recall-journal.js";
+import { appendRecallJournal, type RecallJournalGates } from "../recall/recall-journal.js";
+import { createReranker } from "../recall/rerank/factory.js";
+import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
 import {
@@ -357,6 +359,192 @@ export interface LayeredRecallOutcome {
   profileScope: string;
 }
 
+// ═══ P1 召回质量 Task 2（spec §4.5，r3=232a124）：精排接入（rerank wiring）═══
+// 语义合同：rerank 插在 searchMemories 之后、预算切分/组装之前；shadow-first（缺省只记
+// journal 不改注入，宁缺毋滥 §4.6）；null/throw/熔断一律降级原序，绝不阻塞召回。
+// 关 vs 开但不可用：enabled=false 或 provider=none → off（零开销：不建 reranker、零日志、
+// journal 无 rerank 键）；enabled 且 configError/工厂 null（如 local 占位）→ unavailable
+// （warn 恰一次/调用 + 降级 gate，无 provider 外呼、不扩池）。
+
+/** 熔断器（spec §4.5）：连续 threshold 次失败 → windowMs 内跳过 provider（零外呼零时延，
+ *  原序注入）；窗口过后恢复探测（半开：isOpen 归零计数并放行）；成功重置连续失败计数。
+ *  clock 可注入（测试确定性）。 */
+export interface RerankBreaker {
+  isOpen(): boolean;
+  recordSuccess(): void;
+  recordFailure(): void;
+}
+
+export function createRerankBreaker(opts?: {
+  threshold?: number;
+  windowMs?: number;
+  now?: () => number;
+}): RerankBreaker {
+  const threshold = opts?.threshold ?? 3;
+  const windowMs = opts?.windowMs ?? 60_000;
+  const now = opts?.now ?? Date.now;
+  let failures = 0;
+  let openedAt = -Infinity;
+  return {
+    isOpen(): boolean {
+      if (failures < threshold) return false;
+      if (now() - openedAt >= windowMs) {
+        failures = 0; // 窗口已过 → 恢复探测
+        return false;
+      }
+      return true;
+    },
+    recordSuccess(): void {
+      failures = 0;
+      openedAt = -Infinity;
+    },
+    recordFailure(): void {
+      if (failures === 0) openedAt = now(); // 打点=本串首败时刻
+      failures++;
+    },
+  };
+}
+
+// 模块级默认熔断器（进程内跨调用累计；测试用 resetRerankBreakerForTests 归零；
+// 注入 deps.breaker 的调用方不经过它）。
+let defaultRerankBreaker: RerankBreaker = createRerankBreaker();
+
+/** 测试隔离：重建默认熔断器（仅测试用；生产进程内共享是有意语义）。 */
+export function resetRerankBreakerForTests(): void {
+  defaultRerankBreaker = createRerankBreaker();
+}
+
+interface RerankWiring {
+  state: "off" | "unavailable" | "active";
+  provider: string;
+  reranker?: MemoryReranker;
+  breaker?: RerankBreaker;
+  shadow: boolean;
+  minScore: number;
+  candidates: number;
+}
+
+/** 每调用解析一次精排接线（off | unavailable | active）。T1 移交：
+ *  - 工厂 null（构造期不可用，如 local 占位/关闭）与 rerank() null（本次运行失败）都坍缩为
+ *    降级原序，靠 state 区分关/开但不可用；
+ *  - timeoutMs=0 非 configError（clamp 语义）→ active，实际每次中止由 adapter 层返回 null，
+ *    在此表现为「warn+熔断计败+降级 gate」的永久退化，journal 如实记录；
+ *  - adapter 零日志：warn/breaker 全部归本接线层。 */
+function resolveRerankWiring(
+  cfg: MemoryTdaiConfig,
+  deps: { reranker?: MemoryReranker | null; breaker?: RerankBreaker; fetchImpl?: typeof fetch } | undefined,
+  logger?: Logger,
+): RerankWiring {
+  const rc = cfg.recall?.rerank;
+  const provider = rc?.provider ?? "none";
+  const enabled = rc?.enabled === true;
+  if (!rc || !enabled || provider === "none") {
+    // off：完全静默零开销（configError 存在但已停用 → 每调用 warn 一次提示配置问题）
+    if (rc?.configError) logger?.warn?.(`${TAG} [rerank] 精排已停用（${rc.configError}）`);
+    return { state: "off", provider, shadow: true, minScore: -2, candidates: 12 };
+  }
+  const shadow = rc.shadowMode ?? true;
+  const minScore = typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : -2;
+  const candidates =
+    typeof rc.candidates === "number" && Number.isFinite(rc.candidates) && rc.candidates >= 1
+      ? Math.floor(rc.candidates)
+      : 12;
+  const reranker = deps?.reranker !== undefined ? deps.reranker : createReranker(rc, { fetchImpl: deps?.fetchImpl });
+  if (rc.configError || reranker === null) {
+    logger?.warn?.(`${TAG} [rerank] provider=${provider} 不可用（${rc.configError ?? "工厂返回 null"}），降级原序`);
+    return { state: "unavailable", provider, shadow, minScore, candidates };
+  }
+  return { state: "active", provider, reranker, breaker: deps?.breaker ?? defaultRerankBreaker, shadow, minScore, candidates };
+}
+
+/** P1 Task 2（spec §4.5）：精排主体，原位改写 searchResult（lines/scores/metas/gates）。
+ *  - off → 零动作；lines 空 → 零动作（与现状 journal 一致，不产 gate）；
+ *  - unavailable / 熔断开 → 降级 gate（kept=池大小 dropped=0 无 topScore，熔断路径 ms=0）；
+ *  - adapter null/throw → 熔断计败 + warn 恰一条 + 降级 gate（ms=实际耗时）；
+ *  - 成功 → 熔断清零 + 防御性整形（index 去重首见保留/越界剔除/分数降序）+ 选取：
+ *    minScore 以下丢弃、provider 截断的未排序候选按原序垫尾（绝不静默丢弃）、
+ *    cap=预算经验层额度；shadow 只记 gate 不动注入，active 平行重排 lines/scores/metas。 */
+async function applyRecallRerank(
+  query: string,
+  searchResult: { lines: string[]; scores?: number[]; metas?: { recordId?: string; evidenceIds?: string[] }[]; gates?: RecallJournalGates },
+  wiring: RerankWiring,
+  cap: number,
+  logger?: Logger,
+): Promise<void> {
+  if (wiring.state === "off") return;
+  const lines = searchResult.lines;
+  if (lines.length === 0) return;
+  const shadow = wiring.shadow;
+  const degradeGate = (ms: number): void => {
+    searchResult.gates = {
+      ...searchResult.gates,
+      rerank: { provider: wiring.provider, ms, kept: lines.length, dropped: 0, shadow },
+    };
+  };
+  if (wiring.state === "unavailable") {
+    degradeGate(0);
+    return;
+  }
+  const reranker = wiring.reranker!;
+  const breaker = wiring.breaker!;
+  if (breaker.isOpen()) {
+    logger?.debug?.(`${TAG} [rerank] 熔断开启——跳过 provider 调用（原序注入）`);
+    degradeGate(0);
+    return;
+  }
+  // 精排文档 = 剥离注入元数据后的纯内容（tag/·soul/·(活动时间) 不参与语义打分）；
+  // 剥空则退回原行（防全元数据行变空串）。
+  const docs = lines.map((l) => stripMemoryLineMeta(l) || l);
+  const t0 = performance.now();
+  let ranked: RerankResult[] | null = null;
+  try {
+    ranked = await reranker.rerank(query, docs);
+  } catch (err) {
+    logger?.warn?.(`${TAG} [rerank] provider=${wiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），降级原序`);
+    ranked = null;
+  }
+  const ms = performance.now() - t0;
+  if (ranked === null) {
+    breaker.recordFailure();
+    logger?.warn?.(`${TAG} [rerank] provider=${wiring.provider} 返回 null，降级原序`);
+    degradeGate(ms);
+    return;
+  }
+  breaker.recordSuccess();
+  // 防御性整形：非有限 score/非整数或越界 index 剔除 + index 去重（首见保留）+ score 降序
+  const seen = new Set<number>();
+  const clean: RerankResult[] = [];
+  for (const r of ranked) {
+    if (!r || !Number.isFinite(r.score) || !Number.isInteger(r.index) || r.index < 0 || r.index >= lines.length) continue;
+    if (seen.has(r.index)) continue;
+    seen.add(r.index);
+    clean.push({ index: r.index, score: r.score });
+  }
+  clean.sort((a, b) => b.score - a.score);
+  const rankedPass = clean.filter((r) => r.score >= wiring.minScore);
+  const finalIdxs: number[] = rankedPass.map((r) => r.index);
+  const rankedSet = new Set(clean.map((r) => r.index));
+  for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
+    if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
+  }
+  const final = finalIdxs.slice(0, Math.max(cap, 0));
+  searchResult.gates = {
+    ...searchResult.gates,
+    rerank: {
+      provider: wiring.provider,
+      ms,
+      kept: final.length,
+      dropped: lines.length - final.length,
+      ...(clean.length > 0 ? { topScore: clean[0].score } : {}),
+      shadow,
+    },
+  };
+  if (shadow) return; // shadow-first：journal 已记假设性结果，注入逐位不变
+  searchResult.lines = final.map((i) => lines[i]);
+  if (searchResult.scores) searchResult.scores = final.map((i) => searchResult.scores![i]);
+  if (searchResult.metas) searchResult.metas = final.map((i) => searchResult.metas![i]);
+}
+
 export async function performLayeredRecall(params: {
   userText: string;
   sessionKey: string;
@@ -371,6 +559,14 @@ export async function performLayeredRecall(params: {
   /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点——失效排除与时间窗解析以此为"当前"；
    *  缺省 = new Date()。同时旁路会话复用缓存（不同时点的结果不可复用）。 */
   validityNow?: Date;
+  /** P1 Task 2（spec §4.5）：精排 DI seam（测试与嵌入调用方）。缺省 = config 工厂路由
+   *  （createReranker(cfg.recall.rerank, {fetchImpl})）。reranker 显式 null = 强制不可用
+   *  （降级原序 + warn + 降级 gate）；undefined = 走工厂；breaker 缺省 = 模块级默认熔断器。 */
+  rerankDeps?: {
+    reranker?: MemoryReranker | null;
+    breaker?: RerankBreaker;
+    fetchImpl?: typeof fetch;
+  };
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
 
@@ -549,6 +745,9 @@ export async function performLayeredRecall(params: {
           sceneNames: [...new Set(r7Conclusions.map((c) => c.sceneName).filter((s) => typeof s === "string" && s.length > 0))],
         }
       : undefined;
+    // R7 预算对半切（spec §1）——提前到精排之前：rerank cap 消费经验层额度（结论行不入
+    // 精排，精排只消费经验池，选出行数不得超过预算给经验层的额度）。
+    const r7Budget = splitBudget(r7MaxResults, r7ConclusionLines.length);
     // R-A3（E3）：同 session 上轮 query 与本轮全等 → 复用上轮搜索结果（免搜索免外呼）。
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
     const sessionReuseTtlMs = cfg.recall?.sessionReuseTtlMs ?? 300_000;
@@ -630,7 +829,20 @@ export async function performLayeredRecall(params: {
           logger?.debug?.(`${TAG} [coreRef-boost] fired=${JSON.stringify(firedLabels)}, boost=${coreRefBoost}`);
         }
       }
-      searchResult = await searchMemories(userText, pluginDataDir, cfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
+      // ── P1 Task 2（spec §4.5）：精排接线 ──
+      // wiring 先行（可能 warn：configError/工厂 null）。active 且非 shadow 时按 candidates
+      // 扩池（浅拷贝 cfg，仅本次 searchMemories 生效；rank/预算/标签仍读原 cfg）——
+      // shadow 不扩池：searchHybrid 的 explore 位/失效补位组合依赖 maxResults，扩池会让
+      // shadow 注入偏离基线，破坏「shadow 逐位不变」断言（spec §4.6 shadow-first）。
+      const rerankWiring = resolveRerankWiring(cfg, params.rerankDeps, logger);
+      const baseMaxResults = cfg.recall?.maxResults ?? 5;
+      const searchCfg =
+        rerankWiring.state === "active" && !rerankWiring.shadow && rerankWiring.candidates > baseMaxResults
+          ? ({ ...cfg, recall: { ...cfg.recall, maxResults: rerankWiring.candidates } } as MemoryTdaiConfig)
+          : cfg;
+      searchResult = await searchMemories(userText, pluginDataDir, searchCfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
+      // 精排在复用缓存落位前：缓存持有精排后结果（命中路不再外呼 provider，gate 随缓存复现）。
+      await applyRecallRerank(r7CleanQuery, searchResult, rerankWiring, r7Budget.experienceLimit, logger);
       // 审查 #3 修补：空结果不入复用缓存——瞬时失败（如外呼抖动/瞬时空召回）不放大成
       // TTL 窗口内的持续空召回；lines.length>0 才视为可用注入块。
       if (sessionReuseTtlMs > 0 && params.sessionKey && searchResult.lines.length > 0 && !params.validityNow) {
@@ -644,9 +856,8 @@ export async function performLayeredRecall(params: {
     memoryLines = searchResult.lines;
     searchTiming = searchResult.timing;
     recallGates = searchResult.gates;
-    // ── R7 预算对半切（spec §1）：结论层用剩给经验层。无结论 → experienceLimit 全额 →
-    // slice 恒等 + 组装恒等 → applyRecallBudget 输入与现状逐位一致（退化安全）。──
-    const r7Budget = splitBudget(r7MaxResults, r7ConclusionLines.length);
+    // ── R7 预算对半切：r7Budget 已在精排接线前计算（rerank cap 消费）——此处只消费。
+    // 无结论 → experienceLimit 全额 → slice 恒等 + 组装恒等 → 下游与现状逐位一致（退化安全）。
     memoryLines = memoryLines.slice(0, r7Budget.experienceLimit);
     // 审查修补（伴随 Critical）：经验行实际条数在 slice 后定格——scores 切片以此为界，
     // 修掉"经验命中不足 experienceLimit 时 scores 多切导致 metric 串位"的潜在错位。
@@ -1096,8 +1307,9 @@ interface SearchResult {
    * P0-2 验证（issue #2，Spec 终审 a1 落实 2026-10-13）：召回门槛观测——门生效且
    * 有淘汰时记录 kept/dropped（journal `gates` 字段数据源，对比挡下率调参用）。
    * 缺省缺字段 = 门未启用或未淘汰（journal 侧同样缺字段 = 无门行为）。
+   * P1 Task 2（spec §4.5）：gates 类型统一为 RecallJournalGates（nativeMinRRF + rerank）。
    */
-  gates?: { nativeMinRRF?: { gate: number; kept: number; dropped: number } };
+  gates?: RecallJournalGates;
 }
 
 /**

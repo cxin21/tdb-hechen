@@ -15,6 +15,25 @@ export interface RecallJournalSearchTiming {
   embeddingHits: number;
 }
 
+/**
+ * P1 Task 2（spec §4.5，r3=232a124）：精排观测 gate —— kept/dropped 以本调用候选池口径记录；
+ * shadow=true 时为「若生效会怎样」的假设性统计（注入未变，spec §4.6 shadow-first）；
+ * 降级路径（不可用/熔断开/adapter null）ms=0（未外呼）或实际耗时、kept=池大小、dropped=0、无 topScore。
+ */
+export interface RecallJournalRerankGate {
+  provider: string;
+  ms: number;
+  kept: number;
+  dropped: number;
+  topScore?: number;
+  shadow: boolean;
+}
+
+export interface RecallJournalGates {
+  nativeMinRRF?: { gate: number; kept: number; dropped: number };
+  rerank?: RecallJournalRerankGate;
+}
+
 export interface RecallJournalEntry {
   ts: string;
   query: string;
@@ -32,7 +51,7 @@ export interface RecallJournalEntry {
    * P0-2 验证（issue #2，Spec 终审 a1 落实 2026-10-13）：召回门槛观测——门生效且
    * 有淘汰时记录 kept/dropped（挡下率对比）。缺字段 = 门未启用或未淘汰。
    */
-  gates?: { nativeMinRRF?: { gate: number; kept: number; dropped: number } };
+  gates?: RecallJournalGates;
   block?: string;
   memoryLines: string[];
 }
