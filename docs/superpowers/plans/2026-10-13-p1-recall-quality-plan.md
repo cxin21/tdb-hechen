@@ -52,7 +52,7 @@
 
 ## Task 6: wiki JIT 注入瘦身 + meta 能力位（M2 #4，依赖 Task 5）
 
-- Scope：注入块瘦身（wiki-recall-injector.ts:354-355 applyRecallBudget 处）：单条=标题+一行摘要(≤80 chars)+`[详情: tool wiki_fetch]`，单条 ≤100 chars、整块 ≤500 chars（现 ≤1200）；例外：原文 ≤160 chars 直接注全文；per-agent `jit=false` 降级回现行；放量开关=meta 能力位 AssetCapabilityFlags（同 llm_wiki.enabled 模式）+per-team/per-agent 维度；panel 开关 UI；journal 记录每次注入 chars 与「若 JIT 会注入 chars」对比；摘要行来源：核实 knowledge_item 是否已有 summary 字段，没有就用首段首句截断。
+- Scope：注入块瘦身（wiki-recall-injector.ts:354-355 applyRecallBudget 处）：单条=标题+一行摘要(≤80 chars)+`[详情: tool wiki_fetch]`，单条 ≤100 chars、整块 ≤500 chars（现 ≤1200）；例外：原文 ≤160 chars 直接注全文；per-agent `jit=false` 降级回现行；放量开关=meta 能力位 AssetCapabilityFlags（同 llm_wiki.enabled 模式）+per-team/per-agent 维度；panel 开关 UI；journal 记录每次注入 chars 与「若 JIT 会注入 chars」对比；摘要行来源：核实 knowledge_item 是否已有 summary 字段，没有就用首段首句截断；injector 文案含取文软指引「详情用 wiki_fetch，单轮 ≤3 次」（审稿 Minor#6：防止软指引落入任务间空隙）。
 - 测试（TDD）：瘦身断言（条数/chars 上限/例外直注）、jit=false 降级、能力位开关（开/关/无位=缺省行为）、shadow 对比 journal。
 - 验收：注入体积 P50/P95 降 ≥60%（种子数据）；tool 往返成功率 ≥99%。
 
