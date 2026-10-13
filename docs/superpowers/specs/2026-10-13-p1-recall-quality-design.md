@@ -1,7 +1,7 @@
 # P1 召回质量与上下文体积优化设计（MemoryReranker / wiki JIT / worthiness / bi-temporal 补口）
 
 - 日期：2026-10-13
-- 状态：draft（brainstorming 产出，builder-check 修订 r2，待用户批准；批准前不写产品代码）
+- 状态：draft r3（brainstorming 产出，builder-check 修订 + 用户四项拍板已合入，待最终批准；批准前不写产品代码）
 - 前置：P0 修复已交付（commit b68d167 + 23d4923，issue cxin21/tdb-hechen #1 #2），本设计是其上的 P1 层。
 
 ## 1. 背景与动机
@@ -49,6 +49,10 @@ P0 之后剩余两个用户可感知痛点（用户原话确认）：
 5. 接记忆的 agent 均支持 tool 调用 → JIT 按需取正文可行。
 6. worthiness = 降权存储。
 7. 全部四项 shadow-first：先只记录不生效，与现网并排对比无误杀再切换（C3 domainRouter 教训）。
+8. wiki JIT 放量开关 = **meta 能力位 + panel 管理**（与 llm_wiki.enabled 同款模式；per-team/per-agent 开关，改配置不重启 proxy）。
+9. M1/M2「完成」= **交付代码 + 本机验收**（golden 回放 + 种子矩阵 E2E）；生产部署、开 shadow、收集影子数据由用户执行，影子期不占开发排期。
+10. 云端 rerank **硅基流动先行**（/v1/rerank Cohere/Jina 兼容通用 schema，Qwen3-Reranker-0.6B 起步）；dashscope adapter 随后补。
+11. 生产 /opt/tdai 内存 **4GB 总 / 2.5GB 可用** → 生产强制云端 API；local 兜底仅限开发机（按开发便利标准做内存治理，无 OOM 演练要求）。
 
 ## 4. 设计 A：MemoryReranker（召回精排）
 
@@ -66,9 +70,9 @@ interface MemoryReranker {
 
 | provider | 端点 | 模型（起步默认加粗） | 备注 |
 |---|---|---|---|
-| `siliconflow` | POST `{baseUrl}/v1/rerank`，Cohere/Jina 兼容 `{model, query, documents, top_n}` | **Qwen/Qwen3-Reranker-0.6B**，可配 4B/8B、BAAI/bge-reranker-v2-m3 | schema 已核实（官方 API 文档） |
-| `dashscope` | POST `/api/v1/services/rerank/text-rerank/text-rerank`，自有 schema | **qwen3-rerank**、gte-rerank-v2 | gte-rerank v1 2026-05-30 下线，不得选 |
-| `local` | transformers.js（onnxruntime-node）+ Xenova/bge-reranker-base q8 | 固定起步；worker_threads 内懒加载 | 见 4.4 |
+| `siliconflow` | POST `{baseUrl}/v1/rerank`，Cohere/Jina 兼容 `{model, query, documents, top_n}` | **Qwen/Qwen3-Reranker-0.6B**，可配 4B/8B、BAAI/bge-reranker-v2-m3 | schema 已核实（官方 API 文档）；**M1 首发** |
+| `dashscope` | POST `/api/v1/services/rerank/text-rerank/text-rerank`，自有 schema | **qwen3-rerank**、gte-rerank-v2 | gte-rerank v1 2026-05-30 下线，不得选；M1 内随后补 adapter |
+| `local` | transformers.js（onnxruntime-node）+ Xenova/bge-reranker-base q8 | 固定起步；worker_threads 内懒加载 | 仅开发机（决策 11） |
 | `none` | — | — | 未配置 = 跳过精排，行为 = 现状 |
 
 ### 4.3 配置面（panel 与 yaml 同源）
@@ -112,7 +116,7 @@ panel 表单复用 ValueAnchorsPanel/embedding 配置的交互模式：勾选 en
 - phase-1 `shadowMode: true`：精排照跑，只把「若生效会怎样」写 journal，不改注入。
 - 校准目标（用 golden 回放 + 影子数据）：相关 avg score − 噪音 avg score ≥ 3 logit；minScore 定在分界带内。
 - 验收：① shadow 期间无误杀（会杀掉的行人工复核）；② 切换后 golden 全绿 + 本机 E2E 种子矩阵（spike 用例固化进 MemoryCore 测试）；③ P95 延迟增量 ≤300ms、熔断生效。
-- 里程碑边界（部署/影子收集职责归属）待用户拍板后回填本节。
+- 里程碑边界（已拍板，决策 9）：交付 = 代码 + 本机验收；生产部署/开 shadow/影子收集由用户执行，影子期不占开发排期。
 
 ## 5. 设计 B：wiki JIT 注入
 
@@ -121,7 +125,7 @@ panel 表单复用 ValueAnchorsPanel/embedding 配置的交互模式：勾选 en
 - 正文通道（builder-check 定案）：`wiki_fetch` 走 **knowledge tool 面**——knowledge-tools-injector 渲染 KS 8421 的 `/tools/list`、`/tools/call`（wiki 正文在 Knowledge 服务；memory-bridge 面反代的是 MemoryCore，取不到 wiki 正文，故不选；身份/allowlist 语义沿用 knowledge tool 既有模型）。入参 `{ doc_path | title, section? }`——doc_path = KS 页面 path（对应 WikiSearchHit.path；WikiSearchHit 无独立 doc_id 字段）；出参正文（单次 ≤4000 chars 截断）。agent 侧已确认支持 tool。
 - 例外：候选原文本身就短（≤160 chars）直接注全文，不强制 JIT。
 - 降级：per-agent `jit=false` 回退现行为（为未来不支持 tool 的接入面留门）。
-- 灰度：按 team 开关逐步放量；放量开关的配置载体（proxy yaml per-team 列表 vs meta 能力位 + panel UI）待用户拍板后回填；journal 记录每次注入 chars 与「若 JIT 会注入 chars」对比。
+- 灰度（配置载体已拍板，决策 8）：per-team/per-agent 开关走 **meta 能力位**（AssetCapabilityFlags，同 llm_wiki.enabled 模式）+ panel UI 管理，改配置不重启 proxy；journal 记录每次注入 chars 与「若 JIT 会注入 chars」对比。
 - 验收：注入体积 P50/P95 下降 ≥60%；tool 往返成功率 ≥99%；摘要行足以让 agent 判断「要不要取详情」（人工抽检）。
 - 单轮取文次数：prompt 软指引 ≤3 次（不做 memory-bridge 跨请求硬限流——wiki_fetch 只读、无破坏面，硬限流是独立有状态工程项，收益不成比例）。
 
@@ -146,7 +150,7 @@ panel 表单复用 ValueAnchorsPanel/embedding 配置的交互模式：勾选 en
 
 ## 8. 排期建议
 
-M1 reranker（接口+local provider+下载器+shadow journal+panel）→ M2 wiki JIT（knowledge tool+注入瘦身，可与 M1 并行——M1 在 MemoryCore，M2 在 MemoryProxy/Knowledge）→ M3 worthiness → M4 bi-temporal 补口。每项独立 flag、独立回滚，全部 shadow-first 切换。
+M1 reranker（接口+siliconflow adapter+dashscope adapter+local provider+下载器+shadow journal+panel）→ M2 wiki JIT（knowledge tool+注入瘦身+meta 能力位+panel，可与 M1 并行——M1 在 MemoryCore，M2 在 MemoryProxy/Knowledge/meta）→ M3 worthiness → M4 bi-temporal 补口。每项独立 flag、独立回滚，全部 shadow-first 切换。
 
 ## 9. 留给 builder 的决策（已授权自决）
 
@@ -162,7 +166,7 @@ M1 reranker（接口+local provider+下载器+shadow journal+panel）→ M2 wiki
 | hf-mirror 429 限流（已实测） | 直链+UA+重试+断点续传，备源 ModelScope，模型落盘一次复用 |
 | 精排压掉长尾相关行 | 候选池 5→12 缓冲 + shadow 人工复核 + minScore 分界带内取值 |
 | JIT 使 tool 调用变多 | 单轮 ≤3 次 prompt 软指引；wiki_fetch 只读，不做跨请求硬限流 |
-| 本地模型 614MB RSS | idleUnloadMs 空闲卸载；服务器紧张时换云端 provider（档位待用户拍板） |
+| 本地模型 614MB RSS | 生产 4GB 总/2.5GB 可用 → 生产强制云端 API（决策 11）；local 仅开发机，idleUnloadMs 空闲卸载照实现 |
 | LLM 不可用（本地） | worthiness/rerank 全部可降级，行为=P0 现状 |
 
 ## 11. builder-check 勘误记录（2026-10-13 r2）
