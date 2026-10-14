@@ -357,6 +357,25 @@ describe("POST /core-memory/values/discover（提议制 handler）", () => {
       expect.objectContaining({ teamId: "teamA", userId: "userA", agentId: "agentA" }),
     );
   });
+
+  it("#17 T10：证据重算吃全量语料（沉底老行不在 50 采样窗内也计数）", async () => {
+    // 58 行：55 行新近（挤满 50 采样窗）+ 3 行 8 月老行（updated 排序沉底，不在窗内）。
+    // 「增量对账」只出现在老行 → 现状（sample 窗口径）重算 0 < 3 丢弃；全量口径应为 3。
+    const rows: unknown[] = [];
+    for (let i = 0; i < 55; i++) {
+      rows.push(rowFor(`n${i}`, `新近事务 ${i} 无关词`, `2026-09-10T00:00:00Z`));
+    }
+    rows.push(rowFor("old1", "增量对账：最早的一批对账记忆", "2026-08-01T00:00:00Z"));
+    rows.push(rowFor("old2", "增量对账兜底修复", "2026-08-02T00:00:00Z"));
+    rows.push(rowFor("old3", "增量对账第三处出现", "2026-08-03T00:00:00Z"));
+    const store = mockStore({ rows, values: [] });
+    const runner = mockRunner(JSON.stringify([{ label: "增量对账", rationale: "老但真", evidenceCount: 3 }]));
+    const res = await handleCoreMemoryValuesDiscover({}, AUTH, "req-disc-8", depsFor(store, ISO_A, runner));
+    expect(res.code).toBe(0);
+    const data = (res as { data: { proposals: Array<{ label: string; evidenceCount: number }> } }).data;
+    expect(data.proposals).toHaveLength(1);
+    expect(data.proposals[0]!.evidenceCount).toBe(3);
+  });
 });
 
 // ═══════════════ P0-1A（issue #1，2026-10-13）：person 提案 description 解析 ═══════════════

@@ -2443,14 +2443,20 @@ async function handleCoreMemoryValuesDiscover(_body: unknown, _auth: V2AuthConte
   const sample = selectSampleRows(rows as never, DISCOVER_SAMPLE_CAP);
   const values = (await Promise.resolve(store.listValues(tenant))) ?? [];
   const existingLabels = values.map((v) => v.label);
-  const corpus = sample.map((r) => String((r as { content?: string }).content ?? ""));
+  // LLM prompt 语料 = 50 采样窗（GROW-EVO 预算内：updated 降序 + 高显著优先）。
+  const promptCorpus = sample.map((r) => String((r as { content?: string }).content ?? ""));
+  // #17 T10（2026-10-14）：证据重算语料 = **全量行**——与 anchor-growth GROW-MAINT 同刻度
+  //（anchor-growth.ts:392 起「证据重算语料 = 全量语料（非 50 采样窗）」单一语义）。
+  // 此前本路由 recount 吃 50 采样窗：沉底老行（updated 老但证据真）被窗口截掉 → 提议门
+  // 受采样顺序支配（幸运门/漏真提案）。修复后采样只用于 prompt，门判定全量口径。
+  const corpus = rows.map((r) => String((r as { content?: string }).content ?? ""));
   deps.logger?.info?.(
-    `[core-values] discover (requestId=${requestId}): sample=${sample.length}, existing=${existingLabels.length}, ` +
+    `[core-values] discover (requestId=${requestId}): sample=${sample.length}, corpus=${corpus.length}, existing=${existingLabels.length}, ` +
     `maxTokens: unrestricted (GROW-EVO P2.1 user decision)`,
   );
   const raw = await Promise.resolve(
     runner.run({
-      prompt: buildDiscoverPrompt(corpus, existingLabels),
+      prompt: buildDiscoverPrompt(promptCorpus, existingLabels),
       systemPrompt: DISCOVER_SYSTEM_PROMPT,
       taskId: "core-values-discover",
       timeoutMs: 0,
