@@ -50,14 +50,12 @@ type Draft = {
   rkTimeoutMs: string;
   rkCandidates: string;
   rkMinScore: string;
-  rkShadowMode: boolean;
   rkLocalModelDir: string;
   rkIdleUnloadMs: string;
   // 重要度（P1 task-7，仅 memory 目标）：worthiness.extractionEnabled + recall.importancePenalty
   wExtractionEnabled: boolean;
   ipEnabled: boolean;
   ipPenalty: string;
-  ipShadow: boolean;
 };
 
 function fmtBytes(n?: number): string {
@@ -87,13 +85,11 @@ function toDraft(v: SettingsView): Draft {
     rkTimeoutMs: v.rerank?.timeoutMs != null ? String(v.rerank.timeoutMs) : '',
     rkCandidates: v.rerank?.candidates != null ? String(v.rerank.candidates) : '',
     rkMinScore: v.rerank?.minScore != null ? String(v.rerank.minScore) : '',
-    rkShadowMode: v.rerank?.shadowMode ?? true,
     rkLocalModelDir: v.rerank?.local?.modelDir ?? '',
     rkIdleUnloadMs: v.rerank?.local?.idleUnloadMs != null ? String(v.rerank.local.idleUnloadMs) : '',
     wExtractionEnabled: v.worthiness?.extractionEnabled ?? false,
     ipEnabled: v.importancePenalty?.enabled ?? false,
     ipPenalty: v.importancePenalty?.penalty != null ? String(v.importancePenalty.penalty) : '',
-    ipShadow: v.importancePenalty?.shadowMode ?? true,
   };
 }
 
@@ -181,7 +177,6 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
               rerank: {
                 enabled: draft.rkEnabled,
                 provider: draft.rkProvider,
-                shadowMode: draft.rkShadowMode,
                 ...(draft.rkProvider === 'siliconflow' || draft.rkProvider === 'dashscope'
                   ? {
                       // 审稿 C1/M2：'' = 用服务端 provider 缺省（spec §4.3）——空白键必须省略
@@ -207,7 +202,6 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
               // 形状校验在 validateOverride，[0,0.9] clamp 在 parseConfig。
               importancePenalty: {
                 enabled: draft.ipEnabled,
-                shadowMode: draft.ipShadow,
                 ...(draft.ipPenalty.trim() ? { penalty: Number(draft.ipPenalty) } : {}),
               },
               worthiness: {
@@ -375,15 +369,8 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
               <Checkbox value={draft.rkEnabled} disabled={saving} onChange={(v) => setDraft({ ...draft, rkEnabled: v })}>
                 {t('settings.rerank.enabled')}
               </Checkbox>
-            </div>
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.shadowMode')}>
-            <div>
-              <Checkbox value={draft.rkShadowMode} disabled={saving} onChange={(v) => setDraft({ ...draft, rkShadowMode: v })}>
-                {t('settings.rerank.shadowMode')}
-              </Checkbox>
               <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.rerank.shadowMode.hint')}
+                {t('settings.rerank.activeNote')}
               </Text>
             </div>
           </Form.Item>
@@ -554,20 +541,6 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
                   />
                   <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
                     {t('settings.importance.penalty.value.hint')}
-                  </Text>
-                </div>
-              </Form.Item>
-              <Form.Item label={t('settings.importance.penalty.shadow')}>
-                <div>
-                  <Checkbox
-                    value={draft.ipShadow}
-                    onChange={(v) => setDraft({ ...draft, ipShadow: v })}
-                    disabled={saving}
-                  >
-                    {t('settings.importance.penalty.shadow.label')}
-                  </Checkbox>
-                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                    {t('settings.importance.penalty.shadow.hint')}
                   </Text>
                 </div>
               </Form.Item>

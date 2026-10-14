@@ -2,7 +2,7 @@
  * P1 Task 7（worthiness importance，spec §6）：importance 写入/降权配置解析。
  * memory.worthiness.extractionEnabled（写入面 gate，mirror D-3 memory.sensitivity.extractionEnabled：
  * 缺省 false = prompt 字节不变 = 逐位现状）+ memory.recall.importancePenalty.*（召回面，
- * 缺省 enabled:false = 零行为变化；shadowMode 缺省 true = 只记录 journal 不改排序；
+ * 缺省 enabled:false = 零行为变化；开启即真实降权——shadowMode 已按用户 2026-10-14 拍板移除；
  * penalty clamp [0,0.9]——1 会把 ≤4 的记忆乘成 0 分沉底，spec 拍板不许）。
  */
 import { describe, expect, it } from "vitest";
@@ -13,18 +13,16 @@ const impOf = (raw: Record<string, unknown>) => parseConfig(raw).recall.importan
 const worthinessOf = (raw: Record<string, unknown>) => parseConfig(raw).worthiness;
 
 describe("P1 task-7 config：memory.recall.importancePenalty（缺省关 = 零行为变化）", () => {
-  it("零配置：enabled false + penalty 0.3 + shadowMode true（shadow-only 观测姿态）", () => {
+  it("零配置：enabled false + penalty 0.3", () => {
     const c = impOf({});
     expect(c.enabled).toBe(false);
     expect(c.penalty).toBe(0.3);
-    expect(c.shadowMode).toBe(true);
   });
 
-  it("显式开启：enabled/penalty/shadowMode 透传", () => {
-    const c = impOf({ recall: { importancePenalty: { enabled: true, penalty: 0.5, shadowMode: false } } });
+  it("显式开启：enabled/penalty 透传", () => {
+    const c = impOf({ recall: { importancePenalty: { enabled: true, penalty: 0.5 } } });
     expect(c.enabled).toBe(true);
     expect(c.penalty).toBe(0.5);
-    expect(c.shadowMode).toBe(false);
   });
 
   it("penalty clamp [0,0.9]：-0.5→0；2→0.9；非数值回落 0.3；0 合法（enabled 下不罚=观测-only）", () => {
@@ -34,9 +32,10 @@ describe("P1 task-7 config：memory.recall.importancePenalty（缺省关 = 零�
     expect(impOf({ recall: { importancePenalty: { enabled: true, penalty: 0 } } }).penalty).toBe(0);
   });
 
-  it("shadowMode：缺省 true；显式 false 透传（active 才真正改排序）", () => {
-    expect(impOf({}).shadowMode).toBe(true);
-    expect(impOf({ recall: { importancePenalty: { shadowMode: false } } }).shadowMode).toBe(false);
+  it("shadowMode 键已移除（用户 2026-10-14 拍板）：携带该键不再生效，解析不报错", () => {
+    const c = impOf({ recall: { importancePenalty: { shadowMode: false, enabled: true } } });
+    expect((c as unknown as Record<string, unknown>).shadowMode).toBeUndefined();
+    expect(c.enabled).toBe(true);
   });
 
   it("enabled 缺省 false：即使 penalty 配了也拿不到乘子（config-first，零行为变化）", () => {

@@ -25,7 +25,6 @@ describe("P1 task-1 config：memory.recall.rerank（缺省全关 = 零行为变�
     expect(r.minScore).toBe(-2.0);
     expect(r.local.modelDir).toBe("");
     expect(r.local.idleUnloadMs).toBe(600_000);
-    expect(r.shadowMode).toBe(true);
     expect(r.configError).toBeUndefined();
   });
 
@@ -40,7 +39,6 @@ describe("P1 task-1 config：memory.recall.rerank（缺省全关 = 零行为变�
           timeoutMs: 1500,
           candidates: 20,
           minScore: 0.1,
-          shadowMode: false,
         },
       },
     });
@@ -51,7 +49,6 @@ describe("P1 task-1 config：memory.recall.rerank（缺省全关 = 零行为变�
     expect(r.timeoutMs).toBe(1500);
     expect(r.candidates).toBe(20);
     expect(r.minScore).toBe(0.1);
-    expect(r.shadowMode).toBe(false);
     expect(r.configError).toBeUndefined();
   });
 
@@ -129,8 +126,9 @@ describe("P1 task-1 config：rerank 数值边界 clamp", () => {
     );
   });
 
-  it("shadowMode：缺省 true（phase-1 只记录不生效）；显式 false 透传", () => {
-    expect(rerankOf({}).shadowMode).toBe(true);
-    expect(rerankOf({ recall: { rerank: { shadowMode: false } } }).shadowMode).toBe(false);
+  it("shadowMode 键已移除（用户 2026-10-14 拍板）：携带该键不再生效，解析不报错", () => {
+    const r = rerankOf({ recall: { rerank: { shadowMode: false, enabled: true, provider: "none" } } });
+    expect((r as unknown as Record<string, unknown>).shadowMode).toBeUndefined();
+    expect(r.enabled).toBe(true);
   });
 });

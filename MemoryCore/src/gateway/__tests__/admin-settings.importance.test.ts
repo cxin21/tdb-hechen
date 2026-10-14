@@ -18,9 +18,9 @@ const deps = () => ({
   getEffective: () => ({
     llm: { baseUrl: "https://a.b", apiKey: "sk-12345678", model: "m1" },
     embedding: { provider: "openai_compatible", apiKey: "ek-87654321", model: "e1" },
-    rerank: { enabled: false, provider: "local", shadowMode: true },
+    rerank: { enabled: false, provider: "local" },
     // P1-T7：生效值（parseMemoryConfig 输出的缺省档）
-    importancePenalty: { enabled: false, penalty: 0.3, shadowMode: true },
+    importancePenalty: { enabled: false, penalty: 0.3 },
     worthiness: { extractionEnabled: false },
   }),
   getReindexState: () => ({ status: "idle" as const }),
@@ -34,7 +34,6 @@ describe("admin settings importancePenalty/worthiness 段（P1 task-7）", () =>
     const d = res.data as any;
     expect(d.importancePenalty.enabled).toBe(false);
     expect(d.importancePenalty.penalty).toBe(0.3);
-    expect(d.importancePenalty.shadowMode).toBe(true);
     expect(d.importancePenalty.source).toBe("yaml");
     expect(d.worthiness.extractionEnabled).toBe(false);
     expect(d.worthiness.source).toBe("yaml");
@@ -53,9 +52,10 @@ describe("admin settings importancePenalty/worthiness 段（P1 task-7）", () =>
   it("set：importancePenalty 落盘 + 局部 set 不冲掉已存字段", async () => {
     const table = makeAdminSettingsRouteTable(deps());
     await table["/v3/admin/settings/set"]!({ importancePenalty: { enabled: true, penalty: 0.5 } }, {} as any, "rq-4", {});
-    await table["/v3/admin/settings/set"]!({ importancePenalty: { shadowMode: false } }, {} as any, "rq-5", {});
+    // shadowMode 键已移除（用户 2026-10-14 拍板）：旧载荷携带该键应被静默忽略
+    await table["/v3/admin/settings/set"]!({ importancePenalty: { shadowMode: false } as never }, {} as any, "rq-5", {});
     const o = JSON.parse(readFileSync(join(dir, "config-override.json"), "utf-8"));
-    expect(o.importancePenalty).toEqual({ enabled: true, penalty: 0.5, shadowMode: false });
+    expect(o.importancePenalty).toEqual({ enabled: true, penalty: 0.5 });
   });
 
   it("set：worthiness.extractionEnabled 落盘", async () => {

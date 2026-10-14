@@ -143,8 +143,9 @@ memory:
 
     # ── 召回精排 rerank（P1 召回质量 spec §4.3，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
     # 在 P0 召回门槛之上加云/本地精排：原 topK 候选扩池至 candidates → provider rerank →
-    # minScore 门槛 → 取回 topK。失败/超时一律降级原序（精排永不阻断召回主链路）；
-    # shadowMode true = 只记 journal 不改结果（先影子观察再放量，Global Constraint 1）。
+    # minScore 门槛 → 取回 topK。失败/超时一律降级原序（精排永不阻断召回主链路）。
+    # 开启即真实生效（shadowMode 已按用户 2026-10-14 拍板整体移除——无开关、无键；
+    # journal.gates.rerank 仍记录 kept/dropped/topScore 供观测）。
     # rerank:
     #   enabled: false                    # 总开关（缺省 false = 逐位现状）
     #   provider: "siliconflow"           # siliconflow | dashscope | local(Task 3，暂关) | none
@@ -156,19 +157,17 @@ memory:
     #   timeoutMs: 800                    # 单次精排 HTTP 超时毫秒（负值 clamp 0 = loud 失败）
     #   candidates: 12                    # 送精排候选池大小（clamp [1,100]）
     #   minScore: -2.0                    # 相关度门槛（负值合法——local logits 刻度）
-    #   shadowMode: true                  # 影子模式：只记 journal.gates.rerank 不改注入结果
     #   local:                            # provider:"local"（Task 3 transformers.js）参数
     #     modelDir: ""                    # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
     #     idleUnloadMs: 600000            # 空闲卸载毫秒（0 = 常驻）
 
     # ── worthiness importance 降权（P1 召回质量 spec §6，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
     # 检索精排之后的「重要度」降权：仅惩罚 importance ≤4 的记忆（LLM 写入时评 1-10+理由，
-    # 低价值=寒暄/流水账）；NULL/缺列不罚（宁缺毋滥：评不出来 ≠ 该罚）。shadowMode true =
-    # 只记 journal 双分量（调权后位次 vs 未调位次）不改注入结果——先影子观察再放量（Global Constraint 1）。
+    # 低价值=寒暄/流水账）；NULL/缺列不罚（宁缺毋滥：评不出来 ≠ 该罚）。开启即真实生效
+    # （shadowMode 已按用户 2026-10-14 拍板整体移除；gates.importancePenalty 仍记录 raw/penalized 双分量）。
     # importancePenalty:
     #   enabled: false        # 总开关（缺省 false = 逐位现状）
     #   penalty: 0.3          # ≤4 记忆的乘法惩罚（clamp 上限 0.9；越大降权越狠）
-    #   shadowMode: true      # 影子模式：journal.gates.importancePenalty 双分量观测
 
     # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
     # 提取批次后代码级超限守卫：块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败码点安全硬截断兜底。

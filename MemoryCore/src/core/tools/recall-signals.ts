@@ -194,11 +194,11 @@ export function importanceMultiplierOf(item: RankSignalItem, penalty: number): n
 /**
  * P1-T7（worthiness）：importance 降权观测 gate 统计（journal 双分量，纯函数）。
  * 输入行 rrfScore 为该行 RRF 原始分、mult 为【不含 importance 分量】的确定性乘子。
- *  - shadow 模式（mult 不含 importance）：rawScore = rrfScore × mult；
- *    penalizedScore = rawScore × (1 - penalty)（仅统计，不改排序）。
- *  - active 模式（调用方已把 importance 乘进 mult）：penalizedScore = rrfScore × mult；
- *    rawScore = penalizedScore / (1 - penalty)（penalty clamp < 1 由 config 层保证，不除 0）。
+ * 调用方（auto-recall）已把 importance 乘子真实生效：
+ *  - penalizedScore = rrfScore × mult（实际参与排序的分）；
+ *  - rawScore = penalizedScore / (1 - penalty)（仅对 ≤4 行反推；penalty clamp < 1 由 config 层保证，不除 0）。
  * topChanged = argmax(raw) 行 ≠ argmax(penalized) 行（同分取首个；空池恒 false）。
+ * 用户 2026-10-14 拍板：shadowMode 配置项移除——统计恒为「已生效」口径，双分量仅作 journal 观测。
  */
 export interface ImportanceGateStatInput {
   rrfScore: number;
@@ -208,7 +208,6 @@ export interface ImportanceGateStatInput {
 
 export interface RecallJournalImportanceGateSpec {
   penalty: number;
-  mode: "shadow" | "active";
 }
 
 export interface RecallJournalImportanceGate extends RecallJournalImportanceGateSpec {
@@ -235,11 +234,11 @@ export function importanceGateStats(
     const counted =
       typeof row.importance === "number" && Number.isFinite(row.importance) && row.importance <= 4;
     if (counted) penalized += 1;
-    // shadow：mult 不含 importance → raw=rrf×mult，penalized 仅对 ≤4 行乘 (1-penalty)；
-    // active：mult 已含 importance → penalized=rrf×mult，raw 仅对 ≤4 行除回 (1-penalty)。
+    // active 口径：mult 已含 importance → penalized=rrf×mult（实际排序分），
+    // raw 仅对 ≤4 行除回 (1-penalty) 反推原始分；
     // 未评分（NULL）行 raw = penalized（两口径同分——宁缺毋滥）。
-    const raw = spec.mode === "shadow" ? row.rrfScore * row.mult : counted ? (row.rrfScore * row.mult) / factor : row.rrfScore * row.mult;
-    const pen = spec.mode === "shadow" ? (counted ? row.rrfScore * row.mult * factor : row.rrfScore * row.mult) : row.rrfScore * row.mult;
+    const pen = row.rrfScore * row.mult;
+    const raw = counted ? pen / factor : pen;
     if (raw > topRaw) {
       topRaw = raw;
       topRawIdx = i;
@@ -251,7 +250,6 @@ export function importanceGateStats(
   });
   const has = items > 0;
   return {
-    mode: spec.mode,
     penalty: spec.penalty,
     items,
     penalized,

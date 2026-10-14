@@ -241,8 +241,8 @@ export interface RecallRankSignal extends RecallCoreRefSignal {
   sceneBoost?: number;
   /**
    * P1-T7（worthiness importance）：重要度降权门参数透传——searchHybrid 据此
-   * ①在 active 模式消费 signals.importancePenalty（乘子入 mult，平局组内生效）；
-   * ②两种模式都产出 gates.importancePenalty 双分量影子日志（raw vs penalized）。
+   * ①消费 signals.importancePenalty（乘子入 mult，平局组内生效——开启即真实降权）；
+   * ②gate 在场即产出 gates.importancePenalty 双分量观测日志（penalized=实际分，raw=反推值）。
    * 缺省 undefined = 门未启用 = 无 gates 字段（缺字段=门未启用口径）。
    */
   importanceGate?: RecallJournalImportanceGateSpec;
@@ -371,8 +371,8 @@ export interface LayeredRecallOutcome {
 }
 
 // ═══ P1 召回质量 Task 2（spec §4.5，r3=232a124）：精排接入（rerank wiring）═══
-// 语义合同：rerank 插在 searchMemories 之后、预算切分/组装之前；shadow-first（缺省只记
-// journal 不改注入，宁缺毋滥 §4.6）；null/throw/熔断一律降级原序，绝不阻塞召回。
+// 语义合同：rerank 插在 searchMemories 之后、预算切分/组装之前；重排恒真实生效
+// （用户 2026-10-14 拍板移除 shadowMode），null/throw/熔断一律降级原序，绝不阻塞召回。
 // 关 vs 开但不可用：enabled=false 或 provider=none → off（零开销：不建 reranker、零日志、
 // journal 无 rerank 键）；enabled 且 configError/工厂 null（如 local 占位）→ unavailable
 // （warn 恰一次/调用 + 降级 gate，无 provider 外呼、不扩池）。
@@ -430,7 +430,6 @@ interface RerankWiring {
   provider: string;
   reranker?: MemoryReranker;
   breaker?: RerankBreaker;
-  shadow: boolean;
   minScore: number;
   candidates: number;
 }
@@ -452,9 +451,8 @@ function resolveRerankWiring(
   if (!rc || !enabled || provider === "none") {
     // off：完全静默零开销（configError 存在但已停用 → 每调用 warn 一次提示配置问题）
     if (rc?.configError) logger?.warn?.(`${TAG} [rerank] 精排已停用（${rc.configError}）`);
-    return { state: "off", provider, shadow: true, minScore: -2, candidates: 12 };
+    return { state: "off", provider, minScore: -2, candidates: 12 };
   }
-  const shadow = rc.shadowMode ?? true;
   const minScore = typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : -2;
   const candidates =
     typeof rc.candidates === "number" && Number.isFinite(rc.candidates) && rc.candidates >= 1
@@ -463,9 +461,9 @@ function resolveRerankWiring(
   const reranker = deps?.reranker !== undefined ? deps.reranker : createReranker(rc, { fetchImpl: deps?.fetchImpl });
   if (rc.configError || reranker === null) {
     logger?.warn?.(`${TAG} [rerank] provider=${provider} 不可用（${rc.configError ?? "工厂返回 null"}），降级原序`);
-    return { state: "unavailable", provider, shadow, minScore, candidates };
+    return { state: "unavailable", provider, minScore, candidates };
   }
-  return { state: "active", provider, reranker, breaker: deps?.breaker ?? defaultRerankBreaker, shadow, minScore, candidates };
+  return { state: "active", provider, reranker, breaker: deps?.breaker ?? defaultRerankBreaker, minScore, candidates };
 }
 
 /** P1 Task 2（spec §4.5）：精排主体，原位改写 searchResult（lines/scores/metas/gates）。
@@ -474,7 +472,8 @@ function resolveRerankWiring(
  *  - adapter null/throw → 熔断计败 + warn 恰一条 + 降级 gate（ms=实际耗时）；
  *  - 成功 → 熔断清零 + 防御性整形（index 去重首见保留/越界剔除/分数降序）+ 选取：
  *    minScore 以下丢弃、provider 截断的未排序候选按原序垫尾（绝不静默丢弃）、
- *    cap=预算经验层额度；shadow 只记 gate 不动注入，active 平行重排 lines/scores/metas。 */
+ *    cap=预算经验层额度；重排恒真实生效（用户 2026-10-14 拍板移除 shadowMode），
+ *    gate（kept/dropped/topScore）保留作 journal 观测。 */
 async function applyRecallRerank(
   query: string,
   searchResult: { lines: string[]; scores?: number[]; metas?: { recordId?: string; evidenceIds?: string[] }[]; gates?: RecallJournalGates },
@@ -485,11 +484,10 @@ async function applyRecallRerank(
   if (wiring.state === "off") return;
   const lines = searchResult.lines;
   if (lines.length === 0) return;
-  const shadow = wiring.shadow;
   const degradeGate = (ms: number): void => {
     searchResult.gates = {
       ...searchResult.gates,
-      rerank: { provider: wiring.provider, ms, kept: lines.length, dropped: 0, shadow },
+      rerank: { provider: wiring.provider, ms, kept: lines.length, dropped: 0 },
     };
   };
   if (wiring.state === "unavailable") {
@@ -547,10 +545,8 @@ async function applyRecallRerank(
       kept: final.length,
       dropped: lines.length - final.length,
       ...(clean.length > 0 ? { topScore: clean[0].score } : {}),
-      shadow,
     },
   };
-  if (shadow) return; // shadow-first：journal 已记假设性结果，注入逐位不变
   searchResult.lines = final.map((i) => lines[i]);
   if (searchResult.scores) searchResult.scores = final.map((i) => searchResult.scores![i]);
   if (searchResult.metas) searchResult.metas = final.map((i) => searchResult.metas![i]);
@@ -787,10 +783,10 @@ export async function performLayeredRecall(params: {
       // 失败 / 无价值锚 / appraise 无 fired → 对应信号为零（全链旧行为）。
       const coreRefBoost = cfg.recall?.coreRefBoost ?? 0.05;
       // R-A1 六开关（cfg.recall 解析见 src/config.ts；缺省 = spec §2 默认值）
-      // P1-T7：重要度降权门（shadow=仅观测不入乘子；active=入乘子）。缺省关断=恒等。
+      // P1-T7：重要度降权门（enabled=入乘子真实降权；缺省关断=恒等）。
       const importanceGateCfg = cfg.recall?.importancePenalty;
       const importanceGate: RecallJournalImportanceGateSpec | undefined = importanceGateCfg?.enabled
-        ? { penalty: importanceGateCfg.penalty, mode: importanceGateCfg.shadowMode ? "shadow" : "active" }
+        ? { penalty: importanceGateCfg.penalty }
         : undefined;
       const signals: RankSignals = {
         timeBoost: cfg.recall?.timeBoost ?? DEFAULT_RANK_SIGNALS.timeBoost,
@@ -802,8 +798,8 @@ export async function performLayeredRecall(params: {
         emotionSalienceWeight: cfg.recall?.emotionSalienceWeight ?? DEFAULT_RANK_SIGNALS.emotionSalienceWeight,
         // D-3：敏感性降权（缺省 0=关断恒等）
         sensitivityPenalty: cfg.recall?.sensitivityPenalty ?? DEFAULT_RANK_SIGNALS.sensitivityPenalty,
-        // P1-T7：重要度降权（仅 active 入乘子；shadow 恒 0=排序逐位不变）
-        importancePenalty: importanceGate?.mode === "active" ? importanceGate.penalty : 0,
+        // P1-T7：重要度降权（enabled 才入乘子；关断恒 0=排序逐位不变）
+        importancePenalty: importanceGate ? importanceGate.penalty : 0,
       };
       const signalsActive =
         signals.timeBoost > 0 ||
@@ -821,7 +817,7 @@ export async function performLayeredRecall(params: {
       const graphMinStrength = cfg.recall?.graphMinStrength ?? 0.5;
       const sceneBoost = cfg.recall?.sceneBoost ?? 0.04;
       let rank: RecallRankSignal | undefined;
-      // P1-T7：shadow 模式即使信号全 0 也要建 rank（gate 行采集 = 影子日志前提）
+      // P1-T7：importance 降权开启时即使信号全 0 也要建 rank（gate 行采集 = journal 观测前提）
       if (effectiveStrategy === "hybrid" && vectorStore && (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0 || importanceGate !== undefined)) {
         const { firedLabels, moodSign } = needValues
           ? await computeRecallValueSignals(sanitizeText(userText), vectorStore, params.profileIsolation, logger)
@@ -852,14 +848,13 @@ export async function performLayeredRecall(params: {
         }
       }
       // ── P1 Task 2（spec §4.5）：精排接线 ──
-      // wiring 先行（可能 warn：configError/工厂 null）。active 且非 shadow 时按 candidates
-      // 扩池（浅拷贝 cfg，仅本次 searchMemories 生效；rank/预算/标签仍读原 cfg）——
-      // shadow 不扩池：searchHybrid 的 explore 位/失效补位组合依赖 maxResults，扩池会让
-      // shadow 注入偏离基线，破坏「shadow 逐位不变」断言（spec §4.6 shadow-first）。
+      // wiring 先行（可能 warn：configError/工厂 null）。active 时按 candidates 扩池
+      // （浅拷贝 cfg，仅本次 searchMemories 生效；rank/预算/标签仍读原 cfg）——
+      // 扩池给精排更大的候选面，精排后由 cap 收回预算经验层额度。
       const rerankWiring = resolveRerankWiring(cfg, params.rerankDeps, logger);
       const baseMaxResults = cfg.recall?.maxResults ?? 5;
       const searchCfg =
-        rerankWiring.state === "active" && !rerankWiring.shadow && rerankWiring.candidates > baseMaxResults
+        rerankWiring.state === "active" && rerankWiring.candidates > baseMaxResults
           ? ({ ...cfg, recall: { ...cfg.recall, maxResults: rerankWiring.candidates } } as MemoryTdaiConfig)
           : cfg;
       searchResult = await searchMemories(userText, pluginDataDir, searchCfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
@@ -1894,7 +1889,7 @@ export async function searchHybrid(
           mult:
             certaintyMultiplierOf(src, signalCtx.signals.inferredPenalty) *
             sensitivityMultiplierOf(src, signalCtx.signals.sensitivityPenalty ?? 0) *
-            // P1-T7：重要度降权乘子（仅 active 模式非 0；shadow 恒 0 → 恒 1 = 排序逐位不变）
+            // P1-T7：重要度降权乘子（enabled 时非 0；关断恒 0 → 恒 1 = 排序逐位不变）
             importanceMultiplierOf(src, signalCtx.signals.importancePenalty ?? 0),
         }
       : { signal: 0, mult: 1 };
@@ -1930,7 +1925,7 @@ export async function searchHybrid(
   };
 
   // Process keyword results
-  // P1-T7：影子日志行采集（rrf×mult raw / penalized 双分量；仅 rank.importanceGate 在场时消费）
+  // P1-T7：观测日志行采集（rrf×mult；mult 已含 importance 乘子，raw 由 stats 反推）
   const importanceGateRows: ImportanceGateStatInput[] = [];
   for (let rank0 = 0; rank0 < keywordResults.length; rank0++) {
     const r = keywordResults[rank0];
@@ -2332,7 +2327,7 @@ export async function searchHybrid(
         }
       }
     } catch { /* bookkeeping best-effort */ }
-    // P1-T7：重要度降权影子日志（rank.importanceGate 在场即产出——shadow/active 双模式）。
+    // P1-T7：重要度降权观测日志（rank.importanceGate 在场即产出——penalized=实际分，raw=反推值）。
     // 无 gate = 缺字段 = 门未启用（journal/下游口径）；空池早退不产出（无可观测语义）。
     const importanceGateOut = rankSignal?.importanceGate
       ? { importancePenalty: importanceGateStats(importanceGateRows, rankSignal.importanceGate) }

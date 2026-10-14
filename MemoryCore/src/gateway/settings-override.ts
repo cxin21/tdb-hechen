@@ -28,7 +28,6 @@ export interface RerankSettingsOverride {
   timeoutMs?: number;
   candidates?: number;
   minScore?: number;
-  shadowMode?: boolean;
   local?: { modelDir?: string; idleUnloadMs?: number };
 }
 /**
@@ -39,7 +38,6 @@ export interface RerankSettingsOverride {
 export interface ImportancePenaltySettingsOverride {
   enabled?: boolean;
   penalty?: number;
-  shadowMode?: boolean;
 }
 /** worthiness 段（P1 task-7，keys：memory.worthiness.extractionEnabled）。 */
 export interface WorthinessSettingsOverride {
@@ -144,7 +142,9 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
     }
     if (rk.baseUrl !== undefined && !HTTP_URL_RE.test(rk.baseUrl)) errors.push("rerank.baseUrl 必须是合法 http(s) URL");
     if (rk.model !== undefined && !rk.model.trim()) errors.push("rerank.model 必须是非空字符串");
-    for (const boolField of ["enabled", "shadowMode"] as const) {
+    // shadowMode 键已按用户 2026-10-14 拍板移除：旧 override 载荷若仍携带该键，
+    // 这里静默忽略（不 400，也不再生效）。
+    for (const boolField of ["enabled"] as const) {
       if (b.rerank[boolField] !== undefined) {
         if (typeof b.rerank[boolField] === "boolean") rk[boolField] = b.rerank[boolField];
         else errors.push(`rerank.${boolField} 必须是 boolean`);
@@ -183,7 +183,7 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
   }
   if (b.importancePenalty) {
     const ip: ImportancePenaltySettingsOverride = {};
-    for (const boolField of ["enabled", "shadowMode"] as const) {
+    for (const boolField of ["enabled"] as const) {
       if (b.importancePenalty[boolField] !== undefined) {
         if (typeof b.importancePenalty[boolField] === "boolean") ip[boolField] = b.importancePenalty[boolField];
         else errors.push(`importancePenalty.${boolField} 必须是 boolean`);
@@ -239,7 +239,7 @@ export function applyRerankOverrideToRaw(
 
 /**
  * importancePenalty override 注入 memory 段原始配置（P1 task-7）。必须在
- * parseConfig 之前并入：enabled/penalty clamp/shadowMode 缺省语义全部在
+ * parseConfig 之前并入：enabled/penalty clamp 缺省语义全部在
  * parseConfig 的 importancePenalty 块内（MemoryCore/src/config.ts），parse 后
  * 再合并会绕过这些不变量。返回新对象，不改入参；override 为空时原样返回。
  */

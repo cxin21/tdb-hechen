@@ -20,7 +20,7 @@ export interface RecallJournalSearchTiming {
 
 /**
  * P1 Task 2（spec §4.5，r3=232a124）：精排观测 gate —— kept/dropped 以本调用候选池口径记录；
- * shadow=true 时为「若生效会怎样」的假设性统计（注入未变，spec §4.6 shadow-first）；
+ * gate 为真实生效后的结果观测（用户 2026-10-14 拍板移除 shadowMode，重排恒真实生效）；
  * 降级路径（不可用/熔断开/adapter null）ms=0（未外呼）或实际耗时、kept=池大小、dropped=0、无 topScore。
  */
 export interface RecallJournalRerankGate {
@@ -29,15 +29,14 @@ export interface RecallJournalRerankGate {
   kept: number;
   dropped: number;
   topScore?: number;
-  shadow: boolean;
 }
 
 export interface RecallJournalGates {
   nativeMinRRF?: { gate: number; kept: number; dropped: number };
   rerank?: RecallJournalRerankGate;
   /**
-   * P1-T7（worthiness importance）：重要度降权影子门——raw vs penalized 双分量
-   * （shadow=乘子未生效的假设统计；active=乘子已生效，raw 为反推值）。类型单一源
+   * P1-T7（worthiness importance）：重要度降权观测门——raw vs penalized 双分量
+   * （乘子恒真实生效：penalized=实际排序分，raw 为反推值）。类型单一源
    * 在 recall-signals.ts（与乘子实现同文件，防止口径分裂）。
    */
   importancePenalty?: RecallJournalImportanceGate;

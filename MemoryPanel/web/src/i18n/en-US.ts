@@ -171,8 +171,7 @@ export const enUS = {
   'settings.rerank.title': 'Rerank ({{label}})',
   'settings.rerank.configError': 'Current config error',
   'settings.rerank.enabled': 'Enable Rerank',
-  'settings.rerank.shadowMode': 'Shadow mode',
-  'settings.rerank.shadowMode.hint': 'Shadow mode = log only, no effect: rerank results are written to the recall journal without changing actual recall order.',
+  'settings.rerank.activeNote': 'Rerank results always take effect (shadow mode removed by decision); the recall journal still records kept/dropped/topScore for observation.',
   'settings.rerank.provider': 'Provider',
   'settings.rerank.provider.siliconflow': 'SiliconFlow',
   'settings.rerank.provider.dashscope': 'DashScope',
@@ -207,10 +206,7 @@ export const enUS = {
   'settings.importance.penalty.enabled.label': 'Penalize low-importance (≤4) memories at recall',
   'settings.importance.penalty.enabled.hint': 'Only importance ≤4 is penalized; unscored (NULL) records are never penalized.',
   'settings.importance.penalty.value': 'Penalty',
-  'settings.importance.penalty.value.hint': 'Multiplier = 1 - penalty; range 0-0.9, default 0.3.',
-  'settings.importance.penalty.shadow': 'Shadow mode',
-  'settings.importance.penalty.shadow.label': 'Shadow mode (log only, no ranking change)',
-  'settings.importance.penalty.shadow.hint': 'Shadow mode = raw and penalized scores are both written to the recall journal gates.importancePenalty, ranking unchanged; when off the penalty actually applies.',
+  'settings.importance.penalty.value.hint': 'Multiplier = 1 - penalty; range 0-0.9, default 0.3. The penalty always takes effect (shadow mode removed by decision); gates.importancePenalty still records raw/penalized components.',
 
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',

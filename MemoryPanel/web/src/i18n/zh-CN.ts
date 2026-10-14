@@ -163,8 +163,7 @@ export const zhCN = {
   'settings.rerank.title': 'Rerank 精排（{{label}}）',
   'settings.rerank.configError': '当前配置错误',
   'settings.rerank.enabled': '启用 Rerank',
-  'settings.rerank.shadowMode': '影子模式',
-  'settings.rerank.shadowMode.hint': '影子模式 = 只记录不生效：精排结果仅写入召回日志，不改变实际召回排序。',
+  'settings.rerank.activeNote': '精排结果恒真实生效（影子模式已按拍板移除）；召回日志仍记录 kept/dropped/topScore 供观测。',
   'settings.rerank.provider': 'Provider',
   'settings.rerank.provider.siliconflow': 'SiliconFlow（硅基流动）',
   'settings.rerank.provider.dashscope': 'DashScope（阿里云百炼）',
@@ -199,10 +198,7 @@ export const zhCN = {
   'settings.importance.penalty.enabled.label': '低重要度（≤4）召回降权',
   'settings.importance.penalty.enabled.hint': '仅对重要度 ≤4 的记忆降权；未评分（NULL）永不降权。',
   'settings.importance.penalty.value': '降权强度 (Penalty)',
-  'settings.importance.penalty.value.hint': '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。',
-  'settings.importance.penalty.shadow': '影子模式',
-  'settings.importance.penalty.shadow.label': '影子模式（只记录，不改排序）',
-  'settings.importance.penalty.shadow.hint': '影子模式 = 原始分与降权分都写入召回日志 gates.importancePenalty，但排序不变；关闭则按 penalty 实际降权。',
+  'settings.importance.penalty.value.hint': '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。降权恒真实生效（影子模式已按拍板移除），gates.importancePenalty 仍记录 raw/penalized 双分量。',
 
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',

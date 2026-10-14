@@ -105,7 +105,7 @@ describe("rerank 段（P1 task-4）", () => {
     const ok = validateOverride({
       rerank: {
         enabled: true, provider: "local", baseUrl: "https://a.b", apiKey: "k", model: "m",
-        timeoutMs: 800, candidates: 12, minScore: -2.5, shadowMode: true,
+        timeoutMs: 800, candidates: 12, minScore: -2.5,
         local: { modelDir: "D:/models", idleUnloadMs: 0 },
       },
     });
@@ -118,14 +118,22 @@ describe("rerank 段（P1 task-4）", () => {
   });
   it("validateOverride rerank：非法值逐字段拒收", () => {
     const bad = validateOverride({
-      rerank: { baseUrl: "nope", model: "  ", enabled: 1, shadowMode: "yes", timeoutMs: -5, candidates: 0, minScore: "x", local: { idleUnloadMs: -1, modelDir: 42 } },
+      rerank: { baseUrl: "nope", model: "  ", enabled: 1, timeoutMs: -5, candidates: 0, minScore: "x", local: { idleUnloadMs: -1, modelDir: 42 } },
     });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       const joined = bad.errors.join(";");
-      for (const frag of ["rerank.baseUrl", "rerank.model", "rerank.enabled", "rerank.shadowMode", "rerank.timeoutMs", "rerank.candidates", "rerank.minScore", "rerank.local.idleUnloadMs", "rerank.local.modelDir"]) {
+      for (const frag of ["rerank.baseUrl", "rerank.model", "rerank.enabled", "rerank.timeoutMs", "rerank.candidates", "rerank.minScore", "rerank.local.idleUnloadMs", "rerank.local.modelDir"]) {
         expect(joined).toContain(frag);
       }
+    }
+  });
+  it("shadowMode 键已移除（用户 2026-10-14 拍板）：旧载荷携带该键被静默忽略，不报错不落盘", () => {
+    const v = validateOverride({ rerank: { enabled: true, shadowMode: false } });
+    expect(v.ok).toBe(true);
+    if (v.ok) {
+      expect(v.value.rerank?.enabled).toBe(true);
+      expect((v.value.rerank as unknown as Record<string, unknown>).shadowMode).toBeUndefined();
     }
   });
   it("rerank 空对象不落 override", () => {
@@ -134,7 +142,7 @@ describe("rerank 段（P1 task-4）", () => {
     if (r.ok) expect(r.value.rerank).toBeUndefined();
   });
   it("round-trip 读写 rerank 段（含 local 子对象）", () => {
-    writeSettingsOverride(dir, { rerank: { enabled: true, provider: "local", shadowMode: true, local: { modelDir: "D:/m", idleUnloadMs: 0 } } });
+    writeSettingsOverride(dir, { rerank: { enabled: true, provider: "local", local: { modelDir: "D:/m", idleUnloadMs: 0 } } });
     const o = readSettingsOverride(dir)!;
     expect(o.rerank?.enabled).toBe(true);
     expect(o.rerank?.local?.modelDir).toBe("D:/m");
@@ -189,10 +197,9 @@ describe("rerank 段（P1 task-4）", () => {
       "    rerank:",
       "      enabled: false",
       "      provider: none",
-      "      shadowMode: true",
       "",
     ].join("\n"), "utf-8");
-    writeSettingsOverride(dir, { rerank: { enabled: true, provider: "local", shadowMode: false, local: { idleUnloadMs: 0 } } });
+    writeSettingsOverride(dir, { rerank: { enabled: true, provider: "local", local: { idleUnloadMs: 0 } } });
     const keys = ["TDAI_GATEWAY_CONFIG", "TDAI_DATA_DIR"];
     const saved = new Map(keys.map(k => [k, process.env[k]]));
     process.env.TDAI_GATEWAY_CONFIG = yamlPath;
@@ -202,7 +209,6 @@ describe("rerank 段（P1 task-4）", () => {
       const rr = cfg.memory.recall.rerank as unknown as Record<string, any>;
       expect(rr.enabled).toBe(true);
       expect(rr.provider).toBe("local");
-      expect(rr.shadowMode).toBe(false);
       expect(rr.local.idleUnloadMs).toBe(0);
     } finally {
       for (const [k, v] of saved) {

@@ -4,6 +4,12 @@
 - 状态：draft r3（brainstorming 产出，builder-check 修订 + 用户四项拍板已合入，待最终批准；批准前不写产品代码）
 - 前置：P0 修复已交付（commit b68d167 + 23d4923，issue cxin21/tdb-hechen #1 #2），本设计是其上的 P1 层。
 
+> **变更记录（2026-10-14，用户拍板）**：M1 rerank 与 M3 importancePenalty 的 **shadowMode 配置项整体移除**——
+> 不再提供「只记录不生效」的影子开关：面板无开关、配置面无键（旧载荷携带该键被静默忽略），
+> 两门开启即真实生效；journal 观测保留（`gates.rerank` kept/dropped/topScore、
+> `gates.importancePenalty` raw/penalized 双分量）。本文 §4/§6 中 shadow-first 相关段落为历史设计记录，
+> 以本变更为准。
+
 ## 1. 背景与动机
 
 P0 之后剩余两个用户可感知痛点（用户原话确认）：

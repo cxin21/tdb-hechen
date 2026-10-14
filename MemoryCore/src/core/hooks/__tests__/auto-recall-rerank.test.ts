@@ -4,12 +4,11 @@
  * 接入点合同（spec §4.5 + task-2-brief）：
  *  - rerank 插在 searchMemories 之后、foldNearDuplicates/applyRecallBudget（预算切分/组装）之前；
  *  - 结构行（R7 结论行/灵魂行/锚行）不精排、始终保留（结论行由组装层前置，天然不入精排候选）；
- *  - shadow-first（shadowMode 缺省 true）：精排只进 journal（gates.rerank，shadow:true），注入逐位不变；
- *  - active（shadowMode:false）：按 rerank score 降序取前 cap（预算对半后的经验层额度），
- *    minScore 以下丢弃，provider 截断的未排序候选按原序垫尾——绝不静默丢弃；
+ *  - 精排恒真实生效（shadowMode 已按用户 2026-10-14 拍板移除）：按 rerank score 降序取前 cap
+ *    （预算对半后的经验层额度），minScore 以下丢弃，provider 截断的未排序候选按原序垫尾——绝不静默丢弃；
  *  - 熔断：连续 3 次失败 → 60s 窗口内零 provider 调用（原序注入），窗口过后恢复探测；
  *  - null/warn 合同：adapter null/throw → 原序 + 每次调用恰一条 warn；关闭/none（工厂 null）→ 完全静默零开销；
- *  - journal：gates.rerank = { provider, ms, kept, dropped, topScore?, shadow }；缺省关闭 → journal 无 rerank 键。
+ *  - journal：gates.rerank = { provider, ms, kept, dropped, topScore? }（shadow 键已移除）；缺省关闭 → journal 无 rerank 键。
  *
  * 铁律：不碰检索层（九通道/绝对门槛/RRF/字典序）；本套件只通过 performLayeredRecall 的
  * rerankDeps 注入 fake provider/breaker（DI seam），全链走 sqlite fallback 路径（本机形态；
@@ -253,7 +252,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} 项目进展如何`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false, candidates: 12 }),
+          makeCfg({}, { ...SILICONFLOW_RERANK, candidates: 12 }),
           { reranker: fake.reranker },
         ),
       );
@@ -286,7 +285,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} 记录一下进度`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false, candidates: 12 }),
+          makeCfg({}, { ...SILICONFLOW_RERANK, candidates: 12 }),
           { reranker: fake.reranker },
         ),
       );
@@ -305,12 +304,12 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
     }
   });
 
-  it("③shadow 断言：注入与无精排逐位相同；journal 记录假设性 kept/dropped（shadow:true）", async () => {
+  it("③shadowMode 已移除（用户 2026-10-14 拍板）：缺省配置即真实生效，gate 无 shadow 键", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-shadow-"));
     try {
       const rows = episodicRows(5);
       const store = fallbackStore(rows);
-      // run1：shadow（缺省 true）——fake 给一条 minScore 以下的低分行（Marker5=-5），假设性丢弃 1 条
+      // run1：缺省 rerank 配置（无 shadowMode 键）——fake 给一条 minScore 以下的低分行（Marker1=-5），真实丢弃 1 条
       const fake = markerTableReranker([
         ["Marker5", 90],
         ["Marker4", 80],
@@ -321,20 +320,20 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       const res1 = await performLayeredRecall(
         paramsFor(dir, store, `${KW} 复用探针`, makeCfg({}, { ...SILICONFLOW_RERANK }), { reranker: fake.reranker }),
       );
-      expect(fake.callCount()).toBe(1); // shadow 确实调用了 provider（观测价值所在）
+      expect(fake.callCount()).toBe(1);
+      // 真实生效：Marker1 被丢弃，注入顺序 = 精排降序
+      expect(orderOf((res1.block ?? "").split("\n"))).toEqual(["Marker5", "Marker4", "Marker3", "Marker2"]);
       // run2：完全关闭
       const res2 = await performLayeredRecall(paramsFor(dir, store, `${KW} 复用探针`, makeCfg({})));
-      // 逐位一致：注入块与 memoryLines 均不变
-      expect(res1.block).toBe(res2.block);
-      expect(res1.memoryLines).toEqual(res2.memoryLines);
-      // journal：run1 有 gates.rerank 且 shadow=true；run2 无 rerank 键
+      expect(orderOf((res2.block ?? "").split("\n"))).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
+      // journal：run1 有 gates.rerank（无 shadow 键）；run2 无 rerank 键
       const entries = readJournal(dir);
       expect(entries).toHaveLength(2);
       const g1 = (entries[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown> | undefined;
       expect(g1).toBeDefined();
       expect(g1?.provider).toBe("siliconflow");
-      expect(g1?.shadow).toBe(true);
-      expect(g1?.kept).toBe(4); // 假设性保留 4 条（Marker1=-5 < minScore -2）
+      expect(g1?.shadow).toBeUndefined(); // shadow 键已整体移除
+      expect(g1?.kept).toBe(4); // 真实保留 4 条（Marker1=-5 < minScore -2）
       expect(g1?.dropped).toBe(1);
       expect(g1?.topScore).toBe(90);
       expect(typeof g1?.ms).toBe("number");
@@ -363,14 +362,14 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} 截断垫尾探针`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false, candidates: 12 }),
+          makeCfg({}, { ...SILICONFLOW_RERANK, candidates: 12 }),
           { reranker: fake.reranker },
         ),
       );
       // 精排序 [Marker3,Marker1,Marker2] + 未排序尾 [Marker4,Marker5]（原序）= 5 条；Marker6 被预算裁掉
       expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker2", "Marker4", "Marker5"]);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
-      expect(gate.shadow).toBe(false);
+      expect(gate.shadow).toBeUndefined(); // shadow 键已整体移除
       expect(gate.kept).toBe(5);
       expect(gate.dropped).toBe(1);
       expect(gate.topScore).toBe(90);
@@ -395,7 +394,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} 门槛丢弃探针`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false, minScore: 0 }),
+          makeCfg({}, { ...SILICONFLOW_RERANK, minScore: 0 }),
           { reranker: fake.reranker },
         ),
       );
@@ -417,7 +416,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       const breaker = createRerankBreaker({ threshold: 3, windowMs: 60_000, now: () => nowMs });
       const fake = markerTableReranker([], { failFrom: 1 }); // 恒 null
       const deps = (): RerankDeps => ({ reranker: fake.reranker, breaker });
-      const cfg = makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false });
+      const cfg = makeCfg({}, { ...SILICONFLOW_RERANK });
       // 同步工厂函数（async 会让 performLayeredRecall 收到 Promise 而非 params）
       const run = (): PLRParams => paramsFor(dir, store, `${KW} 熔断探针`, cfg, deps());
 
@@ -435,7 +434,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       expect(fake.callCount()).toBe(4); // 恢复探测
 
       // journal：5 次调用（3 败 + 1 熔断跳过 + 1 恢复探测）都有降级 gate
-      // （kept=N dropped=0 无 topScore shadow=false）；第 4 次 ms=0（熔断未外呼）。
+      // （kept=N dropped=0 无 topScore）；第 4 次 ms=0（熔断未外呼）。
       const entries = readJournal(dir);
       expect(entries).toHaveLength(5);
       const gates = entries.map((e) => (e.gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>);
@@ -443,7 +442,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
         expect(g.kept).toBe(5);
         expect(g.dropped).toBe(0);
         expect(g.topScore).toBeUndefined();
-        expect(g.shadow).toBe(false);
+        expect(g.shadow).toBeUndefined();
       }
       expect(gates[3].ms).toBe(0);
     } finally {
@@ -463,7 +462,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
         reranker: script.reranker,
         breaker: createRerankBreaker({ threshold: 3, windowMs: 60_000 }),
       });
-      const cfg = makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false });
+      const cfg = makeCfg({}, { ...SILICONFLOW_RERANK });
       const run = (): PLRParams => paramsFor(dir, fallbackStore(rows), `${KW} 恢复计数探针`, cfg, deps());
       await performLayeredRecall(run()); // 败1
       await performLayeredRecall(run()); // 败2
@@ -486,7 +485,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} null合同探针`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false }),
+          makeCfg({}, { ...SILICONFLOW_RERANK }),
           { reranker: fake.reranker, breaker: createRerankBreaker({ threshold: 3, windowMs: 60_000 }) },
           logger,
         ),
@@ -531,7 +530,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       expect(typeof gate.ms).toBe("number"); // 活动接线：真实测时（不再是工厂 null 的固定 0）
       expect(gate.kept).toBe(5);
       expect(gate.dropped).toBe(0);
-      expect(gate.shadow).toBe(true);
+      expect(gate.shadow).toBeUndefined();
       expect(gate.topScore).toBeUndefined();
       // 下载被 fire-and-forget 触发（404 → failed），状态查询 API 可见（供 Task 4 panel 轮询）
       expect(downloadFetchCalls).toBeGreaterThanOrEqual(1);
@@ -595,7 +594,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       expect(gate.provider).toBe("siliconflow");
       expect(gate.kept).toBe(5);
       expect(gate.dropped).toBe(0);
-      expect(gate.shadow).toBe(true);
+      expect(gate.shadow).toBeUndefined();
       expect(gate.topScore).toBeUndefined();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -617,14 +616,14 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} fallback全链探针`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false }),
+          makeCfg({}, { ...SILICONFLOW_RERANK }),
           { reranker: fake.reranker },
         ),
       );
       expect(res.effectiveStrategy).toBe("hybrid");
       expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker2", "Marker4"]);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
-      expect(gate.shadow).toBe(false);
+      expect(gate.shadow).toBeUndefined();
       expect(gate.kept).toBe(4);
       expect(gate.dropped).toBe(0);
     } finally {
@@ -651,7 +650,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           nativeStore(nativeRows),
           `${KW} native对位探针`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, shadowMode: false }),
+          makeCfg({}, { ...SILICONFLOW_RERANK }),
           { reranker: fake.reranker },
         ),
       );

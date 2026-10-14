@@ -70,6 +70,9 @@ function mergeRerankOverride(
 /** 组装 get 响应单段：合并 effective + override，掩码 key 且绝不明文回显 apiKey。 */
 function maskedSection(section: Record<string, unknown>, override?: Record<string, unknown>, isOverride?: boolean) {
   const merged = { ...section, ...(override ?? {}) };
+  // shadowMode 键已按用户 2026-10-14 拍板整体移除（P1 M1/M3）：存量 override 文件
+  // 可能仍携带旧键，回显前显式剥除，避免已删除的配置项借旧数据复活。
+  delete merged.shadowMode;
   const { apiKey, ...rest } = merged;
   return {
     ...rest,

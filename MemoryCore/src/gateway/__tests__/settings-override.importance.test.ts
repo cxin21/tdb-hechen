@@ -15,11 +15,11 @@ import {
 } from "../settings-override.js";
 
 describe("validateOverride importancePenalty 段（P1-T7）", () => {
-  it("全字段合法 → 原样透传", () => {
-    const v = validateOverride({ importancePenalty: { enabled: true, penalty: 0.5, shadowMode: false } });
+  it("全字段合法 → 原样透传（shadowMode 键已移除：静默忽略）", () => {
+    const v = validateOverride({ importancePenalty: { enabled: true, penalty: 0.5 } });
     expect(v.ok).toBe(true);
     if (v.ok) {
-      expect(v.value.importancePenalty).toEqual({ enabled: true, penalty: 0.5, shadowMode: false });
+      expect(v.value.importancePenalty).toEqual({ enabled: true, penalty: 0.5 });
     }
   });
 
@@ -29,12 +29,16 @@ describe("validateOverride importancePenalty 段（P1-T7）", () => {
     if (v.ok) expect(v.value.importancePenalty).toEqual({ penalty: 0.3 });
   });
 
-  it("enabled/shadowMode 非 boolean → 报错", () => {
-    const v = validateOverride({ importancePenalty: { enabled: "yes", shadowMode: 1 } });
+  it("enabled 非 boolean → 报错；shadowMode 键已移除 → 静默忽略不报错", () => {
+    const v = validateOverride({ importancePenalty: { enabled: "yes" } });
     expect(v.ok).toBe(false);
     if (!v.ok) {
       expect(v.errors.some((e) => e.includes("importancePenalty.enabled"))).toBe(true);
-      expect(v.errors.some((e) => e.includes("importancePenalty.shadowMode"))).toBe(true);
+    }
+    const legacy = validateOverride({ importancePenalty: { enabled: true, shadowMode: 1 } });
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.importancePenalty).toEqual({ enabled: true });
     }
   });
 

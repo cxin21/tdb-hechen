@@ -1,10 +1,10 @@
 /**
  * P1 Task 7（worthiness importance，spec §6）：recall 接线 RED 套件。
- * 契约（镜像 auto-recall-rank-signals.test.ts 三刀语义）：
- *  - active 模式：importance ≤4 乘子入 mult —— 仅真平局组内生效（compareLex 末位 mult DESC），
- *    跨档永不可翻越（主序=纯 RRF 证据，R-A1 架构不变）；
- *  - shadow 模式：排序逐位不变（关断恒等），但 gates.importancePenalty 携带双分量
- *    （raw vs penalized + topChanged）供影子日志观测；
+ * 契约（镜像 auto-recall-rank-signals.test.ts 三刀语义；shadowMode 已按用户 2026-10-14
+ * 拍板移除——gate 开启即乘子真实生效）：
+ *  - enabled：importance ≤4 乘子入 mult —— 仅真平局组内生效（compareLex 末位 mult DESC），
+ *    跨档永不可翻越（主序=纯 RRF 证据，R-A1 架构不变）；gates.importancePenalty 携带双分量
+ *    （penalized=实际排序分，raw=反推值 + topChanged）供 journal 观测；
  *  - importance NULL/缺省：永不计数、永不罚；
  *  - 无 gate：结果无 gates 字段（缺字段=门未启用口径）。
  */
@@ -53,7 +53,7 @@ function mockStoreDual(vecHits: L1SearchResult[], ftsHits: L1SearchResult[]): { 
   return { vectorStore, embeddingService };
 }
 
-function rank(over: Partial<{ signals: RankSignals; importanceGate: { penalty: number; mode: "shadow" | "active" } }> = {}) {
+function rank(over: Partial<{ signals: RankSignals; importanceGate: { penalty: number } }> = {}) {
   return {
     boost: 0,
     firedLabels: [],
@@ -87,48 +87,33 @@ const fixture = (overA: Partial<L1SearchResult> = {}, overB: Partial<L1SearchRes
   fts: [mkSoul("a", 0.5, overA)],
 });
 
-describe("P1-T7 active 模式：importance 乘子入排序（平局组内）", () => {
-  it("a(imp2) vs b(imp8) 真平局：active penalty 0.5 → b 前；关断 → 插入序", async () => {
+describe("P1-T7 生效模式：乘子入排序（平局组内）+ gates 双分量", () => {
+  it("a(imp2) vs b(imp8) 真平局：penalty 0.5 → b 前；关断 → 插入序", async () => {
     const f = fixture({ importance: 2 }, { importance: 8 }, { importance: 8 });
     const baseline = await runDual(f.vec, f.fts, rank());
     expect(baseline.order).toEqual(["a", "b", "c"]);
     const active = await runDual(f.vec, f.fts, rank({
       signals: { ...ZERO_RANK_SIGNALS, importancePenalty: 0.5 },
-      importanceGate: { penalty: 0.5, mode: "active" },
+      importanceGate: { penalty: 0.5 },
     }));
     expect(active.order).toEqual(["b", "a", "c"]);
   });
-});
 
-describe("P1-T7 shadow 模式：排序逐位不变 + 影子日志双分量", () => {
-  it("shadow penalty 0.5 → 顺序与基线一致；gates.importancePenalty 双分量可见", async () => {
-    const f = fixture({ importance: 2 }, { importance: 8 }, { importance: 8 });
-    const shadow = await runDual(f.vec, f.fts, rank({
-      importanceGate: { penalty: 0.5, mode: "shadow" },
-    }));
-    expect(shadow.order).toEqual(["a", "b", "c"]);
-    const gate = shadow.res.gates?.importancePenalty;
-    expect(gate).toBeDefined();
-    expect(gate!.mode).toBe("shadow");
-    expect(gate!.penalty).toBe(0.5);
-    expect(gate!.items).toBe(3);
-    expect(gate!.penalized).toBe(1); // 仅 a（imp2≤4）计数
-    expect(gate!.topRaw).toBeCloseTo(1 / 61, 12);
-    expect(gate!.topPenalized).toBeCloseTo(1 / 61, 12); // 未罚的 b 顶到 penalized 榜首
-    expect(gate!.topChanged).toBe(true);
-  });
-  it("active 模式同样携带双分量（raw=pen/factor 重建口径）", async () => {
+  it("gates.importancePenalty 双分量可见（penalized=实际分，raw=反推；mode 键已移除）", async () => {
     const f = fixture({ importance: 2 }, { importance: 8 }, { importance: 8 });
     const active = await runDual(f.vec, f.fts, rank({
       signals: { ...ZERO_RANK_SIGNALS, importancePenalty: 0.5 },
-      importanceGate: { penalty: 0.5, mode: "active" },
+      importanceGate: { penalty: 0.5 },
     }));
     const gate = active.res.gates?.importancePenalty;
     expect(gate).toBeDefined();
-    expect(gate!.mode).toBe("active");
-    expect(gate!.penalized).toBe(1);
-    expect(gate!.topRaw).toBeCloseTo(1 / 61, 12);
-    expect(gate!.topChanged).toBe(true);
+    expect((gate as unknown as Record<string, unknown>).mode).toBeUndefined(); // shadowMode 已移除
+    expect(gate!.penalty).toBe(0.5);
+    expect(gate!.items).toBe(3);
+    expect(gate!.penalized).toBe(1); // 仅 a（imp2≤4）计数
+    expect(gate!.topRaw).toBeCloseTo(1 / 61, 12); // a 除回 0.5 反推（与 b 同分，首见保留 a）
+    expect(gate!.topPenalized).toBeCloseTo(1 / 61, 12); // b 不罚顶到实际榜首
+    expect(gate!.topChanged).toBe(true); // argmax 行变化：a → b
   });
 });
 
@@ -139,23 +124,16 @@ describe("P1-T7 importance NULL/缺省：永不计数、永不罚", () => {
       { importance: null },
       {}, // 缺省（undefined）
     );
-    const shadow = await runDual(f.vec, f.fts, rank({
-      importanceGate: { penalty: 0.9, mode: "shadow" },
+    const res = await runDual(f.vec, f.fts, rank({
+      signals: { ...ZERO_RANK_SIGNALS, importancePenalty: 0.9 },
+      importanceGate: { penalty: 0.9 },
     }));
-    expect(shadow.order).toEqual(["a", "b", "c"]);
-    const gate = shadow.res.gates?.importancePenalty;
+    expect(res.order).toEqual(["a", "b", "c"]);
+    const gate = res.res.gates?.importancePenalty;
     expect(gate).toBeDefined();
     expect(gate!.penalized).toBe(0);
     expect(gate!.topRaw).toBeCloseTo(gate!.topPenalized ?? -1, 12);
     expect(gate!.topChanged).toBe(false);
-  });
-  it("active 模式 NULL 行不罚（乘子恒 1）", async () => {
-    const f = fixture({ importance: null }, { importance: null }, {});
-    const active = await runDual(f.vec, f.fts, rank({
-      signals: { ...ZERO_RANK_SIGNALS, importancePenalty: 0.9 },
-      importanceGate: { penalty: 0.9, mode: "active" },
-    }));
-    expect(active.order).toEqual(["a", "b", "c"]);
   });
 });
 

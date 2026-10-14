@@ -2,7 +2,7 @@
  * P1 Task 7（worthiness importance，spec §6）：重要性降权信号 + 观测 gate 纯函数单测。
  * 矩阵：importance NULL/undefined 永不罚（宁缺毋滥——未评分 ≠ 低分）；
  * ≤4 罚（×(1-penalty)）、>4 不罚；penalty 0 = 关断恒等（spec §3 不变式④）。
- * importanceGateStats：shadow/active 双分量（raw vs penalized）统计纯函数。
+ * importanceGateStats：raw/penalized 双分量观测纯函数（乘子恒真实生效，shadowMode 已移除）。
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -69,45 +69,34 @@ describe("P1 Task 7 RankSignals 常量（缺省关断）", () => {
   });
 });
 
-describe("P1 Task 7 importanceGateStats（journal 双分量观测，纯函数）", () => {
-  const spec = { penalty: 0.3, mode: "shadow" as const };
+describe("P1 Task 7 importanceGateStats（journal raw/penalized 双分量观测，纯函数）", () => {
+  const spec = { penalty: 0.3 };
 
-  it("shadow 模式：mult 不含 importance → 仅 ≤4 行乘 (1-penalty)，>4 行 penalized=raw", () => {
+  it("生效口径：mult 已含 importance → penalized=rrf×mult，raw 仅对 ≤4 行除回 (1-penalty) 反推", () => {
     const rows = [
-      { rrfScore: 1 / 61, mult: 1, importance: 2 },
-      { rrfScore: 1 / 62, mult: 0.9, importance: 8 },
+      { rrfScore: 1 / 61, mult: 0.7, importance: 2 },
+      { rrfScore: 0.9 / 62, mult: 1, importance: 8 },
     ];
     const g = importanceGateStats(rows, spec);
     expect(g.items).toBe(2);
     expect(g.penalized).toBe(1);
-    expect(g.mode).toBe("shadow");
     expect(g.penalty).toBe(0.3);
-    // raw 冠军 = 第一行（1/61 ≈ 0.01639 > 0.9/62 ≈ 0.01452）
-    expect(g.topRaw!).toBeCloseTo(1 / 61, 12);
-    // penalized 口径 = active 模式的真实效果：第二行不被罚（0.01452）反超被罚的第一行（0.01148）
+    // penalized = 实际排序分：第二行不罚（0.9/62≈0.01452）压过被罚的第一行（0.7/61≈0.01148）
     expect(g.topPenalized!).toBeCloseTo(0.9 / 62, 12);
-    expect(g.topChanged).toBe(true);
+    // raw 反推：第一行除回 0.7 → 1/61（≈0.01639）= raw 榜首；第二行原样 0.9/62
+    expect(g.topRaw!).toBeCloseTo(1 / 61, 12);
+    expect(g.topChanged).toBe(true); // raw 冠军（第一行）被罚掉——降权真实生效的证据
   });
 
-  it("shadow 模式：降权翻盘矩阵（≤4 冠军被罚、>4 次名升顶）→ topChanged true", () => {
+  it("降权翻盘矩阵（≤4 冠军被罚、>4 次名升顶）→ topChanged true（真实生效的证据）", () => {
     const rows = [
-      { rrfScore: 0.02, mult: 1, importance: 2 },
+      { rrfScore: 0.02, mult: 0.7, importance: 2 },
       { rrfScore: 0.019, mult: 1, importance: 8 },
     ];
     const g = importanceGateStats(rows, spec);
     expect(g.topRaw!).toBeCloseTo(0.02, 12);
     expect(g.topPenalized!).toBeCloseTo(0.019, 12); // 次名不被罚升顶
     expect(g.topChanged).toBe(true);
-  });
-
-  it("active 模式：传入 mult 已含 importance 分量 → raw = penalized / (1-penalty)", () => {
-    const rows = [{ rrfScore: 1 / 61, mult: 0.7, importance: 2 }];
-    const g = importanceGateStats(rows, { penalty: 0.3, mode: "active" });
-    expect(g.penalized).toBe(1);
-    // raw = (1/61 × 0.7) / 0.7 = 1/61
-    expect(g.topRaw!).toBeCloseTo(1 / 61, 12);
-    expect(g.topPenalized!).toBeCloseTo((1 / 61) * 0.7, 12);
-    expect(g.topChanged).toBe(false); // 单条目冠军恒同
   });
 
   it("importance NULL/undefined 永不进 penalized 计数（宁缺毋滥）", () => {

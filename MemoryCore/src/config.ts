@@ -140,11 +140,12 @@ export interface RecallConfig {
   sensitivityPenalty: number;
   /**
    * P1-T7（worthiness importance，spec §6）：importance 降权嵌套组。
-   * 缺省 enabled:false = 零行为变化；shadowMode 缺省 true = 只写 journal 观测
-   * （raw vs penalized 双分量），不改排序；penalty 缺省 0.3、clamp [0,0.9]
-   * （1 会把 ≤4 的记忆乘成 0 分沉底，spec 拍板不许；enabled 且 !shadowMode 才真正改排序）。
+   * 缺省 enabled:false = 零行为变化；penalty 缺省 0.3、clamp [0,0.9]
+   * （1 会把 ≤4 的记忆乘成 0 分沉底，spec 拍板不许；enabled 才真正改排序）。
+   * 用户 2026-10-14 拍板：shadowMode 配置项整体移除——开启即真实降权，
+   * journal gates.importancePenalty 仍保留 raw/penalized 双分量观测。
    */
-  importancePenalty: { enabled: boolean; penalty: number; shadowMode: boolean };
+  importancePenalty: { enabled: boolean; penalty: number };
   reinforcementWeight: number;
   moodBoost: number;
   /**
@@ -297,7 +298,7 @@ export interface RecallConfig {
  * enabled 强制 false（不在启动路径抛异常）；非法 provider → 回落 none + configError。
  */
 export interface RecallRerankConfig {
-  /** 总开关（缺省 false = 逐位现状，Global Constraint 1 shadow-first）。 */
+  /** 总开关（缺省 false = 逐位现状；开启即真实生效——shadowMode 已按用户 2026-10-14 拍板移除）。 */
   enabled: boolean;
   /** provider（缺省 none = skip）。local 为 Task 3 可插拔 id（落地前工厂显式返回 null）。 */
   provider: "siliconflow" | "dashscope" | "local" | "none";
@@ -320,8 +321,6 @@ export interface RecallRerankConfig {
     /** 空闲卸载毫秒（缺省 600000 = 10min；0 = 常驻；负值 clamp 0）。 */
     idleUnloadMs: number;
   };
-  /** 影子模式（缺省 true，phase-1 只记录 journal 不改结果——spec §4.3 shadow-first）。 */
-  shadowMode: boolean;
   /** provider 校验失败说明（云端缺 apiKey / 非法 provider）；caller 负责日志；无错 undefined。 */
   configError?: string;
 }
@@ -1338,13 +1337,12 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // D-3（2026-09-21）：敏感性召回降权乘子（R11）——缺省 0=关断恒等（逐位现状）。
       sensitivityPenalty: recallSignalBoost(recallGroup, "sensitivityPenalty", 0, 1),
       // P1-T7（worthiness importance，spec §6）：importance 降权嵌套组（queryExpansion IIFE 先例）。
-      // 缺省 enabled false + shadowMode true = 零行为变化（journal 双分量观测-only）。
+      // 缺省 enabled false = 零行为变化；开启即真实降权（shadowMode 已按用户 2026-10-14 拍板移除）。
       importancePenalty: (() => {
         const ip = obj(recallGroup, "importancePenalty");
         return {
           enabled: bool(ip, "enabled") ?? false,
           penalty: recallSignalBoost(ip, "penalty", 0.3, 0.9),
-          shadowMode: bool(ip, "shadowMode") ?? true,
         };
       })(),
       reinforcementWeight: recallSignalBoost(recallGroup, "reinforcementWeight", 0.03),
@@ -1467,7 +1465,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             modelDir: optStr(localGroup, "modelDir") ?? "",
             idleUnloadMs: recallSignalBoost(localGroup, "idleUnloadMs", 600_000),
           },
-          shadowMode: bool(rr, "shadowMode") ?? true,
           configError,
         };
       })(),
