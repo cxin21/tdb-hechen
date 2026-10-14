@@ -51,7 +51,8 @@ describe("needsGovernance（超限判定，边界值）", () => {
 });
 
 describe("buildDistillPrompts（蒸馏 prompt 内嵌 §4.1 保留优先级，spec DS-SCENE-GOV-001）", () => {
-  const { systemPrompt, userPrompt } = buildDistillPrompts("【原始块内容】", 8123);
+  // R5 起 buildDistillPrompts 为三参（currentTimestamp）；旧用例补固定时间戳保持确定性。
+  const { systemPrompt, userPrompt } = buildDistillPrompts("【原始块内容】", 8123, "2026-10-12T15:00:00.000Z");
 
   it("systemPrompt 逐条内嵌四级保留优先级且按序出现", () => {
     expect(systemPrompt).toContain("未闭合");
