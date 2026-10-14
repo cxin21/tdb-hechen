@@ -33,6 +33,7 @@
  */
 import type { Hono } from "hono";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { validatePanelMetaHeaders } from "../middleware/validate-panel-headers.js";
 import { respondControlError, respondEnvelope } from "../envelope.js";
@@ -45,6 +46,35 @@ import type { MetaEnvelope } from "../../kernel/envelope.js";
 import { MAX_IMPORTED_AGENTS } from "../../domain/chat-memory-governance.js";
 import { newExternalAssetId } from "../../domain/asset-id.js";
 import { fetchAllMetaListItems } from "./knowledge/common.js";
+
+/**
+ * recall journal 直读目录解析（用户 2026-10-14 拍板：同源修、不硬编码）。
+ *
+ * 契约：core writer 落盘 = <dataDir>/logs/recall（MemoryCore auto-recall.ts:990），
+ * dataDir 单一真源 = TDAI_DATA_DIR env（MemoryCore config.ts:449 解析序的最高优先层；
+ * core/panel 由同一条启动链注入同一份 env，天然同源）。
+ *
+ * 解析序：TDAI_RECALL_JOURNAL_DIR（运维显式覆盖）> TDAI_DATA_DIR（同源锚）。
+ * env 缺失时 loud 抛错（路由层转 503 RECALL_JOURNAL_DIR_UNRESOLVED），绝不猜测部署路径——
+ * core 的 home 默认 / MEMORY_TENCENTDB_ROOT / legacy 回退层（config.ts:831-870）属"绕过
+ * 启动链裸跑"形态，panel 不复刻，避免逻辑复制漂移再次造成静默读空。
+ */
+function resolveRecallJournalDir(): string {
+  const explicit = process.env.TDAI_RECALL_JOURNAL_DIR;
+  if (explicit) return expandTildePrefix(explicit);
+  const dataDir = process.env.TDAI_DATA_DIR;
+  if (!dataDir) {
+    throw new Error(
+      "RECALL_JOURNAL_DIR_UNRESOLVED: set TDAI_DATA_DIR (与 MemoryCore 同一 dataDir 单源) or TDAI_RECALL_JOURNAL_DIR",
+    );
+  }
+  return path.join(expandTildePrefix(dataDir), "logs", "recall");
+}
+
+/** `~/` 前缀展开，与 MemoryCore config.ts:451 对齐；其余形态原样返回。 */
+function expandTildePrefix(p: string): string {
+  return p.startsWith("~/") ? path.join(homedir(), p.slice(2)) : p;
+}
 
 /**
  * 归一化详情页时间筛选器传来的 time_start / time_end。
@@ -3087,7 +3117,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
 
   // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志直读——分页倒序+租户过滤，零改内核。
   // ACL=validatePanelMetaHeaders+resolveCallerUserId（面板登录身份）；租户参数必填；
-  // 目录=env TDAI_RECALL_JOURNAL_DIR ?? /data/tdai-memory/logs/recall（core writer 同源语义）。
+  // 目录=TDAI_RECALL_JOURNAL_DIR（运维显式）> TDAI_DATA_DIR（dataDir 单源锚）派生，
+  // 与 core writer 同源；env 缺失 503 loud（不做静默读空），见 resolveRecallJournalDir。
   api.post(
     "/chat-memory/recall-journal",
     validatePanelMetaHeaders(deps),
@@ -3104,7 +3135,13 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       const page = Math.max(1, Math.floor(Number(body?.page) || 1));
       const pageSize = Math.min(Math.max(Math.floor(Number(body?.page_size) || 20), 1), 100);
 
-      const dir = process.env.TDAI_RECALL_JOURNAL_DIR ?? "/data/tdai-memory/logs/recall";
+      let dir: string;
+      try {
+        dir = resolveRecallJournalDir();
+      } catch (err) {
+        // 配置缺失 loud 报错（用户 2026-10-14 拍板：不做静默读空），错误码即修复指引
+        return respondControlError(c, 503, err instanceof Error ? err.message : String(err));
+      }
       const stem = path.join(dir, `recall-journal-${encodeURIComponent(teamId)}-${encodeURIComponent(agentId)}`);
       const items: Array<Record<string, unknown>> = [];
       try {

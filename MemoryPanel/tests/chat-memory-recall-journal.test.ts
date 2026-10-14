@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { PanelDeps } from '../src/panel/panel-deps.js';
@@ -34,7 +34,7 @@ function makeDeps(callerUserId?: string): { deps: PanelDeps } {
   return { deps };
 }
 
-afterEach(() => { vi.restoreAllMocks(); delete process.env.TDAI_RECALL_JOURNAL_DIR; });
+afterEach(() => { vi.restoreAllMocks(); delete process.env.TDAI_RECALL_JOURNAL_DIR; delete process.env.TDAI_DATA_DIR; });
 
 function writeJournal(dir: string, team: string, agent: string, entries: string): void {
   const name = `recall-journal-${encodeURIComponent(team)}-${encodeURIComponent(agent)}.jsonl`;
@@ -97,5 +97,43 @@ describe('T5: POST /chat-memory/recall-journal（BFF 直读）', () => {
     const { deps: deps2 } = makeDeps('');
     const res3 = await call(deps2, { team_id: 't1', agent_id: 'agt-a' });
     expect(((await res3.json()) as { code: number }).code).toBe(401);
+  });
+
+  // ── 同源解析合同（用户 2026-10-14 拍板：同源修、不硬编码）──
+  it('TDAI_RECALL_JOURNAL_DIR 显式覆盖优先于 TDAI_DATA_DIR 派生', async () => {
+    const explicitDir = mkdtempSync(path.join(tmpdir(), 'rj-explicit-'));
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'rj-datadir-'));
+    const derivedDir = path.join(dataDir, 'logs', 'recall');
+    mkdirSync(derivedDir, { recursive: true });
+    writeJournal(explicitDir, 't1', 'agt-a', E('2026-10-14T00:00:00Z', 'from-explicit'));
+    writeJournal(derivedDir, 't1', 'agt-a', E('2026-10-14T00:00:00Z', 'from-derived'));
+    process.env.TDAI_DATA_DIR = dataDir;
+    process.env.TDAI_RECALL_JOURNAL_DIR = explicitDir;
+    const { deps } = makeDeps();
+    const res = await call(deps, { team_id: 't1', agent_id: 'agt-a' });
+    const j = (await res.json()) as { data: { items: Array<{ query: string }> } };
+    expect(j.data.items.map((x) => x.query)).toEqual(['from-explicit']);
+  });
+
+  it('无显式 env：TDAI_DATA_DIR 派生 <dataDir>/logs/recall（与 core writer 同源）', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'rj-datadir2-'));
+    const derivedDir = path.join(dataDir, 'logs', 'recall');
+    mkdirSync(derivedDir, { recursive: true });
+    writeJournal(derivedDir, 't1', 'agt-a', E('2026-10-14T00:00:00Z', 'from-datadir'));
+    process.env.TDAI_DATA_DIR = dataDir;
+    const { deps } = makeDeps();
+    const res = await call(deps, { team_id: 't1', agent_id: 'agt-a' });
+    const j = (await res.json()) as { data: { items: Array<{ query: string }> } };
+    expect(j.data.items.map((x) => x.query)).toEqual(['from-datadir']);
+  });
+
+  it('TDAI_DATA_DIR 亦缺失 → 503 loud（不再静默读空/猜路径）', async () => {
+    delete process.env.TDAI_DATA_DIR;
+    delete process.env.TDAI_RECALL_JOURNAL_DIR;
+    const { deps } = makeDeps();
+    const res = await call(deps, { team_id: 't1', agent_id: 'agt-a' });
+    const j = (await res.json()) as { code: number; message: string };
+    expect(j.code).toBe(503);
+    expect(j.message).toContain('RECALL_JOURNAL_DIR_UNRESOLVED');
   });
 });
