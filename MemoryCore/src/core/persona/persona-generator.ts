@@ -223,7 +223,7 @@ export class PersonaGenerator {
         systemPrompt,
         prompt: userPrompt,
         taskId: "persona-generation",
-        timeoutMs: 180_000,
+        timeoutMs: 300_000,
         // maxTokens omitted → core uses the resolved model's maxTokens from catalog
         workspaceDir: this.dataDir,
         // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS

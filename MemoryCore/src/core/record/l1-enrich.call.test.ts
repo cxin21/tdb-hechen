@@ -51,11 +51,17 @@ function makeRunner(ret: string) {
   return { llmRunner, calls };
 }
 
-describe("R3 关思考接线", () => {
-  it("主调 llmRunner.run 收到 reasoningEffort=none（对齐 R1 :659 / R2 先例）", async () => {
+describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", () => {
+  it("未传 deps.reasoningEffort 时主调不带该字段（端点默认，缺省 200）", async () => {
     const { llmRunner, calls } = makeRunner("[]");
     await enrichSoulFields([mem(NEUTRAL)], { config: {}, llmRunner });
     expect(calls).toHaveLength(1);
+    expect(calls[0].reasoningEffort).toBeUndefined();
+  });
+
+  it("deps.reasoningEffort 原样透传（支持的端点仍享关思考优化）", async () => {
+    const { llmRunner, calls } = makeRunner("[]");
+    await enrichSoulFields([mem(NEUTRAL)], { config: {}, llmRunner, reasoningEffort: "none" });
     expect(calls[0].reasoningEffort).toBe("none");
   });
 

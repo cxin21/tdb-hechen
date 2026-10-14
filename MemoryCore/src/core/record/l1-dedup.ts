@@ -99,6 +99,12 @@ export async function batchDedup(params: {
   embeddingTimeoutMs?: number;
   /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
   llmRunner?: LLMRunner;
+  /**
+   * 逐调用思考开关（config-first，2026-10-14）：缺省 undefined = 不带 reasoning_effort
+   * （端点默认）。原硬编码 "none"（R2）被当前生产端点拒绝（400 rejected by an internal
+   * MaaS component，L1 全败 → 只有 L0 的同根因），与 l1-extractor 一并改配置化。
+   */
+  reasoningEffort?: string;
   /** Isolation filter applied to candidate recall so dedup never crosses tenants. */
   filter?: IsolationFilter;
   /** langfuse 上报身份四元组（team/user/agent/session），透传给 llmRunner。 */
@@ -194,7 +200,7 @@ export async function batchDedup(params: {
   // prompt 候选与解析过滤用同一份（防幻觉 id，P-D）。读取失败 → 空清单（LLM 回 []，
   // 宁缺毋滥降级，绝不阻塞写入）。
   const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
-  const decisions = await runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext, valueCandidates);
+  const decisions = await runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext, valueCandidates, params.reasoningEffort);
   return attachTopCandidates(decisions, matches, minSimilarity);
 }
 
@@ -245,6 +251,8 @@ async function runLlmJudgment(
   traceContext?: TraceContext,
   /** C1：价值锚候选（prompt 注入与解析过滤同源——防幻觉 id）。 */
   valueCandidates: CoreValueCandidate[] = [],
+  /** 思考开关 config-first（2026-10-14）：undefined = 不带 reasoning_effort（端点默认）。 */
+  reasoningEffort?: string,
 ): Promise<DedupDecision[]> {
   logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories (promptMode=${promptMode})`);
 
@@ -261,14 +269,16 @@ async function runLlmJudgment(
       // Use the host-neutral LLMRunner interface
       // R2 P0-3（关思考）：端点 mimo-v2.6-flash 默认开思考，思考烧时延+输出预算——
       // 生产 10/138 整批超时降级全属思考所致（2026-10-06 取证），R1 v21 十组 A/B
-      // 证关思考质量持平、时延 −32% → 主调关思考。CleanContextRunner 兜底分支
+      // 证关思考质量持平、时延 −32% → 主调关思考。2026-10-14 修订：当前生产端点
+      //（glm-5.3-flash MaaS）对 reasoning_effort 参数直接 400，硬编码改 config-first
+      // 透传（yaml 不配 = 不传 = 端点默认）。CleanContextRunner 兜底分支
       //（OpenClaw 路径，内联参数类型无此字段）不加，维持原样。
       result = await llmRunner.run({
         prompt: userPrompt,
         systemPrompt,
         taskId: "l1-conflict-detection",
-        timeoutMs: 180_000,
-        reasoningEffort: "none",
+        timeoutMs: 300_000,
+        reasoningEffort,
         ...traceParams,
       });
     } else {
@@ -284,7 +294,7 @@ async function runLlmJudgment(
         prompt: userPrompt,
         systemPrompt,
         taskId: "l1-conflict-detection",
-        timeoutMs: 180_000,
+        timeoutMs: 300_000,
         ...traceParams,
       });
     }

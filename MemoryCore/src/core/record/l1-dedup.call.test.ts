@@ -5,10 +5,11 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { LLMRunner } from "../types.js";
 
 /**
- * R2 调用方式契约测试（2026-10-06 审计轮 P0-3）：
- *  - 主调 llmRunner.run 必须带 reasoningEffort="none"（关深度思考——R2 生产
- *    10/138 全超时的根因是思考烧 180s 预算；R1 v21 十组实测关思考质量持平
- *    时延 -32%）
+ * R2 调用方式契约测试（2026-10-06 审计轮 P0-3；2026-10-14 端点兼容修订）：
+ *  - 主调 llmRunner.run 的 reasoningEffort 改为 config-first 透传（原硬编码
+ *    "none" 被当前生产端点 glm-5.3-flash MaaS 拒绝——reasoning_effort 参数
+ *    直接 400，L1 全败 → 只有 L0）。不支持的端点由 llm-runner 400 剥参降级
+ *    兜底，两种端点都兼容。
  *  - taskId / timeoutMs / langfuse trace 参数行为不变（回归）
  */
 
@@ -58,8 +59,8 @@ function makeEmbedding(): EmbeddingService {
   } as unknown as EmbeddingService;
 }
 
-describe("R2 关思考接线", () => {
-  it("主调 llmRunner.run 收到 reasoningEffort=none（P0-3）", async () => {
+describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", () => {
+  it("未传 params.reasoningEffort 时主调不带该字段（端点默认，缺省 200）", async () => {
     let captured: Captured | null = null;
     const llmRunner = {
       run: async (p: Captured) => {
@@ -77,6 +78,27 @@ describe("R2 关思考接线", () => {
     });
 
     expect(captured).not.toBeNull();
+    expect(captured!.reasoningEffort).toBeUndefined();
+  });
+
+  it("params.reasoningEffort 原样透传（支持的端点仍享关思考优化）", async () => {
+    let captured: Captured | null = null;
+    const llmRunner = {
+      run: async (p: Captured) => {
+        captured = p;
+        return "[]";
+      },
+    } as unknown as LLMRunner;
+
+    await batchDedup({
+      memories: [mem("n1")],
+      config: {},
+      vectorStore: makeStore(),
+      embeddingService: makeEmbedding(),
+      llmRunner,
+      reasoningEffort: "none",
+    });
+
     expect(captured!.reasoningEffort).toBe("none");
   });
 
@@ -98,7 +120,7 @@ describe("R2 关思考接线", () => {
     });
 
     expect(captured!.taskId).toBe("l1-conflict-detection");
-    expect(captured!.timeoutMs).toBe(180_000);
+    expect(captured!.timeoutMs).toBe(300_000);
     expect(captured!.systemPrompt).toContain("记忆冲突检测器");
     expect(captured!.prompt).toContain("统一候选记忆池");
   });

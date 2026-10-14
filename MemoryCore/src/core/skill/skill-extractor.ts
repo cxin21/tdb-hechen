@@ -392,8 +392,12 @@ export class SkillExtractor {
       enableTools: false,
       // 让 runner 别真跑 tool loop, 就当一次普通 completion 用。
       maxIterations: 1,
-      // 关键词很短; 32 token 足够 5 词 ×~6 字符 CJK, 也帮 runner 快速返回。
-      maxTokens: 64,
+      // 2026-10-14 修复：原 64——"关键词很短 32 token 足够"是非 thinking 模型的假设。
+      // thinking 模型（glm-5.3-flash 实测）reasoning_content 计入 completion_tokens，
+      // 64 全被思考吃满 → content 空 + finishReason=length → sanitize 空串降级，
+      // 技能召回块永远拿不到关键词。改 0 = 不限制（对齐 GROW-EVO P2.1 语义，
+      // 与 core-values-discover / valence-derive 等其余 LLM 调用点一致）。
+      maxTokens: 0,
       taskId: `skill-extract-query-${input.task_id ?? "unknown"}`,
       // Langfuse 上可按此 traceName 单独筛这类 query-gen call, 跟主 skill.extract 分开。
       traceName: "skill.extract.query-gen",

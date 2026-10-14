@@ -33,6 +33,27 @@ import type { LLMUsage } from "../../core/report/metric-tracking-runner.js";
 
 const TAG = "[memory-tdai] [standalone-runner]";
 
+/**
+ * 端点 reasoning_effort 能力缓存（进程级，key = `${baseUrl}|${model}`）。
+ *
+ * 背景（2026-10-14 生产实锤）：不同 OpenAI 兼容端点对请求体顶层 reasoning_effort
+ * 兼容性不同——mimo 等推理端点支持（关思考省时延省预算，v21/R2/R3 三轮 A/B 拍板
+ * 的优化依据）；glm-5.3-flash MaaS 网关则直接 400 "rejected by an internal MaaS
+ * component"，当日 L1 全败 → cursor 不推进 → 只有 L0。
+ *
+ * 兼容策略：调用方照常按 config 传 reasoningEffort（配置语义不变，换回支持关思考
+ * 的端点优化自动生效）；本层在 400 时剥掉该参数重试一次，成功则记入本缓存——
+ * 同端点后续调用零往返直降。剥参后仍 400 = 400 另有原因，按原样抛出不掩盖。
+ */
+const reasoningEffortUnsupported = new Set<string>();
+
+/** 是否为 HTTP 400 形态的请求体被拒错误（ai SDK APICallError 带 statusCode/status）。 */
+function isBadRequest400(err: unknown): boolean {
+  if (err == null || typeof err !== "object") return false;
+  const anyErr = err as { statusCode?: unknown; status?: unknown };
+  return anyErr.statusCode === 400 || anyErr.status === 400;
+}
+
 // Max iterations in the tool-call loop to prevent infinite loops
 const MAX_TOOL_ITERATIONS = 20;
 
@@ -368,6 +389,14 @@ export class StandaloneLLMRunner implements LLMRunner {
         ? (timeoutSignal ? AbortSignal.any([timeoutSignal, params.abortSignal]) : params.abortSignal)
         : timeoutSignal;
 
+      // 端点能力门（见模块级 reasoningEffortUnsupported 注释）：缓存命中 = 该端点
+      // 已实证拒绝 reasoning_effort → 本次直接不带，走端点默认（零往返降级）。
+      const effortKey = `${this.config.baseUrl}|${this.model}`;
+      const effectiveReasoningEffort =
+        params.reasoningEffort && !reasoningEffortUnsupported.has(effortKey)
+          ? params.reasoningEffort
+          : undefined;
+
       const callParams = {
         model: provider.chatModel(this.model),
         system: params.systemPrompt,
@@ -382,9 +411,10 @@ export class StandaloneLLMRunner implements LLMRunner {
         ...(maxTokens > 0 ? { maxOutputTokens: maxTokens } : {}),
         // 逐调用思考开关（2026-10-06）：reasoningEffort → openai-compatible
         // providerOptions → 请求体 reasoning_effort（ai-sdk dist 已核 :555）。
-        // "none"=关深度思考；缺省不传保持端点默认。见 LLMRunParams 注释与探针证据。
-        ...(params.reasoningEffort
-          ? { providerOptions: { openaiCompatible: { reasoningEffort: params.reasoningEffort } } }
+        // 2026-10-14 端点兼容：不支持的端点（reasoningEffortUnsupported 缓存命中）
+        // 直接不传，走端点默认——首遇 400 由下方剥参重试自动学习。
+        ...(effectiveReasoningEffort
+          ? { providerOptions: { openaiCompatible: { reasoningEffort: effectiveReasoningEffort } } }
           : {}),
         abortSignal: combinedSignal,
         // D-R5-2：ai@6 移除 experimental_telemetry 顶层参数——移除该属性（运行时正常）
@@ -394,23 +424,45 @@ export class StandaloneLLMRunner implements LLMRunner {
       // 读 totalUsage 而不是单 step 的 usage —— tool-call 多 step 时后者只报最后一步,
       // 会漏掉前序工具调用请求的用量,导致 credit 计费偏低。
       // ai@6.0.164 的字段是 inputTokens/outputTokens/totalTokens。
-      const { text, usage, steps } = this.stream
-        ? await (async () => {
-            const streamResult = streamText(callParams as never);
-            return {
-              text: ((await streamResult.text) ?? "").trim(),
-              usage: await streamResult.totalUsage,
-              steps: await streamResult.steps,
-            };
-          })()
-        : await (async () => {
-            const genResult = await generateText(callParams as never);
-            return {
-              text: (genResult.text ?? "").trim(),
-              usage: genResult.totalUsage,
-              steps: genResult.steps,
-            };
-          })();
+      // 执行一次调用（stream/generate 两路共用）；供首调 + 下方降级重试复用。
+      const executeCall = async (cp: typeof callParams) => {
+        if (this.stream) {
+          const streamResult = streamText(cp as never);
+          return {
+            text: ((await streamResult.text) ?? "").trim(),
+            usage: await streamResult.totalUsage,
+            steps: await streamResult.steps,
+          };
+        }
+        const genResult = await generateText(cp as never);
+        return {
+          text: (genResult.text ?? "").trim(),
+          usage: genResult.totalUsage,
+          steps: genResult.steps,
+        };
+      };
+
+      let callOutput: Awaited<ReturnType<typeof executeCall>>;
+      try {
+        callOutput = await executeCall(callParams);
+      } catch (err) {
+        // 端点能力自动降级（2026-10-14）：带 reasoning_effort 的请求被 400 拒 →
+        // 剥掉该参数重试一次；成功则记入能力缓存（同端点后续调用零往返直降）。
+        // 剥参后仍失败 = 400 另有原因，按原错误抛出（不掩盖真实问题）。
+        if (effectiveReasoningEffort && isBadRequest400(err)) {
+          const retryParams = { ...callParams };
+          delete (retryParams as { providerOptions?: unknown }).providerOptions;
+          this.logger?.warn?.(
+            `${TAG} endpoint rejected reasoning_effort ("${effectiveReasoningEffort}") with 400 ` +
+            `— retrying without it and caching capability for ${effortKey} (endpoint-compat 2026-10-14)`,
+          );
+          reasoningEffortUnsupported.add(effortKey);
+          callOutput = await executeCall(retryParams);
+        } else {
+          throw err;
+        }
+      }
+      const { text, usage, steps } = callOutput;
 
       const totalMs = Date.now() - runStartMs;
 

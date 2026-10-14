@@ -228,6 +228,14 @@ export async function extractL1Memories(params: {
      * a CleanContextRunner (decouples from OpenClaw runtime).
      */
     llmRunner?: LLMRunner;
+    /**
+     * 逐调用思考开关（config-first，对齐 L2/scene R4 模式：cfg.persona.reasoningEffort）。
+     * 缺省 undefined = 请求不带 reasoning_effort（端点默认）。
+     * 2026-10-14 拍板：硬编码 "none"（v21）被当前生产端点（glm-5.3-flash MaaS）拒绝
+     * ——请求体 reasoning_effort 直接 400 "rejected by an internal MaaS component"，
+     * L1 全败 → cursor 不推进 → 只有 L0（当日根因）。改配置化后端点默认即 200。
+     */
+    reasoningEffort?: string;
   };
   logger?: Logger;
   /** Plugin instance ID for metric reporting (optional — metrics skipped if absent) */
@@ -295,6 +303,7 @@ export async function extractL1Memories(params: {
       model: options.model,
       promptMode: options.promptMode,
       memoryPrompt: options.memoryPrompt,
+      reasoningEffort: options.reasoningEffort,
       traceContext: { teamId, userId, agentId, sessionId },
       llmRunner: options.llmRunner,
       vectorStore: options.vectorStore,
@@ -362,6 +371,7 @@ export async function extractL1Memories(params: {
       logger,
       model: options.model,
       llmRunner: options.llmRunner,
+      reasoningEffort: options.reasoningEffort,
       traceContext: { teamId, userId, agentId, sessionId },
     });
   } catch (err) {
@@ -432,6 +442,8 @@ export async function extractL1Memories(params: {
         durativeEnabled: options.durativeEnabled,
         embeddingTimeoutMs: options.embeddingTimeoutMs,
         llmRunner: options.llmRunner,
+        // 思考开关 config-first（2026-10-14）：dedup 主调同 L1 提取，端点默认即可
+        reasoningEffort: options.reasoningEffort,
         // S1：similar 建边门槛配置化（memory.links.minSimilarity），缺省 0.3
         minSimilarity: options.minSimilarity,
         traceContext: { teamId, userId, agentId, sessionId },
@@ -611,10 +623,12 @@ async function callLlmExtraction(params: {
   llmRunner?: LLMRunner;
   /** A8：锚候选加载需要 vectorStore（listValues 按租户读锚） */
   vectorStore?: IMemoryStore;
+  /** 思考开关 config-first（2026-10-14）：undefined = 不带 reasoning_effort（端点默认）。 */
+  reasoningEffort?: string;
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
 }): Promise<{ scenes: SceneSegment[]; systemPrompt: string; userPrompt: string; rawOutput: string }> {
-  const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore } = params;
+  const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore, reasoningEffort } = params;
 
   // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
   // 自定义 memoryPrompt 策略优先级不变——自定义时内置 base 被其覆盖，agentAct 块随之
@@ -672,13 +686,14 @@ async function callLlmExtraction(params: {
       prompt: userPrompt,
       systemPrompt,
       taskId: "l1-extraction",
-      timeoutMs: 180_000,
-      // 关深度思考（2026-10-06 拍板依据）：探针实证 mimo 端点思考默认开启，
-      // 烧输出预算（8192 被烧空 2 起）+拉长 wall-time（180s 超时面抬升）；
-      // v21 十组 A/B 关思考质量持平、均时延 4923→3354ms。reasoningEffort="none"
-      // 经 StandaloneLLMRunner 透传为请求体 reasoning_effort。OpenClaw 兜底路径
-      // （下方 CleanContextRunner）不透传该参数，保持端点默认。
-      reasoningEffort: "none",
+      timeoutMs: 300_000,
+      // 思考开关 config-first（2026-10-14）：原 v21 硬编码 "none" 被当前生产端点
+      // （glm-5.3-flash MaaS）拒绝——reasoning_effort 参数直接 400，L1 全败导致
+      // "只有 L0"（当日根因）。改为 reasoningEffort 透传（cfg.persona.
+      // reasoningEffort 接线，yaml 不配 = 不传 = 端点默认 = 200；不支持该参数的
+      // 端点由 llm-runner 400 剥参降级兜底）。OpenClaw 兜底路径（下方
+      // CleanContextRunner）不透传该参数，保持端点默认。
+      reasoningEffort,
       ...traceParams,
     });
   } else {
@@ -694,7 +709,7 @@ async function callLlmExtraction(params: {
       prompt: userPrompt,
       systemPrompt,
       taskId: "l1-extraction",
-      timeoutMs: 180_000,
+      timeoutMs: 300_000,
       ...traceParams,
     });
   }
@@ -902,7 +917,7 @@ function buildEnrichPrompt(memories: Array<{ m: ExtractedMemory; i: number }>): 
  */
 export async function enrichSoulFields(
   memories: ExtractedMemory[],
-  deps: { config: unknown; memoryConfig?: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; traceContext?: TraceContext },
+  deps: { config: unknown; memoryConfig?: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; reasoningEffort?: string; traceContext?: TraceContext },
 ): Promise<void> {
   if (!memories || memories.length === 0) return;
   const missing = memories
@@ -935,11 +950,10 @@ export async function enrichSoulFields(
     if (deps.llmRunner) {
       result = await deps.llmRunner.run({
         prompt, systemPrompt: ENRICH_SYSTEM, taskId: "l1-enrich", timeoutMs: 30_000,
-        // 关深度思考（2026-10-06 R3，复用 R1 :659 / R2 先例）：字段补全是简单小 JSON 任务，
-        // 且 R3 timeout 仅 30s——思考开启抬升超时面（超时即字段留空）。R1 v21 十组实测关思考
-        // 质量持平、均时延 -32%；R2 v22 三臂 -44%。经 StandaloneLLMRunner 透传为请求体
-        // reasoning_effort。OpenClaw 兜底路径（下方 CleanContextRunner）不透传，保持端点默认。
-        reasoningEffort: "none",
+        // 思考开关 config-first（2026-10-14）：原 R3 硬编码 "none" 随 R1/R2 一并被当前
+        // 生产端点拒绝（reasoning_effort → 400），改 deps.reasoningEffort 透传
+        // （yaml 不配 = 不传 = 端点默认）。OpenClaw 兜底路径不透传，保持端点默认。
+        reasoningEffort: deps.reasoningEffort,
         ...(deps.traceContext ?? {}),
       });
     } else {
