@@ -113,4 +113,55 @@ describe("#9 T3：采纳副作用回填收口（allSettled + 结构化计数）"
     expect(store.calls.backfillMemoryRef.some((c) => c.key === "personRefs")).toBe(true);
     expect(warns.some((m) => m.includes("personRefs") && m.includes("fail="))).toBe(true);
   });
+
+  it("#13 T7：theme 回填触发大小写不敏感（与 recount/personEvCount 同刻度）", async () => {
+    // 证据门 recount 双侧 lowercase（英文 label「rollback plan」命中「Rollback Plan approved」），
+    // 但回填触发 content.includes(label) 是大小写敏感 → 同一行证据被采纳计数却不回填 =
+    // 证据↔引用断链。触发口径对齐（CJK 无大小写，逐位不受影响）。
+    const rows = [
+      l1Row("cA", "Rollback Plan approved today", { significance: 0.9, updated: "2026-10-13T09:00:00Z" }),
+      l1Row("cB", "rollback plan again", { updated: "2026-10-13T08:00:00Z" }),
+      l1Row("cC", "unrelated filler", { updated: "2026-10-13T07:00:00Z" }),
+    ];
+    const store = createGoldenStore({ rows });
+    const runner = scriptedRunner({
+      "core-values-discover-growth": JSON.stringify([
+        { label: "rollback plan", rationale: "发布必须先写回滚方案。", evidenceCount: 2 },
+      ]),
+    });
+    const growth = await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner,
+      config: { minEvidence: 2 },
+      logger: GOLDEN_LOG,
+      now: () => GOLDEN_NOW,
+    });
+    expect(growth.adopted).toBe(1); // 证据门已 lowercase（recount），采纳不受影响
+    const hitRows = store.calls.backfillCoreRef.map((c) => c.recordId).sort();
+    expect(hitRows).toEqual(["cA", "cB"]); // 现状漏 cA（大小写敏感）
+  });
+
+  it("#13 T7：person 回填触发大小写不敏感（alias 口径对齐 personEvCount）", async () => {
+    const rows = [
+      l1Row("pA", "ALICE said hi", { significance: 0.9, updated: "2026-10-13T09:00:00Z" }),
+      l1Row("pB", "al wrote a note", { updated: "2026-10-13T08:00:00Z" }),
+    ];
+    const store = createGoldenStore({ rows });
+    const runner = scriptedRunner({
+      "core-values-discover-growth": "[]",
+      "person-discover-growth": JSON.stringify([
+        { label: "Alice", role: "同事", aliases: ["al"], description: "协作同学。" },
+      ]),
+    });
+    const growth = await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner,
+      config: { minEvidence: 2, person: { enabled: true, minEvidence: 2, maxPerPass: 1, maxTotal: 8 } },
+      logger: GOLDEN_LOG,
+      now: () => GOLDEN_NOW,
+    });
+    expect(growth.adopted).toBe(1); // personEvCount 已双侧 lower（#15）
+    const hits = store.calls.backfillMemoryRef.filter((c) => c.key === "personRefs").map((c) => c.recordId).sort();
+    expect(hits).toEqual(["pA", "pB"]); // 现状漏 pA（大小写敏感）
+  });
 });

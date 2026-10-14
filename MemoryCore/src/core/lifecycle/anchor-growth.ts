@@ -625,8 +625,11 @@ export async function runAnchorGrowth(deps: {
               // （证据口径 = recount 同款内容包含；R5 反查补池/Panel 金色节点/遗忘 salience 的数据前提）
               // #9 T3：副作用收口——allSettled 批量等待，rejected/false 计数 warn，不炸 run。
               const backfillTasks: Array<Promise<boolean> | boolean> = [];
+              // #13 T7：触发口径与证据门同刻度（双侧 lowercase）——recount 已计入的行
+              // 不因大小写差异漏回填（CJK 无大小写，逐位不受影响）。
+              const labelLower = c.label.toLowerCase();
               for (const r of rows) {
-                if (String((r as { content?: string }).content ?? "").includes(c.label)) {
+                if (String((r as { content?: string }).content ?? "").toLowerCase().includes(labelLower)) {
                   const rid = String((r as { record_id?: string }).record_id ?? "");
                   if (rid) backfillTasks.push(Promise.resolve(store.backfillCoreRef?.(rid, c.label, tenant) ?? false));
                 }
@@ -711,9 +714,10 @@ export async function runAnchorGrowth(deps: {
                 // F12 证据链：personRefs 回填（命中口径 = personEv 同款 label/alias 包含）
                 // #9 T3：副作用收口——allSettled 批量等待，rejected/false 计数 warn，不炸 run。
                 const backfillTasks: Array<Promise<boolean> | boolean> = [];
+                // #13 T7：person 触发口径与 personEvCount 同刻度（双侧 lowercase，#15 同族）。
                 for (const r of rows) {
-                  const content = String((r as { content?: string }).content ?? "");
-                  if ([c.label, ...c.aliases].some((nm) => content.includes(nm))) {
+                  const contentLower = String((r as { content?: string }).content ?? "").toLowerCase();
+                  if ([c.label, ...c.aliases].some((nm) => contentLower.includes(nm.toLowerCase()))) {
                     const rid = String((r as { record_id?: string }).record_id ?? "");
                     if (rid) backfillTasks.push(Promise.resolve(store.backfillMemoryRef?.(rid, "personRefs", c.label, tenant) ?? false));
                   }
@@ -749,9 +753,17 @@ export async function runAnchorGrowth(deps: {
               .filter((p) => !charNames.includes(p.label.trim().toLowerCase()))
               .map((p) => {
                 // F-EV13-1：证据口径换 facts 模糊匹配（提案 fact 与语料措辞断链修复）。
+                // #13 T7：fact 字段必须真实命中 selfFacts（includes）——断链（0 命中）即拒，
+                // 不回退全量事实：否则 LLM 幻觉措辞凭空继承整槽证据（characterEvidenceCount
+                // 全量计）= 证据虚高。reason=evidence-unverifiable。宁缺毋滥。
+                if (p.fact && !selfFacts.some((f) => f.includes(p.fact!))) {
+                  logger?.debug?.(`[anchor-growth] character fact 断链拒绝: label=${p.label} fact="${p.fact}" reason=evidence-unverifiable`);
+                  return null;
+                }
                 const facts = p.fact ? selfFacts.filter((f) => f.includes(p.fact!)) : selfFacts;
-                return { ...p, evidenceCount: characterEvidenceCount(facts.length > 0 ? facts : selfFacts, corpus) };
+                return { ...p, evidenceCount: characterEvidenceCount(facts, corpus) };
               })
+              .filter((p): p is NonNullable<typeof p> => p !== null)
               .filter((p) => p.evidenceCount >= cfg.character!.minEvidence)
               .sort((a, b) => b.evidenceCount - a.evidenceCount)
               .slice(0, cfg.character!.maxPerPass);

@@ -114,4 +114,48 @@ describe("character 池（P3 品格锚）", () => {
     });
     expect(store.upsertValue.mock.calls.find((c) => c[1] === "守诺")).toBeUndefined();
   });
+
+  it("#13 T7：fact 与 self_identity 槽断链 → 拒绝（不回退全量事实=证据虚高）", async () => {
+    // fact="我每天晨跑五公里" 不在 selfFacts；corpus 却支撑真实事实「我承诺每周五出周报」
+    // → 现状（断链回退全量 selfFacts）= 幻觉 fact 凭空继承整槽证据 → 误采纳。
+    const rows = [corpusRow("r1", "我承诺每周五出周报")];
+    const store = makeStore({ rows });
+    (store as unknown as { readCore: ReturnType<typeof vi.fn> }).readCore = vi.fn(() => [
+      { slot: "self_identity", content: "- 我承诺每周五出周报" },
+    ]);
+    const runner = makeRunnerByTask({
+      "core-values-discover-growth": "[]",
+      "person-discover-growth": "[]",
+      "character-discover-growth": '[{"label":"守诺","rationale":"x","fact":"我每天晨跑五公里"}]',
+    });
+    await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner as never,
+      logger: LOG,
+      now: () => NOW,
+      config: { character: { enabled: true, minEvidence: 1, maxPerPass: 2, maxTotal: 8 } },
+    });
+    expect(store.upsertValue.mock.calls.find((c) => c[1] === "守诺")).toBeUndefined();
+  });
+
+  it("#13 T7：无 fact 提案维持全量 selfFacts 合法默认（LLM 未指明 ≠ 断链）", async () => {
+    const rows = [corpusRow("r1", "我承诺每周五出周报")];
+    const store = makeStore({ rows });
+    (store as unknown as { readCore: ReturnType<typeof vi.fn> }).readCore = vi.fn(() => [
+      { slot: "self_identity", content: "- 我承诺每周五出周报" },
+    ]);
+    const runner = makeRunnerByTask({
+      "core-values-discover-growth": "[]",
+      "person-discover-growth": "[]",
+      "character-discover-growth": '[{"label":"守诺","rationale":"x"}]',
+    });
+    await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner as never,
+      logger: LOG,
+      now: () => NOW,
+      config: { character: { enabled: true, minEvidence: 1, maxPerPass: 2, maxTotal: 8 } },
+    });
+    expect(store.upsertValue.mock.calls.find((c) => c[1] === "守诺")).toBeTruthy();
+  });
 });
