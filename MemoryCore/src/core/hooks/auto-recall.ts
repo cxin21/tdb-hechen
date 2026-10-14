@@ -952,6 +952,10 @@ export async function performLayeredRecall(params: {
             budgetSelfChars: cfg.coreMemory?.soulRender?.budgetSelfChars,
             budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
             maxRelationLines: cfg.coreMemory?.soulRender?.maxRelationLines,
+            // #10 T4：三行锚列表预算（0=关=逐位现状，config-first）
+            budgetAnchorChars: cfg.coreMemory?.soulRender?.budgetAnchorChars,
+            budgetPersonChars: cfg.coreMemory?.soulRender?.budgetPersonChars,
+            budgetCharacterChars: cfg.coreMemory?.soulRender?.budgetCharacterChars,
             // S-FEEL-1（M1）：近期基调行（null/undefined=不渲染=逐位现状）。
             moodTier: moodTierResult,            // S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚仍混渲染于价值锚行）。
             characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,

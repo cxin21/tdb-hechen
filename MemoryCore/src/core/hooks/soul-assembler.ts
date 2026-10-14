@@ -40,6 +40,27 @@ export function truncateByLines(content: string, budget: number): string {
 }
 
 /**
+ * #10 T4（2026-10-14）：锚列表行注入预算——价值锚行/重要的人行/品格行三处共用。
+ * 粒度=整项（票面定案）：按入参顺序（value_id 稳定序）累积（"；" 分隔计长），超预算
+ * 从尾丢整项，不截半句（裸 desc 门已保证每项非空，截半句只会产生断尾残句）。
+ * 例外：首项即超预算 → 保首项整句（槽不空原则，与 truncateByLines 的兜底同精神，
+ * 但不做字符切片——宁超勿断）。
+ * maxChars ≤ 0 = 无预算 = 原样返回（缺省 0=逐位现状，config-first 铁律；放量在配置层）。
+ */
+export function applyAnchorBudget(items: string[], maxChars: number): string[] {
+  if (!maxChars || maxChars <= 0) return items;
+  const kept: string[] = [];
+  let acc = "";
+  for (const item of items) {
+    const next = acc ? `${acc}；${item}` : item;
+    if (next.length > maxChars && kept.length > 0) break;
+    acc = next;
+    kept.push(item);
+  }
+  return kept;
+}
+
+/**
  * v18-d（何晨拍板「全做」2026-10-05）：desc 悬空尾判定单一源（高置信断尾门）。
  * 置空判据只留确定性特征：剥尾引号[”"』」']后尾悬空标点[，、,]（截断在句读处 =
  * 后面还有内容被掐，语义未完态明确）。
@@ -90,6 +111,12 @@ export interface SoulRenderOptions {
   /** S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚混渲染于价值锚行）。
    *  开启：价值锚行排除 character（与感受段 theme-only filter 对齐）+「我是谁」小节尾部「我的品格：」行。 */
   characterTensionEnabled?: boolean;
+  /** #10 T4：价值锚行总长预算（整锚粒度，join("；") 计长；缺省 0=无预算=逐位现状）。 */
+  budgetAnchorChars?: number;
+  /** #10 T4：重要的人 行总长预算（整人粒度；缺省 0=无预算=逐位现状）。 */
+  budgetPersonChars?: number;
+  /** #10 T4：品格行总长预算（整锚粒度；缺省 0=无预算=逐位现状）。 */
+  budgetCharacterChars?: number;
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -164,7 +191,13 @@ export async function buildSoulPrefix(
     if (metaOut) metaOut.soulVersion = soulVer;
 
     // 立项③：指纹→缓存命中跳渲染 / 变更重渲染+人格变更日志
-    cacheKey = `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`;
+    // #10 T4：缓存键含渲染参数指纹——soulVersion 只由数据算出，同数据不同渲染参数
+    // （dual/预算/行数上限）必须换缓存，否则旧渲染串在新参数下复活。
+    // moodTier.sampleCount 的陈旧性为 S-FEEL-1 已登记取舍（指纹只含 tier），此处不重复纳入。
+    cacheKey = [
+      `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0}`,
+    ].join("|");
     const cached = soulPrefixCache.get(cacheKey);
     if (cached && cached.version === soulVer) {
       logger?.debug?.(`[soul] prefix cache hit ${soulVer}`);
@@ -235,12 +268,13 @@ export async function buildSoulPrefix(
             return renderAnchor(v, desc);
           })
           .filter((x): x is string => x !== null);
-        if (decorated.length > 0) lines.push(`价值锚：${decorated.join("；")}`);
+        // #10 T4：整锚预算——超预算从尾丢整锚（value_id 稳定序头部保留），0=无预算逐位现状
+        const budgeted = applyAnchorBudget(decorated, opts?.budgetAnchorChars ?? 0);
+        if (budgeted.length > 0) lines.push(`价值锚：${budgeted.join("；")}`);
       }
       // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段
       if (personRows.length > 0) {
-        lines.push(
-          `重要的人：${personRows.map((v) => {
+        const personDecorated = personRows.map((v) => {
             // V6-1e：attrsOf 统一解析（含 description）——「label(role·方向)：描述」与价值锚行同构；
             // 2026-10-04 勘误（UR-15，台账 61 号）：生产 active person 锚 2/2 有 description（cdcfe5c 终判），
             // 描述段=活跃路径；空 desc 行走下方三元回退为无描述形态（G-ANCHORDESC-WRITE 策略另行拍板）。
@@ -258,8 +292,10 @@ export async function buildSoulPrefix(
               : cutP >= 0 ? rawDesc.slice(0, cutP + 1) : isDanglingTail(rawDesc) ? "" : rawDesc;
             const pDesc = pDescClean !== "" && !looksLikeEpisode(pDescClean) ? `：${escapeXmlTags(pDescClean)}` : "";
             return `${escapeXmlTags(v.label)}(${role}${d})${pDesc}`;
-          }).join("；")}`,
-        );
+          });
+        // #10 T4：整人预算——超预算从尾丢整人（value_id 稳定序头部保留），0=无预算逐位现状
+        const personBudgeted = applyAnchorBudget(personDecorated, opts?.budgetPersonChars ?? 0);
+        if (personBudgeted.length > 0) lines.push(`重要的人：${personBudgeted.join("；")}`);
       }
       // S-CHAR-2（M2/P5）：品格行——「我是谁」小节尾部（数据驱动，无品格锚 → 省略宁缺毋滥）；
       // 渲染门=opts.characterTensionEnabled（M2 缺省关断）。A/B 对象：开启时价值锚行不再含品格锚。
@@ -286,7 +322,9 @@ export async function buildSoulPrefix(
             return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}：${escapeXmlTags(desc)}`;
           })
           .filter((x): x is string => x !== null);
-        if (charDecorated.length > 0) lines.push(`我的品格：${charDecorated.join("；")}`);
+        // #10 T4：整锚预算——同价值锚行（0=无预算逐位现状）
+        const charBudgeted = applyAnchorBudget(charDecorated, opts?.budgetCharacterChars ?? 0);
+        if (charBudgeted.length > 0) lines.push(`我的品格：${charBudgeted.join("；")}`);
       }
       if (lines.length > 0) parts.push(`<soul-identity>\n## 此刻的你\n${lines.join("\n")}\n</soul-identity>`);
     }

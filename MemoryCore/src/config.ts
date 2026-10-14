@@ -438,6 +438,12 @@ export interface MemoryCoreMemoryConfig {
     budgetIdentityChars: number;
     /** F17（审计补齐）：重要的人 行数上限（1..20，缺省 5）。 */
     maxRelationLines: number;
+    /** #10 T4：价值锚行总长预算（整锚粒度从尾丢；0=关（缺省，逐位现状），开则建议 480）。 */
+    budgetAnchorChars: number;
+    /** #10 T4：重要的人 行总长预算（整人粒度从尾丢；0=关（缺省），开则建议 400）。 */
+    budgetPersonChars: number;
+    /** #10 T4：品格行总长预算（整锚粒度从尾丢；0=关（缺省），开则建议 300）。 */
+    budgetCharacterChars: number;
   };
 }
 
@@ -1176,6 +1182,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         budgetSelfChars: clamp("budgetSelfChars", 600, 100, 2000),
         budgetIdentityChars: clamp("budgetIdentityChars", 900, 100, 2000),
         maxRelationLines: clamp("maxRelationLines", 5, 1, 20),
+        // #10 T4：三行锚列表预算（0=关=缺省逐位现状；clamp 上界防手滑写爆）
+        budgetAnchorChars: clamp("budgetAnchorChars", 0, 0, 4000),
+        budgetPersonChars: clamp("budgetPersonChars", 0, 0, 4000),
+        budgetCharacterChars: clamp("budgetCharacterChars", 0, 0, 4000),
       };
     })(),
   };

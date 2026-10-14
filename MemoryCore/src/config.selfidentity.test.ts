@@ -9,10 +9,13 @@ describe("coreMemory.selfIdentity / soulRender（P1 双槽）", () => {
     expect(c.coreMemory.selfIdentity.intervalHours).toBe(24);
   });
 
-  it("缺省：soulRender 预算 600/900", () => {
+  it("缺省：soulRender 预算 600/900；#10 三行预算 0=关", () => {
     const c = parseConfig({});
     expect(c.coreMemory.soulRender.budgetSelfChars).toBe(600);
     expect(c.coreMemory.soulRender.budgetIdentityChars).toBe(900);
+    expect(c.coreMemory.soulRender.budgetAnchorChars).toBe(0);
+    expect(c.coreMemory.soulRender.budgetPersonChars).toBe(0);
+    expect(c.coreMemory.soulRender.budgetCharacterChars).toBe(0);
   });
 
   it("缺省白名单含 self_identity（信任边界扩展，写入仍由 enabled 门控）", () => {
@@ -24,7 +27,7 @@ describe("coreMemory.selfIdentity / soulRender（P1 双槽）", () => {
     const c = parseConfig({
       coreMemory: {
         selfIdentity: { enabled: true, maxPerPass: 99, intervalHours: 0 },
-        soulRender: { budgetSelfChars: 100, budgetIdentityChars: 50 },
+        soulRender: { budgetSelfChars: 100, budgetIdentityChars: 50, budgetAnchorChars: 480, budgetPersonChars: -5, budgetCharacterChars: 99999 },
       },
     });
     expect(c.coreMemory.selfIdentity.enabled).toBe(true);
@@ -32,6 +35,9 @@ describe("coreMemory.selfIdentity / soulRender（P1 双槽）", () => {
     expect(c.coreMemory.selfIdentity.intervalHours).toBe(1); // clamp 下界 1
     expect(c.coreMemory.soulRender.budgetSelfChars).toBe(100);
     expect(c.coreMemory.soulRender.budgetIdentityChars).toBe(100); // clamp 下界 100（防手滑归零段）
+    expect(c.coreMemory.soulRender.budgetAnchorChars).toBe(480); // #10：0..4000，可开
+    expect(c.coreMemory.soulRender.budgetPersonChars).toBe(0); // #10：负值→0（0=关）
+    expect(c.coreMemory.soulRender.budgetCharacterChars).toBe(4000); // #10：clamp 上界
   });
 
   it("显式 allowedSlots 覆盖缺省（不含 self_identity 时写入将被信任边界拒绝——合法配置）", () => {
