@@ -39,7 +39,7 @@ import {
   DISCOVER_SAMPLE_CAP,
   DISCOVER_SYSTEM_PROMPT,
   buildDiscoverPrompt,
-  dedupProposals,
+  dedupProposalsWithVariants,
   parseProposalsJson,
   recountEvidence,
   selectSampleRows,
@@ -2465,13 +2465,25 @@ async function handleCoreMemoryValuesDiscover(_body: unknown, _auth: V2AuthConte
   );
   // 证据重算在 parse + dedup 之后：sampleSize = 样本条数（weight 公式分母）
   const sampleSize = sample.length;
-  const candidates = dedupProposals(parseProposalsJson(String(raw ?? "")), existingLabels);
+  // #18 T11：去重升级集合级（label + attrs.aliases 全变体），证据计数同刻度（OR 口径）。
+  const existingVariants = (values as Array<{ label: string; attrs_json?: string | null }>).map((v) => {
+    let aliases: string[] = [];
+    try {
+      const a = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : null;
+      if (Array.isArray(a?.aliases)) aliases = a.aliases.map(String).filter((s: string) => s.length > 0);
+    } catch {
+      // attrs_json 损坏 → 空别名（宁缺毋滥）
+    }
+    return { label: v.label, aliases };
+  });
+  const candidates = dedupProposalsWithVariants(parseProposalsJson(String(raw ?? "")), existingVariants);
   const proposals = candidates
-    .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus) }))
+    .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus, c.aliases) }))
     .filter((p) => p.evidenceCount >= DISCOVER_MIN_EVIDENCE)
     .map((p) => ({
       label: p.label,
       rationale: p.rationale,
+      aliases: p.aliases,
       evidenceCount: p.evidenceCount,
       suggestedWeight: suggestAnchorWeight(p.evidenceCount, sampleSize),
     }))

@@ -87,13 +87,13 @@ describe("parseProposalsJson（宽松解析，丢弃不可用项）", () => {
       { label: "实证求真", rationale: "一切结论以数据为准", evidenceCount: 5 },
     ]);
     expect(parseProposalsJson(raw)).toEqual([
-      { label: "增量对账", rationale: "反复出现" },
-      { label: "实证求真", rationale: "一切结论以数据为准" },
+      { label: "增量对账", rationale: "反复出现", aliases: [] },
+      { label: "实证求真", rationale: "一切结论以数据为准", aliases: [] },
     ]);
   });
   it("code-fence 包裹（推理模型常见）→ 剥离后解析", () => {
     const raw = '```json\n[{"label":"克己","rationale":"r","evidenceCount":4}]\n```';
-    expect(parseProposalsJson(raw)).toEqual([{ label: "克己", rationale: "r" }]);
+    expect(parseProposalsJson(raw)).toEqual([{ label: "克己", rationale: "r", aliases: [] }]);
   });
   it("garbage / 无数组 / JSON.parse 失败 → []（不抛错）", () => {
     expect(parseProposalsJson("garbage")).toEqual([]);
@@ -106,9 +106,9 @@ describe("parseProposalsJson（宽松解析，丢弃不可用项）", () => {
       "not-an-object",
       null,
       { label: "  ", rationale: "r" },
-      { label: "可用", rationale: "r" },
+      { label: "可用", rationale: "r", aliases: [] },
     ]);
-    expect(parseProposalsJson(raw)).toEqual([{ label: "可用", rationale: "r" }]);
+    expect(parseProposalsJson(raw)).toEqual([{ label: "可用", rationale: "r", aliases: [] }]);
   });
 });
 
@@ -119,23 +119,23 @@ describe("dedupProposals（已有锚不再提 + 提案内部去重，归一化�
   it("与已有锚 label 相同（trim+大小写归一化）→ 丢弃", () => {
     const out = dedupProposals(
       [
-        { label: "增量对账", rationale: "r1" },
-        { label: "增量对账 ", rationale: "r2" },
-        { label: "新主题", rationale: "r3" },
+        { label: "增量对账", rationale: "r1", aliases: [] },
+        { label: "增量对账 ", rationale: "r2", aliases: [] },
+        { label: "新主题", rationale: "r3", aliases: [] },
       ],
       existing,
     );
-    expect(out).toEqual([{ label: "新主题", rationale: "r3" }]);
+    expect(out).toEqual([{ label: "新主题", rationale: "r3", aliases: [] }]);
   });
   it("提案内部同义重复只留第一个", () => {
     const out = dedupProposals(
       [
-        { label: "主题A", rationale: "first" },
-        { label: "主题A", rationale: "dup" },
+        { label: "主题A", rationale: "first", aliases: [] },
+        { label: "主题A", rationale: "dup", aliases: [] },
       ],
       [],
     );
-    expect(out).toEqual([{ label: "主题A", rationale: "first" }]);
+    expect(out).toEqual([{ label: "主题A", rationale: "first", aliases: [] }]);
   });
 });
 

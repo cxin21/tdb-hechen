@@ -27,6 +27,16 @@ describe("K/L appraisal（价值锚 + 当前感受）", () => {
     const res = appraise("提到安全", [{ id: "safety", label: "安全", weight: 0.2 }], { enabled: true, firedThreshold: 0.4 });
     expect(res[0]?.fired).toBe(false);
   });
+
+  it("#18 T11：fired 口径钉死——aliases 不参与 fired（只有 label 子串命中）", () => {
+    // 价值锚带 attrs.aliases（「数据完整」的别名「防丢数据」）——消费端 CoreValue 只有
+    // id/label/weight，别名信息不进 appraise。内容只含别名 → 不 fired（口径防回归）。
+    const res = appraise("评审要求 防丢数据", [{ id: "cv1", label: "数据完整", weight: 0.8 }], { enabled: true, firedThreshold: 0.4 });
+    expect(res[0]?.fired).toBe(false);
+    expect(res[0]?.weight).toBe(0);
+    const res2 = appraise("评审要求 数据完整", [{ id: "cv1", label: "数据完整", weight: 0.8 }], { enabled: true, firedThreshold: 0.4 });
+    expect(res2[0]?.fired).toBe(true);
+  });
 });
 
 describe("salienceBoost（审计 B1：价值命中 → 遗忘显著性 boost）", () => {

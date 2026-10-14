@@ -64,15 +64,16 @@ function labelTokens(label: string): string[] {
 /**
  * 按 label 关键词在样本语料中的实际命中数重算证据条数。
  * 命中判定：一条样本命中 ⟺ label 的每个 token 都出现在该样本内容中（lowercase 包含）。
+ * #18 T11：aliases（同义变体 ≤3）任一变体全 token 命中同样计 1——同行双命中不重复计。
  * 与 appraisal 的 content.includes(label) 同口径（CJK 子串包含即语义命中）。
  */
-export function recountEvidence(label: string, corpus: string[]): number {
-  const tokens = labelTokens(label);
-  if (tokens.length === 0) return 0;
+export function recountEvidence(label: string, corpus: string[], aliases: ReadonlyArray<string> = []): number {
+  const nameGroups = [labelTokens(label), ...aliases.map((a) => labelTokens(a))].filter((g) => g.length > 0);
+  if (nameGroups.length === 0) return 0;
   let hits = 0;
   for (const item of corpus) {
     const text = (item ?? "").toLowerCase();
-    if (tokens.every((t) => text.includes(t))) hits++;
+    if (nameGroups.some((tokens) => tokens.every((t) => text.includes(t)))) hits++;
   }
   return hits;
 }
@@ -82,6 +83,30 @@ export function recountEvidence(label: string, corpus: string[]): number {
 export interface RawProposal {
   label: string;
   rationale: string;
+  /** #18 T11：同义变体 ≤3（规范化后）；证据计数与去重按 label OR aliases。 */
+  aliases: string[];
+}
+
+/** #18 T11：既有锚名集（label + attrs.aliases），集合级去重的比对域。 */
+export interface ThemeNameVariants {
+  label: string;
+  aliases: string[];
+}
+
+/** aliases 规范化：trim / 去空 / 去重 / 去同 label（归一化比对）/ 上限 3。 */
+export function normalizeAliases(raw: unknown, label: string): string[] {
+  const seen = new Set<string>([label.trim().toLowerCase()]);
+  const out: string[] = [];
+  if (!Array.isArray(raw)) return out;
+  for (const item of raw) {
+    const s = String(item ?? "").trim();
+    const k = s.toLowerCase();
+    if (!s || seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+    if (out.length >= 3) break;
+  }
+  return out;
 }
 
 /**
@@ -116,7 +141,8 @@ export function parseProposalsJson(raw: string): RawProposal[] {
     const label = typeof (item as Record<string, unknown>).label === "string" ? ((item as Record<string, unknown>).label as string).trim() : "";
     if (!label) continue;
     const rationale = typeof (item as Record<string, unknown>).rationale === "string" ? ((item as Record<string, unknown>).rationale as string).trim() : "";
-    out.push({ label, rationale });
+    const aliases = normalizeAliases((item as Record<string, unknown>).aliases, label);
+    out.push({ label, rationale, aliases });
   }
   return out;
 }
@@ -130,6 +156,7 @@ function normalizeLabel(s: string): string {
 
 /**
  * 去重：已有锚 label 归一化命中 → 丢弃（已有锚不再提）；提案内部归一化重复只留先出现者。
+ * （旧口径——只比精确 label；集合级变体去重见 dedupProposalsWithVariants。）
  */
 export function dedupProposals(candidates: RawProposal[], existingLabels: string[]): RawProposal[] {
   const existing = new Set(existingLabels.map(normalizeLabel).filter((s) => s.length > 0));
@@ -140,6 +167,53 @@ export function dedupProposals(candidates: RawProposal[], existingLabels: string
     if (!key || existing.has(key) || seen.has(key)) continue;
     seen.add(key);
     out.push(c);
+  }
+  return out;
+}
+
+// #18 T11：集合级去重复用 proposal-dedup 的标定 bigram（0.79 真重复 / 0.692 同簇不并）。
+import { charBigrams, PROPOSAL_DUP_THRESHOLD } from "../core/lifecycle/proposal-dedup.js";
+
+/** 名集：归一化去空的 {label, ...aliases}。 */
+function nameSet(v: { label: string; aliases?: ReadonlyArray<string> }): string[] {
+  const out = [v.label, ...(v.aliases ?? [])].map(normalizeLabel).filter((s) => s.length > 0);
+  return [...new Set(out)];
+}
+
+/** 两个名字的 bigram Jaccard（任一为空 → 0）。 */
+function nameJaccard(a: string, b: string): number {
+  const A = charBigrams(a);
+  const B = charBigrams(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/**
+ * #18 T11：theme 集合级去重（比对域 = label + aliases 全变体，两段判定）：
+ *  ① 精确：候选名集 ∩ 既有名集（含批内先到者）非空 → 重复；
+ *  ② 相似：无精确命中时，任一候选名 × 任一既有名字符 bigram Jaccard ≥ PROPOSAL_DUP_THRESHOLD
+ *     （0.75，宁漏勿错杀标定沿用——「数据完整」vs「{数据安全,防丢数据}」J=0.2 不拦，
+ *     「数据安全」vs「数据安全性」J=0.75 拦）。
+ * 旧签名 dedupProposals 保留兼容（existingLabels → 空别名变体）。
+ */
+export function dedupProposalsWithVariants(candidates: RawProposal[], existingVariants: ReadonlyArray<ThemeNameVariants>): RawProposal[] {
+  const out: RawProposal[] = [];
+  const pool: ThemeNameVariants[] = existingVariants.map((v) => ({ label: v.label, aliases: [...(v.aliases ?? [])] }));
+  for (const c of candidates) {
+    const names = nameSet(c);
+    if (names.length === 0) continue;
+    let dup = false;
+    for (const e of pool) {
+      const eNames = nameSet(e);
+      if (eNames.some((n) => names.includes(n))) { dup = true; break; }          // ① 精确
+      if (names.some((a) => eNames.some((b) => nameJaccard(a, b) >= PROPOSAL_DUP_THRESHOLD))) { dup = true; break; } // ② 相似
+    }
+    if (dup) continue;
+    out.push(c);
+    pool.push({ label: c.label, aliases: [...c.aliases] }); // 批内先到者入比对域
   }
   return out;
 }
@@ -216,7 +290,10 @@ export const DISCOVER_SYSTEM_PROMPT = [
   "   采纳前系统会按 label 在语料中做逐字包含计数来验证证据；抽象概括词（如'部署管理'）",
   "   在语料中没有字面命中，会被判为证据不足而拒绝。宁可提出朴素的原文短语，不要抽象概括。",
   "5. 只提议抽象主题/价值观/稳定习惯；具体人物与人物关系不是主题锚（人物锚由 person 池负责），不要提议任何人名。",
-  "6. 只输出一个 JSON 数组，不要输出任何其它文字：[{\"label\":\"…\",\"rationale\":\"…\",\"evidenceCount\":N}]，无提议输出 []。",
+  "6. aliases（可选）：同一主题的常见同义/变体措辞（逐字摘自样本，≤3 个，不得跨主题）——",
+  "   系统按 label 或任一 alias 在语料中做逐字包含计数验证证据，并按全变体集合去重；",
+  "   语义上没有变体时省略该字段，宁缺毋滥。",
+  "7. 只输出一个 JSON 数组，不要输出任何其它文字：[{\"label\":\"…\",\"rationale\":\"…\",\"aliases\":[\"…\"],\"evidenceCount\":N}]，无提议输出 []。",
 ].join("\n");
 
 /**

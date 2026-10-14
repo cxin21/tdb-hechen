@@ -38,7 +38,7 @@ import {
   buildDiscoverPrompt,
   DISCOVER_SYSTEM_PROMPT,
   parseProposalsJson,
-  dedupProposals,
+  dedupProposalsWithVariants,
   isSimilarLabel,
   recountEvidence,
   suggestAnchorWeight,
@@ -419,12 +419,12 @@ export async function runAnchorGrowth(deps: {
           // 切片 → 冻结（宁缺毋滥）。theme 口径的字面 label 计数会把品格锚误判零证据。
           const isCharacter = a.node_type === "character";
           if (isCharacter && (!cfg.character?.enabled || currentSelfFacts.length === 0)) continue;
-          const aliases = isPerson ? attrsOf(a).aliases : [];
+          const aliases = isCharacter ? [] : attrsOf(a).aliases; // #18 T11：theme attrs.aliases 同样参与维护证据
           const ev = isPerson
             ? personEvCount(a.label, aliases, corpus)
             : isCharacter
               ? characterEvidenceCount(currentSelfFacts, corpus)
-              : recountEvidence(a.label, corpus);
+              : recountEvidence(a.label, corpus, aliases);
           // P2：分池阈值——人物锚退场门槛用 cfg.person.minEvidence（F15/F19 护栏四件分池），
           // 沿用 theme 阈值会把别名支撑的人物锚误退（TDD QUOTA 分池用例实证）。
           // F-EV12-5：品格锚门槛用 cfg.character.minEvidence（分池同款）。
@@ -504,7 +504,7 @@ export async function runAnchorGrowth(deps: {
             }
           }
         };
-        await quotaEvict(themeActive, cfg.maxTotal, (r) => recountEvidence(r.label, corpus), "theme");
+        await quotaEvict(themeActive, cfg.maxTotal, (r) => recountEvidence(r.label, corpus, attrsOf(r).aliases), "theme");
         if (cfg.person.enabled) {
           await quotaEvict(personActive, cfg.person.maxTotal, (r) => personEvCount(r.label, attrsOf(r).aliases, corpus), "person");
         }        if (cfg.character?.enabled) {
@@ -523,9 +523,10 @@ export async function runAnchorGrowth(deps: {
         if (doAdoption) {
         // P0-F3（spec §2.6 复合键）：去重清单收窄 theme 池——人物/品格同名不再误挡主题提案；
         // 同类型全态（veto/retired 永不重提）语义保留；person/character 池各有独立去重清单。
-        const existingLabels = anyState2
-          .filter((v) => (v.node_type ?? "theme") === "theme")
-          .map((v) => v.label);
+        // #18 T11：去重升级集合级——比对域 = label + attrs.aliases 全变体（①精确命中 ②bigram Jaccard≥0.75）。
+        const themeExisting = (anyState2 as CoreValueRow[]).filter((v) => (v.node_type ?? "theme") === "theme");
+        const existingLabels = themeExisting.map((v) => v.label);
+        const existingVariants = themeExisting.map((v) => ({ label: v.label, aliases: attrsOf(v).aliases }));
         const raw = await deps.llmRunner!.run({
           prompt: buildDiscoverPrompt(sampleContents, existingLabels),
           systemPrompt: DISCOVER_SYSTEM_PROMPT,
@@ -536,8 +537,9 @@ export async function runAnchorGrowth(deps: {
           maxTokens: 0,
         });
         // ── 护栏（per-agent 独立计数）：证据门槛 → 强者优先 → 每轮上限 ──
-        const candidates = dedupProposals(parseProposalsJson(String(raw ?? "")), existingLabels)
-          .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus) }))
+        // #18 T11：证据计数同刻度 = label OR aliases（同行只计一次）。
+        const candidates = dedupProposalsWithVariants(parseProposalsJson(String(raw ?? "")), existingVariants)
+          .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus, c.aliases) }))
           .filter((p) => p.evidenceCount >= cfg.minEvidence)
           .sort((a, b) => b.evidenceCount - a.evidenceCount)
           .slice(0, cfg.maxPerPass);
@@ -547,10 +549,10 @@ export async function runAnchorGrowth(deps: {
         // GROW-MAINT 同刻度同 delta 门）做增量更新；命中即计 mergedSimilar（weight 无变化
         // 也阻止新建）。F1 教训（UR-09）：upsertValue 一律 attrs=undefined 不碰 attrs_json。
         let mergedSimilar = 0;
-        let adoptCandidates: Array<{ label: string; rationale: string; evidenceCount: number }> = candidates;
+        let adoptCandidates: Array<{ label: string; rationale: string; aliases: string[]; evidenceCount: number }> = candidates;
         if (cfg.similarMerge.enabled) {
           const themeActiveRows = (anyState2 as CoreValueRow[]).filter((r: CoreValueRow) => r.state === "active" && (r.node_type ?? "theme") === "theme");
-          const kept: Array<{ label: string; rationale: string; evidenceCount: number }> = [];
+          const kept: Array<{ label: string; rationale: string; aliases: string[]; evidenceCount: number }> = [];
           for (const c of candidates) {
             const hit = themeActiveRows.find((a: CoreValueRow) => a.label !== c.label && isSimilarLabel(c.label, a.label, cfg.similarMerge.threshold));
             if (!hit) {
@@ -558,7 +560,8 @@ export async function runAnchorGrowth(deps: {
               continue;
             }
             mergedSimilar++;
-            const ev = Math.max(recountEvidence(hit.label, corpus), c.evidenceCount);
+            // #18 T11：合并侧证据同刻度（既有锚 attrs.aliases + 候选 aliases 都算）。
+            const ev = Math.max(recountEvidence(hit.label, corpus, attrsOf(hit).aliases), c.evidenceCount);
             const newW = suggestAnchorWeight(ev, corpus.length);
             if (Math.abs(newW - hit.weight) >= REWEIGHT_DELTA) {
               const ok = await Promise.resolve(store.upsertValue(hit.value_id, hit.label, newW, hit.created_by, tenant, hit.valence ?? undefined, "auto", "theme", undefined));
@@ -581,7 +584,7 @@ export async function runAnchorGrowth(deps: {
         // 可挤出自生长锚列表（该 agent 的；pinned 豁免）：weight × 语料实际命中
         //（与候选同刻度，确定性），弱者优先被挤出；单轮多候选挤出时逐个弹出。
         const displaceable = autoActiveNonPinned
-          .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus) }))
+          .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus, attrsOf(r).aliases) }))
           .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
         //（adoptedThisAgent 声明上移至 doAdoption 块外——V10-MAINT-DECOUPLE）
         for (const c of adoptCandidates) {
@@ -614,8 +617,10 @@ export async function runAnchorGrowth(deps: {
             const priorTheme = (anyState2 as CoreValueRow[]).find(
               (r) => r.state === "active" && (r.node_type ?? "theme") === "theme" && r.label === c.label,
             );
-            let themeAttrs = anchorDescriptionAttr(c.rationale);
+            let themeAttrs: { description?: string; aliases?: string[] } | undefined = anchorDescriptionAttr(c.rationale);
             if (priorTheme && existingDescription(priorTheme.attrs_json)) themeAttrs = undefined;
+            // #18 T11：采纳 attrs 落 aliases（≤3 已规范化）——维护/去重/挤出从 attrs_json 读取。
+            if (c.aliases.length > 0) themeAttrs = { ...(themeAttrs ?? {}), aliases: [...c.aliases] };
             // #15 T8b：slug 碰撞守卫（coffee vs coffee!）——冲突时改 hash 形态兜底
             const valueId = resolveGrowthValueId(c.label, "theme", anyState2 as CoreValueRow[]);
             const ok = await Promise.resolve(store.upsertValue(valueId, c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto", "theme", themeAttrs));
@@ -627,9 +632,11 @@ export async function runAnchorGrowth(deps: {
               const backfillTasks: Array<Promise<boolean> | boolean> = [];
               // #13 T7：触发口径与证据门同刻度（双侧 lowercase）——recount 已计入的行
               // 不因大小写差异漏回填（CJK 无大小写，逐位不受影响）。
-              const labelLower = c.label.toLowerCase();
+              // #18 T11：同刻度含 aliases——alias 命中行同样回填（OR 口径）。
+              const nameLowers = [c.label, ...c.aliases].map((s) => s.toLowerCase());
               for (const r of rows) {
-                if (String((r as { content?: string }).content ?? "").toLowerCase().includes(labelLower)) {
+                const contentLower = String((r as { content?: string }).content ?? "").toLowerCase();
+                if (nameLowers.some((nm) => contentLower.includes(nm))) {
                   const rid = String((r as { record_id?: string }).record_id ?? "");
                   if (rid) backfillTasks.push(Promise.resolve(store.backfillCoreRef?.(rid, c.label, tenant) ?? false));
                 }
