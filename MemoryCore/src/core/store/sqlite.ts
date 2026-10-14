@@ -1953,9 +1953,9 @@ export class VectorStore implements IMemoryStore {
     try {
       const row = this.db.prepare(
         // P1-T7：importance 入档（归档→恢复 roundtrip 保值；P0-T3 家族"漏拷=刷空"合同）。
-        // 已知缺口（D-3 遗留，非本任务面）：sensitivity 不在清单 → 归档 JSON 无该键，
-        // restoreL1 回落 'none'。见 task-7-report follow-ups。
-        `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, importance FROM l1_records WHERE record_id = ?`,
+        // T7 审稿 M-3：sensitivity 补入清单（整行 JSON.stringify 入档，SELECT 列=归档键），
+        // 闭环 restoreL1 既有 d.sensitivity ?? "none" 回填——归档/恢复 roundtrip 全 soul 列保值。
+        `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity, importance FROM l1_records WHERE record_id = ?`,
       ).get(id);
       if (!row) return false;
       this.db.exec("BEGIN");

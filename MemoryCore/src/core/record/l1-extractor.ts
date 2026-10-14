@@ -58,12 +58,16 @@ export function isRecurrenceMeta(v: unknown): v is RecurrenceMeta {
 
 /**
  * P1 Task 7（worthiness importance）：重要度确定性门（镜像 normalizeRecurrence 先例）。
- * LLM 只提议、门裁决：有限数字 → round(clamp 1..10)（TINYINT 整数口径）；
- * NaN/Infinity/字符串/对象/缺省 → undefined（不伪造默认分——字段缺席 = 现状 = 不罚）。
+ * LLM 只提议、门裁决（T7 审稿 I-1 修订：宁缺毋滥，不伪造评分）：
+ * 有限数字且落在 [1,10] → round 取整（TINYINT 整数口径）；
+ * 越界（<1 或 >10，含 0/99/10.4）/NaN/Infinity/字符串/对象/缺省 → undefined
+ * ——垃圾分不 clamp 成伪评分（clamp 会在 penalty 开启时把 LLM 幻觉 0 分变成真降权）；
+ * 字段缺席 = 现状 = 不罚。
  */
 export function normalizeImportance(raw: unknown): number | undefined {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
-  return Math.round(Math.min(10, Math.max(1, raw)));
+  if (raw < 1 || raw > 10) return undefined;
+  return Math.round(raw);
 }
 
 const WEEKDAY_ZH: Record<string, string> = { MON: "一", TUE: "二", WED: "三", THU: "四", FRI: "五", SAT: "六", SUN: "日" };

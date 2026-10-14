@@ -2,10 +2,11 @@
  * P1 Task 7（worthiness importance，spec §6）：抽取解析面 RED 套件。
  * 契约：
  *  - normalizeImportance 确定性门（镜像 normalizeRecurrence 先例）：LLM 只提议、门裁决——
- *    有限数字 → round(clamp 1..10)；NaN/Infinity/字符串/对象/缺省 → undefined（不伪造）；
+ *    有限数字且落在 [1,10] → round 取整；越界/NaN/Infinity/字符串/对象/缺省 → undefined
+ *    （T7 审稿 I-1：不 clamp 成伪评分，宁缺毋滥）；
  *  - parseExtractionResult 集成：importance + importance_reason → 字段 + metadata
  *    （importance_reason / importance_source='llm'）；合法 importance 缺失时三处全缺席 = 现状；
- *  - 防御第二层：提示词未开启时 LLM 意外输出也被钳制；非法输出不产生任何 importance 痕迹。
+ *  - 防御第二层：提示词未开启时 LLM 意外输出也被确定性门拒绝；非法输出不产生任何 importance 痕迹。
  */
 import { describe, it, expect } from "vitest";
 import { parseExtractionResult, normalizeImportance } from "./l1-extractor.js";
@@ -20,10 +21,11 @@ describe("normalizeImportance（确定性门）", () => {
     expect(normalizeImportance(7.6)).toBe(8);
     expect(normalizeImportance(7.4)).toBe(7);
   });
-  it("越界钳制到 [1,10]", () => {
-    expect(normalizeImportance(0)).toBe(1);
-    expect(normalizeImportance(-3)).toBe(1);
-    expect(normalizeImportance(99)).toBe(10);
+  it("越界 → undefined（审稿 I-1：不 clamp 成伪评分，宁缺毋滥）", () => {
+    expect(normalizeImportance(0)).toBeUndefined();
+    expect(normalizeImportance(-3)).toBeUndefined();
+    expect(normalizeImportance(99)).toBeUndefined();
+    expect(normalizeImportance(10.4)).toBeUndefined();
   });
   it("非法输入 → undefined（不伪造默认分）", () => {
     expect(normalizeImportance(Number.NaN)).toBeUndefined();
@@ -67,14 +69,15 @@ describe("parseExtractionResult × importance 集成", () => {
     }
   });
 
-  it("越界值钳制；小数取整；仅理由无分数 → 不标记（不伪造评分）", () => {
+  it("越界值 → undefined（审稿 I-1）；小数取整；仅理由无分数 → 不标记（不伪造评分）", () => {
     const raw = scene([
       { content: "X", type: "episodic", importance: 99 },
       { content: "Y", type: "episodic", importance: 3.2 },
       { content: "Z", type: "episodic", importance_reason: "光有理由没有分数" },
     ]);
     const mems = parseExtractionResult(raw, undefined, [])[0].memories;
-    expect(mems[0].importance).toBe(10);
+    expect(mems[0].importance).toBeUndefined();
+    expect(mems[0].metadata.importance_source).toBeUndefined();
     expect(mems[1].importance).toBe(3);
     expect(mems[2].importance).toBeUndefined();
     expect(mems[2].metadata.importance_source).toBeUndefined();
