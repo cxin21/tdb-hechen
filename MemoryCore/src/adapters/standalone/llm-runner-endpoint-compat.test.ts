@@ -122,6 +122,24 @@ describe("reasoning_effort 端点兼容（400 剥参降级 + 能力缓存）", (
     expect(calls[1]!.body).not.toContain("reasoning_effort");
   });
 
+  it("评审 M5：剥参只去 reasoning_effort，其余请求体字段逐位保留（防降级路径过度剥参）", async () => {
+    const baseUrl = "http://ep-compat-5.test/v1";
+    const calls = stubEndpoint(1);
+    const runner = new StandaloneLLMRunner({ config: makeConfig(baseUrl) });
+
+    await runner.run(makeParams("none"));
+    await runner.run(makeParams("none")); // 第二次：缓存命中，首发即不带
+    // calls[0]=带 effort 的首发（400），calls[1]=剥参重试（200），calls[2]=缓存命中直发（200）
+    expect(calls.length).toBe(3);
+    const first = JSON.parse(calls[0]!.body) as Record<string, unknown>;
+    const retry = JSON.parse(calls[1]!.body) as Record<string, unknown>;
+    const cached = JSON.parse(calls[2]!.body) as Record<string, unknown>;
+    delete first.reasoning_effort;
+    // 重试体 ≡ 缓存直发体（只少一个 reasoning_effort，tools/maxOutputTokens 等逐位一致）
+    expect(retry).toEqual(cached);
+    expect(first).toEqual(cached);
+  });
+
   it("能力缓存按 baseUrl+model 粒度隔离", async () => {
     const baseA = "http://ep-compat-4a.test/v1";
     const baseB = "http://ep-compat-4b.test/v1";

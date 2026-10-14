@@ -4,6 +4,8 @@
   "results": {
     "growth": {
       "adopted": 1,
+      "backfillFailures": 0,
+      "backfillOk": 5,
       "descRefreshed": 0,
       "displaced": 1,
       "ran": true,

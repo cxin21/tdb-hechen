@@ -22,6 +22,8 @@
   "results": {
     "growth": {
       "adopted": 2,
+      "backfillFailures": 0,
+      "backfillOk": 10,
       "descRefreshed": 0,
       "displaced": 0,
       "ran": true,

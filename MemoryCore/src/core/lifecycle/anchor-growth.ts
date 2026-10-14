@@ -228,6 +228,10 @@ export interface AnchorGrowthResult {
   similarMerged?: number;
   /** #11 T5：desc 重述落库数（LLM 重述+守卫通过才计）；descRefresh.enabled=false 时恒 0。 */
   descRefreshed?: number;
+  /** 评审 M1：回填结构化计数（coreRefs/personRefs 合计；ok=fulfilled+true，fail=rejected/false）。 */
+  backfillOk?: number;
+  /** 评审 M1：回填失败计数（与 warn 同源；fail>0 时运维可从此处而非日志捞取）。 */
+  backfillFailures?: number;
   reason?: "disabled" | "no-llm" | "store-unsupported" | "interval" | "attempt-cooldown" | "no-new-corpus" | "no-corpus" | "error";
 }
 
@@ -266,14 +270,15 @@ function normalizeTriplet(t: CoreTenant): CoreTenant {
  * #9 T3：采纳副作用回填收口——allSettled 等待全部任务；fulfilled+true 计 ok，
  * 其余（rejected / false）计 fail；fail>0 才结构化 warn（全部成功静默，宁缺毋滥）。
  * 回填失败不得中断 runAnchorGrowth、不得成为 unhandled rejection。
+ * 评审 M1：返回计数并入 AnchorGrowthResult.backfillOk/backfillFailures（结构化可观测）。
  */
 async function settleBackfills(
   tasks: Array<Promise<boolean> | boolean>,
   kind: string,
   label: string,
   logger?: Logger,
-): Promise<void> {
-  if (tasks.length === 0) return;
+): Promise<{ ok: number; fail: number }> {
+  if (tasks.length === 0) return { ok: 0, fail: 0 };
   const settled = await Promise.allSettled(tasks);
   let ok = 0;
   let fail = 0;
@@ -282,6 +287,7 @@ async function settleBackfills(
     else fail++;
   }
   if (fail > 0) logger?.warn?.(`[anchor-growth] ${kind} backfill partial: ok=${ok} fail=${fail} label=${label}`);
+  return { ok, fail };
 }
 
 // ── #11 T5：desc 维护环（GROW-MAINT 证据重算周期顺带评估）────────────────────────
@@ -377,6 +383,8 @@ export async function runAnchorGrowth(deps: {
     let skipped = 0;
     let similarMerged = 0; // G-SIMMERGE：相似命中并入既有锚（未新建）的候选数
     let descRefreshed = 0; // #11 T5：desc 重述落库数（维护轮 flush；缺省关=恒 0）
+    let backfillOk = 0; // 评审 M1：回填结构化计数（coreRefs/personRefs 合计）
+    let backfillFailures = 0;
     let firstBlockReason: NonNullable<AnchorGrowthResult["reason"]> | undefined;
     for (const tenant of tenants) {
       // default 三元组 → 无参调用（旧键/旧调用形状；非 default → per-tenant 键）
@@ -721,9 +729,14 @@ export async function runAnchorGrowth(deps: {
               (r) => r.state === "active" && (r.node_type ?? "theme") === "theme" && r.label === c.label,
             );
             let themeAttrs: { description?: string; aliases?: string[]; lastDescRefreshEvidence?: number } | undefined = anchorDescriptionAttr(c.rationale);
-            if (priorTheme && existingDescription(priorTheme.attrs_json)) themeAttrs = undefined;
             // #18 T11：采纳 attrs 落 aliases（≤3 已规范化）——维护/去重/挤出从 attrs_json 读取。
+            // 评审 M4：aliases 并入必须在 F1「不碰」判定之前——若先置 undefined 再被下方 spread
+            // 复活为 {aliases}，会在防御分支命中时把既有 attrs_json（含 description）擦成仅 aliases。
+            // 语义收敛：priorTheme 已有非空 desc → 整体不碰（含 aliases，一并交 dedup/维护环处理）。
             if (c.aliases.length > 0) themeAttrs = { ...(themeAttrs ?? {}), aliases: [...c.aliases] };
+            // attrs_json——同名 active 锚已带非空 description（用户面板手写/既有合格语义）时，
+            // LLM rationale 不得静默覆写：置 attrs=undefined（F1 教训同款"不碰"语义）。
+            if (priorTheme && existingDescription(priorTheme.attrs_json)) themeAttrs = undefined;
             // #11 T5：desc 维护环触发基线（≥2× 语义守恒）——采纳即记录证据基线；
             // priorTheme 已有 desc 时 attrs=undefined（不碰语义）保持不变（存量走 #20/人工通道）。
             if (themeAttrs) themeAttrs = { ...themeAttrs, lastDescRefreshEvidence: c.evidenceCount };
@@ -747,7 +760,9 @@ export async function runAnchorGrowth(deps: {
                   if (rid) backfillTasks.push(Promise.resolve(store.backfillCoreRef?.(rid, c.label, tenant) ?? false));
                 }
               }
-              await settleBackfills(backfillTasks, "coreRefs", c.label, logger);
+              const bf = await settleBackfills(backfillTasks, "coreRefs", c.label, logger);
+              backfillOk += bf.ok;
+              backfillFailures += bf.fail;
             }
             else { skipped++; logger?.warn?.(`[anchor-growth] adopt upsert failed: ${c.label}`); }
           }
@@ -835,7 +850,9 @@ export async function runAnchorGrowth(deps: {
                     if (rid) backfillTasks.push(Promise.resolve(store.backfillMemoryRef?.(rid, "personRefs", c.label, tenant) ?? false));
                   }
                 }
-                await settleBackfills(backfillTasks, "personRefs", c.label, logger);
+                const bf = await settleBackfills(backfillTasks, "personRefs", c.label, logger);
+                backfillOk += bf.ok;
+                backfillFailures += bf.fail;
               } else {
                 skipped++;
                 logger?.warn?.(`[anchor-growth] person adopt upsert failed: ${c.label}`);
@@ -870,7 +887,7 @@ export async function runAnchorGrowth(deps: {
                 // 不回退全量事实：否则 LLM 幻觉措辞凭空继承整槽证据（characterEvidenceCount
                 // 全量计）= 证据虚高。reason=evidence-unverifiable。宁缺毋滥。
                 if (p.fact && !selfFacts.some((f) => f.includes(p.fact!))) {
-                  logger?.debug?.(`[anchor-growth] character fact 断链拒绝: label=${p.label} fact="${p.fact}" reason=evidence-unverifiable`);
+                  logger?.warn?.(`[anchor-growth] character fact 断链拒绝: label=${p.label} fact="${p.fact}" reason=evidence-unverifiable`);
                   return null;
                 }
                 const facts = p.fact ? selfFacts.filter((f) => f.includes(p.fact!)) : selfFacts;
@@ -985,7 +1002,7 @@ export async function runAnchorGrowth(deps: {
     }
     // v4#7：summary 行补 firstBlockReason——ran=false 时对外宣告拦截原因（此前只有 agents/adopted 计数）
     logger?.info?.(`[anchor-growth] ran: agents=${tenants.length} adopted=${adopted} retired=${retired} reweighted=${reweighted} displaced=${displaced} skipped=${skipped}${!ranAny && firstBlockReason ? ` firstBlockReason=${firstBlockReason}` : ""}`);
-    return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, similarMerged, descRefreshed, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
+    return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, similarMerged, descRefreshed, backfillOk, backfillFailures, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
   } catch (err) {
     logger?.warn?.(`[anchor-growth] failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ran: false, adopted: 0, retired: 0, reweighted: 0, displaced: 0, skipped: 0, reason: "error" };

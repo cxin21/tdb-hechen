@@ -154,6 +154,54 @@ describe("#12 T6：pending 采纳同名冲突（缺省安全优先，不静默�
     expect(call[8]).toEqual({ description: "新描述" });
   });
 
+  // 评审 C1：冲突域=全态——retired/vetoed 同名行不得被 ON CONFLICT 静默复活
+  it("同名 retired 锚 → 409 带 state=retired 明细（不静默复活）+ allow_overwrite:true 才显式复活采纳", async () => {
+    const store = cvStore({ ...existingActive, state: "retired" });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r25", depsFor(store));
+    expect(res.code).toBe(409);
+    const conflict = DATA(res).conflict as { state?: string; hint?: string };
+    expect(conflict.state).toBe("retired");
+    expect(String(conflict.hint)).toContain("allow_overwrite");
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+    expect(store.upsertValue).not.toHaveBeenCalled();
+    // 显式复活：allow_overwrite:true → 走直采路径（pending 被消费）
+    const res2 = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted", allow_overwrite: true }, AUTH, "r26", depsFor(store));
+    expect(res2.code).toBe(0);
+    expect(DATA(res2).overwritten).toBe(true);
+    expect(store.decidePendingCore).toHaveBeenCalledTimes(1);
+  });
+
+  it("同名 vetoed 锚 → 409 带 state=vetoed，且 allow_overwrite:true 也不得直采（永久否决）", async () => {
+    const store = cvStore({ ...existingActive, state: "vetoed" });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted", allow_overwrite: true }, AUTH, "r27", depsFor(store));
+    expect(res.code).toBe(409);
+    const conflict = DATA(res).conflict as { state?: string; hint?: string };
+    expect(conflict.state).toBe("vetoed");
+    expect(String(conflict.hint)).toContain("veto");
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+    expect(store.upsertValue).not.toHaveBeenCalled();
+  });
+
+  // 评审 I1+I2：合并分支 attrs 先读后合并 + created_by 沿用既有行（auto-growth 不退出维护环）
+  it("安全合并保留既有 attrs（aliases/descSource/lastDescRefreshEvidence）与 created_by", async () => {
+    const store = cvStore({
+      ...existingActive,
+      created_by: "auto-growth",
+      attrs_json: JSON.stringify({ aliases: ["取證"], descSource: "auto-refresh", lastDescRefreshEvidence: 7 }),
+    });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r28", depsFor(store));
+    expect(res.code).toBe(0);
+    expect(DATA(res).merged).toBe(true);
+    const call = store.upsertValue.mock.calls[0]!;
+    expect(call[3]).toBe("auto-growth"); // created_by 不被 panel-adopt 改写（I2）
+    expect(call[8]).toEqual({
+      aliases: ["取證"],
+      descSource: "auto-refresh",
+      lastDescRefreshEvidence: 7,
+      description: "任何结论必须有证据支撑", // 仅补 desc（I1）
+    });
+  });
+
   it("无同名冲突 → 现行为不变（新建 0.5 manual）", async () => {
     const store = cvStore(undefined);
     const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r24", depsFor(store));
@@ -181,6 +229,20 @@ describe("#12 T6：pending list 冲突标记（conflict 徽标数据源）", () 
     expect(rows.find((r) => r.pending_id === "pd-2")?.conflict).toBe(true);
     expect(rows.find((r) => r.pending_id === "pd-3")?.conflict).toBe(false);
     expect(rows.find((r) => r.pending_id === "pd-4")?.conflict).toBe(false);
+  });
+  it("评审 C1 口径统一：retired/vetoed 同名同样标记 conflict（与 decide 预检同域=全态）", async () => {
+    const store = {
+      listPendingCore: vi.fn(() => [
+        { pending_id: "pd-2", slot: "core_value", content: "c1", label: "取证先行", description: "d", evidence: 3, state: "pending", created_at: "t" },
+      ]),
+      listValuesAnyState: vi.fn(async () => [
+        { value_id: "auto-r1", label: "取证先行", weight: 0.4, created_by: "auto-growth", valence: null, origin: "auto", pinned: 0, state: "retired", node_type: "theme", attrs_json: null },
+        { value_id: "auto-v1", label: "另一 vetoed", weight: 0.4, created_by: "manual", valence: null, origin: "manual", pinned: 0, state: "vetoed", node_type: "theme", attrs_json: null },
+      ]),
+    };
+    const res = await handleCoreMemoryPendingList({}, AUTH, "r30b", depsFor(store));
+    const rows = (res as unknown as { data: { pending: Array<{ conflict?: boolean }> } }).data.pending;
+    expect(rows[0]?.conflict).toBe(true); // retired 同名 → 徽标亮
   });
   it("store 无 listValuesAnyState（特性探测）→ conflict 全 false", async () => {
     const store = { listPendingCore: vi.fn(() => [{ pending_id: "pd-2", slot: "core_value", content: "c", label: "取证先行", evidence: 3, state: "pending", created_at: "t" }]) };

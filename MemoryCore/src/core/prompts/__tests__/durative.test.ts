@@ -19,10 +19,17 @@ describe("GROW-EVO P2 durative 提取契约", () => {
     expect(joined).toContain("判定不了给 false");
   });
 
-  it("生产 yaml durativeEnabled: true 已落盘（cloud 模板同步）", () => {
-    const prod = fs.readFileSync("/opt/tdai/td-agemem/MemoryCore/tdai-gateway.yaml", "utf8");
+  it("生产 yaml durativeEnabled: true 已落盘（cloud 模板同步；部署机限定，非 Linux 开发机跳过）", () => {
+    // 评审建议：/opt/tdai 硬编码路径=部署机限定断言，非部署机必然 FileNotFoundError
+    // → 存在性守卫跳过（部署机上照常生效，开发机全量套件不再恒 1 红）。
+    const prodPath = "/opt/tdai/td-agemem/MemoryCore/tdai-gateway.yaml";
+    const tplPath = "/opt/tdai/td-agemem/deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml";
+    if (!fs.existsSync(prodPath) || !fs.existsSync(tplPath)) {
+      return; // skip（环境不适用）
+    }
+    const prod = fs.readFileSync(prodPath, "utf8");
     expect(prod).toMatch(/durativeEnabled: true/);
-    const tpl = fs.readFileSync("/opt/tdai/td-agemem/deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml", "utf8");
+    const tpl = fs.readFileSync(tplPath, "utf8");
     expect(tpl).toMatch(/durativeEnabled: true/);
   });
 });

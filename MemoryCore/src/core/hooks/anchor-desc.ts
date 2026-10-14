@@ -82,8 +82,9 @@ const DESC_V2_DEFINITION_RE = /(很|非常|十[分分]|极其|特别)重要|重�
 
 /**
  * 确定性预筛（#20 T13）：desc 是否符合合同 v2（sanitize + episode 门 + 取向特征 +
- * 非定义句）。用于脚本存量审计与 LLM 重述的确定性守卫；预筛失败仅提示不阻塞
- * 人工输入（#20 拍板：启发式预筛，LLM 复核只在预筛失败时提示）。
+ * 非定义句）。用途：backfill 脚本 --contract=v2 存量审计（只读报告）。注意：desc 维护环
+ * （#11 T5）落库守卫是 anchorDescriptionAttr（sanitize+episode 双门），不走本函数——
+ * 本函数是更严的合同审计口径，不是运行时写路径守卫（评审 M2 勘误）。
  */
 export function passesDescContractV2(raw: string): boolean {
   const s = sanitizeAnchorDescription(String(raw ?? ""), DESC_CONTRACT_V2.maxChars);

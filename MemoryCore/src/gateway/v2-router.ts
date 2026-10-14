@@ -2062,13 +2062,15 @@ async function handleCoreMemoryPendingList(body: unknown, _auth: V2AuthContext, 
   const b = (body ?? {}) as { include_decided?: unknown };
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
   const pending = (await Promise.resolve(store.listPendingCore(tenant, { includeDecided: b.include_decided === true }))) ?? [];
-  // #12 T6：conflict 徽标数据源——core_value 提案 label 与 active theme 锚同名时标记
+  // #12 T6：conflict 徽标数据源——core_value 提案 label 与既有 theme 锚同名时标记
   // conflict:true，Panel 决策页可先呈现冲突再裁决（数据源仅标记，不改裁决语义）。
+  // 评审 C1 口径统一：冲突域=全态（active/retired/vetoed）与 decide 预检同域——
+  // retired/vetoed 同名同样构成决策前须知悉的冲突（采纳它们另有显式门槛）。
   // 特性探测：store 缺 listValuesAnyState → conflict 全 false（旧实现/测试桩兼容）。
   let activeThemeLabels: Set<string> | null = null;
   if (typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
     const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string }>;
-    activeThemeLabels = new Set(anyRows.filter((r) => r.state === "active" && (r.node_type ?? "theme") === "theme").map((r) => String(r.label ?? "").trim().toLowerCase()));
+    activeThemeLabels = new Set(anyRows.filter((r) => (r.node_type ?? "theme") === "theme").map((r) => String(r.label ?? "").trim().toLowerCase()));
   }
   const enriched = (pending as Array<{ pending_id?: string; slot?: string; label?: unknown; [key: string]: unknown }>).map((p) => ({
     ...p,
@@ -2094,7 +2096,7 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
   //     pending 保持 pending，裁决权归还用户）；
   //   ③ allow_overwrite:true → 显式覆盖 = 旧直采行为（新 id + weight 0.5 + pending desc）。
   // strict_rule / rejected / store 缺 listPendingCore（特性探测）→ 原行为逐位不变。
-  let conflictPrior: { value_id: string; label: string; weight: number; valence?: number | null; pinned?: number; node_type?: string; attrs_json?: string | null } | undefined;
+  let conflictPrior: { value_id: string; label: string; weight: number; valence?: number | null; pinned?: number; node_type?: string; attrs_json?: string | null; state?: string; created_by?: string | null } | undefined;
   let overwrite = false;
   if (b.decision === "adopted" && typeof (store as { listPendingCore?: unknown }).listPendingCore === "function") {
     const pendingRows = ((await Promise.resolve((store as { listPendingCore: (t: unknown, o?: unknown) => unknown }).listPendingCore(tenant, { includeDecided: false }))) ?? []) as Array<{ pending_id?: string; slot?: string; label?: unknown; description?: unknown; content?: unknown }>;
@@ -2102,10 +2104,37 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
     if (row && row.slot === "core_value" && typeof store.upsertValue === "function") {
       const anchor0 = coerceCoreValueAnchor({ label: String(row.label ?? ""), description: (row.description as string | null | undefined) ?? null, content: String(row.content ?? "") });
       if (anchor0 && typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
-        const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string; value_id: string; weight: number; valence?: number | null; pinned?: number; attrs_json?: string | null }>;
+        const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string; value_id: string; weight: number; valence?: number | null; pinned?: number; attrs_json?: string | null; created_by?: string | null }>;
         const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
-        conflictPrior = anyRows.find((r) => r.state === "active" && (r.node_type ?? "theme") === "theme" && norm(r.label) === norm(anchor0.label)) as typeof conflictPrior;
+        // #12 T6 + 评审 C1：冲突域 = 同 label 全态行（active/retired/vetoed）——sqlite upsertValue
+        // ON CONFLICT 会把 state 无条件复位 active，任何态同名行都不得被采纳静默改写：
+        //   active  → 三分流（安全合并 / 409 / allow_overwrite 显式覆盖，原语义）；
+        //   retired → 409 带 state 明细（allow_overwrite:true = 显式复活采纳）；
+        //   vetoed  → 永久否决：allow_overwrite 也不得直采（先显式恢复/撤销否决）。
+        conflictPrior = anyRows.find((r) => (r.node_type ?? "theme") === "theme" && norm(r.label) === norm(anchor0.label)) as typeof conflictPrior;
         overwrite = b.allow_overwrite === true;
+        if (conflictPrior && conflictPrior.state === "vetoed") {
+          return errorEnvelope(409, "core_value adopt conflicts with a vetoed anchor of the same label (veto is never silently revived)", requestId, {
+            conflict: {
+              value_id: conflictPrior.value_id,
+              label: conflictPrior.label,
+              weight: conflictPrior.weight,
+              state: "vetoed",
+              hint: "this label was vetoed; restore or remove the veto first, then adopt",
+            },
+          });
+        }
+        if (conflictPrior && conflictPrior.state === "retired" && !overwrite) {
+          return errorEnvelope(409, "core_value adopt conflicts with a retired anchor of the same label (no silent revive)", requestId, {
+            conflict: {
+              value_id: conflictPrior.value_id,
+              label: conflictPrior.label,
+              weight: conflictPrior.weight,
+              state: "retired",
+              hint: "this label was retired by the evidence gate; pass allow_overwrite:true to explicitly revive-and-overwrite, or reject the pending proposal",
+            },
+          });
+        }
         if (conflictPrior && !overwrite) {
           const existingDesc0 = existingDescription(conflictPrior.attrs_json ?? undefined);
           const pendingDesc0 = anchor0.description ? escapeXmlTags(anchor0.description) : "";
@@ -2115,6 +2144,7 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
                 value_id: conflictPrior.value_id,
                 label: conflictPrior.label,
                 weight: conflictPrior.weight,
+                state: "active",
                 existing_has_description: Boolean(existingDesc0),
                 pending_has_description: Boolean(pendingDesc0),
                 hint: "pass allow_overwrite:true to overwrite, or reject the pending proposal",
@@ -2164,7 +2194,16 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
         }
         // 安全合并：既有行原样保留（id/weight/valence/pinned/node_type），pending desc 只补空
         // （预检已保证 existing 无 desc 且 pending 有 desc 才走到这里）。
-        const ok = await Promise.resolve(store.upsertValue(conflictPrior.value_id, conflictPrior.label, conflictPrior.weight, "panel-adopt", tenant, conflictPrior.valence ?? undefined, "manual", (conflictPrior.node_type as "theme" | "person" | "character" | undefined) ?? "theme", { description: escapeXmlTags(anchor.description) }));
+        // 评审 I1：attrs 先读后合并（F1 教训）——existing 的 aliases/descSource/lastDescRefreshEvidence/
+        // role/facts 不得被 {description} 全量替换冲掉；评审 I2：created_by 沿用既有行
+        // （auto-growth 行并入后仍参与 GROW-MAINT reweight/retire/维护环，不退出自动管理）。
+        let priorAttrs: Record<string, unknown> = {};
+        try {
+          const parsed0: unknown = JSON.parse(conflictPrior.attrs_json ?? "{}");
+          if (parsed0 && typeof parsed0 === "object" && !Array.isArray(parsed0)) priorAttrs = parsed0 as Record<string, unknown>;
+        } catch { /* 坏 JSON → 视作空 attrs，desc 补写语义不变 */ }
+        const mergedAttrs = { ...priorAttrs, description: escapeXmlTags(anchor.description) };
+        const ok = await Promise.resolve(store.upsertValue(conflictPrior.value_id, conflictPrior.label, conflictPrior.weight, conflictPrior.created_by ?? "panel-adopt", tenant, conflictPrior.valence ?? undefined, "manual", (conflictPrior.node_type as "theme" | "person" | "character" | undefined) ?? "theme", mergedAttrs));
         if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
         return successEnvelope<{ pending_id: string; decision: string; slot: string; merged: boolean }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, merged: true }, requestId);
       }

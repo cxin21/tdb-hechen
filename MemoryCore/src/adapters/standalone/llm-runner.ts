@@ -451,7 +451,16 @@ export class StandaloneLLMRunner implements LLMRunner {
         // 剥参后仍失败 = 400 另有原因，按原错误抛出（不掩盖真实问题）。
         if (effectiveReasoningEffort && isBadRequest400(err)) {
           const retryParams = { ...callParams };
-          delete (retryParams as { providerOptions?: unknown }).providerOptions;
+          // 评审 M5：只剥 reasoningEffort 键，不删整个 providerOptions——降级路径
+          // 不得静默丢弃调用方日后加入的其它 providerOptions（例如 provider 级超时/安全设置）。
+          // 嵌套对象浅拷贝后再删（retryParams={...callParams} 是浅拷贝，直接 delete 会改写原 params）。
+          const rp = retryParams as { providerOptions?: { openaiCompatible?: Record<string, unknown> } };
+          const po = rp.providerOptions;
+          if (po?.openaiCompatible) {
+            const oc = { ...po.openaiCompatible };
+            delete oc.reasoningEffort;
+            rp.providerOptions = { ...po, openaiCompatible: oc };
+          }
           this.logger?.warn?.(
             `${TAG} endpoint rejected reasoning_effort ("${effectiveReasoningEffort}") with 400 ` +
             `— retrying without it and caching capability for ${effortKey} (endpoint-compat 2026-10-14)`,
