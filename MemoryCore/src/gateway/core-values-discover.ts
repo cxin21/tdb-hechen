@@ -255,15 +255,17 @@ export function buildDiscoverPrompt(sampleContents: string[], existingLabels: st
 
 /**
  * F11（人物证据口径）：personEv = |{ r : content 包含 label 或任一 alias }|。
+ * #15 T8b：双侧 lowercase（大小写不敏感）——英文昵称/拼音「Alice」vs「alice said…」
+ * 不再系统性漏计；CJK 大小写无变体，逐位不受影响。
  * 纯包含口径（spec verbatim）；已知宽口径弱点（人名短词误命中）在 F19 登记缓解
  * （提案质量门 + maxPerPass + QUOTA 分池），实证后再收紧。
  */
 export function personEvCount(label: string, aliases: string[], corpus: string[]): number {
-  const names = [label, ...aliases].map((s) => String(s ?? "").trim()).filter((s) => s.length > 0);
+  const names = [label, ...aliases].map((s) => String(s ?? "").trim().toLowerCase()).filter((s) => s.length > 0);
   if (names.length === 0) return 0;
   let n = 0;
   for (const r of corpus) {
-    const content = String(r ?? "");
+    const content = String(r ?? "").toLowerCase();
     if (names.some((nm) => content.includes(nm))) n++;
   }
   return n;

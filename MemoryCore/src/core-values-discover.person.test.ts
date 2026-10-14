@@ -25,6 +25,13 @@ describe("F11 personEv 口径", () => {
   it("零命中 → 0", () => {
     expect(personEvCount("张三", ["小三"], ["女儿月考"])).toBe(0);
   });
+  it("#15 T8b：大小写不敏感——「Alice」命中「alice said…」（双侧 lower）", () => {
+    const corpus = ["alice said hi", "ALICE to the moon", "bob unrelated"];
+    expect(personEvCount("Alice", [], corpus)).toBe(2);
+  });
+  it("#15 T8b：alias 大小写同口径", () => {
+    expect(personEvCount("Alice", ["AL"], ["al wrote a note", "Alice ok"])).toBe(2);
+  });
 });
 
 describe("F12 valence 符号化", () => {

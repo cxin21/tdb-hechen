@@ -146,6 +146,34 @@ export function growthValueId(label: string, nodeType: "theme" | "person" | "cha
 }
 
 /**
+ * #15 T8b：slug 碰撞守卫（运行时，不改 growthValueId 纯函数签名）。
+ * 非 CJK label「coffee」vs「coffee!」slug 同为 "coffee" → upsertValue ON CONFLICT 互覆
+ * （后采纳覆盖先采纳，state 复位 active 还可能复活 retired）。采纳写入前比对 anyState
+ * 快照（零额外查询）：目标 value_id 已存在且行 label ≠ 本次 label → 改用 hash 形态兜底
+ * （与纯 CJK 形态一致 [:10]，person/character 保留 p-/c- 命名空间前缀）。
+ * 纯 CJK label slug 化为空 → 本就走完整 hash，天然防碰，不进守卫分支（零迁移）。
+ */
+export function resolveGrowthValueId(
+  label: string,
+  nodeType: "theme" | "person" | "character",
+  rows: ReadonlyArray<{ value_id?: unknown; label?: unknown }>,
+): string {
+  const id = growthValueId(label, nodeType);
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return id;
+  const slug = normalized.replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "");
+  if (!slug) return id; // 纯 CJK：hash 形态逐位不变（幂等守卫）
+  const clash = rows.some(
+    (r) => String(r.value_id ?? "") === id && String(r.label ?? "").trim().toLowerCase() !== normalized,
+  );
+  if (!clash) return id;
+  const hash = "auto-" + createHash("sha256").update(normalized).digest("hex").slice(0, 10);
+  if (nodeType === "person") return "p-" + hash;
+  if (nodeType === "character") return "c-" + hash;
+  return hash;
+}
+
+/**
  * P2（spec §5 F15 身份分支 / F20 红线）：身份事实全量语料重验——失撑**只告警**，
  * 永不自动退场（身份红线=人工确认路径；upsertCore/retire 零调用）。
  * 弱口径 = identityFactSlice 20 字切片（identity-discovery 单源导出）。
@@ -588,7 +616,9 @@ export async function runAnchorGrowth(deps: {
             );
             let themeAttrs = anchorDescriptionAttr(c.rationale);
             if (priorTheme && existingDescription(priorTheme.attrs_json)) themeAttrs = undefined;
-            const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto", "theme", themeAttrs));
+            // #15 T8b：slug 碰撞守卫（coffee vs coffee!）——冲突时改 hash 形态兜底
+            const valueId = resolveGrowthValueId(c.label, "theme", anyState2 as CoreValueRow[]);
+            const ok = await Promise.resolve(store.upsertValue(valueId, c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto", "theme", themeAttrs));
             if (ok) {
               adopted++; adoptedThisAgent++;
               // GROW-EVO P2.1（锚↔记忆双向链路）：采纳时把 label 回填进证据记录的 coreRefs
@@ -672,7 +702,9 @@ export async function runAnchorGrowth(deps: {
                 (r) => r.state === "active" && r.node_type === "person" && r.label === c.label,
               );
               const personAttrs = priorPerson ? undefined : { role: c.role, aliases: c.aliases, ...anchorDescriptionAttr(c.description) };
-              const ok = await Promise.resolve(store.upsertValue(growthValueId(c.label, "person"), c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, vSymbol, "auto", "person", personAttrs));
+              // #15 T8b：slug 碰撞守卫同款（person 域 p- 命名空间内防互覆）
+              const personValueId = resolveGrowthValueId(c.label, "person", anyState2 as CoreValueRow[]);
+              const ok = await Promise.resolve(store.upsertValue(personValueId, c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, vSymbol, "auto", "person", personAttrs));
               if (ok) {
                 adopted++;
                 adoptedThisAgent++;
@@ -742,7 +774,8 @@ export async function runAnchorGrowth(deps: {
               } else { skipped++; continue; }
               if (adoptedC) {
                 const ok = await Promise.resolve(store.upsertValue(
-                  growthValueId(c.label, "character"), c.label,
+                  // #15 T8b：slug 碰撞守卫同款（character 域 c- 命名空间内防互覆）
+                  resolveGrowthValueId(c.label, "character", anyState2 as CoreValueRow[]), c.label,
                   suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant,
                   undefined, "auto", "character", { source: "self_identity", facts: factSlices.slice(0, 3) },
                 ));
