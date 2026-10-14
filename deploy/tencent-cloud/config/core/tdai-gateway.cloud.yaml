@@ -161,6 +161,15 @@ memory:
     #     modelDir: ""                    # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
     #     idleUnloadMs: 600000            # 空闲卸载毫秒（0 = 常驻）
 
+    # ── worthiness importance 降权（P1 召回质量 spec §6，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
+    # 检索精排之后的「重要度」降权：仅惩罚 importance ≤4 的记忆（LLM 写入时评 1-10+理由，
+    # 低价值=寒暄/流水账）；NULL/缺列不罚（宁缺毋滥：评不出来 ≠ 该罚）。shadowMode true =
+    # 只记 journal 双分量（调权后位次 vs 未调位次）不改注入结果——先影子观察再放量（Global Constraint 1）。
+    # importancePenalty:
+    #   enabled: false        # 总开关（缺省 false = 逐位现状）
+    #   penalty: 0.3          # ≤4 记忆的乘法惩罚（clamp 上限 0.9；越大降权越狠）
+    #   shadowMode: true      # 影子模式：journal.gates.importancePenalty 双分量观测
+
     # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
     # 提取批次后代码级超限守卫：块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败码点安全硬截断兜底。
     # 启用依据：GOV-4 复核实证——守卫关闭时修复后 ~10 分钟内活跃提取管线把块体复涨破限
@@ -171,6 +180,13 @@ memory:
       maxBlockChars: 8000     # 块体超限阈值（码点数；clamp [500, 100000]；GOV-4 定档见 spec §6）
       distillTimeoutMs: 60000 # 蒸馏 LLM 调用超时毫秒（负值 clamp 0；0 = runner 缺省超时）
       hardCapChars: 20000     # 蒸馏失败兜底硬截断上限（clamp 下限 = maxBlockChars）
+
+  # ── worthiness 写入面（P1 召回质量 spec §6，2026-10-13）——缺省 false = 逐位现状 ──
+  # true = L0→L1 提取在既有单次 LLM 调用里顺带产出 IMPORTANCE_BLOCK（1-10+≤20 字理由）；
+  # 关闭时 prompt 字节逐位不变、importance 字段缺席=召回不罚。越界/畸形分由确定性门拒绝
+  # （不 clamp 不伪造）。面板可对单条记忆手动调级（/atomic/importance，source=manual）。
+  # worthiness:
+  #   extractionEnabled: false
 
   storeBackend: "sqlite"
 
