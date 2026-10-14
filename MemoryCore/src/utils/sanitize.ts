@@ -55,13 +55,17 @@ export function sanitizeText(text: string): string {
     /<(system-reminder|current_feeling|soul-identity|soul-feeling)\b[^>]*>[\s\S]*?<\/\1>/g,
     "",
   );
-  // 3) 回合脚手架行（时间采样/请求时区/回合间隔——整行剥离）
+  // 3) 回合脚手架行（时间采样/请求时区/回合间隔——整行剥离；Elapsed 措辞有变体
+  //    「model-visible message」/「step context」（m03163 实证），用前缀匹配兜住）
   cleaned = cleaned.replace(
-    /^\s*(?:Time sampled while preparing turn\b[^\n]*|Elapsed since the preceding model-visible message:[^\n]*|Browser time zone for this request:[^\n]*)$/gim,
+    /^\s*(?:Time sampled while preparing turn\b[^\n]*|Elapsed since\b[^\n]*|Browser time zone for this request:[^\n]*)$/gim,
     "",
   );
   // 4) 模型切换标记行（provider 名含斜杠，故不设右界）
   cleaned = cleaned.replace(/^\s*\[model changed:[^\n]*$/gim, "");
+  // 5) 效率 nudge 整体剥离（harness 周期注入的压缩提醒，非用户意图——m03173 实证
+  //    其英文正文残句会以弱相关（topScore≈-1.2）注入记忆，违反宁缺毋滥；标记行措辞稳定）
+  cleaned = cleaned.replace(/^\s*This is an efficiency nudge\b[\s\S]*$/i, "");
 
   // Remove line-leading timestamps, e.g. "[Tue 2026-03-24 03:48 UTC]"
   // or "[Tue 2026-03-24 20:21 GMT+8]", "[Thu 2026-03-24 01:51 GMT+5:30]"

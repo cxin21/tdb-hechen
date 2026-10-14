@@ -51,6 +51,26 @@ describe("sanitizeText · DSH harness 噪音剥离", () => {
     expect(sanitizeText(raw)).toBe("");
   });
 
+  it("脚手架变体：Elapsed since the preceding step context（m03163 实证措辞）也整行剥离", () => {
+    const raw = [
+      '<acp tokens="63" type="text">m03163</acp>',
+      "Time sampled while preparing turn 48, step 34: 2026-10-14T17:33:24+08:00[Asia/Shanghai]",
+      "Browser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.",
+      "Elapsed since the preceding step context: 10m 5s.",
+    ].join("\n");
+    expect(sanitizeText(raw)).toBe("");
+  });
+
+  it("效率 nudge 整体剥离（正文英文散文残句曾以弱相关注入记忆）", () => {
+    const raw = [
+      "This is an efficiency nudge to compress early and keep context lean — not an overflow warning.",
+      "Context breakdown: 24.9K tool | 12.3K summaries | 41.5K text",
+      "HOW TO COMPRESS",
+      "- Work from summaries, not raw tool outputs.",
+    ].join("\n");
+    expect(sanitizeText(raw)).toBe("");
+  });
+
   it("普通用户文本逐位保留（不误伤正文）", () => {
     const raw = "重启 tdai-core 后 journal 行为不变，rerank gate 仍在；importancePenalty=0.3";
     expect(sanitizeText(raw)).toBe(raw);
