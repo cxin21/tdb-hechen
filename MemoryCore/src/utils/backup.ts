@@ -14,13 +14,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 export class BackupManager {
-  private backupRoot: string;
+  private backupRoot?: string;
 
   /**
    * @param backupRoot - Absolute path to the root backup directory
-   *                     (e.g. `<dataDir>/.backup`).
+   *                     (e.g. `<dataDir>/.backup`)。COS 等托管存储模式传 undefined
+   *                     （调用方保证该模式下不会调用 backupFile）。
    */
-  constructor(backupRoot: string) {
+  constructor(backupRoot: string | undefined) {
     this.backupRoot = backupRoot;
   }
 

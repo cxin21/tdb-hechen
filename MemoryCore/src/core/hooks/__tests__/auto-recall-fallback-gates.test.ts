@@ -41,6 +41,7 @@ function mkSoul(id: string, score: number, over: Partial<L1SearchResult> = {}): 
     version: 1,
     session_key: "sk",
     session_id: "s",
+    task_id: "tk",
     team_id: "t",
     user_id: "u",
     agent_id: "a",
@@ -148,7 +149,7 @@ describe("performAutoRecall · fallback gates/scores 端到端透传（journal �
         embeddingService,
       });
       // metric 分数：修复前 fallback 无 scores → 全 0；修复后 top=1/61
-      const scores = res?.recalledL1Memories.map((m) => m.score) ?? [];
+      const scores = res?.recalledL1Memories?.map((m) => m.score) ?? [];
       expect(scores.length).toBeGreaterThan(0);
       expect(scores.some((s) => s > 0)).toBe(true);
       expect(scores[0]).toBeCloseTo(1 / 61, 10);
@@ -181,7 +182,8 @@ describe("performAutoRecall · fallback gates/scores 端到端透传（journal �
         vectorStore,
         embeddingService,
       });
-      expect(res === undefined || res.memoryLines.length === 0).toBe(true);
+      // RecallResult 无 memoryLines 字段（那是 LayeredRecallOutcome 的）——钩子结果零注入口径 = prependContext 空
+      expect(res === undefined || !res.prependContext).toBe(true);
       // journal 照写（query 原文留痕，memoryLines 空 = 零命中诚实口径）
       const entry = readLastJournalEntry(dataDir);
       expect(entry).toBeDefined();

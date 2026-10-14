@@ -1,0 +1,88 @@
+{
+  "core": [],
+  "pending": [],
+  "results": {
+    "growth": {
+      "adopted": 1,
+      "displaced": 1,
+      "ran": true,
+      "retired": 0,
+      "reweighted": 0,
+      "similarMerged": 0,
+      "skipped": 0
+    },
+    "identity": {
+      "adopted": 0,
+      "pending": 0,
+      "ran": false,
+      "reason": "disabled"
+    }
+  },
+  "retires": [
+    {
+      "valueId": "auto-jia"
+    }
+  ],
+  "soul": "<soul-identity>\n## 此刻的你\n价值锚：回滚预案(w0.35)：回滚预案是上线前的强制步骤。\n</soul-identity>\n\n",
+  "valueCalls": [
+    {
+      "attrs": {
+        "description": "回滚预案是上线前的强制步骤。"
+      },
+      "createdBy": "auto-growth",
+      "label": "回滚预案",
+      "nodeType": "theme",
+      "origin": "auto",
+      "valueId": "auto-d12728b668",
+      "weight": 0.35
+    }
+  ],
+  "values": [
+    {
+      "attrs": {
+        "description": "回滚预案是上线前的强制步骤。"
+      },
+      "label": "回滚预案",
+      "node_type": "theme",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "active",
+      "valence": null,
+      "value_id": "auto-d12728b668",
+      "weight": 0.35
+    },
+    {
+      "attrs": null,
+      "label": "复盘纪律",
+      "node_type": "theme",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "retired",
+      "valence": null,
+      "value_id": "auto-jia",
+      "weight": 0.32
+    },
+    {
+      "attrs": null,
+      "label": "数据红线",
+      "node_type": "theme",
+      "origin": "manual",
+      "pinned": 1,
+      "state": "active",
+      "valence": null,
+      "value_id": "auto-pinned",
+      "weight": 0.35
+    },
+    {
+      "attrs": null,
+      "label": "周报承诺",
+      "node_type": "theme",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "active",
+      "valence": null,
+      "value_id": "auto-yi",
+      "weight": 0.33
+    }
+  ]
+}

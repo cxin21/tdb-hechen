@@ -1,0 +1,135 @@
+{
+  "core": [
+    {
+      "content": "- 用户承担 TDB 系统的运维与故障排查职责",
+      "slot": "identity"
+    },
+    {
+      "content": "- 我承诺每周五输出迭代周报并给出数据口径",
+      "slot": "self_identity"
+    }
+  ],
+  "pending": [
+    {
+      "content": "排查调试时安全底线高于进度，绝不以删除记忆或污染数据为代价换取结论",
+      "description": "排查调试时安全底线高于进度。",
+      "evidence": 0,
+      "label": "数据完整优先",
+      "slot": "core_value"
+    },
+    {
+      "content": "排查期间绝不可删除任何生产记忆记录",
+      "evidence": 1,
+      "slot": "strict_rule"
+    }
+  ],
+  "results": {
+    "growth": {
+      "adopted": 3,
+      "displaced": 0,
+      "ran": true,
+      "retired": 0,
+      "reweighted": 0,
+      "similarMerged": 0,
+      "skipped": 0
+    },
+    "identity": {
+      "adopted": 2,
+      "pending": 2,
+      "ran": true
+    }
+  },
+  "retires": [],
+  "soul": "<soul-identity>\n## 此刻的你\n（我是谁）- [self_identity] - 我承诺每周五输出迭代周报并给出数据口径\n（我心中的他）- [identity] - 用户承担 TDB 系统的运维与故障排查职责\n价值锚：交付质量(w0.35)：交付质量是团队稳定发版的底线要求。\n重要的人：何晨(同事·趋近)：TDB 记忆系统核心维护者。\n</soul-identity>\n\n",
+  "valueCalls": [
+    {
+      "attrs": {
+        "description": "交付质量是团队稳定发版的底线要求。"
+      },
+      "createdBy": "auto-growth",
+      "label": "交付质量",
+      "nodeType": "theme",
+      "origin": "auto",
+      "valueId": "auto-ec4fe1d26a",
+      "weight": 0.35
+    },
+    {
+      "attrs": {
+        "aliases": [
+          "老何"
+        ],
+        "description": "TDB 记忆系统核心维护者。",
+        "role": "同事"
+      },
+      "createdBy": "auto-growth",
+      "label": "何晨",
+      "nodeType": "person",
+      "origin": "auto",
+      "valence": 1,
+      "valueId": "p-auto-016bbd5b90",
+      "weight": 0.35
+    },
+    {
+      "attrs": {
+        "facts": [
+          "我承诺每周五输出迭代周报并给出数据口径"
+        ],
+        "source": "self_identity"
+      },
+      "createdBy": "auto-growth",
+      "label": "守诺",
+      "nodeType": "character",
+      "origin": "auto",
+      "valueId": "c-auto-068aee86cb",
+      "weight": 0.32
+    }
+  ],
+  "values": [
+    {
+      "attrs": {
+        "description": "交付质量是团队稳定发版的底线要求。"
+      },
+      "label": "交付质量",
+      "node_type": "theme",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "active",
+      "valence": null,
+      "value_id": "auto-ec4fe1d26a",
+      "weight": 0.35
+    },
+    {
+      "attrs": {
+        "facts": [
+          "我承诺每周五输出迭代周报并给出数据口径"
+        ],
+        "source": "self_identity"
+      },
+      "label": "守诺",
+      "node_type": "character",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "active",
+      "valence": null,
+      "value_id": "c-auto-068aee86cb",
+      "weight": 0.32
+    },
+    {
+      "attrs": {
+        "aliases": [
+          "老何"
+        ],
+        "description": "TDB 记忆系统核心维护者。",
+        "role": "同事"
+      },
+      "label": "何晨",
+      "node_type": "person",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "active",
+      "valence": 1,
+      "value_id": "p-auto-016bbd5b90",
+      "weight": 0.35
+    }
+  ]
+}

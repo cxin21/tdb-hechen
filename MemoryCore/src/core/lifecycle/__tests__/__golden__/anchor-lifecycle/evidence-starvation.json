@@ -1,0 +1,51 @@
+{
+  "core": [],
+  "pending": [
+    {
+      "content": "排查先取证，结论必须可复现",
+      "description": "结论必须可复现。",
+      "evidence": 0,
+      "label": "可复现",
+      "slot": "core_value"
+    }
+  ],
+  "results": {
+    "growth": {
+      "adopted": 0,
+      "displaced": 0,
+      "ran": true,
+      "retired": 0,
+      "reweighted": 0,
+      "similarMerged": 0,
+      "skipped": 0
+    },
+    "identity": {
+      "pass1": {
+        "adopted": 0,
+        "pending": 1,
+        "ran": true
+      },
+      "pass2": {
+        "adopted": 0,
+        "pending": 0,
+        "ran": true
+      }
+    }
+  },
+  "retires": [],
+  "soul": "",
+  "valueCalls": [],
+  "values": [
+    {
+      "attrs": null,
+      "label": "数据安全",
+      "node_type": "theme",
+      "origin": "auto",
+      "pinned": 0,
+      "state": "vetoed",
+      "valence": null,
+      "value_id": "v-vetoed",
+      "weight": 0.4
+    }
+  ]
+}
