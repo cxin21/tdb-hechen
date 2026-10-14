@@ -118,7 +118,7 @@ import { handleAtomicByIds } from "./atomic-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
 // P0-1A（issue #1）：description 质量门单一源（core/hooks，gateway→core 引用方向合法）
-import { anchorDescriptionAttr } from "../core/hooks/anchor-desc.js";
+import { anchorDescriptionAttr, existingDescription } from "../core/hooks/anchor-desc.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
@@ -2062,17 +2062,71 @@ async function handleCoreMemoryPendingList(body: unknown, _auth: V2AuthContext, 
   const b = (body ?? {}) as { include_decided?: unknown };
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
   const pending = (await Promise.resolve(store.listPendingCore(tenant, { includeDecided: b.include_decided === true }))) ?? [];
-  return successEnvelope<{ pending: typeof pending }>({ pending }, requestId);
+  // #12 T6：conflict 徽标数据源——core_value 提案 label 与 active theme 锚同名时标记
+  // conflict:true，Panel 决策页可先呈现冲突再裁决（数据源仅标记，不改裁决语义）。
+  // 特性探测：store 缺 listValuesAnyState → conflict 全 false（旧实现/测试桩兼容）。
+  let activeThemeLabels: Set<string> | null = null;
+  if (typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
+    const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string }>;
+    activeThemeLabels = new Set(anyRows.filter((r) => r.state === "active" && (r.node_type ?? "theme") === "theme").map((r) => String(r.label ?? "").trim().toLowerCase()));
+  }
+  const enriched = (pending as Array<{ pending_id?: string; slot?: string; label?: unknown; [key: string]: unknown }>).map((p) => ({
+    ...p,
+    conflict: activeThemeLabels !== null && p.slot === "core_value" && activeThemeLabels.has(String(p.label ?? "").trim().toLowerCase()),
+  }));
+  return successEnvelope<{ pending: typeof enriched }>({ pending: enriched }, requestId);
 }
 
 async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { pending_id?: unknown; decision?: unknown };
+  const b = (body ?? {}) as { pending_id?: unknown; decision?: unknown; allow_overwrite?: unknown };
   if (typeof b.pending_id !== "string" || !b.pending_id.trim()) return errorEnvelope(400, "pending_id required", requestId);
   if (b.decision !== "adopted" && b.decision !== "rejected") return errorEnvelope(400, "decision must be 'adopted' | 'rejected'", requestId);
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
   if (!store.decidePendingCore) return errorEnvelope(503, "core_pending not supported", requestId);
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
+
+  // ── #12 T6：同名冲突预检（在任何裁决写之前）─────────────────────────────────────
+  // 语义：core_value 采纳遇同 label active theme 锚时缺省不静默覆盖（旧行为会新建一条
+  // 0.5 的同 label 锚、同 label 双行并存/覆盖语义不明）。三分流：
+  //   ① existing 无 desc 且 pending 有 desc → 安全合并（保 weight/valence/pinned/node_type，只补 desc）；
+  //   ② existing 已有 desc 或 pending 无 desc → 409 + conflict 明细（decide 不发生，
+  //     pending 保持 pending，裁决权归还用户）；
+  //   ③ allow_overwrite:true → 显式覆盖 = 旧直采行为（新 id + weight 0.5 + pending desc）。
+  // strict_rule / rejected / store 缺 listPendingCore（特性探测）→ 原行为逐位不变。
+  let conflictPrior: { value_id: string; label: string; weight: number; valence?: number | null; pinned?: number; node_type?: string; attrs_json?: string | null } | undefined;
+  let overwrite = false;
+  if (b.decision === "adopted" && typeof (store as { listPendingCore?: unknown }).listPendingCore === "function") {
+    const pendingRows = ((await Promise.resolve((store as { listPendingCore: (t: unknown, o?: unknown) => unknown }).listPendingCore(tenant, { includeDecided: false }))) ?? []) as Array<{ pending_id?: string; slot?: string; label?: unknown; description?: unknown; content?: unknown }>;
+    const row = pendingRows.find((p) => p.pending_id === b.pending_id);
+    if (row && row.slot === "core_value" && typeof store.upsertValue === "function") {
+      const anchor0 = coerceCoreValueAnchor({ label: String(row.label ?? ""), description: (row.description as string | null | undefined) ?? null, content: String(row.content ?? "") });
+      if (anchor0 && typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
+        const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string; value_id: string; weight: number; valence?: number | null; pinned?: number; attrs_json?: string | null }>;
+        const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
+        conflictPrior = anyRows.find((r) => r.state === "active" && (r.node_type ?? "theme") === "theme" && norm(r.label) === norm(anchor0.label)) as typeof conflictPrior;
+        overwrite = b.allow_overwrite === true;
+        if (conflictPrior && !overwrite) {
+          const existingDesc0 = existingDescription(conflictPrior.attrs_json ?? undefined);
+          const pendingDesc0 = anchor0.description ? escapeXmlTags(anchor0.description) : "";
+          if (existingDesc0 || !pendingDesc0) {
+            return errorEnvelope(409, "core_value adopt conflicts with an existing active anchor of the same label (default: no silent overwrite)", requestId, {
+              conflict: {
+                value_id: conflictPrior.value_id,
+                label: conflictPrior.label,
+                weight: conflictPrior.weight,
+                existing_has_description: Boolean(existingDesc0),
+                pending_has_description: Boolean(pendingDesc0),
+                hint: "pass allow_overwrite:true to overwrite, or reject the pending proposal",
+              },
+            });
+          }
+          // 可安全合并 → 继续走 decide（裁决翻转仍发生），在 core_value 分支内合并写。
+        }
+      }
+    }
+  }
+
   const decided = await Promise.resolve(store.decidePendingCore(b.pending_id, b.decision, tenant));
   if (!decided) return errorEnvelope(404, "pending item not found or already decided", requestId);
   // O13 采纳语义：strict_rule → validateCoreWrite + escapeXmlTags + upsertCore('strict_rule',…,'panel-adopt')
@@ -2100,6 +2154,20 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
       // 写 API P-B 咽喉语义）。
       const anchor = coerceCoreValueAnchor({ label: decided.label, description: decided.description, content: decided.content });
       if (!anchor) return errorEnvelope(422, "core_value adopt blocked: proposal lacks a valid short label (regenerate or reject the proposal)", requestId);
+      if (conflictPrior) {
+        // #12 T6：预检命中同名 active 锚（见函数头三分流注释）。
+        if (overwrite) {
+          // 显式覆盖 = 旧直采行为：新 id + weight 0.5 + pending desc。
+          const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
+          if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
+          return successEnvelope<{ pending_id: string; decision: string; slot: string; overwritten: boolean }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, overwritten: true }, requestId);
+        }
+        // 安全合并：既有行原样保留（id/weight/valence/pinned/node_type），pending desc 只补空
+        // （预检已保证 existing 无 desc 且 pending 有 desc 才走到这里）。
+        const ok = await Promise.resolve(store.upsertValue(conflictPrior.value_id, conflictPrior.label, conflictPrior.weight, "panel-adopt", tenant, conflictPrior.valence ?? undefined, "manual", (conflictPrior.node_type as "theme" | "person" | "character" | undefined) ?? "theme", { description: escapeXmlTags(anchor.description) }));
+        if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
+        return successEnvelope<{ pending_id: string; decision: string; slot: string; merged: boolean }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, merged: true }, requestId);
+      }
       const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
       if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
     }

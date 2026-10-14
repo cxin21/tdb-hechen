@@ -85,7 +85,107 @@ describe("POST /core-memory/pending/decide", () => {
     expect(store.decidePendingCore).not.toHaveBeenCalled();
   });
   it("无 store / 不支持 → 503", async () => {
-    expect((await handleCoreMemoryPendingDecide({ pending_id: "pd-1", decision: "adopted" }, AUTH, "r10", depsFor(undefined))).code).toBe(503);
-    expect((await handleCoreMemoryPendingDecide({ pending_id: "pd-1", decision: "adopted" }, AUTH, "r11", depsFor({}))).code).toBe(503);
+    expect((await handleCoreMemoryPendingDecide({ pending_id: "pd-1", decision: "adopted", }, AUTH, "r10", depsFor(undefined))).code).toBe(503);
+    expect((await handleCoreMemoryPendingDecide({ pending_id: "pd-1", decision: "adopted", }, AUTH, "r11", depsFor({}))).code).toBe(503);
+  });
+});
+
+describe("#12 T6：pending 采纳同名冲突（缺省安全优先，不静默覆盖）", () => {
+  const existingActive = {
+    value_id: "auto-exist12345", label: "取证先行", weight: 0.62, created_by: "auto-growth",
+    valence: 1 as number | null, origin: "auto", pinned: 1, state: "active", node_type: "theme",
+    attrs_json: null as string | null,
+  };
+
+  function cvStore(existing?: typeof existingActive, pendingDesc: string | null = "任何结论必须有证据支撑") {
+    return {
+      decidePendingCore: vi.fn(() => ({ slot: "core_value", content: "任何结论必须有证据支撑", label: "取证先行", description: pendingDesc })),
+      upsertValue: vi.fn((..._a: unknown[]) => true),
+      listPendingCore: vi.fn(() => [{ pending_id: "pd-2", slot: "core_value", content: "任何结论必须有证据支撑", label: "取证先行", description: pendingDesc, evidence: 3, state: "pending", created_at: "t" }]),
+      listValuesAnyState: vi.fn(async () => (existing ? [{ ...existing }] : [])),
+    };
+  }
+  const DATA = (res: { code: number }) => (res as unknown as { data?: Record<string, unknown> }).data ?? {};
+
+  it("同名 active + pending 有 desc + existing 无 desc → 安全合并（保 weight/valence/node_type，仅补 desc）+ merged:true", async () => {
+    const store = cvStore({ ...existingActive, attrs_json: null });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r20", depsFor(store));
+    expect(res.code).toBe(0);
+    expect(DATA(res).merged).toBe(true);
+    const call = store.upsertValue.mock.calls[0]!;
+    expect(call[0]).toBe("auto-exist12345"); // 既有行原 id（不新建）
+    expect(call[1]).toBe("取证先行");
+    expect(call[2]).toBe(0.62);              // 既有 weight 不被 0.5 覆盖
+    expect(call[5]).toBe(1);                 // 既有 valence 保留
+    expect(call[6]).toBe("manual");
+    expect(call[7]).toBe("theme");
+    expect(call[8]).toEqual({ description: "任何结论必须有证据支撑" }); // 只补 desc
+  });
+
+  it("同名 active 且 existing 已有 desc → 409 + conflict 明细 + pending 保持 pending（裁决权不吞）", async () => {
+    const store = cvStore({ ...existingActive, attrs_json: JSON.stringify({ description: "既有描述" }) }, "新描述");
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r21", depsFor(store));
+    expect(res.code).toBe(409);
+    expect((res as unknown as { data?: { conflict?: unknown } }).data?.conflict).toBeTruthy();
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+    expect(store.upsertValue).not.toHaveBeenCalled();
+  });
+
+  it("同名 active 且 pending desc 消毒后为空（超长无句末标点）→ 409（无内容可安全合并）", async () => {
+    const longNoPunct = "这是一个没有句末标点的超长提案内容".repeat(8);
+    const store = {
+      decidePendingCore: vi.fn(() => ({ slot: "core_value", content: longNoPunct, label: "取证先行", description: null })),
+      upsertValue: vi.fn(() => true),
+      listPendingCore: vi.fn(() => [{ pending_id: "pd-2", slot: "core_value", content: longNoPunct, label: "取证先行", description: null, evidence: 3, state: "pending", created_at: "t" }]),
+      listValuesAnyState: vi.fn(async () => [{ ...existingActive, attrs_json: null }]),
+    };
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r22", depsFor(store));
+    expect(res.code).toBe(409);
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+  });
+
+  it("allow_overwrite:true → 显式覆盖（现行为）+ overwritten:true", async () => {
+    const store = cvStore({ ...existingActive, attrs_json: JSON.stringify({ description: "既有描述" }) }, "新描述");
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted", allow_overwrite: true }, AUTH, "r23", depsFor(store));
+    expect(res.code).toBe(0);
+    expect(DATA(res).overwritten).toBe(true);
+    const call = store.upsertValue.mock.calls[0]!;
+    expect(call[2]).toBe(0.5); // 覆盖语义 = 现行为（新 weight）
+    expect(call[8]).toEqual({ description: "新描述" });
+  });
+
+  it("无同名冲突 → 现行为不变（新建 0.5 manual）", async () => {
+    const store = cvStore(undefined);
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r24", depsFor(store));
+    expect(res.code).toBe(0);
+    expect(DATA(res).merged).toBeUndefined();
+    const call = store.upsertValue.mock.calls[0]!;
+    expect(call[2]).toBe(0.5);
+  });
+});
+
+describe("#12 T6：pending list 冲突标记（conflict 徽标数据源）", () => {
+  it("core_value 提案 label 与 active 锚同名 → conflict:true；否则 false", async () => {
+    const existing = { value_id: "auto-exist12345", label: "取证先行", weight: 0.62, created_by: "auto-growth", valence: null, origin: "auto", pinned: 0, state: "active", node_type: "theme", attrs_json: null };
+    const store = {
+      listPendingCore: vi.fn(() => [
+        { pending_id: "pd-2", slot: "core_value", content: "c1", label: "取证先行", description: "d", evidence: 3, state: "pending", created_at: "t" },
+        { pending_id: "pd-3", slot: "core_value", content: "c2", label: "别的主题", description: "d", evidence: 3, state: "pending", created_at: "t" },
+        { pending_id: "pd-4", slot: "strict_rule", content: "c3", evidence: 1, state: "pending", created_at: "t" },
+      ]),
+      listValuesAnyState: vi.fn(async () => [existing]),
+    };
+    const res = await handleCoreMemoryPendingList({}, AUTH, "r30", depsFor(store));
+    expect(res.code).toBe(0);
+    const rows = (res as unknown as { data: { pending: Array<{ pending_id: string; conflict?: boolean }> } }).data.pending;
+    expect(rows.find((r) => r.pending_id === "pd-2")?.conflict).toBe(true);
+    expect(rows.find((r) => r.pending_id === "pd-3")?.conflict).toBe(false);
+    expect(rows.find((r) => r.pending_id === "pd-4")?.conflict).toBe(false);
+  });
+  it("store 无 listValuesAnyState（特性探测）→ conflict 全 false", async () => {
+    const store = { listPendingCore: vi.fn(() => [{ pending_id: "pd-2", slot: "core_value", content: "c", label: "取证先行", evidence: 3, state: "pending", created_at: "t" }]) };
+    const res = await handleCoreMemoryPendingList({}, AUTH, "r31", depsFor(store));
+    const rows = (res as unknown as { data: { pending: Array<{ conflict?: boolean }> } }).data.pending;
+    expect(rows[0]?.conflict).toBe(false);
   });
 });
