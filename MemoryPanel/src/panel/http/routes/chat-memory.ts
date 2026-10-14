@@ -1891,8 +1891,9 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     },
   );
 
-  // POST /chat-memory/pending/decide  body: { block_id, pending_id, decision }
+  // POST /chat-memory/pending/decide  body: { block_id, pending_id, decision, allow_overwrite? }
   // O13 单向状态机的人工裁决入口（adopted/rejected）；写路径 owner 校验与 values/upsert 同款。
+  // #12 T6：allow_overwrite=true 显式覆盖同名冲突（409 data.conflict 的 UI 确认后重试路径）。
   api.post(
     "/chat-memory/pending/decide",
     validatePanelMetaHeaders(deps),
@@ -1902,6 +1903,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       const blockId = requiredBlockId(body);
       const pendingId = typeof body?.pending_id === "string" ? body.pending_id.trim() : "";
       const decision = typeof body?.decision === "string" ? body.decision.trim() : "";
+      const allowOverwrite = body?.allow_overwrite === true;
       if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
       if (!pendingId) return respondControlError(c, 400, "MISSING_PENDING_ID");
       if (!decision) return respondControlError(c, 400, "MISSING_DECISION");
@@ -1937,6 +1939,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
           session_id: "default",
           pending_id: pendingId,
           decision,
+          ...(allowOverwrite ? { allow_overwrite: true } : {}),
         },
         cred,
       );

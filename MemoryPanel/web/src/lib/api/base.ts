@@ -29,12 +29,14 @@ export class ApiError extends Error {
   public code?: number | string;
   public requestId?: string;
   public rawMessage?: string;
+  /** #12 T6：错误信封携带的业务负载（如 409 data.conflict），供调用方分流确认弹窗 */
+  public data?: unknown;
 
   constructor(
     public status: number,
     public statusText: string,
     public body: string,
-    opts: { code?: number | string; requestId?: string; rawMessage?: string } = {}
+    opts: { code?: number | string; requestId?: string; rawMessage?: string; data?: unknown } = {}
   ) {
     super(formatApiErrorMessage({
       code: opts.code,
@@ -48,6 +50,7 @@ export class ApiError extends Error {
     this.code = opts.code;
     this.requestId = opts.requestId;
     this.rawMessage = opts.rawMessage ?? statusText;
+    this.data = opts.data;
   }
 }
 

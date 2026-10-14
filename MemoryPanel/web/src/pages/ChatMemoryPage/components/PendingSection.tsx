@@ -5,15 +5,36 @@
  * 幂等复决由网关 404 兜底，UI 刷新后列表自然消失）。
  * 宁缺毋滥：空列表/读失败整段不渲染（不打扰锚面板主流程）。
  * Owner-only 决策（BFF decide 已做 owner 校验，非属主 403）。
+ *
+ * #19 T12：重提提案徽标（attrs.reproposed → 重提 #generation，tooltip 溯源）。
+ * #12 T6：同名冲突 —— list 徽标（conflict:true）+ 采纳 409 确认弹窗
+ * （缺省安全优先不落库；确认后 allow_overwrite=true 显式覆盖；vetoed 不可绕仅提示）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { chatMemoryApi, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, conflictOf, type PendingItem } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
   core_value: '价值锚提案',
   strict_rule: '行为红线提案',
 };
+
+/** #19 T12：重提提案 attrs（宽松解析；坏 JSON/旧行 → null 不显示徽标） */
+function reproposalOf(p: PendingItem): { generation?: number; supersedes?: string; evidence_threshold?: number } | null {
+  try {
+    const a = p.attrs_json ? (JSON.parse(p.attrs_json) as Record<string, unknown>) : null;
+    if (a && a.reproposed === true) {
+      return {
+        generation: typeof a.generation === 'number' ? a.generation : undefined,
+        supersedes: typeof a.supersedes === 'string' ? a.supersedes : undefined,
+        evidence_threshold: typeof a.evidence_threshold === 'number' ? a.evidence_threshold : undefined,
+      };
+    }
+  } catch {
+    /* 坏 JSON → 无徽标 */
+  }
+  return null;
+}
 
 export function PendingSection(props: { blockId: string }) {
   const [items, setItems] = useState<PendingItem[] | null>(null);
@@ -35,13 +56,37 @@ export function PendingSection(props: { blockId: string }) {
     refresh();
   }, [refresh]);
 
-  async function decide(id: string, decision: 'adopted' | 'rejected') {
+  async function decide(id: string, decision: 'adopted' | 'rejected', allowOverwrite = false) {
     setBusy(id);
     setError('');
     try {
-      await chatMemoryApi.pendingDecide(props.blockId, id, decision);
+      const res = await chatMemoryApi.pendingDecide(props.blockId, id, decision, { allowOverwrite });
+      if (res?.overwritten) tea.notify.success('已显式覆盖同名锚');
       refresh();
-    } catch {
+    } catch (err) {
+      // #12 T6：409 同名冲突——缺省安全优先未落库；确认后显式覆盖重试（vetoed 不可绕仅提示）。
+      const conflict = conflictOf(err);
+      if (conflict && decision === 'adopted' && !allowOverwrite) {
+        if (conflict.state === 'vetoed') {
+          setError(`「${conflict.label}」已被永久否决（vetoed），不可采纳覆盖；如需恢复请先在锚面板处理否决状态`);
+          setBusy('');
+          return;
+        }
+        const stateNote = conflict.state === 'retired' ? '（当前为退休状态，覆盖将复活该锚）' : '';
+        const ok = await tea.confirm({
+          message: `已存在同名锚「${conflict.label}」${stateNote}`,
+          description:
+            '确认覆盖？将复用现有锚（保留权重/方向/钉住/来源），按提案内容重写该锚并执行本次采纳。' +
+            (conflict.pending_has_description ? '' : '注意：本提案缺少合格描述，覆盖后锚描述可能为空。'),
+          okText: '覆盖采纳',
+          cancelText: '取消',
+        });
+        if (ok) {
+          await decide(id, decision, true);
+        }
+        setBusy('');
+        return;
+      }
       setError('决策失败，请重试');
     } finally {
       setBusy('');
@@ -125,6 +170,19 @@ export function PendingSection(props: { blockId: string }) {
                   onChange={() => toggleSel(p.pending_id)}
                 />
                 <span className="_pending-slot">{SLOT_LABEL[p.slot] ?? p.slot}</span>
+                {p.conflict === true && (
+                  <span className="_pending-badge conflict" title="提案 label 与现有同名锚冲突：缺省采纳将被拦截（409），确认后可显式覆盖">
+                    同名冲突
+                  </span>
+                )}
+                {reproposalOf(p) && (
+                  <span
+                    className="_pending-badge reproposal"
+                    title={`证据升级重提（第 ${reproposalOf(p)?.generation ?? '?'} 次，阈值 ${reproposalOf(p)?.evidence_threshold ?? '?'} 条证据）· 溯源 ${reproposalOf(p)?.supersedes ?? '-'}`}
+                  >
+                    重提#{reproposalOf(p)?.generation ?? '?'}
+                  </span>
+                )}
                 <code className="_pending-id">{p.pending_id}</code>
               </div>
               <pre className="_pending-content">{p.content}</pre>

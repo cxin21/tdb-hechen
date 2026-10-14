@@ -44,6 +44,39 @@ export interface PendingItem {
   version?: number;
   state?: string;
   evidence_count?: number;
+  /** V12-CV：core_value 提案携带的 label/description（采纳预览） */
+  label?: string;
+  description?: string;
+  /** #19 T12：重提提案 attrs（{reproposed,supersedes,generation,...}；坏 JSON/旧行 → null） */
+  attrs_json?: string | null;
+  /** #12 T6：list 预检徽标——提案 label 与 active theme 锚同名 → true */
+  conflict?: boolean;
+}
+
+/** #12 T6：pending 采纳 409 冲突载荷（errorEnvelope data.conflict） */
+export interface PendingDecideConflict {
+  value_id: string;
+  label: string;
+  weight?: number;
+  existing_has_description?: boolean;
+  pending_has_description?: boolean;
+  state?: 'active' | 'retired' | 'vetoed';
+  hint?: string;
+}
+
+/** 从 ApiError 提取 409 conflict 载荷；非冲突错误返回 null（前向兼容：形状不符即 null） */
+export function conflictOf(err: unknown): PendingDecideConflict | null {
+  const data = err instanceof ApiError ? err.data : undefined;
+  const conflict = (data as { conflict?: unknown } | undefined)?.conflict;
+  if (
+    conflict &&
+    typeof conflict === 'object' &&
+    typeof (conflict as PendingDecideConflict).value_id === 'string' &&
+    typeof (conflict as PendingDecideConflict).label === 'string'
+  ) {
+    return conflict as PendingDecideConflict;
+  }
+  return null;
 }
 
 /** 价值锚提案（Task DISC，提议制）：/v3/core-memory/values/discover 返回，只提议不落库 */
@@ -172,6 +205,8 @@ async function chatMemoryCall<T>(endpoint: string, body: Record<string, unknown>
       code: envelope.code,
       requestId: envelope.request_id,
       rawMessage: envelope.message,
+      // #12 T6：409 冲突信封的 data.conflict 随错误抛出，供 pending/decide 分流确认弹窗
+      data: (envelope.data ?? undefined) as unknown,
     });
   }
   return envelope.data as T;
@@ -469,12 +504,15 @@ export const chatMemoryApi = {
   pendingList: (blockId: string) =>
     chatMemoryCall<{ pending: PendingItem[] }>('pending/list', { block_id: blockId }),
 
-  /** 待办决策（Owner-only）：adopted 采纳（落槽）/ rejected 拒绝（O13 单向状态机，复决 404） */
-  pendingDecide: (blockId: string, pendingId: string, decision: 'adopted' | 'rejected') =>
-    chatMemoryCall<{ pending_id: string; decision: string; slot?: string }>('pending/decide', {
+  /** 待办决策（Owner-only）：adopted 采纳（落槽）/ rejected 拒绝（O13 单向状态机，复决 404）。
+   *  #12 T6：同名冲突缺省 409（err.data.conflict 载荷）；UI 确认后 allowOverwrite=true 显式覆盖
+   *  （retired 复活允许、vetoed 永久否决不可绕）。返回含 overwritten/merged 结果标记。 */
+  pendingDecide: (blockId: string, pendingId: string, decision: 'adopted' | 'rejected', opts?: { allowOverwrite?: boolean }) =>
+    chatMemoryCall<{ pending_id: string; decision: string; slot?: string; overwritten?: boolean; merged?: boolean }>('pending/decide', {
       block_id: blockId,
       pending_id: pendingId,
       decision,
+      ...(opts?.allowOverwrite ? { allow_overwrite: true } : {}),
     }),
 
   /** 价值锚 upsert：valence 显式传入 = 用户微调；不传 = plain 新建（落 NULL 待 LLM 判）。

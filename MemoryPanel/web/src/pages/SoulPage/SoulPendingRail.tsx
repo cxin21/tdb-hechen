@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { chatMemoryApi, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, conflictOf, type PendingItem } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
@@ -93,8 +93,15 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     try {
       await chatMemoryApi.pendingDecide(blockId, id, decision);
       refresh();
-    } catch {
-      setError('决策失败，请重试');
+    } catch (err) {
+      // #12 T6：同名冲突 409——横幅引导去完整面板确认（rail 保持零重构，不做弹窗流）
+      const conflict = conflictOf(err);
+      if (conflict) {
+        tea.notify.warning(`「${conflict.label}」存在同名锚（${conflict.state ?? 'active'}），已在待办行标记冲突；请到「记忆 → 价值锚」面板确认后采纳`);
+        setError('存在同名冲突，请到价值锚面板确认后采纳');
+      } else {
+        setError('决策失败，请重试');
+      }
     } finally { setBusy(''); }
   }
 
@@ -109,16 +116,18 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     setBatchBusy(true);
     setError('');
     const failedIds: string[] = [];
+    let conflictCount = 0;
     for (const id of Array.from(selected)) {
       try {
         await chatMemoryApi.pendingDecide(blockId, id, decision);
-      } catch {
-        failedIds.push(id);
+      } catch (err) {
+        if (conflictOf(err)) conflictCount++; else failedIds.push(id);
       }
     }
     setBatchBusy(false);
     setSelected(new Set());
     if (failedIds.length > 0) setError(`批量决策部分失败（${failedIds.length} 条），请重试`);
+    if (conflictCount > 0) setError(`同名冲突 ${conflictCount} 条需逐条确认，请到价值锚面板处理`);
     refresh();
   }
 

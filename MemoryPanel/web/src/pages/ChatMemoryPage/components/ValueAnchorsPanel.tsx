@@ -88,12 +88,15 @@ function ValueRow({
   const [weightText, setWeightText] = useState(String(anchor.weight));
   // U2（spec §6.5）：人物锚 attrs 行内编辑初值（attrs_json 宽松解析；theme 锚不渲染）
   const isPerson = anchor.node_type === 'person';
-  const parsedAttrs: { role?: string; aliases?: string[]; description?: string } = (() => {
+  // #21：全量 attrs 解析（保留未知键——lastDescRefreshEvidence/descSource/facts 等），
+  // 保存时先展开既有 attrs 再叠加编辑字段，避免 attrs_json 全量替换丢语义（F1 纪律）。
+  const parsedAttrs: { role?: string; aliases?: string[]; description?: string } & Record<string, unknown> = (() => {
     try {
-      const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as { role?: string; aliases?: string[]; description?: string }) : {};
+      const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as Record<string, unknown>) : {};
       return {
+        ...p,
         role: typeof p.role === 'string' ? p.role : undefined,
-        aliases: Array.isArray(p.aliases) ? p.aliases : [],
+        aliases: Array.isArray(p.aliases) ? (p.aliases as unknown[]).filter((s): s is string => typeof s === 'string') : [],
         // 对抗审查修复（2026-09-23）：description 读回——否则 U2 编辑保存会全量替换 attrs_json 丢语义
         description: typeof p.description === 'string' ? p.description : undefined,
       };
@@ -125,8 +128,15 @@ function ValueRow({
     // U2：person 行编辑保存带 attrs（显式传入才更新）
     // 对抗审查修复（2026-09-23）：description 回写——编辑 role/aliases 时不再丢已落的锚语义
     //（store ON CONFLICT=attrs 显式传入即全量替换）；空值=用户显式清除，合法。
+    // #21：先展开既有 attrs（保留 lastDescRefreshEvidence/descSource/facts 等未知键），
+    // 再叠加本面板编辑的三个字段；description 空串=显式清除走 undefined 删除键。
     const descTrim = descriptionText.trim();
-    const attrs: { role?: string; aliases?: string[]; description?: string } = {
+    const rest: Record<string, unknown> = { ...parsedAttrs };
+    delete rest.role;
+    delete rest.aliases;
+    delete rest.description;
+    const attrs: Record<string, unknown> = {
+      ...rest,
       ...(isPerson && roleText.trim() ? { role: roleText.trim() } : {}),
       ...(isPerson && aliasesText.trim()
         ? { aliases: aliasesText.split(/[,、]/).map((s) => s.trim()).filter((s) => s.length > 0) }
@@ -136,7 +146,7 @@ function ValueRow({
     await onSave(anchor.value_id, {
       label: label.trim(),
       weight: clampWeight(parsedWeight),
-      ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
+      ...(Object.keys(attrs).length > 0 ? { attrs: attrs as { role?: string; aliases?: string[]; description?: string } } : {}),
     });
     setEditing(false);
   }
@@ -244,13 +254,15 @@ function ValueRow({
               🔍 关联记忆
             </Button>
           )}
-          {/* V6-批次二：注入形态预览（与 soul-assembler 锚行逐字同构）+ description 展示行（宁缺毋滥） */}
+          {/* V6-批次二：注入形态预览（与 soul-assembler 锚行逐字同构）+ description 展示行（宁缺毋滥）
+              #18/#21：aliases 展示行（theme 自生长别名 / person 变体；证据与注入不消费，仅信息展示） */}
           {(() => {
             const prev = anchorInjectPreview(anchor);
             const desc = parsedAttrs.description && parsedAttrs.description.trim() !== ''
               ? (parsedAttrs.description.trim().length > 80 ? parsedAttrs.description.trim().slice(0, 80) + '…' : parsedAttrs.description.trim())
               : null;
-            if (!prev && !desc) return null;
+            const aliases = (parsedAttrs.aliases ?? []).filter((s) => typeof s === 'string' && s.trim() !== '');
+            if (!prev && !desc && aliases.length === 0) return null;
             return (
               <div style={{ flexBasis: '100%', fontSize: 11, color: '#6b7280', lineHeight: 1.5 }}>
                 {prev && (
@@ -259,6 +271,9 @@ function ValueRow({
                   </div>
                 )}
                 {desc && <div title={parsedAttrs.description}>{desc}</div>}
+                {aliases.length > 0 && (
+                  <div title="别名（识别变体；证据计数与注入仍按 label 口径）">别名：{aliases.join('、')}</div>
+                )}
               </div>
             );
           })()}

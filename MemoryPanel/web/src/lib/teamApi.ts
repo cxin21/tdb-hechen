@@ -80,10 +80,12 @@ export {
 // ── Chat Memory ──
 export {
   chatMemoryApi,
+  conflictOf,
   type ChatMemoryBlock,
   type ChatMemoryLayerItem,
   type ChatMemoryLayerMetadata,
   type ChatMemorySearchHit,
+  type PendingDecideConflict,
   type PendingItem,
   type ValueAnchor,
   type ValueProposal,
