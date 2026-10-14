@@ -992,6 +992,30 @@
   transform: translateY(-1px);
 }
 
+/* P1-T8（bi-temporal 补口）：失效行视觉区分——低透明度 + 已失效徽章。
+   软失效不删记忆（可撤销恢复），故只做弱化不做隐藏；hover 恢复全透明度便于阅读。 */
+._memory-detail-atomic-item--invalidated {
+  opacity: 0.55;
+}
+._memory-detail-atomic-item--invalidated:hover {
+  opacity: 0.9;
+}
+._memory-detail-atomic-invflag {
+  padding: 0 12px 8px;
+}
+._inv-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #f5c6c2;
+  background: #fdecea;
+  color: #c62828;
+}
+
 /* 标题行：层级徽章 + 标题 + 右侧（loading/时间/展开箭头）。
    作为条目头部 sticky 固定：滚动时当前可见记忆的标题行吸顶，便于长列表中定位。
    sticky 范围受每条记忆卡片（li）约束——当该记忆滚出视口时头部随之释放，不会被下一条顶住。

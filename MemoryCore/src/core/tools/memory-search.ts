@@ -17,7 +17,7 @@ import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
-import { isInvalidated } from "../recall/filter-invalidated.js";
+import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { rowMatchesIsolation } from "../store/isolation.js";
 import { emotionSalienceOf } from "./recall-signals.js";
 import {
@@ -1501,16 +1501,11 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
 // A5（REG-REMAINING-001）：time_point 时间旅行过滤——validityNow 提供时切换"当时有效"
 // 双时态过滤（vs ≤ tp < ve；vs 缺省 0 / ve 缺省 ∞，与 soul 效期语义一致）；
 // 未提供时维持失效排除（excludeInvalidated 缺省 true）。两 trim 点（native-hybrid/双路）共用。
-function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(items: T[], validityNow?: Date, excludeInvalidated?: boolean): T[] {
-  if (validityNow) {
-    const tp = validityNow.getTime();
-    return items.filter((i) => {
-      const vsRaw = i.valid_start ? Date.parse(i.valid_start) : 0;
-      const veRaw = i.valid_end ? Date.parse(i.valid_end) : Number.POSITIVE_INFINITY;
-      const vs = Number.isFinite(vsRaw) ? vsRaw : 0;
-      const ve = Number.isFinite(veRaw) ? veRaw : Number.POSITIVE_INFINITY;
-      return vs <= tp && tp < ve;
-    });
-  }
-  return excludeInvalidated === false ? items : items.filter((i) => !isInvalidated(i as { valid_end?: string }));
+// Task 8（bi-temporal 补口，M4 #6）：两分支统一走 isOutsideValidityWindow 完整区间谓词
+// （valid_start 未来生效同样排除；解析失败/空值保留）——与钩子路共享单一源；导出供
+// filter-invalidated.test.ts「钩子路/工具路一致性」套件同批行同判钉死。
+// 等价性说明：原 validityNow 分支的 clamp（解析失败→0/+∞）与共享谓词的 skip 语义逐位一致。
+export function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(items: T[], validityNow?: Date, excludeInvalidated?: boolean): T[] {
+  if (validityNow) return items.filter((i) => !isOutsideValidityWindow(i, validityNow));
+  return excludeInvalidated === false ? items : items.filter((i) => !isOutsideValidityWindow(i));
 }

@@ -41,6 +41,7 @@ export const zhCN = {
   'memory.badges.strong': '强烈',
   'memory.badges.evo': '已演化',
   'memory.badges.since': '自 {{date}} 起',
+  'memory.badges.invalidated': '已失效',
   'memory.anchors.injectPreview': '注入形态 {{preview}}',
   'soul.feeling.empty': '暂无定向价值锚（valence ±1 的主题锚将在此呈现）',
   // S-FEEL-1（M1/S7）：近期基调副行

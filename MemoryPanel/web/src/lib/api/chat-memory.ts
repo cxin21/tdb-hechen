@@ -339,6 +339,24 @@ export const chatMemoryApi = {
       ...(reason && reason.trim() !== '' ? { reason: reason.trim() } : {}),
     }),
 
+  /** P1-T8：标记失效 / 撤销失效（Owner-only）。软失效语义：invalidate 把 valid_end
+   *  置为 now（或显式 ISO），restore 清空 valid_end 恢复；不删记忆。失效/未来生效
+   *  记忆在钩子路与工具路召回中均被排除（bi-temporal 补口）。 */
+  setInvalidated: (
+    blockId: string,
+    id: string,
+    mode: 'invalidate' | 'restore',
+  ) =>
+    chatMemoryCall<{
+      id?: string;
+      version?: string;
+      valid_end?: string;
+    }>('invalidate', {
+      block_id: blockId,
+      id,
+      mode,
+    }),
+
   /** 分层语义 / 关键字搜索（agent 维度跨 session 召回，命中项带 score）：
    *  L0 = 对话消息检索；L1 = 原子记忆检索。 */
   searchLayer: (

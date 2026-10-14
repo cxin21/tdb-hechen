@@ -2666,6 +2666,83 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   );
 
   // ==========================================================================
+  // POST /chat-memory/invalidate
+  //   body: { block_id, id /* L1 记录主键 */, mode?: "invalidate" | "restore" }
+  //
+  // P1 task-8：bi-temporal 补口——「标记失效 / 撤销失效」透传 → 网关 /v3/atomic/invalidate。
+  // 软失效语义：invalidate 置 valid_end=now（不删记忆），restore 清空 valid_end 恢复；
+  // 失效/未来生效记忆在钩子路（auto-recall）与工具路（memory-search）召回中均被排除。
+  // 数据面 mutation：Owner-only（与 importance / layer-update / archive-restore 同口径）。
+  // ==========================================================================
+  api.post(
+    "/chat-memory/invalidate",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      const recordId = typeof body?.id === "string" ? body.id.trim() : "";
+      const rawMode = body?.mode;
+      const mode: "invalidate" | "restore" | undefined =
+        rawMode === "restore"
+          ? "restore"
+          : rawMode === "invalidate"
+            ? "invalidate"
+            : rawMode === undefined
+              ? "invalidate"
+              : undefined;
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+      if (!recordId) return respondControlError(c, 400, "MISSING_ID");
+      if (mode === undefined) return respondControlError(c, 400, "INVALID_MODE");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      // 用户自建 UserAsset（mem-xxx）没有关联 agent，没有数据面可调。
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      if (asset.owner_user_id !== meUserId)
+        return respondControlError(c, 403, "NOT_ASSET_OWNER");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      try {
+        const env = await deps.kernelHttp.postEnvelope<unknown>(
+          "/v3/atomic/invalidate",
+          {
+            team_id: parsed.teamId,
+            agent_id: parsed.agentId,
+            user_id: asset.owner_user_id,
+            session_id: "default",
+            record_id: recordId,
+            mode,
+          },
+          cred,
+        );
+        return respondEnvelope(c, env);
+      } catch (err) {
+        return respondControlError(
+          c,
+          500,
+          `INVALIDATE_UPDATE_FAILED: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+  );
+
+  // ==========================================================================
   // POST /chat-memory/neighbors
   //   body: { block_id, id /* 某条 L1 记录主键 */, types?, maxHop?, maxN? }
   //

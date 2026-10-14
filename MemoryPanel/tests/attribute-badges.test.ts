@@ -44,6 +44,29 @@ describe('deriveAttributeBadges（阈值与内核 formatMemoryLine 一致）', (
   });
 });
 
+describe('deriveAttributeBadges P1-T8（bi-temporal 补口：已失效徽章）', () => {
+  it('valid_end 已过 → 已失效徽章（icon ⛔ / cls invalidated）', () => {
+    const b = deriveAttributeBadges(item({ valid_end: '2020-01-01T00:00:00.000Z' })).find(x => x.key === 'invalidated');
+    expect(b).toBeDefined();
+    expect(b!.cls).toBe('invalidated');
+    expect(b!.icon).toBe('⛔');
+    expect(b!.labelKey).toBe('memory.badges.invalidated');
+  });
+  it('valid_end 未来 / 空 / 缺失 / 解析失败 → 无已失效徽章', () => {
+    expect(deriveAttributeBadges(item({ valid_end: '2999-01-01T00:00:00.000Z' })).some(x => x.key === 'invalidated')).toBe(false);
+    expect(deriveAttributeBadges(item({ valid_end: '' })).some(x => x.key === 'invalidated')).toBe(false);
+    expect(deriveAttributeBadges(item({})).some(x => x.key === 'invalidated')).toBe(false);
+    expect(deriveAttributeBadges(item({ valid_end: 'not-a-date' })).some(x => x.key === 'invalidated')).toBe(false);
+  });
+  it('已失效徽章排在 since 之后（追加于固定序尾部）', () => {
+    const out = deriveAttributeBadges(item({
+      valid_start: '2026-09-15T00:00:00Z',
+      valid_end: '2026-09-14T00:00:00Z',
+    }));
+    expect(out.map(b => b.key)).toEqual(['since', 'invalidated']);
+  });
+});
+
 describe('pickPrimeAnchor（感受段方案B：weight 选取与渲染序解耦）', () => {
   it('weight 最高者入选；无描述 → null（不回退次锚）', () => {
     expect(pickPrimeAnchor([

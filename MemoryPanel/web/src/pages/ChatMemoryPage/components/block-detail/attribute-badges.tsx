@@ -13,6 +13,7 @@ const CLS: Record<string, { bg: string; fg: string; border: string }> = {
   strong: { bg: '#fff1ed', fg: '#c2410c', border: '#fed7aa' },
   evo: { bg: '#ecfdf5', fg: '#047857', border: '#bbf7d0' },
   since: { bg: '#f3f4f6', fg: '#6b7280', border: '#e5e7eb' },
+  invalidated: { bg: '#fdecea', fg: '#c62828', border: '#f5c6c2' },
 };
 
 export function AttributeBadges({ item }: { item: ChatMemoryLayerItem }) {

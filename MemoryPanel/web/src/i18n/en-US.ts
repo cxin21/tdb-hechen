@@ -41,6 +41,7 @@ export const enUS = {
   'memory.badges.strong': 'Intense',
   'memory.badges.evo': 'Evolved',
   'memory.badges.since': 'Since {{date}}',
+  'memory.badges.invalidated': 'Invalidated',
   'memory.anchors.injectPreview': 'Inject form {{preview}}',
   'soul.feeling.empty': 'No directional value anchors yet (theme anchors with valence ±1 will appear here)',
   // S-FEEL-1 (M1/S7): recent mood sub-row

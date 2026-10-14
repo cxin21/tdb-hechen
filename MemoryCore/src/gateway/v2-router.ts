@@ -186,6 +186,8 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/conversation/delete",
   "/conversation/count",
   "/atomic/update",
+  // P1 task-8：记忆软失效/撤销失效（bi-temporal 补口；handleAtomicUpdate valid_end 写路的语义化薄封装）
+  "/atomic/invalidate",
   "/atomic/query",
   "/atomic/neighbors",
   // C6（graph 设计 §4 / spec §6.4 #1）：两节点间 BFS 最短路径（requestIsolation 消费同 neighbors）
@@ -493,6 +495,8 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/atomic/update": handleAtomicUpdate,
   // P1 task-7：人工重要度调整（Panel 记忆详情）
   "/atomic/importance": handleAtomicImportance,
+  // P1 task-8：记忆软失效/撤销失效（Panel 记忆详情「标记失效/撤销失效」上游）
+  "/atomic/invalidate": handleAtomicInvalidate,
   "/atomic/query": handleAtomicQuery,
   "/atomic/neighbors": handleAtomicNeighbors,
   "/atomic/path": handleAtomicPath,
@@ -1386,6 +1390,121 @@ export async function handleAtomicImportance(body: unknown, _auth: V2AuthContext
     { id, version: `v${updatedVersion}`, importance, importance_source: "manual" },
     requestId,
   );
+}
+
+/**
+ * P1 Task 8（bi-temporal 补口，M4 #6）：POST /atomic/invalidate — 记忆软失效/撤销失效。
+ * 合同：
+ * - body {record_id, valid_end?, mode?: "invalidate"|"restore"}，mode 缺省 invalidate；
+ * - invalidate = handleAtomicUpdate 既有 valid_end 写路（store.invalidateL1）的语义化薄封装：
+ *   valid_end 缺省 now（ISO），显式提供必须是非空可解析 ISO 串（同款措辞 400）；必须
+ *   upsertL1 先、invalidateL1 后（soul 回写会原样写回 valid_end，序反 = 失效被抹回）；
+ *   已失效行/行不存在 → invalidateL1 false → 500（既有语义原样沿用，已失效不覆盖）；
+ * - restore = upsertL1 清空 valid_end（软失效可逆；仅本 handler 内部路径放开 soul 拷贝对
+ *   valid_end 的回写限制，handleAtomicUpdate 公开语义不变；body.valid_end 忽略；幂等）；
+ *   upsertL1 统一写路径自动同步 l1_fts 副本；
+ * - 不造第三条失效写路：除 restore 的清空外，不新增失效存储方法；红线 = 不删记忆；
+ * - /v3 严格隔离（team_id+user_id+agent_id+session_id 缺一 422）由 dispatch 层
+ *   collectV3Missing 统一执行，本 handler 只做租户三轴（team/user/agent）归属校验。
+ */
+export async function handleAtomicInvalidate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const b = (body ?? {}) as { record_id?: unknown; valid_end?: unknown; mode?: unknown };
+  const id = typeof b.record_id === "string" && b.record_id.trim() ? b.record_id.trim() : undefined;
+  if (!id) return errorEnvelope(400, "record_id 必须是非空字符串", requestId);
+
+  const mode = b.mode ?? "invalidate";
+  if (mode !== "invalidate" && mode !== "restore") {
+    return errorEnvelope(400, "mode 必须是 \"invalidate\" 或 \"restore\"", requestId);
+  }
+
+  // invalidate：valid_end 缺省 now；显式提供必须是非空可解析 ISO 串（handleAtomicUpdate 同款措辞）
+  let validEnd: string | undefined;
+  if (mode === "invalidate") {
+    if (b.valid_end === undefined) {
+      validEnd = new Date().toISOString();
+    } else if (typeof b.valid_end !== "string" || !b.valid_end.trim() || !Number.isFinite(Date.parse(b.valid_end))) {
+      return errorEnvelope(400, `valid_end 不是合法 ISO 时间: ${String(b.valid_end)}`, requestId);
+    } else {
+      validEnd = b.valid_end;
+    }
+  }
+
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  const records = (await store.getL1ByIds?.([id])) ?? [];
+  const record = records[0];
+  if (!record) return errorEnvelope(404, `Atomic note ${id} not found`, requestId);
+
+  // 租户三轴校验（handleAtomicImportance 同款 idiom；403）
+  const iso = deps.requestIsolation;
+  if (iso?.teamId && record.team_id && record.team_id !== iso.teamId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different team`, requestId);
+  }
+  if (iso?.userId && record.user_id && record.user_id !== iso.userId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different user`, requestId);
+  }
+  if (iso?.agentId && record.agent_id && record.agent_id !== iso.agentId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different agent`, requestId);
+  }
+
+  const updatedVersion = (record.version ?? 0) + 1;
+  const metadata = parseMetadataJson(record.metadata_json) as Record<string, unknown>;
+
+  const updated: MemoryRecord = {
+    id,
+    content: record.content,
+    type: record.type as any,
+    priority: record.priority ?? 50,
+    scene_name: record.scene_name ?? "",
+    source_message_ids: [],
+    metadata,
+    timestamps: record.timestamp_str ? [record.timestamp_str] : [],
+    createdAt: record.created_time || record.timestamp_str || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    version: updatedVersion,
+    sessionKey: record.session_key ?? "",
+    sessionId: record.session_id ?? iso?.sessionId ?? "",
+    taskId: record.task_id ?? iso?.taskId,
+    teamId: record.team_id ?? iso?.teamId,
+    userId: record.user_id ?? iso?.userId,
+    agentId: record.agent_id ?? iso?.agentId,
+    // P0-T3：soul 字段从既有行原样透传（缺省 undefined → upsertL1 soulBindValues 回填
+    // SOUL_FIELD_DEFAULTS）；restore 时 valid_end 清空（"" 随统一写路径同步 l1_fts 副本）。
+    occurred_at: record.occurred_at,
+    valid_start: record.valid_start,
+    valid_end: mode === "restore" ? "" : record.valid_end,
+    certainty: record.certainty as MemoryRecord["certainty"],
+    source: record.source,
+    valence: record.valence,
+    arousal: record.arousal,
+    significance: record.significance,
+    importance: record.importance,
+    sensitivity: record.sensitivity,
+  };
+
+  // content 不变 → 不重算 embedding（undefined = metadata-only upsert）
+  await store.upsertL1(updated, undefined);
+
+  let effectiveValidEnd = "";
+  if (mode === "invalidate" && validEnd !== undefined) {
+    // 薄封装：复用 handleAtomicUpdate 的既有失效写路（行不存在/已失效不覆盖 → false → 500）
+    const ok = await store.invalidateL1?.(id, validEnd);
+    if (!ok) return errorEnvelope(500, `失效写入失败（行不存在或已失效不覆盖）: ${id}`, requestId);
+    effectiveValidEnd = validEnd;
+  }
+
+  // 审计：L1 update（invalidate/restore 都是 L1 行变更）
+  await recordAudit(store, {
+    record_id: id,
+    layer: "L1",
+    action: "update",
+    iso,
+    version: updatedVersion,
+    requestId,
+    logger: deps.logger,
+  });
+
+  return successEnvelope({ id, version: `v${updatedVersion}`, valid_end: effectiveValidEnd }, requestId);
 }
 
 async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {

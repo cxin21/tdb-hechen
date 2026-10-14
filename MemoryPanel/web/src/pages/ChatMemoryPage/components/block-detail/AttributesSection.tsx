@@ -86,6 +86,32 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
       .finally(() => setImpBusy(false));
   };
 
+  // P1-T8：标记失效 / 撤销失效（软失效不删记忆；失效后钩子路/工具路召回均排除，撤销即恢复）。
+  // hasVe=valid_end 非空（含未来失效时点——清空走 restore）；invalidatedNow=已到期失效。
+  const veRaw = typeof item.valid_end === 'string' ? item.valid_end.trim() : '';
+  const hasVe = veRaw !== '';
+  const invalidatedNow = hasVe && Number.isFinite(Date.parse(veRaw)) && Date.parse(veRaw) <= Date.now();
+  const [invBusy, setInvBusy] = useState(false);
+  const [invMsg, setInvMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const submitInvalidate = (mode: 'invalidate' | 'restore') => {
+    if (!blockId) {
+      setInvMsg({ ok: false, text: '缺少 block 上下文，无法操作' });
+      return;
+    }
+    setInvBusy(true);
+    setInvMsg(null);
+    chatMemoryApi
+      .setInvalidated(blockId, item.id, mode)
+      .then(() =>
+        setInvMsg({
+          ok: true,
+          text: mode === 'invalidate' ? '已标记失效（两路召回排除；可撤销恢复，重新打开属性后生效）' : '已撤销失效（恢复召回，重新打开属性后生效）',
+        }),
+      )
+      .catch((e) => setInvMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }))
+      .finally(() => setInvBusy(false));
+  };
+
   const rows = useMemo<Row[]>(() => {
     const meta = (item.metadata ?? {}) as Record<string, unknown>;
     const out: Row[] = [];
@@ -218,6 +244,39 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
                 {impMsg && (
                   <div style={{ marginTop: 6, fontSize: 12, color: impMsg.ok ? '#2e7d32' : '#c62828' }}>
                     {impMsg.text}
+                  </div>
+                )}
+              </div>
+              {/* P1-T8：标记失效 / 撤销失效（软失效不删记忆；失效后两路召回均排除） */}
+              <div className="_inv-form" style={{ marginTop: 12, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 12 }}>
+                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.75 }}>
+                  失效控制（软失效不删记忆：失效后两路召回均排除；撤销失效即恢复）
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {invalidatedNow ? (
+                    <span style={{ fontSize: 12, color: '#c62828' }}>
+                      当前状态：已失效{hasVe ? `（valid_end=${veRaw}）` : ''}
+                    </span>
+                  ) : hasVe ? (
+                    <span style={{ fontSize: 12, opacity: 0.6 }}>
+                      当前状态：有效（valid_end={veRaw}，未到期）
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 12, opacity: 0.6 }}>当前状态：有效</span>
+                  )}
+                  {hasVe ? (
+                    <Button disabled={invBusy} onClick={() => submitInvalidate('restore')}>
+                      {invBusy ? '处理中…' : '撤销失效'}
+                    </Button>
+                  ) : (
+                    <Button type="error" disabled={invBusy} onClick={() => submitInvalidate('invalidate')}>
+                      {invBusy ? '处理中…' : '标记失效'}
+                    </Button>
+                  )}
+                </div>
+                {invMsg && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: invMsg.ok ? '#2e7d32' : '#c62828' }}>
+                    {invMsg.text}
                   </div>
                 )}
               </div>

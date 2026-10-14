@@ -55,6 +55,18 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
       tooltip: `valid_start = ${item.valid_start}`, values: { date: item.valid_start.slice(0, 10) },
     });
   }
+  // P1-T8（bi-temporal 补口）：已失效徽章——valid_end 非空、可解析且 ≤ now。
+  // 软失效语义（可撤销恢复）：失效后钩子路/工具路召回均排除。
+  if (
+    typeof item.valid_end === 'string' && item.valid_end !== '' &&
+    Number.isFinite(Date.parse(item.valid_end)) &&
+    Date.parse(item.valid_end) <= Date.now()
+  ) {
+    out.push({
+      key: 'invalidated', labelKey: 'memory.badges.invalidated', cls: 'invalidated', icon: '⛔',
+      tooltip: `valid_end = ${item.valid_end}（已失效：两路召回均排除；撤销失效即恢复）`,
+    });
+  }
   return out;
 }
 

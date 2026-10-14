@@ -368,6 +368,12 @@ function AtomicList({
             : '';
         const showHeader = layer === 'L1' && !!day && day !== prevDay;
         prevDay = day;
+        // P1-T8：失效行视觉区分（低透明度 + 已失效徽章）。软失效可撤销恢复。
+        const invalidated =
+          layer === 'L1' &&
+          typeof it.valid_end === 'string' && it.valid_end !== '' &&
+          Number.isFinite(Date.parse(it.valid_end)) &&
+          Date.parse(it.valid_end) <= Date.now();
         async function handleCopy() {
           const ok = await copyToClipboard(it.body);
           if (ok) {
@@ -377,7 +383,10 @@ function AtomicList({
           }
         }
         const itemEl = (
-          <li key={it.id} className="_memory-detail-atomic-item">
+          <li
+            key={it.id}
+            className={`_memory-detail-atomic-item${invalidated ? ' _memory-detail-atomic-item--invalidated' : ''}`}
+          >
             <AtomicHead
               layer={layer}
               tone={meta.tone}
@@ -392,6 +401,13 @@ function AtomicList({
               loading={loading}
               blockId={blockId}
             />
+            {invalidated ? (
+              <div className="_memory-detail-atomic-invflag">
+                <span className="_inv-flag" title={`valid_end = ${it.valid_end}`}>
+                  ⛔ {t('memory.badges.invalidated')}
+                </span>
+              </div>
+            ) : null}
             {layer === 'L3' ? (
               hasBody ? (
                 <MarkdownView bare className="_memory-detail-atomic-md">

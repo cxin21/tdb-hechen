@@ -53,7 +53,7 @@ import { emotionSalienceOf, buildRankContext,
   type RankSignals,
   type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
-import { isInvalidated } from "../recall/filter-invalidated.js";
+import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { appendRecallJournal, type RecallJournalGates } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
@@ -647,8 +647,8 @@ export async function performLayeredRecall(params: {
             // 端点路 = 三元组收窄，store 层 P2-T14 家族既有能力，不改打分语义）
             const wfRows = await vectorStore.searchL1Fts(wfQuery, r7HalfLimit * 2, params.isolationFilter);
             for (const r of wfRows ?? []) {
-              // GROW-EVO P2（§2.3）：失效记忆不进结论层候选（流程测试实测泄漏点）
-              if (isInvalidated(r as { valid_end?: string })) continue;
+              // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（流程测试实测泄漏点）
+              if (isOutsideValidityWindow(r as { valid_start?: string; valid_end?: string })) continue;
               if (r.type === "work_fact") {
                 r7Candidates.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
               }
@@ -690,8 +690,8 @@ export async function performLayeredRecall(params: {
           const relaxed: L2ConclusionCandidate[] = [];
           for (const r of relaxedRows) {
             if (relaxed.length >= 5) break;
-            // GROW-EVO P2（§2.3）：失效记忆不进结论层候选（V2-3 放宽通道同款过滤）
-            if (isInvalidated(r as { valid_end?: string })) continue;
+            // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（V2-3 放宽通道同款过滤）
+            if (isOutsideValidityWindow(r as { valid_start?: string; valid_end?: string })) continue;
             if (!r || typeof r.record_id !== "string" || !r.content?.trim()) continue;
             if (selectedIds.has(r.record_id)) continue;
             relaxed.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
@@ -1302,6 +1302,8 @@ interface MergedPoolValue {
   certainty?: string;
   /** GROW-EVO P2（§2.3）：失效排除需要 valid_end 随池携带。 */
   validEnd?: string;
+  /** Task 8（bi-temporal 补口，M4 #6）：未来生效排除需要 valid_start 随池携带（与 validEnd 成对）。 */
+  validStart?: string;
   /** GROW-EVO P3 R10（§3.2）：情感显著度需要 valence/arousal 随池携带。 */
   valence?: number;
   arousal?: number;
@@ -1953,6 +1955,7 @@ export async function searchHybrid(
         rrfScore,
         certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
         validEnd: (r.soul as { valid_end?: string } | undefined)?.valid_end,
+        validStart: (r.soul as { valid_start?: string } | undefined)?.valid_start,
         valence: (r.soul as { valence?: number } | undefined)?.valence,
         arousal: (r.soul as { arousal?: number } | undefined)?.arousal,
         formatable: {
@@ -2022,6 +2025,7 @@ export async function searchHybrid(
         rrfScore,
         certainty: r.certainty,
         validEnd: r.valid_end,
+        validStart: r.valid_start,
         valence: r.valence,
         arousal: r.arousal,
         formatable: vectorResultToFormatable(r),
@@ -2301,17 +2305,19 @@ export async function searchHybrid(
     );
     // GROW-EVO P2（§2.3）：召回默认排除失效记忆（excludeInvalidated，spec 拍板①缺省
     // true；现存库无失效行 = 逐位不变）。过滤在 bump 之前——失效记忆连 recall_count
-    // 都不积累（宁缺毋滥）。解析失败的 valid_end 保留（同 filter-invalidated 口径）。
+    // 都不积累（宁缺毋滥）。
+    // Task 8（bi-temporal 补口，M4 #6）：与工具路 filterByValidity 对齐——改走共享谓词
+    // isOutsideValidityWindow 完整区间语义（valid_start 未来生效同样排除；解析失败的
+    // valid_start/valid_end 保留不误删）。池携带 validStart/validEnd（keyword soul /
+    // embedding 行双通道注入），一致性由 filter-invalidated.test.ts 与
+    // bitemporal-two-path.test.ts 钉死。
     const applyExclusion = excludeInvalidated !== false;
     let visibleTop = top;
     if (applyExclusion) {
-      const nowMs = (validityNow ?? new Date()).getTime();
-      visibleTop = visibleTop.filter(([, v]) => {
-        const ve = v.validEnd;
-        if (!ve) return true;
-        const t = Date.parse(ve);
-        return !Number.isFinite(t) || t > nowMs;
-      });
+      const now = validityNow ?? new Date();
+      visibleTop = visibleTop.filter(([, v]) =>
+        !isOutsideValidityWindow({ valid_start: v.validStart, valid_end: v.validEnd }, now),
+      );
     }
     // GROW-EVO P1（R8 数据前提）：钩子路 recall_count 计数补齐——top-3 observed
     // （工具路重巩固白名单同款红线），只加计数、不刷 updated_time（防扰动既有排序）。
