@@ -4,6 +4,7 @@
   "results": {
     "growth": {
       "adopted": 1,
+      "descRefreshed": 0,
       "displaced": 1,
       "ran": true,
       "retired": 0,
@@ -27,7 +28,8 @@
   "valueCalls": [
     {
       "attrs": {
-        "description": "回滚预案是上线前的强制步骤。"
+        "description": "回滚预案是上线前的强制步骤。",
+        "lastDescRefreshEvidence": 5
       },
       "createdBy": "auto-growth",
       "label": "回滚预案",
@@ -40,7 +42,8 @@
   "values": [
     {
       "attrs": {
-        "description": "回滚预案是上线前的强制步骤。"
+        "description": "回滚预案是上线前的强制步骤。",
+        "lastDescRefreshEvidence": 5
       },
       "label": "回滚预案",
       "node_type": "theme",

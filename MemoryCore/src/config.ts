@@ -1136,6 +1136,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             maxRejectsBeforeCold: clampR("maxRejectsBeforeCold", 2, 1, 10),
           };
         })(),
+        // #11 T5：desc 维护环（缺省 false=逐位现状；evidenceMultiple=≥N× 基线触发）。
+        descRefresh: (() => {
+          const dg = obj(g, "descRefresh");
+          const clampD = (key: string, dflt: number, lo: number, hi: number) => {
+            const rawD = num(dg, key);
+            if (rawD === undefined || !Number.isFinite(rawD)) return dflt;
+            return Math.min(hi, Math.max(lo, Math.floor(rawD)));
+          };
+          return {
+            enabled: bool(dg, "enabled") ?? false,
+            evidenceMultiple: clampD("evidenceMultiple", 2, 1, 10),
+            maxPerPass: clampD("maxPerPass", 2, 1, 5),
+          };
+        })(),
       };
     })(),
         // S-CHAR-2（M2/P3）：品格张力检测（enabled 缺省 false=逐位现状；clamp 同族防手滑）。

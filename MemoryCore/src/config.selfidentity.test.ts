@@ -45,3 +45,19 @@ describe("coreMemory.selfIdentity / soulRender（P1 双槽）", () => {
     expect(c.coreMemory.allowedSlots).toEqual(["identity"]);
   });
 });
+
+describe("coreMemory.anchorDiscovery.descRefresh（#11 T5）", () => {
+  it("缺省：enabled=false（config-first 逐位现状），倍数/轮次取缺省", () => {
+    const c = parseConfig({});
+    expect(c.coreMemory.anchorDiscovery.descRefresh.enabled).toBe(false);
+    expect(c.coreMemory.anchorDiscovery.descRefresh.evidenceMultiple).toBe(2);
+    expect(c.coreMemory.anchorDiscovery.descRefresh.maxPerPass).toBe(2);
+  });
+
+  it("yaml 值真实生效 + clamp（1..10 / 1..5）", () => {
+    const c = parseConfig({ coreMemory: { anchorDiscovery: { descRefresh: { enabled: true, evidenceMultiple: 99, maxPerPass: 0 } } } });
+    expect(c.coreMemory.anchorDiscovery.descRefresh.enabled).toBe(true);
+    expect(c.coreMemory.anchorDiscovery.descRefresh.evidenceMultiple).toBe(10);
+    expect(c.coreMemory.anchorDiscovery.descRefresh.maxPerPass).toBe(1);
+  });
+});

@@ -77,8 +77,8 @@ describe("character 池（P3 品格锚）", () => {
     expect(up).toBeTruthy();
     expect(up[0]).toMatch(/^c-auto-[0-9a-f]{10}$/); // 中文 slug 清空 → c-auto-<hash>
     expect(up[7]).toBe("character");
-    // #7 T1：attrs.facts = 自我事实切片快照 + attrs.description = rationale 经单一源 sanitizer
-    expect(up[8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报", "我的风格是先给结论"], description: "对交付承诺反复兑现，宁可少接不食言。" });
+    // #7 T1：attrs.facts = 自我事实切片快照 + attrs.description = rationale 经单一源 sanitizer；#11：采纳基线证据
+    expect(up[8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报", "我的风格是先给结论"], description: "对交付承诺反复兑现，宁可少接不食言。", lastDescRefreshEvidence: 2 });
   });
 
   it("#7 T1：rationale 命中 episode 门 → attrs 无 description（锚照常采纳，渲染端跳过）", async () => {
@@ -101,7 +101,7 @@ describe("character 池（P3 品格锚）", () => {
     });
     const up = store.upsertValue.mock.calls.find((c) => c[1] === "守诺");
     expect(up).toBeTruthy(); // 锚照常采纳（宁缺毋滥：desc 缺失只影响渲染）
-    expect(up![8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报"] }); // 无 description 键
+    expect(up![8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报"], lastDescRefreshEvidence: 1 }); // 无 description 键（#11：基线证据仍写）
   });
 
   it("disabled → 无 character LLM 调用（逐位现状）", async () => {

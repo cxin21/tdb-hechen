@@ -26,6 +26,7 @@
   "results": {
     "growth": {
       "adopted": 3,
+      "descRefreshed": 0,
       "displaced": 0,
       "ran": true,
       "retired": 0,
@@ -44,7 +45,8 @@
   "valueCalls": [
     {
       "attrs": {
-        "description": "交付质量是团队稳定发版的底线要求。"
+        "description": "交付质量是团队稳定发版的底线要求。",
+        "lastDescRefreshEvidence": 5
       },
       "createdBy": "auto-growth",
       "label": "交付质量",
@@ -59,6 +61,7 @@
           "老何"
         ],
         "description": "TDB 记忆系统核心维护者。",
+        "lastDescRefreshEvidence": 5,
         "role": "同事"
       },
       "createdBy": "auto-growth",
@@ -75,6 +78,7 @@
         "facts": [
           "我承诺每周五输出迭代周报并给出数据口径"
         ],
+        "lastDescRefreshEvidence": 2,
         "source": "self_identity"
       },
       "createdBy": "auto-growth",
@@ -88,7 +92,8 @@
   "values": [
     {
       "attrs": {
-        "description": "交付质量是团队稳定发版的底线要求。"
+        "description": "交付质量是团队稳定发版的底线要求。",
+        "lastDescRefreshEvidence": 5
       },
       "label": "交付质量",
       "node_type": "theme",
@@ -105,6 +110,7 @@
         "facts": [
           "我承诺每周五输出迭代周报并给出数据口径"
         ],
+        "lastDescRefreshEvidence": 2,
         "source": "self_identity"
       },
       "label": "守诺",
@@ -122,6 +128,7 @@
           "老何"
         ],
         "description": "TDB 记忆系统核心维护者。",
+        "lastDescRefreshEvidence": 5,
         "role": "同事"
       },
       "label": "何晨",

@@ -12,6 +12,7 @@
   "results": {
     "growth": {
       "adopted": 0,
+      "descRefreshed": 0,
       "displaced": 0,
       "ran": true,
       "retired": 0,

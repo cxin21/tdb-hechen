@@ -22,6 +22,7 @@
   "results": {
     "growth": {
       "adopted": 2,
+      "descRefreshed": 0,
       "displaced": 0,
       "ran": true,
       "retired": 0,
@@ -48,7 +49,8 @@
     },
     {
       "attrs": {
-        "description": "先取证再动手是反复重申的工作纪律。"
+        "description": "先取证再动手是反复重申的工作纪律。",
+        "lastDescRefreshEvidence": 5
       },
       "createdBy": "auto-growth",
       "label": "先取证",
@@ -61,7 +63,8 @@
   "values": [
     {
       "attrs": {
-        "description": "先取证再动手是反复重申的工作纪律。"
+        "description": "先取证再动手是反复重申的工作纪律。",
+        "lastDescRefreshEvidence": 5
       },
       "label": "先取证",
       "node_type": "theme",

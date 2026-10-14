@@ -86,6 +86,10 @@ export interface AnchorDiscoveryConfig {
   similarMerge: { enabled: boolean; threshold: number };
   /** #19 T12：rejected 域证据升级重提通道（identity-discovery 消费；缺省缺省=false=V12-REPRO 现状）。 */
   reproposal?: { enabled: boolean; minEvidenceMultiple: number; maxPerPass: number; maxRejectsBeforeCold: number };
+  /** #11 T5：desc/描述维护环（GROW-MAINT 证据重算周期顺带评估；缺省 false=逐位现状）。
+   *  触发 = 证据 ≥ evidenceMultiple × attrs.lastDescRefreshEvidence 基线；desc 缺失锚直接候选（补齐）；
+   *  每轮 ≤ maxPerPass；LLM 重述 + anchorDescriptionAttr 确定性守卫（宁缺毋滥）；manual 源永不覆盖。 */
+  descRefresh?: { enabled: boolean; evidenceMultiple: number; maxPerPass: number };
 }
 
 export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
@@ -102,6 +106,8 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   identityMaintain: { enabled: false },
   // G-SIMMERGE：缺省关闭=逐位现状（config-first）；threshold=bigram Jaccard 阈值（包含关系无条件命中）。
   similarMerge: { enabled: false, threshold: 0.5 },
+  // #11 T5：desc 维护环缺省关闭=逐位现状（config-first）；开启后维护轮 ≥2× 证据增长才重述。
+  descRefresh: { enabled: false, evidenceMultiple: 2, maxPerPass: 2 },
 }
 
 /** 旧 store（缺 listL1TenantTriplets）回退用的 default 桶三元组；PA 起自生长默认遍历全部有记忆 agent。 */
@@ -220,6 +226,8 @@ export interface AnchorGrowthResult {
   skipped: number;
   /** G-SIMMERGE：相似命中并入既有锚（未新建）的候选数；similarMerge.enabled=false 时恒 0。 */
   similarMerged?: number;
+  /** #11 T5：desc 重述落库数（LLM 重述+守卫通过才计）；descRefresh.enabled=false 时恒 0。 */
+  descRefreshed?: number;
   reason?: "disabled" | "no-llm" | "store-unsupported" | "interval" | "attempt-cooldown" | "no-new-corpus" | "no-corpus" | "error";
 }
 
@@ -276,6 +284,39 @@ async function settleBackfills(
   if (fail > 0) logger?.warn?.(`[anchor-growth] ${kind} backfill partial: ok=${ok} fail=${fail} label=${label}`);
 }
 
+// ── #11 T5：desc 维护环（GROW-MAINT 证据重算周期顺带评估）────────────────────────
+
+/** #11 T5：desc 重述 system prompt（合同单一源=#20 descContractPromptLine；只出严格 JSON）。 */
+const DESC_REFRESH_SYSTEM_PROMPT = [
+  "你是价值锚描述重述器：根据价值锚的 label 与证据摘录，重述一句更准确的描述。",
+  descContractPromptLine(),
+  '只输出严格 JSON：{"description":"<一句描述>"}，不要输出其它内容。',
+].join("\n");
+
+/** #11 T5：重述 user prompt——锚类型+label+证据摘录（前 5 条，每条截 120 字）。 */
+function buildDescRefreshPrompt(opts: { label: string; kind: "theme" | "person" | "character"; samples: string[] }): string {
+  const kindText = opts.kind === "person" ? "人物" : opts.kind === "character" ? "品格" : "主题";
+  const sampleBlock = opts.samples.slice(0, 5).map((s, i) => `${i + 1}. ${s.length > 120 ? s.slice(0, 120) + "…" : s}`).join("\n");
+  return [
+    `价值锚（${kindText}）：${opts.label}`,
+    "证据摘录（该锚在本轮语料中的命中行）：",
+    sampleBlock || "（无逐行摘录）",
+    "请重述该锚的描述：概括证据中反复出现的行为取向，符合内容合同，宁缺毋滥。",
+  ].join("\n");
+}
+
+/** #11 T5：重述回复解析——严格 JSON {"description": string}；非 JSON/缺字段 → ""（宁缺毋滥）。 */
+export function parseDescRefreshReply(raw: string): string {
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return "";
+  try {
+    const parsed = JSON.parse(m[0]) as { description?: unknown };
+    return typeof parsed.description === "string" ? parsed.description.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * 自生长一轮（由 lifecycle-scheduler 在巩固周期后挂钩；best-effort，失败只 warn 不抛）。
  * PA：per-agent 严格独立——逐"有记忆的 agent 三元组"跑完整发现循环（双门/护栏/挤出
@@ -303,7 +344,7 @@ export async function runAnchorGrowth(deps: {
   const store = deps.store as IMemoryStore & {
     listValuesAnyState?: (tenant?: CoreTenant) => Promise<CoreValueRow[]> | CoreValueRow[];
     retireValue?: (valueId: string, tenant?: CoreTenant) => Promise<boolean> | boolean;
-    upsertValue?: (valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person" | "character", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] }) => Promise<boolean> | boolean;
+    upsertValue?: (valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person" | "character", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[]; lastDescRefreshEvidence?: number }) => Promise<boolean> | boolean;
     backfillMemoryRef?: (recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant) => Promise<boolean> | boolean;
     getAnchorGrowthState?: (tenant?: CoreTenant) => Promise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null }> | { lastDiscoveryAt: string | null; lastCorpusCount: number | null };
     setAnchorGrowthState?: (state: { lastDiscoveryAt: string; lastCorpusCount: number }, tenant?: CoreTenant) => Promise<void> | void;
@@ -335,6 +376,7 @@ export async function runAnchorGrowth(deps: {
     let displaced = 0;
     let skipped = 0;
     let similarMerged = 0; // G-SIMMERGE：相似命中并入既有锚（未新建）的候选数
+    let descRefreshed = 0; // #11 T5：desc 重述落库数（维护轮 flush；缺省关=恒 0）
     let firstBlockReason: NonNullable<AnchorGrowthResult["reason"]> | undefined;
     for (const tenant of tenants) {
       // default 三元组 → 无参调用（旧键/旧调用形状；非 default → per-tenant 键）
@@ -408,9 +450,19 @@ export async function runAnchorGrowth(deps: {
         // 标签不原地改写（coreRefs/dedup 身份锚点）；主题演化 = 退场 + 新提案以新标签再入。
         let retiredA = 0;
         let reweightedA = 0;
+        let descRefreshedA = 0; // #11 T5：desc 重述落库数（维护轮内评估+flush）
         let quotaRetiredA = 0; // GROW-QUOTA：名额回归守卫退场数（并入 retired 计数）
         let anyState = anyState0; // V10-MAINT-DECOUPLE：快照变量提升（维护/采纳双路径共享）
         if (doMaint) {
+        // #11 T5：desc 维护环挂点——证据重算周期顺带评估（不新增轮次/冷却门，V10 结构不动）。
+        // 缺省关（config-first）；字段级 ?? 解析（config 传 {descRefresh:{enabled:true}} 不丢缺省，#16 浅合并教训）。
+        const drc = {
+          enabled: cfg.descRefresh?.enabled === true,
+          evidenceMultiple: cfg.descRefresh?.evidenceMultiple ?? 2,
+          maxPerPass: cfg.descRefresh?.maxPerPass ?? 2,
+        };
+        const descRefreshCandidates: Array<{ row: CoreValueRow; kind: "theme" | "person" | "character"; ev: number; baseline: number; delta: number; attrsRec: Record<string, unknown> }> = [];
+        const weightUpdates = new Map<string, number>(); // 同轮 reweight 后的新权重（flush 时携带，防旧权重回写）
         for (const a of anyState0) {
           if (a.state !== "active" || a.origin !== "auto" || a.created_by !== "auto-growth") continue;
           // P2：person 行分叉 personEv 口径（label+alias）；person 池关闭时不参与维护
@@ -449,11 +501,60 @@ export async function runAnchorGrowth(deps: {
             // upsertValue 全量替换丢 description=GAP 复发机制）。node_type 冲突路径本就不漂
             //（DO UPDATE 不含 node_type 列），显式传参仅服务新建行。
             const ok = await Promise.resolve(store.upsertValue!(a.value_id, a.label, newW, a.created_by, tenant, a.valence ?? undefined, "auto", isPerson ? "person" : (isCharacter ? "character" : "theme"), undefined));
-            if (ok) reweightedA++;
+            if (ok) { reweightedA++; weightUpdates.set(a.value_id, newW); }
+          }
+          // #11 T5：desc 维护环候选评估（重算证据 ev 就地复用；manual 源/人工 descSource 永不覆盖）。
+          if (drc.enabled) {
+            let attrsRec: Record<string, unknown> = {};
+            try { attrsRec = a.attrs_json && a.attrs_json !== "{}" ? (JSON.parse(a.attrs_json) as Record<string, unknown>) : {}; } catch { attrsRec = {}; }
+            const descSource = typeof attrsRec.descSource === "string" ? attrsRec.descSource : "";
+            if (descSource !== "manual") {
+              const desc = existingDescription(a.attrs_json);
+              const base = typeof attrsRec.lastDescRefreshEvidence === "number" ? (attrsRec.lastDescRefreshEvidence as number) : null;
+              const kind = isPerson ? "person" as const : isCharacter ? "character" as const : "theme" as const;
+              if (!desc) {
+                // desc 缺失（历史 rationale 不合格/未写）：直接候选补齐（无阈值；基线记为当前 ev）。
+                descRefreshCandidates.push({ row: a, kind, ev, baseline: ev, delta: ev, attrsRec });
+              } else if (base !== null && ev >= drc.evidenceMultiple * base && ev > base) {
+                // 证据 ≥2× 基线增长：重述候选（delta 降序供 per-pass cap 择优）。
+                descRefreshCandidates.push({ row: a, kind, ev, baseline: base, delta: ev - base, attrsRec });
+              }
+              // 有 desc 无基线（存量锚）：本轮不触发——基线由采纳时写入（#11 合同），
+              // 存量走 #20 脚本/人工通道，防无基线即触发破坏 ≥2× 语义。
+            }
           }
         }
         retired += retiredA;
         reweighted += reweightedA;
+        // ── #11 T5：desc 重述 flush（delta 降序 ≤maxPerPass；LLM 重述+确定性守卫；manual 永不覆盖）──
+        if (drc.enabled && descRefreshCandidates.length > 0 && deps.llmRunner) {
+          descRefreshCandidates.sort((x, y) => (y.delta - x.delta) || (x.row.value_id < y.row.value_id ? -1 : 1));
+          const picked = descRefreshCandidates.slice(0, drc.maxPerPass);
+          for (const cand of picked) {
+            // 证据摘录：口径与各池证据计数同刻度（theme/person=label+alias 子串；character=事实切片语料）。
+            const names = [cand.row.label, ...attrsOf(cand.row).aliases];
+            const nameLowers = names.map((s) => s.toLowerCase());
+            const samples = cand.kind === "character"
+              ? currentSelfFacts.filter((f) => true)
+              : corpus.filter((c) => nameLowers.some((nm) => c.toLowerCase().includes(nm)));
+            try {
+              const raw = await deps.llmRunner.run({ prompt: buildDescRefreshPrompt({ label: cand.row.label, kind: cand.kind, samples }), systemPrompt: DESC_REFRESH_SYSTEM_PROMPT, taskId: "anchor-desc-refresh", timeoutMs: 0, maxTokens: 0 });
+              const guarded = anchorDescriptionAttr(parseDescRefreshReply(raw));
+              if (!guarded?.description) {
+                logger?.warn?.(`[anchor-growth] desc refresh withheld (contract guard): ${cand.row.value_id} (${cand.row.label})`);
+                continue;
+              }
+              // 先读后合并（#9 同族防覆写）：既有 attrs 键（role/aliases/facts/source…）全保留。
+              const merged = { ...cand.attrsRec, description: guarded.description, descSource: "auto-refresh", lastDescRefreshAt: new Date(nowMs).toISOString(), lastDescRefreshEvidence: cand.ev };
+              const w = weightUpdates.get(cand.row.value_id) ?? cand.row.weight;
+              const ok = await Promise.resolve(store.upsertValue!(cand.row.value_id, cand.row.label, w, cand.row.created_by, tenant, cand.row.valence ?? undefined, "auto", cand.kind, merged));
+              if (ok) descRefreshedA++;
+            } catch (e) {
+              logger?.warn?.(`[anchor-growth] desc refresh failed: ${cand.row.value_id} (${cand.row.label}) ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+        }
+        descRefreshed += descRefreshedA; // #11 T5：flush 之后并入聚合（flush 在聚合行之后执行）
         // ── S-CHAR-2（M2/P3，T2 挂点）：GROW-MAINT 证据重算周期同步产出证据分裂候选──
         // enabled 门控；非 person 活跃锚逐个 detectEvidenceSplit；候选只入内存注册表
         // （消费方=identity-discovery worker drain → prompt → characterProposal 确定性门），
@@ -619,10 +720,13 @@ export async function runAnchorGrowth(deps: {
             const priorTheme = (anyState2 as CoreValueRow[]).find(
               (r) => r.state === "active" && (r.node_type ?? "theme") === "theme" && r.label === c.label,
             );
-            let themeAttrs: { description?: string; aliases?: string[] } | undefined = anchorDescriptionAttr(c.rationale);
+            let themeAttrs: { description?: string; aliases?: string[]; lastDescRefreshEvidence?: number } | undefined = anchorDescriptionAttr(c.rationale);
             if (priorTheme && existingDescription(priorTheme.attrs_json)) themeAttrs = undefined;
             // #18 T11：采纳 attrs 落 aliases（≤3 已规范化）——维护/去重/挤出从 attrs_json 读取。
             if (c.aliases.length > 0) themeAttrs = { ...(themeAttrs ?? {}), aliases: [...c.aliases] };
+            // #11 T5：desc 维护环触发基线（≥2× 语义守恒）——采纳即记录证据基线；
+            // priorTheme 已有 desc 时 attrs=undefined（不碰语义）保持不变（存量走 #20/人工通道）。
+            if (themeAttrs) themeAttrs = { ...themeAttrs, lastDescRefreshEvidence: c.evidenceCount };
             // #15 T8b：slug 碰撞守卫（coffee vs coffee!）——冲突时改 hash 形态兜底
             const valueId = resolveGrowthValueId(c.label, "theme", anyState2 as CoreValueRow[]);
             const ok = await Promise.resolve(store.upsertValue(valueId, c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, undefined, "auto", "theme", themeAttrs));
@@ -713,7 +817,7 @@ export async function runAnchorGrowth(deps: {
               const priorPerson = (anyState2 as CoreValueRow[]).find(
                 (r) => r.state === "active" && r.node_type === "person" && r.label === c.label,
               );
-              const personAttrs = priorPerson ? undefined : { role: c.role, aliases: c.aliases, ...anchorDescriptionAttr(c.description) };
+              const personAttrs = priorPerson ? undefined : { role: c.role, aliases: c.aliases, ...anchorDescriptionAttr(c.description), lastDescRefreshEvidence: c.evidenceCount };
               // #15 T8b：slug 碰撞守卫同款（person 域 p- 命名空间内防互覆）
               const personValueId = resolveGrowthValueId(c.label, "person", anyState2 as CoreValueRow[]);
               const ok = await Promise.resolve(store.upsertValue(personValueId, c.label, suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant, vSymbol, "auto", "person", personAttrs));
@@ -805,6 +909,8 @@ export async function runAnchorGrowth(deps: {
                     // #7 T1（issue #7）：rationale→attrs.description（#20 合同 v2，单一源
                     // sanitizer+episode 门）——缺失则无 description 键，渲染端宁缺毋滥跳过。
                     ...anchorDescriptionAttr(c.rationale),
+                    // #11 T5：desc 维护环触发基线（品格锚同款，≥2× 语义守恒）。
+                    lastDescRefreshEvidence: c.evidenceCount,
                   },
                 ));
                 if (ok) { adopted++; adoptedThisAgent++; } else { skipped++; logger?.warn?.(`[anchor-growth] character adopt upsert failed: ${c.label}`); }
@@ -846,7 +952,7 @@ export async function runAnchorGrowth(deps: {
           ...(adoptedThisAgent > 0 ? { lastAdoptedAt: new Date(nowMs).toISOString() } : {}),
         });
         ranAny = true;
-        logger?.debug?.(`[anchor-growth] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} maint=${doMaint ? "run" : "skip"} adoption=${doAdoption ? "run" : "skip"} retired=${retiredA} reweighted=${reweightedA} adoptedThis=${adoptedThisAgent}`);
+        logger?.debug?.(`[anchor-growth] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} maint=${doMaint ? "run" : "skip"} adoption=${doAdoption ? "run" : "skip"} retired=${retiredA} reweighted=${reweightedA} descRefreshedA=${descRefreshedA} adoptedThis=${adoptedThisAgent}`);
       } catch (err) {
         // per-agent 容错：单个 agent 失败不阻断其它 agent（loud warn，继续下一个）
         logger?.warn?.(`[anchor-growth] agent ${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -879,7 +985,7 @@ export async function runAnchorGrowth(deps: {
     }
     // v4#7：summary 行补 firstBlockReason——ran=false 时对外宣告拦截原因（此前只有 agents/adopted 计数）
     logger?.info?.(`[anchor-growth] ran: agents=${tenants.length} adopted=${adopted} retired=${retired} reweighted=${reweighted} displaced=${displaced} skipped=${skipped}${!ranAny && firstBlockReason ? ` firstBlockReason=${firstBlockReason}` : ""}`);
-    return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, similarMerged, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
+    return { ran: ranAny, adopted, retired, reweighted, displaced, skipped, similarMerged, descRefreshed, ...(ranAny ? {} : { reason: firstBlockReason ?? "error" }) };
   } catch (err) {
     logger?.warn?.(`[anchor-growth] failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ran: false, adopted: 0, retired: 0, reweighted: 0, displaced: 0, skipped: 0, reason: "error" };
