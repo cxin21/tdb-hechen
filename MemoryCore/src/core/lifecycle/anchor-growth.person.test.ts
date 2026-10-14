@@ -96,7 +96,7 @@ describe("person 池采纳（happy path）", () => {
     expect(up).toBeTruthy();
     expect(up[0]).toMatch(/^p-auto-[0-9a-f]{10}$/);
     expect(up[7]).toBe("person");
-    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"] });
+    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"], lastDescRefreshEvidence: 5 }); // #11：采纳基线证据（5 行命中）
     expect(up[5]).toBe(1); // mean(0.5,0.1)=0.3 ≥0.2 → 趋近
     const refs = store.backfillMemoryRef.mock.calls.filter((c) => c[1] === "personRefs");
     expect(refs.length).toBeGreaterThanOrEqual(4);
@@ -128,7 +128,7 @@ describe("P0-1A：person 提案 description 落 attrs（写入口单一源 ancho
     });
     expect(res.adopted).toBe(1);
     const up = store.upsertValue.mock.calls.find((c) => c[1] === "女儿")!;
-    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"], description: "需要持续陪伴与支持的家庭核心。" });
+    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"], description: "需要持续陪伴与支持的家庭核心。", lastDescRefreshEvidence: 5 }); // #11：附采纳基线证据
   });
 
   it("episode 特征 description → attrs 仅 { role, aliases }（锚照常采纳）", async () => {
@@ -146,7 +146,7 @@ describe("P0-1A：person 提案 description 落 attrs（写入口单一源 ancho
     });
     expect(res.adopted).toBe(1);
     const up = store.upsertValue.mock.calls.find((c) => c[1] === "女儿")!;
-    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"] });
+    expect(up[8]).toEqual({ role: "家人", aliases: ["闺女"], lastDescRefreshEvidence: 5 }); // desc 被门拦但基线证据仍写（#11）
   });
 });
 
