@@ -53,6 +53,11 @@ type Draft = {
   rkShadowMode: boolean;
   rkLocalModelDir: string;
   rkIdleUnloadMs: string;
+  // 重要度（P1 task-7，仅 memory 目标）：worthiness.extractionEnabled + recall.importancePenalty
+  wExtractionEnabled: boolean;
+  ipEnabled: boolean;
+  ipPenalty: string;
+  ipShadow: boolean;
 };
 
 function fmtBytes(n?: number): string {
@@ -85,6 +90,10 @@ function toDraft(v: SettingsView): Draft {
     rkShadowMode: v.rerank?.shadowMode ?? true,
     rkLocalModelDir: v.rerank?.local?.modelDir ?? '',
     rkIdleUnloadMs: v.rerank?.local?.idleUnloadMs != null ? String(v.rerank.local.idleUnloadMs) : '',
+    wExtractionEnabled: v.worthiness?.extractionEnabled ?? false,
+    ipEnabled: v.importancePenalty?.enabled ?? false,
+    ipPenalty: v.importancePenalty?.penalty != null ? String(v.importancePenalty.penalty) : '',
+    ipShadow: v.importancePenalty?.shadowMode ?? true,
   };
 }
 
@@ -194,6 +203,16 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
                     }
                   : {}),
               },
+              // 重要度（P1 task-7）：penalty 留空 = 保留原值（服务端缺省 0.3）；
+              // 形状校验在 validateOverride，[0,0.9] clamp 在 parseConfig。
+              importancePenalty: {
+                enabled: draft.ipEnabled,
+                shadowMode: draft.ipShadow,
+                ...(draft.ipPenalty.trim() ? { penalty: Number(draft.ipPenalty) } : {}),
+              },
+              worthiness: {
+                extractionEnabled: draft.wExtractionEnabled,
+              },
             }
           : {}),
       };
@@ -217,6 +236,9 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
   const numPos = (v: string) => !v || (/^\d+$/.test(v) && Number(v) > 0);
   // minScore 允许负数/小数（缺省 -2.0）
   const decimal = (v: string) => !v || /^-?\d+(\.\d+)?$/.test(v);
+  // P1-T7：penalty 允许小数且 ≤ 0.9（服务端 clamp [0,0.9]；越界直接拦）
+  const ipPenaltyValid =
+    !draft.ipPenalty || (/^\d*\.?\d+$/.test(draft.ipPenalty) && Number(draft.ipPenalty) <= 0.9);
   const rerankCloud = isMemory && (draft.rkProvider === 'siliconflow' || draft.rkProvider === 'dashscope');
   const rerankLocal = isMemory && draft.rkProvider === 'local';
   // 云端 + 启用但无 key（新输入且服务端也没有）→ 与 parseConfig「云端缺 apiKey =
@@ -238,6 +260,7 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
           (!draft.rkBaseUrl || /^https?:\/\/.+$/.test(draft.rkBaseUrl))
         : true) &&
         (rerankLocal ? num(draft.rkIdleUnloadMs) : true) &&
+        ipPenaltyValid &&
         !rerankNeedsApiKey));
 
   const triggerRevectorize = () => {
@@ -484,6 +507,69 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
                 {rerankDl?.state === 'failed' && rerankDl.error ? (
                   <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#e34d59' }}>{rerankDl.error}</Text>
                 ) : null}
+              </Form.Item>
+            </>
+          )}
+
+          {/* 重要度（P1 task-7）：抽取标注 + 召回降权（shadow-first） */}
+          <Form.Title>{t('settings.importance.title')}</Form.Title>
+          <Form.Item label={t('settings.importance.extraction')}>
+            <div>
+              <Checkbox
+                value={draft.wExtractionEnabled}
+                onChange={(v) => setDraft({ ...draft, wExtractionEnabled: v })}
+                disabled={saving}
+              >
+                {t('settings.importance.extraction.label')}
+              </Checkbox>
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                {t('settings.importance.extraction.hint')}
+              </Text>
+            </div>
+          </Form.Item>
+          <Form.Item label={t('settings.importance.penalty.enabled')}>
+            <div>
+              <Checkbox
+                value={draft.ipEnabled}
+                onChange={(v) => setDraft({ ...draft, ipEnabled: v })}
+                disabled={saving}
+              >
+                {t('settings.importance.penalty.enabled.label')}
+              </Checkbox>
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                {t('settings.importance.penalty.enabled.hint')}
+              </Text>
+            </div>
+          </Form.Item>
+          {draft.ipEnabled && (
+            <>
+              <Form.Item label={t('settings.importance.penalty.value')}>
+                <div>
+                  <Input
+                    size="full"
+                    value={draft.ipPenalty}
+                    onChange={(v) => setDraft({ ...draft, ipPenalty: v })}
+                    placeholder="0.3"
+                    disabled={saving}
+                  />
+                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                    {t('settings.importance.penalty.value.hint')}
+                  </Text>
+                </div>
+              </Form.Item>
+              <Form.Item label={t('settings.importance.penalty.shadow')}>
+                <div>
+                  <Checkbox
+                    value={draft.ipShadow}
+                    onChange={(v) => setDraft({ ...draft, ipShadow: v })}
+                    disabled={saving}
+                  >
+                    {t('settings.importance.penalty.shadow.label')}
+                  </Checkbox>
+                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                    {t('settings.importance.penalty.shadow.hint')}
+                  </Text>
+                </div>
               </Form.Item>
             </>
           )}

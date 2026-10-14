@@ -117,6 +117,8 @@ export interface ChatMemoryLayerItem {
   timestamp_end?: string;
   /** D-3：敏感性枚举（内核 atomic/query 已返回；缺省 = 上游未返回） */
   sensitivity?: string;
+  /** P1-T7：重要度 1-10（LLM 标注或人工调整；缺省 = 未评分 NULL，不渲染） */
+  importance?: number;
 }
 
 /** L1 语义搜索命中项：在分层条目基础上附带相关度 score（越大越相关） */
@@ -315,6 +317,26 @@ export const chatMemoryApi = {
       ...(params.id ? { id: params.id } : {}),
       content: params.content,
       ...(params.summary !== undefined ? { summary: params.summary } : {}),
+    }),
+
+  /** P1-T7：人工重要度调整（Owner-only）。网关追加 metadata.importance_source='manual'
+   *  + importance_manual_reason（LLM 的 importance_reason 不覆写）；内容不变不重算 embedding。 */
+  adjustImportance: (
+    blockId: string,
+    id: string,
+    importance: number,
+    reason?: string,
+  ) =>
+    chatMemoryCall<{
+      id?: string;
+      importance?: number;
+      importance_source?: string;
+      version?: string;
+    }>('importance', {
+      block_id: blockId,
+      id,
+      importance,
+      ...(reason && reason.trim() !== '' ? { reason: reason.trim() } : {}),
     }),
 
   /** 分层语义 / 关键字搜索（agent 维度跨 session 召回，命中项带 score）：

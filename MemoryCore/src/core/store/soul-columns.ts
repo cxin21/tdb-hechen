@@ -12,6 +12,10 @@ export const SOUL_COLUMNS = [
   // D-3（2026-09-21，用户拍板"全做"）：敏感性枚举 none/health/finance/relationship（缺省 none）。
   // 消费方=召回降权门（sensitivityPenalty）/遗忘敏感偏置（sensitivityBias）/注入行徽章/UI 属性表。
   { name: "sensitivity", sqlType: "TEXT", ftsSuffix: "UNINDEXED" },
+  // P1-T7（2026-10-13，worthiness importance，spec §6）：LLM/人工 importance 1-10。
+  // TINYINT 无 DEFAULT → 旧库既有行 NULL = 未评分 = 永不降权（宁缺毋滥，不伪造默认分）。
+  // 消费方=召回降权门（importancePenalty）/panel L1 详情/manual adjust 路由。
+  { name: "importance", sqlType: "TINYINT", ftsSuffix: "UNINDEXED" },
 ] as const;
 export type SoulColumnName = (typeof SOUL_COLUMNS)[number]["name"];
 export const SOUL_COL_NAMES: SoulColumnName[] = SOUL_COLUMNS.map((c) => c.name);

@@ -138,6 +138,13 @@ export interface RecallConfig {
   inferredPenalty: number;
   /** D-3：敏感性召回降权乘子（R11，clamp [0,1]；缺省 0=关断恒等）。 */
   sensitivityPenalty: number;
+  /**
+   * P1-T7（worthiness importance，spec §6）：importance 降权嵌套组。
+   * 缺省 enabled:false = 零行为变化；shadowMode 缺省 true = 只写 journal 观测
+   * （raw vs penalized 双分量），不改排序；penalty 缺省 0.3、clamp [0,0.9]
+   * （1 会把 ≤4 的记忆乘成 0 分沉底，spec 拍板不许；enabled 且 !shadowMode 才真正改排序）。
+   */
+  importancePenalty: { enabled: boolean; penalty: number; shadowMode: boolean };
   reinforcementWeight: number;
   moodBoost: number;
   /**
@@ -794,6 +801,11 @@ export interface MemoryTdaiConfig {
   sensitivity: {
     extractionEnabled: boolean;
   };
+  /** P1-T7（2026-10-13，worthiness importance）：写入面 gate——缺省 false =
+   *  抽取 prompt 字节不变（LLM 不产出 importance 字段），逐位现状（D-3 镜像）。 */
+  worthiness: {
+    extractionEnabled: boolean;
+  };
   /**
    * Optional Skill module config. Pass-through to `resolveSkillConfig()` at
    * the host wiring layer; defaults are applied there. When absent, the
@@ -1325,6 +1337,16 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       inferredPenalty: recallSignalBoost(recallGroup, "inferredPenalty", 0.1, 1),
       // D-3（2026-09-21）：敏感性召回降权乘子（R11）——缺省 0=关断恒等（逐位现状）。
       sensitivityPenalty: recallSignalBoost(recallGroup, "sensitivityPenalty", 0, 1),
+      // P1-T7（worthiness importance，spec §6）：importance 降权嵌套组（queryExpansion IIFE 先例）。
+      // 缺省 enabled false + shadowMode true = 零行为变化（journal 双分量观测-only）。
+      importancePenalty: (() => {
+        const ip = obj(recallGroup, "importancePenalty");
+        return {
+          enabled: bool(ip, "enabled") ?? false,
+          penalty: recallSignalBoost(ip, "penalty", 0.3, 0.9),
+          shadowMode: bool(ip, "shadowMode") ?? true,
+        };
+      })(),
       reinforcementWeight: recallSignalBoost(recallGroup, "reinforcementWeight", 0.03),
       moodBoost: recallSignalBoost(recallGroup, "moodBoost", 0),
       // R-A2（spec §2 R4/R6）：候选池通道开关（clamp 模式；graph 两旋钮为比值 clamp [0,1]）
@@ -1538,6 +1560,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     // D-3：敏感性标注门（yaml memory.sensitivity.extractionEnabled；缺省 false）
     sensitivity: {
       extractionEnabled: bool((c.sensitivity ?? {}) as Record<string, unknown>, "extractionEnabled") ?? false,
+    },
+    // P1-T7：worthiness importance 写入面门（yaml memory.worthiness.extractionEnabled；
+    // 缺省 false = 抽取 prompt 字节不变，LLM 不产出 importance 字段，逐位现状）
+    worthiness: {
+      extractionEnabled: bool((c.worthiness ?? {}) as Record<string, unknown>, "extractionEnabled") ?? false,
     },
     // Skill: passthrough — let the host wiring call resolveSkillConfig() with
     // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply

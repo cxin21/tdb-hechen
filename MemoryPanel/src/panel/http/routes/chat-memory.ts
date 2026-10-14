@@ -2593,6 +2593,79 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   );
 
   // ==========================================================================
+  // POST /chat-memory/importance
+  //   body: { block_id, id /* L1 记录主键 */, importance /* 1-10 整数 */, reason? }
+  //
+  // P1 task-7：人工重要度调整透传 → 网关 /v3/atomic/importance。
+  // 数据面 mutation：Owner-only（与 layer-update / archive-restore 同口径）。
+  // 网关侧追加语义：metadata.importance_source='manual' + importance_manual_reason
+  // 追加（LLM 的 importance_reason 不覆写）；content 不变 → 不重算 embedding。
+  // ==========================================================================
+  api.post(
+    "/chat-memory/importance",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      const recordId = typeof body?.id === "string" ? body.id.trim() : "";
+      const importance = body?.importance;
+      const reason = typeof body?.reason === "string" ? body.reason.trim() : undefined;
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+      if (!recordId) return respondControlError(c, 400, "MISSING_ID");
+      if (typeof importance !== "number" || !Number.isInteger(importance) || importance < 1 || importance > 10) {
+        return respondControlError(c, 400, "INVALID_IMPORTANCE");
+      }
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      // 用户自建 UserAsset（mem-xxx）没有关联 agent，没有数据面可调。
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      if (asset.owner_user_id !== meUserId)
+        return respondControlError(c, 403, "NOT_ASSET_OWNER");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      try {
+        const env = await deps.kernelHttp.postEnvelope<unknown>(
+          "/v3/atomic/importance",
+          {
+            team_id: parsed.teamId,
+            agent_id: parsed.agentId,
+            user_id: asset.owner_user_id,
+            session_id: "default",
+            id: recordId,
+            importance,
+            ...(reason ? { reason } : {}),
+          },
+          cred,
+        );
+        return respondEnvelope(c, env);
+      } catch (err) {
+        return respondControlError(
+          c,
+          500,
+          `IMPORTANCE_UPDATE_FAILED: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+  );
+
+  // ==========================================================================
   // POST /chat-memory/neighbors
   //   body: { block_id, id /* 某条 L1 记录主键 */, types?, maxHop?, maxN? }
   //

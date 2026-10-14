@@ -1232,6 +1232,9 @@ export class TdaiGateway {
             // rerank 生效值（P1 task-4）：override 合并发生在 parseMemoryConfig 之前
             // （gateway/config.ts rerank 注入块），因此这里读到的已是 override 后值。
             rerank: this.config.memory.recall.rerank as unknown as Record<string, unknown>,
+            // P1 task-7：重要度降权/抽取开关生效值（同为 parse 前合并 → 已是 override 后值）
+            importancePenalty: this.config.memory.recall.importancePenalty as unknown as Record<string, unknown>,
+            worthiness: this.config.memory.worthiness as unknown as Record<string, unknown>,
           }),
           getReindexState: () => getReindexState(),
         }),

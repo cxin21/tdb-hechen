@@ -31,10 +31,26 @@ export interface RerankSettingsOverride {
   shadowMode?: boolean;
   local?: { modelDir?: string; idleUnloadMs?: number };
 }
+/**
+ * importancePenalty 段（P1 task-7，keys：memory.recall.importancePenalty.*）。
+ * 字段语义与 MemoryCore/src/config.ts parseConfig 的 importancePenalty 块一致；
+ * clamp（penalty [0,0.9]）在 parse 落地，这里只做形状校验。
+ */
+export interface ImportancePenaltySettingsOverride {
+  enabled?: boolean;
+  penalty?: number;
+  shadowMode?: boolean;
+}
+/** worthiness 段（P1 task-7，keys：memory.worthiness.extractionEnabled）。 */
+export interface WorthinessSettingsOverride {
+  extractionEnabled?: boolean;
+}
 export interface SettingsOverride {
   llm?: LlmSettingsOverride;
   embedding?: EmbeddingSettingsOverride;
   rerank?: RerankSettingsOverride;
+  importancePenalty?: ImportancePenaltySettingsOverride;
+  worthiness?: WorthinessSettingsOverride;
 }
 
 const OVERRIDE_FILE = "config-override.json";
@@ -165,6 +181,30 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
     }
     if (Object.keys(rk).length) out.rerank = rk;
   }
+  if (b.importancePenalty) {
+    const ip: ImportancePenaltySettingsOverride = {};
+    for (const boolField of ["enabled", "shadowMode"] as const) {
+      if (b.importancePenalty[boolField] !== undefined) {
+        if (typeof b.importancePenalty[boolField] === "boolean") ip[boolField] = b.importancePenalty[boolField];
+        else errors.push(`importancePenalty.${boolField} 必须是 boolean`);
+      }
+    }
+    if (b.importancePenalty.penalty !== undefined) {
+      const n = Number(b.importancePenalty.penalty);
+      // 范围 clamp（[0,0.9]）在 parseConfig（recallSignalBoost）落地，这里只校验形状
+      if (Number.isFinite(n)) ip.penalty = n;
+      else errors.push("importancePenalty.penalty 必须是数字");
+    }
+    if (Object.keys(ip).length) out.importancePenalty = ip;
+  }
+  if (b.worthiness) {
+    const w: WorthinessSettingsOverride = {};
+    if (b.worthiness.extractionEnabled !== undefined) {
+      if (typeof b.worthiness.extractionEnabled === "boolean") w.extractionEnabled = b.worthiness.extractionEnabled;
+      else errors.push("worthiness.extractionEnabled 必须是 boolean");
+    }
+    if (Object.keys(w).length) out.worthiness = w;
+  }
   if (errors.length) return { ok: false, errors };
   return { ok: true, value: out };
 }
@@ -194,5 +234,44 @@ export function applyRerankOverrideToRaw(
   }
   recallRaw.rerank = rerankRaw;
   next.recall = recallRaw;
+  return next;
+}
+
+/**
+ * importancePenalty override 注入 memory 段原始配置（P1 task-7）。必须在
+ * parseConfig 之前并入：enabled/penalty clamp/shadowMode 缺省语义全部在
+ * parseConfig 的 importancePenalty 块内（MemoryCore/src/config.ts），parse 后
+ * 再合并会绕过这些不变量。返回新对象，不改入参；override 为空时原样返回。
+ */
+export function applyImportancePenaltyOverrideToRaw(
+  memoryCompatRaw: Record<string, unknown>,
+  override: ImportancePenaltySettingsOverride | undefined,
+): Record<string, unknown> {
+  const picked = pickDefined(override);
+  if (!override || Object.keys(picked).length === 0) return memoryCompatRaw;
+  const next: Record<string, unknown> = { ...memoryCompatRaw };
+  const recallRaw = { ...((next.recall as Record<string, unknown> | undefined) ?? {}) };
+  const ipRaw = { ...((recallRaw.importancePenalty as Record<string, unknown> | undefined) ?? {}) };
+  Object.assign(ipRaw, picked);
+  recallRaw.importancePenalty = ipRaw;
+  next.recall = recallRaw;
+  return next;
+}
+
+/**
+ * worthiness override 注入 memory 段原始配置（P1 task-7，parse 前合并——
+ * extractionEnabled 缺省 false 语义在 parseConfig）。返回新对象，不改入参；
+ * override 为空时原样返回。
+ */
+export function applyWorthinessOverrideToRaw(
+  memoryCompatRaw: Record<string, unknown>,
+  override: WorthinessSettingsOverride | undefined,
+): Record<string, unknown> {
+  const picked = pickDefined(override);
+  if (!override || Object.keys(picked).length === 0) return memoryCompatRaw;
+  const next: Record<string, unknown> = { ...memoryCompatRaw };
+  const wRaw = { ...((next.worthiness as Record<string, unknown> | undefined) ?? {}) };
+  Object.assign(wRaw, picked);
+  next.worthiness = wRaw;
   return next;
 }

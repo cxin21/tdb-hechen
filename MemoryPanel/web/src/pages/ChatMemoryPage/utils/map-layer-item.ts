@@ -42,6 +42,8 @@ export function mapLayerItem(i: ChatMemoryLayerItem) {
     timestamp_end: i.timestamp_end,
     // D-3：敏感性枚举透传
     sensitivity: i.sensitivity,
+    // P1-T7：重要度透传（缺省 = 未评分 NULL）
+    importance: i.importance,
     // L1 metadata 透传（价值锚 coreRefs / 回忆统计 recall_count）
     metadata: i.metadata,
   };

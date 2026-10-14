@@ -34,6 +34,8 @@ export interface RankSignalItem {
   scene_name?: string | null;
   /** D-3：敏感性枚举（none/health/finance/relationship；缺省 none=无降权）。 */
   sensitivity?: string;
+  /** P1-T7（worthiness）：LLM/人工 importance 1-10（NULL/缺省=未评分，永不降权——宁缺毋滥）。 */
+  importance?: number | null;
   /** D-4：周期性事实（normalize 形状；kwSoul/soul 源透传，徽章链消费）。 */
   recurrence?: { cadence: string; anchor: string | null; note: string } | null;
   /** V6-1a：唤醒度（kw 路 soul 源透传，徽章链消费；排序信号不动——批次四 A/B 裁决）。 */
@@ -62,6 +64,8 @@ export interface RankSignals {
   emotionSalienceWeight: number;
   /** D-3（R11）：敏感记忆 rankKey 乘法降权（缺省 0=关断恒等）。 */
   sensitivityPenalty: number;
+  /** P1-T7（worthiness）：importance ≤ 4 记忆 rankKey 乘法降权（缺省 0=关断恒等；spec §6）。 */
+  importancePenalty: number;
 }
 
 export const DEFAULT_RANK_SIGNALS: RankSignals = {
@@ -73,6 +77,7 @@ export const DEFAULT_RANK_SIGNALS: RankSignals = {
   moodBoost: 0,
   emotionSalienceWeight: 0,
   sensitivityPenalty: 0,
+  importancePenalty: 0,
 };
 
 /** 全 0 常量：关断矩阵锚点（结构上即"所有通道退出"）。 */
@@ -85,6 +90,7 @@ export const ZERO_RANK_SIGNALS: RankSignals = {
   moodBoost: 0,
   emotionSalienceWeight: 0,
   sensitivityPenalty: 0,
+  importancePenalty: 0,
 };
 
 const DAY_MS = 86_400_000;
@@ -172,6 +178,86 @@ export function sensitivityMultiplierOf(item: RankSignalItem, penalty: number): 
   if (!(penalty > 0)) return 1;
   const s = item.sensitivity;
   return s && s !== "none" ? 1 - penalty : 1;
+}
+
+/**
+ * P1-T7（worthiness，spec §6）：importance 乘法降权乘子——importance ≤ 4 的记忆 rankKey 乘
+ * (1 - penalty)。penalty=0 → 恒 1（缺省关断=逐位现状）；NULL/undefined（未评分）→ 恒 1
+ * （宁缺毋滥：没评过分 ≠ 低分，绝不罚）；> 4 → 1。
+ */
+export function importanceMultiplierOf(item: RankSignalItem, penalty: number): number {
+  if (!(penalty > 0)) return 1;
+  const imp = item.importance;
+  return typeof imp === "number" && Number.isFinite(imp) && imp <= 4 ? 1 - penalty : 1;
+}
+
+/**
+ * P1-T7（worthiness）：importance 降权观测 gate 统计（journal 双分量，纯函数）。
+ * 输入行 rrfScore 为该行 RRF 原始分、mult 为【不含 importance 分量】的确定性乘子。
+ *  - shadow 模式（mult 不含 importance）：rawScore = rrfScore × mult；
+ *    penalizedScore = rawScore × (1 - penalty)（仅统计，不改排序）。
+ *  - active 模式（调用方已把 importance 乘进 mult）：penalizedScore = rrfScore × mult；
+ *    rawScore = penalizedScore / (1 - penalty)（penalty clamp < 1 由 config 层保证，不除 0）。
+ * topChanged = argmax(raw) 行 ≠ argmax(penalized) 行（同分取首个；空池恒 false）。
+ */
+export interface ImportanceGateStatInput {
+  rrfScore: number;
+  mult: number;
+  importance?: number | null;
+}
+
+export interface RecallJournalImportanceGateSpec {
+  penalty: number;
+  mode: "shadow" | "active";
+}
+
+export interface RecallJournalImportanceGate extends RecallJournalImportanceGateSpec {
+  items: number;
+  penalized: number;
+  topRaw?: number;
+  topPenalized?: number;
+  topChanged: boolean;
+}
+
+export function importanceGateStats(
+  rows: ReadonlyArray<ImportanceGateStatInput>,
+  spec: RecallJournalImportanceGateSpec,
+): RecallJournalImportanceGate {
+  const factor = 1 - spec.penalty;
+  let items = 0;
+  let penalized = 0;
+  let topRaw = -Infinity;
+  let topRawIdx = -1;
+  let topPen = -Infinity;
+  let topPenIdx = -1;
+  rows.forEach((row, i) => {
+    items += 1;
+    const counted =
+      typeof row.importance === "number" && Number.isFinite(row.importance) && row.importance <= 4;
+    if (counted) penalized += 1;
+    // shadow：mult 不含 importance → raw=rrf×mult，penalized 仅对 ≤4 行乘 (1-penalty)；
+    // active：mult 已含 importance → penalized=rrf×mult，raw 仅对 ≤4 行除回 (1-penalty)。
+    // 未评分（NULL）行 raw = penalized（两口径同分——宁缺毋滥）。
+    const raw = spec.mode === "shadow" ? row.rrfScore * row.mult : counted ? (row.rrfScore * row.mult) / factor : row.rrfScore * row.mult;
+    const pen = spec.mode === "shadow" ? (counted ? row.rrfScore * row.mult * factor : row.rrfScore * row.mult) : row.rrfScore * row.mult;
+    if (raw > topRaw) {
+      topRaw = raw;
+      topRawIdx = i;
+    }
+    if (pen > topPen) {
+      topPen = pen;
+      topPenIdx = i;
+    }
+  });
+  const has = items > 0;
+  return {
+    mode: spec.mode,
+    penalty: spec.penalty,
+    items,
+    penalized,
+    ...(has ? { topRaw, topPenalized: topPen } : {}),
+    topChanged: has && topRawIdx !== topPenIdx,
+  };
 }
 
 // ============================

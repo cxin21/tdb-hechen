@@ -38,7 +38,7 @@ function recurrenceText(v: unknown): string | null {
   return null;
 }
 
-export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
+export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem; blockId?: string }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -60,6 +60,31 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
       .then((r) => setEvItems(r.items))
       .catch((e) => setEvError(e instanceof Error ? e.message : String(e)));
   }, [evOpen, evItems, item.id, evIds]);
+
+  // P1-T7：人工重要度调整（Owner-only）。追加语义由网关保证——
+  // metadata.importance_source='manual' + importance_manual_reason，llm 评语不覆写。
+  const [impValue, setImpValue] = useState(item.importance !== undefined ? String(item.importance) : '');
+  const [impReason, setImpReason] = useState('');
+  const [impBusy, setImpBusy] = useState(false);
+  const [impMsg, setImpMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const submitImportance = () => {
+    if (!blockId) {
+      setImpMsg({ ok: false, text: '缺少 block 上下文，无法调整' });
+      return;
+    }
+    const v = Number(impValue);
+    if (!Number.isInteger(v) || v < 1 || v > 10) {
+      setImpMsg({ ok: false, text: '重要度需为 1-10 的整数' });
+      return;
+    }
+    setImpBusy(true);
+    setImpMsg(null);
+    chatMemoryApi
+      .adjustImportance(blockId, item.id, v, impReason.trim() === '' ? undefined : impReason.trim())
+      .then(() => setImpMsg({ ok: true, text: `已调整为 ${v}（source=manual，重新打开属性后生效）` }))
+      .catch((e) => setImpMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }))
+      .finally(() => setImpBusy(false));
+  };
 
   const rows = useMemo<Row[]>(() => {
     const meta = (item.metadata ?? {}) as Record<string, unknown>;
@@ -95,6 +120,11 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
     push('timestamp_end', item.timestamp_end);
     // D-3：敏感性枚举（none/health/finance/relationship）
     push('sensitivity', item.sensitivity);
+    // P1-T7：重要度（LLM 标注 1-10 或人工调整；NULL=未评分 不渲染）
+    push('importance', item.importance);
+    push('importance_reason（llm）', meta.importance_reason);
+    push('importance_manual_reason', meta.importance_manual_reason);
+    push('importance_source', meta.importance_source);
     push('recall_count', meta.recall_count);
     push('last_recalled_at', meta.last_recalled_at);
     push('subject', meta.subject);
@@ -156,7 +186,41 @@ export function AttributesSection({ item }: { item: ChatMemoryLayerItem }) {
                   <span className="_attr-val">{r.v}</span>
                 </div>
               ))}
-            </div>
+              </div>
+              {/* P1-T7：人工重要度调整（追加语义；≤4 召回降权） */}
+              <div className="_imp-form" style={{ marginTop: 12, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 12 }}>
+                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.75 }}>
+                  人工重要度调整（1-10 整数；≤4 召回降权 · source=manual，不改 llm 评语）
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={impValue}
+                    onChange={(e) => setImpValue(e.target.value)}
+                    style={{ width: 72 }}
+                    aria-label="重要度"
+                  >
+                    <option value="">未评</option>
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={impReason}
+                    onChange={(e) => setImpReason(e.target.value)}
+                    placeholder="调整理由（可选，追加记录）"
+                    style={{ flex: 1, minWidth: 160 }}
+                    aria-label="调整理由"
+                  />
+                  <Button type="primary" disabled={impBusy} onClick={submitImportance}>
+                    {impBusy ? '提交中…' : '调整'}
+                  </Button>
+                </div>
+                {impMsg && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: impMsg.ok ? '#2e7d32' : '#c62828' }}>
+                    {impMsg.text}
+                  </div>
+                )}
+              </div>
             {evIds.length > 0 && (
               <div className="_ev-drawer">
                 <button type="button" className="_ev-toggle" aria-expanded={evOpen} onClick={() => setEvOpen(!evOpen)}>

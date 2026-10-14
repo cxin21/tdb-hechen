@@ -53,10 +53,27 @@ export interface SettingsRerank {
   [k: string]: unknown;
 }
 
+/** P1-T7：memory.recall.importancePenalty.*（重要度召回降权，shadow-first）+ memory.worthiness.extractionEnabled（L1 抽取标注开关）。 */
+export interface SettingsImportancePenalty {
+  enabled?: boolean;
+  penalty?: number;
+  shadowMode?: boolean;
+  source?: 'env' | 'override' | 'yaml';
+  [k: string]: unknown;
+}
+
+export interface SettingsWorthiness {
+  extractionEnabled?: boolean;
+  source?: 'env' | 'override' | 'yaml';
+  [k: string]: unknown;
+}
+
 export interface SettingsView {
   llm: SettingsLlm;
   embedding: SettingsEmbedding;
   rerank?: SettingsRerank;
+  importancePenalty?: SettingsImportancePenalty;
+  worthiness?: SettingsWorthiness;
   rebuildStatus?: {
     status: 'idle' | 'running' | 'done' | 'failed';
     reason?: string;

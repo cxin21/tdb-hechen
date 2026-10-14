@@ -7,7 +7,7 @@
  */
 import { errorEnvelope, successEnvelope } from "./v2-router.js";
 import type { ApiResponseEnvelope, V2AuthContext } from "./v2-schemas.js";
-import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, type SettingsOverride, type RerankSettingsOverride } from "./settings-override.js";
+import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, type SettingsOverride, type RerankSettingsOverride, type ImportancePenaltySettingsOverride, type WorthinessSettingsOverride } from "./settings-override.js";
 import type { ReindexState } from "../utils/reindex-state.js";
 
 export interface EffectiveSettings {
@@ -15,6 +15,10 @@ export interface EffectiveSettings {
   embedding: Record<string, unknown>;
   /** P1 task-4：rerank 生效值（parseMemoryConfig 输出的 memory.recall.rerank）。 */
   rerank?: Record<string, unknown>;
+  /** P1 task-7：重要度降权生效值（parseMemoryConfig 输出的 memory.recall.importancePenalty）。 */
+  importancePenalty?: Record<string, unknown>;
+  /** P1 task-7：重要度抽取开关生效值（memory.worthiness.extractionEnabled）。 */
+  worthiness?: Record<string, unknown>;
 }
 export interface AdminSettingsDeps {
   baseDir: string;
@@ -36,7 +40,19 @@ function deepMerge(existing: SettingsOverride | null, incoming: SettingsOverride
     // rerank（P1 task-4）：local 子对象做一层深合并，避免「只改 idleUnloadMs
     // 时把已保存的 modelDir 整个冲掉」；顶层字段仍按段浅合并（与 llm/embedding 一致）。
     rerank: mergeRerankOverride(existing?.rerank, incoming.rerank),
+    // P1 task-7：扁平段浅合并（无嵌套子对象——与局部 set 不冲掉已存字段同语义）
+    importancePenalty: mergeFlatOverride<ImportancePenaltySettingsOverride>(existing?.importancePenalty, incoming.importancePenalty),
+    worthiness: mergeFlatOverride<WorthinessSettingsOverride>(existing?.worthiness, incoming.worthiness),
   };
+}
+
+/** P1 task-7：扁平段（无子对象）浅合并——双方都空 → undefined。 */
+function mergeFlatOverride<T extends object>(
+  existing: T | undefined,
+  incoming: T | undefined,
+): T | undefined {
+  if (!existing && !incoming) return undefined;
+  return { ...(existing ?? ({} as T)), ...(incoming ?? ({} as T)) };
 }
 
 function mergeRerankOverride(
@@ -84,6 +100,15 @@ export function makeAdminSettingsRouteTable(deps: AdminSettingsDeps): Record<str
           llm: maskedSection(eff.llm, override?.llm as Record<string, unknown> | undefined),
           embedding: maskedSection(eff.embedding, override?.embedding as Record<string, unknown> | undefined),
           rerank: maskedSection(mergedRerank, undefined, Boolean(ovRerank)),
+          // P1 task-7：重要度降权 / worthiness 开关段（无 secret，直接掩码语义合并）
+          importancePenalty: maskedSection(
+            eff.importancePenalty ?? {},
+            override?.importancePenalty as Record<string, unknown> | undefined,
+          ),
+          worthiness: maskedSection(
+            eff.worthiness ?? {},
+            override?.worthiness as Record<string, unknown> | undefined,
+          ),
           // 与 KS 侧 /get 的 rebuildStatus 及 Panel Web SettingsView 字段名对齐（终审 F2）。
           rebuildStatus: deps.getReindexState(),
         },

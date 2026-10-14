@@ -203,7 +203,7 @@ function AtomicHead({
           行为不变、渲染重排（补 valence 双色条/强度·重要性进度条/有效期/上次回忆）。 */}
       <SoulSection soul={buildSoulView(item)} durative={item.title === 'work_fact'} />
       {/* UI 2.0 Phase 2（拍板③）：19 列属性表（可得字段全透传，缺列诚实；折叠段宁缺毋滥） */}
-      {layer === 'L1' ? <AttributesSection item={item} /> : null}
+      {layer === 'L1' ? <AttributesSection item={item} blockId={blockId} /> : null}
       {blockId && layer === 'L1' ? <RelatedSection blockId={blockId} itemId={item.id} /> : null}
       <span className="_memory-detail-atomic-head-right">
         {time && (

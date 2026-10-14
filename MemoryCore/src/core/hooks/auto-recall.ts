@@ -40,14 +40,18 @@ import {
 import { PPR_DEFAULTS, runPPRDetail } from "../recall/ppr.js";
 import { emotionSalienceOf, buildRankContext,
   certaintyMultiplierOf,
+  importanceMultiplierOf,
+  importanceGateStats,
   sensitivityMultiplierOf,
   DEFAULT_RANK_SIGNALS,
   detectSceneHit,
   sceneSignalOf,
   structuralSignalOf,
   ZERO_RANK_SIGNALS,
+  type ImportanceGateStatInput,
   type RankSignalItem,
   type RankSignals,
+  type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isInvalidated } from "../recall/filter-invalidated.js";
 import { appendRecallJournal, type RecallJournalGates } from "../recall/recall-journal.js";
@@ -235,6 +239,13 @@ export interface RecallRankSignal extends RecallCoreRefSignal {
   };
   /** R-A2（R6）：场景路由加成（tiebreak 层；0/缺省 = 关）。 */
   sceneBoost?: number;
+  /**
+   * P1-T7（worthiness importance）：重要度降权门参数透传——searchHybrid 据此
+   * ①在 active 模式消费 signals.importancePenalty（乘子入 mult，平局组内生效）；
+   * ②两种模式都产出 gates.importancePenalty 双分量影子日志（raw vs penalized）。
+   * 缺省 undefined = 门未启用 = 无 gates 字段（缺字段=门未启用口径）。
+   */
+  importanceGate?: RecallJournalImportanceGateSpec;
 }
 
 export interface RecallResult {
@@ -776,6 +787,11 @@ export async function performLayeredRecall(params: {
       // 失败 / 无价值锚 / appraise 无 fired → 对应信号为零（全链旧行为）。
       const coreRefBoost = cfg.recall?.coreRefBoost ?? 0.05;
       // R-A1 六开关（cfg.recall 解析见 src/config.ts；缺省 = spec §2 默认值）
+      // P1-T7：重要度降权门（shadow=仅观测不入乘子；active=入乘子）。缺省关断=恒等。
+      const importanceGateCfg = cfg.recall?.importancePenalty;
+      const importanceGate: RecallJournalImportanceGateSpec | undefined = importanceGateCfg?.enabled
+        ? { penalty: importanceGateCfg.penalty, mode: importanceGateCfg.shadowMode ? "shadow" : "active" }
+        : undefined;
       const signals: RankSignals = {
         timeBoost: cfg.recall?.timeBoost ?? DEFAULT_RANK_SIGNALS.timeBoost,
         recencyBoost: cfg.recall?.recencyBoost ?? DEFAULT_RANK_SIGNALS.recencyBoost,
@@ -786,6 +802,8 @@ export async function performLayeredRecall(params: {
         emotionSalienceWeight: cfg.recall?.emotionSalienceWeight ?? DEFAULT_RANK_SIGNALS.emotionSalienceWeight,
         // D-3：敏感性降权（缺省 0=关断恒等）
         sensitivityPenalty: cfg.recall?.sensitivityPenalty ?? DEFAULT_RANK_SIGNALS.sensitivityPenalty,
+        // P1-T7：重要度降权（仅 active 入乘子；shadow 恒 0=排序逐位不变）
+        importancePenalty: importanceGate?.mode === "active" ? importanceGate.penalty : 0,
       };
       const signalsActive =
         signals.timeBoost > 0 ||
@@ -795,14 +813,16 @@ export async function performLayeredRecall(params: {
         signals.reinforcementWeight > 0 ||
         signals.moodBoost > 0 ||
         signals.emotionSalienceWeight > 0 ||
-        signals.sensitivityPenalty > 0;
+        signals.sensitivityPenalty > 0 ||
+        signals.importancePenalty > 0;
       const needValues = coreRefBoost > 0 || signals.moodBoost > 0;
       // R-A2：候选池通道开关（cfg.recall；缺省 = spec §2 默认值，0 = 通道退出）
       const graphDiscount = cfg.recall?.graphDiscount ?? 0.6;
       const graphMinStrength = cfg.recall?.graphMinStrength ?? 0.5;
       const sceneBoost = cfg.recall?.sceneBoost ?? 0.04;
       let rank: RecallRankSignal | undefined;
-      if (effectiveStrategy === "hybrid" && vectorStore && (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0)) {
+      // P1-T7：shadow 模式即使信号全 0 也要建 rank（gate 行采集 = 影子日志前提）
+      if (effectiveStrategy === "hybrid" && vectorStore && (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0 || importanceGate !== undefined)) {
         const { firedLabels, moodSign } = needValues
           ? await computeRecallValueSignals(sanitizeText(userText), vectorStore, params.profileIsolation, logger)
           : { firedLabels: [] as string[], moodSign: 0 };
@@ -824,6 +844,8 @@ export async function performLayeredRecall(params: {
             pprIterations: cfg.recall?.pprIterations,
           },
           sceneBoost,
+          // P1-T7：重要度降权门参数（searchHybrid 消费：active 入乘子 + 双模式影子日志）
+          ...(importanceGate ? { importanceGate } : {}),
         };
         if (firedLabels.length > 0) {
           logger?.debug?.(`${TAG} [coreRef-boost] fired=${JSON.stringify(firedLabels)}, boost=${coreRefBoost}`);
@@ -1742,6 +1764,8 @@ export async function searchHybrid(
         // R-A2：候选池通道（缺省 = 通道退出——legacy C5 形状不带 graph/sceneBoost）
         graph: (rank as RecallRankSignal).graph,
         sceneBoost: (rank as RecallRankSignal).sceneBoost ?? 0,
+        // P1-T7：重要度降权门（legacy C5 形状不带 = undefined = 门未启用）
+        importanceGate: (rank as RecallRankSignal).importanceGate,
       }
     : undefined;
   // Run keyword and embedding searches in parallel
@@ -1791,6 +1815,8 @@ export async function searchHybrid(
                     significance: r.significance,
                     // D-3：敏感性透传（分层候选池 soul 源——徽章/R11）
                     sensitivity: (r as { sensitivity?: string }).sensitivity,
+                    // P1-T7：重要度透传（降权乘子/影子门信号源——NULL=未评分=不罚）
+                    importance: r.importance ?? null,
                     metadata,
                     // D-4：周期性事实透传（分层候选池 soul 源——丢值点⑤同位）
                     recurrence: isRecurrenceMeta((metadata as { recurrence?: unknown } | undefined)?.recurrence)
@@ -1865,7 +1891,9 @@ export async function searchHybrid(
           signal: structuralSignalOf(src, signalCtx),
           mult:
             certaintyMultiplierOf(src, signalCtx.signals.inferredPenalty) *
-            sensitivityMultiplierOf(src, signalCtx.signals.sensitivityPenalty ?? 0),
+            sensitivityMultiplierOf(src, signalCtx.signals.sensitivityPenalty ?? 0) *
+            // P1-T7：重要度降权乘子（仅 active 模式非 0；shadow 恒 0 → 恒 1 = 排序逐位不变）
+            importanceMultiplierOf(src, signalCtx.signals.importancePenalty ?? 0),
         }
       : { signal: 0, mult: 1 };
 
@@ -1900,11 +1928,18 @@ export async function searchHybrid(
   };
 
   // Process keyword results
+  // P1-T7：影子日志行采集（rrf×mult raw / penalized 双分量；仅 rank.importanceGate 在场时消费）
+  const importanceGateRows: ImportanceGateStatInput[] = [];
   for (let rank0 = 0; rank0 < keywordResults.length; rank0++) {
     const r = keywordResults[rank0];
     const id = r.record.id;
     const rrfScore = 1 / (RRF_K + rank0 + 1);
     const { signal, mult } = structOf(r.soul);
+    importanceGateRows.push({
+      rrfScore,
+      mult,
+      importance: (r.soul as { importance?: number | null } | undefined)?.importance ?? undefined,
+    });
     const existing = mergedMap.get(id);
     if (existing) {
       existing.rrfScore += rrfScore;
@@ -1970,7 +2005,14 @@ export async function searchHybrid(
       valence: r.valence,
       significance: r.significance,
       sensitivity: (r as { sensitivity?: string }).sensitivity,
+      // P1-T7：重要度透传（降权乘子信号源——L1SearchResult.importance，NULL=不罚）
+      importance: r.importance,
       metadata: embMeta,
+    });
+    importanceGateRows.push({
+      rrfScore,
+      mult,
+      importance: r.importance ?? undefined,
     });
     const existing = mergedMap.get(id);
     if (existing) {
@@ -2284,7 +2326,17 @@ export async function searchHybrid(
         }
       }
     } catch { /* bookkeeping best-effort */ }
-    return { lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)), metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds })), timing };
+    // P1-T7：重要度降权影子日志（rank.importanceGate 在场即产出——shadow/active 双模式）。
+    // 无 gate = 缺字段 = 门未启用（journal/下游口径）；空池早退不产出（无可观测语义）。
+    const importanceGateOut = rankSignal?.importanceGate
+      ? { importancePenalty: importanceGateStats(importanceGateRows, rankSignal.importanceGate) }
+      : undefined;
+    return {
+      lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)),
+      metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds })),
+      timing,
+      ...(importanceGateOut ? { gates: importanceGateOut } : {}),
+    };
   }
 
   logger?.debug?.(`${TAG} Hybrid search: no results after merge`);

@@ -936,8 +936,9 @@ export async function executeMemorySearch(params: {
     emotionSalienceWeight = 0,
     rerankWeights,
   } = params;
-  // D-3：敏感性降权（缺省 0=关断恒等）
-  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight, sensitivityPenalty: DEFAULT_RANK_SIGNALS.sensitivityPenalty };
+  // D-3：敏感性降权（缺省 0=关断恒等）。P1-T7：importancePenalty 工具路同样缺省 0
+  // （降权只在 auto-recall hook 路由 config 承载；工具路为确定性检索，保持现状）
+  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight, sensitivityPenalty: DEFAULT_RANK_SIGNALS.sensitivityPenalty, importancePenalty: DEFAULT_RANK_SIGNALS.importancePenalty };
 
   logger?.debug?.(
     `${TAG} CALLED: query="${query.slice(0, 100)}", limit=${limit}, ` +

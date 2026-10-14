@@ -189,6 +189,20 @@ export const zhCN = {
   'settings.rerank.local.download': '下载本地模型',
   'settings.rerank.local.downloading': '下载中 {{percent}}%',
 
+  // ===== 重要度（Memory 设置页 · P1 task-7 worthiness）=====
+  'settings.importance.title': '重要度标注与召回降权（P1 task-7）',
+  'settings.importance.extraction': '抽取标注',
+  'settings.importance.extraction.label': 'L1 抽取时让 LLM 标注重要度（1-10）+ 一句评语',
+  'settings.importance.extraction.hint': '开启后随单次 LLM 调用附带标注（无第二次调用）；关闭 = 完全现状，不留痕。',
+  'settings.importance.penalty.enabled': '召回降权',
+  'settings.importance.penalty.enabled.label': '低重要度（≤4）召回降权',
+  'settings.importance.penalty.enabled.hint': '仅对重要度 ≤4 的记忆降权；未评分（NULL）永不降权。',
+  'settings.importance.penalty.value': '降权强度 (Penalty)',
+  'settings.importance.penalty.value.hint': '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。',
+  'settings.importance.penalty.shadow': '影子模式',
+  'settings.importance.penalty.shadow.label': '影子模式（只记录，不改排序）',
+  'settings.importance.penalty.shadow.hint': '影子模式 = 原始分与降权分都写入召回日志 gates.importancePenalty，但排序不变；关闭则按 penalty 实际降权。',
+
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',
   'llmProvider.desc':

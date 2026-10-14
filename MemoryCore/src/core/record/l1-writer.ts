@@ -42,6 +42,10 @@ export type MemoryType =
 export interface EpisodicMetadata {
   activity_start_time?: string; // ISO 8601
   activity_end_time?: string; // ISO 8601
+  /** P1-T7：重要度判定来源（'llm' | 'manual'）；人工判定由 /atomic/importance 写入。 */
+  importance_source?: string;
+  /** P1-T7：人工调整理由（追加语义——绝不改写 LLM 的 importance_reason，两代判定共存）。 */
+  importance_manual_reason?: string;
 }
 
 /**
@@ -116,6 +120,8 @@ export interface MemoryRecord {
   significance?: number;
   /** D-3：敏感性枚举（写入层 record 类型补齐）。 */
   sensitivity?: string;
+  /** P1-T7（worthiness）：LLM/人工 importance 1-10；undefined = 未评分（NULL 落库，永不降权——不伪造默认分）。 */
+  importance?: number | null;
 }
 
 /**
@@ -141,6 +147,8 @@ export interface ExtractedMemory {
   significance?: number;
   /** D-3：敏感性枚举（确定性门裁决后值）。 */
   sensitivity?: string;
+  /** P1-T7（worthiness）：LLM 标注 importance 1-10（gate off 时缺省 = 未评分）。 */
+  importance?: number;
 }
 
 export type DedupAction = "store" | "update" | "merge" | "skip" | "conflict";
@@ -302,6 +310,9 @@ export async function writeMemory(params: {
     significance: memory.significance,
     // D-3（2026-09-21）：敏感性随记录透传至 soulBindValues（store 按 SOUL_COL_NAMES 单源取键）
     sensitivity: memory.sensitivity,
+    // P1-T7（worthiness）：importance 透传（undefined → soulBindValues 落 NULL = 未评分；
+    // 刻意不进下方 P0 合标块——spec §6"不伪造默认分"，没评过分 ≠ 低分，永不降权）
+    importance: memory.importance,
   };
 
   // 数据可靠性兜底（确定性规则，零 LLM）：模型没吐时从 content 抽时间锚/情感/重要性，只填空字段。

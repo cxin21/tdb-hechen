@@ -56,6 +56,16 @@ export function isRecurrenceMeta(v: unknown): v is RecurrenceMeta {
   return normalizeRecurrence(v) !== undefined;
 }
 
+/**
+ * P1 Task 7（worthiness importance）：重要度确定性门（镜像 normalizeRecurrence 先例）。
+ * LLM 只提议、门裁决：有限数字 → round(clamp 1..10)（TINYINT 整数口径）；
+ * NaN/Infinity/字符串/对象/缺省 → undefined（不伪造默认分——字段缺席 = 现状 = 不罚）。
+ */
+export function normalizeImportance(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  return Math.round(Math.min(10, Math.max(1, raw)));
+}
+
 const WEEKDAY_ZH: Record<string, string> = { MON: "一", TUE: "二", WED: "三", THU: "四", FRI: "五", SAT: "六", SUN: "日" };
 /** 徽章文本：note 首选；省略时回退 cadence+anchor 中文映射。 */
 export function recurrenceLabel(rec: unknown): string | undefined {
@@ -127,6 +137,8 @@ interface SceneSegment {
     significance?: number;
     /** D-3：敏感性枚举（提取门缺省关=不输出；开启时经确定性校验）。 */
     sensitivity?: string;
+    /** P1-T7：重要度 1-10（gated memory.worthiness.extractionEnabled；确定性门 normalizeImportance）。 */
+    importance?: number;
   }>;
 }
 
@@ -331,6 +343,8 @@ export async function extractL1Memories(params: {
         significance: mem.significance,
         // D-3 确定性枚举门：仅白名单放行，非法/缺失 → none（LLM 只提议，代码裁决）
         sensitivity: normalizeSensitivity((mem as { sensitivity?: string }).sensitivity),
+        // P1-T7 确定性门：round(clamp 1..10)；非法/缺省 → undefined（不伪造默认分）
+        importance: normalizeImportance((mem as { importance?: unknown }).importance),
       });
     }
   }
@@ -615,8 +629,12 @@ async function callLlmExtraction(params: {
   const recurrenceEnabled =
     (memoryConfig as { extraction?: { recurrenceEnabled?: boolean } } | undefined)
       ?.extraction?.recurrenceEnabled === true;
+  // P1-T7：重要度标注块（gated memory.worthiness.extractionEnabled，缺省关闭=逐位现状）
+  const importanceEnabled =
+    (memoryConfig as { worthiness?: { extractionEnabled?: boolean } } | undefined)
+      ?.worthiness?.extractionEnabled === true;
   const systemPrompt = composeMemorySystemPrompt(
-    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled, recurrenceEnabled }),
+    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled, recurrenceEnabled, importanceEnabled }),
     memoryPrompt,
   );
   // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取
@@ -770,7 +788,10 @@ export function parseExtractionResult(
                 }
                 return true;
               })
-              .map((m) => ({
+              .map((m) => {
+                // P1-T7 确定性门（防御第二层：提示词未开启时 LLM 意外输出同样被钳制/丢弃）
+                const importance = normalizeImportance(m.importance);
+                return {
                 content: String(m.content),
                 type: String(m.type ?? "episodic"),
                 // P0-3：priority 钳制到 [-1,100]（-1 仅 instruction 死命令），非数字缺省 50
@@ -779,7 +800,15 @@ export function parseExtractionResult(
                 metadata: (() => {
                   const base = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
                   const refs = parseCoreRefs(m.coreRefs, valueCandidates);
-                  return refs && refs.length > 0 ? { ...base, coreRefs: refs } : base;
+                  const out: Record<string, unknown> = refs && refs.length > 0 ? { ...base, coreRefs: refs } : { ...base };
+                  // P1-T7：LLM 重要度理由 + 来源标记（仅在分数合法解析时写入——不伪造评分）
+                  if (importance !== undefined) {
+                    if (typeof m.importance_reason === "string" && m.importance_reason.trim() !== "") {
+                      out.importance_reason = m.importance_reason;
+                    }
+                    out.importance_source = "llm";
+                  }
+                  return out;
                 })(),
                 // 灵魂记忆字段（可选，防御解析）：时空 / 观察推断 / 情感
                 // P0-2/P2：空串 occurred_at 归 undefined（此前原样保留 → 下游 falsy 判 missing 口径分裂）
@@ -796,7 +825,10 @@ export function parseExtractionResult(
                 significance: typeof m.significance === "number" ? clampNum(m.significance, 0, 1) : undefined,
                 // D-3：敏感性透传（枚举门在主映射处统一裁决——此处只带原始值）
                 sensitivity: typeof m.sensitivity === "string" ? m.sensitivity : undefined,
-              }))
+                // P1-T7：重要度（round(clamp 1..10)；非法 → undefined=字段缺席=现状）
+                importance,
+                };
+              })
           : [],
       });
     }

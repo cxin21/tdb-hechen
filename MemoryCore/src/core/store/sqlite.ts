@@ -109,7 +109,7 @@ const L1_FTS_BASE_COLUMN_DEFS = [
 /** soul 8 列 DDL 片段：`name ftsSuffix`（ftsSuffix=UNINDEXED —— soul 是过滤元数据不参与全文索引） */
 const L1_FTS_SOUL_COLUMN_DEFS = SOUL_COLUMNS.map((c) => `${c.name} ${c.ftsSuffix}`);
 
-/** l1_fts 建表列定义（25 列） */
+/** l1_fts 建表列定义（27 列 = 基础 17 + soul 10） */
 const L1_FTS_TABLE_DDL = [...L1_FTS_BASE_COLUMN_DEFS, ...L1_FTS_SOUL_COLUMN_DEFS];
 
 /** l1_fts 全部列名（25 个，INSERT 列清单/迁移共用；顺序与建表一致） */
@@ -118,7 +118,8 @@ const L1_FTS_ALL_COL_NAMES = [
   ...SOUL_COL_NAMES,
 ];
 
-/** soul 8 字段写入缺省值（与 l1_records 建表默认一致；主表/FTS/restore 共用） */
+/** soul 10 字段写入缺省值（与 l1_records 建表默认一致；主表/FTS/restore 共用）。
+ *  P1-T7：importance 缺省 null = 未评分 = 召回面永不降权（宁缺毋滥，不伪造默认分）。 */
 const SOUL_FIELD_DEFAULTS: Record<SoulColumnName, string | number | null> = {
   occurred_at: "",
   valid_start: "",
@@ -129,6 +130,7 @@ const SOUL_FIELD_DEFAULTS: Record<SoulColumnName, string | number | null> = {
   arousal: null,
   significance: null,
   sensitivity: "none",
+  importance: null,
 };
 
 /**
@@ -423,6 +425,8 @@ export interface FtsSearchResult {
   valence?: number;
   arousal?: number;
   significance?: number;
+  /** P1-T7：importance 1-10（null=未评分=不罚）。 */
+  importance?: number | null;
 }
 
 /** FTS5 search result for L0 records. */
@@ -782,6 +786,9 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN significance REAL"); } catch { /* exists */ }
     // D-3（2026-09-21）：敏感性第 9 soul 列（幂等 ALTER；缺省 none=逐位现状）
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN sensitivity TEXT DEFAULT 'none'"); } catch { /* exists */ }
+    // P1-T7（2026-10-13，worthiness importance）：第 10 soul 列。TINYINT 无 DEFAULT →
+    // 既有行 NULL = 未评分 = 召回降权门永不命中（宁缺毋滥；spec §6 shadow-first）。
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN importance TINYINT"); } catch { /* exists */ }
 
     // Indexes for common queries
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_type ON l1_records(type)");
@@ -928,8 +935,9 @@ export class VectorStore implements IMemoryStore {
         team_id, task_id, version, timestamp_str, timestamp_start, timestamp_end,
         created_time, updated_time, metadata_json,
         user_id, agent_id,
-        occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity,
+        importance
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         content=excluded.content,
         type=excluded.type,
@@ -953,7 +961,8 @@ export class VectorStore implements IMemoryStore {
         valence=excluded.valence,
         arousal=excluded.arousal,
         significance=excluded.significance,
-        sensitivity=excluded.sensitivity
+        sensitivity=excluded.sensitivity,
+        importance=excluded.importance
     `);
 
     if (this.dimensions > 0) {
@@ -964,8 +973,9 @@ export class VectorStore implements IMemoryStore {
 
     this.stmtGetMeta = this.db.prepare(`
       SELECT content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
-             version, timestamp_str, timestamp_start, timestamp_end, metadata_json,
-             occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity
+             version, timestamp_str, timestamp_start, timestamp_end, metadata_json, created_time,
+             occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity,
+             importance
       FROM l1_records WHERE record_id = ?
     `);
 
@@ -1942,7 +1952,10 @@ export class VectorStore implements IMemoryStore {
   archiveL1(id: string, reason = "forgetting"): boolean {
     try {
       const row = this.db.prepare(
-        `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance FROM l1_records WHERE record_id = ?`,
+        // P1-T7：importance 入档（归档→恢复 roundtrip 保值；P0-T3 家族"漏拷=刷空"合同）。
+        // 已知缺口（D-3 遗留，非本任务面）：sensitivity 不在清单 → 归档 JSON 无该键，
+        // restoreL1 回落 'none'。见 task-7-report follow-ups。
+        `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, importance FROM l1_records WHERE record_id = ?`,
       ).get(id);
       if (!row) return false;
       this.db.exec("BEGIN");
@@ -2003,16 +2016,17 @@ export class VectorStore implements IMemoryStore {
       const d = JSON.parse(row.data) as Record<string, unknown>;
       this.db.exec("BEGIN");
       try {
-        // 注意：26 列 ↔ 26 个 ?（P2a 加 soul 列时占位符数与列清单曾失配 → restoreL1 恒失败，
-        // 审计 F5 修复：数齐。FTS 重建见下方 F5 块。）
+        // 注意：27 列 ↔ 27 个 ?（P2a 加 soul 列时占位符数与列清单曾失配 → restoreL1 恒失败，
+        // 审计 F5 修复：数齐。P1-T7 加 importance（28 列）。FTS 重建见下方 F5 块。）
         this.db.prepare(
-          `INSERT OR REPLACE INTO l1_records (record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT OR REPLACE INTO l1_records (record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity, importance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).run(
           d.record_id, d.content, d.type, d.priority, d.scene_name, d.session_key, d.session_id,
           d.team_id, d.task_id, d.user_id, d.agent_id, d.version, d.timestamp_str,
           d.timestamp_start, d.timestamp_end, d.created_time, d.updated_time, d.metadata_json,
           d.occurred_at, d.valid_start, d.valid_end, d.certainty, d.source, d.valence, d.arousal, d.significance,
           d.sensitivity ?? "none",
+          d.importance ?? null,
         );
         this.db.prepare("DELETE FROM l1_archive WHERE record_id = ?").run(id);
         // 审计 F5：恢复时重建 FTS 行（archive 时被删了）——否则恢复的记忆只能在
@@ -3022,7 +3036,7 @@ export class VectorStore implements IMemoryStore {
     const out: Array<import("./types.js").L1SearchResult> = [];
     try {
       for (const rid of ids) {
-        const meta = this.stmtGetMeta.get(rid) as { content: string; type: string; priority: number; scene_name: string; timestamp_start: string; timestamp_end: string; occurred_at?: string; valid_start?: string; certainty?: string; source?: string; valence?: number; arousal?: number; significance?: number } | undefined;
+        const meta = this.stmtGetMeta.get(rid) as { content: string; type: string; priority: number; scene_name: string; timestamp_start: string; timestamp_end: string; occurred_at?: string; valid_start?: string; certainty?: string; source?: string; valence?: number; arousal?: number; significance?: number; importance?: number | null; sensitivity?: string } | undefined;
         if (!meta) continue;
         out.push({
           record_id: rid,
@@ -3042,6 +3056,9 @@ export class VectorStore implements IMemoryStore {
           user_id: (meta as { user_id?: string }).user_id ?? "",
           agent_id: (meta as { agent_id?: string }).agent_id ?? "",
           metadata_json: (meta as { metadata_json?: string }).metadata_json ?? "{}",
+          // P1-T7：created_time 读回——v2 编辑/人工调整链 upsert 时 createdAt 需要原值，
+          // 否则每次编辑把 created_time 列刷空（node:sqlite undefined 绑定行为依赖实现细节）。
+          created_time: (meta as { created_time?: string }).created_time ?? "",
           occurred_at: meta.occurred_at ?? undefined,
           valid_start: meta.valid_start ?? undefined,
           valid_end: (meta as { valid_end?: string }).valid_end ?? undefined,
@@ -3050,6 +3067,10 @@ export class VectorStore implements IMemoryStore {
           valence: meta.valence ?? undefined,
           arousal: meta.arousal ?? undefined,
           significance: meta.significance ?? undefined,
+          // D-3：敏感性透传（getL1ByIds 精确读回——v2 编辑链/人工调整链以本方法取 soul 全量，
+          // 漏映射会在 excluded.* 重写时把既有 sensitivity 刷回默认；与向量路 3529 同口径）。
+          sensitivity: meta.sensitivity ?? undefined,
+          importance: meta.importance ?? null,
         });
       }
       return out;
@@ -3101,6 +3122,7 @@ export class VectorStore implements IMemoryStore {
           valence: (d.valence as number) ?? undefined,
           arousal: (d.arousal as number) ?? undefined,
           significance: (d.significance as number) ?? undefined,
+          importance: (d.importance as number | null | undefined) ?? null,
         });
       }
       return out;
@@ -3155,6 +3177,7 @@ export class VectorStore implements IMemoryStore {
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
+        importance?: number | null;
       }>;
       const out: Array<import("./types.js").L1SearchResult> = [];
       for (const r of rows) {
@@ -3201,6 +3224,7 @@ export class VectorStore implements IMemoryStore {
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
+          importance: r.importance ?? null,
         });
       }
       return out;
@@ -3262,6 +3286,7 @@ export class VectorStore implements IMemoryStore {
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
+        importance?: number | null;
       }>;
       const out: Array<import("./types.js").L1SearchResult> = [];
       for (const r of rows) {
@@ -3293,6 +3318,7 @@ export class VectorStore implements IMemoryStore {
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
+          importance: r.importance ?? null,
         });
       }
       return out;
@@ -3343,6 +3369,7 @@ export class VectorStore implements IMemoryStore {
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
+        importance?: number | null;
       }>;
       const out: Array<import("./types.js").L1SearchResult> = [];
       for (const r of rows) {
@@ -3374,6 +3401,7 @@ export class VectorStore implements IMemoryStore {
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
+          importance: r.importance ?? null,
         });
       }
       return out;
@@ -3459,6 +3487,7 @@ export class VectorStore implements IMemoryStore {
               arousal?: number;
               significance?: number;
               sensitivity?: string;
+              importance?: number | null;
             }
           | undefined;
 
@@ -3504,6 +3533,8 @@ export class VectorStore implements IMemoryStore {
           significance: meta.significance ?? undefined,
           // D-3：敏感性透传（向量路 L1SearchResult 数据面——徽章/R11 信号源）
           sensitivity: meta.sensitivity ?? undefined,
+          // P1-T7：importance 透传（NULL→null，未评分=召回面永不降权）
+          importance: meta.importance ?? null,
         });
       }
 
@@ -5449,7 +5480,7 @@ export class VectorStore implements IMemoryStore {
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
-        // soul 8 列（P1-T7：SELECT 由 SOUL_SELECT_FRAGMENT 带出）
+        // soul 10 列（P1-T7：SELECT 由 SOUL_SELECT_FRAGMENT 带出）
         occurred_at?: string | null;
         valid_start?: string | null;
         valid_end?: string | null;
@@ -5458,6 +5489,7 @@ export class VectorStore implements IMemoryStore {
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
+        importance?: number | null;
         rank: number;
       }>;
 
@@ -5482,8 +5514,8 @@ export class VectorStore implements IMemoryStore {
           user_id: r.user_id ?? "",
           agent_id: r.agent_id ?? "",
           metadata_json: r.metadata_json,
-          // soul 8 字段（W1 兑现点：此前 FTS 行恒 undefined；NULL/缺省归一为 undefined，
-          // 口径与 L1RecordRow 读回一致）
+          // soul 10 字段（W1 兑现点：此前 FTS 行恒 undefined；NULL/缺省归一为 undefined，
+          // 口径与 L1RecordRow 读回一致。P1-T7：importance NULL→null，未评分=不罚口径）
           occurred_at: r.occurred_at ?? undefined,
           valid_start: r.valid_start ?? undefined,
           valid_end: r.valid_end ?? undefined,
@@ -5492,6 +5524,7 @@ export class VectorStore implements IMemoryStore {
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
+          importance: r.importance ?? null,
         }));
     } catch (err) {
       this.logger?.warn(
@@ -5557,15 +5590,17 @@ export class VectorStore implements IMemoryStore {
   // ── FTS5 migration & rebuild ──────────────────────────────────────────────
 
   /**
-   * P1-T7（W1）：旧 17 列 `l1_fts` → 25 列（补 soul 8 字段，全 UNINDEXED）。
+   * soul 列迁移（历代扩展）：旧 17 列 `l1_fts` → 当前 soul 列数（现在 27 列，
+   * 全 UNINDEXED soul 字段）。D-3 时为 26 列；2026-10-13 P1 Task 7（worthiness
+   * importance）起 sentinel 检 `importance`，26 → 27 在线重建。
    *
    * FTS5 virtual tables do NOT support `ALTER TABLE ADD COLUMN`，因此走事务内
-   * 重建：建 `l1_fts_new`（25 列）→ 从旧表 17 列原样拷贝（content 列已是分词
+   * 重建：建 `l1_fts_new`（27 列）→ 从旧表 17 列原样拷贝（content 列已是分词
    * 产物，不重切）并 LEFT JOIN l1_records 回填 soul → 行数校验（不一致
    * ROLLBACK + throw，不留半建表）→ DROP 旧表 → RENAME。
    *
-   * 幂等：`PRAGMA table_info(l1_fts)` 已含 `occurred_at` → 跳过。
-   * init() 在 prepare 25 列语句之前自动调用；也导出为独立迁移入口供手动脚本调用。
+   * 幂等：`PRAGMA table_info(l1_fts)` 已含 `importance` → 跳过。
+   * init() 在 prepare 全列语句之前自动调用；也导出为独立迁移入口供手动脚本调用。
    *
    * @returns `migrated` 是否执行了重建；`rows` 迁移行数（跳过时为当前行数）。
    */
@@ -5578,8 +5613,8 @@ export class VectorStore implements IMemoryStore {
     const cols = this.db
       .prepare("SELECT name FROM pragma_table_info('l1_fts')")
       .all() as Array<{ name: string }>;
-    if (cols.some((c) => c.name === "sensitivity")) {
-      // 已含全部 soul 列（D-3 后=26 列；含则跳过——幂等）
+    if (cols.some((c) => c.name === "importance")) {
+      // 已含全部 soul 列（P1-T7 后=27 列；含则跳过——幂等）
       const n = (this.db.prepare("SELECT COUNT(*) AS n FROM l1_fts").get() as { n: number }).n;
       return { migrated: false, rows: n };
     }
@@ -5616,7 +5651,7 @@ export class VectorStore implements IMemoryStore {
       this.db.exec("ALTER TABLE l1_fts_new RENAME TO l1_fts");
       this.db.exec("COMMIT");
       this.logger?.info(
-        `${TAG} Migrated l1_fts 17 → 25 columns (soul backfilled from l1_records): ${newCount} rows`,
+        `${TAG} Migrated l1_fts → ${L1_FTS_ALL_COL_NAMES.length} columns (soul backfilled from l1_records): ${newCount} rows`,
       );
       return { migrated: true, rows: newCount };
     } catch (err) {

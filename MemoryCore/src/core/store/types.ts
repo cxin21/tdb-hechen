@@ -107,6 +107,8 @@ export interface L1SearchResult {
   user_id: string;
   agent_id: string;
   metadata_json: string;
+  /** P1-T7：创建时间（getL1ByIds 精确读回；native 路径可能缺省 → 消费方回退 timestamp_str）。 */
+  created_time?: string;
 
   // ── 灵魂记忆字段（P2a，读回）：时空/观察推断/情感 ──
   occurred_at?: string;
@@ -119,6 +121,8 @@ export interface L1SearchResult {
   significance?: number;
   /** D-3：敏感性枚举（none/health/finance/relationship）。 */
   sensitivity?: string;
+  /** P1-T7：importance 1-10（null/缺省=未评分=召回面永不降权）。 */
+  importance?: number | null;
 }
 
 /** Result from an L1 FTS keyword search. */
@@ -151,6 +155,8 @@ export interface L1FtsResult {
   valence?: number;
   arousal?: number;
   significance?: number;
+  /** P1-T7：importance（FTS SELECT 由 SOUL_SELECT_FRAGMENT 展开，自动带出）。 */
+  importance?: number | null;
 }
 
 /** Filter options for querying L1 records. */
@@ -188,7 +194,7 @@ export interface L1RecordRow {
   created_time: string;
   updated_time: string;
   metadata_json: string;
-  /** soul 8 列（P4a：rowToMemoryRecord 的 valid_end 透传所需；SELECT 已带出、类型此前未声明） */
+  /** soul 10 列（P4a：rowToMemoryRecord 的 valid_end 透传所需；SELECT 已带出、类型此前未声明） */
   occurred_at?: string;
   valid_start?: string;
   valid_end?: string;
@@ -198,6 +204,8 @@ export interface L1RecordRow {
   arousal?: number;
   significance?: number;
   sensitivity?: string;
+  /** P1-T7：importance 1-10（NULL=未评分）。 */
+  importance?: number | null;
 }
 
 // ============================

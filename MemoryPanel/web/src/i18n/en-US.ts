@@ -197,6 +197,20 @@ export const enUS = {
   'settings.rerank.local.download': 'Download local model',
   'settings.rerank.local.downloading': 'Downloading {{percent}}%',
 
+  // ===== Importance (Memory settings · P1 task-7 worthiness) =====
+  'settings.importance.title': 'Importance tagging & recall penalty (P1 task-7)',
+  'settings.importance.extraction': 'Extraction tagging',
+  'settings.importance.extraction.label': 'Have the LLM tag importance (1-10) + one-line reason during L1 extraction',
+  'settings.importance.extraction.hint': 'Tags ride the single extraction LLM call (no second call); off = exactly current behavior, nothing recorded.',
+  'settings.importance.penalty.enabled': 'Recall penalty',
+  'settings.importance.penalty.enabled.label': 'Penalize low-importance (≤4) memories at recall',
+  'settings.importance.penalty.enabled.hint': 'Only importance ≤4 is penalized; unscored (NULL) records are never penalized.',
+  'settings.importance.penalty.value': 'Penalty',
+  'settings.importance.penalty.value.hint': 'Multiplier = 1 - penalty; range 0-0.9, default 0.3.',
+  'settings.importance.penalty.shadow': 'Shadow mode',
+  'settings.importance.penalty.shadow.label': 'Shadow mode (log only, no ranking change)',
+  'settings.importance.penalty.shadow.hint': 'Shadow mode = raw and penalized scores are both written to the recall journal gates.importancePenalty, ranking unchanged; when off the penalty actually applies.',
+
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',
   'llmProvider.desc':

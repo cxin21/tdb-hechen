@@ -19,9 +19,9 @@ import type http from "node:http";
 import { classifyError } from "./error-handler.js";
 import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
 import { DEFAULT_ISOLATION_ID, type CoreTenant } from "../core/store/types.js";
-// P1-T6（P-A）：soul 8 字段单一事实源——handleAtomicUpdate 的 soul 视图类型改由它提供，
-// 不再内联手抄（手抄清单漏抄 = R1 根因）。
-import type { SoulColumnsOf } from "../core/store/soul-columns.js";
+// P1-T7：handleAtomicUpdate/Importance 的 soul 拷贝改用 L1SearchResult 原生窄类型
+// （getL1ByIds 读回行），不再经 SoulColumnsOf 宽断言——string|number|null 联合
+// 是那批 TS2322 的根因，且窄类型让 sensitivity/importance 补拷在类型层面可见。
 import type { EmbeddingService } from "../core/store/embedding.js";
 // S-FEEL-1（M1）：近期情绪基调聚合单一源（mood-line.ts；R-A：mood 不参与召回排序）。
 import { computeMoodTier } from "../core/hooks/mood-line.js";
@@ -491,6 +491,8 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/conversation/delete": handleConversationDelete,
   "/conversation/count": handleConversationCount,
   "/atomic/update": handleAtomicUpdate,
+  // P1 task-7：人工重要度调整（Panel 记忆详情）
+  "/atomic/importance": handleAtomicImportance,
   "/atomic/query": handleAtomicQuery,
   "/atomic/neighbors": handleAtomicNeighbors,
   "/atomic/path": handleAtomicPath,
@@ -1218,13 +1220,11 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     return errorEnvelope(403, `Atomic note ${id} belongs to a different agent`, requestId);
   }
   const updatedVersion = (record.version ?? 0) + 1;
-  // P0-T3（E1）：updated 必须携带既有行的 soul 8 字段。
-  // upsertL1 的 ON CONFLICT 对这 8 列全部 excluded.* 覆盖，updated 漏拷 = 编辑一次
+  // P0-T3（E1）：updated 必须携带既有行的 soul 字段全量。
+  // upsertL1 的 ON CONFLICT 对这些列全部 excluded.* 覆盖，updated 漏拷 = 编辑一次
   // 把时间锚刷成 ""（遗忘引擎 ageDaysOf 恒 0，永不归档）、情感清零、inferred 被静默
-  // 晋升成 observed。空值透传（?? null），不造默认值——update 不走 writeMemory
-  // choke point，那里的 P0 默认逻辑不适用；TEXT 列在 upsertL1 绑定处的列语义回退
-  // （null → "" / "observed"）由 store 层负责，handler 只保证"原值或 null"。
-  const soul = record as SoulColumnsOf;
+  // 晋升成 observed。缺省透传 undefined：upsertL1 soulBindValues 对 undefined/null
+  // 统一回填 SOUL_FIELD_DEFAULTS，与旧 `?? null` 写法在绑定层逐位等价（P1-T7 类型修正）。
   const updated: MemoryRecord = {
     id,
     content,
@@ -1234,7 +1234,7 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     source_message_ids: [],
     metadata: parseMetadataJson(record.metadata_json),
     timestamps: record.timestamp_str ? [record.timestamp_str] : [],
-    createdAt: record.created_time,
+    createdAt: record.created_time || record.timestamp_str || now,
     updatedAt: now,
     version: updatedVersion,
     sessionKey: record.session_key ?? "",
@@ -1243,15 +1243,18 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     teamId: record.team_id ?? iso?.teamId,
     userId: record.user_id ?? iso?.userId,
     agentId: record.agent_id ?? iso?.agentId,
-    // 灵魂记忆字段：从既有行补拷，null 透传（L1RecordRow 未声明这些列 → 断言类型）
-    occurred_at: soul.occurred_at ?? null,
-    valid_start: soul.valid_start ?? null,
-    valid_end: soul.valid_end ?? null,
-    certainty: soul.certainty ?? null,
-    source: soul.source ?? null,
-    valence: soul.valence ?? null,
-    arousal: soul.arousal ?? null,
-    significance: soul.significance ?? null,
+    // 灵魂记忆字段：从既有行原样透传（L1SearchResult 已带窄类型，无需断言）。
+    // P1-T7：sensitivity 补拷——关闭 D-3 已知缺口（此前编辑一次即把敏感性刷回默认）。
+    occurred_at: record.occurred_at,
+    valid_start: record.valid_start,
+    valid_end: record.valid_end,
+    certainty: record.certainty as MemoryRecord["certainty"],
+    source: record.source,
+    valence: record.valence,
+    arousal: record.arousal,
+    significance: record.significance,
+    sensitivity: record.sensitivity,
+    importance: record.importance ?? undefined,
   };
 
   const embedding = deps.getEmbedding();
@@ -1288,6 +1291,101 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
   const updateData: AtomicUpdateData = { id, version: `v${updatedVersion}`, updated_at: now };
   if (invalidatedAt) (updateData as { invalidated_at?: string }).invalidated_at = invalidatedAt;
   return successEnvelope<AtomicUpdateData>(updateData, requestId);
+}
+
+/**
+ * P1 Task 7：POST /atomic/importance — 人工重要度调整（Panel 记忆详情滑杆）。
+ * 合同：
+ * - 覆写 l1_records.importance（1-10 整数），metadata.importance_source='manual'；
+ * - 追加语义：手动原因写 metadata.importance_manual_reason，绝不改写 LLM 的
+ *   metadata.importance_reason（两代判定共存，UI 分源展示）；
+ * - content 不变 → embedding 不重算（upsertL1 传 undefined = metadata-only 写）；
+ * - 全量 soul 拷贝（P0-T3：upsert excluded.* 覆盖，漏拷 = 调整一次刷空 soul）。
+ */
+export async function handleAtomicImportance(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const b = (body ?? {}) as { id?: unknown; importance?: unknown; reason?: unknown };
+  const id = typeof b.id === "string" && b.id.trim() ? b.id.trim() : undefined;
+  if (!id) return errorEnvelope(400, "id 必须是非空字符串", requestId);
+  const importance = b.importance;
+  if (typeof importance !== "number" || !Number.isInteger(importance) || importance < 1 || importance > 10) {
+    return errorEnvelope(400, "importance 必须是 1-10 的整数", requestId);
+  }
+  if (b.reason !== undefined && typeof b.reason !== "string") {
+    return errorEnvelope(400, "reason 必须是字符串", requestId);
+  }
+  const reason = (b.reason as string | undefined)?.trim() || undefined;
+
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  const records = (await store.getL1ByIds?.([id])) ?? [];
+  const record = records[0];
+  if (!record) return errorEnvelope(404, `Atomic note ${id} not found`, requestId);
+  const iso = deps.requestIsolation;
+  if (iso?.teamId && record.team_id && record.team_id !== iso.teamId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different team`, requestId);
+  }
+  if (iso?.userId && record.user_id && record.user_id !== iso.userId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different user`, requestId);
+  }
+  if (iso?.agentId && record.agent_id && record.agent_id !== iso.agentId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different agent`, requestId);
+  }
+
+  const updatedVersion = (record.version ?? 0) + 1;
+  const metadata = parseMetadataJson(record.metadata_json) as Record<string, unknown>;
+  // 追加语义：LLM 的 importance_reason 原样保留；手动判定另开键（两代判定共存）
+  metadata.importance_source = "manual";
+  if (reason) metadata.importance_manual_reason = reason;
+
+  const updated: MemoryRecord = {
+    id,
+    content: record.content,
+    type: record.type as any,
+    priority: record.priority ?? 50,
+    scene_name: record.scene_name ?? "",
+    source_message_ids: [],
+    metadata,
+    timestamps: record.timestamp_str ? [record.timestamp_str] : [],
+    createdAt: record.created_time || record.timestamp_str || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    version: updatedVersion,
+    sessionKey: record.session_key ?? "",
+    sessionId: record.session_id ?? iso?.sessionId ?? "",
+    taskId: record.task_id ?? iso?.taskId,
+    teamId: record.team_id ?? iso?.teamId,
+    userId: record.user_id ?? iso?.userId,
+    agentId: record.agent_id ?? iso?.agentId,
+    // P0-T3：soul 字段从既有行原样透传（缺省 undefined → upsertL1 soulBindValues 回填
+    // SOUL_FIELD_DEFAULTS，与旧 `?? null` 在绑定层逐位等价）；importance 同拷防编辑刷空。
+    occurred_at: record.occurred_at,
+    valid_start: record.valid_start,
+    valid_end: record.valid_end,
+    certainty: record.certainty as MemoryRecord["certainty"],
+    source: record.source,
+    valence: record.valence,
+    arousal: record.arousal,
+    significance: record.significance,
+    importance,
+    sensitivity: record.sensitivity,
+  };
+
+  // content 不变 → 不重算 embedding（undefined = metadata-only upsert）
+  await store.upsertL1(updated, undefined);
+
+  await recordAudit(store, {
+    record_id: id,
+    layer: "L1",
+    action: "update",
+    iso,
+    version: updatedVersion,
+    requestId,
+    logger: deps.logger,
+  });
+
+  return successEnvelope(
+    { id, version: `v${updatedVersion}`, importance, importance_source: "manual" },
+    requestId,
+  );
 }
 
 async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {

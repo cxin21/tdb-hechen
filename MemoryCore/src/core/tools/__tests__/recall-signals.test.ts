@@ -166,6 +166,8 @@ describe("structuralSignalOf 关断矩阵（全 0 → 恒 0）", () => {
       emotionSalienceWeight: 0,
       // D-3（R11）：敏感降权默认关断（gated，缺省 0=逐位现状）。
       sensitivityPenalty: 0,
+      // P1-T7：重要度降权默认关断（gated，缺省 0=逐位现状）。
+      importancePenalty: 0,
     });
   });
 });

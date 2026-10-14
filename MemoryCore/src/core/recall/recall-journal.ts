@@ -7,6 +7,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+// P1-T7：类型单一源在 recall-signals.ts——import type 供本文件接口引用，
+// 再 re-export 供 journal 消费方单点 import。
+import type { RecallJournalImportanceGate } from "../tools/recall-signals.js";
 
 export interface RecallJournalSearchTiming {
   ftsMs: number;
@@ -32,7 +35,16 @@ export interface RecallJournalRerankGate {
 export interface RecallJournalGates {
   nativeMinRRF?: { gate: number; kept: number; dropped: number };
   rerank?: RecallJournalRerankGate;
+  /**
+   * P1-T7（worthiness importance）：重要度降权影子门——raw vs penalized 双分量
+   * （shadow=乘子未生效的假设统计；active=乘子已生效，raw 为反推值）。类型单一源
+   * 在 recall-signals.ts（与乘子实现同文件，防止口径分裂）。
+   */
+  importancePenalty?: RecallJournalImportanceGate;
 }
+
+// P1-T7：类型再导出（journal 消费方 import 单一源 recall-journal 即可）
+export type { RecallJournalImportanceGate, RecallJournalImportanceGateSpec } from "../tools/recall-signals.js";
 
 export interface RecallJournalEntry {
   ts: string;
