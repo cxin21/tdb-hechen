@@ -6,7 +6,7 @@
  * 安全防护（002 §4-5）：
  *   - R1 git hooks：clone/fetch 本就不拉取远端 .git/hooks（hooks 为本地态），故不额外
  *     配置 core.hooksPath（加固版 git 会拒绝该配置，需 allowUnsafeHooksPath）。
- *   - R2 SSRF：只允许 public HTTPS + 内网/环回地址黑名单（对齐项目 security_rules）。
+ *   - R2 SSRF：只允许 public HTTPS / SSH + 内网/环回地址黑名单（对齐项目 security_rules）。
  *   - Bug 修复（方案 A）：增量 sync 的 git clean 排除 .codegraph/，避免删掉 codegraph 索引库。
  */
 
@@ -24,6 +24,12 @@ import type { ISourceFetcher, FetchResult, SourceProbeResult, SourceType } from 
  */
 const PRIVATE_ADDR_RE =
   /^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|127\.|0\.|localhost$|::1$|fe80:)/i;
+
+/**
+ * scp 风格 SSH 地址：git@host:path（host 不含 / 或 :；path 至少 1 字符）。
+ * host 段为第 1 捕获组，供 SSRF 黑名单检查；ssh://user@host[:port]/path 由标准 URL 解析覆盖。
+ */
+const SSH_SCP_LIKE_RE = /^[^\s@]+@([^\s:/]+):([^\s]+)$/;
 
 /**
  * 读取 SSRF 私网黑名单开关。默认开启；
@@ -47,7 +53,7 @@ export interface GitSourceFetcherOptions {
 export class GitSourceFetcher implements ISourceFetcher {
   readonly supportedType: SourceType = "git";
 
-  /** SSRF 私网黑名单校验开关（https-only 协议校验始终生效，不受此开关影响）。 */
+  /** SSRF 私网黑名单校验开关（协议白名单 https/ssh 校验始终生效，不受此开关影响）。 */
   private readonly ssrfCheck: boolean;
 
   constructor(opts?: GitSourceFetcherOptions) {
@@ -55,10 +61,14 @@ export class GitSourceFetcher implements ISourceFetcher {
   }
 
   validate(sourceUrl: string): void {
-    // 第一版：仅支持 public HTTPS 仓库（SSH / 私有仓库鉴权见文档 005）。
-    if (!sourceUrl.startsWith("https://")) {
+    // 支持 public HTTPS 与 SSH 两种形式（scp 风格 git@host:path / ssh://user@host[:port]/path）。
+    // SSH 复用运行进程的 ~/.ssh（key/agent/known_hosts）完成鉴权，凭据不落 KS 数据库；
+    // 匿名 HTTPS 不可用、需 OAuth 交互的私有仓库（如企业内网 GitLab）由此解锁。
+    const isHttps = sourceUrl.startsWith("https://");
+    const isSsh = sourceUrl.startsWith("ssh://") || SSH_SCP_LIKE_RE.test(sourceUrl);
+    if (!isHttps && !isSsh) {
       throw new Error(
-        "first version only supports public HTTPS repos; SSH/private repo support coming soon",
+        "source_url must be an https:// or SSH git URL (git@host:path.git / ssh://user@host/path.git)",
       );
     }
     const host = this.extractHost(sourceUrl);
@@ -125,6 +135,10 @@ export class GitSourceFetcher implements ISourceFetcher {
   }
 
   private extractHost(url: string): string {
+    if (url.startsWith("git@")) {
+      // scp 风格（git@host:path）不是合法 URL，无法走 URL 构造器，正则取 host 段。
+      return SSH_SCP_LIKE_RE.exec(url)?.[1] ?? "";
+    }
     try {
       return new URL(url).hostname;
     } catch {

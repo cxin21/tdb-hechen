@@ -351,7 +351,7 @@ export const knowledgeApi = {
      * 编辑源 url/branch/enabled → KS PATCH /wiki/:id/source。
      * url/branch 实际变更后该源全部页面标 stale（"待重新拉取"），需手动 refetch 重建。
      */
-    updateSource: (wikiId: string, patch: { source_url?: string; branch?: string; enabled?: boolean }): Promise<WikiDetail> =>
+    updateSource: (wikiId: string, patch: { source_url?: string; branch?: string; path_include?: string; path_exclude?: string; enabled?: boolean }): Promise<WikiDetail> =>
       panelPost('/wiki/source/update', { wiki_id: wikiId, ...patch }),
 
     /** 测试连接：ls-remote 探测，返回可达性 + 远端分支列表。sourceUrl 可覆盖（编辑时预览候选 URL）。 */

@@ -224,6 +224,55 @@ describe("PATCH /wiki/:id/source", () => {
     expect(res.status).toBe(200);
     expect(api.updateSource.mock.calls[0][2]).not.toHaveProperty("stale");
   });
+
+  it("updates path_include on actual change and flags stale=true (git source)", async () => {
+    const api = makeService(makeRow()); // path_include: null
+    const app = createWikiRoutes(defaultDeps(api));
+    const res = await patch(app, "/w1/source", { path_include: "^docs/" });
+    expect(res.status).toBe(200);
+    expect(api.updateSource).toHaveBeenCalledWith("svc", "w1", { path_include: "^docs/", stale: true });
+  });
+
+  it("same-value path_include update does not re-flag stale", async () => {
+    const api = makeService(makeRow({ path_include: "^docs/" }));
+    const app = createWikiRoutes(defaultDeps(api));
+    const res = await patch(app, "/w1/source", { path_include: "^docs/" });
+    expect(res.status).toBe(200);
+    expect(api.updateSource.mock.calls[0][2]).not.toHaveProperty("stale");
+  });
+
+  it("clears path_include with an empty string; clearing an empty field does not flag stale", async () => {
+    const api = makeService(makeRow()); // path_include: null
+    const app = createWikiRoutes(defaultDeps(api));
+    const res = await patch(app, "/w1/source", { path_include: "" });
+    expect(res.status).toBe(200);
+    expect(api.updateSource).toHaveBeenCalledWith("svc", "w1", { path_include: "" });
+    expect(api.updateSource.mock.calls[0][2]).not.toHaveProperty("stale");
+  });
+
+  it("rejects an invalid path_include regex with 400 and does NOT persist", async () => {
+    const api = makeService(makeRow());
+    const app = createWikiRoutes(defaultDeps(api));
+    const res = await patch(app, "/w1/source", { path_include: "^docs/(" });
+    expect(res.status).toBe(400);
+    expect(api.updateSource).not.toHaveBeenCalled();
+  });
+
+  it("rejects path_include update on a non-git wiki with 400", async () => {
+    const api = makeService(makeRow({ source_type: "upload" }));
+    const app = createWikiRoutes(defaultDeps(api));
+    const res = await patch(app, "/w1/source", { path_include: "^docs/" });
+    expect(res.status).toBe(400);
+    expect(api.updateSource).not.toHaveBeenCalled();
+  });
+
+  it("updates path_exclude only and flags stale on actual change", async () => {
+    const api = makeService(makeRow());
+    const app = createWikiRoutes(defaultDeps(api));
+    const res = await patch(app, "/w1/source", { path_exclude: "(^|/)node_modules/" });
+    expect(res.status).toBe(200);
+    expect(api.updateSource).toHaveBeenCalledWith("svc", "w1", { path_exclude: "(^|/)node_modules/", stale: true });
+  });
 });
 
 // ═══════════════ POST /wiki/:id/test ═══════════════

@@ -142,17 +142,22 @@ export function registerKnowledgeWikiRoutes(api: Hono, deps: PanelDeps): void {
   // stale 语义：url/branch 实际变更时 KS 置 stale=true；重建（refetch）成功才清除，
   // 失败保持置位 —— Panel 徽标以此为准，不本地猜测。
 
-  // 源编辑 → KS PATCH /wiki/:id/source（url/branch/enabled；校验零放宽在 KS）
+  // 源编辑 → KS PATCH /wiki/:id/source（url/branch/path_include/path_exclude/enabled；校验零放宽在 KS）
+  // path 正则透传空串：编辑弹窗清空输入 = 清除已存正则（KS 存空串语义等同未设置，回退默认匹配）。
   api.post('/knowledge/wiki/source/update', mw, async (c) => {
     const ctx = buildCtx(c);
     const body = await readJson(c);
     const wikiId = str(body, 'wiki_id');
     if (!wikiId) return respondControlError(c, 400, 'MISSING_WIKI_ID');
-    const patch: { source_url?: string; branch?: string; enabled?: boolean } = {};
+    const patch: { source_url?: string; branch?: string; path_include?: string; path_exclude?: string; enabled?: boolean } = {};
     const sourceUrl = str(body, 'source_url');
     if (sourceUrl) patch.source_url = sourceUrl;
     const branch = str(body, 'branch');
     if (branch) patch.branch = branch;
+    const pathInclude = typeof body.path_include === 'string' ? body.path_include.trim() : undefined;
+    if (pathInclude !== undefined) patch.path_include = pathInclude;
+    const pathExclude = typeof body.path_exclude === 'string' ? body.path_exclude.trim() : undefined;
+    if (pathExclude !== undefined) patch.path_exclude = pathExclude;
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
     if (Object.keys(patch).length === 0) {
       return respondControlError(c, 400, 'MISSING_SOURCE_FIELDS');

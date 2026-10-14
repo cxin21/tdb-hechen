@@ -37,7 +37,7 @@ export interface SourceProbeResult {
  *   3. 返回版本标识
  *
  * 实现：
- *   - GitSourceFetcher：simple-git，第一版仅 public HTTPS（SSH/私有仓库鉴权见文档 005）
+ *   - GitSourceFetcher：simple-git，支持 public HTTPS 与 SSH（SSH 复用运行进程 ~/.ssh；token 方案见文档 005）
  *   - LocalSourceFetcher / FtpSourceFetcher：未来扩展
  */
 export interface ISourceFetcher {

@@ -196,11 +196,20 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
     if (source_type === "git") {
       if (!source_url) return c.json(wrapError(400, "source_url is required when source_type is 'git'"), 400);
       try {
-        // resolve 按协议路由；validate 校验 https-only + SSRF 私网黑名单（默认开启）。
+        // resolve 按协议路由；validate 校验 https/ssh URL 形态 + SSRF 私网黑名单（默认开启）。
         fetcherRegistry.resolve(source_url).validate(source_url);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return c.json(wrapError(400, `invalid git source_url: ${msg}`), 400);
+      }
+      // 路径正则编辑期编译校验：坏正则到 ingest 才炸不如直接 400（filterAndCopyMatched 用 new RegExp 编译）。
+      for (const [key, value] of [["path_include", path_include], ["path_exclude", path_exclude]] as const) {
+        if (!value) continue;
+        try {
+          new RegExp(value);
+        } catch {
+          return c.json(wrapError(400, `invalid ${key}: not a valid JS RegExp`), 400);
+        }
       }
     }
 
@@ -251,9 +260,11 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
   // 合法性校验复用 fetcherRegistry（https-only + SSRF 零放宽）；stale 语义见各路由注释。
 
   /**
-   * PATCH /wiki/:id/source — 编辑源 url/branch/enabled。
-   * - url/branch 变更：仅 git 源可改；复用 fetcherRegistry 校验；**实际变更**才置
-   *   stale=true（同值提交不误标）；重建（refetch/auto-sync 成功）前徽标保持。
+   * PATCH /wiki/:id/source — 编辑源 url/branch/path_include/path_exclude/enabled。
+   * - url/branch/path 正则变更：仅 git 源可改；url 复用 fetcherRegistry 校验、path 正则
+   *   编辑期编译校验（坏正则直接 400）；**实际变更**才置 stale=true（同值提交不误标）；
+   *   重建（refetch/auto-sync 成功）前徽标保持。
+   * - path 正则透传空串 = 清除已存正则（空串语义等同未设置，filterAndCopyMatched 回退默认匹配）。
    * - enabled：任意源可改，跳过 url 校验、不触碰 stale。
    */
   app.patch("/:id/source", async (c) => {
@@ -268,22 +279,37 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
 
     const hasUrl = typeof body.source_url === "string" && body.source_url ? true : false;
     const hasBranch = typeof body.branch === "string" && body.branch ? true : false;
+    const hasInclude = typeof body.path_include === "string";
+    const hasExclude = typeof body.path_exclude === "string";
     const hasEnabled = typeof body.enabled === "boolean";
-    if (!hasUrl && !hasBranch && !hasEnabled) {
-      return c.json(wrapError(400, "at least one of source_url/branch/enabled must be provided"), 400);
+    if (!hasUrl && !hasBranch && !hasInclude && !hasExclude && !hasEnabled) {
+      return c.json(
+        wrapError(400, "at least one of source_url/branch/path_include/path_exclude/enabled must be provided"),
+        400,
+      );
     }
 
-    const patch: { source_url?: string; branch?: string; enabled?: boolean; stale?: boolean } = {};
+    const patch: {
+      source_url?: string;
+      branch?: string;
+      path_include?: string;
+      path_exclude?: string;
+      enabled?: boolean;
+      stale?: boolean;
+    } = {};
     if (hasEnabled) patch.enabled = body.enabled as boolean;
 
-    if (hasUrl || hasBranch) {
+    if (hasUrl || hasBranch || hasInclude || hasExclude) {
       if (row.source_type !== "git") {
-        return c.json(wrapError(400, "only git-source wiki supports source_url/branch updates"), 400);
+        return c.json(
+          wrapError(400, "only git-source wiki supports source_url/branch/path_include/path_exclude updates"),
+          400,
+        );
       }
       if (hasUrl) {
         const candidateUrl = body.source_url as string;
         try {
-          // 与 create 同一校验入口：https-only + SSRF 私网黑名单，零放宽。
+          // 与 create 同一校验入口：https/ssh URL 形态 + SSRF 私网黑名单，零放宽。
           fetcherRegistry.resolve(candidateUrl).validate(candidateUrl);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -292,10 +318,34 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
         patch.source_url = candidateUrl;
       }
       if (hasBranch) patch.branch = body.branch as string;
-      // stale 置位仅当 url/branch 实际变化（避免同值提交误标"待重新拉取"）。
+      if (hasInclude) {
+        const rawInclude = (body.path_include as string).trim();
+        if (rawInclude) {
+          try {
+            new RegExp(rawInclude); // 编辑期编译校验，坏正则直接 400
+          } catch {
+            return c.json(wrapError(400, "invalid path_include: not a valid JS RegExp"), 400);
+          }
+        }
+        patch.path_include = rawInclude; // 空串 = 清除（store 层存空串，filterAndCopyMatched 视为未设置）
+      }
+      if (hasExclude) {
+        const rawExclude = (body.path_exclude as string).trim();
+        if (rawExclude) {
+          try {
+            new RegExp(rawExclude);
+          } catch {
+            return c.json(wrapError(400, "invalid path_exclude: not a valid JS RegExp"), 400);
+          }
+        }
+        patch.path_exclude = rawExclude;
+      }
+      // stale 置位仅当 url/branch/path 正则实际变化（避免同值提交误标"待重新拉取"）。
       const urlChanged = hasUrl && (body.source_url as string) !== row.source_url;
       const branchChanged = hasBranch && (body.branch as string) !== row.branch;
-      if (urlChanged || branchChanged) patch.stale = true;
+      const includeChanged = hasInclude && (patch.path_include as string) !== (row.path_include ?? "");
+      const excludeChanged = hasExclude && (patch.path_exclude as string) !== (row.path_exclude ?? "");
+      if (urlChanged || branchChanged || includeChanged || excludeChanged) patch.stale = true;
     }
 
     const updated = wikiService.updateSource(serviceId, wikiId, patch);

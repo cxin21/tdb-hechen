@@ -145,26 +145,32 @@ export default function WikiSourcesPanel() {
   const [editTarget, setEditTarget] = useState<WikiDetail | null>(null);
   const [editUrl, setEditUrl] = useState('');
   const [editBranch, setEditBranch] = useState('');
+  const [editPathInclude, setEditPathInclude] = useState('');
+  const [editPathExclude, setEditPathExclude] = useState('');
   const [probe, setProbe] = useState<WikiSourceProbeResult | null>(null);
 
   const openEdit = (source: WikiDetail) => {
     setEditTarget(source);
     setEditUrl(source.source_url ?? '');
     setEditBranch(source.branch ?? '');
+    setEditPathInclude(source.path_include ?? '');
+    setEditPathExclude(source.path_exclude ?? '');
     setProbe(null);
   };
   const closeEdit = () => setEditTarget(null);
 
   const editUrlInvalid = !!editUrl.trim() && !isValidWikiGitUrl(editUrl);
-  // 只把"实际变更"的字段发给后端：KS 仅在 url/branch 实际变化时置 stale（同值提交不误标）。
+  // 只把"实际变更"的字段发给后端：KS 仅在 url/branch/path 正则实际变化时置 stale（同值提交不误标）。
   const urlChanged = editTarget !== null && editUrl.trim() !== (editTarget.source_url ?? '');
   const branchChanged = editTarget !== null && editBranch.trim() !== (editTarget.branch ?? '');
+  const includeChanged = editTarget !== null && editPathInclude.trim() !== (editTarget.path_include ?? '');
+  const excludeChanged = editTarget !== null && editPathExclude.trim() !== (editTarget.path_exclude ?? '');
   const editSaving = editTarget !== null && sourceBusyId === editTarget.wiki_id;
   const canSaveEdit =
     editTarget !== null &&
     !!editUrl.trim() &&
     !editUrlInvalid &&
-    (urlChanged || branchChanged) &&
+    (urlChanged || branchChanged || includeChanged || excludeChanged) &&
     !editSaving;
 
   const handleEditTest = async () => {
@@ -180,6 +186,8 @@ export default function WikiSourcesPanel() {
     const ok = await handleUpdateSource(editTarget.wiki_id, {
       ...(urlChanged ? { source_url: editUrl.trim() } : {}),
       ...(branchChanged ? { branch: editBranch.trim() } : {}),
+      ...(includeChanged ? { path_include: editPathInclude.trim() } : {}),
+      ...(excludeChanged ? { path_exclude: editPathExclude.trim() } : {}),
     });
     if (ok) closeEdit();
   };
@@ -492,7 +500,7 @@ export default function WikiSourcesPanel() {
                   size="full"
                   value={editUrl}
                   onChange={setEditUrl}
-                  placeholder="https://git.example.com/org/repo.git"
+                  placeholder={t('wiki.create.gitUrlPlaceholder')}
                 />
               </Form.Item>
               {editUrlInvalid && (
@@ -506,6 +514,22 @@ export default function WikiSourcesPanel() {
                   value={editBranch}
                   onChange={setEditBranch}
                   placeholder={t('wiki.create.gitBranchPlaceholder')}
+                />
+              </Form.Item>
+              <Form.Item label={t('wiki.create.pathInclude')} extra={t('wiki.create.pathIncludeExtra')}>
+                <Input
+                  size="full"
+                  value={editPathInclude}
+                  onChange={setEditPathInclude}
+                  placeholder={t('wiki.create.pathIncludePlaceholder')}
+                />
+              </Form.Item>
+              <Form.Item label={t('wiki.create.pathExclude')}>
+                <Input
+                  size="full"
+                  value={editPathExclude}
+                  onChange={setEditPathExclude}
+                  placeholder={t('wiki.create.pathExcludePlaceholder')}
                 />
               </Form.Item>
               {/* 测试连接：编辑时预览候选 URL（body.source_url 覆盖），可达时下拉选分支 */}
@@ -586,7 +610,7 @@ export default function WikiSourcesPanel() {
                       size="full"
                       value={gitUrl}
                       onChange={setGitUrl}
-                      placeholder="https://git.example.com/org/repo.git"
+                      placeholder={t('wiki.create.gitUrlPlaceholder')}
                     />
                   </Form.Item>
                   {gitUrlInvalid && (

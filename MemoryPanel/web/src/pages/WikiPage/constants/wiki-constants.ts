@@ -28,12 +28,15 @@ export function wikiSourceTypeOf(detail: { source_type?: string | null }): WikiS
 }
 
 /**
- * 校验是否为合法的 HTTP(S) Git 仓库地址（与 CodeGraph 注册页一致）：
- * http/https 协议、host 含点、路径不含空格、以 .git 结尾。SSH（git@…）不算合法。
+ * 校验是否为合法的 Git 仓库地址（与 KS GitSourceFetcher.validate 对齐）：
+ *  - HTTPS：http/https 协议、host 含点、路径不含空格、以 .git 结尾；
+ *  - SSH：ssh://user@host[:port]/…/repo.git 或 scp 风格 git@host:group/repo.git。
+ * CodeGraph 注册页（code.register.*）仍仅支持 HTTPS。
  */
-const WIKI_GIT_HTTP_URL_RE = /^https?:\/\/[^\s/]+\.[^\s/]+\/[^\s]+\.git$/i;
+const WIKI_GIT_URL_RE =
+  /^(?:https?:\/\/[^\s/]+\.[^\s/]+\/[^\s]+|ssh:\/\/[^\s/@]+@[^\s/:]+(?::\d+)?\/[^\s]+|[^\s@]+@[^\s/:]+:[^\s]+)\.git$/i;
 export function isValidWikiGitUrl(raw: string): boolean {
-  return WIKI_GIT_HTTP_URL_RE.test(raw.trim());
+  return WIKI_GIT_URL_RE.test(raw.trim());
 }
 
 // Wiki 状态徽章：draft=建壳未加工（待用户点 ingest）；pending=排队；processing=加工中；ready=就绪；failed=失败；missing=KS 数据丢失。

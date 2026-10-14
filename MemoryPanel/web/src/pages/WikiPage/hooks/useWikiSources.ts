@@ -473,10 +473,10 @@ export function useWikiSources() {
   // 正在执行源管理操作（编辑保存/测试连接/暂停切换/重拉）的 wiki_id；用于按钮 loading/禁用。
   const [sourceBusyId, setSourceBusyId] = useState('');
 
-  /** 保存源编辑（url/branch）。成功后后端置 stale，徽标保持到"重新拉取"重建成功（后端清除）。 */
+  /** 保存源编辑（url/branch/path 正则）。成功后后端置 stale，徽标保持到"重新拉取"重建成功（后端清除）。 */
   const handleUpdateSource = async (
     wikiId: string,
-    patch: { source_url?: string; branch?: string },
+    patch: { source_url?: string; branch?: string; path_include?: string; path_exclude?: string },
   ): Promise<boolean> => {
     setSourceBusyId(wikiId);
     try {

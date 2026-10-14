@@ -57,6 +57,8 @@ export interface WikiListResult {
 export interface WikiSourceUpdatePatch {
   source_url?: string;
   branch?: string;
+  path_include?: string;
+  path_exclude?: string;
   enabled?: boolean;
 }
 

@@ -386,9 +386,10 @@ export const enUS = {
   'wiki.create.submit': 'Create',
   'wiki.create.sourceType': 'Source Type',
   'wiki.create.gitUrl': 'Git Repository URL',
-  'wiki.create.gitUrlExtra': 'Public HTTPS Git repo only, e.g. https://…/repo.git',
+  'wiki.create.gitUrlExtra': 'Supports HTTPS or SSH Git repos, e.g. https://…/repo.git or git@host:group/repo.git',
+  'wiki.create.gitUrlPlaceholder': 'https://git.example.com/org/repo.git or git@host:group/repo.git',
   'wiki.create.invalidUrl':
-    'Invalid Git repo URL (must be http(s) and end with .git; SSH is not supported)',
+    'Invalid Git repo URL (supports https://…/repo.git, ssh://…/repo.git, or git@host:group/repo.git)',
   'wiki.create.gitBranch': 'Branch',
   'wiki.create.gitBranchPlaceholder': 'main (default)',
   'wiki.create.pathInclude': 'Path include regex',

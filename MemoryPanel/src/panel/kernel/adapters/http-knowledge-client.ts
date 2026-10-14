@@ -124,7 +124,7 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
   }
 
   // ── 源管理（DS-PANEL-UI-WIKI-SOURCE-001 §1.3）──
-  // PATCH /wiki/:id/source：url/branch/enabled；stale 置位与清除全在 KS 侧。
+  // PATCH /wiki/:id/source：url/branch/path 正则/enabled；stale 置位与清除全在 KS 侧。
   async wikiUpdateSource(wikiId: string, patch: WikiSourceUpdatePatch): Promise<WikiDetail> {
     return this.request('PATCH', `/v3/wiki/${wikiId}/source`, patch);
   }
