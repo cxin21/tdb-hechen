@@ -139,7 +139,8 @@ export interface GoldenStore {
   upsertCore(slot: string, content: string, source: string, t?: unknown): boolean;
   upsertPendingCore(slot: string, content: string, evidence: number, t?: unknown, extra?: { label?: string; description?: string }): boolean;
   listPendingCore(t?: unknown, o?: { includeDecided?: boolean }): PendingRow[];
-  backfillMemoryRef(recordId: string, key: string, label: string, t?: unknown): boolean;
+  backfillMemoryRef(recordId: string, key: string, label: string, t?: unknown): boolean | Promise<boolean>;
+  backfillCoreRef(recordId: string, label: string, t?: unknown): boolean | Promise<boolean>;
   getAnchorGrowthState(...args: unknown[]): { lastDiscoveryAt?: string | null; lastCorpusCount?: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null; lastMaintAt?: string | null };
   setAnchorGrowthState(stateOrKey: unknown, valueOrTenant?: unknown, maybeTenant?: unknown): void;
   getIdentityDiscoveryState(t?: unknown): { lastAttemptAt?: string; lastCorpusCount?: number; supportMap?: Record<string, string[]> };
@@ -154,12 +155,14 @@ export interface GoldenStore {
     upsertCore: Array<{ slot: string; content: string; source: string }>;
     upsertPendingCore: Array<{ slot: string; content: string; evidence: number; label?: string; description?: string }>;
     backfillMemoryRef: Array<{ recordId: string; key: string; label: string }>;
+    backfillCoreRef: Array<{ recordId: string; label: string }>;
   };
 }
 
-export function createGoldenStore(seed?: { rows?: L1Row[]; values?: ValueRow[]; core?: Array<{ slot: string; content: string }> }): GoldenStore {
+export function createGoldenStore(seed?: { rows?: L1Row[]; values?: ValueRow[]; core?: Array<{ slot: string; content: string }>; backfillMode?: "ok" | "reject" | "false" }): GoldenStore {
   const corpus: L1Row[] = [...(seed?.rows ?? [])];
   const values: ValueRow[] = (seed?.values ?? []).map((v) => ({ ...v }));
+  const backfillMode = seed?.backfillMode ?? "ok";
   const core = new Map<string, { slot: string; content: string; version: number; source: string }>();
   for (const s of seed?.core ?? []) core.set(s.slot, { slot: s.slot, content: s.content, version: 1, source: "seed" });
   const pendings: PendingRow[] = [];
@@ -171,6 +174,7 @@ export function createGoldenStore(seed?: { rows?: L1Row[]; values?: ValueRow[]; 
     upsertCore: [] as GoldenStore["calls"]["upsertCore"],
     upsertPendingCore: [] as GoldenStore["calls"]["upsertPendingCore"],
     backfillMemoryRef: [] as GoldenStore["calls"]["backfillMemoryRef"],
+    backfillCoreRef: [] as GoldenStore["calls"]["backfillCoreRef"],
   };
 
   const base: Omit<GoldenStore, "calls"> = {
@@ -236,7 +240,13 @@ export function createGoldenStore(seed?: { rows?: L1Row[]; values?: ValueRow[]; 
     },
     backfillMemoryRef(recordId, key, label) {
       calls.backfillMemoryRef.push({ recordId, key, label });
-      return true;
+      if (backfillMode === "reject") return Promise.reject(new Error("backfill-boom"));
+      return backfillMode === "false" ? false : true;
+    },
+    backfillCoreRef(recordId, label) {
+      calls.backfillCoreRef.push({ recordId, label });
+      if (backfillMode === "reject") return Promise.reject(new Error("backfill-boom"));
+      return backfillMode === "false" ? false : true;
     },
     getAnchorGrowthState(...args: unknown[]) {
       const t = args[0] as { teamId?: string } | undefined;

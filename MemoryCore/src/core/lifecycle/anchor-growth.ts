@@ -225,6 +225,28 @@ function normalizeTriplet(t: CoreTenant): CoreTenant {
 }
 
 /**
+ * #9 T3：采纳副作用回填收口——allSettled 等待全部任务；fulfilled+true 计 ok，
+ * 其余（rejected / false）计 fail；fail>0 才结构化 warn（全部成功静默，宁缺毋滥）。
+ * 回填失败不得中断 runAnchorGrowth、不得成为 unhandled rejection。
+ */
+async function settleBackfills(
+  tasks: Array<Promise<boolean> | boolean>,
+  kind: string,
+  label: string,
+  logger?: Logger,
+): Promise<void> {
+  if (tasks.length === 0) return;
+  const settled = await Promise.allSettled(tasks);
+  let ok = 0;
+  let fail = 0;
+  for (const s of settled) {
+    if (s.status === "fulfilled" && s.value === true) ok++;
+    else fail++;
+  }
+  if (fail > 0) logger?.warn?.(`[anchor-growth] ${kind} backfill partial: ok=${ok} fail=${fail} label=${label}`);
+}
+
+/**
  * 自生长一轮（由 lifecycle-scheduler 在巩固周期后挂钩；best-effort，失败只 warn 不抛）。
  * PA：per-agent 严格独立——逐"有记忆的 agent 三元组"跑完整发现循环（双门/护栏/挤出
  * 全部 per-agent 独立计数）；任一 agent 的失败不阻断其它 agent（单 agent 内错误只
@@ -571,12 +593,15 @@ export async function runAnchorGrowth(deps: {
               adopted++; adoptedThisAgent++;
               // GROW-EVO P2.1（锚↔记忆双向链路）：采纳时把 label 回填进证据记录的 coreRefs
               // （证据口径 = recount 同款内容包含；R5 反查补池/Panel 金色节点/遗忘 salience 的数据前提）
+              // #9 T3：副作用收口——allSettled 批量等待，rejected/false 计数 warn，不炸 run。
+              const backfillTasks: Array<Promise<boolean> | boolean> = [];
               for (const r of rows) {
                 if (String((r as { content?: string }).content ?? "").includes(c.label)) {
                   const rid = String((r as { record_id?: string }).record_id ?? "");
-                  if (rid) store.backfillCoreRef?.(rid, c.label, tenant);
+                  if (rid) backfillTasks.push(Promise.resolve(store.backfillCoreRef?.(rid, c.label, tenant) ?? false));
                 }
               }
+              await settleBackfills(backfillTasks, "coreRefs", c.label, logger);
             }
             else { skipped++; logger?.warn?.(`[anchor-growth] adopt upsert failed: ${c.label}`); }
           }
@@ -652,13 +677,16 @@ export async function runAnchorGrowth(deps: {
                 adopted++;
                 adoptedThisAgent++;
                 // F12 证据链：personRefs 回填（命中口径 = personEv 同款 label/alias 包含）
+                // #9 T3：副作用收口——allSettled 批量等待，rejected/false 计数 warn，不炸 run。
+                const backfillTasks: Array<Promise<boolean> | boolean> = [];
                 for (const r of rows) {
                   const content = String((r as { content?: string }).content ?? "");
                   if ([c.label, ...c.aliases].some((nm) => content.includes(nm))) {
                     const rid = String((r as { record_id?: string }).record_id ?? "");
-                    if (rid) store.backfillMemoryRef?.(rid, "personRefs", c.label, tenant);
+                    if (rid) backfillTasks.push(Promise.resolve(store.backfillMemoryRef?.(rid, "personRefs", c.label, tenant) ?? false));
                   }
                 }
+                await settleBackfills(backfillTasks, "personRefs", c.label, logger);
               } else {
                 skipped++;
                 logger?.warn?.(`[anchor-growth] person adopt upsert failed: ${c.label}`);
