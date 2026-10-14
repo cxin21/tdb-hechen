@@ -45,6 +45,24 @@ export function sanitizeText(text: string): string {
   // Remove injected skill-selection wrappers, e.g. ¥¥[... ]¥¥
   cleaned = cleaned.replace(/¥¥\[[\s\S]*?\]¥¥/g, "");
 
+  // ── DSH harness 噪音剥离（2026-10-14 召回日志分析修复）：journal 实测查询文本携带
+  // 代理标记与回合脚手架，直接进 FTS/embedding 查询与 L0 语料造成污染——宁缺毋滥，
+  // capture 与 recall 双侧同剥（本函数两路共用）。──
+  // 1) acp 代理标记：<acp tokens="18" type="text">m02894</acp>
+  cleaned = cleaned.replace(/<acp\b[^>]*>[\s\S]*?<\/acp>/gi, "");
+  // 2) 系统注入块（提醒/情感/灵魂——整块含内容剥离）
+  cleaned = cleaned.replace(
+    /<(system-reminder|current_feeling|soul-identity|soul-feeling)\b[^>]*>[\s\S]*?<\/\1>/g,
+    "",
+  );
+  // 3) 回合脚手架行（时间采样/请求时区/回合间隔——整行剥离）
+  cleaned = cleaned.replace(
+    /^\s*(?:Time sampled while preparing turn\b[^\n]*|Elapsed since the preceding model-visible message:[^\n]*|Browser time zone for this request:[^\n]*)$/gim,
+    "",
+  );
+  // 4) 模型切换标记行（provider 名含斜杠，故不设右界）
+  cleaned = cleaned.replace(/^\s*\[model changed:[^\n]*$/gim, "");
+
   // Remove line-leading timestamps, e.g. "[Tue 2026-03-24 03:48 UTC]"
   // or "[Tue 2026-03-24 20:21 GMT+8]", "[Thu 2026-03-24 01:51 GMT+5:30]"
   // Matches brackets containing word chars, digits, hyphens, colons, plus signs,

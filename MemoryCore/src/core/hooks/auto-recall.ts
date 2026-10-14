@@ -1542,7 +1542,18 @@ async function searchMemories(
       validityNow,
     );
     // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
-    return { lines: cfg?.recall?.foldClusterEnabled === true ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines, timing: hybrid.timing };
+    // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
+    // 与 hybrid.scores/metas 全部丢弃——journal 永远无 gates.importancePenalty 的根因；
+    // 精排（applyRecallRerank 551-552）已支持 scores/metas 平行重映射，透传即兼容。
+    // 折叠开启时 metas 与折叠后行不再平行 → 不透传（防下游错位）。
+    const fallbackFolded = cfg?.recall?.foldClusterEnabled === true;
+    return {
+      lines: fallbackFolded ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines,
+      timing: hybrid.timing,
+      ...(hybrid.gates ? { gates: hybrid.gates } : {}),
+      ...(hybrid.scores ? { scores: hybrid.scores } : {}),
+      ...(!fallbackFolded && hybrid.metas ? { metas: hybrid.metas } : {}),
+    };
   } catch (err) {
     logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
     return emptyResult;
@@ -2335,6 +2346,9 @@ export async function searchHybrid(
     return {
       lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)),
       metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds })),
+      // 2026-10-14 观测性修复：fallback 消费方（searchMemories 1545）此前丢弃 scores →
+      // metric 上报全 0；此处随 metas 一并返回（rrfScore 刻度，与 lines 平行，精排重映射兼容）。
+      scores: visibleTop.map(([, v]) => v.rrfScore),
       timing,
       ...(importanceGateOut ? { gates: importanceGateOut } : {}),
     };
