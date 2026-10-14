@@ -900,6 +900,9 @@ export class VectorStore implements IMemoryStore {
     // 缺省 NULL = 旧提案逐位现状，label 门在采纳端（coerceCoreValueAnchor），NULL label 采纳即 422。
     try { this.db.exec("ALTER TABLE core_pending ADD COLUMN label TEXT"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE core_pending ADD COLUMN description TEXT"); } catch { /* exists */ }
+    // #19 T12（2026-10-14 拍板）：重提溯源字段——reproposal 通道把 {reproposed, supersedes, generation}
+    // 写进 attrs_json；Panel/审计可读。幂等 ALTER，存量库缺省 NULL = 旧提案逐位现状。
+    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN attrs_json TEXT"); } catch { /* exists */ }
     // GROW：自生长调度状态 kv（last_discovery_at / last_corpus_count）——重启不失忆，
     // 避免每次重启后 interval 门失效白烧一次发现 LLM 调用。
     this.db.exec("CREATE TABLE IF NOT EXISTS anchor_growth_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -2820,16 +2823,21 @@ export class VectorStore implements IMemoryStore {
 
   // ── O13（P2）：core_pending 三方法（同步——与 upsertCore/listValues 同款 sqlite 语义）────
 
-  upsertPendingCore(slot: string, content: string, evidence: number, tenant?: CoreTenant, extra?: { label?: string; description?: string }): boolean {
+  upsertPendingCore(slot: string, content: string, evidence: number, tenant?: CoreTenant, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): boolean {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
-      const pid = "pd-" + createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
-      this.db.prepare(`INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at, label, description)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(pending_id) DO UPDATE SET evidence = excluded.evidence, created_at = excluded.created_at, label = excluded.label, description = excluded.description
-        WHERE core_pending.state = 'pending'`).run(pid, slot, content, Math.max(0, Math.floor(evidence)), teamId, userId, agentId, new Date().toISOString(), extra?.label ?? null, extra?.description ?? null);
+      let pid = "pd-" + createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
+      // #19 T12：重提通道——同 slot|content 的 ON CONFLICT 更新被 WHERE state='pending' 挡住
+      // （rejected 行不可复活=V12 语义），重提案须生成新 id：基础 id + 生成代数后缀（确定性、
+      // 同代幂等；不同代并存互不覆盖，supersedes 溯源在 attrs_json）。
+      if (extra?.reproposalOf) pid = `${pid}-r${Math.max(1, Math.floor(extra.reproposalGen ?? 1))}`;
+      const attrsJson = extra?.attrs && Object.keys(extra.attrs).length > 0 ? JSON.stringify(extra.attrs) : null;
+      this.db.prepare(`INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at, label, description, attrs_json)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(pending_id) DO UPDATE SET evidence = excluded.evidence, created_at = excluded.created_at, label = excluded.label, description = excluded.description, attrs_json = excluded.attrs_json
+        WHERE core_pending.state = 'pending'`).run(pid, slot, content, Math.max(0, Math.floor(evidence)), teamId, userId, agentId, new Date().toISOString(), extra?.label ?? null, extra?.description ?? null, attrsJson);
       return true;
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_pending] upsertPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2837,13 +2845,13 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
-  listPendingCore(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null }> {
+  listPendingCore(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null }> {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
       const stateFilter = opts?.includeDecided ? "" : " AND state = 'pending'";
-      return this.db.prepare(`SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`).all(teamId, userId, agentId) as Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null }>;
+      return this.db.prepare(`SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description, attrs_json FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`).all(teamId, userId, agentId) as Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null }>;
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_pending] listPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];

@@ -1121,6 +1121,21 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             maxTotal: clampC("maxTotal", 8, 1, 50),
           };
         })(),
+        // #19 T12：rejected 域证据升级重提通道（缺省 false=V12-REPRO 逐位现状；config-first）。
+        reproposal: (() => {
+          const rg = obj(g, "reproposal");
+          const clampR = (key: string, dflt: number, lo: number, hi: number) => {
+            const rawR = num(rg, key);
+            if (rawR === undefined || !Number.isFinite(rawR)) return dflt;
+            return Math.min(hi, Math.max(lo, Math.floor(rawR)));
+          };
+          return {
+            enabled: bool(rg, "enabled") ?? false,
+            minEvidenceMultiple: clampR("minEvidenceMultiple", 2, 1, 10),
+            maxPerPass: clampR("maxPerPass", 2, 1, 5),
+            maxRejectsBeforeCold: clampR("maxRejectsBeforeCold", 2, 1, 10),
+          };
+        })(),
       };
     })(),
         // S-CHAR-2（M2/P3）：品格张力检测（enabled 缺省 false=逐位现状；clamp 同族防手滑）。

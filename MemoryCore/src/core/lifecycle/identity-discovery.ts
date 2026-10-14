@@ -13,6 +13,7 @@
  */
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
+import { createHash } from "node:crypto";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { selectSampleRows, DISCOVER_SAMPLE_CAP, DISCOVER_TRUNCATE_CHARS } from "../../gateway/core-values-discover.js";
 import { findDuplicateProposal } from "./proposal-dedup.js";
@@ -20,11 +21,53 @@ import { findDuplicateProposal } from "./proposal-dedup.js";
 // 注：不静态 import anchor-growth（它静态 import 本模块——环）；采纳门内动态 import 复用其导出。
 import { detectEvolutionReversal, recordTensionCandidates, drainTensionCandidates } from "../hooks/character-tension.js";
 
+export interface IdentityDiscoveryReproposalConfig {
+  /** #19 T12：重提通道开关——缺省 false = V12-REPRO 逐位现状（rejected 域静默拦截）。 */
+  enabled: boolean;
+  /** 证据相对门槛：重提需 ≥ minEvidenceMultiple × minEvidence（证据没涨不复活）。 */
+  minEvidenceMultiple: number;
+  /** 每轮重提上限（按证据降序截断）。 */
+  maxPerPass: number;
+  /** 同内容重提被拒达此次数 → 长冷（自动通道关闭，人工通道不受限）。 */
+  maxRejectsBeforeCold: number;
+}
+
+export const DEFAULT_IDENTITY_REPROPOSAL_CONFIG: IdentityDiscoveryReproposalConfig = {
+  enabled: false,
+  minEvidenceMultiple: 2,
+  maxPerPass: 2,
+  maxRejectsBeforeCold: 2,
+};
+
+/**
+ * #19 T12：pending 基础 id（与 store upsertPendingCore 的确定性哈希同式——sqlite.ts 契约）。
+ * 重提案 id = 基础 id + `-r<代数>` 后缀；base id 用于 supersedes 溯源（rejected 行不可复活）。
+ */
+export function pendingBaseId(slot: string, content: string, tenant?: CoreTenant): string {
+  const teamId = tenant?.teamId || "default";
+  const userId = tenant?.userId || "default";
+  const agentId = tenant?.agentId || "default";
+  return "pd-" + createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
+}
+
+/** #19 T12：pending 行重提溯源 attrs 安全解析（坏 JSON/非对象 → {}）。 */
+export function pendingReproposalAttrs(row: { attrs_json?: string | null }): { reproposed?: boolean; supersedes?: string; generation?: number; [key: string]: unknown } {
+  if (!row.attrs_json) return {};
+  try {
+    const a = JSON.parse(row.attrs_json) as unknown;
+    return a && typeof a === "object" && !Array.isArray(a) ? (a as { reproposed?: boolean; supersedes?: string; generation?: number }) : {};
+  } catch {
+    return {};
+  }
+}
+
 export interface IdentityDiscoveryConfig {
   enabled: boolean;
   minEvidence: number;
   maxPerPass: number;
   intervalHours: number;
+  /** #19 T12：rejected 域证据升级重提通道（缺省缺省=false=V12-REPRO 现状；config-first）。 */
+  reproposal?: IdentityDiscoveryReproposalConfig;
 }
 
 export const DEFAULT_IDENTITY_DISCOVERY_CONFIG: IdentityDiscoveryConfig = {
@@ -228,6 +271,9 @@ export async function runIdentityDiscovery(deps: {
         // GROW-MAINT 类重验证为后续纠偏层。core_value/strict_rule（红线类）→ pending 永不自动写入。
         const identityProps: Array<{ content: string; support?: number[] }> = [];        const charProps: Array<{ slot: string; content: string; rationale: string; label?: string; tensionRefs?: string[] }> = [];
         const selfProps: Array<{ content: string; support?: number[] }> = [];
+        // #19 T12：重提通道配置 + 本轮重提候选（flush 在提案循环后统一按证据降序截断落库）。
+        const reproCfg = { ...DEFAULT_IDENTITY_REPROPOSAL_CONFIG, ...(cfg.reproposal ?? {}) };
+        const reproCandidates: Array<{ slot: string; content: string; evidence: number; label?: string; description?: string; supersedes: string; generation: number; threshold: number }> = [];
         const maxSelf = dual ? Math.max(1, deps.selfIdentity?.maxPerPass ?? 2) : 0;
         for (const p of proposals) {
           if (p.slot === "identity") {
@@ -266,11 +312,41 @@ export async function runIdentityDiscovery(deps: {
             // V12-REPRO（2026-09-25 何晨拍板「在当前会话处理完」）：比对域纳入 rejected——被拒红线
             // 同义复提同样拦截（实证 1 例 TDAI 环境铁律变体 ≥0.75 复提；被拒内容留库可查，
             // 真有新证据走 core-memory/write 人工通道；低相似仍放行=宁漏勿错杀不变）。
-            const pendingRowsForGate = ((store as { listPendingCore?: (t?: unknown, o?: { includeDecided?: boolean }) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant, { includeDecided: true }) ?? []).filter((r) => r.state === "pending" || r.state === "rejected");
+            const pendingRowsForGate = ((store as { listPendingCore?: (t?: unknown, o?: { includeDecided?: boolean }) => Array<{ slot: string; content: string; state: string; attrs_json?: string | null }> }).listPendingCore?.(tenant, { includeDecided: true }) ?? []).filter((r) => r.state === "pending" || r.state === "rejected");
             const redlineExisting = existing.filter((s) => s.slot === "core_value" || s.slot === "strict_rule");
-            const dup = findDuplicateProposal(p.content, p.slot, [...pendingRowsForGate, ...redlineExisting]);
-            if (dup) {
-              logger?.info?.(`[identity-discovery] pending skipped (duplicate ${dup.similarity.toFixed(2)} vs: ${dup.content.slice(0, 50)}): ${p.content.slice(0, 60)}`);
+            // #19 T12：三分域去重——①在裁 pending 域（静默跳过，等人工裁决）②已采红线域
+            // （静默跳过）③rejected 域（重提通道：enabled + 证据 ≥2×minEvidence + 未长冷 →
+            // 生成带溯源的重提案；disabled = V12-REPRO 逐位现状静默拦截）。
+            const activePendingRows = pendingRowsForGate.filter((r) => r.state === "pending");
+            const rejectedPendingRows = pendingRowsForGate.filter((r) => r.state === "rejected");
+            const dupPending = findDuplicateProposal(p.content, p.slot, activePendingRows);
+            const dupAdopted = dupPending ? undefined : findDuplicateProposal(p.content, p.slot, redlineExisting);
+            if (dupPending || dupAdopted) {
+              const hit = (dupPending ?? dupAdopted)!;
+              logger?.info?.(`[identity-discovery] pending skipped (duplicate ${hit.similarity.toFixed(2)} vs: ${hit.content.slice(0, 50)}): ${p.content.slice(0, 60)}`);
+              continue;
+            }
+            const dupRejected = findDuplicateProposal(p.content, p.slot, rejectedPendingRows);
+            if (dupRejected) {
+              if (!reproCfg.enabled) {
+                // V12-REPRO 基线语义（拍板「被拒红线同义复提同样拦截」）。
+                logger?.info?.(`[identity-discovery] pending skipped (rejected-domain duplicate ${dupRejected.similarity.toFixed(2)} vs: ${dupRejected.content.slice(0, 50)}): ${p.content.slice(0, 60)}`);
+                continue;
+              }
+              const evR = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
+              const threshold = Math.ceil(reproCfg.minEvidenceMultiple * cfg.minEvidence);
+              if (evR < threshold) {
+                logger?.info?.(`[identity-discovery] reproposal withheld (evidence ${evR} < ${threshold}, V12-REPRO keeps blocking): ${p.content.slice(0, 60)}`);
+                continue;
+              }
+              const baseId = pendingBaseId(p.slot, p.content, tenant);
+              // 溯源自派生（core_pending 表自身即状态）：重提被拒次数 = supersedes 指向 base 的 rejected 行数。
+              const rejectCount = rejectedPendingRows.filter((r) => pendingReproposalAttrs(r).supersedes === baseId).length;
+              if (rejectCount >= reproCfg.maxRejectsBeforeCold) {
+                logger?.info?.(`[identity-discovery] reproposal long-cold (rejected ${rejectCount}×; manual channel still open): ${p.content.slice(0, 60)}`);
+                continue;
+              }
+              reproCandidates.push({ slot: p.slot, content: p.content, evidence: evR, label: p.label, description: p.description, supersedes: baseId, generation: rejectCount + 1, threshold });
               continue;
             }
             const ev = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
@@ -283,6 +359,25 @@ export async function runIdentityDiscovery(deps: {
             if (deps.characterTension?.enabled === true) charProps.push(p);
           } else {
             pendingThis++;
+          }
+        }
+        // #19 T12：重提案 flush——按证据降序取 maxPerPass，写入带溯源 attrs 的新 pending 行
+        // （store 层 pending_id 后缀 -rN；rejected 行不可复活=V12 语义保持，supersedes 可回溯）。
+        if (reproCandidates.length > 0) {
+          const ordered = [...reproCandidates].sort((a, b) => b.evidence - a.evidence).slice(0, Math.max(1, reproCfg.maxPerPass));
+          for (const rc of ordered) {
+            const persistedR = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }) => boolean }).upsertPendingCore?.(rc.slot, rc.content, rc.evidence, tenant, {
+              label: rc.label,
+              description: rc.description,
+              attrs: { reproposed: true, supersedes: rc.supersedes, generation: rc.generation, reproposed_at: new Date().toISOString(), evidence_threshold: rc.threshold },
+              reproposalOf: rc.supersedes,
+              reproposalGen: rc.generation,
+            });
+            pendingThis++;
+            logger?.info?.(`[identity-discovery] reproposed ${rc.slot} (gen=${rc.generation}, evidence=${rc.evidence} >= ${rc.threshold}): ${rc.content.slice(0, 60)}${persistedR ? ", persisted" : ""}`);
+          }
+          if (ordered.length < reproCandidates.length) {
+            logger?.info?.(`[identity-discovery] reproposal per-pass cap: ${reproCandidates.length - ordered.length} withheld (maxPerPass=${reproCfg.maxPerPass})`);
           }
         }
         // identity slot 单行语义：多提案合并为 bulleted 身份描述，version++ 演化

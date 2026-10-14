@@ -84,6 +84,8 @@ export interface AnchorDiscoveryConfig {
    * 时不新建碎片锚，改为增量更新既有锚（证据重算 weight 走同刻度通道）。
    * 缺省 false=逐位现状（config-first 铁律）；yaml 显式开启后生效。 */
   similarMerge: { enabled: boolean; threshold: number };
+  /** #19 T12：rejected 域证据升级重提通道（identity-discovery 消费；缺省缺省=false=V12-REPRO 现状）。 */
+  reproposal?: { enabled: boolean; minEvidenceMultiple: number; maxPerPass: number; maxRejectsBeforeCold: number };
 }
 
 export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
