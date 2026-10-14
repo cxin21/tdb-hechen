@@ -798,7 +798,14 @@ export async function runAnchorGrowth(deps: {
                   // #15 T8b：slug 碰撞守卫同款（character 域 c- 命名空间内防互覆）
                   resolveGrowthValueId(c.label, "character", anyState2 as CoreValueRow[]), c.label,
                   suggestAnchorWeight(c.evidenceCount, corpus.length), "auto-growth", tenant,
-                  undefined, "auto", "character", { source: "self_identity", facts: factSlices.slice(0, 3) },
+                  undefined, "auto", "character",
+                  {
+                    source: "self_identity",
+                    facts: factSlices.slice(0, 3),
+                    // #7 T1（issue #7）：rationale→attrs.description（#20 合同 v2，单一源
+                    // sanitizer+episode 门）——缺失则无 description 键，渲染端宁缺毋滥跳过。
+                    ...anchorDescriptionAttr(c.rationale),
+                  },
                 ));
                 if (ok) { adopted++; adoptedThisAgent++; } else { skipped++; logger?.warn?.(`[anchor-growth] character adopt upsert failed: ${c.label}`); }
               }

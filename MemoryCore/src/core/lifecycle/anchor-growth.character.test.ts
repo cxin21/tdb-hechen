@@ -63,7 +63,8 @@ describe("character 池（P3 品格锚）", () => {
     const runner = makeRunnerByTask({
       "core-values-discover-growth": "[]",
       "person-discover-growth": "[]",
-      "character-discover-growth": '[{"label":"守诺","rationale":"自我事实反复承诺","fact":"我承诺每周五出周报"}]',
+      // #7 T1：rationale 走 #20 合同 v2（情境+取向），采纳端落 attrs.description
+      "character-discover-growth": '[{"label":"守诺","rationale":"对交付承诺反复兑现，宁可少接不食言。","fact":"我承诺每周五出周报"}]',
     });
     const res = await runAnchorGrowth({
       store: store as never,
@@ -76,8 +77,31 @@ describe("character 池（P3 品格锚）", () => {
     expect(up).toBeTruthy();
     expect(up[0]).toMatch(/^c-auto-[0-9a-f]{10}$/); // 中文 slug 清空 → c-auto-<hash>
     expect(up[7]).toBe("character");
-    // attrs.facts = 自我事实切片快照（factSlices 前 3 条，整槽口径）
-    expect(up[8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报", "我的风格是先给结论"] });
+    // #7 T1：attrs.facts = 自我事实切片快照 + attrs.description = rationale 经单一源 sanitizer
+    expect(up[8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报", "我的风格是先给结论"], description: "对交付承诺反复兑现，宁可少接不食言。" });
+  });
+
+  it("#7 T1：rationale 命中 episode 门 → attrs 无 description（锚照常采纳，渲染端跳过）", async () => {
+    const rows = [corpusRow("r1", "我承诺每周五出周报")];
+    const store = makeStore({ rows });
+    (store as unknown as { readCore: ReturnType<typeof vi.fn> }).readCore = vi.fn(() => [
+      { slot: "self_identity", content: "- 我承诺每周五出周报" },
+    ]);
+    const runner = makeRunnerByTask({
+      "core-values-discover-growth": "[]",
+      "person-discover-growth": "[]",
+      "character-discover-growth": '[{"label":"守诺","rationale":"2026-09-01 承诺周报。","fact":"我承诺每周五出周报"}]',
+    });
+    await runAnchorGrowth({
+      store: store as never,
+      llmRunner: runner as never,
+      logger: LOG,
+      now: () => NOW,
+      config: { character: { enabled: true, minEvidence: 1, maxPerPass: 2, maxTotal: 8 } },
+    });
+    const up = store.upsertValue.mock.calls.find((c) => c[1] === "守诺");
+    expect(up).toBeTruthy(); // 锚照常采纳（宁缺毋滥：desc 缺失只影响渲染）
+    expect(up![8]).toEqual({ source: "self_identity", facts: ["我承诺每周五出周报"] }); // 无 description 键
   });
 
   it("disabled → 无 character LLM 调用（逐位现状）", async () => {

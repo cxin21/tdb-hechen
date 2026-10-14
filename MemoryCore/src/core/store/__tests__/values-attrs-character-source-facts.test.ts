@@ -13,17 +13,24 @@ import os from "node:os";
 import path from "node:path";
 import { VectorStore } from "../sqlite.js";
 
-function makeStore(): { store: VectorStore; dir: string } {
+function makeStore(): { store: VectorStore; dir: string; close: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "values-char-attrs-"));
   const store = new VectorStore(path.join(dir, "vectors.db"), 0);
   const initRes = store.init();
   if (store.isDegraded()) throw new Error(`临时库初始化降级：${initRes.reason}`);
-  return { store, dir };
+  // Windows EBUSY 修复：VectorStore 无 destroy 通道，finally 清理 tmpdir 前必须
+  // 显式关 better-sqlite3 句柄，否则 unlink 报 resource busy（断言本身已通过）。
+  const close = () => {
+    try {
+      (store as unknown as { db: { close(): void } }).db.close();
+    } catch { /* 已关/降级态忽略 */ }
+  };
+  return { store, dir, close };
 }
 
 describe("upsertValue attrs.source/facts 持久化（F2 品格采纳通道）", () => {
   it("source+facts 新建 → attrs_json 保留 source/facts", () => {
-    const { store, dir } = makeStore();
+    const { store, dir, close } = makeStore();
     try {
       const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
       const ok = store.upsertValue(
@@ -40,12 +47,13 @@ describe("upsertValue attrs.source/facts 持久化（F2 品格采纳通道）", 
       expect(attrs.source).toBe("self_identity");
       expect(attrs.facts).toEqual(["承诺反复被践行", "交付节奏稳定"]);
     } finally {
+      close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("role/aliases/description/source/facts 五字段同传 → attrs_json 全量保留", () => {
-    const { store, dir } = makeStore();
+    const { store, dir, close } = makeStore();
     try {
       const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
       store.upsertValue(
@@ -60,12 +68,13 @@ describe("upsertValue attrs.source/facts 持久化（F2 品格采纳通道）", 
       expect(attrs.source).toBe("self_identity");
       expect(attrs.facts).toEqual(["要求附 file:line"]);
     } finally {
+      close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("冲突路径 attrs=undefined → 原 attrs_json 不被触碰（F1 依赖的存储语义护栏）", () => {
-    const { store, dir } = makeStore();
+    const { store, dir, close } = makeStore();
     try {
       const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
       store.upsertValue("p-desc", "何晨", 0.3, "auto-growth", TENANT, undefined, "auto", "person", { description: "TDB 负责人" });
@@ -76,6 +85,7 @@ describe("upsertValue attrs.source/facts 持久化（F2 品格采纳通道）", 
       const attrs = JSON.parse(hit!.attrs_json);
       expect(attrs.description).toBe("TDB 负责人");
     } finally {
+      close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
