@@ -37,8 +37,9 @@ function makeTcvdb(dir: string): TcvdbMemoryStore {
 describe("56 号·tcvdb facade 9 参透传（截断防复发）", () => {
   it("nodeType=character + attrs 经 facade upsertValue → 落库保留（现行 7 参截断=RED）", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sig-char-"));
+    let tc: TcvdbMemoryStore | undefined;
     try {
-      const tc = makeTcvdb(dir);
+      tc = makeTcvdb(dir);
       await tc.init();
       const ok = await tc.upsertValue(
         "c-shounuo", "守诺", 0.5, "auto-growth", TENANT, undefined,
@@ -54,6 +55,7 @@ describe("56 号·tcvdb facade 9 参透传（截断防复发）", () => {
       expect(attrs.source).toBe("self_identity"); // 截断时=undefined → RED
       expect(attrs.facts).toEqual(["承诺反复被践行", "交付节奏稳定"]);
     } finally {
+      tc?.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -62,11 +64,13 @@ describe("56 号·tcvdb facade 9 参透传（截断防复发）", () => {
 describe("56 号·tcvdb 读面透传（character 行可读回）", () => {
   it("listValues/listValuesAnyState 透传 node_type+attrs_json（伴生库直插 character 行）", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sig-read-"));
+    let tc: TcvdbMemoryStore | undefined;
+    let aux: VectorStore | undefined;
     try {
-      const tc = makeTcvdb(dir);
+      tc = makeTcvdb(dir);
       await tc.init();
       // 伴生库直插 character 行（绕开 facade 写面，单独验读面委托不筛列）
-      const aux = new VectorStore(path.join(dir, "aux.db"), 0);
+      aux = new VectorStore(path.join(dir, "aux.db"), 0);
       aux.init();
       aux.upsertValue("c-zhixing", "知行合一", 0.4, "auto-growth", TENANT, undefined, "auto", "character", { source: "self_identity", facts: ["f1"] });
       const active = await tc.listValues(TENANT);
@@ -77,6 +81,8 @@ describe("56 号·tcvdb 读面透传（character 行可读回）", () => {
       expect(hitS?.node_type).toBe("character");
       expect(typeof hitS?.attrs_json).toBe("string");
     } finally {
+      tc?.close();
+      aux?.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

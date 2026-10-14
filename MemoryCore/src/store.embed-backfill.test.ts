@@ -12,13 +12,19 @@ import { VectorStore } from "./core/store/sqlite.js";
 import type { MemoryRecord } from "./core/store/types.js";
 
 const cleanup: string[] = [];
-afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recursive: true, force: true }); });
+const cleanupStores: VectorStore[] = [];
+// Windows EBUSY：sqlite 句柄未关即 rmSync 会锁临时文件——afterEach 先 close 再删目录
+afterEach(() => {
+  while (cleanupStores.length) cleanupStores.pop()!.close();
+  while (cleanup.length) rmSync(cleanup.pop()!, { recursive: true, force: true });
+});
 
 const DIM = 4;
 async function makeStore(): Promise<VectorStore> {
   const dir = mkdtempSync(join(tmpdir(), "embed-backfill-"));
   cleanup.push(dir);
   const s = new VectorStore(join(dir, "v.db"), DIM);
+  cleanupStores.push(s);
   await s.init();
   return s;
 }

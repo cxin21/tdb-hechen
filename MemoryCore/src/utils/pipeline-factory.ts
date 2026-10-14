@@ -637,7 +637,8 @@ export function createL1Runner(opts: {
             // 思考开关 config-first 接线（2026-10-14，对齐 L2 R4 形状）：cfg.persona.
             // reasoningEffort → L1 提取/dedup/enrich 全链透传；不支持的端点由
             // llm-runner 400 剥参降级兜底（两种端点都兼容，yaml 配置语义不变）。
-            reasoningEffort: cfg.persona.reasoningEffort,
+            // persona 段可选（测试/旧形状 config 无 persona）→ 软读取。
+            reasoningEffort: cfg.persona?.reasoningEffort,
           },
           logger,
           instanceId: getInstanceId?.(),

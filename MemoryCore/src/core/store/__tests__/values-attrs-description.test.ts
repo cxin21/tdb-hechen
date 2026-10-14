@@ -35,6 +35,7 @@ describe("upsertValue attrs.description 持久化（rationale 通道）", () => 
       expect(attrs.role).toBe("同事");
       expect(attrs.aliases).toEqual(["小七"]);
     } finally {
+      store.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -49,6 +50,7 @@ describe("upsertValue attrs.description 持久化（rationale 通道）", () => 
       expect(attrs.description).toBe("每个批次都四态收口");
       expect(attrs.role).toBeUndefined();
     } finally {
+      store.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -61,6 +63,7 @@ describe("upsertValue attrs.description 持久化（rationale 通道）", () => 
       const rows = store.listValues(TENANT) as Array<{ attrs_json: string }>;
       expect(rows[0].attrs_json).toBe("{}");
     } finally {
+      store.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
