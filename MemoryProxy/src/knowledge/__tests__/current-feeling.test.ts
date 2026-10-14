@@ -53,13 +53,13 @@ describe("C2 动机方向：三态方向行（spec §3.3）", () => {
   it("valence=0 / NULL / 缺省 → 不输出方向行（宁缺毋滥 + D1 兜底）", () => {
     const zero = renderCurrentFeeling("聊聊中性", cfg([{ id: "n", label: "中性", weight: 0.9, valence: 0 }]));
     expect(zero).not.toContain("本轮方向");
-    expect(zero).toContain("中性(n)");
+    expect(zero).toContain("中性");
     const nullV = renderCurrentFeeling("聊聊正确", cfg([{ id: "c", label: "正确", weight: 0.9, valence: null }]));
     expect(nullV).not.toContain("本轮方向");
     // 存量兼容：config.yaml fallback 值没有 valence 字段
     const noField = renderCurrentFeeling("聊聊性能", cfg([{ id: "p", label: "性能", weight: 0.9 }]));
     expect(noField).not.toContain("本轮方向");
-    expect(noField).toContain("性能(p)");
+    expect(noField).toContain("性能");
   });
 
   it("方向行只含 fired 的值（未命中价值不进方向行）", () => {
@@ -69,5 +69,40 @@ describe("C2 动机方向：三态方向行（spec §3.3）", () => {
     ]));
     expect(block).toContain("围绕【正确】推进");
     expect(block).not.toContain("对【风险】保持审慎");
+  });
+});
+
+describe("#8 T2：tags 只渲染 label，不泄漏 value_id + 同 label 去重", () => {
+  it("tags 不含 id 后缀（内部主键不得进 prompt）", () => {
+    const block = renderCurrentFeeling("这块性能太差", {
+      enabled: true, firedThreshold: 0.4,
+      values: [{ id: "auto-0d0e1a86b3", label: "性能", weight: 0.8 }],
+    });
+    expect(block).toContain("当前问题触及的核心价值：性能。");
+    expect(block).not.toContain("(auto-");
+    expect(block).not.toContain("(perf");
+  });
+
+  it("同 label 双源重复（config fallback + 表源）只渲染一次", () => {
+    const block = renderCurrentFeeling("这块性能太差", {
+      enabled: true, firedThreshold: 0.4,
+      values: [
+        { id: "auto-aaaa111111", label: "性能", weight: 0.8 },
+        { id: "perf", label: "性能", weight: 0.7 },
+      ],
+    });
+    expect(block.split("性能").length - 1).toBe(1);
+  });
+
+  it("方向行同 label 也不重复", () => {
+    const block = renderCurrentFeeling("这块性能太差", {
+      enabled: true, firedThreshold: 0.4,
+      values: [
+        { id: "auto-aaaa111111", label: "性能", weight: 0.8, valence: 1 },
+        { id: "perf", label: "性能", weight: 0.7, valence: 1 },
+      ],
+    });
+    expect(block).toContain("本轮方向：围绕【性能】推进");
+    expect(block.split("性能").length - 1).toBe(2); // tags 1 + 方向行 1
   });
 });

@@ -32,11 +32,20 @@ export function renderCurrentFeeling(query: string, cfg: AppraisalConfig): strin
   const q = query.toLowerCase();
   const fired = cfg.values.filter((v) => v.label && q.includes(v.label.toLowerCase()) && v.weight >= cfg.firedThreshold);
   if (fired.length === 0) return "";
-  const tags = fired.map((v) => `${v.label}(${v.id})`).join(", ");
+  // #8 T2：tags/方向行只渲染 label——value_id 是内部主键（含 auto-<sha256> 形态），不得进 prompt；
+  // 同 label（双源 fallback+表源）去重，保序取首个命中配置。
+  const seen = new Set<string>();
+  const deduped = fired.filter((v) => {
+    const key = v.label.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const tags = deduped.map((v) => v.label).join(", ");
   // C2（spec §3.3）动机方向行：仅 fired 且 valence 非 NULL 非 0 才出（宁缺毋滥，现状保留）。
   // 措辞陈述性（判定的语义倾向，不是情绪）；混合（同轮命中正负）两行并列——不合成、不假装权衡过。
-  const pos = fired.filter((v) => v.valence != null && v.valence > 0).map((v) => v.label);
-  const neg = fired.filter((v) => v.valence != null && v.valence < 0).map((v) => v.label);
+  const pos = deduped.filter((v) => v.valence != null && v.valence > 0).map((v) => v.label);
+  const neg = deduped.filter((v) => v.valence != null && v.valence < 0).map((v) => v.label);
   const directionLines: string[] = [];
   if (pos.length > 0) directionLines.push(`本轮方向：围绕【${pos.join("、")}】推进`);
   if (neg.length > 0) directionLines.push(`本轮方向：对【${neg.join("、")}】保持审慎`);

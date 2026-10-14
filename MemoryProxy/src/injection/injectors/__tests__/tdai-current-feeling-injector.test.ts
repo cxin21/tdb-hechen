@@ -150,8 +150,8 @@ describe("T16 解冻：TdaiCurrentFeelingInjector 每轮重算", () => {
     expect(r1.length).toBe(1);
     expect(r2.length).toBe(1);
     expect(r1[0].content).toContain("<current_feeling>");
-    expect(r1[0].content).toContain("性能(perf)");
-    expect(r2[0].content).toContain("结算(settle)");
+    expect(r1[0].content).toContain("当前问题触及的核心价值：性能。");
+    expect(r2[0].content).toContain("当前问题触及的核心价值：结算。");
     expect(r1[0].content).not.toBe(r2[0].content);
   });
 
@@ -201,7 +201,7 @@ describe("T16 解冻：TdaiCurrentFeelingInjector 每轮重算", () => {
     );
     const r = await injector.execute(makeCtx("性能很差", SESSION_A));
     expect(r.length).toBe(1);
-    expect(r[0].content).toContain("性能(perf)");
+    expect(r[0].content).toContain("当前问题触及的核心价值：性能。");
   });
 
   it("prewarm 白名单：cacheStrategy=none，prewarmAll 不缓存感受块 injector", async () => {
@@ -242,26 +242,29 @@ describe("T16 解冻：TdaiCurrentFeelingInjector 每轮重算", () => {
   });
 
   it("租户键：双租户交替 → 各自感受块（复用 T12 corecache 模式）", async () => {
+    // #8 后渲染只含 label——租户隔离改用不同 label 区分（值源仍按租户分桶）
     stubFetchRouter({
       byUrl: {},
       byTeam: {
-        teamA: { values: [{ value_id: "perfA", label: "性能", weight: 0.9 }], slots: [] },
-        teamB: { values: [{ value_id: "perfB", label: "性能", weight: 0.9 }], slots: [] },
+        teamA: { values: [{ value_id: "perfA", label: "交付质量", weight: 0.9 }], slots: [] },
+        teamB: { values: [{ value_id: "perfB", label: "成本", weight: 0.9 }], slots: [] },
       },
     });
     const injector = new TdaiCurrentFeelingInjector(
       makeConfig({ enabled: true, firedThreshold: 0.4, values: [] }),
     );
 
-    const a1 = await injector.execute(makeCtx("性能很差", SESSION_A));
-    const b1 = await injector.execute(makeCtx("性能很差", SESSION_B));
-    const a2 = await injector.execute(makeCtx("性能很差", SESSION_A));
-    const b2 = await injector.execute(makeCtx("性能很差", SESSION_B));
+    const a1 = await injector.execute(makeCtx("交付质量很差", SESSION_A));
+    const b1 = await injector.execute(makeCtx("成本超了", SESSION_B));
+    const a2 = await injector.execute(makeCtx("交付质量很差", SESSION_A));
+    const b2 = await injector.execute(makeCtx("成本超了", SESSION_B));
 
-    expect(a1[0].content).toContain("性能(perfA)");
-    expect(b1[0].content).toContain("性能(perfB)");
-    expect(a2[0].content).toContain("性能(perfA)");
-    expect(b2[0].content).toContain("性能(perfB)");
+    expect(a1[0].content).toContain("当前问题触及的核心价值：交付质量。");
+    expect(b1[0].content).toContain("当前问题触及的核心价值：成本。");
+    expect(a2[0].content).toContain("当前问题触及的核心价值：交付质量。");
+    expect(b2[0].content).toContain("当前问题触及的核心价值：成本。");
+    expect(a1[0].content).not.toContain("成本");
+    expect(b1[0].content).not.toContain("交付质量");
   });
 
   // C2（spec §3.3）：core_values 携带 valence → loadAppraisalValues 透传 → 方向行渲染。
@@ -292,7 +295,7 @@ describe("T16 解冻：TdaiCurrentFeelingInjector 每轮重算", () => {
     );
     const r = await injector.execute(makeCtx("性能很差", SESSION_A));
     expect(r.length).toBe(1);
-    expect(r[0].content).toContain("性能(perf)");
+    expect(r[0].content).toContain("当前问题触及的核心价值：性能。");
     expect(r[0].content).not.toContain("本轮方向");
   });
 });
