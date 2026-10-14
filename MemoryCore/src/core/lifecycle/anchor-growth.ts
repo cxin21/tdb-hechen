@@ -53,7 +53,7 @@ import {
 import { identityFactMatchesCorpus, identityFactSlice } from "./identity-discovery.js";
 // P0-1A（issue #1，2026-10-13）：写入口 description sanitizer 单一源（core/hooks/anchor-desc）——
 // 自生长采纳端与 pending-adopt-merge/coerceCoreValueAnchor 共用同一句边界清洗。
-import { anchorDescriptionAttr, existingDescription } from "../hooks/anchor-desc.js";
+import { anchorDescriptionAttr, existingDescription, descContractPromptLine } from "../hooks/anchor-desc.js";
 // S-CHAR-2（M2/P3）：品格张力 T2 检测单一源（检测纯函数+内存注册表；enabled 门控零行为差异）。
 import { computeT2Candidates, recordTensionCandidates } from "../hooks/character-tension.js";
 
@@ -889,7 +889,9 @@ export const CHARACTER_DISCOVER_SYSTEM_PROMPT = [
   "2. 已有品格锚清单中的标签不得重复提议（去重）。",
   "3. 宁缺毋滥：估计支撑证据少于门槛的不要提；label 为品格词（≤6 字），不是事实复述。",
   "4. 每条提案标注其依据的自我事实原文（fact 字段，逐字摘自给定事实）。",
-  "5. 只输出一个 JSON 数组，不要输出任何其它文字：[\"label\":\"…\",\"rationale\":\"…\",\"fact\":\"…\"]，无提议输出 []。",
+  // #20 T13：rationale→desc 合同 v2 单一源（#7 T1 采纳端把 rationale 落 attrs.description）。
+  "5. " + descContractPromptLine() + "（品格场景：写「该品格在什么情境下如何影响行为」）。",
+  "6. 只输出一个 JSON 数组，不要输出任何其它文字：[{\"label\":\"…\",\"rationale\":\"…\",\"fact\":\"…\"}]，无提议输出 []。",
 ].join("\n");
 
 /** P3：user prompt——自我事实清单 + 既有品格锚清单 + 输出格式。 */
@@ -903,7 +905,7 @@ export function buildCharacterDiscoverPrompt(selfFacts: string[], existing: stri
     for (const e of existing) lines.push("- " + e);
   }
   lines.push("");
-  lines.push("请输出品格提案 JSON 数组（字段：label/rationale/fact）。无合格提议输出 []。");
+  lines.push("请输出品格提案 JSON 数组（字段：label/rationale/fact；rationale 按「情境+行为取向」合同写）。无合格提议输出 []。");
   return lines.join("\n");
 }
 

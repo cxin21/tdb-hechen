@@ -10,6 +10,10 @@
  */
 import { sanitizeJsonForParse } from "../utils/sanitize.js";
 import type { L1RecordRow } from "../core/store/types.js";
+import { descContractPromptLine } from "../core/hooks/anchor-desc.js";
+
+/** #20 T13：人物场景合同好例（保持人物关系语义，仍为「情境+取向」句式）。 */
+export const DESC_CONTRACT_EXAMPLE_PERSON = "技术决策上反复请教的核心同事，倾向先测后改。";
 
 /** 样本硬上限（prompt 预算：50 条 × 截断 200 字）。 */
 export const DISCOVER_SAMPLE_CAP = 50;
@@ -293,6 +297,9 @@ export const DISCOVER_SYSTEM_PROMPT = [
   "6. aliases（可选）：同一主题的常见同义/变体措辞（逐字摘自样本，≤3 个，不得跨主题）——",
   "   系统按 label 或任一 alias 在语料中做逐字包含计数验证证据，并按全变体集合去重；",
   "   语义上没有变体时省略该字段，宁缺毋滥。",
+  // #20 T13：desc 内容合同 v2 单一源（anchor-desc.js DESC_CONTRACT_V2）——rationale 采纳端
+  // 直接落 attrs.description（灵魂注入锚点描述），从「定义句」升级为「情境+取向」句式。
+  "6b. " + descContractPromptLine(),
   "7. 只输出一个 JSON 数组，不要输出任何其它文字：[{\"label\":\"…\",\"rationale\":\"…\",\"aliases\":[\"…\"],\"evidenceCount\":N}]，无提议输出 []。",
 ].join("\n");
 
@@ -321,7 +328,8 @@ export function buildDiscoverPrompt(sampleContents: string[], existingLabels: st
   lines.push(`只提证据充分的主题：支撑证据（命中的记忆条数）少于 ${DISCOVER_MIN_EVIDENCE} 条的不要提。`);
   // P0-1A（issue #1，2026-10-13）：rationale 采纳端直接落 attrs.description（灵魂注入锚点
   // 描述），要求一句完整陈述（含句号、≤60 字）——不合格会被写入口句边界 sanitizer 置空。
-  lines.push("只输出 JSON 数组：[{\"label\":\"主题名\",\"rationale\":\"为什么值得作为价值锚（一句完整陈述，不超过60字，以句号结尾）\",\"evidenceCount\":估计证据条数}]，无提议输出 []。");
+  // #20 T13：输出指令同步合同 v2（全合同见 system prompt 6b，单一源 descContractPromptLine）。
+  lines.push("只输出 JSON 数组：[{\"label\":\"主题名\",\"rationale\":\"一句「情境短语+行为取向」陈述（≤60字，以句号结尾）\",\"evidenceCount\":估计证据条数}]，无提议输出 []。");
   return lines.join("\n");
 }
 
@@ -422,7 +430,7 @@ export const PERSON_DISCOVER_SYSTEM_PROMPT = [
   "2. 宁缺毋滥：没有把握就不提案；宁可不输出，也不虚构或凑数。",
   "3. 人物锚是稳定的关系层，不是事件：禁止把单一事件、状态、项目阶段包装成人物。",
   "4. role 只能取：家人 / 同事 / 朋友 / 其他；aliases 填用户对该人物的实际称呼变体（昵称/简称），没有则空数组。",
-  "4b. description 是一句对人物关系的完整陈述（不超过60字，以句号结尾，如\"技术决策上反复请教的核心同事，倾向先测后改。\"）；写不出合格一句话就省略该字段——宁缺毋滥，禁止事件叙述。",
+  "4b. " + descContractPromptLine() + "（人物关系场景：写「在什么情境下与该人物如何协作/相处」，如\"" + DESC_CONTRACT_EXAMPLE_PERSON + "\"）",
   "5. 既有名单中已存在的人物（label 或任一 alias 命中）不得重复提案。**一人一行**：同一人物只允许一条锚；称呼变体（如\"何晨\"与\"何总\"）视为同一人物，把变体放进 aliases 而不是另提新锚；无法确证两个称呼是同一人时，宁可不提。",
   "6. role 只作参考描述：同一人物若在既有名单中 role 不同（如既有\"同事\"又想提\"朋友\"），仍属重复提案，不得借 role 差异另立新锚。",
   "",

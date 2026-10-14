@@ -1,0 +1,17 @@
+# CONTEXT.md — td-agemem 域词典与架构决定索引
+
+> single-context 布局（见 docs/agents/domain.md）：本文件是全仓库唯一域词典；架构决定一律落 `docs/adr/`。动手改代码前先读相关词条。
+
+## 域词典
+
+- **价值锚（core_values / 锚）**：软取向轴——带权重（weight）与方向（valence）的稳定价值偏好，经四消费点间接生效（soul 注入 / fired 感受 / 召回加成+遗忘保护 / 张力检测）。**不是规则**；节点类型 theme（主题）/ person（人物）/ character（品格）。→ ADR-0002
+- **严格规则（strict_rule 槽）**：硬约束层，人工全量裁决（全有或全无），永不自动写入；采纳合并保留既有行（V12-ADJ）。与价值锚分属规则层/取向层，不可混载。→ ADR-0002
+- **身份槽（identity / self_identity）**：叙事层——用户画像与 agent 第一人称自我；单槽合并演化（version++），非结构化锚。
+- **desc 内容合同 v2**：锚描述一句话（≤60 字）=「情境短语+行为取向」，禁纯定义句与事件叙述；单一源 `MemoryCore/src/core/hooks/anchor-desc.ts`（DESC_CONTRACT_V2 / descContractPromptLine / passesDescContractV2）。→ ADR-0002
+- **pending 提案**：红线类（core_value/strict_rule）LLM 提案只入 `core_pending`，人工采纳；语义去重 0.75（宁漏勿错杀）；rejected 永久拦截，证据 ≥2×minEvidence 可走重提通道（#19，缺省关）。
+- **soul 渲染门**：desc 为空或 episode 特征 → 整条跳过（宁缺毋滥，禁裸关键词入人格）；预算截断按整锚丢弃（#10）。
+
+## 架构决定（ADR）
+
+- [ADR-0001 值信号租户口径与维持现状裁决](docs/adr/0001-值信号租户口径与维持现状裁决.md) —— 值信号 default 桶契约、G-SIMMERGE/q 截断/R4 否定盲区维持现状、coreRef 精排因子 tie-breaker 定位。
+- [ADR-0002 价值锚定位与 desc 内容合同](docs/adr/0002-价值锚定位与desc内容合同.md) —— 三层分工（叙事/取向/规则）、锚≠规则论证、合同 v2 单一源、锚级时效不做。

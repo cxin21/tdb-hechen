@@ -13,16 +13,22 @@
  *
  * 默认 dry-run（只打印提案）；加 --apply 真写。可重入：已有非空 description 的行跳过。
  * 用法: node --import tsx scripts/backfill-anchor-description.ts [--apply] [--db=路径] [--evidence=5]
+ *
+ * #20 T13：--contract=v2 存量合同审计模式——对已有非空 description 的 active
+ *   theme/person 锚跑 passesDescContractV2（ADR-0002「情境短语+行为取向」合同），
+ *   非合同 desc 落 jsonl 报告（off-contract）转人工/LLM 重述通道（#11 维护环）。
+ *   本模式只读不写；可与默认回填模式叠加执行。
  */
 import { VectorStore } from "../src/core/store/sqlite.js";
-import { sanitizeAnchorDescription } from "../src/core/hooks/anchor-desc.js";
+import { sanitizeAnchorDescription, passesDescContractV2 } from "../src/core/hooks/anchor-desc.js";
 
 const apply = process.argv.includes("--apply");
+const contractMode = process.argv.includes("--contract=v2");
 const dbArg = process.argv.find((a) => a.startsWith("--db="))?.slice(5);
 // 两轮审查修正：不做机器耦合默认路径——库路径必须显式给出（--db 或 TDB_VECTORS_DB）。
 const dbPath = dbArg ?? process.env.TDB_VECTORS_DB;
 if (!dbPath) {
-  console.error("用法: tsx scripts/backfill-anchor-description.ts [--apply] --db=<vectors.db 路径> [--evidence=5] [--report=<jsonl 路径>]");
+  console.error("用法: tsx scripts/backfill-anchor-description.ts [--apply] --db=<vectors.db 路径> [--evidence=5] [--report=<jsonl 路径>] [--contract=v2]");
   process.exit(2);
 }
 const evidenceCap = Number(process.argv.find((a) => a.startsWith("--evidence="))?.slice(11) ?? 5) || 5;
@@ -163,6 +169,42 @@ if (needsHuman.length > 0) {
   const { writeFileSync } = await import("node:fs");
   writeFileSync(out, needsHuman.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
   console.log(`  needs-human 清单（${needsHuman.length} 条）→ ${out}`);
+}
+
+// ── #20 T13：--contract=v2 存量合同审计（只读）─────────────────────────────
+// ADR-0002 合同：desc =「情境短语+行为取向」；非合同 desc 不改写（改写归 #11 LLM 重述
+// 通道，带 lastDescRefreshAt/manual origin 守卫），此处仅落报告转人工。
+if (contractMode) {
+  const descRows = db
+    .prepare(
+      `SELECT rowid, value_id, label, node_type, attrs_json, team_id, user_id, agent_id
+       FROM core_values
+       WHERE state='active' AND node_type IN ('theme','person')
+         AND json_valid(attrs_json)=1
+         AND json_extract(attrs_json,'$.description') IS NOT NULL
+         AND json_extract(attrs_json,'$.description') != ''`,
+    )
+    .all() as AnchorRow[];
+  const offContract: Array<{ label: string; nodeType: string; scope: string; description: string; verdict: "off-contract" }> = [];
+  let conforming = 0;
+  for (const a of descRows) {
+    let desc = "";
+    try {
+      const attrs = JSON.parse(a.attrs_json) as { description?: unknown };
+      if (typeof attrs.description === "string") desc = attrs.description;
+    } catch { continue; }
+    if (!desc) continue;
+    if (passesDescContractV2(desc)) { conforming++; continue; }
+    offContract.push({ label: a.label, nodeType: a.node_type, scope: `${a.team_id}/${a.user_id}/${a.agent_id}`, description: desc, verdict: "off-contract" });
+  }
+  console.log(`contract=v2 审计：scanned=${descRows.length}, conforming=${conforming}, off-contract=${offContract.length}（重述由 #11 维护环承担，本脚本不改写）`);
+  for (const r of offContract) console.log(`  [off-contract] [${r.nodeType}] ${r.label} @ ${r.scope} → 「${r.description}」`);
+  if (offContract.length > 0) {
+    const outC = `anchor-desc-contract-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.jsonl`;
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(outC, offContract.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    console.log(`  off-contract 清单（${offContract.length} 条）→ ${outC}`);
+  }
 }
 if (!apply) console.log("  加 --apply 真写");
 await vs.destroy?.();

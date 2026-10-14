@@ -173,7 +173,7 @@ function ValueRow({
             value={descriptionText}
             onChange={setDescriptionText}
             maxLength={80}
-            placeholder="语义描述（可选一句话——注入为锚的释义，≤80字）"
+            placeholder="「情境+行为取向」描述（可选一句话，句号结尾。如：涉及不可再生数据时，宁可慢一步验证，不做不可逆操作。）"
           />
           {isPerson && (
             <>

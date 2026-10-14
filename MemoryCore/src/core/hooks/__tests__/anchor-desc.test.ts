@@ -5,7 +5,7 @@
  * （sanitize + episode 双门 → 非空才回 {description}）。
  */
 import { describe, it, expect } from "vitest";
-import { sanitizeAnchorDescription, anchorDescriptionAttr } from "../anchor-desc.js";
+import { sanitizeAnchorDescription, anchorDescriptionAttr, DESC_CONTRACT_V2, descContractPromptLine, passesDescContractV2 } from "../anchor-desc.js";
 
 describe("sanitizeAnchorDescription（单一源，pending-adopt-merge 钉死行为逐位保留）", () => {
   it("尾悬空标点 → 置空（宁缺毋滥不入半句）", () => {
@@ -48,5 +48,40 @@ describe("anchorDescriptionAttr（采纳端便捷口）", () => {
   it("custom maxChars 生效（窗口含句末标点 → 截到句末；无标点 → 置空）", () => {
     expect(anchorDescriptionAttr("先定位根因。再动手改。", 6)).toEqual({ description: "先定位根因。" });
     expect(anchorDescriptionAttr("先定位根因再动手改。", 5)).toBeUndefined();
+  });
+});
+
+describe("#20 T13：desc 内容合同 v2（情境短语+行为取向）", () => {
+  it("DESC_CONTRACT_V2 单一源常量齐全（maxChars=60 / rule / bans / goodExample）", () => {
+    expect(DESC_CONTRACT_V2.maxChars).toBe(60);
+    expect(DESC_CONTRACT_V2.rule).toContain("情境短语");
+    expect(DESC_CONTRACT_V2.rule).toContain("行为取向");
+    expect(DESC_CONTRACT_V2.bans.length).toBeGreaterThanOrEqual(2);
+    expect(DESC_CONTRACT_V2.goodExample).toContain("宁可");
+  });
+  it("descContractPromptLine 拼出完整合同片段（含禁写与好例）", () => {
+    const line = descContractPromptLine();
+    expect(line).toContain("情境短语 + 行为取向");
+    expect(line).toContain("宁可慢一步验证");
+    expect(line).toContain("宁缺毋滥");
+  });
+  it("passesDescContractV2：取向句式 → true", () => {
+    expect(passesDescContractV2("涉及不可再生数据时，宁可慢一步验证，不做不可逆操作。")).toBe(true);
+    expect(passesDescContractV2("遇灰色地带先影子验证再落库，而不是直接写主路径。")).toBe(true);
+    expect(passesDescContractV2("冲突时优先保全证据，再讨论结论。")).toBe(true);
+    expect(passesDescContractV2("决策先固化为显式阈值再定案。")).toBe(true);
+  });
+  it("passesDescContractV2：纯定义句 → false", () => {
+    expect(passesDescContractV2("记忆数据很重要。")).toBe(false);
+    expect(passesDescContractV2("数据完整优先是团队的核心原则。")).toBe(false);
+    expect(passesDescContractV2("根因优先。")).toBe(false); // 无取向特征
+  });
+  it("passesDescContractV2：episode 特征 → false（episode 门同源）", () => {
+    expect(passesDescContractV2("2026-09-01 部署完成。")).toBe(false);
+    expect(passesDescContractV2("探针 HTTP 200 通过。")).toBe(false);
+  });
+  it("passesDescContractV2：sanitize 置空（断尾/空）→ false", () => {
+    expect(passesDescContractV2("")).toBe(false);
+    expect(passesDescContractV2("证据裁决一切，")).toBe(false);
   });
 });
