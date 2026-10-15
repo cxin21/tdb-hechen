@@ -594,12 +594,17 @@ export function createL1Runner(opts: {
       }));
       const l1Prompts = await resolveMemoryPrompts(vectorStore, l1PromptTargets);
 
-      for (const group of groups) {
-        logger.debug?.(
-          `${TAG} [l1] Group sessionId=${group.sessionId || "(empty)"}: ${group.messages.length} messages`,
-        );
-
-        const l1Result = await extractL1Memories({
+      // 毒批自适应拆分（L1-OUTAGE-20261015 定罪修复）：思考型端点延迟∝prompt 体积
+      // （生产实测 13K≈298s 贴线、20K>300s 恒超时）→ 大批恒超时 → F-EV12-1 游标不
+      // 推进（数据安全设计正确）→ 同批 5min 死循环，积压永不排空。组提取失败且组内
+      // >1 条消息时对半递归拆分重试；单条仍失败才向上报败（交给既有 requeue）。
+      // 部分成功产出保留，重提取由 extraction.enableDedup 兜底（F-EV12-1 语义不变：
+      // 游标仍只在全组成功时推进，拆分保证进展）。
+      const extractGroupWithSplit = async (
+        group: (typeof groups)[number],
+        depth: number,
+      ): Promise<Awaited<ReturnType<typeof extractL1Memories>>> => {
+        const result = await extractL1Memories({
           messages: group.messages,
           sessionKey,
           sessionId: group.sessionId,
@@ -639,11 +644,36 @@ export function createL1Runner(opts: {
             // llm-runner 400 剥参降级兜底（两种端点都兼容，yaml 配置语义不变）。
             // persona 段可选（测试/旧形状 config 无 persona）→ 软读取。
             reasoningEffort: cfg.persona?.reasoningEffort,
+            // 毒批超时（L1-OUTAGE-20261015，config-first）：缺省 300_000=逐位现状
+            extractionTimeoutMs: cfg.extraction.extractionTimeoutMs,
           },
           logger,
           instanceId: getInstanceId?.(),
           storage,
         });
+        if (result.success !== false || group.messages.length <= 1) return result;
+        logger.warn(
+          `${TAG} [l1] group extraction failed (${group.messages.length} msgs, depth=${depth}) — splitting in half for retry (poison-batch guard)`,
+        );
+        const mid = Math.floor(group.messages.length / 2);
+        const first = await extractGroupWithSplit({ ...group, messages: group.messages.slice(0, mid) }, depth + 1);
+        const second = await extractGroupWithSplit({ ...group, messages: group.messages.slice(mid) }, depth + 1);
+        return {
+          success: first.success !== false && second.success !== false,
+          extractedCount: first.extractedCount + second.extractedCount,
+          storedCount: first.storedCount + second.storedCount,
+          records: [...first.records, ...second.records],
+          sceneNames: [...first.sceneNames, ...second.sceneNames],
+          lastSceneName: second.lastSceneName ?? first.lastSceneName,
+        };
+      };
+
+      for (const group of groups) {
+        logger.debug?.(
+          `${TAG} [l1] Group sessionId=${group.sessionId || "(empty)"}: ${group.messages.length} messages`,
+        );
+
+        const l1Result = await extractGroupWithSplit(group, 0);
 
         totalExtracted += l1Result.extractedCount;
         totalStored += l1Result.storedCount;        if (l1Result.success === false) extractionFailed = true;
@@ -851,6 +881,9 @@ export function createL2Runner(opts: {
         // R4：逐调用思考开关 config-first 接线（yaml persona.reasoningEffort；
         // 缺省 undefined=端点默认，A/B 实证后再落产线值）
         reasoningEffort: cfg.persona.reasoningEffort,
+        // 毒批超时（L1-OUTAGE-20261015，config-first）：L1/L2 共用键；
+        // scene-extractor 内部 opts.timeoutMs ?? 300_000（逐位现状）
+        timeoutMs: cfg.extraction.extractionTimeoutMs,
         sceneBackupCount: cfg.persona.sceneBackupCount,
         logger,
         instanceId,

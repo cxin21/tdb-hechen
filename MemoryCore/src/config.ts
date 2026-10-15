@@ -46,6 +46,13 @@ export interface ExtractionConfig {
   /** D-4（2026-09-22 拍板）：周期性事实提取块（RECURRENCE_BLOCK 门；缺省 false = 逐位现状）。
    *  落点=既有 memory.extraction 组（ExtractionConfig）——勿另开子树（混合行尾教训再现）。 */
   recurrenceEnabled: boolean;
+  /**
+   * 毒批超时（L1-OUTAGE-20261015 定罪修复）：单次提取 LLM 调用超时 ms。
+   * 思考型端点延迟∝prompt 体积（生产实测 13K≈298s 贴线、20K>300s 恒超时）→
+   * 大批恒超时 → 游标不推进（F-EV12-1）→ 毒批 5min 死循环。缺省 300_000=逐位现状；
+   * clamp 60_000..3_600_000。L1 提取与 L2 场景提取共用本键。
+   */
+  extractionTimeoutMs: number;
   /** LLM model for extraction, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
   /** Prompt family for L1 extraction (default: chat). */
@@ -1330,6 +1337,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       recurrenceEnabled: bool(extractionGroup, "recurrenceEnabled") ?? false,
       model: optStr(extractionGroup, "model"),
       promptMode: normalizePromptMode(str(extractionGroup, "promptMode"), globalPromptMode),
+      // 毒批超时（L1-OUTAGE-20261015）：缺省 300_000=逐位现状；clamp 60s..1h
+      extractionTimeoutMs: Math.min(
+        3_600_000,
+        Math.max(60_000, num(extractionGroup, "extractionTimeoutMs") ?? 300_000),
+      ),
     },
     persona: {
       triggerEveryN: num(personaGroup, "triggerEveryN") ?? 50,

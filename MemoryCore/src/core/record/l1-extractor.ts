@@ -221,6 +221,12 @@ export async function extractL1Memories(params: {
     conflictRecallTopK?: number;
     /** GROW-EVO P2（§2.2）：durative 效期提取开关——false = 提取侧不写 valid_start（逐位现状） */
     durativeEnabled?: boolean;
+    /**
+     * 毒批超时（L1-OUTAGE-20261015 定罪修复，config-first）：单次提取 LLM 调用超时 ms。
+     * 缺省 300_000 = 逐位现状。生产实锤思考型端点 20K prompt 恒超 300s → 大批毒批死循环，
+     * 可上调配合 pipeline-factory 毒批自适应拆分使用。
+     */
+    extractionTimeoutMs?: number;
     /** Override embedding timeout for capture-path calls (milliseconds) */
     embeddingTimeoutMs?: number;
     /**
@@ -304,6 +310,7 @@ export async function extractL1Memories(params: {
       promptMode: options.promptMode,
       memoryPrompt: options.memoryPrompt,
       reasoningEffort: options.reasoningEffort,
+      extractionTimeoutMs: options.extractionTimeoutMs,
       traceContext: { teamId, userId, agentId, sessionId },
       llmRunner: options.llmRunner,
       vectorStore: options.vectorStore,
@@ -649,10 +656,12 @@ async function callLlmExtraction(params: {
   vectorStore?: IMemoryStore;
   /** 思考开关 config-first（2026-10-14）：undefined = 不带 reasoning_effort（端点默认）。 */
   reasoningEffort?: string;
+  /** 毒批超时（L1-OUTAGE-20261015，config-first）：undefined = 300_000（逐位现状）。 */
+  extractionTimeoutMs?: number;
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
 }): Promise<{ scenes: SceneSegment[]; systemPrompt: string; userPrompt: string; rawOutput: string }> {
-  const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore, reasoningEffort } = params;
+  const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore, reasoningEffort, extractionTimeoutMs } = params;
 
   // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
   // 自定义 memoryPrompt 策略优先级不变——自定义时内置 base 被其覆盖，agentAct 块随之
@@ -710,7 +719,10 @@ async function callLlmExtraction(params: {
       prompt: userPrompt,
       systemPrompt,
       taskId: "l1-extraction",
-      timeoutMs: 300_000,
+      // 毒批超时（L1-OUTAGE-20261015，config-first）：缺省 300_000=逐位现状；
+      // 思考型端点 20K prompt 恒超 300s（生产实测），配合 pipeline-factory 毒批
+      // 自适应拆分可上调本键。
+      timeoutMs: extractionTimeoutMs ?? 300_000,
       // 思考开关 config-first（2026-10-14）：原 v21 硬编码 "none" 被当前生产端点
       // （glm-5.3-flash MaaS）拒绝——reasoning_effort 参数直接 400，L1 全败导致
       // "只有 L0"（当日根因）。改为 reasoningEffort 透传（cfg.persona.
@@ -733,7 +745,7 @@ async function callLlmExtraction(params: {
       prompt: userPrompt,
       systemPrompt,
       taskId: "l1-extraction",
-      timeoutMs: 300_000,
+      timeoutMs: extractionTimeoutMs ?? 300_000,
       ...traceParams,
     });
   }
