@@ -403,6 +403,7 @@ export async function writeMemory(params: {
         );
       }
     }
+    logger?.info?.(`${TAG} jsonl-append start (update/merge) id=${record.id} key=${recordKey}`);
     try {
       await appendRecord(JSON.stringify(record) + "\n");
     } catch (err) {
@@ -411,18 +412,21 @@ export async function writeMemory(params: {
     logger?.debug?.(`${TAG} ${decision.action} memory: removed [${decision.target_ids.join(",")}] from VectorStore → ${record.id}: ${finalContent.slice(0, 80)}...`);
   } else {
     // store: append a new line
+    // L1-OUTAGE-20261015 breadcrumb：JSONL append 与其后的 vec 双写之间曾发生 43min
+    // 静默悬挂——start/end INFO 夹逼 + DONE 尾标，把任何悬挂定罪到具体 await。
+    logger?.info?.(`${TAG} jsonl-append start id=${record.id} key=${recordKey}`);
     try {
       await appendRecord(JSON.stringify(record) + "\n");
     } catch (err) {
       logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
     }
-    logger?.debug?.(`${TAG} Stored memory ${record.id}: ${finalContent.slice(0, 80)}...`);
+    logger?.info?.(`${TAG} Stored memory ${record.id}: ${finalContent.slice(0, 80)}...`);
   }
 
   // === Vector Store dual-write ===
   if (vectorStore) {
     try {
-      logger?.debug?.(
+      logger?.info?.(
         `${TAG} [vec-dual-write] START id=${record.id}, contentLen=${record.content.length}, ` +
         `content="${record.content.slice(0, 80)}..."`,
       );
@@ -432,7 +436,7 @@ export async function writeMemory(params: {
       if (embeddingService) {
         try {
           embedding = await embeddingService.embed(record.content);
-          logger?.warn?.(
+          logger?.info?.(
             `${TAG} [vec-dual-write] Embedding OK: dims=${embedding.length}, ` +
             `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
           );
@@ -447,7 +451,7 @@ export async function writeMemory(params: {
       }
 
       const upsertOk = await vectorStore.upsertL1(record, embedding);
-      logger?.debug?.(`${TAG} [vec-dual-write] upsert result=${upsertOk} id=${record.id}`);
+      logger?.info?.(`${TAG} [vec-dual-write] DONE upsert result=${upsertOk} id=${record.id}`);
     } catch (err) {
       // Vector write failure should NOT block the main JSONL write
       logger?.warn?.(

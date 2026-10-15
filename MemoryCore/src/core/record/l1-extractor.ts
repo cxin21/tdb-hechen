@@ -316,6 +316,19 @@ export async function extractL1Memories(params: {
     return { success: false, extractedCount: 0, storedCount: 0, records: [], sceneNames: [] };
   }
 
+  // L1-OUTAGE-20261015（断流定罪基建）：任务内建 watchdog，每 60s 上报当前阶段。
+  // 2026-10-15 事故：旧进程 extraction 在 dedup 降级存储段悬挂 43min 全程静默，
+  // 静态排查无法定罪具体 await——此后任何一处悬挂都能在日志中直接定位到阶段。
+  // 覆盖范围 = LLM 成功后的全流程（LLM 调用本身有 300s 超时 + ENTRY/RAW_OUTPUT 日志夹逼）。
+  // unref：watchdog 不得反撑事件循环（进程退出/测试 teardown 不被 interval 拖住）。
+  let l1Stage = "parse";
+  const l1Watchdog = setInterval(() => {
+    logger?.warn?.(`${TAG} task watchdog: stage=${l1Stage} elapsed=${Date.now() - l1StartMs}ms`);
+  }, 60_000);
+  l1Watchdog.unref?.();
+  const setL1Stage = (s: string) => { l1Stage = s; };
+  const stopL1Watchdog = () => clearInterval(l1Watchdog);
+
   // Flatten all memories across scenes
   // soul 字段透传（occurred_at/certainty/source/valence/arousal/significance）——
   // ExtractedMemory 基础类型不含这些 optional 字段，用交叉类型放宽（写入时 cast 交给 store）
@@ -363,6 +376,7 @@ export async function extractL1Memories(params: {
   }
 
   logger?.debug?.(`${TAG} Total extracted memories: ${allExtracted.length} across ${scenes.length} scene(s)`);
+  setL1Stage("enrich");
 
   // 后置字段补全：模型有时不吐灵魂字段——用一次 LLM 从 content 抽字段回填（best-effort，绝不阻塞）
   try {
@@ -377,6 +391,7 @@ export async function extractL1Memories(params: {
   } catch (err) {
     logger?.warn?.(`${TAG} enrichSoulFields failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
+  setL1Stage("post-extract");
 
   if (allExtracted.length === 0) {
     // ── 评测指标：L1 提取率（提取为空的情况） ──
@@ -392,6 +407,7 @@ export async function extractL1Memories(params: {
         // 静默忽略，不影响业务逻辑
       }
     }
+    stopL1Watchdog();
     return {
       success: true,
       extractedCount: 0,
@@ -429,6 +445,7 @@ export async function extractL1Memories(params: {
 
   if (enableDedup) {
     try {
+      setL1Stage("dedup");
       const dedupStartMs = Date.now();
       const decisions = await batchDedup({
         memories: memoriesWithIds,
@@ -473,6 +490,7 @@ export async function extractL1Memories(params: {
         }
       }
 
+      setL1Stage("store");
       storedRecords = await applyDecisions({
         memoriesWithIds,
         decisions,
@@ -492,9 +510,11 @@ export async function extractL1Memories(params: {
 
     } catch (err) {
       logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
+      setL1Stage("store-fallback");
       storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity);
     }
   } else {
+    setL1Stage("store-fallback");
     storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity);
   }
 
@@ -524,6 +544,8 @@ export async function extractL1Memories(params: {
     finished_at_ms: generationFinishedAt,
     latency_ms: generationFinishedAt - l1StartMs,
   };
+  setL1Stage("provenance");
+  logger?.info?.(`${TAG} writing generation provenance (layer=l1, records=${storedRecords.length})`);
   await (writeGenerationProvenanceBestEffort as unknown as (p: Record<string, unknown>) => Promise<void>)({
     layer: "l1",
     logger,
@@ -540,6 +562,7 @@ export async function extractL1Memories(params: {
   });
 
   logger?.info(`${TAG} Extraction complete: extracted=${extracted.length}, stored=${storedRecords.length}`);
+  setL1Stage("metrics");
 
   // ── l1_extraction metric ──
   if (metricInstanceId && logger) {
@@ -592,6 +615,7 @@ export async function extractL1Memories(params: {
     // 静默忽略
   }
 
+  stopL1Watchdog();
   return {
     success: true,
     extractedCount: extracted.length,
@@ -1155,9 +1179,13 @@ async function storeAllDirectly(
   // newRecordIds 过滤）。原实现只排自身（c.record_id !== record.id），先写入的
   // 同批记忆会被后写入者当成 top-1 旧记忆，把真旧记忆挤出 top-3。
   const batchIds = new Set(memoriesWithIds.map((m) => m.record_id));
+  // L1-OUTAGE-20261015：dedup 降级存储路径 breadcrumb——事故悬挂点即本函数某条
+  // memory 的 writeMemory 内；逐条 INFO 夹逼把悬挂定罪到具体 memory。
+  logger?.info?.(`${TAG} storeAllDirectly: storing ${memoriesWithIds.length} memories directly (dedup bypassed)`);
 
-  for (const memoryWithId of memoriesWithIds) {
+  for (const [memIdx, memoryWithId] of memoriesWithIds.entries()) {
     try {
+      logger?.info?.(`${TAG} storeAllDirectly: memory ${memIdx + 1}/${memoriesWithIds.length} writeMemory start id=${memoryWithId.record_id}`);
       const wasInLinks = enableMemoryLinks && !!vectorStore?.addLink && !!embeddingService;
       const record = await writeMemory({
         memory: memoryWithId,
@@ -1178,6 +1206,7 @@ async function storeAllDirectly(
         embeddingService,
         storage,
       });
+      logger?.info?.(`${TAG} storeAllDirectly: memory ${memIdx + 1}/${memoriesWithIds.length} writeMemory done id=${memoryWithId.record_id}`);
       if (record) {
         storedRecords.push(record);
         // ── 记忆图（G 设计§3）：no-dedup 路径下，对每条新记忆找最相关 top-1 旧记忆，建 similar 边 ──
