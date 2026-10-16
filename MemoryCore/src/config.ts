@@ -454,9 +454,12 @@ export interface MemoryCoreMemoryConfig {
     /** #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写；
      *  零注入影响——只写 soul_snapshots 观测表）。 */
     snapshotsEnabled: boolean;
-    /** #29（R5）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用（缺省 999=现状全注入；
-     *  shadow 先行：选择器未定（#33 D9 tier/打分器 ADR），当前仅报告不裁剪、渲染逐位现状）。 */
-    anchorSelect: { maxRows: number };
+    /** #29（R5）+#42（票 D / D9）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用
+     *  （缺省 999=现状全注入）。scorer=相似度打分器 config 门（D9：确定性 cosine、shadow-first）：
+     *  enabled 缺省 false=shadow 只报告不裁剪（渲染逐位现状）；true=转正（threshold 硬门+top-K
+     *  重排渲染行）；threshold clamp 0..1 缺省 0（=不设语义硬门：0 只滤除负相关锚行，仅 top-K
+     *  生效；>0 才是硬门）。embedder/queryEmbedding 运行时注入，不入 config。 */
+    anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number } };
     /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
      *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
     introspect: { snapshotLimit: number; evidenceWindowHours: number };
@@ -1253,11 +1256,23 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           ? true
           : (g as Record<string, unknown>)["snapshotsEnabled"] === true,
         // #29（R5）：情境锚选择门——缺省 999=现状全注入（当前锚基数个位数，无收益不启动）；
-        // clamp 1..999 防手滑 0/负数。
+        // clamp 1..999 防手滑 0/负数。#42（票 D / D9）：scorer 门——enabled 缺省 false（shadow）；
+        // threshold clamp 0..1 缺省 0；形状错一律回退缺省（宁缺毋滥，沿 capabilities 解析先例）。
         anchorSelect: {
           maxRows: (() => {
             const v = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["maxRows"];
             return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 999)) : 999;
+          })(),
+          scorer: (() => {
+            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["scorer"] as
+              | Record<string, unknown>
+              | undefined;
+            const en = s?.["enabled"];
+            const th = s?.["threshold"];
+            return {
+              enabled: en === undefined ? false : en === true,
+              threshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0,
+            };
           })(),
         },
         // #36（R5）：soul_introspect 自省面参数（只读；快照条数 1..200 缺省 20，证据窗 1..2160h 缺省 168）。

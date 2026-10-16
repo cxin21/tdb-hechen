@@ -79,6 +79,7 @@ import {
   type ProfileIsolation,
 } from "../profile/profile-sync.js";
 import type { Logger } from "../types.js";
+import type { SoulRenderOptions } from "./soul-assembler.js";
 
 const TAG = "[memory-tdai] [recall]";
 const RECALL_TRUNCATION_SUFFIX = "…（已截断；可用 tdai_memory_search 或 tdai_conversation_search 查看详情）";
@@ -552,6 +553,44 @@ async function applyRecallRerank(
   if (searchResult.metas) searchResult.metas = final.map((i) => searchResult.metas![i]);
 }
 
+/**
+ * #42 审查加固（F1/C-1 生产接线）：soul 渲染 anchorSelect 运行时组装——config 门透传 +
+ * embedder/queryEmbeddingProvider 运行时注入（config 不携带向量）。provider=懒解析闭包：
+ * cachedQueryEmbedding（与 L1 检索路共享 TTL 去重，TTL=cfg.recall.queryEmbeddingCacheTtlMs，
+ * 缺省 60_000）；embed 失败→undefined（宁缺毋滥回退现状，不抛错）。queryText=cacheKey
+ * 指纹源（query 变→签名键变，防旧选择串复活）。向量仅在 scorer 真正需要时（转正选择/
+ * shadow 报告）才解析——缺省配置零 embed。导出仅为单测可见。
+ */
+export function buildSoulAnchorSelectRuntime(
+  cfg: MemoryTdaiConfig,
+  io: { embeddingService?: EmbeddingService; userText: string; logger?: Logger },
+): SoulRenderOptions["anchorSelect"] {
+  const anchorSelectCfg = cfg.coreMemory?.soulRender?.anchorSelect;
+  if (!anchorSelectCfg) return undefined;
+  return {
+    ...anchorSelectCfg,
+    scorer: {
+      ...anchorSelectCfg.scorer,
+      embedder: io.embeddingService ? (t: string) => io.embeddingService!.embed(t) : undefined,
+      queryEmbeddingProvider: io.embeddingService
+        ? async () => {
+            try {
+              return await cachedQueryEmbedding(
+                io.embeddingService!,
+                io.userText,
+                cfg.recall?.queryEmbeddingCacheTtlMs ?? 60_000,
+                io.logger,
+              );
+            } catch {
+              return undefined;
+            }
+          }
+        : undefined,
+      queryText: io.userText,
+    },
+  };
+}
+
 export async function performLayeredRecall(params: {
   userText: string;
   sessionKey: string;
@@ -965,8 +1004,10 @@ export async function performLayeredRecall(params: {
             characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,
             // #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写）。
             snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,
-            // #29（R5）：情境锚选择门（shadow 先行：仅报告不裁剪，转正待 D9/ADR）。
-            anchorSelect: cfg.coreMemory?.soulRender?.anchorSelect,
+            // #29（R5）+#42（票 D / D9）：情境锚选择门——config 门透传 + 运行时注入
+            //（embedder/queryEmbeddingProvider/queryText；F1 生产接线，组装见
+            // buildSoulAnchorSelectRuntime：向量缺席=shadow 报告回退原形态/转正回退现状——宁缺毋滥）。
+            anchorSelect: buildSoulAnchorSelectRuntime(cfg, { embeddingService, userText: params.userText, logger }),
             // #40（ADR0003-P3 接线票 B）：capabilities 渲染门——config 门开且 body 携带
             // 非空清单才传（渲染行=清单 1:1，#32 一致性合同）；门关整链丢弃=逐位现状。
             ...(cfg.coreMemory?.soulRender?.capabilities?.enabled === true && params.capabilities?.length

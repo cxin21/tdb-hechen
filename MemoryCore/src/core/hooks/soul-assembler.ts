@@ -12,6 +12,8 @@
  * - 宁缺毋滥：无材料 → 空串（不注入空段）。
  */
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
+// #42（ADR0003-P3 票 D / D9）：锚相似度打分器（确定性 cosine，shadow-first；本模块管选择/报告语义）。
+import { isUsableQueryVec, scoreAnchorRows, selectAnchorRows, type AnchorEmbedder } from "./soul-anchor-scorer.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
@@ -130,9 +132,26 @@ export interface SoulRenderOptions {
   /** #30（S9/R5）：soul 快照旁路落账门（缺省 true=纯增量持久化，不触碰注入字节；
    *  false=运维关闭开关）。指纹变化后首次渲染 append 一行（last-hash 去重防膨胀）。 */
   snapshotsEnabled?: boolean;
-  /** #29（R5）：情境锚选择触发门——价值锚行数 > maxRows 才（将来会）启用；
-   *  shadow 先行：选择器未定（tier=#33 D9、打分器=ADR），只报告不裁剪、渲染逐位现状。 */
-  anchorSelect?: { maxRows?: number };
+  /** #29（R5）：情境锚选择触发门——价值锚行数 > maxRows 才启用；shadow 先行：只报告不裁剪、
+   *  渲染逐位现状。#42（票 D / D9）：相似度打分器接线——enabled 缺省 false（shadow 报告随
+   *  向量可用性升级逐锚分形态）；enabled=true=转正（threshold 硬门+top-K 重排渲染行）。
+   *  embedder/queryEmbedding 为运行时注入（config 不携带向量）；任一缺席→回退现状形态
+   *  （宁缺毋滥不造分）。 */
+  anchorSelect?: {
+    maxRows?: number;
+    scorer?: {
+      enabled?: boolean;
+      threshold?: number;
+      queryEmbedding?: Float32Array | null;
+      embedder?: AnchorEmbedder | null;
+      /** #42 审查加固（F1 生产接线）：懒解析 provider——auto-recall 注入（cachedQueryEmbedding
+       *  与检索路共享 TTL 去重）；仅转正选择或 shadow 报告真正需要向量时才调（缺省配置零 embed）。
+       *  与 queryEmbedding 二选一，显式向量优先；解析失败/缺席→回退现状（宁缺毋滥不造分）。 */
+      queryEmbeddingProvider?: (() => Promise<Float32Array | null | undefined>) | null;
+      /** #42 审查加固：查询原文（cacheKey 指纹源——queryText 优先于向量量化，零 embed 成本）。 */
+      queryText?: string | null;
+    };
+  };
   /** #32（R5）：能力自述清单（运行时实况，只读派生置身份段尾「## 我能做什么」）。
    *  零落库；一致性合同=渲染行=传入清单（顺序保持）；策展 ≤5 行由调用方负责；
    *  缺省 undefined=不渲染=逐位现状。cacheKey 含清单指纹（字节影响面）。 */
@@ -191,6 +210,14 @@ function fnv1a32Hex(s: string): string {
 const soulPrefixCache = new Map<string, { version: string; text: string; snapshotted?: boolean }>();
 const SOUL_CACHE_MAX = 100;
 
+/** #42 审查加固（F3 静默错红线）：scorer.enabled=true 但向量面缺席（embedder/query 向量均不在位）
+ *  =配置生效承诺落空且零提示——进程内告警一次（重启复位），指向运行时注入侧排查。
+ *  不随请求重复告警（每轮刷屏反稀释）；导出 reset 仅供单测可见（同 resetAnchorVectorCacheForTest 先例）。 */
+let soulScorerMisconfigWarned = false;
+export function resetSoulScorerMisconfigWarnForTest(): void {
+  soulScorerMisconfigWarned = false;
+}
+
 export async function buildSoulPrefix(
   store: IMemoryStore,
   tenant: CoreTenant,
@@ -225,9 +252,30 @@ export async function buildSoulPrefix(
     // #10 T4：缓存键含渲染参数指纹——soulVersion 只由数据算出，同数据不同渲染参数
     // （dual/预算/行数上限）必须换缓存，否则旧渲染串在新参数下复活。
     // moodTier.sampleCount 的陈旧性为 S-FEEL-1 已登记取舍（指纹只含 tier），此处不重复纳入。
+    // #42：scorer 签名并入 cacheKey——转正（enabled=true）时渲染依赖查询向量（每请求变），
+    // 必须换缓存键防「上一查询的选择串在新请求复活」。
+    // #42 审查加固（I-1 对齐设计定案）：签名仅在 enabled===true 时非空——shadow/缺省渲染与
+    // 查询无关，不加段（cacheKey 与现状逐字节同构，部署升级不冷启动）；enabled=true 无向量时
+    // 段仍存在（`,scorer=1,t,`）但渲染与 shadow 同字节，无害。
+    // #42 审查加固（I-3 接受留痕）：指纹源=queryText 原文 fnv1a32Hex（零 embed 成本）；32 位
+    // 碰撞窗口=同租户同参数下两不同 queryText 同 8hex → 单请求陈旧选择（进程内 100 条 FIFO、
+    // 短时效、非行为错分）——与锚向量缓存「碰撞=静默错分」不对称，接受并留痕；无 queryText
+    // 才量化显式 queryEmbedding（provider 不在指纹期解析——指纹只换键不触发 embed）。
+    const scorerSig =
+      opts?.anchorSelect?.scorer?.enabled === true
+        ? `,scorer=1,${opts.anchorSelect.scorer.threshold ?? 0},${
+            opts.anchorSelect.scorer.queryText
+              ? fnv1a32Hex(opts.anchorSelect.scorer.queryText)
+              : opts.anchorSelect.scorer.queryEmbedding
+                ? fnv1a32Hex(
+                    Array.from(opts.anchorSelect.scorer.queryEmbedding, (v) => (Math.round(v * 1e4) / 1e4).toString(36)).join(","),
+                  )
+                : ""
+          }`
+        : "";
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${scorerSig}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -343,26 +391,113 @@ export async function buildSoulPrefix(
             : "";
           return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
         };
-        const decorated = activeStable
+        // #42（票 D / D9）：decoratedPairs 保留 desc 供打分（渲染字节与既有 decorated 逐位一致）。
+        const decoratedPairs = activeStable
           .map((v) => {
             const desc = anchorDescOf(v);
             // R2 episode 门（2026-10-04 何晨令「不属于灵魂而是记忆内容的部分不得放入灵魂注入」）：
             // desc 为具体事件叙述（commit hash/编号/HTTP/日期等硬特征）→ 非灵魂级说明 → 整条跳过
             //（宁缺毋滥；存量混事件锚随此门即刻退出注入，语义级混入交生成端 prompt 负面清单）。
             if (desc === "" || looksLikeEpisode(desc)) return null;
-            return renderAnchor(v, desc);
+            return { row: renderAnchor(v, desc), desc };
           })
-          .filter((x): x is string => x !== null);
+          .filter((x): x is { row: string; desc: string } => x !== null);
+        const decorated = decoratedPairs.map((p) => p.row);
+        // #42：打分选择接线——转正（scorer.enabled=true 且 embedder/可用查询向量在位）=
+        // threshold 硬门 + top-K 重排渲染行；缺省关/shadow/向量缺席 → decorated 原样（逐位现状）。
+        const scorerCfg = opts?.anchorSelect?.scorer;
+        // #42 审查加固（F1 懒解析 + I-4 可用门）：查询向量解析=显式 queryEmbedding ?? provider() ?? null，
+        // 每次 buildSoulPrefix 调用至多解析一次（转正选择与 shadow 报告共用）；退化向量（零范数/空）
+        // 视同缺席。缺省配置（scorer 未配置/关）零解析零 embed（F1 零成本保证）。
+        let queryVecResolved = false;
+        let queryVec: Float32Array | null = null;
+        const resolveQueryVec = async (): Promise<Float32Array | null> => {
+          if (!scorerCfg || queryVecResolved) return queryVec;
+          queryVecResolved = true;
+          const raw =
+            scorerCfg.queryEmbedding ??
+            (typeof scorerCfg.queryEmbeddingProvider === "function" ? await scorerCfg.queryEmbeddingProvider() : null);
+          queryVec = isUsableQueryVec(raw) ? raw : null;
+          return queryVec;
+        };
+        let selected = decorated;
+        if (scorerCfg?.enabled === true) {
+          const qv = await resolveQueryVec();
+          if (typeof scorerCfg.embedder === "function" && qv) {
+            try {
+              selected = selectAnchorRows(await scoreAnchorRows(decoratedPairs, qv, scorerCfg.embedder), {
+                maxRows: opts?.anchorSelect?.maxRows,
+                threshold: scorerCfg.threshold ?? 0,
+              }).map((s) => s.row);
+            } catch (err) {
+              // #42 审查加固（F2/I-2）：embed 失败非致命——整体回退未选择现状（部分打分=选择语义
+              // 不一致，宁缺毋滥），沿 mood compute non-fatal 先例；soul 前缀不再整轮丢失。
+              logger?.warn?.(
+                `[soul-anchor-scorer] score failed (non-fatal, fallback to unselected): ${err instanceof Error ? err.message : String(err)}`,
+              );
+              selected = decorated;
+            }
+          } else if (!soulScorerMisconfigWarned) {
+            // #42 审查加固（F3）：显式 enabled=true 但向量面缺席=静默错——进程内告警一次（重启复位），
+            // 指向运行时注入侧排查（#41 C1 同款「门在、实参缺」的运维可观测补偿）。
+            soulScorerMisconfigWarned = true;
+            logger?.warn?.(
+              `[soul-anchor-scorer] enabled=true but embedder=${typeof scorerCfg.embedder === "function"} queryVec=${qv !== null} → selection inactive（检查 auto-recall 运行时注入：embedder/queryEmbeddingProvider）`,
+            );
+          }
+        }
         // #10 T4：整锚预算——超预算从尾丢整锚（value_id 稳定序头部保留），0=无预算逐位现状
-        const budgeted = applyAnchorBudget(decorated, opts?.budgetAnchorChars ?? 0);
+        const budgeted = applyAnchorBudget(selected, opts?.budgetAnchorChars ?? 0);
         // #29（R5）：情境锚选择 shadow 门——行数超 maxRows 只报告不裁剪（检索式裁剪对抗
-        // 锚稳定性=身份漂移入口；选择器未定：tier 定级=#33 D9、打分器=ADR），渲染逐位
-        // 现状；报告=触发事实+清单快照，一致性门（#31 探针）通过后才转正。
+        // 锚稳定性=身份漂移入口），渲染逐位现状；转正（#42 enabled=true）后选择已生效、不触发报告。
+        // #42：shadow 报告随向量可用性升级为逐锚分形态 `锚N(0.xxx)`（查询向量在位才升级；
+        // 无向量=回退 #29 原形态清单快照——宁缺毋滥不造分）。
         if (opts?.anchorSelect?.maxRows != null && budgeted.length > opts.anchorSelect.maxRows) {
-          logger?.warn?.(
-            `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${opts.anchorSelect.maxRows}（仅报告不裁剪，转正待 D9/ADR）: ` +
-              budgeted.map((r) => r.slice(0, Math.max(r.indexOf("("), 1))).join(","),
-          );
+          // #42：shadow 报告（enabled=false/未配置）随向量可用性升级逐锚分形态；转正后选择已生效
+          // 不触发报告。M-1 锁：预算截断（budgeted<decoratedPairs）→ 升级失效回退原形态。
+          // F1/I-4：报告向量走同一懒解析（可用门），缺席=原形态不造分。
+          const shadowScorer = scorerCfg?.enabled === true ? undefined : scorerCfg;
+          const shadowMaxRows: number = opts.anchorSelect.maxRows; // 窄化后捕获（闭包内引用，TS18048 规避）
+          const emitPlainReport = () => {
+            // M-4：enabled=true 向量缺席的回退报告措辞 ≠ 缺省同形（可观测性：运维可区分两种状态）。
+            const tail =
+              scorerCfg?.enabled === true ? "（仅报告不裁剪，转正已开但向量缺席回退）" : "（仅报告不裁剪，转正待 D9/ADR）";
+            logger?.warn?.(
+              `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${shadowMaxRows}${tail}: ` +
+                budgeted.map((r) => r.slice(0, Math.max(r.indexOf("("), 1))).join(","),
+            );
+          };
+          if (shadowScorer && typeof shadowScorer.embedder === "function" && budgeted.length === decoratedPairs.length) {
+            const shadowQv = await resolveQueryVec();
+            if (shadowQv) {
+              try {
+                const scored = await scoreAnchorRows(decoratedPairs, shadowQv, shadowScorer.embedder);
+                // M-1 复核：scoreOf 按 row 字符串键——重复 row ⇔ 同 label/dir/weight/desc ⇒ 同向量
+                // ⇒ 同 score，覆写无害；报告分不错配。
+                const scoreOf = new Map(scored.map((s) => [s.row, s.score]));
+                logger?.warn?.(
+                  `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${shadowMaxRows}（仅报告不裁剪）: ` +
+                    budgeted
+                      .map((r) => {
+                        const sc = scoreOf.get(r);
+                        const head = r.slice(0, Math.max(r.indexOf("("), 1));
+                        return sc !== undefined ? `${head}(${sc.toFixed(3)})` : head;
+                      })
+                      .join(","),
+                );
+              } catch (err) {
+                // F2/I-2：shadow 打分失败非致命——原形态报告（只报告不裁剪语义不变）。
+                logger?.warn?.(
+                  `[soul-anchor-scorer] shadow score failed (non-fatal, fallback report form): ${err instanceof Error ? err.message : String(err)}`,
+                );
+                emitPlainReport();
+              }
+            } else {
+              emitPlainReport();
+            }
+          } else {
+            emitPlainReport();
+          }
         }
         if (budgeted.length > 0) lines.push(`价值锚：${budgeted.join("；")}`);
       }
