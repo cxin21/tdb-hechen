@@ -401,6 +401,19 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
           ? yaml.injection.assetReflection.markerOptIn
           : DEFAULT_CONFIG.injection.assetReflection!.markerOptIn,
       },
+      // #26（R5）：重叠观测 journal——缺省 undefined（关），yaml 缺省零感。
+      // enabled 严格 boolean 校验；file 严格非空 string。
+      soulOverlapJournal: yaml.injection?.soulOverlapJournal === undefined
+        ? undefined
+        : {
+            enabled: typeof yaml.injection.soulOverlapJournal.enabled === "boolean"
+              ? yaml.injection.soulOverlapJournal.enabled
+              : false,
+            file: typeof yaml.injection.soulOverlapJournal.file === "string"
+              && yaml.injection.soulOverlapJournal.file.trim() !== ""
+              ? yaml.injection.soulOverlapJournal.file.trim()
+              : undefined,
+          },
     },
     extraction: {
       enabled: yaml.extraction?.enabled ?? DEFAULT_CONFIG.extraction.enabled,
