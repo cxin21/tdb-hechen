@@ -133,6 +133,10 @@ export interface SoulRenderOptions {
   /** #29（R5）：情境锚选择触发门——价值锚行数 > maxRows 才（将来会）启用；
    *  shadow 先行：选择器未定（tier=#33 D9、打分器=ADR），只报告不裁剪、渲染逐位现状。 */
   anchorSelect?: { maxRows?: number };
+  /** #32（R5）：能力自述清单（运行时实况，只读派生置身份段尾「## 我能做什么」）。
+   *  零落库；一致性合同=渲染行=传入清单（顺序保持）；策展 ≤5 行由调用方负责；
+   *  缺省 undefined=不渲染=逐位现状。cacheKey 含清单指纹（字节影响面）。 */
+  capabilities?: string[];
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -223,7 +227,7 @@ export async function buildSoulPrefix(
     // moodTier.sampleCount 的陈旧性为 S-FEEL-1 已登记取舍（指纹只含 tier），此处不重复纳入。
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -423,10 +427,17 @@ export async function buildSoulPrefix(
             .filter((s) => s.slot === "strict_rule" && typeof s.content === "string" && s.content.trim() !== "")
             .map((s) => `- [strict_rule] ${s.content}`)
         : [];
-      if (lines.length > 0 || redlineLines.length > 0) {
+      // #32（R5）：能力自述段「## 我能做什么」——只读派生（数据=调用方传入的运行时实况，
+      // 本层零落库零派生逻辑）；逐行 1:1 渲染（一致性合同：渲染行=传入清单，顺序保持），
+      // 行数策展（3-5 行）由调用方负责；缺省 undefined=不渲染=逐位现状。
+      const capLines = (opts?.capabilities ?? [])
+        .filter((c) => typeof c === "string" && c.trim() !== "")
+        .map((c) => `- ${c}`);
+      if (lines.length > 0 || redlineLines.length > 0 || capLines.length > 0) {
         const sections: string[] = [];
         if (lines.length > 0) sections.push(`## 此刻的你\n${lines.join("\n")}`);
         if (redlineLines.length > 0) sections.push(`## 不可逾越（红线）\n${redlineLines.join("\n")}`);
+        if (capLines.length > 0) sections.push(`## 我能做什么\n${capLines.join("\n")}`);
         parts.push(`<soul-identity>\n${sections.join("\n")}\n</soul-identity>`);
       }
     }
