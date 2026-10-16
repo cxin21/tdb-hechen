@@ -130,6 +130,9 @@ export interface SoulRenderOptions {
   /** #30（S9/R5）：soul 快照旁路落账门（缺省 true=纯增量持久化，不触碰注入字节；
    *  false=运维关闭开关）。指纹变化后首次渲染 append 一行（last-hash 去重防膨胀）。 */
   snapshotsEnabled?: boolean;
+  /** #29（R5）：情境锚选择触发门——价值锚行数 > maxRows 才（将来会）启用；
+   *  shadow 先行：选择器未定（tier=#33 D9、打分器=ADR），只报告不裁剪、渲染逐位现状。 */
+  anchorSelect?: { maxRows?: number };
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -220,7 +223,7 @@ export async function buildSoulPrefix(
     // moodTier.sampleCount 的陈旧性为 S-FEEL-1 已登记取舍（指纹只含 tier），此处不重复纳入。
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -343,6 +346,15 @@ export async function buildSoulPrefix(
           .filter((x): x is string => x !== null);
         // #10 T4：整锚预算——超预算从尾丢整锚（value_id 稳定序头部保留），0=无预算逐位现状
         const budgeted = applyAnchorBudget(decorated, opts?.budgetAnchorChars ?? 0);
+        // #29（R5）：情境锚选择 shadow 门——行数超 maxRows 只报告不裁剪（检索式裁剪对抗
+        // 锚稳定性=身份漂移入口；选择器未定：tier 定级=#33 D9、打分器=ADR），渲染逐位
+        // 现状；报告=触发事实+清单快照，一致性门（#31 探针）通过后才转正。
+        if (opts?.anchorSelect?.maxRows != null && budgeted.length > opts.anchorSelect.maxRows) {
+          logger?.warn?.(
+            `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${opts.anchorSelect.maxRows}（仅报告不裁剪，转正待 D9/ADR）: ` +
+              budgeted.map((r) => r.slice(0, Math.max(r.indexOf("("), 1))).join(","),
+          );
+        }
         if (budgeted.length > 0) lines.push(`价值锚：${budgeted.join("；")}`);
       }
       // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段

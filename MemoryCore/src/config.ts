@@ -454,6 +454,9 @@ export interface MemoryCoreMemoryConfig {
     /** #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写；
      *  零注入影响——只写 soul_snapshots 观测表）。 */
     snapshotsEnabled: boolean;
+    /** #29（R5）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用（缺省 999=现状全注入；
+     *  shadow 先行：选择器未定（#33 D9 tier/打分器 ADR），当前仅报告不裁剪、渲染逐位现状）。 */
+    anchorSelect: { maxRows: number };
   };
 }
 
@@ -1237,6 +1240,14 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         snapshotsEnabled: (g as Record<string, unknown>)["snapshotsEnabled"] === undefined
           ? true
           : (g as Record<string, unknown>)["snapshotsEnabled"] === true,
+        // #29（R5）：情境锚选择门——缺省 999=现状全注入（当前锚基数个位数，无收益不启动）；
+        // clamp 1..999 防手滑 0/负数。
+        anchorSelect: {
+          maxRows: (() => {
+            const v = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["maxRows"];
+            return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 999)) : 999;
+          })(),
+        },
       };
     })(),
   };

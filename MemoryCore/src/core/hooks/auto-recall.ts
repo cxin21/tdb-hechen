@@ -961,6 +961,8 @@ export async function performLayeredRecall(params: {
             characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,
             // #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写）。
             snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,
+            // #29（R5）：情境锚选择门（shadow 先行：仅报告不裁剪，转正待 D9/ADR）。
+            anchorSelect: cfg.coreMemory?.soulRender?.anchorSelect,
           },
           soulMeta,
         );
