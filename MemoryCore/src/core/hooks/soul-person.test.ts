@@ -49,8 +49,9 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     expect(out).toContain("重要的人：");
     expect(out).not.toContain("价值锚：张三");
     expect(out).toContain("价值锚：诚实(审慎·w0.9)：诚实呈现证据与遗留。");
-    expect(out).toContain("提醒我审慎的价值：诚实");
-    expect(out).not.toContain("提醒我审慎的价值：诚实、张三");
+    expect(out).toContain("提醒我审慎的价值：首要 诚实：诚实呈现证据与遗留。"); // R5 #23 首要=详述 golden 翻新
+    const feelLine = out.split("\n").find((l) => l.startsWith("提醒我审慎的价值")) ?? "";
+    expect(feelLine).not.toContain("张三"); // person 不入感受段（原断言「诚实、张三」混列形态随 R5 翻新）
   });
 
   it("无 person 行 → 无 重要的人 行（theme 渲染逐位现状）", async () => {

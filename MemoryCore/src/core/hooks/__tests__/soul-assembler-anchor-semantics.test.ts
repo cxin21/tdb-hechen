@@ -83,8 +83,9 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
   it("感受段驱动/审慎清单同样按 value_id 稳定排序", async () => {
     const out = await buildSoulPrefix(
       makeStore([
-        row({ value_id: "z-1", label: "甲", weight: 0.9, valence: 1 }),
-        row({ value_id: "a-2", label: "乙", weight: 0.8, valence: 1 }),
+        row({ value_id: "z-1", label: "甲", weight: 0.9, valence: 1, attrs_json: '{"description":"甲锚句。"}' }),
+        row({ value_id: "a-2", label: "乙", weight: 0.8, valence: 1, attrs_json: '{"description":"乙锚句。"}' }),
+        row({ value_id: "m-3", label: "丙", weight: 0.7, valence: 1, attrs_json: '{"description":"丙锚句。"}' }),
       ]) as never,
       TENANT,
       undefined,
@@ -92,7 +93,10 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
     );
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
-    expect(m![1].indexOf("乙")).toBeLessThan(m![1].indexOf("甲"));
+    // R5 #22/#23 golden 翻新：清单=滤后其余（首要 甲 除名详述），清单序仍 value_id 稳定（与 weight 无关）
+    expect(m![1].indexOf("乙")).toBeGreaterThanOrEqual(0);
+    expect(m![1].indexOf("乙")).toBeLessThan(m![1].indexOf("丙"));
+    expect(m![1]).toContain("首要 甲：甲锚句。");
   });
 
   it("人物锚行：weight DESC 取 top-N 后，渲染按 value_id 稳定", async () => {

@@ -660,6 +660,22 @@ export interface InjectionConfig {
    */
   externalGatewayUrl?: string;
   /**
+   * #26（R5）：soul/core 注入内容重叠观测 journal。**默认关**（config-first，
+   * 零行为变化——纯观测不改任何注入字节）。开启后每轮向 JSONL 追加一条
+   * {ts, session, turn_seq, soul_chars, core_chars, soul_hash, core_hash,
+   * soul_line_hashes, core_line_hashes}，供两周窗口统计 Jaccard 重叠率与
+   * token 成本（报告脚本 scripts/report-soul-overlap.ts）。
+   *
+   * ⚠️ 诚实边界：journal 侧测得的是「内容源重叠」，非「注入层重叠」——
+   * soul-identity 走 MemoryCore 召回块、core_memory 走主链路 system prompt，
+   * 两侧不同层（r5-26.md 修正 2）。
+   */
+  soulOverlapJournal?: {
+    enabled?: boolean;
+    /** JSONL 输出文件；缺省 <cwd>/data/soul-overlap-journal.jsonl。 */
+    file?: string;
+  };
+  /**
    * 资产反思模式（内部效果评估用）。**默认开启**——为了让运营方零配置即可
    * 用 URL marker 观测资产注入效果。marker 本身仍是 opt-in：不带 `/analyse/`
    * 段的请求完全无感。
@@ -893,6 +909,11 @@ export interface RawYamlConfig {
     externalGatewayUrl?: string;
     assetReflection?: {
       markerOptIn?: boolean;
+    };
+    /** #26（R5）：重叠观测 journal（yaml 源；缺省缺段=关）。 */
+    soulOverlapJournal?: {
+      enabled?: boolean;
+      file?: string;
     };
   };
   extraction?: {

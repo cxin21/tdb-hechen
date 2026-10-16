@@ -13,14 +13,15 @@ function makeStore(rows: Array<Record<string, unknown>>, slots: Array<Record<str
   return { listValues, readCore } as never;
 }
 
-const row = (o: { value_id: string; label: string; weight?: number; valence?: number | null }) => ({
+const row = (o: { value_id: string; label: string; weight?: number; valence?: number | null; attrs_json?: string }) => ({
   value_id: o.value_id,
   label: o.label,
   weight: o.weight ?? 0.5,
   valence: o.valence ?? 1,
   state: "active",
   node_type: "theme",
-  attrs_json: "{}",
+  // R5 #22（2026-10-16）：感受段/价值锚行同 desc 门——锚要出现在注入块需带 desc（缓存隔离用例）
+  attrs_json: o.attrs_json ?? "{}",
 });
 
 const slots = [
@@ -78,8 +79,9 @@ describe("soul 前缀缓存（TDB 内部完整实现）", () => {
 
   it("不同租户各自独立缓存（互不干扰）", async () => {
     const T2 = { teamId: "t2", userId: "u2", agentId: "a2" };
-    const rows1 = [row({ value_id: "x", label: "租户1锚" })];
-    const rows2 = [row({ value_id: "y", label: "租户2锚" })];
+    // R5 #22 golden 翻新：desc 空锚不再入注入块（宁缺毋滥）——隔离断言锚改带 desc
+    const rows1 = [row({ value_id: "x", label: "租户1锚", attrs_json: '{"description":"租户1锚说明。"}' })];
+    const rows2 = [row({ value_id: "y", label: "租户2锚", attrs_json: '{"description":"租户2锚说明。"}' })];
     const r1 = await buildSoulPrefix(makeStore(rows1, slots) as never, TENANT, undefined, { selfIdentityEnabled: true });
     const r2 = await buildSoulPrefix(makeStore(rows2, slots) as never, T2, undefined, { selfIdentityEnabled: true });
     expect(r1).toContain("租户1锚");

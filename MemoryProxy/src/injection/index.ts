@@ -146,6 +146,7 @@ import { getSessionStore } from "../session/store.js";
 import type { HookRegistry, PrewarmInput } from "./types.js";
 import { prewarmAll, type PrewarmOptions, type PrewarmResult } from "./prewarm.js";
 import { LoggingInjectionObserver, NoopInjectionObserver, LangfuseInjectionObserver } from "./observer.js";
+import { CompositeInjectionObserver, SoulOverlapJournalObserver } from "./soul-overlap-journal-observer.js";
 
 // ... (rest)
 
@@ -491,11 +492,20 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
 
   // Observer: prefer Langfuse (injection spans under LLM trace) when enabled;
   // fall back to structured logging when log level ≤ info; else noop.
-  const observer = config.langfuse?.enabled
+  let observer = config.langfuse?.enabled
     ? new LangfuseInjectionObserver()
     : (config.log?.level === "debug" || config.log?.level === "info")
       ? new LoggingInjectionObserver()
       : new NoopInjectionObserver();
+
+  // #26（R5）：soul/core 重叠观测 journal —— 默认关；开启时以 composite 串联，
+  // 观测与既有 observer 互不阻断（journal 内部全吞异常）。
+  if (config.injection?.soulOverlapJournal?.enabled) {
+    observer = new CompositeInjectionObserver([
+      observer,
+      new SoulOverlapJournalObserver(config.injection.soulOverlapJournal),
+    ]);
+  }
 
   const pipeline = new InjectionPipeline(registry, adapters, {
     hookCacheRepo,

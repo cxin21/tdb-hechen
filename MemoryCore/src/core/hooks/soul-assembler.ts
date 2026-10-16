@@ -61,6 +61,13 @@ export function applyAnchorBudget(items: string[], maxChars: number): string[] {
 }
 
 /**
+ * R5 #23（2026-10-16）：「首要」详述首句长度单一源（V7 方案A 80 字常量化，原代码内联魔法数）。
+ * 首要子句渲染规则：首句（句边界 [。！？；!?\n] 截取）≤ 该值 → 首要子句带首句；
+ * 无句界且全文 ≤ 该值 → 带全文；否则首要子句省略、该锚退回感受段清单成员（宁缺毋滥不丢成员）。
+ */
+export const SOUL_TOP_DESC_MAX_CHARS = 80;
+
+/**
  * v18-d（何晨拍板「全做」2026-10-05）：desc 悬空尾判定单一源（高置信断尾门）。
  * 置空判据只留确定性特征：剥尾引号[”"』」']后尾悬空标点[，、,]（截断在句读处 =
  * 后面还有内容被掐，语义未完态明确）。
@@ -149,7 +156,12 @@ export function computeSoulVersion(
   let h = 0x811c9dc5;
   for (let i = 0; i < payload.length; i++) {
     h ^= payload.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
+    // R5-F1（2026-10-16 对抗审查）：乘法用 Math.imul 保持 32 位语义——原 (h*0x01000193)>>>0
+    // 中间积最高 ~7.2e16 超 2^53 精度丢失，非标准 FNV-1a；现与 MemoryProxy
+    // soul-overlap-journal.ts 同算法。>>>0 仍必须保留（Math.imul 返回带符号 int32，
+    // 负数 toString(16) 会产出 sv--xxx 双横线畸形——P14/P50 探针抓到后修正）；
+    // sv 值一次性变化=进程内存缓存自然失效，无持久化依赖。
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
   return `sv-${h.toString(16).padStart(8, "0")}`;
 }
@@ -206,6 +218,15 @@ export async function buildSoulPrefix(
     if (cached) {
       logger?.info?.(`[soul] 人格变更 ${cacheKey}: ${cached.version} → ${soulVer}`);
     }
+    // R5 #22（2026-10-16）：desc 判定单一源提升至函数作用域——价值锚行与感受段清单共用同一
+    // desc 门（句边界截取 + isDanglingTail 悬空清洗），两处过滤口径不再漂移。
+    const anchorDescOf = (v: { attrs_json?: string }): string => {
+      const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
+      if (!s) return "";
+      const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
+      if (cut >= 0) return s.slice(0, cut + 1);
+      return isDanglingTail(s) ? "" : s;
+    };
     // ── 身份段：此刻的你 ──
     if (slots.length > 0 || activeAll.length > 0) {
       const lines: string[] = [];
@@ -229,6 +250,9 @@ export async function buildSoulPrefix(
           })
         : slots;
       for (const s of ordered) {
+        // #31 探针 P24（R5，2026-10-16）：空白槽内容不渲染空 `[slot] ` 行
+        //（宁缺毋滥，与锚 desc 空跳过同哲学；生产 slots 无空内容=逐位现状不变）。
+        if (typeof s.content !== "string" || s.content.trim() === "") continue;
         const budget = budgetFor(s.slot);
         const content = budget !== undefined ? truncateByLines(s.content, budget) : s.content;
         const label = labelFor(s.slot);
@@ -240,14 +264,7 @@ export async function buildSoulPrefix(
         // 灵魂注入质量轮（2026-10-04 何晨令「禁止无意义、不明确的内容和仅有关键词无说明的锚点注入」）：
         // desc 空/空白锚整条跳过（宁缺毋滥禁裸关键词形态）；desc 尾悬空半句清洗（句边界，
         // v18-d 起判定单一源 = isDanglingTail，与 pending-adopt-merge.sanitizeDescription 复用）；
-        // 全部锚无 desc → 行省略不造裸串。
-        const anchorDescOf = (v: { attrs_json?: string }): string => {
-          const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
-          if (!s) return "";
-          const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
-          if (cut >= 0) return s.slice(0, cut + 1);
-          return isDanglingTail(s) ? "" : s;
-        };
+        // 全部锚无 desc → 行省略不造裸串。（anchorDescOf 已提升至段作用域：R5 #22 感受段同门复用）
         const renderAnchor = (v: (typeof activeStable)[number], desc: string): string => {
           const descSeg = desc !== "" ? `：${escapeXmlTags(desc)}` : "";
           // V6-1b：weight 显示（仅展示信念强度，不改渲染序——立项② value_id 稳定排序不变；
@@ -339,25 +356,45 @@ export async function buildSoulPrefix(
     // S-FEEL-1（M1）：mood 行独立于方向锚（无 ±1 锚时 soul-feeling 块仍可只含基调行，宁缺毋滥不造空段）；
     // moodTier 缺省=门控逐位现状。
     if (directional.length > 0 || opts?.moodTier) {
-      const pos = directional.filter((v) => v.valence === 1).map((v) => escapeXmlTags(v.label));
-      const neg = directional.filter((v) => v.valence === -1).map((v) => escapeXmlTags(v.label));
-      const feel: string[] = [];
-      // V6-1d（方案B，2026-09-23 用户授权自审定案）：渲染序保持 value_id 稳定（立项②）；
-      // 「首要」锚按 weight 最高选取（选取与排序解耦），附 description 短句 ≤30 字（宁缺毋滥）。
-      const topDescSeg = (rows: typeof directional): string => {
-        const top = [...rows].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))[0];
-        if (!top || !((top.weight ?? 0) > 0)) return "";
-        const d = attrsOf(top.attrs_json)?.description?.trim();
-        if (!d) return "";
-        // V7 方案A：首句优先（句边界截取；首句超预算或无句界且超 80 则省略=宁缺毋滥；与 Panel firstSentenceDesc 同构）
+      // R5 #22（2026-10-16）：感受段清单与价值锚行同门——desc 空/episode 叙述锚不入清单
+      //（消 shadow-first 式悬空裸关键词，anchorDescOf 单一源见上）；滤后仍 value_id 稳定序（立项②）。
+      const gated = directional
+        .map((v) => {
+          const desc = anchorDescOf(v);
+          return !desc || looksLikeEpisode(desc) ? null : { v, desc };
+        })
+        .filter((x): x is { v: (typeof directional)[number]; desc: string } => x !== null);
+      // R5 #23（2026-10-16）：「首要」=详述、清单=其余——首要锚为方向内 weight 最高（平局
+      // value_id 稳定序，V6-1d 选取与排序解耦不变），从清单除名并附首句 ≤SOUL_TOP_DESC_MAX_CHARS
+      //（V7 方案A 首句优先；原内联 80 常量化，注释「≤30 字」漂移一并修正）。首要子句渲染失败
+      //（无句界且超限）→ 该锚退回清单成员（宁缺毋滥不丢成员）。预算门（#10 T4）只管清单项，
+      // 首要子句为详述不占清单预算；缺省 0=无预算逐位现状（config-first）。
+      const topDetailClause = (r: (typeof gated)[number]): string => {
+        const d = r.desc;
         const m = /[。！？；!?\n]/.exec(d);
-        if (m) {
-          return m.index + 1 <= 80 ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d.slice(0, m.index + 1).trim())}` : "";
-        }
-        return d.length <= 80 ? `；首要 ${escapeXmlTags(top.label ?? "")}：${escapeXmlTags(d)}` : "";
+        const detail = m
+          ? (m.index + 1 <= SOUL_TOP_DESC_MAX_CHARS ? d.slice(0, m.index + 1).trim() : "")
+          : (d.length <= SOUL_TOP_DESC_MAX_CHARS ? d : "");
+        return detail ? `首要 ${escapeXmlTags(r.v.label ?? "")}：${escapeXmlTags(detail)}` : "";
       };
-      if (pos.length > 0) feel.push(`驱动我行动的价值：${pos.join("；")}${topDescSeg(directional.filter((v) => v.valence === 1))}`);
-      if (neg.length > 0) feel.push(`提醒我审慎的价值：${neg.join("；")}${topDescSeg(directional.filter((v) => v.valence === -1))}`);
+      const feelLine = (header: string, dirRows: typeof gated): string | null => {
+        if (dirRows.length === 0) return null;
+        const top = [...dirRows].sort((a, b) => (b.v.weight ?? 0) - (a.v.weight ?? 0) || String(a.v.value_id ?? a.v.label).localeCompare(String(b.v.value_id ?? b.v.label)))[0];
+        // 逐位现状（R5 自审 P51）：旧 topDescSeg 有 weight>0 门——零权/负权锚不出首要子句、保留清单
+        const clause = (top.v.weight ?? 0) > 0 ? topDetailClause(top) : "";
+        const list = dirRows
+          .filter((r) => r !== top || clause === "")
+          .map((r) => escapeXmlTags(r.v.label));
+        const budgeted = applyAnchorBudget(list, opts?.budgetAnchorChars ?? 0);
+        if (budgeted.length === 0 && !clause) return null;
+        const head = `${header}${budgeted.join("；")}`;
+        return clause ? (budgeted.length > 0 ? `${head}；${clause}` : `${head}${clause}`) : head;
+      };
+      const feel: string[] = [];
+      const posLine = feelLine("驱动我行动的价值：", gated.filter((r) => r.v.valence === 1));
+      const negLine = feelLine("提醒我审慎的价值：", gated.filter((r) => r.v.valence === -1));
+      if (posLine) feel.push(posLine);
+      if (negLine) feel.push(negLine);
       // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位+样本数，不出连续值防伪精度；
       // opts.moodTier 缺省=不 push=逐位现状）。文案不含「我感到」字样（§1.5 主语越界防线）。
       if (opts?.moodTier) {

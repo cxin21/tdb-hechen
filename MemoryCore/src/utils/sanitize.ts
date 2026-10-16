@@ -315,8 +315,11 @@ export function escapeXmlTags(text: string): string {
   // I-2（P2-T11+13 复核修补）：追加 l3_core_memory 与 agent —— L3 persona 文件
   //（/v3/core/write）注入时的块边界 `<l3_core_memory>…</l3_core_memory>` 与
   // `<agent …>…</agent>` 同为越块逃逸面，写入路径 handleCoreWrite 已接线消毒。
+  // #31（R5 探针 P09，2026-10-16）：追加 soul-identity/soul-feeling —— soul-assembler
+  // 渲染的块边界同为越块逃逸面（core_values desc/label 可携带 `</soul-identity>`
+  // 越块），渲染路径 renderAnchor/重要的人/品格行/感受段均经本函数消毒。
   return text.replace(
-    /<\/?(?:user-persona|relevant-memories|scene-navigation|relevant-scenes|memory-tools-guide|core_memory|identity|strict_rule|core_value|l3_core_memory|agent|user|system|assistant)>/gi,
+    /<\/?(?:user-persona|relevant-memories|scene-navigation|relevant-scenes|memory-tools-guide|core_memory|identity|strict_rule|core_value|l3_core_memory|agent|user|system|assistant|soul-identity|soul-feeling)>/gi,
     (match) => match.replace(/</g, "&lt;").replace(/>/g, "&gt;"),
   );
 }
