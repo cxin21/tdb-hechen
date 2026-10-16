@@ -93,7 +93,7 @@ import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
 import { extractionExtensionsEnabled, rollupStateFromRecords } from "../hooks/soul-state-machine.js";
-import { applyPromiseEvidence, collectPromiseEvidenceFromExtraction } from "../hooks/soul-promise-evidence.js";
+import { applyPromiseEvidence, collectPromiseEvidenceFromExtraction, promiseEvidenceGateEnabled } from "../hooks/soul-promise-evidence.js";
 import type { L1SearchResult } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import { report } from "../report/reporter.js";
@@ -597,15 +597,15 @@ export async function extractL1Memories(params: {
     }
 
     // ── #41（ADR0003-P3 实施票 C，D8 证据门）：promise 确定性证据迁移——user 确认话语
-    // 白名单（soul-promise-evidence 单一源，锚定全句宁缺毋滥）→ refKey 严格相等的 open
-    // promise 迁移（store 侧复判状态机，source=evidence 全链溯源）。门 off=零 promise 读
-    // 零 promise 写=逐位现状；store 缺实现/失败 warn 不阻塞（镜像 #28 观测旁路惯例）。
-    // memoryConfig 实参恒为 buildConfig 产物（MemoryCoreMemoryConfig，soulRender 必材料化）；
-    // 此处参数类型刻意窄化（镜像 #28 extractionExtensionsEnabled 惯例），故局部结构化下钻。
-    if (
-      (memoryConfig as { soulRender?: { promiseEvidence?: { enabled?: boolean } } } | undefined)
-        ?.soulRender?.promiseEvidence?.enabled === true
-    ) {
+    // 白名单（soul-promise-evidence 单一源，锚定全句+承诺指称，宁缺毋滥）→ refKey 严格
+    // 相等的 open promise 迁移（store 侧复判状态机，source=evidence 全链溯源，陈旧证据
+    // 守卫防毒批重放）。门 off=零 promise 读零 promise 写=逐位现状；store 缺实现/失败
+    // warn 不阻塞（镜像 #28 观测旁路惯例）。
+    // 门路径单一源=promiseEvidenceGateEnabled（审查 C1 回归锁）：唯一生产调用点
+    // pipeline-factory.ts:619 传 memoryConfig=cfg（MemoryTdaiConfig 扁平接口，soulRender
+    // 在 coreMemory 子树），直下钻 soulRender 恒 undefined=死开关——路径契约由
+    // config.soulrender-promise-evidence.test.ts 门路径 describe 用 parseConfig 产物钉死。
+    if (promiseEvidenceGateEnabled(memoryConfig)) {
       try {
         const items = collectPromiseEvidenceFromExtraction(messages, taskId || undefined);
         if (items.length > 0) {
