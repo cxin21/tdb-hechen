@@ -156,17 +156,23 @@ export function computeSoulVersion(
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   };
   const payload = JSON.stringify(moodTier !== undefined ? { ...payloadBase, m: moodTier } : payloadBase);
+  return `sv-${fnv1a32Hex(payload)}`;
+}
+
+/** FNV-1a 32bit（零依赖）→ 8 位十六进制（无前缀）。
+ *  R5-F1（2026-10-16 对抗审查）：乘法用 Math.imul 保持 32 位语义——原 (h*0x01000193)>>>0
+ *  中间积最高 ~7.2e16 超 2^53 精度丢失，非标准 FNV-1a；现与 MemoryProxy
+ *  soul-overlap-journal.ts 同算法。>>>0 仍必须保留（Math.imul 返回带符号 int32，
+ *  负数 toString(16) 会产出 sv--xxx 双横线畸形——P14/P50 探针抓到后修正）。
+ *  R5-F2：sv（人格指纹=slots/values/mood）与快照 contentHash（渲染字节哈希）共用
+ *  本算法但语义不同——同 sv 可有多个布局 payload，contentHash 逐一入账不互抑。 */
+function fnv1a32Hex(s: string): string {
   let h = 0x811c9dc5;
-  for (let i = 0; i < payload.length; i++) {
-    h ^= payload.charCodeAt(i);
-    // R5-F1（2026-10-16 对抗审查）：乘法用 Math.imul 保持 32 位语义——原 (h*0x01000193)>>>0
-    // 中间积最高 ~7.2e16 超 2^53 精度丢失，非标准 FNV-1a；现与 MemoryProxy
-    // soul-overlap-journal.ts 同算法。>>>0 仍必须保留（Math.imul 返回带符号 int32，
-    // 负数 toString(16) 会产出 sv--xxx 双横线畸形——P14/P50 探针抓到后修正）；
-    // sv 值一次性变化=进程内存缓存自然失效，无持久化依赖。
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
     h = Math.imul(h, 0x01000193) >>> 0;
   }
-  return `sv-${h.toString(16).padStart(8, "0")}`;
+  return h.toString(16).padStart(8, "0");
 }
 
 /** 立项③ TDB 内部完整实现（2026-09-23 拍板）：soul 前缀会话级缓存——指纹未变化跳过渲染，
@@ -221,17 +227,23 @@ export async function buildSoulPrefix(
       // last-hash 去重检查（payload=缓存文本=同指纹同渲染，字节一致）。
       if (opts?.snapshotsEnabled !== false && !cached.snapshotted && cached.text !== "") {
         try {
+          // R5-F2：contentHash=渲染字节哈希（非 sv）——同 sv 不同布局（渲染参数变体）
+          // 各自成行，账本对注入字节完整可查。
+          const contentHash = fnv1a32Hex(cached.text);
           const lastHash = await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant));
-          if (lastHash !== soulVer && store.writeSoulSnapshot) {
+          if (lastHash !== contentHash && store.writeSoulSnapshot) {
             await Promise.resolve(store.writeSoulSnapshot(tenant, {
               ts: new Date().toISOString(),
-              contentHash: soulVer,
+              contentHash,
               payloadJson: cached.text,
               trigger: "render",
             }));
           }
           cached.snapshotted = true;
-        } catch { /* 观测旁路零注入影响 */ }
+        } catch (err) {
+          // R5-F5：吞错单点在调用方（store 直接抛出）；失败不置旗标 → 下次渲染自动补账。
+          logger?.warn?.(`[soul] soul snapshot capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
       return cached.text;
     }
@@ -473,24 +485,27 @@ export async function buildSoulPrefix(
       if (oldest !== undefined) soulPrefixCache.delete(oldest);
     }
     const entry: { version: string; text: string; snapshotted?: boolean } = { version: soulVer, text: result };
-    // #30（S9/R5，2026-10-16）：soul 快照旁路落账——指纹变化后首次渲染 append 一行
-    //（last-hash 去重=指纹不变零落行防膨胀；payload=本次渲染全文，时间旅行可重建任一时点）。
-    // capture point=渲染路径单一咽喉（锚变更→指纹变化→下次渲染必经此处，at-least-once 语义）。
-    // store 缺实现/失败一律静默跳过（观测旁路绝不影响注入主路径）；空渲染不落行（宁缺毋滥）；
-    // 写成功（或确认库中已有）→ entry.snapshotted=true，后续缓存命中零额外查询。
+    // #30（S9/R5，2026-10-16）：soul 快照旁路落账——渲染尾单咽喉 append（at-least-once 语义：
+    // 锚变更→指纹变化→下次渲染必经此处）。R5-F2：contentHash=渲染字节哈希（非 sv），
+    // last-hash 去重=内容不变零落行防膨胀；同 sv 布局变体各自成行。
+    // R5-F5：store 不吞错（直接抛出），吞错单点在此——失败 warn+不置旗标 → 下次渲染自动补账；
+    // 空渲染不落行（宁缺毋滥）；写成功（或确认库中已有）→ entry.snapshotted=true，缓存命中零额外查询。
     if (result !== "" && opts?.snapshotsEnabled !== false) {
       try {
+        const contentHash = fnv1a32Hex(result);
         const lastHash = await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant));
-        if (lastHash !== soulVer && store.writeSoulSnapshot) {
+        if (lastHash !== contentHash && store.writeSoulSnapshot) {
           await Promise.resolve(store.writeSoulSnapshot(tenant, {
             ts: new Date().toISOString(),
-            contentHash: soulVer,
+            contentHash,
             payloadJson: result,
             trigger: "render",
           }));
         }
         entry.snapshotted = true;
-      } catch { /* 观测旁路零注入影响 */ }
+      } catch (err) {
+        logger?.warn?.(`[soul] soul snapshot capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     soulPrefixCache.set(cacheKey, entry);
   }

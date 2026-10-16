@@ -959,6 +959,8 @@ export async function performLayeredRecall(params: {
             // S-FEEL-1（M1）：近期基调行（null/undefined=不渲染=逐位现状）。
             moodTier: moodTierResult,            // S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚仍混渲染于价值锚行）。
             characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,
+            // #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写）。
+            snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,
           },
           soulMeta,
         );

@@ -451,6 +451,9 @@ export interface MemoryCoreMemoryConfig {
     budgetPersonChars: number;
     /** #10 T4：品格行总长预算（整锚粒度从尾丢；0=关（缺省），开则建议 300）。 */
     budgetCharacterChars: number;
+    /** #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写；
+     *  零注入影响——只写 soul_snapshots 观测表）。 */
+    snapshotsEnabled: boolean;
   };
 }
 
@@ -1222,6 +1225,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         budgetAnchorChars: clamp("budgetAnchorChars", 0, 0, 4000),
         budgetPersonChars: clamp("budgetPersonChars", 0, 0, 4000),
         budgetCharacterChars: clamp("budgetCharacterChars", 0, 0, 4000),
+        // #30（R5-F1 接线）：快照旁路开关——缺省 true=随新功能上线；显式 false 才关闭。
+        snapshotsEnabled: (g as Record<string, unknown>)["snapshotsEnabled"] === undefined
+          ? true
+          : (g as Record<string, unknown>)["snapshotsEnabled"] === true,
       };
     })(),
   };

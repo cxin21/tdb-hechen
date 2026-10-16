@@ -2512,28 +2512,21 @@ export class VectorStore implements IMemoryStore {
     }
   }
   /** #30（S9/R5）：soul 快照三方法——append-only 落行 / last-hash 去重读 / 时间旅行读。
-   *  租户三元组硬隔离（F18 同款）；失败 warn+安全返回（观测旁路不炸主路径）。 */
+   *  租户三元组硬隔离（F18 同款）。R5-F5：write/readLast 不吞错——吞错单点在调用方
+   *  （soul-assembler 捕获后 warn+不置旗标，下次渲染自动补账）；list 为 Panel 读取面，
+   *  warn+安全返回。 */
   writeSoulSnapshot(tenant: CoreTenant, snap: { ts: string; contentHash: string; payloadJson: string; trigger: string }): void {
     const t = normalizeCoreTenant(tenant);
-    try {
-      this.db.prepare(
-        "INSERT INTO soul_snapshots (team_id, user_id, agent_id, ts, content_hash, payload_json, \"trigger\") VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(t.teamId, t.userId, t.agentId, snap.ts, snap.contentHash, snap.payloadJson, snap.trigger);
-    } catch (err) {
-      this.logger?.warn?.(`${TAG} [soul_snapshots] write failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    this.db.prepare(
+      "INSERT INTO soul_snapshots (team_id, user_id, agent_id, ts, content_hash, payload_json, \"trigger\") VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(t.teamId, t.userId, t.agentId, snap.ts, snap.contentHash, snap.payloadJson, snap.trigger);
   }
   readLastSoulSnapshotHash(tenant: CoreTenant): string | null {
     const t = normalizeCoreTenant(tenant);
-    try {
-      const row = this.db.prepare(
-        "SELECT content_hash FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1",
-      ).get(t.teamId, t.userId, t.agentId) as unknown as { content_hash: string } | undefined;
-      return row?.content_hash ?? null;
-    } catch (err) {
-      this.logger?.warn?.(`${TAG} [soul_snapshots] readLast failed: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    }
+    const row = this.db.prepare(
+      "SELECT content_hash FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1",
+    ).get(t.teamId, t.userId, t.agentId) as unknown as { content_hash: string } | undefined;
+    return row?.content_hash ?? null;
   }
   listSoulSnapshots(tenant: CoreTenant, limit?: number): Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }> {
     const t = normalizeCoreTenant(tenant);
