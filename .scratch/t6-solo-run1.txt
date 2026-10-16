@@ -1,0 +1,203 @@
+
+ RUN  v3.2.7 D:/TDB/td-agemem/MemoryProxy
+
+stderr | src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > degrades to [] when a wiki search throws (per-wiki isolation, no rejection)
+[wiki-recall-injector] per-wiki recall failed wiki=Coding-WiKi serviceUrl=http://ks:8421/v3 wikiId=wiki-x reason=retrieve exploded
+
+stderr | src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > degrades to [] when retrieveClientFactory throws (e.g. malformed service_url)
+[wiki-recall-injector] per-wiki recall failed wiki=Coding-WiKi serviceUrl=http://ks:8421/v3 wikiId=wiki-x reason=bad service_url
+
+stdout | src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > ships the 4 new structural typeWeights in config.yaml (other/log/index/schema = 0.3)
+[config] loaded config.yaml (top-level sections: server,upstream,log,redis,costGuard,rateLimit,storage,opik,langfuse,clickhouse,auth,admin,systemUsers,creditReport,creditPricing,injection,extraction,sessionInit,tdai,appraisal,skill,knowledge,wikiRecall,skillRuntime,memCommand,ccRequestRouting)
+
+stdout | src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > C3: config.yaml (deploy mirror) retires domainRouter — code default and deploy stay consistent
+[config] loaded config.yaml (top-level sections: server,upstream,log,redis,costGuard,rateLimit,storage,opik,langfuse,clickhouse,auth,admin,systemUsers,creditReport,creditPricing,injection,extraction,sessionInit,tdai,appraisal,skill,knowledge,wikiRecall,skillRuntime,memCommand,ccRequestRouting)
+
+stdout | src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > wikiRecall.jit tri-state 配置解析 > jit: true / jit: false 透传；缺省 → undefined（跟随 meta 能力位）
+[config] loaded C:\Users\ADMINI~1\AppData\Local\Temp\wiki-jit-cfg-KjG5sx\config.yaml (top-level sections: wikiRecall)
+[config] loaded C:\Users\ADMINI~1\AppData\Local\Temp\wiki-jit-cfg-f03way\config.yaml (top-level sections: wikiRecall)
+[config] loaded C:\Users\ADMINI~1\AppData\Local\Temp\wiki-jit-cfg-I8BDGN\config.yaml (top-level sections: wikiRecall)
+
+ ❯ src/injection/injectors/__tests__/wiki-recall-injector.test.ts (59 tests | 5 failed) 11947ms
+   ✓ WikiRecallInjector > injects <tdai_recalled_wiki> when binding + retrieve hit 90ms
+   ✓ WikiRecallInjector > does NOT let an earlier-bound wiki crowd out a later-bound wiki's higher-scored hits (regression: slice-before-sort) 29ms
+   ✓ WikiRecallInjector > drops candidates whose normScore is below minInjectNormScore (threshold filter) 14ms
+   ✓ WikiRecallInjector > downweights entity/concept via typeWeights so a source outranks a higher raw-scored entity 9ms
+   ✓ WikiRecallInjector > boosts the domain-matched wiki so its hits outrank unrelated wiki (soft domain routing) 10ms
+   ✓ WikiRecallInjector > passes the session space_id as the retrieve serviceId (tenant must match bind resolution) 7ms
+   ✓ WikiRecallInjector > returns [] when identity is missing and never calls retrieve 5ms
+   ✓ WikiRecallInjector > returns [] when no wiki is bound and never calls retrieve 19ms
+   ✓ WikiRecallInjector > returns [] when disabled (no binding resolution, no retrieve) 4ms
+   ✓ WikiRecallInjector > degrades to [] when a wiki search throws (per-wiki isolation, no rejection) 14ms
+   ✓ WikiRecallInjector > degrades to [] when retrieveClientFactory throws (e.g. malformed service_url) 5ms
+   ✓ WikiRecallInjector > returns [] for empty/whitespace-only user query (no binding, no retrieve) 3ms
+   ✓ WikiRecallInjector > renders [图展开] when hop > 0 is configured and a hit is reached via hop 5ms
+   ✓ WikiRecallInjector > searches all bound wikis in parallel (per factory call) and concats before topK 13ms
+   ✓ WikiRecallInjector > annotates [degraded: fts-only] when every merged hit lacks absScore (T15-C) 13ms
+   ✓ WikiRecallInjector > does NOT annotate degraded when at least one hit carries absScore (vector channel alive) 4ms
+   ✓ WikiRecallInjector > appends structural pages (NON_EMBED_TYPES) to the tail with [structural] on the first one (W5) 6ms
+   ✓ WikiRecallInjector > keeps structural pages present but never lets them crowd the top-K body entries (W5) 6ms
+   ✓ WikiRecallInjector > caps the structural tail at MAX_STRUCTURAL_TAIL=3 and drops the overflow with a debug log (S3/T18 M-1) 15ms
+   ✓ WikiRecallInjector > multiplies typeWeights (other: 0.3) so body outranks high-raw other-typed noise (W5 regression confirm) 5ms
+   × WikiRecallInjector > ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3) 5059ms
+     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+   × WikiRecallInjector > C3: code default retires domainRouter explicitly (keywords {} = router off, capability shape kept) 5011ms
+     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+   ✓ WikiRecallInjector > absGate (minInjectAbsScore) 行为钉死 (W7/T20) > ① keeps a candidate whose absScore >= threshold 10ms
+   ✓ WikiRecallInjector > absGate (minInjectAbsScore) 行为钉死 (W7/T20) > ② blocks a candidate whose absScore < threshold (宁缺毋滥)  709ms
+   ✓ WikiRecallInjector > absGate (minInjectAbsScore) 行为钉死 (W7/T20) > ③ fail-open: a candidate WITHOUT absScore passes the gate (相对门控兜底, 有意设计) 4ms
+   ✓ WikiRecallInjector > absGate (minInjectAbsScore) 行为钉死 (W7/T20) > ④ structural pages (no absScore) bypass absGate and stay at the tail (W5×absGate interaction) 4ms
+   ✓ WikiRecallInjector > absGate (minInjectAbsScore) 行为钉死 (W7/T20) > ④b absGate filters only body pool: gated-out body still leaves structural tail present 34ms
+   ✓ WikiRecallInjector > minInjectFtsScore FTS 穿透门 (P0-3) > ① FTS-only 命中 score >= gate → 注入 4ms
+   ✓ WikiRecallInjector > minInjectFtsScore FTS 穿透门 (P0-3) > ② FTS-only 命中 score < gate → 拦截（宁缺毋滥） 2ms
+   ✓ WikiRecallInjector > minInjectFtsScore FTS 穿透门 (P0-3) > ③ 双通道命中（有 absScore）不走此门——由 absGate 独立判 4ms
+   ✓ WikiRecallInjector > minInjectFtsScore FTS 穿透门 (P0-3) > ④ hop>0 时门强制关闭（BM25 原始尺度不可比，代码级设防） 7ms
+   ✓ WikiRecallInjector > minInjectFtsScore FTS 穿透门 (P0-3) > ⑤ 未配置（缺省 0）= 关：FTS-only 低分照旧注入（逐位现状） 3ms
+   ✓ WikiRecallInjector > skipQuery 短 query / 寒暄 query 跳过 (P0-3) > ① CJK 寒暄词全等命中 → 跳过且不发检索请求 13ms
+   ✓ WikiRecallInjector > skipQuery 短 query / 寒暄 query 跳过 (P0-3) > ② 真实任务 query 含寒暄词开头 → 不跳（去标点后全等才跳） 6ms
+   ✓ WikiRecallInjector > skipQuery 短 query / 寒暄 query 跳过 (P0-3) > ③ ASCII 词边界：'ok 这版可以发吗' 跳过；'同步 OKR 进展' 不误杀 15ms
+   ✓ WikiRecallInjector > skipQuery 短 query / 寒暄 query 跳过 (P0-3) > ④ minChars：码点长度不足 → 跳过且不发检索 7ms
+   ✓ WikiRecallInjector > ships the 4 new structural typeWeights in config.yaml (other/log/index/schema = 0.3) 72ms
+   ✓ WikiRecallInjector > C3: config.yaml (deploy mirror) retires domainRouter — code default and deploy stay consistent 31ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > stripFrontmatter / buildJitSummary（摘要行来源） > 剥离首部 frontmatter；非首部/未闭合的不动 3ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > stripFrontmatter / buildJitSummary（摘要行来源） > 摘要 = 剥 frontmatter + 折叠空白 + ≤80 码点截断（CJK/emoji 安全） 7ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > renderWikiRecallBlockJit（JIT 渲染形态） > 单条形状 = 序号+来源+标题+摘要+[详情: tool wiki_fetch]，单条 ≤100、无 path/score 行 4ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > renderWikiRecallBlockJit（JIT 渲染形态） > 例外：原文 ≤160 直接注全文（沿用 legacy 全格式，含 path/score 行） 1ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > renderWikiRecallBlockJit（JIT 渲染形态） > 整块 ≤500：5 条长摘要候选时裁掉装不下的尾部条目，header/footer 必保 10ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > renderWikiRecallBlockJit（JIT 渲染形态） > 软指引恰好一次：doc_path|title、section、≤4000、[truncated]、miss isError=true、单轮 ≤3 次 3ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > renderWikiRecallBlockJit（JIT 渲染形态） > 空 snippet → 仅标题（无冒号）；超长 title 截断保 ≤100 2ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > renderWikiRecallBlockJit（JIT 渲染形态） > 空条目列表返回 null（与 legacy 渲染一致） 1ms
+   × WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > meta wiki_jit=true → JIT 短块（metadata.jitMode=jit，体积对比记录在案） 51ms
+     → expected '<tdai_recalled_wiki>\n[degraded: fts-…' to contain '[详情: tool wiki_fetch]'
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > meta 缺省（无 assetCapabilities）→ 现行全量（jitMode=legacy，默认关=shadow-first） 7ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > meta wiki_jit=false → 现行全量 3ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > config jit=false 逃生门压过 meta 开关 → 现行全量，且与缺省输出逐字节一致 6ms
+   × WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > config jit=true 强制 JIT（meta 关闭/缺席时——运维/live 验收通道） 19ms
+     → expected '<tdai_recalled_wiki>\n[degraded: fts-…' to contain '[详情: tool wiki_fetch]'
+   × WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > JIT 模式下 [degraded: fts-only] 标注照常生效 11ms
+     → expected '<tdai_recalled_wiki>\n[degraded: fts-…' to contain '[详情: tool wiki_fetch]'
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > journal 行：mode/chars/jitWouldBeChars/entries/team 记入 injector 日志通道 10ms
+   ✓ WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > wikiRecall.jit tri-state 配置解析 > jit: true / jit: false 透传；缺省 → undefined（跟随 meta 能力位）  486ms
+   ✓ resolveBoundWikiResources > per-agent path: listAgentKnowledgeIds → listKnowledgeByIds → filter wiki 5ms
+   ✓ resolveBoundWikiResources > per-agent path returns [] early when agent has no bound ids 5ms
+   ✓ resolveBoundWikiResources > fallback team path returns team wikis when no agent userKey 4ms
+   ✓ shouldRegisterWikiRecallInjector > true only when knowledge enabled + serviceToken set + wikiRecall enabled 2ms
+   ✓ shouldRegisterWikiRecallInjector > defaults to enabled when wikiRecall block is absent (only knowledge gate applies) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3)
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/injection/injectors/__tests__/wiki-recall-injector.test.ts:459:3
+    457|   });
+    458| 
+    459|   it("ships the 4 new structural typeWeights in the injection defaults…
+       |   ^
+    460|     // 默认值落在 injection/index.ts defaultWikiRecallConfig（config.wikiRec…
+    461|     const { defaultWikiRecallConfig } = await import("../../index.js");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > C3: code default retires domainRouter explicitly (keywords {} = router off, capability shape kept)
+Error: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ src/injection/injectors/__tests__/wiki-recall-injector.test.ts:468:3
+    466|   });
+    467| 
+    468|   it("C3: code default retires domainRouter explicitly (keywords {} = …
+       |   ^
+    469|     // 2026-09-10 隔离实验（anchor runs/2026-09-10T04-07-38.json）：部署工作点
+    470|     // router 对 posRecall 单变量贡献=0（B/E 同 0.66）、negInjected 恒 +2（13 vs 1…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > meta wiki_jit=true → JIT 短块（metadata.jitMode=jit，体积对比记录在案）
+AssertionError: expected '<tdai_recalled_wiki>\n[degraded: fts-…' to contain '[详情: tool wiki_fetch]'
+
+- Expected
++ Received
+
+- [详情: tool wiki_fetch]
++ <tdai_recalled_wiki>
++ [degraded: fts-only] 本轮向量召回无贡献（向量层降级或相关度门滤除），命中项均无向量相关分（absScore 缺失），召回质量可能不完整。
++ 以下是当前轮用户问题自动召回的团队 wiki 索引（JIT 精简模式，按相关度排序）；每条前的 [wiki:xxx] 标注其来源知识库，多 wiki 命中时据此区分来源。
++ 要看某条完整正文：用 <knowledge_tools> 里的 tools/call 调 wiki 工具 wiki_fetch（入参 doc_path=该条来源页 path，或 title=页面标题；section 可选缩小范围；单次 ≤4000 字符，超长附 [truncated] 标记；未命中返回 isError=true 附原因，可换参重试；单轮取文建议 ≤3 次）。
++
++ 1. [wiki:Coding-WiKi] [concept] score=1.00 — A
++    path: wiki/concepts/a.md
++    机制说明
++ </tdai_recalled_wiki>
+
+ ❯ src/injection/injectors/__tests__/wiki-recall-injector.test.ts:808:23
+    806|       expect(blocks).toHaveLength(1);
+    807|       const content = blocks[0].content;
+    808|       expect(content).toContain("[详情: tool wiki_fetch]");
+       |                       ^
+    809|       expect(content).not.toContain("score=");
+    810|       expect(blocks[0].metadata).toMatchObject({ jitMode: "jit" });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > config jit=true 强制 JIT（meta 关闭/缺席时——运维/live 验收通道）
+AssertionError: expected '<tdai_recalled_wiki>\n[degraded: fts-…' to contain '[详情: tool wiki_fetch]'
+
+- Expected
++ Received
+
+- [详情: tool wiki_fetch]
++ <tdai_recalled_wiki>
++ [degraded: fts-only] 本轮向量召回无贡献（向量层降级或相关度门滤除），命中项均无向量相关分（absScore 缺失），召回质量可能不完整。
++ 以下是当前轮用户问题自动召回的团队 wiki 索引（JIT 精简模式，按相关度排序）；每条前的 [wiki:xxx] 标注其来源知识库，多 wiki 命中时据此区分来源。
++ 要看某条完整正文：用 <knowledge_tools> 里的 tools/call 调 wiki 工具 wiki_fetch（入参 doc_path=该条来源页 path，或 title=页面标题；section 可选缩小范围；单次 ≤4000 字符，超长附 [truncated] 标记；未命中返回 isError=true 附原因，可换参重试；单轮取文建议 ≤3 次）。
++
++ 1. [wiki:Coding-WiKi] [concept] score=1.00 — A
++    path: wiki/concepts/a.md
++    机制说明
++ </tdai_recalled_wiki>
+
+ ❯ src/injection/injectors/__tests__/wiki-recall-injector.test.ts:848:33
+    846|       const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", le…
+    847|       expect(blocks[0].metadata).toMatchObject({ jitMode: "jit" });
+    848|       expect(blocks[0].content).toContain("[详情: tool wiki_fetch]");
+       |                                 ^
+    849|     });
+    850| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  src/injection/injectors/__tests__/wiki-recall-injector.test.ts > WikiRecallInjector > wiki JIT 瘦身注入 (Task 6) > injector JIT 路由（meta 能力位 + jit tri-state） > JIT 模式下 [degraded: fts-only] 标注照常生效
+AssertionError: expected '<tdai_recalled_wiki>\n[degraded: fts-…' to contain '[详情: tool wiki_fetch]'
+
+- Expected
++ Received
+
+- [详情: tool wiki_fetch]
++ <tdai_recalled_wiki>
++ [degraded: fts-only] 本轮向量召回无贡献（向量层降级或相关度门滤除），命中项均无向量相关分（absScore 缺失），召回质量可能不完整。
++ 以下是当前轮用户问题自动召回的团队 wiki 索引（JIT 精简模式，按相关度排序）；每条前的 [wiki:xxx] 标注其来源知识库，多 wiki 命中时据此区分来源。
++ 要看某条完整正文：用 <knowledge_tools> 里的 tools/call 调 wiki 工具 wiki_fetch（入参 doc_path=该条来源页 path，或 title=页面标题；section 可选缩小范围；单次 ≤4000 字符，超长附 [truncated] 标记；未命中返回 isError=true 附原因，可换参重试；单轮取文建议 ≤3 次）。
++
++ 1. [wiki:Coding-WiKi] [concept] score=1.00 — A
++    path: wiki/concepts/a.md
++    机制说明
++ </tdai_recalled_wiki>
+
+ ❯ src/injection/injectors/__tests__/wiki-recall-injector.test.ts:855:33
+    853|       const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", ji…
+    854|       expect(blocks[0].content).toContain("[degraded: fts-only]");
+    855|       expect(blocks[0].content).toContain("[详情: tool wiki_fetch]");
+       |                                 ^
+    856|     });
+    857| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 54 passed (59)
+   Start at  21:53:16
+   Duration  109.57s (transform 45.76s, setup 0ms, collect 38.98s, tests 11.95s, environment 1ms, prepare 9.30s)
+

@@ -1,0 +1,783 @@
+diff --git a/MemoryPanel/web/src/components/SettingsDialog.tsx b/MemoryPanel/web/src/components/SettingsDialog.tsx
+index 215e635..a011d41 100644
+--- a/MemoryPanel/web/src/components/SettingsDialog.tsx
++++ b/MemoryPanel/web/src/components/SettingsDialog.tsx
+@@ -56,6 +56,13 @@ const RESOURCE_MODULES: ResourceModule[] = [
+     descKey: 'settings.module.wiki.desc',
+     icon: <BooksIcon size={16} />,
+   },
++  {
++    id: 'wiki_jit',
++    paramKey: 'wiki_jit.enabled',
++    labelKey: 'settings.module.wikiJit',
++    descKey: 'settings.module.wikiJit.desc',
++    icon: <BooksIcon size={16} />,
++  },
+   {
+     id: 'code',
+     paramKey: 'code_graph.enabled',
+@@ -90,6 +97,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
+     code: true,
+     skill: true,
+     chat_memory: true,
++    // wiki JIT 精简注入：shadow-first 缺省关（与 proxy DEFAULT_ASSET_CAPABILITIES 一致）
++    wiki_jit: false,
+   }));
+   const [loading, setLoading] = useState(true);
+   const [savingKey, setSavingKey] = useState<AssetCapabilityKey | null>(null);
+@@ -107,6 +116,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
+           code: cfg['code_graph.enabled'],
+           skill: cfg['skill.enabled'],
+           chat_memory: cfg['chat_memory.enabled'],
++          wiki_jit: cfg['wiki_jit.enabled'],
+         });
+       })
+       .catch((e) => {
+diff --git a/MemoryPanel/web/src/lib/api/users.ts b/MemoryPanel/web/src/lib/api/users.ts
+index 4dc6c20..b32563c 100644
+--- a/MemoryPanel/web/src/lib/api/users.ts
++++ b/MemoryPanel/web/src/lib/api/users.ts
+@@ -82,7 +82,7 @@ export const userKeysApi = {
+ 
+ // ========================= User Config（meta/config/user/*）=========================
+ 
+-export type AssetCapabilityKey = 'skill.enabled' | 'llm_wiki.enabled' | 'code_graph.enabled' | 'chat_memory.enabled';
++export type AssetCapabilityKey = 'skill.enabled' | 'llm_wiki.enabled' | 'code_graph.enabled' | 'chat_memory.enabled' | 'wiki_jit.enabled';
+ 
+ export interface UserConfigItem {
+   module: string;
+@@ -106,8 +106,20 @@ const ASSET_CAPABILITY_KEYS: AssetCapabilityKey[] = [
+   'llm_wiki.enabled',
+   'code_graph.enabled',
+   'chat_memory.enabled',
++  'wiki_jit.enabled',
+ ];
+ 
++// meta 未返回该参数时的 UI 缺省值。wiki_jit.enabled 必须 false（shadow-first：
++// 能力位缺省关，与 MemoryProxy DEFAULT_ASSET_CAPABILITIES.wiki_jit=false 对齐，
++// 否则面板显示"开"而 proxy 实际关）；其余能力沿用 boolFromConfigValue 的缺省开语义。
++const ASSET_CAPABILITY_DEFAULTS: Record<AssetCapabilityKey, boolean> = {
++  'skill.enabled': true,
++  'llm_wiki.enabled': true,
++  'code_graph.enabled': true,
++  'chat_memory.enabled': true,
++  'wiki_jit.enabled': false,
++};
++
+ function boolFromConfigValue(value: string | undefined): boolean {
+   return value === undefined ? true : value === '1' || value.toLowerCase() === 'true';
+ }
+@@ -124,7 +136,10 @@ export const userConfigApi = {
+     const view = await userConfigApi.get(me.user_id, 'asset_type');
+     const byName = new Map(view.items.map((it) => [it.param_name, it.effective_value]));
+     return Object.fromEntries(
+-      ASSET_CAPABILITY_KEYS.map((key) => [key, boolFromConfigValue(byName.get(key))]),
++      ASSET_CAPABILITY_KEYS.map((key) => {
++        const raw = byName.get(key);
++        return [key, raw === undefined ? ASSET_CAPABILITY_DEFAULTS[key] : boolFromConfigValue(raw)];
++      }),
+     ) as AssetCapabilityConfig;
+   },
+ 
+diff --git a/MemoryProxy/config.example.yaml b/MemoryProxy/config.example.yaml
+index 4b022cf..c778380 100644
+--- a/MemoryProxy/config.example.yaml
++++ b/MemoryProxy/config.example.yaml
+@@ -805,6 +805,18 @@ wikiRecall:
+   # 类型: int | 默认: 0（不限制）
+   # maxTotalChars: 0
+ 
++  # ▲Wiki JIT 精简注入（P1 recall-quality Task 6，shadow-first）：
++  #   开启后注入块瘦身：单条 = 标题 + ≤80 码点摘要 + [详情: tool wiki_fetch]
++  #   （单条 ≤100、整块 ≤500 码点，替换 legacy 的 path/score/全文格式）；
++  #   摘要素材原文 ≤160 码点的条目仍直注全文（沿用 legacy 全格式）。
++  #   三态语义：
++  #     true  = 强制 JIT（meta 能力位关闭/缺席也生效——运维/live 验收通道）；
++  #     false = 逃生门（不支持 tool 取文的接入面强制回退 legacy，逐字节旧行为）；
++  #     缺省（删掉本键）= 跟随 meta 能力位 wiki_jit.enabled（面板"权限管理"可开关，
++  #             能力位缺省关）。journal 每轮记录 mode/chars/jitWouldBeChars 供放量对比。
++  # 类型: boolean | 默认: 未设置（跟随 meta 能力位 wiki_jit.enabled，缺省关）
++  # jit: true
++
+ # ── Skill 运行时 ──────────────────────────────────────────────────────────
+ #
+ # skill 抽取链路: proxy 每轮真人对话结束 (agent 给出无 tool_use 的最终回复)
+diff --git a/MemoryProxy/src/config.ts b/MemoryProxy/src/config.ts
+index e053735..49d2374 100644
+--- a/MemoryProxy/src/config.ts
++++ b/MemoryProxy/src/config.ts
+@@ -513,6 +513,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
+               }
+             : undefined,
+           domainRouter: yaml.wikiRecall.domainRouter,
++          // Task 6：JIT tri-state（true=强制 JIT / false=强制 legacy / 缺省=跟随
++          // meta 能力位 wiki_jit.enabled）。非 boolean 一律视为未设。
++          jit: typeof yaml.wikiRecall.jit === "boolean" ? yaml.wikiRecall.jit : undefined,
+         }
+       : undefined,
+     skillRuntime: {
+diff --git a/MemoryProxy/src/injection/injectors/__tests__/wiki-recall-injector.test.ts b/MemoryProxy/src/injection/injectors/__tests__/wiki-recall-injector.test.ts
+index a460dec..ce329b3 100644
+--- a/MemoryProxy/src/injection/injectors/__tests__/wiki-recall-injector.test.ts
++++ b/MemoryProxy/src/injection/injectors/__tests__/wiki-recall-injector.test.ts
+@@ -1,10 +1,24 @@
+ import { describe, expect, it, vi } from "vitest";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
+ import { WikiRecallInjector, resolveBoundWikiResources, shouldRegisterWikiRecallInjector } from "../wiki-recall-injector.js";
+ import type { WikiRecallInjectorDeps, WikiRecallInjectorConfig } from "../wiki-recall-injector.js";
+ import type { AgentContext } from "../../types.js";
+ import type { WikiRetrieveClient, WikiSearchHit } from "../../../knowledge/wiki-retrieve-client.js";
+ import type { KnowledgeItem } from "../../../knowledge/core-client.js";
+ import type { TdaiIdentity } from "../../../tdai/types.js";
++import { buildConfig } from "../../../config.js";
++// 静态引入 injection barrel：defaultWikiRecallConfig 定义在 index.ts，而 barrel
++// 模块图很大——静态化让加载成本落在 collection 阶段（不受单测 5s 超时约束），
++// 避免本机高负载时动态 import 冷启动超时（stash bisect 证实干净树同样超时 = 环境争用）。
++import { defaultWikiRecallConfig } from "../../index.js";
++import {
++  buildJitSummary,
++  renderWikiRecallBlockJit,
++  stripFrontmatter,
++  type WikiRecallRenderEntry,
++} from "../../../knowledge/wiki-recall-utils.js";
+ import { log } from "../../../report/log.js";
+ 
+ const hit: WikiSearchHit = {
+@@ -446,22 +460,21 @@ describe("WikiRecallInjector", () => {
+     expect(content.indexOf("跨模块接口调用规范")).toBeLessThan(content.indexOf("杂项页面"));
+   });
+ 
+-  it("ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3)", async () => {
++  it("ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3)", () => {
+     // 默认值落在 injection/index.ts defaultWikiRecallConfig（config.wikiRecall 缺失时的兜底）。
+-    const { defaultWikiRecallConfig } = await import("../../index.js");
++    // barrel 已改静态引入（见文件头 import 处注释）。
+     expect(defaultWikiRecallConfig.typeWeights).toMatchObject({
+       entity: 0.6, concept: 0.9, overview: 0.6, // 既有 3 项保留
+       other: 0.3, log: 0.3, index: 0.3, schema: 0.3, // W5 新增 4 项
+     });
+   });
+ 
+-  it("C3: code default retires domainRouter explicitly (keywords {} = router off, capability shape kept)", async () => {
++  it("C3: code default retires domainRouter explicitly (keywords {} = router off, capability shape kept)", () => {
+     // 2026-09-10 隔离实验（anchor runs/2026-09-10T04-07-38.json）：部署工作点
+     // router 对 posRecall 单变量贡献=0（B/E 同 0.66）、negInjected 恒 +2（13 vs 11），
+     // 且 W4 boost→归一→门耦合未解 —— router 默认退役。
+     // 代码默认层必须**显式**携带退役标记（keywords 空表 = injector 静默 no-op），
+     // 而不是靠"字段缺失"隐式关断——显式标记自带退役注释与重开协议，防静默复活。
+-    const { defaultWikiRecallConfig } = await import("../../index.js");
+     expect(defaultWikiRecallConfig.domainRouter).toEqual({ boost: 1.5, keywords: {} });
+     // 行为钉死：默认态下（config.wikiRecall 整段缺失）router 恒 no-op——
+     // 即使 query 含领域词，命中分数也不被 boost。
+@@ -671,6 +684,240 @@ describe("WikiRecallInjector", () => {
+     const yaml = loadYamlConfig("config.yaml");
+     expect(yaml.wikiRecall?.domainRouter).toBeUndefined();
+   });
++
++
++// ══ Task 6（P1 recall-quality）：wiki JIT 瘦身注入 ══════════════════════════
++// 形态（spec §5）：单条 = 标题 + 一行摘要(≤80) + [详情: tool wiki_fetch]，单条
++// ≤100、整块 ≤500；例外：原文 ≤160 chars 直接注全文（legacy 全格式）；降级：
++// per-agent jit=false 回退现行；放量：meta 能力位 wiki_jit.enabled（同
++// llm_wiki.enabled 模式）+ panel UI；journal 记录 chars 与「若 JIT 会注入 chars」。
++describe("wiki JIT 瘦身注入 (Task 6)", () => {
++  /** >160 码点的长摘要（走 JIT 存根渲染）。 */
++  const longSnippet = "这是一段超过一百六十个码点的长摘要内容，用于验证 JIT 存根渲染与块预算裁剪行为。".repeat(6);
++  // 路由级测试用的长摘要命中。模块级 hit 的 snippet 仅 4 码点，会落进 ≤160 例外
++  // 直注全文路（legacy 全格式），永远不产生 JIT 存根——这是前人 3 个路由级红测试的根因。
++  const longHit: WikiSearchHit = { ...hit, snippet: longSnippet };
++  const jitCaps = { skill: true, llm_wiki: true, code_graph: true, chat_memory: true, wiki_jit: true };
++  const legacyCaps = { skill: true, llm_wiki: true, code_graph: true, chat_memory: true, wiki_jit: false };
++
++  function mkCapsCtx(content: string, caps?: Record<string, boolean>): AgentContext {
++    const ctx = mkCtx(content) as unknown as { metadata: { custom: Record<string, unknown> } };
++    if (caps) ctx.metadata.custom.assetCapabilities = caps;
++    return ctx as unknown as AgentContext;
++  }
++
++  function mkJitEntry(over: Partial<WikiRecallRenderEntry> = {}): WikiRecallRenderEntry {
++    return {
++      wikiName: "Coding-WiKi",
++      type: "concept",
++      title: "应收暂估回冲",
++      score: 3.2,
++      normScore: 1,
++      snippet: longSnippet,
++      path: "wiki/concepts/a.md",
++      hop: 0,
++      ...over,
++    };
++  }
++
++  describe("stripFrontmatter / buildJitSummary（摘要行来源）", () => {
++    it("剥离首部 frontmatter；非首部/未闭合的不动", () => {
++      expect(stripFrontmatter("---\ntitle: x\n---\n正文第一行\n第二行")).toBe("正文第一行\n第二行");
++      expect(stripFrontmatter("没有 frontmatter")).toBe("没有 frontmatter");
++      expect(stripFrontmatter("正文\n---\nx\n---")).toBe("正文\n---\nx\n---");
++      expect(stripFrontmatter("---\nunterminated")).toBe("---\nunterminated");
++    });
++
++    it("摘要 = 剥 frontmatter + 折叠空白 + ≤80 码点截断（CJK/emoji 安全）", () => {
++      expect(buildJitSummary("---\ntitle: x\n---\n\n这是 摘要\n第二段", 80)).toBe("这是 摘要 第二段");
++      const s1 = buildJitSummary("字".repeat(100), 80);
++      expect(Array.from(s1).length).toBe(80);
++      expect(s1.endsWith("…")).toBe(true);
++      const s2 = buildJitSummary("👍".repeat(100), 80);
++      expect(Array.from(s2).length).toBe(80);
++      // 不产生孤立代理对（末尾必须是完整 emoji 或截断后缀；孤立即高位代理结尾）
++      expect(/[\uD800-\uDBFF]$/.test(s2)).toBe(false);
++      expect(buildJitSummary("   ", 80)).toBe("");
++    });
++  });
++
++  describe("renderWikiRecallBlockJit（JIT 渲染形态）", () => {
++    it("单条形状 = 序号+来源+标题+摘要+[详情: tool wiki_fetch]，单条 ≤100、无 path/score 行", () => {
++      const block = renderWikiRecallBlockJit([mkJitEntry()]);
++      expect(block).not.toBeNull();
++      expect(block).toContain("<tdai_recalled_wiki>");
++      expect(block).toContain("</tdai_recalled_wiki>");
++      const line = (block as string).split("\n").find((l) => l.startsWith("1. [wiki:Coding-WiKi]"));
++      expect(line).toBeTruthy();
++      expect(line).toContain("[详情: tool wiki_fetch]");
++      expect(line).toContain("应收暂估回冲：");
++      expect(Array.from(line as string).length).toBeLessThanOrEqual(100);
++      expect(line).not.toContain("path:");
++      expect(line).not.toContain("score=");
++    });
++
++    it("例外：原文 ≤160 直接注全文（沿用 legacy 全格式，含 path/score 行）", () => {
++      const block = renderWikiRecallBlockJit([mkJitEntry({ snippet: "短摘要" })]);
++      expect(block).toContain("1. [wiki:Coding-WiKi] [concept] score=1.00 — 应收暂估回冲");
++      expect(block).toContain("   path: wiki/concepts/a.md");
++      expect(block).toContain("   短摘要");
++      expect(block).not.toContain("[详情: tool wiki_fetch]");
++    });
++
++    it("整块 ≤500：5 条长摘要候选时裁掉装不下的尾部条目，header/footer 必保", () => {
++      const entries = [1, 2, 3, 4, 5].map((i) =>
++        mkJitEntry({ title: `标题${i}`, path: `wiki/p/${i}.md` }),
++      );
++      const block = renderWikiRecallBlockJit(entries) as string;
++      expect(Array.from(block).length).toBeLessThanOrEqual(500);
++      const lines = block.split("\n");
++      expect(lines[0]).toBe("<tdai_recalled_wiki>");
++      expect(lines[lines.length - 1]).toBe("</tdai_recalled_wiki>");
++      // header 的来源说明与取文指引行必保
++      expect(block).toContain("wiki 索引");
++      expect(block).toContain("wiki_fetch");
++    });
++
++    it("软指引恰好一次：doc_path|title、section、≤4000、[truncated]、miss isError=true、单轮 ≤3 次", () => {
++      const block = renderWikiRecallBlockJit([mkJitEntry(), mkJitEntry({ title: "标题2" })]) as string;
++      expect(block.split("单轮取文建议 ≤3 次").length - 1).toBe(1);
++      const guideLine = block.split("\n").find((l) => l.includes("wiki_fetch") && l.includes("doc_path"));
++      expect(guideLine).toBeTruthy();
++      expect(guideLine).toContain("title");
++      expect(guideLine).toContain("section");
++      expect(guideLine).toContain("4000");
++      expect(guideLine).toContain("[truncated]");
++      expect(guideLine).toContain("isError=true");
++    });
++
++    it("空 snippet → 仅标题（无冒号）；超长 title 截断保 ≤100", () => {
++      const empty = renderWikiRecallBlockJit([mkJitEntry({ snippet: "" })]) as string;
++      const line = empty.split("\n").find((l) => l.startsWith("1. ")) as string;
++      expect(line).toBe("1. [wiki:Coding-WiKi] 应收暂估回冲 [详情: tool wiki_fetch]");
++      const longTitle = renderWikiRecallBlockJit([mkJitEntry({ title: "长".repeat(60) })]) as string;
++      const line2 = longTitle.split("\n").find((l) => l.startsWith("1. ")) as string;
++      expect(Array.from(line2).length).toBeLessThanOrEqual(100);
++      expect(line2).toContain("[详情: tool wiki_fetch]");
++    });
++
++    it("空条目列表返回 null（与 legacy 渲染一致）", () => {
++      expect(renderWikiRecallBlockJit([])).toBeNull();
++    });
++  });
++
++  describe("injector JIT 路由（meta 能力位 + jit tri-state）", () => {
++    it("meta wiki_jit=true → JIT 短块（metadata.jitMode=jit，体积对比记录在案）", async () => {
++      const { injector } = build({ searchImpl: async () => [longHit] });
++      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
++      expect(blocks).toHaveLength(1);
++      const content = blocks[0].content;
++      expect(content).toContain("[详情: tool wiki_fetch]");
++      expect(content).not.toContain("score=");
++      expect(blocks[0].metadata).toMatchObject({ jitMode: "jit" });
++      const meta = blocks[0].metadata as { chars: number; jitWouldBeChars: number };
++      expect(meta.chars).toBe(Array.from(content).length);
++      // legacy 全量渲染（长摘要）必然显著长于 JIT 短块
++      expect(meta.jitWouldBeChars).toBeGreaterThan(meta.chars);
++    });
++
++    it("meta 缺省（无 assetCapabilities）→ 现行全量（jitMode=legacy，默认关=shadow-first）", async () => {
++      const { injector } = build();
++      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理"));
++      expect(blocks).toHaveLength(1);
++      expect(blocks[0].content).toContain("score=");
++      expect(blocks[0].content).not.toContain("[详情: tool wiki_fetch]");
++      expect(blocks[0].metadata).toMatchObject({ jitMode: "legacy" });
++      const meta = blocks[0].metadata as { chars: number; jitWouldBeChars: number };
++      expect(meta.jitWouldBeChars).toBeLessThan(meta.chars);
++    });
++
++    it("meta wiki_jit=false → 现行全量", async () => {
++      const { injector } = build();
++      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", legacyCaps));
++      expect(blocks[0].metadata).toMatchObject({ jitMode: "legacy" });
++      expect(blocks[0].content).toContain("score=");
++    });
++
++    it("config jit=false 逃生门压过 meta 开关 → 现行全量，且与缺省输出逐字节一致", async () => {
++      const escaped = build({ config: { jit: false } });
++      const baseline = build();
++      const a = await escaped.injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
++      const b = await baseline.injector.execute(mkCapsCtx("应收暂估回冲怎么处理"));
++      expect(a[0].metadata).toMatchObject({ jitMode: "legacy" });
++      expect(a[0].content).toBe(b[0].content);
++    });
++
++    it("config jit=true 强制 JIT（meta 关闭/缺席时——运维/live 验收通道）", async () => {
++      const { injector } = build({ config: { jit: true }, searchImpl: async () => [longHit] });
++      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", legacyCaps));
++      expect(blocks[0].metadata).toMatchObject({ jitMode: "jit" });
++      expect(blocks[0].content).toContain("[详情: tool wiki_fetch]");
++    });
++
++    it("JIT 模式下 [degraded: fts-only] 标注照常生效", async () => {
++      const { injector } = build({ searchImpl: async () => [longHit] });
++      const blocks = await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
++      expect(blocks[0].content).toContain("[degraded: fts-only]");
++      expect(blocks[0].content).toContain("[详情: tool wiki_fetch]");
++    });
++
++    it("journal 行：mode/chars/jitWouldBeChars/entries/team 记入 injector 日志通道", async () => {
++      const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
++      try {
++        const { injector } = build();
++        await injector.execute(mkCapsCtx("应收暂估回冲怎么处理", jitCaps));
++        const journal = infoSpy.mock.calls
++          .map((c) => String(c[0]))
++          .find((s) => s.includes("journal mode=jit"));
++        expect(journal).toBeTruthy();
++        expect(journal).toContain("chars=");
++        expect(journal).toContain("jitWouldBeChars=");
++        expect(journal).toContain("entries=");
++        expect(journal).toContain("team=team");
++
++        infoSpy.mockClear();
++        const { injector: legacyInjector } = build();
++        await legacyInjector.execute(mkCapsCtx("应收暂估回冲怎么处理"));
++        const legacyJournal = infoSpy.mock.calls
++          .map((c) => String(c[0]))
++          .find((s) => s.includes("journal mode=legacy"));
++        expect(legacyJournal).toBeTruthy();
++      } finally {
++        infoSpy.mockRestore();
++      }
++    });
++  });
++
++  describe("wikiRecall.jit tri-state 配置解析", () => {
++    function writeTempYaml(body: string): string {
++      const dir = mkdtempSync(join(tmpdir(), "wiki-jit-cfg-"));
++      const file = join(dir, "config.yaml");
++      writeFileSync(file, body, "utf8");
++      return file;
++    }
++
++    it("jit: true / jit: false 透传；缺省 → undefined（跟随 meta 能力位）", () => {
++      const p1 = writeTempYaml("wikiRecall:\n  enabled: true\n  jit: true\n");
++      try {
++        expect(buildConfig({ configFile: p1 }).wikiRecall?.jit).toBe(true);
++      } finally {
++        rmSync(p1, { force: true });
++      }
++      const p2 = writeTempYaml("wikiRecall:\n  enabled: true\n  jit: false\n");
++      try {
++        expect(buildConfig({ configFile: p2 }).wikiRecall?.jit).toBe(false);
++      } finally {
++        rmSync(p2, { force: true });
++      }
++      const p3 = writeTempYaml("wikiRecall:\n  enabled: true\n");
++      try {
++        expect(buildConfig({ configFile: p3 }).wikiRecall?.jit).toBeUndefined();
++      } finally {
++        rmSync(p3, { force: true });
++      }
++    });
++  });
++});
+ });
+ 
+ describe("resolveBoundWikiResources", () => {
+@@ -716,4 +963,6 @@ describe("shouldRegisterWikiRecallInjector", () => {
+   it("defaults to enabled when wikiRecall block is absent (only knowledge gate applies)", () => {
+     expect(shouldRegisterWikiRecallInjector(base as never)).toBe(true);
+   });
+-});
+\ No newline at end of file
++});
++
++//
+diff --git a/MemoryProxy/src/injection/injectors/wiki-recall-injector.ts b/MemoryProxy/src/injection/injectors/wiki-recall-injector.ts
+index 029d1f1..0ed721c 100644
+--- a/MemoryProxy/src/injection/injectors/wiki-recall-injector.ts
++++ b/MemoryProxy/src/injection/injectors/wiki-recall-injector.ts
+@@ -4,12 +4,14 @@ import { HOOK_PRIORITY } from "../types.js";
+ import { getLastUserMessage, getMessageText } from "../context.js";
+ import { getTdaiIdentity } from "../../tdai/identity.js";
+ import { extractUserQueryText } from "../../tdai/recorder.js";
++import type { AssetCapabilityFlags } from "../types.js";
+ import type { CoreKnowledgeClient, KnowledgeItem } from "../../knowledge/core-client.js";
+ import type { WikiRetrieveClient, WikiSearchHit } from "../../knowledge/wiki-retrieve-client.js";
+ import {
+   applyRecallBudget,
+   normalizeScores,
+   renderWikiRecallBlock,
++  renderWikiRecallBlockJit,
+   type WikiRecallRenderEntry,
+ } from "../../knowledge/wiki-recall-utils.js";
+ // I-4（Task19+20 fix1）：逐轮诊断日志走分级 logger 而非 console.debug。
+@@ -20,6 +22,11 @@ import { log } from "../../report/log.js";
+ 
+ const TAG = "[wiki-recall-injector]";
+ 
++/** 码点长度（与 applyRecallBudget 的预算口径一致；surrogate-safe）。 */
++function countCodePoints(s: string): number {
++  return Array.from(s).length;
++}
++
+ export interface WikiRecallInjectorConfig {
+   enabled: boolean;
+   /** 每个绑定 wiki 各自检索多少条（默认 8）。 */
+@@ -75,6 +82,14 @@ export interface WikiRecallInjectorConfig {
+    * 例：{ boost: 1.5, keywords: { "Coding-WiKi": ["结算","金额","冲回","合同"], "Standards-WiKi": ["规范","并发","异常"] } }
+    */
+   domainRouter?: { boost?: number; keywords: Record<string, string[]> };
++  /**
++   * Task 6（P1 recall-quality）：wiki JIT 瘦身注入 tri-state（可选，缺省 undefined）。
++   * - `false`：强制现行全量注入（逃生门——不支持 tool 取文的接入面用）；
++   * - `true`：强制 JIT 短块（运维覆盖 / live 验收通道）；
++   * - 缺省（undefined）：跟随 meta 能力位 `wiki_jit.enabled`
++   *   （ctx.metadata.custom.assetCapabilities.wiki_jit；缺省 false = shadow-first 默认关）。
++   */
++  jit?: boolean;
+ }
+ 
+ export interface WikiRecallInjectorDeps {
+@@ -340,9 +355,18 @@ export class WikiRecallInjector implements InjectionHook {
+       ...structuralEntries,
+     ];
+     if (entries.length === 0) return [];
+-    const rawRendered = renderWikiRecallBlock(entries);
++    // Task 6（P1 recall-quality）：JIT 瘦身注入 —— 双渲染对比 + tri-state 路由。
++    // 缺省（config.jit 未设）跟随 meta 能力位 wiki_jit.enabled（shadow-first 默认
++    // 关 = legacy）；jit:false 是逃生门（不支持 tool 取文的接入面）；jit:true 为
++    // 运维/live 验收强制通道。两种渲染都算（纯字符串拼接，成本可忽略），journal
++    // 记录实际 chars 与「若走另一形态会注入 chars」对比（P50/P95 数据源）。
++    const jitMode = this.resolveJitMode(ctx);
++    const legacyRendered = renderWikiRecallBlock(entries);
++    const jitRendered = renderWikiRecallBlockJit(entries);
++    const rawRendered = jitMode ? jitRendered ?? legacyRendered : legacyRendered;
+     if (!rawRendered) return [];
+-    // T15-C：降级标注插在块头标签之后（renderWikiRecallBlock 格式锁定，不动 utils）。
++    const jitWouldBe = jitMode ? legacyRendered : jitRendered ?? "";
++    // T15-C：降级标注插在块头标签之后（render 格式锁定，不动 utils）。
+     const annotated = degradedFtsOnly
+       ? rawRendered.replace(
+           "<tdai_recalled_wiki>",
+@@ -354,6 +378,16 @@ export class WikiRecallInjector implements InjectionHook {
+     const budgeted = applyRecallBudget(annotated.split("\n"), this.config.maxTotalChars, 0);
+     const rendered = budgeted.join("\n");
+ 
++    // Task 6 journal（wiki 注入无既有 journal 钩子——recall journal 属 MemoryCore，
++    // 挂点=injector 日志通道 log.info 单行；chars 按码点计，与预算口径一致）。
++    log.info(
++      `${TAG} journal mode=${jitMode ? "jit" : "legacy"} chars=${countCodePoints(rendered)}`
++      + ` jitWouldBeChars=${countCodePoints(jitWouldBe ?? "")} entries=${entries.length}`
++      + ` wikis=${wikis.map((w) => w.name).join(",")}`
++      + ` team=${identity?.teamId ?? "-"} agent=${identity?.agentId ?? "-"}`
++      + ` degradedFtsOnly=${degradedFtsOnly}`,
++    );
++
+     return [
+       {
+         type: "text",
+@@ -363,10 +397,28 @@ export class WikiRecallInjector implements InjectionHook {
+           count: entries.length, // W5：含附尾结构页（真实注入条数）
+           wikis: wikis.map((w) => w.name),
+           degradedFtsOnly,
++          // Task 6：JIT 放量观测字段（mode / 实际 chars / 若另一形态的 chars）
++          jitMode: jitMode ? "jit" : "legacy",
++          chars: countCodePoints(rendered),
++          jitWouldBeChars: countCodePoints(jitWouldBe ?? ""),
+         },
+       },
+     ];
+   }
++
++  /**
++   * Task 6：JIT tri-state 路由。config.jit 显式值优先（false=强制 legacy 逃生门，
++   * true=强制 JIT）；缺省跟随 meta 能力位 `wiki_jit.enabled`
++   * （ctx.metadata.custom.assetCapabilities.wiki_jit；flags 缺省/缺席 = false，
++   * shadow-first 默认关）。
++   */
++  private resolveJitMode(ctx: AgentContext): boolean {
++    if (this.config.jit === false) return false;
++    if (this.config.jit === true) return true;
++    const caps = (ctx.metadata?.custom as { assetCapabilities?: AssetCapabilityFlags } | undefined)
++      ?.assetCapabilities;
++    return caps?.wiki_jit === true;
++  }
+ }
+ 
+ /**
+diff --git a/MemoryProxy/src/injection/types.ts b/MemoryProxy/src/injection/types.ts
+index fda5466..4c7effc 100644
+--- a/MemoryProxy/src/injection/types.ts
++++ b/MemoryProxy/src/injection/types.ts
+@@ -285,6 +285,12 @@ export interface AssetCapabilityFlags {
+   llm_wiki: boolean;
+   code_graph: boolean;
+   chat_memory: boolean;
++  /**
++   * Task 6（P1 recall-quality）：wiki 召回 JIT 瘦身注入放量位（meta 能力位
++   * `wiki_jit.enabled`，同 llm_wiki.enabled 模式）。默认 false = 现行全量注入
++   * （shadow-first）；true = 注入精简索引，正文由 agent 用 wiki_fetch 按需取。
++   */
++  wiki_jit: boolean;
+ }
+ 
+ export interface PrewarmInput {
+diff --git a/MemoryProxy/src/knowledge/wiki-recall-utils.ts b/MemoryProxy/src/knowledge/wiki-recall-utils.ts
+index 3fca8f5..cd8f522 100644
+--- a/MemoryProxy/src/knowledge/wiki-recall-utils.ts
++++ b/MemoryProxy/src/knowledge/wiki-recall-utils.ts
+@@ -95,11 +95,118 @@ export function renderWikiRecallBlock(entries: WikiRecallRenderEntry[]): string
+     "",
+   ];
+   entries.forEach((e, i) => {
+-    const hopTag = e.hop > 0 ? " [图展开]" : "";
+-    lines.push(`${i + 1}. [wiki:${e.wikiName}] [${e.type}] score=${e.normScore.toFixed(2)}${hopTag} — ${e.title}`);
+-    if (e.path) lines.push(`   path: ${e.path}`);
+-    if (e.snippet) lines.push(`   ${e.snippet}`);
++    lines.push(...renderLegacyEntryLines(e, i));
+   });
+   lines.push("</tdai_recalled_wiki>");
+   return lines.join("\n");
++}
++
++/** legacy（Task 6 前）单条渲染：`i. [wiki:x] [type] score=N [图展开] — title` + path/snippet 行。格式锁定 §3.3，勿动。 */
++function renderLegacyEntryLines(e: WikiRecallRenderEntry, index: number): string[] {
++  const hopTag = e.hop > 0 ? " [图展开]" : "";
++  const lines = [`${index + 1}. [wiki:${e.wikiName}] [${e.type}] score=${e.normScore.toFixed(2)}${hopTag} — ${e.title}`];
++  if (e.path) lines.push(`   path: ${e.path}`);
++  if (e.snippet) lines.push(`   ${e.snippet}`);
++  return lines;
++}
++
++// ── Task 6（P1 recall-quality）：wiki JIT 瘦身注入 ───────────────────────────
++// spec §5：单条 = 标题 + 一行摘要(≤80 chars) + [详情: tool wiki_fetch]，单条
++// ≤100、整块 ≤500；例外：候选原文本身就短（≤160 chars）直接注全文（沿用 legacy
++// 全格式）；摘要行来源 = WikiSearchHit.snippet（KS 侧已剥 frontmatter，这里兜底
++// 再剥一次）。软指引单轮取文 ≤3 次；miss 语义半句（tools.ts 契约：HTTP 200 +
++// code 0 + data.isError=true + 可读 error）防止 agent 把 miss 误读成故障。
++
++const JIT_HINT = "[详情: tool wiki_fetch]";
++const JIT_ENTRY_MAX_CHARS = 100;
++const JIT_BLOCK_MAX_CHARS = 500;
++const JIT_SUMMARY_MAX_CHARS = 80;
++const JIT_EXCEPTION_FULL_SNIPPET_CHARS = 160;
++
++/** 剥离首部 YAML frontmatter（`---` 围栏块）。非首部或未闭合的原样返回。 */
++export function stripFrontmatter(text: string): string {
++  if (!text.startsWith("---")) return text;
++  const lines = text.split("\n");
++  if (lines[0].trim() !== "---") return text;
++  for (let i = 1; i < lines.length; i++) {
++    if (lines[i].trim() === "---") {
++      return lines.slice(i + 1).join("\n").replace(/^\s+/, "");
++    }
++  }
++  return text;
++}
++
++/** JIT 摘要行：剥 frontmatter → 折叠为单行 → 码点截断。空输入返回 ""。 */
++export function buildJitSummary(snippet: string, maxChars: number): string {
++  const oneLine = stripFrontmatter(snippet ?? "").replace(/\s+/g, " ").trim();
++  if (!oneLine) return "";
++  return truncateByCodePoint(oneLine, maxChars);
++}
++
++function countCps(s: string): number {
++  return Array.from(s).length;
++}
++
++/** JIT 单条行：`i. [wiki:NAME] title：summary [详情: tool wiki_fetch]`，硬上限 100 码点。 */
++function renderJitEntryLine(e: WikiRecallRenderEntry, index: number): string {
++  const prefix = `${index + 1}. [wiki:${e.wikiName}] `;
++  const hint = ` ${JIT_HINT}`;
++  const title = (e.title ?? "").trim();
++  const fixed = countCps(prefix) + countCps(hint) + 1; // +1 = "：" 分隔符
++  const remaining = JIT_ENTRY_MAX_CHARS - fixed;
++  if (remaining <= 0) {
++    // 退化：前缀+提示本身就超预算 → 整行硬截断（保 hint 不可达，接受截断尾巴）
++    return truncateByCodePoint(
++      `${prefix}${title}：${buildJitSummary(e.snippet, JIT_SUMMARY_MAX_CHARS)}${hint}`,
++      JIT_ENTRY_MAX_CHARS,
++    );
++  }
++  if (countCps(title) > remaining) {
++    // 标题太长：截标题、摘要让位（标题是 wiki_fetch 按 title 取文的主键，尽量保）
++    return `${prefix}${truncateByCodePoint(title, remaining)}${hint}`;
++  }
++  const summaryBudget = Math.min(JIT_SUMMARY_MAX_CHARS, remaining - countCps(title) - 1);
++  const summary = summaryBudget > 0 ? buildJitSummary(e.snippet, summaryBudget) : "";
++  return summary ? `${prefix}${title}：${summary}${hint}` : `${prefix}${title}${hint}`;
++}
++
++/**
++ * JIT 瘦身渲染（Task 6，spec §5 目标形态）：header（来源说明 + 一次性的取文指引，
++ * 含 doc_path|title、section、≤4000/[truncated]、miss isError=true、单轮 ≤3 次）
++ * + 每条 JIT 存根行（例外 ≤160 原文走 legacy 全格式）+ footer，整块 ≤500 码点
++ * （装不下的尾部条目裁掉，header/footer 必保）。空列表返回 null。
++ */
++export function renderWikiRecallBlockJit(entries: WikiRecallRenderEntry[]): string | null {
++  if (!entries || entries.length === 0) return null;
++  const header: string[] = [
++    "<tdai_recalled_wiki>",
++    "以下是当前轮用户问题自动召回的团队 wiki 索引（JIT 精简模式，按相关度排序）；每条前的 [wiki:xxx] 标注其来源知识库，多 wiki 命中时据此区分来源。",
++    '要看某条完整正文：用 <knowledge_tools> 里的 tools/call 调 wiki 工具 wiki_fetch（入参 doc_path=该条来源页 path，或 title=页面标题；section 可选缩小范围；单次 ≤4000 字符，超长附 [truncated] 标记；未命中返回 isError=true 附原因，可换参重试；单轮取文建议 ≤3 次）。',
++    "",
++  ];
++  const footer = "</tdai_recalled_wiki>";
++
++  const groups: string[][] = entries.map((e, i) => {
++    const snippetCps = e.snippet ? countCps(e.snippet) : 0;
++    // 例外：原文本身 ≤160 chars → 直接注全文（legacy 全格式），不强制 JIT 存根
++    if (snippetCps > 0 && snippetCps <= JIT_EXCEPTION_FULL_SNIPPET_CHARS) {
++      return renderLegacyEntryLines(e, i);
++    }
++    return [renderJitEntryLine(e, i)];
++  });
++
++  const footerCps = countCps(footer);
++  const totalCps = (gs: string[][]): number => {
++    const body = gs.flat();
++    const headerCps = header.reduce((acc, l) => acc + countCps(l), 0) + footerCps + body.reduce((acc, l) => acc + countCps(l), 0);
++    const seps = header.length + body.length; // join("\n") 的分隔符数（header 4 行 + body n 行 + footer 1 行 → n+4 个）
++    return headerCps + seps;
++  };
++
++  let kept = groups;
++  while (kept.length > 0 && totalCps(kept) > JIT_BLOCK_MAX_CHARS) {
++    kept = kept.slice(0, -1);
++  }
++  const lines = [...header, ...kept.flat(), footer];
++  return lines.join("\n");
+ }
+\ No newline at end of file
+diff --git a/MemoryProxy/src/tdai/__tests__/capabilities.apikey.test.ts b/MemoryProxy/src/tdai/__tests__/capabilities.apikey.test.ts
+index 55cf6ff..2f65c8a 100644
+--- a/MemoryProxy/src/tdai/__tests__/capabilities.apikey.test.ts
++++ b/MemoryProxy/src/tdai/__tests__/capabilities.apikey.test.ts
+@@ -9,7 +9,7 @@
+  *   → 3. 传入的 apiKey 原样透传。
+  */
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { fetchAssetCapabilities } from "../capabilities.js";
++import { DEFAULT_ASSET_CAPABILITIES, fetchAssetCapabilities } from "../capabilities.js";
+ import { resetTdaiGatewayApiKeyForTest, setTdaiGatewayApiKey } from "../bearer-token.js";
+ 
+ /** mock fetch：捕获请求头，返回空 items 的合法 envelope。 */
+@@ -70,3 +70,45 @@ describe("fetchAssetCapabilities Bearer token（I-2 统一为 resolveBearerToken
+     expect(headers["x-tdai-service-id"]).toBe("space-42");
+   });
+ });
++
++// ── Task 6（P1 recall-quality）：wiki_jit 能力位 ────────────────────────────
++// 放量开关（spec §5 决策 8）：meta 能力位 wiki_jit.enabled，同 llm_wiki.enabled
++// 模式。shadow-first：代码默认 false（旧行为=全量注入），meta 未返回该参数时
++// 也必须停在 false（parseEnabled(undefined)=true 的兜底语义不得误开 JIT）。
++describe("wiki_jit 能力位（Task 6 shadow-first 默认关）", () => {
++  it("DEFAULT_ASSET_CAPABILITIES.wiki_jit === false（缺省=现行全量注入）", () => {
++    expect(DEFAULT_ASSET_CAPABILITIES.wiki_jit).toBe(false);
++  });
++
++  it("meta 返回 wiki_jit.enabled=1 → true；=0 → false", async () => {
++    vi.stubGlobal("fetch", vi.fn(async () => ({
++      ok: true,
++      json: async () => ({
++        code: 0,
++        data: { items: [{ param_name: "wiki_jit.enabled", effective_value: "1" }] },
++      }),
++    }) as unknown as Response));
++    const on = await fetchAssetCapabilities({ ...BASE_INPUT, apiKey: "k" });
++    expect(on.wiki_jit).toBe(true);
++
++    vi.stubGlobal("fetch", vi.fn(async () => ({
++      ok: true,
++      json: async () => ({
++        code: 0,
++        data: { items: [{ param_name: "wiki_jit.enabled", effective_value: "0" }] },
++      }),
++    }) as unknown as Response));
++    const off = await fetchAssetCapabilities({ ...BASE_INPUT, apiKey: "k" });
++    expect(off.wiki_jit).toBe(false);
++  });
++
++  it("meta 未返回该参数（旧内核）→ 保持默认 false（不误开 JIT）", async () => {
++    const { headers } = stubFetchCapture();
++    const flags = await fetchAssetCapabilities({ ...BASE_INPUT, apiKey: "k" });
++    expect(headers["Authorization"]).toBe("Bearer k");
++    expect(flags.wiki_jit).toBe(false);
++    // 其余能力位默认语义不变
++    expect(flags.skill).toBe(true);
++    expect(flags.llm_wiki).toBe(true);
++  });
++});
+diff --git a/MemoryProxy/src/tdai/capabilities.ts b/MemoryProxy/src/tdai/capabilities.ts
+index 04c2453..a1031f6 100644
+--- a/MemoryProxy/src/tdai/capabilities.ts
++++ b/MemoryProxy/src/tdai/capabilities.ts
+@@ -6,6 +6,10 @@ export const DEFAULT_ASSET_CAPABILITIES: AssetCapabilityFlags = {
+   llm_wiki: true,
+   code_graph: true,
+   chat_memory: true,
++  // Task 6（P1 recall-quality）：wiki JIT 瘦身注入放量位——shadow-first 默认关
++  // （false = 现行全量注入）。meta 未返回该参数（旧内核）时也必须停在 false，
++  // 不得被 parseEnabled(undefined)=true 的兜底语义误开。
++  wiki_jit: false,
+ };
+ 
+ interface FetchAssetCapabilitiesInput {
+@@ -38,6 +42,8 @@ const PARAM_TO_CAPABILITY: Record<string, keyof AssetCapabilityFlags> = {
+   "llm_wiki.enabled": "llm_wiki",
+   "code_graph.enabled": "code_graph",
+   "chat_memory.enabled": "chat_memory",
++  // Task 6：wiki JIT 瘦身注入放量开关（meta 能力位，同 llm_wiki.enabled 模式）。
++  "wiki_jit.enabled": "wiki_jit",
+ };
+ 
+ function parseEnabled(value: string | undefined): boolean {
+diff --git a/MemoryProxy/src/types.ts b/MemoryProxy/src/types.ts
+index 32e650b..3468199 100644
+--- a/MemoryProxy/src/types.ts
++++ b/MemoryProxy/src/types.ts
+@@ -396,6 +396,14 @@ export interface WikiRecallConfig {
+   skipQuery?: { minChars?: number; patterns?: string[] };
+   /** 跨库软定域（可选）：按 wiki 领域词 boost（仅加权不删除）；无命中=现状。 */
+   domainRouter?: { boost?: number; keywords: Record<string, string[]> };
++  /**
++   * Task 6（P1 recall-quality）：wiki JIT 瘦身注入 tri-state（可选，缺省 undefined）。
++   * - `false`：强制现行全量注入（逃生门——不支持 tool 取文的接入面用）；
++   * - `true`：强制 JIT 短块（运维覆盖 / live 验收通道）；
++   * - 缺省（undefined）：跟随 meta 能力位 `wiki_jit.enabled`
++   *   （ctx.metadata.custom.assetCapabilities.wiki_jit；缺省 false = shadow-first 默认关）。
++   */
++  jit?: boolean;
+ }
+ 
+ /** Skill runtime-side configuration. */

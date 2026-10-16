@@ -1,0 +1,936 @@
+$ vitest run
+
+ RUN  v4.1.11 D:/TDB/td-agemem/MemoryCore
+
+(node:31604) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/core/prompts/__tests__/durative.test.ts (2 tests | 1 failed) 72ms
+     ✓ 提取 prompt 含 durative 判定指令（域外防泄漏：指令文本含宁缺毋滥兜底） 21ms
+     × 生产 yaml durativeEnabled: true 已落盘（cloud 模板同步） 33ms
+(node:19864) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33076) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:24044) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/store.identity-support-state.test.ts (2 tests | 2 failed) 8120ms
+     × set→get roundtrip 保留 supportMap（RED：旧实现静默丢弃） 5192ms
+     × 不带 supportMap 的旧形状写入照常（回归控制） 2899ms
+ ❯ src/core/store/__tests__/values-attrs-character-source-facts.test.ts (3 tests | 3 failed) 8061ms
+     × source+facts 新建 → attrs_json 保留 source/facts 3570ms
+     × role/aliases/description/source/facts 五字段同传 → attrs_json 全量保留 3128ms
+     × 冲突路径 attrs=undefined → 原 attrs_json 不被触碰（F1 依赖的存储语义护栏） 1336ms
+ ❯ src/core/store/__tests__/values-attrs-description.test.ts (3 tests | 3 failed) 9479ms
+     × description + role + aliases 同传 → attrs_json 全量保留 4411ms
+     × 只传 description（无 role/aliases）→ 仅 description 落档 2499ms
+     × attrs 不传 → attrs_json='{}'（逐位现状） 2553ms
+(node:29896) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:27136) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/store.corevalues-p2.test.ts (5 tests | 5 failed) 17452ms
+     × upsertValue person：node_type/attrs_json 落库且读回 3611ms
+     × DO UPDATE 不碰 node_type/attrs_json（theme 侧调用零改动重写不丢人物属性） 464ms
+     × 缺省 node_type='theme' / attrs_json='{}'（既有调用方逐位现状） 1120ms
+     × listValuesAnyState 同样携带 node_type/attrs_json 1915ms
+     × 三键族写入 metadata_json 且同键去重；原 backfillCoreRef 行为保持 10317ms
+(node:26960) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/store.embed-backfill.test.ts (6 tests | 6 failed) 20352ms
+     × T1 无向量行全部补齐并销账 12124ms
+     × T2 幂等：已有向量的行不重嵌，只补缺失 837ms
+     × T3 单条失败保留待重试，不影响其余补齐 753ms
+     × T4 batchLimit 截断：缺 3 补 2 5001ms
+     × T5 空缺 no-op：零调用零写入 684ms
+     × T6 维度不匹配拒写（防脏向量入库） 538ms
+(node:26332) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/store.personrefs-reverse.test.ts (2 tests | 2 failed) 10815ms
+     × personRefs 命中 label → searchL1ByCoreRefs 返回该记录（旧口径仅 coreRefs = RED） 7400ms
+     × coreRefs 命中不受影响（回归控制） 3406ms
+ ✓ src/core/store/__tests__/values-state.test.ts (12 tests) 26251ms
+     ✓ 全新库：建表 DDL 直带三列；upsert 默认 origin='manual'/pinned=0/state='active'  3812ms
+     ✓ 显式 origin 落库（auto 自生长 / seed 种子）  3023ms
+     ✓ 存量库迁移：旧 8 列 core_values → ALTER 补三列，存量行默认 seed/0/active；重复 init 幂等  835ms
+     ✓ 默认只回 active；retired 经 includeRetired 可见；vetoed 在任何读面都不可见  2186ms
+     ✓ includeRetired 与默认读是独立缓存变体：互不脏读，写后双双失效  2001ms
+     ✓ 删 active → true + vetoed；再删 → false；删不存在 → false  1123ms
+     ✓ 删 retired → true（vetoed）；读面立即消失  650ms
+     ✓ retire → restore 全转换；active 行 restore 幂等 false  1152ms
+     ✓ pin true/false 翻转；vetoed 行 pin/retire/restore 全部拒绝（false）  4852ms
+     ✓ upsert 冲突：retired → active（恢复语义）；vetoed → active（显式撤销否决）；pinned/origin 不被改写  1026ms
+     ✓ vetoed/retired 行不进快照；reset 后其 valence 保持 NULL 且 restore 不复活  2982ms
+     ✓ set → get 回读；重开库仍在（重启不失忆）；get 未初始化 → null 基线  1694ms
+ ✓ src/core/store/__tests__/values-cache.test.ts (14 tests) 32176ms
+     ✓ 首次 miss、二次 hit（同一租户）  965ms
+     ✓ 不同租户各自缓存（key 含租户三元组）  1914ms
+     ✓ upsertValue 写后失效：下一次读反映新行  1775ms
+     ✓ deleteValue 写后失效：删除立即可见  658ms
+     ✓ deriveValueValences 写后失效：LLM 判定值立即可见  610ms
+     ✓ resetValueValences 写后失效：置 NULL 立即可见  3435ms
+     ✓ restoreValueValences 写后失效：快照恢复值立即可见  656ms
+     ✓ setValuesCacheTtlMs(0) → 缓存关（每次都查 DB）  1843ms
+     ✓ TTL 过期 → 重新查 DB（跨进程写漂移防御）  4018ms
+     ✓ 缓存不破坏 L1 主流程（upsertL1/searchL1Fts 照常）  10941ms
+     ✓ 三元组段含 | 的两个不同租户不得串桶（key 碰撞 → 读到对方缓存行）  525ms
+     ✓ SQL 异常路径不计 miss（valuesCacheMisses = 真实 DB 查询次数）  3023ms
+     ✓ 只列存在 valence IS NULL 活跃锚的租户；非 NULL 锚租户与其它 agent 不混入  1247ms
+     ✓ 全租户无 NULL 锚时返回空数组（boot 稳态零 LLM 前提）  504ms
+(node:7720) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/core/store/__tests__/values-signature-character.test.ts (2 tests | 2 failed) 18705ms
+     × nodeType=character + attrs 经 facade upsertValue → 落库保留（现行 7 参截断=RED） 12528ms
+     × listValues/listValuesAnyState 透传 node_type+attrs_json（伴生库直插 character 行） 6136ms
+(node:25552) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/l1-links-derived-from.test.ts (5 tests) 15945ms
+     ✓ 建边后沿边反查：getLinksByTarget 命中 source 端（scene block）  9050ms
+     ✓ getLinksBySource 对偶：scene block 身世查询（由哪些 L1 蒸馏而来）  1124ms
+     ✓ type 过滤互不串扰；同 (s,t,type) 幂等（重复建边不翻倍）  3072ms
+     ✓ 失效传播定位：invalidateL1(r) 后 getLinksByTarget(r,'derived_from') 指向受影响块  2248ms
+     ✓ 行不存在时反查返回空数组（不抛错）  405ms
+(node:28020) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/l1-timefilter.test.ts (5 tests) 21543ms
+     ✓ ① 窗内命中、窗外排除：queryL1Paginated 只返回窗内行  17299ms
+     ✓ ①b countL1 与 queryL1Paginated 同口径：同窗 total 一致  503ms
+     ✓ ② 无时间窗 = 全量（3 条）  393ms
+     ✓ ④ 无效 ISO 防御：非法 timeStart 被忽略（warn），不得静默返回 0 行  2007ms
+     ✓ ④b 无效 ISO 防御：非法 timeEnd 被忽略；合法+非法混合时合法边界仍生效  1291ms
+(node:30348) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/core/lifecycle/__tests__/lifecycle-scheduler-mutex.test.ts (1 test | 1 failed) 4234ms
+     × 上一轮在飞 → 后续 tick 跳过（skip debug 日志 ≥3，无并发 run） 4223ms
+ ❯ src/core/tools/neighbor-expand-tenant.test.ts (1 test | 1 failed) 12492ms
+     × 跨租户邻居边不泄漏：t1 搜索结果不含 t2 邻居记录（RED：当前无复核） 12471ms
+(node:6592) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/anchor-evidence-valences.test.ts (6 tests) 37778ms
+     ✓ ① 租户三元组硬隔离：B agent 桶查不到 A agent 的证据行（F18 同款）  17006ms
+     ✓ ② valence IS NOT NULL 过滤：NULL valence 行不进入证据集（宁缺毋滥）  4393ms
+     ✓ ③ coreRefs 多 label 展开：一条记忆 N 个 label → N 行（valence 同源复制）  2506ms
+     ✓ ④ identityRefs 展开：ref_kind 区分两种键族（identityRefs 切片弱口径如实透传）  4682ms
+     ✓ ⑤ 损坏 metadata_json 容忍：坏行跳过不抛错，好行照常返回（宽松解析不造假值）  4298ms
+     ✓ ⑥ 非字符串元素与空数组跳过：不产出伪 label 行（宁缺毋滥）  4744ms
+(node:27656) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/recent-affect.test.ts (5 tests) 26979ms
+     ✓ ① 租户三元组硬隔离：B agent 桶查不到 A agent 的情感样本（F18 同款）  12141ms
+     ✓ ② valence IS NOT NULL 过滤：NULL valence 行不进入样本（基调行宁缺毋滥）  4125ms
+     ✓ ③ LIMIT 与排序：maxSamples 截断且 occurred_at DESC（最新在前）  3648ms
+     ✓ ④ 样本窗：windowHours 之外的旧样本排除  4236ms
+     ✓ ⑤ 全 NULL valence 租户返回 []（降级路径=基调行静默省略）  2800ms
+(node:32848) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ src/core/tools/neighbor-expand-archive.test.ts (2 tests | 2 failed) 21672ms
+     × 归档邻居不出现在图扩展结果（遗忘语义；RED：当前 WithArchive 优先会复活归档记录） 19712ms
+     × 活跃邻居照常扩展（能力保留，回归控制） 1543ms
+(node:5548) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/scene/scene-extractor.wiring.test.ts (4 tests) 46724ms
+     ✓ opts.reasoningEffort 透传到 runner.run（关思考 config-first 接线）  20477ms
+     ✓ 未配置 reasoningEffort 时 run 参数不带该字段（端点默认）  9849ms
+     ✓ UR-10（修订）输入非空且零文件变更 ⇒ noOpIntegrated=true 且 emptyExtraction=false（不毒批）  11532ms
+     ✓ UR-8 空场景目录时 user prompt 容量头显示 0 / max  4847ms
+(node:21336) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/hooks/__tests__/recall-scene-backfill.test.ts (10 tests) 12769ms
+     ✓ 池未满 + 结论在场 → part_of 证据入池且带 [scene:名] 标注，主检索结果仍在前  1536ms
+     ✓ 池已满（主检索 ≥ maxResults）→ 补池通道退出（getNeighbors/searchL1ByScene 零调用）  529ms
+     ✓ 精确 scene 命中；他 scene 排除；score 恒 0  6062ms
+     ✓ 层级前缀：查「工作」命中「工作/子场景」（与 sceneSignalOf 前缀语义对称）  2995ms
+     ✓ T14 租户过滤：filter 传入时他租户行不可见；缺省 = 全量（旧行为）  721ms
+     ✓ 空参 / limit<=0 → 空数组（宁缺毋滥）  606ms
+ ✓ src/core/scene/__tests__/scene-governor.test.ts (12 tests) 70960ms
+     ✓ ① enabled=false：全 no-op，文件字节不变，runner 零调用  7726ms
+     ✓ ② enabled=true 但块不超限：skipped 登记，文件不变，runner 零调用  3687ms
+     ✓ ③ 超限 + fake runner 合格产出：蒸馏写回、META created 保留、写回前有 backup、timeoutMs 透传  7695ms
+     ✓ ④ fake runner 抛错：原块保留 + errors 登记 + loud warn（不静默）  4349ms
+     ✓ ⑤ 产出仍超限：hardCapFallback 写回（总长 ≤ hardCapChars、含 META、零 U+FFFD）  7831ms
+     ✓ ⑥ N1：META 头 ≥ hardCapChars（bodyBudget≤0）→ 兜底降级：不写回、原块字节不变、errors 登记 + loud warn  5123ms
+     ✓ ⑦ N2：产出合格长度但含 U+FFFD → validate 不过，走 hardCapFallback 而非 distilled 写回  14632ms
+     ✓ ⑧ N3：同秒连续 backup 两个不同块 → 两份快照都在（备份名带源文件名，不互相覆盖）  9523ms
+     ✓ ⑨ F-1：兜底 body 为空/全空白（头长 < hardCap−2）→ 降级：不写回、原块字节不变、errors 登记（body empty）+ loud warn  10047ms
+(node:28404) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:20520) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:22072) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/l0-session-guard.test.ts (3 tests) 17675ms
+     ✓ ① 有 L0 数据的会话键 → true；无数据键 → false（死键判定）  9280ms
+     ✓ ② 与 listL0SessionIds 同族：枚举出的键 hasL0Session 全真（语义一致性）  3268ms
+     ✓ ③ 空串与退化输入 → false（宁缺毋滥不误挂定时器）  5090ms
+(node:30612) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/hooks/__tests__/auto-recall-explore-relax.test.ts (8 tests) 25882ms
+     ✓ 分析型 query：significance top durative 结论无需命中即浮出（降序，受 R7 预算封顶）  15147ms
+     ✓ 非分析型 query：无命中不出结论（现状逐位）  3845ms
+     ✓ conclusionRelaxedForAnalytical=false → 关断（分析型也不放宽）  6206ms
+ ✓ src/core/store/__tests__/recall-count-bump.test.ts (3 tests) 10972ms
+     ✓ 缺省（不传 opts）= 逐位现状：计数 +1 且 updated_time 刷新  7600ms
+     ✓ touchUpdatedTime:false 只加计数、不刷 updated_time  2244ms
+     ✓ 连续 false 两次：recall_count 累加到 2，updated_time 仍不动  1098ms
+ ✓ src/core/hooks/__tests__/recall-e3-tenant.test.ts (3 tests) 8884ms
+     ✓ 跨租户：同 sessionKey 同 query（同一 store 实例——生产形态）→ 不得复用  7327ms
+     ✓ 空 sessionKey（/v3/recall 无 session_id）→ 通道关断（两次都检索）  1001ms
+     ✓ 正向控制：同租户同 session 同 query → 复用语义保留（embed 1 次）  486ms
+ ✓ src/core/store/__tests__/archive-tenant.test.ts (5 tests) 35070ms
+     ✓ 归档后 l1_archive 行的 team_id/user_id/agent_id 与被归档记忆一致  9124ms
+     ✓ A 归档两条 → A filter 可见 2 条；B filter 看不到；出参带三列归属  3649ms
+     ✓ B 恢复 A 的归档 → 拒绝（行不动）；A 自己恢复 → 成功且租户随 JSON 还原  4322ms
+     ✓ legacy 库 init 后：JSON 三字段回填列、缺省/损坏行回 default、二次 init 幂等  11962ms
+     ✓ 回填后 A filter 能读到存量归档行、B 读不到（存量数据不再实例级裸奔）  5413ms
+(node:26416) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/gateway/__tests__/v2-router-recall-merge.test.ts (6 tests) 31338ms
+     ✓ 验收1 · v3Recall.enabled 缺省 false → 404（逐位现状：端点不暴露）  9635ms
+     ✓ 验收2 · /v2/recall 不注册（v3-only），/v3/recall 注册后可分发  1343ms
+     ✓ 验收3 · 隔离头三元组缺失 → 422（v3 严格隔离闸门继承）  4680ms
+     ✓ 验收4 · 同形验证：端点 block 与钩子 prependContext 同 query 逐位一致  6974ms
+     ✓ 验收5 · 会话键传递：同 session 二次调用 → sessionReused=true 且 block 不变（幂等结论层跨 HTTP）  4087ms
+     ✓ 验收6 · 无命中 → block='' + meta 全零（代理零注入语义，非失败）  4378ms
+ ✓ src/core/tools/__tests__/memory-search-rank-signals.test.ts (14 tests) 1506ms
+     ✓ 全 0 → 与基线逐位一致（等分条目保持插入序）  1347ms
+(node:32212) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/values-per-agent.test.ts (5 tests) 37406ms
+     ✓ 非 default 租户空桶 → 严格返回 []（不回退 default 桶锚）  16074ms
+     ✓ 扇出：有记忆的 agent 桶各得 default 全部锚（origin='seed'、pinned/valence/weight 沿用）  4292ms
+     ✓ 幂等：三次 init 零重复；无记忆 agent 不扇出  10114ms
+     ✓ 返回 l1_records 的 distinct (team,user,agent)，无记忆 → []  4501ms
+     ✓ 非 default 三元组各自独立 kv；default/缺省保持旧键旧形状  2391ms
+ ✓ src/core/hooks/__tests__/auto-recall-assembly.test.ts (5 tests) 58271ms
+     ✓ 分析型 query + 结论充足 + V2-3 放宽 → 总行数 ≤ maxResults（=5）  24972ms
+     ✓ enabled=false → 零结论行，经验层照常（无 L2 命中退化同路径）  9832ms
+     ✓ 结论 1 条 + 经验 4 条 → 总 5 行（生产 maxResults=5 口径）  9502ms
+     ✓ 结论行位于全部经验行之前  11025ms
+     ✓ 结论前插 K 个 0 分，经验分按原序对齐（nativeHybrid scores 通道）  2866ms
+(node:4000) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/l0-dup-guard.test.ts (4 tests) 30763ms
+     ✓ ① 窗口内同 session+role+content → true（DSH 连发重复场景）  9244ms
+     ✓ ② 窗口外（>10min）→ false（用户隔小时级真实重发照存）  4107ms
+     ✓ ③ 键维度任一不同 → false（role/session/content 逐字比对）  7462ms
+     ✓ ④ 退化输入 → false（宁缺毋滥不误跳）  9018ms
+ ✓ src/gateway/__tests__/v2-router-recall-switches.test.ts (3 tests) 47014ms
+     ✓ 引擎三 exploreSlot：config false → 探索位退出（基线逐位）；config true → [graph:ppr] 候选占末席  14107ms
+     ✓ 引擎一 queryExpansion：config enabled=false → 通道退出；enabled=true（mock LLM）→ 扩展词命中浮现  27194ms
+(node:31380) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/store/__tests__/invalidate-l1.test.ts (3 tests) 8008ms
+     ✓ 失效后 valid_end 落库；再次 invalidate 不覆盖（返回 false）  3879ms
+     ✓ 行不存在 → 显式 false（不静默）  2944ms
+     ✓ content 不变（失效不删除、不改写正文）  1160ms
+ ❯ src/core/hooks/__tests__/recall-perf-cache.test.ts (14 tests | 1 failed) 23772ms
+     ✓ TTL 内同 query 二次搜索 → 免外呼（embed 只调一次） 72ms
+     ✓ 不同 query → 各自外呼 7ms
+     ✓ ttl=0 → 通道关（每次外呼） 4ms
+     ✓ TTL 过期 → 重新外呼  843ms
+     ✓ 同 query 不同 embeddingService 实例 → 各自外呼（key 掺实例身份，审查 #2 修补） 10ms
+     ✓ 缓存命中不改变结果内容（语义零变化）  515ms
+     ✓ 同 query 同实例不同 embed opts → 各自外呼；同 opts 命中 7ms
+     × 同 session 上轮 query 与本轮全等 → 复用（免搜索免外呼），注入块一致 13105ms
+     ✓ query 变化 → 不复用（重新搜索）  1806ms
+     ✓ sessionReuseTtlMs=0 → 通道关（每轮重新搜索）  2200ms
+     ✓ TTL 过期 → 重新搜索  1777ms
+     ✓ 不同 session 同 query → 不复用（会话隔离）  1641ms
+     ✓ 空结果不入缓存（审查 #3 修补）：瞬时空召回下一轮重新搜索，不放大成 TTL 窗口持续空召回  560ms
+     ✓ 同 session 同 query 但 store 实例不同 → 不复用（verify-s5 C5-2a/2b 跨库脏读缺口）  1146ms
+ ✓ src/core/tools/__tests__/memory-search-candidate-pool.test.ts (20 tests) 9358ms
+     ✓ 唯一邻居以 命中分×graphDiscount 入池（pprNorm=1 天花板）并带 [graph:ppr:causal] 标注  5098ms
+     ✓ 环安全：邻居指向已有命中/彼此成环 → 不重复入池（id 唯一）  339ms
+     ✓ 候选池上限 topK=10：12 个合格邻居只入池 10 个  590ms
+     ✓ T14 租户过滤照常：isolationFilter 透传给 getNeighbors / searchL1ByCoreRefs  350ms
+     ✓ 结果数 < limit 一半 + fired 锚 → 反查补池，[value:锚] 标注 + coreRef 加成  473ms
+     ✓ fired 为空（query 不含锚 label）→ 不触发反查  638ms
+     ✓ 补池条目不重复（已在结果中的 coreRef 匹配记忆不二次入池）  1239ms
+ ✓ src/core/recall/rerank/__tests__/siliconflow-reranker.test.ts (13 tests) 4764ms
+     ✓ 默认端点/默认模型：POST {baseUrl}/v1/rerank，body {model,query,documents,top_n=docs.length}，Bearer 鉴权  3395ms
+     ✓ 超时：timeoutMs 到点 abort → null（不悬挂）  702ms
+     ✓ fetch 直接抛网络错误 → null  384ms
+ ✓ src/core/lifecycle/__tests__/identity-discovery.character-tension.test.ts (11 tests) 5199ms
+     ✓ ① characterTension 缺省关断：character 提案静默丢弃（逐位现状：无 upsertValue、无 pending）  1101ms
+     ✓ ⑥ F15 池配额：名额满 → 拒（诚实留痕不挤出）  2399ms
+     ✓ ⑧ ev 门：self_identity 槽空 → characterEvidenceCount=0 < minEvidence → 拒  374ms
+     ✓ ⑨ IF-4：character 提案不进 proposal-dedup 比对域——与 pending 红线内容雷同仍走张力门  483ms
+ ✓ src/core/tools/__tests__/memory-search-lex-rank.test.ts (7 tests) 4096ms
+     ✓ q9 病灶回归：低 fused + 大信号和不得夺位高 fused 相邻档（RED：加法 rankKey 下 noise 夺位）  3023ms
+ ✓ src/core/hooks/__tests__/auto-recall-pool-channels.test.ts (11 tests) 15282ms
+     ✓ query 含场景名 → 真平局组内场景记忆前移；sceneBoost 缺省 → 基线（三刀语义对齐——跨档不可测信号，登记）  14444ms
+ ✓ src/core/hooks/__tests__/auto-recall-rank-signals.test.ts (9 tests) 11384ms
+     ✓ occurred_at 落窗 → 真平局组内前移；关断 → 基线（三刀语义对齐：跨档不可测信号——登记）  8700ms
+     ✓ significance / recall_count 加成 → 真平局组内前移（三刀语义对齐——登记）  1805ms
+     ✓ metadata.last_recalled_at < 24h → 真平局组内前移（三刀语义对齐——登记）  748ms
+ ✓ src/core/hooks/soul-assembler.test.ts (11 tests) 236ms
+ ✓ src/core/hooks/__tests__/auto-recall-lex-rank.test.ts (7 tests) 14173ms
+     ✓ 相邻档低分者即便吃满场景信号也不得越过高分者（旧加法 RED→新字典序 GREEN）  1361ms
+     ✓ 跨通道同分（fts rank0 ≡ vec rank0）→ 组内场景信号排序；关断 → 稳定插入序  12271ms
+ ✓ src/core/tools/__tests__/memory-search-query-expansion.test.ts (5 tests) 4018ms
+     ✓ 扩展词并入 MATCH：扩展词独占命中条目浮现（无扩展时不存在）  1321ms
+     ✓ LLM 失败 → 无扩展，原 query 照常（退化逐位基线，不抛错）  1055ms
+     ✓ TTL 缓存：同 query 二次搜索 runner 只调一次（ttl>0）  583ms
+ ✓ src/core/tools/__tests__/memory-search-explore-rerank.test.ts (8 tests) 3873ms
+     ✓ applyCompositeRerank：相关度主导四因子组合降序；work_fact 层不越层；全 0 权重 = 稳定基线序  1147ms
+     ✓ applyCompositeRerank：relevanceNorm 池内 max 归一（两类候选同尺度）；纯相关度权重 = 分数序  884ms
+     ✓ 探索位：结构命中且低 recall_count 候选占末席 + [explore] 标注（响应文本可见）  1733ms
+ ✓ src/core/hooks/__tests__/recall-e3-tenant2.test.ts (1 test) 20879ms
+     ✓ 同 sessionKey 不同租户（同空指纹）→ 不得跨租户 reused  20069ms
+ ✓ src/core/lifecycle/identity-pending-evidence.test.ts (2 tests) 268ms
+ ✓ src/core/hooks/__tests__/soul-assembler-anchor-semantics.test.ts (9 tests) 3206ms
+     ✓ theme 锚 attrs_json.description → 注入行「label(方向)：描述」  421ms
+     ✓ 无 description → 该锚不入价值锚行（宁缺毋滥禁裸关键词，2026-10-04 语义）  1150ms
+     ✓ 价值锚行按 value_id 稳定排序（与 weight 无关）  1140ms
+ ✓ src/gateway/core-values-state.test.ts (8 tests) 183ms
+stdout | src/utils/reindex-state.test.ts > reindex-state > scheduleReindex 成功 → running → done 并写 counts
+[reindex] 全量重建完成 L1=3 L0=7
+
+stderr | src/utils/reindex-state.test.ts > reindex-state > 失败 → failed + reason 可见
+[reindex] 全量重建失败: boom
+
+stderr | src/utils/reindex-state.test.ts > reindex-state > running 期间重复调度被拒
+[reindex] 已在运行中，忽略重复调度
+
+stderr | src/utils/reindex-state.test.ts > reindex-state > reindexAll 同步 throw → 状态 failed 而非 running 卡死（F5 同步兜底）
+[reindex] 全量重建失败: sync boom
+
+ ✓ src/utils/reindex-state.test.ts (5 tests) 3090ms
+     ✓ scheduleReindex 成功 → running → done 并写 counts  413ms
+     ✓ 失败 → failed + reason 可见  528ms
+     ✓ running 期间重复调度被拒  703ms
+     ✓ reindexAll 同步 throw → 状态 failed 而非 running 卡死（F5 同步兜底）  1384ms
+ ✓ src/core/skill/conversation-add/extract-worker.test.ts (4 tests) 8212ms
+     ✓ 连续 transient 达 cap → 转永久路径 → DLQ，任务从 _tasks.json 摘除  3111ms
+     ✓ 未达 cap 时行为逐位不变：transient 重试、retry_count 不动、不入 DLQ  382ms
+     ✓ 成功即清 streak：成功后重新计数，不误伤后续重试语义  1305ms
+     ✓ 争锁轮询降 debug：dequeued/contended 不再打 info  3378ms
+ ✓ src/core/hooks/__tests__/auto-recall-rerank.test.ts (14 tests) 37982ms
+     ✓ ①接入顺序：active 模式下 rerank 看到扩池后的预算前候选（docs=8），最终注入=精排 top-cap  9011ms
+     ✓ ②结构行豁免：R7 结论行不入精排候选且始终保留；精排只重排经验行  2039ms
+     ✓ ③shadow 断言：注入与无精排逐位相同；journal 记录假设性 kept/dropped（shadow:true）  3097ms
+     ✓ ④a active：provider 截断（部分 docs 未排序）→ 未排序候选按原序垫尾，绝不静默丢弃  2636ms
+     ✓ ④b active：minScore 以下丢弃（drop 不垫尾）  942ms
+     ✓ ⑤熔断：3 连败 → 60s 窗口内零 provider 调用（原序注入），窗口过后恢复探测  3838ms
+     ✓ ⑤b熔断恢复：成功重置连续失败计数（null,null,成功,null → 第 4 次仍尝试）  3538ms
+     ✓ ⑥a null 合同：adapter 返回 null → 原序注入 + 每次调用恰一条 warn  981ms
+     ✓ ⑥b 工厂 null（provider=local 占位，enabled）→ 不可用降级：warn 恰一条、无 provider 调用、journal 降级 gate  386ms
+     ✓ ⑥c 缺省关闭（无 rerank 键）→ 完全静默零开销：零 [rerank] 日志、零 fetch、journal 无 rerank 键  3066ms
+     ✓ ⑦a sqlite fallback 路（本机形态）全链：精排生效 + journal active gate  1989ms
+     ✓ ⑦b native 路（TCVDB searchL1Hybrid）scores 平行数组随精排重排对位  3087ms
+     ✓ ⑧缺省关闭：journal gates 无 rerank 键（fallback 路无 nativeMinRRF → gates 整体缺席）  2558ms
+(node:19072) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/gateway/settings-override.test.ts (7 tests) 1920ms
+     ✓ round-trip 读写  323ms
+     ✓ pickDefined 只保留非 undefined  1192ms
+     ✓ loadGatewayConfig：yaml 顶层 embedding 不得覆盖 admin override（spec §3.2 顺序）  328ms
+ ✓ src/store.pending.test.ts (4 tests) 2589ms
+     ✓ upsert 幂等：同 (slot,content,tenant) 只一行，evidence 更新  753ms
+ ✓ src/core/lifecycle/anchor-growth.character.test.ts (4 tests) 305ms
+ ✓ src/core/lifecycle/anchor-growth.character-maint.test.ts (3 tests) 177ms
+ ✓ src/utils/stateful-pipeline-drain.test.ts (7 tests) 95ms
+ ✓ src/core/tools/__tests__/recall-signals.test.ts (28 tests) 3226ms
+     ✓ recall_count=9 → log10(10)*weight = weight  865ms
+     ✓ fired 价值 + valence → firedLabels/moodSign；时间线索 → timeWindow  1106ms
+ ✓ src/gateway/admin-settings.test.ts (5 tests) 5285ms
+     ✓ get 返回掩码 key + rebuildStatus（与 KS / Panel SettingsView 字段名对齐）  1239ms
+     ✓ set 落盘 + 空 apiKey 保留 + needsRestart  1528ms
+     ✓ embedding 变更 embeddingChanged=true  2145ms
+ ✓ src/core/lifecycle/reflection.test.ts (5 tests) 171ms
+ ✓ src/core/hooks/__tests__/recall-layered.test.ts (45 tests) 371ms
+ ✓ src/core/hooks/__tests__/mood-render.test.ts (6 tests) 98ms
+ ✓ src/core/prompts/l1-extraction.agentact.test.ts (3 tests) 99ms
+ ✓ src/core/record/l1-extraction.parse.test.ts (11 tests) 1577ms
+     ✓ 输出在第二条记忆中被砍尾 → 抢救出第一个完整情境（原状=整批丢失）  411ms
+     ✓ 空串 → undefined（下游 falsy 判 missing 口径统一）  538ms
+ ✓ src/core/lifecycle/anchor-growth.test.ts (30 tests) 10202ms
+     ✓ config.enabled=false → 不跑（无 LLM 调用、无状态写）  483ms
+     ✓ 证据门槛：4 条命中不提（< minEvidence 5）；5 条命中采纳（origin='auto'，default 桶，建议权重）  1169ms
+     ✓ 每轮上限：3 个达标候选只采纳 2（maxPerPass）  1096ms
+     ✓ 全部 auto 锚被钉住 → pinned 豁免，无挤出目标 → 不采纳  382ms
+     ✓ store 缺自生长能力（feature-detect）→ 不跑（tcvdb 旧实现等安全跳过）  442ms
+     ✓ 0 采纳轮：写 lastAttemptAt、不写 lastAdoptedAt；1h 内重跑被 attempt-cooldown 挡  997ms
+     ✓ 首轮无基线：不误报 AROUSAL-GATE，且本轮基线落盘  558ms
+     ✓ QUOTA 守卫退场后快照刷新：挤出不再打已退场空炮（次候选正确 skip）  371ms
+     ✓ 存量超限 → 强度升序 retire 超出部分（manual/钉住豁免）  826ms
+     ✓ 名额内不触发守卫（retireValue 零调用）  310ms
+     ✓ episode 特征 rationale → attrs=undefined（锚照常采纳，desc 不落库）  400ms
+     ✓ 不合格 rationale（悬空尾/超长无句读）→ attrs=undefined  909ms
+     ✓ 合格 rationale 经句边界 sanitizer 落库（句末标点截断保留）  581ms
+ ✓ src/core/recall/__tests__/layered-metrics.test.ts (20 tests) 670ms
+     ✓ J7 自定义阈值可注入  565ms
+ ✓ src/core/lifecycle/anchor-growth-per-agent.test.ts (8 tests) 3252ms
+     ✓ 遍历 distinct 三元组：A/B 各跑一轮发现（LLM 每 agent 一次），状态按 agent 持久化  2317ms
+ ✓ src/core/hooks/__tests__/attr-signal-badge.test.ts (15 tests) 4239ms
+     ✓ arousal ≥ 0.7 → ·强烈（阈值边界含等号）  725ms
+     ✓ identityRefs 非空 → ·核心事实；空数组/缺省 → 无  405ms
+     ✓ 新徽章与既有 soul 徽章共存，MEMORY_LINE_RE 行首结构不破坏  620ms
+     ✓ vectorResultToFormatable：metadata recall_count/identityRefs/evolution + 顶层 arousal/valid_start  433ms
+     ✓ recordToFormatable：metadata 对象 + record 顶层 arousal/valid_start（kwSoul 路基座）  389ms
+     ✓ recall_count 非法（字符串/0/负数）→ undefined（宁缺毋滥）  622ms
+ ✓ src/config.selfidentity.test.ts (5 tests) 1176ms
+     ✓ 缺省：selfIdentity.enabled=false（config-first 逐位现状）  707ms
+ ✓ src/core/lifecycle/anchor-growth.person.test.ts (10 tests) 1743ms
+     ✓ person 域 p- 前缀；theme 域保持旧逻辑（字节不变）  302ms
+     ✓ p- id + role/aliases attrs + F12 valence 符号 + personRefs 回填  1270ms
+ ✓ src/core/recall/rerank/__tests__/dashscope-reranker.test.ts (12 tests) 7962ms
+     ✓ 默认端点/默认模型：自有 schema {model, input:{query,documents}, parameters:{top_n,return_documents:false}}，Bearer 鉴权  3274ms
+     ✓ 自定义 baseUrl（业务空间专属域）/model 透传；results 按 score 降序归一  685ms
+     ✓ 畸形条目防御：index 越界/非整数、score 非有限数 → 丢弃该条，合法条保留  509ms
+     ✓ HTTP 200 但错误信封（code/message，无 output——官网失败响应示例）→ null  351ms
+     ✓ fetch 直接抛网络错误 → null  890ms
+     ✓ 畸形响应：output 缺失 / output.results 非数组 → null  1323ms
+ ✓ src/core/prompts/l1-name.test.ts (2 tests) 58ms
+ ✓ src/core/hooks/recall-fold-wire.test.ts (2 tests) 65ms
+ ✓ src/core/lifecycle/forgetting/forgetting-refprotection.test.ts (9 tests) 106ms
+ ✓ src/core/record/l1-enrich.call.test.ts (9 tests) 2477ms
+     ✓ 主调 llmRunner.run 收到 reasoningEffort=none（对齐 R1 :659 / R2 先例）  478ms
+     ✓ system prompt 含 index 数字契约+编号不连续说明+中性缺省+收口句  529ms
+     ✓ 只把仍缺字段的行送入 prompt，且编号保持原序（可能不连续）  898ms
+     ✓ 模型回字符串 index 仍能按数字归一回填  402ms
+ ✓ src/core/lifecycle/gate-dr5.test.ts (4 tests) 2900ms
+     ✓ agent 自述复述形态「我以X的身份与用户交流」→ true  2291ms
+ ✓ src/core/lifecycle/forgetting/__tests__/scorer.test.ts (11 tests) 55ms
+ ✓ src/core/recall/__tests__/recall-journal.test.ts (6 tests) 7872ms
+     ✓ append 写入 JSONL 行（租户命名+字段完整）  1871ms
+     ✓ 大小轮转：超限→当前改名 .1，新起当前文件  1864ms
+     ✓ 数量上限：maxFiles=3 → 轮转文件 ≤2 份  2420ms
+     ✓ 租户隔离：不同 team 各自文件  321ms
+     ✓ best-effort：目录不可用（路径为文件）→ 不抛异常  637ms
+ ✓ src/core/lifecycle/identity-discovery.self.test.ts (4 tests) 217ms
+ ✓ src/core/hooks/__tests__/anchor-desc.test.ts (10 tests) 1928ms
+     ✓ 合格 rationale → {description}  963ms
+     ✓ 空/undefined → undefined（attrs_json 不写 description 字段）  632ms
+ ✓ src/core/tools/__tests__/query-expand.test.ts (17 tests) 2867ms
+     ✓ 含 query 原文 + 纯语义扩展指令（零语料泄漏）+ JSON 数组格式要求  691ms
+     ✓ 成功：解析词表返回；run 收到 taskId / maxTokens=8192 / timeoutMs  489ms
+     ✓ 回复非 JSON / 非数组 → []（解析失败退化）  308ms
+     ✓ TTL 缓存：TTL 内同 query 复用（runner 只调一次）；ttl=0 不缓存  312ms
+     ✓ 原词在前、扩展词 OR 追加（词面足迹 widening）  331ms
+ ✓ src/core/lifecycle/anchor-maint-decouple.test.ts (4 tests) 3851ms
+     ✓ 采纳门拦截（interval）但维护到期 → 维护面独立运行：quotaEvict 回归名额 17→15，零 LLM 调用，写 lastMaintAt 不写 lastAdoptedAt  838ms
+     ✓ A/B 同种子 ×10：旧语义等价（lastMaintAt 新鲜=维护被门饿死）retired=0/17 active vs 解耦 retired=2/15 active  2903ms
+ ✓ src/core/lifecycle/anchor-growth-similar-merge.test.ts (8 tests) 3271ms
+     ✓ 归一化相等命中（大小写/空白）  489ms
+     ✓ enabled=false（缺省）：逐位现状，同场景照常新建（配置门真生效）  1109ms
+     ✓ enabled=true：非相似候选不受相似门影响，照常采纳  453ms
+     ✓ enabled=true：weight 变化 < delta 时命中锚不被重写，但碎片锚仍不新建  415ms
+(node:20256) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/core/lifecycle/__tests__/identity-gate.test.ts (7 tests) 69ms
+ ✓ src/core/lifecycle/identity-maintain.test.ts (5 tests) 285ms
+ ✓ src/core/lifecycle/identity-fact-match.test.ts (9 tests) 621ms
+     ✓ 措辞微差（12+ 连续公共子串）→ 命中  312ms
+ ✓ src/core/lifecycle/identity-cooldown.test.ts (2 tests) 83ms
+ ✓ src/core/tools/__tests__/emotion-salience.test.ts (5 tests) 1432ms
+     ✓ 越界 clamp：valence 2 → 1、arousal 3 → 1  504ms
+ ✓ src/core/lifecycle/identity-pending-label.test.ts (1 test) 72ms
+ ✓ src/core/lifecycle/consolidation/__tests__/grouping.test.ts (5 tests) 62ms
+ ✓ src/gateway/v2-router-values-upsert.test.ts (5 tests) 2008ms
+     ✓ 合格描述 → 句边界截取后落库（'证据裁决一切。拒绝粉饰，' → '证据裁决一切。'）  905ms
+     ✓ episode 特征描述 → 400（直连 API 不可绕过）  380ms
+     ✓ 断尾半句描述 → 400  390ms
+(node:31644) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/store-pending-label.test.ts (3 tests) 1108ms
+ ✓ src/core/lifecycle/anchor-growth-dedup-scope.test.ts (2 tests) 278ms
+ ✓ src/core/prompts/l1-extraction.rewrite.test.ts (11 tests) 91ms
+stdout | src/core/recall/__tests__/eval-layered-recall.a1.test.ts > [K] eval 塌方侦测线接线（fixture：上一锚 CC 高、当前 CC 低） > K2 无塌方（prev 0.4 → current 0.4）→ 不触发不发红牌
+[eval-layered] cc collapse check: prev=0.4 current=0.4 相对降幅未过 50% 阈值 → 无塌方
+
+stdout | src/core/recall/__tests__/eval-layered-recall.a1.test.ts > [K] eval 塌方侦测线接线（fixture：上一锚 CC 高、当前 CC 低） > K3 上一锚无 CC 基线 → 不侦测不红牌（如实跳过）
+[eval-layered] cc collapse check: 上一锚 2026-09-12T12-00-00.json 无 CC 基线（未重放过 layeredMetrics）→ 跳过侦测
+
+stdout | src/core/recall/__tests__/eval-layered-recall.a1.test.ts > [K] eval 塌方侦测线接线（fixture：上一锚 CC 高、当前 CC 低） > K6 无任何早于当前锚的归档 → previousRun null，不红牌
+[eval-layered] cc collapse check: 无早于当前锚的已归档锚 → 无基线，跳过侦测
+
+ ✓ src/core/recall/__tests__/eval-layered-recall.a1.test.ts (8 tests) 6364ms
+     ✓ K1 触发红牌：prev 0.4 → current 0.1（相对降幅 75% > 50%）  3062ms
+     ✓ K4 上一锚 CC 双源兼容：原档无内嵌 lm 时读旁挂 .layered.json 副本  303ms
+     ✓ K5 上一锚选取排除派生副本与当前锚  900ms
+     ✓ K6 无任何早于当前锚的归档 → previousRun null，不红牌  521ms
+     ✓ L1 混有 .layered.json 副本与非 json 文件时只取锚归档  756ms
+ ✓ src/core/lifecycle/persona/__tests__/persona-evolution.test.ts (5 tests) 531ms
+ ✓ src/core/recall/rerank/__tests__/rerank-factory.test.ts (9 tests) 918ms
+     ✓ opts.fetchImpl 透传到 adapter（自定义 fetch 被实际调用）  800ms
+ ✓ src/core/hooks/__tests__/soul-attr-inject.test.ts (12 tests) 358ms
+ ✓ src/core/hooks/__tests__/mood-line.test.ts (11 tests) 247ms
+ ✓ src/core/tools/__tests__/memory-search-native-min-rrf.test.ts (6 tests) 3251ms
+     ✓ 未配置（缺省 0）= 逐位现状：3 条全留  2083ms
+     ✓ 门槛 0.016：单通道尾部 (0.008) 被拦，双通道与单通道 top-2 留存  382ms
+     ✓ 门槛生效且有淘汰 → logger.info 留痕（kept/dropped/gate，可观测性）  329ms
+ ✓ src/core/lifecycle/identity-proposal-dedup.test.ts (11 tests) 1032ms
+ ✓ src/core/profile/profile-scope.test.ts (8 tests) 1838ms
+     ✓ 完整三元组 → team|user|agent 三段 scope  345ms
+     ✓ 解析回读：user|agent 变体兼容  565ms
+ ✓ src/config/__tests__/config.rerank.test.ts (13 tests) 146ms
+ ✓ src/core/lifecycle/evolution-worker.test.ts (17 tests) 5423ms
+     ✓ 3 链：单次合并收敛、最新真值不被触碰、staleLineage 遥测命中、不失控  907ms
+     ✓ LLM 若误判 rewrite（对抗：假想模型无视反例指令），golden 只验证零写路径由 skip 决定——此用例验证 rewrite 路径属于真矛盾对  2110ms
+     ✓ 悬挂边容错（vectors.db 实测 7 条边 3 条悬挂）：端点缺失 → gate.dangling  484ms
+     ✓ 进程内节流：intervalMs 未到 → skipped=interval（第二轮零 LLM 调用；resetModules 取干净模块实例隔离跨测试状态）  375ms
+ ✓ src/core/hooks/__tests__/soul-assembler-character.test.ts (4 tests) 324ms
+ ✓ src/core/hooks/__tests__/soul-assembler-valuedesc-gate.test.ts (11 tests) 1741ms
+     ✓ desc 尾悬空（顿号结尾）含句末标点 → 清洗到最后句末标点  352ms
+     ✓ person desc 合格 → 照常渲染（防收窄回归：file:line/三步工序不误杀）  790ms
+ ✓ src/core/lifecycle/identity-gate.test.ts (9 tests) 937ms
+ ✓ src/core/record/l1-dedup.parse.test.ts (24 tests) 3451ms
+     ✓ merge 缺 merged_content → 强制降级 store 且清空 target/merged_*（旧记忆不归档）  524ms
+     ✓ merge 带 merged_content → 保留 merge 与 target  351ms
+     ✓ merge 缺 merged_content 降级时打 per-item warn  485ms
+ ✓ src/gateway/pending-adopt-coerce.test.ts (6 tests) 124ms
+ ✓ src/core/lifecycle/__tests__/growth-reweight-preserves-description.test.ts (1 test) 214ms
+ ✓ src/core/hooks/soul-person.test.ts (6 tests) 3096ms
+     ✓ 重要的人 行：role·dir 形态、weight DESC cap 5、位于价值锚行之后  2163ms
+ ✓ src/core/hooks/__tests__/soul-cache.test.ts (5 tests) 4298ms
+     ✓ 同数据二次调用 → 返回相同文本（缓存命中）  860ms
+     ✓ 人格变更日志：logger.info 包含 '人格变更'  3095ms
+     ✓ 不同租户各自独立缓存（互不干扰）  309ms
+ ✓ src/core/hooks/__tests__/recall-fold-cluster.test.ts (12 tests) 119ms
+ ✓ src/gateway/pending-routes.test.ts (9 tests) 159ms
+ ✓ src/utils/l1-runner-failure.test.ts (1 test) 2542ms
+     ✓ LLM 失败批次：游标不动 + 续批旗标压平 + processedCount=0  2187ms
+ ✓ src/core/prompts/l1-dedup.rewrite.test.ts (14 tests) 97ms
+ ✓ src/core-values-discover.person.test.ts (11 tests) 70ms
+ ✓ src/core/record/__tests__/recurrence.test.ts (12 tests) 288ms
+ ✓ src/core/hooks/__tests__/character-tension.test.ts (13 tests) 2660ms
+     ✓ ① minInstances 边界：neg=1 < 2 不张力；neg=2 达标即张力  1765ms
+     ✓ ④ 空输入与 label 不匹配：静默 false（宁缺毋滥）  404ms
+ ✓ src/core/prompts/scene-extraction.rewrite.test.ts (13 tests) 117ms
+ ✓ src/core/recall/__tests__/filter-invalidated.test.ts (5 tests) 505ms
+ ✓ src/gateway/pending-adopt-merge.test.ts (6 tests) 1640ms
+     ✓ 既有 3 行全部保留 + 采纳行追加为第 4 行（P0 缺陷回归：原实现仅剩 adopted 单行）  1231ms
+ ✓ src/core/sensitivity-d3.test.ts (9 tests) 2036ms
+     ✓ SOUL_COLUMNS 含第 9 列 sensitivity（TEXT，UNINDEXED）  1622ms
+ ✓ src/config/__tests__/config.governance.test.ts (5 tests) 4118ms
+     ✓ 零配置：enabled 缺省 false（生产行为零变化）+ 三键缺省值 8000/60000/20000  1992ms
+     ✓ hardCapChars clamp 下限 = maxBlockChars：传入更小值抬到 maxBlockChars，更大值透传  472ms
+ ✓ src/core/lifecycle/identity-replacing.test.ts (2 tests) 1733ms
+     ✓ merge 成功且旧槽非空：logger.info 留痕旧文（replacing <slot> (old content): …）  1693ms
+ ✓ src/core/hooks/__tests__/recurrence-badge.test.ts (7 tests) 85ms
+ ✓ src/config.rref.test.ts (2 tests) 2388ms
+     ✓ yaml rRef=2 原样生效（不被下限 10 吞掉）  1479ms
+     ✓ 缺省仍回落 150；上界 100000 钳制保持；下界 1  889ms
+ ✓ src/core/scene/__tests__/scene-governance.test.ts (21 tests) 2847ms
+     ✓ 无 META 头时对全文做码点计数  664ms
+     ✓ META 头不计入超限判定（正文很小则不治理）  554ms
+     ✓ systemPrompt 逐条内嵌四级保留优先级且按序出现  527ms
+     ✓ 对代理对边界文本硬截断：截断点落在 emoji 代理对中段仍零 U+FFFD 且 META 头原样  333ms
+ ✓ src/core/hooks/__tests__/character-tension-registry.test.ts (5 tests) 447ms
+     ✓ ① 租户隔离：A 桶候选 B 桶不可见  400ms
+ ✓ src/gateway/atomic-by-ids.test.ts (6 tests) 2005ms
+     ✓ T1 行级租户过滤：同租户保留、跨租户行剔除  1554ms
+     ✓ T2 缺租户头→400 且写明缺失头名  389ms
+ ✓ src/gateway/atomic-query-fields.test.ts (5 tests) 1974ms
+     ✓ search 行空 scene → undefined（宁缺毋滥）  757ms
+ ✓ src/core/record/l1-dedup.call.test.ts (2 tests) 187ms
+ ✓ src/adapters/standalone/llm-go-headers.test.ts (4 tests) 89ms
+ ✓ src/core/hooks/__tests__/auto-recall-threshold.test.ts (3 tests) 86ms
+ ✓ src/core/lifecycle/feeling/__tests__/appraisal.test.ts (7 tests) 78ms
+ ✓ src/core/lifecycle/forgetting/recurrence-protection.test.ts (2 tests) 69ms
+ ✓ src/core/hooks/__tests__/episode-gate.test.ts (2 tests) 1258ms
+     ✓ 具体事件硬特征逐类命中  923ms
+ ✓ src/core/hooks/t-d-gate.test.ts (2 tests) 59ms
+ ✓ src/core/hooks/__tests__/recurrence-recordformat.test.ts (4 tests) 91ms
+ ✓ src/core/lifecycle/lifecycle-embed.test.ts (5 tests) 335ms
+ ✓ src/metadata/config/session-init-registry.test.ts (2 tests) 66ms
+ ✓ src/core/lifecycle/forgetting/__tests__/scorer-arousal.test.ts (5 tests) 152ms
+ ✓ src/gateway/memory-health.test.ts (4 tests) 788ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 29 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/store.corevalues-p2.test.ts > P2 core_values 扩列（node_type/attrs_json） > upsertValue person：node_type/attrs_json 落库且读回
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p2-t1-GwKlz5\v.db'
+ ❯ src/store.corevalues-p2.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/29]⎯
+
+ FAIL  src/store.corevalues-p2.test.ts > P2 core_values 扩列（node_type/attrs_json） > DO UPDATE 不碰 node_type/attrs_json（theme 侧调用零改动重写不丢人物属性）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p2-t1-ecQ5RJ\v.db'
+ ❯ src/store.corevalues-p2.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/29]⎯
+
+ FAIL  src/store.corevalues-p2.test.ts > P2 core_values 扩列（node_type/attrs_json） > 缺省 node_type='theme' / attrs_json='{}'（既有调用方逐位现状）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p2-t1-AgK6gF\v.db'
+ ❯ src/store.corevalues-p2.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/29]⎯
+
+ FAIL  src/store.corevalues-p2.test.ts > P2 core_values 扩列（node_type/attrs_json） > listValuesAnyState 同样携带 node_type/attrs_json
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p2-t1-8KZmEF\v.db'
+ ❯ src/store.corevalues-p2.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/29]⎯
+
+ FAIL  src/store.corevalues-p2.test.ts > P2 backfillMemoryRef 通用键族 > 三键族写入 metadata_json 且同键去重；原 backfillCoreRef 行为保持
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p2-t1-baNr7G\v.db'
+ ❯ src/store.corevalues-p2.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/29]⎯
+
+ FAIL  src/store.embed-backfill.test.ts > backfillL1Vectors（向量缺口补偿器） > T1 无向量行全部补齐并销账
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\embed-backfill-yKxK0F\v.db'
+ ❯ src/store.embed-backfill.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| const DIM = 4;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/29]⎯
+
+ FAIL  src/store.embed-backfill.test.ts > backfillL1Vectors（向量缺口补偿器） > T2 幂等：已有向量的行不重嵌，只补缺失
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\embed-backfill-GDdX0Q\v.db'
+ ❯ src/store.embed-backfill.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| const DIM = 4;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/29]⎯
+
+ FAIL  src/store.embed-backfill.test.ts > backfillL1Vectors（向量缺口补偿器） > T3 单条失败保留待重试，不影响其余补齐
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\embed-backfill-2yzDqG\v.db'
+ ❯ src/store.embed-backfill.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| const DIM = 4;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/29]⎯
+
+ FAIL  src/store.embed-backfill.test.ts > backfillL1Vectors（向量缺口补偿器） > T4 batchLimit 截断：缺 3 补 2
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\embed-backfill-ARA3Jn\v.db'
+ ❯ src/store.embed-backfill.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| const DIM = 4;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/29]⎯
+
+ FAIL  src/store.embed-backfill.test.ts > backfillL1Vectors（向量缺口补偿器） > T5 空缺 no-op：零调用零写入
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\embed-backfill-1z30Ky\v.db'
+ ❯ src/store.embed-backfill.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| const DIM = 4;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/29]⎯
+
+ FAIL  src/store.embed-backfill.test.ts > backfillL1Vectors（向量缺口补偿器） > T6 维度不匹配拒写（防脏向量入库）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\embed-backfill-hpsevz\v.db'
+ ❯ src/store.embed-backfill.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| const DIM = 4;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/29]⎯
+
+ FAIL  src/store.identity-support-state.test.ts > A-7b identity 状态 kv 持久化 supportMap > set→get roundtrip 保留 supportMap（RED：旧实现静默丢弃）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\a7b-state-gpy97k\v.db'
+ ❯ src/store.identity-support-state.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore() {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/29]⎯
+
+ FAIL  src/store.identity-support-state.test.ts > A-7b identity 状态 kv 持久化 supportMap > 不带 supportMap 的旧形状写入照常（回归控制）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\a7b-state-VyWr2f\v.db'
+ ❯ src/store.identity-support-state.test.ts:14:42
+     12|
+     13| const cleanup: string[] = [];
+     14| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     15|
+     16| async function makeStore() {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/29]⎯
+
+ FAIL  src/store.personrefs-reverse.test.ts > P0-F7 反查键族扩 personRefs > personRefs 命中 label → searchL1ByCoreRefs 返回该记录（旧口径仅 coreRefs = RED）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p0f7-CnxtLG\v.db'
+ ❯ src/store.personrefs-reverse.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/29]⎯
+
+ FAIL  src/store.personrefs-reverse.test.ts > P0-F7 反查键族扩 personRefs > coreRefs 命中不受影响（回归控制）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p0f7-LqwSL1\v.db'
+ ❯ src/store.personrefs-reverse.test.ts:15:42
+     13|
+     14| const cleanup: string[] = [];
+     15| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     16|
+     17| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/29]⎯
+
+ FAIL  src/core/tools/neighbor-expand-archive.test.ts > 拍板① neighborExpand 归档不回流 > 归档邻居不出现在图扩展结果（遗忘语义；RED：当前 WithArchive 优先会复活归档记录）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p0f2c-1uyDIQ\v.db'
+ ❯ src/core/tools/neighbor-expand-archive.test.ts:16:42
+     14|
+     15| const cleanup: string[] = [];
+     16| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     17|
+     18| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/29]⎯
+
+ FAIL  src/core/tools/neighbor-expand-archive.test.ts > 拍板① neighborExpand 归档不回流 > 活跃邻居照常扩展（能力保留，回归控制）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p0f2c-LA5krA\v.db'
+ ❯ src/core/tools/neighbor-expand-archive.test.ts:16:42
+     14|
+     15| const cleanup: string[] = [];
+     16| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     17|
+     18| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/29]⎯
+
+ FAIL  src/core/tools/neighbor-expand-tenant.test.ts > P0-F2 neighborExpand 租户复核 > 跨租户邻居边不泄漏：t1 搜索结果不含 t2 邻居记录（RED：当前无复核）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\p0f2-GrGysb\v.db'
+ ❯ src/core/tools/neighbor-expand-tenant.test.ts:16:42
+     14|
+     15| const cleanup: string[] = [];
+     16| afterEach(() => { while (cleanup.length) rmSync(cleanup.pop()!, { recu…
+       |                                          ^
+     17|
+     18| async function makeStore(): Promise<VectorStore> {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/29]⎯
+
+ FAIL  src/core/lifecycle/__tests__/lifecycle-scheduler-mutex.test.ts > GROW-RACE 互斥（REG-REMAINING-004 #9） > 上一轮在飞 → 后续 tick 跳过（skip debug 日志 ≥3，无并发 run）
+AssertionError: expected 1 to be greater than or equal to 3
+ ❯ src/core/lifecycle/__tests__/lifecycle-scheduler-mutex.test.ts:40:31
+     38|     await sleep(400);
+     39|     stop();
+     40|     expect(debugLines.length).toBeGreaterThanOrEqual(3);
+       |                               ^
+     41|   });
+     42| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/29]⎯
+
+ FAIL  src/core/hooks/__tests__/recall-perf-cache.test.ts > E3 同 session 同 query 复用（performAutoRecall） > 同 session 上轮 query 与本轮全等 → 复用（免搜索免外呼），注入块一致
+AssertionError: expected '' to be '<relevant-memories>\n以下是当前对话召回的相关记忆，不…' // Object.is equality
+
+- Expected
++ Received
+
+- <relevant-memories>
+- 以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：
+-
+- - [episodic] RA3PIN 记忆条目 a
+- </relevant-memories>
+
+ ❯ src/core/hooks/__tests__/recall-perf-cache.test.ts:166:34
+     ✓ T1 半覆盖：coveredRows=2 metaRows=4 → 0.5（不受 vecRows 影响）  308ms
+    164|       const r2 = await performAutoRecall({ ...base, userText: `${KW} 复…
+    165|       expect(embedCalls()).toBe(1); // 第二轮整体复用（E1 已关）
+    166|       expect(r1?.prependContext).toBe(r2?.prependContext);
+       |                                  ^
+    167|     } finally {
+    168|       try { fs.rmSync(dir, { recursive: true, force: true }); } catch …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/29]⎯
+
+ FAIL  src/core/prompts/__tests__/durative.test.ts > GROW-EVO P2 durative 提取契约 > 生产 yaml durativeEnabled: true 已落盘（cloud 模板同步）
+Error: ENOENT: no such file or directory, open 'D:\opt\tdai\td-agemem\MemoryCore\tdai-gateway.yaml'
+ ❯ src/core/prompts/__tests__/durative.test.ts:23:21
+     21|
+     22|   it("生产 yaml durativeEnabled: true 已落盘（cloud 模板同步）", () => {
+     23|     const prod = fs.readFileSync("/opt/tdai/td-agemem/MemoryCore/tdai-…
+       |                     ^
+     24|     expect(prod).toMatch(/durativeEnabled: true/);
+     25|     const tpl = fs.readFileSync("/opt/tdai/td-agemem/deploy/tencent-cl…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/29]⎯
+
+ FAIL  src/core/store/__tests__/values-attrs-character-source-facts.test.ts > upsertValue attrs.source/facts 持久化（F2 品格采纳通道） > source+facts 新建 → attrs_json 保留 source/facts
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\values-char-attrs-Y30u8S\vectors.db'
+ ❯ src/core/store/__tests__/values-attrs-character-source-facts.test.ts:43:10
+     41|       expect(attrs.facts).toEqual(["承诺反复被践行", "交付节奏稳定"]);
+     42|     } finally {
+     43|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     44|     }
+     45|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/29]⎯
+
+ FAIL  src/core/store/__tests__/values-attrs-character-source-facts.test.ts > upsertValue attrs.source/facts 持久化（F2 品格采纳通道） > role/aliases/description/source/facts 五字段同传 → attrs_json 全量保留
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\values-char-attrs-VbXmDj\vectors.db'
+ ❯ src/core/store/__tests__/values-attrs-character-source-facts.test.ts:63:10
+     61|       expect(attrs.facts).toEqual(["要求附 file:line"]);
+     62|     } finally {
+     63|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     64|     }
+     65|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/29]⎯
+
+ FAIL  src/core/store/__tests__/values-attrs-character-source-facts.test.ts > upsertValue attrs.source/facts 持久化（F2 品格采纳通道） > 冲突路径 attrs=undefined → 原 attrs_json 不被触碰（F1 依赖的存储语义护栏）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\values-char-attrs-f2CgiO\vectors.db'
+ ❯ src/core/store/__tests__/values-attrs-character-source-facts.test.ts:79:10
+     77|       expect(attrs.description).toBe("TDB 负责人");
+     78|     } finally {
+     79|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     80|     }
+     81|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/29]⎯
+
+ FAIL  src/core/store/__tests__/values-attrs-description.test.ts > upsertValue attrs.description 持久化（rationale 通道） > description + role + aliases 同传 → attrs_json 全量保留
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\values-attrs-lCTO2k\vectors.db'
+ ❯ src/core/store/__tests__/values-attrs-description.test.ts:38:10
+     36|       expect(attrs.aliases).toEqual(["小七"]);
+     37|     } finally {
+     38|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     39|     }
+     40|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/29]⎯
+
+ FAIL  src/core/store/__tests__/values-attrs-description.test.ts > upsertValue attrs.description 持久化（rationale 通道） > 只传 description（无 role/aliases）→ 仅 description 落档
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\values-attrs-D2PEOo\vectors.db'
+ ❯ src/core/store/__tests__/values-attrs-description.test.ts:52:10
+     50|       expect(attrs.role).toBeUndefined();
+     51|     } finally {
+     52|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     53|     }
+     54|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/29]⎯
+
+ FAIL  src/core/store/__tests__/values-attrs-description.test.ts > upsertValue attrs.description 持久化（rationale 通道） > attrs 不传 → attrs_json='{}'（逐位现状）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\values-attrs-RXHjwr\vectors.db'
+ ❯ src/core/store/__tests__/values-attrs-description.test.ts:64:10
+     62|       expect(rows[0].attrs_json).toBe("{}");
+     63|     } finally {
+     64|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     65|     }
+     66|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/29]⎯
+
+ FAIL  src/core/store/__tests__/values-signature-character.test.ts > 56 号·tcvdb facade 9 参透传（截断防复发） > nodeType=character + attrs 经 facade upsertValue → 落库保留（现行 7 参截断=RED）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\sig-char-r0RwaU\aux.db'
+ ❯ src/core/store/__tests__/values-signature-character.test.ts:57:10
+     55|       expect(attrs.facts).toEqual(["承诺反复被践行", "交付节奏稳定"]);
+     56|     } finally {
+     57|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     58|     }
+     59|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[28/29]⎯
+
+ FAIL  src/core/store/__tests__/values-signature-character.test.ts > 56 号·tcvdb 读面透传（character 行可读回） > listValues/listValuesAnyState 透传 node_type+attrs_json（伴生库直插 character 行）
+Error: EBUSY: resource busy or locked, unlink 'C:\Users\ADMINI~1\AppData\Local\Temp\sig-read-PiVzNd\aux.db'
+ ❯ src/core/store/__tests__/values-signature-character.test.ts:80:10
+     78|       expect(typeof hitS?.attrs_json).toBe("string");
+     79|     } finally {
+     80|       fs.rmSync(dir, { recursive: true, force: true });
+       |          ^
+     81|     }
+     82|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[29/29]⎯
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 2 unhandled errors during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+Error: [vitest-pool]: Failed to start forks worker for test files D:/TDB/td-agemem/MemoryCore/src/gateway/core-values-discover.test.ts.
+ ❯ node_modules/.pnpm/vitest@4.1.11_@opentelemetr_bc57a2b5cecffdcf5e4a20e17d5fda1f/node_modules/vitest/dist/chunks/cli-api.CnMVyzaz.js:3532:94
+ ❯ Pool.schedule node_modules/.pnpm/vitest@4.1.11_@opentelemetr_bc57a2b5cecffdcf5e4a20e17d5fda1f/node_modules/vitest/dist/chunks/cli-api.CnMVyzaz.js:3532:5
+
+Caused by: Error: [vitest-pool-runner]: Timeout waiting for worker to respond
+ ❯ Timeout.<anonymous> node_modules/.pnpm/vitest@4.1.11_@opentelemetr_bc57a2b5cecffdcf5e4a20e17d5fda1f/node_modules/vitest/dist/chunks/cli-api.CnMVyzaz.js:3108:58
+ ❯ listOnTimeout node:internal/timers:585:17
+ ❯ process.processTimers node:internal/timers:521:7
+
+
+⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+Error: [vitest-pool]: Failed to start forks worker for test files D:/TDB/td-agemem/MemoryCore/src/core/lifecycle/identity-support-pointer.test.ts.
+ ❯ node_modules/.pnpm/vitest@4.1.11_@opentelemetr_bc57a2b5cecffdcf5e4a20e17d5fda1f/node_modules/vitest/dist/chunks/cli-api.CnMVyzaz.js:3532:94
+ ❯ Pool.schedule node_modules/.pnpm/vitest@4.1.11_@opentelemetr_bc57a2b5cecffdcf5e4a20e17d5fda1f/node_modules/vitest/dist/chunks/cli-api.CnMVyzaz.js:3532:5
+
+Caused by: Error: [vitest-pool-runner]: Timeout waiting for worker to respond
+ ❯ Timeout.<anonymous> node_modules/.pnpm/vitest@4.1.11_@opentelemetr_bc57a2b5cecffdcf5e4a20e17d5fda1f/node_modules/vitest/dist/chunks/cli-api.CnMVyzaz.js:3108:58
+ ❯ listOnTimeout node:internal/timers:585:17
+ ❯ process.processTimers node:internal/timers:521:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  12 failed | 129 passed (141)
+      Tests  29 failed | 1029 passed (1058)
+     Errors  2 errors
+   Start at  20:07:44
+   Duration  701.24s (transform 1107.17s, setup 0ms, import 2444.50s, tests 1045.65s, environment 2.53s)
+
+[ELIFECYCLE] Test failed. See above for more details.

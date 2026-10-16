@@ -1,0 +1,348 @@
+$ tsc -p tsconfig.typecheck.json
+src/core/hooks/__tests__/auto-recall-rerank.test.ts(230,3): error TS2322: Type '("Marker1" | "Marker2" | "Marker3" | "Marker4" | "Marker5" | "Marker6" | "Marker7" | "Marker8" | undefined)[]' is not assignable to type 'string[]'.
+  Type 'string | undefined' is not assignable to type 'string'.
+    Type 'undefined' is not assignable to type 'string'.
+src/core/hooks/__tests__/auto-recall-rerank.test.ts(232,23): error TS2677: A type predicate's type must be assignable to its parameter's type.
+  Type 'string' is not assignable to type '"Marker1" | "Marker2" | "Marker3" | "Marker4" | "Marker5" | "Marker6" | "Marker7" | "Marker8" | undefined'.
+src/core/persona/persona-generator.ts(208,34): error TS2352: Conversion of type 'StorageAdapter | undefined' to type 'string' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'StorageAdapter' is not comparable to type 'string'.
+src/core/persona/persona-generator.ts(208,34): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/core/record/l1-extractor.ts(414,9): error TS2353: Object literal may only specify known properties, and 'durativeEnabled' does not exist in type '{ memories: (ExtractedMemory & { record_id: string; })[]; config: unknown; logger?: Logger | undefined; model?: string | undefined; promptMode?: MemoryPromptMode | undefined; ... 7 more ...; minSimilarity?: number | undefined; }'.
+src/core/report/factory.ts(33,5): error TS2741: Property 'createInternalObservabilityBackend' is missing in type 'typeof import("D:/TDB/td-agemem/MemoryCore/src/integrations/observability/index")' but required in type '{ createInternalObservabilityBackend: (config: ObservabilityConfig) => Promise<IObservabilityBackend>; }'.
+src/core/report/otel-sdk-init.ts(174,50): error TS2353: Object literal may only specify known properties, and 'headers' does not exist in type 'OTLPGRPCExporterConfigNode'.
+src/core/report/otel-sdk-init.ts(185,48): error TS2353: Object literal may only specify known properties, and 'headers' does not exist in type 'OTLPGRPCExporterConfigNode'.
+src/core/report/otel-sdk-init.ts(332,7): error TS2322: Type 'unknown' is not assignable to type 'Resource | undefined'.
+src/core/report/otlp-backend.ts(125,13): error TS2339: Property 'Resource' does not exist on type '{ default: typeof import("D:/TDB/td-agemem/MemoryCore/node_modules/.pnpm/@opentelemetry+resources@2.12.0_@opentelemetry+api@1.9.1/node_modules/@opentelemetry/resources/build/src/index"); ... 9 more ...; defaultServiceName: () => string; }'.
+src/core/skill/conversation-add/add-handler.ts(168,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/add-handler.ts(191,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/add-handler.ts(233,9): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/add-handler.ts(233,84): error TS1117: An object literal cannot have multiple properties with the same name.
+src/core/skill/conversation-add/add-handler.ts(260,9): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/add-handler.ts(260,84): error TS1117: An object literal cannot have multiple properties with the same name.
+src/core/skill/conversation-add/add-handler.ts(294,9): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/add-handler.ts(294,84): error TS1117: An object literal cannot have multiple properties with the same name.
+src/core/skill/conversation-add/extract-worker.ts(358,11): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/trigger-service.ts(163,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/trigger-service.ts(185,11): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/trigger-service.ts(192,11): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/trigger-service.ts(203,11): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/trigger-service.ts(211,11): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/conversation-add/trigger-service.ts(218,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/skill-extractor.ts(222,9): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/skill-extractor.ts(271,9): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/skill-extractor.ts(298,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/skill-extractor.ts(305,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/core/skill/skill-extractor.ts(554,19): error TS2339: Property 'confidence' does not exist on type 'ExtractedSkillCandidate'.
+src/core/skill/skill-extractor.ts(555,15): error TS2339: Property 'reason' does not exist on type 'ExtractedSkillCandidate'.
+src/core/skill/skill-extractor.ts(556,18): error TS2339: Property 'file_path' does not exist on type 'ExtractedSkillCandidate'.
+src/core/skill/skill-extractor.ts(557,18): error TS2339: Property 'file_type' does not exist on type 'ExtractedSkillCandidate'.
+src/core/skill/skill-format.ts(25,15): error TS2305: Module '"./types.js"' has no exported member 'SkillFile'.
+src/core/skill/skill-store.ts(391,22): error TS2352: Conversion of type 'Record<string, SQLOutputValue> | undefined' to type 'SkillRowRaw' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Record<string, SQLOutputValue>' is missing the following properties from type 'SkillRowRaw': row_id, skill_id, version, is_head, and 14 more.
+src/core/skill/skill-store.ts(405,12): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'SQLInputValue'.
+src/core/skill/skill-store.ts(482,20): error TS2352: Conversion of type 'Record<string, SQLOutputValue>[]' to type 'SkillRowRaw[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Record<string, SQLOutputValue>' is missing the following properties from type 'SkillRowRaw': row_id, skill_id, version, is_head, and 14 more.
+src/core/skill/skill-store.ts(487,18): error TS2352: Conversion of type 'Record<string, SQLOutputValue>[]' to type 'SkillRowRaw[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Record<string, SQLOutputValue>' is missing the following properties from type 'SkillRowRaw': row_id, skill_id, version, is_head, and 14 more.
+src/core/skill/skill-store.ts(546,96): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'SQLInputValue'.
+src/core/skill/skill-store.ts(547,18): error TS2352: Conversion of type 'Record<string, SQLOutputValue>[]' to type 'SkillRowRaw[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Record<string, SQLOutputValue>' is missing the following properties from type 'SkillRowRaw': row_id, skill_id, version, is_head, and 14 more.
+src/core/skill/skill-store.ts(549,12): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'SQLInputValue'.
+src/core/skill/skill-store.ts(688,72): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'SQLInputValue'.
+src/core/skill/skill-store.ts(705,5): error TS2322: Type 'number | bigint' is not assignable to type 'number'.
+  Type 'bigint' is not assignable to type 'number'.
+src/core/state/index.ts(54,46): error TS2307: Cannot find module '../../integrations/redis/index.js' or its corresponding type declarations.
+src/core/state/index.ts(56,68): error TS2307: Cannot find module '../../integrations/redis/index.js' or its corresponding type declarations.
+src/core/storage/factory.ts(34,48): error TS2307: Cannot find module '../../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/core/storage/factory.ts(37,11): error TS2307: Cannot find module '../../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/core/store/__tests__/values-state.test.ts(217,7): error TS2739: Type '{ state: string; }' is missing the following properties from type '{ label: string; state: string; pinned: number; origin: string; }': label, pinned, origin
+src/core/store/sqlite.ts(2011,11): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(...anonymousParameters: SQLInputValue[]): StatementResultingChanges', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'SQLInputValue'.
+  Overload 2 of 2, '(namedParameters: Record<string, SQLInputValue>, ...anonymousParameters: SQLInputValue[]): StatementResultingChanges', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'Record<string, SQLInputValue>'.
+src/core/store/sqlite.ts(2023,34): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(...anonymousParameters: SQLInputValue[]): StatementResultingChanges', gave the following error.
+    Argument of type 'unknown' is not assignable to parameter of type 'SQLInputValue'.
+  Overload 2 of 2, '(namedParameters: Record<string, SQLInputValue>, ...anonymousParameters: SQLInputValue[]): StatementResultingChanges', gave the following error.
+    Argument of type 'string' is not assignable to parameter of type 'Record<string, SQLInputValue>'.
+src/core/store/sqlite.ts(3497,11): error TS2353: Object literal may only specify known properties, and 'occurred_at' does not exist in type 'VectorSearchResult'.
+src/core/tdai-core.ts(876,18): error TS2339: Property 'cos' does not exist on type 'MemoryTdaiConfig'.
+src/core/tdai-core.ts(877,18): error TS2339: Property 'cos' does not exist on type 'MemoryTdaiConfig'.
+src/core/tdai-core.ts(878,18): error TS2339: Property 'cos' does not exist on type 'MemoryTdaiConfig'.
+src/core/tdai-core.ts(895,66): error TS2345: Argument of type '{ info: (m: string) => void; warn: (m: string) => void; }' is not assignable to parameter of type 'ResolverLogger'.
+  Property 'error' is missing in type '{ info: (m: string) => void; warn: (m: string) => void; }' but required in type 'ResolverLogger'.
+src/core/tdai-core.ts(896,7): error TS2322: Type 'ResolvedSkillConfig | null' is not assignable to type 'ResolvedSkillConfig | undefined'.
+  Type 'null' is not assignable to type 'ResolvedSkillConfig | undefined'.
+src/core/tdai-core.ts(926,31): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(964,11): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(985,28): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(986,24): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(987,24): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(988,24): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(990,32): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(1002,50): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(1002,84): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(1003,25): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(1004,27): error TS18047: 'resolved' is possibly 'null'.
+src/core/tdai-core.ts(1127,47): error TS2353: Object literal may only specify known properties, and 'msg' does not exist in type '{ sessionKey: string; }'.
+src/core/tools/conversation-search.ts(191,9): error TS2322: Type '{ id: string; session_key: string; role: string; content: string; score: number; recorded_at: string; }[]' is not assignable to type 'ConversationSearchResultItem[]'.
+  Type '{ id: string; session_key: string; role: string; content: string; score: number; recorded_at: string; }' is missing the following properties from type 'ConversationSearchResultItem': session_id, user_id, agent_id
+src/core/tools/memory-search.ts(332,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/core/tools/memory-search.ts(333,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/core/tools/memory-search.ts(334,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/gateway/chat-memory-e2e-helpers.ts(37,5): error TS2741: Property 'corsOrigins' is missing in type '{ port: number; host: string; apiKey: string; }' but required in type '{ port: number; host: string; apiKey?: string | undefined; corsOrigins: string[]; }'.
+src/gateway/chat-memory-handlers.ts(31,15): error TS2305: Module '"../core/storage/types.js"' has no exported member 'StorageAdapter'.
+src/gateway/config.ts(763,5): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/gateway/generated/schemas.ts(1343,24): error TS2304: Cannot find name 'wikiListDataSchema'.
+src/gateway/generated/schemas.ts(1345,33): error TS2304: Cannot find name 'ListWiki200'.
+src/gateway/generated/schemas.ts(1350,712): error TS2552: Cannot find name 'ListWikiError'. Did you mean 'ListSkillError'?
+src/gateway/generated/schemas.ts(1352,59): error TS2552: Cannot find name 'wikiListRequestSchema'. Did you mean 'skillListRequestSchema'?
+src/gateway/generated/schemas.ts(1352,106): error TS2552: Cannot find name 'ListWikiMutationRequest'. Did you mean 'ListSkillMutationRequest'?
+src/gateway/generated/schemas.ts(1354,103): error TS2552: Cannot find name 'ListWikiMutationResponse'. Did you mean 'ListSkillMutationResponse'?
+src/gateway/generated/schemas.ts(1363,33): error TS2552: Cannot find name 'CreateWiki200'. Did you mean 'CreateSkill200'?
+src/gateway/generated/schemas.ts(1368,714): error TS2304: Cannot find name 'CreateWikiError'.
+src/gateway/generated/schemas.ts(1370,61): error TS2304: Cannot find name 'wikiCreateRequestSchema'.
+src/gateway/generated/schemas.ts(1370,110): error TS2304: Cannot find name 'CreateWikiMutationRequest'.
+src/gateway/generated/schemas.ts(1372,107): error TS2304: Cannot find name 'CreateWikiMutationResponse'.
+src/gateway/generated/schemas.ts(1379,24): error TS2304: Cannot find name 'wikiDetailSchema'.
+src/gateway/generated/schemas.ts(1381,33): error TS2304: Cannot find name 'UpdateWiki200'.
+src/gateway/generated/schemas.ts(1386,714): error TS2304: Cannot find name 'UpdateWikiError'.
+src/gateway/generated/schemas.ts(1388,61): error TS2304: Cannot find name 'wikiUpdateRequestSchema'.
+src/gateway/generated/schemas.ts(1388,110): error TS2304: Cannot find name 'UpdateWikiMutationRequest'.
+src/gateway/generated/schemas.ts(1390,107): error TS2304: Cannot find name 'UpdateWikiMutationResponse'.
+src/gateway/generated/schemas.ts(1395,712): error TS2304: Cannot find name 'DeleteWiki200'.
+src/gateway/generated/schemas.ts(1400,714): error TS2304: Cannot find name 'DeleteWikiError'.
+src/gateway/generated/schemas.ts(1402,61): error TS2304: Cannot find name 'wikiDeleteRequestSchema'.
+src/gateway/generated/schemas.ts(1402,110): error TS2304: Cannot find name 'DeleteWikiMutationRequest'.
+src/gateway/generated/schemas.ts(1404,107): error TS2304: Cannot find name 'DeleteWikiMutationResponse'.
+src/gateway/generated/schemas.ts(1413,33): error TS2304: Cannot find name 'SearchWiki200'.
+src/gateway/generated/schemas.ts(1418,714): error TS2304: Cannot find name 'SearchWikiError'.
+src/gateway/generated/schemas.ts(1420,111): error TS2304: Cannot find name 'SearchWikiMutationRequest'.
+src/gateway/generated/schemas.ts(1422,107): error TS2304: Cannot find name 'SearchWikiMutationResponse'.
+src/gateway/generated/schemas.ts(1429,24): error TS2304: Cannot find name 'codeGraphListDataSchema'.
+src/gateway/generated/schemas.ts(1431,33): error TS2304: Cannot find name 'ListCodeGraph200'.
+src/gateway/generated/schemas.ts(1436,717): error TS2304: Cannot find name 'ListCodeGraphError'.
+src/gateway/generated/schemas.ts(1438,64): error TS2304: Cannot find name 'codeGraphListRequestSchema'.
+src/gateway/generated/schemas.ts(1438,116): error TS2304: Cannot find name 'ListCodeGraphMutationRequest'.
+src/gateway/generated/schemas.ts(1440,113): error TS2304: Cannot find name 'ListCodeGraphMutationResponse'.
+src/gateway/generated/schemas.ts(1449,33): error TS2304: Cannot find name 'CreateCodeGraph200'.
+src/gateway/generated/schemas.ts(1454,719): error TS2304: Cannot find name 'CreateCodeGraphError'.
+src/gateway/generated/schemas.ts(1456,66): error TS2304: Cannot find name 'codeGraphCreateRequestSchema'.
+src/gateway/generated/schemas.ts(1456,120): error TS2304: Cannot find name 'CreateCodeGraphMutationRequest'.
+src/gateway/generated/schemas.ts(1458,117): error TS2304: Cannot find name 'CreateCodeGraphMutationResponse'.
+src/gateway/generated/schemas.ts(1463,715): error TS2304: Cannot find name 'SyncCodeGraph200'.
+src/gateway/generated/schemas.ts(1468,717): error TS2304: Cannot find name 'SyncCodeGraphError'.
+src/gateway/generated/schemas.ts(1470,64): error TS2304: Cannot find name 'codeGraphSyncRequestSchema'.
+src/gateway/generated/schemas.ts(1470,116): error TS2304: Cannot find name 'SyncCodeGraphMutationRequest'.
+src/gateway/generated/schemas.ts(1472,113): error TS2304: Cannot find name 'SyncCodeGraphMutationResponse'.
+src/gateway/generated/schemas.ts(1477,717): error TS2304: Cannot find name 'DeleteCodeGraph200'.
+src/gateway/generated/schemas.ts(1482,719): error TS2304: Cannot find name 'DeleteCodeGraphError'.
+src/gateway/generated/schemas.ts(1484,66): error TS2304: Cannot find name 'codeGraphDeleteRequestSchema'.
+src/gateway/generated/schemas.ts(1484,120): error TS2304: Cannot find name 'DeleteCodeGraphMutationRequest'.
+src/gateway/generated/schemas.ts(1486,117): error TS2304: Cannot find name 'DeleteCodeGraphMutationResponse'.
+src/gateway/generated/schemas.ts(1495,33): error TS2304: Cannot find name 'SearchCodeGraph200'.
+src/gateway/generated/schemas.ts(1500,719): error TS2304: Cannot find name 'SearchCodeGraphError'.
+src/gateway/generated/schemas.ts(1502,116): error TS2304: Cannot find name 'SearchCodeGraphMutationRequest'.
+src/gateway/generated/schemas.ts(1504,117): error TS2304: Cannot find name 'SearchCodeGraphMutationResponse'.
+src/gateway/knowledge-handlers.ts(65,71): error TS2345: Argument of type '{ knowledge_id: string; type: "wiki" | "code-graph"; service_url: string; name: string; team_id: string; summary?: string | null | undefined; user_id?: string | undefined; repo_url?: string | undefined; branch?: string | undefined; }' is not assignable to parameter of type 'Omit<KnowledgeEntity, "created_at" | "updated_at">'.
+  Types of property 'user_id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/gateway/server.ts(371,35): error TS2307: Cannot find module '../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/gateway/server.ts(509,9): error TS2345: Argument of type 'Logger' is not assignable to parameter of type 'PermCheckLogger'.
+  Types of property 'debug' are incompatible.
+    Type '((message: string) => void) | undefined' is not assignable to type '(msg: string) => void'.
+      Type 'undefined' is not assignable to type '(msg: string) => void'.
+src/gateway/server.ts(681,11): error TS2322: Type 'false | { [k: string]: string; }' is not assignable to type 'boolean | { host: string; publicKey: string; secretKey: string; } | undefined'.
+  Type '{ [k: string]: string; }' is not assignable to type 'boolean | { host: string; publicKey: string; secretKey: string; } | undefined'.
+    Type '{ [k: string]: string; }' is missing the following properties from type '{ host: string; publicKey: string; secretKey: string; }': host, publicKey, secretKey
+src/gateway/server.ts(1206,9): error TS2322: Type 'Logger' is not assignable to type '{ info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void; }'.
+  Types of property 'info' are incompatible.
+    Type '(message: string) => void' is not assignable to type '(...args: unknown[]) => void'.
+      Types of parameters 'message' and 'args' are incompatible.
+        Type 'unknown' is not assignable to type 'string'.
+src/gateway/server.ts(1207,9): error TS2322: Type 'IStateBackend | null' is not assignable to type 'IStateBackend | undefined'.
+  Type 'null' is not assignable to type 'IStateBackend | undefined'.
+src/gateway/server.ts(1523,54): error TS2307: Cannot find module '../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/gateway/server.ts(2005,50): error TS2307: Cannot find module '../integrations/factory.js' or its corresponding type declarations.
+src/gateway/server.ts(2259,185): error TS2554: Expected 4-6 arguments, but got 8.
+src/gateway/server.ts(2331,17): error TS2304: Cannot find name 'SkillCoreError'.
+src/gateway/server.ts(2348,52): error TS2307: Cannot find module '../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/gateway/server.ts(2355,19): error TS2304: Cannot find name 'SkillCoreError'.
+src/gateway/server.ts(2361,17): error TS2304: Cannot find name 'SkillCoreError'.
+src/gateway/server.ts(2438,17): error TS2304: Cannot find name 'SkillCoreError'.
+src/gateway/server.ts(2441,17): error TS2304: Cannot find name 'SkillCoreError'.
+src/gateway/server.ts(2449,17): error TS2304: Cannot find name 'SkillCoreError'.
+src/gateway/server.ts(2844,23): error TS2304: Cannot find name 'IMemoryStore'.
+src/gateway/server.ts(2845,16): error TS2304: Cannot find name 'IMemoryStore'.
+src/gateway/server.ts(2913,48): error TS2307: Cannot find module '../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/gateway/server.ts(2962,69): error TS2307: Cannot find module '../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/gateway/server.ts(3087,50): error TS2307: Cannot find module '../integrations/cos/cos-backend.js' or its corresponding type declarations.
+src/gateway/server.ts(3359,11): error TS2322: Type 'Logger' is not assignable to type 'ExecutorLogger'.
+  Types of property 'info' are incompatible.
+    Type '(message: string) => void' is not assignable to type '(...args: unknown[]) => void'.
+      Types of parameters 'message' and 'args' are incompatible.
+        Type 'unknown' is not assignable to type 'string'.
+src/gateway/server.ts(3378,11): error TS2322: Type 'Logger' is not assignable to type 'ExecutorLogger'.
+  Types of property 'info' are incompatible.
+    Type '(message: string) => void' is not assignable to type '(...args: unknown[]) => void'.
+      Types of parameters 'message' and 'args' are incompatible.
+        Type 'unknown' is not assignable to type 'string'.
+src/gateway/server.ts(3397,11): error TS2322: Type 'Logger' is not assignable to type 'ExecutorLogger'.
+  Types of property 'info' are incompatible.
+    Type '(message: string) => void' is not assignable to type '(...args: unknown[]) => void'.
+      Types of parameters 'message' and 'args' are incompatible.
+        Type 'unknown' is not assignable to type 'string'.
+src/gateway/skill-handlers.ts(286,124): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(286,148): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(343,124): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(343,148): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(367,123): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(367,147): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(594,128): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(594,152): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(617,129): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(617,153): error TS2322: Type 'number | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(828,7): error TS2322: Type 'CompressOptions | { toolContentThresholdBytes: number; headBytes: number; tailBytes: number; }' is not assignable to type 'CompressOptions'.
+  Property 'placeholder' is missing in type '{ toolContentThresholdBytes: number; headBytes: number; tailBytes: number; }' but required in type 'CompressOptions'.
+src/gateway/skill-handlers.ts(829,7): error TS2322: Type 'OversizeOptions | { chunkMaxBytes: number; headKeepBytes: number; tailKeepBytes: number; }' is not assignable to type 'OversizeOptions'.
+  Property 'placeholderTemplate' is missing in type '{ chunkMaxBytes: number; headKeepBytes: number; tailKeepBytes: number; }' but required in type 'OversizeOptions'.
+src/gateway/skill-handlers.ts(992,27): error TS2322: Type '"tool_calls" | "bytes" | "compressed" | "oversize" | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(1010,7): error TS2322: Type '"tool_calls" | "bytes" | "compressed" | "oversize" | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(1011,7): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/skill-handlers.ts(1018,105): error TS2322: Type 'string | undefined' is not assignable to type 'string | number | boolean'.
+  Type 'undefined' is not assignable to type 'string | number | boolean'.
+src/gateway/v2-router.ts(1033,25): error TS18048: 'store' is possibly 'undefined'.
+src/gateway/v2-router.ts(1035,68): error TS18048: 'iso' is possibly 'undefined'.
+src/gateway/v2-router.ts(1036,68): error TS18048: 'iso' is possibly 'undefined'.
+src/gateway/v2-router.ts(1037,70): error TS18048: 'iso' is possibly 'undefined'.
+src/gateway/v2-router.ts(1038,68): error TS18048: 'iso' is possibly 'undefined'.
+src/gateway/v2-router.ts(1039,41): error TS2769: No overload matches this call.
+  Overload 1 of 5, '(value: string | number | Date): Date', gave the following error.
+    Argument of type 'string | undefined' is not assignable to parameter of type 'string | number | Date'.
+      Type 'undefined' is not assignable to type 'string | number | Date'.
+  Overload 2 of 5, '(vd: VarDate): Date', gave the following error.
+    Argument of type 'string | undefined' is not assignable to parameter of type 'VarDate'.
+      Type 'undefined' is not assignable to type 'VarDate'.
+  Overload 3 of 5, '(value: string | number): Date', gave the following error.
+    Argument of type 'string | undefined' is not assignable to parameter of type 'string | number'.
+      Type 'undefined' is not assignable to type 'string | number'.
+src/gateway/v2-router.ts(1040,39): error TS2769: No overload matches this call.
+  Overload 1 of 5, '(value: string | number | Date): Date', gave the following error.
+    Argument of type 'string | undefined' is not assignable to parameter of type 'string | number | Date'.
+      Type 'undefined' is not assignable to type 'string | number | Date'.
+  Overload 2 of 5, '(vd: VarDate): Date', gave the following error.
+    Argument of type 'string | undefined' is not assignable to parameter of type 'VarDate'.
+      Type 'undefined' is not assignable to type 'VarDate'.
+  Overload 3 of 5, '(value: string | number): Date', gave the following error.
+    Argument of type 'string | undefined' is not assignable to parameter of type 'string | number'.
+      Type 'undefined' is not assignable to type 'string | number'.
+src/gateway/v2-router.ts(1237,23): error TS2339: Property 'created_time' does not exist on type 'L1SearchResult'.
+src/gateway/v2-router.ts(1247,5): error TS2322: Type 'string | number | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+src/gateway/v2-router.ts(1248,5): error TS2322: Type 'string | number | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+src/gateway/v2-router.ts(1249,5): error TS2322: Type 'string | number | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+src/gateway/v2-router.ts(1250,5): error TS2322: Type 'string | number | null' is not assignable to type '"observed" | "inferred" | undefined'.
+  Type 'null' is not assignable to type '"observed" | "inferred" | undefined'.
+src/gateway/v2-router.ts(1251,5): error TS2322: Type 'string | number | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+src/gateway/v2-router.ts(1252,5): error TS2322: Type 'string | number | null' is not assignable to type 'number | undefined'.
+  Type 'null' is not assignable to type 'number | undefined'.
+src/gateway/v2-router.ts(1253,5): error TS2322: Type 'string | number | null' is not assignable to type 'number | undefined'.
+  Type 'null' is not assignable to type 'number | undefined'.
+src/gateway/v2-router.ts(1254,5): error TS2322: Type 'string | number | null' is not assignable to type 'number | undefined'.
+  Type 'null' is not assignable to type 'number | undefined'.
+src/gateway/v2-schemas.ts(56,3): error TS2484: Export declaration conflicts with exported declaration of 'ConversationAddRequest'.
+src/gateway/v2-schemas.ts(150,18): error TS2430: Interface 'import("D:/TDB/td-agemem/MemoryCore/src/gateway/v2-schemas").AtomicDetail' incorrectly extends interface 'import("D:/TDB/td-agemem/MemoryCore/src/gateway/generated/types").AtomicDetail'.
+  Types of property 'version' are incompatible.
+    Type 'number' is not assignable to type 'string'.
+src/metadata/router/entity-ref-validator.ts(30,38): error TS2322: Type 'MaybePromise<UserKeyEntity | null>' is not assignable to type 'Promise<unknown>'.
+  Type 'null' is not assignable to type 'Promise<unknown>'.
+src/metadata/router/entity-ref-validator.ts(31,34): error TS2322: Type 'MaybePromise<AclEntity | null>' is not assignable to type 'Promise<unknown>'.
+  Type 'null' is not assignable to type 'Promise<unknown>'.
+src/metadata/service/metadata-service.ts(1273,11): error TS2322: Type '"active"' is not assignable to type 'AssetStatus | undefined'.
+src/metadata/service/metadata-service.ts(1387,11): error TS2322: Type '"active"' is not assignable to type 'AssetStatus | undefined'.
+src/metadata/store/metadata-store.contract.ts(638,11): error TS2322: Type '"active"' is not assignable to type 'AssetStatus | undefined'.
+src/metadata/store/metadata-store.contract.ts(648,11): error TS2322: Type '"active"' is not assignable to type 'AssetStatus | undefined'.
+src/metadata/store/mongodb-adapter.ts(103,44): error TS2304: Cannot find name 'IMetadataStore'.
+src/metadata/store/mongodb-adapter.ts(373,9): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/metadata/store/mongodb-adapter.ts(374,9): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/metadata/store/mongodb-adapter.ts(1163,20): error TS2352: Conversion of type 'WithId<Document>' to type '{ asset_id: string; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'asset_id' is missing in type 'WithId<Document>' but required in type '{ asset_id: string; }'.
+src/metadata/store/sqlite-adapter.ts(93,45): error TS2304: Cannot find name 'IMetadataStore'.
+src/offload/benchmark-token-estimate.ts(4,36): error TS2307: Cannot find module '../src/offload/fast-token-estimate.ts' or its corresponding type declarations.
+src/offload/index.ts(1313,11): error TS2564: Property '_sessions' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1314,11): error TS2564: Property '_logger' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1315,11): error TS2564: Property '_pCfg' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1316,11): error TS2564: Property '_getContextWindow' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1317,11): error TS2564: Property '_notifyL2NewNullEntries' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1318,11): error TS2564: Property '_clearL2Timeout' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1319,11): error TS2564: Property '_l4State' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1320,11): error TS2564: Property '_flushL1' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1321,11): error TS2564: Property '_backendClient' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1322,11): error TS2564: Property '_judgeL15' has no initializer and is not definitely assigned in the constructor.
+src/offload/index.ts(1323,11): error TS2564: Property '_disposeL15' has no initializer and is not definitely assigned in the constructor.
+src/offload/local-llm/parsers/l1-parser.ts(30,18): error TS2345: Argument of type '{ tool_call_id: string; tool_call: string; summary: string; timestamp: string; score: number; node_id: null; }' is not assignable to parameter of type 'OffloadEntry'.
+  Property 'result_ref' is missing in type '{ tool_call_id: string; tool_call: string; summary: string; timestamp: string; score: number; node_id: null; }' but required in type 'OffloadEntry'.
+src/offload/session-registry.ts(33,44): error TS2729: Property '_registryCounter' is used before its initialization.
+src/offload/state-manager.ts(56,48): error TS2729: Property '_instanceCounter' is used before its initialization.
+src/offload_server/parsers/l1-parser.ts(36,7): error TS2353: Object literal may only specify known properties, and 'seq' does not exist in type 'OffloadEntry'.
+src/services/pipeline-worker.ts(762,55): error TS2304: Cannot find name 'buildPipelineTimerMember'.
+src/services/pipeline-worker.ts(763,55): error TS2304: Cannot find name 'buildPipelineTimerMember'.
+src/utils/clean-context-runner.ts(57,67): error TS2339: Property 'runEmbeddedPiAgent' does not exist on type '{ defaults: { model: "gpt-6-astra"; provider: "openai"; }; resolveAgentDir: (cfg: OpenClawConfig, agentId: string, env?: ProcessEnv | undefined) => string; ... 11 more ...; session: { ...; }; }'.
+src/utils/pipeline-factory.ts(983,9): error TS2322: Type '(() => void | Promise<void>) | undefined' is not assignable to type '(() => Promise<void>) | undefined'.
+  Type '() => void | Promise<void>' is not assignable to type '() => Promise<void>'.
+    Type 'void | Promise<void>' is not assignable to type 'Promise<void>'.
+      Type 'void' is not assignable to type 'Promise<void>'.
+src/utils/pipeline-factory.ts(1036,24): error TS18048: 'isolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1036,51): error TS18048: 'isolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1085,17): error TS18048: 'scopeIsolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1086,18): error TS18048: 'scopeIsolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1163,18): error TS18048: 'scopeIsolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1164,19): error TS18048: 'scopeIsolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1165,18): error TS18048: 'scopeIsolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1166,21): error TS18048: 'scopeIsolation' is possibly 'undefined'.
+src/utils/pipeline-factory.ts(1182,9): error TS2322: Type '(() => void | Promise<void>) | undefined' is not assignable to type '(() => Promise<void>) | undefined'.
+  Type '() => void | Promise<void>' is not assignable to type '() => Promise<void>'.
+    Type 'void | Promise<void>' is not assignable to type 'Promise<void>'.
+      Type 'void' is not assignable to type 'Promise<void>'.
+[ELIFECYCLE] Command failed with exit code 2.
