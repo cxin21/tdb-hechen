@@ -76,6 +76,7 @@ export { SkillToolsInjector } from "./injectors/skill-tools-injector.js";
 export { TdaiL1RecallInjector } from "./injectors/tdai-l1-recall-injector.js";
 export { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 export { TdaiCurrentFeelingInjector } from "./injectors/tdai-current-feeling-injector.js";
+export { TdaiSoulRedlineEventInjector } from "./injectors/tdai-soul-redline-event-injector.js";
 export { TdaiToolsInjector } from "./injectors/tdai-tools-injector.js";
 export { KnowledgeToolsInjector } from "./injectors/knowledge-tools-injector.js";
 export { AssetReflectionInjector, renderAssetReflectionBlock } from "./injectors/asset-reflection-injector.js";
@@ -111,6 +112,8 @@ import { SkillInjector } from "./injectors/skill-injector.js";
 import { SkillToolsInjector } from "./injectors/skill-tools-injector.js";
 import { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 import { TdaiCurrentFeelingInjector } from "./injectors/tdai-current-feeling-injector.js";
+import { TdaiSoulRedlineEventInjector } from "./injectors/tdai-soul-redline-event-injector.js";
+import { DEFAULT_SOUL_TIMING } from "./types.js";
 import { TdaiL1RecallInjector } from "./injectors/tdai-l1-recall-injector.js";
 import { TdaiClient } from "../tdai/client.js";
 import { TdaiToolsInjector } from "./injectors/tdai-tools-injector.js";
@@ -393,6 +396,13 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
       // user.before 动态区 + 当轮真实用户消息）。与 profile injector 同条件注册，
       // 保持拆分前的功能开关语义（injectL2L3）不变。
       registry.register(new TdaiCurrentFeelingInjector(tdaiBaseConfig));
+      // #39（ADR0003-P3 接线票 A）：红线动作点近端 event 注入（tools.before_call）。
+      // 时机 config-first：config.injection.soulTiming.redline 缺省 "session_head"
+      // → execute 直接 []（零触网零行为变化）；显式 "action_proximate" 才挂块。
+      // cacheStrategy="none" 现场渲染，不进 prewarm/指纹缓存（#37 票面验收）。
+      registry.register(
+        new TdaiSoulRedlineEventInjector(tdaiBaseConfig, config.injection?.soulTiming ?? { ...DEFAULT_SOUL_TIMING }),
+      );
     }
     // L1 召回注入（2026-09-11 重新接线；2026-09-12 审查修补 I② 注释更正）：
     // 注意——本注入器（TdaiL1RecallInjector）走内核 /v3/atomic/search（"自有 + 借入"

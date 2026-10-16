@@ -10,6 +10,7 @@ import type {
   AgentContext,
   AgentContextMetadata,
   ContextBlock,
+  ContextMessage,
   HookRegistry,
   InjectionHook,
   InjectionPoint,
@@ -179,6 +180,9 @@ export class InjectionPipeline {
       "user.first_turn",
       "user.before",
       "user.after",
+      // #39（ADR0003-P3）：红线动作点近端。置于 user.after 之后 —— 事件块
+      // 落位在上下文最尾部（模型下一次决策可能发起工具调用前的最近端）。
+      "tools.before_call",
     ];
 
     const sessionId = this.getSessionId(ctx);
@@ -503,6 +507,31 @@ export class InjectionPipeline {
         ctx.tools = [...newTools, ...existingTools];
         break;
       }
+
+      case "tools.before_call": {
+        // #39（ADR0003-P3 红线动作点近端）：event 块落位。
+        //  - anthropic 形状：尾消息是 user 载 tool_result → 追加 text 块
+        //    （tool_result 在前、text 在后 —— Claude 生产模式合法形状）；
+        //  - openai 形状：尾消息 role=tool（serialize 只取 tool_result 块，
+        //    附加 text 会被丢弃）→ 插入新 user 消息承载事件块；
+        //  - 同管线同内容块按 cacheKey 指纹（缺省 (type, content)）去重。
+        const tail = ctx.messages[ctx.messages.length - 1];
+        if (!tail) break;
+        if (tail.role === "user") {
+          for (const block of blocks) {
+            if (block.type !== "text") continue;
+            appendEventBlockDeduped(tail, block);
+          }
+        } else {
+          const userMsg: ContextMessage = { role: "user", blocks: [] };
+          for (const block of blocks) {
+            if (block.type !== "text") continue;
+            appendEventBlockDeduped(userMsg, block);
+          }
+          if (userMsg.blocks.length > 0) ctx.messages.push(userMsg);
+        }
+        break;
+      }
     }
   }
 }
@@ -517,6 +546,22 @@ function safeCall(fn: () => void): void {
   } catch {
     // observer errors are intentionally swallowed
   }
+}
+
+/**
+ * Append an event block to a message, deduplicating same-content blocks within
+ * the SAME pipeline run (#39 红线动作点近端：同管线重复调用去重，#34/#32 先例).
+ * Dedup key: `metadata.cacheKey` when present, otherwise `(type, content)`.
+ */
+function appendEventBlockDeduped(msg: ContextMessage, block: ContextBlock): void {
+  const keyOf = (b: ContextBlock): string => {
+    const ck = b.metadata?.cacheKey;
+    if (typeof ck === "string" && ck.length > 0) return `k:${ck}`;
+    return `c:${b.type}::${b.content}`;
+  };
+  const key = keyOf(block);
+  const exists = msg.blocks.some((b) => b.type === block.type && keyOf(b) === key);
+  if (!exists) msg.blocks.push(block);
 }
 
 /**

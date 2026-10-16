@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { CostGuardConfig, ProxyConfig, RawYamlConfig } from "./types.js";
+import { DEFAULT_SOUL_TIMING, type SoulTimingConfig } from "./injection/types.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
@@ -81,6 +82,8 @@ export const DEFAULT_CONFIG: ProxyConfig = {
     // AssetReflectionInjector 被注册。marker 仍是 opt-in（不带 `/analyse/` 段
     // 的请求完全无感），只是把「必须显式开启」的负担从运营侧移除。
     assetReflection: { markerOptIn: true },
+    // #39：灵魂注入时机缺省 = 现状逐位（config-first；buildConfig 恒材料化）。
+    soulTiming: { ...DEFAULT_SOUL_TIMING },
   },
   // Extraction (write-side) defaults to fully permissive so that a config
   // without the `extraction:` block behaves identically to the pre-gate
@@ -207,6 +210,36 @@ export interface CliOverrides {
  * to the extension untouched. The legacy top-level `badcaseCollector` block, if
  * present, is folded into `options` without being interpreted.
  */
+/**
+ * #39（ADR0003-P3 接线票 A）：injection.soulTiming 严格枚举解析。
+ * 每字段独立 strict enum 校验：合法 → 翻转；缺失/类型错/非法枚举值 → 回退缺省
+ * （不携带垃圾值进管线）。整段非对象（字符串/数字）逐字段取不到 → 整段缺省。
+ * 缺省恒 = DEFAULT_SOUL_TIMING（现状逐位，config-first）。
+ */
+const SOUL_TIMING_ENUMS = {
+  identity: ["session_head", "session_head_drift_reanchor"],
+  redline: ["session_head", "action_proximate"],
+  feeling: ["session_head", "every_turn"],
+  driftTrigger: ["off", "shadow"],
+} as const;
+
+function parseSoulTiming(raw: unknown): SoulTimingConfig {
+  const rawObj = (raw ?? {}) as Record<string, unknown>;
+  const pick = <K extends keyof SoulTimingConfig>(
+    field: K,
+    allowed: readonly string[],
+  ): SoulTimingConfig[K] => {
+    const v = rawObj[field];
+    return (typeof v === "string" && allowed.includes(v) ? v : DEFAULT_SOUL_TIMING[field]) as SoulTimingConfig[K];
+  };
+  return {
+    identity: pick("identity", SOUL_TIMING_ENUMS.identity),
+    redline: pick("redline", SOUL_TIMING_ENUMS.redline),
+    feeling: pick("feeling", SOUL_TIMING_ENUMS.feeling),
+    driftTrigger: pick("driftTrigger", SOUL_TIMING_ENUMS.driftTrigger),
+  };
+}
+
 function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
   const raw: Record<string, unknown> = { ...(yaml.costGuard ?? {}) };
   const enabled = raw.enabled;
@@ -414,6 +447,8 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
               ? yaml.injection.soulOverlapJournal.file.trim()
               : undefined,
           },
+      // #39：灵魂注入时机 —— 恒材料化（yaml 缺段 → DEFAULT_SOUL_TIMING=现状逐位）。
+      soulTiming: parseSoulTiming(yaml.injection?.soulTiming),
     },
     extraction: {
       enabled: yaml.extraction?.enabled ?? DEFAULT_CONFIG.extraction.enabled,

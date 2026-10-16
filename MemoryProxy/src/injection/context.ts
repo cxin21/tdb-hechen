@@ -58,6 +58,20 @@ export function getMessageText(msg: ContextMessage): string {
 }
 
 /**
+ * Whether the last message in the context carries a tool result.
+ *
+ * #39（ADR0003-P3 红线动作点近端）：agentic loop 中「尾消息是 tool_result」
+ * 意味着模型刚收到工具输出、下一步决策可能再次发起工具调用 —— 这是
+ * `tools.before_call` 动作点判定（识别"即将执行工具的轮"）。
+ */
+export function isToolResultTail(ctx: AgentContext): boolean {
+  const msgs = ctx.messages;
+  if (msgs.length === 0) return false;
+  const tail = msgs[msgs.length - 1];
+  return tail.blocks.some((b) => b.type === "tool_result");
+}
+
+/**
  * Get the last user message from context.
  */
 export function getLastUserMessage(ctx: AgentContext): ContextMessage | undefined {

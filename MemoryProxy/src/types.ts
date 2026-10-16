@@ -1,5 +1,9 @@
 /** Shared type definitions for context-proxy. */
 
+// #39（ADR0003-P3）：灵魂注入时机配置 —— 类型单一源在 ./injection/types.js
+// （#37 首交付冻结；injection/types.js 零 import，无循环依赖风险）。
+import type { SoulTimingConfig } from "./injection/types.js";
+
 /**
  * Optional private forwarding extension config.
  *
@@ -695,6 +699,12 @@ export interface InjectionConfig {
   assetReflection?: {
     markerOptIn: boolean;
   };
+  /**
+   * #39（ADR0003-P3 接线票 A）：灵魂注入时机配置（#37 首交付冻结类型）。
+   * buildConfig 恒材料化（yaml 缺段 → DEFAULT_SOUL_TIMING = 现状逐位，
+   * config-first：显式配置才翻转任何时机）。
+   */
+  soulTiming: SoulTimingConfig;
 }
 
 /**
@@ -915,6 +925,8 @@ export interface RawYamlConfig {
       enabled?: boolean;
       file?: string;
     };
+    /** #39：灵魂注入时机（yaml 源；strict enum 逐字段校验，非法回退缺省）。 */
+    soulTiming?: Partial<SoulTimingConfig>;
   };
   extraction?: {
     enabled?: boolean;
