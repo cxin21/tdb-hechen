@@ -168,6 +168,8 @@ export function resolveLlmConfig(
       maxTokens: fallback.maxTokens,
       timeoutMs: fallback.timeoutMs,
       stream: fallback.stream,
+      maxRetries: fallback.maxRetries,
+      summaryMaxOutputTokens: fallback.summaryMaxOutputTokens,
     };
   }
 
@@ -183,5 +185,7 @@ export function resolveLlmConfig(
     maxTokens: fallback.maxTokens,
     timeoutMs: fallback.timeoutMs,
     stream: fallback.stream,
+    maxRetries: fallback.maxRetries,
+    summaryMaxOutputTokens: fallback.summaryMaxOutputTokens,
   };
 }

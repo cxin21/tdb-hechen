@@ -75,6 +75,12 @@ export interface SearchResult {
   via?: string;
   /** Wikilink neighbours (out + in), de-duplicated and capped. */
   related?: RelatedPage[];
+  /**
+   * 召回重排分（R1，2026-10-16；additive）：配置 reranker 且实际重排生效时才有。
+   * 量纲为 reranker 输出原分（local/云端各异），仅用于同一次查询内的排序解释；
+   * `score` 仍为融合分（每库归一化），两者不可比。
+   */
+  rerankScore?: number;
 }
 
 export interface SearchResponse {

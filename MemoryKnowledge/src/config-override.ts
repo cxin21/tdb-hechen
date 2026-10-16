@@ -7,6 +7,10 @@ import { join } from "node:path";
 
 export interface LlmSettingsOverride {
   baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number; timeoutMs?: number;
+  /** 0-10 整数；0 = fail-fast 单次尝试（默认 0，见 tests/wiki-llm-max-retries.test.ts）。 */
+  maxRetries?: number;
+  /** wiki 摘要输出预算；正整数（默认 4096）。 */
+  summaryMaxOutputTokens?: number;
 }
 export interface EmbeddingSettingsOverride {
   provider?: string; baseUrl?: string; apiKey?: string; model?: string; dimensions?: number;
@@ -77,12 +81,17 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
       if (typeof b.llm.model === "string" && b.llm.model.trim()) llm.model = b.llm.model.trim();
       else errors.push("llm.model 必须是非空字符串");
     }
-    for (const intField of ["maxTokens", "timeoutMs"] as const) {
+    for (const intField of ["maxTokens", "timeoutMs", "summaryMaxOutputTokens"] as const) {
       if (b.llm[intField] !== undefined) {
         const n = Number(b.llm[intField]);
         if (Number.isInteger(n) && n > 0) llm[intField] = n;
         else errors.push(`llm.${intField} 必须是正整数`);
       }
+    }
+    if (b.llm.maxRetries !== undefined) {
+      const n = Number(b.llm.maxRetries);
+      if (Number.isInteger(n) && n >= 0 && n <= 10) llm.maxRetries = n;
+      else errors.push("llm.maxRetries 必须是 0-10 的整数");
     }
     if (Object.keys(llm).length) out.llm = llm;
   }

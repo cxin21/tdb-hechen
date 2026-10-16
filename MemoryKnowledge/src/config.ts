@@ -42,6 +42,16 @@ export interface LlmConfig {
    * 个别只接受流式请求的兼容上游需置 true。per-instance binding 不覆盖此字段(部署级开关)。
    */
   stream?: boolean;
+  /**
+   * LLM 调用的 SDK 层重试次数（AI SDK maxRetries；0 = 单次尝试 fail-fast）。
+   * 未配置默认 0：上游持续 5xx 时不做 3 连重试（旧默认单源可烧 ~15min 才报错）。
+   */
+  maxRetries?: number;
+  /**
+   * wiki 摘要（generateWikiSummary）专用输出预算。未配置默认 4096：
+   * 思考模型的 reasoning token 计入 completion_tokens，小预算会被思考吃满导致摘要恒空。
+   */
+  summaryMaxOutputTokens?: number;
 }
 
 /**
@@ -88,8 +98,19 @@ export interface ServiceConfig {
   publicBaseUrl: string;
   /** TMC callback URL for status notifications (empty = no callback). */
   tmcCallbackUrl: string;
+  /** 召回重排（R1）：core 网关 /v1/rerank 薄客户端配置。url 为空 = 关闭（零行为变化）。 */
+  rerank: RerankConfig;
   /** Optional ClickHouse request telemetry. Disabled by default. */
   clickhouse: ClickHouseTelemetryConfig;
+}
+
+export interface RerankConfig {
+  /** core rerank 端点 URL（如 http://127.0.0.1:8420/v1/rerank）。空 = 关闭。 */
+  url: string;
+  /** Bearer token（core 侧 TDAI_GATEWAY_APIKEY）。 */
+  apiKey: string;
+  /** 单次调用超时毫秒（默认 800，clamp 100~30000）。 */
+  timeoutMs: number;
 }
 
 function env(key: string, fallback: string): string {
@@ -174,6 +195,11 @@ export function loadConfig(): ServiceConfig {
     apiPrefix: env("API_PREFIX", "/v3"),
     publicBaseUrl: env("KNOWLEDGE_PUBLIC_BASE_URL", ""),
     tmcCallbackUrl: env("TMC_CALLBACK_URL", ""),
+    rerank: {
+      url: env("KNOWLEDGE_RERANK_URL", ""),
+      apiKey: env("KNOWLEDGE_RERANK_API_KEY", ""),
+      timeoutMs: clamp(envInt("KNOWLEDGE_RERANK_TIMEOUT_MS", 800), 100, 30000),
+    },
     clickhouse,
     llm: {
       mode: env("LLM_MODE", "proxy") === "custom" ? "custom" : "proxy",

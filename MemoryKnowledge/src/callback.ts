@@ -159,7 +159,10 @@ ${pageList}`;
     const text = await client.chat({
       system: "你是一个知识库摘要生成器。只输出摘要文本，不要输出其他内容。",
       prompt,
-      maxOutputTokens: 1024,
+      // glm-5.3-flash 等思考模型把 reasoning token 计入 completion_tokens：
+      // 固定 1024 会被思考吃满 → 正文 0 字符 + finishReason=length（2026-10-15 实锤摘要恒为空）。
+      // 默认放宽到 4096；可经 llm.summaryMaxOutputTokens 配置。
+      maxOutputTokens: llm.summaryMaxOutputTokens ?? 4096,
       temperature: 0.3,
       label: `wiki-summary`,
     });

@@ -9,7 +9,7 @@
  * 图谱小，查询时从 graph_edge 临时构建内存 graphology 实例做多跳 BFS（复用现有算法）。
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, rmSync, renameSync } from "fs";
 import { join, basename, relative } from "path";
 import Graph from "graphology";
 import type DatabaseType from "better-sqlite3";
@@ -41,6 +41,7 @@ import {
   type SourceStatus,
 } from "./index-db.js";
 import { contentSha256 } from "./content-sha.js";
+import { normalizeRerankResults, type WikiReranker } from "../../rerank/client.js";
 import { createLogger } from "../../logger.js";
 import { withSpan } from "../../telemetry.js";
 import { getIngestConcurrency } from "../../config.js";
@@ -661,6 +662,74 @@ interface IngestOutcome {
   deletedSources: string[];
 }
 
+// ── extract-cache（断点续跑）：阶段1 逐源成功即落缓存；重跑 sha 命中免重抽；commit 成功后清 ──
+// 背景：ingest() 的源状态登记只在 run 末尾同一事务完成（设计 003 §3.6 强一致），
+// 长跑中途被杀（重启/kill）= 零登记 = 下次全量重跑。缓存让已抽取源免于重烧 LLM。
+
+/** 候选页缓存目录：<projectPath>/raw/extract-cache。 */
+export function extractCacheDir(projectPath: string): string {
+  return join(projectPath, "raw", "extract-cache");
+}
+
+/** 单源缓存文件路径：<safeFilename>-<sha8>.json（文件名做文件系统安全化）。 */
+export function extractCachePathFor(projectPath: string, filename: string, sha256Hex: string): string {
+  const safe = filename.replace(/[^A-Za-z0-9._-]+/g, "_");
+  return join(extractCacheDir(projectPath), `${safe}-${sha256Hex.slice(0, 8)}.json`);
+}
+
+/** 读单源缓存：filename+sha256 双重校验，任何不符/损坏 → null（强制重抽）。 */
+function loadExtractCache(
+  projectPath: string,
+  filename: string,
+  sha256Hex: string,
+): Map<string, string> | null {
+  try {
+    const p = extractCachePathFor(projectPath, filename, sha256Hex);
+    if (!existsSync(p)) return null;
+    const obj = JSON.parse(readFileSync(p, "utf-8")) as {
+      filename?: unknown; sha256?: unknown; candidates?: unknown;
+    };
+    if (obj.filename !== filename || obj.sha256 !== sha256Hex || !Array.isArray(obj.candidates)) {
+      return null;
+    }
+    const map = new Map<string, string>();
+    for (const entry of obj.candidates) {
+      if (Array.isArray(entry) && entry.length === 2 && typeof entry[0] === "string" && typeof entry[1] === "string") {
+        map.set(entry[0], entry[1]);
+      }
+    }
+    return map.size > 0 ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 原子写单源缓存（tmp + rename），供被中断的下次运行续跑。失败仅告警，不影响本次摄取。 */
+function saveExtractCache(
+  projectPath: string,
+  filename: string,
+  sha256Hex: string,
+  candidates: Map<string, string>,
+): void {
+  try {
+    mkdirSync(extractCacheDir(projectPath), { recursive: true });
+    const p = extractCachePathFor(projectPath, filename, sha256Hex);
+    writeFileSync(`${p}.tmp`, JSON.stringify({ filename, sha256: sha256Hex, candidates: [...candidates.entries()] }), "utf-8");
+    renameSync(`${p}.tmp`, p);
+  } catch (err) {
+    log.warn("extract-cache 写入失败（不影响摄取）", { source: filename, error: String(err) });
+  }
+}
+
+/** 清空缓存目录（仅在 commitCandidates 无 mergeErrors 后调用；整个目录移除）。 */
+function clearExtractCache(projectPath: string): void {
+  try {
+    rmSync(extractCacheDir(projectPath), { recursive: true, force: true });
+  } catch (err) {
+    log.warn("extract-cache 清理失败（不影响摄取）", { error: String(err) });
+  }
+}
+
 /**
  * 增量抽取（设计 003 §3.6 + wiki-ingest-optimization）：
  * 阶段1 并行 LLM 抽取 → 已删源级联清理 → 阶段2 串行 merge 落盘 → overview。
@@ -728,11 +797,30 @@ export async function runIngestIncremental(
     wikiLimit(async () => {
       const t0 = Date.now();
       try {
+        const cached = loadExtractCache(projectPath, d.filename, d.sha256);
+        if (cached) {
+          completed++;
+          report?.({
+            phase: "extracting",
+            total: toIngestDisk.length,
+            completed,
+            failed,
+            skipped: skippedCount,
+            percent: Math.round(((completed + failed) / Math.max(toIngestDisk.length, 1)) * 90),
+          });
+          log.info("runIngest 单源抽取完成（extract-cache 命中，跳过 LLM）", {
+            source: d.filename,
+            candidates: cached.size,
+            ms: Date.now() - t0,
+          });
+          return { ...d, ok: true as const, candidates: cached, error: null };
+        }
         const candidates = await withSpan("ingest-source", async (span) => {
           span.setAttribute("source.name", d.filename);
           const run = () => extractSource(projectPath, d.abs, llmConfig, existingPages);
           return globalLlmLimit ? globalLlmLimit(run) : run();
         });
+        saveExtractCache(projectPath, d.filename, d.sha256, candidates);
         completed++;
         report?.({
           phase: "extracting",
@@ -827,6 +915,9 @@ export async function runIngestIncremental(
 
   if (mergeErrors.length > 0) {
     log.warn("阶段2 合并部分页失败", { count: mergeErrors.length, errors: mergeErrors });
+  } else if (allCandidates.length > 0) {
+    // commit 全部成功 → 缓存使命完成（源状态即将在上层 ingest() 事务登记）。
+    clearExtractCache(projectPath);
   }
 
   // ── 源状态判定（必须在 commitCandidates 之后）──
@@ -903,12 +994,23 @@ function findMdFiles(dir: string): string[] {
 
 // ── Factory ──
 
+/** manager 级可注入依赖（全部可选；缺省行为与历史版本逐位一致）。 */
+export interface WikiManagerOptions {
+  /**
+   * 召回重排器（R1，2026-10-16）：对最终候选（RRF/融合排序后、limit 内）做语义精排。
+   * null/undefined = 不重排；返回 null/空/抛错 = 降级原序（绝不阻断检索）。
+   */
+  reranker?: WikiReranker | null;
+}
+
 export function createWikiSourceManager(
   dataDir: string,
   embeddingConfig: WikiEmbeddingConfig | null = null,
+  opts: WikiManagerOptions | null = null,
 ): WikiSourceManager {
   const sources = new Map<string, WikiSourceState>();
   const stateFile = join(dataDir, "wiki-sources.json");
+  const reranker = opts?.reranker ?? null;
 
   // 知识库向量化：manager 持有 embedding 客户端；未配置/不可用 → null（降级纯 FTS）。
   // vecDim 由 isReady() 决定 → 传入 initIndexDb 决定是否建 wiki_vec。
@@ -1234,8 +1336,29 @@ export function createWikiSourceManager(
       resultIds.push(meta.id);
     }
 
+    // ── 召回重排（R1，2026-10-16）：对融合/RRF 排序后的最终候选做语义精排。
+    //    guard：候选 >1 才调用（单结果重排无意义）；null/空/抛错 → 降级原序；
+    //    rerankScore 附加为 additive 字段，score 保留原融合分（与 golden 形状兼容）。
+    //    links 仍按重排前 resultIds 构建（边与顺序无关）。
+    let finalResults: SearchResult[] = results;
+    if (reranker && results.length > 1) {
+      try {
+        const docs = results.map((r) => `${r.title}\n${r.snippet}`);
+        const scored = await reranker.rerank(query, docs);
+        if (scored && scored.length > 0) {
+          const ordered = normalizeRerankResults(scored, results.length);
+          if (ordered.length > 0) {
+            finalResults = ordered.map((s) => ({ ...results[s.index], rerankScore: s.score }));
+            log.debug("searchInternal rerank 生效", { wiki: name, candidates: results.length, reranked: finalResults.length });
+          }
+        }
+      } catch (err) {
+        log.warn("searchInternal: rerank 失败，降级原序", { wiki: name, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
     const links = buildResultLinks(resultIds, pg, metaById);
-    return { results, links, count: results.length };
+    return { results: finalResults, links, count: finalResults.length };
   }
 
   loadState();

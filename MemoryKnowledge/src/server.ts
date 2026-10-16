@@ -49,6 +49,7 @@ export function createApp() {
     llmConfig: config.llm,
     embeddingConfig: config.embedding,
     tmcCallbackUrl: config.tmcCallbackUrl,
+    rerankConfig: config.rerank,
   });
 
   // Hono app

@@ -29,6 +29,8 @@ export interface RawLlmConfig {
   baseUrl?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  /** SDK 层重试次数（AI SDK maxRetries）；0 = 单次尝试 fail-fast。未配置默认 0。 */
+  maxRetries?: number;
   /**
    * 是否用流式请求(streamText)调用上游。默认 false(非流式)。
    * 个别只接受流式请求的兼容上游需置 true。openai/anthropic 协议均生效。
@@ -48,6 +50,7 @@ export interface NormalizedLlmConfig {
   model: string;
   maxTokens: number;
   timeoutMs: number;
+  maxRetries: number;
   stream: boolean;
 }
 
@@ -71,7 +74,11 @@ export function normalizeLlmConfig(raw: RawLlmConfig | undefined): NormalizedLlm
   const maxTokens = cfg.maxTokens ?? cfg.maxContextSize ?? DEFAULT_MAX_TOKENS;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const stream = cfg.stream ?? false;
-  return { protocol, baseUrl, apiKey, model, maxTokens, timeoutMs, stream };
+  const maxRetries =
+    typeof cfg.maxRetries === "number" && Number.isInteger(cfg.maxRetries) && cfg.maxRetries >= 0
+      ? cfg.maxRetries
+      : 0;
+  return { protocol, baseUrl, apiKey, model, maxTokens, timeoutMs, stream, maxRetries };
 }
 
 export interface ChatParams {
@@ -143,6 +150,8 @@ export function createLlmClient(raw: RawLlmConfig | undefined): LlmClient {
           system: params.system,
           prompt: params.prompt,
           maxOutputTokens: params.maxOutputTokens ?? config.maxTokens,
+          // 0 = fail-fast（默认）；上游持续 5xx 时不再按 SDK 默认做 3 连重试烧时间。
+          maxRetries: config.maxRetries,
           ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
           abortSignal: signal,
           experimental_telemetry: {

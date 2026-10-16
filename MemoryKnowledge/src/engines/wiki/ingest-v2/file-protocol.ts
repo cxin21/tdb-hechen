@@ -32,8 +32,17 @@ export interface ParseResult {
 /**
  * 开标签：标准为 >>>；模型偶发漏写一个 > 变成 >>。
  * 接受 ≥2 个收尾 >，避免「长输出但 files=0」。
+ * path 两种形态（二选一，| 前者优先匹配）：
+ *   1. 属性形态 path="…"：定界符接受直引号与全角引号 “…”（U+201C/201D；
+ *      2026-10-15 实锤：generate 正常返回却因全角引号 parse_empty files=0）。
+ *   2. 裸路径形态：<<<FILE wiki/sources/x.md>>>——path 以裸参数跟在 FILE 后
+ *      （2026-10-15 查询-报表.md 实锤：generate 正常返回 10 组 FILE/END 齐整，
+ *      但全部无 path= 属性 → parse_empty files=0）。
+ * 开/收定界符不要求配对（混合也接受）；属性形态 path 内不得再出现任何引号字符。
+ * ⚠️ 只放宽 path 属性定界符——正文里的全角引号是合法中文内容，绝不全局替换。
+ * 捕获组：第 1 组=属性形态开定界符、第 2 组=属性形态 path、第 3 组=裸形态 path。
  */
-const OPEN_RE = /<<<FILE\s+path\s*=\s*"([^"]*)"\s*>>+/g;
+const OPEN_RE = /<<<FILE\s+(?:path\s*=\s*(["“”])([^"“”]*)["“”]|([^\s>][^>]*?))\s*>>+/g;
 /**
  * 闭标签：标准为 <<<END>>>；模型偶发拆成 <<<\nEND>>>。
  * 仅放宽 END 两侧空白（含换行），仍要求字面 END。
@@ -86,7 +95,14 @@ export function parseFileBlocks(text: string): ParseResult {
   let match: RegExpExecArray | null;
 
   while ((match = OPEN_RE.exec(text)) !== null) {
-    const rawPath = match[1];
+    // 形态 1（属性形态）取 match[2]；形态 2（裸路径）取 match[3]。
+    // 裸形态容错清洗：trim → 剥可选 path= 前缀 → 剥首尾引号（含全角）→ trim。
+    const rawPath = (match[2] ?? match[3] ?? "")
+      .trim()
+      .replace(/^path\s*=\s*/i, "")
+      .replace(/^["“”]/, "")
+      .replace(/["“”]$/, "")
+      .trim();
     const bodyStart = OPEN_RE.lastIndex;
     CLOSE_RE.lastIndex = bodyStart;
     const closeMatch = CLOSE_RE.exec(text);

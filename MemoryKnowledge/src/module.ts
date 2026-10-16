@@ -21,6 +21,7 @@ import {
   type ILlmBindingStore,
 } from "./store/llm-binding-store.js";
 import { createWikiSourceManager, type WikiSourceManager, filterAndCopyMatched } from "./engines/wiki/index.js";
+import { createHttpReranker } from "./rerank/client.js";
 import { getEmbeddingConfig } from "./engines/wiki/embedding-client.js";
 import { indexProject, openIndex, syncIndex, getStats, closeIndex, type CodeGraphInstance } from "./engines/code/index.js";
 import { SourceFetcherRegistry, type ISourceFetcher } from "./source-fetcher/index.js";
@@ -121,6 +122,8 @@ export interface KnowledgeModuleConfig {
   embeddingConfig?: EmbeddingConfig | null;
   /** TMC callback URL for status notifications (empty = no callback). */
   tmcCallbackUrl?: string;
+  /** 召回重排（R1）配置：url 非空 → 构建 core /v1/rerank HTTP 薄客户端并注入 manager。 */
+  rerankConfig?: { url: string; apiKey: string; timeoutMs: number } | null;
   /** Optional: externally injected wiki worker (for testing). */
   wikiWorker?: WikiWorker;
   /** Optional: externally injected code worker (for testing). */
@@ -189,9 +192,15 @@ export function createKnowledgeModule(config: KnowledgeModuleConfig): KnowledgeM
 
   // Wiki engine manager（装配 embedding：getEmbeddingConfig 消费服务 config 的 embedding 段，
   // 未配置/不可用 → null，manager 侧 vecDim=0 不建 wiki_vec，降级纯 FTS）
+  // 召回重排（R1，2026-10-16）：rerankConfig.url 非空 → HTTP 薄客户端（core /v1/rerank）；
+  // 缺省/为空 → 不注入（零行为变化，config-first）。
+  const wikiReranker = config.rerankConfig?.url
+    ? createHttpReranker({ url: config.rerankConfig.url, apiKey: config.rerankConfig.apiKey, timeoutMs: config.rerankConfig.timeoutMs })
+    : null;
   const wikiMgr = createWikiSourceManager(
     join(dataDir, "_wiki_engines"),
     getEmbeddingConfig({ embedding: config.embeddingConfig }),
+    wikiReranker ? { reranker: wikiReranker } : undefined,
   );
 
   // Source fetcher registry (git/local/ftp routing + security validation)
