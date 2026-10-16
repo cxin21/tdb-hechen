@@ -74,7 +74,7 @@ describe("M1-S3 mood 行渲染守卫", () => {
 
   it("渲染⑥：仅 mood（无方向锚）→ soul-feeling 块仍在场且只含基调行（宁缺毋滥不造空段）", async () => {
     const out = await buildSoulPrefix(makeStore([row({ value_id: "vz", label: "中锚", valence: 0 })], SLOTS), mkTenant("g9"), undefined, { moodTier: { tier: "neutral", sampleCount: 9 } });
-    expect(out).toContain("## 当下的感受");
+    expect(out).toContain("## 当下的状态");
     expect(out).toContain("近期基调：平稳（近 9 条经历的情感聚合）");
     expect(out).not.toContain("驱动我行动的价值");
     expect(out).not.toContain("提醒我审慎的价值");

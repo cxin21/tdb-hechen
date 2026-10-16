@@ -88,10 +88,10 @@ describe("S1 #22 感受段同门（价值锚行三门范式同构）", () => {
       row({ value_id: "v-ne", label: "事故锚", weight: 0.8, valence: -1, attrs_json: '{"description":"commit abc1234 引入回归后修复"}' }),
     ];
     const bare = await buildSoulPrefix(makeStore(rows, SLOTS), mkTenant("g4a"), undefined, {});
-    expect(bare).not.toContain("## 当下的感受");
+    expect(bare).not.toContain("## 当下的状态");
     expect(bare).not.toContain("<soul-feeling>");
     const withMood = await buildSoulPrefix(makeStore(rows, SLOTS), mkTenant("g4b"), undefined, { moodTier: { tier: "neutral", sampleCount: 3 } });
-    expect(withMood).toContain("## 当下的感受");
+    expect(withMood).toContain("## 当下的状态");
     expect(withMood).toContain("近期基调：平稳（近 3 条经历的情感聚合）");
     expect(withMood).not.toContain("驱动我行动的价值");
     expect(withMood).not.toContain("提醒我审慎的价值");

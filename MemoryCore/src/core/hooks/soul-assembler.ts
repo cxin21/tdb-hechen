@@ -442,7 +442,8 @@ export async function buildSoulPrefix(
       }
     }
 
-    // ── 感受段：当下的感受 ──
+    // ── 感受段：当下的状态（D6 诚实命名，ADR 0003——内容=价值取向 disposition+情绪基线+state，
+    // 非第一人称体验；真实性边界=不伪造当下体验）──
     // F-EV12-5（A-5③，spec §2.7「soul-feeling 保持仅主题锚」）：character 锚不入感受段
     //（价值锚行保留 = §7「与主题锚共享注入预算」）；node_type 缺省 theme 旧库兼容。
     // 立项②：感受段与价值锚行同序（value_id 稳定）——pos/neg 清单不再随 weight 漂移
@@ -512,7 +513,7 @@ export async function buildSoulPrefix(
         const stateLine = renderStateLine(opts.state, dirTop ? escapeXmlTags(dirTop.v.label ?? "") : undefined);
         if (stateLine) feel.push(stateLine);
       }
-      if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的感受\n${feel.join("\n")}\n</soul-feeling>`);
+      if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的状态\n${feel.join("\n")}\n</soul-feeling>`);
     }
   } catch (err) {
     logger?.warn?.(`[soul] assemble failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
