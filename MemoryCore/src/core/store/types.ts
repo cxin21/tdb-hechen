@@ -754,6 +754,15 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *  键族展开为 {label, valence, ref_kind} 行（identityRefs=20 字切片弱口径，如实透传由消费方匹配）；只读、零写库、零 LLM。 */
   anchorEvidenceValences?(tenant?: CoreTenant): MaybePromise<Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }>>;
 
+  /** #30（S9/R5，2026-10-16）：soul 快照 append-only 账本（三方法可选签名，缺实现=调用侧静默跳过）。
+   *  只追加不更新不删除（禁删红线同构）；payload_json=soul 渲染全文，时间旅行可重建任一时点；
+   *  capture point=渲染路径，指纹变化后首次渲染落行（at-least-once），last-hash 去重零落行防膨胀。 */
+  writeSoulSnapshot?(tenant: CoreTenant, snap: { ts: string; contentHash: string; payloadJson: string; trigger: string }): MaybePromise<void>;
+  /** #30：最近一次快照 content_hash（去重判据；null=该租户无快照史）。 */
+  readLastSoulSnapshotHash?(tenant: CoreTenant): MaybePromise<string | null>;
+  /** #30：快照时间旅行读（id ASC ≤limit，limit 缺省 100 上限 1000）。 */
+  listSoulSnapshots?(tenant: CoreTenant, limit?: number): MaybePromise<Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }>>;
+
   /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
   listValuesAnyState?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
   /** GROW（钉住）：pinned 翻转；只作用 active|retired（vetoed 拒绝）。 */

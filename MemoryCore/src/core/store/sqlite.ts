@@ -880,6 +880,21 @@ export class VectorStore implements IMemoryStore {
     // 缺省 'theme'/'{}' = 逐位现状；sqlite 不可删列，回滚策略=列保留无害、缺省值即现状。
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN node_type TEXT NOT NULL DEFAULT 'theme'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE core_values ADD COLUMN attrs_json TEXT NOT NULL DEFAULT '{}'"); } catch { /* exists */ }
+    // #30（S9/R5，2026-10-16）：soul 快照 append-only 账本——双时态状态史（Graphiti bi-temporal
+    // 同构；禁删哲学=只追加不更新不删除）。capture point=渲染路径（buildSoulPrefix）：指纹变化后
+    // 首次渲染落行（at-least-once），last-hash 去重=指纹不变零落行（防膨胀）。payload_json=soul
+    // 渲染全文，时间旅行=按 ts 取 payload 重建任一时点全文。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      ts TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      "trigger" TEXT NOT NULL DEFAULT 'render'
+    )`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_snapshots_tenant_ts ON soul_snapshots(team_id, user_id, agent_id, ts)");
     // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
     // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
     this.db.exec(`CREATE TABLE IF NOT EXISTS core_pending (
@@ -2493,6 +2508,42 @@ export class VectorStore implements IMemoryStore {
       ).all(t.teamId, t.userId, t.agentId, sinceIso, maxSamples) as unknown as Array<{ valence: number; arousal: number | null; occurred_at: string }>) ?? [];
     } catch (err) {
       this.logger?.warn?.(`${TAG} [recentAffectSignals] failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+  /** #30（S9/R5）：soul 快照三方法——append-only 落行 / last-hash 去重读 / 时间旅行读。
+   *  租户三元组硬隔离（F18 同款）；失败 warn+安全返回（观测旁路不炸主路径）。 */
+  writeSoulSnapshot(tenant: CoreTenant, snap: { ts: string; contentHash: string; payloadJson: string; trigger: string }): void {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      this.db.prepare(
+        "INSERT INTO soul_snapshots (team_id, user_id, agent_id, ts, content_hash, payload_json, \"trigger\") VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(t.teamId, t.userId, t.agentId, snap.ts, snap.contentHash, snap.payloadJson, snap.trigger);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_snapshots] write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  readLastSoulSnapshotHash(tenant: CoreTenant): string | null {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const row = this.db.prepare(
+        "SELECT content_hash FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1",
+      ).get(t.teamId, t.userId, t.agentId) as unknown as { content_hash: string } | undefined;
+      return row?.content_hash ?? null;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_snapshots] readLast failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+  listSoulSnapshots(tenant: CoreTenant, limit?: number): Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }> {
+    const t = normalizeCoreTenant(tenant);
+    const lim = Number(limit) > 0 ? Math.min(1000, Math.floor(Number(limit))) : 100;
+    try {
+      return (this.db.prepare(
+        "SELECT ts, content_hash, payload_json, \"trigger\" FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC LIMIT ?",
+      ).all(t.teamId, t.userId, t.agentId, lim) as unknown as Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }>) ?? [];
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_snapshots] list failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }

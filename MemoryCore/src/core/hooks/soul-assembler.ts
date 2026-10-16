@@ -124,6 +124,9 @@ export interface SoulRenderOptions {
   budgetPersonChars?: number;
   /** #10 T4：品格行总长预算（整锚粒度；缺省 0=无预算=逐位现状）。 */
   budgetCharacterChars?: number;
+  /** #30（S9/R5）：soul 快照旁路落账门（缺省 true=纯增量持久化，不触碰注入字节；
+   *  false=运维关闭开关）。指纹变化后首次渲染 append 一行（last-hash 去重防膨胀）。 */
+  snapshotsEnabled?: boolean;
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -169,7 +172,7 @@ export function computeSoulVersion(
 /** 立项③ TDB 内部完整实现（2026-09-23 拍板）：soul 前缀会话级缓存——指纹未变化跳过渲染，
  *  变化时重渲染并打「人格变更」日志（审计面）。Map 按租户隔离，上限 100 条。
  *  零外部依赖——整个优化闭环在 TDB 内核完成。 */
-const soulPrefixCache = new Map<string, { version: string; text: string }>();
+const soulPrefixCache = new Map<string, { version: string; text: string; snapshotted?: boolean }>();
 const SOUL_CACHE_MAX = 100;
 
 export async function buildSoulPrefix(
@@ -213,6 +216,23 @@ export async function buildSoulPrefix(
     const cached = soulPrefixCache.get(cacheKey);
     if (cached && cached.version === soulVer) {
       logger?.debug?.(`[soul] prefix cache hit ${soulVer}`);
+      // #30：缓存命中路径的快照补账——进程内渲染过≠已落账（写失败/中途关断重开）。
+      // snapshotted 旗标=已确认落账（或确认无需写）→ 零额外查询；未确认才做一次
+      // last-hash 去重检查（payload=缓存文本=同指纹同渲染，字节一致）。
+      if (opts?.snapshotsEnabled !== false && !cached.snapshotted && cached.text !== "") {
+        try {
+          const lastHash = await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant));
+          if (lastHash !== soulVer && store.writeSoulSnapshot) {
+            await Promise.resolve(store.writeSoulSnapshot(tenant, {
+              ts: new Date().toISOString(),
+              contentHash: soulVer,
+              payloadJson: cached.text,
+              trigger: "render",
+            }));
+          }
+          cached.snapshotted = true;
+        } catch { /* 观测旁路零注入影响 */ }
+      }
       return cached.text;
     }
     if (cached) {
@@ -220,11 +240,24 @@ export async function buildSoulPrefix(
     }
     // R5 #22（2026-10-16）：desc 判定单一源提升至函数作用域——价值锚行与感受段清单共用同一
     // desc 门（句边界截取 + isDanglingTail 悬空清洗），两处过滤口径不再漂移。
+    // R5-F8（2026-10-16 用户授权拍板）：共享句界集（全角/半角/换行）单一源——价值锚行、
+    // 感受段首要子句、person/品格行 desc 截取统一从 SENTENCE_CUTS 取界，消句界不对称
+    //（第二路审查 F8）；截取结果内联换行折叠单行（desc 多行渲染缺陷一并消除）。
+    const SENTENCE_CUTS = ["。", "！", "？", "；", "!", "?", "\n"] as const;
+    const lastSentenceCut = (s: string): number => {
+      let cut = -1;
+      for (const c of SENTENCE_CUTS) {
+        const i = s.lastIndexOf(c);
+        if (i > cut) cut = i;
+      }
+      return cut;
+    };
+    const singleLine = (s: string): string => s.replace(/\s*\n+\s*/g, " ").trim();
     const anchorDescOf = (v: { attrs_json?: string }): string => {
       const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
       if (!s) return "";
-      const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
-      if (cut >= 0) return s.slice(0, cut + 1);
+      const cut = lastSentenceCut(s);
+      if (cut >= 0) return singleLine(s.slice(0, cut + 1));
       return isDanglingTail(s) ? "" : s;
     };
     // ── 身份段：此刻的你 ──
@@ -253,6 +286,10 @@ export async function buildSoulPrefix(
         // #31 探针 P24（R5，2026-10-16）：空白槽内容不渲染空 `[slot] ` 行
         //（宁缺毋滥，与锚 desc 空跳过同哲学；生产 slots 无空内容=逐位现状不变）。
         if (typeof s.content !== "string" || s.content.trim() === "") continue;
+        // #24-C1（2026-10-16 用户授权拍板）：dual 路径 strict_rule 是不变量（invariant）而非性格
+        // 倾向，改置 soul-identity 段尾独立红线段渲染（见下方块组装），不再混入身份叙事；
+        // legacy 路径（dual=false）逐位不动。
+        if (dual && s.slot === "strict_rule") continue;
         const budget = budgetFor(s.slot);
         const content = budget !== undefined ? truncateByLines(s.content, budget) : s.content;
         const label = labelFor(s.slot);
@@ -303,10 +340,11 @@ export async function buildSoulPrefix(
             // 不同构：person 锚=灵魂五段成员本身，门只把 desc 段降级为无描述形态（V6-1e 设计内合法
             // 形态），不抹人；gated G-ANCHORDESC-WRITE 存量回填另行拍板不在此处。
             const rawDesc = typeof a.description === "string" ? a.description.trim() : "";
-            const cutP = Math.max(rawDesc.lastIndexOf("。"), rawDesc.lastIndexOf("！"), rawDesc.lastIndexOf("？"), rawDesc.lastIndexOf("；"));
+            // R5-F8：句界集单一源（SENTENCE_CUTS，见 anchorDescOf 处）+ 单行折叠
+            const cutP = lastSentenceCut(rawDesc);
             const pDescClean = rawDesc === ""
               ? ""
-              : cutP >= 0 ? rawDesc.slice(0, cutP + 1) : isDanglingTail(rawDesc) ? "" : rawDesc;
+              : cutP >= 0 ? singleLine(rawDesc.slice(0, cutP + 1)) : isDanglingTail(rawDesc) ? "" : rawDesc;
             const pDesc = pDescClean !== "" && !looksLikeEpisode(pDescClean) ? `：${escapeXmlTags(pDescClean)}` : "";
             return `${escapeXmlTags(v.label)}(${role}${d})${pDesc}`;
           });
@@ -328,8 +366,9 @@ export async function buildSoulPrefix(
           .map((v) => {
             const s = typeof attrsOf(v.attrs_json)?.description === "string" ? String(attrsOf(v.attrs_json)?.description).trim() : "";
             if (!s) return null;
-            const cut = Math.max(s.lastIndexOf("。"), s.lastIndexOf("！"), s.lastIndexOf("？"), s.lastIndexOf("；"));
-            const desc = cut >= 0 ? s.slice(0, cut + 1) : (/[，、,]$/.test(s) ? "" : s);
+            // R5-F8：句界集单一源（SENTENCE_CUTS，见 anchorDescOf 处）+ 单行折叠
+            const cut = lastSentenceCut(s);
+            const desc = cut >= 0 ? singleLine(s.slice(0, cut + 1)) : (/[，、,]$/.test(s) ? "" : s);
             // R2 episode 门：品格锚 desc 同构禁混具体事件叙述（与价值锚行同门）。
             if (desc === "" || looksLikeEpisode(desc)) return null;
             const dir = valenceDir(v.valence);
@@ -343,7 +382,22 @@ export async function buildSoulPrefix(
         const charBudgeted = applyAnchorBudget(charDecorated, opts?.budgetCharacterChars ?? 0);
         if (charBudgeted.length > 0) lines.push(`我的品格：${charBudgeted.join("；")}`);
       }
-      if (lines.length > 0) parts.push(`<soul-identity>\n## 此刻的你\n${lines.join("\n")}\n</soul-identity>`);
+      // #24-C1（2026-10-16 用户授权拍板，r5-24 定案）：红线独立段「## 不可逾越（红线）」置
+      // soul-identity 段尾（禁令动词框架+保留团队话语关键词，段名进 #33 词表）；原文直出禁改写
+      //（无预算/无截断/无转写——不变量语义）；无 strict_rule 整段省略（宁缺毋滥）。
+      // 批次声明：本批（#24-C1+F8）为第二次渲染布局跳变；slots 数据未变 → soulVersion 语义不变，
+      // 布局随进程重启缓存自然刷新（soulPrefixCache 为进程内存态）。
+      const redlineLines = dual
+        ? ordered
+            .filter((s) => s.slot === "strict_rule" && typeof s.content === "string" && s.content.trim() !== "")
+            .map((s) => `- [strict_rule] ${s.content}`)
+        : [];
+      if (lines.length > 0 || redlineLines.length > 0) {
+        const sections: string[] = [];
+        if (lines.length > 0) sections.push(`## 此刻的你\n${lines.join("\n")}`);
+        if (redlineLines.length > 0) sections.push(`## 不可逾越（红线）\n${redlineLines.join("\n")}`);
+        parts.push(`<soul-identity>\n${sections.join("\n")}\n</soul-identity>`);
+      }
     }
 
     // ── 感受段：当下的感受 ──
@@ -371,9 +425,15 @@ export async function buildSoulPrefix(
       // 首要子句为详述不占清单预算；缺省 0=无预算逐位现状（config-first）。
       const topDetailClause = (r: (typeof gated)[number]): string => {
         const d = r.desc;
-        const m = /[。！？；!?\n]/.exec(d);
-        const detail = m
-          ? (m.index + 1 <= SOUL_TOP_DESC_MAX_CHARS ? d.slice(0, m.index + 1).trim() : "")
+        // R5-F8：首句截取与价值锚行同句界集（SENTENCE_CUTS 单一源；此处取首个边界=首句语义，
+        // 价值锚行取末边界=完整句集合语义——位置语义各自保留，界集统一）
+        let firstCut = -1;
+        for (const c of SENTENCE_CUTS) {
+          const i = d.indexOf(c);
+          if (i >= 0 && (firstCut < 0 || i < firstCut)) firstCut = i;
+        }
+        const detail = firstCut >= 0
+          ? (firstCut + 1 <= SOUL_TOP_DESC_MAX_CHARS ? singleLine(d.slice(0, firstCut + 1)) : "")
           : (d.length <= SOUL_TOP_DESC_MAX_CHARS ? d : "");
         return detail ? `首要 ${escapeXmlTags(r.v.label ?? "")}：${escapeXmlTags(detail)}` : "";
       };
@@ -412,7 +472,27 @@ export async function buildSoulPrefix(
       const oldest = soulPrefixCache.keys().next().value;
       if (oldest !== undefined) soulPrefixCache.delete(oldest);
     }
-    soulPrefixCache.set(cacheKey, { version: soulVer, text: result });
+    const entry: { version: string; text: string; snapshotted?: boolean } = { version: soulVer, text: result };
+    // #30（S9/R5，2026-10-16）：soul 快照旁路落账——指纹变化后首次渲染 append 一行
+    //（last-hash 去重=指纹不变零落行防膨胀；payload=本次渲染全文，时间旅行可重建任一时点）。
+    // capture point=渲染路径单一咽喉（锚变更→指纹变化→下次渲染必经此处，at-least-once 语义）。
+    // store 缺实现/失败一律静默跳过（观测旁路绝不影响注入主路径）；空渲染不落行（宁缺毋滥）；
+    // 写成功（或确认库中已有）→ entry.snapshotted=true，后续缓存命中零额外查询。
+    if (result !== "" && opts?.snapshotsEnabled !== false) {
+      try {
+        const lastHash = await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant));
+        if (lastHash !== soulVer && store.writeSoulSnapshot) {
+          await Promise.resolve(store.writeSoulSnapshot(tenant, {
+            ts: new Date().toISOString(),
+            contentHash: soulVer,
+            payloadJson: result,
+            trigger: "render",
+          }));
+        }
+        entry.snapshotted = true;
+      } catch { /* 观测旁路零注入影响 */ }
+    }
+    soulPrefixCache.set(cacheKey, entry);
   }
   return result;
 }
