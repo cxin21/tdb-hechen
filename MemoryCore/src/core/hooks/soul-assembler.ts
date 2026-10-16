@@ -15,6 +15,7 @@ import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
+import { renderStateLine, type SoulState } from "./soul-state.js";
 
 /**
  * D-1（2026-09-21，用户拍板"全做"）：F17 截断改按行（事实）边界。
@@ -115,6 +116,8 @@ export interface SoulRenderOptions {
    *  soulVersion 指纹只纳入 tier 不纳入 sampleCount（三值化控 KV 抖动——设计 §1.3；
    *  count 文本随任一指纹变化刷新，陈旧性为已登记取舍）。 */
   moodTier?: { tier: "positive" | "neutral" | "strained"; sampleCount: number } | null;
+  /** #34（S13/R5）：会话级当下状态（soul-feeling 尾块行；不参与 soulVersion 指纹，参与 cacheKey）。 */
+  state?: SoulState | null;
   /** S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚混渲染于价值锚行）。
    *  开启：价值锚行排除 character（与感受段 theme-only filter 对齐）+「我是谁」小节尾部「我的品格：」行。 */
   characterTensionEnabled?: boolean;
@@ -218,6 +221,10 @@ export async function buildSoulPrefix(
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
       `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0}`,
+      // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
+      //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
+      // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
+      `st=${opts?.state ? `${Number(opts.state.valence).toFixed(3)},${Number(opts.state.arousal).toFixed(3)},${opts.state.topValue ?? ""}` : "na"}`,
     ].join("|");
     const cached = soulPrefixCache.get(cacheKey);
     if (cached && cached.version === soulVer) {
@@ -421,7 +428,8 @@ export async function buildSoulPrefix(
       .filter((v) => (v.node_type ?? "theme") === "theme" && (v.valence === 1 || v.valence === -1));
     // S-FEEL-1（M1）：mood 行独立于方向锚（无 ±1 锚时 soul-feeling 块仍可只含基调行，宁缺毋滥不造空段）；
     // moodTier 缺省=门控逐位现状。
-    if (directional.length > 0 || opts?.moodTier) {
+    // #34：state 也独可撑块（零锚+无 mood 时 state-only 块仍渲染——当下性是独立信号源）
+    if (directional.length > 0 || opts?.moodTier || opts?.state) {
       // R5 #22（2026-10-16）：感受段清单与价值锚行同门——desc 空/episode 叙述锚不入清单
       //（消 shadow-first 式悬空裸关键词，anchorDescOf 单一源见上）；滤后仍 value_id 稳定序（立项②）。
       const gated = directional
@@ -472,6 +480,14 @@ export async function buildSoulPrefix(
       if (opts?.moodTier) {
         const tierLabel = opts.moodTier.tier === "positive" ? "偏积极" : opts.moodTier.tier === "strained" ? "偏承压" : "平稳";
         feel.push(`近期基调：${tierLabel}（近 ${opts.moodTier.sampleCount} 条经历的情感聚合）`);
+      }
+      // #34（S13/R5）：当下状态行——soul-feeling 尾块（依赖 #37 soul.tail 接口语义；
+      // 会话级不落库，状态机数据源归 #28）。topValue 缺省 → directional（gated）权重最高锚
+      //（复用已算结构，不发明第二套评估）；无 state=逐位现状（不 push）。
+      if (opts?.state) {
+        const dirTop = [...gated].sort((a, b) => (b.v.weight ?? 0) - (a.v.weight ?? 0) || String(a.v.value_id ?? a.v.label).localeCompare(String(b.v.value_id ?? b.v.label)))[0];
+        const stateLine = renderStateLine(opts.state, dirTop ? escapeXmlTags(dirTop.v.label ?? "") : undefined);
+        if (stateLine) feel.push(stateLine);
       }
       if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的感受\n${feel.join("\n")}\n</soul-feeling>`);
     }

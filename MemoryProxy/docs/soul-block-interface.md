@@ -30,6 +30,7 @@
 - `redline: "session_head"`（可升级 `action_proximate`）
 - `feeling: "every_turn"`
 - `driftTrigger: "off" | "shadow"`（成本红线：**禁每轮跑全量探针**——触发器=#34 事件流聚合+阈值 config 化+shadow 只记录建议，r5-37 修正 1）
+- 事件 taxonomy 单一源（r5-34 修正 3）：`user_correction | tool_failure | task_switch` 定义于 **MemoryCore `src/core/hooks/soul-state.ts` 的 `SOUL_STATE_EVENT_KINDS`**，本仓不复制定义、只消费该清单（#34 已落地通道：state 参与 cacheKey 不参与 soulVersion 指纹；尾块行由 `renderStateLine` 渲染）。
 
 config-first 纪律：任何 regime 升级必须显式配置才翻转，缺省永远=现状。
 
