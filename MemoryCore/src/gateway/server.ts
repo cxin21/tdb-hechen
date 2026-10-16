@@ -58,6 +58,10 @@ import { validateAndNormalizeRaw, SeedValidationError } from "../core/seed/input
 import { executeSeed } from "../core/seed/seed-runtime.js";
 import type { SeedProgress } from "../core/seed/types.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
+import { handleRerankRoute } from "./rerank-endpoint.js";
+import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
+import { createReranker } from "../core/recall/rerank/factory.js";
+import type { MemoryReranker } from "../core/recall/rerank/types.js";
 import type { V2RouterDeps } from "./v2-router.js";
 import { handleV3MetaRoute, V3_PREFIX } from "../metadata/router/v3-meta-router.js";
 import { handleInternalMetaRoute, V3_INTERNAL_PREFIX } from "../metadata/router/internal-meta-router.js";
@@ -1055,6 +1059,34 @@ export class TdaiGateway {
         return await this.handleInstanceDestroyV3(req, res);
       }
 
+      // ── /v1/rerank —— 精排资源端点（wiki 召回重排 R1，2026-10-16）。
+      //    Bearer 门禁与 /v2/instance/destroy 同级（v1 style，无 user-key）；
+      //    reranker 惰性构建自 memory.recall.rerank（与 auto-recall 同源配置，
+      //    local provider 走进程级单例池，不重复加载模型）。未配置 → 503。
+      if (method === "POST" && pathname === "/v1/rerank") {
+        if (!this.checkAuth(req, res)) return;
+        await handleRerankRoute(req, res, pathname, method, parseJsonBody, sendJson, {
+          getReranker: () => this.getRerankerForRerankEndpoint(),
+          logger: this.logger,
+        });
+        return;
+      }
+
+      // ── /v3/soul/introspect —— soul 只读自省端点（#36，R5）。
+      //    Bearer 门禁与 /v1/rerank 同级；只读合同：introspectSoul 强制
+      //    snapshotsEnabled:false，零写入；store 未就绪 → 503。
+      if (method === "POST" && pathname === "/v3/soul/introspect") {
+        if (!this.checkAuth(req, res)) return;
+        await handleSoulIntrospectRoute(req, res, pathname, method, parseJsonBody, sendJson, {
+          getStore: () => this.core.getStoreForIntrospect(),
+          defaults: (
+            this.config.memory as { coreMemory?: { soulRender?: { introspect?: { snapshotLimit?: number; evidenceWindowHours?: number } } } }
+          ).coreMemory?.soulRender?.introspect,
+          logger: this.logger,
+        });
+        return;
+      }
+
       // ── v3 internal metadata（/v3/internal/meta/*，仅 Bearer）──
       if (pathname.startsWith(`${V3_INTERNAL_PREFIX}/`)) {
         if (!this.checkAuthForV2(req, res)) return;
@@ -1373,6 +1405,22 @@ export class TdaiGateway {
         : "Unauthorized: invalid token",
     );
     return false;
+  }
+
+  /** /v1/rerank 用的 reranker（惰性一次构建并缓存；未配置/不可用 → null → 503 降级）。 */
+  private rerankEndpointReranker?: MemoryReranker | null;
+  private getRerankerForRerankEndpoint(): MemoryReranker | null {
+    if (this.rerankEndpointReranker !== undefined) return this.rerankEndpointReranker;
+    try {
+      const rc = (this.config.memory as { recall?: { rerank?: Parameters<typeof createReranker>[0] } } | undefined)
+        ?.recall?.rerank;
+      this.rerankEndpointReranker =
+        rc && rc.enabled === true && rc.provider !== "none" ? createReranker(rc) : null;
+    } catch (err) {
+      this.logger.warn?.(`[rerank-endpoint] reranker 构建失败，端点降级 503: ${err instanceof Error ? err.message : String(err)}`);
+      this.rerankEndpointReranker = null;
+    }
+    return this.rerankEndpointReranker;
   }
 
   /**

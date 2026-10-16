@@ -1180,6 +1180,14 @@ export class TdaiCore {
   }
 
   /**
+   * #36（R5）：soul_introspect 只读自省面的 store 访问器（vectorStore 仍私有，
+   * 本访问器只暴露只读用途；端点侧零写入由 introspectSoul 合同保证）。
+   */
+  getStoreForIntrospect(): IMemoryStore | null {
+    return this.vectorStore ?? null;
+  }
+
+  /**
    * Run L3 persona generation using an externally provided Store.
    */
   async runL3WithStore(store: IMemoryStore, storage?: StorageAdapter): Promise<{ creditUsed: number }> {

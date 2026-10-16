@@ -457,6 +457,9 @@ export interface MemoryCoreMemoryConfig {
     /** #29（R5）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用（缺省 999=现状全注入；
      *  shadow 先行：选择器未定（#33 D9 tier/打分器 ADR），当前仅报告不裁剪、渲染逐位现状）。 */
     anchorSelect: { maxRows: number };
+    /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
+     *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
+    introspect: { snapshotLimit: number; evidenceWindowHours: number };
   };
 }
 
@@ -1246,6 +1249,17 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           maxRows: (() => {
             const v = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["maxRows"];
             return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 999)) : 999;
+          })(),
+        },
+        // #36（R5）：soul_introspect 自省面参数（只读；快照条数 1..200 缺省 20，证据窗 1..2160h 缺省 168）。
+        introspect: {
+          snapshotLimit: (() => {
+            const v = ((g as Record<string, unknown>)["introspect"] as Record<string, unknown> | undefined)?.["snapshotLimit"];
+            return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 200)) : 20;
+          })(),
+          evidenceWindowHours: (() => {
+            const v = ((g as Record<string, unknown>)["introspect"] as Record<string, unknown> | undefined)?.["evidenceWindowHours"];
+            return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 2160)) : 168;
           })(),
         },
       };
