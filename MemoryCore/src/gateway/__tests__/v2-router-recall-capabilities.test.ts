@@ -177,8 +177,8 @@ describe("#40 · /v3/recall capabilities 数据源接线", () => {
   it("验收3 · body 清洗：非 string/空白项过滤 + trim + 上限 10（清洗后 11 项 → 第 10 项被丢弃）", async () => {
     const env = makeEnv();
     try {
-      // 7 个垃圾项（过滤）+ trim 项 + 10 个有效项 = 清洗后 11 项 → clamp 10 保留前 10
-      // （独行裁断 + 第1..9 项），第 10 项被丢弃。
+      // 6 个垃圾项（过滤）+ 1 个 trim 项 + 10 个有效项 = 清洗后 11 项 → clamp 10
+      // 保留前 10（独行裁断 + 第1..9 项），第 10 项被丢弃。（审查 M-5 订正注释计数）
       const ten = Array.from({ length: 10 }, (_, i) => `第${i + 1}项能力`);
       const res = await postRecall({
         cfg: recallCfg(true),
@@ -193,6 +193,27 @@ describe("#40 · /v3/recall capabilities 数据源接线", () => {
       for (let i = 1; i <= 9; i++) {
         expect(block).toContain(`- 第${i}项能力`);
       }
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it("M-1 · 内部换行折叠：直连传 \"a\\nb\" → 清洗为 \"a b\"（渲染不破行、指纹不与 [\"a\",\"b\"] 碰撞）", async () => {
+    const env = makeEnv();
+    try {
+      const res = await postRecall({
+        cfg: recallCfg(true),
+        store: env.store,
+        dataDir: env.dataDir,
+        sessionId: "sk-cap-nl",
+        capabilities: ["跨行能力：第一段\n第二段", "普通能力"],
+      });
+      const block = blockOf(res);
+      const capIdx = block.indexOf("## 我能做什么");
+      expect(capIdx).toBeGreaterThanOrEqual(0);
+      expect(block.slice(capIdx)).toContain("- 跨行能力：第一段 第二段"); // 换行→空格
+      expect(block.slice(capIdx)).not.toContain("第一段\n第二段"); // 无内嵌换行
+      expect(block.slice(capIdx)).toContain("- 普通能力");
     } finally {
       env.cleanup();
     }

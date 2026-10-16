@@ -55,7 +55,11 @@ export function curateToolCapabilities(
   maxLines = DEFAULT_MAX_LINES,
 ): readonly string[] {
   const list = Array.isArray(tools) ? tools : [];
-  const fingerprint = fnv1a32(JSON.stringify(list.map((t) => [t?.name ?? "", t?.description ?? ""])));
+  // 指纹并入 maxLines（审查 M-2）：未来第二调用点传不同截断行数时不会命中
+  // 首个调用点的缓存（键=行数+工具面内容，纯函数两参数全量进入键空间）。
+  const fingerprint = fnv1a32(
+    `${maxLines}\u0000${JSON.stringify(list.map((t) => [t?.name ?? "", t?.description ?? ""]))}`,
+  );
   const cached = capabilityCache.get(fingerprint);
   if (cached) return cached;
 

@@ -80,11 +80,10 @@ describe("#40 · curateToolCapabilities（模板直出 ≤5 行）", () => {
     expect(changed).toEqual(["t1：能力一", "t2：能力二改"]);
   });
 
-  it("maxLines 可传：截到指定行数（策展上限由调用方/合同决定）", () => {
-    const lines = curateToolCapabilities(
-      [tool("t1", "一"), tool("t2", "二"), tool("t3", "三")],
-      2,
-    );
-    expect(lines).toEqual(["t1：一", "t2：二"]);
+  it("maxLines 可传：截到指定行数（策展上限由调用方/合同决定）；缓存键含 maxLines（审查 M-2）", () => {
+    const three = [tool("t1", "一"), tool("t2", "二"), tool("t3", "三")];
+    expect(curateToolCapabilities(three, 2)).toEqual(["t1：一", "t2：二"]);
+    // 同工具面不同 maxLines → 不命中截断缓存，重策展出 3 行
+    expect(curateToolCapabilities(three, 3)).toEqual(["t1：一", "t2：二", "t3：三"]);
   });
 });

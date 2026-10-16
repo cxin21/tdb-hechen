@@ -287,6 +287,11 @@ export async function buildSoulPrefix(
       return isDanglingTail(s) ? "" : s;
     };
     // ── 身份段：此刻的你 ──
+    // #40 审查 I-1 口径（①设计内确认，2026-10-16）：本外门同时门住 capabilities 段——
+    // 零 soul 数据（无 slot 无价值锚）的 agent 不渲染能力段。依据：能力自述属六属性
+    // 自我叙事、随身份段承载（宁缺毋滥+信封语义=身份块表达记忆衍生的自我）；空自我
+    // 时的工具能力由协议层 tools 清单功能性覆盖，不产出「半灵魂」块。若未来需要
+    // 空数据 agent 也出能力段，须先定空数据 soulVersion 语义（#33 冻结范围）再改独立外门。
     if (slots.length > 0 || activeAll.length > 0) {
       const lines: string[] = [];
       // DS-SOUL-MEMORY-002 P1 四段渲染（gated）：非 dual 路径保持 `- [slot] content`
