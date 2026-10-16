@@ -1,7 +1,8 @@
 /**
  * SettingsPage — 管理员设置（spec §4 / §9.3）。
  *
- * 三个页签：Wiki 设置（MemoryKnowledge）/ Memory 设置（MemoryCore）/ Proxy 计费（MemoryProxy）。
+ * 四个页签：Wiki 设置（MemoryKnowledge）/ Memory 设置（MemoryCore）/ Rerank（独立页签，
+ * 2026-10-16 自 Memory 页签拆出，配置仍存 Core 单一事实源，只提交 rerank 段）/ Proxy 计费（MemoryProxy）。
  * 仅全局 admin 可见/可用（useCurrentRole() === 'admin'，路由与侧边导航两处都做门控）。
  * apiKey 输入框留空 = 保留原值；placeholder 显示尾 4 位掩码。
  * 保存成功提示「重启后生效」；embedding 变更追加重建警示；rebuildStatus 以 Tag 展示。
@@ -41,17 +42,6 @@ type Draft = {
   embApiKey: string;
   embModel: string;
   embDimensions: string;
-  // rerank（P1 task-4，仅 memory 目标）
-  rkEnabled: boolean;
-  rkProvider: RerankProvider;
-  rkApiKey: string;
-  rkBaseUrl: string;
-  rkModel: string;
-  rkTimeoutMs: string;
-  rkCandidates: string;
-  rkMinScore: string;
-  rkLocalModelDir: string;
-  rkIdleUnloadMs: string;
   // 重要度（P1 task-7，仅 memory 目标）：worthiness.extractionEnabled + recall.importancePenalty
   wExtractionEnabled: boolean;
   ipEnabled: boolean;
@@ -77,16 +67,6 @@ function toDraft(v: SettingsView): Draft {
     embApiKey: '',
     embModel: v.embedding.model ?? '',
     embDimensions: v.embedding.dimensions != null ? String(v.embedding.dimensions) : '',
-    rkEnabled: v.rerank?.enabled ?? false,
-    rkProvider: v.rerank?.provider ?? 'none',
-    rkApiKey: '',
-    rkBaseUrl: v.rerank?.baseUrl ?? '',
-    rkModel: v.rerank?.model ?? '',
-    rkTimeoutMs: v.rerank?.timeoutMs != null ? String(v.rerank.timeoutMs) : '',
-    rkCandidates: v.rerank?.candidates != null ? String(v.rerank.candidates) : '',
-    rkMinScore: v.rerank?.minScore != null ? String(v.rerank.minScore) : '',
-    rkLocalModelDir: v.rerank?.local?.modelDir ?? '',
-    rkIdleUnloadMs: v.rerank?.local?.idleUnloadMs != null ? String(v.rerank.local.idleUnloadMs) : '',
     wExtractionEnabled: v.worthiness?.extractionEnabled ?? false,
     ipEnabled: v.importancePenalty?.enabled ?? false,
     ipPenalty: v.importancePenalty?.penalty != null ? String(v.importancePenalty.penalty) : '',
@@ -98,9 +78,7 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
-  const [rerankDl, setRerankDl] = useState<RerankModelStatus | null>(null);
   const isMemory = target === 'memory';
-  const localTier = isMemory && draft?.rkProvider === 'local';
 
   const load = useCallback(async () => {
     try {
@@ -116,40 +94,8 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
     void load();
   }, [load]);
 
-  // Rerank 本地模型状态轮询（P1 task-4）：panel 无推送通道（spec §4.4），
-  // local 档可见时 1s 轮询 /api/v1/rerank-model/status；下载进度由 Core 侧
-  // 计数器节流发布（downloader.ts maybePublishFromCounter）驱动平滑刷新。
-  useEffect(() => {
-    if (!localTier) return;
-    let stopped = false;
-    let timer: number | undefined;
-    const tick = async () => {
-      try {
-        const s = await rerankModelApi.status();
-        if (!stopped) setRerankDl(s);
-      } catch {
-        // 轮询失败静默（网络抖动/服务重启中），下一 tick 重试
-      }
-      if (!stopped) timer = window.setTimeout(() => void tick(), 1000);
-    };
-    void tick();
-    return () => {
-      stopped = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      // 审稿 M3：离开 local 档即丢弃下载状态，防止切回时短暂复显 stale 进度
-      setRerankDl(null);
-    };
-  }, [localTier]);
-
   if (!view || !draft) return <div style={{ padding: 24 }}>加载中…</div>;
   const rs = view.rebuildStatus;
-
-  const triggerRerankDownload = () => {
-    rerankModelApi
-      .download()
-      .then(setRerankDl)
-      .catch((e) => tea.notify.error(e));
-  };
 
   const save = async () => {
     setSaving(true);
@@ -169,37 +115,11 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
           ...(draft.embApiKey ? { apiKey: draft.embApiKey } : {}),
           ...(draft.embDimensions ? { dimensions: Number(draft.embDimensions) } : {}),
         },
-        // rerank（仅 memory 目标；P1 task-4）：apiKey 留空 = 保留原值；
-        // 按 provider 显隐字段 —— 云端传 baseUrl/model/超时/候选数/最低分，
-        // local 只传 modelDir/idleUnloadMs（服务端 validateOverride 同款语义）。
+        // 重要度（P1 task-7）：penalty 留空 = 保留原值（服务端缺省 0.3）；
+        // 形状校验在 validateOverride，[0,0.9] clamp 在 parseConfig。
+        // rerank 段已拆至独立 Rerank 页签（RerankSettingsPanel，只提交 rerank 段）。
         ...(isMemory
           ? {
-              rerank: {
-                enabled: draft.rkEnabled,
-                provider: draft.rkProvider,
-                ...(draft.rkProvider === 'siliconflow' || draft.rkProvider === 'dashscope'
-                  ? {
-                      // 审稿 C1/M2：'' = 用服务端 provider 缺省（spec §4.3）——空白键必须省略
-                      // 而非发送空串（settings-override HTTP_URL_RE/model 校验会 400）。
-                      ...(draft.rkBaseUrl.trim() ? { baseUrl: draft.rkBaseUrl.trim() } : {}),
-                      ...(draft.rkModel.trim() ? { model: draft.rkModel.trim() } : {}),
-                      ...(draft.rkApiKey ? { apiKey: draft.rkApiKey } : {}),
-                      ...(draft.rkTimeoutMs ? { timeoutMs: Number(draft.rkTimeoutMs) } : {}),
-                      ...(draft.rkCandidates ? { candidates: Number(draft.rkCandidates) } : {}),
-                      ...(draft.rkMinScore !== '' ? { minScore: Number(draft.rkMinScore) } : {}),
-                    }
-                  : {}),
-                ...(draft.rkProvider === 'local'
-                  ? {
-                      local: {
-                        modelDir: draft.rkLocalModelDir,
-                        ...(draft.rkIdleUnloadMs ? { idleUnloadMs: Number(draft.rkIdleUnloadMs) } : {}),
-                      },
-                    }
-                  : {}),
-              },
-              // 重要度（P1 task-7）：penalty 留空 = 保留原值（服务端缺省 0.3）；
-              // 形状校验在 validateOverride，[0,0.9] clamp 在 parseConfig。
               importancePenalty: {
                 enabled: draft.ipEnabled,
                 ...(draft.ipPenalty.trim() ? { penalty: Number(draft.ipPenalty) } : {}),
@@ -226,18 +146,9 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
 
   // 数字字段：空 = 不修改；非空必须为纯数字（正整数）
   const num = (v: string) => !v || /^\d+$/.test(v);
-  // 正整数变体（审稿 M1：0 会被服务端 parseConfig clamp/拒绝——timeoutMs/candidates 均 >0）
-  const numPos = (v: string) => !v || (/^\d+$/.test(v) && Number(v) > 0);
-  // minScore 允许负数/小数（缺省 -2.0）
-  const decimal = (v: string) => !v || /^-?\d+(\.\d+)?$/.test(v);
   // P1-T7：penalty 允许小数且 ≤ 0.9（服务端 clamp [0,0.9]；越界直接拦）
   const ipPenaltyValid =
     !draft.ipPenalty || (/^\d*\.?\d+$/.test(draft.ipPenalty) && Number(draft.ipPenalty) <= 0.9);
-  const rerankCloud = isMemory && (draft.rkProvider === 'siliconflow' || draft.rkProvider === 'dashscope');
-  const rerankLocal = isMemory && draft.rkProvider === 'local';
-  // 云端 + 启用但无 key（新输入且服务端也没有）→ 与 parseConfig「云端缺 apiKey =
-  // configError + enabled 强制 false」语义对齐，保存前拦截
-  const rerankNeedsApiKey = rerankCloud && draft.rkEnabled && !draft.rkApiKey && !view.rerank?.hasApiKey;
   const valid =
     num(draft.llmMaxTokens) &&
     num(draft.llmTimeoutMs) &&
@@ -246,16 +157,7 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
     /^https?:\/\/.+$/.test(draft.embBaseUrl) &&
     draft.llmModel.trim() !== '' &&
     draft.embModel.trim() !== '' &&
-    (!isMemory ||
-      ((rerankCloud
-        ? numPos(draft.rkTimeoutMs) &&
-          numPos(draft.rkCandidates) &&
-          decimal(draft.rkMinScore) &&
-          (!draft.rkBaseUrl || /^https?:\/\/.+$/.test(draft.rkBaseUrl))
-        : true) &&
-        (rerankLocal ? num(draft.rkIdleUnloadMs) : true) &&
-        ipPenaltyValid &&
-        !rerankNeedsApiKey));
+    (!isMemory || ipPenaltyValid);
 
   const triggerRevectorize = () => {
     void settingsApi
@@ -356,149 +258,11 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
         />
       </Form.Item>
 
+      {/* rerank 段已拆至独立 Rerank 页签（RerankSettingsPanel）；此处仅保留 Memory 专属召回参数 */}
+
+      {/* 重要度（P1 task-7）：抽取标注 + 召回降权（shadow-first） */}
       {isMemory && (
         <>
-          <Form.Title>{t('settings.rerank.title', { label })}</Form.Title>
-          {view.rerank?.configError ? (
-            <Form.Item label={t('settings.rerank.configError')}>
-              <Tag theme="error">{view.rerank.configError}</Tag>
-            </Form.Item>
-          ) : null}
-          <Form.Item label={t('settings.rerank.enabled')}>
-            <div>
-              <Checkbox value={draft.rkEnabled} disabled={saving} onChange={(v) => setDraft({ ...draft, rkEnabled: v })}>
-                {t('settings.rerank.enabled')}
-              </Checkbox>
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.rerank.activeNote')}
-              </Text>
-            </div>
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.provider')}>
-            <Select
-              size="full"
-              value={draft.rkProvider}
-              disabled={saving}
-              options={[
-                { value: 'siliconflow', text: t('settings.rerank.provider.siliconflow') },
-                { value: 'dashscope', text: t('settings.rerank.provider.dashscope') },
-                { value: 'local', text: t('settings.rerank.provider.local') },
-                { value: 'none', text: t('settings.rerank.provider.none') },
-              ]}
-              onChange={(v: string) => setDraft({ ...draft, rkProvider: v as RerankProvider })}
-            />
-          </Form.Item>
-          {rerankCloud && (
-            <>
-              <Form.Item label={t('settings.rerank.baseUrl')}>
-                <Input
-                  size="full"
-                  value={draft.rkBaseUrl}
-                  onChange={(v) => setDraft({ ...draft, rkBaseUrl: v })}
-                  placeholder={draft.rkProvider === 'siliconflow' ? 'https://api.siliconflow.cn' : 'https://dashscope.aliyuncs.com'}
-                  disabled={saving}
-                />
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.apiKey')}>
-                <Input
-                  size="full"
-                  value={draft.rkApiKey}
-                  onChange={(v) => setDraft({ ...draft, rkApiKey: v })}
-                  placeholder={
-                    view.rerank?.hasApiKey
-                      ? t('settings.rerank.apiKey.masked', { masked: view.rerank.apiKeyMasked.slice(-4) })
-                      : t('settings.rerank.apiKey.unset')
-                  }
-                  autoComplete="new-password"
-                  disabled={saving}
-                />
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.model')}>
-                <Input
-                  size="full"
-                  value={draft.rkModel}
-                  onChange={(v) => setDraft({ ...draft, rkModel: v })}
-                  placeholder={draft.rkProvider === 'siliconflow' ? 'Qwen/Qwen3-Reranker-0.6B' : 'qwen3-rerank'}
-                  disabled={saving}
-                />
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.timeoutMs')}>
-                <Input size="full" value={draft.rkTimeoutMs} onChange={(v) => setDraft({ ...draft, rkTimeoutMs: v })} disabled={saving} />
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.candidates')}>
-                <Input size="full" value={draft.rkCandidates} onChange={(v) => setDraft({ ...draft, rkCandidates: v })} disabled={saving} />
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.minScore')}>
-                <Input size="full" value={draft.rkMinScore} onChange={(v) => setDraft({ ...draft, rkMinScore: v })} disabled={saving} />
-              </Form.Item>
-            </>
-          )}
-          {rerankLocal && (
-            <>
-              <Form.Item label={t('settings.rerank.local.modelDir')}>
-                <Input
-                  size="full"
-                  value={draft.rkLocalModelDir}
-                  onChange={(v) => setDraft({ ...draft, rkLocalModelDir: v })}
-                  placeholder={t('settings.rerank.local.modelDir.placeholder')}
-                  disabled={saving}
-                />
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.local.idleUnloadMs')}>
-                <div>
-                  <Input
-                    size="full"
-                    value={draft.rkIdleUnloadMs}
-                    onChange={(v) => setDraft({ ...draft, rkIdleUnloadMs: v })}
-                    disabled={saving}
-                  />
-                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                    {t('settings.rerank.local.idleUnloadMs.hint')}
-                  </Text>
-                </div>
-              </Form.Item>
-              <Form.Item label={t('settings.rerank.local.status')}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <Button
-                    disabled={rerankDl?.state === 'downloading'}
-                    loading={rerankDl?.state === 'downloading'}
-                    onClick={triggerRerankDownload}
-                  >
-                    {rerankDl?.state === 'downloading'
-                      ? t('settings.rerank.local.downloading', { percent: rerankDl.percent })
-                      : t('settings.rerank.local.download')}
-                  </Button>
-                  {rerankDl === null ? (
-                    <Tag>{t('settings.rerank.local.statusUnknown')}</Tag>
-                  ) : rerankDl.state === 'ready' ? (
-                    <Tag theme="success">{t('settings.rerank.local.ready')}</Tag>
-                  ) : rerankDl.state === 'downloading' ? (
-                    <Tag theme="warning">{`${rerankDl.percent}%`}</Tag>
-                  ) : rerankDl.state === 'failed' ? (
-                    <Tag theme="error">{t('settings.rerank.local.failed')}</Tag>
-                  ) : (
-                    <Tag>{t('settings.rerank.local.idle')}</Tag>
-                  )}
-                </div>
-                {rerankDl?.state === 'downloading' &&
-                  (() => {
-                    const active =
-                      rerankDl.files.find((f) => f.state === 'downloading') ??
-                      rerankDl.files.find((f) => f.bytesReceived != null && f.bytesReceived < (f.totalBytes ?? Infinity));
-                    return active ? (
-                      <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                        {`${active.rel}：${fmtBytes(active.bytesReceived)} / ${fmtBytes(active.totalBytes)}`}
-                      </Text>
-                    ) : null;
-                  })()}
-                {rerankDl?.state === 'failed' && rerankDl.error ? (
-                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#e34d59' }}>{rerankDl.error}</Text>
-                ) : null}
-              </Form.Item>
-            </>
-          )}
-
-          {/* 重要度（P1 task-7）：抽取标注 + 召回降权（shadow-first） */}
           <Form.Title>{t('settings.importance.title')}</Form.Title>
           <Form.Item label={t('settings.importance.extraction')}>
             <div>
@@ -564,6 +328,338 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
         )}
       </Form.Action>
     </Form>
+  );
+}
+
+type RerankDraft = {
+  rkEnabled: boolean;
+  rkProvider: RerankProvider;
+  rkApiKey: string;
+  rkBaseUrl: string;
+  rkModel: string;
+  rkTimeoutMs: string;
+  rkCandidates: string;
+  rkMinScore: string;
+  rkLocalModelDir: string;
+  rkIdleUnloadMs: string;
+};
+
+function toRerankDraft(v: SettingsView): RerankDraft {
+  return {
+    rkEnabled: v.rerank?.enabled ?? false,
+    rkProvider: v.rerank?.provider ?? 'none',
+    rkApiKey: '',
+    rkBaseUrl: v.rerank?.baseUrl ?? '',
+    rkModel: v.rerank?.model ?? '',
+    rkTimeoutMs: v.rerank?.timeoutMs != null ? String(v.rerank.timeoutMs) : '',
+    rkCandidates: v.rerank?.candidates != null ? String(v.rerank.candidates) : '',
+    rkMinScore: v.rerank?.minScore != null ? String(v.rerank.minScore) : '',
+    rkLocalModelDir: v.rerank?.local?.modelDir ?? '',
+    rkIdleUnloadMs: v.rerank?.local?.idleUnloadMs != null ? String(v.rerank.local.idleUnloadMs) : '',
+  };
+}
+
+/**
+ * RerankSettingsPanel — 独立 Rerank 页签（2026-10-16 自 Memory 页签拆出）。
+ *
+ * 配置事实源不变：仍走 /api/v1/settings/memory get|set（Core /v3/admin/settings），
+ * 保存只提交 { rerank } 段——Core deepMerge（rerank 段浅合并、local 子对象深合并），
+ * 不会触碰 llm/embedding/重要度段。
+ * 生效范围：Memory 召回 + Wiki 检索（MemoryKnowledge 经 Core /v1/rerank 链路跟随
+ * 此配置），Core 重启后对两者同时生效。
+ * 字段与拆出前完全一致（远程 API：siliconflow/dashscope；本地模型：local）。
+ */
+function RerankSettingsPanel() {
+  const { t } = useTranslation();
+  const [view, setView] = useState<SettingsView | null>(null);
+  const [draft, setDraft] = useState<RerankDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [rerankDl, setRerankDl] = useState<RerankModelStatus | null>(null);
+  const rerankCloud = draft?.rkProvider === 'siliconflow' || draft?.rkProvider === 'dashscope';
+  const rerankLocal = draft?.rkProvider === 'local';
+
+  const load = useCallback(async () => {
+    try {
+      const v = await settingsApi.get('memory');
+      setView(v);
+      setDraft(toRerankDraft(v));
+    } catch (e) {
+      tea.notify.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Rerank 本地模型状态轮询（P1 task-4 原样迁入）：panel 无推送通道（spec §4.4），
+  // local 档可见时 1s 轮询 /api/v1/rerank-model/status；下载进度由 Core 侧
+  // 计数器节流发布（downloader.ts maybePublishFromCounter）驱动平滑刷新。
+  useEffect(() => {
+    if (!rerankLocal) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const s = await rerankModelApi.status();
+        if (!stopped) setRerankDl(s);
+      } catch {
+        // 轮询失败静默（网络抖动/服务重启中），下一 tick 重试
+      }
+      if (!stopped) timer = window.setTimeout(() => void tick(), 1000);
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      // 审稿 M3：离开 local 档即丢弃下载状态，防止切回时短暂复显 stale 进度
+      setRerankDl(null);
+    };
+  }, [rerankLocal]);
+
+  if (!view || !draft) return <div style={{ padding: 24 }}>加载中…</div>;
+
+  const triggerRerankDownload = () => {
+    rerankModelApi
+      .download()
+      .then(setRerankDl)
+      .catch((e) => tea.notify.error(e));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body: Record<string, unknown> = {
+        // 只提交 rerank 段（Core deepMerge：rerank 段浅合并、local 子对象深合并，
+        // 其他段原样保留）；apiKey 留空 = 不传字段 = 服务端保留原值。
+        rerank: {
+          enabled: draft.rkEnabled,
+          provider: draft.rkProvider,
+          ...(draft.rkProvider === 'siliconflow' || draft.rkProvider === 'dashscope'
+            ? {
+                // 审稿 C1/M2：'' = 用服务端 provider 缺省（spec §4.3）——空白键必须省略
+                // 而非发送空串（settings-override HTTP_URL_RE/model 校验会 400）。
+                ...(draft.rkBaseUrl.trim() ? { baseUrl: draft.rkBaseUrl.trim() } : {}),
+                ...(draft.rkModel.trim() ? { model: draft.rkModel.trim() } : {}),
+                ...(draft.rkApiKey ? { apiKey: draft.rkApiKey } : {}),
+                ...(draft.rkTimeoutMs ? { timeoutMs: Number(draft.rkTimeoutMs) } : {}),
+                ...(draft.rkCandidates ? { candidates: Number(draft.rkCandidates) } : {}),
+                ...(draft.rkMinScore !== '' ? { minScore: Number(draft.rkMinScore) } : {}),
+              }
+            : {}),
+          ...(draft.rkProvider === 'local'
+            ? {
+                local: {
+                  modelDir: draft.rkLocalModelDir,
+                  ...(draft.rkIdleUnloadMs ? { idleUnloadMs: Number(draft.rkIdleUnloadMs) } : {}),
+                },
+              }
+            : {}),
+        },
+      };
+      await settingsApi.set('memory', body);
+      tea.notify.success('已保存，重启 Core 后生效（Memory 召回与 Wiki 检索同步更新）');
+      await load();
+    } catch (e) {
+      tea.notify.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // 正整数变体（审稿 M1：0 会被服务端 parseConfig clamp/拒绝——timeoutMs/candidates 均 >0）
+  const numPos = (v: string) => !v || (/^\d+$/.test(v) && Number(v) > 0);
+  // minScore 允许负数/小数（缺省 -2.0）
+  const decimal = (v: string) => !v || /^-?\d+(\.\d+)?$/.test(v);
+  // 数字字段：空 = 不修改；非空必须为纯数字
+  const num = (v: string) => !v || /^\d+$/.test(v);
+  // 云端 + 启用但无 key（新输入且服务端也没有）→ 与 parseConfig「云端缺 apiKey =
+  // configError + enabled 强制 false」语义对齐，保存前拦截
+  const rerankNeedsApiKey = rerankCloud && draft.rkEnabled && !draft.rkApiKey && !view.rerank?.hasApiKey;
+  const valid =
+    (rerankCloud
+      ? numPos(draft.rkTimeoutMs) &&
+        numPos(draft.rkCandidates) &&
+        decimal(draft.rkMinScore) &&
+        (!draft.rkBaseUrl || /^https?:\/\/.+$/.test(draft.rkBaseUrl))
+      : true) &&
+    (rerankLocal ? num(draft.rkIdleUnloadMs) : true) &&
+    !rerankNeedsApiKey;
+
+  return (
+    <div>
+      {/* tea Form 为 display:table（.tea-form），裸块子元素会被匿名单元格收缩成窄条
+          （2026-10-16 截图实测：说明文字折成 6 行 ~190px 竖条）——Form 顶层只放 Title/Item/Action */}
+      <Form.Title>{t('settings.rerank.tabTitle')}</Form.Title>
+      <Text parent="div" style={{ marginBottom: 8, fontSize: 12, color: '#8a8f99' }}>
+        {t('settings.rerank.scopeNote')}
+      </Text>
+      <Form>
+      {view.rerank?.configError ? (
+        <Form.Item label={t('settings.rerank.configError')}>
+          <Tag theme="error">{view.rerank.configError}</Tag>
+        </Form.Item>
+      ) : null}
+      <Form.Title>{t('settings.rerank.baseGroup.title')}</Form.Title>
+      <Form.Item label={t('settings.rerank.enabled')}>
+        <div>
+          <Checkbox value={draft.rkEnabled} disabled={saving} onChange={(v) => setDraft({ ...draft, rkEnabled: v })}>
+            {t('settings.rerank.enabled.label')}
+          </Checkbox>
+          <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+            {t('settings.rerank.activeNote')}
+          </Text>
+        </div>
+      </Form.Item>
+      <Form.Item label={t('settings.rerank.provider')}>
+        <Select
+          size="full"
+          value={draft.rkProvider}
+          disabled={saving}
+          options={[
+            { value: 'siliconflow', text: t('settings.rerank.provider.siliconflow') },
+            { value: 'dashscope', text: t('settings.rerank.provider.dashscope') },
+            { value: 'local', text: t('settings.rerank.provider.local') },
+            { value: 'none', text: t('settings.rerank.provider.none') },
+          ]}
+          onChange={(v: string) => setDraft({ ...draft, rkProvider: v as RerankProvider })}
+        />
+      </Form.Item>
+      {rerankCloud && (
+        <>
+          <Form.Title>{t('settings.rerank.cloudGroup.title')}</Form.Title>
+          <Form.Item label={t('settings.rerank.baseUrl')}>
+            <Input
+              size="full"
+              value={draft.rkBaseUrl}
+              onChange={(v) => setDraft({ ...draft, rkBaseUrl: v })}
+              placeholder={draft.rkProvider === 'siliconflow' ? 'https://api.siliconflow.cn' : 'https://dashscope.aliyuncs.com'}
+              disabled={saving}
+            />
+          </Form.Item>
+          <Form.Item label={t('settings.rerank.apiKey')}>
+            <Input
+              size="full"
+              value={draft.rkApiKey}
+              onChange={(v) => setDraft({ ...draft, rkApiKey: v })}
+              placeholder={
+                view.rerank?.hasApiKey
+                  ? t('settings.rerank.apiKey.masked', { masked: view.rerank.apiKeyMasked.slice(-4) })
+                  : t('settings.rerank.apiKey.unset')
+              }
+              autoComplete="new-password"
+              disabled={saving}
+            />
+          </Form.Item>
+          <Form.Item label={t('settings.rerank.model')}>
+            <Input
+              size="full"
+              value={draft.rkModel}
+              onChange={(v) => setDraft({ ...draft, rkModel: v })}
+              placeholder={draft.rkProvider === 'siliconflow' ? 'Qwen/Qwen3-Reranker-0.6B' : 'qwen3-rerank'}
+              disabled={saving}
+            />
+          </Form.Item>
+          <Form.Item label={t('settings.rerank.timeoutMs')}>
+            <Input size="full" value={draft.rkTimeoutMs} onChange={(v) => setDraft({ ...draft, rkTimeoutMs: v })} disabled={saving} />
+          </Form.Item>
+          <Form.Title>{t('settings.rerank.memoryGroup.title')}</Form.Title>
+          <Form.Item label={t('settings.rerank.candidates')}>
+            <div>
+              <Input size="full" value={draft.rkCandidates} onChange={(v) => setDraft({ ...draft, rkCandidates: v })} disabled={saving} />
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                {t('settings.rerank.candidates.hint')}
+              </Text>
+            </div>
+          </Form.Item>
+          <Form.Item label={t('settings.rerank.minScore')}>
+            <div>
+              <Input size="full" value={draft.rkMinScore} onChange={(v) => setDraft({ ...draft, rkMinScore: v })} disabled={saving} />
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                {t('settings.rerank.minScore.hint')}
+              </Text>
+            </div>
+          </Form.Item>
+        </>
+      )}
+      {rerankLocal && (
+        <>
+          <Form.Title>{t('settings.rerank.localGroup.title')}</Form.Title>
+          <Form.Item label={t('settings.rerank.local.modelDir')}>
+            <div>
+              <Input
+                size="full"
+                value={draft.rkLocalModelDir}
+                onChange={(v) => setDraft({ ...draft, rkLocalModelDir: v })}
+                placeholder={t('settings.rerank.local.modelDir.placeholder')}
+                disabled={saving}
+              />
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                {t('settings.rerank.local.modelDir.hint')}
+              </Text>
+            </div>
+          </Form.Item>
+          <Form.Item label={t('settings.rerank.local.idleUnloadMs')}>
+            <div>
+              <Input
+                size="full"
+                value={draft.rkIdleUnloadMs}
+                onChange={(v) => setDraft({ ...draft, rkIdleUnloadMs: v })}
+                disabled={saving}
+              />
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                {t('settings.rerank.local.idleUnloadMs.hint')}
+              </Text>
+            </div>
+          </Form.Item>
+          <Form.Item label={t('settings.rerank.local.status')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Button
+                disabled={rerankDl?.state === 'downloading'}
+                loading={rerankDl?.state === 'downloading'}
+                onClick={triggerRerankDownload}
+              >
+                {rerankDl?.state === 'downloading'
+                  ? t('settings.rerank.local.downloading', { percent: rerankDl.percent })
+                  : t('settings.rerank.local.download')}
+              </Button>
+              {rerankDl === null ? (
+                <Tag>{t('settings.rerank.local.statusUnknown')}</Tag>
+              ) : rerankDl.state === 'ready' ? (
+                <Tag theme="success">{t('settings.rerank.local.ready')}</Tag>
+              ) : rerankDl.state === 'downloading' ? (
+                <Tag theme="warning">{`${rerankDl.percent}%`}</Tag>
+              ) : rerankDl.state === 'failed' ? (
+                <Tag theme="error">{t('settings.rerank.local.failed')}</Tag>
+              ) : (
+                <Tag>{t('settings.rerank.local.idle')}</Tag>
+              )}
+            </div>
+            {rerankDl?.state === 'downloading' &&
+              (() => {
+                const active =
+                  rerankDl.files.find((f) => f.state === 'downloading') ??
+                  rerankDl.files.find((f) => f.bytesReceived != null && f.bytesReceived < (f.totalBytes ?? Infinity));
+                return active ? (
+                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                    {`${active.rel}：${fmtBytes(active.bytesReceived)} / ${fmtBytes(active.totalBytes)}`}
+                  </Text>
+                ) : null;
+              })()}
+            {rerankDl?.state === 'failed' && rerankDl.error ? (
+              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#e34d59' }}>{rerankDl.error}</Text>
+            ) : null}
+          </Form.Item>
+        </>
+      )}
+
+      <Form.Action>
+        <Button type="primary" disabled={!valid || saving} loading={saving} onClick={() => void save()}>
+          {saving ? '保存中…' : '保存'}
+        </Button>
+      </Form.Action>
+      </Form>
+    </div>
   );
 }
 
@@ -693,6 +789,7 @@ export function SettingsPage() {
         tabs={[
           { id: 'knowledge', label: 'Wiki 设置' },
           { id: 'memory', label: 'Memory 设置' },
+          { id: 'rerank', label: 'Rerank' },
           { id: 'pricing', label: 'Proxy 计费' },
         ]}
       >
@@ -701,6 +798,9 @@ export function SettingsPage() {
         </TabPanel>
         <TabPanel id="memory">
           <ServiceSettingsPanel target="memory" label="MemoryCore" />
+        </TabPanel>
+        <TabPanel id="rerank">
+          <RerankSettingsPanel />
         </TabPanel>
         <TabPanel id="pricing">
           <ProxyPricingPanel />
