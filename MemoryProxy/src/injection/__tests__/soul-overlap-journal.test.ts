@@ -193,6 +193,22 @@ describe("SoulOverlapJournalObserver（跨钩子聚合、单轮单行）", () =>
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("同 turnKey 二次 start：复用而非覆盖，已聚合块不丢（R5-F2b）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "soul-obs-"));
+    const file = join(dir, "j.jsonl");
+    const obs = flushObserver(file);
+    obs.onPipelineStart(meta("sess", 1));
+    obs.onHookDone({} as never, "system" as never, [SOUL_BLOCK], 1);
+    obs.onPipelineStart(meta("sess", 1)); // 同键二次 start（工具循环/并发场景）
+    obs.onHookDone({} as never, "system" as never, [CORE_BLOCK], 1);
+    obs.onPipelineEnd(meta("sess", 1), 1, []);
+    expect(existsSync(file)).toBe(true); // soul+core 都聚合到同一 buffer，正常落盘
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { soul_chars: number; core_chars: number };
+    expect(parsed.soul_chars).toBeGreaterThan(0);
+    expect(parsed.core_chars).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("observer 异常永不传播：写盘失败静默", () => {
     const obs = new SoulOverlapJournalObserver({
       enabled: true,

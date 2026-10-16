@@ -64,7 +64,7 @@ describe("全量探针（夜间跑，50 条）", () => {
     });
   }
 
-  it("P14/P50 指纹稳定性：同内容跨租户 soulVersion 一致（KV 稳定性规则）", () => {
+  it("P14/P50 指纹确定性：同输入两次 computeSoulVersion 一致且格式合法（R5-F5 注：纯函数确定性断言；跨版本字节稳定需 golden 钉，此处不约束；computeSoulVersion 无租户入参）", () => {
     const slots = [{ slot: "self_identity", content: "我是测试主体" }];
     const rows = [{ value_id: "v1", label: "指纹锚", weight: 0.5, valence: 1, state: "active", node_type: "theme", attrs_json: JSON.stringify({ description: "内容定指纹。" }) }];
     const verA = computeSoulVersion(slots, rows, undefined);

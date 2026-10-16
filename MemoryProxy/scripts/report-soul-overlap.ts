@@ -48,7 +48,8 @@ function main(): void {
   // ── 逐日聚合 ──
   const byDay = new Map<string, { j: number[]; soulChars: number; coreChars: number; n: number }>();
   for (const e of entries) {
-    const day = e.ts.slice(0, 10);
+    // R5-F3b：ts 缺失/非法不崩全报告，归入 unknown 桶
+    const day = typeof e.ts === "string" && e.ts.length >= 10 ? e.ts.slice(0, 10) : "unknown";
     const agg = byDay.get(day) ?? { j: [], soulChars: 0, coreChars: 0, n: 0 };
     agg.j.push(jaccard(e.soul_line_hashes, e.core_line_hashes));
     agg.soulChars += e.soul_chars;

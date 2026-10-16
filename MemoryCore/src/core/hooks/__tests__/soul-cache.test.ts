@@ -39,16 +39,16 @@ describe("soul 前缀缓存（TDB 内部完整实现）", () => {
     expect(r1).toBe(r2); // 字节级一致
   });
 
-  it("weight 变化 → 重渲染返回新文本", async () => {
-    const store1 = makeStore([row({ value_id: "a", label: "根因", weight: 0.8 })], slots);
+  it("weight 变化 → 重渲染返回新文本（R5-F6：锚带 desc 入价值锚行，w 标签随 weight 变化）", async () => {
+    const store1 = makeStore([row({ value_id: "a", label: "根因", weight: 0.8, attrs_json: JSON.stringify({ description: "根因描述。" }) })], slots);
     const r1 = await buildSoulPrefix(store1, TENANT, undefined, { selfIdentityEnabled: true });
     // 模拟 weight 变化（新 store 实例、新数据）
-    const store2 = makeStore([row({ value_id: "a", label: "根因", weight: 0.95 })], slots);
+    const store2 = makeStore([row({ value_id: "a", label: "根因", weight: 0.95, attrs_json: JSON.stringify({ description: "根因描述。" }) })], slots);
     const r2 = await buildSoulPrefix(store2, TENANT, undefined, { selfIdentityEnabled: true });
-    // weight 变了但注入行渲染不展示 weight（排序稳定化）→ 文本可能仍一致
-    // 关键断言：两次调用都正常返回非空文本
-    expect(r1.length).toBeGreaterThan(0);
-    expect(r2.length).toBeGreaterThan(0);
+    // 锚带 desc 入价值锚行（dir·wW 段随 weight 显示）→ 文本真实变化；指纹亦随 weight 变化
+    expect(r1).toContain("根因(趋近·w0.8)");
+    expect(r2).toContain("根因(趋近·w0.95)");
+    expect(r1).not.toBe(r2);
   });
 
   it("人格变更日志：logger.info 包含 '人格变更'", async () => {

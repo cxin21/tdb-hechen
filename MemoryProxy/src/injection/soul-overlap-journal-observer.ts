@@ -59,7 +59,16 @@ export class SoulOverlapJournalObserver implements InjectionObserver {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onPipelineStart(meta: AgentContextMetadata): void {
     try {
-      this.buffers.set(turnKey(meta), { blocks: [] });
+      const key = turnKey(meta);
+      // R5-F2b（第二路审查）：同 turnKey 复用而非覆盖——工具循环共享 sessionKey:turnSeq
+      //（handler.ts turnSeq=countHumanTurns；codexHandler/systemUserPassthrough 常为 0），
+      // 同键并发管线覆盖会丢前管线已聚合块、并使 size!==1 守卫失效（串轮污染）。
+      // 复用=后管线块并入既有 buffer，先到的 pipelineEnd 落盘、后到的无块不落盘（宁混勿丢）。
+      if (this.buffers.has(key)) {
+        console.warn(`[soul-overlap-journal] 同 turnKey 复用 buffer（前管线未结束）：${key}`);
+        return;
+      }
+      this.buffers.set(key, { blocks: [] });
     } catch { /* never throw */ }
   }
 

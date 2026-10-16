@@ -85,7 +85,7 @@ describe("F17 maxRelationLines（审计补齐：spec 要求行数上限 config �
     const out = await buildSoulPrefix(makeStore([], mk()) as never, TENANT);
     const line = out.split("\n").find((l) => l.startsWith("重要的人："))!;
     // 立项②：排序改 value_id 稳定序——top-5 取舍仍按 weight，渲染序不按 weight
-      expect(line).toContain("重要的人：");
+    //（R5-F4：删恒真断言 toContain("重要的人：")——line 由 startsWith 同前缀选出）
     expect(line).not.toContain("己");
   });
 });

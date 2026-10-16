@@ -5,6 +5,10 @@
  *   每轮记录 soul_chars / core_chars 及两组注入内容 hash（复用 soul-assembler
  *   fnv1a32 指纹思路），零行为变化（不改动任何注入字节）；逐日统计（报告脚本
  *   可选 days 时间窗，R5-F3 名实相符）
+ *
+ * 并发假设（R5-F7 注记）：单 proxy 进程单写者；跨进程并发追加在 Windows 上可能
+ * 撕裂行（报告脚本按行解析失败即跳过容忍）；缺省 file 相对进程 cwd，生产建议
+ * 显式配置绝对路径。
  *   Jaccard 重叠率 + token 成本；结论适用范围=「内容源重叠」，非「注入层重叠」
  *   （soul-identity 走 MemoryCore 召回块、core_memory 走主链路 system prompt，
  *   两侧不同层）。
