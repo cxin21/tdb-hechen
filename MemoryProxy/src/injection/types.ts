@@ -160,7 +160,11 @@ export type InjectionPoint =
   | "user.after"          // After the latest user message
   | "user.first_turn"     // Before the first user message (first turn only)
   | "tools.append"        // Append to tools list
-  | "tools.prepend";      // Prepend to tools list
+  | "tools.prepend"       // Prepend to tools list
+  // #37（S16/R5 首交付物）：动作点近端挂点（红线事件块）。分发层接线 owner=proxy
+  // 分发层（pipeline.applyByPoint 暂无 case=no-op，接线前任何使用该点的 hook 都
+  // 不会产生注入——刻意保守，防未定义落位）。
+  | "tools.before_call";
 
 /**
  * All valid injection points as an array (useful for validation).
@@ -175,7 +179,50 @@ export const INJECTION_POINTS: InjectionPoint[] = [
   "user.first_turn",
   "tools.append",
   "tools.prepend",
+  "tools.before_call",
 ];
+
+// ── Soul Layered Blocks（#37 首交付物：接口先行）─────────────────────────────
+
+/**
+ * #37（S16/R5，2026-10-16）：灵魂分层块类型——三 regime 的块语义单一源。
+ * 接口先行的原因（r5-37）：#34 尾块、#36 报告、#37 三 regime 共同前置，
+ * 先冻结块类型防三票各自发明。详见 docs/soul-block-interface.md。
+ *
+ * - `soul.head` 头块 = 身份/红线（慢变量）：会话头注入 + 漂移再锚定（arXiv:2402.10962）
+ * - `soul.tail` 尾块 = 感受/当下（快变量）：每轮注入（现状 soul-feeling 的 regime）
+ * - `soul.event` 事件块 = 动作点近端红线：挂 `tools.before_call`（分发层接线后生效）
+ */
+export type SoulBlockKind = "soul.head" | "soul.tail" | "soul.event";
+
+/** 三块类型的运行时清单（校验/文档双用）。 */
+export const SOUL_BLOCK_KINDS: SoulBlockKind[] = ["soul.head", "soul.tail", "soul.event"];
+
+/**
+ * #37：灵魂注入时机配置（soul.timing.*）。三 regime 各自独立，缺省=现状逐位
+ * （config-first：off/缺省不翻转任何现有行为）。
+ */
+export interface SoulTimingConfig {
+  /** 身份 regime：缺省 session_head=现状（soul-identity 会话头注入）；
+   *  session_head_drift_reanchor=叠加 #34 事件流驱动的漂移再锚定（shadow 先行）。 */
+  identity: "session_head" | "session_head_drift_reanchor";
+  /** 红线 regime：缺省 session_head=现状（红线段随 soul-identity 会话头）；
+   *  action_proximate=动作点近端（tools.before_call 事件块，需分发层接线）。 */
+  redline: "session_head" | "action_proximate";
+  /** 感受/当下 regime：缺省 every_turn=现状（soul-feeling 每轮）。 */
+  feeling: "every_turn" | "session_head";
+  /** 漂移再锚定触发器：缺省 off；shadow=只记录建议不改注入（成本红线：
+   *  禁每轮跑全量探针，触发器=#34 事件流聚合+阈值 config 化，r5-37 修正 1）。 */
+  driftTrigger: "off" | "shadow";
+}
+
+/** 缺省值=现状逐位（#37 验收：timing off 时逐位等于现状）。 */
+export const DEFAULT_SOUL_TIMING: SoulTimingConfig = {
+  identity: "session_head",
+  redline: "session_head",
+  feeling: "every_turn",
+  driftTrigger: "off",
+};
 
 // ── Dynamic Anchor (semantic slots) ─────────────────────────────────────────
 
