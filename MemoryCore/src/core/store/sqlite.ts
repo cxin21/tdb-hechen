@@ -58,10 +58,11 @@ import type {
   AuditEntry,
   AuditQueryFilter,
 } from "./types.js";
-import { DEFAULT_ISOLATION_ID, normalizeCoreTenant, rowMatchesIsolation, type CoreTenant } from "./types.js";
+import { DEFAULT_ISOLATION_ID, normalizeCoreTenant, rowMatchesIsolation, type CoreTenant, type SoulPromiseEvent, type SoulPromiseRecord, type SoulPromiseStatus } from "./types.js";
 import { buildIsolationWhere } from "./isolation.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
+import { canTransitionPromise } from "../hooks/soul-promise.js";
 import type { Logger } from "../types.js";
 import type {
   MemoryPromptListFilter,
@@ -908,6 +909,33 @@ export class VectorStore implements IMemoryStore {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (team_id, user_id, agent_id)
     )`);
+    // #35（R5）：promise 承诺层——义务≠倾向，独立于 core_values 生命周期（排除条款
+    // 见 soul-promise.ts）。当前态表 + 事件 append-only 表（双时态留痕，只增不改）。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_promises (
+      promise_id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      source TEXT NOT NULL DEFAULT 'user',
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      updated_at TEXT NOT NULL
+    )`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_promises_tenant ON soul_promises(team_id, user_id, agent_id, status)");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_promise_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      promise_id TEXT NOT NULL,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      at TEXT NOT NULL,
+      note TEXT
+    )`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_promise_events_promise ON soul_promise_events(promise_id, id)");
     // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
     // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
     this.db.exec(`CREATE TABLE IF NOT EXISTS core_pending (
@@ -2540,6 +2568,90 @@ export class VectorStore implements IMemoryStore {
     if (!row) return null;
     return { valence: row.valence, arousal: row.arousal, topValue: row.top_value, turnSeq: row.turn_seq, updatedAt: row.updated_at };
   }
+
+  /* —— #35（R5）：promise 承诺层四方法 ——
+   * F18 三元组隔离；写面（upsert/transition）不吞错直接抛（R5-F5 约定：吞错单点上移
+   * 调用方）；transition 的业务拒绝（非法迁移/他租户 promiseId）走 { ok:false }
+   * 裁决返回（零写入、不抛），状态机判定复用 canTransitionPromise 单一源。 */
+
+  upsertSoulPromise(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string }): { promiseId: string } {
+    const t = normalizeCoreTenant(tenant);
+    const now = new Date().toISOString();
+    const promiseId = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const createdAt = input.createdAt ?? now;
+    this.db.prepare(
+      "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, NULL, ?)",
+    ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, createdAt, now);
+    this.db.prepare(
+      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?)",
+    ).run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
+    return { promiseId };
+  }
+
+  transitionSoulPromise(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string }): { ok: true } | { ok: false; reason: string } {
+    const t = normalizeCoreTenant(tenant);
+    const row = this.db.prepare(
+      "SELECT status FROM soul_promises WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+    ).get(promiseId, t.teamId, t.userId, t.agentId) as unknown as { status: string } | undefined;
+    if (!row) return { ok: false, reason: `promise-not-found:${promiseId}` };
+    const from = row.status as SoulPromiseStatus;
+    if (!canTransitionPromise(from, to)) return { ok: false, reason: `invalid-transition:${from}->${to}` };
+    const at = opts?.at ?? new Date().toISOString();
+    this.db.prepare(
+      "UPDATE soul_promises SET status = ?, resolved_at = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+    ).run(to, at, at, promiseId, t.teamId, t.userId, t.agentId);
+    this.db.prepare(
+      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null);
+    return { ok: true };
+  }
+
+  listSoulPromises(tenant: CoreTenant, opts?: { status?: SoulPromiseStatus; limit?: number }): SoulPromiseRecord[] {
+    const t = normalizeCoreTenant(tenant);
+    const limit = Math.max(1, Math.min(opts?.limit ?? 200, 1000));
+    try {
+      const rows = (opts?.status
+        ? this.db.prepare(
+            `SELECT promise_id, content, status, source, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at ASC LIMIT ${limit}`,
+          )
+        : this.db.prepare(
+            `SELECT promise_id, content, status, source, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC LIMIT ${limit}`,
+          )
+      ).all(t.teamId, t.userId, t.agentId, ...(opts?.status ? [opts.status] : [])) as unknown as Array<{ promise_id: string; content: string; status: string; source: string; created_at: string; resolved_at: string | null; updated_at: string }>;
+      return rows.map((r) => ({
+        promiseId: r.promise_id,
+        content: r.content,
+        status: r.status as SoulPromiseStatus,
+        source: r.source,
+        createdAt: r.created_at,
+        resolvedAt: r.resolved_at,
+        updatedAt: r.updated_at,
+      }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_promises] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  readSoulPromiseEvents(tenant: CoreTenant, promiseId: string): SoulPromiseEvent[] {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const rows = this.db.prepare(
+        "SELECT promise_id, from_status, to_status, at, note FROM soul_promise_events WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC",
+      ).all(promiseId, t.teamId, t.userId, t.agentId) as unknown as Array<{ promise_id: string; from_status: string | null; to_status: string; at: string; note: string | null }>;
+      return rows.map((r) => ({
+        promiseId: r.promise_id,
+        fromStatus: (r.from_status ?? null) as SoulPromiseEvent["fromStatus"],
+        toStatus: r.to_status as SoulPromiseStatus,
+        at: r.at,
+        note: r.note,
+      }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_promise_events] read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
   /** #30（S9/R5）：soul 快照三方法——append-only 落行 / last-hash 去重读 / 时间旅行读。
    *  租户三元组硬隔离（F18 同款）。R5-F5：write/readLast 不吞错——吞错单点在调用方
    *  （soul-assembler 捕获后 warn+不置旗标，下次渲染自动补账）；list 为 Panel 读取面，

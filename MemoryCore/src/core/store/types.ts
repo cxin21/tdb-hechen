@@ -569,6 +569,30 @@ export interface KnowledgeListResult {
 export type MaybePromise<T> = T | Promise<T>;
 
 // ============================
+// #35（R5）Soul Promise 承诺层（义务≠倾向，独立于 core_values 生命周期）
+// ============================
+
+export type SoulPromiseStatus = "open" | "kept" | "broken" | "withdrawn";
+
+export interface SoulPromiseRecord {
+  promiseId: string;
+  content: string;
+  status: SoulPromiseStatus;
+  source: string;
+  createdAt: string;
+  resolvedAt?: string | null;
+  updatedAt: string;
+}
+
+export interface SoulPromiseEvent {
+  promiseId: string;
+  fromStatus: SoulPromiseStatus | null;
+  toStatus: SoulPromiseStatus;
+  at: string;
+  note?: string | null;
+}
+
+// ============================
 // Memory Audit (修改审计)
 // ============================
 
@@ -765,6 +789,17 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   /** #28（R5）：会话级当下 state 单行 upsert/读（观测旁路；抽取扩展门 on 才写；F18 三元组隔离）。 */
   writeSoulState?(tenant: CoreTenant, state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string }): MaybePromise<void>;
   readSoulState?(tenant: CoreTenant): MaybePromise<{ valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null>;
+
+  /* —— #35（R5）：promise 承诺层数据面 ——
+   * 义务不是倾向：promise 独立于 core_values 生命周期（无 reweight/decay/similarMerge/
+   * anchor-growth 参与，见 soul-promise.ts 头注释排除条款）。
+   * 状态机单向：open → kept | broken | withdrawn（终态不可再迁，同态迁移亦拒绝）。
+   * 双时态留痕：soul_promise_events 逐迁移 append（含创建事件 ∅→open），只增不改。 */
+  upsertSoulPromise?(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string }): MaybePromise<{ promiseId: string }>;
+  /** 非法迁移/他租户 promiseId → { ok:false, reason }，零写入（不抛——裁决面非异常面）。 */
+  transitionSoulPromise?(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string }): MaybePromise<{ ok: true } | { ok: false; reason: string }>;
+  listSoulPromises?(tenant: CoreTenant, opts?: { status?: SoulPromiseStatus; limit?: number }): MaybePromise<SoulPromiseRecord[]>;
+  readSoulPromiseEvents?(tenant: CoreTenant, promiseId: string): MaybePromise<SoulPromiseEvent[]>;
 
   /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
   listValuesAnyState?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
