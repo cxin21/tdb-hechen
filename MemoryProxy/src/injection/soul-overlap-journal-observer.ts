@@ -34,10 +34,22 @@ interface TurnBuffer {
   blocks: { content: string }[];
 }
 
-function turnKey(meta: AgentContextMetadata): string {
+function legacyTurnKey(meta: AgentContextMetadata): string {
   const sessionKey = (meta as { sessionKey?: string })?.sessionKey ?? "unknown";
   const turnSeq = (meta as { turnSeq?: number })?.turnSeq;
   return `${sessionKey}:${typeof turnSeq === "number" ? turnSeq : "unknown"}`;
+}
+
+/** #38（R5-F2 root）：聚合主键=请求级 requestId（`req:<id>`）；缺省回退 legacy 键
+ *  （sessionKey:turnSeq，跨 handler 可碰撞）并一次性 warn 提示调用方升级。 */
+function turnKey(meta: AgentContextMetadata, warnedLegacy?: { v: boolean }): string {
+  const requestId = (meta as { requestId?: string })?.requestId;
+  if (requestId) return `req:${requestId}`;
+  if (warnedLegacy && !warnedLegacy.v) {
+    warnedLegacy.v = true;
+    console.warn("[soul-overlap-journal] meta 缺 requestId，回退 legacy turnKey（跨 handler 可碰撞；调用方应升级至管线入口分配 requestId）");
+  }
+  return legacyTurnKey(meta);
 }
 
 /**
@@ -48,6 +60,8 @@ export class SoulOverlapJournalObserver implements InjectionObserver {
   private buffers = new Map<string, TurnBuffer>();
   /** R5-F2：保守丢弃可见性——并发多活跃轮期间 onHookDone 块被丢弃的累计次数。 */
   private dropped = 0;
+  /** #38：legacy 回退一次性 warn 旗标。 */
+  private legacyWarned = { v: false };
 
   constructor(private readonly options: SoulOverlapJournalOptions) {}
 
@@ -59,11 +73,9 @@ export class SoulOverlapJournalObserver implements InjectionObserver {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onPipelineStart(meta: AgentContextMetadata): void {
     try {
-      const key = turnKey(meta);
-      // R5-F2b（第二路审查）：同 turnKey 复用而非覆盖——工具循环共享 sessionKey:turnSeq
-      //（handler.ts turnSeq=countHumanTurns；codexHandler/systemUserPassthrough 常为 0），
-      // 同键并发管线覆盖会丢前管线已聚合块、并使 size!==1 守卫失效（串轮污染）。
-      // 复用=后管线块并入既有 buffer，先到的 pipelineEnd 落盘、后到的无块不落盘（宁混勿丢）。
+      const key = turnKey(meta, this.legacyWarned);
+      // R5-F2b：同键二次 start 复用而非覆盖（工具循环共享 legacy 键时宁混勿丢）；
+      // #38 后正常路径每管线一个唯一 requestId，同键复用只剩 legacy 回退场景会走到。
       if (this.buffers.has(key)) {
         console.warn(`[soul-overlap-journal] 同 turnKey 复用 buffer（前管线未结束）：${key}`);
         return;
@@ -79,11 +91,17 @@ export class SoulOverlapJournalObserver implements InjectionObserver {
     blocks: ContextBlock[],
     _durationMs: number,
     _cacheStrategy?: string,
+    requestId?: string,
   ): void {
     try {
-      // onHookDone 无 meta —— 聚合键在 onPipelineStart 建立；这里挂到最后一个
-      // 活跃 buffer（pipeline 对单请求串行执行钩子，多请求并发时按 buffer
-      // 数量判断：仅一个活跃 buffer 才挂，避免串轮污染）。
+      // #38（R5-F2 root）：requestId 在场 → 直达路由（并发多活跃 buffer 也不串轮）；
+      // 缺省（旧调用方/单测）→ 沿用保守策略：仅一个活跃 buffer 才挂，避免串轮污染。
+      if (requestId) {
+        const buf = this.buffers.get(`req:${requestId}`);
+        if (!buf) return; // 未知 requestId（start 未达/已结束）→ 丢弃（宁缺毋假挂）
+        buf.blocks.push(...(blocks ?? []));
+        return;
+      }
       if (this.buffers.size !== 1) {
         this.dropped++;
         if (this.dropped === 1) {
@@ -99,7 +117,7 @@ export class SoulOverlapJournalObserver implements InjectionObserver {
 
   onPipelineEnd(meta: AgentContextMetadata, _durationMs: number, _results: HookResult[]): void {
     try {
-      const key = turnKey(meta);
+      const key = turnKey(meta, this.legacyWarned);
       const buf = this.buffers.get(key);
       this.buffers.delete(key);
       if (!buf || buf.blocks.length === 0) return;
@@ -114,7 +132,7 @@ export class SoulOverlapJournalObserver implements InjectionObserver {
 
   onPipelineError(meta: AgentContextMetadata, _error: Error): void {
     try {
-      this.buffers.delete(turnKey(meta));
+      this.buffers.delete(turnKey(meta, this.legacyWarned));
     } catch { /* never throw */ }
   }
 
@@ -159,9 +177,10 @@ export class CompositeInjectionObserver implements InjectionObserver {
     blocks: ContextBlock[],
     durationMs: number,
     cacheStrategy?: string,
+    requestId?: string,
   ): void {
     for (const c of this.children) {
-      try { c.onHookDone(hook, point, blocks, durationMs, cacheStrategy); } catch { /* isolated */ }
+      try { c.onHookDone(hook, point, blocks, durationMs, cacheStrategy, requestId); } catch { /* isolated */ }
     }
   }
 

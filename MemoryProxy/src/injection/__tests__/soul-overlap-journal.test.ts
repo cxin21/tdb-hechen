@@ -250,3 +250,60 @@ describe("CompositeInjectionObserver", () => {
     expect(calls).toEqual(["start", "hookDone", "end", "hookStart", "hookError", "error"]);
   });
 });
+
+describe("#38 请求级 requestId 路由（turnKey 碰撞根修）", () => {
+  function reqMeta(sessionKey: string, turnSeq: number, requestId: string): AgentContextMetadata {
+    return { sessionKey, turnSeq, requestId } as unknown as AgentContextMetadata;
+  }
+
+  it("同 sessionKey:turnSeq 不同 requestId → 两行落盘互不污染（onHookDone 直达路由）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "soul-journal-req-"));
+    const file = join(dir, "journal.jsonl");
+    const obs = new SoulOverlapJournalObserver({ enabled: true, file });
+    const mA = reqMeta("sess", 1, "req-A");
+    const mB = reqMeta("sess", 1, "req-B");
+    obs.onPipelineStart(mA);
+    obs.onPipelineStart(mB); // 同 legacy 键并发——requestId 键不碰撞
+    obs.onHookDone({} as never, "system" as never, [SOUL_BLOCK], 1, undefined, "req-A");
+    obs.onHookDone({} as never, "system" as never, [CORE_BLOCK], 1, undefined, "req-B");
+    obs.onPipelineEnd(mA, 5, [] as HookResult[]);
+    obs.onPipelineEnd(mB, 5, [] as HookResult[]);
+    const lines = readFileSync(file, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    const entries = lines.map((l) => JSON.parse(l) as { soul_chars: number; core_chars: number });
+    const soulLine = entries.find((e) => e.soul_chars > 0);
+    const coreLine = entries.find((e) => e.core_chars > 0);
+    expect(soulLine).toBeDefined();
+    expect(coreLine).toBeDefined();
+    expect(soulLine!.core_chars).toBe(0); // A 行只含 soul 块
+    expect(coreLine!.soul_chars).toBe(0); // B 行只含 core 块
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("多活跃 buffer 下 onHookDone 带 requestId 直达，不触发保守丢弃", () => {
+    const dir = mkdtempSync(join(tmpdir(), "soul-journal-req2-"));
+    const file = join(dir, "journal.jsonl");
+    const obs = new SoulOverlapJournalObserver({ enabled: true, file });
+    obs.onPipelineStart(reqMeta("a", 1, "r1"));
+    obs.onPipelineStart(reqMeta("b", 1, "r2"));
+    obs.onHookDone({} as never, "system" as never, [CORE_BLOCK], 1, undefined, "r2");
+    obs.onPipelineEnd(reqMeta("a", 1, "r1"), 1, [] as HookResult[]); // r1 空 buffer → 不落盘
+    obs.onPipelineEnd(reqMeta("b", 1, "r2"), 1, [] as HookResult[]);
+    expect(obs.droppedCount).toBe(0);
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { core_chars: number };
+    expect(parsed.core_chars).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("requestId 缺省回退 legacy 键（现有行为不变）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "soul-journal-legacy-"));
+    const file = join(dir, "journal.jsonl");
+    const obs = new SoulOverlapJournalObserver({ enabled: true, file });
+    obs.onPipelineStart(meta("s", 1));
+    obs.onHookDone({} as never, "system" as never, [CORE_BLOCK], 1);
+    obs.onPipelineEnd(meta("s", 1), 1, [] as HookResult[]);
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { core_chars: number };
+    expect(parsed.core_chars).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

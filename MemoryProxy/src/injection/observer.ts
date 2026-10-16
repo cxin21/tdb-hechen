@@ -62,13 +62,16 @@ export interface InjectionObserver {
   /** 单个钩子开始执行。 */
   onHookStart(hook: InjectionHook, point: InjectionPoint): void;
 
-  /** 单个钩子执行完成（包括返回空 blocks 的情况）。 */
+  /** 单个钩子执行完成（包括返回空 blocks 的情况）。
+   *  #38（R5-F2 root）：requestId 为管线入口分配的请求级唯一 id，观测聚合主键；
+   *  缺省=旧调用方（observer 按 legacy 键回退）。 */
   onHookDone(
     hook: InjectionHook,
     point: InjectionPoint,
     blocks: ContextBlock[],
     durationMs: number,
     cacheStrategy?: string,
+    requestId?: string,
   ): void;
 
   /** 单个钩子执行异常（会由 error start→error/done 记录）。 */

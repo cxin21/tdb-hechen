@@ -78,6 +78,12 @@ export type Protocol = "openai" | "anthropic";
 export interface AgentContextMetadata {
   protocol: Protocol;
   traceId: string;
+  /**
+   * #38（R5-F2 root）：请求级唯一 id —— injection pipeline `process()` 入口生成
+   * （randomUUID，一次管线一份）。观测聚合主键：traceId 由 sessionKey+turnSeq
+   * 确定性派生（同键碰撞语义），requestId 才是真唯一。缺省=旧调用方（回退 legacy 键）。
+   */
+  requestId?: string;
   keyId: string;
   modelId: string;
   stream: boolean;

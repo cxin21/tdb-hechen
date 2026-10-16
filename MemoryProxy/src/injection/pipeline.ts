@@ -25,6 +25,7 @@ import {
 import type { HookCacheRepo } from "../db/hookCacheRepo.js";
 import type { InjectionObserver, HookResult } from "./observer.js";
 import { NoopInjectionObserver } from "./observer.js";
+import { randomUUID } from "node:crypto";
 
 /** Optional pipeline behaviors (agent detection, etc.). */
 export interface InjectionPipelineOptions {
@@ -83,8 +84,14 @@ export class InjectionPipeline {
   ): Promise<Record<string, unknown>> {
     const pipelineStartMs = Date.now();
 
+    // ── #38（R5-F2 root）：请求级唯一 id —— 一次管线一份（randomUUID）。
+    // traceId 由 sessionKey+turnSeq 确定性派生（同键碰撞），观测聚合主键用 requestId。
+    // 经 enrich meta 传给 start/end/error（零签名变更），executeHooks 显式透传给 onHookDone。
+    const requestId = randomUUID();
+    const obsMeta: AgentContextMetadata = { ...metadata, requestId };
+
     // ── Observer: pipeline start ─────────────────────────────────────────
-    safeCall(() => this.observer.onPipelineStart(metadata));
+    safeCall(() => this.observer.onPipelineStart(obsMeta));
 
     try {
       // 1. Get the appropriate adapter
@@ -128,20 +135,20 @@ export class InjectionPipeline {
       }
 
       // 3. Execute hooks at each injection point
-      const hookResults: HookResult[] = await this.executeHooks(ctx);
+      const hookResults: HookResult[] = await this.executeHooks(ctx, requestId);
 
       // 4. Serialize → modified body
       const result = adapter.serialize(ctx);
 
       // ── Observer: pipeline end ──────────────────────────────────────────
       const durationMs = Date.now() - pipelineStartMs;
-      safeCall(() => this.observer.onPipelineEnd(metadata, durationMs, hookResults));
+      safeCall(() => this.observer.onPipelineEnd(obsMeta, durationMs, hookResults));
 
       return result;
     } catch (err) {
       // ── Observer: pipeline error ────────────────────────────────────────
       const error = err instanceof Error ? err : new Error(String(err));
-      safeCall(() => this.observer.onPipelineError(metadata, error));
+      safeCall(() => this.observer.onPipelineError(obsMeta, error));
       throw err; // re-throw so callers can handle it
     }
   }
@@ -161,7 +168,7 @@ export class InjectionPipeline {
    * `sessionId` in metadata, every hook falls back to `"none"` behavior to
    * preserve legacy semantics.
    */
-  private async executeHooks(ctx: AgentContext): Promise<HookResult[]> {
+  private async executeHooks(ctx: AgentContext, requestId?: string): Promise<HookResult[]> {
     const executionOrder: InjectionPoint[] = [
       "system.prefix",
       "system.before_tools",
@@ -216,7 +223,7 @@ export class InjectionPipeline {
 
           // ── Observer: hook done ─────────────────────────────────────────
           safeCall(() =>
-            this.observer.onHookDone(hook, point, blocks, durationMs, hook.cacheStrategy),
+            this.observer.onHookDone(hook, point, blocks, durationMs, hook.cacheStrategy, requestId),
           );
 
           results.push({
