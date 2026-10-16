@@ -821,6 +821,12 @@ export interface MemoryTdaiConfig {
   worthiness: {
     extractionEnabled: boolean;
   };
+  /** #28（R5 统一抽取扩展门，2026-10-16）：L1 抽取 seam 扩展（state rollup/#27 promise/
+   *  #5 importance）共用单 gate——缺省 false=prompt 字节逐位不变+扩展全跳过
+   *  （worthiness/D-3 先例镜像；语义一处实现，#33 ADR 配置组登记项）。 */
+  extractionExtensions: {
+    enabled: boolean;
+  };
   /**
    * Optional Skill module config. Pass-through to `resolveSkillConfig()` at
    * the host wiring layer; defaults are applied there. When absent, the
@@ -1620,6 +1626,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     // 缺省 false = 抽取 prompt 字节不变，LLM 不产出 importance 字段，逐位现状）
     worthiness: {
       extractionEnabled: bool((c.worthiness ?? {}) as Record<string, unknown>, "extractionEnabled") ?? false,
+    },
+    // #28（R5 统一抽取扩展门）：yaml memory.extractionExtensions.enabled；缺省 false=逐位现状。
+    extractionExtensions: {
+      enabled: bool((c.extractionExtensions ?? {}) as Record<string, unknown>, "enabled") ?? false,
     },
     // Skill: passthrough — let the host wiring call resolveSkillConfig() with
     // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply

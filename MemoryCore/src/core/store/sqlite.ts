@@ -895,6 +895,19 @@ export class VectorStore implements IMemoryStore {
       "trigger" TEXT NOT NULL DEFAULT 'render'
     )`);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_snapshots_tenant_ts ON soul_snapshots(team_id, user_id, agent_id, ts)");
+    // #28（R5）：soul_state——会话级当下 state 单行存储（每 agent 一行，upsert 覆盖；
+    // 历史轨迹重建走 soul_snapshots/时间旅行，本表只存当前值）。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_state (
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      valence REAL NOT NULL DEFAULT 0,
+      arousal REAL NOT NULL DEFAULT 0,
+      top_value TEXT,
+      turn_seq INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (team_id, user_id, agent_id)
+    )`);
     // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
     // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
     this.db.exec(`CREATE TABLE IF NOT EXISTS core_pending (
@@ -2510,6 +2523,22 @@ export class VectorStore implements IMemoryStore {
       this.logger?.warn?.(`${TAG} [recentAffectSignals] failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
+  }
+  /** #28（R5）：soul_state 单行 upsert/读（F18 三元组隔离；soul_snapshots 同款范式；
+   *  抽取扩展门 on 才写——本方法本身不做门判断，门在调用方 l1-extractor）。 */
+  writeSoulState(tenant: CoreTenant, state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string }): void {
+    const t = normalizeCoreTenant(tenant);
+    this.db.prepare(
+      "INSERT OR REPLACE INTO soul_state (team_id, user_id, agent_id, valence, arousal, top_value, turn_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(t.teamId, t.userId, t.agentId, state.valence, state.arousal, state.topValue ?? null, state.turnSeq ?? null, state.updatedAt);
+  }
+  readSoulState(tenant: CoreTenant): { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null {
+    const t = normalizeCoreTenant(tenant);
+    const row = this.db.prepare(
+      "SELECT valence, arousal, top_value, turn_seq, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+    ).get(t.teamId, t.userId, t.agentId) as unknown as { valence: number; arousal: number; top_value: string | null; turn_seq: number | null; updated_at: string } | undefined;
+    if (!row) return null;
+    return { valence: row.valence, arousal: row.arousal, topValue: row.top_value, turnSeq: row.turn_seq, updatedAt: row.updated_at };
   }
   /** #30（S9/R5）：soul 快照三方法——append-only 落行 / last-hash 去重读 / 时间旅行读。
    *  租户三元组硬隔离（F18 同款）。R5-F5：write/readLast 不吞错——吞错单点在调用方

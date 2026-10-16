@@ -92,6 +92,7 @@ import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from ".
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
+import { extractionExtensionsEnabled, rollupStateFromRecords } from "../hooks/soul-state-machine.js";
 import type { L1SearchResult } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import { report } from "../report/reporter.js";
@@ -568,6 +569,31 @@ export async function extractL1Memories(params: {
       : undefined,
   });
 
+    // ── #28（R5 统一抽取扩展门）：state rollup——门 on 时用落库记录 soul 列（连续值观测）
+    // 滚约会话 state 并落库 soul_state（F18 三元组隔离）；门 off=零读零写=逐位现状。
+    // 观测旁路：store 缺实现/失败 warn 不阻塞（抽取主路径零影响）。
+    if (extractionExtensionsEnabled(memoryConfig)) {
+      try {
+        const vs = options.vectorStore as IMemoryStore | undefined;
+        if (vs?.readSoulState && vs.writeSoulState) {
+          const next = rollupStateFromRecords(
+            (await vs.readSoulState({ teamId, userId, agentId })) ?? null,
+            storedRecords,
+          );
+          if (next) {
+            await vs.writeSoulState({ teamId, userId, agentId }, {
+              valence: next.valence,
+              arousal: next.arousal,
+              topValue: next.topValue ?? null,
+              turnSeq: next.turnSeq ?? null,
+              updatedAt: next.at ?? new Date().toISOString(),
+            });
+          }
+        }
+      } catch (err) {
+        logger?.warn?.(`${TAG} soul state rollup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   logger?.info(`${TAG} Extraction complete: extracted=${extracted.length}, stored=${storedRecords.length}`);
   setL1Stage("metrics");
 

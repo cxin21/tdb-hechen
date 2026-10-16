@@ -24,6 +24,8 @@ export interface SoulState {
   topValue?: string;
   /** 会话内轮次（观测附注，不参与指纹/渲染文案）。 */
   turnSeq?: number;
+  /** 状态时刻 ISO（衰减锚；#28 状态机用，渲染不消费）。 */
+  at?: string;
 }
 
 /** 夹紧到合法值域（脏输入防御：状态机上游写坏不炸渲染）。 */

@@ -762,6 +762,9 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   readLastSoulSnapshotHash?(tenant: CoreTenant): MaybePromise<string | null>;
   /** #30：快照时间旅行读（id ASC ≤limit，limit 缺省 100 上限 1000）。 */
   listSoulSnapshots?(tenant: CoreTenant, limit?: number): MaybePromise<Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }>>;
+  /** #28（R5）：会话级当下 state 单行 upsert/读（观测旁路；抽取扩展门 on 才写；F18 三元组隔离）。 */
+  writeSoulState?(tenant: CoreTenant, state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string }): MaybePromise<void>;
+  readSoulState?(tenant: CoreTenant): MaybePromise<{ valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null>;
 
   /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
   listValuesAnyState?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
