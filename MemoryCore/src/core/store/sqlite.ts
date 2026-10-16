@@ -58,7 +58,7 @@ import type {
   AuditEntry,
   AuditQueryFilter,
 } from "./types.js";
-import { DEFAULT_ISOLATION_ID, normalizeCoreTenant, rowMatchesIsolation, type CoreTenant, type SoulPromiseEvent, type SoulPromiseRecord, type SoulPromiseStatus } from "./types.js";
+import { DEFAULT_ISOLATION_ID, normalizeCoreTenant, rowMatchesIsolation, type CoreTenant, type PromiseTransitionSource, type SoulPromiseEvent, type SoulPromiseRecord, type SoulPromiseStatus } from "./types.js";
 import { buildIsolationWhere } from "./isolation.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
@@ -919,6 +919,7 @@ export class VectorStore implements IMemoryStore {
       content TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'open',
       source TEXT NOT NULL DEFAULT 'user',
+      ref_key TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       resolved_at TEXT,
       updated_at TEXT NOT NULL
@@ -933,8 +934,13 @@ export class VectorStore implements IMemoryStore {
       from_status TEXT,
       to_status TEXT NOT NULL,
       at TEXT NOT NULL,
-      note TEXT
+      note TEXT,
+      source TEXT NOT NULL DEFAULT 'manual'
     )`);
+    // #41（ADR0003-P3 实施票 C）：#35 库增量列迁移（幂等 try/ALTER 惯例）——
+    // soul_promises.ref_key（证据关联键）+ soul_promise_events.source（判定来源溯源）。
+    try { this.db.exec("ALTER TABLE soul_promises ADD COLUMN ref_key TEXT NOT NULL DEFAULT ''"); } catch { /* 列已存在 */ }
+    try { this.db.exec("ALTER TABLE soul_promise_events ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"); } catch { /* 列已存在 */ }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_promise_events_promise ON soul_promise_events(promise_id, id)");
     // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
     // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
@@ -2574,21 +2580,21 @@ export class VectorStore implements IMemoryStore {
    * 调用方）；transition 的业务拒绝（非法迁移/他租户 promiseId）走 { ok:false }
    * 裁决返回（零写入、不抛），状态机判定复用 canTransitionPromise 单一源。 */
 
-  upsertSoulPromise(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string }): { promiseId: string } {
+  upsertSoulPromise(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string; refKey?: string }): { promiseId: string } {
     const t = normalizeCoreTenant(tenant);
     const now = new Date().toISOString();
     const promiseId = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const createdAt = input.createdAt ?? now;
     this.db.prepare(
-      "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, NULL, ?)",
-    ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, createdAt, now);
+      "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, ref_key, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL, ?)",
+    ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, input.refKey ?? "", createdAt, now);
     this.db.prepare(
-      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?)",
+      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, 'manual')",
     ).run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
     return { promiseId };
   }
 
-  transitionSoulPromise(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string }): { ok: true } | { ok: false; reason: string } {
+  transitionSoulPromise(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string; source?: PromiseTransitionSource }): { ok: true } | { ok: false; reason: string } {
     const t = normalizeCoreTenant(tenant);
     const row = this.db.prepare(
       "SELECT status FROM soul_promises WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
@@ -2600,9 +2606,10 @@ export class VectorStore implements IMemoryStore {
     this.db.prepare(
       "UPDATE soul_promises SET status = ?, resolved_at = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
     ).run(to, at, at, promiseId, t.teamId, t.userId, t.agentId);
+    // #41：事件溯源列 source（判定来源 manual/evidence/proposal，缺省 manual）。
     this.db.prepare(
-      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null);
+      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null, opts?.source ?? "manual");
     return { ok: true };
   }
 
@@ -2612,17 +2619,18 @@ export class VectorStore implements IMemoryStore {
     try {
       const rows = (opts?.status
         ? this.db.prepare(
-            `SELECT promise_id, content, status, source, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at ASC LIMIT ${limit}`,
+            `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at ASC LIMIT ${limit}`,
           )
         : this.db.prepare(
-            `SELECT promise_id, content, status, source, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC LIMIT ${limit}`,
+            `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC LIMIT ${limit}`,
           )
-      ).all(t.teamId, t.userId, t.agentId, ...(opts?.status ? [opts.status] : [])) as unknown as Array<{ promise_id: string; content: string; status: string; source: string; created_at: string; resolved_at: string | null; updated_at: string }>;
+      ).all(t.teamId, t.userId, t.agentId, ...(opts?.status ? [opts.status] : [])) as unknown as Array<{ promise_id: string; content: string; status: string; source: string; ref_key: string | null; created_at: string; resolved_at: string | null; updated_at: string }>;
       return rows.map((r) => ({
         promiseId: r.promise_id,
         content: r.content,
         status: r.status as SoulPromiseStatus,
         source: r.source,
+        refKey: r.ref_key ?? "",
         createdAt: r.created_at,
         resolvedAt: r.resolved_at,
         updatedAt: r.updated_at,
@@ -2637,14 +2645,15 @@ export class VectorStore implements IMemoryStore {
     const t = normalizeCoreTenant(tenant);
     try {
       const rows = this.db.prepare(
-        "SELECT promise_id, from_status, to_status, at, note FROM soul_promise_events WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC",
-      ).all(promiseId, t.teamId, t.userId, t.agentId) as unknown as Array<{ promise_id: string; from_status: string | null; to_status: string; at: string; note: string | null }>;
+        "SELECT promise_id, from_status, to_status, at, note, source FROM soul_promise_events WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC",
+      ).all(promiseId, t.teamId, t.userId, t.agentId) as unknown as Array<{ promise_id: string; from_status: string | null; to_status: string; at: string; note: string | null; source: string | null }>;
       return rows.map((r) => ({
         promiseId: r.promise_id,
         fromStatus: (r.from_status ?? null) as SoulPromiseEvent["fromStatus"],
         toStatus: r.to_status as SoulPromiseStatus,
         at: r.at,
         note: r.note,
+        source: (r.source ?? "manual") as PromiseTransitionSource,
       }));
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_promise_events] read failed: ${err instanceof Error ? err.message : String(err)}`);

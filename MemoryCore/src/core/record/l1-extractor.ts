@@ -93,6 +93,7 @@ import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
 import { extractionExtensionsEnabled, rollupStateFromRecords } from "../hooks/soul-state-machine.js";
+import { applyPromiseEvidence, collectPromiseEvidenceFromExtraction } from "../hooks/soul-promise-evidence.js";
 import type { L1SearchResult } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import { report } from "../report/reporter.js";
@@ -592,6 +593,33 @@ export async function extractL1Memories(params: {
         }
       } catch (err) {
         logger?.warn?.(`${TAG} soul state rollup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // ── #41（ADR0003-P3 实施票 C，D8 证据门）：promise 确定性证据迁移——user 确认话语
+    // 白名单（soul-promise-evidence 单一源，锚定全句宁缺毋滥）→ refKey 严格相等的 open
+    // promise 迁移（store 侧复判状态机，source=evidence 全链溯源）。门 off=零 promise 读
+    // 零 promise 写=逐位现状；store 缺实现/失败 warn 不阻塞（镜像 #28 观测旁路惯例）。
+    // memoryConfig 实参恒为 buildConfig 产物（MemoryCoreMemoryConfig，soulRender 必材料化）；
+    // 此处参数类型刻意窄化（镜像 #28 extractionExtensionsEnabled 惯例），故局部结构化下钻。
+    if (
+      (memoryConfig as { soulRender?: { promiseEvidence?: { enabled?: boolean } } } | undefined)
+        ?.soulRender?.promiseEvidence?.enabled === true
+    ) {
+      try {
+        const items = collectPromiseEvidenceFromExtraction(messages, taskId || undefined);
+        if (items.length > 0) {
+          const applied = await applyPromiseEvidence(
+            items,
+            options.vectorStore as IMemoryStore | undefined,
+            { teamId, userId, agentId },
+          );
+          if (applied.applied > 0) {
+            logger?.info?.(`${TAG} promise evidence transitions applied=${applied.applied}`);
+          }
+        }
+      } catch (err) {
+        logger?.warn?.(`${TAG} promise evidence transition failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   logger?.info(`${TAG} Extraction complete: extracted=${extracted.length}, stored=${storedRecords.length}`);

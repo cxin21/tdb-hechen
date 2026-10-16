@@ -464,6 +464,11 @@ export interface MemoryCoreMemoryConfig {
      *  时是否渲染进 soul 前缀「## 我能做什么」段。缺省 false=现状（不渲染、请求体字段
      *  被忽略）；显式 true 才消费（config-first；渲染行=传入清单 1:1，#32 一致性合同）。 */
     capabilities: { enabled: boolean };
+    /** #41（ADR0003-P3 实施票 C，D8 证据门）：promise 确定性证据迁移总开关——缺省
+     *  false=逐位现状（抽取管线零 promise 读零 promise 写）；显式 true 才开启：
+     *  确认话语白名单（soul-promise-evidence 单一源）→ refKey 严格相等的 open promise
+     *  迁移（source=evidence 全链溯源）。 */
+    promiseEvidence: { enabled: boolean };
   };
 }
 
@@ -1270,6 +1275,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         // 非布尔/形状错一律回退 false（宁缺毋滥）。
         capabilities: {
           enabled: ((g as Record<string, unknown>)["capabilities"] as Record<string, unknown> | undefined)?.["enabled"] === true,
+        },
+        // #41（ADR0003-P3 实施票 C，D8 证据门）：promise 证据迁移总开关——缺省 false=
+        // 逐位现状；非布尔/形状错一律回退 false（宁缺毋滥，沿 capabilities 解析先例）。
+        promiseEvidence: {
+          enabled: ((g as Record<string, unknown>)["promiseEvidence"] as Record<string, unknown> | undefined)?.["enabled"] === true,
         },
       };
     })(),

@@ -574,11 +574,20 @@ export type MaybePromise<T> = T | Promise<T>;
 
 export type SoulPromiseStatus = "open" | "kept" | "broken" | "withdrawn";
 
+/**
+ * #41（ADR0003-P3 实施票 C，D8 事件溯源）：promise 迁移判定来源——
+ * manual=人工显式操作（Panel/API）；evidence=确定性证据命中（确认话语白名单/工具回执）；
+ * proposal=LLM 提议经人工采纳（#27 提案门范式，LLM 永不直写）。
+ */
+export type PromiseTransitionSource = "manual" | "evidence" | "proposal";
+
 export interface SoulPromiseRecord {
   promiseId: string;
   content: string;
   status: SoulPromiseStatus;
   source: string;
+  /** #41：任务/上下文关联键（确定性证据关联 = 与证据 refKey 严格相等；缺省 ''）。 */
+  refKey: string;
   createdAt: string;
   resolvedAt?: string | null;
   updatedAt: string;
@@ -590,6 +599,8 @@ export interface SoulPromiseEvent {
   toStatus: SoulPromiseStatus;
   at: string;
   note?: string | null;
+  /** #41：判定来源（manual/evidence/proposal；创建事件恒 manual）。 */
+  source: PromiseTransitionSource;
 }
 
 // ============================
@@ -795,9 +806,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * anchor-growth 参与，见 soul-promise.ts 头注释排除条款）。
    * 状态机单向：open → kept | broken | withdrawn（终态不可再迁，同态迁移亦拒绝）。
    * 双时态留痕：soul_promise_events 逐迁移 append（含创建事件 ∅→open），只增不改。 */
-  upsertSoulPromise?(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string }): MaybePromise<{ promiseId: string }>;
-  /** 非法迁移/他租户 promiseId → { ok:false, reason }，零写入（不抛——裁决面非异常面）。 */
-  transitionSoulPromise?(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string }): MaybePromise<{ ok: true } | { ok: false; reason: string }>;
+  upsertSoulPromise?(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string; refKey?: string }): MaybePromise<{ promiseId: string }>;
+  /** 非法迁移/他租户 promiseId → { ok:false, reason }，零写入（不抛——裁决面非异常面）。
+   *  #41：opts.source 落事件溯源列（manual/evidence/proposal，缺省 manual）。 */
+  transitionSoulPromise?(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string; source?: PromiseTransitionSource }): MaybePromise<{ ok: true } | { ok: false; reason: string }>;
   listSoulPromises?(tenant: CoreTenant, opts?: { status?: SoulPromiseStatus; limit?: number }): MaybePromise<SoulPromiseRecord[]>;
   readSoulPromiseEvents?(tenant: CoreTenant, promiseId: string): MaybePromise<SoulPromiseEvent[]>;
 
