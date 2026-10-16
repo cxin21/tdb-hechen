@@ -194,7 +194,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
   if (deps.config.reflection?.enabled) {
     try {
       const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter, embeddingService: deps.embeddingService });
-      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten}`);
+      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} proposals=${res.proposalsPushed ?? 0}`);
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
     }

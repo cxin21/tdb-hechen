@@ -529,6 +529,8 @@ export interface MemoryLifecycleConfig {
   reflection: {
     enabled: boolean;
     rRef: number;
+    /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=逐位现状。 */
+    soulProposals: { enabled: boolean };
   };
 }
 
@@ -1291,6 +1293,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // F-EV12-4（REG-REMAINING-006 A-4）：下限 10→1——yaml rRef: 2（2.0≈3 条高显著）
       // 曾被旧下限 10 静默钳到 10（配置值与生效值背离）。significance [0,1] 刻度下 1~2 均为合法意图值。
       rRef: Math.min(100000, Math.max(1, Math.floor(num(obj(lifecycleGroup, "reflection"), "rRef") ?? 150))),
+      // #27（R5）：memory.lifecycle.reflection.soulProposals.enabled；缺省 false=零提案=逐位现状
+      soulProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "soulProposals"), "enabled") ?? false },
     },
   };
 

@@ -10,6 +10,7 @@
  * work_fact 不入触发累计（防"反思的反思"自我 reinforce，与 consolidation 分组同原则）。
  */
 import { embedForLifecycle } from "./embed-helpers.js";
+import { proposalAlreadyKnown, vetReflectionIdentityProposal } from "./soul-reflection-proposals.js";
 import type { Logger } from "../types.js";
 
 export interface ReflectionConfig {
@@ -20,12 +21,20 @@ export interface ReflectionConfig {
   maxConclusions?: number;
   /** 反思输入样本窗（significance 降序 cap）。 */
   maxSample?: number;
+  /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=零提案=逐位现状。 */
+  soulProposals?: { enabled?: boolean };
 }
 
 export interface ReflectionDeps {
   queryL1: () => Promise<Array<Record<string, unknown>>>;
   config?: ReflectionConfig;
-  store?: { upsertL1(record: unknown, embedding?: unknown): boolean | Promise<boolean> };
+  store?: {
+    upsertL1(record: unknown, embedding?: unknown): boolean | Promise<boolean>;
+    /** #27：O13 rail 桥接可选面（缺实现→桥接安静跳过，采纳侧人工裁决兜底）。 */
+    upsertPendingCore?(slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): boolean | Promise<boolean>;
+    listPendingCore?(tenant?: unknown, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; state: string }> | Promise<Array<{ pending_id: string; slot: string; content: string; state: string }>>;
+    readCore?(tenant?: unknown): Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }> | null> | null;
+  };
   /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
 
   embeddingService?: { embed(t: string): Promise<Float32Array> } | null;
@@ -92,16 +101,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -117,7 +126,11 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
 
   let triggered = 0;
   let cardsWritten = 0;
+  let proposalsPushed = 0;
+  const soulProposalsOn = cfg.soulProposals?.enabled === true;
   for (const { triple, rows } of byTenant.values()) {
+    // #27：证据指针 → 原文内容映射（样本源即证据源；幻觉 id 无内容→去原文门按可用证据裁决）
+    const contentById = new Map(rows.map((r) => [String(r.id ?? ""), String(r.content ?? "")]));
     // 反思史即状态：最新反思结论卡的 updatedAt = 上次反思时间戳
     // 时间戳键：camelCase（MemoryRecord 形）与 snake_case（裸行）双兼容——
     // scheduler 的 mapL1RowToRecord 只展开原始行，updatedAt/createdAt 可能缺位。
@@ -172,8 +185,35 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       };
       const ok = await Promise.resolve(deps.store.upsertL1(rec, await embedForLifecycle(deps.embeddingService, String(rec.content ?? ""), "[reflection]", deps.logger)));
       if (ok) cardsWritten++;
+      // #27（R5）：反思结论 → 身份层提案（O13 rail）。门 on 才启用；确定性门
+      // （slot 白名单→安全阀→证据非空→去 L1 原文→重复抑制）逐条裁决，被拒只记日志
+      // 不抛（反思主路径零影响）。提案内容=结论卡原文直出（不做 LLM 改写）；
+      // 采纳侧沿用 decidePendingCore→mergeIdentityFacts；identity 变更→sv 变化→
+      // 渲染路径 #30 快照全量落账（调度单一源：F13 触发+consolidation 节拍，零新调度器）。
+      if (ok && soulProposalsOn) {
+        try {
+          const verdict = vetReflectionIdentityProposal({
+            slot: "self_identity",
+            content: pr.conclusion,
+            evidenceRecordIds: pr.evidence,
+            evidenceContents: pr.evidence.map((id) => contentById.get(id)),
+          });
+          if (!verdict.ok) {
+            deps.logger?.info?.(`[reflection] soul proposal rejected (${verdict.reason.slice(0, 80)}): ${pr.conclusion.slice(0, 60)}`);
+          } else if (await proposalAlreadyKnown(deps.store, triple, verdict.proposal.content)) {
+            deps.logger?.info?.("[reflection] soul proposal deduped (already pending or in core identity)");
+          } else {
+            const pushed = await Promise.resolve(
+              deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, { attrs: verdict.proposal.attrs }),
+            );
+            if (pushed) proposalsPushed++;
+          }
+        } catch (err) {
+          deps.logger?.warn?.(`[reflection] soul proposal failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
   }
-  return { triggered, cardsWritten };
+  return { triggered, cardsWritten, proposalsPushed };
 }
 void DEFAULTS;
