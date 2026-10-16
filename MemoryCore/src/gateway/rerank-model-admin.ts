@@ -11,7 +11,14 @@
  */
 import { successEnvelope } from "./v2-router.js";
 import type { ApiResponseEnvelope, V2AuthContext } from "./v2-schemas.js";
-import { getRerankModelStatus, startRerankModelDownload, type StartRerankModelDownloadOptions } from "../core/recall/rerank/downloader.js";
+import {
+  DEFAULT_RERANK_MODEL_FILES,
+  DEFAULT_RERANK_REPO,
+  getRerankModelStatus,
+  isRerankModelReady,
+  startRerankModelDownload,
+  type StartRerankModelDownloadOptions,
+} from "../core/recall/rerank/downloader.js";
 import { resolveLocalModelDir } from "../core/recall/rerank/factory.js";
 import type { RecallRerankConfig } from "../config.js";
 
@@ -33,8 +40,33 @@ export type RerankModelAdminHandler = (
 
 export function makeRerankModelAdminRouteTable(deps: RerankModelAdminDeps): Record<string, RerankModelAdminHandler> {
   return {
-    "/v3/admin/rerank-model/status": async (_body, _auth, requestId): Promise<ApiResponseEnvelope> =>
-      successEnvelope(getRerankModelStatus(), requestId),
+    "/v3/admin/rerank-model/status": async (_body, _auth, requestId): Promise<ApiResponseEnvelope> => {
+      const snap = getRerankModelStatus();
+      // 2026-10-16「未下载」误报修复（用户拍板 A）：注册表是进程内存态（启动即 idle，
+      // 不持久化、不扫盘）——core 重启后即使磁盘模型齐全也显示未下载。快照 idle 时
+      // 聚合磁盘实况：isRerankModelReady → 合成 ready 快照；downloading/failed 活动
+      // 态不覆盖（本进程下载进度优先）。
+      if (snap.state === "idle") {
+        const modelDir = resolveLocalModelDir(deps.getRerankConfig(), deps.dataDir);
+        const files = deps.downloadOptions?.modelFiles ?? DEFAULT_RERANK_MODEL_FILES;
+        if (isRerankModelReady(modelDir, files)) {
+          return successEnvelope(
+            {
+              state: "ready" as const,
+              percent: 100,
+              repo: deps.downloadOptions?.repo ?? DEFAULT_RERANK_REPO,
+              modelDir,
+              files: files.map((s) => ({ rel: s.rel, state: "done" as const })),
+              error: null,
+              startedAt: null,
+              finishedAt: null,
+            },
+            requestId,
+          );
+        }
+      }
+      return successEnvelope(snap, requestId);
+    },
     "/v3/admin/rerank-model/download": async (_body, _auth, requestId): Promise<ApiResponseEnvelope> => {
       const modelDir = resolveLocalModelDir(deps.getRerankConfig(), deps.dataDir);
       // fire-and-forget：download() 内部已捕获失败并落 registry（failed 态），
