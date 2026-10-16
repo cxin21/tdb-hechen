@@ -283,9 +283,10 @@ export class SceneExtractor {
     // Phase 4: Run LLM agent (sandboxed to scene_blocks/)
     let llmOutput = "";
     let llmDurationMs = 0;
+    // #46（取证层）：runnerStartMs 提升至 try 外——失败路径也能量得 runner 耗时（原仅成功路径可测）。
+    const runnerStartMs = Date.now();
     try {
       this.logger?.debug?.(`${TAG} extract() starting LLM runner (timeout=${this.timeoutMs}ms, maxTokens=model default)...`);
-      const runnerStartMs = Date.now();
       // langfuse trace 语义：L2 场景抽取有独立 name / 顶级 user/session 列 / 可筛选 tags。
       const traceParams = buildTraceParams("memory.scene-extract", this.traceContext);
       llmOutput = await this.runner.run({
@@ -304,10 +305,20 @@ export class SceneExtractor {
       }) ?? "";
       llmDurationMs = Date.now() - runnerStartMs;
       this.logger?.debug?.(`${TAG} extract() LLM runner completed: ${llmDurationMs}ms`);
+      // #46（取证层）：INFO 级结构化证据行——批次大小（memories/promptChars）× 超时口径 × runner 耗时，
+      // 生产可见（原 :281/:287/:305 证据全 debug 级），供超时归因（批次 vs 容量）。
+      this.logger?.info?.(
+        `${TAG} extract() runner evidence: outcome=ok memories=${memories.length} promptChars=${userPrompt.length} timeoutMs=${this.timeoutMs} runnerElapsedMs=${llmDurationMs}`,
+      );
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       const totalMs = Date.now() - extractStartMs;
       this.logger?.error(`${TAG} extract() LLM runner failed after ${totalMs}ms: ${errMsg}`);
+      // #46（取证层）：失败路径证据行——runnerStartMs 已在 try 外，runnerElapsedMs 可得；
+      // 上一行既有 error 模板逐字保留（日志 grep 兼容，#46 票面依赖）。
+      this.logger?.info?.(
+        `${TAG} extract() runner evidence: outcome=failed memories=${memories.length} promptChars=${userPrompt.length} timeoutMs=${this.timeoutMs} runnerElapsedMs=${Date.now() - runnerStartMs}`,
+      );
 
       // Restore scene_blocks/ from the Phase 1 backup so partial LLM writes
       // (or a wiped sandbox) don't leak into the next recall cycle.
