@@ -2585,12 +2585,21 @@ export class VectorStore implements IMemoryStore {
     const now = new Date().toISOString();
     const promiseId = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const createdAt = input.createdAt ?? now;
-    this.db.prepare(
-      "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, ref_key, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL, ?)",
-    ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, input.refKey ?? "", createdAt, now);
-    this.db.prepare(
-      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, 'manual')",
-    ).run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
+    // #45（D8 存储加固）：promise 行与创建事件行同事务——第二步故障整体回滚，无半写。
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(
+        "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, ref_key, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL, ?)",
+      ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, input.refKey ?? "", createdAt, now);
+      this.db.prepare(
+        "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, 'manual')",
+      ).run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      // 审查 A-low：COMMIT 失败时引擎可能已自动回滚——ROLLBACK 需自兜底，不掩蔽原始错误（:2908 先例同款）。
+      try { this.db.exec("ROLLBACK"); } catch { /* 事务已不存在 */ }
+      throw err;
+    }
     return { promiseId };
   }
 
@@ -2603,13 +2612,23 @@ export class VectorStore implements IMemoryStore {
     const from = row.status as SoulPromiseStatus;
     if (!canTransitionPromise(from, to)) return { ok: false, reason: `invalid-transition:${from}->${to}` };
     const at = opts?.at ?? new Date().toISOString();
-    this.db.prepare(
-      "UPDATE soul_promises SET status = ?, resolved_at = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
-    ).run(to, at, at, promiseId, t.teamId, t.userId, t.agentId);
-    // #41：事件溯源列 source（判定来源 manual/evidence/proposal，缺省 manual）。
-    this.db.prepare(
-      "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null, opts?.source ?? "manual");
+    // #45（D8 存储加固）：UPDATE 与事件 INSERT 同事务——事件写入故障整体回滚，
+    // 状态行与事件行要么同存要么同无（事件溯源不断链）；业务拒绝已在上方零写入返回。
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(
+        "UPDATE soul_promises SET status = ?, resolved_at = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+      ).run(to, at, at, promiseId, t.teamId, t.userId, t.agentId);
+      // #41：事件溯源列 source（判定来源 manual/evidence/proposal，缺省 manual）。
+      this.db.prepare(
+        "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null, opts?.source ?? "manual");
+      this.db.exec("COMMIT");
+    } catch (err) {
+      // 审查 A-low：同上，ROLLBACK 自兜底（:2908 先例同款）。
+      try { this.db.exec("ROLLBACK"); } catch { /* 事务已不存在 */ }
+      throw err;
+    }
     return { ok: true };
   }
 
