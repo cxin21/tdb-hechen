@@ -130,3 +130,39 @@ describe("TdaiClient.recallBlockForCtx（DS-RECALL-MERGE-001 瘦传输）", () =
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+// ═══════════════ #40（ADR0003-P3 接线票 B）· capabilities 请求体线程 ═══════════════
+
+describe("#40 · recallBlockForCtx capabilities 请求体", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("传入 capabilities → 请求体携带策展清单", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => OK_ENVELOPE,
+    }) as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new TdaiClient(makeConfig());
+    await client.recallBlockForCtx(CTX, "q", "s", undefined, 5, ["t1：能力一"]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ query: "q", maxResults: 5, capabilities: ["t1：能力一"] });
+  });
+
+  it("未传/空数组 → 请求体不含 capabilities 键（逐位现状）", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => OK_ENVELOPE,
+    }) as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new TdaiClient(makeConfig());
+    await client.recallBlockForCtx(CTX, "q", "s", undefined, 5, []);
+    await client.recallBlockForCtx(CTX, "q", "s", undefined, 5);
+    const bodies = fetchMock.mock.calls.map((c) =>
+      JSON.parse(String((c as unknown as [string, RequestInit])[1].body)),
+    );
+    expect(bodies[0]).toEqual({ query: "q", maxResults: 5 });
+    expect(bodies[1]).toEqual({ query: "q", maxResults: 5 });
+  });
+});

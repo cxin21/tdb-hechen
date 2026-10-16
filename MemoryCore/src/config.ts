@@ -460,6 +460,10 @@ export interface MemoryCoreMemoryConfig {
     /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
      *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
     introspect: { snapshotLimit: number; evidenceWindowHours: number };
+    /** #40（ADR0003-P3 接线票 B）：capabilities 数据源门——/v3/recall body 携带策展清单
+     *  时是否渲染进 soul 前缀「## 我能做什么」段。缺省 false=现状（不渲染、请求体字段
+     *  被忽略）；显式 true 才消费（config-first；渲染行=传入清单 1:1，#32 一致性合同）。 */
+    capabilities: { enabled: boolean };
   };
 }
 
@@ -1261,6 +1265,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const v = ((g as Record<string, unknown>)["introspect"] as Record<string, unknown> | undefined)?.["evidenceWindowHours"];
             return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 2160)) : 168;
           })(),
+        },
+        // #40（ADR0003-P3 接线票 B）：capabilities 渲染门——缺省 false=逐位现状；
+        // 非布尔/形状错一律回退 false（宁缺毋滥）。
+        capabilities: {
+          enabled: ((g as Record<string, unknown>)["capabilities"] as Record<string, unknown> | undefined)?.["enabled"] === true,
         },
       };
     })(),

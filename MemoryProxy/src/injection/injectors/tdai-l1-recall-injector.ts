@@ -7,6 +7,7 @@ import { extractUserQueryText } from "../../tdai/recorder.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs } from "./tdai-fixed-asset.js";
+import { curateToolCapabilities } from "./tdai-tool-capabilities.js";
 import { log } from "../../report/log.js";
 
 /**
@@ -93,8 +94,14 @@ export class TdaiL1RecallInjector implements InjectionHook {
     let mergedChain: ContextBlock[] | null = null;
     const recallFn = (this.client as unknown as { recallBlockForCtx?: unknown }).recallBlockForCtx;
     if (typeof recallFn === "function") {
+      // ── #40（ADR0003-P3 接线票 B）capabilities 数据源 ──
+      // 工具面实况 → 策展清单（≤5 行模板直出，零 LLM）；空清单 → undefined（请求体
+      // 不带 capabilities 键=逐位现状）。仅 self ctx 携带（见 recallViaEndpoint）：
+      // 借入块出自他人 agent 身份，混入当前 agent 的能力自述会污染其 soul 前缀语义。
+      const curated = curateToolCapabilities(ctx.tools);
+      const capabilities = curated.length > 0 ? curated : undefined;
       try {
-        mergedChain = await this.recallViaEndpoint(ctxs, identity, query);
+        mergedChain = await this.recallViaEndpoint(ctxs, identity, query, capabilities);
       } catch (err) {
         // 防静默降级老纪律：降级必须 loud（404 = 核心端点 enabled=false 关断档，同样降级）
         log.warn(
@@ -166,12 +173,15 @@ export class TdaiL1RecallInjector implements InjectionHook {
    *   - 任一 ctx 返回 null（recallL1 关闭）→ 整链零注入（开关语义：控制合并后的
    *     唯一代理注入链，不降级）；
    *   - 借入 ctx 的块前置 `[from <agent>]` 来源标注（沿降级路 fromTag 词汇），self
-   *     ctx 原样透传（核心块自含 <relevant-memories> 包装，代理零渲染）。
+   *     ctx 原样透传（核心块自含 <relevant-memories> 包装，代理零渲染）；
+   *   - #40：capabilities（工具面策展清单）仅随 self ctx 携带（他人身份不混当前
+   *     agent 能力自述；undefined = 请求体不带键，行为逐位现状）。
    */
   private async recallViaEndpoint(
-    ctxs: Array<{ teamId: string; userId: string; agentId: string; agentName?: string }>,
+    ctxs: Array<{ teamId: string; userId: string; agentId: string; agentName?: string; isSelf?: boolean }>,
     identity: { agentId: string; sessionId: string; taskId?: string },
     query: string,
+    capabilities?: readonly string[],
   ): Promise<ContextBlock[] | null> {
     const results = await Promise.all(
       ctxs.map(async (c) => ({
@@ -182,6 +192,10 @@ export class TdaiL1RecallInjector implements InjectionHook {
           identity.sessionId,
           identity.taskId,
           this.globalTopK,
+          // 审查修补（#40-F1）：self 判定优先信任 resolveFixedAssetCtxs 显式携带的 isSelf
+          // 旗标（FixedAssetCtx 恒有该字段），agentId 等值比较仅作旧形状兜底——防御
+          // 跨租户同 agentId 的借入 ctx 被误判为 self 而混入当前请求的能力自述。
+          (c.isSelf ?? c.agentId === identity.agentId) ? capabilities : undefined,
         ),
       })),
     );
@@ -189,7 +203,7 @@ export class TdaiL1RecallInjector implements InjectionHook {
     for (const { ctx: c, res } of results) {
       if (res === null) return []; // recallL1=false：零注入不变（不降级）
       if (!res.block) continue; // 核心"无命中"语义：本轮该 ctx 无可注入
-      const isSelf = c.agentId === identity.agentId;
+      const isSelf = c.isSelf ?? c.agentId === identity.agentId; // 同上（#40-F1 同源旗标）
       parts.push(isSelf ? res.block : `[from ${c.agentName ?? c.agentId}]\n${res.block}`);
     }
     if (parts.length === 0) return [];

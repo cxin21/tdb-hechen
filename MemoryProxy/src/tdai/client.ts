@@ -259,6 +259,14 @@ export class TdaiClient {
     sessionId: string,
     taskId?: string,
     maxResults?: number,
+    /**
+     * #40（ADR0003-P3 接线票 B）：工具面策展清单（≤5 行能力自述），随请求体
+     * `capabilities` 键透传 → 核心按 config 门（coreMemory.soulRender.capabilities.
+     * enabled，缺省 false）决定是否渲染进 soul 前缀「## 我能做什么」。undefined
+     * （或空数组）= 请求体不带键，服务端行为逐位现状（config-first 双保险：代理
+     * 侧不传 + 核心侧门关，任一关=现状）。
+     */
+    capabilities?: readonly string[],
   ): Promise<{
     block: string;
     meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean };
@@ -285,6 +293,7 @@ export class TdaiClient {
         body: JSON.stringify(stripUndefined({
           query: query.slice(0, 2048),
           ...(maxResults !== undefined ? { maxResults } : {}),
+          ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
         })),
       });
       if (!res.ok) {

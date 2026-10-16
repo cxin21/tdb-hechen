@@ -11,7 +11,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { TdaiL1RecallInjector } from "../tdai-l1-recall-injector.js";
-import type { ContextMessage } from "../../types.js";
+import type { AgentTool, ContextMessage } from "../../types.js";
+import type { FixedAssetCtx } from "../tdai-fixed-asset.js";
 import type { TdaiClient } from "../../../tdai/client.js";
 import { log } from "../../../report/log.js";
 
@@ -172,5 +173,67 @@ describe("DS-RECALL-MERGE-001 · TdaiL1RecallInjector /v3/recall 瘦传输", () 
     const blocks = await injector.execute(makeCtx("召回专项最近有什么新进展"));
     expect(blocks).toEqual([]);
     expect(searchL1ForCtx).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════ #40（ADR0003-P3 接线票 B）· capabilities 策展与 self-only 携带 ═══════════════
+
+describe("#40 · TdaiL1RecallInjector capabilities 策展（self-only 携带）", () => {
+  const CAP_LINES = ["t1：能力一", "t2：能力二"];
+  const TOOLS: AgentTool[] = [
+    { name: "t1", description: "能力一", parameters: {} },
+    { name: "t2", description: "能力二", parameters: {} },
+  ];
+  const SELF: FixedAssetCtx = {
+    teamId: "teamA", userId: "userA", agentId: "agentA", agentName: "agentA", isSelf: true,
+  };
+  const BORROWED: FixedAssetCtx = {
+    teamId: "teamA", userId: "userA", agentId: "agentB", agentName: "agentB", isSelf: false,
+  };
+
+  /** 在 makeCtx 基础上携带工具面与（可选）fixed-asset ctx 缓存（借入 ctx 测试缝，绕过控制面）。 */
+  function makeToolsCtx(userText: string, tools: AgentTool[], fixedAssetCtxs?: FixedAssetCtx[]) {
+    const base = makeCtx(userText) as Parameters<TdaiL1RecallInjector["execute"]>[0];
+    base.tools = tools;
+    if (fixedAssetCtxs) {
+      (base.metadata.custom as Record<string, unknown>).__tdaiFixedAssetCtxs = fixedAssetCtxs;
+    }
+    return base;
+  }
+
+  /** 本 describe 专用假 client（makeMergeInjector 为上 describe 局部，不跨块复用）。 */
+  function makeCapInjector() {
+    const recallBlockForCtx = vi.fn(async () => ({
+      block: "<relevant-memories>\n- [结论|合并召回] 核心组装块行甲\n</relevant-memories>",
+      meta: { conclusionCount: 1, experienceCount: 1, sessionReused: false, layered: true },
+    }));
+    const injector = new TdaiL1RecallInjector({ recallBlockForCtx } as unknown as TdaiClient, null);
+    return { injector, recallBlockForCtx };
+  }
+
+  it("self ctx：tools 非空 → recallBlockForCtx 第 6 参携带策展清单（≤5 行模板直出）", async () => {
+    const { injector, recallBlockForCtx } = makeCapInjector();
+    await injector.execute(makeToolsCtx("召回专项最近有什么新进展", TOOLS));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+    const args = recallBlockForCtx.mock.calls[0] as unknown[];
+    expect(args[5]).toEqual(CAP_LINES);
+  });
+
+  it("借入 ctx：不携带 capabilities（他人身份不混当前 agent 能力）", async () => {
+    const { injector, recallBlockForCtx } = makeCapInjector();
+    await injector.execute(makeToolsCtx("召回专项最近有什么新进展", TOOLS, [SELF, BORROWED]));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+    const calls = recallBlockForCtx.mock.calls as unknown as unknown[][];
+    const selfCall = calls.find((c) => (c[0] as { agentId: string }).agentId === "agentA");
+    const borrowedCall = calls.find((c) => (c[0] as { agentId: string }).agentId === "agentB");
+    expect(selfCall?.[5]).toEqual(CAP_LINES);
+    expect(borrowedCall?.[5]).toBeUndefined();
+  });
+
+  it("tools 为空 → 第 6 参 undefined（请求体不带 capabilities=逐位现状）", async () => {
+    const { injector, recallBlockForCtx } = makeCapInjector();
+    await injector.execute(makeToolsCtx("召回专项最近有什么新进展", []));
+    const args = recallBlockForCtx.mock.calls[0] as unknown[];
+    expect(args[5]).toBeUndefined();
   });
 });

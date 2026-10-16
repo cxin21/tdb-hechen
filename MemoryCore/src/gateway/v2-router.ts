@@ -1841,9 +1841,21 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       requestId,
     );
   }
-  const b = (body ?? {}) as { query?: unknown; maxResults?: unknown; time_point?: unknown };
+  const b = (body ?? {}) as { query?: unknown; maxResults?: unknown; time_point?: unknown; capabilities?: unknown };
   if (typeof b.query !== "string" || b.query.trim().length === 0) {
     return errorEnvelope(400, "query (non-empty string) required", requestId);
+  }
+  // #40（ADR0003-P3 接线票 B）：capabilities（代理侧工具面策展清单，可选）——清洗后
+  // 透传渲染层；是否渲染由 coreMemory.soulRender.capabilities.enabled 门决定（缺省
+  // false=现状）。清洗规则：仅 string、trim 非空、上限 10（代理侧已策展 ≤5，此处仅防御）。
+  let capabilities: string[] | undefined;
+  if (Array.isArray(b.capabilities)) {
+    const cleaned = b.capabilities
+      .filter((c): c is string => typeof c === "string")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0)
+      .slice(0, 10);
+    if (cleaned.length > 0) capabilities = cleaned;
   }
   let maxResultsOverride: number | undefined;
   if (b.maxResults !== undefined && b.maxResults !== null) {
@@ -1913,6 +1925,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       profileIsolation,
       isolationFilter: searchFilter,
       validityNow,
+      capabilities,
     }).finally(() => {
       if (timer) clearTimeout(timer);
     }),

@@ -574,6 +574,10 @@ export async function performLayeredRecall(params: {
     breaker?: RerankBreaker;
     fetchImpl?: typeof fetch;
   };
+  /** #40（ADR0003-P3 接线票 B）：工具面策展清单（代理侧 /v3/recall body 透传，可选）——
+   *  仅在 coreMemory.soulRender.capabilities.enabled 门开时渲染进 soul 前缀
+   *  「## 我能做什么」（渲染行=清单 1:1，#32 合同）；门关或未传=现状零渲染。 */
+  capabilities?: string[];
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
 
@@ -963,6 +967,11 @@ export async function performLayeredRecall(params: {
             snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,
             // #29（R5）：情境锚选择门（shadow 先行：仅报告不裁剪，转正待 D9/ADR）。
             anchorSelect: cfg.coreMemory?.soulRender?.anchorSelect,
+            // #40（ADR0003-P3 接线票 B）：capabilities 渲染门——config 门开且 body 携带
+            // 非空清单才传（渲染行=清单 1:1，#32 一致性合同）；门关整链丢弃=逐位现状。
+            ...(cfg.coreMemory?.soulRender?.capabilities?.enabled === true && params.capabilities?.length
+              ? { capabilities: params.capabilities }
+              : {}),
           },
           soulMeta,
         );
