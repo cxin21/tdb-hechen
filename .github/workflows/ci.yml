@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  memorycore-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: MemoryCore/pnpm-lock.yaml
+      - name: Install
+        working-directory: MemoryCore
+        run: pnpm install --frozen-lockfile
+      - name: Redline subset probes (PR gate, #48)
+        working-directory: MemoryCore
+        run: pnpm exec vitest run src/core/hooks/__tests__/soul-identity-probes.test.ts -t "红线子集"
+      - name: Full test suite
+        working-directory: MemoryCore
+        run: pnpm exec vitest run
+
+  memoryproxy-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: MemoryProxy/pnpm-lock.yaml
+      - name: Install
+        working-directory: MemoryProxy
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        working-directory: MemoryProxy
+        run: pnpm exec tsc --noEmit
+      - name: Full test suite
+        working-directory: MemoryProxy
+        run: pnpm exec vitest run

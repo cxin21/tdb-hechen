@@ -1,0 +1,48 @@
+name: probes-nightly
+
+on:
+  schedule:
+    - cron: "30 19 * * *" # 03:30 Asia/Shanghai
+  workflow_dispatch: {}
+
+jobs:
+  memorycore-nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: MemoryCore/pnpm-lock.yaml
+      - name: Install
+        working-directory: MemoryCore
+        run: pnpm install --frozen-lockfile
+      - name: Full identity probes (nightly, #48)
+        working-directory: MemoryCore
+        run: pnpm exec vitest run src/core/hooks/__tests__/soul-identity-probes.test.ts
+      - name: Full test suite
+        working-directory: MemoryCore
+        run: pnpm exec vitest run
+
+  memoryproxy-nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: MemoryProxy/pnpm-lock.yaml
+      - name: Install
+        working-directory: MemoryProxy
+        run: pnpm install --frozen-lockfile
+      - name: Full test suite
+        working-directory: MemoryProxy
+        run: pnpm exec vitest run
