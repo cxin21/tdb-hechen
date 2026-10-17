@@ -15,6 +15,8 @@ import {
   jaccard,
   buildJournalEntry,
   appendJournalEntry,
+  JOURNAL_NORM_VERSION,
+  journalNormVersion,
   type SoulOverlapJournalEntry,
 } from "../soul-overlap-journal.js";
 import {
@@ -324,5 +326,40 @@ describe("#38 请求级 requestId 路由（turnKey 碰撞根修）", () => {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as { core_chars: number };
     expect(parsed.core_chars).toBeGreaterThan(0);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("#51 norm 口径版本（H26 归一化切换窗）", () => {
+  it("buildJournalEntry 新行带 norm=JOURNAL_NORM_VERSION（当前=1）", () => {
+    const entry = buildJournalEntry([SOUL_BLOCK, CORE_BLOCK], meta("s", 1))!;
+    expect(entry.norm).toBe(1);
+    expect(entry.norm).toBe(JOURNAL_NORM_VERSION);
+  });
+
+  it("appendJournalEntry JSONL roundtrip 保留 norm 字段", () => {
+    const dir = mkdtempSync(join(tmpdir(), "soul-journal-norm-"));
+    const file = join(dir, "j.jsonl");
+    appendJournalEntry(file, buildJournalEntry([SOUL_BLOCK, CORE_BLOCK], meta("s", 1))!);
+    const parsed = JSON.parse(readFileSync(file, "utf8").trim()) as SoulOverlapJournalEntry;
+    expect(parsed.norm).toBe(1);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("journalNormVersion：缺省/undefined/NaN/非数字 → 0（旧口径），1 → 1", () => {
+    expect(journalNormVersion({})).toBe(0);
+    expect(journalNormVersion(undefined)).toBe(0);
+    expect(journalNormVersion({ norm: undefined })).toBe(0);
+    expect(journalNormVersion({ norm: Number.NaN })).toBe(0);
+    expect(journalNormVersion({ norm: "1" as unknown as number })).toBe(0);
+    expect(journalNormVersion({ norm: 1 })).toBe(1);
+  });
+
+  it("旧行（无 norm 字段）JSONL 解析不炸 = 0 口径（向后兼容）", () => {
+    const oldLine =
+      '{"ts":"2026-10-16T01:00:00.000Z","session":"s","turn_seq":1,"soul_chars":10,"core_chars":20,' +
+      '"soul_hash":"aa","core_hash":"bb","soul_line_hashes":["x"],"core_line_hashes":["y"]}';
+    const old = JSON.parse(oldLine) as SoulOverlapJournalEntry;
+    expect(old.session).toBe("s");
+    expect(journalNormVersion(old)).toBe(0);
   });
 });

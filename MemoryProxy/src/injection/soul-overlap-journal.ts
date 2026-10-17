@@ -6,6 +6,13 @@
  *   fnv1a32 指纹思路），零行为变化（不改动任何注入字节）；逐日统计（报告脚本
  *   可选 days 时间窗，R5-F3 名实相符）
  *
+ * 口径版本（#51/H26，2026-10-17）：journal 行带 `norm` 字段标记行 hash 计算口径
+ *   —— 1 = 行 hash 按 normalizeJournalLine 归一化口径（ffc33e1 起）；历史行
+ *   （ffc33e1 之前）无该字段 = 0 口径（同文异装格式噪声，恒 0% 伪影）。旧行与新行
+ *   hash 不互通且不可离线重算（journal 无原文列）→ 报告侧口径感知见
+ *   soul-overlap-report.ts（三档判定只消费同口径数据；窗口跨切换日 →
+ *   insufficient-window 诚实降级）。
+ *
  * 并发假设（R5-F7 注记）：单 proxy 进程单写者；跨进程并发追加在 Windows 上可能
  * 撕裂行（报告脚本按行解析失败即跳过容忍）；缺省 file 相对进程 cwd，生产建议
  * 显式配置绝对路径。
@@ -21,6 +28,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+
+/** #51：journal 行口径版本当前值（写入面使用；读取面用 journalNormVersion 容错）。 */
+export const JOURNAL_NORM_VERSION = 1;
 
 /** 单轮 journal 条目（JSONL 一行一条）。 */
 export interface SoulOverlapJournalEntry {
@@ -38,6 +48,17 @@ export interface SoulOverlapJournalEntry {
   /** 逐行 hash 集合（Jaccard 的计算材料；空行剔除）。 */
   soul_line_hashes: string[];
   core_line_hashes: string[];
+  /** 行 hash 口径版本（#51）：1=归一化口径；缺省/0=未归一旧口径（向后兼容）。 */
+  norm?: number;
+}
+
+/**
+ * 读取行口径版本：缺省/undefined/NaN/非数字 → 0（旧口径，向后兼容不炸）。
+ * 判定语义见 soul-overlap-report.ts（三档规则只消费同口径数据）。
+ */
+export function journalNormVersion(e: { norm?: number } | undefined): number {
+  const n = e?.norm;
+  return typeof n === "number" && Number.isFinite(n) ? n : 0;
 }
 
 /** FNV-1a 32bit（与 MemoryCore/src/core/hooks/soul-assembler.ts 同算法，跨包一致性）。 */
@@ -130,6 +151,7 @@ export function buildJournalEntry(
     core_hash: extracted.core ? fnv1a32(extracted.core) : "",
     soul_line_hashes: lineHashes(extracted.soul),
     core_line_hashes: lineHashes(extracted.core),
+    norm: JOURNAL_NORM_VERSION, // #51：lineHashes 已按归一化口径计算（ffc33e1 起）
   };
 }
 
