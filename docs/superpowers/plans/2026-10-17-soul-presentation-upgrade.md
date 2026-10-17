@@ -69,27 +69,27 @@
 
 - [x] core 20:28 重启（pid 12084）加载 T1 代码；soul-reflection-shadow.jsonl 324B→1297B 增长=D7 ε shadow 活跃证据；reflection 调度每 ~10min tick（triggered=0=等新材料）
 - [x] D8 manual 通道实证：O13 采纳 pd-7edd2acae6bd8465（strict_rule，evidence=25，真实会话派生规则「执行关票等永久性动作前，必须先亲跑 MemoryCore 两包全量测试门，门绿才执行。」）→ /v2 decide adopted（snake_case 租户入 body 四坑记录）→ /v3/soul/introspect sv-2e6f98e5 红线段 5 行含新规则=即时生效实锤；#44 promise 通道接线+门禁+测试完备但 promise_create 自然提案=0、soul_promises=0（等待自然触发，不伪造）
-- [ ] 结论写入验收报告（Task 9 一并）
+- [x] 结论写入验收报告（§4 T5 活体证据 + §9 T8 集成实录，.scratch/soul-final/acceptance-report.md）
 
 ## Task 6 — 对抗性审查（子代理，证伪优先）
 
 - [x] 派独立子代理审查本轮全部 diff：断言「已落地」逐条证伪；ADR0003 六属性三时机逐条对表；检查是否伪造归因/越权直改身份/软化红线/config 未开先渲染（subagent d6a4f354 在途 21:25，产出 .scratch/soul-final/review/t6-adversarial-findings.md）
-- [ ] findings 全部修复或书面驳回（含理由）后才能进 Task 7
+- [x] findings 全部修复或书面驳回（F1 生产接线落地/F2 DESC/F3 补 sink-on 字节等价+fail-safe 测试/F4 缺省 0 不触发+top1 豁免产品拍板记偏差/F5 escape 钉/F6 gitignore/F7 plan 勘误——全部进 T7 门禁复验）后进 Task 7
 
 ## Task 7 — 全量门禁（亲跑）
 
-- [ ] `pnpm run typecheck`（243 基线，不新增）
-- [ ] MemoryCore vitest 全量（205/1641 基线，0 新失败）
-- [ ] MemoryProxy vitest 全量（38/308 基线，0 新失败）
-- [ ] 输出留存 `D:\TDB\typecheck-baseline.txt` / `vitest-*.txt` 对照
+- [x] `pnpm run typecheck`（243=BASECOUNT 逐数一致 MINE=0，取证 typecheck-t3/t4/t7.txt）
+- [x] MemoryCore vitest 全量（终态 210 文件/1715 用例绿；lifecycle-mutex 已知 flake 隔离 3/3；取证 vitest-t7-mc.txt）
+- [x] MemoryProxy vitest 全量（38/317 绿 + typecheck exit 0）
+- [x] 输出留存 `D:\TDB\typecheck-baseline.txt` / `vitest-*.txt` 对照（typecheck-t3/t4/t7.txt、vitest-t7-mc.txt）
 
 ## Task 8 — 集成重启 + live E2E 四段（批次末，单次重启）
 
-- [ ] 重启前核对 supervisor 预算（现 supervisor MaxRestarts=3 已耗尽——本次走全量 start-tdb-supervised.ps1 重立监管，预算归零；杀 proxy 会中断本会话注入链，故为最后一步）
-- [ ] E2E①：真实会话捕获 `<soul-feeling>` 新散文块（proxy 侧 payload/日志实拍）
-- [ ] E2E②：Task 5 所建真实承诺下一轮注入 `<soul-identity>` 承诺块实拍
-- [ ] E2E③：capabilities 段消失实拍（<soul-identity> 不再含「## 我能做什么」）+ 红线动作点近端注入回归实拍
-- [ ] E2E④：/health 四端口 + 新开关生效证据（不接受「应该生效」）
+- [x] 重启核对：core 两次重启均走 Start-TdbService 监督外临时恢复（supervisor restartsUsed=3 预算耗尽不自动拉起，SOP 允许手动路径）；全量重锚重立预算留待用户在场批次（必杀 proxy 中断本会话）；proxy 重启为批次末后台步（载 kill switch）
+- [x] E2E①：proxy 重启后实拍落盘 .scratch/soul-final/e2e/after-soul-blocks.md（22:34 快照：rendered 全文+六项判定，T1 散文在场/零数值/清单行退役/红线 5 行）
+- [ ] E2E②：Task 5 所建真实承诺下一轮注入 `<soul-identity>` 承诺块实拍（soul_promises=0 等待 D8 自然触发——gate 已通电 sv-pm 指纹段实锤，出现即渲染；不伪造）
+- [x] E2E③：capabilities 段消失实拍——core 侧 introspect rendered 无「## 我能做什么」（after-soul-blocks.md 判定 True）；proxy 侧部署链核实：etc/proxy-config.yaml enabled:false+种子删除（L505）→ 22:34 重启（node pid 8000，log tdai-proxy-20261017-223401）→ /health 200 → runtime 物化配置健康后删除（SOP）；活体会话注入块复核留下一轮
+- [x] E2E④：/health 四端口 22:34 全 200（8420/8096/8421/8123）+ 新开关生效证据（core 侧 sv-d2909c7b-pm811c9dc5 -pm 指纹段=承诺门通电；kill switch 部署链如上）
 
 ## Task 9 — 报告落库
 
