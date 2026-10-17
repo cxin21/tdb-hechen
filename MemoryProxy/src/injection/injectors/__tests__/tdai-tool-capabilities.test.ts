@@ -8,6 +8,11 @@
  *   - 跳过空/纯空白名（宁缺毋滥）；空工具面 → 空数组；
  *   - 记忆化：同工具面（指纹 = [name,description][] 序列化 FNV-1a 32bit）→ 同引用
  *     （工具面未变更不重策展）；内容变更 → 重策展新引用；上限 100 条淘汰不崩。
+ *
+ * #40-B（ADR0003 派生票 B，2026-10-17）工具面数据源合同修订：新增 config lines
+ * 显式通道（第 3 参，readonly string[]）——非空时逐字 1:1 直出（config 即数据源，
+ * 工具面实况不参与、不做 firstLine 截断），仍受 maxLines 上限保护；缺失/空 →
+ * 回退既有运行时策展（逐位现状）。指纹覆盖 lines（变更即缓存失效重算）。
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { curateToolCapabilities, resetToolCapabilityCacheForTest } from "../tdai-tool-capabilities.js";
@@ -85,5 +90,46 @@ describe("#40 · curateToolCapabilities（模板直出 ≤5 行）", () => {
     expect(curateToolCapabilities(three, 2)).toEqual(["t1：一", "t2：二"]);
     // 同工具面不同 maxLines → 不命中截断缓存，重策展出 3 行
     expect(curateToolCapabilities(three, 3)).toEqual(["t1：一", "t2：二", "t3：三"]);
+  });
+});
+
+// ═══════════════ #40-B（ADR0003 派生票 B）· config lines 显式数据源通道 ═══════════════
+
+describe("#40-B · curateToolCapabilities config lines 显式通道（工具面数据源合同修订）", () => {
+  beforeEach(() => resetToolCapabilityCacheForTest());
+
+  it("lines 非空 → 逐字 1:1 直出（config 即数据源：工具面不参与、>80 字符不截、空工具面也直出）", () => {
+    const lines = [
+      "通用开发协作：代码取证、缺陷定位、测试驱动实现",
+      `超长行${"很".repeat(120)}`, // >80 字符：lines 通道不做 firstLine 截断
+    ];
+    // 工具面在场也不参与策展（换工具面输出不变）
+    expect(curateToolCapabilities([tool("t1", "能力一")], undefined, lines)).toEqual(lines);
+    // 空工具面同样直出（config 是唯一数据源）
+    expect(curateToolCapabilities([], undefined, lines)).toEqual(lines);
+  });
+
+  it("lines 仍受 maxLines 上限保护：截到前 maxLines 条（缺省 5 与显式值同效），输出冻结", () => {
+    const lines = ["一", "二", "三", "四", "五", "六"];
+    const clipped = curateToolCapabilities([], undefined, lines);
+    expect(clipped).toEqual(["一", "二", "三", "四", "五"]);
+    expect(Object.isFrozen(clipped)).toBe(true);
+    expect(curateToolCapabilities([], 2, lines)).toEqual(["一", "二"]);
+  });
+
+  it("lines 缺失/空数组 → 回退运行时策展，与旧逻辑逐位一致（同缓存引用=回归锚）", () => {
+    const tools = [tool("t1", "能力一"), tool("t2", "能力二")];
+    const baseline = curateToolCapabilities(tools);
+    expect(baseline).toEqual(["t1：能力一", "t2：能力二"]);
+    expect(curateToolCapabilities(tools, undefined, undefined)).toBe(baseline);
+    expect(curateToolCapabilities(tools, undefined, [])).toBe(baseline);
+  });
+
+  it("lines 变更 → 指纹覆盖 lines：换行重算新引用，同行复用缓存引用", () => {
+    const a = curateToolCapabilities([], undefined, ["行A"]);
+    const b = curateToolCapabilities([], undefined, ["行B"]);
+    expect(b).not.toBe(a);
+    expect(b).toEqual(["行B"]);
+    expect(curateToolCapabilities([], undefined, ["行A"])).toBe(a);
   });
 });

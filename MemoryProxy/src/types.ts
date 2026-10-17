@@ -2,7 +2,8 @@
 
 // #39（ADR0003-P3）：灵魂注入时机配置 —— 类型单一源在 ./injection/types.js
 // （#37 首交付冻结；injection/types.js 零 import，无循环依赖风险）。
-import type { SoulTimingConfig } from "./injection/types.js";
+// #40-B：工具面策展配置（injection.toolCapabilities.lines 显式数据源通道）同源。
+import type { SoulTimingConfig, ToolCapabilitiesConfig } from "./injection/types.js";
 
 /**
  * Optional private forwarding extension config.
@@ -705,6 +706,13 @@ export interface InjectionConfig {
    * config-first：显式配置才翻转任何时机）。
    */
   soulTiming: SoulTimingConfig;
+  /**
+   * #40-B（ADR0003 派生票 B）：工具面策展配置——soul「我能做什么」段数据源
+   * 合同修订通道。buildConfig 恒材料化（缺段 → {}，lines 缺省 = 回退既有
+   * 运行时策展，现状逐位，config-first）；lines 非空 → 逐字 1:1 直出
+   * （仍受策展器 maxLines 上限保护）。
+   */
+  toolCapabilities: ToolCapabilitiesConfig;
 }
 
 /**
@@ -927,6 +935,8 @@ export interface RawYamlConfig {
     };
     /** #39：灵魂注入时机（yaml 源；strict enum 逐字段校验，非法回退缺省）。 */
     soulTiming?: Partial<SoulTimingConfig>;
+    /** #40-B：工具面策展（yaml 源；lines 非空字符串数组才采纳，非法回退缺省）。 */
+    toolCapabilities?: Partial<ToolCapabilitiesConfig>;
   };
   extraction?: {
     enabled?: boolean;

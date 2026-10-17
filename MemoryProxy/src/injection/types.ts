@@ -230,6 +230,18 @@ export const DEFAULT_SOUL_TIMING: SoulTimingConfig = {
   driftTrigger: "off",
 };
 
+/**
+ * #40-B（ADR0003 派生票 B，2026-10-17）：工具面策展配置（injection.toolCapabilities.*）。
+ * config lines 显式通道——soul「我能做什么」段数据源合同的修订通道：
+ * lines 非空 → 逐字 1:1 直出（config 即数据源，工具面实况不参与，不做 firstLine
+ * 截断），仍受策展器 maxLines 上限保护（截到前 maxLines 条）；
+ * lines 缺失/空 → 回退既有运行时策展（工具面声明序前 5、描述首行 ≤80 截断），现状逐位。
+ */
+export interface ToolCapabilitiesConfig {
+  /** agent 能力策展行（zh 手写，模板直出零 LLM）；缺失/空数组 = 回退运行时策展。 */
+  lines?: string[];
+}
+
 // ── Dynamic Anchor (semantic slots) ─────────────────────────────────────────
 
 /**

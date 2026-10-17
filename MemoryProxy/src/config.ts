@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { CostGuardConfig, ProxyConfig, RawYamlConfig } from "./types.js";
-import { DEFAULT_SOUL_TIMING, type SoulTimingConfig } from "./injection/types.js";
+import { DEFAULT_SOUL_TIMING, type SoulTimingConfig, type ToolCapabilitiesConfig } from "./injection/types.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
@@ -84,6 +84,8 @@ export const DEFAULT_CONFIG: ProxyConfig = {
     assetReflection: { markerOptIn: true },
     // #39：灵魂注入时机缺省 = 现状逐位（config-first；buildConfig 恒材料化）。
     soulTiming: { ...DEFAULT_SOUL_TIMING },
+    // #40-B：工具面策展缺省 = {}（lines 缺省 → 回退运行时策展现状；buildConfig 恒材料化）。
+    toolCapabilities: {},
   },
   // Extraction (write-side) defaults to fully permissive so that a config
   // without the `extraction:` block behaves identically to the pre-gate
@@ -238,6 +240,21 @@ function parseSoulTiming(raw: unknown): SoulTimingConfig {
     feeling: pick("feeling", SOUL_TIMING_ENUMS.feeling),
     driftTrigger: pick("driftTrigger", SOUL_TIMING_ENUMS.driftTrigger),
   };
+}
+
+/**
+ * #40-B（ADR0003 派生票 B）：injection.toolCapabilities 解析（config lines 显式通道）。
+ * lines 仅当「非空数组且元素全为 string」时采纳（逐字 1:1，不裁剪不转义）；
+ * 缺失/空数组/含非字符串/非数组 → lines 缺省（undefined = 回退运行时策展，现状逐位）。
+ * 整段非对象（字符串/数字）→ 逐字段取不到 → 整段缺省（parseSoulTiming 同构姿势）。
+ */
+function parseToolCapabilities(raw: unknown): ToolCapabilitiesConfig {
+  const rawObj = (raw ?? {}) as Record<string, unknown>;
+  const lines = rawObj.lines;
+  const valid = Array.isArray(lines)
+    && lines.length > 0
+    && lines.every((l) => typeof l === "string");
+  return valid ? { lines: lines as string[] } : {};
 }
 
 function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {
@@ -449,6 +466,8 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
           },
       // #39：灵魂注入时机 —— 恒材料化（yaml 缺段 → DEFAULT_SOUL_TIMING=现状逐位）。
       soulTiming: parseSoulTiming(yaml.injection?.soulTiming),
+      // #40-B：工具面策展 —— 恒材料化（缺段 → {}；lines 非空字符串数组才采纳）。
+      toolCapabilities: parseToolCapabilities(yaml.injection?.toolCapabilities),
     },
     extraction: {
       enabled: yaml.extraction?.enabled ?? DEFAULT_CONFIG.extraction.enabled,

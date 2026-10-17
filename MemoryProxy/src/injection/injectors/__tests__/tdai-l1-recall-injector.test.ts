@@ -236,4 +236,38 @@ describe("#40 · TdaiL1RecallInjector capabilities 策展（self-only 携带）"
     const args = recallBlockForCtx.mock.calls[0] as unknown[];
     expect(args[5]).toBeUndefined();
   });
+
+  // ═══ #40-B（ADR0003 派生票 B）：config lines 显式数据源通道（构造第 6 参透传）═══
+
+  /** #40-B 专用：构造第 6 参携带 config 能力策展行（injection.toolCapabilities.lines）。 */
+  function makeCapInjectorWithLines(lines: readonly string[] | undefined) {
+    const recallBlockForCtx = vi.fn(async () => ({
+      block: "<relevant-memories>\n- [结论|合并召回] 核心组装块行甲\n</relevant-memories>",
+      meta: { conclusionCount: 1, experienceCount: 1, sessionReused: false, layered: true },
+    }));
+    const injector = new TdaiL1RecallInjector(
+      { recallBlockForCtx } as unknown as TdaiClient,
+      null,
+      undefined,
+      5,
+      null,
+      lines,
+    );
+    return { injector, recallBlockForCtx };
+  }
+
+  it("#40-B：构造携带 config lines → 第 6 参逐字携带 lines（工具面不参与策展）", async () => {
+    const { injector, recallBlockForCtx } = makeCapInjectorWithLines(["行甲：能力甲", "行乙：能力乙"]);
+    await injector.execute(makeToolsCtx("召回专项最近有什么新进展", TOOLS));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+    const args = recallBlockForCtx.mock.calls[0] as unknown[];
+    expect(args[5]).toEqual(["行甲：能力甲", "行乙：能力乙"]);
+  });
+
+  it("#40-B：构造 lines 缺省 → 第 6 参=运行时策展（现状逐位）", async () => {
+    const { injector, recallBlockForCtx } = makeCapInjectorWithLines(undefined);
+    await injector.execute(makeToolsCtx("召回专项最近有什么新进展", TOOLS));
+    const args = recallBlockForCtx.mock.calls[0] as unknown[];
+    expect(args[5]).toEqual(CAP_LINES);
+  });
 });

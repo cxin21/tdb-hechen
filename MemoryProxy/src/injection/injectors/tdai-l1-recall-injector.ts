@@ -48,6 +48,12 @@ export class TdaiL1RecallInjector implements InjectionHook {
      * fixed-asset ctx 都会走 acl/check(read) 过滤。为 null 时保留旧行为。
      */
     private aclClient: TdaiClient | null = null,
+    /**
+     * #40-B（ADR0003 派生票 B）：config 显式能力策展行（injection.toolCapabilities.lines）。
+     * 非空 → curateToolCapabilities 逐字 1:1 直出（config 即数据源，工具面实况不参与）；
+     * 缺失/空 → undefined = 运行时策展（现状逐位）。
+     */
+    private capabilitiesLines?: readonly string[],
   ) {}
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
@@ -95,10 +101,12 @@ export class TdaiL1RecallInjector implements InjectionHook {
     const recallFn = (this.client as unknown as { recallBlockForCtx?: unknown }).recallBlockForCtx;
     if (typeof recallFn === "function") {
       // ── #40（ADR0003-P3 接线票 B）capabilities 数据源 ──
-      // 工具面实况 → 策展清单（≤5 行模板直出，零 LLM）；空清单 → undefined（请求体
-      // 不带 capabilities 键=逐位现状）。仅 self ctx 携带（见 recallViaEndpoint）：
-      // 借入块出自他人 agent 身份，混入当前 agent 的能力自述会污染其 soul 前缀语义。
-      const curated = curateToolCapabilities(ctx.tools);
+      // #40-B 修订：config lines 显式通道优先（injection.toolCapabilities.lines 非空
+      // → 逐字 1:1 直出，工具面实况不参与）；缺失/空 → 工具面实况策展（≤5 行模板
+      // 直出，零 LLM）。空清单 → undefined（请求体不带 capabilities 键=逐位现状）。
+      // 仅 self ctx 携带（见 recallViaEndpoint）：借入块出自他人 agent 身份，混入
+      // 当前 agent 的能力自述会污染其 soul 前缀语义。
+      const curated = curateToolCapabilities(ctx.tools, undefined, this.capabilitiesLines);
       const capabilities = curated.length > 0 ? curated : undefined;
       try {
         mergedChain = await this.recallViaEndpoint(ctxs, identity, query, capabilities);

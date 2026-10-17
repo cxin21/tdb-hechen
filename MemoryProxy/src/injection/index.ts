@@ -450,6 +450,9 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
           undefined,
           config.tdai.memory.l1GlobalTopK,
           l1Client,
+          // #40-B：config lines 显式数据源通道（injection.toolCapabilities.lines）——
+          // 非空 → soul「我能做什么」逐字 1:1 直出；缺失/空 → 运行时策展现状逐位。
+          config.injection?.toolCapabilities?.lines,
         ),
       );
     }
