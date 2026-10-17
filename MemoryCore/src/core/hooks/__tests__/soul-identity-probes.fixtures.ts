@@ -68,14 +68,14 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     category: "value-direct", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "根因", weight: 0.78, valence: 1, attrs_json: desc("多次失效最终归因到配置层。") })],
     slots: [S("self_identity", "我是测试主体")],
-    expectContains: ["根因(趋近·w0.78)：多次失效最终归因到配置层。"],
+    expectContains: ["- 根因(趋近)：多次失效最终归因到配置层。"],
   },
   {
     id: "P02-anchor-negative-dir",
     category: "value-direct", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "数据守护", weight: 0.5, valence: -1, attrs_json: desc("绝不以删除记忆换结论。") })],
     slots: [S("self_identity", "x")],
-    expectContains: ["数据守护(审慎·w0.5)"],
+    expectContains: ["- 数据守护(审慎)"],
   },
   {
     id: "P03-anchor-stable-order",
@@ -85,8 +85,8 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "va", label: "甲锚", weight: 0.4, attrs_json: desc("甲。") }),
     ],
     slots: [S("self_identity", "x")],
-    // 价值锚行单行「；」拼接（:282），同线断言顺序=value_id 稳定序
-    expectRegex: ["甲锚\\(趋近·w0\\.4\\)：甲。；乙锚\\(趋近·w0\\.4\\)：乙。"],
+    // 价值锚行逐锚列表（呈现层翻修 2026-10-16），行序=value_id 稳定序
+    expectRegex: ["- 甲锚\\(趋近\\)：甲。\\n- 乙锚\\(趋近\\)：乙。"],
   },
   {
     id: "P04-weight-not-sort-key",
@@ -96,8 +96,8 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "vb", label: "乙锚", weight: 0.95, attrs_json: desc("乙。") }),
     ],
     slots: [S("self_identity", "x")],
-    // 立项②：weight 只管取舍不管注入序 → 仍按 value_id 稳定序（同线断言）
-    expectRegex: ["甲锚\\(趋近·w0\\.4\\)：甲。；乙锚\\(趋近·w0\\.95\\)：乙。"],
+    // 立项②：weight 只管取舍不管注入序（内隐不渲染）→ 行序仍=value_id 稳定序
+    expectRegex: ["- 甲锚\\(趋近\\)：甲。\\n- 乙锚\\(趋近\\)：乙。"],
   },
   {
     id: "P05-empty-desc-excluded-everywhere",
@@ -118,8 +118,8 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     category: "value-direct", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "中性锚", weight: 0.6, valence: 0, attrs_json: desc("中性的锚。") })],
     slots: [S("self_identity", "x")],
-    expectContains: ["中性锚(中性·w0.6)"],
-    expectNotContains: ["驱动我行动的价值：中性锚"],
+    expectContains: ["- 中性锚(中性)"],
+    expectNotContains: ["驱动我行动的价值：\n- 中性锚"],
   },
   {
     id: "P08-label-boundary-escaped",
@@ -302,7 +302,7 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "pa", label: "甲人", weight: 0.5, valence: 1, node_type: "person", attrs_json: JSON.stringify({ description: "甲。", role: "同事" }) }),
     ],
     slots: [S("self_identity", "x")],
-    expectRegex: ["甲人\\(同事·趋近\\)：甲。[^\\n]*；乙人"],
+    expectRegex: ["- 甲人\\(同事·趋近\\)：甲。[\\s\\S]*- 乙人\\(同事·趋近\\)"],
   },
   {
     id: "P29-person-boundary-escaped",
@@ -368,7 +368,7 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     rows: [row({ value_id: "c1", label: "求实", weight: 0.4, valence: 1, node_type: "character", attrs_json: desc("只认一手证据。") })],
     slots: [S("self_identity", "x")],
     opts: { characterTensionEnabled: true },
-    expectContains: ["求实(趋近·w0.4)：只认一手证据。"],
+    expectContains: ["- 求实(趋近)：只认一手证据。"],
   },
   {
     id: "P36-character-not-in-value-rows",
@@ -400,7 +400,7 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     rows: [row({ value_id: "c1", label: "严谨", weight: 0.4, valence: -1, node_type: "character", attrs_json: desc("先验配置再定性。") })],
     slots: [S("self_identity", "x")],
     opts: { characterTensionEnabled: true },
-    expectContains: ["严谨(审慎·w0.4)"],
+    expectContains: ["- 严谨(审慎)"],
   },
   {
     id: "P40-character-missing-tension",
@@ -442,9 +442,9 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "vb", label: "乙锚", weight: 0.4, valence: 1, attrs_json: desc("次锚描述。") }),
     ],
     slots: [S("self_identity", "x")],
-    // #23：首要锚不在清单中重复两现
-    expectRegex: ["驱动我行动的价值：乙锚；首要 甲锚：首要锚描述。"],
-    expectNotContains: ["甲锚；首要 甲锚"],
+    // #23：首要锚不在清单中重复两现（清单=裸 label「；」单行 + 首要独立行；呈现层翻修 2026-10-16）
+    expectRegex: ["驱动我行动的价值：乙锚\\n首要 甲锚：首要锚描述。"],
+    expectNotContains: ["甲锚；"],
   },
   {
     id: "P44-feeling-top-sentence-boundary",
@@ -460,7 +460,7 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     category: "feeling", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "长锚", weight: 0.8, valence: 1, attrs_json: desc("长".repeat(100)) })],
     slots: [S("self_identity", "x")],
-    // 合同钉：无句界+重复字符 → topDetailClause 的 isDanglingTail 判垃圾尾丢弃子句；清单 gate（desc 非空）仍保留「长锚」裸词
+    // 合同钉：无句界+重复字符 → topDetailClause 的 isDanglingTail 判垃圾尾丢弃子句；清单 gate（desc 非空）仍保留「长锚」清单项（裸 label 形态）
     expectContains: ["驱动我行动的价值：长锚"],
     expectNotContains: ["首要 长锚"],
   },

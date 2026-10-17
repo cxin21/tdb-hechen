@@ -30,7 +30,8 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     const out = await buildSoulPrefix(makeStore([{ slot: "identity", content: "x" }], values) as never, TENANT);
     expect(out).toContain("重要的人：");
     // weight DESC：赵六(0.95) 首位，王五(0.4) 被 cap 掉
-    const line = out.split("\n").find((l) => l.startsWith("重要的人："))!;
+    // 呈现层翻修（2026-10-16）：逐人列表行——断言面=「重要的人：」标题行起至文末（含 - 列表行）
+    const line = out.slice(out.indexOf("重要的人："));
     expect(line).toContain("赵六(朋友·趋近)");
     expect(line).toContain("女儿(家人·趋近)");
     expect(line).toContain("老周(棋友·中性)");
@@ -48,7 +49,7 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     const out = await buildSoulPrefix(makeStore([], values) as never, TENANT);
     expect(out).toContain("重要的人：");
     expect(out).not.toContain("价值锚：张三");
-    expect(out).toContain("价值锚：诚实(审慎·w0.9)：诚实呈现证据与遗留。");
+    expect(out).toContain("- 诚实(审慎)：诚实呈现证据与遗留。");
     expect(out).toContain("提醒我审慎的价值：首要 诚实：诚实呈现证据与遗留。"); // R5 #23 首要=详述 golden 翻新
     const feelLine = out.split("\n").find((l) => l.startsWith("提醒我审慎的价值")) ?? "";
     expect(feelLine).not.toContain("张三"); // person 不入感受段（原断言「诚实、张三」混列形态随 R5 翻新）
@@ -58,13 +59,13 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     const values: VRow[] = [{ label: "诚实", weight: 0.9, valence: 1, state: "active", attrs_json: '{"description":"诚实呈现证据与遗留。"}' }];
     const out = await buildSoulPrefix(makeStore([{ slot: "identity", content: "x" }], values) as never, TENANT);
     expect(out).not.toContain("重要的人：");
-    expect(out).toContain("价值锚：诚实(趋近·w0.9)：诚实呈现证据与遗留。"); // V6-1b：weight 显示（合法波及更新）
+    expect(out).toContain("- 诚实(趋近)：诚实呈现证据与遗留。"); // 权重内隐+逐锚列表行（呈现层翻修）
   });
 
   it("node_type undefined → theme（旧库行兼容，不误入重要的人）", async () => {
     const values: VRow[] = [{ label: "旧库锚", weight: 0.9, valence: null, state: "active", attrs_json: '{"description":"旧库锚说明。"}' }];
     const out = await buildSoulPrefix(makeStore([], values) as never, TENANT);
-    expect(out).toContain("价值锚：旧库锚(w0.9)：旧库锚说明。");
+    expect(out).toContain("- 旧库锚：旧库锚说明。"); // 旧库 valence null+权重内隐 → 无括号段
     expect(out).not.toContain("重要的人：");
   });
 });
@@ -76,14 +77,14 @@ describe("F17 maxRelationLines（审计补齐：spec 要求行数上限 config �
   ];
   it("opts.maxRelationLines=2 → 只渲染 weight 前二", async () => {
     const out = await buildSoulPrefix(makeStore([], mk()) as never, TENANT, undefined, { maxRelationLines: 2 });
-    const line = out.split("\n").find((l) => l.startsWith("重要的人："))!;
+    const line = out.slice(out.indexOf("重要的人："));
     expect(line).toContain("甲(家人·趋近)");
     expect(line).toContain("乙(朋友·趋近)");
     expect(line).not.toContain("丙");
   });
   it("缺省不传 → cap 5（原行为不变）", async () => {
     const out = await buildSoulPrefix(makeStore([], mk()) as never, TENANT);
-    const line = out.split("\n").find((l) => l.startsWith("重要的人："))!;
+    const line = out.slice(out.indexOf("重要的人："));
     // 立项②：排序改 value_id 稳定序——top-5 取舍仍按 weight，渲染序不按 weight
     //（R5-F4：删恒真断言 toContain("重要的人：")——line 由 startsWith 同前缀选出）
     expect(line).not.toContain("己");

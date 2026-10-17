@@ -124,7 +124,7 @@ describe("V7 F-U2：感受段首要锚并列 weight 两端序统一", () => {
       ) as never,
       TENANT,
     );
-    expect(out).toContain("；首要 甲：甲描述");
+    expect(out).toContain("\n首要 甲：甲描述");
   });
 });
 

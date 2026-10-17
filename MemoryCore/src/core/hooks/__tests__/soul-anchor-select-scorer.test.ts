@@ -124,8 +124,8 @@ describe("#42 锚选择打分器接线（soul-assembler）", () => {
       },
     );
     expect(warns.filter((w) => w.includes("soul-anchor-select"))).toHaveLength(0);
-    // 偶数号锚 score=1 过门且并列保 value_id 声明序；奇数号 score=0 被硬门滤除
-    const anchorLine = out.split("\n").find((l) => l.startsWith("价值锚："));
+    // 偶数号锚 score=1 过门且并列保 value_id 声明序；奇数号 score=0 被硬门滤除（逐锚列表行聚合）
+    const anchorLine = out.split("\n").filter((l) => l.startsWith("- 锚")).map((l) => l.slice(2)).join("\n");
     expect(anchorLine).toBeDefined();
     expect(anchorLine).toContain("锚0");
     expect(anchorLine).toContain("锚6");
@@ -253,7 +253,7 @@ describe("#42 审查加固（降级自审 F1/F2/F3）", () => {
       },
     );
     expect(provider).toHaveBeenCalledTimes(1);
-    const anchorLine = out.split("\n").find((l) => l.startsWith("价值锚："));
+    const anchorLine = out.split("\n").filter((l) => l.startsWith("- 锚")).map((l) => l.slice(2)).join("\n");
     expect(anchorLine).toBeDefined();
     expect(anchorLine).toContain("锚0");
     expect(anchorLine).not.toContain("锚1"); // provider 向量生效=硬门滤除正交锚

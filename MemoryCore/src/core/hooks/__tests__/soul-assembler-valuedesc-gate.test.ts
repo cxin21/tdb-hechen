@@ -37,11 +37,11 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/价值锚：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("根因(趋近·w0.5)：所有结论须以真实代码与测试取证背书");
-    expect(m![1]).not.toContain("拍板"); // 裸关键词形态整条消失
-    expect(m![1]).not.toContain("拍板(趋近·w0.5)");
+    // 呈现层翻修（2026-10-16）：断言面=「价值锚：」标题行起至文末（含逐锚 - 列表行）
+    const m = out.slice(out.indexOf("价值锚："));
+    expect(out).toContain("- 根因(趋近)：所有结论须以真实代码与测试取证背书");
+    expect(m).not.toContain("拍板"); // 裸关键词形态整条消失
+    expect(m).not.toContain("拍板(趋近)");
   });
 
   it("全部锚无 desc → 价值锚行省略（不造空行/裸串）", async () => {
@@ -52,7 +52,7 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
       { selfIdentityEnabled: true },
     );
     expect(out).not.toContain("价值锚：");
-    expect(out).not.toContain("拍板(趋近·w0.5)");
+    expect(out).not.toContain("拍板(趋近)");
   });
 
   it("desc 尾悬空（顿号结尾）含句末标点 → 清洗到最后句末标点", async () => {
@@ -64,10 +64,9 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/价值锚：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("实证(趋近·w0.5)：换路绕行是实证沉淀。"); // 截到最后句末标点
-    expect(m![1]).not.toContain("成功、"); // 半句尾巴消失
+    const m = out.slice(out.indexOf("价值锚："));
+    expect(out).toContain("- 实证(趋近)：换路绕行是实证沉淀。"); // 截到最后句末标点
+    expect(m).not.toContain("成功、"); // 半句尾巴消失
   });
 
   it("desc 尾悬空且无任何句末标点 → 按空处理整条跳过", async () => {
@@ -92,10 +91,9 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
       undefined,
       { selfIdentityEnabled: true, characterTensionEnabled: true },
     );
-    const m = out.match(/我的品格：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("诚实");
-    expect(m![1]).not.toContain("审慎");
+    const m = out.slice(out.indexOf("我的品格："));
+    expect(m).toContain("诚实");
+    expect(m).not.toContain("审慎");
   });
 
   it("R2 episode 门：desc 为具体事件叙述（commit hash/编号/HTTP）→ 锚不入行（灵魂禁混记忆内容）", async () => {
@@ -109,13 +107,12 @@ describe("价值锚行 desc 门（宁缺毋滥禁裸关键词/半句）", () => 
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/价值锚：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("根因优先"); // 合格价值观锚照常
-    expect(m![1]).not.toContain("闭环"); // 混事件锚（commit hash）整条消失
-    expect(m![1]).not.toContain("审计"); // 混事件锚（登记号）整条消失
-    expect(m![1]).not.toContain("b1ea2e5");
-    expect(m![1]).not.toContain("REG-REMAINING");
+    const m = out.slice(out.indexOf("价值锚："));
+    expect(m).toContain("根因优先"); // 合格价值观锚照常
+    expect(m).not.toContain("闭环"); // 混事件锚（commit hash）整条消失
+    expect(m).not.toContain("审计"); // 混事件锚（登记号）整条消失
+    expect(m).not.toContain("b1ea2e5");
+    expect(m).not.toContain("REG-REMAINING");
   });
 });
 
@@ -141,10 +138,9 @@ describe("v18-d isDanglingTail（断尾半句判定单一源）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/价值锚：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).not.toContain("文档"); // 尾悬空 desc → 置空 → 整锚跳过
-    expect(m![1]).toContain("；"); // join("、")→join("；")（与 desc 内部标点歧义消解）
+    const m = out.slice(out.indexOf("价值锚："));
+    expect(m).not.toContain("文档"); // 尾悬空 desc → 置空 → 整锚跳过
+    expect(m).toContain("- 收口(趋近)：残留项逐一消除"); // 合格锚保留（逐锚列表行形态）
   });
 });
 
@@ -158,10 +154,9 @@ describe("R2b person 行 desc 门（人保留、desc 降级——与价值锚行
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/重要的人：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("何晨(同事·趋近)"); // 人本身是灵魂五段，门只降 desc 不抹人
-    expect(m![1]).not.toContain("b1ea2e5"); // 混事件 desc 段消失
+    const m = out.slice(out.indexOf("重要的人："));
+    expect(m).toContain("何晨(同事·趋近)"); // 人本身是灵魂五段，门只降 desc 不抹人
+    expect(m).not.toContain("b1ea2e5"); // 混事件 desc 段消失
     expect(m![1]).not.toContain("REG-2026-001");
   });
 
@@ -174,9 +169,8 @@ describe("R2b person 行 desc 门（人保留、desc 降级——与价值锚行
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/重要的人：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("何晨(同事·趋近)：要求分析附 file:line 取证并按三步工序后才允许下结论。");
+    const m = out.slice(out.indexOf("重要的人："));
+    expect(m).toContain("何晨(同事·趋近)：要求分析附 file:line 取证并按三步工序后才允许下结论。");
   });
 
   it("person desc 尾悬空半句 → 降级为无 desc 形态（句边界清洗同构）", async () => {
@@ -188,9 +182,8 @@ describe("R2b person 行 desc 门（人保留、desc 降级——与价值锚行
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/重要的人：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toContain("何晨(同事·趋近)");
-    expect(m![1]).not.toContain("逐轮记录"); // 半句尾巴消失
+    const m = out.slice(out.indexOf("重要的人："));
+    expect(m).toContain("何晨(同事·趋近)");
+    expect(m).not.toContain("逐轮记录"); // 半句尾巴消失
   });
 });

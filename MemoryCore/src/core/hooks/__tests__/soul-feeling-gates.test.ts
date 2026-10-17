@@ -30,7 +30,13 @@ const row = (o: { value_id: string; label: string; weight?: number; valence?: nu
 const SLOTS = [{ slot: "self_identity", content: "我是测试主体" }];
 
 const feelBlock = (out: string) => out.match(/<soul-feeling>[\s\S]*?<\/soul-feeling>/)?.[0] ?? "";
-const feelLine = (out: string, header: string) => out.split("\n").find((l) => l.startsWith(header)) ?? "";
+const feelLine = (out: string, header: string) => {
+  const lines = out.split("\n");
+  const i = lines.findIndex((l) => l.startsWith(header));
+  if (i < 0) return "";
+  // 呈现层翻修（2026-10-16）：首要子句独立成行——聚合 header 行+紧随首要行，保持单行语义视图断言面
+  return i + 1 < lines.length && lines[i + 1].startsWith("首要 ") ? `${lines[i]}\n${lines[i + 1]}` : lines[i];
+};
 
 describe("S1 #22 感受段同门（价值锚行三门范式同构）", () => {
   it("①desc 空锚不入感受段清单（shadow-first 形态消失）；有 desc 锚保留", async () => {
@@ -105,9 +111,9 @@ describe("S1 #22 感受段同门（价值锚行三门范式同构）", () => {
     ];
     const budgeted = await buildSoulPrefix(makeStore(rows, SLOTS), mkTenant("g5a"), undefined, { budgetAnchorChars: 2 });
     const bl = feelLine(budgeted, "驱动我行动的价值：");
-    expect(bl).toBe("驱动我行动的价值：乙；首要 甲：甲锚详述。");
+    expect(bl).toBe("驱动我行动的价值：乙\n首要 甲：甲锚详述。");
     const full = await buildSoulPrefix(makeStore(rows, SLOTS), mkTenant("g5b"), undefined, {});
-    expect(feelLine(full, "驱动我行动的价值：")).toBe("驱动我行动的价值：乙；丙；首要 甲：甲锚详述。");
+    expect(feelLine(full, "驱动我行动的价值：")).toBe("驱动我行动的价值：乙；丙\n首要 甲：甲锚详述。");
   });
 });
 
@@ -122,7 +128,7 @@ describe("S2 #23 首要=详述、清单=其余 + 常量单一源", () => {
       undefined,
       {},
     );
-    expect(feelLine(out, "驱动我行动的价值：")).toBe("驱动我行动的价值：乙；首要 甲：甲锚详述句。");
+    expect(feelLine(out, "驱动我行动的价值：")).toBe("驱动我行动的价值：乙\n首要 甲：甲锚详述句。");
   });
 
   it("②退化形态（R5-23.2 专项 golden）：单锚承担首要 → 行=首要子句、无悬空分隔", async () => {

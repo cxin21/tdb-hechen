@@ -27,24 +27,34 @@ const BASE_VALUES: Array<Record<string, unknown>> = [
   { value_id: "v-char", label: "守诺", weight: 0.6, valence: 1, state: "active", node_type: "character", attrs_json: '{"description":"承诺必兑现"}', created_by: "auto-growth", origin: "auto", pinned: 0 },
 ];
 
+// 呈现层翻修（2026-10-16）：锚/品格/人员均为「标题行+逐条 - 列表行」——段内容=标题行后到下一
+// 段标题（until 前缀任一命中）之间的列表行聚合。
+const seg = (text: string, header: string, until: string[]): string => {
+  const lines = text.split("\n");
+  const i = lines.findIndex((l) => l.startsWith(header));
+  if (i < 0) return "";
+  const j = lines.findIndex((l, k) => k > i && until.some((u) => l.startsWith(u)));
+  return lines.slice(i + 1, j < 0 ? lines.length : j).join("\n");
+};
+const VALUE_UNTIL = ["重要的人：", "我的品格："];
+
 describe("M2-P5 品格行渲染迁移", () => {
   it("① 渲染门关断（缺省）：品格锚保持现状混渲染于价值锚行，无「我的品格」行", async () => {
     const text = await buildSoulPrefix(makeFakeStore(BASE_VALUES), nextTenant(), undefined, {} as never);
     expect(text).not.toContain("我的品格");
-    const valueRow = text.split("\n").find((l) => l.startsWith("价值锚："));
-    expect(valueRow).toContain("守诺");
+    const valueRow = seg(text, "价值锚：", VALUE_UNTIL);
+    expect(valueRow).toContain("守诺(");
   });
 
-  it("② 渲染门开启：价值锚行排除 character，「我的品格：label(方向·w)：描述」行在场；指纹=数据决定两模式一致", async () => {
+  it("② 渲染门开启：价值锚行排除 character，「我的品格：label(方向)：描述」行在场；指纹=数据决定两模式一致", async () => {
     const meta1: { soulVersion?: string } = {};
     const meta2: { soulVersion?: string } = {};
     const off = await buildSoulPrefix(makeFakeStore(BASE_VALUES), nextTenant(), undefined, {} as never, meta1);
     const on = await buildSoulPrefix(makeFakeStore(BASE_VALUES), nextTenant(), undefined, { characterTensionEnabled: true } as never, meta2);
-    const valueRow = on.split("\n").find((l) => l.startsWith("价值锚："));
+    const valueRow = seg(on, "价值锚：", VALUE_UNTIL);
     expect(valueRow).toContain("诚实");
     expect(valueRow).not.toContain("守诺");
-    const charRow = on.split("\n").find((l) => l.startsWith("我的品格："));
-    expect(charRow).toBeDefined();
+    const charRow = seg(on, "我的品格：", ["## 不可逾越", "## 当下的状态"]);
     expect(charRow).toContain("守诺(");
     expect(charRow).toContain("承诺必兑现");
     expect(meta1.soulVersion).toBe(meta2.soulVersion);

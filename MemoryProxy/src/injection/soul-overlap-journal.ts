@@ -77,11 +77,26 @@ export function extractSoulCore(
   return { soul, core };
 }
 
-/** 逐行 hash 集合（空行剔除；行内 trim 后 hash）。 */
+/**
+ * 行级归一化（H26，2026-10-17）：soul 侧 slot 行带「（我是谁）- [slot] - 」包装、core 侧为裸文本/markdown 行，
+ * 同文异装字节不同 → 行 hash 恒不同 → 重叠恒 0%（生产 372 行实证，预注册规则两周后将被误判关票）。
+ * 剥包装后再 hash：① soul slot 段前缀；② slot 标记 `- [x] - `；③ 两侧列表标记 `- `。
+ * 兼容性：hash 值与未归一版本不互通——跨版本窗口混装期以同期行为准（报告按日聚合，影响可忽略）。
+ */
+export function normalizeJournalLine(line: string): string {
+  return line
+    .replace(/^（我是谁）\s*/, "")
+    .replace(/^（我心中的他）\s*/, "")
+    .replace(/^-\s*\[[^\]]+\]\s*-\s*/, "")
+    .replace(/^-\s+/, "")
+    .trim();
+}
+
+/** 逐行 hash 集合（空行剔除；行内 trim+H26 归一化后 hash）。 */
 export function lineHashes(text: string): string[] {
   return (text ?? "")
     .split(/\r?\n/)
-    .map((l) => l.trim())
+    .map((l) => normalizeJournalLine(l.trim()))
     .filter((l) => l.length > 0)
     .map((l) => fnv1a32(l));
 }

@@ -26,7 +26,7 @@
       "valueId": "auto-jia"
     }
   ],
-  "soul": "<soul-identity>\n## 此刻的你\n价值锚：回滚预案(w0.35)：回滚预案是上线前的强制步骤。\n</soul-identity>\n\n",
+  "soul": "<soul-identity>\n## 此刻的你\n价值锚：\n- 回滚预案：回滚预案是上线前的强制步骤。\n</soul-identity>\n\n",
   "valueCalls": [
     {
       "attrs": {

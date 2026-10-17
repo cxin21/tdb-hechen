@@ -89,6 +89,25 @@ describe("lineHashes / jaccard", () => {
     expect(h1).toHaveLength(2);
   });
 
+  it("H26 归一化：soul 包装行与 core 裸行同 hash（同文异装不再恒 0 重叠）", () => {
+    const soulLine = "（我是谁）- [self_identity] - 排查坚持源码考古与最小探针。";
+    const strictLine = "- [strict_rule] - 绝不通过任何路径删除记忆。";
+    const coreBare = "排查坚持源码考古与最小探针。";
+    const coreList = "- 绝不通过任何路径删除记忆。";
+    const hs = lineHashes(soulLine);
+    const hc = lineHashes(coreBare);
+    expect(hs).toEqual(hc);
+    expect(lineHashes(strictLine)).toEqual(lineHashes(coreList));
+  });
+
+  it("H26 归一化：真异文仍不同 hash（归一不吞差异）", () => {
+    const a = lineHashes("（我是谁）- [self_identity] - 内容甲");
+    const b = lineHashes("（我是谁）- [self_identity] - 内容乙");
+    expect(a).not.toEqual(b);
+    // 非 slot 行（如价值锚行）不受影响
+    expect(lineHashes("一手证据(趋近)：先亲跑测试。")).not.toEqual(lineHashes("一手证据(审慎)：先亲跑测试。"));
+  });
+
   it("Jaccard 边界：相同=1、不相交=0、部分重叠=1/3、双空=0", () => {
     const a = lineHashes("x\ny");
     const b = lineHashes("x\ny");

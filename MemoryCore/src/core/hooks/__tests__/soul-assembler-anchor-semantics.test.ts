@@ -35,7 +35,7 @@ describe("锚行语义升级（rationale 持久化）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("根因(趋近·w0.5)：所有结论须以真实代码与测试取证背书"); // V6-1b：weight 显示（合法波及更新）
+    expect(out).toContain("根因(趋近)：所有结论须以真实代码与测试取证背书"); // 权重内隐（呈现层翻修 2026-10-16）
   });
 
   it("无 description → 该锚不入价值锚行（宁缺毋滥禁裸关键词，2026-10-04 语义）", async () => {
@@ -71,11 +71,10 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/价值锚：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1].indexOf("a-y".replace(/-/, "")) === -1).toBe(true); // 渲染的是 label，不是 value_id
-    const idxFirst = m![1].indexOf("前锚");
-    const idxSecond = m![1].indexOf("后锚");
+    // 呈现层翻修：标题行独立+逐锚列表行——序断言改全文首现序
+    expect(out.indexOf("a-y".replace(/-/, ""))).toBe(-1); // 渲染的是 label，不是 value_id
+    const idxFirst = out.indexOf("前锚");
+    const idxSecond = out.indexOf("后锚");
     expect(idxFirst).toBeGreaterThanOrEqual(0);
     expect(idxSecond).toBeGreaterThan(idxFirst);
   });
@@ -93,10 +92,10 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
     );
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
-    // R5 #22/#23 golden 翻新：清单=滤后其余（首要 甲 除名详述），清单序仍 value_id 稳定（与 weight 无关）
+    // R5 #22/#23 + 呈现层翻修：清单=滤后其余（首要 甲 除名详述）、首要独立成行；清单序仍 value_id 稳定
     expect(m![1].indexOf("乙")).toBeGreaterThanOrEqual(0);
     expect(m![1].indexOf("乙")).toBeLessThan(m![1].indexOf("丙"));
-    expect(m![1]).toContain("首要 甲：甲锚句。");
+    expect(out).toContain("\n首要 甲：甲锚句。");
   });
 
   it("人物锚行：weight DESC 取 top-N 后，渲染按 value_id 稳定", async () => {
@@ -109,9 +108,9 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/重要的人：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1].indexOf("甲人")).toBeLessThan(m![1].indexOf("乙人"));
+    // 呈现层翻修：逐人列表行——断言面=标题行起至文末
+    const m = out.slice(out.indexOf("重要的人："));
+    expect(m.indexOf("甲人")).toBeLessThan(m.indexOf("乙人"));
   });
 });
 

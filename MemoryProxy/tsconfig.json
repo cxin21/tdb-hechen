@@ -12,6 +12,6 @@
       "@context-proxy/cost-guard": ["./packages/cost-guard/src/index.ts"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist"]
 }

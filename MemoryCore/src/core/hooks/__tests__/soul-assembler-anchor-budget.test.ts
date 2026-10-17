@@ -55,13 +55,15 @@ describe("#10 三行注入预算（buildSoulPrefix）", () => {
   it("15 锚满载 budgetAnchorChars=240 → 价值锚行 ≤240 字且保留头部锚、整锚不截半", async () => {
     const rows = Array.from({ length: 15 }, (_, i) => themed(i));
     const out = await buildSoulPrefix(makeStore(rows) as never, TENANT, undefined, { budgetAnchorChars: 240 });
-    const m = /价值锚：(.*)/.exec(out);
-    expect(m).not.toBeNull();
-    const body = m![1];
+    // 呈现层翻修（2026-10-16）：逐锚列表行——预算断言面=锚内容串（applyAnchorBudget join("；") 口径），
+    // 与「- 」前缀/换行渲染解耦。
+    const items = out.split("\n").filter((l) => l.startsWith("- 锚")).map((l) => l.slice(2));
+    expect(items.length).toBeGreaterThan(0);
+    const body = items.join("；");
     expect(body.length).toBeLessThanOrEqual(240);
     expect(body).toContain("锚0("); // 头部保留
     expect(body).not.toContain("锚14("); // 尾部丢弃
-    for (const seg of body.split("；")) expect(seg.endsWith("。")).toBe(true); // 整锚不截半
+    for (const seg of items) expect(seg.endsWith("。")).toBe(true); // 整锚不截半
   });
 
   it("budgetAnchorChars=0 → 逐位现状（与无预算渲染逐字节一致）", async () => {
@@ -76,7 +78,7 @@ describe("#10 三行注入预算（buildSoulPrefix）", () => {
     const tight = await buildSoulPrefix(makeStore(rows) as never, TENANT, undefined, { budgetAnchorChars: 120 });
     const loose = await buildSoulPrefix(makeStore(rows) as never, TENANT, undefined, { budgetAnchorChars: 0 });
     expect(loose).not.toBe(tight);
-    const looseBody = /价值锚：(.*)/.exec(loose)![1];
+    const looseBody = loose.split("\n").filter((l) => l.startsWith("- 锚")).map((l) => l.slice(2)).join("；");
     expect(looseBody).toContain("锚14(");
   });
 
@@ -86,9 +88,7 @@ describe("#10 三行注入预算（buildSoulPrefix）", () => {
       row({ value_id: "p-b", label: "乙君", node_type: "person", attrs_json: '{"role":"朋友","description":"乙君的稳定描述句。"}' }),
     ];
     const out = await buildSoulPrefix(makeStore(rows) as never, TENANT, undefined, { budgetPersonChars: 30 });
-    const m = /重要的人：(.*)/.exec(out);
-    expect(m).not.toBeNull();
-    const body = m![1];
+    const body = out.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2)).join("；");
     expect(body.length).toBeLessThanOrEqual(30);
     expect(body).toContain("甲君"); // value_id 稳定序头部
     expect(body).not.toContain("乙君");
@@ -100,9 +100,7 @@ describe("#10 三行注入预算（buildSoulPrefix）", () => {
       row({ value_id: "c-b", label: "严谨", node_type: "character", attrs_json: '{"description":"交付前逐项核对验收口径。"}' }),
     ];
     const out = await buildSoulPrefix(makeStore(rows) as never, TENANT, undefined, { characterTensionEnabled: true, budgetCharacterChars: 24 });
-    const m = /我的品格：(.*)/.exec(out);
-    expect(m).not.toBeNull();
-    const body = m![1];
+    const body = out.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2)).join("；");
     expect(body.length).toBeLessThanOrEqual(24);
     expect(body).toContain("守诺");
     expect(body).not.toContain("严谨");

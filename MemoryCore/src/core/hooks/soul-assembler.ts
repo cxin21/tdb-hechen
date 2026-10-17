@@ -94,11 +94,6 @@ function valenceDir(v: number | null | undefined): string {
   return "";
 }
 
-/** V6-1b：weight 显示值（两位小数去尾零：0.33→"0.33"、0.8→"0.8"、1→"1"）。 */
-function weightLabel(w: number): string {
-  return w.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-}
-
 /** P2（spec §2.7）：人物锚关系方向词——与主题价值方向（审慎）区分（回避≠审慎）。 */
 function personDir(v: number | null | undefined): string {
   if (v === 1) return "趋近";
@@ -383,13 +378,11 @@ export async function buildSoulPrefix(
         // 全部锚无 desc → 行省略不造裸串。（anchorDescOf 已提升至段作用域：R5 #22 感受段同门复用）
         const renderAnchor = (v: (typeof activeStable)[number], desc: string): string => {
           const descSeg = desc !== "" ? `：${escapeXmlTags(desc)}` : "";
-          // V6-1b：weight 显示（仅展示信念强度，不改渲染序——立项② value_id 稳定排序不变；
-          // weight ≤0 视为未测量不展示，宁缺毋滥）
+          // 呈现层翻修（2026-10-16 用户拍板「有问题的现在直接优化」）：权重内隐——weight 消费于
+          // 排序/门控/首要选取（立项② value_id 稳定排序不变），渲染面不再暴露伪精度数字；
+          // V6-1b「weight 显示」决策退役，weightLabel 函数随之移除。
           const dir = valenceDir(v.valence);
-          const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
-            ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
-            : "";
-          return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}${descSeg}`;
+          return `${escapeXmlTags(v.label)}${dir ? `(${dir})` : ""}${descSeg}`;
         };
         // #42（票 D / D9）：decoratedPairs 保留 desc 供打分（渲染字节与既有 decorated 逐位一致）。
         const decoratedPairs = activeStable
@@ -499,7 +492,11 @@ export async function buildSoulPrefix(
             emitPlainReport();
           }
         }
-        if (budgeted.length > 0) lines.push(`价值锚：${budgeted.join("；")}`);
+        if (budgeted.length > 0) {
+          // 呈现层翻修（2026-10-16 用户拍板）：单行「；」串（9 锚 ~470 字符无换行）→「价值锚：」
+          // 标题行 + 逐锚列表行（- 前缀）；内容稳定即 KV 稳定，换行无损。
+          lines.push("价值锚：", ...budgeted.map((r) => `- ${r}`));
+        }
       }
       // P2：重要的人 行——数据驱动（无 person 行 → 省略）；role 缺失只省 role 段
       if (personRows.length > 0) {
@@ -525,7 +522,10 @@ export async function buildSoulPrefix(
           });
         // #10 T4：整人预算——超预算从尾丢整人（value_id 稳定序头部保留），0=无预算逐位现状
         const personBudgeted = applyAnchorBudget(personDecorated, opts?.budgetPersonChars ?? 0);
-        if (personBudgeted.length > 0) lines.push(`重要的人：${personBudgeted.join("；")}`);
+        if (personBudgeted.length > 0) {
+          // 呈现层翻修同构（2026-10-16）：逐人列表行（- 前缀），role·方向 语义保留（无 weight 段）。
+          lines.push("重要的人：", ...personBudgeted.map((r) => `- ${r}`));
+        }
       }
       // S-CHAR-2（M2/P5）：品格行——「我是谁」小节尾部（数据驱动，无品格锚 → 省略宁缺毋滥）；
       // 渲染门=opts.characterTensionEnabled（M2 缺省关断）。A/B 对象：开启时价值锚行不再含品格锚。
@@ -547,15 +547,15 @@ export async function buildSoulPrefix(
             // R2 episode 门：品格锚 desc 同构禁混具体事件叙述（与价值锚行同门）。
             if (desc === "" || looksLikeEpisode(desc)) return null;
             const dir = valenceDir(v.valence);
-            const wSeg = typeof v.weight === "number" && Number.isFinite(v.weight) && v.weight > 0
-              ? `${dir ? "·" : ""}w${weightLabel(v.weight)}`
-              : "";
-            return `${escapeXmlTags(v.label)}${dir || wSeg ? `(${dir}${wSeg})` : ""}：${escapeXmlTags(desc)}`;
+            return `${escapeXmlTags(v.label)}${dir ? `(${dir})` : ""}：${escapeXmlTags(desc)}`;
           })
           .filter((x): x is string => x !== null);
         // #10 T4：整锚预算——同价值锚行（0=无预算逐位现状）
         const charBudgeted = applyAnchorBudget(charDecorated, opts?.budgetCharacterChars ?? 0);
-        if (charBudgeted.length > 0) lines.push(`我的品格：${charBudgeted.join("；")}`);
+        if (charBudgeted.length > 0) {
+          // 呈现层翻修同构（2026-10-16）：逐品格列表行（- 前缀）+ 权重内隐（与价值锚行同批）。
+          lines.push("我的品格：", ...charBudgeted.map((r) => `- ${r}`));
+        }
       }
       // #24-C1（2026-10-16 用户授权拍板，r5-24 定案）：红线独立段「## 不可逾越（红线）」置
       // soul-identity 段尾（禁令动词框架+保留团队话语关键词，段名进 #33 词表）；原文直出禁改写
@@ -632,7 +632,9 @@ export async function buildSoulPrefix(
         const budgeted = applyAnchorBudget(list, opts?.budgetAnchorChars ?? 0);
         if (budgeted.length === 0 && !clause) return null;
         const head = `${header}${budgeted.join("；")}`;
-        return clause ? (budgeted.length > 0 ? `${head}；${clause}` : `${head}${clause}`) : head;
+          // 呈现层翻修（2026-10-16 用户拍板）：清单非空时首要子句独立成行（消除「首要 X：」与
+        // 清单同「；」混拼的层次混乱）；清单退化为空时保持 header 直拼（单锚退化合同不变）。
+        return clause ? (budgeted.length > 0 ? `${head}\n${clause}` : `${head}${clause}`) : head;
       };
       const feel: string[] = [];
       const posLine = feelLine("驱动我行动的价值：", gated.filter((r) => r.v.valence === 1));

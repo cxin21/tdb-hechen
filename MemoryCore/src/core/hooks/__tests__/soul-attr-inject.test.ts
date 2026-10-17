@@ -30,25 +30,28 @@ const row = (o: { value_id: string; label: string; weight?: number; valence?: nu
   attrs_json: o.attrs_json ?? "{}",
 });
 
-describe("V6-1b 锚行 weight 显示", () => {
-  it("weight 0.9 + description → 「根因(趋近·w0.9)：描述」", async () => {
+describe("呈现层翻修：锚行权重内隐（2026-10-16 用户拍板「有问题的现在直接优化」）", () => {
+  it("weight 0.9 + description → 「根因(趋近)：描述」（V6-1b w 段退役，数值不进渲染面）", async () => {
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "a", label: "根因", weight: 0.9, attrs_json: '{"description":"所有结论须以真实代码取证背书"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("根因(趋近·w0.9)：所有结论须以真实代码取证背书");
+    expect(out).toContain("根因(趋近)：所有结论须以真实代码取证背书");
+    expect(out).not.toContain("·w");
   });
-  it("weight 两位小数去尾零：0.33 → w0.33、0.5 → w0.5", async () => {
+  it("weight 0.33/0.5 → 渲染无 w 段（内隐：强度只消费于排序/门控/首要选取）", async () => {
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "a", label: "A锚", weight: 0.33, attrs_json: '{"description":"甲锚说明。"}' }), row({ value_id: "b", label: "B锚", weight: 0.5, attrs_json: '{"description":"乙锚说明。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("A锚(趋近·w0.33)：甲锚说明。");
-    expect(out).toContain("B锚(趋近·w0.5)：乙锚说明。");
+    expect(out).toContain("A锚(趋近)：甲锚说明。");
+    expect(out).toContain("B锚(趋近)：乙锚说明。");
+    expect(out).not.toContain("w0.33");
+    expect(out).not.toContain("w0.5");
   });
   it("weight 缺省/0 → 无 w 段（逐位现状，宁缺毋滥不展示误导值）", async () => {
     const out = await buildSoulPrefix(
@@ -60,26 +63,25 @@ describe("V6-1b 锚行 weight 显示", () => {
     expect(out).toContain("根因(趋近)：根因说明。");
     expect(out).not.toContain("根因(趋近·");
   });
-  it("valence null（无方向）但有 weight → 「A(w0.8)：描述」", async () => {
+  it("valence null（无方向）+ weight → 「A锚：描述」（无 dir 无 w → 无括号段）", async () => {
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "a", label: "A锚", weight: 0.8, valence: null, attrs_json: '{"description":"无向锚说明。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("A锚(w0.8)：无向锚说明。");
+    expect(out).toContain("A锚：无向锚说明。");
   });
-  it("weight 显示不改渲染序（value_id 稳定——立项②守卫）", async () => {
+  it("weight 显示不改渲染序（value_id 稳定——立项②守卫；多行后按全文首现序断言）", async () => {
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "b-x", label: "后锚", weight: 0.9, attrs_json: '{"description":"后锚描述。"}' }), row({ value_id: "a-y", label: "前锚", weight: 0.1, attrs_json: '{"description":"前锚描述。"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/价值锚：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1].indexOf("前锚")).toBeGreaterThanOrEqual(0);
-    expect(m![1].indexOf("前锚")).toBeLessThan(m![1].indexOf("后锚"));
+    // 呈现层翻新：标题行独立+逐锚列表行——序断言改全文首现序（价值锚行列表序即全文序）
+    expect(out.indexOf("前锚")).toBeGreaterThanOrEqual(0);
+    expect(out.indexOf("前锚")).toBeLessThan(out.indexOf("后锚"));
   });
 });
 
@@ -96,8 +98,9 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     );
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
-    // R5 #23：首要=详述（甲从清单除名）、清单=其余（乙）；行序=value_id 稳定序（清单在前、首要子句在后）
-    expect(m![1]).toBe("乙；首要 甲：所有结论须以真实代码与测试取证背书");
+    // 呈现层翻修（首要独立行）：清单行=「乙」（首要除名不变），首要子句独立成行
+    expect(m![1]).toBe("乙");
+    expect(out).toContain("\n首要 甲：所有结论须以真实代码与测试取证背书");
   });
   it("首要锚无 description → 该锚整体退出感受段（#22 消悬空），详述次锚升为首要（宁缺毋滥）", async () => {
     const out = await buildSoulPrefix(

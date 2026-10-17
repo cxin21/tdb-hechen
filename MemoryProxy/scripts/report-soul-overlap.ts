@@ -6,7 +6,6 @@
  *   pnpm exec tsx scripts/report-soul-overlap.ts [journal.jsonl] [days]
  *   缺省路径 = data/soul-overlap-journal.jsonl（与 observer 缺省一致）
  *   days 省略 = 全量；days=14 = 预注册两周窗
- */
  *
  * ⚠️ 诚实边界（r5-26.md 修正 2）：本报告测得的是「内容源重叠」（journal 侧
  * 逐行 hash 集合），非「注入层重叠」——soul-identity 走 MemoryCore 召回块、

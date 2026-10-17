@@ -62,7 +62,7 @@ describe("#30 soul snapshots", () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].contentHash).toMatch(/^[0-9a-f]{8}$/);
     expect(snapshots[0].trigger).toBe("render");
-    expect(snapshots[0].payloadJson).toContain("根因(趋近·w0.8)");
+    expect(snapshots[0].payloadJson).toContain("根因(趋近)");
   });
 
   it("内容不变重复渲染零落行（last-hash 去重防膨胀）", async () => {
@@ -75,16 +75,16 @@ describe("#30 soul snapshots", () => {
     expect(snapshots).toHaveLength(1);
   });
 
-  it("锚变更→字节变化→新 contentHash 落新行（时间旅行基础）", async () => {
-    const rows = [row({ value_id: "v1", label: "根因", weight: 0.8, valence: 1 })];
+  it("锚 desc 变更→字节变化→新 contentHash 落新行（时间旅行基础；权重内隐后 weight 不再是字节维度）", async () => {
+    const rows = [row({ value_id: "v1", label: "根因", weight: 0.8, valence: 1, attrs_json: JSON.stringify({ description: "第一版描述。" }) })];
     const { store, snapshots } = makeStore(rows);
     const t = { teamId: "ts4", userId: "u1", agentId: "a1" };
     await buildSoulPrefix(store, t, LOG, { ...CT });
-    rows[0] = row({ value_id: "v1", label: "根因", weight: 0.95, valence: 1 });
+    rows[0] = row({ value_id: "v1", label: "根因", weight: 0.8, valence: 1, attrs_json: JSON.stringify({ description: "第二版描述。" }) });
     await buildSoulPrefix(store, t, LOG, { ...CT });
     expect(snapshots).toHaveLength(2);
     expect(snapshots[1].contentHash).not.toBe(snapshots[0].contentHash);
-    expect(snapshots[1].payloadJson).toContain("根因(趋近·w0.95)");
+    expect(snapshots[1].payloadJson).toContain("第二版描述。");
   });
 
   it("写失败抛出→旗标不置→缓存命中路径自动补账（R5-F5 吞错单点=调用方；R5-F3 分支覆盖）", async () => {
@@ -95,7 +95,7 @@ describe("#30 soul snapshots", () => {
     expect(snapshots).toHaveLength(0);
     await buildSoulPrefix(store, t, LOG, { ...CT }); // cache hit + !snapshotted → 补账 → 1 行
     expect(snapshots).toHaveLength(1);
-    expect(snapshots[0].payloadJson).toContain("根因(趋近·w0.8)");
+    expect(snapshots[0].payloadJson).toContain("根因(趋近)");
   });
 
   it("同 sv 布局变体各自成行（R5-F2：contentHash=渲染字节哈希）", async () => {
@@ -133,7 +133,7 @@ describe("#30 soul snapshots", () => {
     delete bare.readLastSoulSnapshotHash;
     delete bare.writeSoulSnapshot;
     const out = await buildSoulPrefix(store, { teamId: "ts5", userId: "u1", agentId: "a1" }, LOG, { ...CT });
-    expect(out).toContain("根因(趋近·w0.8)");
+    expect(out).toContain("根因(趋近)");
   });
 
   it("snapshotsEnabled:false → 不落行（观测旁路可关）", async () => {

@@ -118,9 +118,9 @@ describe("F-EV12-5③ · soul-feeling 仅主题锚（character 不入感受段�
       ],
     };
     const out = await buildSoulPrefix(store as never, T, LOG, { selfIdentityEnabled: true, budgetSelfChars: 600, budgetIdentityChars: 900, maxRelationLines: 5 });
-    // 价值锚行：character 在场（共享注入预算）
+    // 价值锚行：character 在场（共享注入预算）；呈现层翻修后=逐锚列表行形态
     expect(out).toContain("价值锚：");
-    expect(out).toContain("守诺(趋近·w0.5)：守诺品格说明。");
+    expect(out).toContain("- 守诺(趋近)：守诺品格说明。");
     // 感受段：仅主题锚——守诺不得出现
     const feel = out.split("<soul-feeling>")[1] ?? "";
     expect(feel).toContain("交付质量");
