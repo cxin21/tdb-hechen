@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  deriveAttributeBadges, pickPrimeAnchor, anchorInjectPreview, weightLabel, createdByBadge,
+  deriveAttributeBadges, pickPrimeAnchor, anchorInjectPreview, createdByBadge,
 } from '../web/src/pages/ChatMemoryPage/utils/attribute-badges';
 import type { ChatMemoryLayerItem } from '../web/src/lib/api/chat-memory';
 
@@ -83,20 +83,19 @@ describe('pickPrimeAnchor（感受段方案B：weight 选取与渲染序解耦�
   });
 });
 
-describe('anchorInjectPreview（与 soul-assembler 锚行逐字同构）', () => {
-  it('全形态 label(趋近·w0.8)：描述；无尾零', () => {
+describe('anchorInjectPreview（与 soul-assembler 锚行逐字同构——呈现层翻修 2026-10-17 对齐：权重内隐）', () => {
+  it('新形态 label(方向)：描述；weight 不再渲染（内隐于排序/门控/首要选取）', () => {
     expect(anchorInjectPreview({ label: '文档', weight: 0.8, valence: 1, attrs_json: '{"description":"d"}' }))
-      .toBe('文档(趋近·w0.8)：d');
-    expect(anchorInjectPreview({ label: 'A', weight: 0.33, valence: 1 })).toBe('A(趋近·w0.33)');
+      .toBe('文档(趋近)：d');
+    expect(anchorInjectPreview({ label: 'A', weight: 0.33, valence: 1 })).toBe('A(趋近)');
+    const out = anchorInjectPreview({ label: 'A', weight: 0.5, valence: 1 }) ?? '';
+    expect(out).not.toContain('w0.');
   });
-  it('weight≤0 → 无 w 段；valence null → label(w)；损坏 attrs_json → 宁缺毋滥', () => {
-    expect(anchorInjectPreview({ label: '根因', weight: 0, valence: 1 })).toBe('根因(趋近)');
-    expect(anchorInjectPreview({ label: 'A', weight: 0.8, valence: null })).toBe('A(w0.8)');
-    expect(anchorInjectPreview({ label: 'A', weight: 0.8, valence: 1, attrs_json: 'not-json' })).toBe('A(趋近·w0.8)');
-  });
-  it('weightLabel 去尾零', () => {
-    expect(weightLabel(0.8)).toBe('0.8');
-    expect(weightLabel(1)).toBe('1');
+  it('valence 0 → (中性) 与内核 valenceDir 一致；valence null → 裸 label；损坏 attrs_json → 宁缺毋滥', () => {
+    expect(anchorInjectPreview({ label: '探针', weight: 0.8, valence: 0 })).toBe('探针(中性)');
+    expect(anchorInjectPreview({ label: 'A', valence: null })).toBeNull();
+    expect(anchorInjectPreview({ label: 'A', valence: null, attrs_json: '{"description":"d"}' })).toBe('A：d');
+    expect(anchorInjectPreview({ label: 'A', weight: 0.8, valence: 1, attrs_json: 'not-json' })).toBe('A(趋近)');
   });
 });
 

@@ -70,11 +70,6 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
   return out;
 }
 
-/** weight 显示值（两位小数去尾零：0.8→"0.8"、0.33→"0.33"——与 soul-assembler weightLabel 同构）。 */
-export function weightLabel(w: number): string {
-  return w.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
-}
-
 function valenceDir(v: number | null | undefined): string {
   if (v === 1) return '趋近';
   if (v === -1) return '审慎';
@@ -82,20 +77,20 @@ function valenceDir(v: number | null | undefined): string {
   return '';
 }
 
-/** 锚注入形态预览：`label(方向·w0.8)：描述`——与 soul-assembler 价值锚行逐字同构。 */
+/** 锚注入形态预览：`label(方向)：描述`——与 soul-assembler 锚行逐字同构。
+ *  呈现层翻修（2026-10-17 用户拍板「有问题的现在直接优化」）对齐：权重内隐（core ffc33e1
+ *  renderAnchor 退役 w 段，weight 只消费于排序/门控/首要选取），本预览同步去 w 段，
+ *  中性/空方向语义与内核 valenceDir 一致（0→(中性)、null→裸 label）。 */
 export function anchorInjectPreview(
   a: { label: string; weight?: number; valence?: number | null; attrs_json?: string },
 ): string | null {
   const dir = valenceDir(a.valence);
-  const wSeg = typeof a.weight === 'number' && Number.isFinite(a.weight) && a.weight > 0
-    ? `${dir ? '·' : ''}w${weightLabel(a.weight)}`
-    : '';
   let desc = '';
   try {
     const p = a.attrs_json && a.attrs_json !== '{}' ? (JSON.parse(a.attrs_json) as { description?: unknown }) : null;
     if (p && typeof p.description === 'string' && p.description.trim() !== '') desc = p.description.trim();
   } catch { /* 损坏 attrs_json 宁缺毋滥 */ }
-  const head = dir || wSeg ? `(${dir}${wSeg})` : '';
+  const head = dir ? `(${dir})` : '';
   if (!head && !desc) return null;
   return `${a.label}${head}${desc ? `：${desc}` : ''}`;
 }
