@@ -459,9 +459,8 @@ describe("WikiRecallInjector", () => {
   });
 
   it("ships the 4 new structural typeWeights in the injection defaults (other/log/index/schema = 0.3)", () => {
-    // 默认值落在 injection/index.ts defaultWikiRecallConfig（config.wikiRecall 缺失时的兜底）。
-    // barrel 已改静态引入（见文件头 import 处注释）。
-    expect(defaultWikiRecallConfig.typeWeights).toMatchObject({
+    // 默认值权威单一源=wiki-recall-injector.ts（#48 CI 加固：getter 形态，TDZ 免疫）。
+    expect(defaultWikiRecallConfig().typeWeights).toMatchObject({
       entity: 0.6, concept: 0.9, overview: 0.6, // 既有 3 项保留
       other: 0.3, log: 0.3, index: 0.3, schema: 0.3, // W5 新增 4 项
     });
@@ -473,7 +472,7 @@ describe("WikiRecallInjector", () => {
     // 且 W4 boost→归一→门耦合未解 —— router 默认退役。
     // 代码默认层必须**显式**携带退役标记（keywords 空表 = injector 静默 no-op），
     // 而不是靠"字段缺失"隐式关断——显式标记自带退役注释与重开协议，防静默复活。
-    expect(defaultWikiRecallConfig.domainRouter).toEqual({ boost: 1.5, keywords: {} });
+    expect(defaultWikiRecallConfig().domainRouter).toEqual({ boost: 1.5, keywords: {} });
     // 行为钉死：默认态下（config.wikiRecall 整段缺失）router 恒 no-op——
     // 即使 query 含领域词，命中分数也不被 boost。
   });

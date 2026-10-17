@@ -356,7 +356,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
           { timeoutMs: 3000 },
         );
       registry.register(new WikiRecallInjector(
-        config.wikiRecall ?? defaultWikiRecallConfig,
+        config.wikiRecall ?? defaultWikiRecallConfig(),
         {
           knowledgeClient,
           retrieveClientFactory: (serviceUrl: string, serviceId?: string) =>

@@ -23,10 +23,11 @@ import { log } from "../../report/log.js";
 
 const TAG = "[wiki-recall-injector]";
 
-/** WikiRecallInjector 缺省参数（config.wikiRecall 缺失/整段时兜底）。导出仅供同形验证断言。
- * 权威单一源=本文件（#48 CI 加固：原定义在 injection/index.ts barrel，测试经 barrel
- * import 在 Linux 模块图下 typeWeights 解析为 undefined——移入生产消费方单一源，index re-export 保兼容）。 */
-export const defaultWikiRecallConfig: WikiRecallConfig = {
+/** WikiRecallInjector 缺省参数（config.wikiRecall 缺失/整段时兜底）。导出 getter 仅供同形验证断言。
+ * 权威单一源=本文件（#48 CI 加固：原定义在 injection/index.ts barrel，Linux CI 下测试端
+ * 顶层 const binding 经模块图求值顺序解析为 undefined——改为函数声明（提升语义，TDZ 免疫），
+ * 内部 const 不导出；index re-export 保兼容）。 */
+const DEFAULT_WIKI_RECALL_CONFIG: WikiRecallConfig = {
   enabled: true,
   perWikiLimit: 8,
   globalTopK: 5,
@@ -47,6 +48,10 @@ export const defaultWikiRecallConfig: WikiRecallConfig = {
   // (b) 先解耦 W4（boost 作用于归一前分数、直接受注入门放大）——独立任务。
   domainRouter: { boost: 1.5, keywords: {} },
 };
+
+export function defaultWikiRecallConfig(): WikiRecallConfig {
+  return DEFAULT_WIKI_RECALL_CONFIG;
+}
 
 /** 码点长度（与 applyRecallBudget 的预算口径一致；surrogate-safe）。 */
 function countCodePoints(s: string): number {
