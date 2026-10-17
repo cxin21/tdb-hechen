@@ -3047,7 +3047,19 @@ export class VectorStore implements IMemoryStore {
       // #19 T12：重提通道——同 slot|content 的 ON CONFLICT 更新被 WHERE state='pending' 挡住
       // （rejected 行不可复活=V12 语义），重提案须生成新 id：基础 id + 生成代数后缀（确定性、
       // 同代幂等；不同代并存互不覆盖，supersedes 溯源在 attrs_json）。
-      if (extra?.reproposalOf) pid = `${pid}-r${Math.max(1, Math.floor(extra.reproposalGen ?? 1))}`;
+      if (extra?.reproposalOf) {
+        pid = `${pid}-r${Math.max(1, Math.floor(extra.reproposalGen ?? 1))}`;
+      } else if (extra?.attrs && Object.keys(extra.attrs).length > 0) {
+        // #49：attrs 参与派生唯一性——同 slot|content|tenant 而提案属性不同（如不同 promiseId）
+        // 的两条提案各自独立成行，不再被 ON CONFLICT 静默覆盖（先推提案 attrs 丢失）。
+        // 兼容性：不迁移旧行 id，仅影响新派生；attrs 缺省时派生逐位不变（identity 旧路径等）。
+        // 重提通道排除：其唯一性已由 -r<代数> 后缀承载，且该通道 attrs 含非确定性时间戳
+        // （reproposed_at），纳入派生会破坏 #19 T12 同代幂等。规范化=顶层键排序（同键异序等价归一）。
+        const attrs = extra.attrs; // 局部绑定：属性访问窄化不进回调闭包（TS18048），取局部常量
+        const attrKeys = Object.keys(attrs).sort();
+        const canonical = JSON.stringify(Object.fromEntries(attrKeys.map((k) => [k, attrs[k]])));
+        pid += "-" + createHash("sha256").update(canonical).digest("hex").slice(0, 8);
+      }
       const attrsJson = extra?.attrs && Object.keys(extra.attrs).length > 0 ? JSON.stringify(extra.attrs) : null;
       this.db.prepare(`INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at, label, description, attrs_json)
         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)

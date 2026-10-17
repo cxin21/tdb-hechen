@@ -166,3 +166,75 @@ describe("#44 · reflection → promise 提案桥（D-44-1 调度面）", () => 
     expect(slots).not.toContain("promise_transition");
   });
 });
+
+/**
+ * #50（2026-10-17）：桥块 vet 证据集与快照新鲜度。
+ * ③ verbatim 门证据集须含 promise 内容——LLM 可逐字抄 open promise 内容（≥12 字句级碎片）
+ * 进 reason 绕过去 L1 拒推（与 #27 提示注入持久化同理据）；证据集 = sample L1 内容 ∪ promise 内容。
+ * ④ openPromises 快照先于 LLM 调用拉取——调用期间 promise 被迁移 → vet 过期快照放行 →
+ * 死 pending → 采纳 409；vet 前须重取 open 快照（重取缺实现/失败回退旧快照，不放大失败面）。
+ */
+describe("#50 · 桥块 vet 证据集与快照新鲜度", () => {
+  it("③ reason 逐字含 open promise 内容片段（≥12 字）→ 拒推（RED：证据集缺 promise 内容时放行）", async () => {
+    // promise 内容单句 20 字（≥VERBATIM_FRAGMENT_MIN_CHARS=12）；sample L1 内容 4 字（无句级碎片，
+    // 不可能触发逐字门）——拒推只能来自证据集含 promise 内容。
+    const PROMISE_CONTENT = "周五前交付灰度发布演练报告并回传验收结论";
+    const store = mkStore({
+      listSoulPromises: vi.fn(async () => [{ promiseId: "pm_1", content: PROMISE_CONTENT, status: "open", refKey: "t-9" }]),
+    });
+    const llmRunner = { run: vi.fn(async () => cardWithTransition(`已兑现：${PROMISE_CONTENT}`)) };
+    const res = await runReflection({
+      queryL1: async () => [rec("r1", "推进顺利", 3)],
+      config: { enabled: true, rRef: 2, promiseProposals: { enabled: true } },
+      store: store as never,
+      llmRunner,
+      logger: LOG,
+    });
+    expect(res.promiseProposalsPushed).toBe(0);
+    const slots = store.upsertPendingCore.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(slots).not.toContain("promise_transition");
+  });
+
+  it("④ LLM 调用期间 promise 被迁移 → vet 前重取快照后拒推（RED：过期快照放行）", async () => {
+    // 第 1 次调用（LLM 前快照）：pm_1 open；第 2 次调用（vet 前重取）：open 集已空（已被迁移）。
+    const store = mkStore({
+      listSoulPromises: vi
+        .fn()
+        .mockResolvedValueOnce([{ promiseId: "pm_1", content: "我会交付报告", status: "open", refKey: "t-9" }])
+        .mockResolvedValueOnce([] as Array<Record<string, unknown>>),
+    });
+    const llmRunner = { run: vi.fn(async () => cardWithTransition("后续对话确认报告已交付完成")) };
+    const res = await runReflection({
+      queryL1: async () => [rec("r1", "推进顺利", 3)],
+      config: { enabled: true, rRef: 2, promiseProposals: { enabled: true } },
+      store: store as never,
+      llmRunner,
+      logger: LOG,
+    });
+    expect(store.listSoulPromises).toHaveBeenCalledTimes(2);
+    expect(res.promiseProposalsPushed).toBe(0);
+    const slots = store.upsertPendingCore.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(slots).not.toContain("promise_transition");
+  });
+
+  it("④ 重取快照仍 open → 正常放行（防过杀回归锚）", async () => {
+    // 每次调用都返回同一 open 集合（重取=仍 open）→ 提案正常入轨。
+    const store = mkStore();
+    const llmRunner = { run: vi.fn(async () => cardWithTransition("后续对话确认报告已交付完成")) };
+    const res = await runReflection({
+      queryL1: async () => [rec("r1", "推进顺利", 3)],
+      config: { enabled: true, rRef: 2, promiseProposals: { enabled: true } },
+      store: store as never,
+      llmRunner,
+      logger: LOG,
+    });
+    expect(res.promiseProposalsPushed).toBe(1);
+    expect(store.upsertPendingCore).toHaveBeenCalledWith(
+      "promise_transition",
+      "后续对话确认报告已交付完成",
+      1,
+      TRIPLE,
+      { attrs: { promiseId: "pm_1", to: "kept", refKey: "t-9", origin: "reflection-promise" } },
+    );
+  });
+});

@@ -252,11 +252,18 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       if (ok && promiseProposalsOn && openPromises.length > 0 && pr.promiseTransitions.length > 0) {
         try {
           const pendingRows = ((await Promise.resolve(deps.store.listPendingCore?.(triple, { includeDecided: false }))) ?? []) as Array<{ slot?: string; state?: string; attrs_json?: string | null }>;
+          // #50④：openPromises 快照先于 LLM 调用拉取（上方 ：154），调用期间承诺可能已被
+          // 迁移（人工采纳/迁移→closed）——vet 前重取 open 快照，防过期快照放行产生死 pending
+          // （下游人工采纳 409 的诚实垃圾轨）。重取缺实现或返回 undefined 时回退旧快照（不放大失败面）。
+          // #50③：verbatim 门证据集须含 fresh open promise 内容——防 LLM 逐字抄 promise 内容进
+          // reason 绕过去 L1 拒推（与 #27 提示注入持久化同理据）。
+          const freshOpenPromises =
+            ((await Promise.resolve(deps.store.listSoulPromises?.(triple, { status: "open" }))) as Array<{ promiseId: string; content?: string; status: string; refKey?: string }>) ?? openPromises;
           for (const pt of pr.promiseTransitions) {
             const verdict = vetPromiseTransitionProposal(
               { promiseId: pt.promiseId, to: pt.to, reason: pt.reason },
-              openPromises,
-              sample.map((r) => String(r.content ?? "")),
+              freshOpenPromises,
+              [...sample.map((r) => String(r.content ?? "")), ...freshOpenPromises.map((p) => p.content)],
             );
             if (!verdict.ok) {
               deps.logger?.info?.(`[reflection] promise proposal rejected (${verdict.reason.slice(0, 80)}): ${pt.promiseId}`);
