@@ -43,12 +43,23 @@ export interface ImportancePenaltySettingsOverride {
 export interface WorthinessSettingsOverride {
   extractionEnabled?: boolean;
 }
+/**
+ * extraction 段（#46 收口，keys：memory.extraction.scenePoisonSplit /
+ * sceneBatchMaxChars）。字段语义与 MemoryCore/src/config.ts parseConfig 的
+ * extraction 块一致；clamp（sceneBatchMaxChars Math.max(0,…)）在 parse 落地，
+ * 这里只做形状校验。
+ */
+export interface ExtractionSettingsOverride {
+  scenePoisonSplit?: boolean;
+  sceneBatchMaxChars?: number;
+}
 export interface SettingsOverride {
   llm?: LlmSettingsOverride;
   embedding?: EmbeddingSettingsOverride;
   rerank?: RerankSettingsOverride;
   importancePenalty?: ImportancePenaltySettingsOverride;
   worthiness?: WorthinessSettingsOverride;
+  extraction?: ExtractionSettingsOverride;
 }
 
 const OVERRIDE_FILE = "config-override.json";
@@ -205,6 +216,20 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
     }
     if (Object.keys(w).length) out.worthiness = w;
   }
+  if (b.extraction) {
+    const ex: ExtractionSettingsOverride = {};
+    if (b.extraction.scenePoisonSplit !== undefined) {
+      if (typeof b.extraction.scenePoisonSplit === "boolean") ex.scenePoisonSplit = b.extraction.scenePoisonSplit;
+      else errors.push("extraction.scenePoisonSplit 必须是 boolean");
+    }
+    if (b.extraction.sceneBatchMaxChars !== undefined) {
+      const n = Number(b.extraction.sceneBatchMaxChars);
+      // 范围 clamp（Math.max(0,…)）在 parseConfig 落地，这里只校验形状（非负整数）
+      if (Number.isInteger(n) && n >= 0) ex.sceneBatchMaxChars = n;
+      else errors.push("extraction.sceneBatchMaxChars 必须是非负整数");
+    }
+    if (Object.keys(ex).length) out.extraction = ex;
+  }
   if (errors.length) return { ok: false, errors };
   return { ok: true, value: out };
 }
@@ -273,5 +298,25 @@ export function applyWorthinessOverrideToRaw(
   const wRaw = { ...((next.worthiness as Record<string, unknown> | undefined) ?? {}) };
   Object.assign(wRaw, picked);
   next.worthiness = wRaw;
+  return next;
+}
+
+/**
+ * extraction override 注入 memory 段原始配置（#46 收口）。必须在 parseConfig
+ * 之前并入：scenePoisonSplit 缺省 false / sceneBatchMaxChars Math.max(0,…)
+ * clamp 语义全部在 parseConfig 的 extraction 块内（MemoryCore/src/config.ts），
+ * parse 后再合并会绕过这些不变量。返回新对象，不改入参；override 为空时
+ * 原样返回。
+ */
+export function applyExtractionOverrideToRaw(
+  memoryCompatRaw: Record<string, unknown>,
+  override: ExtractionSettingsOverride | undefined,
+): Record<string, unknown> {
+  const picked = pickDefined(override);
+  if (!override || Object.keys(picked).length === 0) return memoryCompatRaw;
+  const next: Record<string, unknown> = { ...memoryCompatRaw };
+  const exRaw = { ...((next.extraction as Record<string, unknown> | undefined) ?? {}) };
+  Object.assign(exRaw, picked);
+  next.extraction = exRaw;
   return next;
 }

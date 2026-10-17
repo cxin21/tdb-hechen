@@ -15,7 +15,7 @@ import { getEnv } from "../utils/env.js";
 import { parseConfig as parseMemoryConfig } from "../config.js";
 import type { MemoryTdaiConfig } from "../config.js";
 import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
-import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImportancePenaltyOverrideToRaw, applyWorthinessOverrideToRaw } from "./settings-override.js";
+import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImportancePenaltyOverrideToRaw, applyWorthinessOverrideToRaw, applyExtractionOverrideToRaw } from "./settings-override.js";
 
 // ============================
 // Gateway config types
@@ -500,7 +500,10 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   //（enabled/penalty clamp/extractionEnabled 缺省语义在 parseConfig 内）。
   const memoryCompatWithRerank = applyImportancePenaltyOverrideToRaw(
     applyWorthinessOverrideToRaw(
-      applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank),
+      applyExtractionOverrideToRaw(
+        applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank),
+        settingsOverride?.extraction,
+      ),
       settingsOverride?.worthiness,
     ),
     settingsOverride?.importancePenalty,
