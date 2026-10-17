@@ -16,11 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: MemoryCore/pnpm-lock.yaml
+      # 仓库纪律（.gitignore:32-35）：lockfile 不入库（dev-only）——CI 无 frozen 安装、无依赖缓存
       - name: Install
         working-directory: MemoryCore
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
       - name: Redline subset probes (PR gate, #48)
         working-directory: MemoryCore
         run: pnpm exec vitest run src/core/hooks/__tests__/soul-identity-probes.test.ts -t "红线子集"
@@ -38,11 +37,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: MemoryProxy/pnpm-lock.yaml
       - name: Install
         working-directory: MemoryProxy
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
       - name: Typecheck
         working-directory: MemoryProxy
         run: pnpm exec tsc --noEmit
