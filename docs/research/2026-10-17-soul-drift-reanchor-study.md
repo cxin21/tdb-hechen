@@ -60,3 +60,10 @@ curl -X POST http://127.0.0.1:8420/v3/recall -H "Authorization: Bearer <key>" -H
 curl -X POST http://127.0.0.1:8420/v3/soul/introspect -H "Authorization: Bearer <key>" -H "x-tdai-service-id: default" \
   -d '{"teamId":"…","userId":"…","agentId":"…","snapshotLimit":3}'
 ```
+
+## 六、执行记录（2026-10-17 用户拍板：G1 + 推 git + 批次末重锚）
+
+- **G1 已执行**：`UPDATE core_values SET state='retired' WHERE value_id='shadow-first' AND state='active' AND 三元组` → changes=1，total 14 不变（零删除），retired=2；introspect 活体验证 has-shadow-first=False、soulVersion sv-57ed4626→sv-77531f86；真实轮次 soul-feeling 审慎清单悬空消失（仅剩取证先行）。
+- **推 git**：本报告按先例 0d1fe22 复制入库 fd8c171；etc/RESTART-SOP.md 与 start-tdb-supervised.ps1（MaxRestarts 3→10）属部署侧本地配置，按 SOP 不入库留磁盘。
+- **批次末重锚已执行**：杀监督外 core 7700 + panel 17828 → 新 supervisor pid 10536 takeover（MaxRestarts=10、restartsUsed=0、owned 四服务齐整零监督外：proxy/panel/knowledge/core）→ 四端口 200（8420/8096/8421/8123）。
+- **重锚后 E2E 全绿**：#39 redline=action_proximate 活体（`<soul-event kind="redline">` 近端块多次真实出现）；#40 capabilities 段在位；#51 journal norm=1 首行落账（ts 2026-10-17T05:27:36Z，两周三档窗口自此刻起算）；#30 快照门新指纹行继续落账（65915f11/d82ca875/aaff6991）。
