@@ -86,7 +86,7 @@ describe("R5-F8 句界集统一（共享句界常量，含 \\n 与半角）", ()
     const out = await buildSoulPrefix(store, TENANT, undefined, { selfIdentityEnabled: true });
     // 价值锚行与感受段首要子句使用同一句界集，渲染口径一致
     expect(out).toContain("根因(趋近)：第一句事实!");
-    expect(out).toContain("首要 根因：第一句事实!");
+    expect(out).toContain("根因（首要：第一句事实!）");
     expect(out).not.toContain("第二句细节");
   });
 });

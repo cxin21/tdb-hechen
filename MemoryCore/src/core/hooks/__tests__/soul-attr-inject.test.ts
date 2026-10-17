@@ -98,9 +98,8 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     );
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
-    // 呈现层翻修（首要独立行）：清单行=「乙」（首要除名不变），首要子句独立成行
-    expect(m![1]).toBe("乙");
-    expect(out).toContain("\n首要 甲：所有结论须以真实代码与测试取证背书");
+    // 形态翻修（2026-10-17）：首要内联后缀入清单位——单行=乙(a-2)；甲(z-1)（首要：…）
+    expect(m![1]).toBe("乙；甲（首要：所有结论须以真实代码与测试取证背书）");
   });
   it("首要锚无 description → 该锚整体退出感受段（#22 消悬空），详述次锚升为首要（宁缺毋滥）", async () => {
     const out = await buildSoulPrefix(
@@ -114,9 +113,9 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     );
     const fm = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(fm).not.toBeNull();
-    // R5 #22：甲 desc 空 → 与价值锚行同门整体拒入（不再出现裸关键词悬空）；乙升为首要详述
-    expect(fm![1]).toBe("首要 乙：次锚描述");
-    expect(out).not.toContain("首要 甲");
+    // R5 #22：甲 desc 空 → 与价值锚行同门整体拒入（不再出现裸关键词悬空）；乙=唯一成员内联详述
+    expect(fm![1]).toBe("乙（首要：次锚描述）");
+    expect(out).not.toContain("甲（首要");
   });
   it("V7 方案A：描述无句界且≤80 预算→全量（替换 V6-1d 的 30 字硬截）", async () => {
     const d40 = "一二三四五六七八九十".repeat(4);
@@ -128,8 +127,7 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
     );
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
-    expect(m![1]).toContain("首要 甲：一二三四五六七八九十".slice(0, 6));
-    expect(m![1]).toContain(d40);
+    expect(m![1]).toBe(`甲（首要：${d40}）`);
   });
   it("审慎组（valence=-1）同样生效（首要=详述、同锚两现消失）", async () => {
     const out = await buildSoulPrefix(
@@ -138,7 +136,7 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("提醒我审慎的价值：首要 风险锚：发布前必须回滚演练");
+    expect(out).toContain("提醒我审慎的价值：风险锚（首要：发布前必须回滚演练）");
   });
 });
 

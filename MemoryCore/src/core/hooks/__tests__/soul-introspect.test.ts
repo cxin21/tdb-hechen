@@ -132,3 +132,107 @@ describe("#36 端点 handler（soul-introspect-endpoint）", () => {
     expect(data.orphanAnchors).toEqual([{ label: "孤儿锚", evidenceHits: 0 }]);
   });
 });
+
+describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（body 逐键覆盖）", () => {
+  const fidelitySlots = [
+    { slot: "self_identity", content: "我是测试者。" },
+    { slot: "identity", content: "用户是系统维护者。" },
+    { slot: "strict_rule", content: "绝不可删除记忆。" },
+  ];
+
+  it("defaultRenderOpts 生效：selfIdentityEnabled=true → rendered 含红线段（与生产注入同形）", async () => {
+    const out = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      { getStore: () => makeStore({ slots: fidelitySlots }), defaultRenderOpts: { selfIdentityEnabled: true } },
+    );
+    expect(out.status).toBe(200);
+    const data = (out.payload as { code: number; data: { rendered: string } }).data;
+    expect(data.rendered).toContain("## 不可逾越（红线）");
+    expect(data.rendered).toContain("绝不可删除记忆。");
+  });
+
+  it("body renderOpts 逐键覆盖 defaultRenderOpts：显式 false 回退 legacy（无红线段）", async () => {
+    const out = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1", renderOpts: { selfIdentityEnabled: false } },
+      { getStore: () => makeStore({ slots: fidelitySlots }), defaultRenderOpts: { selfIdentityEnabled: true } },
+    );
+    const data = (out.payload as { code: number; data: { rendered: string } }).data;
+    expect(data.rendered).not.toContain("## 不可逾越（红线）");
+  });
+
+  it("moodTierProvider 现算基调行；未提供 provider 不渲染基调（诚实降级）", async () => {
+    const slots = [{ slot: "identity", content: "我是测试。" }];
+    const withMood = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      {
+        getStore: () => makeStore({ slots }),
+        defaultRenderOpts: { selfIdentityEnabled: true },
+        moodTierProvider: async () => ({ tier: "strained", sampleCount: 5 }),
+      },
+    );
+    const d1 = (withMood.payload as { data: { rendered: string } }).data;
+    expect(d1.rendered).toContain("近期基调：");
+    expect(d1.rendered).toContain("近 5 条经历的情感聚合");
+
+    const noMood = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      { getStore: () => makeStore({ slots }), defaultRenderOpts: { selfIdentityEnabled: true } },
+    );
+    const d2 = (noMood.payload as { data: { rendered: string } }).data;
+    expect(d2.rendered).not.toContain("近期基调：");
+  });
+
+  it("moodTierProvider 抛错非致命：warn + 省略基调行、其余段照常", async () => {
+    const warns: string[] = [];
+    const out = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      {
+        getStore: () => makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] }),
+        defaultRenderOpts: { selfIdentityEnabled: true },
+        moodTierProvider: async () => {
+          throw new Error("mood down");
+        },
+        logger: { warn: (m: string) => warns.push(m) },
+      },
+    );
+    expect(out.status).toBe(200);
+    const data = (out.payload as { code: number; data: { rendered: string } }).data;
+    expect(data.rendered).not.toContain("近期基调：");
+    expect(data.rendered).toContain("我是测试。");
+    expect(warns.join("\n")).toContain("mood down");
+  });
+
+  it("stateProvider 返回 state → rendered 含当下状态行（探针与生产同形）", async () => {
+    const out = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      {
+        getStore: () => makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] }),
+        defaultRenderOpts: { selfIdentityEnabled: true },
+        stateProvider: async () => ({ valence: 0.6, arousal: 0.4, topValue: "用户拍板" }),
+      },
+    );
+    expect(out.status).toBe(200);
+    const data = (out.payload as { code: number; data: { rendered: string } }).data;
+    expect(data.rendered).toContain("当下状态：偏正（0.6）·唤醒中等（0.4）·活跃价值：用户拍板");
+  });
+
+  it("stateProvider 抛错非致命：warn + 省略状态行、其余段照常", async () => {
+    const warns: string[] = [];
+    const out = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      {
+        getStore: () => makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] }),
+        defaultRenderOpts: { selfIdentityEnabled: true },
+        stateProvider: async () => {
+          throw new Error("state down");
+        },
+        logger: { warn: (m: string) => warns.push(m) },
+      },
+    );
+    expect(out.status).toBe(200);
+    const data = (out.payload as { code: number; data: { rendered: string } }).data;
+    expect(data.rendered).not.toContain("当下状态：");
+    expect(data.rendered).toContain("我是测试。");
+    expect(warns.join("\n")).toContain("state down");
+  });
+});

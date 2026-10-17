@@ -10,6 +10,8 @@
  *   - 单一源：computeMoodValence 导出供任务 2（R10 情感显著度权重）复用或反向——禁第二份加权实现。
  *   - 样本契约：samples 须按 occurred_at DESC（store.recentAffectSignals 已保证）；maxSamples 在此截断。
  */
+import type { CoreTenant, IMemoryStore } from "../store/types.js";
+
 export interface MoodSample {
   valence: number;
   arousal: number | null;
@@ -69,4 +71,42 @@ export function computeMoodTier(samples: MoodSample[], cfg: MoodConfig): MoodRes
   }
   const tier: MoodTier = mood >= cfg.posThreshold ? "positive" : mood <= cfg.negThreshold ? "strained" : "neutral";
   return { tier, sampleCount: valid.length };
+}
+
+/**
+ * #36 保真度补全：store→三档的组合封装（消费侧单一入口，禁第二份内联实现）。
+ * 门：moodCfg.enabled!==true 或 store 无 recentAffectSignals → null（零行为基线，config-first）。
+ * cfg 字段逐位透传 computeMoodTier（undefined 由其 Number()||0 兜底，与既有行为一致）；
+ * nowMs 用 Date.now()——本函数是运行时封装非纯函数，不受"禁内联时钟"纯函数纪律约束。
+ * store 抛错不在此吞（上抛，调用侧 try/catch 非致命降级）。
+ */
+export interface MoodLineConfig {
+  enabled?: boolean;
+  windowHours?: number;
+  maxSamples?: number;
+  minSamples?: number;
+  posThreshold?: number;
+  negThreshold?: number;
+  halfLifeHours?: number;
+}
+
+export async function computeMoodTierFromStore(
+  store: IMemoryStore,
+  tenant: CoreTenant,
+  moodCfg: MoodLineConfig | undefined,
+): Promise<{ tier: MoodTier; sampleCount: number } | null> {
+  if (moodCfg?.enabled !== true) return null;
+  if (typeof store.recentAffectSignals !== "function") return null;
+  const samples = await Promise.resolve(
+    store.recentAffectSignals(tenant, { windowHours: moodCfg.windowHours as number, maxSamples: moodCfg.maxSamples as number }),
+  );
+  const res = computeMoodTier(samples ?? [], {
+    minSamples: moodCfg.minSamples as number,
+    maxSamples: moodCfg.maxSamples as number,
+    posThreshold: moodCfg.posThreshold as number,
+    negThreshold: moodCfg.negThreshold as number,
+    halfLifeHours: moodCfg.halfLifeHours as number,
+    nowMs: Date.now(),
+  });
+  return res.tier === null ? null : { tier: res.tier, sampleCount: res.sampleCount };
 }

@@ -124,7 +124,7 @@ describe("V7 F-U2：感受段首要锚并列 weight 两端序统一", () => {
       ) as never,
       TENANT,
     );
-    expect(out).toContain("\n首要 甲：甲描述");
+    expect(out).toContain("甲（首要：甲描述）；乙");
   });
 });
 
@@ -140,7 +140,7 @@ describe("V7 方案A：首要描述句边界截取（消残句，宁缺毋滥）
     );
     // 注：断言限定感受段——价值锚行另有描述渲染（V6-1b，全量存储描述），不在本断言范围
     const feel = out.match(/<soul-feeling>[\s\S]*?<\/soul-feeling>/)?.[0] ?? "";
-    expect(feel).toContain("首要 文档：" + longDesc.split("。")[0] + "。");
+    expect(feel).toContain("文档（首要：" + longDesc.split("。")[0] + "。）");
     expect(feel).not.toContain("后续");
   });
   it("无句边界且超预算：省略描述（宁缺毋滥，不产残句）", async () => {

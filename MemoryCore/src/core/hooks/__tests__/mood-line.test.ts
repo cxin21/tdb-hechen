@@ -8,7 +8,7 @@
  *   红线 R-A：mood 不参与召回排序——本模块只有聚合与映射，无任何排序/加权召回接口。
  */
 import { describe, expect, it } from "vitest";
-import { computeMoodTier, computeMoodValence, type MoodSample } from "../mood-line.js";
+import { computeMoodTier, computeMoodTierFromStore, computeMoodValence, type MoodSample } from "../mood-line.js";
 
 const NOW = Date.parse("2026-09-24T12:00:00.000Z");
 const iso = (hoursBefore: number): string => new Date(NOW - hoursBefore * 3600e3).toISOString();
@@ -94,5 +94,34 @@ describe("M1-S2 mood-line：computeMoodTier 三档映射（降级+边界+确定�
     // 近期（1h/2h）正向 0.8/0.7，远期（200h）负向 -0.9：加权后应为正 → positive
     const r = computeMoodTier([s(0.8, 1), s(0.7, 2), s(-0.9, 200), s(-0.9, 220), s(-0.9, 240)], cfg({ minSamples: 5 }));
     expect(r.tier).toBe("positive");
+  });
+});
+
+describe("#36 保真度补全：computeMoodTierFromStore（store→三档单一源组合）", () => {
+  const T = { teamId: "t", userId: "u", agentId: "a" };
+  const moodCfg = { enabled: true, windowHours: 72, maxSamples: 20, minSamples: 2, posThreshold: 0.15, negThreshold: -0.15, halfLifeHours: 48 };
+  const mkStore = (impl?: () => Promise<Array<{ valence: number; arousal: number | null; occurred_at: string }>>) =>
+    (impl ? { recentAffectSignals: impl } : {}) as never as Parameters<typeof computeMoodTierFromStore>[0];
+
+  it("门：enabled!==true / 方法缺席 / cfg 缺省 → null（零行为基线）", async () => {
+    expect(await computeMoodTierFromStore(mkStore(async () => []), T, { ...moodCfg, enabled: false })).toBeNull();
+    expect(await computeMoodTierFromStore(mkStore(undefined), T, moodCfg)).toBeNull();
+    expect(await computeMoodTierFromStore(mkStore(async () => []), T, undefined)).toBeNull();
+  });
+
+  it("样本达标三档判定；不足 minSamples → null；store 抛错上抛（调用侧非致命）", async () => {
+    const ok = await computeMoodTierFromStore(mkStore(async () => [s(0.5, 1), s(0.6, 2)]), T, moodCfg);
+    expect(ok).toEqual({ tier: "positive", sampleCount: 2 });
+    const low = await computeMoodTierFromStore(mkStore(async () => [s(0.5, 1)]), T, moodCfg);
+    expect(low).toBeNull();
+    await expect(
+      computeMoodTierFromStore(
+        mkStore(async () => {
+          throw new Error("db down");
+        }),
+        T,
+        moodCfg,
+      ),
+    ).rejects.toThrow("db down");
   });
 });

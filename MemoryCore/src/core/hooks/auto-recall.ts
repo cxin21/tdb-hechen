@@ -16,7 +16,7 @@ import { stripMemoryLineMeta } from "./memory-line-meta.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
-import { computeMoodTier } from "./mood-line.js";
+import { computeMoodTierFromStore } from "./mood-line.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
 import type { MemoryRecord } from "../record/l1-reader.js";
 import type { IMemoryStore, L1SearchResult, L1FtsResult, CoreTenant, IsolationFilter } from "../store/types.js";
@@ -80,6 +80,7 @@ import {
 } from "../profile/profile-sync.js";
 import type { Logger } from "../types.js";
 import type { SoulRenderOptions } from "./soul-assembler.js";
+import type { SoulState } from "./soul-state.js";
 
 const TAG = "[memory-tdai] [recall]";
 const RECALL_TRUNCATION_SUFFIX = "…（已截断；可用 tdai_memory_search 或 tdai_conversation_search 查看详情）";
@@ -958,30 +959,47 @@ export async function performLayeredRecall(params: {
       try {
         const { buildSoulPrefix } = await import("./soul-assembler.js");
         const it = params.isolationFilter;
-        // S-FEEL-1（M1）：近期情绪基调——enabled=false 时完全跳过（零行为差异=逐位现状）；
-        // store 可选方法缺实现（recentAffectSignals 不在场）→ 静默省略基调行（宁缺毋滥）。
+        // S-FEEL-1（M1）：近期情绪基调——enabled=false 时完全跳过（零行为差异=逐位现状）。
+        // #36 保真度补全：store→三档封装下沉 mood-line.computeMoodTierFromStore（消费侧单一入口，
+        // 禁第二份内联实现）；store 可选方法缺实现 → null（宁缺毋滥）。
         // 红线 R-A：mood 只进 soul 前缀与 meta.mood，不参与任何召回排序/加权（情绪不得喂自身）。
         let moodTierResult: { tier: "positive" | "neutral" | "strained"; sampleCount: number } | null = null;
-        const moodCfg = cfg.coreMemory?.moodLine;
-        if (moodCfg?.enabled === true && typeof vectorStore.recentAffectSignals === "function") {
+        try {
+          moodTierResult = await computeMoodTierFromStore(
+            vectorStore,
+            { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
+            cfg.coreMemory?.moodLine,
+          );
+        } catch (err) {
+          logger?.warn?.(`[soul] mood compute failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+        // #28→#34 生产断层接线（2026-10-17）：#28 状态机已生产写 soul_state（真实租户行在库），
+        // #34 渲染通道（opts.state → soul-assembler renderStateLine，soul-feeling 尾块）无人喂入
+        // → 状态行永不渲染。此处单一接线点：store 实现可选方法 readSoulState（IMemoryStore
+        // types.ts:802，返回 MaybePromise）才读；返回 null/undefined=无状态行 → 不传 opts.state
+        //（#34 opt-in 语义：数据在=渲染，无数据=逐位现状，零新配置）。字段映射（store 行
+        // camelCase 直接兼容 SoulState，仅 null→缺省归一）：topValue/turnSeq 为 null → 省略
+        //（topValue 缺省由 soul-assembler directional 兜底，勿在此重算）；updatedAt → at
+        //（渲染不消费，保留状态时刻）。红线 R-A 同款：state 只进 soul 前缀渲染与进程内 cacheKey，
+        // 不参与 soulVersion 指纹（soul-assembler 指纹隔离）与任何召回排序。
+        let soulState: SoulState | undefined;
+        const stateStore = vectorStore;
+        if (stateStore && typeof stateStore.readSoulState === "function") {
           try {
-            const samples = await Promise.resolve(
-              vectorStore.recentAffectSignals(
-                { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
-                { windowHours: moodCfg.windowHours, maxSamples: moodCfg.maxSamples },
-              ),
-            );
-            const moodRes = computeMoodTier(samples, {
-              minSamples: moodCfg.minSamples,
-              maxSamples: moodCfg.maxSamples,
-              posThreshold: moodCfg.posThreshold,
-              negThreshold: moodCfg.negThreshold,
-              halfLifeHours: moodCfg.halfLifeHours,
-              nowMs: Date.now(),
+            const row = await stateStore.readSoulState?.({
+              teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default",
             });
-            if (moodRes.tier !== null) moodTierResult = { tier: moodRes.tier, sampleCount: moodRes.sampleCount };
+            if (row) {
+              soulState = {
+                valence: row.valence,
+                arousal: row.arousal,
+                ...(row.topValue != null ? { topValue: row.topValue } : {}),
+                ...(row.turnSeq != null ? { turnSeq: row.turnSeq } : {}),
+                ...(row.updatedAt ? { at: row.updatedAt } : {}),
+              };
+            }
           } catch (err) {
-            logger?.warn?.(`[soul] mood compute failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+            logger?.warn?.(`[soul] state read failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           }
         }
         const soulMeta: { soulVersion?: string } = {};
@@ -1001,6 +1019,10 @@ export async function performLayeredRecall(params: {
             budgetCharacterChars: cfg.coreMemory?.soulRender?.budgetCharacterChars,
             // S-FEEL-1（M1）：近期基调行（null/undefined=不渲染=逐位现状）。
             moodTier: moodTierResult,            // S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚仍混渲染于价值锚行）。
+            // #28→#34（2026-10-17 接线）：当下状态行——soul_state 行非 null 才传（读取点见上，
+            // mood 计算后）；缺省 undefined=不渲染=逐位现状；指纹隔离由 soul-assembler 保证
+            //（state 只进进程内 cacheKey，不进 soulVersion）。
+            ...(soulState ? { state: soulState } : {}),
             characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,
             // #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写）。
             snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,

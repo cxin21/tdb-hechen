@@ -60,6 +60,7 @@ import type { SeedProgress } from "../core/seed/types.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
 import { handleRerankRoute } from "./rerank-endpoint.js";
 import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
+import { computeMoodTierFromStore, type MoodLineConfig } from "../core/hooks/mood-line.js";
 import { createReranker } from "../core/recall/rerank/factory.js";
 import type { MemoryReranker } from "../core/recall/rerank/types.js";
 import type { V2RouterDeps } from "./v2-router.js";
@@ -1075,13 +1076,59 @@ export class TdaiGateway {
       // ── /v3/soul/introspect —— soul 只读自省端点（#36，R5）。
       //    Bearer 门禁与 /v1/rerank 同级；只读合同：introspectSoul 强制
       //    snapshotsEnabled:false，零写入；store 未就绪 → 503。
+      //    #36 保真度补全：defaultRenderOpts=生产 soul 渲染配置镜像 + moodTierProvider=
+      //    现算近期基调（与 auto-recall 同源 computeMoodTierFromStore）+ stateProvider=
+      //    现读当下状态（同源 readSoulState）——探针评估与生产注入同形文本。
       if (method === "POST" && pathname === "/v3/soul/introspect") {
         if (!this.checkAuth(req, res)) return;
+        const memCfg = this.config.memory as {
+          coreMemory?: {
+            selfIdentity?: { enabled?: boolean };
+            characterTension?: { enabled?: boolean };
+            moodLine?: MoodLineConfig;
+            soulRender?: {
+              budgetSelfChars?: number;
+              budgetIdentityChars?: number;
+              maxRelationLines?: number;
+              budgetAnchorChars?: number;
+              budgetPersonChars?: number;
+              budgetCharacterChars?: number;
+              introspect?: { snapshotLimit?: number; evidenceWindowHours?: number };
+            };
+          };
+        };
+        const coreMem = memCfg.coreMemory;
         await handleSoulIntrospectRoute(req, res, pathname, method, parseJsonBody, sendJson, {
           getStore: () => this.core.getStoreForIntrospect(),
-          defaults: (
-            this.config.memory as { coreMemory?: { soulRender?: { introspect?: { snapshotLimit?: number; evidenceWindowHours?: number } } } }
-          ).coreMemory?.soulRender?.introspect,
+          defaults: coreMem?.soulRender?.introspect,
+          defaultRenderOpts: {
+            selfIdentityEnabled: coreMem?.selfIdentity?.enabled === true,
+            budgetSelfChars: coreMem?.soulRender?.budgetSelfChars,
+            budgetIdentityChars: coreMem?.soulRender?.budgetIdentityChars,
+            maxRelationLines: coreMem?.soulRender?.maxRelationLines,
+            budgetAnchorChars: coreMem?.soulRender?.budgetAnchorChars,
+            budgetPersonChars: coreMem?.soulRender?.budgetPersonChars,
+            budgetCharacterChars: coreMem?.soulRender?.budgetCharacterChars,
+            characterTensionEnabled: coreMem?.characterTension?.enabled === true,
+          },
+          moodTierProvider: async (tenant) => {
+            const st = this.core.getStoreForIntrospect();
+            return st ? computeMoodTierFromStore(st, tenant, coreMem?.moodLine) : null;
+          },
+          stateProvider: async (tenant) => {
+            const st = this.core.getStoreForIntrospect();
+            if (!st || typeof st.readSoulState !== "function") return null;
+            const row = await Promise.resolve(st.readSoulState(tenant));
+            if (!row) return null;
+            // 字段映射与 auto-recall.ts:993 同构：null→省略、updatedAt→at。
+            return {
+              valence: row.valence,
+              arousal: row.arousal,
+              ...(row.topValue != null ? { topValue: row.topValue } : {}),
+              ...(row.turnSeq != null ? { turnSeq: row.turnSeq } : {}),
+              ...(row.updatedAt ? { at: row.updatedAt } : {}),
+            };
+          },
           logger: this.logger,
         });
         return;

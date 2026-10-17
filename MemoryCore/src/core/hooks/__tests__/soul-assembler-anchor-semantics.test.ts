@@ -92,10 +92,8 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
     );
     const m = out.match(/驱动我行动的价值：([^\n]+)/);
     expect(m).not.toBeNull();
-    // R5 #22/#23 + 呈现层翻修：清单=滤后其余（首要 甲 除名详述）、首要独立成行；清单序仍 value_id 稳定
-    expect(m![1].indexOf("乙")).toBeGreaterThanOrEqual(0);
-    expect(m![1].indexOf("乙")).toBeLessThan(m![1].indexOf("丙"));
-    expect(out).toContain("\n首要 甲：甲锚句。");
+    // R5 #22/#23 + 形态翻修（2026-10-17）：首要内联后缀入清单位、悬浮行退役；整行 value_id 稳定（乙→丙→甲）
+    expect(m![1]).toBe("乙；丙；甲（首要：甲锚句。）");
   });
 
   it("人物锚行：weight DESC 取 top-N 后，渲染按 value_id 稳定", async () => {

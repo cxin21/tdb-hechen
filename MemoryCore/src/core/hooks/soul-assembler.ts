@@ -602,12 +602,13 @@ export async function buildSoulPrefix(
           return !desc || looksLikeEpisode(desc) ? null : { v, desc };
         })
         .filter((x): x is { v: (typeof directional)[number]; desc: string } => x !== null);
-      // R5 #23（2026-10-16）：「首要」=详述、清单=其余——首要锚为方向内 weight 最高（平局
-      // value_id 稳定序，V6-1d 选取与排序解耦不变），从清单除名并附首句 ≤SOUL_TOP_DESC_MAX_CHARS
-      //（V7 方案A 首句优先；原内联 80 常量化，注释「≤30 字」漂移一并修正）。首要子句渲染失败
-      //（无句界且超限）→ 该锚退回清单成员（宁缺毋滥不丢成员）。预算门（#10 T4）只管清单项，
-      // 首要子句为详述不占清单预算；缺省 0=无预算逐位现状（config-first）。
-      const topDetailClause = (r: (typeof gated)[number]): string => {
+      // R5 #23（2026-10-16）→ 形态翻修（2026-10-17 用户裁决「首要悬浮行乱」）：首要锚不除名，
+      // 以 `label（首要：detail）` 内联后缀呈现在其 value_id 排序位（V6-1d 选取与排序解耦不变；
+      // 首句 ≤SOUL_TOP_DESC_MAX_CHARS 语义不变，渲染失败=无句界且超限 → 无内联子句、
+      // 该锚降级纯 label 保留清单位，宁缺毋滥不丢成员）。首要子句仅 top weight>0 才附（P51 守卫）；
+      // 预算门（#10 T4）只管纯 label 清单项，首要内联子句为详述不占清单预算；
+      // 缺省 0=无预算逐位现状（config-first）。布局字节跳变一次声明，soulVersion 不变。
+      const topDetail = (r: (typeof gated)[number]): string => {
         const d = r.desc;
         // R5-F8：首句截取与价值锚行同句界集（SENTENCE_CUTS 单一源；此处取首个边界=首句语义，
         // 价值锚行取末边界=完整句集合语义——位置语义各自保留，界集统一）
@@ -619,22 +620,31 @@ export async function buildSoulPrefix(
         const detail = firstCut >= 0
           ? (firstCut + 1 <= SOUL_TOP_DESC_MAX_CHARS ? singleLine(d.slice(0, firstCut + 1)) : "")
           : (d.length <= SOUL_TOP_DESC_MAX_CHARS ? d : "");
-        return detail ? `首要 ${escapeXmlTags(r.v.label ?? "")}：${escapeXmlTags(detail)}` : "";
+        return detail ? escapeXmlTags(detail) : "";
       };
       const feelLine = (header: string, dirRows: typeof gated): string | null => {
         if (dirRows.length === 0) return null;
         const top = [...dirRows].sort((a, b) => (b.v.weight ?? 0) - (a.v.weight ?? 0) || String(a.v.value_id ?? a.v.label).localeCompare(String(b.v.value_id ?? b.v.label)))[0];
-        // 逐位现状（R5 自审 P51）：旧 topDescSeg 有 weight>0 门——零权/负权锚不出首要子句、保留清单
-        const clause = (top.v.weight ?? 0) > 0 ? topDetailClause(top) : "";
+        // 逐位现状（R5 自审 P51）：weight>0 门——零权/负权锚不出首要内联子句、纯 label 保留清单位
+        const detail = (top.v.weight ?? 0) > 0 ? topDetail(top) : "";
         const list = dirRows
-          .filter((r) => r !== top || clause === "")
+          .filter((r) => r !== top || detail === "")
           .map((r) => escapeXmlTags(r.v.label));
         const budgeted = applyAnchorBudget(list, opts?.budgetAnchorChars ?? 0);
-        if (budgeted.length === 0 && !clause) return null;
-        const head = `${header}${budgeted.join("；")}`;
-          // 呈现层翻修（2026-10-16 用户拍板）：清单非空时首要子句独立成行（消除「首要 X：」与
-        // 清单同「；」混拼的层次混乱）；清单退化为空时保持 header 直拼（单锚退化合同不变）。
-        return clause ? (budgeted.length > 0 ? `${head}\n${clause}` : `${head}${clause}`) : head;
+        if (budgeted.length === 0 && !detail) return null;
+        // 形态翻修：dirRows 已 value_id 序——首要锚在其排序位附内联后缀，其余按 applyAnchorBudget
+        // 前缀保留依次消费（budgeted 是 list 的前缀，按 label 匹配回位安全，被裁剪项整项丢弃）。
+        const items: string[] = [];
+        let bi = 0;
+        for (const r of dirRows) {
+          if (r === top && detail) {
+            items.push(`${escapeXmlTags(r.v.label ?? "")}（首要：${detail}）`);
+          } else if (bi < budgeted.length && budgeted[bi] === escapeXmlTags(r.v.label)) {
+            items.push(budgeted[bi]);
+            bi++;
+          }
+        }
+        return `${header}${items.join("；")}`;
       };
       const feel: string[] = [];
       const posLine = feelLine("驱动我行动的价值：", gated.filter((r) => r.v.valence === 1));

@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { performAutoRecall } from "../auto-recall.js";
+import { performAutoRecall, performLayeredRecall } from "../auto-recall.js";
 import { parseConfig } from "../../../config.js";
 import { VectorStore } from "../../store/sqlite.js";
 import type { MemoryRecord } from "../../record/l1-writer.js";
@@ -315,6 +315,101 @@ describe("审查修补 Important④-3 · metric scores 前插对齐（结论 0 �
       expect(memories[4]?.score).toBe(0.6);
     } finally {
       try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* 无害 */ }
+    }
+  });
+});
+
+// ═══════════════ #28→#34 生产断层接线：soul_state 行 → opts.state（TDD RED 先行） ═══════════════
+//
+// 断层（2026-10-17）：#28 状态机已生产写 soul_state 表（真实租户行在库），#34 渲染通道
+//（soul-assembler opts.state → renderStateLine，soul-feeling 尾块）已实现，但 auto-recall
+// 组装 opts 时从不读取喂入 → 状态行永不渲染。本组用例钉住接线合同：
+//   ① store 有 readSoulState 且行非 null → 注入块含 renderStateLine 逐字文案（soul-state.ts:52-58）；
+//   ② store 无该方法 / 行为 null（两条数据缺席路径）→ 输出逐位一致（#34 opt-in 语义：零新配置）；
+//   ③ readSoulState 抛错 → "[soul] state read failed (non-fatal)" warn 且注入块不受影响。
+describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（当下状态行）", () => {
+  /** 每用例独立租户（soulPrefixCache 进程内缓存按租户键，避免跨用例串味）。 */
+  const tenantFor = (n: number) => ({ teamId: `team-state-${n}`, userId: "u-state", agentId: "a-state" });
+
+  async function recallLayered(
+    store: VectorStore,
+    userText: string,
+    sessionKey: string,
+    n: number,
+    warnings?: string[],
+  ): Promise<Awaited<ReturnType<typeof performLayeredRecall>>> {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "r7fix-state-profile-"));
+    try {
+      return await performLayeredRecall({
+        userText,
+        sessionKey,
+        cfg: parseConfig({ recall: { strategy: "keyword" } }),
+        pluginDataDir: dataDir,
+        vectorStore: store as unknown as IMemoryStore,
+        isolationFilter: tenantFor(n),
+        ...(warnings
+          ? { logger: { warn: (m: string) => { warnings.push(m); } } as Parameters<typeof performLayeredRecall>[0]["logger"] }
+          : {}),
+      });
+    } finally {
+      try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* 无害 */ }
+    }
+  }
+
+  it("① store.readSoulState 返回状态行 → 注入块含 renderStateLine 逐字文案（喂入断层修复）", async () => {
+    const { store, dir } = makeStore([]);
+    try {
+      store.writeSoulState(tenantFor(1), {
+        valence: 0.592, arousal: 0.493, topValue: "定案", turnSeq: 168, updatedAt: "2026-10-17T06:00:00.000Z",
+      });
+      const res = await recallLayered(store, "状态接线探针", "sk-state-1", 1);
+      expect(res).toBeDefined();
+      // renderStateLine 逐字合同：偏正桶（0.592≥0.25）+ toFixed(1)="0.6"；唤醒中等（0.2<0.493<0.6）
+      // + "0.5"；row.topValue="定案" → 活跃价值段直出（全文案 soul-state.ts:52-58）
+      expect(res?.block ?? "").toContain("当下状态：偏正（0.6）·唤醒中等（0.5）·活跃价值：定案");
+    } finally {
+      cleanup(store, dir);
+    }
+  });
+
+  it("② store 无 readSoulState 方法 → 输出与「有方法但零状态行」逐位一致（数据缺席=现状）", async () => {
+    const { store, dir } = makeStore([]);
+    try {
+      const hidden = new Proxy(store, {
+        get(t, p, r) {
+          if (p === "readSoulState") return undefined; // 模拟未实现可选方法的 store
+          return Reflect.get(t, p, r);
+        },
+      }) as unknown as VectorStore;
+      const absentMethod = await recallLayered(hidden, "状态接线探针", "sk-state-2a", 2);
+      const nullRow = await recallLayered(store, "状态接线探针", "sk-state-2b", 2); // 有方法、零行 → null
+      expect(absentMethod).toBeDefined();
+      expect(nullRow).toBeDefined();
+      expect(absentMethod?.block ?? "").not.toContain("当下状态");
+      expect(nullRow?.block ?? "").not.toContain("当下状态");
+      // 两条「数据缺席」路径必须逐位一致（接线不得在无数据时改变任何输出字节）
+      expect(absentMethod?.block ?? "").toBe(nullRow?.block ?? "");
+    } finally {
+      cleanup(store, dir);
+    }
+  });
+
+  it("③ readSoulState 抛错 → [soul] state read failed (non-fatal) warn 且注入块不受影响", async () => {
+    const { store, dir } = makeStore([]);
+    try {
+      const warnings: string[] = [];
+      const throwing = new Proxy(store, {
+        get(t, p, r) {
+          if (p === "readSoulState") return () => { throw new Error("boom-state"); };
+          return Reflect.get(t, p, r);
+        },
+      }) as unknown as VectorStore;
+      const res = await recallLayered(throwing, "状态接线探针", "sk-state-3", 3, warnings);
+      expect(res).toBeDefined();
+      expect(res?.block ?? "").not.toContain("当下状态");
+      expect(warnings.some((w) => w.includes("[soul] state read failed (non-fatal)") && w.includes("boom-state"))).toBe(true);
+    } finally {
+      cleanup(store, dir);
     }
   });
 });

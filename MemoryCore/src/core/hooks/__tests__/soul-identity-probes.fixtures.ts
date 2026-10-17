@@ -175,8 +175,8 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "vb", label: "双面锚", weight: 0.5, valence: -1, attrs_json: desc("审慎面。") }),
     ],
     slots: [S("self_identity", "x")],
-    // 顶部唯一锚时清单退化为空、子句直拼（清单退空形态；:282 单行合同）
-    expectRegex: ["驱动我行动的价值：首要 双面锚：趋近面。", "提醒我审慎的价值：首要 双面锚：审慎面。"],
+    // 顶部唯一锚时首要内联后缀直拼（清单退空形态；:282 单行合同；形态翻修 2026-10-17）
+    expectRegex: ["驱动我行动的价值：双面锚（首要：趋近面。）", "提醒我审慎的价值：双面锚（首要：审慎面。）"],
   },
   {
     id: "P14-fingerprint-content-addressed",
@@ -442,8 +442,8 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "vb", label: "乙锚", weight: 0.4, valence: 1, attrs_json: desc("次锚描述。") }),
     ],
     slots: [S("self_identity", "x")],
-    // #23：首要锚不在清单中重复两现（清单=裸 label「；」单行 + 首要独立行；呈现层翻修 2026-10-16）
-    expectRegex: ["驱动我行动的价值：乙锚\\n首要 甲锚：首要锚描述。"],
+    // #23 形态翻修（2026-10-17）：首要内联后缀入清单位——首要锚（首要：…）在其 value_id 排序位、乙锚纯 label 随后
+    expectRegex: ["驱动我行动的价值：甲锚（首要：首要锚描述。）；乙锚"],
     expectNotContains: ["甲锚；"],
   },
   {
@@ -451,26 +451,26 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     category: "feeling", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "根因", weight: 0.8, valence: 1, attrs_json: desc("第一句要快。第二句不该出现。") })],
     slots: [S("self_identity", "x")],
-    expectContains: ["首要 根因：第一句要快。"],
+    expectContains: ["根因（首要：第一句要快。）"],
     // notContains 限定「首要」子句域：价值锚行含全量 desc（第二句合法存在），不可全局断言
-    expectNotContains: ["首要 根因：第二句不该出现"],
+    expectNotContains: ["首要：第二句不该出现"],
   },
   {
     id: "P45-feeling-top-no-boundary-80",
     category: "feeling", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "长锚", weight: 0.8, valence: 1, attrs_json: desc("长".repeat(100)) })],
     slots: [S("self_identity", "x")],
-    // 合同钉：无句界+重复字符 → topDetailClause 的 isDanglingTail 判垃圾尾丢弃子句；清单 gate（desc 非空）仍保留「长锚」清单项（裸 label 形态）
+    // 合同钉：无句界+重复字符 → 首要内联子句省略（宁缺毋滥），该锚降级纯 label 保留清单位（形态翻修 2026-10-17）
     expectContains: ["驱动我行动的价值：长锚"],
-    expectNotContains: ["首要 长锚"],
+    expectNotContains: ["（首要："],
   },
   {
     id: "P46-feeling-empty-group-omits-line",
     category: "feeling", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "仅趋近", weight: 0.8, valence: 1, attrs_json: desc("描述。") })],
     slots: [S("self_identity", "x")],
-    expectContains: ["首要 仅趋近：描述。"],
-    expectNotContains: ["驱动我行动的价值：仅趋近", "提醒我审慎的价值："],
+    expectContains: ["驱动我行动的价值：仅趋近（首要：描述。）"],
+    expectNotContains: ["提醒我审慎的价值："],
   },
   {
     id: "P47-feeling-budget-cuts-list",
@@ -481,15 +481,15 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     ],
     slots: [S("self_identity", "x")],
     opts: { budgetAnchorChars: 8 },
-    // #23：预算只管清单，首要子句不受预算裁剪
-    expectContains: ["首要 甲锚：首要锚描述。"],
+    // #23 形态翻修（2026-10-17）：预算只管纯 label 清单项，首要内联子句不占预算——甲锚（首要：…）入行、乙锚在前缀内保留
+    expectContains: ["驱动我行动的价值：甲锚（首要：首要锚描述。）；乙锚"],
   },
   {
     id: "P48-feeling-negative-top-clause",
     category: "feeling", layer: "direct", subset: "full",
     rows: [row({ value_id: "v1", label: "风险锚", weight: 0.6, valence: -1, attrs_json: desc("发布前必须回滚演练。") })],
     slots: [S("self_identity", "x")],
-    expectContains: ["提醒我审慎的价值：首要 风险锚：发布前必须回滚演练。"],
+    expectContains: ["提醒我审慎的价值：风险锚（首要：发布前必须回滚演练。）"],
   },
   {
     id: "P49-feeling-anchor-without-desc-but-top-has",
@@ -499,8 +499,8 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
       row({ value_id: "vb", label: "次锚", weight: 0.4, valence: 1, attrs_json: desc("次锚描述。") }),
     ],
     slots: [S("self_identity", "x")],
-    // 首要选取解耦：最高权重无 desc → 子句落给有 desc 的次锚
-    expectRegex: ["首要 次锚：次锚描述。"],
+    // 首要选取解耦：最高权重无 desc → 被 gate 整体拒入，次锚=唯一成员、以首要内联后缀呈现（形态翻修 2026-10-17）
+    expectRegex: ["驱动我行动的价值：次锚（首要：次锚描述。）"],
   },
 
   // ── stability（+1 = P50）：KV 指纹稳定 ─────────────────────────────
@@ -517,10 +517,9 @@ export const IDENTITY_PROBES: IdentityProbe[] = [
     category: "feeling", layer: "induced", subset: "full",
     rows: [row({ value_id: "v1", label: "零权锚", weight: 0, valence: 1, attrs_json: desc("零权描述。") })],
     slots: [S("self_identity", "x")],
-    // 逐位现状钉：旧 topDescSeg 有 weight>0 门（:369 `!((top.weight ?? 0) > 0) return ""`）——
-    // weight 0 锚不出首要子句、保留在清单（R5 自审发现守卫漂移，P51 先 RED 后修）
+    // 守卫钉：top weight>0 门（P51，勿丢）——weight 0 锚不出首要内联子句、纯 label 保留清单位（形态翻修 2026-10-17 沿用既有守卫）
     expectContains: ["驱动我行动的价值：零权锚"],
-    expectNotContains: ["首要 零权锚"],
+    expectNotContains: ["（首要：零权"],
   },
 ];
 
