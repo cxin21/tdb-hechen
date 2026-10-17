@@ -7,12 +7,13 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { chatMemoryApi, conflictOf, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, conflictOf, promiseConflictOf, type PendingItem } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
   core_value: '价值锚提案',
   strict_rule: '行为红线提案',
+  promise_transition: '承诺状态迁移提案',
 };
 
 function PendingRow({ id, slot, content, busy, batchBusy, checked, onToggle, onDecide }: {
@@ -99,6 +100,10 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
       if (conflict) {
         tea.notify.warning(`「${conflict.label}」存在同名锚（${conflict.state ?? 'active'}），已在待办行标记冲突；请到「记忆 → 价值锚」面板确认后采纳`);
         setError('存在同名冲突，请到价值锚面板确认后采纳');
+      } else if (promiseConflictOf(err)) {
+        // #50⑤：promise 迁移 409——状态已迁移，重试只会撞 404，不误导重试。
+        tea.notify.warning('该承诺状态已发生迁移，本次未重复执行；请刷新后查看承诺当前状态');
+        setError('该承诺状态已发生迁移，请刷新后重看当前状态');
       } else {
         setError('决策失败，请重试');
       }
@@ -117,17 +122,23 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     setError('');
     const failedIds: string[] = [];
     let conflictCount = 0;
+    let promiseConflictCount = 0;
     for (const id of Array.from(selected)) {
       try {
         await chatMemoryApi.pendingDecide(blockId, id, decision);
       } catch (err) {
-        if (conflictOf(err)) conflictCount++; else failedIds.push(id);
+        // #50⑤：promise 迁移 409 单列计数（重试只会撞 404，不混入失败重试提示）。
+        if (conflictOf(err)) conflictCount++;
+        else if (promiseConflictOf(err)) promiseConflictCount++;
+        else failedIds.push(id);
       }
     }
     setBatchBusy(false);
     setSelected(new Set());
     if (failedIds.length > 0) setError(`批量决策部分失败（${failedIds.length} 条），请重试`);
     if (conflictCount > 0) setError(`同名冲突 ${conflictCount} 条需逐条确认，请到价值锚面板处理`);
+    if (promiseConflictCount > 0)
+      setError(`承诺状态迁移冲突 ${promiseConflictCount} 条，承诺已被他处迁移，请刷新后查看当前状态`);
     refresh();
   }
 

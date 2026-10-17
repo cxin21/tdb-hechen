@@ -81,11 +81,13 @@ export {
 export {
   chatMemoryApi,
   conflictOf,
+  promiseConflictOf,
   type ChatMemoryBlock,
   type ChatMemoryLayerItem,
   type ChatMemoryLayerMetadata,
   type ChatMemorySearchHit,
   type PendingDecideConflict,
+  type PromiseDecideConflict,
   type PendingItem,
   type ValueAnchor,
   type ValueProposal,

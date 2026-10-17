@@ -11,12 +11,13 @@
  * （缺省安全优先不落库；确认后 allow_overwrite=true 显式覆盖；vetoed 不可绕仅提示）。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { chatMemoryApi, conflictOf, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, conflictOf, promiseConflictOf, type PendingItem } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
   core_value: '价值锚提案',
   strict_rule: '行为红线提案',
+  promise_transition: '承诺状态迁移提案',
 };
 
 /** #19 T12：重提提案 attrs（宽松解析；坏 JSON/旧行 → null 不显示徽标） */
@@ -84,6 +85,15 @@ export function PendingSection(props: { blockId: string }) {
         if (ok) {
           await decide(id, decision, true);
         }
+        setBusy('');
+        return;
+      }
+      // #50⑤：promise 迁移 409——承诺状态已被他处迁移或迁移被拒，重试只会撞 404，不误导重试。
+      const promiseConflict = promiseConflictOf(err);
+      if (promiseConflict) {
+        setError(
+          `该承诺状态已发生迁移（目标 ${promiseConflict.to}${promiseConflict.reason ? `：${promiseConflict.reason}` : ''}），本次未重复执行；请刷新后查看承诺当前状态`,
+        );
         setBusy('');
         return;
       }

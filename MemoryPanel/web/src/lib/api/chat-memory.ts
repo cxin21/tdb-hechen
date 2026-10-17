@@ -79,6 +79,30 @@ export function conflictOf(err: unknown): PendingDecideConflict | null {
   return null;
 }
 
+/** #50⑤：promise_transition 采纳 409 载荷（core v2-router errorEnvelope detail.promiseTransition） */
+export interface PromiseDecideConflict {
+  promiseId: string;
+  to: string;
+  reason?: string;
+}
+
+/** #50⑤：识别 promise 迁移 409（形状=promiseTransition.ok===false）；非该形状返回 null */
+export function promiseConflictOf(err: unknown): PromiseDecideConflict | null {
+  const data = err instanceof ApiError ? err.data : undefined;
+  const pt = (data as { promiseTransition?: unknown } | undefined)?.promiseTransition;
+  if (
+    pt &&
+    typeof pt === 'object' &&
+    (pt as PromiseDecideConflict & { ok: unknown }).ok === false &&
+    typeof (pt as PromiseDecideConflict).promiseId === 'string' &&
+    typeof (pt as PromiseDecideConflict).to === 'string'
+  ) {
+    const { ok: _ok, ...rest } = pt as PromiseDecideConflict & { ok: unknown };
+    return rest;
+  }
+  return null;
+}
+
 /** 价值锚提案（Task DISC，提议制）：/v3/core-memory/values/discover 返回，只提议不落库 */
 export interface ValueProposal {
   label: string;
