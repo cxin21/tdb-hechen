@@ -611,28 +611,10 @@ export function shouldRegisterKnowledgeInjector(config: ProxyConfig): boolean {
     && !!config.knowledge.serviceToken;
 }
 
-/** WikiRecallInjector 缺省参数（config.wikiRecall 缺失/整段时兜底）。导出仅供同形验证断言。 */
-export const defaultWikiRecallConfig: WikiRecallConfig = {
-  enabled: true,
-  perWikiLimit: 8,
-  globalTopK: 5,
-  minScore: 0.02,
-  hop: 0,
-  decay: 0.5,
-  maxTotalChars: 0,
-  minInjectNormScore: 0.6,
-  // W5（T18-B）：新增结构页权重 other/log/index/schema = 0.3（结构页同时在
-  // wiki-recall-injector 排尾不竞争 top-K，权重为兜底乘法项）；既有 3 项保留。
-  typeWeights: { entity: 0.6, concept: 0.9, overview: 0.6, other: 0.3, log: 0.3, index: 0.3, schema: 0.3 },
-  // C3（2026-09-10）domainRouter 默认退役：09-09 隔离实验（锚点 evals/recall-golden/
-  // runs/2026-09-10T04-07-38.json，B on vs E off 同语料快照）实证——部署工作点
-  // （tw09/rel0.6/absGate1.5）router 对 posRecall 单变量贡献=0（0.66 vs 0.66）、
-  // negInjected 恒 +2（13 vs 11），且 W4 boost→归一→注入门耦合未解。
-  // **显式退役标记**：keywords 空表 → injector 跨库软定域恒 no-op（能力形状保留，
-  // 重开只需填 keywords）。重开 router 前必须：(a) 先归档 router-on 实验；
-  // (b) 先解耦 W4（boost 作用于归一前分数、直接受注入门放大）——独立任务。
-  domainRouter: { boost: 1.5, keywords: {} },
-};
+/** WikiRecallInjector 缺省参数权威单一源=injectors/wiki-recall-injector.ts（#48 CI 加固：
+ * barrel 定义在 Linux 模块图下被测试端解析为 undefined；此处 re-export 保兼容面）。 */
+import { defaultWikiRecallConfig } from "./injectors/wiki-recall-injector.js";
+export { defaultWikiRecallConfig };
 
 /** Test-only: drop the cached pipeline so the next call rebuilds from config. */
 export function __resetInjectionPipelineForTests(): void {

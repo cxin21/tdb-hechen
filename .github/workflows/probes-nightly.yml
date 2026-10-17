@@ -17,9 +17,10 @@ jobs:
         with:
           node-version: 22
       # 仓库纪律（.gitignore:32-35）：lockfile 不入库（dev-only）——CI 无 frozen 安装、无依赖缓存
+      # --ignore-scripts：openclaw 依赖链 preinstall 在 CI 沙箱失败（同 ci.yml 说明）
       - name: Install
         working-directory: MemoryCore
-        run: pnpm install
+        run: pnpm install --ignore-scripts
       - name: Full identity probes (nightly, #48)
         working-directory: MemoryCore
         run: pnpm exec vitest run src/core/hooks/__tests__/soul-identity-probes.test.ts

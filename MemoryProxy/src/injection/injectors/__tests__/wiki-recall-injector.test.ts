@@ -2,17 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WikiRecallInjector, resolveBoundWikiResources, shouldRegisterWikiRecallInjector } from "../wiki-recall-injector.js";
+import { WikiRecallInjector, defaultWikiRecallConfig, resolveBoundWikiResources, shouldRegisterWikiRecallInjector } from "../wiki-recall-injector.js";
 import type { WikiRecallInjectorDeps, WikiRecallInjectorConfig } from "../wiki-recall-injector.js";
 import type { AgentContext } from "../../types.js";
 import type { WikiRetrieveClient, WikiSearchHit } from "../../../knowledge/wiki-retrieve-client.js";
 import type { KnowledgeItem } from "../../../knowledge/core-client.js";
 import type { TdaiIdentity } from "../../../tdai/types.js";
 import { buildConfig } from "../../../config.js";
-// 静态引入 injection barrel：defaultWikiRecallConfig 定义在 index.ts，而 barrel
-// 模块图很大——静态化让加载成本落在 collection 阶段（不受单测 5s 超时约束），
-// 避免本机高负载时动态 import 冷启动超时（stash bisect 证实干净树同样超时 = 环境争用）。
-import { defaultWikiRecallConfig } from "../../index.js";
+// defaultWikiRecallConfig 权威单一源=同目录 injector（#48 CI 加固：原经 index.ts barrel
+// import，Linux CI 模块图下 typeWeights 解析为 undefined；改自被测模块直取同引用）。
 import {
   buildJitSummary,
   renderWikiRecallBlockJit,
