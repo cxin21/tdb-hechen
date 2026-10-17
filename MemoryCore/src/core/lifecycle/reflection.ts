@@ -11,6 +11,7 @@
  */
 import { embedForLifecycle } from "./embed-helpers.js";
 import { proposalAlreadyKnown, vetReflectionIdentityProposal } from "./soul-reflection-proposals.js";
+import { vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
 import type { Logger } from "../types.js";
 
 export interface ReflectionConfig {
@@ -23,6 +24,8 @@ export interface ReflectionConfig {
   maxSample?: number;
   /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=零提案=逐位现状。 */
   soulProposals?: { enabled?: boolean };
+  /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
+  promiseProposals?: { enabled?: boolean };
 }
 
 export interface ReflectionDeps {
@@ -32,7 +35,9 @@ export interface ReflectionDeps {
     upsertL1(record: unknown, embedding?: unknown): boolean | Promise<boolean>;
     /** #27：O13 rail 桥接可选面（缺实现→桥接安静跳过，采纳侧人工裁决兜底）。 */
     upsertPendingCore?(slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): boolean | Promise<boolean>;
-    listPendingCore?(tenant?: unknown, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; state: string }> | Promise<Array<{ pending_id: string; slot: string; content: string; state: string }>>;
+    listPendingCore?(tenant?: unknown, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; state: string; attrs_json?: string | null }> | Promise<Array<{ pending_id: string; slot: string; content: string; state: string; attrs_json?: string | null }>>;
+    /** #44：promise 提案桥可选面（缺实现→桥接优雅跳过，采纳侧人工裁决兜底）。 */
+    listSoulPromises?(tenant?: unknown, opts?: { status?: string; limit?: number }): Array<{ promiseId: string; content?: string; status: string; refKey?: string }> | Promise<Array<{ promiseId: string; content?: string; status: string; refKey?: string }>>;
     readCore?(tenant?: unknown): Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }> | null> | null;
   };
   /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
@@ -56,7 +61,7 @@ export const REFLECTION_SYSTEM_PROMPT = [
 ].join("\n");
 
 /** 解析反思产出（宽松 JSON 提取，与 person/character 解析同风格）。 */
-export function parseReflectionProposals(raw: string): Array<{ question: string; conclusion: string; evidence: string[] }> {
+export function parseReflectionProposals(raw: string): Array<{ question: string; conclusion: string; evidence: string[]; promiseTransitions: Array<{ promiseId: string; to: string; reason: string }> }> {
   const text = String(raw ?? "").trim();
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
@@ -70,6 +75,17 @@ export function parseReflectionProposals(raw: string): Array<{ question: string;
         question: typeof p.question === "string" ? p.question.trim() : "",
         conclusion: typeof p.conclusion === "string" ? p.conclusion.trim() : "",
         evidence: Array.isArray(p.evidence) ? p.evidence.map(String).filter((s) => s.length > 0) : [],
+        // #44（D-44-1）：可选 promiseTransitions 提议（宽松解析，非法项由确定性门拒绝）。
+        promiseTransitions: Array.isArray(p.promiseTransitions)
+          ? (p.promiseTransitions as unknown[])
+              .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+              .map((t) => ({
+                promiseId: typeof t.promiseId === "string" ? t.promiseId.trim() : "",
+                to: typeof t.to === "string" ? t.to.trim() : "",
+                reason: typeof t.reason === "string" ? t.reason.trim() : "",
+              }))
+              .filter((t) => t.promiseId.length > 0 || t.to.length > 0 || t.reason.length > 0)
+          : [],
       }))
       .filter((p) => p.question.length > 0 && p.conclusion.length > 0);
   } catch {
@@ -101,16 +117,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; promiseProposalsPushed: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -127,10 +143,17 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   let triggered = 0;
   let cardsWritten = 0;
   let proposalsPushed = 0;
+  let promiseProposalsPushed = 0;
   const soulProposalsOn = cfg.soulProposals?.enabled === true;
+  // #44（D-44-3）：promise 提案桥接门（缺省 false=逐位现状：零提示词段、零 store 调用、零提案）
+  const promiseProposalsOn = cfg.promiseProposals?.enabled === true;
   for (const { triple, rows } of byTenant.values()) {
     // #27：证据指针 → 原文内容映射（样本源即证据源；幻觉 id 无内容→去原文门按可用证据裁决）
     const contentById = new Map(rows.map((r) => [String(r.id ?? ""), String(r.content ?? "")]));
+    // #44（D-44-1）：在途承诺仅在 gate on 时拉取（gate off=零 store 调用=逐位现状）
+    const openPromises: Array<{ promiseId: string; content?: string; status: string; refKey?: string }> = promiseProposalsOn
+      ? ((await Promise.resolve(deps.store.listSoulPromises?.(triple, { status: "open" }))) ?? [])
+      : [];
     // 反思史即状态：最新反思结论卡的 updatedAt = 上次反思时间戳
     // 时间戳键：camelCase（MemoryRecord 形）与 snake_case（裸行）双兼容——
     // scheduler 的 mapL1RowToRecord 只展开原始行，updatedAt/createdAt 可能缺位。
@@ -154,6 +177,12 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
     const promptLines: string[] = ["【近期记忆样本（record_id | significance | 内容）】"];
     for (const r of sample) promptLines.push(`- ${String(r.id ?? "")} | ${Number(r.significance) || 0} | ${String(r.content ?? "").slice(0, 160)}`);
     promptLines.push("");
+    // #44（D-44-1）：在途承诺段仅当 gate on 且存在 open promise（gate off=提示词逐位现状）
+    if (promiseProposalsOn && openPromises.length > 0) {
+      promptLines.push("【在途承诺（promise_id | 内容 | refKey）】");
+      for (const p of openPromises.slice(0, 20)) promptLines.push(`- ${p.promiseId} | ${String(p.content ?? "").slice(0, 80)} | ${String(p.refKey ?? "")}`);
+      promptLines.push("如样本证据显示某在途承诺已兑现或已失约，可在对应结论卡附 promiseTransitions 数组（字段 promiseId/to/reason；to 仅限 kept|broken|withdrawn；reason ≤100 字说明证据依据）。无证据依据不提议。");
+    }
     promptLines.push("请按三问式输出反思结论 JSON 数组（字段：question/conclusion/evidence）。无合格结论输出 []。");
     const raw = await deps.llmRunner.run({ prompt: promptLines.join("\n"), systemPrompt: REFLECTION_SYSTEM_PROMPT, taskId: "reflection-l3", timeoutMs: 0, maxTokens: 0 });
     deps.logger?.debug?.(`[reflection] tenant=${JSON.stringify([triple.teamId, triple.userId, triple.agentId])} rawLen=${String(raw ?? "").length} rawPreview=${String(raw ?? "").slice(0, 200)}`);
@@ -212,8 +241,61 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
           deps.logger?.warn?.(`[reflection] soul proposal failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      // #44（D8-(c) 提案通道）：结论卡附带的 promiseTransitions 提议 → 确定性门裁决
+      // （vetPromiseTransitionProposal：目标 terminal→id 归一→promise 存在且 open→
+      // reason 非空≤200→去 L1 原文；refKey 取 store 行不采信 LLM）→ 重复抑制
+      // （listPendingCore slot=promise_transition attrs promiseId+to 全等）→ O13 rail 入轨
+      // （slot="promise_transition"，attrs{promiseId,to,refKey?,origin:"reflection-promise"}）。
+      // LLM 仅提议、store 写入一律 pending 待人工采纳（ADR0003 D8 判定权=确定性证据门+用户）。
+      // 采纳侧由 v2-router pending-decide promise_transition 分支落 transitionSoulPromise(source="proposal")。
+      // 非致命：桥接失败仅记日志，反思主路径零影响。
+      if (ok && promiseProposalsOn && openPromises.length > 0 && pr.promiseTransitions.length > 0) {
+        try {
+          const pendingRows = ((await Promise.resolve(deps.store.listPendingCore?.(triple, { includeDecided: false }))) ?? []) as Array<{ slot?: string; state?: string; attrs_json?: string | null }>;
+          for (const pt of pr.promiseTransitions) {
+            const verdict = vetPromiseTransitionProposal(
+              { promiseId: pt.promiseId, to: pt.to, reason: pt.reason },
+              openPromises,
+              sample.map((r) => String(r.content ?? "")),
+            );
+            if (!verdict.ok) {
+              deps.logger?.info?.(`[reflection] promise proposal rejected (${verdict.reason.slice(0, 80)}): ${pt.promiseId}`);
+              continue;
+            }
+            const proposal = verdict.proposal;
+            const dup = pendingRows.some((p) => {
+              if (p.slot !== "promise_transition" || p.state !== "pending") return false;
+              try {
+                const a = JSON.parse(String(p.attrs_json ?? "{}")) as { promiseId?: unknown; to?: unknown };
+                return a.promiseId === proposal.promiseId && a.to === proposal.to;
+              } catch {
+                return false;
+              }
+            });
+            if (dup) {
+              deps.logger?.info?.(`[reflection] promise proposal deduped (already pending): ${proposal.promiseId}`);
+              continue;
+            }
+            const pushed = await Promise.resolve(
+              deps.store.upsertPendingCore?.(
+                "promise_transition",
+                proposal.reason,
+                pr.evidence.length,
+                triple,
+                { attrs: { promiseId: proposal.promiseId, to: proposal.to, ...(proposal.attrs.refKey ? { refKey: proposal.attrs.refKey } : {}), origin: "reflection-promise" } },
+              ),
+            );
+            if (pushed) {
+              promiseProposalsPushed++;
+              deps.logger?.info?.(`[reflection] promise proposal queued: ${proposal.promiseId} -> ${proposal.to}`);
+            }
+          }
+        } catch (err) {
+          deps.logger?.warn?.(`[reflection] promise proposal failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
   }
-  return { triggered, cardsWritten, proposalsPushed };
+  return { triggered, cardsWritten, proposalsPushed, promiseProposalsPushed };
 }
 void DEFAULTS;

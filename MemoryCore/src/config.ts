@@ -559,6 +559,8 @@ export interface MemoryLifecycleConfig {
     rRef: number;
     /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=逐位现状。 */
     soulProposals: { enabled: boolean };
+    /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
+    promiseProposals: { enabled: boolean };
   };
 }
 
@@ -1364,6 +1366,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       rRef: Math.min(100000, Math.max(1, Math.floor(num(obj(lifecycleGroup, "reflection"), "rRef") ?? 150))),
       // #27（R5）：memory.lifecycle.reflection.soulProposals.enabled；缺省 false=零提案=逐位现状
       soulProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "soulProposals"), "enabled") ?? false },
+      // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状
+      promiseProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "promiseProposals"), "enabled") ?? false },
     },
   };
 

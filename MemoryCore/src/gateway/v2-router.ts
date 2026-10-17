@@ -25,6 +25,8 @@ import { DEFAULT_ISOLATION_ID, type CoreTenant } from "../core/store/types.js";
 import type { EmbeddingService } from "../core/store/embedding.js";
 // S-FEEL-1（M1）：近期情绪基调聚合单一源（mood-line.ts；R-A：mood 不参与召回排序）。
 import { computeMoodTier } from "../core/hooks/mood-line.js";
+import { applyAdoptedPromiseTransition, type PromiseTerminalTarget } from "../core/hooks/soul-promise-proposal.js";
+import { PROMISE_TERMINAL_STATUSES } from "../core/hooks/soul-promise.js";
 import { createScopedStorageAdapter, type StorageAdapter } from "../core/storage/adapter.js";
 import { StoragePaths } from "../core/storage/types.js";
 import type { Logger } from "../core/types.js";
@@ -2112,9 +2114,28 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
   // strict_rule / rejected / store 缺 listPendingCore（特性探测）→ 原行为逐位不变。
   let conflictPrior: { value_id: string; label: string; weight: number; valence?: number | null; pinned?: number; node_type?: string; attrs_json?: string | null; state?: string; created_by?: string | null } | undefined;
   let overwrite = false;
+  // #44（D8-(c) 提案通道）：promise 采纳载荷——预检（listPendingCore 特性探测）通过才置位；
+  // 预检不可用时（store 缺 listPendingCore）post-decide 分支防御性 422（与 core_value 先例同语义边界）。
+  let promisePayload: { promiseId: string; to: string } | undefined;
   if (b.decision === "adopted" && typeof (store as { listPendingCore?: unknown }).listPendingCore === "function") {
-    const pendingRows = ((await Promise.resolve((store as { listPendingCore: (t: unknown, o?: unknown) => unknown }).listPendingCore(tenant, { includeDecided: false }))) ?? []) as Array<{ pending_id?: string; slot?: string; label?: unknown; description?: unknown; content?: unknown }>;
+    const pendingRows = ((await Promise.resolve((store as { listPendingCore: (t: unknown, o?: unknown) => unknown }).listPendingCore(tenant, { includeDecided: false }))) ?? []) as Array<{ pending_id?: string; slot?: string; label?: unknown; description?: unknown; content?: unknown; attrs_json?: string | null }>;
     const row = pendingRows.find((p) => p.pending_id === b.pending_id);
+    // #44（D8-(c) 提案通道）：promise_transition 提案预检——任何裁决写之前（decide 在 :2174 之后的
+    // 分支才执行，此处 return 则 pending 保持 pending）。store 无 transitionSoulPromise → 503；
+    // attrs_json 缺失/坏/promiseId 缺/目标非 terminal → 422（不暗箱替用户裁决，走 rejected 或重出提案）。
+    // 通过预检 → promisePayload 带入 post-decide 采纳分支。
+    if (row?.slot === "promise_transition") {
+      if (typeof store.transitionSoulPromise !== "function") return errorEnvelope(503, "soul promise transitions not supported by store", requestId);
+      let attrs0: { promiseId?: unknown; to?: unknown } = {};
+      try {
+        const parsed0: unknown = JSON.parse(String(row.attrs_json ?? "{}"));
+        if (parsed0 && typeof parsed0 === "object" && !Array.isArray(parsed0)) attrs0 = parsed0 as { promiseId?: unknown; to?: unknown };
+      } catch { /* 坏 JSON → 校验失败 422 */ }
+      if (typeof attrs0.promiseId !== "string" || !attrs0.promiseId.trim() || !(PROMISE_TERMINAL_STATUSES as readonly string[]).includes(String(attrs0.to))) {
+        return errorEnvelope(422, "promise proposal payload invalid (promise_id/target missing) — reject or regenerate the proposal", requestId);
+      }
+      promisePayload = { promiseId: attrs0.promiseId.trim(), to: String(attrs0.to) };
+    }
     if (row && row.slot === "core_value" && typeof store.upsertValue === "function") {
       const anchor0 = coerceCoreValueAnchor({ label: String(row.label ?? ""), description: (row.description as string | null | undefined) ?? null, content: String(row.content ?? "") });
       if (anchor0 && typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
@@ -2223,6 +2244,24 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
       }
       const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
       if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
+    } else if (decided.slot === "promise_transition") {
+      // #44（D8-(c) 提案通道采纳侧）：唯一写入口=applyAdoptedPromiseTransition（#41 单一源：
+      // source="proposal"、note="[proposal] ${reason}"、恒可审计）。预检未产出载荷（store 缺
+      // listPendingCore 特性探测面）→ 防御性 422（pending 已裁决，采纳需经 API 重放——
+      // 与 core_value 422 post-decide 先例同语义边界）；store 竞态 {ok:false} → 409 幂等收尾。
+      if (!promisePayload) return errorEnvelope(422, "promise proposal payload unavailable (store lacks listPendingCore) — adopt again via API", requestId);
+      const applied = await applyAdoptedPromiseTransition(store, tenant, {
+        promiseId: promisePayload.promiseId,
+        to: promisePayload.to as PromiseTerminalTarget,
+        reason: String(decided.content ?? ""),
+        attrs: { origin: "proposal" },
+      });
+      if (!applied.ok) {
+        return errorEnvelope(409, `promise transition rejected: ${applied.reason ?? "transition-rejected"}`, requestId, {
+          promiseTransition: { ok: false, promiseId: applied.promiseId, to: applied.to, reason: applied.reason },
+        });
+      }
+      return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseTransition: { ok: boolean; promiseId: string; to: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseTransition: { ok: true, promiseId: applied.promiseId, to: applied.to } }, requestId);
     }
   }
   return successEnvelope<{ pending_id: string; decision: string; slot: string }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot }, requestId);

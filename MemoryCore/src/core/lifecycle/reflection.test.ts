@@ -99,7 +99,8 @@ describe("F13 反思触发", () => {
 
 describe("parseReflectionProposals", () => {
   it("宽松 JSON 提取 + 非法输入空数组", () => {
-    expect(parseReflectionProposals('[{"question":"q","conclusion":"c","evidence":["r1"]}]')).toEqual([{ question: "q", conclusion: "c", evidence: ["r1"] }]);
+    // #44：parse 契约扩展 promiseTransitions（缺省 []，可选提议面）——非 promise 字段逐位不变。
+    expect(parseReflectionProposals('[{"question":"q","conclusion":"c","evidence":["r1"]}]')).toEqual([{ question: "q", conclusion: "c", evidence: ["r1"], promiseTransitions: [] }]);
     expect(parseReflectionProposals("not json")).toEqual([]);
   });
 });

@@ -2585,12 +2585,14 @@ export class VectorStore implements IMemoryStore {
     const now = new Date().toISOString();
     const promiseId = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const createdAt = input.createdAt ?? now;
+    // #44（D-44-2 refKey 显式契约）：trim 归一；纯空白=无关联（''），不落垃圾指涉物。
+    const refKey = typeof input.refKey === "string" && input.refKey.trim().length > 0 ? input.refKey.trim() : "";
     // #45（D8 存储加固）：promise 行与创建事件行同事务——第二步故障整体回滚，无半写。
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(
         "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, ref_key, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL, ?)",
-      ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, input.refKey ?? "", createdAt, now);
+      ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, refKey, createdAt, now);
       this.db.prepare(
         "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, 'manual')",
       ).run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
