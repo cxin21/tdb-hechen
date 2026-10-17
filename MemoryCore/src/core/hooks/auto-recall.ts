@@ -1026,6 +1026,9 @@ export async function performLayeredRecall(params: {
             characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,
             // #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写）。
             snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,
+            // #52 D3（双通道 slots 去重）：per-turn 身份两行省略门（缺省 true=逐位现状；
+            // false=dual 路径跳过（我是谁）/（我心中的他）slots 行——会话头已承载）。
+            perTurnSlots: cfg.coreMemory?.soulRender?.perTurnSlots,
             // #29（R5）+#42（票 D / D9）：情境锚选择门——config 门透传 + 运行时注入
             //（embedder/queryEmbeddingProvider/queryText；F1 生产接线，组装见
             // buildSoulAnchorSelectRuntime：向量缺席=shadow 报告回退原形态/转正回退现状——宁缺毋滥）。

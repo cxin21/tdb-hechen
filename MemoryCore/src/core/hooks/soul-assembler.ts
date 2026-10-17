@@ -127,11 +127,20 @@ export interface SoulRenderOptions {
   /** #30（S9/R5）：soul 快照旁路落账门（缺省 true=纯增量持久化，不触碰注入字节；
    *  false=运维关闭开关）。指纹变化后首次渲染 append 一行（last-hash 去重防膨胀）。 */
   snapshotsEnabled?: boolean;
+  /** #52 D3（双通道 slots 去重）：per-turn 身份两行省略门——缺省 true（undefined 同）=逐位
+   *  现状；显式 false=dual（selfIdentityEnabled=true）路径跳过（我是谁）[self_identity] 与
+   *  （我心中的他）[identity] 两行 slots 行（会话头时机已承载，逐轮省略）；红线段
+   *  （strict_rule 仍走红线段）、价值锚行、重要的人、品格行、感受段（含当下状态/近期基调）、
+   *  capabilities 段照常渲染。legacy（dual=false）不适用（身份行是 legacy 路径唯一身份载体，
+   *  不静默丢失）。布局级渲染门：进 prefix cacheKey（false 才进键段）；不进 soulVersion
+   *  （ADR0003 批次纪律：布局变更不翻 sv，soulVer 只由数据驱动）。 */
+  perTurnSlots?: boolean;
   /** #29（R5）：情境锚选择触发门——价值锚行数 > maxRows 才启用；shadow 先行：只报告不裁剪、
    *  渲染逐位现状。#42（票 D / D9）：相似度打分器接线——enabled 缺省 false（shadow 报告随
-   *  向量可用性升级逐锚分形态）；enabled=true=转正（threshold 硬门+top-K 重排渲染行）。
-   *  embedder/queryEmbedding 为运行时注入（config 不携带向量）；任一缺席→回退现状形态
-   *  （宁缺毋滥不造分）。 */
+   *  向量可用性升级逐锚分形态）；enabled=true=转正（threshold 硬门+top-K）；#52 D3 选项C：
+   *  仅 rows.length > maxRows（发生裁剪）时按 cosine desc 重排渲染行，rows ≤ maxRows 不重排
+   *  （value_id 声明序）。embedder/queryEmbedding 为运行时注入（config 不携带向量）；任一
+   *  缺席→回退现状形态（宁缺毋滥不造分）。 */
   anchorSelect?: {
     maxRows?: number;
     scorer?: {
@@ -270,7 +279,7 @@ export async function buildSoulPrefix(
         : "";
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${scorerSig}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${scorerSig}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -364,6 +373,11 @@ export async function buildSoulPrefix(
         // 倾向，改置 soul-identity 段尾独立红线段渲染（见下方块组装），不再混入身份叙事；
         // legacy 路径（dual=false）逐位不动。
         if (dual && s.slot === "strict_rule") continue;
+        // #52 D3（双通道 slots 去重）：perTurnSlots=false 时 dual 路径跳过身份两行
+        //（（我是谁）[self_identity] /（我心中的他）[identity]——会话头时机已承载，逐轮省略）；
+        // strict_rule 不在此行内（上面已 continue，仍走红线段），其余段照常。
+        // legacy 路径不适用（身份行是 legacy 唯一身份载体，见 SoulRenderOptions 注）。
+        if (dual && opts?.perTurnSlots === false && (s.slot === "self_identity" || s.slot === "identity")) continue;
         const budget = budgetFor(s.slot);
         const content = budget !== undefined ? truncateByLines(s.content, budget) : s.content;
         const label = labelFor(s.slot);
@@ -397,7 +411,9 @@ export async function buildSoulPrefix(
           .filter((x): x is { row: string; desc: string } => x !== null);
         const decorated = decoratedPairs.map((p) => p.row);
         // #42：打分选择接线——转正（scorer.enabled=true 且 embedder/可用查询向量在位）=
-        // threshold 硬门 + top-K 重排渲染行；缺省关/shadow/向量缺席 → decorated 原样（逐位现状）。
+        // threshold 硬门 + top-K；#52 D3 选项C：仅 rows.length > maxRows（发生裁剪）时按
+        // cosine desc 决定保留集与顺序，rows ≤ maxRows 不重排（value_id 声明序，不抖动）；
+        // 缺省关/shadow/向量缺席 → decorated 原样（逐位现状）。
         const scorerCfg = opts?.anchorSelect?.scorer;
         // #42 审查加固（F1 懒解析 + I-4 可用门）：查询向量解析=显式 queryEmbedding ?? provider() ?? null，
         // 每次 buildSoulPrefix 调用至多解析一次（转正选择与 shadow 报告共用）；退化向量（零范数/空）
@@ -418,10 +434,13 @@ export async function buildSoulPrefix(
           const qv = await resolveQueryVec();
           if (typeof scorerCfg.embedder === "function" && qv) {
             try {
-              selected = selectAnchorRows(await scoreAnchorRows(decoratedPairs, qv, scorerCfg.embedder), {
-                maxRows: opts?.anchorSelect?.maxRows,
-                threshold: scorerCfg.threshold ?? 0,
-              }).map((s) => s.row);
+              selected = selectAnchorRows(
+                await scoreAnchorRows(decoratedPairs, qv, scorerCfg.embedder, { maxRows: opts?.anchorSelect?.maxRows }),
+                {
+                  maxRows: opts?.anchorSelect?.maxRows,
+                  threshold: scorerCfg.threshold ?? 0,
+                },
+              ).map((s) => s.row);
             } catch (err) {
               // #42 审查加固（F2/I-2）：embed 失败非致命——整体回退未选择现状（部分打分=选择语义
               // 不一致，宁缺毋滥），沿 mood compute non-fatal 先例；soul 前缀不再整轮丢失。

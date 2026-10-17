@@ -2,7 +2,9 @@
  * #42（ADR0003-P3 实施票 D / D9）：情境锚相似度打分器单测。
  * 合同：cosine 纯函数（零范数→0、维数不匹配→0 宁缺毋滥）；锚向量缓存=desc 原文精确键
  * （弃 hash 键——键错=静默错分，宁用原文；cap 100 FIFO 镜像 soul-assembler SOUL_CACHE_MAX）；
- * scoreAnchorRows 排序 score desc+并列保声明序；selectAnchorRows=threshold 硬门+top-K（K=maxRows）。
+ * #52 D3 选项C（仅裁剪时重排）：scoreAnchorRows 仅 rows.length > maxRows（发生裁剪）时按
+ * score desc（并列保声明序）决定保留集与顺序；≤ maxRows / 未传 maxRows=不重排（保持声明序，
+ * 分数照常计算可报告）。selectAnchorRows=threshold 硬门+top-K（K=maxRows）。
  * 真实性边界：embedder/queryEmbedding 缺席→[]（不造分）。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,7 +65,7 @@ describe("#42 scoreAnchorRows（锚向量缓存）", () => {
     expect(embed).toHaveBeenCalledTimes(102); // "100" 仍在缓存
   });
 
-  it("排序 score desc；并列保声明序（稳定）", async () => {
+  it("#52 D3 选项C：未传 maxRows（无裁剪门）→ 不重排，保持声明序，分数照常", async () => {
     const embed = async (t: string) => new Float32Array([t === "hi" ? 1 : 0, 1]);
     const rows = [
       { row: "lo-a", desc: "lo" },
@@ -72,11 +74,57 @@ describe("#42 scoreAnchorRows（锚向量缓存）", () => {
       { row: "tie2", desc: "hi" },
     ];
     const scored = await scoreAnchorRows(rows, new Float32Array([1, 0]), embed);
+    expect(scored.map((r) => r.row)).toEqual(["lo-a", "tie1", "lo-b", "tie2"]);
+    // vec("hi")=[1,1] 对 query [1,0] 的 cosine=√½；分数照常计算（可用于报告）。
+    expect(scored[1].score).toBeCloseTo(Math.SQRT1_2, 10);
+    expect(scored[0].score).toBeCloseTo(0, 10);
+  });
+
+  it("#52 D3 选项C：rows ≤ maxRows（不裁剪）→ 不重排，保持声明序", async () => {
+    const embed = async (t: string) => new Float32Array([t === "hi" ? 1 : 0, 1]);
+    const rows = [
+      { row: "lo-a", desc: "lo" },
+      { row: "tie1", desc: "hi" },
+      { row: "lo-b", desc: "lo" },
+      { row: "tie2", desc: "hi" },
+    ];
+    const scored = await scoreAnchorRows(rows, new Float32Array([1, 0]), embed, { maxRows: 4 });
+    expect(scored.map((r) => r.row)).toEqual(["lo-a", "tie1", "lo-b", "tie2"]);
+    expect(scored[1].score).toBeCloseTo(Math.SQRT1_2, 10);
+  });
+
+  it("#52 D3 选项C：rows > maxRows（发生裁剪）→ 按 score desc 决定保留集与顺序，并列保声明序", async () => {
+    const embed = async (t: string) => new Float32Array([t === "hi" ? 1 : 0, 1]);
+    const rows = [
+      { row: "lo-a", desc: "lo" },
+      { row: "tie1", desc: "hi" },
+      { row: "lo-b", desc: "lo" },
+      { row: "tie2", desc: "hi" },
+    ];
+    const scored = await scoreAnchorRows(rows, new Float32Array([1, 0]), embed, { maxRows: 3 });
+    // 打分器职责=按 score desc 给出全量排序（保留集决策的输入，不截断——threshold 语义归
+    // selectAnchorRows：threshold 过滤作用于全量 desc 集，再 top-K）；
     expect(scored.map((r) => r.row)).toEqual(["tie1", "tie2", "lo-a", "lo-b"]);
-    // vec("hi")=[1,1] 对 query [1,0] 的 cosine=√½（合同工件修正：RED 阶段测试体未运行，
-    // 原断言误写为 1；GREEN 前修正契约，不改排序语义）。
     expect(scored[0].score).toBeCloseTo(Math.SQRT1_2, 10);
-    expect(scored[2].score).toBeCloseTo(0, 10);
+    // 保留集与顺序=cosine desc 头部 maxRows（打分器+选择器组合语义）
+    const kept = selectAnchorRows(scored, { maxRows: 3 }).map((r) => r.row);
+    expect(kept).toEqual(["tie1", "tie2", "lo-a"]);
+  });
+
+  it("#52 D3 选项C：同 query 连续两跑输出顺序稳定（缓存命中，零重排抖动）", async () => {
+    const embed = vi.fn(async (t: string) => new Float32Array([t === "hi" ? 1 : 0, 1]));
+    const rows = [
+      { row: "lo-a", desc: "lo" },
+      { row: "tie1", desc: "hi" },
+      { row: "lo-b", desc: "lo" },
+      { row: "tie2", desc: "hi" },
+    ];
+    const q = new Float32Array([1, 0]);
+    const first = await scoreAnchorRows(rows, q, embed);
+    const second = await scoreAnchorRows(rows, q, embed);
+    expect(embed).toHaveBeenCalledTimes(2); // 两个 desc；第二次全缓存命中
+    expect(second.map((r) => r.row)).toEqual(first.map((r) => r.row));
+    expect(second.map((r) => r.score)).toEqual(first.map((r) => r.score));
   });
 
   it("embedder 缺席或 queryEmbedding 缺席→[] 且零 embed 调用（真实性：不造分）", async () => {

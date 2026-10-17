@@ -235,4 +235,30 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
     expect(data.rendered).toContain("我是测试。");
     expect(warns.join("\n")).toContain("state down");
   });
+
+  it("#52 D3：defaultRenderOpts.perTurnSlots=false → rendered 省略身份两行、红线段照常；body renderOpts 逐键覆盖可恢复", async () => {
+    const slots = [
+      { slot: "self_identity", content: "我是测试者。" },
+      { slot: "identity", content: "用户是系统维护者。" },
+      { slot: "strict_rule", content: "绝不可删除记忆。" },
+    ];
+    const off = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1" },
+      { getStore: () => makeStore({ slots }), defaultRenderOpts: { selfIdentityEnabled: true, perTurnSlots: false } },
+    );
+    expect(off.status).toBe(200);
+    const d1 = (off.payload as { code: number; data: { rendered: string } }).data;
+    expect(d1.rendered).not.toContain("（我是谁）");
+    expect(d1.rendered).not.toContain("（我心中的他）");
+    expect(d1.rendered).toContain("## 不可逾越（红线）");
+    expect(d1.rendered).toContain("绝不可删除记忆。");
+
+    const restored = await handleSoulIntrospectCore(
+      { teamId: "ti", userId: "u1", agentId: "a1", renderOpts: { perTurnSlots: true } },
+      { getStore: () => makeStore({ slots }), defaultRenderOpts: { selfIdentityEnabled: true, perTurnSlots: false } },
+    );
+    const d2 = (restored.payload as { code: number; data: { rendered: string } }).data;
+    expect(d2.rendered).toContain("（我是谁）");
+    expect(d2.rendered).toContain("（我心中的他）");
+  });
 });

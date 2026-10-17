@@ -14,6 +14,8 @@ import {
   PROMISE_PROPOSAL_MAX_REASON_CHARS,
   vetPromiseTransitionProposal,
   applyAdoptedPromiseTransition,
+  vetPromiseCreationProposal,
+  PROMISE_CREATION_MAX_CONTENT_CHARS,
 } from "../soul-promise-proposal.js";
 
 const openPromise = { promiseId: "pm_1", status: "open", refKey: "task-9" };
@@ -101,5 +103,84 @@ describe("#41 · 采纳侧唯一写路径（applyAdoptedPromiseTransition）", (
       attrs: { origin: "proposal" },
     });
     expect(missing).toMatchObject({ ok: false, reason: "store-unsupported" });
+  });
+});
+
+/**
+ * D8 创建通道（2026-10-17）· vetPromiseCreationProposal（纯裁决门，镜像 vetPromiseTransitionProposal）。
+ *
+ * 合同（ADR0003 D8 + 实施票 ②）：
+ * - content 非空且 ≤120 字（trim 后，PROMISE_CREATION_MAX_CONTENT_CHARS 安全阀）；
+ * - 逐字门：content 与任一样本内容空白归一公共串 ≥12 字 → 拒（防提示注入持久化，#27/#44 同理据；
+ *   12-gram 窗口精确判定——中段截取的逐字串同样命中，比句级 includes 更严）；
+ * - 去重：与现有 open promise 内容全等或 pending promise_create 行内容全等（空白归一）→ 拒；
+ * - 不设 refKey（创建不带关联；证据迁移通道按 refKey 严格相等工作，宁缺毋滥）；
+ * - vet 纯裁决零副作用：返回 {ok:true, proposal:{content}} | {ok:false, reason}。
+ */
+describe("D8 创建通道 · vetPromiseCreationProposal（纯裁决门）", () => {
+  const SAMPLES = ["推进顺利，本周继续联调"];
+
+  it("合法创建过门：非空 ≤120、无逐字命中、无重复 → proposal.content 归一化且不带 refKey", () => {
+    const v = vetPromiseCreationProposal(
+      { content: "  下次先跑测试再合并  " },
+      SAMPLES,
+      [{ content: "我会交付报告" }],
+      [{ slot: "promise_transition", state: "pending", content: "后续确认完成" }],
+    );
+    expect(v.ok).toBe(true);
+    if (v.ok) {
+      expect(v.proposal.content).toBe("下次先跑测试再合并");
+      expect("refKey" in v.proposal).toBe(false);
+    }
+  });
+
+  it("content 安全阀：空白 / 空 / 超 120 字（trim 后）拒绝", () => {
+    expect(vetPromiseCreationProposal({ content: "" }, SAMPLES, [], []).ok).toBe(false);
+    expect(vetPromiseCreationProposal({ content: "   " }, SAMPLES, [], []).ok).toBe(false);
+    expect(
+      vetPromiseCreationProposal(
+        { content: `前缀${"x".repeat(PROMISE_CREATION_MAX_CONTENT_CHARS)}` },
+        SAMPLES,
+        [],
+        [],
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("逐字门：与样本公共串 ≥12 字拒绝；短公共短语（<12 字）不误杀", () => {
+    const sample = ["周五前必须交付 wiki 重跑报告并且附上全部探针用例"];
+    expect(
+      vetPromiseCreationProposal(
+        { content: "已确认承诺：周五前必须交付 wiki 重跑报告并且附上全部探针用例" },
+        sample,
+        [],
+        [],
+      ).ok,
+    ).toBe(false);
+    // 「必须交付 wiki」= 9 字，未达 12 字阈值 → 放行
+    expect(vetPromiseCreationProposal({ content: "必须交付 wiki 的清单" }, sample, [], []).ok).toBe(true);
+  });
+
+  it("逐字门（12-gram 精确判定）：中段截取 ≥12 字公共串命中，句级 includes 会漏判", () => {
+    const sample = ["这是一段足够长的原始记忆内容用于逐字检测判定"];
+    // content 不包含完整样本句（句级 includes 不命中），但中段公共串「段足够长的原始记忆内容用于逐字检测」= 17 字 ≥12
+    expect(
+      vetPromiseCreationProposal({ content: "结论：段足够长的原始记忆内容用于逐字检测" }, sample, [], []).ok,
+    ).toBe(false);
+  });
+
+  it("去重：与 open promise 内容全等拒绝；与 pending promise_create 行内容全等拒绝（空白归一）", () => {
+    expect(vetPromiseCreationProposal({ content: "我会交付报告" }, SAMPLES, [{ content: "我会交付报告" }], []).ok).toBe(false);
+    expect(
+      vetPromiseCreationProposal({ content: "我会交付报告" }, SAMPLES, [], [
+        { slot: "promise_create", state: "pending", content: " 我会交付报告 " },
+      ]).ok,
+    ).toBe(false);
+    // 去重只针对 pending promise_create 行：同内容的 pending promise_transition 行不拦截
+    expect(
+      vetPromiseCreationProposal({ content: "我会交付报告" }, SAMPLES, [], [
+        { slot: "promise_transition", state: "pending", content: "我会交付报告" },
+      ]).ok,
+    ).toBe(true);
   });
 });

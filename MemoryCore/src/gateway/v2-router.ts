@@ -2117,6 +2117,8 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
   // #44（D8-(c) 提案通道）：promise 采纳载荷——预检（listPendingCore 特性探测）通过才置位；
   // 预检不可用时（store 缺 listPendingCore）post-decide 分支防御性 422（与 core_value 先例同语义边界）。
   let promisePayload: { promiseId: string; to: string } | undefined;
+  // D8 创建通道：promise_create 采纳载荷（与 promisePayload 同语义——预检通过才置位）。
+  let promiseCreatePayload: { content: string } | undefined;
   if (b.decision === "adopted" && typeof (store as { listPendingCore?: unknown }).listPendingCore === "function") {
     const pendingRows = ((await Promise.resolve((store as { listPendingCore: (t: unknown, o?: unknown) => unknown }).listPendingCore(tenant, { includeDecided: false }))) ?? []) as Array<{ pending_id?: string; slot?: string; label?: unknown; description?: unknown; content?: unknown; attrs_json?: string | null }>;
     const row = pendingRows.find((p) => p.pending_id === b.pending_id);
@@ -2135,6 +2137,22 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
         return errorEnvelope(422, "promise proposal payload invalid (promise_id/target missing) — reject or regenerate the proposal", requestId);
       }
       promisePayload = { promiseId: attrs0.promiseId.trim(), to: String(attrs0.to) };
+    }
+    // D8 创建通道：promise_create 提案预检（镜像 promise_transition 双分支）——任何裁决写之前。
+    // store 无 upsertSoulPromise → 503；content 校验双源：attrs_json.content 优先、回退行 content
+    // （reflection 桥真实形状：content 落行 content 列，attrs 仅 origin），均缺失 → 422（不暗箱裁决）。
+    if (row?.slot === "promise_create") {
+      if (typeof store.upsertSoulPromise !== "function") return errorEnvelope(503, "soul promise creation not supported by store", requestId);
+      let attrsC: { content?: unknown } = {};
+      try {
+        const parsedC: unknown = JSON.parse(String(row.attrs_json ?? "{}"));
+        if (parsedC && typeof parsedC === "object" && !Array.isArray(parsedC)) attrsC = parsedC as { content?: unknown };
+      } catch { /* 坏 JSON → 回退行 content 判定 */ }
+      const contentC = typeof attrsC.content === "string" && attrsC.content.trim() ? attrsC.content.trim() : String(row.content ?? "").trim();
+      if (!contentC) {
+        return errorEnvelope(422, "promise creation payload invalid (content missing) — reject or regenerate the proposal", requestId);
+      }
+      promiseCreatePayload = { content: contentC };
     }
     if (row && row.slot === "core_value" && typeof store.upsertValue === "function") {
       const anchor0 = coerceCoreValueAnchor({ label: String(row.label ?? ""), description: (row.description as string | null | undefined) ?? null, content: String(row.content ?? "") });
@@ -2262,6 +2280,22 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
         });
       }
       return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseTransition: { ok: boolean; promiseId: string; to: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseTransition: { ok: true, promiseId: applied.promiseId, to: applied.to } }, requestId);
+    } else if (decided.slot === "promise_create") {
+      // D8 创建通道采纳侧（唯一写入口=upsertSoulPromise source="reflection"）。预检未产出载荷
+      // （store 缺 listPendingCore 特性探测面）→ 防御性 422（同 transition post-decide 先例）；
+      // store 业务拒绝（缺 promiseId / {ok:false}）→ 409 幂等收尾（镜像 transition 409 形状）；
+      // sqlite DB 级失败抛错 → 直接传播（R5-F5：不静默吞 DB 错误，镜像 transition applier 语义）。
+      if (!promiseCreatePayload) return errorEnvelope(422, "promise creation payload unavailable (store lacks listPendingCore) — adopt again via API", requestId);
+      const created = (await Promise.resolve(
+        store.upsertSoulPromise?.(tenant, { content: promiseCreatePayload.content, source: "reflection" }),
+      )) as { promiseId?: string; reason?: string } | undefined;
+      if (!created || typeof created.promiseId !== "string" || !created.promiseId) {
+        const reason = created?.reason ?? "creation-failed";
+        return errorEnvelope(409, `promise creation rejected: ${reason}`, requestId, {
+          promiseCreate: { ok: false, reason },
+        });
+      }
+      return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseCreate: { ok: boolean; promiseId: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseCreate: { ok: true, promiseId: created.promiseId } }, requestId);
     }
   }
   return successEnvelope<{ pending_id: string; decision: string; slot: string }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot }, requestId);

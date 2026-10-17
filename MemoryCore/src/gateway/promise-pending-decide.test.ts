@@ -87,3 +87,74 @@ describe("#44 · pending decide → promise 迁移采纳分支", () => {
     expect(store.transitionSoulPromise).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * D8 创建通道（2026-10-17，票面 ④）：pending decide → promise_create 采纳分支（镜像 promise_transition 双分支）。
+ *
+ * 合同（D8 唯一创建写入口）：
+ * - pre-decide 预检：store 无 upsertSoulPromise → 503（裁决不发生，pending 保持 pending）；
+ *   载荷 content 非空 string 校验——attrs_json.content 优先、回退行 content（reflection 桥真实形状），
+ *   均缺失 → 422 "promise creation payload invalid (content missing) — reject or regenerate the proposal"；
+ * - adopted：upsertSoulPromise(tenant, {content, source:"reflection"}) → 成功 envelope 附
+ *   promiseCreate{ok:true,promiseId}；store 拒绝/缺 promiseId → 409 幂等收尾
+ *   （envelope.promiseCreate{ok:false,reason}，镜像 transition 409 形状——pending 已裁决，不重放）；
+ * - rejected：零 promise 写入。
+ */
+function promiseCreateStore(over: Record<string, unknown> = {}) {
+  return {
+    decidePendingCore: vi.fn(() => ({ slot: "promise_create", content: "下次先跑测试再合并", label: null, description: null })),
+    listPendingCore: vi.fn(async () => [
+      { pending_id: "pd-c1", slot: "promise_create", content: "下次先跑测试再合并", state: "pending", attrs_json: JSON.stringify({ origin: "reflection-promise" }) },
+    ]),
+    upsertSoulPromise: vi.fn(() => ({ promiseId: "pm_new_1" })),
+    ...over,
+  };
+}
+
+describe("D8 创建通道 · pending decide → promise_create 采纳分支", () => {
+  it("adopted → upsertSoulPromise({content, source:reflection}) + envelope.promiseCreate{ok:true,promiseId}", async () => {
+    const store = promiseCreateStore();
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-c1", decision: "adopted" }, AUTH, "rp7", depsFor(store));
+    expect(res.code).toBe(0);
+    expect(store.upsertSoulPromise).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: "teamA", userId: "userA", agentId: "agentA" }),
+      { content: "下次先跑测试再合并", source: "reflection" },
+    );
+    expect((res.data as { promiseCreate?: { ok: boolean; promiseId: string } }).promiseCreate).toEqual({ ok: true, promiseId: "pm_new_1" });
+  });
+
+  it("store 无 upsertSoulPromise → 503 且裁决不发生（decidePendingCore 未调）", async () => {
+    const store = promiseCreateStore({ upsertSoulPromise: undefined });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-c1", decision: "adopted" }, AUTH, "rp8", depsFor(store));
+    expect(res.code).toBe(503);
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+  });
+
+  it("载荷 content 缺失（行 content 与 attrs_json.content 均空）→ 422 且裁决不发生", async () => {
+    const store = promiseCreateStore({
+      listPendingCore: vi.fn(async () => [
+        { pending_id: "pd-c1", slot: "promise_create", content: "", state: "pending", attrs_json: JSON.stringify({ origin: "reflection-promise" }) },
+      ]),
+    });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-c1", decision: "adopted" }, AUTH, "rp9", depsFor(store));
+    expect(res.code).toBe(422);
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+    expect(store.upsertSoulPromise).not.toHaveBeenCalled();
+  });
+
+  it("store 拒绝（缺 promiseId）→ 409 幂等收尾（envelope.promiseCreate{ok:false,reason}）", async () => {
+    const store = promiseCreateStore({ upsertSoulPromise: vi.fn(() => ({ ok: false, reason: "creation-rejected" })) });
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-c1", decision: "adopted" }, AUTH, "rp10", depsFor(store));
+    expect(res.code).toBe(409);
+    expect(
+      (res.data as { promiseCreate?: { ok: boolean; reason: string } } | undefined)?.promiseCreate,
+    ).toEqual({ ok: false, reason: "creation-rejected" });
+  });
+
+  it("rejected → 零 promise 创建写入", async () => {
+    const store = promiseCreateStore();
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-c1", decision: "rejected" }, AUTH, "rp11", depsFor(store));
+    expect(res.code).toBe(0);
+    expect(store.upsertSoulPromise).not.toHaveBeenCalled();
+  });
+});

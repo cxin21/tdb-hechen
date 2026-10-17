@@ -63,6 +63,27 @@ export function findVerbatimL1Fragment(
   return null;
 }
 
+/**
+ * #ε-定标（ADR0003 D7）：提案与证据间的 best verbatim overlap——与 findVerbatimL1Fragment
+ * 完全相同的匹配逻辑（同一空白归一、同一句级碎片检查集、同一 includes 比对），仅改为
+ * 返回最长命中碎片长度而非首个碎片。纯函数无 IO；供 shadow 定标旁路采集（门判定不变），
+ * ε 定量阈值先看分布再定（不拍脑袋）。
+ */
+export function bestVerbatimOverlapLen(
+  proposal: string,
+  evidenceContents: readonly (string | null | undefined)[],
+): number {
+  const norm = normalizeProposalText(proposal);
+  if (!norm) return 0;
+  let best = 0;
+  for (const c of evidenceContents) {
+    for (const f of l1VerbatimFragments(String(c ?? ""))) {
+      if (norm.includes(f) && f.length > best) best = f.length;
+    }
+  }
+  return best;
+}
+
 export interface ReflectionIdentityProposal {
   slot: string;
   content: string;

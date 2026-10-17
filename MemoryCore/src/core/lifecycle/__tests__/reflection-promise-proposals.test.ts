@@ -238,3 +238,91 @@ describe("#50 · 桥块 vet 证据集与快照新鲜度", () => {
     );
   });
 });
+
+/**
+ * D8 创建通道（2026-10-17）：reflection → promise_create 提案桥。
+ *
+ * 合同（ADR0003 D8 + 实施票 ③）：
+ * - 同一 LLM 调用产出结论卡可附 promiseCreations[]（{content}）——零新增 LLM 调用；
+ *   prompt 仅当 gate on 时追加创建指引段，且【不要求 open promise 存在】——第一条承诺就是从无到有；
+ * - 确定性门（复用 vetPromiseCreationProposal，禁第二实现）：非空 ≤120、逐字 ≥12 拒、
+ *   与 open promise / pending promise_create 全等拒（宁缺毋滥）；
+ * - 提案落 pending 轨 slot="promise_create"，attrs={origin:"reflection-promise"}（创建不带 refKey）；
+ *   返回新增 promiseCreationsPushed 计数；
+ * - gate off=提示词无创建指引，LLM 即便输出 promiseCreations 也被忽略（零调用零写入）。
+ */
+describe("D8 创建通道 · reflection → promise_create 提案桥", () => {
+  it("gate on + LLM 输出 promiseCreations → pending 落 promise_create 轨 + promiseCreationsPushed=1", async () => {
+    const store = mkStore();
+    const llmRunner = {
+      run: vi.fn(async () =>
+        JSON.stringify([{ question: "q", conclusion: "结论丙", evidence: ["r1"], promiseCreations: [{ content: "下次先跑测试再合并" }] }]),
+      ),
+    };
+    const res = await runReflection({
+      queryL1: async () => [rec("r1", "用户说周五要交付报告", 3)],
+      config: { enabled: true, rRef: 2, promiseProposals: { enabled: true } },
+      store: store as never,
+      llmRunner,
+      logger: LOG,
+    });
+    expect(res.promiseCreationsPushed).toBe(1);
+    expect(store.upsertPendingCore).toHaveBeenCalledWith(
+      "promise_create",
+      "下次先跑测试再合并",
+      1,
+      TRIPLE,
+      { attrs: { origin: "reflection-promise" } },
+    );
+  });
+
+  it("创建分支不要求 open promise 存在（第一条承诺从无到有）：openPromises=[] 仍入轨；prompt 有创建指引、无在途承诺段", async () => {
+    const store = mkStore({ listSoulPromises: vi.fn(async () => [] as Array<Record<string, unknown>>) });
+    const llmRunner = {
+      run: vi.fn(async () =>
+        JSON.stringify([{ question: "q", conclusion: "结论丁", evidence: ["r1"], promiseCreations: [{ content: "我会修复构建告警" }] }]),
+      ),
+    };
+    const res = await runReflection({
+      queryL1: async () => [rec("r1", "用户说周五要交付报告", 3)],
+      config: { enabled: true, rRef: 2, promiseProposals: { enabled: true } },
+      store: store as never,
+      llmRunner,
+      logger: LOG,
+    });
+    expect(res.promiseCreationsPushed).toBe(1);
+    const prompt = String(
+      (llmRunner.run.mock.calls[0] as unknown[])[0] !== undefined
+        ? ((llmRunner.run.mock.calls[0] as unknown[])[0] as { prompt: string }).prompt
+        : "",
+    );
+    expect(prompt).toContain("promiseCreations");
+    expect(prompt).not.toContain("在途承诺");
+  });
+
+  it("gate off（缺省）：prompt 无创建指引；LLM 输出 promiseCreations 被忽略（零调用零写入）", async () => {
+    const store = mkStore();
+    const llmRunner = {
+      run: vi.fn(async () =>
+        JSON.stringify([{ question: "q", conclusion: "结论戊", evidence: ["r1"], promiseCreations: [{ content: "下次先跑测试再合并" }] }]),
+      ),
+    };
+    const res = await runReflection({
+      queryL1: async () => [rec("r1", "用户说周五要交付报告", 3)],
+      config: { enabled: true, rRef: 2 },
+      store: store as never,
+      llmRunner,
+      logger: LOG,
+    });
+    expect(res.promiseCreationsPushed).toBe(0);
+    expect(store.listPendingCore).not.toHaveBeenCalled();
+    const prompt = String(
+      (llmRunner.run.mock.calls[0] as unknown[])[0] !== undefined
+        ? ((llmRunner.run.mock.calls[0] as unknown[])[0] as { prompt: string }).prompt
+        : "",
+    );
+    expect(prompt).not.toContain("promiseCreations");
+    const slots = store.upsertPendingCore.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(slots).not.toContain("promise_create");
+  });
+});

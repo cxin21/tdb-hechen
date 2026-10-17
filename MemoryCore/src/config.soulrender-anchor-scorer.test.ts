@@ -59,3 +59,29 @@ describe("#42 · coreMemory.soulRender.anchorSelect.scorer 解析", () => {
     expect(bad.coreMemory.soulRender.anchorSelect.maxRows).toBe(999);
   });
 });
+
+describe("#52 D3 · coreMemory.soulRender.perTurnSlots 解析", () => {
+  it("缺省（无 soulRender 键）→ true（逐位现状）", () => {
+    const c = parseConfig({});
+    expect(c.coreMemory.soulRender.perTurnSlots).toBe(true);
+  });
+
+  it("缺省（有 soulRender 段但无 perTurnSlots 键）→ true", () => {
+    const c = parseConfig({ coreMemory: { soulRender: { anchorSelect: { maxRows: 5 } } } });
+    expect(c.coreMemory.soulRender.perTurnSlots).toBe(true);
+  });
+
+  it("显式 false → false（省略身份两行）；显式 true → true", () => {
+    const off = parseConfig({ coreMemory: { soulRender: { perTurnSlots: false } } });
+    const on = parseConfig({ coreMemory: { soulRender: { perTurnSlots: true } } });
+    expect(off.coreMemory.soulRender.perTurnSlots).toBe(false);
+    expect(on.coreMemory.soulRender.perTurnSlots).toBe(true);
+  });
+
+  it("非 true 值（\"off\"/0）→ false（===true 解析语义：defined 非 true 一律关，同 snapshotsEnabled 先例）", () => {
+    const str = parseConfig({ coreMemory: { soulRender: { perTurnSlots: "off" } } });
+    const num = parseConfig({ coreMemory: { soulRender: { perTurnSlots: 0 } } });
+    expect(str.coreMemory.soulRender.perTurnSlots).toBe(false);
+    expect(num.coreMemory.soulRender.perTurnSlots).toBe(false);
+  });
+});

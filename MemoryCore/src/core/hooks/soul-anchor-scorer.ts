@@ -41,12 +41,22 @@ export function isUsableQueryVec(qv: Float32Array | null | undefined): qv is Flo
   return sq > 0;
 }
 
+/** #52 D3 选项C（仅裁剪时重排）的裁剪触发门：调用方传 maxRows，rows.length > maxRows 即发生裁剪。 */
+export interface ScoreAnchorRowsOpts {
+  /** 裁剪触发门（候选行数上限）：仅 rows.length > maxRows 时按 score desc 重排；不传=无裁剪门=不重排。 */
+  maxRows?: number;
+}
+
 /** 批量打分：rows 逐条取 desc 向量（缓存命中零 embed），score=cosine(query, vec)。
- *  返回全部行按 score desc 排序（并列保声明序）。embedder/queryEmbedding 缺席或 rows 空 → []。 */
+ *  #52 D3 选项C（仅裁剪时重排）：rows.length > opts.maxRows（发生裁剪）才按 score desc
+ *  （并列保声明序）决定保留集与顺序；rows.length ≤ maxRows 或未传 maxRows（无裁剪门）→
+ *  不重排，保持入参声明序（调用方以 value_id 稳定序喂入），分数照常计算可报告。
+ *  embedder/queryEmbedding 缺席或 rows 空 → []。 */
 export async function scoreAnchorRows(
   rows: ReadonlyArray<{ row: string; desc: string }>,
   queryEmbedding: Float32Array | null | undefined,
   embedder?: AnchorEmbedder | null,
+  opts?: ScoreAnchorRowsOpts,
 ): Promise<AnchorScoredRow[]> {
   if (!embedder || !queryEmbedding || rows.length === 0) return [];
   const withIdx = rows.map((r, idx) => ({ r, idx }));
@@ -64,6 +74,9 @@ export async function scoreAnchorRows(
     }
     scored.push({ row: r.row, score: cosineSimilarity(queryEmbedding, vec), idx });
   }
+  // 选项C：仅发生裁剪（rows > maxRows）时重排；未裁剪时输出序=声明序（不抖动 value_id 稳定序）。
+  const trimTriggered = opts?.maxRows !== undefined && rows.length > opts.maxRows;
+  if (!trimTriggered) return scored.map(({ row, score }) => ({ row, score }));
   return scored
     .sort((a, b) => b.score - a.score || a.idx - b.idx)
     .map(({ row, score }) => ({ row, score }));
@@ -71,7 +84,8 @@ export async function scoreAnchorRows(
 
 /** 转正选择纯函数：threshold 硬门（score ≥ threshold，含等号——M-2 回归锁钉死；0=仅滤负相关
  *  （cosine<0 不注入），>0=硬门——M-3 注释语义对齐）+ top-K（K=maxRows，缺省=不过滤）。
- *  maxRows≤0 → []。输入已按 score desc 排序时输出保序。 */
+ *  maxRows≤0 → []。#52 D3 选项C：输入=scoreAnchorRows 输出（仅裁剪时 desc，未裁剪时=声明序）
+ *  → 输出保输入序（过滤/截取不改序）。 */
 export function selectAnchorRows(
   scored: ReadonlyArray<AnchorScoredRow>,
   cfg: { maxRows?: number; threshold?: number } = {},

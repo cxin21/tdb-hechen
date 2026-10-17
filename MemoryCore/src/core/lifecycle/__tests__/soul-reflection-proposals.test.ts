@@ -10,6 +10,9 @@
  * - 门 off（缺省）→ 零提案零落库差异（config-first 逐位现状）。
  */
 import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   REFLECTION_PROPOSAL_SLOTS,
   VERBATIM_FRAGMENT_MIN_CHARS,
@@ -34,9 +37,10 @@ function mkRows() {
 function mkDeps(over: {
   llmRaw: string;
   store?: Record<string, unknown>;
-  soulProposals?: { enabled?: boolean };
+  soulProposals?: { enabled?: boolean; shadowCalibration?: { enabled?: boolean; file?: string } };
 }) {
   const upsertPendingCore = vi.fn(async () => true);
+  const warn = vi.fn();
   const listPendingCore = vi.fn(async () => (over.store?.pendingRows as unknown[]) ?? []);
   const readCore = vi.fn(async () => (over.store?.coreRows as unknown[]) ?? null);
   const upsertL1 = vi.fn(async () => true);
@@ -53,9 +57,9 @@ function mkDeps(over: {
       config: { enabled: true, rRef: 1, ...(over.soulProposals ? { soulProposals: over.soulProposals } : {}) },
       store,
       llmRunner: { run: async () => over.llmRaw },
-      logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+      logger: { info: vi.fn(), warn, debug: vi.fn() },
     },
-    spies: { upsertPendingCore, upsertL1 },
+    spies: { upsertPendingCore, upsertL1, warn },
   };
 }
 
@@ -160,5 +164,145 @@ describe("#27 桥接（runReflection 集成）", () => {
     const res = await runReflection(deps as never);
     expect(res.proposalsPushed ?? 0).toBe(0);
     expect(spies.upsertPendingCore).not.toHaveBeenCalled();
+  });
+});
+
+describe("ε shadow 定标（shadow calibration，ADR0003 D7）", () => {
+  // 行为零变化：shadow 只是被判定提案的旁路 JSONL 记录（best verbatim overlap，供 ε 定量阈值定标）。
+  const cleanRaw = JSON.stringify([{ question: "协作模式是什么？", conclusion: "他坚持交付前完成全量回归验证，宁慢勿漏。", evidence: ["r1", "r2"] }]);
+  const verbatimRaw = JSON.stringify([{ question: "q", conclusion: `模式记录：${L1_A.slice(0, 22)}，值得内化。`, evidence: ["r1"] }]);
+
+  function mkShadowDir(): string {
+    return mkdtempSync(join(tmpdir(), "soul-shadow-"));
+  }
+
+  it("shadow on + 逐字重叠 → 追加一行 rejected（bestLen>0，缺失目录自动创建）", async () => {
+    const dir = mkShadowDir();
+    const file = join(dir, "nested", "deeper", "shadow.jsonl"); // 父目录不存在 → 需 mkdir -p
+    const { deps, spies } = mkDeps({
+      llmRaw: verbatimRaw,
+      soulProposals: { enabled: true, shadowCalibration: { enabled: true, file } },
+    });
+    try {
+      const res = await runReflection(deps as never);
+      expect(res.cardsWritten).toBe(1);
+      expect(res.proposalsPushed).toBe(0); // 门仍拒绝：shadow 不改变判定
+      expect(existsSync(file)).toBe(true);
+      const lines = readFileSync(file, "utf8").trim().split("\n");
+      expect(lines).toHaveLength(1);
+      const row = JSON.parse(lines[0]) as Record<string, unknown>;
+      expect(row.slot).toBe("self_identity");
+      expect(row.verdict).toBe("rejected");
+      expect(row.bestLen).toBeGreaterThanOrEqual(VERBATIM_FRAGMENT_MIN_CHARS);
+      expect(row.verbatimGate).toBe(VERBATIM_FRAGMENT_MIN_CHARS);
+      expect(Number.isNaN(Date.parse(String(row.ts)))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shadow on + 干净结论 → 追加 accepted 行且 bestLen=0", async () => {
+    const dir = mkShadowDir();
+    const file = join(dir, "shadow.jsonl");
+    const { deps } = mkDeps({
+      llmRaw: cleanRaw,
+      soulProposals: { enabled: true, shadowCalibration: { enabled: true, file } },
+    });
+    try {
+      await runReflection(deps as never);
+      expect(existsSync(file)).toBe(true);
+      const row = JSON.parse(readFileSync(file, "utf8").trim().split("\n")[0]) as Record<string, unknown>;
+      expect(row.verdict).toBe("accepted");
+      expect(row.bestLen).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shadow enabled=false → 不产生文件（零旁路）", async () => {
+    const dir = mkShadowDir();
+    const file = join(dir, "shadow.jsonl");
+    const { deps, spies } = mkDeps({
+      llmRaw: cleanRaw,
+      soulProposals: { enabled: true, shadowCalibration: { enabled: false, file } },
+    });
+    try {
+      await runReflection(deps as never);
+      expect(existsSync(file)).toBe(false);
+      expect(spies.upsertPendingCore).toHaveBeenCalledTimes(1); // 门行为不受影响
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shadowCalibration.file 给了但 enabled 缺省 → 不产生文件", async () => {
+    const dir = mkShadowDir();
+    const file = join(dir, "shadow.jsonl");
+    const { deps } = mkDeps({
+      llmRaw: cleanRaw,
+      soulProposals: { enabled: true, shadowCalibration: { file } },
+    });
+    try {
+      await runReflection(deps as never);
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("门 off（soulProposals.enabled=false）+ shadowCalibration.enabled=true → 零文件零提案", async () => {
+    const dir = mkShadowDir();
+    const file = join(dir, "shadow.jsonl");
+    const { deps, spies } = mkDeps({
+      llmRaw: cleanRaw,
+      soulProposals: { enabled: false, shadowCalibration: { enabled: true, file } },
+    });
+    try {
+      await runReflection(deps as never);
+      expect(existsSync(file)).toBe(false);
+      expect(spies.upsertPendingCore).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("shadow 开关不影响门判定（同输入 on/off 结果逐位一致）", async () => {
+    const run = async (shadow: boolean) => {
+      const dir = mkShadowDir();
+      const file = join(dir, "shadow.jsonl");
+      const { deps, spies } = mkDeps({
+        llmRaw: verbatimRaw,
+        soulProposals: { enabled: true, ...(shadow ? { shadowCalibration: { enabled: true, file } } : {}) },
+      });
+      try {
+        const res = await runReflection(deps as never);
+        const pendingCalls = spies.upsertPendingCore.mock.calls.length;
+        const pendingContent = pendingCalls > 0 ? String((spies.upsertPendingCore.mock.calls[0] as unknown[])[1]) : "";
+        return { cardsWritten: res.cardsWritten, proposalsPushed: res.proposalsPushed ?? 0, pendingCalls, pendingContent };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const off = await run(false);
+    const on = await run(true);
+    expect(on).toEqual(off);
+  });
+
+  it("写失败（目标目录被同名文件占据）→ 流程不抛、提案照常入轨、每路径恰 warn 一次", async () => {
+    const dir = mkShadowDir();
+    const file = join(dir, "blocker", "shadow.jsonl");
+    writeFileSync(join(dir, "blocker"), "occupied", "utf8"); // 该路径是文件不是目录 → mkdir 必失败
+    const raw = JSON.stringify([
+      { question: "q1", conclusion: "他坚持交付前完成全量回归验证，宁慢勿漏。", evidence: ["r1"] },
+      { question: "q2", conclusion: "他宁可慢一点也不省掉全量回归。", evidence: ["r2"] },
+    ]);
+    const { deps, spies } = mkDeps({
+      llmRaw: raw,
+      soulProposals: { enabled: true, shadowCalibration: { enabled: true, file } },
+    });
+    const res = await runReflection(deps as never); // 不抛
+    expect(res.proposalsPushed).toBe(2);
+    expect(spies.upsertPendingCore).toHaveBeenCalledTimes(2);
+    expect(spies.warn).toHaveBeenCalledTimes(1); // 同一文件路径只 warn 一次，随后静默降级
   });
 });

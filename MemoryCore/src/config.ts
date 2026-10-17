@@ -464,6 +464,12 @@ export interface MemoryCoreMemoryConfig {
     /** #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写；
      *  零注入影响——只写 soul_snapshots 观测表）。 */
     snapshotsEnabled: boolean;
+    /** #52 D3（双通道 slots 去重）：per-turn 身份两行省略门——缺省 true=逐位现状；
+     *  显式 false=双通道（selfIdentity.enabled=true）路径跳过（我是谁）[self_identity] 与
+     *  （我心中的他）[identity] 两行 slots 行（会话头时机已承载，逐轮省略）；红线段/
+     *  价值锚行/重要的人/品格行/感受段/capabilities 段照常。legacy 路径不适用
+     *  （身份行是 legacy 唯一身份载体）。布局级渲染门：不翻 soulVersion（批次纪律）。 */
+    perTurnSlots: boolean;
     /** #29（R5）+#42（票 D / D9）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用
      *  （缺省 999=现状全注入）。scorer=相似度打分器 config 门（D9：确定性 cosine、shadow-first）：
      *  enabled 缺省 false=shadow 只报告不裁剪（渲染逐位现状）；true=转正（threshold 硬门+top-K
@@ -558,7 +564,11 @@ export interface MemoryLifecycleConfig {
     enabled: boolean;
     rRef: number;
     /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=逐位现状。 */
-    soulProposals: { enabled: boolean };
+    soulProposals: {
+      enabled: boolean;
+      /** #ε-定标（ADR0003 D7）：shadow 旁路采集（行为零变化）；缺省 false=零旁路。 */
+      shadowCalibration?: { enabled?: boolean; file?: string };
+    };
     /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
     promiseProposals: { enabled: boolean };
   };
@@ -1267,6 +1277,12 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         snapshotsEnabled: (g as Record<string, unknown>)["snapshotsEnabled"] === undefined
           ? true
           : (g as Record<string, unknown>)["snapshotsEnabled"] === true,
+        // #52 D3（双通道 slots 去重）：per-turn 身份两行省略门——缺省 true=逐位现状；
+        // 显式 false 才跳过（我是谁）/（我心中的他）slots 行（非布尔值回退缺省，
+        // snapshotsEnabled ===true 解析先例）。
+        perTurnSlots: (g as Record<string, unknown>)["perTurnSlots"] === undefined
+          ? true
+          : (g as Record<string, unknown>)["perTurnSlots"] === true,
         // #29（R5）：情境锚选择门——缺省 999=现状全注入（当前锚基数个位数，无收益不启动）；
         // clamp 1..999 防手滑 0/负数。#42（票 D / D9）：scorer 门——enabled 缺省 false（shadow）；
         // threshold clamp 0..1 缺省 0；形状错一律回退缺省（宁缺毋滥，沿 capabilities 解析先例）。
@@ -1365,7 +1381,24 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // 曾被旧下限 10 静默钳到 10（配置值与生效值背离）。significance [0,1] 刻度下 1~2 均为合法意图值。
       rRef: Math.min(100000, Math.max(1, Math.floor(num(obj(lifecycleGroup, "reflection"), "rRef") ?? 150))),
       // #27（R5）：memory.lifecycle.reflection.soulProposals.enabled；缺省 false=零提案=逐位现状
-      soulProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "soulProposals"), "enabled") ?? false },
+      // #ε-定标（ADR0003 D7）：shadowCalibration.shadow（旁路 JSONL 采集）缺省 false=零旁路
+      soulProposals: (() => {
+        const soulProposalsGroup = obj(obj(lifecycleGroup, "reflection"), "soulProposals");
+        const shadowGroup = obj(soulProposalsGroup, "shadowCalibration");
+        const shadowEnabled = bool(shadowGroup, "enabled");
+        const shadowFile = str(shadowGroup, "file");
+        return {
+          enabled: bool(soulProposalsGroup, "enabled") ?? false,
+          ...(shadowEnabled === undefined && shadowFile === undefined
+            ? {}
+            : {
+                shadowCalibration: {
+                  ...(shadowEnabled === undefined ? {} : { enabled: shadowEnabled }),
+                  ...(shadowFile === undefined ? {} : { file: shadowFile }),
+                },
+              }),
+        };
+      })(),
       // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状
       promiseProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "promiseProposals"), "enabled") ?? false },
     },

@@ -1,8 +1,11 @@
 /**
  * #42（ADR0003-P3 实施票 D / D9）：soul-assembler 锚选择打分器接线测试。
  * 合同：shadow（scorer 缺省关）只报告不裁剪=渲染逐位现状，报告随向量可用性升级为
- * 逐锚分形态 `锚N(0.xxx)`；转正（scorer.enabled=true）=threshold 硬门+top-K 重排渲染行，
- * 缺省关=逐位现状 golden；embedder/query 缺席→回退现状形态（宁缺毋滥不造分）。
+ * 逐锚分形态 `锚N(0.xxx)`；转正（scorer.enabled=true）=threshold 硬门+top-K；
+ * #52 D3 选项C（仅裁剪时重排）：转正打分仅 rows.length > maxRows（发生裁剪）时按 cosine
+ * desc 决定保留集与顺序；rows ≤ maxRows / 未传 maxRows=不重排（value_id 声明序，
+ * 分数照常计算可报告）；缺省关=逐位现状 golden；embedder/query 缺席→回退现状形态
+ * （宁缺毋滥不造分）。
  * 锚点：价值锚行 budgeted=applyAnchorBudget(decorated,…)（soul-assembler.ts:357）。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -411,5 +414,78 @@ describe("#42 审查加固（降级自审 F1/F2/F3）", () => {
     expect(shadow).toHaveLength(1);
     expect(shadow[0]).toContain("转正待 D9/ADR");
     expect(shadow[0]).not.toMatch(/锚\d\(0\.\d{3}\)/);
+  });
+});
+
+describe("#52 D3 选项C（仅裁剪时重排）：soul-assembler 接线", () => {
+  beforeEach(() => resetAnchorVectorCacheForTest());
+
+  it("① rows ≤ maxRows（不裁剪）→ 转正渲染与打分器关闭时逐位一致（value_id 声明序），分数照常计算", async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => themed(i)); // 5 ≤ maxRows 5
+    const base = await buildSoulPrefix(makeStore(rows), { ...TENANT, userId: "u-c1a" }, undefined, {});
+    const embed = stubEmbedder();
+    const out = await buildSoulPrefix(
+      makeStore(rows),
+      { ...TENANT, userId: "u-c1b" },
+      undefined,
+      { anchorSelect: { maxRows: 5, scorer: { enabled: true, threshold: 0, queryEmbedding: new Float32Array([1, 0]), embedder: embed } } },
+    );
+    expect(embed).toHaveBeenCalledTimes(5); // 分数仍计算（可报告），但不重排
+    expect(out).toBe(base); // 渲染逐位一致=声明序
+  });
+
+  it("①b rows ≤ maxRows 且 threshold 过滤 → 保留集按声明序输出（不按 cosine 重排）", async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => themed(i)); // 3 ≤ maxRows 3
+    // 打分表：锚0=0.6、锚1=1.0、锚2=0 → threshold 0.5 保留 {锚0,锚1}；声明序=[锚0,锚1]
+    const tableEmbed: AnchorEmbedder = async (t: string) => {
+      const m = t.match(/第(\d+)号锚/);
+      const i = m ? Number(m[1]) : -1;
+      const vec = i === 0 ? [0.6, 0.8] : i === 1 ? [1, 0] : [0, 1];
+      return new Float32Array(vec);
+    };
+    const out = await buildSoulPrefix(
+      makeStore(rows),
+      { ...TENANT, userId: "u-c1c" },
+      undefined,
+      { anchorSelect: { maxRows: 3, scorer: { enabled: true, threshold: 0.5, queryEmbedding: new Float32Array([1, 0]), embedder: tableEmbed } } },
+    );
+    // 断言范围=价值锚行段（感受段会合法列举全部 active 锚，不在此门内）。
+    // 旧语义（无条件 desc）会给出 [锚1, 锚0] → RED；选项C 声明序 [锚0, 锚1] → GREEN
+    const anchorBlock = out.slice(out.indexOf("价值锚："), out.indexOf("</soul-identity>"));
+    const anchorRows = [...anchorBlock.matchAll(/^- (锚\d+)\(/gm)].map((m) => m[1]);
+    expect(anchorRows).toEqual(["锚0", "锚1"]);
+  });
+
+  it("② rows > maxRows（发生裁剪）→ 按 cosine desc 决定保留集与顺序（回归锁）", async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => themed(i)); // 8 > maxRows 3
+    // 打分表：锚0=1.0、锚2=0.6、锚4=0.8、锚6≈0.2、奇数=0 → desc top3=[锚0,锚4,锚2]
+    const tableEmbed: AnchorEmbedder = async (t: string) => {
+      const m = t.match(/第(\d+)号锚/);
+      const i = m ? Number(m[1]) : -1;
+      const table: Record<number, number[]> = { 0: [1, 0], 2: [0.6, 0.8], 4: [0.8, 0.6], 6: [0.2, 0.98] };
+      return new Float32Array(table[i] ?? [0, 1]);
+    };
+    const out = await buildSoulPrefix(
+      makeStore(rows),
+      { ...TENANT, userId: "u-c2" },
+      undefined,
+      { anchorSelect: { maxRows: 3, scorer: { enabled: true, threshold: 0, queryEmbedding: new Float32Array([1, 0]), embedder: tableEmbed } } },
+    );
+    // 断言范围=价值锚行段（感受段会合法列举全部 active 锚，不受裁剪门影响）
+    const anchorBlock = out.slice(out.indexOf("价值锚："), out.indexOf("</soul-identity>"));
+    const anchorRows = [...anchorBlock.matchAll(/^- (锚\d+)\(/gm)].map((m) => m[1]);
+    expect(anchorRows).toEqual(["锚0", "锚4", "锚2"]);
+  });
+
+  it("③ 同 query 连续两跑输出顺序稳定（锚向量缓存命中，零重排抖动）", async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => themed(i));
+    const embed = stubEmbedder();
+    const opts = {
+      anchorSelect: { maxRows: 5, scorer: { enabled: true, threshold: 0, queryEmbedding: new Float32Array([1, 0]), embedder: embed } },
+    };
+    const base = await buildSoulPrefix(makeStore(rows), { ...TENANT, userId: "u-c3a" }, undefined, opts);
+    const again = await buildSoulPrefix(makeStore(rows), { ...TENANT, userId: "u-c3b" }, undefined, opts);
+    expect(again).toBe(base); // 选项C 不裁剪=声明序=与无打分器一致，两跑稳定
+    expect(embed).toHaveBeenCalledTimes(5); // 第二跑全锚向量缓存命中
   });
 });
