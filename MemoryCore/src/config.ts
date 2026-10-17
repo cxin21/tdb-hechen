@@ -53,6 +53,16 @@ export interface ExtractionConfig {
    * clamp 60_000..3_600_000。L1 提取与 L2 场景提取共用本键。
    */
   extractionTimeoutMs: number;
+  /**
+   * #46 毒批拆分（用户拍板 A，2026-10-17）：scene 抽取失败且批内 >1 条时对半
+   * 递归重试（镜像 L1 extractGroupWithSplit 先例）。缺省 false=逐位现状。
+   */
+  scenePoisonSplit: boolean;
+  /**
+   * #46 批次上限：scene 抽取前按 memoriesJson 估长（与 scene-extractor.ts:259-267
+   * 构造同构）贪心预分批，防巨批。缺省 0=关（单批现状）。
+   */
+  sceneBatchMaxChars: number;
   /** LLM model for extraction, format: "provider/model" (falls back to OpenClaw default model when omitted) */
   model?: string;
   /** Prompt family for L1 extraction (default: chat). */
@@ -1418,6 +1428,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         3_600_000,
         Math.max(60_000, num(extractionGroup, "extractionTimeoutMs") ?? 300_000),
       ),
+      // #46 毒批拆分+批次上限（config-first）：缺省关=逐位现状
+      scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,
+      sceneBatchMaxChars: Math.max(0, num(extractionGroup, "sceneBatchMaxChars") ?? 0),
     },
     persona: {
       triggerEveryN: num(personaGroup, "triggerEveryN") ?? 50,

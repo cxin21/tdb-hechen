@@ -18,6 +18,7 @@ import { MemoryPipelineManager } from "./pipeline-manager.js";
 import type { L2Runner, L3Runner } from "./pipeline-manager.js";
 import { SessionFilter } from "./session-filter.js";
 import { extractL1Memories } from "../core/record/l1-extractor.js";
+import { extractSceneBatches } from "./scene-batch-split.js";
 import { readConversationMessagesGroupedBySessionId } from "../core/conversation/l0-recorder.js";
 import type { ConversationMessage } from "../core/conversation/l0-recorder.js";
 import { CheckpointManager } from "./checkpoint.js";
@@ -921,7 +922,16 @@ export function createL2Runner(opts: {
         agentId: ctx.agentId,
         layer: "l2",
       }));
-      const extractResult = await extractor.extract(memories);
+      // #46 毒批拆分+批次上限（config-first，缺省双关=逐位现状单调用）：scene 批
+      // 失败对半递归重试 + memoriesJson 估长预分批，镜像 L1 extractGroupWithSplit
+      // 先例（:603-669）；单批未拆分时原样透传 extractor 结果对象。
+      const extractResult = await extractSceneBatches({
+        extract: (m) => extractor.extract(m),
+        memories,
+        batchMaxChars: cfg.extraction.sceneBatchMaxChars,
+        poisonSplit: cfg.extraction.scenePoisonSplit === true,
+        warnLog: (message) => logger.warn(message),
+      });
       if (!(extractResult.success && extractResult.memoriesProcessed > 0)) continue;
       if (extractResult.emptyExtraction) {
         anyEmptyExtraction = true;
