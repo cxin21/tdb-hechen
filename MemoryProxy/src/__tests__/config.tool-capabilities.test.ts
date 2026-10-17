@@ -91,3 +91,54 @@ describe("#40-B injection.toolCapabilities 解析（config lines 显式通道）
     expect(cfg.injection.toolCapabilities).toEqual({});
   });
 });
+
+describe("kill switch（m00265）· toolCapabilities.enabled 解析（缺省 true，false=整段摘除）", () => {
+  it("enabled: false → 采纳（唯一显式关断档）", () => {
+    const cfg = buildWith(`injection:
+  enabled: true
+  toolCapabilities:
+    enabled: false
+`);
+    expect(cfg.injection.toolCapabilities).toEqual({ enabled: false });
+  });
+
+  it("enabled: true 显式开启 → 采纳", () => {
+    const cfg = buildWith(`injection:
+  enabled: true
+  toolCapabilities:
+    enabled: true
+`);
+    expect(cfg.injection.toolCapabilities).toEqual({ enabled: true });
+  });
+
+  it("enabled 缺省 → 不携带键（缺省 true 零行为变化）", () => {
+    const cfg = buildWith(`injection:
+  enabled: true
+  toolCapabilities:
+    lines:
+      - "合法行"
+`);
+    expect(cfg.injection.toolCapabilities).toEqual({ lines: ["合法行"] });
+    expect(cfg.injection.toolCapabilities.enabled).toBeUndefined();
+  });
+
+  it("enabled 非布尔（字符串值）→ 不采纳键（不静默携带垃圾值）", () => {
+    const cfg = buildWith(`injection:
+  enabled: true
+  toolCapabilities:
+    enabled: "false"
+`);
+    expect(cfg.injection.toolCapabilities).toEqual({});
+  });
+
+  it("enabled: false 与 lines 并存 → 双字段齐携（curator 先门 enabled，lines 不参与）", () => {
+    const cfg = buildWith(`injection:
+  enabled: true
+  toolCapabilities:
+    enabled: false
+    lines:
+      - "残留行"
+`);
+    expect(cfg.injection.toolCapabilities).toEqual({ enabled: false, lines: ["残留行"] });
+  });
+});

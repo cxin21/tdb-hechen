@@ -25,6 +25,8 @@ import { fnv1a32 } from "../soul-overlap-journal.js";
 const DEFAULT_MAX_LINES = 5;
 const DESC_MAX_CHARS = 80;
 const CACHE_MAX = 100;
+/** kill switch 返回值（m00265）：冻结空数组共享引用，语义=整段摘除（不入策展缓存）。 */
+const FROZEN_EMPTY: readonly string[] = Object.freeze([]);
 
 /** 策展结果记忆化（进程内；键=工具面内容指纹，非身份维度——策展是纯函数，租户无影响面）。
  *  值=readonly：#40-R5 缓存引用冻结，调用方突变在类型层即被拒绝。 */
@@ -58,12 +60,21 @@ function firstLine(description: string | undefined): string {
  *
  * #40-B：configLines 非空 → 逐字 1:1 直出（config 即数据源，工具面实况不参与、
  * 不做 firstLine 截断），仍受 maxLines 上限保护；缺失/空 → 既有运行时策展。
+ *
+ * kill switch（m00265 用户终审 2026-10-17）：enabled=false → 先于 literal/策展
+ * 两路径返回冻结空数组（config-first 缺省 true 零行为变化）。空数组语义=调用方
+ * 不携带 capabilities → 核心不渲染「## 我能做什么」标题（soul-assembler :599 门）。
+ * 关断结果不入缓存（kill switch 非策展结论，关断期不污染正常指纹空间）。
  */
 export function curateToolCapabilities(
   tools: AgentTool[] | undefined | null,
   maxLines = DEFAULT_MAX_LINES,
   configLines?: readonly string[],
+  enabled?: boolean,
 ): readonly string[] {
+  // kill switch 先于两路径（m00265）：整段摘除唯一入口；冻结空数组=调用方省键。
+  if (enabled === false) return FROZEN_EMPTY;
+
   // #40-B config 显式通道：指纹前缀 "lines" 与工具面指纹空间隔离（键含 maxLines
   // + lines 全量序列化——纯函数两参数全量进入键空间，config 行变更必失效重算）。
   if (configLines && configLines.length > 0) {

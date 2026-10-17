@@ -247,6 +247,9 @@ function parseSoulTiming(raw: unknown): SoulTimingConfig {
  * lines 仅当「非空数组且元素全为 string」时采纳（逐字 1:1，不裁剪不转义）；
  * 缺失/空数组/含非字符串/非数组 → lines 缺省（undefined = 回退运行时策展，现状逐位）。
  * 整段非对象（字符串/数字）→ 逐字段取不到 → 整段缺省（parseSoulTiming 同构姿势）。
+ *
+ * kill switch（m00265）：enabled 仅当布尔时采纳（false=整段摘除唯一显式关断档）；
+ * 缺失/非布尔 → 键不携带（缺省 true 零行为变化，config-first）。
  */
 function parseToolCapabilities(raw: unknown): ToolCapabilitiesConfig {
   const rawObj = (raw ?? {}) as Record<string, unknown>;
@@ -254,7 +257,11 @@ function parseToolCapabilities(raw: unknown): ToolCapabilitiesConfig {
   const valid = Array.isArray(lines)
     && lines.length > 0
     && lines.every((l) => typeof l === "string");
-  return valid ? { lines: lines as string[] } : {};
+  const enabled = rawObj.enabled;
+  const out: ToolCapabilitiesConfig = {};
+  if (valid) out.lines = lines as string[];
+  if (typeof enabled === "boolean") out.enabled = enabled;
+  return out;
 }
 
 function parseCostGuard(yaml: RawYamlConfig): CostGuardConfig {

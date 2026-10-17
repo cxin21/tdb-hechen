@@ -236,10 +236,16 @@ export const DEFAULT_SOUL_TIMING: SoulTimingConfig = {
  * lines 非空 → 逐字 1:1 直出（config 即数据源，工具面实况不参与，不做 firstLine
  * 截断），仍受策展器 maxLines 上限保护（截到前 maxLines 条）；
  * lines 缺失/空 → 回退既有运行时策展（工具面声明序前 5、描述首行 ≤80 截断），现状逐位。
+ *
+ * kill switch（m00265 用户终审 2026-10-17）：能力段整段摘除入口——enabled:false 时
+ * curateToolCapabilities 先于 literal/策展两路径返回空数组（config-first 缺省 true
+ * 零行为变化）；下游核心侧 capabilities 空数组不渲染「## 我能做什么」标题（:599 门）。
  */
 export interface ToolCapabilitiesConfig {
   /** agent 能力策展行（zh 手写，模板直出零 LLM）；缺失/空数组 = 回退运行时策展。 */
   lines?: string[];
+  /** 整段开关：缺省 true；显式 false = 能力段整段摘除（kill switch，m00265）。 */
+  enabled?: boolean;
 }
 
 // ── Dynamic Anchor (semantic slots) ─────────────────────────────────────────

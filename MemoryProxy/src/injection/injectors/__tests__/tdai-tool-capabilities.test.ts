@@ -133,3 +133,33 @@ describe("#40-B · curateToolCapabilities config lines 显式通道（工具面�
     expect(curateToolCapabilities([], undefined, ["行A"])).toBe(a);
   });
 });
+
+// ═══════════════ kill switch（m00265 用户终审：能力段整段摘除）═══════════════
+
+describe("kill switch · curateToolCapabilities enabled=false → 整段摘除（先于 literal/策展两路径）", () => {
+  beforeEach(() => resetToolCapabilityCacheForTest());
+
+  it("enabled=false + config lines 非空 → 返回空数组（config 逐字直出路径也被门住）", () => {
+    expect(curateToolCapabilities([], undefined, ["手写行"], false)).toEqual([]);
+  });
+
+  it("enabled=false + 无 config lines → 返回空数组（运行时策展路径也被门住）", () => {
+    const lines = curateToolCapabilities([tool("t1", "能力一"), tool("t2", "能力二")], undefined, undefined, false);
+    expect(lines).toEqual([]);
+    expect(Object.isFrozen(lines)).toBe(true);
+  });
+
+  it("kill switch 不入缓存：关断期后恢复 enabled=true，输出与从未关断逐位一致（无缓存污染）", () => {
+    const before = curateToolCapabilities([tool("t1", "能力一")]);
+    curateToolCapabilities([tool("t1", "能力一")], undefined, undefined, false); // 关断调用
+    const after = curateToolCapabilities([tool("t1", "能力一")]);
+    expect(after).toEqual(["t1：能力一"]);
+    expect(after).toBe(before); // 同指纹同引用：关断未污染策展缓存
+  });
+
+  it("enabled 缺省（undefined）→ 行为零变化（literal 与策展两路径回归锚）", () => {
+    const lines = ["缺省启用行"];
+    expect(curateToolCapabilities([], undefined, lines, undefined)).toEqual(lines);
+    expect(curateToolCapabilities([tool("t1", "能力一")], undefined, undefined, undefined)).toEqual(["t1：能力一"]);
+  });
+});
