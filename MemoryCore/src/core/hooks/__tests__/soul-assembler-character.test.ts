@@ -68,12 +68,13 @@ describe("M2-P5 品格行渲染迁移", () => {
     expect(on).toBe(off);
   });
 
-  it("④ R-B 红线：品格锚 valence=±1 也不入感受段（两种模式）", async () => {
+  it("④ R-B 红线：品格锚 valence=±1 也不入感受段（两种模式）；清单行退役后感受段无锚名", async () => {
     for (const opts of [{}, { characterTensionEnabled: true }]) {
       const text = await buildSoulPrefix(makeFakeStore(BASE_VALUES), nextTenant(), undefined, opts as never);
       const feelBlock = text.split("<soul-feeling>")[1]?.split("</soul-feeling>")[0] ?? "";
       expect(feelBlock).not.toContain("守诺");
-      expect(feelBlock).toContain("诚实"); // theme ±1 锚照常在感受段
+      expect(feelBlock).not.toContain("诚实"); // 呈现层翻修（m00227）：清单行退役——感受段不再列锚名
+      expect(text).toContain("- 诚实(趋近)：诚实呈现证据与遗留。"); // theme 方向语义收敛到 identity 逐锚行
     }
   });
 });

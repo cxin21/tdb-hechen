@@ -94,4 +94,23 @@ describe("#35 soul_promises sqlite 往返+双时态留痕", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("T6-F2 钉：limit 截断保最新（created_at DESC，open 超上限时旧承诺让位）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "soul-promise-cap-"));
+    let store: VectorStore | null = null;
+    try {
+      store = new VectorStore(join(dir, "vectors.db"), 0);
+      await store.init();
+      const t = { teamId: "tcap", userId: "u1", agentId: "a1" };
+      const base = Date.parse("2026-10-17T10:00:00Z");
+      for (let i = 0; i < 4; i++) {
+        await store.upsertSoulPromise!(t, { content: `承诺${i}`, source: "user", createdAt: new Date(base + i * 1000).toISOString() });
+      }
+      const rows = store.listSoulPromises!(t, { status: "open", limit: 2 });
+      expect(rows.map((r) => r.content)).toEqual(["承诺3", "承诺2"]); // 最新在前
+    } finally {
+      store?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

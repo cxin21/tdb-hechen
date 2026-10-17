@@ -79,7 +79,7 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
     expect(idxSecond).toBeGreaterThan(idxFirst);
   });
 
-  it("感受段驱动/审慎清单同样按 value_id 稳定排序", async () => {
+  it("感受段清单行退役（m00227）：方向排序语义收敛到 identity 价值锚行（value_id 稳定）", async () => {
     const out = await buildSoulPrefix(
       makeStore([
         row({ value_id: "z-1", label: "甲", weight: 0.9, valence: 1, attrs_json: '{"description":"甲锚句。"}' }),
@@ -90,10 +90,8 @@ describe("锚行排序稳定化（value_id 排序，weight 只管取舍）", () 
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/驱动我行动的价值：([^\n]+)/);
-    expect(m).not.toBeNull();
-    // R5 #22/#23 + 形态翻修（2026-10-17）：首要内联后缀入清单位、悬浮行退役；整行 value_id 稳定（乙→丙→甲）
-    expect(m![1]).toBe("乙；丙；甲（首要：甲锚句。）");
+    expect(out).not.toContain("驱动我行动的价值：");
+    expect(out).toContain("- 乙(趋近)：乙锚句。\n- 丙(趋近)：丙锚句。\n- 甲(趋近)：甲锚句。");
   });
 
   it("人物锚行：weight DESC 取 top-N 后，渲染按 value_id 稳定", async () => {

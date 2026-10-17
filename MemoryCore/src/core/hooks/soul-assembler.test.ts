@@ -112,7 +112,7 @@ describe("soul-assembler 四段渲染（P1）", () => {
   });
 });
 
-describe("V7 F-U2：感受段首要锚并列 weight 两端序统一", () => {
+describe("V7 F-U2：identity 价值锚行并列 weight 次级键（value_id 序）", () => {
   it("并列 weight：value_id 次级键（与 Panel pickPrimeAnchor 同键；输入序不承载语义的显式化守占）", async () => {
     const out = await buildSoulPrefix(
       makeStore(
@@ -124,13 +124,15 @@ describe("V7 F-U2：感受段首要锚并列 weight 两端序统一", () => {
       ) as never,
       TENANT,
     );
-    expect(out).toContain("甲（首要：甲描述）；乙");
+    // 呈现层翻修（m00227）：清单行退役，排序语义收敛到 identity 逐锚行（value_id 稳定序）
+    expect(out).toContain("- 甲(趋近)：甲描述\n- 乙(趋近)：乙描述");
+    expect(out).not.toContain("驱动我行动的价值");
   });
 });
 
-describe("V7 方案A：首要描述句边界截取（消残句，宁缺毋滥）", () => {
+describe("V7 方案A 句界机制退役钉（m00227）：句界单一源收敛 identity 价值锚行", () => {
   const longDesc = "用户长期偏好：文本类成果（含移交提示词、分析报告、文档）一律在对话框直接输出可复制全文，不得落成文档文件。后续补充句。";
-  it("首句在预算内：完整首句呈现至句号（非 30 字硬截）", async () => {
+  it("句界截取由 identity 价值锚行承载（首句+句号）；首要内联子句不再出现", async () => {
     const out = await buildSoulPrefix(
       makeStore(
         [{ slot: "identity", content: "用户是家里的首席厨师" }],
@@ -138,12 +140,10 @@ describe("V7 方案A：首要描述句边界截取（消残句，宁缺毋滥）
       ) as never,
       TENANT,
     );
-    // 注：断言限定感受段——价值锚行另有描述渲染（V6-1b，全量存储描述），不在本断言范围
-    const feel = out.match(/<soul-feeling>[\s\S]*?<\/soul-feeling>/)?.[0] ?? "";
-    expect(feel).toContain("文档（首要：" + longDesc.split("。")[0] + "。）");
-    expect(feel).not.toContain("后续");
+    expect(out).toContain("- 文档(趋近)：" + longDesc.split("。")[0] + "。");
+    expect(out).not.toContain("（首要：");
   });
-  it("无句边界且超预算：省略描述（宁缺毋滥，不产残句）", async () => {
+  it("无句边界：identity 行全量呈现（不产残句）", async () => {
     const noBound = "表层现象与真实根因多次背离：" + "长长长长长".repeat(30);
     const out = await buildSoulPrefix(
       makeStore(
@@ -152,6 +152,7 @@ describe("V7 方案A：首要描述句边界截取（消残句，宁缺毋滥）
       ) as never,
       TENANT,
     );
+    expect(out).toContain("根因(趋近)：");
     expect(out).not.toContain("；首要");
   });
 });

@@ -121,9 +121,9 @@ describe("F-EV12-5③ · soul-feeling 仅主题锚（character 不入感受段�
     // 价值锚行：character 在场（共享注入预算）；呈现层翻修后=逐锚列表行形态
     expect(out).toContain("价值锚：");
     expect(out).toContain("- 守诺(趋近)：守诺品格说明。");
-    // 感受段：仅主题锚——守诺不得出现
-    const feel = out.split("<soul-feeling>")[1] ?? "";
-    expect(feel).toContain("交付质量");
-    expect(feel).not.toContain("守诺");
+    // 呈现层翻修（m00227）：感受段清单行退役 → 无 moodTier/state 时整段省略；
+    // character 不入感受段（F-EV12-5③）与「感受段无锚名」由同一缺席断言覆盖
+    expect(out).not.toContain("<soul-feeling>");
+    expect(out).not.toContain("驱动我行动的价值");
   });
 });

@@ -1095,6 +1095,8 @@ export class TdaiGateway {
               budgetCharacterChars?: number;
               /** #52 D3：per-turn 身份两行省略门（缺省 true=逐位现状）。 */
               perTurnSlots?: boolean;
+              /** T3（T6-F1 接线）：承诺块渲染门（缺省 false=逐位现状）。 */
+              promises?: { enabled?: boolean };
               introspect?: { snapshotLimit?: number; evidenceWindowHours?: number };
             };
           };
@@ -1113,6 +1115,8 @@ export class TdaiGateway {
             budgetCharacterChars: coreMem?.soulRender?.budgetCharacterChars,
             // #52 D3：per-turn 身份两行省略门镜像（与 auto-recall 同源 soulRender 配置）。
             perTurnSlots: coreMem?.soulRender?.perTurnSlots,
+            // T3（T6-F1 接线）：承诺块渲染门镜像（与 auto-recall 同源 soulRender 配置）。
+            promisesEnabled: coreMem?.soulRender?.promises?.enabled === true,
             characterTensionEnabled: coreMem?.characterTension?.enabled === true,
           },
           moodTierProvider: async (tenant) => {

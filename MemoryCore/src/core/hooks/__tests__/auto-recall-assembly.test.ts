@@ -337,13 +337,14 @@ describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（
     sessionKey: string,
     n: number,
     warnings?: string[],
+    cfgOverrides?: Record<string, unknown>,
   ): Promise<Awaited<ReturnType<typeof performLayeredRecall>>> {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "r7fix-state-profile-"));
     try {
       return await performLayeredRecall({
         userText,
         sessionKey,
-        cfg: parseConfig({ recall: { strategy: "keyword" } }),
+        cfg: parseConfig({ recall: { strategy: "keyword" }, ...(cfgOverrides ?? {}) }),
         pluginDataDir: dataDir,
         vectorStore: store as unknown as IMemoryStore,
         isolationFilter: tenantFor(n),
@@ -364,9 +365,10 @@ describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（
       });
       const res = await recallLayered(store, "状态接线探针", "sk-state-1", 1);
       expect(res).toBeDefined();
-      // renderStateLine 逐字合同：偏正桶（0.592≥0.25）+ toFixed(1)="0.6"；唤醒中等（0.2<0.493<0.6）
-      // + "0.5"；row.topValue="定案" → 活跃价值段直出（全文案 soul-state.ts:52-58）
-      expect(res?.block ?? "").toContain("当下状态：偏正（0.6）·唤醒中等（0.5）·活跃价值：定案");
+      // renderStateLine 逐字合同（呈现层翻修 m00227）：叙事散文，数值留代码层——
+      // 0.592≥0.25 且 <0.6 → 心里偏顺遂；0.2<0.493<0.6 → 状态平稳安定；topValue=定案
+      // → 「眼下最想推进的是定案」子句（全文案 soul-state.ts valencePhrase/arousalPhrase）
+      expect(res?.block ?? "").toContain("此刻心里偏顺遂，状态平稳安定。眼下最想推进的是定案。");
     } finally {
       cleanup(store, dir);
     }
@@ -408,6 +410,27 @@ describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（
       expect(res).toBeDefined();
       expect(res?.block ?? "").not.toContain("当下状态");
       expect(warnings.some((w) => w.includes("[soul] state read failed (non-fatal)") && w.includes("boom-state"))).toBe(true);
+    } finally {
+      cleanup(store, dir);
+    }
+  });
+
+  it("④ T6-F1 接线：soulRender.promises.enabled=true → 承诺块经生产链路渲染；缺省 cfg 不渲染（config-first）", async () => {
+    const { store, dir } = makeStore([]);
+    try {
+      await store.upsertSoulPromise!(tenantFor(4), {
+        content: "执行关票等永久性动作前，必须先亲跑测试门。",
+        source: "user",
+      });
+      const gateOn = await recallLayered(
+        store, "承诺接线探针", "sk-promise-4a", 4, undefined,
+        { coreMemory: { soulRender: { promises: { enabled: true } } } },
+      );
+      expect(gateOn?.block ?? "").toContain("我的承诺：");
+      expect(gateOn?.block ?? "").toContain("执行关票等永久性动作前，必须先亲跑测试门。");
+      // 缺省 cfg（gate off）——同数据零渲染（零行为变化；独立租户避缓存串味）
+      const gateOff = await recallLayered(store, "承诺接线探针", "sk-promise-4b", 5);
+      expect(gateOff?.block ?? "").not.toContain("我的承诺：");
     } finally {
       cleanup(store, dir);
     }

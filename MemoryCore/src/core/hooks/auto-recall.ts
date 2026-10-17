@@ -1038,6 +1038,9 @@ export async function performLayeredRecall(params: {
             ...(cfg.coreMemory?.soulRender?.capabilities?.enabled === true && params.capabilities?.length
               ? { capabilities: params.capabilities }
               : {}),
+            // T3（未来性渲染面，T6-F1 接线 2026-10-17）：承诺块渲染门——config 门透传
+            //（soulRender.promises.enabled 缺省 false=零渲染零查询=逐位现状）。
+            promisesEnabled: cfg.coreMemory?.soulRender?.promises?.enabled === true,
           },
           soulMeta,
         );

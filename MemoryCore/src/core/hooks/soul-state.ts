@@ -34,26 +34,38 @@ export function clampState(s: SoulState): SoulState {
   return { ...s, valence: clamp(s.valence, -1, 1), arousal: clamp(s.arousal, 0, 1) };
 }
 
-/** 定性桶阈值与 mood-line.ts 三档同源（±0.25），防伪精度：连续值仅以括号小数附注。 */
-function valenceBucket(v: number): string {
-  return v >= 0.25 ? "偏正" : v <= -0.25 ? "偏负" : "中性";
+/**
+ * 定性档位→散文短语映射（呈现层翻修 2026-10-17，用户 m00227 终审：数值留代码层、
+ * prompt 只写自然语言自述——r2-state-and-capabilities.md 调研定案；arXiv:2601.16087
+ * VAD→自然语言映射为参考实现）。阈值与 mood-line.ts 三档同源（±0.25 / 0.6 / 0.2）。
+ * 渲染层零数字=不伪造精度；无主语断言防线（§1.5）保持：只描述状态信号本身，
+ * 不发明「我感到…」式越界情绪归因（归因属 T5 之后近因事件数据面，本批不做）。
+ */
+function valencePhrase(v: number): string {
+  if (v >= 0.6) return "心里明亮，劲头是趋近的";
+  if (v >= 0.25) return "心里偏顺遂";
+  if (v > -0.25) return "心里平稳";
+  if (v > -0.6) return "有点受阻，心里偏审慎";
+  return "明显受阻，心里沉重";
 }
-function arousalBucket(a: number): string {
-  return a >= 0.6 ? "偏高" : a <= 0.2 ? "平缓" : "中等";
+function arousalPhrase(a: number): string {
+  if (a >= 0.6) return "整个人紧绷而跃跃欲试";
+  if (a >= 0.2) return "状态平稳安定";
+  return "整个人平缓松弛";
 }
 
 /**
- * 渲染「当下状态」行（soul-feeling 尾块专用；依赖 #37 soul.tail 接口）。
+ * 渲染「当下的状态」叙事行（soul-feeling 尾块专用；依赖 #37 soul.tail 接口）。
  * - null/undefined → ""（逐位现状，config-first）；
  * - topValue 缺省由调用方传 directional top（soul-assembler 已算出，不重算）；
- *   两处皆无 → 省略活跃价值段。
- * - 文案不含主语断言「我感到…」（§1.5 主语越界防线）：只报状态信号本身。
+ *   两处皆无 → 省略「眼下最想推进的是X」子句，不硬造；
+ * - 文案为第一人称散文：`此刻<valence 短语>，<arousal 短语>。眼下最想推进的是X。`
+ *   （数值与键值头全部退出 prompt；state 仍不参与 soulVersion，只进 cacheKey）。
  */
 export function renderStateLine(state: SoulState | null | undefined, fallbackTopValue?: string): string {
   if (!state) return "";
   const s = clampState(state);
-  const parts = [`${valenceBucket(s.valence)}（${s.valence.toFixed(1)}）`, `唤醒${arousalBucket(s.arousal)}（${s.arousal.toFixed(1)}）`];
+  const head = `此刻${valencePhrase(s.valence)}，${arousalPhrase(s.arousal)}。`;
   const top = s.topValue?.trim() || fallbackTopValue?.trim() || "";
-  if (top) parts.push(`活跃价值：${top}`);
-  return `当下状态：${parts.join("·")}`;
+  return top ? `${head}眼下最想推进的是${top}。` : head;
 }

@@ -14,6 +14,8 @@
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 // #42（ADR0003-P3 票 D / D9）：锚相似度打分器（确定性 cosine，shadow-first；本模块管选择/报告语义）。
 import { isUsableQueryVec, scoreAnchorRows, selectAnchorRows, type AnchorEmbedder } from "./soul-anchor-scorer.js";
+// T4（方案 Task 4，2026-10-17）：#42 shadow 定标落盘——行为零变化旁路采集（fail-safe 降级）。
+import { appendAnchorShadowRow } from "./soul-anchor-shadow-sink.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
@@ -69,6 +71,13 @@ export function applyAnchorBudget(items: string[], maxChars: number): string[] {
  * 无句界且全文 ≤ 该值 → 带全文；否则首要子句省略、该锚退回感受段清单成员（宁缺毋滥不丢成员）。
  */
 export const SOUL_TOP_DESC_MAX_CHARS = 80;
+
+/**
+ * T3（方案 Task 3，2026-10-17）：承诺块行数上限单一源——「我的承诺：」只渲染最新
+ * 3 条 open 承诺（createdAt desc，最新在前）。宁缺毋滥：上限防承诺累积成第二份
+ * 调试清单；存量可见性由 D8 账本（soul_promise_events/Panel 待办栏）承载。
+ */
+export const SOUL_PROMISE_RENDER_MAX = 3;
 
 /**
  * v18-d（何晨拍板「全做」2026-10-05）：desc 悬空尾判定单一源（高置信断尾门）。
@@ -143,6 +152,11 @@ export interface SoulRenderOptions {
    *  缺席→回退现状形态（宁缺毋滥不造分）。 */
   anchorSelect?: {
     maxRows?: number;
+    /** T4（方案 Task 4，2026-10-17）：#42 shadow 定标落盘门——缺省关（零写盘零采集）。
+     *  true=shadow 打分真实发生时（rows>maxRows + embedder + 可用查询向量）追加一行
+     *  定标 jsonl（wouldSelect/actuallySelected/agree）；file 缺省
+     *  data/logs/soul-anchor-shadow.jsonl。行为零变化旁路（渲染字节不受影响）。 */
+    shadowSink?: { enabled?: boolean; file?: string };
     scorer?: {
       enabled?: boolean;
       threshold?: number;
@@ -160,6 +174,12 @@ export interface SoulRenderOptions {
    *  零落库；一致性合同=渲染行=传入清单（顺序保持）；策展 ≤5 行由调用方负责；
    *  缺省 undefined=不渲染=逐位现状。cacheKey 含清单指纹（字节影响面）。 */
   capabilities?: string[];
+  /** T3（方案 Task 3，2026-10-17）：承诺块渲染门——未来性注入面（#35/D8 承诺层）。
+   *  缺省 false（config-first 缺省关=逐位现状，零新增注入）；true 时 buildSoulPrefix
+   *  经 store.listSoulPromises（可选方法，types.ts:813）拉取 open 承诺，身份段
+   *  「我的承诺：」行渲染最新 SOUL_PROMISE_RENDER_MAX 条（createdAt desc，content
+   *  逐字直出）。承诺集参与 soulVersion（-pm 指纹段，承诺变化必重渲染）。 */
+  promisesEnabled?: boolean;
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -249,7 +269,26 @@ export async function buildSoulPrefix(
       // 立项②（2026-09-23 拍板）：取舍按 weight、渲染按 value_id 稳定排序（KV cache 前缀连续性）
       .sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
 
+    // T3（未来性渲染面）：承诺数据面——gate=opts.promisesEnabled（config-first 缺省关：
+    // 关断零查询零渲染零指纹附加=逐位现状）；store 无该方法 → 空清单（可选方法契约）。
+    // 客户端二次滤 status（store 忽略 status 参数也不漏渲非 open）；content 空/非串行剔除。
+    const promiseRows = opts?.promisesEnabled === true
+      ? (((await Promise.resolve(store.listSoulPromises?.(tenant, { status: "open", limit: 1000 }))) ?? []) as Array<{ content: string; status: string; createdAt: string }>)
+          .filter((p) => p.status === "open" && typeof p.content === "string" && p.content.trim() !== "")
+      : [];
     soulVer = computeSoulVersion(slots, activeAll, opts?.moodTier?.tier);
+    // T3：承诺集参与指纹（承诺变化=自我陈述变化=必须重渲染，人格不冻结）。指纹段
+    // 仅 gate on 时附加（关断时 sv 字节与现状一致——快照守卫/旧调用点零破坏）；
+    // 指纹源=createdAt+content 确定性序列化排序（序稳定，不依赖 store 返回序）。
+    if (opts?.promisesEnabled === true) {
+      const pmFp = fnv1a32Hex(
+        promiseRows
+          .map((p) => `${p.createdAt}\u0000${p.content}`)
+          .sort()
+          .join("\n"),
+      );
+      soulVer = `${soulVer}-pm${pmFp}`;
+    }
     if (metaOut) metaOut.soulVersion = soulVer;
 
     // 立项③：指纹→缓存命中跳渲染 / 变更重渲染+人格变更日志
@@ -279,7 +318,7 @@ export async function buildSoulPrefix(
         : "";
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${scorerSig}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${scorerSig}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -344,7 +383,9 @@ export async function buildSoulPrefix(
     // 自我叙事、随身份段承载（宁缺毋滥+信封语义=身份块表达记忆衍生的自我）；空自我
     // 时的工具能力由协议层 tools 清单功能性覆盖，不产出「半灵魂」块。若未来需要
     // 空数据 agent 也出能力段，须先定空数据 soulVersion 语义（#33 冻结范围）再改独立外门。
-    if (slots.length > 0 || activeAll.length > 0) {
+    // T3/T6-F1（2026-10-17）：承诺块属身份内容——仅承诺在场（slots/values 全空）也渲染
+    // <soul-identity>（未来性=「此刻的你」的一部分）；gate off 时 promiseRows=[] 门不变。
+    if (slots.length > 0 || activeAll.length > 0 || promiseRows.length > 0) {
       const lines: string[] = [];
       // DS-SOUL-MEMORY-002 P1 四段渲染（gated）：非 dual 路径保持 `- [slot] content`
       // 原样且不做截断——逐位现状；dual 路径 self/identity 行分别带（我是谁）/（我心中的他）
@@ -406,9 +447,10 @@ export async function buildSoulPrefix(
             // desc 为具体事件叙述（commit hash/编号/HTTP/日期等硬特征）→ 非灵魂级说明 → 整条跳过
             //（宁缺毋滥；存量混事件锚随此门即刻退出注入，语义级混入交生成端 prompt 负面清单）。
             if (desc === "" || looksLikeEpisode(desc)) return null;
-            return { row: renderAnchor(v, desc), desc };
+            // T4：valueId 随行携带——shadow 定标行按 valueId 归集（渲染字节零变化）。
+            return { row: renderAnchor(v, desc), desc, valueId: String(v.value_id ?? v.label) };
           })
-          .filter((x): x is { row: string; desc: string } => x !== null);
+          .filter((x): x is { row: string; desc: string; valueId: string } => x !== null);
         const decorated = decoratedPairs.map((p) => p.row);
         // #42：打分选择接线——转正（scorer.enabled=true 且 embedder/可用查询向量在位）=
         // threshold 硬门 + top-K；#52 D3 选项C：仅 rows.length > maxRows（发生裁剪）时按
@@ -487,6 +529,36 @@ export async function buildSoulPrefix(
                 // M-1 复核：scoreOf 按 row 字符串键——重复 row ⇔ 同 label/dir/weight/desc ⇒ 同向量
                 // ⇒ 同 score，覆写无害；报告分不错配。
                 const scoreOf = new Map(scored.map((s) => [s.row, s.score]));
+                // T4（方案 Task 4，2026-10-17）：#42 shadow 定标落盘——sink 开启时追加一行
+                // 定标 jsonl（行为零变化旁路：渲染字节不受影响）。仅在真实打分发生时采集；
+                // 无向量/打分失败/rows≤maxRows 分支零采集=不造数（真实性红线）。
+                // wouldSelect=假设转正（threshold 硬门+top-K）会保留的 valueId 集；
+                // actuallySelected=本轮实际渲染集合（shadow 不重排=value_id 声明序，#52 D3 选项C）；
+                // agree=两者去重集合相等（重复行场景=重复 valueId 归集后相等）。
+                if (opts?.anchorSelect?.shadowSink?.enabled === true) {
+                  const rowToValueId = new Map(decoratedPairs.map((p) => [p.row, p.valueId]));
+                  // 与真实转正路径同参（scoreAnchorRows 携 maxRows=仅裁剪时按 score desc 重排），
+                  // 再过 threshold 硬门+top-K——wouldSelect 精确镜像「假设转正」的选择语义。
+                  const wouldSelect = selectAnchorRows(
+                    await scoreAnchorRows(decoratedPairs, shadowQv, shadowScorer.embedder, { maxRows: shadowMaxRows }),
+                    { maxRows: shadowMaxRows, threshold: scorerCfg?.threshold ?? 0 },
+                  ).map((s) => rowToValueId.get(s.row) ?? "");
+                  const actuallySelected = budgeted.map((r) => rowToValueId.get(r) ?? r);
+                  const keyOf = (xs: string[]) => [...new Set(xs)].sort().join("\u0000");
+                  appendAnchorShadowRow(
+                    opts.anchorSelect.shadowSink.file ?? "data/logs/soul-anchor-shadow.jsonl",
+                    {
+                      ts: new Date().toISOString(),
+                      agentId: tenant.agentId,
+                      threshold: scorerCfg?.threshold ?? 0,
+                      rowsScored: scored.map((s) => ({ valueId: rowToValueId.get(s.row) ?? "", score: Math.round(s.score * 10000) / 10000 })),
+                      wouldSelect,
+                      actuallySelected,
+                      agree: keyOf(wouldSelect) === keyOf(actuallySelected),
+                    },
+                    logger,
+                  );
+                }
                 logger?.warn?.(
                   `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${shadowMaxRows}（仅报告不裁剪）: ` +
                     budgeted
@@ -576,6 +648,20 @@ export async function buildSoulPrefix(
           lines.push("我的品格：", ...charBudgeted.map((r) => `- ${r}`));
         }
       }
+      // T3（方案 Task 3，2026-10-17）：承诺块——「我的承诺：」+ 逐条列表行（- 前缀），
+      // 未来性属性（#35）注入面：open 承诺=对用户立着的义务，属「此刻的你」自我陈述。
+      // 渲染门=opts.promisesEnabled（config-first 缺省关=逐位现状）；宁缺毋滥：零 open/
+      // 滤后空 → 整行省略不出占位；content 逐字直出（真实性=不改写不截断，创建门 ≤120 字
+      // 已约束长度；escapeXmlTags=程序化组装与写入路径同级消毒，语义逐字不变）；行数上限
+      // SOUL_PROMISE_RENDER_MAX（最新在前，createdAt desc）。
+      if (opts?.promisesEnabled === true && promiseRows.length > 0) {
+        const openPromises = [...promiseRows]
+          .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+          .slice(0, SOUL_PROMISE_RENDER_MAX);
+        if (openPromises.length > 0) {
+          lines.push("我的承诺：", ...openPromises.map((p) => `- ${escapeXmlTags(p.content)}`));
+        }
+      }
       // #24-C1（2026-10-16 用户授权拍板，r5-24 定案）：红线独立段「## 不可逾越（红线）」置
       // soul-identity 段尾（禁令动词框架+保留团队话语关键词，段名进 #33 词表）；原文直出禁改写
       //（无预算/无截断/无转写——不变量语义）；无 strict_rule 整段省略（宁缺毋滥）。
@@ -621,55 +707,13 @@ export async function buildSoulPrefix(
           return !desc || looksLikeEpisode(desc) ? null : { v, desc };
         })
         .filter((x): x is { v: (typeof directional)[number]; desc: string } => x !== null);
-      // R5 #23（2026-10-16）→ 形态翻修（2026-10-17 用户裁决「首要悬浮行乱」）：首要锚不除名，
-      // 以 `label（首要：detail）` 内联后缀呈现在其 value_id 排序位（V6-1d 选取与排序解耦不变；
-      // 首句 ≤SOUL_TOP_DESC_MAX_CHARS 语义不变，渲染失败=无句界且超限 → 无内联子句、
-      // 该锚降级纯 label 保留清单位，宁缺毋滥不丢成员）。首要子句仅 top weight>0 才附（P51 守卫）；
-      // 预算门（#10 T4）只管纯 label 清单项，首要内联子句为详述不占清单预算；
-      // 缺省 0=无预算逐位现状（config-first）。布局字节跳变一次声明，soulVersion 不变。
-      const topDetail = (r: (typeof gated)[number]): string => {
-        const d = r.desc;
-        // R5-F8：首句截取与价值锚行同句界集（SENTENCE_CUTS 单一源；此处取首个边界=首句语义，
-        // 价值锚行取末边界=完整句集合语义——位置语义各自保留，界集统一）
-        let firstCut = -1;
-        for (const c of SENTENCE_CUTS) {
-          const i = d.indexOf(c);
-          if (i >= 0 && (firstCut < 0 || i < firstCut)) firstCut = i;
-        }
-        const detail = firstCut >= 0
-          ? (firstCut + 1 <= SOUL_TOP_DESC_MAX_CHARS ? singleLine(d.slice(0, firstCut + 1)) : "")
-          : (d.length <= SOUL_TOP_DESC_MAX_CHARS ? d : "");
-        return detail ? escapeXmlTags(detail) : "";
-      };
-      const feelLine = (header: string, dirRows: typeof gated): string | null => {
-        if (dirRows.length === 0) return null;
-        const top = [...dirRows].sort((a, b) => (b.v.weight ?? 0) - (a.v.weight ?? 0) || String(a.v.value_id ?? a.v.label).localeCompare(String(b.v.value_id ?? b.v.label)))[0];
-        // 逐位现状（R5 自审 P51）：weight>0 门——零权/负权锚不出首要内联子句、纯 label 保留清单位
-        const detail = (top.v.weight ?? 0) > 0 ? topDetail(top) : "";
-        const list = dirRows
-          .filter((r) => r !== top || detail === "")
-          .map((r) => escapeXmlTags(r.v.label));
-        const budgeted = applyAnchorBudget(list, opts?.budgetAnchorChars ?? 0);
-        if (budgeted.length === 0 && !detail) return null;
-        // 形态翻修：dirRows 已 value_id 序——首要锚在其排序位附内联后缀，其余按 applyAnchorBudget
-        // 前缀保留依次消费（budgeted 是 list 的前缀，按 label 匹配回位安全，被裁剪项整项丢弃）。
-        const items: string[] = [];
-        let bi = 0;
-        for (const r of dirRows) {
-          if (r === top && detail) {
-            items.push(`${escapeXmlTags(r.v.label ?? "")}（首要：${detail}）`);
-          } else if (bi < budgeted.length && budgeted[bi] === escapeXmlTags(r.v.label)) {
-            items.push(budgeted[bi]);
-            bi++;
-          }
-        }
-        return `${header}${items.join("；")}`;
-      };
+      // 呈现层翻修（2026-10-17 用户 m00227 终审）：驱动/审慎清单行（posLine/negLine）与
+      // 首要内联子句（topDetail/feelLine 机制）整体删除——纯去重：identity 价值锚行逐锚
+      // 方向标注（趋近/审慎，:462 applyAnchorBudget 消费点保留）已完整承载方向语义。
+      // 感受段现仅承载近期基调（moodTier）与当下状态（state）两行；state 叙事形态见
+      // soul-state.ts（数值留代码层，prompt 只写自然语言自述）。布局字节跳变一次声明，
+      // soulVersion 不变（指纹只由 slots+values+moodTier tier 算出）。
       const feel: string[] = [];
-      const posLine = feelLine("驱动我行动的价值：", gated.filter((r) => r.v.valence === 1));
-      const negLine = feelLine("提醒我审慎的价值：", gated.filter((r) => r.v.valence === -1));
-      if (posLine) feel.push(posLine);
-      if (negLine) feel.push(negLine);
       // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位+样本数，不出连续值防伪精度；
       // opts.moodTier 缺省=不 push=逐位现状）。文案不含「我感到」字样（§1.5 主语越界防线）。
       if (opts?.moodTier) {

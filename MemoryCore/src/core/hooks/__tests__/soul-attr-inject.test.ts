@@ -85,8 +85,8 @@ describe("呈现层翻修：锚行权重内隐（2026-10-16 用户拍板「有�
   });
 });
 
-describe("V6-1d 感受段语义增强（方案B）", () => {
-  it("首要锚（weight 最高）附 description 首句（≤SOUL_TOP_DESC_MAX_CHARS=80），清单=其余（value_id 稳定序）", async () => {
+describe("呈现层翻修（m00227）：感受段清单退役、identity 全量详述", () => {
+  it("首要内联子句与驱动/审慎清单行退役；identity 逐锚行按 value_id 序全量详述", async () => {
     const out = await buildSoulPrefix(
       makeStore([
         row({ value_id: "z-1", label: "甲", weight: 0.9, attrs_json: '{"description":"所有结论须以真实代码与测试取证背书"}' }),
@@ -96,12 +96,12 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    const m = out.match(/驱动我行动的价值：([^\n]+)/);
-    expect(m).not.toBeNull();
-    // 形态翻修（2026-10-17）：首要内联后缀入清单位——单行=乙(a-2)；甲(z-1)（首要：…）
-    expect(m![1]).toBe("乙；甲（首要：所有结论须以真实代码与测试取证背书）");
+    expect(out).not.toContain("驱动我行动的价值：");
+    expect(out).not.toContain("（首要：");
+    expect(out).toContain("- 乙(趋近)：乙锚句。");
+    expect(out).toContain("- 甲(趋近)：所有结论须以真实代码与测试取证背书");
   });
-  it("首要锚无 description → 该锚整体退出感受段（#22 消悬空），详述次锚升为首要（宁缺毋滥）", async () => {
+  it("首要锚无 description → 与 identity 价值锚行同门整体拒入（#22 消悬空不变）", async () => {
     const out = await buildSoulPrefix(
       makeStore([
         row({ value_id: "z-1", label: "甲", weight: 0.9 }),
@@ -111,32 +111,19 @@ describe("V6-1d 感受段语义增强（方案B）", () => {
       undefined,
       { selfIdentityEnabled: true },
     );
-    const fm = out.match(/驱动我行动的价值：([^\n]+)/);
-    expect(fm).not.toBeNull();
-    // R5 #22：甲 desc 空 → 与价值锚行同门整体拒入（不再出现裸关键词悬空）；乙=唯一成员内联详述
-    expect(fm![1]).toBe("乙（首要：次锚描述）");
-    expect(out).not.toContain("甲（首要");
+    expect(out).toContain("- 乙(趋近)：次锚描述");
+    expect(out).not.toContain("- 甲(趋近)");
+    expect(out).not.toContain("<soul-feeling>");
   });
-  it("V7 方案A：描述无句界且≤80 预算→全量（替换 V6-1d 的 30 字硬截）", async () => {
-    const d40 = "一二三四五六七八九十".repeat(4);
-    const out = await buildSoulPrefix(
-      makeStore([row({ value_id: "a", label: "甲", weight: 0.9, attrs_json: `{"description":"${d40}"}` })]) as never,
-      TENANT,
-      undefined,
-      { selfIdentityEnabled: true },
-    );
-    const m = out.match(/驱动我行动的价值：([^\n]+)/);
-    expect(m).not.toBeNull();
-    expect(m![1]).toBe(`甲（首要：${d40}）`);
-  });
-  it("审慎组（valence=-1）同样生效（首要=详述、同锚两现消失）", async () => {
+  it("审慎组（valence=-1）：identity 逐锚行审慎方向承载语义，感受段无清单行", async () => {
     const out = await buildSoulPrefix(
       makeStore([row({ value_id: "n-1", label: "风险锚", weight: 0.8, valence: -1, attrs_json: '{"description":"发布前必须回滚演练"}' })]) as never,
       TENANT,
       undefined,
       { selfIdentityEnabled: true },
     );
-    expect(out).toContain("提醒我审慎的价值：风险锚（首要：发布前必须回滚演练）");
+    expect(out).toContain("- 风险锚(审慎)：发布前必须回滚演练");
+    expect(out).not.toContain("提醒我审慎的价值：");
   });
 });
 

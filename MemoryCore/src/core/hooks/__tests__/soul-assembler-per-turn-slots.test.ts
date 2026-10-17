@@ -91,8 +91,8 @@ describe("#52 D3 perTurnSlots=false：双通道身份两行省略", () => {
     expect(out).toContain("严谨");
     expect(out).toContain("<soul-feeling>");
     expect(out).toContain("## 当下的状态");
-    expect(out).toContain("驱动我行动的价值：");
     expect(out).toContain("近期基调：偏积极（近 5 条经历的情感聚合）");
+    expect(out).not.toContain("驱动我行动的价值："); // 呈现层翻修（m00227）：感受段清单行退役
     expect(out).toContain("## 我能做什么");
     expect(out).toContain("可以检索记忆");
   });

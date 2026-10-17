@@ -4,7 +4,11 @@
  * 合同（r5-34）：
  * 1. state 更新**不改变 soulVersion 指纹**（指纹=slots+values+moodTier；state 混入
  *    指纹=每轮前缀缓存全失效——R5 修正 2，显式验收断言）；
- * 2. state 段位于尾块（soul-feeling，依赖 #37 分层接口——接口已落地）；
+ * 2. state 段位于尾块（soul-feeling，依赖 #37 分层接口——接口已落地）；呈现层翻修
+ *    （2026-10-17 用户 m00227 终审，R2 调研 arXiv:2601.16087）：状态行=第一人称叙事
+ *    散文（valencePhrase/arousalPhrase 分档词表），数值留代码层防伪造；首要锚折叠进
+ *    「眼下最想推进的是X」子句；清单行（驱动/审慎）退役；段内仅基调+状态两行，
+ *    双缺省整段省略（宁缺毋滥）；
  * 3. 会话级 state 不落库（本票只建通道与渲染；状态机数据源归 #28，不发明第二套情绪评估）；
  * 4. 事件 taxonomy 单一源（user_correction/tool_failure/task_switch，与 #37 漂移触发共用）；
  * 5. state=undefined → 逐位现状（config-first：无 state 通道时渲染字节与现状一致）；
@@ -63,13 +67,14 @@ describe("#34 soul-state taxonomy 与渲染行", () => {
     expect(renderStateLine(undefined)).toBe("");
   });
 
-  it("renderStateLine：定性桶+数值+活跃价值（防伪精度：桶来自 mood-line 同阈值）", () => {
+  it("renderStateLine：叙事化定性短语（防伪=数值留代码层；分档词表 valencePhrase/arousalPhrase 单一源）", () => {
     const line = renderStateLine({ valence: -0.4, arousal: 0.6, topValue: "根因" });
-    expect(line).toContain("当下状态");
-    expect(line).toContain("偏负");
-    expect(line).toContain("-0.4");
-    expect(line).toContain("0.6");
-    expect(line).toContain("根因");
+    // 呈现层翻修（m00227，R2 调研）：第一人称叙事散文——无「当下状态」头、零数字
+    expect(line).not.toContain("当下状态");
+    expect(line).not.toMatch(/-?0\.\d/);
+    expect(line).toContain("有点受阻，心里偏审慎");
+    expect(line).toContain("整个人紧绷而跃跃欲试");
+    expect(line).toContain("眼下最想推进的是根因。");
   });
 });
 
@@ -88,14 +93,14 @@ describe("#34 soul-assembler state 通道", () => {
     expect(metaA.soulVersion).toBeTruthy();
     expect(metaA.soulVersion).toBe(metaB.soulVersion); // 指纹不含 state
     expect(outA).not.toBe(outB); // 尾块字节随 state 变化
-    expect(outA).toContain("偏负");
-    expect(outB).toContain("偏正");
+    expect(outA).toContain("有点受阻，心里偏审慎");
+    expect(outB).toContain("心里明亮，劲头是趋近的");
   });
 
-  it("state=undefined → 逐位现状（无「当下状态」行）", async () => {
+  it("state=undefined → 无状态行；无 moodTier 时感受段整段省略（m00227：段内仅基调+状态两行）", async () => {
     const out = await buildSoulPrefix(makeStore(rows()), { teamId: "st2", userId: "u1", agentId: "a1" }, LOG, { ...CT });
     expect(out).not.toContain("当下状态");
-    expect(out).toContain("soul-feeling"); // 感受段本身照常
+    expect(out).not.toContain("<soul-feeling>"); // 清单行退役+无基调无状态 → 宁缺毋滥整段省略
   });
 
   it("同 sv 下 state 变化必须重渲染（state 入 cacheKey 不入 sv）", async () => {
@@ -106,18 +111,18 @@ describe("#34 soul-assembler state 通道", () => {
     const metaB: { soulVersion?: string } = {};
     const outB = await buildSoulPrefix(store, t, LOG, { ...CT, state: { valence: 0.8, arousal: 0.2, topValue: "根因" } }, metaB);
     expect(metaA.soulVersion).toBe(metaB.soulVersion);
-    expect(outB).toContain("偏正"); // 缓存未吞掉新 state
-    expect(outA).toContain("偏负");
+    expect(outB).toContain("心里明亮，劲头是趋近的"); // 缓存未吞掉新 state
+    expect(outA).toContain("有点受阻，心里偏审慎");
   });
 
-  it("活跃价值 top1 复用 directional：topValue 缺省→方向内权重最高锚；无方向锚→省略段", async () => {
+  it("活跃价值 top1 复用 directional：topValue 缺省→方向内权重最高锚（眼下最想推进子句）；无方向锚→省略子句", async () => {
     // topValue 缺省 → 取 weight 最高的 directional 锚（根因 w0.8）
     const out1 = await buildSoulPrefix(makeStore(rows()), { teamId: "st4", userId: "u1", agentId: "a1" }, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6 } });
-    expect(out1).toContain("根因");
-    // 无任何锚 → state 行无活跃价值段，但 state 行仍在
+    expect(out1).toContain("眼下最想推进的是根因。");
+    // 无任何锚 → state 行仍在但无推进子句（m00227：无「当下状态」头，「此刻」起句）
     const out2 = await buildSoulPrefix(makeStore([]), { teamId: "st5", userId: "u1", agentId: "a1" }, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6 } });
-    expect(out2).toContain("当下状态");
-    expect(out2).not.toContain("活跃价值");
+    expect(out2).toContain("此刻");
+    expect(out2).not.toContain("眼下最想推进");
   });
 });
 

@@ -2638,12 +2638,14 @@ export class VectorStore implements IMemoryStore {
     const t = normalizeCoreTenant(tenant);
     const limit = Math.max(1, Math.min(opts?.limit ?? 200, 1000));
     try {
+      // T6-F2（2026-10-17）：created_at DESC——limit 截断保最新（open 超上限时旧承诺
+      // 让位；「最新在前」合同在 list 层成立，渲染层再 desc 重排为幂等）。
       const rows = (opts?.status
         ? this.db.prepare(
-            `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at ASC LIMIT ${limit}`,
+            `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? AND status = ? ORDER BY created_at DESC LIMIT ${limit}`,
           )
         : this.db.prepare(
-            `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC LIMIT ${limit}`,
+            `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at DESC LIMIT ${limit}`,
           )
       ).all(t.teamId, t.userId, t.agentId, ...(opts?.status ? [opts.status] : [])) as unknown as Array<{ promise_id: string; content: string; status: string; source: string; ref_key: string | null; created_at: string; resolved_at: string | null; updated_at: string }>;
       return rows.map((r) => ({

@@ -475,7 +475,7 @@ export interface MemoryCoreMemoryConfig {
      *  enabled 缺省 false=shadow 只报告不裁剪（渲染逐位现状）；true=转正（threshold 硬门+top-K
      *  重排渲染行）；threshold clamp 0..1 缺省 0（=不设语义硬门：0 只滤除负相关锚行，仅 top-K
      *  生效；>0 才是硬门）。embedder/queryEmbedding 运行时注入，不入 config。 */
-    anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number } };
+    anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number }; shadowSink: { enabled: boolean; file: string } };
     /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
      *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
     introspect: { snapshotLimit: number; evidenceWindowHours: number };
@@ -488,6 +488,11 @@ export interface MemoryCoreMemoryConfig {
      *  确认话语白名单（soul-promise-evidence 单一源）→ refKey 严格相等的 open promise
      *  迁移（source=evidence 全链溯源）。 */
     promiseEvidence: { enabled: boolean };
+    /** T3（2026-10-17 未来性渲染面，T6-F1 接线）：承诺块渲染门——「我的承诺：」注入
+     *  soul-identity（品格后红线前）。缺省 false=逐位现状（零渲染零查询：listSoulPromises
+     *  不被调用）；显式 true 才消费（config-first；渲染=最新 3 条 open 承诺原文逐字，
+     *  escapeXmlTags 同级消毒；宁缺毋滥：零 open 整块省略）。 */
+    promises: { enabled: boolean };
   };
 }
 
@@ -1302,6 +1307,19 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
               threshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0,
             };
           })(),
+          // T4（方案 Task 4，2026-10-17）：shadow 定标落盘门——缺省关（零写盘零采集）；
+          // enabled 仅布尔 true 采纳；file 仅非空 string 采纳，否则缺省
+          // data/logs/soul-anchor-shadow.jsonl（reflection shadow sink 同路径惯例）。
+          shadowSink: (() => {
+            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["shadowSink"] as
+              | Record<string, unknown>
+              | undefined;
+            const f = s?.["file"];
+            return {
+              enabled: s?.["enabled"] === true,
+              file: typeof f === "string" && f.trim() !== "" ? f : "data/logs/soul-anchor-shadow.jsonl",
+            };
+          })(),
         },
         // #36（R5）：soul_introspect 自省面参数（只读；快照条数 1..200 缺省 20，证据窗 1..2160h 缺省 168）。
         introspect: {
@@ -1323,6 +1341,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         // 逐位现状；非布尔/形状错一律回退 false（宁缺毋滥，沿 capabilities 解析先例）。
         promiseEvidence: {
           enabled: ((g as Record<string, unknown>)["promiseEvidence"] as Record<string, unknown> | undefined)?.["enabled"] === true,
+        },
+        // T3（未来性渲染面，T6-F1 接线 2026-10-17）：承诺块渲染门——缺省 false=逐位现状；
+        // 非布尔/形状错一律回退 false（宁缺毋滥，沿 promiseEvidence 解析先例）。
+        promises: {
+          enabled: ((g as Record<string, unknown>)["promises"] as Record<string, unknown> | undefined)?.["enabled"] === true,
         },
       };
     })(),

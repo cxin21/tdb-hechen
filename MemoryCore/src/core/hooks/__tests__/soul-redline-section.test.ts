@@ -79,14 +79,14 @@ describe("R5-F8 句界集统一（共享句界常量，含 \\n 与半角）", ()
     expect(out).not.toContain("再定位根因");
   });
 
-  it("首要子句与价值锚行同句界：desc 首句含半角句界时两处一致（单一源）", async () => {
+  it("句界单一源收敛 identity 价值锚行（m00227 首要子句退役）：半角句界口径一致", async () => {
     const store = makeStore([
       { value_id: "a", label: "根因", weight: 0.8, valence: 1, state: "active", node_type: "theme", attrs_json: JSON.stringify({ description: "第一句事实!\n第二句细节" }) },
     ]);
     const out = await buildSoulPrefix(store, TENANT, undefined, { selfIdentityEnabled: true });
-    // 价值锚行与感受段首要子句使用同一句界集，渲染口径一致
+    // 价值锚行仍按句界集截取（SENTENCE_CUTS 单一源）；首要内联子句机制已退役
     expect(out).toContain("根因(趋近)：第一句事实!");
-    expect(out).toContain("根因（首要：第一句事实!）");
+    expect(out).not.toContain("根因（首要：");
     expect(out).not.toContain("第二句细节");
   });
 });

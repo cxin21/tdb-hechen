@@ -213,7 +213,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
     );
     expect(out.status).toBe(200);
     const data = (out.payload as { code: number; data: { rendered: string } }).data;
-    expect(data.rendered).toContain("当下状态：偏正（0.6）·唤醒中等（0.4）·活跃价值：用户拍板");
+    expect(data.rendered).toContain("此刻心里明亮，劲头是趋近的，状态平稳安定。眼下最想推进的是用户拍板。");
   });
 
   it("stateProvider 抛错非致命：warn + 省略状态行、其余段照常", async () => {

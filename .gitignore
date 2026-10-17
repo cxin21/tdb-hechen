@@ -170,3 +170,11 @@ MemoryCore/scripts/import-opik-to-memory-core/README.md
 .graphflow/
 .dsh-mattskillsdeck-cache/
 graphflow-out/
+
+# ── 追加（2026-10-17 T6-F6）：本地运行时噪音与诊断产物，防误 git add -A ──
+MemoryCore/anchor-desc-contract-*.jsonl
+MemoryCore/anchor-description-needs-human-*.jsonl
+MemoryCore/data/
+MemoryPanel/web/.buildtmp/
+MemoryPanel/web/.esbuild-tmp/
+MemoryPanel/web/.npmrc

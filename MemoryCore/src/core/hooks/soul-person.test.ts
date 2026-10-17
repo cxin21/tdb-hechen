@@ -50,9 +50,10 @@ describe("灵魂渲染 person 行（P2 §2.7）", () => {
     expect(out).toContain("重要的人：");
     expect(out).not.toContain("价值锚：张三");
     expect(out).toContain("- 诚实(审慎)：诚实呈现证据与遗留。");
-    expect(out).toContain("提醒我审慎的价值：诚实（首要：诚实呈现证据与遗留。）"); // 形态翻修 2026-10-17：首要内联
-    const feelLine = out.split("\n").find((l) => l.startsWith("提醒我审慎的价值")) ?? "";
-    expect(feelLine).not.toContain("张三"); // person 不入感受段（原断言「诚实、张三」混列形态随 R5 翻新）
+    // 呈现层翻修（m00227）：感受段清单行退役——审慎语义由 identity 逐锚行承载；person 仍不入任何价值/感受清单
+    expect(out).not.toContain("提醒我审慎的价值：");
+    expect(out).not.toContain("（首要：");
+    expect(out).not.toContain("张三(审慎)");
   });
 
   it("无 person 行 → 无 重要的人 行（theme 渲染逐位现状）", async () => {
