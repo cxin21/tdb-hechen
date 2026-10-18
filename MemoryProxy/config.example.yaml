@@ -535,6 +535,46 @@ injection:
   assetReflection:
     markerOptIn: true
 
+  # ── #26（R5）：soul 注入重叠观测 journal ─────────────────────────────────
+  # enabled=true 时 buildPipelineBundle 装配 SoulOverlapJournalObserver（injection/index.ts:527），
+  # 把 soul 注入块与召回内容的重叠情况落盘观测（不影响注入行为）。缺省不配置 = 关（零感）。
+  # enabled 严格 boolean（非 boolean → false）；file 严格非空 string 否则不带路径。
+  # soulOverlapJournal:
+  #   enabled: true
+  #   file: "D:/TDB/data/logs/soul-overlap-journal.jsonl"
+
+  # ── #40-B：工具面策展（toolCapabilities，config lines 显式通道）──────────────
+  # 恒材料化（缺段 → {}，config.ts:290）。lines 仅当「非空数组且元素全为 string」才采纳
+  # （逐字 1:1，不裁剪不转义）；缺失/空/含非字符串 → 回退运行时策展（现状逐位）。
+  # enabled 仅 boolean 采纳（m00265 kill switch：false=整段摘除唯一显式关断档；缺失=缺省 true）。
+  # 本地部署拍板（m00265）：能力段摘除 → 不配置即回退缺省（lines 空=不覆盖策展）。
+  # toolCapabilities:
+  #   enabled: false
+  #   lines: []
+
+  # ── 灵魂注入时机（SoulTiming，ADR0003 三注入时机 + #59 轮次再锚定；config-first）──
+  # ⚠️ 解析层级=injection.soulTiming（MemoryProxy/src/config.ts:511 只读 yaml.injection.soulTiming）。
+  # 严格枚举逐字段解析：非法值回退缺省、缺省段 = 旧行为（identity/redline 会话头、feeling 每轮、无再锚定）。
+  #   identity      session_head（缺省）| session_head_drift_reanchor —— 身份块注入时机
+  #   redline       session_head（缺省）| action_proximate —— 红线块时机；action_proximate = #37 ADR D3
+  #                 第三时机：tools.before_call 动作点近端注入 <soul-event kind="redline"> 块（仅在检测到
+  #                 agentic loop——messages 尾为 tool_result——时触发，cacheStrategy=none）
+  #   feeling       every_turn（缺省）| session_head —— 感受块时机
+  #   driftTrigger  off（缺省）| shadow | auto —— #59 轮次驱动再锚定：auto = 首轮 + 每 intervalTurns 轮在
+  #                 动作点近端注入 <soul-event kind="reanchor"> 身份基线块（identity+self_identity 槽行级
+  #                 渲染，≤8 行、每行 ≤120 字，对冲长会话注意力稀释；轮次计数 per-identity，Map cap 1000）
+  #   reanchor      仅 driftTrigger=auto 时材料化 {intervalTurns: 20}；clamp [1,200] 缺省 20
+  #   redlineDedup  仅 enabled=true 时材料化 {enabled: true, jaccardThreshold: 0.45}——红线块近重复行去重
+  #                 （exact/jaccard/containment 三判，保长=归一后更长；阈值 clamp [0,1] 缺省 0.45）
+  # 生产现值：redline: action_proximate + driftTrigger: auto + reanchor.intervalTurns: 20 + redlineDedup.enabled: true
+  # soulTiming:
+  #   redline: "action_proximate"      # 生产已开（#37 动作点近端）
+  #   driftTrigger: "auto"             # 生产已开（#59 再锚定）
+  #   reanchor:
+  #     intervalTurns: 20
+  #   redlineDedup:
+  #     enabled: true                  # 生产已开（#55）
+
 
 # ── 提取（写侧：把每轮对话/工具调用回流到内核） ─────────────────────────────
 # 与 injection 对偶：injection 决定"往 prompt 塞什么"，extraction 决定"往内核回写什么"。
@@ -604,6 +644,14 @@ sessionInit:
   # debugVerboseLogging: false
 
 
+# ── Workbuddy 请求路由（workbuddyRequestRouting；代码内建段，缺省已开） ────────
+# 顶层段（非 injection 子键；config.ts:160 DEFAULT enabled:true，696-699 读取）。
+# workbuddyHandler.ts:882-885：enabled=false 时所有请求强制按 main 处理——与开启时的
+# aux 分流行为完全等价，仅省一次分流判断。缺省 true，一般无需配置。
+# workbuddyRequestRouting:
+#   enabled: true
+
+
 # ── TDAI Memory Gateway（core / openclaw-plugin） ────────────────────────────
 # proxy 通过与同机部署的内核 gateway（监听 8420）交互实现记忆读写。
 # 四级记忆：
@@ -630,28 +678,6 @@ tdai:
     # l1GlobalTopK: 5        # L1 召回"自有 + 借入"跨 agent 合并后保留条数（默认 5 = 原硬编码行为）
     l2Limit: 3              # L2/L3 注入最大条数
     timeoutMs: 5000         # 单次内核调用超时（毫秒）
-
-  # ── 灵魂注入时机（SoulTiming，ADR0003 三注入时机 + #59 轮次再锚定；config-first）──
-  # 严格枚举逐字段解析：非法值回退缺省、缺省段 = 旧行为（identity/redline 会话头、feeling 每轮、无再锚定）。
-  #   identity      session_head（缺省）| session_head_drift_reanchor —— 身份块注入时机
-  #   redline       session_head（缺省）| action_proximate —— 红线块时机；action_proximate = #37 ADR D3
-  #                 第三时机：tools.before_call 动作点近端注入 <soul-event kind="redline"> 块（仅在检测到
-  #                 agentic loop——messages 尾为 tool_result——时触发，cacheStrategy=none）
-  #   feeling       every_turn（缺省）| session_head —— 感受块时机
-  #   driftTrigger  off（缺省）| shadow | auto —— #59 轮次驱动再锚定：auto = 首轮 + 每 intervalTurns 轮在
-  #                 动作点近端注入 <soul-event kind="reanchor"> 身份基线块（identity+self_identity 槽行级
-  #                 渲染，≤8 行、每行 ≤120 字，对冲长会话注意力稀释；轮次计数 per-identity，Map cap 1000）
-  #   reanchor      仅 driftTrigger=auto 时材料化 {intervalTurns: 20}；clamp [1,200] 缺省 20
-  #   redlineDedup  仅 enabled=true 时材料化 {enabled: true, jaccardThreshold: 0.45}——红线块近重复行去重
-  #                 （exact/jaccard/containment 三判，保长=归一后更长；阈值 clamp [0,1] 缺省 0.45）
-  # 生产现值：redline: action_proximate + driftTrigger: auto + reanchor.intervalTurns: 20 + redlineDedup.enabled: true
-  # soulTiming:
-  #   redline: "action_proximate"      # 生产已开（#37 动作点近端）
-  #   driftTrigger: "auto"             # 生产已开（#59 再锚定）
-  #   reanchor:
-  #     intervalTurns: 20
-  #   redlineDedup:
-  #     enabled: true                  # 生产已开（#55）
 
 # ── 当前感受（K/L，config-first） ──────────────────────────────────────────────
 # value 标签命中当前 user query 才注入一条短 <current_feeling> 块（价值命中，宁缺毋滥）。
