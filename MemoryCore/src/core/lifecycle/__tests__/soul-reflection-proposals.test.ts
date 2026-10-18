@@ -37,7 +37,11 @@ function mkRows() {
 function mkDeps(over: {
   llmRaw: string;
   store?: Record<string, unknown>;
-  soulProposals?: { enabled?: boolean; shadowCalibration?: { enabled?: boolean; file?: string } };
+  soulProposals?: {
+    enabled?: boolean;
+    shadowCalibration?: { enabled?: boolean; file?: string };
+    cardContract?: { enabled?: boolean };
+  };
 }) {
   const upsertPendingCore = vi.fn(async () => true);
   const warn = vi.fn();
@@ -304,5 +308,63 @@ describe("ε shadow 定标（shadow calibration，ADR0003 D7）", () => {
     expect(res.proposalsPushed).toBe(2);
     expect(spies.upsertPendingCore).toHaveBeenCalledTimes(2);
     expect(spies.warn).toHaveBeenCalledTimes(1); // 同一文件路径只 warn 一次，随后静默降级
+  });
+});
+describe("#60 产物契约门（cardContract，config-first 缺省关）", () => {
+  const narrativeRaw = JSON.stringify([
+    { question: "协作模式是什么？", conclusion: "我信奉根因优先：动手前先定位根因，再决定怎么修。", evidence: ["r1", "r2"] },
+  ]);
+  const fabricatedRaw = JSON.stringify([
+    { question: "q", conclusion: "经过这轮排查，我现在感到整体链路已经稳定。", evidence: ["r1", "r2"] },
+  ]);
+  const noAnchorRaw = JSON.stringify([
+    { question: "q", conclusion: "我宁可慢一点也不省掉全量回归。", evidence: ["r1", "r2"] },
+  ]);
+
+  it("契约 on + 伪造当下体验 → 拒推（卡照写，D6 机械门）", async () => {
+    const { deps, spies } = mkDeps({ llmRaw: fabricatedRaw, soulProposals: { enabled: true, cardContract: { enabled: true } } });
+    const res = await runReflection(deps as never);
+    expect(res.cardsWritten).toBe(1);
+    expect(res.proposalsPushed).toBe(0);
+    expect(spies.upsertPendingCore).not.toHaveBeenCalled();
+  });
+
+  it("契约 on + 合格叙事 + 锚引用 → 推进且 attrs.anchor_refs 命中 core_value label", async () => {
+    const { deps, spies } = mkDeps({
+      llmRaw: narrativeRaw,
+      soulProposals: { enabled: true, cardContract: { enabled: true } },
+      store: { coreRows: [{ slot: "core_value", content: "根因优先：先定位根因再动手。" }] },
+    });
+    const res = await runReflection(deps as never);
+    expect(res.proposalsPushed).toBe(1);
+    expect(spies.upsertPendingCore).toHaveBeenCalledTimes(1);
+    const extra = (spies.upsertPendingCore.mock.calls[0] as unknown[])[4] as { attrs?: Record<string, unknown> };
+    expect(extra.attrs).toMatchObject({ origin: "reflection", anchor_refs: ["根因优先"] });
+  });
+
+  it("契约 on + 合格叙事 + 锚集非空零引用 → no-anchor-ref 拒推", async () => {
+    const { deps, spies } = mkDeps({
+      llmRaw: noAnchorRaw,
+      soulProposals: { enabled: true, cardContract: { enabled: true } },
+      store: { coreRows: [{ slot: "core_value", content: "根因优先：先定位根因再动手。" }] },
+    });
+    const res = await runReflection(deps as never);
+    expect(res.proposalsPushed).toBe(0);
+    expect(spies.upsertPendingCore).not.toHaveBeenCalled();
+  });
+
+  it("契约 on + 锚集缺失（readCore 空）→ 降级过，anchor_refs=[]", async () => {
+    const { deps, spies } = mkDeps({ llmRaw: narrativeRaw, soulProposals: { enabled: true, cardContract: { enabled: true } } });
+    const res = await runReflection(deps as never);
+    expect(res.proposalsPushed).toBe(1);
+    const extra = (spies.upsertPendingCore.mock.calls[0] as unknown[])[4] as { attrs?: Record<string, unknown> };
+    expect(extra.attrs).toMatchObject({ anchor_refs: [] });
+  });
+
+  it("契约 off（缺省无 cardContract 键）+ 伪造当下体验 → 现状推（逐位现状）", async () => {
+    const { deps, spies } = mkDeps({ llmRaw: fabricatedRaw, soulProposals: { enabled: true } });
+    const res = await runReflection(deps as never);
+    expect(res.proposalsPushed).toBe(1);
+    expect(spies.upsertPendingCore).toHaveBeenCalledTimes(1);
   });
 });

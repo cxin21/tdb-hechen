@@ -14,6 +14,7 @@ import { dirname, resolve } from "node:path";
 import { embedForLifecycle } from "./embed-helpers.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
+import { REFLECTION_CARD_CONTRACT_PROMPT, labelsFromCoreValueRows, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
 import type { Logger } from "../types.js";
 
 // #ε-定标（ADR0003 D7）：shadow 定标旁路（行为零变化）——被判定提案的 best verbatim
@@ -47,7 +48,12 @@ export interface ReflectionConfig {
   /** 反思输入样本窗（significance 降序 cap）。 */
   maxSample?: number;
   /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=零提案=逐位现状。 */
-  soulProposals?: { enabled?: boolean; shadowCalibration?: { enabled?: boolean; file?: string } };
+  soulProposals?: {
+    enabled?: boolean;
+    shadowCalibration?: { enabled?: boolean; file?: string };
+    /** #60（S22，2026-10-18）：产物契约门（D6 禁伪造当下体验+第一人称+价值锚引用）；缺省 false=逐位现状。 */
+    cardContract?: { enabled?: boolean };
+  };
   /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
   promiseProposals?: { enabled?: boolean };
 }
@@ -224,6 +230,10 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
         "若近期样本显示助手作出了明确、可验证的承诺（例：「我会修复 X」「下次先跑测试再合并」），可在对应结论卡附 promiseCreations 数组（字段 content，≤120 字）；无明确承诺语义不提议，宽泛意向（如「我会努力」「尽量」）不提议。",
       );
     }
+    // #60（S22，2026-10-18）：产物契约提示——cardContract on 才附加（off = prompt 逐位现状）。
+    if (cfg.soulProposals?.cardContract?.enabled === true) {
+      promptLines.push(REFLECTION_CARD_CONTRACT_PROMPT);
+    }
     promptLines.push("请按三问式输出反思结论 JSON 数组（字段：question/conclusion/evidence）。无合格结论输出 []。");
     const raw = await deps.llmRunner.run({ prompt: promptLines.join("\n"), systemPrompt: REFLECTION_SYSTEM_PROMPT, taskId: "reflection-l3", timeoutMs: 0, maxTokens: 0 });
     deps.logger?.debug?.(`[reflection] tenant=${JSON.stringify([triple.teamId, triple.userId, triple.agentId])} rawLen=${String(raw ?? "").length} rawPreview=${String(raw ?? "").slice(0, 200)}`);
@@ -262,16 +272,43 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       // 渲染路径 #30 快照全量落账（调度单一源：F13 触发+consolidation 节拍，零新调度器）。
       if (ok && soulProposalsOn) {
         try {
-          const verdict = vetReflectionIdentityProposal({
-            slot: "self_identity",
-            content: pr.conclusion,
-            evidenceRecordIds: pr.evidence,
-            evidenceContents: pr.evidence.map((id) => contentById.get(id)),
-          });
+          // #60（S22，2026-10-18）：产物契约门（先于 vet；config-first 缺省 off=逐位现状）。
+          // D6 禁伪造当下体验 + 第一人称 + 价值锚引用（锚集=readCore 的 core_value 行，
+          // 读失败/缺实现降级空锚集=跳过锚校验）；通过 → anchor_refs 并入 attrs
+          // （契约 on 恒带键，空数组也带——采纳侧可区分「锚集缺失降级」与「未接线」）；
+          // 拒绝只记日志不推提案（promise 提案段不受影响；契约拒不产 shadow 行——
+          // shadow 是 vet 定标旁路，契约门先挡则 vet 未跑）。
+          const contractOn = cfg.soulProposals?.cardContract?.enabled === true;
+          let anchorRefs: string[] = [];
+          let contractOk = true;
+          if (contractOn) {
+            let labels: string[] = [];
+            try {
+              const coreRows = (await Promise.resolve(deps.store.readCore?.(triple))) ?? [];
+              labels = labelsFromCoreValueRows(Array.isArray(coreRows) ? (coreRows as Array<{ slot: string; content: string }>) : []);
+            } catch {
+              labels = [];
+            }
+            const contract = validateReflectionCardContract({ content: pr.conclusion, validAnchorLabels: labels });
+            if (!contract.ok) {
+              contractOk = false;
+              deps.logger?.info?.(`[reflection] soul proposal contract rejected (${String(contract.reason).slice(0, 80)}): ${pr.conclusion.slice(0, 60)}`);
+            } else {
+              anchorRefs = contract.anchorRefs;
+            }
+          }
+          const verdict = contractOk
+            ? vetReflectionIdentityProposal({
+                slot: "self_identity",
+                content: pr.conclusion,
+                evidenceRecordIds: pr.evidence,
+                evidenceContents: pr.evidence.map((id) => contentById.get(id)),
+              })
+            : null;
           // #ε-定标（ADR0003 D7）：shadow 旁路采集——与门完全相同的匹配逻辑记录 best
           // verbatim overlap，判定行为零变化（仅 soulProposalsOn 块内=门 off 零判定零采集；
           // shadow off 零旁路；写失败 fail-safe 每路径 warn 一次后静默）。
-          if (cfg.soulProposals?.shadowCalibration?.enabled === true) {
+          if (verdict && cfg.soulProposals?.shadowCalibration?.enabled === true) {
             appendShadowCalibrationRow(
               cfg.soulProposals.shadowCalibration.file ?? "data/logs/soul-reflection-shadow.jsonl",
               {
@@ -284,13 +321,17 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
               deps.logger,
             );
           }
-          if (!verdict.ok) {
+          if (!contractOk) {
+            // 契约拒绝已记日志（上方）；不推提案，promise 提案段不受影响。
+          } else if (verdict && !verdict.ok) {
             deps.logger?.info?.(`[reflection] soul proposal rejected (${verdict.reason.slice(0, 80)}): ${pr.conclusion.slice(0, 60)}`);
-          } else if (await proposalAlreadyKnown(deps.store, triple, verdict.proposal.content)) {
+          } else if (verdict?.ok && (await proposalAlreadyKnown(deps.store, triple, verdict.proposal.content))) {
             deps.logger?.info?.("[reflection] soul proposal deduped (already pending or in core identity)");
-          } else {
+          } else if (verdict?.ok) {
             const pushed = await Promise.resolve(
-              deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, { attrs: verdict.proposal.attrs }),
+              deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, {
+                attrs: { ...verdict.proposal.attrs, anchor_refs: anchorRefs },
+              }),
             );
             if (pushed) proposalsPushed++;
           }

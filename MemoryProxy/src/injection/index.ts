@@ -77,6 +77,7 @@ export { TdaiL1RecallInjector } from "./injectors/tdai-l1-recall-injector.js";
 export { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 export { TdaiCurrentFeelingInjector } from "./injectors/tdai-current-feeling-injector.js";
 export { TdaiSoulRedlineEventInjector } from "./injectors/tdai-soul-redline-event-injector.js";
+export { TdaiSoulReanchorInjector } from "./injectors/tdai-soul-reanchor-injector.js";
 export { TdaiToolsInjector } from "./injectors/tdai-tools-injector.js";
 export { KnowledgeToolsInjector } from "./injectors/knowledge-tools-injector.js";
 export { AssetReflectionInjector, renderAssetReflectionBlock } from "./injectors/asset-reflection-injector.js";
@@ -113,6 +114,7 @@ import { SkillToolsInjector } from "./injectors/skill-tools-injector.js";
 import { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 import { TdaiCurrentFeelingInjector } from "./injectors/tdai-current-feeling-injector.js";
 import { TdaiSoulRedlineEventInjector } from "./injectors/tdai-soul-redline-event-injector.js";
+import { TdaiSoulReanchorInjector } from "./injectors/tdai-soul-reanchor-injector.js";
 import { DEFAULT_SOUL_TIMING } from "./types.js";
 import { TdaiL1RecallInjector } from "./injectors/tdai-l1-recall-injector.js";
 import { TdaiClient } from "../tdai/client.js";
@@ -402,6 +404,13 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
       // cacheStrategy="none" 现场渲染，不进 prewarm/指纹缓存（#37 票面验收）。
       registry.register(
         new TdaiSoulRedlineEventInjector(tdaiBaseConfig, config.injection?.soulTiming ?? { ...DEFAULT_SOUL_TIMING }),
+      );
+      // #59（S21，2026-10-18）：身份漂移再锚定注入（tools.before_call，轮次节流）。
+      // 时机 config-first：config.injection.soulTiming.driftTrigger 缺省 "off"（/"shadow"）
+      // → execute 直接 []（零触网零行为变化）；显式 "auto" 才挂块（首轮 + 每
+      // reanchor.intervalTurns 轮，clamp [1,200] 缺省 20）。cacheStrategy="none" 现场渲染。
+      registry.register(
+        new TdaiSoulReanchorInjector(tdaiBaseConfig, config.injection?.soulTiming ?? { ...DEFAULT_SOUL_TIMING }),
       );
     }
     // L1 召回注入（2026-09-11 重新接线；2026-09-12 审查修补 I② 注释更正）：

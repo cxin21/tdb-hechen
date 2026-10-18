@@ -601,6 +601,9 @@ export interface MemoryLifecycleConfig {
       enabled: boolean;
       /** #ε-定标（ADR0003 D7）：shadow 旁路采集（行为零变化）；缺省 false=零旁路。 */
       shadowCalibration?: { enabled?: boolean; file?: string };
+      /** #60（S22，2026-10-18）：反思产物契约门（D6 禁伪造当下体验+第一人称+价值锚
+       *  引用，确定性机械校验；通过 → attrs.anchor_refs）；缺省 false=逐位现状。 */
+      cardContract?: { enabled?: boolean };
     };
     /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
     promiseProposals: { enabled: boolean };
@@ -1452,6 +1455,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         const shadowGroup = obj(soulProposalsGroup, "shadowCalibration");
         const shadowEnabled = bool(shadowGroup, "enabled");
         const shadowFile = str(shadowGroup, "file");
+        // #60（S22，2026-10-18）：cardContract 条件材料化——对象且 enabled===true 才带键
+        // （显式关/非对象/缺键 = 不带键 = 缺省 off 逐位现状）。
+        const cardContractGroup = obj(soulProposalsGroup, "cardContract");
+        const cardContractEnabled = bool(cardContractGroup, "enabled");
         return {
           enabled: bool(soulProposalsGroup, "enabled") ?? false,
           ...(shadowEnabled === undefined && shadowFile === undefined
@@ -1462,6 +1469,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
                   ...(shadowFile === undefined ? {} : { file: shadowFile }),
                 },
               }),
+          ...(cardContractEnabled === true ? { cardContract: { enabled: true } } : {}),
         };
       })(),
       // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状

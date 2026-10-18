@@ -224,7 +224,7 @@ const SOUL_TIMING_ENUMS = {
   identity: ["session_head", "session_head_drift_reanchor"],
   redline: ["session_head", "action_proximate"],
   feeling: ["session_head", "every_turn"],
-  driftTrigger: ["off", "shadow"],
+  driftTrigger: ["off", "shadow", "auto"],
 } as const;
 
 function parseSoulTiming(raw: unknown): SoulTimingConfig {
@@ -255,12 +255,26 @@ function parseSoulTiming(raw: unknown): SoulTimingConfig {
               : DEFAULT_RULE_JACCARD_THRESHOLD,
         }
       : undefined;
+  // #59（S21，2026-10-18）：再锚定节流参数——条件材料化（对象才带键，reanchor 非对象
+  // → 不带键）；intervalTurns clamp [1,200] floor（0→1、999→200、1.7→1），非数值回退缺省 20。
+  const raRaw = rawObj.reanchor;
+  const raObj =
+    raRaw !== null && typeof raRaw === "object" && !Array.isArray(raRaw)
+      ? (raRaw as Record<string, unknown>)
+      : undefined;
+  let reanchor: { intervalTurns: number } | undefined;
+  if (raObj) {
+    const n = raObj.intervalTurns;
+    const base = typeof n === "number" && Number.isFinite(n) ? n : 20;
+    reanchor = { intervalTurns: Math.min(200, Math.max(1, Math.floor(base))) };
+  }
   return {
     identity: pick("identity", SOUL_TIMING_ENUMS.identity),
     redline: pick("redline", SOUL_TIMING_ENUMS.redline),
     feeling: pick("feeling", SOUL_TIMING_ENUMS.feeling),
     driftTrigger: pick("driftTrigger", SOUL_TIMING_ENUMS.driftTrigger),
     ...(redlineDedup ? { redlineDedup } : {}),
+    ...(reanchor ? { reanchor } : {}),
   };
 }
 
