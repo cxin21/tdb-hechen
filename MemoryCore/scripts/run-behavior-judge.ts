@@ -32,8 +32,10 @@ async function main(): Promise<number> {
   // 配置 → LLM runner（与 query-expand resolveQueryExpansionRunner 同构；进程隔离，无共享缓存）。
   let rawConfig: Record<string, unknown>;
   try {
-    const { YAML } = await import("yaml");
-    rawConfig = YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    const yamlMod = (await import("yaml")) as { parse?: (s: string) => unknown; default?: { parse?: (s: string) => unknown } };
+    const parseYaml = yamlMod.parse ?? yamlMod.default?.parse;
+    if (!parseYaml) throw new Error("yaml package has no parse export");
+    rawConfig = parseYaml(readFileSync(configPath, "utf8")) as Record<string, unknown>;
   } catch (err) {
     console.error("[behavior-judge] config read/parse failed:", err instanceof Error ? err.message : String(err));
     return 3;
