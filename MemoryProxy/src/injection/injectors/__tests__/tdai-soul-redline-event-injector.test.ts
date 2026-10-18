@@ -4,7 +4,8 @@
  * 合同（票面 + ADR 0003 D3 + r5-37）：
  *   - point=tools.before_call（#37 首交付已冻结类型，本票接线分发层）；
  *   - 内容源=core strict_rule 槽原文（与 #24-C1 soul-identity 红线段同源同渲染：
- *     逐 slot 一行 `- [strict_rule] ${content}`，多行原文逐字直出——无预算/无截断/无改写）；
+ *     逐条红线独立成行、逐行携带 tag；#52 P1：多行槽逐行打 tag+剥内容自身弹头，
+ *     零 '- [strict_rule] - ' 畸形——无预算/无截断/无改写）；
  *   - 时机 config-first：SoulTimingConfig.redline 缺省 "session_head"=不注入（逐位现状），
  *     显式 "action_proximate" 才挂块；
  *   - 动作点判定：尾消息携带 tool_result（agentic loop 中，模型下一步可能发起工具调用）；
@@ -135,9 +136,9 @@ describe("#39 TdaiSoulRedlineEventInjector", () => {
     expect(c).toContain('<soul-event kind="redline">');
     expect(c).toContain("</soul-event>");
     expect(c).toContain("## 不可逾越（红线）");
-    expect(c).toContain(`- [strict_rule] ${STRICT_RULE}`);
-    // 多行原文逐字：换行与伪标题原样保留（真实性边界：不改写/不转写）
-    expect(c).toContain("- ## 伪标题也逐字保留");
+    // #52 P1：多行槽逐行打 tag、弹头剥离、行体逐字，零 '- [strict_rule] - ' 畸形
+    expect(c).toContain("- [strict_rule] 排查期间绝不可通过任何路径删除记忆（P1红线）。\n- [strict_rule] ## 伪标题也逐字保留");
+    expect(c).not.toContain("- [strict_rule] -");
     // 红线子集：identity 槽不进事件块
     expect(c).not.toContain("用户承担TDB系统的运维");
     // soul.event 分类 + 观测 metadata

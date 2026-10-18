@@ -110,7 +110,7 @@ describe("#30 soul snapshots", () => {
     expect(snapshots[1].payloadJson).not.toContain("（我是谁）");
   });
 
-  it("多行 strict_rule 原样直出（R5-F6 合同钉：换行/伪标题逐字保留进段与快照）", async () => {
+  it("多行 strict_rule 逐行 tag 直出（R5-F6 合同钉 #52 P1 再锚定：行体逐字保留进段与快照）", async () => {
     const raw = "禁A。\n## 伪标题\n禁B。";
     const slots = [
       { slot: "self_identity", content: "我是测试者。" },
@@ -121,9 +121,11 @@ describe("#30 soul snapshots", () => {
     const out = await buildSoulPrefix(store, { teamId: "ts9", userId: "u1", agentId: "a1" }, LOG, { ...CT });
     const idx = out.indexOf("## 不可逾越（红线）");
     expect(idx).toBeGreaterThan(-1);
-    expect(out.slice(idx)).toContain(raw);
+    // #52 P1：逐条红线独立成行、逐行带 tag；行体（'禁A。'/'## 伪标题'/'禁B。'）逐字保留
+    expect(out.slice(idx)).toContain("- [strict_rule] 禁A。\n- [strict_rule] ## 伪标题\n- [strict_rule] 禁B。");
+    expect(out.slice(idx)).not.toContain("- [strict_rule] -");
     expect(snapshots).toHaveLength(1);
-    expect(snapshots[0].payloadJson).toContain(raw);
+    expect(snapshots[0].payloadJson).toContain("- [strict_rule] 禁A。\n- [strict_rule] ## 伪标题\n- [strict_rule] 禁B。");
   });
 
   it("store 缺快照方法→静默跳过，注入不受影响", async () => {

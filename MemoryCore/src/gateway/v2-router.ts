@@ -119,6 +119,8 @@ import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-
 import { handleAtomicByIds } from "./atomic-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
+// #52 P4（2026-10-18）：采纳侧 pending 清扫——同族提案自动 rejected（best-effort 非致命）。
+import { sweepPendingDuplicatesAfterAdopt, type PendingAdoptSweepRow } from "../core/lifecycle/pending-adopt-sweep.js";
 // P0-1A（issue #1）：description 质量门单一源（core/hooks，gateway→core 引用方向合法）
 import { anchorDescriptionAttr, existingDescription } from "../core/hooks/anchor-desc.js";
 import { growthValueId } from "../core/lifecycle/anchor-growth.js";
@@ -1922,6 +1924,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       sessionKey,
       cfg,
       pluginDataDir: dataDir,
+      logger: deps.logger,
       vectorStore: store,
       embeddingService: deps.getEmbedding(),
       storage: deps.getStorage(),
@@ -2214,6 +2217,9 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
   if (!decided) return errorEnvelope(404, "pending item not found or already decided", requestId);
   // O13 采纳语义：strict_rule → validateCoreWrite + escapeXmlTags + upsertCore('strict_rule',…,'panel-adopt')
   //               core_value（V12-CV 转换层）→ coerceCoreValueAnchor 确定性门 → upsertValue(growthValueId(label,'theme'), label, 0.5, 'panel-adopt', tenant, undefined, 'manual','theme',{description})
+  // #52 P4：采纳侧清扫结果（strict_rule 直采/直采 core_value 落穿公共 return 时随
+  // envelope 透出；overwrite/merge 分支各自内联透出）。空数组=零清扫（幂等无害）。
+  let adoptSwept: PendingAdoptSweepRow[] = [];
   if (b.decision === "adopted") {
     if (decided.slot === "strict_rule") {
       const cfg = deps.config?.memory?.coreMemory;
@@ -2228,6 +2234,8 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
       const merged = mergeStrictRuleContent(existingStrict, escapeXmlTags(decided.content));
       const ok = await Promise.resolve(store.upsertCore("strict_rule", merged, "panel-adopt", tenant));
       if (!ok) return errorEnvelope(503, "strict_rule adopt failed", requestId);
+      // #52 P4：同族 strict_rule 提案自动 rejected（行级 Jaccard 对合并后槽全文，best-effort）。
+      adoptSwept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "strict_rule", mergedContent: merged, adoptedPendingId: b.pending_id, logger: deps.logger });
     } else if (decided.slot === "core_value") {
       if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);
       // V12-CV（拍板执行⑤）：转换层——旧路径以整段 content 当锚 label（锚行灾难性污染，29 条
@@ -2243,7 +2251,9 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
           // 显式覆盖 = 旧直采行为：新 id + weight 0.5 + pending desc。
           const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
           if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
-          return successEnvelope<{ pending_id: string; decision: string; slot: string; overwritten: boolean }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, overwritten: true }, requestId);
+          // #52 P4：同 label 同族提案自动 rejected（label 归一相等判重，best-effort）。
+          const swept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "core_value", adoptedLabel: anchor.label, adoptedPendingId: b.pending_id, logger: deps.logger });
+          return successEnvelope<{ pending_id: string; decision: string; slot: string; overwritten: boolean; swept: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, overwritten: true, swept }, requestId);
         }
         // 安全合并：既有行原样保留（id/weight/valence/pinned/node_type），pending desc 只补空
         // （预检已保证 existing 无 desc 且 pending 有 desc 才走到这里）。
@@ -2258,10 +2268,14 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
         const mergedAttrs = { ...priorAttrs, description: escapeXmlTags(anchor.description) };
         const ok = await Promise.resolve(store.upsertValue(conflictPrior.value_id, conflictPrior.label, conflictPrior.weight, conflictPrior.created_by ?? "panel-adopt", tenant, conflictPrior.valence ?? undefined, "manual", (conflictPrior.node_type as "theme" | "person" | "character" | undefined) ?? "theme", mergedAttrs));
         if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
-        return successEnvelope<{ pending_id: string; decision: string; slot: string; merged: boolean }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, merged: true }, requestId);
+        // #52 P4：同 label 同族提案自动 rejected（合并后锚身份不变，label 域判重）。
+        const swept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "core_value", adoptedLabel: anchor.label, adoptedPendingId: b.pending_id, logger: deps.logger });
+        return successEnvelope<{ pending_id: string; decision: string; slot: string; merged: boolean; swept: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, merged: true, swept }, requestId);
       }
       const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
       if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
+      // #52 P4：同 label 同族提案自动 rejected（label 归一相等判重，best-effort）。
+      adoptSwept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "core_value", adoptedLabel: anchor.label, adoptedPendingId: b.pending_id, logger: deps.logger });
     } else if (decided.slot === "promise_transition") {
       // #44（D8-(c) 提案通道采纳侧）：唯一写入口=applyAdoptedPromiseTransition（#41 单一源：
       // source="proposal"、note="[proposal] ${reason}"、恒可审计）。预检未产出载荷（store 缺
@@ -2298,7 +2312,7 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
       return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseCreate: { ok: boolean; promiseId: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseCreate: { ok: true, promiseId: created.promiseId } }, requestId);
     }
   }
-  return successEnvelope<{ pending_id: string; decision: string; slot: string }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot }, requestId);
+  return successEnvelope<{ pending_id: string; decision: string; slot: string; swept?: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, swept: adoptSwept }, requestId);
 }
 
 async function handleCoreMemoryRead(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {

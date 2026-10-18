@@ -38,6 +38,24 @@ describe("#24-C1 红线独立段（dual 路径）", () => {
     expect(idBlock.indexOf(`- [strict_rule] ${STRICT}`)).toBeGreaterThan(idBlock.indexOf("## 不可逾越（红线）"));
   });
 
+  it("#52 P1：多行 strict_rule（每行自带 '- ' 弹头）→ 逐行打 tag 且弹头剥离，无 '- [strict_rule] - ' 畸形", async () => {
+    const multi = [
+      "- 排查期间绝不可通过任何路径删除记忆（P1红线），也绝不可注入测试对话，以免测试数据永久污染l1_records。",
+      "- 无论排查还是运维操作，对记忆库零删除、零注入。",
+      "无弹头行也逐字保留。",
+    ].join("\n");
+    const store = makeStore([], [
+      { slot: "self_identity", content: "我是谁内容" },
+      { slot: "strict_rule", content: multi },
+    ]);
+    const out = await buildSoulPrefix(store, TENANT, undefined, { selfIdentityEnabled: true });
+    expect(out).toContain("## 不可逾越（红线）");
+    expect(out).toContain("- [strict_rule] 排查期间绝不可通过任何路径删除记忆（P1红线），也绝不可注入测试对话，以免测试数据永久污染l1_records。");
+    expect(out).toContain("- [strict_rule] 无论排查还是运维操作，对记忆库零删除、零注入。");
+    expect(out).toContain("- [strict_rule] 无弹头行也逐字保留。");
+    expect(out).not.toContain("- [strict_rule] -"); // 畸形弹头绝迹（内容逐字，弹头属格式）
+  });
+
   it("无 strict_rule → 红线段整体省略（宁缺毋滥）", async () => {
     const store = makeStore([], [{ slot: "self_identity", content: "我是谁内容" }]);
     const out = await buildSoulPrefix(store, TENANT, undefined, { selfIdentityEnabled: true });

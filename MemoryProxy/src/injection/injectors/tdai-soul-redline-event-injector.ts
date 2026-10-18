@@ -12,8 +12,10 @@
  *   - 动作点判定：尾消息携带 tool_result（agentic loop 中模型下一步决策可能发起
  *     工具调用）；普通 user 尾（非 loop）不注入；
  *   - 内容源 = core strict_rule 槽原文（与 #24-C1 soul-identity 红线段同源同渲染：
- *     段名「## 不可逾越（红线）」+ 逐 slot 一行 `- [strict_rule] ${content}`，
- *     多行原文逐字直出 —— 真实性边界：无预算/无截断/无改写，红线不软化）；
+ *     段名「## 不可逾越（红线）」+ 逐条红线独立成行、逐行携带 tag
+ *     （#52 P1：多行槽逐行打 tag + 剥内容自身弹头，零 '- [strict_rule] - ' 畸形；
+ *     渲染单一源 = ./soul-redline-render.ts 镜像）。行体逐字直出 ——
+ *     真实性边界：无预算/无截断/无改写，红线不软化）；
  *   - cacheStrategy = "none"：动作点现场渲染，绝不进指纹缓存（#37 票面验收）；
  *     复用 loadCoreMemorySlots 的 60s 租户分桶缓存，不额外打 core；
  *   - 同管线同内容 event 块去重：块携带 cacheKey 内容指纹，由 pipeline 落位层
@@ -30,9 +32,12 @@ import { TdaiClient } from "../../tdai/client.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
 import type { TdaiMemoryConfig } from "../../tdai/types.js";
 import { loadCoreMemorySlots } from "./tdai-profile-memory-injector.js";
+// #52 P1（2026-10-18）：红线渲染单一源（本包镜像副本，与 MemoryCore 逐位等价+契约测试）——
+// 多行 strict_rule 槽逐行打 tag+剥行首自身弹头（旧 map 只给首行打 tag 且不剥弹头=生产畸形）。
+import { REDLINE_SECTION_TITLE, renderStrictRuleTaggedLines } from "./soul-redline-render.js";
 
-/** 与 #24-C1 soul-identity 红线段同源的段名（MemoryCore soul-assembler.ts:439）。 */
-const REDLINE_SECTION_TITLE = "## 不可逾越（红线）";
+// REDLINE_SECTION_TITLE 由 ./soul-redline-render.js 单一源提供（与 #24-C1 soul-identity
+// 红线段同源；本文件原私有常量于 #52 P1 收敛，防双源漂移）。
 const REDLINE_EVENT_KIND = "redline";
 
 export class TdaiSoulRedlineEventInjector {
@@ -70,9 +75,7 @@ export class TdaiSoulRedlineEventInjector {
     const client = new TdaiClient({ ...this.baseConfig, serviceId: spaceId || this.baseConfig.serviceId });
     const slots = await loadCoreMemorySlots(client, identity);
 
-    const redlineLines = slots
-      .filter((s) => s.slot === "strict_rule" && typeof s.content === "string" && s.content.trim() !== "")
-      .map((s) => `- [strict_rule] ${s.content}`);
+    const redlineLines = renderStrictRuleTaggedLines(slots);
     if (redlineLines.length === 0) return []; // 宁缺毋滥：无红线整块省略
 
     // 与 #24-C1 同源渲染：段名 + 逐 slot 一行，多行原文逐字直出（无截断/无转写）。

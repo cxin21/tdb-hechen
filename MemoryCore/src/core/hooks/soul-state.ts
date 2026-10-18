@@ -20,7 +20,7 @@ export interface SoulState {
   valence: number;
   /** 唤醒连续值 [0,1]（高=切换/紧张，低=平缓）。 */
   arousal: number;
-  /** 活跃价值 top1（缺省时由渲染层取 directional 权重最高锚）。 */
+  /** 活跃价值 top1（#52 P2：仅状态机显式写入才渲染；缺省不回退、不硬造）。 */
   topValue?: string;
   /** 会话内轮次（观测附注，不参与指纹/渲染文案）。 */
   turnSeq?: number;
@@ -40,12 +40,15 @@ export function clampState(s: SoulState): SoulState {
  * VAD→自然语言映射为参考实现）。阈值与 mood-line.ts 三档同源（±0.25 / 0.6 / 0.2）。
  * 渲染层零数字=不伪造精度；无主语断言防线（§1.5）保持：只描述状态信号本身，
  * 不发明「我感到…」式越界情绪归因（归因属 T5 之后近因事件数据面，本批不做）。
+ * #52 P2（2026-10-18）：词表去黑话——「劲头是趋近的」「心里偏审慎」是锚方向 taxonomy
+ * 术语（趋近/审慎=valenceDir 词表）渗入散文，生产实拍读感突兀；改自然语言
+ *（「劲头正足」「心里偏紧」），档位阈值不动。
  */
 function valencePhrase(v: number): string {
-  if (v >= 0.6) return "心里明亮，劲头是趋近的";
+  if (v >= 0.6) return "心里明亮，劲头正足";
   if (v >= 0.25) return "心里偏顺遂";
   if (v > -0.25) return "心里平稳";
-  if (v > -0.6) return "有点受阻，心里偏审慎";
+  if (v > -0.6) return "有点受阻，心里偏紧";
   return "明显受阻，心里沉重";
 }
 function arousalPhrase(a: number): string {
@@ -57,15 +60,17 @@ function arousalPhrase(a: number): string {
 /**
  * 渲染「当下的状态」叙事行（soul-feeling 尾块专用；依赖 #37 soul.tail 接口）。
  * - null/undefined → ""（逐位现状，config-first）；
- * - topValue 缺省由调用方传 directional top（soul-assembler 已算出，不重算）；
- *   两处皆无 → 省略「眼下最想推进的是X」子句，不硬造；
- * - 文案为第一人称散文：`此刻<valence 短语>，<arousal 短语>。眼下最想推进的是X。`
- *   （数值与键值头全部退出 prompt；state 仍不参与 soulVersion，只进 cacheKey）。
+ * - #52 P2（2026-10-18）：fallbackTopValue 参数删除——topValue 仅状态机显式写入才
+ *   渲染，缺省省略「眼下最想推进的是X」子句（不硬造）。生产实证 dirTop 回退把
+ *   权重最高程序性锚名（「用户拍板」）塞进「眼下最想推进的是…」= 语义荒谬。
+ * - 文案为第一人称散文：`此刻<valence 短语>，<arousal 短语>。`（topValue 在位时追加
+ *   `眼下最想推进的是X。`；数值与键值头全部退出 prompt；state 仍不参与 soulVersion，
+ *   只进 cacheKey）。
  */
-export function renderStateLine(state: SoulState | null | undefined, fallbackTopValue?: string): string {
+export function renderStateLine(state: SoulState | null | undefined): string {
   if (!state) return "";
   const s = clampState(state);
   const head = `此刻${valencePhrase(s.valence)}，${arousalPhrase(s.arousal)}。`;
-  const top = s.topValue?.trim() || fallbackTopValue?.trim() || "";
+  const top = s.topValue?.trim() || "";
   return top ? `${head}眼下最想推进的是${top}。` : head;
 }

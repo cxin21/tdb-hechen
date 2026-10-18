@@ -16,6 +16,9 @@ import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import { isUsableQueryVec, scoreAnchorRows, selectAnchorRows, type AnchorEmbedder } from "./soul-anchor-scorer.js";
 // T4（方案 Task 4，2026-10-17）：#42 shadow 定标落盘——行为零变化旁路采集（fail-safe 降级）。
 import { appendAnchorShadowRow } from "./soul-anchor-shadow-sink.js";
+// #52 P1（2026-10-18）：红线段渲染单一源——多行 strict_rule 槽逐行打 tag+剥行首自身弹头
+//（旧渲染只首行带 tag 且不剥弹头 = 生产畸形实锚）；MemoryProxy 侧逐位镜像 + 契约测试钉等价。
+import { renderStrictRuleSectionLines } from "./soul-redline-render.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
@@ -506,21 +509,21 @@ export async function buildSoulPrefix(
         // 锚稳定性=身份漂移入口），渲染逐位现状；转正（#42 enabled=true）后选择已生效、不触发报告。
         // #42：shadow 报告随向量可用性升级为逐锚分形态 `锚N(0.xxx)`（查询向量在位才升级；
         // 无向量=回退 #29 原形态清单快照——宁缺毋滥不造分）。
-        if (opts?.anchorSelect?.maxRows != null && budgeted.length > opts.anchorSelect.maxRows) {
+        const shadowMaxRows: number | undefined = opts?.anchorSelect?.maxRows;
+        const emitPlainReport = () => {
+          // M-4：enabled=true 向量缺席的回退报告措辞 ≠ 缺省同形（可观测性：运维可区分两种状态）。
+          const tail =
+            scorerCfg?.enabled === true ? "（仅报告不裁剪，转正已开但向量缺席回退）" : "（仅报告不裁剪，转正待 D9/ADR）";
+          logger?.warn?.(
+            `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${shadowMaxRows}${tail}: ` +
+              budgeted.map((r) => r.slice(0, Math.max(r.indexOf("("), 1))).join(","),
+          );
+        };
+        if (shadowMaxRows != null && budgeted.length > shadowMaxRows) {
           // #42：shadow 报告（enabled=false/未配置）随向量可用性升级逐锚分形态；转正后选择已生效
           // 不触发报告。M-1 锁：预算截断（budgeted<decoratedPairs）→ 升级失效回退原形态。
           // F1/I-4：报告向量走同一懒解析（可用门），缺席=原形态不造分。
           const shadowScorer = scorerCfg?.enabled === true ? undefined : scorerCfg;
-          const shadowMaxRows: number = opts.anchorSelect.maxRows; // 窄化后捕获（闭包内引用，TS18048 规避）
-          const emitPlainReport = () => {
-            // M-4：enabled=true 向量缺席的回退报告措辞 ≠ 缺省同形（可观测性：运维可区分两种状态）。
-            const tail =
-              scorerCfg?.enabled === true ? "（仅报告不裁剪，转正已开但向量缺席回退）" : "（仅报告不裁剪，转正待 D9/ADR）";
-            logger?.warn?.(
-              `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${shadowMaxRows}${tail}: ` +
-                budgeted.map((r) => r.slice(0, Math.max(r.indexOf("("), 1))).join(","),
-            );
-          };
           if (shadowScorer && typeof shadowScorer.embedder === "function" && budgeted.length === decoratedPairs.length) {
             const shadowQv = await resolveQueryVec();
             if (shadowQv) {
@@ -529,36 +532,6 @@ export async function buildSoulPrefix(
                 // M-1 复核：scoreOf 按 row 字符串键——重复 row ⇔ 同 label/dir/weight/desc ⇒ 同向量
                 // ⇒ 同 score，覆写无害；报告分不错配。
                 const scoreOf = new Map(scored.map((s) => [s.row, s.score]));
-                // T4（方案 Task 4，2026-10-17）：#42 shadow 定标落盘——sink 开启时追加一行
-                // 定标 jsonl（行为零变化旁路：渲染字节不受影响）。仅在真实打分发生时采集；
-                // 无向量/打分失败/rows≤maxRows 分支零采集=不造数（真实性红线）。
-                // wouldSelect=假设转正（threshold 硬门+top-K）会保留的 valueId 集；
-                // actuallySelected=本轮实际渲染集合（shadow 不重排=value_id 声明序，#52 D3 选项C）；
-                // agree=两者去重集合相等（重复行场景=重复 valueId 归集后相等）。
-                if (opts?.anchorSelect?.shadowSink?.enabled === true) {
-                  const rowToValueId = new Map(decoratedPairs.map((p) => [p.row, p.valueId]));
-                  // 与真实转正路径同参（scoreAnchorRows 携 maxRows=仅裁剪时按 score desc 重排），
-                  // 再过 threshold 硬门+top-K——wouldSelect 精确镜像「假设转正」的选择语义。
-                  const wouldSelect = selectAnchorRows(
-                    await scoreAnchorRows(decoratedPairs, shadowQv, shadowScorer.embedder, { maxRows: shadowMaxRows }),
-                    { maxRows: shadowMaxRows, threshold: scorerCfg?.threshold ?? 0 },
-                  ).map((s) => rowToValueId.get(s.row) ?? "");
-                  const actuallySelected = budgeted.map((r) => rowToValueId.get(r) ?? r);
-                  const keyOf = (xs: string[]) => [...new Set(xs)].sort().join("\u0000");
-                  appendAnchorShadowRow(
-                    opts.anchorSelect.shadowSink.file ?? "data/logs/soul-anchor-shadow.jsonl",
-                    {
-                      ts: new Date().toISOString(),
-                      agentId: tenant.agentId,
-                      threshold: scorerCfg?.threshold ?? 0,
-                      rowsScored: scored.map((s) => ({ valueId: rowToValueId.get(s.row) ?? "", score: Math.round(s.score * 10000) / 10000 })),
-                      wouldSelect,
-                      actuallySelected,
-                      agree: keyOf(wouldSelect) === keyOf(actuallySelected),
-                    },
-                    logger,
-                  );
-                }
                 logger?.warn?.(
                   `[soul-anchor-select] shadow: rows=${budgeted.length} > maxRows=${shadowMaxRows}（仅报告不裁剪）: ` +
                     budgeted
@@ -581,6 +554,52 @@ export async function buildSoulPrefix(
             }
           } else {
             emitPlainReport();
+          }
+        }
+        // #52 P3（2026-10-18）：shadowSink 采集与报告门解耦——旧实现 sink 落在 rows>maxRows
+        // 报告门内，生产实证 rows=11 ≤ maxRows=12 → 永不触发=D9 定标数据黑洞（且转正态
+        // enabled=true 时 shadowScorer=undefined 同样零采集）。新语义：sink enabled 且打分
+        // 前提成立（embedder 在位+预算截断未破坏行匹配+查询向量可用）即落一行定标 jsonl，
+        // rows≤maxRows 的分布同样是定标材料。渲染字节零影响（旁路）；真实性红线不变：
+        // 无向量/打分失败零采集=不造数。wouldSelect=假设转正（threshold 硬门+top-K）会
+        // 保留的 valueId 集（maxRows 未配置=不裁剪 → 全集）；actuallySelected=本轮实际渲染
+        // 集合（shadow 不重排=value_id 声明序，#52 D3 选项C）；agree=两者去重集合相等
+        //（转正态=活跃选择与重算镜像的一致性金丝雀）。二次 scoreAnchorRows 命中
+        // anchorVectorCache（键=desc 原文）=零重复 embed。
+        if (opts?.anchorSelect?.shadowSink?.enabled === true && scorerCfg && typeof scorerCfg.embedder === "function" && budgeted.length === decoratedPairs.length) {
+          try {
+            const sinkQv = await resolveQueryVec();
+            if (sinkQv) {
+              const rowToValueId = new Map(decoratedPairs.map((p) => [p.row, p.valueId]));
+              const sinkScored = await scoreAnchorRows(decoratedPairs, sinkQv, scorerCfg.embedder);
+              const wouldSelect =
+                shadowMaxRows != null
+                  ? selectAnchorRows(
+                      await scoreAnchorRows(decoratedPairs, sinkQv, scorerCfg.embedder, { maxRows: shadowMaxRows }),
+                      { maxRows: shadowMaxRows, threshold: scorerCfg?.threshold ?? 0 },
+                    ).map((s) => rowToValueId.get(s.row) ?? "")
+                  : budgeted.map((r) => rowToValueId.get(r) ?? r);
+              const actuallySelected = budgeted.map((r) => rowToValueId.get(r) ?? r);
+              const keyOf = (xs: string[]) => [...new Set(xs)].sort().join("\u0000");
+              appendAnchorShadowRow(
+                opts.anchorSelect.shadowSink.file ?? "data/logs/soul-anchor-shadow.jsonl",
+                {
+                  ts: new Date().toISOString(),
+                  agentId: tenant.agentId,
+                  threshold: scorerCfg?.threshold ?? 0,
+                  rowsScored: sinkScored.map((s) => ({ valueId: rowToValueId.get(s.row) ?? "", score: Math.round(s.score * 10000) / 10000 })),
+                  wouldSelect,
+                  actuallySelected,
+                  agree: keyOf(wouldSelect) === keyOf(actuallySelected),
+                },
+                logger,
+              );
+            }
+          } catch (err) {
+            // #52 P3：采集失败非致命——渲染零影响（fail-safe 降级，与 sink 模块同级语义）。
+            logger?.warn?.(
+              `[soul-anchor-scorer] shadow sink failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
         if (budgeted.length > 0) {
@@ -665,13 +684,13 @@ export async function buildSoulPrefix(
       // #24-C1（2026-10-16 用户授权拍板，r5-24 定案）：红线独立段「## 不可逾越（红线）」置
       // soul-identity 段尾（禁令动词框架+保留团队话语关键词，段名进 #33 词表）；原文直出禁改写
       //（无预算/无截断/无转写——不变量语义）；无 strict_rule 整段省略（宁缺毋滥）。
-      // 批次声明：本批（#24-C1+F8）为第二次渲染布局跳变；slots 数据未变 → soulVersion 语义不变，
-      // 布局随进程重启缓存自然刷新（soulPrefixCache 为进程内存态）。
-      const redlineLines = dual
-        ? ordered
-            .filter((s) => s.slot === "strict_rule" && typeof s.content === "string" && s.content.trim() !== "")
-            .map((s) => `- [strict_rule] ${s.content}`)
-        : [];
+      // #52 P1（2026-10-18）：渲染改单一源 renderStrictRuleSectionLines——多行 strict_rule 槽
+      // 逐条独立成行、逐行带 [strict_rule] tag、剥行首自身弹头（旧 `- [strict_rule] ${content}`
+      // 只给首行打 tag 且不剥内容自带 `- ` 弹头 = 生产畸形 `- [strict_rule] - …` + 续行全裸）。
+      // 批次声明：#24-C1+F8 为第二次渲染布局跳变；#52 P1 为第三次（红线行形态：逐行 tag+
+      // 剥弹头）。slots 数据未变 → soulVersion 语义不变，布局随进程重启缓存自然刷新
+      //（soulPrefixCache 为进程内存态）。
+      const redlineLines = dual ? renderStrictRuleSectionLines(ordered) : [];
       // #32（R5）：能力自述段「## 我能做什么」——只读派生（数据=调用方传入的运行时实况，
       // 本层零落库零派生逻辑）；逐行 1:1 渲染（一致性合同：渲染行=传入清单，顺序保持），
       // 行数策展（3-5 行）由调用方负责；缺省 undefined=不渲染=逐位现状。
@@ -699,20 +718,14 @@ export async function buildSoulPrefix(
     // moodTier 缺省=门控逐位现状。
     // #34：state 也独可撑块（零锚+无 mood 时 state-only 块仍渲染——当下性是独立信号源）
     if (directional.length > 0 || opts?.moodTier || opts?.state) {
-      // R5 #22（2026-10-16）：感受段清单与价值锚行同门——desc 空/episode 叙述锚不入清单
-      //（消 shadow-first 式悬空裸关键词，anchorDescOf 单一源见上）；滤后仍 value_id 稳定序（立项②）。
-      const gated = directional
-        .map((v) => {
-          const desc = anchorDescOf(v);
-          return !desc || looksLikeEpisode(desc) ? null : { v, desc };
-        })
-        .filter((x): x is { v: (typeof directional)[number]; desc: string } => x !== null);
       // 呈现层翻修（2026-10-17 用户 m00227 终审）：驱动/审慎清单行（posLine/negLine）与
       // 首要内联子句（topDetail/feelLine 机制）整体删除——纯去重：identity 价值锚行逐锚
-      // 方向标注（趋近/审慎，:462 applyAnchorBudget 消费点保留）已完整承载方向语义。
-      // 感受段现仅承载近期基调（moodTier）与当下状态（state）两行；state 叙事形态见
-      // soul-state.ts（数值留代码层，prompt 只写自然语言自述）。布局字节跳变一次声明，
-      // soulVersion 不变（指纹只由 slots+values+moodTier tier 算出）。
+      // 方向标注（趋近/审慎，applyAnchorBudget 消费点保留）已完整承载方向语义。
+      // #52 P2（2026-10-18）：dirTop 回退删除（topValue 缺省 → 权重最高方向锚的旧回退）——
+      // 生产实证回退产出「眼下最想推进的是用户拍板」（程序性锚名作宾语=语义荒谬）；
+      // 新语义：topValue 仅状态机显式写入才渲染，缺省只写状态行（宁缺毋滥）。感受段现仅
+      // 承载近期基调（moodTier）与当下状态（state）两行；state 叙事形态见 soul-state.ts
+      //（数值留代码层，prompt 只写自然语言自述）。
       const feel: string[] = [];
       // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位+样本数，不出连续值防伪精度；
       // opts.moodTier 缺省=不 push=逐位现状）。文案不含「我感到」字样（§1.5 主语越界防线）。
@@ -721,11 +734,9 @@ export async function buildSoulPrefix(
         feel.push(`近期基调：${tierLabel}（近 ${opts.moodTier.sampleCount} 条经历的情感聚合）`);
       }
       // #34（S13/R5）：当下状态行——soul-feeling 尾块（依赖 #37 soul.tail 接口语义；
-      // 会话级不落库，状态机数据源归 #28）。topValue 缺省 → directional（gated）权重最高锚
-      //（复用已算结构，不发明第二套评估）；无 state=逐位现状（不 push）。
+      // 会话级不落库，状态机数据源归 #28）。无 state=逐位现状（不 push）。
       if (opts?.state) {
-        const dirTop = [...gated].sort((a, b) => (b.v.weight ?? 0) - (a.v.weight ?? 0) || String(a.v.value_id ?? a.v.label).localeCompare(String(b.v.value_id ?? b.v.label)))[0];
-        const stateLine = renderStateLine(opts.state, dirTop ? escapeXmlTags(dirTop.v.label ?? "") : undefined);
+        const stateLine = renderStateLine(opts.state);
         if (stateLine) feel.push(stateLine);
       }
       if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的状态\n${feel.join("\n")}\n</soul-feeling>`);

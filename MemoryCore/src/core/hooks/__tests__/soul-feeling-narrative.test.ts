@@ -5,7 +5,8 @@
  * 1. renderStateLine 产出第一人称散文；连续数值与档位括号附注（防伪精度旧形态）
  *    全部退出 prompt——断言无阿拉伯数字、无「当下状态：」键值头。
  * 2. valence 五档/arousal 三档在代码层映射散文短语（本测试钉住词表片段）。
- * 3. 活跃价值折叠进「眼下最想推进的是X」；无 topValue 时省略子句，不硬造。
+ * 3. 活跃价值折叠进「眼下最想推进的是X」；无 topValue 时省略子句，不硬造
+ *    （#52 P2：dirTop 回退删除——topValue 仅状态机显式写入才渲染）。
  * 4. soul-assembler：驱动/审慎清单行（posLine/negLine）从 soul-feeling 删除——
  *    纯去重（identity 逐锚方向标注已含方向语义），不是信息删除（方案约束4）。
  * 5. null/undefined state → ""（逐位现状不变）；moodTier 文案保留样本数聚合语义。
@@ -79,9 +80,8 @@ describe("renderStateLine 叙事化（m00227 终审形态）", () => {
     expect(renderStateLine(st(-2, 3))).not.toBe("");
   });
 
-  it("活跃价值折叠为「眼下最想推进的是X」", () => {
+  it("活跃价值折叠为「眼下最想推进的是X」（仅显式 topValue；#52 P2 回退参数已删）", () => {
     expect(renderStateLine(st(0.3, 0.4, "定案"))).toContain("眼下最想推进的是定案");
-    expect(renderStateLine(st(0.3, 0.4), "用户拍板")).toContain("眼下最想推进的是用户拍板");
   });
 
   it("无 topValue（入参与回退皆缺）→ 省略子句不硬造", () => {
@@ -106,7 +106,7 @@ describe("soul-assembler 感受段终审形态（m00227/m00265）", () => {
     expect(out).not.toContain("提醒我审慎的价值：");
   });
 
-  it("有 state 时感受段含叙事状态行（首要锚折叠进「眼下最想推进的是X」子句）", async () => {
+  it("有 state 时感受段含叙事状态行（#52 P2：topValue 缺省不回退——首要锚在位也不硬造子句）", async () => {
     const out = await buildSoulPrefix(
       makeStore([
         row({ value_id: "v-top", label: "定案", weight: 0.9, valence: 1, attrs_json: '{"description":"推进关键决策落地。"}' }),
@@ -117,8 +117,21 @@ describe("soul-assembler 感受段终审形态（m00227/m00265）", () => {
     );
     const feel = feelBlock(out);
     expect(feel).toContain("<soul-feeling>");
-    expect(feel).toContain("眼下最想推进的是定案");
+    expect(feel).toContain("此刻");
+    expect(feel).not.toContain("眼下最想推进的是");
     expect(feel).not.toContain("当下状态：");
+  });
+
+  it("state.topValue 显式在位 → 「眼下最想推进的是X」子句照常渲染", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "v-top", label: "定案", weight: 0.9, valence: 1, attrs_json: '{"description":"推进关键决策落地。"}' }),
+      ], SLOTS),
+      mkTenant("a2b"),
+      undefined,
+      { state: { valence: 0.6, arousal: 0.5, topValue: "定案" } },
+    );
+    expect(feelBlock(out)).toContain("眼下最想推进的是定案");
   });
 
   it("moodTier 单独存在（无任何价值锚）→ 感受段只有基调行，无清单行", async () => {

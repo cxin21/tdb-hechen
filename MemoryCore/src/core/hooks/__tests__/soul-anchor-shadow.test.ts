@@ -4,13 +4,15 @@
  * 合同（方案 Task 4 Interfaces + ADR0003 D7 ε-定标先例）：
  * - config `coreMemory.soulRender.anchorSelect.shadowSink {enabled, file}`——缺省关
  *   （enabled:false=零写盘零采集零渲染影响，逐位现状）；file 缺省 data/logs/soul-anchor-shadow.jsonl。
- * - 开启后：shadow 打分真实发生时（rows>maxRows + embedder + 可用查询向量，I-4 可用门）
+ * - #52 P3 语义重声明（采集与裁剪报告门解耦）：sink 开启后，只要 embedder + 可用
+ *   查询向量在位（I-4 可用门）即采集——rows>maxRows（未转正态）采集 wouldSelect=topK
+ *   假设选择集；rows≤maxRows（已转正态）采集 actuallySelected 本身作一致性金丝雀。
  *   追加一行 jsonl：{ts, agentId, threshold, rowsScored:[{valueId,score}],
  *   wouldSelect:[valueId], actuallySelected:[valueId], agree:boolean}。
- * - 语义：wouldSelect=假设转正（threshold 硬门+top-K）会保留的集合；
- *   actuallySelected=本轮实际渲染集合（#52 D3 选项C：shadow 不重排，value_id 序）；
- *   agree=两者集合相等（按 valueId 去重比较——重复行场景 must 显式覆盖）。
- * - 真实性红线：无向量/打分失败/rows≤maxRows 分支零采集（不造数）；渲染字节零变化；
+ * - 语义：wouldSelect=假设转正（threshold 硬门+top-K）会保留的集合（转正态=
+ *   实际渲染集合）；actuallySelected=本轮实际渲染集合（#52 D3 选项C：shadow 不重排，
+ *   value_id 序）；agree=两者集合相等（按 valueId 去重比较——重复行场景 must 显式覆盖）。
+ * - 真实性红线：无向量/打分失败零采集（不造数）；渲染字节零变化；
  *   写失败 fail-safe 降级（warn 一次后静默，与 reflection shadow sink 同哲学）。
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -128,13 +130,18 @@ describe("T4 #42 shadow 定标落盘", () => {
     expect(row.agree).toBe(true);
   });
 
-  it("④rows ≤ maxRows → 零采集（shadow 触发门不满足，连打分都不发生）", async () => {
+  it("④#52 P3：rows ≤ maxRows（已转正态）→ 采集照发，wouldSelect=actuallySelected、agree=true（一致性金丝雀）", async () => {
     const rows = Array.from({ length: 3 }, (_, i) => themed(i));
     const file = tempFile();
     await buildSoulPrefix(makeStore(rows), { ...TENANT, userId: "u-on3" }, undefined, {
       anchorSelect: { maxRows: 3, scorer: { enabled: false, threshold: 0, embedder: embed, queryEmbedding: unit(0) }, shadowSink: { enabled: true, file } } as never,
     });
-    expect(existsSync(file)).toBe(false);
+    expect(existsSync(file)).toBe(true);
+    const row = JSON.parse(readFileSync(file, "utf8").trim()) as { rowsScored: unknown[]; wouldSelect: string[]; actuallySelected: string[]; agree: boolean };
+    expect(row.rowsScored).toHaveLength(3);
+    expect(row.wouldSelect).toHaveLength(3);
+    expect(row.actuallySelected).toHaveLength(3);
+    expect(row.agree).toBe(true);
   });
 
   it("⑤向量缺席（无 queryEmbedding/provider）→ 零采集不造数（I-4 可用门），渲染现状", async () => {

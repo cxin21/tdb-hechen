@@ -14,8 +14,8 @@
  * 5. state=undefined → 逐位现状（config-first：无 state 通道时渲染字节与现状一致）；
  * 6. state 参与 cacheKey 但不参与 sv——同 sv 下 state 变化必须重渲染出新 state 行
  *   （进程内缓存正确性，否则尾块永远是旧 state）；
- * 7. 活跃价值 top1 复用 directional（驱动/审慎）结构：state.topValue 缺省时取
- *    方向内权重最高锚（value_id 平局），无方向锚时省略该段。
+ * 7. 「眼下最想推进的是X」仅由 state.topValue 显式驱动（#52 P2：dirTop 回退删除——
+ *    程序性锚名不作目标语义硬造；topValue 缺省→省略子句，宁缺毋滥）。
  */
 import { describe, expect, it, vi } from "vitest";
 import { buildSoulPrefix } from "../soul-assembler.js";
@@ -72,7 +72,7 @@ describe("#34 soul-state taxonomy 与渲染行", () => {
     // 呈现层翻修（m00227，R2 调研）：第一人称叙事散文——无「当下状态」头、零数字
     expect(line).not.toContain("当下状态");
     expect(line).not.toMatch(/-?0\.\d/);
-    expect(line).toContain("有点受阻，心里偏审慎");
+    expect(line).toContain("有点受阻，心里偏紧"); // #52 P2 去 taxonomy 黑话
     expect(line).toContain("整个人紧绷而跃跃欲试");
     expect(line).toContain("眼下最想推进的是根因。");
   });
@@ -93,8 +93,8 @@ describe("#34 soul-assembler state 通道", () => {
     expect(metaA.soulVersion).toBeTruthy();
     expect(metaA.soulVersion).toBe(metaB.soulVersion); // 指纹不含 state
     expect(outA).not.toBe(outB); // 尾块字节随 state 变化
-    expect(outA).toContain("有点受阻，心里偏审慎");
-    expect(outB).toContain("心里明亮，劲头是趋近的");
+    expect(outA).toContain("有点受阻，心里偏紧"); // #52 P2 去 taxonomy 黑话
+    expect(outB).toContain("心里明亮，劲头正足");
   });
 
   it("state=undefined → 无状态行；无 moodTier 时感受段整段省略（m00227：段内仅基调+状态两行）", async () => {
@@ -111,14 +111,18 @@ describe("#34 soul-assembler state 通道", () => {
     const metaB: { soulVersion?: string } = {};
     const outB = await buildSoulPrefix(store, t, LOG, { ...CT, state: { valence: 0.8, arousal: 0.2, topValue: "根因" } }, metaB);
     expect(metaA.soulVersion).toBe(metaB.soulVersion);
-    expect(outB).toContain("心里明亮，劲头是趋近的"); // 缓存未吞掉新 state
-    expect(outA).toContain("有点受阻，心里偏审慎");
+    expect(outB).toContain("心里明亮，劲头正足"); // 缓存未吞掉新 state
+    expect(outA).toContain("有点受阻，心里偏紧");
   });
 
-  it("活跃价值 top1 复用 directional：topValue 缺省→方向内权重最高锚（眼下最想推进子句）；无方向锚→省略子句", async () => {
-    // topValue 缺省 → 取 weight 最高的 directional 锚（根因 w0.8）
+  it("#52 P2：topValue 缺省→不回退不硬造（dirTop 已删——权重最高锚名非目标语义）；显式 topValue→子句在位", async () => {
+    // topValue 缺省（即使「根因」锚在位）→ 省略推进子句，不回退 dirTop
     const out1 = await buildSoulPrefix(makeStore(rows()), { teamId: "st4", userId: "u1", agentId: "a1" }, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6 } });
-    expect(out1).toContain("眼下最想推进的是根因。");
+    expect(out1).toContain("此刻");
+    expect(out1).not.toContain("眼下最想推进的是");
+    // 显式 topValue（状态机写入通道）→ 子句照常渲染
+    const out3 = await buildSoulPrefix(makeStore(rows()), { teamId: "st6", userId: "u1", agentId: "a1" }, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6, topValue: "根因" } });
+    expect(out3).toContain("眼下最想推进的是根因。");
     // 无任何锚 → state 行仍在但无推进子句（m00227：无「当下状态」头，「此刻」起句）
     const out2 = await buildSoulPrefix(makeStore([]), { teamId: "st5", userId: "u1", agentId: "a1" }, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6 } });
     expect(out2).toContain("此刻");
