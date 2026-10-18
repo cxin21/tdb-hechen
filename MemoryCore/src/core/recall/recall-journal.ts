@@ -45,6 +45,20 @@ export interface RecallJournalGates {
 // P1-T7：类型再导出（journal 消费方 import 单一源 recall-journal 即可）
 export type { RecallJournalImportanceGate, RecallJournalImportanceGateSpec } from "../tools/recall-signals.js";
 
+/**
+ * #61（2026-10-18）：/v3/recall v2 5000ms 硬超时贴脸——分段计时观测。
+ * 全部为毫秒整数值；l2 段在 conclusionLayer.enabled=false 时恒为 0；
+ * l1 段含 R7 经验行组装（slice/动态 topK/budget，同步微秒级）；
+ * soul 段含 mood/state/soul-prefix 渲染全链。
+ */
+export interface RecallJournalPerfMs {
+  total: number;
+  scene: number;
+  l2: number;
+  l1: number;
+  soul: number;
+}
+
 export interface RecallJournalEntry {
   ts: string;
   query: string;
@@ -63,6 +77,8 @@ export interface RecallJournalEntry {
    * 有淘汰时记录 kept/dropped（挡下率对比）。缺字段 = 门未启用或未淘汰。
    */
   gates?: RecallJournalGates;
+  /** #61 分段计时观测（毫秒）；缺字段 = 旧入口未打点。 */
+  perfMs?: RecallJournalPerfMs;
   block?: string;
   memoryLines: string[];
 }

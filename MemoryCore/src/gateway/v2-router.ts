@@ -127,6 +127,7 @@ import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
 import { performLayeredRecall } from "../core/hooks/auto-recall.js";
+import type { RecallJournalPerfMs } from "../core/recall/recall-journal.js";
 
 const TAG = "[tdai-gateway][v2]";
 const V2_PREFIX = "/v2";
@@ -1960,7 +1961,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
 
   return successEnvelope<{
     block: string;
-    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; soulVersion?: string; mood?: string };
+    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; soulVersion?: string; mood?: string; perfMs: RecallJournalPerfMs };
   }>(
     {
       block: outcome.block ?? "",
@@ -1972,6 +1973,8 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
         soulVersion: outcome.soulVersion,
         // S-FEEL-1（M1）：enabled=false/样本不足时 outcome.mood=undefined → 条件展开不出键（逐位现状）。
         ...(outcome.mood !== undefined ? { mood: outcome.mood } : {}),
+        // #61（2026-10-18）：分段计时观测（毫秒）——超时黑洞定位（journal perfMs 同源）。
+        perfMs: outcome.perfMs,
       },
     },
     requestId,

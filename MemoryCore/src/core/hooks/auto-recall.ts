@@ -56,7 +56,7 @@ import { emotionSalienceOf, buildRankContext,
   type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
-import { appendRecallJournal, type RecallJournalGates } from "../recall/recall-journal.js";
+import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
@@ -372,6 +372,9 @@ export interface LayeredRecallOutcome {
   profileDataDir: string;
   profileStorage?: StorageAdapter;
   profileScope: string;
+  /** #61（2026-10-18）：分段计时观测（毫秒）——v3 端点路 /v3/recall 5000ms 硬超时贴脸
+   *  的黑洞定位（journal 时间线显示 L1 ~70ms / soul ~130ms 后静默）。 */
+  perfMs: RecallJournalPerfMs;
 }
 
 // ═══ P1 召回质量 Task 2（spec §4.5，r3=232a124）：精排接入（rerank wiring）═══
@@ -622,6 +625,19 @@ export async function performLayeredRecall(params: {
   capabilities?: string[];
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
+  // ── #61（2026-10-18）：分段计时打点 ──
+  // v3 端点路（/v3/recall → 本函数）此前无任何分段日志：生产 5000ms 硬超时 504 时，
+  // journal 时间线只显示 L1 hybrid ~70ms、soul ~130ms，其后 ~3.2s 完全静默——黑洞
+  // 无从定位。分段口径：scene=scene index 读取；l2=结论层候选收集+选择+放宽+截断
+  // （conclusionLayer.enabled=false 恒 0）；l1=L1 检索（FTS/向量/混合+精排+复用缓存）
+  // 含 R7 经验行组装（slice/动态 topK/budget，同步微秒级）；soul=mood+state+soul-prefix
+  // 渲染全链（含动态 import）。l1/l2/soul 打点在 else 分支内赋值，空 userText 走 if
+  // 分支时恒 0（perfMs 仍出，零分支例外）。
+  const tPerfStart61 = performance.now();
+  let tPerfSceneMs61 = 0;
+  let tPerfL2Ms61 = 0;
+  let tPerfL1Ms61 = 0;
+  let tPerfSoulMs61 = 0;
 
   // L2/L3 writers scope profile files by team+agent. Recall resolves the same
   // scope and never falls back to the unscoped data root, preventing cross-scope
@@ -639,7 +655,9 @@ export async function performLayeredRecall(params: {
   // ── R7：scene index 一次读取，两处消费 ──
   // ① L2 结论层 scene_block 候选（title+snippet 通道，需在 L1 检索前就位）；
   // ② 现状 scene navigation（钩子 L2 层，行为零变化）。readSceneIndex 自捕获（失败 → []）。
+  const tPerfSceneStart61 = performance.now();
   const sceneIndexEntries = await readSceneIndex(profileDataDir, profileStorage);
+  tPerfSceneMs61 = Math.round(performance.now() - tPerfSceneStart61);
 
   // Search relevant memories (L1 layer) — skip only when userText is empty/undefined
   const tSearchStart = performance.now();
@@ -676,6 +694,7 @@ export async function performLayeredRecall(params: {
     // 缺省 true = 现行为；false = 结论层整体退出（候选零收集、选择零执行、V2-3 放宽零触发）
     // → r7Conclusions 恒空 → 下游沿"无 L2 命中退化"同一既有路径（layered=undefined /
     // 结论行空 / 经验层全额 / metric scores 原样），输出与 R7 前基线逐位一致。不另写旁路。
+    const tPerfL2Start61 = performance.now();
     const r7ConclusionLayerEnabled = cfg.recall?.conclusionLayer?.enabled !== false;
     const r7Candidates: L2ConclusionCandidate[] = [];
     let r7Conclusions: L2ConclusionCandidate[] = [];
@@ -757,6 +776,7 @@ export async function performLayeredRecall(params: {
       // 恒等（逐位现状）。裁剪保留头部 = 命中结论优先于放宽结论（选择器排序语义保持）。
       r7Conclusions = r7Conclusions.slice(0, r7HalfLimit);
     }
+    tPerfL2Ms61 = Math.round(performance.now() - tPerfL2Start61);
     // Task CAL C1（brief 裁决）：结论层注入前截断——纯注入层，不碰门槛/九通道排序。
     // 巨型场景块摘要（首跑 F1：21,660 字符万词面通用匹配器）按 conclusionLayer.maxCharsPerMemory
     // 截断（默认 2000）+ 尾部标注；0 = 通道关闭（逐位现状）。截断先于幂等指纹（截断态即缓存态）。
@@ -971,6 +991,9 @@ export async function performLayeredRecall(params: {
       !!vectorStore && !!embeddingService &&
       searchTiming.ftsHits > 0 && searchTiming.embeddingHits === 0 &&
       effectiveStrategy !== "keyword";
+    // #61：l1 段终点（tSearchStart 起含检索+精排+复用缓存+R7 经验行组装）；soul 段起点。
+    tPerfL1Ms61 = Math.round(performance.now() - tSearchStart);
+    const tPerfSoulStart61 = performance.now();
     // SOUL C3（REG-REMAINING-001）：身份段常驻——soul 前缀组装与记忆有无解耦。
     let soulPrefix = "";
     if (params.isolationFilter && vectorStore?.readCore) {
@@ -1072,6 +1095,7 @@ export async function performLayeredRecall(params: {
         logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    tPerfSoulMs61 = Math.round(performance.now() - tPerfSoulStart61);
     if (memoryLines.length > 0) {
       const degradedNote = recallDegradedFtsOnly
         // I-1 复核修补：两义措辞 —— ftsHits>0∧embeddingHits=0 只证明"本轮向量召回无贡献"，
@@ -1088,6 +1112,16 @@ export async function performLayeredRecall(params: {
       block = soulPrefix;
     }
   }
+
+  // ── #61：分段计时汇总 + 单行观测日志（钩子与 v3 端点两路统一出口）──
+  const perfMs61: RecallJournalPerfMs = {
+    total: Math.round(performance.now() - tPerfStart61),
+    scene: tPerfSceneMs61,
+    l2: tPerfL2Ms61,
+    l1: tPerfL1Ms61,
+    soul: tPerfSoulMs61,
+  };
+  logger?.info?.(`${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}`);
 
   // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——采集点单一源（钩子与路由两路
   // 共用于本函数返回点，禁第二份）。best-effort：writer 自吞错 + 本 try 兜底，零影响主链路。
@@ -1114,6 +1148,7 @@ export async function performLayeredRecall(params: {
           experienceCount,
           searchTiming,
           ...(recallGates ? { gates: recallGates } : {}),
+          perfMs: perfMs61,
           block,
           memoryLines,
         },
@@ -1138,6 +1173,7 @@ export async function performLayeredRecall(params: {
     profileDataDir,
     profileStorage,
     profileScope,
+    perfMs: perfMs61,
   };
 }
 
