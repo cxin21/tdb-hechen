@@ -88,13 +88,13 @@
 - [x] 重启核对：core 两次重启均走 Start-TdbService 监督外临时恢复（supervisor restartsUsed=3 预算耗尽不自动拉起，SOP 允许手动路径）；全量重锚重立预算留待用户在场批次（必杀 proxy 中断本会话）；proxy 重启为批次末后台步（载 kill switch）
 - [x] E2E①：proxy 重启后实拍落盘 .scratch/soul-final/e2e/after-soul-blocks.md（22:34 快照：rendered 全文+六项判定，T1 散文在场/零数值/清单行退役/红线 5 行）
 - [ ] E2E②：Task 5 所建真实承诺下一轮注入 `<soul-identity>` 承诺块实拍（soul_promises=0 等待 D8 自然触发——gate 已通电 sv-pm 指纹段实锤，出现即渲染；不伪造）
-- [x] E2E③：capabilities 段消失实拍——core 侧 introspect rendered 无「## 我能做什么」（after-soul-blocks.md 判定 True）；proxy 侧部署链核实：etc/proxy-config.yaml enabled:false+种子删除（L505）→ 22:34 重启（node pid 8000，log tdai-proxy-20261017-223401）→ /health 200 → runtime 物化配置健康后删除（SOP）；活体会话注入块复核留下一轮
+- [x] E2E③：capabilities 段消失实拍——core 侧 introspect rendered 无「## 我能做什么」（after-soul-blocks.md 判定 True）；proxy 侧部署链核实：etc/proxy-config.yaml enabled:false+种子删除（L505）→ 22:34 重启（node pid 8000，log tdai-proxy-20261017-223401）→ /health 200 → runtime 物化配置健康后删除（SOP）；活体复核确认（2026-10-18 10:43 会话头注入块实拍：soul-identity 含价值锚/重要的人/品格/红线段、无「## 我能做什么」=kill switch 生产生效终验，观察点关闭）
 - [x] E2E④：/health 四端口 22:34 全 200（8420/8096/8421/8123）+ 新开关生效证据（core 侧 sv-d2909c7b-pm811c9dc5 -pm 指纹段=承诺门通电；kill switch 部署链如上）
 
 ## Task 9 — 报告落库
 
-- [ ] `.scratch/soul-final/` 验收报告（含调研回收链接 r1/r2/r3、E2E 实拍、门禁数字）
-- [ ] 票务台账更新 + RESTART-SOP 预算口径勘误（实际 MaxRestarts=3 由 bundle 传入）
+- [x] `.scratch/soul-final/` 验收报告（含调研回收链接 r1/r2/r3、E2E 实拍 after-soul-blocks.md/after-core-t2.md、门禁数字；§9 T8 集成实录 + 偏差 4 条）
+- [x] 票务台账更新（.scratch/triage/2026-10-17-soul-final-batch.md 生效时序+2026-10-18 活体终验）+ RESTART-SOP 预算口径勘误（实际 MaxRestarts=3 由 bundle 传入，第 1/28 行改写）
 
 ## 修订记录
 
