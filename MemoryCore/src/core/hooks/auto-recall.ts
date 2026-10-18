@@ -1117,11 +1117,14 @@ export async function performLayeredRecall(params: {
   const perfMs61: RecallJournalPerfMs = {
     total: Math.round(performance.now() - tPerfStart61),
     scene: tPerfSceneMs61,
+    // #63：expand 段 = searchTiming.expandMs（getExpansionTerms 计时；旧缓存条目/native 路
+    // 缺字段 → 0）——journal 实锤 l1 中 ~4s 为 query-expand LLM 串行阻塞，不拆段必再误诊。
+    expand: searchTiming.expandMs ?? 0,
     l2: tPerfL2Ms61,
     l1: tPerfL1Ms61,
     soul: tPerfSoulMs61,
   };
-  logger?.info?.(`${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}`);
+  logger?.info?.(`${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} expand=${perfMs61.expand} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}`);
 
   // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——采集点单一源（钩子与路由两路
   // 共用于本函数返回点，禁第二份）。best-effort：writer 自吞错 + 本 try 兜底，零影响主链路。
@@ -1457,6 +1460,12 @@ export interface SearchTiming {
   embeddingMs: number;
   ftsHits: number;
   embeddingHits: number;
+  /**
+   * #63（2026-10-18）：V2-2 LLM 查询扩展耗时（仅 keyword/hybrid-fallback 路打点——
+   * getExpansionTerms 实际触发时才有值；native/embedding 路与旧构造点缺省缺字段
+   * = 未打点，journal 侧 ?? 0 兜底）。
+   */
+  expandMs?: number;
 }
 
 interface SearchResult {
@@ -1591,37 +1600,47 @@ async function searchMemories(
     // 仅 FTS 路消费（keyword/hybrid 关键词侧）；embedding 路 / native-hybrid 单调用路
     // 无本地 FTS 构建点 → 零 LLM 调用（E1.3 向量路不动）。失败/超时 → []（E1.4 退化）。
     let expansionTermsCache: string[] | null = null;
+    // #63（2026-10-18）：扩展段计时——journal 实锤 l1=4305ms 中 ~4s 为 query-expand
+    // LLM 串行阻塞（真实 embedding RTT 仅 108ms），不拆段会再次误诊。整函数 try/finally
+    // 包装：cache 命中/qe 关闭 ≈0ms，LLM 慢 = 真实耗时；两消费路（keyword / fallback）
+    // 的 timing.expandMs 透传，native/embedding 路不触发本函数（expandMs 缺字段 → 0）。
+    let expandMsMeasured = 0;
     const getExpansionTerms = async (): Promise<string[]> => {
-      if (expansionTermsCache) return expansionTermsCache;
-      const qeCfg = cfg.recall?.queryExpansion;
-      if (!qeCfg?.enabled) return (expansionTermsCache = []);
-      const qeRunner = await resolveQueryExpansionRunner(
-        cfg.llm,
-        (cfg as { instanceId?: string }).instanceId,
-        logger,
-      );
-      // 运行期预算 clamp（E1.4 失败安全优先）：recall 有整体 timeoutMs（默认 5000），
-      // 扩展外呼若超出预算会触发整体超时（注入全空，比无扩展更糟）。config 默认 8000
-      // 保留给无外层预算的工具路；auto-recall 路 clamp 到 召回预算-1s（至少 1s），留出
-      // 真实检索时间。clamp 生效记 debug（配置与真实行为一致性，可追溯）。
-      const recallBudget = cfg.recall?.timeoutMs ?? 5000;
-      const timeoutMs = Math.min(qeCfg.timeoutMs, Math.max(1000, recallBudget - 1000));
-      if (timeoutMs !== qeCfg.timeoutMs) {
-        logger?.debug?.(`${TAG} [query-expand] timeoutMs clamped into recall budget: ${qeCfg.timeoutMs} → ${timeoutMs}ms`);
+      const tExpand63 = performance.now();
+      try {
+        if (expansionTermsCache) return expansionTermsCache;
+        const qeCfg = cfg.recall?.queryExpansion;
+        if (!qeCfg?.enabled) return (expansionTermsCache = []);
+        const qeRunner = await resolveQueryExpansionRunner(
+          cfg.llm,
+          (cfg as { instanceId?: string }).instanceId,
+          logger,
+        );
+        // 运行期预算 clamp（E1.4 失败安全优先）：recall 有整体 timeoutMs（默认 5000），
+        // 扩展外呼若超出预算会触发整体超时（注入全空，比无扩展更糟）。config 默认 8000
+        // 保留给无外层预算的工具路；auto-recall 路 clamp 到 召回预算-1s（至少 1s），留出
+        // 真实检索时间。clamp 生效记 debug（配置与真实行为一致性，可追溯）。
+        const recallBudget = cfg.recall?.timeoutMs ?? 5000;
+        const timeoutMs = Math.min(qeCfg.timeoutMs, Math.max(1000, recallBudget - 1000));
+        if (timeoutMs !== qeCfg.timeoutMs) {
+          logger?.debug?.(`${TAG} [query-expand] timeoutMs clamped into recall budget: ${qeCfg.timeoutMs} → ${timeoutMs}ms`);
+        }
+        expansionTermsCache = await expandQuery(cleanText, qeRunner, {
+          maxTerms: qeCfg.maxTerms,
+          ttlMs: qeCfg.ttlMs,
+          timeoutMs,
+          logger,
+        });
+        return expansionTermsCache;
+      } finally {
+        expandMsMeasured = Math.round(performance.now() - tExpand63);
       }
-      expansionTermsCache = await expandQuery(cleanText, qeRunner, {
-        maxTerms: qeCfg.maxTerms,
-        ttlMs: qeCfg.ttlMs,
-        timeoutMs,
-        logger,
-      });
-      return expansionTermsCache;
     };
 
     if (effectiveStrategy === "keyword") {
       const tFts = performance.now();
       const lines = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, layered, await getExpansionTerms(), isolationFilter);
-      return { lines, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: lines.length, embeddingHits: 0 } };
+      return { lines, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: lines.length, embeddingHits: 0, expandMs: expandMsMeasured } };
     }
 
     if (effectiveStrategy === "embedding") {
@@ -1693,7 +1712,8 @@ async function searchMemories(
     const fallbackFolded = cfg?.recall?.foldClusterEnabled === true;
     return {
       lines: fallbackFolded ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines,
-      timing: hybrid.timing,
+      // #63：expandMs 在 searchMemories 层测得（getExpansionTerms 计时），补进 hybrid.timing
+      timing: { ...hybrid.timing, expandMs: expandMsMeasured },
       ...(hybrid.gates ? { gates: hybrid.gates } : {}),
       ...(hybrid.scores ? { scores: hybrid.scores } : {}),
       ...(!fallbackFolded && hybrid.metas ? { metas: hybrid.metas } : {}),

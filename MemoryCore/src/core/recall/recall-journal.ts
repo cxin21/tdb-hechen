@@ -54,6 +54,13 @@ export type { RecallJournalImportanceGate, RecallJournalImportanceGateSpec } fro
 export interface RecallJournalPerfMs {
   total: number;
   scene: number;
+  /**
+   * #63（2026-10-18）：V2-2 LLM 查询扩展（getExpansionTerms，keyword/hybrid-fallback
+   * 路消费）耗时。journal 实锤 l1=4305ms 中 ~4s 为 query-expand LLM 串行阻塞（真实
+   * embedding RTT 仅 108ms），不拆本段会再次误诊为「embedding 慢」。native/embedding
+   * 路零 LLM 调用 → 恒 0；qe.enabled=false → ≈0。
+   */
+  expand: number;
   l2: number;
   l1: number;
   soul: number;

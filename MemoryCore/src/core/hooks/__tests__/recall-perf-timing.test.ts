@@ -6,8 +6,12 @@
  * v3 端点路（performLayeredRecall）不打钩子路的 ⏱ Recall timing 行，分段黑洞无法定位。
  *
  * 契约：
- *   - outcome.perfMs = { total, scene, l2, l1, soul }，全部非负有限数；
- *   - logger.info 恰有一次 [recall-perf] 行（含 total=/scene=/l2=/l1=/soul= 字段）；
+ *   - outcome.perfMs = { total, scene, expand, l2, l1, soul }，全部非负有限数；
+ *   - expand 段（#63，2026-10-18）：V2-2 LLM 查询扩展（getExpansionTerms）耗时——
+ *     journal 实锤 l1=4305ms 中 ~4s 是 query-expand LLM 串行阻塞（真实 embedding RTT
+ *     仅 108ms），不拆 expand 段会再次误诊为「embedding 慢」；native/embedding 路
+ *     零 LLM 调用 → expand=0。
+ *   - logger.info 恰有一次 [recall-perf] 行（含 total=/scene=/expand=/l2=/l1=/soul= 字段）；
  *   - recallJournal enabled 时 jsonl 行带 perfMs 键（证据链落盘）；
  *   - 空 userText 分支同样出 perfMs（l1=0），零分支例外。
  */
@@ -91,17 +95,18 @@ describe("#61 分段计时 · performLayeredRecall perfMs（v3 端点路观测�
     cleanup61(dataDir);
     expect(outcome.perfMs).toBeDefined();
     const p = outcome.perfMs!;
-    for (const v of [p.total, p.scene, p.l2, p.l1, p.soul]) {
+    for (const v of [p.total, p.scene, p.expand, p.l2, p.l1, p.soul]) {
       expect(Number.isFinite(v)).toBe(true);
       expect(v).toBeGreaterThanOrEqual(0);
     }
     expect(p.total).toBeGreaterThanOrEqual(p.scene);
+    expect(p.total).toBeGreaterThanOrEqual(p.expand);
     expect(p.total).toBeGreaterThanOrEqual(p.l2);
     expect(p.total).toBeGreaterThanOrEqual(p.l1);
     expect(p.total).toBeGreaterThanOrEqual(p.soul);
   });
 
-  it("logger.info 恰一次 [recall-perf] 行：含 total=/scene=/l2=/l1=/soul= 与 strategy", async () => {
+  it("logger.info 恰一次 [recall-perf] 行：含 total=/scene=/expand=/l2=/l1=/soul= 与 strategy", async () => {
     const { outcome, logger, dataDir } = await recall61({ tag: "log" });
     cleanup61(dataDir);
     expect(outcome.perfMs).toBeDefined();
@@ -111,6 +116,7 @@ describe("#61 分段计时 · performLayeredRecall perfMs（v3 端点路观测�
     expect(perfLines).toHaveLength(1);
     expect(perfLines[0]).toContain("total=");
     expect(perfLines[0]).toContain("scene=");
+    expect(perfLines[0]).toContain("expand=");
     expect(perfLines[0]).toContain("l2=");
     expect(perfLines[0]).toContain("l1=");
     expect(perfLines[0]).toContain("soul=");
@@ -137,5 +143,48 @@ describe("#61 分段计时 · performLayeredRecall perfMs（v3 端点路观测�
     cleanup61(dataDir);
     expect(outcome.perfMs).toBeDefined();
     expect(outcome.perfMs!.total).toBeGreaterThanOrEqual(0);
+  });
+
+  it("#63 native hybrid 路（零 LLM 扩展调用）：expand=0", async () => {
+    const { outcome, dataDir } = await recall61({ tag: "native63" });
+    cleanup61(dataDir);
+    expect(outcome.perfMs).toBeDefined();
+    expect(outcome.perfMs!.expand).toBe(0);
+  });
+
+  it("#63 fallback 路（SQLite hybrid）：expand 段计时存在且 total 覆盖（qe 关闭=0ms 语义）", async () => {
+    // 生产实态 = SQLite fallback 路（nativeHybridSearch=false）；qe.enabled=false 时
+    // getExpansionTerms 立即返回 []，expand 段语义 = 无 LLM 调用耗时 ≈ 0。
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "perf63-"));
+    const logger = mkLogger61();
+    try {
+      const fbStore = {
+        isFtsAvailable: () => true,
+        getCapabilities: () => ({ nativeHybridSearch: false }),
+        searchL1Fts: async () => [],
+        searchL1Hybrid: async () => [],
+        readCore: async () => [],
+      } as unknown as IMemoryStore;
+      const outcome = await performLayeredRecall({
+        userText: "fallback 路扩展计时探针",
+        sessionKey: "sk-perf63-fb",
+        cfg: parseConfig({
+          recall: { strategy: "hybrid", maxResults: 5, queryExpansion: { enabled: false } },
+        }),
+        pluginDataDir: dataDir,
+        logger,
+        vectorStore: fbStore,
+        embeddingService: embedding61,
+        profileIsolation: { teamId: "t", userId: "u", agentId: "a" },
+        isolationFilter: { teamId: "t", userId: "u", agentId: "a" },
+      });
+      expect(outcome.perfMs).toBeDefined();
+      const p = outcome.perfMs!;
+      expect(Number.isFinite(p.expand)).toBe(true);
+      expect(p.expand).toBeGreaterThanOrEqual(0);
+      expect(p.total).toBeGreaterThanOrEqual(p.expand);
+    } finally {
+      cleanup61(dataDir);
+    }
   });
 });
