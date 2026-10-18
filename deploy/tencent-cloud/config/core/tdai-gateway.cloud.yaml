@@ -51,6 +51,18 @@ memory:
     maxMemoriesPerSession: 20
     durativeEnabled: true # GROW-EVO P2（§2.2）：持续状态事实写 valid_start
     recurrenceEnabled: true # D-4（2026-09-22 拍板）：周期性事实 RECURRENCE_BLOCK 提取（LLM 只提议、确定性门裁决）
+    # L1-OUTAGE-20261015：单次提取 LLM 调用超时 ms（思考型端点延迟∝prompt 体积，大批恒超时→游标不推进毒批死循环）；
+    # 缺省 300000=逐位现状；clamp 60000..3600000。L1 提取与 L2 场景提取共用本键。
+    # extractionTimeoutMs: 300000
+    # #46 毒批拆分（2026-10-17 拍板 A）：scene 抽取失败且批内 >1 条时对半递归重试（镜像 L1 extractGroupWithSplit 先例）；缺省 false
+    scenePoisonSplit: true
+    # #46 批次上限：scene 抽取前按 memoriesJson 估长贪心预分批防巨批；缺省 0=关（单批现状）
+    sceneBatchMaxChars: 20000
+  # #28（R3，2026-10-17 用户拍板「都开」）：soul-state 观测门——抽取完成 seam 读 soul_state
+  # →rollupStateFromRecords→写回（user_correction/tool_failure/task_switch 冲量 + 48h 半衰期）。
+  # 开启后「当下的状态」尾块随真实行为积累（自然触发，零注入零删除，P1 安全）；缺省 false。
+  extractionExtensions:
+    enabled: true
 
   persona:
     triggerEveryN: 50
@@ -132,6 +144,25 @@ memory:
       cacheTtlMs: 300000       # I③ 幂等结论层缓存 TTL 毫秒（0 = 关；显式落盘 = 原"回落 sessionReuseTtlMs"的等价值）
       minUniqRatio: 0.35       # v18-c 结论块低密度门（何晨拍板「全做」2026-10-05）：句子级去重保留率下限，
                                # 低于阈值 = 自指回放块跳过取下一名（undefined/0 = 关逐位现状）
+      # P1（issue #2，2026-10-13）：textHit 万词面 token 剔除——token 命中候选占比超过此值（0-1）
+      # 视为通用词从 textHit 匹配集剔除（sceneHit 不受影响）。0 = 不启用。
+      textHitMaxTokenRatio: 0.5
+      # #53（2026-10-19）：L2 结论层 IDF 加权计分——true 时候选按 batch 相对 IDF
+      # （idf(t)=ln(1+N/(1+df(t)))，万词面 token 天然低分）重排；层级序（work_fact>scene_block）
+      # 不被反转，平分保调用方序。缺省 false = 调用方序逐位现状。
+      idfWeighted: true
+
+    # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
+    # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差
+    # （argmax d(k)=pool[k-1]-pool[k]，全池 k∈[1,pool.length-1]），落差 ≥ dropRatio×span
+    # （首分-末分）才切到 k，并 clamp max(切点, minTopK)——保底=注入下限，不是切点下限。
+    # 刻度无关（纯相对落差，RRF/余弦皆可），scores 缺席（keyword FTS 路）不切。
+    # journal「[dynamic-topk] elbow 收缩 X->Y」。minTopK clamp [1,50] 缺省 2；
+    # dropRatio clamp [0.01,1] 缺省 0.5。缺省 false=逐位现状。
+    dynamicTopK:
+      enabled: true          # 生产已开
+      minTopK: 2
+      dropRatio: 0.5
 
     # ── 合并召回 · /v3/recall 核心单点（DS-RECALL-MERGE-001，2026-09-12）──
     # 端点返回与 auto-recall 钩子同一条组装路径（分层 + 预算 + 幂等结论层）产出的注入块；
@@ -139,7 +170,10 @@ memory:
     # 代理侧 404/5xx/超时自动降级旧路（/v3/atomic/search 自行组装）+ loud 日志。
     v3Recall:
       enabled: true        # 代码缺省 false（逐位现状，端点 404）；true = 瘦传输链路启用
-      timeoutMs: 5000      # 端点内召回超时毫秒（与 recall.timeoutMs 同族；超时 → 504 → 代理降级）
+      # #61（2026-10-18）：端点内召回超时毫秒。生产 5000→8000；proxy 侧 memory.timeoutMs 需同步 ≥ 此值
+      # （否则 proxy 先断）。响应 meta.perfMs={total,scene,l2,l1,soul} 分段计时 + journal
+      # [recall-perf] 行；2026-10-18 实测 L1 占 74%（含 embedding RTT）——容量优化靶在 L1/embedding。
+      timeoutMs: 8000
 
     # ── 召回精排 rerank（P1 召回质量 spec §4.3，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
     # 在 P0 召回门槛之上加云/本地精排：原 topK 候选扩池至 candidates → provider rerank →
@@ -168,6 +202,8 @@ memory:
     # importancePenalty:
     #   enabled: false        # 总开关（缺省 false = 逐位现状）
     #   penalty: 0.3          # ≤4 记忆的乘法惩罚（clamp 上限 0.9；越大降权越狠）
+    # 生产现值（2026-10-19 开门）：enabled: true + penalty 0.3——写侧 worthiness 配套，
+    # 寒暄/流水账类低价值记忆在检索排序中真实降权。
 
     # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
     # 提取批次后代码级超限守卫：块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败码点安全硬截断兜底。
@@ -185,7 +221,8 @@ memory:
   # 关闭时 prompt 字节逐位不变、importance 字段缺席=召回不罚。越界/畸形分由确定性门拒绝
   # （不 clamp 不伪造）。面板可对单条记忆手动调级（/atomic/importance，source=manual）。
   # worthiness:
-  #   extractionEnabled: false
+  #   extractionEnabled: true   # 生产已开（2026-10-19 开门）：LLM 顺带产出 importance 字段（写侧）；
+  #                             # 与 recall.importancePenalty（读侧消费）配套。
 
   storeBackend: "sqlite"
 
@@ -195,6 +232,10 @@ memory:
     apiKey: "${TDAI_LLM_API_KEY}" # 与 llm 同源（Ark）；如需独立 embedding key 请替换
     model: "doubao-embedding-vision"
     dimensions: 2048
+    # #61（2026-10-18）：仅召回链路的 embedding 专用超时 ms（undefined = 回落 timeoutMs）。
+    # embedding 慢时到点断开 → hybrid 自动退化 FTS（degraded 标注 recallDegradedFtsOnly），
+    # 用延迟换可用性。
+    recallTimeoutMs: 2000
 
   bm25:
     enabled: true
@@ -251,6 +292,45 @@ memory:
       budgetSelfChars: 600
       budgetIdentityChars: 900
       maxRelationLines: 5 # F17（审计补齐）：重要的人 行数上限；5=原行为显式落盘
+      # #10 T4：三行锚列表总长预算（整锚粒度从尾丢，不截半句）。0=关（缺省逐位现状）。
+      # 建议放量值：锚行 480（≈10 锚当量）、人物行 400、品格行 300。
+      budgetAnchorChars: 0
+      budgetPersonChars: 0
+      budgetCharacterChars: 0
+      # #42（D9 情境锚选择器，确定性 embedding 相似度，不上 LLM 打分）：
+      # scorer.enabled=true 打分链路通电（embedding=共享 EmbeddingService）；threshold=0 无硬门；
+      # shadowSink 每轮渲染都采集锚分分布（#52 P3 已与裁剪报告门解耦，渲染字节零变化），
+      # 数据供 D9 定标：#57 analyze:anchor-shadow 实测 0.2 为无损收紧带、0.3 断崖。
+      anchorSelect:
+        maxRows: 12
+        scorer:
+          enabled: true
+          threshold: 0
+        shadowSink:
+          enabled: true
+          file: "/data/tdai-memory/logs/soul-anchor-shadow.jsonl"  # 云端路径；本地为 D:/TDB/data/logs/…
+      # #40（ADR0003 票 B）：capabilities 渲染门——「## 我能做什么」段；清单由 proxy /v3/recall body 传入
+      capabilities:
+        enabled: true
+      # #52 D3：per-turn soul 块省略（我是谁）/（我心中的他）两行（system 侧 core_memory 块已承载同内容）；
+      # false = 省略模式（生产现状）；缺省 true = 每轮渲染（旧行为）；legacy（dual=false）路径不受影响
+      perTurnSlots: false
+      # #41（D8 证据迁移门）：user 确认话语白名单→refKey 严格相等的 open promise 迁移；
+      # 承诺创建通道由 lifecycle.reflection.promiseProposals→人工采纳承载（LLM 无直改路径）
+      promiseEvidence:
+        enabled: true
+      # T3（未来性渲染面）：「我的承诺：」块注入 soul-identity（品格后红线前）；
+      # 最新 3 条 open 承诺逐字渲染（零 open 整块省略=宁缺毋滥，不伪造）
+      promises:
+        enabled: true
+      # #55（S17，2026-10-19）：soul 渲染近重复去重门（config-first 缺省关，布局级变更不翻 soulVersion）——
+      # strictRuleDedup：红线段近重复行收敛（exact/jaccard≥0.45/containment≥0.9，保长=归一后更长，
+      # winner 原位替换）；anchorDedup：价值锚 label 双向包含且短侧 ≥2 字护栏（完整句优先）。
+      # 生产 A/B 实证：14→13 红线（R03 环境铁律短变体并入 R08）、根因→根因优先。
+      strictRuleDedup:
+        enabled: true          # 生产已开；jaccardThreshold 缺省 0.45
+      anchorDedup:
+        enabled: true          # 生产已开
   lifecycle:
     enabled: true # H+I：巩固 + 遗忘的周期调度（每 10 分钟一轮，best-effort）
     intervalMs: 600000
@@ -271,6 +351,23 @@ memory:
     reflection:
       enabled: true
       rRef: 2 # 刻度换算：Generative Agents 0-100 刻度的 150 ≈ 本库 significance [0,1] 刻度的 1.5；取 2.0≈3 条高显著记录
+      # #44（D8-(c) 提案通道）：reflection 同调用产 promiseTransitions→vet（verbatim≥12 等）→
+      # dedup→pending 轨（slot=promise_transition）；人工 Panel/API decide adopted→唯一写入口。
+      promiseProposals:
+        enabled: true
+      # #27（S6 反思结论→身份层提案安全门）：slot 白名单 [identity,self_identity]、verbatim≥12 逐字拒绝、
+      # O13 pending→人工采纳；strict_rule 不可提案。缺省 false=零提案。
+      soulProposals:
+        enabled: true
+        # D7 ε shadow 定标：行为零变化，仅旁路记录 bestLen 分布至 data/logs/soul-reflection-shadow.jsonl。
+        # 注意嵌套层级：config.ts 从 soulProposals 组内解析（与 soulProposals 平级=不生效）。
+        shadowCalibration:
+          enabled: true
+        # #60（S22 反思产物契约门，2026-10-19）：LLM 仅提议+确定性校验（第一人称叙事、禁伪造当下体验
+        # /我(现在|此刻|当下)(的)?(感到|觉得|感觉|情绪)/、≤200 字、价值锚引用校验锚集来自 core_value 行）——
+        # 契约不通过拒绝推提案；通过时 anchor_refs 并入提案 attrs。缺省 false=现状。
+        cardContract:
+          enabled: true       # 生产已开
 
   evolution: # 受控正文演化（GROW-EVO §4，REG-REMAINING-005 #1）——全系统唯一允许改写已固化正文的路径
     enabled: true # P4b 验证通过后开启（2026-09-17 live 验证轮；五条件门+单轮上限护栏，门严=不触发良性）
