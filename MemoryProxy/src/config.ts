@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { load as yamlLoad } from "js-yaml";
 import type { CostGuardConfig, ProxyConfig, RawYamlConfig } from "./types.js";
 import { DEFAULT_SOUL_TIMING, type SoulTimingConfig, type ToolCapabilitiesConfig } from "./injection/types.js";
+// soul-dedupe（2026-10-19）：红线近端去重门缺省阈值（单一源常量；该模块为依赖自足的纯函数镜像）。
+import { DEFAULT_RULE_JACCARD_THRESHOLD } from "./injection/injectors/soul-dedupe.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
@@ -234,11 +236,31 @@ function parseSoulTiming(raw: unknown): SoulTimingConfig {
     const v = rawObj[field];
     return (typeof v === "string" && allowed.includes(v) ? v : DEFAULT_SOUL_TIMING[field]) as SoulTimingConfig[K];
   };
+  // soul-dedupe（2026-10-19）：红线近端去重门——条件材料化（yaml 有且合法才带键，
+  // 缺省不带 = off = 逐位现状；config.soul-timing.test.ts 的 toEqual(DEFAULT_SOUL_TIMING)
+  // 合同不破坏）。jaccardThreshold ∈[0,1] 透传，非数值/越界回退单一源缺省。
+  const rddRaw = rawObj.redlineDedup;
+  const rddObj =
+    rddRaw !== null && typeof rddRaw === "object" && !Array.isArray(rddRaw)
+      ? (rddRaw as Record<string, unknown>)
+      : undefined;
+  const rddThresholdRaw = rddObj?.jaccardThreshold;
+  const redlineDedup =
+    rddObj && rddObj.enabled === true
+      ? {
+          enabled: true,
+          jaccardThreshold:
+            typeof rddThresholdRaw === "number" && rddThresholdRaw >= 0 && rddThresholdRaw <= 1
+              ? rddThresholdRaw
+              : DEFAULT_RULE_JACCARD_THRESHOLD,
+        }
+      : undefined;
   return {
     identity: pick("identity", SOUL_TIMING_ENUMS.identity),
     redline: pick("redline", SOUL_TIMING_ENUMS.redline),
     feeling: pick("feeling", SOUL_TIMING_ENUMS.feeling),
     driftTrigger: pick("driftTrigger", SOUL_TIMING_ENUMS.driftTrigger),
+    ...(redlineDedup ? { redlineDedup } : {}),
   };
 }
 

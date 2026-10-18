@@ -273,6 +273,27 @@ export interface RecallConfig {
      * sessionReuseTtlMs 保持现行为；显式 0 = 关（每次重组，不缓存）；负值 clamp 0。
      */
     cacheTtlMs?: number;
+    /**
+     * #53（2026-10-19）：L2 结论层 textHit IDF 加权排序（缺省 false = 逐位现状）。
+     * true = selectL2Conclusions 同 source 层内按 batch 相对 IDF 分降序稳定重排
+     * （稀有 token 命中者先于万词面命中者）；层级序与平分保序不变。确定性纯函数。
+     */
+    idfWeighted: boolean;
+  };
+  /**
+   * #54（2026-10-19）：召回注入动态 topK——按经验层 scores 分布的 elbow（最大相邻
+   * 落差）收缩注入条数（只缩不扩）。缺省 enabled=false=逐位现状（固定条数注入）。
+   * 刻度无关（纯相对落差，兼容 cosine/RRF 两种 scores 量纲）；scores 缺席（keyword
+   * FTS 路无平行分数）不切；span<=0（全同分/非降序）不切。确定性纯函数
+   * dynamicTopKCount（recall-dynamic-topk.ts），调用点 auto-recall.ts R7 经验层切片后。
+   */
+  dynamicTopK: {
+    /** 总开关（缺省 false = 逐位现状）。 */
+    enabled: boolean;
+    /** 保底条数（clamp [1,50]，先 floor；缺省 2）——elbow 不会切到低于此值的注入。 */
+    minTopK: number;
+    /** elbow 门槛：最大相邻落差 ≥ dropRatio × (首分-末分) 才切（clamp [0.01,1]；缺省 0.5）。 */
+    dropRatio: number;
   };
   /**
    * RV2（task RV2-2，brief 裁决）：精排重设计 = 相关度主导组合分四因子权重
@@ -476,6 +497,13 @@ export interface MemoryCoreMemoryConfig {
      *  重排渲染行）；threshold clamp 0..1 缺省 0（=不设语义硬门：0 只滤除负相关锚行，仅 top-K
      *  生效；>0 才是硬门）。embedder/queryEmbedding 运行时注入，不入 config。 */
     anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number }; shadowSink: { enabled: boolean; file: string } };
+    /** soul 去重门（soul-dedupe，2026-10-19）：strictRuleDedup=红线段近重复行收敛
+     *  （exact / Jaccard≥阈值 / containment；阈值 clamp 0..1 缺省 0.45，与 soul-dedupe.ts
+     *  DEFAULT_RULE_JACCARD_THRESHOLD 标定一致）；anchorDedup=价值锚近重复对收敛
+     *  （label 全同或双向包含且短侧≥2 字）。enabled 缺省 false=逐位现状（不去重）；
+     *  开启属布局级渲染变更（遵循批次纪律：不翻 soulVersion；dropped 走 debug 日志可审计）。 */
+    strictRuleDedup: { enabled: boolean; jaccardThreshold: number };
+    anchorDedup: { enabled: boolean };
     /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
      *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
     introspect: { snapshotLimit: number; evidenceWindowHours: number };
@@ -1321,6 +1349,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             };
           })(),
         },
+        // soul 去重门（soul-dedupe，2026-10-19）：enabled 缺省 false=逐位现状；
+        // jaccardThreshold clamp 0..1 缺省 0.45（soul-dedupe.ts 标定值）；形状错一律
+        // 回退缺省（宁缺毋滥，沿 anchorSelect.scorer 解析先例）。
+        strictRuleDedup: (() => {
+          const s = (g as Record<string, unknown>)["strictRuleDedup"] as Record<string, unknown> | undefined;
+          const th = s?.["jaccardThreshold"];
+          return {
+            enabled: s?.["enabled"] === true,
+            jaccardThreshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0.45,
+          };
+        })(),
+        anchorDedup: {
+          enabled: ((g as Record<string, unknown>)["anchorDedup"] as Record<string, unknown> | undefined)?.["enabled"] === true,
+        },
         // #36（R5）：soul_introspect 自省面参数（只读；快照条数 1..200 缺省 20，证据窗 1..2160h 缺省 168）。
         introspect: {
           snapshotLimit: (() => {
@@ -1602,6 +1644,19 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(cl, "cacheTtlMs");
             return raw === undefined ? undefined : Math.max(0, Math.floor(raw));
           })(),
+          // #53：L2 结论层 textHit IDF 加权排序（缺省 false=逐位现状）
+          idfWeighted: bool(cl, "idfWeighted") ?? false,
+        };
+      })(),
+      // #54：召回注入动态 topK（分数分布 elbow；缺省 false=逐位现状；clamp 见类型注释）
+      dynamicTopK: (() => {
+        const dk = obj(recallGroup, "dynamicTopK");
+        const minTopKRaw = Math.floor(num(dk, "minTopK") ?? 2);
+        const dropRatioRaw = num(dk, "dropRatio") ?? 0.5;
+        return {
+          enabled: bool(dk, "enabled") ?? false,
+          minTopK: Math.min(50, Math.max(1, minTopKRaw)),
+          dropRatio: Math.min(1, Math.max(0.01, dropRatioRaw)),
         };
       })(),
       // RV2-2（精排重设计）：相关度主导四因子（默认 0.7/0.15/0.1/0.05——relevance ≥70% 契约；

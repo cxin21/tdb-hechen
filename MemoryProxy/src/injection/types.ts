@@ -220,6 +220,10 @@ export interface SoulTimingConfig {
   /** 漂移再锚定触发器：缺省 off；shadow=只记录建议不改注入（成本红线：
    *  禁每轮跑全量探针，触发器=#34 事件流聚合+阈值 config 化，r5-37 修正 1）。 */
   driftTrigger: "off" | "shadow";
+  /** 红线近端去重门（soul-dedupe 镜像，2026-10-19）：redline=action_proximate 时对
+   *  渲染行做近重复整行选择（drop 变体、kept 行体逐字，不截断不改写）；
+   *  缺省不带键 = off = 逐位现状（DEFAULT_SOUL_TIMING 不材料化此键）。 */
+  redlineDedup?: { enabled?: boolean; jaccardThreshold?: number };
 }
 
 /** 缺省值=现状逐位（#37 验收：timing off 时逐位等于现状）。 */

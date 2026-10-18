@@ -17,6 +17,8 @@ import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
 import { computeMoodTierFromStore } from "./mood-line.js";
+// #54（2026-10-19）：召回注入动态 topK——分数分布 elbow 确定性纯函数（recall-dynamic-topk.ts）
+import { dynamicTopKCount } from "./recall-dynamic-topk.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
 import type { MemoryRecord } from "../record/l1-reader.js";
 import type { IMemoryStore, L1SearchResult, L1FtsResult, CoreTenant, IsolationFilter } from "../store/types.js";
@@ -717,6 +719,8 @@ export async function performLayeredRecall(params: {
         ftsTokens: r7FtsTokens,
         minUniqRatio: cfg.recall?.conclusionLayer?.minUniqRatio,
         textHitMaxTokenRatio: cfg.recall?.conclusionLayer?.textHitMaxTokenRatio,
+        // #53：textHit IDF 加权排序透传（conclusionLayer.idfWeighted；缺省 false=逐位现状）
+        idfWeighted: cfg.recall?.conclusionLayer?.idfWeighted === true,
       }, r7HalfLimit);
       // ── V2-3（引擎三 E3.2 结论层放宽）：分析型 query → L2 结论层追加 "significance top-5
       // 的 durative 结论"（无需 scene/text 命中——蒸馏结论对分析问题浮出）。数据源 =
@@ -920,6 +924,20 @@ export async function performLayeredRecall(params: {
     // ── R7 预算对半切：r7Budget 已在精排接线前计算（rerank cap 消费）——此处只消费。
     // 无结论 → experienceLimit 全额 → slice 恒等 + 组装恒等 → 下游与现状逐位一致（退化安全）。
     memoryLines = memoryLines.slice(0, r7Budget.experienceLimit);
+    // #54（2026-10-19）：召回注入动态 topK——按经验层 scores 分布的 elbow（最大相邻
+    // 落差）收缩注入条数（只缩不扩）。缺省 off=逐位现状（固定条数注入）；scores 缺席
+    // （keyword FTS 路只回 lines、无平行分数）不调用；span<=0（全同分/非降序）在纯函数
+    // 内不切。刻度无关（纯相对落差），兼容 nativeHybrid 相似度与 RRF fallback 两种量纲。
+    // 切点在 r7ExperienceLineCount（下方）定格之前 → metric scores 切片自动对齐不串位。
+    const dynScores54 = searchResult.scores;
+    const dynTopKCfg54 = cfg.recall?.dynamicTopK;
+    if (dynTopKCfg54?.enabled === true && dynScores54 !== undefined && dynScores54.length > 0) {
+      const dynK54 = dynamicTopKCount(dynScores54, memoryLines.length, dynTopKCfg54);
+      if (dynK54 < memoryLines.length) {
+        logger?.debug?.(`${TAG} [dynamic-topk] elbow 收缩 ${memoryLines.length}->${dynK54}（minTopK=${dynTopKCfg54.minTopK}, dropRatio=${dynTopKCfg54.dropRatio}）`);
+        memoryLines = memoryLines.slice(0, dynK54);
+      }
+    }
     // 审查修补（伴随 Critical）：经验行实际条数在 slice 后定格——scores 切片以此为界，
     // 修掉"经验命中不足 experienceLimit 时 scores 多切导致 metric 串位"的潜在错位。
     const r7ExperienceLineCount = memoryLines.length;
@@ -1033,6 +1051,10 @@ export async function performLayeredRecall(params: {
             //（embedder/queryEmbeddingProvider/queryText；F1 生产接线，组装见
             // buildSoulAnchorSelectRuntime：向量缺席=shadow 报告回退原形态/转正回退现状——宁缺毋滥）。
             anchorSelect: buildSoulAnchorSelectRuntime(cfg, { embeddingService, userText: params.userText, logger }),
+            // soul 去重门（soul-dedupe，2026-10-19）：config 门透传（缺省 off=逐位现状；
+            // dropped 走 buildSoulPrefix 内 debug 日志；cacheKey srd/ad 隔离，不翻 soulVersion）。
+            strictRuleDedup: cfg.coreMemory?.soulRender?.strictRuleDedup,
+            anchorDedup: cfg.coreMemory?.soulRender?.anchorDedup,
             // #40（ADR0003-P3 接线票 B）：capabilities 渲染门——config 门开且 body 携带
             // 非空清单才传（渲染行=清单 1:1，#32 一致性合同）；门关整链丢弃=逐位现状。
             ...(cfg.coreMemory?.soulRender?.capabilities?.enabled === true && params.capabilities?.length

@@ -48,6 +48,13 @@ export interface L2MatchInputs {
    * IDF 分母 = 本轮传入的候选集（已在调用点按 query 收窄），非全库统计。
    */
   textHitMaxTokenRatio?: number;
+  /**
+   * #53（2026-10-19）：L2 结论层 textHit IDF 加权排序（缺省 off = 逐位现状）。
+   * true 时同 source 层内按 batch 相对 IDF 分（conclusionIdfScores，对 matchTokens
+   * 计分）降序稳定重排——稀有 token 命中者先于万词面命中者；层级序（work_fact 先于
+   * scene_block）与调用方序（平分保序）不变。纯确定性：无时钟、无随机。
+   */
+  idfWeighted?: boolean;
 }
 
 /**
@@ -66,6 +73,36 @@ export function parseFtsTokens(ftsQuery: string | null | undefined): string[] {
 function textHit(content: string, ftsTokens: readonly string[]): boolean {
   const lower = content.toLowerCase();
   return ftsTokens.some((t) => t.length >= 2 && lower.includes(t.toLowerCase()));
+}
+
+/**
+ * #53（2026-10-19）：L2 textHit 升级 batch 相对 IDF 加权计分——token 命中候选占比越低
+ * （越稀有）权重越高：idf(t) = ln(1 + N / (1 + df(t)))。df 分母 = 本轮传入候选集（与
+ * P1 万词面剔除门同一 batch 相对语义，非全库统计）；1 字 token 不计分（与 textHit
+ * 匹配集同门槛）；sceneHit 不计分（加权只作用于 textHit 通道）。确定性纯函数。
+ */
+export function conclusionIdfScores(
+  candidates: readonly L2ConclusionCandidate[],
+  tokens: readonly string[],
+): number[] {
+  const n = candidates.length;
+  if (n === 0) return [];
+  const lowerContents = candidates.map((c) =>
+    typeof c?.content === "string" ? c.content.toLowerCase() : "",
+  );
+  const usable = tokens
+    .filter((t) => typeof t === "string" && t.length >= 2)
+    .map((t) => t.toLowerCase());
+  const idfs = usable.map((lt) => {
+    let df = 0;
+    for (const lc of lowerContents) if (lc.includes(lt)) df++;
+    return Math.log(1 + n / (1 + df));
+  });
+  return lowerContents.map((lc) => {
+    let s = 0;
+    for (let i = 0; i < usable.length; i++) if (lc.includes(usable[i])) s += idfs[i];
+    return s;
+  });
 }
 
 /**
@@ -127,9 +164,14 @@ export function selectL2Conclusions(
     if (gated.length > 0) matchTokens = gated;
   }
   const rankOf = (c: L2ConclusionCandidate): number => (c.source === "work_fact" ? 0 : 1);
+  // #53：IDF 加权（缺省 off = 逐位现状——不额外计算分数）
+  const idfOn = inputs?.idfWeighted === true;
+  const idfScores = idfOn ? conclusionIdfScores(candidates, matchTokens) : [];
   const seen = new Set<string>();
-  const out: L2Conclusion[] = [];
+  const out: { c: L2Conclusion; i: number; score: number }[] = [];
+  let idx = -1;
   for (const c of candidates) {
+    idx++;
     if (out.length >= limit) break;
     if (!c || typeof c.content !== "string" || c.content.trim().length === 0) continue;
     const sceneHit = c.sceneName ? detectSceneHit(query, [c.sceneName]) : null;
@@ -145,12 +187,17 @@ export function selectL2Conclusions(
     const key = `${c.sceneName}\u0000${c.content}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ sceneName: c.sceneName, content: c.content, source: c.source, recordId: c.recordId });
+    out.push({ c: { sceneName: c.sceneName, content: c.content, source: c.source, recordId: c.recordId }, i: idx, score: idfOn ? (idfScores[idx] ?? 0) : 0 });
   }
-  // work_fact 优先（稳定结论 > 场景块摘要），同层保序——稳定排序
+  // work_fact 优先（稳定结论 > 场景块摘要）；#53 开启时同层内按 IDF 分降序（稀有 token
+  // 命中者先于万词面命中者），平分回落调用方序——稳定排序。off = 逐位现状。
   return out
-    .map((c, i) => ({ c, i }))
-    .sort((a, b) => rankOf(a.c) - rankOf(b.c) || a.i - b.i)
+    .sort((a, b) => {
+      const layer = rankOf(a.c) - rankOf(b.c);
+      if (layer !== 0) return layer;
+      if (idfOn && a.score !== b.score) return b.score - a.score;
+      return a.i - b.i;
+    })
     .map(({ c }) => c);
 }
 

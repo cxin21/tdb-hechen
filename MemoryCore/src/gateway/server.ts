@@ -1097,6 +1097,9 @@ export class TdaiGateway {
               perTurnSlots?: boolean;
               /** T3（T6-F1 接线）：承诺块渲染门（缺省 false=逐位现状）。 */
               promises?: { enabled?: boolean };
+              /** soul 去重门（soul-dedupe，2026-10-19）：与 auto-recall 同源 soulRender 配置镜像。 */
+              strictRuleDedup?: { enabled?: boolean; jaccardThreshold?: number };
+              anchorDedup?: { enabled?: boolean };
               introspect?: { snapshotLimit?: number; evidenceWindowHours?: number };
             };
           };
@@ -1118,6 +1121,9 @@ export class TdaiGateway {
             // T3（T6-F1 接线）：承诺块渲染门镜像（与 auto-recall 同源 soulRender 配置）。
             promisesEnabled: coreMem?.soulRender?.promises?.enabled === true,
             characterTensionEnabled: coreMem?.characterTension?.enabled === true,
+            // soul 去重门（soul-dedupe，2026-10-19）：镜像（与 auto-recall 同源 soulRender 配置）。
+            strictRuleDedup: coreMem?.soulRender?.strictRuleDedup,
+            anchorDedup: coreMem?.soulRender?.anchorDedup,
           },
           moodTierProvider: async (tenant) => {
             const st = this.core.getStoreForIntrospect();

@@ -19,6 +19,9 @@ import { appendAnchorShadowRow } from "./soul-anchor-shadow-sink.js";
 // #52 P1（2026-10-18）：红线段渲染单一源——多行 strict_rule 槽逐行打 tag+剥行首自身弹头
 //（旧渲染只首行带 tag 且不剥弹头 = 生产畸形实锚）；MemoryProxy 侧逐位镜像 + 契约测试钉等价。
 import { renderStrictRuleSectionLines } from "./soul-redline-render.js";
+// 灵魂注入去重单一源（2026-10-18 生产实测驱动）：红线近重复行（Jaccard/containment/保长）
+// 与价值锚 label 包含对（完整句优先）——只做选择不改写（真实性边界），门由调用方配置携带。
+import { dedupeAnchorPairs, dedupeNearDuplicateLines } from "./soul-dedupe.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
@@ -183,6 +186,20 @@ export interface SoulRenderOptions {
    *  「我的承诺：」行渲染最新 SOUL_PROMISE_RENDER_MAX 条（createdAt desc，content
    *  逐字直出）。承诺集参与 soulVersion（-pm 指纹段，承诺变化必重渲染）。 */
   promisesEnabled?: boolean;
+  /** 灵魂注入去重轮（2026-10-18，生产实测驱动）：红线近重复行去重门——缺省 undefined/off
+   *  =逐位现状（段级选项语义 :117 同款）。开启：renderStrictRuleSectionLines 输出上做独立
+   *  后处理 pass（不动单一源文件契约）：归一全同 / char-bigram Jaccard ≥ 阈值（缺省 0.45，
+   *  标定=生产 14 行全量 pairwise：真重复 0.608 / 最大语义异对 0.266）/ containment ≥0.9
+   *  （≥8 bigram 护栏）；保长规则=归一后更长者胜（更具体不变量留在注入面）；kept 行体逐字
+   *  保留（不截断/不改写/不合并——真实性边界=选择而非改写）。渲染布局影响面：进 prefix
+   *  cacheKey（srd=1[@阈值] 段）；不进 soulVersion（slots 数据未变）。 */
+  strictRuleDedup?: { enabled?: boolean; jaccardThreshold?: number };
+  /** 同轮：价值锚 label 近重复去重门——缺省 undefined/off=逐位现状。开启：decoratedPairs
+   *  （desc 门后）上做归一 label 全同 / 双向包含（短侧 ≥2 字护栏）判定，择优保留：
+   *  (1) desc 完整句（句末标点）胜（生产实锚：根因=事故叙事 vs 根因优先=完整原则句）；
+   *  (2) desc 更长者胜；(3) 平手保首现（value_id 稳定序，不抖动）；winner 原位替换。
+   *  在 #42 scorer 消费前执行（被去重锚不进 embed 成本与 top-K 选择面）；进 cacheKey（ad=1）。 */
+  anchorDedup?: { enabled?: boolean };
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -321,7 +338,7 @@ export async function buildSoulPrefix(
         : "";
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${scorerSig}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${opts?.strictRuleDedup?.enabled === true ? `,srd=1${opts.strictRuleDedup.jaccardThreshold != null ? `@${opts.strictRuleDedup.jaccardThreshold}` : ""}` : ""}${opts?.anchorDedup?.enabled === true ? ",ad=1" : ""}${scorerSig}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -443,7 +460,9 @@ export async function buildSoulPrefix(
           return `${escapeXmlTags(v.label)}${dir ? `(${dir})` : ""}${descSeg}`;
         };
         // #42（票 D / D9）：decoratedPairs 保留 desc 供打分（渲染字节与既有 decorated 逐位一致）。
-        const decoratedPairs = activeStable
+        // 去重轮：label 随行携带（soul-dedupe 判定源）；anchorDedup 在 scorer 消费前执行
+        //（被去重锚不进 embed 成本与 top-K 选择面），dropped 落 debug 日志可核对。
+        let decoratedPairs = activeStable
           .map((v) => {
             const desc = anchorDescOf(v);
             // R2 episode 门（2026-10-04 何晨令「不属于灵魂而是记忆内容的部分不得放入灵魂注入」）：
@@ -451,9 +470,18 @@ export async function buildSoulPrefix(
             //（宁缺毋滥；存量混事件锚随此门即刻退出注入，语义级混入交生成端 prompt 负面清单）。
             if (desc === "" || looksLikeEpisode(desc)) return null;
             // T4：valueId 随行携带——shadow 定标行按 valueId 归集（渲染字节零变化）。
-            return { row: renderAnchor(v, desc), desc, valueId: String(v.value_id ?? v.label) };
+            return { row: renderAnchor(v, desc), desc, valueId: String(v.value_id ?? v.label), label: String(v.label ?? "") };
           })
-          .filter((x): x is { row: string; desc: string; valueId: string } => x !== null);
+          .filter((x): x is { row: string; desc: string; valueId: string; label: string } => x !== null);
+        if (opts?.anchorDedup?.enabled === true && decoratedPairs.length > 1) {
+          const dd = dedupeAnchorPairs(decoratedPairs);
+          if (dd.dropped.length > 0) {
+            logger?.debug?.(
+              `[soul-dedupe] anchors dropped ${dd.dropped.length}/${decoratedPairs.length}: ${dd.dropped.map((d) => `${d.label}→${d.keptLabel}`).join(",")}`,
+            );
+            decoratedPairs = dd.pairs;
+          }
+        }
         const decorated = decoratedPairs.map((p) => p.row);
         // #42：打分选择接线——转正（scorer.enabled=true 且 embedder/可用查询向量在位）=
         // threshold 硬门 + top-K；#52 D3 选项C：仅 rows.length > maxRows（发生裁剪）时按
@@ -690,7 +718,19 @@ export async function buildSoulPrefix(
       // 批次声明：#24-C1+F8 为第二次渲染布局跳变；#52 P1 为第三次（红线行形态：逐行 tag+
       // 剥弹头）。slots 数据未变 → soulVersion 语义不变，布局随进程重启缓存自然刷新
       //（soulPrefixCache 为进程内存态）。
-      const redlineLines = dual ? renderStrictRuleSectionLines(ordered) : [];
+      // 去重轮（2026-10-18）：红线近重复行独立后处理 pass（不动单一源文件契约；
+      // kept 行体逐字保留=选择而非改写；≤1 行零成本直通）。dropped 落 debug 日志。
+      const redlineLinesRaw = dual ? renderStrictRuleSectionLines(ordered) : [];
+      let redlineLines = redlineLinesRaw;
+      if (opts?.strictRuleDedup?.enabled === true && redlineLinesRaw.length > 1) {
+        const dd = dedupeNearDuplicateLines(redlineLinesRaw, { jaccardThreshold: opts.strictRuleDedup.jaccardThreshold });
+        if (dd.dropped.length > 0) {
+          logger?.debug?.(
+            `[soul-dedupe] strict_rules dropped ${dd.dropped.length}/${redlineLinesRaw.length}: ${dd.dropped.map((d) => d.reason).join("; ")}`,
+          );
+          redlineLines = dd.kept;
+        }
+      }
       // #32（R5）：能力自述段「## 我能做什么」——只读派生（数据=调用方传入的运行时实况，
       // 本层零落库零派生逻辑）；逐行 1:1 渲染（一致性合同：渲染行=传入清单，顺序保持），
       // 行数策展（3-5 行）由调用方负责；缺省 undefined=不渲染=逐位现状。

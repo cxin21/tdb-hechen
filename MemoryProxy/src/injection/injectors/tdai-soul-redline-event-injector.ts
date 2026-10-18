@@ -16,6 +16,8 @@
  *     （#52 P1：多行槽逐行打 tag + 剥内容自身弹头，零 '- [strict_rule] - ' 畸形；
  *     渲染单一源 = ./soul-redline-render.ts 镜像）。行体逐字直出 ——
  *     真实性边界：无预算/无截断/无改写，红线不软化）；
+ *   - 红线近端去重门（soul-dedupe 镜像，2026-10-19）：SoulTimingConfig.redlineDedup
+ *     .enabled=true 时对渲染行做近重复整行选择（drop 变体、kept 行体逐字），缺省 off=逐位现状；
  *   - cacheStrategy = "none"：动作点现场渲染，绝不进指纹缓存（#37 票面验收）；
  *     复用 loadCoreMemorySlots 的 60s 租户分桶缓存，不额外打 core；
  *   - 同管线同内容 event 块去重：块携带 cacheKey 内容指纹，由 pipeline 落位层
@@ -35,6 +37,8 @@ import { loadCoreMemorySlots } from "./tdai-profile-memory-injector.js";
 // #52 P1（2026-10-18）：红线渲染单一源（本包镜像副本，与 MemoryCore 逐位等价+契约测试）——
 // 多行 strict_rule 槽逐行打 tag+剥行首自身弹头（旧 map 只给首行打 tag 且不剥弹头=生产畸形）。
 import { REDLINE_SECTION_TITLE, renderStrictRuleTaggedLines } from "./soul-redline-render.js";
+// soul-dedupe（2026-10-19）：红线近端去重单一源镜像副本（与 MemoryCore 逐位等价+parity 契约测试）。
+import { dedupeNearDuplicateLines } from "./soul-dedupe.js";
 
 // REDLINE_SECTION_TITLE 由 ./soul-redline-render.js 单一源提供（与 #24-C1 soul-identity
 // 红线段同源；本文件原私有常量于 #52 P1 收敛，防双源漂移）。
@@ -75,7 +79,14 @@ export class TdaiSoulRedlineEventInjector {
     const client = new TdaiClient({ ...this.baseConfig, serviceId: spaceId || this.baseConfig.serviceId });
     const slots = await loadCoreMemorySlots(client, identity);
 
-    const redlineLines = renderStrictRuleTaggedLines(slots);
+    const redlineLinesRaw = renderStrictRuleTaggedLines(slots);
+    // soul-dedupe 去重门（config-first，缺省 off=逐位现状）：只做整行选择（drop 近重复
+    // 变体、kept 行体逐字），不截断不改写——红线「不软化」约束针对行体内容，选择≠改写。
+    const dedupCfg = this.soulTiming.redlineDedup;
+    const redlineLines =
+      dedupCfg?.enabled === true && redlineLinesRaw.length > 1
+        ? dedupeNearDuplicateLines(redlineLinesRaw, { jaccardThreshold: dedupCfg.jaccardThreshold }).kept
+        : redlineLinesRaw;
     if (redlineLines.length === 0) return []; // 宁缺毋滥：无红线整块省略
 
     // 与 #24-C1 同源渲染：段名 + 逐 slot 一行，多行原文逐字直出（无截断/无转写）。

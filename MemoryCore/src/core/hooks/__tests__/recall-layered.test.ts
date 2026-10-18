@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   assembleLayeredLines,
   conclusionFingerprint,
+  conclusionIdfScores,
   conclusionUniqRatio,
   formatConclusionLine,
   parseFtsTokens,
@@ -462,3 +463,48 @@ describe("v18-c 结论块低密度门（minUniqRatio：低密度候选跳过取�
     expect(parseConfig({ recall: { conclusionLayer: { minUniqRatio: -0.2 } } }).recall.conclusionLayer.minUniqRatio).toBe(0);
   });
 });
+// ═══════════════ #53 · L2 textHit IDF 加权计分（加权排序；缺省 off=逐位现状） ═══════════════
+
+describe("#53 conclusionIdfScores（batch 相对 IDF 纯函数）", () => {
+  it("稀有 token idf 高于万词面 token；空 tokens/空候选 → 全 0；1 字 token 不计分", () => {
+    const cands = ["含缓存设计", "含对账流程", "含对账脚本"].map((c) => cand({ content: c }));
+    const scores = conclusionIdfScores(cands, ["缓存", "对账"]);
+    // df：缓存=1，对账=2，N=3 → idf(缓存)=ln(1+3/2) > idf(对账)=ln(1+3/3)
+    expect(scores[0]).toBeGreaterThan(scores[1]);
+    expect(conclusionIdfScores(cands, [])).toEqual([0, 0, 0]);
+    expect(conclusionIdfScores([], ["缓存"])).toEqual([]);
+    expect(conclusionIdfScores(cands, ["的"])).toEqual([0, 0, 0]);
+  });
+});
+
+describe("#53 selectL2Conclusions idfWeighted（同层内 IDF 降序稳定重排；缺省 off=逐位现状）", () => {
+  // 稀有 token "缓存" 只在 rare；"对账" 3/3 候选命中（万词面倾向）
+  const rare = cand({ content: "缓存编码不一致导致对账差异", source: "work_fact" });
+  const mid = cand({ content: "对账流程里部署脚本幂等", source: "work_fact" });
+  const tail = cand({ content: "对账日志轮转策略", source: "work_fact" });
+
+  it("缺省（无 idfWeighted）= 逐位现状：调用方序不变", () => {
+    const out = selectL2Conclusions("缓存对账", [mid, tail, rare], { ftsTokens: ["缓存", "对账"] }, 5);
+    expect(out.map((c) => c.content)).toEqual([mid.content, tail.content, rare.content]);
+  });
+
+  it("idfWeighted=true：稀有 token 命中者排前（万词面命中者靠后）；入选集合不变", () => {
+    const out = selectL2Conclusions("缓存对账", [mid, tail, rare], { ftsTokens: ["缓存", "对账"], idfWeighted: true }, 5);
+    expect(out).toHaveLength(3);
+    expect(out.map((c) => c.content)[0]).toBe(rare.content);
+  });
+
+  it("层级序不被 score 反转（work_fact 先于 scene_block）；平分回落调用方序", () => {
+    const sb = cand({ content: "缓存治理决议：对账差异以幂等重放收敛", source: "scene_block" });
+    const out = selectL2Conclusions("缓存对账", [sb, mid, tail, rare], { ftsTokens: ["缓存", "对账"], idfWeighted: true }, 5);
+    expect(out.map((c) => c.source)).toEqual(["work_fact", "work_fact", "work_fact", "scene_block"]);
+    // work_fact 层内：rare（稀有分高）→ mid/tail 平分（都只命中万词面"对账"）保调用方序
+    expect(out.map((c) => c.content)).toEqual([rare.content, mid.content, tail.content, sb.content]);
+  });
+
+  it("config 解析：idfWeighted 缺省 false；yaml true 装载", () => {
+    expect(parseConfig({ recall: { enabled: true } }).recall.conclusionLayer.idfWeighted).toBe(false);
+    expect(parseConfig({ recall: { conclusionLayer: { idfWeighted: true } } }).recall.conclusionLayer.idfWeighted).toBe(true);
+  });
+});
+
