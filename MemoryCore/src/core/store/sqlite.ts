@@ -383,6 +383,18 @@ export function _setJiebaForTest(instance: JiebaInstance | null): void {
 }
 
 /**
+ * Whether the jieba singleton is currently loaded with a real instance
+ * (i.e. the require + dict load has succeeded and been cached).
+ * Exported for testing only (#68 S0 boot-warmup preload contract: after a
+ * listen-time `tokenizeForFts` preload, later `buildFtsQuery` calls must
+ * consult the cached singleton instead of re-initialising).
+ * @internal
+ */
+export function _isJiebaLoadedForTest(): boolean {
+  return _jieba !== undefined && _jieba !== null;
+}
+
+/**
  * Convert a BM25 rank (negative = more relevant) to a 0–1 score.
  * Mirrors the formula in openclaw core `hybrid.ts`.
  */

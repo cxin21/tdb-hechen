@@ -29,6 +29,27 @@ export interface HealthResponse {
     pipelineWorker: unknown;
     stateBackend: string;
   };
+  /**
+   * Boot warmup status (#68 core 启动暖机化). Read-only observability only —
+   * /health stays 200 regardless of warmup outcome; no readiness gating.
+   * warming = S1-S3 still running; done = all steps finished;
+   * failed = at least one step failed (service still serves normally).
+   */
+  warmup?: HealthWarmupInfo;
+}
+
+/** #68 boot warmup — per-step timing + aggregate status exposed via /health. */
+export interface HealthWarmupInfo {
+  status: "warming" | "done" | "failed";
+  /** Per-step elapsed ms; a key appears once its step has finished. */
+  steps: {
+    jiebaMs?: number;
+    storeReadyMs?: number;
+    queryExpandMs?: number;
+    rerankMs?: number;
+  };
+  /** Wall-clock ms from S0 start (runPreListen) through the last finished step. */
+  totalMs: number;
 }
 
 // ============================

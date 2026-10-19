@@ -64,6 +64,9 @@ import { computeMoodTierFromStore, type MoodLineConfig } from "../core/hooks/moo
 import { createReranker } from "../core/recall/rerank/factory.js";
 import type { RecallRerankConfig } from "../config.js";
 import type { MemoryReranker } from "../core/recall/rerank/types.js";
+import { tokenizeForFts } from "../core/store/sqlite.js";
+import { expandQuery, resolveQueryExpansionRunner } from "../core/recall/query-expand.js";
+import { BootWarmup, RERANK_WARMUP_CLOUD_DOCS, buildRerankWarmupDocs } from "./boot-warmup.js";
 import type { V2RouterDeps } from "./v2-router.js";
 import { handleV3MetaRoute, V3_PREFIX } from "../metadata/router/v3-meta-router.js";
 import { handleInternalMetaRoute, V3_INTERNAL_PREFIX } from "../metadata/router/internal-meta-router.js";
@@ -356,6 +359,10 @@ export class TdaiGateway {
   } | null = null;
   /** Guards against concurrent / repeated stop() invocations (e.g. multiple SIGINT). */
   private stopPromise: Promise<void> | null = null;
+
+  // ── #68 boot warmup：启动暖机编排（S0 在 listen 前；S1-S3 在 listen 后 fire-and-forget）──
+  // 编排/状态机见 gateway/boot-warmup.ts；经 getBootWarmup() 惰性构造（单次幂等）。
+  private bootWarmup: BootWarmup | null = null;
 
   // ── Integrated services (Scanner + Worker) ──
   private stateBackend: IStateBackend | null = null;
@@ -789,6 +796,11 @@ export class TdaiGateway {
       );
     });
 
+    // ── #68 S0：jieba/FTS 字典直载（listen 前唯一同步步，~50-100ms）──
+    // /health 此时尚不存在（不违反可用性约束）；失败非致命——FTS 查询侧退回
+    // unicode61 切分，服务照常起。预热与查询侧共享同一 jieba 单例（sqlite.ts）。
+    this.getBootWarmup().runPreListen();
+
     const { port, host } = this.config.server;
 
     await new Promise<void>((resolve, reject) => {
@@ -803,31 +815,66 @@ export class TdaiGateway {
 
     // ── T15-B：启动 embedding 探活（embed-only，不写哨兵行；5min 周期 + 启动即探一次）──
     this.startEmbeddingProbe();
-    // ── 灵魂注入性能轮（2026-10-19）：local rerank 进程内启动预热 ──
-    this.startRerankWarmup();
+    // ── #68 S1-S3：store 就绪有界等待 → query-expand → rerank 真实档位预热 ──
+    // listen 已完成、/health 已可用；fire-and-forget 串行，非致命（编排在 boot-warmup.ts）。
+    this.getBootWarmup().runPostListen();
   }
 
-  // 灵魂注入性能轮（2026-10-19）：local rerank 进程内启动预热。
-  // 痛点（E2E 实测）：provider=local 的模型 worker 加载 3-5s 发生在本进程首次 rerank
-  // 调用——core 重启后首个 /v3/recall 直撞 5000ms 预算 504（第二次起恢复 ~1s）。
-  // #64 的 offline warmup 脚本只热「模型文件+独立进程实例」，救不了「新进程首召回」。
-  // 本预热走与 recall 同一进程级单例池（getSharedLocalReranker keyed by modelDir）：
-  // 启动即 fire-and-forget 一次 dummy 推理，把 worker 加载成本移出首召回关键路径。
-  // 非致命合同：配置关/工厂 null 静默跳过；失败仅 warn（recall 侧已有完整降级链）。
-  private startRerankWarmup(): void {
+  // ── #68 boot warmup：生产步骤实现 + 挂接点 ──
+  // 编排/状态机在 gateway/boot-warmup.ts（BootWarmup，deps 全注入可单测），这里只提供
+  // 真实步骤。原「灵魂注入性能轮」的 1×1 local 预热由 warmRerank() 的真实档位预热升级
+  // 取代（#64 的 offline 脚本 scripts/warmup:reranker 不在本票范围，保持不动）。
+  private getBootWarmup(): BootWarmup {
+    if (!this.bootWarmup) {
+      this.bootWarmup = new BootWarmup({
+        logger: this.logger,
+        // S0：索引侧 jieba 加载（require + 字典）；查询侧 buildFtsQuery 共享同一单例，
+        // 故预载后首召回不再付字典加载成本。
+        jiebaPreload: () => {
+          tokenizeForFts("[warmup] FTS 字典预加载");
+        },
+        // S1：store 就绪有界等待（≤5s；超时非失败——可用性由 /health stores 表达）。
+        waitForStores: (timeoutMs) => this.core.waitForStores(timeoutMs),
+        queryExpandWarmup: () => this.warmQueryExpand(),
+        rerankWarmup: () => this.warmRerank(),
+      });
+    }
+    return this.bootWarmup;
+  }
+
+  // S2：query-expand 预热。门：memory.recall.queryExpansion.enabled（与 auto-recall
+  // 同一开关）。LLM 未配（enabled=false / 缺 baseUrl / 缺 apiKey）→ runner undefined
+  // → no-op 非失败；进程级单例在此构造并缓存，首召回不再付动态 import 链 + 构造成本。
+  private async warmQueryExpand(): Promise<void> {
+    const qe = (this.config.memory as { recall?: { queryExpansion?: { enabled?: boolean } } } | undefined)
+      ?.recall?.queryExpansion;
+    if (!qe?.enabled) return;
+    // memory.llm 与 auto-recall 的 cfg.llm 同源（顶层 TDAI_LLM_*/yaml 解析后 splice）。
+    const runner = await resolveQueryExpansionRunner(this.config.memory.llm, this.config.instanceId, this.logger);
+    if (!runner) return;
+    // 1 次极小真实 LLM 调用（maxTerms=1 / 10s 超时，无重试）：把 ark origin 首连 +
+    // 首个往返移出关键路径；LLM 失败由 expandQuery 自吞（warnOnce + 负缓存 + []）。
+    await expandQuery("[warmup] 查询扩展预热", runner, { maxTerms: 1, timeoutMs: 10_000, logger: this.logger });
+  }
+
+  // S3：rerank 真实档位预热（升级 #64 的 1×1 预热）。非致命合同：配置关/工厂 null
+  // 静默跳过；失败向上抛由 BootWarmup 统一 warn + status=failed（recall 侧已有完整
+  // 降级链，预热失败不影响服务）。
+  private async warmRerank(): Promise<void> {
     const rc = (this.config.memory as { recall?: { rerank?: RecallRerankConfig } } | undefined)?.recall?.rerank;
-    if (!rc?.enabled || rc.provider !== "local") return;
+    if (!rc?.enabled) return;
+    // local → candidates 档（缺省 12，clamp [1,100]）真实长度中文样本：真实批量推理
+    // （worker 加载 + tokenize + ORT session 暖机）全落在此步。
+    // cloud（siliconflow/dashscope，含 none 兜底）→ 1×1 dummy：预热首连/鉴权/往返。
+    const cloud = rc.provider !== "local";
+    const docs = cloud ? [...RERANK_WARMUP_CLOUD_DOCS] : buildRerankWarmupDocs(rc.candidates);
     const t0 = Date.now();
-    void (async () => {
-      try {
-        const reranker = createReranker(rc, { dataDir: this.config.data.baseDir });
-        if (!reranker) return;
-        const scores = await reranker.rerank("[warmup] 部署后首次召回预热", ["预热文档：本地精排模型加载与首次推理。"]);
-        this.logger.info(`[rerank] startup warmup done in ${Date.now() - t0}ms (scores=${scores?.length ?? 0})`);
-      } catch (err) {
-        this.logger.warn?.(`[rerank] startup warmup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-      }
-    })();
+    const reranker = createReranker(rc, { dataDir: this.config.data.baseDir });
+    if (!reranker) return; // 工厂 null（provider=none / local 未落地）→ 静默跳过
+    const scores = await reranker.rerank("[warmup] 部署后首次召回预热", docs);
+    this.logger.info(
+      `[rerank] startup warmup done in ${Date.now() - t0}ms (scores=${scores?.length ?? 0}, docs=${docs.length})`,
+    );
   }
 
   // ============================
@@ -1760,6 +1807,9 @@ export class TdaiGateway {
         stateBackend: this.stateBackend ? "connected" : "none",
       },
       memory: buildMemoryHealth(memory),
+      // #68 boot warmup 只读段（warming|done|failed + 各步耗时 + totalMs）。
+      // /health 恒 200：warmup 失败不改变 status——无 readiness 门（设计裁决）。
+      warmup: this.bootWarmup?.snapshot(),
     };
     sendJson(res, 200, response);
   }

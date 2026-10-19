@@ -290,6 +290,36 @@ export class TdaiCore {
   }
 
   /**
+   * Bounded wait for store initialisation (#68 S1 boot warmup).
+   *
+   * `storeReady` is fire-and-forget (`initialize()` kicks it off without
+   * awaiting). The gateway's boot warmup uses this gate so the first
+   * `/v3/recall` no longer races an unbounded 503 window: we wait at most
+   * `timeoutMs` for the stores to come up and report the outcome — the
+   * caller treats `false` (timeout) as non-fatal.
+   *
+   * - Resolves `true`  — stores finished initialising within `timeoutMs`.
+   * - Resolves `false` — the bounded wait elapsed first (still initialising).
+   * - Never rejects: `initStores` swallows its own errors, so the underlying
+   *   promise always settles; a rejected gate is reported as `false` too.
+   */
+  async waitForStores(timeoutMs: number): Promise<boolean> {
+    // Never initialized (or already torn down) → nothing to wait for.
+    const gate: Promise<void> = this.storeReady ?? Promise.resolve();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      return await Promise.race([gate.then(() => true), timeout]);
+    } catch {
+      return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Destroy all resources. Call on shutdown.
    */
   async destroy(): Promise<void> {
