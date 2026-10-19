@@ -454,8 +454,13 @@ export class TdaiClient {
    * K 核心记忆稳定块（设计 §3 / spec §6）：拉 /v3/core-memory/read 的 slots
    * （identity / core_value / strict_rule），供 session_init 稳定区注入（cache 友好）。
    * P2-T12（K1）：按租户读 —— identity 三元组透传成 isolation 头。失败/空 → []（宁缺毋滥，不注入空块）。
+   * #67（R3 身份叙事层，2026-10-19）：opts.format="narrative" 透传 body——服务端开关 governs
+   *（coreMemory.soulRender.identityNarrative.enabled 关闭时格式被忽略=旧响应形态，双向兼容）；
+   * 开启时 identity/self_identity 两槽折叠为 identity_narrative 合成槽（叙事=渲染侧派生，
+   * Park 2411.10109 条目存储+叙事渲染并存），经通用 <slot> 循环原样渲染——proxy 零组装
+   * 逻辑复刻（单一源在 MemoryCore，禁双份实现）。
    */
-  async listCoreMemories(identity: TdaiIdentity): Promise<Array<{ slot: string; content: string; source: string; version: number; updated_at: string }>> {
+  async listCoreMemories(identity: TdaiIdentity, opts?: { format?: "narrative" }): Promise<Array<{ slot: string; content: string; source: string; version: number; updated_at: string }>> {
     if (!this.isEnabled()) return [];
     const base = this.config.endpoint.replace(/\/$/, "");
     const controller = new AbortController();
@@ -469,7 +474,8 @@ export class TdaiClient {
           "x-tdai-service-id": this.config.serviceId || "default",
           ...this.isoGateHeaders(identity),
         },
-        body: "{}",
+        // #67：narrative 格式按需透传（缺省 {} = 旧契约逐字节不变；服务端门 governs）。
+        body: JSON.stringify(opts?.format ? { format: opts.format } : {}),
         signal: controller.signal,
       });
       if (!resp.ok) return [];

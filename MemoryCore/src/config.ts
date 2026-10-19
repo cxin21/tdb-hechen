@@ -498,6 +498,14 @@ export interface MemoryCoreMemoryConfig {
      *  价值锚行/重要的人/品格行/感受段/capabilities 段照常。legacy 路径不适用
      *  （身份行是 legacy 唯一身份载体）。布局级渲染门：不翻 soulVersion（批次纪律）。 */
     perTurnSlots: boolean;
+    /** #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事化门——
+     *  缺省 false=逐位现状；显式 true：soul dual 路径身份两行由 renderIdentityNarrative
+     *  叙事段替代，且 /v3/core-memory/read 支持 format=narrative（身份两槽折叠为
+     *  identity_narrative 合成槽，proxy 经 API 透传消费）。模板常量+事实句逐字，
+     *  无 LLM/随机/时钟；生成闸违例或无身份内容→null→条目渲染兜底。Park 2411.10109
+     *  口径：条目存储+叙事渲染并存（渲染侧派生不回写存储）；strict_rule/价值锚不动。
+     *  布局级渲染门：不翻 soulVersion（批次纪律，ADR-0003 §5：模板指纹 nv 随门声明）。 */
+    identityNarrative: { enabled: boolean };
     /** #29（R5）+#42（票 D / D9）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用
      *  （缺省 999=现状全注入）。scorer=相似度打分器 config 门（D9：确定性 cosine、shadow-first）：
      *  enabled 缺省 false=shadow 只报告不裁剪（渲染逐位现状）；true=转正（threshold 硬门+top-K
@@ -1337,6 +1345,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         perTurnSlots: (g as Record<string, unknown>)["perTurnSlots"] === undefined
           ? true
           : (g as Record<string, unknown>)["perTurnSlots"] === true,
+        // #67（R3 身份叙事层）：身份叙事化门——缺省 false=逐位现状；显式 true 才开启
+        //（非布尔值回退缺省，沿 perTurnSlots/snapshotsEnabled 解析先例：形状错不炸配置）。
+        identityNarrative: {
+          enabled: ((g as Record<string, unknown>)["identityNarrative"] as Record<string, unknown> | undefined)?.["enabled"] === true,
+        },
         // #29（R5）：情境锚选择门——缺省 999=现状全注入（当前锚基数个位数，无收益不启动）；
         // clamp 1..999 防手滑 0/负数。#42（票 D / D9）：scorer 门——enabled 缺省 false（shadow）；
         // threshold clamp 0..1 缺省 0；形状错一律回退缺省（宁缺毋滥，沿 capabilities 解析先例）。

@@ -1168,6 +1168,8 @@ export class TdaiGateway {
               budgetCharacterChars?: number;
               /** #52 D3：per-turn 身份两行省略门（缺省 true=逐位现状）。 */
               perTurnSlots?: boolean;
+              /** #67（R3 身份叙事层）：身份叙事化门（缺省 false=逐位现状）。 */
+              identityNarrative?: { enabled?: boolean };
               /** T3（T6-F1 接线）：承诺块渲染门（缺省 false=逐位现状）。 */
               promises?: { enabled?: boolean };
               /** soul 去重门（soul-dedupe，2026-10-19；质量轮扩 maxLines/suppressAnchorOverlap/
@@ -1197,6 +1199,8 @@ export class TdaiGateway {
             budgetCharacterChars: coreMem?.soulRender?.budgetCharacterChars,
             // #52 D3：per-turn 身份两行省略门镜像（与 auto-recall 同源 soulRender 配置）。
             perTurnSlots: coreMem?.soulRender?.perTurnSlots,
+            // #67（R3 身份叙事层）：身份叙事化门镜像（与 auto-recall 同源 soulRender 配置）。
+            identityNarrative: coreMem?.soulRender?.identityNarrative?.enabled === true,
             // T3（T6-F1 接线）：承诺块渲染门镜像（与 auto-recall 同源 soulRender 配置）。
             promisesEnabled: coreMem?.soulRender?.promises?.enabled === true,
             characterTensionEnabled: coreMem?.characterTension?.enabled === true,

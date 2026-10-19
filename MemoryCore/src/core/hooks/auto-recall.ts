@@ -1071,6 +1071,10 @@ export async function performLayeredRecall(params: {
             // #52 D3（双通道 slots 去重）：per-turn 身份两行省略门（缺省 true=逐位现状；
             // false=dual 路径跳过（我是谁）/（我心中的他）slots 行——会话头已承载）。
             perTurnSlots: cfg.coreMemory?.soulRender?.perTurnSlots,
+            // #67（R3 身份叙事层，2026-10-19）：身份叙事化门——config 门透传（缺省 false=
+            // 逐位现状；true=dual 路径身份两行由 renderIdentityNarrative 叙事段替代，
+            // cacheKey nv 段隔离，不翻 soulVersion；Park 2411.10109 条目存储+叙事渲染并存）。
+            identityNarrative: cfg.coreMemory?.soulRender?.identityNarrative?.enabled === true,
             // #29（R5）+#42（票 D / D9）：情境锚选择门——config 门透传 + 运行时注入
             //（embedder/queryEmbeddingProvider/queryText；F1 生产接线，组装见
             // buildSoulAnchorSelectRuntime：向量缺席=shadow 报告回退原形态/转正回退现状——宁缺毋滥）。

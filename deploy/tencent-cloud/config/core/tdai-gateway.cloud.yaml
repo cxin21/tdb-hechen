@@ -315,6 +315,13 @@ memory:
       # #52 D3：per-turn soul 块省略（我是谁）/（我心中的他）两行（system 侧 core_memory 块已承载同内容）；
       # false = 省略模式（生产现状）；缺省 true = 每轮渲染（旧行为）；legacy（dual=false）路径不受影响
       perTurnSlots: false
+      # #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事化门——
+      # true=soul dual 路径身份两行由 renderIdentityNarrative 叙事段替代（模板常量+事实句
+      # 逐字，无 LLM/随机/时钟；生成闸违例或无身份内容→条目渲染兜底），且 /v3/core-memory/read
+      # 支持 format=narrative（身份两槽折叠为 identity_narrative 合成槽，proxy 经 API 透传）。
+      # Park 2411.10109 口径：条目存储+叙事渲染并存；strict_rule/价值锚不动；缺省 false。
+      identityNarrative:
+        enabled: true
       # #41（D8 证据迁移门）：user 确认话语白名单→refKey 严格相等的 open promise 迁移；
       # 承诺创建通道由 lifecycle.reflection.promiseProposals→人工采纳承载（LLM 无直改路径）
       promiseEvidence:

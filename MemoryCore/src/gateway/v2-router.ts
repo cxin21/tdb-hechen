@@ -27,6 +27,9 @@ import type { EmbeddingService } from "../core/store/embedding.js";
 import { computeMoodTier } from "../core/hooks/mood-line.js";
 import { applyAdoptedPromiseTransition, type PromiseTerminalTarget } from "../core/hooks/soul-promise-proposal.js";
 import { PROMISE_TERMINAL_STATUSES } from "../core/hooks/soul-promise.js";
+// #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事组装单一源
+//（/v3/core-memory/read format=narrative 主路；模板常量+事实句逐字，无 LLM/随机/时钟）。
+import { IDENTITY_NARRATIVE_SLOT, renderIdentityNarrative } from "../core/hooks/identity-narrative.js";
 import { createScopedStorageAdapter, type StorageAdapter } from "../core/storage/adapter.js";
 import { StoragePaths } from "../core/storage/types.js";
 import type { Logger } from "../core/types.js";
@@ -2322,13 +2325,51 @@ async function handleCoreMemoryRead(_body: unknown, _auth: V2AuthContext, reques
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
   // GROW：可选 include_retired（Panel 退休区用；默认 false = active-only 匹配面不变）
-  const b = (_body ?? {}) as { include_retired?: unknown };
+  const b = (_body ?? {}) as { include_retired?: unknown; format?: unknown };
   const includeRetired = b.include_retired === true;
   // P2-T12（K1）：core 按租户过滤（slots 与 values 同一租户范围）
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
   const core = (await store.readCore?.(tenant)) ?? [];
   const values = (await Promise.resolve(store.listValues?.(tenant, { includeRetired }))) ?? [];
-  return successEnvelope<{ slots: typeof core; values: typeof values }>({ slots: core, values }, requestId);
+  // #67（R3 身份叙事层，2026-10-19）：format="narrative"（且 config 门开）——identity /
+  // self_identity 两槽折叠为一条 identity_narrative 叙事槽（renderIdentityNarrative 单一源：
+  // 模板常量+事实句逐字，无 LLM/随机/时钟；soul 会话头辅路同源双路）。Park 2411.10109
+  // 口径：条目存储 + 叙事渲染并存——只改响应形态，存储合同（identity-discovery 提案门 /
+  // version++）不动；门关 / 格式缺席 / 生成闸违例 / 无身份内容 → 原条目形态（逐位现状，
+  // proxy 兼容旧响应）。非身份槽（strict_rule / core_value…）原样保留；narrSlot 的
+  // version/updated_at 取身份行聚合（max version / 最新 updated_at，合成槽可审计溯源）。
+  const cfg = deps.config?.memory?.coreMemory;
+  const narrEnabled = cfg?.soulRender?.identityNarrative?.enabled === true;
+  let slotsOut: typeof core = core;
+  if (narrEnabled && b.format === "narrative") {
+    const narr = renderIdentityNarrative(core, {
+      budgetChars: (cfg?.soulRender?.budgetSelfChars ?? 600) + (cfg?.soulRender?.budgetIdentityChars ?? 900),
+    });
+    if (narr) {
+      const isId = (s: { slot: string }) => s.slot === "self_identity" || s.slot === "identity";
+      const idRows = core.filter(isId);
+      const narrSlot = {
+        slot: IDENTITY_NARRATIVE_SLOT,
+        content: narr,
+        source: "narrative",
+        version: Math.max(0, ...idRows.map((s) => s.version)),
+        updated_at: idRows.map((s) => s.updated_at).sort().at(-1) ?? "",
+      };
+      slotsOut = [];
+      let placed = false;
+      for (const s of core) {
+        if (isId(s)) {
+          if (!placed) {
+            slotsOut.push(narrSlot); // 首个身份行的位置承载叙事槽（身份内容位置不丢）
+            placed = true;
+          }
+          continue;
+        }
+        slotsOut.push(s);
+      }
+    }
+  }
+  return successEnvelope<{ slots: typeof core; values: typeof values }>({ slots: slotsOut, values }, requestId);
 }
 
 async function handleCoreMemoryWrite(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {

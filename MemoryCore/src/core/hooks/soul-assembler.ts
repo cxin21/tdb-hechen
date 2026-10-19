@@ -31,6 +31,9 @@ import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
 import { renderStateLine, type SoulState } from "./soul-state.js";
+// #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事组装单一源
+//（模板常量+事实句逐字，无 LLM/随机/时钟；生成闸/写入闸/预算闸三闸内建）。
+import { NARRATIVE_TEMPLATE_VERSION, renderIdentityNarrative } from "./identity-narrative.js";
 
 /**
  * D-1（2026-09-21，用户拍板"全做"）：F17 截断改按行（事实）边界。
@@ -155,6 +158,14 @@ export interface SoulRenderOptions {
    *  不静默丢失）。布局级渲染门：进 prefix cacheKey（false 才进键段）；不进 soulVersion
    *  （ADR0003 批次纪律：布局变更不翻 sv，soulVer 只由数据驱动）。 */
   perTurnSlots?: boolean;
+  /** #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事化门——缺省
+   *  false（undefined 同）=逐位现状；显式 true：dual 路径身份两行由 renderIdentityNarrative
+   *  叙事段替代（模板常量+事实句逐字，无 LLM/随机/时钟；生成闸违例或无身份内容→null→
+   *  条目渲染兜底，身份载体不丢）。Park 2411.10109 口径：条目存储+叙事渲染并存
+   *  （渲染侧派生不回写存储）；strict_rule 红线段不动。布局级渲染门：进 prefix cacheKey
+   *  （nv=模板指纹段，仅 true 时出现，缺省键逐字节现状）；不进 soulVersion
+   *  （ADR0003 §5 批次纪律：模板变更一次性显式声明跳变）。 */
+  identityNarrative?: boolean;
   /** #29（R5）：情境锚选择触发门——价值锚行数 > maxRows 才启用；shadow 先行：只报告不裁剪、
    *  渲染逐位现状。#42（票 D / D9）：相似度打分器接线——enabled 缺省 false（shadow 报告随
    *  向量可用性升级逐锚分形态）；enabled=true=转正（threshold 硬门+top-K）；#52 D3 选项C：
@@ -369,7 +380,7 @@ export async function buildSoulPrefix(
         : "";
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${opts?.strictRuleDedup?.enabled === true ? `,srd=1${opts.strictRuleDedup.jaccardThreshold != null ? `@${opts.strictRuleDedup.jaccardThreshold}` : ""}${opts.strictRuleDedup.maxLines ? `,max=${opts.strictRuleDedup.maxLines}` : ""}${opts.strictRuleDedup.suppressAnchorOverlap === true ? ",sup=1" : ""}` : ""}${opts?.anchorDedup?.enabled === true ? `,ad=1${opts.anchorDedup.embeddingThreshold ? `,adEmb=${opts.anchorDedup.embeddingThreshold}` : ""}` : ""}${scorerSig}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${opts?.strictRuleDedup?.enabled === true ? `,srd=1${opts.strictRuleDedup.jaccardThreshold != null ? `@${opts.strictRuleDedup.jaccardThreshold}` : ""}${opts.strictRuleDedup.maxLines ? `,max=${opts.strictRuleDedup.maxLines}` : ""}${opts.strictRuleDedup.suppressAnchorOverlap === true ? ",sup=1" : ""}` : ""}${opts?.anchorDedup?.enabled === true ? `,ad=1${opts.anchorDedup.embeddingThreshold ? `,adEmb=${opts.anchorDedup.embeddingThreshold}` : ""}` : ""}${opts?.identityNarrative === true ? `,nv=${NARRATIVE_TEMPLATE_VERSION}` : ""}${scorerSig}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -457,6 +468,23 @@ export async function buildSoulPrefix(
             return rank(a.slot) - rank(b.slot);
           })
         : slots;
+      // #67（R3 身份叙事层）：identityNarrative=true 时 dual 路径身份两行由确定性叙事段
+      // 替代——renderIdentityNarrative 单一源（本会话头辅路与 system 侧 core_memory
+      // format=narrative 主路双路同源；MemoryProxy 经 API 透传消费，不复制组装逻辑）。
+      // Park 2411.10109 口径：条目存储 + 叙事渲染并存——只改渲染字节，存储合同
+      //（identity-discovery 提案门 / version++）不动；strict_rule 红线段照常（不参与叙事化）。
+      // 生成闸违例 / 无身份内容 → null → narrLines 空 → 身份两行按逐位现状渲染
+      //（条目渲染兜底）。预算=叙事替代两行，取 budgetSelfChars+budgetIdentityChars 之和。
+      const idNarr = dual && opts?.identityNarrative === true;
+      let narrLines: string[] = [];
+      if (idNarr) {
+        const narr = renderIdentityNarrative(slots, {
+          budgetChars: (opts?.budgetSelfChars ?? 600) + (opts?.budgetIdentityChars ?? 900),
+        });
+        if (narr) narrLines = narr.split("\n");
+      }
+      const idNarrSkip = idNarr && narrLines.length > 0;
+      lines.push(...narrLines);
       for (const s of ordered) {
         // #31 探针 P24（R5，2026-10-16）：空白槽内容不渲染空 `[slot] ` 行
         //（宁缺毋滥，与锚 desc 空跳过同哲学；生产 slots 无空内容=逐位现状不变）。
@@ -470,6 +498,9 @@ export async function buildSoulPrefix(
         // strict_rule 不在此行内（上面已 continue，仍走红线段），其余段照常。
         // legacy 路径不适用（身份行是 legacy 唯一身份载体，见 SoulRenderOptions 注）。
         if (dual && opts?.perTurnSlots === false && (s.slot === "self_identity" || s.slot === "identity")) continue;
+        // #67：叙事段已承载身份两槽时跳过条目行（与 perTurnSlots 跳过同层语义；
+        // narrLines 为空时本门不开=条目渲染兜底）。
+        if (idNarrSkip && (s.slot === "self_identity" || s.slot === "identity")) continue;
         const budget = budgetFor(s.slot);
         const content = budget !== undefined ? truncateByLines(s.content, budget) : s.content;
         const label = labelFor(s.slot);

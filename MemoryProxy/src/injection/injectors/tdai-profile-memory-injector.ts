@@ -262,7 +262,12 @@ export async function loadCoreMemorySlots(client: TdaiClient, identity: TdaiIden
   const hit = _coreSlotsCache.get(key);
   if (hit && hit.expiresAt > now) return hit.slots;
   try {
-    const slots = await client.listCoreMemories(identity);
+    // #67（R3 身份叙事层，2026-10-19）：format=narrative 透传——服务端（MemoryCore）开关
+    // governs：门开=identity/self_identity 两槽折叠为 identity_narrative 合成槽（渲染侧派生，
+    // Park 2411.10109 条目存储+叙事渲染并存）；门关=格式被忽略=旧响应形态（双向兼容）。
+    // API/透传消费（设计硬约束 6）：proxy 零叙事组装逻辑复刻（单一源在 MemoryCore，
+    // 禁双份实现）；identity_narrative 槽走下方既有 <slot> 通用循环原样渲染。
+    const slots = await client.listCoreMemories(identity, { format: "narrative" });
     if (slots.length > 0) {
       _coreSlotsCache.set(key, { slots, expiresAt: now + CORE_SLOTS_TTL_MS });
       return slots;
