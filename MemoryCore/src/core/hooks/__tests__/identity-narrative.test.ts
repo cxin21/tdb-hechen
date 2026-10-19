@@ -102,6 +102,34 @@ describe("#67 renderIdentityNarrative：确定性叙事组装（A 案）", () =>
     // 缺组标签的裸事实行
     expect(verifyNarrativeProvenance([NARR_HEAD, "我是测试者。", NARR_TAIL].join("\n"), slots)).toBe(false);
   });
+
+  it("生成闸分隔符自碰撞回归（2026-10-19 生产 E2E）：事实行含内部「；」仍成叙事且过闸", () => {
+    // 真实生产形状：self_identity 行自身含模板分隔符「；」（回切分片段 ≠ 原整行，
+    // 旧整行白名单恒判违例 → 叙事静默退条目）。修正后回查单位=原行再切分片段。
+    const real = [
+      { slot: "self_identity", content: "- 我在客开中坚持纪律：逐处断言；复读核对；改动后跑校验。" },
+      { slot: "identity", content: "- 用户承担运维与排查职责。" },
+    ];
+    const narr = renderIdentityNarrative(real);
+    expect(narr).not.toBeNull();
+    expect(narr).toContain("逐处断言；复读核对；改动后跑校验。");
+    expect(verifyNarrativeProvenance(narr!, real)).toBe(true);
+  });
+
+  it("生成闸仍拒（片段白名单语义下）：外部片段与无原文出处的空段 → false", () => {
+    const real = [{ slot: "self_identity", content: "- 甲；乙。" }];
+    // 片段「丙。」不在任何原文行再切分结果里（「甲」缺组前缀同样不在）
+    expect(verifyNarrativeProvenance([NARR_HEAD, `${NARR_SELF}甲；丙。`, NARR_TAIL].join("\n"), real)).toBe(false);
+    // 空段：原文行无空片段来源（无边界/连续分隔符），凭空空段=违例
+    expect(verifyNarrativeProvenance([NARR_HEAD, `${NARR_SELF}- 甲；；乙。`, NARR_TAIL].join("\n"), real)).toBe(false);
+  });
+
+  it("生成闸空片段边界：原文行自带尾分隔符产生的空片段合法（仍全为原文字节）", () => {
+    const real = [{ slot: "self_identity", content: "- 附加说明；" }];
+    const narr = renderIdentityNarrative(real);
+    expect(narr).not.toBeNull();
+    expect(verifyNarrativeProvenance(narr!, real)).toBe(true);
+  });
 });
 
 // ── soul-assembler 集成（identityNarrative 门）─────────────────────────────

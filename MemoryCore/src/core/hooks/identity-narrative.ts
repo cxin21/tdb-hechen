@@ -108,6 +108,9 @@ export function renderIdentityNarrative(
  * 生成闸单一源（导出供测试独立断言）：叙事每一行必须逐字等于模板常量，或等于
  * 组标签 + 若干「slots 原文行（trim 后）」按模板分隔符的连接。独立于组装路径重建
  * 期望串做字节比对——组装逻辑未来若混入插值/随机/外部材料，本门即红。
+ *
+ * 回查单位=片段白名单（原行按模板分隔符再切分），理由与安全性论证见实现内注释
+ *（分隔符自碰撞：真实身份行含内部「；」时整行回查恒假阴性）。
  */
 export function verifyNarrativeProvenance(
   narrative: string,
@@ -116,7 +119,13 @@ export function verifyNarrativeProvenance(
   const factSet = new Set(
     slots
       .filter((s) => s.slot === "self_identity" || s.slot === "identity")
-      .flatMap((s) => factsOf(s.content)),
+      .flatMap((s) => factsOf(s.content))
+      // 片段白名单（2026-10-19 生产 E2E 修正）：回查单位是「原文行按模板分隔符再切分的
+      // 片段」而非整行——分隔符自碰撞（真实身份行自身含「；」，join 后再按「；」回切分
+      // 得到的段 ≠ 原整行）曾致真实生产内容恒判违例、叙事静默退条目。片段仍是原文行
+      // 的子串（split 不产生新字节，空片段仅当原文行自带边界/连续分隔符才出现），
+      // 不变量「输出字节 ⊆ 模板常量 ∪ slots 原文」保持。
+      .flatMap((f) => f.split(NARR_FACT_SEP)),
   );
   for (const line of narrative.split("\n")) {
     if (line === NARR_HEAD || line === NARR_TAIL) continue;
@@ -124,7 +133,7 @@ export function verifyNarrativeProvenance(
     const isUser = !isSelf && line.startsWith(NARR_USER_LABEL);
     if (!isSelf && !isUser) return false;
     const body = line.slice(isSelf ? NARR_SELF_LABEL.length : NARR_USER_LABEL.length);
-    // 多句行按分隔符切开后逐段回查原文集合（组内无句 = 空段 = 违例）。
+    // 多句行按分隔符切开后逐段回查片段白名单（片段必为某原文行的再切分）。
     for (const seg of body.split(NARR_FACT_SEP)) {
       if (!factSet.has(seg)) return false;
     }
