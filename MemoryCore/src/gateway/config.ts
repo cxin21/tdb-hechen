@@ -577,6 +577,28 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   // override 最后落，保证其优先级最高；未指定的字段仍保留 yaml/默认值。
   if (settingsOverride?.embedding) {
     memory.embedding = { ...memory.embedding, ...pickDefined(settingsOverride.embedding) } as typeof memory.embedding;
+    // ADR-0006 回归修复（2026-10-19 生产实锚）：parseConfig 的 embedding enabled 判定跑在
+    // 本次 override 合并之前——yaml memory.embedding.apiKey 用 "${TDAI_LLM_API_KEY}" 占位
+    // （一把 key 同源设计），env 键按 ADR-0006 迁移删除后 expandEnvVars 整串展开为空串 →
+    // parseConfig 判 disabled（configError 记 missing apiKey）。override 补齐字段后必须
+    // 重跑判定救回：enabled 的最终状态只能由最终合并值决定，不能由合并前的中间态定死。
+    // 判定语义与 parseConfig embedding 块对齐：none/local 恒 disabled；qclaw 另需 proxyUrl；
+    // 其余 remote 需 apiKey/baseUrl/model/dimensions>0 全齐。
+    const me = memory.embedding as typeof memory.embedding & { configError?: string };
+    const embProvider = me.provider;
+    if (!me.enabled && embProvider !== "none" && embProvider !== "local") {
+      const missing = [
+        !me.apiKey && "apiKey",
+        !me.baseUrl && "baseUrl",
+        !me.model && "model",
+        !(typeof me.dimensions === "number" && me.dimensions > 0) && "dimensions",
+        ...(embProvider === "qclaw" ? [!me.proxyUrl && "proxyUrl"] : []),
+      ].filter((x): x is string => Boolean(x));
+      if (missing.length === 0) {
+        me.enabled = true;
+        me.configError = undefined;
+      }
+    }
   }
 
   // ── Skill module config ──

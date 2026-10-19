@@ -84,6 +84,84 @@ describe("settings-override (core)", () => {
   });
 });
 
+// ── ADR-0006 回归（2026-10-19 生产实锚）：parseConfig 的 embedding enabled 判定跑在
+// override 合并之前——yaml memory.embedding.apiKey 用 "${TDAI_LLM_API_KEY}" 占位（一把
+// key 同源设计），env 键按 ADR-0006 迁移删除后 expandEnvVars 整串展开为空串 →
+// parseConfig 判 disabled（configError 记 missing apiKey）；override（config-override.json）
+// 补齐字段后必须重跑判定救回 enabled——最终状态只能由最终合并值决定，不能由中间态定死。
+describe("ADR-0006 回归：override 补齐 embedding 后须重跑 enabled 判定", () => {
+  const ENV_KEYS = [
+    "TDAI_GATEWAY_CONFIG", "TDAI_DATA_DIR",
+    "TDAI_LLM_PROVIDER", "TDAI_LLM_BASE_URL", "TDAI_LLM_API_KEY", "TDAI_LLM_MODEL",
+    "TDAI_EMBEDDING_PROVIDER", "TDAI_EMBEDDING_BASE_URL", "TDAI_EMBEDDING_API_KEY",
+    "TDAI_EMBEDDING_MODEL", "TDAI_EMBEDDING_DIMENSIONS",
+  ];
+  function withEnv(fn: () => void): void {
+    const saved = new Map(ENV_KEYS.map(k => [k, process.env[k]] as const));
+    for (const k of ENV_KEYS) if (k !== "TDAI_GATEWAY_CONFIG" && k !== "TDAI_DATA_DIR") delete process.env[k];
+    process.env.TDAI_GATEWAY_CONFIG = join(dir, "tdai-gateway.yaml");
+    process.env.TDAI_DATA_DIR = dir;
+    try { fn(); } finally {
+      for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  }
+  function writeYaml(rows: string[]): void {
+    writeFileSync(join(dir, "tdai-gateway.yaml"), rows.join("\n") + "\n", "utf-8");
+  }
+  it("yaml 占位 apiKey 展开为空串 + override 补齐 → enabled=true 且 configError 清空", () => {
+    writeYaml([
+      "memory:",
+      "  embedding:",
+      '    provider: "openai_compatible"',
+      "    baseUrl: https://ark.example/api/v3",
+      "    apiKey: \"${TDAI_LLM_API_KEY}\"",
+      "    model: doubao-embedding-test",
+      "    dimensions: 2048",
+    ]);
+    writeSettingsOverride(dir, { embedding: { baseUrl: "https://override-emb.example/v3", apiKey: "override-emb-key", model: "override-emb-model", dimensions: 2048 } });
+    withEnv(() => {
+      const cfg = loadGatewayConfig();
+      expect(cfg.memory.embedding.enabled).toBe(true);
+      expect(cfg.memory.embedding.configError).toBeUndefined();
+      expect(cfg.memory.embedding.apiKey).toBe("override-emb-key");
+      expect(cfg.memory.embedding.model).toBe("override-emb-model");
+    });
+  });
+  it("override 仍缺字段（yaml 无 model 且 override 不给）→ 保持 disabled 且 configError 保留", () => {
+    writeYaml([
+      "memory:",
+      "  embedding:",
+      '    provider: "openai_compatible"',
+      "    baseUrl: https://ark.example/api/v3",
+      "    apiKey: \"${TDAI_LLM_API_KEY}\"",
+      "    dimensions: 2048",
+    ]);
+    writeSettingsOverride(dir, { embedding: { apiKey: "override-emb-key" } });
+    withEnv(() => {
+      const cfg = loadGatewayConfig();
+      expect(cfg.memory.embedding.enabled).toBe(false);
+      expect(cfg.memory.embedding.configError).toBeTruthy();
+    });
+  });
+  it("qclaw 缺 proxyUrl → 不救回（configError 保留）", () => {
+    writeYaml([
+      "memory:",
+      "  embedding:",
+      '    provider: "qclaw"',
+      "    baseUrl: https://ark.example/api/v3",
+      "    apiKey: \"${TDAI_LLM_API_KEY}\"",
+      "    model: emb-model",
+      "    dimensions: 2048",
+    ]);
+    writeSettingsOverride(dir, { embedding: { baseUrl: "https://override-emb.example/v3", apiKey: "k", model: "m", dimensions: 8 } });
+    withEnv(() => {
+      const cfg = loadGatewayConfig();
+      expect(cfg.memory.embedding.enabled).toBe(false);
+      expect(cfg.memory.embedding.configError).toBeTruthy();
+    });
+  });
+});
+
 describe("maxTokens/timeoutMs=0（不限制语义，2026-09-16 拍板；UI 需可保存 0）", () => {
   it("0 合法且保留（不被拒收）", () => {
     const r = validateOverride({ llm: { maxTokens: 0, timeoutMs: 0 } });
