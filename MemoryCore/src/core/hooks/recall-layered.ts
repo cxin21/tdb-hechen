@@ -27,6 +27,12 @@ export interface L2ConclusionCandidate {
   source: L2ConclusionSource;
   /** work_fact 源的 record id（part_of 证据链反查 + 经验层防重排除源）。 */
   recordId?: string;
+  /**
+   * R71-A1（2026-10-19）：FTS5 raw relevance（=-rank，越大越相关）——work_fact 候选
+   * bm25 预地板（conclusionLayer.minBm25Rel）数据源。scene_block 源 / 后端未提供 rank
+   * 的行 = undefined = 地板豁免（宁缺毋滥不误杀）。
+   */
+  bm25Rel?: number;
 }
 
 export type L2Conclusion = L2ConclusionCandidate;

@@ -416,6 +416,8 @@ export interface FtsSearchResult {
   scene_name: string;
   /** BM25-derived score (0–1, higher is better) */
   score: number;
+  /** R71-A1（2026-10-19）：FTS5 raw rank（负=更相关）；L1 行透传（L0 行不透传）。 */
+  rank?: number;
   timestamp_str: string;
   timestamp_start: string;
   timestamp_end: string;
@@ -5752,6 +5754,7 @@ export class VectorStore implements IMemoryStore {
           priority: r.priority,
           scene_name: r.scene_name,
           score: bm25RankToScore(r.rank),
+          rank: r.rank,
           timestamp_str: r.timestamp_str,
           timestamp_start: r.timestamp_start,
           timestamp_end: r.timestamp_end,

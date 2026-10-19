@@ -134,6 +134,11 @@ export interface L1FtsResult {
   scene_name: string;
   /** BM25-derived score (0–1, higher is better). */
   score: number;
+  /**
+   * R71-A1（2026-10-19）：FTS5 raw rank（负=更相关，bm25() 刻度）。结论候选 bm25
+   * 预地板数据源（auto-recall 透传为 bm25Rel=-rank）；后端未提供 = undefined = 地板豁免。
+   */
+  rank?: number;
   timestamp_str: string;
   timestamp_start: string;
   timestamp_end: string;

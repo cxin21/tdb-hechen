@@ -31,9 +31,30 @@ export interface RecallJournalRerankGate {
   topScore?: number;
 }
 
+/** R71-A1（2026-10-19）：work_fact 候选 bm25 预地板观测门。kept=地板后剩余候选数。 */
+export interface RecallJournalConclusionBm25Gate {
+  minRel: number;
+  kept: number;
+  dropped: number;
+}
+
+/** R71-A2（2026-10-19）：结论层 rerank 语义门观测（shadow 记 would-be 决策）。
+ *  bypass ∈ rerank-off | rerank-unavailable | breaker-open | rerank-failed（旁路留痕=未执行门控）。 */
+export interface RecallJournalConclusionRerankGate {
+  mode: "off" | "shadow" | "enforce";
+  provider: string;
+  ms: number;
+  kept: number;
+  dropped: number;
+  topScore?: number;
+  bypass?: "rerank-off" | "rerank-unavailable" | "breaker-open" | "rerank-failed";
+}
+
 export interface RecallJournalGates {
   nativeMinRRF?: { gate: number; kept: number; dropped: number };
   rerank?: RecallJournalRerankGate;
+  conclusionBm25?: RecallJournalConclusionBm25Gate;
+  conclusionRerank?: RecallJournalConclusionRerankGate;
   /**
    * P1-T7（worthiness importance）：重要度降权观测门——raw vs penalized 双分量
    * （乘子恒真实生效：penalized=实际排序分，raw 为反推值）。类型单一源

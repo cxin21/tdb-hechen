@@ -103,6 +103,9 @@ function makeCfg(): MemoryTdaiConfig {
       rerankWeights: { relevance: 1, timeProx: 0, significance: 0, coreRef: 0 },
       queryEmbeddingCacheTtlMs: 0,
       sessionReuseTtlMs: 300_000,
+      // R71-C fts-only 注入帽与双时态排除语义正交，显式关断（0）；
+      // 帽行为在 auto-recall-conclusion-gate.test.ts 覆盖。
+      ftsOnlyInjectCap: 0,
     },
   } as unknown as MemoryTdaiConfig;
 }

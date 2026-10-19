@@ -286,7 +286,28 @@ export interface RecallConfig {
      * （稀有 token 命中者先于万词面命中者）；层级序与平分保序不变。确定性纯函数。
      */
     idfWeighted: boolean;
+    /**
+     * R71-A1（2026-10-19）：work_fact 候选 bm25 预地板——raw relevance（=-FTS5 rank）
+     * 低于此值的候选在进选择器前剔除（rerank 不可用部署的唯一硬门）。缺省 undefined/0
+     * = off = 逐位现状。绝对门槛必须按语料定标（2026-10-19 语料拟 6.5，语料规模变化
+     * 需重定标），禁硬编码——纯分数统计，零词表。
+     */
+    minBm25Rel?: number;
+    /**
+     * R71-A2（2026-10-19）：结论层 rerank 语义门（主门）。mode 缺省 "shadow"
+     * （shadow-first：只记录不过滤，journal gates.conclusionRerank 观测定标后切 enforce）；
+     * "enforce" = score < minScore 的选中结论在幂等指纹缓存前剔除；"off" = 零开销。
+     * minScore 按 provider 刻度定标（local logits 缺省 -1.0；经验层 -2.0 对结论层实测
+     * 太松——设计 §2.2）。门 wiring 与经验层同源（resolveRerankWiring+rerankDeps）。
+     */
+    rerankGate?: { mode: "off" | "shadow" | "enforce"; minScore?: number };
   };
+  /**
+   * R71-C（2026-10-19）：fts-only 降级注入帽——向量路死（ftsHits>0 ∧ embeddingHits=0 ∧
+   * strategy≠keyword）时注入块（结论+经验合计）从尾部裁到此帽内（结论前置=头部保留
+   * 优先）。缺省 2（无结果兜底；0=off=逐位现状）。非降级路径零触碰。
+   */
+  ftsOnlyInjectCap?: number;
   /**
    * #54（2026-10-19）：召回注入动态 topK——按经验层 scores 分布的 elbow（最大相邻
    * 落差）收缩注入条数（只缩不扩）。缺省 enabled=false=逐位现状（固定条数注入）。
@@ -1705,7 +1726,30 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           })(),
           // #53：L2 结论层 textHit IDF 加权排序（缺省 false=逐位现状）
           idfWeighted: bool(cl, "idfWeighted") ?? false,
+          // R71-A1（2026-10-19）：work_fact 候选 bm25 预地板（负值 clamp 0=off；缺省 undefined=off）
+          minBm25Rel: (() => {
+            const raw = num(cl, "minBm25Rel");
+            return raw === undefined ? undefined : Math.max(0, raw);
+          })(),
+          // R71-A2（2026-10-19）：结论层 rerank 门——mode 非法值回落 "shadow"（shadow-first；
+          // minScore 非有限回落 undefined=运行期取 -1.0 缺省）
+          rerankGate: (() => {
+            const rg = obj(cl, "rerankGate");
+            if (!rg || Object.keys(rg).length === 0) return undefined; // 缺键=undefined（零配置逐位现状）
+            const rawMode = str(rg, "mode");
+            const mode = rawMode === "enforce" || rawMode === "off" ? rawMode : "shadow";
+            const minScore = num(rg, "minScore");
+            return {
+              mode,
+              ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
+            };
+          })(),
         };
+      })(),
+      // R71-C（2026-10-19）：fts-only 降级注入帽（缺省 2；非负整数 floor；非数字=undefined=运行期取 2）
+      ftsOnlyInjectCap: (() => {
+        const raw = num(recallGroup, "ftsOnlyInjectCap");
+        return raw === undefined ? undefined : Math.max(0, Math.floor(raw));
       })(),
       // #54：召回注入动态 topK（分数分布 elbow；缺省 false=逐位现状；clamp 见类型注释）
       dynamicTopK: (() => {

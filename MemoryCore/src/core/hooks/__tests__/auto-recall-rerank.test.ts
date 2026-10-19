@@ -133,6 +133,9 @@ function makeCfg(recallOver: Record<string, unknown> = {}, rerank?: Record<strin
       rerankWeights: { relevance: 1, timeProx: 0, significance: 0, coreRef: 0 },
       queryEmbeddingCacheTtlMs: 0,
       sessionReuseTtlMs: 300_000,
+      // R71-C fts-only 注入帽与本文件被测特性（rerank 接入/熔断/降级）正交，
+      // 显式关断（0）以维持既有全额注入断言；帽行为在 auto-recall-conclusion-gate.test.ts 覆盖。
+      ftsOnlyInjectCap: 0,
       ...recallOver,
       ...(rerank !== undefined ? { rerank } : {}),
     },
@@ -285,14 +288,15 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           dir,
           fallbackStore(rows),
           `${KW} 记录一下进度`,
-          makeCfg({}, { ...SILICONFLOW_RERANK, candidates: 12 }),
+          makeCfg({ conclusionLayer: { rerankGate: { mode: "off" } } }, { ...SILICONFLOW_RERANK, candidates: 12 }),
           { reranker: fake.reranker },
         ),
       );
       // 结论行存在且在最前（tag=结论，scene_name 空）
       expect(res.memoryLines[0].startsWith("- [结论")).toBe(true);
       expect(res.memoryLines[0]).toContain("RerankStructAnchor");
-      // 豁免：精排候选不含结论内容
+      // 豁免：经验层精排候选不含结论内容（R71-A2 结论语义门是独立通道，
+      // 此处显式 off 以单独验证经验层豁免不变量；A2 通道在 conclusion-gate 套件覆盖）
       const allDocs = fake.docSets().flat();
       expect(allDocs.length).toBeGreaterThan(0);
       expect(allDocs.some((d) => d.includes("RerankStructAnchor"))).toBe(false);

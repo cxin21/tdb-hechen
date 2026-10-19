@@ -151,6 +151,11 @@ memory:
       # （idf(t)=ln(1+N/(1+df(t)))，万词面 token 天然低分）重排；层级序（work_fact>scene_block）
       # 不被反转，平分保调用方序。缺省 false = 调用方序逐位现状。
       idfWeighted: true
+      # ── R71-A1（2026-10-19）：work_fact 结论候选 bm25 相关性地板——FTS5 raw rank 转相对分
+      # rel/(1+rel) 后 < minBm25Rel 者在选择器前剔除（journal gates.conclusionBm25 记 kept/dropped）。
+      # 6.5 = 2026-10-19 生产语料定标（docs/research/2026-10-19-r71-recall-relevance-design.md §3）；
+      # 语料规模变化需重定标；缺省/0 = off。
+      minBm25Rel: 6.5
 
     # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
     # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差

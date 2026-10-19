@@ -699,6 +699,9 @@ export async function performLayeredRecall(params: {
     const r7ConclusionLayerEnabled = cfg.recall?.conclusionLayer?.enabled !== false;
     const r7Candidates: L2ConclusionCandidate[] = [];
     let r7Conclusions: L2ConclusionCandidate[] = [];
+    // R71（2026-10-19）：结论层双门 gate 观测（A1 地板 / A2 rerank 门）——入 journal gates
+    let r71Bm25Gate: RecallJournalGates["conclusionBm25"] | undefined;
+    let r71ConclusionRerankGate: RecallJournalGates["conclusionRerank"] | undefined;
     if (r7ConclusionLayerEnabled) {
       const r7FtsTokens = parseFtsTokens(buildFtsQuery(r7CleanQuery));
       try {
@@ -712,7 +715,17 @@ export async function performLayeredRecall(params: {
               // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（流程测试实测泄漏点）
               if (isOutsideValidityWindow(r as { valid_start?: string; valid_end?: string })) continue;
               if (r.type === "work_fact") {
-                r7Candidates.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
+                // R71-A1（2026-10-19）：FTS5 raw rank（负=更相关）透传为 raw rel（=-rank）——
+                // bm25 预地板数据源；后端未提供（undefined）→ 地板豁免（宁缺毋滥不误杀）。
+                const r71Rank = (r as L1FtsResult).rank;
+                const r71Bm25Rel = typeof r71Rank === "number" && Number.isFinite(r71Rank) ? -r71Rank : undefined;
+                r7Candidates.push({
+                  sceneName: r.scene_name ?? "",
+                  content: r.content,
+                  source: "work_fact",
+                  recordId: r.record_id,
+                  ...(r71Bm25Rel !== undefined ? { bm25Rel: r71Bm25Rel } : {}),
+                });
               }
             }
           }
@@ -732,6 +745,21 @@ export async function performLayeredRecall(params: {
           continue;
         }
         r7Candidates.push({ sceneName: e.filename.replace(/\.md$/i, ""), content: e.summary, source: "scene_block" });
+      }
+      // ── R71-A1（2026-10-19）：work_fact 候选 bm25 rel 预地板（纯分数统计，零词表）──
+      // raw rel（=-FTS5 rank）低于 conclusionLayer.minBm25Rel 的候选在选择器前剔除；
+      // rerank 不可用部署的唯一硬门（A2 shadow 观测期）。undefined/0 = off = 逐位现状；
+      // bm25Rel 缺席的候选（scene_block / V2-3 放宽通道 / 后端未提供 rank）豁免——
+      // 宁缺毋滥不误杀。gate 观测（minRel/kept/dropped）入 journal。
+      const r71MinBm25Rel = cfg.recall?.conclusionLayer?.minBm25Rel;
+      if (typeof r71MinBm25Rel === "number" && r71MinBm25Rel > 0 && r7Candidates.some((c) => c.bm25Rel !== undefined)) {
+        const r71BeforeFloor = r7Candidates.length;
+        for (let i = r7Candidates.length - 1; i >= 0; i--) {
+          const rel = r7Candidates[i].bm25Rel;
+          if (rel !== undefined && rel < r71MinBm25Rel) r7Candidates.splice(i, 1);
+        }
+        r71Bm25Gate = { minRel: r71MinBm25Rel, kept: r7Candidates.length, dropped: r71BeforeFloor - r7Candidates.length };
+        logger?.debug?.(`${TAG} [layered] R71-A1 bm25 floor: dropped=${r71Bm25Gate.dropped} kept=${r71Bm25Gate.kept} (minRel=${r71MinBm25Rel})`);
       }
       // v18-c：minUniqRatio 透传（conclusionLayer.minUniqRatio；undefined/0 = 关逐位现状）
       // P1（issue #2）：textHitMaxTokenRatio 万词面 token 剔除门透传（同族，缺省 undefined=关）
@@ -787,6 +815,69 @@ export async function performLayeredRecall(params: {
         ...c,
         content: truncateConclusionContent(c.content, r7ConclusionMaxChars),
       }));
+    }
+    // ── R71-A2（2026-10-19）：结论层 rerank 语义门（主门）──
+    // 选中结论按注入行形态（formatConclusionLine 去 "- " 前缀）统一 rerank，score <
+    // rerankGate.minScore（local logits 缺省 -1.0）者剔除。门在幂等指纹缓存前（缓存态=
+    // 门控态）。mode 缺省 "shadow"（shadow-first：只记录不过滤，journal 观测定标后切
+    // enforce）；"off"=零开销。wiring 与经验层同源（resolveRerankWiring+rerankDeps）：
+    // 非 active / 熔断开 → 旁路不误杀（bypass 留痕）；provider null/throw → 熔断计败
+    // + bypass=rerank-failed；未覆盖候选不杀（垫尾语义，绝不静默丢弃）。绝对门槛必须
+    // 按 provider 刻度定标（listwise softmax 对常数平移不变），禁硬编码。
+    {
+      const r71GateCfg = cfg.recall?.conclusionLayer?.rerankGate;
+      const r71GateMode = r71GateCfg?.mode === "enforce" ? "enforce" : r71GateCfg?.mode === "off" ? "off" : "shadow";
+      if (r71GateMode !== "off" && r7Conclusions.length > 0) {
+        const r71GateWiring = resolveRerankWiring(cfg, params.rerankDeps, logger);
+        if (r71GateWiring.state !== "active" || !r71GateWiring.breaker || r71GateWiring.breaker.isOpen()) {
+          const r71Bypass = r71GateWiring.state === "off" ? "rerank-off"
+            : r71GateWiring.state === "unavailable" ? "rerank-unavailable" : "breaker-open";
+          r71ConclusionRerankGate = { mode: r71GateMode, provider: r71GateWiring.provider, ms: 0, kept: r7Conclusions.length, dropped: 0, bypass: r71Bypass };
+        } else {
+          const r71GateReranker = r71GateWiring.reranker!;
+          const r71GateBreaker = r71GateWiring.breaker;
+          const r71GateDocs = r7Conclusions.map((c) => formatConclusionLine(c).replace(/^- /, ""));
+          const r71GateT0 = performance.now();
+          let r71GateRanked: RerankResult[] | null = null;
+          try {
+            r71GateRanked = await r71GateReranker.rerank(r7CleanQuery, r71GateDocs);
+          } catch (err) {
+            logger?.warn?.(`${TAG} [rerank-gate] provider=${r71GateWiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），结论门降级旁路`);
+            r71GateRanked = null;
+          }
+          const r71GateMs = performance.now() - r71GateT0;
+          if (r71GateRanked === null) {
+            r71GateBreaker.recordFailure();
+            r71ConclusionRerankGate = { mode: r71GateMode, provider: r71GateWiring.provider, ms: r71GateMs, kept: r7Conclusions.length, dropped: 0, bypass: "rerank-failed" };
+          } else {
+            r71GateBreaker.recordSuccess();
+            // 防御性整形（与 applyRecallRerank 同款）：index 去重首见 + 非有限/越界剔除
+            const r71GateScoreOf = new Map<number, number>();
+            let r71GateTop = -Infinity;
+            for (const rr of r71GateRanked) {
+              if (!rr || !Number.isFinite(rr.score) || !Number.isInteger(rr.index) || rr.index < 0 || rr.index >= r7Conclusions.length) continue;
+              if (!r71GateScoreOf.has(rr.index)) r71GateScoreOf.set(rr.index, rr.score);
+              if (rr.score > r71GateTop) r71GateTop = rr.score;
+            }
+            const r71GateMin = typeof r71GateCfg?.minScore === "number" && Number.isFinite(r71GateCfg.minScore) ? r71GateCfg.minScore : -1;
+            const r71WouldDrop = r7Conclusions.reduce((acc, _c, i) => acc + ((r71GateScoreOf.get(i) ?? Infinity) < r71GateMin ? 1 : 0), 0);
+            r71ConclusionRerankGate = {
+              mode: r71GateMode,
+              provider: r71GateWiring.provider,
+              ms: r71GateMs,
+              kept: r7Conclusions.length - r71WouldDrop,
+              dropped: r71WouldDrop,
+              ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { topScore: r71GateTop } : {}),
+            };
+            if (r71GateMode === "enforce" && r71WouldDrop > 0) {
+              r7Conclusions = r7Conclusions.filter((_c, i) => (r71GateScoreOf.get(i) ?? Infinity) >= r71GateMin);
+              logger?.debug?.(`${TAG} [rerank-gate] enforce: dropped=${r71WouldDrop} kept=${r7Conclusions.length} (minScore=${r71GateMin})`);
+            } else if (r71GateMode === "shadow" && r71WouldDrop > 0) {
+              logger?.debug?.(`${TAG} [rerank-gate] shadow: would-drop=${r71WouldDrop}/${r7Conclusions.length} (minScore=${r71GateMin})`);
+            }
+          }
+        }
+      }
     }
     // 幂等结论层（spec §2 R7-1，借团队 幂等与防重 模式）：结论未变化 → 复用已存行（不重组，cache 友好）
     // 审查修补 I③（TTL 解耦）：conclusionLayer.cacheTtlMs 独立键——缺省（未配置）回落
@@ -942,6 +1033,15 @@ export async function performLayeredRecall(params: {
     memoryLines = searchResult.lines;
     searchTiming = searchResult.timing;
     recallGates = searchResult.gates;
+    // R71（2026-10-19）：结论层双门 gate 记录并入 journal（A1 地板 / A2 rerank 门）——
+    // 与经验层 rerank gate 并列，观测链同源（logs/recall/*.jsonl gates 段）。
+    if (r71Bm25Gate || r71ConclusionRerankGate) {
+      recallGates = {
+        ...(recallGates ?? {}),
+        ...(r71Bm25Gate ? { conclusionBm25: r71Bm25Gate } : {}),
+        ...(r71ConclusionRerankGate ? { conclusionRerank: r71ConclusionRerankGate } : {}),
+      };
+    }
     // ── R7 预算对半切：r7Budget 已在精排接线前计算（rerank cap 消费）——此处只消费。
     // 无结论 → experienceLimit 全额 → slice 恒等 + 组装恒等 → 下游与现状逐位一致（退化安全）。
     memoryLines = memoryLines.slice(0, r7Budget.experienceLimit);
@@ -964,6 +1064,20 @@ export async function performLayeredRecall(params: {
     const r7ExperienceLineCount = memoryLines.length;
     memoryLines = assembleLayeredLines(r7ConclusionLines, memoryLines);
     memoryLines = applyRecallBudget(memoryLines, cfg.recall, logger);
+    // ── R71-C（2026-10-19）：fts-only 降级注入帽 ──
+    // 向量路死（ftsHits>0 ∧ embeddingHits=0 ∧ strategy≠keyword）时注入块（结论+经验合计）
+    // 从尾部裁到 recall.ftsOnlyInjectCap 内（结论前置=头部保留优先）。缺省 2（无结果兜底；
+    // 0=off=逐位现状）；非降级路径零触碰。帽在 R7 预算/动态 topK 之后（帽=无结果兜底的
+    // 最后闸门，只可能更小）。T15-C 降级常量随之上移（degradedNote 消费点不变）。
+    const recallDegradedFtsOnly =
+      !!vectorStore && !!embeddingService &&
+      searchTiming.ftsHits > 0 && searchTiming.embeddingHits === 0 &&
+      effectiveStrategy !== "keyword";
+    const r71FtsOnlyCap = cfg.recall?.ftsOnlyInjectCap ?? 2;
+    if (recallDegradedFtsOnly && r71FtsOnlyCap > 0 && memoryLines.length > r71FtsOnlyCap) {
+      logger?.debug?.(`${TAG} [fts-only-cap] degraded injection ${memoryLines.length}->${r71FtsOnlyCap} (cap=${r71FtsOnlyCap})`);
+      memoryLines = memoryLines.slice(0, r71FtsOnlyCap);
+    }
 
     // Extract structured RecalledMemory from formatted lines for metric reporting
     // R7：结论行前置 → metric scores 数组同步前插 0（结论非相似度命中，score=0 如实）
@@ -981,17 +1095,12 @@ export async function performLayeredRecall(params: {
       return { content: line, score: r7MetricScores?.[i] ?? 0, type: "unknown" };
     });
     // ── DS-RECALL-MERGE-001：R7 meta 定格 + 注入块组装（自钩子原位平移，逐位一致）──
-    conclusionCount = r7ConclusionLines.length;
-    experienceCount = r7ExperienceLineCount;
+    // R71-C：counts 改注入块实测派生——fts-only 帽 / R7 预算 / 动态 topK 从尾部裁剪时，
+    // 条数口径与注入块逐位对齐（此前固定值在裁剪态虚高）。无裁剪路径恒等（min/max 同值）。
+    conclusionCount = Math.min(r7ConclusionLines.length, memoryLines.length);
+    experienceCount = Math.max(0, memoryLines.length - conclusionCount);
     sessionReused = searchCacheHit || conclusionReused;
     layered = r7ConclusionLines.length > 0;
-    // T15-C 降级可见：embedding 已配置但本轮命中全部来自 FTS（向量层死亡/无向量命中）
-    // → 注入块头部标注 [degraded: fts-only]，用户与 LLM 都要知道在看残废召回。
-    // 显式 keyword 策略是用户选择（embedding 未参与），不算降级。
-    const recallDegradedFtsOnly =
-      !!vectorStore && !!embeddingService &&
-      searchTiming.ftsHits > 0 && searchTiming.embeddingHits === 0 &&
-      effectiveStrategy !== "keyword";
     // #61：l1 段终点（tSearchStart 起含检索+精排+复用缓存+R7 经验行组装）；soul 段起点。
     tPerfL1Ms61 = Math.round(performance.now() - tSearchStart);
     const tPerfSoulStart61 = performance.now();

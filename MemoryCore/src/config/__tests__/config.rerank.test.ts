@@ -132,3 +132,40 @@ describe("P1 task-1 config：rerank 数值边界 clamp", () => {
     expect(r.enabled).toBe(true);
   });
 });
+
+
+// ═══════════════ R71（2026-10-19，issue #71）：结论层双门 + fts-only 帽解析 ═══════════════
+
+describe("R71 config：conclusionLayer.minBm25Rel / rerankGate + recall.ftsOnlyInjectCap", () => {
+  const clOf = (raw: Record<string, unknown>) => parseConfig(raw).recall.conclusionLayer;
+  const recallOf = (raw: Record<string, unknown>) => parseConfig(raw).recall;
+
+  it("零配置：minBm25Rel/rerankGate/ftsOnlyInjectCap 均 undefined = 关/shadow 逐位现状", () => {
+    const cl = clOf({});
+    expect(cl.minBm25Rel).toBeUndefined();
+    expect(cl.rerankGate).toBeUndefined();
+    expect(recallOf({}).ftsOnlyInjectCap).toBeUndefined(); // 用点兜底 2
+  });
+
+  it("minBm25Rel：数字透传；负值 clamp 0；非数字=undefined", () => {
+    expect(clOf({ recall: { conclusionLayer: { minBm25Rel: 6.5 } } }).minBm25Rel).toBe(6.5);
+    expect(clOf({ recall: { conclusionLayer: { minBm25Rel: -1 } } }).minBm25Rel).toBe(0);
+    expect(clOf({ recall: { conclusionLayer: { minBm25Rel: "x" as unknown as number } } }).minBm25Rel).toBeUndefined();
+  });
+
+  it("rerankGate：mode 合法值透传；非法值回落 shadow；minScore 数字透传/非数字剔除", () => {
+    const g1 = clOf({ recall: { conclusionLayer: { rerankGate: { mode: "enforce", minScore: -0.5 } } } }).rerankGate;
+    expect(g1).toEqual({ mode: "enforce", minScore: -0.5 });
+    const g2 = clOf({ recall: { conclusionLayer: { rerankGate: { mode: "off" } } } }).rerankGate;
+    expect(g2).toEqual({ mode: "off" });
+    const g3 = clOf({ recall: { conclusionLayer: { rerankGate: { mode: "bogus", minScore: "x" as unknown as number } } } }).rerankGate;
+    expect(g3).toEqual({ mode: "shadow" });
+  });
+
+  it("ftsOnlyInjectCap：负值 clamp 0；非数字=undefined（用点兜底 2）", () => {
+    expect(recallOf({ recall: { ftsOnlyInjectCap: 2 } }).ftsOnlyInjectCap).toBe(2);
+    expect(recallOf({ recall: { ftsOnlyInjectCap: -3 } }).ftsOnlyInjectCap).toBe(0);
+    expect(recallOf({ recall: { ftsOnlyInjectCap: 2.7 } }).ftsOnlyInjectCap).toBe(2);
+    expect(recallOf({ recall: { ftsOnlyInjectCap: "x" as unknown as number } }).ftsOnlyInjectCap).toBeUndefined();
+  });
+});
