@@ -27,7 +27,7 @@ describe("#32 能力自述段", () => {
     for (const c of CAPS) expect(out).toContain(`- ${c}`); // 一致性合同：全量逐行
     const capIdx = out.indexOf("## 我能做什么");
     const redlineIdx = out.indexOf("## 不可逾越");
-    const whoIdx = out.indexOf("## 此刻的你");
+    const whoIdx = out.indexOf("## 此刻的我");
     expect(whoIdx).toBeGreaterThan(-1);
     expect(capIdx).toBeGreaterThan(redlineIdx > -1 ? redlineIdx : whoIdx); // 段尾位置
     expect(out.indexOf("</soul-identity>")).toBeGreaterThan(capIdx);

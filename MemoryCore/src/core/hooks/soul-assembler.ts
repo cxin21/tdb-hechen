@@ -428,7 +428,7 @@ export async function buildSoulPrefix(
       if (cut >= 0) return singleLine(s.slice(0, cut + 1));
       return isDanglingTail(s) ? "" : s;
     };
-    // ── 身份段：此刻的你 ──
+    // ── 身份段：此刻的我（公式术语「此刻的你」见 :4；2026-10-19 用户拍板方案 A 自白体） ──
     // #40 审查 I-1 口径（①设计内确认，2026-10-16）：本外门同时门住 capabilities 段——
     // 零 soul 数据（无 slot 无价值锚）的 agent 不渲染能力段。依据：能力自述属六属性
     // 自我叙事、随身份段承载（宁缺毋滥+信封语义=身份块表达记忆衍生的自我）；空自我
@@ -856,7 +856,7 @@ export async function buildSoulPrefix(
         .map((c) => `- ${c}`);
       if (lines.length > 0 || redlineLines.length > 0 || capLines.length > 0) {
         const sections: string[] = [];
-        if (lines.length > 0) sections.push(`## 此刻的你\n${lines.join("\n")}`);
+        if (lines.length > 0) sections.push(`## 此刻的我\n${lines.join("\n")}`);
         if (redlineLines.length > 0) sections.push(`## 不可逾越（红线）\n${redlineLines.join("\n")}`);
         if (capLines.length > 0) sections.push(`## 我能做什么\n${capLines.join("\n")}`);
         parts.push(`<soul-identity>\n${sections.join("\n")}\n</soul-identity>`);

@@ -81,7 +81,7 @@ describe("#52 D3 perTurnSlots=false：双通道身份两行省略", () => {
     expect(out).toContain("## 不可逾越（红线）");
     expect(out).toContain("- [strict_rule] 绝不可删除记忆。");
     // 其余段照常
-    expect(out).toContain("## 此刻的你");
+    expect(out).toContain("## 此刻的我");
     expect(out).toContain("绝不可删除记忆。");
     expect(out).toContain("价值锚：");
     expect(out).toContain("根因");

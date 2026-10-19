@@ -15,7 +15,7 @@ describe("soul-assembler 四段渲染（P1）", () => {
 
   it("opts 缺省：渲染与现状逐字节一致（无（我是谁）标注、无预算）", async () => {
     const out = await buildSoulPrefix(makeStore(IDENTITY_ONLY) as never, TENANT);
-    expect(out).toBe("<soul-identity>\n## 此刻的你\n- [identity] 用户是家里的首席厨师\n</soul-identity>\n\n");
+    expect(out).toBe("<soul-identity>\n## 此刻的我\n- [identity] 用户是家里的首席厨师\n</soul-identity>\n\n");
   });
 
   it("enabled=true：self 与 identity 分行标注", async () => {

@@ -1109,7 +1109,7 @@ export async function performLayeredRecall(params: {
         soulPrefix +
         `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
     } else if (soulPrefix) {
-      // C3：无记忆轮次——身份段常驻（"此刻的你"不因零召回而缺席）
+      // C3：无记忆轮次——身份段常驻（"此刻的我"不因零召回而缺席）
       block = soulPrefix;
     }
   }

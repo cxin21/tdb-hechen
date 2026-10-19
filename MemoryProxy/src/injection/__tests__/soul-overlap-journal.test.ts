@@ -29,7 +29,7 @@ import type { HookResult, InjectionObserver } from "../observer.js";
 const SOUL_BLOCK: ContextBlock = {
   type: "system" as ContextBlock["type"],
   content:
-    "<soul-identity>\n## 此刻的你\n（我是谁）- [self_identity] - 工程纪律。\n</soul-identity>\n\n<soul-feeling>\n## 当下的感受\n驱动我行动的价值：根因。\n</soul-feeling>",
+    "<soul-identity>\n## 此刻的我\n（我是谁）- [self_identity] - 工程纪律。\n</soul-identity>\n\n<soul-feeling>\n## 当下的感受\n驱动我行动的价值：根因。\n</soul-feeling>",
 } as ContextBlock;
 
 const CORE_BLOCK: ContextBlock = {

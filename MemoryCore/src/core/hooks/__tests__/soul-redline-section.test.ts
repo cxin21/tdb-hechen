@@ -29,12 +29,12 @@ describe("#24-C1 红线独立段（dual 路径）", () => {
     const out = await buildSoulPrefix(store, TENANT, undefined, { selfIdentityEnabled: true });
     expect(out).toContain("## 不可逾越（红线）");
     expect(out).toContain(`- [strict_rule] ${STRICT}`); // 原文直出（逐字）
-    // 不再与身份散文混排：strict 不应出现在「## 此刻的你」段行内
-    const narrative = out.split("## 此刻的你")[1]?.split("## 不可逾越（红线）")[0] ?? "";
+    // 不再与身份散文混排：strict 不应出现在「## 此刻的我」段行内
+    const narrative = out.split("## 此刻的我")[1]?.split("## 不可逾越（红线）")[0] ?? "";
     expect(narrative).not.toContain("strict_rule");
-    // 段序：红线段在 soul-identity 段尾（此刻的你之后、</soul-identity> 之前）
+    // 段序：红线段在 soul-identity 段尾（此刻的我之后、</soul-identity> 之前）
     const idBlock = out.split("<soul-identity>")[1]?.split("</soul-identity>")[0] ?? "";
-    expect(idBlock.indexOf("## 不可逾越（红线）")).toBeGreaterThan(idBlock.indexOf("## 此刻的你"));
+    expect(idBlock.indexOf("## 不可逾越（红线）")).toBeGreaterThan(idBlock.indexOf("## 此刻的我"));
     expect(idBlock.indexOf(`- [strict_rule] ${STRICT}`)).toBeGreaterThan(idBlock.indexOf("## 不可逾越（红线）"));
   });
 
@@ -67,7 +67,7 @@ describe("#24-C1 红线独立段（dual 路径）", () => {
     const out = await buildSoulPrefix(store, TENANT, undefined, { selfIdentityEnabled: true });
     expect(out).toContain("<soul-identity>");
     expect(out).toContain("## 不可逾越（红线）");
-    expect(out).not.toContain("## 此刻的你\n\n"); // 无空叙事段
+    expect(out).not.toContain("## 此刻的我\n\n"); // 无空叙事段
   });
 
   it("legacy 路径（selfIdentityEnabled=false）逐位不动：strict_rule 仍为普通 slot 行", async () => {
