@@ -59,11 +59,11 @@ sudo cp deploy/tencent-cloud/systemd/*.service /etc/systemd/system/
 
 ```bash
 TDAI_GATEWAY_API_KEY=<openssl rand -hex 32>     # core/proxy/panel 三处同源
-TDAI_LLM_API_KEY=<ark key>
+TDAI_LLM_API_KEY=<ark key>   # deprecated（ADR-0006）：LLM 凭据 SoT = 各服务 {dataDir}/config-override.json（admin settings）；env 仅回退
 PROXY_ADMIN_API_KEY=<openssl rand -hex 32>
 ```
 
-- **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。
+- **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。LLM key 的运行时唯一 SoT = 服务器 `{dataDir}/config-override.json`（ADR-0006）；env 占位展开为空不影响 override 生效。
 - **proxy**：`cp 本地 MemoryProxy/config.yaml → /opt/tdai/etc/proxy-config.yaml`，按同目录 `CLOUD-DIFF.md` 改 6 处（endpoint 指向 core、密钥替换、admin key）。
 - **knowledge**：`cp deploy/tencent-cloud/config/knowledge/env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。
 - **panel**：Panel 的 core 地址/api_key 配置按其 `config/metadata-instances.json` 格式落盘（指向 http://127.0.0.1:8420 + 同一把 gateway key）。

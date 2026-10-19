@@ -49,7 +49,7 @@ cp tdai-gateway.service.yaml tdai-gateway.yaml
 ```bash
 docker run -d --name agent-memory \
   -v $(pwd)/tdai-gateway.yaml:/data/config/tdai-gateway.yaml:ro \
-  -e TDAI_LLM_API_KEY=sk-your-key \
+  -e TDAI_LLM_API_KEY=sk-your-key \  # deprecated（ADR-0006）：SoT=admin settings（config-override.json）
   -p 8420:8420 \
   tencentdb-agent-memory:latest
 ```
@@ -73,7 +73,7 @@ npx tsx scripts/mock-shark-server.ts &
 # 启动 Memory Service
 docker run -d --name agent-memory \
   -v $(pwd)/tdai-gateway.real.yaml:/data/config/tdai-gateway.yaml:ro \
-  -e TDAI_LLM_API_KEY=sk-your-key \
+  -e TDAI_LLM_API_KEY=sk-your-key \  # deprecated（ADR-0006）：SoT=admin settings（config-override.json）
   -p 8420:8420 \
   tencentdb-agent-memory:latest
 ```
@@ -81,7 +81,7 @@ docker run -d --name agent-memory \
 **Docker Compose 一键启动（含 Redis）：**
 
 ```bash
-TDAI_LLM_API_KEY=sk-your-key docker compose -f docker-compose.local.yaml up --build
+TDAI_LLM_API_KEY=sk-your-key docker compose -f docker-compose.local.yaml up --build  # key deprecated（ADR-0006）：SoT=admin settings（config-override.json）
 ```
 
 ### 4. 验证服务
@@ -133,7 +133,7 @@ server:
 
 llm:                         # LLM API (OpenAI 兼容)
   baseUrl: "https://api.lkeap.cloud.tencent.com/v1"
-  apiKey: "${TDAI_LLM_API_KEY}"
+  apiKey: "${TDAI_LLM_API_KEY}"  # deprecated 占位（ADR-0006）：展开为空则落 override
   model: "deepseek-v3.2"
 
 redis:                       # Redis (service 模式必需)
@@ -166,7 +166,7 @@ memory:                      # 记忆引擎调参
 |---------|----------|--------|------|
 | `TDAI_DEPLOY_MODE` | `deployMode` | `standalone` | 部署模式 |
 | `TDAI_GATEWAY_CONFIG` | — | `/data/config/tdai-gateway.yaml` | 配置文件路径 |
-| `TDAI_LLM_API_KEY` | `llm.apiKey` | — | LLM API Key |
+| `TDAI_LLM_API_KEY` | `llm.apiKey` | — | LLM API Key（deprecated ADR-0006：SoT=admin settings，env 仅回退） |
 | `TDAI_LLM_BASE_URL` | `llm.baseUrl` | `https://api.openai.com/v1` | LLM 地址 |
 | `TDAI_LLM_MODEL` | `llm.model` | `gpt-4o` | 模型名 |
 | `REDIS_HOST` | `redis.host` | `127.0.0.1` | Redis 地址 |
@@ -184,7 +184,7 @@ memory:                      # 记忆引擎调参
 参考 `MemoryCore/deploy/k8s/tdai-memory.yaml`，核心做法：
 
 1. **ConfigMap** 挂载 `tdai-gateway.yaml` 到 `/app/config/`
-2. **Secret** 通过环境变量注入 `TDAI_LLM_API_KEY` + `REDIS_PASSWORD`
+2. **Secret** 通过环境变量注入 `TDAI_LLM_API_KEY` + `REDIS_PASSWORD`（TDAI_LLM_API_KEY 为 deprecated 回退通道，ADR-0006）
 3. **Deployment** 设置 `TDAI_GATEWAY_CONFIG=/data/config/tdai-gateway.yaml`
 
 ```yaml

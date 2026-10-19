@@ -1,10 +1,10 @@
 // src/gateway/settings-override.test.ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, pickDefined, applyRerankOverrideToRaw } from "./settings-override.js";
-import { loadGatewayConfig } from "./config.js";
+import { loadGatewayConfig, resetLlmApiKeyDeprecationWarnForTests } from "./config.js";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "core-ovr-")); });
@@ -216,5 +216,97 @@ describe("rerank 段（P1 task-4）", () => {
         else process.env[k] = v;
       }
     }
+  });
+});
+
+// ADR-0006（#70）：llm.apiKey 不再 env 优先 —— override > yaml > env(deprecated warn)。
+// 占位符（__X__ / ${X}，云模板未替换/未展开标记）视为未设置。
+// baseUrl/model/provider 的 env 优先保留（非秘密，不在本合同内）。
+describe("llm.apiKey 解析链（ADR-0006：override > yaml > env-deprecated）", () => {
+  const keys = [
+    "TDAI_GATEWAY_CONFIG", "TDAI_DATA_DIR", "TDAI_LLM_PROVIDER", "TDAI_LLM_BASE_URL",
+    "TDAI_LLM_API_KEY", "TDAI_LLM_MODEL", "TDAI_LLM_MAX_TOKENS", "TDAI_LLM_TIMEOUT_MS", "TDAI_LLM_STREAM",
+  ];
+  let dir: string;
+  let yamlPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "llmchain-"));
+    yamlPath = join(dir, "tdai-gateway.yaml");
+    writeFileSync(yamlPath, [
+      "llm:",
+      "  baseUrl: https://yaml-llm.example/v1",
+      "  apiKey: yaml-llm-key",
+      "  model: yaml-llm-model",
+      "",
+    ].join("\n"), "utf-8");
+    const saved = new Map(keys.map(k => [k, process.env[k]]));
+    for (const k of keys) if (k !== "TDAI_GATEWAY_CONFIG" && k !== "TDAI_DATA_DIR") delete process.env[k];
+    process.env.TDAI_GATEWAY_CONFIG = yamlPath;
+    process.env.TDAI_DATA_DIR = dir;
+    (globalThis as unknown as { __llmChainSaved?: Map<string, string | undefined> }).__llmChainSaved = saved;
+    resetLlmApiKeyDeprecationWarnForTests();
+  });
+  afterEach(() => {
+    const saved = (globalThis as unknown as { __llmChainSaved?: Map<string, string | undefined> }).__llmChainSaved;
+    if (saved) {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("override key > yaml key > env key", () => {
+    writeSettingsOverride(dir, { llm: { apiKey: "ovr-llm-key" } });
+    process.env.TDAI_LLM_API_KEY = "env-llm-key";
+    const cfg = loadGatewayConfig();
+    expect(cfg.llm.apiKey).toBe("ovr-llm-key");
+  });
+
+  it("yaml key 压过 env key，且 env 未被采信时不告警", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.TDAI_LLM_API_KEY = "env-llm-key";
+    const cfg = loadGatewayConfig();
+    expect(cfg.llm.apiKey).toBe("yaml-llm-key");
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("仅 env 有 key 时回退生效并发弃用告警（ADR-0006）", () => {
+    writeFileSync(yamlPath, [
+      "llm:",
+      "  baseUrl: https://yaml-llm.example/v1",
+      "  model: yaml-llm-model",
+      "",
+    ].join("\n"), "utf-8");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.TDAI_LLM_API_KEY = "env-llm-key-fallback";
+    const cfg = loadGatewayConfig();
+    expect(cfg.llm.apiKey).toBe("env-llm-key-fallback");
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(String(errSpy.mock.calls[0]?.[0])).toContain("弃用");
+  });
+
+  it("env 占位符 __ARK_KEY__ 视为未设置（落 yaml，不告警）", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.TDAI_LLM_API_KEY = "__ARK_KEY__";
+    const cfg = loadGatewayConfig();
+    expect(cfg.llm.apiKey).toBe("yaml-llm-key");
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("yaml key 为未展开占位符时落 env（发弃用告警）", () => {
+    writeFileSync(yamlPath, [
+      "llm:",
+      "  baseUrl: https://yaml-llm.example/v1",
+      '  apiKey: __TDAI_LLM_API_KEY__',
+      "  model: yaml-llm-model",
+      "",
+    ].join("\n"), "utf-8");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.TDAI_LLM_API_KEY = "env-llm-key-unexpanded";
+    const cfg = loadGatewayConfig();
+    expect(cfg.llm.apiKey).toBe("env-llm-key-unexpanded");
+    expect(errSpy).toHaveBeenCalledTimes(1);
   });
 });

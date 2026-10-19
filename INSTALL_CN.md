@@ -27,7 +27,7 @@ cd TencentDB-Agent-Memory/deploy/global-images
 
 1. `.env` 不存在时，自动从 `.env.example` 复制一份
 2. 引导你填写两组 LLM（回车 = 保留默认值）：
-   - `memory 组`：`MEMORY_LLM_BASE_URL` / `MEMORY_LLM_API_KEY` / `MEMORY_LLM_MODEL`（memory + hub 内部用）
+   - `memory 组`：`MEMORY_LLM_BASE_URL` / `MEMORY_LLM_API_KEY` / `MEMORY_LLM_MODEL`（memory + hub 内部用；core 侧属 ADR-0006 deprecated 回退通道，生产凭据可挂载 config-override.json 覆盖）
    - `proxy 组`：`PROXY_UPSTREAM_URL` / `PROXY_UPSTREAM_API_KEY` / `PROXY_UPSTREAM_MODEL`（proxy 转发上游，可复用 memory 组）
 3. 填完**立即检查 LLM 通路**，不通会提示重新输入，直到通过或主动放弃
 4. 把填写值写回 `.env` 持久化

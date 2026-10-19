@@ -35,7 +35,8 @@ upstream:
   url: https://ark.cn-beijing.volces.com/api/coding/v3
   # 若非空，则替换所有转发请求中的 Authorization: Bearer <apiKey>。
   # 留空则透传客户端原始 API Key。
-  apiKey: "${TDAI_LLM_API_KEY}"
+  # LLM 凭据 SoT=admin settings（ADR-0006）；proxy 此处为兜底 upstream key，部署时字面量替换：
+  apiKey: REPLACE_WITH_LLM_API_KEY
 
   # ── Per-Agent 覆盖 ─────────────────────────────────────────────────────────
   # 按 agent 名（URL 路径前缀 /{agent}/...）覆盖 url + apiKey。

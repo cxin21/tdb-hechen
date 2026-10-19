@@ -29,7 +29,7 @@ cd MemoryCore
 npm install
 
 # 2. 配置 LLM
-export TDAI_LLM_API_KEY="your-api-key"
+export TDAI_LLM_API_KEY="your-api-key"  # deprecated（ADR-0006）：SoT=admin settings（config-override.json），env 仅回退
 export TDAI_LLM_BASE_URL="https://api.deepseek.com/v1"
 export TDAI_LLM_MODEL="deepseek-chat"
 
@@ -54,7 +54,7 @@ Gateway 默认监听 `http://127.0.0.1:8420`，数据存储在 `~/.memory-tencen
 
 ```bash
 # 必须 — LLM 配置
-export TDAI_LLM_API_KEY="sk-xxx"
+export TDAI_LLM_API_KEY="sk-xxx"  # deprecated（ADR-0006）：SoT=admin settings（config-override.json）
 export TDAI_LLM_BASE_URL="https://api.deepseek.com/v1"   # 默认 https://api.openai.com/v1
 export TDAI_LLM_MODEL="deepseek-chat"                     # 默认 gpt-4o
 export TDAI_LLM_MAX_TOKENS=4096
@@ -90,7 +90,7 @@ data:
 
 llm:
   baseUrl: "https://api.deepseek.com/v1"
-  apiKey: "${TDAI_LLM_API_KEY}"
+  apiKey: "${TDAI_LLM_API_KEY}"  # deprecated 占位（ADR-0006）：展开为空则落 override
   model: "deepseek-chat"
   maxTokens: 4096
   timeoutMs: 120000
@@ -108,7 +108,7 @@ memory:
     enabled: true
     provider: "openai"            # none / openai / deepseek / qclaw
     baseUrl: "${TDAI_LLM_BASE_URL}"
-    apiKey: "${TDAI_LLM_API_KEY}"
+    apiKey: "${TDAI_LLM_API_KEY}"  # deprecated 占位（ADR-0006）：展开为空则落 override
     model: "text-embedding-3-small"
     dimensions: 1536
   bm25:
@@ -128,7 +128,7 @@ memory:
 ```bash
 # 纯 Gateway
 docker run -d \
-  -e TDAI_LLM_API_KEY="sk-xxx" \
+  -e TDAI_LLM_API_KEY="sk-xxx" \  # deprecated（ADR-0006）
   -e TDAI_LLM_BASE_URL="https://api.deepseek.com/v1" \
   -e TDAI_LLM_MODEL="deepseek-chat" \
   -e TDAI_GATEWAY_HOST="0.0.0.0" \
@@ -221,7 +221,7 @@ data:
 
 llm:
   baseUrl: "${TDAI_LLM_BASE_URL}"
-  apiKey: "${TDAI_LLM_API_KEY}"
+  apiKey: "${TDAI_LLM_API_KEY}"  # deprecated 占位（ADR-0006）：展开为空则落 override
   model: "deepseek-chat"
 
 memory:
@@ -340,7 +340,7 @@ memory:
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `TDAI_LLM_API_KEY` | (必填) | LLM API Key |
+| `TDAI_LLM_API_KEY` | (必填，deprecated ADR-0006) | LLM API Key（SoT=admin settings config-override.json，env 仅回退） |
 | `TDAI_LLM_BASE_URL` | `https://api.openai.com/v1` | LLM API 地址 |
 | `TDAI_LLM_MODEL` | `gpt-4o` | LLM 模型名 |
 | `MEMORY_TENCENTDB_GATEWAY_PORT` | `8420` | Gateway 监听端口 |
@@ -462,7 +462,7 @@ memory:
 | `TDAI_DATA_DIR` | `~/.memory-tencentdb/memory-tdai` | 全部 | 数据目录 |
 | `TDAI_GATEWAY_CONFIG` | (搜索) | 全部 | 配置文件路径 |
 | **LLM** |
-| `TDAI_LLM_API_KEY` | `""` | 全部 | LLM API Key |
+| `TDAI_LLM_API_KEY` | `""` | 全部 | LLM API Key（deprecated ADR-0006：SoT=admin settings，env 仅回退） |
 | `TDAI_LLM_BASE_URL` | `https://api.openai.com/v1` | 全部 | LLM API 地址 |
 | `TDAI_LLM_MODEL` | `gpt-4o` | 全部 | 模型名称 |
 | `TDAI_LLM_MAX_TOKENS` | `4096` | 全部 | 最大输出 token |

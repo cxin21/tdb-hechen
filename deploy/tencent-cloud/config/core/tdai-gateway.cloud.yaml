@@ -24,7 +24,7 @@ data:
 # ── LLM (必填; new-api 中转, 模型 scm-flash) ──
 llm:
   baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3"
-  apiKey: "${TDAI_LLM_API_KEY}"
+  apiKey: "${TDAI_LLM_API_KEY}" # deprecated 占位（ADR-0006）：展开为空则落 override（config-override.json）或 env 回退
   model: "ark-code-latest"
   maxTokens: 4096
   # 多提供商兼容：max_tokens 上限（按模型声明；缺省 131072=Ark 上限）
@@ -229,7 +229,7 @@ memory:
   embedding:
     provider: "openai_compatible"
     baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3"
-    apiKey: "${TDAI_LLM_API_KEY}" # 与 llm 同源（Ark）；如需独立 embedding key 请替换
+    apiKey: "${TDAI_LLM_API_KEY}" # 与 llm 同源（Ark）；embedding env 优先不受 ADR-0006 影响；如需独立 embedding key 请替换
     model: "doubao-embedding-vision"
     dimensions: 2048
     # #61（2026-10-18）：仅召回链路的 embedding 专用超时 ms（undefined = 回落 timeoutMs）。

@@ -17,12 +17,14 @@
  * - 缺省 dry-run（零写）；--write 才落库。可重入：已写 aliases 的锚不再是目标。
  *
  * 用法: node --import tsx scripts/backfill-theme-aliases.ts --db <vectors.db> [--write] [--limit N]
- *   LLM 凭据环境变量：TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY / TDAI_LLM_MODEL
+ *   LLM 凭据（ADR-0006）：override（<dataDir>/config-override.json）> gateway yaml llm 段 >
+ *   TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY / TDAI_LLM_MODEL（env 已 deprecated，仅回退）
  */
 import { pathToFileURL } from "node:url";
 import { VectorStore } from "../src/core/store/sqlite.js";
 import { StandaloneLLMRunner } from "../src/adapters/standalone/llm-runner.js";
 import type { LLMRunner } from "../src/core/types.js";
+import { readLlmCredential } from "./lib/read-llm-credential.js";
 
 const TAG = "[backfill-theme-aliases]";
 const ALIAS_MAX = 12;
@@ -220,12 +222,6 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return args;
 }
 
-function requiredEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (!v) throw new Error(`${TAG} 缺少环境变量 ${name}（生产运行需 LLM 凭据）`);
-  return v;
-}
-
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || !args.db) {
@@ -239,14 +235,11 @@ async function main(): Promise<void> {
   await vs.init();
   try {
     const db = (vs as unknown as { db: Db }).db;
+    const cred = readLlmCredential();
+    if (!cred) throw new Error(`${TAG} LLM 凭据不全（override/yaml/env 均未配齐；ADR-0006：SoT=admin settings config-override.json）`);
+    console.error(`${TAG} LLM credSource=${cred.apiKeySource} model=${cred.model}`);
     const llmRunner: LLMRunner = new StandaloneLLMRunner({
-      config: {
-        baseUrl: requiredEnv("TDAI_LLM_BASE_URL"),
-        apiKey: requiredEnv("TDAI_LLM_API_KEY"),
-        model: requiredEnv("TDAI_LLM_MODEL"),
-        maxTokens: 512,
-        timeoutMs: 120_000,
-      },
+      config: { baseUrl: cred.baseUrl, apiKey: cred.apiKey, model: cred.model, maxTokens: 512, timeoutMs: 120_000 },
       logger: console as never,
     });
     const stats = await runAliasBackfill({

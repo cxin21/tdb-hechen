@@ -69,7 +69,7 @@ npm run build
 
 ```bash
 export TDAI_GATEWAY_CONFIG="$PWD/tdai-gateway.standalone.yaml"
-export TDAI_LLM_API_KEY="your-api-key"
+export TDAI_LLM_API_KEY="your-api-key"  # deprecated（ADR-0006）：SoT=admin settings（config-override.json），env 仅回退
 export TDAI_LLM_BASE_URL="https://api.openai.com/v1"
 export TDAI_LLM_MODEL="gpt-4o-mini"
 
@@ -125,7 +125,7 @@ docker build -t memory-core:local .
 ```bash
 docker run --rm \
   -p 8420:8420 \
-  -e TDAI_LLM_API_KEY="your-api-key" \
+  -e TDAI_LLM_API_KEY="your-api-key" \  # deprecated（ADR-0006）
   -e TDAI_GATEWAY_API_KEY="replace-with-a-strong-random-token" \
   -v "$PWD/tdai-gateway.standalone.yaml:/data/config/tdai-gateway.yaml:ro" \
   -v memory-core-data:/data/tdai-memory \
@@ -272,7 +272,7 @@ Gateway 按以下优先级加载配置：
 | `TDAI_GATEWAY_API_KEY` | 未设置 | HTTP Bearer 鉴权；非回环监听必须设置 |
 | `TDAI_CORS_ORIGINS` | 空 | 允许的 Origin，逗号分隔 |
 | `TDAI_DATA_DIR` | `~/.memory-tencentdb/memory-tdai` | 本地数据目录 |
-| `TDAI_LLM_API_KEY` | 空 | LLM API Key |
+| `TDAI_LLM_API_KEY` | 空 | LLM API Key（deprecated ADR-0006：SoT=admin settings，env 仅回退） |
 | `TDAI_LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API 地址 |
 | `TDAI_LLM_MODEL` | `gpt-4o` | LLM 模型 |
 | `TDAI_SKILL_ENABLED` | 配置文件值 | 强制启用 Skill 模块 |

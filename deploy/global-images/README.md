@@ -91,7 +91,7 @@ cd TencentDB-Agent-Memory/deploy/global-images
 | 变量 | 说明 | 示例 |
 |---|---|---|
 | `MEMORY_LLM_BASE_URL` | OpenAI 兼容 base URL | `https://api.deepseek.com/v1` |
-| `MEMORY_LLM_API_KEY` | 上述端点的 API Key | `sk-xxxxxxxx` |
+| `MEMORY_LLM_API_KEY` | 上述端点的 API Key | `sk-xxxxxxxx`（core 侧 ADR-0006 deprecated 回退；生产可挂载 config-override.json 覆盖） |
 | `MEMORY_LLM_MODEL` | 模型 ID | `deepseek-chat` |
 | `MEMORY_LLM_PROTOCOL` | `openai` 或 `anthropic`，默认 `openai` | `openai` |
 

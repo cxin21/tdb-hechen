@@ -10,7 +10,7 @@
 
 | 占位符 | 来源（/opt/tdai/etc/env） | 说明 |
 |---|---|---|
-| `${TDAI_LLM_API_KEY}` | `TDAI_LLM_API_KEY` | ark LLM key（`upstream.apiKey`） |
+| `REPLACE_WITH_LLM_API_KEY`（字面量替换） | `TDAI_LLM_API_KEY`（deprecated，ADR-0006） | ark LLM key（`upstream.apiKey` 兜底；SoT=admin settings config-override.json） |
 | `${TDAI_GATEWAY_API_KEY}` | `TDAI_GATEWAY_API_KEY` | core 网关 key（`tdai.apiKey` = `skill.serviceToken` 同源） |
 | `${PROXY_ADMIN_API_KEY}` | `PROXY_ADMIN_API_KEY` | 运维口 `admin.apiKey`（公网部署必须设置） |
 | `${PROXY_EXTERNAL_GATEWAY_URL}` | 手填 | 公网访问 core 的地址；proxy 与 core 同机部署时用 `http://127.0.0.1:8420` |

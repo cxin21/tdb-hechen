@@ -1,11 +1,13 @@
 #!/usr/bin/env tsx
 /**
  * Real VDB + COS E2E for custom memory prompts and generation provenance.
- * Credentials are read exclusively from environment variables.
+ * VDB/COS credentials are read exclusively from environment variables; LLM credentials
+ * follow ADR-0006 (config-override.json override > gateway yaml > TDAI_LLM_* env deprecated).
  */
 import { createHash, randomUUID } from "node:crypto";
 
 import { StandaloneLLMRunner } from "../src/adapters/standalone/llm-runner.js";
+import { readLlmCredential } from "./lib/read-llm-credential.js";
 import { extractL1Memories } from "../src/core/record/l1-extractor.js";
 import { SceneExtractor } from "../src/core/scene/scene-extractor.js";
 import { PersonaGenerator } from "../src/core/persona/persona-generator.js";
@@ -54,9 +56,12 @@ const cosKey = required("COS_SECRET_KEY");
 const COS_ENDPOINT_DOMAIN = process.env.COS_ENDPOINT_DOMAIN?.trim()
   || (COS_BUCKET_URL?.includes(".cos-internal.") ? `cos-internal.${COS_REGION}.tencentcos.cn` : undefined);
 const COS_PATH_PREFIX = (process.env.COS_PATH_PREFIX?.trim() || "memory-prompt-e2e").replace(/^\/+|\/+$/g, "");
-const LLM_BASE_URL = required("TDAI_LLM_BASE_URL");
-const llmAuth = required("TDAI_LLM_API_KEY");
-const LLM_MODEL = required("TDAI_LLM_MODEL");
+// LLM 凭据（ADR-0006）：override > gateway yaml > TDAI_LLM_* env deprecated 回退。
+const llmCred = readLlmCredential();
+if (!llmCred) throw new Error("LLM 凭据不全（override/yaml/env 均未配齐；ADR-0006：SoT=admin settings config-override.json）");
+const LLM_BASE_URL = llmCred.baseUrl;
+const llmAuth = llmCred.apiKey;
+const LLM_MODEL = llmCred.model;
 const SKIP_COS_LIFECYCLE = process.env.E2E_SKIP_COS_LIFECYCLE === "1";
 
 const run = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;

@@ -37,7 +37,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import YAML from "yaml";
 
 // 生产同构模块（tsx 直跑；单一源复用，禁第二份实现）
 const { countBlockChars, needsGovernance, validateDistilled, hardCapFallback, metaChars } =
@@ -47,11 +46,12 @@ const { syncSceneIndex } = await import("../src/core/scene/scene-index.js");
 const { BackupManager } = await import("../src/utils/backup.js");
 const { StandaloneLLMRunner } = await import("../src/adapters/standalone/llm-runner.js");
 const { buildProfileIsolationScope } = await import("../src/core/profile/profile-sync.js");
+const { readLlmCredential } = await import("./lib/read-llm-credential.js");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = path.resolve(__dirname, "..");
 const RUNS_DIR = path.join(CORE_DIR, "runs");
-const PROD_YAML = path.join(CORE_DIR, "tdai-gateway.yaml"); // 只读（LLM 凭据回退源）
+const PROD_YAML = path.join(CORE_DIR, "tdai-gateway.yaml"); // 只读（凭据 yaml 通道；ADR-0006：override 优先）
 const TAG = "[repair-scene-blocks]";
 const BACKUP_CATEGORY = "scene_governance"; // 与 SceneGovernor 同款
 const BACKUP_MAX_KEEP = 10;
@@ -176,27 +176,18 @@ const scope = buildProfileIsolationScope({ teamId: TEAM, agentId: AGENT });
 const profileDataDir = path.join(DATA_DIR, "profiles", encodeURIComponent(scope));
 const blocksDir = path.join(profileDataDir, "scene_blocks");
 
-// ── LLM runner（凭据 env 优先 > 只读 yaml llm 段，与 gateway 配置优先级同形）────────
+// ── LLM runner（ADR-0006：override（config-override.json）> 只读 yaml llm 段 > TDAI_LLM_* env deprecated 回退）────────
 function buildRunner(): { run(p: { systemPrompt: string; prompt: string; timeoutMs?: number }): Promise<string>; model: string } {
-  const envBase = process.env.TDAI_LLM_BASE_URL?.trim();
-  const envKey = process.env.TDAI_LLM_API_KEY?.trim();
-  const envModel = process.env.TDAI_LLM_MODEL?.trim();
-  let baseUrl = envBase, apiKey = envKey, model = envModel, credSource = "env:TDAI_LLM_*";
-  if (!baseUrl || !apiKey || !model) {
-    const cfg = YAML.parse(fs.readFileSync(PROD_YAML, "utf8")) as any; // 只读
-    const llm = cfg?.llm ?? {};
-    baseUrl ??= llm.baseUrl;
-    apiKey ??= llm.apiKey;
-    model ??= llm.model;
-    credSource = "env 覆盖 + 只读 tdai-gateway.yaml llm 段回退";
+  const cred = readLlmCredential({ yamlPath: PROD_YAML });
+  if (!cred) {
+    throw new Error(`${TAG} LLM 凭据不全（override / yaml / env 均未配齐；ADR-0006：SoT=admin settings config-override.json）`);
   }
-  if (!baseUrl || !apiKey || !model) throw new Error(`${TAG} LLM 凭据不全（env 与 yaml 均未配齐）`);
-  log(`LLM: model=${model} credSource=${credSource}`);
+  log(`LLM: model=${cred.model} credSource=${cred.apiKeySource}`);
   const runner = new StandaloneLLMRunner({
-    config: { baseUrl: baseUrl!, apiKey: apiKey!, model: model!, maxTokens: MAX_TOKENS, timeoutMs: TIMEOUT_MS },
+    config: { baseUrl: cred.baseUrl, apiKey: cred.apiKey, model: cred.model, maxTokens: MAX_TOKENS, timeoutMs: TIMEOUT_MS },
     logger: console as never,
   });
-  return { run: (p) => runner.run(p), model: model! };
+  return { run: (p) => runner.run(p), model: cred.model };
 }
 
 // ── §4.1 保留优先级（与 scene-governance.ts buildDistillPrompts 逐字同口径）──────────

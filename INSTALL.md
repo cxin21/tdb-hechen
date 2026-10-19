@@ -30,7 +30,7 @@ cd TencentDB-Agent-Memory/deploy/global-images
 
 1. Copies `.env.example` to `.env` if `.env` doesn't exist
 2. Walks you through both LLM groups (press Enter to keep the current default):
-   - `memory` group: `MEMORY_LLM_BASE_URL` / `MEMORY_LLM_API_KEY` / `MEMORY_LLM_MODEL` (used internally by memory + hub)
+   - `memory` group: `MEMORY_LLM_BASE_URL` / `MEMORY_LLM_API_KEY` / `MEMORY_LLM_MODEL` (used internally by memory + hub) (core side: ADR-0006 deprecated fallback; mount config-override.json for production override)
    - `proxy` group: `PROXY_UPSTREAM_URL` / `PROXY_UPSTREAM_API_KEY` / `PROXY_UPSTREAM_MODEL` (upstream the proxy forwards to; can reuse the memory group)
 3. **Immediately probes the LLM connectivity** after each group — if it fails, you're prompted to re-enter until it passes (or you abort)
 4. Writes the values back to `.env` for persistence

@@ -29,8 +29,8 @@
  * 用法（在 MemoryCore 目录下）：
  *   node --import tsx scripts/backfill-core-refs.ts --db <vectors.db 路径> [--write]
  *        [--batch-size 30] [--mode chat|code] [--limit N]
- *   LLM 凭据走环境变量：TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY / TDAI_LLM_MODEL
- *   （与 e2e-memory-prompt-vdb-cos.ts 同源惯例）。
+ *   LLM 凭据（ADR-0006）：override（{dataDir}/config-override.json）> yaml >
+ *   TDAI_LLM_* env（deprecated 仅回退）——经 scripts/lib/read-llm-credential.ts 统一读取。
  *
  * 验证：scripts/verify-backfill.ts（临时库 + mock LLM，不碰生产）。
  */
@@ -47,6 +47,7 @@ import type { ExtractedMemory, MemoryType } from "../src/core/record/l1-writer.j
 import type { L1RecordRow } from "../src/core/store/types.js";
 import type { LLMRunner, Logger, TraceContext } from "../src/types.js";
 import { StandaloneLLMRunner } from "../src/adapters/standalone/llm-runner.js";
+import { readLlmCredential } from "./lib/read-llm-credential.js";
 
 const TAG = "[memory-tdai][backfill-core-refs]";
 
@@ -333,7 +334,8 @@ async function main(): Promise<void> {
   if (args.help || !args.db) {
     console.log(`用法：node --import tsx scripts/backfill-core-refs.ts --db <vectors.db> [--write] [--batch-size 30] [--mode chat|code] [--limit N]
   默认 dry-run（零写库）；--write 真实写库（幂等，可中断重跑）。
-  LLM 凭据环境变量：TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY / TDAI_LLM_MODEL`);
+  LLM 凭据（ADR-0006）：override（<dataDir>/config-override.json）> gateway yaml llm 段 >
+  TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY / TDAI_LLM_MODEL（env 已 deprecated，仅回退）`);
     if (!args.db) process.exitCode = 1;
     return;
   }
@@ -341,14 +343,11 @@ async function main(): Promise<void> {
   const batchSize = args["batch-size"] !== undefined ? Number(args["batch-size"]) : undefined;
   const limit = args.limit !== undefined ? Number(args.limit) : undefined;
   const mode = args.mode === "code" ? "code" : "chat";
+  const cred = readLlmCredential();
+  if (!cred) throw new Error(`${TAG} LLM 凭据不全（override/yaml/env 均未配齐；ADR-0006：SoT=admin settings config-override.json）`);
+  console.error(`${TAG} LLM credSource=${cred.apiKeySource} model=${cred.model}`);
   const llmRunner: LLMRunner = new StandaloneLLMRunner({
-    config: {
-      baseUrl: requiredEnv("TDAI_LLM_BASE_URL"),
-      apiKey: requiredEnv("TDAI_LLM_API_KEY"),
-      model: requiredEnv("TDAI_LLM_MODEL"),
-      maxTokens: 4096,
-      timeoutMs: LLM_TIMEOUT_MS,
-    },
+    config: { baseUrl: cred.baseUrl, apiKey: cred.apiKey, model: cred.model, maxTokens: 4096, timeoutMs: LLM_TIMEOUT_MS },
     logger: console as never,
   });
   const stats = await runBackfill({ dbPath, write: args.write === true, batchSize, limit, mode, llmRunner, logger: console as never });

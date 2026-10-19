@@ -67,7 +67,7 @@ npm run build
 
 ```bash
 export TDAI_GATEWAY_CONFIG="$PWD/tdai-gateway.standalone.yaml"
-export TDAI_LLM_API_KEY="your-api-key"
+export TDAI_LLM_API_KEY="your-api-key"  # deprecated (ADR-0006): SoT = admin settings (config-override.json), env is fallback only
 export TDAI_LLM_BASE_URL="https://api.openai.com/v1"
 export TDAI_LLM_MODEL="gpt-4o-mini"
 
@@ -123,7 +123,7 @@ Run a Standalone container:
 ```bash
 docker run --rm \
   -p 8420:8420 \
-  -e TDAI_LLM_API_KEY="your-api-key" \
+  -e TDAI_LLM_API_KEY="your-api-key" \  # deprecated (ADR-0006)
   -e TDAI_GATEWAY_API_KEY="replace-with-a-strong-random-token" \
   -v "$PWD/tdai-gateway.standalone.yaml:/data/config/tdai-gateway.yaml:ro" \
   -v memory-core-data:/data/tdai-memory \
@@ -204,7 +204,7 @@ Environment variables override file configuration. Common settings:
 | `TDAI_GATEWAY_API_KEY` | Unset | HTTP Bearer authentication; required for non-loopback binding |
 | `TDAI_CORS_ORIGINS` | Empty | Comma-separated allowed origins |
 | `TDAI_DATA_DIR` | `~/.memory-tencentdb/memory-tdai` | Local data directory |
-| `TDAI_LLM_API_KEY` | Empty | LLM API key |
+| `TDAI_LLM_API_KEY` | Empty | LLM API key (deprecated ADR-0006: SoT = admin settings config-override.json; env fallback only) |
 | `TDAI_LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API URL |
 | `TDAI_LLM_MODEL` | `gpt-4o` | LLM model |
 | `TDAI_SKILL_ENABLED` | File configuration | Force-enable the Skill module |

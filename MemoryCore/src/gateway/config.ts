@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { getEnv } from "../utils/env.js";
+import { isSetCredential } from "../utils/credential.js";
 import { parseConfig as parseMemoryConfig } from "../config.js";
 import type { MemoryTdaiConfig } from "../config.js";
 import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
@@ -464,7 +465,9 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     rawLlmProvider === "proxy" ? "proxy" : "openai";
   const llm: StandaloneLLMConfig = {
     baseUrl: env("TDAI_LLM_BASE_URL") ?? str(llmConfig, "baseUrl") ?? "https://api.openai.com/v1",
-    apiKey: env("TDAI_LLM_API_KEY") ?? str(llmConfig, "apiKey") ?? "",
+    // ADR-0006（#70）：apiKey yaml 优先，env 仅 deprecated 回退（loud 告警）；
+    // 占位符（__X__ / ${X}）视为未设置。override（config-override.json）在下方 :516 Object.assign 最后落。
+    apiKey: resolveLlmApiKey(str(llmConfig, "apiKey")),
     model: env("TDAI_LLM_MODEL") ?? str(llmConfig, "model") ?? "gpt-4o",
     maxTokens: envInt("TDAI_LLM_MAX_TOKENS") ?? num(llmConfig, "maxTokens") ?? 4096,
     timeoutMs: envInt("TDAI_LLM_TIMEOUT_MS") ?? num(llmConfig, "timeoutMs") ?? 120_000,
@@ -489,7 +492,7 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     memoryCompatRaw.promptMode = topLevelPromptMode;
   }
 
-  // ── Admin settings override（{baseDir}/config-override.json）> TDAI_LLM_* env > yaml（spec §3.2）──
+  // ── Admin settings override（{baseDir}/config-override.json）> yaml > TDAI_LLM_* env(deprecated)（ADR-0006；llm.apiKey 解析链同序，见 resolveLlmApiKey）──
   // rerank 段（P1 task-4）必须并入 parse 之前的 raw：rerank 的 provider 校验/
   // 非法回退 none/enabled 强制关闭/clamp 语义全部在 parseConfig 的 rerank 块内，
   // parse 后合并会绕过这些不变量（applyRerankOverrideToRaw 只在 memoryCompatRaw
@@ -569,7 +572,8 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   // 必须放在上方"Standalone embedding override pass-through"兼容 splice 之后：
   // 该 splice 以 `str(yaml,"X") ?? memory.embedding.X` 逐字段回填 yaml 顶层
   // embedding，若 override 在它之前合并，yaml 值会反向覆盖 admin override，
-  // 违背 spec §3.2 优先级（config-override.json > TDAI_LLM_* env > yaml）。
+  // 违背 spec §3.2 优先级（config-override.json > env > yaml；embedding 的 env 优先
+  // 不受 ADR-0006 影响 —— ADR-0006 只改 llm.apiKey 这一秘密字段的通道序）。
   // override 最后落，保证其优先级最高；未指定的字段仍保留 yaml/默认值。
   if (settingsOverride?.embedding) {
     memory.embedding = { ...memory.embedding, ...pickDefined(settingsOverride.embedding) } as typeof memory.embedding;
@@ -869,6 +873,36 @@ function resolveDefaultDataDir(): string {
   return newDefault;
 }
 
+
+// ── llm.apiKey 解析（ADR-0006，#70）──
+// 服务凭据唯一 SoT = admin settings（config-override.json）。运行时解析链：
+//   override（settingsOverride.llm.apiKey，:516 Object.assign 最后落）
+//   > gateway yaml llm.apiKey
+//   > TDAI_LLM_API_KEY env（deprecated 回退，loud 告警一次/值）
+// 占位符（__X__ / ${X}，云模板未替换/未展开标记）视为未设置（src/utils/credential.ts）。
+// baseUrl/model/provider 的 env 优先保留 —— 非秘密，不在本合同内。
+let lastWarnedLlmApiKeyEnv: string | null = null;
+function warnLlmApiKeyEnvDeprecated(value: string): void {
+  if (lastWarnedLlmApiKeyEnv === value) return;
+  lastWarnedLlmApiKeyEnv = value;
+  console.error(
+    "[config] TDAI_LLM_API_KEY 已弃用（ADR-0006）：LLM 凭据 SoT=admin settings（config-override.json）。" +
+      "本次回退读取 env，请尽快迁移：写入 <dataDir>/config-override.json 的 llm 段，或经 admin settings UI 设置。",
+  );
+}
+/** 测试专用：重置弃用告警去重状态。 */
+export function resetLlmApiKeyDeprecationWarnForTests(): void {
+  lastWarnedLlmApiKeyEnv = null;
+}
+function resolveLlmApiKey(yamlApiKey: string | undefined): string {
+  if (isSetCredential(yamlApiKey)) return yamlApiKey;
+  const envKey = env("TDAI_LLM_API_KEY");
+  if (isSetCredential(envKey)) {
+    warnLlmApiKeyEnvDeprecated(envKey);
+    return envKey;
+  }
+  return "";
+}
 function env(key: string): string | undefined {
   const v = getEnv(key)?.trim();
   return v || undefined;

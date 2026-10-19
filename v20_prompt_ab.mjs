@@ -19,6 +19,12 @@ const grab = (re) => { const m = yamlText.match(re); return m ? m[1] : ""; };
 let BASE = grab(/^llm:\s*\n\s*baseUrl:\s*"([^"]+)"/m) || process.env.TDAI_LLM_BASE_URL || "";
 let MODEL = grab(/^llm:\s*\n\s*baseUrl:[^\n]*\n\s*model:\s*"([^"]+)"/m) || "ark-code-latest";
 let KEY = process.env.TDAI_LLM_API_KEY || "";
+try { // ADR-0006：override > env；override 无 key 时从 gateway yaml 回退
+  const y = fs.readFileSync(YAML_FILE, "utf8");
+  const m = y.match(/^\s*apiKey:\s*"?([^"\n}]+)"?\s*(?:#.*)?$/m);
+  const yk = m && m[1] && !/^\$\{/.test(m[1]) ? m[1].trim() : "";
+  if (!KEY && yk) KEY = yk;
+} catch {}
 try {
   const ov = JSON.parse(fs.readFileSync("/data/tdai-memory/config-override.json", "utf8"));
   if (ov.llm && ov.llm.baseUrl && ov.llm.model && ov.llm.apiKey) {

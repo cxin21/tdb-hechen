@@ -21,6 +21,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { isSetCredential } from "../../src/utils/credential.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -122,6 +123,30 @@ function baselineShapeErrors(baseline: unknown): string[] {
  *  走 node:http 可通过）。租户可经 TDAI_PERSONA_SOUL_TEAM_ID / USER_ID / AGENT_ID
  *  指定（introspect 的租户来自 body 而非隔离头；缺省 default 租户）。地址可用
  *  TDAI_GATEWAY_HOST / TDAI_GATEWAY_PORT 覆盖（缺省 127.0.0.1:8420）。 */
+/**
+ * ADR-0006（#70）--config llm 段回退补齐（纯函数，可测）。
+ * 判缺口必须用 parse 前的原始 yaml 值（rawLlm）：parseConfig 会给缺省 llm 段注入
+ * baseUrl="https://api.openai.com/v1"/model="gpt-4o" 等缺省值，伪装成「已设置」，
+ * 逐字段 isSet 判断会把缺省值当显式配置，造成 openai 缺省与 override key 混搭打错地址。
+ * 显式给定的字段不回填；至少补一字段返回 true。
+ */
+export function patchLlmFieldsFromCredential(
+  rawLlm: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number | string } | undefined,
+  parsedLlm: { baseUrl: string; apiKey: string; model: string; maxTokens: number; timeoutMs: number; [k: string]: unknown },
+  cred: { baseUrl: string; apiKey: string; model: string; maxTokens?: number; timeoutMs?: number },
+): boolean {
+  const r = rawLlm ?? {};
+  let patched = false;
+  if (!isSetCredential(r.baseUrl)) { parsedLlm.baseUrl = cred.baseUrl; patched = true; }
+  if (!isSetCredential(r.apiKey)) { parsedLlm.apiKey = cred.apiKey; patched = true; }
+  if (!isSetCredential(r.model)) { parsedLlm.model = cred.model; patched = true; }
+  // maxTokens：0 合法（不限制，reasoning 模型），判缺口用 nullish/空串而非真值
+  const rawMt = r.maxTokens;
+  const rawMtSet = rawMt !== undefined && rawMt !== null && String(rawMt).trim() !== "";
+  if (!rawMtSet && cred.maxTokens !== undefined) { parsedLlm.maxTokens = cred.maxTokens; patched = true; }
+  return patched;
+}
+
 async function fetchSoulIntrospect(): Promise<string> {
   const body = JSON.stringify({
     ...(process.env.TDAI_PERSONA_SOUL_TEAM_ID ? { teamId: process.env.TDAI_PERSONA_SOUL_TEAM_ID } : {}),
@@ -272,6 +297,20 @@ async function main(): Promise<number> {
   }
   const cfgMod = (await import("../../src/config.js")) as { parseConfig: (raw: Record<string, unknown>) => { llm?: unknown } };
   const cfg = cfgMod.parseConfig(rawConfig);
+  // ADR-0006（#70）：--config yaml 的 llm 段缺任一凭据字段时，经统一读取器回退
+  // （override > repo yaml > TDAI_LLM_* env deprecated）——生产凭据经 config-override.json
+  // 自动生效，无需把真实 key 写进临时 yaml。--config 已显式给定的字段不回填（显式优先）。
+  const rawLlm = (rawConfig.llm ?? undefined) as { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number | string } | undefined;
+  const parsedLlm = (cfg.llm ?? {}) as { baseUrl: string; apiKey: string; model: string; maxTokens: number; timeoutMs: number; [k: string]: unknown };
+  if (!isSetCredential(rawLlm?.baseUrl) || !isSetCredential(rawLlm?.apiKey) || !isSetCredential(rawLlm?.model)) {
+    const { readLlmCredential } = await import("../lib/read-llm-credential.js");
+    const cred = readLlmCredential();
+    if (cred) {
+      patchLlmFieldsFromCredential(rawLlm, parsedLlm, cred);
+      cfg.llm = parsedLlm;
+      console.error(`[persona-eval] llm 凭据经 readLlmCredential 回退补齐（source=${cred.apiKeySource}）`);
+    }
+  }
   let runner: JudgeRunnerLike | undefined = undefined;
   let unlimitedOutput = false;
   try {
@@ -296,7 +335,7 @@ async function main(): Promise<number> {
     console.error("[persona-eval] llm runner unavailable:", err instanceof Error ? err.message : String(err));
   }
   if (!runner) {
-    console.error("[persona-eval] no llm runner (check memory.llm.baseUrl/apiKey) — exit 2");
+    console.error("[persona-eval] no llm runner（--config yaml llm 段与 override/yaml/env 均未配齐，见 ADR-0006）— exit 2");
     return 2;
   }
 
