@@ -5,7 +5,7 @@
  * 用法:
  *   node --import tsx scripts/persona-eval/run-persona-eval.ts --config tdai-gateway.yaml \
  *        [--soul <file>] [--no-soul] [--subset smoke|full] [--drift 8] [--max-calls 90] \
- *        [--baseline <compare.json>] [--out <jsonl>] [--summary <json>] [--no-llm] [--limit N] \
+ *        [--baseline <compare.json>] [--out <jsonl>] [--summary <json>] [--no-llm] [--limit N] [--timeout-ms 120000] \
  *        [--replay <fixtures/golden-samples.json>]
  *
  * 编排: parseConfig(yaml) → StandaloneLLMRunner（同 #62 run-behavior-judge 管线）→
@@ -17,8 +17,10 @@
  * 退出码: 0=全 pass；1=存在真 fail（含 capHit 截断/golden mismatch）；2=LLM/配置不可用；
  *         3=网络/参数校验错（config 解析、CLI 参数、语料 schema）；4=baseline 回归。
  * --no-llm: 零成本确定性干跑（校验语料/golden static/基线格式；不调 LLM；漂移不跑）。
+ * config llm.maxTokens=0（不限制）→ 两跳输出帽禁用（reasoning 模型思考即烧 token，1024 帽会截成空响应）。
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -115,6 +117,43 @@ function baselineShapeErrors(baseline: unknown): string[] {
   return errors;
 }
 
+/** 拉取网关 soul 渲染结果（node:http 原生请求——undici fetch 对本机网关存在
+ *  Authorization 头丢失/变形问题，见 2026-10-19 R1 E2E 教训；网关 Bearer 同 key
+ *  走 node:http 可通过）。租户可经 TDAI_PERSONA_SOUL_TEAM_ID / USER_ID / AGENT_ID
+ *  指定（introspect 的租户来自 body 而非隔离头；缺省 default 租户）。地址可用
+ *  TDAI_GATEWAY_HOST / TDAI_GATEWAY_PORT 覆盖（缺省 127.0.0.1:8420）。 */
+async function fetchSoulIntrospect(): Promise<string> {
+  const body = JSON.stringify({
+    ...(process.env.TDAI_PERSONA_SOUL_TEAM_ID ? { teamId: process.env.TDAI_PERSONA_SOUL_TEAM_ID } : {}),
+    ...(process.env.TDAI_PERSONA_SOUL_USER_ID ? { userId: process.env.TDAI_PERSONA_SOUL_USER_ID } : {}),
+    ...(process.env.TDAI_PERSONA_SOUL_AGENT_ID ? { agentId: process.env.TDAI_PERSONA_SOUL_AGENT_ID } : {}),
+  });
+  const host = process.env.TDAI_GATEWAY_HOST ?? "127.0.0.1";
+  const port = Number(process.env.TDAI_GATEWAY_PORT ?? 8420);
+  const rendered = await new Promise<string | undefined>((resolve, reject) => {
+    const req = http.request(
+      { host, port, path: "/v3/soul/introspect", method: "POST",
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body),
+          authorization: "Bearer " + (process.env.TDAI_GATEWAY_API_KEY ?? "") } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          if ((res.statusCode ?? 0) !== 200) { reject(new Error("HTTP " + res.statusCode)); return; }
+          try {
+            const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { data?: { rendered?: string } };
+            resolve(parsed.data?.rendered);
+          } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); }
+        });
+      });
+    req.setTimeout(10_000, () => req.destroy(new Error("introspect timeout(10s)")));
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+  return rendered ?? "";
+}
+
 async function main(): Promise<number> {
   const here = dirname(fileURLToPath(import.meta.url));
   const configPath = argOf("config") ?? "tdai-gateway.yaml";
@@ -139,6 +178,7 @@ async function main(): Promise<number> {
   const maxCallsArg = numArg("max-calls", 90);
   if (typeof maxCallsArg === "string") { console.error("[persona-eval] " + maxCallsArg); return 3; }
   const maxCalls = Math.max(1, maxCallsArg);
+  const callTimeoutMs = Math.max(1000, numArg("timeout-ms", 120_000));
 
   // ── 语料加载 + schema 校验（--no-llm 与实跑共用；schema 违规恒退出码 3）──
   const probesDir = resolve(here, "probes");
@@ -233,6 +273,7 @@ async function main(): Promise<number> {
   const cfgMod = (await import("../../src/config.js")) as { parseConfig: (raw: Record<string, unknown>) => { llm?: unknown } };
   const cfg = cfgMod.parseConfig(rawConfig);
   let runner: JudgeRunnerLike | undefined = undefined;
+  let unlimitedOutput = false;
   try {
     const { StandaloneLLMRunner } = await import("../../src/adapters/standalone/llm-runner.js");
     const { resolveStandaloneLlmForRuntime } = await import("../../src/adapters/standalone/llm-provider-resolver.js");
@@ -244,10 +285,12 @@ async function main(): Promise<number> {
           baseUrl: effective.baseUrl,
           apiKey: effective.apiKey,
           model: effective.model ?? "default",
+          maxTokens: effective.maxTokens,
           timeoutMs: effective.timeoutMs ?? 120_000,
           stream: effective.stream ?? false,
         },
       }) as unknown as JudgeRunnerLike;
+    unlimitedOutput = effective.maxTokens === 0;
     }
   } catch (err) {
     console.error("[persona-eval] llm runner unavailable:", err instanceof Error ? err.message : String(err));
@@ -264,17 +307,11 @@ async function main(): Promise<number> {
       soulRendered = readFileSync(soulPath, "utf8");
     } else {
       try {
-        const res = await fetch("http://127.0.0.1:8420/v3/soul/introspect", {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: "Bearer " + (process.env.TDAI_GATEWAY_API_KEY ?? "") },
-          body: JSON.stringify({}),
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (res.ok) {
-          const body = (await res.json()) as { data?: { rendered?: string } };
-          if (body.data?.rendered) soulRendered = body.data.rendered;
-        }
-      } catch { /* introspect 不可用 → 裸基线对照 */ }
+        soulRendered = await fetchSoulIntrospect();
+      } catch (err) {
+        // introspect 不可用 → 裸基线对照；失败原因要可见（ bare 会让 soul-dependent 探针全 skip）
+        console.error("[persona-eval] soul introspect failed: " + (err instanceof Error ? err.message : String(err)));
+      }
       if (!soulRendered) console.error("[persona-eval] soul introspect unavailable — running bare baseline");
     }
   }
@@ -286,13 +323,15 @@ async function main(): Promise<number> {
   console.error("[persona-eval] probes=" + probes.length + "/" + allProbes.length + " subset=" + subset +
     " plannedCalls=" + planned + " maxCalls=" + maxCalls + " drift=" + driftRounds +
     " soul=" + (soulRendered ? "injected(" + soulRendered.length + " chars)" : "bare") +
+    " timeoutMs=" + callTimeoutMs +
     (truncatedBySubset ? " (smoke truncated>10)" : ""));
   if (planned > maxCalls) {
     console.error("[persona-eval] WARN: 计划调用 " + planned + " > 硬帽 " + maxCalls + "，超出部分将 skip（宁缺毋滥不伪造）");
   }
 
   // ── 探针两跳 + 汇总 ──
-  const results = await runPersonaProbes(probes, runner, { soulRendered, budget });
+  const hopCaps = unlimitedOutput ? { agentMaxTokens: 0, judgeMaxTokens: 0 } : {};
+  const results = await runPersonaProbes(probes, runner, { soulRendered, budget, timeoutMs: callTimeoutMs, ...hopCaps });
   const summary = summarizeByDimension(results);
 
   // ── 漂移（每轮重注入 soul；redline forbid pattern 零成本扫描）──
@@ -304,14 +343,14 @@ async function main(): Promise<number> {
         .map((a) => ({ id: a.id, regex: a.regex! })),
     );
     const topics = allProbes.filter((p) => p.driftEligible).map((p) => p.title);
-    drift = await runDriftSession({ runner, soulRendered, rounds: driftRounds, budget, topics, redlinePatterns });
+    drift = await runDriftSession({ runner, soulRendered, rounds: driftRounds, budget, topics, redlinePatterns, timeoutMs: callTimeoutMs, ...hopCaps });
   }
 
   // ── golden replay（可选；共享预算，static 零成本）──
   let goldenReplay: Awaited<ReturnType<typeof replayGolden>> | undefined;
   let goldenFail = false;
   if (golden) {
-    goldenReplay = await replayGolden(golden, allProbes, runner, budget);
+    goldenReplay = await replayGolden(golden, allProbes, runner, budget, callTimeoutMs, unlimitedOutput ? 0 : undefined);
     for (const r of goldenReplay) {
       if (r.unknownAssertionIds.length > 0 || r.mismatches.length > 0) goldenFail = true;
     }

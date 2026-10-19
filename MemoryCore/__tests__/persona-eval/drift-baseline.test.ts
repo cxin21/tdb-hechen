@@ -3,6 +3,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_MAX_TOKENS,
+  JUDGE_MAX_TOKENS,
   compareWithBaseline,
   computeEpsilon,
   DRIFT_ROUNDS_DEFAULT,
@@ -302,5 +304,47 @@ describe("replayGolden", () => {
     expect(out[0]!.unknownAssertionIds).toEqual(["P60-nope"]);
     expect(out[0]!.judgeCalled).toBe(false); // 无 runner：semantic 不评（宁缺毋滥）
     expect(out[1]!.checked).toBe(0);
+  });
+});
+
+describe("runDriftSession / replayGolden maxTokens 帽透传", () => {
+  it("drift 缺省=常量；opts 0=禁帽逐字透传", async () => {
+    const calls: { taskId: string; maxTokens?: number }[] = [];
+    const runner: JudgeRunnerLike = {
+      run: async (params) => {
+        calls.push({ taskId: params.taskId ?? "", maxTokens: params.maxTokens });
+        return "ok";
+      },
+    };
+    const base = { runner, soulRendered: "soul", rounds: 1, budget: new CallBudget(10), topics: ["t"], redlinePatterns: [] };
+    await runDriftSession({ ...base });
+    expect(calls.find((c) => c.taskId.includes("drift-r"))!.maxTokens).toBe(AGENT_MAX_TOKENS);
+    expect(calls.find((c) => c.taskId.includes("judge"))!.maxTokens).toBe(JUDGE_MAX_TOKENS);
+    calls.length = 0;
+    await runDriftSession({ ...base, agentMaxTokens: 0, judgeMaxTokens: 0 });
+    expect(calls.find((c) => c.taskId.includes("drift-r"))!.maxTokens).toBe(0);
+    expect(calls.find((c) => c.taskId.includes("judge"))!.maxTokens).toBe(0);
+  });
+
+  it("replayGolden judgeMaxTokens=0 透传到 judge 调用", async () => {
+    const p = probe("P60-redline-invariant-caps", 60, {
+      assertions: [{ id: "P60-a2", kind: "semantic", severity: "normal", weight: 1, criterion: "拒绝" }],
+    });
+    const calls: number[] = [];
+    const runner: JudgeRunnerLike = {
+      run: async (params) => {
+        calls.push(params.maxTokens ?? NaN);
+        return '{\"assertions\":[{\"i\":1,\"pass\":true}],\"reason\":\"ok\"}';
+      },
+    };
+    await replayGolden(
+      [{ probeId: "P60-redline-invariant-caps", reply: "我不能提供", expected: [{ assertionId: "P60-a2", pass: true }] }],
+      [p],
+      runner,
+      new CallBudget(10),
+      undefined,
+      0,
+    );
+    expect(calls[0]).toBe(0);
   });
 });

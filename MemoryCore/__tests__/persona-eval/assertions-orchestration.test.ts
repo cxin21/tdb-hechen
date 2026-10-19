@@ -250,3 +250,19 @@ describe("summarizeByDimension", () => {
     expect(s.dimensions["redline-invariant"]!.probeTotal).toBe(1);
   });
 });
+
+describe("两跳 maxTokens 帽透传（reasoning 模型 0=禁帽）", () => {
+  it("缺省：agent=AGENT_MAX_TOKENS / judge=JUDGE_MAX_TOKENS", async () => {
+    const { runner, calls } = stubRunner();
+    await runPersonaProbes([probe()], runner, { budget: new CallBudget(10) });
+    expect(calls.find((c) => !c.taskId.includes("judge"))!.maxTokens).toBe(AGENT_MAX_TOKENS);
+    expect(calls.find((c) => c.taskId.includes("judge"))!.maxTokens).toBe(JUDGE_MAX_TOKENS);
+  });
+
+  it("opts 覆盖：agentMaxTokens/judgeMaxTokens=0 逐字透传（帽禁用）", async () => {
+    const { runner, calls } = stubRunner();
+    await runPersonaProbes([probe()], runner, { budget: new CallBudget(10), agentMaxTokens: 0, judgeMaxTokens: 0 });
+    expect(calls.find((c) => !c.taskId.includes("judge"))!.maxTokens).toBe(0);
+    expect(calls.find((c) => c.taskId.includes("judge"))!.maxTokens).toBe(0);
+  });
+});

@@ -385,9 +385,11 @@ export function evaluateStaticAssertions(probe: PersonaProbe, reply: string): As
 
 // ────────────────────────── 5. semantic 单跳批量 judge ──────────────────────────
 
-/** agent 跳 maxTokens（设计 §2.6：agent 跳建议 1024——短回复足够，控成本）。 */
+/** agent 跳 maxTokens（设计 §2.6：agent 跳建议 1024——短回复足够，控成本）。
+ *  可被调用方 opts.agentMaxTokens 覆盖；0=不限制（reasoning 模型思考即烧 token，须禁帽）。 */
 export const AGENT_MAX_TOKENS = 1024;
-/** judge 跳 maxTokens（批量 JSON 短输出；留 thinking 预算余量）。 */
+/** judge 跳 maxTokens（批量 JSON 短输出；留 thinking 预算余量）。
+ *  可被调用方 opts.judgeMaxTokens / replayGolden 第 6 参覆盖；0=不限制。 */
 export const JUDGE_MAX_TOKENS = 2048;
 
 /**
@@ -519,6 +521,10 @@ export async function runPersonaProbes(
     soulRendered?: string;
     budget: CallBudget;
     timeoutMs?: number;
+    /** agent 跳输出帽；0=不限制（reasoning 模型）。缺省 AGENT_MAX_TOKENS。 */
+    agentMaxTokens?: number;
+    /** judge 跳输出帽；0=不限制。缺省 JUDGE_MAX_TOKENS。 */
+    judgeMaxTokens?: number;
   },
 ): Promise<PersonaProbeResult[]> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
@@ -560,7 +566,7 @@ export async function runPersonaProbes(
         ),
         taskId: "persona-eval:" + probe.id,
         timeoutMs,
-        maxTokens: AGENT_MAX_TOKENS,
+        maxTokens: opts.agentMaxTokens ?? AGENT_MAX_TOKENS,
       });
     } catch (err) {
       agentError = "agent-error:" + (err instanceof Error ? err.message : String(err));
@@ -582,7 +588,7 @@ export async function runPersonaProbes(
               prompt: buildAtomicJudgePrompt(probe, reply, semantic),
               taskId: "persona-eval-judge:" + probe.id,
               timeoutMs,
-              maxTokens: JUDGE_MAX_TOKENS,
+              maxTokens: opts.judgeMaxTokens ?? JUDGE_MAX_TOKENS,
             });
           } catch (err) {
             const reason = "judge-error:" + (err instanceof Error ? err.message : String(err));
@@ -904,6 +910,10 @@ export async function runDriftSession(opts: {
   topics: readonly string[];
   redlinePatterns: readonly { id: string; regex: RegExp }[];
   timeoutMs?: number;
+  /** agent 跳输出帽；0=不限制（reasoning 模型）。缺省 AGENT_MAX_TOKENS。 */
+  agentMaxTokens?: number;
+  /** judge 跳输出帽；0=不限制。缺省 JUDGE_MAX_TOKENS。 */
+  judgeMaxTokens?: number;
 }): Promise<DriftSessionResult> {
   const rounds = Math.max(0, Math.floor(opts.rounds));
   const timeoutMs = opts.timeoutMs ?? 120_000;
@@ -924,7 +934,7 @@ export async function runDriftSession(opts: {
         ),
         taskId: `persona-eval-drift-r${r}`,
         timeoutMs,
-        maxTokens: AGENT_MAX_TOKENS,
+        maxTokens: opts.agentMaxTokens ?? AGENT_MAX_TOKENS,
       });
     } catch (err) {
       error = "agent-error:" + (err instanceof Error ? err.message : String(err));
@@ -945,7 +955,7 @@ export async function runDriftSession(opts: {
           prompt: buildDriftJudgePrompt(r, first, reply),
           taskId: `persona-eval-drift-judge-r${r}`,
           timeoutMs,
-          maxTokens: JUDGE_MAX_TOKENS,
+          maxTokens: opts.judgeMaxTokens ?? JUDGE_MAX_TOKENS,
         });
         const v = parseDriftJudge(raw);
         anchorPass = v.pass;
@@ -1002,6 +1012,8 @@ export async function replayGolden(
   runner: JudgeRunnerLike | undefined,
   budget: CallBudget,
   timeoutMs?: number,
+  /** judge 跳输出帽；0=不限制。缺省 JUDGE_MAX_TOKENS。 */
+  judgeMaxTokens?: number,
 ): Promise<GoldenReplayResult[]> {
   const byId = new Map(probes.map((p) => [p.id, p]));
   const out: GoldenReplayResult[] = [];
@@ -1024,7 +1036,7 @@ export async function replayGolden(
           prompt: buildAtomicJudgePrompt(probe, c.reply, semantic),
           taskId: `persona-eval-golden:${c.probeId}`,
           timeoutMs: timeoutMs ?? 120_000,
-          maxTokens: JUDGE_MAX_TOKENS,
+          maxTokens: judgeMaxTokens ?? JUDGE_MAX_TOKENS,
         });
         const parsed = parseAtomicVerdict(raw, semantic.length);
         if (parsed.unparseable) {
