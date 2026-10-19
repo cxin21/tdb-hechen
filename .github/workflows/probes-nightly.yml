@@ -44,3 +44,55 @@ jobs:
       - name: Full test suite
         working-directory: MemoryProxy
         run: pnpm exec vitest run
+
+  # ── #66 R2 行为级人格回归评测（persona-eval）夜间全量 ──
+  # 设计 §2.5：27→26 探针全量 + 漂移 8 轮 ≤90 调用（--max-calls 缺省 90 硬帽，runner 内置）；
+  # 无 secrets 时 skip 注记（key 永不入库），票验收贴本地实跑证据（fallback 纪律同渲染层 nightly）
+  behavior-regression:
+    runs-on: ubuntu-latest
+    env:
+      TDAI_GATEWAY_API_KEY: ${{ secrets.TDAI_GATEWAY_API_KEY }}
+      TDAI_GATEWAY_BASE_URL: ${{ secrets.TDAI_GATEWAY_BASE_URL }}
+      TDAI_GATEWAY_MODEL: ${{ secrets.TDAI_GATEWAY_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 仓库纪律（.gitignore:32-35）：lockfile 不入库（dev-only）——CI 无 frozen 安装、无依赖缓存
+      # --ignore-scripts：openclaw 依赖链 preinstall 在 CI 沙箱失败（同 ci.yml 说明）
+      - name: Install
+        working-directory: MemoryCore
+        run: pnpm install --ignore-scripts
+      # 零成本确定性门（夜间也保）：语料全库校验 + full 选样（26 探针）+ 调用计划（plannedCalls=68 ≤ 帽 90）
+      - name: Persona-eval full corpus dry-run (#66, zero-cost)
+        working-directory: MemoryCore
+        run: pnpm run judge:behavior:full -- --no-llm
+      # LLM 全量实跑（26 探针两跳 52 + 漂移 8 轮 16 = 68 调用 ≤ 90）；step 失败不阻断 summary 输出
+      - name: Persona-eval full run + drift 8 (LLM, ≤90 calls, #66)
+        if: ${{ env.TDAI_GATEWAY_API_KEY != '' }}
+        working-directory: MemoryCore
+        run: |
+          set -uo pipefail
+          cat > /tmp/tdai-gateway-ci.yaml <<EOF
+          llm:
+            baseUrl: "${TDAI_GATEWAY_BASE_URL}"
+            apiKey: "${TDAI_GATEWAY_API_KEY}"
+            model: "${TDAI_GATEWAY_MODEL:-default}"
+            timeoutMs: 120000
+          EOF
+          code=0
+          pnpm run judge:behavior:drift -- --config /tmp/tdai-gateway-ci.yaml --no-soul \
+            --out /tmp/persona-nightly.jsonl --summary /tmp/persona-nightly-summary.json || code=$?
+          echo "persona-eval exit code: $code"
+          if [ -f /tmp/persona-nightly-summary.json ]; then
+            { echo '```json'; cat /tmp/persona-nightly-summary.json; echo '```'; } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          exit $code
+      - name: Persona-eval nightly skip note (no TDAI_GATEWAY_API_KEY, #66)
+        if: ${{ env.TDAI_GATEWAY_API_KEY == '' }}
+        run: |
+          echo "::notice::nightly persona-eval LLM run skipped: TDAI_GATEWAY_API_KEY not configured. 票验收贴本地实跑证据（设计 §2.5 nightly fallback 纪律）；本地命令见 MemoryCore/scripts/persona-eval/README.md"

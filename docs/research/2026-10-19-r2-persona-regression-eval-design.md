@@ -254,3 +254,64 @@ CI 无 secrets 时（gateway API key 不入库）：nightly job 打 skip 注记 
 9. arXiv:2604.02236 — Do Emotions in Prompts Matter?
 10. arXiv:2609.08592 — Three-Tier Persona Vector（2026-09）
 11. SIGDIAL 2025 <https://aclanthology.org/2025.sigdial-1.31/>（综述转引，未独立核实）
+
+---
+
+## 落地记录（2026-10-19，R2-T4 门禁接线 + 文档）
+
+> 实施对应本设计 §2–§4 与 ADR-0003 D7；团队协作：corpus（T2）/ harness（T3）/ CI 接线与文档（T4）三条流水，全部产出未 commit，由 Lead 审查后统一提交。
+
+### 实际文件清单
+
+**语料与契约（T1/T2）**
+
+- `MemoryCore/scripts/persona-eval/CORPUS_SCHEMA.md` — 语料契约（探针/断言字段、severity 语义、校验门 10 条）
+- `MemoryCore/scripts/persona-eval/probes/P<nnn>.<dimension>.json` — 26 探针，一探针一文件（P57–P82）
+- `MemoryCore/scripts/persona-eval/fixtures/{golden-samples.json,calibration-subset.json}` — golden 固定样本 + 校准子集
+
+**评测引擎（T3）**
+
+- `MemoryCore/scripts/persona-eval/lib.ts`（1049 行）— 加载/校验/原子断言评估/盲评批量契约/parseAtomicVerdict 宁缺毋滥/CallBudget 硬帽/维度加权分/percentile/computeEpsilon/compareWithBaseline/选样/两跳编排/漂移八轮/golden replay
+- `MemoryCore/scripts/persona-eval/run-persona-eval.ts`（389 行）— 主 CLI（参数、退出码、summary JSON）
+- `MemoryCore/scripts/persona-eval/validate-corpus.ts`（105 行）— 语料完整性校验门
+- `MemoryCore/__tests__/persona-eval/{assertions-orchestration,drift-baseline,probe-parse}.test.ts` — 46 tests 全绿（LLM 全 stub）；typecheck 243=243
+
+**门禁接线与文档（T4）**
+
+- `.github/workflows/ci.yml` — memorycore-test job 增 5 步：L34-36 corpus validate → L38-40 smoke `--no-llm` 零成本干跑 → L42-56 smoke LLM 实跑（有 secret 才执行，≤10 探针 ≤20 调用）→ L57-60 无 secret skip 注记（::notice:: 指向 README）→ L61-63 原有 Full test suite 原样保留
+- `.github/workflows/probes-nightly.yml` — 文末新增 behavior-regression job（L48-98）：full `--no-llm` 确定性门（plannedCalls=68≤帽 90）+ 有 secret 时 full 实跑 + 漂移 8 轮，summary 进 `$GITHUB_STEP_SUMMARY`；无 secret skip 注记。cron 维持 03:30 Asia/Shanghai
+- `MemoryCore/scripts/persona-eval/README.md` — 用法/参数/退出码 0–4/成本帽/维度与门禁/CI 接线/secrets 映射/基线惯例/已知边界
+- 本节（落地记录 + #66 验收自检清单）
+
+### 与设计的偏差
+
+1. **探针总数 26，非设计 L81 的「合计 27」** — 设计 L81 合计口径与 §2.1 维度表（5+5+4+4+4+4）不一致；按维度表落地，不注水凑数。
+2. **static:semantic = 12:88，非原估 4:6** — static 红线断言因「引用复述误报」风险全数放弃，仅保留 D-D 低风险词表 + P57 既有两条（#62 原文逐字比对保护）；理由：硬门误报的代价最高。断言共 81 条（static 10 / semantic 71），redline severity 17 条。
+3. **smoke 子集 10/10 恰帽** — P57（legacy 对照）+ P60-63（D-A 红线）+ P64/P68/P72/P77/P80（其余五维各 1），覆盖 6 维；`smoke` 为语料侧标记，选样确定性由语料保证，CI 不自选。
+4. **CI 无 secrets fallback 生效**（设计 §5.2 风险表第 4 行的缓解已落地）— secrets 未配置时两 workflow 均以 ::notice:: 注记 skip、指向 README 本地验收命令；票验收按纪律贴本地实跑证据。
+5. **`--drift` 缺省随 subset**：full 缺省带漂移 8 轮、smoke 缺省 0（代码 `run-persona-eval.ts:136`，`lib.ts:811` DRIFT_ROUNDS_DEFAULT=8）；设计未明说缺省，以代码为准。
+
+### 门禁接线说明
+
+- **退出码**（`--help` 内置）：0 全 pass；1 真 fail（断言失败/漂移失败/golden mismatch/capHit）；2 LLM 或配置不可用；3 网络/参数/schema 错；4 `--baseline` 回归（优先级最高）。CI/门禁只认退出码。
+- **红线 100% 硬门无 ε**：任何 redline 断言 fail（含漂移任一轮）→ exit 1，`--baseline` 模式 → exit 4。
+- **五维 shadow 门禁**：ε 定标（≥2 周 shadow 分布，ε=max(3σ,P5)）前只记录不拦截；样本 <2 时从严回退 ε=0。
+- **成本帽**：`--max-calls` 缺省 90 硬帽；实测 smoke plannedCalls=20、full plannedCalls=68（26×2+16 漂移）。
+- **Secrets**：统一 `TDAI_GATEWAY_API_KEY`（CLI 直读）+ `TDAI_GATEWAY_BASE_URL`/`TDAI_GATEWAY_MODEL`（CI heredoc 写临时 yaml 的顶层 llm 段）；三者在 workflow env 层映射自 `secrets.*`，未配置时空串触发 skip，key 永不落库。
+- **基线惯例**：首轮实跑基线与 summary 落 `docs/superpowers/evals/behavior-golden/summary-<date>.json`；对比用 `--baseline`，回归 → exit 4。
+
+### #66 验收标准自检清单
+
+| # | 票面验收标准（§4 L196-202） | 状态 | 证据 |
+| --- | --- | --- | --- |
+| 1 | 原子断言层（AtomicAssertion/evaluateStaticAssertions/parseAtomicVerdict）+ mock 单测 + 现有 3 探针行为不变 | ✅ | lib.ts（27 导出）；__tests__/persona-eval 46 tests 全绿（LLM stub）；P57-59 与 behavior-judge-probes.fixtures.ts 原文逐字比对（validate-corpus.ts 校验门） |
+| 2 | fixtures ≥20 条 P60+ 覆盖 6 维，只增不改 + 完整性门 | ✅ | 26 探针（6 维 5/5/4/4/4/4）、断言 81 条；validate-corpus.ts 10 条校验门；语料全部新增，未改 #62 既有 |
+| 3 | CLI --subset/--drift 8/--max-calls 90/--baseline/summary JSON | ✅ | run-persona-eval.ts 冻结 CLI 契约全实现；summary JSON 字段含 scorecard/drift/baseline/golden/verdict/exitCode |
+| 4 | 首轮实跑基线入库 docs/superpowers/evals/behavior-golden/ | ⏳ 待 Lead 统一执行本地实跑 | 目录尚未创建；README 已写基线惯例（summary-<date>.json 命名） |
+| 5 | probes-nightly.yml 追加 behavior-regression job（无 secrets skip 注记 + 本地验收命令） | ✅ | probes-nightly.yml:48-98；L95-98 skip note 指向 README；YAML 解析通过 |
+| 6 | shadow ≥2 周 ε 定标 | ⏳ 日历等待项 | 门禁代码已支持（computeEpsilon/compareWithBaseline）；README 与本节注明两阶段纪律 |
+| 7 | 红线 100% 硬门 + ε 门 + 退出码 0-4 入 help | ✅ | lib.ts compareWithBaseline（红线维 100% 硬门）；run-persona-eval.ts --help 含退出码表 |
+
+**证据要求（§4 L204-208）**：单元测试（✅ 46 tests + typecheck 243=243）；validate-corpus 通过（✅ 本地实跑）；nightly workflow 文件（✅ probes-nightly.yml）；首轮实跑基线入库（⏳ 待 Lead 本地实跑后补，属票面第 4 条同项）。
+
+**Non-goals 复核**：未改 #62 既有 3 探针行为（逐字比对保护）；未引入新依赖；未 commit；GitHub issue 票面由 Lead 统一评论（本文档 §4 即票面等价文本）。

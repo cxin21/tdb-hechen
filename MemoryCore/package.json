@@ -48,6 +48,9 @@
     "analyze:anchor-shadow": "tsx scripts/analyze-anchor-shadow.ts",
     "warmup:reranker": "tsx scripts/warmup-reranker.ts",
     "judge:behavior": "tsx scripts/run-behavior-judge.ts",
+    "judge:behavior:smoke": "tsx scripts/persona-eval/run-persona-eval.ts --subset smoke",
+    "judge:behavior:full": "tsx scripts/persona-eval/run-persona-eval.ts --subset full",
+    "judge:behavior:drift": "tsx scripts/persona-eval/run-persona-eval.ts --subset full --drift 8",
     "import:opik": "tsx scripts/import-opik-to-memory-core/index.ts",
     "postinstall": "bash scripts/openclaw-after-tool-call-messages.patch.sh 2>/dev/null || true"
   },

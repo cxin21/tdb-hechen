@@ -1,0 +1,12 @@
+{
+  "purpose": "双 judge agreement + RC_atom 复跑（季度/红线规则改动时手动）",
+  "probeIds": [
+    "P57-redline-temptation-secret-inline",
+    "P64-expected-action-hotfix-pressure",
+    "P68-persona-consistency-role-flip",
+    "P72-linguistic-habits-emotional-performance",
+    "P77-action-justification-hollow-reason",
+    "P80-capability-honesty-fabricated-execution"
+  ],
+  "maxProbes": 6
+}

@@ -8,6 +8,11 @@ on:
 jobs:
   memorycore-test:
     runs-on: ubuntu-latest
+    # #66 persona-eval LLM 实跑凭据（secrets 未配置时为空串 → 冒烟步自动 skip 注记，设计 §2.5 fallback 纪律）
+    env:
+      TDAI_GATEWAY_API_KEY: ${{ secrets.TDAI_GATEWAY_API_KEY }}
+      TDAI_GATEWAY_BASE_URL: ${{ secrets.TDAI_GATEWAY_BASE_URL }}
+      TDAI_GATEWAY_MODEL: ${{ secrets.TDAI_GATEWAY_MODEL }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -25,6 +30,34 @@ jobs:
       - name: Redline subset probes (PR gate, #48)
         working-directory: MemoryCore
         run: pnpm exec vitest run src/core/hooks/__tests__/soul-identity-probes.test.ts -t "红线子集"
+      # ── #66 R2 行为级人格回归评测（persona-eval）PR 门禁 ──
+      - name: Persona-eval corpus validate (#66)
+        working-directory: MemoryCore
+        run: pnpm exec tsx scripts/persona-eval/validate-corpus.ts
+      # 零成本确定性干跑：语料 schema 全库校验（26 探针）+ smoke 选样（smoke:true ≤10 覆盖 6 维）+ 调用计划，不调 LLM
+      - name: Persona-eval corpus dry-run gate (#66, zero-cost)
+        working-directory: MemoryCore
+        run: pnpm run judge:behavior:smoke -- --no-llm
+      # LLM 实跑冒烟（≤10 探针 / ≤20 调用，runner 双硬保）；secrets 未配置时由下一行 skip 注记（key 永不入库）
+      - name: Persona-eval smoke run (LLM, ≤10 probes ≤20 calls, #66)
+        if: ${{ env.TDAI_GATEWAY_API_KEY != '' }}
+        working-directory: MemoryCore
+        run: |
+          set -euo pipefail
+          cat > /tmp/tdai-gateway-ci.yaml <<EOF
+          llm:
+            baseUrl: "${TDAI_GATEWAY_BASE_URL}"
+            apiKey: "${TDAI_GATEWAY_API_KEY}"
+            model: "${TDAI_GATEWAY_MODEL:-default}"
+            timeoutMs: 120000
+          EOF
+          pnpm run judge:behavior:smoke -- --config /tmp/tdai-gateway-ci.yaml --no-soul \
+            --out /tmp/persona-smoke.jsonl --summary /tmp/persona-smoke-summary.json
+          cat /tmp/persona-smoke-summary.json
+      - name: Persona-eval smoke skip note (no TDAI_GATEWAY_API_KEY, #66)
+        if: ${{ env.TDAI_GATEWAY_API_KEY == '' }}
+        run: |
+          echo "::notice::persona-eval LLM smoke skipped: TDAI_GATEWAY_API_KEY secret not configured. 本地验收命令见 MemoryCore/scripts/persona-eval/README.md（设计 §2.5 CI 无 secrets fallback 纪律）"
       - name: Full test suite
         working-directory: MemoryCore
         run: pnpm exec vitest run
