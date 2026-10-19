@@ -13,7 +13,7 @@
  */
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 // #42（ADR0003-P3 票 D / D9）：锚相似度打分器（确定性 cosine，shadow-first；本模块管选择/报告语义）。
-import { isUsableQueryVec, scoreAnchorRows, selectAnchorRows, type AnchorEmbedder } from "./soul-anchor-scorer.js";
+import { isUsableQueryVec, scoreAnchorRows, selectAnchorRows, selectAnchorRowsMmr, type AnchorEmbedder } from "./soul-anchor-scorer.js";
 // T4（方案 Task 4，2026-10-17）：#42 shadow 定标落盘——行为零变化旁路采集（fail-safe 降级）。
 import { appendAnchorShadowRow } from "./soul-anchor-shadow-sink.js";
 // #52 P1（2026-10-18）：红线段渲染单一源——多行 strict_rule 槽逐行打 tag+剥行首自身弹头
@@ -21,7 +21,12 @@ import { appendAnchorShadowRow } from "./soul-anchor-shadow-sink.js";
 import { renderStrictRuleSectionLines } from "./soul-redline-render.js";
 // 灵魂注入去重单一源（2026-10-18 生产实测驱动）：红线近重复行（Jaccard/containment/保长）
 // 与价值锚 label 包含对（完整句优先）——只做选择不改写（真实性边界），门由调用方配置携带。
-import { dedupeAnchorPairs, dedupeNearDuplicateLines } from "./soul-dedupe.js";
+import {
+  dedupeAnchorPairs,
+  dedupeAnchorPairsEmbedding,
+  dedupeNearDuplicateLines,
+  suppressAnchorOverlapRows,
+} from "./soul-dedupe.js";
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
@@ -174,6 +179,15 @@ export interface SoulRenderOptions {
       queryEmbeddingProvider?: (() => Promise<Float32Array | null | undefined>) | null;
       /** #42 审查加固：查询原文（cacheKey 指纹源——queryText 优先于向量量化，零 embed 成本）。 */
       queryText?: string | null;
+      /** 灵魂注入质量轮（2026-10-19）：MMR 多样性 λ（val=λ·rel−(1−λ)·maxSim，缺省 0.7）。
+       *  生产实证纯 cosine top-K 会把语义近重复锚（如「取证」族）整团选入价值锚块；MMR 在
+       *  scoreAnchorRows 产出的向量上做贪心多样性选择（零额外 embed）。λ=1 退化为纯 top-K。 */
+      mmrLambda?: number;
+      /** 锚 desc 并行预嵌软预算（ms；0=关=逐位现状）：超预算抛错→catch 回退声明序锚行，
+       *  本轮渲染标记降级（**不写** soulPrefixCache/soul 快照——降级渲染不冒充完整质量渲染
+       *  污染缓存与账本）；in-flight embed 继续落缓存，下一请求得完整 MMR。
+       *  生产默认 1200（config anchorSelect.scorer.embedBudgetMs）。 */
+      embedBudgetMs?: number;
     };
   };
   /** #32（R5）：能力自述清单（运行时实况，只读派生置身份段尾「## 我能做什么」）。
@@ -192,14 +206,28 @@ export interface SoulRenderOptions {
    *  标定=生产 14 行全量 pairwise：真重复 0.608 / 最大语义异对 0.266）/ containment ≥0.9
    *  （≥8 bigram 护栏）；保长规则=归一后更长者胜（更具体不变量留在注入面）；kept 行体逐字
    *  保留（不截断/不改写/不合并——真实性边界=选择而非改写）。渲染布局影响面：进 prefix
-   *  cacheKey（srd=1[@阈值] 段）；不进 soulVersion（slots 数据未变）。 */
-  strictRuleDedup?: { enabled?: boolean; jaccardThreshold?: number };
+   *  cacheKey（srd=1[@阈值] 段）；不进 soulVersion（slots 数据未变）。
+   *  maxLines：红线行数硬上限（渲染面治理——红线墙挤占身份段；0=不设限=缺省逐位现状；
+   *  去重后截断保前 N=renderStrictRuleSectionLines 输出序=数据权重序；dropped 落 debug）。
+   *  suppressAnchorOverlap：跨段抑制——价值锚 desc 与红线行语义重复时锚行让位（红线是硬
+   *  约束承载面，重复的价值锚行属冗余注入；jaccard 通道 + 可选 embedding cosine 通道）；
+   *  缺省 false=两段独立渲染=逐位现状。cacheKey 含 sup/max 段。 */
+  strictRuleDedup?: {
+    enabled?: boolean;
+    jaccardThreshold?: number;
+    maxLines?: number;
+    suppressAnchorOverlap?: boolean;
+  };
   /** 同轮：价值锚 label 近重复去重门——缺省 undefined/off=逐位现状。开启：decoratedPairs
    *  （desc 门后）上做归一 label 全同 / 双向包含（短侧 ≥2 字护栏）判定，择优保留：
    *  (1) desc 完整句（句末标点）胜（生产实锚：根因=事故叙事 vs 根因优先=完整原则句）；
    *  (2) desc 更长者胜；(3) 平手保首现（value_id 稳定序，不抖动）；winner 原位替换。
-   *  在 #42 scorer 消费前执行（被去重锚不进 embed 成本与 top-K 选择面）；进 cacheKey（ad=1）。 */
-  anchorDedup?: { enabled?: boolean };
+   *  在 #42 scorer 消费前执行（被去重锚不进 embed 成本与 top-K 选择面）；进 cacheKey（ad=1）。
+   *  embeddingThreshold：第二通道——desc 向量 cosine ≥ 阈值判近重复（label 包含抓不住的同义
+   *  改写对，如「一手证据」vs「取证先行」）；缺省 0=关=逐位现状；embedder 复用
+   *  anchorSelect.scorer.embedder（不在位时通道静默跳过=仅 label 通道）；标定 0.85
+   *  （同义改写对 0.86-0.94 vs 最大语义异对 <0.62）；进 cacheKey（adEmb 段）。 */
+  anchorDedup?: { enabled?: boolean; embeddingThreshold?: number };
 }
 
 /** 立项①（2026-09-23 拍板）：attrs_json 安全解析（description/role/aliases；损坏→undefined 宁缺毋滥）。 */
@@ -272,6 +300,9 @@ export async function buildSoulPrefix(
   const parts: string[] = [];
   let soulVer = '';
   let cacheKey = '';
+  // 质量轮（2026-10-19）：降级渲染旗标——scorer embed 失败/超预算回退声明序时置位；
+  // 函数尾 soulPrefixCache/soul 快照写入门守卫（降级串不得冒充完整渲染入缓存/账本）。
+  let soulRenderDegraded = false;
   try {
     const slots = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
     const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ value_id?: string; label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
@@ -326,7 +357,7 @@ export async function buildSoulPrefix(
     // 才量化显式 queryEmbedding（provider 不在指纹期解析——指纹只换键不触发 embed）。
     const scorerSig =
       opts?.anchorSelect?.scorer?.enabled === true
-        ? `,scorer=1,${opts.anchorSelect.scorer.threshold ?? 0},${
+        ? `,scorer=1,${opts.anchorSelect.scorer.threshold ?? 0},mmr=${opts.anchorSelect.scorer.mmrLambda ?? 0.7},eb=${opts.anchorSelect.scorer.embedBudgetMs ?? 0},${
             opts.anchorSelect.scorer.queryText
               ? fnv1a32Hex(opts.anchorSelect.scorer.queryText)
               : opts.anchorSelect.scorer.queryEmbedding
@@ -338,7 +369,7 @@ export async function buildSoulPrefix(
         : "";
     cacheKey = [
       `${tenant.teamId}|${tenant.userId}|${tenant.agentId}`,
-      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${opts?.strictRuleDedup?.enabled === true ? `,srd=1${opts.strictRuleDedup.jaccardThreshold != null ? `@${opts.strictRuleDedup.jaccardThreshold}` : ""}` : ""}${opts?.anchorDedup?.enabled === true ? ",ad=1" : ""}${scorerSig}`,
+      `r=${opts?.selfIdentityEnabled ? 1 : 0},${opts?.budgetSelfChars ?? 0},${opts?.budgetIdentityChars ?? 0},${opts?.maxRelationLines ?? 0},${opts?.budgetAnchorChars ?? 0},${opts?.budgetPersonChars ?? 0},${opts?.budgetCharacterChars ?? 0},${opts?.characterTensionEnabled ? 1 : 0},${opts?.anchorSelect?.maxRows ?? 0},${opts?.capabilities ? fnv1a32Hex(opts.capabilities.join("\n")) : ""}${opts?.perTurnSlots === false ? ",pt=0" : ""}${opts?.promisesEnabled === true ? ",pm=1" : ""}${opts?.strictRuleDedup?.enabled === true ? `,srd=1${opts.strictRuleDedup.jaccardThreshold != null ? `@${opts.strictRuleDedup.jaccardThreshold}` : ""}${opts.strictRuleDedup.maxLines ? `,max=${opts.strictRuleDedup.maxLines}` : ""}${opts.strictRuleDedup.suppressAnchorOverlap === true ? ",sup=1" : ""}` : ""}${opts?.anchorDedup?.enabled === true ? `,ad=1${opts.anchorDedup.embeddingThreshold ? `,adEmb=${opts.anchorDedup.embeddingThreshold}` : ""}` : ""}${scorerSig}`,
       // #34：state 参与 cacheKey（进程内缓存正确性）但**不参与 soulVersion 指纹**
       //（指纹隔离断言见 soul-state.test.ts）——state 混入指纹=每轮前缀缓存全失效。
       // 确定性序列化（toFixed 固定位+topValue 原文），不依赖 JSON 键序。
@@ -444,6 +475,38 @@ export async function buildSoulPrefix(
         const label = labelFor(s.slot);
         lines.push(dual && label ? `（${label}）- [${s.slot}] ${content}` : `- [${s.slot}] ${s.content}`);
       }
+      // #24-C1（2026-10-16 用户授权拍板，r5-24 定案）：红线独立段「## 不可逾越（红线）」置
+      // soul-identity 段尾（禁令动词框架+保留团队话语关键词，段名进 #33 词表）；原文直出禁改写
+      //（无预算/无截断/无转写——不变量语义）；无 strict_rule 整段省略（宁缺毋滥）。
+      // #52 P1（2026-10-18）：渲染改单一源 renderStrictRuleSectionLines——多行 strict_rule 槽
+      // 逐条独立成行、逐行带 [strict_rule] tag、剥行首自身弹头（旧 `- [strict_rule] ${content}`
+      // 只给首行打 tag 且不剥内容自带 `- ` 弹头 = 生产畸形 `- [strict_rule] - …` + 续行全裸）。
+      // 去重轮（2026-10-18）：红线近重复行独立后处理 pass（不动单一源文件契约；kept 行体逐字
+      // 保留=选择而非改写；≤1 行零成本直通）。dropped 落 debug 日志。
+      // 灵魂注入质量轮（2026-10-19 上移+治理）：红线行计算上移至锚块之前——跨段抑制
+      //（suppressAnchorOverlap）需要先有红线行再筛锚行（依存方向：锚筛红线 → 红线先行）；
+      // maxLines=渲染面治理（红线墙挤占身份段注入预算，生产实拍 10 条 strict_rule 占段 60%；
+      // 去重后截断保前 N=单一源输出序；0=不设限=逐位现状）。真实性边界不变：去重/截断均为
+      // 整行选择（drop），kept 行体逐字不动，不发生改写。
+      const redlineLinesRaw = dual ? renderStrictRuleSectionLines(ordered) : [];
+      let redlineLines = redlineLinesRaw;
+      if (opts?.strictRuleDedup?.enabled === true && redlineLinesRaw.length > 1) {
+        const dd = dedupeNearDuplicateLines(redlineLinesRaw, { jaccardThreshold: opts.strictRuleDedup.jaccardThreshold });
+        if (dd.dropped.length > 0) {
+          logger?.debug?.(
+            `[soul-dedupe] strict_rules dropped ${dd.dropped.length}/${redlineLinesRaw.length}: ${dd.dropped.map((d) => d.reason).join("; ")}`,
+          );
+          redlineLines = dd.kept;
+        }
+      }
+      const redlineMaxLines = opts?.strictRuleDedup?.maxLines ?? 0;
+      if (redlineMaxLines > 0 && redlineLines.length > redlineMaxLines) {
+        const droppedByCap = redlineLines.slice(redlineMaxLines);
+        logger?.debug?.(
+          `[soul-dedupe] strict_rules capped ${droppedByCap.length}/${redlineLines.length} by maxLines=${redlineMaxLines}`,
+        );
+        redlineLines = redlineLines.slice(0, redlineMaxLines);
+      }
       if (active.length > 0) {
         // 立项②：渲染顺序按 value_id 稳定排序（weight 只用于取舍/排序上限，不决定注入序）
         const activeStable = [...active].sort((a, b) => String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)));
@@ -473,6 +536,8 @@ export async function buildSoulPrefix(
             return { row: renderAnchor(v, desc), desc, valueId: String(v.value_id ?? v.label), label: String(v.label ?? "") };
           })
           .filter((x): x is { row: string; desc: string; valueId: string; label: string } => x !== null);
+        // #42：scorer 配置提前解析（anchorDedup embedding 通道复用同一 embedder——单一依赖面）。
+        const scorerCfg = opts?.anchorSelect?.scorer;
         if (opts?.anchorDedup?.enabled === true && decoratedPairs.length > 1) {
           const dd = dedupeAnchorPairs(decoratedPairs);
           if (dd.dropped.length > 0) {
@@ -482,12 +547,39 @@ export async function buildSoulPrefix(
             decoratedPairs = dd.pairs;
           }
         }
+        // 灵魂注入质量轮（2026-10-19 第二通道）：desc 向量 cosine 语义近重复去重——label 双向
+        // 包含抓不住的同义改写对。阈值诚实标定注记（生产 22 锚 × doubao-embedding-vision
+        // 2048dims 实测 231 对：top=0.669、p50=0.406，真重复对与非重复对无分离阈值）——
+        // 绝对 cosine 门跨嵌入模型不可移植：0.85 在本生产模型下为诚实 no-op（通道机制保留，
+        // 供更高分离度的嵌入模型/未来换模型时启用）；本模型下的实际去扎堆由 MMR 多样性选择
+        // 承担（soul-anchor-scorer.ts selectAnchorRowsMmr）。embedder 缺席/阈值 0=通道静默跳过
+        //（仅 label 通道，逐位现状）；失败非致命（内部降级全保留 + 外层兜底 warn）。
+        const adEmbThreshold = opts?.anchorDedup?.embeddingThreshold ?? 0;
+        if (
+          opts?.anchorDedup?.enabled === true &&
+          adEmbThreshold > 0 &&
+          decoratedPairs.length > 1 &&
+          typeof scorerCfg?.embedder === "function"
+        ) {
+          try {
+            const dd2 = await dedupeAnchorPairsEmbedding(decoratedPairs, scorerCfg.embedder, adEmbThreshold, { logger });
+            if (dd2.dropped.length > 0) {
+              logger?.debug?.(
+                `[soul-dedupe] anchors embedding-dropped ${dd2.dropped.length}/${decoratedPairs.length}: ${dd2.dropped.map((d) => `${d.label}→${d.keptLabel}(${d.reason})`).join(",")}`,
+              );
+              decoratedPairs = dd2.pairs;
+            }
+          } catch (err) {
+            logger?.warn?.(
+              `[soul-dedupe] embedding dedup failed (non-fatal, label-channel result kept): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
         const decorated = decoratedPairs.map((p) => p.row);
         // #42：打分选择接线——转正（scorer.enabled=true 且 embedder/可用查询向量在位）=
         // threshold 硬门 + top-K；#52 D3 选项C：仅 rows.length > maxRows（发生裁剪）时按
         // cosine desc 决定保留集与顺序，rows ≤ maxRows 不重排（value_id 声明序，不抖动）；
-        // 缺省关/shadow/向量缺席 → decorated 原样（逐位现状）。
-        const scorerCfg = opts?.anchorSelect?.scorer;
+        // 缺省关/shadow/向量缺席 → decorated 原样（逐位现状）。（scorerCfg 已上提至 anchorDedup 块前解析）
         // #42 审查加固（F1 懒解析 + I-4 可用门）：查询向量解析=显式 queryEmbedding ?? provider() ?? null，
         // 每次 buildSoulPrefix 调用至多解析一次（转正选择与 shadow 报告共用）；退化向量（零范数/空）
         // 视同缺席。缺省配置（scorer 未配置/关）零解析零 embed（F1 零成本保证）。
@@ -507,19 +599,37 @@ export async function buildSoulPrefix(
           const qv = await resolveQueryVec();
           if (typeof scorerCfg.embedder === "function" && qv) {
             try {
-              selected = selectAnchorRows(
-                await scoreAnchorRows(decoratedPairs, qv, scorerCfg.embedder, { maxRows: opts?.anchorSelect?.maxRows }),
-                {
-                  maxRows: opts?.anchorSelect?.maxRows,
-                  threshold: scorerCfg.threshold ?? 0,
-                },
+              // 灵魂注入质量轮（2026-10-19）：MMR 多样性选择——scoreAnchorRows 产出锚向量随行
+              // 携带（零额外 embed），λ<1 时对发生裁剪的池贪心去扎堆（selectAnchorRowsMmr 内部
+              // 触发门与 #52 D3 选项C 同款：仅 pool>maxRows 才重排，未裁剪=声明序原样）；
+              // mmrLambda 缺席/≥1 → selectAnchorRows 纯 top-K 逐位现状。
+              const mmrLambda = scorerCfg.mmrLambda ?? 0.7;
+              const scoredRows = await scoreAnchorRows(decoratedPairs, qv, scorerCfg.embedder, {
+                maxRows: opts?.anchorSelect?.maxRows,
+                embedBudgetMs: scorerCfg.embedBudgetMs,
+              });
+              selected = (
+                mmrLambda > 0 && mmrLambda < 1
+                  ? selectAnchorRowsMmr(scoredRows, {
+                      maxRows: opts?.anchorSelect?.maxRows,
+                      threshold: scorerCfg.threshold ?? 0,
+                      lambda: mmrLambda,
+                    })
+                  : selectAnchorRows(scoredRows, {
+                      maxRows: opts?.anchorSelect?.maxRows,
+                      threshold: scorerCfg.threshold ?? 0,
+                    })
               ).map((s) => s.row);
             } catch (err) {
               // #42 审查加固（F2/I-2）：embed 失败非致命——整体回退未选择现状（部分打分=选择语义
               // 不一致，宁缺毋滥），沿 mood compute non-fatal 先例；soul 前缀不再整轮丢失。
+              // 质量轮（2026-10-19）：降级渲染**不写** soulPrefixCache/soul 快照（见函数尾
+              // soulRenderDegraded 写入门）——降级锚序（声明序）若被缓存，embed 预算后到齐的完整
+              // MMR 渲染会被同键旧降级串遮蔽，直到缓存驱逐。in-flight embed 已在后台落缓存。
               logger?.warn?.(
                 `[soul-anchor-scorer] score failed (non-fatal, fallback to unselected): ${err instanceof Error ? err.message : String(err)}`,
               );
+              soulRenderDegraded = true;
               selected = decorated;
             }
           } else if (!soulScorerMisconfigWarned) {
@@ -532,7 +642,32 @@ export async function buildSoulPrefix(
           }
         }
         // #10 T4：整锚预算——超预算从尾丢整锚（value_id 稳定序头部保留），0=无预算逐位现状
-        const budgeted = applyAnchorBudget(selected, opts?.budgetAnchorChars ?? 0);
+        //（let：跨段抑制可能收窄集合，shadow 报告/shadowSink/渲染共用抑制后集合——观测面=实际注入面）
+        let budgeted = applyAnchorBudget(selected, opts?.budgetAnchorChars ?? 0);
+        // 灵魂注入质量轮（2026-10-19）：红线/价值锚跨段抑制——价值锚 desc 与红线行语义重复时
+        // 锚行让位（红线=硬约束承载面优先级更高；软取向原则不重复占注入字数；生产实拍红线值锚
+        // desc 与 strict_rule R-A 条目同文重复）。行级 drop、kept 逐字保留（真实性边界同上）；
+        // 判定=jaccard 通道+可选 embedding cosine 通道（soul-dedupe.suppressAnchorOverlapRows）；
+        // 失败非致命（内部降级 + 外层兜底 warn），回退=不抑制=逐位现状。
+        if (opts?.strictRuleDedup?.suppressAnchorOverlap === true && redlineLines.length > 0 && budgeted.length > 0) {
+          try {
+            const sup = await suppressAnchorOverlapRows(budgeted, redlineLines, {
+              jaccardThreshold: opts.strictRuleDedup.jaccardThreshold,
+              embedder: typeof scorerCfg?.embedder === "function" ? scorerCfg.embedder : null,
+              embeddingThreshold: adEmbThreshold,
+            });
+            if (sup.dropped.length > 0) {
+              logger?.debug?.(
+                `[soul-dedupe] anchor-vs-redline suppressed ${sup.dropped.length}/${budgeted.length}: ${sup.dropped.map((d) => `${d.line.slice(0, 24)}…(${d.reason})`).join(",")}`,
+              );
+              budgeted = sup.kept;
+            }
+          } catch (err) {
+            logger?.warn?.(
+              `[soul-dedupe] suppressAnchorOverlap failed (non-fatal, no suppression): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
         // #29（R5）：情境锚选择 shadow 门——行数超 maxRows 只报告不裁剪（检索式裁剪对抗
         // 锚稳定性=身份漂移入口），渲染逐位现状；转正（#42 enabled=true）后选择已生效、不触发报告。
         // #42：shadow 报告随向量可用性升级为逐锚分形态 `锚N(0.xxx)`（查询向量在位才升级；
@@ -709,28 +844,10 @@ export async function buildSoulPrefix(
           lines.push("我的承诺：", ...openPromises.map((p) => `- ${escapeXmlTags(p.content)}`));
         }
       }
-      // #24-C1（2026-10-16 用户授权拍板，r5-24 定案）：红线独立段「## 不可逾越（红线）」置
-      // soul-identity 段尾（禁令动词框架+保留团队话语关键词，段名进 #33 词表）；原文直出禁改写
-      //（无预算/无截断/无转写——不变量语义）；无 strict_rule 整段省略（宁缺毋滥）。
-      // #52 P1（2026-10-18）：渲染改单一源 renderStrictRuleSectionLines——多行 strict_rule 槽
-      // 逐条独立成行、逐行带 [strict_rule] tag、剥行首自身弹头（旧 `- [strict_rule] ${content}`
-      // 只给首行打 tag 且不剥内容自带 `- ` 弹头 = 生产畸形 `- [strict_rule] - …` + 续行全裸）。
-      // 批次声明：#24-C1+F8 为第二次渲染布局跳变；#52 P1 为第三次（红线行形态：逐行 tag+
-      // 剥弹头）。slots 数据未变 → soulVersion 语义不变，布局随进程重启缓存自然刷新
-      //（soulPrefixCache 为进程内存态）。
-      // 去重轮（2026-10-18）：红线近重复行独立后处理 pass（不动单一源文件契约；
-      // kept 行体逐字保留=选择而非改写；≤1 行零成本直通）。dropped 落 debug 日志。
-      const redlineLinesRaw = dual ? renderStrictRuleSectionLines(ordered) : [];
-      let redlineLines = redlineLinesRaw;
-      if (opts?.strictRuleDedup?.enabled === true && redlineLinesRaw.length > 1) {
-        const dd = dedupeNearDuplicateLines(redlineLinesRaw, { jaccardThreshold: opts.strictRuleDedup.jaccardThreshold });
-        if (dd.dropped.length > 0) {
-          logger?.debug?.(
-            `[soul-dedupe] strict_rules dropped ${dd.dropped.length}/${redlineLinesRaw.length}: ${dd.dropped.map((d) => d.reason).join("; ")}`,
-          );
-          redlineLines = dd.kept;
-        }
-      }
+      // 红线段计算已上移至 slots 循环后（灵魂注入质量轮 2026-10-19：跨段抑制依存方向
+      // 「锚行筛红线」→ 红线行先行；maxLines/suppressAnchorOverlap 治理同处——见 slots
+      // 循环后红线块与上方「价值锚」锚块内注释）。soulVersion 语义不变（slots 数据未变），
+      // 布局随进程重启缓存自然刷新（soulPrefixCache 为进程内存态）。
       // #32（R5）：能力自述段「## 我能做什么」——只读派生（数据=调用方传入的运行时实况，
       // 本层零落库零派生逻辑）；逐行 1:1 渲染（一致性合同：渲染行=传入清单，顺序保持），
       // 行数策展（3-5 行）由调用方负责；缺省 undefined=不渲染=逐位现状。
@@ -767,11 +884,14 @@ export async function buildSoulPrefix(
       // 承载近期基调（moodTier）与当下状态（state）两行；state 叙事形态见 soul-state.ts
       //（数值留代码层，prompt 只写自然语言自述）。
       const feel: string[] = [];
-      // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位+样本数，不出连续值防伪精度；
+      // S-FEEL-1（M1）：近期基调行——soul-feeling 块尾新行（档位文案，不出连续值防伪精度；
       // opts.moodTier 缺省=不 push=逐位现状）。文案不含「我感到」字样（§1.5 主语越界防线）。
+      // 灵魂注入质量轮（2026-10-19）：去实现细节括号——「（近 N 条经历的情感聚合）」是管线
+      // 元数据（样本量/聚合方式），泄露进 prompt 属实现细节外溢（渲染面调研定案：聚合标签
+      // 只留存储/统计层，注入面只写自述语义；样本量观测走 soul-state.ts 聚合侧日志）。
       if (opts?.moodTier) {
         const tierLabel = opts.moodTier.tier === "positive" ? "偏积极" : opts.moodTier.tier === "strained" ? "偏承压" : "平稳";
-        feel.push(`近期基调：${tierLabel}（近 ${opts.moodTier.sampleCount} 条经历的情感聚合）`);
+        feel.push(`近期基调：${tierLabel}。`);
       }
       // #34（S13/R5）：当下状态行——soul-feeling 尾块（依赖 #37 soul.tail 接口语义；
       // 会话级不落库，状态机数据源归 #28）。无 state=逐位现状（不 push）。
@@ -785,7 +905,10 @@ export async function buildSoulPrefix(
     logger?.warn?.(`[soul] assemble failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
   const result = parts.length > 0 ? parts.join("\n\n") + "\n\n" : "";
-  if (soulVer) {
+  // 质量轮（2026-10-19）写入门：降级渲染（scorer 回退声明序）跳过前缀缓存与快照落账——
+  // 降级串入缓存会遮蔽预算后到齐的完整 MMR 渲染（同键旧串复活直到驱逐）；入快照账本则
+  // 产生一次性的「人格变更」假阳性行。in-flight embed 已在后台落缓存，下一请求即完整渲染。
+  if (soulVer && !soulRenderDegraded) {
     if (soulPrefixCache.size >= SOUL_CACHE_MAX) {
       const oldest = soulPrefixCache.keys().next().value;
       if (oldest !== undefined) soulPrefixCache.delete(oldest);

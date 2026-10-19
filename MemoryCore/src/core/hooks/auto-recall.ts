@@ -37,6 +37,7 @@ import {
 import {
   expandQuery,
   mergeFtsQueryWithExpansion,
+  raceWithTimeoutCap,
   resolveQueryExpansionRunner,
 } from "../recall/query-expand.js";
 import { PPR_DEFAULTS, runPPRDetail } from "../recall/ppr.js";
@@ -1601,46 +1602,61 @@ async function searchMemories(
     // 无本地 FTS 构建点 → 零 LLM 调用（E1.3 向量路不动）。失败/超时 → []（E1.4 退化）。
     let expansionTermsCache: string[] | null = null;
     // #63（2026-10-18）：扩展段计时——journal 实锤 l1=4305ms 中 ~4s 为 query-expand
-    // LLM 串行阻塞（真实 embedding RTT 仅 108ms），不拆段会再次误诊。整函数 try/finally
-    // 包装：cache 命中/qe 关闭 ≈0ms，LLM 慢 = 真实耗时；两消费路（keyword / fallback）
-    // 的 timing.expandMs 透传，native/embedding 路不触发本函数（expandMs 缺字段 → 0）。
-    let expandMsMeasured = 0;
+    // LLM 串行阻塞（真实 embedding RTT 仅 108ms），不拆段会再次误诊。
+    // 灵魂注入性能轮（2026-10-19）：journal expandMs 口径改热路实际等待（waitMs 快照随
+    // awaitExpansionTerms 返回值透出）；LLM 完整耗时降为 debug 日志（迟到完成不再污染
+    // timing，expandMs > l1 墙钟的 journal 假象随之消除）。
     const getExpansionTerms = async (): Promise<string[]> => {
-      const tExpand63 = performance.now();
-      try {
-        if (expansionTermsCache) return expansionTermsCache;
-        const qeCfg = cfg.recall?.queryExpansion;
-        if (!qeCfg?.enabled) return (expansionTermsCache = []);
-        const qeRunner = await resolveQueryExpansionRunner(
-          cfg.llm,
-          (cfg as { instanceId?: string }).instanceId,
-          logger,
-        );
-        // 运行期预算 clamp（E1.4 失败安全优先）：recall 有整体 timeoutMs（默认 5000），
-        // 扩展外呼若超出预算会触发整体超时（注入全空，比无扩展更糟）。config 默认 8000
-        // 保留给无外层预算的工具路；auto-recall 路 clamp 到 召回预算-1s（至少 1s），留出
-        // 真实检索时间。clamp 生效记 debug（配置与真实行为一致性，可追溯）。
-        const recallBudget = cfg.recall?.timeoutMs ?? 5000;
-        const timeoutMs = Math.min(qeCfg.timeoutMs, Math.max(1000, recallBudget - 1000));
-        if (timeoutMs !== qeCfg.timeoutMs) {
-          logger?.debug?.(`${TAG} [query-expand] timeoutMs clamped into recall budget: ${qeCfg.timeoutMs} → ${timeoutMs}ms`);
-        }
-        expansionTermsCache = await expandQuery(cleanText, qeRunner, {
-          maxTerms: qeCfg.maxTerms,
-          ttlMs: qeCfg.ttlMs,
-          timeoutMs,
-          logger,
-        });
-        return expansionTermsCache;
-      } finally {
-        expandMsMeasured = Math.round(performance.now() - tExpand63);
+      const tLlm63 = performance.now();
+      if (expansionTermsCache) return expansionTermsCache;
+      const qeCfg = cfg.recall?.queryExpansion;
+      if (!qeCfg?.enabled) return (expansionTermsCache = []);
+      const qeRunner = await resolveQueryExpansionRunner(
+        cfg.llm,
+        (cfg as { instanceId?: string }).instanceId,
+        logger,
+      );
+      // 运行期预算 clamp（E1.4 失败安全优先）：recall 有整体 timeoutMs（默认 5000），
+      // 扩展外呼若超出预算会触发整体超时（注入全空，比无扩展更糟）。config 默认 8000
+      // 保留给无外层预算的工具路；auto-recall 路 clamp 到 召回预算-1s（至少 1s），留出
+      // 真实检索时间。clamp 生效记 debug（配置与真实行为一致性，可追溯）。
+      const recallBudget = cfg.recall?.timeoutMs ?? 5000;
+      const timeoutMs = Math.min(qeCfg.timeoutMs, Math.max(1000, recallBudget - 1000));
+      if (timeoutMs !== qeCfg.timeoutMs) {
+        logger?.debug?.(`${TAG} [query-expand] timeoutMs clamped into recall budget: ${qeCfg.timeoutMs} → ${timeoutMs}ms`);
       }
+      expansionTermsCache = await expandQuery(cleanText, qeRunner, {
+        maxTerms: qeCfg.maxTerms,
+        ttlMs: qeCfg.ttlMs,
+        timeoutMs,
+        // 灵魂注入性能轮（2026-10-19）：失败负缓存（negativeTtlMs，缺省 30s，0=关）——
+        // journal 实锤 expandQuery 失败/超时不缓存 → 同批新 query 每轮重付 LLM 全额 RTT
+        //（实测 2.2-2.4s，clamp 后 4s 黑洞顶满 504）；负缓存期内短路 [] 不再外呼。
+        negativeTtlMs: qeCfg.negativeTtlMs,
+        logger,
+      });
+      logger?.debug?.(`${TAG} [query-expand] llm settled in ${Math.round(performance.now() - tLlm63)}ms (cache miss, hot-wait capped)`);
+      return expansionTermsCache;
+    };
+
+    // 灵魂注入性能轮（2026-10-19）：扩展词热路等待帽（hotPathTimeoutMs，缺省 1500，0=旧行为
+    // 全 clamp 等待）——race 兜底：帽内未返回 → 本轮无扩展词检索（[]），LLM 迟到结果照写
+    // TTL 缓存（下轮同 query 命中）/失败写负缓存（negativeTtlMs 短路）。expandMs 观测口径
+    // 改为热路实际等待（waitMs 快照随返回值透出；旧 expandMsMeasured=完整 LLM 耗时在迟到
+    // 完成时会晚于 wait 快照落笔 → 不再作为 timing 源，防 journal expandMs > l1 墙钟假象）。
+    // 消费路=keyword / hybrid-fallback 两处（embedding / native-hybrid 不触发扩展，E1.3 不动）。
+    const hotPathCapMs = cfg.recall?.queryExpansion?.hotPathTimeoutMs ?? 1500;
+    const awaitExpansionTerms = async (): Promise<{ terms: string[]; waitMs: number }> => {
+      const tWait = performance.now();
+      const terms = await raceWithTimeoutCap(getExpansionTerms(), hotPathCapMs, []);
+      return { terms, waitMs: Math.round(performance.now() - tWait) };
     };
 
     if (effectiveStrategy === "keyword") {
       const tFts = performance.now();
-      const lines = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, layered, await getExpansionTerms(), isolationFilter);
-      return { lines, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: lines.length, embeddingHits: 0, expandMs: expandMsMeasured } };
+      const { terms: kwTerms, waitMs: kwExpandWaitMs } = await awaitExpansionTerms();
+      const lines = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, layered, kwTerms, isolationFilter);
+      return { lines, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: lines.length, embeddingHits: 0, expandMs: kwExpandWaitMs } };
     }
 
     if (effectiveStrategy === "embedding") {
@@ -1693,9 +1709,14 @@ async function searchMemories(
     }
 
     // Fallback: run keyword + embedding in parallel, merge with client-side RRF (SQLite path)
+    // 灵魂注入性能轮（2026-10-19）：旧实现 `await getExpansionTerms()` 内联阻塞在 searchHybrid
+    // 形参取值处——LLM RTT 2.2-2.4s 全额串行进 l1 计时（journal 实锤 expand=4002/4007ms 顶满
+    // clamp=504 直接根因）。改热路等待帽：帽内未返回 → 本轮无扩展词继续检索（宁缺毋滥同构），
+    // 迟到 LLM 结果仍落 TTL/负缓存惠及后续轮次（见 awaitExpansionTerms 注释）。
+    const { terms: expansionTerms, waitMs: fallbackExpandWaitMs } = await awaitExpansionTerms();
     const hybrid = await searchHybrid(
       cleanText, pluginDataDir, maxResults, threshold, vectorStore!, embeddingService!, logger,
-      embeddingCallOpts, rank, embedCacheTtlMs, layered, await getExpansionTerms(),
+      embeddingCallOpts, rank, embedCacheTtlMs, layered, expansionTerms,
       // V2-3（引擎三）：探索位 + 组合分精排（config 透传——缺省默认开/均等权重）
       cfg.recall?.exploreSlot !== false, cfg.recall?.rerankWeights,
       // DS-RECALL-MERGE-001：租户收窄 filter（钩子路缺省 undefined = 旧行为逐位）
@@ -1712,8 +1733,9 @@ async function searchMemories(
     const fallbackFolded = cfg?.recall?.foldClusterEnabled === true;
     return {
       lines: fallbackFolded ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines,
-      // #63：expandMs 在 searchMemories 层测得（getExpansionTerms 计时），补进 hybrid.timing
-      timing: { ...hybrid.timing, expandMs: expandMsMeasured },
+      // #63：expandMs 在 searchMemories 层测得（灵魂注入性能轮 2026-10-19 起口径=热路实际
+      // 等待 waitMs 快照），补进 hybrid.timing
+      timing: { ...hybrid.timing, expandMs: fallbackExpandWaitMs },
       ...(hybrid.gates ? { gates: hybrid.gates } : {}),
       ...(hybrid.scores ? { scores: hybrid.scores } : {}),
       ...(!fallbackFolded && hybrid.metas ? { metas: hybrid.metas } : {}),

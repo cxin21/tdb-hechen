@@ -11,6 +11,46 @@
  *    零随机零时钟零 LLM，同输入逐字节同输出。
  */
 /** 红线近重复判定阈值（char-bigram Jaccard；标定=生产 14 行全量 pairwise）。 */
+/**
+ * proxy 本地锚向量缓存（镜像外基础设施，不参与 parity 契约）：core 侧实现见
+ * MemoryCore/src/core/hooks/soul-anchor-scorer.ts embedAnchorCached（缓存命中直返、
+ * in-flight 并发合并、失败不缓存、FIFO 100 驱逐）。两包无跨包依赖（package.json 互不
+ * 依赖），镜像正文 embed 通道需要同名符号，此处按同语义本地落地。当前 injector 消费面
+ * 只用行级/label 通道，embed 通道为契约完整性而存在，运行时不会触发。
+ */
+const anchorVectorCache = new Map<string, Float32Array>();
+const anchorVectorInflight = new Map<string, Promise<Float32Array | null>>();
+const ANCHOR_VECTOR_CACHE_MAX = 100;
+
+async function embedAnchorCached(
+  embedder: (text: string) => Promise<Float32Array>,
+  text: string,
+): Promise<Float32Array | null> {
+  const hit = anchorVectorCache.get(text);
+  if (hit) return hit;
+  const inflight = anchorVectorInflight.get(text);
+  if (inflight) return inflight;
+  const p = (async (): Promise<Float32Array | null> => {
+    try {
+      const v = await embedder(text);
+      if (!(v instanceof Float32Array) || v.length === 0) return null;
+      anchorVectorCache.set(text, v);
+      while (anchorVectorCache.size > ANCHOR_VECTOR_CACHE_MAX) {
+        const oldest = anchorVectorCache.keys().next();
+        if (oldest.done) break;
+        anchorVectorCache.delete(oldest.value);
+      }
+      return v;
+    } catch {
+      return null;
+    } finally {
+      anchorVectorInflight.delete(text);
+    }
+  })();
+  anchorVectorInflight.set(text, p);
+  return p;
+}
+
 export const DEFAULT_RULE_JACCARD_THRESHOLD = 0.45;
 
 /** containment 通道最小 bigram 集护栏（防短串误判；8 bigram ≈ 9+ 归一字符）。 */
@@ -187,6 +227,193 @@ export function dedupeAnchorPairs<T extends AnchorPairLike>(pairs: readonly T[])
     }
   }
   return { pairs: out, dropped };
+}
+
+// ── 2026-10-19 第二批：embedding 语义近重复通道 + 红线/价值锚跨段抑制 ──
+// 生产实证（主 tenant /v3/recall 实拍 block）：
+// - 「取证」族六锚语义同质（探针/一手证据/取证先行/只读取证/求实/实测验证），
+//   label 互不包含 → label 通道零命中；需 desc cosine 通道兜底。
+//   阈值诚实标定注记（2026-10-19 生产 22 锚 × doubao-embedding-vision 2048dims 全量
+//   pairwise 实测 231 对：top=0.669、p50=0.406）——真重复对与非重复对无分离阈值，
+//   绝对 cosine 门跨嵌入模型不可移植：缺省 0.85 在本生产模型下为诚实 no-op
+//   （通道机制保留，供更高分离度嵌入模型启用）；本模型下的去扎堆由 MMR 多样性
+//   选择承担（soul-anchor-scorer.ts selectAnchorRowsMmr）。
+// - 红线值锚 desc 与 strict_rule R-A 条目语义重复（软取向原则与硬约束同文重复占注入
+//   字数）→ 跨段抑制：锚行让位（红线=硬约束优先级更高）。
+// 真实性边界沿本文件第一条：只做整行/整锚选择（drop），kept 逐字保留；确定性；
+// embed 不可判/失败 → 保留该条（宁缺毋滥不误删）。
+
+/** embedder 最小形状（与 soul-anchor-scorer.ts AnchorEmbedder 同构；本地声明防循环依赖——
+ *  本文件保持零 import 单一源，调用方把 embedder 注入进来）。 */
+export type AnchorEmbedderLike = (text: string) => Promise<Float32Array>;
+
+/** cosine 相似度；任一为空 / 长度不齐 / 零向量 → 0（宁缺毋滥不造分）。 */
+export function cosineSimilarity(
+  a: Float32Array | null | undefined,
+  b: Float32Array | null | undefined,
+): number {
+  if (!a || !b || a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+export interface DedupedPairsEmbedding<T extends AnchorPairLike> {
+  pairs: T[];
+  dropped: { label: string; keptLabel: string; reason: string }[];
+}
+
+/**
+ * 价值锚 embedding 语义近重复去重（label 包含对之外的语义通道；在 dedupeAnchorPairs
+ * 之后级联执行——label 通道先收字面重复，本通道再收语义重复）。
+ * 判定：desc 非空锚逐条 embed（并行 allSettled），贪心首现保留——与任一 kept 的
+ * desc cosine ≥ threshold → drop（保首现=value_id 稳定序，不抖动）。
+ * 降级合同：embedder 缺席/整体抛错 → 全保留原样返回（调用方回退 label 通道结果）；
+ * 单条 embed 失败/空 desc → 该锚视为不可判 → 保留（真实性边界：不因基础设施抖动误删人格锚）。
+ * 确定性：同 embedder 同输入逐字节同输出。零 LLM（embedding 模型确定性推理）。
+ */
+export async function dedupeAnchorPairsEmbedding<T extends AnchorPairLike>(
+  pairs: readonly T[],
+  embedder: AnchorEmbedderLike,
+  threshold: number,
+  opts?: { logger?: { warn?: (msg: string) => void } },
+): Promise<DedupedPairsEmbedding<T>> {
+  const all = [...pairs];
+  if (all.length <= 1) return { pairs: all, dropped: [] };
+  if (!embedder || typeof embedder !== "function" || !(threshold > 0)) return { pairs: all, dropped: [] };
+  const texts = all.map((p) => String(p?.desc ?? "").trim());
+  let settled: PromiseSettledResult<Float32Array | null>[];
+  try {
+    settled = await Promise.allSettled(
+      texts.map((t) => (t === "" ? Promise.reject(new Error("empty-desc")) : embedAnchorCached(embedder, t))),
+    );
+  } catch (err) {
+    opts?.logger?.warn?.(
+      `[soul-dedupe] anchor embedding unavailable, fallback to label channel: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { pairs: all, dropped: [] };
+  }
+  const vecs = new Map<number, Float32Array>();
+  for (let i = 0; i < all.length; i++) {
+    const s = settled[i];
+    if (s && s.status === "fulfilled" && s.value instanceof Float32Array && s.value.length > 0) vecs.set(i, s.value);
+  }
+  const out: T[] = [];
+  const outVecs: (Float32Array | undefined)[] = [];
+  const dropped: { label: string; keptLabel: string; reason: string }[] = [];
+  for (let i = 0; i < all.length; i++) {
+    const p = all[i]!;
+    const v = vecs.get(i);
+    if (!v) {
+      out.push(p); // 不可判（embed 失败/空 desc）→ 保留
+      outVecs.push(undefined);
+      continue;
+    }
+    let hit = -1;
+    let hitScore = 0;
+    for (let k = 0; k < out.length; k++) {
+      const ov = outVecs[k];
+      if (!ov) continue;
+      const c = cosineSimilarity(v, ov);
+      if (c >= threshold && c > hitScore) {
+        hit = k;
+        hitScore = c;
+      }
+    }
+    if (hit === -1) {
+      out.push(p);
+      outVecs.push(v);
+      continue;
+    }
+    dropped.push({ label: p.label, keptLabel: out[hit]!.label, reason: `cosine=${hitScore.toFixed(3)}>=${threshold}` });
+  }
+  return { pairs: out, dropped };
+}
+
+/**
+ * 红线/价值锚跨段抑制（2026-10-19 第三批）：价值锚渲染行 desc 与红线行语义近重复时
+ * 锚行让位——红线是硬约束（higher priority），软取向原则不重复占注入字数。
+ * 判定通道：① 归一 char-bigram Jaccard ≥ jaccardThreshold（缺省 0.45 本文件标定同款）；
+ * ② embedder+embeddingThreshold 在位时 desc cosine ≥ 阈值（字面不同语义同；并行预计算
+ * 两侧向量，allSettled 单条失败视为该条不可判不触发）。
+ * 锚行 desc 段 = 首个全角「：」之后（渲染行形如 `label(dir)：desc`；无「：」= 无 desc，
+ * 整行保留）。真实性边界：行级 drop，kept 逐字保留。确定性：同输入同 embedder 同输出。
+ */
+export async function suppressAnchorOverlapRows(
+  rows: readonly string[],
+  ruleLines: readonly string[],
+  opts?: { jaccardThreshold?: number; embedder?: AnchorEmbedderLike | null; embeddingThreshold?: number },
+): Promise<DedupedLines> {
+  const kept: string[] = [];
+  const dropped: { line: string; reason: string }[] = [];
+  if (rows.length === 0 || ruleLines.length === 0) return { kept: [...rows], dropped };
+  const jThreshold =
+    typeof opts?.jaccardThreshold === "number" && opts.jaccardThreshold >= 0
+      ? opts.jaccardThreshold
+      : DEFAULT_RULE_JACCARD_THRESHOLD;
+  const embThreshold = opts?.embeddingThreshold;
+  const embedder = opts?.embedder;
+  const useEmb = !!embedder && typeof embedder === "function" && typeof embThreshold === "number" && embThreshold > 0;
+
+  const descOf = (row: string): string => {
+    const idx = row.indexOf("：");
+    return idx >= 0 ? row.slice(idx + 1).trim() : "";
+  };
+
+  // 预计算红线侧判定材料（归一集一次成型；向量通道并行预计算，失败→undefined=不可判；
+  // embedAnchorCached：与 scoreAnchorRows 共享缓存/并发合并——锚 desc 双通道零重复付费）
+  const ruleSets = ruleLines.map((l) => charBigramSet(normalizeDedupText(l)));
+  let ruleVecs: (Float32Array | undefined)[] = ruleLines.map(() => undefined);
+  if (useEmb) {
+    const settled = await Promise.allSettled(ruleLines.map((l) => embedAnchorCached(embedder!, l)));
+    ruleVecs = settled.map((s) =>
+      s.status === "fulfilled" && s.value instanceof Float32Array && s.value.length > 0 ? s.value : undefined,
+    );
+  }
+  let rowVecs: (Float32Array | undefined)[] = rows.map(() => undefined);
+  if (useEmb) {
+    const descs = rows.map(descOf);
+    const settled = await Promise.allSettled(
+      descs.map((d) => (d === "" ? Promise.reject(new Error("empty-desc")) : embedAnchorCached(embedder!, d))),
+    );
+    rowVecs = settled.map((s) =>
+      s.status === "fulfilled" && s.value instanceof Float32Array && s.value.length > 0 ? s.value : undefined,
+    );
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const desc = descOf(row);
+    if (desc === "") {
+      kept.push(row);
+      continue;
+    }
+    const set = charBigramSet(normalizeDedupText(desc));
+    let reason = "";
+    for (let r = 0; r < ruleLines.length && reason === ""; r++) {
+      const j = jaccard(set, ruleSets[r]!);
+      if (j >= jThreshold) {
+        reason = `jaccard=${j.toFixed(3)}>=${jThreshold}`;
+        break;
+      }
+      const rv = ruleVecs[r];
+      const rowV = rowVecs[i];
+      if (rv && rowV) {
+        const c = cosineSimilarity(rowV, rv);
+        if (c >= (embThreshold as number)) reason = `cosine=${c.toFixed(3)}>=${embThreshold}`;
+      }
+    }
+    if (reason === "") kept.push(row);
+    else dropped.push({ line: row, reason: `${reason} vs redline` });
+  }
+  return { kept, dropped };
 }
 
 /**

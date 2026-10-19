@@ -6,7 +6,11 @@
  *   parseExpansion        → 解析防御：非串丢弃 / trim / 去重（大小写不敏感）/
  *                           去除与原 query 相同项 / maxTerms 截断；
  *   expandQuery           → standalone runner 调用（C2 derive 模式）+ 失败/超时 → []
- *                           （E1.4 失败退化：原 query 照常）+ TTL 缓存（E1.2，10 分钟）；
+ *                           （E1.4 失败退化：原 query 照常）+ TTL 缓存（E1.2，10 分钟）
+ *                           + 失败负缓存（negativeTtlMs，默认 30s——LLM 故障期不逐请求重付
+ *                           2-4s RTT；空结果=LLM 确定答「无扩展」按正常 TTL 正缓存）；
+ *   raceWithTimeoutCap    → 热路径超时帽 race（recall 热路不等慢 LLM：cap 内未返回取 fallback，
+ *                           promise 继续后台完成并落 TTL 缓存——下轮同 query 即时命中）；
  *   mergeFtsQueryWithExpansion → E1.3 FTS OR 合并（词面足迹 widening；向量路不动）。
  *
  * 不变式：扩展只加候选，绝对门槛照常裁决（宁缺毋滥不破）；扩展词命中的条目不特殊标注。
@@ -38,6 +42,11 @@ export const QUERY_EXPANSION_DEFAULTS: QueryExpansionConfig = {
   ttlMs: 600_000,
   timeoutMs: 8000,
 };
+
+/** 失败负缓存缺省 TTL（2026-10-19 热路径改造）：LLM RTT 实测 2.2-2.4s，故障/超时期间
+ *  每个新 query 都重付全额 RTT（journal 实证 expand=4002/4007ms 顶满 clamp 连环黑洞）。
+ *  默认 30s：故障期最多 2 次重试/分钟/query，恢复后自动放行；0=关（旧行为逐请求重试）。 */
+export const QUERY_EXPANSION_NEGATIVE_TTL_DEFAULT = 30_000;
 
 /**
  * E1.2 maxTokens 覆写 8192（推理模型预算教训：backfill 4096 全空——thinking 占输出
@@ -102,25 +111,44 @@ interface ExpansionCacheEntry {
 }
 const expansionCache = new Map<string, ExpansionCacheEntry>();
 const EXPANSION_CACHE_MAX = 200;
+/** 失败负缓存：query → 失败时刻。命中期内 expandQuery 直接短路 []（不重付 LLM RTT）。 */
+const expansionFailureCache = new Map<string, number>();
+
+/** Map FIFO 驱逐（上界守护，正/负缓存共用）。 */
+function evictOldestFifo(map: Map<string, unknown>, max: number): void {
+  if (map.size <= max) return;
+  const oldest = map.keys().next().value;
+  if (oldest !== undefined) map.delete(oldest);
+}
 
 /**
  * E1.2 expandQuery：LLM 语义邻域扩展（失败→[]，E1.4 失败退化 + warn 一次）。
  * 缓存 key = query 原文（同 query TTL 内复用）；ttlMs<=0 = 不缓存（直呼）；
- * 失败的调用不缓存（下次重试）。工具侧与 auto-recall 侧共用本模块 Map（同进程同缓存）。
+ * negativeTtlMs（默认 30s，0=关）：失败/超时后负缓存——命中期内直接 [] 短路，
+ * 故障期不逐请求重付 2-4s RTT（journal 实证 expand 顶满 4s clamp 连环黑洞的根因之一）。
+ * 空结果 = LLM 确定答「无扩展」（解析成功但无有效项）→ 按正常 TTL 正缓存 []，
+ * 与失败区分：确定答案无需重试，重试只会原样重付 RTT。
+ * 工具侧与 auto-recall 侧共用本模块 Map（同进程同缓存）。
  */
 export async function expandQuery(
   query: string,
   runner: ExpansionRunner | undefined,
-  opts?: { maxTerms?: number; ttlMs?: number; timeoutMs?: number; logger?: Logger },
+  opts?: { maxTerms?: number; ttlMs?: number; negativeTtlMs?: number; timeoutMs?: number; logger?: Logger },
 ): Promise<string[]> {
   if (!query || query.trim().length === 0) return [];
   if (!runner || typeof runner.run !== "function") return [];
   const ttlMs = opts?.ttlMs ?? QUERY_EXPANSION_DEFAULTS.ttlMs;
+  const negativeTtlMs = opts?.negativeTtlMs ?? QUERY_EXPANSION_NEGATIVE_TTL_DEFAULT;
   const timeoutMs = opts?.timeoutMs ?? QUERY_EXPANSION_DEFAULTS.timeoutMs;
   if (ttlMs > 0) {
     const hit = expansionCache.get(query);
     if (hit && Date.now() - hit.at < ttlMs) return hit.terms;
     if (hit) expansionCache.delete(query); // 过期
+  }
+  if (negativeTtlMs > 0) {
+    const failedAt = expansionFailureCache.get(query);
+    if (failedAt !== undefined && Date.now() - failedAt < negativeTtlMs) return []; // 负缓存短路
+    if (failedAt !== undefined) expansionFailureCache.delete(query); // 负缓存过期→放行重试
   }
   let raw: string;
   try {
@@ -132,18 +160,46 @@ export async function expandQuery(
     });
   } catch (err) {
     warnOnce(opts?.logger, `query expansion LLM call failed (non-fatal, no expansion): ${err instanceof Error ? err.message : String(err)}`);
+    if (negativeTtlMs > 0) {
+      expansionFailureCache.set(query, Date.now());
+      evictOldestFifo(expansionFailureCache, EXPANSION_CACHE_MAX);
+    }
     return [];
   }
   const terms = parseExpansion(raw, { maxTerms: opts?.maxTerms, original: query });
-  if (terms.length === 0) return [];
+  if (negativeTtlMs > 0) expansionFailureCache.delete(query); // 成功即清负缓存（防 ttl<negativeTtl 的病态配置下旧失败条目误短路）
   if (ttlMs > 0) {
     expansionCache.set(query, { terms, at: Date.now() });
-    if (expansionCache.size > EXPANSION_CACHE_MAX) {
-      const oldest = expansionCache.keys().next().value;
-      if (oldest !== undefined) expansionCache.delete(oldest);
-    }
+    evictOldestFifo(expansionCache, EXPANSION_CACHE_MAX);
   }
   return terms;
+}
+
+/**
+ * 热路径超时帽 race（2026-10-19）：capMs<=0 或非有限值 → 直通 await（旧行为，调用方
+ * 全额等待）；否则与 capMs 定时器竞速——超时返回 fallback，原 promise 继续在后台完成
+ * 并自行落 TTL/负缓存（下轮同 query 即时命中或短路，本轮 recall 不被慢 LLM 拖过预算）。
+ * 迟到 rejection 由后台 catch 吸收（race 已决后不得成为 unhandledRejection）；
+ * promise 先落定时经 Promise.race 正常透传（成功值/异常原样）。timer unref 不阻进程退出
+ * （rerank/local.ts:178 同款）。
+ */
+export async function raceWithTimeoutCap<T>(
+  promise: Promise<T>,
+  capMs: number,
+  fallback: T,
+): Promise<T> {
+  if (!Number.isFinite(capMs) || capMs <= 0) return promise;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), capMs);
+    timer?.unref?.();
+  });
+  promise.catch(() => undefined);
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 let expansionWarned = false;

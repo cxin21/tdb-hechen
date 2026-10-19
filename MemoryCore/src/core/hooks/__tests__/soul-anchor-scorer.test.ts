@@ -42,8 +42,8 @@ describe("#42 scoreAnchorRows（锚向量缓存）", () => {
     const q = new Float32Array([1, 0]);
     const first = await scoreAnchorRows(rows, q, embed);
     expect(first).toEqual([
-      { row: "r1", score: expect.any(Number) },
-      { row: "r2", score: expect.any(Number) },
+      { row: "r1", score: expect.any(Number), vec: expect.any(Float32Array) },
+      { row: "r2", score: expect.any(Number), vec: expect.any(Float32Array) },
     ]);
     expect(embed).toHaveBeenCalledTimes(2);
     const second = await scoreAnchorRows(rows, q, embed);

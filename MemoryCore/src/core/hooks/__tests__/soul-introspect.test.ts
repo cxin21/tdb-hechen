@@ -172,7 +172,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
     );
     const d1 = (withMood.payload as { data: { rendered: string } }).data;
     expect(d1.rendered).toContain("近期基调：");
-    expect(d1.rendered).toContain("近 5 条经历的情感聚合");
+    expect(d1.rendered).toContain("近期基调：偏承压。"); // 质量轮 2026-10-19：实现细节括号退役
 
     const noMood = await handleSoulIntrospectCore(
       { teamId: "ti", userId: "u1", agentId: "a1" },

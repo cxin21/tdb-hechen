@@ -226,6 +226,13 @@ export interface RecallConfig {
     maxTerms: number;
     ttlMs: number;
     timeoutMs: number;
+    /** 2026-10-19 热路径改造：hybrid-fallback 路扩展词等待帽（ms，0=旧行为全额等待）。
+     *  LLM RTT 实测 2.2-2.4s > 热路预算；帽内未返回→本请求零扩展照常检索，
+     *  promise 后台完成落 TTL 缓存（下轮同 query 即时命中）。缺省 1500。 */
+    hotPathTimeoutMs: number;
+    /** 扩展失败负缓存 TTL（ms，0=关）：LLM 故障/超时后短周期内直接短路 []，
+     *  不逐请求重付 RTT。缺省 30000。 */
+    negativeTtlMs: number;
   };
   /**
    * V2-3（引擎三 E3.1）：探索位——最终排序后、截断前，结构命中且 recall_count < 池内
@@ -495,15 +502,26 @@ export interface MemoryCoreMemoryConfig {
      *  （缺省 999=现状全注入）。scorer=相似度打分器 config 门（D9：确定性 cosine、shadow-first）：
      *  enabled 缺省 false=shadow 只报告不裁剪（渲染逐位现状）；true=转正（threshold 硬门+top-K
      *  重排渲染行）；threshold clamp 0..1 缺省 0（=不设语义硬门：0 只滤除负相关锚行，仅 top-K
-     *  生效；>0 才是硬门）。embedder/queryEmbedding 运行时注入，不入 config。 */
-    anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number }; shadowSink: { enabled: boolean; file: string } };
+     *  生效；>0 才是硬门）。mmrLambda=MMR 多样性 λ（灵魂注入质量轮 2026-10-19：λ<1 时对
+     *  发生裁剪的池贪心去扎堆，val=λ·rel−(1−λ)·maxSim；clamp 0..1 缺省 0.7；λ≥1 退化纯 top-K）。
+     *  embedBudgetMs=锚 desc 预嵌软预算 ms（灵魂注入质量轮 2026-10-19：E2E 实证冷进程 20 锚
+     *  并行 embed 仍 ~3s 顶穿 5000ms v3 召回预算；超预算→scorer 回退声明序+降级渲染不入缓存，
+     *  in-flight embed 后台落缓存下一请求即完整渲染。缺省 1200；0=关（无预算，旧行为）。
+     *  embedder/queryEmbedding 运行时注入，不入 config。 */
+    anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number; mmrLambda: number; embedBudgetMs: number }; shadowSink: { enabled: boolean; file: string } };
     /** soul 去重门（soul-dedupe，2026-10-19）：strictRuleDedup=红线段近重复行收敛
      *  （exact / Jaccard≥阈值 / containment；阈值 clamp 0..1 缺省 0.45，与 soul-dedupe.ts
      *  DEFAULT_RULE_JACCARD_THRESHOLD 标定一致）；anchorDedup=价值锚近重复对收敛
      *  （label 全同或双向包含且短侧≥2 字）。enabled 缺省 false=逐位现状（不去重）；
-     *  开启属布局级渲染变更（遵循批次纪律：不翻 soulVersion；dropped 走 debug 日志可审计）。 */
-    strictRuleDedup: { enabled: boolean; jaccardThreshold: number };
-    anchorDedup: { enabled: boolean };
+     *  开启属布局级渲染变更（遵循批次纪律：不翻 soulVersion；dropped 走 debug 日志可审计）。
+     *  strictRuleDedup.maxLines=红线段行数上限（0=关缺省，1..50）：去重后从头部保留 N 条
+     *  （slots 声明序=重要性序），生产红线墙治理（10 条占 60% 字数）；
+     *  suppressAnchorOverlap=true：价值锚 desc 与红线行近重复时锚行让位（红线是硬约束
+     *  优先级更高，软取向原则不重复占注入字数）。
+     *  anchorDedup.embeddingThreshold（0..1，缺省 0=关）：label 包含对之外的 embedding
+     *  语义近重复去重（desc cosine≥阈值保留首现代表锚；生产「取证」六锚同质扎堆治理）。 */
+    strictRuleDedup: { enabled: boolean; jaccardThreshold: number; maxLines: number; suppressAnchorOverlap: boolean };
+    anchorDedup: { enabled: boolean; embeddingThreshold: number };
     /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
      *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
     introspect: { snapshotLimit: number; evidenceWindowHours: number };
@@ -1333,9 +1351,13 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
               | undefined;
             const en = s?.["enabled"];
             const th = s?.["threshold"];
+            const ml = s?.["mmrLambda"];
+            const eb = s?.["embedBudgetMs"];
             return {
               enabled: en === undefined ? false : en === true,
               threshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0,
+              mmrLambda: typeof ml === "number" && Number.isFinite(ml) ? Math.max(0, Math.min(ml, 1)) : 0.7,
+              embedBudgetMs: typeof eb === "number" && Number.isFinite(eb) ? Math.max(0, Math.floor(eb)) : 1200,
             };
           })(),
           // T4（方案 Task 4，2026-10-17）：shadow 定标落盘门——缺省关（零写盘零采集）；
@@ -1353,19 +1375,30 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           })(),
         },
         // soul 去重门（soul-dedupe，2026-10-19）：enabled 缺省 false=逐位现状；
-        // jaccardThreshold clamp 0..1 缺省 0.45（soul-dedupe.ts 标定值）；形状错一律
-        // 回退缺省（宁缺毋滥，沿 anchorSelect.scorer 解析先例）。
+        // jaccardThreshold clamp 0..1 缺省 0.45（soul-dedupe.ts 标定值）；
+        // maxLines clamp 0..50 缺省 0=关（红线段行数上限，生产红线墙治理）；
+        // suppressAnchorOverlap 缺省 false（价值锚 desc vs 红线行跨段抑制）；
+        // anchorDedup.embeddingThreshold clamp 0..1 缺省 0=关（embedding 语义近重复去重）。
+        // 形状错一律回退缺省（宁缺毋滥，沿 anchorSelect.scorer 解析先例）。
         strictRuleDedup: (() => {
           const s = (g as Record<string, unknown>)["strictRuleDedup"] as Record<string, unknown> | undefined;
           const th = s?.["jaccardThreshold"];
+          const ml = s?.["maxLines"];
           return {
             enabled: s?.["enabled"] === true,
             jaccardThreshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0.45,
+            maxLines: typeof ml === "number" && Number.isFinite(ml) ? Math.max(0, Math.min(Math.floor(ml), 50)) : 0,
+            suppressAnchorOverlap: s?.["suppressAnchorOverlap"] === true,
           };
         })(),
-        anchorDedup: {
-          enabled: ((g as Record<string, unknown>)["anchorDedup"] as Record<string, unknown> | undefined)?.["enabled"] === true,
-        },
+        anchorDedup: (() => {
+          const s = (g as Record<string, unknown>)["anchorDedup"] as Record<string, unknown> | undefined;
+          const th = s?.["embeddingThreshold"];
+          return {
+            enabled: s?.["enabled"] === true,
+            embeddingThreshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0,
+          };
+        })(),
         // #36（R5）：soul_introspect 自省面参数（只读；快照条数 1..200 缺省 20，证据窗 1..2160h 缺省 168）。
         introspect: {
           snapshotLimit: (() => {
@@ -1615,6 +1648,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       pprTopK: Math.floor(recallSignalBoost(recallGroup, "pprTopK", 10, 100)),
       pprIterations: Math.max(1, Math.floor(recallSignalBoost(recallGroup, "pprIterations", 30, 100))),
       // V2-2（引擎一 spec E1.1）：查询自动扩展（E1.1 默认 true / maxTerms 8 / ttl 10min / timeout 8s）
+      // 2026-10-19 热路径改造：hotPathTimeoutMs（hybrid-fallback 扩展等待帽，0=旧行为全额等待，
+      // 缺省 1500）+ negativeTtlMs（失败负缓存，0=关，缺省 30000）——journal 实证 expand
+      // 顶满 4s clamp 连环黑洞治理（LLM RTT 实测 2.2-2.4s 超热路预算）。
       queryExpansion: (() => {
         const qe = obj(recallGroup, "queryExpansion");
         return {
@@ -1622,6 +1658,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           maxTerms: Math.max(1, Math.floor(recallSignalBoost(qe, "maxTerms", 8, 32))),
           ttlMs: recallSignalBoost(qe, "ttlMs", 600_000),
           timeoutMs: Math.max(1000, recallSignalBoost(qe, "timeoutMs", 8000)),
+          hotPathTimeoutMs: Math.max(0, Math.floor(recallSignalBoost(qe, "hotPathTimeoutMs", 1500))),
+          negativeTtlMs: Math.max(0, Math.floor(recallSignalBoost(qe, "negativeTtlMs", 30_000))),
         };
       })(),
       // V2-3（引擎三 E3.1/E3.2）注意力平衡旋钮（默认开）+ RV2-2 精排重设计（相关度主导）

@@ -2687,7 +2687,7 @@ async function handleCoreMemoryValuesDiscover(_body: unknown, _auth: V2AuthConte
     }
     return { label: v.label, aliases };
   });
-  const candidates = dedupProposalsWithVariants(parseProposalsJson(String(raw ?? "")), existingVariants);
+  const candidates = dedupProposalsWithVariants(parseProposalsJson(String(raw ?? "")), existingVariants, { containmentGate: true });
   const proposals = candidates
     .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus, c.aliases) }))
     .filter((p) => p.evidenceCount >= DISCOVER_MIN_EVIDENCE)

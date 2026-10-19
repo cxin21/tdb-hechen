@@ -47,18 +47,19 @@ describe("M1-S3 mood 行渲染守卫", () => {
     expect(computeSoulVersion(SLOTS, ROWS)).toBe(computeSoulVersion(SLOTS, ROWS, undefined));
   });
 
-  it("渲染③：strained → 「近期基调：偏承压（近 20 条经历的情感聚合）」为 </soul-feeling> 前最后一行", async () => {
+  it("渲染③：strained → 「近期基调：偏承压。」为 </soul-feeling> 前最后一行（质量轮 2026-10-19：实现细节括号退役）", async () => {
     const out = await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g2"), undefined, { moodTier: { tier: "strained", sampleCount: 20 } });
-    expect(out).toContain("近期基调：偏承压（近 20 条经历的情感聚合）");
+    expect(out).toContain("近期基调：偏承压。");
+    expect(out).not.toContain("近期基调：偏承压（近 20 条经历的情感聚合）");
     expect(out).toMatch(/近期基调：[^\n]+\n<\/soul-feeling>/);
     expect(out).not.toContain("我感到");
   });
 
   it("渲染④：positive→偏积极 / neutral→平稳 映射", async () => {
     const pos = await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g4"), undefined, { moodTier: { tier: "positive", sampleCount: 7 } });
-    expect(pos).toContain("近期基调：偏积极（近 7 条经历的情感聚合）");
+    expect(pos).toContain("近期基调：偏积极。");
     const neu = await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g5"), undefined, { moodTier: { tier: "neutral", sampleCount: 5 } });
-    expect(neu).toContain("近期基调：平稳（近 5 条经历的情感聚合）");
+    expect(neu).toContain("近期基调：平稳。");
   });
 
   it("指纹⑤：传 moodTier（档位）→ 指纹变化；同档位不同样本数 → 指纹不变（三值化控 KV 抖动）", async () => {
@@ -75,7 +76,7 @@ describe("M1-S3 mood 行渲染守卫", () => {
   it("渲染⑥：仅 mood（无方向锚）→ soul-feeling 块仍在场且只含基调行（宁缺毋滥不造空段）", async () => {
     const out = await buildSoulPrefix(makeStore([row({ value_id: "vz", label: "中锚", valence: 0 })], SLOTS), mkTenant("g9"), undefined, { moodTier: { tier: "neutral", sampleCount: 9 } });
     expect(out).toContain("## 当下的状态");
-    expect(out).toContain("近期基调：平稳（近 9 条经历的情感聚合）");
+    expect(out).toContain("近期基调：平稳。");
     expect(out).not.toContain("驱动我行动的价值");
     expect(out).not.toContain("提醒我审慎的价值");
   });

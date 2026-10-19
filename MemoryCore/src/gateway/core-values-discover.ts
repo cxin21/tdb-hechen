@@ -196,14 +196,22 @@ function nameJaccard(a: string, b: string): number {
 }
 
 /**
- * #18 T11：theme 集合级去重（比对域 = label + aliases 全变体，两段判定）：
+ * #18 T11：theme 集合级去重（比对域 = label + aliases 全变体，三段判定）：
  *  ① 精确：候选名集 ∩ 既有名集（含批内先到者）非空 → 重复；
  *  ② 相似：无精确命中时，任一候选名 × 任一既有名字符 bigram Jaccard ≥ PROPOSAL_DUP_THRESHOLD
  *     （0.75，宁漏勿错杀标定沿用——「数据完整」vs「{数据安全,防丢数据}」J=0.2 不拦，
- *     「数据安全」vs「数据安全性」J=0.75 拦）。
+ *     「数据安全」vs「数据安全性」J=0.75 拦）；
+ *  ③ 包含（灵魂注入质量轮 2026-10-19 新增，isSimilarLabel 规则2同款语义，threshold=1
+ *     关闭其 bigram 通道避免越权放宽 ②）：归一化后一方包含另一方 → 重复——「取证」⊂
+ *     「取证先行」类生产实锚碎片对 J 仅 0.33，②拦不住；嵌入侧实测（22 锚 pairwise
+ *     top=0.669）证明本模型无语义分离阈值，字面包含是零误杀硬信号。比对域含既有锚
+ *     （existingVariants），故同时拦截「提案撞既有锚」与「批内互撞」两个方向。
+ *     ⚠️ opt-in（opts.containmentGate，缺省关）：anchor-growth 采纳前相似门（G-SIMMERGE）
+ *     依赖本函数放行包含对——「根因」⊂「根因优先」在门关时照常新建、门开时增量合并，
+ *     都是该路由的合同行为；只有 discover 提案路由（v2-router values/discover）开启 ③。
  * 旧签名 dedupProposals 保留兼容（existingLabels → 空别名变体）。
  */
-export function dedupProposalsWithVariants(candidates: RawProposal[], existingVariants: ReadonlyArray<ThemeNameVariants>): RawProposal[] {
+export function dedupProposalsWithVariants(candidates: RawProposal[], existingVariants: ReadonlyArray<ThemeNameVariants>, opts?: { containmentGate?: boolean }): RawProposal[] {
   const out: RawProposal[] = [];
   const pool: ThemeNameVariants[] = existingVariants.map((v) => ({ label: v.label, aliases: [...(v.aliases ?? [])] }));
   for (const c of candidates) {
@@ -214,6 +222,7 @@ export function dedupProposalsWithVariants(candidates: RawProposal[], existingVa
       const eNames = nameSet(e);
       if (eNames.some((n) => names.includes(n))) { dup = true; break; }          // ① 精确
       if (names.some((a) => eNames.some((b) => nameJaccard(a, b) >= PROPOSAL_DUP_THRESHOLD))) { dup = true; break; } // ② 相似
+      if (opts?.containmentGate === true && names.some((a) => eNames.some((b) => isSimilarLabel(a, b, 1)))) { dup = true; break; } // ③ 包含（opt-in）
     }
     if (dup) continue;
     out.push(c);

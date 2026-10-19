@@ -84,7 +84,7 @@ describe("S1 三门范式迁移：identity 价值锚行（与感受段同门管�
     expect(bare).not.toContain("<soul-feeling>");
     const withMood = await buildSoulPrefix(makeStore(rows, SLOTS), mkTenant("g4b"), undefined, { moodTier: { tier: "neutral", sampleCount: 3 } });
     expect(withMood).toContain("## 当下的状态");
-    expect(withMood).toContain("近期基调：平稳（近 3 条经历的情感聚合）");
+    expect(withMood).toContain("近期基调：平稳。"); // 质量轮 2026-10-19：实现细节括号退役
     expect(withMood).not.toContain("驱动我行动的价值");
     expect(withMood).not.toContain("提醒我审慎的价值");
   });

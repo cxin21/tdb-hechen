@@ -62,6 +62,7 @@ import { handleRerankRoute } from "./rerank-endpoint.js";
 import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
 import { computeMoodTierFromStore, type MoodLineConfig } from "../core/hooks/mood-line.js";
 import { createReranker } from "../core/recall/rerank/factory.js";
+import type { RecallRerankConfig } from "../config.js";
 import type { MemoryReranker } from "../core/recall/rerank/types.js";
 import type { V2RouterDeps } from "./v2-router.js";
 import { handleV3MetaRoute, V3_PREFIX } from "../metadata/router/v3-meta-router.js";
@@ -802,6 +803,31 @@ export class TdaiGateway {
 
     // ── T15-B：启动 embedding 探活（embed-only，不写哨兵行；5min 周期 + 启动即探一次）──
     this.startEmbeddingProbe();
+    // ── 灵魂注入性能轮（2026-10-19）：local rerank 进程内启动预热 ──
+    this.startRerankWarmup();
+  }
+
+  // 灵魂注入性能轮（2026-10-19）：local rerank 进程内启动预热。
+  // 痛点（E2E 实测）：provider=local 的模型 worker 加载 3-5s 发生在本进程首次 rerank
+  // 调用——core 重启后首个 /v3/recall 直撞 5000ms 预算 504（第二次起恢复 ~1s）。
+  // #64 的 offline warmup 脚本只热「模型文件+独立进程实例」，救不了「新进程首召回」。
+  // 本预热走与 recall 同一进程级单例池（getSharedLocalReranker keyed by modelDir）：
+  // 启动即 fire-and-forget 一次 dummy 推理，把 worker 加载成本移出首召回关键路径。
+  // 非致命合同：配置关/工厂 null 静默跳过；失败仅 warn（recall 侧已有完整降级链）。
+  private startRerankWarmup(): void {
+    const rc = (this.config.memory as { recall?: { rerank?: RecallRerankConfig } } | undefined)?.recall?.rerank;
+    if (!rc?.enabled || rc.provider !== "local") return;
+    const t0 = Date.now();
+    void (async () => {
+      try {
+        const reranker = createReranker(rc, { dataDir: this.config.data.baseDir });
+        if (!reranker) return;
+        const scores = await reranker.rerank("[warmup] 部署后首次召回预热", ["预热文档：本地精排模型加载与首次推理。"]);
+        this.logger.info(`[rerank] startup warmup done in ${Date.now() - t0}ms (scores=${scores?.length ?? 0})`);
+      } catch (err) {
+        this.logger.warn?.(`[rerank] startup warmup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
   }
 
   // ============================
@@ -1097,9 +1123,15 @@ export class TdaiGateway {
               perTurnSlots?: boolean;
               /** T3（T6-F1 接线）：承诺块渲染门（缺省 false=逐位现状）。 */
               promises?: { enabled?: boolean };
-              /** soul 去重门（soul-dedupe，2026-10-19）：与 auto-recall 同源 soulRender 配置镜像。 */
-              strictRuleDedup?: { enabled?: boolean; jaccardThreshold?: number };
-              anchorDedup?: { enabled?: boolean };
+              /** soul 去重门（soul-dedupe，2026-10-19；质量轮扩 maxLines/suppressAnchorOverlap/
+               *  embeddingThreshold）：与 auto-recall 同源 soulRender 配置镜像。 */
+              strictRuleDedup?: {
+                enabled?: boolean;
+                jaccardThreshold?: number;
+                maxLines?: number;
+                suppressAnchorOverlap?: boolean;
+              };
+              anchorDedup?: { enabled?: boolean; embeddingThreshold?: number };
               introspect?: { snapshotLimit?: number; evidenceWindowHours?: number };
             };
           };
