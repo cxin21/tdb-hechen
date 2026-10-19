@@ -114,6 +114,8 @@ export async function handleSessionInit(
   userKey?: string,
   spaceId?: string,
   presetIdentity?: PresetIdentity,
+  /** dsh PTC 预检路径：mismatch 时绝不弹表单，安全降级为 bypass 登记（仅该路径传 true）。 */
+  presetMismatchBypass?: boolean,
 ): Promise<SessionInitResult> {
   if (agentSource === "claude-code") {
     return ccHandle(
@@ -146,6 +148,7 @@ export async function handleSessionInit(
     spaceId,
     presetIdentity,
     agentSource,
+    presetMismatchBypass,
   );
 
   // WorkBuddy 客户端复用 CB 状态机（uninitialized → pending_team → pending_agent_task

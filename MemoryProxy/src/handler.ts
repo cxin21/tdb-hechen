@@ -831,6 +831,44 @@ export async function handleChatCompletions(
     console.log(`[request-classify] session=${sessionKey} agent=dsh empty-tools subagent (spawn one-shot) → bypass session-init/mem/injection`);
   }
 
+  // ── dsh PTC 会话身份预检（捕获中断修复）─────────────────────────────────────
+  // PTC（code-mode）会话 tools 只含 run_code、无 ask_user_question → _dshHeadless
+  // 会把会话短路在 session-init 之外 → 无身份 → L0/skill 提取全零写入。
+  // 修复：key→userId 后读用户级 session_init 默认值（manual_select=0 +
+  // default_associate=1 + default_team_id + default_agent_id），四者配齐且 kernel
+  // 校验通过 → 合成 presetIdentity 放行进既有头驱动登记路径（cbHandle
+  // presetIdentity → completeRegistration，零表单、零新状态机）。
+  // 任何不满足 → null → 维持现状 headless bypass（零行为变化）。
+  // 红线：绝不给 PTC 会话弹表单（fake form tool_call 会被 dsh agent-loop 抛错）。
+  let _dshPtcPresetIdentity: import("./session/preset.js").PresetIdentity | null = null;
+  if (
+    _dshHeadless &&
+    !_oneShotSubagent &&
+    config.sessionInit?.enabled &&
+    sessionKey &&
+    !isAuxiliary &&
+    userId &&
+    config.sessionInit.headerAutoSelect?.enabled !== false
+  ) {
+    try {
+      const { resolveDshPtcPresetIdentity } = await import("./session/dsh-ptc-preset.js");
+      const { getMetadataClient } = await import("./meta/client.js");
+      const kernelUserKeyPtc = apiKey || config.tdai?.apiKey || "";
+      const metadataClientPtc = getMetadataClient(config.coreSkill, spaceId, kernelUserKeyPtc);
+      _dshPtcPresetIdentity = await resolveDshPtcPresetIdentity(metadataClientPtc, userId);
+    } catch {
+      // 预检失败（kernel 不可用等）→ 维持现状 bypass。
+      _dshPtcPresetIdentity = null;
+    }
+    if (_dshPtcPresetIdentity) {
+      console.log(`[request-classify] session=${sessionKey} agent=dsh ptc-preset (user session_init defaults) → identity team=${_dshPtcPresetIdentity.teamId} agent=${_dshPtcPresetIdentity.agentId} → session-init via preset path`);
+    }
+  }
+  // 预检放行的会话不再是「有效 headless」：L0 写入 / skill 提取 / ctx 标志全部按
+  // 正常登记会话处理（tools 判定降级为预检失败后的兜底分类）。
+  const _dshHeadlessEffective = _dshHeadless && !_dshPtcPresetIdentity;
+
+
   // ── mem:session-reset pre-hook ──
   // hermes / openclaw 走 header 预选身份, dsh headless 无 ask_user_question tool —
   // 三者都没有交互式 form UI 可以弹,reset 后 session 会永远卡在 pending_asset_confirm。
@@ -925,13 +963,13 @@ export async function handleChatCompletions(
   let injectedSkipped = !sessionKey || isAuxiliary;
   let sessionJustRegistered = false;
   let _resetFlowResult: { agentName: string; agentIdShort: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
-  console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
+  console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} ptcPreset=${!!_dshPtcPresetIdentity} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
   // C4-dsh（用户 2026-09-15）：子 agent（一次性无头会话）跳过 session-init——
   // 历史阻塞（skip → sessionInfo 空 → 空注入 tool_call → unknown tool）已被
   // injectedSkipped 的 _dshHeadless bypass 消除（本函数上方，无头请求永不注入），
   // 现在跳过 init 是安全的：无头会话直接放行，不弹表单、不注册资产。
   // V12-PROVIDER: session-init gate widened (conversationId -> sessionKey)
-  if (config.sessionInit?.enabled && sessionKey && !isAuxiliary && !_dshHeadless && !_oneShotSubagent && !_emptyToolsSubagent) {
+  if (config.sessionInit?.enabled && sessionKey && !isAuxiliary && !_dshHeadlessEffective && !_oneShotSubagent && !_emptyToolsSubagent) {
     try {
       const { getSessionStore, handleSessionInit, parsePresetIdentity } = await import("./session/index.js");
       const { getMetadataClient } = await import("./meta/client.js");
@@ -948,7 +986,8 @@ export async function handleChatCompletions(
       // 与 workbuddyHandler.ts 里的 kernelUserKey 逻辑对齐（那里也是客户端优先）。
       const kernelUserKey = apiKey || config.tdai?.apiKey || "";
       const metadataClient = getMetadataClient(config.coreSkill, spaceId, kernelUserKey);
-      const presetIdentity = parsePresetIdentity(config.sessionInit, lcHeaders);
+      // dsh PTC 预检身份优先（来自用户 session_init 默认值）；无预检时回落头驱动。
+      const presetIdentity = _dshPtcPresetIdentity ?? parsePresetIdentity(config.sessionInit, lcHeaders);
 
       // ── Session Recovery: try L2b binding before falling into session-init form ──
       const compositeKey = `${agentSource}:${sessionKey}`;
@@ -1044,6 +1083,7 @@ export async function handleChatCompletions(
           kernelUserKey,
           spaceId,
           presetIdentity,
+          !!_dshPtcPresetIdentity,
         );
       }
 
@@ -1763,7 +1803,7 @@ export async function handleChatCompletions(
       sessionKeyForSkill: sessionKey,
       agentSource,
       isAuxiliary,
-      isDshHeadless: _dshHeadless,
+      isDshHeadless: _dshHeadlessEffective,
       sessionInfo,
       lf,
       spaceId,

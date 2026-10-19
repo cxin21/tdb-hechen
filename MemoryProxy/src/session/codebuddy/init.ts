@@ -553,13 +553,14 @@ export async function handleSessionInit(
   spaceId?: string,
   presetIdentity?: PresetIdentity,
   agentSource: string = "codebuddy",
+  presetMismatchBypass?: boolean,
 ): Promise<SessionInitResult> {
   const compositeKey = `${agentSource}:${sessionKey}`;
   const prevStatus = store.get(compositeKey)?.status ?? "uninitialized";
   try {
     const result = await handleSessionInitInner(
       sessionKey, userId, messages, config, store, reqCtx,
-      metadataClient, userKey, spaceId, presetIdentity, agentSource,
+      metadataClient, userKey, spaceId, presetIdentity, agentSource, presetMismatchBypass,
     );
     // codex-only 后置增强：把最新 state 里的 codexPageIndex 塞进 formData,
     // 让 codexHandler 的 buildCodexFormResponse 拿到正确的翻页页码。这样
@@ -594,6 +595,7 @@ async function handleSessionInitInner(
   spaceId?: string,
   presetIdentity?: PresetIdentity,
   agentSource: string = "codebuddy",
+  presetMismatchBypass?: boolean,
 ): Promise<SessionInitResult> {
   const compositeKey = `${agentSource}:${sessionKey}`;
   if (sessionKey === "unknown" || !sessionKey) return { intercepted: false };
@@ -836,6 +838,27 @@ async function handleSessionInitInner(
     // ── Header-driven pre-selection: skip forms when identity is provided ──
     if (presetIdentity && config.headerAutoSelect?.enabled) {
       const pr = resolvePresetIdentity(teams, presetIdentity);
+
+      // dsh PTC 预检路径：预检（handler 阶段）已确认 canRegister，此处失败只可能
+      // 因两次 kernel 调用之间 teams 变化。该路径绝不允许弹表单（fake form
+      // tool_call 会被 dsh agent-loop 校验为 unknown tool 直接抛错）→ 安全降级为
+      // bypass 登记，与 headerAutoSelect.onMismatch 语义解耦。
+      if (!pr.canRegister && presetMismatchBypass) {
+        console.warn(`[session-init:cb] session=${compositeKey} ptc-preset no longer resolvable (mismatch after pre-check) → bypass`);
+        await store.set(compositeKey, {
+          status: "initialized",
+          keyId: sessionKey,
+          startedAt: Date.now(),
+          attemptCount: 0,
+          userId,
+          cachedTeams: teams,
+          sessionInfo: null,
+          agentDetail: null,
+          taskDetail: null,
+          bypassed: true,
+        } as SessionInitState);
+        return { intercepted: false, bypassed: true, justRegistered: true, resetFlow: state?.resetFlow ?? false };
+      }
 
       if (pr.hadMismatch) {
         if (config.headerAutoSelect.onMismatch === "bypass") {
