@@ -1374,8 +1374,10 @@ export async function handleChatCompletions(
     }
   }
 
-  // aux 请求(compaction/title)/ dsh headless(无 UI 无 preset)不写 L0 —— 直接透传
-  const tdaiClient = isAuxiliary || _dshHeadless || assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
+  // aux 请求(compaction/title)/dsh 有效 headless(无 UI 且 PTC 预检未放行)不写 L0 —— 直接透传。
+  // 用 _dshHeadlessEffective 而非原值 _dshHeadless：PTC preset 放行的会话按正常登记会话处理
+  // （L0 写入生效），见上方 :858 注释合同与 #72 复盘（2026-10-20 补全漏改点）。
+  const tdaiClient = isAuxiliary || _dshHeadlessEffective || assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
   const tdaiIdentity = injectedSkipped
     ? null
     : deriveTdaiIdentity({
@@ -2012,8 +2014,8 @@ export async function handleChatCompletions(
 
   // Skill extract trigger — count tool calls + buffer conversation.
   // 同步 await：直到 store 落盘再继续，保证下一轮跨节点读到最新数据。
-  // aux 请求(compaction/title)/dsh headless 不触发 skill 提取 —— 保持归档 buffer 语义纯净
-  if (!isAuxiliary && !_dshHeadless && isExtractionAllowed(config, "skill")) {
+  // aux 请求(compaction/title)/dsh 有效 headless 不触发 skill 提取（PTC preset 放行会话按正常会话处理）
+  if (!isAuxiliary && !_dshHeadlessEffective && isExtractionAllowed(config, "skill")) {
     await triggerSkillExtractIfReady({
       config,
       sessionKey,
@@ -2024,7 +2026,7 @@ export async function handleChatCompletions(
       protocol: "openai",
       assetCapabilities,
     });
-  } else if (!isAuxiliary && !_dshHeadless) {
+  } else if (!isAuxiliary && !_dshHeadlessEffective) {
     logExtractionSkipped(config, "skill", sessionKey);
   }
 
