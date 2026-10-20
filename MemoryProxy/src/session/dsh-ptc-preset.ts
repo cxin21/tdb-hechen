@@ -48,12 +48,13 @@ export async function resolveDshPtcPresetIdentity(
   deps: DshPtcPresetDeps,
   userId: string,
 ): Promise<PresetIdentity | null> {
-  if (!userId) return null;
+  if (!userId) { console.warn("[dsh-ptc-preset] reject: empty userId"); return null; }
 
   let userCfg: Record<string, string>;
   try {
     userCfg = await deps.getUserSessionConfig(userId, SESSION_INIT_MODULE);
-  } catch {
+  } catch (err) {
+    console.warn("[dsh-ptc-preset] reject: getUserSessionConfig failed:", err instanceof Error ? err.message : String(err));
     // kernel 不可用 → 预检失败 → 维持现状 bypass（零行为变化）。
     return null;
   }
@@ -61,28 +62,36 @@ export async function resolveDshPtcPresetIdentity(
   const decision = resolveUserSessionInitPreset(userCfg);
   if (decision.kind !== "preset") {
     // ask（未配置/需要手动选/缺 team）或 bypass（default_associate=0）→ 不放行。
+    console.warn(`[dsh-ptc-preset] reject: user session_init decision not preset (kind=${decision.kind})`);
     return null;
   }
 
   let teams: { team_id: string }[];
   try {
     teams = await deps.listTeams(userId);
-  } catch {
+  } catch (err) {
+    console.warn("[dsh-ptc-preset] reject: listTeams failed:", err instanceof Error ? err.message : String(err));
     return null;
   }
-  // team 必须真实存在于该用户可见 teams[]（不信任配置里的裸值，同 headerAutoSelect）。
-  if (!teams.some((t) => t.team_id === decision.teamId)) return null;
+  if (!teams.some((t) => t.team_id === decision.teamId)) {
+    console.warn("[dsh-ptc-preset] reject: team not in user-visible teams (configured=" + decision.teamId + ", visible=" + teams.map((t) => t.team_id).join(",") + ")");
+    return null;
+  }
 
   let agents: { agent_id: string; team_id?: string }[];
   try {
     agents = await deps.listAgents(decision.teamId, userId);
-  } catch {
+  } catch (err) {
+    console.warn("[dsh-ptc-preset] reject: listAgents failed:", err instanceof Error ? err.message : String(err));
     return null;
   }
   // agent 必须挂在该 team 下（resolvePresetIdentity 的等价语义：在指定 team
   // 的 agents 列表里能找到该 agent_id）。
   const hit = agents.find((a) => a.agent_id === decision.agentId);
-  if (!hit) return null;
+  if (!hit) {
+    console.warn(`[dsh-ptc-preset] reject: agent not in team (agentId=${decision.agentId}, teamId=${decision.teamId}, visible=${agents.length})`);
+    return null;
+  }
 
   return { teamId: decision.teamId, agentId: decision.agentId };
 }

@@ -47,6 +47,7 @@ import { extractLatestUserMessage, extractLatestDshUserMessage, recordTdaiTurn }
 import { trackWrite, withL0Retry } from "./tdai/pending-writes.js";
 import type { TdaiIdentity, TdaiMessage } from "./tdai/types.js";
 import { triggerSkillExtractIfReady } from "./skill/handler-glue.js";
+import { isOneShotSubagentMessages } from "./session/one-shot-detect.js";
 import { emitModelIntentTelemetry } from "./session/model-intent-telemetry.js";
 import { isExtractionAllowed, logExtractionSkipped } from "./extraction-gate.js";
 import {
@@ -799,21 +800,9 @@ export async function handleChatCompletions(
   // 也自动挂 ask_user_question（工具声明存在但运行时无处理器），tools 启发式失效
   // （声明≠可执行）。改用显式 prompt 标记：插件在子 agent 系统提示词里加
   // [[one-shot-subagent]]，proxy 据此跳过 session-init 与全部注入。
-  const _oneShotSubagent = agentSource === "dsh" && (() => {
-    try {
-      const msgs = (body as { messages?: Array<{ content?: unknown }> }).messages ?? [];
-      for (const m of msgs) {
-        const c = m.content;
-        const text = typeof c === "string"
-          ? c
-          : Array.isArray(c)
-            ? c.map((p) => (p as { text?: string })?.text ?? "").join("\n")
-            : "";
-        if (text.includes("[[one-shot-subagent]]")) return true;
-      }
-    } catch { /* non-fatal */ }
-    return false;
-  })();
+  // 2026-10-20 收窄：标记只在 spawn 子代理的 system prompt；全量扫描曾把主会话历史
+  // 里的字面量引用（工具结果/代码/摘要）误判为子代理 → PTC 预检被永久跳过（#72 复盘）。
+  const _oneShotSubagent = agentSource === "dsh" && isOneShotSubagentMessages((body as { messages?: unknown }).messages);
   if (_oneShotSubagent) {
     console.log(`[request-classify] session=${sessionKey} agent=dsh one-shot-subagent (prompt marker) → bypass session-init/mem/injection`);
   }
@@ -850,13 +839,15 @@ export async function handleChatCompletions(
     userId &&
     config.sessionInit.headerAutoSelect?.enabled !== false
   ) {
+    console.log("[dsh-ptc-preset] precheck entered, resolving identity for userId=" + userId);
     try {
       const { resolveDshPtcPresetIdentity } = await import("./session/dsh-ptc-preset.js");
       const { getMetadataClient } = await import("./meta/client.js");
       const kernelUserKeyPtc = apiKey || config.tdai?.apiKey || "";
       const metadataClientPtc = getMetadataClient(config.coreSkill, spaceId, kernelUserKeyPtc);
       _dshPtcPresetIdentity = await resolveDshPtcPresetIdentity(metadataClientPtc, userId);
-    } catch {
+    } catch (e) {
+      console.error("[dsh-ptc-preset] precheck threw:", e instanceof Error ? (e.stack || e.message) : String(e));
       // 预检失败（kernel 不可用等）→ 维持现状 bypass。
       _dshPtcPresetIdentity = null;
     }
