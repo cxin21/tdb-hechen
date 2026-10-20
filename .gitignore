@@ -178,3 +178,9 @@ MemoryCore/data/
 MemoryPanel/web/.buildtmp/
 MemoryPanel/web/.esbuild-tmp/
 MemoryPanel/web/.npmrc
+
+# ── 追加（2026-10-20 #73）：既有 runs/ 排除模式少一层通配，嵌套数据集目录（recall-precision-2026-10-20/runs/）未被匹配致 runs 归档险些入库——补 ** 形态 ──
+docs/superpowers/evals/**/runs/
+
+# ── 追加（2026-10-20 召回精度 #74 门禁轮）：本地门禁日志与临时 SQLite，防误 git add ──
+.tmp-gate/
