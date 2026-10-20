@@ -314,6 +314,19 @@ export interface RecallConfig {
     rerankGate?: { mode: "off" | "shadow" | "enforce"; minScore?: number };
   };
   /**
+   * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子——
+   * compositeScore timeProx 因子 × 0.5^(ageDays/halfLifeDays)（MemOS 对标 30d 半衰期；
+   * 永不归零 floor 0.05 = never-a-filter：陈旧只降权绝不埋没，不构成绝对门槛）。
+   * 缺省 enabled=false = 逐位现状（config-first）；halfLifeDays 非有限/负 → 30。
+   */
+  ageDecay: { enabled: boolean; halfLifeDays: number };
+  /**
+   * Batch C C-b（#77 伴生）：timeProx 时间锚回退——occurredAt 缺失时以记录 createdAt
+   * 折算时近因子（治 work_fact 大面积空 occurred_at 期的时近信号全失）。缺省 false
+   * = 逐位现状（无实证不加成，R1 口径不变）。
+   */
+  timeProxFallbackEnabled: boolean;
+  /**
    * R71-C（2026-10-19）：fts-only 降级注入帽——向量路死（ftsHits>0 ∧ embeddingHits=0 ∧
    * strategy≠keyword）时注入块（结论+经验合计）从尾部裁到此帽内（结论前置=头部保留
    * 优先）。缺省 2（无结果兜底；0=off=逐位现状）。非降级路径零触碰。
@@ -1710,6 +1723,18 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // V2-3（引擎三 E3.1/E3.2）注意力平衡旋钮（默认开）+ RV2-2 精排重设计（相关度主导）
       exploreSlot: bool(recallGroup, "exploreSlot") ?? true,
       conclusionRelaxedForAnalytical: bool(recallGroup, "conclusionRelaxedForAnalytical") ?? true,
+      // Batch C C-b（#77 伴生 · survey F6b）：检索期重算衰减乘子（缺省关=逐位现状；
+      // halfLifeDays 非有限/负 → 30 缺省，正值 floor）
+      ageDecay: (() => {
+        const ad = obj(recallGroup, "ageDecay");
+        // ?? NaN：num() 返回 number|undefined 而 Number.isFinite 无 type predicate（TS18048/TS2345）；NaN → 30 缺省，行为不变
+        const hl = num(ad, "halfLifeDays") ?? NaN;
+        return {
+          enabled: bool(ad, "enabled") ?? false,
+          halfLifeDays: Number.isFinite(hl) && hl > 0 ? Math.floor(hl) : 30,
+        };
+      })(),
+      timeProxFallbackEnabled: bool(recallGroup, "timeProxFallbackEnabled") ?? false,
       // F-CLUSTER v2：召回折叠总开关（缺省 false = 现行为）。类型声明 config.ts:100
       // 自 09-26 存在，但逐键装载遗漏 → yaml true 装不进运行时（2026-09-30 实锤 fcVal=undefined）。
       foldClusterEnabled: bool(recallGroup, "foldClusterEnabled") ?? false,

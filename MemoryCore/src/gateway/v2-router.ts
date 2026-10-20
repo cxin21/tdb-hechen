@@ -1667,6 +1667,12 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     validityNow,
     // GROW-EVO P3 R10（§3.2）：情感显著度权重（cfg 透传——缺省 0 = 恒等）
     emotionSalienceWeight: (deps as { config?: { memory?: { recall?: { emotionSalienceWeight?: number } } } }).config?.memory?.recall?.emotionSalienceWeight,
+    // Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算衰减乘子/时间锚回退
+    //（cfg 透传——缺省关 = 逐位现状；只乘 timeProx 因子，floor 0.05 never-a-filter）
+    ageDecay: (deps as { config?: { memory?: { recall?: { ageDecay?: { enabled?: boolean; halfLifeDays?: number } } } } }).config?.memory?.recall?.ageDecay?.enabled === true
+      ? { halfLifeDays: (deps as { config?: { memory?: { recall?: { ageDecay?: { halfLifeDays?: number } } } } }).config!.memory!.recall!.ageDecay!.halfLifeDays ?? 30 }
+      : undefined,
+    timeProxFallbackEnabled: (deps as { config?: { memory?: { recall?: { timeProxFallbackEnabled?: boolean } } } }).config?.memory?.recall?.timeProxFallbackEnabled === true,
     // 重构式回忆（J 设计§3）：query 时间锚自动解析（今天/上周/N天前等→时间窗过滤；解析不出不过滤）
     // C1 + R-A1：coreRef 与排序层结构信号配置透传（缺省由 executeMemorySearch 内部
     // 回落 spec §2 默认值；价值锚由其内部从 store.listValues 租户读取——两路咽喉同生效）

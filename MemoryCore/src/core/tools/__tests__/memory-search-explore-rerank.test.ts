@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyCompositeRerank,
   applyExploreSlot,
+  compositeScoreOf,
   isStructuralChannel,
   DEFAULT_COMPOSITE_WEIGHTS,
   type CompositeFactors,
@@ -237,5 +238,35 @@ describe("V2-3 咽喉 executeMemorySearch：组合分精排 + 探索位", () => 
     const rows = [ftsRow("a", { score: 0.9 }), ftsRow("b", { score: 0.3, significance: 0.9, occurred_at: "2026-09-11T00:00:00Z" })];
     const res = await run({ rows }, { rerankWeights: { relevance: 0.7, timeProx: 0.15, significance: 0.1, coreRef: 0.05 } });
     expect(res.results.map((r) => r.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("Batch C C-b：compositeScoreOf ageDecay 乘子（检索期重算衰减，缺省=逐位现状）", () => {
+  const now = new Date("2026-09-11T00:00:00Z");
+  const f30d = { relevance: 1.0, occurredAt: "2026-08-12T00:00:00Z", significance: 0, coreRefCount: 0, isWorkFact: false };
+  const w = { relevance: 0, timeProx: 0.15, significance: 0, coreRef: 0 }; // 只看 timeProx 因子
+
+  it("ageDecay={halfLifeDays:30}：30 天前条目 timeProx 乘 0.5（0.5^(30/30)）", () => {
+    const base = compositeScoreOf(f30d, w, now, 1);
+    const decayed = compositeScoreOf(f30d, w, now, 1, { halfLifeDays: 30 });
+    expect(decayed).toBeCloseTo(base * 0.5, 6);
+    expect(decayed).toBeLessThan(base);
+  });
+
+  it("14 天半衰期：30 天条目乘 0.5^(30/14)（衰减更强）", () => {
+    const decayed = compositeScoreOf(f30d, w, now, 1, { halfLifeDays: 14 });
+    expect(decayed).toBeCloseTo(compositeScoreOf(f30d, w, now, 1) * Math.pow(0.5, 30 / 14), 6);
+  });
+
+  it("never-a-filter：超陈旧条目乘子下溢 → clamp floor 0.05（分>0，绝不归零埋没）", () => {
+    const fOld = { ...f30d, occurredAt: "2016-09-11T00:00:00Z" };
+    const decayed = compositeScoreOf(fOld, w, now, 1, { halfLifeDays: 30 });
+    expect(decayed).toBeGreaterThan(0);
+    expect(decayed).toBeCloseTo((0.15 / (1 + 3650)) * 0.05, 8);
+  });
+
+  it("occurredAt 缺失 → timeProx 恒 0（无实证不惩罚，ageDecay 不改变该口径）", () => {
+    const fNull = { relevance: 1.0, occurredAt: null, significance: 0, coreRefCount: 0, isWorkFact: false };
+    expect(compositeScoreOf(fNull, w, now, 1, { halfLifeDays: 30 })).toBe(0);
   });
 });

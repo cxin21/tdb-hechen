@@ -1851,6 +1851,9 @@ async function searchMemories(
       // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
       cfg.recall?.excludeInvalidated,
       validityNow,
+      // Batch C C-b（#77 伴生 · survey F6b）：衰减乘子/时间锚回退（cfg 透传——缺省关=逐位现状）
+      cfg.recall?.ageDecay?.enabled === true ? { halfLifeDays: cfg.recall.ageDecay.halfLifeDays } : undefined,
+      cfg.recall?.timeProxFallbackEnabled === true,
     );
     // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
     // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
@@ -2072,6 +2075,14 @@ export async function searchHybrid(
   excludeInvalidated?: boolean,
   /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点——失效排除以该时点为"当前"。 */
   validityNow?: Date,
+  /**
+   * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子
+   * （缺省 undefined = 逐位现状）。enabled 时由调用方 cfg.recall.ageDecay 透传；
+   * 只乘 timeProx 因子，floor 0.05 never-a-filter。
+   */
+  ageDecay?: { halfLifeDays: number; floor?: number },
+  /** Batch C C-b：timeProx 时间锚回退（缺省 false = 逐位现状；true 时 occurredAt 缺失回退 createdAt）。 */
+  timeProxFallbackEnabled?: boolean,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -2591,17 +2602,21 @@ export async function searchHybrid(
   // 补池 = 0。结构因子（timeProx/significance/coreRef）合计 ≤30%（相关度主导契约）。
   // now 锚点沿 R-A1 纪律（rankSignal.now 快照；缺省 new Date()）。 ──
   const v2Now = rankSignal?.now ?? new Date();
+  // Batch C C-b（#77 伴生 · survey F6b）：衰减乘子/时间锚回退（缺省 undefined/false = 逐位现状）
+  const r7AgeDecay = ageDecay && Number.isFinite(ageDecay.halfLifeDays) && ageDecay.halfLifeDays > 0 ? ageDecay : undefined;
   sorted = applyCompositeRerank(
     sorted,
     ([, v]) => ({
       relevance: v.rrfScore,
-      occurredAt: v.formatable.occurred_at,
+      // fallback 锚=formatable.timestamp（记录创建时刻：kw 路 record.timestamps[0] :2938 / 向量路 r.timestamp_str :3010，两 converter 均带）
+      occurredAt: v.formatable.occurred_at ?? (timeProxFallbackEnabled === true ? (v.formatable.timestamp ?? null) : null),
       significance: v.formatable.significance,
       coreRefCount: v.coreRefCount,
       isWorkFact: v.formatable.type === "work_fact",
     }),
     rerankWeights ?? DEFAULT_COMPOSITE_WEIGHTS,
     v2Now,
+    r7AgeDecay,
   );
   if (exploreSlot !== false) {
     sorted = applyExploreSlot(

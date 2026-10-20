@@ -643,6 +643,14 @@ export function compositeScoreOf(
   weights: CompositeWeights,
   now: Date,
   maxRelevance: number,
+  /**
+   * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子
+   * （缺省不传 = 逐位现状）。halfLifeDays>0 时 timeProx 因子 × max(floor, 0.5^(ageDays/
+   * halfLifeDays))——MemOS 对标 30d 半衰期；floor 缺省 0.05（never-a-filter：陈旧只降权
+   * 绝不埋没，不构成绝对门槛；分数恒 >0）。只在 time 因子非零时生效（occurredAt 缺失
+   * → timeProx 恒 0，无实证不加成口径不变）。
+   */
+  ageDecay?: { halfLifeDays: number; floor?: number },
 ): number {
   // 权重逐键守卫（undefined/负值 → 0）：既有调用方可能传旧形状/部分权重对象，
   // 直接 factor×undefined 会产生 NaN 污染排序比较器（verify-rv2 调试实证）。
@@ -655,12 +663,18 @@ export function compositeScoreOf(
       ? f.relevance / maxRelevance
       : 0;
   const time = wTime > 0 ? occurredRecencyFactor(f.occurredAt, now) : 0;
+  // Batch C C-b：衰减乘子只在 time 因子非零时计算（time>0 蕴含 occurredAt 非空且可解析）
+  let timeFactor = time;
+  if (time > 0 && ageDecay && Number.isFinite(ageDecay.halfLifeDays) && ageDecay.halfLifeDays > 0) {
+    const ageDays = (now.getTime() - Date.parse(f.occurredAt as string)) / 86_400_000;
+    timeFactor = time * Math.max(ageDecay.floor ?? 0.05, Math.pow(0.5, Math.max(0, ageDays) / ageDecay.halfLifeDays));
+  }
   const sig =
     wSig > 0 && typeof f.significance === "number" && Number.isFinite(f.significance) && f.significance > 0
       ? f.significance
       : 0;
   const core = wCore > 0 && Number.isFinite(f.coreRefCount) && f.coreRefCount > 0 ? 1 : 0;
-  return rel * wRel + time * wTime + sig * wSig + core * wCore;
+  return rel * wRel + timeFactor * wTime + sig * wSig + core * wCore;
 }
 
 /**
@@ -677,12 +691,14 @@ export function applyCompositeRerank<T>(
   factorsOf: (item: T) => CompositeFactors,
   weights: CompositeWeights,
   now: Date,
+  /** Batch C C-b（#77 伴生）：衰减乘子透传（缺省不传 = 逐位现状）。 */
+  ageDecay?: { halfLifeDays: number; floor?: number },
 ): T[] {
   const w = weights ?? DEFAULT_COMPOSITE_WEIGHTS;
   const factors = items.map(factorsOf);
   const maxRel = factors.reduce((m, f) => (Number.isFinite(f.relevance) && f.relevance > m ? f.relevance : m), 0);
   return factors
-    .map((f, i) => ({ f, i, score: compositeScoreOf(f, w, now, maxRel) }))
+    .map((f, i) => ({ f, i, score: compositeScoreOf(f, w, now, maxRel, ageDecay) }))
     .sort((a, b) => (a.f.isWorkFact ? 0 : 1) - (b.f.isWorkFact ? 0 : 1) || b.score - a.score || a.i - b.i)
     .map(({ i }) => items[i]!);
 }
@@ -828,6 +844,14 @@ export async function executeMemorySearch(params: {
   validityNow?: Date;
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；由调用方 cfg 透传） */
   emotionSalienceWeight?: number;
+  /**
+   * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子
+   * （缺省 undefined = 逐位现状）。enabled 时由调用方 cfg.recall.ageDecay 透传；
+   * 只乘 timeProx 因子，floor 0.05 never-a-filter。
+   */
+  ageDecay?: { halfLifeDays: number; floor?: number };
+  /** Batch C C-b：timeProx 时间锚回退（缺省 false = 逐位现状；true 时 occurredAt 缺失回退 createdAt）。 */
+  timeProxFallbackEnabled?: boolean;
   /**
    * 重构式回忆（J 设计§3）：query 时间锚窗过滤。
    * "auto" = 从 query 解析（今天/上周/N天前等），解析不出→不过滤；显式传窗则直接用。
@@ -1349,17 +1373,20 @@ export async function executeMemorySearch(params: {
   // 结构因子合计 ≤30%）。与 auto-recall searchHybrid 截断前同层对齐（R-A1 教训；同一
   // 单一源 applyCompositeRerank；work_fact 分层不越层）。
   // 全 0 权重 = 权重信号关断恒等（层内稳定排序逐位基线；work_fact 分层保留——I1 裁定）。 ──
+  // Batch C C-b（#77 伴生 · survey F6b）：衰减乘子/时间锚回退（缺省 undefined/false = 逐位现状）
+  const msAgeDecay = params.ageDecay && Number.isFinite(params.ageDecay.halfLifeDays) && params.ageDecay.halfLifeDays > 0 ? params.ageDecay : undefined;
   results = applyCompositeRerank(
     results,
     (r) => ({
       relevance: r.score,
-      occurredAt: r.occurred_at,
+      occurredAt: r.occurred_at ?? (params.timeProxFallbackEnabled === true ? (r.created_at ?? null) : null),
       significance: r.significance,
       coreRefCount: firedLabels.length > 0 ? coreRefsOf(r).filter((s) => firedLabels.includes(s)).length : 0,
       isWorkFact: r.type === "work_fact",
     }),
     rerankWeights ?? DEFAULT_COMPOSITE_WEIGHTS,
     rankContext?.now ?? new Date(),
+    msAgeDecay,
   );
 
   // ── V2-3（E3.1 探索位）：最终排序后、截断前——结构命中且 recall_count < 池内中位数

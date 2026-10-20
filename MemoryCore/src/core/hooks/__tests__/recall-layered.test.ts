@@ -600,3 +600,18 @@ describe("Batch B F2 config：conclusionLayer.truncateMode / maxTotalChars（缺
   });
 });
 
+describe("Batch C C-b：recall.ageDecay / timeProxFallbackEnabled parse（缺省=关逐位现状）", () => {
+  it("缺省 → { enabled:false, halfLifeDays:30 } / false（config-first：不翻转默认行为）", () => {
+    const cfg = parseConfig({ recall: { enabled: true } });
+    expect(cfg.recall.ageDecay).toEqual({ enabled: false, halfLifeDays: 30 });
+    expect(cfg.recall.timeProxFallbackEnabled).toBe(false);
+  });
+
+  it("显式透传；halfLifeDays 非有限/负 → 30 缺省", () => {
+    const cfg = parseConfig({ recall: { ageDecay: { enabled: true, halfLifeDays: 14 }, timeProxFallbackEnabled: true } });
+    expect(cfg.recall.ageDecay).toEqual({ enabled: true, halfLifeDays: 14 });
+    expect(cfg.recall.timeProxFallbackEnabled).toBe(true);
+    expect(parseConfig({ recall: { ageDecay: { halfLifeDays: -5 } } }).recall.ageDecay.halfLifeDays).toBe(30);
+  });
+});
+
