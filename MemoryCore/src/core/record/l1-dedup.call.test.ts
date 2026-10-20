@@ -125,3 +125,26 @@ describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", 
     expect(captured!.prompt).toContain("统一候选记忆池");
   });
 });
+
+describe("#79 dedupTimeoutMs 透传（config-first）", () => {
+  it("params.dedupTimeoutMs 原样透传（未传时保持 300_000 回归见上）", async () => {
+    let captured: Captured | null = null;
+    const llmRunner = {
+      run: async (p: Captured) => {
+        captured = p;
+        return "[]";
+      },
+    } as unknown as LLMRunner;
+
+    await batchDedup({
+      memories: [mem("n1")],
+      config: {},
+      vectorStore: makeStore(),
+      embeddingService: makeEmbedding(),
+      llmRunner,
+      dedupTimeoutMs: 90_000,
+    });
+
+    expect(captured!.timeoutMs).toBe(90_000);
+  });
+});

@@ -54,6 +54,13 @@ export interface ExtractionConfig {
    */
   extractionTimeoutMs: number;
   /**
+   * #79 dedup 判重超时（core 三次静默崩溃根修，config-first）：dedup LLM
+   * 冲突检测调用超时 ms。崩溃直接前因=LLM 端点超时风暴 × 该路径硬编码
+   * timeoutMs:300_000 悬挂堆积。缺省 300_000=逐位现状；clamp 60_000..3_600_000
+   * （镜像 extractionTimeoutMs 形态）。
+   */
+  dedupTimeoutMs: number;
+  /**
    * #46 毒批拆分（用户拍板 A，2026-10-17）：scene 抽取失败且批内 >1 条时对半
    * 递归重试（镜像 L1 extractGroupWithSplit 先例）。缺省 false=逐位现状。
    */
@@ -1635,6 +1642,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       extractionTimeoutMs: Math.min(
         3_600_000,
         Math.max(60_000, num(extractionGroup, "extractionTimeoutMs") ?? 300_000),
+      ),
+      // #79 dedup 判重超时（config-first）：缺省 300_000=逐位现状；clamp 60s..1h（镜像 extractionTimeoutMs）
+      dedupTimeoutMs: Math.min(
+        3_600_000,
+        Math.max(60_000, num(extractionGroup, "dedupTimeoutMs") ?? 300_000),
       ),
       // #46 毒批拆分+批次上限（config-first）：缺省关=逐位现状
       scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,

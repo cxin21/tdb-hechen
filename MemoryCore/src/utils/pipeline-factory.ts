@@ -647,6 +647,8 @@ export function createL1Runner(opts: {
             reasoningEffort: cfg.persona?.reasoningEffort,
             // 毒批超时（L1-OUTAGE-20261015，config-first）：缺省 300_000=逐位现状
             extractionTimeoutMs: cfg.extraction.extractionTimeoutMs,
+            // #79 dedup 判重超时（config-first）：缺省 300_000=逐位现状
+            dedupTimeoutMs: cfg.extraction.dedupTimeoutMs,
           },
           logger,
           instanceId: getInstanceId?.(),

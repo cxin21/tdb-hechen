@@ -168,4 +168,72 @@ describe("F-EV12-1 · L1 提取失败不得推进游标", () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 无害 */ }
     }
   });
+
+  it("cfg.extraction.dedupTimeoutMs 透传 dedup 阶段（#79，缺省 300_000）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dedup-timeout-"));
+    try {
+      const timeouts: number[] = [];
+      let calls = 0;
+      const stageRunner = {
+        run: async (p: { prompt: string; timeoutMs?: number }) => {
+          timeouts.push(p.timeoutMs ?? -1);
+          calls++;
+          if (calls === 1) {
+            // extraction 主调成功 → 流程推进到 dedup 判重
+            return JSON.stringify([{
+              scene_name: "去重情境", message_ids: ["m1"],
+              memories: [{ content: "dedup 透传验证事实：验证 dedupTimeoutMs 从配置透传到判重 LLM 调用超时参数", type: "episodic" }],
+            }]);
+          }
+          return "[]";
+        },
+      };
+      const mkMsg = (id: string) => ({
+        id, role: "user" as const,
+        content: id + " dedup 透传夹具消息（排查 TDB 记忆管线时发现 core 静默崩溃，需要验证 dedupTimeoutMs 配置从 yaml 透传到判重 LLM 调用超时参数）",
+        timestamp: 1_700_000_000_000, recordedAtMs: 1_700_000_000_000,
+      });
+      const opts = makeRunnerOpts(dir, stageRunner, [
+        {
+          sessionId: "sess-dedup-1", teamId: "team-x", userId: "user-x", agentId: "agent-x",
+          messages: [mkMsg("m1")],
+        },
+      ]) as Parameters<typeof createL1Runner>[0];
+      // 触发 dedup 判重（#79 整链透传验证的前提）：enableDedup 开 + Tier1 向量候选召回
+      // 可用（makeStore/makeEmbedding 形态照抄 l1-dedup.call.test.ts；原 makeRunnerOpts
+      // 的 enableDedup:false + 无召回能力 mock → dedup 阶段整体跳过，判重调用不发生）。
+      (opts.cfg as unknown as { extraction: Record<string, unknown> }).extraction.enableDedup = true;
+      (opts.cfg as unknown as { extraction: Record<string, unknown> }).extraction.dedupTimeoutMs = 123_456;
+      (opts.cfg as unknown as { embedding: Record<string, unknown> }).embedding.conflictRecallTopK = 3;
+      (opts as unknown as { vectorStore: unknown }).vectorStore = {
+        isDegraded: () => false,
+        countL1VectorRows: async () => 10,
+        countL1: async () => 10,
+        isFtsAvailable: () => false,
+        searchL1Vector: async () => [
+          {
+            record_id: "c1", content: "旧记忆内容", type: "episodic", priority: 60,
+            scene_name: "去重情境", timestamp_str: "2026-01-01T00:00:00.000Z",
+            session_key: "", session_id: "", score: 0.9,
+          },
+        ],
+        upsertL1: async () => true,
+        queryL0GroupedBySessionId: async () => [
+          {
+            sessionId: "sess-dedup-1", teamId: "team-x", userId: "user-x", agentId: "agent-x",
+            messages: [mkMsg("m1")],
+          },
+        ],
+      };
+      (opts as unknown as { embeddingService: unknown }).embeddingService = {
+        embedBatch: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]),
+      };
+      const runner = createL1Runner(opts);
+      await runner({ sessionKey: "sess-dedup-1" }).catch(() => undefined);
+      // dedup 判重调用的 timeoutMs 必须取自 cfg.extraction.dedupTimeoutMs（现状=300_000 硬编码 → RED）
+      expect(timeouts).toContain(123_456);
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 无害 */ }
+    }
+  });
 });

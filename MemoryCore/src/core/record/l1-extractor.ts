@@ -229,6 +229,11 @@ export async function extractL1Memories(params: {
      * 可上调配合 pipeline-factory 毒批自适应拆分使用。
      */
     extractionTimeoutMs?: number;
+    /**
+     * #79 dedup 判重超时（config-first）：cfg.extraction.dedupTimeoutMs 透传至
+     * batchDedup 的 LLM 判重调用。缺省 300_000 = 逐位现状。
+     */
+    dedupTimeoutMs?: number;
     /** Override embedding timeout for capture-path calls (milliseconds) */
     embeddingTimeoutMs?: number;
     /**
@@ -467,6 +472,8 @@ export async function extractL1Memories(params: {
         conflictRecallTopK: options.conflictRecallTopK,
         durativeEnabled: options.durativeEnabled,
         embeddingTimeoutMs: options.embeddingTimeoutMs,
+        // #79：dedup 判重超时（config-first），缺省 300_000=逐位现状
+        dedupTimeoutMs: options.dedupTimeoutMs,
         llmRunner: options.llmRunner,
         // 思考开关 config-first（2026-10-14）：dedup 主调同 L1 提取，端点默认即可
         reasoningEffort: options.reasoningEffort,

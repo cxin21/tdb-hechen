@@ -97,6 +97,8 @@ export async function batchDedup(params: {
   conflictRecallTopK?: number;
   /** Override embedding timeout for capture-path calls (milliseconds) */
   embeddingTimeoutMs?: number;
+  /** #79 dedup 判重 LLM 调用超时（config-first）：缺省 300_000 = 逐位现状 */
+  dedupTimeoutMs?: number;
   /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
   llmRunner?: LLMRunner;
   /**
@@ -200,7 +202,7 @@ export async function batchDedup(params: {
   // prompt 候选与解析过滤用同一份（防幻觉 id，P-D）。读取失败 → 空清单（LLM 回 []，
   // 宁缺毋滥降级，绝不阻塞写入）。
   const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
-  const decisions = await runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext, valueCandidates, params.reasoningEffort);
+  const decisions = await runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext, valueCandidates, params.reasoningEffort, params.dedupTimeoutMs);
   return attachTopCandidates(decisions, matches, minSimilarity);
 }
 
@@ -253,6 +255,8 @@ async function runLlmJudgment(
   valueCandidates: CoreValueCandidate[] = [],
   /** 思考开关 config-first（2026-10-14）：undefined = 不带 reasoning_effort（端点默认）。 */
   reasoningEffort?: string,
+  /** #79 dedup 判重超时（config-first）：undefined = 缺省 300_000（逐位现状）。 */
+  dedupTimeoutMs?: number,
 ): Promise<DedupDecision[]> {
   logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories (promptMode=${promptMode})`);
 
@@ -277,7 +281,8 @@ async function runLlmJudgment(
         prompt: userPrompt,
         systemPrompt,
         taskId: "l1-conflict-detection",
-        timeoutMs: 300_000,
+        // #79：dedupTimeoutMs 可配置（config-first），缺省 300_000=逐位现状
+        timeoutMs: dedupTimeoutMs ?? 300_000,
         reasoningEffort,
         ...traceParams,
       });
@@ -294,7 +299,8 @@ async function runLlmJudgment(
         prompt: userPrompt,
         systemPrompt,
         taskId: "l1-conflict-detection",
-        timeoutMs: 300_000,
+        // #79：dedupTimeoutMs 可配置（config-first），缺省 300_000=逐位现状
+        timeoutMs: dedupTimeoutMs ?? 300_000,
         ...traceParams,
       });
     }
