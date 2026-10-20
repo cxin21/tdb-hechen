@@ -157,6 +157,17 @@ memory:
       # 语料规模变化需重定标；缺省/0 = off。
       minBm25Rel: 6.5
 
+    # ── #77 Batch C（survey F6b，2026-10-20 拍板开启）：检索期年龄衰减乘子 + 时间锚回退 ──
+    # ageDecay：composite 打分 timeFactor 乘子 0.5^(ageDays/halfLifeDays)（floor 0.05；无时间锚不乘）。
+    # 缺省 false=逐位现状；仅时间维度，零情绪数据（R-A 红线）。14d=现库 0-7d 龄区分度折中（决策包建议）。
+    ageDecay:
+      enabled: true
+      halfLifeDays: 14
+    # timeProxFallbackEnabled：composite timeProx 时间锚回退——occurred_at 缺失时用 created_at（写入
+    # 时刻）兜底；不开则无 occurred_at 的记录 timeProx=0。效果与存量回填写库等价且零写库可逆
+    # （决策包 2026-10-20-d2-d3 D2 选 B）。缺省 false=逐位现状。
+    timeProxFallbackEnabled: true
+
     # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
     # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差
     # （argmax d(k)=pool[k-1]-pool[k]，全池 k∈[1,pool.length-1]），落差 ≥ dropRatio×span
@@ -380,6 +391,11 @@ memory:
         # 契约不通过拒绝推提案；通过时 anchor_refs 并入提案 attrs。缺省 false=现状。
         cardContract:
           enabled: true       # 生产已开
+        # #77 Batch D（survey F1，2026-10-20 拍板开启）：结论卡拆条引导——反思 LLM prompt 附加
+        # 「一句话一件事/≤300 码点/多事拆条/宁缺毋滥」few-shot；≤300 码点机械拒收门已无条件生效
+        # （validateConclusionCard，拒收记 skipped 警告日志），本键只加引导降拒收率。缺省 false=逐位现状。
+        conclusionContract:
+          enabled: true
 
   evolution: # 受控正文演化（GROW-EVO §4，REG-REMAINING-005 #1）——全系统唯一允许改写已固化正文的路径
     enabled: true # P4b 验证通过后开启（2026-09-17 live 验证轮；五条件门+单轮上限护栏，门严=不触发良性）
