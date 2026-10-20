@@ -97,6 +97,28 @@ describe("F13 反思触发", () => {
   });
 });
 
+describe("Batch C C-a：反思写卡 occurred_at 合标（#77：340/397 work_fact 空根治）", () => {
+  it("写卡 rec.occurred_at 非空 ISO（写链直调 upsertL1 绕过 l1-writer choke point，须就地合标）", async () => {
+    const rows: Record<string, unknown>[] = [
+      rec("r1", "用户坚持先给结论", 0.9),
+      rec("r2", "用户每周五复盘", 0.8),
+      rec("r3", "用户偏好清单式评审", 0.7),
+    ];
+    const store = { upsertL1: vi.fn(async () => true) };
+    const llmRunner = { run: vi.fn(async () => '[{"question":"q","conclusion":"用户偏好结论先行的沟通方式","evidence":["r1","r2"]}]') };
+    await runReflection({
+      queryL1: async () => rows as never,
+      config: { enabled: true, rRef: 2 },
+      store, llmRunner, logger: LOG,
+    });
+    expect(store.upsertL1).toHaveBeenCalled();
+    const card = (store.upsertL1.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(typeof card.occurred_at).toBe("string");
+    expect(String(card.occurred_at).length).toBeGreaterThan(0);
+    expect(Number.isNaN(Date.parse(String(card.occurred_at)))).toBe(false);
+  });
+});
+
 describe("parseReflectionProposals", () => {
   it("宽松 JSON 提取 + 非法输入空数组", () => {
     // #44：parse 契约扩展 promiseTransitions（缺省 []，可选提议面）——非 promise 字段逐位不变。

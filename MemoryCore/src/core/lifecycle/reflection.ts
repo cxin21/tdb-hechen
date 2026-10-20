@@ -12,6 +12,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { embedForLifecycle } from "./embed-helpers.js";
+import { bindSoulAtWrite } from "./consolidation/content-soul.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
 import { REFLECTION_CARD_CONTRACT_PROMPT, labelsFromCoreValueRows, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
@@ -263,6 +264,11 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
         version: 1,
         certainty: "observed",
       };
+      // Batch C C-a（#77）：写链 soul 合标统一——本写链直调 store.upsertL1 绕过
+      // l1-writer choke point，生产实证 340/340 空 occurred_at 全部来自本链
+      // （scene_name=reflection）。bindSoulAtWrite 只填空字段：certainty 已有
+      // → 零变化；occurred_at=now（真实记录时刻）；情感/重要性规则照常。
+      bindSoulAtWrite(rec);
       const ok = await Promise.resolve(deps.store.upsertL1(rec, await embedForLifecycle(deps.embeddingService, String(rec.content ?? ""), "[reflection]", deps.logger)));
       if (ok) cardsWritten++;
       // #27（R5）：反思结论 → 身份层提案（O13 rail）。门 on 才启用；确定性门

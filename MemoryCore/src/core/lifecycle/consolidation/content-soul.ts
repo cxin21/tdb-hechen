@@ -86,3 +86,35 @@ export function patchSoulFromContent(content: string, current: SoulPatch): SoulP
   if (current.significance == null && SIGNIFICANT.some((re) => re.test(content))) out.significance = 0.8;
   return out;
 }
+
+/**
+ * Batch C C-a（#77，2026-10-20）：写链 soul 合标统一——写入点就地应用 patchSoulFromContent
+ * （既有语义：只填空字段，不覆盖已有值）并做 occurred_at 最小兜底（=createdAt||now，
+ * 与 l1-writer.ts:330 choke point 同款语义：occurred_at=真实记录时刻，非内容时间猜测）。
+ * 取证：生产 l1_records work_fact 397 条中 340 条 occurred_at 空（85.6%），按日稳定 85-90%
+ * ＝持续现状；scene_name/source 分桶实证 340/340 全部来自 reflection 写卡链（写链直调
+ * store.upsertL1 绕过 l1-writer choke point，:330 兜底够不着）。幂等：已有值不动——
+ * 对已合标链（consolidation/evolution/l1-writer）零行为变化。纯同步、零 LLM、无 IO。
+ */
+export function bindSoulAtWrite(
+  rec: { content?: unknown; occurred_at?: unknown; certainty?: unknown; valence?: unknown; arousal?: unknown; significance?: unknown; createdAt?: unknown },
+): void {
+  const current = {
+    occurred_at: typeof rec.occurred_at === "string" && rec.occurred_at ? rec.occurred_at : undefined,
+    certainty: rec.certainty === "observed" || rec.certainty === "inferred" ? rec.certainty : undefined,
+    valence: typeof rec.valence === "number" && Number.isFinite(rec.valence) ? rec.valence : undefined,
+    arousal: typeof rec.arousal === "number" && Number.isFinite(rec.arousal) ? rec.arousal : undefined,
+    significance: typeof rec.significance === "number" && Number.isFinite(rec.significance) ? rec.significance : undefined,
+  };
+  // as SoulPatch：current 的 undefined 字段=未提供，与 optional 字段等价语义（SoulPatch 字段无 | undefined 联合，TS2345）
+  const patch = patchSoulFromContent(String(rec.content ?? ""), current as SoulPatch);
+  if (patch.occurred_at) rec.occurred_at = patch.occurred_at;
+  if (patch.certainty) rec.certainty = patch.certainty;
+  if (patch.valence != null) rec.valence = patch.valence;
+  if (patch.arousal != null) rec.arousal = patch.arousal;
+  if (patch.significance != null) rec.significance = patch.significance;
+  // 最小兜底：仍空 → 真实记录时刻（createdAt 优先）
+  if (!(typeof rec.occurred_at === "string" && rec.occurred_at)) {
+    rec.occurred_at = typeof rec.createdAt === "string" && rec.createdAt ? rec.createdAt : new Date().toISOString();
+  }
+}
