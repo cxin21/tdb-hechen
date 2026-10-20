@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { patchLlmFieldsFromCredential } from "../../scripts/persona-eval/run-persona-eval.js";
+import { isCliDirectExecution, patchLlmFieldsFromCredential } from "../../scripts/persona-eval/run-persona-eval.js";
+import { relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** ADR-0006（#70）：--config llm 段回退补齐——判缺口用 parse 前原始值，防 parseConfig 缺省值伪装。 */
 describe("patchLlmFieldsFromCredential（ADR-0006 CLI 回退）", () => {
@@ -52,5 +54,35 @@ describe("patchLlmFieldsFromCredential（ADR-0006 CLI 回退）", () => {
     const parsed = { baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o" };
     expect(patchLlmFieldsFromCredential({ baseUrl: "", apiKey: "", model: "" }, parsed, cred)).toBe(true);
     expect(parsed.baseUrl).toBe(cred.baseUrl);
+  });
+});
+
+/** CI 修复：isCliDirectExecution——CLI 直接执行守卫，防 import 触发顶层 main()（process.exit）。 */
+describe("isCliDirectExecution（CLI 直接执行守卫）", () => {
+  const cliPath = fileURLToPath(new URL("../../scripts/persona-eval/run-persona-eval.ts", import.meta.url));
+  const cliUrl = pathToFileURL(cliPath).href;
+
+  it("argv1=本脚本绝对路径 → true（正常 CLI 入口不误伤）", () => {
+    expect(isCliDirectExecution(cliPath, cliUrl)).toBe(true);
+  });
+
+  it("argv1=从当前 cwd 出发的相对路径 → 归一化后仍 true（tsx 从仓库根/包根启动）", () => {
+    const rel = relative(process.cwd(), cliPath);
+    expect(isCliDirectExecution(rel, cliUrl)).toBe(true);
+  });
+
+  it("argv1=其他脚本（如 vitest/测试文件自身）→ false（import 场景不触发 main）", () => {
+    const testSelf = fileURLToPath(import.meta.url);
+    expect(isCliDirectExecution(testSelf, cliUrl)).toBe(false);
+  });
+
+  it("argv1=undefined → false", () => {
+    expect(isCliDirectExecution(undefined, cliUrl)).toBe(false);
+  });
+
+  it("argv1 与 metaUrl 都指向本脚本但大小写/盘符经 pathToFileURL 归一化 → 稳定 true", () => {
+    // 同一路径两种书写（正斜杠形式）都应命中
+    const posixForm = cliPath.replace(/\\/g, "/");
+    expect(isCliDirectExecution(posixForm, cliUrl)).toBe(true);
   });
 });

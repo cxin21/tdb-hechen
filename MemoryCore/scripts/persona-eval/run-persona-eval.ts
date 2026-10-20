@@ -23,7 +23,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { isSetCredential } from "../../src/utils/credential.js";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CallBudget,
   DIMENSIONS,
@@ -462,7 +462,24 @@ async function main(): Promise<number> {
   return exitCode;
 }
 
-main().then((code) => process.exit(code)).catch((err) => {
-  console.error("[persona-eval] fatal:", err instanceof Error ? err.message : String(err));
-  process.exit(3);
-});
+/**
+ * 判定本模块是否被「直接执行」（CLI 入口），而非被测试/工具 import。
+ * 背景（CI 修复，2026-10-20）：此前模块顶层裸调 main().then(process.exit)，测试文件
+ * import 本模块时会在 vitest 进程内连带执行 main() 与 process.exit，产生
+ * Unhandled Rejection 导致 CI job 失败（0cb8198 起连红）。加守卫后仅直接执行才运行 main()。
+ */
+export function isCliDirectExecution(argv1: string | undefined, metaUrl: string): boolean {
+  if (!argv1) return false;
+  try {
+    return pathToFileURL(resolve(argv1)).href === metaUrl;
+  } catch {
+    return false;
+  }
+}
+
+if (isCliDirectExecution(process.argv[1], import.meta.url)) {
+  main().then((code) => process.exit(code)).catch((err) => {
+    console.error("[persona-eval] fatal:", err instanceof Error ? err.message : String(err));
+    process.exit(3);
+  });
+}
