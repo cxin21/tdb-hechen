@@ -109,6 +109,12 @@ export interface RecallJournalEntry {
   perfMs?: RecallJournalPerfMs;
   block?: string;
   memoryLines: string[];
+  /**
+   * #74（Batch A，2026-10-20）：跳过语义注记。skip 路是独立语义入口（如端点路纯
+   * 脚手架查询整条跳过：零检索零注入零指标上报），以 skipReason="scaffold-query"
+   * 区分于正常召回条目；缺字段 = 正常召回（向后兼容旧条目与旧消费方）。
+   */
+  skipReason?: string;
 }
 
 export interface RecallJournalTenant {

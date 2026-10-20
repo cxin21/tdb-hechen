@@ -115,6 +115,14 @@ function recallCfg(cfgOverrides: Record<string, unknown>, enabled: boolean): Mem
   });
 }
 
+/** #74：journal 开启版 cfg——recallJournal 是 memory 配置顶层键（config.ts:906），非 recall 嵌套键。 */
+function recallCfgJournal(enabled: boolean): MemoryTdaiConfig {
+  return parseConfig({
+    recall: { ...RECALL_OFF, v3Recall: { enabled, timeoutMs: 5000 } },
+    recallJournal: { enabled: true, rotationSizeMB: 5, maxFiles: 5 },
+  });
+}
+
 interface CapturedResponse {
   status?: number;
   body?: { code: number; message: string; data?: Record<string, unknown> };
@@ -204,6 +212,94 @@ describe("DS-RECALL-MERGE-001 · /v3/recall 核心单点端点", () => {
       expect(res.status).toBe(422);
       expect(res.body?.code).toBe(422);
       expect(res.body?.message).toContain("strict isolation");
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  // ── #74 Batch A（合同 §1.3/§1.6）：两级剥噪端点接入 ——
+
+  it("#74 D1 · 纯脚手架查询 → block=\"\" + meta.skipReason + journal skip 条目", async () => {
+    const env = makeEnv({});
+    try {
+      const cfg = recallCfgJournal(true);
+      const res = await postRecall({
+        cfg,
+        store: env.store,
+        dataDir: env.dataDir,
+        body: {
+          query: [
+            '<acp tokens="30" type="text">m00207</acp>',
+            "Time sampled while preparing turn 45, step 1: 2026-10-20T03:15:00+08:00[Asia/Shanghai]",
+            "⚠️ Context limit reached — compress now",
+          ].join("\n"),
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body?.code).toBe(0);
+      const data = res.body?.data as { block: string; meta: Record<string, unknown> };
+      expect(data.block).toBe("");
+      expect(data.meta.skipReason).toBe("scaffold-query");
+      // 审查 m2（2026-10-20）：skip 路 perfMs 行为钉死——total 实测、分项零（合同 §1.3「零值」以分项为准）
+      const skipPerf = data.meta.perfMs as { total: number; scene: number; expand: number; l1: number; l2: number; soul: number };
+      expect(typeof skipPerf.total).toBe("number");
+      expect(skipPerf.scene).toBe(0);
+      expect(skipPerf.expand).toBe(0);
+      expect(data.meta.conclusionCount).toBe(0);
+      expect(data.meta.experienceCount).toBe(0);
+      // journal skip 条目落盘（租户 default/a1 与隔离头一致；独立语义入口以 skipReason 区分）
+      const jf = path.join(env.dataDir, "logs", "recall", "recall-journal-default-a1.jsonl");
+      expect(fs.existsSync(jf)).toBe(true);
+      const rows = fs.readFileSync(jf, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.skipReason).toBe("scaffold-query");
+      expect(rows[0]!.strategy).toBe("scaffold-skip");
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it("#74 D2 · 混合查询端到端清洗 → 正常召回且 journal.query=清洗后文本", async () => {
+    const env = makeEnv({});
+    try {
+      const cfg = recallCfgJournal(true);
+      const res = await postRecall({
+        cfg,
+        store: env.store,
+        dataDir: env.dataDir,
+        body: {
+          query: [
+            '<acp tokens="18" type="text">m00209</acp>',
+            "Time sampled while preparing turn 46, step 2: 2026-10-20T03:17:00+08:00[Asia/Shanghai]",
+            "MERGECALL 合并召回的当前进展",
+          ].join("\n"),
+        },
+      });
+      expect(res.status).toBe(200);
+      const data = res.body?.data as { block: string; meta: Record<string, unknown> };
+      expect(data.meta.skipReason).toBeUndefined();
+      expect(data.block.length).toBeGreaterThan(0);
+      const jf = path.join(env.dataDir, "logs", "recall", "recall-journal-default-a1.jsonl");
+      const rows = fs.readFileSync(jf, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.query).toBe("MERGECALL 合并召回的当前进展");
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it("#74 D3 · 干净查询行为不变（回归锚：无 skipReason、block 非空、journal.query 原样）", async () => {
+    const env = makeEnv({});
+    try {
+      const cfg = recallCfgJournal(true);
+      const res = await postRecall({ cfg, store: env.store, dataDir: env.dataDir, body: { query: QUERY } });
+      expect(res.status).toBe(200);
+      const data = res.body?.data as { block: string; meta: Record<string, unknown> };
+      expect(data.meta.skipReason).toBeUndefined();
+      expect(data.block.length).toBeGreaterThan(0);
+      const jf = path.join(env.dataDir, "logs", "recall", "recall-journal-default-a1.jsonl");
+      const rows = fs.readFileSync(jf, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(rows[0]!.query).toBe(QUERY);
     } finally {
       env.cleanup();
     }

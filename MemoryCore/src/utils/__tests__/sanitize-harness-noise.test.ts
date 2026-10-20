@@ -75,4 +75,37 @@ describe("sanitizeText · DSH harness 噪音剥离", () => {
     const raw = "重启 tdai-core 后 journal 行为不变，rerank gate 仍在；importancePenalty=0.3";
     expect(sanitizeText(raw)).toBe(raw);
   });
+
+  // ── #74 Batch A（合同 docs/research/2026-10-20-recall-batch-a-contract.md §1.1）：
+  // 六 pattern 补全——裸 m\d{5} ref、⚠️/Context limit 行、【Compressed…】区段头、方括号 POV 标签头 ──
+
+  it("剥裸 mNNNNN ref token（#74 D4-1：词边界删 token 留正文）", () => {
+    const raw = "这条引用了早前消息 m00207 与 m00311 的上下文";
+    expect(sanitizeText(raw)).toBe("这条引用了早前消息  与  的上下文");
+  });
+
+  it("m-ref 不误伤：无 m+5 位数形态的普通文本逐位保留", () => {
+    const raw = "编号 team-2k12 与版本 v1.0 的 m2501.13956 论文号保留";
+    expect(sanitizeText(raw)).toBe(raw);
+  });
+
+  it("剥 ⚠️/Context limit 系统提醒行（#74 D4-2：整行删，T4 §3 字面撞车实锤）", () => {
+    const raw = "⚠️ Context limit reached — compress now\n真实问题：召回精度怎么提";
+    expect(sanitizeText(raw)).toBe("真实问题：召回精度怎么提");
+  });
+
+  it("剥【Compressed conversation section】区段头（#74 D4-3：整行删，区段正文保留交两级策略）", () => {
+    const raw = "【Compressed conversation section】— 任务接单与团队组建\n压缩区段里的真实查询内容";
+    expect(sanitizeText(raw)).toBe("压缩区段里的真实查询内容");
+  });
+
+  it("剥 [Compressed conversation section] 半角形态区段头（审查 M1：生产 journal 唯一实际形态，与全角整行删行为对齐）", () => {
+    const raw = "[Compressed conversation section] — 任务接单与团队组建\n压缩区段里的真实查询内容";
+    expect(sanitizeText(raw)).toBe("压缩区段里的真实查询内容");
+  });
+
+  it("剥 [current_feeling]/[soul-*] 方括号标签头（#74 D4-4：删 token 留正文，含属性形式）", () => {
+    const raw = '[current_feeling] 用户拍板优先\n[soul-event kind="redline"] 红线内容\n正文结论';
+    expect(sanitizeText(raw)).toBe("用户拍板优先\n红线内容\n正文结论");
+  });
 });

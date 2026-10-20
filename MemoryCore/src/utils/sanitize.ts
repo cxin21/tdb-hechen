@@ -66,6 +66,19 @@ export function sanitizeText(text: string): string {
   // 5) 效率 nudge 整体剥离（harness 周期注入的压缩提醒，非用户意图——m03173 实证
   //    其英文正文残句会以弱相关（topScore≈-1.2）注入记忆，违反宁缺毋滥；标记行措辞稳定）
   cleaned = cleaned.replace(/^\s*This is an efficiency nudge\b[\s\S]*$/i, "");
+  // 6) 裸 m\d{5} 消息 ref token（#74 D4，2026-10-20）：上下文压缩区段残留引用（如
+  //    m00209）——词边界删 token 留正文；负向先行 (?!\.\d) 防误伤 arXiv 式编号
+  //    （m2501.13956）与更长 id（m1234567，\b 收尾自动放行）。
+  cleaned = cleaned.replace(/\bm\d{5}(?!\.\d)\b/g, "");
+  // 7) 上下文超限提醒行（⚠️ … Context limit …——整行剥离；须 ⚠️ 前缀，防误伤正常
+  //    讨论「Context limit」语义的用户正文行）
+  cleaned = cleaned.replace(/^\s*⚠️[^\n]*Context limit[^\n]*$/gim, "");
+  // 8) 压缩区段标题行（【Compressed conversation section】…——整行剥离，区段内正文
+  //    保留；P6 活体证据：区段正文剥壳后仍可能携带有效语义行，只剥标题头不弃正文）
+  cleaned = cleaned.replace(/^\s*[【\[]Compressed conversation section[】\]][^\n]*$/gim, "");
+  // 9) 方括号 POV 标签头（[current_feeling] / [soul-*] 含属性形式——删头留正文；块
+  //    形式 <current_feeling>/<soul-*> 已由 (2) 整块剥离，此处兜方括号行首变体）
+  cleaned = cleaned.replace(/^\s*\[(?:current_feeling|soul-[a-z0-9-]+)\b[^\]]*\][ \t]*/gim, "");
 
   // Remove line-leading timestamps, e.g. "[Tue 2026-03-24 03:48 UTC]"
   // or "[Tue 2026-03-24 20:21 GMT+8]", "[Thu 2026-03-24 01:51 GMT+5:30]"
@@ -96,6 +109,42 @@ export function sanitizeText(text: string): string {
   cleaned = cleaned.replace(/\0/g, "").replace(/\n{3,}/g, "\n\n").trim();
 
   return cleaned;
+}
+
+/**
+ * #74（Batch A，2026-10-20）：召回查询专用两级剥噪。
+ *
+ * 一级：sanitizeText 全量剥噪后残留 < MIN_QUERY_RESIDUAL_CHARS 字符 → 判定为纯
+ *      脚手架查询（skipped=true），调用方应整条跳过（零检索零注入）。
+ * 二级：否则返回清洗后文本供检索——P6 活体证据（2026-10-20 取证）：压缩区段查询
+ *      剥壳后仍常携带有效语义行，一刀切跳过会误伤，故非纯噪音一律清洗后检索。
+ *
+ * 端点路（v2-router handleRecall）与钩子路共用 sanitizeText 单一源；本函数只在
+ * 召回入口调用（L0 capture 不做 skip 判定——capture 侧宁存勿删）。
+ */
+export const MIN_QUERY_RESIDUAL_CHARS = 10;
+
+export interface SanitizedRecallQuery {
+  /** 清洗后查询（仅二级分支承载）；skipped=true 时恒为空串——残留量经 residualChars 观测，skip 分支不回传残句（RED 用例 6 钉死）。 */
+  text: string;
+  /** true = 纯脚手架查询（残留 < 阈值），调用方应跳过检索 */
+  skipped: boolean;
+  /** 剥噪后残留字符数（UTF-16 code units，trim 后口径） */
+  residualChars: number;
+}
+
+export function sanitizeRecallQuery(
+  raw: string,
+  opts?: { minResidualChars?: number },
+): SanitizedRecallQuery {
+  const min = opts?.minResidualChars ?? MIN_QUERY_RESIDUAL_CHARS;
+  const cleaned = typeof raw === "string" ? sanitizeText(raw).trim() : "";
+  const residualChars = cleaned.length;
+  // 契约（RED 用例 6）：skipped=true 时 text 恒空串——text 仅在二级（清洗后检索）
+  // 分支承载查询；skip 分支不回传残句，残留量经 residualChars 观测。
+  return residualChars < min
+    ? { text: "", skipped: true, residualChars }
+    : { text: cleaned, skipped: false, residualChars };
 }
 
 /**

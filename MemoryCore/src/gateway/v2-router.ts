@@ -16,6 +16,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import type http from "node:http";
+import path from "node:path";
 import { classifyError } from "./error-handler.js";
 import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
 import { DEFAULT_ISOLATION_ID, type CoreTenant } from "../core/store/types.js";
@@ -130,7 +131,9 @@ import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
 import { performLayeredRecall } from "../core/hooks/auto-recall.js";
-import type { RecallJournalPerfMs } from "../core/recall/recall-journal.js";
+import { appendRecallJournal, type RecallJournalPerfMs } from "../core/recall/recall-journal.js";
+// #74（Batch A，2026-10-20）：端点路查询两级剥噪（sanitizeText/sanitizeRecallQuery 单一源在 utils/sanitize.ts）。
+import { sanitizeRecallQuery } from "../utils/sanitize.js";
 
 const TAG = "[tdai-gateway][v2]";
 const V2_PREFIX = "/v2";
@@ -1922,9 +1925,79 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
   const timeoutMs = v3Recall.timeoutMs ?? 5000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const TIMEOUT_SENTINEL = "__recall_timeout__";
+
+  // ── #74（Batch A · 两级剥噪，2026-10-20）：端点路查询剥噪，与钩子路（auto-recall
+  // 对 userText 的 sanitizeText 剥壳）对齐。一级：剥噪残留 < MIN_QUERY_RESIDUAL_CHARS(10)
+  // 字符 = 纯脚手架查询 → 整条跳过（零检索零注入零指标上报），journal 以
+  // skipReason="scaffold-query" 注记——skip 路是独立语义入口，不经 performLayeredRecall
+  // 采集点（该采集点单一源禁第二份），租户推导与目录形态镜像 auto-recall.ts journal
+  // 落库；二级：清洗后检索（P6 活体证据：压缩区段查询剥壳后仍可能携带有效语义行，
+  // 不一刀切丢弃）。
+  const sq = sanitizeRecallQuery(b.query);
+  if (sq.skipped) {
+    const skipPerfMs: RecallJournalPerfMs = {
+      total: Math.round(performance.now() - tStart),
+      scene: 0,
+      expand: 0,
+      l2: 0,
+      l1: 0,
+      soul: 0,
+    };
+    // best-effort：journal 失败零影响 skip 响应（与钩子路同纪律）。
+    try {
+      const journalCfg = cfg.recallJournal ?? { enabled: false, rotationSizeMB: 5, maxFiles: 5 };
+      if (journalCfg.enabled) {
+        appendRecallJournal(
+          path.join(dataDir, "logs", "recall"),
+          {
+            teamId: searchFilter?.teamId ?? profileIsolation.teamId ?? "default",
+            agentId: searchFilter?.agentId ?? profileIsolation.agentId ?? "default",
+          },
+          {
+            ts: new Date().toISOString(),
+            query: sq.text,
+            strategy: "scaffold-skip",
+            teamId: searchFilter?.teamId ?? profileIsolation.teamId ?? "default",
+            userId: searchFilter?.userId,
+            agentId: searchFilter?.agentId ?? profileIsolation.agentId ?? "default",
+            sessionKey,
+            sessionReused: false,
+            layered: false,
+            conclusionCount: 0,
+            experienceCount: 0,
+            searchTiming: { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 },
+            skipReason: "scaffold-query",
+            memoryLines: [],
+            perfMs: skipPerfMs,
+          },
+          journalCfg,
+        );
+      }
+    } catch {
+      /* 兜底：writer 已吞错，此处再兜一层 */
+    }
+    return successEnvelope<{
+      block: string;
+      meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; skipReason: string; perfMs: RecallJournalPerfMs };
+    }>(
+      {
+        block: "",
+        meta: {
+          conclusionCount: 0,
+          experienceCount: 0,
+          sessionReused: false,
+          layered: false,
+          skipReason: "scaffold-query",
+          perfMs: skipPerfMs,
+        },
+      },
+      requestId,
+    );
+  }
+
   const outcome = await Promise.race([
     performLayeredRecall({
-      userText: b.query,
+      userText: sq.text,
       sessionKey,
       cfg,
       pluginDataDir: dataDir,

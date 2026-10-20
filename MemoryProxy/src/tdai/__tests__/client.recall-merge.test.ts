@@ -67,7 +67,18 @@ describe("TdaiClient.recallBlockForCtx（DS-RECALL-MERGE-001 瘦传输）", () =
     expect(headers["x-tdai-team-id"]).toBe("team-merge");
     expect(headers["x-tdai-agent-id"]).toBe("agent-merge");
     expect(headers["x-tdai-session-id"]).toBe("session-m1");
-    expect(JSON.parse(String(init.body))).toEqual({ query: "合并召回进展", maxResults: 5 });
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body.query).toBe("合并召回进展");
+    expect(body.maxResults).toBe(5);
+    // #74：time_point 透传（ISO 可解析；核心据此旁路会话复用缓存+时窗锚定，T4 病灶②接线）
+    expect(typeof body.time_point).toBe("string");
+    expect(Number.isNaN(Date.parse(String(body.time_point)))).toBe(false);
+    // 审查 m5（2026-10-20）：time_point 逐请求新鲜——两次调用单调不减，钉死非冻结常量
+    const res2 = await client.recallBlockForCtx(CTX, "合并召回进展", "session-m1", undefined, 5);
+    expect(res2).not.toBeNull();
+    const [, init2] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    const body2 = JSON.parse(String(init2.body)) as Record<string, unknown>;
+    expect(Date.parse(String(body2.time_point))).toBeGreaterThanOrEqual(Date.parse(String(body.time_point)));
   });
 
   it("HTTP 5xx → 抛错（调用方降级旧路）", async () => {
@@ -147,7 +158,7 @@ describe("#40 · recallBlockForCtx capabilities 请求体", () => {
     const client = new TdaiClient(makeConfig());
     await client.recallBlockForCtx(CTX, "q", "s", undefined, 5, ["t1：能力一"]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ query: "q", maxResults: 5, capabilities: ["t1：能力一"] });
+    expect(JSON.parse(String(init.body))).toEqual({ query: "q", maxResults: 5, capabilities: ["t1：能力一"], time_point: expect.any(String) });
   });
 
   it("未传/空数组 → 请求体不含 capabilities 键（逐位现状）", async () => {
@@ -162,7 +173,7 @@ describe("#40 · recallBlockForCtx capabilities 请求体", () => {
     const bodies = fetchMock.mock.calls.map((c) =>
       JSON.parse(String((c as unknown as [string, RequestInit])[1].body)),
     );
-    expect(bodies[0]).toEqual({ query: "q", maxResults: 5 });
-    expect(bodies[1]).toEqual({ query: "q", maxResults: 5 });
+    expect(bodies[0]).toEqual({ query: "q", maxResults: 5, time_point: expect.any(String) });
+    expect(bodies[1]).toEqual({ query: "q", maxResults: 5, time_point: expect.any(String) });
   });
 });

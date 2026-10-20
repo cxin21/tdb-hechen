@@ -70,4 +70,20 @@ describe("T5: recall-journal writer", () => {
     writeFileSync(blocker, "x");
     expect(() => appendRecallJournal(blocker, tenant, base as never, opts)).not.toThrow();
   });
+
+  // #74（合同 §1.4）：skipReason 可选字段——正常条目无键，skip 条目往返。
+  it("skipReason：正常条目无键 + skip 条目往返", () => {
+    appendRecallJournal(dir, tenant, base as never, opts);
+    appendRecallJournal(
+      dir,
+      tenant,
+      { ...base, query: "", strategy: "scaffold-skip", skipReason: "scaffold-query" } as never,
+      opts,
+    );
+    const rows = linesOf(path.join(dir, "recall-journal-team-a-agt-a.jsonl"));
+    expect(rows).toHaveLength(2);
+    expect("skipReason" in rows[0]!).toBe(false);
+    expect(rows[1]!.skipReason).toBe("scaffold-query");
+    expect(rows[1]!.strategy).toBe("scaffold-skip");
+  });
 });

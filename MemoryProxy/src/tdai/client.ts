@@ -292,6 +292,10 @@ export class TdaiClient {
         headers,
         body: JSON.stringify(stripUndefined({
           query: query.slice(0, 2048),
+          // #74（Batch A，2026-10-20）：查询时间锚（ISO）——核心 time_point 解析
+          // （v2-router handleRecall）旁路会话复用缓存并锚定时效窗口；代理发送时刻
+          // = 查询发起时刻，逐请求新鲜。核心侧缺省自行取 now，传值为显式锚定。
+          time_point: new Date().toISOString(),
           ...(maxResults !== undefined ? { maxResults } : {}),
           ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
         })),
