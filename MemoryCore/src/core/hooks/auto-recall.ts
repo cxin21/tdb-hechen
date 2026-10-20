@@ -65,12 +65,14 @@ import { sanitizeText } from "../../utils/sanitize.js";
 import {
   assembleLayeredLines,
   conclusionFingerprint,
+  allocateConclusionPerLineChars,
   formatConclusionLine,
   parseFtsTokens,
   resolveIdempotentConclusionLines,
   selectL2Conclusions,
   splitBudget,
   truncateConclusionContent,
+  truncateConclusionContentSentences,
   type L2ConclusionCandidate,
 } from "./recall-layered.js";
 import path from "node:path";
@@ -810,10 +812,22 @@ export async function performLayeredRecall(params: {
     // 巨型场景块摘要（首跑 F1：21,660 字符万词面通用匹配器）按 conclusionLayer.maxCharsPerMemory
     // 截断（默认 2000）+ 尾部标注；0 = 通道关闭（逐位现状）。截断先于幂等指纹（截断态即缓存态）。
     const r7ConclusionMaxChars = cfg.recall?.conclusionLayer?.maxCharsPerMemory ?? 2000;
-    if (r7ConclusionMaxChars > 0) {
+    // Batch B F2（2026-10-20 · issue #76）：总预算分配 + 句界截断模式。perLine =
+    // floor(min(maxTotalChars/count, maxCharsPerMemory))；maxTotalChars 缺省/关 →
+    // allocate 恒等返回 maxCharsPerMemory（逐位现状）。截断仍先于幂等指纹与 rerank 门
+    // （缓存态=截断态）。
+    const r7TruncateMode = cfg.recall?.conclusionLayer?.truncateMode ?? "chars";
+    const r7PerLineMaxChars = allocateConclusionPerLineChars(
+      r7Conclusions.length,
+      cfg.recall?.conclusionLayer?.maxTotalChars,
+      r7ConclusionMaxChars,
+    );
+    if (r7PerLineMaxChars > 0) {
       r7Conclusions = r7Conclusions.map((c) => ({
         ...c,
-        content: truncateConclusionContent(c.content, r7ConclusionMaxChars),
+        content: r7TruncateMode === "sentences"
+          ? truncateConclusionContentSentences(c.content, r7PerLineMaxChars)
+          : truncateConclusionContent(c.content, r7PerLineMaxChars),
       }));
     }
     // ── R71-A2（2026-10-19）：结论层 rerank 语义门（主门）──

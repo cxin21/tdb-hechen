@@ -259,6 +259,17 @@ export interface RecallConfig {
     enabled: boolean;
     maxCharsPerMemory: number;
     /**
+     * Batch B F2（2026-10-20 · issue #76）：结论行截断模式——"chars" 码点中句（现状）|
+     * "sentences" 句界整句保留；缺省/非法回落 "chars" = 逐位现状。
+     */
+    truncateMode: "chars" | "sentences";
+    /**
+     * Batch B F2（2026-10-20 · issue #76）：结论层注入总预算（所有结论行合并字符上限）。
+     * 缺省 undefined = 关 = 逐位现状；负/非有限 → 0（关）；正数 floor。行级配额 =
+     * floor(min(maxTotalChars/count, maxCharsPerMemory))（allocateConclusionPerLineChars）。
+     */
+    maxTotalChars?: number;
+    /**
      * v18-c（何晨拍板「全做」2026-10-05）：结论块低密度门——句子级去重保留率下限（0-1；
      * undefined/0 = 关 = 逐位现状；>1 clamp 1）。门在 selectL2Conclusions 候选循环内：
      * conclusionUniqRatio(content) < 阈值 → 跳过取下一名（宁缺毋滥 + 让位语义）。
@@ -1710,6 +1721,19 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         return {
           enabled: bool(cl, "enabled") ?? true,
           maxCharsPerMemory: recallSignalBoost(cl, "maxCharsPerMemory", 2000),
+          // Batch B F2（2026-10-20）：截断模式（"chars"=码点中句现状 | "sentences"=句界；
+          // 缺省/非法回落 "chars"=逐位现状）与结论层总预算（缺省 undefined=关；
+          // 负/非有限→0=关；正数 floor）
+          truncateMode: (() => {
+            const raw = str(cl, "truncateMode");
+            return raw === "sentences" ? "sentences" : "chars";
+          })(),
+          maxTotalChars: (() => {
+            const raw = num(cl, "maxTotalChars");
+            return raw === undefined
+              ? undefined
+              : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+          })(),
           // v18-c：结论块低密度门阈值（clamp [0,1]；缺省 undefined = 关逐位现状）
           minUniqRatio: (() => {
             const raw = num(cl, "minUniqRatio");

@@ -251,6 +251,55 @@ export function truncateConclusionContent(content: string, maxChars: number): st
 }
 
 /**
+ * Batch B F2（2026-10-20 · issue #76）：句界版结论截断——按句累积（。！？；\n 为界、
+ * 保留分隔符），预算内整句保留、装不下的下一句起整句舍弃 + 尾部同款 `…[截断:原文N字]`
+ * 标注（N=原文全码点长，标注计入预算，结果 ≤ maxChars）。首句即超预算（或标注放不下）
+ * → 退化为 truncateConclusionContent 同输出（码点截断语义不回退）。透传守卫与 chars 版
+ * 一致：非 string/空、maxChars<=0/非有限 → 原样返回（通道关闭）。
+ */
+export function truncateConclusionContentSentences(content: string, maxChars: number): string {
+  if (typeof content !== "string" || content.length === 0) return content;
+  if (!Number.isFinite(maxChars) || maxChars <= 0) return content;
+  const limit = Math.floor(maxChars);
+  const cps = Array.from(content);
+  if (cps.length <= limit) return content;
+  const sentences = content.match(/[\s\S]*?[。！？；\n]|[\s\S]+$/g) ?? [];
+  const marker = `…[截断:原文${cps.length}字]`;
+  const markerLen = Array.from(marker).length;
+  const kept: string[] = [];
+  let keptLen = 0;
+  for (const s of sentences) {
+    const len = Array.from(s).length;
+    if (keptLen + len > limit) break;
+    kept.push(s);
+    keptLen += len;
+  }
+  if (kept.length === 0 || keptLen + markerLen > limit) {
+    return truncateConclusionContent(content, maxChars); // 退化：与 chars 模式同输出
+  }
+  return kept.join("").trimEnd() + marker;
+}
+
+/**
+ * Batch B F2（2026-10-20 · issue #76）：结论行总预算分配——
+ * perLine = floor(min(maxTotalChars/count, maxCharsPerMemory))。
+ * maxTotalChars 缺省/非有限/<=0（关）或 count 非有限/<=0 → 返回 maxCharsPerMemory
+ * （= 逐位现状，无总预算约束）；充足预算帽不放大（min 兜底不超单行帽）。
+ */
+export function allocateConclusionPerLineChars(
+  count: number,
+  maxTotalChars: number | undefined,
+  maxCharsPerMemory: number,
+): number {
+  const total =
+    typeof maxTotalChars === "number" && Number.isFinite(maxTotalChars) && maxTotalChars > 0
+      ? Math.floor(maxTotalChars)
+      : undefined;
+  if (total === undefined || !(Number.isFinite(count) && count > 0)) return maxCharsPerMemory;
+  return Math.min(maxCharsPerMemory, Math.floor(total / Math.floor(count)));
+}
+
+/**
  * R7-3 · 结论行格式（带 [结论] 标注，spec §2 R7-3）：`- [结论|场景名] 内容`；
  * 无场景名 → `- [结论] 内容`。保持行首 `- [tag] content` 结构（metric 解析正则兼容）。
  */

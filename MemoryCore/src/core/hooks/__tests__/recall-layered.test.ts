@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  allocateConclusionPerLineChars,
   assembleLayeredLines,
   conclusionFingerprint,
   conclusionIdfScores,
@@ -19,6 +20,7 @@ import {
   selectL2Conclusions,
   splitBudget,
   truncateConclusionContent,
+  truncateConclusionContentSentences,
   type L2ConclusionCandidate,
 } from "../recall-layered.js";
 import { parseConfig } from "../../../config.js";
@@ -505,6 +507,96 @@ describe("#53 selectL2Conclusions idfWeighted（同层内 IDF 降序稳定重排
   it("config 解析：idfWeighted 缺省 false；yaml true 装载", () => {
     expect(parseConfig({ recall: { enabled: true } }).recall.conclusionLayer.idfWeighted).toBe(false);
     expect(parseConfig({ recall: { conclusionLayer: { idfWeighted: true } } }).recall.conclusionLayer.idfWeighted).toBe(true);
+  });
+});
+
+// ═══════════════ Batch B（#76 F2）· 句界累积截断 + 结论层总预算再分配 ═══════════════
+
+describe("Batch B F2 truncateConclusionContentSentences（句界累积截断：预算内整句、句尾不劈半）", () => {
+  const S1 = "根因是配置占位符未展开，累计九十三次鉴权失败。";
+  const S2 = "修复采用 env-first 单一事实源统一出站鉴权。";
+  const S3 = "随后四服务全部恢复二百健康响应。";
+  const text = S1 + S2 + S3;
+  const total = [...text].length;
+
+  it("预算容纳前两句：整句累积，第三句不劈半（尾部标注在场、总长 ≤ maxChars）", () => {
+    const out = truncateConclusionContentSentences(text, 64);
+    const len = [...out].length;
+    expect(len).toBeLessThanOrEqual(64);
+    expect(out.startsWith(S1 + S2)).toBe(true);
+    expect(out.includes(S3)).toBe(false);
+    expect(out).toMatch(new RegExp("…\\[截断:原文" + total + "字\\]$"));
+  });
+
+  it("预算容纳全部句子 → 原样返回（无标注）", () => {
+    expect(truncateConclusionContentSentences(text, 2000)).toBe(text);
+  });
+
+  it("短内容 ≤ maxChars → 原样返回", () => {
+    const s = "一句话结论";
+    expect(truncateConclusionContentSentences(s, 2000)).toBe(s);
+    expect(truncateConclusionContentSentences(s, s.length)).toBe(s);
+  });
+
+  it("首句单独超预算 → 退化 chars 逐位语义（与 truncateConclusionContent 同输出，绝不返空）", () => {
+    const long = "甲".repeat(3000);
+    expect(truncateConclusionContentSentences(long, 100)).toBe(truncateConclusionContent(long, 100));
+  });
+
+  it("maxChars=0/负/非有限 → 透传（0=关闭截断通道）", () => {
+    expect(truncateConclusionContentSentences(text, 0)).toBe(text);
+    expect(truncateConclusionContentSentences(text, -5)).toBe(text);
+    expect(truncateConclusionContentSentences(text, Number.NaN)).toBe(text);
+  });
+
+  it("极小 maxChars（≤ 标注长）→ 纯码点截断不标注（退化不崩溃）", () => {
+    const out = truncateConclusionContentSentences(text, 5);
+    expect([...out].length).toBe(5);
+    expect(out).toBe([...text].slice(0, 5).join(""));
+  });
+
+  it("码点安全：emoji surrogate 不劈半", () => {
+    const emojiText = "结论含emoji😀与中文。后续第二句内容描述展开。再补第三句说明收束。";
+    const out = truncateConclusionContentSentences(emojiText, 20);
+    expect(out.includes("\uFFFD")).toBe(false);
+    expect([...out].length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("Batch B F2 allocateConclusionPerLineChars（结论层总预算→单行预算再分配）", () => {
+  it("maxTotalChars 缺省/0/负/非有限 → maxCharsPerMemory（现状逐位）", () => {
+    expect(allocateConclusionPerLineChars(4, undefined, 2000)).toBe(2000);
+    expect(allocateConclusionPerLineChars(4, 0, 2000)).toBe(2000);
+    expect(allocateConclusionPerLineChars(4, -5, 2000)).toBe(2000);
+    expect(allocateConclusionPerLineChars(4, Number.NaN, 2000)).toBe(2000);
+  });
+
+  it("无结论行（count=0）→ maxCharsPerMemory（现状）", () => {
+    expect(allocateConclusionPerLineChars(0, 3000, 2000)).toBe(2000);
+  });
+
+  it("总预算充足（maxTotal ≥ count×maxCharsPerMemory）→ 单行帽 maxCharsPerMemory（不放大）", () => {
+    expect(allocateConclusionPerLineChars(2, 999999, 2000)).toBe(2000);
+  });
+
+  it("总预算紧张 → floor(maxTotal/count)，且不超过 maxCharsPerMemory", () => {
+    expect(allocateConclusionPerLineChars(3, 100, 2000)).toBe(33);
+    expect(allocateConclusionPerLineChars(2, 3000, 2000)).toBe(1500);
+  });
+});
+
+describe("Batch B F2 config：conclusionLayer.truncateMode / maxTotalChars（缺省=现状逐位）", () => {
+  it("truncateMode 缺省 → chars（现状）；非法值回落 chars", () => {
+    expect(parseConfig({ recall: { enabled: true } }).recall.conclusionLayer.truncateMode).toBe("chars");
+    expect(parseConfig({ recall: { conclusionLayer: { truncateMode: "sentences" } } }).recall.conclusionLayer.truncateMode).toBe("sentences");
+    expect(parseConfig({ recall: { conclusionLayer: { truncateMode: "bogus" } } }).recall.conclusionLayer.truncateMode).toBe("chars");
+  });
+
+  it("maxTotalChars 缺省 → undefined（=关）；正值 floor；0/负 → 0（关）", () => {
+    expect(parseConfig({ recall: { enabled: true } }).recall.conclusionLayer.maxTotalChars).toBeUndefined();
+    expect(parseConfig({ recall: { conclusionLayer: { maxTotalChars: 100.9 } } }).recall.conclusionLayer.maxTotalChars).toBe(100);
+    expect(parseConfig({ recall: { conclusionLayer: { maxTotalChars: 0 } } }).recall.conclusionLayer.maxTotalChars).toBe(0);
+    expect(parseConfig({ recall: { conclusionLayer: { maxTotalChars: -3 } } }).recall.conclusionLayer.maxTotalChars).toBe(0);
   });
 });
 
