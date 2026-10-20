@@ -675,6 +675,9 @@ export interface MemoryLifecycleConfig {
       /** #60（S22，2026-10-18）：反思产物契约门（D6 禁伪造当下体验+第一人称+价值锚
        *  引用，确定性机械校验；通过 → attrs.anchor_refs）；缺省 false=逐位现状。 */
       cardContract?: { enabled?: boolean };
+      /** #77 Batch D（survey F1）：结论卡原子性契约门（一句话一件事拆条引导）。
+       *  拒收门无条件生效，本键只控制 few-shot prompt 附加；缺省 false=逐位现状。 */
+      conclusionContract?: { enabled?: boolean };
     };
     /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
     promiseProposals: { enabled: boolean };
@@ -1550,6 +1553,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         // （显式关/非对象/缺键 = 不带键 = 缺省 off 逐位现状）。
         const cardContractGroup = obj(soulProposalsGroup, "cardContract");
         const cardContractEnabled = bool(cardContractGroup, "enabled");
+        // #77 Batch D（survey F1）：conclusionContract 条件材料化——同 cardContract 形态。
+        const conclusionContractGroup = obj(soulProposalsGroup, "conclusionContract");
+        const conclusionContractEnabled = bool(conclusionContractGroup, "enabled");
         return {
           enabled: bool(soulProposalsGroup, "enabled") ?? false,
           ...(shadowEnabled === undefined && shadowFile === undefined
@@ -1561,6 +1567,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
                 },
               }),
           ...(cardContractEnabled === true ? { cardContract: { enabled: true } } : {}),
+          ...(conclusionContractEnabled === true ? { conclusionContract: { enabled: true } } : {}),
         };
       })(),
       // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状

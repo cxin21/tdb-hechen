@@ -45,6 +45,30 @@ export function validateIdentityNarrative(content: unknown): NarrativeValidation
   return { ok: true };
 }
 
+/** #77 Batch D（survey F1）：结论卡原子性上限（码点；与 l1-extraction.ts:38 抽取链原子性规则同刻度）。 */
+export const REFLECTION_CONCLUSION_MAX_CHARS = 300;
+
+/** 产物契约提示（conclusionContract on 时附加进反思 prompt；一句话一件事拆条引导）。 */
+export const REFLECTION_CONCLUSION_CONTRACT_PROMPT = [
+  "【结论卡产物契约】",
+  "- 一句话一件事：每条 conclusion 只记一个稳定事实或结论，≤300 字。",
+  "- 多事拆条：多个互不依赖的事拆成多条卡，各自独立成立。",
+  "- 宁缺毋滥：证据不足以支撑时，宁可不产出该条结论。",
+].join("\n");
+
+/**
+ * #77 Batch D：结论卡原子性机械门（D8：门只裁决不创作；语义拆分属 LLM few-shot 职责）。
+ * 非串/空 → empty-content；码点 > REFLECTION_CONCLUSION_MAX_CHARS → content-too-long。
+ * 互不依赖事件数不做确定性判定（语义判定非机械门能力，交 few-shot 引导）。
+ */
+export function validateConclusionCard(content: unknown): NarrativeValidation {
+  if (typeof content !== "string") return { ok: false, reason: "empty-content" };
+  const text = content.trim();
+  if (text.length === 0) return { ok: false, reason: "empty-content" };
+  if ([...text].length > REFLECTION_CONCLUSION_MAX_CHARS) return { ok: false, reason: "content-too-long" };
+  return { ok: true };
+}
+
 /**
  * 锚集提取：只认 core_value 槽，逐行取「label：desc」行首段（全角冒号——生产
  * core_value 行格式实证）；无分隔行/空 label 跳过；跨行跨槽去重保首现（输入序）。

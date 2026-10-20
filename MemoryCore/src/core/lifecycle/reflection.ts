@@ -15,7 +15,7 @@ import { embedForLifecycle } from "./embed-helpers.js";
 import { bindSoulAtWrite } from "./consolidation/content-soul.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
-import { REFLECTION_CARD_CONTRACT_PROMPT, labelsFromCoreValueRows, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
+import { REFLECTION_CARD_CONTRACT_PROMPT, REFLECTION_CONCLUSION_CONTRACT_PROMPT, labelsFromCoreValueRows, validateConclusionCard, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
 import type { Logger } from "../types.js";
 
 // #ε-定标（ADR0003 D7）：shadow 定标旁路（行为零变化）——被判定提案的 best verbatim
@@ -54,6 +54,8 @@ export interface ReflectionConfig {
     shadowCalibration?: { enabled?: boolean; file?: string };
     /** #60（S22，2026-10-18）：产物契约门（D6 禁伪造当下体验+第一人称+价值锚引用）；缺省 false=逐位现状。 */
     cardContract?: { enabled?: boolean };
+    /** #77 Batch D（survey F1）：结论卡原子性契约门（一句话一件事拆条引导）；缺省 false=逐位现状。 */
+    conclusionContract?: { enabled?: boolean };
   };
   /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
   promiseProposals?: { enabled?: boolean };
@@ -157,16 +159,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; promiseProposalsPushed: number; promiseCreationsPushed: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -182,6 +184,8 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
 
   let triggered = 0;
   let cardsWritten = 0;
+  // #77 Batch D：结论卡校验门拒收计数（跨租户累加，终值随 return 暴露供可观测）。
+  let skipped = 0;
   let proposalsPushed = 0;
   let promiseProposalsPushed = 0;
   let promiseCreationsPushed = 0;
@@ -235,12 +239,24 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
     if (cfg.soulProposals?.cardContract?.enabled === true) {
       promptLines.push(REFLECTION_CARD_CONTRACT_PROMPT);
     }
+    // #77 Batch D（survey F1）：结论卡拆条引导——conclusionContract on 才附加（off = prompt 逐位现状）。
+    if (cfg.soulProposals?.conclusionContract?.enabled === true) {
+      promptLines.push(REFLECTION_CONCLUSION_CONTRACT_PROMPT);
+    }
     promptLines.push("请按三问式输出反思结论 JSON 数组（字段：question/conclusion/evidence）。无合格结论输出 []。");
     const raw = await deps.llmRunner.run({ prompt: promptLines.join("\n"), systemPrompt: REFLECTION_SYSTEM_PROMPT, taskId: "reflection-l3", timeoutMs: 0, maxTokens: 0 });
     deps.logger?.debug?.(`[reflection] tenant=${JSON.stringify([triple.teamId, triple.userId, triple.agentId])} rawLen=${String(raw ?? "").length} rawPreview=${String(raw ?? "").slice(0, 200)}`);
     const proposals = parseReflectionProposals(String(raw ?? "")).slice(0, maxConclusions);
     const now = new Date().toISOString();
     for (const pr of proposals) {
+      // #77 Batch D（survey F1）：结论卡确定性校验门——空/超 300 码点拒收（D8 门只裁决不创作；
+      // 语义拆分属 LLM few-shot 职责）。skipped 并入返回值供可观测。
+      const gate = validateConclusionCard(pr.conclusion);
+      if (!gate.ok) {
+        skipped++;
+        deps.logger?.warn?.(`[reflection] conclusion card rejected: ${gate.reason} len=${Array.from(String(pr.conclusion ?? "")).length}`);
+        continue;
+      }
       // 终测实证（D-R5-6 续）：真实 store.upsertL1 静默返回 false——MemoryRecord 必填
       // 会话/版本/确信度字段缺位（probe 的 mock store 掩盖）。补齐与 consolidation
       // 持续态同形（work_fact/observed 先例）：sessionKey/sessionId/version/certainty。
@@ -449,6 +465,6 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       }
     }
   }
-  return { triggered, cardsWritten, proposalsPushed, promiseProposalsPushed, promiseCreationsPushed };
+  return { triggered, cardsWritten, proposalsPushed, promiseProposalsPushed, promiseCreationsPushed, skipped };
 }
 void DEFAULTS;

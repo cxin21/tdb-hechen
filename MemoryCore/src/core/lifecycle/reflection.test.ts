@@ -119,6 +119,53 @@ describe("Batch C C-a：反思写卡 occurred_at 合标（#77：340/397 work_fac
   });
 });
 
+describe("Batch D D-a：结论卡确定性校验门 + few-shot（#77 · survey F1）", () => {
+  const triggerRows = (): Record<string, unknown>[] => [
+    rec("r1", "用户坚持先给结论", 0.9),
+    rec("r2", "用户每周五复盘", 0.8),
+    rec("r3", "用户偏好清单式评审", 0.7),
+  ];
+
+  it("超 300 字结论卡拒收：upsertL1 只收合格卡（门无条件生效，D8 门只裁决不创作）", async () => {
+    const store = makeStore();
+    const oversized = "整".repeat(301);
+    const llmRunner = { run: vi.fn(async () => `[{"question":"q1","conclusion":"${oversized}","evidence":["r1"]},{"question":"q2","conclusion":"用户偏好结论先行的沟通方式","evidence":["r2"]}]`) };
+    const res = await runReflection({
+      queryL1: async () => triggerRows() as never,
+      config: { enabled: true, rRef: 2 },
+      store, llmRunner, logger: LOG,
+    });
+    expect(store.upsertL1).toHaveBeenCalledTimes(1);
+    const card = (store.upsertL1.mock.calls[0] as unknown[])[0] as { content?: unknown };
+    expect(card.content).toBe("用户偏好结论先行的沟通方式");
+    expect(res.cardsWritten).toBe(1);
+  });
+
+  it("few-shot gate on：conclusionContract.enabled=true → prompt 含「一句话一件事」拆条引导", async () => {
+    const store = makeStore();
+    const llmRunner = { run: vi.fn(async () => "[]") };
+    await runReflection({
+      queryL1: async () => triggerRows() as never,
+      config: { enabled: true, rRef: 2, soulProposals: { conclusionContract: { enabled: true } } },
+      store, llmRunner, logger: LOG,
+    });
+    const prompt = ((llmRunner.run.mock.calls[0] as unknown[])[0] as { prompt?: string }).prompt ?? "";
+    expect(prompt).toContain("一句话一件事");
+  });
+
+  it("few-shot gate off（缺省）：prompt 逐位现状不含拆条引导", async () => {
+    const store = makeStore();
+    const llmRunner = { run: vi.fn(async () => "[]") };
+    await runReflection({
+      queryL1: async () => triggerRows() as never,
+      config: { enabled: true, rRef: 2 },
+      store, llmRunner, logger: LOG,
+    });
+    const prompt = ((llmRunner.run.mock.calls[0] as unknown[])[0] as { prompt?: string }).prompt ?? "";
+    expect(prompt).not.toContain("一句话一件事");
+  });
+});
+
 describe("parseReflectionProposals", () => {
   it("宽松 JSON 提取 + 非法输入空数组", () => {
     // #44：parse 契约扩展 promiseTransitions（缺省 []，可选提议面）——非 promise 字段逐位不变。

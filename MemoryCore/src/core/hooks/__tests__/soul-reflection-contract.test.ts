@@ -14,8 +14,11 @@ import { describe, expect, it } from "vitest";
 import {
   FORBID_CURRENT_EXPERIENCE_RE,
   REFLECTION_CARD_CONTRACT_PROMPT,
+  REFLECTION_CONCLUSION_CONTRACT_PROMPT,
+  REFLECTION_CONCLUSION_MAX_CHARS,
   extractValueAnchorRefs,
   labelsFromCoreValueRows,
+  validateConclusionCard,
   validateIdentityNarrative,
   validateReflectionCardContract,
 } from "../soul-reflection-contract.js";
@@ -118,5 +121,38 @@ describe("#60 REFLECTION_CARD_CONTRACT_PROMPT", () => {
     expect(REFLECTION_CARD_CONTRACT_PROMPT).toContain("第一人称");
     expect(REFLECTION_CARD_CONTRACT_PROMPT).toContain("当下");
     expect(REFLECTION_CARD_CONTRACT_PROMPT).toContain("价值锚");
+  });
+});
+
+describe("#77 Batch D validateConclusionCard（结论卡原子性机械门 · survey F1）", () => {
+  it("空串/纯空白 → empty-content", () => {
+    expect(validateConclusionCard("")).toMatchObject({ ok: false, reason: "empty-content" });
+    expect(validateConclusionCard("   ")).toMatchObject({ ok: false, reason: "empty-content" });
+  });
+
+  it("非串（null/undefined/数字）→ empty-content（写入 rec.content 须为串）", () => {
+    expect(validateConclusionCard(null)).toMatchObject({ ok: false, reason: "empty-content" });
+    expect(validateConclusionCard(undefined)).toMatchObject({ ok: false, reason: "empty-content" });
+    expect(validateConclusionCard(123)).toMatchObject({ ok: false, reason: "empty-content" });
+  });
+
+  it("300 码点内 → ok", () => {
+    expect(validateConclusionCard("一句话结论。")).toMatchObject({ ok: true });
+    expect(validateConclusionCard("长".repeat(300))).toMatchObject({ ok: true });
+  });
+
+  it("301 码点 → content-too-long（复用 l1-extraction.ts:38 原子性上限同刻度）", () => {
+    expect(validateConclusionCard("长".repeat(301))).toMatchObject({ ok: false, reason: "content-too-long" });
+  });
+
+  it("码点刻度：emoji（UTF-16 双单元）按码点计——300 个通过、301 拒绝", () => {
+    expect(validateConclusionCard("\u{1F600}".repeat(300))).toMatchObject({ ok: true });
+    expect(validateConclusionCard("\u{1F600}".repeat(301))).toMatchObject({ ok: false, reason: "content-too-long" });
+  });
+
+  it("上限常量 = 300 且 few-shot 模板点名拆条要求", () => {
+    expect(REFLECTION_CONCLUSION_MAX_CHARS).toBe(300);
+    expect(REFLECTION_CONCLUSION_CONTRACT_PROMPT).toContain("一句话一件事");
+    expect(REFLECTION_CONCLUSION_CONTRACT_PROMPT).toContain("宁缺毋滥");
   });
 });
