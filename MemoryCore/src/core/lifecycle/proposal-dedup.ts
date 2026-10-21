@@ -39,6 +39,15 @@ export function proposalSimilarity(a: string, b: string): number {
 /** 去重阈值（生产 102 条全行标定，见文件头）。 */
 export const PROPOSAL_DUP_THRESHOLD = 0.75;
 
+/**
+ * P3 #80（2026-10-21 用户拍板「增量生成：相似→更新而非新增」）：红线槽内行合并阈值。
+ * 标定：生产槽 14 行两两矩阵——真重复对 L1×L2=0.508、L4×L10=0.459 呈孤立相似峰，
+ * 次高对仅 0.097——0.40 捕获全部真重复且距次高对 4 倍安全边距（宁漏勿错杀原则不变，
+ * Panel 人工采纳兜底）。与 PROPOSAL_DUP_THRESHOLD=0.75（pending 闸门，高阈值=宁漏勿
+ * 错杀）分域：槽内合并是用户显式拍板放行的更激进合并（更新而非新增）。
+ */
+export const REDLINE_MERGE_THRESHOLD = 0.4;
+
 /** 在同类（同 slot）既有提案/已采纳条目中找语义重复项（取最高相似度者；无 → undefined）。 */
 export function findDuplicateProposal(
   content: string,

@@ -5,9 +5,14 @@
  * upsertCore(decided.content)（整槽替换）——5 次采纳使 strict_rule 槽仅剩最后一条，
  * 原 3 条红线被挤出注入（生产实锚：slot version 1→6、content 仅剩 A/B 单行）。
  *
- * 语义：既有行全保留 + 采纳行追加 + 按行体去重（幂等）+ '- ' 前缀规范化。
- * 单一源：strict_rule 采纳写入的唯一合并实现（identity 类槽由 worker mergeIdentityFacts 承载，互不复制）。
+ * 语义：既有行全保留 + 采纳行按行处理——全等幂等（保持）→ 相似≥阈值取最高相似行
+ * （P3 #80 2026-10-21 用户拍板「增量生成：相似→更新而非新增」：采纳行码点更长则原位替换
+ * =更新，否则旧行保留、采纳行丢弃）→ 不相似追加（V12-ADJ 语义不变）+ '- ' 前缀规范化。
+ * 单一源：strict_rule 采纳写入的唯一合并实现（identity 类槽由 worker mergeIdentityFacts 承载，
+ * 互不复制）；相似度单一源=core/lifecycle/proposal-dedup proposalSimilarity。
  */
+import { proposalSimilarity, REDLINE_MERGE_THRESHOLD } from "../core/lifecycle/proposal-dedup.js";
+
 export function mergeStrictRuleContent(existing: string | undefined | null, adopted: string): string {
   const norm = (l: string): string => l.trim().replace(/^-+\s*/, '');
   const lines: string[] = [];
@@ -18,8 +23,26 @@ export function mergeStrictRuleContent(existing: string | undefined | null, adop
     if (lines.some((x) => norm(x) === body)) continue;
     lines.push(line.startsWith('-') ? line : '- ' + line);
   }
-  const body = norm(adopted);
-  if (body && !lines.some((x) => norm(x) === body)) lines.push('- ' + body);
+  for (const adoptedLine of String(adopted ?? '').split('\n')) {
+    const body = norm(adoptedLine);
+    if (!body) continue;
+    if (lines.some((x) => norm(x) === body)) continue; // 全等幂等（V12-ADJ 保持）
+    let bestIdx = -1;
+    let bestSim = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const s = proposalSimilarity(body, norm(lines[i]));
+      if (s > bestSim) {
+        bestSim = s;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx >= 0 && bestSim >= REDLINE_MERGE_THRESHOLD) {
+      // 相似合并：保留信息更全行（码点更长）于原位；等长/更短 → 旧行保留（宁保守不降信息量）。
+      if ([...body].length > [...norm(lines[bestIdx])].length) lines[bestIdx] = '- ' + body;
+      continue;
+    }
+    lines.push('- ' + body);
+  }
   return lines.join('\n');
 }
 
