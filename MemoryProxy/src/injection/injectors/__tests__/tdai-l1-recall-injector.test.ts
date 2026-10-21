@@ -271,3 +271,120 @@ describe("#40 · TdaiL1RecallInjector capabilities 策展（self-only 携带）"
     expect(args[5]).toEqual(CAP_LINES);
   });
 });
+
+// ═══════════════ #87 · 同意图只自动召回一次（会话级 intent 指纹闸） ═══════════════
+
+describe("#87 · TdaiL1RecallInjector 同意图去重闸（仅 intent 档）", () => {
+  const INTENT = "不要影子规则，直接完整实现";
+  const MERGE_BLOCK_87 = "<relevant-memories>\n- [结论|#87] 去重闸测试块\n</relevant-memories>";
+
+  /** intent 档 ctx：metadata.sessionKey + custom.tdaiTurnContext.turnIntent 定源。 */
+  function makeIntentCtx(sessionKey: string, intent: string) {
+    const base = makeCtx("占位：intent 档 query 由 turnIntent 提供") as Parameters<TdaiL1RecallInjector["execute"]>[0];
+    base.metadata.sessionKey = sessionKey;
+    (base.metadata.custom as Record<string, unknown>).tdaiTurnContext = {
+      turnIntent: { classification: "real", text: intent },
+      classified: [],
+    };
+    return base;
+  }
+
+  function makeDedupInjector(dedup: boolean, recallBlock?: () => Promise<{ block: string; meta: Record<string, unknown> } | null>) {
+    const recallBlockForCtx = vi.fn(recallBlock ?? (async () => ({
+      block: MERGE_BLOCK_87,
+      meta: { conclusionCount: 1, experienceCount: 0, sessionReused: false, layered: true },
+    })));
+    const searchL1ForCtx = vi.fn(async () => [] as Array<{ type: string; content: string; score: number }>);
+    const injector = new TdaiL1RecallInjector(
+      { recallBlockForCtx, searchL1ForCtx } as unknown as TdaiClient,
+      null, undefined, 5, null, undefined, undefined,
+      "intent",
+      dedup,
+    );
+    return { injector, recallBlockForCtx };
+  }
+
+  it("同 session 第二步同意图 → 不再 POST，execute 返回 []", async () => {
+    const { injector, recallBlockForCtx } = makeDedupInjector(true);
+    const first = await injector.execute(makeIntentCtx("sessA", INTENT));
+    expect(first).toHaveLength(1);
+    const second = await injector.execute(makeIntentCtx("sessA", INTENT));
+    expect(second).toEqual([]);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+  });
+
+  it("新意图（同 session）→ 正常再次召回", async () => {
+    const { injector, recallBlockForCtx } = makeDedupInjector(true);
+    await injector.execute(makeIntentCtx("sessA", INTENT));
+    const second = await injector.execute(makeIntentCtx("sessA", "换一个问题：召回为什么要去重"));
+    expect(second).toHaveLength(1);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+  });
+
+  it("dedup=false（config 关）→ 同意图每步都召回（行为逐位现状）", async () => {
+    const { injector, recallBlockForCtx } = makeDedupInjector(false);
+    await injector.execute(makeIntentCtx("sessA", INTENT));
+    await injector.execute(makeIntentCtx("sessA", INTENT));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+  });
+
+  it("召回成功但 0 行 → 仍置指纹（下一步同意图跳过）", async () => {
+    const { injector, recallBlockForCtx } = makeDedupInjector(true, async () => ({
+      block: "",
+      meta: { conclusionCount: 0, experienceCount: 0, sessionReused: false, layered: true },
+    }));
+    const first = await injector.execute(makeIntentCtx("sessA", INTENT));
+    expect(first).toEqual([]);
+    const second = await injector.execute(makeIntentCtx("sessA", INTENT));
+    expect(second).toEqual([]);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST 异常不置指纹：主链+降级路同败 → execute 拒绝；恢复后成功召回；第三步跳过", async () => {
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
+    try {
+      const recallBlockForCtx = vi.fn()
+        .mockRejectedValueOnce(new Error("/v3/recall http 500"))
+        .mockResolvedValue({ block: MERGE_BLOCK_87, meta: { conclusionCount: 1, experienceCount: 0, sessionReused: false, layered: true } });
+      const searchL1ForCtx = vi.fn().mockRejectedValueOnce(new Error("atomic search down")).mockResolvedValue([]);
+      const injector = new TdaiL1RecallInjector(
+        { recallBlockForCtx, searchL1ForCtx } as unknown as TdaiClient,
+        null, undefined, 5, null, undefined, undefined, "intent", true,
+      );
+      await expect(injector.execute(makeIntentCtx("sessA", INTENT))).rejects.toThrow();
+      const recovered = await injector.execute(makeIntentCtx("sessA", INTENT));
+      expect(recovered).toHaveLength(1);
+      const third = await injector.execute(makeIntentCtx("sessA", INTENT));
+      expect(third).toEqual([]);
+      expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("legacy 档不受去重影响：同文本每步都召回", async () => {
+    const recallBlockForCtx = vi.fn(async () => ({
+      block: MERGE_BLOCK_87,
+      meta: { conclusionCount: 1, experienceCount: 0, sessionReused: false, layered: true },
+    }));
+    const injector = new TdaiL1RecallInjector(
+      { recallBlockForCtx, searchL1ForCtx: vi.fn(async () => []) } as unknown as TdaiClient,
+      null, undefined, 5, null, undefined, undefined, "legacy", true,
+    );
+    await injector.execute(makeCtx("同一句提问"));
+    await injector.execute(makeCtx("同一句提问"));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+  });
+
+  it("容量上限 200：超限清空不崩、最早会话指纹让位可再次召回", async () => {
+    const { injector, recallBlockForCtx } = makeDedupInjector(true);
+    for (let i = 0; i < 200; i++) {
+      await injector.execute(makeIntentCtx(`sess-${i}`, INTENT));
+    }
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(200);
+    await injector.execute(makeIntentCtx("sess-overflow", INTENT));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(201);
+    await injector.execute(makeIntentCtx("sess-0", INTENT));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(202);
+  });
+});

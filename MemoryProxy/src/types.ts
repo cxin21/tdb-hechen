@@ -315,6 +315,8 @@ export interface TdaiConfig {
     recallQuerySource: "legacy" | "shadow" | "intent";
     /** #83 L0 捕获档位：legacy=单条提取（现状）|shadow=双跑对比日志|classified=入口分类全量写（宁漏勿杀）。默认 legacy。 */
     l0CaptureMode: "legacy" | "shadow" | "classified";
+    /** #87 同意图只自动召回一次：intent 档会话级指纹闸开关（legacy/shadow 不消费）。默认 true。 */
+    recallIntentDedup: boolean;
     timeoutMs: number;
   };
 }

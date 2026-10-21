@@ -466,6 +466,8 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
           config.injection?.toolCapabilities?.enabled,
           // #83：query 来源三档（缺省 legacy = 现行为逐位不变）。
           config.tdai.memory.recallQuerySource,
+          // #87：同意图去重闸（缺省 true，仅 intent 档消费）。
+          config.tdai.memory.recallIntentDedup,
         ),
       );
     }

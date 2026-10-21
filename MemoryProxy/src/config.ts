@@ -134,6 +134,9 @@ export const DEFAULT_CONFIG: ProxyConfig = {
       // l0CaptureMode —— L0 捕获：legacy=单条提取（现状）；shadow=双跑对比日志；
       // classified=turnContext 全量写入并带 classification 标签（宁漏勿杀）。
       l0CaptureMode: "legacy",
+      // #87 同意图去重：intent 档同 session 同意图只自动召回一次（会话级指纹闸）；
+      // legacy/shadow 行为不变。缺省 true。
+      recallIntentDedup: true,
       timeoutMs: 3000,
     },
   },
@@ -578,6 +581,8 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         // #83 入口单点定源（缺省 legacy = 现行为逐位不变）。
         recallQuerySource: yaml.tdai?.memory?.recallQuerySource ?? DEFAULT_CONFIG.tdai.memory.recallQuerySource,
         l0CaptureMode: yaml.tdai?.memory?.l0CaptureMode ?? DEFAULT_CONFIG.tdai.memory.l0CaptureMode,
+        // #87 同意图去重（缺省 true，仅 intent 档消费）。
+        recallIntentDedup: yaml.tdai?.memory?.recallIntentDedup ?? DEFAULT_CONFIG.tdai.memory.recallIntentDedup,
         timeoutMs: yaml.tdai?.memory?.timeoutMs ?? DEFAULT_CONFIG.tdai.memory.timeoutMs,
       },
     },

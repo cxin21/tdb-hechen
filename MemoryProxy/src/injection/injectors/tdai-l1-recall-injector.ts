@@ -27,11 +27,16 @@ import { log } from "../../report/log.js";
  *
  * 控制面不可达时（fixed-asset 解析降级）：仅查当前 agent 的 L1（与改造前的行为一致）。
  */
+/** #87 同意图去重闸：会话级 last-recalled-intent 指纹容量上限（超限清空，镜像 recorder L0_FP_MAX_SESSIONS 模式）。 */
+const INTENT_FP_MAX_SESSIONS = 200;
+
 export class TdaiL1RecallInjector implements InjectionHook {
   id = "tdai-l1-recall-injector";
   point = "user.before" as const;
   priority: HookPriority = HOOK_PRIORITY.MEMORY;
   description = "Recall TDAI L1 memories from self + imported agents and prepend them to the current user turn";
+  /** #87：sessionKey → 最近一次已成功召回的 intent 文本（仅 intent 档写入与消费）。 */
+  private lastIntentBySession = new Map<string, string>();
 
   /**
    * @param sessionInitConfig 用来调控制面拿 fixed-asset-agents；如果 null，
@@ -67,6 +72,11 @@ export class TdaiL1RecallInjector implements InjectionHook {
      * intent=读 turnContext.turnIntent（缺 turnContext 时保持 legacy 行为）。
      */
     private querySource: "legacy" | "shadow" | "intent" = "legacy",
+    /**
+     * #87 同意图去重：intent 档下同 session 同意图已成功召回过 → 跳过 POST 零召回
+     * （「一步一查」收敛为「一意图一查」）。缺省 true；legacy/shadow 行为逐位不变。
+     */
+    private recallIntentDedup = true,
   ) {}
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
@@ -91,6 +101,13 @@ export class TdaiL1RecallInjector implements InjectionHook {
         // intent 档：turnIntent 缺失（全 scaffold/unknown 轮）→ query 空 → 零召回
         //（不把噪声送检）；turnContext 缺失 → else 分支限频 warn（Me1 修复），行为保持 legacy。
         query = intentQuery;
+        // ── #87 同意图去重闸（仅 intent 档）：同 session 同意图已成功召回过 → 跳过 POST
+        // 零召回（journal 无行、无 ~2.6s 延迟）。指纹在召回成功后更新（markIntentRecalled），
+        // POST 异常不置 → 下一步自动重试。多步 agentic 轮内「一步一查」收敛为「一意图一查」。
+        if (this.recallIntentDedup && query && this.lastIntentBySession.get(ctx.metadata.sessionKey ?? "") === query) {
+          log.info("dsh-recall-intent-dedup-skip", { session: ctx.metadata.sessionKey ?? "", intentHead: query.slice(0, 80) });
+          return [];
+        }
       } else {
         // shadow 档：双跑对比日志，行为仍用 legacy query（影子期零行为变化）。
         log.info("dsh-recall-query-shadow", {
@@ -162,6 +179,8 @@ export class TdaiL1RecallInjector implements InjectionHook {
     if (mergedChain !== null) {
       // #83 哨兵：recall 空响应采样（log-only）
       recordRecallOutcome(mergedChain.length === 0);
+      // #87：主链召回成功（含空结果）→ 置会话意图指纹。
+      this.markIntentRecalled(ctx.metadata.sessionKey ?? "", query);
       return mergedChain;
     }
 
@@ -188,6 +207,8 @@ export class TdaiL1RecallInjector implements InjectionHook {
       .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity))
       .slice(0, this.globalTopK);
 
+    // #87：降级路召回成功（含空结果）→ 同样置指纹，避免每步重查。
+    this.markIntentRecalled(ctx.metadata.sessionKey ?? "", query);
     if (merged.length === 0) return [];
 
     const lines: string[] = [
@@ -216,6 +237,13 @@ export class TdaiL1RecallInjector implements InjectionHook {
         },
       },
     ];
+  }
+
+  /** #87：召回成功后更新会话级意图指纹（仅 intent 档 + dedup 开）。容量超限清空防泄漏。 */
+  private markIntentRecalled(sessionKey: string, intent: string): void {
+    if (this.querySource !== "intent" || !this.recallIntentDedup) return;
+    if (this.lastIntentBySession.size >= INTENT_FP_MAX_SESSIONS) this.lastIntentBySession.clear();
+    this.lastIntentBySession.set(sessionKey, intent);
   }
 
   /**
