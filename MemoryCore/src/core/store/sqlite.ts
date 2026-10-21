@@ -195,6 +195,8 @@ export interface L0RecordRow {
   message_text: string;
   recorded_at: string;
   timestamp: number;
+  /** #83 入口单点定源：行级分类标签（存量行=unclassified） */
+  classification?: string;
 }
 
 const TAG = "[memory-tdai][sqlite]";
@@ -1099,6 +1101,12 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
+    // #83 入口单点定源：L0 行级分类标签（real/artifact/echo/scaffold/dup/unknown）。
+    // 存量行缺省 'unclassified'；#84 存量回填走 UPDATE-only（零删除红线内）。
+    try {
+      this.db.exec("ALTER TABLE l0_conversations ADD COLUMN classification TEXT NOT NULL DEFAULT 'unclassified'");
+      this.logger?.debug?.(`${TAG} Migrated l0_conversations: added classification column`);
+    } catch { /* exists */ }
     this.db.prepare("UPDATE l0_conversations SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l0_conversations SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l0_conversations SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
@@ -1145,8 +1153,8 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0UpsertMeta = this.db.prepare(`
       INSERT INTO l0_conversations (
         record_id, session_key, session_id, team_id, task_id, role, message_text, recorded_at, timestamp,
-        user_id, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, agent_id, classification
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         message_text=excluded.message_text,
         recorded_at=excluded.recorded_at,
@@ -1164,7 +1172,7 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0DeleteMeta = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?");
 
     this.stmtL0GetMeta = this.db.prepare(`
-      SELECT session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp, classification
       FROM l0_conversations WHERE record_id = ?
     `);
 
@@ -4386,6 +4394,9 @@ export class VectorStore implements IMemoryStore {
           record.timestamp,
           (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
           (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
+          // #83：行级分类标签（未传=unclassified；冲突时保留原值——classification
+          // 刻意不在 ON CONFLICT UPDATE SET 中，防止旧写入把已回填标签降级）
+          (record as L0Record & { classification?: string }).classification ?? "unclassified",
         );
 
         if (!skipVec) {

@@ -4,6 +4,8 @@ import { getLastUserMessage, getMessageText } from "../context.js";
 import type { TdaiClient } from "../../tdai/client.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
 import { extractUserQueryText } from "../../tdai/recorder.js";
+import type { TurnContext } from "../../common/intent-classifier.js";
+import { recordRecallOutcome, recordTurnIntentPresence, warnTurnContextMissing } from "../../tdai/sentinel.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs } from "./tdai-fixed-asset.js";
@@ -59,6 +61,12 @@ export class TdaiL1RecallInjector implements InjectionHook {
      */
     private capabilitiesLines?: readonly string[],
     private capabilitiesEnabled?: boolean,
+    /**
+     * #83 入口单点定源：query 来源三档（tdai.memory.recallQuerySource）。
+     * legacy=现状裸取尾+提取器；shadow=分类器双跑对比日志（行为不变）；
+     * intent=读 turnContext.turnIntent（缺 turnContext 时保持 legacy 行为）。
+     */
+    private querySource: "legacy" | "shadow" | "intent" = "legacy",
   ) {}
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
@@ -71,7 +79,33 @@ export class TdaiL1RecallInjector implements InjectionHook {
     // （后者含 <user_info>/<additional_data>/<question_answer> 等噪声，
     //  会让 FTS5/向量检索命中率极低甚至 0，导致 L1 召不回）。
     const rawUserText = getMessageText(lastUser);
-    const query = extractUserQueryText(rawUserText).trim().slice(0, 2048);
+    const legacyQuery = extractUserQueryText(rawUserText).trim().slice(0, 2048);
+    // ── #83 入口单点定源：query 来源三档（config tdai.memory.recallQuerySource，
+    //    缺省 legacy=直接用 legacyQuery，行为逐位不变）──
+    const turnContext = (ctx.metadata.custom as { tdaiTurnContext?: TurnContext | null } | undefined)?.tdaiTurnContext ?? null;
+    let query = legacyQuery;
+    if (this.querySource !== "legacy" && turnContext) {
+      const intentQuery = turnContext.turnIntent ? turnContext.turnIntent.text.trim().slice(0, 2048) : "";
+      recordTurnIntentPresence(ctx.metadata.sessionKey ?? "", intentQuery.length > 0);
+      if (this.querySource === "intent") {
+        // intent 档：turnIntent 缺失（全 scaffold/unknown 轮）→ query 空 → 零召回
+        //（不把噪声送检）；turnContext 缺失 → else 分支限频 warn（Me1 修复），行为保持 legacy。
+        query = intentQuery;
+      } else {
+        // shadow 档：双跑对比日志，行为仍用 legacy query（影子期零行为变化）。
+        log.info("dsh-recall-query-shadow", {
+          legacyLen: legacyQuery.length,
+          intentLen: intentQuery.length,
+          match: legacyQuery === intentQuery,
+          legacyHead: legacyQuery.slice(0, 80),
+          intentHead: intentQuery.slice(0, 80),
+        });
+      }
+    } else if (this.querySource !== "legacy") {
+      // Me1 修复（2026-10-22 审查）：此前注释宣称「哨兵与 loud 日志兜底」但实现无 else，
+      // turnContext 缺失（handler 未接线/旧渠道）静默回落 legacy。限频 warn 补可观测性。
+      warnTurnContextMissing(ctx.metadata.sessionKey ?? "", this.querySource);
+    }
     if (!query) return [];
 
     // 审查修补 I②（跨链路防重，最小方案）：MemoryCore before_prompt_build 链路的注入块
@@ -125,7 +159,11 @@ export class TdaiL1RecallInjector implements InjectionHook {
         mergedChain = null;
       }
     }
-    if (mergedChain !== null) return mergedChain;
+    if (mergedChain !== null) {
+      // #83 哨兵：recall 空响应采样（log-only）
+      recordRecallOutcome(mergedChain.length === 0);
+      return mergedChain;
+    }
 
     // ── 降级路（现状逐位保留）：并发对每个 ctx search L1，自行组装 ──
     const groups = await Promise.all(

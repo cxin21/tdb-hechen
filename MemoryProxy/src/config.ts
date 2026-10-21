@@ -127,6 +127,13 @@ export const DEFAULT_CONFIG: ProxyConfig = {
       // R7 复审 Minor ③：globalTopK 由硬编码 5 配置化；缺省 5 = 现行为不变。
       l1GlobalTopK: 5,
       l2Limit: 3,
+      // #83 入口单点定源（config-first，缺省 legacy = 现行为逐位不变）：
+      // recallQuerySource —— 召回 query 来源：legacy=裸取尾+提取器（现状）；
+      // shadow=分类器双跑对比日志（行为不变）；intent=读 turnContext.turnIntent。
+      recallQuerySource: "legacy",
+      // l0CaptureMode —— L0 捕获：legacy=单条提取（现状）；shadow=双跑对比日志；
+      // classified=turnContext 全量写入并带 classification 标签（宁漏勿杀）。
+      l0CaptureMode: "legacy",
       timeoutMs: 3000,
     },
   },
@@ -568,6 +575,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         // R7 复审 Minor ③：L1 召回合并 top-K 配置化（缺省 5 = 现行为不变）。
         l1GlobalTopK: yaml.tdai?.memory?.l1GlobalTopK ?? DEFAULT_CONFIG.tdai.memory.l1GlobalTopK,
         l2Limit: yaml.tdai?.memory?.l2Limit ?? DEFAULT_CONFIG.tdai.memory.l2Limit,
+        // #83 入口单点定源（缺省 legacy = 现行为逐位不变）。
+        recallQuerySource: yaml.tdai?.memory?.recallQuerySource ?? DEFAULT_CONFIG.tdai.memory.recallQuerySource,
+        l0CaptureMode: yaml.tdai?.memory?.l0CaptureMode ?? DEFAULT_CONFIG.tdai.memory.l0CaptureMode,
         timeoutMs: yaml.tdai?.memory?.timeoutMs ?? DEFAULT_CONFIG.tdai.memory.timeoutMs,
       },
     },

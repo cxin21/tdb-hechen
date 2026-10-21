@@ -44,6 +44,8 @@ import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
 import { TdaiClient } from "./tdai/client.js";
 import { deriveTdaiIdentity } from "./tdai/identity.js";
 import { extractLatestUserMessage, recordTdaiTurn } from "./tdai/recorder.js";
+import { classifyInbound, type TurnContext } from "./common/intent-classifier.js";
+import { recordTurnIntentPresence } from "./tdai/sentinel.js";
 import { trackWrite, withL0Retry } from "./tdai/pending-writes.js";
 import type { TdaiIdentity, TdaiMessage } from "./tdai/types.js";
 import { triggerSkillExtractIfReady } from "./skill/handler-glue.js";
@@ -1182,6 +1184,17 @@ export async function handleAnthropicMessages(
       });
   const tdaiUserMessage = extractLatestUserMessage(messages);
 
+  // ── #83 入口单点定源：本轮 turnIntent 与逐条分类，一次分类随流传递 ──
+  // 仅在任一档位 ≠ legacy 时计算（config-first：全 legacy 零开销、行为逐位不变）。
+  const tdaiRecallQuerySource = config.tdai.memory.recallQuerySource;
+  const tdaiL0CaptureMode = config.tdai.memory.l0CaptureMode;
+  const tdaiTurnContext = (tdaiRecallQuerySource !== "legacy" || tdaiL0CaptureMode !== "legacy")
+    ? classifyInbound(messages)
+    : null;
+  if (tdaiTurnContext) {
+    recordTurnIntentPresence(sessionKey, tdaiTurnContext.turnIntent != null);
+  }
+
   // ── Context injection (before cost guard) ────────────────────────────────
   // CC 分流：
   //   - SIDEQUERY: 完全跳过 injection（自带短 prompt，不共享 cache）
@@ -1208,7 +1221,7 @@ export async function handleAnthropicMessages(
         // 透传原始请求路径 —— AssetReflectionInjector 用它判断 `/analyse` marker。
         // 其它 injector 不依赖此字段。
         requestPath: c.req.path,
-        custom: sessionInfo ? { session: sessionInfo, userKey: callerUserKey ?? undefined, assetCapabilities } : undefined,
+        custom: sessionInfo ? { session: sessionInfo, userKey: callerUserKey ?? undefined, assetCapabilities, tdaiTurnContext } : undefined,
         readOnly: requestKind === "fork",
       });
       body = injectedBody;
@@ -1568,6 +1581,7 @@ export async function handleAnthropicMessages(
       tdaiClient,
       tdaiIdentity,
       tdaiUserMessage,
+      tdaiTurnContext,
       assetCapabilities,
       lf,
       spaceId,
@@ -1799,7 +1813,11 @@ export async function handleAnthropicMessages(
   // 常用的 stream:false）沉默丢失。缺失该调用意味着 CC non-stream 场景
   // 完全没有 L0 记忆写入。
   if (isMainDialog && tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
-    recordTdaiTurn(tdaiClient, tdaiIdentity, tdaiUserMessage, outputContent)
+    recordTdaiTurn(
+      tdaiClient, tdaiIdentity, tdaiUserMessage, outputContent,
+      // #83：captureMode/turnContext 随流（classified 全量写 + 行级标签）
+      { captureMode: tdaiL0CaptureMode, turnContext: tdaiTurnContext },
+    )
       .catch((err: unknown) => pipe.error("TDAI_L0", err));
   } else if (isMainDialog && tdaiClient) {
     logExtractionSkipped(config, "tdai-memory", sessionKey);
@@ -1975,6 +1993,8 @@ interface AnthropicTapContext {
   tdaiClient: TdaiClient | null;
   tdaiIdentity: TdaiIdentity | null;
   tdaiUserMessage: TdaiMessage | null;
+  /** #83 入口单点定源：turnContext（legacy 模式恒 null；classifyInbound 产物随流） */
+  tdaiTurnContext: TurnContext | null;
   assetCapabilities?: import("./injection/types.js").AssetCapabilityFlags;
   /** Langfuse turn-trace context (trace = one turn). */
   lf: LangfuseTurnContext;
@@ -2135,6 +2155,8 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           withL0Retry(() => recordTdaiTurn(
             ctx.tdaiClient!, ctx.tdaiIdentity, ctx.tdaiUserMessage,
             outputText || null,
+            // #83：captureMode/turnContext 随流（classified 全量写 + 行级标签）
+            { captureMode: ctx.config.tdai.memory.l0CaptureMode, turnContext: ctx.tdaiTurnContext },
           )).catch((err: unknown) => pipe.error("TDAI_L0", err))
         );
       } else if (isMainDialog && ctx.tdaiClient) {

@@ -109,7 +109,10 @@ import {
 /** conversationAdd with session_id defaulting to compatibility bucket. */
 export const conversationAddRequestSchema = z.object({
   session_id: z.string().min(1).default(DEFAULT_ISOLATION_ID),
-  messages: z.array(_conversationItemSchema).min(1).max(100),
+  // #83 入口单点定源：v2 校验层放行行级 classification 标签。generated schema
+  // （Kubb 生成禁手改）用 intersection 扩展——proxy classified 模式全量写入时
+  // 每条带标签落库；旧调用方不传 = undefined → 落库 'unclassified'。
+  messages: z.array(_conversationItemSchema.and(z.object({ classification: z.string().optional() }))).min(1).max(100),
 });
 export type ConversationAddRequest = z.infer<typeof conversationAddRequestSchema>;
 

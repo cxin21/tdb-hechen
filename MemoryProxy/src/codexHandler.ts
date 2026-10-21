@@ -50,6 +50,8 @@ import {
 import { TdaiClient } from "./tdai/client.js";
 import { deriveTdaiIdentity } from "./tdai/identity.js";
 import { recordTdaiTurn } from "./tdai/recorder.js";
+import { classifyInbound, type TurnContext } from "./common/intent-classifier.js";
+import { recordTurnIntentPresence } from "./tdai/sentinel.js";
 import { trackWrite, withL0Retry } from "./tdai/pending-writes.js";
 import type { TdaiIdentity, TdaiMessage } from "./tdai/types.js";
 import { triggerSkillExtractIfReady } from "./skill/handler-glue.js";
@@ -896,6 +898,15 @@ export async function handleCodexEndpoint(
         model: modelId,
       };
 
+      // ── #83 入口单点定源：真实 input[] 一次性分类（synthetic body 只有占位
+      // user 消息，turnContext 必须从原始 input 算好随 custom 传入）──
+      const tdaiTurnContext = (config.tdai.memory.recallQuerySource !== "legacy" || config.tdai.memory.l0CaptureMode !== "legacy")
+        ? classifyInbound(input)
+        : null;
+      if (tdaiTurnContext) {
+        recordTurnIntentPresence(sessionKey, tdaiTurnContext.turnIntent != null);
+      }
+
       const injectedBody = await pipeline.process(syntheticBody, {
         protocol: "openai",
         traceId,
@@ -908,7 +919,7 @@ export async function handleCodexEndpoint(
         sessionKey,
         turnSeq: 0,
         requestPath: c.req.path,
-        custom: { session: sessionInfo, userKey: callerUserKey ?? undefined, assetCapabilities },
+        custom: { session: sessionInfo, userKey: callerUserKey ?? undefined, assetCapabilities, tdaiTurnContext },
       });
 
       // Extract injected content from the synthetic body's system message.
@@ -983,6 +994,8 @@ export interface CodexArchiveCtx {
   tdaiIdentity: TdaiIdentity | null;
   /** 从 `input[]` 抽出的最新用户提问 (extractLatestCodexUserMessage 提取)。 */
   tdaiUserMessage: TdaiMessage | null;
+  /** #83 入口单点定源：turnContext（legacy 模式恒 null） */
+  tdaiTurnContext: TurnContext | null;
   assetCapabilities?: import("./injection/types.js").AssetCapabilityFlags;
 }
 
@@ -1011,6 +1024,10 @@ function buildArchiveCtx(args: {
     userKey: args.callerUserKey,
   });
   const tdaiUserMessage = extractLatestCodexUserMessage(args.input);
+  // #83 入口单点定源：legacy 时 null（零额外开销）；否则对真实 input[] 分类
+  const tdaiTurnContext = (args.config.tdai.memory.recallQuerySource !== "legacy" || args.config.tdai.memory.l0CaptureMode !== "legacy")
+    ? classifyInbound(args.input)
+    : null;
 
   return {
     config: args.config,
@@ -1022,6 +1039,7 @@ function buildArchiveCtx(args: {
     tdaiClient,
     tdaiIdentity,
     tdaiUserMessage,
+    tdaiTurnContext,
     assetCapabilities: args.assetCapabilities,
   };
 }
@@ -1049,7 +1067,11 @@ async function triggerCodexArchiveHooks(
   if (ctx.tdaiClient && ctx.tdaiIdentity && isExtractionAllowed(ctx.config, "tdai-memory")) {
     trackWrite(
       withL0Retry(() =>
-        recordTdaiTurn(ctx.tdaiClient!, ctx.tdaiIdentity, ctx.tdaiUserMessage, assistantText || null),
+        recordTdaiTurn(
+          ctx.tdaiClient!, ctx.tdaiIdentity, ctx.tdaiUserMessage, assistantText || null,
+          // #83：captureMode/turnContext 随流（classified 全量写 + 行级标签）
+          { captureMode: ctx.config.tdai.memory.l0CaptureMode, turnContext: ctx.tdaiTurnContext },
+        ),
       ).catch((err: unknown) => {
         console.warn("[codex-tdai-l0] failed:", err instanceof Error ? err.message : String(err));
       }),

@@ -237,6 +237,8 @@ export interface L0Record {
   role: string;
   messageText: string;
   recordedAt: string;
+  /** #83 入口单点定源：L0 行级分类标签（real/artifact/echo/scaffold/dup/unknown；未传=unclassified） */
+  classification?: string;
   /** Original message timestamp (epoch ms). */
   timestamp: number;
 }

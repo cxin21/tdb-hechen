@@ -464,6 +464,8 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
           // kill switch（m00265）：enabled=false → 整段摘除（缺省 undefined=true 零行为变化）。
           config.injection?.toolCapabilities?.lines,
           config.injection?.toolCapabilities?.enabled,
+          // #83：query 来源三档（缺省 legacy = 现行为逐位不变）。
+          config.tdai.memory.recallQuerySource,
         ),
       );
     }

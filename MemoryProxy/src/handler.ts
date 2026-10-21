@@ -44,6 +44,8 @@ import { handleSystemUserPassthrough } from "./systemUserPassthrough.js";
 import { TdaiClient } from "./tdai/client.js";
 import { deriveTdaiIdentity } from "./tdai/identity.js";
 import { extractLatestUserMessage, extractLatestDshUserMessage, recordTdaiTurn } from "./tdai/recorder.js";
+import { classifyInbound, type TurnContext } from "./common/intent-classifier.js";
+import { recordTurnIntentPresence } from "./tdai/sentinel.js";
 import { trackWrite, withL0Retry } from "./tdai/pending-writes.js";
 import type { TdaiIdentity, TdaiMessage } from "./tdai/types.js";
 import { triggerSkillExtractIfReady } from "./skill/handler-glue.js";
@@ -1391,6 +1393,19 @@ export async function handleChatCompletions(
     ? extractLatestDshUserMessage(messages)
     : extractLatestUserMessage(messages);
 
+  // ── #83 入口单点定源：本轮 turnIntent 与逐条分类，一次分类随流传递 ──
+  // 仅在任一档位 ≠ legacy 时计算（config-first：全 legacy 时零额外开销、行为逐位不变）。
+  // 在注入管线处理 messages 之前分类（注入新增的 <relevant-memories> 等块不参与分类）。
+  const recallQuerySource = config.tdai.memory.recallQuerySource;
+  const l0CaptureMode = config.tdai.memory.l0CaptureMode;
+  const tdaiTurnContext = (recallQuerySource !== "legacy" || l0CaptureMode !== "legacy")
+    ? classifyInbound(messages)
+    : null;
+  // #83 哨兵：turnIntent 缺失率采样（log-only）
+  if (tdaiTurnContext) {
+    recordTurnIntentPresence(sessionKey, tdaiTurnContext.turnIntent != null);
+  }
+
   // [PROBE] dsh raw wire user messages — dump every user message content for matching analysis
   if (agentSource === "dsh") {
     const userMessages = (messages as Array<Record<string, unknown>>)
@@ -1454,6 +1469,8 @@ export async function handleChatCompletions(
               session: sessionInfo,
               assetCapabilities,
               userKey: apiKey || undefined,
+              // #83 入口单点定源：turnContext 随流传递（injector 读 turnIntent，shadow/intent 档生效）
+              tdaiTurnContext,
             }
           : undefined,
       });
@@ -1791,6 +1808,7 @@ export async function handleChatCompletions(
       tdaiClient,
       tdaiIdentity,
       tdaiUserMessage,
+      tdaiTurnContext,
       assetCapabilities,
       pipe,
       sessionKeyForSkill: sessionKey,
@@ -1947,7 +1965,11 @@ export async function handleChatCompletions(
     }
 
     if (tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
-      await recordTdaiTurn(tdaiClient, tdaiIdentity, tdaiUserMessage, assistantContentForTdai(assistantMessage));
+      await recordTdaiTurn(
+        tdaiClient, tdaiIdentity, tdaiUserMessage, assistantContentForTdai(assistantMessage),
+        // #83：captureMode/turnContext 随流（classified 全量写 + 行级标签）
+        { captureMode: l0CaptureMode, turnContext: tdaiTurnContext },
+      );
     } else if (tdaiClient) {
       logExtractionSkipped(config, "tdai-memory", sessionKey);
     }
@@ -2109,6 +2131,8 @@ interface TapContext {
   tdaiClient: TdaiClient | null;
   tdaiIdentity: TdaiIdentity | null;
   tdaiUserMessage: TdaiMessage | null;
+  /** #83 入口单点定源：turnContext（legacy 模式恒 null；classifyInbound 产物随流） */
+  tdaiTurnContext: TurnContext | null;
   assetCapabilities?: import("./injection/types.js").AssetCapabilityFlags;
   pipe: ReturnType<typeof createPipeline>;
   /** For skill extract trigger; null when session_init is disabled. */
@@ -2242,6 +2266,8 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       withL0Retry(() => recordTdaiTurn(
         ctx.tdaiClient!, ctx.tdaiIdentity, ctx.tdaiUserMessage,
         outputMessageContent(outputMsg),
+        // #83：captureMode/turnContext 随流（classified 全量写 + 行级标签；flushL0 闭包走 ctx）
+        { captureMode: ctx.config.tdai.memory.l0CaptureMode, turnContext: ctx.tdaiTurnContext },
       )).catch((err: unknown) => pipe.error("TDAI_L0", err))
     );
   };

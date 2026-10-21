@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import type { TdaiClient } from "./client.js";
 import type { TdaiIdentity, TdaiMessage } from "./types.js";
 import { extractUserQueryText, isDshRuntimeContextSnapshot } from "../common/user-query-extractor.js";
+import type { TurnContext } from "../common/intent-classifier.js";
 
 /**
  * 从最后一条 user 消息中抽取「真正的用户提问」，写入 L0。
@@ -88,7 +90,42 @@ export function extractLatestDshUserMessage(messages: unknown[]): TdaiMessage | 
   return null;
 }
 
-export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity | null, userMessage: TdaiMessage | null, assistantContent: string | null | undefined): Promise<void> {
+/** #83 L0 捕获档位随流参数（captureMode/turnContext 由 handler 从 config+classifyInbound 注入） */
+export interface RecordTurnCapture {
+  captureMode?: "legacy" | "shadow" | "classified";
+  turnContext?: TurnContext | null;
+}
+
+// ── M1 最小修（审查 4544dc9d，2026-10-22）：classified 全量写 + core F-DUP-1 仅 10min 窗 +
+// 步间实测 10-16min → 整史重复落库 O(T²) 并逐条重 embed。代理侧 per-session 指纹集合做
+// 增量提交：已提交过的 role+content 不再重发（重复≠丢失，「宁漏勿杀」不冲突）；进程重启
+// 集合清空 → 最坏一批重复（有界，非 O(T²)），10min 内由 core F-DUP-1 兜住。
+const L0_FP_MAX_SESSIONS = 200;
+const submittedFingerprints = new Map<string, Set<string>>();
+
+function l0Fingerprint(role: string, content: string): string {
+  return createHash("sha256").update(role).update("\u0000").update(content).digest("hex");
+}
+
+/** 测试隔离用：清空指纹集合（生产代码勿调） */
+export function resetSubmittedFingerprintsForTests(): void {
+  submittedFingerprints.clear();
+}
+
+function submittedSetFor(sessionKey: string): Set<string> {
+  let set = submittedFingerprints.get(sessionKey);
+  if (!set) {
+    if (submittedFingerprints.size >= L0_FP_MAX_SESSIONS) {
+      const oldest = submittedFingerprints.keys().next().value;
+      if (oldest !== undefined) submittedFingerprints.delete(oldest);
+    }
+    set = new Set();
+    submittedFingerprints.set(sessionKey, set);
+  }
+  return set;
+}
+
+export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity | null, userMessage: TdaiMessage | null, assistantContent: string | null | undefined, capture?: RecordTurnCapture): Promise<void> {
   // [PROBE-v2] full-args dump for L0 write path — DEBUG ONLY
   try {
     const { log } = await import("../report/log.js");
@@ -110,7 +147,27 @@ export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity 
     });
   } catch { /* best effort */ }
 
-  if (!identity || !userMessage) {
+  // #83 捕获三档（缺省 legacy = 现行为逐位不变）：
+  //  legacy     —— 单条提取（现状）：userMessage 为空即整轮丢弃（脚手架轮 L0 缺失的旧病灶）。
+  //  shadow     —— 双跑对比日志：行为仍 legacy，另打 classified 路径会写什么（对比观测）。
+  //  classified —— turnContext 全量写入「宁漏勿杀」：逐条带 classification 标签；
+  //                turnIntent 缺失（全脚手架轮）也写入（带标签，供哨兵观测与存量回填）。
+  const mode = capture?.captureMode ?? "legacy";
+  const turnContext = capture?.turnContext ?? null;
+  if (mode === "shadow" && turnContext) {
+    try {
+      const { log } = await import("../report/log.js");
+      const legacyHead = userMessage ? userMessage.content.slice(0, 80) : "(null)";
+      const intentHead = turnContext.turnIntent ? turnContext.turnIntent.text.slice(0, 80) : "(none)";
+      log.info("dsh-l0-capture-shadow", {
+        legacyHead,
+        intentHead,
+        match: legacyHead === intentHead,
+        classified: turnContext.classified.map((c) => c.classification),
+      });
+    } catch { /* best effort */ }
+  }
+  if (!identity || (!userMessage && !(mode === "classified" && turnContext))) {
     // [PROBE] reason why recordTdaiTurn early-returns — DEBUG ONLY
     try {
       const { log } = await import("../report/log.js");
@@ -128,10 +185,51 @@ export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity 
     } catch { /* best effort */ }
     return;
   }
-  const messages: TdaiMessage[] = [userMessage];
-  if (assistantContent?.trim()) {
-    messages.push({ role: "assistant", content: assistantContent });
+  let messages: TdaiMessage[];
+  let fpSet: Set<string> | null = null;
+  let userBefore = 0;
+  if (mode === "classified" && turnContext) {
+    // #83 classified：全量写入（宁漏勿杀）——classified 每条带行级 classification 标签；
+    // scaffold 行清洗后 text 为空串，写原始内容（raw）供存量分析与 #84 回填。
+    // M1 最小修：per-session 指纹增量——已提交条目不再重发（见 submittedFingerprints 注释）。
+    fpSet = submittedSetFor(identity?.sessionId ?? identity?.userKey ?? "(no-session)");
+    userBefore = turnContext.classified.length;
+    messages = [];
+    for (const c of turnContext.classified) {
+      const fp = l0Fingerprint("user", c.raw || c.text);
+      if (fpSet.has(fp)) continue;
+      fpSet.add(fp);
+      messages.push({
+        role: "user" as const,
+        content: c.raw || c.text,
+        classification: c.classification,
+      });
+    }
+    try {
+      const { log } = await import("../report/log.js");
+      log.info("dsh-l0-capture-dedup", {
+        session: identity?.sessionId ?? null,
+        before: userBefore,
+        submitted: messages.length,
+        skipped: userBefore - messages.length,
+      });
+    } catch { /* best effort */ }
+  } else {
+    messages = [];
+    if (userMessage) messages.push(userMessage);
   }
+  if (assistantContent?.trim()) {
+    if (fpSet) {
+      const aFp = l0Fingerprint("assistant", assistantContent);
+      if (!fpSet.has(aFp)) {
+        fpSet.add(aFp);
+        messages.push({ role: "assistant", content: assistantContent });
+      }
+    } else {
+      messages.push({ role: "assistant", content: assistantContent });
+    }
+  }
+  if (messages.length === 0) return;
   await client.addConversation(identity, messages);
 }
 

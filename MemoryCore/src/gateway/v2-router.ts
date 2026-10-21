@@ -854,6 +854,8 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
       agentId: iso?.agentId,
       role: msg.role,
       messageText: msg.content,
+      // #83 入口单点定源：行级分类标签随流落库（schema 可选；未传=unclassified）
+      classification: msg.classification,
       recordedAt: new Date(recordedAtMs).toISOString(),
       timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : recordedAtMs,
     };

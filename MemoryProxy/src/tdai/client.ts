@@ -25,7 +25,8 @@ const TDAI_CONVERSATION_MAX_MESSAGES = 100;
  * UTF-16 surrogate pairs. The gateway validates string.length, so this limit
  * intentionally uses JavaScript code units rather than UTF-8 bytes.
  */
-function chunkConversationMessages(messages: TdaiMessage[]): TdaiMessage[] {
+// export for tests（#86）：分片继承 classification 的契约测试直接消费
+export function chunkConversationMessages(messages: TdaiMessage[]): TdaiMessage[] {
   return messages.flatMap((message) => {
     if (message.content.length <= TDAI_MESSAGE_CONTENT_MAX_CHARS) return [message];
 
@@ -40,7 +41,7 @@ function chunkConversationMessages(messages: TdaiMessage[]): TdaiMessage[] {
       ) {
         end -= 1;
       }
-      chunks.push({ role: message.role, content: message.content.slice(start, end) });
+      chunks.push({ role: message.role, content: message.content.slice(start, end), classification: message.classification });
       start = end;
     }
     return chunks;

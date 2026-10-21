@@ -61,6 +61,8 @@ export interface TdaiL1Hit extends TdaiL1Memory {
 export interface TdaiMessage {
   role: "user" | "assistant";
   content: string;
+  /** #83 入口单点定源：L0 行级分类标签（real/artifact/echo/scaffold/dup/unknown） */
+  classification?: string;
 }
 
 export interface TdaiL1Memory {

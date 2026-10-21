@@ -311,6 +311,10 @@ export interface TdaiConfig {
     /** L1 召回"自有 + 借入"跨 agent 合并后保留条数（TdaiL1RecallInjector globalTopK）。默认 5 = 原硬编码行为不变。 */
     l1GlobalTopK: number;
     l2Limit: number;
+    /** #83 召回 query 来源：legacy=裸取尾+提取器（现状）|shadow=双跑对比日志|intent=入口单点定源 turnIntent。默认 legacy。 */
+    recallQuerySource: "legacy" | "shadow" | "intent";
+    /** #83 L0 捕获档位：legacy=单条提取（现状）|shadow=双跑对比日志|classified=入口分类全量写（宁漏勿杀）。默认 legacy。 */
+    l0CaptureMode: "legacy" | "shadow" | "classified";
     timeoutMs: number;
   };
 }
