@@ -981,6 +981,11 @@ export class VectorStore implements IMemoryStore {
     // #19 T12（2026-10-14 拍板）：重提溯源字段——reproposal 通道把 {reproposed, supersedes, generation}
     // 写进 attrs_json；Panel/审计可读。幂等 ALTER，存量库缺省 NULL = 旧提案逐位现状。
     try { this.db.exec("ALTER TABLE core_pending ADD COLUMN attrs_json TEXT"); } catch { /* exists */ }
+    // #91（复现即投票 + 默认终局）：复现计票与预嵌向量专列——幂等 ALTER（T12 模式），
+    // 存量库缺省 NULL = 旧提案逐位现状（无计票语义、无向量）；两列不参与 pending_id 派生，
+    // upsertPendingCore 的 INSERT/ON CONFLICT 集合不含它们（A6：重推不碰复现状态）。
+    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN recurrence_json TEXT"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN embedding_json TEXT"); } catch { /* exists */ }
     // GROW：自生长调度状态 kv（last_discovery_at / last_corpus_count）——重启不失忆，
     // 避免每次重启后 interval 门失效白烧一次发现 LLM 调用。
     this.db.exec("CREATE TABLE IF NOT EXISTS anchor_growth_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -3096,13 +3101,13 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
-  listPendingCore(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null }> {
+  listPendingCore(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null; recurrence_json?: string | null; embedding_json?: string | null }> {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
       const stateFilter = opts?.includeDecided ? "" : " AND state = 'pending'";
-      return this.db.prepare(`SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description, attrs_json FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`).all(teamId, userId, agentId) as Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null }>;
+      return this.db.prepare(`SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description, attrs_json, recurrence_json, embedding_json FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`).all(teamId, userId, agentId) as Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null; recurrence_json?: string | null; embedding_json?: string | null }>;
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_pending] listPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -3121,6 +3126,104 @@ export class VectorStore implements IMemoryStore {
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_pending] decidePendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
+    }
+  }
+
+  // ── #91（复现即投票 + 默认终局）：core_pending 复现计票三方法（O13 同款同步语义）──────
+  // recurrence_json 形状：{count, first_seen, last_seen, episodes:[{ts,content,evidenceRecordIds?}], evidence_record_ids:string[]}
+  // evidence_record_ids=全局去重并集（插入序）；embedding_json=首写不覆盖；两列不参与 pending_id 派生、
+  // 不在 upsertPendingCore 的 INSERT/ON CONFLICT 集合内（重推不碰复现状态）。
+
+  private parsePendingRecurrence(json: string | null | undefined): { count: number; first_seen: string; last_seen: string; episodes: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>; evidence_record_ids: string[] } | null {
+    if (!json) return null;
+    try {
+      const v = JSON.parse(json) as { count?: unknown; first_seen?: string; last_seen?: string; episodes?: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>; evidence_record_ids?: string[] };
+      if (typeof v.count !== "number") return null;
+      return { count: v.count, first_seen: v.first_seen ?? "", last_seen: v.last_seen ?? "", episodes: Array.isArray(v.episodes) ? v.episodes : [], evidence_record_ids: Array.isArray(v.evidence_record_ids) ? v.evidence_record_ids : [] };
+    } catch {
+      return null;
+    }
+  }
+
+  updatePendingRecurrence(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
+    try {
+      const row = this.db.prepare("SELECT slot, state, team_id, user_id, agent_id, created_at, recurrence_json, embedding_json FROM core_pending WHERE pending_id = ?").get(pendingId) as { slot: string; state: string; team_id: string; user_id: string; agent_id: string; created_at: string; recurrence_json: string | null; embedding_json: string | null } | undefined;
+      if (!row || row.slot !== "self_identity") return null;
+      // rejected/adopted 已裁决行不可计票；expired 行可复活（软失效可逆，继承计数）。
+      if (row.state !== "pending" && row.state !== "expired") return null;
+      if (opts?.tenant && (row.team_id !== (opts.tenant.teamId || "default") || row.user_id !== (opts.tenant.userId || "default") || row.agent_id !== (opts.tenant.agentId || "default"))) return null;
+      const now = new Date().toISOString();
+      const ts = episode.ts ?? now;
+      const prev = this.parsePendingRecurrence(row.recurrence_json);
+      const revived = row.state === "expired";
+      const count = (prev?.count ?? 0) + 1; // 复活行在其原 count 上 +1（继承计数）
+      const first_seen = prev?.first_seen || ts;
+      const last_seen = ts;
+      const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = { ts, content: episode.content ?? "" };
+      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0) ep.evidenceRecordIds = [...episode.evidenceRecordIds];
+      const episodes = [...(prev?.episodes ?? []), ep];
+      const union = [...new Set([...(prev?.evidence_record_ids ?? []), ...(episode.evidenceRecordIds ?? [])])];
+      const votesN = Math.max(1, Math.floor(opts?.votesN ?? 3));
+      const spanHours = Math.max(0, opts?.spanHours ?? 24);
+      const from = Date.parse(first_seen);
+      const to = Date.parse(last_seen);
+      const ready = count >= votesN && Number.isFinite(from) && Number.isFinite(to) && to - from >= spanHours * 3_600_000;
+      this.db.prepare("UPDATE core_pending SET recurrence_json = ?, state = 'pending' WHERE pending_id = ?").run(JSON.stringify({ count, first_seen, last_seen, episodes, evidence_record_ids: union }), pendingId);
+      if (episode.embedding && !row.embedding_json) { // 首写不覆盖
+        this.db.prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?").run(JSON.stringify(episode.embedding), pendingId);
+      }
+      return { count, first_seen, last_seen, ready, revived };
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] updatePendingRecurrence failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  initPendingRecurrenceByContent(slot: string, content: string, tenant: CoreTenant | undefined, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
+    try {
+      const teamId = tenant?.teamId || "default";
+      const userId = tenant?.userId || "default";
+      const agentId = tenant?.agentId || "default";
+      const row = this.db.prepare("SELECT pending_id, recurrence_json, embedding_json FROM core_pending WHERE slot = ? AND content = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'pending'").get(slot, content, teamId, userId, agentId) as { pending_id: string; recurrence_json: string | null; embedding_json: string | null } | undefined;
+      if (!row) return null;
+      if (this.parsePendingRecurrence(row.recurrence_json)) return null; // 重推不双计
+      const ts = episode.ts ?? new Date().toISOString();
+      const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = { ts, content: episode.content ?? content };
+      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0) ep.evidenceRecordIds = [...episode.evidenceRecordIds];
+      this.db.prepare("UPDATE core_pending SET recurrence_json = ? WHERE pending_id = ?").run(JSON.stringify({ count: 1, first_seen: ts, last_seen: ts, episodes: [ep], evidence_record_ids: [...new Set(episode.evidenceRecordIds ?? [])] }), row.pending_id);
+      if (episode.embedding && !row.embedding_json) { // 首写不覆盖
+        this.db.prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?").run(JSON.stringify(episode.embedding), row.pending_id);
+      }
+      return { count: 1, first_seen: ts, last_seen: ts, ready: false, revived: false };
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] initPendingRecurrenceByContent failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  sweepExpiredSelfIdentityPending(tenant?: CoreTenant, opts?: { ttlHours?: number; now?: string }): Array<{ pending_id: string; content: string }> {
+    try {
+      const teamId = tenant?.teamId || "default";
+      const userId = tenant?.userId || "default";
+      const agentId = tenant?.agentId || "default";
+      const ttlHours = Math.max(0, opts?.ttlHours ?? 24);
+      const nowMs = Date.parse(opts?.now ?? new Date().toISOString());
+      const rows = this.db.prepare("SELECT pending_id, content, recurrence_json, created_at FROM core_pending WHERE slot = 'self_identity' AND state = 'pending' AND team_id = ? AND user_id = ? AND agent_id = ?").all(teamId, userId, agentId) as Array<{ pending_id: string; content: string; recurrence_json: string | null; created_at: string }>;
+      const swept: Array<{ pending_id: string; content: string }> = [];
+      for (const row of rows) {
+        const rec = this.parsePendingRecurrence(row.recurrence_json);
+        if ((rec?.count ?? 1) !== 1) continue; // 仅 count=1 的孤行进默认终局（票面字面；count>=2 僵尸边界已记入报告）
+        const first = rec?.first_seen || row.created_at;
+        const t = Date.parse(first);
+        if (!Number.isFinite(t) || !Number.isFinite(nowMs)) continue;
+        if (nowMs - t <= ttlHours * 3_600_000) continue; // 严格大于 TTL 才过期
+        const r = this.db.prepare("UPDATE core_pending SET state = 'expired' WHERE pending_id = ? AND state = 'pending'").run(row.pending_id);
+        if (Number(r.changes) > 0) swept.push({ pending_id: row.pending_id, content: row.content });
+      }
+      return swept;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] sweepExpiredSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
     }
   }
 

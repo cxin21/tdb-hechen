@@ -199,6 +199,19 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // #91：self_identity pending TTL sweep（复现即投票·默认终局）——recurrence 开才跑
+  // （golden 缺省关=零调用逐位）；仿 reflection 块独立 try/catch warn 非致命。
+  {
+    const recCfg = deps.config.reflection?.selfIdentityGate?.recurrence;
+    if (recCfg?.enabled === true) {
+      try {
+        const swept = await Promise.resolve(deps.store.sweepExpiredSelfIdentityPending?.(deps.config.filter, { ttlHours: recCfg.ttlHours }));
+        if (swept && swept.length > 0) deps.logger?.info?.(`[lifecycle] self_identity pending TTL swept=${swept.length}`);
+      } catch (err) {
+        deps.logger?.warn?.(`[lifecycle] self_identity pending sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
   if (deps.config.forgetting?.enabled !== false) {
     try {
       const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });

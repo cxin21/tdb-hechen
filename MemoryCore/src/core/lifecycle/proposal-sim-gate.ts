@@ -177,6 +177,88 @@ export async function similarSelfIdentityProposalExists(args: {
   }
 }
 
+/** 防崩解析行内预嵌向量（embedding_json）：空/非数组/含非有限数 → null（宁缺毋滥）。 */
+function parseEmbeddingJson(json: string | null | undefined): Float32Array | null {
+  if (!json) return null;
+  try {
+    const arr: unknown = JSON.parse(json);
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    if (!arr.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    return new Float32Array(arr as number[]);
+  } catch {
+    return null;
+  }
+}
+
+function pendingRowState(r: unknown): string {
+  const s = (r as { state?: unknown } | null | undefined)?.state;
+  return typeof s === "string" && s.length > 0 ? s : "pending";
+}
+
+/**
+ * #91：相似门 Match 版——Exists 语义 + 返回命中行与候选向量（复现即投票的取数基建）。
+ * 语料=core_pending(slot=self_identity, state∈{pending,expired}；includeDecided:true 拉全后
+ * 白名单自滤，expired 留语料供 TTL 过期后再命中→计票复活；rejected/adopted 滤除)
+ * + core 槽行(identity/self_identity)。行带 embedding_json（写入时预嵌向量落库）直读绕嵌；
+ * 恒嵌候选：语料空也嵌提案本身（vector 恒供 push 支路 init 预嵌）。
+ * 命中语义：pending 行→pending{pending_id,content,attrs_json}（计票写路径用）；core 行→仅 hit（拦不投）。
+ * 精确重复短路在嵌前（embedder 缺席也生效，同 Exists）。降级合同同 Exists：绝不抛出。
+ */
+export async function similarSelfIdentityProposalMatch(args: {
+  store?: SimGateStore | undefined;
+  tenant?: unknown;
+  content: string;
+  threshold?: number;
+  embeddingService?: unknown;
+  logger?: SimGateLogger;
+}): Promise<{ hit: boolean; pending?: { pending_id: string; content: string; attrs_json?: string | null }; vector?: Float32Array }> {
+  const threshold = typeof args.threshold === "number" && args.threshold > 0 ? args.threshold : SIM_GATE_DEFAULT_THRESHOLD;
+  type GateRow = { slot: string; content: string; pending_id?: unknown; attrs_json?: unknown; embedding_json?: unknown };
+  type MatchRes = { hit: boolean; pending?: { pending_id: string; content: string; attrs_json?: string | null }; vector?: Float32Array };
+  const hitOf = (row: GateRow, vector?: Float32Array): MatchRes => {
+    const pid = typeof row.pending_id === "string" && row.pending_id.length > 0 ? row.pending_id : undefined;
+    return {
+      hit: true,
+      ...(pid ? { pending: { pending_id: pid, content: row.content, attrs_json: typeof row.attrs_json === "string" ? row.attrs_json : null } } : {}),
+      ...(vector ? { vector } : {}),
+    };
+  };
+  try {
+    const pendingRows = asArray(await Promise.resolve(args.store?.listPendingCore?.(args.tenant, { includeDecided: true })))
+      .filter((r) => isSelfIdentityRow(r) && (pendingRowState(r) === "pending" || pendingRowState(r) === "expired")) as unknown as Array<GateRow>;
+    const coreRows = asArray(await Promise.resolve(args.store?.readCore?.(args.tenant))).filter(isIdentitySlotRow) as unknown as Array<GateRow>;
+    const norm = normalizeProposalText(args.content);
+    const corpus: Array<{ row: GateRow; vec: Float32Array | null }> = [];
+    for (const r of pendingRows) corpus.push({ row: r, vec: parseEmbeddingJson(typeof r.embedding_json === "string" ? r.embedding_json : null) });
+    for (const r of coreRows) corpus.push({ row: r, vec: null });
+    const exact = corpus.find((c) => normalizeProposalText(c.row.content) === norm);
+    if (exact) return hitOf(exact.row); // 精确重复短路（embedder 缺席也不漏，同 Exists:159）
+    const embedder = resolveEmbedder(args.embeddingService);
+    if (!embedder) return { hit: false }; // 降级：无 embedder 放行（同 Exists:161）
+    if (args.embeddingService !== cacheSvc) {
+      cacheSvc = args.embeddingService;
+      vecCache.clear();
+    }
+    const toEmbed = corpus.filter((c) => c.vec == null).map((c) => c.row.content);
+    // 恒嵌候选（#91）：语料空 texts=[content] 仍嵌一次，vector 供 push 支路 init 预嵌。
+    const vecs = await embedAll(embedder, [args.content, ...toEmbed]);
+    const base = vecs[0];
+    if (!base) return { hit: false };
+    let k = 1;
+    for (const c of corpus) {
+      if (c.vec == null) {
+        c.vec = vecs[k] ?? null;
+        k++;
+      }
+      if (c.vec && cosineSimilarity(base, c.vec) >= threshold) return hitOf(c.row, base);
+    }
+    return { hit: false, vector: base };
+  } catch (err) {
+    args.logger?.warn?.(`[proposal-sim-gate] similarSelfIdentityProposalMatch degraded: ${err instanceof Error ? err.message : String(err)}`);
+    return { hit: false };
+  }
+}
+
 function truncateItem(s: string): string {
   return s.length > SUPPRESSION_ITEM_MAX_CHARS ? s.slice(0, SUPPRESSION_ITEM_MAX_CHARS) + "…" : s;
 }

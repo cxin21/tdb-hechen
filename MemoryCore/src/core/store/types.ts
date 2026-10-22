@@ -781,8 +781,15 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   backfillMemoryRef?(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): MaybePromise<boolean>
   /** O13（P2）：core_pending——红线类提案人工采纳落点（三方法，缺省=store 不支持时调用方安静跳过）。 */
   upsertPendingCore?(slot: string, content: string, evidence: number, tenant?: CoreTenant, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): MaybePromise<boolean>;
-  listPendingCore?(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): MaybePromise<Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null }>>;
+  listPendingCore?(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): MaybePromise<Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null; recurrence_json?: string | null; embedding_json?: string | null }>>;
   decidePendingCore?(pendingId: string, decision: "adopted" | "rejected", tenant?: CoreTenant): MaybePromise<{ slot: string; content: string; label?: string | null; description?: string | null } | null>;
+  /** #91（复现即投票）：命中已登记 pending 行时计票——episodes 独立 episode 追加、evidence 联合并集、
+   *  复活继承计数（expired→pending）；count>=votesN 且跨度>=spanHours → ready。行缺/slot 不符/状态不符 → null。 */
+  updatePendingRecurrence?(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant }): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
+  /** #91：push 支路落库后按 (slot,content,tenant,state=pending) 初始化复现账本；行 recurrence_json 已存在 → null（重推不双计）。 */
+  initPendingRecurrenceByContent?(slot: string, content: string, tenant?: CoreTenant, episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
+  /** #91（默认终局）：TTL sweep——self_identity 且 state=pending 且 count=1（recurrence 缺省视为 1）且 age(first_seen??created_at) 严格大于 ttlHours → state=expired（软失效可逆，行保留在匹配语料与计数图谱）。 */
+  sweepExpiredSelfIdentityPending?(tenant?: { teamId?: string; userId?: string; agentId?: string }, opts?: { ttlHours?: number; now?: string }): MaybePromise<Array<{ pending_id: string; content: string }>>;
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。

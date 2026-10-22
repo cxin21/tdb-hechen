@@ -14,7 +14,7 @@ import { dirname, resolve } from "node:path";
 import { embedForLifecycle } from "./embed-helpers.js";
 import { bindSoulAtWrite } from "./consolidation/content-soul.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
-import { buildSelfIdentitySuppressionLines, similarSelfIdentityProposalExists, SIM_GATE_DEFAULT_THRESHOLD } from "./proposal-sim-gate.js";
+import { buildSelfIdentitySuppressionLines, similarSelfIdentityProposalExists, similarSelfIdentityProposalMatch, SIM_GATE_DEFAULT_THRESHOLD } from "./proposal-sim-gate.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
 import { REFLECTION_CARD_CONTRACT_PROMPT, REFLECTION_CONCLUSION_CONTRACT_PROMPT, labelsFromCoreValueRows, validateConclusionCard, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
 import type { Logger } from "../types.js";
@@ -68,6 +68,8 @@ export interface ReflectionConfig {
     enabled?: boolean;
     threshold?: number;
     suppression?: { enabled?: boolean; maxPending?: number };
+    /** #91：复现即投票+默认终局——缺省 false=逐位现状（Exists 原路径）；votes/ttlHours 缺省 3/24（票面标定 N=3/T=24h）。 */
+    recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number };
   };
 }
 
@@ -82,6 +84,9 @@ export interface ReflectionDeps {
     /** #44：promise 提案桥可选面（缺实现→桥接优雅跳过，采纳侧人工裁决兜底）。 */
     listSoulPromises?(tenant?: unknown, opts?: { status?: string; limit?: number }): Array<{ promiseId: string; content?: string; status: string; refKey?: string }> | Promise<Array<{ promiseId: string; content?: string; status: string; refKey?: string }>>;
     readCore?(tenant?: unknown): Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }> | null> | null;
+    /** #91：复现即投票三方法可选面（缺实现→调用方降级不计票不 init，宁漏勿误）。 */
+    updatePendingRecurrence?(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: unknown }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null | Promise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
+    initPendingRecurrenceByContent?(slot: string, content: string, tenant?: unknown, episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null | Promise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
   };
   /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
 
@@ -169,16 +174,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number; recurrenceVotes: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -201,6 +206,8 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   let promiseCreationsPushed = 0;
   // #81：相似门拦截计数（跨租户累加，随 return 暴露供可观测）。
   let simGated = 0;
+  // #91：复现即投票计票数（跨租户累加；同拍多提案命中同一 pending 行只计一票）。
+  let recurrenceVotes = 0;
   const soulProposalsOn = cfg.soulProposals?.enabled === true;
   // #81（拍板②①）：相似门缺省开；阈值 0.65 config 可配。
   const simGateOn = cfg.selfIdentityGate?.enabled !== false;
@@ -208,11 +215,17 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   // #81（拍板③）：生成端抑制缺省开；maxPending 缺省 20。
   const simSuppressionOn = cfg.selfIdentityGate?.suppression?.enabled !== false;
   const simSuppressionMaxPending = cfg.selfIdentityGate?.suppression?.maxPending;
+  // #91：复现即投票门（缺省 false=逐位现状）；votes/ttlHours 票面标定缺省 3/24。
+  const recOn = cfg.selfIdentityGate?.recurrence?.enabled === true;
+  const recVotes = Math.max(1, Math.floor(cfg.selfIdentityGate?.recurrence?.votes ?? 3));
+  const recTtlHours = Math.max(0, cfg.selfIdentityGate?.recurrence?.ttlHours ?? 24);
   // #44（D-44-3）：promise 提案桥接门（缺省 false=逐位现状：零提示词段、零 store 调用、零提案）
   const promiseProposalsOn = cfg.promiseProposals?.enabled === true;
   for (const { triple, rows } of byTenant.values()) {
     // #27：证据指针 → 原文内容映射（样本源即证据源；幻觉 id 无内容→去原文门按可用证据裁决）
     const contentById = new Map(rows.map((r) => [String(r.id ?? ""), String(r.content ?? "")]));
+    // #91：同拍双提案命中同一 pending 行只计一票（per-run per-tenant 去重；独立 episode 由 store 侧合并）。
+    const votedPids = new Set<string>();
     // #44（D-44-1）：在途承诺仅在 gate on 时拉取（gate off=零 store 调用=逐位现状）
     const openPromises: Array<{ promiseId: string; content?: string; status: string; refKey?: string }> = promiseProposalsOn
       ? ((await Promise.resolve(deps.store.listSoulPromises?.(triple, { status: "open" }))) ?? [])
@@ -381,7 +394,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
             deps.logger?.info?.(`[reflection] soul proposal rejected (${verdict.reason.slice(0, 80)}): ${pr.conclusion.slice(0, 60)}`);
           } else if (verdict?.ok && (await proposalAlreadyKnown(deps.store, triple, verdict.proposal.content))) {
             deps.logger?.info?.("[reflection] soul proposal deduped (already pending or in core identity)");
-          } else if (verdict?.ok && simGateOn && (await similarSelfIdentityProposalExists({
+          } else if (verdict?.ok && simGateOn && !recOn && (await similarSelfIdentityProposalExists({
             store: deps.store,
             tenant: triple,
             content: verdict.proposal.content,
@@ -389,10 +402,54 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
             embeddingService: deps.embeddingService,
             logger: deps.logger,
           }))) {
-            // #81（拍板②）：语义相似门——与在途 pending/core 槽行同构的 self_identity 提案不再重复入轨
-            // （洪泛根治：词面闸门拦不住互异文案复读；simGated 计数随 return 暴露供可观测）。
+            // #81（拍板②）：语义相似门（#91 recurrence off 原路径逐位）——与在途 pending/core 槽行
+            // 同构的 self_identity 提案不再重复入轨（洪泛根治：词面闸门拦不住互异文案复读）。
             simGated++;
             deps.logger?.info?.(`[reflection] soul proposal sim-gated (similar self_identity in flight, threshold=${simGateThreshold}): ${verdict.proposal.content.slice(0, 60)}`);
+          } else if (verdict?.ok && simGateOn && recOn) {
+            // #91：复现即投票——Match 版相似门（语料含 expired 供 TTL 过期后再命中→计票复活；
+            // 恒嵌候选，vector 供 push 支路预嵌落库）。命中 pending 行→计票（每 run 每 pending 一次）；
+            // 命中 core 行→仅拦不投；未命中→push + init 复现账本（重推不双计由 store 侧保证）。
+            const m = await similarSelfIdentityProposalMatch({
+              store: deps.store,
+              tenant: triple,
+              content: verdict.proposal.content,
+              threshold: simGateThreshold,
+              embeddingService: deps.embeddingService,
+              logger: deps.logger,
+            });
+            // #91：episode 证据 ids 取 attrs.evidence_record_ids（vet 产出；proposal.evidence 是数量 number）。
+            const recEvidenceIds = Array.isArray((verdict.proposal.attrs as { evidence_record_ids?: unknown } | undefined)?.evidence_record_ids)
+              ? ((verdict.proposal.attrs as { evidence_record_ids?: unknown }).evidence_record_ids as unknown[]).filter((s): s is string => typeof s === "string")
+              : [];
+            if (m.hit) {
+              simGated++;
+              deps.logger?.info?.(`[reflection] soul proposal sim-gated (similar self_identity in flight, threshold=${simGateThreshold}): ${verdict.proposal.content.slice(0, 60)}`);
+              const pid = m.pending?.pending_id;
+              if (m.pending && pid && typeof deps.store.updatePendingRecurrence === "function" && !votedPids.has(pid)) {
+                votedPids.add(pid);
+                try {
+                  await Promise.resolve(deps.store.updatePendingRecurrence(pid, { content: verdict.proposal.content, evidenceRecordIds: recEvidenceIds }, { votesN: recVotes, spanHours: recTtlHours, tenant: triple }));
+                  recurrenceVotes++;
+                } catch (err) {
+                  deps.logger?.warn?.(`[reflection] recurrence vote failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
+            } else {
+              const pushed = await Promise.resolve(
+                deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, {
+                  attrs: { ...verdict.proposal.attrs, anchor_refs: anchorRefs },
+                }),
+              );
+              if (pushed) proposalsPushed++;
+              if (typeof deps.store.initPendingRecurrenceByContent === "function") {
+                try {
+                  await Promise.resolve(deps.store.initPendingRecurrenceByContent(verdict.proposal.slot, verdict.proposal.content, triple, { content: verdict.proposal.content, evidenceRecordIds: recEvidenceIds, embedding: m.vector ? Array.from(m.vector) : undefined }));
+                } catch (err) {
+                  deps.logger?.warn?.(`[reflection] recurrence init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
+            }
           } else if (verdict?.ok) {
             const pushed = await Promise.resolve(
               deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, {
@@ -509,6 +566,6 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       }
     }
   }
-  return { triggered, cardsWritten, proposalsPushed, simGated, promiseProposalsPushed, promiseCreationsPushed, skipped };
+  return { triggered, cardsWritten, proposalsPushed, simGated, promiseProposalsPushed, promiseCreationsPushed, skipped, recurrenceVotes };
 }
 void DEFAULTS;
