@@ -71,6 +71,8 @@ export interface AnchorDiscoveryConfig {
   minEvidence: number;
   maxPerPass: number;
   maxTotal: number;
+  /** #94（拍板①）：名额口径——"total"=池内 active 总数（auto+manual+seed 全算，pinned 计入总数，逐出豁免 pinned）；"auto"=旧口径（origin=auto 非钉 + 钉住）。缺省 "total"（拍板即行为）。 */
+  quotaScope: "auto" | "total";
   intervalHours: number;
   /** V10-MAINT-DECOUPLE：维护面（证据重算+QUOTA 回归+T2）独立调度节奏小时数；0=每 tick（缺省 6）。 */
   maintainIntervalHours: number;
@@ -97,6 +99,8 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   minEvidence: 5,
   maxPerPass: 2,
   maxTotal: 15,
+  // #94（拍板①）：缺省 total=总预算口径；回滚 = 显式配 "auto"。
+  quotaScope: "total",
   intervalHours: 24,
   maintainIntervalHours: 6,
   // P2：人物池缺省关闭=逐位现状（config-first 铁律）；yaml 显式开启后生效。
@@ -108,6 +112,128 @@ export const DEFAULT_ANCHOR_DISCOVERY_CONFIG: AnchorDiscoveryConfig = {
   similarMerge: { enabled: false, threshold: 0.5 },
   // #11 T5：desc 维护环缺省关闭=逐位现状（config-first）；开启后维护轮 ≥2× 证据增长才重述。
   descRefresh: { enabled: false, evidenceMultiple: 2, maxPerPass: 2 },
+}
+
+// ═══ #94（拍板②）：存量收敛——相似自动合并 + 超额退休（一次性维护函数，DI embedder 可测）═══
+// 用户拍板「超出的自动对比退休，相似的自动合并」。嵌入 cosine 聚簇 → 簇内保最强（weight 降序，
+// 平手 value_id 升序，确定性）→ 幸存者 attrs.aliases 折叠败者 label、败者 state='retired'
+//（零删除可逆）→ 合并后仍超 maxTotal 再退最弱非钉至 ≤maxTotal。嵌入不可用/抛错 → 退化为
+// 只退超额不合并（宁缺毋滥）。确定性零 LLM。RED 占位骨架：行为 GREEN 时实现。
+export interface ConvergeStockResult {
+  embedAvailable: boolean;
+  before: number;
+  after: number;
+  mergedClusters: Array<{ survivorId: string; survivorLabel: string; retiredLabels: string[] }>;
+  retiredExcess: Array<{ valueId: string; label: string; strength: number }>;
+}
+
+export async function convergeAnchorStock(opts: {
+  store: { listValuesAnyState: (t?: unknown) => unknown; retireValue: (id: string, t?: unknown) => unknown; upsertValue: (...args: unknown[]) => unknown };
+  tenant?: CoreTenant;
+  maxTotal: number;
+  embed: (texts: string[]) => Promise<number[][]>;
+  threshold?: number;
+  evidenceOf?: (r: CoreValueRow) => number;
+  logger?: { debug?: (m: string) => void; info?: (m: string) => void; warn?: (m: string) => void };
+}): Promise<ConvergeStockResult> {
+  const threshold = opts.threshold ?? 0.65;
+  const evOf = opts.evidenceOf ?? (() => 1);
+  const tenant = opts.tenant;
+  const pool0 = (((await Promise.resolve(opts.store.listValuesAnyState(tenant))) ?? []) as CoreValueRow[])
+    .filter((r) => r.state === "active" && (r.node_type ?? "theme") === "theme");
+  const before = pool0.length;
+  const result: ConvergeStockResult = { embedAvailable: false, before, after: before, mergedClusters: [], retiredExcess: [] };
+  if (pool0.length === 0) return result;
+
+  // ① 嵌入 + cosine 聚簇（嵌入不可用/长度不匹配 → 退化为只退超额，宁缺毋滥）
+  let vecs: number[][] | null = null;
+  try {
+    const out = await opts.embed(pool0.map((r) => r.label));
+    vecs = Array.isArray(out) && out.length === pool0.length ? out : null;
+  } catch (e) {
+    opts.logger?.warn?.(`[anchor-growth] convergeAnchorStock embed unavailable, degrade to excess-evict-only: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const cos = (a: number[], b: number[]): number => {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { dot += a[i]! * b[i]!; na += a[i]! * a[i]!; nb += b[i]! * b[i]!; }
+    if (na === 0 || nb === 0) return 0;
+    return dot / Math.sqrt(na * nb);
+  };
+  const losers = new Set<string>();
+  if (vecs) {
+    result.embedAvailable = true;
+    // union-find：cosine ≥ threshold → 同簇（确定性：按池序两两判定）。
+    const parent = pool0.map((_, i) => i);
+    const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]!]!; x = parent[x]!; } return x; };
+    const union = (a: number, b: number): void => { const ra = find(a), rb = find(b); if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); };
+    for (let i = 0; i < pool0.length; i++) {
+      for (let j = i + 1; j < pool0.length; j++) {
+        if (cos(vecs[i]!, vecs[j]!) >= threshold) union(i, j);
+      }
+    }
+    const clusters = new Map<number, number[]>();
+    for (let i = 0; i < pool0.length; i++) {
+      const root = find(i);
+      const arr = clusters.get(root);
+      if (arr) arr.push(i); else clusters.set(root, [i]);
+    }
+    // 簇内保最强：weight 降序，平手 value_id 升序（确定性）；幸存者 attrs.aliases 折叠败者 label。
+    for (const members of clusters.values()) {
+      if (members.length < 2) continue;
+      const ordered = members
+        .map((i) => pool0[i]!)
+        .sort((a, b) => b.weight - a.weight || String(a.value_id).localeCompare(String(b.value_id)));
+      const survivor = ordered[0]!;
+      const retiredLabels: string[] = [];
+      for (const loser of ordered.slice(1)) {
+        const ok = await Promise.resolve(opts.store.retireValue(loser.value_id, tenant));
+        if (ok) {
+          losers.add(loser.value_id);
+          retiredLabels.push(loser.label);
+        } else {
+          opts.logger?.warn?.(`[anchor-growth] convergeAnchorStock retire loser failed: ${loser.value_id} (${loser.label})`);
+        }
+      }
+      if (retiredLabels.length > 0) {
+        result.mergedClusters.push({ survivorId: survivor.value_id, survivorLabel: survivor.label, retiredLabels });
+        // attrs 先读后合并（F1 教训）：既有 aliases/description 等键全保留，aliases 追加败者 label。
+        let priorAttrs: Record<string, unknown> = {};
+        try {
+          const parsed: unknown = JSON.parse(survivor.attrs_json ?? "{}");
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) priorAttrs = parsed as Record<string, unknown>;
+        } catch { /* 坏 JSON → 视作空 attrs */ }
+        const priorAliases = Array.isArray(priorAttrs.aliases) ? (priorAttrs.aliases as unknown[]).map(String) : [];
+        const mergedAliases = [...priorAliases, ...retiredLabels].filter((v, i, arr) => arr.indexOf(v) === i);
+        const mergedAttrs = { ...priorAttrs, aliases: mergedAliases };
+        const ok = await Promise.resolve(opts.store.upsertValue(survivor.value_id, survivor.label, survivor.weight, survivor.created_by || "panel-adopt", tenant, survivor.valence ?? undefined, survivor.origin ?? "auto", (survivor.node_type as "theme" | "person" | "character" | undefined) ?? "theme", mergedAttrs));
+        if (!ok) opts.logger?.warn?.(`[anchor-growth] convergeAnchorStock survivor alias fold failed: ${survivor.value_id}`);
+      }
+    }
+  }
+
+  // ② 合并后仍超 maxTotal → 退最弱非钉（any origin，strength=weight×evidence）至 ≤ maxTotal；
+  //    pinned 豁免（钉住锚不受存量收敛影响）。
+  const remaining = pool0.filter((r) => !losers.has(r.value_id));
+  const overLimit = remaining.length - opts.maxTotal;
+  if (overLimit > 0) {
+    const victims = remaining
+      .filter((r) => r.pinned !== 1)
+      .map((r) => ({ row: r, strength: r.weight * evOf(r) }))
+      .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)))
+      .slice(0, overLimit);
+    for (const v of victims) {
+      const ok = await Promise.resolve(opts.store.retireValue(v.row.value_id, tenant));
+      if (ok) {
+        losers.add(v.row.value_id);
+        result.retiredExcess.push({ valueId: v.row.value_id, label: v.row.label, strength: v.strength });
+      } else {
+        opts.logger?.warn?.(`[anchor-growth] convergeAnchorStock excess retire failed: ${v.row.value_id} (${v.row.label})`);
+      }
+    }
+  }
+  result.after = pool0.length - losers.size;
+  return result;
 }
 
 /** 旧 store（缺 listL1TenantTriplets）回退用的 default 桶三元组；PA 起自生长默认遍历全部有记忆 agent。 */
@@ -588,19 +714,27 @@ export async function runAnchorGrowth(deps: {
         // 否则注入面失控且永无自愈路径（GROW-MAINT 只有证据退场）。超出部分按强度
         //（weight × 证据）升序 retire（可恢复非删除）；manual/钉住豁免（信任边界）。
         // 名额口径与 free 计算一致：限额对象 = origin=auto 活跃锚 + 钉住。
+        // #94（拍板①）：quotaScope="total"（缺省）时名额=池内 active 总数（manual/seed 全算，
+        // pinned 计入总数），逐出对象=池内非钉全部 origin；"auto"=上述旧口径（回滚档）。
         // P2（F15 QUOTA 分池）：theme/person 各自独立计数与 maxTotal——防人物锚挤占主题锚名额。
         // theme 池行集 = 非 person 行（无 person 行时与旧口径逐位一致）；person 池仅 enabled 时守卫。
         const activeNow = anyState.filter((r) => r.state === "active");
         // P3：口径收紧——theme 池 = 显式 theme（缺省无 node_type 行=theme）；person/character 各自独立。
         const themeActive = activeNow.filter((r) => (r.node_type ?? "theme") === "theme");
         const personActive = activeNow.filter((r) => r.node_type === "person");        const characterActive = activeNow.filter((r) => r.node_type === "character");
+        const scopeTotal = cfg.quotaScope !== "auto";
         const quotaEvict = async (poolRows: CoreValueRow[], maxTotal: number, evOf: (r: CoreValueRow) => number, tag: string) => {
           const pinnedNow = poolRows.filter((r) => r.pinned === 1).length;
           const autoNow = poolRows.filter((r) => r.origin === "auto" && r.pinned !== 1); // 非钉 auto（钉住单列，避免 free 口径的 pinned-auto 双计）
-          const overLimit = autoNow.length + pinnedNow - maxTotal;
+          // #94：total 口径超额 = 池内 active 总数 − maxTotal；auto 口径维持旧算式。
+          const overLimit = scopeTotal ? poolRows.length - maxTotal : autoNow.length + pinnedNow - maxTotal;
           if (overLimit <= 0) return;
-          const victims = autoNow
-            .filter((r) => r.pinned !== 1 && r.created_by === "auto-growth")
+          // #94：total 口径逐出对象 = 池内非钉全部 origin（manual/seed 占席、超额同责）；
+          // auto 口径维持旧信任边界（仅 created_by="auto-growth"）。
+          const evictable = scopeTotal
+            ? poolRows.filter((r) => r.pinned !== 1)
+            : autoNow.filter((r) => r.pinned !== 1 && r.created_by === "auto-growth");
+          const victims = evictable
             .map((r) => ({ row: r, strength: r.weight * evOf(r) }))
             .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)))
             .slice(0, overLimit);
@@ -691,12 +825,27 @@ export async function runAnchorGrowth(deps: {
         // 偏保守方向（少采纳），但与守卫口径不一致，统一之。
         const pinnedActive = anyState2.filter((r) => r.state === "active" && r.pinned === 1).length;
         const autoActiveNonPinned = anyState2.filter((r) => r.state === "active" && r.origin === "auto" && r.pinned !== 1);
-        let free = Math.max(0, cfg.maxTotal - pinnedActive - autoActiveNonPinned.length);
-        // 可挤出自生长锚列表（该 agent 的；pinned 豁免）：weight × 语料实际命中
-        //（与候选同刻度，确定性），弱者优先被挤出；单轮多候选挤出时逐个弹出。
-        const displaceable = autoActiveNonPinned
-          .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus, attrsOf(r).aliases) }))
-          .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
+        // #94（拍板①）：free/displaceable 口径随 quotaScope——total=theme 池 active 总数占满名额
+        //（manual/seed 也占席，与 GROW-QUOTA total 守卫同口径），可挤出对象=池内非钉全部 origin；
+        // auto=旧口径逐位现状（钉住 + 非钉 auto，不限池）。
+        let free: number;
+        let displaceable: Array<{ row: CoreValueRow; strength: number }>;
+        // #94：scopeTotal 声明在 doMaint 块内（quotaEvict 闭包旁），采纳块跨块不可见——在此按同式重算。
+        if (cfg.quotaScope !== "auto") {
+          const themeActive2 = anyState2.filter((r) => r.state === "active" && (r.node_type ?? "theme") === "theme");
+          free = Math.max(0, cfg.maxTotal - themeActive2.length);
+          displaceable = themeActive2
+            .filter((r) => r.pinned !== 1)
+            .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus, attrsOf(r).aliases) }))
+            .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
+        } else {
+          free = Math.max(0, cfg.maxTotal - pinnedActive - autoActiveNonPinned.length);
+          // 可挤出自生长锚列表（该 agent 的；pinned 豁免）：weight × 语料实际命中
+          //（与候选同刻度，确定性），弱者优先被挤出；单轮多候选挤出时逐个弹出。
+          displaceable = autoActiveNonPinned
+            .map((r) => ({ row: r, strength: r.weight * recountEvidence(r.label, corpus, attrsOf(r).aliases) }))
+            .sort((a, b) => a.strength - b.strength || a.row.weight - b.row.weight || String(a.row.value_id).localeCompare(String(b.row.value_id)));
+        }
         //（adoptedThisAgent 声明上移至 doAdoption 块外——V10-MAINT-DECOUPLE）
         for (const c of adoptCandidates) {
           const candidateStrength = suggestAnchorWeight(c.evidenceCount, corpus.length) * c.evidenceCount;

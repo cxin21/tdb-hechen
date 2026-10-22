@@ -2305,6 +2305,34 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
     }
   }
 
+  // ══ #94（拍板①）：core_value 采纳容量门（total 预算口径，decide 之前预检）════════
+  // 采纳即落锚（V12-CV 转换层 upsertValue），但 GROW-QUOTA 守卫只在 anchor-growth 周期跑——
+  // 面板直采可绕过名额持续膨胀（生产实证：限额 15 实际 22）。此处对齐守卫口径：
+  // quotaScope=total（缺省）且 store 支持 listValues 时，theme 池 active 总数 ≥ maxTotal
+  // → 422（pending 保持 pending，不暗箱替用户裁决；先在面板退休锚或上调 maxTotal 再采纳）。
+  // quotaScope=auto（回滚档）不设门；旧 store 缺 listValues（特性探测）→ 放行不阻塞人工裁决。
+  if (
+    b.decision === "adopted" &&
+    typeof store.upsertValue === "function" &&
+    typeof (store as { listPendingCore?: unknown }).listPendingCore === "function"
+  ) {
+    const adCfg = deps.config?.memory?.coreMemory?.anchorDiscovery;
+    const quotaScope = adCfg?.quotaScope ?? "total";
+    if (quotaScope !== "auto" && typeof (store as { listValues?: unknown }).listValues === "function") {
+      const maxTotal = adCfg?.maxTotal ?? 15; // 缺省对齐 DEFAULT_ANCHOR_DISCOVERY_CONFIG.maxTotal
+      // 门自包含定位本条 pending（`row` 作用域在上方预检块内，此处不可引用——#94 取证教训）。
+      const gateRow = (((await Promise.resolve((store as { listPendingCore: (t?: unknown) => unknown }).listPendingCore(tenant))) ?? []) as Array<{ pending_id?: string; slot?: string }>)
+        .find((r) => r.pending_id === b.pending_id);
+      if (gateRow?.slot === "core_value") {
+        const activeTheme = (((await Promise.resolve((store as { listValues: (t?: unknown, o?: unknown) => unknown }).listValues(tenant, { includeRetired: false }))) ?? []) as Array<{ state?: string; node_type?: string }>)
+          .filter((r) => r.state === "active" && (r.node_type ?? "theme") === "theme");
+        if (activeTheme.length >= maxTotal) {
+          return errorEnvelope(422, `core_value adopt blocked: anchorDiscovery.maxTotal=${maxTotal} reached (total-budget scope) — retire an anchor in the panel or raise the limit, then retry`, requestId);
+        }
+      }
+    }
+  }
+
   const decided = await Promise.resolve(store.decidePendingCore(b.pending_id, b.decision, tenant));
   if (!decided) return errorEnvelope(404, "pending item not found or already decided", requestId);
   // O13 采纳语义：strict_rule → validateCoreWrite + escapeXmlTags + upsertCore('strict_rule',…,'panel-adopt')

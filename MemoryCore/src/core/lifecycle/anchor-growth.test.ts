@@ -12,7 +12,7 @@
  *   - value_id：slug(label)；纯 CJK → auto-<sha256[:10]>（ASCII，pin/retire/delete 路由可用）
  */
 import { describe, it, expect, vi } from "vitest";
-import { runAnchorGrowth, DEFAULT_ANCHOR_DISCOVERY_CONFIG, growthValueId } from "./anchor-growth.js";
+import { runAnchorGrowth, DEFAULT_ANCHOR_DISCOVERY_CONFIG, growthValueId, convergeAnchorStock } from "./anchor-growth.js";
 import { suggestAnchorWeight } from "../../gateway/core-values-discover.js";
 
 const NOW = new Date("2026-09-10T12:00:00.000Z");
@@ -475,7 +475,8 @@ describe('runAnchorGrowth GROW-QUOTA 名额回归守卫', () => {
       .map((label, i) => corpusRow('r' + i, '第' + i + '条 关于' + label + '的记忆'));
     const store = makeStore({ rows, anyState, growthState: { lastDiscoveryAt: '2026-09-01T00:00:00.000Z', lastCorpusCount: 0 } });
     const runner = makeRunner('[]');
-    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24 }, logger: LOG, now });
+    // #94：本用例断言 auto 口径契约（manual/钉住豁免）——显式钉 quotaScope:"auto"（回滚档；total 口径见下方新用例）。
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24, quotaScope: "auto" }, logger: LOG, now });
     expect(res.retired).toBe(3);
     const retiredIds = (store.retireValue as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
     expect(retiredIds).toEqual(['v1', 'v2', 'v3']); // 强度升序 = weight 升序（同证据）
@@ -528,5 +529,129 @@ describe("P0-1A：主题采纳 rationale 落 attrs.description（写入口单一
     expect(store.upsertValue).toHaveBeenCalledWith(
       expect.any(String), "增量对账", suggestAnchorWeight(5, 5), "auto-growth", DEFAULT_TENANT, undefined, "auto", "theme", { description: "证据裁决一切。", lastDescRefreshEvidence: 5 },
     );
+  });
+});
+
+// ═════════════ #94（拍板①/②）：quotaScope total 口径 + 存量收敛 ═════════════
+describe("#94 GROW-QUOTA total 口径（超额不限 origin，最弱优先，pinned 豁免）", () => {
+  it("total：manual 锚计入名额且可被守卫退休（pinned 豁免保留）", async () => {
+    const anyState = [
+      row("v1", "弱主题甲", { origin: "auto", created_by: "auto-growth", weight: 0.3 }),
+      row("v2", "弱主题乙", { origin: "auto", created_by: "auto-growth", weight: 0.35 }),
+      row("v3", "弱主题丙", { origin: "auto", created_by: "auto-growth", weight: 0.4 }),
+      row("v4", "强主题甲", { origin: "auto", created_by: "auto-growth", weight: 0.5 }),
+      row("v5", "强主题乙", { origin: "auto", created_by: "auto-growth", weight: 0.55 }),
+      row("vp", "钉住锚", { origin: "auto", created_by: "auto-growth", weight: 0.6, pinned: 1 }),
+      row("vm", "手工锚", { origin: "manual", created_by: "verify", weight: 0.1 }),
+    ];
+    // 手工锚 ev=1（其余 ev=3）：vm 强度 0.1×1 稳居最弱，且 ev=1 ≥ minEvidence 1 不触证据退场（隔离名额守卫）。
+    const rows: unknown[] = [
+      ...["弱主题甲", "弱主题乙", "弱主题丙", "强主题甲", "强主题乙", "钉住锚"].flatMap((label) => [0, 1, 2].map((i) => corpusRow(`r-${label}-${i}`, `${i}条 关于${label}的记忆`))),
+      corpusRow("r-vm", "第0条 关于手工锚的记忆"),
+    ];
+    const store = makeStore({ rows, anyState, growthState: { lastDiscoveryAt: "2026-09-01T00:00:00.000Z", lastCorpusCount: 0 } });
+    const runner = makeRunner("[]");
+    // 池总数 7 − maxTotal 3 = 超额 4 → victims = 非钉 any-origin 强度升序 = vm v1 v2 v3
+    const res = await runAnchorGrowth({ store: store as never, llmRunner: runner as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24, quotaScope: "total" }, logger: LOG, now });
+    expect(res.retired).toBe(4);
+    const retiredIds = (store.retireValue as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(retiredIds).toEqual(["vm", "v1", "v2", "v3"]);
+    expect(retiredIds).not.toContain("vp"); // pinned 豁免
+  });
+});
+
+describe("#94 名额 free total 口径（manual 挤满触发守卫自愈；auto 口径对照）", () => {
+  it("total：4 active（2 auto+2 manual）maxTotal=3 → 守卫退最弱 manual，候选 skip；auto 口径 = 无守卫且直接采纳", async () => {
+    const anyState = [
+      row("v1", "主题甲", { origin: "auto", created_by: "auto-growth", weight: 0.8 }),
+      row("v2", "主题乙", { origin: "auto", created_by: "auto-growth", weight: 0.7 }),
+      row("vm1", "手工锚一", { origin: "manual", created_by: "verify", weight: 0.6 }),
+      row("vm2", "手工锚二", { origin: "manual", created_by: "verify", weight: 0.5 }),
+    ];
+    const rows: unknown[] = [
+      ...["主题甲", "主题乙", "手工锚一"].flatMap((label) => [0, 1, 2].map((i) => corpusRow(`r-${label}-${i}`, `${i}条 关于${label}的记忆`))),
+      corpusRow("r-vm2", "第0条 关于手工锚二的记忆"),
+      corpusRow("r-cand", "第0条 关于候选新锚的记忆"),
+    ];
+    const growthState = { lastDiscoveryAt: "2026-09-01T00:00:00.000Z", lastCorpusCount: 0 };
+    const storeTotal = makeStore({ rows, anyState, growthState });
+    const resT = await runAnchorGrowth({ store: storeTotal as never, llmRunner: makeRunner(JSON.stringify([{ label: "候选新锚", rationale: "r" }])) as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24, quotaScope: "total" }, logger: LOG, now });
+    expect(resT.retired).toBe(1); // 守卫先退 vm2（强度最弱）
+    expect(resT.adopted).toBe(0); // 快照刷新后 free=0，候选弱于最弱剩余 → skip
+    const storeAuto = makeStore({ rows, anyState, growthState });
+    const resA = await runAnchorGrowth({ store: storeAuto as never, llmRunner: makeRunner(JSON.stringify([{ label: "候选新锚", rationale: "r" }])) as never, config: { minEvidence: 1, maxPerPass: 2, maxTotal: 3, intervalHours: 24, quotaScope: "auto" }, logger: LOG, now });
+    expect(resA.retired).toBe(0); // auto 口径：manual 超额不守卫（回滚档现状）
+    expect(resA.adopted).toBe(1); // free = 3 − 0 − 2(auto) = 1 → 直接采纳
+  });
+});
+
+describe("#94 convergeAnchorStock（存量收敛：相似合并 + 超额退休）", () => {
+  function stockStore(rows: Array<Record<string, unknown>>) {
+    const values = rows.map((r) => ({ ...r }));
+    return {
+      listValuesAnyState: vi.fn(async () => values.map((r) => ({ ...r }))),
+      upsertValue: vi.fn(async () => true),
+      retireValue: vi.fn(async (id: string) => {
+        const v = values.find((x) => x.value_id === id);
+        if (v) (v as { state: string }).state = "retired";
+        return true;
+      }),
+    };
+  }
+  const vr = (value_id: string, label: string, weight: number, origin: "auto" | "manual" = "auto", attrs_json: string | null = null, pinned: 0 | 1 = 0) =>
+    ({ value_id, label, weight, created_by: origin === "auto" ? "auto-growth" : "verify", valence: null, origin, pinned, state: "active", node_type: "theme", attrs_json });
+
+  it("相似簇 → 保最强，败者退休，alias 折叠进幸存者（既有 description 保留）", async () => {
+    const store = stockStore([
+      vr("v-high", "数据完整", 0.8, "manual", JSON.stringify({ description: "数据完整性优先" })),
+      vr("v-low", "数据完整优先", 0.4),
+      vr("v-other", "取证先行", 0.5),
+    ]);
+    const embed = async (texts: string[]) => texts.map((t) => (t.includes("数据完整") ? [1, 0.05] : [0, 1]));
+    const res = await convergeAnchorStock({ store: store as never, maxTotal: 15, embed, threshold: 0.65, logger: LOG });
+    expect(res.embedAvailable).toBe(true);
+    expect(res.before).toBe(3);
+    expect(res.mergedClusters).toEqual([{ survivorId: "v-high", survivorLabel: "数据完整", retiredLabels: ["数据完整优先"] }]);
+    expect(store.retireValue).toHaveBeenCalledWith("v-low", undefined);
+    const call = (store.upsertValue as ReturnType<typeof vi.fn>).mock.calls[0]! as unknown[];
+    expect(call[0]).toBe("v-high");
+    expect(call[8]).toEqual({ description: "数据完整性优先", aliases: ["数据完整优先"] });
+    expect(res.after).toBe(2);
+  });
+
+  it("阈值下不相似 → 零合并零退休", async () => {
+    const store = stockStore([vr("v1", "数据完整", 0.8), vr("v2", "取证先行", 0.5)]);
+    const embed = async (texts: string[]) => texts.map((t) => (t === "数据完整" ? [1, 0] : [0, 1]));
+    const res = await convergeAnchorStock({ store: store as never, maxTotal: 15, embed, threshold: 0.99, logger: LOG });
+    expect(res.mergedClusters).toEqual([]);
+    expect(store.retireValue).not.toHaveBeenCalled();
+    expect(res.after).toBe(2);
+  });
+
+  it("embedder 抛错 → 零合并，仅退超额（宁缺毋滥退化）", async () => {
+    const store = stockStore([vr("v1", "主题甲", 0.8), vr("v2", "主题乙", 0.5), vr("v3", "主题丙", 0.4), vr("v4", "主题丁", 0.3)]);
+    const embed = async () => { throw new Error("Embedding API error: HTTP 429"); };
+    const res = await convergeAnchorStock({ store: store as never, maxTotal: 2, embed, logger: LOG });
+    expect(res.embedAvailable).toBe(false);
+    expect(res.mergedClusters).toEqual([]);
+    expect(res.retiredExcess.map((x) => x.valueId)).toEqual(["v4", "v3"]);
+    expect(res.after).toBe(2);
+  });
+
+  it("合并后仍超 maxTotal → 继续退最弱非钉至 ≤maxTotal（pinned 豁免）", async () => {
+    const store = stockStore([
+      vr("v1", "数据完整", 0.8, "manual", JSON.stringify({ description: "d" })),
+      vr("v2", "数据完整优先", 0.4),
+      vr("v3", "弱甲", 0.3),
+      vr("v4", "弱乙", 0.2),
+      vr("vp", "钉住锚", 0.1, "auto", null, 1),
+    ]);
+    // #94 用例④：非合并行各给独立正交向量，钉住锚零向量（cos=0）防意外聚簇。
+    const embed = async (texts: string[]) => texts.map((t) => (t.includes("数据完整") ? [1, 0] : t === "弱甲" ? [0, 1, 0] : t === "弱乙" ? [0, 0, 1] : [0, 0, 0]));
+    const res = await convergeAnchorStock({ store: store as never, maxTotal: 3, embed, threshold: 0.65, evidenceOf: () => 1, logger: LOG });
+    expect(res.mergedClusters).toHaveLength(1);
+    // 合并后 active = v1,v3,v4,vp（4）> 3 → 退最弱非钉 v4(0.2)；vp(0.1) pinned 豁免
+    expect(res.retiredExcess.map((x) => x.valueId)).toEqual(["v4"]);
+    expect(res.after).toBe(3);
   });
 });

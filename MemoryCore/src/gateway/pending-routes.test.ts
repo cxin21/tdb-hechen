@@ -251,3 +251,50 @@ describe("#12 T6：pending list 冲突标记（conflict 徽标数据源）", () 
     expect(rows[0]?.conflict).toBe(false);
   });
 });
+
+// ═════════════ #94：core_value 采纳容量门（maxTotal 总预算口径，decide 之前预检）═════════════
+describe("#94 core_value 采纳容量门（total 口径，超限 422 pending 保持 pending）", () => {
+  const CFG_FULL = { memory: { coreMemory: { writeEnabled: true, allowedSlots: ["core_value"], maxContentLength: 2000, anchorDiscovery: { maxTotal: 15, quotaScope: "total" } } } };
+  const CFG_AUTO = { memory: { coreMemory: { writeEnabled: true, allowedSlots: ["core_value"], maxContentLength: 2000, anchorDiscovery: { maxTotal: 15, quotaScope: "auto" } } } };
+  function gateStore(nTheme: number, nPerson = 0) {
+    const mk = (prefix: string, label: string, node_type: string, i: number) => ({ value_id: `auto-${prefix}${i}`, label: `${label}${i}`, weight: 0.5, created_by: "auto-growth", valence: null, origin: "auto", pinned: 0, state: "active", node_type, attrs_json: null });
+    return {
+      listPendingCore: vi.fn(() => [{ pending_id: "pd-2", slot: "core_value", content: "任何结论必须有证据支撑", label: "取证先行", description: "任何结论必须有证据支撑", evidence: 3, state: "pending", created_at: "t" }]),
+      decidePendingCore: vi.fn(() => ({ slot: "core_value", content: "任何结论必须有证据支撑", label: "取证先行", description: "任何结论必须有证据支撑" })),
+      upsertValue: vi.fn(() => true),
+      listValues: vi.fn(async () => [
+        ...Array.from({ length: nTheme }, (_, i) => mk("t", "主题", "theme", i)),
+        ...Array.from({ length: nPerson }, (_, i) => mk("p", "人物", "person", i)),
+      ]),
+    };
+  }
+  it("满员 15/15 → 422，decide 不执行（pending 保持 pending），不落锚", async () => {
+    const store = gateStore(15);
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r40", depsFor(store, ISO_A, CFG_FULL));
+    expect(res.code).toBe(422);
+    expect(store.decidePendingCore).not.toHaveBeenCalled();
+    expect(store.upsertValue).not.toHaveBeenCalled();
+  });
+  it("14/15 → 放行采纳（门只在满员拦截）", async () => {
+    const store = gateStore(14);
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r41", depsFor(store, ISO_A, CFG_FULL));
+    expect(res.code).toBe(0);
+    expect(store.upsertValue).toHaveBeenCalled();
+  });
+  it("quotaScope=auto（回滚档）→ 满员也不设门", async () => {
+    const store = gateStore(15);
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r42", depsFor(store, ISO_A, CFG_AUTO));
+    expect(res.code).toBe(0);
+  });
+  it("person 池不占 theme 名额（14 theme + 5 person → 放行）", async () => {
+    const store = gateStore(14, 5);
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r43", depsFor(store, ISO_A, CFG_FULL));
+    expect(res.code).toBe(0);
+  });
+  it("旧 store 缺 listValues（特性探测）→ 放行（能力缺失不阻塞人工裁决）", async () => {
+    const store = gateStore(15);
+    delete (store as { listValues?: unknown }).listValues;
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-2", decision: "adopted" }, AUTH, "r44", depsFor(store, ISO_A, CFG_FULL));
+    expect(res.code).toBe(0);
+  });
+});

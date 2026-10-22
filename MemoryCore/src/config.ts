@@ -472,6 +472,8 @@ export interface MemoryCoreMemoryConfig {
     minEvidence: number;
     maxPerPass: number;
     maxTotal: number;
+    /** #94（拍板①）：名额口径——"total"=池内 active 总数（auto+manual+seed 全算，pinned 计入总数，逐出豁免 pinned）；"auto"=旧口径（origin=auto 非钉 + 钉住）。缺省 "total"。 */
+    quotaScope: "auto" | "total";
     intervalHours: number;
     /** V10-MAINT-DECOUPLE：维护面独立调度节奏小时数（0=每 tick；clamp 0..168，缺省 6）。 */
     maintainIntervalHours: number;
@@ -1262,6 +1264,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         minEvidence: clamp("minEvidence", 5, 1, 50),
         maxPerPass: clamp("maxPerPass", 2, 1, 10),
         maxTotal: clamp("maxTotal", 15, 1, 100),
+        // #94（拍板①）：total=总预算口径（缺省，拍板即行为）；auto=旧口径回滚档。
+        quotaScope: str(g, "quotaScope") === "auto" ? ("auto" as const) : ("total" as const),
         intervalHours: clamp("intervalHours", 24, 1, 24 * 30),
         maintainIntervalHours: clamp("maintainIntervalHours", 6, 0, 24 * 7),
         person: {
