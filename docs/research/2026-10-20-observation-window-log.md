@@ -140,3 +140,10 @@
 - TDD：RED 5 failed/9 passed（全因相似合并未实现）→ GREEN → 单文件 14/14 → 三门 core 232f/2077t 全绿（+8 对账）+proxy 47f/368t 全绿+typecheck 243 守恒（本批命中 0）。
 - 存量清理（两包门全绿后执行）：strict_rule 槽 14→12 行（version 14→15），merge-replace ×2（sim 0.508/0.459），写后逐字比对 mergedByteEqual=true、alienRows=0，备份 .tmp-gate/strict-rule-slot-backup-*.json；写回脚本 .tmp-gate/p3-fold-apply.mjs（precondition 漂移即拒绝）。
 - 增量语义（mergeStrictRuleContent）：全等幂等保持→相似≥0.4 取最高 sim→采纳行码点更长原位替换（更新）否则旧行保留→不相似追加（V12-ADJ 语义不变）；
+
+## P3 增量合并活体实证（2026-10-21，用户指令「用真实数据测试一下」）
+
+- 方法：生产 strict_rule 槽 12 行真实文本（readOnly 拉取，version=15）+ 生产真实函数 mergeStrictRuleContent（node --import tsx 直跑 src/gateway/pending-adopt-merge.ts）+ 完整采纳链 O13 同构落在 .tmp-gate 副本 DB（零生产写入，探针用后即删）。
+- 结果四场景全 PASS：A 相似→更新（L1 真实行 vs 更长变体 sim=0.646≥0.4 → rows 12→12 原位替换、更新而非新增）；B 全等→幂等（逐字节一致）；C 不相似→追加（真实客开规范 sim=0.000<0.4 → 12→13 尾部追加）；D 完整采纳链落库（副本 version 15→16、rows 12→13、重复采纳幂等=行数不变）。
+- 诚实披露：探针 A 场景「旧行消失」子断言写歪（长变体以短版为前缀，includes 必 true），但结论不受影响——判据=行数不变+原位替换+新句在位；A/B/C/D 主判定均以行数与位置证据为准。
+- 边界澄清：本实证覆盖「采纳端」增量（panel-adopt 时 mergeStrictRuleContent）；「生成端」防重复机制=identity-discovery 生成提案时携带 redlineExisting 上下文（未改动，考古记录在案）。
