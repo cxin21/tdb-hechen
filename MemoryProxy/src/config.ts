@@ -179,12 +179,15 @@ export function loadYamlConfig(filePath: string): RawYamlConfig {
     const text = readFileSync(filePath, "utf-8");
     const parsed = yamlLoad(text);
     if (parsed == null || typeof parsed !== "object") {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[config] ${filePath} parsed to empty/invalid YAML — falling back to DEFAULT_CONFIG. ` +
-          `This means sessionInit/injection/tdai/etc. will use hard-coded defaults (mostly disabled).`,
+      // #93 read-side guard: an EXISTING config file that parses to empty/invalid
+      // YAML (0-byte, whitespace-only, comments-only, scalar) previously fell back
+      // to DEFAULT_CONFIG with only a warn line - a partial/empty materialized file
+      // (non-atomic write) would downgrade every section (tdai/injection/storage...)
+      // silently. Fail fast instead; a MISSING file still keeps default behavior.
+      throw new Error(
+        `[config] ${filePath} exists but parsed to empty/invalid YAML (${text.length} bytes) — refusing to start on a silent config downgrade. ` +
+          `Delete the file or fix its content.`,
       );
-      return {};
     }
     // eslint-disable-next-line no-console
     console.log(
