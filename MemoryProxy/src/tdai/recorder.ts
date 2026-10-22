@@ -3,6 +3,7 @@ import type { TdaiClient } from "./client.js";
 import type { TdaiIdentity, TdaiMessage } from "./types.js";
 import { extractUserQueryText, isDshRuntimeContextSnapshot } from "../common/user-query-extractor.js";
 import type { TurnContext } from "../common/intent-classifier.js";
+import { stripDshAcpTags } from "../common/acp-tag.js";
 
 /**
  * 从最后一条 user 消息中抽取「真正的用户提问」，写入 L0。
@@ -195,13 +196,17 @@ export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity 
     fpSet = submittedSetFor(identity?.sessionId ?? identity?.userKey ?? "(no-session)");
     userBefore = turnContext.classified.length;
     messages = [];
+    let emptySkipped = 0;
     for (const c of turnContext.classified) {
-      const fp = l0Fingerprint("user", c.raw || c.text);
+      // #89：写边界统一剥 acp 标签——纯标签行（剥后为空）跳过不写；指纹按剥后内容。
+      const stored = stripDshAcpTags(c.raw || c.text);
+      if (!stored) { emptySkipped += 1; continue; }
+      const fp = l0Fingerprint("user", stored);
       if (fpSet.has(fp)) continue;
       fpSet.add(fp);
       messages.push({
         role: "user" as const,
-        content: c.raw || c.text,
+        content: stored,
         classification: c.classification,
       });
     }
@@ -212,21 +217,30 @@ export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity 
         before: userBefore,
         submitted: messages.length,
         skipped: userBefore - messages.length,
+        emptySkipped,
       });
     } catch { /* best effort */ }
   } else {
     messages = [];
-    if (userMessage) messages.push(userMessage);
+    if (userMessage) {
+      // #89：写边界统一剥 acp 标签（legacy 提取仍可能残留尾随标签）；剥后为空不写。
+      const stored = stripDshAcpTags(userMessage.content);
+      if (stored) messages.push({ ...userMessage, content: stored });
+    }
   }
   if (assistantContent?.trim()) {
-    if (fpSet) {
-      const aFp = l0Fingerprint("assistant", assistantContent);
-      if (!fpSet.has(aFp)) {
-        fpSet.add(aFp);
-        messages.push({ role: "assistant", content: assistantContent });
+    // #89：assistant 尾随 acp 标签同规则剥除；剥后为空不写；指纹按剥后内容。
+    const aStored = stripDshAcpTags(assistantContent);
+    if (aStored) {
+      if (fpSet) {
+        const aFp = l0Fingerprint("assistant", aStored);
+        if (!fpSet.has(aFp)) {
+          fpSet.add(aFp);
+          messages.push({ role: "assistant", content: aStored });
+        }
+      } else {
+        messages.push({ role: "assistant", content: aStored });
       }
-    } else {
-      messages.push({ role: "assistant", content: assistantContent });
     }
   }
   if (messages.length === 0) return;
