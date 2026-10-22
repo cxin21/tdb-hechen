@@ -376,7 +376,7 @@ describe("#87 · TdaiL1RecallInjector 同意图去重闸（仅 intent 档）", (
     expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
   });
 
-  it("容量上限 200：超限清空不崩、最早会话指纹让位可再次召回", async () => {
+  it("#88 R8 · 容量上限 200：LRU 仅逐出最旧会话（未逐出会话指纹保留不漏闸）", async () => {
     const { injector, recallBlockForCtx } = makeDedupInjector(true);
     for (let i = 0; i < 200; i++) {
       await injector.execute(makeIntentCtx(`sess-${i}`, INTENT));
@@ -384,7 +384,203 @@ describe("#87 · TdaiL1RecallInjector 同意图去重闸（仅 intent 档）", (
     expect(recallBlockForCtx).toHaveBeenCalledTimes(200);
     await injector.execute(makeIntentCtx("sess-overflow", INTENT));
     expect(recallBlockForCtx).toHaveBeenCalledTimes(201);
+    // #88 R8：未逐出会话（sess-1）指纹必须保留——旧 clear() 整表清空在此漏闸（改前 RED；判别步）
+    await injector.execute(makeIntentCtx("sess-1", INTENT));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(201);
+    // 被逐出的最旧会话（sess-0）→ 指纹让位，可再次召回
     await injector.execute(makeIntentCtx("sess-0", INTENT));
     expect(recallBlockForCtx).toHaveBeenCalledTimes(202);
+  });
+
+  it("#88 M1 · scope 槽真 LRU：命中刷新（非 FIFO 插入序）——刚命中者免逐出、最久未用者让位", async () => {
+    const { injector, recallBlockForCtx } = makeDedupInjector(true);
+    for (let i = 0; i < 200; i++) {
+      await injector.execute(makeIntentCtx("sess-" + i, "intent-" + i));
+    }
+    // 命中刷新：sess-0 复访经 getScopeState 命中（去重闸挡 POST）——真 LRU 必须重插尾部；FIFO 在此不刷新（RED 判别锚）
+    await injector.execute(makeIntentCtx("sess-0", "intent-0"));
+    // 第 201 scope 溢出：真 LRU 逐出最久未用的 sess-1（FIFO 会误逐出刚命中的 sess-0）
+    await injector.execute(makeIntentCtx("sess-overflow", "intent-ov"));
+    // 判别 A：刚命中的 sess-0 指纹仍在 → 同意图不重 POST
+    await injector.execute(makeIntentCtx("sess-0", "intent-0"));
+    // 判别 B：最久未用的 sess-1 已让位 → 指纹丢失可重 POST
+    await injector.execute(makeIntentCtx("sess-1", "intent-1"));
+    const calls = recallBlockForCtx.mock.calls;
+    const countFor = (q: string) => calls.filter((c) => (c as unknown[])[1] === q).length;
+    expect(countFor("intent-0")).toBe(1);
+    expect(countFor("intent-1")).toBe(2);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(202);
+  });
+});
+
+// ═══════════ #88 · 惰性刷新超窗 + 短消息三分 + 三级 scope 指纹（R 矩阵，2026-10-22 定案） ═══════════
+
+describe("#88 · TdaiL1RecallInjector 超窗/短消息/scope（R1-R10）", () => {
+  const INTENT88 = "不要影子规则，直接完整实现";
+  const W = 60 * 60 * 1000; // recallIntentDedupTtlMs 缺省 60min（定案参数终表）
+  const BLOCK = "<relevant-memories>\n- [结论|#88] R 矩阵块\n</relevant-memories>";
+
+  function makeClock() {
+    let now = 1_700_000_000_000;
+    return { nowFn: () => now, advance(ms: number) { now += ms; } };
+  }
+
+  function makeInjector88(opts: { nowFn: () => number; dedup?: boolean; ttlMs?: number }) {
+    const recallBlockForCtx = vi.fn(async () => ({
+      block: BLOCK,
+      meta: { conclusionCount: 1, experienceCount: 0, sessionReused: false, layered: true },
+    }));
+    const searchL1ForCtx = vi.fn(async () => []);
+    const injector = new TdaiL1RecallInjector(
+      { recallBlockForCtx, searchL1ForCtx } as unknown as TdaiClient,
+      null, undefined, 5, null, undefined, undefined,
+      "intent",
+      opts.dedup ?? true,
+      opts.ttlMs ?? W,
+      opts.nowFn,
+    );
+    return { injector, recallBlockForCtx };
+  }
+
+  function makeIntentCtx88(sessionKey: string, intent: string) {
+    const ctx = makeCtx(intent);
+    (ctx.metadata as Record<string, unknown>).sessionKey = sessionKey;
+    (ctx.metadata.custom as Record<string, unknown>).tdaiTurnContext = {
+      turnIntent: { classification: "real", text: intent },
+      classified: [],
+    };
+    return ctx;
+  }
+
+  /** R7b：同 sessionKey、不同 user_id（scope=userId:agentId:sessionKey 隔离验证）。 */
+  function makeIntentCtxAsUser(sessionKey: string, intent: string, userId: string) {
+    const ctx = makeIntentCtx88(sessionKey, intent);
+    (ctx.metadata.custom as Record<string, unknown>).session = { ...SESSION, user_id: userId };
+    return ctx;
+  }
+
+  it("R1 · 同文 3 步（各 +1min，W=60min）→ 仅 1 次 POST", async () => {
+    const clock = makeClock();
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+    await injector.execute(makeIntentCtx88("sessA", INTENT88));
+    clock.advance(60_000);
+    await injector.execute(makeIntentCtx88("sessA", INTENT88));
+    clock.advance(60_000);
+    await injector.execute(makeIntentCtx88("sessA", INTENT88));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+  });
+
+  it("R2 · A→B→A 窗内 → 第二次 A 不 POST（指纹按意图分槽，不被 B 冲掉）", async () => {
+    const clock = makeClock();
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+    await injector.execute(makeIntentCtx88("sessA", "分析召回根因"));
+    clock.advance(60_000);
+    await injector.execute(makeIntentCtx88("sessA", "换成看降级路径"));
+    clock.advance(60_000);
+    const third = await injector.execute(makeIntentCtx88("sessA", "分析召回根因"));
+    expect(third).toEqual([]);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+  });
+
+  it("R3 · A→B→A 超 W → A 重新 POST 且时间戳刷新（条目是刷新非删除）", async () => {
+    const clock = makeClock();
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+    await injector.execute(makeIntentCtx88("sessA", "分析召回根因"));
+    clock.advance(60_000);
+    await injector.execute(makeIntentCtx88("sessA", "换成看降级路径"));
+    clock.advance(60 * 60_000); // 累计 61min > W=60min
+    const third = await injector.execute(makeIntentCtx88("sessA", "分析召回根因"));
+    expect(third).toHaveLength(1);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(3);
+    // 刷新后再窗内 → 不 POST（证明 lastRecalledAt 被刷新）
+    clock.advance(60_000);
+    const fourth = await injector.execute(makeIntentCtx88("sessA", "分析召回根因"));
+    expect(fourth).toEqual([]);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(3);
+  });
+
+  it("R4a · 「继续」+ last-known 窗内 → 不 POST（延续消息不独立召回）", async () => {
+    const clock = makeClock();
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+    await injector.execute(makeIntentCtx88("sessA", "帮我分析召回根因"));
+    clock.advance(60_000);
+    const second = await injector.execute(makeIntentCtx88("sessA", "继续"));
+    expect(second).toEqual([]);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+  });
+
+  it("R4b · 「继续」无 last-known → 不 POST 且记 intent-missing（不得记 scaffold-skip）", async () => {
+    const clock = makeClock();
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    try {
+      const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+      const blocks = await injector.execute(makeIntentCtx88("sessA", "继续"));
+      expect(blocks).toEqual([]);
+      expect(recallBlockForCtx).not.toHaveBeenCalled();
+      expect(infoSpy.mock.calls.some((c) => c[0] === "dsh-recall-intent-missing")).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("R5 · 短新意图「换北京」→ 正常 POST 且 query 原样透传（残差门不再拍平）", async () => {
+    const clock = makeClock();
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+    const blocks = await injector.execute(makeIntentCtx88("sessA", "换北京"));
+    expect(blocks).toHaveLength(1);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+    expect((recallBlockForCtx.mock.calls[0] as unknown[])[1]).toBe("换北京");
+  });
+
+  it("R6 · 「停」→ 不 POST + 记 short-command + 清 last-known（后续「继续」不召回）", async () => {
+    const clock = makeClock();
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    try {
+      const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+      await injector.execute(makeIntentCtx88("sessA", "帮我分析召回根因"));
+      clock.advance(60_000);
+      const stop = await injector.execute(makeIntentCtx88("sessA", "停"));
+      expect(stop).toEqual([]);
+      expect(infoSpy.mock.calls.some((c) => c[0] === "dsh-recall-short-command")).toBe(true);
+      // 焦点切换：last-known 已清除 → 「继续」无 last-known → 不 POST
+      clock.advance(60_000);
+      const cont = await injector.execute(makeIntentCtx88("sessA", "继续"));
+      expect(cont).toEqual([]);
+      expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("R7a · 同文跨 sessionKey → 各自召回不误杀", async () => {
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: () => 1_700_000_000_000 });
+    await injector.execute(makeIntentCtx88("sessA", INTENT88));
+    await injector.execute(makeIntentCtx88("sessB", INTENT88));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+  });
+
+  it("R7b · 同 sessionKey 跨 user_id → scope 隔离，各自召回", async () => {
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: () => 1_700_000_000_000 });
+    await injector.execute(makeIntentCtx88("sessA", INTENT88));
+    await injector.execute(makeIntentCtxAsUser("sessA", INTENT88, "userB"));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(2);
+  });
+
+  it("R10 · 同会话 33 意图 → 仅最旧逐出（中间意图指纹保留、总量有界）", async () => {
+    const clock = makeClock(); // 静态时钟：全部窗内
+    const { injector, recallBlockForCtx } = makeInjector88({ nowFn: clock.nowFn });
+    for (let i = 1; i <= 33; i++) {
+      await injector.execute(makeIntentCtx88("sessA", `意图编号${String(i).padStart(2, "0")}`));
+    }
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(33);
+    // 最旧（意图01）已被逐出 → 可再次召回
+    await injector.execute(makeIntentCtx88("sessA", "意图编号01"));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(34);
+    // 中间（意图20）未被逐出 → 指纹保留不漏闸
+    await injector.execute(makeIntentCtx88("sessA", "意图编号20"));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(34);
+    // 最新（意图33）保留
+    await injector.execute(makeIntentCtx88("sessA", "意图编号33"));
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(34);
   });
 });

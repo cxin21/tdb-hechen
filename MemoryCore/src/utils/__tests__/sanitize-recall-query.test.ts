@@ -1,8 +1,9 @@
 /**
  * #74 Batch A · sanitizeRecallQuery 两级剥噪契约（合同 §1.2）。
  *
- * D4 定案：清洗后残留 < 10 字符 → skipped=true（一级：整条跳过，零检索零注入）；
- * 否则返回清洗后查询（二级：清洗后检索）。阈值常量 MIN_QUERY_RESIDUAL_CHARS=10 导出。
+ * #74 D4 定案（2026-10-22 由 #88 合同修订）：skip 当且仅当剥噪后残留为空（残差=0=纯脚手
+ * 架，结构信号定源）；残差 <10 不再 skip——降级「≥10 无条件可检索」档位标记，
+ * MIN_QUERY_RESIDUAL_CHARS=10 保留导出供档位观测。
  * RED 形态：函数与常量尚不存在——import 失败即 feature-missing RED。
  */
 import { describe, expect, it } from "vitest";
@@ -44,17 +45,31 @@ describe("sanitizeRecallQuery · 两级剥噪（#74 D4）", () => {
     expect(r.text).toBe("重启 tdai-core 后 journal 行为不变");
   });
 
-  it("边界：残留恰好 9 字符 → skip；10 字符 → 检索", () => {
-    expect(sanitizeRecallQuery("一二三四五六七八九").skipped).toBe(true);
+  it("#88 合同翻转：残差 9 字符短查询 → 不再 skip（残差门降级为档位标记，改前 RED）", () => {
+    const r = sanitizeRecallQuery("一二三四五六七八九");
+    expect(r.skipped).toBe(false);
+    expect(r.text).toBe("一二三四五六七八九");
+    expect(r.residualChars).toBe(9);
+  });
+
+  it("#88 R5 锚：短实义查询「换北京」→ 不 skip（原残差门拍平处，改前 RED）", () => {
+    const r = sanitizeRecallQuery("换北京");
+    expect(r.skipped).toBe(false);
+    expect(r.text).toBe("换北京");
+    expect(r.residualChars).toBe(3);
+  });
+
+  it("残差 10 字符 → 检索（≥10 无条件可检索档位不变）", () => {
     const r10 = sanitizeRecallQuery("一二三四五六七八九十");
     expect(r10.skipped).toBe(false);
     expect(r10.text).toBe("一二三四五六七八九十");
   });
 
-  it("裸 m-ref+脚手架混合后残留不足 → skip（六 pattern 全参战）", () => {
+  it("#88 合同翻转：m-ref+压缩标题+[soul-feeling] 行 → 删头留正文残差=2 → 不 skip", () => {
     const raw = "m00207\n【Compressed conversation section】\n[soul-feeling] 平稳";
     const r = sanitizeRecallQuery(raw);
-    expect(r.skipped).toBe(true);
-    expect(r.text).toBe("");
+    expect(r.skipped).toBe(false);
+    expect(r.text).toBe("平稳");
+    expect(r.residualChars).toBe(2);
   });
 });

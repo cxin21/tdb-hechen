@@ -468,6 +468,8 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
           config.tdai.memory.recallQuerySource,
           // #87：同意图去重闸（缺省 true，仅 intent 档消费）。
           config.tdai.memory.recallIntentDedup,
+          // #88：超窗 TTL（缺省 60min，惰性刷新非自动重召回）。
+          config.tdai.memory.recallIntentDedupTtlMs,
         ),
       );
     }

@@ -122,6 +122,10 @@ export function sanitizeText(text: string): string {
  * 端点路（v2-router handleRecall）与钩子路共用 sanitizeText 单一源；本函数只在
  * 召回入口调用（L0 capture 不做 skip 判定——capture 侧宁存勿删）。
  */
+/**
+ * #88 语义修订（2026-10-22）：不再是 skip 判决阈值（skip 当且仅当剥噪残留=0），
+ * 降级为「≥10 无条件可检索」档位标记，保留导出供档位观测与消费方兼容。
+ */
 export const MIN_QUERY_RESIDUAL_CHARS = 10;
 
 export interface SanitizedRecallQuery {
@@ -133,16 +137,14 @@ export interface SanitizedRecallQuery {
   residualChars: number;
 }
 
-export function sanitizeRecallQuery(
-  raw: string,
-  opts?: { minResidualChars?: number },
-): SanitizedRecallQuery {
-  const min = opts?.minResidualChars ?? MIN_QUERY_RESIDUAL_CHARS;
+export function sanitizeRecallQuery(raw: string): SanitizedRecallQuery {
   const cleaned = typeof raw === "string" ? sanitizeText(raw).trim() : "";
   const residualChars = cleaned.length;
-  // 契约（RED 用例 6）：skipped=true 时 text 恒空串——text 仅在二级（清洗后检索）
-  // 分支承载查询；skip 分支不回传残句，残留量经 residualChars 观测。
-  return residualChars < min
+  // 契约（#88 修订，2026-10-22）：skip 当且仅当剥噪残留=0（结构信号定源——'<' 头/时间戳
+  // 模板等纯脚手架已被 sanitizeText 剥净）。旧「残差 <10 → skip」废除：残差 1-9 的短实义
+  // 查询（如「换北京」）不再被拍平；残差量经 residualChars 观测（R9 journal 留痕）。
+  // skipped=true 时 text 恒空串（原 RED 用例 6 契约保留）。
+  return residualChars === 0
     ? { text: "", skipped: true, residualChars }
     : { text: cleaned, skipped: false, residualChars };
 }

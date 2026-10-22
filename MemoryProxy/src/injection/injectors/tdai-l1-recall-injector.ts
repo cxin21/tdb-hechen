@@ -6,6 +6,8 @@ import { getTdaiIdentity } from "../../tdai/identity.js";
 import { extractUserQueryText } from "../../tdai/recorder.js";
 import type { TurnContext } from "../../common/intent-classifier.js";
 import { recordRecallOutcome, recordTurnIntentPresence, warnTurnContextMissing } from "../../tdai/sentinel.js";
+import { createHash } from "node:crypto";
+import { classifyShortIntent, normalizeIntentText, residualChars as intentResidual } from "../../common/short-intent.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs } from "./tdai-fixed-asset.js";
@@ -27,16 +29,28 @@ import { log } from "../../report/log.js";
  *
  * 控制面不可达时（fixed-asset 解析降级）：仅查当前 agent 的 L1（与改造前的行为一致）。
  */
-/** #87 同意图去重闸：会话级 last-recalled-intent 指纹容量上限（超限清空，镜像 recorder L0_FP_MAX_SESSIONS 模式）。 */
-const INTENT_FP_MAX_SESSIONS = 200;
+/** #87/#88 指纹闸：scope（userId:agentId:sessionKey 三级键）容量上限——LRU 仅逐出最旧 scope（#88 取代旧 clear() 整表清空=集体漏闸）。 */
+const INTENT_FP_MAX_SCOPES = 200;
+/** #88：单 scope 内意图指纹 LRU 容量（定案参数终表 N=32；超限逐出最旧意图槽）。 */
+const INTENT_FP_MAX_INTENTS = 32;
+
+/** #88 三级 scope 指纹状态：意图槽 LRU（Map 插入序=LRU 序，首键=最旧）+ last-known 焦点。 */
+interface ScopeFingerprint {
+  /** intentHash（归一化意图 sha256 前 12 hex）→ lastRecalledAt；重召回=刷新值（条目不删）。 */
+  intents: Map<string, number>;
+  /** last-known 焦点：最近一条可检索意图文本（S2 写入 / S1·null 轮消费 / S3 清除）。 */
+  lastKnownText: string | null;
+  /** lastKnownText 的最近刷新时刻（nowFn 时钟）；0=无焦点。 */
+  lastKnownAt: number;
+}
 
 export class TdaiL1RecallInjector implements InjectionHook {
   id = "tdai-l1-recall-injector";
   point = "user.before" as const;
   priority: HookPriority = HOOK_PRIORITY.MEMORY;
   description = "Recall TDAI L1 memories from self + imported agents and prepend them to the current user turn";
-  /** #87：sessionKey → 最近一次已成功召回的 intent 文本（仅 intent 档写入与消费）。 */
-  private lastIntentBySession = new Map<string, string>();
+  /** #88：scope → 指纹状态（意图 LRU + last-known 焦点；仅 intent 档写入与消费）。 */
+  private fingerprintByScope = new Map<string, ScopeFingerprint>();
 
   /**
    * @param sessionInitConfig 用来调控制面拿 fixed-asset-agents；如果 null，
@@ -77,6 +91,13 @@ export class TdaiL1RecallInjector implements InjectionHook {
      * （「一步一查」收敛为「一意图一查」）。缺省 true；legacy/shadow 行为逐位不变。
      */
     private recallIntentDedup = true,
+    /**
+     * #88 超窗语义（惰性刷新非自动重召回）：指纹 TTL 缺省 3600000ms=60min（定案参数终表 W）。
+     * now−lastRecalledAt≤W → 同意图去重不 POST；>W → 失效重召回并刷新时间戳（条目不删）。
+     */
+    private recallIntentDedupTtlMs = 3_600_000,
+    /** #88 可注入时钟（测试 fake clock；缺省 Date.now）。 */
+    private nowFn: () => number = Date.now,
   ) {}
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
@@ -94,34 +115,74 @@ export class TdaiL1RecallInjector implements InjectionHook {
     //    缺省 legacy=直接用 legacyQuery，行为逐位不变）──
     const turnContext = (ctx.metadata.custom as { tdaiTurnContext?: TurnContext | null } | undefined)?.tdaiTurnContext ?? null;
     let query = legacyQuery;
-    if (this.querySource !== "legacy" && turnContext) {
-      const intentQuery = turnContext.turnIntent ? turnContext.turnIntent.text.trim().slice(0, 2048) : "";
-      recordTurnIntentPresence(ctx.metadata.sessionKey ?? "", intentQuery.length > 0);
-      if (this.querySource === "intent") {
-        // intent 档：turnIntent 缺失（全 scaffold/unknown 轮）→ query 空 → 零召回
-        //（不把噪声送检）；turnContext 缺失 → else 分支限频 warn（Me1 修复），行为保持 legacy。
-        query = intentQuery;
-        // ── #87 同意图去重闸（仅 intent 档）：同 session 同意图已成功召回过 → 跳过 POST
-        // 零召回（journal 无行、无 ~2.6s 延迟）。指纹在召回成功后更新（markIntentRecalled），
-        // POST 异常不置 → 下一步自动重试。多步 agentic 轮内「一步一查」收敛为「一意图一查」。
-        if (this.recallIntentDedup && query && this.lastIntentBySession.get(ctx.metadata.sessionKey ?? "") === query) {
-          log.info("dsh-recall-intent-dedup-skip", { session: ctx.metadata.sessionKey ?? "", intentHead: query.slice(0, 80) });
+    // #88：三级 scope 键（userId:agentId:sessionKey）——跨用户/跨 agent 指纹串扰隔离（R7）。
+    const sessionKey = ctx.metadata.sessionKey ?? "";
+    const scopeKey = `${identity.userId}:${identity.agentId}:${sessionKey}`;
+    if (this.querySource === "intent") {
+      // #88 intent 档：短消息三分（S1 延续/S2 短新意图/S3 纯指令）+ last-known 焦点 + scope 指纹去重。
+      if (!turnContext) {
+        warnTurnContextMissing(sessionKey, this.querySource);
+      }
+      const state = this.getScopeState(scopeKey);
+      const now = this.nowFn();
+      const rawIntent = turnContext?.turnIntent ? turnContext.turnIntent.text.trim() : "";
+      const normalized = normalizeIntentText(rawIntent);
+      const kind = classifyShortIntent(normalized);
+      if (rawIntent && kind === "command") {
+        // S3 纯指令（「停/撤/？」）：检索区分度≈0 → 不召回；焦点切换=清 last-known；记账+哨兵。
+        log.info("dsh-recall-short-command", {
+          session: sessionKey,
+          head: rawIntent.slice(0, 40),
+          residual: intentResidual(normalized),
+        });
+        state.lastKnownText = null;
+        recordTurnIntentPresence(sessionKey, false);
+        return [];
+      }
+      if (rawIntent && kind === "retrievable") {
+        // S2 短新意图（「换北京」）：原文可检索 → 正常召回 + 刷新 last-known 焦点。
+        query = rawIntent.slice(0, 2048);
+        state.lastKnownText = query;
+        state.lastKnownAt = now;
+        recordTurnIntentPresence(sessionKey, true);
+      } else {
+        // S1 延续/确认（词表命中，含「嗯嗯」归一化）与 turnIntent=null（续跑轮）：
+        // 不独立召回，意图=last-known（去重闸裁决新鲜度）；无 last-known → intent-missing 哨兵。
+        if (state.lastKnownText && now - state.lastKnownAt <= this.recallIntentDedupTtlMs) {
+          query = state.lastKnownText;
+          recordTurnIntentPresence(sessionKey, true);
+        } else {
+          recordTurnIntentPresence(sessionKey, false);
+          log.info("dsh-recall-intent-missing", {
+            session: sessionKey,
+            rawHead: rawIntent.slice(0, 40),
+            reason: rawIntent ? "continuation-no-focus" : "no-turn-intent",
+          });
           return [];
         }
-      } else {
-        // shadow 档：双跑对比日志，行为仍用 legacy query（影子期零行为变化）。
-        log.info("dsh-recall-query-shadow", {
-          legacyLen: legacyQuery.length,
-          intentLen: intentQuery.length,
-          match: legacyQuery === intentQuery,
-          legacyHead: legacyQuery.slice(0, 80),
-          intentHead: intentQuery.slice(0, 80),
-        });
       }
+      // #88 去重闸：同 scope 同意图 W 内已成功召回 → 跳过 POST；>W 失效 → 重召回（mark 刷新时间戳）。
+      if (this.recallIntentDedup && query) {
+        const hash = createHash("sha256").update(normalizeIntentText(query), "utf8").digest("hex").slice(0, 12);
+        const lastRecalledAt = state.intents.get(hash);
+        if (lastRecalledAt !== undefined && now - lastRecalledAt <= this.recallIntentDedupTtlMs) {
+          log.info("dsh-recall-intent-dedup-skip", { session: sessionKey, intentHead: query.slice(0, 80) });
+          return [];
+        }
+      }
+    } else if (this.querySource === "shadow" && turnContext) {
+      // shadow 档：双跑对比日志（影子期零行为变化，query 仍用 legacy）。
+      const intentQuery = turnContext.turnIntent ? turnContext.turnIntent.text.trim().slice(0, 2048) : "";
+      recordTurnIntentPresence(sessionKey, intentQuery.length > 0);
+      log.info("dsh-recall-query-shadow", {
+        legacyLen: legacyQuery.length,
+        intentLen: intentQuery.length,
+        match: legacyQuery === intentQuery,
+        legacyHead: legacyQuery.slice(0, 80),
+        intentHead: intentQuery.slice(0, 80),
+      });
     } else if (this.querySource !== "legacy") {
-      // Me1 修复（2026-10-22 审查）：此前注释宣称「哨兵与 loud 日志兜底」但实现无 else，
-      // turnContext 缺失（handler 未接线/旧渠道）静默回落 legacy。限频 warn 补可观测性。
-      warnTurnContextMissing(ctx.metadata.sessionKey ?? "", this.querySource);
+      warnTurnContextMissing(sessionKey, this.querySource);
     }
     if (!query) return [];
 
@@ -180,7 +241,7 @@ export class TdaiL1RecallInjector implements InjectionHook {
       // #83 哨兵：recall 空响应采样（log-only）
       recordRecallOutcome(mergedChain.length === 0);
       // #87：主链召回成功（含空结果）→ 置会话意图指纹。
-      this.markIntentRecalled(ctx.metadata.sessionKey ?? "", query);
+      this.markIntentRecalled(scopeKey, query);
       return mergedChain;
     }
 
@@ -208,7 +269,7 @@ export class TdaiL1RecallInjector implements InjectionHook {
       .slice(0, this.globalTopK);
 
     // #87：降级路召回成功（含空结果）→ 同样置指纹，避免每步重查。
-    this.markIntentRecalled(ctx.metadata.sessionKey ?? "", query);
+    this.markIntentRecalled(scopeKey, query);
     if (merged.length === 0) return [];
 
     const lines: string[] = [
@@ -240,10 +301,41 @@ export class TdaiL1RecallInjector implements InjectionHook {
   }
 
   /** #87：召回成功后更新会话级意图指纹（仅 intent 档 + dedup 开）。容量超限清空防泄漏。 */
-  private markIntentRecalled(sessionKey: string, intent: string): void {
+  /** #88：召回成功后置指纹（仅 intent 档 + dedup 开）——意图 LRU + last-known 刷新（时间戳刷新非删除）。 */
+  private markIntentRecalled(scopeKey: string, intent: string): void {
     if (this.querySource !== "intent" || !this.recallIntentDedup) return;
-    if (this.lastIntentBySession.size >= INTENT_FP_MAX_SESSIONS) this.lastIntentBySession.clear();
-    this.lastIntentBySession.set(sessionKey, intent);
+    const state = this.getScopeState(scopeKey);
+    const hash = createHash("sha256").update(normalizeIntentText(intent), "utf8").digest("hex").slice(0, 12);
+    // LRU 刷新：重插到尾部（首键=最旧）；超 N=32 逐出最旧意图槽。
+    state.intents.delete(hash);
+    state.intents.set(hash, this.nowFn());
+    while (state.intents.size > INTENT_FP_MAX_INTENTS) {
+      const oldest = state.intents.keys().next().value;
+      if (oldest === undefined) break;
+      state.intents.delete(oldest);
+    }
+    if (intent) {
+      state.lastKnownText = intent;
+      state.lastKnownAt = this.nowFn();
+    }
+  }
+
+  /** #88：取（或建）scope 指纹状态；scope 级 LRU 200——命中重插尾部（真 LRU 非 FIFO），超限仅逐出最久未用 scope（取代旧 clear() 整表清空）。 */
+  private getScopeState(scopeKey: string): ScopeFingerprint {
+    const existing = this.fingerprintByScope.get(scopeKey);
+    if (existing) {
+      // 命中刷新：delete+set 重插尾部（与意图槽 markIntentRecalled 对称）——否则是 FIFO（按插入序驱逐，#88 M1）。
+      this.fingerprintByScope.delete(scopeKey);
+      this.fingerprintByScope.set(scopeKey, existing);
+      return existing;
+    }
+    if (this.fingerprintByScope.size >= INTENT_FP_MAX_SCOPES) {
+      const oldest = this.fingerprintByScope.keys().next().value;
+      if (oldest !== undefined) this.fingerprintByScope.delete(oldest);
+    }
+    const fresh: ScopeFingerprint = { intents: new Map(), lastKnownText: null, lastKnownAt: 0 };
+    this.fingerprintByScope.set(scopeKey, fresh);
+    return fresh;
   }
 
   /**

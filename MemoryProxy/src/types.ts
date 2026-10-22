@@ -317,6 +317,8 @@ export interface TdaiConfig {
     l0CaptureMode: "legacy" | "shadow" | "classified";
     /** #87 同意图只自动召回一次：intent 档会话级指纹闸开关（legacy/shadow 不消费）。默认 true。 */
     recallIntentDedup: boolean;
+    /** #88 超窗语义（惰性刷新非自动重召回）：指纹 TTL 毫秒，缺省 3600000=60min；now−lastRecalledAt>W 失效重召回并刷新时间戳（条目不删）。 */
+    recallIntentDedupTtlMs: number;
     timeoutMs: number;
   };
 }

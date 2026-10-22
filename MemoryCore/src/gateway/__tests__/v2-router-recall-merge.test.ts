@@ -14,6 +14,7 @@
  *
  * 铁律：全部走真链路（临时 SQLite 库 + handleV2Route 真分发），零检索层语义假设。
  */
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -254,6 +255,16 @@ describe("DS-RECALL-MERGE-001 · /v3/recall 核心单点端点", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]!.skipReason).toBe("scaffold-query");
       expect(rows[0]!.strategy).toBe("scaffold-skip");
+      // #88 R9：skip 行双留痕——rawQuery 截断原文 + len + hash8 + residual（闸门失明定界用）
+      const rawQuery = [
+        '<acp tokens="30" type="text">m00207</acp>',
+        "Time sampled while preparing turn 45, step 1: 2026-10-20T03:15:00+08:00[Asia/Shanghai]",
+        "⚠️ Context limit reached — compress now",
+      ].join("\n");
+      expect(rows[0]!.rawQuery).toBe(rawQuery.slice(0, 120));
+      expect(rows[0]!.rawLen).toBe(rawQuery.length);
+      expect(rows[0]!.rawHash8).toBe(createHash("sha256").update(rawQuery, "utf8").digest("hex").slice(0, 8));
+      expect(rows[0]!.residualChars).toBe(0);
     } finally {
       env.cleanup();
     }

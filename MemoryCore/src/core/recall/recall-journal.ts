@@ -115,6 +115,14 @@ export interface RecallJournalEntry {
    * 区分于正常召回条目；缺字段 = 正常召回（向后兼容旧条目与旧消费方）。
    */
   skipReason?: string;
+  /** #88：skip 行双留痕（闸门失明定界）——原文截断 120 字符。仅 skip 行携带；缺字段=正常召回。 */
+  rawQuery?: string;
+  /** #88：skip 行原文 UTF-16 长度。 */
+  rawLen?: number;
+  /** #88：skip 行原文 sha256 前 8 hex。 */
+  rawHash8?: string;
+  /** #88：skip 行剥噪残差（sanitizeRecallQuery.residualChars）。 */
+  residualChars?: number;
 }
 
 export interface RecallJournalTenant {

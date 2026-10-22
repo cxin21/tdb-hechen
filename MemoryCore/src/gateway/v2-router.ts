@@ -1935,7 +1935,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
   const TIMEOUT_SENTINEL = "__recall_timeout__";
 
   // ── #74（Batch A · 两级剥噪，2026-10-20）：端点路查询剥噪，与钩子路（auto-recall
-  // 对 userText 的 sanitizeText 剥壳）对齐。一级：剥噪残留 < MIN_QUERY_RESIDUAL_CHARS(10)
+  // 对 userText 的 sanitizeText 剥壳）对齐。一级：#88 修订后 skip 当且仅当剥噪残留=0（MIN_QUERY_RESIDUAL_CHARS 降级档位标记）
   // 字符 = 纯脚手架查询 → 整条跳过（零检索零注入零指标上报），journal 以
   // skipReason="scaffold-query" 注记——skip 路是独立语义入口，不经 performLayeredRecall
   // 采集点（该采集点单一源禁第二份），租户推导与目录形态镜像 auto-recall.ts journal
@@ -1975,6 +1975,11 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
             experienceCount: 0,
             searchTiming: { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 },
             skipReason: "scaffold-query",
+            // #88 R9：skip 行双留痕——原文截断 + 长度 + hash8 + 残差（闸门失明定界用）。
+            rawQuery: b.query.slice(0, 120),
+            rawLen: b.query.length,
+            rawHash8: createHash("sha256").update(b.query, "utf8").digest("hex").slice(0, 8),
+            residualChars: sq.residualChars,
             memoryLines: [],
             perfMs: skipPerfMs,
           },

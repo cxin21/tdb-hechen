@@ -137,6 +137,9 @@ export const DEFAULT_CONFIG: ProxyConfig = {
       // #87 同意图去重：intent 档同 session 同意图只自动召回一次（会话级指纹闸）；
       // legacy/shadow 行为不变。缺省 true。
       recallIntentDedup: true,
+      // #88 超窗语义（惰性刷新非自动重召回）：指纹 TTL 缺省 60min（挡实测洪泛 19min/15x、
+      // 8h 密集工作 ≤9 次重召回/意图、对齐人类工作块）。
+      recallIntentDedupTtlMs: 3_600_000,
       timeoutMs: 3000,
     },
   },
@@ -583,6 +586,8 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         l0CaptureMode: yaml.tdai?.memory?.l0CaptureMode ?? DEFAULT_CONFIG.tdai.memory.l0CaptureMode,
         // #87 同意图去重（缺省 true，仅 intent 档消费）。
         recallIntentDedup: yaml.tdai?.memory?.recallIntentDedup ?? DEFAULT_CONFIG.tdai.memory.recallIntentDedup,
+        // #88 超窗 TTL（缺省 60min，惰性刷新非自动重召回）。
+        recallIntentDedupTtlMs: yaml.tdai?.memory?.recallIntentDedupTtlMs ?? DEFAULT_CONFIG.tdai.memory.recallIntentDedupTtlMs,
         timeoutMs: yaml.tdai?.memory?.timeoutMs ?? DEFAULT_CONFIG.tdai.memory.timeoutMs,
       },
     },
