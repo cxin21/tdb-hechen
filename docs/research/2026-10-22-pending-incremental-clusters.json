@@ -1,0 +1,318 @@
+{
+ "generated_at": "2026-10-22T07:26:19.685Z",
+ "threshold": 0.65,
+ "scope": "pending self_identity rows not in #81 Phase0 清单（快照后新增）",
+ "pendingSelfIdentity": 177,
+ "keepersMatched": 57,
+ "newRows": 120,
+ "api": {
+  "calls": 15,
+  "retries": 3,
+  "error": null,
+  "dim": 2048,
+  "embedded": 120
+ },
+ "clusters": {
+  "pairs65": 55,
+  "buckets": 12,
+  "bucketRows": 54,
+  "singletons": 66,
+  "suggestReject": 42
+ },
+ "buckets": [
+  [
+   {
+    "pending_id": "pd-7f4ac85c46f910bd-0a425f09",
+    "created_at": "2026-10-21T07:03:21.852Z",
+    "head": "我在代码补丁协作中坚持三条纪律：git 零自行提交、"
+   },
+   {
+    "pending_id": "pd-8692fa9534e290aa-68fb2c30",
+    "created_at": "2026-10-21T07:14:03.074Z",
+    "head": "我以「取证/开发双红线纪律」跨场景行事：取证只读零干"
+   },
+   {
+    "pending_id": "pd-2b5931841271bc24-00c8622c",
+    "created_at": "2026-10-21T07:33:19.882Z",
+    "head": "我以「取证先行+判读诚实」为稳定工作方式：承重结论须"
+   },
+   {
+    "pending_id": "pd-0e04395e68959de0-e6d90353",
+    "created_at": "2026-10-21T07:55:16.748Z",
+    "head": "我在召回诊断、取证调研、生产数据验证等不同任务域执行"
+   },
+   {
+    "pending_id": "pd-76a47001d2d84641-78f0bf52",
+    "created_at": "2026-10-21T08:08:25.582Z",
+    "head": "我在调研取证、选购比价与工程验证中稳定执行『只读铁律"
+   },
+   {
+    "pending_id": "pd-059d697a60d32106-1e8383c8",
+    "created_at": "2026-10-21T08:24:33.146Z",
+    "head": "我在调研取证、比价、召回诊断、生产数据验证等多任务域"
+   },
+   {
+    "pending_id": "pd-f8c11050cb4d4ea6-7e5a1914",
+    "created_at": "2026-10-21T08:57:37.783Z",
+    "head": "我在各任务域一致执行只读铁律与一手实证优先：零写入/"
+   },
+   {
+    "pending_id": "pd-f8497e4fdfe14730-7b4856f3",
+    "created_at": "2026-10-21T09:12:49.701Z",
+    "head": "我在取证与验证中坚持「数据完整优先」：先行取证、全程"
+   },
+   {
+    "pending_id": "pd-3193aee52820ff54-d5c9b82d",
+    "created_at": "2026-10-21T09:54:13.358Z",
+    "head": "ctgenorder v2.4~v2.8 全部客开改"
+   },
+   {
+    "pending_id": "pd-f18d23118f63405d-aea4479d",
+    "created_at": "2026-10-21T11:29:40.936Z",
+    "head": "我执行提交收口自审纪律：提交前核对仓库布局、远端与提"
+   },
+   {
+    "pending_id": "pd-d93d80fd184a6ed1-6e936028",
+    "created_at": "2026-10-21T13:31:54.041Z",
+    "head": "我兑现零 git 承诺的方式是「备妥执行件、按兵不动"
+   },
+   {
+    "pending_id": "pd-c9e0bbe068c137c5-adec9b8a",
+    "created_at": "2026-10-21T19:12:46.788Z",
+    "head": "我在#83批次收口恪守零git自行操作承诺：15+2"
+   },
+   {
+    "pending_id": "pd-974efdc7cd067ce0-b7ad166a",
+    "created_at": "2026-10-21T21:01:31.324Z",
+    "head": "我在#83收口恪守surgical提交边界：经用户授"
+   },
+   {
+    "pending_id": "pd-17581ac193180033-8f8e6176",
+    "created_at": "2026-10-22T00:18:15.126Z",
+    "head": "我在#81以票评留证替代提交动作：设计文档v1与拍板"
+   },
+   {
+    "pending_id": "pd-555be76d359bbc0a-d6665bed",
+    "created_at": "2026-10-22T00:28:45.116Z",
+    "head": "我把零自行写操作立为跨项目通用纪律并细化授权粒度：g"
+   },
+   {
+    "pending_id": "pd-7cfb9947a2f89707-e0138c81",
+    "created_at": "2026-10-22T00:38:41.275Z",
+    "head": "我把用户明示红线当承诺履行：MemoryCore #"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-7663886ac930a824-c727ac16",
+    "created_at": "2026-10-21T12:02:30.477Z",
+    "head": "我在 golden replay 合同B冲突定谳中，"
+   },
+   {
+    "pending_id": "pd-1af27fea832a8c87-42eb838c",
+    "created_at": "2026-10-21T13:41:05.956Z",
+    "head": "我从#83三重失守（proxy裸取末条user消息致"
+   },
+   {
+    "pending_id": "pd-94310860344a8540-109d2055",
+    "created_at": "2026-10-21T13:41:06.168Z",
+    "head": "我从#83两轮误判定谳：CJK内容是启发式分类的高危"
+   },
+   {
+    "pending_id": "pd-bdafd6c538a5c892-831cd398",
+    "created_at": "2026-10-21T13:41:06.318Z",
+    "head": "我把修复上线当作验证起点而非终点：#83分类器修复1"
+   },
+   {
+    "pending_id": "pd-079c7e71515738ef-c26bfb82",
+    "created_at": "2026-10-21T14:32:10.844Z",
+    "head": "分类器上线暴露缺陷后，我把迭代次序定为『先收集全问题"
+   },
+   {
+    "pending_id": "pd-0326320df1074488-5a7d3a96",
+    "created_at": "2026-10-21T15:52:08.872Z",
+    "head": "我定关键阈值凭测量分布而非直觉：T=0.10 经 g"
+   },
+   {
+    "pending_id": "pd-25e2b88d5fa7669c-07d67f00",
+    "created_at": "2026-10-21T18:01:14.769Z",
+    "head": "我从TASK#83缺陷②定谳第二处fixture保真"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-cce6534c5219be11-fe834299",
+    "created_at": "2026-10-21T13:21:10.117Z",
+    "head": "我在 #83 实施中亲审测试文件证实 fixture"
+   },
+   {
+    "pending_id": "pd-735de382372145d2-9be9896a",
+    "created_at": "2026-10-21T19:51:56.530Z",
+    "head": "我把意图类信息定为『会话级单次判定、随流传递』的状态"
+   },
+   {
+    "pending_id": "pd-061cd4d25abc8b2b-428d92ea",
+    "created_at": "2026-10-21T21:12:23.393Z",
+    "head": "我在#87把「单次指令被多次召回」根治为会话级int"
+   },
+   {
+    "pending_id": "pd-6a10193f134c9821-13224787",
+    "created_at": "2026-10-21T21:12:23.518Z",
+    "head": "我把TDD RED的有效性判据定为「失败全因目标缺陷"
+   },
+   {
+    "pending_id": "pd-eee115c56d668bb2-91d650e8",
+    "created_at": "2026-10-22T00:28:45.207Z",
+    "head": "我把同词重复召回的病根定谳于召回触发接线而非捕获层："
+   },
+   {
+    "pending_id": "pd-1d5bd24c6a241f44-64212705",
+    "created_at": "2026-10-22T00:47:40.661Z",
+    "head": "我在#87把RED铺成7用例行为矩阵：正路径（同意图"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-0126e834573da243-32301a08",
+    "created_at": "2026-10-21T23:14:34.963Z",
+    "head": "我在#81洪泛治理先标定后选型：129条8249对实"
+   },
+   {
+    "pending_id": "pd-911c66ed6a2cc237-08417eaf",
+    "created_at": "2026-10-21T23:14:36.066Z",
+    "head": "我把#81身份洪泛定性为语义级逃逸：每场会话换文案重"
+   },
+   {
+    "pending_id": "pd-17d72e991bc3b478-05740553",
+    "created_at": "2026-10-21T23:59:07.355Z",
+    "head": "我把#81闸门被击穿根因定为跨边界参数失校+异常路径"
+   },
+   {
+    "pending_id": "pd-3410e989f03183b1-d2f5c968",
+    "created_at": "2026-10-22T00:57:46.029Z",
+    "head": "我把#81洪泛根因之二定谳在生成端重嵌放大回路：每次"
+   },
+   {
+    "pending_id": "pd-12fd18d22a7955e7-6def31aa",
+    "created_at": "2026-10-22T01:23:34.387Z",
+    "head": "我把#81闸门两度失守的共性定谳为异常路径fail-"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-5bfca31c605e2e8f-91acf308",
+    "created_at": "2026-10-21T08:24:33.491Z",
+    "head": "我处理此类问题呈稳定流程：只读取证→假设逐一证伪→锁"
+   },
+   {
+    "pending_id": "pd-e67dcc0e94d0e969-bedb908a",
+    "created_at": "2026-10-21T14:20:53.085Z",
+    "head": "我在 #83 收口执行「基线守恒」判据：Memory"
+   },
+   {
+    "pending_id": "pd-f2a4849b3fc07362-82533d23",
+    "created_at": "2026-10-21T23:59:07.424Z",
+    "head": "我在本机跑全量验证门（typecheck与vites"
+   },
+   {
+    "pending_id": "pd-83a4030d6332713a-61df8afa",
+    "created_at": "2026-10-22T00:18:14.822Z",
+    "head": "我把改动开工的前置换成基线锁定与零漂移核验：#81第"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-7db6a1e3d9d34916-4c41bc8b",
+    "created_at": "2026-10-21T10:36:33.026Z",
+    "head": "我在 #83 TDB 意图污染根治中执行「零回归优先"
+   },
+   {
+    "pending_id": "pd-a5bbe782b0e0a005-1a3459ce",
+    "created_at": "2026-10-21T12:02:30.618Z",
+    "head": "我承接 TDB 根治类修复时，把改动定在入口单点（分"
+   },
+   {
+    "pending_id": "pd-21ba9647d39ee92b-b00d991a",
+    "created_at": "2026-10-21T17:08:33.203Z",
+    "head": "我恪守用户为TDB定下的零删除红线：已落库的污染数据"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-032866c77cce0e3b-cf724626",
+    "created_at": "2026-10-21T13:31:53.686Z",
+    "head": "我在 #83 重启流程发现审查子代理 fbe90b9"
+   },
+   {
+    "pending_id": "pd-6944f37f3486978a-fba6ed36",
+    "created_at": "2026-10-21T18:11:04.349Z",
+    "head": "我把对抗性审查的闭环条件定为拿到明确 verdict"
+   },
+   {
+    "pending_id": "pd-3522ef6caca86fc3-cf0f6d6b",
+    "created_at": "2026-10-21T22:42:10.907Z",
+    "head": "我采信子代理审查发现以逐一亲读源码坐实为前提：tur"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-71b27ada82937f4f-a55bb4a2",
+    "created_at": "2026-10-21T08:08:25.956Z",
+    "head": "双十一扫地机调研（2500-3500 元）中，因已交"
+   },
+   {
+    "pending_id": "pd-fa71ad63bb4f0773-30f66930",
+    "created_at": "2026-10-21T08:42:42.097Z",
+    "head": "2026-10-21 我完成用户双11扫地机选购闭环"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-7bfd01aac5e91049-46b975a8",
+    "created_at": "2026-10-21T13:01:12.367Z",
+    "head": "我把用户明示的范围约束当作求解硬前提而非待绕障碍：『"
+   },
+   {
+    "pending_id": "pd-c33564a308f72540-82cc3f44",
+    "created_at": "2026-10-21T15:30:10.166Z",
+    "head": "与我拍板协作的用户是记忆系统开发者本人（Memory"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-60fb0bdd34674970-4ba2b09b",
+    "created_at": "2026-10-21T15:40:11.723Z",
+    "head": "我在 TDB 重启服务遵守 RESTART-SOP："
+   },
+   {
+    "pending_id": "pd-d6ad91202db25094-5045f9a5",
+    "created_at": "2026-10-21T20:32:32.624Z",
+    "head": "我判断 TDB 重启预算以 bundle 实际传参为"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-bc8d789e565026e8-12fddaed",
+    "created_at": "2026-10-21T15:22:16.100Z",
+    "head": "我把 #83 收尾验收定在全量穷尽而非抽样：L0 全"
+   },
+   {
+    "pending_id": "pd-f7e5222720e55d19-208c1973",
+    "created_at": "2026-10-21T21:01:31.512Z",
+    "head": "我把全量真实数据回放定为测试门之上的验收关：#83在"
+   }
+  ],
+  [
+   {
+    "pending_id": "pd-619c5c114675c1c2-520614fc",
+    "created_at": "2026-10-21T23:24:08.438Z",
+    "head": "我把sim-gate修复后的生产观测记为未决：用户完"
+   },
+   {
+    "pending_id": "pd-4c20d4d26bee2d41-ef0ad0ba",
+    "created_at": "2026-10-22T00:57:46.231Z",
+    "head": "我把#81收尾次序定为先证生效、后动存量：重启后进程"
+   }
+  ]
+ ]
+}
