@@ -14,6 +14,7 @@ import { dirname, resolve } from "node:path";
 import { embedForLifecycle } from "./embed-helpers.js";
 import { bindSoulAtWrite } from "./consolidation/content-soul.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
+import { buildSelfIdentitySuppressionLines, similarSelfIdentityProposalExists, SIM_GATE_DEFAULT_THRESHOLD } from "./proposal-sim-gate.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
 import { REFLECTION_CARD_CONTRACT_PROMPT, REFLECTION_CONCLUSION_CONTRACT_PROMPT, labelsFromCoreValueRows, validateConclusionCard, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
 import type { Logger } from "../types.js";
@@ -59,6 +60,15 @@ export interface ReflectionConfig {
   };
   /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
   promiseProposals?: { enabled?: boolean };
+  /**
+   * #81（拍板 2026-10-21）：self_identity 提案相似门 + 生成端抑制——闸门缺省开（拍板②）、
+   * 抑制缺省开（拍板③）、阈值缺省 0.65 config 可配（拍板①）。降级合同见 proposal-sim-gate.ts。
+   */
+  selfIdentityGate?: {
+    enabled?: boolean;
+    threshold?: number;
+    suppression?: { enabled?: boolean; maxPending?: number };
+  };
 }
 
 export interface ReflectionDeps {
@@ -159,16 +169,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -189,7 +199,15 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   let proposalsPushed = 0;
   let promiseProposalsPushed = 0;
   let promiseCreationsPushed = 0;
+  // #81：相似门拦截计数（跨租户累加，随 return 暴露供可观测）。
+  let simGated = 0;
   const soulProposalsOn = cfg.soulProposals?.enabled === true;
+  // #81（拍板②①）：相似门缺省开；阈值 0.65 config 可配。
+  const simGateOn = cfg.selfIdentityGate?.enabled !== false;
+  const simGateThreshold = cfg.selfIdentityGate?.threshold ?? SIM_GATE_DEFAULT_THRESHOLD;
+  // #81（拍板③）：生成端抑制缺省开；maxPending 缺省 20。
+  const simSuppressionOn = cfg.selfIdentityGate?.suppression?.enabled !== false;
+  const simSuppressionMaxPending = cfg.selfIdentityGate?.suppression?.maxPending;
   // #44（D-44-3）：promise 提案桥接门（缺省 false=逐位现状：零提示词段、零 store 调用、零提案）
   const promiseProposalsOn = cfg.promiseProposals?.enabled === true;
   for (const { triple, rows } of byTenant.values()) {
@@ -242,6 +260,20 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
     // #77 Batch D（survey F1）：结论卡拆条引导——conclusionContract on 才附加（off = prompt 逐位现状）。
     if (cfg.soulProposals?.conclusionContract?.enabled === true) {
       promptLines.push(REFLECTION_CONCLUSION_CONTRACT_PROMPT);
+    }
+    // #81（拍板③）：生成端同主题抑制——soulProposals on 且 suppression 未关时注入「已有身份认知」段
+    // （槽行+在途 pending，语义相近不得再提）。store 缺方法/抛错/无内容 → [] 不注入（降级=逐位现状）。
+    if (soulProposalsOn && simSuppressionOn) {
+      const suppressionLines = await buildSelfIdentitySuppressionLines({
+        store: deps.store,
+        tenant: triple,
+        maxPending: simSuppressionMaxPending,
+        logger: deps.logger,
+      });
+      if (suppressionLines.length > 0) {
+        promptLines.push("");
+        for (const line of suppressionLines) promptLines.push(line);
+      }
     }
     promptLines.push("请按三问式输出反思结论 JSON 数组（字段：question/conclusion/evidence）。无合格结论输出 []。");
     const raw = await deps.llmRunner.run({ prompt: promptLines.join("\n"), systemPrompt: REFLECTION_SYSTEM_PROMPT, taskId: "reflection-l3", timeoutMs: 0, maxTokens: 0 });
@@ -349,6 +381,18 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
             deps.logger?.info?.(`[reflection] soul proposal rejected (${verdict.reason.slice(0, 80)}): ${pr.conclusion.slice(0, 60)}`);
           } else if (verdict?.ok && (await proposalAlreadyKnown(deps.store, triple, verdict.proposal.content))) {
             deps.logger?.info?.("[reflection] soul proposal deduped (already pending or in core identity)");
+          } else if (verdict?.ok && simGateOn && (await similarSelfIdentityProposalExists({
+            store: deps.store,
+            tenant: triple,
+            content: verdict.proposal.content,
+            threshold: simGateThreshold,
+            embeddingService: deps.embeddingService,
+            logger: deps.logger,
+          }))) {
+            // #81（拍板②）：语义相似门——与在途 pending/core 槽行同构的 self_identity 提案不再重复入轨
+            // （洪泛根治：词面闸门拦不住互异文案复读；simGated 计数随 return 暴露供可观测）。
+            simGated++;
+            deps.logger?.info?.(`[reflection] soul proposal sim-gated (similar self_identity in flight, threshold=${simGateThreshold}): ${verdict.proposal.content.slice(0, 60)}`);
           } else if (verdict?.ok) {
             const pushed = await Promise.resolve(
               deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, {
@@ -465,6 +509,6 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       }
     }
   }
-  return { triggered, cardsWritten, proposalsPushed, promiseProposalsPushed, promiseCreationsPushed, skipped };
+  return { triggered, cardsWritten, proposalsPushed, simGated, promiseProposalsPushed, promiseCreationsPushed, skipped };
 }
 void DEFAULTS;
