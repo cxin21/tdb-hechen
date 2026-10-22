@@ -584,3 +584,63 @@ describe("#88 · TdaiL1RecallInjector 超窗/短消息/scope（R1-R10）", () =>
     expect(recallBlockForCtx).toHaveBeenCalledTimes(34);
   });
 });
+
+// ═══════════ #90 · 召回 query 剥除 DSH acp 标签（注入器 query 装配点统一 strip） ═══════════
+
+describe("#90 · TdaiL1RecallInjector query 剥签（legacy+intent+shadow）", () => {
+  const TAG_LEGACY = '<acp tokens="17" type="text">m00895</acp>\n帮我查一下订单状态';
+  const TAG_INTENT = '<acp tokens="18" type="text">m00175</acp>\n查一下北京明天天气';
+
+  function makeInjector90(mode: "legacy" | "intent" | "shadow") {
+    const recallBlockForCtx = vi.fn(async () => ({
+      block: "<relevant-memories>\n- [结论|#90] query 剥签测试块\n</relevant-memories>",
+      meta: { conclusionCount: 1, experienceCount: 0, sessionReused: false, layered: true },
+    }));
+    const searchL1ForCtx = vi.fn(async () => [] as Array<{ type: string; content: string; score: number }>);
+    const injector = new TdaiL1RecallInjector(
+      { recallBlockForCtx, searchL1ForCtx } as unknown as TdaiClient,
+      null, undefined, 5, null, undefined, undefined, mode, false,
+    );
+    return { injector, recallBlockForCtx };
+  }
+
+  function makeCtx90(userText: string, intentText: string) {
+    const ctx = makeCtx(userText) as Parameters<TdaiL1RecallInjector["execute"]>[0];
+    ctx.metadata.sessionKey = "sessA"; // #90：AgentContextMetadata 自带可选 sessionKey（#87 :284 先例），绕开 TS2352
+    (ctx.metadata.custom as Record<string, unknown>).tdaiTurnContext = {
+      turnIntent: { classification: "real", text: intentText },
+      classified: [],
+    };
+    return ctx;
+  }
+
+  it("R1 · legacy 档：用户消息带 acp 标签 → POST query 剥净（提取器 2b 列表缺 acp 的消费端防线）", async () => {
+    const { injector, recallBlockForCtx } = makeInjector90("legacy");
+    const blocks = await injector.execute(makeCtx(TAG_LEGACY));
+    expect(blocks).toHaveLength(1);
+    expect(recallBlockForCtx).toHaveBeenCalledTimes(1);
+    expect((recallBlockForCtx.mock.calls[0] as unknown[])[1]).toBe("帮我查一下订单状态");
+  });
+
+  it("R2 · intent 档：turnIntent.text 带签 → S2 检索 query 剥净（消费点兜底）", async () => {
+    const { injector, recallBlockForCtx } = makeInjector90("intent");
+    const blocks = await injector.execute(makeCtx90("占位：query 由 turnIntent 提供", TAG_INTENT));
+    expect(blocks).toHaveLength(1);
+    expect((recallBlockForCtx.mock.calls[0] as unknown[])[1]).toBe("查一下北京明天天气");
+  });
+
+  it("R3 · shadow 档：shadow 对比日志 intentHead 剥净", async () => {
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+    try {
+      const { injector } = makeInjector90("shadow");
+      await injector.execute(makeCtx90(TAG_INTENT, TAG_INTENT));
+      const entries = infoSpy.mock.calls
+        .filter((c) => c[0] === "dsh-recall-query-shadow")
+        .map((c) => c[1] as Record<string, unknown>);
+      expect(entries.length).toBeGreaterThan(0);
+      expect(entries[0].intentHead).toBe("查一下北京明天天气");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+});

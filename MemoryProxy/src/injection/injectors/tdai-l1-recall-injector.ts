@@ -5,6 +5,7 @@ import type { TdaiClient } from "../../tdai/client.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
 import { extractUserQueryText } from "../../tdai/recorder.js";
 import type { TurnContext } from "../../common/intent-classifier.js";
+import { stripDshAcpTags } from "../../common/acp-tag.js"; // #90：召回 query 剥 acp 标签
 import { recordRecallOutcome, recordTurnIntentPresence, warnTurnContextMissing } from "../../tdai/sentinel.js";
 import { createHash } from "node:crypto";
 import { classifyShortIntent, normalizeIntentText, residualChars as intentResidual } from "../../common/short-intent.js";
@@ -110,7 +111,7 @@ export class TdaiL1RecallInjector implements InjectionHook {
     // （后者含 <user_info>/<additional_data>/<question_answer> 等噪声，
     //  会让 FTS5/向量检索命中率极低甚至 0，导致 L1 召不回）。
     const rawUserText = getMessageText(lastUser);
-    const legacyQuery = extractUserQueryText(rawUserText).trim().slice(0, 2048);
+    const legacyQuery = stripDshAcpTags(extractUserQueryText(rawUserText)).trim().slice(0, 2048); // #90：提取器 2b 列表缺 acp，消费端防线
     // ── #83 入口单点定源：query 来源三档（config tdai.memory.recallQuerySource，
     //    缺省 legacy=直接用 legacyQuery，行为逐位不变）──
     const turnContext = (ctx.metadata.custom as { tdaiTurnContext?: TurnContext | null } | undefined)?.tdaiTurnContext ?? null;
@@ -125,7 +126,7 @@ export class TdaiL1RecallInjector implements InjectionHook {
       }
       const state = this.getScopeState(scopeKey);
       const now = this.nowFn();
-      const rawIntent = turnContext?.turnIntent ? turnContext.turnIntent.text.trim() : "";
+      const rawIntent = turnContext?.turnIntent ? stripDshAcpTags(turnContext.turnIntent.text).trim() : ""; // #90：S 分类/last-known/指纹全消费剥后文本
       const normalized = normalizeIntentText(rawIntent);
       const kind = classifyShortIntent(normalized);
       if (rawIntent && kind === "command") {
@@ -172,7 +173,7 @@ export class TdaiL1RecallInjector implements InjectionHook {
       }
     } else if (this.querySource === "shadow" && turnContext) {
       // shadow 档：双跑对比日志（影子期零行为变化，query 仍用 legacy）。
-      const intentQuery = turnContext.turnIntent ? turnContext.turnIntent.text.trim().slice(0, 2048) : "";
+      const intentQuery = turnContext.turnIntent ? stripDshAcpTags(turnContext.turnIntent.text).trim().slice(0, 2048) : ""; // #90：shadow 对比基线同剥
       recordTurnIntentPresence(sessionKey, intentQuery.length > 0);
       log.info("dsh-recall-query-shadow", {
         legacyLen: legacyQuery.length,
