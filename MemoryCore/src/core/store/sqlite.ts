@@ -3201,20 +3201,33 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
-  sweepExpiredSelfIdentityPending(tenant?: CoreTenant, opts?: { ttlHours?: number; now?: string }): Array<{ pending_id: string; content: string }> {
+  sweepExpiredSelfIdentityPending(tenant?: CoreTenant, opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number }): Array<{ pending_id: string; content: string }> {
     try {
-      const teamId = tenant?.teamId || "default";
-      const userId = tenant?.userId || "default";
-      const agentId = tenant?.agentId || "default";
+      // #91 R1 返工（2026-10-23）：① tenant 缺省=全租户（终局清理语义；修复原 ||"default" 吞租户
+      // 致生产 0 行静默空转），传值=逐字段精确限定（全部现网调用方传完整三元组，行为不变）；
+      // ② count>=2 未 ready 行按 last_seen 锚过期（复现停止后 TTL 退场，消除永生僵尸）；
+      // ③ ready 行（count>=votesN 且 span>=spanHours）排除——待人工裁决不进默认终局。
+      const conds = ["slot = 'self_identity'", "state = 'pending'"];
+      const params: string[] = [];
+      if (tenant?.teamId) { conds.push("team_id = ?"); params.push(tenant.teamId); }
+      if (tenant?.userId) { conds.push("user_id = ?"); params.push(tenant.userId); }
+      if (tenant?.agentId) { conds.push("agent_id = ?"); params.push(tenant.agentId); }
       const ttlHours = Math.max(0, opts?.ttlHours ?? 24);
+      const votesN = Math.max(1, Math.floor(opts?.votesN ?? 3));
+      const spanHours = Math.max(0, opts?.spanHours ?? ttlHours);
       const nowMs = Date.parse(opts?.now ?? new Date().toISOString());
-      const rows = this.db.prepare("SELECT pending_id, content, recurrence_json, created_at FROM core_pending WHERE slot = 'self_identity' AND state = 'pending' AND team_id = ? AND user_id = ? AND agent_id = ?").all(teamId, userId, agentId) as Array<{ pending_id: string; content: string; recurrence_json: string | null; created_at: string }>;
+      const rows = this.db.prepare(`SELECT pending_id, content, recurrence_json, created_at FROM core_pending WHERE ${conds.join(" AND ")}`).all(...params) as Array<{ pending_id: string; content: string; recurrence_json: string | null; created_at: string }>;
       const swept: Array<{ pending_id: string; content: string }> = [];
       for (const row of rows) {
         const rec = this.parsePendingRecurrence(row.recurrence_json);
-        if ((rec?.count ?? 1) !== 1) continue; // 仅 count=1 的孤行进默认终局（票面字面；count>=2 僵尸边界已记入报告）
-        const first = rec?.first_seen || row.created_at;
-        const t = Date.parse(first);
+        const count = rec?.count ?? 1;
+        if (rec) {
+          const from = Date.parse(rec.first_seen);
+          const to = Date.parse(rec.last_seen);
+          if (Number.isFinite(from) && Number.isFinite(to) && count >= votesN && to - from >= spanHours * 3_600_000) continue; // ready：待人工裁决
+        }
+        const anchor = count === 1 ? (rec?.first_seen || row.created_at) : (rec?.last_seen || rec?.first_seen || row.created_at);
+        const t = Date.parse(anchor);
         if (!Number.isFinite(t) || !Number.isFinite(nowMs)) continue;
         if (nowMs - t <= ttlHours * 3_600_000) continue; // 严格大于 TTL 才过期
         const r = this.db.prepare("UPDATE core_pending SET state = 'expired' WHERE pending_id = ? AND state = 'pending'").run(row.pending_id);

@@ -194,7 +194,8 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
   if (deps.config.reflection?.enabled) {
     try {
       const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter, embeddingService: deps.embeddingService });
-      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} proposals=${res.proposalsPushed ?? 0}`);
+      // #91 返工观测夹带（2026-10-23 拍板③）：sim-gated/计票/echo 路由关键点进拍级汇总行。
+      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} proposals=${res.proposalsPushed ?? 0} simGated=${res.simGated ?? 0} recVotes=${res.recurrenceVotes ?? 0} echoVotes=${res.echoVotes ?? 0} echoSkipped=${res.echoSkipped ?? 0}`);
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -206,7 +207,8 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
     if (recCfg?.enabled === true) {
       try {
         const swept = await Promise.resolve(deps.store.sweepExpiredSelfIdentityPending?.(deps.config.filter, { ttlHours: recCfg.ttlHours }));
-        if (swept && swept.length > 0) deps.logger?.info?.(`[lifecycle] self_identity pending TTL swept=${swept.length}`);
+        // #91 返工观测夹带：swept 无条件打（空扫也打，证明 sweep 节拍活着——消除空转无声盲区）。
+        deps.logger?.info?.(`[lifecycle] self_identity pending TTL swept=${swept?.length ?? 0}`);
       } catch (err) {
         deps.logger?.warn?.(`[lifecycle] self_identity pending sweep failed: ${err instanceof Error ? err.message : String(err)}`);
       }

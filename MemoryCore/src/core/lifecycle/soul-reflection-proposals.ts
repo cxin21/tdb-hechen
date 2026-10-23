@@ -105,6 +105,8 @@ export function vetReflectionIdentityProposal(input: {
   content: string;
   evidenceRecordIds: readonly string[];
   evidenceContents: readonly (string | null | undefined)[];
+  /** #91 返工：产卡 echo_key 指认（M-marker 路由输入），透传进 attrs 持久化（零迁移形态）。 */
+  echoKey?: string;
 }): ReflectionProposalVerdict {
   if (!isReflectionProposalSlotAllowed(input.slot)) return { ok: false, reason: `slot-not-allowed:${input.slot}` };
   const content = normalizeProposalText(input.content);
@@ -119,7 +121,7 @@ export function vetReflectionIdentityProposal(input: {
       slot: input.slot,
       content,
       evidence: input.evidenceRecordIds.length,
-      attrs: { origin: "reflection", evidence_record_ids: [...input.evidenceRecordIds] },
+      attrs: { origin: "reflection", evidence_record_ids: [...input.evidenceRecordIds], ...(input.echoKey ? { echo_key: input.echoKey } : {}) },
     },
   };
 }

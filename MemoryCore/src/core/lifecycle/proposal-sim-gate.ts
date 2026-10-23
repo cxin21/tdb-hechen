@@ -263,8 +263,37 @@ function truncateItem(s: string): string {
   return s.length > SUPPRESSION_ITEM_MAX_CHARS ? s.slice(0, SUPPRESSION_ITEM_MAX_CHARS) + "…" : s;
 }
 
+export type SelfIdentityMarker = { key: string; kind: "core" | "pending"; pid?: string; content: string };
+
 /**
- * 生成端抑制段装配：槽行 + 在途 pending（≤maxPending，缺省 20），逐条 160 字截断。
+ * #91 返工（M-marker 路由）：抑制清单行带 [M#] 编号 + 返回 marker 映射（产卡 echo_key 指认回路的路由依据）。
+ * core 行在前、pending 行在后，序号连续 M1..Mn。store 缺方法/抛错/无内容 → 空降级（绝不抛出）。
+ */
+export async function buildSelfIdentityMarkers(args: {
+  store?: SimGateStore | undefined;
+  tenant?: unknown;
+  maxPending?: number;
+  logger?: SimGateLogger;
+}): Promise<{ lines: string[]; markers: SelfIdentityMarker[] }> {
+  const max = typeof args.maxPending === "number" && args.maxPending > 0 ? Math.floor(args.maxPending) : 20;
+  try {
+    const coreRows = asArray(await Promise.resolve(args.store?.readCore?.(args.tenant))).filter(isIdentitySlotRow);
+    const pendingRows = asArray(await Promise.resolve(args.store?.listPendingCore?.(args.tenant, { includeDecided: false }))).filter(isSelfIdentityRow);
+    const markers: SelfIdentityMarker[] = [];
+    let n = 0;
+    for (const r of coreRows) markers.push({ key: `M${++n}`, kind: "core", content: r.content });
+    for (const r of pendingRows.slice(0, max)) markers.push({ key: `M${++n}`, kind: "pending", pid: (r as { pending_id?: string }).pending_id, content: r.content });
+    if (markers.length === 0) return { lines: [], markers: [] };
+    const lines = [SUPPRESSION_MARKER, ...markers.map((m) => `- [${m.key}] ${truncateItem(m.content)}`), SUPPRESSION_TAIL];
+    return { lines, markers };
+  } catch (err) {
+    args.logger?.warn?.(`[proposal-sim-gate] buildSelfIdentityMarkers degraded: ${err instanceof Error ? err.message : String(err)}`);
+    return { lines: [], markers: [] };
+  }
+}
+
+/**
+ * 生成端抑制段装配：槽行 + 在途 pending（≤maxPending，缺省 20），逐条 160 字截断，行带 [M#] 编号。
  * store 缺方法/抛错/无内容 → []（不注入=逐位现状）。绝不抛出。
  */
 export async function buildSelfIdentitySuppressionLines(args: {
@@ -273,15 +302,5 @@ export async function buildSelfIdentitySuppressionLines(args: {
   maxPending?: number;
   logger?: SimGateLogger;
 }): Promise<string[]> {
-  const max = typeof args.maxPending === "number" && args.maxPending > 0 ? Math.floor(args.maxPending) : 20;
-  try {
-    const coreRows = asArray(await Promise.resolve(args.store?.readCore?.(args.tenant))).filter(isIdentitySlotRow);
-    const pendingRows = asArray(await Promise.resolve(args.store?.listPendingCore?.(args.tenant, { includeDecided: false }))).filter(isSelfIdentityRow);
-    const items = [...coreRows.map((r) => truncateItem(r.content)), ...pendingRows.slice(0, max).map((r) => truncateItem(r.content))];
-    if (items.length === 0) return [];
-    return [SUPPRESSION_MARKER, ...items.map((s) => `- ${s}`), SUPPRESSION_TAIL];
-  } catch (err) {
-    args.logger?.warn?.(`[proposal-sim-gate] buildSelfIdentitySuppressionLines degraded: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
-  }
+  return (await buildSelfIdentityMarkers(args)).lines;
 }

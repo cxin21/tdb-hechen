@@ -14,7 +14,7 @@ import { dirname, resolve } from "node:path";
 import { embedForLifecycle } from "./embed-helpers.js";
 import { bindSoulAtWrite } from "./consolidation/content-soul.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
-import { buildSelfIdentitySuppressionLines, similarSelfIdentityProposalExists, similarSelfIdentityProposalMatch, SIM_GATE_DEFAULT_THRESHOLD } from "./proposal-sim-gate.js";
+import { buildSelfIdentityMarkers, similarSelfIdentityProposalExists, similarSelfIdentityProposalMatch, SIM_GATE_DEFAULT_THRESHOLD, type SelfIdentityMarker } from "./proposal-sim-gate.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
 import { REFLECTION_CARD_CONTRACT_PROMPT, REFLECTION_CONCLUSION_CONTRACT_PROMPT, labelsFromCoreValueRows, validateConclusionCard, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
 import type { Logger } from "../types.js";
@@ -68,8 +68,8 @@ export interface ReflectionConfig {
     enabled?: boolean;
     threshold?: number;
     suppression?: { enabled?: boolean; maxPending?: number };
-    /** #91：复现即投票+默认终局——缺省 false=逐位现状（Exists 原路径）；votes/ttlHours 缺省 3/24（票面标定 N=3/T=24h）。 */
-    recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number };
+    /** #91：复现即投票+默认终局——缺省 false=逐位现状（Exists 原路径）；votes/ttlHours 缺省 3/24（票面标定 N=3/T=24h）。spanHours：ready 晋升跨度（缺省跟随 ttlHours；返工拍板拆键，TTL 管过期、span 管晋升）。 */
+    recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
   };
 }
 
@@ -109,7 +109,7 @@ export const REFLECTION_SYSTEM_PROMPT = [
 ].join("\n");
 
 /** 解析反思产出（宽松 JSON 提取，与 person/character 解析同风格）。 */
-export function parseReflectionProposals(raw: string): Array<{ question: string; conclusion: string; evidence: string[]; promiseTransitions: Array<{ promiseId: string; to: string; reason: string }>; promiseCreations: Array<{ content: string }> }> {
+export function parseReflectionProposals(raw: string): Array<{ question: string; conclusion: string; evidence: string[]; echoKey: string; promiseTransitions: Array<{ promiseId: string; to: string; reason: string }>; promiseCreations: Array<{ content: string }> }> {
   const text = String(raw ?? "").trim();
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
@@ -122,6 +122,8 @@ export function parseReflectionProposals(raw: string): Array<{ question: string;
       .map((p) => ({
         question: typeof p.question === "string" ? p.question.trim() : "",
         conclusion: typeof p.conclusion === "string" ? p.conclusion.trim() : "",
+        // #91 返工（M-marker 路由）：宽松解析产卡 echo_key 指认（缺失/非法 → 空串=无指认）。
+        echoKey: typeof p.echo_key === "string" ? p.echo_key.trim() : "",
         evidence: Array.isArray(p.evidence) ? p.evidence.map(String).filter((s) => s.length > 0) : [],
         // #44（D-44-1）：可选 promiseTransitions 提议（宽松解析，非法项由确定性门拒绝）。
         promiseTransitions: Array.isArray(p.promiseTransitions)
@@ -174,16 +176,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number; recurrenceVotes: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; echoVotes: number; echoSkipped: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number; recurrenceVotes: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -208,6 +210,9 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   let simGated = 0;
   // #91：复现即投票计票数（跨租户累加；同拍多提案命中同一 pending 行只计一票）。
   let recurrenceVotes = 0;
+  // #91 返工（M-marker 路由）：echo 指认计数——命中 pending 计票 / 命中 core 跳过（跨租户累加）。
+  let echoVotes = 0;
+  let echoSkipped = 0;
   const soulProposalsOn = cfg.soulProposals?.enabled === true;
   // #81（拍板②①）：相似门缺省开；阈值 0.65 config 可配。
   const simGateOn = cfg.selfIdentityGate?.enabled !== false;
@@ -219,6 +224,8 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   const recOn = cfg.selfIdentityGate?.recurrence?.enabled === true;
   const recVotes = Math.max(1, Math.floor(cfg.selfIdentityGate?.recurrence?.votes ?? 3));
   const recTtlHours = Math.max(0, cfg.selfIdentityGate?.recurrence?.ttlHours ?? 24);
+  // #91 返工：晋升跨度与 TTL 拆键——spanHours 缺省跟随 recTtlHours（C1 回归锚 24 不变）
+  const recSpanHours = Math.max(0, cfg.selfIdentityGate?.recurrence?.spanHours ?? recTtlHours);
   // #44（D-44-3）：promise 提案桥接门（缺省 false=逐位现状：零提示词段、零 store 调用、零提案）
   const promiseProposalsOn = cfg.promiseProposals?.enabled === true;
   for (const { triple, rows } of byTenant.values()) {
@@ -276,17 +283,25 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
     }
     // #81（拍板③）：生成端同主题抑制——soulProposals on 且 suppression 未关时注入「已有身份认知」段
     // （槽行+在途 pending，语义相近不得再提）。store 缺方法/抛错/无内容 → [] 不注入（降级=逐位现状）。
+    // #91 返工（M-marker 路由）：清单行带 [M#] 编号 + 保存 marker 映射（产卡 echo_key 指认回路的路由依据）。
+    // suppression off / 映射空 → echo_key 全部落 fallback（保守走 Match 原路径，fail 方向=多落库人工门纠正）。
+    let selfIdentityMarkers: SelfIdentityMarker[] = [];
     if (soulProposalsOn && simSuppressionOn) {
-      const suppressionLines = await buildSelfIdentitySuppressionLines({
+      const markerRes = await buildSelfIdentityMarkers({
         store: deps.store,
         tenant: triple,
         maxPending: simSuppressionMaxPending,
         logger: deps.logger,
       });
-      if (suppressionLines.length > 0) {
+      selfIdentityMarkers = markerRes.markers;
+      if (markerRes.lines.length > 0) {
         promptLines.push("");
-        for (const line of suppressionLines) promptLines.push(line);
+        for (const line of markerRes.lines) promptLines.push(line);
       }
+    }
+    if (simGateOn && recOn && selfIdentityMarkers.length > 0) {
+      // #91 返工（M-marker 路由）：recurrence on 才指引 echo_key（flag 关 → prompt 逐位现状）。
+      promptLines.push("若某条结论与上方已有认知清单中某条 [M#] 同义（场景不同、内核相同），在该条目对象加字段 echo_key 填对应编号（如 \"echo_key\":\"M3\"）；清单无对应条目则不输出 echo_key。");
     }
     promptLines.push("请按三问式输出反思结论 JSON 数组（字段：question/conclusion/evidence）。无合格结论输出 []。");
     const raw = await deps.llmRunner.run({ prompt: promptLines.join("\n"), systemPrompt: REFLECTION_SYSTEM_PROMPT, taskId: "reflection-l3", timeoutMs: 0, maxTokens: 0 });
@@ -370,6 +385,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
                 content: pr.conclusion,
                 evidenceRecordIds: pr.evidence,
                 evidenceContents: pr.evidence.map((id) => contentById.get(id)),
+                echoKey: pr.echoKey || undefined,
               })
             : null;
           // #ε-定标（ADR0003 D7）：shadow 旁路采集——与门完全相同的匹配逻辑记录 best
@@ -410,6 +426,30 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
             // #91：复现即投票——Match 版相似门（语料含 expired 供 TTL 过期后再命中→计票复活；
             // 恒嵌候选，vector 供 push 支路预嵌落库）。命中 pending 行→计票（每 run 每 pending 一次）；
             // 命中 core 行→仅拦不投；未命中→push + init 复现账本（重推不双计由 store 侧保证）。
+            // #91 返工（M-marker 路由）：产卡 echo_key 指认优先——零嵌入零向量门直接路由：
+            // 命中 pending marker → 计票；命中 core marker → skip 零落库；未命中/映射缺失 → 保守走 Match 原路径。
+            const recEvidenceIds = Array.isArray((verdict.proposal.attrs as { evidence_record_ids?: unknown } | undefined)?.evidence_record_ids)
+              ? ((verdict.proposal.attrs as { evidence_record_ids?: unknown }).evidence_record_ids as unknown[]).filter((s): s is string => typeof s === "string")
+              : [];
+            const echoKeyRaw = (verdict.proposal.attrs as { echo_key?: unknown } | undefined)?.echo_key;
+            const echoKey = typeof echoKeyRaw === "string" ? echoKeyRaw.trim() : "";
+            const echoMk = echoKey ? selfIdentityMarkers.find((x) => x.key === echoKey) : undefined;
+            if (echoMk?.kind === "pending" && echoMk.pid) {
+              echoVotes++;
+              const pid = echoMk.pid;
+              if (typeof deps.store.updatePendingRecurrence === "function" && !votedPids.has(pid)) {
+                votedPids.add(pid);
+                try {
+                  await Promise.resolve(deps.store.updatePendingRecurrence(pid, { content: verdict.proposal.content, evidenceRecordIds: recEvidenceIds }, { votesN: recVotes, spanHours: recSpanHours, tenant: triple }));
+                  recurrenceVotes++;
+                } catch (err) {
+                  deps.logger?.warn?.(`[reflection] recurrence vote failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
+            } else if (echoMk?.kind === "core") {
+              echoSkipped++;
+              deps.logger?.info?.(`[reflection] soul proposal echo-skipped (already in core, marker=${echoKey}): ${verdict.proposal.content.slice(0, 60)}`);
+            } else {
             const m = await similarSelfIdentityProposalMatch({
               store: deps.store,
               tenant: triple,
@@ -418,10 +458,6 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
               embeddingService: deps.embeddingService,
               logger: deps.logger,
             });
-            // #91：episode 证据 ids 取 attrs.evidence_record_ids（vet 产出；proposal.evidence 是数量 number）。
-            const recEvidenceIds = Array.isArray((verdict.proposal.attrs as { evidence_record_ids?: unknown } | undefined)?.evidence_record_ids)
-              ? ((verdict.proposal.attrs as { evidence_record_ids?: unknown }).evidence_record_ids as unknown[]).filter((s): s is string => typeof s === "string")
-              : [];
             if (m.hit) {
               simGated++;
               deps.logger?.info?.(`[reflection] soul proposal sim-gated (similar self_identity in flight, threshold=${simGateThreshold}): ${verdict.proposal.content.slice(0, 60)}`);
@@ -429,7 +465,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
               if (m.pending && pid && typeof deps.store.updatePendingRecurrence === "function" && !votedPids.has(pid)) {
                 votedPids.add(pid);
                 try {
-                  await Promise.resolve(deps.store.updatePendingRecurrence(pid, { content: verdict.proposal.content, evidenceRecordIds: recEvidenceIds }, { votesN: recVotes, spanHours: recTtlHours, tenant: triple }));
+                  await Promise.resolve(deps.store.updatePendingRecurrence(pid, { content: verdict.proposal.content, evidenceRecordIds: recEvidenceIds }, { votesN: recVotes, spanHours: recSpanHours, tenant: triple }));
                   recurrenceVotes++;
                 } catch (err) {
                   deps.logger?.warn?.(`[reflection] recurrence vote failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -449,6 +485,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
                   deps.logger?.warn?.(`[reflection] recurrence init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
                 }
               }
+            }
             }
           } else if (verdict?.ok) {
             const pushed = await Promise.resolve(
@@ -566,6 +603,6 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       }
     }
   }
-  return { triggered, cardsWritten, proposalsPushed, simGated, promiseProposalsPushed, promiseCreationsPushed, skipped, recurrenceVotes };
+  return { triggered, cardsWritten, proposalsPushed, simGated, echoVotes, echoSkipped, promiseProposalsPushed, promiseCreationsPushed, skipped, recurrenceVotes };
 }
 void DEFAULTS;

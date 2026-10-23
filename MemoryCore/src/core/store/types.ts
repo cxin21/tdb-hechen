@@ -788,8 +788,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   updatePendingRecurrence?(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant }): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
   /** #91：push 支路落库后按 (slot,content,tenant,state=pending) 初始化复现账本；行 recurrence_json 已存在 → null（重推不双计）。 */
   initPendingRecurrenceByContent?(slot: string, content: string, tenant?: CoreTenant, episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
-  /** #91（默认终局）：TTL sweep——self_identity 且 state=pending 且 count=1（recurrence 缺省视为 1）且 age(first_seen??created_at) 严格大于 ttlHours → state=expired（软失效可逆，行保留在匹配语料与计数图谱）。 */
-  sweepExpiredSelfIdentityPending?(tenant?: { teamId?: string; userId?: string; agentId?: string }, opts?: { ttlHours?: number; now?: string }): MaybePromise<Array<{ pending_id: string; content: string }>>;
+  /** #91（默认终局；2026-10-23 R1 返工）：TTL sweep——self_identity 且 state=pending；ready 行
+   *  （count>=votesN 且 span>=spanHours）排除（待人工裁决不进终局）；其余锚=count=1 → first_seen??created_at、
+   *  count>=2 → last_seen（复现停止后 TTL 退场，消除 count>=2 永生僵尸）；age 严格大于 ttlHours →
+   *  state=expired（软失效可逆，行保留在匹配语料与计数图谱）。tenant 缺省=全租户（终局清理语义，
+   *  修复原 ||"default" 吞租户空转）；传值=逐字段精确限定。 */
+  sweepExpiredSelfIdentityPending?(tenant?: { teamId?: string; userId?: string; agentId?: string }, opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number }): MaybePromise<Array<{ pending_id: string; content: string }>>;
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。

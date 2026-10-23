@@ -170,7 +170,8 @@ describe("parseReflectionProposals", () => {
   it("宽松 JSON 提取 + 非法输入空数组", () => {
     // #44：parse 契约扩展 promiseTransitions（缺省 []，可选提议面）——非 promise 字段逐位不变。
     // D8 创建通道：parse 契约同式扩展 promiseCreations（缺省 []，可选提议面）。
-    expect(parseReflectionProposals('[{"question":"q","conclusion":"c","evidence":["r1"]}]')).toEqual([{ question: "q", conclusion: "c", evidence: ["r1"], promiseTransitions: [], promiseCreations: [] }]);
+    // #91 返工（M-marker 路由）：parse 契约同式扩展 echoKey（缺省 ""，产卡 echo_key 指认；缺失/非法 → 空串）。
+    expect(parseReflectionProposals('[{"question":"q","conclusion":"c","evidence":["r1"]}]')).toEqual([{ question: "q", conclusion: "c", evidence: ["r1"], echoKey: "", promiseTransitions: [], promiseCreations: [] }]);
     expect(parseReflectionProposals("not json")).toEqual([]);
   });
 });

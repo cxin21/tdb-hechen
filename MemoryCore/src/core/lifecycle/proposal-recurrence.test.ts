@@ -24,7 +24,7 @@ import { describe, it, expect, vi, afterAll } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReflection } from "./reflection.js";
+import { parseReflectionProposals, runReflection } from "./reflection.js";
 import { startLifecycleScheduler } from "./lifecycle-scheduler.js";
 import { VectorStore } from "../store/sqlite.js";
 
@@ -81,7 +81,7 @@ type RecSnapshot = { count: number; first_seen: string; last_seen: string; ready
 type Episode = { ts: string; content: string; evidenceRecordIds?: string[]; embedding?: number[] };
 type UpdFn = (pid: string, ep: Episode, opts?: { votesN?: number; spanHours?: number; tenant?: Tenant }) => Promise<RecSnapshot | null>;
 type IniFn = (slot: string, content: string, tenant: Tenant, ep: Episode, opts?: { votesN?: number; spanHours?: number }) => Promise<RecSnapshot | null>;
-type SweepFn = (tenant?: Tenant, opts?: { ttlHours?: number; now?: string }) => Promise<Array<{ pending_id: string; content: string }>>;
+type SweepFn = (tenant?: Tenant, opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number }) => Promise<Array<{ pending_id: string; content: string }>>;
 
 // 方法存在性断言后返回**绑定 this 的闭包**——类方法摘绑裸调会丢 this（严格模式 undefined）。
 function updOf(st: VectorStore): UpdFn {
@@ -442,6 +442,57 @@ describe("#91 runReflection · 复现即投票接线", () => {
     expect(res.simGated).toBe(1);
     expect((res as unknown as { recurrenceVotes?: number }).recurrenceVotes).toBe(0);
   });
+
+  it("E4 spanHours 与 ttlHours 拆键：spanHours 独立可配（晋升跨度≠TTL）", async () => {
+    const st = fakeStore91({ pending: [{ slot: "self_identity", content: PENDING_A }] });
+    const emb = embedder({ [PENDING_A]: VEC.dup, [CONTENT_A]: VEC.dupTwin });
+    const cfg = { ...baseCfg, selfIdentityGate: { recurrence: { enabled: true, ttlHours: 12, spanHours: 1 } } };
+    await runReflection({ queryL1: async () => rows91(), config: cfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(firstCall(st.updatePendingRecurrence)[2]).toMatchObject({ votesN: 3, spanHours: 1 });
+  });
+
+  it("F1 parse echo_key 宽松解析（产卡指认字段，M-marker 路由输入）", async () => {
+    const out = JSON.stringify([{ question: "q", conclusion: "c", evidence: ["r1"], echo_key: "M1" }]);
+    const parsed = parseReflectionProposals(out);
+    expect(parsed[0]?.echoKey).toBe("M1");
+  });
+
+  it("F2 echo_key 命中 pending marker → 直接计票（向量门前短路，零嵌入）", async () => {
+    const st = fakeStore91({ pending: [{ slot: "self_identity", content: PENDING_A }] });
+    const emb = embedder({ [PENDING_A]: VEC.dup, [CONTENT_A]: VEC.dupTwin });
+    const embedSpy = vi.spyOn(emb, "embedBatch"); // embedBatch 非 spy fixture → spyOn 断言零嵌入
+    const raw = JSON.stringify([{ question: "q", conclusion: CONTENT_A, evidence: ["r1"], echo_key: "M1" }]);
+    const res = await runReflection({ queryL1: async () => rows91(), config: recCfg, store: st, llmRunner: llm91(raw), logger: LOG, filter: T, embeddingService: emb });
+    expect((res as unknown as { echoVotes?: number }).echoVotes).toBe(1);
+    expect(res.simGated).toBe(0);
+    expect(embedSpy).not.toHaveBeenCalled();
+    expect(firstCall(st.updatePendingRecurrence)[0]).toBe("pd0");
+    expect(st.upsertPendingCore).not.toHaveBeenCalled();
+  });
+
+  it("F3 echo_key 命中 core marker → skip 零落库零计票零嵌入", async () => {
+    const st = fakeStore91({ core: [{ slot: "self_identity", content: "用户重视确定性门裁决" }] }); // 内容≠提案，避开 proposalAlreadyKnown 短路
+    const emb = embedder({});
+    const embedSpy = vi.spyOn(emb, "embedBatch"); // embedBatch 非 spy fixture → spyOn 断言零嵌入
+    const raw = JSON.stringify([{ question: "q", conclusion: CONTENT_A, evidence: ["r1"], echo_key: "M1" }]);
+    const res = await runReflection({ queryL1: async () => rows91(), config: recCfg, store: st, llmRunner: llm91(raw), logger: LOG, filter: T, embeddingService: emb });
+    expect((res as unknown as { echoSkipped?: number }).echoSkipped).toBe(1);
+    expect(res.simGated).toBe(0);
+    expect(st.upsertPendingCore).not.toHaveBeenCalled();
+    expect(st.updatePendingRecurrence).not.toHaveBeenCalled();
+    expect(embedSpy).not.toHaveBeenCalled();
+  });
+
+  it("F4 echo_key 未命中映射（越界编号）→ 保守走 Match 原路径（fail 方向=多落库人工门纠正）", async () => {
+    const st = fakeStore91({ pending: [{ slot: "self_identity", content: PENDING_A }] });
+    const emb = embedder({ [PENDING_A]: VEC.dup, [CONTENT_A]: VEC.dupTwin });
+    const raw = JSON.stringify([{ question: "q", conclusion: CONTENT_A, evidence: ["r1"], echo_key: "M99" }]);
+    const res = await runReflection({ queryL1: async () => rows91(), config: recCfg, store: st, llmRunner: llm91(raw), logger: LOG, filter: T, embeddingService: emb });
+    // 未命中 marker → 走 Match 原路径：dup 向量 cos=0.90 ≥0.65 → hit → sim-gated 计票（与 C1 同形态）
+    expect(res.simGated).toBe(1);
+    expect((res as unknown as { echoVotes?: number }).echoVotes).toBe(0);
+    expect((res as unknown as { recurrenceVotes?: number }).recurrenceVotes).toBe(1);
+  });
 });
 
 // ───────────────────────── Part D：lifecycle-scheduler TTL sweep 节拍接线 ─────────────────────────
@@ -502,4 +553,56 @@ describe("#91 scheduler · TTL sweep 节拍接线", () => {
       stop();
     }
   });
+});
+
+// ───────────── Part E：R1 修正版返工（2026-10-23 拍板：对抗审查合并终判，全部落 #91）─────────────
+// 合同（票 91 返工评论）：
+// E1 sweep tenant=undefined → 全租户（store 读路径不吞 default——修复生产 0 行静默空转 P0）。
+// E2 sweep 扩展：count>=2 未 ready 行按 last_seen 锚过期（消除永生僵尸）；ready 行（count>=votesN
+//    且 span>=spanHours）排除——待人工裁决行不进默认终局。
+// E3（撤回 2026-10-23）：listPendingCore tenant=undefined 语义保持 ||"default" 不改——gateway
+//    v2-router:2175 传 AUTH 租户，undefined 场景改不限定会扩大暴露面（列全租户 pending），违反
+//    最小污染面；六项定案只要求 sweep。sweep 是内部 lifecycle 方法不经 gateway，修复安全。
+
+describe("#91 R1 返工 · store 读路径租户与 sweep 扩展", () => {
+  it("E1 sweep tenant=undefined → 全租户（不吞 default）", async () => {
+    const st = await mkStore();
+    const sweep = sweepOf(st);
+    const upd = updOf(st);
+    const T2 = { teamId: "t92", userId: "u92", agentId: "a92" };
+    await st.upsertPendingCore("self_identity", "租户A的孤行", 1, T);
+    await st.upsertPendingCore("self_identity", "租户B的孤行", 1, T2);
+    const pidA = await pidOf(st, "租户A的孤行");
+    const rowB = (await st.listPendingCore(T2, { includeDecided: true }))[0];
+    expect(rowB).toBeTruthy();
+    const pidB = (rowB as unknown as { pending_id: string }).pending_id;
+    await upd(pidA, { ts: H48_AGO, content: "租户A的孤行" }, { tenant: T });
+    await upd(pidB, { ts: H48_AGO, content: "租户B的孤行" }, { tenant: T2 });
+    const swept = await sweep(undefined, { ttlHours: 24, now: NOW_ISO });
+    expect(swept.map((r) => r.pending_id).sort()).toEqual([pidA, pidB].sort());
+  });
+
+  it("E2 sweep 扩展：count>=2 未 ready 按 last_seen 锚过期；ready 行排除", async () => {
+    const st = await mkStore();
+    const sweep = sweepOf(st);
+    const upd = updOf(st);
+    // 行1：count=2、span=23h（未 ready）、last_seen 距 now 25h>TTL → 应扫
+    await st.upsertPendingCore("self_identity", "count2 未ready 行", 1, T);
+    const pid1 = await pidOf(st, "count2 未ready 行");
+    await upd(pid1, { ts: H48_AGO, content: "x1" }, { tenant: T });
+    await upd(pid1, { ts: H25_AGO, content: "x2" }, { tenant: T });
+    // 行2：count=3、span=48h → ready（待人工裁决）→ 不扫
+    await st.upsertPendingCore("self_identity", "ready 行", 1, T);
+    const pid2 = await pidOf(st, "ready 行");
+    await upd(pid2, { ts: H48_AGO, content: "r1" }, { tenant: T });
+    await upd(pid2, { ts: H25_AGO, content: "r2" }, { tenant: T });
+    await upd(pid2, { ts: NOW_ISO, content: "r3" }, { tenant: T });
+    const swept = await sweep(T, { ttlHours: 24, now: NOW_ISO, votesN: 3, spanHours: 24 });
+    expect(swept.map((r) => r.pending_id)).toEqual([pid1]);
+    const rows = await st.listPendingCore(T, { includeDecided: true });
+    const byId = new Map(rows.map((r) => [r.pending_id, r.state]));
+    expect(byId.get(pid1)).toBe("expired");
+    expect(byId.get(pid2)).toBe("pending");
+  });
+
 });
