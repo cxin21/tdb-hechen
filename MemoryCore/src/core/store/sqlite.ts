@@ -3240,6 +3240,26 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /** #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数（含全部后续 state，保护人工带宽口径）。 */
+  countSelfIdentityRecent(tenant?: CoreTenant, windowHours?: number): number {
+    try {
+      const conds = ["slot = 'self_identity'"];
+      const params: string[] = [];
+      if (tenant?.teamId) { conds.push("team_id = ?"); params.push(tenant.teamId); }
+      if (tenant?.userId) { conds.push("user_id = ?"); params.push(tenant.userId); }
+      if (tenant?.agentId) { conds.push("agent_id = ?"); params.push(tenant.agentId); }
+      const wh = Math.max(0, windowHours ?? 24);
+      const since = new Date(Date.now() - wh * 3_600_000).toISOString();
+      conds.push("created_at >= ?");
+      params.push(since);
+      const row = this.db.prepare(`SELECT COUNT(*) AS n FROM core_pending WHERE ${conds.join(" AND ")}`).get(...params) as { n: number } | undefined;
+      return Number(row?.n ?? 0);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] countSelfIdentityRecent failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
   /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
   getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null; supportMap?: Record<string, string[]> } {
     try {

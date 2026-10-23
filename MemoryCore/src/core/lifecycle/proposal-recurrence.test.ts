@@ -347,6 +347,8 @@ function fakeStore91(opts: { pending?: FakePending[]; core?: { slot: string; con
     updatePendingRecurrence: vi.fn(async (_pid?: string, _ep?: unknown, _opts?: unknown) => ({ count: 2, first_seen: NOW_ISO, last_seen: NOW_ISO, ready: false, revived: false })),
     initPendingRecurrenceByContent: vi.fn(async (_slot?: string, _content?: string, _tenant?: unknown, _ep?: unknown, _opts?: unknown) => ({ count: 1, first_seen: NOW_ISO, last_seen: NOW_ISO, ready: false, revived: false })),
     sweepExpiredSelfIdentityPending: vi.fn(async (_tenant?: unknown, _opts?: unknown) => [] as Array<{ pending_id: string; content: string }>),
+    // #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数查询（缺省 0=不拦）。
+    countSelfIdentityRecent: vi.fn(async (_tenant?: unknown, _windowHours?: number) => 0),
     // scheduler 内部组装 queryL1 = store.queryL1Records（snake_case 行）→ mapL1RowToRecord；
     // selfIdentity/anchorDiscovery/consolidation/forgetting/evolution 全关 → reflection 是唯一 upsert 来源。
     queryL1Records: vi.fn(async () => [
@@ -492,6 +494,86 @@ describe("#91 runReflection · 复现即投票接线", () => {
     expect(res.simGated).toBe(1);
     expect((res as unknown as { echoVotes?: number }).echoVotes).toBe(0);
     expect((res as unknown as { recurrenceVotes?: number }).recurrenceVotes).toBe(1);
+  });
+});
+
+// ───────────── Part G/H：五步方案剩余两项（2026-10-24 拍板「剩余两项也做了」）─────────────
+// G：K 阀（rateLimit 源头硬闸，K=12 标定）——窗口内该租户 self_identity 新落库行数（含后续
+//    rejected，保护人工带宽口径）>=maxNew → push 支路跳过落库 + rateLimitSkipped 计数进拍级
+//    日志；echo/计票/sim-gated 路由不受影响（只拦未路由新行，fail 方向=少落库）。
+// H：gateDegraded 降级观测——sim-gate 嵌入降级（硬错 catch/无 embedder/向量异常）上浮
+//    degraded:true，reflection 计数进返回与拍级日志（放行行为不变，只补可观测盲区）。
+
+describe("#91 K 阀 · rateLimit 源头硬闸（只拦未路由新行）", () => {
+  it("G1 golden：rateLimit 未配 → 照常落库逐位（rateLimitSkipped=0）", async () => {
+    const st = fakeStore91({});
+    const emb = embedder({ [CONTENT_A]: VEC.dupTwin });
+    const res = await runReflection({ queryL1: async () => rows91(), config: recCfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(st.upsertPendingCore).toHaveBeenCalledTimes(1);
+    expect((res as unknown as { rateLimitSkipped?: number }).rateLimitSkipped).toBe(0);
+  });
+
+  it("G2 阈值内（count<maxNew）→ 正常落库；count 查询带租户三元组与窗口", async () => {
+    const st = fakeStore91({});
+    st.countSelfIdentityRecent.mockResolvedValue(3);
+    const emb = embedder({ [CONTENT_A]: VEC.dupTwin });
+    const cfg = { ...baseCfg, selfIdentityGate: { recurrence: { enabled: true }, rateLimit: { enabled: true, maxNew: 5, windowHours: 24 } } };
+    const res = await runReflection({ queryL1: async () => rows91(), config: cfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(st.upsertPendingCore).toHaveBeenCalledTimes(1);
+    expect((res as unknown as { rateLimitSkipped?: number }).rateLimitSkipped).toBe(0);
+    expect(st.countSelfIdentityRecent).toHaveBeenCalledTimes(1);
+    const call = firstCall(st.countSelfIdentityRecent);
+    // 阀门按拍租户（=queryL1 记录租户，tenantKey 记录值优先）限流——非 filter 常量。
+    expect(call[0]).toMatchObject({ teamId: "t1", userId: "u1", agentId: "a1" });
+    expect(call[1]).toBe(24);
+  });
+
+  it("G3 超阈（count>=maxNew）→ 跳过落库（upsert/init 零调用）+ rateLimitSkipped=1", async () => {
+    const st = fakeStore91({});
+    st.countSelfIdentityRecent.mockResolvedValue(12);
+    const emb = embedder({ [CONTENT_A]: VEC.dupTwin });
+    const cfg = { ...baseCfg, selfIdentityGate: { recurrence: { enabled: true }, rateLimit: { enabled: true, maxNew: 12, windowHours: 24 } } };
+    const res = await runReflection({ queryL1: async () => rows91(), config: cfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(st.upsertPendingCore).not.toHaveBeenCalled();
+    expect(st.initPendingRecurrenceByContent).not.toHaveBeenCalled();
+    expect((res as unknown as { rateLimitSkipped?: number }).rateLimitSkipped).toBe(1);
+    expect((res as unknown as { proposalsPushed?: number }).proposalsPushed).toBe(0);
+  });
+
+  it("G4 sim-gate 关（兜底 push 支路）同样受阀门拦", async () => {
+    const st = fakeStore91({});
+    st.countSelfIdentityRecent.mockResolvedValue(99);
+    const emb = embedder({ [CONTENT_A]: VEC.dupTwin });
+    const cfg = { ...baseCfg, selfIdentityGate: { enabled: false, rateLimit: { enabled: true, maxNew: 12 } } };
+    const res = await runReflection({ queryL1: async () => rows91(), config: cfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(st.upsertPendingCore).not.toHaveBeenCalled();
+    expect((res as unknown as { rateLimitSkipped?: number }).rateLimitSkipped).toBe(1);
+  });
+
+  it("G5 store 缺 count 方法（旧 store）→ 阀门旁路照常落库（宽容降级=现状）", async () => {
+    const st = fakeGate({}); // 无 countSelfIdentityRecent
+    const emb = embedder({ [CONTENT_A]: VEC.dupTwin });
+    const cfg = { ...baseCfg, selfIdentityGate: { recurrence: { enabled: true }, rateLimit: { enabled: true, maxNew: 1 } } };
+    const res = await runReflection({ queryL1: async () => rows91(), config: cfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(st.upsertPendingCore).toHaveBeenCalledTimes(1);
+    expect((res as unknown as { rateLimitSkipped?: number }).rateLimitSkipped).toBe(0);
+  });
+});
+
+describe("#91 gateDegraded · sim-gate 降级上浮计数（放行行为不变）", () => {
+  it("H1 嵌入硬错（非限流）→ 降级放行 + gateDegraded=1", async () => {
+    const st = fakeStore91({});
+    const emb = { embed: async () => { throw new Error("embed hard fail"); }, embedBatch: async () => { throw new Error("embed hard fail"); } };
+    const res = await runReflection({ queryL1: async () => rows91(), config: recCfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect(st.upsertPendingCore).toHaveBeenCalledTimes(1); // 降级放行（现状不变）
+    expect((res as unknown as { gateDegraded?: number }).gateDegraded).toBe(1);
+  });
+
+  it("H2 正常嵌入未降级 → gateDegraded=0", async () => {
+    const st = fakeStore91({});
+    const emb = embedder({ [CONTENT_A]: VEC.dupTwin });
+    const res = await runReflection({ queryL1: async () => rows91(), config: recCfg, store: st, llmRunner: llm91(PROPOSAL_A), logger: LOG, filter: T, embeddingService: emb });
+    expect((res as unknown as { gateDegraded?: number }).gateDegraded).toBe(0);
   });
 });
 

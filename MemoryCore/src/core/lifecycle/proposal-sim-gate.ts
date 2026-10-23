@@ -211,10 +211,10 @@ export async function similarSelfIdentityProposalMatch(args: {
   threshold?: number;
   embeddingService?: unknown;
   logger?: SimGateLogger;
-}): Promise<{ hit: boolean; pending?: { pending_id: string; content: string; attrs_json?: string | null }; vector?: Float32Array }> {
+}): Promise<{ hit: boolean; pending?: { pending_id: string; content: string; attrs_json?: string | null }; vector?: Float32Array; degraded?: boolean }> {
   const threshold = typeof args.threshold === "number" && args.threshold > 0 ? args.threshold : SIM_GATE_DEFAULT_THRESHOLD;
   type GateRow = { slot: string; content: string; pending_id?: unknown; attrs_json?: unknown; embedding_json?: unknown };
-  type MatchRes = { hit: boolean; pending?: { pending_id: string; content: string; attrs_json?: string | null }; vector?: Float32Array };
+  type MatchRes = { hit: boolean; pending?: { pending_id: string; content: string; attrs_json?: string | null }; vector?: Float32Array; degraded?: boolean };
   const hitOf = (row: GateRow, vector?: Float32Array): MatchRes => {
     const pid = typeof row.pending_id === "string" && row.pending_id.length > 0 ? row.pending_id : undefined;
     return {
@@ -234,7 +234,7 @@ export async function similarSelfIdentityProposalMatch(args: {
     const exact = corpus.find((c) => normalizeProposalText(c.row.content) === norm);
     if (exact) return hitOf(exact.row); // 精确重复短路（embedder 缺席也不漏，同 Exists:159）
     const embedder = resolveEmbedder(args.embeddingService);
-    if (!embedder) return { hit: false }; // 降级：无 embedder 放行（同 Exists:161）
+    if (!embedder) return { hit: false, degraded: true }; // 降级：无 embedder 放行（同 Exists:161）
     if (args.embeddingService !== cacheSvc) {
       cacheSvc = args.embeddingService;
       vecCache.clear();
@@ -243,7 +243,7 @@ export async function similarSelfIdentityProposalMatch(args: {
     // 恒嵌候选（#91）：语料空 texts=[content] 仍嵌一次，vector 供 push 支路 init 预嵌。
     const vecs = await embedAll(embedder, [args.content, ...toEmbed]);
     const base = vecs[0];
-    if (!base) return { hit: false };
+    if (!base) return { hit: false, degraded: true };
     let k = 1;
     for (const c of corpus) {
       if (c.vec == null) {
@@ -255,7 +255,7 @@ export async function similarSelfIdentityProposalMatch(args: {
     return { hit: false, vector: base };
   } catch (err) {
     args.logger?.warn?.(`[proposal-sim-gate] similarSelfIdentityProposalMatch degraded: ${err instanceof Error ? err.message : String(err)}`);
-    return { hit: false };
+    return { hit: false, degraded: true };
   }
 }
 

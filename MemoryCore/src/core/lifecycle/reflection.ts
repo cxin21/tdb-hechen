@@ -70,6 +70,8 @@ export interface ReflectionConfig {
     suppression?: { enabled?: boolean; maxPending?: number };
     /** #91：复现即投票+默认终局——缺省 false=逐位现状（Exists 原路径）；votes/ttlHours 缺省 3/24（票面标定 N=3/T=24h）。spanHours：ready 晋升跨度（缺省跟随 ttlHours；返工拍板拆键，TTL 管过期、span 管晋升）。 */
     recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
+    /** #91 K 阀（2026-10-24 拍板「剩余两项」）：源头硬闸缺省 off=逐位现状；窗口内该租户 self_identity 新落库 >= maxNew → push 支路跳过落库。maxNew 标定 12（人工带宽口径）、窗口缺省 24h。 */
+    rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
   };
 }
 
@@ -87,6 +89,8 @@ export interface ReflectionDeps {
     /** #91：复现即投票三方法可选面（缺实现→调用方降级不计票不 init，宁漏勿误）。 */
     updatePendingRecurrence?(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: unknown }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null | Promise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
     initPendingRecurrenceByContent?(slot: string, content: string, tenant?: unknown, episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null | Promise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
+    /** #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数（缺实现→阀门旁路，宽容降级=现状）。 */
+    countSelfIdentityRecent?(tenant?: unknown, windowHours?: number): number | Promise<number>;
   };
   /** R1（09-27 源头嵌入）：产物写入前嵌入；缺省/失败回退 metadata-only（补偿器兜底）。 */
 
@@ -176,16 +180,16 @@ function tenantKey(r: Rec, filter?: ReflectionDeps["filter"]): string {
   return `${teamId}|${userId}|${agentId}`;
 }
 
-export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; echoVotes: number; echoSkipped: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number; recurrenceVotes: number }> {
+export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: number; cardsWritten: number; proposalsPushed: number; simGated: number; echoVotes: number; echoSkipped: number; promiseProposalsPushed: number; promiseCreationsPushed: number; skipped: number; recurrenceVotes: number; rateLimitSkipped: number; gateDegraded: number }> {
   const cfg = deps.config;
-  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
-  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
+  if (!cfg?.enabled) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0, rateLimitSkipped: 0, gateDegraded: 0 };
+  if (!deps.store?.upsertL1 || !deps.llmRunner) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0, rateLimitSkipped: 0, gateDegraded: 0 };
   const rRef = Number.isFinite(cfg.rRef) ? cfg.rRef : 150;
   const maxSample = cfg.maxSample ?? 20;
   const maxConclusions = cfg.maxConclusions ?? 3;
 
   const records = (await deps.queryL1()) as Array<Rec>;
-  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0 };
+  if (!Array.isArray(records) || records.length === 0) return { triggered: 0, cardsWritten: 0, proposalsPushed: 0, simGated: 0, echoVotes: 0, echoSkipped: 0, promiseProposalsPushed: 0, promiseCreationsPushed: 0, skipped: 0, recurrenceVotes: 0, rateLimitSkipped: 0, gateDegraded: 0 };
 
   const byTenant = new Map<string, { triple: { teamId: string; userId: string; agentId: string }; rows: Array<Rec> }>();
   for (const r of records) {
@@ -213,6 +217,9 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   // #91 返工（M-marker 路由）：echo 指认计数——命中 pending 计票 / 命中 core 跳过（跨租户累加）。
   let echoVotes = 0;
   let echoSkipped = 0;
+  // #91 K 阀/provider 治理（2026-10-24）：阀门跳过计数 + sim-gate 降级放行计数（拍级日志可观测）。
+  let rateLimitSkipped = 0;
+  let gateDegraded = 0;
   const soulProposalsOn = cfg.soulProposals?.enabled === true;
   // #81（拍板②①）：相似门缺省开；阈值 0.65 config 可配。
   const simGateOn = cfg.selfIdentityGate?.enabled !== false;
@@ -226,11 +233,33 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
   const recTtlHours = Math.max(0, cfg.selfIdentityGate?.recurrence?.ttlHours ?? 24);
   // #91 返工：晋升跨度与 TTL 拆键——spanHours 缺省跟随 recTtlHours（C1 回归锚 24 不变）
   const recSpanHours = Math.max(0, cfg.selfIdentityGate?.recurrence?.spanHours ?? recTtlHours);
+  // #91 K 阀（2026-10-24）：源头硬闸缺省 off=逐位现状；maxNew 标定 12、窗口缺省 24h。
+  const rateLimitOn = cfg.selfIdentityGate?.rateLimit?.enabled === true;
+  const rateLimitMaxNew = Math.max(1, Math.floor(cfg.selfIdentityGate?.rateLimit?.maxNew ?? 12));
+  const rateLimitWindowHours = Math.max(0, cfg.selfIdentityGate?.rateLimit?.windowHours ?? 24);
   // #44（D-44-3）：promise 提案桥接门（缺省 false=逐位现状：零提示词段、零 store 调用、零提案）
   const promiseProposalsOn = cfg.promiseProposals?.enabled === true;
   for (const { triple, rows } of byTenant.values()) {
     // #27：证据指针 → 原文内容映射（样本源即证据源；幻觉 id 无内容→去原文门按可用证据裁决）
     const contentById = new Map(rows.map((r) => [String(r.id ?? ""), String(r.content ?? "")]));
+    // #91 K 阀（2026-10-24 拍板「剩余两项」）：窗口内该租户 self_identity 新落库 >= maxNew →
+    // push 支路跳过落库（只拦未路由新行；echo/计票/sim-gated 路径不经过此处，fail 方向=少落库）。
+    // store 缺方法/计数异常 → 旁路（宽容降级=现状逐位）。
+    const rateLimitBlocksPush = async (slot: string, content: string): Promise<boolean> => {
+      if (!rateLimitOn || slot !== "self_identity") return false;
+      let recent = 0;
+      try {
+        const n = await Promise.resolve(deps.store?.countSelfIdentityRecent?.(triple, rateLimitWindowHours));
+        if (typeof n === "number" && Number.isFinite(n)) recent = n;
+      } catch (err) {
+        deps.logger?.warn?.(`[reflection] rate-limit count failed (non-fatal, bypass): ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      }
+      if (recent < rateLimitMaxNew) return false;
+      rateLimitSkipped++;
+      deps.logger?.info?.(`[reflection] soul proposal rate-limit skipped (recent=${recent} >= max=${rateLimitMaxNew} in ${rateLimitWindowHours}h): ${content.slice(0, 60)}`);
+      return true;
+    };
     // #91：同拍双提案命中同一 pending 行只计一票（per-run per-tenant 去重；独立 episode 由 store 侧合并）。
     const votedPids = new Set<string>();
     // #44（D-44-1）：在途承诺仅在 gate on 时拉取（gate off=零 store 调用=逐位现状）
@@ -458,6 +487,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
               embeddingService: deps.embeddingService,
               logger: deps.logger,
             });
+            if (m.degraded) gateDegraded++;
             if (m.hit) {
               simGated++;
               deps.logger?.info?.(`[reflection] soul proposal sim-gated (similar self_identity in flight, threshold=${simGateThreshold}): ${verdict.proposal.content.slice(0, 60)}`);
@@ -471,7 +501,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
                   deps.logger?.warn?.(`[reflection] recurrence vote failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
                 }
               }
-            } else {
+            } else if (!(await rateLimitBlocksPush(verdict.proposal.slot, verdict.proposal.content))) {
               const pushed = await Promise.resolve(
                 deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, {
                   attrs: { ...verdict.proposal.attrs, anchor_refs: anchorRefs },
@@ -487,7 +517,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
               }
             }
             }
-          } else if (verdict?.ok) {
+          } else if (verdict?.ok && !(await rateLimitBlocksPush(verdict.proposal.slot, verdict.proposal.content))) {
             const pushed = await Promise.resolve(
               deps.store.upsertPendingCore?.(verdict.proposal.slot, verdict.proposal.content, verdict.proposal.evidence, triple, {
                 attrs: { ...verdict.proposal.attrs, anchor_refs: anchorRefs },
@@ -603,6 +633,6 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       }
     }
   }
-  return { triggered, cardsWritten, proposalsPushed, simGated, echoVotes, echoSkipped, promiseProposalsPushed, promiseCreationsPushed, skipped, recurrenceVotes };
+  return { triggered, cardsWritten, proposalsPushed, simGated, echoVotes, echoSkipped, promiseProposalsPushed, promiseCreationsPushed, skipped, recurrenceVotes, rateLimitSkipped, gateDegraded };
 }
 void DEFAULTS;

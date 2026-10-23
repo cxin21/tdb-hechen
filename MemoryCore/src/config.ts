@@ -690,6 +690,16 @@ export interface MemoryLifecycleConfig {
     };
     /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
     promiseProposals: { enabled: boolean };
+    /** #81/#91：self_identity 提案相似门——yaml 显式写的键才材料化（parse 白名单接线，FLOW-E「不接线即死配置」教训）；
+     *  不写=缺省行为逐位（闸门/抑制缺省开、recurrence 复现计票缺省关）。 */
+    selfIdentityGate?: {
+      enabled?: boolean;
+      threshold?: number;
+      suppression?: { enabled?: boolean; maxPending?: number };
+      recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
+      /** #91 K 阀（2026-10-24）：源头硬闸缺省 off=逐位现状；窗口内该租户 self_identity 新落库 >= maxNew → push 支路跳过。maxNew 标定 12、窗口缺省 24h。 */
+      rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
+    };
   };
 }
 
@@ -1583,6 +1593,52 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       })(),
       // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状
       promiseProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "promiseProposals"), "enabled") ?? false },
+      // #81/#91：self_identity 提案相似门——条件材料化（FLOW-E「不接线即死配置」修复，2026-10-24 实证
+      // yaml 写了 selfIdentityGate 但 parse 白名单剥离 → recOn 恒 false → #91 机制生产全旁路）。
+      // 语义：yaml 显式写的键才带（undefined 省略=消费侧缺省逐位）；整键未写=undefined=现状。
+      selfIdentityGate: (() => {
+        const sigGroup = obj(obj(lifecycleGroup, "reflection"), "selfIdentityGate");
+        const sigEnabled = bool(sigGroup, "enabled");
+        const threshold = num(sigGroup, "threshold");
+        const supGroup = obj(sigGroup, "suppression");
+        const supEnabled = bool(supGroup, "enabled");
+        const supMax = num(supGroup, "maxPending");
+        const recGroup = obj(sigGroup, "recurrence");
+        const recEnabled = bool(recGroup, "enabled");
+        const recVotes = num(recGroup, "votes");
+        const recTtl = num(recGroup, "ttlHours");
+        const recSpan = num(recGroup, "spanHours");
+        const rec = {
+          ...(recEnabled === undefined ? {} : { enabled: recEnabled }),
+          ...(recVotes === undefined ? {} : { votes: recVotes }),
+          ...(recTtl === undefined ? {} : { ttlHours: recTtl }),
+          ...(recSpan === undefined ? {} : { spanHours: recSpan }),
+        };
+        const hasRec = Object.keys(rec).length > 0;
+        // #91 K 阀（2026-10-24）：rateLimit 子键条件材料化（同 recurrence 形态；不写=不带键=缺省 off 逐位）。
+        const rlGroup = obj(sigGroup, "rateLimit");
+        const rlEnabled = bool(rlGroup, "enabled");
+        const rlMax = num(rlGroup, "maxNew");
+        const rlWin = num(rlGroup, "windowHours");
+        const rl = {
+          ...(rlEnabled === undefined ? {} : { enabled: rlEnabled }),
+          ...(rlMax === undefined ? {} : { maxNew: rlMax }),
+          ...(rlWin === undefined ? {} : { windowHours: rlWin }),
+        };
+        const hasRl = Object.keys(rl).length > 0;
+        if (sigEnabled === undefined && threshold === undefined && supEnabled === undefined && supMax === undefined && !hasRec && !hasRl) {
+          return undefined;
+        }
+        return {
+          ...(sigEnabled === undefined ? {} : { enabled: sigEnabled }),
+          ...(threshold === undefined ? {} : { threshold }),
+          ...(supEnabled === undefined && supMax === undefined
+            ? {}
+            : { suppression: { ...(supEnabled === undefined ? {} : { enabled: supEnabled }), ...(supMax === undefined ? {} : { maxPending: supMax }) } }),
+          ...(hasRec ? { recurrence: rec } : {}),
+          ...(hasRl ? { rateLimit: rl } : {}),
+        };
+      })(),
     },
   };
 

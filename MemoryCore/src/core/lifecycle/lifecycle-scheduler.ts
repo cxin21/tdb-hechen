@@ -195,7 +195,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
     try {
       const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter, embeddingService: deps.embeddingService });
       // #91 返工观测夹带（2026-10-23 拍板③）：sim-gated/计票/echo 路由关键点进拍级汇总行。
-      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} proposals=${res.proposalsPushed ?? 0} simGated=${res.simGated ?? 0} recVotes=${res.recurrenceVotes ?? 0} echoVotes=${res.echoVotes ?? 0} echoSkipped=${res.echoSkipped ?? 0}`);
+      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} proposals=${res.proposalsPushed ?? 0} simGated=${res.simGated ?? 0} recVotes=${res.recurrenceVotes ?? 0} echoVotes=${res.echoVotes ?? 0} echoSkipped=${res.echoSkipped ?? 0} rateLimitSkipped=${res.rateLimitSkipped ?? 0} gateDegraded=${res.gateDegraded ?? 0}`);
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -794,6 +794,10 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *  state=expired（软失效可逆，行保留在匹配语料与计数图谱）。tenant 缺省=全租户（终局清理语义，
    *  修复原 ||"default" 吞租户空转）；传值=逐字段精确限定。 */
   sweepExpiredSelfIdentityPending?(tenant?: { teamId?: string; userId?: string; agentId?: string }, opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number }): MaybePromise<Array<{ pending_id: string; content: string }>>;
+  /** #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数（含全部后续 state——保护人工带宽
+   *  口径）；created_at >= now−windowHours（ISO 字典序比较）。tenant 传值=逐字段精确限定（拍级调用方
+   *  传真实三元组）；缺实现=调用方旁路（宽容降级=现状逐位）。 */
+  countSelfIdentityRecent?(tenant?: { teamId?: string; userId?: string; agentId?: string }, windowHours?: number): MaybePromise<number>;
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。
