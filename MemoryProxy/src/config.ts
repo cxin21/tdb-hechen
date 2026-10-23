@@ -284,6 +284,30 @@ function parseSoulTiming(raw: unknown): SoulTimingConfig {
     const base = typeof n === "number" && Number.isFinite(n) ? n : 20;
     reanchor = { intervalTurns: Math.min(200, Math.max(1, Math.floor(base))) };
   }
+  // redlineCadence（2026-10-23，#39 终判 revisit 后用户拍板 D=8）：条件材料化——
+  // mode 合法（every_action_point|turn_head）才带键（缺失/非法 → 整段不带 = 逐位现状）；
+  // depthOverflow clamp [1,200] floor（0→1、999→200、1.7→1），非数值回退缺省 8；
+  // riskToolPatterns 仅非空字符串元素采纳，缺省 []（风险覆盖关，显式材料化）。
+  const rcRaw = rawObj.redlineCadence;
+  const rcObj =
+    rcRaw !== null && typeof rcRaw === "object" && !Array.isArray(rcRaw)
+      ? (rcRaw as Record<string, unknown>)
+      : undefined;
+  let redlineCadence: SoulTimingConfig["redlineCadence"] | undefined;
+  if (rcObj && (rcObj.mode === "every_action_point" || rcObj.mode === "turn_head")) {
+    const d = rcObj.depthOverflow;
+    const base = typeof d === "number" && Number.isFinite(d) ? d : 8;
+    const patterns = Array.isArray(rcObj.riskToolPatterns)
+      ? (rcObj.riskToolPatterns as unknown[]).filter(
+          (p): p is string => typeof p === "string" && p.length > 0,
+        )
+      : [];
+    redlineCadence = {
+      mode: rcObj.mode,
+      depthOverflow: Math.min(200, Math.max(1, Math.floor(base))),
+      riskToolPatterns: patterns,
+    };
+  }
   return {
     identity: pick("identity", SOUL_TIMING_ENUMS.identity),
     redline: pick("redline", SOUL_TIMING_ENUMS.redline),
@@ -291,6 +315,7 @@ function parseSoulTiming(raw: unknown): SoulTimingConfig {
     driftTrigger: pick("driftTrigger", SOUL_TIMING_ENUMS.driftTrigger),
     ...(redlineDedup ? { redlineDedup } : {}),
     ...(reanchor ? { reanchor } : {}),
+    ...(redlineCadence ? { redlineCadence } : {}),
   };
 }
 

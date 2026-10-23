@@ -628,7 +628,15 @@ tdai:
   #   reanchor      仅 driftTrigger=auto 时材料化 {intervalTurns: 20}；clamp [1,200] 缺省 20
   #   redlineDedup  仅 enabled=true 时材料化 {enabled: true, jaccardThreshold: 0.45}——红线块近重复行去重
   #                 （exact/jaccard/containment 三判，保长=归一后更长；阈值 clamp [0,1] 缺省 0.45）
+  #   redlineCadence 红线动作点降频节流（2026-10-23 用户拍板 D=8，#39 终判 revisit）：仅 redline=action_proximate
+  #                 时生效。mode: every_action_point（缺省，逐位现状=每动作点全文）| turn_head（轮首锚定：
+  #                 每轮首个动作点必注全文 + 链内每 depthOverflow 个动作点溢出重锚；null 态 fail-open /
+  #                 红线指纹变更 / 风险工具命中强制全文兜底）。depthOverflow: clamp [1,200] 缺省 8（0→1、999→200）。
+  #                 riskToolPatterns: 工具名大小写不敏感子串，命中→无条件全文注入；缺省 []（风险覆盖关）。
+  #                 注：红线 event 块尾带语用附带句「以上为既有红线近端复现，无需复述确认，直接继续当前步骤。」
+  #                 （代码常量 REDLINE_EVENT_RIDER，治理逐次确认税）。
   # 生产现值：redline: action_proximate + driftTrigger: auto + reanchor.intervalTurns: 20 + redlineDedup.enabled: true
+  #           + redlineCadence: {mode: turn_head, depthOverflow: 8, riskToolPatterns: []}
   # soulTiming:
   #   redline: "action_proximate"      # 生产已开（#37 动作点近端）
   #   driftTrigger: "auto"             # 生产已开（#59 再锚定）
@@ -636,6 +644,10 @@ tdai:
   #     intervalTurns: 20
   #   redlineDedup:
   #     enabled: true                  # 生产已开（#55）
+  #   redlineCadence:
+  #     mode: "turn_head"              # 生产已开（2026-10-23 D=8 降频）
+  #     depthOverflow: 8
+  #     riskToolPatterns: []           # 默认关（显式写明）
 
 # ── 当前感受（K/L，config-first） ──────────────────────────────────────────────
 # value 标签命中当前 user query 才注入一条短 <current_feeling> 块（价值命中，宁缺毋滥）。

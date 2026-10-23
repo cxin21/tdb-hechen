@@ -228,6 +228,18 @@ export interface SoulTimingConfig {
   /** 漂移再锚定节流参数（#59 S21）：driftTrigger="auto" 时首轮注入、之后每
    *  intervalTurns 轮一次（clamp [1,200]，缺省 20）；缺省不带键 = 用缺省 20。 */
   reanchor?: { intervalTurns?: number };
+  /** 红线动作点降频节流（2026-10-23，#39 终判 revisit 后用户拍板 D=8）：
+   *  redline="action_proximate" 时生效。mode 缺省 "every_action_point"=逐位现状
+   *  （每动作点全文注入）；"turn_head"=轮首锚定+链深溢出重锚（每轮首个动作点必注
+   *  全文，链内每 depthOverflow 个动作点再锚一次；null 态 fail-open / 红线指纹
+   *  变更 / 风险工具命中强制全文兜底）。depthOverflow clamp [1,200] 缺省 8；
+   *  riskToolPatterns 大小写不敏感子串匹配、缺省 []（风险覆盖关）。
+   *  缺省不带键 = 逐位现状。 */
+  redlineCadence?: {
+    mode: "every_action_point" | "turn_head";
+    depthOverflow?: number;
+    riskToolPatterns?: string[];
+  };
 }
 
 /** 缺省值=现状逐位（#37 验收：timing off 时逐位等于现状）。 */
