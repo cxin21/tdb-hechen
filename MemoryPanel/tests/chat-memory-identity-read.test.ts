@@ -143,6 +143,34 @@ describe('POST /chat-memory/identity/read', () => {
     expect(body.data).toEqual({ slots });
   });
 
+  // #69（R3 配套，Panel 身份区叙事预览）：可选 format=narrative 透传（MemoryProxy
+  // client.ts:462 先例同构——缺省不带，存量契约逐位不变）。
+  it('format=narrative 透传到 /v3/core-memory/read；缺省与非法值都不带 format 字段', async () => {
+    const { deps } = makeDeps();
+    const slots = [
+      { slot: 'identity_narrative', content: '以下事实由你和团队共同写就：- 我是谁：…', source: 'narrative', version: 3 },
+      { slot: 'strict_rule', content: '规则原文原样保留' },
+    ];
+    mockKernelFetch({ body: { code: 0, message: 'ok', data: { slots, values: [] } } });
+
+    const res = await call(deps, '/api/v1/chat-memory/identity/read', { block_id: BLOCK_ID, format: 'narrative' });
+    expect(res.status).toBe(200);
+    let sent = JSON.parse((await lastKernelCall()).init.body as string) as Record<string, unknown>;
+    expect(sent.format).toBe('narrative');
+    const body = (await res.json()) as InvokeEnvelope;
+    expect(body.data).toEqual({ slots });
+
+    // 缺省（无 format 字段）：请求体不带 format（存量视图逐位不变）
+    await call(deps, '/api/v1/chat-memory/identity/read', { block_id: BLOCK_ID });
+    sent = JSON.parse((await lastKernelCall()).init.body as string) as Record<string, unknown>;
+    expect('format' in sent).toBe(false);
+
+    // 非法 format 值：忽略（BFF 白名单只认 narrative，其余不透传）
+    await call(deps, '/api/v1/chat-memory/identity/read', { block_id: BLOCK_ID, format: 'yaml' });
+    sent = JSON.parse((await lastKernelCall()).init.body as string) as Record<string, unknown>;
+    expect('format' in sent).toBe(false);
+  });
+
   it('缺 block_id 返回 400；读权限不过返回 403', async () => {
     const { deps } = makeDeps();
     mockKernelFetch();

@@ -247,6 +247,18 @@
 ._soul-mood-badge--positive { background: var(--soul-pos-bg); color: var(--soul-pos); }
 ._soul-mood-badge--neutral { background: var(--soul-fill-muted, rgba(128, 128, 128, 0.15)); color: var(--soul-text-2, inherit); }
 ._soul-mood-badge--strained { background: var(--soul-cau-bg); color: var(--soul-cau); }
+
+/* ===== #69（R3 配套）身份叙事预览（IdentityNarrativeView / NarrativeStatusLine；chip 复用 _soul-chip--green/--neutral） ===== */
+._soul-narr-content { margin: 0; font-family: inherit; font-size: var(--soul-fz-body); line-height: var(--soul-lh-long); color: var(--soul-text-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+._soul-narr-status { display: flex; align-items: center; gap: var(--soul-sp-2); }
+._soul-narr-hint { font-size: var(--soul-fz-meta); color: var(--soul-text-3); overflow-wrap: anywhere; }
+._soul-narr-switch { display: flex; gap: 6px; }
+._soul-narr-switch-btn { padding: 2px 10px; font-size: var(--soul-fz-meta); border: 1px solid var(--soul-border); border-radius: var(--soul-radius-btn); background: transparent; color: var(--soul-text-3); cursor: pointer; }
+._soul-narr-switch-btn--on { color: var(--soul-text-1); background: var(--soul-fill-muted); border-color: var(--soul-border); }
+._soul-narr-details summary { font-size: var(--soul-fz-meta); color: var(--soul-text-3); cursor: pointer; }
+._soul-narr-details-body { margin-top: 4px; font-size: var(--soul-fz-meta); color: var(--soul-text-3); }
+._soul-narr-raw-row { display: flex; flex-direction: column; gap: 2px; }
+._soul-narr-raw-slot { font-size: var(--soul-fz-meta); color: var(--soul-text-3); }
 ._soul-mood-text { color: var(--soul-text-2, inherit); min-width: 0; overflow-wrap: anywhere; }
 
 /* ===== V10-NOGO-G3：首要卡信息层级降维（tag 并入主标题；描述 2 行截断+点击展开；2026-09-25） ===== */

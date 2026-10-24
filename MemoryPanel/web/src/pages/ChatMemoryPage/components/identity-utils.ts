@@ -59,3 +59,59 @@ export function splitIdentitySlots(slots: CoreSlotRow[]): SplitIdentitySlots {
 export function identityEmpty(user: string[], self: string[]): boolean {
   return self.length === 0 && user.length === 0;
 }
+
+// ── #69（R3 配套，Panel 身份区「叙事预览」）──
+
+/** #69 合成叙事槽槽名。仅作为 API 响应的识别键消费（值镜像 MemoryCore
+  * IDENTITY_NARRATIVE_SLOT，ADR-0005 单一源在内核）；Panel 不复制模板/组装逻辑。 */
+export const IDENTITY_NARRATIVE_SLOT = 'identity_narrative';
+
+/** #69 叙事预览三态：active=叙事生效（绿）；fallback=条目形态（灰；kernel 门关与
+  * 生成闸降级在单次读响应中同为条目形态、无信号可分，合一展示并在 UI 说明）；
+  * empty=身份内容全空（预览整段不渲染）。 */
+export type NarrativePreviewState = 'active' | 'fallback' | 'empty';
+
+export interface NarrativePreview {
+  state: NarrativePreviewState;
+  /** state='active' 时的叙事合成槽行（source/version/updated_at 供技术细节折叠）。 */
+  narrative: CoreSlotRow | null;
+  /** fallback 时的身份条目分组（empty 守卫与调试用途）。 */
+  entries: SplitIdentitySlots;
+}
+
+/** #69 状态判定纯函数（kernel 语义 v2-router.ts:2458-2484）：叙事组装成功时身份两行被
+  * 全量替换为合成槽 → active 响应内无条目；门关/降级/无身份内容 → 原条目形态。
+  * 叙事槽内容空白视为缺失（宁缺毋滥）；叙事槽与条目并存（kernel 不该出现）叙事优先。 */
+export function narrativePreviewOf(slots: CoreSlotRow[] | null | undefined): NarrativePreview {
+  const rows = Array.isArray(slots) ? slots : [];
+  const narrative =
+    rows.find(
+      (s) => s && s.slot === IDENTITY_NARRATIVE_SLOT && typeof s.content === 'string' && s.content.trim() !== '',
+    ) ?? null;
+  const entries = splitIdentitySlots(rows);
+  const state: NarrativePreviewState = narrative
+    ? 'active'
+    : identityEmpty(entries.user, entries.self)
+      ? 'empty'
+      : 'fallback';
+  return { state, narrative, entries };
+}
+
+/** #69「存储原文（管理员视角）」口径（与灰态条目视图一致）：只留身份两槽
+  * （self_identity/identity）的字符串内容行——strict_rule/core_value 等核心区
+  * 其它槽不得混入身份区；identity_narrative 合成槽与非字符串内容一并滤除。 */
+export function rawIdentityRowsOf(slots: unknown): CoreSlotRow[] {
+  if (!Array.isArray(slots)) return [];
+  const rows: CoreSlotRow[] = [];
+  for (const s of slots) {
+    const row = s as Partial<CoreSlotRow> | null | undefined;
+    if (
+      row &&
+      (row.slot === 'self_identity' || row.slot === 'identity') &&
+      typeof row.content === 'string'
+    ) {
+      rows.push(s as CoreSlotRow);
+    }
+  }
+  return rows;
+}

@@ -1,14 +1,16 @@
 /**
  * SoulIdentityDual —— 身份双槽双栏卡（UI 2.1 P0，2026-09-21；设计师方案 §4.3）。
  *
- * SoulPage 局部组件：IdentitySection 共享组件零改动（ChatMemoryPage 逐位现状），
- * 数据同源（chatMemoryApi.identityRead）。双栏并排镜像布局 + 长文折叠
+ * #69（R3 配套，票 ② 两个页面都加叙事小节）：与 IdentitySection 共用 identity-narrative
+ * 小节组件——绿（叙事生效）→ IdentityNarrativeView「AI 眼中的我」；灰（门关/降级）→
+ * NarrativeStatusLine + 存量双栏卡逐位现状；空 → 整段不渲染。数据同源
+ * （chatMemoryApi.identityRead）。双栏并排镜像布局 + 长文折叠
  * （>12 行渐隐 +「展开全文(n 字)」，折叠≠丢失——C11/C12 判据）。
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { chatMemoryApi } from '@/lib/teamApi';
-import { identityEmpty, splitIdentitySlots, type CoreSlotRow } from '@/pages/ChatMemoryPage/components/identity-utils';
+import { narrativePreviewOf } from '@/pages/ChatMemoryPage/components/identity-utils';
+import { IdentityNarrativeView, NarrativeStatusLine, useIdentityNarrativeState } from '@/pages/ChatMemoryPage/components/identity-narrative';
 
 type SlotKey = 'self' | 'user';
 
@@ -49,24 +51,19 @@ function IdentitySlotCard({ slotKey, lines, expanded, onToggle }: {
 
 export function SoulIdentityDual({ blockId }: { blockId: string }) {
   const { t } = useTranslation();
-  const [slots, setSlots] = useState<CoreSlotRow[]>([]);
-  const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState<{ self: boolean; user: boolean }>({ self: false, user: false });
-
-  useEffect(() => {
-    let alive = true;
-    setSlots([]);
-    setFailed(false);
-    chatMemoryApi
-      .identityRead(blockId)
-      .then((d) => { if (alive) setSlots(Array.isArray(d.slots) ? d.slots : []); })
-      .catch(() => { if (alive) setFailed(true); });
-    return () => { alive = false; };
-  }, [blockId]);
+  const { failed, slots } = useIdentityNarrativeState(blockId);
 
   if (failed) return null;
-  const { user, self } = splitIdentitySlots(slots);
-  if (identityEmpty(user, self)) return null;
+  const preview = narrativePreviewOf(slots);
+  if (preview.state === 'empty') return null;
+  if (preview.state === 'active') {
+    // 绿态：叙事生效（kernel 已把身份两行替换为合成槽）——整段换叙事视图；
+    // 锚点经 anchorId 落在叙事 section 上（SoulPage/index.tsx 页内导航引用，不丢锚）。
+    return <IdentityNarrativeView blockId={blockId} preview={preview} variant="soul" anchorId="_soul-sec-identity" />;
+  }
+  // 灰态（门关/降级合一）：一行状态说明（降级不静默）+ 存量双栏卡逐位现状。
+  const { user, self } = preview.entries;
 
   return (
     <section className="_soul-section" aria-label={t('soul.identity.title')} id="_soul-sec-identity">
@@ -74,6 +71,7 @@ export function SoulIdentityDual({ blockId }: { blockId: string }) {
         <span className="_soul-section-title">{t('soul.identity.title')}</span>
         <span className="_soul-chip _soul-chip--person">双槽</span>
       </div>
+      <NarrativeStatusLine variant="soul" />
       <div className="_soul-idgrid">
         {self.length > 0 && (
           <IdentitySlotCard

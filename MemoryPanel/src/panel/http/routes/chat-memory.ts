@@ -1792,6 +1792,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       const body = await readJson(c);
       const blockId = requiredBlockId(body);
       if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+      // #69（R3 配套，叙事预览）：可选 format="narrative" 白名单透传——仅精确命中才带；
+      // 缺省/非法值一律不带（kernel 侧按条目形态响应，存量契约逐位不变；
+      // MemoryProxy client.ts listCoreMemories(identity, opts) 同构先例）。
+      const narrativeFormat =
+        (body as { format?: unknown } | null | undefined)?.format === "narrative";
 
       const parsed = parseChatMemoryAssetId(blockId);
       if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
@@ -1828,6 +1833,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
           agent_id: parsed.agentId,
           user_id: asset.owner_user_id,
           session_id: "default",
+          ...(narrativeFormat ? { format: "narrative" as const } : {}),
         },
         cred,
       );

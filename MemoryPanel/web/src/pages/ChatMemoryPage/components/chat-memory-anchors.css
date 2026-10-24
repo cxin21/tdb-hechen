@@ -294,6 +294,21 @@
 /* #12 T6 / #19 T12：pending 行徽标（同名冲突 / 证据升级重提） */
 ._pending-badge { padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 1.6; cursor: help; }
 ._pending-badge.conflict { background: #fff3e8; color: #d46b08; border: 1px solid #ffcfb3; }
+
+/* ===== #69（R3 配套）身份叙事预览（IdentityNarrativeView / NarrativeStatusLine，_id-narr-*）===== */
+._id-narr-head { display: flex; align-items: center; gap: 8px; }
+._id-narr-chip--on { color: var(--mem-sem-valence-pos, #5c9a1e); background: #f2f8e6; border-color: #b7d98a; }
+._id-narr-chip--off { color: var(--tea-color-text-secondary, #666); background: var(--tea-color-bg-primary-default, #f3f3f3); }
+._id-narr-status { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+._id-narr-hint { font-size: 12px; color: var(--tea-color-text-secondary, #666); }
+._id-narr-switch { display: flex; gap: 6px; margin-top: 8px; }
+._id-narr-switch-btn { padding: 2px 10px; font-size: 12px; border: 1px solid var(--tea-color-border-primary-default, #d9d9d9); border-radius: 999px; background: transparent; color: var(--tea-color-text-secondary, #666); cursor: pointer; }
+._id-narr-switch-btn--on { color: var(--tea-color-text-primary-default, #333); background: var(--tea-color-bg-secondary-default, #f3f3f3); border-color: #b7d98a; }
+._id-narr-details { margin-top: 6px; }
+._id-narr-details summary { font-size: 12px; color: var(--tea-color-text-secondary, #666); cursor: pointer; }
+._id-narr-details-body { margin-top: 4px; font-size: 12px; color: var(--tea-color-text-secondary, #666); }
+._id-narr-raw-row { margin-top: 8px; }
+._id-narr-raw-slot { font-size: 12px; color: var(--tea-color-text-secondary, #666); margin-bottom: 2px; }
 ._pending-badge.reproposal { background: #eef6ff; color: #1677ff; border: 1px solid #91caff; }
 
 /* U7/T-C：分池配额迷你显示 + sensitivity 状态徽章（D-3 已实施，占位文案 2026-09-22 修正） */
