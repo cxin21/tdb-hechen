@@ -3,7 +3,11 @@
  * （adopt：strict_rule → validateCoreWrite+escapeXmlTags+upsertCore('panel-adopt')；
  *   core_value → upsertValue(growthValueId(content),…,'panel-adopt','manual')；幂等 404）。
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { VectorStore } from "../core/store/sqlite.js";
 import { handleCoreMemoryPendingList, handleCoreMemoryPendingDecide } from "./v2-router.js";
 
 const ISO_A = { teamId: "teamA", userId: "userA", agentId: "agentA", sessionId: "s1" };
@@ -369,4 +373,42 @@ describe("#82 self_identity 采纳落槽（merge-on-adopt）", () => {
     expect(data.swept).toEqual([]);
   });
 });
+// ── #82 SQLite 全链路（真实 VectorStore，临时库）──────────────────────────────
+// Brief 验收「临时 SQLite 全链路」：真实存储面（upsertPendingCore → 裁决 → upsertCore/readCore
+// 落盘）走一遍 merge-on-adopt，stub 单测之上的持久层端到端补证；库文件落 tmpdir，跑完即清。
+describe("#82 SQLite 全链路（真实 VectorStore，临时库）", () => {
+  let store: InstanceType<typeof VectorStore>;
+  let dir: string;
+  const T_A = { teamId: "teamA", userId: "userA", agentId: "agentA" };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "tdb-p82-"));
+    store = new VectorStore(join(dir, "v.db"), 0);
+    await store.init();
+  });
+  afterAll(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* cleanup */ }
+  });
+
+  it("采纳 self_identity 提案 → mergeIdentityFacts 合并落槽 + pending 转 adopted", async () => {
+    const s = store as unknown as {
+      upsertCore: (slot: string, content: string, source: string, tenant?: typeof T_A) => boolean;
+      readCore: (tenant?: typeof T_A) => Array<{ slot: string; content: string; source: string }>;
+      upsertPendingCore: (slot: string, content: string, evidence: number, tenant?: typeof T_A) => boolean;
+      listPendingCore: (tenant?: typeof T_A, opts?: { includeDecided?: boolean }) => Array<{ pending_id: string; slot: string; content: string; state: string }>;
+    };
+    expect(s.upsertCore("self_identity", "- 既有事实甲", "identity-discovery", T_A)).toBe(true);
+    expect(s.upsertPendingCore("self_identity", "默认跟随用户设好的节奏工作", 1, T_A)).toBe(true);
+    const row = s.listPendingCore(T_A).find((r) => r.slot === "self_identity" && r.content === "默认跟随用户设好的节奏工作");
+    expect(row).toBeDefined();
+    const res = await handleCoreMemoryPendingDecide({ pending_id: row!.pending_id, decision: "adopted" }, AUTH, "r-sqlite", depsFor(store, { ...T_A, sessionId: "s1" }));
+    expect(res.code).toBe(0);
+    const slotRow = s.readCore(T_A).find((r) => r.slot === "self_identity");
+    expect(slotRow?.content).toBe("- 既有事实甲\n- 默认跟随用户设好的节奏工作");
+    expect(slotRow?.source).toBe("panel-adopt");
+    const all = s.listPendingCore(T_A, { includeDecided: true });
+    expect(all.find((r) => r.pending_id === row!.pending_id)?.state).toBe("adopted");
+  });
+});
+
 
