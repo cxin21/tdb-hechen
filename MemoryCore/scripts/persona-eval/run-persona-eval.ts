@@ -120,7 +120,7 @@ function baselineShapeErrors(baseline: unknown): string[] {
 
 /** 拉取网关 soul 渲染结果（node:http 原生请求——undici fetch 对本机网关存在
  *  Authorization 头丢失/变形问题，见 2026-10-19 R1 E2E 教训；网关 Bearer 同 key
- *  走 node:http 可通过）。租户可经 TDAI_PERSONA_SOUL_TEAM_ID / USER_ID / AGENT_ID
+ *  走 node:http 可通过）。Bearer 来源：TDAI_GATEWAY_API_KEY env ?? --config yaml 的 server.apiKey（isSetCredential 判定，占位符视为未配置）——定时/CI 等无 env 场景由机器本地 yaml 提供同值（#66 shadow 2026-10-25）。租户可经 TDAI_PERSONA_SOUL_TEAM_ID / USER_ID / AGENT_ID
  *  指定（introspect 的租户来自 body 而非隔离头；缺省 default 租户）。地址可用
  *  TDAI_GATEWAY_HOST / TDAI_GATEWAY_PORT 覆盖（缺省 127.0.0.1:8420）。 */
 /**
@@ -147,7 +147,7 @@ export function patchLlmFieldsFromCredential(
   return patched;
 }
 
-async function fetchSoulIntrospect(): Promise<string> {
+async function fetchSoulIntrospect(bearer: string): Promise<string> {
   const body = JSON.stringify({
     ...(process.env.TDAI_PERSONA_SOUL_TEAM_ID ? { teamId: process.env.TDAI_PERSONA_SOUL_TEAM_ID } : {}),
     ...(process.env.TDAI_PERSONA_SOUL_USER_ID ? { userId: process.env.TDAI_PERSONA_SOUL_USER_ID } : {}),
@@ -159,7 +159,7 @@ async function fetchSoulIntrospect(): Promise<string> {
     const req = http.request(
       { host, port, path: "/v3/soul/introspect", method: "POST",
         headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body),
-          authorization: "Bearer " + (process.env.TDAI_GATEWAY_API_KEY ?? "") } },
+          authorization: "Bearer " + bearer } },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
@@ -220,12 +220,22 @@ async function main(): Promise<number> {
   if (baselinePath) {
     try {
       const parsed: unknown = JSON.parse(readFileSync(baselinePath, "utf8"));
-      const shapeErrors = baselineShapeErrors(parsed);
+      // EvalSummary（--out summary 文件，如 behavior-golden/summary-*.json）顶层不是
+      // BaselineFile：Scorecard（baseline 对比输入，buildScorecard 产物）嵌在 .scorecard
+      // 下。自动解包，裸 BaselineFile/Scorecard 文件不受影响（#66 shadow 期 2026-10-25 发现）。
+      const unwrapped: unknown =
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+        "scorecard" in parsed &&
+        typeof (parsed as { scorecard?: unknown }).scorecard === "object" &&
+        (parsed as { scorecard?: unknown }).scorecard !== null
+          ? (parsed as { scorecard: unknown }).scorecard
+          : parsed;
+      const shapeErrors = baselineShapeErrors(unwrapped);
       if (shapeErrors.length > 0) {
         for (const e of shapeErrors) console.error("[persona-eval] BASELINE FORMAT " + e);
         return 3;
       }
-      baseline = parsed as BaselineFile;
+      baseline = unwrapped as BaselineFile;
     } catch (err) {
       console.error("[persona-eval] baseline 读取/解析失败:", err instanceof Error ? err.message : String(err));
       return 3;
@@ -345,8 +355,15 @@ async function main(): Promise<number> {
     if (soulPath) {
       soulRendered = readFileSync(soulPath, "utf8");
     } else {
+      const envBearer = process.env.TDAI_GATEWAY_API_KEY?.trim();
+      const rawServer = (rawConfig.server ?? undefined) as { apiKey?: string } | undefined;
+      const gatewayBearer = (envBearer && envBearer !== "" ? envBearer : undefined)
+        ?? (typeof rawServer?.apiKey === "string" && isSetCredential(rawServer.apiKey) ? rawServer.apiKey : undefined);
+      if (!gatewayBearer) {
+        console.error("[persona-eval] soul introspect: 无网关 Bearer（TDAI_GATEWAY_API_KEY env 与 --config yaml server.apiKey 均未配置，占位符视为未配置）— bare 模式");
+      }
       try {
-        soulRendered = await fetchSoulIntrospect();
+        soulRendered = await fetchSoulIntrospect(gatewayBearer ?? "");
       } catch (err) {
         // introspect 不可用 → 裸基线对照；失败原因要可见（ bare 会让 soul-dependent 探针全 skip）
         console.error("[persona-eval] soul introspect failed: " + (err instanceof Error ? err.message : String(err)));

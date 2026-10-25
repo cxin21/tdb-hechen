@@ -184,3 +184,8 @@ docs/superpowers/evals/**/runs/
 
 # ── 追加（2026-10-20 召回精度 #74 门禁轮）：本地门禁日志与临时 SQLite，防误 git add ──
 .tmp-gate/
+
+# ── 追加（2026-10-25 #66 shadow 期）：每日实跑产物机器本地留存，分布数字以台账行为准；yaml 机器本地备份不入库 ──
+docs/superpowers/evals/behavior-golden/shadow/run-*.jsonl
+docs/superpowers/evals/behavior-golden/shadow/shadow-*.json
+MemoryCore/tdai-gateway.yaml.bak-*
