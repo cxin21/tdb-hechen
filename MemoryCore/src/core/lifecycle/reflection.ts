@@ -80,6 +80,8 @@ export interface ReflectionDeps {
   config?: ReflectionConfig;
   store?: {
     upsertL1(record: unknown, embedding?: unknown): boolean | Promise<boolean>;
+    /** #78 W-a（survey F4 small-to-big 上半段）：记忆图 L1↔L1 边写入（同 (s,t,type) ON CONFLICT 幂等）。可选：旧后端安静跳过。 */
+    addLink?(sourceId: string, targetId: string, type: string, strength?: number, now?: string): boolean | Promise<boolean>;
     /** #27：O13 rail 桥接可选面（缺实现→桥接安静跳过，采纳侧人工裁决兜底）。 */
     upsertPendingCore?(slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): boolean | Promise<boolean>;
     listPendingCore?(tenant?: unknown, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; state: string; attrs_json?: string | null }> | Promise<Array<{ pending_id: string; slot: string; content: string; state: string; attrs_json?: string | null }>>;
@@ -101,6 +103,44 @@ export interface ReflectionDeps {
 }
 
 const DEFAULTS = { rRef: 150, maxConclusions: 3, maxSample: 20 };
+
+/**
+ * #78 W-a 写面（survey F4 small-to-big 上半段；拍板 Q2=(a) 写面无条件补边）：
+ * reflection 结论卡写卡成功后，对触发行集补 part_of 身世边（卡→证据，对齐
+ * consolidation-worker「持续态→其点状证据」语义）。addLink 同 (s,t,type) 幂等
+ * （ON CONFLICT 更新）；失败/返回 false → warn 软处理，缺能力 → debug 静默跳过；
+ * 只新卡调用，存量卡零改动。返回成功写入（含幂等更新）的边数。
+ */
+export async function writeReflectionPartOfEdges(
+  store: ReflectionDeps["store"],
+  cardId: string,
+  evidenceIds: readonly string[],
+  logger?: Logger,
+): Promise<number> {
+  if (!store || typeof store.addLink !== "function") {
+    logger?.debug?.("[reflection] W-a: store.addLink unavailable — skip part_of edges (旧后端安静跳过)");
+    return 0;
+  }
+  const addLink = store.addLink;
+  let written = 0;
+  const seen = new Set<string>();
+  for (const rawId of evidenceIds) {
+    const evId = String(rawId ?? "").trim();
+    if (!evId || evId === cardId || seen.has(evId)) continue;
+    seen.add(evId);
+    try {
+      const ok = await Promise.resolve(addLink.call(store, cardId, evId, "part_of", 1));
+      if (ok === false) {
+        logger?.warn?.(`[reflection] W-a part_of edge soft-failed (returned false): card=${cardId} evidence=${evId}`);
+        continue;
+      }
+      written++;
+    } catch (err) {
+      logger?.warn?.(`[reflection] W-a part_of edge soft-failed: card=${cardId} evidence=${evId} err=${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return written;
+}
 
 /** 三问式反思系统提示（Generative Agents 对标，spec §5 F13）。 */
 export const REFLECTION_SYSTEM_PROMPT = [
@@ -375,7 +415,13 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       // → 零变化；occurred_at=now（真实记录时刻）；情感/重要性规则照常。
       bindSoulAtWrite(rec);
       const ok = await Promise.resolve(deps.store.upsertL1(rec, await embedForLifecycle(deps.embeddingService, String(rec.content ?? ""), "[reflection]", deps.logger)));
-      if (ok) cardsWritten++;
+      if (ok) {
+        cardsWritten++;
+        // #78 W-a：写卡成功 → 触发行集 part_of 身世边。只对检索触发行写边
+        // （contentById 过滤幻觉 id）；软失败不阻塞写卡主链路；存量卡零改动。
+        const edgeN = await writeReflectionPartOfEdges(deps.store, rec.id, pr.evidence.filter((id) => contentById.has(String(id))), deps.logger);
+        deps.logger?.debug?.(`[reflection] W-a part_of edges card=${rec.id} written=${edgeN}/${pr.evidence.length}`);
+      }
       // #27（R5）：反思结论 → 身份层提案（O13 rail）。门 on 才启用；确定性门
       // （slot 白名单→安全阀→证据非空→去 L1 原文→重复抑制）逐条裁决，被拒只记日志
       // 不抛（反思主路径零影响）。提案内容=结论卡原文直出（不做 LLM 改写）；
