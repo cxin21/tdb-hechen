@@ -20,3 +20,4 @@
 - [ADR-0005 身份叙事层：确定性叙事组装](docs/adr/0005-身份叙事层-确定性叙事组装.md) —— 条目存储+叙事渲染并存、A 案确定性组装单一源、双路同源、真实性三闸、nv 模板指纹（ADR-0003 §5 批次纪律）。
 - [ADR-0006 LLM 凭据 SoT 收敛](docs/adr/0006-LLM凭据-SoT收敛-admin-settings.md) —— 秘密字段唯一 SoT=admin settings、通道序 override>yaml>env(deprecated)、占位符守卫、脚本域 readLlmCredential 单一读取器。
 - [ADR-0007 身份槽确定性自动采纳门](docs/adr/0007-身份槽确定性自动采纳门.md) —— stage 2 终局形态：三重门（N₂=4/T₂=72h/矛盾线 0.60/重复线 0.75，2026-10-25 拍板）、config 缺省关、快照+版本守卫回滚、采纳链单一源镜像人审 merge-on-adopt。
+- [ADR-0008 召回门限刻度治理：剔词退役与地板相对化](docs/adr/0008-召回门限刻度治理-剔词退役与地板相对化.md) —— 候选集占比剔词退役（自指病灶）、bm25 地板 α×topRel 相对化（legacy 双轨兜底）、local rerank sigmoid 归一 + all-below 降级不清零；未迁移 yaml 逐位不变。
