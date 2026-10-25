@@ -32,6 +32,8 @@ import type { MemoryReranker, RerankResult } from "../../recall/rerank/types.js"
 import type { IMemoryStore, L1FtsResult } from "../../store/types.js";
 import type { EmbeddingService } from "../../store/embedding.js";
 import type { MemoryTdaiConfig } from "../../../config.js";
+import { buildProfileIsolationScope, DEFAULT_PROFILE_SCOPE } from "../../profile/profile-sync.js";
+import { writeSceneIndex } from "../../scene/scene-index.js";
 
 type PLRParams = Parameters<typeof performLayeredRecall>[0];
 type RerankDeps = NonNullable<PLRParams["rerankDeps"]>;
@@ -231,6 +233,78 @@ describe("R71-A1 · work_fact 候选 bm25 rel 预地板", () => {
       expect(res.conclusionCount).toBe(2);
       const entry = readJournal(dir).at(-1)!;
       expect((entry.gates as Record<string, unknown> | undefined)?.conclusionBm25).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════ #95：gates.conclusionBm25 kept 按来源拆分（work_fact vs scene_block）═══════════════
+
+/**
+ * #95：scene_block 候选夹具。注意 performLayeredRecall 缺省 profileIsolation
+ * （team:default|user:default|agent:default）→ profileDataDir 落 profiles/<encoded> 桶
+ * （isScopedProfile 分支），scene index 须写进该桶——scope 用单一源
+ * buildProfileIsolationScope 推算（对照 DEFAULT_PROFILE_SCOPE），落盘复用生产
+ * writeSceneIndex（scene-index.ts 单一源），不复制其 fs 写形状。
+ */
+const R95_PROFILE_SCOPE = buildProfileIsolationScope({ teamId: "default", agentId: "default" });
+
+function profileDataDirFor(dir: string): string {
+  return R95_PROFILE_SCOPE === DEFAULT_PROFILE_SCOPE ? dir : path.join(dir, "profiles", encodeURIComponent(R95_PROFILE_SCOPE));
+}
+
+async function writeSceneIndexFixture(dir: string, entries: Array<{ filename: string; summary: string }>): Promise<void> {
+  await writeSceneIndex(profileDataDirFor(dir), entries.map((e) => ({ ...e, heat: 0, created: "", updated: "" })));
+}
+
+describe("#95 · gates.conclusionBm25 kept 按来源拆分（work_fact vs scene_block）", () => {
+  it("①scene_block 豁免显式计数：kept=keptWorkFact+keptSceneBlock，与 scene_index 条数对账，kept/dropped 总口径不变", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "r95-sb-"));
+    try {
+      const rows = [wfRow("wf-1", "ConclA", -10), wfRow("wf-2", "ConclB", -3), ...episodicRows(2)];
+      await writeSceneIndexFixture(dir, [
+        { filename: "场景甲.md", summary: "交付窗口安排：每周三固定回归三层门禁后上线" },
+        { filename: "场景乙.md", summary: "备份演练约定：月末核对快照恢复流程" },
+      ]);
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(rows), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { minBm25Rel: 6.5 },
+      })));
+      // 行为不变式（与 A1 ① 同口径）：rel=3 的 ConclB 仍被地板剔除、ConclA 保留——拆分纯观测，不改筛选
+      expect(res.memoryLines.some((l) => l.includes("[结论]") && l.includes("ConclA"))).toBe(true);
+      expect(res.memoryLines.some((l) => l.includes("[结论]") && l.includes("ConclB"))).toBe(false);
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionBm25 as Record<string, unknown> | undefined;
+      expect(gate).toBeDefined();
+      expect(gate?.minRel).toBe(6.5);
+      expect(gate?.kept).toBe(3); // 1 wf 过线 + 2 sb 豁免（#75：kept = 预选择候选总数，非 FTS 池大小）
+      expect(gate?.dropped).toBe(1); // 恒为 work_fact 行（sb 无 bm25Rel，不参与地板判定）
+      expect(gate?.keptWorkFact).toBe(1);
+      expect(gate?.keptSceneBlock).toBe(2); // 与 scene_index 条数可对账
+      expect((gate?.keptWorkFact as number) + (gate?.keptSceneBlock as number)).toBe(gate?.kept);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②bm25Rel undefined 的 wf 行豁免分支：计入 keptWorkFact，不被地板误杀", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "r95-nk-"));
+    try {
+      const rows = [wfRow("wf-1", "ConclA", undefined), wfRow("wf-2", "ConclB", -3), ...episodicRows(2)];
+      await writeSceneIndexFixture(dir, [{ filename: "场景甲.md", summary: "交付窗口安排：每周三固定回归三层门禁后上线" }]);
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(rows), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { minBm25Rel: 6.5 },
+      })));
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionBm25 as Record<string, unknown> | undefined;
+      expect(gate).toBeDefined();
+      expect(gate?.kept).toBe(2); // wf-1（无 rank，豁免）+ 1 sb
+      expect(gate?.dropped).toBe(1); // wf-2 被地板删减
+      expect(gate?.keptWorkFact).toBe(1); // 豁免行计入 wf 拆分
+      expect(gate?.keptSceneBlock).toBe(1);
+      expect((gate?.keptWorkFact as number) + (gate?.keptSceneBlock as number)).toBe(gate?.kept);
+      // 豁免行照常被选择器选中（宁缺毋滥不误杀，行为不变式）
+      expect(res.memoryLines.some((l) => l.includes("[结论]") && l.includes("ConclA"))).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

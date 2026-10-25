@@ -752,7 +752,9 @@ export async function performLayeredRecall(params: {
       // raw rel（=-FTS5 rank）低于 conclusionLayer.minBm25Rel 的候选在选择器前剔除；
       // rerank 不可用部署的唯一硬门（A2 shadow 观测期）。undefined/0 = off = 逐位现状；
       // bm25Rel 缺席的候选（scene_block / V2-3 放宽通道 / 后端未提供 rank）豁免——
-      // 宁缺毋滥不误杀。gate 观测（minRel/kept/dropped）入 journal。
+      // 宁缺毋滥不误杀。gate 观测（minRel/kept/dropped + #95 来源拆分）入 journal。
+      // #95（2026-10-25）：kept 语义 = 预选择候选总数（wf 过线 + sb 豁免），非 FTS 池大小——
+      // kept/dropped 按来源拆分 keptWorkFact/keptSceneBlock（纯观测，筛选行为零变化）。
       const r71MinBm25Rel = cfg.recall?.conclusionLayer?.minBm25Rel;
       if (typeof r71MinBm25Rel === "number" && r71MinBm25Rel > 0 && r7Candidates.some((c) => c.bm25Rel !== undefined)) {
         const r71BeforeFloor = r7Candidates.length;
@@ -760,7 +762,18 @@ export async function performLayeredRecall(params: {
           const rel = r7Candidates[i].bm25Rel;
           if (rel !== undefined && rel < r71MinBm25Rel) r7Candidates.splice(i, 1);
         }
-        r71Bm25Gate = { minRel: r71MinBm25Rel, kept: r7Candidates.length, dropped: r71BeforeFloor - r7Candidates.length };
+        // #95（2026-10-25）：地板后按来源拆分计数（单遍按 source 累计——来源全集遍历，
+        // 新增第三来源时拆分和 < kept 在 journal 可见，而非静默漏计）
+        const r71KeptBySource: Record<string, number> = {};
+        for (const c of r7Candidates) r71KeptBySource[c.source] = (r71KeptBySource[c.source] ?? 0) + 1;
+        r71Bm25Gate = {
+          minRel: r71MinBm25Rel,
+          kept: r7Candidates.length,
+          dropped: r71BeforeFloor - r7Candidates.length,
+          // 不变式（当前仅两来源）：keptWorkFact + keptSceneBlock === kept（单测锁定）
+          keptWorkFact: r71KeptBySource.work_fact ?? 0,
+          keptSceneBlock: r71KeptBySource.scene_block ?? 0,
+        };
         logger?.debug?.(`${TAG} [layered] R71-A1 bm25 floor: dropped=${r71Bm25Gate.dropped} kept=${r71Bm25Gate.kept} (minRel=${r71MinBm25Rel})`);
       }
       // v18-c：minUniqRatio 透传（conclusionLayer.minUniqRatio；undefined/0 = 关逐位现状）

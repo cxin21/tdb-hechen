@@ -31,11 +31,30 @@ export interface RecallJournalRerankGate {
   topScore?: number;
 }
 
-/** R71-A1（2026-10-19）：work_fact 候选 bm25 预地板观测门。kept=地板后剩余候选数。 */
+/**
+ * R71-A1（2026-10-19）：work_fact 候选 bm25 预地板观测门。
+ * kept = 进入 bm25 地板筛选的预选择候选总数（过线 work_fact + 豁免候选）——非 FTS 池大小：
+ * scene_block 候选无 bm25Rel 恒豁免地板，kept 会大于 work_fact FTS 行数（#75/#95：生产
+ * 619 条 gate 记录 kept ∈ 14-18 与 scene_index 条数精确吻合，非异常）。向后兼容（#95）：
+ * kept/dropped 含义不变；旧条目无 keptWorkFact/keptSceneBlock（缺字段 = 拆分引入前）。
+ */
 export interface RecallJournalConclusionBm25Gate {
+  /** 地板阈值（conclusionLayer.minBm25Rel 透传）。 */
   minRel: number;
+  /** 预选择候选总数（keptWorkFact + keptSceneBlock）——非 FTS 池大小（见接口注释）。 */
   kept: number;
+  /** 被地板删减的候选数；恒为 work_fact 行（scene_block 无 bm25Rel 不参与地板判定，故不设 droppedWorkFact 拆分）。 */
   dropped: number;
+  /**
+   * #95（2026-10-25）：kept 中 work_fact 来源数 = 过线 FTS 行 + bm25Rel undefined 的豁免行
+   * （后端未提供 rank；V2-3 放宽通道不进候选池，不计入）。缺字段 = 旧条目。
+   */
+  keptWorkFact?: number;
+  /**
+   * #95（2026-10-25）：kept 中 scene_block 来源数 = 过 identity 门后的 scene_index 候选数
+   * （豁免地板，显式计数；与 scene_index 条数可对账）。缺字段 = 旧条目。
+   */
+  keptSceneBlock?: number;
 }
 
 /** R71-A2（2026-10-19）：结论层 rerank 语义门观测（shadow 记 would-be 决策）。
