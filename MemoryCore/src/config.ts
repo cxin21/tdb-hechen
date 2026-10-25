@@ -321,6 +321,15 @@ export interface RecallConfig {
     rerankGate?: { mode: "off" | "shadow" | "enforce"; minScore?: number };
   };
   /**
+   * #78 R-b（2026-10-25，survey F4 small-to-big 下半段）：结论卡身世回捞——读面独立开关
+   * （不挂 conclusionLayer 语义）。开启时 work_fact 结论候选命中后按 recordId 单跳回捞
+   * part_of 证据行，作预算内附加「上下文行」注入（行形态 `- [上下文|场景] 内容`）；
+   * maxExtraLines 全局帽（缺省 2），附加行挤经验层配额 ⇒ 注入总行数 = maxResults 恒定。
+   * 代码缺省关（enabled 缺省 false = 逐位现状）；部署 yaml 显式开（#77 三键同款）。
+   * maxExtraLines 负值 → 0（=关）；非数字/非有限回落缺省 2。
+   */
+  smallToBig: { enabled: boolean; maxExtraLines: number };
+  /**
    * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子——
    * compositeScore timeProx 因子 × 0.5^(ageDays/halfLifeDays)（MemOS 对标 30d 半衰期；
    * 永不归零 floor 0.05 = never-a-filter：陈旧只降权绝不埋没，不构成绝对门槛）。
@@ -1871,6 +1880,18 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
               mode,
               ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
             };
+          })(),
+        };
+      })(),
+      // #78 R-b：结论卡身世回捞读面开关（代码缺省关=逐位现状；yaml 显式开——#77 三键同款）。
+      // maxExtraLines 缺省 2；负值 clamp 0（=关）；非数字/非有限（num()→undefined）回落缺省 2。
+      smallToBig: (() => {
+        const sb = obj(recallGroup, "smallToBig");
+        return {
+          enabled: bool(sb, "enabled") ?? false,
+          maxExtraLines: (() => {
+            const raw = num(sb, "maxExtraLines");
+            return raw === undefined ? 2 : raw > 0 ? Math.floor(raw) : 0;
           })(),
         };
       })(),

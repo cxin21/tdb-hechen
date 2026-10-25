@@ -168,6 +168,15 @@ memory:
     # （决策包 2026-10-20-d2-d3 D2 选 B）。缺省 false=逐位现状。
     timeProxFallbackEnabled: true
 
+    # ── #78 R-b（survey F4 small-to-big，2026-10-25 拍板开启）：结论卡父块回链读面 ──
+    # enabled=true 时对 work_fact 结论卡按 part_of 身世边单跳回捞关联证据行，作预算内附加
+    # 「上下文行」注入（[上下文|场景] 前缀）；maxExtraLines = 附加行全局帽（跨卡累计，0=关）。
+    # 附加行挤经验层配额 ⇒ 注入总行数恒 ≤ maxResults（预算内附加）；软失败不阻断召回。
+    # 缺省 false = 逐位现状；代码保守缺省关 + 部署 yaml 显式开（#77 三键同款惯例）。
+    smallToBig:
+      enabled: true
+      maxExtraLines: 2
+
     # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
     # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差
     # （argmax d(k)=pool[k-1]-pool[k]，全池 k∈[1,pool.length-1]），落差 ≥ dropRatio×span

@@ -893,6 +893,62 @@ export async function performLayeredRecall(params: {
         }
       }
     }
+    // ── #78 R-b（2026-10-25，survey F4 small-to-big 下半段）：结论卡身世回捞（读面独立开关）──
+    // 开关 cfg.recall.smallToBig（独立键，不挂 conclusionLayer 语义；代码缺省关=逐位现状，
+    // 部署 yaml 显式开——#77 三键同款）。开启时对选中 work_fact 结论（recordId 在场）按
+    // recordId 单跳回捞 part_of 证据行作预算内附加「上下文行」注入（行形态 `- [上下文|场景]
+    // 内容`，与 formatConclusionLine 同族；每行截到 r7ConclusionMaxChars，截断模式同结论行）。
+    // 方向地面真相：part_of 边 source=结论卡→target=证据行 ⇒ 回捞用 getLinksBySource
+    // （brief 原文 getLinksByTarget 为 scout 措辞滑差，票评论已注明）。maxExtraLines 全局帽
+    // （缺省 2，0=关）；附加行并入结论行序列，r7Budget 按结论行总数（含上下文行）计——
+    // 附加行挤经验层配额 ⇒ 注入总行数恒 ≤ maxResults（注入总预算帽不破）。上下文行随结论内容同入幂等
+    // 指纹缓存（缓存态=注入态）。关断矩阵：开关关 / 无 work_fact recordId / 缺
+    // getLinksBySource 或 getL1ByIds[WithArchive] → 零 store 调用；软失败 warn 不阻塞召回。
+    // derived_from 读面语义按 brief 规则留待另行拍板（一期只做 part_of）。
+    // R-A 红线：上下文行零 valence/arousal/mood 情绪字段。
+    const s2bCfg = cfg.recall?.smallToBig;
+    const smallToBigLines: string[] = [];
+    if (s2bCfg?.enabled === true && r7Conclusions.length > 0 && vectorStore &&
+        typeof vectorStore.getLinksBySource === "function" &&
+        (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")) {
+      try {
+        const s2bMaxExtra = Math.max(0, Math.floor(s2bCfg.maxExtraLines ?? 2));
+        if (s2bMaxExtra > 0) {
+          const s2bSeen = new Set(r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!));
+          const s2bResolveByIds = (ids: string[]) =>
+            vectorStore.getL1ByIdsWithArchive
+              ? vectorStore.getL1ByIdsWithArchive(ids)
+              : vectorStore.getL1ByIds!(ids);
+          for (const s2bConcl of r7Conclusions) {
+            if (smallToBigLines.length >= s2bMaxExtra) break;
+            if (s2bConcl.source !== "work_fact" || !s2bConcl.recordId) continue;
+            const s2bLinks = ((await vectorStore.getLinksBySource(s2bConcl.recordId, "part_of")) ?? []) as Array<{ targetId: string; type: string; strength: number; createdAt: string }>;
+            const s2bEvIds = s2bLinks
+              .map((l) => l?.targetId)
+              .filter((id): id is string => typeof id === "string" && !s2bSeen.has(id));
+            if (s2bEvIds.length === 0) continue;
+            const s2bRows = ((await s2bResolveByIds(s2bEvIds)) ?? []) as L1SearchResult[];
+            for (const s2bRow of s2bRows) {
+              if (smallToBigLines.length >= s2bMaxExtra) break;
+              if (!s2bRow || typeof s2bRow.record_id !== "string" || s2bSeen.has(s2bRow.record_id)) continue;
+              s2bSeen.add(s2bRow.record_id);
+              const s2bContent = typeof s2bRow.content === "string" && s2bRow.content.trim()
+                ? (r7TruncateMode === "sentences"
+                  ? truncateConclusionContentSentences(s2bRow.content, r7ConclusionMaxChars)
+                  : truncateConclusionContent(s2bRow.content, r7ConclusionMaxChars))
+                : "";
+              if (!s2bContent) continue;
+              smallToBigLines.push(`- [上下文${s2bConcl.sceneName ? `|${s2bConcl.sceneName}` : ""}] ${s2bContent}`);
+            }
+          }
+          if (smallToBigLines.length > 0) {
+            logger?.debug?.(`${TAG} [small-to-big] R-b context lines: +${smallToBigLines.length} (cap=${s2bMaxExtra})`);
+          }
+        }
+      } catch (err) {
+        logger?.warn?.(`${TAG} [small-to-big] R-b context backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     // 幂等结论层（spec §2 R7-1，借团队 幂等与防重 模式）：结论未变化 → 复用已存行（不重组，cache 友好）
     // 审查修补 I③（TTL 解耦）：conclusionLayer.cacheTtlMs 独立键——缺省（未配置）回落
     // sessionReuseTtlMs 保持现行为；显式 0 = 关（每次重组，不缓存）。负值/非有限由 config
@@ -907,10 +963,14 @@ export async function performLayeredRecall(params: {
     const conclusionCacheKey = params.isolationFilter
       ? `${params.sessionKey}#${params.isolationFilter.teamId ?? ""}#${params.isolationFilter.userId ?? ""}#${params.isolationFilter.agentId ?? ""}`
       : params.sessionKey;
+    // #78 R-b：上下文行并入 freshLines（缓存态=注入态；smallToBigLines 空 → 恒等数组=逐位现状）
+    const r7FreshLines = smallToBigLines.length > 0
+      ? [...r7Conclusions.map(formatConclusionLine), ...smallToBigLines]
+      : r7Conclusions.map(formatConclusionLine);
     const r7ConclusionResolved = resolveIdempotentConclusionLines(
       conclusionCacheKey,
       conclusionFingerprint(r7Conclusions),
-      r7Conclusions.map(formatConclusionLine),
+      r7FreshLines,
       r7ConclusionTtlMs,
     );
     const r7ConclusionLines = r7ConclusionResolved.lines;
@@ -928,7 +988,14 @@ export async function performLayeredRecall(params: {
       : undefined;
     // R7 预算对半切（spec §1）——提前到精排之前：rerank cap 消费经验层额度（结论行不入
     // 精排，精排只消费经验池，选出行数不得超过预算给经验层的额度）。
-    const r7Budget = splitBudget(r7MaxResults, r7ConclusionLines.length);
+    // #78 R-b（2026-10-25）：smallToBig 开启时附加「上下文行」并入结论行序列，预算按结论行
+    // 总数（含上下文行）计——experienceLimit = max(0, maxResults − 结论行总数)，附加行挤
+    // 经验层配额 ⇒ 注入总行数恒 ≤ maxResults（「预算内附加」验收口径）。上下文行不入精排
+    // 额度语义不变。smallToBig 关（无上下文行）→ splitBudget 原语义逐位现状（既有不变式：
+    // 结论行 ≤ halfLimit 恒成立，splitBudget 的 half clamp 不触发）。
+    const r7Budget = smallToBigLines.length > 0
+      ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length) }
+      : splitBudget(r7MaxResults, r7ConclusionLines.length);
     // R-A3（E3）：同 session 上轮 query 与本轮全等 → 复用上轮搜索结果（免搜索免外呼）。
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
     const sessionReuseTtlMs = cfg.recall?.sessionReuseTtlMs ?? 300_000;
