@@ -9,7 +9,8 @@
  *    空白归一后比对）+ 证据指针非空双保险。
  * 3. 调度单一源：本模块为纯裁决函数，无 IO 无调度；桥接内联 runReflection（F13 importance
  *    触发为主、consolidation 既有节拍兜底），不造第二套调度器。
- * 4. 采纳侧语义沿用既有 decidePendingCore → mergeIdentityFacts（identity 类槽 worker 承载）；
+ * 4. 采纳侧语义沿用 decidePendingCore → mergeIdentityFacts（identity 类槽合并唯一源：
+ *    worker 演化与 #82 采纳落槽共用）；
  *    identity 变更 → sv 变化 → 渲染路径 #30 快照全量落账（零新增快照代码）。
  * 5. 重复抑制：与在途 pending / 既有 core 身份行归一化重复 → 拒推（宁缺毋滥）。
  *
