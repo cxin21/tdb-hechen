@@ -34,51 +34,43 @@ function cand(over: Partial<L2ConclusionCandidate> & { content: string }): L2Con
   return { sceneName: "", source: "scene_block", ...over };
 }
 
-// ═══════════════ P1（issue #2）：textHitMaxTokenRatio 万词面 token 剔除 ═══════════════
+// ═══════════════ #99 F1（2026-10-25）：textHit 万词面候选集占比剔除退役 ═══════════════
+//
+// 病灶（#96/#99 一手取证）：textHitMaxTokenRatio 用「token 命中候选占比」判万词面，而候选集
+// 经 buildFtsQuery FTS 预筛天然含查询 token——占比恒≈1，最贴题的 token 反被剔（P3「提示」
+// 2/2=100%>0.5 → 结论层 0 行；单独问「提示词」全 token 被剔触发兜底反而命中 2 行）。
+// 修法（票面 F1-A，对齐 ES 7.3 弃用 common-terms 方向）：删除候选集占比硬剔除，FTS 预筛只管
+// 召回、BM25 IDF 自行降权（#53 idfWeighted 同层重排）。textHitMaxTokenRatio 键从
+// L2MatchInputs/config/yaml 三面整体退役（编译期护栏——本套件不再出现该键）。
 
-describe("P1 textHitMaxTokenRatio（batch 相对 IDF，万词面剔除）", () => {
-  it("未配置（缺省 undefined）= 逐位现状：万词面 token 照常命中", () => {
+describe("#99 F1 · textHit 万词面剔除退役（候选集占比自指病灶根治）", () => {
+  it("P3 同构：token 命中 100% 候选不再被剔——核心 token 照常入选（旧门下 0 行）", () => {
     const cands = [
-      cand({ content: "项目一：缓存编码不一致导致对账差异" }),
-      cand({ content: "项目二：部署脚本幂等" }),
-      cand({ content: "项目三：日志轮转策略" }),
+      cand({ content: "交接质量取决于只写耐久锚：提示词仅记重复发生的环境事实" }),
+      cand({ content: "项目转入下一阶段，并已生成交接提示词" }),
     ];
-    // "项目" 在 3/3 候选出现（万词面），但门关 → 全部照旧命中
-    const out = selectL2Conclusions("项目重构", cands, { ftsTokens: ["项目"] }, 5);
-    expect(out).toHaveLength(3);
-  });
-
-  it("占比超阈 token 被剔除；其余 token 仍参与匹配", () => {
-    const cands = [
-      cand({ content: "项目一：缓存编码不一致导致对账差异" }),
-      cand({ content: "项目二：部署脚本幂等" }),
-      cand({ content: "项目三：日志轮转策略" }),
-    ];
-    // ratio 0.5："项目" df=3/3 > 0.5 → 剔除；"缓存" df=1/3 → 保留
-    const out = selectL2Conclusions("项目缓存", cands, { ftsTokens: ["项目", "缓存"], textHitMaxTokenRatio: 0.5 }, 5);
-    expect(out).toHaveLength(1);
-    expect(out[0].content).toContain("缓存");
-  });
-
-  it("全 token 万词面（FTS 预筛候选集）→ 回落原 token 集（work_fact 通道保护，对抗审查 #5）", () => {
-    const cands = [
-      cand({ content: "对账项目差异修复", source: "work_fact" }),
-      cand({ content: "对账项目脚本更新", source: "work_fact" }),
-    ];
-    // 两 token 均在 2/2 候选出现 → gated 为空 → 回落原 tokens，两候选照常命中
-    const out = selectL2Conclusions("对账项目", cands, { ftsTokens: ["对账", "项目"], textHitMaxTokenRatio: 0.4 }, 5);
+    // "提示" 命中 2/2 = 100%——旧门必剔；辅助 token（复制/文档/不要）不在任何候选中，
+    // 旧门 matchTokens 只剩它们 → 0 行。新语义：核心 token 照常参与匹配。
+    const out = selectL2Conclusions(
+      "给我一个可复制的提示词，不要文档",
+      cands,
+      { ftsTokens: ["复制", "提示", "文档", "不要"] },
+      5,
+    );
     expect(out).toHaveLength(2);
+    expect(out[0].content).toContain("提示词");
   });
 
-  it("sceneHit 不受 IDF 剔除影响（场景名命中独立通道）", () => {
+  it("万词面 token（df=3/3）照常命中，消歧交给 idfWeighted 排序而非匹配集裁剪", () => {
     const cands = [
-      cand({ sceneName: "项目重构", content: "与 query token 无关的正文" }),
-      cand({ content: "完全无关的其他结论" }),
+      cand({ content: "项目一：缓存编码不一致导致对账差异" }),
+      cand({ content: "项目二：部署脚本幂等" }),
+      cand({ content: "项目三：日志轮转策略" }),
     ];
-    // "项目" df=1/2=0.5 = 不> 0.5… 换 0.4 保证剔除；场景名命中不受影响
-    const out = selectL2Conclusions("项目重构", cands, { ftsTokens: ["项目"], textHitMaxTokenRatio: 0.4 }, 5);
-    expect(out).toHaveLength(1);
-    expect(out[0].sceneName).toBe("项目重构");
+    const out = selectL2Conclusions("项目重构", cands, { ftsTokens: ["项目"], idfWeighted: true }, 5);
+    expect(out).toHaveLength(3);
+    // 万词面 token 在所有候选 df 相同 → IDF 分相同 → 平分保调用方序（确定性不翻转）
+    expect(out.map((c) => c.content)).toEqual(cands.map((c) => c.content));
   });
 });
 

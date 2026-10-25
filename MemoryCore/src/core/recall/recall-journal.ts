@@ -29,6 +29,17 @@ export interface RecallJournalRerankGate {
   kept: number;
   dropped: number;
   topScore?: number;
+  /**
+   * #99 F3（2026-10-25）：local provider 原始 logit 经 sigmoid 归一 0..1 后对门槛——
+   * 本键标记刻度（topScore 仍为 raw，取证口径连续）；云 provider 原生 0..1 缺键（native）。
+   */
+  scoreScale?: "logit-sigmoid";
+  /** #99 F3：topScore 的归一化值（logit-sigmoid 时 sigmoid(topScore)；native 不出键）。 */
+  top01?: number;
+  /** #99 F3：生效门槛的归一化值（仅 logit-sigmoid 出键 = sigmoid(minScore)；native 不出键——native 刻度即 minScore 原值，无需归一化观测）。 */
+  threshold01?: number;
+  /** #99 F3：优雅降级归因——全员低于阈值不清零，回退未重排顺序注入（预算帽照常生效）。 */
+  degraded?: "all-below-minScore";
 }
 
 /**
@@ -55,6 +66,15 @@ export interface RecallJournalConclusionBm25Gate {
    * （豁免地板，显式计数；与 scene_index 条数可对账）。缺字段 = 旧条目。
    */
   keptSceneBlock?: number;
+  /**
+   * #99 F2（2026-10-25）：地板口径——relative = 门槛 = α×topRel（minBm25RelRatio 相对门，
+   * 刻度无关）；absolute = legacy minBm25Rel 绝对分（未迁移部署）。缺字段 = 旧条目（absolute）。
+   */
+  mode?: "relative" | "absolute";
+  /** #99 F2：relative 口径的 α（conclusionLayer.minBm25RelRatio 透传，[0,1] clamp）。 */
+  alpha?: number;
+  /** #99 F2：relative 口径的本候选池最大 raw rel（门槛 minRel = alpha×topRel）。 */
+  topRel?: number;
 }
 
 /** R71-A2（2026-10-19）：结论层 rerank 语义门观测（shadow 记 would-be 决策）。
@@ -67,6 +87,17 @@ export interface RecallJournalConclusionRerankGate {
   dropped: number;
   topScore?: number;
   bypass?: "rerank-off" | "rerank-unavailable" | "breaker-open" | "rerank-failed";
+  /**
+   * #99 F3（2026-10-25）：local provider 原始 logit 经 sigmoid 归一 0..1 后对门槛
+   * （topScore 仍为 raw）；云 provider 原生 0..1 缺键（native）。
+   */
+  scoreScale?: "logit-sigmoid";
+  /** #99 F3：topScore 的归一化值（logit-sigmoid 时 sigmoid(topScore)；native 不出键）。 */
+  top01?: number;
+  /** #99 F3：生效门槛的归一化值（仅 logit-sigmoid 出键 = sigmoid(minScore)；native 不出键——native 刻度即 minScore 原值，无需归一化观测）。 */
+  threshold01?: number;
+  /** #99 F3：优雅降级归因——enforce 全员低于阈值不清零，保留原选择（降级旁路）。 */
+  degraded?: "all-below-minScore";
 }
 
 export interface RecallJournalGates {

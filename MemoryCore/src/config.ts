@@ -284,15 +284,10 @@ export interface RecallConfig {
      * halfLimit 结论层配额（v18 取证 §13 ③）。
      */
     minUniqRatio?: number;
-    /**
-     * P1（issue #2 词面匹配器过宽，2026-10-13）：textHit 万词面 token 剔除——batch
-     * 相对 IDF 门。token 命中候选占比 > 此值（0-1）视为万词面通用 token，从 textHit
-     * 匹配集剔除（sceneHit 不受影响）。undefined/0 = 关 = 逐位现状；>1 clamp 1。
-     * 背景（:152 注释自认）：任何 query 的 ≥2 字 token 都子串命中 → 通用词（"项目"
-     * "工作"）把无关注结论全部拽进注入层。门开启时 1 字 token 一并退出 textHit
-     * （Standards 终审 #5 声明）：单字词面匹配区分度本就近乎为零。
-     */
-    textHitMaxTokenRatio?: number;
+    // #99 F1（2026-10-25）：原 textHitMaxTokenRatio（issue #2 万词面 token 剔除门）退役——
+    // 候选集占比自指病灶：候选经 buildFtsQuery FTS 预筛天然含查询 token，占比恒≈1，
+    // 最贴题 token 反被剔（P3 结论层 0 行）。键三面退役（类型/解析/yaml），历史 yaml
+    // 残留此键被解析器静默忽略；万词面降权回归 idfWeighted 排序消歧（下键）。
     /**
      * 审查修补 I③（TTL 解耦）：幂等结论层缓存 TTL 毫秒。缺省（未配置）= 回落
      * sessionReuseTtlMs 保持现行为；显式 0 = 关（每次重组，不缓存）；负值 clamp 0。
@@ -305,18 +300,29 @@ export interface RecallConfig {
      */
     idfWeighted: boolean;
     /**
-     * R71-A1（2026-10-19）：work_fact 候选 bm25 预地板——raw relevance（=-FTS5 rank）
-     * 低于此值的候选在进选择器前剔除（rerank 不可用部署的唯一硬门）。缺省 undefined/0
-     * = off = 逐位现状。绝对门槛必须按语料定标（2026-10-19 语料拟 6.5，语料规模变化
-     * 需重定标），禁硬编码——纯分数统计，零词表。
+     * R71-A1（2026-10-19）：work_fact 候选 bm25 预地板（legacy 绝对分口径）——raw
+     * relevance（=-FTS5 rank）低于此值的候选在进选择器前剔除。缺省 undefined/0 = off。
+     * #99 F2（2026-10-25） legacy 化：BM25 分为语料相对值（非可比绝对值），库增长使绝对门
+     * 语义漂移（l1_archive 已 6444 行）；新部署用 minBm25RelRatio 相对门，本键保留作未迁移
+     * 部署兜底（行为逐位不变）；与 minBm25RelRatio 并存时相对门优先。
      */
     minBm25Rel?: number;
+    /**
+     * #99 F2（2026-10-25）：work_fact 候选 bm25 预地板相对化——门槛 = α×topRel
+     * （topRel=本候选池最大 raw rel），α∈[0,1] clamp。刻度无关（BM25 分为语料相对值，
+     * search-at-depth ch3-s2），库增长免重定标；α∈[0.3,0.5] 起步（票面，现值 0.4）。
+     * 与 minBm25Rel 并存时相对门优先；缺省 undefined/0 = off（legacy minBm25Rel 独立生效）。
+     */
+    minBm25RelRatio?: number;
     /**
      * R71-A2（2026-10-19）：结论层 rerank 语义门（主门）。mode 缺省 "shadow"
      * （shadow-first：只记录不过滤，journal gates.conclusionRerank 观测定标后切 enforce）；
      * "enforce" = score < minScore 的选中结论在幂等指纹缓存前剔除；"off" = 零开销。
      * minScore 按 provider 刻度定标（local logits 缺省 -1.0；经验层 -2.0 对结论层实测
      * 太松——设计 §2.2）。门 wiring 与经验层同源（resolveRerankWiring+rerankDeps）。
+     * #99 F3（2026-10-25）：local logit 在门边界 sigmoid 归一 0..1 后对门槛（minScore 仍按
+     * provider 原生刻度声明，门槛同变换 sigmoid(minScore)，单调等价）；enforce 全员低于
+     * 阈值时降级旁路不清零（journal degraded 归因）。
      */
     rerankGate?: { mode: "off" | "shadow" | "enforce"; minScore?: number };
   };
@@ -418,7 +424,12 @@ export interface RecallRerankConfig {
   timeoutMs: number;
   /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 12，clamp [1,100] 取整）。 */
   candidates: number;
-  /** 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。 */
+  /**
+   * 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
+   * #99 F3（2026-10-25）：本键恒按 provider 原生刻度声明（local=logit，云 provider=0..1）；
+   * 门边界 local logit 先 sigmoid 归一 0..1、门槛同变换 sigmoid(minScore)（单调等价）；
+   * 全员低于阈值不清零——回退未重排顺序（journal gates.rerank degraded 归因）。
+   */
   minScore: number;
   /** provider:"local"（Task 3 transformers.js 本地模型）参数。 */
   local: {
@@ -1870,21 +1881,25 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(cl, "minUniqRatio");
             return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
           })(),
-          // P1（issue #2）：textHit 万词面 token 剔除占比门（clamp [0,1]；缺省 undefined=关逐位现状）
-          textHitMaxTokenRatio: (() => {
-            const raw = num(cl, "textHitMaxTokenRatio");
-            return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
-          })(),
+          // #99 F1（2026-10-25）：textHitMaxTokenRatio 解析退役（键三面退役；历史 yaml 残留
+          // 此键被解析器静默忽略——候选集占比自指病灶，见 selectL2Conclusions 处注释）。
           cacheTtlMs: (() => {
             const raw = num(cl, "cacheTtlMs");
             return raw === undefined ? undefined : Math.max(0, Math.floor(raw));
           })(),
           // #53：L2 结论层 textHit IDF 加权排序（缺省 false=逐位现状）
           idfWeighted: bool(cl, "idfWeighted") ?? false,
-          // R71-A1（2026-10-19）：work_fact 候选 bm25 预地板（负值 clamp 0=off；缺省 undefined=off）
+          // R71-A1（2026-10-19）：work_fact 候选 bm25 预地板（负值 clamp 0=off；缺省 undefined=off；
+          // #99 F2 后为 legacy 绝对分口径，minBm25RelRatio 并存时相对门优先）
           minBm25Rel: (() => {
             const raw = num(cl, "minBm25Rel");
             return raw === undefined ? undefined : Math.max(0, raw);
+          })(),
+          // #99 F2（2026-10-25）：bm25 地板相对化 α（clamp [0,1]；缺省 undefined=off；
+          // 门槛 = α×本候选池最大 raw rel，刻度无关免重定标）
+          minBm25RelRatio: (() => {
+            const raw = num(cl, "minBm25RelRatio");
+            return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
           })(),
           // R71-A2（2026-10-19）：结论层 rerank 门——mode 非法值回落 "shadow"（shadow-first；
           // minScore 非有限回落 undefined=运行期取 -1.0 缺省）

@@ -48,12 +48,11 @@ export interface L2MatchInputs {
    */
   minUniqRatio?: number;
   /**
-   * P1（issue #2 词面匹配器过宽，2026-10-13）：textHit 万词面 token 剔除——batch
-   * 相对 IDF 门。token 命中候选占比 > 此值（0-1）= 万词面通用 token，从 textHit
-   * 匹配集剔除（sceneHit 不受影响）。undefined/0 = 关 = 逐位现状。纯函数、确定性：
-   * IDF 分母 = 本轮传入的候选集（已在调用点按 query 收窄），非全库统计。
+   * #99 F1（2026-10-25）：原 textHitMaxTokenRatio（issue #2 万词面 token 剔除门）退役——
+   * 候选集占比自指病灶：候选经 buildFtsQuery FTS 预筛天然含查询 token，占比恒≈1，
+   * 最贴题 token 反被剔（P3 结论层 0 行）。字段三面退役（本接口/config 解析/yaml），
+   * 万词面降权回归 idfWeighted 排序消歧（见下）。
    */
-  textHitMaxTokenRatio?: number;
   /**
    * #53（2026-10-19）：L2 结论层 textHit IDF 加权排序（缺省 off = 逐位现状）。
    * true 时同 source 层内按 batch 相对 IDF 分（conclusionIdfScores，对 matchTokens
@@ -83,8 +82,9 @@ function textHit(content: string, ftsTokens: readonly string[]): boolean {
 
 /**
  * #53（2026-10-19）：L2 textHit 升级 batch 相对 IDF 加权计分——token 命中候选占比越低
- * （越稀有）权重越高：idf(t) = ln(1 + N / (1 + df(t)))。df 分母 = 本轮传入候选集（与
- * P1 万词面剔除门同一 batch 相对语义，非全库统计）；1 字 token 不计分（与 textHit
+ * （越稀有）权重越高：idf(t) = ln(1 + N / (1 + df(t)))。df 分母 = 本轮传入候选集
+ * （batch 相对语义：分母=本轮候选集，非全库统计；#99 F1 后为万词面降权的唯一机制——
+ * 排序消歧而非剔除）；1 字 token 不计分（与 textHit
  * 匹配集同门槛）；sceneHit 不计分（加权只作用于 textHit 通道）。确定性纯函数。
  */
 export function conclusionIdfScores(
@@ -148,27 +148,13 @@ export function selectL2Conclusions(
   if (!candidates || candidates.length === 0) return [];
   if (!(limit > 0)) return [];
   const tokens = inputs?.ftsTokens ?? [];
-  // P1（issue #2 词面匹配器过宽）：batch 相对 IDF——token 命中候选占比 > 阈值的
-  // 万词面 token（"项目""工作"级通用词）不参与 textHit 判定（sceneHit 不受影响）。
-  // 未配置/0 = 关 = 逐位现状（matchTokens 即原 tokens，行为逐位一致）。
-  // 对抗审查修复（#5 major）：work_fact 候选经 buildFtsQuery(query) FTS 预筛，候选集
-  // 内 token 占比天然≈1——若全部 token 都被判为万词面（过滤后为空），回落原 token
-  // 集（保持 FTS 预筛通道现状），避免该通道被门静默清空。
-  const ratioGate = inputs?.textHitMaxTokenRatio;
-  let matchTokens = tokens;
-  if (ratioGate != null && ratioGate > 0 && candidates.length > 0) {
-    const lowerCandidates = candidates.map((c) =>
-      typeof c?.content === "string" ? c.content.toLowerCase() : "",
-    );
-    const isCommon = (t: string): boolean => {
-      const lt = t.toLowerCase();
-      let hits = 0;
-      for (const lc of lowerCandidates) if (lc.includes(lt)) hits++;
-      return hits / candidates.length > ratioGate;
-    };
-    const gated = tokens.filter((t) => t.length >= 2 && !isCommon(t));
-    if (gated.length > 0) matchTokens = gated;
-  }
+  // #99 F1（2026-10-25）：候选集占比万词面剔除退役（P3 自指病灶）——旧 ratioGate 用
+  // 「token 命中候选占比」判水词，而候选集经 buildFtsQuery(query) FTS 预筛天然含查询
+  // token，占比恒≈1：最贴题的 token 反被剔（「提示」2/2=100%>0.5 → 结论层 0 行；
+  // 旧兜底只救「全部 token 被剔」，部分剔除不救）。对齐 ES 7.3 弃用 common-terms 的
+  // 方向：FTS 预筛只管召回，BM25 IDF 自行降权（#53 idfWeighted 同层重排，稀有 token
+  // 命中者先于万词面命中者）。matchTokens 恒 = 原 tokens（水词不再参与匹配集裁剪）。
+  const matchTokens = tokens;
   const rankOf = (c: L2ConclusionCandidate): number => (c.source === "work_fact" ? 0 : 1);
   // #53：IDF 加权（缺省 off = 逐位现状——不额外计算分数）
   const idfOn = inputs?.idfWeighted === true;

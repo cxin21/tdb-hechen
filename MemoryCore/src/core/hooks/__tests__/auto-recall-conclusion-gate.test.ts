@@ -239,6 +239,157 @@ describe("R71-A1 · work_fact 候选 bm25 rel 预地板", () => {
   });
 });
 
+// ═══════════════ #99（2026-10-25）：F1 剔词退役 / F2 地板相对化 / F3 结论门优雅降级 ═══════════════
+
+describe("#99 F1·integration：legacy textHitMaxTokenRatio 键退役（候选集自指病灶根治）", () => {
+  it("①config 携带 legacy 键（生产 yaml 迁移前形态）→ 100% 命中 token 不再被剔，结论层 2 行", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f1-"));
+    try {
+      // P3 同构：两 work_fact 候选都含核心 token（KW 扮演「提示」，2/2=100%>0.5 旧门必剔）；
+      // 辅助 token（铅笔）不在任何候选 → 旧门 matchTokens 只剩铅笔 → 结论层 0 行（RED 口径）。
+      const rows = [wfRow("wf-1", "ConclA", undefined), wfRow("wf-2", "ConclB", undefined), ...episodicRows(2)];
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(rows), KW + " 铅笔", makeCfg({
+        conclusionLayer: { textHitMaxTokenRatio: 0.5 },
+      })));
+      expect(res.conclusionCount).toBe(2);
+      expect(res.memoryLines.some((l) => l.includes("[结论]") && l.includes("ConclA"))).toBe(true);
+      expect(res.memoryLines.some((l) => l.includes("[结论]") && l.includes("ConclB"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#99 F2 · conclusionBm25 地板相对化（rel ≥ α×topRel）", () => {
+  const ratioRows = () => [
+    wfRow("wf-1", "ConclA", -10),
+    wfRow("wf-2", "ConclB", -8),
+    wfRow("wf-3", "ConclC", -5),
+    wfRow("wf-4", "ConclD", -3),
+    ...episodicRows(2),
+  ];
+
+  it("①minBm25RelRatio：topRel=10 → 门=α×topRel=4，rel 3 剔除，journal 记 mode/alpha/topRel", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f2-"));
+    try {
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(ratioRows()), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { minBm25RelRatio: 0.4 },
+      })));
+      // 保留 rel 10/8/5（≥4）、剔 rel 3；选择器 halfLimit=2 → 注入 ConclA/ConclB
+      expect(res.conclusionCount).toBe(2);
+      expect(res.memoryLines.some((l) => l.includes("[结论]") && l.includes("ConclD"))).toBe(false);
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionBm25 as Record<string, unknown> | undefined;
+      expect(gate).toBeDefined();
+      expect(gate?.mode).toBe("relative");
+      expect(gate?.alpha).toBe(0.4);
+      expect(gate?.topRel).toBe(10);
+      expect(gate?.minRel).toBe(4);
+      expect(gate?.kept).toBe(3);
+      expect(gate?.dropped).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②与 legacy minBm25Rel 并存 → 相对门优先（absolute 6.5 只留 2 条，相对门留 3 条）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f2b-"));
+    try {
+      await performLayeredRecall(paramsFor(dir, fallbackStore(ratioRows()), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { minBm25Rel: 6.5, minBm25RelRatio: 0.4 },
+      })));
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionBm25 as Record<string, unknown> | undefined;
+      expect(gate?.mode).toBe("relative");
+      expect(gate?.kept).toBe(3);
+      expect(gate?.dropped).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("③legacy 单独配置 → absolute 行为逐位不变（向后兼容回归锁）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f2c-"));
+    try {
+      await performLayeredRecall(paramsFor(dir, fallbackStore(ratioRows()), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { minBm25Rel: 6.5 },
+      })));
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionBm25 as Record<string, unknown> | undefined;
+      expect(gate?.mode).toBe("absolute");
+      expect(gate?.minRel).toBe(6.5);
+      expect(gate?.kept).toBe(2);
+      expect(gate?.dropped).toBe(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#99 F3 · 结论门 enforce 全员低于阈值优雅降级（不清零）", () => {
+  it("①两结论全 < minScore → 保留原选择（旧行为全杀=0 行），journal degraded 归因", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f3c-"));
+    try {
+      const rows = [wfRow("wf-1", "ConclA", -10), wfRow("wf-2", "ConclB", -9), ...episodicRows(2)];
+      const fake = markerReranker([["ConclA", -2.82], ["ConclB", -3.5]]);
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(rows), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { rerankGate: { mode: "enforce", minScore: -1 } },
+      }, { ...SILICONFLOW_RERANK }), { deps: { reranker: fake.reranker } }));
+      expect(res.conclusionCount).toBe(2);
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionRerank as Record<string, unknown> | undefined;
+      expect(gate?.mode).toBe("enforce");
+      expect(gate?.degraded).toBe("all-below-minScore");
+      expect(gate?.kept).toBe(2);
+      expect(gate?.dropped).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②部分过线 → 照常剔除（降级只在全员低置信触发，宁缺毋滥语义不变）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f3c2-"));
+    try {
+      const rows = [wfRow("wf-1", "ConclA", -10), wfRow("wf-2", "ConclB", -9), ...episodicRows(2)];
+      const fake = markerReranker([["ConclA", -0.5], ["ConclB", -3.5]]);
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(rows), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { rerankGate: { mode: "enforce", minScore: -1 } },
+      }, { ...SILICONFLOW_RERANK }), { deps: { reranker: fake.reranker } }));
+      expect(res.conclusionCount).toBe(1);
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionRerank as Record<string, unknown> | undefined;
+      expect(gate?.degraded).toBeUndefined();
+      expect(gate?.kept).toBe(1);
+      expect(gate?.dropped).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("③local provider logit → sigmoid 归一对门槛（与 raw 刻度单调等价锁定）+ journal 归一化字段", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "i99-f3c3-"));
+    try {
+      const rows = [wfRow("wf-1", "ConclA", -10), wfRow("wf-2", "ConclB", -9), ...episodicRows(2)];
+      const fake = markerReranker([["ConclA", -0.5], ["ConclB", -3.5]]);
+      const res = await performLayeredRecall(paramsFor(dir, fallbackStore(rows), KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { rerankGate: { mode: "enforce", minScore: -1 } },
+      }, { enabled: true, provider: "local" }), { deps: { reranker: fake.reranker } }));
+      // σ(−0.5)=0.3775 ≥ σ(−1)=0.2689 过线；σ(−3.5)=0.0294 < 门槛 剔除——与 raw 比较（−0.5≥−1 过、−3.5<−1 剔）逐位一致
+      expect(res.conclusionCount).toBe(1);
+      const entry = readJournal(dir).at(-1)!;
+      const gate = (entry.gates as Record<string, unknown> | undefined)?.conclusionRerank as Record<string, unknown> | undefined;
+      expect(gate?.scoreScale).toBe("logit-sigmoid");
+      expect(gate?.threshold01).toBeCloseTo(1 / (1 + Math.exp(1)), 5);
+      expect(gate?.top01).toBeCloseTo(1 / (1 + Math.exp(0.5)), 5);
+      expect(gate?.topScore).toBe(-0.5); // raw 保留
+      expect(gate?.kept).toBe(1);
+      expect(gate?.dropped).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ═══════════════ #95：gates.conclusionBm25 kept 按来源拆分（work_fact vs scene_block）═══════════════
 
 /**

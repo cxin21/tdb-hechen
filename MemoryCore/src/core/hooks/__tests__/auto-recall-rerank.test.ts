@@ -411,6 +411,92 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
     }
   });
 
+  // ═══════════════ #99 F3（2026-10-25）：local logit 刻度校准化 + 全员低于阈值优雅降级 ═══════════════
+
+  describe("#99 F3 · local rerank sigmoid 归一 + all-below 降级（不清零）", () => {
+    const LOCAL_RERANK = { enabled: true, provider: "local", minScore: -1.0 };
+
+    it("①全员低于阈值 → 回退未重排顺序注入（P3 病灶：旧行为全杀=0 经验行），journal degraded 归因 + 归一化刻度字段", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-i99-"));
+      try {
+        const rows = episodicRows(5);
+        const fake = markerTableReranker([
+          ["Marker1", -2.82],
+          ["Marker2", -3.5],
+          ["Marker3", -4],
+          ["Marker4", -5],
+          ["Marker5", -6],
+        ]);
+        const res = await performLayeredRecall(
+          paramsFor(dir, fallbackStore(rows), `${KW} i99降级探针`, makeCfg({}, { ...LOCAL_RERANK }), { reranker: fake.reranker }),
+        );
+        // 降级 = 原序注入（与 null/throw/熔断同族「原序注入」语义），预算帽内不清零
+        expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
+        const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
+        expect(gate.degraded).toBe("all-below-minScore");
+        expect(gate.scoreScale).toBe("logit-sigmoid");
+        expect(gate.topScore).toBe(-2.82); // raw 保留（#96 取证口径连续）
+        expect(gate.top01).toBeCloseTo(1 / (1 + Math.exp(2.82)), 5);
+        expect(gate.threshold01).toBeCloseTo(1 / (1 + Math.exp(1)), 5);
+        expect(gate.kept).toBe(5);
+        expect(gate.dropped).toBe(0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("②部分过线 → 过滤语义与原始 logit 刻度逐位一致（sigmoid 单调等价锁定），无 degraded", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-i99b-"));
+      try {
+        const rows = episodicRows(5);
+        const fake = markerTableReranker([
+          ["Marker1", -0.5],
+          ["Marker2", -3],
+          ["Marker3", 2],
+          ["Marker4", -1.2],
+          ["Marker5", -0.9],
+        ]);
+        const res = await performLayeredRecall(
+          paramsFor(dir, fallbackStore(rows), `${KW} i99等价探针`, makeCfg({}, { ...LOCAL_RERANK }), { reranker: fake.reranker }),
+        );
+        // sigmoid 单调：-0.5/2/-0.9 过线（0.3775/0.8808/0.2891 ≥ 0.2689），-3/-1.2 不过（0.0474/0.2315）
+        expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker5"]);
+        const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
+        expect(gate.degraded).toBeUndefined();
+        expect(gate.kept).toBe(3);
+        expect(gate.dropped).toBe(2);
+        expect(gate.scoreScale).toBe("logit-sigmoid");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("③siliconflow 原生 0..1 刻度不归一（scoreScale 缺席 = native，行为逐位不变）", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-i99c-"));
+      try {
+        const rows = episodicRows(5);
+        const fake = markerTableReranker([
+          ["Marker1", 5],
+          ["Marker2", 9],
+          ["Marker3", -5],
+          ["Marker4", 2],
+          ["Marker5", -1],
+        ]);
+        const res = await performLayeredRecall(
+          paramsFor(dir, fallbackStore(rows), `${KW} i99native探针`, makeCfg({}, { ...SILICONFLOW_RERANK, minScore: 0 }), { reranker: fake.reranker }),
+        );
+        expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4"]);
+        const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
+        expect(gate.scoreScale).toBeUndefined();
+        expect(gate.top01).toBeUndefined();
+        expect(gate.threshold01).toBeUndefined();
+        expect(gate.kept).toBe(3);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("⑤熔断：3 连败 → 60s 窗口内零 provider 调用（原序注入），窗口过后恢复探测", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-breaker-"));
     try {

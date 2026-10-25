@@ -540,11 +540,33 @@ async function applyRecallRerank(
     clean.push({ index: r.index, score: r.score });
   }
   clean.sort((a, b) => b.score - a.score);
-  const rankedPass = clean.filter((r) => r.score >= wiring.minScore);
-  const finalIdxs: number[] = rankedPass.map((r) => r.index);
-  const rankedSet = new Set(clean.map((r) => r.index));
-  for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
-    if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
+  // ── #99 F3（2026-10-25）：rerank 刻度校准化 + 全员低于阈值优雅降级 ──
+  // local provider 输出原始 logit（bge 系 rank-correct 非校准——ZeroEntropy score-calibration
+  // 结论：未校准分数对拍门槛必翻车，P3 实证 topScore −2.82 < −1.0 全杀 12 条）→ sigmoid
+  // 归一 0..1 后再对门槛。配置 minScore 仍按 provider 原生刻度声明（local=logit），门槛同
+  // 变换 sigmoid(minScore)——单调等价，部分过线场景接受/拒绝边界与旧逐位一致
+  // （sigmoid(−1.0)≈0.269，换算出处=生产 config-override rerank.minScore=−1.0 logit 刻度）。
+  // journal topScore 恒记 raw（#96 取证口径连续），top01/threshold01/scoreScale 附加归一化观测；
+  // 云 provider（siliconflow/dashscope）原生 0..1 相关度不归一（scoreScale 键缺席 = native）。
+  const logitScale = wiring.provider === "local";
+  const sigmoid01 = (s: number): number => 1 / (1 + Math.exp(-s));
+  const score01Of = (s: number): number => (logitScale ? sigmoid01(s) : s);
+  const threshold01 = logitScale ? sigmoid01(wiring.minScore) : wiring.minScore;
+  const rankedPass = clean.filter((r) => score01Of(r.score) >= threshold01);
+  let finalIdxs: number[];
+  let degraded: "all-below-minScore" | undefined;
+  if (rankedPass.length === 0 && clean.length > 0) {
+    // F3 优雅降级：全员低于阈值不清零（P3 病灶：经验层 0 行）——回退未重排顺序
+    // （与 null/throw/熔断同族「原序注入」语义），journal degraded 归因；预算帽照常生效。
+    degraded = "all-below-minScore";
+    finalIdxs = lines.map((_, i) => i);
+    logger?.debug?.(`${TAG} [rerank] 全员低于阈值（topScore=${clean[0].score} < minScore=${wiring.minScore}）→ 降级原序注入`);
+  } else {
+    finalIdxs = rankedPass.map((r) => r.index);
+    const rankedSet = new Set(clean.map((r) => r.index));
+    for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
+      if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
+    }
   }
   const final = finalIdxs.slice(0, Math.max(cap, 0));
   searchResult.gates = {
@@ -555,6 +577,14 @@ async function applyRecallRerank(
       kept: final.length,
       dropped: lines.length - final.length,
       ...(clean.length > 0 ? { topScore: clean[0].score } : {}),
+      ...(logitScale
+        ? {
+            scoreScale: "logit-sigmoid" as const,
+            threshold01,
+            ...(clean.length > 0 ? { top01: sigmoid01(clean[0].score) } : {}),
+          }
+        : {}),
+      ...(degraded ? { degraded } : {}),
     },
   };
   searchResult.lines = final.map((i) => lines[i]);
@@ -749,39 +779,63 @@ export async function performLayeredRecall(params: {
         r7Candidates.push({ sceneName: e.filename.replace(/\.md$/i, ""), content: e.summary, source: "scene_block" });
       }
       // ── R71-A1（2026-10-19）：work_fact 候选 bm25 rel 预地板（纯分数统计，零词表）──
-      // raw rel（=-FTS5 rank）低于 conclusionLayer.minBm25Rel 的候选在选择器前剔除；
-      // rerank 不可用部署的唯一硬门（A2 shadow 观测期）。undefined/0 = off = 逐位现状；
-      // bm25Rel 缺席的候选（scene_block / V2-3 放宽通道 / 后端未提供 rank）豁免——
-      // 宁缺毋滥不误杀。gate 观测（minRel/kept/dropped + #95 来源拆分）入 journal。
+      // #99 F2（2026-10-25）：绝对地板相对化——BM25 分数是语料相对值（corpus statistics，
+      // 非可比绝对值，search-at-depth ch3-s2），库增长会让绝对门语义漂移（l1_archive 已
+      // 6444 行）。相对门（优先）：minBm25RelRatio=α（[0,1] clamp），门槛 = α×topRel
+      // （topRel=本候选池最大 raw rel）；α∈[0.3,0.5] 起步（票面）。legacy minBm25Rel 绝对分
+      // 仍支持（未迁移部署逐位现状）；两键并存时相对门优先。kept-count 上限逻辑不动；
+      // bm25Rel 缺席候选（scene_block / V2-3 放宽通道 / 后端未提供 rank）豁免不变——
+      // 宁缺毋滥不误杀。gate 观测（minRel/kept/dropped + #95 来源拆分 + mode/alpha/topRel）入 journal。
       // #95（2026-10-25）：kept 语义 = 预选择候选总数（wf 过线 + sb 豁免），非 FTS 池大小——
       // kept/dropped 按来源拆分 keptWorkFact/keptSceneBlock（纯观测，筛选行为零变化）。
+      const r71MinBm25RelRatio = cfg.recall?.conclusionLayer?.minBm25RelRatio;
       const r71MinBm25Rel = cfg.recall?.conclusionLayer?.minBm25Rel;
-      if (typeof r71MinBm25Rel === "number" && r71MinBm25Rel > 0 && r7Candidates.some((c) => c.bm25Rel !== undefined)) {
+      const r71RatioOn = typeof r71MinBm25RelRatio === "number" && r71MinBm25RelRatio > 0;
+      const r71AbsOn = typeof r71MinBm25Rel === "number" && r71MinBm25Rel > 0;
+      if ((r71RatioOn || r71AbsOn) && r7Candidates.some((c) => c.bm25Rel !== undefined)) {
+        let r71FloorThreshold: number;
+        let r71FloorMode: "relative" | "absolute";
+        let r71TopRel: number | undefined;
+        if (r71RatioOn) {
+          r71TopRel = 0;
+          for (const c of r7Candidates) {
+            if (c.bm25Rel !== undefined && c.bm25Rel > r71TopRel) r71TopRel = c.bm25Rel;
+          }
+          r71FloorThreshold = r71MinBm25RelRatio! * r71TopRel;
+          r71FloorMode = "relative";
+        } else {
+          r71FloorThreshold = r71MinBm25Rel!;
+          r71FloorMode = "absolute";
+        }
         const r71BeforeFloor = r7Candidates.length;
         for (let i = r7Candidates.length - 1; i >= 0; i--) {
           const rel = r7Candidates[i].bm25Rel;
-          if (rel !== undefined && rel < r71MinBm25Rel) r7Candidates.splice(i, 1);
+          if (rel !== undefined && rel < r71FloorThreshold) r7Candidates.splice(i, 1);
         }
         // #95（2026-10-25）：地板后按来源拆分计数（单遍按 source 累计——来源全集遍历，
         // 新增第三来源时拆分和 < kept 在 journal 可见，而非静默漏计）
         const r71KeptBySource: Record<string, number> = {};
         for (const c of r7Candidates) r71KeptBySource[c.source] = (r71KeptBySource[c.source] ?? 0) + 1;
         r71Bm25Gate = {
-          minRel: r71MinBm25Rel,
+          minRel: r71FloorThreshold,
           kept: r7Candidates.length,
           dropped: r71BeforeFloor - r7Candidates.length,
           // 不变式（当前仅两来源）：keptWorkFact + keptSceneBlock === kept（单测锁定）
           keptWorkFact: r71KeptBySource.work_fact ?? 0,
           keptSceneBlock: r71KeptBySource.scene_block ?? 0,
+          // #99 F2：地板口径（relative=α×topRel / absolute=legacy 绝对分）
+          mode: r71FloorMode,
+          ...(r71FloorMode === "relative" ? { alpha: r71MinBm25RelRatio, topRel: r71TopRel } : {}),
         };
-        logger?.debug?.(`${TAG} [layered] R71-A1 bm25 floor: dropped=${r71Bm25Gate.dropped} kept=${r71Bm25Gate.kept} (minRel=${r71MinBm25Rel})`);
+        logger?.debug?.(`${TAG} [layered] R71-A1 bm25 floor(${r71FloorMode}): dropped=${r71Bm25Gate.dropped} kept=${r71Bm25Gate.kept} (minRel=${r71FloorThreshold}${r71TopRel !== undefined ? `, topRel=${r71TopRel}` : ""})`);
       }
       // v18-c：minUniqRatio 透传（conclusionLayer.minUniqRatio；undefined/0 = 关逐位现状）
-      // P1（issue #2）：textHitMaxTokenRatio 万词面 token 剔除门透传（同族，缺省 undefined=关）
+      // #99 F1（2026-10-25）：textHitMaxTokenRatio 万词面剔除门退役——候选经 FTS 预筛天然
+      // 含查询 token，候选集占比自指（恒≈1）致最贴题 token 反被剔（P3 结论层 0 行）。
+      // 万词面降权回归 BM25 IDF 单一源（#53 idfWeighted 排序消歧），不再裁剪匹配集。
       r7Conclusions = selectL2Conclusions(r7CleanQuery, r7Candidates, {
         ftsTokens: r7FtsTokens,
         minUniqRatio: cfg.recall?.conclusionLayer?.minUniqRatio,
-        textHitMaxTokenRatio: cfg.recall?.conclusionLayer?.textHitMaxTokenRatio,
         // #53：textHit IDF 加权排序透传（conclusionLayer.idfWeighted；缺省 false=逐位现状）
         idfWeighted: cfg.recall?.conclusionLayer?.idfWeighted === true,
       }, r7HalfLimit);
@@ -887,7 +941,25 @@ export async function performLayeredRecall(params: {
               if (rr.score > r71GateTop) r71GateTop = rr.score;
             }
             const r71GateMin = typeof r71GateCfg?.minScore === "number" && Number.isFinite(r71GateCfg.minScore) ? r71GateCfg.minScore : -1;
-            const r71WouldDrop = r7Conclusions.reduce((acc, _c, i) => acc + ((r71GateScoreOf.get(i) ?? Infinity) < r71GateMin ? 1 : 0), 0);
+            // #99 F3（2026-10-25）：与经验层 applyRecallRerank 同款刻度校准——local provider
+            // 原始 logit 先 sigmoid 归一 0..1 后对门槛（门槛同变换 sigmoid(minScore)，单调等价
+            // 不改接受/拒绝边界）；未覆盖候选恒 Infinity 不杀（垫尾语义不变）。journal
+            // scoreScale/top01/threshold01 附加归一化观测（topScore 仍记 raw，取证口径连续）。
+            const r71GateLogitScale = r71GateWiring.provider === "local";
+            const r71GateSigmoid01 = (s: number): number => 1 / (1 + Math.exp(-s));
+            const r71GateThreshold01 = r71GateLogitScale ? r71GateSigmoid01(r71GateMin) : r71GateMin;
+            const r71GateScore01Of = (i: number): number => {
+              const raw = r71GateScoreOf.get(i);
+              return raw === undefined ? Infinity : r71GateLogitScale ? r71GateSigmoid01(raw) : raw;
+            };
+            const r71WouldDrop = r7Conclusions.reduce((acc, _c, i) => acc + (r71GateScore01Of(i) < r71GateThreshold01 ? 1 : 0), 0);
+            const r71GateScaleFields = r71GateLogitScale
+              ? {
+                  scoreScale: "logit-sigmoid" as const,
+                  threshold01: r71GateThreshold01,
+                  ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { top01: r71GateSigmoid01(r71GateTop) } : {}),
+                }
+              : {};
             r71ConclusionRerankGate = {
               mode: r71GateMode,
               provider: r71GateWiring.provider,
@@ -895,10 +967,28 @@ export async function performLayeredRecall(params: {
               kept: r7Conclusions.length - r71WouldDrop,
               dropped: r71WouldDrop,
               ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { topScore: r71GateTop } : {}),
+              ...r71GateScaleFields,
             };
             if (r71GateMode === "enforce" && r71WouldDrop > 0) {
-              r7Conclusions = r7Conclusions.filter((_c, i) => (r71GateScoreOf.get(i) ?? Infinity) >= r71GateMin);
-              logger?.debug?.(`${TAG} [rerank-gate] enforce: dropped=${r71WouldDrop} kept=${r7Conclusions.length} (minScore=${r71GateMin})`);
+              const r71Kept = r7Conclusions.filter((_c, i) => r71GateScore01Of(i) >= r71GateThreshold01);
+              if (r71Kept.length === 0 && r71GateScoreOf.size > 0) {
+                // #99 F3（2026-10-25）：全员低于阈值不清零——结论门降级旁路保留原选择
+                // （与经验层 applyRecallRerank all-below 降级同族语义），journal degraded 归因。
+                r71ConclusionRerankGate = {
+                  mode: r71GateMode,
+                  provider: r71GateWiring.provider,
+                  ms: r71GateMs,
+                  kept: r7Conclusions.length,
+                  dropped: 0,
+                  ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { topScore: r71GateTop } : {}),
+                  ...r71GateScaleFields,
+                  degraded: "all-below-minScore",
+                };
+                logger?.debug?.(`${TAG} [rerank-gate] enforce all-below → 降级旁路保留 ${r7Conclusions.length} 条结论 (minScore=${r71GateMin})`);
+              } else {
+                r7Conclusions = r71Kept;
+                logger?.debug?.(`${TAG} [rerank-gate] enforce: dropped=${r71WouldDrop} kept=${r7Conclusions.length} (minScore=${r71GateMin})`);
+              }
             } else if (r71GateMode === "shadow" && r71WouldDrop > 0) {
               logger?.debug?.(`${TAG} [rerank-gate] shadow: would-drop=${r71WouldDrop}/${r7Conclusions.length} (minScore=${r71GateMin})`);
             }
