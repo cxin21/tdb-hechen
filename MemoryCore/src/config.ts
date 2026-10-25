@@ -708,6 +708,8 @@ export interface MemoryLifecycleConfig {
       recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
       /** #91 K 阀（2026-10-24）：源头硬闸缺省 off=逐位现状；窗口内该租户 self_identity 新落库 >= maxNew → push 支路跳过。maxNew 标定 12、窗口缺省 24h。 */
       rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
+      /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门缺省 off=逐位现状；N₂/T₂ 缺省 4/72、矛盾线 0.60（宁拦勿收）、重复线 0.75（单一源标准）。生产启用由部署面显式写 yaml（人格写入终审权变更的最后一道闸）。 */
+      autoAdopt?: { enabled?: boolean; votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
     };
   };
 }
@@ -1635,7 +1637,22 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           ...(rlWin === undefined ? {} : { windowHours: rlWin }),
         };
         const hasRl = Object.keys(rl).length > 0;
-        if (sigEnabled === undefined && threshold === undefined && supEnabled === undefined && supMax === undefined && !hasRec && !hasRl) {
+        // #92 stage 2（2026-10-25 拍板四项）：autoAdopt 子键条件材料化（同 rateLimit 形态；不写=不带键=缺省 off 逐位）。
+        const aaGroup = obj(sigGroup, "autoAdopt");
+        const aaEnabled = bool(aaGroup, "enabled");
+        const aaVotes = num(aaGroup, "votes");
+        const aaSpan = num(aaGroup, "spanHours");
+        const aaContra = num(aaGroup, "contradictionThreshold");
+        const aaDup = num(aaGroup, "dupThreshold");
+        const aa = {
+          ...(aaEnabled === undefined ? {} : { enabled: aaEnabled }),
+          ...(aaVotes === undefined ? {} : { votes: aaVotes }),
+          ...(aaSpan === undefined ? {} : { spanHours: aaSpan }),
+          ...(aaContra === undefined ? {} : { contradictionThreshold: aaContra }),
+          ...(aaDup === undefined ? {} : { dupThreshold: aaDup }),
+        };
+        const hasAa = Object.keys(aa).length > 0;
+        if (sigEnabled === undefined && threshold === undefined && supEnabled === undefined && supMax === undefined && !hasRec && !hasRl && !hasAa) {
           return undefined;
         }
         return {
@@ -1646,6 +1663,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             : { suppression: { ...(supEnabled === undefined ? {} : { enabled: supEnabled }), ...(supMax === undefined ? {} : { maxPending: supMax }) } }),
           ...(hasRec ? { recurrence: rec } : {}),
           ...(hasRl ? { rateLimit: rl } : {}),
+          ...(hasAa ? { autoAdopt: aa } : {}),
         };
       })(),
     },

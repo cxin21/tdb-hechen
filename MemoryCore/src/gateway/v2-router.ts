@@ -2201,6 +2201,21 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
   if (!store.decidePendingCore) return errorEnvelope(503, "core_pending not supported", requestId);
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
 
+  // ── #92 stage 2（2026-10-25 拍板四项）：auto_adopted 行的 rejected = 审计回滚（快照+版本守卫）──
+  // 语义：reject 打在 auto_adopted 行上不是普通裁决，而是「人转审计员」的回滚动作——
+  // rollbackAutoAdoptedPending 在 store 侧做版本守卫（槽 version ≠ 采纳时 post 版本 → 拒绝 409
+  // 提示手工处理），恢复 prev_slot_content（或删除采纳时创建的槽行）+ state='rejected'，零删除。
+  // 面板零 API 变更（reject 按钮即回滚入口）；getPendingCoreState 缺实现（旧 store）→ 旁路走常规裁决逐位。
+  if (b.decision === "rejected" && typeof (store as { getPendingCoreState?: unknown }).getPendingCoreState === "function") {
+    const rowState = await Promise.resolve((store as { getPendingCoreState: (pid: string) => unknown }).getPendingCoreState(b.pending_id));
+    if (rowState === "auto_adopted") {
+      if (typeof (store as { rollbackAutoAdoptedPending?: unknown }).rollbackAutoAdoptedPending !== "function") return errorEnvelope(503, "auto-adopt rollback not supported by store", requestId);
+      const rb = (await Promise.resolve((store as { rollbackAutoAdoptedPending: (pid: string, t?: unknown) => unknown }).rollbackAutoAdoptedPending(b.pending_id, tenant))) as { restored?: boolean; reason?: string } | null;
+      if (!rb?.restored) return errorEnvelope(409, `auto-adopt rollback refused: ${rb?.reason ?? "unknown"} — slot changed since auto-adopt; handle manually`, requestId);
+      return successEnvelope<{ pending_id: string; decision: string; slot: string; rolled_back: boolean }>({ pending_id: b.pending_id, decision: "rejected", slot: "self_identity", rolled_back: true }, requestId);
+    }
+  }
+
   // ── #12 T6：同名冲突预检（在任何裁决写之前）─────────────────────────────────────
   // 语义：core_value 采纳遇同 label active theme 锚时缺省不静默覆盖（旧行为会新建一条
   // 0.5 的同 label 锚、同 label 双行并存/覆盖语义不明）。三分流：

@@ -798,6 +798,15 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *  口径）；created_at >= now−windowHours（ISO 字典序比较）。tenant 传值=逐字段精确限定（拍级调用方
    *  传真实三元组）；缺实现=调用方旁路（宽容降级=现状逐位）。 */
   countSelfIdentityRecent?(tenant?: { teamId?: string; userId?: string; agentId?: string }, windowHours?: number): MaybePromise<number>;
+  /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门可选面（缺实现 → 门整体旁路=现状逐位）。
+   *  候选=state='pending' ∧ recurrence ready（count≥votesN ∧ 跨度≥spanHours，口径与 sweep 同构）；
+   *  tenant 缺省=全租户（#91 R1 先例），行带租户三元组供调度分组；显式传值=逐字段精确过滤。
+   *  auto_adopted 落账带审计快照（prev 内容/版本/存在性、post 版本、门参数）——回滚（rejected 打在
+   *  auto_adopted 行）按 post 版本守卫恢复 prev_slot_content（或删除采纳时创建的槽行），零删除。 */
+  listReadySelfIdentityPending?(tenant?: CoreTenant, opts?: { votesN?: number; spanHours?: number }): MaybePromise<Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }>>;
+  decidePendingCoreAuto?(pendingId: string, tenant?: CoreTenant, audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } }): MaybePromise<boolean>;
+  rollbackAutoAdoptedPending?(pendingId: string, tenant?: CoreTenant): MaybePromise<{ restored: boolean; reason?: string }>;
+  getPendingCoreState?(pendingId: string): MaybePromise<string | null>;
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。

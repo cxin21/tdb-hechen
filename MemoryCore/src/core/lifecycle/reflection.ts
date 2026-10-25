@@ -72,6 +72,8 @@ export interface ReflectionConfig {
     recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
     /** #91 K 阀（2026-10-24 拍板「剩余两项」）：源头硬闸缺省 off=逐位现状；窗口内该租户 self_identity 新落库 >= maxNew → push 支路跳过落库。maxNew 标定 12（人工带宽口径）、窗口缺省 24h。 */
     rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
+    /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门缺省 off=逐位现状（晋升只到 ready，人审不变）。votes/spanHours=N₂/T₂ 缺省 4/72（比 ready 严一票，跨 3 天复现才够格）；contradictionThreshold=同主题 rejected 矛盾线缺省 0.60（宁拦勿收）；dupThreshold=槽内重复线缺省 0.75（单一源标准）。 */
+    autoAdopt?: { enabled?: boolean; votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
   };
 }
 

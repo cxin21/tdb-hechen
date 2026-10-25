@@ -18,6 +18,7 @@ interface SigProbe {
         suppression?: { enabled?: boolean; maxPending?: number };
         recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
         rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
+        autoAdopt?: { enabled?: boolean; votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
       };
     };
   };
@@ -79,5 +80,31 @@ describe("lifecycle.reflection.selfIdentityGate（#81/#91 配置接线）", () =
       lifecycle: { reflection: { selfIdentityGate: "garbage" } },
     }) as unknown as SigProbe;
     expect(c.lifecycle?.reflection?.selfIdentityGate).toBeUndefined();
+  });
+
+  it("#92 stage 2：autoAdopt 显式逐键透传（enabled/votes/spanHours/contradictionThreshold/dupThreshold）", () => {
+    const c = parseConfig({
+      lifecycle: { reflection: { selfIdentityGate: { autoAdopt: { enabled: true, votes: 4, spanHours: 72, contradictionThreshold: 0.6, dupThreshold: 0.75 } } } },
+    }) as unknown as SigProbe;
+    const aa = c.lifecycle?.reflection?.selfIdentityGate?.autoAdopt;
+    expect(aa?.enabled).toBe(true);
+    expect(aa?.votes).toBe(4);
+    expect(aa?.spanHours).toBe(72);
+    expect(aa?.contradictionThreshold).toBe(0.6);
+    expect(aa?.dupThreshold).toBe(0.75);
+  });
+
+  it("#92 stage 2：部分键只写 enabled 其余不带；不写 autoAdopt=不带键（缺省 off 逐位）", () => {
+    const on = parseConfig({
+      lifecycle: { reflection: { selfIdentityGate: { autoAdopt: { enabled: true } } } },
+    }) as unknown as SigProbe;
+    const aa = on.lifecycle?.reflection?.selfIdentityGate?.autoAdopt;
+    expect(aa?.enabled).toBe(true);
+    expect(aa).not.toHaveProperty("votes");
+    expect(aa).not.toHaveProperty("spanHours");
+    const off = parseConfig({
+      lifecycle: { reflection: { selfIdentityGate: { recurrence: { enabled: true } } } },
+    }) as unknown as SigProbe;
+    expect(off.lifecycle?.reflection?.selfIdentityGate).not.toHaveProperty("autoAdopt");
   });
 });

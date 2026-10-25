@@ -409,6 +409,43 @@ describe("#82 SQLite 全链路（真实 VectorStore，临时库）", () => {
     const all = s.listPendingCore(T_A, { includeDecided: true });
     expect(all.find((r) => r.pending_id === row!.pending_id)?.state).toBe("adopted");
   });
+
+  it("#92 stage 2：auto_adopted 行 rejected = 审计回滚（路由按 state 分支；版本守卫在 store）", async () => {
+    const rollbackAutoAdoptedPending = vi.fn((_pid: string, _t?: unknown) => ({ restored: true }));
+    const store92 = {
+      decidePendingCore: vi.fn((_pid: string, _d: string, _t?: unknown) => ({ slot: "self_identity", content: "x" })),
+      getPendingCoreState: vi.fn((_pid: string) => "auto_adopted"),
+      rollbackAutoAdoptedPending,
+    };
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-auto-1", decision: "rejected" }, AUTH, "r-92a", depsFor(store92));
+    expect(res.code).toBe(0);
+    expect((res.data as { rolled_back?: boolean } | undefined)?.rolled_back).toBe(true);
+    expect(rollbackAutoAdoptedPending).toHaveBeenCalledWith("pd-auto-1", expect.objectContaining({ teamId: "teamA" }));
+    expect(store92.decidePendingCore).not.toHaveBeenCalled();
+  });
+
+  it("#92 stage 2：回滚被版本守卫拒绝 → 409（state 不变，提示手工处理）", async () => {
+    const store92 = {
+      decidePendingCore: vi.fn(),
+      getPendingCoreState: vi.fn((_pid: string) => "auto_adopted"),
+      rollbackAutoAdoptedPending: vi.fn((_pid: string, _t?: unknown) => ({ restored: false, reason: "slot-version-changed (current=3 != adopt-time=2)" })),
+    };
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-auto-2", decision: "rejected" }, AUTH, "r-92b", depsFor(store92));
+    expect(res.code).toBe(409);
+    expect(store92.decidePendingCore).not.toHaveBeenCalled();
+  });
+
+  it("#92 stage 2：pending 行 rejected 走常规裁决（回滚分支旁路）", async () => {
+    const store92 = {
+      decidePendingCore: vi.fn((_pid: string, _d: string, _t?: unknown) => ({ slot: "strict_rule", content: "x" })),
+      getPendingCoreState: vi.fn((_pid: string) => "pending"),
+      rollbackAutoAdoptedPending: vi.fn(),
+    };
+    const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-9", decision: "rejected" }, AUTH, "r-92c", depsFor(store92));
+    expect(res.code).toBe(0);
+    expect(store92.decidePendingCore).toHaveBeenCalled();
+    expect(store92.rollbackAutoAdoptedPending).not.toHaveBeenCalled();
+  });
 });
 
 

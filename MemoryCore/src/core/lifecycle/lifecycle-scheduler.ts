@@ -214,6 +214,21 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       }
     }
   }
+  // #92 stage 2：self_identity 确定性自动采纳门（三重门高置信自动采纳；缺省 off=逐位现状；2026-10-25 拍板四项）。
+  // 独立 try/catch warn 非致命（同 sweep 先例）；动态 import 保持模块懒加载（同 identity-discovery 先例）。
+  {
+    const aaCfg = deps.config.reflection?.selfIdentityGate?.autoAdopt;
+    if (aaCfg?.enabled === true) {
+      try {
+        const { runSelfIdentityAutoAdopt } = await import("./auto-adopt-gate.js");
+        const res = await runSelfIdentityAutoAdopt({ store: deps.store, config: aaCfg, logger: deps.logger });
+        // #92 观测夹带：拍级计数行（adopted/blocked/skipped），同 #91 口径——空拍也打，节拍在场可证。
+        deps.logger?.info?.(`[lifecycle] self_identity auto-adopt adopted=${res.adopted} blocked=${res.blocked} skipped=${res.skipped}`);
+      } catch (err) {
+        deps.logger?.warn?.(`[lifecycle] self_identity auto-adopt failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
   if (deps.config.forgetting?.enabled !== false) {
     try {
       const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });

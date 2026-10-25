@@ -3260,6 +3260,105 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  // ── #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门三方法 + 单行 state 读 ──────────────
+  // 候选查询：state='pending' ∧ recurrence ready（count≥votesN ∧ 跨度≥spanHours，口径与 sweep 同构）；
+  // tenant 缺省=全租户（R1 先例），行带租户三元组供调度分组；显式传值=逐字段精确过滤。
+
+  listReadySelfIdentityPending(tenant?: CoreTenant, opts?: { votesN?: number; spanHours?: number }): Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }> {
+    try {
+      const conds = ["slot = 'self_identity'", "state = 'pending'"];
+      const params: string[] = [];
+      if (tenant?.teamId) { conds.push("team_id = ?"); params.push(tenant.teamId); }
+      if (tenant?.userId) { conds.push("user_id = ?"); params.push(tenant.userId); }
+      if (tenant?.agentId) { conds.push("agent_id = ?"); params.push(tenant.agentId); }
+      const votesN = Math.max(1, Math.floor(opts?.votesN ?? 4));
+      const spanHours = Math.max(0, opts?.spanHours ?? 72);
+      const nowMs = Date.now();
+      const rows = this.db.prepare(`SELECT pending_id, content, recurrence_json, attrs_json, team_id, user_id, agent_id, created_at FROM core_pending WHERE ${conds.join(" AND ")}`).all(...params) as Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }>;
+      return rows.filter((row) => {
+        const rec = this.parsePendingRecurrence(row.recurrence_json);
+        if (!rec) return false;
+        const from = Date.parse(rec.first_seen);
+        const to = Date.parse(rec.last_seen);
+        return rec.count >= votesN && Number.isFinite(from) && Number.isFinite(to) && to - from >= spanHours * 3_600_000 && nowMs >= to;
+      });
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] listReadySelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /** 自动采纳落账：state='auto_adopted' + attrs_json.auto_adopt 审计（prev 内容/版本/存在性、post 版本、门参数）；仅 pending 行可落，非 pending/租户不符 → false。 */
+  decidePendingCoreAuto(pendingId: string, tenant?: CoreTenant, audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } }): boolean {
+    try {
+      const row = this.db.prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?").get(pendingId) as { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
+      if (!row || row.state !== "pending") return false;
+      if (tenant && (row.team_id !== (tenant.teamId || "default") || row.user_id !== (tenant.userId || "default") || row.agent_id !== (tenant.agentId || "default"))) return false;
+      let attrs: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(row.attrs_json ?? "{}");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) attrs = parsed as Record<string, unknown>;
+      } catch { /* 坏 attrs → 以审计对象覆盖（复现证据以 recurrence_json 为准，不受影响） */ }
+      attrs.auto_adopt = {
+        adopted_at: new Date().toISOString(),
+        ...(audit?.prev_slot_content !== undefined ? { prev_slot_content: audit.prev_slot_content } : {}),
+        ...(audit?.prev_slot_version !== undefined ? { prev_slot_version: audit.prev_slot_version } : {}),
+        ...(audit?.prev_slot_existed !== undefined ? { prev_slot_existed: audit.prev_slot_existed } : {}),
+        ...(audit?.post_slot_version !== undefined ? { post_slot_version: audit.post_slot_version } : {}),
+        ...(audit?.gate ? { gate: audit.gate } : {}),
+      };
+      const r = this.db.prepare("UPDATE core_pending SET state = 'auto_adopted', decided_at = ?, attrs_json = ? WHERE pending_id = ? AND state = 'pending'").run(new Date().toISOString(), JSON.stringify(attrs), pendingId);
+      return Number(r.changes) > 0;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] decidePendingCoreAuto failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** 审计回滚：state='auto_adopted' → 'rejected'；版本守卫（现行槽 version ≠ post_slot_version → 拒绝并提示手工处理）；
+   *  prev_slot_existed=false → 删除采纳时创建的槽行，否则恢复 prev_slot_content（走 upsertCore 单一写路径 bump version）。零删除（recurrence/attrs 证据全留）。 */
+  rollbackAutoAdoptedPending(pendingId: string, tenant?: CoreTenant): { restored: boolean; reason?: string } {
+    try {
+      const row = this.db.prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?").get(pendingId) as { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
+      if (!row || row.state !== "auto_adopted") return { restored: false, reason: row ? "not-auto-adopted" : "not-found" };
+      if (tenant && (row.team_id !== (tenant.teamId || "default") || row.user_id !== (tenant.userId || "default") || row.agent_id !== (tenant.agentId || "default"))) return { restored: false, reason: "tenant-mismatch" };
+      let audit: { prev_slot_content?: unknown; prev_slot_version?: unknown; prev_slot_existed?: unknown; post_slot_version?: unknown } = {};
+      try {
+        const parsed = JSON.parse(row.attrs_json ?? "{}") as Record<string, unknown>;
+        const aa = parsed && typeof parsed === "object" ? parsed.auto_adopt : undefined;
+        if (aa && typeof aa === "object" && !Array.isArray(aa)) audit = aa as typeof audit;
+      } catch { /* 坏 attrs → 视为缺审计 */ }
+      if (typeof audit.post_slot_version !== "number") return { restored: false, reason: "audit-missing-post-version" };
+      const t = normalizeCoreTenant(tenant);
+      const cur = this.db.prepare("SELECT version FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?").get(t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
+      const curVersion = cur?.version ?? 0;
+      if (curVersion !== audit.post_slot_version) return { restored: false, reason: `slot-version-changed (current=${curVersion} != adopt-time=${audit.post_slot_version})` };
+      const prevExisted = audit.prev_slot_existed !== false; // 缺审计字段按存在处理（宁保守不误删）
+      if (prevExisted) {
+        const prevContent = typeof audit.prev_slot_content === "string" ? audit.prev_slot_content : "";
+        this.upsertCore("self_identity", prevContent, "auto-adopt-rollback", tenant);
+      } else {
+        this.db.prepare("DELETE FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?").run(t.teamId, t.userId, t.agentId);
+      }
+      const r = this.db.prepare("UPDATE core_pending SET state = 'rejected', decided_at = ? WHERE pending_id = ? AND state = 'auto_adopted'").run(new Date().toISOString(), pendingId);
+      return Number(r.changes) > 0 ? { restored: true } : { restored: false, reason: "state-flip-raced" };
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] rollbackAutoAdoptedPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { restored: false, reason: "internal" };
+    }
+  }
+
+  /** 单行 state 读（decide 路由分支用——列表读 LIMIT 面外/已决行不可达）。 */
+  getPendingCoreState(pendingId: string): string | null {
+    try {
+      const row = this.db.prepare("SELECT state FROM core_pending WHERE pending_id = ?").get(pendingId) as { state: string } | undefined;
+      return row?.state ?? null;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] getPendingCoreState failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
   getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null; supportMap?: Record<string, string[]> } {
     try {
