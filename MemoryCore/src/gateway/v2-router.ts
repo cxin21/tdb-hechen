@@ -123,6 +123,8 @@ import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-
 import { handleAtomicByIds } from "./atomic-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
+// #82：self_identity 采纳落槽（merge-on-adopt）唯一合并源——与 worker 演化语义同构，互不复制。
+import { mergeIdentityFacts } from "../core/lifecycle/identity-discovery.js";
 // #52 P4（2026-10-18）：采纳侧 pending 清扫——同族提案自动 rejected（best-effort 非致命）。
 import { sweepPendingDuplicatesAfterAdopt, type PendingAdoptSweepRow } from "../core/lifecycle/pending-adopt-sweep.js";
 // P0-1A（issue #1）：description 质量门单一源（core/hooks，gateway→core 引用方向合法）
@@ -2430,6 +2432,22 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
         });
       }
       return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseCreate: { ok: boolean; promiseId: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseCreate: { ok: true, promiseId: created.promiseId } }, requestId);
+    } else if (decided.slot === "self_identity") {
+      // #82（2026-10-25 拍板）：self_identity 采纳落槽（merge-on-adopt）——旧行为纯状态翻转
+      // （decidePendingCore 仅 UPDATE state），槽内容零变化 → adopted 69 条 vs 槽 8 行长期脱节。
+      // 语义（单一源=mergeIdentityFacts，与 worker 演化同构；采纳路径零 embedding/cosine——
+      // 提案层判重已由 #81 0.65 相似门承载，采纳权在用户）：新行 escapeXmlTags 消毒+按行拆分
+      // （mergeIdentityFacts 约定每元素=一行、调用方消毒）；槽满 IDENTITY_MAX_FACTS=8
+      // slice(-8) 淘汰最旧；合并输出与槽逐字节相同 → 跳过写槽（幂等采纳零 version 空转）；
+      // source="panel-adopt" 对齐 strict_rule 采纳先例、与 worker source="identity-discovery" 区分。
+      if (!store.upsertCore) return errorEnvelope(503, "core_memory not supported", requestId);
+      const existingIdentity = ((store as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> }).readCore?.(tenant) ?? []).find((s) => s.slot === "self_identity")?.content;
+      const adoptedLines = String(decided.content ?? "").split("\n").map((l) => escapeXmlTags(l.trim())).filter((l) => l.length > 0);
+      const mergedIdentity = mergeIdentityFacts(existingIdentity, adoptedLines);
+      if (mergedIdentity !== (existingIdentity ?? "")) {
+        const ok = await Promise.resolve(store.upsertCore("self_identity", mergedIdentity, "panel-adopt", tenant));
+        if (!ok) return errorEnvelope(503, "self_identity adopt failed", requestId);
+      }
     }
   }
   return successEnvelope<{ pending_id: string; decision: string; slot: string; swept?: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, swept: adoptSwept }, requestId);
