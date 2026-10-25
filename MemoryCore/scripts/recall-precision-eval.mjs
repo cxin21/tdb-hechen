@@ -4,7 +4,10 @@
  *
  * 纪律（红线遵守）：
  *   - 生产 tdai-gateway.yaml 全程只读；
- *   - 生产 vectors.db 只 COPY 到临时目录，临时网关仅触碰副本（零写生产库）；
+ *   - 默认 seed 模式（#96-A）：复放打在 golden 专用种子库快照副本上（docs/superpowers/evals/
+ *     .../seed-fixture/，由 build-golden-seed-fixture.mjs 从 journal 重建），库固定 → 双跑逐位一致；
+ *     --production 恢复旧路径：生产 vectors.db 只 COPY 到临时目录（取证用，锚随库漂移会污染指标）；
+ *   - #96-C 红牌预检：期望锚不在复放库 → 降级 metaNote（锚失效），锚在库而未召回才红牌；
  *   - 零注入零删除（不向任何记忆库写入测试数据）；
  *   - 临时网关 :8422 自起自停；结伴生（lifecycle/capture/extraction/skill.extraction）全关；
  *   - 归档 runs/<ts>.json；红牌不阻塞（exit 0，供 Step 0 对账）。
@@ -29,6 +32,9 @@ const PORT = 8422;
 const API_BASE = "http://127.0.0.1:" + PORT;
 const PROD_TEAM = "team-2k12lgb650";
 const PROD_AGENT = "agt-2m7buribzz";
+// #96-A：golden 专用种子库快照（密闭复放）。fixture 由 scripts/build-golden-seed-fixture.mjs
+// 从 dataset journal.memoryLines 重建（锚覆盖 37/37），库固定后双跑逐位一致、锚复现可复现。
+const SEED_DIR = path.join(DS_DIR, "seed-fixture");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // fs.writeSync 直写 fd：process.exit 前管道 stdout 异步缓冲会被截断（2026-10-20 实证）
@@ -103,6 +109,9 @@ async function recall(query, session, apiKey, tenant) {
 async function main() {
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const { meta, rounds } = parseDataset();
+  // #96 复放模式：默认 seed（密闭快照）；--production 恢复旧「生产库当日副本」路径（取证用——
+  // 该模式下锚随库演化退场会污染指标，#77 口径 B 复跑实证，故默认不走）。
+  const productionMode = process.argv.includes("--production");
   const prod = YAML.parse(fs.readFileSync(PROD_YAML, "utf8"));
   const baseDir = prod && prod.data && prod.data.baseDir;
   // API key 解析（env-first，与网关 config.ts:445 同序）：env 主名 → env 兼容名 → yaml 字面值。
@@ -116,24 +125,54 @@ async function main() {
   }
   if (!baseDir) throw new Error("data.baseDir 缺失");
 
-  // 1) 生产 DB 副本（零写生产）
+  // 1) DB 副本（零写源库）：production 模式=生产库当日副本（旧路径，取证用）；
+  //    seed 模式（默认）=golden 专用种子库快照（#96-A），fixture 缺失时自动重建。
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-precision-eval-"));
   TMP_REF = tmpDir;
   const dbCopy = path.join(tmpDir, "vectors.db");
+  let copySource;
+  if (productionMode) {
+    copySource = String(baseDir);
+  } else {
+    if (!fs.existsSync(path.join(SEED_DIR, "vectors.db"))) {
+      log("seed fixture 缺失，自动构建（scripts/build-golden-seed-fixture.mjs）…");
+      const { spawnSync } = await import("node:child_process");
+      const b = spawnSync(process.execPath, ["--import", "tsx", "scripts/build-golden-seed-fixture.mjs"], { cwd: CORE_DIR, stdio: "inherit" });
+      if (b.status !== 0 || !fs.existsSync(path.join(SEED_DIR, "vectors.db"))) throw new Error("seed fixture 构建失败——手工执行: cd MemoryCore && node --import tsx scripts/build-golden-seed-fixture.mjs");
+    }
+    copySource = SEED_DIR;
+  }
   for (const suffix of ["", "-wal", "-shm"]) {
-    const src = path.join(String(baseDir), "vectors.db" + suffix);
+    const src = path.join(copySource, "vectors.db" + suffix);
     if (fs.existsSync(src)) fs.copyFileSync(src, dbCopy + suffix);
   }
-  log("DB copied: " + dbCopy);
+  log("DB copied (mode=" + (productionMode ? "production-copy" : "seed-fixture") + "): " + dbCopy);
 
   // 1b) 配置层副本（生产保真）：config-override.json 是生产实际配置层（优先级 override>env>yaml，
   // settings-override.ts:65/config.ts:495）。缺它临时网关退回 yaml 层（无内网 LLM/本地 rerank/
   // importancePenalty）→ 指标失真（2026-10-20 实证 perf 6-37ms vs 生产 expand p50 1.51s）。
   // 只读复制进临时 baseDir，零改原件。
-  const overrideSrc = path.join(String(baseDir), "config-override.json");
-  if (fs.existsSync(overrideSrc)) {
+  // seed 模式：fixture 内 config-override.json 是净化副本（apiKey→REDACTED，随仓入库不泄密钥，
+  // #96 密闭化安全收尾）；运行时优先只读复制生产 baseDir 的真实 override（密钥/保真层与生产同源，
+  // 只读零触碰原件）；生产文件缺失才回落净化副本（embedding 将 401 降级，如实 warn）。
+  // production 模式沿用生产 baseDir 的原件（只读复制，不变）。
+  let overrideSrc;
+  if (productionMode) {
+    overrideSrc = path.join(String(baseDir), "config-override.json");
+  } else {
+    const prodOverride = path.join(String(baseDir), "config-override.json");
+    const fixtureOverride = path.join(SEED_DIR, "config-override.json");
+    if (fs.existsSync(prodOverride)) {
+      overrideSrc = prodOverride;
+      log("config-override.json src=prod baseDir (runtime merge; keys stay out of committed fixture)");
+    } else if (fs.existsSync(fixtureOverride)) {
+      overrideSrc = fixtureOverride;
+      log("WARN: prod config-override.json absent — using sanitized fixture copy (embedding key REDACTED, expect 401 degrade)");
+    }
+  }
+  if (overrideSrc && fs.existsSync(overrideSrc)) {
     fs.copyFileSync(overrideSrc, path.join(tmpDir, "config-override.json"));
-    log("config-override.json copied (config layer fidelity)");
+    log("config-override.json copied (config layer fidelity, src=" + (productionMode ? "prod baseDir" : overrideSrc === path.join(String(baseDir), "config-override.json") ? "prod baseDir (seed runtime merge)" : "seed fixture sanitized") + ")");
   } else {
     log("WARN: config-override.json absent in prod baseDir — temp gateway runs yaml layer only");
   }
@@ -141,7 +180,19 @@ async function main() {
   // 2) 租户三元组（副本直查）
   const db = new DatabaseSync(dbCopy, { readOnly: true });
   const triples = db.prepare("select team_id, user_id, agent_id, count(*) n from l1_records group by team_id, user_id, agent_id order by n desc").all();
+  // C 预检（#96-C）：期望锚在库存在性检查（instr 原文前 20 字；种子/生产正文均逐字落库成立）。
+  // 锚随库演化退场是 #77 口径 B 复跑「假回归」根因（旧代卡被新卡压位/退场 + ageDecay 衰减）——
+  // 锚全缺席的零召回/低命中降级 metaNote 不再红牌；锚在库而未召回 = 真实行为分歧，维持红牌。
+  const probeOf = new Map(); // "roundId:rowIndex" → 期望锚原文前 20 字
+  for (const round of rounds) for (const e of round.expected || []) probeOf.set(round.id + ":" + e.rowIndex, e.rowText.replace(/^- \[[^\]]+\] /, "").slice(0, 20));
+  const anchorPresent = new Map();
+  for (const probe of new Set(probeOf.values())) {
+    const row = db.prepare("select count(*) n from l1_records where instr(content, ?) > 0").get(probe);
+    anchorPresent.set(probe, !!(row && row.n > 0));
+  }
   db.close();
+  const anchorMissing = [...new Set(probeOf.values())].filter((p) => !anchorPresent.get(p));
+  log("anchor precheck: probes=" + new Set(probeOf.values()).size + " missing=" + anchorMissing.length + (anchorMissing.length ? " → " + anchorMissing.slice(0, 5).map((p) => p.slice(0, 24)).join(" | ") : "（锚全在库）"));
   const hit = triples.find((t) => t.team_id === PROD_TEAM && t.agent_id === PROD_AGENT);
   if (!hit) throw new Error("副本未找到生产主租户: " + JSON.stringify(triples.slice(0, 5)));
   const tenant = { team_id: hit.team_id, user_id: hit.user_id, agent_id: hit.agent_id };
@@ -167,6 +218,7 @@ async function main() {
 
   await startGw(yamlFile);
   const redCards = [];
+  const anchorDriftNotes = []; // #96-C：锚失效降级记录（进归档 metaNotes，不计红牌）
 
   // 预热呼（不计指标）：温化 embedding API/LLM 连接/本地 rerank——冷启动首呼可超 5s 级（2026-10-20
   // 504 实证）。只读召回打在副本上，零生产写入；journal 落 tmpDir。
@@ -207,7 +259,15 @@ async function main() {
     // 审查 M2 红牌兜底：分类后零行时同时报原始带 tag 行数（排除 soul strict_rule 段），
     // 区分「真零召回」与「分类器/渲染形态漂移导致的伪零」。
     const nonSoulTagged = res.lines.filter((l) => /^- \[(?!strict_rule\b)/.test(l)).length;
-    if (!round.systemPov && memLines.length === 0) redCards.push(round.id + " 生产轮复放零记忆行（生产 journal 有行 → 复放/生产行为分歧，需归因；raw 带 tag 行=" + nonSoulTagged + "，>0 疑分类器/渲染漂移）");
+    if (!round.systemPov && memLines.length === 0) {
+      // #96-C：本轮期望锚全部不在复放库 → 判锚失效降级；锚在库而零召回 = 真实行为分歧。
+      const roundProbes = (round.expected || []).map((e) => probeOf.get(round.id + ":" + e.rowIndex)).filter(Boolean);
+      if (roundProbes.length > 0 && roundProbes.every((p) => !anchorPresent.get(p))) {
+        anchorDriftNotes.push(round.id + " 零记忆行判锚失效：本轮全部期望锚（" + roundProbes.length + "）不在复放库（锚随库演化退场，#96-C 降级不计红牌）");
+      } else {
+        redCards.push(round.id + " 生产轮复放零记忆行（生产 journal 有行 → 复放/生产行为分歧，需归因；raw 带 tag 行=" + nonSoulTagged + "，>0 疑分类器/渲染漂移）");
+      }
+    }
     log("clean " + round.id + " memRows=" + memLines.length + " soulLines=" + soulLines + " high=" + hits.length + "/" + exps.length + " strictHigh=" + hitsHigh.length + "/" + expsHigh.length + " perf=" + ((res.meta.perfMs && res.meta.perfMs.total) ?? "?") + "ms");
   }
 
@@ -259,7 +319,17 @@ async function main() {
     perfMs: { p50: quantile(perfs, 0.5), p90: quantile(perfs, 0.9), n: perfs.length },
     layerComposition: prodRounds.reduce((acc, c) => { for (const k of Object.keys(c.layerCount)) acc[k] = (acc[k] || 0) + c.layerCount[k]; return acc; }, {}),
   };
-  if (summary.highValueHitRate !== null && summary.highValueHitRate < 0.2) redCards.push("高价值命中率 " + summary.highValueHitRate + " 远低于 T4 基线带宽（复放环境失真？先查 embedding/配置）");
+  if (summary.highValueHitRate !== null && summary.highValueHitRate < 0.2) {
+    // #96-C：全部未命中锚都不在复放库 → 失真可归因于锚缺席，降级 metaNote；
+    // 任一未命中锚在库 = 复放行为分歧，维持红牌。
+    const missedProbes = new Set();
+    for (const c of cleanRuns) for (const h of c.hitDetail || []) if (!h.hit) { const p = probeOf.get(c.id + ":" + h.rowIndex); if (p) missedProbes.add(p); }
+    if (missedProbes.size > 0 && [...missedProbes].every((p) => !anchorPresent.get(p))) {
+      anchorDriftNotes.push("高价值命中率 " + summary.highValueHitRate + " 判锚失效：全部未命中锚（" + missedProbes.size + "）不在复放库（#96-C 降级不计红牌）");
+    } else {
+      redCards.push("高价值命中率 " + summary.highValueHitRate + " 远低于 T4 基线带宽（复放环境失真？先查 embedding/配置）");
+    }
+  }
 
   // 审查 m6：HEAD 原文是 ref（"ref: refs/heads/main"）非 SHA——解析到 40 位提交哈希
   //（loose ref → packed-refs 兜底），归档溯源可信（对齐既有评测 corpus/gitSha 双一致纪律）。
@@ -280,9 +350,12 @@ async function main() {
   const archive = {
     archivedAt: new Date().toISOString(), gitSha,
     dataset: DATASET_FILE, tenant, dbCopyUsed: dbCopy,
+    evalMode: productionMode ? "production-copy" : "seed-fixture",
+    seedFixture: productionMode ? undefined : { dir: SEED_DIR, manifest: (() => { try { return JSON.parse(fs.readFileSync(path.join(SEED_DIR, "seed-manifest.json"), "utf8")); } catch { return null; } })() },
     configSnapshot: { recall: cfg.memory ? cfg.memory.recall : null, companionDisabled: ["memory.lifecycle", "memory.capture", "memory.extraction", "skill.extraction"], tempGatewayPort: PORT },
     summary, cleanRuns, rawRuns, probeRuns,
-    redCards, metaNotes: meta.discrepancy,
+    redCards, metaNotes: [meta.discrepancy, ...anchorDriftNotes].filter(Boolean),
+    anchorPrecheck: { uniqueProbes: new Set(probeOf.values()).size, missing: anchorMissing.length },
   };
   fs.mkdirSync(RUNS_DIR, { recursive: true });
   const runFile = path.join(RUNS_DIR, ts + ".json");

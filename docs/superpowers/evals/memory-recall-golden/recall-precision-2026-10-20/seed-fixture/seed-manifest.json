@@ -1,0 +1,26 @@
+{
+  "builtAt": "2026-10-25T05:11:42.909Z",
+  "purpose": "#96-A golden 专用种子库快照：journal.memoryLines 重建，锚密闭复放",
+  "dataset": {
+    "file": "D:\\TDB\\td-agemem\\docs\\superpowers\\evals\\memory-recall-golden\\recall-precision-2026-10-20\\dataset.jsonl",
+    "sha256": "7ef1d687a7aed031c9be31b4eef7628e024c0f6ba71618cb3457f3dfc7e02eab",
+    "rounds": 10
+  },
+  "rows": {
+    "journalLines": 37,
+    "uniqueRecords": 30,
+    "written": 30,
+    "failed": 0
+  },
+  "tenant": {
+    "team_id": "team-2k12lgb650",
+    "user_id": "usr-2m7b1144d9",
+    "agent_id": "agt-2m7buribzz"
+  },
+  "embedding": {
+    "provider": "openai_compatible",
+    "model": "doubao-embedding-vision",
+    "dimensions": 2048
+  },
+  "note": "重建脚本 MemoryCore/scripts/build-golden-seed-fixture.mjs；再建=同命令重跑（先删后建，幂等）"
+}

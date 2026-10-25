@@ -1,0 +1,34 @@
+{
+  "llm": {
+    "baseUrl": "http://10.16.235.171:50003/v1",
+    "model": "scm-flash",
+    "maxTokens": 0,
+    "timeoutMs": 120000,
+    "apiKey": "REDACTED"
+  },
+  "embedding": {
+    "baseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+    "apiKey": "REDACTED",
+    "model": "doubao-embedding-vision",
+    "dimensions": 2048
+  },
+  "rerank": {
+    "provider": "local",
+    "enabled": true,
+    "local": {
+      "modelDir": "",
+      "idleUnloadMs": 0
+    }
+  },
+  "importancePenalty": {
+    "enabled": true,
+    "penalty": 0.3
+  },
+  "extraction": {
+    "scenePoisonSplit": true,
+    "sceneBatchMaxChars": 20000
+  },
+  "worthiness": {
+    "extractionEnabled": true
+  }
+}
