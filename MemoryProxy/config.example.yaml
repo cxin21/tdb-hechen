@@ -678,6 +678,16 @@ tdai:
     # l1GlobalTopK: 5        # L1 召回"自有 + 借入"跨 agent 合并后保留条数（默认 5 = 原硬编码行为）
     l2Limit: 3              # L2/L3 注入最大条数
     timeoutMs: 5000         # 单次内核调用超时（毫秒）
+    # recallQuerySource —— 召回 query 来源（#83 入口单点定源）：
+    #   legacy   = 裸取尾+提取器（现状，缺省）
+    #   shadow   = 分类器双跑对比日志（行为不变，影子期先开这个）
+    #   intent   = 读 turnContext.turnIntent（影子期抽验通过后再切）
+    recallQuerySource: "legacy"
+    # l0CaptureMode —— L0 捕获档位（#83 分类随流）：
+    #   legacy     = 单条提取（现状，缺省）
+    #   shadow     = 双跑对比日志（行为不变）
+    #   classified = turnContext 全量写入，逐条带 classification 标签
+    l0CaptureMode: "legacy"
 
 # ── 当前感受（K/L，config-first） ──────────────────────────────────────────────
 # value 标签命中当前 user query 才注入一条短 <current_feeling> 块（价值命中，宁缺毋滥）。
