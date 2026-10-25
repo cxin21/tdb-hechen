@@ -8,8 +8,9 @@
  * 语义：既有行全保留 + 采纳行按行处理——全等幂等（保持）→ 相似≥阈值取最高相似行
  * （P3 #80 2026-10-21 用户拍板「增量生成：相似→更新而非新增」：采纳行码点更长则原位替换
  * =更新，否则旧行保留、采纳行丢弃）→ 不相似追加（V12-ADJ 语义不变）+ '- ' 前缀规范化。
- * 单一源：strict_rule 采纳写入的唯一合并实现（identity 类槽由 worker mergeIdentityFacts 承载，
- * 互不复制）；相似度单一源=core/lifecycle/proposal-dedup proposalSimilarity。
+ * 单一源：strict_rule 采纳写入的唯一合并实现（identity 类槽合并唯一源=identity-discovery
+ * mergeIdentityFacts——worker 演化与 #82 采纳落槽共用，互不复制）；
+ * 相似度单一源=core/lifecycle/proposal-dedup proposalSimilarity。
  */
 import { proposalSimilarity, REDLINE_MERGE_THRESHOLD } from "../core/lifecycle/proposal-dedup.js";
 
