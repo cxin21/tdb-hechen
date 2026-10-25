@@ -13,6 +13,7 @@ export TDAI_PERSONA_SOUL_USER_ID=usr-2m7b1144d9
 export TDAI_PERSONA_SOUL_AGENT_ID=agt-2m7buribzz
 pnpm run judge:behavior:drift -- \
   --max-calls 90 --timeout-ms 240000 \
+  --agent-max-tokens 0 --judge-max-tokens 0 \
   --baseline ../docs/superpowers/evals/behavior-golden/summary-2026-10-19.json \
   --out ../docs/superpowers/evals/behavior-golden/shadow/run-<日期>.jsonl \
   --summary ../docs/superpowers/evals/behavior-golden/shadow/shadow-<日期>.json
@@ -22,6 +23,7 @@ pnpm run judge:behavior:drift -- \
 
 - `summary.soulInjected=true` 且 exit ∈ {0, 1, 4} —— FAIL 也是分布数据，照收入库；
 - `soulInjected=false`（gateway 没开，bare 降级，与基线不可比）或 exit 2/3（凭据/参数问题）→ 删除本次输出，台账记跳过原因。
+- jsonl 大面积 `agent-error: LLM empty response`（reasoning 模型 thinking 烧尽输出帽→空响应；生产/eval 输出帽必须 0=不限制）→ 同样无效，删除重跑（2026-10-25 实证：1024/4096 帽均被打爆，completionTokens=帽值 finishReason=length）。
 
 ## 运行台账
 
@@ -29,3 +31,4 @@ pnpm run judge:behavior:drift -- \
 | ---- | ---- | ----- | ------------ | ------- | -------- | -------- | ---- |
 | 2026-10-19 | 1 | 68/90 | true | 14/17 | 0.21 (linguistic-habits) | fail (round-8=0) | Run 4 首轮基线（文件在 ../summary-2026-10-19.json，非本目录） |
 | 2026-10-25 | 4 | 27/90 | false | 0/17 | 0 | [0] | 两次尝试均无效已删：①yaml llm 段 ark 兜底 × override 中转钥匙混搭 → Ark 拒钥匙格式全 agent-error；②soul 租户 env 缺失 → introspect 落空租户 → bare。修复（yaml 对齐中转 + eval Bearer 回退 + 每日命令加租户 env）后当日重跑，见下行 |
+| 2026-10-25 | 4 | 29/90 | true | 0/17 | 0 | [1,0] | 第三次尝试无效已删：运行时模型 10-24 起 scm-flash→glm（reasoning），thinking 烧 token 无上界——agent 跳 1024 帽被打爆，finishReason=length 空 content 全 agent-error。修复（eval 新增 --agent/judge-max-tokens 旗标，生产 yaml llm.maxTokens 4096→0 对齐 override 本意）后 0/0 重跑，见下行 |

@@ -6,6 +6,7 @@
  *   node --import tsx scripts/persona-eval/run-persona-eval.ts --config tdai-gateway.yaml \
  *        [--soul <file>] [--no-soul] [--subset smoke|full] [--drift 8] [--max-calls 90] \
  *        [--baseline <compare.json>] [--out <jsonl>] [--summary <json>] [--no-llm] [--limit N] [--timeout-ms 120000] \
+ *        [--agent-max-tokens N] [--judge-max-tokens N] \
  *        [--replay <fixtures/golden-samples.json>]
  *
  * 编排: parseConfig(yaml) → StandaloneLLMRunner（同 #62 run-behavior-judge 管线）→
@@ -18,6 +19,8 @@
  *         3=网络/参数校验错（config 解析、CLI 参数、语料 schema）；4=baseline 回归。
  * --no-llm: 零成本确定性干跑（校验语料/golden static/基线格式；不调 LLM；漂移不跑）。
  * config llm.maxTokens=0（不限制）→ 两跳输出帽禁用（reasoning 模型思考即烧 token，1024 帽会截成空响应）。
+ * --agent-max-tokens/--judge-max-tokens：显式覆盖两跳输出帽（0=不限制），优先于上面两条；
+ * 例：reasoning 运行时（glm-*）+生产帽对齐 → --agent-max-tokens 4096 --judge-max-tokens 8192（#66 shadow 2026-10-25）。
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -25,9 +28,11 @@ import { isSetCredential } from "../../src/utils/credential.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  AGENT_MAX_TOKENS,
   CallBudget,
   DIMENSIONS,
   DRIFT_ROUNDS_DEFAULT,
+  JUDGE_MAX_TOKENS,
   compareWithBaseline,
   loadProbesFromDir,
   planCalls,
@@ -60,6 +65,15 @@ function hasFlag(name: string): boolean {
 function numArg(name: string, fallback: number): number | string {
   const raw = argOf(name);
   if (raw == null) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return "--" + name + " 必须是非负有限数，得 " + JSON.stringify(raw);
+  return Math.floor(n);
+}
+
+/** 同 numArg 但未给旗标返回 undefined（三态：未给/非法/数值——非法以 string 返回由调用方报错）。 */
+function numArgOpt(name: string): number | undefined | string {
+  const raw = argOf(name);
+  if (raw == null) return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return "--" + name + " 必须是非负有限数，得 " + JSON.stringify(raw);
   return Math.floor(n);
@@ -204,6 +218,10 @@ async function main(): Promise<number> {
   if (typeof maxCallsArg === "string") { console.error("[persona-eval] " + maxCallsArg); return 3; }
   const maxCalls = Math.max(1, maxCallsArg);
   const callTimeoutMs = Math.max(1000, numArg("timeout-ms", 120_000));
+const agentMaxTokensArg = numArgOpt("agent-max-tokens");
+const judgeMaxTokensArg = numArgOpt("judge-max-tokens");
+if (typeof agentMaxTokensArg === "string") { console.error("[persona-eval] " + agentMaxTokensArg); return 3; }
+if (typeof judgeMaxTokensArg === "string") { console.error("[persona-eval] " + judgeMaxTokensArg); return 3; }
 
   // ── 语料加载 + schema 校验（--no-llm 与实跑共用；schema 违规恒退出码 3）──
   const probesDir = resolve(here, "probes");
@@ -372,6 +390,13 @@ async function main(): Promise<number> {
     }
   }
 
+  // 两跳输出帽：显式旗标 > unlimitedOutput（effective.maxTokens===0 → 0=不限制）> lib 常量缺省。
+  const hopCaps: { agentMaxTokens?: number; judgeMaxTokens?: number } = {};
+  if (agentMaxTokensArg !== undefined) hopCaps.agentMaxTokens = agentMaxTokensArg;
+  else if (unlimitedOutput) hopCaps.agentMaxTokens = 0;
+  if (judgeMaxTokensArg !== undefined) hopCaps.judgeMaxTokens = judgeMaxTokensArg;
+  else if (unlimitedOutput) hopCaps.judgeMaxTokens = 0;
+
   // ── 选样 + 预算 + 预演 ──
   const { probes, truncatedBySubset } = selectProbes(allProbes, subset, limit);
   const budget = new CallBudget(maxCalls);
@@ -380,13 +405,13 @@ async function main(): Promise<number> {
     " plannedCalls=" + planned + " maxCalls=" + maxCalls + " drift=" + driftRounds +
     " soul=" + (soulRendered ? "injected(" + soulRendered.length + " chars)" : "bare") +
     " timeoutMs=" + callTimeoutMs +
+    " hopCaps=agent:" + (hopCaps.agentMaxTokens ?? AGENT_MAX_TOKENS) + ",judge:" + (hopCaps.judgeMaxTokens ?? JUDGE_MAX_TOKENS) +
     (truncatedBySubset ? " (smoke truncated>10)" : ""));
   if (planned > maxCalls) {
     console.error("[persona-eval] WARN: 计划调用 " + planned + " > 硬帽 " + maxCalls + "，超出部分将 skip（宁缺毋滥不伪造）");
   }
 
   // ── 探针两跳 + 汇总 ──
-  const hopCaps = unlimitedOutput ? { agentMaxTokens: 0, judgeMaxTokens: 0 } : {};
   const results = await runPersonaProbes(probes, runner, { soulRendered, budget, timeoutMs: callTimeoutMs, ...hopCaps });
   const summary = summarizeByDimension(results);
 
@@ -406,7 +431,7 @@ async function main(): Promise<number> {
   let goldenReplay: Awaited<ReturnType<typeof replayGolden>> | undefined;
   let goldenFail = false;
   if (golden) {
-    goldenReplay = await replayGolden(golden, allProbes, runner, budget, callTimeoutMs, unlimitedOutput ? 0 : undefined);
+    goldenReplay = await replayGolden(golden, allProbes, runner, budget, callTimeoutMs, hopCaps.judgeMaxTokens);
     for (const r of goldenReplay) {
       if (r.unknownAssertionIds.length > 0 || r.mismatches.length > 0) goldenFail = true;
     }
