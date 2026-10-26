@@ -365,6 +365,10 @@ export class LocalEmbeddingService implements EmbeddingService {
 /** Max texts per batch (OpenAI limit is 2048, we use a safe value) */
 const MAX_BATCH_SIZE = 256;
 
+/** B（2026-10-26 降调用量）：内容寻址向量缓存的条数上限。
+ *  2048 维 float32 ≈ 8KB/条 → 512 条 ≈ 4MB，上限固定，超出按插入序淘汰最旧（LRU）。 */
+const EMBED_CACHE_MAX_ENTRIES = 512;
+
 /** Max retries for API calls */
 const MAX_RETRIES = 0;
 /** Default timeout per API call in milliseconds */
@@ -410,6 +414,11 @@ export class OpenAIEmbeddingService implements EmbeddingService {
   private readonly maxInputChars?: number;
   private readonly timeoutMs: number;
   private readonly logger?: Logger;
+  /** B（2026-10-26 降调用量）：内容寻址缓存，键 = model + "\u0000" + 文本。
+   *  同一文本只打一次 provider；L1 dedup 批量算过的向量被写入侧/相似搜索直接复用。 */
+  private readonly embedCache = new Map<string, Float32Array>();
+  private cacheHits = 0;
+  private cacheMisses = 0;
 
   constructor(config: OpenAIEmbeddingConfig, logger?: Logger) {
     if (!config.apiKey) {
@@ -467,18 +476,78 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       ? texts.map((t) => this.truncateInput(t))
       : texts;
 
-    // Split into sub-batches if needed
-    if (processedTexts.length > MAX_BATCH_SIZE) {
-      const results: Float32Array[] = [];
-      for (let i = 0; i < processedTexts.length; i += MAX_BATCH_SIZE) {
-        const chunk = processedTexts.slice(i, i + MAX_BATCH_SIZE);
-        const chunkResults = await this._callApi(chunk, options?.timeoutMs);
-        results.push(...chunkResults);
+    // B（2026-10-26 降调用量）：先查内容缓存 + 批内去重，只把真正缺的文本发给 provider。
+    // 根因背景：Ark coding 端点的突发并发上限约 4~5 在飞，超了即 429 秒拒；
+    // 而 L1 链条对同一 content 会 embed 三次（dedup 批量 → 写入 → 相似搜索），
+    // L0 是逐条串行 embed。缓存把重复计算压掉，批次把 N 次请求压成 1 次。
+    const out: Array<Float32Array | undefined> = new Array(processedTexts.length);
+    const pending = new Map<string, { text: string; indexes: number[] }>();
+    let cacheHits = 0;
+    for (let i = 0; i < processedTexts.length; i++) {
+      const text = processedTexts[i];
+      const cached = this.cacheLookup(text);
+      if (cached) {
+        out[i] = cached.slice(); // 复制：缓存里的向量不交给调用方改
+        cacheHits++;
+        continue;
       }
-      return results;
+      const bucket = pending.get(text);
+      if (bucket) bucket.indexes.push(i);
+      else pending.set(text, { text, indexes: [i] });
+    }
+    if (cacheHits > 0) {
+      this.cacheHits += cacheHits;
+      this.logger?.debug?.(TAG + " [embed-cache] hit " + cacheHits + "/" + processedTexts.length);
     }
 
-    return this._callApi(processedTexts, options?.timeoutMs);
+    // 只对未命中的去重文本调 API（仍按 MAX_BATCH_SIZE 分块）
+    const uniqueTexts = [...pending.values()].map((p) => p.text);
+    for (let i = 0; i < uniqueTexts.length; i += MAX_BATCH_SIZE) {
+      const chunk = uniqueTexts.slice(i, i + MAX_BATCH_SIZE);
+      const chunkResults = await this._callApi(chunk, options?.timeoutMs);
+      for (let j = 0; j < chunk.length; j++) {
+        const text = chunk[j];
+        const vec = chunkResults[j];
+        if (!vec) continue;
+        this.cacheStore(text, vec);
+        const bucket = pending.get(text);
+        if (!bucket) continue;
+        for (const idx of bucket.indexes) out[idx] = vec.slice();
+      }
+    }
+    this.cacheMisses += uniqueTexts.length;
+
+    return out as Float32Array[];
+  }
+
+  /** 缓存键：model 参与，换模型不会串味。 */
+  private cacheKey(text: string): string {
+    return this.model + "\u0000" + text;
+  }
+
+  /** 读缓存并刷新 LRU 顺序（Map 插入序即新旧序）。 */
+  private cacheLookup(text: string): Float32Array | undefined {
+    const key = this.cacheKey(text);
+    const hit = this.embedCache.get(key);
+    if (!hit) return undefined;
+    this.embedCache.delete(key);
+    this.embedCache.set(key, hit);
+    return hit;
+  }
+
+  private cacheStore(text: string, vec: Float32Array): void {
+    const key = this.cacheKey(text);
+    this.embedCache.delete(key);
+    if (this.embedCache.size >= EMBED_CACHE_MAX_ENTRIES) {
+      const oldest = this.embedCache.keys().next();
+      if (!oldest.done) this.embedCache.delete(oldest.value);
+    }
+    this.embedCache.set(key, vec);
+  }
+
+  /** 缓存命中统计（探针/运维可读）。 */
+  getCacheStats(): { size: number; hits: number; misses: number } {
+    return { size: this.embedCache.size, hits: this.cacheHits, misses: this.cacheMisses };
   }
 
   /**

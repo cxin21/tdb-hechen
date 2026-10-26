@@ -839,6 +839,11 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   const ingestBaseMs = Date.now();
   let dedupSkipped = 0; // F-DUP-1：窗口内重复跳过计数（journal 留痕，响应契约不动）
 
+  // B（2026-10-26 降调用量）：本段改为「先收集 → 一次 embedBatch → 逐条落库」。
+  // 原实现每行一次 embed = 单请求 N 次 provider 调用；多会话并发即撞 Ark coding
+  // 端点的突发并发上限（约 4~5 在飞）→ 429。批量化后单请求只打 1 次。
+  const pendingL0: L0Record[] = [];
+  const seenInBatch = new Set<string>();
   for (const [index, msg] of messages.entries()) {
     const id = `msg-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const ingestRecordedAtMs = ingestBaseMs + index;
@@ -880,14 +885,35 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
         continue;
       }
     }
-    let emb: Float32Array | undefined;
-    if (embedding) {
-      try { emb = await embedding.embed(msg.content); } catch (e) { console.warn(`[v2-router] L0 embedding failed:`, e); }
+    // B（2026-10-26）：批内同文本也按重复挡。原实现靠「上一条已落库」被
+    // store 的 hasRecentL0Duplicate 挡下；落库延后到批次末尾后必须显式去重。
+    const batchKey = `${msg.role}\u0000${msg.content}`;
+    if (seenInBatch.has(batchKey)) {
+      dedupSkipped++;
+      deps.logger.info(
+        `${TAG} [F-DUP-1] duplicate skipped (session=${session_id}, role=${msg.role}, window=10min): ${msg.content.slice(0, 40)}`,
+      );
+      continue;
     }
+    seenInBatch.add(batchKey);
+    pendingL0.push(record);
+  }
 
-    await store.upsertL0(record, emb);
-    acceptedIds.push(id);
-    acceptedRecords.push(record);
+  // B（2026-10-26 降调用量）：整轮一次 embedBatch（原逐条 embed）。配置缺失或
+  // 调用失败 → 该批按无向量落库，与逐条版失败时单行无向量的语义一致。
+  const l0Vectors: Array<Float32Array | undefined> = pendingL0.map(() => undefined);
+  if (embedding && pendingL0.length > 0) {
+    try {
+      const vectors = await embedding.embedBatch(pendingL0.map((r) => r.messageText));
+      for (let i = 0; i < pendingL0.length && i < vectors.length; i++) l0Vectors[i] = vectors[i];
+    } catch (e) {
+      console.warn(`[v2-router] L0 embedding failed (batch=${pendingL0.length}):`, e);
+    }
+  }
+  for (let i = 0; i < pendingL0.length; i++) {
+    await store.upsertL0(pendingL0[i], l0Vectors[i]);
+    acceptedIds.push(pendingL0[i].id);
+    acceptedRecords.push(pendingL0[i]);
   }
 
   if (dedupSkipped > 0) {
