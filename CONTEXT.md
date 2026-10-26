@@ -11,7 +11,7 @@
 - **pending 提案**：红线类（core_value/strict_rule）LLM 提案只入 `core_pending`，人工采纳；语义去重 0.75（宁漏勿错杀）；rejected 永久拦截，证据 ≥2×minEvidence 可走重提通道（#19，缺省关）。
 - **soul 渲染门**：desc 为空或 episode 特征 → 整条跳过（宁缺毋滥，禁裸关键词入人格）；预算截断按整锚丢弃（#10）。
 - **LLM 凭据 SoT（admin settings）**：LLM 秘密字段（llm.apiKey）运行时唯一可信来源 = admin settings（各服务 `{dataDir}/config-override.json`）；通道序 override > yaml > TDAI_LLM_* env(deprecated 回退+一次性弃用告警)；占位符（整串 `__X__` / `${X}`）视为未设置（`utils/credential.ts` 守卫；脚本域单一读取器 `MemoryCore/scripts/lib/read-llm-credential.ts`）。baseUrl/model 等非秘密字段 env 优先不受影响。→ ADR-0006
-- **Panel UI 小白优先原则**（2026-10-19 用户拍板）：MemoryPanel 一切界面以「第一次接触本系统的运维者」为基准用户，易用易懂优先——①白话标签，禁内部术语直达 UI（slot 名/门名/接口词翻译成人话，如 identity/self_identity → 「我是谁」「我心中的他」）；②状态外显（生效/降级/关闭一眼可辨，配一句解释）；③渐进披露（默认简单视图，技术细节折叠进高级区）；④降级与错误用人话说明（如叙事兜底 → 「已自动回退到原文显示」，不静默）。落点：所有 Panel UI 票的验收标准（首个应用票=R3 叙事预览，待立票）。
+- **Panel UI 小白优先原则**（2026-10-19 用户拍板）：MemoryPanel 一切界面以「第一次接触本系统的运维者」为基准用户，易用易懂优先——①白话标签，禁内部术语直达 UI（slot 名/门名/接口词翻译成人话，未知名的 slot 键也不许直达 UI，兜底「未知提案」，原始键名走悬停提示——如 self_identity → 「我是谁」提案、未知 slot → 「未知提案」）；②状态外显（生效/降级/关闭一眼可辨，配一句解释）；③渐进披露（默认简单视图，技术细节折叠进高级区）；④降级与错误用人话说明（如叙事兜底 → 「已自动回退到原文显示」，不静默）。落点：所有 Panel UI 票的验收标准（首个应用票=R3 叙事预览，待立票；#105 起两页待裁决区落地本词条）。
 
 ## 架构决定（ADR）
 

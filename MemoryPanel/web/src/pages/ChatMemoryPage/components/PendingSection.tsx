@@ -15,6 +15,7 @@
  * #101 重构：auto_adopt 审计三件套抽至 @/lib/chatMemoryAutoAdopt，与 SoulPendingRail 统一消费。
  * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel，与 SoulPendingRail 统一消费。
  * #103 修复：批量操作排除终局行——auto_adopted 等终局行复选框禁用、全选跳过、无可选项禁用批量按钮。
+ * #105 小白优先：未知 slot 白话兜底「未知提案」（chip 悬停显原始键名）；审计行 v{N} 记法人话化为「版本 N」。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { chatMemoryApi, classify409Of, type PendingItem } from '@/lib/teamApi';
@@ -26,7 +27,7 @@ import {
   pruneSelectionToSelectable,
   type AutoAdoptAudit,
 } from '@/lib/chatMemoryAutoAdopt';
-import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
+import { slotLabelOf, slotTitleOf, slotVersionText } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
 
 /** #19 T12：重提提案 attrs（宽松解析；坏 JSON/旧行 → null 不显示徽标） */
@@ -221,7 +222,7 @@ export function PendingSection(props: { blockId: string }) {
                   checked={selected.has(p.pending_id)}
                   onChange={() => toggleSel(p.pending_id)}
                 />
-                <span className="_pending-slot">{slotLabelOf(p.slot)}</span>
+                <span className="_pending-slot" title={slotTitleOf(p.slot)}>{slotLabelOf(p.slot)}</span>
                 {p.conflict === true && (
                   <span className="_pending-badge conflict" title="提案 label 与现有同名锚冲突：缺省采纳将被拦截（409），确认后可显式覆盖">
                     同名冲突
@@ -295,12 +296,12 @@ function AutoAdoptRow(props: {
           </span>
           <span>
             采纳前的「我是谁」：
-            {a?.prev_slot_existed === false ? '当时还没有（回滚即清空）' : `v${a?.prev_slot_version ?? '-'}`}
+            {a?.prev_slot_existed === false ? '当时还没有（回滚即清空）' : slotVersionText(a?.prev_slot_version)}
           </span>
           {a?.prev_slot_content !== undefined && (
             <pre className="_pending-audit-content">{a.prev_slot_content}</pre>
           )}
-          <span>采纳后的「我是谁」：v{a?.post_slot_version ?? '-'}</span>
+          <span>采纳后的「我是谁」：{slotVersionText(a?.post_slot_version)}</span>
         </div>
       </details>
       <button

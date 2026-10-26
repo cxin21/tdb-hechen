@@ -12,6 +12,7 @@
  * #103 修复：批量操作排除终局行——auto_adopted 等终局行复选框禁用、全选跳过、无可选项禁用批量按钮。
  * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel；审计快照缺值占位统一「-」
  * （原 '?' / 整行省略 → 显示「-」；#104 分诊拍板的有意可见变更，详见票内注记）。
+ * #105 小白优先：未知 slot 白话兜底「未知提案」（chip/分组标题悬停显原始键名）；审计行 v{N} 记法人话化为「版本 N」。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -24,7 +25,7 @@ import {
   pruneSelectionToSelectable,
   type AutoAdoptAudit,
 } from '@/lib/chatMemoryAutoAdopt';
-import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
+import { slotLabelOf, slotTitleOf, slotVersionText } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
 
 function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked, selectable, onToggle, onDecide }: {
@@ -46,7 +47,7 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
             checked={checked}
             onChange={() => onToggle(id)}
           />
-          <span className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`}>
+          <span className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`} title={slotTitleOf(slot)}>
             {slotLabelOf(slot)}
           </span>
           {autoAdopted && (
@@ -69,12 +70,10 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
               </div>
               <div>
                 采纳前的「我是谁」：
-                {audit.prev_slot_existed === false
-                  ? '（此前不存在，回滚即删除）'
-                  : `v${audit.prev_slot_version ?? '-'}`}
+                {audit.prev_slot_existed === false ? '（此前不存在，回滚即删除）' : slotVersionText(audit.prev_slot_version)}
               </div>
               {audit.prev_slot_content !== undefined && <pre className="_spending-audit-content">{audit.prev_slot_content}</pre>}
-              <div>采纳后的「我是谁」：v{audit.post_slot_version ?? '-'}</div>
+              <div>采纳后的「我是谁」：{slotVersionText(audit.post_slot_version)}</div>
             </div>
           </details>
         )}
@@ -286,7 +285,7 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
                 return next;
               })}
             >
-              <span className="_spending-group-title">{slotLabelOf(slot)}</span>
+              <span className="_spending-group-title" title={slotTitleOf(slot)}>{slotLabelOf(slot)}</span>
               <span className="_soul-meta">{collapsed ? `展开（${list.length}）` : list.length}</span>
             </button>
             {!collapsed && (
