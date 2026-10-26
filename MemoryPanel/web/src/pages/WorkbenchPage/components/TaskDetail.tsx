@@ -8,7 +8,11 @@ import { DeleteIcon, EditIcon, UserIcon, UsergroupIcon } from 'tea-icons-react';
 import { canEditTask, type Task, type Team } from '@/services';
 import { useUserDisplayName } from '@/services/user-profile-store';
 import { tea } from '@/lib/tea-bridge';
-import { useStatusLabels, type AgentOption, type TaskParticipationView } from '../utils/workbench-utils';
+import {
+  useStatusLabels,
+  type AgentOption,
+  type TaskParticipationView,
+} from '../utils/workbench-utils';
 
 /**
  * 参与者 chip：可见文本显示 display_name（缓存未命中先回退 id），
@@ -30,7 +34,9 @@ function UserChip({
     <span className="_memory-workbench-chip" title={`${tooltip} · ${userId}`}>
       <UserIcon size={12} />
       <Text theme="text">{name || userId}</Text>
-      {userId === currentUser && <span className="_memory-workbench-chip-you">{t('common.you.short')}</span>}
+      {userId === currentUser && (
+        <span className="_memory-workbench-chip-you">{t('common.you.short')}</span>
+      )}
     </span>
   );
 }
@@ -48,7 +54,11 @@ export default function TaskDetail({
 }: {
   task: Task;
   onUpdateStatus: (s: Task['status']) => void;
-  onUpdateTask: (patch: Partial<Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>>) => void;
+  onUpdateTask: (
+    patch: Partial<
+      Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>
+    >,
+  ) => void;
   /** 删除当前 task（权限校验与二次确认由外层统一处理） */
   onDelete: () => void;
   canDelete: boolean;
@@ -85,7 +95,9 @@ export default function TaskDetail({
     setEditing(false);
   }
   function saveEdit() {
-    const patch: Partial<Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>> = {};
+    const patch: Partial<
+      Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>
+    > = {};
     const title = draftTitle.trim();
     if (title.length === 0) {
       tea.notify.warning(t('task.titleRequired'));
@@ -129,7 +141,9 @@ export default function TaskDetail({
               className="_memory-workbench-title-input"
             />
             <Button onClick={cancelEdit}>{t('common.cancel')}</Button>
-            <Button type="primary" onClick={saveEdit}>{t('task.save')}</Button>
+            <Button type="primary" onClick={saveEdit}>
+              {t('task.save')}
+            </Button>
           </>
         ) : (
           <>
@@ -155,7 +169,9 @@ export default function TaskDetail({
       {/* === 参与者 === */}
       <div className="_memory-workbench-people">
         <div className="_memory-workbench-people-row">
-          <Text theme="weak" className="_memory-workbench-people-label">{t('task.creator')}</Text>
+          <Text theme="weak" className="_memory-workbench-people-label">
+            {t('task.creator')}
+          </Text>
           <UserChip
             userId={task.creator_user_id}
             currentUser={currentUser}
@@ -163,7 +179,9 @@ export default function TaskDetail({
           />
         </div>
         <div className="_memory-workbench-people-row">
-          <Text theme="weak" className="_memory-workbench-people-label">{t('task.participantUsers')}</Text>
+          <Text theme="weak" className="_memory-workbench-people-label">
+            {t('task.participantUsers')}
+          </Text>
           {participantUsers.length === 0 ? (
             <Text theme="weak">—</Text>
           ) : (
@@ -178,7 +196,9 @@ export default function TaskDetail({
           )}
         </div>
         <div className="_memory-workbench-people-row">
-          <Text theme="weak" className="_memory-workbench-people-label">{t('task.sessionAgents')}</Text>
+          <Text theme="weak" className="_memory-workbench-people-label">
+            {t('task.sessionAgents')}
+          </Text>
           {sessionAgents.length === 0 ? (
             <Text theme="weak">—</Text>
           ) : (
@@ -198,7 +218,9 @@ export default function TaskDetail({
 
       {/* === 描述 === */}
       <div className="_memory-workbench-block">
-        <Text theme="label" className="_memory-workbench-block-label">{t('task.description')}</Text>
+        <Text theme="label" className="_memory-workbench-block-label">
+          {t('task.description')}
+        </Text>
         {editing ? (
           <Input.TextArea
             value={draftDesc}
@@ -213,7 +235,10 @@ export default function TaskDetail({
       </div>
 
       <Text theme="weak" className="_memory-workbench-footer">
-        {t('task.footer', { created: new Date(task.created_at_ms).toLocaleString(), updated: new Date(task.updated_at_ms).toLocaleString() })}
+        {t('task.footer', {
+          created: new Date(task.created_at_ms).toLocaleString(),
+          updated: new Date(task.updated_at_ms).toLocaleString(),
+        })}
       </Text>
 
       {/* === 危险操作 === */}

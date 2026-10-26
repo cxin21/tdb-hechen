@@ -189,3 +189,16 @@ docs/superpowers/evals/**/runs/
 docs/superpowers/evals/behavior-golden/shadow/run-*.jsonl
 docs/superpowers/evals/behavior-golden/shadow/shadow-*.json
 MemoryCore/tdai-gateway.yaml.bak-*
+
+# ── 追加（2026-10-26 #106 收尾）：本地工具缓存、SQLite sidecar 与 Windows 保留名事故产物，防误 git add ──
+.codegraph/
+.local/
+# SQLite WAL/shm sidecar：与 *.db 成对生成，随库文件一起忽略
+*.db-shm
+*.db-wal
+# Windows 保留名事故文件（命令把输出重定向到 NUL 时生成）
+nul
+NUL
+MemoryPanel/web/NUL
+# 本地一次性推演脚本（内存门控调试用，不入库）
+MemoryCore/.tmp-*.mjs

@@ -1,0 +1,23 @@
+# 全仓行尾策略（#106）：文本文件统一 LF，二进制文件显式标注永不转换。
+* text=auto eol=lf
+
+# 二进制资产（图片 / 视频 / 字体 / 文档 / 压缩包 / 数据库 / 原生模块）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mov binary
+*.mp4 binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.wasm binary
+*.node binary

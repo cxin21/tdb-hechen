@@ -95,9 +95,7 @@ export default function DefaultAgentTemplateSection({
         </div>
       ) : (
         <div className="_memory-default-agent-body">
-          <span className="_memory-default-agent-placeholder">
-            {t('defaultAgent.empty')}
-          </span>
+          <span className="_memory-default-agent-placeholder">{t('defaultAgent.empty')}</span>
         </div>
       )}
 

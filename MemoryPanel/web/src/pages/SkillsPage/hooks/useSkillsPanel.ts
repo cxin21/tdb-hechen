@@ -358,7 +358,9 @@ export function useSkillsPanel() {
       const msg =
         errorName === 'AbortError' || errorName === 'TimeoutError'
           ? t('skills.export.timeout')
-          : (err instanceof Error ? err.message : String(err));
+          : err instanceof Error
+            ? err.message
+            : String(err);
       tea.notify.error({ description: msg });
     } finally {
       setExportLoading(false);

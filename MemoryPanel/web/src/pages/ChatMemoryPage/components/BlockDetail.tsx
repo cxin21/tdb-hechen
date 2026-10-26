@@ -104,7 +104,9 @@ function ArchivedSection({ blockId, visible }: { blockId: string; visible: boole
   if (!visible) return null;
   return (
     <div className="_memory-archived">
-      <div className="_memory-archived-title">{t('memory.detail.archivedCount', { count: items.length })}</div>
+      <div className="_memory-archived-title">
+        {t('memory.detail.archivedCount', { count: items.length })}
+      </div>
       {loading ? (
         <div className="_memory-archived-empty">{t('memory.detail.loading')}</div>
       ) : items.length === 0 ? (
@@ -126,7 +128,10 @@ function ArchivedSection({ blockId, visible }: { blockId: string; visible: boole
                 {it.reason && <span className="_memory-archived-reason">{it.reason}</span>}
                 {/* SEC-1：归属徽标（agent 名）——出参带租户三列才渲染（旧后端 additive 兼容） */}
                 {it.agent_id && (
-                  <span className="_memory-archived-reason" title={t('memory.detail.archivedOwner', { agent: it.agent_id })}>
+                  <span
+                    className="_memory-archived-reason"
+                    title={t('memory.detail.archivedOwner', { agent: it.agent_id })}
+                  >
                     {t('memory.detail.archivedOwner', { agent: it.agent_id })}
                   </span>
                 )}
@@ -214,10 +219,7 @@ function AtomicHead({
         {/* 操作菜单（三个点）置于时间右侧。三个点点击展开，支持编辑 / 复制。
             L2 的 head 是可点击展开区域，需阻止冒泡避免误触发折叠。 */}
         {hasActions && (
-          <span
-            className="_memory-detail-atomic-actions"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <span className="_memory-detail-atomic-actions" onClick={(e) => e.stopPropagation()}>
             <Dropdown
               appearance="pure"
               clickClose
@@ -234,14 +236,10 @@ function AtomicHead({
             >
               <List type="option">
                 {canEditItem && (
-                  <List.Item onClick={() => onEdit!(item)}>
-                    {t('memory.detail.edit')}
-                  </List.Item>
+                  <List.Item onClick={() => onEdit!(item)}>{t('memory.detail.edit')}</List.Item>
                 )}
                 {canCopyItem && (
-                  <List.Item onClick={() => void onCopy()}>
-                    {t('common.copy')}
-                  </List.Item>
+                  <List.Item onClick={() => void onCopy()}>{t('common.copy')}</List.Item>
                 )}
               </List>
             </Dropdown>
@@ -312,9 +310,7 @@ function AtomicHead({
     );
   }
   return (
-    <div className="_memory-detail-atomic-head _memory-detail-atomic-head--with-body">
-      {inner}
-    </div>
+    <div className="_memory-detail-atomic-head _memory-detail-atomic-head--with-body">{inner}</div>
   );
 }
 
@@ -371,7 +367,8 @@ function AtomicList({
         // P1-T8：失效行视觉区分（低透明度 + 已失效徽章）。软失效可撤销恢复。
         const invalidated =
           layer === 'L1' &&
-          typeof it.valid_end === 'string' && it.valid_end !== '' &&
+          typeof it.valid_end === 'string' &&
+          it.valid_end !== '' &&
           Number.isFinite(Date.parse(it.valid_end)) &&
           Date.parse(it.valid_end) <= Date.now();
         async function handleCopy() {
@@ -533,10 +530,22 @@ function L2AtomicList({
               <div className="_memory-detail-atomic-expand-inner">
                 {loading ? (
                   <div className="_memory-detail-atomic-body-skel" aria-busy="true">
-                    <div className="_memory-detail-atomic-body-skel-line" style={{ width: '92%' }} />
-                    <div className="_memory-detail-atomic-body-skel-line" style={{ width: '78%' }} />
-                    <div className="_memory-detail-atomic-body-skel-line" style={{ width: '88%' }} />
-                    <div className="_memory-detail-atomic-body-skel-line" style={{ width: '45%' }} />
+                    <div
+                      className="_memory-detail-atomic-body-skel-line"
+                      style={{ width: '92%' }}
+                    />
+                    <div
+                      className="_memory-detail-atomic-body-skel-line"
+                      style={{ width: '78%' }}
+                    />
+                    <div
+                      className="_memory-detail-atomic-body-skel-line"
+                      style={{ width: '88%' }}
+                    />
+                    <div
+                      className="_memory-detail-atomic-body-skel-line"
+                      style={{ width: '45%' }}
+                    />
                   </div>
                 ) : hasBody ? (
                   <MarkdownView bare className="_memory-detail-atomic-md">
@@ -610,11 +619,7 @@ export function BlockDetail({
   /** 是否显示编辑入口（仅资产 Owner 可编辑） */
   canEdit?: boolean;
   /** 保存单层内容（L1/L2/L3）；未传则不显示编辑入口 */
-  onSaveLayerItem?: (
-    l: 'L1' | 'L2' | 'L3',
-    id: string,
-    content: string,
-  ) => Promise<void>;
+  onSaveLayerItem?: (l: 'L1' | 'L2' | 'L3', id: string, content: string) => Promise<void>;
   /** 分层语义搜索（L0 = 对话消息，L1 = 原子记忆）；未传则不显示搜索框 */
   onSearchLayer?: (l: 'L0' | 'L1', query: string) => Promise<ChatMemorySearchHit[]>;
 }) {
@@ -661,11 +666,7 @@ export function BlockDetail({
       // 搜索结果态：hook 的乐观更新只作用于分页列表，这里同步更新搜索结果条目，
       // 否则搜索视图里刚编辑的那条正文不会刷新。
       setSearchResults((prev) =>
-        prev
-          ? prev.map((it) =>
-              it.id === editing.id ? { ...it, body: editContent } : it,
-            )
-          : prev,
+        prev ? prev.map((it) => (it.id === editing.id ? { ...it, body: editContent } : it)) : prev,
       );
       setEditing(null);
     } catch (e) {
@@ -900,7 +901,11 @@ export function BlockDetail({
             className="_memory-detail-search-input"
             value={searchInput}
             onChange={(v) => setSearchInput(v)}
-            placeholder={t(layer === 'L0' ? 'memory.detail.searchPlaceholderL0' : 'memory.detail.searchPlaceholderL1')}
+            placeholder={t(
+              layer === 'L0'
+                ? 'memory.detail.searchPlaceholderL0'
+                : 'memory.detail.searchPlaceholderL1',
+            )}
             disabled={searching}
           />
           <Button
@@ -951,7 +956,10 @@ export function BlockDetail({
                       <div className="_memory-detail-skel-chat-avatar" />
                       <div className="_memory-detail-skel-chat-bubble">
                         <div className="_memory-detail-skel-line" />
-                        <div className="_memory-detail-skel-line" style={{ width: isUser ? '40%' : '72%' }} />
+                        <div
+                          className="_memory-detail-skel-line"
+                          style={{ width: isUser ? '40%' : '72%' }}
+                        />
                       </div>
                     </div>
                   );
@@ -1006,8 +1014,14 @@ export function BlockDetail({
                       <div className="_memory-detail-skel-block _memory-detail-skel-block--more" />
                     </div>
                     <div className="_memory-detail-skel-body">
-                      <div className="_memory-detail-skel-line" style={{ width: `${88 - i * 6}%` }} />
-                      <div className="_memory-detail-skel-line" style={{ width: `${64 - i * 8}%` }} />
+                      <div
+                        className="_memory-detail-skel-line"
+                        style={{ width: `${88 - i * 6}%` }}
+                      />
+                      <div
+                        className="_memory-detail-skel-line"
+                        style={{ width: `${64 - i * 8}%` }}
+                      />
                     </div>
                   </div>
                 ))}
@@ -1226,36 +1240,36 @@ export function BlockDetail({
       {/* 编辑 Modal（L1/L2/L3 通用）：正文用多行输入覆盖写 */}
       {editing && (
         <Modal
-        visible
-        caption={t('memory.detail.editTitle', { layer: editing.layer })}
-        size="xl"
-        onClose={() => {
-          if (!saving) setEditing(null);
-        }}
-        disableEscape={saving}
+          visible
+          caption={t('memory.detail.editTitle', { layer: editing.layer })}
+          size="xl"
+          onClose={() => {
+            if (!saving) setEditing(null);
+          }}
+          disableEscape={saving}
         >
-        <Modal.Body>
-          <div className="_memory-detail-edit-name" title={editing.title}>
-            {editing.title}
-          </div>
-          <Input.TextArea
-            size="full"
-            className="_memory-detail-edit-textarea"
-            value={editContent}
-            onChange={(v) => setEditContent(v)}
-            disabled={saving}
-          />
-        </Modal.Body>
-        <Modal.Footer>
-          <Button type="primary" onClick={() => void saveEdit()} loading={saving}>
-            {t('memory.detail.save')}
-          </Button>
-          <Button onClick={() => setEditing(null)} disabled={saving}>
-            {t('memory.detail.cancel')}
-          </Button>
-        </Modal.Footer>
+          <Modal.Body>
+            <div className="_memory-detail-edit-name" title={editing.title}>
+              {editing.title}
+            </div>
+            <Input.TextArea
+              size="full"
+              className="_memory-detail-edit-textarea"
+              value={editContent}
+              onChange={(v) => setEditContent(v)}
+              disabled={saving}
+            />
+          </Modal.Body>
+          <Modal.Footer>
+            <Button type="primary" onClick={() => void saveEdit()} loading={saving}>
+              {t('memory.detail.save')}
+            </Button>
+            <Button onClick={() => setEditing(null)} disabled={saving}>
+              {t('memory.detail.cancel')}
+            </Button>
+          </Modal.Footer>
         </Modal>
-        )}
-        </div>
-        );
-        }
+      )}
+    </div>
+  );
+}

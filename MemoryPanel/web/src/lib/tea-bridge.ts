@@ -84,7 +84,12 @@ export const tea = {
     success: (msg: string) => message.success({ content: msg }),
     error: (msg: unknown) => {
       // 结构化入参 { title?, detail?, requestId? }
-      if (msg && typeof msg === 'object' && !((msg as unknown) instanceof Error) && ('title' in msg || 'detail' in msg || 'requestId' in msg)) {
+      if (
+        msg &&
+        typeof msg === 'object' &&
+        !((msg as unknown) instanceof Error) &&
+        ('title' in msg || 'detail' in msg || 'requestId' in msg)
+      ) {
         const input = msg as StructuredErrorInput;
         const desc = input.requestId
           ? input.detail
@@ -100,9 +105,7 @@ export const tea = {
       // Error / string / 其他 — 走 getErrorMessage 提取友好提示
       const friendly = getErrorMessage(msg);
       const requestId = extractRequestId(msg);
-      const desc = requestId
-        ? `${friendly}\nrequest_id: ${requestId}`
-        : friendly;
+      const desc = requestId ? `${friendly}\nrequest_id: ${requestId}` : friendly;
       notification.error({
         title: t('teaBridge.notify.errorTitle'),
         description: desc,
@@ -113,20 +116,20 @@ export const tea = {
         title: t('teaBridge.notify.warningTitle'),
         description: msg,
       }),
-    info: (msg: string) =>
-      notification.success({ description: msg }),
+    info: (msg: string) => notification.success({ description: msg }),
   },
 
   /**
    * 复杂通知（带自定义标题）
    */
   notification: {
-    success: (title: string, description?: string) =>
-      notification.success({ title, description }),
+    success: (title: string, description?: string) => notification.success({ title, description }),
     error: (title: string, description?: string) =>
-      notification.error({ title, description: description ? getErrorMessage(description) : undefined }),
-    warning: (title: string, description?: string) =>
-      notification.warning({ title, description }),
+      notification.error({
+        title,
+        description: description ? getErrorMessage(description) : undefined,
+      }),
+    warning: (title: string, description?: string) => notification.warning({ title, description }),
   },
 
   /**

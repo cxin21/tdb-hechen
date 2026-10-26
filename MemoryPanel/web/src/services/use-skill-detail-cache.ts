@@ -39,40 +39,44 @@ export function useSkillDetailCache(teamId: string | null | undefined) {
   }, []);
 
   /** 预加载一条 skill 的数据面详情（幂等，已缓存或正在请求的直接跳过）。 */
-  const preload = useCallback(async (skillId: string) => {
-    if (!teamId || !skillId) return;
-    if (cacheRef.current.has(skillId) || inFlightRef.current.has(skillId)) return;
-    inFlightRef.current.add(skillId);
-    try {
-      const full = await getSkill({
-        skill_id: skillId,
-        team_id: teamId,
-        include_content: false,
-        include_manifest: false,
-      });
-      cacheRef.current.set(skillId, {
-        version: full.version,
-        owner_agent_id: full.owner_agent_id,
-      });
-      setCacheVersion((n) => n + 1);
-    } catch {
-      // 静默失败：列表仍用 asset 默认值（v1 / 空 owner_agent_id）
-    } finally {
-      inFlightRef.current.delete(skillId);
-    }
-  }, [teamId]);
+  const preload = useCallback(
+    async (skillId: string) => {
+      if (!teamId || !skillId) return;
+      if (cacheRef.current.has(skillId) || inFlightRef.current.has(skillId)) return;
+      inFlightRef.current.add(skillId);
+      try {
+        const full = await getSkill({
+          skill_id: skillId,
+          team_id: teamId,
+          include_content: false,
+          include_manifest: false,
+        });
+        cacheRef.current.set(skillId, {
+          version: full.version,
+          owner_agent_id: full.owner_agent_id,
+        });
+        setCacheVersion((n) => n + 1);
+      } catch {
+        // 静默失败：列表仍用 asset 默认值（v1 / 空 owner_agent_id）
+      } finally {
+        inFlightRef.current.delete(skillId);
+      }
+    },
+    [teamId],
+  );
 
   /**
    * 用缓存里的最新值覆盖 skill 对象的 version / owner_agent_id 字段。
    * 缓存 miss 则原样返回，不影响渲染。
    */
-  const applyCachedDetail = useCallback(<T extends { skill_id: string; version: number; owner_agent_id: string }>(
-    skill: T,
-  ): T => {
-    const cached = cacheRef.current.get(skill.skill_id);
-    if (!cached) return skill;
-    return { ...skill, version: cached.version, owner_agent_id: cached.owner_agent_id };
-  }, []);
+  const applyCachedDetail = useCallback(
+    <T extends { skill_id: string; version: number; owner_agent_id: string }>(skill: T): T => {
+      const cached = cacheRef.current.get(skill.skill_id);
+      if (!cached) return skill;
+      return { ...skill, version: cached.version, owner_agent_id: cached.owner_agent_id };
+    },
+    [],
+  );
 
   return { getFromCache, preload, applyCachedDetail, cacheRef, cacheVersion };
 }

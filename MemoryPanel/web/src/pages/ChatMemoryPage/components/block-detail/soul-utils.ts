@@ -139,9 +139,12 @@ function certaintyOf(v: unknown): {
  * 语义与既有 AtomicHead 灵魂段门控一致（并扩展 arousal/significance/source/有效期）。
  */
 export function buildSoulView(item?: SoulInput | null): SoulView {
-  const occurredAt = typeof item?.occurred_at === 'string' && item.occurred_at ? item.occurred_at : undefined;
-  const validStart = typeof item?.valid_start === 'string' && item.valid_start ? item.valid_start : undefined;
-  const validEnd = typeof item?.valid_end === 'string' && item.valid_end ? item.valid_end : undefined;
+  const occurredAt =
+    typeof item?.occurred_at === 'string' && item.occurred_at ? item.occurred_at : undefined;
+  const validStart =
+    typeof item?.valid_start === 'string' && item.valid_start ? item.valid_start : undefined;
+  const validEnd =
+    typeof item?.valid_end === 'string' && item.valid_end ? item.valid_end : undefined;
   const source = typeof item?.source === 'string' && item.source ? item.source : undefined;
   const certainty = certaintyOf(item?.certainty);
   const valence = finiteOf(item?.valence);
@@ -159,8 +162,7 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
   const occurredText = formatSoulTime(occurredAt);
   const startText = formatSoulTime(validStart);
   const endText = formatSoulTime(validEnd);
-  const validityText =
-    startText && endText ? `${startText} ~ ${endText}` : startText ?? endText;
+  const validityText = startText && endText ? `${startText} ~ ${endText}` : (startText ?? endText);
 
   const hasSoul =
     !!occurredAt ||
@@ -225,12 +227,9 @@ const CARD_CORE_REF_LIMIT = 3;
  */
 export function buildSoulCardView(item?: SoulInput | null): SoulCardView {
   const view = buildSoulView(item);
-  const recallText =
-    view.recallCount !== null ? `回忆 ${view.recallCount} 次` : null;
+  const recallText = view.recallCount !== null ? `回忆 ${view.recallCount} 次` : null;
   const significanceText =
-    view.significancePct !== null
-      ? ((view.significancePct ?? 0) / 100).toFixed(2)
-      : null;
+    view.significancePct !== null ? ((view.significancePct ?? 0) / 100).toFixed(2) : null;
   const valenceText =
     view.valence !== null
       ? `${(view.valence ?? 0) > 0 ? '+' : ''}${(view.valence ?? 0).toFixed(1)}`

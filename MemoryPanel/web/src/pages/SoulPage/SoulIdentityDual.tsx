@@ -10,17 +10,42 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { narrativePreviewOf } from '@/pages/ChatMemoryPage/components/identity-utils';
-import { IdentityNarrativeView, NarrativeStatusLine, useIdentityNarrativeState } from '@/pages/ChatMemoryPage/components/identity-narrative';
+import {
+  IdentityNarrativeView,
+  NarrativeStatusLine,
+  useIdentityNarrativeState,
+} from '@/pages/ChatMemoryPage/components/identity-narrative';
 
 type SlotKey = 'self' | 'user';
 
-const SLOT_META: Record<SlotKey, { title: string; dotCls: string; badgeCls: string; badgeText: string }> = {
-  self: { title: '我是谁', dotCls: '_soul-dot--person', badgeCls: '_soul-badge--person', badgeText: 'agent 自我' },
-  user: { title: '我心中的他', dotCls: '_soul-dot--gold', badgeCls: '_soul-badge--gold', badgeText: '用户身份' },
+const SLOT_META: Record<
+  SlotKey,
+  { title: string; dotCls: string; badgeCls: string; badgeText: string }
+> = {
+  self: {
+    title: '我是谁',
+    dotCls: '_soul-dot--person',
+    badgeCls: '_soul-badge--person',
+    badgeText: 'agent 自我',
+  },
+  user: {
+    title: '我心中的他',
+    dotCls: '_soul-dot--gold',
+    badgeCls: '_soul-badge--gold',
+    badgeText: '用户身份',
+  },
 };
 
-function IdentitySlotCard({ slotKey, lines, expanded, onToggle }: {
-  slotKey: SlotKey; lines: string[]; expanded: boolean; onToggle: () => void;
+function IdentitySlotCard({
+  slotKey,
+  lines,
+  expanded,
+  onToggle,
+}: {
+  slotKey: SlotKey;
+  lines: string[];
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const meta = SLOT_META[slotKey];
   const fullText = lines.join('\n');
@@ -33,15 +58,24 @@ function IdentitySlotCard({ slotKey, lines, expanded, onToggle }: {
         <span className={`_soul-chip ${meta.badgeCls}`}>{meta.badgeText}</span>
         <span className="_soul-meta">{lines.length} 条</span>
       </div>
-      <div className={`_soul-idcard-body${collapsible && !expanded ? ' _soul-idcard-body--collapsed' : ''}`}>
+      <div
+        className={`_soul-idcard-body${collapsible && !expanded ? ' _soul-idcard-body--collapsed' : ''}`}
+      >
         <ul className="_soul-idlist">
           {lines.map((line, i) => (
-            <li key={i} className="_soul-idline">{line.replace(/^-\s*/, '')}</li>
+            <li key={i} className="_soul-idline">
+              {line.replace(/^-\s*/, '')}
+            </li>
           ))}
         </ul>
       </div>
       {collapsible && (
-        <button type="button" className="_soul-idcard-toggle" aria-expanded={expanded} onClick={onToggle}>
+        <button
+          type="button"
+          className="_soul-idcard-toggle"
+          aria-expanded={expanded}
+          onClick={onToggle}
+        >
           {expanded ? '收起' : `展开全文（共 ${fullText.length} 字）`}
         </button>
       )}
@@ -51,7 +85,10 @@ function IdentitySlotCard({ slotKey, lines, expanded, onToggle }: {
 
 export function SoulIdentityDual({ blockId }: { blockId: string }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState<{ self: boolean; user: boolean }>({ self: false, user: false });
+  const [expanded, setExpanded] = useState<{ self: boolean; user: boolean }>({
+    self: false,
+    user: false,
+  });
   const { failed, slots } = useIdentityNarrativeState(blockId);
 
   if (failed) return null;
@@ -60,13 +97,24 @@ export function SoulIdentityDual({ blockId }: { blockId: string }) {
   if (preview.state === 'active') {
     // 绿态：叙事生效（kernel 已把身份两行替换为合成槽）——整段换叙事视图；
     // 锚点经 anchorId 落在叙事 section 上（SoulPage/index.tsx 页内导航引用，不丢锚）。
-    return <IdentityNarrativeView blockId={blockId} preview={preview} variant="soul" anchorId="_soul-sec-identity" />;
+    return (
+      <IdentityNarrativeView
+        blockId={blockId}
+        preview={preview}
+        variant="soul"
+        anchorId="_soul-sec-identity"
+      />
+    );
   }
   // 灰态（门关/降级合一）：一行状态说明（降级不静默）+ 存量双栏卡逐位现状。
   const { user, self } = preview.entries;
 
   return (
-    <section className="_soul-section" aria-label={t('soul.identity.title')} id="_soul-sec-identity">
+    <section
+      className="_soul-section"
+      aria-label={t('soul.identity.title')}
+      id="_soul-sec-identity"
+    >
       <div className="_soul-section-head">
         <span className="_soul-section-title">{t('soul.identity.title')}</span>
         <span className="_soul-chip _soul-chip--person">双槽</span>

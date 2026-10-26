@@ -69,7 +69,11 @@ function readAccounts(): MockAccount[] {
       return seeds;
     }
     return parsed.filter(
-      (a): a is MockAccount => a && typeof a.email === 'string' && typeof a.username === 'string' && typeof a.password === 'string'
+      (a): a is MockAccount =>
+        a &&
+        typeof a.email === 'string' &&
+        typeof a.username === 'string' &&
+        typeof a.password === 'string',
     );
   } catch {
     const seeds = getDefaultAccounts();
@@ -102,7 +106,13 @@ export function verifyAccountCredentials(email: string, password: string): MockA
 
 /** 创建单个账号（admin 专有权限，权限校验在 UI 层）。
  *  用户名允许重复，邮箱全局唯一。 */
-export function createAccount(input: { email: string; username: string; password?: string; isAdmin?: boolean; description?: string }): MockAccount {
+export function createAccount(input: {
+  email: string;
+  username: string;
+  password?: string;
+  isAdmin?: boolean;
+  description?: string;
+}): MockAccount {
   const e = input.email.trim().toLowerCase();
   if (!e) throw new Error(i18n.t('account.error.emailEmpty'));
   if (!input.username.trim()) throw new Error(i18n.t('account.error.usernameEmpty'));
@@ -124,7 +134,7 @@ export function createAccount(input: { email: string; username: string; password
 
 /** 批量创建账号 */
 export function batchCreateAccounts(
-  entries: Array<{ email: string; username: string; description?: string }>
+  entries: Array<{ email: string; username: string; description?: string }>,
 ): { created: MockAccount[]; errors: Array<{ email: string; error: string }> } {
   const created: MockAccount[] = [];
   const errors: Array<{ email: string; error: string }> = [];
@@ -135,7 +145,10 @@ export function batchCreateAccounts(
     const e = entry.email.trim().toLowerCase();
     const u = entry.username.trim();
     if (!e || !u) {
-      errors.push({ email: entry.email || i18n.t('account.error.emptyPlaceholder'), error: i18n.t('account.error.emailAndUsernameEmpty') });
+      errors.push({
+        email: entry.email || i18n.t('account.error.emptyPlaceholder'),
+        error: i18n.t('account.error.emailAndUsernameEmpty'),
+      });
       continue;
     }
     if (emailSet.has(e)) {
@@ -168,7 +181,8 @@ export function changePassword(username: string, oldPassword: string, newPasswor
   const accounts = readAccounts();
   const account = accounts.find((a) => a.username === username);
   if (!account) throw new Error(i18n.t('account.error.accountNotFoundByUsername', { username }));
-  if (account.password !== oldPassword) throw new Error(i18n.t('account.error.currentPasswordIncorrect'));
+  if (account.password !== oldPassword)
+    throw new Error(i18n.t('account.error.currentPasswordIncorrect'));
   account.password = newPassword;
   writeAccountsRaw(accounts);
 }
@@ -198,7 +212,8 @@ export function updateAccountEmail(username: string, newEmail: string): void {
   if (!account) throw new Error(i18n.t('account.error.accountNotFoundByUsername', { username }));
   // 检查邮箱是否已被其他人使用
   const conflict = accounts.find((a) => a.email.toLowerCase() === e && a.username !== username);
-  if (conflict) throw new Error(i18n.t('account.error.emailUsedByOther', { email: newEmail.trim() }));
+  if (conflict)
+    throw new Error(i18n.t('account.error.emailUsedByOther', { email: newEmail.trim() }));
   account.email = newEmail.trim();
   writeAccountsRaw(accounts);
 }

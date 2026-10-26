@@ -63,7 +63,9 @@ export default function EditTeamDialog({
         >
           {t('editTeam.submit')}
         </Button>
-        <Button onClick={onClose} disabled={busy}>{t('editTeam.cancel')}</Button>
+        <Button onClick={onClose} disabled={busy}>
+          {t('editTeam.cancel')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );

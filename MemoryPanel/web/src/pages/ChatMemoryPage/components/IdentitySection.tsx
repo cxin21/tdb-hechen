@@ -10,10 +10,14 @@
  *   - identity → 「我心中的他（用户身份）」
  */
 import { identityMetaOf, narrativePreviewOf, type IdentityMeta } from './identity-utils';
-import { IdentityNarrativeView, NarrativeStatusLine, useIdentityNarrativeState } from './identity-narrative';
+import {
+  IdentityNarrativeView,
+  NarrativeStatusLine,
+  useIdentityNarrativeState,
+} from './identity-narrative';
 
 /** U1 徽标（spec §6.5）：version/source/updated_at——数据内核已返回，纯 UI 消费补齐；
-  * 空对象/全缺 → 不渲染徽标行（宁缺毋滥）。 */
+ * 空对象/全缺 → 不渲染徽标行（宁缺毋滥）。 */
 function identityMetaBadges(meta: IdentityMeta | null) {
   if (!meta) return null;
   const items: string[] = [];

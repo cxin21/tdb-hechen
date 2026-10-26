@@ -39,7 +39,9 @@ export function TabBar({
             }}
             className={`_memory-tabbar-item${isActive ? ' _memory-tabbar-item--active' : ''}`}
           >
-            <span className="_memory-tabbar-icon" aria-hidden="true">{ITEM_ICON[id]}</span>
+            <span className="_memory-tabbar-icon" aria-hidden="true">
+              {ITEM_ICON[id]}
+            </span>
             <span className="_memory-tabbar-label">{meta.label}</span>
             {!meta.affix && (
               <button
@@ -51,7 +53,15 @@ export function TabBar({
                 }}
                 className="_memory-tabbar-close"
               >
-                <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" width="10" height="10" aria-hidden="true">
+                <svg
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  width="10"
+                  height="10"
+                  aria-hidden="true"
+                >
                   <path d="M3 3l6 6M9 3l-6 6" />
                 </svg>
               </button>

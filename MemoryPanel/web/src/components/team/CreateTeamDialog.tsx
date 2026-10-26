@@ -16,7 +16,13 @@ export default function CreateTeamDialog({
   const [description, setDescription] = useState('');
   const canSubmit = name.trim().length > 0 && !busy;
   return (
-    <Modal visible caption={t('createTeam.caption')} size="s" onClose={onClose} disableEscape={busy}>
+    <Modal
+      visible
+      caption={t('createTeam.caption')}
+      size="s"
+      onClose={onClose}
+      disableEscape={busy}
+    >
       <Modal.Body>
         <Form>
           <Form.Item label={t('createTeam.name')} required extra={t('createTeam.name.extra')}>
@@ -40,8 +46,17 @@ export default function CreateTeamDialog({
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" disabled={!canSubmit} loading={busy} onClick={() => onCreate({ name: name.trim(), description: description.trim() })}>{t('createTeam.submit')}</Button>
-        <Button onClick={onClose} disabled={busy}>{t('createTeam.cancel')}</Button>
+        <Button
+          type="primary"
+          disabled={!canSubmit}
+          loading={busy}
+          onClick={() => onCreate({ name: name.trim(), description: description.trim() })}
+        >
+          {t('createTeam.submit')}
+        </Button>
+        <Button onClick={onClose} disabled={busy}>
+          {t('createTeam.cancel')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );

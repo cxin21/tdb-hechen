@@ -21,7 +21,10 @@ export function AttributeBadges({ item }: { item: ChatMemoryLayerItem }) {
   const badges = deriveAttributeBadges(item);
   if (badges.length === 0) return null;
   return (
-    <span className="_attr-badges" style={{ display: 'inline-flex', gap: 6, verticalAlign: 'middle' }}>
+    <span
+      className="_attr-badges"
+      style={{ display: 'inline-flex', gap: 6, verticalAlign: 'middle' }}
+    >
       {badges.map((b) => {
         const c = CLS[b.cls] ?? CLS.since;
         return (
@@ -29,7 +32,18 @@ export function AttributeBadges({ item }: { item: ChatMemoryLayerItem }) {
             key={b.key}
             className={`_attr-badge _attr-badge--${b.cls}`}
             title={b.tooltip}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, lineHeight: 1.4, padding: '2px 8px', borderRadius: 999, border: `1px solid ${c.border}`, background: c.bg, color: c.fg }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              fontSize: 11,
+              lineHeight: 1.4,
+              padding: '2px 8px',
+              borderRadius: 999,
+              border: `1px solid ${c.border}`,
+              background: c.bg,
+              color: c.fg,
+            }}
           >
             <span aria-hidden>{b.icon}</span>
             {t(b.labelKey, b.values ?? {}) as string}

@@ -17,7 +17,13 @@ import {
   LayersIcon as ArchitectureIcon,
   StarIcon,
 } from 'tea-icons-react';
-import { knowledgeApi, type GraphData, type GraphNode, type WikiDetail, type WikiPage } from '@/lib/api/knowledge-api';
+import {
+  knowledgeApi,
+  type GraphData,
+  type GraphNode,
+  type WikiDetail,
+  type WikiPage,
+} from '@/lib/api/knowledge-api';
 import { useResizable } from '@/lib/useResizable';
 import { tea } from '@/lib/tea-bridge';
 import { AssetMarkdown } from '@/components/asset/AssetMarkdown';
@@ -86,7 +92,12 @@ export function WikiActions({
         </Button>
       )}
       <Button type="weak" disabled={ingestBusy} onClick={() => onIngest(source.wiki_id)}>
-        <StarIcon size={14} /> {isCurrentIngesting ? t('wiki.action.ingestBusy') : ingestBusy ? t('wiki.action.queuing') : t('wiki.action.ingest')}
+        <StarIcon size={14} />{' '}
+        {isCurrentIngesting
+          ? t('wiki.action.ingestBusy')
+          : ingestBusy
+            ? t('wiki.action.queuing')
+            : t('wiki.action.ingest')}
       </Button>
       {scopeTab === 'fixed' ? (
         <Button type="weak" onClick={() => onUnbind(source.wiki_id)}>
@@ -96,11 +107,7 @@ export function WikiActions({
         <Button
           type="weak"
           disabled={source.status !== 'ready'}
-          tooltip={
-            source.status === 'ready'
-              ? undefined
-              : t('wiki.action.allocate.disabled')
-          }
+          tooltip={source.status === 'ready' ? undefined : t('wiki.action.allocate.disabled')}
           onClick={() => onAllocate({ wiki_id: source.wiki_id, name: source.name })}
         >
           {t('wiki.action.allocate')}
@@ -336,7 +343,9 @@ export function PagesTabContent({
                         {tag.trim()}
                       </Tag>
                     ))}
-                {metadata.created && <Text theme="label">{t('wiki.detail.created', { date: metadata.created })}</Text>}
+                {metadata.created && (
+                  <Text theme="label">{t('wiki.detail.created', { date: metadata.created })}</Text>
+                )}
               </div>
             )}
             {readLoading ? (

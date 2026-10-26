@@ -66,7 +66,11 @@ async function readAsUtf8(file: File): Promise<string> {
  */
 function looksLikeText(file: File): boolean {
   const lower = file.name.toLowerCase();
-  if (/\.(md|markdown|txt|json|yaml|yml|sh|js|ts|tsx|py|go|rs|toml|html|css|csv|conf|cfg)$/.test(lower)) {
+  if (
+    /\.(md|markdown|txt|json|yaml|yml|sh|js|ts|tsx|py|go|rs|toml|html|css|csv|conf|cfg)$/.test(
+      lower,
+    )
+  ) {
     return true;
   }
   if (file.size < 64 * 1024) return true;
@@ -150,17 +154,17 @@ export default function ImportSkillDialog(props: {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useTranslation();
 
-  const partition = useMemo(() => (mode === 'directory' ? partitionFiles(pickedFiles) : null), [
-    mode,
-    pickedFiles
-  ]);
+  const partition = useMemo(
+    () => (mode === 'directory' ? partitionFiles(pickedFiles) : null),
+    [mode, pickedFiles],
+  );
 
   async function submit(): Promise<void> {
     setError(null);
     setResult(null);
     setSubmitting(true);
     try {
-      const agentId = props.target === 'fixed' ? (selectedAgentId || props.agentId || '') : '';
+      const agentId = props.target === 'fixed' ? selectedAgentId || props.agentId || '' : '';
       if (props.target === 'fixed' && !agentId) {
         throw new Error(t('importSkill.error.noAgent'));
       }
@@ -174,7 +178,9 @@ export default function ImportSkillDialog(props: {
         try {
           parsed = JSON.parse(raw);
         } catch (e) {
-          throw new Error(t('importSkill.error.jsonParse', { msg: e instanceof Error ? e.message : String(e) }));
+          throw new Error(
+            t('importSkill.error.jsonParse', { msg: e instanceof Error ? e.message : String(e) }),
+          );
         }
         if (!Array.isArray((parsed as { messages?: unknown }).messages)) {
           throw new Error(t('importSkill.error.noMessages'));
@@ -199,7 +205,8 @@ export default function ImportSkillDialog(props: {
           user_id: props.userId,
           team_id: props.teamId,
           agent_id: agentId || props.userId,
-          task_id: typeof parsed.task_id === 'string' && parsed.task_id ? parsed.task_id : undefined,
+          task_id:
+            typeof parsed.task_id === 'string' && parsed.task_id ? parsed.task_id : undefined,
           session_id:
             typeof parsed.session_id === 'string' && parsed.session_id
               ? parsed.session_id
@@ -263,26 +270,32 @@ export default function ImportSkillDialog(props: {
       if (!name) {
         throw new Error(t('importSkill.error.noName'));
       }
-      const resourceFiles: { path: string; file: File; isBinary: boolean }[] = partition.resources.map(
-        ({ path, file }) => ({ path, file, isBinary: !looksLikeText(file) }),
-      );
+      const resourceFiles: { path: string; file: File; isBinary: boolean }[] =
+        partition.resources.map(({ path, file }) => ({
+          path,
+          file,
+          isBinary: !looksLikeText(file),
+        }));
 
       // 确保 content 以 `---\n` 开头（v3 frontmatter 格式要求）。
-      const safeContent = content.trimStart().startsWith('---') ? content : `---\nname: ${name}\n---\n\n${content}`;
+      const safeContent = content.trimStart().startsWith('---')
+        ? content
+        : `---\nname: ${name}\n---\n\n${content}`;
 
       // 资源文件随 create 一次性落库（单版本 v1）。
       // 修复：原实现是 create(resources=[] → v1) + files/write(→ v2) 两步，
       // 导致任何带资源的导入 skill 一落库就是 v2（version 语义错乱）。
       // v3 create 本身支持 resources 数组，合并为一次调用即可保证新建 skill = v1。
-      const resources: SkillResourcePayload[] = resourceFiles.length > 0
-        ? await Promise.all(
-            resourceFiles.map(async ({ path, file, isBinary }) =>
-              isBinary
-                ? { path, content: await readAsBase64(file), encoding: 'base64' as const }
-                : { path, content: await readAsUtf8(file), encoding: 'utf-8' as const },
-            ),
-          )
-        : [];
+      const resources: SkillResourcePayload[] =
+        resourceFiles.length > 0
+          ? await Promise.all(
+              resourceFiles.map(async ({ path, file, isBinary }) =>
+                isBinary
+                  ? { path, content: await readAsBase64(file), encoding: 'base64' as const }
+                  : { path, content: await readAsUtf8(file), encoding: 'utf-8' as const },
+              ),
+            )
+          : [];
 
       await createSkill({
         user_id: props.userId,
@@ -308,152 +321,174 @@ export default function ImportSkillDialog(props: {
   const showAgentPicker = props.target === 'fixed' && !!props.agents;
 
   return (
-    <Modal visible caption={t('importSkill.caption')} size="l" onClose={props.onClose} disableEscape={submitting}>
+    <Modal
+      visible
+      caption={t('importSkill.caption')}
+      size="l"
+      onClose={props.onClose}
+      disableEscape={submitting}
+    >
       <Modal.Body>
         <Alert type="info">{t('importSkill.hint')}</Alert>
-      {/* 归属 Agent —— 必选项。始终展示在导入方式上方，
+        {/* 归属 Agent —— 必选项。始终展示在导入方式上方，
           与 ChatMemoryPanel.ImportBlockDialog 一致：即便外层已经传了 agentId
           也允许在弹窗里重选。 */}
-      {showAgentPicker && (
-        <Form layout="vertical" style={{ width: '100%' }}>
-          <Form.Item
-            label={t('importSkill.agent')}
-            extra={t('importSkill.agent.extra')}
-          >
-            {props.agents!.length === 0 ? (
-              <Alert type="warning">{t('importSkill.agent.noAgent')}</Alert>
-            ) : (
-              <Select
-                size="full"
-                value={selectedAgentId}
-                onChange={setSelectedAgentId}
-                placeholder={t('importSkill.agent.placeholder')}
-                options={props.agents!.map((a) => ({ value: a.id, text: `${a.name}（${a.id}）` }))}
-              />
-            )}
-          </Form.Item>
-        </Form>
-      )}
+        {showAgentPicker && (
+          <Form layout="vertical" style={{ width: '100%' }}>
+            <Form.Item label={t('importSkill.agent')} extra={t('importSkill.agent.extra')}>
+              {props.agents!.length === 0 ? (
+                <Alert type="warning">{t('importSkill.agent.noAgent')}</Alert>
+              ) : (
+                <Select
+                  size="full"
+                  value={selectedAgentId}
+                  onChange={setSelectedAgentId}
+                  placeholder={t('importSkill.agent.placeholder')}
+                  options={props.agents!.map((a) => ({
+                    value: a.id,
+                    text: `${a.name}（${a.id}）`,
+                  }))}
+                />
+              )}
+            </Form.Item>
+          </Form>
+        )}
 
-      {/* Mode tabs：只保留 directory（目录导入）/ session（对话导入）两种 */}
-      <Segment
-        className="_memory-isd-mode-segment"
-        value={mode}
-        onChange={(v) => setMode(v as Mode)}
-        options={[
-          { value: 'directory', text: t('importSkill.mode.directory') },
-          { value: 'session', text: t('importSkill.mode.session') },
-        ]}
-      />
+        {/* Mode tabs：只保留 directory（目录导入）/ session（对话导入）两种 */}
+        <Segment
+          className="_memory-isd-mode-segment"
+          value={mode}
+          onChange={(v) => setMode(v as Mode)}
+          options={[
+            { value: 'directory', text: t('importSkill.mode.directory') },
+            { value: 'session', text: t('importSkill.mode.session') },
+          ]}
+        />
 
-      {mode === 'directory' && (
-        <div className="_memory-isd-section">
-          <div className="_memory-isd-label">{t('importSkill.directory.label')}</div>
-          {/*
+        {mode === 'directory' && (
+          <div className="_memory-isd-section">
+            <div className="_memory-isd-label">{t('importSkill.directory.label')}</div>
+            {/*
             目录选择无 Tea 组件等价物，此处保留原生 input 作为唯一豁免，隐藏后由下方
             Tea Button 触发点击。webkitdirectory/directory 是非标准但广泛支持的浏览器
             属性，React 类型定义未收录，用 spread + any 透传而非逐属性 @ts-expect-error。
           */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            onChange={(e) => {
-              const list = e.target.files;
-              if (!list) return;
-              setPickedFiles(Array.from(list));
-            }}
-            className="_memory-isd-hidden-file-input"
-            {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-          />
-          <Button onClick={() => fileInputRef.current?.click()}>
-            <FolderOpenIcon size={14} /> {t('importSkill.directory.selectFile')}
-          </Button>
-          {pickedFiles.length > 0 && (
-            <span className="_memory-isd-picked-count">{t('importSkill.directory.picked', { count: pickedFiles.length })}</span>
-          )}
-          {pickedFiles.length > 0 && partition && (
-            <div className="_memory-isd-partition-box">
-              <div>
-                {t('importSkill.directory.mainFile')}
-                {partition.mainFile ? (
-                  <span className="_memory-isd-main-file">
-                    {partition.mainFile.webkitRelativePath || partition.mainFile.name}
-                  </span>
-                ) : (
-                  <span className="_memory-isd-error-text">{t('importSkill.directory.noSkillMd')}</span>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={(e) => {
+                const list = e.target.files;
+                if (!list) return;
+                setPickedFiles(Array.from(list));
+              }}
+              className="_memory-isd-hidden-file-input"
+              {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+            />
+            <Button onClick={() => fileInputRef.current?.click()}>
+              <FolderOpenIcon size={14} /> {t('importSkill.directory.selectFile')}
+            </Button>
+            {pickedFiles.length > 0 && (
+              <span className="_memory-isd-picked-count">
+                {t('importSkill.directory.picked', { count: pickedFiles.length })}
+              </span>
+            )}
+            {pickedFiles.length > 0 && partition && (
+              <div className="_memory-isd-partition-box">
+                <div>
+                  {t('importSkill.directory.mainFile')}
+                  {partition.mainFile ? (
+                    <span className="_memory-isd-main-file">
+                      {partition.mainFile.webkitRelativePath || partition.mainFile.name}
+                    </span>
+                  ) : (
+                    <span className="_memory-isd-error-text">
+                      {t('importSkill.directory.noSkillMd')}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  {t('importSkill.directory.resources', { count: partition.resources.length })}
+                </div>
+                {partition.resources.length > 0 && (
+                  <ul className="_memory-isd-resource-list">
+                    {partition.resources.map((r) => (
+                      <li key={r.path}>
+                        · {r.path} ({Math.round(r.file.size / 1024)}KB)
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {partition.warning && (
+                  <div className="_memory-isd-warning-text">{partition.warning}</div>
                 )}
               </div>
-              <div>{t('importSkill.directory.resources', { count: partition.resources.length })}</div>
-              {partition.resources.length > 0 && (
-                <ul className="_memory-isd-resource-list">
-                  {partition.resources.map((r) => (
-                    <li key={r.path}>· {r.path} ({Math.round(r.file.size / 1024)}KB)</li>
-                  ))}
-                </ul>
-              )}
-              {partition.warning && (
-                <div className="_memory-isd-warning-text">{partition.warning}</div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
 
-      {mode === 'session' && (
-        <div className="_memory-isd-section">
-          <Alert type="info">
-            {t('importSkill.session.hintPrefix')}
-            <span className="_memory-isd-mono-inline">messages</span>
-            {t('importSkill.session.hintSuffix')}
+        {mode === 'session' && (
+          <div className="_memory-isd-section">
+            <Alert type="info">
+              {t('importSkill.session.hintPrefix')}
+              <span className="_memory-isd-mono-inline">messages</span>
+              {t('importSkill.session.hintSuffix')}
+            </Alert>
+            <Form layout="vertical" style={{ width: '100%' }}>
+              <Form.Item label={t('importSkill.session.label')}>
+                <Input.TextArea
+                  size="full"
+                  value={sessionPayload}
+                  onChange={setSessionPayload}
+                  rows={16}
+                  placeholder={JSON.stringify(
+                    {
+                      session_id: 'demo-user-extract-demo-1',
+                      task_id: 'default',
+                      messages: [
+                        { role: 'user', content: t('importSkill.sample.user') },
+                        { role: 'assistant', content: t('importSkill.sample.assistant') },
+                        { role: 'tool_call', content: t('importSkill.sample.toolCall') },
+                        { role: 'tool_result', content: t('importSkill.sample.toolResult') },
+                        { role: 'assistant', content: t('importSkill.sample.assistant2') },
+                      ],
+                    },
+                    null,
+                    2,
+                  )}
+                  className="_memory-isd-mono-input"
+                />
+              </Form.Item>
+            </Form>
+          </div>
+        )}
+
+        {error && <Alert type="error">{error}</Alert>}
+        {result && (
+          <Alert type="success">
+            <span className="_memory-isd-result-text">{result}</span>
           </Alert>
-          <Form layout="vertical" style={{ width: '100%' }}>
-            <Form.Item label={t('importSkill.session.label')}>
-              <Input.TextArea
-                size="full"
-                value={sessionPayload}
-                onChange={setSessionPayload}
-                rows={16}
-                placeholder={JSON.stringify(
-                  {
-                    session_id: 'demo-user-extract-demo-1',
-                    task_id: 'default',
-                    messages: [
-                      { role: 'user', content: t('importSkill.sample.user') },
-                      { role: 'assistant', content: t('importSkill.sample.assistant') },
-                      { role: 'tool_call', content: t('importSkill.sample.toolCall') },
-                      { role: 'tool_result', content: t('importSkill.sample.toolResult') },
-                      { role: 'assistant', content: t('importSkill.sample.assistant2') },
-                    ],
-                  },
-                  null,
-                  2,
-                )}
-                className="_memory-isd-mono-input"
-              />
-            </Form.Item>
-          </Form>
-        </div>
-      )}
-
-      {error && <Alert type="error">{error}</Alert>}
-      {result && <Alert type="success"><span className="_memory-isd-result-text">{result}</span></Alert>}
+        )}
       </Modal.Body>
       <Modal.Footer>
         <Button
           type="primary"
           onClick={() => void submit()}
           disabled={
-            submitting
-            || (mode === 'directory' ? !partition?.mainFile : !sessionPayload.trim())
-            || (props.target === 'fixed' && !selectedAgentId)
+            submitting ||
+            (mode === 'directory' ? !partition?.mainFile : !sessionPayload.trim()) ||
+            (props.target === 'fixed' && !selectedAgentId)
           }
-          title={props.target === 'fixed' && !selectedAgentId ? t('importSkill.error.noAgentHint') : ''}
+          title={
+            props.target === 'fixed' && !selectedAgentId ? t('importSkill.error.noAgentHint') : ''
+          }
           loading={submitting}
         >
           {mode === 'session' ? t('importSkill.session.submit') : t('importSkill.submit')}
         </Button>
-        <Button onClick={props.onClose} disabled={submitting}>{t('importSkill.cancel')}</Button>
+        <Button onClick={props.onClose} disabled={submitting}>
+          {t('importSkill.cancel')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );

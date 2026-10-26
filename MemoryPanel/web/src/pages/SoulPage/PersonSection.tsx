@@ -32,17 +32,28 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
   const prefetchedRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
-    if (!props.blockId) { setRows([]); setLoaded(true); return; }
+    if (!props.blockId) {
+      setRows([]);
+      setLoaded(true);
+      return;
+    }
     try {
       const res = await chatMemoryApi.valuesList(props.blockId);
-      const parsed = buildPersonRows((res.values ?? []) as unknown as Array<Record<string, unknown>>);
+      const parsed = buildPersonRows(
+        (res.values ?? []) as unknown as Array<Record<string, unknown>>,
+      );
       parsed.sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0));
       setRows(parsed);
-    } catch { setRows([]); }
-    finally { setLoaded(true); }
+    } catch {
+      setRows([]);
+    } finally {
+      setLoaded(true);
+    }
   }, [props.blockId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // chips 点击定位：highlight 命中人物 → 自动展开证据链 + 滚动定位（C12：≤1 次交互可达）
   useEffect(() => {
@@ -51,7 +62,9 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
     if (hit && !expanded.has(hit.value_id)) {
       void toggleEvidence(hit);
       window.setTimeout(() => {
-        document.getElementById(`person-${CSS.escape(hit.label)}`)?.scrollIntoView({ block: 'center' });
+        document
+          .getElementById(`person-${CSS.escape(hit.label)}`)
+          ?.scrollIntoView({ block: 'center' });
       }, 60);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -73,9 +86,12 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
     setEvidenceLoading((prev) => new Set(prev).add(row.value_id));
     try {
       const queries = [row.label, ...row.aliases];
-      const all = await Promise.all(queries.map((q) => chatMemoryApi.searchLayer(props.blockId, 'L1', q, 30)));
+      const all = await Promise.all(
+        queries.map((q) => chatMemoryApi.searchLayer(props.blockId, 'L1', q, 30)),
+      );
       const merged: Array<Record<string, unknown>> = [];
-      for (const r of all) merged.push(...((r.items ?? []) as unknown as Array<Record<string, unknown>>));
+      for (const r of all)
+        merged.push(...((r.items ?? []) as unknown as Array<Record<string, unknown>>));
       const ev = collectPersonEvidence(merged, queries);
       setEvidence((prev) => ({ ...prev, [row.value_id]: ev }));
     } catch {
@@ -94,7 +110,8 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
     if (evidence[row.value_id] || evidenceLoading.has(row.value_id)) {
       setExpanded((prev) => {
         const next = new Set(prev);
-        if (next.has(row.value_id)) next.delete(row.value_id); else next.add(row.value_id);
+        if (next.has(row.value_id)) next.delete(row.value_id);
+        else next.add(row.value_id);
         return next;
       });
       return;
@@ -107,7 +124,11 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
   if (rows.length === 0) return null;
 
   return (
-    <section className="_soul-section" aria-label={t('soul.person.title')} id="_soul-person-section">
+    <section
+      className="_soul-section"
+      aria-label={t('soul.person.title')}
+      id="_soul-person-section"
+    >
       <div className="_soul-section-head">
         <span className="_soul-section-title">{t('soul.person.title')}</span>
         <span className="_soul-chip _soul-chip--person">{rows.length}</span>
@@ -129,28 +150,55 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
               id={`person-${CSS.escape(r.label)}`}
             >
               <div className="_soul-personrow-head">
-                <span className="_soul-avatar" aria-hidden>{firstChar}</span>
+                <span className="_soul-avatar" aria-hidden>
+                  {firstChar}
+                </span>
                 <span className="_soul-personrow-name">{r.label}</span>
                 {r.role && <span className="_soul-chip _soul-chip--neutral">{r.role}</span>}
-                {d && <span className={`_soul-chip _soul-chip--${d === '回避' ? 'red' : d === '趋近' ? 'green' : 'neutral'}`}>{d}</span>}
+                {d && (
+                  <span
+                    className={`_soul-chip _soul-chip--${d === '回避' ? 'red' : d === '趋近' ? 'green' : 'neutral'}`}
+                  >
+                    {d}
+                  </span>
+                )}
                 {r.aliases.length > 0 && (
-                  <span className="_soul-meta _soul-personrow-aliases">别名：{r.aliases.join('、')}</span>
+                  <span className="_soul-meta _soul-personrow-aliases">
+                    别名：{r.aliases.join('、')}
+                  </span>
                 )}
                 <span className="_soul-wmeter" title="信念强度（F5 绝对证据+饱和）">
-                  <span className="_soul-wbar"><span className="_soul-wbar-fill" style={{ width: `${Math.round((r.weight ?? 0) * 100)}%` }} /></span>
+                  <span className="_soul-wbar">
+                    <span
+                      className="_soul-wbar-fill"
+                      style={{ width: `${Math.round((r.weight ?? 0) * 100)}%` }}
+                    />
+                  </span>
                   <span className="_soul-meta">w {(r.weight ?? 0).toFixed(2)}</span>
                 </span>
-                <button type="button" className="_soul-btn-ghost _soul-personrow-toggle" onClick={() => void toggleEvidence(r)}>
-                  {loading ? t('soul.person.loading') : isOpen ? t('soul.person.collapse') : `${t('soul.person.expand')} · ${ev ? ev.length : '…'}`}
+                <button
+                  type="button"
+                  className="_soul-btn-ghost _soul-personrow-toggle"
+                  onClick={() => void toggleEvidence(r)}
+                >
+                  {loading
+                    ? t('soul.person.loading')
+                    : isOpen
+                      ? t('soul.person.collapse')
+                      : `${t('soul.person.expand')} · ${ev ? ev.length : '…'}`}
                 </button>
               </div>
               {r.description && (
-                <div className="_soul-personrow-desc" title={r.description}>{r.description}</div>
+                <div className="_soul-personrow-desc" title={r.description}>
+                  {r.description}
+                </div>
               )}
               {isOpen && (
                 <div className="_soul-evidence">
                   {err && <div className="_soul-meta">{t('soul.person.failed')}</div>}
-                  {ev && ev.length === 0 && <div className="_soul-meta">{t('soul.person.empty')}</div>}
+                  {ev && ev.length === 0 && (
+                    <div className="_soul-meta">{t('soul.person.empty')}</div>
+                  )}
                   {ev && ev.length > 0 && (
                     <>
                       <ul className="_soul-timeline">
@@ -160,7 +208,9 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
                             <div className="_soul-timeline-main">
                               <div className="_soul-timeline-meta">
                                 {e.occurredAt && <span>{e.occurredAt.slice(0, 10)}</span>}
-                                {e.certainty && <span>{e.certainty === 'inferred' ? '推断' : '实见'}</span>}
+                                {e.certainty && (
+                                  <span>{e.certainty === 'inferred' ? '推断' : '实见'}</span>
+                                )}
                                 <span>L1</span>
                               </div>
                               <div className="_soul-timeline-body">{maskSecrets(e.body)}</div>
@@ -169,7 +219,13 @@ export function PersonSection(props: { blockId: string; highlight?: string }) {
                         ))}
                       </ul>
                       {ev.length > shown.length && (
-                        <button type="button" className="_soul-idcard-toggle" onClick={() => setEvidenceLimit((prev) => ({ ...prev, [r.value_id]: limit + 20 }))}>
+                        <button
+                          type="button"
+                          className="_soul-idcard-toggle"
+                          onClick={() =>
+                            setEvidenceLimit((prev) => ({ ...prev, [r.value_id]: limit + 20 }))
+                          }
+                        >
                           展开其余 {ev.length - shown.length} 条
                         </button>
                       )}

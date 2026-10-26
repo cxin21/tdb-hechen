@@ -37,8 +37,12 @@ export function formatRepoName(repoName: string, repoUrl: string): string {
   if (!url) return '';
   try {
     const parsed = new URL(url);
-    const segments = parsed.pathname.replace(/\.git$/, '').split('/').filter(Boolean);
-    if (segments.length >= 2) return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
+    const segments = parsed.pathname
+      .replace(/\.git$/, '')
+      .split('/')
+      .filter(Boolean);
+    if (segments.length >= 2)
+      return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
     if (segments.length === 1) return segments[0];
   } catch {
     // fallback

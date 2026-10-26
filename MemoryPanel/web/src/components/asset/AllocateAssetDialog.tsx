@@ -44,7 +44,9 @@ export default function AllocateAssetDialog(props: {
     setSubmitting(true);
     try {
       await props.onAllocate(agentId);
-      tea.notify.success(t('allocAsset.notify.success', { label: props.assetLabel, agent: agentId }));
+      tea.notify.success(
+        t('allocAsset.notify.success', { label: props.assetLabel, agent: agentId }),
+      );
       props.onClose();
     } catch (err) {
       tea.notify.error(err);
@@ -54,12 +56,20 @@ export default function AllocateAssetDialog(props: {
   }
 
   return (
-    <Modal visible caption={t('allocAsset.caption', { type: typeLabel })} size="s" onClose={props.onClose} disableEscape={submitting}>
+    <Modal
+      visible
+      caption={t('allocAsset.caption', { type: typeLabel })}
+      size="s"
+      onClose={props.onClose}
+      disableEscape={submitting}
+    >
       <Modal.Body>
         <Form>
           {props.team && (
             <Form.Item label={t('allocAsset.team')}>
-              <Form.Text>{props.team.name} <Tag size="sm">{props.team.team_id}</Tag></Form.Text>
+              <Form.Text>
+                {props.team.name} <Tag size="sm">{props.team.team_id}</Tag>
+              </Form.Text>
             </Form.Item>
           )}
           <Form.Item label={t('allocAsset.asset')} extra={t('allocAsset.asset.extra')}>
@@ -70,17 +80,34 @@ export default function AllocateAssetDialog(props: {
               size="full"
               value={agentId}
               onChange={setAgentId}
-              placeholder={props.agents.length === 0 ? t('allocAsset.agent.placeholder.empty') : t('allocAsset.agent.placeholder.select')}
+              placeholder={
+                props.agents.length === 0
+                  ? t('allocAsset.agent.placeholder.empty')
+                  : t('allocAsset.agent.placeholder.select')
+              }
               options={props.agents.map((a) => ({ value: a.id, text: `${a.id} · ${a.name}` }))}
               disabled={props.agents.length === 0}
             />
           </Form.Item>
-          {error && <Form.Item><Alert type="error">{error}</Alert></Form.Item>}
+          {error && (
+            <Form.Item>
+              <Alert type="error">{error}</Alert>
+            </Form.Item>
+          )}
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" onClick={() => void submit()} disabled={submitting || !agentId} loading={submitting}>{t('allocAsset.submit')}</Button>
-        <Button onClick={props.onClose} disabled={submitting}>{t('allocAsset.cancel')}</Button>
+        <Button
+          type="primary"
+          onClick={() => void submit()}
+          disabled={submitting || !agentId}
+          loading={submitting}
+        >
+          {t('allocAsset.submit')}
+        </Button>
+        <Button onClick={props.onClose} disabled={submitting}>
+          {t('allocAsset.cancel')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );
