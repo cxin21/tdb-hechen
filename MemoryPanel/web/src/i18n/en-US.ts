@@ -886,6 +886,13 @@ export const enUS = {
   'memory.journal.conclusion': 'Conclusions {{count}}',
   'memory.journal.experience': 'Experiences {{count}}',
   'memory.journal.timing': 'FTS {{fts}}ms/{{ftsHits}} · Vector {{emb}}ms/{{embHits}}',
+  'memory.journal.filterAll': 'All',
+  'memory.journal.filterRecall': 'Real recalls',
+  'memory.journal.filterSkipped': 'Skipped',
+  'memory.journal.skippedBadge': 'Skipped',
+  'memory.journal.skippedNoQuery': '(pure scaffold query, empty after sanitizing)',
+  'memory.journal.skippedDetail':
+    'Skip reason: {{reason}} · residual {{residual}} chars · raw {{len}} chars',
   'memory.journal.prev': 'Prev',
   'memory.journal.next': 'Next',
   'memory.anchors.valence.positive': 'Advance',

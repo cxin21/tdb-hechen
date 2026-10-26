@@ -247,3 +247,21 @@
   min-width: 50px;
   text-align: center;
 }
+
+/* skip 行（2026-10-26 拍板 A）——#74 留痕条目不与真实召回抢视觉权重：左侧灰条 + 弱化背景。 */
+._rj-card--skip {
+  border-left: 3px solid var(--td-gray-color-3, #d4d8de);
+  background: var(--td-gray-color-1, #f7f8fa);
+}
+._rj-card--skip ._rj-query-text {
+  font-weight: 500;
+  color: var(--td-text-color-secondary, #86909c);
+}
+._rj-skip-detail {
+  margin-top: 4px;
+}
+._rj-skip-note {
+  font-size: 12px;
+  color: var(--td-text-color-secondary, #86909c);
+  margin-bottom: 6px;
+}

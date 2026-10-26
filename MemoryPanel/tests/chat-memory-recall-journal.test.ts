@@ -41,6 +41,10 @@ function writeJournal(dir: string, team: string, agent: string, entries: string)
   writeFileSync(path.join(dir, name), entries, 'utf8');
 }
 
+/** skip 行样本（writer 侧 #74 双留痕：query 恒空、rawQuery 留原文）。 */
+const S = (ts: string, rawQuery: string, team = 't1', agent = 'agt-a') =>
+  JSON.stringify({ ts, query: '', strategy: 'scaffold-skip', teamId: team, agentId: agent, sessionReused: false, layered: false, conclusionCount: 0, experienceCount: 0, searchTiming: { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 }, skipReason: 'scaffold-query', rawQuery, rawLen: rawQuery.length, rawHash8: 'deadbeef', residualChars: 0, memoryLines: [] });
+
 const E = (ts: string, query: string, team = 't1', agent = 'agt-a') =>
   JSON.stringify({ ts, query, strategy: 'hybrid', teamId: team, agentId: agent, sessionReused: false, layered: true, conclusionCount: 1, experienceCount: 2, searchTiming: { ftsMs: 1, embeddingMs: 1, ftsHits: 1, embeddingHits: 1 }, memoryLines: ['x'] });
 
@@ -125,6 +129,49 @@ describe('T5: POST /chat-memory/recall-journal（BFF 直读）', () => {
     const res = await call(deps, { team_id: 't1', agent_id: 'agt-a' });
     const j = (await res.json()) as { data: { items: Array<{ query: string }> } };
     expect(j.data.items.map((x) => x.query)).toEqual(['from-datadir']);
+  });
+
+  // ── filter（2026-10-26 拍板 A：skip 行不再混进真实召回列表）──
+  it('filter=recall 排除 skip 行；counts 三口径齐全', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'rj-filter-'));
+    writeJournal(dir, 't1', 'agt-a', [S('2026-10-26T13:00:00Z', 'Time sampled while preparing turn 1'), E('2026-10-26T13:00:10Z', 'q-real')].join('\n') + '\n');
+    process.env.TDAI_RECALL_JOURNAL_DIR = dir;
+    const { deps } = makeDeps();
+    const res = await call(deps, { team_id: 't1', agent_id: 'agt-a', filter: 'recall' });
+    const j = (await res.json()) as {
+      data: { items: Array<{ query: string }>; total: number; filter: string; counts: { all: number; recall: number; skipped: number } };
+    };
+    expect(j.data.items.map((x) => x.query)).toEqual(['q-real']);
+    expect(j.data.total).toBe(1);
+    expect(j.data.filter).toBe('recall');
+    expect(j.data.counts).toEqual({ all: 2, recall: 1, skipped: 1 });
+  });
+
+  it('filter=skipped 只回 skip 行，且分页按过滤后总量算', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'rj-filter2-'));
+    writeJournal(dir, 't1', 'agt-a', [
+      S('2026-10-26T13:00:00Z', 'scaffold-a'),
+      E('2026-10-26T13:00:10Z', 'q-real'),
+      S('2026-10-26T13:00:20Z', 'scaffold-b'),
+    ].join('\n') + '\n');
+    process.env.TDAI_RECALL_JOURNAL_DIR = dir;
+    const { deps } = makeDeps();
+    const res = await call(deps, { team_id: 't1', agent_id: 'agt-a', filter: 'skipped', page: 1, page_size: 5 });
+    const j = (await res.json()) as { data: { items: Array<{ rawQuery?: string }>; total: number; has_more: boolean } };
+    expect(j.data.items.map((x) => x.rawQuery)).toEqual(['scaffold-b', 'scaffold-a']);
+    expect(j.data.total).toBe(2);
+    expect(j.data.has_more).toBe(false);
+  });
+
+  it('非法/缺省 filter → all（向后兼容旧调用方）', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'rj-filter3-'));
+    writeJournal(dir, 't1', 'agt-a', [S('2026-10-26T13:00:00Z', 'scaffold-a'), E('2026-10-26T13:00:10Z', 'q-real')].join('\n') + '\n');
+    process.env.TDAI_RECALL_JOURNAL_DIR = dir;
+    const { deps } = makeDeps();
+    const res = await call(deps, { team_id: 't1', agent_id: 'agt-a', filter: 'bogus' });
+    const j = (await res.json()) as { data: { total: number; filter: string } };
+    expect(j.data.total).toBe(2);
+    expect(j.data.filter).toBe('all');
   });
 
   it('TDAI_DATA_DIR 亦缺失 → 503 loud（不再静默读空/猜路径）', async () => {

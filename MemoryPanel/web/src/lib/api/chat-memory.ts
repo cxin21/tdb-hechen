@@ -270,7 +270,23 @@ export interface RecallJournalEntry {
   block?: string;
   /** 召回记忆行（formatMemoryLine 输出原文） */
   memoryLines?: string[];
+  /**
+   * 跳过语义注记（core #74/#88）：skip 行是独立语义入口（纯脚手架查询整条跳过），
+   * query 剥噪后恒为空串、memoryLines 恒空。缺字段 = 正常召回。
+   */
+  skipReason?: string;
+  /** skip 行原文截断（120 字符）：卡片标题用它替代空 query。 */
+  rawQuery?: string;
+  /** skip 行原文 UTF-16 长度。 */
+  rawLen?: number;
+  /** skip 行原文 sha256 前 8 hex（同文本去重/定界用）。 */
+  rawHash8?: string;
+  /** skip 行剥噪残差（0 = 纯脚手架）。 */
+  residualChars?: number;
 }
+
+/** 召回日志语义过滤（2026-10-26 拍板 A）：all 全部 / recall 真实召回 / skipped 已跳过 */
+export type RecallJournalFilter = 'all' | 'recall' | 'skipped';
 
 const CHAT_MEMORY_PREFIX = '/api/v1/chat-memory';
 
@@ -320,18 +336,29 @@ export const chatMemoryApi = {
   // F-CLUSTER §5：证据源按 id 批量回读（/chat-memory/evidence-by-ids，含归档回退）
   evidenceByIds: (blockId: string, ids: string[]) =>
     chatMemoryCall<{ items: Array<Record<string, unknown>> }>('evidence-by-ids', { blockId, ids }),
-  recallJournal: (teamId: string, agentId: string, page = 1, pageSize = 20) =>
+  recallJournal: (
+    teamId: string,
+    agentId: string,
+    page = 1,
+    pageSize = 20,
+    filter: RecallJournalFilter = 'all',
+  ) =>
     chatMemoryCall<{
       items: RecallJournalEntry[];
       total: number;
       page: number;
       page_size: number;
       has_more: boolean;
+      /** 回显生效的过滤口径（非法值后端回落 all）。 */
+      filter: RecallJournalFilter;
+      /** 三口径条数（与 total 同源，工具栏徽标用）。 */
+      counts: { all: number; recall: number; skipped: number };
     }>('recall-journal', {
       team_id: teamId,
       agent_id: agentId,
       page,
       page_size: pageSize,
+      filter,
     }),
 
   /** L0/L1/L2/L3 分层懒加载；L2 可传 path 懒读单个 Markdown 原文。

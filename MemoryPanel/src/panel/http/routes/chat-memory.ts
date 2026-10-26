@@ -3148,6 +3148,14 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       const page = Math.max(1, Math.floor(Number(body?.page) || 1));
       const pageSize = Math.min(Math.max(Math.floor(Number(body?.page_size) || 20), 1), 100);
 
+      // filter（2026-10-26 拍板 A）：skip 行（#74 留痕，skipReason="scaffold-query"）与真实
+      // 召回行混在同一列表，skip 行 query 剥噪后恒为空串 → 前端把 query 当主标题就是空卡片。
+      // BFF 按语义过滤，且 total/counts 与同一口径对齐（先过滤再切片——否则「已跳过」页会按
+      // 未过滤总量算页数，末页全是幻影）。缺省 all = 旧行为（向后兼容旧调用方）。
+      const rawFilter = typeof body?.filter === "string" ? body.filter : "all";
+      const filter: "all" | "recall" | "skipped" =
+        rawFilter === "recall" || rawFilter === "skipped" ? rawFilter : "all";
+
       let dir: string;
       try {
         dir = resolveRecallJournalDir();
@@ -3173,16 +3181,30 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       } catch { /* 目录/文件缺失=空结果（宁缺毋滥，不报错） */ }
 
       items.sort((a, b) => String(b.ts ?? "").localeCompare(String(a.ts ?? "")));
-      const total = items.length;
+      // skip 判据单一源：writer 侧缺 skipReason 字段 = 正常召回（recall-journal.ts:162-176）。
+      const isSkipEntry = (e: Record<string, unknown>): boolean =>
+        typeof e.skipReason === "string" && e.skipReason.trim() !== "";
+      const counts = {
+        all: items.length,
+        recall: items.filter((e) => !isSkipEntry(e)).length,
+        skipped: items.filter(isSkipEntry).length,
+      };
+      const visible =
+        filter === "all"
+          ? items
+          : items.filter((e) => (filter === "skipped" ? isSkipEntry(e) : !isSkipEntry(e)));
+      const total = visible.length;
       const start = (page - 1) * pageSize;
       return respondEnvelope(
         c,
         okEnvelope(c, {
-          items: items.slice(start, start + pageSize),
+          items: visible.slice(start, start + pageSize),
           total,
           page,
           page_size: pageSize,
           has_more: start + pageSize < total,
+          filter,
+          counts,
         }),
       );
     },

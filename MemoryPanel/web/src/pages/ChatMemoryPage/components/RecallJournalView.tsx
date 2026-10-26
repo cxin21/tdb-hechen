@@ -14,10 +14,20 @@ import { useTranslation } from 'react-i18next';
 import { Button, Select } from 'tea-component';
 import { readAuth } from '@/components/LoginGate';
 import { useAgents, useTeams } from '@/services';
-import { chatMemoryApi, type RecallJournalEntry } from '@/lib/api/chat-memory';
+import {
+  chatMemoryApi,
+  type RecallJournalEntry,
+  type RecallJournalFilter,
+} from '@/lib/api/chat-memory';
 import './recall-journal.css';
 
 const PAGE_SIZE = 20;
+
+/** skip 行标题：query 恒空，退到 rawQuery 首行（原文截断 120 字符，够辨识来源）。 */
+function skipTitle(e: RecallJournalEntry): string {
+  const raw = (e.rawQuery ?? '').split('\n')[0]?.trim() ?? '';
+  return raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+}
 
 function formatEntryTime(ts: string): string {
   const d = new Date(ts);
@@ -67,6 +77,13 @@ export default function RecallJournalView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
+  /** 语义过滤（2026-10-26 拍板 A）：默认只看真实召回——skip 行 query 为空，混在一起全是空卡。 */
+  const [filter, setFilter] = useState<RecallJournalFilter>('recall');
+  const [counts, setCounts] = useState<{ all: number; recall: number; skipped: number }>({
+    all: 0,
+    recall: 0,
+    skipped: 0,
+  });
 
   const fetchPage = useCallback(
     async (p: number) => {
@@ -80,10 +97,11 @@ export default function RecallJournalView() {
       setLoading(true);
       setError('');
       try {
-        const res = await chatMemoryApi.recallJournal(activeTeamId, agentId, p, PAGE_SIZE);
+        const res = await chatMemoryApi.recallJournal(activeTeamId, agentId, p, PAGE_SIZE, filter);
         setEntries(res.items ?? []);
         setTotal(res.total ?? 0);
         setHasMore(!!res.has_more);
+        setCounts(res.counts ?? { all: 0, recall: 0, skipped: 0 });
       } catch (e) {
         setEntries([]);
         setTotal(0);
@@ -93,12 +111,13 @@ export default function RecallJournalView() {
         setLoading(false);
       }
     },
-    [activeTeamId, agentId],
+    [activeTeamId, agentId, filter],
   );
 
   useEffect(() => {
     setPage(1);
-  }, [activeTeamId, agentId]);
+    setExpandedIdx(new Set());
+  }, [activeTeamId, agentId, filter]);
   useEffect(() => {
     void fetchPage(page);
   }, [fetchPage, page]);
@@ -136,6 +155,17 @@ export default function RecallJournalView() {
             text: `${a.name}（${a.agent_id}）`,
           }))}
         />
+        <Select
+          appearance="button"
+          matchButtonWidth
+          value={filter}
+          onChange={(v: string) => setFilter(v as RecallJournalFilter)}
+          options={[
+            { value: 'recall', text: `${t('memory.journal.filterRecall')}（${counts.recall}）` },
+            { value: 'skipped', text: `${t('memory.journal.filterSkipped')}（${counts.skipped}）` },
+            { value: 'all', text: `${t('memory.journal.filterAll')}（${counts.all}）` },
+          ]}
+        />
         <Button onClick={() => void fetchPage(page)} disabled={loading}>
           {t('memory.journal.refresh')}
         </Button>
@@ -157,12 +187,21 @@ export default function RecallJournalView() {
             const isOpen = expandedIdx.has(idx);
             const meta = metaSummary(e, t);
             const lines = Array.isArray(e.memoryLines) ? e.memoryLines : [];
+            // skip 行（#74 留痕）：query 剥噪后为空、memoryLines 恒空——标题退 rawQuery，
+            // 并打「已跳过」徽标，避免再出现「有卡无字」的空卡片。
+            const isSkip = typeof e.skipReason === 'string' && e.skipReason !== '';
+            const titleText = isSkip
+              ? skipTitle(e) || t('memory.journal.skippedNoQuery')
+              : e.query;
             return (
-              <div className="_rj-card" key={`${e.ts}|${idx}`}>
-                {/* 主标题 = query */}
+              <div
+                className={isSkip ? '_rj-card _rj-card--skip' : '_rj-card'}
+                key={`${e.ts}|${idx}`}
+              >
+                {/* 主标题 = query（skip 行 = rawQuery 首行） */}
                 <div
                   className="_rj-query-title"
-                  title={e.query}
+                  title={isSkip ? e.rawQuery ?? '' : e.query}
                   onClick={() => toggleExpand(idx)}
                   role="button"
                   tabIndex={0}
@@ -170,12 +209,17 @@ export default function RecallJournalView() {
                     if (ev.key === 'Enter') toggleExpand(idx);
                   }}
                 >
-                  <span className="_rj-query-text">{e.query}</span>
+                  <span className="_rj-query-text">{titleText}</span>
                   <span className="_rj-toggle-icon">{isOpen ? '▾' : '▸'}</span>
                 </div>
                 {/* 副标题 = 时间 + 精简 meta */}
                 <div className="_rj-sub">
                   <span className="_rj-time">{formatEntryTime(e.ts)}</span>
+                  {isSkip && (
+                    <span className="_rj-badge _rj-badge--muted">
+                      {t('memory.journal.skippedBadge')}
+                    </span>
+                  )}
                   {meta && <span className="_rj-meta-sep">·</span>}
                   {meta && <span className="_rj-meta">{meta}</span>}
                   {lines.length > 0 && (
@@ -185,6 +229,20 @@ export default function RecallJournalView() {
                 {/* 展开区：灵魂块 + 召回行 */}
                 {isOpen && (
                   <div className="_rj-expand">
+                    {isSkip ? (
+                      <div className="_rj-skip-detail">
+                        <div className="_rj-skip-note">
+                          {t('memory.journal.skippedDetail', {
+                            reason: e.skipReason,
+                            residual: e.residualChars ?? 0,
+                            len: e.rawLen ?? 0,
+                          })}
+                        </div>
+                        {e.rawQuery ? (
+                          <pre className="_rj-soul-pre">{e.rawQuery}</pre>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {e.block ? (
                       <details className="_rj-soul" open>
                         <summary className="_rj-soul-summary">

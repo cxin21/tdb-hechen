@@ -849,6 +849,13 @@ export const zhCN = {
   'memory.journal.conclusion': '结论 {{count}}',
   'memory.journal.experience': '经历 {{count}}',
   'memory.journal.timing': 'FTS {{fts}}ms/{{ftsHits}} · 向量 {{emb}}ms/{{embHits}}',
+  'memory.journal.filterAll': '全部',
+  'memory.journal.filterRecall': '真实召回',
+  'memory.journal.filterSkipped': '已跳过',
+  'memory.journal.skippedBadge': '已跳过',
+  'memory.journal.skippedNoQuery': '（纯脚手架查询，剥噪后为空）',
+  'memory.journal.skippedDetail':
+    '跳过原因：{{reason}} · 剥噪残差 {{residual}} 字符 · 原文 {{len}} 字符',
   'memory.journal.prev': '上一页',
   'memory.journal.next': '下一页',
   'memory.anchors.valence.positive': '推进',
