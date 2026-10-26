@@ -1202,8 +1202,10 @@ export class VectorStore implements IMemoryStore {
     // Sort/filter by recorded_at (write time) instead of timestamp (conversation
     // time) because L1 cursor uses recorded_at semantics. ISO 8601 string
     // comparison preserves time order.
+    // classification（proxy #83 行级标签）随行返回：L1 批次据此结构性挡掉
+    // scaffold/artifact/echo/dup，见 utils/sanitize.ts isNonRealL0Classification。
     this.stmtL0QueryAll = this.db.prepare(`
-      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp, classification
       FROM l0_conversations
       WHERE session_key = ?
       ORDER BY recorded_at ASC
@@ -1211,7 +1213,7 @@ export class VectorStore implements IMemoryStore {
     `);
 
     this.stmtL0QueryAfter = this.db.prepare(`
-      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp, classification
       FROM l0_conversations
       WHERE session_key = ? AND recorded_at > ?
       ORDER BY recorded_at ASC
@@ -5164,6 +5166,7 @@ export class VectorStore implements IMemoryStore {
         message_text: r.message_text as string,
         recorded_at: (r.recorded_at as string) || "",
         timestamp: (r.timestamp as number) || 0,
+        classification: (r.classification as string) || "",
       }));
     } catch (err) {
       this.logger?.warn(
@@ -5243,7 +5246,7 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> {
+  ): Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; classification?: string }> }> {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query-grouped] SKIPPED (degraded mode)`);
       return [];
@@ -5258,7 +5261,7 @@ export class VectorStore implements IMemoryStore {
         taskId?: string;
         userId: string;
         agentId: string;
-        messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>;
+        messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; classification?: string }>;
       }>();
       for (const row of rows) {
         const sid = row.session_id || "";
@@ -5278,11 +5281,12 @@ export class VectorStore implements IMemoryStore {
           content: row.message_text,
           timestamp: row.timestamp,
           recordedAtMs: row.recorded_at ? Date.parse(row.recorded_at) || 0 : 0,
+          classification: row.classification,
         });
       }
 
       // Convert to array, sorted by earliest message timestamp
-      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> = [];
+      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; classification?: string }> }> = [];
       for (const group of groupMap.values()) {
         if (group.messages.length > 0) {
           groups.push(group);

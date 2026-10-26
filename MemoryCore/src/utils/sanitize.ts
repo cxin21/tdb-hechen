@@ -195,19 +195,144 @@ export function shouldCaptureL0(text: string): boolean {
 }
 
 /**
+ * Harness 注入物特征串（2026-10-26 L1 闸门）。
+ *
+ * 背景：proxy 的 classified 模式给每条 L0 行打了 classification 标签
+ * （scaffold/artifact/echo/dup/real/unknown），内核侧由
+ * `isNonRealL0Classification` 结构性地挡掉非 real 行。但两类行没有标签：
+ *   ① classified 生效之前的历史 L0 行（unclassified）
+ *   ② 非 DSH 客户端 / 分类器判 unknown 的行
+ * 它们整段携带 harness 注入物（runtime context 快照、system-reminder、压缩
+ * nudge、压缩摘要段、技能目录），8192 字全文照过旧闸门，被 LLM 当成"用户长期
+ * 指令"提炼成 instruction 记忆——2026-10-26 生产实测 133 条 L1 里 85 条源自
+ * 脚手架文本。此表是那类文本的兜底特征（结构闸门之后的第二道）。
+ *
+ * 只在特征串明确属于 harness 注入协议时登记；用户自己写下这些字样的概率极低，
+ * 且代价仅是「这条不进 L1 抽取」（L0 原文仍完整保留）。
+ */
+export const L1_SCAFFOLD_MARKERS: readonly string[] = [
+  // DSH 注入头
+  "Current runtime context",
+  "The approval policy changed from",
+  "Time sampled while preparing turn",
+  "Browser time zone for this request",
+  "Available skills:",
+  // 协议标签与 enqueue 注入
+  "<system-reminder>",
+  "<!-- CODEGRAPH_START -->",
+  "<!-- CODEGRAPH_END -->",
+  // 压缩 nudge / 压缩摘要段 / ACP 规则
+  "Context limit reached — compress now",
+  "Compression Philosophy",
+  "[Compressed conversation section]",
+  "ACP TAGS",
+  "Execute these calls silently",
+  "confirmation line you wrote yourself proves nothing",
+  // 系统提示与技能正文
+  "You are an AI agent powered by",
+  "<skill_content name=",
+  // 后台任务回执头
+  "Background subagent ",
+  "Background job ",
+];
+
+/**
+ * L1 候选的脚手架识别（兜底闸门）。
+ *
+ * 判定：去掉首尾空白后，消息以任一特征串开头，**或**正文包含任一特征串。
+ * 包含式略宽，但如上文所述误伤代价可控（只影响抽取、不删 L0），
+ * 而 8192 字截断会把 nudge 的尾部切成「 and confirm the block count …」
+ * 这类残片——只有包含式才拦得住。
+ */
+export function isHarnessScaffoldText(text: string): boolean {
+  const s = typeof text === "string" ? text.trim() : "";
+  if (!s) return false;
+  for (const marker of L1_SCAFFOLD_MARKERS) {
+    if (s.startsWith(marker) || s.includes(marker)) return true;
+  }
+  return false;
+}
+
+/**
+ * 非 real 的 L0 行分类（proxy #83 逐条 classification 枚举的镜像）。
+ *
+ * real = 真实用户意图（唯一该进 L1 的类别）；unknown/unclassified = 老行或未分类，
+ * 交给 {@link isHarnessScaffoldText} 内容兜底；其余四类都是注入/回流的非用户内容，
+ * L1 结构性挡掉（游标照常推进，见 pipeline-factory 的 L1 批次）。
+ */
+/**
+ * 「有内容的脚手架」白名单（2026-10-26 生产回放修订）。
+ *
+ * 生产 L0 回放发现：DSH 的压缩摘要段与后台任务回执虽然被 proxy 归到 scaffold，
+ * 但它们恰恰是长会话里信息密度最高的部分——`[Compressed conversation section]`
+ * 承载已消费轮次的任务状态（用户原话、文件行号、决策理由），`Background subagent … finished`
+ * 承载子代理的评审结论。整类挡掉会让 L1 只剩零碎对话，长会话的骨架全丢。
+ *
+ * 因此闸门分两层：纯注入物（压缩 nudge / 技能清单 / runtime context / approval 通知）
+ * 继续挡；下面两类按「有内容脚手架」放行，由 LLM 自行判断是否值得沉淀。
+ */
+export const L0_CONTENT_BEARING_SCAFFOLD_MARKERS: readonly string[] = [
+  // DSH 上下文压缩段：已消费轮次的稠密摘要（billion-context 生成）
+  "[Compressed conversation section]",
+  // 后台任务回执：子代理 / shell 任务的结论正文
+  "Background subagent ",
+  "Background job ",
+];
+
+/**
+ * true = 该文本虽属脚手架形态，但正文承载真实工作内容（压缩摘要段 / 后台回执），
+ * 应放行 L1 抽取。判据与 {@link isHarnessScaffoldText} 同口径（startsWith 或 includes）。
+ */
+export function isContentBearingScaffoldText(text: string): boolean {
+  const s = typeof text === "string" ? text.trim() : "";
+  if (!s) return false;
+  for (const marker of L0_CONTENT_BEARING_SCAFFOLD_MARKERS) {
+    if (s.startsWith(marker) || s.includes(marker)) return true;
+  }
+  return false;
+}
+
+export const NON_REAL_L0_CLASSIFICATIONS: readonly string[] = [
+  "scaffold",
+  "artifact",
+  "echo",
+  "dup",
+];
+
+/** true = 该 classification 的 L0 行不得进入 L1 抽取。空串/undefined = 无标签，交内容闸门。 */
+export function isNonRealL0Classification(classification?: string | null): boolean {
+  const c = typeof classification === "string" ? classification.trim().toLowerCase() : "";
+  if (!c) return false;
+  return NON_REAL_L0_CLASSIFICATIONS.includes(c);
+}
+
+/**
  * L1 extraction filter — **strict** quality gate.
  *
  * Applied when L0 messages are fed into the LLM extraction pipeline.
- * Filters out content that is too short, too long, purely symbolic,
- * or looks like a prompt-injection attack — none of which should
+ * Filters out content that is too short, purely symbolic, harness-injected
+ * scaffolding, or a bare framework slash command — none of which should
  * become structured memories.
  *
- * This function is a superset of {@link shouldCaptureL0}: anything
- * rejected by L0 is also rejected here, plus additional quality checks.
+ * 与 {@link shouldCaptureL0} 的关系（2026-10-26 拆分）：L0 侧保持宽松
+ * （"宁存勿删"，含斜杠指令一律拦），L1 侧收紧且**不再**沿用 L0 的斜杠规则——
+ * 生产实测 "/implement https://github.com/cxin21/tdb-hechen/issues/115" 这类带载荷
+ * 的斜杠指令是真实用户意图，旧实现把它连同整段脚手架一起丢掉了。
  */
 export function shouldExtractL1(text: string): boolean {
-  // First apply the same structural filters as L0
-  if (!shouldCaptureL0(text)) return false;
+  if (!text || !text.trim()) return false;
+
+  // 「有内容的脚手架」（压缩摘要段 / 后台回执）放行：形态是脚手架，正文是工作事实。
+  if (isContentBearingScaffoldText(text)) return true;
+
+  // Filter framework-internal / bootstrap noise messages
+  if (isFrameworkNoise(text)) return false;
+
+  // Harness 注入物（脚手架/工件/压缩产物）——内容兜底闸门
+  if (isHarnessScaffoldText(text)) return false;
+
+  // 无载荷的纯框架指令（"/new"、"/reset"）仍拦；带载荷的斜杠指令放行
+  if (/^\/[A-Za-z][\w-]*$/.test(text.trim())) return false;
 
   // ── Length filters ──
   // const isCJK = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(text);

@@ -150,7 +150,7 @@ const L1_OUTPUT_FIELDS = [
 /** All L0 output fields returned by query/search. */
 const L0_OUTPUT_FIELDS = [
   "id", "message_text", "team_id", "user_id", "agent_id", "session_key", "session_id", "task_id", "role",
-  "recorded_at_ms", "timestamp",
+  "recorded_at_ms", "timestamp", "classification",
 ];
 
 const PROFILE_OUTPUT_FIELDS = [
@@ -2324,6 +2324,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         message_text: String(doc.message_text ?? ""),
         recorded_at: epochMsToIso(Number(doc.recorded_at_ms ?? 0)),
         timestamp: Number(doc.timestamp ?? 0),
+        classification: String(doc.classification ?? ""),
       }));
 
       return rows;
@@ -2359,6 +2360,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
           content: row.message_text,
           timestamp: row.timestamp,
           recordedAtMs: row.recorded_at ? Date.parse(row.recorded_at) || 0 : 0,
+          classification: row.classification,
         });
       }
 

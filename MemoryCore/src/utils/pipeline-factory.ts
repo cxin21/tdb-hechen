@@ -62,6 +62,7 @@ import {
 } from "../core/profile/profile-sync.js";
 import { createScopedStorageAdapter, StorageAdapter } from "../core/storage/adapter.js";
 import type { Logger } from "../core/types.js";
+import { isContentBearingScaffoldText, isNonRealL0Classification } from "./sanitize.js";
 
 const TAG = "[memory-tdai] [pipeline-factory]";
 
@@ -432,7 +433,7 @@ export function createL1Runner(opts: {
       // the oldest L1_BATCH_PROCESS (= N) for actual processing and use the
       // remaining rows merely as a *signal* to detect backlog. See file-level
       // comment on L1_BATCH_PROCESS / L1_BATCH_QUERY for rationale.
-      type FlatMessage = ConversationMessage & { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; recordedAtMs: number };
+      type FlatMessage = ConversationMessage & { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; recordedAtMs: number; classification?: string };
       let flat: FlatMessage[] = [];
       let queriedCount = 0;
 
@@ -454,6 +455,7 @@ export function createL1Runner(opts: {
               userId: g.userId,
               agentId: g.agentId,
               recordedAtMs: m.recordedAtMs,
+              classification: m.classification,
             });
           }
         }
@@ -530,8 +532,32 @@ export function createL1Runner(opts: {
       // ── Step 3: re-group sliced messages by isolation tuple + sessionId (chronological within each group) ──
       const groupMap = new Map<string, { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: ConversationMessage[] }>();
       let maxRecordedAtMs = 0;
+      // ── 分类闸门（2026-10-26）：只在「喂给 LLM」这一侧挡，游标照常推进 ──
+      //
+      // 生产事故：classified 模式下每轮 L0 = 1 条 real 用户消息 + N 条脚手架
+      // （runtime context 快照 / system-reminder / 压缩 nudge / 技能正文），
+      // 而旧 L1 链路只读 message_text、从不看 classification → 每批 10 条里 8-9 条
+      // 是脚手架，LLM 把它们当用户原话提炼成 instruction 记忆（实测 133 条 L1
+      // 中 85 条源自脚手架）。
+      //
+      // 这里结构性挡掉 scaffold/artifact/echo/dup；无标签的行（classified 上线前
+      // 的历史行、非 DSH 客户端）落到 l1-extractor 的内容兜底闸门
+      // （shouldExtractL1 → isHarnessScaffoldText）。
+      //
+      // 关键不变量：maxRecordedAtMs 仍统计**全部** processed 行（含被挡的行），
+      // 否则整批都是脚手架时游标不前进 → 同一批被无限重取。
+      let gateSkipped = 0;
+      const gateSkippedByClass: Record<string, number> = {};
       for (const m of processed) {
         if (m.recordedAtMs > maxRecordedAtMs) maxRecordedAtMs = m.recordedAtMs;
+        // 「有内容的脚手架」豁免：压缩摘要段 / 后台回执虽被 proxy 归类为 scaffold，
+        // 但正文是任务状态与评审结论（生产 L0 回放实测），只挡纯注入物。
+        if (isNonRealL0Classification(m.classification) && !isContentBearingScaffoldText(m.content)) {
+          gateSkipped++;
+          const c = String(m.classification);
+          gateSkippedByClass[c] = (gateSkippedByClass[c] ?? 0) + 1;
+          continue;
+        }
         const groupKey = `${m.userId}\u0000${m.agentId}\u0000${m.sessionId}`;
         let g = groupMap.get(groupKey);
         if (!g) {
@@ -547,6 +573,13 @@ export function createL1Runner(opts: {
       // Sort groups by earliest timestamp so extractL1Memories sees them in
       // the same order they were captured (matches pre-existing behavior).
       groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
+
+      if (gateSkipped > 0) {
+        logger.info(
+          `${TAG} [l1] classification gate: ${gateSkipped}/${processed.length} L0 rows skipped ` +
+          `(${JSON.stringify(gateSkippedByClass)}), ${groups.length} group(s) remain`,
+        );
+      }
 
       // ── Step 4: backlog detection ──
       //

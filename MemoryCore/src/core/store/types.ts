@@ -290,6 +290,12 @@ export interface L0QueryRow {
   message_text: string;
   recorded_at: string;
   timestamp: number;
+  /**
+   * 行级分类标签（proxy #83：real/artifact/echo/scaffold/dup/unknown）。
+   * 无标签（老行/非 DSH 客户端）= 空串，L1 侧退化为内容闸门
+   * （sanitize.ts isHarnessScaffoldText）。
+   */
+  classification?: string;
 }
 
 /** L0 messages grouped by session ID (for L1 runner). */
@@ -306,6 +312,8 @@ export interface L0SessionGroup {
     timestamp: number;
     /** Epoch ms when this message was recorded into L0 (used by L1 cursor). */
     recordedAtMs: number;
+    /** 行级分类标签（见 {@link L0QueryRow.classification}）。 */
+    classification?: string;
   }>;
 }
 
