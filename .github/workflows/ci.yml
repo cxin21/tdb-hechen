@@ -81,3 +81,22 @@ jobs:
       - name: Full test suite
         working-directory: MemoryProxy
         run: pnpm exec vitest run
+
+  panel-format:
+    # #106 格式门禁：prettier --check 必须绿（格式修复与门禁同 PR，落地即绿）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # lockfile 不入库（仓库纪律）——无 frozen 安装；prettier 无原生依赖，--ignore-scripts 足够
+      - name: Install
+        working-directory: MemoryPanel/web
+        run: pnpm install --ignore-scripts
+      - name: Prettier format gate (#106)
+        working-directory: MemoryPanel/web
+        run: pnpm run format:check
