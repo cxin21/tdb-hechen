@@ -177,6 +177,12 @@
 ._spending-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--soul-sp-2); margin-top: 6px; }
 ._spending-error { font-size: var(--soul-fz-meta); color: var(--soul-avoid); margin-top: var(--soul-sp-2); }
 
+/* ===== #100 审计视图：auto_adopted 徽标行内审计快照折叠体（chip 复用 _soul-chip--green） ===== */
+._spending-audit { margin-top: 4px; }
+._spending-audit summary { font-size: var(--soul-fz-meta); color: var(--soul-text-3); cursor: pointer; }
+._spending-audit-body { margin-top: 4px; padding: 6px 8px; border: 1px dashed var(--soul-border); border-radius: var(--soul-radius-btn); display: flex; flex-direction: column; gap: 2px; font-size: var(--soul-fz-meta); color: var(--soul-text-3); }
+._spending-audit-content { margin: 2px 0 0; font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--soul-text-2); }
+
 /* ── UI 2.1 下一批（2026-09-21）：三池 Tab + kebab 收纳（soul 变体专用类；ChatMemoryPage 不加载本文件） ── */
 ._va-vtab { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 ._va-vtab-pill {

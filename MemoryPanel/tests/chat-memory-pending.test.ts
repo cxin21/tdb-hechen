@@ -131,6 +131,32 @@ describe('POST /chat-memory/pending/list', () => {
     expect(sent.user_id).toBe('u1'); // owner 借用语义
     expect(sent.team_id).toBe('t1');
     expect(sent.agent_id).toBe('agt-1');
+    expect(sent.include_decided).toBeUndefined(); // #100 缺省不透传（逐位不变）
+  });
+
+  it('#100 透传 include_decided=true 到 /v3/core-memory/pending/list', async () => {
+    const { deps } = makeDeps();
+    const pending = [
+      {
+        pending_id: 'pd-2',
+        slot: 'self_identity',
+        state: 'auto_adopted',
+        attrs_json: JSON.stringify({ auto_adopt: { adopted_at: '2026-10-26T02:00:00.000Z', gate: { votes: 3 } } }),
+      },
+    ];
+    mockKernelFetch({ body: okEnvelope({ pending }) });
+    const res = await call(deps, '/api/v1/chat-memory/pending/list', {
+      block_id: BLOCK_ID,
+      include_decided: true,
+    });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { code: number; data?: { pending?: unknown[] } };
+    expect(json.code).toBe(0);
+    expect(json.data?.pending).toEqual(pending);
+    const { url, init } = await lastKernelCall();
+    expect(url).toBe(`${CORE_BASE}/v3/core-memory/pending/list`);
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.include_decided).toBe(true);
   });
 });
 

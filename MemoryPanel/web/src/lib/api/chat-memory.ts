@@ -79,6 +79,24 @@ export function conflictOf(err: unknown): PendingDecideConflict | null {
   return null;
 }
 
+/** #100：auto_adopted 回滚 409 载荷（v2-router 无 detail，理由嵌在 message：
+ *  'auto-adopt rollback refused: <reason> — slot changed since auto-adopt; handle manually'） */
+export interface PendingRollbackRefused {
+  /** store 版本守卫给出的原始拒绝理由（如 'slot-version-changed (current=3 != adopt-time=2)'） */
+  reason?: string;
+}
+
+/** #100：识别 auto_adopted 回滚 409（业务码 409 ∧ message 含 'rollback refused'；形状不符返回 null）。
+ *  语义（#92 R5）：auto_adopt 后槽版本漂移 → 拒绝快照回滚，需人工处理。 */
+export function rollbackRefusedOf(err: unknown): PendingRollbackRefused | null {
+  if (!(err instanceof ApiError)) return null;
+  if (err.code !== 409) return null;
+  const msg = err.rawMessage ?? '';
+  if (!msg.includes('rollback refused')) return null;
+  const m = /rollback refused: (.+?) — /.exec(msg);
+  return { reason: m?.[1] };
+}
+
 /** #50⑤：promise_transition 采纳 409 载荷（core v2-router errorEnvelope detail.promiseTransition） */
 export interface PromiseDecideConflict {
   promiseId: string;
@@ -527,9 +545,14 @@ export const chatMemoryApi = {
       ...(opts?.format ? { format: opts.format } : {}),
     }),
 
-  /** P2（O13 UI）：待办列表（core_value/strict_rule 分级提案，人工裁决后生效） */
-  pendingList: (blockId: string) =>
-    chatMemoryCall<{ pending: PendingItem[] }>('pending/list', { block_id: blockId }),
+  /** P2（O13 UI）：待办列表（core_value/strict_rule 分级提案，人工裁决后生效）。
+   *  #100 审计视图：opts.includeDecided=true → BFF 透传 include_decided，已裁决行（含
+   *  auto_adopted 审计态）也返回；缺省与旧调用逐位一致。 */
+  pendingList: (blockId: string, opts?: { includeDecided?: boolean }) =>
+    chatMemoryCall<{ pending: PendingItem[] }>('pending/list', {
+      block_id: blockId,
+      ...(opts?.includeDecided ? { include_decided: true } : {}),
+    }),
 
   /** 待办决策（Owner-only）：adopted 采纳（落槽）/ rejected 拒绝（O13 单向状态机，复决 404）。
    *  #12 T6：同名冲突缺省 409（err.data.conflict 载荷）；UI 确认后 allowOverwrite=true 显式覆盖

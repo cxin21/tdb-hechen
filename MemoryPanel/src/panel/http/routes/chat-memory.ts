@@ -1882,6 +1882,9 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
 
       const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      // #100 审计视图：include_decided=true 时透传，让已裁决（含 auto_adopted）行进入列表；
+      // 缺省不携带，网关按 false 处理——存量调用逐位不变。
+      const includeDecided = (body as { include_decided?: unknown } | null)?.include_decided === true;
       const env = await deps.kernelHttp.postEnvelope<{ pending?: unknown }>(
         "/v3/core-memory/pending/list",
         {
@@ -1889,6 +1892,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
           agent_id: parsed.agentId,
           user_id: asset.owner_user_id,
           session_id: "default",
+          ...(includeDecided ? { include_decided: true } : {}),
         },
         cred,
       );

@@ -4,23 +4,53 @@
  * SoulPage 局部组件：PendingSection 共享组件零改动，数据同源（pendingList/pendingDecide）。
  * 重构点：按 slot 分组折叠（20+ 项不再垂直轰炸）+ 按钮权重分级
  * （采纳=小号主按钮 / 拒绝=text 级 hover 红）+ 红色左竖条 + 计数徽标。
+ *
+ * #100 审计视图：include_decided 拉取后客户端只留 待决+auto_adopted 两类可操作行；
+ * auto_adopted 行 = 绿色「自动采纳」徽标 + 可折叠审计快照（采纳时间/门限/前后槽） +
+ * 「回滚」按钮（复用 rejected 裁决；409 版本漂移 → 提示手工处理，#92 R5 语义）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { chatMemoryApi, conflictOf, promiseConflictOf, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, conflictOf, promiseConflictOf, rollbackRefusedOf, type PendingItem } from '@/lib/teamApi';
 import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
   core_value: '价值锚提案',
   strict_rule: '行为红线提案',
   promise_transition: '承诺状态迁移提案',
+  self_identity: '「我是谁」提案',
 };
 
-function PendingRow({ id, slot, content, busy, batchBusy, checked, onToggle, onDecide }: {
-  id: string; slot: string; content: string; busy: string; batchBusy: boolean;
+/** #100：auto_adopt 审计快照（attrs_json.auto_adopt；decidePendingCoreAuto 落账形状） */
+interface AutoAdoptAudit {
+  adopted_at?: string;
+  prev_slot_content?: string;
+  prev_slot_version?: number;
+  prev_slot_existed?: boolean;
+  post_slot_version?: number;
+  gate?: { votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
+}
+
+/** #100：宽松解析 auto_adopt 审计（无 auto_adopt 字段 → null 不显示徽标；坏 JSON → {} 仍显示徽标与回滚，快照字段走缺省占位） */
+function autoAdoptOf(p: PendingItem): AutoAdoptAudit | null {
+  if (p.state !== 'auto_adopted') return null;
+  try {
+    const a = p.attrs_json ? (JSON.parse(p.attrs_json) as Record<string, unknown>) : null;
+    const audit = a?.auto_adopt;
+    if (audit && typeof audit === 'object' && !Array.isArray(audit)) return audit as AutoAdoptAudit;
+  } catch {
+    /* 坏 JSON → 无快照体，仍显示徽标与回滚 */
+  }
+  return {};
+}
+
+function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked, onToggle, onDecide }: {
+  id: string; slot: string; content: string; state?: string; audit?: AutoAdoptAudit | null;
+  busy: string; batchBusy: boolean;
   checked: boolean; onToggle: (id: string) => void;
   onDecide: (id: string, d: 'adopted' | 'rejected') => void;
 }) {
+  const autoAdopted = state === 'auto_adopted';
   return (
     <li className="_spending-row">
       <div className="_spending-body">
@@ -34,26 +64,66 @@ function PendingRow({ id, slot, content, busy, batchBusy, checked, onToggle, onD
           <span className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`}>
             {SLOT_LABEL[slot] ?? slot}
           </span>
+          {autoAdopted && (
+            <span className="_soul-chip _soul-chip--green" title="证据达到要求，系统自动采纳了这条；点「回滚」可恢复原样">
+              自动采纳
+            </span>
+          )}
           <code className="_soul-meta _spending-id">{id}</code>
         </div>
         <pre className="_spending-content">{content}</pre>
+        {audit && (
+          <details className="_spending-audit">
+            <summary>系统自动采纳记录</summary>
+            <div className="_spending-audit-body">
+              {audit.adopted_at && <div>采纳时间：{audit.adopted_at}</div>}
+              {audit.gate && (
+                <div>
+                  证据要求：{audit.gate.votes ?? '?'} 票 / 跨 {audit.gate.spanHours ?? '?'} 小时；把关线：与被拒提案相似低于 {audit.gate.contradictionThreshold ?? '?'} · 与现有内容相似低于 {audit.gate.dupThreshold ?? '?'}
+                </div>
+              )}
+              <div>
+                采纳前的「我是谁」：
+                {audit.prev_slot_existed === false
+                  ? '（此前不存在，回滚即删除）'
+                  : `v${audit.prev_slot_version ?? '?'}`}
+              </div>
+              {audit.prev_slot_content && <pre className="_spending-audit-content">{audit.prev_slot_content}</pre>}
+              {typeof audit.post_slot_version === 'number' && <div>采纳后的「我是谁」：v{audit.post_slot_version}</div>}
+            </div>
+          </details>
+        )}
         <div className="_spending-actions">
-          <button
-            type="button"
-            className="_soul-btn-primary _soul-btn-sm"
-            disabled={batchBusy || busy === id}
-            onClick={() => onDecide(id, 'adopted')}
-          >
-            采纳
-          </button>
-          <button
-            type="button"
-            className="_soul-btn-text"
-            disabled={batchBusy || busy === id}
-            onClick={() => onDecide(id, 'rejected')}
-          >
-            拒绝
-          </button>
+          {autoAdopted ? (
+            <button
+              type="button"
+              className="_soul-btn-ghost _soul-btn-sm"
+              disabled={batchBusy || busy === id}
+              title="撤销这次自动采纳，恢复原来的内容"
+              onClick={() => onDecide(id, 'rejected')}
+            >
+              回滚
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="_soul-btn-primary _soul-btn-sm"
+                disabled={batchBusy || busy === id}
+                onClick={() => onDecide(id, 'adopted')}
+              >
+                采纳
+              </button>
+              <button
+                type="button"
+                className="_soul-btn-text"
+                disabled={batchBusy || busy === id}
+                onClick={() => onDecide(id, 'rejected')}
+              >
+                拒绝
+              </button>
+            </>
+          )}
         </div>
       </div>
     </li>
@@ -72,9 +142,17 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
 
   const refresh = useCallback(() => {
     setItems(null);
+    // #100 审计视图：拉取含已裁决行，客户端过滤只留 待决 + auto_adopted 两类可操作行
+    // （rejected/adopted/expired 为终局，审计语义已闭合，不再打扰裁决队列）。
     chatMemoryApi
-      .pendingList(blockId)
-      .then((d) => setItems(Array.isArray(d.pending) ? d.pending : []))
+      .pendingList(blockId, { includeDecided: true })
+      .then((d) =>
+        setItems(
+          Array.isArray(d.pending)
+            ? d.pending.filter((p) => p.state === undefined || p.state === 'pending' || p.state === 'auto_adopted')
+            : [],
+        ),
+      )
       .catch(() => setItems([]));
   }, [blockId]);
 
@@ -104,6 +182,11 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
         // #50⑤：promise 迁移 409——状态已迁移，重试只会撞 404，不误导重试。
         tea.notify.warning('该承诺状态已发生迁移，本次未重复执行；请刷新后查看承诺当前状态');
         setError('该承诺状态已发生迁移，请刷新后重看当前状态');
+      } else if (rollbackRefusedOf(err)) {
+        // #100：auto_adopted 回滚 409——采纳后身份槽已被人改动（版本漂移），快照回滚拒绝，
+        // 重试同样拒绝；不误导重试，引导手工处理。
+        tea.notify.warning('「我是谁」在自动采纳后又被改过，回滚被拒；请到「记忆 → 身份」手工核对当前内容');
+        setError('回滚被拒：「我是谁」采纳后又被改过，需手工核对当前内容');
       } else {
         setError('决策失败，请重试');
       }
@@ -123,6 +206,7 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     const failedIds: string[] = [];
     let conflictCount = 0;
     let promiseConflictCount = 0;
+    let rollbackRefusedCount = 0;
     for (const id of Array.from(selected)) {
       try {
         await chatMemoryApi.pendingDecide(blockId, id, decision);
@@ -130,6 +214,7 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
         // #50⑤：promise 迁移 409 单列计数（重试只会撞 404，不混入失败重试提示）。
         if (conflictOf(err)) conflictCount++;
         else if (promiseConflictOf(err)) promiseConflictCount++;
+        else if (rollbackRefusedOf(err)) rollbackRefusedCount++;
         else failedIds.push(id);
       }
     }
@@ -139,6 +224,8 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     if (conflictCount > 0) setError(`同名冲突 ${conflictCount} 条需逐条确认，请到价值锚面板处理`);
     if (promiseConflictCount > 0)
       setError(`承诺状态迁移冲突 ${promiseConflictCount} 条，承诺已被他处迁移，请刷新后查看当前状态`);
+    if (rollbackRefusedCount > 0)
+      setError(`回滚被拒 ${rollbackRefusedCount} 条：「我是谁」采纳后又被改过，需手工核对当前内容（见「记忆 → 身份」）`);
     refresh();
   }
 
@@ -211,6 +298,8 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
                     id={p.pending_id}
                     slot={p.slot}
                     content={p.content}
+                    state={p.state}
+                    audit={autoAdoptOf(p)}
                     busy={busy}
                     batchBusy={batchBusy}
                     checked={selected.has(p.pending_id)}
