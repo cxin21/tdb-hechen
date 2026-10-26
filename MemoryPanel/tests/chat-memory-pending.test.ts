@@ -182,6 +182,31 @@ describe('POST /chat-memory/pending/decide', () => {
     expect(sent.user_id).toBe('u1');
   });
 
+  it('#102：网关 409 结构化 detail（data.rollbackRefused）透传到前端信封 data', async () => {
+    const { deps } = makeDeps();
+    mockKernelFetch({
+      body: {
+        code: 409,
+        message: 'auto-adopt rollback refused: slot-version-changed (current=3 != adopt-time=2) — slot changed since auto-adopt; handle manually',
+        request_id: 'req-core-409',
+        data: { rollbackRefused: { reason: 'slot-version-changed (current=3 != adopt-time=2)' } },
+      },
+    });
+    const res = await call(deps, '/api/v1/chat-memory/pending/decide', {
+      block_id: BLOCK_ID,
+      pending_id: 'pd-1',
+      decision: 'rejected',
+    });
+    expect(res.status).toBe(409); // mapHttpStatusFromEnvelopeCode：400-599 → 同码
+    const json = (await res.json()) as {
+      code: number;
+      data?: { rollbackRefused?: { reason?: string } };
+    };
+    expect(json.code).toBe(409);
+    // #102 验收：结构化载荷原样到达前端（分类器 data.rollbackRefused 优先识别的依据）
+    expect(json.data).toEqual({ rollbackRefused: { reason: 'slot-version-changed (current=3 != adopt-time=2)' } });
+  });
+
   it('非属主 → 403 NOT_ASSET_OWNER', async () => {
     const { deps } = makeDeps({ callerUserId: 'u2', assetOwner: 'u1' });
     mockKernelFetch();

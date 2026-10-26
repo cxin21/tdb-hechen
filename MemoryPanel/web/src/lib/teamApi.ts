@@ -80,6 +80,7 @@ export {
 // ── Chat Memory ──
 export {
   chatMemoryApi,
+  classify409Of,
   conflictOf,
   promiseConflictOf,
   rollbackRefusedOf,

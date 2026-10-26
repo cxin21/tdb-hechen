@@ -64,6 +64,35 @@ export interface PendingDecideConflict {
   hint?: string;
 }
 
+/** #102：409 分类结果判别联合——kind 区分三类冲突，载荷随分类携带（形状不符即 null，前向兼容） */
+export type Classified409 =
+  | { kind: 'conflict'; conflict: PendingDecideConflict }
+  | { kind: 'promise-conflict'; conflict: PromiseDecideConflict }
+  | { kind: 'rollback-refused'; reason?: string };
+
+/**
+ * #102 统一 409 分类器：三条提取路径（conflict / promiseTransition / rollbackRefused）
+ * 共享的单一分类入口。结构化字段优先（网关 409 data.rollbackRefused / data.conflict /
+ * data.promiseTransition），message 文案正则仅作旧网关兼容回退——网关文案改动不再
+ * 破坏前端识别（#100 评审 Standards 路判断题的收口）。
+ */
+export function classify409Of(err: unknown): Classified409 | null {
+  const data = err instanceof ApiError ? err.data : undefined;
+  if (data && typeof data === 'object') {
+    // ① 结构化：conflict / promiseTransition（形状校验与既有提取器逐位一致）
+    const conflict = conflictOf(err);
+    if (conflict) return { kind: 'conflict', conflict };
+    const promise = promiseConflictOf(err);
+    if (promise) return { kind: 'promise-conflict', conflict: promise };
+    // ② 结构化：rollbackRefused detail（#102 网关新载荷；有 detail 即分类，reason 可缺省）
+    const detail = rollbackDetailOf(err);
+    if (detail) return { kind: 'rollback-refused', reason: detail.reason };
+  }
+  // ③ 兼容回退：旧网关无结构化 detail，rollback 拒绝理由只嵌在 message 文案里
+  const legacy = rollbackRefusedOf(err);
+  return legacy ? { kind: 'rollback-refused', reason: legacy.reason } : null;
+}
+
 /** 从 ApiError 提取 409 conflict 载荷；非冲突错误返回 null（前向兼容：形状不符即 null） */
 export function conflictOf(err: unknown): PendingDecideConflict | null {
   const data = err instanceof ApiError ? err.data : undefined;
@@ -79,18 +108,33 @@ export function conflictOf(err: unknown): PendingDecideConflict | null {
   return null;
 }
 
-/** #100：auto_adopted 回滚 409 载荷（v2-router 无 detail，理由嵌在 message：
- *  'auto-adopt rollback refused: <reason> — slot changed since auto-adopt; handle manually'） */
+/** #100：auto_adopted 回滚 409 载荷（新网关 = data.rollbackRefused detail；旧网关理由嵌在
+ *  message：'auto-adopt rollback refused: <reason> — slot changed since auto-adopt; handle manually'） */
 export interface PendingRollbackRefused {
   /** store 版本守卫给出的原始拒绝理由（如 'slot-version-changed (current=3 != adopt-time=2)'） */
   reason?: string;
 }
 
-/** #100：识别 auto_adopted 回滚 409（业务码 409 ∧ message 含 'rollback refused'；形状不符返回 null）。
+/** #102：data.rollbackRefused detail 形状嗅探——classify409Of 与 rollbackRefusedOf 共享，
+ *  消除重复解包；有 detail 即认定 rollback 场景，reason 非 string 归一为 undefined */
+function rollbackDetailOf(err: unknown): PendingRollbackRefused | null {
+  if (!(err instanceof ApiError)) return null;
+  const rb = (err.data as { rollbackRefused?: unknown } | undefined)?.rollbackRefused;
+  if (rb && typeof rb === 'object') {
+    const reason = (rb as { reason?: unknown }).reason;
+    return { reason: typeof reason === 'string' ? reason : undefined };
+  }
+  return null;
+}
+
+/** #100/#102：识别 auto_adopted 回滚 409——结构化 data.rollbackRefused 优先，
+ *  旧网关回退到 message 文案正则（业务码 409 ∧ 含 'rollback refused'；形状不符返回 null）。
  *  语义（#92 R5）：auto_adopt 后槽版本漂移 → 拒绝快照回滚，需人工处理。 */
 export function rollbackRefusedOf(err: unknown): PendingRollbackRefused | null {
   if (!(err instanceof ApiError)) return null;
   if (err.code !== 409) return null;
+  const detail = rollbackDetailOf(err);
+  if (detail) return detail;
   const msg = err.rawMessage ?? '';
   if (!msg.includes('rollback refused')) return null;
   const m = /rollback refused: (.+?) — /.exec(msg);
@@ -120,7 +164,6 @@ export function promiseConflictOf(err: unknown): PromiseDecideConflict | null {
   }
   return null;
 }
-
 /** 价值锚提案（Task DISC，提议制）：/v3/core-memory/values/discover 返回，只提议不落库 */
 export interface ValueProposal {
   label: string;

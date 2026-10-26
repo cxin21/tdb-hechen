@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { chatMemoryApi, conflictOf, promiseConflictOf, rollbackRefusedOf, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, classify409Of, type PendingItem } from '@/lib/teamApi';
 import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
 import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
@@ -145,15 +145,17 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
       refresh();
     } catch (err) {
       // #12 T6：同名冲突 409——横幅引导去完整面板确认（rail 保持零重构，不做弹窗流）
-      const conflict = conflictOf(err);
+      // #102：三处提取器收敛到 classify409Of 单一分类入口（结构化优先，文案回退）。
+      const c409 = classify409Of(err);
+      const conflict = c409?.kind === 'conflict' ? c409.conflict : null;
       if (conflict) {
         tea.notify.warning(`「${conflict.label}」存在同名锚（${conflict.state ?? 'active'}），已在待办行标记冲突；请到「记忆 → 价值锚」面板确认后采纳`);
         setError('存在同名冲突，请到价值锚面板确认后采纳');
-      } else if (promiseConflictOf(err)) {
+      } else if (c409?.kind === 'promise-conflict') {
         // #50⑤：promise 迁移 409——状态已迁移，重试只会撞 404，不误导重试。
         tea.notify.warning('该承诺状态已发生迁移，本次未重复执行；请刷新后查看承诺当前状态');
         setError('该承诺状态已发生迁移，请刷新后重看当前状态');
-      } else if (rollbackRefusedOf(err)) {
+      } else if (c409?.kind === 'rollback-refused') {
         // #100：auto_adopted 回滚 409——采纳后身份槽已被人改动（版本漂移），快照回滚拒绝，
         // 重试同样拒绝；不误导重试，引导手工处理。
         tea.notify.warning('「我是谁」在自动采纳后又被改过，回滚被拒；请到「记忆 → 身份」手工核对当前内容');
@@ -183,9 +185,10 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
         await chatMemoryApi.pendingDecide(blockId, id, decision);
       } catch (err) {
         // #50⑤：promise 迁移 409 单列计数（重试只会撞 404，不混入失败重试提示）。
-        if (conflictOf(err)) conflictCount++;
-        else if (promiseConflictOf(err)) promiseConflictCount++;
-        else if (rollbackRefusedOf(err)) rollbackRefusedCount++;
+        const kind = classify409Of(err)?.kind;
+        if (kind === 'conflict') conflictCount++;
+        else if (kind === 'promise-conflict') promiseConflictCount++;
+        else if (kind === 'rollback-refused') rollbackRefusedCount++;
         else failedIds.push(id);
       }
     }

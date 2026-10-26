@@ -69,21 +69,21 @@ export function onUnauthorized(handler: () => void): () => void {
   return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handler);
 }
 
-function parseMetaErrorEnvelope(text: string): {
+export function parseMetaErrorEnvelope(text: string): {
   code?: number | string;
   requestId?: string;
   rawMessage?: string;
+  /** #102：错误信封业务负载（结构化 409 detail 如 rollbackRefused/conflict/promiseTransition），供分类器识别 */
+  data?: unknown;
 } {
   const trimmed = text.trim();
   if (!trimmed.startsWith('{')) return {};
   try {
     const env = JSON.parse(trimmed) as MetaEnvelope<unknown>;
     if (typeof env?.message === 'string' && env.message.trim()) {
-      return {
-        code: env.code,
-        requestId: env.request_id,
-        rawMessage: env.message,
-      };
+      return env.data !== undefined && env.data !== null
+        ? { code: env.code, requestId: env.request_id, rawMessage: env.message, data: env.data }
+        : { code: env.code, requestId: env.request_id, rawMessage: env.message };
     }
   } catch {
     /* non-JSON error body */

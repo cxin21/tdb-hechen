@@ -433,6 +433,8 @@ describe("#82 SQLite 全链路（真实 VectorStore，临时库）", () => {
     const res = await handleCoreMemoryPendingDecide({ pending_id: "pd-auto-2", decision: "rejected" }, AUTH, "r-92b", depsFor(store92));
     expect(res.code).toBe(409);
     expect(store92.decidePendingCore).not.toHaveBeenCalled();
+    // #102：409 携带结构化 detail（前端按 data.rollbackRefused 分类识别，文案改动不再破坏识别）
+    expect(res.data).toEqual({ rollbackRefused: { reason: "slot-version-changed (current=3 != adopt-time=2)" } });
   });
 
   it("#92 stage 2：pending 行 rejected 走常规裁决（回滚分支旁路）", async () => {

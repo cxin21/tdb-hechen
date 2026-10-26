@@ -16,7 +16,7 @@
  * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel，与 SoulPendingRail 统一消费。
  */
 import { useCallback, useEffect, useState } from 'react';
-import { chatMemoryApi, conflictOf, promiseConflictOf, rollbackRefusedOf, type PendingItem } from '@/lib/teamApi';
+import { chatMemoryApi, classify409Of, type PendingItem } from '@/lib/teamApi';
 import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
 import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
@@ -70,7 +70,9 @@ export function PendingSection(props: { blockId: string }) {
       refresh();
     } catch (err) {
       // #12 T6：409 同名冲突——缺省安全优先未落库；确认后显式覆盖重试（vetoed 不可绕仅提示）。
-      const conflict = conflictOf(err);
+      // #102：三处提取器收敛到 classify409Of 单一分类入口（结构化优先，文案回退）。
+      const c409 = classify409Of(err);
+      const conflict = c409?.kind === 'conflict' ? c409.conflict : null;
       if (conflict && decision === 'adopted' && !allowOverwrite) {
         if (conflict.state === 'vetoed') {
           setError(`「${conflict.label}」已被永久否决（vetoed），不可采纳覆盖；如需恢复请先在锚面板处理否决状态`);
@@ -93,7 +95,7 @@ export function PendingSection(props: { blockId: string }) {
         return;
       }
       // #50⑤：promise 迁移 409——承诺状态已被他处迁移或迁移被拒，重试只会撞 404，不误导重试。
-      const promiseConflict = promiseConflictOf(err);
+      const promiseConflict = c409?.kind === 'promise-conflict' ? c409.conflict : null;
       if (promiseConflict) {
         setError(
           `该承诺状态已发生迁移（目标 ${promiseConflict.to}${promiseConflict.reason ? `：${promiseConflict.reason}` : ''}），本次未重复执行；请刷新后查看承诺当前状态`,
@@ -103,7 +105,7 @@ export function PendingSection(props: { blockId: string }) {
       }
       // #100：auto_adopted 回滚 409——采纳后身份槽已被人改动（版本漂移），快照回滚拒绝，
       // 重试同样拒绝；不误导重试，引导手工处理。
-      if (rollbackRefusedOf(err)) {
+      if (c409?.kind === 'rollback-refused') {
         setError('回滚被拒：「我是谁」在自动采纳后又被改过，需手工核对当前内容');
         setBusy('');
         return;
@@ -139,7 +141,7 @@ export function PendingSection(props: { blockId: string }) {
         await chatMemoryApi.pendingDecide(props.blockId, id, decision);
       } catch (err) {
         // #100：回滚被拒单列计数（槽已漂移，重试同样拒绝，不混入可重试失败）。
-        if (rollbackRefusedOf(err)) rollbackRefusedCount++;
+        if (classify409Of(err)?.kind === 'rollback-refused') rollbackRefusedCount++;
         else failedIds.push(id);
       }
     }

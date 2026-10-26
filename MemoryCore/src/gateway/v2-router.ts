@@ -2211,7 +2211,12 @@ async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext
     if (rowState === "auto_adopted") {
       if (typeof (store as { rollbackAutoAdoptedPending?: unknown }).rollbackAutoAdoptedPending !== "function") return errorEnvelope(503, "auto-adopt rollback not supported by store", requestId);
       const rb = (await Promise.resolve((store as { rollbackAutoAdoptedPending: (pid: string, t?: unknown) => unknown }).rollbackAutoAdoptedPending(b.pending_id, tenant))) as { restored?: boolean; reason?: string } | null;
-      if (!rb?.restored) return errorEnvelope(409, `auto-adopt rollback refused: ${rb?.reason ?? "unknown"} — slot changed since auto-adopt; handle manually`, requestId);
+      // #102：409 附带结构化 detail（data.rollbackRefused），前端统一 409 分类器优先按此识别；
+      // message 文案保留旧形状供旧版前端兼容回退（文案不再是识别依据）。
+      if (!rb?.restored)
+        return errorEnvelope(409, `auto-adopt rollback refused: ${rb?.reason ?? "unknown"} — slot changed since auto-adopt; handle manually`, requestId, {
+          rollbackRefused: { reason: rb?.reason ?? "unknown" },
+        });
       return successEnvelope<{ pending_id: string; decision: string; slot: string; rolled_back: boolean }>({ pending_id: b.pending_id, decision: "rejected", slot: "self_identity", rolled_back: true }, requestId);
     }
   }
