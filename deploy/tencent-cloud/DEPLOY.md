@@ -84,8 +84,17 @@ PROXY_ADMIN_API_KEY=<同上>                       # docker-compose 别名；原
 > 1. **TDAI_DATA_DIR 缺了不会静默**——Panel「召回日志」页直接 503 `RECALL_JOURNAL_DIR_UNRESOLVED`（解析序：`TDAI_RECALL_JOURNAL_DIR` > `TDAI_DATA_DIR` + `/logs/recall`，见 `MemoryPanel/src/panel/http/routes/chat-memory.ts:54-68`）。
 > 2. **PROXY_ADMIN_API_KEY 不是 proxy 读的变量名**——`MemoryProxy/src/config.ts:716` 只读 `TDAI_PROXY_ADMIN_API_KEY`；只写前者会让运维口 key 落成空串＝公开可访问，且启动日志不告警，只能靠 curl 验 401 发现。
 
-- **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。LLM key 的运行时唯一 SoT = 服务器 `{dataDir}/config-override.json`（ADR-0006）；env 占位展开为空不影响 override 生效。
-- **proxy**：以 `deploy/tencent-cloud/config/proxy/proxy-config.cloud.example.yaml` 为起点（**不是**本地 `MemoryProxy/config.yaml`——它被 `.gitignore` 忽略、从未入库），按同目录 `CLOUD-DIFF.md` 替换 `${VAR}` 占位符（endpoint 指向 core、网关 key、admin key）。**闸门类键**（`recallQuerySource` / `l0CaptureMode` / `recallIntentDedup`）缺省会退回 legacy：落盘后必须 `sudo grep -nE 'recallQuerySource|l0CaptureMode' /opt/tdai/etc/proxy-config.yaml` 确认 2 行都在，否则一个用户消息会按模型步数重复召回。
+- **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。
+
+  > **解析层级铁律**（2026-10-26 审计，两条死配置踩过）：`MemoryCore/src/gateway/config.ts:488` 先取 `obj(fileConfig,"memory")` 再送 `parseMemoryConfig`，所以内核类键**相对 `memory` 段**写；灵魂/锚相关在 `memory.coreMemory.*`（不是 `memory.soulRender`）；skill 提取在**顶层** `skill.extraction.*`（与 `memory` 平级）。逐条（已对三份配置实测确认载体一致）：
+  > - 场景治理 → `memory.sceneGovernance.*`（读点 `MemoryCore/src/config.ts:1701`）；写成 `memory.recall.sceneGovernance.*` 解析器从不读取 → 守卫静默全关（生产曾如此）。
+  > - 场景毒化切分/批量上限 → `memory.extraction.scenePoisonSplit` / `sceneBatchMaxChars`（读点 `MemoryCore/src/config.ts:1750-1751`）；`memory.skill.extraction.*` 无解析。
+  > - 召回精排 → `memory.recall.conclusionLayer.*`；其中 `textHitMaxTokenRatio` 已随 #99 F1 退役，写了被静默忽略。
+  > - 灵魂渲染预算/去重/锚选择 → `memory.coreMemory.soulRender.*`（`budgetAnchorChars`、`strictRuleDedup`、`anchorDedup`、`anchorSelect.scorer`）；锚发现三门 → `memory.coreMemory.anchorDiscovery.*`。
+  > - skill 提取 → `skill.extraction.{enabled,maxIterations,archiveBytes,timeoutMs,maxTokens}`（装配点 `MemoryCore/src/gateway/server.ts:2673-2688`；缺省 maxIterations 16 在 `src/core/skill/skill-config.ts:240`）。
+  >
+  > 改完务必用 `loadGatewayConfig()` 打生效面核对（见 §7），不要只看 YAML 文本。LLM key 的运行时唯一 SoT = 服务器 `{dataDir}/config-override.json`（ADR-0006）；env 占位展开为空不影响 override 生效。
+- **proxy**：以 `deploy/tencent-cloud/config/proxy/proxy-config.cloud.example.yaml` 为起点（**不是**本地 `MemoryProxy/config.yaml`——它被 `.gitignore` 忽略、从未入库），按同目录 `CLOUD-DIFF.md` 替换 `${VAR}` 占位符（endpoint 指向 core、网关 key、admin key）。**闸门类键**（`recallQuerySource` / `l0CaptureMode` / `recallIntentDedup`）缺省会退回 legacy：落盘后必须 `sudo grep -nE 'recallQuerySource|l0CaptureMode' /opt/tdai/etc/proxy-config.yaml` 确认 2 行都在，否则一个用户消息会按模型步数重复召回。同一条命令顺带核对 `injection.soulTiming` 与 `wikiRecall.jit/querySource`（见 §7）。
 - **knowledge**：`cp deploy/tencent-cloud/config/knowledge/env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。
 - **panel**：Panel 的 core 地址/api_key 配置按其 `config/metadata-instances.json` 格式落盘（指向 http://127.0.0.1:8420 + 同一把 gateway key）。
 
@@ -120,6 +129,12 @@ curl -sX POST https://<域名>/v3/recall \
 
 # 召回入口闸门生效（#83/#87）：应各有 1 行输出；缺任一行 = 每步一次召回（见 CLOUD-DIFF.md「防漂移」）
 sudo grep -nE 'recallQuerySource|l0CaptureMode' /opt/tdai/etc/proxy-config.yaml
+# 注入形态闸门（2026-10-26 审计）：soulTiming 必须挂在 injection 段（顶层 tdai.soulTiming 不生效）
+sudo grep -nE '^  soulTiming:|^    redline:|^  jit:|^  querySource:|minStructuralTailNormScore|maxTotalChars' \
+  /opt/tdai/etc/proxy-config.yaml
+# core 生效面（不是 YAML 文本）：应打印 sceneGovernance / conclusionLayer / queryExpansion / budgets / selfIdentityGate
+sudo -u tdai bash -lc 'set -a; . /opt/tdai/etc/env; set +a; cd /opt/tdai/td-agemem/MemoryCore && \
+  TDAI_GATEWAY_CONFIG=/opt/tdai/td-agemem/MemoryCore/tdai-gateway.yaml node --import tsx /tmp/dumpcfg.ts'
 
 # Panel 前端产物时间戳应为本次构建（不是几周前，见 §3.1）
 ls -l /opt/tdai/td-agemem/MemoryPanel/web/dist/assets/main-*.js

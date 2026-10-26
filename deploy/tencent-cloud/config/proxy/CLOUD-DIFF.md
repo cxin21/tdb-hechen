@@ -32,6 +32,15 @@
 | `tdai.memory.l0CaptureMode` | `legacy` | `classified` | L0 只写单条提取结果，无 turnContext 全量与 classification 标签 |
 | `tdai.memory.recallIntentDedup` | `true` | `true` | 去重闸关闭（同意图反复召回） |
 | `tdai.memory.recallIntentDedupTtlMs` | `3600000` | 缺省即可 | 窗口过短会出现"聊着聊着又召回一次" |
+| `injection.soulTiming.*`（7 键） | 各键见注释（=旧注入形态） | 全显式开启 | **错层陷阱**：写在顶层 `tdai.soulTiming` 解析器从不读取 → 静默回旧形态。生产已显式落盘 `redline: action_proximate` / `driftTrigger: auto` / `reanchor.intervalTurns: 20` / `redlineDedup.enabled` / `redlineCadence{mode: turn_head, depthOverflow: 8}` |
+| `wikiRecall.jit` | `false` | `true` | #4/#63 JIT 转正没生效，wiki 召回留在 legacy 路由 |
+| `wikiRecall.minStructuralTailNormScore` | 未启用 | `0.3` | #85 Q2 结构页附尾次门失效，结构页噪音进注入块 |
+| `wikiRecall.querySource` | `message` | `intent` | #85 Q3 读不到 `turnContext.turnIntent`，wiki 召回按整段消息检索（含脚手架噪声） |
+| `wikiRecall.maxTotalChars` | `0`（不限） | `1200` | issue #2 P0-3 的注入体积上限失效，wiki 片段可把上下文撑爆 |
+| `tdai.memory.timeoutMs` | `5000` | `8000` | 必须 ≥ core `memory.recall.v3Recall.timeoutMs`（云端 8000），否则 proxy 先断、内核白跑 |
+| `memCommand.enabled` | `false` | `true` | `/tdai` 命令面不可用 |
+
+> 2026-10-26 审计（A+B+C 一轮）：生产 `injection.soulTiming` 一直有值、模板却是「整段注释 + 误放在 `tdai` 段」，重装即回退；`wikiRecall` 三个 #85 键同病。现已按生产现值写进 example，开发机 `MemoryProxy/config.yaml` 同步补齐（终态 diff 仅剩 5 处刻意环境差异：externalGatewayUrl / memCommand.enabled / server.host / storage.sqlite.dbPath / tdai.memory.timeoutMs）。
 
 ## 历史注
 

@@ -503,6 +503,40 @@ injection:
   #   /memory-bridge/**  → proxy /memory-bridge/**
   externalGatewayUrl: "${PROXY_EXTERNAL_GATEWAY_URL}" # 对外可达地址，如 http://<your-server-ip>:8096
 
+  # ── 灵魂注入时机（SoulTiming，ADR0003 三注入时机 + #59 轮次再锚定；config-first）──
+  # 严格枚举逐字段解析：非法值回退缺省、缺省段 = 旧行为（identity/redline 会话头、feeling 每轮、无再锚定）。
+  #   identity      session_head（缺省）| session_head_drift_reanchor —— 身份块注入时机
+  #   redline       session_head（缺省）| action_proximate —— 红线块时机；action_proximate = #37 ADR D3
+  #                 第三时机：tools.before_call 动作点近端注入 <soul-event kind="redline"> 块（仅在检测到
+  #                 agentic loop——messages 尾为 tool_result——时触发，cacheStrategy=none）
+  #   feeling       every_turn（缺省）| session_head —— 感受块时机
+  #   driftTrigger  off（缺省）| shadow | auto —— #59 轮次驱动再锚定：auto = 首轮 + 每 intervalTurns 轮在
+  #                 动作点近端注入 <soul-event kind="reanchor"> 身份基线块（identity+self_identity 槽行级
+  #                 渲染，≤8 行、每行 ≤120 字，对冲长会话注意力稀释；轮次计数 per-identity，Map cap 1000）
+  #   reanchor      仅 driftTrigger=auto 时材料化 {intervalTurns: 20}；clamp [1,200] 缺省 20
+  #   redlineDedup  仅 enabled=true 时材料化 {enabled: true, jaccardThreshold: 0.45}——红线块近重复行去重
+  #                 （exact/jaccard/containment 三判，保长=归一后更长；阈值 clamp [0,1] 缺省 0.45）
+  #   redlineCadence 红线动作点降频节流（2026-10-23 用户拍板 D=8，#39 终判 revisit）：仅 redline=action_proximate
+  #                 时生效。mode: every_action_point（缺省，逐位现状=每动作点全文）| turn_head（轮首锚定：
+  #                 每轮首个动作点必注全文 + 链内每 depthOverflow 个动作点溢出重锚；null 态 fail-open /
+  #                 红线指纹变更 / 风险工具命中强制全文兜底）。depthOverflow: clamp [1,200] 缺省 8（0→1、999→200）。
+  #                 riskToolPatterns: 工具名大小写不敏感子串，命中→无条件全文注入；缺省 []（风险覆盖关）。
+  #                 注：红线 event 块尾带语用附带句「以上为既有红线近端复现，无需复述确认，直接继续当前步骤。」
+  #                 （代码常量 REDLINE_EVENT_RIDER，治理逐次确认税）。
+  # 2026-10-26 配置审计：下列 7 键在生产已真开、模板此前却是「全部注释 + 误放在 tdai 段」（错层 → 解析器
+  # 从不读取 memoryProxy 的 tdai.soulTiming），现移正到 injection.soulTiming 并按生产现值显式落盘。
+  soulTiming:
+    redline: "action_proximate"      # #37 动作点近端（缺省 session_head）
+    driftTrigger: "auto"             # #59 再锚定（缺省 off）
+    reanchor:
+      intervalTurns: 20
+    redlineDedup:
+      enabled: true                  # #55 红线近重复去重
+    redlineCadence:
+      mode: "turn_head"              # 2026-10-23 拍板 D=8 降频（缺省 every_action_point）
+      depthOverflow: 8
+      riskToolPatterns: []           # 风险工具全文兜底：默认关（显式写明）
+
   # ── 资产反思模式（内部效果评估用；默认开启） ─────────────────────────────
   # 结构与 costGuard.markerOptIn 姿势对齐,但 default 相反:
   #   markerOptIn=true（默认）：AssetReflectionInjector 会 register。marker 仍是
@@ -628,41 +662,9 @@ tdai:
     # 类型: int | 默认: 5（原硬编码行为，R7 复审 Minor → 配置化）
     # l1GlobalTopK: 5
     l2Limit: 3 # L2/L3 注入最大条数
-    timeoutMs: 5000 # 单次内核调用超时（毫秒）
-
-  # ── 灵魂注入时机（SoulTiming，ADR0003 三注入时机 + #59 轮次再锚定；config-first）──
-  # 严格枚举逐字段解析：非法值回退缺省、缺省段 = 旧行为（identity/redline 会话头、feeling 每轮、无再锚定）。
-  #   identity      session_head（缺省）| session_head_drift_reanchor —— 身份块注入时机
-  #   redline       session_head（缺省）| action_proximate —— 红线块时机；action_proximate = #37 ADR D3
-  #                 第三时机：tools.before_call 动作点近端注入 <soul-event kind="redline"> 块（仅在检测到
-  #                 agentic loop——messages 尾为 tool_result——时触发，cacheStrategy=none）
-  #   feeling       every_turn（缺省）| session_head —— 感受块时机
-  #   driftTrigger  off（缺省）| shadow | auto —— #59 轮次驱动再锚定：auto = 首轮 + 每 intervalTurns 轮在
-  #                 动作点近端注入 <soul-event kind="reanchor"> 身份基线块（identity+self_identity 槽行级
-  #                 渲染，≤8 行、每行 ≤120 字，对冲长会话注意力稀释；轮次计数 per-identity，Map cap 1000）
-  #   reanchor      仅 driftTrigger=auto 时材料化 {intervalTurns: 20}；clamp [1,200] 缺省 20
-  #   redlineDedup  仅 enabled=true 时材料化 {enabled: true, jaccardThreshold: 0.45}——红线块近重复行去重
-  #                 （exact/jaccard/containment 三判，保长=归一后更长；阈值 clamp [0,1] 缺省 0.45）
-  #   redlineCadence 红线动作点降频节流（2026-10-23 用户拍板 D=8，#39 终判 revisit）：仅 redline=action_proximate
-  #                 时生效。mode: every_action_point（缺省，逐位现状=每动作点全文）| turn_head（轮首锚定：
-  #                 每轮首个动作点必注全文 + 链内每 depthOverflow 个动作点溢出重锚；null 态 fail-open /
-  #                 红线指纹变更 / 风险工具命中强制全文兜底）。depthOverflow: clamp [1,200] 缺省 8（0→1、999→200）。
-  #                 riskToolPatterns: 工具名大小写不敏感子串，命中→无条件全文注入；缺省 []（风险覆盖关）。
-  #                 注：红线 event 块尾带语用附带句「以上为既有红线近端复现，无需复述确认，直接继续当前步骤。」
-  #                 （代码常量 REDLINE_EVENT_RIDER，治理逐次确认税）。
-  # 生产现值：redline: action_proximate + driftTrigger: auto + reanchor.intervalTurns: 20 + redlineDedup.enabled: true
-  #           + redlineCadence: {mode: turn_head, depthOverflow: 8, riskToolPatterns: []}
-  # soulTiming:
-  #   redline: "action_proximate"      # 生产已开（#37 动作点近端）
-  #   driftTrigger: "auto"             # 生产已开（#59 再锚定）
-  #   reanchor:
-  #     intervalTurns: 20
-  #   redlineDedup:
-  #     enabled: true                  # 生产已开（#55）
-  #   redlineCadence:
-  #     mode: "turn_head"              # 生产已开（2026-10-23 D=8 降频）
-  #     depthOverflow: 8
-  #     riskToolPatterns: []           # 默认关（显式写明）
+    # #61（2026-10-18 生产 5s→8s）：需 ≥ gateway memory.recall.v3Recall.timeoutMs（模板 core 侧 8000），
+    # 否则 proxy 先断、内核白跑。2026-10-26 审计：模板此前 5000 与 core 模板 8000 不匹配，现对齐。
+    timeoutMs: 8000 # 单次内核调用超时（毫秒）
 
 # ── 当前感受（K/L，config-first） ──────────────────────────────────────────────
 # value 标签命中当前 user query 才注入一条短 <current_feeling> 块（价值命中，宁缺毋滥）。
@@ -732,6 +734,11 @@ knowledge:
 # 字段保留在这里作参考——需要时取消注释即可生效，不用翻代码。
 
 wikiRecall:
+
+  # #4/#63（2026-10-18）：wiki JIT 转正（meta 能力位 shadow-first 实证完备）——
+  # 显式 true=强制 JIT 路由；false=逃生门回 legacy；journal mode=jit|legacy 可观测。
+  # 2026-10-26 审计：生产已开 true，模板缺键 → 重装即回退 legacy 路由，现显式落盘。
+  jit: true
   # 总开关。false = 不注入 WikiRecallInjector（完全退化成"AI 自己想起来才查 wiki"）。
   # 类型: boolean | 默认: true
   # enabled: true
@@ -842,9 +849,9 @@ wikiRecall:
 
   # 注入块（<tdai_recalled_wiki> 文本）的总字符上限（code points）：0 = 不限制。
   # 用途：控制每轮注入的 token 开销，防止 KB 片段把上下文撑爆（注意这是测试版方向B；
-  #       已知成本点——动态注入会轻微影响 KV/prompt cache 命中）。本地部署显式设 1200。
+  #       已知成本点——动态注入会轻微影响 KV/prompt cache 命中）。本部署显式设 1200。
   # 类型: int | 默认: 0（不限制）
-  # maxTotalChars: 1200
+  maxTotalChars: 1200
 
 # ── Skill 运行时 ───────────────────────────────────────────────────────────
 #
@@ -871,7 +878,8 @@ skillRuntime:
 #
 # 关闭时所有 mem: 开头的消息正常发给模型，不做拦截。
 memCommand:
-  enabled: false # 是否启用 mem: 命令拦截（默认 false，不影响原有链路）
+  # 2026-10-26 审计：生产已开（mem:sync / mem:create-skill / mem:help 拦截走通），模板仍是 false。
+  enabled: true # 是否启用 mem: 命令拦截（代码缺省 false，不影响原有链路）
   allowedCommands: [] # 命令白名单；空数组 = 全部允许
                                    # 示例: ["sync", "help"] — 只允许这两个命令
                                    # 可选值: sync | create-skill | help

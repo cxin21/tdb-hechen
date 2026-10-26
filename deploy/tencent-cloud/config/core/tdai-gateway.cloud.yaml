@@ -147,18 +147,18 @@ memory:
       cacheTtlMs: 300000       # I③ 幂等结论层缓存 TTL 毫秒（0 = 关；显式落盘 = 原"回落 sessionReuseTtlMs"的等价值）
       minUniqRatio: 0.35       # v18-c 结论块低密度门（何晨拍板「全做」2026-10-05）：句子级去重保留率下限，
                                # 低于阈值 = 自指回放块跳过取下一名（undefined/0 = 关逐位现状）
-      # P1（issue #2，2026-10-13）：textHit 万词面 token 剔除——token 命中候选占比超过此值（0-1）
-      # 视为通用词从 textHit 匹配集剔除（sceneHit 不受影响）。0 = 不启用。
-      textHitMaxTokenRatio: 0.5
       # #53（2026-10-19）：L2 结论层 IDF 加权计分——true 时候选按 batch 相对 IDF
       # （idf(t)=ln(1+N/(1+df(t)))，万词面 token 天然低分）重排；层级序（work_fact>scene_block）
       # 不被反转，平分保调用方序。缺省 false = 调用方序逐位现状。
       idfWeighted: true
-      # ── R71-A1（2026-10-19）：work_fact 结论候选 bm25 相关性地板——FTS5 raw rank 转相对分
-      # rel/(1+rel) 后 < minBm25Rel 者在选择器前剔除（journal gates.conclusionBm25 记 kept/dropped）。
-      # 6.5 = 2026-10-19 生产语料定标（docs/research/2026-10-19-r71-recall-relevance-design.md §3）；
-      # 语料规模变化需重定标；缺省/0 = off。
-      minBm25Rel: 6.5
+      # ── R71-A1 后继（2026-10-26 配置审计修正）：绝对分 minBm25Rel（6.5，生产语料定标）
+      # 语料重建即失标 → 换相对门 minBm25RelRatio（分池相对分位，语料无关）。
+      # 解析点 src/config.ts:1861-1903。缺省 undefined = 关 ≠ 0（0 也是显式关）。──
+      minBm25RelRatio: 0.4     # work_fact 候选 bm25 相对相关性地板（rel/(1+rel) 归一后的相对分位）
+      maxTotalChars: 2000      # 结论层整块字符帽（跨卡累计；缺省 undefined=关）
+      truncateMode: sentences  # 截断粒度：sentences=句边界；缺省 chars=码点硬截
+      # ⚠️ 2026-10-26 审计：原 textHitMaxTokenRatio（#99 F1 万词面 token 剔除）已退役，
+      # config.ts:1884 注释明写静默忽略 → 已删除，避免「看起来开了」的假配置。
 
     # ── #77 Batch C（survey F6b，2026-10-20 拍板开启）：检索期年龄衰减乘子 + 时间锚回退 ──
     # ageDecay：composite 打分 timeFactor 乘子 0.5^(ageDays/halfLifeDays)（floor 0.05；无时间锚不乘）。
@@ -203,56 +203,74 @@ memory:
       # [recall-perf] 行；2026-10-18 实测 L1 占 74%（含 embedding RTT）——容量优化靶在 L1/embedding。
       timeoutMs: 8000
 
-    # ── 召回精排 rerank（P1 召回质量 spec §4.3，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
-    # 在 P0 召回门槛之上加云/本地精排：原 topK 候选扩池至 candidates → provider rerank →
+    # ── 查询扩展门（2026-10-26 配置审计固化：代码缺省已开，显式落盘防未来缺省翻转）──
+    # 解析点 src/config.ts:1832-1837：enabled 缺省 true、maxTerms 8、ttlMs 600000、
+    # timeoutMs 8000、hotPathTimeoutMs 1500、negativeTtlMs 30000。
+    queryExpansion:
+      enabled: true
+      maxTerms: 8                        # 每次最多扩展词项数
+      ttlMs: 600000                      # 扩展结果缓存 10 分钟
+      # ⚠️ 云端建议 1200（非缺省 8000）：#63 实测 expand 占 l1 段 ~4s（LLM RTT 2.2-2.4s，
+      # 失败/超时不缓存 → 每轮新 query 重付全额 RTT），超时/失败退化原 query（E1.4）。
+      # 本地开发保持缺省 8000 以便观察扩展质量。
+      timeoutMs: 1200
+      hotPathTimeoutMs: 1500             # 热路等待帽：帽内未返回→本轮无扩展词检索（0=旧行为全额等待）
+      negativeTtlMs: 30000               # 失败负缓存：LLM 故障期 30s 内短路 [] 不再外呼（0=关）
+    # 探索槽 / 分析型 query 放宽结论层（两者代码缺省 true，显式落盘防翻转）
+    exploreSlot: true                    # 给低分但多样的候选留名额（对冲同质化）
+    conclusionRelaxedForAnalytical: true # 分析型 query（对比/枚举）放宽结论层入选
+
+    # ── 召回精排 rerank（P1 召回质量 spec §4.3，2026-10-13）──
+    # 在 P0 召回门槛之上加精排：原 topK 候选扩池至 candidates → provider rerank →
     # minScore 门槛 → 取回 topK。失败/超时一律降级原序（精排永不阻断召回主链路）。
     # 开启即真实生效（shadowMode 已按用户 2026-10-14 拍板整体移除——无开关、无键；
     # journal.gates.rerank 仍记录 kept/dropped/topScore 供观测）。
-    # rerank:
-    #   enabled: false                    # 总开关（缺省 false = 逐位现状）
-    #   provider: "siliconflow"           # siliconflow | dashscope | local(Task 3，暂关) | none
-    #   apiKey: ""                        # 云端 provider 必填；缺失 → configError + 自动关断
-    #   baseUrl: ""                       # 缺省 = provider 官方端点（siliconflow: api.siliconflow.cn；
-    #                                     #   dashscope: dashscope.aliyuncs.com，业务空间专属域经此覆盖）
-    #   model: ""                         # 缺省 = 推荐档（siliconflow: Qwen/Qwen3-Reranker-0.6B；
-    #                                     #   dashscope: qwen3-rerank——gte-rerank v1 2026-05-30 下线勿选）
-    #   timeoutMs: 800                    # 单次精排 HTTP 超时毫秒（负值 clamp 0 = loud 失败）
-    #   candidates: 12                    # 送精排候选池大小（clamp [1,100]）
-    #   minScore: -2.0                    # 相关度门槛（负值合法——local logits 刻度）
-    #   local:                            # provider:"local"（Task 3 transformers.js）参数
-    #     modelDir: ""                    # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
-    #     idleUnloadMs: 600000            # 空闲卸载毫秒（0 = 常驻）
+    # local provider = transformers.js bge-reranker-base INT8（模型缺失自动 hf-mirror 下载 ~113MB，
+    # 生产已用 scripts/warmup-reranker.ts 预热，systemd drop-in rerank-warmup.conf 启动即跑）。
+    # ⚠️ 2026-10-26 配置审计：本段此前是「全部注释 = 缺省关」，生产却已真开（renderer/rerank 生效
+    # source=yaml）→ 模板与生产漂移，重装即静默回退旧行为。现按生产现值显式落盘。
+    rerank:
+      enabled: true
+      provider: "local"
+      timeoutMs: 5000  # #63 首载 worker+模型 load ~3.2s，缺省 800 必超时返回 null
+      candidates: 12   # 送精排候选池大小（clamp [1,100]）
+      minScore: -2.0   # 相关度门槛（负值合法——local logits 刻度）
+      local:
+        modelDir: ""             # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
+        idleUnloadMs: 600000     # 空闲卸载毫秒（0 = 常驻；生产 10 分钟卸载省内存）
 
-    # ── worthiness importance 降权（P1 召回质量 spec §6，2026-10-13）——全部注释 = 缺省全关（零行为变化）──
+    # ── worthiness importance 降权（P1 召回质量 spec §6，2026-10-13）──
     # 检索精排之后的「重要度」降权：仅惩罚 importance ≤4 的记忆（LLM 写入时评 1-10+理由，
     # 低价值=寒暄/流水账）；NULL/缺列不罚（宁缺毋滥：评不出来 ≠ 该罚）。开启即真实生效
     # （shadowMode 已按用户 2026-10-14 拍板整体移除；gates.importancePenalty 仍记录 raw/penalized 双分量）。
-    # importancePenalty:
-    #   enabled: false        # 总开关（缺省 false = 逐位现状）
-    #   penalty: 0.3          # ≤4 记忆的乘法惩罚（clamp 上限 0.9；越大降权越狠）
-    # 生产现值（2026-10-19 开门）：enabled: true + penalty 0.3——写侧 worthiness 配套，
-    # 寒暄/流水账类低价值记忆在检索排序中真实降权。
-
-    # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
-    # 提取批次后代码级超限守卫：块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败码点安全硬截断兜底。
-    # 启用依据：GOV-4 复核实证——守卫关闭时修复后 ~10 分钟内活跃提取管线把块体复涨破限
-    # （7,728→8,754 且持续增长），时点修复不可持续；守卫启用是该设计闭环的完成动作。
-    # 生产实证底座：分段蒸馏 6000 码点/片 + seg-cache + 空输出重试稳定跑通（spec §6 注记）。
-    sceneGovernance:
-      enabled: true           # 总开关（代码缺省 false = 逐位现状；此处生产显式开启）
-      maxBlockChars: 8000     # 块体超限阈值（码点数；clamp [500, 100000]；GOV-4 定档见 spec §6）
-      distillTimeoutMs: 60000 # 蒸馏 LLM 调用超时毫秒（负值 clamp 0；0 = runner 缺省超时）
-      hardCapChars: 20000     # 蒸馏失败兜底硬截断上限（clamp 下限 = maxBlockChars）
+    # 2026-10-26 审计：enabled 代码缺省 false，生产已开 → 显式落盘防缺省翻转。
+    importancePenalty:
+      enabled: true         # 总开关（代码缺省 false = 逐位现状）
+      penalty: 0.3          # ≤4 记忆的乘法惩罚（clamp 上限 0.9；越大降权越狠）
 
   # ── worthiness 写入面（P1 召回质量 spec §6，2026-10-13）——缺省 false = 逐位现状 ──
   # true = L0→L1 提取在既有单次 LLM 调用里顺带产出 IMPORTANCE_BLOCK（1-10+≤20 字理由）；
   # 关闭时 prompt 字节逐位不变、importance 字段缺席=召回不罚。越界/畸形分由确定性门拒绝
   # （不 clamp 不伪造）。面板可对单条记忆手动调级（/atomic/importance，source=manual）。
-  # worthiness:
-  #   extractionEnabled: true   # 生产已开（2026-10-19 开门）：LLM 顺带产出 importance 字段（写侧）；
-  #                             # 与 recall.importancePenalty（读侧消费）配套。
+  # 2026-10-26 配置审计：代码缺省 false（config.ts:2103-2104），生产已开 → 显式落盘防缺省翻转。
+  worthiness:
+    extractionEnabled: true   # LLM 顺带产出 importance 字段（写侧）；与 recall.importancePenalty（读侧消费）配套。
 
   storeBackend: "sqlite"
+
+  # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
+  # ⚠️ 解析层级 = memory.sceneGovernance（与 recall 平级）：解析点 src/config.ts:1701
+  # `obj(c,"sceneGovernance")`，c = memory 段对象。2026-10-26 配置审计修正：本块此前误挂在
+  # memory.recall.sceneGovernance 下、解析器从不读取，守卫实际一直处于缺省关断；现移正并显式开启。
+  # 守卫：提取批次后块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败时码点安全硬截断兜底。
+  # 启用依据（GOV-4 复核实证）：守卫关闭时活跃提取管线 ~10 分钟内把块体复涨破限
+  # （7,728→8,754 且持续增长），时点修复不可持续；守卫启用是该设计闭环的完成动作。
+  # 生产实证底座：分段蒸馏 6000 码点/片 + seg-cache + 空输出重试稳定跑通（spec §6 注记）。
+  sceneGovernance:
+    enabled: true           # 总开关（代码缺省 false = 关断；此处显式开启）
+    maxBlockChars: 8000     # 块体超限阈值（码点数；clamp [500, 100000]；GOV-4 定档见 spec §6）
+    distillTimeoutMs: 60000 # 蒸馏 LLM 调用超时毫秒（负值 clamp 0；0 = runner 缺省超时）
+    hardCapChars: 20000     # 蒸馏失败兜底硬截断上限（clamp 下限 = maxBlockChars）
 
   embedding:
     provider: "openai_compatible"
@@ -311,6 +329,25 @@ memory:
         minEvidence: 3
         maxPerPass: 2
         maxTotal: 6
+      # ── 锚发现增强三门（2026-10-19 用户授权自决开；解析点 src/config.ts:1281-1364，均 clamp 防手滑）──
+      # 2026-10-26 配置审计：三门代码缺省 false，生产已开 → 模板显式落盘防漂移。
+      # similarMerge（G-SIMMERGE）：候选锚 label 与既有 active 锚 bigram Jaccard≥threshold → 不新建、
+      #   证据增量并入命中锚（不删除任何既有锚，仅防锚碎片化）；threshold clamp [0.2,0.95] 缺省 0.5。
+      # reproposal（#19 T12 / V12-REPRO）：rejected 域提案证据≥minEvidenceMultiple×基线时重提案
+      #   （落 pending 提案池 upsertPendingCore 含 Gen 溯源；纯提案制不直改 active）；maxRejectsBeforeCold 后冷却。
+      # descRefresh（#11 T5）：锚描述重述环——LLM 重述+守卫门通过才落库，maxPerPass 节流。
+      similarMerge:
+        enabled: true
+        threshold: 0.5
+      reproposal:
+        enabled: true
+        minEvidenceMultiple: 2
+        maxPerPass: 2
+        maxRejectsBeforeCold: 2
+      descRefresh:
+        enabled: true
+        evidenceMultiple: 2
+        maxPerPass: 2
     # DS-SOUL-MEMORY-002 P1: agent 自我层(灵魂双槽)——双视角自发现 + 四段渲染
     selfIdentity:
       enabled: true
@@ -320,11 +357,11 @@ memory:
       budgetSelfChars: 600
       budgetIdentityChars: 900
       maxRelationLines: 5 # F17（审计补齐）：重要的人 行数上限；5=原行为显式落盘
-      # #10 T4：三行锚列表总长预算（整锚粒度从尾丢，不截半句）。0=关（缺省逐位现状）。
-      # 建议放量值：锚行 480（≈10 锚当量）、人物行 400、品格行 300。
-      budgetAnchorChars: 0
-      budgetPersonChars: 0
-      budgetCharacterChars: 0
+      # #10 T4：三行锚列表总长预算（整锚粒度从尾丢，不截半句）。0=关（代码缺省逐位现状）。
+      # 2026-10-26 配置审计：生产已放量 480/400/300，模板此前仍 0/0/0 → 重装即静默回退，现对齐。
+      budgetAnchorChars: 480    # 价值锚行预算（≈10 锚当量；消费点 soul-assembler.ts:535）
+      budgetPersonChars: 400    # 重要的人行预算
+      budgetCharacterChars: 300 # 品格行预算
       # #42（D9 情境锚选择器，确定性 embedding 相似度，不上 LLM 打分）：
       # scorer.enabled=true 打分链路通电（embedding=共享 EmbeddingService）；threshold=0 无硬门；
       # shadowSink 每轮渲染都采集锚分分布（#52 P3 已与裁剪报告门解耦，渲染字节零变化），
@@ -334,6 +371,9 @@ memory:
         scorer:
           enabled: true
           threshold: 0
+          # 灵魂注入质量轮（2026-10-19）：MMR 多样性 λ + desc 预嵌软预算 ms（生产已开；代码缺省 0.7/1200）。
+          mmrLambda: 0.7
+          embedBudgetMs: 1200
         shadowSink:
           enabled: true
           file: "/data/tdai-memory/logs/soul-anchor-shadow.jsonl"  # 云端路径；本地为 D:/TDB/data/logs/…
@@ -363,9 +403,12 @@ memory:
       # winner 原位替换）；anchorDedup：价值锚 label 双向包含且短侧 ≥2 字护栏（完整句优先）。
       # 生产 A/B 实证：14→13 红线（R03 环境铁律短变体并入 R08）、根因→根因优先。
       strictRuleDedup:
-        enabled: true          # 生产已开；jaccardThreshold 缺省 0.45
+        enabled: true             # jaccardThreshold 缺省 0.45
+        maxLines: 8               # 红线段行数上限：去重后从头部保留 N 条（0=不设限；红线墙挤占身份段预算治理）
+        suppressAnchorOverlap: true # 价值锚 desc 与红线行近重复时锚行让位（红线=硬约束承载面优先）
       anchorDedup:
-        enabled: true          # 生产已开
+        enabled: true             # 价值锚/人物/品格近重复锚对择优（完整句胜，winner 原位替换）
+        embeddingThreshold: 0.85  # label 包含对之外的第二通道：desc 向量 cosine≥0.85 判近重复（0=关缺省）
   lifecycle:
     enabled: true # H+I：巩固 + 遗忘的周期调度（每 10 分钟一轮，best-effort）
     intervalMs: 600000
@@ -408,6 +451,34 @@ memory:
         # （validateConclusionCard，拒收记 skipped 警告日志），本键只加引导降拒收率。缺省 false=逐位现状。
         conclusionContract:
           enabled: true
+      # ── #91/#92 身份提案裁决门（2026-10-23/24/25 用户拍板；解析点 src/config.ts:1621-1679）──
+      # 2026-10-26 配置审计：本段是**条件材料化**——不写=不带键=消费侧缺省全关，生产已开而模板
+      # 整段缺失（重装即人格写入终审权静默回退人工裁决），现按生产现值显式落盘。
+      # recurrence：复现即投票（===true 才开；ttlHours 缺省 24，生产 72 与 spanHours 共用）。
+      # rateLimit（#91 K 阀）：源头硬闸——窗口内该租户 self_identity 新落库 ≥ maxNew → push 支路跳过
+      #   落库（LLM 反思照常、echo/计票路径不受影响；fail 方向=少落库）。maxNew=12 人工带宽口径，窗口 24h。
+      # autoAdopt（#92 stage 2）：确定性自动采纳门——三重门（count≥votes ∧ 跨≥spanHours ∧ 无同主题
+      #   rejected 矛盾 ∧ 非槽内重复）→ 自动采纳落槽（source=auto-adopt-gate），人转审计员；
+      #   回滚=Panel 对 auto_adopted 行 reject。显式开 = 人格写入终审权变更生效（ADR-0007）。
+      selfIdentityGate:
+        recurrence:
+          enabled: true
+          ttlHours: 72
+        rateLimit:
+          enabled: true
+          maxNew: 12
+          windowHours: 24
+        autoAdopt:
+          enabled: true
+          votes: 4                    # N₂（比 stage-1 ready 的 votes=3 严一票）
+          spanHours: 72               # T₂（跨 3 天持续复现才够格，慢变量口径）
+          contradictionThreshold: 0.6 # 同主题 rejected 矛盾线（宁拦勿收：误拦=退回人审）
+          dupThreshold: 0.75          # 槽内重复线（proposal-dedup 单一源标准）
+    # ── embedding 回填（2026-10-26 配置审计：代码缺省已开 true/30/50，显式落盘防翻转）──
+    embedBackfill:
+      enabled: true       # 为缺向量/向量过期的记录批量重算 embedding
+      intervalMinutes: 30 # 扫描周期 30 分钟
+      batchLimit: 50      # 单轮最多回填 50 条（节流，避免打满 embedding 配额）
 
   evolution: # 受控正文演化（GROW-EVO §4，REG-REMAINING-005 #1）——全系统唯一允许改写已固化正文的路径
     enabled: true # P4b 验证通过后开启（2026-09-17 live 验证轮；五条件门+单轮上限护栏，门严=不触发良性）
@@ -432,7 +503,7 @@ skill:
     searchTopK: 20
   extraction:
     enabled: true # 官方：开启 LLM 自动抽取（之前为 false 导致 0 产出）
-    maxIterations: 16 # review agent 最大迭代（官方模板默认 16）
+    maxIterations: 5 # review agent 最大迭代（2026-10-26 收紧：prompt v3 单 pass 上限 2 条新建，5 回合足够；16→5 见提交 aadae63）
     archiveBytes: 40960 # 40KB 归档阈值（工具调用 ≥10 或 字节 ≥40KB 触发归档）
     # O8 拍板 2026-09-17：超大对话（~40KB 归档阈值）提取超 120s 为确定性失败而非瞬时故障，
     # 曾被无界 transient 重试。以下两旋钮 0 = 不限制（llm-runner GROW-EVO P2.1 语义，
