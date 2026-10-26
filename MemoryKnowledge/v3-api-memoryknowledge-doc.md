@@ -40,14 +40,21 @@
 
 ### 1.3 鉴权
 
-KS 走 **内网信任模型**，与 MemoryCore 的 user-key 体系不同：
+KS 走 **内网信任模型**（租户维度），与 MemoryCore 的 user-key 体系不同；在此之上叠一层**可选的服务间鉴权**（服务密钥）：
 
 | 项 | 说明 |
 |---|---|
 | 唯一必填 Header | `x-tdai-service-id`（租户/service 标识，即内核路由键） |
-| 其他鉴权 | **无**（无 Bearer、无 user-key；service_id 自报，内网信任） |
+| 服务间鉴权（可选） | 环境变量 `KNOWLEDGE_SERVICE_KEY`：**为空 = 不启用**（全部端点放行，向后兼容本地/开发部署）；**非空 = 除只读白名单外的 `/v3` 端点必须带 `Authorization: Bearer <KNOWLEDGE_SERVICE_KEY>`**，缺失或错误一律 `401`（fail-closed） |
+| 只读白名单（启用密钥时仍开放） | `POST /v3/tools/list`、`POST /v3/tools/call`；`POST /v3/wiki/{get,list,search,graph,raw/ls,raw/read,page/ls,page/read}`；`POST /v3/code-graph/{list,get}` 与 8 个动态只读查询（`search`/`explore`/`callers`/`callees`/`impact`/`node`/`status`/`files`）；`GET /v3/auto-sync/status` |
 | 例外 | `POST /v3/internal/llm-binding/list` 不需要 `x-tdai-service-id` 头（返回全部 binding，供 Panel 启动缓存）；`/v3/auto-sync/*` 无鉴权 |
 
+> **未设置 `KNOWLEDGE_SERVICE_KEY` 时，整层服务间鉴权不生效**——此时 KS 仍是纯内网信任模型：任何可达者都能写/删知识库，并读取 `/v3/internal/llm-binding`（含 base_url 等绑定信息）。共享或生产部署必须设置该变量。部署脚本（`deploy/global-images/start-memory-hub.sh`）在 `.env` 缺省时自动生成随机 key（`ks-svc-<hex>`）并幂等回写，同一个值分两路注入容器：Knowledge 校验侧 `KNOWLEDGE_SERVICE_KEY`、Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN`。
+>
+> 鉴权失败的响应体为 `{ "code": 401, "message": "unauthorized: valid service key required", "data": null }`（HTTP 401）。
+>
+> `/health`、`/docs`、`/openapi.json` 挂在 `/v3` 之外，不受服务密钥影响。
+>
 > `service_id` / `team_id` / 资源 ID 统一做**路径分段白名单校验**（`^[A-Za-z0-9_-]+$`、长度 ≤200），防止路径穿越。
 
 ### 1.4 ID 与多租户
@@ -641,7 +648,7 @@ upsert binding（`proxy`\|`byo`）。**幂等**：重复 set 覆盖。
 | 维度 | MemoryCore（卷一） | MemoryKnowledge（本卷） |
 |---|---|---|
 | 信封 | `{ code, message, request_id, data }` | `{ code, message, data }`（**无 request_id**） |
-| 鉴权 | Bearer + service-id + user-key 分层 | 仅 `x-tdai-service-id`（内网信任） |
+| 鉴权 | Bearer + service-id + user-key 分层 | `x-tdai-service-id`（内网信任）+ 可选服务密钥 Bearer（`KNOWLEDGE_SERVICE_KEY` 非空时写/管理面 401） |
 | 错误 message | 三类格式（枚举 / 5 位 code / `CODE: detail`） | 小写英文句子（按 HTTP code 分支） |
 | 分页出参 | `{ items, total, limit, offset }` | `{ items, total }`（无 limit/offset 回显） |
 | ID 前缀 | skill `skl-` 等 | wiki `wiki-`、code-graph `cg-` |

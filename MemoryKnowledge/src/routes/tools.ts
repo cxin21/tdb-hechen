@@ -20,6 +20,7 @@ import { executeTool as executeCodeTool } from "../engines/code/index.js";
 import { wrapOk, wrapError, isValidIdSegment } from "../api-helpers.js";
 import { wikiCanServeReads } from "../store/index.js";
 import { isWikiId, isCodeGraphId } from "../store/ids.js";
+import { CODEGRAPH_QUERY_TOOL_NAMES } from "../codegraph-tool-names.js";
 
 export interface ToolsRouteDeps {
   wikiService: WikiService;
@@ -518,15 +519,6 @@ function truncateForWikiFetch(
 // ═══════════════════════════════════════════════════════════════════════
 
 // Reuse the query specs from code-graph routes
-
-/**
- * 对外暴露的 codegraph 查询工具名（不含 get_info，get_info 在调用方特殊处理）。
- * 单一真相源：tools.ts 的 CODE_GRAPH_TOOLS、code-graph.ts 的路由注册、
- * toCodeGraphToolName 的校验列表，全部从这里来。
- */
-export const CODEGRAPH_QUERY_TOOL_NAMES: readonly string[] = [
-  "search", "explore", "callers", "callees", "impact", "node", "status", "files",
-];
 
 /**
  * 把对外暴露的工具名映射为 executeTool 接受的内部工具名。

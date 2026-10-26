@@ -102,6 +102,20 @@ export interface ServiceConfig {
   rerank: RerankConfig;
   /** Optional ClickHouse request telemetry. Disabled by default. */
   clickhouse: ClickHouseTelemetryConfig;
+  /**
+   * 服务间鉴权。serviceKey 为空 = 不启用（向后兼容本地/开发部署，端点全放行）；
+   * 非空 = /v3 下除只读白名单外的端点均要求 `Authorization: Bearer <serviceKey>`（fail-closed）。
+   */
+  auth: KnowledgeAuthConfig;
+}
+
+/**
+ * 服务间鉴权配置（KNOWLEDGE_SERVICE_KEY）。
+ * serviceKey 为空 = 不启用鉴权；非空 = /v3 下除只读白名单外的端点均要求 Bearer（fail-closed）。
+ */
+export interface KnowledgeAuthConfig {
+  /** 共享密钥；空字符串表示不启用鉴权。 */
+  serviceKey: string;
 }
 
 export interface RerankConfig {
@@ -201,6 +215,7 @@ export function loadConfig(): ServiceConfig {
       timeoutMs: clamp(envInt("KNOWLEDGE_RERANK_TIMEOUT_MS", 800), 100, 30000),
     },
     clickhouse,
+    auth: { serviceKey: env("KNOWLEDGE_SERVICE_KEY", "") },
     llm: {
       mode: env("LLM_MODE", "proxy") === "custom" ? "custom" : "proxy",
       protocol: env("LLM_PROTOCOL", "openai") === "anthropic" ? "anthropic" : "openai",

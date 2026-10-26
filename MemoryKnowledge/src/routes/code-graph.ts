@@ -17,7 +17,8 @@ import { Hono } from "hono";
 import type { CodeGraphService } from "../store/index.js";
 import type { SyncStatus } from "../store/index.js";
 import { executeTool as executeCodeTool } from "../engines/code/index.js";
-import { toCodeGraphToolName, CODEGRAPH_QUERY_TOOL_NAMES } from "./tools.js";
+import { toCodeGraphToolName } from "./tools.js";
+import { CODEGRAPH_QUERY_TOOL_NAMES } from "../codegraph-tool-names.js";
 import {
   extractIdFields,
   isValidIdSegment,
