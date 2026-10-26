@@ -12,16 +12,17 @@ interface FetchLog {
   calls: string[][];
 }
 
-function installFetch(log: FetchLog, opts?: { failTimes?: number }): void {
+function installFetch(log: FetchLog, opts?: { failTimes?: number; failStatus?: number }): void {
   let remainingFailures = opts?.failTimes ?? 0;
+  const failStatus = opts?.failStatus ?? 429;
   vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
     const body = JSON.parse(init.body) as { input: string[]; model: string };
     log.calls.push([...body.input]);
     if (remainingFailures > 0) {
       remainingFailures--;
       return new Response(JSON.stringify({ error: { code: "AccountRateLimitExceeded" } }), {
-        status: 429,
-        statusText: "Too Many Requests",
+        status: failStatus,
+        statusText: failStatus === 429 ? "Too Many Requests" : "Bad Request",
       });
     }
     return new Response(
@@ -93,10 +94,11 @@ describe("OpenAIEmbeddingService 内容缓存（B 降调用量）", () => {
 
   it("调用失败不写缓存：下一次仍会真正重试 provider", async () => {
     const log: FetchLog = { calls: [] };
-    installFetch(log, { failTimes: 1 });
+    // 用不可重试的 4xx（429 现在会自动重试，见 embedding-429-retry.test.ts）
+    installFetch(log, { failTimes: 1, failStatus: 400 });
     const svc = makeService();
 
-    await expect(svc.embed("flaky")).rejects.toThrow(/HTTP 429/);
+    await expect(svc.embed("flaky")).rejects.toThrow(/HTTP 400/);
     expect(svc.getCacheStats().size).toBe(0);
 
     const ok = await svc.embed("flaky");

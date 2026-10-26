@@ -369,8 +369,15 @@ const MAX_BATCH_SIZE = 256;
  *  2048 维 float32 ≈ 8KB/条 → 512 条 ≈ 4MB，上限固定，超出按插入序淘汰最旧（LRU）。 */
 const EMBED_CACHE_MAX_ENTRIES = 512;
 
-/** Max retries for API calls */
-const MAX_RETRIES = 0;
+/**
+ * 429 重试次数（2026-10-26 起；此前是 0=不重试）。
+ * 生产实测：Ark coding 端点的 429 是 43ms 内秒拒的突发限制（4rps 匀速 20/20 成功，
+ * 3 次快速连打即全灭），单发重试 400ms 后基本必成 —— 不重试等于白丢向量。
+ * 只对 429 重试；超时/5xx/4xx 语义保持不变（一次即抛，避免拖长调用方预算）。
+ */
+const MAX_429_RETRIES = 2;
+/** 429 后的退避基数：第 n 次失败等 n×400ms，并让后续调用一起排队等（全局冷却）。 */
+const RATE_LIMIT_BACKOFF_MS = 400;
 /** Default timeout per API call in milliseconds */
 const DEFAULT_API_TIMEOUT_MS = 10_000;
 
@@ -419,6 +426,9 @@ export class OpenAIEmbeddingService implements EmbeddingService {
   private readonly embedCache = new Map<string, Float32Array>();
   private cacheHits = 0;
   private cacheMisses = 0;
+  /** 429 全局冷却截止时刻（ms）：撞限后所有调用一起等待，避免继续撞枪口。 */
+  private cooldownUntil = 0;
+  private rateLimitHits = 0;
 
   constructor(config: OpenAIEmbeddingConfig, logger?: Logger) {
     if (!config.apiKey) {
@@ -562,6 +572,24 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     return text.slice(0, this.maxInputChars);
   }
 
+  /** 429 撞限：记一次并让全局冷却顺延（第 n 次失败等 n×400ms）。 */
+  private noteRateLimit(attempt: number): void {
+    this.rateLimitHits += 1;
+    const waitMs = RATE_LIMIT_BACKOFF_MS * (attempt + 1);
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + waitMs);
+    this.logger?.warn?.(
+      `${TAG} rate limited (429), attempt ${attempt + 1}/${MAX_429_RETRIES + 1}; cooling down ${waitMs}ms`,
+    );
+  }
+
+  /** 等待 429 全局冷却结束（未撞限时零开销）。 */
+  private async waitForCooldown(): Promise<void> {
+    const waitMs = this.cooldownUntil - Date.now();
+    if (waitMs <= 0) return;
+    this.logger?.debug?.(`${TAG} waiting ${waitMs}ms for rate-limit cooldown`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
   private async _callApi(texts: string[], timeoutOverride?: number): Promise<Float32Array[]> {
     const body: Record<string, unknown> = {
       input: texts,
@@ -585,9 +613,11 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       );
     }
 
-    // Retry loop with timeout
+    // Retry loop: 429 有界重试 + 全局冷却；其余错误一次即抛（保持旧语义）
     let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+      // 撞限后所有调用（含 recall/backfill）一起排队等冷却过去，避免继续撞枪口
+      await this.waitForCooldown();
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutOverride ?? this.timeoutMs);
@@ -606,12 +636,13 @@ export class OpenAIEmbeddingService implements EmbeddingService {
               `Embedding API error: HTTP ${resp.status} ${resp.statusText} — ${errBody.slice(0, 500)}`,
               resp.status,
             );
-            // Don't retry on 4xx client errors (except 429 rate limit)
-            if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) {
-              throw err;
+            if (resp.status === 429) {
+              // 只对 429 重试：等下一轮循环开头的冷却
+              lastError = err;
+              this.noteRateLimit(attempt);
+              if (attempt < MAX_429_RETRIES) continue;
             }
-            lastError = err;
-            continue;
+            throw err;
           }
 
           const json = (await resp.json()) as OpenAIEmbeddingResponse;
@@ -627,17 +658,8 @@ export class OpenAIEmbeddingService implements EmbeddingService {
           clearTimeout(timeoutId);
         }
       } catch (err) {
-        // Non-retryable errors (4xx client errors) — rethrow immediately
-        if (err instanceof EmbeddingApiError && err.isClientError()) {
-          throw err;
-        }
-        lastError = err instanceof Error ? err : new Error(String(err));
-        // AbortError = timeout, retry
-        if (attempt < MAX_RETRIES) {
-          // Exponential backoff: 500ms, 1000ms
-          const delay = 500 * (attempt + 1);
-          await new Promise((r) => setTimeout(r, delay));
-        }
+        // 超时（AbortError）/5xx/其他非 429 错误：一次即抛，不拖长调用方预算
+        throw err instanceof Error ? err : new Error(String(err));
       }
     }
 
