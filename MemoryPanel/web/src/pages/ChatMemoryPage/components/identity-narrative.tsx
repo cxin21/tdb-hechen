@@ -18,44 +18,76 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { chatMemoryApi } from '@/lib/teamApi';
-import { IDENTITY_NARRATIVE_SLOT, rawIdentityRowsOf, type CoreSlotRow, type NarrativePreview } from './identity-utils';
+import {
+  IDENTITY_NARRATIVE_SLOT,
+  rawIdentityRowsOf,
+  type CoreSlotRow,
+  type NarrativePreview,
+} from './identity-utils';
 
 export type IdentityNarrativeVariant = 'anchors' | 'soul';
 
 interface VariantClasses {
-  section: string; head: string; title: string;
-  chipOn: string; chipOff: string;
+  section: string;
+  head: string;
+  title: string;
+  chipOn: string;
+  chipOff: string;
   content: string;
-  switchWrap: string; switchBtn: string; switchBtnOn: string;
-  details: string; detailsBody: string;
-  status: string; hint: string;
-  rawRow: string; rawSlot: string;
+  switchWrap: string;
+  switchBtn: string;
+  switchBtnOn: string;
+  details: string;
+  detailsBody: string;
+  status: string;
+  hint: string;
+  rawRow: string;
+  rawSlot: string;
 }
 
 const CLS: Record<IdentityNarrativeVariant, VariantClasses> = {
   anchors: {
-    section: '_id-section', head: '_id-narr-head', title: '_id-title',
-    chipOn: '_id-badge _id-narr-chip--on', chipOff: '_id-badge _id-narr-chip--off',
+    section: '_id-section',
+    head: '_id-narr-head',
+    title: '_id-title',
+    chipOn: '_id-badge _id-narr-chip--on',
+    chipOff: '_id-badge _id-narr-chip--off',
     content: '_id-content',
-    switchWrap: '_id-narr-switch', switchBtn: '_id-narr-switch-btn', switchBtnOn: '_id-narr-switch-btn--on',
-    details: '_id-narr-details', detailsBody: '_id-narr-details-body',
-    status: '_id-narr-status', hint: '_id-narr-hint',
-    rawRow: '_id-narr-raw-row', rawSlot: '_id-narr-raw-slot',
+    switchWrap: '_id-narr-switch',
+    switchBtn: '_id-narr-switch-btn',
+    switchBtnOn: '_id-narr-switch-btn--on',
+    details: '_id-narr-details',
+    detailsBody: '_id-narr-details-body',
+    status: '_id-narr-status',
+    hint: '_id-narr-hint',
+    rawRow: '_id-narr-raw-row',
+    rawSlot: '_id-narr-raw-slot',
   },
   soul: {
-    section: '_soul-section', head: '_soul-section-head', title: '_soul-section-title',
-    chipOn: '_soul-chip _soul-chip--green', chipOff: '_soul-chip _soul-chip--neutral',
+    section: '_soul-section',
+    head: '_soul-section-head',
+    title: '_soul-section-title',
+    chipOn: '_soul-chip _soul-chip--green',
+    chipOff: '_soul-chip _soul-chip--neutral',
     content: '_soul-narr-content',
-    switchWrap: '_soul-narr-switch', switchBtn: '_soul-narr-switch-btn', switchBtnOn: '_soul-narr-switch-btn--on',
-    details: '_soul-narr-details', detailsBody: '_soul-narr-details-body',
-    status: '_soul-narr-status', hint: '_soul-narr-hint',
-    rawRow: '_soul-narr-raw-row', rawSlot: '_soul-narr-raw-slot',
+    switchWrap: '_soul-narr-switch',
+    switchBtn: '_soul-narr-switch-btn',
+    switchBtnOn: '_soul-narr-switch-btn--on',
+    details: '_soul-narr-details',
+    detailsBody: '_soul-narr-details-body',
+    status: '_soul-narr-status',
+    hint: '_soul-narr-hint',
+    rawRow: '_soul-narr-raw-row',
+    rawSlot: '_soul-narr-raw-slot',
   },
 };
 
 /** #69 三态数据源（宿主共用）：读 narrative 视图（format='narrative'）+ 失败位。
-  * 编排（failed→null / narrativePreviewOf 判态 / 灰态存量渲染）留在各宿主——两页布局不同。 */
-export function useIdentityNarrativeState(blockId: string): { failed: boolean; slots: CoreSlotRow[] } {
+ * 编排（failed→null / narrativePreviewOf 判态 / 灰态存量渲染）留在各宿主——两页布局不同。 */
+export function useIdentityNarrativeState(blockId: string): {
+  failed: boolean;
+  slots: CoreSlotRow[];
+} {
   const [slots, setSlots] = useState<CoreSlotRow[]>([]);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -78,7 +110,7 @@ export function useIdentityNarrativeState(blockId: string): { failed: boolean; s
 }
 
 /** 绿态视图：「AI 眼中的我」——默认结论级叙事文本（AI 实际看到的），技术细节折叠，
-  * 「存储原文（管理员视角）」按需懒加载（渐进披露：原文视图不默认拉取）。 */
+ * 「存储原文（管理员视角）」按需懒加载（渐进披露：原文视图不默认拉取）。 */
 export function IdentityNarrativeView(props: {
   blockId: string;
   preview: NarrativePreview;
@@ -169,7 +201,7 @@ export function IdentityNarrativeView(props: {
 }
 
 /** 灰态状态行（降级不静默）：门关/生成闸降级合一（单次读响应无信号可分），一句人话。
-  * 存量条目视图由宿主在其下继续渲染——本行只补状态，不改存量布局。 */
+ * 存量条目视图由宿主在其下继续渲染——本行只补状态，不改存量布局。 */
 export function NarrativeStatusLine(props: { variant: IdentityNarrativeVariant }) {
   const { t } = useTranslation();
   const c = CLS[props.variant];

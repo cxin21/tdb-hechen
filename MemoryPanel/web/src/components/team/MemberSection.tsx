@@ -4,7 +4,18 @@
  */
 
 import { useState } from 'react';
-import { Alert, Button, Copy, Form, Input, Modal, Segment, Select, Switch, Tag } from 'tea-component';
+import {
+  Alert,
+  Button,
+  Copy,
+  Form,
+  Input,
+  Modal,
+  Segment,
+  Select,
+  Switch,
+  Tag,
+} from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { AddIcon, CloseIcon } from 'tea-icons-react';
 import { isTeamAdmin, invalidateBackendCache, type Team } from '@/services';
@@ -53,7 +64,9 @@ export function MemberSection({
       <div className="_memory-section-header">
         <div className="_memory-section-header-info">
           <div className="_memory-section-header-title-row">
-            <div className="_memory-section-title">{t('member.title', { count: team.members.length })}</div>
+            <div className="_memory-section-title">
+              {t('member.title', { count: team.members.length })}
+            </div>
             <Tag size="sm">{team.team_id}</Tag>
           </div>
           <div className="_memory-section-subtitle">
@@ -123,7 +136,10 @@ function MemberCard({
           {isMe && <span className="_memory-member-me-tag">{t('member.me')}</span>}
         </div>
         {hasUsername && (
-          <div className="_memory-member-role" style={{ fontSize: '10px', color: 'var(--tea-color-text-tertiary)' }}>
+          <div
+            className="_memory-member-role"
+            style={{ fontSize: '10px', color: 'var(--tea-color-text-tertiary)' }}
+          >
             {user_id}
           </div>
         )}
@@ -136,7 +152,10 @@ function MemberCard({
         {canRemove && (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onRemove(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
             disabled={removing}
             className="_memory-member-remove-btn"
             title={t('member.remove.tooltip')}
@@ -188,8 +207,6 @@ export function AddMemberDialog({
   // user/create 须 system_admin 权限（见 docs/api/metadata-api.md §1.4），
   // 非 全局 admin 调了必 403 —— 这里直接隐藏"新建用户"选项，避免用户操作后才报错。
   const canCreateUser = _globalAdmin;
-
-
 
   async function submitExisting() {
     const id = userId.trim();
@@ -277,7 +294,12 @@ export function AddMemberDialog({
   return (
     <Modal
       visible
-      caption={<>{t('addMember.caption', { name: team.name })}<Tag size="sm">{team.team_id}</Tag></>}
+      caption={
+        <>
+          {t('addMember.caption', { name: team.name })}
+          <Tag size="sm">{team.team_id}</Tag>
+        </>
+      }
       size="m"
       onClose={onClose}
       disableEscape={submitting}
@@ -285,127 +307,137 @@ export function AddMemberDialog({
       <Modal.Body>
         {!canGrantAdmin && <Alert type="info">{t('addMember.adminOnlyHint')}</Alert>}
         <Form>
-      <Form.Item label={t('addMember.mode')}>
-        {canCreateUser ? (
-          <Segment
-            value={mode}
-            onChange={(v) => {
-              setMode(v as 'existing' | 'new');
-              setError(null);
-              if (v === 'new') setRole('member');
-            }}
-            options={[
-              { value: 'existing', text: t('addMember.mode.existing') },
-              { value: 'new', text: t('addMember.mode.new') },
-            ]}
-          />
-        ) : (
-          <div className="_memory-field-hint">
-            {t('addMember.mode.hint')}
-          </div>
-        )}
-      </Form.Item>
-
-      {mode === 'existing' ? (
-        <Form.Item label={t('addMember.userId')}>
-          <div>
-            <Input
-              autoFocus
-              size="full"
-              value={userId}
-              onChange={(v) => {
-                setUserId(v);
-                setError(null);
-              }}
-              onPressEnter={() => void handleSubmit()}
-              placeholder={t('addMember.userId.placeholder')}
-            />
-            <div className="_memory-field-hint">{t('addMember.userId.hint')}</div>
-          </div>
-        </Form.Item>
-      ) : (
-        <>
-          <Form.Item label={t('addMember.username')} required>
-            <div>
-              <Input
-                autoFocus
-                size="full"
-                value={newUsername}
+          <Form.Item label={t('addMember.mode')}>
+            {canCreateUser ? (
+              <Segment
+                value={mode}
                 onChange={(v) => {
-                  setNewUsername(v);
+                  setMode(v as 'existing' | 'new');
                   setError(null);
+                  if (v === 'new') setRole('member');
                 }}
-                onPressEnter={() => void handleSubmit()}
-                placeholder={t('addMember.username.placeholder')}
+                options={[
+                  { value: 'existing', text: t('addMember.mode.existing') },
+                  { value: 'new', text: t('addMember.mode.new') },
+                ]}
               />
-              {newUsername.trim() && !/^[A-Za-z0-9_]+$/.test(newUsername.trim()) ? (
-                <div className="_memory-field-hint" style={{ color: 'var(--tea-color-text-error-default)' }}>
-                  {t('addMember.username.invalid')}
-                </div>
-              ) : (
-                <div className="_memory-field-hint">{t('addMember.username.hint')}</div>
-              )}
-            </div>
+            ) : (
+              <div className="_memory-field-hint">{t('addMember.mode.hint')}</div>
+            )}
           </Form.Item>
 
-          {/*
+          {mode === 'existing' ? (
+            <Form.Item label={t('addMember.userId')}>
+              <div>
+                <Input
+                  autoFocus
+                  size="full"
+                  value={userId}
+                  onChange={(v) => {
+                    setUserId(v);
+                    setError(null);
+                  }}
+                  onPressEnter={() => void handleSubmit()}
+                  placeholder={t('addMember.userId.placeholder')}
+                />
+                <div className="_memory-field-hint">{t('addMember.userId.hint')}</div>
+              </div>
+            </Form.Item>
+          ) : (
+            <>
+              <Form.Item label={t('addMember.username')} required>
+                <div>
+                  <Input
+                    autoFocus
+                    size="full"
+                    value={newUsername}
+                    onChange={(v) => {
+                      setNewUsername(v);
+                      setError(null);
+                    }}
+                    onPressEnter={() => void handleSubmit()}
+                    placeholder={t('addMember.username.placeholder')}
+                  />
+                  {newUsername.trim() && !/^[A-Za-z0-9_]+$/.test(newUsername.trim()) ? (
+                    <div
+                      className="_memory-field-hint"
+                      style={{ color: 'var(--tea-color-text-error-default)' }}
+                    >
+                      {t('addMember.username.invalid')}
+                    </div>
+                  ) : (
+                    <div className="_memory-field-hint">{t('addMember.username.hint')}</div>
+                  )}
+                </div>
+              </Form.Item>
+
+              {/*
             自定义 user_key 开关：
             - 关（默认）：走 user/create，内核自动生成 default_user_key（现有行为）
             - 开：走 user/create-with-key，把用户指定的 key 作为默认 key
           */}
-          <Form.Item label={t('addMember.customKey.label')}>
-            <div>
-              <Switch
-                value={customKeyEnabled}
-                onChange={(v) => {
-                  setCustomKeyEnabled(v);
-                  setError(null);
-                  if (!v) setCustomKey('');
-                }}
-              />
-              <div className="_memory-field-hint">{t('addMember.customKey.hint')}</div>
-            </div>
-          </Form.Item>
+              <Form.Item label={t('addMember.customKey.label')}>
+                <div>
+                  <Switch
+                    value={customKeyEnabled}
+                    onChange={(v) => {
+                      setCustomKeyEnabled(v);
+                      setError(null);
+                      if (!v) setCustomKey('');
+                    }}
+                  />
+                  <div className="_memory-field-hint">{t('addMember.customKey.hint')}</div>
+                </div>
+              </Form.Item>
 
-          {customKeyEnabled && (
-            <Form.Item label={t('addMember.customKey.value')} required>
-              <div>
-                <Input
-                  size="full"
-                  value={customKey}
-                  onChange={(v) => {
-                    setCustomKey(v);
-                    setError(null);
-                  }}
-                  onPressEnter={() => void handleSubmit()}
-                  placeholder={t('addMember.customKey.placeholder')}
-                />
-                <div className="_memory-field-hint">{t('addMember.customKey.valueHint')}</div>
-              </div>
+              {customKeyEnabled && (
+                <Form.Item label={t('addMember.customKey.value')} required>
+                  <div>
+                    <Input
+                      size="full"
+                      value={customKey}
+                      onChange={(v) => {
+                        setCustomKey(v);
+                        setError(null);
+                      }}
+                      onPressEnter={() => void handleSubmit()}
+                      placeholder={t('addMember.customKey.placeholder')}
+                    />
+                    <div className="_memory-field-hint">{t('addMember.customKey.valueHint')}</div>
+                  </div>
+                </Form.Item>
+              )}
+            </>
+          )}
+
+          <Form.Item label={t('addMember.role')}>
+            <Select
+              size="full"
+              value="member"
+              disabled
+              options={[{ value: 'member', text: t('addMember.role.default') }]}
+            />
+            <div className="_memory-field-hint">{t('addMember.role.hint')}</div>
+          </Form.Item>
+          {error && (
+            <Form.Item>
+              <Alert type="error">{error}</Alert>
             </Form.Item>
           )}
-        </>
-      )}
-
-      <Form.Item label={t('addMember.role')}>
-        <Select
-          size="full"
-          value="member"
-          disabled
-          options={[
-            { value: 'member', text: t('addMember.role.default') },
-          ]}
-        />
-        <div className="_memory-field-hint">{t('addMember.role.hint')}</div>
-      </Form.Item>
-          {error && <Form.Item><Alert type="error">{error}</Alert></Form.Item>}
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" onClick={() => void handleSubmit()} disabled={!canSubmit || submitting} loading={submitting}>
+        <Button
+          type="primary"
+          onClick={() => void handleSubmit()}
+          disabled={!canSubmit || submitting}
+          loading={submitting}
+        >
           {mode === 'existing' ? t('addMember.existing.submit') : t('addMember.new.submit')}
         </Button>
-        <Button onClick={onClose} disabled={submitting}>{t('addMember.cancel')}</Button>
+        <Button onClick={onClose} disabled={submitting}>
+          {t('addMember.cancel')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );
@@ -428,42 +460,46 @@ export function CreatedUserKeyModal({
     <Modal visible caption={t('createdUserKey.caption')} size="m" onClose={onClose}>
       <Modal.Body>
         <Form>
-          <Alert type="success">{t('createdUserKey.success', { username: info.username, userId: info.userId })}</Alert>
-          <div className="space-y-4 text-[13px]">
-        {info.keyValue ? (
-          <>
-            <Alert type="warning">
-              <strong>{t('createdUserKey.warning')}</strong>
-            </Alert>
-            <Form.Item label={t('createdUserKey.keyLabel')}>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 rounded border bg-muted px-3 py-2 text-[12px] font-mono break-all select-all">
-                  {info.keyValue}
-                </code>
-                <Copy text={info.keyValue}>
-                  <Button onClick={() => setCopied(true)}>
-                    {copied ? t('createdUserKey.copied') : t('createdUserKey.copy')}
-                  </Button>
-                </Copy>
-              </div>
-            </Form.Item>
-          </>
-        ) : (
-          <Alert type="warning">
-            {t('createdUserKey.noKey')}
-            <code
-              className="mt-1 block rounded px-2 py-1 text-[12px] font-mono select-all"
-              style={{ background: 'var(--tea-color-bg-primary-default)' }}
-            >
-              {info.userId}
-            </code>
+          <Alert type="success">
+            {t('createdUserKey.success', { username: info.username, userId: info.userId })}
           </Alert>
-        )}
+          <div className="space-y-4 text-[13px]">
+            {info.keyValue ? (
+              <>
+                <Alert type="warning">
+                  <strong>{t('createdUserKey.warning')}</strong>
+                </Alert>
+                <Form.Item label={t('createdUserKey.keyLabel')}>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 rounded border bg-muted px-3 py-2 text-[12px] font-mono break-all select-all">
+                      {info.keyValue}
+                    </code>
+                    <Copy text={info.keyValue}>
+                      <Button onClick={() => setCopied(true)}>
+                        {copied ? t('createdUserKey.copied') : t('createdUserKey.copy')}
+                      </Button>
+                    </Copy>
+                  </div>
+                </Form.Item>
+              </>
+            ) : (
+              <Alert type="warning">
+                {t('createdUserKey.noKey')}
+                <code
+                  className="mt-1 block rounded px-2 py-1 text-[12px] font-mono select-all"
+                  style={{ background: 'var(--tea-color-bg-primary-default)' }}
+                >
+                  {info.userId}
+                </code>
+              </Alert>
+            )}
           </div>
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" onClick={onClose}>{t('createdUserKey.close')}</Button>
+        <Button type="primary" onClick={onClose}>
+          {t('createdUserKey.close')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );

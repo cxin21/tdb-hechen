@@ -59,7 +59,8 @@ export const zhCN = {
   'soul.mood.positive': '偏积极',
   'soul.mood.neutral': '平稳',
   'soul.mood.strained': '偏承压',
-  'soul.mood.tooltip': '判定依据：近 {{window}} 小时内 {{samples}} 条经历的情感聚合（半衰期 {{halfLife}}h 加权；阈值 +{{pos}}/−{{neg}}；不足 {{min}} 条省略）',
+  'soul.mood.tooltip':
+    '判定依据：近 {{window}} 小时内 {{samples}} 条经历的情感聚合（半衰期 {{halfLife}}h 加权；阈值 +{{pos}}/−{{neg}}；不足 {{min}} 条省略）',
   'soul.person.title': '重要的人（人物锚专视图）',
   'soul.person.expand': '证据链',
   'soul.person.collapse': '收起证据链',
@@ -171,12 +172,14 @@ export const zhCN = {
 
   // ===== Rerank（独立页签 · 2026-10-16 自 Memory 页签拆出，配置仍存 Core 单一事实源）=====
   'settings.rerank.tabTitle': 'Rerank 精排',
-  'settings.rerank.scopeNote': '生效范围：Memory 召回与 Wiki 检索（Wiki 侧经 Core /v1/rerank 链路跟随此配置）。',
+  'settings.rerank.scopeNote':
+    '生效范围：Memory 召回与 Wiki 检索（Wiki 侧经 Core /v1/rerank 链路跟随此配置）。',
   'settings.rerank.title': 'Rerank 精排（{{label}}）',
   'settings.rerank.configError': '当前配置错误',
   'settings.rerank.enabled': '启用 Rerank',
   'settings.rerank.enabled.label': '开启后精排实时生效（关闭 = 直接返回融合排序结果）',
-  'settings.rerank.activeNote': '保存并重启 Core 后对两者同时生效；召回日志保留 kept/dropped/topScore 供排查观测。',
+  'settings.rerank.activeNote':
+    '保存并重启 Core 后对两者同时生效；召回日志保留 kept/dropped/topScore 供排查观测。',
   'settings.rerank.baseGroup.title': '基础设置',
   'settings.rerank.cloudGroup.title': '云端服务参数',
   'settings.rerank.memoryGroup.title': '召回候选控制（仅作用于 Memory 召回）',
@@ -197,7 +200,8 @@ export const zhCN = {
   'settings.rerank.minScore': '最低分 (Min Score)',
   'settings.rerank.minScore.hint': '低于该分数的结果被丢弃；Wiki 重排不按此阈值过滤。',
   'settings.rerank.local.modelDir': '模型目录',
-  'settings.rerank.local.modelDir.placeholder': '留空 = 数据目录下 models/reranker/Xenova/bge-reranker-base',
+  'settings.rerank.local.modelDir.placeholder':
+    '留空 = 数据目录下 models/reranker/Xenova/bge-reranker-base',
   'settings.rerank.local.modelDir.hint': '模型已就绪时无需改动；自定义目录填绝对路径。',
   'settings.rerank.local.idleUnloadMs': '空闲卸载 (ms)',
   'settings.rerank.local.idleUnloadMs.hint': '0 = 常驻不卸载',
@@ -213,12 +217,14 @@ export const zhCN = {
   'settings.importance.title': '重要度标注与召回降权（P1 task-7）',
   'settings.importance.extraction': '抽取标注',
   'settings.importance.extraction.label': 'L1 抽取时让 LLM 标注重要度（1-10）+ 一句评语',
-  'settings.importance.extraction.hint': '开启后随单次 LLM 调用附带标注（无第二次调用）；关闭 = 完全现状，不留痕。',
+  'settings.importance.extraction.hint':
+    '开启后随单次 LLM 调用附带标注（无第二次调用）；关闭 = 完全现状，不留痕。',
   'settings.importance.penalty.enabled': '召回降权',
   'settings.importance.penalty.enabled.label': '低重要度（≤4）召回降权',
   'settings.importance.penalty.enabled.hint': '仅对重要度 ≤4 的记忆降权；未评分（NULL）永不降权。',
   'settings.importance.penalty.value': '降权强度 (Penalty)',
-  'settings.importance.penalty.value.hint': '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。降权恒真实生效（影子模式已按拍板移除），gates.importancePenalty 仍记录 raw/penalized 双分量。',
+  'settings.importance.penalty.value.hint':
+    '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。降权恒真实生效（影子模式已按拍板移除），gates.importancePenalty 仍记录 raw/penalized 双分量。',
 
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',
@@ -393,9 +399,12 @@ export const zhCN = {
   'wiki.create.submit': '创建',
   'wiki.create.sourceType': '来源类型',
   'wiki.create.gitUrl': 'Git 仓库 URL',
-  'wiki.create.gitUrlExtra': '支持 HTTPS 或 SSH Git 仓库，形如 https://…/repo.git 或 git@host:group/repo.git',
-  'wiki.create.gitUrlPlaceholder': 'https://git.example.com/org/repo.git 或 git@host:group/repo.git',
-  'wiki.create.invalidUrl': 'Git 仓库 URL 格式不正确（支持 https://…/repo.git、ssh://…/repo.git 或 git@host:group/repo.git）',
+  'wiki.create.gitUrlExtra':
+    '支持 HTTPS 或 SSH Git 仓库，形如 https://…/repo.git 或 git@host:group/repo.git',
+  'wiki.create.gitUrlPlaceholder':
+    'https://git.example.com/org/repo.git 或 git@host:group/repo.git',
+  'wiki.create.invalidUrl':
+    'Git 仓库 URL 格式不正确（支持 https://…/repo.git、ssh://…/repo.git 或 git@host:group/repo.git）',
   'wiki.create.gitBranch': '分支',
   'wiki.create.gitBranchPlaceholder': 'main（默认）',
   'wiki.create.pathInclude': '路径匹配正则（包含）',
@@ -854,7 +863,8 @@ export const zhCN = {
   'memory.anchors.delete': '删除',
   'memory.anchors.add': '新增',
   'memory.anchors.addPlaceholder': '新价值锚名称',
-  'memory.anchors.addDescPlaceholder': '一句「情境+行为取向」描述（≤80字，句号结尾。如：涉及不可再生数据时，宁可慢一步验证，不做不可逆操作。）',
+  'memory.anchors.addDescPlaceholder':
+    '一句「情境+行为取向」描述（≤80字，句号结尾。如：涉及不可再生数据时，宁可慢一步验证，不做不可逆操作。）',
   'memory.anchors.derive': '重新总结方向',
   'memory.anchors.deriveDone': '重判完成：判定 {{derived}} 条，跳过 {{skipped}} 条',
   // ---- 价值锚发现（Task DISC，提议制）----
@@ -866,7 +876,8 @@ export const zhCN = {
   'memory.anchors.adopt': '采纳',
   'memory.anchors.ignore': '忽略',
   'memory.anchors.undecidedHint': '恢复「未判定」需先点击「重新总结方向」重置后重判',
-  'memory.anchors.confirmDelete': '确定删除价值锚「{{label}}」吗？删除为永久否决（veto），该锚不再自动重提。',
+  'memory.anchors.confirmDelete':
+    '确定删除价值锚「{{label}}」吗？删除为永久否决（veto），该锚不再自动重提。',
   // ---- 价值锚自生长（Task GROW：来源徽标 + 钉住/挤出状态机 + 退休区）----
   'memory.anchors.origin.seed': '种子',
   'memory.anchors.origin.manual': '手工',
@@ -950,7 +961,8 @@ export const zhCN = {
   'memory.detail.updated': '更新：{{time}}',
   'memory.detail.noL0': '该记忆块未保留 L0 对话原文。',
   'memory.detail.noL0InRange': '当前时间范围内没有 L0 对话原文，可调整右上角的时间筛选范围试试。',
-  'memory.detail.emptyLayerInRange': '当前时间范围内在 {{layer}} 层暂无条目，可调整右上角的时间筛选范围试试。',
+  'memory.detail.emptyLayerInRange':
+    '当前时间范围内在 {{layer}} 层暂无条目，可调整右上角的时间筛选范围试试。',
   'memory.detail.rangeTooLarge': '记忆条数过多，建议缩短筛选的时间范围',
   'memory.detail.loadMore': '加载更早的对话',
   'memory.detail.allLoaded': '已加载全部对话',
@@ -973,7 +985,8 @@ export const zhCN = {
   'memory.detail.clickToLoad': '点击加载该层内容',
   'memory.detail.modeBrowse': '浏览',
   'memory.detail.modeSearch': '搜索',
-  'memory.detail.searchPrompt': '输入关键词按语义搜索本记忆，搜索结果按相关度排序（不受时间范围限制）。',
+  'memory.detail.searchPrompt':
+    '输入关键词按语义搜索本记忆，搜索结果按相关度排序（不受时间范围限制）。',
   'memory.detail.emptyLayer': '该记忆块在 {{layer}} 层暂无条目。可由 curator / 高层提炼后写入。',
   'memory.detail.loading': '加载中…',
   'memory.detail.collapseBody': '收起原文',
@@ -1085,7 +1098,8 @@ export const zhCN = {
   'team.editTeam': '编辑 Team',
   'team.editTeam.tooltip': '修改当前 team 的名称 / 描述（仅 owner / 管理员）',
   'team.deleteTeam': '删除当前 Team',
-  'team.deleteTeam.tooltip': '删除当前 team 及其全部成员 / Agent / 任务 / 资产（仅 owner / 管理员）',
+  'team.deleteTeam.tooltip':
+    '删除当前 team 及其全部成员 / Agent / 任务 / 资产（仅 owner / 管理员）',
   'team.deleteTeam.confirm': '确认删除 team「{{name}}」？',
   'team.deleteTeam.desc':
     '删除后将级联移除 {{members}} 名成员、{{agents}} 个 Agent，以及该 team 下的全部任务与资产，且不可恢复。',
@@ -1281,10 +1295,12 @@ export const zhCN = {
   'addMember.error.invalidName': '用户名仅支持英文字母、数字、下划线，不能包含其他符号或空格。',
   'addMember.error.emptyKey': '已开启自定义 User_Key，请填写要下发给用户的 key。',
   'addMember.customKey.label': '自定义 User_Key',
-  'addMember.customKey.hint': '默认关闭时由后端自动生成一次性 key；开启后由你手动指定用户初始 key。',
+  'addMember.customKey.hint':
+    '默认关闭时由后端自动生成一次性 key；开启后由你手动指定用户初始 key。',
   'addMember.customKey.value': 'User_Key',
   'addMember.customKey.placeholder': '例如 sk-mem-xxxxxxxxxxxxxxxx',
-  'addMember.customKey.valueHint': '将作为该用户的默认 User_Key；不可与已有用户的 key 重复，否则创建会被拒绝。',
+  'addMember.customKey.valueHint':
+    '将作为该用户的默认 User_Key；不可与已有用户的 key 重复，否则创建会被拒绝。',
 
   // ===== CreatedUserKeyModal =====
   'createdUserKey.caption': '用户创建成功',
@@ -1509,7 +1525,8 @@ export const zhCN = {
   'error.ALREADY_ALLOCATED': '这条资产已经分配给该 Agent，无需重复分配。',
   'error.IMPORT_LIMIT_EXCEEDED': '该 Agent 最多只能借入 2 条其它 Agent 的记忆。',
   'error.ASSET_PRIVATE_INACCESSIBLE': '该资产已被 owner 设为私密，你无权访问。',
-  'error.ASSET_NOT_BINDABLE': '该资产的可见范围不允许绑定到此 Agent。请让 owner 将它设为团队可见后重试。',
+  'error.ASSET_NOT_BINDABLE':
+    '该资产的可见范围不允许绑定到此 Agent。请让 owner 将它设为团队可见后重试。',
   'error.INVALID_TITLE': '标题不能为空且不能超过长度限制。',
   'error.MISSING_MESSAGES': '缺少对话消息。',
   'error.TOO_MANY_MESSAGES': '一次最多导入 100 条消息。',
@@ -1635,8 +1652,10 @@ export const zhCN = {
   'guide.quick.ide.sub': '配置 Proxy 与模型',
   'guide.quick.history.title': '获取历史数据',
   'guide.quick.history.sub': '让多 Agent 共享记忆和 Skill',
-  'guide.quick.history.desc': '在仓库根目录运行脚本，从本机 IDE 导入历史 Session 和 Skill，让多个 Agent 共享已有记忆与能力。',
-  'guide.quick.history.sources': '{{sources}} 等 source 均可导入；将目标 Team 和 Agent ID 替换后运行。',
+  'guide.quick.history.desc':
+    '在仓库根目录运行脚本，从本机 IDE 导入历史 Session 和 Skill，让多个 Agent 共享已有记忆与能力。',
+  'guide.quick.history.sources':
+    '{{sources}} 等 source 均可导入；将目标 Team 和 Agent ID 替换后运行。',
   'guide.quick.history.dupHint': ' 若已在脚本配置最后选择导入，则无需重复执行。',
 
   // 准备信息
@@ -1664,11 +1683,13 @@ export const zhCN = {
   'guide.method.skill.sub': '推荐 · 由 Agent 引导配置',
   'guide.method.skill.step1': '在仓库根目录准备 Skill',
   'guide.method.skill.step2': '将下面的提示词发送给 Agent',
-  'guide.method.skill.hint': 'Agent 会探测环境和 Proxy，再调用配套脚本写入配置，并询问是否导入本地 Skill 与历史对话。',
+  'guide.method.skill.hint':
+    'Agent 会探测环境和 Proxy，再调用配套脚本写入配置，并询问是否导入本地 Skill 与历史对话。',
   'guide.method.script.title': '方式二：脚本配置',
   'guide.method.script.sub': '在终端运行交互向导',
   'guide.method.script.step1': '在仓库根目录运行',
-  'guide.method.script.hint': '脚本会扫描现有配置、检查 Proxy 并写入所选 IDE；最后可选择导入本地 Skill 与历史对话。',
+  'guide.method.script.hint':
+    '脚本会扫描现有配置、检查 Proxy 并写入所选 IDE；最后可选择导入本地 Skill 与历史对话。',
 
   // 手动配置
   'guide.manual.expand': '无法启动命令？手动配置',
@@ -1764,7 +1785,8 @@ export const zhCN = {
   // 手动配置注意事项
   'guide.manual.note.claude': '直接启动 claude 即可从 settings.json 读取环境变量',
   'guide.manual.note.codebuddy': '在 CodeBuddy 对话框中选择模型 proxy-memory-agent',
-  'guide.manual.note.codex': '首次对话前先切到 Plan 模式（Shift+Tab）选 Team→Agent→Task，再切回 Agent 模式',
+  'guide.manual.note.codex':
+    '首次对话前先切到 Plan 模式（Shift+Tab）选 Team→Agent→Task，再切回 Agent 模式',
   'guide.manual.note.workbuddy': '在 WorkBuddy 自定义模型列表中选择该模型',
   'guide.manual.note.dsh.0': '需同时配置两个文件',
   'guide.manual.note.dsh.1': '权限要求：chmod 700 ~/.dsh，chmod 600 ~/.dsh/.credentials.yaml',

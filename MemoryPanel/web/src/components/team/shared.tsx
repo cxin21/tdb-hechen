@@ -24,7 +24,15 @@ export function selectableAssetKeys(assets: MountableAsset[]): string[] {
   return assets.filter(isAssetSelectable).map((a) => a.key);
 }
 
-export function Mounted({ label, count, loading = false }: { label: string; count: number; loading?: boolean }) {
+export function Mounted({
+  label,
+  count,
+  loading = false,
+}: {
+  label: string;
+  count: number;
+  loading?: boolean;
+}) {
   // counts 还在加载时，单独把数字区换成骨架占位，不动 label。
   // 让 agent 卡片主体立刻可见（避免「4 骨架 → 1 真实卡」的突兀跳变），
   // 只把不确定的计数数据占位起来，比整个网格保留骨架更平滑。
@@ -32,7 +40,10 @@ export function Mounted({ label, count, loading = false }: { label: string; coun
     <div className={`_memory-mounted-chip${loading ? ' _memory-mounted-chip--loading' : ''}`}>
       <span className="_memory-mounted-chip-label">{label}</span>
       {loading ? (
-        <span className="_memory-mounted-chip-count _memory-mounted-chip-count--loading" aria-label="loading" />
+        <span
+          className="_memory-mounted-chip-count _memory-mounted-chip-count--loading"
+          aria-label="loading"
+        />
       ) : (
         <span className="_memory-mounted-chip-count">{count}</span>
       )}
@@ -87,7 +98,12 @@ export function CollapseGroup({
   const { t } = useTranslation();
   return (
     <div className={`_memory-collapse-group${loading ? ' _memory-collapse-group--loading' : ''}`}>
-      <button type="button" onClick={onToggle} className="_memory-collapse-group-header" disabled={loading}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="_memory-collapse-group-header"
+        disabled={loading}
+      >
         <ChevronRightIcon
           size={12}
           className={`_memory-collapse-group-chevron${open ? ' _memory-collapse-group-chevron--open' : ''}`}
@@ -96,10 +112,15 @@ export function CollapseGroup({
         <span className="_memory-collapse-group-title">{title}</span>
         {loading ? (
           // 加载中：保留图标 + 标题，仅把 count 区换成骨架；按钮禁用防止「加载中点开」出现空面板
-          <span className="_memory-collapse-group-count _memory-collapse-group-count--loading" aria-label="loading" />
+          <span
+            className="_memory-collapse-group-count _memory-collapse-group-count--loading"
+            aria-label="loading"
+          />
         ) : (
           <span className="_memory-collapse-group-count">
-            {hideTotal ? t('shared.bound', { count: selectedCount }) : t('shared.selected', { selected: selectedCount, total: totalCount })}
+            {hideTotal
+              ? t('shared.bound', { count: selectedCount })
+              : t('shared.selected', { selected: selectedCount, total: totalCount })}
           </span>
         )}
       </button>
@@ -139,11 +160,22 @@ export function AssetCheckList({
               const disabled = readOnly || disabledKeys.has(a.key) || notReady;
               return (
                 <li key={a.key} className="_memory-asset-check-item">
-                  <Checkbox value={checked} disabled={disabled} onChange={() => { if (!disabled) onToggle(a.key); }}>
+                  <Checkbox
+                    value={checked}
+                    disabled={disabled}
+                    onChange={() => {
+                      if (!disabled) onToggle(a.key);
+                    }}
+                  >
                     <span className="_memory-asset-check-item-row">
                       <span className="_memory-asset-check-item-title">{a.title}</span>
                       <span className="_memory-asset-check-item-slug">
-                        {a.slug}{disabledKeys.has(a.key) ? t('shared.selfMemory') : notReady ? ` · ${a.status}` : ''}
+                        {a.slug}
+                        {disabledKeys.has(a.key)
+                          ? t('shared.selfMemory')
+                          : notReady
+                            ? ` · ${a.status}`
+                            : ''}
                       </span>
                     </span>
                   </Checkbox>

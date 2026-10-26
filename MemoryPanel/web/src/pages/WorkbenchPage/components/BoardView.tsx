@@ -7,7 +7,12 @@ import { AddIcon, ChevronRightIcon, UsergroupIcon } from 'tea-icons-react';
 import { canDeleteTask, type Task, type Team } from '@/services';
 import { useDisplayNameResolver } from '@/services/user-profile-store';
 import TaskDetail from './TaskDetail';
-import { participationOf, useStatusLabels, type AgentOption, type TaskParticipationView } from '../utils/workbench-utils';
+import {
+  participationOf,
+  useStatusLabels,
+  type AgentOption,
+  type TaskParticipationView,
+} from '../utils/workbench-utils';
 
 export default function BoardView({
   tasks,
@@ -38,7 +43,12 @@ export default function BoardView({
   onCreate: () => void;
   onDelete: (task: Task) => void;
   onUpdateStatus: (task: Task, status: Task['status']) => void;
-  onUpdateTask: (task: Task, patch: Partial<Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>>) => void;
+  onUpdateTask: (
+    task: Task,
+    patch: Partial<
+      Pick<Task, 'title' | 'description' | 'source_type' | 'source_url' | 'linked_agents'>
+    >,
+  ) => void;
   agents: AgentOption[];
   teams: Team[];
   currentUser: string;
@@ -48,7 +58,9 @@ export default function BoardView({
   const statusLabels = useStatusLabels();
   // 参与者 tooltip 展示 display_name 而非 user_id（与抽屉详情 UserChip 同一缓存）
   const resolveUserName = useDisplayNameResolver();
-  const selectedTeam = selected ? teams.find((x) => x.team_id === selected.team_id) ?? null : null;
+  const selectedTeam = selected
+    ? (teams.find((x) => x.team_id === selected.team_id) ?? null)
+    : null;
 
   // 后端分页：useTasks 已只返回当前页数据，不需要前端切片
   const totalPages = Math.max(1, Math.ceil(tasksTotal / pageSize));
@@ -102,10 +114,14 @@ export default function BoardView({
               >
                 {/* 标题行：状态 pill + 标题 + 箭头 */}
                 <div className="_memory-workbench-task-card-head">
-                  <span className={`_memory-workbench-status-pill _memory-workbench-status-pill--${task.status}`}>
+                  <span
+                    className={`_memory-workbench-status-pill _memory-workbench-status-pill--${task.status}`}
+                  >
                     {statusLabels[task.status]}
                   </span>
-                  <span className="_memory-workbench-task-card-title" title={task.title}>{task.title}</span>
+                  <span className="_memory-workbench-task-card-title" title={task.title}>
+                    {task.title}
+                  </span>
                   <ChevronRightIcon size={14} className="_memory-workbench-task-card-chevron" />
                 </div>
 
@@ -118,15 +134,27 @@ export default function BoardView({
                 <div className="_memory-workbench-task-card-meta">
                   <span
                     className="_memory-workbench-meta-item"
-                    title={view.users.length === 0 ? t('task.participants.empty') : t('task.participants.tooltip', { users: view.users.map((u) => resolveUserName(u)).join('\n') })}
+                    title={
+                      view.users.length === 0
+                        ? t('task.participants.empty')
+                        : t('task.participants.tooltip', {
+                            users: view.users.map((u) => resolveUserName(u)).join('\n'),
+                          })
+                    }
                   >
                     <UsergroupIcon size={12} />
                     {t('task.peopleCount', { count: view.users.length })}
-                    {imParticipant && <span className="_memory-workbench-meta-you">{t('common.you2')}</span>}
+                    {imParticipant && (
+                      <span className="_memory-workbench-meta-you">{t('common.you2')}</span>
+                    )}
                   </span>
                   <span
                     className="_memory-workbench-meta-item"
-                    title={agentLabels.length === 0 ? t('task.agents.empty') : t('task.agents.tooltip', { agents: agentLabels.join('\n') })}
+                    title={
+                      agentLabels.length === 0
+                        ? t('task.agents.empty')
+                        : t('task.agents.tooltip', { agents: agentLabels.join('\n') })
+                    }
                   >
                     {t('task.agentCount', { count: agentLabels.length })}
                   </span>
@@ -161,17 +189,19 @@ export default function BoardView({
         size="l"
         onClose={() => onSelect(null)}
         title={selected?.title}
-        subtitle={selected && (
-          <span className="_memory-workbench-drawer-subtitle">
-            <span className="_memory-mono">{selected.task_id}</span>
-            {selectedTeam && (
-              <>
-                <span className="_memory-workbench-meta-sep">·</span>
-                {selectedTeam.name}
-              </>
-            )}
-          </span>
-        )}
+        subtitle={
+          selected && (
+            <span className="_memory-workbench-drawer-subtitle">
+              <span className="_memory-mono">{selected.task_id}</span>
+              {selectedTeam && (
+                <>
+                  <span className="_memory-workbench-meta-sep">·</span>
+                  {selectedTeam.name}
+                </>
+              )}
+            </span>
+          )
+        }
         destroyOnClose
       >
         {selected && (

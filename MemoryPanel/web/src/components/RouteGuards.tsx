@@ -24,7 +24,10 @@ export function ResourceGuard({ children }: { children: ReactNode }) {
 /** 成员管理守卫：reviewer 不可见（admin / member 可见）。
  *  member 可查看成员列表、添加已有成员，但新建成员/删除成员/新建删除 Team
  *  的按钮在 TeamManagementPanel 内部按角色收敛。 */
-export function MemberManageGuard({ children, allowedRoles }: {
+export function MemberManageGuard({
+  children,
+  allowedRoles,
+}: {
   children: ReactNode;
   allowedRoles?: TeamRole[];
 }) {

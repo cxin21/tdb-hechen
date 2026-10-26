@@ -25,14 +25,20 @@ function formatEntryTime(ts: string): string {
 }
 
 /** 精简 meta 摘要：一行文字，不逐条 badge */
-function metaSummary(e: RecallJournalEntry, t: (k: string, o?: Record<string, unknown>) => string): string {
+function metaSummary(
+  e: RecallJournalEntry,
+  t: (k: string, o?: Record<string, unknown>) => string,
+): string {
   const parts: string[] = [];
   if (e.strategy) parts.push(e.strategy);
   if (e.layered) parts.push(t('memory.journal.layered'));
   if (e.sessionReused) parts.push(t('memory.journal.sessionReused'));
   const cc = typeof e.conclusionCount === 'number' ? e.conclusionCount : 0;
   const ec = typeof e.experienceCount === 'number' ? e.experienceCount : 0;
-  if (cc > 0 || ec > 0) parts.push(`${t('memory.journal.conclusion', { count: cc })}·${t('memory.journal.experience', { count: ec })}`);
+  if (cc > 0 || ec > 0)
+    parts.push(
+      `${t('memory.journal.conclusion', { count: cc })}·${t('memory.journal.experience', { count: ec })}`,
+    );
   return parts.join(' · ');
 }
 
@@ -41,9 +47,7 @@ export default function RecallJournalView() {
   const auth = readAuth();
   const { activeTeamId } = useTeams();
   const { agents: teamAgents } = useAgents(activeTeamId);
-  const ownedTeamAgents = teamAgents.filter(
-    (a) => a.owner_user_id === auth?.user_id,
-  );
+  const ownedTeamAgents = teamAgents.filter((a) => a.owner_user_id === auth?.user_id);
 
   const [agentId, setAgentId] = useState<string>('');
   useEffect(() => {
@@ -162,7 +166,9 @@ export default function RecallJournalView() {
                   onClick={() => toggleExpand(idx)}
                   role="button"
                   tabIndex={0}
-                  onKeyDown={(ev) => { if (ev.key === 'Enter') toggleExpand(idx); }}
+                  onKeyDown={(ev) => {
+                    if (ev.key === 'Enter') toggleExpand(idx);
+                  }}
                 >
                   <span className="_rj-query-text">{e.query}</span>
                   <span className="_rj-toggle-icon">{isOpen ? '▾' : '▸'}</span>

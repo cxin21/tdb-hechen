@@ -132,7 +132,9 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
       };
       const res = await settingsApi.set(target, body);
       if (res.embeddingChanged) {
-        tea.notify.warning('已保存。重启服务后将自动重建向量索引；重建期间向量召回降级为纯 FTS，完成后自动恢复。');
+        tea.notify.warning(
+          '已保存。重启服务后将自动重建向量索引；重建期间向量召回降级为纯 FTS，完成后自动恢复。',
+        );
       } else {
         tea.notify.success('已保存，重启服务后生效');
       }
@@ -314,11 +316,20 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
       )}
 
       <Form.Action>
-        <Button type="primary" disabled={!valid || saving} loading={saving} onClick={() => void save()}>
+        <Button
+          type="primary"
+          disabled={!valid || saving}
+          loading={saving}
+          onClick={() => void save()}
+        >
           {saving ? '保存中…' : '保存'}
         </Button>
         {rs && rs.status !== 'idle' && (
-          <Tag theme={rs.status === 'failed' ? 'error' : rs.status === 'running' ? 'warning' : 'success'}>
+          <Tag
+            theme={
+              rs.status === 'failed' ? 'error' : rs.status === 'running' ? 'warning' : 'success'
+            }
+          >
             向量重建：{rs.status}
             {rs.reason ? `（${rs.reason}）` : ''}
           </Tag>
@@ -355,7 +366,8 @@ function toRerankDraft(v: SettingsView): RerankDraft {
     rkCandidates: v.rerank?.candidates != null ? String(v.rerank.candidates) : '',
     rkMinScore: v.rerank?.minScore != null ? String(v.rerank.minScore) : '',
     rkLocalModelDir: v.rerank?.local?.modelDir ?? '',
-    rkIdleUnloadMs: v.rerank?.local?.idleUnloadMs != null ? String(v.rerank.local.idleUnloadMs) : '',
+    rkIdleUnloadMs:
+      v.rerank?.local?.idleUnloadMs != null ? String(v.rerank.local.idleUnloadMs) : '',
   };
 }
 
@@ -475,7 +487,8 @@ function RerankSettingsPanel() {
   const num = (v: string) => !v || /^\d+$/.test(v);
   // 云端 + 启用但无 key（新输入且服务端也没有）→ 与 parseConfig「云端缺 apiKey =
   // configError + enabled 强制 false」语义对齐，保存前拦截
-  const rerankNeedsApiKey = rerankCloud && draft.rkEnabled && !draft.rkApiKey && !view.rerank?.hasApiKey;
+  const rerankNeedsApiKey =
+    rerankCloud && draft.rkEnabled && !draft.rkApiKey && !view.rerank?.hasApiKey;
   const valid =
     (rerankCloud
       ? numPos(draft.rkTimeoutMs) &&
@@ -495,169 +508,208 @@ function RerankSettingsPanel() {
         {t('settings.rerank.scopeNote')}
       </Text>
       <Form>
-      {view.rerank?.configError ? (
-        <Form.Item label={t('settings.rerank.configError')}>
-          <Tag theme="error">{view.rerank.configError}</Tag>
+        {view.rerank?.configError ? (
+          <Form.Item label={t('settings.rerank.configError')}>
+            <Tag theme="error">{view.rerank.configError}</Tag>
+          </Form.Item>
+        ) : null}
+        <Form.Title>{t('settings.rerank.baseGroup.title')}</Form.Title>
+        <Form.Item label={t('settings.rerank.enabled')}>
+          <div>
+            <Checkbox
+              value={draft.rkEnabled}
+              disabled={saving}
+              onChange={(v) => setDraft({ ...draft, rkEnabled: v })}
+            >
+              {t('settings.rerank.enabled.label')}
+            </Checkbox>
+            <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+              {t('settings.rerank.activeNote')}
+            </Text>
+          </div>
         </Form.Item>
-      ) : null}
-      <Form.Title>{t('settings.rerank.baseGroup.title')}</Form.Title>
-      <Form.Item label={t('settings.rerank.enabled')}>
-        <div>
-          <Checkbox value={draft.rkEnabled} disabled={saving} onChange={(v) => setDraft({ ...draft, rkEnabled: v })}>
-            {t('settings.rerank.enabled.label')}
-          </Checkbox>
-          <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-            {t('settings.rerank.activeNote')}
-          </Text>
-        </div>
-      </Form.Item>
-      <Form.Item label={t('settings.rerank.provider')}>
-        <Select
-          size="full"
-          value={draft.rkProvider}
-          disabled={saving}
-          options={[
-            { value: 'siliconflow', text: t('settings.rerank.provider.siliconflow') },
-            { value: 'dashscope', text: t('settings.rerank.provider.dashscope') },
-            { value: 'local', text: t('settings.rerank.provider.local') },
-            { value: 'none', text: t('settings.rerank.provider.none') },
-          ]}
-          onChange={(v: string) => setDraft({ ...draft, rkProvider: v as RerankProvider })}
-        />
-      </Form.Item>
-      {rerankCloud && (
-        <>
-          <Form.Title>{t('settings.rerank.cloudGroup.title')}</Form.Title>
-          <Form.Item label={t('settings.rerank.baseUrl')}>
-            <Input
-              size="full"
-              value={draft.rkBaseUrl}
-              onChange={(v) => setDraft({ ...draft, rkBaseUrl: v })}
-              placeholder={draft.rkProvider === 'siliconflow' ? 'https://api.siliconflow.cn' : 'https://dashscope.aliyuncs.com'}
-              disabled={saving}
-            />
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.apiKey')}>
-            <Input
-              size="full"
-              value={draft.rkApiKey}
-              onChange={(v) => setDraft({ ...draft, rkApiKey: v })}
-              placeholder={
-                view.rerank?.hasApiKey
-                  ? t('settings.rerank.apiKey.masked', { masked: view.rerank.apiKeyMasked.slice(-4) })
-                  : t('settings.rerank.apiKey.unset')
-              }
-              autoComplete="new-password"
-              disabled={saving}
-            />
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.model')}>
-            <Input
-              size="full"
-              value={draft.rkModel}
-              onChange={(v) => setDraft({ ...draft, rkModel: v })}
-              placeholder={draft.rkProvider === 'siliconflow' ? 'Qwen/Qwen3-Reranker-0.6B' : 'qwen3-rerank'}
-              disabled={saving}
-            />
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.timeoutMs')}>
-            <Input size="full" value={draft.rkTimeoutMs} onChange={(v) => setDraft({ ...draft, rkTimeoutMs: v })} disabled={saving} />
-          </Form.Item>
-          <Form.Title>{t('settings.rerank.memoryGroup.title')}</Form.Title>
-          <Form.Item label={t('settings.rerank.candidates')}>
-            <div>
-              <Input size="full" value={draft.rkCandidates} onChange={(v) => setDraft({ ...draft, rkCandidates: v })} disabled={saving} />
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.rerank.candidates.hint')}
-              </Text>
-            </div>
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.minScore')}>
-            <div>
-              <Input size="full" value={draft.rkMinScore} onChange={(v) => setDraft({ ...draft, rkMinScore: v })} disabled={saving} />
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.rerank.minScore.hint')}
-              </Text>
-            </div>
-          </Form.Item>
-        </>
-      )}
-      {rerankLocal && (
-        <>
-          <Form.Title>{t('settings.rerank.localGroup.title')}</Form.Title>
-          <Form.Item label={t('settings.rerank.local.modelDir')}>
-            <div>
+        <Form.Item label={t('settings.rerank.provider')}>
+          <Select
+            size="full"
+            value={draft.rkProvider}
+            disabled={saving}
+            options={[
+              { value: 'siliconflow', text: t('settings.rerank.provider.siliconflow') },
+              { value: 'dashscope', text: t('settings.rerank.provider.dashscope') },
+              { value: 'local', text: t('settings.rerank.provider.local') },
+              { value: 'none', text: t('settings.rerank.provider.none') },
+            ]}
+            onChange={(v: string) => setDraft({ ...draft, rkProvider: v as RerankProvider })}
+          />
+        </Form.Item>
+        {rerankCloud && (
+          <>
+            <Form.Title>{t('settings.rerank.cloudGroup.title')}</Form.Title>
+            <Form.Item label={t('settings.rerank.baseUrl')}>
               <Input
                 size="full"
-                value={draft.rkLocalModelDir}
-                onChange={(v) => setDraft({ ...draft, rkLocalModelDir: v })}
-                placeholder={t('settings.rerank.local.modelDir.placeholder')}
+                value={draft.rkBaseUrl}
+                onChange={(v) => setDraft({ ...draft, rkBaseUrl: v })}
+                placeholder={
+                  draft.rkProvider === 'siliconflow'
+                    ? 'https://api.siliconflow.cn'
+                    : 'https://dashscope.aliyuncs.com'
+                }
                 disabled={saving}
               />
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.rerank.local.modelDir.hint')}
-              </Text>
-            </div>
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.local.idleUnloadMs')}>
-            <div>
+            </Form.Item>
+            <Form.Item label={t('settings.rerank.apiKey')}>
               <Input
                 size="full"
-                value={draft.rkIdleUnloadMs}
-                onChange={(v) => setDraft({ ...draft, rkIdleUnloadMs: v })}
+                value={draft.rkApiKey}
+                onChange={(v) => setDraft({ ...draft, rkApiKey: v })}
+                placeholder={
+                  view.rerank?.hasApiKey
+                    ? t('settings.rerank.apiKey.masked', {
+                        masked: view.rerank.apiKeyMasked.slice(-4),
+                      })
+                    : t('settings.rerank.apiKey.unset')
+                }
+                autoComplete="new-password"
                 disabled={saving}
               />
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.rerank.local.idleUnloadMs.hint')}
-              </Text>
-            </div>
-          </Form.Item>
-          <Form.Item label={t('settings.rerank.local.status')}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Button
-                disabled={rerankDl?.state === 'downloading'}
-                loading={rerankDl?.state === 'downloading'}
-                onClick={triggerRerankDownload}
-              >
-                {rerankDl?.state === 'downloading'
-                  ? t('settings.rerank.local.downloading', { percent: rerankDl.percent })
-                  : t('settings.rerank.local.download')}
-              </Button>
-              {rerankDl === null ? (
-                <Tag>{t('settings.rerank.local.statusUnknown')}</Tag>
-              ) : rerankDl.state === 'ready' ? (
-                <Tag theme="success">{t('settings.rerank.local.ready')}</Tag>
-              ) : rerankDl.state === 'downloading' ? (
-                <Tag theme="warning">{`${rerankDl.percent}%`}</Tag>
-              ) : rerankDl.state === 'failed' ? (
-                <Tag theme="error">{t('settings.rerank.local.failed')}</Tag>
-              ) : (
-                <Tag>{t('settings.rerank.local.idle')}</Tag>
-              )}
-            </div>
-            {rerankDl?.state === 'downloading' &&
-              (() => {
-                const active =
-                  rerankDl.files.find((f) => f.state === 'downloading') ??
-                  rerankDl.files.find((f) => f.bytesReceived != null && f.bytesReceived < (f.totalBytes ?? Infinity));
-                return active ? (
-                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                    {`${active.rel}：${fmtBytes(active.bytesReceived)} / ${fmtBytes(active.totalBytes)}`}
-                  </Text>
-                ) : null;
-              })()}
-            {rerankDl?.state === 'failed' && rerankDl.error ? (
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#e34d59' }}>{rerankDl.error}</Text>
-            ) : null}
-          </Form.Item>
-        </>
-      )}
+            </Form.Item>
+            <Form.Item label={t('settings.rerank.model')}>
+              <Input
+                size="full"
+                value={draft.rkModel}
+                onChange={(v) => setDraft({ ...draft, rkModel: v })}
+                placeholder={
+                  draft.rkProvider === 'siliconflow' ? 'Qwen/Qwen3-Reranker-0.6B' : 'qwen3-rerank'
+                }
+                disabled={saving}
+              />
+            </Form.Item>
+            <Form.Item label={t('settings.rerank.timeoutMs')}>
+              <Input
+                size="full"
+                value={draft.rkTimeoutMs}
+                onChange={(v) => setDraft({ ...draft, rkTimeoutMs: v })}
+                disabled={saving}
+              />
+            </Form.Item>
+            <Form.Title>{t('settings.rerank.memoryGroup.title')}</Form.Title>
+            <Form.Item label={t('settings.rerank.candidates')}>
+              <div>
+                <Input
+                  size="full"
+                  value={draft.rkCandidates}
+                  onChange={(v) => setDraft({ ...draft, rkCandidates: v })}
+                  disabled={saving}
+                />
+                <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                  {t('settings.rerank.candidates.hint')}
+                </Text>
+              </div>
+            </Form.Item>
+            <Form.Item label={t('settings.rerank.minScore')}>
+              <div>
+                <Input
+                  size="full"
+                  value={draft.rkMinScore}
+                  onChange={(v) => setDraft({ ...draft, rkMinScore: v })}
+                  disabled={saving}
+                />
+                <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                  {t('settings.rerank.minScore.hint')}
+                </Text>
+              </div>
+            </Form.Item>
+          </>
+        )}
+        {rerankLocal && (
+          <>
+            <Form.Title>{t('settings.rerank.localGroup.title')}</Form.Title>
+            <Form.Item label={t('settings.rerank.local.modelDir')}>
+              <div>
+                <Input
+                  size="full"
+                  value={draft.rkLocalModelDir}
+                  onChange={(v) => setDraft({ ...draft, rkLocalModelDir: v })}
+                  placeholder={t('settings.rerank.local.modelDir.placeholder')}
+                  disabled={saving}
+                />
+                <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                  {t('settings.rerank.local.modelDir.hint')}
+                </Text>
+              </div>
+            </Form.Item>
+            <Form.Item label={t('settings.rerank.local.idleUnloadMs')}>
+              <div>
+                <Input
+                  size="full"
+                  value={draft.rkIdleUnloadMs}
+                  onChange={(v) => setDraft({ ...draft, rkIdleUnloadMs: v })}
+                  disabled={saving}
+                />
+                <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
+                  {t('settings.rerank.local.idleUnloadMs.hint')}
+                </Text>
+              </div>
+            </Form.Item>
+            <Form.Item label={t('settings.rerank.local.status')}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Button
+                  disabled={rerankDl?.state === 'downloading'}
+                  loading={rerankDl?.state === 'downloading'}
+                  onClick={triggerRerankDownload}
+                >
+                  {rerankDl?.state === 'downloading'
+                    ? t('settings.rerank.local.downloading', { percent: rerankDl.percent })
+                    : t('settings.rerank.local.download')}
+                </Button>
+                {rerankDl === null ? (
+                  <Tag>{t('settings.rerank.local.statusUnknown')}</Tag>
+                ) : rerankDl.state === 'ready' ? (
+                  <Tag theme="success">{t('settings.rerank.local.ready')}</Tag>
+                ) : rerankDl.state === 'downloading' ? (
+                  <Tag theme="warning">{`${rerankDl.percent}%`}</Tag>
+                ) : rerankDl.state === 'failed' ? (
+                  <Tag theme="error">{t('settings.rerank.local.failed')}</Tag>
+                ) : (
+                  <Tag>{t('settings.rerank.local.idle')}</Tag>
+                )}
+              </div>
+              {rerankDl?.state === 'downloading' &&
+                (() => {
+                  const active =
+                    rerankDl.files.find((f) => f.state === 'downloading') ??
+                    rerankDl.files.find(
+                      (f) =>
+                        f.bytesReceived != null && f.bytesReceived < (f.totalBytes ?? Infinity),
+                    );
+                  return active ? (
+                    <Text
+                      style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}
+                    >
+                      {`${active.rel}：${fmtBytes(active.bytesReceived)} / ${fmtBytes(active.totalBytes)}`}
+                    </Text>
+                  ) : null;
+                })()}
+              {rerankDl?.state === 'failed' && rerankDl.error ? (
+                <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#e34d59' }}>
+                  {rerankDl.error}
+                </Text>
+              ) : null}
+            </Form.Item>
+          </>
+        )}
 
-      <Form.Action>
-        <Button type="primary" disabled={!valid || saving} loading={saving} onClick={() => void save()}>
-          {saving ? '保存中…' : '保存'}
-        </Button>
-      </Form.Action>
+        <Form.Action>
+          <Button
+            type="primary"
+            disabled={!valid || saving}
+            loading={saving}
+            onClick={() => void save()}
+          >
+            {saving ? '保存中…' : '保存'}
+          </Button>
+        </Form.Action>
       </Form>
     </div>
   );
@@ -707,7 +759,15 @@ function ProxyPricingPanel() {
   const addRow = () =>
     setRows([
       ...rows,
-      { name: '', modelName: '', input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
+      {
+        name: '',
+        modelName: '',
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite5m: 0,
+        cacheWrite1h: 0,
+      },
     ]);
 
   return (

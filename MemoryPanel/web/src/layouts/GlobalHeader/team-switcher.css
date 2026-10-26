@@ -23,7 +23,9 @@
   border-radius: 6px;
   background: var(--tea-color-bg-primary-default);
   cursor: pointer;
-  transition: background-color 0.15s, border-color 0.15s;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
   color: var(--tea-color-text-primary);
   max-width: 220px;
 }
@@ -167,7 +169,9 @@
   background: transparent;
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out;
+  transition:
+    background-color 0.15s ease-in-out,
+    border-color 0.15s ease-in-out;
 }
 
 ._memory-team-switcher-item:hover {
@@ -248,7 +252,9 @@
   background: var(--tea-color-bg-primary-default);
   color: var(--tea-color-text-secondary);
   cursor: pointer;
-  transition: background-color 0.12s ease-in-out, color 0.12s ease-in-out;
+  transition:
+    background-color 0.12s ease-in-out,
+    color 0.12s ease-in-out;
 }
 
 ._memory-team-switcher-item-op:hover {

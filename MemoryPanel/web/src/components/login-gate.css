@@ -16,8 +16,7 @@
   display: flex;
   overflow-y: auto;
   /* 顶部微冷白 → 底部略暖白的柔和渐变，营造"光从上方来"的明亮感 */
-  background:
-    radial-gradient(120% 80% at 50% -10%, #ffffff 0%, #f7f9fc 45%, #eef2f7 100%);
+  background: radial-gradient(120% 80% at 50% -10%, #ffffff 0%, #f7f9fc 45%, #eef2f7 100%);
 }
 
 /* ===== 动效背景层 ===== */

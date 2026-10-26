@@ -175,7 +175,8 @@ export interface ValueProposal {
 }
 
 /** 记忆块列表项（team-assets / agent-fixed / my-agents 共用） */
-export interface ChatMemoryBlock {  id: string;
+export interface ChatMemoryBlock {
+  id: string;
   title: string;
   summary?: string;
   uploaded_by_user_id: string;
@@ -441,12 +442,7 @@ export const chatMemoryApi = {
 
   /** P1-T7：人工重要度调整（Owner-only）。网关追加 metadata.importance_source='manual'
    *  + importance_manual_reason（LLM 的 importance_reason 不覆写）；内容不变不重算 embedding。 */
-  adjustImportance: (
-    blockId: string,
-    id: string,
-    importance: number,
-    reason?: string,
-  ) =>
+  adjustImportance: (blockId: string, id: string, importance: number, reason?: string) =>
     chatMemoryCall<{
       id?: string;
       importance?: number;
@@ -462,11 +458,7 @@ export const chatMemoryApi = {
   /** P1-T8：标记失效 / 撤销失效（Owner-only）。软失效语义：invalidate 把 valid_end
    *  置为 now（或显式 ISO），restore 清空 valid_end 恢复；不删记忆。失效/未来生效
    *  记忆在钩子路与工具路召回中均被排除（bi-temporal 补口）。 */
-  setInvalidated: (
-    blockId: string,
-    id: string,
-    mode: 'invalidate' | 'restore',
-  ) =>
+  setInvalidated: (blockId: string, id: string, mode: 'invalidate' | 'restore') =>
     chatMemoryCall<{
       id?: string;
       version?: string;
@@ -479,13 +471,7 @@ export const chatMemoryApi = {
 
   /** 分层语义 / 关键字搜索（agent 维度跨 session 召回，命中项带 score）：
    *  L0 = 对话消息检索；L1 = 原子记忆检索。 */
-  searchLayer: (
-    blockId: string,
-    layer: 'L0' | 'L1',
-    query: string,
-    limit = 30,
-    type?: string,
-  ) =>
+  searchLayer: (blockId: string, layer: 'L0' | 'L1', query: string, limit = 30, type?: string) =>
     chatMemoryCall<{ items: ChatMemorySearchHit[]; total: number }>('search', {
       block_id: blockId,
       layer,
@@ -574,7 +560,19 @@ export const chatMemoryApi = {
   /** S-FEEL-1（M1/S7）：近期情绪基调（core /v3/memory/mood 只读透传；tier=null 不渲染=宁缺毋滥）。
    *  windowHours/阈值等判定依据字段随出参回传（信息完整性：tooltip 展示真实配置值）。 */
   moodRead: (blockId: string) =>
-    chatMemoryCall<{ mood: { tier: 'positive' | 'neutral' | 'strained' | null; sampleCount: number; enabled?: boolean; windowHours?: number; maxSamples?: number; minSamples?: number; posThreshold?: number; negThreshold?: number; halfLifeHours?: number } }>('mood', {
+    chatMemoryCall<{
+      mood: {
+        tier: 'positive' | 'neutral' | 'strained' | null;
+        sampleCount: number;
+        enabled?: boolean;
+        windowHours?: number;
+        maxSamples?: number;
+        minSamples?: number;
+        posThreshold?: number;
+        negThreshold?: number;
+        halfLifeHours?: number;
+      };
+    }>('mood', {
       block_id: blockId,
     }),
 
@@ -583,7 +581,15 @@ export const chatMemoryApi = {
    *  #69：opts.format='narrative' 透传 /v3/core-memory/read（叙事视图；门关/降级时
    *  内核原样返回条目形态——状态判定交给 narrativePreviewOf，不在 client 判）。 */
   identityRead: (blockId: string, opts?: { format?: 'narrative' }) =>
-    chatMemoryCall<{ slots: Array<{ slot: string; content: string; version?: number; source?: string; updated_at?: string }> }>('identity/read', {
+    chatMemoryCall<{
+      slots: Array<{
+        slot: string;
+        content: string;
+        version?: number;
+        source?: string;
+        updated_at?: string;
+      }>;
+    }>('identity/read', {
       block_id: blockId,
       ...(opts?.format ? { format: opts.format } : {}),
     }),
@@ -600,8 +606,19 @@ export const chatMemoryApi = {
   /** 待办决策（Owner-only）：adopted 采纳（落槽）/ rejected 拒绝（O13 单向状态机，复决 404）。
    *  #12 T6：同名冲突缺省 409（err.data.conflict 载荷）；UI 确认后 allowOverwrite=true 显式覆盖
    *  （retired 复活允许、vetoed 永久否决不可绕）。返回含 overwritten/merged 结果标记。 */
-  pendingDecide: (blockId: string, pendingId: string, decision: 'adopted' | 'rejected', opts?: { allowOverwrite?: boolean }) =>
-    chatMemoryCall<{ pending_id: string; decision: string; slot?: string; overwritten?: boolean; merged?: boolean }>('pending/decide', {
+  pendingDecide: (
+    blockId: string,
+    pendingId: string,
+    decision: 'adopted' | 'rejected',
+    opts?: { allowOverwrite?: boolean },
+  ) =>
+    chatMemoryCall<{
+      pending_id: string;
+      decision: string;
+      slot?: string;
+      overwritten?: boolean;
+      merged?: boolean;
+    }>('pending/decide', {
       block_id: blockId,
       pending_id: pendingId,
       decision,
@@ -612,7 +629,13 @@ export const chatMemoryApi = {
    *  U2：可选 attrs（人物锚 role/aliases 行内编辑；显式传入才更新，theme 锚忽略无害）。 */
   valuesUpsert: (
     blockId: string,
-    params: { value_id: string; label: string; weight: number; valence?: number; attrs?: { role?: string; aliases?: string[]; description?: string } },
+    params: {
+      value_id: string;
+      label: string;
+      weight: number;
+      valence?: number;
+      attrs?: { role?: string; aliases?: string[]; description?: string };
+    },
   ) =>
     chatMemoryCall<{ ok: boolean; value_id: string }>('values/upsert', {
       block_id: blockId,

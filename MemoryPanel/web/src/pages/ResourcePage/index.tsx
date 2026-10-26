@@ -8,9 +8,5 @@ import type { ReactNode } from 'react';
 import './styles/page-style.css';
 
 export function ResourcePage({ children }: { children: ReactNode }) {
-  return (
-    <div className="_memory-page-body">
-      {children}
-    </div>
-  );
+  return <div className="_memory-page-body">{children}</div>;
 }

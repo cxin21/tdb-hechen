@@ -10,7 +10,13 @@ import { OwnerLabel } from '@/components/OwnerLabel';
  * Owner 展示 —— 复用通用 OwnerLabel（走 user-profile-store 全局缓存，同一 owner 多行共享）。
  * 抽子组件是 Rules of Hooks 要求（不能在 .map 里循环调 hook）。
  */
-export function CodeOwnerLabel({ userId, currentUserId }: { userId: string; currentUserId: string }) {
+export function CodeOwnerLabel({
+  userId,
+  currentUserId,
+}: {
+  userId: string;
+  currentUserId: string;
+}) {
   const { t } = useTranslation();
   return (
     <OwnerLabel
@@ -24,7 +30,10 @@ export function CodeOwnerLabel({ userId, currentUserId }: { userId: string; curr
 }
 
 // 状态 → Tea Tag 语义主题映射（soft 变体），对齐 Memory 的 statusTheme。
-export function statusLabel(t: (key: string, options?: Record<string, unknown>) => string, s: string) {
+export function statusLabel(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  s: string,
+) {
   const map: Record<string, [string, StatusTheme]> = {
     ready: [t('code.status.ready'), 'success'],
     pending: [t('code.status.pending'), 'warning'],

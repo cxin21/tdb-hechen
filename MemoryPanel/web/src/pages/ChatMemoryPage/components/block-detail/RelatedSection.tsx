@@ -16,7 +16,14 @@ import { createPathRequestController } from './path-request';
 import type { PathState } from './path-request';
 
 /** Phase 2（拍板③）：边类型着色白名单（与记忆图 EDGE_COLORS 同 hex；未知类型默认灰）。 */
-const EDGE_CLS: Record<string, string> = { similar: 'similar', evolve: 'evolve', conflict: 'conflict', derived_from: 'derived_from', part_of: 'part_of', causal: 'causal' };
+const EDGE_CLS: Record<string, string> = {
+  similar: 'similar',
+  evolve: 'evolve',
+  conflict: 'conflict',
+  derived_from: 'derived_from',
+  part_of: 'part_of',
+  causal: 'causal',
+};
 function edgeCls(t: string): string {
   return EDGE_CLS[t] ?? 'other';
 }
@@ -67,24 +74,45 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
 
   return (
     <div className="_memory-detail-atomic-neighbors">
-      <button type="button" className="_soul-chip _soul-chip--neighbors" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((v) => !v)}>
+      <button
+        type="button"
+        className="_soul-chip _soul-chip--neighbors"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((v) => !v)}
+      >
         🔗 相关记忆{neighbors.length > 0 ? ` (${neighbors.length})` : ''}
       </button>
       {open && (
         <Modal
           visible
-          caption={"相关记忆" + (neighbors.length > 0 ? "（" + neighbors.length + " 条）" : "")}
+          caption={'相关记忆' + (neighbors.length > 0 ? '（' + neighbors.length + ' 条）' : '')}
           size="l"
           onClose={() => setOpen(false)}
         >
           <Modal.Body>
             <div className="_nb-modal">
               <div className="_nb-legend">
-                <span><i className="_nb-dot" style={{ background: '#5b6bff' }} />similar</span>
-                <span><i className="_nb-dot" style={{ background: '#1a9d63' }} />evolve</span>
-                <span><i className="_nb-dot" style={{ background: '#e5484d' }} />conflict</span>
-                <span><i className="_nb-dot" style={{ background: '#16a34a' }} />derived_from</span>
-                <span><i className="_nb-dot" style={{ background: '#8b5cf6' }} />part_of</span>
+                <span>
+                  <i className="_nb-dot" style={{ background: '#5b6bff' }} />
+                  similar
+                </span>
+                <span>
+                  <i className="_nb-dot" style={{ background: '#1a9d63' }} />
+                  evolve
+                </span>
+                <span>
+                  <i className="_nb-dot" style={{ background: '#e5484d' }} />
+                  conflict
+                </span>
+                <span>
+                  <i className="_nb-dot" style={{ background: '#16a34a' }} />
+                  derived_from
+                </span>
+                <span>
+                  <i className="_nb-dot" style={{ background: '#8b5cf6' }} />
+                  part_of
+                </span>
               </div>
               <ul className="_memory-detail-atomic-neighbors-list">
                 {loading ? (
@@ -94,7 +122,7 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
                 ) : (
                   neighbors.map((n) => (
                     <li key={n.id} className="_memory-detail-atomic-neighbor">
-                      <span className={"_nb-edge _nb-edge--" + edgeCls(n.type)}>{n.type}</span>
+                      <span className={'_nb-edge _nb-edge--' + edgeCls(n.type)}>{n.type}</span>
                       <span className="_nb-content">{n.content ?? n.id}</span>
                       {typeof n.strength === 'number' ? (
                         <span className="_nb-strength">{n.strength.toFixed(1)}</span>
@@ -112,30 +140,42 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
                 )}
               </ul>
               {path?.loading && <div className="_nb-muted">关联链查询中…</div>}
-              {path && !path.loading && path.failed && <div className="_nb-muted">关联链查询失败</div>}
-              {path && !path.loading && !path.failed && path.chain !== null && path.chain.length > 0 && (
-                <div className="_nb-path">
-                  <div className="_nb-path-title">{"关联链（" + path.chain.length + " 节点）"}</div>
-                  <ol className="_nb-path-list">
-                    {path.chain.map((node, i) => (
-                      <li key={node.id + "-" + i} className="_nb-path-node">
-                        <span className={"_nb-edge _nb-edge--" + edgeCls(node.type)}>
-                          {node.type}
-                          {typeof node.strength === 'number' ? " · " + node.strength.toFixed(1) : ''}
-                        </span>
-                        <span className="_nb-path-content">{node.content ?? node.id}</span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
+              {path && !path.loading && path.failed && (
+                <div className="_nb-muted">关联链查询失败</div>
               )}
+              {path &&
+                !path.loading &&
+                !path.failed &&
+                path.chain !== null &&
+                path.chain.length > 0 && (
+                  <div className="_nb-path">
+                    <div className="_nb-path-title">
+                      {'关联链（' + path.chain.length + ' 节点）'}
+                    </div>
+                    <ol className="_nb-path-list">
+                      {path.chain.map((node, i) => (
+                        <li key={node.id + '-' + i} className="_nb-path-node">
+                          <span className={'_nb-edge _nb-edge--' + edgeCls(node.type)}>
+                            {node.type}
+                            {typeof node.strength === 'number'
+                              ? ' · ' + node.strength.toFixed(1)
+                              : ''}
+                          </span>
+                          <span className="_nb-path-content">{node.content ?? node.id}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
               {path && !path.loading && !path.failed && path.chain === null && (
                 <div className="_nb-muted">未找到 ≤3 跳内的关联链</div>
               )}
             </div>
           </Modal.Body>
           <Modal.Footer>
-            <Button type="primary" onClick={() => setOpen(false)}>关闭</Button>
+            <Button type="primary" onClick={() => setOpen(false)}>
+              关闭
+            </Button>
           </Modal.Footer>
         </Modal>
       )}

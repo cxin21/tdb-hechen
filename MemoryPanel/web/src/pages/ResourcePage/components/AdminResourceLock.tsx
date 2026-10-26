@@ -15,9 +15,7 @@ export function AdminResourceLock() {
         <Card.Body>
           <LockOnIcon size={32} className="_memory-admin-lock-icon" />
           <div className="_memory-admin-lock-title">{t('adminLock.title')}</div>
-          <div className="_memory-admin-lock-desc">
-            {t('adminLock.desc')}
-          </div>
+          <div className="_memory-admin-lock-desc">{t('adminLock.desc')}</div>
         </Card.Body>
       </Card>
     </div>

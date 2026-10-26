@@ -27,9 +27,16 @@ export interface PersonEvidenceItem {
 }
 
 /** attrs_json 宽松解析（损坏/缺失 → {}，只损失 role/aliases 维度——soul-assembler 同款）。 */
-export function parsePersonAttrs(raw: unknown): { role?: string; aliases: string[]; description?: string } {
+export function parsePersonAttrs(raw: unknown): {
+  role?: string;
+  aliases: string[];
+  description?: string;
+} {
   try {
-    const p = typeof raw === 'string' && raw !== '{}' ? (JSON.parse(raw) as { role?: unknown; aliases?: unknown; description?: unknown }) : {};
+    const p =
+      typeof raw === 'string' && raw !== '{}'
+        ? (JSON.parse(raw) as { role?: unknown; aliases?: unknown; description?: unknown })
+        : {};
     return {
       role: typeof p?.role === 'string' ? p.role : undefined,
       aliases: Array.isArray(p?.aliases) ? p.aliases.map(String) : [],
@@ -81,14 +88,17 @@ export function collectPersonEvidence(
   for (const item of items) {
     const id = String(item.id ?? item.record_id ?? '');
     if (!id || seen.has(id)) continue;
-    const meta = (item.metadata && typeof item.metadata === 'object' ? item.metadata : {}) as Record<string, unknown>;
+    const meta = (
+      item.metadata && typeof item.metadata === 'object' ? item.metadata : {}
+    ) as Record<string, unknown>;
     const refs = Array.isArray(meta.personRefs) ? meta.personRefs.map(String) : [];
     if (!queries.some((q) => refs.includes(q))) continue;
     seen.add(id);
     out.push({
       id,
       body: typeof item.body === 'string' ? item.body : '',
-      occurredAt: typeof item.occurred_at === 'string' && item.occurred_at ? item.occurred_at : undefined,
+      occurredAt:
+        typeof item.occurred_at === 'string' && item.occurred_at ? item.occurred_at : undefined,
       certainty: typeof item.certainty === 'string' ? item.certainty : undefined,
     });
   }
@@ -106,13 +116,20 @@ export function maskSecrets(text: string): string {
   if (!text) return text;
   let out = text;
   // 显式 key=value 形态（值 ≥16 位，字母数字下划线混合）
-  out = out.replace(/((?:api[_-]?key|secret|token|password|passwd)\s*[=:]\s*)([A-Za-z0-9_-]{16,})/gi,
-    (_m, p1: string, v: string) => `${p1}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}`);
+  out = out.replace(
+    /((?:api[_-]?key|secret|token|password|passwd)\s*[=:]\s*)([A-Za-z0-9_-]{16,})/gi,
+    (_m, p1: string, v: string) => `${p1}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}`,
+  );
   // Bearer 形态
-  out = out.replace(/(Bearer\s+)([A-Za-z0-9._-]{16,})/gi,
-    (_m, p1: string, v: string) => `${p1}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}`);
+  out = out.replace(
+    /(Bearer\s+)([A-Za-z0-9._-]{16,})/gi,
+    (_m, p1: string, v: string) => `${p1}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}`,
+  );
   // 通用长 token（≥24 位）：避免误伤 URL 里的单词与中文——仅匹配独立词
-  out = out.replace(/(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]{24,})([^A-Za-z0-9_-]|$)/g,
-    (_m, pre: string, v: string, post: string) => `${pre}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}${post}`);
+  out = out.replace(
+    /(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]{24,})([^A-Za-z0-9_-]|$)/g,
+    (_m, pre: string, v: string, post: string) =>
+      `${pre}${v.slice(0, 4)}${'*'.repeat(6)}${v.slice(-4)}${post}`,
+  );
   return out;
 }

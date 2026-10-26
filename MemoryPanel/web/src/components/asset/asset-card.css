@@ -135,15 +135,26 @@
 }
 
 ._asset-wiki-skeleton-line--title,
-._codelist-skeleton-line--title { width: 50%; height: 16px; }
+._codelist-skeleton-line--title {
+  width: 50%;
+  height: 16px;
+}
 ._asset-wiki-skeleton-line--desc,
-._codelist-skeleton-line--desc { width: 80%; }
+._codelist-skeleton-line--desc {
+  width: 80%;
+}
 ._asset-wiki-skeleton-line--meta,
-._codelist-skeleton-line--meta { width: 60%; }
+._codelist-skeleton-line--meta {
+  width: 60%;
+}
 
 @keyframes _asset-card-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 /* ============================================================

@@ -76,7 +76,7 @@ export function createUserAsset(input: {
 /** 更新用户自建资产（只有 owner 可调用） */
 export function updateUserAsset(
   asset_id: string,
-  patch: Partial<Pick<UserAsset, 'title' | 'description' | 'scope'>>
+  patch: Partial<Pick<UserAsset, 'title' | 'description' | 'scope'>>,
 ): void {
   const assets = readUserAssets();
   const target = assets.find((a) => a.asset_id === asset_id);
@@ -95,9 +95,14 @@ export function deleteUserAsset(asset_id: string): void {
 }
 
 /** 读取某用户拥有的资产（按 kind 过滤） */
-export function getUserAssetsByOwner(owner_user_id: string, kind: UserAssetKind, team_id?: string): UserAsset[] {
+export function getUserAssetsByOwner(
+  owner_user_id: string,
+  kind: UserAssetKind,
+  team_id?: string,
+): UserAsset[] {
   return readUserAssets().filter(
-    (a) => a.owner_user_id === owner_user_id && a.kind === kind && (!team_id || a.team_id === team_id)
+    (a) =>
+      a.owner_user_id === owner_user_id && a.kind === kind && (!team_id || a.team_id === team_id),
   );
 }
 
@@ -106,11 +111,12 @@ export function getUserAssetsByOwner(owner_user_id: string, kind: UserAssetKind,
 export function getTeamVisibleAssets(
   team_id: string | null | undefined,
   kind: UserAssetKind,
-  currentUser?: string
+  currentUser?: string,
 ): UserAsset[] {
   return readUserAssets().filter(
-    (a) => (!team_id || a.team_id === team_id) && a.kind === kind && (a.scope === 'team' || a.owner_user_id === currentUser)
+    (a) =>
+      (!team_id || a.team_id === team_id) &&
+      a.kind === kind &&
+      (a.scope === 'team' || a.owner_user_id === currentUser),
   );
 }
-
-

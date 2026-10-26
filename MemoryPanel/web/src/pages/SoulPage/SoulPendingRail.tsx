@@ -28,10 +28,29 @@ import {
 import { slotLabelOf, slotTitleOf, slotVersionText } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
 
-function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked, selectable, onToggle, onDecide }: {
-  id: string; slot: string; content: string; state?: string; audit?: AutoAdoptAudit | null; selectable?: boolean;
-  busy: string; batchBusy: boolean;
-  checked: boolean; onToggle: (id: string) => void;
+function PendingRow({
+  id,
+  slot,
+  content,
+  state,
+  audit,
+  busy,
+  batchBusy,
+  checked,
+  selectable,
+  onToggle,
+  onDecide,
+}: {
+  id: string;
+  slot: string;
+  content: string;
+  state?: string;
+  audit?: AutoAdoptAudit | null;
+  selectable?: boolean;
+  busy: string;
+  batchBusy: boolean;
+  checked: boolean;
+  onToggle: (id: string) => void;
   onDecide: (id: string, d: 'adopted' | 'rejected') => void;
 }) {
   const autoAdopted = state === 'auto_adopted';
@@ -47,11 +66,17 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
             checked={checked}
             onChange={() => onToggle(id)}
           />
-          <span className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`} title={slotTitleOf(slot)}>
+          <span
+            className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`}
+            title={slotTitleOf(slot)}
+          >
             {slotLabelOf(slot)}
           </span>
           {autoAdopted && (
-            <span className="_soul-chip _soul-chip--green" title="证据达到要求，系统自动采纳了这条；点「回滚」可恢复原样">
+            <span
+              className="_soul-chip _soul-chip--green"
+              title="证据达到要求，系统自动采纳了这条；点「回滚」可恢复原样"
+            >
               自动采纳
             </span>
           )}
@@ -66,13 +91,19 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
               <div>采纳时间：{audit.adopted_at ?? '-'}</div>
               {/* #104 拍板：gate 缺失时逐字段显示「-」，不再整行省略（可见变更，票内已注明） */}
               <div>
-                证据要求：{audit.gate?.votes ?? '-'} 票 / 跨 {audit.gate?.spanHours ?? '-'} 小时；把关线：与被拒提案相似低于 {audit.gate?.contradictionThreshold ?? '-'} · 与现有内容相似低于 {audit.gate?.dupThreshold ?? '-'}
+                证据要求：{audit.gate?.votes ?? '-'} 票 / 跨 {audit.gate?.spanHours ?? '-'}{' '}
+                小时；把关线：与被拒提案相似低于 {audit.gate?.contradictionThreshold ?? '-'} ·
+                与现有内容相似低于 {audit.gate?.dupThreshold ?? '-'}
               </div>
               <div>
                 采纳前的「我是谁」：
-                {audit.prev_slot_existed === false ? '（此前不存在，回滚即删除）' : slotVersionText(audit.prev_slot_version)}
+                {audit.prev_slot_existed === false
+                  ? '（此前不存在，回滚即删除）'
+                  : slotVersionText(audit.prev_slot_version)}
               </div>
-              {audit.prev_slot_content !== undefined && <pre className="_spending-audit-content">{audit.prev_slot_content}</pre>}
+              {audit.prev_slot_content !== undefined && (
+                <pre className="_spending-audit-content">{audit.prev_slot_content}</pre>
+              )}
               <div>采纳后的「我是谁」：{slotVersionText(audit.post_slot_version)}</div>
             </div>
           </details>
@@ -139,7 +170,9 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
       .catch(() => setItems([]));
   }, [blockId]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   // #103：可批量勾选的行（待决行）——全选与批量计数都只看它；终局行仍可见可单条回滚
   const selectable = batchSelectablePendingRows(items ?? []);
@@ -148,7 +181,8 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
   function toggleSel(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
@@ -165,7 +199,9 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
       const c409 = classify409Of(err);
       const conflict = c409?.kind === 'conflict' ? c409.conflict : null;
       if (conflict) {
-        tea.notify.warning(`「${conflict.label}」存在同名锚（${conflict.state ?? 'active'}），已在待办行标记冲突；请到「记忆 → 价值锚」面板确认后采纳`);
+        tea.notify.warning(
+          `「${conflict.label}」存在同名锚（${conflict.state ?? 'active'}），已在待办行标记冲突；请到「记忆 → 价值锚」面板确认后采纳`,
+        );
         setError('存在同名冲突，请到价值锚面板确认后采纳');
       } else if (c409?.kind === 'promise-conflict') {
         // #50⑤：promise 迁移 409——状态已迁移，重试只会撞 404，不误导重试。
@@ -174,12 +210,16 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
       } else if (c409?.kind === 'rollback-refused') {
         // #100：auto_adopted 回滚 409——采纳后身份槽已被人改动（版本漂移），快照回滚拒绝，
         // 重试同样拒绝；不误导重试，引导手工处理。
-        tea.notify.warning('「我是谁」在自动采纳后又被改过，回滚被拒；请到「记忆 → 身份」手工核对当前内容');
+        tea.notify.warning(
+          '「我是谁」在自动采纳后又被改过，回滚被拒；请到「记忆 → 身份」手工核对当前内容',
+        );
         setError('回滚被拒：「我是谁」采纳后又被改过，需手工核对当前内容');
       } else {
         setError('决策失败，请重试');
       }
-    } finally { setBusy(''); }
+    } finally {
+      setBusy('');
+    }
   }
 
   async function batchDecide(decision: 'adopted' | 'rejected') {
@@ -216,9 +256,13 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     if (failedIds.length > 0) setError(`批量决策部分失败（${failedIds.length} 条），请重试`);
     if (conflictCount > 0) setError(`同名冲突 ${conflictCount} 条需逐条确认，请到价值锚面板处理`);
     if (promiseConflictCount > 0)
-      setError(`承诺状态迁移冲突 ${promiseConflictCount} 条，承诺已被他处迁移，请刷新后查看当前状态`);
+      setError(
+        `承诺状态迁移冲突 ${promiseConflictCount} 条，承诺已被他处迁移，请刷新后查看当前状态`,
+      );
     if (rollbackRefusedCount > 0)
-      setError(`回滚被拒 ${rollbackRefusedCount} 条：「我是谁」采纳后又被改过，需手工核对当前内容（见「记忆 → 身份」）`);
+      setError(
+        `回滚被拒 ${rollbackRefusedCount} 条：「我是谁」采纳后又被改过，需手工核对当前内容（见「记忆 → 身份」）`,
+      );
     refresh();
   }
 
@@ -232,7 +276,11 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
   }
 
   return (
-    <section className="_soul-section _soul-railcard" aria-label={t('soul.pending.title')} id="_soul-sec-pending">
+    <section
+      className="_soul-section _soul-railcard"
+      aria-label={t('soul.pending.title')}
+      id="_soul-sec-pending"
+    >
       <div className="_soul-section-head">
         <span className="_soul-section-title">{t('soul.pending.title')}</span>
         <span className="_soul-chip _soul-chip--red">{items.length} 待裁决</span>
@@ -279,14 +327,21 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
             <button
               type="button"
               className="_spending-group-head"
-              onClick={() => setCollapsedGroups((prev) => {
-                const next = new Set(prev);
-                if (next.has(slot)) next.delete(slot); else next.add(slot);
-                return next;
-              })}
+              onClick={() =>
+                setCollapsedGroups((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(slot)) next.delete(slot);
+                  else next.add(slot);
+                  return next;
+                })
+              }
             >
-              <span className="_spending-group-title" title={slotTitleOf(slot)}>{slotLabelOf(slot)}</span>
-              <span className="_soul-meta">{collapsed ? `展开（${list.length}）` : list.length}</span>
+              <span className="_spending-group-title" title={slotTitleOf(slot)}>
+                {slotLabelOf(slot)}
+              </span>
+              <span className="_soul-meta">
+                {collapsed ? `展开（${list.length}）` : list.length}
+              </span>
             </button>
             {!collapsed && (
               <ul className="_spending-list">

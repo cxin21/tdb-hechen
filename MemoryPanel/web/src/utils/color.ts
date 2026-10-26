@@ -6,8 +6,16 @@
 
 /** 团队头像配色列表 */
 export const TEAM_AVATAR_COLORS = [
-  'bg-rose-500', 'bg-amber-500', 'bg-blue-500', 'bg-emerald-500', 'bg-violet-500',
-  'bg-cyan-600', 'bg-orange-500', 'bg-pink-500', 'bg-teal-500', 'bg-indigo-500',
+  'bg-rose-500',
+  'bg-amber-500',
+  'bg-blue-500',
+  'bg-emerald-500',
+  'bg-violet-500',
+  'bg-cyan-600',
+  'bg-orange-500',
+  'bg-pink-500',
+  'bg-teal-500',
+  'bg-indigo-500',
 ];
 
 /**

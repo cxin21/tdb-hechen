@@ -97,7 +97,7 @@ export default function ParticleWaveBackground({
           const wave =
             Math.sin(nx * 7.5 - t * 1.15) * 0.45 +
             Math.sin(ny * 5.5 + t * 0.75) * 0.28 +
-            Math.sin((nx * 3.2 + ny * 4.1) + t * 0.95) * 0.27;
+            Math.sin(nx * 3.2 + ny * 4.1 + t * 0.95) * 0.27;
 
           // wave ∈ 约 [-1, 1] → intensity ∈ [0, 1]
           const intensity = (wave + 1) / 2;

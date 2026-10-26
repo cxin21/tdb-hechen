@@ -15,7 +15,8 @@ export interface CreateUserResult {
 
 export const usersApi = {
   /** 分页列出用户；可传入 { username } 精确匹配或 { user_ids } 过滤 */
-  list: (params?: { username?: string; user_ids?: string[] }) => metaListAll<PublicUser>('user/list', { ...params }),
+  list: (params?: { username?: string; user_ids?: string[] }) =>
+    metaListAll<PublicUser>('user/list', { ...params }),
 
   /** 用户详情 */
   get: (userId: string) => metaPost<PublicUser>('user/get', { user_id: userId }),
@@ -28,8 +29,13 @@ export const usersApi = {
    *
    * ⚠️ 权限：须当前用户持有 system_admin 权限；普通用户 → 403。
    */
-  create: (data: { username: string; auth_provider: string; external_id: string; display_name?: string; email?: string }) =>
-    metaPost<CreateUserResult>('user/create', data),
+  create: (data: {
+    username: string;
+    auth_provider: string;
+    external_id: string;
+    display_name?: string;
+    email?: string;
+  }) => metaPost<CreateUserResult>('user/create', data),
 
   /**
    * 新建用户并显式指定 user_key（透明代理至后端 user/create-with-key）。
@@ -74,7 +80,8 @@ export const userKeysApi = {
   list: () => dedupeInFlight('user-key/list', () => metaListAll<UserKey>('user-key/list', {})),
 
   /** 创建一把新 Key；返回值里的 key_value 明文只展示这一次，调用方需立即展示给用户 */
-  create: (data: { name?: string; expires_at?: string; user_id?: string }) => metaPost<UserKey>('user-key/create', data),
+  create: (data: { name?: string; expires_at?: string; user_id?: string }) =>
+    metaPost<UserKey>('user-key/create', data),
 
   /** 吊销一把 Key */
   revoke: (keyId: string) => metaPost<{ ok: boolean }>('user-key/revoke', { key_id: keyId }),
@@ -82,7 +89,12 @@ export const userKeysApi = {
 
 // ========================= User Config（meta/config/user/*）=========================
 
-export type AssetCapabilityKey = 'skill.enabled' | 'llm_wiki.enabled' | 'code_graph.enabled' | 'chat_memory.enabled' | 'wiki_jit.enabled';
+export type AssetCapabilityKey =
+  | 'skill.enabled'
+  | 'llm_wiki.enabled'
+  | 'code_graph.enabled'
+  | 'chat_memory.enabled'
+  | 'wiki_jit.enabled';
 
 export interface UserConfigItem {
   module: string;
@@ -156,17 +168,17 @@ export const userConfigApi = {
 
 /** session_init module 下当前用户的默认配置（键盘不进，全靠滑块 + 下拉配置）。 */
 export interface SessionInitConfig {
-  manual_select: boolean;      // true=仍手动选；false=按默认自动关联
-  default_associate: boolean;  // true=默认关联团队资产
-  default_team_id: string;     // 空串=未指定
-  default_agent_id: string;    // 空串=未指定
+  manual_select: boolean; // true=仍手动选；false=按默认自动关联
+  default_associate: boolean; // true=默认关联团队资产
+  default_team_id: string; // 空串=未指定
+  default_agent_id: string; // 空串=未指定
 }
 
-const SESSION_INIT_MODULE = "session_init";
+const SESSION_INIT_MODULE = 'session_init';
 
 function boolOrTrue(value: string | undefined): boolean {
   if (value === undefined) return true;
-  return value === "1" || value.toLowerCase() === "true";
+  return value === '1' || value.toLowerCase() === 'true';
 }
 
 export const sessionInitApi = {
@@ -176,14 +188,18 @@ export const sessionInitApi = {
     const view = await userConfigApi.get(me.user_id, SESSION_INIT_MODULE);
     const byName = new Map(view.items.map((it) => [it.param_name, it.effective_value]));
     return {
-      manual_select: boolOrTrue(byName.get("manual_select")),
-      default_associate: boolOrTrue(byName.get("default_associate")),
-      default_team_id: (byName.get("default_team_id") ?? "").trim(),
-      default_agent_id: (byName.get("default_agent_id") ?? "").trim(),
+      manual_select: boolOrTrue(byName.get('manual_select')),
+      default_associate: boolOrTrue(byName.get('default_associate')),
+      default_team_id: (byName.get('default_team_id') ?? '').trim(),
+      default_agent_id: (byName.get('default_agent_id') ?? '').trim(),
     };
   },
   /** 写当前用户 session_init（params 只含改动项；id 传空串 = 未指定）。 */
-  set: async (params: Partial<Record<"manual_select" | "default_associate" | "default_team_id" | "default_agent_id", string>>): Promise<void> => {
+  set: async (
+    params: Partial<
+      Record<'manual_select' | 'default_associate' | 'default_team_id' | 'default_agent_id', string>
+    >,
+  ): Promise<void> => {
     const me = await getCurrentUser();
     await userConfigApi.set(me.user_id, SESSION_INIT_MODULE, params);
   },

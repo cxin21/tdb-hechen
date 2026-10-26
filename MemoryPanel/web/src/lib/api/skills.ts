@@ -70,9 +70,14 @@ const SKILL_PREFIX = '/api/v1/skill';
 async function skillCall<T>(
   action: string,
   body: Record<string, unknown>,
-  headers: Record<string, string>
+  headers: Record<string, string>,
 ): Promise<T> {
-  const envelope = await request<MetaEnvelope<T>>('POST', `${SKILL_PREFIX}/${action}`, body, headers);
+  const envelope = await request<MetaEnvelope<T>>(
+    'POST',
+    `${SKILL_PREFIX}/${action}`,
+    body,
+    headers,
+  );
   if (envelope.code !== 0) {
     throw new ApiError(200, envelope.message, '', {
       code: envelope.code,
@@ -105,7 +110,7 @@ export const skillApi = {
   /** 列出 team 下的 head skill（分页拉全量；可选按 owner agent / 名称前缀 / 状态过滤） */
   list: async (
     teamId: string,
-    opts?: { ownerAgentId?: string; namePrefix?: string; status?: Array<'active' | 'archived'> }
+    opts?: { ownerAgentId?: string; namePrefix?: string; status?: Array<'active' | 'archived'> },
   ): Promise<SkillSummary[]> => {
     const me = await getCurrentUser();
     const items: SkillSummary[] = [];
@@ -159,7 +164,12 @@ export const skillApi = {
   create: async (
     teamId: string,
     agentId: string,
-    data: { name: string; content: string; resources?: SkillResourcePayload[]; metadata?: Record<string, unknown> }
+    data: {
+      name: string;
+      content: string;
+      resources?: SkillResourcePayload[];
+      metadata?: Record<string, unknown>;
+    },
   ): Promise<SkillSummary> => {
     const me = await getCurrentUser();
     return skillPost<SkillSummary>('create', {
@@ -178,7 +188,7 @@ export const skillApi = {
     teamId: string,
     agentId: string,
     skillId: string,
-    expectedVersion: number
+    expectedVersion: number,
   ): Promise<{ skill_id: string; archived: boolean }> => {
     const me = await getCurrentUser();
     return skillPost<{ skill_id: string; archived: boolean }>('delete', {
@@ -196,7 +206,7 @@ export const skillApi = {
     agentId: string,
     skillId: string,
     expectedVersion: number,
-    content: string
+    content: string,
   ): Promise<SkillSummary> => {
     const me = await getCurrentUser();
     return skillPost<SkillSummary>('update', {
@@ -213,10 +223,12 @@ export const skillApi = {
   search: async (
     teamId: string,
     query: string,
-    opts?: { topK?: number; scope?: 'team' }
+    opts?: { topK?: number; scope?: 'team' },
   ): Promise<Array<SkillSummary & { score: number; snippet: string }>> => {
     const me = await getCurrentUser();
-    const res = await skillPost<{ items: Array<SkillSummary & { score: number; snippet: string }> }>('search', {
+    const res = await skillPost<{
+      items: Array<SkillSummary & { score: number; snippet: string }>;
+    }>('search', {
       user_id: me.user_id,
       team_id: teamId,
       query,
@@ -246,7 +258,7 @@ export const skillApi = {
   forkToAgent: async (
     teamId: string,
     sourceSkillId: string,
-    targetAgentId: string
+    targetAgentId: string,
   ): Promise<SkillSummary> => {
     const detail = await skillApi.get(teamId, sourceSkillId);
     const resources: SkillResourcePayload[] = [];

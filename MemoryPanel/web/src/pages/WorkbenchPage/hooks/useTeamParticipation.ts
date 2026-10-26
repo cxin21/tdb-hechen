@@ -47,8 +47,12 @@ export function useTeamParticipation(teamId: string | null): Map<string, TaskPar
 
   useEffect(() => {
     let cancelled = false;
-    fetchLogs().catch(() => { /* handled inside */ });
-    const handler = () => { if (!cancelled) fetchLogs(); };
+    fetchLogs().catch(() => {
+      /* handled inside */
+    });
+    const handler = () => {
+      if (!cancelled) fetchLogs();
+    };
     window.addEventListener('tdai-memory.backend-refresh', handler);
     return () => {
       cancelled = true;

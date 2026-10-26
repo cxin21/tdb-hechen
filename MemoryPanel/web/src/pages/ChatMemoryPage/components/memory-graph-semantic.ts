@@ -45,7 +45,7 @@ export function directedEdgeType(kind: string): 'line' | 'arrow' {
 
 /** from → to 的最短弧有符号差，∈ (-180, 180]。 */
 function shortestHueDelta(from: number, to: number): number {
-  return (((to - from) % 360) + 540) % 360 - 180;
+  return ((((to - from) % 360) + 540) % 360) - 180;
 }
 
 /** #rgb / #rrggbb → [r,g,b] 0..255；其余 → null。 */
@@ -53,13 +53,19 @@ function parseHex(hex: string): [number, number, number] | null {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return null;
   let s = m[1];
-  if (s.length === 3) s = s.split('').map((c) => c + c).join('');
+  if (s.length === 3)
+    s = s
+      .split('')
+      .map((c) => c + c)
+      .join('');
   const n = parseInt(s, 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
 function toHexByte(v: number): string {
-  return Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0');
+  return Math.round(Math.max(0, Math.min(255, v)))
+    .toString(16)
+    .padStart(2, '0');
 }
 
 function hslToHex(h: number, s: number, l: number): string {
