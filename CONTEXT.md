@@ -11,6 +11,7 @@
 - **pending 提案**：红线类（core_value/strict_rule）LLM 提案只入 `core_pending`，人工采纳；语义去重 0.75（宁漏勿错杀）；rejected 永久拦截，证据 ≥2×minEvidence 可走重提通道（#19，缺省关）。
 - **soul 渲染门**：desc 为空或 episode 特征 → 整条跳过（宁缺毋滥，禁裸关键词入人格）；预算截断按整锚丢弃（#10）。
 - **LLM 凭据 SoT（admin settings）**：LLM 秘密字段（llm.apiKey）运行时唯一可信来源 = admin settings（各服务 `{dataDir}/config-override.json`）；通道序 override > yaml > TDAI_LLM_* env(deprecated 回退+一次性弃用告警)；占位符（整串 `__X__` / `${X}`）视为未设置（`utils/credential.ts` 守卫；脚本域单一读取器 `MemoryCore/scripts/lib/read-llm-credential.ts`）。baseUrl/model 等非秘密字段 env 优先不受影响。→ ADR-0006
+- **服务间鉴权（service key）**：KS 写/管理面的入站鉴权。`KNOWLEDGE_SERVICE_KEY` 为空 = **不启用**（内网信任，向后兼容本地/开发）；非空 = 除只读白名单（Agent 查询面：tools/list、tools/call、wiki/code-graph 查询、auto-sync/status）外的 `/v3` 端点必须带 `Authorization: Bearer <key>`，缺失/错误一律 401（fail-closed）；`/health`、`/docs`、`/openapi.json` 在 `/v3` 之外不受影响。同一个 key 三侧传播：校验侧 `KNOWLEDGE_SERVICE_KEY` / Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN` / MCP 侧 `KNOWLEDGE_API_TOKEN`；部署脚本自动生成 `ks-svc-<hex48>` 并幂等回写 .env。→ ADR-0009
 - **Panel UI 小白优先原则**（2026-10-19 用户拍板）：MemoryPanel 一切界面以「第一次接触本系统的运维者」为基准用户，易用易懂优先——①白话标签，禁内部术语直达 UI（slot 名/门名/接口词翻译成人话，未知名的 slot 键也不许直达 UI，兜底「未知提案」，原始键名走悬停提示——如 self_identity → 「我是谁」提案、未知 slot → 「未知提案」）；②状态外显（生效/降级/关闭一眼可辨，配一句解释）；③渐进披露（默认简单视图，技术细节折叠进高级区）；④降级与错误用人话说明（如叙事兜底 → 「已自动回退到原文显示」，不静默）。落点：所有 Panel UI 票的验收标准（首个应用票=R3 叙事预览，待立票；#105 起两页待裁决区落地本词条）。
 
 ## 架构决定（ADR）
@@ -21,3 +22,4 @@
 - [ADR-0006 LLM 凭据 SoT 收敛](docs/adr/0006-LLM凭据-SoT收敛-admin-settings.md) —— 秘密字段唯一 SoT=admin settings、通道序 override>yaml>env(deprecated)、占位符守卫、脚本域 readLlmCredential 单一读取器。
 - [ADR-0007 身份槽确定性自动采纳门](docs/adr/0007-身份槽确定性自动采纳门.md) —— stage 2 终局形态：三重门（N₂=4/T₂=72h/矛盾线 0.60/重复线 0.75，2026-10-25 拍板）、config 缺省关、快照+版本守卫回滚、采纳链单一源镜像人审 merge-on-adopt。
 - [ADR-0008 召回门限刻度治理：剔词退役与地板相对化](docs/adr/0008-召回门限刻度治理-剔词退役与地板相对化.md) —— 候选集占比剔词退役（自指病灶）、bm25 地板 α×topRel 相对化（legacy 双轨兜底）、local rerank sigmoid 归一 + all-below 降级不清零；未迁移 yaml 逐位不变。
+- [ADR-0009 服务间鉴权：KNOWLEDGE_SERVICE_KEY fail-closed](docs/adr/0009-服务间鉴权-KNOWLEDGE_SERVICE_KEY.md) —— 空 key=不启用/非空=写管理面 401、只读白名单口径（补齐上游漏掉的 code-graph 8 个动态只读查询）、code-graph 查询名单单一真相源、真实路由表护栏、key 三侧传播与部署侧自动生成。
