@@ -22,6 +22,10 @@ require_vars \
   MEMORY_LLM_BASE_URL MEMORY_LLM_API_KEY MEMORY_LLM_MODEL \
   KNOWLEDGE_PUBLIC_BASE_URL
 
+# 服务间鉴权 key：为空则自动生成并写回 .env（幂等，重启不漂移）。
+# 同一个值分两路注入容器：KS 侧 KNOWLEDGE_SERVICE_KEY（校验）、Panel 侧 KNOWLEDGE_AUTH_TOKEN（调用）。
+ensure_knowledge_service_key
+
 # 与 memory-core 保持一致的 gateway 内部凭据（默认 local，仅本地体验）
 MEMORY_CORE_GATEWAY_API_KEY="${MEMORY_CORE_GATEWAY_API_KEY:-local}"
 
@@ -96,6 +100,8 @@ $DOCKER run -d --name "$CONTAINER" \
   -e PANEL_PORT=8125 \
   -e KNOWLEDGE_PORT=8424 \
   -e KNOWLEDGE_PUBLIC_BASE_URL="$KNOWLEDGE_PUBLIC_BASE_URL" \
+  -e KNOWLEDGE_SERVICE_KEY="$KNOWLEDGE_SERVICE_KEY" \
+  -e KNOWLEDGE_AUTH_TOKEN="$KNOWLEDGE_SERVICE_KEY" \
   -e REMOTE_INSTANCE_ID=default \
   -e REMOTE_INSTANCE_NAME=default \
   -e REMOTE_INSTANCE_URL="http://memory-core:8420" \

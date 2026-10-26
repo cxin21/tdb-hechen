@@ -61,10 +61,14 @@ docker run -d --name memory-hub \
   -v /path/to/metadata-instances.json:/app/panel/config/metadata-instances.json:ro \
   -e KNOWLEDGE_PUBLIC_BASE_URL=http://10.2.3.4:8424/v3 \
   -e KNOWLEDGE_LLM_PROXY_BASE_URL=https://memory.ap-shanghai.tencenttdai.com \
+  -e KNOWLEDGE_SERVICE_KEY=ks-svc-<your-key> \
+  -e KNOWLEDGE_AUTH_TOKEN=ks-svc-<your-key> \
   agentmemory/memory-hub:latest
 ```
 
 > 将 `/path/to/metadata-instances.json`、`10.2.3.4`（KS 外部地址）以及 `KNOWLEDGE_LLM_PROXY_BASE_URL`（与 `gateway_endpoint` 相同，按控制台实际 Gateway 地址填写）换成你的实际值。
+
+> **服务间鉴权（可选）**：`KNOWLEDGE_SERVICE_KEY`（Knowledge 校验侧）与 `KNOWLEDGE_AUTH_TOKEN`（Panel 调用侧）填**同一个值**；只设其中一侧时容器内启动脚本会自动对齐。留空 = 不启用鉴权（内网信任模型）。启用后 `/v3` 写/管理面需带 `Authorization: Bearer <key>`（缺失即 401），只读端点与 `/health`、`/docs` 保持开放。
 
 ### 必填项（只有这 3 项）
 

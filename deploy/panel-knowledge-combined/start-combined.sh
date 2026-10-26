@@ -26,6 +26,11 @@ KS_INTERNAL_URL="http://127.0.0.1:${KNOWLEDGE_PORT}"
 # service_url 需包含 API prefix（/v3），context_proxy 会拼成 {service_url}/tools/list。
 KS_PUBLIC_URL="${KNOWLEDGE_PUBLIC_BASE_URL:-${KS_INTERNAL_URL}/v3}"
 PROXY_BASE_URL="${KNOWLEDGE_LLM_PROXY_BASE_URL:-}"
+# 服务间鉴权：Panel 与 KS 共用同一个 key。
+#   KS 侧    → KNOWLEDGE_SERVICE_KEY（校验侧；为空 = 不启用鉴权）
+#   Panel 侧 → KNOWLEDGE_AUTH_TOKEN（调用侧，带 Bearer）
+# 只设了其中一个时自动对齐，避免一侧 401 把面板打挂。
+KS_SERVICE_KEY="${KNOWLEDGE_SERVICE_KEY:-${KNOWLEDGE_AUTH_TOKEN:-}}"
 
 # 仅当用户未提供 instances 文件时，才用 REMOTE_INSTANCE_* env 生成单实例配置。
 # REMOTE_INSTANCE_PROXY_URL 为可选项：
@@ -99,6 +104,7 @@ fi
 
 cd /app/knowledge
 PORT="${KNOWLEDGE_PORT}" LOG_LEVEL="${LOG_LEVEL:-info}" \
+KNOWLEDGE_SERVICE_KEY="${KS_SERVICE_KEY}" \
   node "$(test -f dist/server.js && echo dist/server.js || echo dist/server.mjs)" 2>&1 \
   | tee -a "$KNOWLEDGE_LOG" &
 KNOWLEDGE_PID=$!
@@ -124,7 +130,7 @@ UI_DIST_DIR=/app/panel/web/dist \
 METADATA_INSTANCES_CONFIG=/app/panel/config/metadata-instances.json \
 METADATA_REMOTE_TIMEOUT_MS="${METADATA_REMOTE_TIMEOUT_MS:-15000}" \
 KNOWLEDGE_SERVICE_URL="${KS_INTERNAL_URL}" \
-KNOWLEDGE_AUTH_TOKEN="${KNOWLEDGE_AUTH_TOKEN:-}" \
+KNOWLEDGE_AUTH_TOKEN="${KS_SERVICE_KEY}" \
 KNOWLEDGE_TIMEOUT_MS="${KNOWLEDGE_TIMEOUT_MS:-15000}" \
 KNOWLEDGE_LLM_BINDING_SYNC="${SYNC_ENV}" \
 KNOWLEDGE_LLM_PROXY_BASE_URL="${PROXY_BASE_URL}" \

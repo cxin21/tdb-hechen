@@ -322,6 +322,26 @@ set_env_value() {
   fi
 }
 
+# ensure_knowledge_service_key
+#   Knowledge 服务间鉴权 key（Panel ↔ Knowledge 共用同一个值）。
+#   为空或仍是占位符时生成随机值并写回 .env（幂等：已生成则复用，重启不漂移）。
+#   调用方随后把同一个值分两路注入容器：
+#     KNOWLEDGE_SERVICE_KEY → Knowledge 进程校验侧（src/middleware/auth.ts）
+#     KNOWLEDGE_AUTH_TOKEN  → Panel 进程调用侧
+ensure_knowledge_service_key() {
+  if [[ -z "${KNOWLEDGE_SERVICE_KEY:-}" || "${KNOWLEDGE_SERVICE_KEY}" == "REPLACE_ME" ]]; then
+    local rand
+    if command -v openssl >/dev/null 2>&1; then
+      rand="$(openssl rand -hex 24)"
+    else
+      rand="$(head -c 24 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+    fi
+    KNOWLEDGE_SERVICE_KEY="ks-svc-${rand}"
+    set_env_value KNOWLEDGE_SERVICE_KEY "$KNOWLEDGE_SERVICE_KEY" "$ENV_FILE"
+    info "已生成 KNOWLEDGE_SERVICE_KEY 并写回 ${ENV_FILE}（Panel 与 Knowledge 共用）"
+  fi
+}
+
 # interactive_llm_setup
 #   交互式引导填写 LLM 两组（memory + proxy）→ 通路检查（可重试）→ 写回 .env。
 #   会更新内存中的 MEMORY_LLM_* / PROXY_UPSTREAM_* 变量（已 export），并写回 .env 持久化。
