@@ -127,27 +127,6 @@ function submittedSetFor(sessionKey: string): Set<string> {
 }
 
 export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity | null, userMessage: TdaiMessage | null, assistantContent: string | null | undefined, capture?: RecordTurnCapture): Promise<void> {
-  // [PROBE-v2] full-args dump for L0 write path — DEBUG ONLY
-  try {
-    const { log } = await import("../report/log.js");
-    const caller = () => {
-      try { return String(new Error().stack || "").split("\n").slice(2, 6).join("|"); } catch { return ""; }
-    };
-    log.info("dsh-l0-turn-v2", {
-      identityPresent: !!identity,
-      identity: identity ? {
-        team: identity.teamId, user: identity.userId, agent: identity.agentId,
-        session: identity.sessionId, task: identity.taskId, userKey: identity.userKey ? "set" : "unset",
-      } : null,
-      userMessagePresent: !!userMessage,
-      userMessageLen: userMessage ? String(userMessage.content ?? "").length : null,
-      userMessageFull: userMessage ? String(userMessage.content ?? "").slice(0, 500) : null,
-      assistantLen: assistantContent ? String(assistantContent ?? "").length : null,
-      assistantFull: assistantContent ? String(assistantContent ?? "").slice(0, 200) : null,
-      caller: caller().slice(0, 300),
-    });
-  } catch { /* best effort */ }
-
   // #83 捕获三档（缺省 legacy = 现行为逐位不变）：
   //  legacy     —— 单条提取（现状）：userMessage 为空即整轮丢弃（脚手架轮 L0 缺失的旧病灶）。
   //  shadow     —— 双跑对比日志：行为仍 legacy，另打 classified 路径会写什么（对比观测）。
@@ -169,19 +148,13 @@ export async function recordTdaiTurn(client: TdaiClient, identity: TdaiIdentity 
     } catch { /* best effort */ }
   }
   if (!identity || (!userMessage && !(mode === "classified" && turnContext))) {
-    // [PROBE] reason why recordTdaiTurn early-returns — DEBUG ONLY
+    // 跳过原因留痕：降到 debug 档（INFO 下静默，需要排查时 MEMORY_LOG_LEVEL=debug 打开）
     try {
       const { log } = await import("../report/log.js");
-      const prog = () => {
-        try { return String(new Error().stack || "").split("\n").slice(2, 6).join("|"); } catch { return ""; }
-      };
-      log.info("dsh-l0-skip", {
-        identity: !!identity, userMessage: !!userMessage,
+      log.debug("dsh-l0-skip", {
         reason: !identity ? "no-identity" : "no-user-message",
         agent: identity?.agentId ?? null,
-        user: identity?.userId ?? null,
         session: identity?.sessionId ?? null,
-        caller: prog().slice(0, 200),
       });
     } catch { /* best effort */ }
     return;

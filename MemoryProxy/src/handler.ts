@@ -1406,44 +1406,6 @@ export async function handleChatCompletions(
     recordTurnIntentPresence(sessionKey, tdaiTurnContext.turnIntent != null);
   }
 
-  // [PROBE] dsh raw wire user messages — dump every user message content for matching analysis
-  if (agentSource === "dsh") {
-    const userMessages = (messages as Array<Record<string, unknown>>)
-      .filter((m) => m?.role === "user")
-      .map((m, idx) => {
-        const c = m.content;
-        let text = "";
-        if (typeof c === "string") text = c;
-        else if (Array.isArray(c)) text = c.map((p) => (p && typeof p === "object" ? (p as any).text ?? "" : String(p ?? ""))).join("");
-        else if (c) text = String(c);
-        return { idx, role: m.role, contentLen: text.length, head: text.slice(0, 120), src: (m as any).source?.kind ?? (m as any).src ?? null };
-      });
-    log.info("dsh-l0-rawwires", {
-      session: sessionKey, totalMsgs: messages.length,
-      userCount: userMessages.length,
-      userMessages: userMessages.slice(-6), // last 6 user entries
-    });
-  }
-
-  // [PROBE] dsh L0 decision diagnostics — DEBUG ONLY
-  if (agentSource === "dsh") {
-    const probeMsg = tdaiUserMessage ? String(tdaiUserMessage.content) : null;
-    log.info("dsh-l0-probe", {
-      session: sessionKey,
-      requestKind: _requestKind,
-      dshHeadless: _dshHeadless,
-      injectedSkipped,
-      hasSessionInfo: !!sessionInfo,
-      chatMemory: assetCapabilities?.chat_memory,
-      identity: tdaiIdentity ? { team: tdaiIdentity.teamId, user: tdaiIdentity.userId, agent: tdaiIdentity.agentId, session: tdaiIdentity.sessionId } : null,
-      userMessageLen: probeMsg ? probeMsg.length : null,
-      userMessagePreview: probeMsg ? probeMsg.slice(0, 80) : null,
-      userRoleCount: messages.filter((m) => (m as { role?: string })?.role === "user").length,
-      totalMsgs: messages.length,
-      lastRole: (messages[messages.length - 1] as { role?: string })?.role,
-    });
-  }
-
   // ── Context injection (before cost guard) ──────────────────────────────
   if (!injectedSkipped && config.injection?.enabled && config.injection.injectors.length > 0) {
     try {
@@ -1955,15 +1917,6 @@ export async function handleChatCompletions(
       });
     }
 
-    // [PROBE] non-stream write decision — DEBUG ONLY
-    if (agentSource === "dsh") {
-      log.info("dsh-l0-nonstream", {
-        session: sessionKey, hasClient: !!tdaiClient, hasIdentity: !!tdaiIdentity,
-        hasUserMsg: !!tdaiUserMessage, identity: tdaiIdentity ? { agent: tdaiIdentity.agentId, user: tdaiIdentity.userId } : null,
-        extractionAllowed: isExtractionAllowed(config, "tdai-memory"),
-      });
-    }
-
     if (tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
       await recordTdaiTurn(
         tdaiClient, tdaiIdentity, tdaiUserMessage, assistantContentForTdai(assistantMessage),
@@ -2295,16 +2248,6 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
   }
 
   async function finalize(): Promise<void> {
-    // [PROBE] streaming finalize reached — DEBUG ONLY (dsh)
-    if (ctx.agentSource === "dsh") {
-      log.info("dsh-l0-finalize", {
-        session: ctx.sessionKeyForSkill,
-        hasClient: !!ctx.tdaiClient, hasIdentity: !!ctx.tdaiIdentity,
-        hasUserMsg: !!ctx.tdaiUserMessage,
-        sseLen: sseBuf.length, assistantLen: assistantContent.length,
-        extractionAllowed: isExtractionAllowed(ctx.config, "tdai-memory"),
-      });
-    }
     if (sseBuf.trim()) {
       const usage = extractSseUsage(sseBuf);
       if (usage) lastUsage = usage;
@@ -2492,8 +2435,6 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       flushL0();
     } else if (ctx.tdaiClient) {
       logExtractionSkipped(ctx.config, "tdai-memory", ctx.sessionKeyForSkill);
-      // [PROBE] streaming L0 write blocked by extraction gate — DEBUG ONLY
-      log.info("dsh-l0-stream-blocked", { session: ctx.sessionKeyForSkill, extraction: { enabled: ctx.config.extraction?.enabled, extractors: ctx.config.extraction?.extractors } });
     }
 
     pipe.streamDone(lastUsage);

@@ -137,16 +137,6 @@ export class TdaiClient {
 
     const chunkedMessages = chunkConversationMessages(messages);
 
-    // [PROBE] addConversation reached — DEBUG ONLY
-    if (identity.agentId === "agt-2t81sh9zdz" || identity.sessionId?.includes("f74dc5ac")) {
-      log.info("dsh-l0-addconversation", {
-        team: identity.teamId, agent: identity.agentId, user: identity.userId,
-        session: identity.sessionId, task: identity.taskId,
-        msgs: messages.length, chunks: chunkedMessages.length,
-        writeL0: this.config.writeL0, enabled: this.config.enabled,
-      });
-    }
-
     log.info("tdai-recorder:write-l0", {
       team: identity.teamId,
       agent: identity.agentId,
