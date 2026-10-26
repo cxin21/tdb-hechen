@@ -198,6 +198,21 @@ async function main() {
   let embThresholdOverride;
   const eth = arg("emb-threshold", undefined);
   if (eth !== undefined && eth !== true) embThresholdOverride = Number(eth);
+  // B0 修复（bench/recall-opt）：rerank 试验键必须同时打进 override json——
+  // loadGatewayConfig 合并优先级 override > yaml，生产 config-override.json 带
+  // rerank.enabled=true，会吞掉沙箱 yaml 里的 enabled:false（2026-10-27 T4 实锤）。
+  if (Object.keys(rerankOverride).length && overrideCopied) {
+    try {
+      const ojPath = overrideCopied;
+      const oj = JSON.parse(fs.readFileSync(ojPath, "utf8"));
+      oj.rerank = { ...(oj.rerank ?? {}), ...rerankOverride };
+      fs.writeFileSync(ojPath, JSON.stringify(oj, null, 2) + "\n", "utf8");
+      log("[bench] rerank 试验键同步进 override json: " + JSON.stringify(rerankOverride));
+    } catch (e) {
+      log("[bench] 警告: override json 补丁失败，试验键可能被生产 override 吞掉: " + String(e?.message ?? e));
+    }
+  }
+
   prepareBenchYaml({
     srcYaml: prodConfig,
     storeDir,
