@@ -266,7 +266,9 @@ async function main() {
   // ── 检索评估 ──
   // B2-b：validityNow 用题目日期（--b2b-validity；缺省保持 new Date() 现状）
   const b2bValidity = flag("b2b-validity");
-  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity });
+    // B0 修复（bench/recall-opt）：--rerank-child-proc 精排子进程隔离（onnx 原生崩溃防护）
+  const rerankChildProc = flag("rerank-child-proc");
+  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc });
   const k = num("k", cfg.recall?.maxResults ?? 5);
   // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
   const kList = String(arg("recall-ks", "1,3,5,10"))
@@ -382,6 +384,7 @@ async function main() {
       manifest: manifestUsed,
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
       answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
+  rerankChildProc,
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,

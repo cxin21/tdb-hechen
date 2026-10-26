@@ -47,6 +47,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
     if (m[k] && typeof m[k] === "object") m[k] = { ...m[k], enabled: false };
   }
   m.recallJournal = { ...(m.recallJournal || {}), enabled: false };
+  // 基准期关断 query-expansion：bench 进程内 qe LLM 外呼恒超时（clamp 后 ~29s/题黑洞，
+  // 2026-10-27 冒烟实测 p50=29.2s）；超时路径本就退化为无扩展词，关断后各档检索语义
+  // 一致、延迟口径干净（偏差说明记录）。无条件写键——yaml 缺省时 config 默认 enabled。
+  m.recall.queryExpansion = { ...(m.recall.queryExpansion || {}), enabled: false };
   m.recall = { ...(m.recall || {}) };
   // v3 召回是本基准的被测面，必须显式开（yaml 缺省不开）。
   m.recall.v3Recall = { ...(m.recall.v3Recall || {}), enabled: true };
@@ -256,8 +260,9 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
  * 构造召回函数：per case 传三元组隔离（team/user/agent），与 /v3/recall 端点同形。
  * 返回 async (query, caseObj) => { hits:[{id,content,score}], block, latencyMs, debug }
  */
-export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogger }) {
+export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogger, validityFromCase, rerankChildProc }) {
   let fn;
+  let childReranker;
   return async function recall(query, caseObj) {
     if (!fn) fn = (await import("../../../src/core/hooks/auto-recall.ts")).performLayeredRecall;
     const t0 = performance.now();
@@ -279,8 +284,22 @@ export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogg
       // B2-b：validityNow=题目日期（D6——拿 2026 视角看 2023 会触发不该触发的双时态失效排除）
       validityNow:
         validityFromCase && caseObj?.questionDateISO ? new Date(caseObj.questionDateISO) : new Date(),
-      // 精排走配置（生产同款），显式不走工厂覆盖
-      rerankDeps: undefined,
+      // 精排走配置（生产同款）。--rerank-child-proc：子进程隔离注入（onnx 原生崩溃防护，
+      // 见 rerank-child-host.mjs 头注）；模型与打分同款，仅传输层不同。
+      rerankDeps:
+        rerankChildProc && cfg?.recall?.rerank?.enabled && cfg?.recall?.rerank?.provider === "local"
+          ? {
+              reranker: (childReranker ??= await (async () => {
+                const { resolveLocalModelDir } = await import("../../../src/core/recall/rerank/factory.ts");
+                const { ChildProcessReranker } = await import("./rerank-child-host.mjs");
+                return new ChildProcessReranker({
+                  modelDir: resolveLocalModelDir(cfg.recall.rerank),
+                  idleUnloadMs: cfg.recall?.rerank?.local?.idleUnloadMs ?? 0,
+                  timeoutMs: 90_000,
+                });
+              })()),
+            }
+          : undefined,
     });
     const latencyMs = performance.now() - t0;
     // 召回行是「渲染后文本」：带 [type|scene] 前言与 ·soul[...] / ·(活动时间:…) 尾注。
