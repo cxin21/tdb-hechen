@@ -268,6 +268,16 @@ async function main() {
   const b2bValidity = flag("b2b-validity");
     // B0 修复（bench/recall-opt）：--rerank-child-proc 精排子进程隔离（onnx 原生崩溃防护）
   const rerankChildProc = flag("rerank-child-proc");
+  // B2a 提速（bench/recall-opt）：rerank 推理耗时治理——文档截断 + onnx 线程数。
+  // 只影响 --rerank-child-proc 子进程链路（env 透传 worker）；A/B 全档一致即对比公平。
+  let rerankDocCap = 0;
+  let rerankThreads = 0;
+  if (rerankChildProc) {
+    rerankDocCap = num("rerank-doc-cap", 192);
+    rerankThreads = num("rerank-threads", 8);
+    process.env.RERANK_DOC_CAP = String(rerankDocCap);
+    process.env.RERANK_THREADS = String(rerankThreads);
+  }
   const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc });
   const k = num("k", cfg.recall?.maxResults ?? 5);
   // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
@@ -385,6 +395,8 @@ async function main() {
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
       answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
   rerankChildProc,
+      rerankDocCap,
+      rerankThreads,
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,

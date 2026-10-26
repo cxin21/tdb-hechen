@@ -16,6 +16,13 @@
 import path from "node:path";
 import { parentPort } from "node:worker_threads";
 
+// B2a/B2-b bench 提速（仅环境变量显式开启时生效，生产默认关闭）：
+// - RERANK_THREADS>0 → onnx session intra_op_num_threads（onnxruntime-node q8 默认线程扩展性差）
+// - RERANK_DOC_CAP>0 → 精排打分前截断每条文档到 N 字符（相关性信号主要在行首；
+//   A/B 全档一致截断保证对比公平，生产行短不受影响）
+const RERANK_THREADS = Number(process.env.RERANK_THREADS ?? "0") || 0;
+const RERANK_DOC_CAP = Number(process.env.RERANK_DOC_CAP ?? "0") || 0;
+
 const { workerData } = await import("node:worker_threads");
 
 const modelLib = workerData?.transformersEntryUrl
@@ -38,6 +45,9 @@ parentPort.on("message", async (msg) => {
       tokenizer = await modelLib.AutoTokenizer.from_pretrained(modelId);
       model = await modelLib.AutoModelForSequenceClassification.from_pretrained(modelId, {
         dtype: "q8",
+        ...(RERANK_THREADS > 0
+          ? { session_options: { intra_op_num_threads: RERANK_THREADS } }
+          : {}),
       });
       parentPort.postMessage({ type: "loaded" });
       return;
@@ -45,7 +55,11 @@ parentPort.on("message", async (msg) => {
     if (msg.type === "score") {
       if (!tokenizer || !model) throw new Error("score before load");
       const scores = [];
-      for (const doc of msg.docs) {
+      for (const raw of msg.docs) {
+        const doc =
+          RERANK_DOC_CAP > 0 && raw.length > RERANK_DOC_CAP
+            ? raw.slice(0, RERANK_DOC_CAP)
+            : raw;
         const inputs = await tokenizer(msg.query, { text_pair: doc, truncation: true });
         const out = await model(inputs);
         scores.push(out.logits.data[0]);

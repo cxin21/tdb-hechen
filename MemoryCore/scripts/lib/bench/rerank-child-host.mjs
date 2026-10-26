@@ -14,11 +14,12 @@ import { fileURLToPath } from "node:url";
 const CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), "rerank-child.mjs");
 
 export class ChildProcessReranker {
-  constructor({ modelDir, idleUnloadMs = 0, timeoutMs = 60_000, maxRespawns = 30, logger } = {}) {
+  constructor({ modelDir, idleUnloadMs = 0, timeoutMs = 60_000, maxRespawns = 400, recycleAfter = 4, logger } = {}) {
     this.modelDir = modelDir;
     this.idleUnloadMs = idleUnloadMs;
     this.timeoutMs = timeoutMs;
     this.maxRespawns = maxRespawns;
+    this.recycleAfter = recycleAfter;
     this.logger = logger;
     this.child = null;
     this.nextId = 1;
@@ -30,7 +31,9 @@ export class ChildProcessReranker {
         // 必须带 --import tsx：子脚本 import 仓库 .ts 模块（裸 node 直接 ERR_UNKNOWN_FILE_EXTENSION 崩）
     const child = spawn(process.execPath, ["--import", "tsx", CHILD, this.modelDir, String(this.idleUnloadMs)], {
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, RERANK_RECYCLE_AFTER: String(this.recycleAfter ?? 4) },
     });
+    this._served = 0;
     child.stdout.setEncoding("utf8");
     let buf = "";
     child.stdout.on("data", (chunk) => {
@@ -46,6 +49,7 @@ export class ChildProcessReranker {
         if (!entry) continue;
         this.pending.delete(msg.id);
         if (entry.timer) clearTimeout(entry.timer);
+        this._served = (this._served ?? 0) + 1;
         if (msg.ok && Array.isArray(msg.scores)) entry.resolve(msg.scores);
         else entry.resolve(null);
       }
@@ -57,9 +61,11 @@ export class ChildProcessReranker {
         entry.resolve(null); // 子进程崩：本次降级，调用方按 null 处理
       }
       this.pending.clear();
-      this.logger?.warn?.(`[rerank-child] 子进程退出 code=${code}，下次调用重拉`);
+      this.logger?.warn?.(`[rerank-child] 子进程退出 code=${code} served=${this._served ?? "?"} stderr=${(child.stderrTail?.() ?? "").slice(-300).replace(/\n/g, " | ")}`);
     });
-    child.stderr.on("data", () => { /* 静默收集，避免管道背压 */ });
+    let stderrTail = "";
+    child.stderr.on("data", (d) => { stderrTail = (stderrTail + d).slice(-2000); });
+    child.stderrTail = () => stderrTail;
     this.child = child;
     return child;
   }

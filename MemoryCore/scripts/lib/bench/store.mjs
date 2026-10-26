@@ -295,7 +295,9 @@ export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogg
                 return new ChildProcessReranker({
                   modelDir: resolveLocalModelDir(cfg.recall.rerank),
                   idleUnloadMs: cfg.recall?.rerank?.local?.idleUnloadMs ?? 0,
-                  timeoutMs: 90_000,
+                  timeoutMs: 180_000,
+                  recycleAfter: 4,
+                  logger: console,
                 });
               })()),
             }

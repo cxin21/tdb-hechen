@@ -7,7 +7,7 @@
  * 启动参数：node rerank-child.mjs <modelDir> [idleUnloadMs]
  */
 import fs from "node:fs";
-import { createReranker } from "../../../src/core/recall/rerank/factory.ts";
+import { LocalReranker } from "../../../src/core/recall/rerank/local.ts";
 
 const [, , modelDir, idleArg] = process.argv;
 const cfg = {
@@ -15,12 +15,17 @@ const cfg = {
   provider: "local",
   local: { modelDir: modelDir, ...(idleArg ? { idleUnloadMs: Number(idleArg) } : {}) },
 };
-const reranker = createReranker(cfg);
-if (!reranker) {
-  process.stderr.write("rerank-child: createReranker returned null\n");
-  process.exit(2);
-}
+const RECYCLE_AFTER = Number(process.env.RERANK_RECYCLE_AFTER ?? 4);
+const reranker = new LocalReranker({
+  modelDir,
+  idleUnloadMs: 0, // 子进程本身就是回收单元，不需要内部 idle 卸载
+  inferTimeoutMs: 120_000, // bench 文档长，infer 慢于生产；超时由 host 120s 兜底
+  loadTimeoutMs: 300_000,
+});
+const tChild0 = Date.now();
+process.stderr.write(`rerank-child: ready +${Date.now() - tChild0}ms\n`);
 
+let served = 0;
 let buf = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -53,8 +58,18 @@ async function handle(line) {
   try {
     const msg = JSON.parse(line);
     id = msg.id;
+    const tScore = Date.now();
+    const chars = (msg.docs ?? []).reduce((a, d) => a + String(d).length, 0);
     const ranked = await reranker.rerank(String(msg.query ?? ""), Array.isArray(msg.docs) ? msg.docs.map(String) : []);
+    process.stderr.write(`rerank-child: score id=${id} docs=${msg.docs?.length} chars=${chars} infer=${Date.now() - tScore}ms sinceStart=${Date.now() - tChild0}ms\n`);
     write({ id, ok: true, scores: ranked });
+    served++;
+    if (RECYCLE_AFTER > 0 && served >= RECYCLE_AFTER) {
+      // 主动回收：绕开 onnx 推理次数累积后的原生崩溃窗口（crash-after-~6）
+      process.stderr.write(`rerank-child: recycle after ${served}\n`);
+      fs.writeSync(1, "", () => {});
+      process.exit(0);
+    }
   } catch (err) {
     write({ id, ok: false, error: err instanceof Error ? err.message : String(err) });
   }
