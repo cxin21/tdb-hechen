@@ -147,3 +147,23 @@
 - 结果四场景全 PASS：A 相似→更新（L1 真实行 vs 更长变体 sim=0.646≥0.4 → rows 12→12 原位替换、更新而非新增）；B 全等→幂等（逐字节一致）；C 不相似→追加（真实客开规范 sim=0.000<0.4 → 12→13 尾部追加）；D 完整采纳链落库（副本 version 15→16、rows 12→13、重复采纳幂等=行数不变）。
 - 诚实披露：探针 A 场景「旧行消失」子断言写歪（长变体以短版为前缀，includes 必 true），但结论不受影响——判据=行数不变+原位替换+新句在位；A/B/C/D 主判定均以行数与位置证据为准。
 - 边界澄清：本实证覆盖「采纳端」增量（panel-adopt 时 mergeStrictRuleContent）；「生成端」防重复机制=identity-discovery 生成提案时携带 redlineExisting 上下文（未改动，考古记录在案）。
+
+## #76 Batch B F2 生产翻转与观察窗（2026-10-25，拍板「按最优方案」）
+
+- 拍板执行：Q1 `truncateMode: sentences`、Q2 `maxTotalChars: 2000`（数字面量；B2b golden 实证：注入字符 -38%、高价值率 0.778 持平、p50 不升）；Q5 跨层配比不加码。生产 yaml `MemoryCore/tdai-gateway.yaml` conclusionLayer 增两键，删两行即回滚。
+- 门 4 补做：只读独立对抗审查 PASS-with-notes（vitest 65/65 对账 63+2；da466b9 纯新增、scene-governance 复用面零触碰；19 项对抗探针全 PASS；1 Low + 3 Nit 不阻塞——Low= maxTotalChars<结论行数时 floor=0 判关跳过截断，触发需 maxResults≥2×maxTotalChars，后续 clamp≥1 候选）。留证全文见票 #76 评论区。
+- 观察窗：自网关重启生效后起算，7 天回收 skipReason/注入字符/命中率，对照 B2b 基线；达标关票 #76，命中率异常按 Q2 放宽 6000~8000 定标。
+
+## #79 A1+A2 受控实证（2026-10-25，拍板「补配 yaml + 受控制造判重端点超时」）
+
+- 环境：本地临时实例（端口 8431/数据目录 .tmp-gate/dedup-storm/，生产 8420 pid 34932 未动），测试 yaml dedupTimeoutMs=60000（clamp 下限加速观察），判重 LLM 悬挂 mock（按 systemPrompt 特征串分流：提取→罐头 2 条记忆/判重→永不响应/其余→中性）；mock-llm.mjs、gateway-test.yaml、run-storm.mjs 与 out.log/err.log/mock.log 全套留存 .tmp-gate/dedup-storm/。
+- 证据链（2026-10-25）：判重 LLM 00:43:48.365Z HANG（warmup 阈值翻倍后第 4 轮 capture 才带候选触发完整判重，前 3 轮快路径/未达阈值不调 LLM）→ +60.007s 客户端 socket 断连（AbortSignal.timeout 量纲=配置值 60s，≠ llm 缺省 120s、≠ 旧缺省 300s）→ +1ms err.log 降级 warn（内层 catch：「Batch conflict detection failed, defaulting all to store: The operation was aborted due to timeout」；外层「Batch dedup failed, storing all as new」仅召回/解析抛错才触发，纯超时场景不出现）→ +8ms [l1] L1 complete: extracted=2, stored=2 流程继续 → l1_records 回读 4 行（第二代 2 条与 warn 同毫秒按全存新落库，零丢失，mgl_l1_succeeded_*）→ 降级后 POST /capture 与 /health 均 200。
+- 生产对照：两份 yaml（MemoryCore/tdai-gateway.yaml 活体版 + deploy/tencent-cloud/…cloud.yaml）已补 dedupTimeoutMs: 90000；活体版需网关重启生效，cloud 版待部署；真实风暴继续以 DEDUP-FALLBACK 计数/err.log 口径长期观察（round 39 基线 DEDUP-FALLBACK=0）。
+- 备注：本地 FTS 检索 /search/memories 查「张三」返回 0（strategy=fts）为独立检索话题，与 #79 无关。
+
+
+## #79 生产重启生效记录（2026-10-25 08:57）
+
+- 生产网关重启：8420 监听 pid 34932 → 29832，新进程 2026-10-25 08:57:23 启动；MemoryCore/tdai-gateway.yaml:64 dedupTimeoutMs: 90000 随本次启动加载（进程启动晚于 yaml 写入 08:08:32，mtime 2026-10-25T00:08:32.866Z 佐证），A1 配置化在生产生效。
+- /health 复核：200 正常。
+- 观察口径不变：盯 err.log「Batch conflict detection failed, defaulting all to store」降级行与 DEDUP-FALLBACK 计数（round 39 基线 0）；#79 以受控实证（拍板口径 b）+ 生产配置生效关票，自然风暴长期观察为非阻塞跟进，cloud 版 yaml 随下次部署生效。

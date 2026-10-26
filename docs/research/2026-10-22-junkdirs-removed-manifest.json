@@ -1,0 +1,34 @@
+{
+  "captured_at": "2026-10-22T12:54:34.668Z",
+  "authorization": "user instruction m01073 (2026-10-22 ~21:0x+08): 「垃圾目录清理一下」 — the two untracked junk dirs previously disclosed in #94/#81 wrap-up reports",
+  "scope": [
+    "D:/TDB/td-agemem/%SystemDrive%",
+    "D:/TDB/td-agemem/.local"
+  ],
+  "origin_analysis": [
+    "%SystemDrive%/ = Windows Explorer Caches artifacts (ProgramData\\Microsoft\\Windows\\Caches\\*.db) created under a literally-unexpanded %SystemDrive% path; no user data.",
+    ".local/ = tool artifacts: gh issue view #66 output snapshot (issue66.md, source of truth on GitHub) + gh CLI device-id (regenerable); created when gh/env pointed XDG state into repo root."
+  ],
+  "safety_check": "no memory/user-data files inside (no vectors.db / anchor-*.jsonl / sqlite); 'TDB' regex hits were path-prefix false positives; real memory store at D:/TDB/data untouched",
+  "listing": [
+    {
+      "dir": "%SystemDrive%/ProgramData/Microsoft/Windows/Caches",
+      "files": [
+        "cversions.2.db (16384B, 2026-10-20T01:25:04.606Z)",
+        "{6AF0698E-D558-4F6E-9B3C-3716689AF493}.2.ver0x0000000000000002.db (308840B, 2026-10-20T07:42:53.311Z)",
+        "{DDF571F2-BE98-426D-8288-1A9A39C3FDA2}.2.ver0x0000000000000002.db (662488B, 2026-10-20T07:42:53.307Z)"
+      ]
+    },
+    {
+      "dir": ".local",
+      "files": [
+        "issue66.md (3847B, 2026-10-19T07:01:09.165Z)",
+        "state/gh/device-id (36B, 2026-10-19T03:54:33.964Z)"
+      ]
+    }
+  ],
+  "preserved_content": {
+    "issue66.md": "title:\tR2 行为级人格回归评测：原子断言 judge + 8 轮自聊漂移 + 基线门禁（复用 #62 基建，单轮 ≤90 LLM 调用硬帽）\nstate:\tOPEN\nauthor:\tcxin21 (hechen)\nlabels:\tready-for-agent, task\ncomments:\t0\nassignees:\t\nprojects:\t\nmilestone:\t\nissue-type:\t\nparent:\t\nsub-issues:\t\nsub-issues-completed:\t\nblocked-by:\t\nblocking:\t\nnumber:\t66\n--\n> 调研依据：docs/research/2026-10-19-r2-persona-regression-eval-design.md（2026-10-19 三路调研最优方案，本票按其 §票面草稿立票）\n\n## 4. GitHub 票面草稿\n\n**标题**：`R2 行为级人格回归评测：原子断言 judge + 8 轮自聊漂移 + 基线门禁（复用 #62 基建，单轮 ≤90 LLM 调用硬帽）`\n\n**Labels**：`ready-for-agent` `task`\n\n**正文**：\n\n> ## 背景\n> #65 R2：现有探针（渲染层 P01–P56、行为层 P57–P59）未覆盖「人格行为一致性」——IdentityProbe 只测渲染面，行为面只有 3 条探针，无维度体系、无基线、无门禁。方案调研见 `docs/research/2026-10-19-r2-persona-regression-eval-design.md`（PersonaGym 五任务维度 + 2402.10962 八轮漂移协议 + 2506.19352 原子断言方法学，引用均已核实）。\n>\n> ## 目标\n> soul 改动合并前可被**行为级**回归门禁拦住：红线行为不许软化（硬门），其余维度 pass-rate 不许跌破定标基线（ε 门），长对话 8 轮不漂出身份（driftCurve 基线）。\n>\n> ## 方案要点\n> 1. 六维度 ~27 探针（P57–59 保留 + 新增 P60+ ~23 条，只增不改），每探针 2–5 条原子断言（static 正则零成本优先 + semantic 进 judge）。\n> 2. judge 单跳批量断言：一探针恒定 1 次 judge 调用；`parseAtomicVerdict` 宁缺毋滥防御。\n> 3. `--drift 8` 自聊模式：每轮重注入 soul 后原子断言评分 → driftCurve。\n> 4. 门禁：D-A 红线维 100% 硬门；其余维度 shadow 定标 ≥2 周后按分布定 ε（ADR-0003 D7）。\n> 5. 成本硬帽 `--max-calls` 缺省 90；PR 冒烟 ≤20 调用；全量轮 ≈70 调用 / ~25 万 token。\n>\n> ## 验收标准（可执行）\n> - [ ] `behavior-judge.ts` 增原子断言层：`AtomicAssertion` + `evaluateStaticAssertions` + `parseAtomicVerdict`（数组长度/布尔/围栏防御），mock 单测全绿，现有 3 条探针行为不变\n> - [ ] fixtures 追加 ≥20 条 P60+ 覆盖 6 维（只增不改），完整性门更新（断言 id 唯一/kind 枚举/redline 必有 severity/每维 ≥2 探针）\n> - [ ] `run-behavior-judge.ts` 增 `--subset smoke|full`、`--drift 8`、`--max-calls`（缺省 90）、`--baseline`、summary JSON 输出（per-dimension pass-rate + driftCurve）\n> - [ ] 首轮实跑基线入库 `docs/superpowers/evals/behavior-golden/`\n> - [ ] probes-nightly.yml 追加 behavior-regression job（无 secrets 时 skip 注记 + 文档记录本地验收命令）\n> - [ ] shadow 期 ≥2 周分布记录后，票内定 ε 并写明定标依据\n> - [ ] 红线维 100% 硬门 + 其余维度 ε 门禁代码落地，退出码 0/1/2/3/4 语义入 CLI help\n>\n> ## 证据要求\n> - 每次实跑的 JSONL + summary JSON 入库并贴票（命令行 + 退出码）\n> - 双 judge 校准报告（≤6 探针 agreement）\n> - ε 定标依据段落（shadow 分布数据 + 取值理由）\n> - `--max-calls` 硬帽触发演示（一次超帽中止输出）\n>\n> ## Non-goals\n> - 不做多租户/多 persona 矩阵（PersonaGym 规模化不取，单产品 soul）\n> - 不引入 BFI 问卷类自报指标（2509.03730 已证不可靠）\n> - 不新增 npm 依赖；不建独立断言仓库（断言内联 fixtures）\n> - 不在 PR CI 跑全量（成本分层，PR 只跑冒烟）\n\n---\n\n---\n相关：#65（灵魂优化收口记录）；R1（一手证据×端到端实证冗余裁决）已于 2026-10-19 闭环（审计 A=0，见 docs/audit/2026-10-19-core-values-redundancy-audit.md）。\n",
+    "state/gh/device-id": "9be4a288-7d14-44c5-8f60-47727aa09400"
+  }
+}
