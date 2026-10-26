@@ -357,6 +357,8 @@ export interface LayeredRecallOutcome {
   block?: string;
   effectiveStrategy: string;
   searchTiming: SearchTiming;
+  /** B0 观测（bench/recall-opt）：检索门观测（nativeMinRRF/rerank）；未启用=缺字段。 */
+  gates?: SearchResult["gates"];
   /** R7 meta（spec §4.1 观测/评估用）：结论行数（含 [结论] 标注行）。 */
   conclusionCount: number;
   /** R7 meta：经验行数（预算切分后实际入块数）。 */
@@ -1464,6 +1466,7 @@ export async function performLayeredRecall(params: {
     block,
     effectiveStrategy,
     searchTiming,
+    ...(recallGates ? { gates: recallGates } : {}),
     conclusionCount,
     experienceCount,
     sessionReused,

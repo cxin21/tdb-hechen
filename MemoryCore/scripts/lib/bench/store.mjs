@@ -283,6 +283,9 @@ export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogg
       block: outcome.block || "",
       latencyMs,
       strategy: outcome.effectiveStrategy,
+      // B0 校尺（bench/recall-opt）：检索计时与门观测透传进行数据
+      searchTiming: outcome.searchTiming,
+      ...(outcome.gates ? { gates: outcome.gates } : {}),
       perfMs: outcome.perfMs,
       layered: outcome.layered,
       conclusionCount: outcome.conclusionCount,

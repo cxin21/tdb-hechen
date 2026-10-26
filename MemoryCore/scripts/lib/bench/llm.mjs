@@ -91,6 +91,9 @@ function safeHost(u) {
 
 // ── 提示词 ──────────────────────────────────────────────────────────────────
 
+/** 判分/生成提示版本（B0 校尺：report.config.judgePromptVersion 记录，防提示词漂移无痕）。 */
+export const PROMPT_VERSION = "lme-v2";
+
 /** 生成提示：只给召回块 + 问题 + 提问日期；要求证据不足时明说，不猜。 */
 export function buildAnswerPrompt({ question, block, questionDate, datasetName }) {
   const lines = [
@@ -143,9 +146,9 @@ export function buildJudgePrompt({ question, gold, answer, questionType, dataset
     "规则：",
     "1) 只要事实/语义与标准答案等价即算 correct=true，不要求措辞一致；",
     "2) 模型回答包含标准答案之外的正确细节不扣分，但若与标准答案矛盾则 correct=false；",
-    "3) 模型回答回避、含糊、或声称无法确定（而标准答案给出了答案）→ correct=false；",
-    "4) 空虚/无关/复述问题 → correct=false。",
+    "3) 模型回答回避、含糊、或声称无法确定（而标准答案给出了答案）→ correct=false 且 refused=true；",
+    "4) 空虚/无关/复述问题 → correct=false（不算拒答，refused=false）。",
     "",
-    '只输出 JSON：{"correct": true|false, "reason": "一句话理由"}',
+    '只输出 JSON：{"correct": true|false, "refused": true|false, "reason": "一句话理由"}',
   ].join("\n");
 }

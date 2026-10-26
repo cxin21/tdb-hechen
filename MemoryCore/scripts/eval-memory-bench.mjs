@@ -34,7 +34,7 @@ import {
 } from "./lib/bench/store.mjs";
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
 import { aggregate, evalRetrieval, makeIdResolver, normHead, tokenF1 } from "./lib/bench/metrics.mjs";
-import { buildAnswerPrompt, buildJudgePrompt, makeLlm } from "./lib/bench/llm.mjs";
+import { buildAnswerPrompt, buildJudgePrompt, makeLlm, PROMPT_VERSION } from "./lib/bench/llm.mjs";
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +61,9 @@ if (flag("help") || argv.length === 0) {
   --limit N                      题目数上限（默认全部）
   --gen-limit N                  生成+判分题数上限（默认 = limit；0 = 只测检索）
   --k N                          检索口径 top-k（默认取生产配置 maxResults）
+  --recall-ks 1,3,5,10           B0 多 k 切片（行内平铺 turnCov@k 等键；缺省 1,3,5,10）
+  --manifest <path>              B0 抽样清单（caseId 顺序即运行序；配对比较必须同清单）
+  --tag NAME                     运行标签（进 config.tag，A/B 对比命名用）
   --store <dir>                  复用已有库（跳过灌库）
   --keep                         保留沙箱目录
   --out <dir>                    报告输出目录（默认 MemoryCore/.eval-data/bench）
@@ -128,8 +131,26 @@ function gitSha() {
 async function main() {
   const dataPath = String(arg("data", defaultDataPath(datasetName)));
   const ds = loadDataset(datasetName, dataPath, { samples: num("samples", 0) });
-  const limit = num("limit", ds.cases.length);
-  const casesAll = ds.cases.slice(0, limit);
+  // B0（bench/recall-opt）：--manifest 抽样——caseId 清单顺序即运行序。配对比较（McNemar /
+  // paired bootstrap）要求两轮跑完全相同的题集，固定 seed 生成一次 manifest 后永久复用。
+  const manifestArg = arg("manifest", undefined);
+  let cases = ds.cases;
+  let manifestUsed = null;
+  if (manifestArg && manifestArg !== true) {
+    manifestUsed = String(manifestArg);
+    const manifest = JSON.parse(fs.readFileSync(manifestUsed, "utf8"));
+    const ids = manifest.caseIds ?? manifest;
+    if (!Array.isArray(ids) || ids.length === 0) throw new Error("manifest 无 caseIds");
+    const byId = new Map(ds.cases.map((c) => [c.caseId, c]));
+    cases = ids.map((id) => {
+      const c = byId.get(id);
+      if (!c) throw new Error(`manifest caseId 不在数据集中: ${id}`);
+      return c;
+    });
+    log(`[bench] manifest 抽样: ${cases.length}/${ds.cases.length} 题（${manifestUsed}）`);
+  }
+  const limit = num("limit", cases.length);
+  const casesAll = cases.slice(0, limit);
   const dsSummary = summarizeDataset({ ...ds, cases: casesAll });
   log(`[bench] 数据集=${ds.name} 题数=${dsSummary.cases} 轮数=${dsSummary.turns}`);
 
@@ -204,6 +225,11 @@ async function main() {
   // ── 检索评估 ──
   const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir });
   const k = num("k", cfg.recall?.maxResults ?? 5);
+  // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
+  const kList = String(arg("recall-ks", "1,3,5,10"))
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
   // 单题硬超时：生产 /v3/recall 有 5000ms 端到端超时，基准侧放宽到 60s，
   // 避免个别题（query 扩展外呼抖动）把整轮跑挂死。
   const recallTimeoutMs = num("recall-timeout", 60000);
@@ -223,7 +249,7 @@ async function main() {
       r = { hits: [], block: "", latencyMs: performance.now() - t0, strategy: "error", error: String(e?.message ?? e) };
     }
     if (paceMs > 0) await new Promise((res) => setTimeout(res, paceMs));
-    const ret = evalRetrieval({ caseObj: c, hits: r.hits, resolve: resolvers.get(c.groupKey), k });
+    const ret = evalRetrieval({ caseObj: c, hits: r.hits, resolve: resolvers.get(c.groupKey), k, kList });
     rows.push({
       caseId: c.caseId,
       questionType: c.questionType,
@@ -234,6 +260,10 @@ async function main() {
       layered: r.layered,
       conclusionCount: r.conclusionCount,
       experienceCount: r.experienceCount,
+      // B0 校尺：检索计时/门观测/相关度分数序列透传进行数据
+      searchTiming: r.searchTiming ?? null,
+      ...(r.gates ? { gates: r.gates } : {}),
+      scores: r.hits.map((h) => Math.round((h.score ?? 0) * 1e4) / 1e4),
       blockChars: (r.block || "").length,
       hits: r.hits.length,
       topContents: r.hits.slice(0, k).map((h) => h.content.slice(0, 160)),
@@ -265,6 +295,8 @@ async function main() {
           { role: "user", content: buildJudgePrompt({ question: row.question, gold: row.gold, answer, questionType: row.questionType, datasetName: ds.name }) },
         ], { maxTokens: 512 });
         row.genCorrect = verdict?.correct === true ? 1 : 0;
+        // judge 规则3：拒答（声称无法确定而标准答案有答案）
+        row.refused = verdict?.refused === true ? 1 : 0;
         row.judgeReason = verdict?.reason ?? (verdict ? "" : "judge-parse-failed");
       } catch (e) {
         row.genError = String(e?.message ?? e);
@@ -291,6 +323,12 @@ async function main() {
       rerank: cfg.recall?.rerank?.provider ?? "none",
       v3Recall: cfg.recall?.v3Recall?.enabled ?? false,
       k,
+      recallKs: kList,
+      answerModel: llmInfo?.model ?? null,
+      judgeTemperature: 0,
+      judgePromptVersion: PROMPT_VERSION,
+      tag: String(arg("tag", "")) || null,
+      manifest: manifestUsed,
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
       apiKeySource: llmInfo?.apiKeySource ?? null,

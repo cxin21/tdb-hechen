@@ -30,13 +30,10 @@ export function normHead(s) {
  * @param {object} p.caseObj  bench case（含 evidenceSessionIds / evidenceTurnIds）
  * @param {Array}  p.hits     [{content, score}] 按召回顺序（已按相关度排序）
  * @param {function} p.resolve content → turn id
- * @param {number} p.k        top-k 截断
+ * @param {number} p.k        top-k 截断（主口径，键不带后缀）
+ * @param {number[]} [p.kList] 附加多 k 切片（键平铺为 `sessionAny@k` 等；同一份 hits 重切，零额外召回）
  */
-export function evalRetrieval({ caseObj, hits, resolve, k }) {
-  const top = hits.slice(0, k);
-  // 优先用召回行自带的 record id（灌库即 turn id，精确）；退化才走 content→id 反查。
-  const ids = top.map((h) => resolve(h.clean ?? h.content)).filter(Boolean);
-  const unresolved = top.length - ids.length;
+export function evalRetrieval({ caseObj, hits, resolve, k, kList = [] }) {
   const evSessions = [...caseObj.evidenceSessionIds];
   const evTurns = [...caseObj.evidenceTurnIds];
 
@@ -46,50 +43,78 @@ export function evalRetrieval({ caseObj, hits, resolve, k }) {
     return m ? `session_${Number(m[1])}` : null;
   };
 
-  const hitTurnIds = new Set();
-  const hitSessionIds = new Set();
-  for (let i = 0; i < ids.length; i++) {
-    const id = ids[i];
-    hitTurnIds.add(id);
-    const s = top[i]?.sessionId ?? sessionOf(id);
-    if (s) hitSessionIds.add(String(s));
-  }
+  // 单一 k 的口径计算（主 k 与 kList 共用同一实现，禁止两套算法）
+  const evalOneK = (kk) => {
+    const top = hits.slice(0, kk);
+    // 优先用召回行自带的 record id（灌库即 turn id，精确）；退化才走 content→id 反查。
+    const ids = top.map((h) => resolve(h.clean ?? h.content)).filter(Boolean);
+    const unresolved = top.length - ids.length;
 
-  const sessionHits = evSessions.filter((s) => hitSessionIds.has(s)).length;
-  const turnHits = evTurns.filter((t) => hitTurnIds.has(t)).length;
-
-  // 首个证据命中的位次（turn 级优先，缺 turn 标注时用 session 级）
-  const isEvidence = (id) => {
-    if (evTurns.length) return hitTurnIds.has(id) && evTurns.includes(id);
-    const s = sessionOf(id);
-    return s ? caseObj.evidenceSessionIds.has(s) : false;
-  };
-  let firstRank = 0;
-  for (let i = 0; i < ids.length; i++) {
-    if (isEvidence(ids[i])) {
-      firstRank = i + 1;
-      break;
+    const hitTurnIds = new Set();
+    const hitSessionIds = new Set();
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      hitTurnIds.add(id);
+      const s = top[i]?.sessionId ?? sessionOf(id);
+      if (s) hitSessionIds.add(String(s));
     }
-  }
 
-  // nDCG@k（二值）：每行相关当且仅当是证据
-  let dcg = 0;
-  for (let i = 0; i < ids.length; i++) if (isEvidence(ids[i])) dcg += 1 / Math.log2(i + 2);
-  const idealN = Math.min(evTurns.length || evSessions.length, k);
-  let idcg = 0;
-  for (let i = 0; i < idealN; i++) idcg += 1 / Math.log2(i + 2);
+    const sessionHits = evSessions.filter((s) => hitSessionIds.has(s)).length;
+    const turnHits = evTurns.filter((t) => hitTurnIds.has(t)).length;
 
-  return {
+    // 首个证据命中的位次（turn 级优先，缺 turn 标注时用 session 级）
+    const isEvidence = (id) => {
+      if (evTurns.length) return hitTurnIds.has(id) && evTurns.includes(id);
+      const s = sessionOf(id);
+      return s ? caseObj.evidenceSessionIds.has(s) : false;
+    };
+    let firstRank = 0;
+    for (let i = 0; i < ids.length; i++) {
+      if (isEvidence(ids[i])) {
+        firstRank = i + 1;
+        break;
+      }
+    }
+
+    // nDCG@k（二值）：每行相关当且仅当是证据
+    let dcg = 0;
+    for (let i = 0; i < ids.length; i++) if (isEvidence(ids[i])) dcg += 1 / Math.log2(i + 2);
+    const idealN = Math.min(evTurns.length || evSessions.length, kk);
+    let idcg = 0;
+    for (let i = 0; i < idealN; i++) idcg += 1 / Math.log2(i + 2);
+
+    return {
+      ids,
+      unresolved,
+      sessionAny: evSessions.length ? (sessionHits > 0 ? 1 : 0) : null,
+      sessionCov: evSessions.length ? sessionHits / evSessions.length : null,
+      turnCov: evTurns.length ? turnHits / evTurns.length : null,
+      mrr: firstRank ? 1 / firstRank : 0,
+      ndcg: idcg > 0 ? dcg / idcg : null,
+    };
+  };
+
+  const primary = evalOneK(k);
+  const out = {
     k,
-    retrieved: ids,
-    unresolved,
-    sessionAny: evSessions.length ? (sessionHits > 0 ? 1 : 0) : null,
-    sessionCov: evSessions.length ? sessionHits / evSessions.length : null,
-    turnCov: evTurns.length ? turnHits / evTurns.length : null,
-    mrr: firstRank ? 1 / firstRank : 0,
-    ndcg: idcg > 0 ? dcg / idcg : null,
+    retrieved: primary.ids,
+    unresolved: primary.unresolved,
+    sessionAny: primary.sessionAny,
+    sessionCov: primary.sessionCov,
+    turnCov: primary.turnCov,
+    mrr: primary.mrr,
+    ndcg: primary.ndcg,
     hasEvidence: evSessions.length > 0 || evTurns.length > 0,
   };
+  for (const kk of kList) {
+    const r = evalOneK(kk);
+    out[`sessionAny@${kk}`] = r.sessionAny;
+    out[`sessionCov@${kk}`] = r.sessionCov;
+    out[`turnCov@${kk}`] = r.turnCov;
+    out[`mrr@${kk}`] = r.mrr;
+    out[`ndcg@${kk}`] = r.ndcg;
+  }
+  return out;
 }
 
 /** LoCoMo 官方风格 token-F1（小写分词后取并集计数）。 */
@@ -122,7 +147,10 @@ export function tokenF1(pred, gold) {
 /** 聚合：总体 + 分题型/分类。 */
 export function aggregate(rows) {
   const numeric = [
-    "sessionAny", "sessionCov", "turnCov", "mrr", "ndcg", "latencyMs", "genCorrect", "f1", "blockChars",
+    "sessionAny", "sessionCov", "turnCov", "mrr", "ndcg", "latencyMs", "genCorrect", "refused", "f1", "blockChars",
+    // B0 多 k 切片：行数据里的 `@k` 后缀键自动并入聚合
+    ...[...new Set(rows.flatMap((r) => Object.keys(r).filter((key) => /^(sessionAny|sessionCov|turnCov|mrr|ndcg)@\d+$/.test(key))))]
+      .sort((a, b) => Number(a.match(/\d+$/)[0]) - Number(b.match(/\d+$/)[0])),
   ];
   const mean = (list, key) => {
     const v = list.map((r) => r[key]).filter((x) => typeof x === "number" && Number.isFinite(x));
@@ -140,6 +168,8 @@ export function aggregate(rows) {
     const judged = list.filter((r) => typeof r.genCorrect === "number");
     out.genJudged = judged.length;
     out.genAccuracy = judged.length ? judged.reduce((a, r) => a + r.genCorrect, 0) / judged.length : null;
+    // 拒答率（judge 规则3 refused）：验收口径 <20%
+    out.refusalRate = mean(list, "refused");
     return out;
   };
   const byType = {};
