@@ -71,10 +71,18 @@ sudo cp deploy/tencent-cloud/systemd/*.service /etc/systemd/system/
 - **密钥文件** `/opt/tdai/etc/env`（systemd EnvironmentFile，chmod 600）：
 
 ```bash
-TDAI_GATEWAY_API_KEY=<openssl rand -hex 32>     # core/proxy/panel 三处同源
+TDAI_GATEWAY_API_KEY=<openssl rand -hex 32>      # core/proxy/panel 三处同源
+TDAI_GATEWAY_APIKEY=<同上>                       # 主用名（无下划线）；_KEY 为兼容别名，建议两者都写
+TDAI_DATA_DIR=/data/tdai-memory                  # 必填：core dataDir 单一真源 + Panel 召回日志读面的锚点
 TDAI_LLM_API_KEY=<ark key>   # deprecated（ADR-0006）：LLM 凭据 SoT = 各服务 {dataDir}/config-override.json（admin settings）；env 仅回退
-PROXY_ADMIN_API_KEY=<openssl rand -hex 32>
+TDAI_PROXY_ADMIN_API_KEY=<openssl rand -hex 32>  # proxy 运维口实际读取的名字（env > yaml admin.apiKey）
+PROXY_ADMIN_API_KEY=<同上>                       # docker-compose 别名；原生 systemd 不读，写上只为对齐模板
 ```
+
+> 两个易踩的坑：
+>
+> 1. **TDAI_DATA_DIR 缺了不会静默**——Panel「召回日志」页直接 503 `RECALL_JOURNAL_DIR_UNRESOLVED`（解析序：`TDAI_RECALL_JOURNAL_DIR` > `TDAI_DATA_DIR` + `/logs/recall`，见 `MemoryPanel/src/panel/http/routes/chat-memory.ts:54-68`）。
+> 2. **PROXY_ADMIN_API_KEY 不是 proxy 读的变量名**——`MemoryProxy/src/config.ts:716` 只读 `TDAI_PROXY_ADMIN_API_KEY`；只写前者会让运维口 key 落成空串＝公开可访问，且启动日志不告警，只能靠 curl 验 401 发现。
 
 - **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。LLM key 的运行时唯一 SoT = 服务器 `{dataDir}/config-override.json`（ADR-0006）；env 占位展开为空不影响 override 生效。
 - **proxy**：`cp 本地 MemoryProxy/config.yaml → /opt/tdai/etc/proxy-config.yaml`，按同目录 `CLOUD-DIFF.md` 改 6 处（endpoint 指向 core、密钥替换、admin key）。
