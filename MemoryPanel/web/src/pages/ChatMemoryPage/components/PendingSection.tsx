@@ -13,18 +13,13 @@
  * auto_adopted 行 = 绿色「自动采纳」徽标 + 可折叠审计快照 + 「回滚」按钮
  * （复用 rejected 裁决；409 版本漂移 → 提示手工处理，#92 R5 语义）。
  * #101 重构：auto_adopt 审计三件套抽至 @/lib/chatMemoryAutoAdopt，与 SoulPendingRail 统一消费。
+ * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel，与 SoulPendingRail 统一消费。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { chatMemoryApi, conflictOf, promiseConflictOf, rollbackRefusedOf, type PendingItem } from '@/lib/teamApi';
 import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
+import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
-
-const SLOT_LABEL: Record<string, string> = {
-  core_value: '价值锚提案',
-  strict_rule: '行为红线提案',
-  promise_transition: '承诺状态迁移提案',
-  self_identity: '「我是谁」提案',
-};
 
 /** #19 T12：重提提案 attrs（宽松解析；坏 JSON/旧行 → null 不显示徽标） */
 function reproposalOf(p: PendingItem): { generation?: number; supersedes?: string; evidence_threshold?: number } | null {
@@ -200,7 +195,7 @@ export function PendingSection(props: { blockId: string }) {
                   checked={selected.has(p.pending_id)}
                   onChange={() => toggleSel(p.pending_id)}
                 />
-                <span className="_pending-slot">{SLOT_LABEL[p.slot] ?? p.slot}</span>
+                <span className="_pending-slot">{slotLabelOf(p.slot)}</span>
                 {p.conflict === true && (
                   <span className="_pending-badge conflict" title="提案 label 与现有同名锚冲突：缺省采纳将被拦截（409），确认后可显式覆盖">
                     同名冲突

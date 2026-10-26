@@ -9,19 +9,15 @@
  * auto_adopted 行 = 绿色「自动采纳」徽标 + 可折叠审计快照（采纳时间/门限/前后槽） +
  * 「回滚」按钮（复用 rejected 裁决；409 版本漂移 → 提示手工处理，#92 R5 语义）。
  * #101 重构：auto_adopt 审计三件套抽至 @/lib/chatMemoryAutoAdopt，与 PendingSection 统一消费。
+ * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel；审计快照缺值占位统一「-」
+ * （原 '?' / 整行省略 → 显示「-」；#104 分诊拍板的有意可见变更，详见票内注记）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { chatMemoryApi, conflictOf, promiseConflictOf, rollbackRefusedOf, type PendingItem } from '@/lib/teamApi';
 import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
+import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
-
-const SLOT_LABEL: Record<string, string> = {
-  core_value: '价值锚提案',
-  strict_rule: '行为红线提案',
-  promise_transition: '承诺状态迁移提案',
-  self_identity: '「我是谁」提案',
-};
 
 function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked, onToggle, onDecide }: {
   id: string; slot: string; content: string; state?: string; audit?: AutoAdoptAudit | null;
@@ -41,7 +37,7 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
             onChange={() => onToggle(id)}
           />
           <span className={`_soul-chip ${slot === 'strict_rule' ? '_soul-chip--red' : '_soul-chip--gold'}`}>
-            {SLOT_LABEL[slot] ?? slot}
+            {slotLabelOf(slot)}
           </span>
           {autoAdopted && (
             <span className="_soul-chip _soul-chip--green" title="证据达到要求，系统自动采纳了这条；点「回滚」可恢复原样">
@@ -55,20 +51,20 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
           <details className="_spending-audit">
             <summary>系统自动采纳记录</summary>
             <div className="_spending-audit-body">
-              {audit.adopted_at && <div>采纳时间：{audit.adopted_at}</div>}
-              {audit.gate && (
-                <div>
-                  证据要求：{audit.gate.votes ?? '?'} 票 / 跨 {audit.gate.spanHours ?? '?'} 小时；把关线：与被拒提案相似低于 {audit.gate.contradictionThreshold ?? '?'} · 与现有内容相似低于 {audit.gate.dupThreshold ?? '?'}
-                </div>
-              )}
+              {/* #104 拍板：缺值显示「-」而非整行省略（原条件渲染的可见变更，票内已注明） */}
+              <div>采纳时间：{audit.adopted_at ?? '-'}</div>
+              {/* #104 拍板：gate 缺失时逐字段显示「-」，不再整行省略（可见变更，票内已注明） */}
+              <div>
+                证据要求：{audit.gate?.votes ?? '-'} 票 / 跨 {audit.gate?.spanHours ?? '-'} 小时；把关线：与被拒提案相似低于 {audit.gate?.contradictionThreshold ?? '-'} · 与现有内容相似低于 {audit.gate?.dupThreshold ?? '-'}
+              </div>
               <div>
                 采纳前的「我是谁」：
                 {audit.prev_slot_existed === false
                   ? '（此前不存在，回滚即删除）'
-                  : `v${audit.prev_slot_version ?? '?'}`}
+                  : `v${audit.prev_slot_version ?? '-'}`}
               </div>
-              {audit.prev_slot_content && <pre className="_spending-audit-content">{audit.prev_slot_content}</pre>}
-              {typeof audit.post_slot_version === 'number' && <div>采纳后的「我是谁」：v{audit.post_slot_version}</div>}
+              {audit.prev_slot_content !== undefined && <pre className="_spending-audit-content">{audit.prev_slot_content}</pre>}
+              <div>采纳后的「我是谁」：v{audit.post_slot_version ?? '-'}</div>
             </div>
           </details>
         )}
@@ -262,7 +258,7 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
                 return next;
               })}
             >
-              <span className="_spending-group-title">{SLOT_LABEL[slot] ?? slot}</span>
+              <span className="_spending-group-title">{slotLabelOf(slot)}</span>
               <span className="_soul-meta">{collapsed ? `展开（${list.length}）` : list.length}</span>
             </button>
             {!collapsed && (
