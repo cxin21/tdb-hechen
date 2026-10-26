@@ -9,18 +9,26 @@
  * auto_adopted 行 = 绿色「自动采纳」徽标 + 可折叠审计快照（采纳时间/门限/前后槽） +
  * 「回滚」按钮（复用 rejected 裁决；409 版本漂移 → 提示手工处理，#92 R5 语义）。
  * #101 重构：auto_adopt 审计三件套抽至 @/lib/chatMemoryAutoAdopt，与 PendingSection 统一消费。
+ * #103 修复：批量操作排除终局行——auto_adopted 等终局行复选框禁用、全选跳过、无可选项禁用批量按钮。
  * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel；审计快照缺值占位统一「-」
  * （原 '?' / 整行省略 → 显示「-」；#104 分诊拍板的有意可见变更，详见票内注记）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { chatMemoryApi, classify409Of, type PendingItem } from '@/lib/teamApi';
-import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
+import {
+  autoAdoptOf,
+  batchSelectablePendingRows,
+  isActionablePendingRow,
+  isBatchSelectablePendingRow,
+  pruneSelectionToSelectable,
+  type AutoAdoptAudit,
+} from '@/lib/chatMemoryAutoAdopt';
 import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
 
-function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked, onToggle, onDecide }: {
-  id: string; slot: string; content: string; state?: string; audit?: AutoAdoptAudit | null;
+function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked, selectable, onToggle, onDecide }: {
+  id: string; slot: string; content: string; state?: string; audit?: AutoAdoptAudit | null; selectable?: boolean;
   busy: string; batchBusy: boolean;
   checked: boolean; onToggle: (id: string) => void;
   onDecide: (id: string, d: 'adopted' | 'rejected') => void;
@@ -30,9 +38,11 @@ function PendingRow({ id, slot, content, state, audit, busy, batchBusy, checked,
     <li className="_spending-row">
       <div className="_spending-body">
         <div className="_spending-meta">
+          {/* #103：终局行复选框禁用——auto_adopted 可见可回滚但不可批量勾选，勾了就撞内核 404 */}
           <input
             type="checkbox"
             className="_spending-check"
+            disabled={selectable === false}
             checked={checked}
             onChange={() => onToggle(id)}
           />
@@ -121,13 +131,20 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     // （rejected/adopted/expired 为终局，审计语义已闭合，不再打扰裁决队列）。
     chatMemoryApi
       .pendingList(blockId, { includeDecided: true })
-      .then((d) =>
-        setItems(Array.isArray(d.pending) ? d.pending.filter(isActionablePendingRow) : []),
-      )
+      .then((d) => {
+        const rows = Array.isArray(d.pending) ? d.pending.filter(isActionablePendingRow) : [];
+        setItems(rows);
+        // #103：拉新列表后清洗勾选集——并发 auto-adopt 门可能已把已勾行置终局
+        setSelected((prev) => new Set(pruneSelectionToSelectable(Array.from(prev), rows)));
+      })
       .catch(() => setItems([]));
   }, [blockId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // #103：可批量勾选的行（待决行）——全选与批量计数都只看它；终局行仍可见可单条回滚
+  const selectable = batchSelectablePendingRows(items ?? []);
+  const selectableIds = selectable.map((q) => q.pending_id);
 
   function toggleSel(id: string) {
     setSelected((prev) => {
@@ -167,10 +184,13 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
   }
 
   async function batchDecide(decision: 'adopted' | 'rejected') {
-    if (selected.size === 0 || batchBusy) return;
+    // #103：发车前再清洗一遍勾选集——items 里已变终局的行不允许混进批量请求（内核会 404）
+    const ids = pruneSelectionToSelectable(Array.from(selected), items ?? []);
+    setSelected(new Set(ids));
+    if (ids.length === 0 || batchBusy) return;
     const ok = await tea.confirm({
       message: decision === 'adopted' ? '批量采纳所选提案？' : '批量拒绝所选提案？',
-      description: `共 ${selected.size} 条；O13 单向状态机，操作后不可复决`,
+      description: `共 ${ids.length} 条；O13 单向状态机，操作后不可复决`,
       okText: '确认',
     });
     if (!ok) return;
@@ -180,7 +200,7 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
     let conflictCount = 0;
     let promiseConflictCount = 0;
     let rollbackRefusedCount = 0;
-    for (const id of Array.from(selected)) {
+    for (const id of ids) {
       try {
         await chatMemoryApi.pendingDecide(blockId, id, decision);
       } catch (err) {
@@ -219,13 +239,18 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
         <span className="_soul-chip _soul-chip--red">{items.length} 待裁决</span>
       </div>
       <div className="_spending-batch">
+        {/* #103：全选只选待决行——终局行（auto_adopted 等）不可批量勾选，勾了就撞内核 404 */}
         <label className="_spending-selall">
           <input
             type="checkbox"
-            checked={selected.size === items.length && items.length > 0}
+            checked={selectableIds.length > 0 && selected.size === selectableIds.length}
+            ref={(el) => {
+              if (el) el.indeterminate = selected.size > 0 && selected.size < selectableIds.length;
+            }}
+            disabled={selectableIds.length === 0}
             onChange={() =>
               setSelected(
-                selected.size === items.length ? new Set() : new Set(items.map((q) => q.pending_id)),
+                selected.size === selectableIds.length ? new Set() : new Set(selectableIds),
               )
             }
           />
@@ -276,6 +301,7 @@ export function SoulPendingRail({ blockId }: { blockId: string }) {
                     audit={autoAdoptOf(p)}
                     busy={busy}
                     batchBusy={batchBusy}
+                    selectable={isBatchSelectablePendingRow(p)}
                     checked={selected.has(p.pending_id)}
                     onToggle={toggleSel}
                     onDecide={decide}

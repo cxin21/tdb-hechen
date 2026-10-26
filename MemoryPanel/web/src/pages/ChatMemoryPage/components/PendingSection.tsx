@@ -14,10 +14,18 @@
  * （复用 rejected 裁决；409 版本漂移 → 提示手工处理，#92 R5 语义）。
  * #101 重构：auto_adopt 审计三件套抽至 @/lib/chatMemoryAutoAdopt，与 SoulPendingRail 统一消费。
  * #104 重构：slot 标签映射抽至 @/lib/chatMemorySlotLabel，与 SoulPendingRail 统一消费。
+ * #103 修复：批量操作排除终局行——auto_adopted 等终局行复选框禁用、全选跳过、无可选项禁用批量按钮。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { chatMemoryApi, classify409Of, type PendingItem } from '@/lib/teamApi';
-import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
+import {
+  autoAdoptOf,
+  batchSelectablePendingRows,
+  isActionablePendingRow,
+  isBatchSelectablePendingRow,
+  pruneSelectionToSelectable,
+  type AutoAdoptAudit,
+} from '@/lib/chatMemoryAutoAdopt';
 import { slotLabelOf } from '@/lib/chatMemorySlotLabel';
 import { tea } from '@/lib/tea-bridge';
 
@@ -51,15 +59,21 @@ export function PendingSection(props: { blockId: string }) {
     // #100 审计视图：拉取含已裁决行，客户端过滤只留 待决 + auto_adopted 两类可操作行。
     chatMemoryApi
       .pendingList(props.blockId, { includeDecided: true })
-      .then((d) =>
-        setItems(Array.isArray(d.pending) ? d.pending.filter(isActionablePendingRow) : []),
-      )
+      .then((d) => {
+        const rows = Array.isArray(d.pending) ? d.pending.filter(isActionablePendingRow) : [];
+        setItems(rows);
+        // #103：拉新列表后清洗勾选集——并发 auto-adopt 门可能已把已勾行置终局
+        setSelected((prev) => new Set(pruneSelectionToSelectable(Array.from(prev), rows)));
+      })
       .catch(() => setItems([]));
   }, [props.blockId]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // #103：可批量勾选的行（待决行）——全选与批量计数都只看它；终局行仍可见可单条回滚
+  const selectable = batchSelectablePendingRows(items ?? []);
 
   async function decide(id: string, decision: 'adopted' | 'rejected', allowOverwrite = false) {
     setBusy(id);
@@ -125,10 +139,13 @@ export function PendingSection(props: { blockId: string }) {
   }
 
   async function batchDecide(decision: 'adopted' | 'rejected') {
-    if (selected.size === 0 || batchBusy) return;
+    // #103：发车前再清洗一遍勾选集——items 里已变终局的行不允许混进批量请求（内核会 404）
+    const ids = pruneSelectionToSelectable(Array.from(selected), items ?? []);
+    setSelected(new Set(ids));
+    if (ids.length === 0 || batchBusy) return;
     const ok = await tea.confirm({
       message: decision === 'adopted' ? '批量采纳所选提案？' : '批量拒绝所选提案？',
-      description: `共 ${selected.size} 条；O13 单向状态机，操作后不可复决`,
+      description: `共 ${ids.length} 条；O13 单向状态机，操作后不可复决`,
       okText: '确认',
     });
     if (!ok) return;
@@ -136,7 +153,7 @@ export function PendingSection(props: { blockId: string }) {
     setError('');
     const failedIds: string[] = [];
     let rollbackRefusedCount = 0;
-    for (const id of Array.from(selected)) {
+    for (const id of ids) {
       try {
         await chatMemoryApi.pendingDecide(props.blockId, id, decision);
       } catch (err) {
@@ -160,13 +177,18 @@ export function PendingSection(props: { blockId: string }) {
       <div className="_id-block">
         <div className="_id-title">待办裁决（分级提案，人工决策后生效）</div>
         <div className="_pending-batch">
+          {/* #103：全选只选待决行——终局行（auto_adopted 等）不可批量勾选，勾了就撞内核 404 */}
           <label className="_pending-selall">
             <input
               type="checkbox"
-              checked={selected.size === items.length && items.length > 0}
+              checked={selectable.length > 0 && selected.size === selectable.length}
+              ref={(el) => {
+                if (el) el.indeterminate = selected.size > 0 && selected.size < selectable.length;
+              }}
+              disabled={selectable.length === 0}
               onChange={() =>
                 setSelected(
-                  selected.size === items.length ? new Set() : new Set(items.map((q) => q.pending_id)),
+                  selected.size === selectable.length ? new Set() : new Set(selectable.map((q) => q.pending_id)),
                 )
               }
             />
@@ -191,9 +213,11 @@ export function PendingSection(props: { blockId: string }) {
           {items.map((p) => (
             <li key={p.pending_id} className="_pending-row">
               <div className="_pending-meta">
+                {/* #103：终局行复选框禁用——auto_adopted 可见可回滚但不可批量勾选，勾了就撞内核 404 */}
                 <input
                   type="checkbox"
                   className="_pending-check"
+                  disabled={!isBatchSelectablePendingRow(p)}
                   checked={selected.has(p.pending_id)}
                   onChange={() => toggleSel(p.pending_id)}
                 />

@@ -44,3 +44,33 @@ export function autoAdoptOf(p: PendingItem): AutoAdoptAudit | null {
 export function isActionablePendingRow(p: PendingItem): boolean {
   return p.state === undefined || p.state === 'pending' || p.state === 'auto_adopted';
 }
+
+/** #103：终局行 state 白名单之外的统一终局判定——auto_adopted 虽可回滚（人转审计员），但已是终局，不可再批量裁决 */
+const FINAL_STATES = new Set(['auto_adopted', 'rejected', 'adopted', 'expired']);
+
+/**
+ * #103：批量操作勾选谓词——只有待决行可进勾选。
+ *
+ * #103 bug：auto_adopted 行可见可回滚（#100），但行复选框未禁用，勾选后点「批量采纳」
+ * 打到已终局行被内核 404，批量整体报错。终局行（含 auto_adopted）一律不可批量勾选；
+ * 单条「回滚」按钮路径不受影响（批量入口只在全选/行勾选，回滚走 onDecide 直调）。
+ */
+export function isBatchSelectablePendingRow(p: PendingItem): boolean {
+  return !FINAL_STATES.has(p.state ?? 'pending');
+}
+
+/** #103：全选/批量可选行集合——从当前列表里滤出待决行（全选跳过终局行） */
+export function batchSelectablePendingRows(items: PendingItem[]): PendingItem[] {
+  return items.filter(isBatchSelectablePendingRow);
+}
+
+/**
+ * #103：勾选集清洗——剔除已变终局的勾选 id（保持原顺序）。
+ *
+ * 场景：行在勾选时是待决，refresh 拉回时已被 auto-adopt 门/其他端置为终局；
+ * 不清洗的话陈旧勾选会混进批量请求，再撞内核 404。batchDecide 前与 refresh 后都应过一遍。
+ */
+export function pruneSelectionToSelectable(selected: string[], items: PendingItem[]): string[] {
+  const ok = new Set(batchSelectablePendingRows(items).map((q) => q.pending_id));
+  return selected.filter((id) => ok.has(id));
+}
