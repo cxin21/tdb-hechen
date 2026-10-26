@@ -80,10 +80,39 @@ const TYPE_DIR: Record<string, string> = {
   finding: "synthesis",
 };
 
-/** 把 type 映射到目录名；未知 type 退到以 type 复数化的 generic 目录。 */
+/**
+ * 合法 type 的值域：type 是 OKF 分类标签，不是路径，只可能是标识符。
+ * 任何含 `/`、`.`（含 `..`）或其它字符的值都不是合法分类，一律归到 other 目录。
+ */
+const SAFE_TYPE_RE = /^[a-z0-9_-]+$/;
+
+/**
+ * Object.prototype 上的自有成员名——经 toLowerCase 后仍成立的只有
+ * `__proto__` 与 `constructor`（`toString` / `valueOf` 等小写化后已不匹配）。
+ * 这些名字字符集合法（`SAFE_TYPE_RE` 放行），但不能直接当目录名：
+ * 下游按对象键处理目录名时，`obj["__proto__"] = …` 就是一次原型链污染。
+ */
+function isPrototypeKey(key: string): boolean {
+  return Object.hasOwn(Object.prototype, key);
+}
+
+/**
+ * 把 type 映射到目录名；未知但合法的 type 以自身作 generic 目录，非法值归 other。
+ *
+ * type 由 LLM 抽取，既不是标识符也不是可信输入，因此：
+ *   - 查表用 `Object.hasOwn` 而非索引取值，避免 `__proto__`/`constructor`
+ *     命中 Object 原型链上的成员并被字符串化进目录名；
+ *   - 查不到时只接受 `SAFE_TYPE_RE` 认的标识符，杜绝 `..`、`a/b` 这类
+ *     能拼出目录穿越的片段；
+ *   - 标识符本身是原型链成员名（`__proto__` / `constructor`）时也归 other，
+ *     免得目录名被下游当对象键处理时污染原型链。
+ */
 export function dirForType(type: string): string {
   const key = (type ?? "").trim().toLowerCase();
-  return TYPE_DIR[key] ?? `${key || "other"}`;
+  if (Object.hasOwn(TYPE_DIR, key)) return TYPE_DIR[key];
+  if (!SAFE_TYPE_RE.test(key)) return "other";
+  if (isPrototypeKey(key)) return "other";
+  return key;
 }
 
 /**
