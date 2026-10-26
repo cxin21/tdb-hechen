@@ -32,7 +32,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -50,6 +50,10 @@ export function prepareBenchYaml({ srcYaml, storeDir }) {
   m.recall = { ...(m.recall || {}) };
   // v3 召回是本基准的被测面，必须显式开（yaml 缺省不开）。
   m.recall.v3Recall = { ...(m.recall.v3Recall || {}), enabled: true };
+  // B2-a（bench/recall-opt）：精排试验档只写沙箱 yaml（生产 yaml 定档后才动——用户决策②）。
+  if (rerankOverride && typeof rerankOverride === "object" && Object.keys(rerankOverride).length) {
+    m.recall.rerank = { ...(m.recall.rerank || {}), ...rerankOverride };
+  }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
   return file;

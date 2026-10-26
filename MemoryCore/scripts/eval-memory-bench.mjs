@@ -63,6 +63,9 @@ if (flag("help") || argv.length === 0) {
   --k N                          检索口径 top-k（默认取生产配置 maxResults）
   --recall-ks 1,3,5,10           B0 多 k 切片（行内平铺 turnCov@k 等键；缺省 1,3,5,10）
   --manifest <path>              B0 抽样清单（caseId 顺序即运行序；配对比较必须同清单）
+  --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
+  --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
+  --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
   --tag NAME                     运行标签（进 config.tag，A/B 对比命名用）
   --store <dir>                  复用已有库（跳过灌库）
   --keep                         保留沙箱目录
@@ -165,7 +168,15 @@ async function main() {
   if (!overrideCopied && !reuseMode) {
     log(`[bench] 警告：生产 dataDir 无 config-override.json（${prodData}），embedding/llm 可能不可用`);
   }
-  prepareBenchYaml({ srcYaml: prodConfig, storeDir });
+  // B2-a：精排试验档（只改沙箱 bench-gateway.yaml；生产 tdai-gateway.yaml 不动）
+  const rerankOverride = {};
+  if (flag("rerank-off")) rerankOverride.enabled = false;
+  const rms = arg("rerank-minscore", undefined);
+  if (rms !== undefined && rms !== true) rerankOverride.minScore = Number(rms);
+  const rcand = arg("rerank-candidates", undefined);
+  if (rcand !== undefined && rcand !== true) rerankOverride.candidates = Number(rcand);
+  prepareBenchYaml({ srcYaml: prodConfig, storeDir, ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}) });
+  if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
 
   const { cfg } = await loadBenchConfig(storeDir);
   const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
@@ -329,6 +340,7 @@ async function main() {
       judgePromptVersion: PROMPT_VERSION,
       tag: String(arg("tag", "")) || null,
       manifest: manifestUsed,
+      rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
       apiKeySource: llmInfo?.apiKeySource ?? null,
@@ -428,7 +440,13 @@ function renderMarkdown(r) {
   return L.join("\n");
 }
 
-main().catch((e) => {
-  console.error("[bench] 失败:", e?.stack || e);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // B0（bench/recall-opt）：报告已同步落盘，主动退出——本地精排模型/连接池挂着事件循环，
+    // 不显式退出进程会在成功后挂住（观察到的现象：报告打印后进程不结束）。
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error("[bench] 失败:", e?.stack || e);
+    process.exit(1);
+  });
