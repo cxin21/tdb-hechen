@@ -11,7 +11,7 @@ run_tier() {
   echo "=== [B2-a] tier=${tag} start $(date +%H:%M:%S) ==="
   node --import tsx scripts/eval-memory-bench.mjs \
     --dataset longmemeval --manifest .eval-data/bench/lme-manifest.json \
-    --store "$STORE" --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 \
+    --store "$STORE" --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --rerank-child-proc --rerank-child-proc \
     --tag "$tag" "$@" > "$LOGDIR/run-${tag}.log" 2>&1
   echo "=== [B2-a] tier=${tag} exit=$? $(date +%H:%M:%S) ==="
 }
