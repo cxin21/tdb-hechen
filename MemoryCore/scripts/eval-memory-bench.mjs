@@ -34,7 +34,16 @@ import {
 } from "./lib/bench/store.mjs";
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
 import { aggregate, evalRetrieval, makeIdResolver, normHead, tokenF1 } from "./lib/bench/metrics.mjs";
-import { buildAnswerPrompt, buildJudgePrompt, makeLlm, PROMPT_VERSION } from "./lib/bench/llm.mjs";
+import {
+  buildAnswerPrompt,
+  buildJudgePrompt,
+  makeLlm,
+  PROMPT_VERSION,
+  ANSWER_PROMPT_VERSION,
+  buildEvidenceBlock,
+  buildAnswerPromptV3,
+  extractFinalAnswer,
+} from "./lib/bench/llm.mjs";
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +75,7 @@ if (flag("help") || argv.length === 0) {
   --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
+  --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --tag NAME                     运行标签（进 config.tag，A/B 对比命名用）
   --store <dir>                  复用已有库（跳过灌库）
   --keep                         保留沙箱目录
@@ -245,6 +255,8 @@ async function main() {
   // 避免个别题（query 扩展外呼抖动）把整轮跑挂死。
   const recallTimeoutMs = num("recall-timeout", 60000);
   const paceMs = num("pace", 0);
+  // B1（bench/recall-opt）：读侧四件套，显式开关——S3 各档不受影响
+  const b1Mode = flag("b1");
   const rows = [];
   let i = 0;
   for (const c of casesAll) {
@@ -275,6 +287,7 @@ async function main() {
       searchTiming: r.searchTiming ?? null,
       ...(r.gates ? { gates: r.gates } : {}),
       scores: r.hits.map((h) => Math.round((h.score ?? 0) * 1e4) / 1e4),
+      ...(b1Mode ? { evidence: buildEvidenceBlock(r.hits) } : {}),
       blockChars: (r.block || "").length,
       hits: r.hits.length,
       topContents: r.hits.slice(0, k).map((h) => h.content.slice(0, 160)),
@@ -298,12 +311,17 @@ async function main() {
       const c = casesAll.find((x) => x.caseId === row.caseId);
       try {
         const answer = await llm.text([
-          { role: "user", content: buildAnswerPrompt({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name }) },
+          b1Mode
+            ? { role: "user", content: buildAnswerPromptV3({ question: row.question, evidence: row.evidence, questionDate: c?.questionDateISO, datasetName: ds.name }) }
+            : { role: "user", content: buildAnswerPrompt({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name }) },
         ], { maxTokens: cred?.maxTokens && cred.maxTokens > 0 ? cred.maxTokens : 1024 });
         row.answer = answer;
-        row.f1 = tokenF1(answer, row.gold);
+        // B1：v3 提示产出「笔记 + Answer: 行」，判分/F1 只看抽取后的最终答案
+        const answerFinal = b1Mode ? extractFinalAnswer(answer) : answer;
+        if (b1Mode) row.answerFinal = answerFinal;
+        row.f1 = tokenF1(answerFinal, row.gold);
         const verdict = await llm.json([
-          { role: "user", content: buildJudgePrompt({ question: row.question, gold: row.gold, answer, questionType: row.questionType, datasetName: ds.name }) },
+          { role: "user", content: buildJudgePrompt({ question: row.question, gold: row.gold, answer: answerFinal, questionType: row.questionType, datasetName: ds.name }) },
         ], { maxTokens: 512 });
         row.genCorrect = verdict?.correct === true ? 1 : 0;
         // judge 规则3：拒答（声称无法确定而标准答案有答案）
@@ -341,6 +359,7 @@ async function main() {
       tag: String(arg("tag", "")) || null,
       manifest: manifestUsed,
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
+      answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
       apiKeySource: llmInfo?.apiKeySource ?? null,

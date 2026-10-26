@@ -115,6 +115,73 @@ export function buildAnswerPrompt({ question, block, questionDate, datasetName }
   return lines.join("\n");
 }
 
+/** B1（bench/recall-opt）答案侧提示版本。 */
+export const ANSWER_PROMPT_VERSION = "answer-v3-b1";
+
+/** 证据时间戳提取：内容前缀 `[YYYY-MM-DD HH:mm]`（turnContent 打包格式）；无前缀排最后。 */
+function tsOf(content) {
+  const m = /^\[(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)\]/.exec(String(content || ""));
+  return m ? `${m[1]} ${m[2] ?? "00:00"}` : "9999-99-99 99:99";
+}
+
+/**
+ * B1 时间戳打包：证据按时间先后重排（非分数序），最相关避开正中位置（LME 官方做法；
+ * 2307.03172 §4 位置效应 >20%）。编号 [i] 供 CoN 引用。同分数序的近重复折叠仍由生产侧
+ * foldNearDuplicates 负责，这里只重排。
+ */
+export function buildEvidenceBlock(hits, { maxChars = 14000 } = {}) {
+  const list = (hits || []).map((h, idx) => ({ h, idx }));
+  list.sort((a, b) => tsOf(a.h.content).localeCompare(tsOf(b.h.content)) || a.idx - b.idx);
+  const lines = [];
+  let used = 0;
+  for (let i = 0; i < list.length; i++) {
+    const c = String(list[i].h?.content ?? "").replace(/\s+/g, " ").trim();
+    if (!c) continue;
+    const line = `[${i + 1}] ${c}`;
+    if (used + line.length > maxChars) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.join("\n");
+}
+
+/**
+ * B1 生成提示：英文指令（修正 19/20 中文答英文题）+ CoN（先写 2-4 条带 [i] 引用的证据笔记再作答）
+ * + 明确拒答出口 NOT_ENOUGH_INFO（judge 按 lme-v2 规则3 记 refused）。证据不足时允许只写拒答说明。
+ */
+export function buildAnswerPromptV3({ question, evidence, questionDate, datasetName }) {
+  const lines = [
+    "You are a long-term memory assistant. Answer the question using ONLY the numbered evidence below.",
+    "",
+    "Evidence (chronological order; timestamps are when each message was said):",
+    evidence && evidence.trim() ? evidence.trim() : "(no evidence retrieved)",
+    "",
+    `Date when the question was asked: ${questionDate || "unknown"}`,
+    `Question: ${question}`,
+    "",
+    "Instructions:",
+    "1. First write 2-4 short evidence notes, one per line, each citing sources like [1][3]. If the evidence is insufficient, write a single note saying so.",
+    "2. Then write your final answer on the last line in this exact format:",
+    "   Answer: <the answer, in the SAME LANGUAGE the question uses>",
+    "3. If the evidence does not contain the answer, output exactly:",
+    "   Answer: NOT_ENOUGH_INFO",
+  ];
+  if (datasetName === "locomo") {
+    lines.push("4. The conversations involve multiple speakers; name who said what when possible.");
+  } else {
+    lines.push("4. For time-related questions give a concrete date/duration; if memory was updated, the latest state wins.");
+  }
+  return lines.join("\n");
+}
+
+/** 取「Answer: 」末次出现的行作为最终答案；没有则原文兜底（judge 兼容自由格式）。 */
+export function extractFinalAnswer(text) {
+  const s = String(text ?? "");
+  const idx = s.lastIndexOf("Answer:");
+  if (idx < 0) return s.trim();
+  return s.slice(idx + "Answer:".length).trim();
+}
+
 const TYPE_HINT = {
   "single-session-user": "事实应与标准答案一致（用户说过的信息）。",
   "single-session-assistant": "事实应与标准答案一致（助手此前给出过的信息）。",
