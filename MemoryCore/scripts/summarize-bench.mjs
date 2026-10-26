@@ -9,6 +9,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pairedBootstrap, mcnemarExact, pct, pp } from "./lib/bench/stats.mjs";
+import { loadDataset } from "./lib/bench/datasets.mjs";
+
+function defaultDataPath(name) {
+  const names = { longmemeval: ["longmemeval_oracle.json", "longmemeval_s.json"], locomo: ["locomo10.json"] }[name] || [];
+  const repo = path.resolve(import.meta.dirname ?? ".", ".."); // MemoryCore/
+  const roots = [path.resolve(repo, ".."), repo];
+  for (const r of roots) for (const n of names) {
+    const c = path.join(r, ".eval-data", n);
+    if (fs.existsSync(c)) return c;
+  }
+  throw new Error(`dataset data not found for ${name}`);
+}
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => {
@@ -32,8 +44,27 @@ const trials = files.slice(1).map(load);
 
 const K = base.report.rows[0]["turnCov@5"] !== undefined ? "turnCov@5" : "turnCov";
 
-/** avgHits：overall 里 /avghits/i 数值键优先，否则行级 hits 数组均长，否则 n/a。 */
+// B0（bench/recall-opt）：avgHits@5 = 平均每题 top-5 命中的 gold 证据 turn 数。
+// 报告行只存 retrieved id 与指标，不存证据交集 → 从数据集证据标注现算（所有档同一口径）。
+let goldTurns = null;
+try {
+  const dsName = base.report.config?.dataset ?? "longmemeval";
+  const ds = loadDataset(dsName, defaultDataPath(dsName), { samples: 0 });
+  goldTurns = new Map(ds.cases.map((c) => [c.caseId, [...(c.evidenceTurnIds ?? [])]]));
+} catch (e) {
+  console.error("[summarize] avgHits: 数据集加载失败，回退 n/a:", String(e?.message ?? e).slice(0, 120));
+}
+
 function avgHitsOf(rep) {
+  if (goldTurns) {
+    const vals = rep.rows.map((r) => {
+      const ev = goldTurns.get(r.caseId);
+      if (!ev || !ev.length) return null;
+      const ids = (Array.isArray(r.retrieved) ? r.retrieved : []).slice(0, 5);
+      return ev.filter((t) => ids.includes(t)).length;
+    }).filter((x) => x != null);
+    if (vals.length) return vals.reduce((a, b) => a + b, 0) / vals.length;
+  }
   for (const [k, v] of Object.entries(rep.overall ?? {})) {
     if (/avghits/i.test(k) && typeof v === "number") return v;
   }
