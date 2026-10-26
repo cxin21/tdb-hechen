@@ -17,7 +17,7 @@ export const authVerifyApi = {
     metaCall<{ valid: boolean; user?: PublicUser }>(
       'auth/verify',
       { user_key: userKey },
-      { 'X-Tdai-Service-Id': instanceId }
+      { 'X-Tdai-Service-Id': instanceId },
     ),
 };
 
@@ -51,5 +51,6 @@ export const environmentBindingsApi = {
     request<EnvironmentBinding>('POST', '/api/v1/users/me/environment-bindings', data),
 
   /** 删除一条绑定（只能删自己的；删别人 → 403） */
-  remove: (id: string) => request<{ ok: boolean }>('DELETE', `/api/v1/users/me/environment-bindings/${id}`),
+  remove: (id: string) =>
+    request<{ ok: boolean }>('DELETE', `/api/v1/users/me/environment-bindings/${id}`),
 };

@@ -18,28 +18,62 @@ import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { chatMemoryApi } from '@/lib/teamApi';
 import type { AtomicItem } from '../constants/types';
 import { buildSoulView } from './block-detail/soul-utils';
-import { directedEdgeType, isDirectedKind, nodeSemanticColor, GOLD_CORE_REF_COLOR, PERSON_REF_COLOR } from './memory-graph-semantic';
+import {
+  directedEdgeType,
+  isDirectedKind,
+  nodeSemanticColor,
+  GOLD_CORE_REF_COLOR,
+  PERSON_REF_COLOR,
+} from './memory-graph-semantic';
 
 interface MemNode {
-  id: string; label: string; type: string; linkCount: number; community: number; significance?: number; t: number;
+  id: string;
+  label: string;
+  type: string;
+  linkCount: number;
+  community: number;
+  significance?: number;
+  t: number;
   /** U-B1 语义通道：valence（色相偏移）与是否挂价值锚（金色） */
-  valence?: number; hasCoreRefs: boolean;
+  valence?: number;
+  hasCoreRefs: boolean;
 }
-interface MemEdge { source: string; target: string; weight: number; kind: string; }
+interface MemEdge {
+  source: string;
+  target: string;
+  weight: number;
+  kind: string;
+}
 
 const EDGE_KIND_COLOR: Record<string, string> = {
-  similar: '#5b6bff', evolve: '#1a9d63', conflict: '#e5484d', causal: '#e8872a', part_of: '#8b5cf6',
+  similar: '#5b6bff',
+  evolve: '#1a9d63',
+  conflict: '#e5484d',
+  causal: '#e8872a',
+  part_of: '#8b5cf6',
 };
 function readTeaColor(token: string): string {
-  try { return getComputedStyle(document.documentElement).getPropertyValue(token).trim(); } catch { return ''; }
+  try {
+    return getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+  } catch {
+    return '';
+  }
 }
 function memNodeColor(isDurative: boolean): string {
   if (isDurative) return readTeaColor('--tea-color-bg-brand-default') || '#4f7cff';
   return readTeaColor('--tea-color-bg-warning-default') || '#5b6bff';
 }
 
-function ForceLayouter({ nodes, edges, onNodeClick, highlightNode }: {
-  nodes: MemNode[]; edges: MemEdge[]; onNodeClick?: (n: string) => void; highlightNode?: string | null;
+function ForceLayouter({
+  nodes,
+  edges,
+  onNodeClick,
+  highlightNode,
+}: {
+  nodes: MemNode[];
+  edges: MemEdge[];
+  onNodeClick?: (n: string) => void;
+  highlightNode?: string | null;
 }) {
   const loadGraph = useLoadGraph();
   const sigma = useSigma();
@@ -82,15 +116,27 @@ function ForceLayouter({ nodes, edges, onNodeClick, highlightNode }: {
       }
     }
     const settings = forceAtlas2.inferSettings(g);
-    forceAtlas2.assign(g, { iterations: 46, settings: { ...settings, gravity: 0.6, scalingRatio: 1.4, strongGravityMode: false } });
+    forceAtlas2.assign(g, {
+      iterations: 46,
+      settings: { ...settings, gravity: 0.6, scalingRatio: 1.4, strongGravityMode: false },
+    });
     loadGraph(g);
     sigma.refresh();
   }, [nodes, edges, loadGraph, sigma]);
 
   useEffect(() => {
     registerEvents({
-      enterNode: (e) => { const g = sigma.getGraph(); setHovered({ node: e.node, neighbors: new Set(g.neighbors(e.node)) }); const c = sigma.getContainer(); if (c) c.style.cursor = 'pointer'; },
-      leaveNode: () => { setHovered(null); const c = sigma.getContainer(); if (c) c.style.cursor = 'default'; },
+      enterNode: (e) => {
+        const g = sigma.getGraph();
+        setHovered({ node: e.node, neighbors: new Set(g.neighbors(e.node)) });
+        const c = sigma.getContainer();
+        if (c) c.style.cursor = 'pointer';
+      },
+      leaveNode: () => {
+        setHovered(null);
+        const c = sigma.getContainer();
+        if (c) c.style.cursor = 'default';
+      },
       clickNode: (e) => onNodeClick?.(e.node),
     });
   }, [registerEvents, sigma, nodes, onNodeClick]);
@@ -104,11 +150,22 @@ function ForceLayouter({ nodes, edges, onNodeClick, highlightNode }: {
         valence: typeof data.valence === 'number' ? data.valence : null,
         hasCoreRefs: !!data.hasCoreRefs,
       });
-      if (highlightNode && node === highlightNode) { res.highlighted = true; res.zIndex = 2; }
+      if (highlightNode && node === highlightNode) {
+        res.highlighted = true;
+        res.zIndex = 2;
+      }
       if (hovered) {
-        if (node === hovered.node) { res.highlighted = true; res.zIndex = 2; res.size = (data.size || 7) * 1.3; }
-        else if (hovered.neighbors.has(node)) { res.zIndex = 1; }
-        else { res.color = '#d6d6de'; res.label = ''; res.zIndex = 0; }
+        if (node === hovered.node) {
+          res.highlighted = true;
+          res.zIndex = 2;
+          res.size = (data.size || 7) * 1.3;
+        } else if (hovered.neighbors.has(node)) {
+          res.zIndex = 1;
+        } else {
+          res.color = '#d6d6de';
+          res.label = '';
+          res.zIndex = 0;
+        }
       }
       return res;
     });
@@ -120,33 +177,69 @@ function ForceLayouter({ nodes, edges, onNodeClick, highlightNode }: {
 
 function MemGraphControls() {
   const sigma = useSigma();
-  const cls = "h-7 w-7 bg-card/90 hover:bg-card border border-border text-muted-foreground shadow-md rounded-md flex items-center justify-center transition-colors text-[12px] backdrop-blur";
+  const cls =
+    'h-7 w-7 bg-card/90 hover:bg-card border border-border text-muted-foreground shadow-md rounded-md flex items-center justify-center transition-colors text-[12px] backdrop-blur';
   return (
     <div className="absolute bottom-3 right-3 flex flex-col gap-1 z-10">
-      <button type="button" aria-label="+" className={cls} onClick={() => sigma.getCamera().animatedZoom({ duration: 200 })}>+</button>
-      <button type="button" aria-label="-" className={cls} onClick={() => sigma.getCamera().animatedUnzoom({ duration: 200 })}>−</button>
-      <button type="button" aria-label="reset" className={cls} onClick={() => sigma.getCamera().animatedReset({ duration: 300 })}>⊙</button>
+      <button
+        type="button"
+        aria-label="+"
+        className={cls}
+        onClick={() => sigma.getCamera().animatedZoom({ duration: 200 })}
+      >
+        +
+      </button>
+      <button
+        type="button"
+        aria-label="-"
+        className={cls}
+        onClick={() => sigma.getCamera().animatedUnzoom({ duration: 200 })}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        aria-label="reset"
+        className={cls}
+        onClick={() => sigma.getCamera().animatedReset({ duration: 300 })}
+      >
+        ⊙
+      </button>
     </div>
   );
 }
 
 export function MemoryGraphView({ blockId, items }: { blockId?: string; items: AtomicItem[] }) {
   const [selected, setSelected] = useState<AtomicItem | null>(null);
-  const [adj, setAdj] = useState<Record<string, Array<{ id: string; type: string; strength?: number; content?: string }>>>({});
+  const [adj, setAdj] = useState<
+    Record<string, Array<{ id: string; type: string; strength?: number; content?: string }>>
+  >({});
 
   useEffect(() => {
     if (!blockId || items.length === 0) return;
     let cancelled = false;
     const nodes = items.slice(0, 60);
     Promise.all(
-      nodes.map((n) => chatMemoryApi.neighbors(blockId, n.id, { maxN: 24 }).catch(() => ({ id: n.id, neighbors: [] as Array<{ id: string; type: string; strength?: number }> }))),
+      nodes.map((n) =>
+        chatMemoryApi.neighbors(blockId, n.id, { maxN: 24 }).catch(() => ({
+          id: n.id,
+          neighbors: [] as Array<{ id: string; type: string; strength?: number }>,
+        })),
+      ),
     ).then((res) => {
       if (cancelled) return;
-      const m: Record<string, Array<{ id: string; type: string; strength?: number; content?: string }>> = {};
-      res.forEach((r, i) => { m[nodes[i].id] = r.neighbors ?? []; });
+      const m: Record<
+        string,
+        Array<{ id: string; type: string; strength?: number; content?: string }>
+      > = {};
+      res.forEach((r, i) => {
+        m[nodes[i].id] = r.neighbors ?? [];
+      });
       setAdj(m);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [blockId, items]);
 
   const { nodes, edges } = useMemo(() => {
@@ -201,70 +294,144 @@ export function MemoryGraphView({ blockId, items }: { blockId?: string; items: A
   const bg = readTeaColor('--tea-color-bg-primary-default') || '#fff';
   const gridBg: CSSProperties = {
     background: bg,
-    backgroundImage: 'linear-gradient(#eee 1px, transparent 1px), linear-gradient(90deg, #eee 1px, transparent 1px)',
+    backgroundImage:
+      'linear-gradient(#eee 1px, transparent 1px), linear-gradient(90deg, #eee 1px, transparent 1px)',
     backgroundSize: '32px 32px',
   };
 
   return (
-    <div className="relative flex flex-col overflow-hidden border border-border rounded-lg" style={{ background: bg, minHeight: 420 }}>
+    <div
+      className="relative flex flex-col overflow-hidden border border-border rounded-lg"
+      style={{ background: bg, minHeight: 420 }}
+    >
       <div className="flex-1 min-h-0 relative" style={gridBg}>
         <SigmaContainer
           style={{ width: '100%', height: 380, background: 'transparent' }}
-          settings={{ allowInvalidContainer: true, renderLabels: true, labelFont: 'system-ui', labelSize: 12, defaultEdgeType: 'line', minCameraRatio: 0.06, maxCameraRatio: 4 }}
+          settings={{
+            allowInvalidContainer: true,
+            renderLabels: true,
+            labelFont: 'system-ui',
+            labelSize: 12,
+            defaultEdgeType: 'line',
+            minCameraRatio: 0.06,
+            maxCameraRatio: 4,
+          }}
         >
-          <ForceLayouter nodes={nodes} edges={edges} onNodeClick={(id) => setSelected(items.find((it) => it.id === id) ?? null)} highlightNode={selected?.id} />
+          <ForceLayouter
+            nodes={nodes}
+            edges={edges}
+            onNodeClick={(id) => setSelected(items.find((it) => it.id === id) ?? null)}
+            highlightNode={selected?.id}
+          />
           <MemGraphControls />
         </SigmaContainer>
       </div>
       {/* 图例（U-B1 扩展：金描边 / valence 色相 / 方向箭头） */}
       <div className="flex flex-wrap items-center gap-3 border-t border-border px-3 py-1.5">
-        <span className="text-xs text-muted-foreground">节点色：蓝=点状 · 品牌色=持续态(work_fact) · <i className="inline-block w-2.5 h-2.5 rounded-full align-middle" style={{ background: GOLD_CORE_REF_COLOR }} /> 金=挂价值锚 · <i className="inline-block w-2.5 h-2.5 rounded-full align-middle" style={{ background: PERSON_REF_COLOR }} /> 青=人物关联 · 情感色相：<i className="inline-block w-2.5 h-2.5 rounded-full align-middle" style={{ background: nodeSemanticColor('#8b8b98', { valence: 1, hasCoreRefs: false }) }} />正偏绿 / <i className="inline-block w-2.5 h-2.5 rounded-full align-middle" style={{ background: nodeSemanticColor('#8b8b98', { valence: -1, hasCoreRefs: false }) }} />负偏红；边色：</span>
+        <span className="text-xs text-muted-foreground">
+          节点色：蓝=点状 · 品牌色=持续态(work_fact) ·{' '}
+          <i
+            className="inline-block w-2.5 h-2.5 rounded-full align-middle"
+            style={{ background: GOLD_CORE_REF_COLOR }}
+          />{' '}
+          金=挂价值锚 ·{' '}
+          <i
+            className="inline-block w-2.5 h-2.5 rounded-full align-middle"
+            style={{ background: PERSON_REF_COLOR }}
+          />{' '}
+          青=人物关联 · 情感色相：
+          <i
+            className="inline-block w-2.5 h-2.5 rounded-full align-middle"
+            style={{ background: nodeSemanticColor('#8b8b98', { valence: 1, hasCoreRefs: false }) }}
+          />
+          正偏绿 /{' '}
+          <i
+            className="inline-block w-2.5 h-2.5 rounded-full align-middle"
+            style={{
+              background: nodeSemanticColor('#8b8b98', { valence: -1, hasCoreRefs: false }),
+            }}
+          />
+          负偏红；边色：
+        </span>
         {Object.entries(EDGE_KIND_COLOR).map(([k, c]) => (
           <span key={k} className="flex items-center gap-1 text-xs text-muted-foreground">
-            <i className="inline-block w-3 h-0.5 rounded" style={{ background: c }} />{k}{isDirectedKind(k) && <span title="evolve/conflict 边带方向箭头（源头 → 目标）">→</span>}
+            <i className="inline-block w-3 h-0.5 rounded" style={{ background: c }} />
+            {k}
+            {isDirectedKind(k) && (
+              <span title="evolve/conflict 边带方向箭头（源头 → 目标）">→</span>
+            )}
           </span>
         ))}
-        <span className="text-xs text-muted-foreground/60">时间→  左早右晚（节点 X 按 occurred_at 播种）</span>
-        <span className="text-xs text-muted-foreground/60" title="同对节点双向异类边仅渲染先到方向（对向箭头暂不渲染，M-6 登记）">双向异类边仅示先到方向</span>
-        <span className="ml-auto text-xs text-muted-foreground">{nodes.length} 节点 · {edges.length} 边</span>
+        <span className="text-xs text-muted-foreground/60">
+          时间→ 左早右晚（节点 X 按 occurred_at 播种）
+        </span>
+        <span
+          className="text-xs text-muted-foreground/60"
+          title="同对节点双向异类边仅渲染先到方向（对向箭头暂不渲染，M-6 登记）"
+        >
+          双向异类边仅示先到方向
+        </span>
+        <span className="ml-auto text-xs text-muted-foreground">
+          {nodes.length} 节点 · {edges.length} 边
+        </span>
       </div>
-      {selected && (() => {
-        // U-B1 详情卡扩展：coreRefs 价值 chips / valence 双色条+方向 / recall_count
-        //（soul-utils 同一套宽松解析，宁缺毋滥）
-        const soul = buildSoulView(selected);
-        const directionLabel =
-          soul.valencePolarity === 'positive' ? '推进' : soul.valencePolarity === 'negative' ? '审慎' : '中性';
-        return (
-          <div className="_graph-detail">
-            <div className="_graph-detail-close" onClick={() => setSelected(null)}>✕</div>
-            <div className="_graph-detail-title">{selected.title}</div>
-            <div className="_graph-detail-content">{selected.body}</div>
-            <div className="_graph-detail-meta">
-              {selected.occurred_at && <span>⏱ {selected.occurred_at}</span>}
-              {selected.certainty && <span>{selected.certainty === 'inferred' ? '推断' : '实见'}</span>}
-              {selected.significance != null && <span>重要 {selected.significance.toFixed(2)}</span>}
-              {soul.valencePct !== null && (
-                <span title={`情感方向：${directionLabel}`}>
-                  <span className="_soul-valbar" aria-hidden>
-                    <span className="_soul-valbar-mark" style={{ left: `${soul.valencePct}%` }} />
-                  </span>
-                  {(soul.valence ?? 0).toFixed(1)} · {directionLabel}
-                </span>
-              )}
-              {soul.recallCount !== null && <span title="被回忆次数（重巩固统计）">🔥 {soul.recallCount} 次</span>}
-            </div>
-            {soul.coreRefs.length > 0 && (
-              <div className="_graph-detail-meta">
-                {soul.coreRefs.map((label) => (
-                  <span key={label} title={`价值锚：${label}`} style={{ background: GOLD_CORE_REF_COLOR + '2e', borderColor: GOLD_CORE_REF_COLOR + '80' }}>
-                    🎯 #{label}
-                  </span>
-                ))}
+      {selected &&
+        (() => {
+          // U-B1 详情卡扩展：coreRefs 价值 chips / valence 双色条+方向 / recall_count
+          //（soul-utils 同一套宽松解析，宁缺毋滥）
+          const soul = buildSoulView(selected);
+          const directionLabel =
+            soul.valencePolarity === 'positive'
+              ? '推进'
+              : soul.valencePolarity === 'negative'
+                ? '审慎'
+                : '中性';
+          return (
+            <div className="_graph-detail">
+              <div className="_graph-detail-close" onClick={() => setSelected(null)}>
+                ✕
               </div>
-            )}
-          </div>
-        );
-      })()}
+              <div className="_graph-detail-title">{selected.title}</div>
+              <div className="_graph-detail-content">{selected.body}</div>
+              <div className="_graph-detail-meta">
+                {selected.occurred_at && <span>⏱ {selected.occurred_at}</span>}
+                {selected.certainty && (
+                  <span>{selected.certainty === 'inferred' ? '推断' : '实见'}</span>
+                )}
+                {selected.significance != null && (
+                  <span>重要 {selected.significance.toFixed(2)}</span>
+                )}
+                {soul.valencePct !== null && (
+                  <span title={`情感方向：${directionLabel}`}>
+                    <span className="_soul-valbar" aria-hidden>
+                      <span className="_soul-valbar-mark" style={{ left: `${soul.valencePct}%` }} />
+                    </span>
+                    {(soul.valence ?? 0).toFixed(1)} · {directionLabel}
+                  </span>
+                )}
+                {soul.recallCount !== null && (
+                  <span title="被回忆次数（重巩固统计）">🔥 {soul.recallCount} 次</span>
+                )}
+              </div>
+              {soul.coreRefs.length > 0 && (
+                <div className="_graph-detail-meta">
+                  {soul.coreRefs.map((label) => (
+                    <span
+                      key={label}
+                      title={`价值锚：${label}`}
+                      style={{
+                        background: GOLD_CORE_REF_COLOR + '2e',
+                        borderColor: GOLD_CORE_REF_COLOR + '80',
+                      }}
+                    >
+                      🎯 #{label}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
     </div>
   );
 }

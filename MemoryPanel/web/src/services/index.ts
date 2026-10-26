@@ -9,14 +9,7 @@
  */
 
 // ===== Types =====
-export type {
-  TeamMember,
-  Team,
-  Task,
-  TaskStatus,
-  TaskSourceType,
-  Agent,
-} from './backendStore';
+export type { TeamMember, Team, Task, TaskStatus, TaskSourceType, Agent } from './backendStore';
 export type { AgentTemplate } from './agent-template-store';
 export type { AssetKind, AssetConfigScope, AssetScopeRecord } from './asset-scope-store';
 export type { UserAssetKind, UserAsset } from './user-asset-store';
@@ -67,10 +60,7 @@ export {
 } from './account-store';
 
 // ===== User display name service =====
-export {
-  useUserDisplayName,
-  seedDisplayNameCache,
-} from './user-profile-store';
+export { useUserDisplayName, seedDisplayNameCache } from './user-profile-store';
 
 // ===== API Key service（链路 A 辅助 REST，见 @/lib/teamApi 的 userKeysApi，ApiKeyPanel 直接调用）=====
 

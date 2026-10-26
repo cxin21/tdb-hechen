@@ -73,7 +73,9 @@
   background: var(--tea-color-bg-primary-default);
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .guide-main-tabs button b {
@@ -130,7 +132,9 @@
   background: var(--tea-color-bg-primary-default);
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .guide-stepper button:hover {
@@ -209,7 +213,9 @@
   color: var(--tea-color-text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
 }
 
 .guide-step-nav button:hover {

@@ -5,14 +5,46 @@
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Button, Card, Form, Input, Justify, MetricsBoard, Modal, SearchBox, Segment, Select, StatusTip, Table, Tag, Text } from 'tea-component';
-import { BooksIcon, ChevronRightIcon, UsergroupIcon, ViewListIcon, ViewModuleIcon } from 'tea-icons-react';
+import {
+  Alert,
+  Button,
+  Card,
+  Form,
+  Input,
+  Justify,
+  MetricsBoard,
+  Modal,
+  SearchBox,
+  Segment,
+  Select,
+  StatusTip,
+  Table,
+  Tag,
+  Text,
+} from 'tea-component';
+import {
+  BooksIcon,
+  ChevronRightIcon,
+  UsergroupIcon,
+  ViewListIcon,
+  ViewModuleIcon,
+} from 'tea-icons-react';
 import { knowledgeApi } from '@/lib/api/knowledge-api';
 import type { WikiDetail, WikiSourceProbeResult } from '@/lib/api/knowledge-api';
 import { tea } from '@/lib/tea-bridge';
 import AllocateAssetDialog from '@/components/asset/AllocateAssetDialog';
 import { AssetPageHeader } from '@/components/asset/AssetPageHeader';
-import { formatShortTime, SCOPE_LABEL_KEYS, WIKI_SOURCE_KEYS, isValidWikiGitUrl, wikiSourceTypeOf, type StatusFilter, type ViewMode, type WikiScopeTab, type WikiSourceType } from '../constants/wiki-constants';
+import {
+  formatShortTime,
+  SCOPE_LABEL_KEYS,
+  WIKI_SOURCE_KEYS,
+  isValidWikiGitUrl,
+  wikiSourceTypeOf,
+  type StatusFilter,
+  type ViewMode,
+  type WikiScopeTab,
+  type WikiSourceType,
+} from '../constants/wiki-constants';
 import { WikiOwnerLabel, WikiStatusBadge } from './wiki-ui';
 import { WikiActions } from './wiki-detail-components';
 import { useWikiSources } from '../hooks/useWikiSources';
@@ -48,7 +80,11 @@ function WikiSourceBadges({ source }: { source: WikiDetail }) {
       {source.stale && (
         <span
           className="_wiki-source-badge _wiki-source-badge--warning"
-          title={source.sync_error ? `${t('wiki.badge.stale')}：${source.sync_error}` : t('wiki.badge.stale')}
+          title={
+            source.sync_error
+              ? `${t('wiki.badge.stale')}：${source.sync_error}`
+              : t('wiki.badge.stale')
+          }
         >
           {t('wiki.badge.stale')}
         </span>
@@ -163,8 +199,10 @@ export default function WikiSourcesPanel() {
   // 只把"实际变更"的字段发给后端：KS 仅在 url/branch/path 正则实际变化时置 stale（同值提交不误标）。
   const urlChanged = editTarget !== null && editUrl.trim() !== (editTarget.source_url ?? '');
   const branchChanged = editTarget !== null && editBranch.trim() !== (editTarget.branch ?? '');
-  const includeChanged = editTarget !== null && editPathInclude.trim() !== (editTarget.path_include ?? '');
-  const excludeChanged = editTarget !== null && editPathExclude.trim() !== (editTarget.path_exclude ?? '');
+  const includeChanged =
+    editTarget !== null && editPathInclude.trim() !== (editTarget.path_include ?? '');
+  const excludeChanged =
+    editTarget !== null && editPathExclude.trim() !== (editTarget.path_exclude ?? '');
   const editSaving = editTarget !== null && sourceBusyId === editTarget.wiki_id;
   const canSaveEdit =
     editTarget !== null &&
@@ -353,7 +391,10 @@ export default function WikiSourcesPanel() {
                     <WikiSourceTag sourceType={source.source_type} />
                     <WikiSourceBadges source={source} />
                     <span>
-                      {t('wiki.card.pagesAndTime', { pages: source.page_count ?? 0, time: formatShortTime(source.last_sync_at) })}
+                      {t('wiki.card.pagesAndTime', {
+                        pages: source.page_count ?? 0,
+                        time: formatShortTime(source.last_sync_at),
+                      })}
                     </span>
                   </div>
                   <div className="_asset-wiki-card-owner">
@@ -366,7 +407,9 @@ export default function WikiSourcesPanel() {
                       t('wiki.teamPool')
                     )}
                   </div>
-                  <div className="_asset-wiki-card-id">{t('wiki.card.id', { id: source.wiki_id })}</div>
+                  <div className="_asset-wiki-card-id">
+                    {t('wiki.card.id', { id: source.wiki_id })}
+                  </div>
                   <WikiActions
                     source={source}
                     scopeTab={scopeTab}
@@ -386,98 +429,99 @@ export default function WikiSourcesPanel() {
             </div>
           ) : (
             <div className="_view-swap">
-            <Table
-              records={filteredSources}
-              recordKey="wiki_id"
-              addons={[scrollable({ minWidth: 1040 })]}
-              columns={[
-                {
-                  key: 'name',
-                  header: t('wiki.table.name'),
-                  width: 240,
-                  render: (source) => (
-                    <button
-                      type="button"
-                      className="_asset-wiki-row-name"
-                      onClick={() => openDetail(source.wiki_id)}
-                    >
-                      <BooksIcon size={14} />
-                      <span>{source.name}</span>
-                      <WikiSourceTag sourceType={source.source_type} />
-                      <ChevronRightIcon size={12} />
-                    </button>
-                  ),
-                },
-                {
-                  key: 'status',
-                  header: t('wiki.table.status'),
-                  width: 140,
-                  render: (source) => (
-                    <>
-                      <WikiStatusBadge status={source.status} /> <WikiSourceBadges source={source} />
-                    </>
-                  ),
-                },
-                {
-                  key: 'page_count',
-                  header: t('wiki.table.pageCount'),
-                  width: 80,
-                  render: (source) => source.page_count ?? 0,
-                },
-                {
-                  key: 'owner',
-                  header: t('wiki.table.owner'),
-                  width: 180,
-                  render: (source) =>
-                    scopeTab === 'fixed' ? (
-                      <span className="_asset-wiki-inline-icon">
-                        <UsergroupIcon size={12} />
-                        {agentFilter || t('wiki.noAgent')}
-                      </span>
-                    ) : source.owner_user_id ? (
-                      <WikiOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
-                    ) : (
-                      <Text theme="label">{t('wiki.teamPool.short')}</Text>
+              <Table
+                records={filteredSources}
+                recordKey="wiki_id"
+                addons={[scrollable({ minWidth: 1040 })]}
+                columns={[
+                  {
+                    key: 'name',
+                    header: t('wiki.table.name'),
+                    width: 240,
+                    render: (source) => (
+                      <button
+                        type="button"
+                        className="_asset-wiki-row-name"
+                        onClick={() => openDetail(source.wiki_id)}
+                      >
+                        <BooksIcon size={14} />
+                        <span>{source.name}</span>
+                        <WikiSourceTag sourceType={source.source_type} />
+                        <ChevronRightIcon size={12} />
+                      </button>
                     ),
-                },
-                {
-                  key: 'last_sync_at',
-                  header: t('wiki.table.lastSync'),
-                  width: 140,
-                  render: (source) => (
-                    <Text theme="label">{formatShortTime(source.last_sync_at)}</Text>
-                  ),
-                },
-                {
-                  key: 'wiki_id',
-                  header: t('wiki.table.wikiId'),
-                  width: 220,
-                  render: (source) => <span className="_asset-wiki-id">{source.wiki_id}</span>,
-                },
-                {
-                  key: 'actions',
-                  header: t('wiki.table.actions'),
-                  width: 240,
-                  fixed: 'right',
-                  render: (source) => (
-                    <WikiActions
-                      source={source}
-                      scopeTab={scopeTab}
-                      ingestBusy={ingestBusy}
-                      isCurrentIngesting={runningWikiIds.has(source.wiki_id)}
-                      sourceBusy={sourceBusyId === source.wiki_id}
-                      onIngest={handleIngest}
-                      onAllocate={setAllocateTarget}
-                      onUnbind={handleUnbindWiki}
-                      onDelete={handleDelete}
-                      onEdit={openEdit}
-                      onToggleEnabled={handleToggleEnabled}
-                      onRefetch={handleRefetch}
-                    />
-                  ),
-                },
-              ]}
-            />
+                  },
+                  {
+                    key: 'status',
+                    header: t('wiki.table.status'),
+                    width: 140,
+                    render: (source) => (
+                      <>
+                        <WikiStatusBadge status={source.status} />{' '}
+                        <WikiSourceBadges source={source} />
+                      </>
+                    ),
+                  },
+                  {
+                    key: 'page_count',
+                    header: t('wiki.table.pageCount'),
+                    width: 80,
+                    render: (source) => source.page_count ?? 0,
+                  },
+                  {
+                    key: 'owner',
+                    header: t('wiki.table.owner'),
+                    width: 180,
+                    render: (source) =>
+                      scopeTab === 'fixed' ? (
+                        <span className="_asset-wiki-inline-icon">
+                          <UsergroupIcon size={12} />
+                          {agentFilter || t('wiki.noAgent')}
+                        </span>
+                      ) : source.owner_user_id ? (
+                        <WikiOwnerLabel userId={source.owner_user_id} currentUserId={currentUser} />
+                      ) : (
+                        <Text theme="label">{t('wiki.teamPool.short')}</Text>
+                      ),
+                  },
+                  {
+                    key: 'last_sync_at',
+                    header: t('wiki.table.lastSync'),
+                    width: 140,
+                    render: (source) => (
+                      <Text theme="label">{formatShortTime(source.last_sync_at)}</Text>
+                    ),
+                  },
+                  {
+                    key: 'wiki_id',
+                    header: t('wiki.table.wikiId'),
+                    width: 220,
+                    render: (source) => <span className="_asset-wiki-id">{source.wiki_id}</span>,
+                  },
+                  {
+                    key: 'actions',
+                    header: t('wiki.table.actions'),
+                    width: 240,
+                    fixed: 'right',
+                    render: (source) => (
+                      <WikiActions
+                        source={source}
+                        scopeTab={scopeTab}
+                        ingestBusy={ingestBusy}
+                        isCurrentIngesting={runningWikiIds.has(source.wiki_id)}
+                        sourceBusy={sourceBusyId === source.wiki_id}
+                        onIngest={handleIngest}
+                        onAllocate={setAllocateTarget}
+                        onUnbind={handleUnbindWiki}
+                        onDelete={handleDelete}
+                        onEdit={openEdit}
+                        onToggleEnabled={handleToggleEnabled}
+                        onRefetch={handleRefetch}
+                      />
+                    ),
+                  },
+                ]}
+              />
             </div>
           )}
         </Card.Body>
@@ -516,7 +560,10 @@ export default function WikiSourcesPanel() {
                   placeholder={t('wiki.create.gitBranchPlaceholder')}
                 />
               </Form.Item>
-              <Form.Item label={t('wiki.create.pathInclude')} extra={t('wiki.create.pathIncludeExtra')}>
+              <Form.Item
+                label={t('wiki.create.pathInclude')}
+                extra={t('wiki.create.pathIncludeExtra')}
+              >
                 <Input
                   size="full"
                   value={editPathInclude}
@@ -552,9 +599,13 @@ export default function WikiSourcesPanel() {
               {probe && (
                 <Form.Item>
                   {probe.reachable ? (
-                    <Alert type="success">{t('wiki.edit.reachable', { count: probe.branches.length })}</Alert>
+                    <Alert type="success">
+                      {t('wiki.edit.reachable', { count: probe.branches.length })}
+                    </Alert>
                   ) : (
-                    <Alert type="error">{t('wiki.edit.unreachable', { error: probe.error || '-' })}</Alert>
+                    <Alert type="error">
+                      {t('wiki.edit.unreachable', { error: probe.error || '-' })}
+                    </Alert>
                   )}
                 </Form.Item>
               )}
@@ -564,7 +615,12 @@ export default function WikiSourcesPanel() {
             </Form>
           </Modal.Body>
           <Modal.Footer>
-            <Button type="primary" onClick={handleEditSave} disabled={!canSaveEdit} loading={editSaving}>
+            <Button
+              type="primary"
+              onClick={handleEditSave}
+              disabled={!canSaveEdit}
+              loading={editSaving}
+            >
               {editSaving ? t('wiki.edit.saving') : t('wiki.edit.save')}
             </Button>
             <Button onClick={closeEdit} disabled={editSaving}>
@@ -605,7 +661,11 @@ export default function WikiSourcesPanel() {
               </Form.Item>
               {isGitCreate && (
                 <>
-                  <Form.Item label={t('wiki.create.gitUrl')} required extra={t('wiki.create.gitUrlExtra')}>
+                  <Form.Item
+                    label={t('wiki.create.gitUrl')}
+                    required
+                    extra={t('wiki.create.gitUrlExtra')}
+                  >
                     <Input
                       size="full"
                       value={gitUrl}
@@ -626,7 +686,10 @@ export default function WikiSourcesPanel() {
                       placeholder={t('wiki.create.gitBranchPlaceholder')}
                     />
                   </Form.Item>
-                  <Form.Item label={t('wiki.create.pathInclude')} extra={t('wiki.create.pathIncludeExtra')}>
+                  <Form.Item
+                    label={t('wiki.create.pathInclude')}
+                    extra={t('wiki.create.pathIncludeExtra')}
+                  >
                     <Input
                       size="full"
                       value={gitPathInclude}

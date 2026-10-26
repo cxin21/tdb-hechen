@@ -67,7 +67,12 @@ export const llmProviderApi = {
     ).then(dataOf),
 
   /** 保存某个 subject（user 或自有 agent）的 Provider。 */
-  save: (cfg: Omit<LlmProviderConfig, 'subject_type' | 'subject_id'> & { subjectType: LlmProviderSubjectType; subjectId: string }) =>
+  save: (
+    cfg: Omit<LlmProviderConfig, 'subject_type' | 'subject_id'> & {
+      subjectType: LlmProviderSubjectType;
+      subjectId: string;
+    },
+  ) =>
     request<AdminEnvelope<{ subject_type: LlmProviderSubjectType; subject_id: string }>>(
       'PUT',
       '/api/v1/llm-providers',
@@ -83,7 +88,9 @@ export const llmProviderApi = {
 
   /** 清除某个 subject 的 Provider（回落到团队/全局默认）。 */
   clear: (subjectType: LlmProviderSubjectType, subjectId: string) =>
-    request<AdminEnvelope<{ subject_type: LlmProviderSubjectType; subject_id: string; deleted: boolean }>>(
+    request<
+      AdminEnvelope<{ subject_type: LlmProviderSubjectType; subject_id: string; deleted: boolean }>
+    >(
       'DELETE',
       `/api/v1/llm-providers?subject_type=${subjectType}&subject_id=${encodeURIComponent(subjectId)}`,
       undefined,

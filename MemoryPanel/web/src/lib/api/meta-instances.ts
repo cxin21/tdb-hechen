@@ -23,6 +23,8 @@ export const metaInstancesApi = {
   /** 登录前选实例；GET /api/v1/meta/instances，公开、无需鉴权、无分页 */
   list: () =>
     dedupeInFlight('meta/instances', () =>
-      request<{ instances: MetadataInstance[] }>('GET', '/api/v1/meta/instances').then((r) => r.instances),
+      request<{ instances: MetadataInstance[] }>('GET', '/api/v1/meta/instances').then(
+        (r) => r.instances,
+      ),
     ),
 };

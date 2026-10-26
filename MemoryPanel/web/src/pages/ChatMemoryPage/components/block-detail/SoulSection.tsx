@@ -23,7 +23,9 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
   return (
     <div className="_memory-detail-atomic-soul">
       {durative && (
-        <span className="_soul-chip _soul-chip--durative" title="巩固产物（持续态）">🔗 持续态</span>
+        <span className="_soul-chip _soul-chip--durative" title="巩固产物（持续态）">
+          🔗 持续态
+        </span>
       )}
       {/* 🎯 价值锚 chips（S1：#label 形式；metadata.coreRefs 解析，宁缺毋滥） */}
       {soul.coreRefs.map((label) => (
@@ -45,16 +47,25 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
       ))}
       {/* 🧠 身份事实 chips（S2/U3：identityRefs 切片徽标） */}
       {soul.identityRefs.map((label) => (
-        <span key={`identity:${label}`} className="_soul-chip _soul-chip--identity" title={`身份事实：${label}`}>
+        <span
+          key={`identity:${label}`}
+          className="_soul-chip _soul-chip--identity"
+          title={`身份事实：${label}`}
+        >
           🧠 {label}
         </span>
       ))}
       {/* ⏱ 时间行：发生时刻（title 存原始 ISO 便于核对）+ 有效期 */}
       {soul.occurredText && (
-        <span className="_soul-chip" title={`发生时刻 ${soul.occurredAt ?? ''}`}>⏱ {soul.occurredText}</span>
+        <span className="_soul-chip" title={`发生时刻 ${soul.occurredAt ?? ''}`}>
+          ⏱ {soul.occurredText}
+        </span>
       )}
       {soul.validityText && (
-        <span className="_soul-chip" title={`有效期 ${soul.validStart ?? ''} ~ ${soul.validEnd ?? ''}`}>
+        <span
+          className="_soul-chip"
+          title={`有效期 ${soul.validStart ?? ''} ~ ${soul.validEnd ?? ''}`}
+        >
           📅 {soul.validityText}
         </span>
       )}
@@ -68,7 +79,9 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
         </span>
       )}
       {soul.source && (
-        <span className="_soul-chip" title="来源">src {soul.source}</span>
+        <span className="_soul-chip" title="来源">
+          src {soul.source}
+        </span>
       )}
       {/* 🎈 valence 双色条：负红左 / 正绿右，标记落点 + 数值（S1 情感色可视化） */}
       {soul.valencePct !== null && (
@@ -91,7 +104,10 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
       {soul.significancePct !== null && (
         <span className="_soul-meter" title="重要程度 (0..1)">
           <span className="_soul-meter-track" aria-hidden>
-            <span className="_soul-meter-fill _soul-meter-fill--significance" style={{ width: `${soul.significancePct}%` }} />
+            <span
+              className="_soul-meter-fill _soul-meter-fill--significance"
+              style={{ width: `${soul.significancePct}%` }}
+            />
           </span>
           {((soul.significancePct ?? 0) / 100).toFixed(2)}
         </span>
@@ -100,7 +116,9 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
       {soul.recallCount !== null && (
         <span
           className="_soul-chip"
-          title={soul.lastRecalledText ? `上次回忆 ${soul.lastRecalledText}` : '被回忆次数（重巩固统计）'}
+          title={
+            soul.lastRecalledText ? `上次回忆 ${soul.lastRecalledText}` : '被回忆次数（重巩固统计）'
+          }
         >
           🔥 {t('memory.detail.recallCount', { count: soul.recallCount })}
         </span>

@@ -435,7 +435,9 @@ export default function SkillDetailPane(props: {
         <div className="_memory-skill-detail-head">
           <div className="_memory-skill-detail-head-main">
             <div className="_memory-skill-detail-head-info">
-              <div className="_memory-skill-detail-name">{skillName ?? currentView?.name ?? ''}</div>
+              <div className="_memory-skill-detail-name">
+                {skillName ?? currentView?.name ?? ''}
+              </div>
               {/* skill_id（= asset_id）：给出可复制的资产标识，便于对接 API /
                   排查问题时引用。用 skillId（权威选中值）而非 currentView，
                   详情还在加载时也能立即显示。 */}

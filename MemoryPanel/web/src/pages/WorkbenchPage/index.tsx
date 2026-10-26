@@ -16,7 +16,7 @@ export function WorkbenchPage() {
   const { agents: teamAgentList } = useAgents(activeTeamId);
   const teamAgents = useMemo(
     () => teamAgentList.map((a) => ({ id: a.agent_id, name: a.name })),
-    [teamAgentList]
+    [teamAgentList],
   );
 
   if (!auth) return null;

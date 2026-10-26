@@ -24,20 +24,30 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
   if (Array.isArray(refs) && refs.length > 0) {
     const first = typeof refs[0] === 'string' ? refs[0] : '';
     out.push({
-      key: 'core', labelKey: 'memory.badges.core', cls: 'core', icon: '🧩',
+      key: 'core',
+      labelKey: 'memory.badges.core',
+      cls: 'core',
+      icon: '🧩',
       tooltip: `identityRefs×${refs.length}（身份事实支撑）：${first.slice(0, 40)}`,
     });
   }
   const rc = meta.recall_count;
   if (typeof rc === 'number' && Number.isFinite(rc) && rc >= 3) {
     out.push({
-      key: 'verify', labelKey: 'memory.badges.verify', cls: 'verify', icon: '🔁',
-      tooltip: `recall_count = ${rc}（≥3 显示）`, values: { n: rc },
+      key: 'verify',
+      labelKey: 'memory.badges.verify',
+      cls: 'verify',
+      icon: '🔁',
+      tooltip: `recall_count = ${rc}（≥3 显示）`,
+      values: { n: rc },
     });
   }
   if (typeof item.arousal === 'number' && Number.isFinite(item.arousal) && item.arousal >= 0.7) {
     out.push({
-      key: 'strong', labelKey: 'memory.badges.strong', cls: 'strong', icon: '⚡',
+      key: 'strong',
+      labelKey: 'memory.badges.strong',
+      cls: 'strong',
+      icon: '⚡',
       tooltip: `arousal = ${item.arousal}（≥0.7 显示）`,
     });
   }
@@ -45,25 +55,36 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
     const evo = meta.evolution as { from?: unknown };
     const n = Array.isArray(evo?.from) ? evo.from.length : 0;
     out.push({
-      key: 'evo', labelKey: 'memory.badges.evo', cls: 'evo', icon: '🧪',
+      key: 'evo',
+      labelKey: 'memory.badges.evo',
+      cls: 'evo',
+      icon: '🧪',
       tooltip: n > 0 ? `evolution 精炼结论（from ${n} 条源记忆）` : 'evolution 精炼结论',
     });
   }
   if (typeof item.valid_start === 'string' && item.valid_start !== '') {
     out.push({
-      key: 'since', labelKey: 'memory.badges.since', cls: 'since', icon: '🗓',
-      tooltip: `valid_start = ${item.valid_start}`, values: { date: item.valid_start.slice(0, 10) },
+      key: 'since',
+      labelKey: 'memory.badges.since',
+      cls: 'since',
+      icon: '🗓',
+      tooltip: `valid_start = ${item.valid_start}`,
+      values: { date: item.valid_start.slice(0, 10) },
     });
   }
   // P1-T8（bi-temporal 补口）：已失效徽章——valid_end 非空、可解析且 ≤ now。
   // 软失效语义（可撤销恢复）：失效后钩子路/工具路召回均排除。
   if (
-    typeof item.valid_end === 'string' && item.valid_end !== '' &&
+    typeof item.valid_end === 'string' &&
+    item.valid_end !== '' &&
     Number.isFinite(Date.parse(item.valid_end)) &&
     Date.parse(item.valid_end) <= Date.now()
   ) {
     out.push({
-      key: 'invalidated', labelKey: 'memory.badges.invalidated', cls: 'invalidated', icon: '⛔',
+      key: 'invalidated',
+      labelKey: 'memory.badges.invalidated',
+      cls: 'invalidated',
+      icon: '⛔',
       tooltip: `valid_end = ${item.valid_end}（已失效：两路召回均排除；撤销失效即恢复）`,
     });
   }
@@ -81,15 +102,24 @@ function valenceDir(v: number | null | undefined): string {
  *  呈现层翻修（2026-10-17 用户拍板「有问题的现在直接优化」）对齐：权重内隐（core ffc33e1
  *  renderAnchor 退役 w 段，weight 只消费于排序/门控/首要选取），本预览同步去 w 段，
  *  中性/空方向语义与内核 valenceDir 一致（0→(中性)、null→裸 label）。 */
-export function anchorInjectPreview(
-  a: { label: string; weight?: number; valence?: number | null; attrs_json?: string },
-): string | null {
+export function anchorInjectPreview(a: {
+  label: string;
+  weight?: number;
+  valence?: number | null;
+  attrs_json?: string;
+}): string | null {
   const dir = valenceDir(a.valence);
   let desc = '';
   try {
-    const p = a.attrs_json && a.attrs_json !== '{}' ? (JSON.parse(a.attrs_json) as { description?: unknown }) : null;
-    if (p && typeof p.description === 'string' && p.description.trim() !== '') desc = p.description.trim();
-  } catch { /* 损坏 attrs_json 宁缺毋滥 */ }
+    const p =
+      a.attrs_json && a.attrs_json !== '{}'
+        ? (JSON.parse(a.attrs_json) as { description?: unknown })
+        : null;
+    if (p && typeof p.description === 'string' && p.description.trim() !== '')
+      desc = p.description.trim();
+  } catch {
+    /* 损坏 attrs_json 宁缺毋滥 */
+  }
   const head = dir ? `(${dir})` : '';
   if (!head && !desc) return null;
   return `${a.label}${head}${desc ? `：${desc}` : ''}`;
@@ -110,13 +140,22 @@ export function pickPrimeAnchor(
 ): { label: string; desc: string } | null {
   const group = rows.filter((r) => typeof r.weight === 'number' && r.weight > 0);
   // V7 F-U2：并列 weight 时 value_id 次级键定序（与内核 topDescSeg 同键；输入序不承载语义）
-  const top = group.sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)))[0];
+  const top = group.sort(
+    (a, b) =>
+      (b.weight ?? 0) - (a.weight ?? 0) ||
+      String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)),
+  )[0];
   if (!top) return null;
   let desc = '';
   try {
-    const p = top.attrs_json && top.attrs_json !== '{}' ? (JSON.parse(top.attrs_json) as { description?: unknown }) : null;
+    const p =
+      top.attrs_json && top.attrs_json !== '{}'
+        ? (JSON.parse(top.attrs_json) as { description?: unknown })
+        : null;
     if (p && typeof p.description === 'string') desc = p.description.trim();
-  } catch { /* 宁缺毋滥 */ }
+  } catch {
+    /* 宁缺毋滥 */
+  }
   if (!desc) return null;
   // V7 方案A：首句完整呈现（句边界，无完整句则 null=宁缺毋滥；与内核 topDescSeg 同构）
   const s = firstSentenceDesc(desc);

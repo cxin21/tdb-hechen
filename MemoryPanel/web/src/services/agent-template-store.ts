@@ -154,5 +154,7 @@ export function createAgentTemplate(input: {
 /** 删除一个自定义模板；内置模板不可删（静默忽略）。 */
 export function deleteAgentTemplate(template_id: string): void {
   if (getBuiltinAgentTemplates().some((t) => t.template_id === template_id)) return;
-  writeCustomAgentTemplates(readCustomAgentTemplates().filter((t) => t.template_id !== template_id));
+  writeCustomAgentTemplates(
+    readCustomAgentTemplates().filter((t) => t.template_id !== template_id),
+  );
 }

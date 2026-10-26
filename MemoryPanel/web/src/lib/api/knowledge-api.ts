@@ -59,10 +59,18 @@ async function panelPost<T>(path: string, body?: unknown): Promise<T> {
   try {
     env = JSON.parse(text) as Envelope<T>;
   } catch {
-    throw new KnowledgeApiError(res.status || 500, text || res.statusText || 'Knowledge request failed', '');
+    throw new KnowledgeApiError(
+      res.status || 500,
+      text || res.statusText || 'Knowledge request failed',
+      '',
+    );
   }
   if (!res.ok || env.code !== 0) {
-    throw new KnowledgeApiError(env.code ?? res.status, env.message || res.statusText, env.request_id);
+    throw new KnowledgeApiError(
+      env.code ?? res.status,
+      env.message || res.statusText,
+      env.request_id,
+    );
   }
   return env.data;
 }
@@ -164,11 +172,33 @@ export interface IngestStreamCallbacks {
 }
 
 // 图谱类型（与旧版兼容）
-export interface GraphNode { id: string; label: string; type: string; path: string; linkCount: number; community: number; }
-export interface GraphEdge { source: string; target: string; weight: number; }
-export interface GraphData { nodes: GraphNode[]; edges: GraphEdge[]; communities?: { id: number; nodeCount: number; topNodes: string[] }[]; }
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: string;
+  path: string;
+  linkCount: number;
+  community: number;
+}
+export interface GraphEdge {
+  source: string;
+  target: string;
+  weight: number;
+}
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  communities?: { id: number; nodeCount: number; topNodes: string[] }[];
+}
 
-export interface WikiPage { path: string; title: string; type: string; tags?: string[]; created?: string; updated?: string; }
+export interface WikiPage {
+  path: string;
+  title: string;
+  type: string;
+  tags?: string[];
+  created?: string;
+  updated?: string;
+}
 
 /** 连接探测结果（KS /wiki/:id/test）：网络失败是 reachable=false + error，不是请求错误。 */
 export interface WikiSourceProbeResult {
@@ -257,7 +287,9 @@ function assetItemToCode(item: KnowledgeAssetItem): CodeGraphDetail {
 }
 
 async function listTeamAssets(path: string, teamId: string): Promise<KnowledgeAssetItem[]> {
-  const d = await panelPost<{ items: KnowledgeAssetItem[]; total: number }>(path, { team_id: teamId });
+  const d = await panelPost<{ items: KnowledgeAssetItem[]; total: number }>(path, {
+    team_id: teamId,
+  });
   return d.items ?? [];
 }
 
@@ -271,7 +303,11 @@ export interface KnowledgeFixedItem {
   agent_id: string;
 }
 
-async function allocateKnowledge(teamId: string, knowledgeId: string, agentId: string): Promise<void> {
+async function allocateKnowledge(
+  teamId: string,
+  knowledgeId: string,
+  agentId: string,
+): Promise<void> {
   await panelPost('/allocate', { team_id: teamId, knowledge_id: knowledgeId, agent_id: agentId });
 }
 
@@ -280,13 +316,18 @@ async function unbindKnowledge(knowledgeId: string, agentId: string): Promise<vo
 }
 
 async function listAgentFixedKnowledge(agentId: string): Promise<KnowledgeFixedItem[]> {
-  const d = await panelPost<{ items: KnowledgeFixedItem[]; total: number }>('/agent-fixed', { agent_id: agentId });
+  const d = await panelPost<{ items: KnowledgeFixedItem[]; total: number }>('/agent-fixed', {
+    agent_id: agentId,
+  });
   return d.items ?? [];
 }
 
 // ========================= Wiki API =========================
 
-export function wikiStageLabel(status: WikiDetail['status'], internalStatus?: string | null): string {
+export function wikiStageLabel(
+  status: WikiDetail['status'],
+  internalStatus?: string | null,
+): string {
   if (status === 'missing') return i18n.t('wiki.status.missing');
   if (status === 'pending') return i18n.t('wiki.status.pending');
   if (status === 'ready') return i18n.t('wiki.status.ready');
@@ -297,10 +338,15 @@ export function wikiStageLabel(status: WikiDetail['status'], internalStatus?: st
     ingesting: i18n.t('knowledgeApi.stage.ingesting'),
     'rebuilding-index': i18n.t('knowledgeApi.stage.rebuildingIndex'),
   };
-  return internalStatus ? (map[internalStatus] ?? internalStatus) : i18n.t('knowledgeApi.stage.processing');
+  return internalStatus
+    ? (map[internalStatus] ?? internalStatus)
+    : i18n.t('knowledgeApi.stage.processing');
 }
 
-export function wikiProgressPercent(status: WikiDetail['status'], internalStatus?: string | null): number {
+export function wikiProgressPercent(
+  status: WikiDetail['status'],
+  internalStatus?: string | null,
+): number {
   if (status === 'ready') return 100;
   if (status === 'failed') return 100;
   if (status === 'missing') return 100;
@@ -324,13 +370,17 @@ export const knowledgeApi = {
 
   wiki: {
     /** 创建 wiki。返回 WikiDetail（含 wiki_id）。opts 支持 git 源：source_type/source_url/branch/path_include/path_exclude */
-    create: (teamId: string, name: string, opts?: {
-      source_type?: string;
-      source_url?: string;
-      branch?: string;
-      path_include?: string;
-      path_exclude?: string;
-    }): Promise<WikiDetail> =>
+    create: (
+      teamId: string,
+      name: string,
+      opts?: {
+        source_type?: string;
+        source_url?: string;
+        branch?: string;
+        path_include?: string;
+        path_exclude?: string;
+      },
+    ): Promise<WikiDetail> =>
       panelPost('/wiki/create', {
         team_id: teamId,
         name,
@@ -342,8 +392,7 @@ export const knowledgeApi = {
       }),
 
     /** 手动同步 git 源 wiki（POST /wiki/sync，非 git 源后端会返回 400） */
-    sync: (wikiId: string): Promise<void> =>
-      panelPost('/wiki/sync', { wiki_id: wikiId }),
+    sync: (wikiId: string): Promise<void> => panelPost('/wiki/sync', { wiki_id: wikiId }),
 
     // ---- 源管理（DS-PANEL-UI-WIKI-SOURCE-001 Task 2）----
 
@@ -351,12 +400,23 @@ export const knowledgeApi = {
      * 编辑源 url/branch/enabled → KS PATCH /wiki/:id/source。
      * url/branch 实际变更后该源全部页面标 stale（"待重新拉取"），需手动 refetch 重建。
      */
-    updateSource: (wikiId: string, patch: { source_url?: string; branch?: string; path_include?: string; path_exclude?: string; enabled?: boolean }): Promise<WikiDetail> =>
-      panelPost('/wiki/source/update', { wiki_id: wikiId, ...patch }),
+    updateSource: (
+      wikiId: string,
+      patch: {
+        source_url?: string;
+        branch?: string;
+        path_include?: string;
+        path_exclude?: string;
+        enabled?: boolean;
+      },
+    ): Promise<WikiDetail> => panelPost('/wiki/source/update', { wiki_id: wikiId, ...patch }),
 
     /** 测试连接：ls-remote 探测，返回可达性 + 远端分支列表。sourceUrl 可覆盖（编辑时预览候选 URL）。 */
     testSource: (wikiId: string, sourceUrl?: string): Promise<WikiSourceProbeResult> =>
-      panelPost('/wiki/source/test', { wiki_id: wikiId, ...(sourceUrl ? { source_url: sourceUrl } : {}) }),
+      panelPost('/wiki/source/test', {
+        wiki_id: wikiId,
+        ...(sourceUrl ? { source_url: sourceUrl } : {}),
+      }),
 
     /** 重新拉取：手动全量重建（202 异步）。stale 徽标保持到重建成功（后端清除）。 */
     refetch: (wikiId: string): Promise<{ wiki_id: string; status: string }> =>
@@ -364,7 +424,9 @@ export const knowledgeApi = {
 
     /** @deprecated 使用 teamAssets */
     list: async (teamId: string): Promise<WikiDetail[]> => {
-      const d = await panelPost<{ items: WikiDetail[]; total: number }>('/wiki/list', { team_id: teamId });
+      const d = await panelPost<{ items: WikiDetail[]; total: number }>('/wiki/list', {
+        team_id: teamId,
+      });
       return d.items ?? [];
     },
 
@@ -375,17 +437,25 @@ export const knowledgeApi = {
     },
 
     /** 获取详情（含 status，用于 ingest 后轮询） */
-    get: (wikiId: string): Promise<WikiDetail> =>
-      panelPost('/wiki/get', { wiki_id: wikiId }),
+    get: (wikiId: string): Promise<WikiDetail> => panelPost('/wiki/get', { wiki_id: wikiId }),
 
     /** 触发异步 ingest（返回后轮询 get 看 status） */
-    ingest: (wikiId: string): Promise<void> =>
-      panelPost('/wiki/ingest', { wiki_id: wikiId }),
+    ingest: (wikiId: string): Promise<void> => panelPost('/wiki/ingest', { wiki_id: wikiId }),
 
     /** 触发 ingest 后轮询 wiki/get，用真实 status/internal_status 驱动进度展示。 */
-    ingestWithPolling: async (wikiId: string, callbacks: IngestStreamCallbacks, _teamId: string): Promise<void> => {
+    ingestWithPolling: async (
+      wikiId: string,
+      callbacks: IngestStreamCallbacks,
+      _teamId: string,
+    ): Promise<void> => {
       try {
-        callbacks.onProgress?.({ type: 'file_start', detail: i18n.t('knowledgeApi.ingest.triggering'), done: 0, total: 100, ts: Date.now() });
+        callbacks.onProgress?.({
+          type: 'file_start',
+          detail: i18n.t('knowledgeApi.ingest.triggering'),
+          done: 0,
+          total: 100,
+          ts: Date.now(),
+        });
         try {
           await knowledgeApi.wiki.ingest(wikiId);
         } catch (err: unknown) {
@@ -395,11 +465,14 @@ export const knowledgeApi = {
 
         const maxAttempts = 300; // 最多约 10 分钟；每次都实际查询 wiki/get。
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-          await new Promise(r => setTimeout(r, attempt === 1 ? 800 : 2000));
+          await new Promise((r) => setTimeout(r, attempt === 1 ? 800 : 2000));
           const detail = await knowledgeApi.wiki.get(wikiId);
           const stage = wikiStageLabel(detail.status, detail.internal_status);
           const done = wikiProgressPercent(detail.status, detail.internal_status);
-          const pageHint = typeof detail.page_count === 'number' ? i18n.t('knowledgeApi.ingest.currentPage', { count: detail.page_count }) : '';
+          const pageHint =
+            typeof detail.page_count === 'number'
+              ? i18n.t('knowledgeApi.ingest.currentPage', { count: detail.page_count })
+              : '';
           callbacks.onProgress?.({
             type: 'file_done',
             detail: i18n.t('knowledgeApi.ingest.check', { attempt, stage, pageHint }),
@@ -409,7 +482,13 @@ export const knowledgeApi = {
           });
 
           if (detail.status === 'ready') {
-            callbacks.onProgress?.({ type: 'batch_done', detail: i18n.t('knowledgeApi.ingest.complete'), done: 100, total: 100, ts: Date.now() });
+            callbacks.onProgress?.({
+              type: 'batch_done',
+              detail: i18n.t('knowledgeApi.ingest.complete'),
+              done: 100,
+              total: 100,
+              ts: Date.now(),
+            });
             const count = detail.page_count ?? 0;
             callbacks.onComplete?.({ total: count, ingested: count });
             return;
@@ -426,12 +505,10 @@ export const knowledgeApi = {
     },
 
     /** 删除 */
-    delete: (wikiId: string): Promise<void> =>
-      panelPost('/wiki/delete', { wiki_ids: [wikiId] }),
+    delete: (wikiId: string): Promise<void> => panelPost('/wiki/delete', { wiki_ids: [wikiId] }),
 
     /** 图谱 */
-    graph: (wikiId: string): Promise<GraphData> =>
-      panelPost('/wiki/graph', { wiki_id: wikiId }),
+    graph: (wikiId: string): Promise<GraphData> => panelPost('/wiki/graph', { wiki_id: wikiId }),
 
     /** 页面列表 */
     pages: async (wikiId: string): Promise<WikiPage[]> => {
@@ -441,9 +518,9 @@ export const knowledgeApi = {
 
     /** 读页面（含 raw/sources/...） */
     read: async (wikiId: string, path: string): Promise<{ content: string }> => {
-      const d = await panelPost<{ items: Array<{ ref: string; content?: string; not_found?: boolean }> }>(
-        '/wiki/page/read', { wiki_id: wikiId, refs: [path] }
-      );
+      const d = await panelPost<{
+        items: Array<{ ref: string; content?: string; not_found?: boolean }>;
+      }>('/wiki/page/read', { wiki_id: wikiId, refs: [path] });
       const item = d.items?.[0];
       if (item?.not_found) throw new Error(i18n.t('knowledgeApi.pageNotFound', { path }));
       return { content: item?.content ?? '' };
@@ -454,21 +531,30 @@ export const knowledgeApi = {
       panelPost('/wiki/page/rm', { wiki_id: wikiId, refs }),
 
     /** 全文搜索 */
-    search: (wikiId: string, query: string, limit?: number): Promise<{
+    search: (
+      wikiId: string,
+      query: string,
+      limit?: number,
+    ): Promise<{
       results: Array<{ path: string; title: string; snippet: string; score: number; type: string }>;
-    }> =>
-      panelPost('/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20 }),
+    }> => panelPost('/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20 }),
 
     /** raw 文件列表 */
-    rawList: async (wikiId: string): Promise<{ files: Array<{ filename: string; size: number }> }> => {
+    rawList: async (
+      wikiId: string,
+    ): Promise<{ files: Array<{ filename: string; size: number }> }> => {
       const d = await panelPost<{ items: Array<{ filename: string; size: number }> }>(
-        '/wiki/raw/ls', { wiki_id: wikiId }
+        '/wiki/raw/ls',
+        { wiki_id: wikiId },
       );
       return { files: d.items ?? [] };
     },
 
     /** raw 文件读取 */
-    rawRead: (wikiId: string, filenames: string[]): Promise<{ items: Array<{ filename: string; content?: string; not_found?: boolean }> }> =>
+    rawRead: (
+      wikiId: string,
+      filenames: string[],
+    ): Promise<{ items: Array<{ filename: string; content?: string; not_found?: boolean }> }> =>
       panelPost('/wiki/raw/read', { wiki_id: wikiId, filenames }),
 
     /** 删除 raw 原始文档 */
@@ -476,14 +562,22 @@ export const knowledgeApi = {
       panelPost('/wiki/raw/rm', { wiki_id: wikiId, filenames }),
 
     /** raw 文件上传 */
-    upload: (opts: { teamId: string; wikiId: string; filename: string; content: string }): Promise<void> =>
-      panelPost('/wiki/raw/write', { team_id: opts.teamId, wiki_id: opts.wikiId, files: [{ filename: opts.filename, content: opts.content }] }),
+    upload: (opts: {
+      teamId: string;
+      wikiId: string;
+      filename: string;
+      content: string;
+    }): Promise<void> =>
+      panelPost('/wiki/raw/write', {
+        team_id: opts.teamId,
+        wiki_id: opts.wikiId,
+        files: [{ filename: opts.filename, content: opts.content }],
+      }),
 
     allocate: (teamId: string, wikiId: string, agentId: string): Promise<void> =>
       allocateKnowledge(teamId, wikiId, agentId),
 
-    unbind: (wikiId: string, agentId: string): Promise<void> =>
-      unbindKnowledge(wikiId, agentId),
+    unbind: (wikiId: string, agentId: string): Promise<void> => unbindKnowledge(wikiId, agentId),
 
     agentFixed: async (agentId: string): Promise<KnowledgeFixedItem[]> => {
       const items = await listAgentFixedKnowledge(agentId);
@@ -495,12 +589,24 @@ export const knowledgeApi = {
 
   code: {
     /** 创建（注册仓库） */
-    create: (opts: { teamId: string; repoUrl: string; branch?: string; repoName?: string }): Promise<CodeGraphDetail> =>
-      panelPost('/code-graph/create', { team_id: opts.teamId, repo_url: opts.repoUrl, branch: opts.branch ?? 'main', repo_name: opts.repoName }),
+    create: (opts: {
+      teamId: string;
+      repoUrl: string;
+      branch?: string;
+      repoName?: string;
+    }): Promise<CodeGraphDetail> =>
+      panelPost('/code-graph/create', {
+        team_id: opts.teamId,
+        repo_url: opts.repoUrl,
+        branch: opts.branch ?? 'main',
+        repo_name: opts.repoName,
+      }),
 
     /** @deprecated 使用 teamAssets */
     list: async (teamId: string): Promise<CodeGraphDetail[]> => {
-      const d = await panelPost<{ items: CodeGraphDetail[]; total: number }>('/code-graph/list', { team_id: teamId });
+      const d = await panelPost<{ items: CodeGraphDetail[]; total: number }>('/code-graph/list', {
+        team_id: teamId,
+      });
       return d.items ?? [];
     },
 
@@ -523,8 +629,18 @@ export const knowledgeApi = {
       panelPost('/code-graph/delete', { code_graph_ids: [codeGraphId] }),
 
     /** 代码搜索（返回 { text, isError } 文本块） */
-    search: (opts: { codeGraphId: string; query: string; kind?: string; limit?: number }): Promise<{ text: string; isError: boolean }> =>
-      panelPost('/code-graph/search', { code_graph_id: opts.codeGraphId, query: opts.query, ...(opts.kind && opts.kind !== 'any' ? { kind: opts.kind } : {}), limit: opts.limit ?? 10 }),
+    search: (opts: {
+      codeGraphId: string;
+      query: string;
+      kind?: string;
+      limit?: number;
+    }): Promise<{ text: string; isError: boolean }> =>
+      panelPost('/code-graph/search', {
+        code_graph_id: opts.codeGraphId,
+        query: opts.query,
+        ...(opts.kind && opts.kind !== 'any' ? { kind: opts.kind } : {}),
+        limit: opts.limit ?? 10,
+      }),
 
     /** 代码探索（返回 { text, isError } 文本块） */
     explore: (codeGraphId: string, query: string): Promise<{ text: string; isError: boolean }> =>
@@ -556,21 +672,29 @@ export const knowledgeApi = {
 // ========================= 工具函数 =========================
 
 /** 轮询 wiki ingest 状态直到 ready/failed */
-export async function pollWikiStatus(wikiId: string, maxAttempts = 30, intervalMs = 3000): Promise<WikiDetail> {
+export async function pollWikiStatus(
+  wikiId: string,
+  maxAttempts = 30,
+  intervalMs = 3000,
+): Promise<WikiDetail> {
   for (let i = 0; i < maxAttempts; i++) {
     const detail = await knowledgeApi.wiki.get(wikiId);
     if (detail.status === 'ready' || detail.status === 'failed') return detail;
-    await new Promise(r => setTimeout(r, intervalMs));
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(i18n.t('knowledgeApi.wikiIngestTimeout', { wikiId }));
 }
 
 /** 轮询 code-graph sync 状态 */
-export async function pollCodeGraphStatus(codeGraphId: string, maxAttempts = 30, intervalMs = 5000): Promise<CodeGraphDetail> {
+export async function pollCodeGraphStatus(
+  codeGraphId: string,
+  maxAttempts = 30,
+  intervalMs = 5000,
+): Promise<CodeGraphDetail> {
   for (let i = 0; i < maxAttempts; i++) {
     const detail = await knowledgeApi.code.get(codeGraphId);
     if (detail.status === 'ready' || detail.status === 'failed') return detail;
-    await new Promise(r => setTimeout(r, intervalMs));
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(i18n.t('knowledgeApi.codeGraphSyncTimeout', { codeGraphId }));
 }

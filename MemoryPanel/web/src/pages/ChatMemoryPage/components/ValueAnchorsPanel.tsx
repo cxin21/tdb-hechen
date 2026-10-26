@@ -75,7 +75,14 @@ function ValueRow({
   anchor: ValueAnchor;
   /** UI 2.1（2026-09-21）：'panel'=四 text 按钮逐位现状；'soul'=kebab 收纳（SoulPage 消费）。 */
   variant?: 'panel' | 'soul';
-  onSave: (valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[]; description?: string } }) => Promise<void>;
+  onSave: (
+    valueId: string,
+    patch: {
+      label: string;
+      weight: number;
+      attrs?: { role?: string; aliases?: string[]; description?: string };
+    },
+  ) => Promise<void>;
   onValenceChange: (anchor: ValueAnchor, valence: number) => Promise<void>;
   onPin: (anchor: ValueAnchor, pinned: boolean) => Promise<void>;
   onRetire: (anchor: ValueAnchor) => Promise<void>;
@@ -90,13 +97,18 @@ function ValueRow({
   const isPerson = anchor.node_type === 'person';
   // #21：全量 attrs 解析（保留未知键——lastDescRefreshEvidence/descSource/facts 等），
   // 保存时先展开既有 attrs 再叠加编辑字段，避免 attrs_json 全量替换丢语义（F1 纪律）。
-  const parsedAttrs: { role?: string; aliases?: string[]; description?: string } & Record<string, unknown> = (() => {
+  const parsedAttrs: { role?: string; aliases?: string[]; description?: string } & Record<
+    string,
+    unknown
+  > = (() => {
     try {
       const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as Record<string, unknown>) : {};
       return {
         ...p,
         role: typeof p.role === 'string' ? p.role : undefined,
-        aliases: Array.isArray(p.aliases) ? (p.aliases as unknown[]).filter((s): s is string => typeof s === 'string') : [],
+        aliases: Array.isArray(p.aliases)
+          ? (p.aliases as unknown[]).filter((s): s is string => typeof s === 'string')
+          : [],
         // 对抗审查修复（2026-09-23）：description 读回——否则 U2 编辑保存会全量替换 attrs_json 丢语义
         description: typeof p.description === 'string' ? p.description : undefined,
       };
@@ -139,14 +151,21 @@ function ValueRow({
       ...rest,
       ...(isPerson && roleText.trim() ? { role: roleText.trim() } : {}),
       ...(isPerson && aliasesText.trim()
-        ? { aliases: aliasesText.split(/[,、]/).map((s) => s.trim()).filter((s) => s.length > 0) }
+        ? {
+            aliases: aliasesText
+              .split(/[,、]/)
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0),
+          }
         : {}),
       ...(descTrim ? { description: descTrim } : {}),
     };
     await onSave(anchor.value_id, {
       label: label.trim(),
       weight: clampWeight(parsedWeight),
-      ...(Object.keys(attrs).length > 0 ? { attrs: attrs as { role?: string; aliases?: string[]; description?: string } } : {}),
+      ...(Object.keys(attrs).length > 0
+        ? { attrs: attrs as { role?: string; aliases?: string[]; description?: string } }
+        : {}),
     });
     setEditing(false);
   }
@@ -154,10 +173,14 @@ function ValueRow({
   return (
     <div className="_va-row">
       <span className={`_va-badge _va-badge--${badge.cls}`}>{t(badge.key)}</span>
-      {nodeBadge && <span className={`_va-nodetype _va-nodetype--${nodeBadge.cls}`}>{nodeBadge.label}</span>}
+      {nodeBadge && (
+        <span className={`_va-nodetype _va-nodetype--${nodeBadge.cls}`}>{nodeBadge.label}</span>
+      )}
       {origin && <span className={`_va-origin _va-origin--${origin.cls}`}>{t(origin.key)}</span>}
       {createdBy && (
-        <span className="_va-origin _va-origin--by">{t('memory.anchors.createdBy', { v: createdBy })}</span>
+        <span className="_va-origin _va-origin--by">
+          {t('memory.anchors.createdBy', { v: createdBy })}
+        </span>
       )}
       {isPinned && (
         <span className="_va-pin-icon" title={t('memory.anchors.pinned')}>
@@ -226,7 +249,10 @@ function ValueRow({
           {/* weight 进度条（U-B2 修法逐字：weight 进度条 0..1）+ 数值 */}
           <span className="_va-weight" title={`权重 ${anchor.weight.toFixed(2)}`}>
             <span className="_va-weight-track" aria-hidden>
-              <span className="_va-weight-fill" style={{ width: `${clampWeight(anchor.weight) * 100}%` }} />
+              <span
+                className="_va-weight-fill"
+                style={{ width: `${clampWeight(anchor.weight) * 100}%` }}
+              />
             </span>
             {anchor.weight.toFixed(2)}
           </span>
@@ -234,7 +260,9 @@ function ValueRow({
             className="_va-valence-select"
             appearance="button"
             matchButtonWidth
-            value={anchor.valence === 1 || anchor.valence === -1 ? String(anchor.valence) : 'undecided'}
+            value={
+              anchor.valence === 1 || anchor.valence === -1 ? String(anchor.valence) : 'undecided'
+            }
             onChange={(v) => {
               if (v === '1' || v === '-1') {
                 void onValenceChange(anchor, Number(v));
@@ -258,21 +286,30 @@ function ValueRow({
               #18/#21：aliases 展示行（theme 自生长别名 / person 变体；证据与注入不消费，仅信息展示） */}
           {(() => {
             const prev = anchorInjectPreview(anchor);
-            const desc = parsedAttrs.description && parsedAttrs.description.trim() !== ''
-              ? (parsedAttrs.description.trim().length > 80 ? parsedAttrs.description.trim().slice(0, 80) + '…' : parsedAttrs.description.trim())
-              : null;
-            const aliases = (parsedAttrs.aliases ?? []).filter((s) => typeof s === 'string' && s.trim() !== '');
+            const desc =
+              parsedAttrs.description && parsedAttrs.description.trim() !== ''
+                ? parsedAttrs.description.trim().length > 80
+                  ? parsedAttrs.description.trim().slice(0, 80) + '…'
+                  : parsedAttrs.description.trim()
+                : null;
+            const aliases = (parsedAttrs.aliases ?? []).filter(
+              (s) => typeof s === 'string' && s.trim() !== '',
+            );
             if (!prev && !desc && aliases.length === 0) return null;
             return (
               <div style={{ flexBasis: '100%', fontSize: 11, color: '#6b7280', lineHeight: 1.5 }}>
                 {prev && (
-                  <div style={{ fontFamily: 'ui-monospace, Consolas, monospace', color: '#4338ca' }}>
+                  <div
+                    style={{ fontFamily: 'ui-monospace, Consolas, monospace', color: '#4338ca' }}
+                  >
                     {t('memory.anchors.injectPreview', { preview: prev })}
                   </div>
                 )}
                 {desc && <div title={parsedAttrs.description}>{desc}</div>}
                 {aliases.length > 0 && (
-                  <div title="别名（识别变体；证据计数与注入仍按 label 口径）">别名：{aliases.join('、')}</div>
+                  <div title="别名（识别变体；证据计数与注入仍按 label 口径）">
+                    别名：{aliases.join('、')}
+                  </div>
                 )}
               </div>
             );
@@ -280,20 +317,53 @@ function ValueRow({
           {variant === 'soul' ? (
             <Dropdown
               appearance="pure"
-              button={<button type="button" className="_va-kebab" title="更多操作">⋯</button>}
+              button={
+                <button type="button" className="_va-kebab" title="更多操作">
+                  ⋯
+                </button>
+              }
             >
               {(close: () => void) => (
                 <div className="_va-kebab-menu" role="menu">
-                  <button type="button" role="menuitem" onClick={() => { close(); setEditing(true); }}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      close();
+                      setEditing(true);
+                    }}
+                  >
                     {t('memory.anchors.edit')}
                   </button>
-                  <button type="button" role="menuitem" onClick={() => { close(); void onPin(anchor, !isPinned); }}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      close();
+                      void onPin(anchor, !isPinned);
+                    }}
+                  >
                     {isPinned ? t('memory.anchors.unpin') : t('memory.anchors.pin')}
                   </button>
-                  <button type="button" role="menuitem" onClick={() => { close(); void onRetire(anchor); }}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      close();
+                      void onRetire(anchor);
+                    }}
+                  >
                     {t('memory.anchors.retire')}
                   </button>
-                  <button type="button" role="menuitem" className="_va-kebab-danger" onClick={() => { close(); onDelete(anchor); }}>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="_va-kebab-danger"
+                    onClick={() => {
+                      close();
+                      onDelete(anchor);
+                    }}
+                  >
                     {t('memory.anchors.delete')}
                   </button>
                 </div>
@@ -321,7 +391,13 @@ function ValueRow({
   );
 }
 
-export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hideIdentityPending?: boolean; variant?: 'panel' | 'soul' } = {}) {
+export default function ValueAnchorsPanel(
+  props: {
+    blockIdOverride?: string;
+    hideIdentityPending?: boolean;
+    variant?: 'panel' | 'soul';
+  } = {},
+) {
   const { t } = useTranslation();
   const auth = readAuth();
   const currentUserId = auth?.user_id ?? '';
@@ -366,7 +442,9 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
   // 缺省逐位现状（ChatMemoryPage 挂载不变）。UI 2.1（2026-09-21）：variant='soul' 启用三池 Tab 行列表
   // + kebab 收纳（仅 SoulPage 消费；'panel' 缺省逐位现状）。
   const soulMode = props.variant === 'soul';
-  const blockId = props.blockIdOverride ?? (activeTeamId && agentId ? `chat_memory-${activeTeamId}-${agentId}` : '');
+  const blockId =
+    props.blockIdOverride ??
+    (activeTeamId && agentId ? `chat_memory-${activeTeamId}-${agentId}` : '');
 
   const load = useCallback(async () => {
     if (!blockId) {
@@ -386,7 +464,9 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
       if (knownAutoIds.current !== null) {
         const fresh = autoRows.filter((r) => !knownAutoIds.current!.has(r.value_id));
         if (fresh.length > 0) {
-          tea.notify.info(t('memory.notify.anchorAutoGrown', { labels: fresh.map((r) => r.label).join('、') }));
+          tea.notify.info(
+            t('memory.notify.anchorAutoGrown', { labels: fresh.map((r) => r.label).join('、') }),
+          );
         }
       }
       knownAutoIds.current = new Set(autoRows.map((r) => r.value_id));
@@ -409,7 +489,10 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
     setProposals([]);
   }, [blockId]);
 
-  async function handleSave(valueId: string, patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } }) {
+  async function handleSave(
+    valueId: string,
+    patch: { label: string; weight: number; attrs?: { role?: string; aliases?: string[] } },
+  ) {
     if (!blockId) return;
     try {
       await chatMemoryApi.valuesUpsert(blockId, { value_id: valueId, ...patch });
@@ -426,7 +509,9 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
     if (!blockId) return;
     const aliases: string[] = (() => {
       try {
-        const p = anchor.attrs_json ? (JSON.parse(anchor.attrs_json) as { aliases?: string[] }) : {};
+        const p = anchor.attrs_json
+          ? (JSON.parse(anchor.attrs_json) as { aliases?: string[] })
+          : {};
         return Array.isArray(p.aliases) ? p.aliases : [];
       } catch {
         return [];
@@ -434,7 +519,9 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
     })();
     const queries = [anchor.label, ...aliases];
     try {
-      const all = await Promise.all(queries.map((q) => chatMemoryApi.searchLayer(blockId, 'L1', q, 30)));
+      const all = await Promise.all(
+        queries.map((q) => chatMemoryApi.searchLayer(blockId, 'L1', q, 30)),
+      );
       const seen = new Set<string>();
       for (const r of all) {
         for (const item of r.items ?? []) {
@@ -633,7 +720,10 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
             onChange={setAgentId}
             disabled={ownedAgents.length === 0}
             placeholder={t('memory.noAgent')}
-            options={ownedAgents.map((a) => ({ value: a.agent_id, text: `${a.name}（${a.agent_id}）` }))}
+            options={ownedAgents.map((a) => ({
+              value: a.agent_id,
+              text: `${a.name}（${a.agent_id}）`,
+            }))}
           />
         )}
         <div className="_va-header-actions">
@@ -645,7 +735,12 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
           >
             {t('memory.anchors.discover')}
           </Button>
-          <Button type="primary" onClick={() => void handleDerive()} loading={deriving} disabled={!blockId}>
+          <Button
+            type="primary"
+            onClick={() => void handleDerive()}
+            loading={deriving}
+            disabled={!blockId}
+          >
             {t('memory.anchors.derive')}
           </Button>
         </div>
@@ -667,57 +762,80 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
         <div className="_va-empty">{t('memory.anchors.empty')}</div>
       ) : (
         <>
-        {/* U7（T-C 回归修复 2026-09-19）：分池配额迷你显示（F15 三池；上限与 yaml anchorDiscovery 对齐）+ U6 sensitivity 预留徽章位 */}
-        {soulMode ? (
-          <div className="_va-vtab" role="tablist" aria-label="价值锚三池切换">
-            {([['theme', '主题', 15], ['person', '人物', 8], ['character', '品格', 8]] as const).map(([key, label, cap]) => {
-              const n = values.filter((v) => (v.node_type ?? 'theme') === key).length;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  role="tab"
-                  aria-selected={pool === key}
-                  className={`_va-vtab-pill${pool === key ? ' _va-vtab-pill--active' : ''}`}
-                  onClick={() => setPool(key)}
-                >
-                  {label} <span className="_va-vtab-count">{n}/{cap}</span>
-                </button>
-              );
-            })}
-            <span className="_va-quota-item _va-quota-sensitivity">敏感度（L1 行已实施）</span>
+          {/* U7（T-C 回归修复 2026-09-19）：分池配额迷你显示（F15 三池；上限与 yaml anchorDiscovery 对齐）+ U6 sensitivity 预留徽章位 */}
+          {soulMode ? (
+            <div className="_va-vtab" role="tablist" aria-label="价值锚三池切换">
+              {(
+                [
+                  ['theme', '主题', 15],
+                  ['person', '人物', 8],
+                  ['character', '品格', 8],
+                ] as const
+              ).map(([key, label, cap]) => {
+                const n = values.filter((v) => (v.node_type ?? 'theme') === key).length;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={pool === key}
+                    className={`_va-vtab-pill${pool === key ? ' _va-vtab-pill--active' : ''}`}
+                    onClick={() => setPool(key)}
+                  >
+                    {label}{' '}
+                    <span className="_va-vtab-count">
+                      {n}/{cap}
+                    </span>
+                  </button>
+                );
+              })}
+              <span className="_va-quota-item _va-quota-sensitivity">敏感度（L1 行已实施）</span>
+            </div>
+          ) : (
+            <div className="_va-quota">
+              <span className="_va-quota-item">
+                主题 {values.filter((v) => (v.node_type ?? 'theme') === 'theme').length}/15
+              </span>
+              <span className="_va-quota-item">
+                人物 {values.filter((v) => v.node_type === 'person').length}/8
+              </span>
+              <span className="_va-quota-item">
+                品格 {values.filter((v) => v.node_type === 'character').length}/8
+              </span>
+              <span className="_va-quota-item _va-quota-sensitivity">敏感度（L1 行已实施）</span>
+            </div>
+          )}
+          <div className="_va-list">
+            {values
+              .filter((v) => !soulMode || (v.node_type ?? 'theme') === pool)
+              .map((v) => (
+                <ValueRow
+                  key={v.value_id}
+                  anchor={v}
+                  variant={props.variant ?? 'panel'}
+                  onSave={handleSave}
+                  onValenceChange={handleValenceChange}
+                  onPin={handlePin}
+                  onRetire={handleRetire}
+                  onDelete={handleDelete}
+                  onViewRelated={handleViewRelated}
+                />
+              ))}
           </div>
-        ) : (
-          <div className="_va-quota">
-            <span className="_va-quota-item">主题 {values.filter((v) => (v.node_type ?? 'theme') === 'theme').length}/15</span>
-            <span className="_va-quota-item">人物 {values.filter((v) => v.node_type === 'person').length}/8</span>
-            <span className="_va-quota-item">品格 {values.filter((v) => v.node_type === 'character').length}/8</span>
-            <span className="_va-quota-item _va-quota-sensitivity">敏感度（L1 行已实施）</span>
-          </div>
-        )}
-        <div className="_va-list">
-          {values.filter((v) => !soulMode || (v.node_type ?? 'theme') === pool).map((v) => (
-            <ValueRow
-              key={v.value_id}
-              anchor={v}
-              variant={props.variant ?? 'panel'}
-              onSave={handleSave}
-              onValenceChange={handleValenceChange}
-              onPin={handlePin}
-              onRetire={handleRetire}
-              onDelete={handleDelete}
-              onViewRelated={handleViewRelated}
-            />
-          ))}
-        </div>
         </>
       )}
 
       {/* GROW 退休区折叠段：retired 列表 + [恢复][钉住]；空时不渲染 */}
       {retired.length > 0 && (
         <div className="_va-retired">
-          <button type="button" className="_va-retired-toggle" aria-expanded={showRetired} onClick={() => setShowRetired((s) => !s)}>
-            {showRetired ? '▾' : '▸'} {t('memory.anchors.retiredSection', { count: retired.length })}
+          <button
+            type="button"
+            className="_va-retired-toggle"
+            aria-expanded={showRetired}
+            onClick={() => setShowRetired((s) => !s)}
+          >
+            {showRetired ? '▾' : '▸'}{' '}
+            {t('memory.anchors.retiredSection', { count: retired.length })}
           </button>
           {showRetired && (
             <div className="_va-list">
@@ -796,7 +914,11 @@ export default function ValueAnchorsPanel(props: { blockIdOverride?: string; hid
           placeholder={t('memory.anchors.addDescPlaceholder')}
           disabled={!blockId}
         />
-        <Button type="primary" disabled={!newLabel.trim() || !blockId} onClick={() => void handleAdd()}>
+        <Button
+          type="primary"
+          disabled={!newLabel.trim() || !blockId}
+          onClick={() => void handleAdd()}
+        >
           {t('memory.anchors.add')}
         </Button>
       </div>

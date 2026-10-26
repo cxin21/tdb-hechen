@@ -16,9 +16,7 @@ export function TeamHeaderCard({ team, ops }: { team: Team; ops?: ReactNode }) {
     <div className="_memory-panel-card">
       <div className="_memory-team-header-row">
         <div className="_memory-team-header-info">
-          <div className="_memory-team-header-avatar">
-            {team.name.slice(0, 1).toUpperCase()}
-          </div>
+          <div className="_memory-team-header-avatar">{team.name.slice(0, 1).toUpperCase()}</div>
           <div className="_memory-team-header-meta">
             <div className="_memory-team-header-meta-row">
               <span className="_memory-team-header-name">{team.name}</span>
@@ -27,9 +25,7 @@ export function TeamHeaderCard({ team, ops }: { team: Team; ops?: ReactNode }) {
                 {t('team.memberCount', { count: team.members.length })}
               </span>
             </div>
-            {team.description && (
-              <div className="_memory-team-header-desc">{team.description}</div>
-            )}
+            {team.description && <div className="_memory-team-header-desc">{team.description}</div>}
           </div>
         </div>
         {ops && <div className="_memory-team-header-ops">{ops}</div>}

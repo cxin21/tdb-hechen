@@ -68,7 +68,9 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s ease-in-out, background-color 0.15s ease-in-out;
+  transition:
+    border-color 0.15s ease-in-out,
+    background-color 0.15s ease-in-out;
 }
 
 ._memory-workbench-task-card:hover {
@@ -124,7 +126,10 @@
   flex-shrink: 0;
   color: var(--tea-color-text-tertiary);
   opacity: 0.6;
-  transition: color 0.15s ease-in-out, opacity 0.15s ease-in-out, transform 0.15s ease-in-out;
+  transition:
+    color 0.15s ease-in-out,
+    opacity 0.15s ease-in-out,
+    transform 0.15s ease-in-out;
 }
 
 /* 描述：2 行截断 */
@@ -308,13 +313,24 @@
   animation: _memory-workbench-skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
-._memory-workbench-skeleton-line--title { width: 50%; height: 16px; }
-._memory-workbench-skeleton-line--desc { width: 80%; }
-._memory-workbench-skeleton-line--meta { width: 60%; }
+._memory-workbench-skeleton-line--title {
+  width: 50%;
+  height: 16px;
+}
+._memory-workbench-skeleton-line--desc {
+  width: 80%;
+}
+._memory-workbench-skeleton-line--meta {
+  width: 60%;
+}
 
 @keyframes _memory-workbench-skeleton-shimmer {
-  0%   { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 ._memory-workbench-pagination {

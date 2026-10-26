@@ -50,7 +50,9 @@ export default function App() {
     if (auth === null) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#0f172a]">
-          <div className="text-sm text-slate-500 dark:text-slate-400">{t('app.checkingSession')}</div>
+          <div className="text-sm text-slate-500 dark:text-slate-400">
+            {t('app.checkingSession')}
+          </div>
         </div>
       );
     }
@@ -62,9 +64,5 @@ export default function App() {
     return <RouterProvider router={router} />;
   })();
 
-  return (
-    <ConfigProvider locale={teaLocale}>
-      {content}
-    </ConfigProvider>
-  );
+  return <ConfigProvider locale={teaLocale}>{content}</ConfigProvider>;
 }

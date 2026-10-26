@@ -72,7 +72,18 @@ export function SoulPage() {
             <div className="_soul-title">{t('soul.title')}</div>
             <nav className="_soul-nav" aria-label="分区导航">
               {NAV_ITEMS.map((n) => (
-                <button key={n.id} type="button" className={"_soul-nav-pill" + (activeNav === n.id ? " _soul-nav-pill--active" : "")} aria-current={activeNav === n.id ? "true" : undefined} onClick={() => { setActiveNav(n.id); scroll_to_section(n.id); }}>
+                <button
+                  key={n.id}
+                  type="button"
+                  className={
+                    '_soul-nav-pill' + (activeNav === n.id ? ' _soul-nav-pill--active' : '')
+                  }
+                  aria-current={activeNav === n.id ? 'true' : undefined}
+                  onClick={() => {
+                    setActiveNav(n.id);
+                    scroll_to_section(n.id);
+                  }}
+                >
                   {n.label}
                 </button>
               ))}
@@ -86,7 +97,10 @@ export function SoulPage() {
               onChange={setAgentId}
               disabled={ownedAgents.length === 0}
               placeholder={t('soul.noAgent')}
-              options={ownedAgents.map((a) => ({ value: a.agent_id, text: `${a.name}（${a.agent_id}）` }))}
+              options={ownedAgents.map((a) => ({
+                value: a.agent_id,
+                text: `${a.name}（${a.agent_id}）`,
+              }))}
             />
           </div>
         </header>

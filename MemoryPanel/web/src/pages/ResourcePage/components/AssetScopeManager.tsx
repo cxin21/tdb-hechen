@@ -12,7 +12,7 @@ import {
   getAssetConfigScope,
   setAssetConfigScope,
   canManageAssetScope,
-  useAssetConfigScopes
+  useAssetConfigScopes,
 } from '@/services';
 import { useUserDisplayName } from '@/services/user-profile-store';
 import './asset-scope-manager.css';
@@ -45,7 +45,7 @@ export default function AssetScopeManager({
   currentUser,
   isAdmin,
   team,
-  items
+  items,
 }: {
   kind: AssetKind;
   label: string;
@@ -59,7 +59,7 @@ export default function AssetScopeManager({
 
   const SCOPE_OPTIONS: Array<{ value: AssetConfigScope; label: string }> = [
     { value: 'team', label: t('assetScope.option.team') },
-    { value: 'private', label: t('assetScope.option.private') }
+    { value: 'private', label: t('assetScope.option.private') },
   ];
 
   return (
@@ -84,7 +84,11 @@ export default function AssetScopeManager({
       ) : (
         <ul className="_memory-asset-scope-list">
           {items.map((item) => {
-            const { scope, owner_user_id } = getAssetConfigScope(kind, item.id, item.owner_user_id ?? '');
+            const { scope, owner_user_id } = getAssetConfigScope(
+              kind,
+              item.id,
+              item.owner_user_id ?? '',
+            );
             const effectiveOwner = owner_user_id || item.owner_user_id || '';
             const canManage = canManageAssetScope(effectiveOwner, team, currentUser, isAdmin);
             const ownerIsMe = effectiveOwner === currentUser;
@@ -99,7 +103,9 @@ export default function AssetScopeManager({
                     {effectiveOwner ? (
                       <ScopeOwnerLabel ownerId={effectiveOwner} isMe={ownerIsMe} />
                     ) : (
-                      <Text theme="weak" className="_memory-asset-scope-item-owner">{t('assetScope.noOwner')}</Text>
+                      <Text theme="weak" className="_memory-asset-scope-item-owner">
+                        {t('assetScope.noOwner')}
+                      </Text>
                     )}
                   </div>
                   {item.meta && (
@@ -113,7 +119,13 @@ export default function AssetScopeManager({
                   <Segment
                     value={scope}
                     onChange={(value) =>
-                      setAssetConfigScope(kind, item.id, value as AssetConfigScope, currentUser, item.owner_user_id ?? '')
+                      setAssetConfigScope(
+                        kind,
+                        item.id,
+                        value as AssetConfigScope,
+                        currentUser,
+                        item.owner_user_id ?? '',
+                      )
                     }
                     options={SCOPE_OPTIONS}
                   />

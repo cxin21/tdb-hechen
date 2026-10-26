@@ -5,7 +5,9 @@ import { metaPost, metaListAll, getCurrentUser } from './base';
 import type { Asset, AssetType, AssetStatus } from './types';
 
 function newExternalAssetId(assetType: AssetType): string {
-  const prefix = { skill: 'skl', llm_wiki: 'wiki', code_graph: 'cg', chat_memory: 'mem' }[assetType];
+  const prefix = { skill: 'skl', llm_wiki: 'wiki', code_graph: 'cg', chat_memory: 'mem' }[
+    assetType
+  ];
   const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
   return `${prefix}-${suffix}`;
 }
@@ -14,7 +16,7 @@ export const assetsApi = {
   /** 列出 team 资产（支持按 type/status/owner 筛选） */
   list: (
     teamId: string,
-    params?: { asset_type?: AssetType; status?: AssetStatus; owner_user_id?: string }
+    params?: { asset_type?: AssetType; status?: AssetStatus; owner_user_id?: string },
   ) =>
     metaListAll<Asset>('asset/list', {
       team_id: teamId,
@@ -38,7 +40,7 @@ export const assetsApi = {
       visibility?: string;
       metadata_json?: string;
       detail?: Record<string, unknown>;
-    }
+    },
   ) => {
     const me = await getCurrentUser();
     return metaPost<Asset>('asset/create', {
@@ -59,7 +61,7 @@ export const assetsApi = {
   /** 更新资产 */
   update: (
     assetId: string,
-    data: Partial<{ name: string; description: string; status: AssetStatus; visibility: string }>
+    data: Partial<{ name: string; description: string; status: AssetStatus; visibility: string }>,
   ) => metaPost<Asset>('asset/update', { asset_id: assetId, ...data }),
 
   /** 删除资产（meta asset/delete → 物理删除行） */
@@ -87,7 +89,7 @@ export const assetsApi = {
       asset_type?: AssetType;
       action?: 'read' | 'write' | 'use';
       visibility?: Asset['visibility'] | Asset['visibility'][];
-    }
+    },
   ): Promise<Asset[]> => {
     const me = await getCurrentUser();
     return metaListAll<Asset>('asset/list-accessible', {

@@ -24,7 +24,15 @@ function str(v: unknown): string | null {
 function recurrenceText(v: unknown): string | null {
   if (!v || typeof v !== 'object') return null;
   const r = v as { cadence?: string; anchor?: string | null; note?: string };
-  const ZH: Record<string, string> = { MON: '一', TUE: '二', WED: '三', THU: '四', FRI: '五', SAT: '六', SUN: '日' };
+  const ZH: Record<string, string> = {
+    MON: '一',
+    TUE: '二',
+    WED: '三',
+    THU: '四',
+    FRI: '五',
+    SAT: '六',
+    SUN: '日',
+  };
   if (typeof r.note === 'string' && r.note.trim() !== '') return r.note;
   const c = r.cadence;
   const a = r.anchor || null;
@@ -38,7 +46,13 @@ function recurrenceText(v: unknown): string | null {
   return null;
 }
 
-export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem; blockId?: string }) {
+export function AttributesSection({
+  item,
+  blockId,
+}: {
+  item: ChatMemoryLayerItem;
+  blockId?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -47,7 +61,8 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
   const evIds = useMemo(() => {
     const raw = (item.metadata ?? {}) as Record<string, unknown>;
     const v = raw.evidence_ids;
-    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string' && x.length > 0);
+    if (Array.isArray(v))
+      return v.filter((x): x is string => typeof x === 'string' && x.length > 0);
     if (typeof v === 'string' && v.trim()) return [v.trim()];
     return [];
   }, [item]);
@@ -56,14 +71,17 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
   const [evError, setEvError] = useState<string | null>(null);
   useEffect(() => {
     if (!evOpen || evItems !== null) return;
-    chatMemoryApi.evidenceByIds(item.id, evIds)
+    chatMemoryApi
+      .evidenceByIds(item.id, evIds)
       .then((r) => setEvItems(r.items))
       .catch((e) => setEvError(e instanceof Error ? e.message : String(e)));
   }, [evOpen, evItems, item.id, evIds]);
 
   // P1-T7：人工重要度调整（Owner-only）。追加语义由网关保证——
   // metadata.importance_source='manual' + importance_manual_reason，llm 评语不覆写。
-  const [impValue, setImpValue] = useState(item.importance !== undefined ? String(item.importance) : '');
+  const [impValue, setImpValue] = useState(
+    item.importance !== undefined ? String(item.importance) : '',
+  );
   const [impReason, setImpReason] = useState('');
   const [impBusy, setImpBusy] = useState(false);
   const [impMsg, setImpMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -81,7 +99,9 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
     setImpMsg(null);
     chatMemoryApi
       .adjustImportance(blockId, item.id, v, impReason.trim() === '' ? undefined : impReason.trim())
-      .then(() => setImpMsg({ ok: true, text: `已调整为 ${v}（source=manual，重新打开属性后生效）` }))
+      .then(() =>
+        setImpMsg({ ok: true, text: `已调整为 ${v}（source=manual，重新打开属性后生效）` }),
+      )
       .catch((e) => setImpMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }))
       .finally(() => setImpBusy(false));
   };
@@ -90,7 +110,8 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
   // hasVe=valid_end 非空（含未来失效时点——清空走 restore）；invalidatedNow=已到期失效。
   const veRaw = typeof item.valid_end === 'string' ? item.valid_end.trim() : '';
   const hasVe = veRaw !== '';
-  const invalidatedNow = hasVe && Number.isFinite(Date.parse(veRaw)) && Date.parse(veRaw) <= Date.now();
+  const invalidatedNow =
+    hasVe && Number.isFinite(Date.parse(veRaw)) && Date.parse(veRaw) <= Date.now();
   const [invBusy, setInvBusy] = useState(false);
   const [invMsg, setInvMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const submitInvalidate = (mode: 'invalidate' | 'restore') => {
@@ -105,7 +126,10 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
       .then(() =>
         setInvMsg({
           ok: true,
-          text: mode === 'invalidate' ? '已标记失效（两路召回排除；可撤销恢复，重新打开属性后生效）' : '已撤销失效（恢复召回，重新打开属性后生效）',
+          text:
+            mode === 'invalidate'
+              ? '已标记失效（两路召回排除；可撤销恢复，重新打开属性后生效）'
+              : '已撤销失效（恢复召回，重新打开属性后生效）',
         }),
       )
       .catch((e) => setInvMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }))
@@ -160,7 +184,10 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
     push('evidence_ids', Array.isArray(eids) ? (eids as unknown[]).join('、') : eids);
     const evo = meta.evolution as { from?: unknown; reason?: unknown } | null | undefined;
     if (evo && typeof evo === 'object') {
-      push('evolution.from', Array.isArray(evo.from) ? (evo.from as unknown[]).join('、') : evo.from);
+      push(
+        'evolution.from',
+        Array.isArray(evo.from) ? (evo.from as unknown[]).join('、') : evo.from,
+      );
       push('evolution.reason', evo.reason);
     }
     return out;
@@ -170,17 +197,31 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
 
   function handleCopy() {
     const payload: Record<string, unknown> = {
-      id: item.id, type: item.title, occurred_at: item.occurred_at,
-      valid_start: item.valid_start, valid_end: item.valid_end,
-      certainty: item.certainty, source: item.source,
-      valence: item.valence, arousal: item.arousal, significance: item.significance,
-      version: item.version, team_id: item.team_id, user_id: item.user_id,
-      agent_id: item.agent_id, task_id: item.task_id,
-      scene_name: item.scene_name, priority: item.priority,
-      session_key: item.session_key, session_id: item.session_id,
-      timestamp_str: item.timestamp_str, timestamp_start: item.timestamp_start,
+      id: item.id,
+      type: item.title,
+      occurred_at: item.occurred_at,
+      valid_start: item.valid_start,
+      valid_end: item.valid_end,
+      certainty: item.certainty,
+      source: item.source,
+      valence: item.valence,
+      arousal: item.arousal,
+      significance: item.significance,
+      version: item.version,
+      team_id: item.team_id,
+      user_id: item.user_id,
+      agent_id: item.agent_id,
+      task_id: item.task_id,
+      scene_name: item.scene_name,
+      priority: item.priority,
+      session_key: item.session_key,
+      session_id: item.session_id,
+      timestamp_str: item.timestamp_str,
+      timestamp_start: item.timestamp_start,
       timestamp_end: item.timestamp_end,
-      created_at: item.created_at, updated_at: item.updated_at, metadata: item.metadata,
+      created_at: item.created_at,
+      updated_at: item.updated_at,
+      metadata: item.metadata,
     };
     const text = JSON.stringify(payload, null, 2);
     if (navigator.clipboard?.writeText) {
@@ -199,11 +240,22 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
 
   return (
     <div className="_memory-detail-atomic-attrs">
-      <button type="button" className="_soul-chip _soul-chip--attrs" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((v) => !v)}>
+      <button
+        type="button"
+        className="_soul-chip _soul-chip--attrs"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((v) => !v)}
+      >
         🧬 属性{open ? '' : ` (${rows.length})`}
       </button>
       {open && (
-        <Modal visible caption={`记忆属性（${rows.length} 列）`} size="l" onClose={() => setOpen(false)}>
+        <Modal
+          visible
+          caption={`记忆属性（${rows.length} 列）`}
+          size="l"
+          onClose={() => setOpen(false)}
+        >
           <Modal.Body>
             <div className="_attr-table _attr-table--modal" id={`_attr-tbl-${item.id}`}>
               {rows.map((r) => (
@@ -212,82 +264,113 @@ export function AttributesSection({ item, blockId }: { item: ChatMemoryLayerItem
                   <span className="_attr-val">{r.v}</span>
                 </div>
               ))}
+            </div>
+            {/* P1-T7：人工重要度调整（追加语义；≤4 召回降权） */}
+            <div
+              className="_imp-form"
+              style={{
+                marginTop: 12,
+                borderTop: '1px solid rgba(127,127,127,.25)',
+                paddingTop: 12,
+              }}
+            >
+              <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.75 }}>
+                人工重要度调整（1-10 整数；≤4 召回降权 · source=manual，不改 llm 评语）
               </div>
-              {/* P1-T7：人工重要度调整（追加语义；≤4 召回降权） */}
-              <div className="_imp-form" style={{ marginTop: 12, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 12 }}>
-                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.75 }}>
-                  人工重要度调整（1-10 整数；≤4 召回降权 · source=manual，不改 llm 评语）
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <select
+                  value={impValue}
+                  onChange={(e) => setImpValue(e.target.value)}
+                  style={{ width: 72 }}
+                  aria-label="重要度"
+                >
+                  <option value="">未评</option>
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={impReason}
+                  onChange={(e) => setImpReason(e.target.value)}
+                  placeholder="调整理由（可选，追加记录）"
+                  style={{ flex: 1, minWidth: 160 }}
+                  aria-label="调整理由"
+                />
+                <Button type="primary" disabled={impBusy} onClick={submitImportance}>
+                  {impBusy ? '提交中…' : '调整'}
+                </Button>
+              </div>
+              {impMsg && (
+                <div
+                  style={{ marginTop: 6, fontSize: 12, color: impMsg.ok ? '#2e7d32' : '#c62828' }}
+                >
+                  {impMsg.text}
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select
-                    value={impValue}
-                    onChange={(e) => setImpValue(e.target.value)}
-                    style={{ width: 72 }}
-                    aria-label="重要度"
-                  >
-                    <option value="">未评</option>
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={impReason}
-                    onChange={(e) => setImpReason(e.target.value)}
-                    placeholder="调整理由（可选，追加记录）"
-                    style={{ flex: 1, minWidth: 160 }}
-                    aria-label="调整理由"
-                  />
-                  <Button type="primary" disabled={impBusy} onClick={submitImportance}>
-                    {impBusy ? '提交中…' : '调整'}
+              )}
+            </div>
+            {/* P1-T8：标记失效 / 撤销失效（软失效不删记忆；失效后两路召回均排除） */}
+            <div
+              className="_inv-form"
+              style={{
+                marginTop: 12,
+                borderTop: '1px solid rgba(127,127,127,.25)',
+                paddingTop: 12,
+              }}
+            >
+              <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.75 }}>
+                失效控制（软失效不删记忆：失效后两路召回均排除；撤销失效即恢复）
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {invalidatedNow ? (
+                  <span style={{ fontSize: 12, color: '#c62828' }}>
+                    当前状态：已失效{hasVe ? `（valid_end=${veRaw}）` : ''}
+                  </span>
+                ) : hasVe ? (
+                  <span style={{ fontSize: 12, opacity: 0.6 }}>
+                    当前状态：有效（valid_end={veRaw}，未到期）
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12, opacity: 0.6 }}>当前状态：有效</span>
+                )}
+                {hasVe ? (
+                  <Button disabled={invBusy} onClick={() => submitInvalidate('restore')}>
+                    {invBusy ? '处理中…' : '撤销失效'}
                   </Button>
-                </div>
-                {impMsg && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: impMsg.ok ? '#2e7d32' : '#c62828' }}>
-                    {impMsg.text}
-                  </div>
+                ) : (
+                  <Button
+                    type="error"
+                    disabled={invBusy}
+                    onClick={() => submitInvalidate('invalidate')}
+                  >
+                    {invBusy ? '处理中…' : '标记失效'}
+                  </Button>
                 )}
               </div>
-              {/* P1-T8：标记失效 / 撤销失效（软失效不删记忆；失效后两路召回均排除） */}
-              <div className="_inv-form" style={{ marginTop: 12, borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: 12 }}>
-                <div style={{ fontSize: 12, marginBottom: 6, opacity: 0.75 }}>
-                  失效控制（软失效不删记忆：失效后两路召回均排除；撤销失效即恢复）
+              {invMsg && (
+                <div
+                  style={{ marginTop: 6, fontSize: 12, color: invMsg.ok ? '#2e7d32' : '#c62828' }}
+                >
+                  {invMsg.text}
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {invalidatedNow ? (
-                    <span style={{ fontSize: 12, color: '#c62828' }}>
-                      当前状态：已失效{hasVe ? `（valid_end=${veRaw}）` : ''}
-                    </span>
-                  ) : hasVe ? (
-                    <span style={{ fontSize: 12, opacity: 0.6 }}>
-                      当前状态：有效（valid_end={veRaw}，未到期）
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: 12, opacity: 0.6 }}>当前状态：有效</span>
-                  )}
-                  {hasVe ? (
-                    <Button disabled={invBusy} onClick={() => submitInvalidate('restore')}>
-                      {invBusy ? '处理中…' : '撤销失效'}
-                    </Button>
-                  ) : (
-                    <Button type="error" disabled={invBusy} onClick={() => submitInvalidate('invalidate')}>
-                      {invBusy ? '处理中…' : '标记失效'}
-                    </Button>
-                  )}
-                </div>
-                {invMsg && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: invMsg.ok ? '#2e7d32' : '#c62828' }}>
-                    {invMsg.text}
-                  </div>
-                )}
-              </div>
+              )}
+            </div>
             {evIds.length > 0 && (
               <div className="_ev-drawer">
-                <button type="button" className="_ev-toggle" aria-expanded={evOpen} onClick={() => setEvOpen(!evOpen)}>
+                <button
+                  type="button"
+                  className="_ev-toggle"
+                  aria-expanded={evOpen}
+                  onClick={() => setEvOpen(!evOpen)}
+                >
                   {evOpen ? '▾' : '▸'} 证据源（{evIds.length} 条）
                 </button>
                 {evOpen && (
                   <div className="_ev-list">
-                    {evError && <div className="_ev-state _ev-state--error">读取失败：{evError}</div>}
+                    {evError && (
+                      <div className="_ev-state _ev-state--error">读取失败：{evError}</div>
+                    )}
                     {!evError && evItems === null && <div className="_ev-state">读取中…</div>}
                     {!evError && evItems !== null && evItems.length === 0 && (
                       <div className="_ev-state">无匹配源记录（可能已物理清理）</div>

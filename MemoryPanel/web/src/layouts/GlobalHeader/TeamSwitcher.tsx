@@ -12,12 +12,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dropdown, Input, Button } from 'tea-component';
 import { ChevronDownIcon, AddIcon, EditIcon, DeleteIcon } from 'tea-icons-react';
-import {
-  useTeams,
-  writeActiveTeamId,
-  invalidateBackendCache,
-  isTeamAdmin,
-} from '@/services';
+import { useTeams, writeActiveTeamId, invalidateBackendCache, isTeamAdmin } from '@/services';
 import { useBackendStore } from '@/stores/backend';
 import { type TeamRole } from '@/services/useCurrentRole';
 import { teamsApi } from '@/lib/teamApi';
@@ -123,7 +118,9 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
     }
   }
 
-  const editingTeam = editingTeamId ? myTeams.find((tm) => tm.team_id === editingTeamId) ?? null : null;
+  const editingTeam = editingTeamId
+    ? (myTeams.find((tm) => tm.team_id === editingTeamId) ?? null)
+    : null;
 
   return (
     <>
@@ -136,7 +133,9 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
         // 静默刷新：仅让下拉框里的 team 列表保新鲜，不翻转 teamsLoading，
         // 否则 TeamManagementPanel 等消费方会整体进入 loading 占位（表现为
         // "点开选择 team 的选项框，成员/Agents 管理页面就刷新一下"）。
-        onOpen={() => { void refreshTeams({ silent: true }); }}
+        onOpen={() => {
+          void refreshTeams({ silent: true });
+        }}
         onClose={resetCreateForm}
         button={
           <button
@@ -144,12 +143,18 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
             className="_memory-team-switcher-trigger"
             title={active?.name ?? t('teamSwitcher.selectTeam')}
           >
-            <span className={`_memory-team-switcher-avatar ${active ? teamColor(active.team_id) : 'bg-primary'}`}>
+            <span
+              className={`_memory-team-switcher-avatar ${active ? teamColor(active.team_id) : 'bg-primary'}`}
+            >
               {(active?.name ?? '?').slice(0, 1).toUpperCase()}
             </span>
             <span className="_memory-team-switcher-meta">
-              <span className="_memory-team-switcher-name">{active?.name ?? t('teamSwitcher.selectTeam')}</span>
-              <span className="_memory-team-switcher-id">{active?.team_id ?? t('teamSwitcher.noTeam')}</span>
+              <span className="_memory-team-switcher-name">
+                {active?.name ?? t('teamSwitcher.selectTeam')}
+              </span>
+              <span className="_memory-team-switcher-id">
+                {active?.team_id ?? t('teamSwitcher.noTeam')}
+              </span>
             </span>
             <ChevronDownIcon size={12} className="_memory-team-switcher-chevron" />
           </button>
@@ -159,12 +164,12 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
           <div className="_memory-team-switcher-panel">
             <div className="_memory-team-switcher-panel-header">
               <div className="_memory-team-switcher-panel-title">{t('teamSwitcher.title')}</div>
-              <div className="_memory-team-switcher-panel-desc">
-                {t('teamSwitcher.desc')}
-              </div>
+              <div className="_memory-team-switcher-panel-desc">{t('teamSwitcher.desc')}</div>
             </div>
 
-            <div className="_memory-team-switcher-panel-label">{t('teamSwitcher.teamCount', { count: myTeams.length })}</div>
+            <div className="_memory-team-switcher-panel-label">
+              {t('teamSwitcher.teamCount', { count: myTeams.length })}
+            </div>
 
             <div className="_memory-team-switcher-list-wrap">
               {myTeams.length === 0 ? (
@@ -191,7 +196,9 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
                           aria-current={isActive || undefined}
                           onClick={() => pick(tm.team_id, close)}
                         >
-                          <span className={`_memory-team-switcher-item-avatar ${teamColor(tm.team_id)}`}>
+                          <span
+                            className={`_memory-team-switcher-item-avatar ${teamColor(tm.team_id)}`}
+                          >
                             {tm.name.slice(0, 1).toUpperCase()}
                           </span>
                           <span className="_memory-team-switcher-item-meta">
@@ -252,7 +259,8 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
                   />
                   <div className="_memory-team-switcher-create-actions">
                     <Button onClick={resetCreateForm}>{t('teamSwitcher.cancel')}</Button>
-                    <Button type="primary"
+                    <Button
+                      type="primary"
                       loading={creating}
                       disabled={!newTeamName.trim() || creating}
                       onClick={handleCreate}
@@ -262,7 +270,8 @@ export function TeamSwitcher({ userRole }: { userRole: TeamRole | null }) {
                   </div>
                 </div>
               ) : (
-                <Button type="text"
+                <Button
+                  type="text"
                   className="_memory-team-switcher-create-trigger"
                   onClick={() => setShowCreateTeam(true)}
                 >

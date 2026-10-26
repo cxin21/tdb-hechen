@@ -87,9 +87,7 @@ export default function ForkSkillDialog(props: {
         pagination: { limit: 100 },
       });
       if (existing.items.some((s) => s.name === newName)) {
-        throw new Error(
-          t('forkSkill.error.duplicate', { agent: agentId, name: newName })
-        );
+        throw new Error(t('forkSkill.error.duplicate', { agent: agentId, name: newName }));
       }
 
       // Step 3: 复制附属资源文件（逐个 readSkillFile；单个失败跳过，不阻断主流程）。
@@ -116,9 +114,10 @@ export default function ForkSkillDialog(props: {
       // Step 4: 以（可编辑的）副本名 + 目标 agent 为 owner 创建 skill（v3 API）。
       // 若用户改了名，同步改写 SKILL.md frontmatter 的 name 字段，保持 DB 与文件一致。
       const trimmedName = newName.trim();
-      const finalContent = trimmedName !== props.skillName
-        ? rewriteFrontmatterName(full.content, trimmedName)
-        : full.content;
+      const finalContent =
+        trimmedName !== props.skillName
+          ? rewriteFrontmatterName(full.content, trimmedName)
+          : full.content;
       const created = await createSkill({
         user_id: props.userId,
         team_id: props.teamId,
@@ -128,11 +127,20 @@ export default function ForkSkillDialog(props: {
         resources: resources.length ? resources : undefined,
       });
 
-      const resourceInfo = resources.length > 0
-        ? t('forkSkill.success.withResources', { name: props.skillName, agent: agentId, count: resources.length })
-        : (full.manifest?.length ?? 0) > 0
-          ? t('forkSkill.success.allFailed', { name: props.skillName, agent: agentId, count: full.manifest?.length ?? 0 })
-          : t('forkSkill.success.noResources', { name: props.skillName, agent: agentId });
+      const resourceInfo =
+        resources.length > 0
+          ? t('forkSkill.success.withResources', {
+              name: props.skillName,
+              agent: agentId,
+              count: resources.length,
+            })
+          : (full.manifest?.length ?? 0) > 0
+            ? t('forkSkill.success.allFailed', {
+                name: props.skillName,
+                agent: agentId,
+                count: full.manifest?.length ?? 0,
+              })
+            : t('forkSkill.success.noResources', { name: props.skillName, agent: agentId });
       setSuccess(resourceInfo);
       setTimeout(() => props.onForked(created), 800);
     } catch (err) {
@@ -143,7 +151,13 @@ export default function ForkSkillDialog(props: {
   }
 
   return (
-    <Modal visible caption={t('forkSkill.caption')} size="s" onClose={props.onClose} disableEscape={submitting}>
+    <Modal
+      visible
+      caption={t('forkSkill.caption')}
+      size="s"
+      onClose={props.onClose}
+      disableEscape={submitting}
+    >
       <Modal.Body>
         <Form>
           <Form.Item label={t('forkSkill.descLabel')}>
@@ -166,13 +180,30 @@ export default function ForkSkillDialog(props: {
               placeholder={t('forkSkill.copyName.placeholder')}
             />
           </Form.Item>
-          {error && <Form.Item><Alert type="error">{error}</Alert></Form.Item>}
-          {success && <Form.Item><Alert type="success">{success}</Alert></Form.Item>}
+          {error && (
+            <Form.Item>
+              <Alert type="error">{error}</Alert>
+            </Form.Item>
+          )}
+          {success && (
+            <Form.Item>
+              <Alert type="success">{success}</Alert>
+            </Form.Item>
+          )}
         </Form>
       </Modal.Body>
       <Modal.Footer>
-        <Button type="primary" onClick={() => void submit()} disabled={submitting || !agentId || !newName.trim()} loading={submitting}>{t('forkSkill.submit')}</Button>
-        <Button onClick={props.onClose} disabled={submitting}>{t('forkSkill.cancel')}</Button>
+        <Button
+          type="primary"
+          onClick={() => void submit()}
+          disabled={submitting || !agentId || !newName.trim()}
+          loading={submitting}
+        >
+          {t('forkSkill.submit')}
+        </Button>
+        <Button onClick={props.onClose} disabled={submitting}>
+          {t('forkSkill.cancel')}
+        </Button>
       </Modal.Footer>
     </Modal>
   );

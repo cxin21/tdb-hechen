@@ -75,7 +75,8 @@ export default function AgentGrid({
   const [keyword, setKeyword] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('agentGrid.viewMode') : null;
+    const saved =
+      typeof localStorage !== 'undefined' ? localStorage.getItem('agentGrid.viewMode') : null;
     return saved === 'list' ? 'list' : 'card';
   });
   const handleSetViewMode = useCallback((mode: ViewMode) => {
@@ -102,9 +103,9 @@ export default function AgentGrid({
       if (ownerFilter && agent.owner_user_id !== ownerFilter) return false;
       if (!normalizedKeyword) return true;
       return (
-        agent.name.toLowerCase().includes(normalizedKeyword)
-        || agent.description.toLowerCase().includes(normalizedKeyword)
-        || agent.agent_id.toLowerCase().includes(normalizedKeyword)
+        agent.name.toLowerCase().includes(normalizedKeyword) ||
+        agent.description.toLowerCase().includes(normalizedKeyword) ||
+        agent.agent_id.toLowerCase().includes(normalizedKeyword)
       );
     });
   }, [agents, keyword, ownerFilter]);
@@ -128,18 +129,30 @@ export default function AgentGrid({
         data-guide={editable ? 'agent-name-editable' : undefined}
         onClick={() => editable && onEditAgent(agent)}
         disabled={!editable}
-        title={editable
-          ? t('agentGrid.card.edit.tooltip.can')
-          : t('agentGrid.card.edit.tooltip.cannot', { owner: agent.owner_user_id ? resolveUserName(agent.owner_user_id) : t('agentGrid.card.ownerUnset') })}
+        title={
+          editable
+            ? t('agentGrid.card.edit.tooltip.can')
+            : t('agentGrid.card.edit.tooltip.cannot', {
+                owner: agent.owner_user_id
+                  ? resolveUserName(agent.owner_user_id)
+                  : t('agentGrid.card.ownerUnset'),
+              })
+        }
       >
-        <span className="_memory-agents-name" title={agent.name}>{agent.name}</span>
-        {editable && <ChevronRightIcon size={compact ? 12 : 14} className="_memory-agents-chevron" />}
+        <span className="_memory-agents-name" title={agent.name}>
+          {agent.name}
+        </span>
+        {editable && (
+          <ChevronRightIcon size={compact ? 12 : 14} className="_memory-agents-chevron" />
+        )}
       </button>
     );
   }
 
   function renderOwner(agent: StoreAgent) {
-    return <AgentOwnerTag ownerId={agent.owner_user_id} isMe={agent.owner_user_id === currentUser} />;
+    return (
+      <AgentOwnerTag ownerId={agent.owner_user_id} isMe={agent.owner_user_id === currentUser} />
+    );
   }
 
   function renderAssets(agent: StoreAgent, countsLoading = false) {
@@ -163,7 +176,9 @@ export default function AgentGrid({
             {t('agentGrid.subtitle', {
               name: activeTeam.name,
               id: activeTeam.team_id,
-              loading: agentsLoading ? t('agentGrid.loading') : t('agentGrid.subtitle.count', { count: agents.length }),
+              loading: agentsLoading
+                ? t('agentGrid.loading')
+                : t('agentGrid.subtitle.count', { count: agents.length }),
             })}
           </div>
         </div>
@@ -195,7 +210,10 @@ export default function AgentGrid({
                   appearance="button"
                   options={[
                     { value: '', text: t('agentGrid.allOwners') },
-                    ...ownerOptions.map((ownerId) => ({ value: ownerId, text: resolveUserName(ownerId) })),
+                    ...ownerOptions.map((ownerId) => ({
+                      value: ownerId,
+                      text: resolveUserName(ownerId),
+                    })),
                   ]}
                   matchButtonWidth
                 />
@@ -283,12 +301,18 @@ export default function AgentGrid({
                 data-guide={editable ? 'agent-card-editable' : undefined}
               >
                 <div className="_memory-agents-card-head">{renderName(agent)}</div>
-                <div className="_memory-agents-card-id">{t('agentGrid.card.id', { id: agent.agent_id })}</div>
-                <div className="_memory-agents-card-desc">{agent.description || t('common.noDescription')}</div>
+                <div className="_memory-agents-card-id">
+                  {t('agentGrid.card.id', { id: agent.agent_id })}
+                </div>
+                <div className="_memory-agents-card-desc">
+                  {agent.description || t('common.noDescription')}
+                </div>
                 <div className="_memory-agents-owner-row">
                   <span>{t('agentGrid.card.owner')}</span>
                   {renderOwner(agent)}
-                  {!editable && <span className="_memory-agents-readonly">{t('agentGrid.card.readonly')}</span>}
+                  {!editable && (
+                    <span className="_memory-agents-readonly">{t('agentGrid.card.readonly')}</span>
+                  )}
                 </div>
                 {/* 资产计数区：counts 还在加载时只把 4 个数字换成小骨架占位，主体立刻可见 */}
                 {renderAssets(agent, countsLoading)}
@@ -297,7 +321,11 @@ export default function AgentGrid({
                     type="text"
                     disabled={!editable}
                     onClick={() => onDeleteAgent(agent)}
-                    title={editable ? t('agentGrid.card.delete.tooltip.can') : t('agentGrid.card.delete.tooltip.cannot')}
+                    title={
+                      editable
+                        ? t('agentGrid.card.delete.tooltip.can')
+                        : t('agentGrid.card.delete.tooltip.cannot')
+                    }
                   >
                     <DeleteIcon size={12} /> {t('agentGrid.card.delete')}
                   </Button>
@@ -331,11 +359,16 @@ export default function AgentGrid({
                 const counts = mountedCounts[agent.agent_id] ?? emptyMountedCounts();
                 // 列表视图同样：counts 在加载时用「—」占位，而不是整行消失
                 if (countsLoading) {
-                  return <span className="_memory-agents-list-assets _memory-agents-list-assets--loading">—</span>;
+                  return (
+                    <span className="_memory-agents-list-assets _memory-agents-list-assets--loading">
+                      —
+                    </span>
+                  );
                 }
                 return (
                   <span className="_memory-agents-list-assets">
-                    skills×{counts.skills} · code_graph×{counts.code_graph} · llm_wiki×{counts.llm_wiki} · chat_memory×{counts.chat_memory}
+                    skills×{counts.skills} · code_graph×{counts.code_graph} · llm_wiki×
+                    {counts.llm_wiki} · chat_memory×{counts.chat_memory}
                   </span>
                 );
               },
@@ -343,7 +376,11 @@ export default function AgentGrid({
             {
               key: 'description',
               header: t('agentGrid.table.desc'),
-              render: (agent: StoreAgent) => <span className="_memory-agents-list-description">{agent.description || t('common.noDescription')}</span>,
+              render: (agent: StoreAgent) => (
+                <span className="_memory-agents-list-description">
+                  {agent.description || t('common.noDescription')}
+                </span>
+              ),
             },
             {
               key: 'actions',

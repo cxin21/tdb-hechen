@@ -58,7 +58,7 @@ function writeAssetScopeMap(map: AssetScopeMap): void {
 export function getAssetConfigScope(
   kind: AssetKind,
   asset_id: string,
-  fallbackOwner = ''
+  fallbackOwner = '',
 ): { scope: AssetConfigScope; owner_user_id: string } {
   const rec = readAssetScopeMap()[scopeKey(kind, asset_id)];
   if (rec) return { scope: rec.scope, owner_user_id: rec.owner_user_id || fallbackOwner };
@@ -75,7 +75,7 @@ export function setAssetConfigScope(
   asset_id: string,
   scope: AssetConfigScope,
   actor: string,
-  fallbackOwner = ''
+  fallbackOwner = '',
 ): void {
   const map = readAssetScopeMap();
   const key = scopeKey(kind, asset_id);
@@ -95,7 +95,7 @@ export function canManageAssetScope(
   ownerUserId: string,
   team: Team | null | undefined,
   user_id: string,
-  isAdmin?: boolean
+  isAdmin?: boolean,
 ): boolean {
   if (!user_id) return false;
   // 全局 admin 不再自动获得资产管理特权，与普通 member 一致：

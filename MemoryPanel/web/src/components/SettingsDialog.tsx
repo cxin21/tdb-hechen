@@ -10,21 +10,8 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Alert,
-  Modal,
-  Segment,
-  Select,
-  Switch,
-  Tag,
-  Text,
-} from 'tea-component';
-import {
-  BooksIcon,
-  CodeIcon,
-  ToolsIcon,
-  ChatIcon,
-} from 'tea-icons-react';
+import { Alert, Modal, Segment, Select, Switch, Tag, Text } from 'tea-component';
+import { BooksIcon, CodeIcon, ToolsIcon, ChatIcon } from 'tea-icons-react';
 import {
   sessionInitApi,
   userConfigApi,
@@ -108,7 +95,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     let cancelled = false;
     setLoading(true);
     setError('');
-    userConfigApi.getAssetCapabilities()
+    userConfigApi
+      .getAssetCapabilities()
       .then((cfg) => {
         if (cancelled) return;
         setEnabled({
@@ -125,7 +113,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleToggle(mod: ResourceModule, next: boolean) {
@@ -135,7 +125,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     setError('');
     try {
       await userConfigApi.setAssetCapability(mod.paramKey, next);
-      tea.notify.success(t(next ? 'settings.notify.enabled' : 'settings.notify.disabled', { label: t(mod.labelKey) }));
+      tea.notify.success(
+        t(next ? 'settings.notify.enabled' : 'settings.notify.disabled', {
+          label: t(mod.labelKey),
+        }),
+      );
     } catch (e) {
       setEnabled((prev) => ({ ...prev, [mod.id]: previous }));
       const msg = e instanceof Error ? e.message : String(e);
@@ -163,70 +157,82 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       }
     >
       <Modal.Body>
-      {activeTab === 'permissions' && (
-        <div>
-          <div style={{ paddingTop: 4 }}>
-            <Text theme="label" style={{ display: 'block', marginBottom: 8 }}>
-              {t('settings.title')}
-            </Text>
-            <Text theme="weak" style={{ display: 'block', marginBottom: 16, fontSize: 12 }}>
-              {t('settings.desc')}
-            </Text>
-            {error && <Alert type="error" style={{ marginBottom: 12 }}>{error}</Alert>}
-            {loading && <Alert type="info" style={{ marginBottom: 12 }}>{t('settings.loadingConfig')}</Alert>}
+        {activeTab === 'permissions' && (
+          <div>
+            <div style={{ paddingTop: 4 }}>
+              <Text theme="label" style={{ display: 'block', marginBottom: 8 }}>
+                {t('settings.title')}
+              </Text>
+              <Text theme="weak" style={{ display: 'block', marginBottom: 16, fontSize: 12 }}>
+                {t('settings.desc')}
+              </Text>
+              {error && (
+                <Alert type="error" style={{ marginBottom: 12 }}>
+                  {error}
+                </Alert>
+              )}
+              {loading && (
+                <Alert type="info" style={{ marginBottom: 12 }}>
+                  {t('settings.loadingConfig')}
+                </Alert>
+              )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {RESOURCE_MODULES.map((mod) => (
-                <div
-                  key={mod.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '10px 12px',
-                    border: '1px solid var(--tea-color-border-primary-default)',
-                    borderRadius: 6,
-                    background: enabled[mod.id]
-                      ? 'var(--tea-color-bg-brand-lighten-default)'
-                      : 'var(--tea-color-bg-primary-default)',
-                    transition: 'background-color 0.15s',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                    <span style={{ color: 'var(--tea-color-text-secondary)', flexShrink: 0 }}>
-                      {mod.icon}
-                    </span>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Text style={{ fontSize: 13, fontWeight: 500 }}>
-                          {t(mod.labelKey)}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {RESOURCE_MODULES.map((mod) => (
+                  <div
+                    key={mod.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '10px 12px',
+                      border: '1px solid var(--tea-color-border-primary-default)',
+                      borderRadius: 6,
+                      background: enabled[mod.id]
+                        ? 'var(--tea-color-bg-brand-lighten-default)'
+                        : 'var(--tea-color-bg-primary-default)',
+                      transition: 'background-color 0.15s',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                      <span style={{ color: 'var(--tea-color-text-secondary)', flexShrink: 0 }}>
+                        {mod.icon}
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Text style={{ fontSize: 13, fontWeight: 500 }}>{t(mod.labelKey)}</Text>
+                          {savingKey === mod.paramKey ? (
+                            <Tag theme="warning" variant="soft" size="sm">
+                              {t('settings.tag.saving')}
+                            </Tag>
+                          ) : enabled[mod.id] ? (
+                            <Tag theme="success" variant="soft" size="sm">
+                              {t('settings.tag.enabled')}
+                            </Tag>
+                          ) : (
+                            <Tag theme="default" variant="soft" size="sm">
+                              {t('settings.tag.disabled')}
+                            </Tag>
+                          )}
+                        </div>
+                        <Text theme="weak" style={{ fontSize: 12, marginTop: 2, display: 'block' }}>
+                          {t(mod.descKey)}
                         </Text>
-                        {savingKey === mod.paramKey ? (
-                          <Tag theme="warning" variant="soft" size="sm">{t('settings.tag.saving')}</Tag>
-                        ) : enabled[mod.id] ? (
-                          <Tag theme="success" variant="soft" size="sm">{t('settings.tag.enabled')}</Tag>
-                        ) : (
-                          <Tag theme="default" variant="soft" size="sm">{t('settings.tag.disabled')}</Tag>
-                        )}
                       </div>
-                      <Text theme="weak" style={{ fontSize: 12, marginTop: 2, display: 'block' }}>
-                        {t(mod.descKey)}
-                      </Text>
                     </div>
+                    <Switch
+                      value={enabled[mod.id]}
+                      disabled={loading || savingKey === mod.paramKey}
+                      onChange={(v) => void handleToggle(mod, v)}
+                    />
                   </div>
-                  <Switch
-                    value={enabled[mod.id]}
-                    disabled={loading || savingKey === mod.paramKey}
-                    onChange={(v) => void handleToggle(mod, v)}
-                  />
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {activeTab === 'sessionInit' && <SessionInitPanel />}
+        {activeTab === 'sessionInit' && <SessionInitPanel />}
       </Modal.Body>
     </Modal>
   );
@@ -262,7 +268,9 @@ function SessionInitPanel() {
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   async function save(patch: Partial<SessionInitConfig>, clearAgentOnTeamChange = false) {
     const next = { ...cfg!, ...patch };
@@ -292,42 +300,98 @@ function SessionInitPanel() {
     }
   }
 
-  const teamOptions = [{ value: '', text: t('settings.sessionInit.noTeam'), disabled: false }].concat(
-    teams.map((th) => ({ value: th.team_id, text: th.name, disabled: false })),
-  );
-  const agentOptions = [{ value: '', text: t('settings.sessionInit.noAgent'), disabled: false }].concat(
-    agents.map((a) => ({ value: a.agent_id, text: a.name, disabled: false })),
-  );
+  const teamOptions = [
+    { value: '', text: t('settings.sessionInit.noTeam'), disabled: false },
+  ].concat(teams.map((th) => ({ value: th.team_id, text: th.name, disabled: false })));
+  const agentOptions = [
+    { value: '', text: t('settings.sessionInit.noAgent'), disabled: false },
+  ].concat(agents.map((a) => ({ value: a.agent_id, text: a.name, disabled: false })));
 
   return (
     <div style={{ paddingTop: 4 }}>
-      <Text theme="label" style={{ display: 'block', marginBottom: 4 }}>{t('settings.sessionInit.title')}</Text>
-      <Text theme="weak" style={{ display: 'block', marginBottom: 16, fontSize: 12 }}>{t('settings.sessionInit.desc')}</Text>
-      {error && <Alert type="error" style={{ marginBottom: 12 }}>{error}</Alert>}
-      {loading && <Alert type="info" style={{ marginBottom: 12 }}>{t('settings.loadingConfig')}</Alert>}
+      <Text theme="label" style={{ display: 'block', marginBottom: 4 }}>
+        {t('settings.sessionInit.title')}
+      </Text>
+      <Text theme="weak" style={{ display: 'block', marginBottom: 16, fontSize: 12 }}>
+        {t('settings.sessionInit.desc')}
+      </Text>
+      {error && (
+        <Alert type="error" style={{ marginBottom: 12 }}>
+          {error}
+        </Alert>
+      )}
+      {loading && (
+        <Alert type="info" style={{ marginBottom: 12 }}>
+          {t('settings.loadingConfig')}
+        </Alert>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 滑块：是否需要手动选择 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', border: '1px solid var(--tea-color-border-primary-default)', borderRadius: 6 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 12px',
+            border: '1px solid var(--tea-color-border-primary-default)',
+            borderRadius: 6,
+          }}
+        >
           <div>
-            <Text style={{ fontSize: 13, fontWeight: 500 }}>{t('settings.sessionInit.manualSelectLabel')}</Text>
-            <Text theme="weak" style={{ fontSize: 12, marginTop: 2, display: 'block' }}>{t('settings.sessionInit.manualSelectDesc')}</Text>
+            <Text style={{ fontSize: 13, fontWeight: 500 }}>
+              {t('settings.sessionInit.manualSelectLabel')}
+            </Text>
+            <Text theme="weak" style={{ fontSize: 12, marginTop: 2, display: 'block' }}>
+              {t('settings.sessionInit.manualSelectDesc')}
+            </Text>
           </div>
-          <Switch value={!!cfg?.manual_select} disabled={loading || saving || !cfg} onChange={(v) => void save({ manual_select: v })} />
+          <Switch
+            value={!!cfg?.manual_select}
+            disabled={loading || saving || !cfg}
+            onChange={(v) => void save({ manual_select: v })}
+          />
         </div>
 
         {/* 滑块：默认是否关联团队资产 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', border: '1px solid var(--tea-color-border-primary-default)', borderRadius: 6 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 12px',
+            border: '1px solid var(--tea-color-border-primary-default)',
+            borderRadius: 6,
+          }}
+        >
           <div>
-            <Text style={{ fontSize: 13, fontWeight: 500 }}>{t('settings.sessionInit.associateLabel')}</Text>
-            <Text theme="weak" style={{ fontSize: 12, marginTop: 2, display: 'block' }}>{t('settings.sessionInit.associateDesc')}</Text>
+            <Text style={{ fontSize: 13, fontWeight: 500 }}>
+              {t('settings.sessionInit.associateLabel')}
+            </Text>
+            <Text theme="weak" style={{ fontSize: 12, marginTop: 2, display: 'block' }}>
+              {t('settings.sessionInit.associateDesc')}
+            </Text>
           </div>
-          <Switch value={!!cfg?.default_associate} disabled={loading || saving || !cfg} onChange={(v) => void save({ default_associate: v })} />
+          <Switch
+            value={!!cfg?.default_associate}
+            disabled={loading || saving || !cfg}
+            onChange={(v) => void save({ default_associate: v })}
+          />
         </div>
 
         {/* 下拉：默认团队 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px' }}>
-          <Text style={{ fontSize: 13, fontWeight: 500, flexShrink: 0 }}>{t('settings.sessionInit.teamLabel')}</Text>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '10px 12px',
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: 500, flexShrink: 0 }}>
+            {t('settings.sessionInit.teamLabel')}
+          </Text>
           <Select
             size="m"
             value={cfg?.default_team_id ?? ''}
@@ -338,8 +402,18 @@ function SessionInitPanel() {
         </div>
 
         {/* 下拉：默认 Agent（含未指定空选项） */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px' }}>
-          <Text style={{ fontSize: 13, fontWeight: 500, flexShrink: 0 }}>{t('settings.sessionInit.agentLabel')}</Text>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            padding: '10px 12px',
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: 500, flexShrink: 0 }}>
+            {t('settings.sessionInit.agentLabel')}
+          </Text>
           <Select
             size="m"
             value={cfg?.default_agent_id ?? ''}

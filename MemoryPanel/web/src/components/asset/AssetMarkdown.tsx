@@ -189,9 +189,18 @@ const mdComponentsCompact: Components = {
 };
 
 /** 渲染一段 Markdown 正文（统一 gfm 插件 + 共享样式；compact 用于 Code 详情小字号场景） */
-export function AssetMarkdown({ content, compact = false }: { content: string; compact?: boolean }) {
+export function AssetMarkdown({
+  content,
+  compact = false,
+}: {
+  content: string;
+  compact?: boolean;
+}) {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={compact ? mdComponentsCompact : mdComponents}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={compact ? mdComponentsCompact : mdComponents}
+    >
       {content}
     </ReactMarkdown>
   );

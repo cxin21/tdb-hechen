@@ -36,16 +36,18 @@ export class ApiError extends Error {
     public status: number,
     public statusText: string,
     public body: string,
-    opts: { code?: number | string; requestId?: string; rawMessage?: string; data?: unknown } = {}
+    opts: { code?: number | string; requestId?: string; rawMessage?: string; data?: unknown } = {},
   ) {
-    super(formatApiErrorMessage({
-      code: opts.code,
-      message: opts.rawMessage ?? statusText,
-      requestId: opts.requestId,
-      httpStatus: status,
-      httpStatusText: statusText,
-      body,
-    }));
+    super(
+      formatApiErrorMessage({
+        code: opts.code,
+        message: opts.rawMessage ?? statusText,
+        requestId: opts.requestId,
+        httpStatus: status,
+        httpStatusText: statusText,
+        body,
+      }),
+    );
     this.name = 'ApiError';
     this.code = opts.code;
     this.requestId = opts.requestId;
@@ -95,7 +97,7 @@ export async function request<T>(
   method: string,
   path: string,
   body?: unknown,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
   const headers: Record<string, string> = { ...extraHeaders };
   const init: RequestInit = { method, headers };
@@ -143,12 +145,17 @@ export async function getCurrentUser(): Promise<PublicUser> {
  * meta 透明代理的公共调用：注入指定 Header，POST body，解析信封。
  * `auth/verify` 走此函数但只传 X-Tdai-Service-Id（不带 user-key），
  * 其余 action 走 `metaPost`（自动从 session 注入双 Header）。
- */export async function metaCall<T>(
+ */ export async function metaCall<T>(
   action: string,
   body: Record<string, unknown>,
-  headers: Record<string, string>
+  headers: Record<string, string>,
 ): Promise<T> {
-  const envelope = await request<MetaEnvelope<T>>('POST', `${META_PREFIX}/${action}`, body, headers);
+  const envelope = await request<MetaEnvelope<T>>(
+    'POST',
+    `${META_PREFIX}/${action}`,
+    body,
+    headers,
+  );
   if (envelope.code !== 0) {
     throw new ApiError(200, envelope.message, '', {
       code: envelope.code,

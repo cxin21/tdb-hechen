@@ -24,7 +24,12 @@ export interface AutoAdoptAudit {
   prev_slot_version?: number;
   prev_slot_existed?: boolean;
   post_slot_version?: number;
-  gate?: { votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
+  gate?: {
+    votes?: number;
+    spanHours?: number;
+    contradictionThreshold?: number;
+    dupThreshold?: number;
+  };
 }
 
 /** #100：宽松解析 auto_adopt 审计（state 非 auto_adopted → null 不显示徽标；state=auto_adopted 时永远非 null——auto_adopt 非对象时返 {}，仍显示徽标与回滚，快照字段走缺省占位） */

@@ -17,7 +17,12 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select, Input, Button, Alert } from 'tea-component';
-import { authVerifyApi, metaInstancesApi, type MetadataInstance, type PublicUser } from '@/lib/teamApi';
+import {
+  authVerifyApi,
+  metaInstancesApi,
+  type MetadataInstance,
+  type PublicUser,
+} from '@/lib/teamApi';
 import { getPanelSession, setPanelSession, clearPanelSession } from '@/lib/panelSession';
 import ParticleWaveBackground from './ParticleWaveBackground';
 import './login-gate.css';
@@ -81,11 +86,7 @@ export async function resumeSession(): Promise<AuthState | null> {
   return auth;
 }
 
-export default function LoginGate({
-  onLoggedIn,
-}: {
-  onLoggedIn: (auth: AuthState) => void;
-}) {
+export default function LoginGate({ onLoggedIn }: { onLoggedIn: (auth: AuthState) => void }) {
   const { t } = useTranslation();
   const [instances, setInstances] = useState<MetadataInstance[]>([]);
   const [instanceId, setInstanceId] = useState('');
@@ -115,7 +116,11 @@ export default function LoginGate({
       .catch((err) => {
         if (cancelled) return;
         setInstancesError(true);
-        setError(t('login.error.loadInstances', { detail: err instanceof Error ? ` (${err.message})` : '' }));
+        setError(
+          t('login.error.loadInstances', {
+            detail: err instanceof Error ? ` (${err.message})` : '',
+          }),
+        );
       });
     return () => {
       cancelled = true;
@@ -198,7 +203,9 @@ export default function LoginGate({
                 }}
                 disabled={submitting || instances.length === 0}
                 placeholder={
-                  instancesError ? t('login.placeholder.instanceError') : t('login.placeholder.instance')
+                  instancesError
+                    ? t('login.placeholder.instanceError')
+                    : t('login.placeholder.instance')
                 }
                 options={instances.map((inst) => ({ value: inst.instance_id, text: inst.name }))}
                 boxSizeSync

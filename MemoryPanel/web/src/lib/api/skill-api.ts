@@ -103,7 +103,11 @@ function stripEmpty(body: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-async function skillCall<T>(action: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+async function skillCall<T>(
+  action: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const session = getPanelSession();
   const headers: Record<string, string> = {
     'content-type': 'application/json',
@@ -126,10 +130,18 @@ async function skillCall<T>(action: string, body: Record<string, unknown>, signa
   try {
     envelope = JSON.parse(text) as SkillEnvelope<T>;
   } catch {
-    throw new SkillApiError(res.status || 500, text || res.statusText || 'Skill request failed', '');
+    throw new SkillApiError(
+      res.status || 500,
+      text || res.statusText || 'Skill request failed',
+      '',
+    );
   }
   if (!res.ok || envelope.code !== 0) {
-    throw new SkillApiError(envelope.code ?? res.status, envelope.message || res.statusText, envelope.request_id);
+    throw new SkillApiError(
+      envelope.code ?? res.status,
+      envelope.message || res.statusText,
+      envelope.request_id,
+    );
   }
   return envelope.data;
 }
@@ -426,20 +438,26 @@ export interface ExportSkillResult {
 
 const EXPORT_TIMEOUT_MS = 30_000;
 
-export function exportSkill(params: ExportSkillParams, signal?: AbortSignal): Promise<ExportSkillResult> {
+export function exportSkill(
+  params: ExportSkillParams,
+  signal?: AbortSignal,
+): Promise<ExportSkillResult> {
   const timeout = AbortSignal.timeout ? AbortSignal.timeout(EXPORT_TIMEOUT_MS) : undefined;
   // 合并外部 signal 与内部超时
-  const effectiveSignal = signal && timeout
-    ? AbortSignal.any?.([signal, timeout]) ?? timeout
-    : (signal ?? timeout);
+  const effectiveSignal =
+    signal && timeout ? (AbortSignal.any?.([signal, timeout]) ?? timeout) : (signal ?? timeout);
 
-  return skillCall('export', {
-    user_id: params.user_id ?? '',
-    team_id: params.team_id ?? '',
-    skill_id: params.skill_id,
-    version: params.version,
-    format: params.format,
-  }, effectiveSignal);
+  return skillCall(
+    'export',
+    {
+      user_id: params.user_id ?? '',
+      team_id: params.team_id ?? '',
+      skill_id: params.skill_id,
+      version: params.version,
+      format: params.format,
+    },
+    effectiveSignal,
+  );
 }
 
 // ---- 3.15 extract/result (deprecated) ----

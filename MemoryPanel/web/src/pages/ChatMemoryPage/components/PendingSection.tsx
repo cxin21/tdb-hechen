@@ -31,14 +31,17 @@ import { slotLabelOf, slotTitleOf, slotVersionText } from '@/lib/chatMemorySlotL
 import { tea } from '@/lib/tea-bridge';
 
 /** #19 T12：重提提案 attrs（宽松解析；坏 JSON/旧行 → null 不显示徽标） */
-function reproposalOf(p: PendingItem): { generation?: number; supersedes?: string; evidence_threshold?: number } | null {
+function reproposalOf(
+  p: PendingItem,
+): { generation?: number; supersedes?: string; evidence_threshold?: number } | null {
   try {
     const a = p.attrs_json ? (JSON.parse(p.attrs_json) as Record<string, unknown>) : null;
     if (a && a.reproposed === true) {
       return {
         generation: typeof a.generation === 'number' ? a.generation : undefined,
         supersedes: typeof a.supersedes === 'string' ? a.supersedes : undefined,
-        evidence_threshold: typeof a.evidence_threshold === 'number' ? a.evidence_threshold : undefined,
+        evidence_threshold:
+          typeof a.evidence_threshold === 'number' ? a.evidence_threshold : undefined,
       };
     }
   } catch {
@@ -80,7 +83,9 @@ export function PendingSection(props: { blockId: string }) {
     setBusy(id);
     setError('');
     try {
-      const res = await chatMemoryApi.pendingDecide(props.blockId, id, decision, { allowOverwrite });
+      const res = await chatMemoryApi.pendingDecide(props.blockId, id, decision, {
+        allowOverwrite,
+      });
       if (res?.overwritten) tea.notify.success('已显式覆盖同名锚');
       refresh();
     } catch (err) {
@@ -90,7 +95,9 @@ export function PendingSection(props: { blockId: string }) {
       const conflict = c409?.kind === 'conflict' ? c409.conflict : null;
       if (conflict && decision === 'adopted' && !allowOverwrite) {
         if (conflict.state === 'vetoed') {
-          setError(`「${conflict.label}」已被永久否决（vetoed），不可采纳覆盖；如需恢复请先在锚面板处理否决状态`);
+          setError(
+            `「${conflict.label}」已被永久否决（vetoed），不可采纳覆盖；如需恢复请先在锚面板处理否决状态`,
+          );
           setBusy('');
           return;
         }
@@ -99,7 +106,9 @@ export function PendingSection(props: { blockId: string }) {
           message: `已存在同名锚「${conflict.label}」${stateNote}`,
           description:
             '确认覆盖？将复用现有锚（保留权重/方向/钉住/来源），按提案内容重写该锚并执行本次采纳。' +
-            (conflict.pending_has_description ? '' : '注意：本提案缺少合格描述，覆盖后锚描述可能为空。'),
+            (conflict.pending_has_description
+              ? ''
+              : '注意：本提案缺少合格描述，覆盖后锚描述可能为空。'),
           okText: '覆盖采纳',
           cancelText: '取消',
         });
@@ -134,7 +143,8 @@ export function PendingSection(props: { blockId: string }) {
   function toggleSel(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
@@ -167,7 +177,9 @@ export function PendingSection(props: { blockId: string }) {
     setSelected(new Set());
     if (failedIds.length > 0) setError(`批量决策部分失败（${failedIds.length} 条），请重试`);
     if (rollbackRefusedCount > 0)
-      setError(`回滚被拒 ${rollbackRefusedCount} 条：「我是谁」采纳后又被改过，需手工核对当前内容（见「记忆 → 身份」）`);
+      setError(
+        `回滚被拒 ${rollbackRefusedCount} 条：「我是谁」采纳后又被改过，需手工核对当前内容（见「记忆 → 身份」）`,
+      );
     refresh();
   }
 
@@ -189,7 +201,9 @@ export function PendingSection(props: { blockId: string }) {
               disabled={selectable.length === 0}
               onChange={() =>
                 setSelected(
-                  selected.size === selectable.length ? new Set() : new Set(selectable.map((q) => q.pending_id)),
+                  selected.size === selectable.length
+                    ? new Set()
+                    : new Set(selectable.map((q) => q.pending_id)),
                 )
               }
             />
@@ -222,9 +236,14 @@ export function PendingSection(props: { blockId: string }) {
                   checked={selected.has(p.pending_id)}
                   onChange={() => toggleSel(p.pending_id)}
                 />
-                <span className="_pending-slot" title={slotTitleOf(p.slot)}>{slotLabelOf(p.slot)}</span>
+                <span className="_pending-slot" title={slotTitleOf(p.slot)}>
+                  {slotLabelOf(p.slot)}
+                </span>
                 {p.conflict === true && (
-                  <span className="_pending-badge conflict" title="提案 label 与现有同名锚冲突：缺省采纳将被拦截（409），确认后可显式覆盖">
+                  <span
+                    className="_pending-badge conflict"
+                    title="提案 label 与现有同名锚冲突：缺省采纳将被拦截（409），确认后可显式覆盖"
+                  >
                     同名冲突
                   </span>
                 )}
@@ -284,7 +303,10 @@ function AutoAdoptRow(props: {
   const a = props.audit;
   return (
     <div className="_pending-actions _pending-audit">
-      <span className="_pending-badge auto-adopt" title="证据达到要求，系统自动采纳了这条；点「回滚」可恢复原样">
+      <span
+        className="_pending-badge auto-adopt"
+        title="证据达到要求，系统自动采纳了这条；点「回滚」可恢复原样"
+      >
         自动采纳
       </span>
       <details className="_pending-audit-details">
@@ -296,7 +318,9 @@ function AutoAdoptRow(props: {
           </span>
           <span>
             采纳前的「我是谁」：
-            {a?.prev_slot_existed === false ? '当时还没有（回滚即清空）' : slotVersionText(a?.prev_slot_version)}
+            {a?.prev_slot_existed === false
+              ? '当时还没有（回滚即清空）'
+              : slotVersionText(a?.prev_slot_version)}
           </span>
           {a?.prev_slot_content !== undefined && (
             <pre className="_pending-audit-content">{a.prev_slot_content}</pre>

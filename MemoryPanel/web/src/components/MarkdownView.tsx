@@ -11,9 +11,19 @@ import remarkGfm from 'remark-gfm';
 
 import './markdown-view.css';
 
-export function MarkdownView({ children, className, bare }: { children: string; className?: string; bare?: boolean }) {
+export function MarkdownView({
+  children,
+  className,
+  bare,
+}: {
+  children: string;
+  className?: string;
+  bare?: boolean;
+}) {
   return (
-    <div className={`_md-view${bare ? ' _md-view--bare' : ''} prose prose-slate max-w-none${className ? ` ${className}` : ''}`}>
+    <div
+      className={`_md-view${bare ? ' _md-view--bare' : ''} prose prose-slate max-w-none${className ? ` ${className}` : ''}`}
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
     </div>
   );

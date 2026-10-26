@@ -41,7 +41,16 @@ function isValidHttpUrl(url: string): boolean {
 
 export default function ProviderEditor(props: ProviderEditorProps) {
   const { t } = useTranslation();
-  const { title, caption, subjectType, subjectId, provider, isYou, fallbackUserDefault, onChanged } = props;
+  const {
+    title,
+    caption,
+    subjectType,
+    subjectId,
+    provider,
+    isYou,
+    fallbackUserDefault,
+    onChanged,
+  } = props;
 
   // 未配置提示:agent 卡未配且用户已设了默认 → "将沿用我的默认";否则(用户卡、或 agent 无用户级默认)→ "走团队/全局默认"。
   const notConfiguredNote =
@@ -172,7 +181,12 @@ export default function ProviderEditor(props: ProviderEditorProps) {
               </Form.Item>
             </Form>
             <div className="_llm-provider-actions">
-              <Button type="primary" onClick={() => void handleSave()} loading={saving} disabled={saving}>
+              <Button
+                type="primary"
+                onClick={() => void handleSave()}
+                loading={saving}
+                disabled={saving}
+              >
                 {t('llmProvider.save')}
               </Button>
               <Button onClick={cancelEdit} disabled={saving}>

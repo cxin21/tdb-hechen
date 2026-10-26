@@ -18,7 +18,9 @@ export function formatShortTime(ms: number): string {
   const now = new Date();
   const d = new Date(ms);
   const sameDay =
-    now.getFullYear() === d.getFullYear() && now.getMonth() === d.getMonth() && now.getDate() === d.getDate();
+    now.getFullYear() === d.getFullYear() &&
+    now.getMonth() === d.getMonth() &&
+    now.getDate() === d.getDate();
   if (sameDay) {
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
@@ -28,7 +30,8 @@ export function formatShortTime(ms: number): string {
     yesterday.getFullYear() === d.getFullYear() &&
     yesterday.getMonth() === d.getMonth() &&
     yesterday.getDate() === d.getDate()
-  ) return i18n.t('common.yesterday');
+  )
+    return i18n.t('common.yesterday');
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 

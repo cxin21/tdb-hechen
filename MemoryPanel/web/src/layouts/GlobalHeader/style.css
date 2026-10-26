@@ -115,7 +115,9 @@
   background: transparent;
   color: var(--tea-color-text-secondary);
   cursor: pointer;
-  transition: background-color 0.15s, color 0.15s;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
 }
 
 ._memory-global-header-icon-btn:hover {
@@ -132,7 +134,9 @@
   color: var(--tea-color-text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: background-color 0.15s, color 0.15s;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
   white-space: nowrap;
 }
 
