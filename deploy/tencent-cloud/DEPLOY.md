@@ -85,7 +85,7 @@ PROXY_ADMIN_API_KEY=<同上>                       # docker-compose 别名；原
 > 2. **PROXY_ADMIN_API_KEY 不是 proxy 读的变量名**——`MemoryProxy/src/config.ts:716` 只读 `TDAI_PROXY_ADMIN_API_KEY`；只写前者会让运维口 key 落成空串＝公开可访问，且启动日志不告警，只能靠 curl 验 401 发现。
 
 - **core**：`tdai-gateway.cloud.yaml` 已含 `${TDAI_GATEWAY_API_KEY}`/`${TDAI_LLM_API_KEY}` 占位（本地生产 yaml 派生，全部增值配置随行：场景治理/合并召回/字典序开关）。LLM key 的运行时唯一 SoT = 服务器 `{dataDir}/config-override.json`（ADR-0006）；env 占位展开为空不影响 override 生效。
-- **proxy**：`cp 本地 MemoryProxy/config.yaml → /opt/tdai/etc/proxy-config.yaml`，按同目录 `CLOUD-DIFF.md` 改 6 处（endpoint 指向 core、密钥替换、admin key）。
+- **proxy**：以 `deploy/tencent-cloud/config/proxy/proxy-config.cloud.example.yaml` 为起点（**不是**本地 `MemoryProxy/config.yaml`——它被 `.gitignore` 忽略、从未入库），按同目录 `CLOUD-DIFF.md` 替换 `${VAR}` 占位符（endpoint 指向 core、网关 key、admin key）。**闸门类键**（`recallQuerySource` / `l0CaptureMode` / `recallIntentDedup`）缺省会退回 legacy：落盘后必须 `sudo grep -nE 'recallQuerySource|l0CaptureMode' /opt/tdai/etc/proxy-config.yaml` 确认 2 行都在，否则一个用户消息会按模型步数重复召回。
 - **knowledge**：`cp deploy/tencent-cloud/config/knowledge/env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。
 - **panel**：Panel 的 core 地址/api_key 配置按其 `config/metadata-instances.json` 格式落盘（指向 http://127.0.0.1:8420 + 同一把 gateway key）。
 
@@ -117,6 +117,9 @@ curl -sX POST https://<域名>/v3/recall \
   -H 'x-tdai-team-id: ...' -H 'x-tdai-agent-id: ...' -H 'x-tdai-user-id: ...' \
   -H 'Authorization: Bearer <TDAI_GATEWAY_API_KEY>' \
   -d '{"query":"冒烟测试","maxResults":3,"session_id":"smoke-001"}'
+
+# 召回入口闸门生效（#83/#87）：应各有 1 行输出；缺任一行 = 每步一次召回（见 CLOUD-DIFF.md「防漂移」）
+sudo grep -nE 'recallQuerySource|l0CaptureMode' /opt/tdai/etc/proxy-config.yaml
 
 # Panel 前端产物时间戳应为本次构建（不是几周前，见 §3.1）
 ls -l /opt/tdai/td-agemem/MemoryPanel/web/dist/assets/main-*.js

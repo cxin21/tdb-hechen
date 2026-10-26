@@ -609,6 +609,21 @@ tdai:
     recallL1: true # 是否启用 L1 召回（从对话中检索相关记忆）
     injectL2L3: true # 是否注入 L2（Agent Profile）+ L3（Team/Global 记忆）到 system prompt
     l1Limit: 5 # L1 召回最大条数
+    # ── 两把"入口闸门"开关（缺省=legacy 老行为；漏配会静默退回每步一召回）──
+    # recallQuerySource：单次抽取的入口查询定源（#83）。
+    #   legacy（缺省）= 每步裸取 messages 尾条查询 → 一个用户消息跑 N 步就打 N 次 /v3/recall；
+    #   shadow        = 分类器双跑对比，只记日志，行为同 legacy；
+    #   intent        = 读 turnContext.turnIntent，配合 #87/#88 会话级意图指纹去重（生产用）。
+    recallQuerySource: "intent"
+    # l0CaptureMode：L0 落库口径（#83）。
+    #   legacy（缺省）= 单条提取写入；shadow = 双跑对比；classified = turnContext 全量写入 +
+    #   classification 标签（宁漏勿杀，生产用；与 recallQuerySource=intent 同批上线）。
+    l0CaptureMode: "classified"
+    # #87 同意图去重闸（仅 recallQuerySource=intent 消费）：同 userId:agentId:sessionKey 下同一意图
+    # 在 TTL 内只召回一次。缺省 true；置 false 即退回每步召回。
+    recallIntentDedup: true
+    # #88 去重窗口，缺省 3600000（60min；实测洪泛窗口 15–19min，留 3 倍余量）。
+    # recallIntentDedupTtlMs: 3600000
     # L1 召回"自有 + 借入"跨 agent 合并后保留条数（TdaiL1RecallInjector globalTopK）：
     # 类型: int | 默认: 5（原硬编码行为，R7 复审 Minor → 配置化）
     # l1GlobalTopK: 5

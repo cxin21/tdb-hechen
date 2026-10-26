@@ -18,6 +18,21 @@
 
 `${VAR}` 展开由 proxy 配置加载器支持（`MemoryProxy/src/config.ts`，含 `${VAR:-default}` 默认值语法）。
 
+## 防漂移：开发机有、云端可能没有的键
+
+`MemoryProxy/config.yaml` 被 `MemoryProxy/.gitignore` 忽略（从未入库），所以**只在开发机 `config.yaml` 里加过的键，生产不会自动获得**——代码上线了、行为没变，启动日志也不告警。
+
+已踩过的实例（2026-10-26）：`recallQuerySource: intent` / `l0CaptureMode: classified` 只存在于开发机，生产 `/opt/tdai/etc/proxy-config.yaml` 无这两个键 → 全程 legacy，一个用户消息按模型步数重复打 `/v3/recall`（实测同一 intent 在 21:19–21:23 连打 4 次，历史最高单意图 23 次）。
+
+规则：**改 `MemoryProxy/src/config.ts` 的解析 = 同一提交内改本目录 example**。下列"闸门/口径"类开关在 example 里显式声明，不吃缺省：
+
+| 键 | 缺省（=老行为） | 生产值 | 漏配的后果 |
+|---|---|---|---|
+| `tdai.memory.recallQuerySource` | `legacy` | `intent` | 每步一次召回；#87/#88 去重闸完全不生效 |
+| `tdai.memory.l0CaptureMode` | `legacy` | `classified` | L0 只写单条提取结果，无 turnContext 全量与 classification 标签 |
+| `tdai.memory.recallIntentDedup` | `true` | `true` | 去重闸关闭（同意图反复召回） |
+| `tdai.memory.recallIntentDedupTtlMs` | `3600000` | 缺省即可 | 窗口过短会出现"聊着聊着又召回一次" |
+
 ## 历史注
 
 旧版本说明写「从本地 `MemoryProxy/config.yaml` 复制改 6 处」——该文件从未入库（git 历史只有 `config.example.yaml`），此派生路径作废。现 `MemoryProxy/config.example.yaml`（838 行）已与生产文件同步：补齐 creditPricing 的 scm-flash / ark-code-latest 计价行、appraisal 六值块、wikiRecall 块；通用部署仍以 `config.example.yaml` 为起点，云端部署用本目录 example。
