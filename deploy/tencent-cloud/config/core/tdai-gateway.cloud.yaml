@@ -48,6 +48,9 @@ memory:
   extraction:
     enabled: true
     enableDedup: true
+    # #79（2026-10-25 拍板）：dedup LLM 判重超时毫秒（clamp 60000..3600000；缺省 300000）。
+    # 超时→快失败→既有 catch 走 storeAllDirectly 降级（l1-extractor.ts:528），防 300s 悬挂堆积静默死（2026-10-20 三连崩溃根修）。
+    dedupTimeoutMs: 90000
     maxMemoriesPerSession: 20
     durativeEnabled: true # GROW-EVO P2（§2.2）：持续状态事实写 valid_start
     recurrenceEnabled: true # D-4（2026-09-22 拍板）：周期性事实 RECURRENCE_BLOCK 提取（LLM 只提议、确定性门裁决）

@@ -4,6 +4,8 @@ import { HOOK_PRIORITY } from "../types.js";
 import { getLastUserMessage, getMessageText } from "../context.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
 import { extractUserQueryText } from "../../tdai/recorder.js";
+import { stripDshAcpTags } from "../../common/acp-tag.js"; // #85 Q3：intent 档消费剥后文本（#90 同款）
+import type { TurnContext } from "../../common/intent-classifier.js"; // #85 Q3：turnContext 形态（#83 契约）
 import type { AssetCapabilityFlags } from "../types.js";
 import type { WikiRecallConfig } from "../../types.js";
 import type { CoreKnowledgeClient, KnowledgeItem } from "../../knowledge/core-client.js";
@@ -100,6 +102,19 @@ export interface WikiRecallInjectorConfig {
    */
   minInjectFtsScore?: number;
   /**
+   * #85 Q3（对齐 #83 入口单点定源）：query 来源三态（可选，缺省 undefined=legacy 逐位现状）。
+   * - legacy：现状（消息文本提取器）；
+   * - shadow：双跑对比日志（行为不变，仍用 legacy query）；
+   * - intent：读 turnContext.turnIntent；缺 turnContext / turnIntent 空 → 兜底回落消息文本。
+   */
+  querySource?: "legacy" | "shadow" | "intent";
+  /**
+   * #85 Q2 次门（可选，默认关）：结构页附尾前，子集内 min-max 归一分低于此值不附尾
+   * （子集最低恒 0 → 只削最弱者；单项结构页恒 1.0 不误杀）。主门（正文池全灭整轮
+   * 不注入）恒生效、无配置位。W5「保留存在性」附尾形态不变。
+   */
+  minStructuralTailNormScore?: number;
+  /**
    * P0-3（issue #2 短 query 跳过，可选默认关闭）：短 query / 寒暄 query 跳过整轮
    * wiki 召回——查询本身就是噪音源（bigram 前缀 OR 对 2-4 字 query 几乎全库命中）。
    * minChars：清洗后 query 码点长度 < minChars 跳过（0=不启用）；patterns：子串命中
@@ -171,7 +186,20 @@ export class WikiRecallInjector implements InjectionHook {
     const lastUser = getLastUserMessage(ctx);
     if (!lastUser) return [];
     // 用「干净的真实 user_query」作检索词而非整条原始消息 blob（去掉 harness 噪声）。
-    const query = extractUserQueryText(getMessageText(lastUser)).trim().slice(0, 2048);
+    const legacyQuery = extractUserQueryText(getMessageText(lastUser)).trim().slice(0, 2048);
+    // #85 Q3（对齐 #83 入口单点定源）：query 来源三态。缺省（undefined）= legacy 逐位现状。
+    // - intent：读 turnContext.turnIntent（handler 入口 classifyInbound 随流透传）；缺
+    //   turnContext / turnIntent 空 → 兜底回落 legacyQuery（拍板保留消息文本兜底）。
+    // - shadow：双跑对比日志（影子期零行为变化，query 仍用 legacyQuery）。
+    const turnContext = (ctx.metadata.custom as { tdaiTurnContext?: TurnContext | null } | undefined)?.tdaiTurnContext ?? null;
+    let query = legacyQuery;
+    if (this.config.querySource === "intent") {
+      const intentQuery = turnContext?.turnIntent ? stripDshAcpTags(turnContext.turnIntent.text).trim().slice(0, 2048) : "";
+      query = intentQuery || legacyQuery;
+    } else if (this.config.querySource === "shadow" && turnContext) {
+      const intentQuery = turnContext.turnIntent ? stripDshAcpTags(turnContext.turnIntent.text).trim().slice(0, 2048) : "";
+      log.info(`${TAG} query-shadow legacyLen=${legacyQuery.length} intentLen=${intentQuery.length} match=${legacyQuery === intentQuery} legacyHead="${legacyQuery.slice(0, 60)}" intentHead="${intentQuery.slice(0, 60)}"`);
+    }
     if (!query) return [];
 
     // P0-3（issue #2）：短 query / 寒暄 query 整轮跳过 wiki 召回（缺省 off=逐位现状，
@@ -342,8 +370,12 @@ export class WikiRecallInjector implements InjectionHook {
       : normalizeScores(pool)
           .sort((a, b) => b.normScore - a.normScore)
           .slice(0, this.config.globalTopK);
-    if (normalized.length === 0 && structural.length === 0) {
-      log.debug(`${TAG} 全部候选人低于 minInjectNormScore=${threshold}，跳过注入`);
+    if (normalized.length === 0) {
+      // #85 Q2 主门：正文池全灭（门槛后无正文条目存活）→ 整轮不注入。结构页不再
+      // 单独兜底触发（旧 W5×门控交互「正文灭结构页仍在」= #85 症状②「score=0.00
+      // 结构页独占注入块」的来源，拍板反转）；结构页「保留存在性」仅在正文存活时
+      // 经附尾体现（W5 形态不变）。
+      log.debug(`${TAG} body pool empty after gates (normalized=0) → skip injection entirely (#85 Q2)`);
       return [];
     }
     // 【诊断】最终注入 topK 的明细（来源 wiki + 归一化分 + 标题）—— 判断"谁该进
@@ -358,11 +390,21 @@ export class WikiRecallInjector implements InjectionHook {
     // 挤占注入预算；超出 cap 直接丢弃并打 debug 日志（可诊断，不静默）。
     const structuralNorm = structural.length > 0 ? normalizeScores(structural) : [];
     const MAX_STRUCTURAL_TAIL = 3;
-    const droppedStructural = Math.max(0, structuralNorm.length - MAX_STRUCTURAL_TAIL);
+    // #85 Q2 次门：结构页子集内 min-max 归一分低于阈值不附尾（缺省关=config-first）。
+    // 子集 min-max 最低恒 0 → 只削最弱者；单项结构页恒 1.0 不误杀。W5「保留存在性」
+    // 形态不变，只挡「明显弱于同批结构页」的尾巴（如零分 schema 页）。
+    const tailGate = this.config.minStructuralTailNormScore ?? 0;
+    const tailGated = tailGate > 0
+      ? structuralNorm.filter((n) => n.normScore >= tailGate)
+      : structuralNorm;
+    if (tailGated.length < structuralNorm.length) {
+      log.debug(`${TAG} structural-tail gate: drop=${structuralNorm.length - tailGated.length} kept=${tailGated.length} (minStructuralTailNormScore=${tailGate})`);
+    }
+    const droppedStructural = Math.max(0, tailGated.length - MAX_STRUCTURAL_TAIL);
     if (droppedStructural > 0) {
       log.debug(`${TAG} structural-tail cap: drop=${droppedStructural} kept=${MAX_STRUCTURAL_TAIL} (MAX_STRUCTURAL_TAIL=${MAX_STRUCTURAL_TAIL})`);
     }
-    const structuralEntries: WikiRecallRenderEntry[] = structuralNorm.slice(0, MAX_STRUCTURAL_TAIL).map((n, i) => ({
+    const structuralEntries: WikiRecallRenderEntry[] = tailGated.slice(0, MAX_STRUCTURAL_TAIL).map((n, i) => ({
       wikiName: n.wikiName,
       type: n.type,
       title: i === 0 ? `${n.title} [structural]` : n.title,

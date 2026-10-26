@@ -1,0 +1,70 @@
+{
+ "stats": {
+  "total": 85,
+  "withEcho": 54,
+  "echoXs": 54,
+  "m1Hit": 0,
+  "m2Hit": 0,
+  "ambiguous1": 0,
+  "ambiguous2": 54,
+  "noEcho": 31,
+  "echoMiss": 0
+ },
+ "families": 4,
+ "famTop": [
+  [
+   "pd-8a4a949e09b69e94-483f346b",
+   52
+  ],
+  [
+   "NEW_ROW",
+   31
+  ],
+  [
+   "pd-5cbd1ab9e3322b2b-734b6526",
+   1
+  ],
+  [
+   "pd-03973436163b0cee-ea54c6f3",
+   1
+  ]
+ ],
+ "newRowsUnderBa": 31,
+ "sweepPreview": {
+  "wouldExpireAt72h": 7,
+  "wouldExpireAt24h": 13,
+  "pendingTotal": 85
+ },
+ "samples": [
+  {
+   "x": "可验证",
+   "matched": "以可验证不变量收尾：G1 shadow-first 置 retired 全程零删除；supervisor 全量重锚后四服",
+   "n": 4
+  },
+  {
+   "x": "诚实边界",
+   "matched": "父代理逐字下达规格与合同纪律（TDD、验证门），子代理据此完成 soul-feeling 翻修与 soul_state ",
+   "n": 55
+  },
+  {
+   "x": "诚实边界",
+   "matched": "父代理逐字下达规格与合同纪律（TDD、验证门），子代理据此完成 soul-feeling 翻修与 soul_state ",
+   "n": 55
+  },
+  {
+   "x": "诚实边界",
+   "matched": "父代理逐字下达规格与合同纪律（TDD、验证门），子代理据此完成 soul-feeling 翻修与 soul_state ",
+   "n": 55
+  },
+  {
+   "x": "诚实边界",
+   "matched": "父代理逐字下达规格与合同纪律（TDD、验证门），子代理据此完成 soul-feeling 翻修与 soul_state ",
+   "n": 55
+  },
+  {
+   "x": "诚实边界",
+   "matched": "父代理逐字下达规格与合同纪律（TDD、验证门），子代理据此完成 soul-feeling 翻修与 soul_state ",
+   "n": 55
+  }
+ ]
+}

@@ -400,6 +400,18 @@ export interface WikiRecallConfig {
    */
   minInjectFtsScore?: number;
   /**
+   * #85 Q3（对齐 #83 入口单点定源）：query 来源三态（可选，缺省=legacy 逐位现状）。
+   * legacy=现状（消息文本提取器）；shadow=双跑对比日志（行为不变）；intent=读
+   * turnContext.turnIntent（缺 turnContext / turnIntent 空 → 兜底回落消息文本，拍板保留）。
+   */
+  querySource?: "legacy" | "shadow" | "intent";
+  /**
+   * #85 Q2 次门（可选，默认关）：结构页附尾前，子集内 min-max 归一分低于此值不附尾
+   * （子集最低恒 0 → 只削最弱者；单项结构页恒 1.0 不误杀）。主门（正文池全灭整轮
+   * 不注入）恒生效、无配置位。W5「保留存在性」附尾形态不变。
+   */
+  minStructuralTailNormScore?: number;
+  /**
    * 短 query / 寒暄 query 整轮跳过 wiki 召回（可选，默认关）。minChars=清洗后
    * query 码点长度下限；patterns=寒暄词表。命中任一 → 本轮不发检索直接跳过。
    * 匹配语义（对抗审查 #3 修正，勿按"子串"调参）：CJK 词 = 消息去标点/空白后与

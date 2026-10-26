@@ -662,6 +662,13 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
           typeWeights: yaml.wikiRecall.typeWeights,
           minInjectAbsScore: typeof yaml.wikiRecall.minInjectAbsScore === "number" ? yaml.wikiRecall.minInjectAbsScore : undefined,
           minInjectFtsScore: typeof yaml.wikiRecall.minInjectFtsScore === "number" ? yaml.wikiRecall.minInjectFtsScore : undefined,
+          // #85 Q3：query 来源三态（legacy/shadow/intent；非合法值视为未设=legacy）。
+          querySource:
+            yaml.wikiRecall.querySource === "intent" || yaml.wikiRecall.querySource === "shadow" || yaml.wikiRecall.querySource === "legacy"
+              ? yaml.wikiRecall.querySource
+              : undefined,
+          // #85 Q2 次门：结构页子集归一分下限（缺省关）。
+          minStructuralTailNormScore: typeof yaml.wikiRecall.minStructuralTailNormScore === "number" ? yaml.wikiRecall.minStructuralTailNormScore : undefined,
           skipQuery: yaml.wikiRecall.skipQuery
             ? {
                 minChars: typeof yaml.wikiRecall.skipQuery.minChars === "number" ? yaml.wikiRecall.skipQuery.minChars : undefined,
