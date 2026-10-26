@@ -52,7 +52,7 @@ export interface SettingsRerank {
   [k: string]: unknown;
 }
 
-/** P1-T7：memory.recall.importancePenalty.*（重要度召回降权；shadowMode 已按用户 2026-10-14 拍板移除）+ memory.worthiness.extractionEnabled（L1 抽取标注开关）。 */
+/** P1-T7：memory.recall.importancePenalty.*（重要度召回降权）+ memory.worthiness.extractionEnabled（L1 抽取标注开关）。 */
 export interface SettingsImportancePenalty {
   enabled?: boolean;
   penalty?: number;

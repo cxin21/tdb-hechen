@@ -224,7 +224,7 @@ export const zhCN = {
   'settings.importance.penalty.enabled.hint': '仅对重要度 ≤4 的记忆降权；未评分（NULL）永不降权。',
   'settings.importance.penalty.value': '降权强度 (Penalty)',
   'settings.importance.penalty.value.hint':
-    '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。降权恒真实生效（影子模式已按拍板移除），gates.importancePenalty 仍记录 raw/penalized 双分量。',
+    '乘子 = 1 - penalty；范围 0-0.9，缺省 0.3。降权恒真实生效，gates.importancePenalty 仍记录 raw/penalized 双分量。',
 
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',

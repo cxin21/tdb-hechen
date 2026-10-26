@@ -240,7 +240,7 @@ export const enUS = {
     'Only importance ≤4 is penalized; unscored (NULL) records are never penalized.',
   'settings.importance.penalty.value': 'Penalty',
   'settings.importance.penalty.value.hint':
-    'Multiplier = 1 - penalty; range 0-0.9, default 0.3. The penalty always takes effect (shadow mode removed by decision); gates.importancePenalty still records raw/penalized components.',
+    'Multiplier = 1 - penalty; range 0-0.9, default 0.3. The penalty always takes effect; gates.importancePenalty still records raw/penalized components.',
 
   // ===== LLM Provider =====
   'llmProvider.title': 'LLM Provider',
