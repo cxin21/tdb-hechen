@@ -48,6 +48,19 @@ for d in MemoryCore MemoryProxy MemoryKnowledge MemoryPanel; do
 done
 ```
 
+### 3.1 Panel 前端构建（不能跳过）
+
+`MemoryPanel/web/dist` 是前端静态产物，且**不进 git**（见 `MemoryPanel/web/.gitignore`）。tdai-panel 的后端是 `node --import tsx src/index.ts` 直跑 TS 源码（pull + 重启即生效），但**页面来自 dist**：只 pull 不构建，UI 就停在上一次构建的版本。
+
+> 2026-10 事故：dist 停在 10-02，10-16 的「Rerank 拆独立页签」(af95dac) 在线上完全看不到，被误判成"admin 设置里的 rerank 配置项消失了"。排查手段：`ls -l MemoryPanel/web/dist/assets` 的时间戳 vs `git log -1 --format=%ad -- MemoryPanel/web/src`。
+
+```bash
+sudo bash deploy/tencent-cloud/native/rebuild-panel-web.sh
+# 等价于：cd MemoryPanel/web && pnpm install --no-frozen-lockfile && pnpm build（tsc && vite build）
+```
+
+构建产物经脚本自检（dist/index.html 存在 + 其引用的 main-*.js 存在）。前端改动后：重跑本脚本 → 浏览器 **Ctrl+Shift+R**（旧 index.html/main-*.js 有缓存）；tdai-panel 无需重启。
+
 ## 4. 配置落盘（/opt/tdai/etc/）
 
 ```bash
@@ -96,6 +109,9 @@ curl -sX POST https://<域名>/v3/recall \
   -H 'x-tdai-team-id: ...' -H 'x-tdai-agent-id: ...' -H 'x-tdai-user-id: ...' \
   -H 'Authorization: Bearer <TDAI_GATEWAY_API_KEY>' \
   -d '{"query":"冒烟测试","maxResults":3,"session_id":"smoke-001"}'
+
+# Panel 前端产物时间戳应为本次构建（不是几周前，见 §3.1）
+ls -l /opt/tdai/td-agemem/MemoryPanel/web/dist/assets/main-*.js
 ```
 
 空库 bootstrap 自动完成（SQLite 建表 / scene_blocks / persona 空骨架）——首次对话后 L0→L1 流水线开始积累。
@@ -112,7 +128,7 @@ Panel（SSH 隧道 `ssh -L 8123:127.0.0.1:8123 <server>`）→ 知识源管理 �
 ## 10. 备份与升级
 
 - **备份**（数据全在 `/opt/tdai/data` + 各 dataDir）：cron `tar` 打包 /opt/tdai/data → 腾讯云 COS 或异地；SQLite 建议停写快照（`systemctl stop tdai-core` → 打包 → start，秒级）。
-- **升级**：`git pull` → 变更目录 `pnpm install` → `systemctl restart <受影响服务>`；排序/召回语义变更后按漂移协议重锚（README ×4 节）。
+- **升级**：`git pull` → 变更目录 `pnpm install` → **MemoryPanel/web 有改动则必须重建前端**（`sudo bash deploy/tencent-cloud/native/rebuild-panel-web.sh`，否则页面还是旧包 + 浏览器 Ctrl+Shift+R）→ `systemctl restart <受影响服务>`；排序/召回语义变更后按漂移协议重锚（README ×4 节）。
 - **回滚**：git checkout 上一 tag + restart；数据卷不受代码回滚影响（schema 兼容以 CHANGELOG 升级须知为准）。
 
 ---
