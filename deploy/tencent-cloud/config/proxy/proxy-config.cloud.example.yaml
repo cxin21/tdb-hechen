@@ -762,6 +762,21 @@ wikiRecall:
   skipQuery:
     patterns: ["你好", "在吗", "在么", "谢谢", "好的", "嗯", "收到", "辛苦了", "麻烦了", "OK"]
 
+  # ▲#85 Q2 次门（结构页附尾门槛，2026-10-25 拍板）：结构页（index/schema/purpose/
+  #   overview/log，NON_EMBED_TYPES 永无 absScore、不过 absGate/ftsGate）附尾前在
+  #   结构页子集内 min-max 归一，低于此值不附尾（子集最低恒 0 → 只削最弱者；单项
+  #   结构页恒 1.0 不误杀）。主门（正文池全灭 → 整轮不注入，结构页不再单独兜底）
+  #   恒生效、无配置位。0 或删掉 = 不启用。
+  # 类型: number | 默认: 未启用（本部署显式设为 0.3）
+  minStructuralTailNormScore: 0.3
+
+  # ▲#85 Q3 query 源三态（对齐 #83 入口单点定源，2026-10-25 拍板）：legacy=消息文本
+  #   提取器（逐位现状）；shadow=双跑对比日志（行为不变）；intent=读 turnContext.
+  #   turnIntent（handler 入口 classifyInbound 随流透传；缺 turnContext / turnIntent
+  #   空 → 兜底回落消息文本）。删掉 = legacy（逐位现状）。
+  # 类型: "legacy" | "shadow" | "intent" | 默认: legacy（本部署显式设为 intent）
+  querySource: "intent"
+
   # ▲type 降权：entity/concept 是"命名/索引"节点，标题精确命中易被相对归一顶成 1.0
   # 噪音。在跨库并池+归一前乘系数降权。source/other 不配 = 不降权。
   # 调参回归(golden)：concept 0.8 会把真相关概念压到 relGate 下造成 under-recall，

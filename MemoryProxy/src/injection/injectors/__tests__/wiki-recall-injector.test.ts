@@ -404,6 +404,7 @@ describe("WikiRecallInjector", () => {
     // S3 小扫除：结构页附尾数量封顶（MAX_STRUCTURAL_TAIL=3）。结构页天生无 absScore、
     // 不竞争 top-K，若一轮召回捞回大量结构页（log/index/schema 全中），附尾会无界
     // 挤占注入预算 —— 超出 3 条直接丢弃并打 debug 日志。
+    // #85 Q2 主门后：cap 场景需正文存活（正文池全灭整轮不注入），夹具补一条正文命中。
     const debugSpy = vi.spyOn(log, "debug").mockImplementation(() => {});
     try {
       const mk = (title: string, score: number, type: string): WikiSearchHit => ({
@@ -415,6 +416,7 @@ describe("WikiRecallInjector", () => {
         mk("运行日志一", 0.85, "log"),
         mk("运行日志二", 0.8, "log"),
         mk("库目的说明", 0.75, "purpose"),
+        mk("跨模块接口调用规范", 0.7, "concept"), // 正文命中：保证主门放行，cap 逻辑独立受验
       ];
       const { injector } = build({
         config: { minInjectNormScore: 0 },
@@ -422,6 +424,7 @@ describe("WikiRecallInjector", () => {
       });
       const blocks = await injector.execute(mkCtx("跨模块调用接口规范"));
       expect(blocks).toHaveLength(1);
+      expect(blocks[0].content).toContain("跨模块接口调用规范"); // 正文在前
       const content = blocks[0].content;
       // 前 3 条结构页附尾存活，首个带 [structural] 标注
       expect(content).toContain("全库索引页");
@@ -540,9 +543,9 @@ describe("WikiRecallInjector", () => {
       expect(content).toContain("[structural]"); // 结构页标注仍在
     });
 
-    it("④b absGate filters only body pool: gated-out body still leaves structural tail present", async () => {
-      // 正文全部被 absGate 拦掉时，结构页（不进 absGate 池）依然存在并排尾——
-      // 证明"先拎出、后门控"的顺序，结构页从不因 absScore 缺失被 absGate 误伤。
+    it("④b absGate filters only body pool: gated-out body ⇒ whole turn silent (#85 Q2 主门，反转旧兜底)", async () => {
+      // #85 Q2 拍板：正文全部被门槛拦掉 → 整轮不注入，结构页不再单独兜底。
+      // 旧行为（结构页依然排尾）= #85 症状②「score=0.00 结构页独占注入」的来源，已反转。
       const bodyGated = mk("低相关正文页", 0.7, 1.0, "source");
       const schemaPage = mk("schema 说明", 0.9, undefined, "schema");
       const { injector } = build({
@@ -550,11 +553,7 @@ describe("WikiRecallInjector", () => {
         searchImpl: async () => [schemaPage, bodyGated],
       });
       const blocks = await injector.execute(mkCtx("跨模块调用接口规范"));
-      expect(blocks).toHaveLength(1);
-      const content = blocks[0].content;
-      expect(content).not.toContain("低相关正文页"); // 正文被拦
-      expect(content).toContain("schema 说明"); // 结构页存活
-      expect(content).toContain("[structural]");
+      expect(blocks).toHaveLength(0);
     });
   });
 
@@ -922,6 +921,211 @@ describe("wiki JIT 瘦身注入 (Task 6)", () => {
     });
   });
 });
+});
+
+// ── #85 wiki JIT 召回语义错配（三问拍板实施，2026-10-25）────────────────────────
+// 拍板：Q1 绝对门 config-first 启用（标定循 #80）/ Q2 结构页主门+次门 / Q3 querySource 三态。
+// 症状①无关 query 命中满分规范条目（per-query min-max 归一假满分，相对门拦不住头部）；
+// 症状②score=0.00 结构页兜底进注入（W5 附尾不过门 + 正文池全灭时单独触发）。
+
+const wikiItem85: KnowledgeItem = {
+  knowledge_id: "wiki-x", type: "wiki", service_url: "http://ks:8421/v3", name: "Coding-WiKi",
+  summary: "s", team_id: "team", user_id: null, created_at: "", updated_at: "",
+} as KnowledgeItem;
+
+const baseCfg85: WikiRecallInjectorConfig = {
+  enabled: true, perWikiLimit: 8, globalTopK: 5, minScore: 0.02,
+  hop: 0, decay: 0.5, maxTotalChars: 0, minInjectNormScore: 0,
+};
+
+function build85(
+  cfg: Partial<WikiRecallInjectorConfig>,
+  impl: (params: { query: string }) => WikiSearchHit[] | Promise<WikiSearchHit[]>,
+) {
+  const search = vi.fn(impl as never);
+  const deps: WikiRecallInjectorDeps = {
+    knowledgeClient: {} as WikiRecallInjectorDeps["knowledgeClient"],
+    retrieveClientFactory: () => ({ search }) as unknown as WikiRetrieveClient,
+    identityResolver: (() => ({ teamId: "team", agentId: "agent", userId: "u", sessionId: "s" })) as WikiRecallInjectorDeps["identityResolver"],
+    listBoundWiki: async () => [wikiItem85],
+  };
+  const injector = new WikiRecallInjector({ ...baseCfg85, ...cfg }, deps);
+  return { injector, search };
+}
+
+const capturedQuery85 = (search: { mock: { calls: unknown[][] } }): string => {
+  const call = search.mock.calls[0] as unknown[] | undefined;
+  const params = call?.[0] as { query?: string } | undefined;
+  return params?.query ?? "";
+};
+
+const mkCtx85 = (content: string, turn?: { turnIntent: { index: number; text: string } | null } | null): AgentContext => {
+  const custom: Record<string, unknown> = {
+    session: { user_id: "u", team_id: "team", agent_id: "agent", space_id: "default" },
+  };
+  if (turn !== undefined) custom.tdaiTurnContext = turn;
+  return {
+    messages: [{ role: "user", blocks: [{ type: "text", content }] }],
+    tools: [], requestParams: {},
+    metadata: { protocol: "anthropic", traceId: "t", keyId: "k", modelId: "m", stream: false, agentSource: "dsh", custom },
+  } as unknown as AgentContext;
+};
+
+describe("#85 Q3 querySource 三态（对齐 #83 入口单点定源）", () => {
+  const mk = (title: string, score: number): WikiSearchHit => ({
+    path: "wiki/x.md", title, snippet: "s", score, type: "concept", hop: 0,
+  });
+
+  it("intent 档：query 改读 turnContext.turnIntent.text（harness 噪声消息不再当检索词）", async () => {
+    const { injector, search } = build85(
+      { querySource: "intent" },
+      () => [mk("无关规范页", 0.9)],
+    );
+    await injector.execute(mkCtx85(
+      "Current runtime context. Time sampled while preparing turn 1, step 1: 2026-10-25T16:39:08+08:00",
+      { turnIntent: { index: 0, text: "第一性原理分析一下 TDB 记忆系统的注入门槛" } },
+    ));
+    expect(capturedQuery85(search)).toBe("第一性原理分析一下 TDB 记忆系统的注入门槛");
+  });
+
+  it("intent 档：缺 turnContext（null）→ 兜底回落消息文本提取（拍板保留）", async () => {
+    const { injector, search } = build85({ querySource: "intent" }, () => [mk("页", 0.9)]);
+    await injector.execute(mkCtx85("应收暂估回冲怎么处理", null));
+    expect(capturedQuery85(search)).toBe("应收暂估回冲怎么处理");
+  });
+
+  it("intent 档：turnContext 在但 turnIntent=null（续跑轮）→ 兜底回落消息文本", async () => {
+    const { injector, search } = build85({ querySource: "intent" }, () => [mk("页", 0.9)]);
+    await injector.execute(mkCtx85("应收暂估回冲怎么处理", { turnIntent: null }));
+    expect(capturedQuery85(search)).toBe("应收暂估回冲怎么处理");
+  });
+
+  it("intent 档：turnIntent 为空白文本 → 兜底回落消息文本", async () => {
+    const { injector, search } = build85({ querySource: "intent" }, () => [mk("页", 0.9)]);
+    await injector.execute(mkCtx85("应收暂估回冲怎么处理", { turnIntent: { index: 0, text: "   " } }));
+    expect(capturedQuery85(search)).toBe("应收暂估回冲怎么处理");
+  });
+
+  it("shadow 档：行为不变（仍用消息文本检索），只记对比日志", async () => {
+    const { injector, search } = build85({ querySource: "shadow" }, () => [mk("页", 0.9)]);
+    await injector.execute(mkCtx85("应收暂估回冲怎么处理", { turnIntent: { index: 0, text: "完全不同的意图文本" } }));
+    expect(capturedQuery85(search)).toBe("应收暂估回冲怎么处理");
+  });
+
+  it("缺省（未配置 querySource）= legacy：行为逐位不变，不读 turnIntent", async () => {
+    const { injector, search } = build85({}, () => [mk("页", 0.9)]);
+    await injector.execute(mkCtx85("应收暂估回冲怎么处理", { turnIntent: { index: 0, text: "intent 文本在但缺省不读" } }));
+    expect(capturedQuery85(search)).toBe("应收暂估回冲怎么处理");
+  });
+});
+
+describe("#85 Q2 结构页主门：正文池全灭 → 整轮不注入（结构页不再单独兜底）", () => {
+  const mk = (title: string, score: number, absScore?: number, type = "concept"): WikiSearchHit => ({
+    path: `wiki/${type}/${title}.md`, title, snippet: "s", score, type, hop: 0,
+    ...(absScore !== undefined ? { absScore } : {}),
+  });
+
+  it("检索结果只有结构页（无正文）→ 不注入任何块（#85 症状②主形态）", async () => {
+    const { injector } = build85({}, () => [mk("Wiki Schema", 3.0, undefined, "schema"), mk("运行日志索引", 2.0, undefined, "log")]);
+    const blocks = await injector.execute(mkCtx85("第一性原理分析 TDB 记忆注入门槛"));
+    expect(blocks).toHaveLength(0);
+  });
+
+  it("正文被 ftsGate 全拦 → 结构页不再兜底注入", async () => {
+    const { injector } = build85(
+      { minInjectFtsScore: 0.9 },
+      () => [mk("低分正文页", 0.4, undefined, "concept"), mk("Wiki Schema", 3.0, undefined, "schema")],
+    );
+    const blocks = await injector.execute(mkCtx85("第一性原理分析 TDB 记忆注入门槛"));
+    expect(blocks).toHaveLength(0);
+  });
+
+  it("正文存活 + 结构页在场 → W5 附尾形态不变（回归护栏）", async () => {
+    const { injector } = build85(
+      { minInjectAbsScore: 1.5 },
+      () => [mk("运行日志索引", 0.9, undefined, "log"), mk("跨模块接口调用规范", 0.7, 2.0, "source")],
+    );
+    const blocks = await injector.execute(mkCtx85("跨模块调用接口规范"));
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].content).toContain("[structural]");
+    expect(blocks[0].content).toContain("跨模块接口调用规范");
+  });
+});
+
+describe("#85 Q2 结构页次门 minStructuralTailNormScore（子集归一低于阈值不附尾）", () => {
+  const mk = (title: string, score: number, type: string): WikiSearchHit => ({
+    path: `wiki/${type}/${title}.md`, title, snippet: "s", score, type, hop: 0,
+  });
+
+  it("次门启用：子集内归一分低于阈值的结构页不附尾", async () => {
+    const { injector } = build85(
+      { minStructuralTailNormScore: 0.3 },
+      () => [mk("运行日志索引", 5.0, "log"), mk("低分 schema", 0.5, "schema"), mk("正文页", 0.9, "concept")],
+    );
+    const blocks = await injector.execute(mkCtx85("跨模块调用接口规范"));
+    expect(blocks).toHaveLength(1);
+    const content = blocks[0].content;
+    expect(content).toContain("运行日志索引"); // 子集 max → 1.0 保留
+    expect(content).not.toContain("低分 schema"); // 子集 min → 0.0 剔除
+  });
+
+  it("次门关闭（缺省 undefined）：结构页附尾行为逐位不变", async () => {
+    const { injector } = build85(
+      {},
+      () => [mk("运行日志索引", 5.0, "log"), mk("低分 schema", 0.5, "schema"), mk("正文页", 0.9, "concept")],
+    );
+    const blocks = await injector.execute(mkCtx85("跨模块调用接口规范"));
+    const content = blocks[0].content;
+    expect(content).toContain("运行日志索引");
+    expect(content).toContain("低分 schema");
+  });
+
+  it("单项结构页：子集归一恒 1.0 → 任何阈值下不误杀", async () => {
+    const { injector } = build85(
+      { minStructuralTailNormScore: 0.3 },
+      () => [mk("唯一结构页", 0.1, "overview"), mk("正文页", 0.9, "concept")],
+    );
+    const blocks = await injector.execute(mkCtx85("跨模块调用接口规范"));
+    expect(blocks[0].content).toContain("唯一结构页");
+  });
+});
+
+describe("#85 Q1 配置面：querySource / minStructuralTailNormScore 解析", () => {
+  const writeTmp85 = (body: string): string => {
+    const file = join(tmpdir(), `wiki-recall-85-${Math.random().toString(36).slice(2)}.yaml`);
+    writeFileSync(file, body, "utf-8");
+    return file;
+  };
+
+  it("wikiRecall.querySource 三态解析：intent/shadow 合法、非法值与缺省 → undefined", () => {
+    const p1 = writeTmp85("wikiRecall:\n  enabled: true\n  querySource: intent\n");
+    try {
+      expect(buildConfig({ configFile: p1 }).wikiRecall?.querySource).toBe("intent");
+    } finally { rmSync(p1, { force: true }); }
+    const p2 = writeTmp85("wikiRecall:\n  enabled: true\n  querySource: shadow\n");
+    try {
+      expect(buildConfig({ configFile: p2 }).wikiRecall?.querySource).toBe("shadow");
+    } finally { rmSync(p2, { force: true }); }
+    const p3 = writeTmp85("wikiRecall:\n  enabled: true\n");
+    try {
+      expect(buildConfig({ configFile: p3 }).wikiRecall?.querySource).toBeUndefined();
+    } finally { rmSync(p3, { force: true }); }
+    const p4 = writeTmp85("wikiRecall:\n  enabled: true\n  querySource: bogus\n");
+    try {
+      expect(buildConfig({ configFile: p4 }).wikiRecall?.querySource).toBeUndefined();
+    } finally { rmSync(p4, { force: true }); }
+  });
+
+  it("wikiRecall.minStructuralTailNormScore 解析：number 直通、缺省 undefined", () => {
+    const p1 = writeTmp85("wikiRecall:\n  enabled: true\n  minStructuralTailNormScore: 0.3\n");
+    try {
+      expect(buildConfig({ configFile: p1 }).wikiRecall?.minStructuralTailNormScore).toBe(0.3);
+    } finally { rmSync(p1, { force: true }); }
+    const p2 = writeTmp85("wikiRecall:\n  enabled: true\n");
+    try {
+      expect(buildConfig({ configFile: p2 }).wikiRecall?.minStructuralTailNormScore).toBeUndefined();
+    } finally { rmSync(p2, { force: true }); }
+  });
 });
 
 describe("resolveBoundWikiResources", () => {
