@@ -79,6 +79,7 @@ if (flag("help") || argv.length === 0) {
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
   --mmr                          B2-b：沙箱 yaml 开 MMR 多样性重排（recall.mmr.enabled）
   --mmr-lambda X                 B2-b：MMR λ（缺省 0.7；1=纯相关序）
+  --emb-threshold X              B2-b：向量余弦门槛（生产 0.3；试验 0.15 放宽）
   --tag NAME                     运行标签（进 config.tag，A/B 对比命名用）
   --store <dir>                  复用已有库（跳过灌库）
   --keep                         保留沙箱目录
@@ -193,11 +194,16 @@ async function main() {
   if (flag("mmr")) mmrOverride.enabled = true;
   const mlam = arg("mmr-lambda", undefined);
   if (mlam !== undefined && mlam !== true) mmrOverride.lambda = Number(mlam);
+  // B2-b：向量余弦门槛试验值（0.3→0.15 等；声明须在 prepareBenchYaml 之前）
+  let embThresholdOverride;
+  const eth = arg("emb-threshold", undefined);
+  if (eth !== undefined && eth !== true) embThresholdOverride = Number(eth);
   prepareBenchYaml({
     srcYaml: prodConfig,
     storeDir,
     ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
     ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
+    ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
   });
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
@@ -378,6 +384,7 @@ async function main() {
       answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
+      embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
       apiKeySource: llmInfo?.apiKeySource ?? null,

@@ -32,7 +32,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -57,6 +57,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // B2-b（bench/recall-opt）：MMR 多样性重排试验档，同样只写沙箱 yaml。
   if (mmrOverride && typeof mmrOverride === "object" && Object.keys(mmrOverride).length) {
     m.recall.mmr = { ...(m.recall.mmr || {}), ...mmrOverride };
+  }
+  // B2-b：向量余弦门槛试验值（native hybrid 路疑形同虚设，A/B 用数据验证）。
+  if (embThresholdOverride !== undefined && Number.isFinite(embThresholdOverride)) {
+    m.recall.scoreThreshold = embThresholdOverride;
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
