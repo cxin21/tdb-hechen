@@ -12,9 +12,11 @@
  * #100 审计视图：include_decided 拉取后客户端过滤只留 待决 + auto_adopted 两类可操作行；
  * auto_adopted 行 = 绿色「自动采纳」徽标 + 可折叠审计快照 + 「回滚」按钮
  * （复用 rejected 裁决；409 版本漂移 → 提示手工处理，#92 R5 语义）。
+ * #101 重构：auto_adopt 审计三件套抽至 @/lib/chatMemoryAutoAdopt，与 SoulPendingRail 统一消费。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { chatMemoryApi, conflictOf, promiseConflictOf, rollbackRefusedOf, type PendingItem } from '@/lib/teamApi';
+import { autoAdoptOf, isActionablePendingRow, type AutoAdoptAudit } from '@/lib/chatMemoryAutoAdopt';
 import { tea } from '@/lib/tea-bridge';
 
 const SLOT_LABEL: Record<string, string> = {
@@ -23,29 +25,6 @@ const SLOT_LABEL: Record<string, string> = {
   promise_transition: '承诺状态迁移提案',
   self_identity: '「我是谁」提案',
 };
-
-/** #100：auto_adopt 审计快照（attrs_json.auto_adopt；decidePendingCoreAuto 落账形状） */
-interface AutoAdoptAudit {
-  adopted_at?: string;
-  prev_slot_content?: string;
-  prev_slot_version?: number;
-  prev_slot_existed?: boolean;
-  post_slot_version?: number;
-  gate?: { votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
-}
-
-/** #100：宽松解析 auto_adopt 审计（无 auto_adopt 字段 → null 不显示徽标；坏 JSON → {} 仍显示徽标与回滚，快照字段走缺省占位） */
-function autoAdoptOf(p: PendingItem): AutoAdoptAudit | null {
-  if (p.state !== 'auto_adopted') return null;
-  try {
-    const a = p.attrs_json ? (JSON.parse(p.attrs_json) as Record<string, unknown>) : null;
-    const audit = a?.auto_adopt;
-    if (audit && typeof audit === 'object' && !Array.isArray(audit)) return audit as AutoAdoptAudit;
-  } catch {
-    /* 坏 JSON → 无快照体，仍显示徽标与回滚 */
-  }
-  return {};
-}
 
 /** #19 T12：重提提案 attrs（宽松解析；坏 JSON/旧行 → null 不显示徽标） */
 function reproposalOf(p: PendingItem): { generation?: number; supersedes?: string; evidence_threshold?: number } | null {
@@ -78,11 +57,7 @@ export function PendingSection(props: { blockId: string }) {
     chatMemoryApi
       .pendingList(props.blockId, { includeDecided: true })
       .then((d) =>
-        setItems(
-          Array.isArray(d.pending)
-            ? d.pending.filter((p) => p.state === undefined || p.state === 'pending' || p.state === 'auto_adopted')
-            : [],
-        ),
+        setItems(Array.isArray(d.pending) ? d.pending.filter(isActionablePendingRow) : []),
       )
       .catch(() => setItems([]));
   }, [props.blockId]);
