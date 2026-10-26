@@ -40,6 +40,8 @@ export interface RecallJournalRerankGate {
   threshold01?: number;
   /** #99 F3：优雅降级归因——全员低于阈值不清零，回退未重排顺序注入（预算帽照常生效）。 */
   degraded?: "all-below-minScore";
+  /** B2-b（bench/recall-opt）：pass 池 MMR 多样性重排观测（缺字段 = 未启用）。 */
+  mmr?: { lambda: number; ms: number };
 }
 
 /**

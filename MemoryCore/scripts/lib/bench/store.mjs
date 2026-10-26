@@ -32,7 +32,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -53,6 +53,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride }) {
   // B2-a（bench/recall-opt）：精排试验档只写沙箱 yaml（生产 yaml 定档后才动——用户决策②）。
   if (rerankOverride && typeof rerankOverride === "object" && Object.keys(rerankOverride).length) {
     m.recall.rerank = { ...(m.recall.rerank || {}), ...rerankOverride };
+  }
+  // B2-b（bench/recall-opt）：MMR 多样性重排试验档，同样只写沙箱 yaml。
+  if (mmrOverride && typeof mmrOverride === "object" && Object.keys(mmrOverride).length) {
+    m.recall.mmr = { ...(m.recall.mmr || {}), ...mmrOverride };
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
@@ -268,7 +272,9 @@ export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogg
         userId: caseObj.tenant.user_id,
         agentId: caseObj.tenant.agent_id,
       },
-      validityNow: new Date(),
+      // B2-b：validityNow=题目日期（D6——拿 2026 视角看 2023 会触发不该触发的双时态失效排除）
+      validityNow:
+        validityFromCase && caseObj?.questionDateISO ? new Date(caseObj.questionDateISO) : new Date(),
       // 精排走配置（生产同款），显式不走工厂覆盖
       rerankDeps: undefined,
     });

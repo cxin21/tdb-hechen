@@ -59,6 +59,7 @@ import { emotionSalienceOf, buildRankContext,
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
+import { mmrReorder } from "../recall/mmr.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
@@ -492,6 +493,8 @@ async function applyRecallRerank(
   wiring: RerankWiring,
   cap: number,
   logger?: Logger,
+  /** B2-b：精排 pass 池 MMR 多样性重排（缺省 undefined = 逐位现状）。 */
+  mmr?: { enabled: boolean; lambda: number },
 ): Promise<void> {
   if (wiring.state === "off") return;
   const lines = searchResult.lines;
@@ -557,6 +560,8 @@ async function applyRecallRerank(
   const rankedPass = clean.filter((r) => score01Of(r.score) >= threshold01);
   let finalIdxs: number[];
   let degraded: "all-below-minScore" | undefined;
+  // B2-b：MMR 重排耗时（gates 观测；声明提到 if/else 外供 gates 组装读取）
+  let mmrMs = 0;
   if (rankedPass.length === 0 && clean.length > 0) {
     // F3 优雅降级：全员低于阈值不清零（P3 病灶：经验层 0 行）——回退未重排顺序
     // （与 null/throw/熔断同族「原序注入」语义），journal degraded 归因；预算帽照常生效。
@@ -564,7 +569,14 @@ async function applyRecallRerank(
     finalIdxs = lines.map((_, i) => i);
     logger?.debug?.(`${TAG} [rerank] 全员低于阈值（topScore=${clean[0].score} < minScore=${wiring.minScore}）→ 降级原序注入`);
   } else {
-    finalIdxs = rankedPass.map((r) => r.index);
+    let passIdxs: number[] = rankedPass.map((r) => r.index);
+    if (mmr?.enabled && passIdxs.length > 1) {
+      const tM = performance.now();
+      // B2-b：pass 池整体置换（不减员），多样性优先级进序——预算帽照常在 slice 处生效
+      passIdxs = mmrReorder(passIdxs, docs, mmr.lambda);
+      mmrMs = performance.now() - tM;
+    }
+    finalIdxs = passIdxs;
     const rankedSet = new Set(clean.map((r) => r.index));
     for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
       if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
@@ -587,6 +599,7 @@ async function applyRecallRerank(
           }
         : {}),
       ...(degraded ? { degraded } : {}),
+      ...(mmr?.enabled ? { mmr: { lambda: mmr.lambda, ms: Math.round(mmrMs) } } : {}),
     },
   };
   searchResult.lines = final.map((i) => lines[i]);
@@ -1205,7 +1218,8 @@ export async function performLayeredRecall(params: {
           : cfg;
       searchResult = await searchMemories(userText, pluginDataDir, searchCfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
       // 精排在复用缓存落位前：缓存持有精排后结果（命中路不再外呼 provider，gate 随缓存复现）。
-      await applyRecallRerank(r7CleanQuery, searchResult, rerankWiring, r7Budget.experienceLimit, logger);
+      await applyRecallRerank(r7CleanQuery, searchResult, rerankWiring, r7Budget.experienceLimit, logger,
+      cfg.recall?.mmr?.enabled ? { enabled: true, lambda: cfg.recall.mmr.lambda } : undefined);
       // 审查 #3 修补：空结果不入复用缓存——瞬时失败（如外呼抖动/瞬时空召回）不放大成
       // TTL 窗口内的持续空召回；lines.length>0 才视为可用注入块。
       if (sessionReuseTtlMs > 0 && params.sessionKey && searchResult.lines.length > 0 && !params.validityNow) {

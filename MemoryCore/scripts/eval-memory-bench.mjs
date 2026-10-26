@@ -76,6 +76,9 @@ if (flag("help") || argv.length === 0) {
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
+  --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
+  --mmr                          B2-b：沙箱 yaml 开 MMR 多样性重排（recall.mmr.enabled）
+  --mmr-lambda X                 B2-b：MMR λ（缺省 0.7；1=纯相关序）
   --tag NAME                     运行标签（进 config.tag，A/B 对比命名用）
   --store <dir>                  复用已有库（跳过灌库）
   --keep                         保留沙箱目录
@@ -185,8 +188,19 @@ async function main() {
   if (rms !== undefined && rms !== true) rerankOverride.minScore = Number(rms);
   const rcand = arg("rerank-candidates", undefined);
   if (rcand !== undefined && rcand !== true) rerankOverride.candidates = Number(rcand);
-  prepareBenchYaml({ srcYaml: prodConfig, storeDir, ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}) });
+  // B2-b：MMR 试验档（只写沙箱 yaml；生产 yaml 不动——同用户决策②）。声明须在 prepareBenchYaml 之前。
+  const mmrOverride = {};
+  if (flag("mmr")) mmrOverride.enabled = true;
+  const mlam = arg("mmr-lambda", undefined);
+  if (mlam !== undefined && mlam !== true) mmrOverride.lambda = Number(mlam);
+  prepareBenchYaml({
+    srcYaml: prodConfig,
+    storeDir,
+    ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
+    ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
+  });
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
+  if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
 
   const { cfg } = await loadBenchConfig(storeDir);
   const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
@@ -244,7 +258,9 @@ async function main() {
   }
 
   // ── 检索评估 ──
-  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir });
+  // B2-b：validityNow 用题目日期（--b2b-validity；缺省保持 new Date() 现状）
+  const b2bValidity = flag("b2b-validity");
+  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity });
   const k = num("k", cfg.recall?.maxResults ?? 5);
   // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
   const kList = String(arg("recall-ks", "1,3,5,10"))
@@ -360,6 +376,8 @@ async function main() {
       manifest: manifestUsed,
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
       answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
+      validityFromCase: b2bValidity,
+      mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
       apiKeySource: llmInfo?.apiKeySource ?? null,

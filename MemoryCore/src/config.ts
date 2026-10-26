@@ -402,6 +402,17 @@ export interface RecallConfig {
    * （config-first 关断矩阵；yaml 显式开启前任何调用方拿不到精排通道，接线在 Task 2）。
    */
   rerank: RecallRerankConfig;
+  /**
+   * B2-b（bench/recall-opt）：精排后 MMR 多样性重排（memory.recall.mmr.*）。
+   * 铁律：enabled 缺省 false = 逐位现状；只对精排 pass 池做多样性**重排**
+   * （垫尾/预算/门槛语义全部不变；近重复用字符 bigram Jaccard，零新增外呼）。
+   */
+  mmr: {
+    /** 总开关（缺省 false = 逐位现状）。 */
+    enabled: boolean;
+    /** 相关性-多样性权衡（缺省 0.7，clamp [0,1]；1=纯相关序，0=纯多样性）。 */
+    lambda: number;
+  };
 }
 
 /**
@@ -2006,6 +2017,17 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             idleUnloadMs: recallSignalBoost(localGroup, "idleUnloadMs", 600_000),
           },
           configError,
+        };
+      })(),
+      // B2-b：MMR 多样性重排（缺省关=逐位现状）
+      mmr: (() => {
+        const mmrGroup = obj(recallGroup, "mmr");
+        const lambdaRaw = num(mmrGroup, "lambda");
+        return {
+          enabled: bool(mmrGroup, "enabled") ?? false,
+          lambda: lambdaRaw === undefined || !Number.isFinite(lambdaRaw)
+            ? 0.7
+            : Math.min(1, Math.max(0, lambdaRaw)),
         };
       })(),
     },
