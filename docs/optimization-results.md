@@ -189,3 +189,53 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 - **本波仅 bench 验证**（与 B1 同款先例）：三个新模块只被 bench harness 消费；生产接入（l1-writer/v2-router 写链 hook）= 另开票，需带默认关 + 门禁闸。生产侧的即时可行动作见 §7 的 W3 配置项。
 - **偏差记录**：① W2 失效粒度 = L1 整行（票面写「事实带 valid_from/valid_to」）——一行多事实时整行失效，粒度粗于票面；LME90 上表现为显著丢 gold，粒度细化（事实级行）留待生产语料验证时一并评估；② W3 的 `--conclusion-cards` 同时开写入面与读侧回捞，本波未拆两个独立开关（拆分留作后续）；③ **w3b 是看到 w3 的 cov 下探后按假设调参**（maxExtraLines 2→4，靶向 gold-turn 覆盖）——同题集上调参，非预注册，绝对增益应打折扣解读；w3（2 行）与 w3b（4 行）两档证据都保留；④ 抽取预算门禁在缓存命中档无 token 证据 → 显式 SKIP（不假绿），首次抽取档的 token 计量见 `factExtraction.stats`。
 - 新增 bench 工具链：`scripts/lib/bench/facts.mjs`（抽取+缓存+429 长退避）、`conclusions.mjs`（结论卡蒸馏+缓存）、`fact-extract-gate.mjs`（抽样验收门禁）、`bench-gates.mjs`（票面门禁汇总：缺口桶/判对 CI/预算/抽取验收；无证据时显式 SKIP 不假绿）、`run-w134-arms.sh`（逐档可复现，先跑抽取门禁、失败即非 0）；`--facts-only` 离线抽取、`--store` 分阶段写入、`--embed-cache` query 向量缓存。
+
+## 9. 组合失效的第一性原理分析（2026-10-27）
+
+> 触发问题：全开（W1+W2+W3, allon）判对 77.8% = 基线 b1-off（77.8%），比只开 W3（w3b 84.4%）**显著更差（-6.7pp，p=0.031，6 对 0）**。为什么三个"各自方向为正"的机制叠加反而归零？
+
+### 9.1 逐题证据：6 题回归、0 题翻盘
+
+w3b（对）→ allon（错）的 6 题：2 题 single-session-preference、1 题 single-session-user、3 题 temporal-reasoning（其中 2 题证据被删到 cov 0/0.5 后**拒答**）；反向翻盘 **0 题**。即 W1+W2 在 w3b 之上只产生损失、没有产生任何新收益。
+
+### 9.2 根因一：W2 的失效判定违反「函数依赖」前提（语义错误）
+
+supersession 把（subject, predicate）当作**函数依赖键**（一个属性同时只有一个值），但抽取器给的 predicate 是**泛化谓词**，不保证互斥。实测被误失效的行：
+
+| 题 | 被失效的（subject / predicate） | 旧值 → 新值 | 实际语义 |
+|---|---|---|---|
+| gpt4_e072b769（temporal） | User / **is considering** | "trying a new grocery delivery service" → "trying Thrive Market" | 两个**并存的考虑项**，非版本更新 |
+| gpt4_93f6379c（temporal，"先加入哪个群"） | User / **wants to create** | "a private Facebook community" → "a content calendar" | 两个**不同目标**，非互斥 |
+| gpt4_93f6379c | the user / **has a book club member** | "who is publishing her debut novel" → "…soon" | 同一事实的**措辞差异**（值不该参与比较） |
+| gpt4_f49edff3（temporal，事件排序） | I / **am considering** | "a personalized baby blanket" → "a baby gym or playmat" | 并存的候选礼物 |
+
+后果：temporal-reasoning（"哪个先发生"）恰恰需要**旧事件仍在池里**；整行失效把它们删掉 → cov 0/0.5 → 模型拒答。**这不是粒度问题（事实级只缩小破坏面），而是"该不该失效"的判定问题**：必须先有 cardinality（单值属性）契约。
+
+### 9.3 根因二：三个机制作用在同一阶段 → 抢同一个 5 行预算
+
+实测每题的**有效证据行**（进入 answer 的 hits）：b1-off 平均 3.53 行、w3b 4.48 行；w3b 的 evidence 组成 = 3 行 turn + 2 行结论（样本 4b24c848）。结论与 turn 是**同一知识的两种表示（摘要 vs 原文）**，不是互补信息——注入结论就必然挤掉 turn，池子固定 5 行时是**零和替换**。w3b 的 +6.7pp 来自"摘要对聚合/更新题够用"，其 cov 下探（-3.3pp）来自"摘要挤掉了需要原文的题"。
+W1 再改 embedding 键 → 改变**哪些 turn 参与竞争**（knowledge-update/temporal cov -8.3/-6.7pp）；W2 再删行 → 直接缩小候选池（cov -4.6pp）。三者都在"选哪些行进池"这一层竞争，代价叠加、收益互相覆盖。
+
+### 9.4 根因三：回捞（backfill）几乎没工作
+
+w3b 的 [上下文] 证据行只出现在 **9/90 题**（平均 0.10 行/题）。即"结论 + 其源证据"的配对机制基本没触发（需要结论被选中 + part_of 边 + 未被 seen），所以 W3 实际只贡献了"摘要替换原文"，没贡献"摘要 + 证据"的双份信息。想让 W3 与 W1/W2 互补，先得让回捞变成**结论的强制伴随单元**。
+
+### 9.5 结论：需要调整算法（四个组合层改动）
+
+**原则：让三个机制各占一个阶段，而不是都在"选行"阶段竞争。**
+
+1. **W1 → 召回通道（不是键替换）**：保留原文 embedding 主索引与排序；新增"事实键"作为**并行召回通道**，两路候选 RRF 融合后由原信号裁决排序。收益（multi-session 召回 +6pp）保留，时间/版本排序不再被稀释。
+2. **W2 → 软失效 + 属性契约**：抽取/去重输出 cardinality（单值 vs 多值）或 mutually_exclusive 标记；**只有单值属性**允许 supersession；多值一律 additive、永不失效。失效从"硬过滤"改为"validity 特征降权"（fused score），仅当问题显式问"现在/最新"且存在更新的有效行时才硬过滤。
+3. **W3 → 表示选择 + 强制回捞**：结论与 turn 不是并列候选，而是**复合单元**（摘要 + 其 top-1 源证据），按问题类型分配预算（exact-fact 题结论=0、聚合/更新题结论=1-2、preference 题结论≤1）；回捞从"可选"改为"选定结论即必带 1 条源证据"。
+4. **查询路由**：按意图分桶——精确事实（买/哪一次/时间顺序）走 turn 优先；聚合/比较/更新走结论优先；偏好/推荐走 preference 行 + 少量 turn。路由是让 1+1>2 的主开关，而不是把所有机制全开。
+
+### 9.6 怎么验证（1+1>2 的判定方式）
+
+- **因子设计**：W1(通道/键) × W2(软/硬/关) × W3(结论数/回捞数) 至少跑 8 格而不是单档叠加；每格同 judge 配对（#140）。
+- **新增指标**：① 证据充分性（注入集是否含 gold 答案跨度，LLM 判定"可答性"而非直接作答）；② 结论/turn 归因（答案实际引用了哪类行）；③ 分题型门禁（temporal 不得低于基线）。
+- **判定线**：组合档相对单档最好成绩的 Δ 需 CI 下界 > 0（否则"1+1>2"不成立，维持单档最优）。
+
+### 9.7 现状处置
+
+- 生产配置维持**只开 W3（maxExtraLines=4）**；W1/W2 保持关（yaml 已回退）。
+- 待办：事实级粒度与 cardinality 契约（#136）、多事实键与双通道（#137）、组合设计与路由（#141）、判分一致性（#140）。
