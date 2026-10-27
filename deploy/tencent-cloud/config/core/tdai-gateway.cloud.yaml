@@ -49,10 +49,14 @@ memory:
   # 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
   #  · factKey.enabled=true：L1 的 embedding 键 = 内容 + 分隔符 + 事实短语
   #    （事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
-  #    LME90 实测 +6.7pp 判对但不显著（CI 含负）→ 默认关，待生产语料验证。
+  #    LME90 实测 +6.7pp 判对但不显著（CI 含负）；全开档（W1+W2+W3）判对与基线打平、
+  #    cov -4.6pp（ns）→ 2026-10-27 judge 对齐后复核：**保持关**（生产最优 = 只开 W3，
+  #    见 docs/optimization-results.md §8 排名表）。
   #  · supersession.enabled=true：dedup 的 update/merge 决策把旧行从"归档"改为
   #    "valid_end 只标记"（零删除红线，历史可追溯）。
-  #    LME90 实测 turnCov -10.9pp 显著负（gold 含旧值 turn）→ 默认关，待生产语料验证。
+  #    LME90 实测 turnCov -10.9pp 显著负（gold 含旧值 turn，bench 语料无失效语义）；
+  #    全开档复核：判对与基线打平、cov 更差 → **保持关**，待事实级粒度（后续票）+
+  #    生产语料验证后再议。
   write:
     factKey:
       enabled: false

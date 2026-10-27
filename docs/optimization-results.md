@@ -126,8 +126,8 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 
 - **P0 生产 A/B**：生产网关灰度 `rerank.enabled=false`（或 minScore→-10.5 等价于近全开），观测生产侧有效信息率与延迟——bench 证据支持关停方向，但生产语料（短行）需自证。
 - **P0 B1 生产化**：injector 注入块渲染按 B1 四件套改造（时间序+CoN+NOT_ENOUGH_INFO+中性英文包裹），bench 已验证 +15.6pp。
-- **P0 结论层回捞（W3，§8）**：生产打开 `recall.smallToBig.enabled=true`，**maxExtraLines=4**——bench 判对 70.0%→84.4%（+14.4pp，CI[+6.7,+23.3]，n=90，p=0.0023）、拒答 8.9%、turnCov 持平（79.3%，-0.2pp ns）；生产结论卡由 consolidation 既有产出，读侧零改动，配置级灰度即可。
-- **W1/W2 维持默认关（§8）**：W1 事实双写 +6.7pp 不显著（CI 含负）；W2 supersession 在 LME90 cov 显著负（gold 含被取代旧值 turn），需生产语料（有失效语义）复核后再议；W2 粒度（事实级 vs 整行）同时复核。
+- **P0 结论层回捞（W3，§8）**：生产 `recall.smallToBig.enabled=true`，**maxExtraLines=4**——judge 对齐口径 77.8%→84.4%（+6.7pp，CI[+0.0,+14.4]，n=90，p=0.146；点估计最大、拒答 8.9% 最低、cov 持平）；生产结论卡由 consolidation 既有产出，读侧零改动。
+- **W1/W2 维持默认关（§8，yaml 已回退）**：全开档判对与基线打平（Δ 0.0pp）、cov -4.6pp、且比只开 W3 显著更差（-6.7pp，p=0.031）；W1 需多事实键、W2 需事实级粒度 + 生产语料（有失效语义）复核——已立后续票（#136/#137）。
 - **P1 candidateK 解锁**：若未来要重试池扩容，先解 auto-recall.ts:2274 `candidateK=maxResults*3=15` 对 rerank.candidates 的隐式上限（本轮 T1 因此无效）。
 - **P1 拒答残余 30%**：按 D 系继续归因（多 gold 题证据聚合、B1 证据 note 质量抽查）。
 - **P2 onnx 推理提速**：fp32/不同量化/DirectML EP/升级 onnxruntime——bench 30 GFLOPS 明显低于硬件能力。
@@ -151,9 +151,33 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 
 **证据索引**：w1=`…-03-09-19`、w2=`…-04-44-24`、w3=`…-04-33-21`、w3b=`…-04-55-56`、w13=`…-04-11-25`、combo=`…-03-59-44`；抽取门禁=`fact-gate-2026-10-27T02-17-53`。
 
+### Judge 对齐后的最终排名（MiniMax 判分，2026-10-27 复核）
+
+**方法学修正**：上表的 b0-base/b1-off 是 2026-10-26 用 **scm-flash** 判分的（判分器随 admin settings 在 10-27 00:09Z 切到 MiniMax）。跨判分器配对会放大/缩小差异，故用 **MiniMax-M3.1-Flash** 重跑两个基线（同 manifest/同沙箱库副本/同宣判提示），并以此重排：
+
+| # | 档 | 判对 | Δ vs b0-base-mm [95%CI] | 拒答 | turnCov@5 | 说明 |
+|---|---|---|---|---|---|---|
+| - | **b0-base-mm（初始基线）** | 45.6% | — | 40.0% | 67.1% | scm-flash 旧判分 38.9% → MiniMax 45.6% |
+| 1 | **w3b（W3 + 回捞 4 行）** | **84.4%** | **+38.9pp [+27.8,+50.0]** | **8.9%** | 79.3% | 生产已开（本档） |
+| 2 | w3（W3 + 回捞 2 行） | 81.1% | +35.6pp [+24.4,+46.7] | 10.0% | 76.3% | |
+| 3 | w13（W1+W3） | 78.9% | +33.3pp [+21.1,+44.4] | 12.2% | 74.0% | |
+| 4 | **b1-off-mm（第二波基线）** | 77.8% | +32.2pp [+21.1,+43.3] | 12.2% | 79.5% | scm-flash 旧判分 70.0% → 77.8% |
+| 5 | w-combo（W1+W2+W3，2 行） | 77.8% | +32.2pp [+21.1,+43.3] | 12.2% | 71.3% | |
+| 6 | **allon（全开，4 行）** | 77.8% | +32.2pp [+20.0,+43.3] | 13.3% | 74.9% | **= 基线（Δ 0.0pp，p=1.0）** |
+| 7 | w1（W1） | 76.7% | +31.1pp [+20.0,+42.2] | 14.4% | 77.0% | |
+| 8 | w2（W2） | 75.6% | +30.0pp [+18.9,+41.1] | 10.0% | 68.6% | |
+
+**配对结论（judge 对齐口径）**：
+
+- **w3b vs b1-off-mm**：判对 +6.7pp（84.4% vs 77.8%），**95%CI[+0.0,+14.4]、McNemar p=0.146 → 不显著**；turnCov 持平（-0.2pp ns），拒答 12.2%→8.9%。**门禁1（缺口桶 5/11）PASS；门禁2 点估计 ≥3pt 但 CI 下界恰 0 → 严格口径未过**（此前 +14.4pp/p=0.0023 是与 scm-flash 判分的基线跨判分器比较，已作废）。
+- **allon（全开）vs b1-off-mm**：判对 **Δ=0.0pp**（8 对 8，p=1.0）、turnCov -4.6pp（ns）→ **W1+W2 把 W3 的收益抵消干净**。
+- **allon vs w3b**：判对 **-6.7pp（p=0.031，6 对 0）**、cov -4.4pp → 开了 W1/W2 反而显著更差。
+- 分桶（judge 对齐不可用逐题，取各档 MiniMax 判分）：w3b 与 allon 的 knowledge-update 都是 93%（该桶 W2 无额外增益）；allon 在 preference（53% vs 67%）、single-session-user（93% vs 100%）、temporal（80% vs 100%）更差。
+- **结论**：生产最优 = **只开 W3（smallToBig maxExtraLines=4）**；W1/W2 保持关（已回退 yaml）。W2 的账要在**事实级粒度 + 生产语料**上再算（后续票）。
+
 ### 逐项结论
 
-- **W3（唯一通过答案侧门禁）**：判对 70.0%→**81.1%（+11.1pp，CI[+2.2,+20.0]，p=0.031）**、拒答 15.6%→10.0%；证据回捞行数调到 4（w3b）后 **84.4%（+14.4pp，CI[+6.7,+23.3]，p=0.0023）、拒答 8.9%、cov 回到基线（79.3%，-0.2pp ns）、缺口桶 5/11**——**六档中唯一双门禁达标**（调参口径见下方偏差记录）。机制：结论卡（3.56 卡/组 × 90 = 320 卡、769 条 part_of 边）经既有 R7-1 结论层（FTS 词面命中）入候选，`smallToBig`（#78 R-b）单跳回捞源证据行作「上下文行」注入；预算未破（结论行硬上限 floor(maxResults/2)、maxExtraLines=2，注入总行数 ≤ maxResults）。turnCov@5 -3.3pp（ns）：single-session-assistant/preference 桶 -13.3/-12.2pp（结论卡占注入位、gold-turn 覆盖被稀释），但 knowledge-update 桶 **+8.3pp**（结论卡把同一实体的多次更新聚合到一行，正是该桶需要的粒度）。**缺口桶 4/11，差 1 题**。
+- **W3（唯一通过答案侧门禁）**：判对 77.8%（judge 对齐基线）→**84.4%（+6.7pp，CI[+0.0,+14.4]，p=0.146，不显著）**、拒答 12.2%→8.9%、cov 持平（79.3%，-0.2pp ns）、缺口桶 5/11（门禁1 PASS；门禁2 严格口径未过）。回捞 2 行档（w3）为 81.1%。**注**：此前 +14.4pp/p=0.0023 是与 scm-flash 判分的旧基线跨判分器比较，已作废（见上一小节）。机制：结论卡（3.56 卡/组 × 90 = 320 卡、769 条 part_of 边）经既有 R7-1 结论层（FTS 词面命中）入候选，`smallToBig`（#78 R-b）单跳回捞源证据行作「上下文行」注入；预算未破（结论行硬上限 floor(maxResults/2)、maxExtraLines=2，注入总行数 ≤ maxResults）。turnCov@5 -3.3pp（ns）：single-session-assistant/preference 桶 -13.3/-12.2pp（结论卡占注入位、gold-turn 覆盖被稀释），但 knowledge-update 桶 **+8.3pp**（结论卡把同一实体的多次更新聚合到一行，正是该桶需要的粒度）。**缺口桶 4/11，差 1 题**。
 - **W1**：判对 +6.7pp（CI 含负，不显著）；turnCov -2.5pp（ns）；multi-session +6.0pp / knowledge-update -8.3pp（事实短语把同事实不同时点的行拉近，稀释时间/版本信号）。按票面规则（Δ<3pt 或 CI 含负值即回滚）**默认关**（`--fact-dual-write` 保留能力）。
 - **W2**：机制正确（140 条 valid_end **只标记不删除**、主表+l1_fts 双写同步、读侧既有 `isOutsideValidityWindow(validityNow)` 生效），但 **turnCov -10.9pp 显著负**（knowledge-update 桶尤甚）；判对 +5.6pp（ns）。**与票面预期一致**：LME90 的 gold 证据常包含被取代的旧值 turn，"只留新值"直接丢 gold。→ 默认关（`--write-supersede` + `--b2b-validity`），收益需生产语料（带失效语义）验证。
 - **叠加性**：不叠加。w13 +8.9pp、combo +7.8pp，均低于 w3 单开 +11.1pp——W1/W3 答案收益重叠（都靠补充上下文），W2 的 cov 伤害进一步拖累。**推荐配置 = b1-off + W3**。
