@@ -26,6 +26,20 @@ case "${1:-default}" in
       run "r2-$tag" $COMMON --store "$TMPROOT/lme90-r2-$tag" --fusion "$json"
     done
     ;;
+  # #135 全开档：candidateK=32 + weighted fusion wdef + presentTemporal（R1+R2+R3 同时开）
+  allon)
+    fresh "$BASE" "$TMPROOT/lme90-r2-allon"
+    run r2-allon $COMMON --store "$TMPROOT/lme90-r2-allon" --candidate-k 32 --present-temporal --fusion "$FDEF"
+    ;;
+  # #135 全开 + 消融：allon(R1+R2+R3) → r1only(candidateK) → r3only(presentTemporal)
+  ablate)
+    fresh "$BASE" "$TMPROOT/lme90-r2-allon"
+    run r2-allon $COMMON --store "$TMPROOT/lme90-r2-allon" --candidate-k 32 --present-temporal --fusion "$FDEF"
+    fresh "$BASE" "$TMPROOT/lme90-r2-r1only"
+    run r2-r1only $COMMON --store "$TMPROOT/lme90-r2-r1only" --candidate-k 32
+    fresh "$BASE" "$TMPROOT/lme90-r2-r3only"
+    run r2-r3only $COMMON --store "$TMPROOT/lme90-r2-r3only" --present-temporal
+    ;;
   one) fresh "$BASE" "$TMPROOT/lme90-r2-$3"; run "r2-$3" $COMMON --store "$TMPROOT/lme90-r2-$3" --fusion "$2" ;;
   *) echo "用法: $0 [default|grid|one <json> <tag>]"; exit 2 ;;
 esac

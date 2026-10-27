@@ -298,6 +298,12 @@ async function main() {
   }
   // #135 R2/E1（bench/recall-opt）：--fusion '<json>' 加权融合试验档（recall.fusion，沙箱 yaml）。
   // 例：--fusion '{"mode":"weighted","dense":0.4,"bm25":0.3,"recency":0.2,"validity":0.1,"recencyHalfLifeDays":30}'
+  // #135 全开档：--candidate-k N（recall.candidateK）+ --present-temporal（recall.presentTemporal enabled）
+  const candidateKArg = arg("candidate-k", undefined);
+  const candidateKOverride = candidateKArg !== undefined && candidateKArg !== true && Number.isFinite(Number(candidateKArg)) && Number(candidateKArg) >= 1
+    ? Math.floor(Number(candidateKArg)) : undefined;
+  const presentTemporalOverride = flag("present-temporal")
+    ? { enabled: true, boost: 0.08, recentDays: 30 } : undefined;
   const fusionRaw = arg("fusion", undefined);
   let fusionOverride;
   if (fusionRaw !== undefined && fusionRaw !== true) {
@@ -343,6 +349,8 @@ async function main() {
     ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
     ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
   ...(fusionOverride ? { fusionOverride } : {}),
+  ...(candidateKOverride !== undefined ? { candidateKOverride } : {}),
+  ...(presentTemporalOverride ? { presentTemporalOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
@@ -354,6 +362,8 @@ async function main() {
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
   if (fusionOverride) log("[bench] R2 融合试验档(仅沙箱 yaml): " + JSON.stringify(fusionOverride));
+  if (candidateKOverride !== undefined) log("[bench] R1 候选池上限试验档(仅沙箱 yaml): candidateK=" + candidateKOverride);
+  if (presentTemporalOverride) log("[bench] R3 时间感知试验档(仅沙箱 yaml): " + JSON.stringify(presentTemporalOverride));
 
   const { cfg } = await loadBenchConfig(storeDir);
   const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
