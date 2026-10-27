@@ -190,6 +190,13 @@ export interface RecallConfig {
    * journal gates.importancePenalty 仍保留 raw/penalized 双分量观测。
    */
   importancePenalty: { enabled: boolean; penalty: number };
+  /**
+   * #135 R3（bench/recall-opt）：查询时间感知——query 含当下时态标记
+   * （now/currently/现在/目前/最新…）时对「当下成立」的记忆行 +boost。
+   * 铁律：enabled 缺省 false = 排序逐位现状（先测后开）；
+   * boost 缺省 0.08（结构信号加性量级，与 timeBoost 同族）；recentDays 缺省 30。
+   */
+  presentTemporal: { enabled: boolean; boost: number; recentDays: number };
   reinforcementWeight: number;
   moodBoost: number;
   /**
@@ -1907,6 +1914,16 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         return {
           enabled: bool(ip, "enabled") ?? false,
           penalty: recallSignalBoost(ip, "penalty", 0.3, 0.9),
+        };
+      })(),
+      // #135 R3：查询时间感知（缺省关 = 逐位现状；boost clamp [0,1]、recentDays >=1 取整）
+      presentTemporal: (() => {
+        const pt = obj(recallGroup, "presentTemporal");
+        const rawDays = num(pt, "recentDays");
+        return {
+          enabled: bool(pt, "enabled") ?? false,
+          boost: recallSignalBoost(pt, "boost", 0.08, 1),
+          recentDays: Math.max(1, Math.floor(rawDays !== undefined && Number.isFinite(rawDays) ? rawDays : 30)),
         };
       })(),
       reinforcementWeight: recallSignalBoost(recallGroup, "reinforcementWeight", 0.03),

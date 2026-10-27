@@ -92,6 +92,9 @@ describe("#28 R-A 回归锚：recall-signals 零新增字段", () => {
     "importancePenalty",
     "inferredPenalty",
     "moodBoost",
+    // #135 R3：查询时间感知（gated，缺省 0=逐位现状；先测后开）
+    "presentTemporalBoost",
+    "presentTemporalDays",
     "recencyBoost",
     "reinforcementWeight",
     "sensitivityPenalty",

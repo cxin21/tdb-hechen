@@ -47,6 +47,7 @@ import { emotionSalienceOf, buildRankContext,
   importanceGateStats,
   sensitivityMultiplierOf,
   DEFAULT_RANK_SIGNALS,
+  detectPresentTemporalIntent,
   detectSceneHit,
   sceneSignalOf,
   structuralSignalOf,
@@ -255,6 +256,11 @@ export interface RecallRankSignal extends RecallCoreRefSignal {
    * 缺省 undefined = 门未启用 = 无 gates 字段（缺字段=门未启用口径）。
    */
   importanceGate?: RecallJournalImportanceGateSpec;
+  /**
+   * #135 R3：query 当下时态标记命中（detectPresentTemporalIntent）。缺省 undefined =
+   * 未检测 = 关断恒等（presentTemporalBoost > 0 且本标记为 true 才生效）。
+   */
+  presentTemporal?: boolean;
 }
 
 export interface RecallResult {
@@ -1184,6 +1190,11 @@ export async function performLayeredRecall(params: {
         sensitivityPenalty: cfg.recall?.sensitivityPenalty ?? DEFAULT_RANK_SIGNALS.sensitivityPenalty,
         // P1-T7：重要度降权（enabled 才入乘子；关断恒 0=排序逐位不变）
         importancePenalty: importanceGate ? importanceGate.penalty : 0,
+        // #135 R3：查询时间感知（enabled 才加成；缺省关=排序逐位现状）
+        presentTemporalBoost: cfg.recall?.presentTemporal?.enabled
+          ? (cfg.recall.presentTemporal.boost ?? 0.08)
+          : 0,
+        presentTemporalDays: cfg.recall?.presentTemporal?.recentDays ?? 30,
       };
       const signalsActive =
         signals.timeBoost > 0 ||
@@ -1194,7 +1205,8 @@ export async function performLayeredRecall(params: {
         signals.moodBoost > 0 ||
         signals.emotionSalienceWeight > 0 ||
         signals.sensitivityPenalty > 0 ||
-        signals.importancePenalty > 0;
+        signals.importancePenalty > 0 ||
+        (signals.presentTemporalBoost ?? 0) > 0;
       const needValues = coreRefBoost > 0 || signals.moodBoost > 0;
       // R-A2：候选池通道开关（cfg.recall；缺省 = spec §2 默认值，0 = 通道退出）
       const graphDiscount = cfg.recall?.graphDiscount ?? 0.6;
@@ -1224,6 +1236,8 @@ export async function performLayeredRecall(params: {
             pprIterations: cfg.recall?.pprIterations,
           },
           sceneBoost,
+          // #135 R3：当下时态检测（boost>0 才 parse——timeWindow 先例；regex 纯函数零 I/O）
+          presentTemporal: (signals.presentTemporalBoost ?? 0) > 0 ? detectPresentTemporalIntent(sanitizeText(userText)) : undefined,
           // P1-T7：重要度降权门参数（searchHybrid 消费：active 入乘子 + 双模式影子日志）
           ...(importanceGate ? { importanceGate } : {}),
         };
@@ -2336,6 +2350,8 @@ export async function searchHybrid(
         sceneBoost: (rank as RecallRankSignal).sceneBoost ?? 0,
         // P1-T7：重要度降权门（legacy C5 形状不带 = undefined = 门未启用）
         importanceGate: (rank as RecallRankSignal).importanceGate,
+        // #135 R3：当下时态标记（legacy C5 形状不带 = undefined = 关断）
+        presentTemporal: (rank as RecallRankSignal).presentTemporal,
       }
     : undefined;
   // Run keyword and embedding searches in parallel
@@ -2457,7 +2473,15 @@ export async function searchHybrid(
       : 0;
   // R-A1：结构信号预处理（rankSignal 缺席 = 纯基线；在场但全 0 = 关断恒等）
   const signalCtx = rankSignal
-    ? { timeWindow: rankSignal.timeWindow, moodSign: rankSignal.moodSign, signals: rankSignal.signals, now: rankSignal.now }
+    ? {
+        timeWindow: rankSignal.timeWindow,
+        moodSign: rankSignal.moodSign,
+        signals: rankSignal.signals,
+        now: rankSignal.now,
+        // #135 R3：query 当下时态命中 × 配置开关（关断时恒 false = 零加成）
+        presentTemporal:
+          (rankSignal.signals.presentTemporalBoost ?? 0) > 0 && rankSignal.presentTemporal,
+      }
     : undefined;
   const structOf = (src: RankSignalItem | undefined): { signal: number; mult: number } =>
     signalCtx && src

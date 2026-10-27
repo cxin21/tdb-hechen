@@ -66,6 +66,13 @@ export interface RankSignals {
   sensitivityPenalty: number;
   /** P1-T7（worthiness）：importance ≤ 4 记忆 rankKey 乘法降权（缺省 0=关断恒等；spec §6）。 */
   importancePenalty: number;
+  /**
+   * #135 R3：查询时间感知——query 含当下时态标记（now/currently/现在/目前/最新…）时，
+   * 对「当下成立」的记忆行加成（缺省 0=关断恒等；先测后开）。
+   */
+  presentTemporalBoost?: number;
+  /** #135 R3：「当下成立」的 occurred_at 回看窗（天，缺省 30；仅无 validity 锚时用于兜底）。 */
+  presentTemporalDays?: number;
 }
 
 export const DEFAULT_RANK_SIGNALS: RankSignals = {
@@ -78,6 +85,8 @@ export const DEFAULT_RANK_SIGNALS: RankSignals = {
   emotionSalienceWeight: 0,
   sensitivityPenalty: 0,
   importancePenalty: 0,
+  presentTemporalBoost: 0,
+  presentTemporalDays: 30,
 };
 
 /** 全 0 常量：关断矩阵锚点（结构上即"所有通道退出"）。 */
@@ -91,6 +100,8 @@ export const ZERO_RANK_SIGNALS: RankSignals = {
   emotionSalienceWeight: 0,
   sensitivityPenalty: 0,
   importancePenalty: 0,
+  presentTemporalBoost: 0,
+  presentTemporalDays: 30,
 };
 
 const DAY_MS = 86_400_000;
@@ -358,6 +369,51 @@ export function sceneSignalOf(
 }
 
 // ============================
+// #135 R3 · 查询时间感知（present-tense intent；缺省关断，先测后开）
+// ============================
+
+/** 当下时态标记（中英，宁缺毋滥——只在明确指向"现在"时命中）。 */
+const PRESENT_TEMPORAL_RE =
+  /\b(now|currently|these days|lately|as of now|up to date|up-to-date|latest)\b|(现在|目前|如今|当下|现阶段|最近|如今都|最新|现在都)/i;
+
+/**
+ * R3：query 是否含当下时态标记（纯函数、确定性）。
+ * 例：命中 "What do I currently like?" / "我现在用哪个编辑器？"；不命中
+ * "What did I like last week?"（过去窗走 timeWindow/timeBoost，互不抢占）。
+ */
+export function detectPresentTemporalIntent(query: string): boolean {
+  if (!query) return false;
+  return PRESENT_TEMPORAL_RE.test(query);
+}
+
+/**
+ * R3 加成：当下时态 query 下，「当下成立」的记忆 +boost。
+ * 当下成立 = ①valid 区间覆盖 now（vs<=now<=ve，缺侧=开放端，与 timeSignalOf 同口径）；
+ * 或 ②无 validity 锚但 occurred_at 落在最近 recentDays 天内（偏新版本兜底）。
+ * 两者皆无 → 0（宁缺毋滥）。未来 occurred（时钟偏移）不加成。
+ */
+export function presentTemporalSignalOf(
+  item: RankSignalItem,
+  now: Date,
+  boost: number,
+  recentDays = 30,
+): number {
+  if (!(boost > 0)) return 0;
+  const nowMs = now.getTime();
+  const vs = item.valid_start ? Date.parse(item.valid_start) : NaN;
+  const ve = item.valid_end ? Date.parse(item.valid_end) : NaN;
+  if (!Number.isNaN(vs) || !Number.isNaN(ve)) {
+    const s = Number.isNaN(vs) ? -Infinity : vs;
+    const e = Number.isNaN(ve) ? Infinity : ve;
+    return s <= nowMs && e >= nowMs ? boost : 0;
+  }
+  const occurred = item.occurred_at ? Date.parse(item.occurred_at) : NaN;
+  if (Number.isNaN(occurred)) return 0;
+  const delta = nowMs - occurred;
+  return delta >= 0 && delta <= recentDays * DAY_MS ? boost : 0;
+}
+
+// ============================
 // 组合：加性结构信号总量（不含 coreRef 与 R3 乘法——调用方组合）
 // ============================
 
@@ -369,6 +425,8 @@ export function structuralSignalOf(
     moodSign: number;
     signals: RankSignals;
     now: Date;
+    /** #135 R3：query 当下时态命中（buildRankContext 检测；关断/未命中 = false）。 */
+    presentTemporal?: boolean;
   },
 ): number {
   return (
@@ -376,7 +434,10 @@ export function structuralSignalOf(
     recencySignalOf(item, ctx.now, ctx.signals.recencyBoost) +
     significanceSignalOf(item, ctx.signals.sigWeight) +
     reinforcementSignalOf(item, ctx.signals.reinforcementWeight) +
-    moodSignalOf(item, ctx.moodSign, ctx.signals.moodBoost)
+    moodSignalOf(item, ctx.moodSign, ctx.signals.moodBoost) +
+    (ctx.presentTemporal
+      ? presentTemporalSignalOf(item, ctx.now, ctx.signals.presentTemporalBoost ?? 0, ctx.signals.presentTemporalDays ?? 30)
+      : 0)
   );
 }
 
@@ -408,6 +469,8 @@ export interface RankContext {
    * 即 items），也可直接用 detectSceneHit 在排序点自行计算（同一实现，单一源）。
    */
   sceneHit: string | null;
+  /** #135 R3：query 当下时态标记命中（detectPresentTemporalIntent）。 */
+  presentTemporal: boolean;
   now: Date;
 }
 
@@ -476,6 +539,7 @@ export async function buildRankContext(
     firedLabels: firedValues.map((v) => v.label),
     timeWindow: parseTimeWindow(query, now),
     moodSign: moodSignOf(firedValues.map((v) => v.valence)),
+    presentTemporal: detectPresentTemporalIntent(query),
     sceneHit,
     now,
   };
