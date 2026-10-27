@@ -390,3 +390,25 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 - 生产 yaml（gitignored）与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 已加 `cardinalityGate/cardinalityDefault/validity.mode` 注释与缺省值（均缺省关/硬）。
 - 软失效的硬丢判据是「查询意图 + 内容 token 重叠 + 更新时间」，非实体级同键（行级无 subject 持久化）；事实级落地后应由 metadata.(subject,predicate) 精确判定。
 
+
+### 11.7 全开档复测（#136 配置全开，2026-10-27 晚；判分被配额阻塞）
+
+> 触发：用户重启后要求「配置项都打开，重跑评分，对比初始与排名」。
+> 配置（本机 `tdai-gateway.yaml`，改后需重启网关）：`memory.write.factKey.enabled=true`、`memory.write.supersession.enabled=true`（cardinalityGate=true / cardinalityDefault=single）、`recall.validity.mode=soft`；W3 `smallToBig` 原本已开（maxExtraLines=4）。rerank 维持生产现值（candidates 12 / minScore −2，属 #145 范围，本波不动）。
+> **判分阻塞**：MiniMax 账号 `402 当前已达到 Token Plan 用量上限`（重启后复测仍 402），本轮只能跑 `--gen-limit 0` 检索侧；判分补跑见 #147。
+
+| 档 | 组成 | turnCov@5 | sessionCov | MRR | nDCG | 判对 |
+|---|---|---|---|---|---|---|
+| b1off-mm | 基线 | 79.5% | 92.7% | 0.712 | 0.723 | 77.8% |
+| old allon | W1+W2旧（140 失效）+W3×2 | 74.9% | 91.9% | 0.666 | 0.745 | 77.8% |
+| w3b | W3×4 | 79.3% | 92.9% | 0.691 | 0.792 | **84.4%** |
+| **new A** | W1+W2契约（0 失效）+W3×4+soft | **78.8%** | **94.0%** | 0.681 | 0.786 | 待补 |
+| **new B** | W2契约（0 失效）+W3×4+soft | **79.3%** | 92.9% | 0.691 | 0.792 | 待补（≡ w3b） |
+
+- **A vs old allon**：turnCov **+3.9pp**（74.9→78.8）、sessionCov +2.1pp（91.9→94.0）——契约门去掉 W2 的 140 条误失效后，全开档从「比基线差 4.6pp」回到「差 0.7pp（ns，CI[−8.0,+6.5]）」。
+- **B ≡ w3b**：四项检索指标逐位相同（79.3 / 92.9 / 0.691 / 0.792）——W2 在 LME90 上 0 失效、soft 在无失效行时恒等，故 B 的判分输入与 w3b 完全一致；判对预期 ≈ w3b 84.4%（待 #147 用 MiniMax 实跑确认）。
+- 分桶（new A vs b1off，逐题配对）：knowledge-update cov **+14.4pp**（70.0→84.4，CI[−5.6,+34.4]）、multi-session +7.8pp；single-session-assistant −13.3pp（结论卡挤占原文行，W3 已知副作用）、preference −6.7pp、temporal −3.3pp（均 ns）。
+- **排名（判对，已有 MiniMax 同 judge 档）**：w3b 84.4% > deep105 82.2% > w3 81.1% > w13 78.9% > b1off 77.8% ≈ old allon 77.8% > w1 76.7% > w2 75.6% > b0base 45.6%。new A/B 的判分列待 #147 补齐后重排。
+
+**结论**：全开配置下，检索侧已不劣于基线（B=w3b、A −0.7pp ns）；W3 仍是判对主贡献，W1 的判对收益仍未知（历史 w1 +6.7pp 但 CI 含负），W2 的伤害已被契约门消除。生产定档建议：**W3 + W2(契约) + soft 先开**，W1 等 #147 判分后再定；rerank 档位归 #145。
+
