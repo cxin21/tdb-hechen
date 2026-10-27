@@ -2054,6 +2054,8 @@ async function searchMemories(
       cfg.recall?.timeProxFallbackEnabled === true,
       // #135 R1：候选池上游上限配置化（缺省 undefined = maxResults*3 逐位现状）
       cfg.recall?.candidateK,
+      // #135 R2：加权融合配置（缺省 undefined = RRF 恒等逐位现状）
+      cfg.recall?.fusion,
     );
     // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
     // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
@@ -2289,6 +2291,12 @@ export async function searchHybrid(
    * 由 searchMemories 从 cfg.recall.candidateK 透传；正整数才生效（config 层 clamp）。
    */
   candidateKOverride?: number,
+  /**
+   * #135 R2（检索融合 spec）：加权融合配置（cfg.recall.fusion 透传）。缺省 undefined =
+   * RRF 恒等权重（dense/bm25×1，recency/validity×0）= 逐位现状。V1 实证 ageDecay
+   * 乘子在 rank-based RRF 路 0/90 零差异——recency/validity 以显式归一特征加入融合分。
+   */
+  fusion?: RecallFusionConfig,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -2309,6 +2317,9 @@ export async function searchHybrid(
   // Run keyword and embedding searches in parallel
   // #135 R1：candidateK 配置化（缺省 3x = 逐位现状；cfg.recall.candidateK 解锁扩池）
   const candidateK = candidateKOverride ?? maxResults * 3; // retrieve more for merging
+  // #135 R2：融合权重（缺省恒等 = 逐位现状）
+  const fusionW = fusionWeightsOf(fusion);
+  const fusionHalfLifeDays = recencyHalfLifeDaysOf(fusion);
 
   const [keywordResult, embeddingResult] = await Promise.all([
     // Keyword search: FTS5 only (no in-memory fallback)
@@ -2479,9 +2490,11 @@ export async function searchHybrid(
       mult,
       importance: (r.soul as { importance?: number | null } | undefined)?.importance ?? undefined,
     });
+    // #135 R2：bm25 通道加权贡献（恒等权重 ×1 = 逐位现状）
+    const fusionContribution = fusionW.bm25 * rrfScore;
     const existing = mergedMap.get(id);
     if (existing) {
-      existing.rrfScore += rrfScore;
+      existing.rrfScore += fusionContribution;
     } else {
       const kwMeta = (r.record.metadata ?? {}) as Record<string, unknown>;
       // A3（REG-REMAINING-001）终极修复：keyword 通道的 soul 单独携带（R-A1 设计）但池插入
@@ -2489,7 +2502,7 @@ export async function searchHybrid(
       // 修复：并回标注所需四字段（与 embedding 通道 vectorResultToFormatable 对齐）。
       const kwSoul = r.soul as { occurred_at?: string; certainty?: string; valence?: number; significance?: number } | undefined;
       mergedMap.set(id, {
-        rrfScore,
+        rrfScore: fusionContribution,
         certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
         validEnd: (r.soul as { valid_end?: string } | undefined)?.valid_end,
         validStart: (r.soul as { valid_start?: string } | undefined)?.valid_start,
@@ -2554,12 +2567,14 @@ export async function searchHybrid(
       mult,
       importance: r.importance ?? undefined,
     });
+    // #135 R2：dense 通道加权贡献（恒等权重 ×1 = 逐位现状）
+    const fusionContribution = fusionW.dense * rrfScore;
     const existing = mergedMap.get(id);
     if (existing) {
-      existing.rrfScore += rrfScore;
+      existing.rrfScore += fusionContribution;
     } else {
       mergedMap.set(id, {
-        rrfScore,
+        rrfScore: fusionContribution,
         certainty: r.certainty,
         validEnd: r.valid_end,
         validStart: r.valid_start,
@@ -2572,6 +2587,21 @@ export async function searchHybrid(
         coreRefCount: coreRefCountOf(embMeta),
         recallCount: recallCountOf(embMeta),
       });
+    }
+  }
+
+  // #135 R2：recency/validity 显式融合特征（恒等权重 0 → 零加成逐位现状）。
+  // V1 配对实证：ageDecay 乘子在 rank-based RRF 路零差异（0/90）——时近/有效性
+  // 必须以归一特征直接进融合分才生效。特征追加在双通道合并后、池扩展/排序前。
+  if (fusionW.recency > 0 || fusionW.validity > 0) {
+    const fusionNow = rankSignal?.now ?? new Date();
+    for (const [, v] of mergedMap) {
+      if (fusionW.recency > 0) {
+        v.rrfScore += fusionW.recency * recencyNormOf(v.formatable.occurred_at, fusionNow, fusionHalfLifeDays);
+      }
+      if (fusionW.validity > 0) {
+        v.rrfScore += fusionW.validity * validityNormOf(v.validStart, v.validEnd, fusionNow);
+      }
     }
   }
 
@@ -2918,6 +2948,13 @@ export async function searchHybrid(
  * 处 metric 解析共用单一源）。
  */
 import { isRecurrenceMeta, recurrenceLabel } from "../record/l1-extractor.js";
+import {
+  fusionWeightsOf,
+  recencyHalfLifeDaysOf,
+  recencyNormOf,
+  validityNormOf,
+  type RecallFusionConfig,
+} from "../recall/fusion.js";
 
 interface FormatableMemory {
   type: string;

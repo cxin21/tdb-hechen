@@ -129,6 +129,20 @@ export interface RecallConfig {
    * 被此隐式上限锁死）；正整数 floor 生效，非法/非有限 = 缺省。
    */
   candidateK?: number;
+  /**
+   * #135 R2（检索融合 spec）：RRF → 加权融合。缺省 mode="rrf" = 恒等权重
+   * （dense/bm25×1、recency/validity×0）逐位现状；"weighted" = 四通道加权和
+   * （dense + BM25 + recency 衰减 + validity 状态，权重由 E1 离线拟合产物经
+   * config 显式填入；未填项回落 0.4/0.3/0.2/0.1 占位）。非法/负权重逐项回落。
+   */
+  fusion?: {
+    mode: "rrf" | "weighted";
+    dense?: number;
+    bm25?: number;
+    recency?: number;
+    validity?: number;
+    recencyHalfLifeDays?: number;
+  };
   /** Max characters injected for a single recalled L1 memory. 0 disables the per-memory limit. */
   maxCharsPerMemory: number;
   /** Max total characters injected for all recalled L1 memories. 0 disables the total limit. */
@@ -1842,6 +1856,20 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       candidateK: (() => {
         const raw = num(recallGroup, "candidateK");
         return raw !== undefined && Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : undefined;
+      })(),
+      // #135 R2：加权融合（缺省 mode="rrf" 逐位现状；权重非法/负逐项回落占位）
+      fusion: (() => {
+        const fg = obj(recallGroup, "fusion");
+        if (!fg || Object.keys(fg).length === 0) return undefined;
+        const mode = str(fg, "mode");
+        return {
+          mode: mode === "weighted" ? "weighted" : "rrf",
+          dense: num(fg, "dense"),
+          bm25: num(fg, "bm25"),
+          recency: num(fg, "recency"),
+          validity: num(fg, "validity"),
+          recencyHalfLifeDays: num(fg, "recencyHalfLifeDays"),
+        };
       })(),
       maxCharsPerMemory: num(recallGroup, "maxCharsPerMemory") ?? 0,
       maxTotalRecallChars: num(recallGroup, "maxTotalRecallChars") ?? 0,
