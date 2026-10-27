@@ -16,7 +16,9 @@ B="node --import tsx scripts/eval-memory-bench.mjs"
 L=.eval-data/bench
 TMP="${TMPDIR:-/tmp}"
 BASE="${BASE_STORE:-/c/Users/Administrator/AppData/Local/Temp/tdagemem-bench/lme90-mm-b1off}"
-STORE_ROOT="${STORE_ROOT:-$TMP/tdagemem-bench}"
+# STORE_ROOT 缺省 = BASE 的父目录（别再拿 $TMP 猜——Windows 的 TEMP 与 /tmp 不是一个地方，
+# 曾导致 fc-ro 找不到刚写好的库）
+STORE_ROOT="${STORE_ROOT:-$(dirname "$BASE")}"
 COMMON="--dataset longmemeval --manifest $L/lme-manifest.json --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --rerank-off --b1 --candidate-k 32 --fact-model MiniMax-M2.7 --embed-interval-ms 1200"
 FC="--fact-channel --fact-channel-weight 0.6 --fact-max-facts 5"
 FCNORM='{"mode":"normalized","dense":0.5,"bm25":0.2,"fact":0.3}'
