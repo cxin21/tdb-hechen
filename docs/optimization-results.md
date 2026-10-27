@@ -7,6 +7,8 @@
 
 ## 0. 一句话结论
 
+> **2026-10-27 下午修正（§10）**：精排本身不是净负项——伤害来自 `candidates=12` + `minScore=-2` 的**过度剪枝**（把 30% 的题剪到只剩 1 行证据）。保留 rerank、把池扩到 32、floor 放到 −10.5，turnCov@5 = **84.3%**（+16.67pp vs b0-base，CI[+9.05,+24.29]，p=0.0005），高于「关掉 rerank」的 79.5%。下文 §0–§2 为下午修正前的原始结论，保留作历史记录。
+
 **精排（本地 bge-reranker-base，minScore=-2 logit-sigmoid 闸门）在 LME90 上是净负项：关停 = turnCov@5 +12.0pp（67.1%→79.5%，CI[+4.1,+20.0]）且延迟 -7.3s、答案判对持平；B1 读侧四件套（时间序证据+CoN 引用+NOT_ENOUGH_INFO 出口+英文指令）在答案侧大胜：判对 38.9%→54.4%（+15.6pp，McNemar p=0.001），拒答 51%→30%。B2b 三项（MMR/validityNow/向量门槛）一项显著负、两项无效。**
 
 ## 1. 最终汇总表（基线 b0-base vs 各档，同题配对 n=90）
@@ -239,3 +241,77 @@ w3b 的 [上下文] 证据行只出现在 **9/90 题**（平均 0.10 行/题）�
 
 - 生产配置维持**只开 W3（maxExtraLines=4）**；W1/W2 保持关（yaml 已回退）。
 - 待办：事实级粒度与 cardinality 契约（#136）、多事实键与双通道（#137）、组合设计与路由（#141）、判分一致性（#140）。
+
+## 10. 检索融合与闭环（issue #135：R1–R4 + E1–E3，2026-10-27 下午场）
+
+> 本节全部为 n=90 同题配对，judge=answer=MiniMax-M3.1-Flash（生产 config-override 的 llm 配置），口径 lme-v2。跑档脚本 `MemoryCore/scripts/run-r135-*-arms.sh`，结果落 `MemoryCore/.eval-data/bench/longmemeval-oracle-*.json`。
+
+### 10.1 代码侧交付（bench/recall-opt，逐项独立 commit）
+
+| 子项 | commit | 内容 |
+|---|---|---|
+| R1 | `1c1130e` | `recall.candidateK` 配置化——候选池上游上限解锁；缺省 = `maxResults*3` 逐位现状 |
+| R2 | `68fa360` | `recall.fusion` 加权融合（dense/BM25/recency/validity 显式特征）；缺省 `mode:"rrf"` 恒等，逐位不变 |
+| R3 | `085a722` | `recall.presentTemporal` 查询时间感知（now/currently/最新…）；缺省关断 |
+| R4 | `1a426c9` | `rerank.mode="filter"` floor 只滤不清排、保原序；缺省 `rerank` |
+| E1/E2 | `6c87550` | `scripts/fit-fusion-weights.mjs` 配对汇总 + E2 门禁（Δ≥+3pp 且 CI 下界>0） |
+| bench 旋钮 | `74b8de1` + 本节 | `--fusion/--candidate-k/--present-temporal/--rerank-mode`，全部只写沙箱 yaml 与沙箱 override json |
+
+### 10.2 评测结论表（rerank 开/关 × 剪枝深度）
+
+| 档 | rerank | candidates | minScore | 其它 | turnCov@5 | MRR | 判对 | 拒答 |
+|---|---|---|---|---|---|---|---|---|
+| b0base-mm | 开 | 12 | −2 | 无 #135 开关 | 67.1% | 0.702 | 45.6% | 40.0% |
+| allon-on-rerank | 开 | 12 | −2 | cK32+fusion+presentTemporal+B1 | 78.0% | 0.777 | 73.3% | 18.9% |
+| **deep4** | 开 | 32 | −4 | 同上 | 80.9% | 0.806 | 80.0% | 13.3% |
+| **filter7deep** | 开（filter 模式） | 32 | −7 | 同上（保原序） | 79.3% | 0.731 | 75.6% | 15.6% |
+| **deep105** | 开 | 32 | −10.5 | 同上 | **84.3%** | **0.813** | **82.2%** | **10.0%** |
+| b1off-mm | 关 | — | — | 无 #135 开关 | 79.5% | 0.712 | 77.8% | 12.2% |
+| allon（rerank 关） | 关 | — | — | cK32+fusion+presentTemporal+B1 | 79.9% | 0.735 | 72.2% | 17.8% |
+
+配对统计（`fit-fusion-weights.mjs`）：
+
+- **deep105 vs b0base：ΔturnCov@5 = +16.67pp，CI95[+9.05,+24.29]，30W/8L/52T，p=0.0005 —— E2 门禁 PASS**。
+- deep105 vs b1off（rerank 关）：+4.63pp，CI95 下界 −2.9pp，14W/11L/65T，p=0.69 —— FAIL（n=90 不够，非负向）。
+- deep105 vs filter7deep：+4.81pp（10W/13L/67T）—— 重排优于保原序。
+- filter7deep vs b1off：−0.19pp（6W/4L/80T）—— 深池 + 保原序 ≈ 关掉 rerank。
+- allon（rerank 关） vs b1off：+0.37pp（5W/3L/82T）—— #135 三个开关在无精排基线上是中性，之前 +10.6pp 主要是在补剪枝的洞。
+- r2-wdef（weighted 融合，rerank 开基线上） vs b0base：Δ=0.00pp，1W/1L/88T —— 见 10.4。
+
+### 10.3 根因：精排的伤害来自「剪枝」，不是「重排」
+
+按 b0base 的 `gates.rerank.kept`（剪枝后保留行数）分组，看「关掉 rerank 后的 ΔturnCov@5」：
+
+| kept | 题数 | 关掉 rerank 后 Δ |
+|---|---|---|
+| 1 | 27（30%） | **+35.2pp** |
+| 2 | 16 | +6.3pp |
+| 3 | 9 | +9.3pp |
+| ≥4 | 38 | −1.3pp（中性） |
+
+即：rerank 只在保留 ≥4 行的题上中性，而在保留 1 行的 27 题（30%）把证据剪到只剩一条，B1 的时间序证据块与拒答出口同时失效。deep105 把 kept≥4 的题从 38/90 提到 80/90，分题型 knowledge-update 0.750→**0.929**、multi-session 0.657→**0.764**、temporal-reasoning 0.778→0.800，single-session 类持平（preference −1.1pp）。
+
+**注意交互性**：§1 的 T3（minScore −10.5 + pool32，但无 B1、无 #135 开关）当时 Δ=0——松 floor **单独不产生收益**，它只是把 B1 需要的证据还回来；收益来自「不剪 + 读侧四件套 + 深池」的组合。
+
+### 10.4 R2/R3 的定位：它们只在「平局组」里起作用
+
+R2 加权融合缺省恒等；weighted 档（dense .4/bm25 .3/recency .2/validity .1）在 LME90 上 Δ=0（1W/1L/88T），R3 presentTemporal 在 rerank-off 基线上 +0.37pp（n.s.）。机制解释：`compareLex` 主序是 rrfScore 降序**严格优先**，recency/validity/presentTemporal 都是加性小量——只有 rrfScore 精确平局才会改变名次，而 LME90 上几乎不出现精确平局。V1 早先「ageDecay 在 rank-based RRF 路 0/90 无差异」同一机制。
+
+**结论**：R2/R3 保留为「能力 + 缺省关断」，不主张收益；要让时间信号真正生效，得让它在**通道内打分**（向量/BM25 分数量纲）而不是合并后加性并入——见后续票。
+
+### 10.5 R4 的结论：filter 模式可用，但不是最优解
+
+`rerank.mode="filter"` 在 src 侧生效已实证（filter7deep 的 90/90 行 `gates.rerank.mode="filter"`）。但同池深下保原序（79.3%）低于重排（deep4 80.9% / deep105 84.3%）——**重排本身有正收益**（knowledge-update 78.6% vs 92.9%），filter 模式的价值是「安全降级档」，不应做生产默认。生产默认应由 #145 校准（candidates 12→32、minScore −2→−10.5 logit 刻度，非 logit provider 需按标度换算）。
+
+### 10.6 复现
+
+```bash
+cd MemoryCore
+bash scripts/run-r135-rerankfix-arms.sh deep105     # 84.3%
+bash scripts/run-r135-rerankfix-arms.sh filter7deep # 79.3%（R4 filter 模式）
+bash scripts/run-r135-rerankfix-arms.sh deep4       # 80.9%
+bash scripts/run-r135-off-arms.sh allon             # 79.9%（rerank 关）
+node scripts/fit-fusion-weights.mjs \
+  --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json \
+  --arm deep105=.eval-data/bench/longmemeval-oracle-2026-10-27T08-36-53.json
+```

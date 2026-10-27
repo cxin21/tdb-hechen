@@ -79,6 +79,7 @@ if (flag("help") || argv.length === 0) {
   --manifest <path>              B0 抽样清单（caseId 顺序即运行序；配对比较必须同清单）
   --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
+  --rerank-mode filter|rerank   #135 R4 精排试验：filter=floor 只滤不清排（保原序）；缺省 rerank
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
@@ -278,6 +279,9 @@ async function main() {
   if (rms !== undefined && rms !== true) rerankOverride.minScore = Number(rms);
   const rcand = arg("rerank-candidates", undefined);
   if (rcand !== undefined && rcand !== true) rerankOverride.candidates = Number(rcand);
+  // #135 R4：精排模式（rerank=重排；filter=只丢低于 floor 的行、保原序）。写进 yaml 与 override json，两边一致。
+  const rmode = arg("rerank-mode", undefined);
+  if (rmode === "filter" || rmode === "rerank") rerankOverride.mode = rmode;
   // B2-b：MMR 试验档（只写沙箱 yaml；生产 yaml 不动——同用户决策②）。声明须在 prepareBenchYaml 之前。
   const mmrOverride = {};
   if (flag("mmr")) mmrOverride.enabled = true;
@@ -704,6 +708,8 @@ async function main() {
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
   fusion: fusionOverride ?? null,
+      candidateK: candidateKOverride ?? null,
+      presentTemporal: presentTemporalOverride ?? null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
