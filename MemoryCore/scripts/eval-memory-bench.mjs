@@ -23,6 +23,7 @@ import {
   summarizeDataset,
 } from "./lib/bench/datasets.mjs";
 import {
+  applyWriteSteps,
   copyOverrideFrom,
   ingestCase,
   loadBenchConfig,
@@ -30,10 +31,14 @@ import {
   makeStoreDir,
   openBenchStore,
   prepareBenchYaml,
+  reembedFactKeys,
   repoRoot,
+  withEmbedCache,
 } from "./lib/bench/store.mjs";
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
 import { aggregate, evalRetrieval, makeIdResolver, normHead, tokenF1 } from "./lib/bench/metrics.mjs";
+import { FACTS_PROMPT_VERSION, factsCoverage, factsForCase } from "./lib/bench/facts.mjs";
+import { CONCLUSIONS_PROMPT_VERSION, conclusionsForCase } from "./lib/bench/conclusions.mjs";
 import {
   buildAnswerPrompt,
   buildJudgePrompt,
@@ -171,6 +176,90 @@ async function main() {
   const dsSummary = summarizeDataset({ ...ds, cases: casesAll });
   log(`[bench] 数据集=${ds.name} 题数=${dsSummary.cases} 轮数=${dsSummary.turns}`);
 
+  // W1/W2（issue #134）：写入治本试验档——事实抽取离线批处理 + K=V+fact 双写 + 写时 supersession。
+  // 缺省全关（逐位现状）；--write-supersede 需要抽取结果（隐含 --fact-extract）。
+  const factDualWrite = flag("fact-dual-write");
+  const writeSupersede = flag("write-supersede");
+  const factExtract = flag("fact-extract") || factDualWrite || writeSupersede;
+  const factMaxChars = num("fact-max-chars", 240);
+  const factSeparatorArg = arg("fact-separator", undefined);
+  const factSeparator = typeof factSeparatorArg === "string" ? factSeparatorArg : undefined;
+  const factCacheDir = String(arg("fact-cache", path.join(repo, ".eval-data", "bench", "facts-cache")));
+  const factBatchSize = num("fact-batch-size", 20);
+  const factConcurrency = num("fact-concurrency", 8);
+  const factModelArg = arg("fact-model", undefined);
+  // embedding 节流（豆包账号级 RPM 限制）：请求间隔下限，避免突发触发 429 重试风暴
+  const embedIntervalMs = num("embed-interval-ms", 400);
+  // W3（issue #134）：结论卡（work_fact）接入召回——蒸馏 + part_of 证据链 + smallToBig 回捞。
+  const conclusionCards = flag("conclusion-cards");
+  const conclusionMax = num("conclusion-max", 4);
+  const conclusionMaxExtra = num("conclusion-max-extra", 2);
+
+  // ── 按 groupKey 分组灌库 ──
+  const groups = new Map();
+  for (const c of casesAll) {
+    if (!groups.has(c.groupKey)) groups.set(c.groupKey, { corpus: c, cases: [] });
+    groups.get(c.groupKey).cases.push(c);
+  }
+
+  // W1/W2（issue #134）：--facts-only 离线批处理——只跑抽取落 facts-cache，不建库、不检索、不判分。
+  // 门禁（scripts/fact-extract-gate.mjs）的前置步：抽取质量不达标就不启用双写。
+  if (flag("facts-only")) {
+    const fcred0 = readLlmCredential({ yamlPath: prodConfig, baseDir: resolveProdDataDir(prodConfig) });
+    const fcred = typeof factModelArg === "string" && factModelArg ? { ...fcred0, model: factModelArg } : fcred0;
+    const fllm = makeLlm(fcred);
+    const fmodel = fllm.info?.model ?? fcred?.model ?? "unknown";
+    log(`[bench] facts-only 离线抽取: model=${fmodel} cache=${factCacheDir} 组=${groups.size}`);
+    const t0 = Date.now();
+    let done = 0;
+    let hits = 0;
+    let nextIdx = 0;
+    const cov = { turns: 0, turnsWithFacts: 0, phrases: 0 };
+    const usage = { prompt: 0, completion: 0 };
+    let failedBatches = 0;
+    const groupList = [...groups.values()];
+    // case 级并行：单 case 内部再按 factBatchSize 并发；两侧并行度相乘 =
+    // in-flight 外呼数（抽取是本轮唯一的长尾，串行 case 会拖到小时级）。
+    const caseWorkers = Math.max(1, Math.min(Number(arg("fact-case-concurrency", 6)), groupList.length));
+    const batchWorkers = Math.max(1, Math.min(6, factConcurrency));
+    await Promise.all(Array.from({ length: caseWorkers }, async () => {
+      for (;;) {
+        const i = nextIdx++;
+        if (i >= groupList.length) return;
+        const fx = await factsForCase({
+          caseObj: groupList[i].corpus,
+          cacheDir: factCacheDir,
+          llm: fllm,
+          model: fmodel,
+          batchSize: factBatchSize,
+          concurrency: batchWorkers,
+          logger: { warn: (m) => log("[bench:warn] " + m) },
+        });
+        if (fx.cacheHit) hits++;
+        else if (fx.usage) {
+          usage.prompt += fx.usage.prompt ?? 0;
+          usage.completion += fx.usage.completion ?? 0;
+        }
+        if (fx.failedBatches) failedBatches += fx.failedBatches;
+        const c = factsCoverage(fx.facts.byTurn);
+        cov.turns += c.turns;
+        cov.turnsWithFacts += c.turnsWithFacts;
+        cov.phrases += c.phrases;
+        done++;
+        if (done % 5 === 0 || done === groupList.length) {
+          log(`[bench] facts-only ${done}/${groupList.length}（缓存命中 ${hits}；覆盖 turn ${cov.turnsWithFacts}/${cov.turns}，短语 ${cov.phrases}）耗时=${((Date.now() - t0) / 1000).toFixed(0)}s`);
+        }
+      }
+    }));
+    log(`[bench] facts-only 完成：组 ${groups.size}（缓存命中 ${hits}），短语 ${cov.phrases}，LLM usage prompt=${usage.prompt} completion=${usage.completion}`);
+    // 抽取失败批非 0 退出（门禁链可判：抽取全失败不能静默当成功）
+    if (failedBatches > 0) {
+      console.error(`[bench] facts-only 失败批 ${failedBatches} 个——抽取不完整，退出码 1`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   // ── 沙箱库 ──
   const reuse = arg("store", undefined);
   const storeDir = makeStoreDir(ds.name, typeof reuse === "string" ? reuse : undefined);
@@ -244,8 +333,10 @@ async function main() {
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
+    ...(conclusionCards ? { smallToBigOverride: { enabled: true, maxExtraLines: conclusionMaxExtra } } : {}),
   });
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
+  if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra }));
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
@@ -255,17 +346,26 @@ async function main() {
   log(`[bench] 存储=${cfg.storeBackend} 向量维=${dims} bm25=${cfg.bm25?.enabled ? "on" : "off"} 精排=${cfg.recall?.rerank?.provider ?? "none"}`);
   if (init && init.needsReindex) log("[bench] 警告: store.init 要求重建索引（embedding 维度变化）");
 
-  // ── 按 groupKey 分组灌库 ──
-  const groups = new Map();
-  for (const c of casesAll) {
-    if (!groups.has(c.groupKey)) groups.set(c.groupKey, { corpus: c, cases: [] });
-    groups.get(c.groupKey).cases.push(c);
-  }
   log(`[bench] 记忆语料组=${groups.size}（每组一次灌库 + 组内题目检索）`);
 
   const ingestStats = { groups: 0, turns: 0, embedded: 0, embedFailed: 0, written: 0, embedRetries: 0 };
   const resolvers = new Map();
   const corpusSummary = [];
+
+  // W1/W2（issue #134）：抽取器 LLM——凭据同一读取器（ADR-0006），yaml 已由 prepareBenchYaml 落盘。
+  let factLlm = null;
+  let factModel = null;
+  if (factExtract || conclusionCards) {
+    const fcred0 = readLlmCredential({ yamlPath: path.join(storeDir, "bench-gateway.yaml"), baseDir: storeDir });
+    // 「小模型离线批处理」：--fact-model 覆盖抽取/蒸馏用模型（端点 highspeed 档；缺省=生产同款）
+    const fcred = typeof factModelArg === "string" && factModelArg ? { ...fcred0, model: factModelArg } : fcred0;
+    factLlm = makeLlm(fcred);
+    factModel = factLlm.info?.model ?? fcred?.model ?? "unknown";
+    if (factExtract) log(`[bench] 事实抽取: model=${factModel} cache=${factCacheDir} dualWrite=${factDualWrite} supersede=${writeSupersede}`);
+    if (conclusionCards) log(`[bench] 结论卡蒸馏: model=${factModel} max=${conclusionMax} cache=${factCacheDir}`);
+  }
+  const factStats = { groups: 0, cacheHits: 0, turns: 0, turnsWithFacts: 0, phrases: 0, extractMs: 0, usage: { prompt: 0, completion: 0 }, failedBatches: 0 };
+  const conclusionStats = { groups: 0, cacheHits: 0, cards: 0, ms: 0 };
 
   if (!reuseMode) {
     const t0 = Date.now();
@@ -273,12 +373,59 @@ async function main() {
     for (const [key, g] of groups) {
       gi++;
       const contentIndex = new Map();
+      // W1/W2：本组语料的事实抽取（缓存优先；命中零外呼）
+      let fx = null;
+      if (factExtract) {
+        fx = await factsForCase({
+          caseObj: g.corpus,
+          cacheDir: factCacheDir,
+          llm: factLlm,
+          model: factModel,
+          batchSize: factBatchSize,
+          concurrency: factConcurrency,
+          logger: { warn: (m) => log("[bench:warn] " + m) },
+        });
+        factStats.groups++;
+        if (fx.cacheHit) factStats.cacheHits++;
+        else {
+          factStats.extractMs += fx.ms ?? 0;
+          if (fx.failedBatches) factStats.failedBatches += fx.failedBatches;
+          if (fx.usage) {
+            factStats.usage.prompt += fx.usage.prompt ?? 0;
+            factStats.usage.completion += fx.usage.completion ?? 0;
+          }
+        }
+        const cov = factsCoverage(fx.facts.byTurn);
+        factStats.turns += cov.turns;
+        factStats.turnsWithFacts += cov.turnsWithFacts;
+        factStats.phrases += cov.phrases;
+      }
+      // W3：本组语料蒸馏结论卡（缓存优先）
+      let cc = null;
+      if (conclusionCards) {
+        cc = await conclusionsForCase({
+          caseObj: g.corpus,
+          cacheDir: factCacheDir,
+          llm: factLlm,
+          model: factModel,
+          maxCards: conclusionMax,
+        });
+        conclusionStats.groups++;
+        if (cc.cacheHit) conclusionStats.cacheHits++;
+        else conclusionStats.ms += cc.ms ?? 0;
+        conclusionStats.cards += cc.cards.length;
+      }
       const st = await ingestCase({
         caseObj: g.corpus,
         store,
         embedding,
         contentIndex,
         concurrency: num("concurrency", 1),
+        embedMinIntervalMs: embedIntervalMs,
+        ...(fx ? { facts: fx.facts } : {}),
+        ...(cc ? { conclusions: cc } : {}),
+        ...(factDualWrite ? { dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars } } : {}),
+        ...(writeSupersede ? { supersede: true } : {}),
       });
       ingestStats.groups++;
       ingestStats.turns += st.turns;
@@ -286,6 +433,13 @@ async function main() {
       ingestStats.embedFailed += st.embedFailed;
       ingestStats.embedRetries += st.embedRetries ?? 0;
       ingestStats.written += st.written;
+      // W1/W2/W3 写入面计数（门禁预算与证据用）
+      if (st.factTurns !== undefined) ingestStats.factTurns = (ingestStats.factTurns ?? 0) + st.factTurns;
+      if (st.factKeyCharsAdded !== undefined) ingestStats.factKeyCharsAdded = (ingestStats.factKeyCharsAdded ?? 0) + st.factKeyCharsAdded;
+      if (st.supersedeOps !== undefined) ingestStats.supersedeOps = (ingestStats.supersedeOps ?? 0) + st.supersedeOps;
+      if (st.superseded !== undefined) ingestStats.superseded = (ingestStats.superseded ?? 0) + st.superseded;
+      if (st.conclusionsWritten !== undefined) ingestStats.conclusionsWritten = (ingestStats.conclusionsWritten ?? 0) + st.conclusionsWritten;
+      if (st.conclusionLinks !== undefined) ingestStats.conclusionLinks = (ingestStats.conclusionLinks ?? 0) + st.conclusionLinks;
       resolvers.set(key, makeIdResolver(contentIndex));
       corpusSummary.push({ groupKey: key, turns: st.turns, written: st.written, embedded: st.embedded });
       if (!quiet && (gi % 5 === 0 || gi === groups.size)) {
@@ -320,7 +474,86 @@ async function main() {
     process.env.RERANK_DOC_CAP = String(rerankDocCap);
     process.env.RERANK_THREADS = String(rerankThreads);
   }
-  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc, rerankFilterOnly, rerankFilterFloor });
+  // ── W1/W2/W3 分阶段写入（--store 复用库：只补写本档差异，不重灌 turn）──
+  // 语义等价于重灌：W1 只对「有事实」的 turn 重 embed 键（无事实 turn 键===原文，复用原向量）；
+  // W2 只落 valid_end 标记；W3 只写结论卡 + part_of 链。embedding 外呼因此降到 1/N。
+  if (reuseMode && (factDualWrite || writeSupersede || conclusionCards)) {
+    const t0 = Date.now();
+    log(`[bench] 分阶段写入：dualWrite=${factDualWrite} supersede=${writeSupersede} conclusions=${conclusionCards}`);
+    let gi2 = 0;
+    for (const [, g] of groups) {
+      gi2++;
+      const records = [];
+      for (const gg of g.corpus.groups) for (const t of gg.turns) records.push({ turn: t, sessionId: gg.sessionId });
+      let fx = null;
+      if (factDualWrite || writeSupersede) {
+        fx = await factsForCase({
+          caseObj: g.corpus,
+          cacheDir: factCacheDir,
+          llm: factLlm,
+          model: factModel,
+          batchSize: factBatchSize,
+          concurrency: factConcurrency,
+          logger: { warn: (m) => log("[bench:warn] " + m) },
+        });
+        const cov = factsCoverage(fx.facts.byTurn);
+        factStats.groups++;
+        if (fx.cacheHit) factStats.cacheHits++;
+        factStats.turns += cov.turns;
+        factStats.turnsWithFacts += cov.turnsWithFacts;
+        factStats.phrases += cov.phrases;
+      }
+      let cc = null;
+      if (conclusionCards) {
+        cc = await conclusionsForCase({
+          caseObj: g.corpus,
+          cacheDir: factCacheDir,
+          llm: factLlm,
+          model: factModel,
+          maxCards: conclusionMax,
+        });
+        conclusionStats.groups++;
+        if (cc.cacheHit) conclusionStats.cacheHits++;
+        conclusionStats.cards += cc.cards.length;
+      }
+      if (factDualWrite) {
+        const st = await reembedFactKeys({
+          caseObj: g.corpus,
+          store,
+          embedding,
+          facts: fx?.facts,
+          dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars },
+          embedMinIntervalMs: embedIntervalMs,
+        });
+        ingestStats.factTurns = (ingestStats.factTurns ?? 0) + (st.factTurns ?? 0);
+        ingestStats.factKeyCharsAdded = (ingestStats.factKeyCharsAdded ?? 0) + (st.factKeyCharsAdded ?? 0);
+        ingestStats.embedded = (ingestStats.embedded ?? 0) + (st.embedded ?? 0);
+        ingestStats.embedFailed = (ingestStats.embedFailed ?? 0) + (st.embedFailed ?? 0);
+        ingestStats.embedRetries = (ingestStats.embedRetries ?? 0) + (st.embedRetries ?? 0);
+      }
+      const st2 = await applyWriteSteps({
+        caseObj: g.corpus,
+        store,
+        records,
+        facts: fx?.facts,
+        supersede: writeSupersede,
+        conclusions: cc,
+      });
+      ingestStats.supersedeOps = (ingestStats.supersedeOps ?? 0) + (st2.supersedeOps ?? 0);
+      ingestStats.superseded = (ingestStats.superseded ?? 0) + (st2.superseded ?? 0);
+      ingestStats.conclusionsWritten = (ingestStats.conclusionsWritten ?? 0) + (st2.conclusionsWritten ?? 0);
+      ingestStats.conclusionLinks = (ingestStats.conclusionLinks ?? 0) + (st2.conclusionLinks ?? 0);
+      if (!quiet && (gi2 % 10 === 0 || gi2 === groups.size)) {
+        log(`[bench] 分阶段写入 ${gi2}/${groups.size}（重嵌 turn ${ingestStats.factTurns ?? 0}，失效 ${ingestStats.superseded ?? 0}，结论卡 ${ingestStats.conclusionsWritten ?? 0}）耗时=${((Date.now() - t0) / 1000).toFixed(0)}s`);
+      }
+    }
+    log(`[bench] 分阶段写入完成：耗时 ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  }
+
+  // 查询向量磁盘缓存：同一批题目跨档复用（embedding 确定性，语义零变化），避开账号级 RPM 限流。
+  const embedCacheDir = String(arg("embed-cache", path.join(repo, ".eval-data", "bench", "embed-cache")));
+  const embedForRecall = withEmbedCache(embedding, flag("no-embed-cache") ? null : embedCacheDir, `${cfg.embedding?.model ?? "emb"}-${dims}`);
+  const recall = makeRecall({ cfg, store, embedding: embedForRecall, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc, rerankFilterOnly, rerankFilterFloor });
   const k = num("k", cfg.recall?.maxResults ?? 5);
   // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
   const kList = String(arg("recall-ks", "1,3,5,10"))
@@ -450,6 +683,27 @@ async function main() {
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
       apiKeySource: llmInfo?.apiKeySource ?? null,
+      factExtraction: factExtract
+        ? {
+            promptVersion: FACTS_PROMPT_VERSION,
+            model: factModel,
+            dualWrite: factDualWrite,
+            maxFactChars: factDualWrite ? factMaxChars : null,
+            separator: factDualWrite ? (factSeparator ?? " | ") : null,
+            supersede: writeSupersede,
+            cacheDir: factCacheDir,
+            stats: factStats,
+          }
+        : null,
+      conclusionCards: conclusionCards
+        ? {
+            promptVersion: CONCLUSIONS_PROMPT_VERSION,
+            model: factModel,
+            maxCards: conclusionMax,
+            maxExtraLines: conclusionMaxExtra,
+            stats: conclusionStats,
+          }
+        : null,
       ingest: ingestStats,
       storeDir: reuseMode ? storeDir : "(已清理/保留见运行日志)",
     },

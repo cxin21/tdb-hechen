@@ -12,6 +12,7 @@
  * 由 tsx 执行 .mjs 以便直接 import 仓库 .ts 模块（见 package.json 的 audit 脚本先例）。
  */
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { normHead } from "./metrics.mjs";
 import path from "node:path";
 import os from "node:os";
@@ -32,7 +33,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -74,6 +75,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   if (injectOverride && typeof injectOverride === "object" && Object.keys(injectOverride).length) {
     m.recall.injectTimeSort = { ...(m.recall.injectTimeSort || {}), ...(injectOverride.timeSort ?? {}) };
     if (injectOverride.wrapper) m.recall.injectWrapper = injectOverride.wrapper;
+  }
+  // W3（issue #134）：结论卡证据回捞（#78 R-b smallToBig）——实验档只写沙箱 yaml。
+  if (smallToBigOverride && typeof smallToBigOverride === "object" && Object.keys(smallToBigOverride).length) {
+    m.recall.smallToBig = { ...(m.recall.smallToBig || {}), ...smallToBigOverride };
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
@@ -196,6 +201,8 @@ export function turnToRecord(caseObj, turn, sessionId = "s") {
     userId: caseObj.tenant.user_id,
     agentId: caseObj.tenant.agent_id,
     occurred_at: t || undefined,
+    // 双时态起点（W2）：valid_start = 该轮发生时刻；valid_end 由写时 supersession 补。
+    valid_start: t || "",
     certainty: "observed",
     source: "bench-ingest",
   };
@@ -212,14 +219,37 @@ export function turnContent(caseObj, turn) {
 /**
  * 批量写入一个 case 的全部 turn（含 embedding）+ 回填 content→turnId 映射。
  * 并发受限（embedding 服务多为单批小上限），失败对半降级重试。
+ *
+ * W1（issue #134）：facts/dualWrite 传入时，embedding 键文本 = turn 原文 + 事实短语拼接；
+ * 落库 content 不变（原文仍是命中载荷）。缺省（未传）→ 逐位现状。
  */
-export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry }) {
+export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry, facts, dualWrite, supersede, conclusions, embedMinIntervalMs = 400 }) {
   const records = [];
   for (const g of caseObj.groups) for (const t of g.turns) records.push({ turn: t, sessionId: g.sessionId });
 
   const stats = { turns: records.length, embedded: 0, embedFailed: 0, written: 0, embedRetries: 0 };
 
-  const texts = records.map(({ turn }) => turnContent(caseObj, turn));
+  const payloadTexts = records.map(({ turn }) => turnContent(caseObj, turn));
+  // W1：键文本（缺省 = 载荷文本，逐位现状）。事实按 turn id 对齐；无事实的 turn 键=原文。
+  let texts = payloadTexts;
+  if (dualWrite?.enabled) {
+    const { buildEmbeddingKey } = await import("../../../src/core/record/fact-key.ts");
+    let factTurns = 0;
+    let factChars = 0;
+    texts = records.map(({ turn }, i) => {
+      const phrases = facts?.byTurn?.[turn.id]?.phrases ?? [];
+      if (phrases.length) factTurns++;
+      const key = buildEmbeddingKey(payloadTexts[i], phrases, {
+        ...(dualWrite.separator ? { separator: dualWrite.separator } : {}),
+        ...(typeof dualWrite.maxFactChars === "number" ? { maxFactChars: dualWrite.maxFactChars } : {}),
+      });
+      factChars += key.length - payloadTexts[i].length;
+      return key;
+    });
+    stats.factKeys = records.length;
+    stats.factTurns = factTurns;
+    stats.factKeyCharsAdded = factChars;
+  }
 
   // 分批 + 限并发取向量
   const batches = [];
@@ -234,6 +264,7 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
       if (!embedding || typeof embedding.embedBatch !== "function") continue;
       try {
         const vs = await embedWithRetry(embedding, b.texts, {
+          minIntervalMs: embedMinIntervalMs,
           onRetry: (n) => { stats.embedRetries++; onRetry?.(n); },
         });
         for (let k = 0; k < vs.length; k++) vectors[b.start + k] = vs[k];
@@ -241,7 +272,7 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
         // 批上限因模型而异：整批失败再逐条退避重试
         for (let k = 0; k < b.texts.length; k++) {
           try {
-            const one = await embedWithRetry(embedding, [b.texts[k]], { tries: 4, onRetry: () => { stats.embedRetries++; onRetry?.(); } });
+            const one = await embedWithRetry(embedding, [b.texts[k]], { tries: 4, minIntervalMs: embedMinIntervalMs, onRetry: () => { stats.embedRetries++; onRetry?.(); } });
             vectors[b.start + k] = one[0];
           } catch {
             stats.embedFailed++;
@@ -260,6 +291,9 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
     const ok = store.upsertL1(record, vectors[i]);
     if (ok !== false) stats.written++;
   }
+
+  // W2/W3 写入面（issue #134）：失效标记 + 结论卡——与 --store 分阶段写入共用同一实现（零重复）。
+  Object.assign(stats, await applyWriteSteps({ caseObj, store, records, facts, supersede, conclusions }));
   return stats;
 }
 
@@ -350,4 +384,189 @@ export function makeStoreDir(datasetName, reuse) {
   const dir = path.join(base, `${datasetName}-${Date.now().toString(36)}`);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+// ── 分阶段写入（issue #134：复用同一沙箱库零重灌）─────────────────────────────
+/**
+ * 在既有库上补写 W2/W3 的写入面差异（不重灌 turn，无 embedding 外呼）：
+ *  - supersede：按本 case 事实计算失效标记 → store.invalidateL1（只标记）
+ *  - conclusions：结论卡 work_fact 落库 + part_of 证据链
+ * @returns {{supersedeOps:number, superseded:number, conclusionsWritten:number, conclusionLinks:number}}
+ */
+export async function applyWriteSteps({ caseObj, store, records, facts, supersede, conclusions }) {
+  const stats = { supersedeOps: 0, superseded: 0, conclusionsWritten: 0, conclusionLinks: 0 };
+  if (supersede && facts?.byTurn) {
+    const { computeSupersessions } = await import("../../../src/core/record/supersession.ts");
+    const turnFacts = records.map(({ turn }) => ({
+      turnId: turn.id,
+      timestamp: turn.tsISO || caseObj.questionDateISO || "",
+      facts: facts.byTurn?.[turn.id]?.triples ?? [],
+    }));
+    const ops = computeSupersessions(turnFacts);
+    for (const op of ops) {
+      if (typeof store.invalidateL1 !== "function") break;
+      try {
+        const r = await store.invalidateL1(op.turnId, op.validEnd);
+        if (r !== false) stats.superseded++;
+      } catch {
+        /* 软失败计数可见 */
+      }
+    }
+    stats.supersedeOps = ops.length;
+  }
+  if (conclusions?.cards?.length) {
+    const byId = new Map(records.map(({ turn, sessionId }) => [turn.id, { turn, sessionId }]));
+    let idx = 0;
+    for (const card of conclusions.cards) {
+      idx++;
+      const srcTurns = (card.sourceTurnIds || []).map((id) => byId.get(id)).filter(Boolean);
+      if (srcTurns.length === 0) continue;
+      const tsList = srcTurns.map(({ turn }) => turn.tsISO).filter(Boolean).sort();
+      const ts = tsList.length ? tsList[tsList.length - 1] : caseObj.questionDateISO || "";
+      const id = caseObj.caseId + "-wfc-" + idx;
+      const record = {
+        id,
+        content: card.content,
+        type: "work_fact",
+        priority: 70,
+        scene_name: "conclusion",
+        source_message_ids: card.sourceTurnIds.slice(),
+        metadata: ts ? { activity_start_time: ts, activity_end_time: ts } : {},
+        timestamps: ts ? [ts] : [],
+        createdAt: ts || "1970-01-01T00:00:00Z",
+        updatedAt: ts || "1970-01-01T00:00:00Z",
+        version: 1,
+        sessionKey: caseObj.tenant.user_id + "::concl",
+        sessionId: srcTurns[0].sessionId || "concl",
+        teamId: caseObj.tenant.team_id,
+        userId: caseObj.tenant.user_id,
+        agentId: caseObj.tenant.agent_id,
+        occurred_at: ts || undefined,
+        valid_start: ts || "",
+        certainty: "inferred",
+        source: "bench-conclusion",
+        significance: 0.8,
+      };
+      const ok = await store.upsertL1(record, undefined);
+      if (ok === false) continue;
+      stats.conclusionsWritten++;
+      if (typeof store.addLink === "function") {
+        for (const { turn } of srcTurns) {
+          try {
+            if (store.addLink(id, turn.id, "part_of", 1) !== false) stats.conclusionLinks++;
+          } catch {
+            /* 软失败 */
+          }
+        }
+      }
+    }
+  }
+  return stats;
+}
+
+/**
+ * W1 分阶段键重写：只对「有事实」的 turn 重新 embed 键并 upsert 向量；
+ * 无事实 turn 的键 === 原文（逐位相同向量）→ 复用既有向量，零外呼。
+ */
+export async function reembedFactKeys({ caseObj, store, embedding, facts, dualWrite, embedMinIntervalMs = 400 }) {
+  const { buildEmbeddingKey } = await import("../../../src/core/record/fact-key.ts");
+  const records = [];
+  for (const g of caseObj.groups) for (const t of g.turns) {
+    if (facts?.byTurn?.[t.id]?.phrases?.length) records.push({ turn: t, sessionId: g.sessionId });
+  }
+  const stats = { factTurns: records.length, embedded: 0, embedFailed: 0, embedRetries: 0, factKeyCharsAdded: 0 };
+  if (records.length === 0 || !embedding) return stats;
+  const keyOpts = dualWrite?.enabled
+    ? {
+        ...(dualWrite.separator ? { separator: dualWrite.separator } : {}),
+        ...(typeof dualWrite.maxFactChars === "number" ? { maxFactChars: dualWrite.maxFactChars } : {}),
+      }
+    : {};
+  const chunkSize = 8;
+  // 顺序不变式：重写向量**不得抹掉**既有双时态状态（对已跑过 supersession 的库再跑 dual-write，
+  // 若用无 valid_* 的重建记录 upsert，会把 valid_end 写回空 → 静默复活已失效行）。
+  const readExisting = async (ids) => {
+    if (typeof store.getL1ByIds !== "function") return new Map();
+    try {
+      const rows = (await store.getL1ByIds(ids)) ?? [];
+      return new Map(rows.map((r) => [r.record_id, r]));
+    } catch {
+      return new Map();
+    }
+  };
+  for (let i = 0; i < records.length; i += chunkSize) {
+    const batch = records.slice(i, i + chunkSize);
+    const payloadTexts = batch.map(({ turn }) => turnContent(caseObj, turn));
+    const keyTexts = batch.map(({ turn }, j) =>
+      buildEmbeddingKey(payloadTexts[j], facts.byTurn[turn.id].phrases, keyOpts),
+    );
+    let vectors = null;
+    try {
+      vectors = await embedWithRetry(embedding, keyTexts, {
+        minIntervalMs: embedMinIntervalMs,
+        onRetry: () => {
+          stats.embedRetries++;
+        },
+      });
+    } catch {
+      for (let k = 0; k < batch.length; k++) {
+        try {
+          const one = await embedWithRetry(embedding, [keyTexts[k]], { tries: 4, minIntervalMs: embedMinIntervalMs });
+          if (!vectors) vectors = new Array(batch.length).fill(undefined);
+          vectors[k] = one[0];
+        } catch {
+          stats.embedFailed++;
+        }
+      }
+    }
+    const existing = await readExisting(batch.map(({ turn }) => turn.id));
+    for (let k = 0; k < batch.length; k++) {
+      const { turn, sessionId } = batch[k];
+      const record = turnToRecord(caseObj, turn, sessionId);
+      const prev = existing.get(turn.id);
+      if (prev) {
+        record.valid_start = prev.valid_start ?? record.valid_start;
+        record.valid_end = prev.valid_end ?? record.valid_end;
+      }
+      stats.factKeyCharsAdded += keyTexts[k].length - payloadTexts[k].length;
+      const ok = await store.upsertL1(record, vectors ? vectors[k] : undefined);
+      if (ok !== false && vectors && vectors[k]) stats.embedded++;
+    }
+  }
+  return stats;
+}
+
+/** 查询向量磁盘缓存（同题同模型零重复外呼；arms 间复用，语义不变——embedding 确定性）。 */
+export function withEmbedCache(embedding, cacheDir, tag) {
+  if (!embedding || !cacheDir) return embedding;
+  const dir = path.join(cacheDir, "emb");
+  fs.mkdirSync(dir, { recursive: true });
+  const fileOf = (text) => {
+    const h = createHash("sha256").update(tag + "\u0000" + String(text)).digest("hex").slice(0, 32);
+    return path.join(dir, h + ".json");
+  };
+  const wrapper = Object.create(embedding);
+  const innerEmbed = typeof embedding.embed === "function" ? embedding.embed.bind(embedding) : null;
+  // 只缓存默认选项下的查询向量（带 opts 的调用直接回源，避免把 timeoutMs 等语义吞掉）。
+  wrapper.embed = async (text, opts) => {
+    if (!innerEmbed) throw new Error("embedding.embed 不可用");
+    if (opts !== undefined) return innerEmbed(text, opts);
+    const f = fileOf(text);
+    if (fs.existsSync(f)) {
+      try {
+        return new Float32Array(JSON.parse(fs.readFileSync(f, "utf8")));
+      } catch {
+        /* 缓存损坏 → 回源 */
+      }
+    }
+    const v = await innerEmbed(text);
+    try {
+      const tmp = f + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(Array.from(v)), "utf8");
+      fs.renameSync(tmp, f);
+    } catch {
+      /* 写缓存失败不影响结果 */
+    }
+    return v;
+  };
+  return wrapper;
 }

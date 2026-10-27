@@ -59,6 +59,25 @@ export function makeLlm(cred) {
     return r.content.trim();
   }
 
+  /** JSON 回答 + usage（token 计量；调用方需计费证据时用）。 */
+  async function jsonWithUsage(messages, opts = {}) {
+    const r = await call({ messages, json: true, ...opts });
+    const raw = r.content.trim();
+    const candidates = [raw];
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) candidates.push(fence[1].trim());
+    const brace = raw.match(/\{[\s\S]*\}/);
+    if (brace) candidates.push(brace[0]);
+    for (const c of candidates) {
+      try {
+        return { data: JSON.parse(c), usage: r.usage ?? null };
+      } catch {
+        /* 下一个候选 */
+      }
+    }
+    return { data: null, usage: r.usage ?? null };
+  }
+
   /** JSON 回答：容忍 ```json 围栏与前后噪声；解析失败返回 null（调用方决定降级）。 */
   async function json(messages, opts = {}) {
     const r = await call({ messages, json: true, ...opts });
@@ -78,7 +97,7 @@ export function makeLlm(cred) {
     return null;
   }
 
-  return { text, json, info: { model: cred.model, baseUrlHost: safeHost(cred.baseUrl), apiKeySource: cred.apiKeySource } };
+  return { text, json, jsonWithUsage, info: { model: cred.model, baseUrlHost: safeHost(cred.baseUrl), apiKeySource: cred.apiKeySource } };
 }
 
 function safeHost(u) {
