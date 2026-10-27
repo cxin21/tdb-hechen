@@ -446,6 +446,8 @@ interface RerankWiring {
   breaker?: RerankBreaker;
   minScore: number;
   candidates: number;
+  /** #135 R4：作用模式（缺省 "rerank" = 逐位现状；"filter" = 只滤不清排保原序）。 */
+  mode: "rerank" | "filter";
 }
 
 /** 每调用解析一次精排接线（off | unavailable | active）。T1 移交：
@@ -465,7 +467,7 @@ function resolveRerankWiring(
   if (!rc || !enabled || provider === "none") {
     // off：完全静默零开销（configError 存在但已停用 → 每调用 warn 一次提示配置问题）
     if (rc?.configError) logger?.warn?.(`${TAG} [rerank] 精排已停用（${rc.configError}）`);
-    return { state: "off", provider, minScore: -2, candidates: 12 };
+    return { state: "off", provider, minScore: -2, candidates: 12, mode: "rerank" };
   }
   const minScore = typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : -2;
   const candidates =
@@ -475,9 +477,17 @@ function resolveRerankWiring(
   const reranker = deps?.reranker !== undefined ? deps.reranker : createReranker(rc, { fetchImpl: deps?.fetchImpl });
   if (rc.configError || reranker === null) {
     logger?.warn?.(`${TAG} [rerank] provider=${provider} 不可用（${rc.configError ?? "工厂返回 null"}），降级原序`);
-    return { state: "unavailable", provider, minScore, candidates };
+    return { state: "unavailable", provider, minScore, candidates, mode: rc.mode === "filter" ? "filter" : "rerank" };
   }
-  return { state: "active", provider, reranker, breaker: deps?.breaker ?? defaultRerankBreaker, minScore, candidates };
+  return {
+    state: "active",
+    provider,
+    reranker,
+    breaker: deps?.breaker ?? defaultRerankBreaker,
+    minScore,
+    candidates,
+    mode: rc.mode === "filter" ? "filter" : "rerank",
+  };
 }
 
 /** P1 Task 2（spec §4.5）：精排主体，原位改写 searchResult（lines/scores/metas/gates）。
@@ -570,17 +580,30 @@ async function applyRecallRerank(
     finalIdxs = lines.map((_, i) => i);
     logger?.debug?.(`${TAG} [rerank] 全员低于阈值（topScore=${clean[0].score} < minScore=${wiring.minScore}）→ 降级原序注入`);
   } else {
-    let passIdxs: number[] = rankedPass.map((r) => r.index);
-    if (mmr?.enabled && passIdxs.length > 1) {
-      const tM = performance.now();
-      // B2-b：pass 池整体置换（不减员），多样性优先级进序——预算帽照常在 slice 处生效
-      passIdxs = mmrReorder(passIdxs, docs, mmr.lambda);
-      mmrMs = performance.now() - tM;
-    }
-    finalIdxs = passIdxs;
-    const rankedSet = new Set(clean.map((r) => r.index));
-    for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
-      if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
+    if (wiring.mode === "filter") {
+      // ── #135 R4：过滤器化——provider 打分只作 floor，不清排、不改序（保原序注入）。
+      // bench V2 host 侧实证：floor=-7 无增益；生产应 ≤-10.5（logit）或校准概率门槛。
+      // MMR 是重排器，与 filter 语义互斥——filter 模式下忽略。
+      const passSet = new Set(rankedPass.map((r) => r.index));
+      const scoredSet = new Set(clean.map((r) => r.index));
+      finalIdxs = [];
+      for (let i = 0; i < lines.length; i++) {
+        // 达线保留；未达线剔除；未被 provider 评分的候选（截断漏排）原样保留（floor 只作用于已评分行）
+        if (passSet.has(i) || !scoredSet.has(i)) finalIdxs.push(i);
+      }
+    } else {
+      let passIdxs: number[] = rankedPass.map((r) => r.index);
+      if (mmr?.enabled && passIdxs.length > 1) {
+        const tM = performance.now();
+        // B2-b：pass 池整体置换（不减员），多样性优先级进序——预算帽照常在 slice 处生效
+        passIdxs = mmrReorder(passIdxs, docs, mmr.lambda);
+        mmrMs = performance.now() - tM;
+      }
+      finalIdxs = passIdxs;
+      const rankedSet = new Set(clean.map((r) => r.index));
+      for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
+        if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
+      }
     }
   }
   const final = finalIdxs.slice(0, Math.max(cap, 0));
@@ -600,6 +623,7 @@ async function applyRecallRerank(
           }
         : {}),
       ...(degraded ? { degraded } : {}),
+      ...(wiring.mode === "filter" ? { mode: "filter" as const } : {}),
       ...(mmr?.enabled ? { mmr: { lambda: mmr.lambda, ms: Math.round(mmrMs) } } : {}),
     },
   };

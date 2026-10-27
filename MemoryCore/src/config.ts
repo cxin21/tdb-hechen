@@ -468,6 +468,13 @@ export interface RecallRerankConfig {
   /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 12，clamp [1,100] 取整）。 */
   candidates: number;
   /**
+   * #135 R4（bench/recall-opt）：精排作用模式（缺省 "rerank" = 逐位现状）。
+   * "filter" = 过滤器化：provider 打分后仅按门槛 floor 剔除不达线行、不清排（保原序）。
+   * bench V2 host 侧实证：floor=-7 无增益；生产应 ≤-10.5（logit 刻度）或校准概率门槛。
+   * 非法值回落 "rerank"（config-first 沿 provider 先例）。
+   */
+  mode: "rerank" | "filter";
+  /**
    * 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
    * #99 F3（2026-10-25）：本键恒按 provider 原生刻度声明（local=logit，云 provider=0..1）；
    * 门边界 local logit 先 sigmoid 归一 0..1、门槛同变换 sigmoid(minScore)（单调等价）；
@@ -2108,6 +2115,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           model: str(rr, "model") ?? "",
           timeoutMs: Math.max(0, num(rr, "timeoutMs") ?? 800),
           candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
+          // #135 R4：非法 mode 回落 "rerank"（逐位现状），静默回落
+          mode: str(rr, "mode") === "filter" ? ("filter" as const) : ("rerank" as const),
           minScore: num(rr, "minScore") ?? -2.0,
           local: {
             modelDir: optStr(localGroup, "modelDir") ?? "",

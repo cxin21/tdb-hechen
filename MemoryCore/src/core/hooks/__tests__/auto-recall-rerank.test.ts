@@ -770,3 +770,63 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
     }
   });
 });
+
+// ═══════════════ #135 R4：精排过滤器化（rerank.mode="filter"）═══════════════
+describe("#135 R4 · rerank.mode=\"filter\"（floor 只滤不清排保原序）", () => {
+  it("①filter：达线保留、未达线剔除、注入序 = 原序（RRF 名次序，非精排分序）；未评分候选保留", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-filter-"));
+    try {
+      const rows = episodicRows(5); // 原序 = RRF 名次 Marker1..Marker5
+      // provider 分序故意逆原序：Marker5 分最高。floor=0.5（cloud 原生 0..1 刻度）
+      // → Marker4(0.4)/Marker5(0.3) 未达线；Marker1..3 达线且保留原序
+      const fake = markerTableReranker([
+        ["Marker1", 0.9], ["Marker2", 0.8], ["Marker3", 0.6], ["Marker4", 0.4], ["Marker5", 0.3],
+      ]);
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5 }),
+          { reranker: fake.reranker },
+        ),
+      );
+      // 保序：非精排分序（若误走 rerank 分序则成 Marker3,2,1）
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      // journal 标记 mode=filter
+      const entries = readJournal(dir);
+      const gates = entries[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.mode).toBe("filter");
+      expect(rerankGate?.kept).toBe(3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②filter 全员低于阈值：F3 优雅降级——保序注入全部行（不清零）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-filter2-"));
+    try {
+      const rows = episodicRows(4);
+      const fake = markerTableReranker([
+        ["Marker1", 0.2], ["Marker2", 0.1], ["Marker3", 0.1], ["Marker4", 0.1],
+      ]);
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5 }),
+          { reranker: fake.reranker },
+        ),
+      );
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4"]);
+      const entries = readJournal(dir);
+      const gates = entries[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.degraded).toBe("all-below-minScore");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -42,6 +42,8 @@ export interface RecallJournalRerankGate {
   degraded?: "all-below-minScore";
   /** B2-b（bench/recall-opt）：pass 池 MMR 多样性重排观测（缺字段 = 未启用）。 */
   mmr?: { lambda: number; ms: number };
+  /** #135 R4（bench/recall-opt）：作用模式标记（缺字段 = 缺省 "rerank"）。 */
+  mode?: "filter";
 }
 
 /**
