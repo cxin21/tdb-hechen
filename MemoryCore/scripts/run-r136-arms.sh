@@ -21,10 +21,13 @@ run() {
 fresh_from() { rm -rf "$2"; cp -r "$1" "$2"; echo "[r136] 复制库 $1 → $2"; }
 case "${1:-help}" in
   card-soft)   fresh_from "$BASE" "$STORE_ROOT/lme90-r136-card-soft";   run r136-card-soft   $COMMON --keep --store "$STORE_ROOT/lme90-r136-card-soft"   --write-supersede --b2b-validity --validity-mode soft ;;
+  card-soft-final) fresh_from "$BASE" "$STORE_ROOT/lme90-r136-card-soft"; run r136-cardsoft3 $COMMON --keep --store "$STORE_ROOT/lme90-r136-card-soft" --write-supersede --b2b-validity --validity-mode soft ;;
+  allon)       fresh_from "$STORE_ROOT/lme90-w134-w1" "$STORE_ROOT/lme90-r136-allon"; run r136-allon $COMMON --keep --store "$STORE_ROOT/lme90-r136-allon" --write-supersede --b2b-validity --validity-mode soft --conclusion-cards --conclusion-max-extra 4 ;;
+  newb)        fresh_from "$BASE" "$STORE_ROOT/lme90-r136-newb"; run r136-newb $COMMON --keep --store "$STORE_ROOT/lme90-r136-newb" --write-supersede --b2b-validity --validity-mode soft --conclusion-cards --conclusion-max-extra 4 ;;
   card-hard)   fresh_from "$BASE" "$STORE_ROOT/lme90-r136-card-hard";   run r136-card-hard   $COMMON --keep --store "$STORE_ROOT/lme90-r136-card-hard"   --write-supersede --b2b-validity --validity-mode hard ;;
   nogate-soft) fresh_from "$BASE" "$STORE_ROOT/lme90-r136-nogate-soft"; run r136-nogatesoft $COMMON --keep --store "$STORE_ROOT/lme90-r136-nogate-soft" --write-supersede --b2b-validity --validity-mode soft --supersede-cardinality off ;;
   all) for m in card-soft card-hard nogate-soft; do bash "$0" $m; done ;;
-  *) echo "用法: $0 {card-soft|card-hard|nogate-soft|all}"; exit 2 ;;
+  *) echo "用法: $0 {card-soft|card-soft-final|card-hard|nogate-soft|allon|all}"; exit 2 ;;
 esac
 if [ "$FAILED" -ne 0 ]; then echo "[r136] 有 $FAILED 处失败"; exit 1; fi
 echo "[r136] OK"

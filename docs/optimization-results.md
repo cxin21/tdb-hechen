@@ -337,14 +337,14 @@ node scripts/fit-fusion-weights.mjs \
 |---|---|---|---|---|---|---|---|---|
 | b1off-mm（基线） | 无 | 0 | 硬 | 79.5% | 77.8% | 12.2% | 75.0% / 86.7% | 77.8% / 86.7% |
 | w2（#134 旧实现） | W2 无契约门 | 140 | 硬 | 68.6% | 75.6% | 10.0% | 57.1% / 80.0% | 64.4% / 86.7% |
-| **card-soft（#136）** | W2 + 契约门 | **0** | **软** | **79.5%** | 未取得¹ | — | **75.0%** | **77.8%** |
+| **card-soft（#136）** | W2 + 契约门 | **0** | **软** | **80.1%** | **78.9%** | 11.1% | **78.6% / 86.7%** | **77.8% / 86.7%** |
 | nogate-soft（消融：关契约门） | W2 | 140 | 软 | 75.3% | 未取得¹ | — | 57.1% | 77.8% |
 
-¹ **判对证据缺口（诚实登记）**：新档生成阶段遭遇 MiniMax Token Plan 429（`已达到 Token Plan 速率限制`），card-soft 90 题中 10 题、nogate-soft 90/90 题无答案，故判对/拒答不计。恢复配额后用 §11.5 命令重跑即可补齐；检索侧证据（cov / top-k 集合）完整。
+¹ **nogate-soft 的判对未取得**：该档生成阶段遭遇 MiniMax 429（90/90 题无答案）。**card-soft 已在配额恢复后重跑**（2026-10-27 20:04，90/90 判分、0 null，tag `r136-cardsoft3`）；检索侧与初测一致。
 
 **检索侧配对结论（`scripts/bench-bucket-paired.mjs`）**：
 
-- **card-soft vs b1off-mm**：逐题 turnCov@5 **0 差异**（CI[0,0]），90 题中仅 3 题 top-5 内部顺序不同（同集合，并发合并的同分序）。即契约门把 140 条失效判为「不该失效」后，检索面与基线**逐题一致**。
+- **card-soft vs b1off-mm**：turnCov@5 +0.6pp（CI[+0.0,+1.7]）、判对 +1.1pp（78.9% vs 77.8%，McNemar 2/1，ns）；knowledge-update cov **+3.3pp**（CI[+0.0,+10.0]）、判对 **±0.0pp**（86.7% vs 86.7%）；temporal cov/判对 **±0.0pp**。初测（配额前）逐题 cov 0 差异、仅 3 题 top-5 内部同分序不同；重跑的小幅正差在 n=90 噪声内（embedding/精排并发序），结论不变：契约门把 140 条失效判为「不该失效」后，检索面与基线等价。
 - **nogate-soft vs w2（同 140 失效、只差读面）**：overall cov −10.6pp → **−4.1pp**（少损 6.5pp）；temporal-reasoning −13.3pp → **0.0pp**（完全恢复）；knowledge-update −16.7pp → −16.7pp（未恢复：该桶 gold 常是被取代的旧值 turn，0.5 降权仍把它挤出 top-5）。→ 软失效解决「别删」，但 knowledge-update 的账必须由契约（别判错）来结，与 §9.5 的判断一致。
 - **契约门不是「关开关」**：LME90 上 140 条失效全部落在泛化谓词（`is considering` / `plans to try` / `likes` / `has` / `feels`…），契约判定它们不是函数依赖，所以 0 条应当失效；生产真实语料 815 条更新链里 **696 条仍判 single 会失效**、119 条 additive（14.6%），见 §11.3。
 
@@ -362,9 +362,9 @@ node scripts/fit-fusion-weights.mjs \
 | 门禁 | 判定 | 证据 |
 |---|---|---|
 | ① 一行两事实、只取代其一 → 另一事实仍可召回 | **PASS（单测）** | `supersession-cardinality.test.ts`：写侧多值不产 op / soft 保留行 / hard 对照删行；写面端到端 `l1-writer.write-policy.test.ts` 锁定「多值不失效、单值仍失效、门关回滚」 |
-| ② knowledge-update 桶 cov 不低于 b1-off | **PASS** | card-soft 75.0% = b1off 75.0%（逐题 0 差异） |
-| ② knowledge-update 判对不低于 b1-off | **未取得（429 配额）** | 见 §11.2 脚注；恢复后重跑 |
-| ② temporal-reasoning 桶 cov/判对不低于 b1-off | cov **PASS**（77.8% = b1off）；判对**未取得（429）** | 同上；消融档 nogate-soft 已实证 cov 从 −13.3pp 回到 0.0pp |
+| ② knowledge-update 桶 cov 不低于 b1-off | **PASS** | card-soft cov 78.6%（b1off 75.0%）；逐题配对 +3.3pp，CI[+0.0,+10.0] |
+| ② knowledge-update 判对不低于 b1-off | **PASS** | 86.7% = b1off 86.7%（±0.0pp，McNemar 0/0） |
+| ② temporal-reasoning 桶 cov/判对不低于 b1-off | **PASS** | cov 77.8% = b1off；判对 86.7% = b1off（均 ±0.0pp）；消融档 nogate-soft 另证 cov 从 −13.3pp 回到 0.0pp |
 | ③ 生产语料「知识更新」链路走查 | **PASS** | §11.3：815 链、696/119 判定分布、零删除 |
 
 ### 11.5 复现
@@ -386,7 +386,7 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 ### 11.6 偏差与遗留
 
 - **事实级粒度未实施**（票面次优先项）：失效仍落整行，soft + 契约已把误伤从「永久丢失」降为「排序下沉」；后续票 #146（一条事实一行 + 抽取器直出 cardinality）。
-- **判对证据缺口**：§11.2 脚注（429）；不影响检索侧与单测结论。
+- **判对证据**：card-soft 已于 2026-10-27 20:04 配额恢复后重跑补齐（§11.2）；nogate-soft 的判对仍缺（429 时的消融档，检索侧结论已足）。
 - 生产 yaml（gitignored）与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 已加 `cardinalityGate/cardinalityDefault/validity.mode` 注释与缺省值（均缺省关/硬）。
 - 软失效的硬丢判据是「查询意图 + 内容 token 重叠 + 更新时间」，非实体级同键（行级无 subject 持久化）；事实级落地后应由 metadata.(subject,predicate) 精确判定。
 
@@ -395,20 +395,30 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 
 > 触发：用户重启后要求「配置项都打开，重跑评分，对比初始与排名」。
 > 配置（本机 `tdai-gateway.yaml`，改后需重启网关）：`memory.write.factKey.enabled=true`、`memory.write.supersession.enabled=true`（cardinalityGate=true / cardinalityDefault=single）、`recall.validity.mode=soft`；W3 `smallToBig` 原本已开（maxExtraLines=4）。rerank 维持生产现值（candidates 12 / minScore −2，属 #145 范围，本波不动）。
-> **判分阻塞**：MiniMax 账号 `402 当前已达到 Token Plan 用量上限`（重启后复测仍 402），本轮只能跑 `--gen-limit 0` 检索侧；判分补跑见 #147。
+> **判分**：初测时 MiniMax 402（Token Plan 上限）只能跑检索侧；2026-10-27 20:04–20:26 配额恢复后按 #147 用 **MiniMax-M3.1-Flash** 补跑 new A / new B / card-soft（各 90/90 判分、0 null，同 manifest / rerank-off + B1）。
 
 | 档 | 组成 | turnCov@5 | sessionCov | MRR | nDCG | 判对 |
 |---|---|---|---|---|---|---|
 | b1off-mm | 基线 | 79.5% | 92.7% | 0.712 | 0.723 | 77.8% |
 | old allon | W1+W2旧（140 失效）+W3×2 | 74.9% | 91.9% | 0.666 | 0.745 | 77.8% |
 | w3b | W3×4 | 79.3% | 92.9% | 0.691 | 0.792 | **84.4%** |
-| **new A** | W1+W2契约（0 失效）+W3×4+soft | **78.8%** | **94.0%** | 0.681 | 0.786 | 待补 |
-| **new B** | W2契约（0 失效）+W3×4+soft | **79.3%** | 92.9% | 0.691 | 0.792 | 待补（≡ w3b） |
+| **new A** | W1+W2契约（0 失效）+W3×4+soft | **78.8%** | **94.0%** | 0.681 | 0.786 | **82.2%** |
+| **new B** | W2契约（0 失效）+W3×4+soft | **79.3%** | 92.9% | 0.691 | 0.792 | **84.4%** |
+| card-soft（#136 单档） | W2契约+soft（无 W1/W3） | 80.1% | 93.2% | 0.718 | 0.729 | 78.9% |
 
 - **A vs old allon**：turnCov **+3.9pp**（74.9→78.8）、sessionCov +2.1pp（91.9→94.0）——契约门去掉 W2 的 140 条误失效后，全开档从「比基线差 4.6pp」回到「差 0.7pp（ns，CI[−8.0,+6.5]）」。
-- **B ≡ w3b**：四项检索指标逐位相同（79.3 / 92.9 / 0.691 / 0.792）——W2 在 LME90 上 0 失效、soft 在无失效行时恒等，故 B 的判分输入与 w3b 完全一致；判对预期 ≈ w3b 84.4%（待 #147 用 MiniMax 实跑确认）。
+- **B ≡ w3b（判分实测确认）**：五项指标逐位相同（cov 79.3 / session 92.9 / MRR 0.691 / nDCG 0.792 / 判对 **84.4%**）——W2 在 LME90 上 0 失效、soft 在无失效行时恒等，故 B 的判分输入与 w3b 完全一致。
+- **A vs B（唯一差别 = W1 事实键）**：判对 82.2% vs 84.4%（**−2.2pp**，McNemar 2/0，ns）、cov 78.8% vs 79.3%（−0.6pp，CI[−2.8,+3.9]）；A 的 sessionCov 更高（94.0 vs 92.9），但判对与 cov 都不占优 → **W1 在当前单短语事实键形态下没有净收益**（与 w1 单档 +6.7pp ns 的历史结论一致）。
+- **card-soft vs b1off**：判对 **78.9% vs 77.8%**（+1.1pp，ns）、cov 80.1% vs 79.5%；knowledge-update 判对 **86.7% = 基线**、temporal **86.7% = 基线** → #136 两项门禁 PASS。
 - 分桶（new A vs b1off，逐题配对）：knowledge-update cov **+14.4pp**（70.0→84.4，CI[−5.6,+34.4]）、multi-session +7.8pp；single-session-assistant −13.3pp（结论卡挤占原文行，W3 已知副作用）、preference −6.7pp、temporal −3.3pp（均 ns）。
-- **排名（判对，已有 MiniMax 同 judge 档）**：w3b 84.4% > deep105 82.2% > w3 81.1% > w13 78.9% > b1off 77.8% ≈ old allon 77.8% > w1 76.7% > w2 75.6% > b0base 45.6%。new A/B 的判分列待 #147 补齐后重排。
+- **排名（判对，MiniMax-M3.1-Flash 同 judge；rerank-off 组）**：
+  **B 84.4% = w3b 84.4%** > deep105 82.2%（rerank on，不同组）≈ **A 82.2%** > w3 81.1% > w13 78.9% ≈ card-soft 78.9% > b1off 77.8% ≈ old allon 77.8% > w1 76.7% > w2 75.6% > b0base 45.6%。
+  **初始（b0base 45.6%）→ 全开（A 82.2%）+36.6pp；→ B（84.4%）+38.8pp**；old allon（W2 旧硬失效）77.8% → new A 82.2%（+4.4pp，契约门把 W2 的伤害消掉）。
+- **分桶代价（A/B 一致）**：single-session-assistant cov/判对均 −13.3pp（结论卡挤占原文行，W3 已知副作用；B 桶 cov 80.0→66.7、判对 93.3→80.0）；preference cov −6.7~−10pp；换回 knowledge-update **+14.4pp cov / +6.7pp 判对**、multi-session **+7.8pp cov / +26.7pp 判对**、temporal **+3.3pp cov / +13.3pp 判对**（B 桶 temporal 判对 100%）。
 
-**结论**：全开配置下，检索侧已不劣于基线（B=w3b、A −0.7pp ns）；W3 仍是判对主贡献，W1 的判对收益仍未知（历史 w1 +6.7pp 但 CI 含负），W2 的伤害已被契约门消除。生产定档建议：**W3 + W2(契约) + soft 先开**，W1 等 #147 判分后再定；rerank 档位归 #145。
+**结论（全开会后重排）**：
+1. **配置全开后不再拖累基线**：A 判对 82.2%（+4.4pp vs b1off，ns）、B 84.4%（与 w3b 持平）；W2 的旧伤害已被契约门 + 软失效消除。
+2. **W1 在“键替换”形态下是净负项**：A vs B 唯一差别是 W1，判对 −2.2pp、cov −0.6pp（均 ns，但方向一致）——生产最优仍是 **W3×4 + W2(契约) + soft（= B）**；W1 的出路是 #137 的「并行召回通道 + 多事实键」，不是继续替换 embedding 键。
+3. **#136 判对门禁 PASS**：card-soft knowledge-update/temporal 判对均与基线持平（86.7%），cov 不低于基线。
+4. rerank 档位仍归 #145（deep105 的 82.2% 是 rerank-on 组，与本节不可直接合并排名）。
 
