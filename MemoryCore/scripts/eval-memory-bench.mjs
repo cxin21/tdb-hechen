@@ -214,6 +214,13 @@ async function main() {
     ageDecayDays = adArg === true ? 30 : Number(adArg);
     if (!Number.isFinite(ageDecayDays) || ageDecayDays <= 0) ageDecayDays = 30;
   }
+  // G1（bench/recall-opt B1 生产化）：--inject-time-sort / --inject-wrapper neutral|legacy
+  const injectTimeSort = flag("inject-time-sort");
+  const injectWrapperRaw = String(arg("inject-wrapper", "legacy"));
+  const injectWrapper = injectWrapperRaw === "neutral" ? "neutral" : "legacy";
+  const injectOverride = {};
+  if (injectTimeSort) injectOverride.timeSort = { enabled: true };
+  if (injectWrapper !== "legacy") injectOverride.wrapper = injectWrapper;
   // B0 修复（bench/recall-opt）：rerank 试验键必须同时打进 override json——
   // loadGatewayConfig 合并优先级 override > yaml，生产 config-override.json 带
   // rerank.enabled=true，会吞掉沙箱 yaml 里的 enabled:false（2026-10-27 T4 实锤）。
@@ -236,7 +243,9 @@ async function main() {
     ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
+    ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
   });
+  if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
@@ -433,6 +442,8 @@ async function main() {
       rerankFilterOnly,
       rerankFilterFloor: rerankFilterOnly ? rerankFilterFloor : null,
       ageDecayDays: ageDecayDays > 0 ? ageDecayDays : null,
+      injectTimeSort,
+      injectWrapper,
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,

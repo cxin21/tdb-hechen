@@ -60,6 +60,7 @@ import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import { mmrReorder } from "../recall/mmr.js";
+import { sortLinesByLeadingTimestamp } from "./inject-order.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
@@ -1416,11 +1417,21 @@ export async function performLayeredRecall(params: {
         // 无法区分向量层降级与相关度门滤除，禁止假警报式单因断言。
         ? "[degraded: fts-only] 本轮记忆召回仅来自关键词检索（FTS），向量召回无贡献（向量层降级或相关度门滤除），召回质量可能不完整。\n\n"
         : "";
+      // G1-a（bench/recall-opt B1 生产化）：注入块时间序打包——config 门
+      //（recall.injectTimeSort.enabled，缺省 false=分数序逐位现状）。依据 LME90 配对实验：
+      // 语义分数序会把 knowledge-update 的旧值压过新值（hurt 9/23），时间升序后 B1 档判对 +15.6pp。
+      const orderedLines =
+        cfg.recall?.injectTimeSort?.enabled === true ? sortLinesByLeadingTimestamp(memoryLines) : memoryLines;
       // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
-      const foldedLines = foldNearDuplicates(memoryLines);
+      const foldedLines = foldNearDuplicates(orderedLines);
+      // G1-b：包裹语——neutral 去掉「仅作为参考」贬抑措辞并加如实指引（缺省 legacy=现行文案）
+      const wrapperHead =
+        cfg.recall?.injectWrapper === "neutral"
+          ? "以下是与当前对话可能相关的历史对话记忆（按时间先后排列）。请结合当前对话使用这些记忆；若记忆不足以回答，请如实说明。"
+          : "以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：";
       block =
         soulPrefix +
-        `<relevant-memories>\n${degradedNote}以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
+        `<relevant-memories>\n${degradedNote}${wrapperHead}\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
     } else if (soulPrefix) {
       // C3：无记忆轮次——身份段常驻（"此刻的我"不因零召回而缺席）
       block = soulPrefix;

@@ -343,6 +343,18 @@ export interface RecallConfig {
    */
   ageDecay: { enabled: boolean; halfLifeDays: number };
   /**
+   * B1 生产化（bench/recall-opt G1-a）：注入块时间序打包——开启后注入块内的记忆行
+   * 按行首时间前缀升序（旧→新）重排（无前缀行垫尾，稳定），替代语义分数序。
+   * 依据：LME90 配对实验（docs/optimization-results.md）语义序会把 knowledge-update
+   * 的旧值压过新值（hurt 9/23）。缺省 false = 逐位现状（分数序）。
+   */
+  injectTimeSort: { enabled: boolean };
+  /**
+   * B1 生产化（bench/recall-opt G1-b）：注入块包裹语。legacy = 现行文案（含「仅作为
+   * 参考」贬抑措辞）；neutral = 中性包裹 + 证据不足时如实说明的指引。缺省 legacy。
+   */
+  injectWrapper: "legacy" | "neutral";
+  /**
    * Batch C C-b（#77 伴生）：timeProx 时间锚回退——occurredAt 缺失时以记录 createdAt
    * 折算时近因子（治 work_fact 大面积空 occurred_at 期的时近信号全失）。缺省 false
    * = 逐位现状（无实证不加成，R1 口径不变）。
@@ -1861,6 +1873,15 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           enabled: bool(ad, "enabled") ?? false,
           halfLifeDays: Number.isFinite(hl) && hl > 0 ? Math.floor(hl) : 30,
         };
+      })(),
+      // B1 生产化（bench/recall-opt G1）：注入块时间序 + 包裹语（缺省关/legacy=逐位现状）
+      injectTimeSort: (() => {
+        const its = obj(recallGroup, "injectTimeSort");
+        return { enabled: bool(its, "enabled") ?? false };
+      })(),
+      injectWrapper: (() => {
+        const raw = str(recallGroup, "injectWrapper");
+        return raw === "neutral" ? "neutral" : "legacy";
       })(),
       timeProxFallbackEnabled: bool(recallGroup, "timeProxFallbackEnabled") ?? false,
       // F-CLUSTER v2：召回折叠总开关（缺省 false = 现行为）。类型声明 config.ts:100

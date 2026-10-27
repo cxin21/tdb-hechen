@@ -32,7 +32,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -69,6 +69,11 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // 架构验证（bench/recall-opt）：F6b 时间衰减进排序（config 已有管道，缺省关）。
   if (ageDecayOverride && typeof ageDecayOverride === "object" && Object.keys(ageDecayOverride).length) {
     m.recall.ageDecay = { ...(m.recall.ageDecay || {}), ...ageDecayOverride };
+  }
+  // G1（bench/recall-opt）：注入块时间序 + 包裹语试验档。
+  if (injectOverride && typeof injectOverride === "object" && Object.keys(injectOverride).length) {
+    m.recall.injectTimeSort = { ...(m.recall.injectTimeSort || {}), ...(injectOverride.timeSort ?? {}) };
+    if (injectOverride.wrapper) m.recall.injectWrapper = injectOverride.wrapper;
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
