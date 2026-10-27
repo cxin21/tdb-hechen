@@ -14,12 +14,14 @@ import { fileURLToPath } from "node:url";
 const CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), "rerank-child.mjs");
 
 export class ChildProcessReranker {
-  constructor({ modelDir, idleUnloadMs = 0, timeoutMs = 60_000, maxRespawns = 400, recycleAfter = 4, logger } = {}) {
+  constructor({ modelDir, idleUnloadMs = 0, timeoutMs = 60_000, maxRespawns = 400, recycleAfter = 4, logger, filterOnly = false, filterFloor = -1e9 } = {}) {
     this.modelDir = modelDir;
     this.idleUnloadMs = idleUnloadMs;
     this.timeoutMs = timeoutMs;
     this.maxRespawns = maxRespawns;
     this.recycleAfter = recycleAfter;
+    this.filterOnly = filterOnly;
+    this.filterFloor = filterFloor;
     this.logger = logger;
     this.child = null;
     this.nextId = 1;

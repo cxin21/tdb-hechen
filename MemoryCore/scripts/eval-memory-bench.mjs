@@ -198,6 +198,22 @@ async function main() {
   let embThresholdOverride;
   const eth = arg("emb-threshold", undefined);
   if (eth !== undefined && eth !== true) embThresholdOverride = Number(eth);
+  // B2a 结论验证：--rerank-filter-only [floor] 精排降级为过滤器（只丢噪声不清排）
+  let rerankFilterOnly = false;
+  let rerankFilterFloor = -1e9;
+  const rfo = arg("rerank-filter-only", undefined);
+  if (rfo !== undefined) {
+    rerankFilterOnly = true;
+    const fl = rfo === true ? -7 : Number(rfo);
+    if (Number.isFinite(fl)) rerankFilterFloor = fl;
+  }
+  // 架构验证：--age-decay [days] F6b 时间衰减进排序（config 已有管道）
+  let ageDecayDays = 0;
+  const adArg = arg("age-decay", undefined);
+  if (adArg !== undefined) {
+    ageDecayDays = adArg === true ? 30 : Number(adArg);
+    if (!Number.isFinite(ageDecayDays) || ageDecayDays <= 0) ageDecayDays = 30;
+  }
   // B0 修复（bench/recall-opt）：rerank 试验键必须同时打进 override json——
   // loadGatewayConfig 合并优先级 override > yaml，生产 config-override.json 带
   // rerank.enabled=true，会吞掉沙箱 yaml 里的 enabled:false（2026-10-27 T4 实锤）。
@@ -219,7 +235,9 @@ async function main() {
     ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
     ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
+    ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
   });
+  if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
 
@@ -293,7 +311,7 @@ async function main() {
     process.env.RERANK_DOC_CAP = String(rerankDocCap);
     process.env.RERANK_THREADS = String(rerankThreads);
   }
-  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc });
+  const recall = makeRecall({ cfg, store, embedding, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc, rerankFilterOnly, rerankFilterFloor });
   const k = num("k", cfg.recall?.maxResults ?? 5);
   // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
   const kList = String(arg("recall-ks", "1,3,5,10"))
@@ -412,6 +430,9 @@ async function main() {
   rerankChildProc,
       rerankDocCap,
       rerankThreads,
+      rerankFilterOnly,
+      rerankFilterFloor: rerankFilterOnly ? rerankFilterFloor : null,
+      ageDecayDays: ageDecayDays > 0 ? ageDecayDays : null,
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,
