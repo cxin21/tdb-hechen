@@ -39,6 +39,8 @@ case "${1:-help}" in
   w2) gate_facts; fresh_from "$BASE" "$STORE_ROOT/lme90-w134-w2"; run w2 $COMMON --keep --store "$STORE_ROOT/lme90-w134-w2" --write-supersede --b2b-validity ;;
   w3) gate_facts; fresh_from "$BASE" "$STORE_ROOT/lme90-w134-w3"; run w3 $COMMON --keep --store "$STORE_ROOT/lme90-w134-w3" --conclusion-cards ;;
   w3b) gate_facts; fresh_from "$BASE" "$STORE_ROOT/lme90-w134-w3b"; run w3b $COMMON --keep --store "$STORE_ROOT/lme90-w134-w3b" --conclusion-cards --conclusion-max-extra 4 ;;
+  # allon：三件全开（W1 键已在 w1 库中 + W2 失效标记 + W3 结论卡，回捞 4 行）
+  allon) gate_facts; fresh_from "$W1STORE" "$STORE_ROOT/lme90-w134-allon"; run allon $COMMON --keep --store "$STORE_ROOT/lme90-w134-allon" --write-supersede --b2b-validity --conclusion-cards --conclusion-max-extra 4 ;;
   w13) gate_facts; fresh_from "$W1STORE" "$STORE_ROOT/lme90-w134-w13"; run w13 $COMMON --keep --store "$STORE_ROOT/lme90-w134-w13" --conclusion-cards ;;
   combo) gate_facts; fresh_from "$W1STORE" "$STORE_ROOT/lme90-w134-combo"; run w-combo $COMMON --keep --store "$STORE_ROOT/lme90-w134-combo" --write-supersede --b2b-validity --conclusion-cards ;;
   all) for m in w1 w2 w3 w13 combo; do bash "$0" $m; done ;;
