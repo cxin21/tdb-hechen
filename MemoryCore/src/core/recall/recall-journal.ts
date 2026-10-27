@@ -44,6 +44,12 @@ export interface RecallJournalRerankGate {
   mmr?: { lambda: number; ms: number };
   /** #135 R4（bench/recall-opt）：作用模式标记（缺字段 = 缺省 "rerank"）。 */
   mode?: "filter";
+  /** #137-F：精排与融合相关度的混合比例（缺字段 = 0 = 纯精排顺序）。 */
+  blend?: number;
+  /** #137-F：融合锚点是否被强制保留（true = 精排曾把融合 top-1 挤出窗口）。 */
+  anchor?: boolean;
+  /** #137-F：floor 补位数（达线行不足预算时按融合序补回的候选数；防小窗口被 floor 饿死）。 */
+  floorToppedUp?: number;
 }
 
 /**

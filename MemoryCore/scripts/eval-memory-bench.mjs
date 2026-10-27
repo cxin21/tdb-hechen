@@ -80,6 +80,8 @@ if (flag("help") || argv.length === 0) {
   --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
   --rerank-mode filter|rerank   #135 R4 精排试验：filter=floor 只滤不清排（保原序）；缺省 rerank
+  --rerank-blend X              #137-F 精排试验：精排分与检索融合分的混合比例 α∈[0,1]（0=纯精排=旧行为）
+  --rerank-timeout MS           精排超时（毫秒；本机 onnx 冷加载可能 >5s，冷启动档放宽到 30000）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
@@ -319,6 +321,16 @@ async function main() {
   // #135 R4：精排模式（rerank=重排；filter=只丢低于 floor 的行、保原序）。写进 yaml 与 override json，两边一致。
   const rmode = arg("rerank-mode", undefined);
   if (rmode === "filter" || rmode === "rerank") rerankOverride.mode = rmode;
+  // 精排超时（毫秒；0=不限）——本机 onnx 冷加载可能 >5s，冷启动档需要放宽
+  const rtimeout = arg("rerank-timeout", undefined);
+  if (rtimeout !== undefined && rtimeout !== true && Number.isFinite(Number(rtimeout))) {
+    rerankOverride.timeoutMs = Math.max(0, Number(rtimeout));
+  }
+  // #137-F：精排 × 融合相关度混合比例 α（0=纯精排=旧行为；1=纯融合序）
+  const rblend = arg("rerank-blend", undefined);
+  if (rblend !== undefined && rblend !== true && Number.isFinite(Number(rblend))) {
+    rerankOverride.blend = Math.min(1, Math.max(0, Number(rblend)));
+  }
   // B2-b：MMR 试验档（只写沙箱 yaml；生产 yaml 不动——同用户决策②）。声明须在 prepareBenchYaml 之前。
   const mmrOverride = {};
   if (flag("mmr")) mmrOverride.enabled = true;

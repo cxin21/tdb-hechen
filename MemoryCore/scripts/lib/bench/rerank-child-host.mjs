@@ -68,6 +68,17 @@ export class ChildProcessReranker {
     let stderrTail = "";
     child.stderr.on("data", (d) => { stderrTail = (stderrTail + d).slice(-2000); });
     child.stderrTail = () => stderrTail;
+    // 子进程/管道错误（EPIPE/ECONNRESET）必须吞掉并降级：否则未处理的 'error' 事件会让
+    // 整个 bench 进程崩（2026-10-28 实测：recycle 瞬间写 stdin → write EPIPE → unhandled）。
+    const failAllPending = () => {
+      for (const [, entry] of this.pending) {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.resolve(null);
+      }
+      this.pending.clear();
+    };
+    child.stdin.on("error", () => { this.child = null; failAllPending(); });
+    child.on("error", () => { this.child = null; failAllPending(); });
     this.child = child;
     return child;
   }
@@ -93,6 +104,8 @@ export class ChildProcessReranker {
       }, this.timeoutMs);
       this.pending.set(id, { resolve, timer });
       try {
+        // writable 已销毁时 write 会同步抛/或异步 emit error（handler 见 #spawn 的 failAllPending）
+        if (!child.stdin.writable) throw new Error("child stdin closed");
         child.stdin.write(JSON.stringify({ id, query, docs }) + "\n");
       } catch {
         clearTimeout(timer);

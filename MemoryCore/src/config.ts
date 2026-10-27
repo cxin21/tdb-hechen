@@ -526,6 +526,12 @@ export interface RecallRerankConfig {
    */
   mode: "rerank" | "filter";
   /**
+   * #137-F（2026-10-28）：精排与检索融合相关度的混合比例 α∈[0,1]。
+   * 0 = 旧行为（纯精排顺序，逻辑逐位不变）；1 = 纯检索顺序（精排只剩 floor 语义）；
+   * 0<α<1 = 精排只能在「检索也看好」的候选间翻盘。设计动机见 recall/rerank/blend.ts。
+   */
+  blend: number;
+  /**
    * 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
    * #99 F3（2026-10-25）：本键恒按 provider 原生刻度声明（local=logit，云 provider=0..1）；
    * 门边界 local logit 先 sigmoid 归一 0..1、门槛同变换 sigmoid(minScore)（单调等价）；
@@ -2241,6 +2247,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
           // #135 R4：非法 mode 回落 "rerank"（逐位现状），静默回落
           mode: str(rr, "mode") === "filter" ? ("filter" as const) : ("rerank" as const),
+          // #137-F：混合比例 clamp [0,1]；缺省 0 = 逐位现状
+          blend: Math.min(1, Math.max(0, num(rr, "blend") ?? 0)),
           minScore: num(rr, "minScore") ?? -2.0,
           local: {
             modelDir: optStr(localGroup, "modelDir") ?? "",

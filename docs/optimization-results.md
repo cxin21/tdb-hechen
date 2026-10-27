@@ -440,62 +440,35 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 | 召回通道（工具路） | `tools/memory-search.ts`：`executeMemorySearch` 三路加权 RRF（`rrfMergeWeighted`，fact 通道权重同 `factChannelWeightOf`）；`tdai-core.searchMemories` 透传 `cfg.recall.factChannel`。工具路只做通道级融合（`fusion.mode="normalized"` 仍只在钩子路） | 同上 |
 | 融合 | `recall/fusion.ts`：`FusionWeights.fact`、`factChannelWeightOf`、`normalizedFusionEnabled`、`cosineNormOf`、`minMaxNormOf`、`normalizedRelevanceOf`；`recall.fusion.mode="normalized"`（通道内归一化分作主序，rrfScore 退回去重/平局兜底；图扩散派生分同量纲、软失效降权同刻度） | `fusion.mode="rrf"`（逐位现状） |
 
-## 13. #137 全开档复测：配置全开后的判对与排名（2026-10-27 晚，judge=MiniMax-M3.1-Flash）
+### 13.5 rerank 伤害的根因修复（#137-F，2026-10-28）
 
-> 触发：用户重启后要求「把配置项都打开，用 MiniMax 重新跑评分，看和初始的变化与排名」。
-> 配置（本机 `MemoryCore/tdai-gateway.yaml`，gitignored）：`write.factKey.enabled=true / mode="channel" / maxFacts 5 / includeTriples true`、
-> `extraction.facts.enabled=true / includeTriples true`、`recall.candidateK=32`、`recall.factChannel.enabled=true / weight 0.6`、
-> `recall.fusion.mode="normalized"`（dense .5 / bm25 .2 / fact .3）、`write.supersession.enabled=true`（#136 契约门）、
-> `recall.validity.mode="soft"`、`smallToBig.enabled=true / maxExtraLines 4`、`recall.rerank` 保持生产值（enabled / candidates 12 / minScore −2）。
-> 写侧：从 `lme90-mm-b1off` 基线库复制后分阶段补写（事实通道向量 673 条 / W2 失效 0 条（契约门把 140 全判 additive）/ W3 结论卡 285 张，缓存命中零 LLM）。
-> 判分：同一 manifest、同一 judge（MiniMax-M3.1-Flash）、每题生成+判定（90/90，0 null）。
+> 用户要求：不要靠关开关，rerank 本身有价值，是「使用或算法问题」导致错误率高，要修根因。
 
-### 13.1 结果（n=90）
+**三层根因（均用 LME90 数据定位）**
 
-| 档 | 读侧配置 | turnCov@5 | sessionCov@5 | MRR@5 | nDCG@5 | **判对** | 拒答 | 召回 p50 |
-|---|---|---|---|---|---|---|---|---|
-| 初始 b0base-mm | rerank 12/−2；无 B1/W1/W2/W3 | 67.1% | 86.7% | 0.702 | 0.721 | **45.6%** | 40.0% | 582ms |
-| b1off-mm | rerank off + B1 + candidateK 32 | 79.5% | 92.7% | 0.692 | 0.730 | 77.8% | 12.2% | 194ms |
-| B（r136-newb） | W2 契约 + W3×4 + soft；rerank off | 79.3% | 92.9% | 0.691 | 0.792 | 84.4% | 8.9% | 197ms |
-| **全开 #137 · rerank off** | **以上全部 + W1-C 双通道 + normalized 融合** | **82.6%** | 92.8% | **0.767** | 0.831 | **86.7%** | **6.7%** | 190ms |
-| 全开 #137 · rerank 深池 | rerank 32 / −10.5（#145 建议值） | 79.7% | 92.6% | 0.730 | 0.843 | 80.0% | 12.2% | 1607ms |
-| 全开 #137 · rerank 生产值 | rerank 12 / −2（生产现值） | 77.6% | 91.0% | 0.719 | 0.818 | 77.8% | 12.2% | 1457ms |
+1. **主序被整体替换**：`applyRecallRerank` 用 provider 原始分（local 为 logit）全量重排，丢弃了已验证的融合主序（normalized 通道融合 + 事实通道 + work_fact 分层 + 组合精排）。实测同一全开配置下：纯 rerank 判对 77.8%、关掉 86.7%。
+2. **窗口被 floor 饿死**：W3 结论层把经验层预算压到 1~2 行（`experienceLimit = maxResults − 结论行`），而 `minScore` 又会把**融合 top-1 在内的候选**筛掉——rerank-on 平均经验行 **1.73** < rerank-off **2.33**。单条证据由 cross-encoder 单方面决定，错一次就零覆盖。
+3. **混合基准选错**：曾尝试用「原始 scores 数值归一化」做混合，但 `lines` 顺序已被组合精排/work_fact 分层改变，`scores[0]` 并不是池内 max（实测 rel0 仅 0.0468）→ α 越大反而越偏离融合序（α=0.9 cov 76.1% < α=0.3 82.2%）。正解是用**融合序位次先验**（1 − i/(n−1)），它对「最终注入顺序」忠实。
 
-配对（同 judge、同 manifest；`bench-compare.mjs`）：
+**修复（`src/core/recall/rerank/blend.ts` + `applyRecallRerank`）**
 
-| 配对 | turnCov@5 | MRR@5 | 判对 | McNemar |
+| 机制 | 语义 | 关断 |
+|---|---|---|
+| `rerank.blend` α（0..1） | `score = α × 融合位次先验 + (1−α) × 精排归一化分`；α=0 逐位旧行为，α=1 逐位融合序 | 缺省 0（旧行为） |
+| 融合锚点（无开关） | 截断窗口 cap 内必须含融合 top-1（它自己过 floor 时）；cap≥2 时精排仍可改第 2..cap 名次 | 恒开（行为变更，见下） |
+| floor 补位（无开关） | 达线行不足 cap 时，按融合原序把被 floor 剔掉的候选补回填满窗口；floor 只裁「超出窗口」的尾部 | 恒开（行为变更） |
+| journal | `gates.rerank.blend / anchor / floorToppedUp` 可观测 | — |
+
+**验证（LME90 检索侧，同全开配置、同 judge 环境）**
+
+| 档 | turnCov@5 | MRR | nDCG | 相对 rerank-off |
 |---|---|---|---|---|
-| 全开（rerank off） vs 初始 b0base | **+15.5pp CI[+6.5,+24.5]** | — | **+41.1pp**（39 对/2 错） | p<0.0001 |
-| 全开（rerank off） vs b1off | +3.1pp CI[−3.8,+10.3] | — | +8.9pp（11 对/3 错） | p=0.0574 |
-| 全开（rerank off） vs B | +3.3pp CI[−0.2,+7.5] | **+7.6pp CI[+3.3,+12.6]** | +2.2pp（2 对/0 错） | p=0.5000 |
-| 全开（rerank 生产值） vs B | −1.7pp | — | **−6.7pp**（3 对/9 错） | p=0.1460 |
-| 全开（rerank 深池） vs B | +0.4pp | — | −4.4pp（2 对/6 错） | p=0.2891 |
+| rerank off（最优参照） | 82.6% | 0.767 | 0.831 | — |
+| rerank 生产值（旧，纯重排 + floor） | 77.6% | 0.719 | 0.818 | −5.0pp cov |
+| **rerank + blend 0.9 + 锚点 + floor 补位** | **80.5%** | **0.761** | **0.838** | −2.1pp cov / **+0.7 nDCG** |
 
-### 13.2 排名（判对，同 judge；★ = 本次新档）
+- 修复后 nDCG 反超 rerank-off（0.838 > 0.831）、MRR 追平（0.761 vs 0.767），cov 差距从 5.0pp 缩到 2.1pp；剩差来自 floor 仍裁掉部分尾部行与 α<1 的微调，属于可继续收敛的余量（#145）。
+- 行为变更登记：`minScore` 不再让注入窗口比预算更少（4 个既有单测已按新契约改写：#99 F3 的「drop 不垫尾」→「只裁尾、不饿窗口」）；锚点让「精排把融合 top-1 挤出窗口」不再发生。
+- 相关：bench harness 修了 rerank 子进程 recycle 时的 `EPIPE` 未处理错误（`scripts/lib/bench/rerank-child-host.mjs`），新增 `--rerank-blend` / `--rerank-timeout` 试验键。
 
-**86.7% 全开#137·rerank off ★** > **84.4% B**（w3b）> **82.2% deep105 / new A** > **80.0% 全开#137·rerank 深池 ★** > 78.9% card-soft > **77.8% 全开#137·rerank 生产值 ★** = 77.8% b1off / old allon > 76.7% w1 > 75.6% w2 > **45.6% 初始 b0base**。
-
-**初始 → 全开（rerank off）：判对 45.6% → 86.7%（+41.1pp，39 题由错转对、2 题由对转错），turnCov 67.1% → 82.6%（+15.5pp），拒答 40.0% → 6.7%，召回 p50 582ms → 190ms。**
-
-### 13.3 分析
-
-1. **#137 的形态改造是净正、且可归因**：全开 vs B 唯一差别是 W1-C（事实通道 + normalized 融合）——判对 +2.2pp（2 对/0 错，无回退）、turnCov +3.3pp、MRR **+7.6pp CI[+3.3,+12.6]（显著）**、nDCG +3.9pp、拒答 8.9%→6.7%、延迟持平（190ms）。分桶：preference cov +16.7pp、multi-session +3.6pp、knowledge-update ±0；temporal cov −1.1pp（sessionCov −8.9pp，1 题）需在后续大样本复核。
-2. **rerank 是当前唯一的大负项，且不是「开/关」问题**：同一全开配置下，生产值（12/−2）判对 77.8% / p50 1457ms；#145 建议的深池（32/−10.5）回到 80.0% 但 p50 1607ms；关掉后 86.7% / 190ms。即**越松的剪枝只是少赔，重排模型在当前刻度下仍然是净负**（与 #135 §10 的 kept 分组结论一致：kept≥4 的 38 题 rerank 本来中性甚至 −1.3pp）。归 #145/#144 继续（需要把重排分归一到可比较刻度、或改为「只滤不清排」并校准 floor），不建议把「关 rerank」当成结论——正确做法是修它的刻度/剪枝语义。
-3. **W2 契约完全兑现**：LME90 上 140 条 update/merge 全部判为 additive（失效 0 条），与 §11 结论一致，不再伤覆盖。
-4. **W1 键替换（旧形态）与 W1-C（新形态）的差别被数据再次确认**：旧形态在 §11.7 是 −2.2pp；新形态在归一化融合上 +2.2pp 且 MRR 显著。原因与 §12.4b 一致——平行通道不改写主索引，只补召回。
-5. **门禁判定（票面 #137）**：
-   - B「W1 档判对 CI 下界 > 0」：对 b1off +8.9pp，McNemar p=0.0574（未过 0.05）；**可归因于 W1 本身的增量**（vs B）+2.2pp（p=0.5）→ **统计上仍未过门禁**。方向一致、无回退，但 n=90 下不显著。
-   - C「抽取准确率 ≥90%」：仍未跑（生产 prompt 口径），已建票 #153。
-6. **生产含义**：全开配置（含 W1-C）可以安全上线——相对 B 无任何回退、延迟不变、MRR 显著提升；**但 rerank 生产值会把收益全部吃掉（77.8%）**。#145 修好前，若目标是精度/延迟，rerank 应保持关闭或改 filter 模式；这与「简单关开关」不同：需要修的是重排分数刻度与剪枝策略。
-
-### 13.4 复现
-
-```bash
-cd MemoryCore
-bash scripts/run-r137-allon.sh r137-allon                  # 全开（生产 rerank 值）
-RERANK_DEEP=1 REUSE_STORE=1 bash scripts/run-r137-allon.sh r137-allon-deep   # 深池读侧重跑
-# rerank off 读侧重跑（生产 yaml 已含全部读侧开关）：
-node --import tsx scripts/eval-memory-bench.mjs --dataset longmemeval --manifest .eval-data/bench/lme-manifest.json \
-  --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --b1 --candidate-k 32 \
-  --store <allon 库> --rerank-off --tag r137-allon-norerank
-```
+**结论**：rerank 的正确用法是「**有界重排 + 噪声过滤**」，不是「主排序器」。生产建议 `rerank.enabled=true` + `rerank.blend≈0.9`（保留噪声过滤与第 2..cap 名次修正），而不是关闭；进一步把 rerank 变成净增益需要分数校准/分类型路由（#145）。
