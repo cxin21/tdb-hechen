@@ -422,3 +422,107 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 3. **#136 判对门禁 PASS**：card-soft knowledge-update/temporal 判对均与基线持平（86.7%），cov 不低于基线。
 4. rerank 档位仍归 #145（deep105 的 82.2% 是 rerank-on 组，与本节不可直接合并排名）。
 
+## 12. 事实键平行召回通道 + 多事实键（issue #137，2026-10-27）
+
+> **问题（根因）**：① 生产 W1 的事实来源只有 dedup 顺带抽取的**单短语** `metadata.subject`，事实覆盖远弱于 bench 的 facts[]（bench 也只 +6.7pp ns）；② W1 以「替换 embedding 键」实现——事实短语把「同主题」的行拉近，稀释「同实体不同时间」的判别信号（knowledge-update −8.3pp / temporal −6.7pp），与 W3 组合时是纯噪声（§11.7 A vs B：判对 −2.2pp）。
+> **本票改法**：不是关开关，而是换形态——**原文主索引逐位不动，事实键单独成一条向量、作为平行召回通道**；事实来源从单短语扩到 2-5 条多事实；融合从「加性小量」迁到**通道内归一化分**（§10 已证加性小量改不了主序）。
+
+### 12.1 代码侧交付
+
+| 子项 | 落点 | 缺省 |
+|---|---|---|
+| 多事实归一化 | `src/core/record/fact-key.ts`：`normalizeFacts / normalizeFactPhrases / normalizeFactTriples / factKeyPhrases`（折叠空白 → 长度边界（整条丢弃，不切断）→ 大小写/尾随标点不敏感去重 → 条数上限；脏形状安静丢弃） | 生效（纯函数） |
+| 事实通道键 | 同文件 `buildFactChannelKey`：**只含事实短语**（不含原文），支持已有归一形状 `{phrases,triples}`、`maxFacts / maxFactChars / includeTriples`；无事实/预算 0 → `""`（调用方零外呼） | 生效（纯函数） |
+| 写侧策略 | `write-policy.ts`：`writeFactsOf / writeFactSetOf`（`metadata.facts` ∪ `metadata.factTriples` ∪ `metadata.subject` 回退）、`factChannelKeyFor(record, memory, policy)`；`embeddingKeyFor` 在 `mode="channel"` 时**逐位返回原文** | `memory.write.factKey.enabled=false`；`mode="replace"`（不静默改语义） |
+| 写侧落库 | `l1-writer.ts`：主写入成功后 feature-detect `store.upsertL1FactVector`，事实键单独 embed → 写 `l1_fact_vec`；失败只 warn（记录照常写入） | — |
+| store 通道 | `store/sqlite.ts` + `store/types.ts`：`l1_fact_vec` vec0 表（同维同余弦，`IF NOT EXISTS` 老库自愈）；`upsertL1FactVector / searchL1FactVector`（可选方法，镜像 `searchL1Vector` 的容错）；archive/delete/expired/clear/reindex 六条删除路径同步清理 | tcvdb 不实现 → 通道静默退出 |
+| 召回通道（钩子路） | `hooks/auto-recall.ts`：同一 query 向量并行打两路；事实候选过余弦下限 + `onlyForTypes` + 同 id 去重；新池行带 `·[fact]` 标注与 `factMs/factHits` 计时 | `recall.factChannel.enabled=false` |
+| 召回通道（工具路） | `tools/memory-search.ts`：`executeMemorySearch` 三路加权 RRF（`rrfMergeWeighted`，fact 通道权重同 `factChannelWeightOf`）；`tdai-core.searchMemories` 透传 `cfg.recall.factChannel`。工具路只做通道级融合（`fusion.mode="normalized"` 仍只在钩子路） | 同上 |
+| 融合 | `recall/fusion.ts`：`FusionWeights.fact`、`factChannelWeightOf`、`normalizedFusionEnabled`、`cosineNormOf`、`minMaxNormOf`、`normalizedRelevanceOf`；`recall.fusion.mode="normalized"`（通道内归一化分作主序，rrfScore 退回去重/平局兜底；图扩散派生分同量纲、软失效降权同刻度） | `fusion.mode="rrf"`（逐位现状） |
+| 抽取侧 | `prompts/l1-extraction.ts` FACTS_BLOCK + `record/l1-extractor.ts` parse 落 `metadata.facts`（门关时即使 LLM 输出也不落库） | `memory.extraction.facts.enabled=false`（prompt 字节不变） |
+| 测试 | `fact-key.facts.test.ts`（16，归一化/clamp/预算/去重/三元组合并）、`write-policy.test.ts`（8，多事实/通道/类型门）、`l1-writer.write-policy.test.ts`（10，含通道写端到端）、`recall/__tests__/fusion.test.ts`（17，含权重/归一化/融合新增 10）、`store/sqlite.fact-channel.test.ts`（7，真库写入/检索/删除/隔离/零向量）、`hooks/__tests__/auto-recall-fact-channel.test.ts`（7，含双命中不反超回归）、`tools/__tests__/memory-search-fact-channel.test.ts`（5，工具路）、`prompts/l1-extraction.facts.test.ts`（7）、`l1-extractor.facts-parse.test.ts`（10） | 全量 vitest 267 文件 / 2426 例通过（2026-10-27） |
+
+**两条通道的分工（本票红线）**：事实通道只负责「把原文措辞匹配不到的候选捞进池」，**不替换主序**。rrf 模式下它**只收池里还没有的新候选**，贡献 `weight × 1/(60+rank+1)`（与 dense/bm25 同量纲的名次分）——池里已有的记录不再加分，否则「dense 低名次 + fact 高名次」双命中会累加两份 RRF、跨通道反超原文 rank1（code-review 抓到的反例，已加回归测试钉死）。只有显式选 `fusion.mode="normalized"` 才把归一化分当主序（此时 dense 与 fact 同表权重，事实权重唯一来源 `fusion.fact > recall.factChannel.weight > 0.6`）。
+**设计决定**：[ADR-0011](adr/0011-事实键平行召回通道与多事实键.md)；三开关错配（写侧建了索引读侧不查 / 反之）由 `pipeline-factory` 启动时 warn 一次。
+
+### 12.2 与 #135 证据的关系
+
+§10 的结论是「合并后的加性小量改不了主序（rrfScore 严格降序、几乎无平局）」——所以本票**没有**再往合并后的 rrfScore 上加 recency 式小量，而是：
+1. 事实通道走**通道级 RRF**（新通道整体参与名次分，不是加性小量）；
+2. 想要真正的「分数级融合」时切 `fusion.mode="normalized"`：各通道先在通道内归一（dense/fact = 余弦，bm25 = 通道内 min-max），再按权重合成 relevance 作主序。
+
+### 12.3 已知边界
+
+- **存量库没有事实通道向量**：只有开启写侧后新写入的记录才有。回填需要事实来源（`metadata.facts` 或重新抽取），本票不做自动回填；bench 侧用 `reembedFactKeys(factChannel)` 在复用库上补写。
+- **成本**：开启后每条有事实的记录多一次 embedding 外呼（bench 实测 12/24 turn 有事实）。生产 /bench 都建议保留 pacing（`--embed-interval-ms 1200`）。
+- **tcvdb**：服务端 embedding 后端无本地事实向量表，通道 feature-detect 缺失（生产主库是 sqlite 时不受影响）。
+- **默认关**：票面验收要求 LME90 配对 CI 下界 > 0 才能转默认开；该档**尚未跑**（§12.4），所以生产/部署配置维持 `enabled=false`，但整条链路已实现并可一键开启——这不是「关掉开关规避问题」，而是「效果未验证前不静默改变生产排序」。
+
+### 12.4 门禁判定（票面验收）
+
+| 门禁 | 判定 | 证据/命令 |
+|---|---|---|
+| ① 单测：多事实键契约（去重/预算/去噪/clamp） | **PASS** | `fact-key.facts.test.ts` 16 例 + `write-policy.test.ts` 8 例 + `l1-writer.write-policy.test.ts` 10 例（含通道写端到端） |
+| ① 单测：通道只扩召回、主索引不动 | **PASS** | `auto-recall-fact-channel.test.ts`（关闭=只有原文命中；开启=事实候选带 `·[fact]` 且主序仍由原文裁决；**双命中不反超 rank1 回归**）；`sqlite.fact-channel.test.ts` 断言 `l1_vec` 行数不受事实写入影响 |
+| ① 单测：全量回归 | **PASS** | `cd MemoryCore && npx vitest run` → **267 文件 / 2426 例全绿**（2026-10-27） |
+| ② LME90 配对：W1 档判对 CI 下界 > 0 | **PENDING（判对未跑；检索侧已跑，结果见 §12.4b）** | 判对需 `--gen-limit 90` 生成+判分（约 2–3h/档）；检索侧四档已实跑并用 `bench-compare.mjs` 配对：归一化融合 + 事实通道 MRR **+10.8pp CI[+5.1,+16.9]**、turnCov +1.1pp、sessionCov +1.4pp |
+| ③ 抽取抽样门禁 ≥ 90% | **PENDING（prompt 变了要重跑）** | 生产侧新增 FACTS_BLOCK，口径与 bench 抽取器不同：需用**生产 prompt** 重抽一批样本再审计。可复用判分器：`node --import tsx scripts/fact-extract-gate.mjs --dataset longmemeval --manifest .eval-data/bench/lme-manifest.json --cache <新生产缓存> --sample 40 --threshold 0.9`（旧 `fact-gate-2026-10-27T02-17-53` 92.6% 只覆盖 bench `facts-v2` 抽取器，不能直接引用）；或先跑一小批生产提取（`facts.enabled=true`）后抽 `metadata.facts` 人工/LLM 审计 |
+
+### 12.4b 检索侧配对（2026-10-27 实跑，n=90，gen-limit 0 = 只测检索不判分）
+
+前提：四档全部从 `lme90-mm-b1off` 基线库复制，同配置（`--rerank-off --b1 --candidate-k 32`、同 manifest）。
+试验档在副本上补写事实通道向量：**673/673 条写入成功、0 失败**（12/24 turn 有事实），主索引
+`l1_vec` 零改动（日志 "重嵌 turn 0"）。命令见 §12.5。
+
+| 档 | 读侧 | turnCov@5 | sessionCov@5 | MRR@5 | nDCG@5 |
+|---|---|---|---|---|---|
+| A 控制 | rrf，无通道 | 79.5% | 92.7% | 0.703 | 0.721 |
+| B | **normalized**，无通道 | 78.4% | 93.6% | 0.743 | 0.742 |
+| C | **normalized + 事实通道**（fact 0.3） | **80.7%** | **94.1%** | **0.811** | **0.783** |
+| D | rrf + 事实通道（只收新候选） | 79.5% | 93.2% | 0.709 | 0.724 |
+
+配对（`bench-compare.mjs`，paired bootstrap 10000）：
+
+| 配对（唯一变量） | turnCov@5 | sessionCov@5 | MRR@5 | 判读 |
+|---|---|---|---|---|
+| A→B（只换融合层级） | −1.1pp CI[−5.7,+3.3] | +0.9pp | **+3.9pp CI[+0.1,+8.2]** | 通道内归一化融合本身提升排名，覆盖略降 |
+| B→C（再叠事实通道） | +2.3pp CI[−3.3,+8.4] | +0.5pp | **+6.9pp CI[+1.7,+12.0]** | 事实通道在归一化融合上**再显著提升排名**（20 改善/65 平/5 变差） |
+| A→C（两者合计） | +1.1pp CI[−5.2,+7.5] | +1.4pp | **+10.8pp CI[+5.1,+16.9]** | 排名大幅改善（7 改善/73 平/7 变差） |
+| A→D（rrf 档 + 通道） | ±0.0pp | +0.6pp | +0.6pp | 「只收新候选」几乎不动：多数事实候选本就在 dense 池内（新候选约 10%） |
+
+**结论（检索侧）**：
+
+1. **「事实键无效」被证伪**：在归一化融合上它带来 MRR **+6.9pp（显著）**、turnCov +2.3pp、sessionCov +0.5pp。
+2. **rrf 档「只收新候选」几乎零效应**（±0.0pp）——不是通道没生效（写侧 673/673、factHits 有值），
+   而是 LME90 的事实短语向量与原文向量高度重合、可新增的候选太少。这也解释 #147 键替换为何无收益。
+3. **覆盖损失来自融合层、不是事实通道**：knowledge-update cov 在 A→B 与 B→C 各 −7.1pp（同一个 turn，
+   MRR 反而 +5.6pp）；C vs A 的 −14.3pp（n=14，2 个 turn）留待判对档复核。
+4. C 的分桶收益：multi-session cov **+10.7pp**、single-session-user **+14.3pp**、temporal **+6.7pp**；
+   single-session-assistant −13.3pp、knowledge-update 覆盖 −14.3%（MRR +7.6pp）。
+
+**判读纪律**：以上是检索侧指标。票面门禁是**判对**（生成 + judge），仍 PENDING，所以生产三开关维持
+缺省关；但「通道本身没用」不成立——推荐开启姿势是 `fusion.mode="normalized"` + 事实通道，
+而不是 rrf 档只收新候选。
+
+### 12.5 复现（单测 + 冒烟）
+
+```bash
+cd MemoryCore
+npx vitest run src/core/record/fact-key.facts.test.ts src/core/record/write-policy.test.ts \
+  src/core/recall/__tests__/fusion.test.ts src/core/store/sqlite.fact-channel.test.ts \
+  src/core/hooks/__tests__/auto-recall-fact-channel.test.ts
+# bench 单题冒烟（有事实的 turn 才写通道；control 档应无 factHits）
+node --import tsx scripts/eval-memory-bench.mjs --dataset longmemeval --limit 1 --gen-limit 0 \
+  --fact-channel --fact-model MiniMax-M2.7 --embed-interval-ms 1200 --tag r137-smoke
+
+# §12.4b 四档复现：先 fc 写一次通道向量（673 条，约 18min），之后每档只重跑读侧、零 embedding 外呼
+bash scripts/run-r137-factchannel.sh control    # A（rrf，无通道）
+bash scripts/run-r137-factchannel.sh fc         # 写通道向量
+bash scripts/run-r137-factchannel.sh fc-ro      # D（rrf + 通道，只读重跑）
+# B（normalized 无通道）与 C（normalized + 通道）在同一 fc 库上换读侧配置：
+node --import tsx scripts/eval-memory-bench.mjs <COMMON> --store <fc库> \
+  --fusion '{"mode":"normalized","dense":0.5,"bm25":0.2,"fact":0}' --tag r137-norm-nofact     # B
+node --import tsx scripts/eval-memory-bench.mjs <COMMON> --store <fc库> --fact-channel \
+  --fact-channel-read-only --fusion '{"mode":"normalized","dense":0.5,"bm25":0.2,"fact":0.3}' --tag r137-fc-norm-ro  # C
+node scripts/bench-compare.mjs <A.json> <C.json>
+```

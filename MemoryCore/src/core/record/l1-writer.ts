@@ -23,7 +23,13 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
-import { embeddingKeyFor, supersessionEligibleForContent, supersessionEnabled, type WritePolicy } from "./write-policy.js";
+import {
+  embeddingKeyFor,
+  factChannelKeyFor,
+  supersessionEligibleForContent,
+  supersessionEnabled,
+  type WritePolicy,
+} from "./write-policy.js";
 
 // ============================
 // Types
@@ -504,6 +510,31 @@ export async function writeMemory(params: {
 
       const upsertOk = await vectorStore.upsertL1(record, embedding);
       logger?.info?.(`${TAG} [vec-dual-write] DONE upsert result=${upsertOk} id=${record.id}`);
+
+      // #137（W1 双通道）：事实键**平行通道**——原文主索引刚写完（embedding 键逐位=原文），
+      // 再把事实短语单独 embed 成一条向量写进 store 的独立向量表。三条红线：
+      //  ① 主写入已成功才开始（不因通道失败回滚/丢记录）；
+      //  ② feature-detect（store 未实现 = tcvdb 等服务端 embedding 后端 → 通道静默缺失）；
+      //  ③ 失败只 warn（非致命）：单条事实通道缺失 = 该记忆少一条召回路径，不影响准确写入。
+      if (embeddingService && typeof vectorStore.upsertL1FactVector === "function") {
+        const factKeyText = factChannelKeyFor(record, memory, writePolicy);
+        if (factKeyText) {
+          try {
+            const factVector = await embeddingService.embed(factKeyText);
+            if (factVector && factVector.length > 0) {
+              const factOk = await vectorStore.upsertL1FactVector(record.id, factVector, record.updatedAt);
+              logger?.info?.(
+                `${TAG} [vec-dual-write] fact-channel ${factOk ? "DONE" : "SKIPPED"} id=${record.id} keyLen=${factKeyText.length}`,
+              );
+            }
+          } catch (factErr) {
+            logger?.warn?.(
+              `${TAG} [vec-dual-write] fact-channel FAILED (non-fatal, record kept) id=${record.id}: ` +
+              `${factErr instanceof Error ? factErr.message : String(factErr)}`,
+            );
+          }
+        }
+      }
     } catch (err) {
       // Vector write failure should NOT block the main JSONL write
       logger?.warn?.(

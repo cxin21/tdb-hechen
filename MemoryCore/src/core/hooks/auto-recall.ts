@@ -1829,6 +1829,14 @@ interface ScoredRecord {
 /** V2-3：mergedMap 值形状（V2-3 起携带 coreRefCount/recallCount 供组合分精排/探索位消费）。 */
 interface MergedPoolValue {
   rrfScore: number;
+  /**
+   * #137（W1 双通道）：通道内归一化融合分（0..1）。仅 fusion.mode="normalized" 时写入——
+   * 届时它是**主序**键（#135 实证：合并后的加性小量改不了 rrfScore 主序），
+   * rrfScore 退回去重/平局兜底；其余模式 undefined（逐位现状）。
+   */
+  relevance?: number;
+  /** #137：各通道在本候选上的归一化分（dense/fact = 余弦，bm25 = 通道内 min-max）。 */
+  channelScores?: { dense?: number; bm25?: number; fact?: number };
   formatable: FormatableMemory;
   coreRefHit: number;
   signal: number;
@@ -1853,6 +1861,9 @@ export interface SearchTiming {
   embeddingMs: number;
   ftsHits: number;
   embeddingHits: number;
+  /** #137：事实通道耗时/命中数（通道关闭时缺字段 = 未打点）。 */
+  factMs?: number;
+  factHits?: number;
   /**
    * #63（2026-10-18）：V2-2 LLM 查询扩展耗时（仅 keyword/hybrid-fallback 路打点——
    * getExpansionTerms 实际触发时才有值；native/embedding 路与旧构造点缺省缺字段
@@ -2124,6 +2135,8 @@ async function searchMemories(
       cfg.recall?.candidateK,
       // #135 R2：加权融合配置（缺省 undefined = RRF 恒等逐位现状）
       cfg.recall?.fusion,
+      // #137（W1 双通道）：事实键平行召回通道（缺省 undefined / enabled=false = 通道退出）
+      cfg.recall?.factChannel,
     );
     // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
     // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
@@ -2367,6 +2380,12 @@ export async function searchHybrid(
    * 乘子在 rank-based RRF 路 0/90 零差异——recency/validity 以显式归一特征加入融合分。
    */
   fusion?: RecallFusionConfig,
+  /**
+   * #137（W1 双通道）：事实键平行召回通道（cfg.recall.factChannel 透传）。
+   * 缺省 undefined / enabled=false / store 未实现 searchL1FactVector → 通道退出
+   * （零调用、零行为变化——关断矩阵纪律）。
+   */
+  factChannel?: RecallFactChannelConfig,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -2392,6 +2411,14 @@ export async function searchHybrid(
   // #135 R2：融合权重（缺省恒等 = 逐位现状）
   const fusionW = fusionWeightsOf(fusion);
   const fusionHalfLifeDays = recencyHalfLifeDaysOf(fusion);
+  // #137（W1 双通道）：事实键平行通道——store 未实现（如 tcvdb 服务端 embedding）或未开启
+  // → 通道退出（零调用）。normalized 模式下通道分进归一化融合、否则按 RRF 贡献并入池。
+  const normalizedMode = normalizedFusionEnabled(fusion);
+  const factSearch = factChannel?.enabled === true && typeof vectorStore.searchL1FactVector === "function"
+    ? vectorStore.searchL1FactVector.bind(vectorStore)
+    : undefined;
+  const factWeight = factChannelWeightOf(factChannel, fusion);
+  const factTopK = factChannel?.candidateK ?? candidateK;
 
   const [keywordResult, embeddingResult] = await Promise.all([
     // Keyword search: FTS5 only (no in-memory fallback)
@@ -2472,10 +2499,23 @@ export async function searchHybrid(
         );
         const results = await vectorStore.searchL1Vector(queryEmbedding, candidateK, userText, isolationFilter);
         logger?.debug?.(`${TAG} [hybrid-embedding] Got ${results.length} candidates`);
-        return { results, ms: performance.now() - tStart };
+        // #137：同一 query 向量再打一次事实通道（原文主索引不动；失败非致命——通道静默退出）
+        let factResults: L1SearchResult[] = [];
+        let factMs = 0;
+        if (factSearch) {
+          const tFact = performance.now();
+          try {
+            factResults = ((await factSearch(queryEmbedding, factTopK, isolationFilter)) ?? []) as L1SearchResult[];
+          } catch (err) {
+            logger?.warn?.(`${TAG} Hybrid: fact channel failed (non-fatal, channel skipped): ${err instanceof Error ? err.message : String(err)}`);
+          }
+          factMs = performance.now() - tFact;
+          logger?.debug?.(`${TAG} [hybrid-fact] Got ${factResults.length} candidates in ${factMs.toFixed(0)}ms (topK=${factTopK})`);
+        }
+        return { results, factResults, factMs, ms: performance.now() - tStart };
       } catch (err) {
         logger?.warn?.(`${TAG} Hybrid: embedding part failed: ${err instanceof Error ? err.message : String(err)}`);
-        return { results: [] as L1SearchResult[], ms: performance.now() - tStart };
+        return { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: performance.now() - tStart };
       }
     })(),
   ]);
@@ -2484,6 +2524,22 @@ export async function searchHybrid(
   // L1 向量分是 cosine（0–1，绝对可比）：低于阈值（scoreThreshold，默认 0.3）的候选
   // 不进 RRF 融合——修掉"排名即注入"（原 `_threshold` 被忽略、低相关也进）。宁缺毋滥。
   const embeddingResults = embeddingResult.results.filter((r) => r.score >= threshold);
+  // #137：事实通道候选——余弦下限（缺省回落 scoreThreshold）、类型门（onlyForTypes）、
+  // 同 id 去重留最高分（store 已按距离排序，这里只做防御性归并）。
+  const factOnlyTypes =
+    factChannel?.onlyForTypes && factChannel.onlyForTypes.length > 0 ? new Set(factChannel.onlyForTypes) : null;
+  const factMinScore = typeof factChannel?.minScore === "number" && Number.isFinite(factChannel.minScore)
+    ? factChannel.minScore
+    : threshold;
+  const factByScore = new Map<string, L1SearchResult>();
+  for (const r of factSearch ? embeddingResult.factResults : []) {
+    if (!r || typeof r.record_id !== "string") continue;
+    if (!(typeof r.score === "number" && Number.isFinite(r.score) && r.score >= factMinScore)) continue;
+    if (factOnlyTypes && !factOnlyTypes.has(r.type)) continue;
+    const prev = factByScore.get(r.record_id);
+    if (!prev || r.score > prev.score) factByScore.set(r.record_id, r);
+  }
+  const factResults = [...factByScore.values()].sort((a, b) => b.score - a.score);
 
   // C5：coreRef 排序加成预处理（fired 空 / boost≤0 → 恒 0，零开销路径）
   const coreRefActive = !!rankSignal && rankSignal.boost > 0 && rankSignal.firedLabels.length > 0;
@@ -2532,12 +2588,19 @@ export async function searchHybrid(
     embeddingMs: embeddingResult.ms,
     ftsHits: keywordResults.length,
     embeddingHits: embeddingResults.length,
+    ...(factSearch ? { factMs: embeddingResult.factMs, factHits: factResults.length } : {}),
   };
 
-  if (keywordResults.length === 0 && embeddingResults.length === 0) {
-    logger?.debug?.(`${TAG} Hybrid search: both strategies returned 0 results`);
+  if (keywordResults.length === 0 && embeddingResults.length === 0 && factResults.length === 0) {
+    logger?.debug?.(`${TAG} Hybrid search: all channels returned 0 results`);
     return { lines: [], metas: [], timing };
   }
+
+  // #137：normalized 融合需要先在各通道内部归一（BM25 无绝对刻度 → 通道内 min-max；
+  // dense/fact 是余弦距离换算的 1-distance，已在 [0,1] 同量纲）。
+  const keywordNorms = normalizedMode ? minMaxNormOf(keywordResults.map((r) => r.score)) : [];
+  const denseNorms = normalizedMode ? embeddingResults.map((r) => cosineNormOf(r.score)) : [];
+  const factNorms = normalizedMode ? factResults.map((r) => cosineNormOf(r.score)) : [];
 
   // RRF merge: k=60 is a standard constant from the RRF paper
   // RRF K=60：Cormack et al. (2009) 原论文标准常数——协议不变量，硬编码不配置化（GOLD-EVO 判定 2026-09-15）
@@ -2575,6 +2638,7 @@ export async function searchHybrid(
     const existing = mergedMap.get(id);
     if (existing) {
       existing.rrfScore += fusionContribution;
+      if (normalizedMode) existing.channelScores = { ...existing.channelScores, bm25: keywordNorms[rank0] };
     } else {
       const kwMeta = (r.record.metadata ?? {}) as Record<string, unknown>;
       // A3（REG-REMAINING-001）终极修复：keyword 通道的 soul 单独携带（R-A1 设计）但池插入
@@ -2618,6 +2682,7 @@ export async function searchHybrid(
         mult,
         coreRefCount: coreRefCountOf(kwMeta),
         recallCount: recallCountOf(kwMeta),
+        ...(normalizedMode ? { channelScores: { bm25: keywordNorms[rank0] } } : {}),
       });
     }
   }
@@ -2652,6 +2717,7 @@ export async function searchHybrid(
     const existing = mergedMap.get(id);
     if (existing) {
       existing.rrfScore += fusionContribution;
+      if (normalizedMode) existing.channelScores = { ...existing.channelScores, dense: denseNorms[rank1] };
     } else {
       mergedMap.set(id, {
         rrfScore: fusionContribution,
@@ -2666,8 +2732,58 @@ export async function searchHybrid(
         mult,
         coreRefCount: coreRefCountOf(embMeta),
         recallCount: recallCountOf(embMeta),
+        ...(normalizedMode ? { channelScores: { dense: denseNorms[rank1] } } : {}),
       });
     }
+  }
+
+  // #137（W1 双通道）：事实通道候选并入池。
+  //  - rrf/weighted 模式：**只收新候选**（池里已有的记录不加分）——否则同一记录同时被
+  //    dense 低名次与 fact 高名次命中时会累加两份贡献、跨通道反超原文 rank1，违背本票红线
+  //    「事实键只扩召回、不裁决排序」。只收新 = 原文命中之间的相对序逐位不变，
+  //    事实新候选按 weight × 1/(RRF_K+rank+1) 插入到相应名次段；
+  //  - normalized 模式：已有/新候选都只登记通道归一化分，主序由归一化融合分统一裁决
+  //    （该模式本来就是「通道内归一化分融合」，与 rrf 档语义不同，见 ADR-0011）。
+  for (let rankF = 0; rankF < factResults.length; rankF++) {
+    const r = factResults[rankF];
+    const id = r.record_id;
+    const rrfScore = 1 / (RRF_K + rankF + 1);
+    const factMeta = parseMetadataJson(r.metadata_json);
+    const { signal, mult } = structOf({
+      occurred_at: r.occurred_at,
+      valid_start: r.valid_start,
+      valid_end: r.valid_end,
+      certainty: r.certainty,
+      valence: r.valence,
+      significance: r.significance,
+      sensitivity: (r as { sensitivity?: string }).sensitivity,
+      importance: r.importance,
+      metadata: factMeta,
+    });
+    // P1-T7 观测口径：事实通道候选同样进重要度门统计（否则 gates.importancePenalty 漏掉一路）
+    importanceGateRows.push({ rrfScore, mult, importance: r.importance ?? undefined });
+    const fusionContribution = factWeight * rrfScore;
+    const existing = mergedMap.get(id);
+    if (existing) {
+      if (normalizedMode) existing.channelScores = { ...existing.channelScores, fact: factNorms[rankF] };
+      continue;
+    }
+    mergedMap.set(id, {
+      rrfScore: fusionContribution,
+      certainty: r.certainty,
+      validEnd: r.valid_end,
+      validStart: r.valid_start,
+      valence: r.valence,
+      arousal: r.arousal,
+      formatable: { ...vectorResultToFormatable(r), recall_channel: "fact" },
+      coreRefHit: coreRefHitOf(factMeta),
+      signal,
+      mult,
+      coreRefCount: coreRefCountOf(factMeta),
+      recallCount: recallCountOf(factMeta),
+      channel: "fact",
+      ...(normalizedMode ? { channelScores: { fact: factNorms[rankF] } } : {}),
+    });
   }
 
   // #135 R2：recency/validity 显式融合特征（恒等权重 0 → 零加成逐位现状）。
@@ -2682,6 +2798,28 @@ export async function searchHybrid(
       if (fusionW.validity > 0) {
         v.rrfScore += fusionW.validity * validityNormOf(v.validStart, v.validEnd, fusionNow);
       }
+    }
+  }
+
+  // #137：normalized 融合——通道内归一化分合成可比的 relevance（主序），
+  // rrfScore 退回去重/平局兜底（#135 实证：合并后的加性小量改不了 rrfScore 主序）。
+  if (normalizedMode) {
+    const fusionNow = rankSignal?.now ?? new Date();
+    // 事实权重与 rrf 档同源：fusion.fact > recall.factChannel.weight > 0.6（见 factChannelWeightOf）。
+    // 否则 fusionWeightsOf 的 0.3 缺省会静默盖掉用户配的 factChannel.weight（两个 SoT）。
+    const normWeights = { ...fusionW, fact: factChannelWeightOf(factChannel, fusion) };
+    for (const [, v] of mergedMap) {
+      const cs = v.channelScores ?? {};
+      v.relevance = normalizedRelevanceOf(
+        {
+          dense: cs.dense,
+          bm25: cs.bm25,
+          fact: cs.fact,
+          recency: fusionW.recency > 0 ? recencyNormOf(v.formatable.occurred_at, fusionNow, fusionHalfLifeDays) : undefined,
+          validity: fusionW.validity > 0 ? validityNormOf(v.validStart, v.validEnd, fusionNow) : undefined,
+        },
+        normWeights,
+      );
     }
   }
 
@@ -2705,9 +2843,11 @@ export async function searchHybrid(
   //    组内旗标（mult 仅平局组内生效，与工具侧 R3 平移一致）。 ──
   const sceneSignalOfEntry = (v: FormatableMemory) => sceneSignalOf(v, sceneHit, sceneBoostVal);
   const compareLex = (
-    a: { rrfScore: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
-    b: { rrfScore: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
+    a: { rrfScore: number; relevance?: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
+    b: { rrfScore: number; relevance?: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
   ): number => {
+    // #137：normalized 融合模式主序 = 通道内归一化融合分（0..1），rrfScore 只在平局时兜底。
+    if (normalizedMode && (b.relevance ?? 0) !== (a.relevance ?? 0)) return (b.relevance ?? 0) - (a.relevance ?? 0);
     if (b.rrfScore !== a.rrfScore) return b.rrfScore - a.rrfScore;
     if (b.coreRefHit !== a.coreRefHit) return b.coreRefHit - a.coreRefHit;
     const aScene = sceneSignalOfEntry(a.formatable);
@@ -2760,6 +2900,10 @@ export async function searchHybrid(
         });
         if (edges.length > 0) {
           const maxHitScore = Math.max(...sorted.map(([, v]) => v.rrfScore));
+          // #137：normalized 模式下图扩散分按 relevance 刻度派生（同量纲，不混刻度）
+          const maxHitRelevance = normalizedMode
+            ? Math.max(...sorted.map(([, v]) => v.relevance ?? v.rrfScore))
+            : 0;
           const detail = runPPRDetail(seeds, edges, {
             damping: graph.pprDamping ?? PPR_DEFAULTS.damping,
             topK: graph.pprTopK ?? PPR_DEFAULTS.topK,
@@ -2779,6 +2923,7 @@ export async function searchHybrid(
               const pprMeta = parseMetadataJson(nr.metadata_json);
               mergedMap.set(id, {
                 rrfScore: maxHitScore * graph.discount * pprNorm,
+                ...(normalizedMode ? { relevance: maxHitRelevance * graph.discount * pprNorm } : {}),
                 formatable: { ...vectorResultToFormatable(nr), recall_channel: `graph:ppr:${kind}` },
                 coreRefHit: 0,
                 signal: 0,
@@ -2935,7 +3080,12 @@ export async function searchHybrid(
       .filter(([id]) => !droppedIds.has(id))
       .map(([id, v]) =>
         demotedIds.has(id)
-          ? ([id, { ...v, rrfScore: v.rrfScore * SOFT_VALIDITY_PENALTY }] as [string, MergedPoolValue])
+          ? ([id, {
+              ...v,
+              rrfScore: v.rrfScore * SOFT_VALIDITY_PENALTY,
+              // #137：normalized 模式主序是 relevance——降权必须同刻度落在主序上，否则软失效失效
+              ...(v.relevance !== undefined ? { relevance: v.relevance * SOFT_VALIDITY_PENALTY } : {}),
+            }] as [string, MergedPoolValue])
           : [id, v],
       );
   }
@@ -2952,7 +3102,8 @@ export async function searchHybrid(
   sorted = applyCompositeRerank(
     sorted,
     ([, v]) => ({
-      relevance: v.rrfScore,
+      // #137：normalized 模式下 relevance 已是 0..1 的通道归一化融合分（主序口径）
+      relevance: v.relevance ?? v.rrfScore,
       // fallback 锚=formatable.timestamp（记录创建时刻：kw 路 record.timestamps[0] :2938 / 向量路 r.timestamp_str :3010，两 converter 均带）
       occurredAt: v.formatable.occurred_at ?? (timeProxFallbackEnabled === true ? (v.formatable.timestamp ?? null) : null),
       significance: v.formatable.significance,
@@ -3022,7 +3173,7 @@ export async function searchHybrid(
       metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds })),
       // 2026-10-14 观测性修复：fallback 消费方（searchMemories 1545）此前丢弃 scores →
       // metric 上报全 0；此处随 metas 一并返回（rrfScore 刻度，与 lines 平行，精排重映射兼容）。
-      scores: visibleTop.map(([, v]) => v.rrfScore),
+      scores: visibleTop.map(([, v]) => v.relevance ?? v.rrfScore),
       timing,
       ...(importanceGateOut ? { gates: importanceGateOut } : {}),
     };
@@ -3058,10 +3209,16 @@ export async function searchHybrid(
  */
 import { isRecurrenceMeta, recurrenceLabel } from "../record/l1-extractor.js";
 import {
+  cosineNormOf,
+  factChannelWeightOf,
   fusionWeightsOf,
+  minMaxNormOf,
+  normalizedFusionEnabled,
+  normalizedRelevanceOf,
   recencyHalfLifeDaysOf,
   recencyNormOf,
   validityNormOf,
+  type RecallFactChannelConfig,
   type RecallFusionConfig,
 } from "../recall/fusion.js";
 

@@ -70,6 +70,9 @@ export function normalizeImportance(raw: unknown): number | undefined {
   return Math.round(raw);
 }
 
+/** 关闭态的空事实集（共享常量，避免每条 memory 分配）。 */
+const NO_FACTS: NormalizedFacts = { phrases: [], triples: [] };
+
 const WEEKDAY_ZH: Record<string, string> = { MON: "一", TUE: "二", WED: "三", THU: "四", FRI: "五", SAT: "六", SUN: "日" };
 /** 徽章文本：note 首选；省略时回退 cadence+anchor 中文映射。 */
 export function recurrenceLabel(rec: unknown): string | undefined {
@@ -86,6 +89,7 @@ export function recurrenceLabel(rec: unknown): string | undefined {
 }
 
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
+import { clampMaxFacts, normalizeFacts, type NormalizedFacts } from "./fact-key.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
@@ -749,8 +753,23 @@ async function callLlmExtraction(params: {
   const importanceEnabled =
     (memoryConfig as { worthiness?: { extractionEnabled?: boolean } } | undefined)
       ?.worthiness?.extractionEnabled === true;
+  // #137（W1 双通道）：多事实输出块（gated memory.extraction.facts.enabled，缺省关闭=逐位现状）
+  const factsCfg = (memoryConfig as {
+    extraction?: { facts?: { enabled?: boolean; maxFacts?: number; includeTriples?: boolean } };
+  } | undefined)?.extraction?.facts;
+  const factsEnabled = factsCfg?.enabled === true;
+  const factsMaxFacts = clampMaxFacts(factsCfg?.maxFacts);
+  const factsIncludeTriples = factsCfg?.includeTriples === true;
   const systemPrompt = composeMemorySystemPrompt(
-    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled, recurrenceEnabled, importanceEnabled }),
+    getExtractMemoriesSystemPrompt(promptMode, {
+      selfIdentityEnabled,
+      sensitivityEnabled,
+      recurrenceEnabled,
+      importanceEnabled,
+      factsEnabled,
+      factsMaxFacts,
+      factsIncludeTriples,
+    }),
     memoryPrompt,
   );
   // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取
@@ -818,7 +837,11 @@ async function callLlmExtraction(params: {
   // [l1-debug] RAW OUTPUT — 定位模型到底吐了哪些字段（用于 R4 实证）
   logger?.debug?.(`${TAG} [l1-debug] RAW_OUTPUT:\n${result}`);
 
-  const _scenes = parseExtractionResult(result, logger, valueCandidates, { promptMode });
+  const _scenes = parseExtractionResult(result, logger, valueCandidates, {
+    promptMode,
+    // #137：parse 侧同一道门（关闭时完全忽略 LLM 输出的 facts）
+    facts: { enabled: factsEnabled, maxFacts: factsMaxFacts, includeTriples: factsIncludeTriples },
+  });
   return { scenes: _scenes, systemPrompt, userPrompt, rawOutput: result };
 }
 
@@ -835,7 +858,15 @@ export function parseExtractionResult(
   raw: string,
   logger?: Logger,
   valueCandidates: Array<{ id: string; label: string }> = [],
-  opts?: { promptMode?: MemoryPromptMode },
+  opts?: {
+    promptMode?: MemoryPromptMode;
+    /**
+     * #137（W1 双通道）：多事实落库门。缺省/关闭 = 完全忽略 LLM 输出的 facts
+     * （即使模型意外输出也不落 metadata）；开启 = normalizeFacts 归一化后落
+     * metadata.facts（string[]），includeTriples 且三元组非空时另落 metadata.factTriples。
+     */
+    facts?: { enabled: boolean; maxFacts: number; includeTriples: boolean };
+  },
 ): SceneSegment[] {
   try {
     // Strip markdown code block wrappers if present
@@ -911,6 +942,11 @@ export function parseExtractionResult(
               .map((m) => {
                 // P1-T7 确定性门（防御第二层：提示词未开启时 LLM 意外输出同样被钳制/丢弃）
                 const importance = normalizeImportance(m.importance);
+                // #137 确定性门（同一防御第二层纪律）：关闭时完全忽略 m.facts；开启时由
+                // normalizeFacts 归一化（折叠空白/去重/去噪/封顶 maxFacts），脏形状安静丢弃不抛。
+                const factsOpts = opts?.facts;
+                const factsGate = factsOpts?.enabled === true;
+                const facts = factsGate ? normalizeFacts(m.facts, { maxFacts: clampMaxFacts(factsOpts?.maxFacts) }) : NO_FACTS;
                 return {
                 content: String(m.content),
                 type: String(m.type ?? "episodic"),
@@ -918,7 +954,15 @@ export function parseExtractionResult(
                 priority: typeof m.priority === "number" ? clampNum(m.priority, -1, 100) : 50,
                 source_message_ids: Array.isArray(m.source_message_ids) ? m.source_message_ids.map(String) : [],
                 metadata: (() => {
-                  const base = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
+                  const rawBase = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
+                  // #137：开启时 facts/factTriples 由提取门独占——先摘掉 LLM 可能塞进 metadata 的
+                  // 原始值，只落归一化结果（避免脏值绕过确定性门）。关闭时不改既有透传行为。
+                  let base = rawBase;
+                  if (factsGate) {
+                    base = { ...rawBase };
+                    delete base.facts;
+                    delete base.factTriples;
+                  }
                   const refs = parseCoreRefs(m.coreRefs, valueCandidates);
                   const out: Record<string, unknown> = refs && refs.length > 0 ? { ...base, coreRefs: refs } : { ...base };
                   // P1-T7：LLM 重要度理由 + 来源标记（仅在分数合法解析时写入——不伪造评分）
@@ -927,6 +971,12 @@ export function parseExtractionResult(
                       out.importance_reason = m.importance_reason;
                     }
                     out.importance_source = "llm";
+                  }
+                  // #137 落位：非空短语 → metadata.facts；includeTriples 且非空三元组 → metadata.factTriples
+                  // （空集不写键 = 现状形状；写侧 write-policy 读这两个键建事实通道键）。
+                  if (facts.phrases.length > 0) out.facts = facts.phrases;
+                  if (factsGate && factsOpts?.includeTriples === true && facts.triples.length > 0) {
+                    out.factTriples = facts.triples;
                   }
                   return out;
                 })(),

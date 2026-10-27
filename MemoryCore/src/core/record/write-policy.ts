@@ -1,21 +1,47 @@
 /**
- * #134 生产写面策略（W1 事实键双写 / W2 写时双时态 supersession）。
+ * #134 / #137 生产写面策略（W1 事实键 / W1-C 事实通道 / W2 写时双时态 supersession）。
  *
- * 设计取舍：生产 L1 的写入是「LLM 抽取后的记忆」而非 bench 的 turn 原文，因此：
- *  - W1 的事实短语来源 = dedup LLM **顺带抽取**的 metadata.subject（P3-T17，零额外 LLM 成本），
- *    与 bench 的离线抽取同构（把查询表述之外的主题词拼进 embedding 键，桥接「同事实不同说法」）；
- *  - W2 的触发点 = dedup 的 update/merge 决策（生产既有的「同实体同属性新值」识别点），
- *    旧行从「归档」改为「valid_end 只标记」——零删除红线在写时也成立。
- * 两者缺省全关（逐位现状）；开关在 memory.write.*（config.ts）。
+ * 设计取舍：生产 L1 的写入是「LLM 抽取后的记忆」而非 bench 的 turn 原文，因此事实来源 =
+ *  ① **抽取侧 facts（#137）**：l1-extractor 在 memory.extraction.facts.enabled 时每条记忆
+ *    多输出 2-5 条自足短语，落 metadata.facts（可选三元组落 metadata.factTriples）；
+ *  ② **dedup 顺带抽取的 metadata.subject**：单短语回退源（P3-T17，零额外 LLM 成本）。
+ * 两种形态（memory.write.factKey.mode）：
+ *  - "replace"：原文 + 事实拼**同一条** embedding 键（W1 旧形态）。#147 实测键替换无净收益
+ *    （判对 −2.2pp ns），且事实短语把「同主题」的行拉近、稀释「同实体不同时间」的判别信号
+ *    （knowledge-update/temporal 掉点）——保留仅为回滚/对照，不再作为推荐形态。
+ *  - "channel"（#137）：**原文主索引逐位不动**，事实短语单独 embed 成平行通道向量（写侧
+ *    l1-writer 走 upsertL1FactVector），召回侧只扩召回、不裁决排序。
+ * 开关仍在 memory.write.*（config.ts）；缺省全关（逐位现状）。
  */
-import { buildEmbeddingKey } from "./fact-key.js";
+import {
+  buildEmbeddingKey,
+  buildFactChannelKey,
+  clampMaxFacts,
+  DEFAULT_MAX_FACTS,
+  factKeyPhrases,
+  mergeFactTriples,
+  normalizeFactPhrases,
+  type FactNormalizeOptions,
+  type NormalizedFacts,
+} from "./fact-key.js";
 import { classifyContentCardinality, isSupersessionEligible } from "./cardinality.js";
 import type { FactCardinality } from "./cardinality.js";
 
+/** #137：事实键形态（"replace" = 旧 W1 键替换；"channel" = 平行通道）。 */
+export type FactKeyMode = "replace" | "channel";
+
 export interface WriteFactKeyConfig {
   enabled: boolean;
+  /** 缺省 "replace"（不静默改变既有语义）。 */
+  mode?: FactKeyMode;
   separator: string;
   maxFactChars: number;
+  /** #137：最多拼几条事实短语（缺省 5）。 */
+  maxFacts?: number;
+  /** #137：三元组展开成短语一起进键（缺省 false）。 */
+  includeTriples?: boolean;
+  /** #137：只对这些 type 建键（空/缺省 = 全类型；例 ["work_fact"]）。 */
+  onlyForTypes?: string[];
 }
 
 export interface WriteSupersessionConfig {
@@ -36,20 +62,74 @@ export interface WritePolicy {
 
 /** 缺省策略：全关 = 与既有行为逐位一致（生产安全缺省）。 */
 export const DEFAULT_WRITE_POLICY: WritePolicy = {
-  factKey: { enabled: false, separator: " | ", maxFactChars: 240 },
+  factKey: {
+    enabled: false,
+    mode: "replace",
+    separator: " | ",
+    maxFactChars: 240,
+    maxFacts: 5,
+    includeTriples: false,
+    onlyForTypes: [],
+  },
   supersession: { enabled: false },
 };
 
-/** 取写时可用的事实短语（缺省来源 = metadata.subject；无/空白 → 空数组）。 */
-export function writeFactsOf(memory: { metadata?: unknown } | undefined | null): string[] {
-  const md = memory?.metadata;
-  const raw = md && typeof md === "object" ? (md as Record<string, unknown>).subject : undefined;
-  if (typeof raw !== "string") return [];
-  const t = raw.trim();
-  return t ? [t] : [];
+/** 事实键配置 → 归一化选项（单点换算，写侧读侧同口径；maxFacts 走全局唯一 clamp）。 */
+function factNormalizeOptionsOf(fk: WriteFactKeyConfig): FactNormalizeOptions & { includeTriples: boolean } {
+  return {
+    maxFacts: clampMaxFacts(fk.maxFacts ?? DEFAULT_MAX_FACTS),
+    includeTriples: fk.includeTriples === true,
+  };
 }
 
-/** W1：embedding 键文本（关或缺事实 → 逐位返回 content）。 */
+interface RawWriteFacts {
+  /** metadata.facts 原始值（string / {phrase} / {subject,predicate,value} 混排）。 */
+  facts: unknown;
+  /** metadata.factTriples 原始值（#137 三元组旁路）。 */
+  triples: unknown;
+  /** metadata.subject（dedup 顺带抽取的单短语回退源）。 */
+  subject?: string;
+}
+
+function rawWriteFactsOf(memory: { metadata?: unknown } | undefined | null): RawWriteFacts {
+  const md = memory?.metadata;
+  if (!md || typeof md !== "object") return { facts: [], triples: [] };
+  const o = md as Record<string, unknown>;
+  const subject = typeof o.subject === "string" ? o.subject.trim() : "";
+  return { facts: o.facts, triples: o.factTriples, ...(subject ? { subject } : {}) };
+}
+
+/**
+ * 写时可用的事实集合（#137 多来源）：metadata.facts（多短语）∪ metadata.factTriples
+ * ∪ metadata.subject 回退。全部过归一化（去重/去噪/条数上限）——宁缺毋滥。
+ */
+export function writeFactSetOf(
+  memory: { metadata?: unknown } | undefined | null,
+  opts: FactNormalizeOptions & { includeTriples?: boolean } = {},
+): NormalizedFacts {
+  const raw = rawWriteFactsOf(memory);
+  const normalized = normalizeFactPhrases(raw.facts, opts);
+  // 三元组来源：facts[] 内联的 {subject,predicate,value} ∪ metadata.factTriples（去重单源）
+  const triples = mergeFactTriples([raw.facts, raw.triples], opts);
+  const phrases = normalizeFactPhrases(
+    [...normalized, ...(raw.subject ? [raw.subject] : [])],
+    opts,
+  );
+  return { phrases, triples };
+}
+
+/** 取写时可用的事实短语（多事实 + subject 回退；无/空白 → 空数组）。 */
+export function writeFactsOf(
+  memory: { metadata?: unknown } | undefined | null,
+  opts: FactNormalizeOptions & { includeTriples?: boolean } = {},
+): string[] {
+  return factKeyPhrases(writeFactSetOf(memory, opts), opts.includeTriples === true, opts);
+}
+
+/**
+ * 键文本（both 形态共用）：replace = 原文 + 事实；channel = 原文逐位返回（主索引不动）。
+ * 关或缺事实 → 逐位返回 content。
+ */
 export function embeddingKeyFor(
   content: string,
   memory: { metadata?: unknown } | undefined | null,
@@ -57,9 +137,38 @@ export function embeddingKeyFor(
 ): string {
   const fk = policy?.factKey;
   if (!fk?.enabled) return content;
-  return buildEmbeddingKey(content, writeFactsOf(memory), {
+  // #137：channel 形态下原文主索引必须逐位不动——事实走独立通道向量，不进这条键。
+  if ((fk.mode ?? "replace") === "channel") return content;
+  const opts = factNormalizeOptionsOf(fk);
+  return buildEmbeddingKey(content, writeFactsOf(memory, opts), {
     separator: fk.separator,
     maxFactChars: fk.maxFactChars,
+  });
+}
+
+/**
+ * #137（channel 档）：事实通道键文本。
+ * 关 / 形态为 replace / 类型不在 onlyForTypes / 事实为空 → ""（调用方据此零外呼、通道退出）。
+ */
+export function factChannelKeyFor(
+  record: { type?: string } | undefined | null,
+  memory: { metadata?: unknown } | undefined | null,
+  policy?: WritePolicy,
+): string {
+  const fk = policy?.factKey;
+  if (!fk?.enabled || (fk.mode ?? "replace") !== "channel") return "";
+  const only = fk.onlyForTypes ?? [];
+  if (only.length > 0) {
+    const t = record?.type;
+    if (typeof t !== "string" || !only.includes(t)) return "";
+  }
+  const opts = factNormalizeOptionsOf(fk);
+  const set = writeFactSetOf(memory, opts);
+  return buildFactChannelKey(set, {
+    separator: fk.separator,
+    maxFactChars: fk.maxFactChars,
+    maxFacts: opts.maxFacts,
+    includeTriples: opts.includeTriples,
   });
 }
 

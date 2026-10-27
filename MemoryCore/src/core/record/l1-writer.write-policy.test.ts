@@ -20,12 +20,14 @@ const policy = (over: Partial<WritePolicy> = {}): WritePolicy => ({
   ...over,
 });
 
-function fakeStore(opts: { withInvalidate?: boolean } = {}) {
+function fakeStore(opts: { withInvalidate?: boolean; withFactVector?: boolean } = {}) {
   const calls = {
     embedTexts: [] as string[],
     upserted: [] as Array<{ id: string; content: string }>,
     archived: [] as string[],
     invalidated: [] as Array<{ id: string; validEnd: string }>,
+    // #137：事实通道写入（recordId + 该向量的来源键文本下标）
+    factWrites: [] as Array<{ id: string; updatedAt?: string }>,
   };
   const store: Record<string, unknown> = {
     queryL1Records: async () => [],
@@ -42,6 +44,12 @@ function fakeStore(opts: { withInvalidate?: boolean } = {}) {
   if (opts.withInvalidate !== false) {
     store.invalidateL1 = async (id: string, validEnd: string) => {
       calls.invalidated.push({ id, validEnd });
+      return true;
+    };
+  }
+  if (opts.withFactVector === true) {
+    store.upsertL1FactVector = async (id: string, _vec: Float32Array, updatedAt?: string) => {
+      calls.factWrites.push({ id, updatedAt });
       return true;
     };
   }
@@ -84,12 +92,19 @@ async function runWrite(args: {
   policy?: WritePolicy;
   subject?: string;
   content?: string;
+  metadata?: Record<string, unknown>;
   decision?: DedupDecision;
   withInvalidate?: boolean;
+  withFactVector?: boolean;
 }) {
-  const { store, embedding, calls } = fakeStore({ withInvalidate: args.withInvalidate });
+  const { store, embedding, calls } = fakeStore({
+    withInvalidate: args.withInvalidate,
+    withFactVector: args.withFactVector,
+  });
+  const mem = memory(args.subject, args.content);
+  if (args.metadata) mem.metadata = args.metadata as never;
   const record = await writeMemory({
-    memory: memory(args.subject, args.content),
+    memory: mem,
     decision: args.decision ?? decision(),
     baseDir,
     sessionKey: "s::k",
@@ -157,6 +172,60 @@ describe("writeMemory 生产写面（#134）", () => {
       decision: decision({ action: "update", target_ids: ["old-1"] }),
     });
     expect(calls.invalidated.map((c) => c.id)).toEqual(["old-1"]);
+  });
+
+  // ── #137（W1 双通道）：事实键走独立通道向量，原文主索引逐位不动 ──
+  const channelPolicy = (over: Record<string, unknown> = {}): WritePolicy =>
+    policy({
+      factKey: {
+        enabled: true,
+        mode: "channel",
+        separator: " | ",
+        maxFactChars: 240,
+        maxFacts: 5,
+        includeTriples: false,
+        onlyForTypes: [],
+        ...over,
+      } as never,
+    });
+
+  it("#137 通道档：主 embedding=原文；事实短语单独 embed 并写 l1_fact_vec", async () => {
+    const { record, calls } = await runWrite({
+      policy: channelPolicy(),
+      metadata: { facts: ["用户养了一只叫团子的猫", "用户住在杭州"] },
+      withFactVector: true,
+    });
+    expect(calls.embedTexts).toEqual([
+      "用户的 Instagram 粉丝数涨到 1300",
+      "用户养了一只叫团子的猫 | 用户住在杭州",
+    ]);
+    expect(calls.factWrites).toHaveLength(1);
+    expect(calls.factWrites[0].id).toBe(record?.id);
+    expect(calls.factWrites[0].updatedAt).toBe(record?.updatedAt);
+  });
+
+  it("#137 通道档：store 无 upsertL1FactVector（tcvdb 等）→ 不额外外呼、不抛错", async () => {
+    const { record, calls } = await runWrite({
+      policy: channelPolicy(),
+      metadata: { facts: ["用户住在杭州"] },
+      withFactVector: false,
+    });
+    expect(calls.embedTexts).toEqual(["用户的 Instagram 粉丝数涨到 1300"]);
+    expect(calls.factWrites).toEqual([]);
+    expect(record?.id).toBe("new-1");
+  });
+
+  it("#137 通道档：无事实 / 类型不在 onlyForTypes → 只有主 embedding（零额外外呼）", async () => {
+    const noFacts = await runWrite({ policy: channelPolicy(), withFactVector: true });
+    expect(noFacts.calls.embedTexts).toEqual(["用户的 Instagram 粉丝数涨到 1300"]);
+    expect(noFacts.calls.factWrites).toEqual([]);
+    const otherType = await runWrite({
+      policy: channelPolicy({ onlyForTypes: ["episodic"] }), // memory.type = work_fact
+      metadata: { facts: ["用户住在杭州"] },
+      withFactVector: true,
+    });
+    expect(otherType.calls.embedTexts).toEqual(["用户的 Instagram 粉丝数涨到 1300"]);
+    expect(otherType.calls.factWrites).toEqual([]);
   });
 
   it("W2 开但后端无 invalidateL1：回退归档（零删除底线）", async () => {

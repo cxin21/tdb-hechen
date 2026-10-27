@@ -33,7 +33,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -100,6 +100,11 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   if (supersessionOverride && typeof supersessionOverride === "object" && Object.keys(supersessionOverride).length) {
     m.write = m.write && typeof m.write === "object" ? { ...m.write } : {};
     m.write.supersession = { ...(m.write.supersession || {}), ...supersessionOverride };
+  }
+  // #137 W1/C（bench）：事实键平行通道——recall.factChannel（生产 config.ts 同名字段；
+  // 缺省 yaml 无此键 = 通道关，逐位现状）。只写沙箱 yaml，生产配置不动。
+  if (factChannelOverride && typeof factChannelOverride === "object" && Object.keys(factChannelOverride).length) {
+    m.recall.factChannel = { ...(m.recall.factChannel || {}), ...factChannelOverride };
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
@@ -238,13 +243,99 @@ export function turnContent(caseObj, turn) {
 }
 
 /**
+ * 批量取向量：分块 + 限并发 + 退避重试（批上限因模型而异：整批失败再逐条重试）。
+ * 返回 { vectors, failed, retries }；vectors 与 texts 逐位对齐（失败位 undefined）。
+ * 主通道与事实通道共用这一实现——批次/并发/pacing 语义必须一致，否则两档不可比。
+ */
+async function embedTexts({ embedding, texts, chunkSize = 8, concurrency = 1, embedMinIntervalMs = 400, onRetry }) {
+  const batches = [];
+  for (let i = 0; i < texts.length; i += chunkSize) batches.push({ start: i, texts: texts.slice(i, i + chunkSize) });
+  const vectors = new Array(texts.length).fill(undefined);
+  let failed = 0;
+  let retries = 0;
+  let cursor = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, batches.length)) }, async () => {
+    for (;;) {
+      const bi = cursor++;
+      if (bi >= batches.length) return;
+      const b = batches[bi];
+      if (!embedding || typeof embedding.embedBatch !== "function") continue;
+      try {
+        const vs = await embedWithRetry(embedding, b.texts, {
+          minIntervalMs: embedMinIntervalMs,
+          onRetry: (n) => { retries++; onRetry?.(n); },
+        });
+        for (let k = 0; k < vs.length; k++) vectors[b.start + k] = vs[k];
+      } catch {
+        // 批上限因模型而异：整批失败再逐条退避重试
+        for (let k = 0; k < b.texts.length; k++) {
+          try {
+            const one = await embedWithRetry(embedding, [b.texts[k]], { tries: 4, minIntervalMs: embedMinIntervalMs, onRetry: () => { retries++; onRetry?.(); } });
+            vectors[b.start + k] = one[0];
+          } catch {
+            failed++;
+          }
+        }
+      }
+    }
+  });
+  await Promise.all(workers);
+  return { vectors, failed, retries };
+}
+
+// ── #137 W1/C 事实键平行通道 ─────────────────────────────────────────────────
+/**
+ * 载入 buildFactChannelKey（契约见 src/core/record/fact-key.ts，#137）。
+ * 契约未合并时给出可诊断的错误，而不是把 TypeError 埋在灌库中途。
+ */
+async function loadFactChannelKeyBuilder() {
+  const mod = await import("../../../src/core/record/fact-key.ts");
+  if (typeof mod.buildFactChannelKey !== "function") {
+    throw new Error("src/core/record/fact-key.ts 缺少 buildFactChannelKey（#137 契约未合并？）——无法启用 --fact-channel");
+  }
+  return mod.buildFactChannelKey;
+}
+
+/** factChannel 选项 → buildFactChannelKey opts（只传显式给出的键，其余用 src 缺省）。 */
+function factChannelKeyOptions(factChannel) {
+  const opts = {};
+  if (typeof factChannel?.separator === "string" && factChannel.separator) opts.separator = factChannel.separator;
+  if (typeof factChannel?.maxFactChars === "number") opts.maxFactChars = factChannel.maxFactChars;
+  if (typeof factChannel?.maxFacts === "number") opts.maxFacts = factChannel.maxFacts;
+  return opts;
+}
+
+/**
+ * 通道向量逐条落库（store 缺该方法 = 静默跳过并计数，绝不抛）。
+ * 返回 true 表示已写入。
+ */
+async function writeFactChannelVector(writeFn, stats, record, vec) {
+  try {
+    const wrote = await writeFn(record.id, vec, record.updatedAt);
+    if (wrote === false) {
+      stats.factChannelWriteFailed++;
+      return false;
+    }
+    stats.factChannelEmbedded++;
+    return true;
+  } catch {
+    stats.factChannelWriteFailed++;
+    return false;
+  }
+}
+
+/**
  * 批量写入一个 case 的全部 turn（含 embedding）+ 回填 content→turnId 映射。
  * 并发受限（embedding 服务多为单批小上限），失败对半降级重试。
  *
  * W1（issue #134）：facts/dualWrite 传入时，embedding 键文本 = turn 原文 + 事实短语拼接；
  * 落库 content 不变（原文仍是命中载荷）。缺省（未传）→ 逐位现状。
+ *
+ * W1/C（#137）：facts/factChannel 传入时，另算「事实短语键」文本（不含原文）→ 单独 embed
+ * → store.upsertL1FactVector 写平行向量表（l1_vec 主索引完全不动）。与 dualWrite 可同时开：
+ * 两者键文本不同、目标表不同，互不干扰。store 无该方法（tcvdb 等）→ 静默跳过并计数。
  */
-export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry, facts, dualWrite, supersede, cardinalityGate, conclusions, embedMinIntervalMs = 400 }) {
+export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry, facts, dualWrite, factChannel, supersede, cardinalityGate, conclusions, embedMinIntervalMs = 400 }) {
   const records = [];
   for (const g of caseObj.groups) for (const t of g.turns) records.push({ turn: t, sessionId: g.sessionId });
 
@@ -272,37 +363,42 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
     stats.factKeyCharsAdded = factChars;
   }
 
-  // 分批 + 限并发取向量
-  const batches = [];
-  for (let i = 0; i < texts.length; i += chunkSize) batches.push({ start: i, texts: texts.slice(i, i + chunkSize) });
-  const vectors = new Array(texts.length).fill(undefined);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, batches.length)) }, async () => {
-    for (;;) {
-      const bi = cursor++;
-      if (bi >= batches.length) return;
-      const b = batches[bi];
-      if (!embedding || typeof embedding.embedBatch !== "function") continue;
-      try {
-        const vs = await embedWithRetry(embedding, b.texts, {
-          minIntervalMs: embedMinIntervalMs,
-          onRetry: (n) => { stats.embedRetries++; onRetry?.(n); },
-        });
-        for (let k = 0; k < vs.length; k++) vectors[b.start + k] = vs[k];
-      } catch {
-        // 批上限因模型而异：整批失败再逐条退避重试
-        for (let k = 0; k < b.texts.length; k++) {
-          try {
-            const one = await embedWithRetry(embedding, [b.texts[k]], { tries: 4, minIntervalMs: embedMinIntervalMs, onRetry: () => { stats.embedRetries++; onRetry?.(); } });
-            vectors[b.start + k] = one[0];
-          } catch {
-            stats.embedFailed++;
-          }
-        }
-      }
+  // #137 W1/C：事实键平行通道——先算键文本（无事实 → ""，不外呼），再按「有键文本」的下标批量 embed。
+  // 键文本 = 事实短语（不含原文），与 dualWrite 的「原文 + 事实」是两条独立通道。
+  let channel = null;
+  let writeFactVector = null;
+  if (factChannel?.enabled) {
+    const buildFactChannelKey = await loadFactChannelKeyBuilder();
+    const keyOpts = factChannelKeyOptions(factChannel);
+    const keys = records.map(({ turn }) => buildFactChannelKey(facts?.byTurn?.[turn.id]?.phrases, keyOpts));
+    stats.factChannelTurns = 0;
+    stats.factChannelEmbedded = 0;
+    stats.factChannelEmbedFailed = 0;
+    stats.factChannelWriteFailed = 0;
+    stats.factChannelRetries = 0;
+    stats.factChannelKeyChars = keys.reduce((n, k) => n + k.length, 0);
+    channel = new Array(keys.length).fill(undefined);
+    const idx = [];
+    for (let i = 0; i < keys.length; i++) if (keys[i]) idx.push(i);
+    stats.factChannelTurns = idx.length;
+    writeFactVector = typeof store.upsertL1FactVector === "function" ? store.upsertL1FactVector.bind(store) : null;
+    if (!writeFactVector) {
+      // 契约：缺失时静默跳过（tcvdb 等后端没有该表）。计数可见，避免试验档静默等同控制档。
+      stats.factChannelUnsupported = true;
+      console.warn("[bench:warn] store 无 upsertL1FactVector（#137 契约未落地/后端不支持）：事实通道静默关闭");
+    } else if (idx.length && embedding) {
+      const sub = await embedTexts({ embedding, texts: idx.map((i) => keys[i]), chunkSize, concurrency, embedMinIntervalMs, onRetry });
+      stats.factChannelEmbedFailed += sub.failed;
+      stats.factChannelRetries += sub.retries;
+      idx.forEach((ri, k) => { channel[ri] = sub.vectors[k]; });
     }
-  });
-  await Promise.all(workers);
+  }
+
+  // 分批 + 限并发取向量（与事实通道同一实现）
+  const main = await embedTexts({ embedding, texts, chunkSize, concurrency, embedMinIntervalMs, onRetry });
+  const vectors = main.vectors;
+  stats.embedFailed += main.failed;
+  stats.embedRetries += main.retries;
   stats.embedded = vectors.filter(Boolean).length;
 
   for (let i = 0; i < records.length; i++) {
@@ -311,6 +407,9 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
     contentIndex.set(normHead(record.content), turn.id);
     const ok = store.upsertL1(record, vectors[i]);
     if (ok !== false) stats.written++;
+    // #137：通道向量逐条写入（有键文本且成向量才写；写失败只计数，不拖垮主写入）
+    const vec = channel ? channel[i] : undefined;
+    if (writeFactVector && vec && vec.length) await writeFactChannelVector(writeFactVector, stats, record, vec);
   }
 
   // W2/W3 写入面（issue #134）：失效标记 + 结论卡——与 --store 分阶段写入共用同一实现（零重复）。
@@ -490,16 +589,40 @@ export async function applyWriteSteps({ caseObj, store, records, facts, supersed
 /**
  * W1 分阶段键重写：只对「有事实」的 turn 重新 embed 键并 upsert 向量；
  * 无事实 turn 的键 === 原文（逐位相同向量）→ 复用既有向量，零外呼。
+ *
+ * W1/C（#137）：factChannel.enabled 时同批再算事实短语键并写 l1_fact_vec
+ * （该表由 store.init 的 IF NOT EXISTS 在复用库里自愈建出，零迁移脚本）。
+ * 只有 dualWrite 档才重写主向量（l1_vec 不动是通道档的硬要求）。
  */
-export async function reembedFactKeys({ caseObj, store, embedding, facts, dualWrite, embedMinIntervalMs = 400 }) {
+export async function reembedFactKeys({ caseObj, store, embedding, facts, dualWrite, factChannel, embedMinIntervalMs = 400 }) {
   const { buildEmbeddingKey } = await import("../../../src/core/record/fact-key.ts");
   const records = [];
   for (const g of caseObj.groups) for (const t of g.turns) {
     if (facts?.byTurn?.[t.id]?.phrases?.length) records.push({ turn: t, sessionId: g.sessionId });
   }
-  const stats = { factTurns: records.length, embedded: 0, embedFailed: 0, embedRetries: 0, factKeyCharsAdded: 0 };
+  const stats = {
+    factTurns: records.length,
+    embedded: 0,
+    embedFailed: 0,
+    embedRetries: 0,
+    factKeyCharsAdded: 0,
+    factChannelTurns: 0,
+    factChannelEmbedded: 0,
+    factChannelEmbedFailed: 0,
+    factChannelWriteFailed: 0,
+    factChannelRetries: 0,
+  };
   if (records.length === 0 || !embedding) return stats;
-  const keyOpts = dualWrite?.enabled
+  const dualEnabled = dualWrite?.enabled === true;
+  const fcEnabled = factChannel?.enabled === true;
+  const buildFactChannelKey = fcEnabled ? await loadFactChannelKeyBuilder() : null;
+  const fcKeyOpts = fcEnabled ? factChannelKeyOptions(factChannel) : {};
+  const writeFactVector = fcEnabled && typeof store.upsertL1FactVector === "function" ? store.upsertL1FactVector.bind(store) : null;
+  if (fcEnabled && !writeFactVector) {
+    stats.factChannelUnsupported = true;
+    console.warn("[bench:warn] store 无 upsertL1FactVector（#137 契约未落地/后端不支持）：事实通道静默关闭");
+  }
+  const keyOpts = dualEnabled
     ? {
         ...(dualWrite.separator ? { separator: dualWrite.separator } : {}),
         ...(typeof dualWrite.maxFactChars === "number" ? { maxFactChars: dualWrite.maxFactChars } : {}),
@@ -520,40 +643,68 @@ export async function reembedFactKeys({ caseObj, store, embedding, facts, dualWr
   for (let i = 0; i < records.length; i += chunkSize) {
     const batch = records.slice(i, i + chunkSize);
     const payloadTexts = batch.map(({ turn }) => turnContent(caseObj, turn));
-    const keyTexts = batch.map(({ turn }, j) =>
-      buildEmbeddingKey(payloadTexts[j], facts.byTurn[turn.id].phrases, keyOpts),
-    );
+    const keyTexts = dualEnabled
+      ? batch.map(({ turn }, j) => buildEmbeddingKey(payloadTexts[j], facts.byTurn[turn.id].phrases, keyOpts))
+      : null;
+    const fcTexts = fcEnabled ? batch.map(({ turn }) => buildFactChannelKey(facts.byTurn[turn.id].phrases, fcKeyOpts)) : null;
+
+    // 主通道（l1_vec）：仅 dualWrite 档重写，逐位保持既有重试/降级语义
     let vectors = null;
-    try {
-      vectors = await embedWithRetry(embedding, keyTexts, {
-        minIntervalMs: embedMinIntervalMs,
-        onRetry: () => {
-          stats.embedRetries++;
-        },
-      });
-    } catch {
-      for (let k = 0; k < batch.length; k++) {
-        try {
-          const one = await embedWithRetry(embedding, [keyTexts[k]], { tries: 4, minIntervalMs: embedMinIntervalMs });
-          if (!vectors) vectors = new Array(batch.length).fill(undefined);
-          vectors[k] = one[0];
-        } catch {
-          stats.embedFailed++;
+    if (dualEnabled) {
+      try {
+        vectors = await embedWithRetry(embedding, keyTexts, {
+          minIntervalMs: embedMinIntervalMs,
+          onRetry: () => {
+            stats.embedRetries++;
+          },
+        });
+      } catch {
+        for (let k = 0; k < batch.length; k++) {
+          try {
+            const one = await embedWithRetry(embedding, [keyTexts[k]], { tries: 4, minIntervalMs: embedMinIntervalMs });
+            if (!vectors) vectors = new Array(batch.length).fill(undefined);
+            vectors[k] = one[0];
+          } catch {
+            stats.embedFailed++;
+          }
         }
       }
     }
-    const existing = await readExisting(batch.map(({ turn }) => turn.id));
-    for (let k = 0; k < batch.length; k++) {
-      const { turn, sessionId } = batch[k];
-      const record = turnToRecord(caseObj, turn, sessionId);
-      const prev = existing.get(turn.id);
-      if (prev) {
-        record.valid_start = prev.valid_start ?? record.valid_start;
-        record.valid_end = prev.valid_end ?? record.valid_end;
+
+    // 事实通道（l1_fact_vec）：只对有键文本的 turn 外呼（批/并发/节流用同一实现）
+    let fcVectors = null;
+    if (fcEnabled) {
+      const idx = [];
+      for (let k = 0; k < fcTexts.length; k++) if (fcTexts[k]) idx.push(k);
+      stats.factChannelTurns += idx.length;
+      fcVectors = new Array(fcTexts.length).fill(undefined);
+      if (writeFactVector && idx.length) {
+        const sub = await embedTexts({ embedding, texts: idx.map((k) => fcTexts[k]), chunkSize, concurrency: 1, embedMinIntervalMs });
+        stats.factChannelEmbedFailed += sub.failed;
+        stats.factChannelRetries += sub.retries;
+        idx.forEach((k, j) => { fcVectors[k] = sub.vectors[j]; });
       }
-      stats.factKeyCharsAdded += keyTexts[k].length - payloadTexts[k].length;
-      const ok = await store.upsertL1(record, vectors ? vectors[k] : undefined);
-      if (ok !== false && vectors && vectors[k]) stats.embedded++;
+    }
+
+    const batchRecords = batch.map(({ turn, sessionId }) => turnToRecord(caseObj, turn, sessionId));
+    if (dualEnabled) {
+      const existing = await readExisting(batch.map(({ turn }) => turn.id));
+      for (let k = 0; k < batchRecords.length; k++) {
+        const prev = existing.get(batchRecords[k].id);
+        if (prev) {
+          batchRecords[k].valid_start = prev.valid_start ?? batchRecords[k].valid_start;
+          batchRecords[k].valid_end = prev.valid_end ?? batchRecords[k].valid_end;
+        }
+        stats.factKeyCharsAdded += keyTexts[k].length - payloadTexts[k].length;
+      }
+    }
+    for (let k = 0; k < batchRecords.length; k++) {
+      if (dualEnabled) {
+        const ok = await store.upsertL1(batchRecords[k], vectors ? vectors[k] : undefined);
+        if (ok !== false && vectors && vectors[k]) stats.embedded++;
+      }
+      const vec = fcVectors ? fcVectors[k] : undefined;
+      if (writeFactVector && vec && vec.length) await writeFactChannelVector(writeFactVector, stats, batchRecords[k], vec);
     }
   }
   return stats;

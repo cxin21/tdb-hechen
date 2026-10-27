@@ -85,6 +85,10 @@ if (flag("help") || argv.length === 0) {
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
   --validity-mode soft|hard      #136 效期策略：soft=失效行降权保留（仅当下意图+有更新行才硬丢）
   --supersede-cardinality off    #136 对照档：关闭 cardinality 门（多值属性也失效=现状 W2）
+  --fact-channel                 #137 事实键平行通道试验档（隐含 --fact-extract；事实短语键另写 l1_fact_vec + 沙箱 yaml recall.factChannel）
+  --fact-channel-read-only       只开读侧（沙箱 recall.factChannel），不写通道向量——在已灌库上迭代融合参数的零外呼档
+  --fact-channel-weight N        #137 事实通道融合权重（缺省 0.6；只进沙箱 yaml，不改写侧）
+  --fact-max-facts N             #137 事实通道键的事实条数上限（缺省 5；即 buildFactChannelKey 的 maxFacts）
   --mmr                          B2-b：沙箱 yaml 开 MMR 多样性重排（recall.mmr.enabled）
   --mmr-lambda X                 B2-b：MMR λ（缺省 0.7；1=纯相关序）
   --emb-threshold X              B2-b：向量余弦门槛（生产 0.3；试验 0.15 放宽）
@@ -183,10 +187,33 @@ async function main() {
   // 缺省全关（逐位现状）；--write-supersede 需要抽取结果（隐含 --fact-extract）。
   const factDualWrite = flag("fact-dual-write");
   const writeSupersede = flag("write-supersede");
-  const factExtract = flag("fact-extract") || factDualWrite || writeSupersede;
+  // #137 W1/C（bench）：事实键平行通道试验档——原文键仍是主索引（l1_vec 不动），事实短语键
+  // embedding 另写一张 vec0 表（store.upsertL1FactVector），召回侧按 recall.factChannel 融合。
+  // --fact-channel 隐含 --fact-extract（通道复用同一份事实缓存，键文本来自 phrases）。
+  // --fact-channel-read-only：只开读侧（沙箱 yaml recall.factChannel），不写通道向量——
+  // 用于在已灌好 fact 向量的库上迭代融合参数（权重/模式），零重复 embedding 外呼。
+  const factChannel = flag("fact-channel");
+  const factChannelReadOnly = flag("fact-channel-read-only");
+  const fcWeightArg = num("fact-channel-weight", 0.6);
+  const factChannelWeight = Number.isFinite(fcWeightArg) ? fcWeightArg : 0.6;
+  const fcMaxFactsArg = num("fact-max-facts", 5);
+  const factMaxFacts = Number.isFinite(fcMaxFactsArg) && fcMaxFactsArg > 0 ? Math.floor(fcMaxFactsArg) : 5;
+  const factExtract = flag("fact-extract") || factDualWrite || writeSupersede || factChannel;
   const factMaxChars = num("fact-max-chars", 240);
   const factSeparatorArg = arg("fact-separator", undefined);
   const factSeparator = typeof factSeparatorArg === "string" ? factSeparatorArg : undefined;
+  // #137：通道键的构造选项（写侧；与 dualWrite 的「键替换」档互不干扰，可同时开）
+  const factChannelWrite = factChannel && !factChannelReadOnly;
+  const factChannelOpts = factChannelWrite
+    ? {
+        enabled: true,
+        ...(typeof factSeparator === "string" ? { separator: factSeparator } : {}),
+        maxFacts: factMaxFacts,
+      }
+    : null;
+  // #137：沙箱 yaml memory.recall.factChannel（生产 config.ts 同名字段；缺省无此键 = 通道关）。
+  // weight 只影响读侧融合，写侧灌库与权重无关。
+  const factChannelOverride = factChannel ? { enabled: true, weight: factChannelWeight } : undefined;
   const factCacheDir = String(arg("fact-cache", path.join(repo, ".eval-data", "bench", "facts-cache")));
   const factBatchSize = num("fact-batch-size", 20);
   const factConcurrency = num("fact-concurrency", 8);
@@ -371,6 +398,7 @@ async function main() {
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
     ...(conclusionCards ? { smallToBigOverride: { enabled: true, maxExtraLines: conclusionMaxExtra } } : {}),
+    ...(factChannelOverride ? { factChannelOverride } : {}),
   });
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
   if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra }));
@@ -380,6 +408,13 @@ async function main() {
   if (fusionOverride) log("[bench] R2 融合试验档(仅沙箱 yaml): " + JSON.stringify(fusionOverride));
   if (candidateKOverride !== undefined) log("[bench] R1 候选池上限试验档(仅沙箱 yaml): candidateK=" + candidateKOverride);
   if (presentTemporalOverride) log("[bench] R3 时间感知试验档(仅沙箱 yaml): " + JSON.stringify(presentTemporalOverride));
+  if (factChannelOverride) {
+    log(
+      "[bench] #137 事实键平行通道试验档(仅沙箱 yaml): recall.factChannel=" +
+        JSON.stringify(factChannelOverride) +
+        " 写侧=" + JSON.stringify({ ...factChannelOpts, dualWrite: factDualWrite }),
+    );
+  }
 
   const { cfg } = await loadBenchConfig(storeDir);
   const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
@@ -465,6 +500,7 @@ async function main() {
         ...(fx ? { facts: fx.facts } : {}),
         ...(cc ? { conclusions: cc } : {}),
         ...(factDualWrite ? { dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars } } : {}),
+        ...(factChannelOpts ? { factChannel: factChannelOpts } : {}),
         ...(writeSupersede ? { supersede: true } : {}),
         ...(cardinalityGate === false ? { cardinalityGate: false } : {}),
       });
@@ -483,6 +519,11 @@ async function main() {
       if (st.supersedeOpsMulti !== undefined) ingestStats.supersedeOpsMulti = (ingestStats.supersedeOpsMulti ?? 0) + st.supersedeOpsMulti;
       if (st.conclusionsWritten !== undefined) ingestStats.conclusionsWritten = (ingestStats.conclusionsWritten ?? 0) + st.conclusionsWritten;
       if (st.conclusionLinks !== undefined) ingestStats.conclusionLinks = (ingestStats.conclusionLinks ?? 0) + st.conclusionLinks;
+      // #137 事实键平行通道计数（写侧有效性证据：0 写入 = 本档等同控制档，不能当成功）
+      for (const key of ["factChannelTurns", "factChannelEmbedded", "factChannelEmbedFailed", "factChannelWriteFailed", "factChannelKeyChars"]) {
+        if (st[key] !== undefined) ingestStats[key] = (ingestStats[key] ?? 0) + st[key];
+      }
+      if (st.factChannelUnsupported) ingestStats.factChannelUnsupported = true;
       resolvers.set(key, makeIdResolver(contentIndex));
       corpusSummary.push({ groupKey: key, turns: st.turns, written: st.written, embedded: st.embedded });
       if (!quiet && (gi % 5 === 0 || gi === groups.size)) {
@@ -520,16 +561,16 @@ async function main() {
   // ── W1/W2/W3 分阶段写入（--store 复用库：只补写本档差异，不重灌 turn）──
   // 语义等价于重灌：W1 只对「有事实」的 turn 重 embed 键（无事实 turn 键===原文，复用原向量）；
   // W2 只落 valid_end 标记；W3 只写结论卡 + part_of 链。embedding 外呼因此降到 1/N。
-  if (reuseMode && (factDualWrite || writeSupersede || conclusionCards)) {
+  if (reuseMode && (factDualWrite || writeSupersede || conclusionCards || factChannelWrite)) {
     const t0 = Date.now();
-    log(`[bench] 分阶段写入：dualWrite=${factDualWrite} supersede=${writeSupersede} conclusions=${conclusionCards}`);
+    log(`[bench] 分阶段写入：dualWrite=${factDualWrite} supersede=${writeSupersede} conclusions=${conclusionCards} factChannel=${factChannelWrite}${factChannelReadOnly ? "（read-only 档：不写通道向量）" : ""}`);
     let gi2 = 0;
     for (const [, g] of groups) {
       gi2++;
       const records = [];
       for (const gg of g.corpus.groups) for (const t of gg.turns) records.push({ turn: t, sessionId: gg.sessionId });
       let fx = null;
-      if (factDualWrite || writeSupersede) {
+      if (factDualWrite || writeSupersede || factChannelWrite) {
         fx = await factsForCase({
           caseObj: g.corpus,
           cacheDir: factCacheDir,
@@ -559,20 +600,28 @@ async function main() {
         if (cc.cacheHit) conclusionStats.cacheHits++;
         conclusionStats.cards += cc.cards.length;
       }
-      if (factDualWrite) {
+      if (factDualWrite || factChannelWrite) {
         const st = await reembedFactKeys({
           caseObj: g.corpus,
           store,
           embedding,
           facts: fx?.facts,
-          dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars },
+          ...(factDualWrite ? { dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars } } : {}),
+          ...(factChannelOpts ? { factChannel: factChannelOpts } : {}),
           embedMinIntervalMs: embedIntervalMs,
         });
-        ingestStats.factTurns = (ingestStats.factTurns ?? 0) + (st.factTurns ?? 0);
-        ingestStats.factKeyCharsAdded = (ingestStats.factKeyCharsAdded ?? 0) + (st.factKeyCharsAdded ?? 0);
-        ingestStats.embedded = (ingestStats.embedded ?? 0) + (st.embedded ?? 0);
-        ingestStats.embedFailed = (ingestStats.embedFailed ?? 0) + (st.embedFailed ?? 0);
-        ingestStats.embedRetries = (ingestStats.embedRetries ?? 0) + (st.embedRetries ?? 0);
+        if (factDualWrite) {
+          ingestStats.factTurns = (ingestStats.factTurns ?? 0) + (st.factTurns ?? 0);
+          ingestStats.factKeyCharsAdded = (ingestStats.factKeyCharsAdded ?? 0) + (st.factKeyCharsAdded ?? 0);
+          ingestStats.embedded = (ingestStats.embedded ?? 0) + (st.embedded ?? 0);
+          ingestStats.embedFailed = (ingestStats.embedFailed ?? 0) + (st.embedFailed ?? 0);
+          ingestStats.embedRetries = (ingestStats.embedRetries ?? 0) + (st.embedRetries ?? 0);
+        }
+        // #137 通道计数（st 侧只有通道字段；dualWrite 关闭时主通道零变化）
+        for (const key of ["factChannelTurns", "factChannelEmbedded", "factChannelEmbedFailed", "factChannelWriteFailed", "factChannelKeyChars"]) {
+          if (st[key] !== undefined) ingestStats[key] = (ingestStats[key] ?? 0) + st[key];
+        }
+        if (st.factChannelUnsupported) ingestStats.factChannelUnsupported = true;
       }
       const st2 = await applyWriteSteps({
         caseObj: g.corpus,
@@ -594,6 +643,20 @@ async function main() {
       }
     }
     log(`[bench] 分阶段写入完成：耗时 ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  }
+
+  // #137 事实通道写侧证据：0 条 = 本档实际等同控制档（store 不支持 / 事实缓存空 / 键全空），
+  // 必须显式可见——否则容易把「通道没生效」误读成「通道无效」。
+  if (factChannelWrite) {
+    log(
+      `[bench] 事实通道写侧: turns=${ingestStats.factChannelTurns ?? 0} 已写=${ingestStats.factChannelEmbedded ?? 0} ` +
+        `embed失败=${ingestStats.factChannelEmbedFailed ?? 0} 写失败=${ingestStats.factChannelWriteFailed ?? 0}`,
+    );
+    if ((ingestStats.factChannelEmbedded ?? 0) === 0) {
+      console.warn("[bench:warn] 事实通道向量写入 0 条——本档等同控制档（检查 store.upsertL1FactVector / 事实缓存）");
+    }
+  } else if (factChannel) {
+    log("[bench] 事实通道 read-only 档：不写通道向量（假定 --store 库已灌好）");
   }
 
   // 查询向量磁盘缓存：同一批题目跨档复用（embedding 确定性，语义零变化），避开账号级 RPM 限流。
@@ -727,6 +790,16 @@ async function main() {
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
   fusion: fusionOverride ?? null,
       candidateK: candidateKOverride ?? null,
+      // #137 事实键平行通道试验档（写侧选项 + 沙箱 yaml 读侧覆盖，与 fusion/candidateK 同位）
+      factChannel: factChannel
+        ? {
+            ...factChannelOverride,
+            readOnly: factChannelReadOnly,
+            maxFacts: factChannelOpts?.maxFacts ?? factMaxFacts,
+            separator: factChannelOpts?.separator ?? null,
+            sandboxKey: "memory.recall.factChannel",
+          }
+        : null,
       presentTemporal: presentTemporalOverride ?? null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,
       judgeModel: llmInfo?.model ?? null,

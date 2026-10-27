@@ -90,6 +90,26 @@ const TAG = "[memory-tdai] [pipeline-factory]";
 export const L1_BATCH_PROCESS = 10;
 export const L1_BATCH_QUERY = L1_BATCH_PROCESS * 2;
 
+/**
+ * #137（W1 双通道）：三开关联动护栏。
+ *
+ * 事实通道的写读是三个独立开关（extraction.facts / write.factKey.mode / recall.factChannel），
+ * 任一错配都是**静默空跑**：写侧建了索引读侧不查（空转），或读侧开了但库里没向量（空查）。
+ * 这里只在真错配时 warn 一次；不改任何行为（config-first：不替用户改配置）。
+ */
+let factChannelMismatchWarned = false;
+function warnFactChannelMismatch(cfg: MemoryTdaiConfig, logger: PipelineLogger): void {
+  if (factChannelMismatchWarned) return;
+  const channelWrite = cfg.write?.factKey?.enabled === true && (cfg.write.factKey.mode ?? "replace") === "channel";
+  const readOn = cfg.recall?.factChannel?.enabled === true;
+  if (channelWrite === readOn) return;
+  factChannelMismatchWarned = true;
+  const msg = channelWrite
+    ? "write.factKey.mode=channel 已开但 recall.factChannel.enabled=false——事实通道向量会写入但召回不走（索引空转）"
+    : "recall.factChannel.enabled=true 但写侧不是 channel 模式——库里没有事实通道向量，通道只会空查";
+  logger.warn?.(`${TAG} [fact-channel] 开关不一致：${msg}（#137 提示，不改行为）`);
+}
+
 function supportsProfileSyncWrite(store?: IMemoryStore): boolean {
   return !!(store?.syncProfiles || store?.deleteProfiles);
 }
@@ -411,6 +431,8 @@ export function createL1Runner(opts: {
 }> {
   const { pluginDataDir, cfg, openclawConfig, vectorStore, embeddingService, logger, getInstanceId, llmRunner, storage, checkpointLock } = opts;
   const config = openclawConfig as Record<string, unknown> | undefined;
+  // #137：写读开关联动护栏（错配 = 静默空跑；只提示一次，不改行为）
+  warnFactChannelMismatch(cfg, logger);
 
   return async ({ sessionKey }) => {
     if (!config && !llmRunner) {

@@ -6,6 +6,7 @@
  *
  * Minimal config (zero config): {} — all fields have sensible defaults.
  */
+import { clampMaxFacts, DEFAULT_MAX_FACTS } from "./core/record/fact-key.js";
 
 // ============================
 // Type definitions
@@ -46,6 +47,19 @@ export interface ExtractionConfig {
   /** D-4（2026-09-22 拍板）：周期性事实提取块（RECURRENCE_BLOCK 门；缺省 false = 逐位现状）。
    *  落点=既有 memory.extraction 组（ExtractionConfig）——勿另开子树（混合行尾教训再现）。 */
   recurrenceEnabled: boolean;
+  /**
+   * #137（W1 双通道）：多事实抽取块（FACTS_BLOCK 门；缺省 false = prompt 字节逐位不变）。
+   * 开启后每条 memory 多输出 facts（2-5 条自足短语，可选 subject/predicate/value），
+   * parse 侧归一化后落 metadata.facts / metadata.factTriples——写侧事实通道据此建键。
+   * 这是「单短语 metadata.subject 事实覆盖太弱」的治本点（#137 票面根因①）。
+   */
+  facts: {
+    enabled: boolean;
+    /** 每条记忆最多保留几条事实（缺省 5；clamp 1..12）。 */
+    maxFacts: number;
+    /** 是否要求/接受三元组形状（缺省 false——只要短语可减少 LLM 输出体积与幻觉面）。 */
+    includeTriples: boolean;
+  };
   /**
    * 毒批超时（L1-OUTAGE-20261015 定罪修复）：单次提取 LLM 调用超时 ms。
    * 思考型端点延迟∝prompt 体积（生产实测 13K≈298s 贴线、20K>300s 恒超时）→
@@ -136,12 +150,35 @@ export interface RecallConfig {
    * config 显式填入；未填项回落 0.4/0.3/0.2/0.1 占位）。非法/负权重逐项回落。
    */
   fusion?: {
-    mode: "rrf" | "weighted";
+    /**
+     * "rrf"（缺省）= 逐位现状；"weighted" = RRF 值上加权 + recency/validity 归一分；
+     * "normalized"（#137）= **通道内归一化**融合：dense/fact 用余弦（0..1）、bm25 用通道内
+     * min-max 分位，合成一个可比的 relevance 做主序，rrfScore 退回去重/平局兜底
+     * （#135 实证：合并后的加性小量改不了主序——必须换融合所在层级）。
+     */
+    mode: "rrf" | "weighted" | "normalized";
     dense?: number;
     bm25?: number;
+    /** #137：事实通道权重（normalized/weighted 模式；缺省回落 recall.factChannel.weight）。 */
+    fact?: number;
     recency?: number;
     validity?: number;
     recencyHalfLifeDays?: number;
+  };
+  /**
+   * #137（W1 双通道）：事实键平行召回通道（写侧 memory.write.factKey.mode="channel" 建索引）。
+   * 缺省 undefined / enabled=false → 通道退出（零调用、零行为变化）。
+   */
+  factChannel?: {
+    enabled: boolean;
+    /** 事实通道融合权重（缺省 0.6）：rrf/weighted 模式 = weight × 1/(60+rank+1) 的 RRF 贡献。 */
+    weight: number;
+    /** 事实通道上游候选上限（缺省 = candidateK）。 */
+    candidateK?: number;
+    /** 事实通道余弦下限（缺省回落 recall.scoreThreshold）。 */
+    minScore?: number;
+    /** 只对某些 type 的记录生效（缺省空 = 全类型）。 */
+    onlyForTypes?: string[];
   };
   /** Max characters injected for a single recalled L1 memory. 0 disables the per-memory limit. */
   maxCharsPerMemory: number;
@@ -1032,8 +1069,21 @@ export interface RecallJournalConfig {
 export interface WriteConfig {
   factKey: {
     enabled: boolean;
+    /**
+     * #137：「键形态」。
+     * - "replace" = W1 旧形态：原文 + 事实拼成**同一条** embedding 键（#147 实测键替换无净收益，
+     *   且稀释「同实体不同时间」判别信号 → knowledge-update/temporal 掉点）；
+     * - "channel" = 本票形态：原文主索引**逐位不动**，事实短语单独 embed 成平行通道向量。
+     */
+    mode: "replace" | "channel";
     separator: string;
     maxFactChars: number;
+    /** 事实通道最多拼几条短语（缺省 5；clamp 1..12）。 */
+    maxFacts: number;
+    /** 三元组展开成短语一起进键（缺省 false）。 */
+    includeTriples: boolean;
+    /** 只对这些 type 建事实通道（空数组 = 全类型；例 ["work_fact"]）。 */
+    onlyForTypes: string[];
   };
   supersession: {
     enabled: boolean;
@@ -1836,6 +1886,15 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // #46 毒批拆分+批次上限（config-first）：缺省关=逐位现状
       scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,
       sceneBatchMaxChars: Math.max(0, num(extractionGroup, "sceneBatchMaxChars") ?? 0),
+      // #137（W1 双通道）：多事实抽取块（缺省关 = prompt 字节不变；maxFacts clamp 1..12）
+      facts: (() => {
+        const fg = obj(extractionGroup, "facts");
+        return {
+          enabled: bool(fg, "enabled") ?? false,
+          maxFacts: clampMaxFacts(num(fg, "maxFacts") ?? DEFAULT_MAX_FACTS),
+          includeTriples: bool(fg, "includeTriples") ?? false,
+        };
+      })(),
     },
     // #134（写面策略）：缺省全关=逐位现状；separator 空串回落默认，maxFactChars clamp ≥0
     write: (() => {
@@ -1844,6 +1903,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       return {
         factKey: {
           enabled: bool(factKeyGroup, "enabled") ?? false,
+          // #137：缺省 replace = W1 旧形态（本票不静默改语义）；channel = 平行通道
+          mode: str(factKeyGroup, "mode") === "channel" ? ("channel" as const) : ("replace" as const),
           // separator 保原样（不 trim）：" | " 的前后空格是键格式的一部分，与 bench 口径一致；
           // 空白串/null → 回落默认分隔符。
           separator: (() => {
@@ -1851,6 +1912,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             return typeof raw === "string" && raw.trim() ? raw : " | ";
           })(),
           maxFactChars: Math.max(0, num(factKeyGroup, "maxFactChars") ?? 240),
+          maxFacts: clampMaxFacts(num(factKeyGroup, "maxFacts") ?? DEFAULT_MAX_FACTS),
+          includeTriples: bool(factKeyGroup, "includeTriples") ?? false,
+          onlyForTypes: strArray(factKeyGroup, "onlyForTypes") ?? [],
         },
         supersession: (() => {
           const ssGroup = obj(writeGroup, "supersession");
@@ -1898,12 +1962,29 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         if (!fg || Object.keys(fg).length === 0) return undefined;
         const mode = str(fg, "mode");
         return {
-          mode: mode === "weighted" ? "weighted" : "rrf",
+          mode: mode === "weighted" ? ("weighted" as const) : mode === "normalized" ? ("normalized" as const) : ("rrf" as const),
           dense: num(fg, "dense"),
           bm25: num(fg, "bm25"),
+          fact: num(fg, "fact"),
           recency: num(fg, "recency"),
           validity: num(fg, "validity"),
           recencyHalfLifeDays: num(fg, "recencyHalfLifeDays"),
+        };
+      })(),
+      // #137（W1 双通道）：事实键平行召回通道（缺省 undefined = 通道退出；权重 clamp [0,1]）
+      factChannel: (() => {
+        const fc = obj(recallGroup, "factChannel");
+        if (Object.keys(fc).length === 0) return undefined;
+        const weight = num(fc, "weight");
+        const fk = num(fc, "candidateK");
+        const fm = num(fc, "minScore");
+        const only = strArray(fc, "onlyForTypes");
+        return {
+          enabled: bool(fc, "enabled") ?? false,
+          weight: typeof weight === "number" && weight >= 0 ? Math.min(weight, 1) : 0.6,
+          ...(typeof fk === "number" && fk >= 1 ? { candidateK: Math.floor(fk) } : {}),
+          ...(typeof fm === "number" && Number.isFinite(fm) ? { minScore: fm } : {}),
+          ...(only && only.length > 0 ? { onlyForTypes: only } : {}),
         };
       })(),
       maxCharsPerMemory: num(recallGroup, "maxCharsPerMemory") ?? 0,
