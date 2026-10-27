@@ -296,6 +296,18 @@ async function main() {
     const fl = rfo === true ? -7 : Number(rfo);
     if (Number.isFinite(fl)) rerankFilterFloor = fl;
   }
+  // #135 R2/E1（bench/recall-opt）：--fusion '<json>' 加权融合试验档（recall.fusion，沙箱 yaml）。
+  // 例：--fusion '{"mode":"weighted","dense":0.4,"bm25":0.3,"recency":0.2,"validity":0.1,"recencyHalfLifeDays":30}'
+  const fusionRaw = arg("fusion", undefined);
+  let fusionOverride;
+  if (fusionRaw !== undefined && fusionRaw !== true) {
+    try {
+      fusionOverride = JSON.parse(String(fusionRaw));
+      if (!fusionOverride || typeof fusionOverride !== "object" || Array.isArray(fusionOverride)) throw new Error("not an object");
+    } catch (e) {
+      throw new Error("--fusion 需为合法 JSON 对象: " + String(e?.message ?? e));
+    }
+  }
   // 架构验证：--age-decay [days] F6b 时间衰减进排序（config 已有管道）
   let ageDecayDays = 0;
   const adArg = arg("age-decay", undefined);
@@ -330,6 +342,7 @@ async function main() {
     storeDir,
     ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
     ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
+  ...(fusionOverride ? { fusionOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
@@ -340,6 +353,7 @@ async function main() {
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
+  if (fusionOverride) log("[bench] R2 融合试验档(仅沙箱 yaml): " + JSON.stringify(fusionOverride));
 
   const { cfg } = await loadBenchConfig(storeDir);
   const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
@@ -679,6 +693,7 @@ async function main() {
       injectWrapper,
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
+  fusion: fusionOverride ?? null,
       embThresholdOverride: embThresholdOverride !== undefined ? embThresholdOverride : null,
       judgeModel: llmInfo?.model ?? null,
       judgeHost: llmInfo?.baseUrlHost ?? null,
