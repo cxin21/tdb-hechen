@@ -77,6 +77,26 @@ describe("Task 8 isOutsideValidityWindow（完整区间 valid_start ≤ now ≤/
   });
 });
 
+describe("#136 filterByValidity soft（工具路：只丢 future，保留失效行）", () => {
+  it("soft：失效行保留、未生效行丢弃、生效行保留", () => {
+    const rows = [
+      { id: "expired", valid_start: VS_PAST, valid_end: VE_PAST },
+      { id: "future", valid_start: VS_FUTURE },
+      { id: "live", valid_start: VS_PAST },
+    ];
+    expect(filterByValidity(rows, undefined, "soft").map((r) => r.id)).toEqual(["expired", "live"]);
+  });
+  it("false（通道退出）：全保留；true/undefined：硬排除", () => {
+    const rows = [
+      { id: "expired", valid_start: VS_PAST, valid_end: VE_PAST },
+      { id: "live", valid_start: VS_PAST },
+    ];
+    expect(filterByValidity(rows, undefined, false).map((r) => r.id)).toEqual(["expired", "live"]);
+    expect(filterByValidity(rows, undefined, true).map((r) => r.id)).toEqual(["live"]);
+    expect(filterByValidity(rows, undefined).map((r) => r.id)).toEqual(["live"]);
+  });
+});
+
 describe("Task 8 钩子路/工具路一致性（同一批行同 include/exclude 结论）", () => {
   type WinRow = { id: string; valid_start?: string | null; valid_end?: string | null };
   const batch: WinRow[] = [

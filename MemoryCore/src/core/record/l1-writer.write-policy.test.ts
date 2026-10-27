@@ -56,8 +56,8 @@ function fakeStore(opts: { withInvalidate?: boolean } = {}) {
   return { store: store as never, embedding: embedding as never, calls };
 }
 
-const memory = (subject?: string): ExtractedMemory => ({
-  content: "用户的 Instagram 粉丝数涨到 1300",
+const memory = (subject?: string, content = "用户的 Instagram 粉丝数涨到 1300"): ExtractedMemory => ({
+  content,
   type: "work_fact",
   priority: 60,
   source_message_ids: [],
@@ -83,12 +83,13 @@ afterEach(() => {
 async function runWrite(args: {
   policy?: WritePolicy;
   subject?: string;
+  content?: string;
   decision?: DedupDecision;
   withInvalidate?: boolean;
 }) {
   const { store, embedding, calls } = fakeStore({ withInvalidate: args.withInvalidate });
   const record = await writeMemory({
-    memory: memory(args.subject),
+    memory: memory(args.subject, args.content),
     decision: args.decision ?? decision(),
     baseDir,
     sessionKey: "s::k",
@@ -124,6 +125,38 @@ describe("writeMemory 生产写面（#134）", () => {
     for (const c of calls.invalidated) expect(Number.isNaN(Date.parse(c.validEnd))).toBe(false);
     expect(calls.archived).toEqual([]);
     expect(record?.valid_start).toBeTruthy();
+  });
+
+  it("#136 多值内容（additive）：不失效、不归档，且保留 target_ids 供建记忆图边", async () => {
+    const d = decision({ action: "update", target_ids: ["old-1"] });
+    const { calls } = await runWrite({
+      policy: policy({ supersession: { enabled: true } }),
+      content: "我在考虑换一家生鲜配送服务",
+      decision: d,
+    });
+    expect(calls.invalidated).toEqual([]);
+    expect(calls.archived).toEqual([]);
+    // target_ids 不被清空：l1-extractor 仍据它建 evolve 边
+    expect(d.target_ids).toEqual(["old-1"]);
+  });
+
+  it("#136 单值内容：仍走失效（knowledge-update 收益不牺牲）", async () => {
+    const { calls } = await runWrite({
+      policy: policy({ supersession: { enabled: true } }),
+      content: "我的 Instagram 粉丝数涨到 1300",
+      decision: decision({ action: "update", target_ids: ["old-1"] }),
+    });
+    expect(calls.invalidated.map((c) => c.id)).toEqual(["old-1"]);
+    expect(calls.archived).toEqual([]);
+  });
+
+  it("#136 cardinalityGate=false（回滚阀门）：多值内容也失效（= #136 前行为）", async () => {
+    const { calls } = await runWrite({
+      policy: policy({ supersession: { enabled: true, cardinalityGate: false } }),
+      content: "我在考虑换一家生鲜配送服务",
+      decision: decision({ action: "update", target_ids: ["old-1"] }),
+    });
+    expect(calls.invalidated.map((c) => c.id)).toEqual(["old-1"]);
   });
 
   it("W2 开但后端无 invalidateL1：回退归档（零删除底线）", async () => {

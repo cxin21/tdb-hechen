@@ -8,10 +8,22 @@
  * 缺省语义：输入无法定序（时间戳缺失/空）的 turn 不参与 supersession（宁缺毋滥）。
  */
 
+import { classifyCardinality, isSupersessionEligible } from "./cardinality.js";
+import type { FactCardinality } from "./cardinality.js";
+
 export interface FactTriple {
   subject: string;
   predicate: string;
   value: string;
+  /** #136：抽取器/调用方显式标注的基数（缺省按谓词启发式判定）。 */
+  cardinality?: FactCardinality;
+}
+
+export interface SupersessionOptions {
+  /**
+   * #136 属性契约门控（缺省 true = 修复开启）。false = #136 前逐位行为（凡同键新值都失效）。
+   */
+  cardinalityGate?: boolean;
 }
 
 /** 一个 turn 及其抽取出的事实（时间戳 = turn 的会话时间）。 */
@@ -33,6 +45,8 @@ export interface SupersessionOp {
   predicate: string;
   oldValue: string;
   newValue: string;
+  /** #136：被取代事实的基数（只有 "single" 会产出 op；审计/复算用）。 */
+  cardinality: FactCardinality;
 }
 
 function normKeyPart(s: string): string {
@@ -43,8 +57,14 @@ function normKeyPart(s: string): string {
  * 计算写时失效标记（按时间序推演）。
  *
  * 同一行被多次失效时，valid_end 取**最早**一次（行在第一次被取代时即失效）。
+ * #136：只有单值属性（cardinality === "single"）参与失效；多值/模态属性是 additive，
+ * 新值只追加不取代（否则"粉丝数 1300"会把同行的"住在上海"一起删掉）。
  */
-export function computeSupersessions(turns: readonly TurnFacts[]): SupersessionOp[] {
+export function computeSupersessions(
+  turns: readonly TurnFacts[],
+  opts: SupersessionOptions = {},
+): SupersessionOp[] {
+  const cardinalityGate = opts.cardinalityGate !== false;
   const ordered = turns
     .map((t, i) => ({ t, i }))
     .filter(({ t }) => typeof t.timestamp === "string" && t.timestamp.trim() !== "")
@@ -68,6 +88,12 @@ export function computeSupersessions(turns: readonly TurnFacts[]): SupersessionO
       const value = typeof f?.value === "string" ? f.value.trim() : "";
       // 事实三要素缺一不可：缺 value 的「事实」无法判定新旧（宁缺毋滥，不猜）。
       if (!subject || !predicate || !value) continue;
+      // #136 属性契约：多值属性的新值不取代旧值（不进 active 表，也就永不失效）。
+      const verdict = f.cardinality
+        ? { cardinality: f.cardinality, reason: "explicit" }
+        : classifyCardinality(predicate, value);
+      if (cardinalityGate && !isSupersessionEligible(verdict.cardinality)) continue;
+
       const key = normKeyPart(subject) + "\u0000" + normKeyPart(predicate);
       // 同一 turn 内同键多值：只认首见，不自伤（turn 是原子写入单元）。
       if (seenThisTurn.has(key)) continue;
@@ -82,6 +108,7 @@ export function computeSupersessions(turns: readonly TurnFacts[]): SupersessionO
           predicate: prev.predicate,
           oldValue: prev.value,
           newValue: value,
+          cardinality: verdict.cardinality,
         });
       }
       active.set(key, { turnId: t.turnId, subject, predicate, value });

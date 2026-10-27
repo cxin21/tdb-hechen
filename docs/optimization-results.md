@@ -315,3 +315,78 @@ node scripts/fit-fusion-weights.mjs \
   --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json \
   --arm deep105=.eval-data/bench/longmemeval-oracle-2026-10-27T08-36-53.json
 ```
+
+## 11. 双时态属性契约与软失效（issue #136，2026-10-27 晚场）
+
+> **问题**：#134 的 W2 把「同（subject, predicate）新值 ≠ 旧值」当版本更新，整行写 `valid_end`。LME90 实测 cov −10.9pp、temporal-reasoning 拒答；复查（§9）定位两类根因：①属性不满足函数依赖（泛化谓词的值不互斥）；②失效 = 硬删除，旧事件永久退出候选池。
+> **本票改动**：写侧 cardinality 契约（只有单值属性允许失效；多值 additive）+ 读侧软失效（expired 降权保留，仅「问当下 + 内容相关的更新行」才硬丢）。设计取舍见 ADR-0010。
+
+### 11.1 代码侧交付
+
+| 子项 | 落点 | 缺省 |
+|---|---|---|
+| 属性契约 | `src/core/record/cardinality.ts`：`classifyCardinality`（显式 > 单值词表 > 多值词表 > 值结构线索 > 缺省 single）、`classifyContentCardinality`（内容级，英文 cue 卡词边界） | 生效 |
+| 写面门控 | `write-policy.ts` `supersessionEligibleForContent`；`l1-writer.ts` dedup update/merge 与 `l1-extractor.ts` conflict 分支在 invalidate 前判定；多值 → 不失效、不归档、保留 target_ids 建记忆图边 | `memory.write.supersession.cardinalityGate=true`（supersession 本身仍缺省关）；`false`=回滚到 #136 前 |
+| 读面软失效 | `src/core/recall/validity-policy.ts`：`selectByValidity`（future 恒丢；expired 降权保留；presentIntent + 内容相关更新行才硬丢）、`excludeInvalidatedFor`（单一映射点）、`SOFT_VALIDITY_PENALTY=0.5` | `recall.validity.mode="hard"`（逐位现状）；soft 显式开启 |
+| 三路读口径 | 钩子路 `searchHybrid`：expired 的 rrfScore × 0.5 后再进组合精排（不块状重排）；结论层两处（`shouldHardDropValidity`）与工具路 `filterByValidity("soft")`：只丢 future、保留 expired（无法重排的通道不硬丢） | 同上 |
+| 测试 | `cardinality.test.ts`（10）、`supersession-cardinality.test.ts`（验收①+内容门控）、`validity-policy.test.ts`（7）、`auto-recall-soft-validity.test.ts`（5，钩子路接线）、`l1-writer.write-policy.test.ts`（+3 写面端到端：多值不失效/单值仍失效/回滚阀门）、`filter-invalidated.test.ts`（+2 工具路 soft） | 全量 vitest 261 文件 / 2362 例通过 |
+
+### 11.2 LME90 配对（同 manifest `lme-manifest.json`、同 judge `MiniMax-M3.1-Flash`、rerank-off + B1）
+
+| 档 | 写面 | 失效数 | 读面 | turnCov@5 | 判对 | 拒答 | knowledge-update cov / 判对 | temporal cov / 判对 |
+|---|---|---|---|---|---|---|---|---|
+| b1off-mm（基线） | 无 | 0 | 硬 | 79.5% | 77.8% | 12.2% | 75.0% / 86.7% | 77.8% / 86.7% |
+| w2（#134 旧实现） | W2 无契约门 | 140 | 硬 | 68.6% | 75.6% | 10.0% | 57.1% / 80.0% | 64.4% / 86.7% |
+| **card-soft（#136）** | W2 + 契约门 | **0** | **软** | **79.5%** | 未取得¹ | — | **75.0%** | **77.8%** |
+| nogate-soft（消融：关契约门） | W2 | 140 | 软 | 75.3% | 未取得¹ | — | 57.1% | 77.8% |
+
+¹ **判对证据缺口（诚实登记）**：新档生成阶段遭遇 MiniMax Token Plan 429（`已达到 Token Plan 速率限制`），card-soft 90 题中 10 题、nogate-soft 90/90 题无答案，故判对/拒答不计。恢复配额后用 §11.5 命令重跑即可补齐；检索侧证据（cov / top-k 集合）完整。
+
+**检索侧配对结论（`scripts/bench-bucket-paired.mjs`）**：
+
+- **card-soft vs b1off-mm**：逐题 turnCov@5 **0 差异**（CI[0,0]），90 题中仅 3 题 top-5 内部顺序不同（同集合，并发合并的同分序）。即契约门把 140 条失效判为「不该失效」后，检索面与基线**逐题一致**。
+- **nogate-soft vs w2（同 140 失效、只差读面）**：overall cov −10.6pp → **−4.1pp**（少损 6.5pp）；temporal-reasoning −13.3pp → **0.0pp**（完全恢复）；knowledge-update −16.7pp → −16.7pp（未恢复：该桶 gold 常是被取代的旧值 turn，0.5 降权仍把它挤出 top-5）。→ 软失效解决「别删」，但 knowledge-update 的账必须由契约（别判错）来结，与 §9.5 的判断一致。
+- **契约门不是「关开关」**：LME90 上 140 条失效全部落在泛化谓词（`is considering` / `plans to try` / `likes` / `has` / `feels`…），契约判定它们不是函数依赖，所以 0 条应当失效；生产真实语料 815 条更新链里 **696 条仍判 single 会失效**、119 条 additive（14.6%），见 §11.3。
+
+### 11.3 生产语料知识更新链路走查（只读）
+
+`node --import tsx scripts/audit/r136-corpus-walkthrough.mjs`（读 `D:/TDB/data/records`，零写入零外呼）：
+
+- 14 个日分片 / **8353 行** L1 records；带 `metadata.subject` 的实体簇 **5016**，其中内容发生过变化 **815 簇**；
+- 写侧契约模拟：815 条真实更新链中 **696 条判 single（允许标记旧值失效）**、**119 条 multi（additive，不失效）**——契约在生产语料上并非全域关停；
+- 旧值可追溯：全库 8353 行原样保留（JSONL append-only），带 `valid_end` 的行 0 行（生产的 supersession/conflict 失效未开启）；开启后也只在 store 层写 `valid_end`，不删 JSONL 行；
+- 典型链（样例）：`销售费用分摊前端` 两版（2026-10-27 05:52 → 06:15）判 single → 旧版标记失效但保留；`云文库测试失败归因` 两版判 multi（含「计划」）→ additive，两版并存。
+
+### 11.4 门禁判定（票面验收）
+
+| 门禁 | 判定 | 证据 |
+|---|---|---|
+| ① 一行两事实、只取代其一 → 另一事实仍可召回 | **PASS（单测）** | `supersession-cardinality.test.ts`：写侧多值不产 op / soft 保留行 / hard 对照删行；写面端到端 `l1-writer.write-policy.test.ts` 锁定「多值不失效、单值仍失效、门关回滚」 |
+| ② knowledge-update 桶 cov 不低于 b1-off | **PASS** | card-soft 75.0% = b1off 75.0%（逐题 0 差异） |
+| ② knowledge-update 判对不低于 b1-off | **未取得（429 配额）** | 见 §11.2 脚注；恢复后重跑 |
+| ② temporal-reasoning 桶 cov/判对不低于 b1-off | cov **PASS**（77.8% = b1off）；判对**未取得（429）** | 同上；消融档 nogate-soft 已实证 cov 从 −13.3pp 回到 0.0pp |
+| ③ 生产语料「知识更新」链路走查 | **PASS** | §11.3：815 链、696/119 判定分布、零删除 |
+
+### 11.5 复现
+
+```bash
+cd MemoryCore
+# 配对档（每档从 b1-off 基线库复制，只补写本档差异）
+bash scripts/run-r136-arms.sh card-soft    # W2 + 契约门 + 软失效
+bash scripts/run-r136-arms.sh nogate-soft  # 消融：关契约门 + 软失效
+# 分桶配对 + 门禁（cov/判对 ≥ 基线）
+node --import tsx scripts/bench-bucket-paired.mjs \
+  --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-35-29.json \
+  --arm card-soft=.eval-data/bench/<card-soft>.json \
+  --gate knowledge-update,temporal-reasoning
+# 生产语料走查（只读）
+node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
+```
+
+### 11.6 偏差与遗留
+
+- **事实级粒度未实施**（票面次优先项）：失效仍落整行，soft + 契约已把误伤从「永久丢失」降为「排序下沉」；后续票 #146（一条事实一行 + 抽取器直出 cardinality）。
+- **判对证据缺口**：§11.2 脚注（429）；不影响检索侧与单测结论。
+- 生产 yaml（gitignored）与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 已加 `cardinalityGate/cardinalityDefault/validity.mode` 注释与缺省值（均缺省关/硬）。
+- 软失效的硬丢判据是「查询意图 + 内容 token 重叠 + 更新时间」，非实体级同键（行级无 subject 持久化）；事实级落地后应由 metadata.(subject,predicate) 精确判定。
+

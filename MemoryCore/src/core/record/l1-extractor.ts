@@ -89,7 +89,7 @@ import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryProm
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
-import type { WritePolicy } from "./write-policy.js";
+import { supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
@@ -1198,9 +1198,16 @@ async function applyDecisions(params: {
               // GROW-EVO P2（§2.2 方向性守卫）：仅新记忆 observed 才自动失效旧记忆；
               // inferred → 只记 conflict 边（推断不许冒充事实——红线对称应用）。
               // 失效 = 写 valid_end（失效不删除）；best-effort 不阻塞写入。
-              if ((record as { certainty?: string }).certainty === "observed") {
+              // #136 属性契约：多值/模态内容的"冲突"多半是同一属性的两个并存值（考虑 A vs 考虑 B），
+              // 不是真矛盾——不失效旧行（conflict 边仍建，读侧软失效决定排序）。
+              const eligible = supersessionEligibleForContent(record.content, writePolicy);
+              if (eligible && (record as { certainty?: string }).certainty === "observed") {
                 const invalidEnd = record.occurred_at || new Date().toISOString();
                 for (const t of decision.target_ids) vectorStore.invalidateL1?.(t, invalidEnd);
+              } else if (!eligible) {
+                logger?.debug?.(
+                  `${TAG} [W2-cardinality] multi-valued conflict — keeping ${decision.target_ids.length} target(s) valid (no invalidation)`,
+                );
               }
             }
           } catch (err) {

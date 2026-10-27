@@ -18,6 +18,7 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
+import { shouldHardDropValidity } from "../recall/validity-policy.js";
 import { rowMatchesIsolation } from "../store/isolation.js";
 import { emotionSalienceOf } from "./recall-signals.js";
 import {
@@ -839,7 +840,8 @@ export async function executeMemorySearch(params: {
   /** 重构式回忆（J）：图邻居扩展默认关闭；开启时按 getNeighbors 扩点（default off，宁缺毋滥）。 */
   neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number };
   /** GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；由调用方 cfg 透传） */
-  excludeInvalidated?: boolean;
+  /** #136：true/undefined = 硬排除失效行；false = 通道退出；"soft" = 只丢 future、保留失效行。 */
+  excludeInvalidated?: boolean | "soft";
   /** A5（REG-REMAINING-001）：time_point 时间旅行——提供时切换"当时有效"双时态过滤 */
   validityNow?: Date;
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；由调用方 cfg 透传） */
@@ -1532,7 +1534,16 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
 // （valid_start 未来生效同样排除；解析失败/空值保留）——与钩子路共享单一源；导出供
 // filter-invalidated.test.ts「钩子路/工具路一致性」套件同批行同判钉死。
 // 等价性说明：原 validityNow 分支的 clamp（解析失败→0/+∞）与共享谓词的 skip 语义逐位一致。
-export function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(items: T[], validityNow?: Date, excludeInvalidated?: boolean): T[] {
+export function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(
+  items: T[],
+  validityNow?: Date,
+  excludeInvalidated?: boolean | "soft",
+): T[] {
   if (validityNow) return items.filter((i) => !isOutsideValidityWindow(i, validityNow));
-  return excludeInvalidated === false ? items : items.filter((i) => !isOutsideValidityWindow(i));
+  if (excludeInvalidated === false) return items;
+  // #136（W2 软失效）：工具路无法像钩子路那样按预算重排序，因此 soft 的语义是
+  // 「只丢未生效（future），失效行保留」——历史证据不因一次失效标记被删除；
+  // 新旧取舍交给调用方的分数/时间排序。
+  if (excludeInvalidated === "soft") return items.filter((i) => !shouldHardDropValidity(i, new Date(), "soft"));
+  return items.filter((i) => !isOutsideValidityWindow(i));
 }

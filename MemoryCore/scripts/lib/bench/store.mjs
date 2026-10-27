@@ -33,7 +33,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, fusionOverride, candidateKOverride, presentTemporalOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -91,6 +91,15 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // #135 R3 全开档：查询时间感知（recall.presentTemporal，enabled true）。
   if (presentTemporalOverride && typeof presentTemporalOverride === "object") {
     m.recall.presentTemporal = { ...(m.recall.presentTemporal || {}), ...presentTemporalOverride };
+  }
+  // #136 双时态属性契约：读侧效期策略（recall.validity.mode hard|soft）与写侧
+  // cardinality 门（memory.write.supersession.cardinalityGate）——只写沙箱 yaml。
+  if (validityOverride && typeof validityOverride === "object" && Object.keys(validityOverride).length) {
+    m.recall.validity = { ...(m.recall.validity || {}), ...validityOverride };
+  }
+  if (supersessionOverride && typeof supersessionOverride === "object" && Object.keys(supersessionOverride).length) {
+    m.write = m.write && typeof m.write === "object" ? { ...m.write } : {};
+    m.write.supersession = { ...(m.write.supersession || {}), ...supersessionOverride };
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
@@ -235,7 +244,7 @@ export function turnContent(caseObj, turn) {
  * W1（issue #134）：facts/dualWrite 传入时，embedding 键文本 = turn 原文 + 事实短语拼接；
  * 落库 content 不变（原文仍是命中载荷）。缺省（未传）→ 逐位现状。
  */
-export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry, facts, dualWrite, supersede, conclusions, embedMinIntervalMs = 400 }) {
+export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry, facts, dualWrite, supersede, cardinalityGate, conclusions, embedMinIntervalMs = 400 }) {
   const records = [];
   for (const g of caseObj.groups) for (const t of g.turns) records.push({ turn: t, sessionId: g.sessionId });
 
@@ -305,7 +314,7 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
   }
 
   // W2/W3 写入面（issue #134）：失效标记 + 结论卡——与 --store 分阶段写入共用同一实现（零重复）。
-  Object.assign(stats, await applyWriteSteps({ caseObj, store, records, facts, supersede, conclusions }));
+  Object.assign(stats, await applyWriteSteps({ caseObj, store, records, facts, supersede, cardinalityGate, conclusions }));
   return stats;
 }
 
@@ -404,8 +413,8 @@ export function makeStoreDir(datasetName, reuse) {
  *  - conclusions：结论卡 work_fact 落库 + part_of 证据链
  * @returns {{supersedeOps:number, superseded:number, conclusionsWritten:number, conclusionLinks:number}}
  */
-export async function applyWriteSteps({ caseObj, store, records, facts, supersede, conclusions }) {
-  const stats = { supersedeOps: 0, superseded: 0, conclusionsWritten: 0, conclusionLinks: 0 };
+export async function applyWriteSteps({ caseObj, store, records, facts, supersede, cardinalityGate, conclusions }) {
+  const stats = { supersedeOps: 0, superseded: 0, supersedeOpsMulti: 0, supersedeOpsSingle: 0, conclusionsWritten: 0, conclusionLinks: 0 };
   if (supersede && facts?.byTurn) {
     const { computeSupersessions } = await import("../../../src/core/record/supersession.ts");
     const turnFacts = records.map(({ turn }) => ({
@@ -413,8 +422,11 @@ export async function applyWriteSteps({ caseObj, store, records, facts, supersed
       timestamp: turn.tsISO || caseObj.questionDateISO || "",
       facts: facts.byTurn?.[turn.id]?.triples ?? [],
     }));
-    const ops = computeSupersessions(turnFacts);
+    // #136 属性契约：cardinalityGate !== false 时多值属性不进失效表（同一谓词可并存多值）。
+    const ops = computeSupersessions(turnFacts, cardinalityGate === false ? { cardinalityGate: false } : {});
     for (const op of ops) {
+      if (op.cardinality === "multi") stats.supersedeOpsMulti++;
+      else stats.supersedeOpsSingle++;
       if (typeof store.invalidateL1 !== "function") break;
       try {
         const r = await store.invalidateL1(op.turnId, op.validEnd);

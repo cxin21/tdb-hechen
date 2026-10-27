@@ -24,6 +24,8 @@ describe("computeSupersessions", () => {
         predicate: "Instagram followers",
         oldValue: "1250",
         newValue: "1300",
+        // #136：op 携带基数（只有 single 会产出 op）
+        cardinality: "single",
       },
     ]);
   });

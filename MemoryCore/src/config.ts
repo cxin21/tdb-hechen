@@ -233,6 +233,13 @@ export interface RecallConfig {
   sessionReuseTtlMs: number;
   /** GROW-EVO P2（§2.3）：召回默认排除失效记忆（valid_end ≤ now）。缺省 true（spec 拍板①：现存库无失效行 = 逐位不变）。 */
   excludeInvalidated: boolean;
+  /**
+   * #136（W2 软失效）：效期判定模式。hard = 逐位旧行为（失效/未来生效行直接排除）；
+   * soft = 效期作为融合特征——expired 行降权保留（排到生效行之后、被预算挤出），
+   * 只有查询显式问"现在/最新"且池里存在更新的有效行时才硬丢。
+   * 缺省 hard（零行为变化）；#136 验证档用 soft。
+   */
+  validity: { mode: "hard" | "soft" };
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）。 */
   emotionSalienceWeight?: number;
   /**
@@ -1030,6 +1037,12 @@ export interface WriteConfig {
   };
   supersession: {
     enabled: boolean;
+    /**
+     * #136 属性契约：多值/模态内容不失效（缺省 true = 修复开启）。false = #136 前逐位行为。
+     */
+    cardinalityGate: boolean;
+    /** 内容级无线索时的缺省基数（缺省 "single" 保覆盖）。 */
+    cardinalityDefault: "single" | "multi";
   };
 }
 
@@ -1839,9 +1852,17 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           })(),
           maxFactChars: Math.max(0, num(factKeyGroup, "maxFactChars") ?? 240),
         },
-        supersession: {
-          enabled: bool(obj(writeGroup, "supersession"), "enabled") ?? false,
-        },
+        supersession: (() => {
+          const ssGroup = obj(writeGroup, "supersession");
+          // #136：cardinalityGate 缺省 true（supersession 本身缺省关，故零行为变化）；
+          // 回滚阀门 = 显式 false（回到"凡 update/merge 一律失效"的旧行为）。
+          const defaultRaw = str(ssGroup, "cardinalityDefault");
+          return {
+            enabled: bool(ssGroup, "enabled") ?? false,
+            cardinalityGate: bool(ssGroup, "cardinalityGate") ?? true,
+            cardinalityDefault: defaultRaw === "multi" ? ("multi" as const) : ("single" as const),
+          };
+        })(),
       };
     })(),
     persona: {
@@ -1937,6 +1958,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
       // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
       excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
+      // #136（W2 软失效）：效期判定模式（缺省 hard = 逐位现状）
+      validity: (() => {
+        const vg = obj(recallGroup, "validity");
+        return { mode: str(vg, "mode") === "soft" ? ("soft" as const) : ("hard" as const) };
+      })(),
       // GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）
       emotionSalienceWeight: Math.max(0, num(recallGroup, "emotionSalienceWeight") ?? 0),
       sessionReuseTtlMs: recallSignalBoost(recallGroup, "sessionReuseTtlMs", 300_000),

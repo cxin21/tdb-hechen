@@ -83,6 +83,8 @@ if (flag("help") || argv.length === 0) {
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
+  --validity-mode soft|hard      #136 效期策略：soft=失效行降权保留（仅当下意图+有更新行才硬丢）
+  --supersede-cardinality off    #136 对照档：关闭 cardinality 门（多值属性也失效=现状 W2）
   --mmr                          B2-b：沙箱 yaml 开 MMR 多样性重排（recall.mmr.enabled）
   --mmr-lambda X                 B2-b：MMR λ（缺省 0.7；1=纯相关序）
   --emb-threshold X              B2-b：向量余弦门槛（生产 0.3；试验 0.15 放宽）
@@ -189,6 +191,14 @@ async function main() {
   const factBatchSize = num("fact-batch-size", 20);
   const factConcurrency = num("fact-concurrency", 8);
   const factModelArg = arg("fact-model", undefined);
+  // #136 双时态属性契约试验档：
+  //  --validity-mode soft|hard  读侧效期策略（soft = 失效行降权而非硬过滤；缺省读 yaml）
+  //  --supersede-cardinality off  写侧关闭 cardinality 门（对照档：现状"谓词一变就失效"）
+  const validityModeArg = String(arg("validity-mode", "") ?? "").toLowerCase();
+  const validityOverride = validityModeArg === "soft" || validityModeArg === "hard" ? { mode: validityModeArg } : undefined;
+  const supersedeCardinalityArg = String(arg("supersede-cardinality", "") ?? "").toLowerCase();
+  const cardinalityGate = supersedeCardinalityArg === "off" ? false : undefined;
+  const supersessionOverride = cardinalityGate === false ? { cardinalityGate: false } : undefined;
   // embedding 节流（豆包账号级 RPM 限制）：请求间隔下限，避免突发触发 429 重试风暴
   const embedIntervalMs = num("embed-interval-ms", 400);
   // W3（issue #134）：结论卡（work_fact）接入召回——蒸馏 + part_of 证据链 + smallToBig 回捞。
@@ -355,6 +365,8 @@ async function main() {
   ...(fusionOverride ? { fusionOverride } : {}),
   ...(candidateKOverride !== undefined ? { candidateKOverride } : {}),
   ...(presentTemporalOverride ? { presentTemporalOverride } : {}),
+    ...(validityOverride ? { validityOverride } : {}),
+    ...(supersessionOverride ? { supersessionOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
@@ -454,6 +466,7 @@ async function main() {
         ...(cc ? { conclusions: cc } : {}),
         ...(factDualWrite ? { dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars } } : {}),
         ...(writeSupersede ? { supersede: true } : {}),
+        ...(cardinalityGate === false ? { cardinalityGate: false } : {}),
       });
       ingestStats.groups++;
       ingestStats.turns += st.turns;
@@ -466,6 +479,8 @@ async function main() {
       if (st.factKeyCharsAdded !== undefined) ingestStats.factKeyCharsAdded = (ingestStats.factKeyCharsAdded ?? 0) + st.factKeyCharsAdded;
       if (st.supersedeOps !== undefined) ingestStats.supersedeOps = (ingestStats.supersedeOps ?? 0) + st.supersedeOps;
       if (st.superseded !== undefined) ingestStats.superseded = (ingestStats.superseded ?? 0) + st.superseded;
+      if (st.supersedeOpsSingle !== undefined) ingestStats.supersedeOpsSingle = (ingestStats.supersedeOpsSingle ?? 0) + st.supersedeOpsSingle;
+      if (st.supersedeOpsMulti !== undefined) ingestStats.supersedeOpsMulti = (ingestStats.supersedeOpsMulti ?? 0) + st.supersedeOpsMulti;
       if (st.conclusionsWritten !== undefined) ingestStats.conclusionsWritten = (ingestStats.conclusionsWritten ?? 0) + st.conclusionsWritten;
       if (st.conclusionLinks !== undefined) ingestStats.conclusionLinks = (ingestStats.conclusionLinks ?? 0) + st.conclusionLinks;
       resolvers.set(key, makeIdResolver(contentIndex));
@@ -565,10 +580,13 @@ async function main() {
         records,
         facts: fx?.facts,
         supersede: writeSupersede,
+        ...(cardinalityGate === false ? { cardinalityGate: false } : {}),
         conclusions: cc,
       });
       ingestStats.supersedeOps = (ingestStats.supersedeOps ?? 0) + (st2.supersedeOps ?? 0);
       ingestStats.superseded = (ingestStats.superseded ?? 0) + (st2.superseded ?? 0);
+      ingestStats.supersedeOpsSingle = (ingestStats.supersedeOpsSingle ?? 0) + (st2.supersedeOpsSingle ?? 0);
+      ingestStats.supersedeOpsMulti = (ingestStats.supersedeOpsMulti ?? 0) + (st2.supersedeOpsMulti ?? 0);
       ingestStats.conclusionsWritten = (ingestStats.conclusionsWritten ?? 0) + (st2.conclusionsWritten ?? 0);
       ingestStats.conclusionLinks = (ingestStats.conclusionLinks ?? 0) + (st2.conclusionLinks ?? 0);
       if (!quiet && (gi2 % 10 === 0 || gi2 === groups.size)) {
@@ -722,6 +740,7 @@ async function main() {
             maxFactChars: factDualWrite ? factMaxChars : null,
             separator: factDualWrite ? (factSeparator ?? " | ") : null,
             supersede: writeSupersede,
+            cardinalityGate: cardinalityGate !== false,
             cacheDir: factCacheDir,
             stats: factStats,
           }

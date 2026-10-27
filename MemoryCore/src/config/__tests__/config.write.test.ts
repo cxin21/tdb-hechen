@@ -10,7 +10,8 @@ describe("config: write（#134 写面策略）", () => {
   it("缺省全关", () => {
     const c = parseConfig({});
     expect(c.write.factKey).toEqual({ enabled: false, separator: " | ", maxFactChars: 240 });
-    expect(c.write.supersession).toEqual({ enabled: false });
+    // #136：cardinalityGate 缺省 true（修复开启）；cardinalityDefault 缺省 single（保覆盖）
+    expect(c.write.supersession).toEqual({ enabled: false, cardinalityGate: true, cardinalityDefault: "single" });
   });
 
   it("yaml 值生效 + clamp", () => {
@@ -24,6 +25,16 @@ describe("config: write（#134 写面策略）", () => {
     expect(c.write.factKey.separator).toBe("::");
     expect(c.write.factKey.maxFactChars).toBe(0);
     expect(c.write.supersession.enabled).toBe(true);
+  });
+
+  it("#136 属性契约开关：cardinalityGate / cardinalityDefault 解析", () => {
+    const off = parseConfig({ write: { supersession: { cardinalityGate: false } } }).write.supersession;
+    expect(off.cardinalityGate).toBe(false);
+    expect(off.cardinalityDefault).toBe("single");
+    const strict = parseConfig({ write: { supersession: { cardinalityDefault: "multi" } } }).write.supersession;
+    expect(strict.cardinalityDefault).toBe("multi");
+    // 非法值回落缺省 single
+    expect(parseConfig({ write: { supersession: { cardinalityDefault: "bogus" } } }).write.supersession.cardinalityDefault).toBe("single");
   });
 
   it("separator 保原样（前后空格保留）；空白串回落默认", () => {

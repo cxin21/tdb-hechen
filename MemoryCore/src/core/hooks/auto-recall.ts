@@ -58,6 +58,14 @@ import { emotionSalienceOf, buildRankContext,
   type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
+import {
+  SOFT_VALIDITY_PENALTY,
+  excludeInvalidatedFor,
+  selectByValidity,
+  shouldHardDropValidity,
+  type ExcludeInvalidated,
+  type ValidityMode,
+} from "../recall/validity-policy.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import { mmrReorder } from "../recall/mmr.js";
@@ -91,6 +99,25 @@ import type { SoulRenderOptions } from "./soul-assembler.js";
 import type { SoulState } from "./soul-state.js";
 
 const TAG = "[memory-tdai] [recall]";
+
+/** #136：软失效硬丢前的"取代者"相关性判定用停用词（高频但不承载事实的词）。 */
+const RELATED_STOPWORDS = new Set([
+  "user", "users", "have", "that", "this", "with", "their", "from", "about",
+  "记忆", "用户", "条目",
+]);
+
+/**
+ * #136：两行内容是否有可承载事实的公共 token（英文 ≥4 字符 / 中文 ≥3 字）。
+ * 只用于"问当下时是否允许硬丢旧行"——判 false 时宁可降权保留（安全方向：不误删）。
+ */
+function contentTokenOverlap(a?: string, b?: string): boolean {
+  if (!a || !b) return false;
+  const tokensOf = (s: string): Set<string> =>
+    new Set((s.toLowerCase().match(/[a-z0-9]{4,}|[\u4e00-\u9fff]{3,}/g) ?? []).filter((t) => !RELATED_STOPWORDS.has(t)));
+  const left = tokensOf(a);
+  for (const t of tokensOf(b)) if (left.has(t)) return true;
+  return false;
+}
 const RECALL_TRUNCATION_SUFFIX = "…（已截断；可用 tdai_memory_search 或 tdai_conversation_search 查看详情）";
 const MIN_TRUNCATED_RECALL_LINE_CHARS = 40;
 const RECALL_LINE_SEPARATOR = "\n";
@@ -704,6 +731,8 @@ export async function performLayeredRecall(params: {
   capabilities?: string[];
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
+  // #136（W2 软失效）：结论层/放宽通道不能重排序，只做"该不该硬丢"的模式判定。
+  const validityMode: ValidityMode = cfg.recall?.validity?.mode === "soft" ? "soft" : "hard";
   // ── #61（2026-10-18）：分段计时打点 ──
   // v3 端点路（/v3/recall → 本函数）此前无任何分段日志：生产 5000ms 硬超时 504 时，
   // journal 时间线只显示 L1 hybrid ~70ms、soul ~130ms，其后 ~3.2s 完全静默——黑洞
@@ -791,7 +820,7 @@ export async function performLayeredRecall(params: {
             const wfRows = await vectorStore.searchL1Fts(wfQuery, r7HalfLimit * 2, params.isolationFilter);
             for (const r of wfRows ?? []) {
               // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（流程测试实测泄漏点）
-              if (isOutsideValidityWindow(r as { valid_start?: string; valid_end?: string })) continue;
+              if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, new Date(), validityMode)) continue;
               if (r.type === "work_fact") {
                 // R71-A1（2026-10-19）：FTS5 raw rank（负=更相关）透传为 raw rel（=-rank）——
                 // bm25 预地板数据源；后端未提供（undefined）→ 地板豁免（宁缺毋滥不误杀）。
@@ -898,7 +927,7 @@ export async function performLayeredRecall(params: {
           for (const r of relaxedRows) {
             if (relaxed.length >= 5) break;
             // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（V2-3 放宽通道同款过滤）
-            if (isOutsideValidityWindow(r as { valid_start?: string; valid_end?: string })) continue;
+            if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, new Date(), validityMode)) continue;
             if (!r || typeof r.record_id !== "string" || !r.content?.trim()) continue;
             if (selectedIds.has(r.record_id)) continue;
             relaxed.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
@@ -2084,8 +2113,9 @@ async function searchMemories(
       cfg.recall?.exploreSlot !== false, cfg.recall?.rerankWeights,
       // DS-RECALL-MERGE-001：租户收窄 filter（钩子路缺省 undefined = 旧行为逐位）
       isolationFilter,
-      // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
-      cfg.recall?.excludeInvalidated,
+      // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）；
+      // #136：validity.mode=soft 时传 "soft"（效期转为排序特征）
+      excludeInvalidatedFor(cfg.recall?.validity?.mode, cfg.recall?.excludeInvalidated),
       validityNow,
       // Batch C C-b（#77 伴生 · survey F6b）：衰减乘子/时间锚回退（cfg 透传——缺省关=逐位现状）
       cfg.recall?.ageDecay?.enabled === true ? { halfLifeDays: cfg.recall.ageDecay.halfLifeDays } : undefined,
@@ -2311,8 +2341,10 @@ export async function searchHybrid(
   /**
    * GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；false = 通道退出）。
    * 由 searchMemories 自 cfg.recall.excludeInvalidated 透传。
+   * #136（W2 软失效）：新增 "soft" —— 效期不当硬过滤，而在截断预算前把 expired 排到
+   * active 之后（问当下且存在更新行时才硬丢）。true/false 语义逐位不变。
    */
-  excludeInvalidated?: boolean,
+  excludeInvalidated?: ExcludeInvalidated,
   /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点——失效排除以该时点为"当前"。 */
   validityNow?: Date,
   /**
@@ -2880,6 +2912,34 @@ export async function searchHybrid(
     sorted = sorted.filter(([id]) => !r7Excluded.has(id));
   }
 
+  // #136（W2 软失效）：future 恒丢；expired **降权保留**——rrfScore × SOFT_VALIDITY_PENALTY
+  // 后继续参与组合精排（效期作为融合特征，保留相关度序，不做池级块重排）；
+  // 仅当查询显式问"现在/最新"且存在**内容相关**的更新行时才硬丢（related 判定见
+  // contentTokenOverlap——任意新记忆不足以成为"取代者"）。
+  if (excludeInvalidated === "soft") {
+    const now = validityNow ?? new Date();
+    const sel = selectByValidity(sorted, {
+      now,
+      mode: "soft",
+      presentIntent: detectPresentTemporalIntent(userText),
+      accessors: {
+        validStart: (entry) => entry[1].validStart,
+        validEnd: (entry) => entry[1].validEnd,
+      },
+      related: ([, expired], [, active]) =>
+        contentTokenOverlap(expired.formatable?.content, active.formatable?.content),
+    });
+    const droppedIds = new Set(sel.dropped.map(([id]) => id));
+    const demotedIds = new Set(sel.demoted.map(([id]) => id));
+    sorted = sorted
+      .filter(([id]) => !droppedIds.has(id))
+      .map(([id, v]) =>
+        demotedIds.has(id)
+          ? ([id, { ...v, rrfScore: v.rrfScore * SOFT_VALIDITY_PENALTY }] as [string, MergedPoolValue])
+          : [id, v],
+      );
+  }
+
   // ── RV2-2（精排重设计 + E3.1 探索位）：与工具路 executeMemorySearch 截断前同层
   // 对齐（R-A1 教训）——消费同一单一源纯函数（applyCompositeRerank / applyExploreSlot）。
   // relevanceNorm 池内 max 归一：直接命中 = v.rrfScore（RRF fused）；图候选 = 派生分
@@ -2930,7 +2990,8 @@ export async function searchHybrid(
     // valid_start/valid_end 保留不误删）。池携带 validStart/validEnd（keyword soul /
     // embedding 行双通道注入），一致性由 filter-invalidated.test.ts 与
     // bitemporal-two-path.test.ts 钉死。
-    const applyExclusion = excludeInvalidated !== false;
+    // #136：soft 已在截断前处理（排序/硬丢），此处不再二次过滤；true/undefined 逐位不变。
+    const applyExclusion = excludeInvalidated !== false && excludeInvalidated !== "soft";
     let visibleTop = top;
     if (applyExclusion) {
       const now = validityNow ?? new Date();

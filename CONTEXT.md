@@ -12,6 +12,8 @@
 - **soul 渲染门**：desc 为空或 episode 特征 → 整条跳过（宁缺毋滥，禁裸关键词入人格）；预算截断按整锚丢弃（#10）。
 - **LLM 凭据 SoT（admin settings）**：LLM 秘密字段（llm.apiKey）运行时唯一可信来源 = admin settings（各服务 `{dataDir}/config-override.json`）；通道序 override > yaml > TDAI_LLM_* env(deprecated 回退+一次性弃用告警)；占位符（整串 `__X__` / `${X}`）视为未设置（`utils/credential.ts` 守卫；脚本域单一读取器 `MemoryCore/scripts/lib/read-llm-credential.ts`）。baseUrl/model 等非秘密字段 env 优先不受影响。→ ADR-0006
 - **服务间鉴权（service key）**：KS 写/管理面的入站鉴权。`KNOWLEDGE_SERVICE_KEY` 为空 = **不启用**（内网信任，向后兼容本地/开发）；非空 = 除只读白名单（Agent 查询面：tools/list、tools/call、wiki/code-graph 查询、auto-sync/status）外的 `/v3` 端点必须带 `Authorization: Bearer <key>`，缺失/错误一律 401（fail-closed）；`/health`、`/docs`、`/openapi.json` 在 `/v3` 之外不受影响。同一个 key 三侧传播：校验侧 `KNOWLEDGE_SERVICE_KEY` / Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN` / MCP 侧 `KNOWLEDGE_API_TOKEN`；部署脚本自动生成 `ks-svc-<hex48>` 并幂等回写 .env。→ ADR-0009
+- **属性基数（cardinality / single·multi）**：#136 的写面契约——判断一条事实的属性是否函数依赖（同一时刻只有一个值）。single（计数/联系方式/个人档案）允许 supersession 失效旧值；multi（模态/意愿/泛化动词：consider/want/like/has/feels…）是 additive，新值只追加、永不失效。单一源 `MemoryCore/src/core/record/cardinality.ts`（谓词级 `classifyCardinality` + 内容级 `classifyContentCardinality`，显式 > 单值词表 > 多值词表 > 值结构线索 > 缺省 single）。→ ADR-0010
+- **软失效（soft validity）**：读侧双时态策略——expired（valid_end ≤ now）不再硬删，而是 relevance × SOFT_VALIDITY_PENALTY 降权后继续参与精排；仅当查询显式问「现在/最新」且池里存在**内容相关**的更新行时才硬丢，future 恒丢。单一源 `MemoryCore/src/core/recall/validity-policy.ts`（`selectByValidity` / `excludeInvalidatedFor` / `SOFT_VALIDITY_PENALTY`），config `recall.validity.mode` 缺省 hard。→ ADR-0010
 - **Panel UI 小白优先原则**（2026-10-19 用户拍板）：MemoryPanel 一切界面以「第一次接触本系统的运维者」为基准用户，易用易懂优先——①白话标签，禁内部术语直达 UI（slot 名/门名/接口词翻译成人话，未知名的 slot 键也不许直达 UI，兜底「未知提案」，原始键名走悬停提示——如 self_identity → 「我是谁」提案、未知 slot → 「未知提案」）；②状态外显（生效/降级/关闭一眼可辨，配一句解释）；③渐进披露（默认简单视图，技术细节折叠进高级区）；④降级与错误用人话说明（如叙事兜底 → 「已自动回退到原文显示」，不静默）。落点：所有 Panel UI 票的验收标准（首个应用票=R3 叙事预览，待立票；#105 起两页待裁决区落地本词条）。
 
 ## 架构决定（ADR）
@@ -22,4 +24,5 @@
 - [ADR-0006 LLM 凭据 SoT 收敛](docs/adr/0006-LLM凭据-SoT收敛-admin-settings.md) —— 秘密字段唯一 SoT=admin settings、通道序 override>yaml>env(deprecated)、占位符守卫、脚本域 readLlmCredential 单一读取器。
 - [ADR-0007 身份槽确定性自动采纳门](docs/adr/0007-身份槽确定性自动采纳门.md) —— stage 2 终局形态：三重门（N₂=4/T₂=72h/矛盾线 0.60/重复线 0.75，2026-10-25 拍板）、config 缺省关、快照+版本守卫回滚、采纳链单一源镜像人审 merge-on-adopt。
 - [ADR-0008 召回门限刻度治理：剔词退役与地板相对化](docs/adr/0008-召回门限刻度治理-剔词退役与地板相对化.md) —— 候选集占比剔词退役（自指病灶）、bm25 地板 α×topRel 相对化（legacy 双轨兜底）、local rerank sigmoid 归一 + all-below 降级不清零；未迁移 yaml 逐位不变。
+- [ADR-0010 双时态属性契约与软失效](docs/adr/0010-双时态属性契约与软失效.md) —— supersession 只在单值属性成立（cardinality 契约，多值 additive 永不失效）、效期从硬过滤改为融合特征降权（仅当下意图 + 内容相关的更新行才硬丢）、三路读口径按能力分层、零删除不变。
 - [ADR-0009 服务间鉴权：KNOWLEDGE_SERVICE_KEY fail-closed](docs/adr/0009-服务间鉴权-KNOWLEDGE_SERVICE_KEY.md) —— 空 key=不启用/非空=写管理面 401、只读白名单口径（补齐上游漏掉的 code-graph 8 个动态只读查询）、code-graph 查询名单单一真相源、真实路由表护栏、key 三侧传播与部署侧自动生成。
