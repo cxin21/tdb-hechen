@@ -7,7 +7,7 @@ B="node --import tsx scripts/eval-memory-bench.mjs"
 L=.eval-data/bench
 TMPROOT="${TMPDIR:-/tmp}/tdagemem-bench"
 BASE="/c/Users/Administrator/AppData/Local/Temp/tdagemem-bench/lme90-mm-b1off"
-COMMON="--dataset longmemeval --manifest $L/lme-manifest.json --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --b1"
+COMMON="--dataset longmemeval --manifest $L/lme-manifest.json --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --b1 --rerank-off"
 FDEF='{"mode":"weighted","dense":0.4,"bm25":0.3,"recency":0.2,"validity":0.1,"recencyHalfLifeDays":30}'
 FAILED=0
 run() { local tag="$1"; shift; echo "[r135] start $tag $(date +%H:%M:%S)"; $B "$@" --tag "$tag" || { echo "[r135] FAILED $tag"; FAILED=$((FAILED+1)); }; echo "[r135] done $tag $(date +%H:%M:%S)"; }
