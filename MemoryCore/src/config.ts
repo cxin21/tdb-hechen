@@ -984,12 +984,29 @@ export interface RecallJournalConfig {
   maxFiles: number;
 }
 
+/**
+ * #134 写面策略（W1 事实键双写 / W2 写时双时态 supersession）。
+ * 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
+ */
+export interface WriteConfig {
+  factKey: {
+    enabled: boolean;
+    separator: string;
+    maxFactChars: number;
+  };
+  supersession: {
+    enabled: boolean;
+  };
+}
+
 /** Fully resolved plugin configuration (v3). */
 export interface MemoryTdaiConfig {
   /** Global prompt family; group-level promptMode can override it. */
   promptMode: MemoryPromptMode;
   capture: CaptureConfig;
   extraction: ExtractionConfig;
+  /** #134：写面策略（缺省全关=逐位现状）。 */
+  write: WriteConfig;
   persona: PersonaConfig;
   pipeline: PipelineTriggerConfig;
   recall: RecallConfig;
@@ -1773,6 +1790,26 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,
       sceneBatchMaxChars: Math.max(0, num(extractionGroup, "sceneBatchMaxChars") ?? 0),
     },
+    // #134（写面策略）：缺省全关=逐位现状；separator 空串回落默认，maxFactChars clamp ≥0
+    write: (() => {
+      const writeGroup = obj(c, "write");
+      const factKeyGroup = obj(writeGroup, "factKey");
+      return {
+        factKey: {
+          enabled: bool(factKeyGroup, "enabled") ?? false,
+          // separator 保原样（不 trim）：" | " 的前后空格是键格式的一部分，与 bench 口径一致；
+          // 空白串/null → 回落默认分隔符。
+          separator: (() => {
+            const raw = factKeyGroup["separator"];
+            return typeof raw === "string" && raw.trim() ? raw : " | ";
+          })(),
+          maxFactChars: Math.max(0, num(factKeyGroup, "maxFactChars") ?? 240),
+        },
+        supersession: {
+          enabled: bool(obj(writeGroup, "supersession"), "enabled") ?? false,
+        },
+      };
+    })(),
     persona: {
       triggerEveryN: num(personaGroup, "triggerEveryN") ?? 50,
       maxScenes: num(personaGroup, "maxScenes") ?? 15,

@@ -23,6 +23,7 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
+import { embeddingKeyFor, supersessionEnabled, type WritePolicy } from "./write-policy.js";
 
 // ============================
 // Types
@@ -238,8 +239,13 @@ export async function writeMemory(params: {
   embeddingService?: EmbeddingService;
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
+  /**
+   * #134 写面策略（W1 事实键 / W2 写时 supersession）。缺省/全关 → 逐位现状
+   * （键=内容；update/merge 旧行归档）。由 pipeline-factory 从 cfg.write 透传。
+   */
+  writePolicy?: WritePolicy;
 }): Promise<MemoryRecord | null> {
-  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage } = params;
+  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, writePolicy } = params;
 
   if (decision.action === "skip") {
     logger?.debug?.(`${TAG} Skipping memory: ${memory.content.slice(0, 50)}...`);
@@ -371,7 +377,36 @@ export async function writeMemory(params: {
     // → 孤儿边、证据链断裂。归档保留整行（l1_archive），getL1ByIdsWithArchive 可回溯；
     // 同时 archiveL1 会级联清掉向量/FTS——归档的旧证据不再进入检索面，不污染召回。
     // 检索准确性不受影响（旧内容不再可召回），而演进链/证据链仍可从归档解析。
-    if (vectorStore) {
+    if (vectorStore && supersessionEnabled(writePolicy)) {
+      // W2（#134，config 门控）：旧行只标记 valid_end（不归档、不删除）——双时态版本治理
+      // 的写时落点（dedup 的 update/merge 即「同实体同属性新值」的生产识别点）。
+      // store 未实现 invalidateL1（可选方法）→ loud warn 并退回归档路径（零删除底线不变）。
+      const superseded: string[] = [];
+      if (typeof vectorStore.invalidateL1 === "function") {
+        const validEndIso = new Date().toISOString();
+        try {
+          for (const tid of decision.target_ids) {
+            const ok = await vectorStore.invalidateL1(tid, validEndIso);
+            if (ok) superseded.push(tid);
+          }
+          // 新行补双时态起点（valid_start 缺省 = 发生时刻 → createdAt 兜底）：两端齐。
+          if (!record.valid_start) record.valid_start = record.occurred_at || record.createdAt;
+          logger?.debug?.(
+            `${TAG} [W2-supersession] marked ${superseded.length}/${decision.target_ids.length} target(s) superseded (valid_end=${validEndIso}); history preserved`,
+          );
+        } catch (err) {
+          logger?.warn?.(
+            `${TAG} [W2-supersession] invalidateL1 failed for ${decision.action}: ${err instanceof Error ? err.message : String(err)} — falling back to archive path`,
+          );
+        }
+      } else {
+        logger?.warn?.(`${TAG} [W2-supersession] store lacks invalidateL1 — falling back to archive path (no hard delete)`);
+      }
+      if (superseded.length > 0) {
+        decision.target_ids = decision.target_ids.filter((tid) => !superseded.includes(tid));
+      }
+    }
+    if (vectorStore && decision.target_ids.length > 0) {
       try {
         let archived = 0;
         for (const tid of decision.target_ids) {
@@ -435,7 +470,10 @@ export async function writeMemory(params: {
 
       if (embeddingService) {
         try {
-          embedding = await embeddingService.embed(record.content);
+          // W1（#134，config 门控，缺省关=逐位现状）：embedding 键 = 内容 + 事实短语拼接
+          // （生产事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
+          const embeddingKeyText = embeddingKeyFor(record.content, memory, writePolicy);
+          embedding = await embeddingService.embed(embeddingKeyText);
           logger?.info?.(
             `${TAG} [vec-dual-write] Embedding OK: dims=${embedding.length}, ` +
             `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,

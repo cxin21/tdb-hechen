@@ -45,6 +45,22 @@ memory:
   capture:
     enabled: true
 
+  # ── #134 写面策略（W1 事实键双写 / W2 写时双时态 supersession）──────────────
+  # 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
+  #  · factKey.enabled=true：L1 的 embedding 键 = 内容 + 分隔符 + 事实短语
+  #    （事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
+  #    LME90 实测 +6.7pp 判对但不显著（CI 含负）→ 默认关，待生产语料验证。
+  #  · supersession.enabled=true：dedup 的 update/merge 决策把旧行从"归档"改为
+  #    "valid_end 只标记"（零删除红线，历史可追溯）。
+  #    LME90 实测 turnCov -10.9pp 显著负（gold 含旧值 turn）→ 默认关，待生产语料验证。
+  write:
+    factKey:
+      enabled: false
+      separator: " | "     # 原文与事实短语的拼接分隔符（空串回落默认）
+      maxFactChars: 240    # 事实部分字符预算（整条截断，不切断单条短语；0=不拼接）
+    supersession:
+      enabled: false
+
   extraction:
     enabled: true
     enableDedup: true
@@ -178,7 +194,9 @@ memory:
     # 缺省 false = 逐位现状；代码保守缺省关 + 部署 yaml 显式开（#77 三键同款惯例）。
     smallToBig:
       enabled: true
-      maxExtraLines: 2
+      # #134 LME90 配对：maxExtraLines 2→4 判对 81.1%→84.4%（+14.4pp CI[+6.7,+23.3]，p=0.0023）、
+      # 缺口桶回收 4→5/11、turnCov 回到基线（-0.2pp ns）；注入总行数仍由 maxResults 硬帽收口。
+      maxExtraLines: 4
 
     # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
     # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差

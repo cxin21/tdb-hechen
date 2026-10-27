@@ -654,6 +654,8 @@ export function createL1Runner(opts: {
           options: {
             enableDedup: cfg.extraction.enableDedup,
             enableMemoryLinks: cfg.links.enabled,
+            // #134 写面策略（W1 事实键 / W2 写时 supersession；缺省全关=逐位现状）
+            writePolicy: cfg.write,
             // S1（T9 裁决待办收口）：similar 建边门槛配置化透传（memory.links.minSimilarity）
             minSimilarity: cfg.links.minSimilarity,
             maxMemoriesPerSession: cfg.extraction.maxMemoriesPerSession,

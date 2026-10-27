@@ -89,6 +89,7 @@ import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryProm
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
+import type { WritePolicy } from "./write-policy.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
@@ -199,6 +200,8 @@ export async function extractL1Memories(params: {
     enableDedup?: boolean;
     /** 记忆图（G）：是否在 dedup 决策后建 L1↔L1 边（配置项，默认开） */
     enableMemoryLinks?: boolean;
+    /** #134 写面策略（W1 事实键 / W2 写时 supersession；缺省全关=逐位现状）。 */
+    writePolicy?: WritePolicy;
     /**
      * S1（T9 裁决待办收口）：similar 边最低相似度门槛（memory.links.minSimilarity 透传）。
      * 缺省 = MIN_SIMILAR_STRENGTH（0.3，行为逐位不变）；作用于 dedup 路径
@@ -522,16 +525,17 @@ export async function extractL1Memories(params: {
         embeddingService: options.embeddingService,
         storage,
         enableMemoryLinks: options.enableMemoryLinks !== false,
+        writePolicy: options.writePolicy,
       });
 
     } catch (err) {
       logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
       setL1Stage("store-fallback");
-      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity);
+      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity, options.writePolicy);
     }
   } else {
     setL1Stage("store-fallback");
-    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity);
+    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity, options.writePolicy);
   }
 
   const logStorage = storage ?? new StorageAdapter(new LocalStorageBackend(baseDir));
@@ -1115,8 +1119,10 @@ async function applyDecisions(params: {
   storage?: StorageAdapter;
   /** 记忆图（G）：是否在 dedup 决策后建边（配置项，默认开） */
   enableMemoryLinks?: boolean;
+  /** #134 写面策略（W1/W2；缺省全关）。 */
+  writePolicy?: WritePolicy;
 }): Promise<MemoryRecord[]> {
-  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, enableMemoryLinks = true } = params;
+  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, enableMemoryLinks = true, writePolicy } = params;
   const storedRecords: MemoryRecord[] = [];
 
   // Build a map from record_id → decision
@@ -1169,6 +1175,7 @@ async function applyDecisions(params: {
         vectorStore,
         embeddingService,
         storage,
+        writePolicy,
       });
 
       if (record) {
@@ -1246,6 +1253,8 @@ async function storeAllDirectly(
   enableMemoryLinks = true,
   /** S1：similar 边最低相似度门槛（memory.links.minSimilarity），缺省 = MIN_SIMILAR_STRENGTH。 */
   minSimilarity: number = MIN_SIMILAR_STRENGTH,
+  /** #134 写面策略（W1/W2；缺省全关=逐位现状）。 */
+  writePolicy?: WritePolicy,
 ): Promise<MemoryRecord[]> {
   const storedRecords: MemoryRecord[] = [];
   // G4（T9-B）：同批排除——批内新记忆不互当"最相关旧记忆"（对照 dedup 路径的
@@ -1278,6 +1287,7 @@ async function storeAllDirectly(
         vectorStore,
         embeddingService,
         storage,
+        writePolicy,
       });
       logger?.info?.(`${TAG} storeAllDirectly: memory ${memIdx + 1}/${memoriesWithIds.length} writeMemory done id=${memoryWithId.record_id}`);
       if (record) {
