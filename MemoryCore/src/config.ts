@@ -123,6 +123,12 @@ export interface RecallConfig {
   enabled: boolean;
   /** Max results to return (default: 5) */
   maxResults: number;
+  /**
+   * #135 R1（检索融合 spec）：hybrid 候选池上游上限 candidateK（FTS/向量两通道各自取
+   * 前 candidateK 进融合）。缺省 undefined = maxResults*3（逐位现状——T1 实测扩池实验
+   * 被此隐式上限锁死）；正整数 floor 生效，非法/非有限 = 缺省。
+   */
+  candidateK?: number;
   /** Max characters injected for a single recalled L1 memory. 0 disables the per-memory limit. */
   maxCharsPerMemory: number;
   /** Max total characters injected for all recalled L1 memories. 0 disables the total limit. */
@@ -1832,6 +1838,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     recall: {
       enabled: bool(recallGroup, "enabled") ?? true,
       maxResults: num(recallGroup, "maxResults") ?? 5,
+      // #135 R1：候选池上游上限（缺省 undefined = maxResults*3 逐位现状；正整数才生效）
+      candidateK: (() => {
+        const raw = num(recallGroup, "candidateK");
+        return raw !== undefined && Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : undefined;
+      })(),
       maxCharsPerMemory: num(recallGroup, "maxCharsPerMemory") ?? 0,
       maxTotalRecallChars: num(recallGroup, "maxTotalRecallChars") ?? 0,
       scoreThreshold: num(recallGroup, "scoreThreshold") ?? 0.3,

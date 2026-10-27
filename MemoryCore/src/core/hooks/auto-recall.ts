@@ -2052,6 +2052,8 @@ async function searchMemories(
       // Batch C C-b（#77 伴生 · survey F6b）：衰减乘子/时间锚回退（cfg 透传——缺省关=逐位现状）
       cfg.recall?.ageDecay?.enabled === true ? { halfLifeDays: cfg.recall.ageDecay.halfLifeDays } : undefined,
       cfg.recall?.timeProxFallbackEnabled === true,
+      // #135 R1：候选池上游上限配置化（缺省 undefined = maxResults*3 逐位现状）
+      cfg.recall?.candidateK,
     );
     // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
     // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
@@ -2281,6 +2283,12 @@ export async function searchHybrid(
   ageDecay?: { halfLifeDays: number; floor?: number },
   /** Batch C C-b：timeProx 时间锚回退（缺省 false = 逐位现状；true 时 occurredAt 缺失回退 createdAt）。 */
   timeProxFallbackEnabled?: boolean,
+  /**
+   * #135 R1（检索融合 spec）：候选池上游上限 candidateK 配置化。缺省 undefined =
+   * maxResults*3（逐位现状——T1 实测 pool32 被 3x 上限锁死，kept 仅 +0.16 的根因）。
+   * 由 searchMemories 从 cfg.recall.candidateK 透传；正整数才生效（config 层 clamp）。
+   */
+  candidateKOverride?: number,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -2299,7 +2307,8 @@ export async function searchHybrid(
       }
     : undefined;
   // Run keyword and embedding searches in parallel
-  const candidateK = maxResults * 3; // retrieve more for merging
+  // #135 R1：candidateK 配置化（缺省 3x = 逐位现状；cfg.recall.candidateK 解锁扩池）
+  const candidateK = candidateKOverride ?? maxResults * 3; // retrieve more for merging
 
   const [keywordResult, embeddingResult] = await Promise.all([
     // Keyword search: FTS5 only (no in-memory fallback)
