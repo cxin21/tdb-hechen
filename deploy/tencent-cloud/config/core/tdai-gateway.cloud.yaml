@@ -223,6 +223,12 @@ memory:
       truncateMode: sentences  # 截断粒度：sentences=句边界；缺省 chars=码点硬截
       # ⚠️ 2026-10-26 审计：原 textHitMaxTokenRatio（#99 F1 万词面 token 剔除）已退役，
       # config.ts:1884 注释明写静默忽略 → 已删除，避免「看起来开了」的假配置。
+      # ── #138（2026-10-28）：结论层查询路由 ──
+      # assistantRecall = 「回忆 assistant 自己先前输出」的查询（you said/recommended/wrote…）
+      # 整层跳过结论层：结论卡只蒸馏 user 侧事实，对这类问题系统性不相关，注入只会挤掉承载答案的
+      # assistant 轮。bench LME90：该桶 cov 66.7→80.0（回到基线）、90 题路由命中 13/15 assistant 桶、
+      # 其余五桶 0/75（零附带伤害）。off = 逐位现状（缺省）。
+      routing: assistantRecall
 
     # ── #77 Batch C（survey F6b，2026-10-20 拍板开启）：检索期年龄衰减乘子 + 时间锚回退 ──
     # ageDecay：composite 打分 timeFactor 乘子 0.5^(ageDays/halfLifeDays)（floor 0.05；无时间锚不乘）。
@@ -251,7 +257,9 @@ memory:
       #             「摘要 + 源证据」成对补信息，注入总行数 ≤ maxResults + maxExtraLines。
       # 生产 journal 实测（2485 条）：结论层命中 49.6%、其中经验层 ≤1 行 98.4%、回捞触发 0.2%
       # → 问题在「结论层吃满窗口 + 回捞选错证据」，不在结论卡本身（见 docs/optimization-results.md §14）。
-      budget: shared
+      # #138 定档（2026-10-28 bench：add×4 判对 84.4% 不降、经验层 ≤1 行 36.7%→1.1%；
+      # add×2/4/6 扫参 4→6 饱和）→ 云端同步 additive。
+      budget: additive
       # 回捞证据行按查询 token 命中数排序（缺省 true = 质量修复：先选最可能是答案的源证据，
       # 且第一轮每卡至多 1 条）；false = 回滚旧序（store 返回序）。
       relevanceRanked: true

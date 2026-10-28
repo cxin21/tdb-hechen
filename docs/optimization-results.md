@@ -582,3 +582,48 @@ temporal +3.3pp；**single-session-assistant −13.3pp、preference −10pp**—
 2. **生产无 gold**：判对只能在 bench 复核；生产侧看结构指标（经验行分布、表示占比、回捞触发率）+ 抽样可答性，
    灰度前后对照即可判定 additive 是否在生产同样生效。
 3. `turnCov@k` 口径对「注入行数 > k」的档不公平，后续评测应改用「注入集覆盖率」而非固定 k 切片。
+
+### 14.6 生产落地（2026-10-28，非灰度开关：只改读侧预算与路由）
+
+**改动（本机生产网关，`MemoryCore/tdai-gateway.yaml`）**
+
+| 键 | 旧值 | 新值 | 回退 |
+|---|---|---|---|
+| `memory.recall.smallToBig.budget` | `shared` | `additive` | 一行改回 |
+| `memory.recall.smallToBig.relevanceRanked` | true（缺省） | true（显式） | 一行改 false |
+| `memory.recall.conclusionLayer.routing` | （缺键=off） | `assistantRecall` | 删键/改 off |
+
+网关按生产 SOP 重启（`node --import logtee --import tsx src/gateway/server.ts`，新日志
+`tdai-core-20261028-100716.*`），`127.0.0.1:8420` 恢复监听、`/v3/recall` 200。
+
+**活体探针前后对照**（`scripts/audit/r138-live-probe.mjs`，只读 `/v3/recall`）
+
+| 探针查询 | 重启前 | 重启后 |
+|---|---|---|
+| 中文事实型（采购测试环境地址） | cc=2 / ec=2，3 行 | cc=2 / ec=2，4 行（`s2b.candidates=0`） |
+| 中文更新型（云文库二期调研进度） | cc=1 / ec=2，3 行 | cc=1 / ec=2，3 行 |
+| **assistant 回忆型（"Can you remind me …you told me…"）** | **cc=2 / ec=0，2 行** | **cc=0 / ec=2，2 行（layered=false，路由生效）** |
+| 建议请求型（"Can you recommend…"） | cc=2 / ec=0 | cc=2 / ec=0（走 fts-only 降级帽，见下） |
+
+`gates.smallToBig` 首次出现在生产 journal（`mode=additive, ranked=true, candidates, kept`）——
+本票要求的「生产可观测」已落地，后续灰度可直接量 `kept/candidates` 而不是猜。
+
+**探针揭示的两件生产事实（写进遗留）**
+
+1. **结论卡大多没有 part_of 证据边**：两个中文查询 `s2b.candidates=0`，回捞天然不触发——
+   这是生产回捞率 0.2% 的主因（不是 `maxExtraLines` 太小）。`budget=additive` 在「无证据边」时
+   退化为 shared 语义（上下文行为 0），不会误伤。
+2. **fts-only 降级帽会掩盖预算实验**：英文查询 `embeddingHits=0`（余弦门槛 0.3 过滤）触发
+   `ftsOnlyInjectCap=2`，注入被裁到 2 行（头部=结论行）——与 additive 无关，探针/灰度分析必须先
+   排除 `embeddingHits=0` 的样本，否则会把降级裁剪切当成预算效果。
+
+### 14.7 需要重新设计的部分（本轮已做 / 待后续票）
+
+| 项 | 判断 | 本轮处置 |
+|---|---|---|
+| 覆盖率口径 `turnCov@k` 对「注入行 > k」的档不公平 | **已重设计** | bench metrics 新增 `turnCovInjected / sessionCovInjected / injectedLines`（旧键保留，口径连续） |
+| assistant 桶被结论卡挤占 | **已重设计（路由）** | `conclusionLayer.routing=assistantRecall`：纯规则识别「回忆 assistant 输出」，90 题命中 13/15 assistant 桶、其余五桶 0/75；retrieval 侧 cov 66.7→80.0 |
+| 结论卡只蒸馏 user 侧事实（路由只是权宜） | **待后续（#141 方向）** | 根治要写入面双源蒸馏（结论卡覆盖 assistant 侧），或按题型预算路由；本轮不动写入面 |
+| 生产结论卡缺 part_of 证据链 | **待后续（写入面）** | 生产 `candidates=0` 是回捞不工作的主因；需要 consolidation 在产卡时落证据边（本票只读侧，不动写链） |
+| `ftsOnlyInjectCap` 与预算观测混淆 | **已登记** | 灰度分析需按 `embeddingHits>0` 过滤样本；未改代码（改它会动降级语义，另立票） |
+
