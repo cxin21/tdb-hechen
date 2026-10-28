@@ -24,7 +24,9 @@ import {
 } from "./lib/bench/datasets.mjs";
 import {
   applyWriteSteps,
+  assertExpectedConfig,
   copyOverrideFrom,
+  effectiveRecallSnapshot,
   ingestCase,
   loadBenchConfig,
   makeRecall,
@@ -32,13 +34,15 @@ import {
   openBenchStore,
   prepareBenchYaml,
   reembedFactKeys,
+  parseExpectConfig,
   repoRoot,
   withEmbedCache,
 } from "./lib/bench/store.mjs";
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
 import { aggregate, evalRetrieval, makeIdResolver, normHead, tokenF1 } from "./lib/bench/metrics.mjs";
 import { FACTS_PROMPT_VERSION, factsCoverage, factsForCase } from "./lib/bench/facts.mjs";
-import { CONCLUSIONS_PROMPT_VERSION, conclusionsForCase } from "./lib/bench/conclusions.mjs";
+import { CONCLUSIONS_PROMPT_VERSION } from "./lib/bench/conclusions.mjs";
+import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "./lib/bench/stages.mjs";
 import {
   buildAnswerPrompt,
   buildJudgePrompt,
@@ -66,6 +70,15 @@ function num(name, dflt) {
 function flag(name) {
   return argv.includes("--" + name);
 }
+/** 取值参数：裸 flag（后面紧跟 -- 或到底）必须显式失败，不能静默退化成默认路径。 */
+function strArg(name, dflt) {
+  const v = arg(name, dflt);
+  if (v === true) {
+    console.error(`[bench] --${name} 需要一个值（只给了裸 flag）；已中止，避免静默走默认路径白跑。`);
+    process.exit(2);
+  }
+  return v;
+}
 
 if (flag("help") || argv.length === 0) {
   console.log(`记忆系统基准评测
@@ -74,8 +87,12 @@ if (flag("help") || argv.length === 0) {
   --samples N                    LoCoMo 样本数（每样本含 18–26 题）
   --limit N                      题目数上限（默认全部）
   --gen-limit N                  生成+判分题数上限（默认 = limit；0 = 只测检索）
-  --conclusion-cards             W3 结论卡档（蒸馏+part_of+smallToBig 回捞）
-  --conclusion-max-extra N       W3 上下文行全局帽（缺省 2）
+  --conclusion-cards             W3 **写入面**：蒸馏结论卡 + work_fact 落库 + part_of 证据链
+  --small-to-big                 W3 **读侧**：开 recall.smallToBig 证据回捞（#139 拆分；不再隐含于 --conclusion-cards）
+  --small-to-big-off             显式关读侧（复用库会继承 yaml；归因「读侧关」档必须用它）
+  --conclusion-layer-off         连结论层注入一起关（归因表「无卡基线」档）
+  --small-to-big-max-extra N     读侧上下文行帽（缺省取 --conclusion-max-extra）
+  --conclusion-max-extra N       读侧上下文行帽别名（缺省 2）
   --conclusion-cap N             #138 结论行条数上限（conclusionLayer.maxConclusions；缺省 floor(maxResults/2)）
   --conclusion-budget-mode M     #138 上下文行预算归属 shared|additive（缺省 shared=逐位现状）
   --conclusion-legacy-rank       #138 回滚证据排序（旧序=store 返回序）
@@ -87,7 +104,9 @@ if (flag("help") || argv.length === 0) {
   --rerank-mode filter|rerank   #135 R4 精排试验：filter=floor 只滤不清排（保原序）；缺省 rerank
   --rerank-blend X              #137-F 精排试验：精排分与检索融合分的混合比例 α∈[0,1]（0=纯精排=旧行为）
   --rerank-timeout MS           精排超时（毫秒；本机 onnx 冷加载可能 >5s，冷启动档放宽到 30000）
+  --rerank-filter-only [floor]  精排降级为过滤器（**必须同时加 --rerank-child-proc**，否则直接退出码 2）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
+  --rerank-child-proc            精排子进程隔离（onnx 原生崩溃防护；--rerank-filter-only 依赖此路径）
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
   --validity-mode soft|hard      #136 效期策略：soft=失效行降权保留（仅当下意图+有更新行才硬丢）
@@ -95,6 +114,7 @@ if (flag("help") || argv.length === 0) {
   --fact-channel                 #137 事实键平行通道试验档（隐含 --fact-extract；事实短语键另写 l1_fact_vec + 沙箱 yaml recall.factChannel）
   --fact-channel-read-only       只开读侧（沙箱 recall.factChannel），不写通道向量——在已灌库上迭代融合参数的零外呼档
   --fact-channel-weight N        #137 事实通道融合权重（缺省 0.6；只进沙箱 yaml，不改写侧）
+  --fact-channel-off             #137 对照档：显式关读侧事实通道（生产 yaml 已开，复跑旧基线必须用它）
   --fact-max-facts N             #137 事实通道键的事实条数上限（缺省 5；即 buildFactChannelKey 的 maxFacts）
   --mmr                          B2-b：沙箱 yaml 开 MMR 多样性重排（recall.mmr.enabled）
   --mmr-lambda X                 B2-b：MMR λ（缺省 0.7；1=纯相关序）
@@ -107,12 +127,15 @@ if (flag("help") || argv.length === 0) {
   --pace N                       每题之间停顿毫秒（默认 0；限流账号建议 300）
   --prod-config <path>           生产 yaml（默认 MemoryCore/tdai-gateway.yaml）
   --prod-data <dir>              生产 dataDir（默认 TDAI_DATA_DIR 或 yaml data.baseDir）
+  --expect-config k=v[,k=v]      生效配置自检（如 recall.rerank.enabled=false）；不符即退出码 2，防白跑整档
+  --no-write-steps               --store 复用库时跳过分阶段写入（纯读侧档：库里状态保持不变）
+  --report-name <name>           报告文件名（不含扩展名）；arms 脚本按 tag 定位报告时必传
   --quiet                        只打最终摘要
 `);
   process.exit(0);
 }
 
-const datasetName = String(arg("dataset", "")).toLowerCase();
+const datasetName = String(strArg("dataset", "")).toLowerCase();
 if (!datasetName) {
   console.error("缺少 --dataset longmemeval|locomo");
   process.exit(2);
@@ -169,7 +192,7 @@ async function main() {
   const ds = loadDataset(datasetName, dataPath, { samples: num("samples", 0) });
   // B0（bench/recall-opt）：--manifest 抽样——caseId 清单顺序即运行序。配对比较（McNemar /
   // paired bootstrap）要求两轮跑完全相同的题集，固定 seed 生成一次 manifest 后永久复用。
-  const manifestArg = arg("manifest", undefined);
+  const manifestArg = strArg("manifest", undefined);
   let cases = ds.cases;
   let manifestUsed = null;
   if (manifestArg && manifestArg !== true) {
@@ -201,6 +224,13 @@ async function main() {
   // 用于在已灌好 fact 向量的库上迭代融合参数（权重/模式），零重复 embedding 外呼。
   const factChannel = flag("fact-channel");
   const factChannelReadOnly = flag("fact-channel-read-only");
+  // 复跑历史档要用：生产 yaml 自 #137 起 recall.factChannel.enabled=true，复用的沙箱库
+  // 会继承它 —— 没有 off 开关就无法复现「无事实通道」的旧基线（#135-1 同源漂移）。
+  const factChannelOff = flag("fact-channel-off");
+  if (factChannelOff && (factChannel || factChannelReadOnly)) {
+    console.error("[bench] --fact-channel-off 与 --fact-channel/--fact-channel-read-only 互斥；已中止。");
+    process.exit(2);
+  }
   const fcWeightArg = num("fact-channel-weight", 0.6);
   const factChannelWeight = Number.isFinite(fcWeightArg) ? fcWeightArg : 0.6;
   const fcMaxFactsArg = num("fact-max-facts", 5);
@@ -220,7 +250,7 @@ async function main() {
     : null;
   // #137：沙箱 yaml memory.recall.factChannel（生产 config.ts 同名字段；缺省无此键 = 通道关）。
   // weight 只影响读侧融合，写侧灌库与权重无关。
-  const factChannelOverride = factChannel ? { enabled: true, weight: factChannelWeight } : undefined;
+  const factChannelOverride = factChannel ? { enabled: true, weight: factChannelWeight } : factChannelOff ? { enabled: false } : undefined;
   const factCacheDir = String(arg("fact-cache", path.join(repo, ".eval-data", "bench", "facts-cache")));
   const factBatchSize = num("fact-batch-size", 20);
   const factConcurrency = num("fact-concurrency", 8);
@@ -248,6 +278,41 @@ async function main() {
   const conclusionLegacyRank = flag("conclusion-legacy-rank");
   // #138：结论层查询路由（assistantRecall = 回忆 assistant 输出的查询跳过结论层）
   const conclusionRouting = String(arg("conclusion-routing", "off")) === "assistant-recall" ? "assistantRecall" : "off";
+  // #139 第5项归因补充：无卡基线档（连结论层注入都关），用于把「卡本身」与「回捞」分离。
+  const conclusionLayerOff = flag("conclusion-layer-off");
+  // #139 第5项：W3 写/读开关拆分。--conclusion-cards 只开**写入面**（蒸馏 + work_fact 落库 + part_of 链）；
+  // **读侧回捞**（recall.smallToBig 证据回捞）改由 --small-to-big 独立开关控制。
+  // 历史语义（--conclusion-cards 同时开两面）导致 +10pp 无法归因：无法区分是"结论卡进了候选池"
+  // 还是"smallToBig 把证据行捞回来"。拆分后两档各跑一次即可归因。
+  const smallToBigEnabled = flag("small-to-big");
+  // --small-to-big-off：显式关读侧。归因必需——复用库（--store）常继承上一档 yaml 里的
+  // smallToBig.enabled=true，只「不加 --small-to-big」并不能真的关掉（--expect-config 会把它抓出来）。
+  const smallToBigOff = flag("small-to-big-off");
+  if (smallToBigEnabled && smallToBigOff) {
+    console.error("[bench:error] --small-to-big 与 --small-to-big-off 互斥");
+    process.exit(2);
+  }
+  const smallToBigMaxExtraArg = num("small-to-big-max-extra", conclusionMaxExtra);
+  const smallToBigMaxExtra = Number.isFinite(smallToBigMaxExtraArg) && smallToBigMaxExtraArg >= 0 ? Math.floor(smallToBigMaxExtraArg) : conclusionMaxExtra;
+  if (flag("conclusion-cards") && !smallToBigEnabled) {
+    log("[bench] W3 只开写入面（--conclusion-cards 不再隐含读侧回捞）：需要 smallToBig 回捞请加 --small-to-big");
+  }
+  // #135 第1项：--expect-config key=value[,key=value] 生效配置自检（灌库前失败，避免白跑整档）。
+  const expectConfigRaw = arg("expect-config", undefined);
+  if (expectConfigRaw === true) {
+    console.error("[bench:error] --expect-config 需要 key=value（例如 recall.rerank.enabled=false）");
+    process.exit(2);
+  }
+  let expectConfig = null;
+  if (expectConfigRaw !== undefined) {
+    try {
+      expectConfig = parseExpectConfig(String(expectConfigRaw));
+    } catch (e) {
+      // 参数错误统一 exit 2（与 run 内断言失败区分：断言失败也是 2，二者都是"没跑起来"）。
+      console.error(`[bench:error] --expect-config 解析失败: ${e?.message ?? e}`);
+      process.exit(2);
+    }
+  }
 
   // ── 按 groupKey 分组灌库 ──
   const groups = new Map();
@@ -266,11 +331,9 @@ async function main() {
     log(`[bench] facts-only 离线抽取: model=${fmodel} cache=${factCacheDir} 组=${groups.size}`);
     const t0 = Date.now();
     let done = 0;
-    let hits = 0;
     let nextIdx = 0;
-    const cov = { turns: 0, turnsWithFacts: 0, phrases: 0 };
-    const usage = { prompt: 0, completion: 0 };
-    let failedBatches = 0;
+    // #139 第2项：统计累加只有 mergeStageStats 一份实现（与灌库主循环/分阶段写入同口径）。
+    const stage = createStageStats();
     const groupList = [...groups.values()];
     // case 级并行：单 case 内部再按 factBatchSize 并发；两侧并行度相乘 =
     // in-flight 外呼数（抽取是本轮唯一的长尾，串行 case 会拖到小时级）。
@@ -289,33 +352,31 @@ async function main() {
           concurrency: batchWorkers,
           logger: { warn: (m) => log("[bench:warn] " + m) },
         });
-        if (fx.cacheHit) hits++;
-        else if (fx.usage) {
-          usage.prompt += fx.usage.prompt ?? 0;
-          usage.completion += fx.usage.completion ?? 0;
-        }
-        if (fx.failedBatches) failedBatches += fx.failedBatches;
-        const c = factsCoverage(fx.facts.byTurn);
-        cov.turns += c.turns;
-        cov.turnsWithFacts += c.turnsWithFacts;
-        cov.phrases += c.phrases;
+        // #139 第4项：缓存命中也带 usage（真值或 estimated-cache 回落），一律入账并标注来源。
+        mergeStageStats(stage, { facts: fx });
         done++;
         if (done % 5 === 0 || done === groupList.length) {
-          log(`[bench] facts-only ${done}/${groupList.length}（缓存命中 ${hits}；覆盖 turn ${cov.turnsWithFacts}/${cov.turns}，短语 ${cov.phrases}）耗时=${((Date.now() - t0) / 1000).toFixed(0)}s`);
+          const fs1 = stage.facts;
+          log(`[bench] facts-only ${done}/${groupList.length}（缓存命中 ${fs1.cacheHits}；覆盖 turn ${fs1.turnsWithFacts}/${fs1.turns}，短语 ${fs1.phrases}）耗时=${((Date.now() - t0) / 1000).toFixed(0)}s`);
         }
       }
     }));
-    log(`[bench] facts-only 完成：组 ${groups.size}（缓存命中 ${hits}），短语 ${cov.phrases}，LLM usage prompt=${usage.prompt} completion=${usage.completion}`);
+    const fs1 = stage.facts;
+    const tok = tokenEvidence(fs1);
+    log(
+      `[bench] facts-only 完成：组 ${fs1.groups}（缓存命中 ${fs1.cacheHits}；来源 ${JSON.stringify(fs1.usageBySource)}），短语 ${fs1.phrases}，` +
+        `LLM usage prompt=${fs1.usage.prompt} completion=${fs1.usage.completion}${tok.hasEstimated ? "（含估算，" + tok.estimatedCalls + " 组）" : ""}`,
+    );
     // 抽取失败批非 0 退出（门禁链可判：抽取全失败不能静默当成功）
-    if (failedBatches > 0) {
-      console.error(`[bench] facts-only 失败批 ${failedBatches} 个——抽取不完整，退出码 1`);
+    if (fs1.failedBatches > 0) {
+      console.error(`[bench] facts-only 失败批 ${fs1.failedBatches} 个——抽取不完整，退出码 1`);
       process.exit(1);
     }
     process.exit(0);
   }
 
   // ── 沙箱库 ──
-  const reuse = arg("store", undefined);
+  const reuse = strArg("store", undefined);
   const storeDir = makeStoreDir(ds.name, typeof reuse === "string" ? reuse : undefined);
   const reuseMode = typeof reuse === "string";
   log(`[bench] 库目录: ${storeDir}${reuseMode ? "（复用）" : ""}`);
@@ -362,6 +423,12 @@ async function main() {
     rerankFilterOnly = true;
     const fl = rfo === true ? -7 : Number(rfo);
     if (Number.isFinite(fl)) rerankFilterFloor = fl;
+  }
+  // #135 第2项：--rerank-filter-only 只在 rerankChildProc 路径（ChildProcessReranker）生效，
+  // 不加 --rerank-child-proc 等于静默无效（一档白跑）。这里显式失败，别让它悄悄变成控制档。
+  if (rerankFilterOnly && !flag("rerank-child-proc")) {
+    console.error("[bench] --rerank-filter-only 需要 --rerank-child-proc（filter 模式只在该路径生效）；已中止，避免白跑一档。");
+    process.exit(2);
   }
   // #135 R2/E1（bench/recall-opt）：--fusion '<json>' 加权融合试验档（recall.fusion，沙箱 yaml）。
   // 例：--fusion '{"mode":"weighted","dense":0.4,"bm25":0.3,"recency":0.2,"validity":0.1,"recencyHalfLifeDays":30}'
@@ -423,27 +490,42 @@ async function main() {
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
-    ...(conclusionCards ? {
-      smallToBigOverride: {
-        enabled: true,
-        maxExtraLines: conclusionMaxExtra,
-        budget: conclusionBudgetMode,
-        relevanceRanked: !conclusionLegacyRank,
-      },
-      ...(conclusionCap !== undefined || conclusionRouting !== "off"
-        ? { conclusionLayerOverride: { ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), ...(conclusionRouting !== "off" ? { routing: conclusionRouting } : {}) } }
-        : {}),
-    } : {}),
+    // #139 第5项：读侧 smallToBig 独立于写侧 conclusionCards（拆分后两档可分别归因）。
+    ...(smallToBigEnabled || smallToBigOff
+      ? {
+          smallToBigOverride: {
+            enabled: smallToBigEnabled,
+            ...(smallToBigEnabled ? { maxExtraLines: smallToBigMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank } : {}),
+          },
+        }
+      : {}),
+    // conclusionLayer 是**读侧**（注入层）参数：maxConclusions/routing 不该被写侧开关 gate 掉，
+    // 否则「不加 --conclusion-cards 就用不上 --conclusion-cap/--conclusion-routing」= 静默退化。
+    // --conclusion-layer-off：连卡本身都不注入——归因表要的「无卡基线」档。
+    ...(conclusionLayerOff || conclusionCap !== undefined || conclusionRouting !== "off"
+      ? {
+          conclusionLayerOverride: {
+            ...(conclusionLayerOff ? { enabled: false } : {}),
+            ...(!conclusionLayerOff && conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}),
+            ...(!conclusionLayerOff && conclusionRouting !== "off" ? { routing: conclusionRouting } : {}),
+          },
+        }
+      : {}),
     ...(factChannelOverride ? { factChannelOverride } : {}),
   });
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
-  if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank }) + " conclusionLayer=" + JSON.stringify({ ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), routing: conclusionRouting }));
+  if (conclusionCards) log("[bench] W3 写入面试验档(仅沙箱 yaml): 蒸馏 + part_of 证据链落库");
+  if (conclusionLayerOff) log("[bench] 结论层整体关闭（--conclusion-layer-off）：无卡基线档");
+  if (conclusionCap !== undefined || conclusionRouting !== "off") log("[bench] 结论层读侧试验档(仅沙箱 yaml): " + JSON.stringify({ ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), routing: conclusionRouting }));
+  if (smallToBigEnabled) log("[bench] W3 读侧 smallToBig 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, maxExtraLines: smallToBigMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank }));
+  if (smallToBigOff) log("[bench] W3 读侧 smallToBig 显式关闭（--small-to-big-off）");
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));
   if (fusionOverride) log("[bench] R2 融合试验档(仅沙箱 yaml): " + JSON.stringify(fusionOverride));
   if (candidateKOverride !== undefined) log("[bench] R1 候选池上限试验档(仅沙箱 yaml): candidateK=" + candidateKOverride);
   if (presentTemporalOverride) log("[bench] R3 时间感知试验档(仅沙箱 yaml): " + JSON.stringify(presentTemporalOverride));
+  if (factChannelOff) log("[bench] #137 事实键平行通道显式关闭（--fact-channel-off）：复跑无通道基线用");
   if (factChannelOverride) {
     log(
       "[bench] #137 事实键平行通道试验档(仅沙箱 yaml): recall.factChannel=" +
@@ -453,8 +535,34 @@ async function main() {
   }
 
   const { cfg } = await loadBenchConfig(storeDir);
+  // #135 第1项：回读**最终生效**配置并落报告/断言。生产 config-override.json 会覆盖沙箱 yaml
+  // （rerank.enabled=true 吞掉 enabled:false 的教训），只信解析后的 cfg，不信自己写过什么。
+  const effectiveConfig = effectiveRecallSnapshot(cfg);
+  for (const [k, v] of Object.entries(effectiveConfig)) log(`[bench] cfg ${k}=${JSON.stringify(v)}`);
+  // #135 第2项残留：--rerank-filter-only 的 filter 模式只在 ChildProcessReranker 里生效，
+  // 而 store 只在 rerankChildProc && rerank.enabled && provider==='local' 时建子进程。
+  // 所以 rerank.enabled 被关掉时，--rerank-child-proc 是空转、--rerank-filter-only 静默失效
+  // （一档白跑）。这里对解析后的生效配置断言，别只校验 flag 有没有传。
+  if (rerankFilterOnly && cfg.recall?.rerank?.enabled !== true) {
+    console.error(
+      "[bench] --rerank-filter-only 需要 rerank.enabled=true（当前生效值 enabled=" +
+        JSON.stringify(cfg.recall?.rerank?.enabled) +
+        "，provider=" + JSON.stringify(cfg.recall?.rerank?.provider) +
+        "）：filter 模式只在 local 子进程精排路径生效；已中止，避免白跑一档。",
+    );
+    process.exit(2);
+  }
+  if (expectConfig) {
+    try {
+      assertExpectedConfig(effectiveConfig, expectConfig);
+      log("[bench] --expect-config 通过: " + JSON.stringify(expectConfig));
+    } catch (e) {
+      console.error("[bench] " + String(e?.message ?? e));
+      process.exit(2);
+    }
+  }
   const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
-  log(`[bench] 存储=${cfg.storeBackend} 向量维=${dims} bm25=${cfg.bm25?.enabled ? "on" : "off"} 精排=${cfg.recall?.rerank?.provider ?? "none"}`);
+  log(`[bench] 存储=${cfg.storeBackend} 向量维=${dims} bm25=${cfg.bm25?.enabled ? "on" : "off"} 精排=${cfg.recall?.rerank?.provider ?? "none"}(enabled=${cfg.recall?.rerank?.enabled === true})`);
   if (init && init.needsReindex) log("[bench] 警告: store.init 要求重建索引（embedding 维度变化）");
 
   log(`[bench] 记忆语料组=${groups.size}（每组一次灌库 + 组内题目检索）`);
@@ -475,8 +583,10 @@ async function main() {
     if (factExtract) log(`[bench] 事实抽取: model=${factModel} cache=${factCacheDir} dualWrite=${factDualWrite} supersede=${writeSupersede}`);
     if (conclusionCards) log(`[bench] 结论卡蒸馏: model=${factModel} max=${conclusionMax} cache=${factCacheDir}`);
   }
-  const factStats = { groups: 0, cacheHits: 0, turns: 0, turnsWithFacts: 0, phrases: 0, extractMs: 0, usage: { prompt: 0, completion: 0 }, failedBatches: 0 };
-  const conclusionStats = { groups: 0, cacheHits: 0, cards: 0, ms: 0 };
+  // #139 第2项：抽取/蒸馏计数走 stages.mjs 单一实现（缓存命中与实抽同口径，含 token 来源分桶）。
+  const stageStats = createStageStats();
+  const factStats = stageStats.facts;
+  const conclusionStats = stageStats.conclusions;
 
   if (!reuseMode) {
     const t0 = Date.now();
@@ -484,61 +594,37 @@ async function main() {
     for (const [key, g] of groups) {
       gi++;
       const contentIndex = new Map();
-      // W1/W2：本组语料的事实抽取（缓存优先；命中零外呼）
-      let fx = null;
-      if (factExtract) {
-        fx = await factsForCase({
-          caseObj: g.corpus,
-          cacheDir: factCacheDir,
-          llm: factLlm,
-          model: factModel,
-          batchSize: factBatchSize,
-          concurrency: factConcurrency,
-          logger: { warn: (m) => log("[bench:warn] " + m) },
-        });
-        factStats.groups++;
-        if (fx.cacheHit) factStats.cacheHits++;
-        else {
-          factStats.extractMs += fx.ms ?? 0;
-          if (fx.failedBatches) factStats.failedBatches += fx.failedBatches;
-          if (fx.usage) {
-            factStats.usage.prompt += fx.usage.prompt ?? 0;
-            factStats.usage.completion += fx.usage.completion ?? 0;
-          }
-        }
-        const cov = factsCoverage(fx.facts.byTurn);
-        factStats.turns += cov.turns;
-        factStats.turnsWithFacts += cov.turnsWithFacts;
-        factStats.phrases += cov.phrases;
-      }
-      // W3：本组语料蒸馏结论卡（缓存优先）
-      let cc = null;
-      if (conclusionCards) {
-        cc = await conclusionsForCase({
-          caseObj: g.corpus,
-          cacheDir: factCacheDir,
-          llm: factLlm,
-          model: factModel,
-          maxCards: conclusionMax,
-        });
-        conclusionStats.groups++;
-        if (cc.cacheHit) conclusionStats.cacheHits++;
-        else conclusionStats.ms += cc.ms ?? 0;
-        conclusionStats.cards += cc.cards.length;
-      }
+      // 缓存优先；命中零外呼。未启用段返回 null（与历史「不抽就不计」等价）。
+      const fetched = await fetchFactsAndConclusions({
+        caseObj: g.corpus,
+        factCacheDir,
+        llm: factLlm,
+        model: factModel,
+        wantFacts: factExtract,
+        wantConclusions: conclusionCards,
+        factBatchSize,
+        factConcurrency,
+        conclusionMax,
+        logger: { warn: (m) => log("[bench:warn] " + m) },
+      });
+      mergeStageStats(stageStats, fetched);
       const st = await ingestCase({
         caseObj: g.corpus,
         store,
         embedding,
         contentIndex,
-        concurrency: num("concurrency", 1),
-        embedMinIntervalMs: embedIntervalMs,
-        ...(fx ? { facts: fx.facts } : {}),
-        ...(cc ? { conclusions: cc } : {}),
-        ...(factDualWrite ? { dualWrite: { enabled: true, separator: factSeparator, maxFactChars: factMaxChars } } : {}),
-        ...(factChannelOpts ? { factChannel: factChannelOpts } : {}),
-        ...(writeSupersede ? { supersede: true } : {}),
-        ...(cardinalityGate === false ? { cardinalityGate: false } : {}),
+        opts: {
+          concurrency: num("concurrency", 1),
+          embedMinIntervalMs: embedIntervalMs,
+          facts: fetched.facts?.facts,
+          conclusions: fetched.conclusions,
+          writePolicy: {
+            dualWrite: factDualWrite ? { enabled: true, separator: factSeparator, maxFactChars } : null,
+            factChannel: factChannelOpts,
+            supersede: writeSupersede,
+            cardinalityGate,
+          },
+        },
       });
       ingestStats.groups++;
       ingestStats.turns += st.turns;
@@ -597,7 +683,13 @@ async function main() {
   // ── W1/W2/W3 分阶段写入（--store 复用库：只补写本档差异，不重灌 turn）──
   // 语义等价于重灌：W1 只对「有事实」的 turn 重 embed 键（无事实 turn 键===原文，复用原向量）；
   // W2 只落 valid_end 标记；W3 只写结论卡 + part_of 链。embedding 外呼因此降到 1/N。
-  if (reuseMode && (factDualWrite || writeSupersede || conclusionCards || factChannelWrite)) {
+  // #139 第5项补充：读侧迭代档（--store 复用库）不该顺带触发写侧外呼——尤其
+  // 「库里已有结论卡、只想比 smallToBig 开/关」的归因场景。--no-write-steps 显式关掉本段。
+  const noWriteSteps = flag("no-write-steps");
+  if (noWriteSteps && reuseMode) {
+    log("[bench] --no-write-steps：跳过分阶段写入（只做读侧评估；写侧保持库内现状）");
+  }
+  if (reuseMode && !noWriteSteps && (factDualWrite || writeSupersede || conclusionCards || factChannelWrite)) {
     const t0 = Date.now();
     log(`[bench] 分阶段写入：dualWrite=${factDualWrite} supersede=${writeSupersede} conclusions=${conclusionCards} factChannel=${factChannelWrite}${factChannelReadOnly ? "（read-only 档：不写通道向量）" : ""}`);
     let gi2 = 0;
@@ -605,37 +697,23 @@ async function main() {
       gi2++;
       const records = [];
       for (const gg of g.corpus.groups) for (const t of gg.turns) records.push({ turn: t, sessionId: gg.sessionId });
-      let fx = null;
-      if (factDualWrite || writeSupersede || factChannelWrite) {
-        fx = await factsForCase({
-          caseObj: g.corpus,
-          cacheDir: factCacheDir,
-          llm: factLlm,
-          model: factModel,
-          batchSize: factBatchSize,
-          concurrency: factConcurrency,
-          logger: { warn: (m) => log("[bench:warn] " + m) },
-        });
-        const cov = factsCoverage(fx.facts.byTurn);
-        factStats.groups++;
-        if (fx.cacheHit) factStats.cacheHits++;
-        factStats.turns += cov.turns;
-        factStats.turnsWithFacts += cov.turnsWithFacts;
-        factStats.phrases += cov.phrases;
-      }
-      let cc = null;
-      if (conclusionCards) {
-        cc = await conclusionsForCase({
-          caseObj: g.corpus,
-          cacheDir: factCacheDir,
-          llm: factLlm,
-          model: factModel,
-          maxCards: conclusionMax,
-        });
-        conclusionStats.groups++;
-        if (cc.cacheHit) conclusionStats.cacheHits++;
-        conclusionStats.cards += cc.cards.length;
-      }
+      const fetched = await fetchFactsAndConclusions({
+        caseObj: g.corpus,
+        factCacheDir,
+        llm: factLlm,
+        model: factModel,
+        wantFacts: factDualWrite || writeSupersede || factChannelWrite,
+        wantConclusions: conclusionCards,
+        factBatchSize,
+        factConcurrency,
+        conclusionMax,
+        logger: { warn: (m) => log("[bench:warn] " + m) },
+      });
+      // #139 第2项：旧分阶段分支**完全不累加 conclusionStats.ms**，且缓存命中不计 usage；
+      // 统一走 mergeStageStats 后与灌库主循环同口径（缓存档 token 也可测）。
+      mergeStageStats(stageStats, fetched);
+      const fx = fetched.facts;
+      const cc = fetched.conclusions;
       if (factDualWrite || factChannelWrite) {
         const st = await reembedFactKeys({
           caseObj: g.corpus,
@@ -804,13 +882,26 @@ async function main() {
       scoreThreshold: cfg.recall?.scoreThreshold,
       queryExpansion: cfg.recall?.queryExpansion?.enabled ?? false,
       rerank: cfg.recall?.rerank?.provider ?? "none",
+      // #135 第1项：报告必须记 enabled（只记 provider 会掩盖"沙箱写 false、生产 override 覆盖成 true"）
+      rerankEnabled: cfg.recall?.rerank?.enabled === true,
+      // #139 第5项：读侧 smallToBig 与写侧 conclusionCards 分开归因
+      smallToBig: {
+        enabled: cfg.recall?.smallToBig?.enabled === true,
+        maxExtraLines: cfg.recall?.smallToBig?.maxExtraLines ?? null,
+        budget: cfg.recall?.smallToBig?.budget ?? null,
+        relevanceRanked: cfg.recall?.smallToBig?.relevanceRanked ?? null,
+        // 'on' / 'off' / null：null = 没指定，继承生产 yaml 的生效值（旧布尔分不清这两者）。
+        requested: smallToBigEnabled ? "on" : smallToBigOff ? "off" : null,
+      },
+      // #135 第1项：最终生效召回配置原始快照（--expect-config 断言对象，也是归因表的事实来源）
+      effectiveConfig,
       v3Recall: cfg.recall?.v3Recall?.enabled ?? false,
       k,
       recallKs: kList,
       answerModel: llmInfo?.model ?? null,
       judgeTemperature: 0,
       judgePromptVersion: PROMPT_VERSION,
-      tag: String(arg("tag", "")) || null,
+      tag: String(strArg("tag", "")) || null,
       manifest: manifestUsed,
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
       answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
@@ -852,6 +943,7 @@ async function main() {
             cardinalityGate: cardinalityGate !== false,
             cacheDir: factCacheDir,
             stats: factStats,
+            tokens: tokenEvidence(factStats),
           }
         : null,
       conclusionCards: conclusionCards
@@ -859,8 +951,9 @@ async function main() {
             promptVersion: CONCLUSIONS_PROMPT_VERSION,
             model: factModel,
             maxCards: conclusionMax,
-            maxExtraLines: conclusionMaxExtra,
+            maxExtraLines: smallToBigMaxExtra,
             stats: conclusionStats,
+            tokens: tokenEvidence(conclusionStats),
           }
         : null,
       ingest: ingestStats,
@@ -872,8 +965,12 @@ async function main() {
   };
 
   fs.mkdirSync(outDir, { recursive: true });
+  // #139：报告名可钉死（--report-name）——arms 脚本按 tag 定位报告，用「全局最新」在并行跑时会串味。
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const base = path.join(outDir, `${ds.name}-${stamp}`);
+  const reportNameArg = strArg("report-name", undefined);
+  const reportName = typeof reportNameArg === "string" && reportNameArg ? reportNameArg : `${ds.name}-${stamp}`;
+  if (/[\\/]/.test(reportName)) throw new Error("--report-name 只能是文件名，不能带路径分隔符");
+  const base = path.join(outDir, reportName);
   fs.writeFileSync(base + ".json", JSON.stringify(report, null, 2), "utf8");
   fs.writeFileSync(base + ".md", renderMarkdown(report), "utf8");
 

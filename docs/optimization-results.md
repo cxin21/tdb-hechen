@@ -692,3 +692,114 @@ temporal +3.3pp；**single-session-assistant −13.3pp、preference −10pp**—
 
 残余（不阻塞关票，均已外置）：路由档判对因 MiniMax 配额（402/429）未跑 → 另立票跟踪；
 part_of 覆盖率 10.5% → #155；结论卡单源 → #156；在线 24h 灰度观察 → 生产已上线，journal 自然积累。
+
+## 15. #139 bench harness 技术债 + W3 写/读拆分归因（2026-10-28）
+
+> **票面**：github #139 七项技术债（429 退避单一源 / 取数去重 / 缓存三件套 / 抽取 token 计量 /
+> W3 写读拆分 / ingestCase 写入策略 / arms 可移植且失败即非 0）+ #135 并入两项。
+> **用户口径**（贯穿本票）：「不要只尝试关闭开关——配置本身有益，错在使用或算法，要解决根因」。
+> 本票不改召回语义，只把「测量仪器」修准，并用它回答 §14 遗留的归因问题。
+
+### 15.1 三档口径（同一库、只改读侧开关）
+
+- 库：`STORE=/tmp/tdagemem-bench/lme90-r138-add4`（§14 add×4 全开基线库，结论卡与 part_of 边已落库），
+  三档**零重灌、零写侧外呼**，只切读侧开关；`--no-write-steps`（复用库跳过分阶段写入）。
+- 检索口径：`--gen-limit 0`（retrieval-only，只比召回覆盖率），manifest n=90 逐题配对，
+  `--pace 150`、rerank=local+blend0.9、candidateK32、factChannel 0.6、fusion normalized。
+- 命令：`bash scripts/run-139-w3split.sh all` → 报告 `MemoryCore/.eval-data/bench/139-w3-{control,write-only,read}.json`
+  （`--report-name` 钉死文件名，并行跑不再串味）。
+
+| 档 | 读侧配置 | 语义 |
+|---|---|---|
+| control | `--small-to-big-off --conclusion-layer-off` | 无卡基线：结论层整体关，注入里没有结论行 |
+| write-only | `--conclusion-cards --small-to-big-off` | 卡在库里且结论层开、**回捞关**（只看写入面） |
+| read | `--conclusion-cards --small-to-big --small-to-big-max-extra 4` | 卡 + 源证据回捞（§14 定档值） |
+
+### 15.2 三档结果（逐题均值，n=90）
+
+| 档 | 结论行/题 | 注入行/题 | blockChars/题 | turnCov@5 | sessionCov@5 | sessionAny@5 | nDCG@5 | MRR@5 | 召回均值 |
+|---|---|---|---|---|---|---|---|---|---|
+| control（无卡基线） | 0.00 | 3.93 | 1062 | **74.11%** | 88.37% | 98.89% | 0.742 | 0.791 | 1112ms |
+| write-only（有卡、无回捞） | 0.63 | 3.93 | 1009 | **70.78%** | 87.63% | 98.89% | 0.726 | 0.789 | 1414ms |
+| read（有卡 + 回捞 4 行） | 2.04 | 4.42 | 961 | **81.15%** | 93.19% | 100% | 0.878 | 0.811 | 1754ms |
+
+### 15.3 配对归因（逐题配对 + paired bootstrap 4000 次）
+
+| 对比 | turnCov@5 Δ[95%CI] | sessionCov@5 Δ | nDCG@5 Δ | MRR@5 Δ | 结论行 Δ | 升降题数 |
+|---|---|---|---|---|---|---|
+| control → write-only（卡的净效应） | **−3.33pp [−7.22, 0.00]** | −0.74pp [−3.33,+1.48] | −0.016 [−0.044,+0.008] | −0.002 | +0.63 [+0.51,+0.76] | 1↑ / 5↓ / 84= |
+| write-only → read（回捞的净效应） | **+10.37pp [+4.26, +16.67]** | +5.56pp [+1.11,+10.19] | +0.153 [+0.080,+0.225] | +0.022（ns） | +1.41 [+1.10,+1.73] | 17↑ / 3↓ / 70= |
+| control → read（完整 W3 的净效应） | **+7.04pp [+1.67, +12.59]** | +4.81pp [+0.56,+9.44] | +0.137 [+0.064,+0.208] | +0.020（ns） | +2.04 | 13↑ / 3↓ / 74= |
+
+门禁（`scripts/bench-gates.mjs` 配对）：
+
+| 配对 | 门禁1 缺口桶回收 | 门禁2 判对 | 结论 / exit |
+|---|---|---|---|
+| control → write-only | **FAIL**（13 个缺口桶，回收 0 题） | SKIP（retrieval-only 无 genCorrect） | 1 项 FAIL → exit 1 |
+| write-only → read | **PASS**（15 个缺口桶，回收 9 题） | SKIP（同上） | 通过（3 项 SKIP）→ exit 0 |
+
+### 15.4 判读（这就是票面第 5 项要的归因）
+
+1. **写入面本身不回收召回，且是轻微负项**：只落卡不打开回捞，turnCov@5 **−3.33pp**（CI 上界恰为 0），
+   13 个缺口桶**一题未回收**。机制与 §14.3 同源——结论行占用 shared 预算，把承载答案的经验行挤掉，
+   而卡片自己不带源证据，读侧就拿不到原文。**「有卡」≠「能答」。**
+2. **收益几乎全部来自读侧回捞**：write→read 的 **+10.37pp**（17 题升 / 3 题降 / 70 题持平）与
+   nDCG **+0.153**；同时注入行只 +0.49 行、blockChars 反而 −48（ns）——回捞是「把摘要行补成摘要+源证据行」，
+   **不是靠塞更多上下文**换来的。
+3. **完整 W3 相对无卡基线 +7.04pp**（CI 下界 +1.67>0）。所以「结论层有用」的成立条件被这次拆分钉死了：
+   **必须带 part_of 源证据回捞**；单独开卡会把 §14 的槽位挤压再犯一遍。
+   这与 §14.8.1 的生产短板（part_of 覆盖率仅 **10.5%**）直接对应——生产回捞触发率低不是 maxExtraLines 太小，
+   而是卡缺证据边（#155）。
+
+**一句话**：W3 的价值不在「写结论卡」，而在「结论卡 → 源证据回捞」这条链路；修测量仪器后，
+票面第 5 项的归因从「w3b 比 b1-off +10pp 说不清」变成三行可解释的账。
+
+### 15.5 技术债收敛落点（票面 7 项 + #135 两项）
+
+| 票面项 | 落点 | 验收 |
+|---|---|---|
+| 1 429 退避单一源 | `lib/bench/retry.mjs`（attempts/delays/jitter/isRetryable/isEmpty；末次不 sleep） | facts/conclusions/fact-extract-gate/llm 四处引用；`llm.call` 新增 `retry:false`，**长退避所有权只在抽取层**（避免 4×3 双层叠加） |
+| 2 取数去重 | `lib/bench/stages.mjs` `fetchFactsAndConclusions` + `mergeStageStats` | eval 三路（主灌库 / 分阶段 / facts-only）同源，不再各写一份累加 |
+| 3 缓存三件套 | `lib/bench/cache.mjs`（model + promptVersion 校验、tmp+rename 原子写、失效原因可见） | 缓存失效不再静默重抽（`[bench] 事实/结论卡缓存失效（reason）`） |
+| 4 抽取 token 计量 | `lib/bench/tokens.mjs` `normalizeUsage/estimateMessagesUsage` + `stages.tokenEvidence` | 缓存档也出 token/turn；估算标「（估算口径）」但**不改 verdict**；usageSource=live/estimated-live/mixed/none |
+| 5 W3 写读拆分 | `--small-to-big` / `--small-to-big-off` / `--conclusion-layer-off`；`scripts/run-139-w3split.sh` | 本 §15 三档归因表 |
+| 6 ingestCase 写入策略 | `store.normalizeWritePolicy` + `opts.writePolicy` | dualWrite/supersede/factChannel 需 facts 集中报错；cardinalityGate 缺省开 |
+| 7 arms 可移植 / 失败即非 0 | `STORE_ROOT`/`TMPDIR`、失败累计、`--report-name`、门禁读失败→FAIL、门禁2 无 genCorrect→SKIP | 三个 arms 脚本 `bash -n` 通过；`bench-gates` 不再「SKIP 假绿」（旧版门禁4 读失败落 SKIP→exit 0） |
+| #135-1 生效配置回读 | `effectiveRecallSnapshot` + `--expect-config` | 生产 `config-override.json` 覆盖沙箱 yaml 时立刻 exit 2，不白跑一档 |
+| #135-2 filter-only 静默无效 | eval 断言 `--rerank-child-proc` **且** 生效 `rerank.enabled=true` | `--rerank-filter-only … --rerank-off` 组合现在 exit 2 |
+
+补充（本轮评审后加固）：门禁3 预算判定抽成 `judgeTokenBudget`（展示与判定分离；turns 缺失→SKIP 不再假红）；
+`--budget-cards-per-group` 可判结论卡数量；`--store/--dataset/--manifest/--report-name/--tag` 裸 flag 一律 exit 2；
+`smallToBig.requested` 记 `"on"|"off"|null`（区分「没指定」与「显式关」）。
+
+### 15.6 遗留
+
+1. **判对指标缺**：本机 LLM 单点 402，三档只有召回侧（genCorrect 全空 → 门禁2 SKIP，属未测量）；
+   判对结论沿用 §14.4（add×4 = 84.4%）。
+2. **turnCov@5 口径对注入行 >5 的档不利**（同 §14 遗留 3）；read 档注入 4.42 行仍可读，但 4 行回捞已贴近边界。
+3. **回捞收益的上限取决于 part_of 覆盖率**（生产 10.5%）：写入面补证据边是 #155，结论卡覆盖 assistant 侧是 #156/#141。
+4. **历史档逐位复现需要显式关配置**：生产 yaml 自 #137 起 `recall.factChannel.enabled=true`，复用的沙箱库会继承它；
+   已加 `--fact-channel-off`（与 `--fact-channel*` 互斥）才能拼出「无事实通道」的旧基线。
+
+### 15.7 回归复跑（验收项「既有 arm 复跑结果不变」）
+
+- 口径：**同一库** `lme90-mm-b1off`、**同一组旗标**（`--b1 --rerank-off --gen-limit 0 --recall-ks 1,3,5,10`）上，
+  旧 harness（45e3d87，`git stash` 暂存本票改动后跑）与新 harness（本票）各跑一次，retrieval-only、n=90。
+- 先证可复现：新 harness 连跑两次逐位一致（77.82 / 93.04 / 0.739 / 0.743），排除自身抖动后再谈差异。
+
+| 档 | turnCov@5 | sessionCov@5 | nDCG@5 | MRR@5 |
+|---|---|---|---|---|
+| 旧 harness（45e3d87） | 78.40% | 93.60% | 0.742 | 0.743 |
+| 新 harness（本票） | 77.82% | 93.04% | 0.739 | 0.743 |
+| Δ（新−旧） | **−0.58pp** | −0.56pp | −0.003 | 0.000 |
+
+→ 四项 Δ 全部 ≤1pp，**验收「结果不变」成立**（本票只动 harness，不改召回语义）。
+
+**顺带查清的两件事**（都属于别人/环境的账，不是本票引入）：
+
+1. 10-26/10-27 的历史档位数**不能逐位复现**：b1-off 79.54%→77.82%（−1.7pp）、w3b 79.35%→83.37%（+4.1pp）。
+   后者的机制能定位：w3b 的**结论行数从 2.36/题降到 2.04/题**（#138 起的结论条数上限缺省 = `floor(maxResults/2)`=2），
+   按 §14 的槽位竞争规律，结论行变少就会抬高 turnCov —— 是 #138 的缺省值变更，与本票无关；
+   b1-off 的 −1.7pp 落在库/环境状态差（同库跨周复用 + query 向量缓存状态），无系统性方向。
+2. 复跑历史档必须显式关掉后来开的生产配置（`--fact-channel-off`、`--validity-mode hard`、`--small-to-big-off`、`--conclusion-layer-off`），
+   否则「基线档」里混进生产默认，差异会被误读成本票的回退。

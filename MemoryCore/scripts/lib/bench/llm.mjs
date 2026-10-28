@@ -6,6 +6,12 @@
  * 本模块不打印 apiKey，报告里只记 apiKeySource。
  */
 
+import { isRetriableHttpError, withRateLimitRetry } from "./retry.mjs";
+
+/** 生成/判分层的短退避刻度（800ms/1600ms）——与抽取的 5s/15s/30s 长退避不同：
+ *  这里是单点调用，长等只会把整档拖慢，而抽取是并发批量、429 来自端点级 Token Plan。 */
+const LLM_RETRY_DELAYS_MS = [800, 1600];
+
 /** 从凭据建一个最小 chat 客户端。 */
 export function makeLlm(cred) {
   if (!cred) throw new Error("LLM 凭据缺失（baseUrl/apiKey/model 未配齐）");
@@ -14,7 +20,7 @@ export function makeLlm(cred) {
   const timeoutMs = cred.timeoutMs && cred.timeoutMs > 0 ? cred.timeoutMs : 120_000;
   const maxTokens = cred.maxTokens && cred.maxTokens > 0 ? cred.maxTokens : 2048;
 
-  async function call({ messages, json = false, temperature = 0, maxTokens: mt }) {
+  async function call({ messages, json = false, temperature = 0, maxTokens: mt, retry = true }) {
     const body = {
       model: cred.model,
       messages,
@@ -24,33 +30,41 @@ export function makeLlm(cred) {
     // max_tokens=0 语义=不限制（reasoning 模型），此时不传该字段
     if (mt ?? maxTokens) body.max_tokens = mt ?? maxTokens;
 
-    let lastErr;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: "Bearer " + cred.apiKey },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        const text = await res.text();
-        if (!res.ok) {
-          // 4xx（除 429）不重试
-          if (res.status !== 429 && res.status < 500) {
-            throw new Error(`LLM HTTP ${res.status}: ${text.slice(0, 300)}`);
-          }
-          lastErr = new Error(`LLM HTTP ${res.status}: ${text.slice(0, 200)}`);
-        } else {
-          const j = JSON.parse(text);
-          const content = j?.choices?.[0]?.message?.content ?? "";
-          return { content: String(content), usage: j?.usage };
-        }
-      } catch (e) {
-        lastErr = e;
+    const attemptOnce = async () => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + cred.apiKey },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        const err = new Error(`LLM HTTP ${res.status}: ${text.slice(0, 300)}`);
+        err.status = res.status;
+        throw err;
       }
-      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-    }
-    throw lastErr ?? new Error("LLM 调用失败");
+      const j = JSON.parse(text);
+      const content = j?.choices?.[0]?.message?.content ?? "";
+      return { content: String(content), usage: j?.usage };
+    };
+
+    // 重试所有权：抽取/蒸馏/验收门禁（facts.mjs / conclusions.mjs / fact-extract-gate.mjs）
+    // 自己拥有 5s/15s/30s 的长退避，这里传 retry:false 只做单次尝试——否则内层 0.8s/1.6s
+    // 套在外层 4 次里会出现「单批最多 12 次 HTTP、最坏 sleep≈157s」的双层叠加（Spec 评审）。
+    // 其余单点调用（生成/判分）仍由本层重试，重试收敛到 retry.mjs 单一源（#139 第1项）。
+    // 历史实现的 4xx（除 429）判定写在 try 内，抛出的错误会被 catch 吞掉并重试——状态码
+    // 判定形同虚设；这里挂 e.status 交给统一判定，非 429 的 4xx 首次即抛。
+    if (retry === false) return attemptOnce();
+    return withRateLimitRetry(attemptOnce, {
+      attempts: 3,
+      delays: LLM_RETRY_DELAYS_MS,
+      // 4xx（除 429）不重试；网络层失败（无状态码 / 限流文案）由 isRetriableHttpError 兜底。
+      // 超时不重试：AbortSignal.timeout 的 120s × 3 次会在单点上挂死 6 分钟，整档卡住。
+      isRetryable: (e) => {
+        if (e?.name === "TimeoutError" || e?.name === "AbortError") return false;
+        return isRetriableHttpError(e);
+      },
+    });
   }
 
   /** 纯文本回答。 */

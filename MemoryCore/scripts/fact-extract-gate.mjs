@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { loadDataset } from "./lib/bench/datasets.mjs";
 import { makeLlm } from "./lib/bench/llm.mjs";
 import { readFactsCacheFile, FACTS_PROMPT_VERSION } from "./lib/bench/facts.mjs";
+import { isRetriableHttpError, withRateLimitRetry } from "./lib/bench/retry.mjs";
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
 
 const argv = process.argv.slice(2);
@@ -74,25 +75,20 @@ const VERIFY_PROMPT = [
 
 async function verifyTurn(llm, text, phrases) {
   const lines = phrases.map((p, i) => `${i + 1}. ${p}`);
-  // 429 退避重试（端点 Token Plan 速率限制）：5s/15s/30s。
-  let res = null;
-  let lastErr = null;
   const messages = [
     { role: "system", content: VERIFY_PROMPT },
     { role: "user", content: `Turn text:\n${text}\n\nExtracted facts:\n${lines.join("\n")}\n\nReturn one verdict per fact.` },
   ];
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      res = await llm.json(messages, { maxTokens: 0 });
-      if (res) break;
-      lastErr = new Error("empty/unparsable verdicts");
-    } catch (e) {
-      lastErr = e;
-      if (!/429|rate.?limit/i.test(String(e?.message ?? e))) throw e;
-    }
-    await new Promise((r) => setTimeout(r, [5000, 15000, 30000][attempt] ?? 30000));
-  }
-  if (!res) throw lastErr ?? new Error("verify failed");
+  // 429 退避重试（端点 Token Plan 速率限制）：5s/15s/30s。收敛到 retry.mjs 单一源
+  // （#139 第1项）：旧实现无条件 sleep，第 4 次失败后仍白等 30s 才抛。
+  // 重试所有权在本层：llm 调用 retry:false 只单次尝试，避免与外层长退避双层叠加。
+  const res = await withRateLimitRetry(() => llm.json(messages, { maxTokens: 0, retry: false }), {
+    attempts: 4,
+    jitter: 0.2,
+    isEmpty: (v) => !v,
+    emptyMessage: "empty/unparsable verdicts",
+    isRetryable: isRetriableHttpError,
+  });
   const verdicts = Array.isArray(res?.verdicts) ? res.verdicts : [];
   const byIndex = new Map();
   for (const v of verdicts) {

@@ -13,6 +13,7 @@
  */
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { cacheFileOf, readCache, writeCache } from "./cache.mjs";
 import { normHead } from "./metrics.mjs";
 import path from "node:path";
 import os from "node:os";
@@ -329,6 +330,48 @@ async function writeFactChannelVector(writeFn, stats, record, vec) {
 }
 
 /**
+ * 写入策略参数簇（#139 第6项）。
+ *
+ * 历史：ingestCase 12 个位置参数、四个开关互相依赖（dualWrite/factChannel 需要 facts、
+ * supersede 需要 facts.triples、conclusions 需要 cards），漏传一个就静默退化成控制档——
+ * 一档白跑的代价是 90 题 × 数十分钟。这里把依赖集中校验：该报错就报错。
+ *
+ * @param {object} [input] {dualWrite, factChannel, supersede, cardinalityGate, conclusions}
+ * @param {{facts?:object, conclusions?:object}} [ctx] 供依赖校验的实际数据
+ * @returns {{dualWrite:object|null, factChannel:object|null, supersede:boolean, cardinalityGate:boolean, conclusions:object|null}}
+ */
+export function normalizeWritePolicy(input = {}, ctx = {}) {
+  const src = input && typeof input === "object" ? input : {};
+  const { facts, conclusions } = ctx;
+
+  // dualWrite: true | {separator?, maxFactChars?, enabled?} | null
+  let dualWrite = null;
+  if (src.dualWrite === true) dualWrite = { enabled: true };
+  else if (src.dualWrite && typeof src.dualWrite === "object" && src.dualWrite.enabled !== false) dualWrite = { enabled: true, ...src.dualWrite };
+
+  // factChannel: true | {separator?, maxFacts?, enabled?} | null
+  let factChannel = null;
+  if (src.factChannel === true) factChannel = { enabled: true };
+  else if (src.factChannel && typeof src.factChannel === "object" && src.factChannel.enabled !== false) {
+    factChannel = { enabled: true, ...src.factChannel };
+  }
+
+  const supersede = src.supersede === true;
+  // cardinalityGate 缺省开（#136 契约）；显式 false 才关。
+  const cardinalityGate = src.cardinalityGate !== false;
+  const concl = src.conclusions && Array.isArray(src.conclusions.cards) ? src.conclusions : conclusions && Array.isArray(conclusions.cards) ? conclusions : null;
+
+  if ((dualWrite || factChannel || supersede) && !facts?.byTurn) {
+    throw new Error("writePolicy: dualWrite/factChannel/supersede 都需要 facts（先跑 --fact-extract；缓存命中也可）");
+  }
+  if (concl && concl.cards.length === 0) {
+    // 0 卡不是错误（软失败可达），但需要调用方知道本档没有写入面。
+    return { dualWrite, factChannel, supersede, cardinalityGate, conclusions: concl, emptyConclusions: true };
+  }
+  return { dualWrite, factChannel, supersede, cardinalityGate, conclusions: concl, emptyConclusions: false };
+}
+
+/**
  * 批量写入一个 case 的全部 turn（含 embedding）+ 回填 content→turnId 映射。
  * 并发受限（embedding 服务多为单批小上限），失败对半降级重试。
  *
@@ -339,7 +382,13 @@ async function writeFactChannelVector(writeFn, stats, record, vec) {
  * → store.upsertL1FactVector 写平行向量表（l1_vec 主索引完全不动）。与 dualWrite 可同时开：
  * 两者键文本不同、目标表不同，互不干扰。store 无该方法（tcvdb 等）→ 静默跳过并计数。
  */
-export async function ingestCase({ caseObj, store, embedding, contentIndex, chunkSize = 8, concurrency = 1, onRetry, facts, dualWrite, factChannel, supersede, cardinalityGate, conclusions, embedMinIntervalMs = 400 }) {
+export async function ingestCase({ caseObj, store, embedding, contentIndex, opts = {} }) {
+  const { chunkSize = 8, concurrency = 1, onRetry, embedMinIntervalMs = 400, facts, conclusions } = opts;
+  // #139 第6项：12 个散参收敛为 opts.writePolicy，依赖关系在这一处集中校验（漏配即报错，
+  // 不再静默降级成"控制档"——历史上有过 --fact-channel 没开 dualWrite 却以为开着的档）。
+  const policy = normalizeWritePolicy(opts.writePolicy, { facts, conclusions });
+  const dualWrite = policy.dualWrite;
+  const factChannel = policy.factChannel;
   const records = [];
   for (const g of caseObj.groups) for (const t of g.turns) records.push({ turn: t, sessionId: g.sessionId });
 
@@ -417,7 +466,18 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, chun
   }
 
   // W2/W3 写入面（issue #134）：失效标记 + 结论卡——与 --store 分阶段写入共用同一实现（零重复）。
-  Object.assign(stats, await applyWriteSteps({ caseObj, store, records, facts, supersede, cardinalityGate, conclusions }));
+  Object.assign(
+    stats,
+    await applyWriteSteps({
+      caseObj,
+      store,
+      records,
+      facts,
+      supersede: policy.supersede,
+      cardinalityGate: policy.cardinalityGate,
+      conclusions: policy.conclusions,
+    }),
+  );
   return stats;
 }
 
@@ -516,7 +576,7 @@ export function makeStoreDir(datasetName, reuse) {
  *  - conclusions：结论卡 work_fact 落库 + part_of 证据链
  * @returns {{supersedeOps:number, superseded:number, conclusionsWritten:number, conclusionLinks:number}}
  */
-export async function applyWriteSteps({ caseObj, store, records, facts, supersede, cardinalityGate, conclusions }) {
+export async function applyWriteSteps({ caseObj, store, records, facts, supersede, cardinalityGate = true, conclusions }) {
   const stats = { supersedeOps: 0, superseded: 0, supersedeOpsMulti: 0, supersedeOpsSingle: 0, conclusionsWritten: 0, conclusionLinks: 0 };
   if (supersede && facts?.byTurn) {
     const { computeSupersessions } = await import("../../../src/core/record/supersession.ts");
@@ -526,7 +586,7 @@ export async function applyWriteSteps({ caseObj, store, records, facts, supersed
       facts: facts.byTurn?.[turn.id]?.triples ?? [],
     }));
     // #136 属性契约：cardinalityGate !== false 时多值属性不进失效表（同一谓词可并存多值）。
-    const ops = computeSupersessions(turnFacts, cardinalityGate === false ? { cardinalityGate: false } : {});
+    const ops = computeSupersessions(turnFacts, { cardinalityGate: cardinalityGate !== false });
     for (const op of ops) {
       if (op.cardinality === "multi") stats.supersedeOpsMulti++;
       else stats.supersedeOpsSingle++;
@@ -717,35 +777,107 @@ export async function reembedFactKeys({ caseObj, store, embedding, facts, dualWr
 /** 查询向量磁盘缓存（同题同模型零重复外呼；arms 间复用，语义不变——embedding 确定性）。 */
 export function withEmbedCache(embedding, cacheDir, tag) {
   if (!embedding || !cacheDir) return embedding;
-  const dir = path.join(cacheDir, "emb");
-  fs.mkdirSync(dir, { recursive: true });
-  const fileOf = (text) => {
-    const h = createHash("sha256").update(tag + "\u0000" + String(text)).digest("hex").slice(0, 32);
-    return path.join(dir, h + ".json");
-  };
+  // #139 第3项：路径/读/原子写统一走 cache.mjs（与 facts/conclusions 同一实现，
+  // 并发写不再互踩固定 .tmp 名）。
+  const keyOf = (text) => createHash("sha256").update(tag + "\u0000" + String(text)).digest("hex").slice(0, 32);
   const wrapper = Object.create(embedding);
   const innerEmbed = typeof embedding.embed === "function" ? embedding.embed.bind(embedding) : null;
   // 只缓存默认选项下的查询向量（带 opts 的调用直接回源，避免把 timeoutMs 等语义吞掉）。
   wrapper.embed = async (text, opts) => {
     if (!innerEmbed) throw new Error("embedding.embed 不可用");
     if (opts !== undefined) return innerEmbed(text, opts);
-    const f = fileOf(text);
-    if (fs.existsSync(f)) {
-      try {
-        return new Float32Array(JSON.parse(fs.readFileSync(f, "utf8")));
-      } catch {
-        /* 缓存损坏 → 回源 */
-      }
-    }
+    const key = keyOf(text);
+    const hit = readCache(cacheDir, "emb", key, (payload) => Array.isArray(payload) && payload.length > 0);
+    if (hit) return new Float32Array(hit.payload);
     const v = await innerEmbed(text);
     try {
-      const tmp = f + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(Array.from(v)), "utf8");
-      fs.renameSync(tmp, f);
+      // 缓存写失败不影响检索结果（embed cache 只是省外呼的旁路）。
+      writeCache(cacheDir, "emb", key, Array.from(v));
     } catch {
-      /* 写缓存失败不影响结果 */
+      /* 磁盘只读/配额满 → 继续跑 */
     }
     return v;
   };
   return wrapper;
 }
+
+// ── 生效配置自检（issue #135 白跑档的根因防线）───────────────────────────────
+/**
+ * 回读「最终生效」的召回配置。
+ *
+ * 背景（#135）：每轮 copyOverrideFrom(prodData, storeDir) 会把生产
+ * config-override.json（rerank.enabled=true）复制进沙箱库，覆盖
+ * prepareBenchYaml 写的 enabled:false——yaml 写得对、实验档却按生产配置跑，
+ * 一档白跑且无从察觉（报告里 rerank 字段还只记 provider 不记 enabled）。
+ *
+ * 纪律：报告必须记这里的原始快照；--expect-config 用它做断言。
+ */
+export function effectiveRecallSnapshot(cfg) {
+  const r = cfg?.recall ?? {};
+  const rr = r.rerank ?? {};
+  return {
+    "recall.maxResults": r.maxResults ?? null,
+    "recall.candidateK": r.candidateK ?? null,
+    "recall.fusion.mode": r.fusion?.mode ?? null,
+    "recall.rerank.enabled": rr.enabled === true,
+    "recall.rerank.provider": rr.provider ?? "none",
+    "recall.rerank.candidates": rr.candidates ?? null,
+    "recall.rerank.minScore": rr.minScore ?? null,
+    "recall.rerank.mode": rr.mode ?? null,
+    "recall.rerank.blend": rr.blend ?? null,
+    "recall.smallToBig.enabled": r.smallToBig?.enabled === true,
+    "recall.smallToBig.maxExtraLines": r.smallToBig?.maxExtraLines ?? null,
+    "recall.smallToBig.budget": r.smallToBig?.budget ?? null,
+    "recall.conclusionLayer.enabled": r.conclusionLayer?.enabled === true,
+    "recall.conclusionLayer.maxConclusions": r.conclusionLayer?.maxConclusions ?? null,
+    "recall.factChannel.enabled": r.factChannel?.enabled === true,
+    "recall.factChannel.weight": r.factChannel?.weight ?? null,
+    "recall.validity.mode": r.validity?.mode ?? null,
+    "recall.presentTemporal.enabled": r.presentTemporal?.enabled === true,
+  };
+}
+
+/** 解析 --expect-config key=value[,key=value] 或多次 --expect-config。 */
+export function parseExpectConfig(spec) {
+  const out = {};
+  const list = Array.isArray(spec) ? spec : String(spec ?? "").split(",");
+  for (const raw of list) {
+    const item = String(raw ?? "").trim();
+    if (!item) continue;
+    const eq = item.indexOf("=");
+    if (eq <= 0) throw new Error("--expect-config 需要 key=value，收到: " + item);
+    const key = item.slice(0, eq).trim();
+    const val = item.slice(eq + 1).trim();
+    out[key] = coerceConfigValue(val);
+  }
+  return out;
+}
+
+function coerceConfigValue(val) {
+  if (val === "true") return true;
+  if (val === "false") return false;
+  if (val === "null") return null;
+  if (val !== "" && Number.isFinite(Number(val))) return Number(val);
+  return val;
+}
+
+/** 比较生效快照与期望值，返回不匹配清单（空数组=全过）。 */
+export function diffExpectedConfig(snapshot, expected) {
+  const mismatches = [];
+  for (const [key, want] of Object.entries(expected ?? {})) {
+    const got = snapshot?.[key];
+    const same = typeof want === "number" && typeof got === "number" ? Math.abs(got - want) < 1e-9 : got === want;
+    if (!same) mismatches.push({ key, expected: want, actual: got ?? null });
+  }
+  return mismatches;
+}
+
+/** 断言生效配置；不匹配直接抛错（让档位在灌库前失败，而不是跑完才发现白跑）。 */
+export function assertExpectedConfig(snapshot, expected) {
+  const mismatches = diffExpectedConfig(snapshot, expected);
+  if (mismatches.length) {
+    const detail = mismatches.map((m) => `${m.key}: 期望 ${JSON.stringify(m.expected)} 实际 ${JSON.stringify(m.actual)}`).join("; ");
+    throw new Error("生效配置与 --expect-config 不符（多半是生产 config-override.json 覆盖了沙箱 yaml）: " + detail);
+  }
+}
+

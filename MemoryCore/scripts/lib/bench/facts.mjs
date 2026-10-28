@@ -12,9 +12,16 @@
  * 纪律：抽取 prompt 明令"只抽该 turn 明说的内容，不推断不补充"；抽不准的噪声由
  * 抽样验收门（scripts/fact-extract-gate.mjs）在启用前拦下——文档 B3 警告：
  * 抽不好的噪声事实是负收益。
+ *
+ * #139 技术债收敛：
+ *  - 缓存路径/读/原子写 → cache.mjs（三件套唯一实现）；
+ *  - 429 长退避 → retry.mjs（末次不白等）；
+ *  - token 计量：provider 不报 usage 时按 tokens.mjs 估算并标注 estimated；
+ *    缓存命中也带回 usage（缓存档终于能进 bench-gates 门禁3）。
  */
-import fs from "node:fs";
-import path from "node:path";
+import { cacheFileOf, readCache, writeCache } from "./cache.mjs";
+import { isRetriableHttpError, withRateLimitRetry } from "./retry.mjs";
+import { estimateMessagesTokens, estimateTokens, normalizeUsage } from "./tokens.mjs";
 
 export const FACTS_PROMPT_VERSION = "facts-v2";
 
@@ -31,44 +38,45 @@ const SYSTEM_PROMPT = [
 
 /** 缓存文件路径。 */
 export function factsCachePath(cacheDir, caseId) {
-  return path.join(cacheDir, "facts", String(caseId).replace(/[^\w.-]+/g, "_") + ".json");
+  return cacheFileOf(cacheDir, "facts", caseId);
 }
 
 /** 直读缓存文件（只校验 prompt 版本，不校验模型——验收门禁跨模型审计用）。 */
 export function readFactsCacheFile(cacheDir, caseId) {
-  const file = factsCachePath(cacheDir, caseId);
-  if (!fs.existsSync(file)) return null;
-  try {
-    const j = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (j?.promptVersion !== FACTS_PROMPT_VERSION) return null;
-    if (!j.byTurn || typeof j.byTurn !== "object") return null;
-    return j;
-  } catch {
-    return null;
-  }
+  const hit = readCache(cacheDir, "facts", caseId, (j) => j?.promptVersion === FACTS_PROMPT_VERSION && j?.byTurn && typeof j.byTurn === "object");
+  return hit ? hit.payload : null;
+}
+
+const reportedInvalid = new Set();
+/** 失效只报一次（同一原因不刷屏），但能看出这一档在重抽而不是命中。 */
+function reportInvalidOnce(reason, file) {
+  const key = String(reason ?? "validate");
+  if (reportedInvalid.has(key)) return;
+  reportedInvalid.add(key);
+  console.warn("[bench] 事实缓存失效（" + key + "），将重新抽取：" + file);
 }
 
 /** 读缓存（版本/模型不符 → null，重新抽取）。 */
 export function loadCachedFacts(cacheDir, caseId, model) {
-  const file = factsCachePath(cacheDir, caseId);
-  if (!fs.existsSync(file)) return null;
-  try {
-    const j = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (j?.promptVersion !== FACTS_PROMPT_VERSION || j?.model !== model) return null;
-    if (!j.byTurn || typeof j.byTurn !== "object") return null;
-    return j;
-  } catch {
-    return null;
-  }
+  const hit = readCache(
+    cacheDir,
+    "facts",
+    caseId,
+    (j) => {
+      if (j?.promptVersion !== FACTS_PROMPT_VERSION) return { ok: false, reason: "promptVersion " + j?.promptVersion + "≠" + FACTS_PROMPT_VERSION };
+      if (j?.model !== model) return { ok: false, reason: "model " + j?.model + "≠" + model };
+      if (!j?.byTurn || typeof j.byTurn !== "object") return { ok: false, reason: "payload-shape" };
+      return { ok: true };
+    },
+    undefined,
+    reportInvalidOnce,
+  );
+  return hit ? hit.payload : null;
 }
 
-/** 写缓存（原子替换：先写临时文件再 rename，避免中断留下半截 JSON）。 */
+/** 写缓存（原子替换：cache.mjs 统一 tmp+rename，并发写不互踩）。 */
 export function saveCachedFacts(cacheDir, caseId, payload) {
-  const file = factsCachePath(cacheDir, caseId);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
-  fs.renameSync(tmp, file);
+  return writeCache(cacheDir, "facts", caseId, payload);
 }
 
 /** 把一个 case 的全部 turn 摊平为 [{ turn, sessionId }]。 */
@@ -78,34 +86,35 @@ function flattenTurns(caseObj) {
   return out;
 }
 
-/** 单批抽取：一次 LLM 调用处理 batchSize 个 turn。失败抛错（由调用方决定降级）。 */
-async function extractBatch(llm, batch) {
+/** 抽取批的消息体（estimate 与真实调用共用同一实现——估算才可复现）。 */
+function buildBatchMessages(batch) {
   const lines = batch.map(({ turn }, i) => `[${i + 1}] id=${turn.id} speaker=${turn.speaker || turn.role || "?"}\n${turn.text}`);
   const userPrompt = ["Extract facts from these turns:", "", ...lines, "", 'Return JSON {"results":[...]} for every listed id.'].join("\n");
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: userPrompt },
+  ];
+}
+
+/** 单批抽取：一次 LLM 调用处理 batchSize 个 turn。失败抛错（由调用方决定降级）。 */
+async function extractBatch(llm, batch) {
+  const messages = buildBatchMessages(batch);
   // maxTokens: 0 = 不传上限——MiniMax-M3.1 等 reasoning 模型 thinking 无上界，
   // 小额帽（1600 实测）会被 thinking 吃光后返回空 content（2026-10-27 血泪实证）。
-  // 429 是端点级速率限制（Token Plan），退避要足够长：5s/15s/30s 三次重试。
-  let res = null;
-  let usage = null;
-  let lastErr = null;
+  // 429 是端点级速率限制（Token Plan），退避要足够长：5s/15s/30s 三次重试（retry.mjs 单一源）。
   const callJson = llm.jsonWithUsage ?? ((m, o) => llm.json(m, o).then((data) => ({ data, usage: null })));
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const out = await callJson([
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ], { maxTokens: 0 });
-      res = out?.data ?? null;
-      usage = out?.usage ?? null;
-      if (res) break;
-      lastErr = new Error("empty/unparsable response");
-    } catch (e) {
-      lastErr = e;
-      if (!/429|rate.?limit/i.test(String(e?.message ?? e))) throw e;
-    }
-    if (attempt < 3) await new Promise((r) => setTimeout(r, [5000, 15000, 30000][attempt] ?? 30000));
-  }
-  if (!res) throw lastErr ?? new Error("facts extraction failed");
+  // 重试所有权在本层（长退避 5s/15s/30s）：llm 调用带 retry:false 只做单次尝试，
+  // 避免内层 0.8s/1.6s 套进来形成双层叠加（单批最坏 12 次 HTTP、sleep≈157s）。
+  const out = await withRateLimitRetry(() => callJson(messages, { maxTokens: 0, retry: false }), {
+    attempts: 4,
+    // 8 路并发的批量抽取：齐步重试会撞出新的 429 尖峰，必须抖动。
+    jitter: 0.2,
+    isEmpty: (v) => !v?.data,
+    emptyMessage: "empty/unparsable response",
+    isRetryable: isRetriableHttpError,
+  });
+  const res = out?.data ?? null;
+  if (!res) throw new Error("facts extraction failed");
   const results = Array.isArray(res?.results) ? res.results : [];
   const byId = new Map();
   for (const r of results) {
@@ -124,12 +133,16 @@ async function extractBatch(llm, batch) {
     }
     byId.set(r.id, { phrases, triples });
   }
+  // token 计量：provider 报了就用真值；没报（本机内网中转部分档位不返 usage）用估算，
+  // 显式标 estimated，绝不把 0 当成"花了 0 token"（否则预算门禁永远 SKIP）。
+  const usage = normalizeUsage(out?.usage, { completionText: JSON.stringify(res) });
+  if (usage.estimated) usage.prompt = estimateMessagesTokens(messages);
   return { byId, usage };
 }
 
 /**
  * 抽取一个 case 的全部事实（不走缓存）。
- * @returns {{byTurn: Record<string,{phrases:string[],triples:Array}>, usage:{prompt:number,completion:number}, turns:number, ms:number, failedBatches:number}}
+ * @returns {{byTurn: object, usage:{prompt:number,completion:number}, usageSources:{reported:number,estimated:number}, turns:number, ms:number, failedBatches:number}}
  */
 export async function extractFactsForCase({ caseObj, llm, batchSize = 20, concurrency = 2, logger = console, roles = ["user"] }) {
   // 只抽用户侧发言：assistant 轮多为泛化知识/建议（实测抽出"H&M 有会员计划"类世界知识，
@@ -140,13 +153,16 @@ export async function extractFactsForCase({ caseObj, llm, batchSize = 20, concur
   const t0 = Date.now();
   const byTurn = {};
   const usage = { prompt: 0, completion: 0 };
+  const usageSources = { reported: 0, estimated: 0 };
   let failedBatches = 0;
   await runWithConcurrency(batches, concurrency, async (batch) => {
     try {
       const { byId, usage: u } = await extractBatch(llm, batch);
       if (u) {
-        usage.prompt += Number(u.prompt_tokens ?? 0);
-        usage.completion += Number(u.completion_tokens ?? 0);
+        usage.prompt += u.prompt ?? 0;
+        usage.completion += u.completion ?? 0;
+        if (u.reported) usageSources.reported++;
+        else if (u.estimated) usageSources.estimated++;
       }
       for (const { turn } of batch) {
         const got = byId.get(turn.id);
@@ -158,7 +174,7 @@ export async function extractFactsForCase({ caseObj, llm, batchSize = 20, concur
       for (const { turn } of batch) byTurn[turn.id] = { phrases: [], triples: [] };
     }
   });
-  return { byTurn, usage, turns: flat.length, ms: Date.now() - t0, failedBatches };
+  return { byTurn, usage, usageSources, turns: flat.length, ms: Date.now() - t0, failedBatches };
 }
 
 async function runWithConcurrency(items, limit, fn) {
@@ -174,29 +190,103 @@ async function runWithConcurrency(items, limit, fn) {
 }
 
 /**
+ * 缓存命中时的 token 证据重建（#139 第4项）。
+ *
+ * 旧缓存 payload 的 usage 可能是 {prompt:0,completion:0}（provider 未报）。直接把 0
+ * 当证据会让预算门禁永远 SKIP；这里用**同一套 prompt 构造**重算估算值，标注 estimated。
+ * 确定性：只依赖 case 语料 + 缓存里的 byTurn，不取时钟/随机。
+ */
+export function estimateExtractionUsage({ caseObj, byTurn, batchSize = 20, roles = ["user"] }) {
+  const flat = flattenTurns(caseObj).filter(({ turn }) => roles.includes(turn.role));
+  const batches = [];
+  for (let i = 0; i < flat.length; i += batchSize) batches.push(flat.slice(i, i + batchSize));
+  let prompt = 0;
+  let completion = 0;
+  const usage = { prompt: 0, completion: 0 };
+  for (const batch of batches) {
+    prompt += estimateMessagesTokens(buildBatchMessages(batch));
+    const results = batch.map(({ turn }) => {
+      const got = byTurn?.[turn.id] ?? { phrases: [], triples: [] };
+      return {
+        id: turn.id,
+        facts: (got.phrases ?? []).map((phrase) => ({ subject: "", predicate: "", value: "", phrase })),
+      };
+    });
+    completion += estimateTokens(JSON.stringify({ results }));
+  }
+  usage.prompt = prompt;
+  usage.completion = completion;
+  return usage;
+}
+
+/**
  * 缓存优先的事实获取：命中缓存零外呼；未命中 → 抽取并落盘。
- * @returns {{facts: {byTurn: Record<string,{phrases:string[],triples:Array}>}, cacheHit: boolean, ms: number, usage?: object, turns?: number, failedBatches?: number}}
+ *
+ * 命中时也带回 usage（#139 第4项：缓存档 token 可测）：
+ *  - payload.usage 有正数 → usageSource="cache"（真值）；
+ *  - payload.usage 缺失/全 0 → 用 estimateExtractionUsage 重建 → usageSource="estimated-cache"。
+ *
+ * @returns {{facts:{byTurn:object}, cacheHit:boolean, ms:number, usage:{prompt:number,completion:number}, usageSource:"live"|"cache"|"estimated-cache"|"none", turns:number, failedBatches:number, coverage:object}}
  */
 export async function factsForCase({ caseObj, cacheDir, llm, model, batchSize = 20, concurrency = 2, logger = console, roles }) {
+  const effectiveRoles = roles ?? ["user"];
   if (cacheDir) {
     const hit = loadCachedFacts(cacheDir, caseObj.caseId, model);
-    if (hit) return { facts: { byTurn: hit.byTurn }, cacheHit: true, ms: 0 };
+    if (hit) {
+      const stored = hit.usage ?? null;
+      const hasStored = (stored?.prompt ?? 0) > 0 || (stored?.completion ?? 0) > 0;
+      const usage = hasStored
+        ? { prompt: Number(stored.prompt) || 0, completion: Number(stored.completion) || 0 }
+        : estimateExtractionUsage({ caseObj, byTurn: hit.byTurn, batchSize: hit.batchSize ?? batchSize, roles: effectiveRoles });
+      return {
+        facts: { byTurn: hit.byTurn },
+        cacheHit: true,
+        ms: 0,
+        usage,
+        usageSource: hasStored ? "cache" : "estimated-cache",
+        turns: hit.turns ?? Object.keys(hit.byTurn).length,
+        failedBatches: 0,
+        coverage: factsCoverage(hit.byTurn),
+      };
+    }
   }
   if (!llm) throw new Error("事实抽取需要 LLM 客户端（--fact-extract / --fact-dual-write）");
   const t0 = Date.now();
-  const out = await extractFactsForCase({ caseObj, llm, batchSize, concurrency, logger, ...(roles ? { roles } : {}) });
+  const out = await extractFactsForCase({ caseObj, llm, batchSize, concurrency, logger, roles: effectiveRoles });
   if (cacheDir && out.failedBatches === 0) {
-    saveCachedFacts(cacheDir, caseObj.caseId, {
-      promptVersion: FACTS_PROMPT_VERSION,
-      model: model ?? null,
-      caseId: caseObj.caseId,
-      generatedAt: new Date().toISOString(),
-      turns: out.turns,
-      usage: out.usage,
-      byTurn: out.byTurn,
-    });
+    // 缓存是旁路：落盘失败不能让已成功的抽取整档崩掉（与 withEmbedCache 同纪律）。
+    try {
+      saveCachedFacts(cacheDir, caseObj.caseId, {
+        promptVersion: FACTS_PROMPT_VERSION,
+        model: model ?? null,
+        caseId: caseObj.caseId,
+        generatedAt: new Date().toISOString(),
+        turns: out.turns,
+        batchSize,
+        usage: out.usage,
+        usageSources: out.usageSources,
+        byTurn: out.byTurn,
+      });
+    } catch (e) {
+      logger?.warn?.(`[bench:facts] 缓存写入失败（不影响本档结果）: ${e?.message ?? e}`);
+    }
   }
-  return { facts: { byTurn: out.byTurn }, cacheHit: false, ms: Date.now() - t0, usage: out.usage, turns: out.turns, failedBatches: out.failedBatches };
+  // 来源判定看「有多少批走的是估算」，不能看 total>0——估算值本身就 >0，
+  // 用总量判断会把估算全记成 live，门禁「（估算口径）」标记永远不亮。
+  const est = out.usageSources?.estimated ?? 0;
+  const rep = out.usageSources?.reported ?? 0;
+  const usageSource = rep > 0 && est === 0 ? "live" : est > 0 && rep === 0 ? "estimated-live" : rep > 0 && est > 0 ? "mixed" : "none";
+  return {
+    facts: { byTurn: out.byTurn },
+    cacheHit: false,
+    ms: Date.now() - t0,
+    usage: out.usage,
+    usageSource,
+    usageSources: out.usageSources,
+    turns: out.turns,
+    failedBatches: out.failedBatches,
+    coverage: factsCoverage(out.byTurn),
+  };
 }
 
 /** 该 case 的事实覆盖统计（抽取质量旁证：多少 turn 有事实、平均短语数）。 */
