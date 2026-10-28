@@ -92,7 +92,8 @@ for (const { tag, file } of armSpecs) {
       ctxN,
       total: Number(r.conclusionCount ?? 0) + Number(r.experienceCount ?? 0),
       cov5: r["turnCov@5"] ?? null,
-      gen: r.genCorrect === true ? 1 : r.genCorrect === false ? 0 : null,
+      // genCorrect 在不同档里可能是 boolean 或 0/1（历史产物口径不一）——统一归一
+      gen: r.genCorrect === true || r.genCorrect === 1 ? 1 : r.genCorrect === false || r.genCorrect === 0 ? 0 : null,
       refused: r.refused === true ? 1 : 0,
       kept: r.gates?.rerank?.kept,
       blend: r.gates?.rerank?.blend,
@@ -151,7 +152,22 @@ for (const a of ok) {
   console.log(`| ${a.tag} | ${o.meanConclusion} | ${o.meanContext} | ${o.meanExperience} | ${o.meanTotal} | ${o.hardCapRate}% | ${o.starvedRate}% | ${o.kept1Rate ?? "-"}% | ${o.turnCov5}% | ${o.gen ?? "-"}% | ${o.refused}% |`);
 }
 console.log("");
-console.log("## 分桶（经验行被挤占 vs cov/判对）");
+console.log("## 分桶判对（gen，逐桶 15 题：±1 题 = ±6.7pp，只看方向）");
+console.log("");
+console.log("| 桶 | " + ok.map((a) => a.tag).join(" | ") + " |");
+console.log("|---|" + ok.map(() => "---").join("|") + "|");
+for (const b of BUCKETS) {
+  const cells = ok.map((a) => {
+    const x = a.buckets[b];
+    return `${x.gen ?? "-"}% (cov ${x.turnCov5}%)`;
+  });
+  console.log(`| ${b} | ` + cells.join(" | ") + " |");
+}
+console.log("");
+console.log("> cov@5 口径注意：additive 档注入行数可达 maxResults+maxExtraLines（≈7 行），turnCov@5 只数前 5 行，");
+console.log("> 对 additive 档系统性不利——定档以「判对」为主、cov 作形状参考。");
+console.log("");
+console.log("## 分桶（经验行被挤占 vs cov）");
 console.log("");
 console.log("| 桶 | " + ok.map((a) => a.tag).join(" | ") + " |");
 console.log("|---|" + ok.map(() => "---").join("|") + "|");

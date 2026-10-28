@@ -537,11 +537,44 @@ temporal +3.3pp；**single-session-assistant −13.3pp、preference −10pp**—
 排序层）；`budget` 缺省 shared 保证未配置部署逐位不变。新增单测：`recall-small-to-big.test.ts` ⑧–⑪
 （additive 预算 / 相关性排序 / 回滚档 / 结论条数上限）、`config.small-to-big.test.ts`（三键解析）。
 
-### 14.4 扫参结果（`scripts/run-r138-arms.sh`，additive 档 × maxExtraLines）
+### 14.4 扫参结果（`scripts/run-r138-arms.sh`，additive 档 × maxExtraLines；同 manifest n=90 / 同 judge MiniMax-M3.1-Flash / 同基线库）
 
-（待填：add2 / add4 / add6 同 manifest 同 judge 的 cov/判对/拒答 + 分桶门禁）
+| 档 | budget | maxExtraLines | 结论行/题 | 上下文行/题 | 经验行/题 | 总行/题 | 经验≤1 行率 | kept≤1 | turnCov@5 | **判对** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| b1off-mm（基线） | — | — | 0 | 0 | 3.53 | 3.53 | 1.1% | — | 76.9% | 77.8% |
+| w3×2（现状 shared） | shared | 2 | 1.88 | 0.03 | 2.56 | 4.43 | 10.0% | — | 73.7% | 81.1% |
+| w3×4（现状 shared） | shared | 4 | 2.36 | 0.04 | 2.12 | 4.48 | **36.7%** | — | 76.7% | 84.4% |
+| r137fix（shared + rerank .9） | shared | 4 | 2.36 | 0.04 | 2.12 | 4.48 | 35.6% | 31.1% | 77.8% | 81.1% |
+| **add×2（#138 修复）** | additive | 2 | 1.88 | 0.03 | 3.19 | 5.07 | **1.1%** | 0% | 73.0% | **84.4%** |
+| **add×4（#138 修复，推荐）** | additive | 4 | 2.36 | 0.04 | 3.14 | 5.50 | **1.1%** | 0% | **78.9%** | **84.4%** |
+
+**读法**
+
+- `additive` 把「结论层命中时经验层 ≤1 行」从 **36.7% 压到 1.1%**（每题经验行 2.12 → 3.14），
+  同时**判对不降**（84.4% = 现状 shared×4 的最好值，高于 shared + rerank-fix 的 81.1%）、cov@5 +2.2pp。
+- **cov@5 口径**：additive 档注入行数可达 `maxResults + maxExtraLines`（≈7 行），`turnCov@5` 只数前 5 行，
+  对 additive 系统性不利 → 定档以判对为主，cov 看形状。
+- **分桶判对（add×4 vs 基线）**：knowledge-update **100%**（86.7%）、temporal **100%**（86.7%）、
+  multi-session 66.7%（40%）、single-session-user 93.3%（93.3%）、preference 66.7%（66.7%）；
+  **single-session-assistant 仍 80% vs 93.3%**——这一桶的缺口不在预算（经验行已回到 2.73），
+  而在结论卡只蒸馏 user 侧事实（见 §14.5 遗留）。
+- **判对噪声**：n=90，±1 题 = ±1.1pp；单桶 15 题，±1 题 = ±6.7pp。add×2 与 add×4 同分，差异只在 cov/分桶方向。
 
 ### 14.5 定档与生产建议
 
-（待填：结论 + 生产配置组合）
+| 旋钮 | 定档 | 依据 |
+|---|---|---|
+| `recall.smallToBig.budget` | **additive** | 经验层 ≤1 行率 36.7% → 1.1%；判对 84.4% 不降；注入行数 4.48 → 5.50（平均 +1 行） |
+| `recall.smallToBig.maxExtraLines` | **4** | add×2 与 add×4 判对同分，但 add×4 的 cov +5.9pp、knowledge-update 判对 93.3%→100%；再往上（6）在 n=90 上不可分辨 |
+| `recall.smallToBig.relevanceRanked` | **true**（缺省） | 回捞证据按查询命中排名；不做这项时 7161e7e2 类会把前情行排在答案轮之前 |
+| `recall.conclusionLayer.maxConclusions` | 缺省（`floor(maxResults/2)`） | 与 maxExtraLines 同属一个预算；本波无放宽证据 |
 
+**回退面**：`budget: shared` 一行回到本波之前（代码不需要回滚）。
+
+**遗留（不在本票）**
+
+1. **结论卡只覆盖 user 侧事实**：assistant 桶（「你上次建议了什么」）系统性不相关，单靠预算修不动——
+   需要写入面扩展（结论卡覆盖 assistant 侧）或按题型路由（#141）。
+2. **生产无 gold**：判对只能在 bench 复核；生产侧看结构指标（经验行分布、表示占比、回捞触发率）+ 抽样可答性，
+   灰度前后对照即可判定 additive 是否在生产同样生效。
+3. `turnCov@k` 口径对「注入行数 > k」的档不公平，后续评测应改用「注入集覆盖率」而非固定 k 切片。
