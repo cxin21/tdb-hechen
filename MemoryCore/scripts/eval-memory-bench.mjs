@@ -805,6 +805,8 @@ async function main() {
     }
     if (paceMs > 0) await new Promise((res) => setTimeout(res, paceMs));
     const ret = evalRetrieval({ caseObj: c, hits: r.hits, resolve: resolvers.get(c.groupKey), k, kList });
+    // #139 评论 8：block 与 evidence 是两条渲染路，报告里分别落长度，避免分析时混读。
+    const evidenceBlock = b1Mode ? buildEvidenceBlock(r.hits) : null;
     rows.push({
       caseId: c.caseId,
       questionType: c.questionType,
@@ -819,7 +821,7 @@ async function main() {
       searchTiming: r.searchTiming ?? null,
       ...(r.gates ? { gates: r.gates } : {}),
       scores: r.hits.map((h) => Math.round((h.score ?? 0) * 1e4) / 1e4),
-      ...(b1Mode ? { evidence: buildEvidenceBlock(r.hits) } : {}),
+      ...(b1Mode ? { evidence: evidenceBlock, evidenceChars: evidenceBlock.length } : {}),
       blockChars: (r.block || "").length,
       hits: r.hits.length,
       topContents: r.hits.slice(0, k).map((h) => h.content.slice(0, 160)),
@@ -958,6 +960,13 @@ async function main() {
         : null,
       ingest: ingestStats,
       storeDir: reuseMode ? storeDir : "(已清理/保留见运行日志)",
+      // #139 评论 8：两套渲染路不可混读——blockChars 是生产 injector 输出（短、常只 1-2 行），
+      // evidenceChars 是 b1 模式下喂给作答的证据块（hits 拼装、长）；分析注入预算请认准后者。
+      fieldSemantics: {
+        blockChars: "生产 injector 注入块长度（非 b1 作答口径）",
+        evidenceChars: b1Mode ? "b1 证据块长度（作答与预算分析用这个）" : null,
+        injectedLines: "b1 证据块行数",
+      },
     },
     overall: agg.overall,
     perType: agg.perType,

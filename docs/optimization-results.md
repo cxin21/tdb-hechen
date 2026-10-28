@@ -715,6 +715,10 @@ part_of 覆盖率 10.5% → #155；结论卡单源 → #156；在线 24h 灰度�
 | write-only | `--conclusion-cards --small-to-big-off` | 卡在库里且结论层开、**回捞关**（只看写入面） |
 | read | `--conclusion-cards --small-to-big --small-to-big-max-extra 4` | 卡 + 源证据回捞（§14 定档值） |
 
+**注入口径**（#139 评论第 8 条）：报告里 `blockChars` 是生产 injector 输出（短，常 1-2 行），
+`evidenceChars` / `injectedLines` 才是 b1 模式真正喂给作答的证据块（hits 拼装）。
+讨论注入预算/结论占比时认准后者，混读会得出「注入只有 1.5 行」的错误结论。报告 `config.fieldSemantics` 里已写明。
+
 ### 15.2 三档结果（逐题均值，n=90）
 
 | 档 | 结论行/题 | 注入行/题 | blockChars/题 | turnCov@5 | sessionCov@5 | sessionAny@5 | nDCG@5 | MRR@5 | 召回均值 |
