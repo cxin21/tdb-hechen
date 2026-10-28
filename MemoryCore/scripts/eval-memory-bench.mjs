@@ -40,6 +40,7 @@ import {
 } from "./lib/bench/store.mjs";
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
 import { aggregate, evalRetrieval, makeIdResolver, normHead, tokenF1 } from "./lib/bench/metrics.mjs";
+import { attributeInjectedLines, evidenceSufficiency, INJECT_LINE_TYPES } from "./lib/bench/inject-attribution.mjs";
 import { FACTS_PROMPT_VERSION, factsCoverage, factsForCase } from "./lib/bench/facts.mjs";
 import { CONCLUSIONS_PROMPT_VERSION } from "./lib/bench/conclusions.mjs";
 import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "./lib/bench/stages.mjs";
@@ -94,7 +95,10 @@ if (flag("help") || argv.length === 0) {
   --small-to-big-max-extra N     读侧上下文行帽（缺省取 --conclusion-max-extra）
   --conclusion-max-extra N       读侧上下文行帽别名（缺省 2）
   --conclusion-cap N             #138 结论行条数上限（conclusionLayer.maxConclusions；缺省 floor(maxResults/2)）
-  --conclusion-budget-mode M     #138 上下文行预算归属 shared|additive（缺省 shared=逐位现状）
+  --conclusion-budget-mode M     #138/#141 上下文行预算归属 shared|additive|slot（缺省 shared=逐位现状；slot=复合单元槽位预算）
+  --conclusion-routing R         #138/#141 结论层查询路由 off|assistant-recall|intent（intent=按题意分预算/排序/成对）
+  --conclusion-slot-cost X       #141 复合单元槽位成本（clamp [1,3]；缺省 1.5；仅 --conclusion-budget-mode slot 生效）
+  --conclusion-pairing off|require  #141 结论必带源证据（require=没回捞到证据的结论行丢弃）
   --conclusion-legacy-rank       #138 回滚证据排序（旧序=store 返回序）
   --k N                          检索口径 top-k（默认取生产配置 maxResults）
   --recall-ks 1,3,5,10           B0 多 k 切片（行内平铺 turnCov@k 等键；缺省 1,3,5,10）
@@ -110,6 +114,7 @@ if (flag("help") || argv.length === 0) {
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
   --validity-mode soft|hard      #136 效期策略：soft=失效行降权保留（仅当下意图+有更新行才硬丢）
+  --validity-off                 #136/#141 对照档：关失效排除（recall.excludeInvalidated=false，不排也不降权）
   --supersede-cardinality off    #136 对照档：关闭 cardinality 门（多值属性也失效=现状 W2）
   --fact-channel                 #137 事实键平行通道试验档（隐含 --fact-extract；事实短语键另写 l1_fact_vec + 沙箱 yaml recall.factChannel）
   --fact-channel-read-only       只开读侧（沙箱 recall.factChannel），不写通道向量——在已灌库上迭代融合参数的零外呼档
@@ -133,6 +138,40 @@ if (flag("help") || argv.length === 0) {
   --quiet                        只打最终摘要
 `);
   process.exit(0);
+}
+
+// #141 评审 #5：未识别旗标必须显式失败。`arg()` 走 argv.indexOf 精确匹配，
+// 于是 `--conclusion-pairing=require`（等号写法）和拼错的 `--conclusion-routin` 都会被静默忽略：
+// 负控臂在「以为已关」的情况下跑成默认档，报告里看不出任何差别 —— 这正是 #141 要消灭的静默降级。
+const KNOWN_FLAGS = new Set([
+  "age-decay", "b1", "b2b-validity", "candidate-k", "conclusion-budget-mode", "conclusion-cap",
+  "conclusion-cards", "conclusion-layer-off", "conclusion-legacy-rank", "conclusion-max", "conclusion-max-extra", "conclusion-pairing",
+  "conclusion-routing", "conclusion-slot-cost", "concurrency", "data", "dataset", "emb-threshold",
+  "embed-cache", "embed-interval-ms", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
+  "fact-channel", "fact-channel-off", "fact-channel-read-only", "fact-channel-weight", "fact-concurrency", "fact-dual-write",
+  "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-separator", "facts-only",
+  "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
+  "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
+  "out", "pace", "present-temporal", "prod-config", "prod-data", "quiet",
+  "recall-ks", "recall-timeout", "report-name", "rerank-blend", "rerank-candidates", "rerank-child-proc",
+  "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
+  "rerank-timeout", "samples", "small-to-big", "small-to-big-max-extra", "small-to-big-off", "store",
+  "supersede-cardinality", "tag", "validity-mode", "validity-off", "write-supersede",
+]);
+{
+  const bad = [];
+  for (const tok of argv) {
+    if (typeof tok !== "string" || !tok.startsWith("--")) continue;
+    const eq = tok.indexOf("=");
+    const name = (eq >= 0 ? tok.slice(2, eq) : tok.slice(2)).toLowerCase();
+    if (!KNOWN_FLAGS.has(name)) bad.push(tok);
+    else if (eq >= 0) bad.push(tok + "（等号写法；请改成 --" + name + " <值>）");
+  }
+  if (bad.length) {
+    console.error("[bench:error] 未识别的旗标：" + bad.join("、"));
+    console.error("[bench:error] 已支持：" + [...KNOWN_FLAGS].sort().join(" "));
+    process.exit(2);
+  }
 }
 
 const datasetName = String(strArg("dataset", "")).toLowerCase();
@@ -259,7 +298,11 @@ async function main() {
   //  --validity-mode soft|hard  读侧效期策略（soft = 失效行降权而非硬过滤；缺省读 yaml）
   //  --supersede-cardinality off  写侧关闭 cardinality 门（对照档：现状"谓词一变就失效"）
   const validityModeArg = String(arg("validity-mode", "") ?? "").toLowerCase();
-  const validityOverride = validityModeArg === "soft" || validityModeArg === "hard" ? { mode: validityModeArg } : undefined;
+  const validityModeOverride = validityModeArg === "soft" || validityModeArg === "hard" ? { mode: validityModeArg } : undefined;
+  // --validity-off：#141 的 W2「关」格。失效排除总开关是 recall 根级键（不是 recall.validity.mode），
+  // 两者分开写：混在 validityOverride 里会被 prepareBenchYaml 塞进 recall.validity，静默失效。
+  const validityOffOverride = flag("validity-off") ? { excludeInvalidated: false } : undefined;
+  const validityOverride = validityModeOverride;
   const supersedeCardinalityArg = String(arg("supersede-cardinality", "") ?? "").toLowerCase();
   const cardinalityGate = supersedeCardinalityArg === "off" ? false : undefined;
   const supersessionOverride = cardinalityGate === false ? { cardinalityGate: false } : undefined;
@@ -274,10 +317,38 @@ async function main() {
   const conclusionCap = typeof conclusionCapArg === "number" && Number.isFinite(conclusionCapArg) && conclusionCapArg >= 0
     ? Math.floor(conclusionCapArg)
     : undefined;
-  const conclusionBudgetMode = String(arg("conclusion-budget-mode", "shared")) === "additive" ? "additive" : "shared";
+  // #141：slot = 复合单元槽位预算（结论按 slotCost 占槽，经验层取剩余）。
+  // 显式校验（裸 flag / 拼错一律退出码 2）：静默回落 shared 会让「新分阶段档」跑成旧档，
+  // 报告里也看不出差别——这类静默降级正是 #141 要消灭的。
+  const budgetModeArg = strArg("conclusion-budget-mode", "shared");
+  if (!["shared", "additive", "slot"].includes(String(budgetModeArg))) {
+    console.error(`[bench:error] --conclusion-budget-mode 只能是 shared|additive|slot（收到 ${budgetModeArg}）`);
+    process.exit(2);
+  }
+  const conclusionBudgetMode = String(budgetModeArg);
   const conclusionLegacyRank = flag("conclusion-legacy-rank");
   // #138：结论层查询路由（assistantRecall = 回忆 assistant 输出的查询跳过结论层）
-  const conclusionRouting = String(arg("conclusion-routing", "off")) === "assistant-recall" ? "assistantRecall" : "off";
+  // #141：intent = 按查询意图分预算/排序/成对（分阶段选择）。同样显式校验，不静默回落 off。
+  const routingArg = strArg("conclusion-routing", "off");
+  if (!["off", "assistant-recall", "intent"].includes(String(routingArg))) {
+    console.error(`[bench:error] --conclusion-routing 只能是 off|assistant-recall|intent（收到 ${routingArg}）`);
+    process.exit(2);
+  }
+  const conclusionRouting = String(routingArg) === "assistant-recall" ? "assistantRecall" : String(routingArg) === "intent" ? "intent" : "off";
+  // #141：复合单元槽位成本（[1,3]；缺省留给运行期 layered-budget 的 1.5）与成对执行开关。
+  const slotCostArg = strArg("conclusion-slot-cost", undefined);
+  const slotCostNum = slotCostArg === undefined ? undefined : Number(slotCostArg);
+  if (slotCostArg !== undefined && (!Number.isFinite(slotCostNum) || slotCostNum < 1 || slotCostNum > 3)) {
+    console.error(`[bench:error] --conclusion-slot-cost 需 1~3 的数值（收到 ${slotCostArg}）`);
+    process.exit(2);
+  }
+  const conclusionSlotCost = slotCostNum;
+  const pairingArg = strArg("conclusion-pairing", "off");
+  if (!["off", "require"].includes(String(pairingArg))) {
+    console.error(`[bench:error] --conclusion-pairing 只能是 off|require（收到 ${pairingArg}）`);
+    process.exit(2);
+  }
+  const conclusionPairing = String(pairingArg);
   // #139 第5项归因补充：无卡基线档（连结论层注入都关），用于把「卡本身」与「回捞」分离。
   const conclusionLayerOff = flag("conclusion-layer-off");
   // #139 第5项：W3 写/读开关拆分。--conclusion-cards 只开**写入面**（蒸馏 + work_fact 落库 + part_of 链）；
@@ -477,6 +548,24 @@ async function main() {
     }
   }
 
+  // #141 评审 #6：slot 预算 / 槽位成本 / 成对执行都依赖读侧回捞（smallToBig.enabled）。
+  // 没有 --small-to-big 时这些键会被 yaml gate 掉，臂名写着 slot/require、实际跑的是旧档。
+  if (!smallToBigEnabled) {
+    const inert = [
+      conclusionBudgetMode !== "shared" ? "--conclusion-budget-mode " + conclusionBudgetMode : null,
+      conclusionSlotCost !== undefined ? "--conclusion-slot-cost" : null,
+      conclusionPairing === "require" ? "--conclusion-pairing require" : null,
+    ].filter(Boolean);
+    if (inert.length) {
+      console.error("[bench:error] " + inert.join("、") + " 需要 --small-to-big（读侧回捞没开时这些键会被 yaml gate 掉，等于白跑）");
+      process.exit(2);
+    }
+  }
+  if (conclusionSlotCost !== undefined && conclusionBudgetMode !== "slot") {
+    console.error("[bench:error] --conclusion-slot-cost 只在 --conclusion-budget-mode slot 下生效；请补 --conclusion-budget-mode slot 或去掉槽位成本");
+    process.exit(2);
+  }
+
   prepareBenchYaml({
     srcYaml: prodConfig,
     storeDir,
@@ -486,6 +575,7 @@ async function main() {
   ...(candidateKOverride !== undefined ? { candidateKOverride } : {}),
   ...(presentTemporalOverride ? { presentTemporalOverride } : {}),
     ...(validityOverride ? { validityOverride } : {}),
+    ...(validityOffOverride ? { recallFlatOverride: validityOffOverride } : {}),
     ...(supersessionOverride ? { supersessionOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
@@ -502,12 +592,15 @@ async function main() {
     // conclusionLayer 是**读侧**（注入层）参数：maxConclusions/routing 不该被写侧开关 gate 掉，
     // 否则「不加 --conclusion-cards 就用不上 --conclusion-cap/--conclusion-routing」= 静默退化。
     // --conclusion-layer-off：连卡本身都不注入——归因表要的「无卡基线」档。
-    ...(conclusionLayerOff || conclusionCap !== undefined || conclusionRouting !== "off"
+    ...(conclusionLayerOff || conclusionCap !== undefined || conclusionRouting !== "off" || conclusionSlotCost !== undefined || conclusionPairing !== "off"
       ? {
           conclusionLayerOverride: {
             ...(conclusionLayerOff ? { enabled: false } : {}),
             ...(!conclusionLayerOff && conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}),
             ...(!conclusionLayerOff && conclusionRouting !== "off" ? { routing: conclusionRouting } : {}),
+            // #141 分阶段读侧旋钮：槽位成本 + 成对执行（只影响 slot/pairing 生效时的注入组装）。
+            ...(!conclusionLayerOff && conclusionSlotCost !== undefined ? { slotCost: conclusionSlotCost } : {}),
+            ...(!conclusionLayerOff && conclusionPairing !== "off" ? { pairing: conclusionPairing } : {}),
           },
         }
       : {}),
@@ -516,7 +609,8 @@ async function main() {
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
   if (conclusionCards) log("[bench] W3 写入面试验档(仅沙箱 yaml): 蒸馏 + part_of 证据链落库");
   if (conclusionLayerOff) log("[bench] 结论层整体关闭（--conclusion-layer-off）：无卡基线档");
-  if (conclusionCap !== undefined || conclusionRouting !== "off") log("[bench] 结论层读侧试验档(仅沙箱 yaml): " + JSON.stringify({ ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), routing: conclusionRouting }));
+  if (conclusionCap !== undefined || conclusionRouting !== "off" || conclusionSlotCost !== undefined || conclusionPairing !== "off") log("[bench] 结论层读侧试验档(仅沙箱 yaml): " + JSON.stringify({ ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), routing: conclusionRouting, ...(conclusionSlotCost !== undefined ? { slotCost: conclusionSlotCost } : {}), ...(conclusionPairing !== "off" ? { pairing: conclusionPairing } : {}) }));
+  if (validityOffOverride) log("[bench] #141 效期对照档(仅沙箱 yaml): recall.excludeInvalidated=false（不排也不降权）");
   if (smallToBigEnabled) log("[bench] W3 读侧 smallToBig 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, maxExtraLines: smallToBigMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank }));
   if (smallToBigOff) log("[bench] W3 读侧 smallToBig 显式关闭（--small-to-big-off）");
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
@@ -805,8 +899,27 @@ async function main() {
     }
     if (paceMs > 0) await new Promise((res) => setTimeout(res, paceMs));
     const ret = evalRetrieval({ caseObj: c, hits: r.hits, resolve: resolvers.get(c.groupKey), k, kList });
+    // #141 / #158：注入行类型归因 + 证据充分性。逐题就地算（hits 是对象数组，
+    // 报告里只落 hits 计数，事后无法再归因），跨题汇总交 aggregate 之外的 byTypeTotal 单独落盘。
+    // sessionOf 与 metrics.evalRetrieval 同口径：turn id 尾部 -s<N>-t<M> → session_<N>。
+    const sessionOfTurn = (id) => {
+      const m = String(id).match(/-s(\d+)-t\d+$/);
+      return m ? `session_${Number(m[1])}` : null;
+    };
+    const lineTypeStats = attributeInjectedLines({
+      hits: r.hits,
+      resolve: resolvers.get(c.groupKey),
+      goldTurnIds: c.evidenceTurnIds,
+      sessionOf: sessionOfTurn,
+      goldSessionIds: c.evidenceSessionIds,
+    });
     // #139 评论 8：block 与 evidence 是两条渲染路，报告里分别落长度，避免分析时混读。
     const evidenceBlock = b1Mode ? buildEvidenceBlock(r.hits) : null;
+    // 证据充分性：量的是「作答模型眼前那段证据」的字面 gold 覆盖率（b1 用编号证据块，否则用记忆块）。
+    const suff = evidenceSufficiency({
+      evidence: b1Mode ? evidenceBlock : r.block,
+      goldAnswer: c.goldAnswer,
+    });
     rows.push({
       caseId: c.caseId,
       questionType: c.questionType,
@@ -826,6 +939,10 @@ async function main() {
       hits: r.hits.length,
       topContents: r.hits.slice(0, k).map((h) => h.content.slice(0, 160)),
       ...ret,
+      // #141 / #158：注入行类型归因（含去掉某类后的一阶覆盖率损失）与证据充分性。
+      // missing 只留前 20 token，报告体积可控；全量口径见单测。
+      lineTypeStats,
+      evidenceSufficiency: { score: suff.score, goldTokens: suff.goldTokens, coveredTokens: suff.coveredTokens },
       block: r.block,
     });
     if (!quiet && (i % 10 === 0 || i === casesAll.length)) log(`[bench] 检索 ${i}/${casesAll.length}`);
@@ -870,6 +987,23 @@ async function main() {
 
   // ── 汇总 ──
   const agg = aggregate(rows);
+  // #141 / #158：跨题注入行类型汇总（与 rows[].lineTypeStats.byType 同口径累加，sessions 按题求和）
+  // 与证据充分性均值（null = 证据块里没有 gold token，不参与均值，避免把「无信号」摊成 0 分）。
+  const lineTypeTotals = Object.fromEntries(INJECT_LINE_TYPES.map((t) => [t, { lines: 0, goldLines: 0, sessions: 0 }]));
+  for (const row of rows) {
+    const bt = row.lineTypeStats?.byType ?? {};
+    for (const t of INJECT_LINE_TYPES) {
+      if (!bt[t]) continue;
+      lineTypeTotals[t].lines += bt[t].lines;
+      lineTypeTotals[t].goldLines += bt[t].goldLines;
+      lineTypeTotals[t].sessions += bt[t].sessions;
+    }
+  }
+  const esScores = rows.map((row) => row.evidenceSufficiency?.score).filter((v) => typeof v === "number");
+  const evidenceSufficiencySummary = {
+    mean: esScores.length ? esScores.reduce((a, b) => a + b, 0) / esScores.length : null,
+    cases: esScores.length,
+  };
   const report = {
     generatedAt: new Date().toISOString(),
     repoCommit: gitSha(),
@@ -894,6 +1028,24 @@ async function main() {
         relevanceRanked: cfg.recall?.smallToBig?.relevanceRanked ?? null,
         // 'on' / 'off' / null：null = 没指定，继承生产 yaml 的生效值（旧布尔分不清这两者）。
         requested: smallToBigEnabled ? "on" : smallToBigOff ? "off" : null,
+      },
+      // #141（三机制分阶段）：读侧结论层的**生效**快照。判定表必须能区分「这一臂真跑在新分阶段」
+      // 与「旗标静默回落到旧档」——只看命令行看不出来，只看 effectiveConfig 又要人肉挖。
+      conclusionLayer: {
+        enabled: cfg.recall?.conclusionLayer?.enabled !== false,
+        maxConclusions: cfg.recall?.conclusionLayer?.maxConclusions ?? null,
+        routing: cfg.recall?.conclusionLayer?.routing ?? null,
+        pairing: cfg.recall?.conclusionLayer?.pairing ?? null,
+        slotCost: cfg.recall?.conclusionLayer?.slotCost ?? null,
+        arbitrate: cfg.recall?.conclusionLayer?.arbitrate ?? null,
+        arbitrateThreshold: cfg.recall?.conclusionLayer?.arbitrateThreshold ?? null,
+        requested: { budget: conclusionBudgetMode, routing: conclusionRouting, pairing: conclusionPairing, slotCost: conclusionSlotCost ?? null },
+      },
+      // #141 W2「关/软/硬」三格：失效排除总开关与效期模式是两处不同的键，必须分开记。
+      validity: {
+        excludeInvalidated: cfg.recall?.excludeInvalidated ?? null,
+        mode: cfg.recall?.validity?.mode ?? null,
+        requested: validityOffOverride ? "off" : validityModeOverride ? String(validityModeOverride.mode) : null,
       },
       // #135 第1项：最终生效召回配置原始快照（--expect-config 断言对象，也是归因表的事实来源）
       effectiveConfig,
@@ -970,6 +1122,8 @@ async function main() {
     },
     overall: agg.overall,
     perType: agg.perType,
+    lineTypeTotals,
+    evidenceSufficiency: evidenceSufficiencySummary,
     rows,
   };
 

@@ -40,7 +40,10 @@ const baseFile = secondFile === undefined ? (firstFile ? "auto" : undefined) : f
 const trialFile = secondFile === undefined ? firstFile : secondFile;
 if (!baseFile || !trialFile) {
   console.error(
-    "用法: node --import tsx scripts/bench-gates.mjs [<base.json|auto>] <trial.json> [--min-recovered 5] [--min-delta-pp 3] [--budget-tokens-per-turn 800]\n  只给一份报告时自动用基线登记表的「同 judge 基线」作 base。",
+    "用法: node --import tsx scripts/bench-gates.mjs [<base.json|auto>] <trial.json> [--min-recovered 5] [--min-delta-pp 3] [--budget-tokens-per-turn 800]\n" +
+      "       [--min-evidence-sufficiency 0.6] [--per-type-floor temporal=0]\n" +
+      "  只给一份报告时自动用基线登记表的「同 judge 基线」作 base。",
+      "  --min-evidence-sufficiency / --per-type-floor 缺省不判（SKIP），老报告不受影响。",
   );
   process.exit(2);
 }
@@ -51,6 +54,33 @@ const budgetTokensPerTurn = Number(arg("budget-tokens-per-turn", 800));
 const budgetCardsPerGroup = arg("budget-cards-per-group", undefined) === undefined ? null : Number(arg("budget-cards-per-group"));
 
 const allowCrossJudge = arg("allow-cross-judge", false) === true;
+// #141：新增两个可选门禁（缺省 SKIP = 不参与判定，老报告不受影响）。
+//  --min-evidence-sufficiency X   证据充分性均值下限（trial 报告 evidenceSufficiency.mean）
+//  --per-type-floor temporal=<pp> 分题型判对 Δ 下限（可逗号分隔多个题型）
+const minEvidenceSufficiencyArg = arg("min-evidence-sufficiency", undefined);
+const minEvidenceSufficiency =
+  minEvidenceSufficiencyArg === undefined ? null : Number(minEvidenceSufficiencyArg);
+if (minEvidenceSufficiency !== null && (!Number.isFinite(minEvidenceSufficiency) || minEvidenceSufficiency < 0 || minEvidenceSufficiency > 1)) {
+  console.error("[gates:error] --min-evidence-sufficiency 需 0~1 的数值（证据充分性口径）");
+  process.exit(2);
+}
+const perTypeFloorArg = arg("per-type-floor", undefined);
+const perTypeFloors = [];
+if (perTypeFloorArg !== undefined) {
+  const raw = perTypeFloorArg === true ? "" : String(perTypeFloorArg);
+  for (const part of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const m = part.match(/^([A-Za-z0-9_-]+)=(-?[\d.]+)$/);
+    if (!m) {
+      console.error(`[gates:error] --per-type-floor 需形如 temporal=0（收到 ${part}）`);
+      process.exit(2);
+    }
+    perTypeFloors.push({ type: m[1], floorPp: Number(m[2]) });
+  }
+  if (perTypeFloors.length === 0) {
+    console.error("[gates:error] --per-type-floor 需要一个值，例如 temporal=0");
+    process.exit(2);
+  }
+}
 
 /** 登记表里存的是登记时的报告路径；先按 cwd，再按 manifest 目录解析。 */
 function resolveReport(ref, manifest) {
@@ -274,6 +304,74 @@ if (!decision.allowed) {
       // 指定了报告却读不到/解析失败 = 防线静默失效，判 FAIL（旧实现落 SKIP → exit 0 假绿）。
       failed++;
       L.push("报告: " + gatePath + " → FAIL（报告读取/解析失败: " + String(e?.message ?? e) + "）");
+    }
+  }
+  L.push("");
+}
+
+// ── 门禁 5：证据充分性（#141 新增指标；缺省 SKIP）──
+{
+  L.push("## 门禁5 证据充分性（#141 可答性近似：trial 均值 ≥ 阈值）");
+  const esB = B.evidenceSufficiency?.mean;
+  const esA = A.evidenceSufficiency?.mean;
+  const fmt = (v) => (typeof v === "number" ? v.toFixed(3) : "-");
+  if (minEvidenceSufficiency === null) {
+    // 缺省不判：这是新指标，历史报告里没有，默认参与判定会把老档全变 SKIP/FAIL。
+    skipped++;
+    L.push("证据充分性: SKIP（未设 --min-evidence-sufficiency；base=" + fmt(esA) + " trial=" + fmt(esB) + "）");
+  } else if (typeof esB !== "number") {
+    // 有阈值但报告缺字段 = 本档没采这个指标 → 未测量，不是测不过。
+    skipped++;
+    L.push("证据充分性: SKIP（trial 报告无 evidenceSufficiency——该档未采集此指标；先跑含该字段的档）");
+  } else {
+    const ok = esB >= minEvidenceSufficiency;
+    if (!ok) failed++;
+    L.push("证据充分性: base=" + fmt(esA) + " trial=" + fmt(esB) + "（阈值 ≥" + minEvidenceSufficiency + "）→ " + (ok ? "PASS" : "FAIL"));
+  }
+  // 注入行类型归因（#158）：只做展示，不设门禁——它解释「谁在为覆盖率买单」，不是验收线。
+  const lt = B.lineTypeTotals;
+  if (lt && typeof lt === "object") {
+    const parts = Object.entries(lt).map(([t, v]) => t + " " + (v?.lines ?? 0) + " 行/gold " + (v?.goldLines ?? 0));
+    L.push("注入行类型（trial）: " + parts.join(" · "));
+  }
+  L.push("");
+}
+
+// ── 门禁 6：分题型判对地板（#141 验收：temporal 不得低于基线；缺省 SKIP）──
+{
+  L.push("## 门禁6 分题型判对地板（--per-type-floor）");
+  if (perTypeFloors.length === 0) {
+    skipped++;
+    L.push("分题型: SKIP（未设 --per-type-floor，例如 temporal=0）");
+  } else {
+    for (const { type, floorPp } of perTypeFloors) {
+      // 题型名支持前缀匹配：写 temporal 即命中 temporal-reasoning（LME 题型多是 "<族>-<子类>"）；
+      // 精确名照样命中。两档都要有 genCorrect 才算可判。
+      const matchType = (qt) => {
+        const s = String(qt ?? "");
+        return s === type || s.startsWith(type + "-") || s.startsWith(type + "_");
+      };
+      const rows = pairs.filter((p) => matchType(p.b.questionType ?? p.a.questionType) && p.a.genCorrect != null && p.b.genCorrect != null);
+      if (rows.length === 0) {
+        // 区分两种「零行」：题型名根本不存在（拼写错）→ 门禁凭空消失必须 FAIL；
+        // 题型存在但这一档没判分（未生成作答）→ SKIP 才诚实。
+        const knownTypes = [...new Set(pairs.map((p) => String(p.b.questionType ?? p.a.questionType ?? "")).filter(Boolean))];
+        const named = knownTypes.some(matchType);
+        if (!named) {
+          failed++;
+          L.push(type + ": FAIL（报告里没有匹配的题型；已见题型: " + knownTypes.join(", ") + "）");
+        } else {
+          skipped++;
+          L.push(type + ": SKIP（题型存在但没有可配对判分行——该档未生成作答？）");
+        }
+        continue;
+      }
+      const deltas = rows.map((p) => p.b.genCorrect - p.a.genCorrect);
+      const mean = deltas.reduce((s, x) => s + x, 0) / deltas.length;
+      const ok = mean * 100 >= floorPp;
+      if (!ok) failed++;
+      const accB = rows.filter((p) => p.b.genCorrect === 1).length / rows.length;
+      L.push(type + ": n=" + rows.length + " Δ=" + pp(mean) + "（地板 ≥" + floorPp + "pp；trial 判对 " + pct(accB) + "）→ " + (ok ? "PASS" : "FAIL"));
     }
   }
   L.push("");

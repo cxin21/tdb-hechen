@@ -397,8 +397,35 @@ export interface RecallConfig {
      * assistantRecall = 当查询在「回忆 assistant 自己先前的输出」（you said/recommended/wrote…）
      * 时整层跳过结论层（user 侧事实卡对这类问题系统性不相关，注入只会挤掉承载答案的 assistant 轮），
      * 预算全额还给经验层。判定纯规则（src/core/recall/query-intent.ts），无模型调用。
+     * #141（2026-10-28）新增 "intent"：按查询意图（temporal/exact-fact/update/aggregate/
+     * preference/assistant-recall）分阶段分配表示预算——结论预算、经验层顺序、成对约束与
+     * 表示仲裁都由 INTENT_POLICY 派生（见 query-intent.ts）。缺省仍 off（不改变现行为）。
      */
-    routing: "off" | "assistantRecall";
+    routing: "off" | "assistantRecall" | "intent";
+    /**
+     * #141（2026-10-28）：结论「必带源证据」约束——"off"（缺省，逐位现状）| "require"。
+     * require = 每条入选的 work_fact 结论必须在 smallToBig 回捞里拿到 ≥1 条 part_of 证据行；
+     * 拿不到的（缺边/证据被预算裁掉）让位给经验层——「无源证据的摘要」比原文信息更少（#155）。
+     * 只在 smallToBig.enabled=true 时生效（否则全体让位等于关层）。结论层路由为 intent 时
+     * 由 INTENT_POLICY.pairing 决定是否强制；本键是全局强开（任一为 require 即生效）。
+     */
+    pairing?: "off" | "require";
+    /**
+     * #141（2026-10-28）：复合单元槽位成本（smallToBig.budget="slot" 时生效）。
+     * 结论 1 槽 + 其必带源证据 0.5 槽 = 1.5（缺省）；clamp [1,3]。
+     * 见 src/core/recall/layered-budget.ts 的 computeSlotBudget。
+     */
+    slotCost?: number;
+    /**
+     * #141（2026-10-28）：表示仲裁——"off"（缺省，逐位现状）| "redundant"。
+     * redundant = 与已选经验层原文行语义重复（token 覆盖率 ≥ arbitrateThreshold）的结论行让位，
+     * 槽位还给经验层：原文既有答案又有时间戳与说话人，比摘要信息量大。这是「同一知识的两种
+     * 表示」的正面解（不是靠关掉结论层回避）。结论层路由为 intent 时由 INTENT_POLICY.arbitrate
+     * 决定；本键是全局强开（任一为 redundant 即生效）。
+     */
+    arbitrate?: "off" | "redundant";
+    /** #141：表示仲裁冗余阈值（缺省 0.75，clamp [0,1]）。 */
+    arbitrateThreshold?: number;
     /**
      * R71-A2（2026-10-19）：结论层 rerank 语义门（主门）。mode 缺省 "shadow"
      * （shadow-first：只记录不过滤，journal gates.conclusionRerank 观测定标后切 enforce）；
@@ -428,8 +455,11 @@ export interface RecallConfig {
      * "additive" = 上下文行只挤「结论层」之外仍按 maxResults 保底经验层：
      * experienceLimit = max(0, maxResults − 结论行)，上下文行不计入 → 注入总行数
      * ≤ maxResults + maxExtraLines（摘要+源证据成对，不以牺牲原文行为代价）。
+     * #141（2026-10-28）"slot" = 复合单元记账：一条结论 + 它必带的 1 条源证据记 1.5 槽
+     * （conclusionLayer.slotCost），经验层额度 = maxResults − 全部复合单元槽位；
+     * 结论行与上下文行都不额外挤经验层（各自已在槽位里记账），注入总行数 ≈ maxResults。
      */
-    budget: "shared" | "additive";
+    budget: "shared" | "additive" | "slot";
     /**
      * #138（2026-10-28）：回捞证据行的查询相关性排序（缺省 true）。true = 对每张卡按
      * 查询 token 命中数（去重计数）在它的 part_of 证据行里挑最相关的一条先注入，
@@ -2184,8 +2214,29 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(cl, "maxConclusions");
             return raw === undefined ? undefined : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
           })(),
-          // #138（2026-10-28）：结论层查询路由（缺省 off = 逐位现状；assistantRecall 显式开）
-          routing: str(cl, "routing") === "assistantRecall" ? "assistantRecall" : "off",
+          // #138（2026-10-28）：结论层查询路由（缺省 off = 逐位现状；assistantRecall 显式开；
+          // #141 增 intent = 按查询意图分阶段分预算）
+          routing: (() => {
+            const raw = str(cl, "routing");
+            return raw === "assistantRecall" || raw === "intent" ? raw : "off";
+          })(),
+          // #141（2026-10-28）：结论必带源证据（缺省 off；require 显式开）
+          pairing: str(cl, "pairing") === "require" ? "require" : "off",
+          // #141：复合单元槽位成本（clamp [1,3]；缺省 undefined → layered-budget 缺省 1.5）
+          slotCost: (() => {
+            const raw = num(cl, "slotCost");
+            return raw === undefined || !Number.isFinite(raw)
+              ? undefined
+              : Math.min(3, Math.max(1, raw));
+          })(),
+          // #141：表示仲裁（缺省 off；redundant 显式开）与冗余阈值（clamp [0,1]）
+          arbitrate: str(cl, "arbitrate") === "redundant" ? "redundant" : "off",
+          arbitrateThreshold: (() => {
+            const raw = num(cl, "arbitrateThreshold");
+            return raw === undefined || !Number.isFinite(raw)
+              ? undefined
+              : Math.min(1, Math.max(0, raw));
+          })(),
           // R71-A2（2026-10-19）：结论层 rerank 门——mode 非法值回落 "shadow"（shadow-first；
           // minScore 非有限回落 undefined=运行期取 -1.0 缺省）
           rerankGate: (() => {
@@ -2212,7 +2263,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             return raw === undefined ? 2 : raw > 0 ? Math.floor(raw) : 0;
           })(),
           // #138（2026-10-28）：上下文行预算归属（缺省 shared = 逐位现状；additive 显式开）
-          budget: str(sb, "budget") === "additive" ? "additive" : "shared",
+          budget: (() => {
+            const raw = str(sb, "budget");
+            return raw === "additive" || raw === "slot" ? raw : "shared";
+          })(),
           // #138（2026-10-28）：回捞证据行按查询相关性取（缺省 true = 质量修复；false 回滚旧序）
           relevanceRanked: bool(sb, "relevanceRanked") ?? true,
         };

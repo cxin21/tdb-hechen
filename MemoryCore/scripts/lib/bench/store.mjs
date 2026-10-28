@@ -34,7 +34,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, conclusionLayerOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, conclusionLayerOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride, recallFlatOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -110,6 +110,11 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // 缺省 yaml 无此键 = 通道关，逐位现状）。只写沙箱 yaml，生产配置不动。
   if (factChannelOverride && typeof factChannelOverride === "object" && Object.keys(factChannelOverride).length) {
     m.recall.factChannel = { ...(m.recall.factChannel || {}), ...factChannelOverride };
+  }
+  // #141：recall 根级平铺键（如 excludeInvalidated）试验档——最后应用，只覆盖点名的键。
+  // validityOverride 落 recall.validity.mode；excludeInvalidated 是 recall 根级键，两者不能混写。
+  if (recallFlatOverride && typeof recallFlatOverride === "object" && Object.keys(recallFlatOverride).length) {
+    Object.assign(m.recall, recallFlatOverride);
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");

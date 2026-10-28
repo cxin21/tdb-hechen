@@ -121,7 +121,8 @@ export interface RecallJournalGates {
    * candidates = 卡的全部 part_of 证据候选数；kept = 实际注入的上下文行数。
    */
   smallToBig?: {
-    mode: "shared" | "additive";
+    /** #141（2026-10-28）：增 "slot" = 复合单元记账（结论+必带源证据按 slotCost 占槽）。 */
+    mode: "shared" | "additive" | "slot";
     maxExtraLines: number;
     /** true = 按查询相关性排名取证据（#138 修复）；false = 旧序（逐位回滚档）。 */
     ranked: boolean;
@@ -134,6 +135,37 @@ export interface RecallJournalGates {
    * 在 recall-signals.ts（与乘子实现同文件，防止口径分裂）。
    */
   importancePenalty?: RecallJournalImportanceGate;
+  /**
+   * #141（2026-10-28）：结论层分阶段路由观测——意图、预算、顺序、成对与仲裁。
+   * 灰度复核要能区分「没路由到（default）」与「路由到了但预算 0 / 证据缺失被丢弃」。
+   */
+  conclusionRouting?: {
+    /** classifyRecallIntent 的结果；routing!=="intent" 时为 null。 */
+    intent: string | null;
+    mode: "off" | "assistantRecall" | "intent";
+    /** 本次生效的结论行预算（null = 沿用 maxConclusions/半切缺省）。 */
+    budget: number | null;
+    order: "conclusion-first" | "turn-first";
+    /** 是否强制结论必带源证据（生效值）。 */
+    pairing: boolean;
+    /** 是否启用表示仲裁（生效值）。 */
+    arbitrate: boolean;
+    /** 成对约束下因无 part_of 证据被丢弃的结论张数。 */
+    unpairedDropped?: number;
+    /** 表示仲裁让位的结论张数与阈值（arbitrate 生效时才写）。 */
+    arbitrateDropped?: number;
+    arbitrateThreshold?: number;
+    /** slot 模式：记账后经验层额度与槽位成本。 */
+    slotExperienceLimit?: number;
+    slotCost?: number;
+    /** 降级原因：回捞通道不可用（store 无 part_of 读面 / maxExtraLines=0 / 软失败）→ 成对约束跳过、结论保留。 */
+    degraded?: "pairing-unavailable";
+    /**
+     * 被丢弃结论的样本（≤3 条，recordId + 原因）。只有计数无法回答「丢的是不是
+     * 那道题的答案卡」——灰度过线后要复盘具体卡，必须能指名到记录。
+     */
+    droppedSamples?: Array<{ recordId: string | null; why: string }>;
+  };
 }
 
 // P1-T7：类型再导出（journal 消费方 import 单一源 recall-journal 即可）

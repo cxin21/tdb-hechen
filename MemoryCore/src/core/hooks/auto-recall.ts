@@ -67,7 +67,13 @@ import {
   type ExcludeInvalidated,
   type ValidityMode,
 } from "../recall/validity-policy.js";
-import { isAssistantRecallQuery } from "../recall/query-intent.js";
+import {
+  classifyRecallIntent,
+  isAssistantRecallQuery,
+  recallIntentPolicy,
+  type RecallIntentPolicy,
+} from "../recall/query-intent.js";
+import { arbitrateConclusions, computeSlotBudget } from "../recall/layered-budget.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import { mmrReorder } from "../recall/mmr.js";
@@ -861,6 +867,13 @@ export async function performLayeredRecall(params: {
     const r7MaxResults = cfg.recall.maxResults ?? 5;
     const r7HalfLimit = Math.floor(r7MaxResults / 2);
     const r7CleanQuery = sanitizeText(userText);
+    // ── #141（2026-10-28）：结论层分阶段路由（routing="intent"）──
+    // 票面根因②「三机制同阶段竞争」：结论与 turn 是同一知识的两种表示，同层竞争 ⇒ 零和替换。
+    // 解：按查询意图给「表示层」分预算与顺序（INTENT_POLICY 单一源），而不是关掉某个机制。
+    // 纯规则无外呼；缺省 routing="off" ⇒ r7Policy=undefined ⇒ 全链逐位现状。
+    const r7RoutingMode = cfg.recall?.conclusionLayer?.routing ?? "off";
+    const r7Intent = r7RoutingMode === "intent" ? classifyRecallIntent(r7CleanQuery) : undefined;
+    const r7Policy: RecallIntentPolicy | undefined = r7Intent ? recallIntentPolicy(r7Intent) : undefined;
     // ── 审查修补 I①（关断矩阵纪律）：conclusionLayer.enabled 总开关 ──
     // 缺省 true = 现行为；false = 结论层整体退出（候选零收集、选择零执行、V2-3 放宽零触发）
     // → r7Conclusions 恒空 → 下游沿"无 L2 命中退化"同一既有路径（layered=undefined /
@@ -871,8 +884,9 @@ export async function performLayeredRecall(params: {
     // 依据（bench 逐桶）：single-session-assistant 的 gold 在 assistant 轮，而结论卡只蒸馏
     // user 侧事实——卡与查询词面重合却不含答案，注入只挤掉答案轮（cov 80→66.7、判对 93.3→80）。
     // 判定纯规则（query-intent.ts）；路由命中时结论层零候选、零 store 调用，预算全给经验层。
-    const r7ConclusionRoutingOff = cfg.recall?.conclusionLayer?.routing === "assistantRecall"
-      && isAssistantRecallQuery(r7CleanQuery);
+    // #141：intent 路由把 assistant-recall 也并进同一张策略表（INTENT_POLICY 里预算 0）。
+    const r7ConclusionRoutingOff = (r7RoutingMode === "assistantRecall" && isAssistantRecallQuery(r7CleanQuery))
+      || r7Intent === "assistant-recall";
     const r7Candidates: L2ConclusionCandidate[] = [];
     let r7Conclusions: L2ConclusionCandidate[] = [];
     // R71（2026-10-19）：结论层双门 gate 观测（A1 地板 / A2 rerank 门）——入 journal gates
@@ -1022,8 +1036,16 @@ export async function performLayeredRecall(params: {
       // #138（2026-10-28）：上限改为可配（conclusionLayer.maxConclusions）——缺省仍取
       // floor(maxResults/2)（逐位现状），使「结论条数上限」与 smallToBig.maxExtraLines
       // 成为同一预算的两个可扫旋钮（票面评论 ④）。
-      const r7ConclusionCap = cfg.recall?.conclusionLayer?.maxConclusions ?? r7HalfLimit;
+      // #141（2026-10-28）：intent 路由档下策略预算与配置上限取 min（策略表是「按题型」更严的那条）：
+      // exact-fact=0（精确事实靠原文行）、temporal/preference=1、update/aggregate=2。
+      const r7ConclusionCapCfg = cfg.recall?.conclusionLayer?.maxConclusions ?? r7HalfLimit;
+      const r7ConclusionCap = r7Policy?.conclusionBudget !== undefined
+        ? Math.min(r7ConclusionCapCfg, r7Policy.conclusionBudget)
+        : r7ConclusionCapCfg;
       r7Conclusions = r7Conclusions.slice(0, Math.max(0, r7ConclusionCap));
+      if (r7Intent) {
+        logger?.debug?.(`${TAG} [layered] #141 intent=${r7Intent} cap=${r7ConclusionCap} order=${r7Policy?.order ?? "-"} pairing=${r7Policy?.pairing ?? false} arbitrate=${r7Policy?.arbitrate ?? false}`);
+      }
     }
     tPerfL2Ms61 = Math.round(performance.now() - tPerfL2Start61);
     // Task CAL C1（brief 裁决）：结论层注入前截断——纯注入层，不碰门槛/九通道排序。
@@ -1161,7 +1183,14 @@ export async function performLayeredRecall(params: {
     // derived_from 读面语义按 brief 规则留待另行拍板（一期只做 part_of）。
     // R-A 红线：上下文行零 valence/arousal/mood 情绪字段。
     const s2bCfg = cfg.recall?.smallToBig;
-    const smallToBigLines: string[] = [];
+    // #141（2026-10-28）：成对约束与槽位记账的生效值——全局键强开 或 intent 策略要求。
+    // 成对（pairing）只在回捞开启时生效（否则全体让位 = 关层，不是本票要的语义）。
+    const r7PairingRequire = s2bCfg?.enabled === true
+      && (cfg.recall?.conclusionLayer?.pairing === "require" || r7Policy?.pairing === true);
+    const r7SlotMode = s2bCfg?.budget === "slot";
+    let smallToBigLines: string[] = [];
+    /** #141：上下文行按「结论卡下标」记账——成对约束丢弃结论时，其证据行必须同步移除。 */
+    const s2bCardLines = new Map<number, string[]>();
     // #138（2026-10-28）：回捞可观测化——生产 journal 此前只有「上下文行数」，看不出是
     // 「没触发」还是「触发了但选错证据」。gates.smallToBig 记候选/入选/排名三段。
     let s2bGate: RecallJournalGates["smallToBig"] | undefined;
@@ -1169,7 +1198,14 @@ export async function performLayeredRecall(params: {
         typeof vectorStore.getLinksBySource === "function" &&
         (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")) {
       try {
-        const s2bMaxExtra = Math.max(0, Math.floor(s2bCfg.maxExtraLines ?? 2));
+        // #141：slot 模式或成对约束下，每张结论至少 1 条源证据（否则「必带证据」不可能满足）；
+        // 其余档位维持 maxExtraLines 帽（逐位现状）。
+        const s2bBaseExtra = Math.max(0, Math.floor(s2bCfg.maxExtraLines ?? 2));
+        // maxExtraLines=0 = 显式关（尊重用户关断）；>0 时才把帽抬到「每卡 1 条」。
+        const s2bMaxExtra = Math.max(
+          s2bBaseExtra,
+          (r7SlotMode || r7PairingRequire) && s2bBaseExtra > 0 ? r7Conclusions.length : 0,
+        );
         const s2bRanked = s2bCfg.relevanceRanked !== false;
         const s2bTokens = s2bRanked ? parseFtsTokens(buildFtsQuery(r7CleanQuery)) : [];
         if (s2bMaxExtra > 0) {
@@ -1217,7 +1253,12 @@ export async function performLayeredRecall(params: {
               : "";
             if (!s2bContent) return false;
             s2bEmitted.add(cand.row.record_id);
-            smallToBigLines.push(`- [上下文${cand.sceneName ? `|${cand.sceneName}` : ""}] ${s2bContent}`);
+            const s2bLine = `- [上下文${cand.sceneName ? `|${cand.sceneName}` : ""}] ${s2bContent}`;
+            smallToBigLines.push(s2bLine);
+            // #141：按卡记账（成对约束丢弃结论行时同步丢弃其证据行）
+            const s2bCard = s2bCardLines.get(cand.ci);
+            if (s2bCard) s2bCard.push(s2bLine);
+            else s2bCardLines.set(cand.ci, [s2bLine]);
             return true;
           };
           if (!s2bRanked) {
@@ -1241,7 +1282,7 @@ export async function performLayeredRecall(params: {
             }
           }
           s2bGate = {
-            mode: s2bCfg.budget === "additive" ? "additive" : "shared",
+            mode: s2bCfg.budget === "slot" ? "slot" : s2bCfg.budget === "additive" ? "additive" : "shared",
             maxExtraLines: s2bMaxExtra,
             ranked: s2bRanked,
             candidates: s2bCandidates.length,
@@ -1253,6 +1294,46 @@ export async function performLayeredRecall(params: {
         }
       } catch (err) {
         logger?.warn?.(`${TAG} [small-to-big] context backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // ── #141（2026-10-28）：成对约束执行 ──
+    // 入选的 work_fact 结论必须拿到 ≥1 条 part_of 证据行，否则让位给经验层（无源证据的摘要
+    // 比原文信息更少，见 #155）。scene 型结论无 part_of 链、不参与本约束。
+    // 丢弃结论必须连同它的证据行一起丢（否则留下孤儿上下文行白占注入预算）。
+    let r7UnpairedDropped = 0;
+    /** #141（评审 #10）：被丢弃结论的样本（recordId + 原因），观测面要能指名到卡。 */
+    const r7DroppedSamples: Array<{ recordId: string | null; why: string }> = [];
+    const r7PushDropSample = (recordId: string | null | undefined, why: string) => {
+      if (r7DroppedSamples.length < 3) r7DroppedSamples.push({ recordId: recordId ?? null, why });
+    };
+    // #141 修补（评审 #4）：「查不到证据」≠「确实没有证据」。回捞通道没起来（store 无 part_of
+    // 读面 / maxExtraLines=0 显式关 / 回捞软失败）时，若照样执行成对约束，会把整层结论静默清空
+    // ——这不是票面要的「摘要让位给原文」，而是把能力缺失伪装成内容缺失。通道不可用 → 跳过成对
+    // 并记 degraded（结论保留），让观测面能区分两者。
+    let r7PairingDegraded: "pairing-unavailable" | undefined;
+    const r7PairingAvailable = s2bGate !== undefined && (s2bGate.maxExtraLines ?? 0) > 0;
+    if (r7PairingRequire && r7Conclusions.length > 0) {
+      if (!r7PairingAvailable) {
+        r7PairingDegraded = "pairing-unavailable";
+        logger?.warn?.(`${TAG} [small-to-big] #141 pairing skipped: backfill unavailable (store/maxExtraLines=0/soft-fail); keeping ${r7Conclusions.length} conclusion(s)`);
+      } else {
+        const s2bKeep: number[] = [];
+        for (let i = 0; i < r7Conclusions.length; i++) {
+          const c = r7Conclusions[i];
+          if (c.source !== "work_fact" || !c.recordId) { s2bKeep.push(i); continue; }
+          if ((s2bCardLines.get(i)?.length ?? 0) > 0) s2bKeep.push(i);
+        }
+        r7UnpairedDropped = r7Conclusions.length - s2bKeep.length;
+        if (r7UnpairedDropped > 0) {
+          const s2bKeptSet = new Set(s2bKeep);
+          for (let i = 0; i < r7Conclusions.length; i++) {
+            if (!s2bKeptSet.has(i)) r7PushDropSample(r7Conclusions[i]?.recordId, "unpaired");
+          }
+          r7Conclusions = s2bKeep.map((i) => r7Conclusions[i]);
+          smallToBigLines = s2bKeep.flatMap((i) => s2bCardLines.get(i) ?? []);
+          if (s2bGate) s2bGate = { ...s2bGate, kept: smallToBigLines.length };
+          logger?.debug?.(`${TAG} [small-to-big] #141 pairing: dropped ${r7UnpairedDropped} unpaired conclusion(s) (kept=${r7Conclusions.length}, context=${smallToBigLines.length})`);
+        }
       }
     }
     // 幂等结论层（spec §2 R7-1，借团队 幂等与防重 模式）：结论未变化 → 复用已存行（不重组，cache 友好）
@@ -1305,11 +1386,27 @@ export async function performLayeredRecall(params: {
     // 上下文行在预算外附加（注入总行数 ≤ maxResults + maxExtraLines）——「摘要+源证据」成对
     // 补信息，而不是用摘要换掉原文行。
     const r7ContextLines = smallToBigLines.length;
-    const r7Budget = smallToBigLines.length > 0
-      ? (s2bCfg?.budget === "additive"
-          ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7Conclusions.length) }
-          : { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length) })
-      : splitBudget(r7MaxResults, r7ConclusionLines.length);
+    // #141（2026-10-28）：slot = 复合单元记账——一条结论 + 它必带的一条源证据记 1.5 槽
+    // （conclusionLayer.slotCost，clamp [1,3]）。经验层额度 = floor(maxResults − 复合单元槽位)：
+    // 「摘要 + 源证据」成对补信息，代价只按 1.5 行记，而不是把两行都算成挤占经验层。
+    const r7SlotCost = Math.min(3, Math.max(1, cfg.recall?.conclusionLayer?.slotCost ?? 1.5));
+    const r7Slot = r7SlotMode && r7ConclusionLines.length > 0
+      ? computeSlotBudget({
+          maxResults: r7MaxResults,
+          conclusionCount: r7Conclusions.length,
+          slotCost: r7SlotCost,
+          // #141 修补（评审 #9）：成对未开时槽位记账按 1 记（复合单元只在「必带证据」时成立），
+          // 否则会凭空把经验层额度扣掉 0.5×结论数行。
+          pairing: r7PairingRequire,
+        })
+      : undefined;
+    const r7Budget = r7Slot
+      ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: r7Slot.experienceLimit }
+      : smallToBigLines.length > 0
+        ? (s2bCfg?.budget === "additive"
+            ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7Conclusions.length) }
+            : { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length) })
+        : splitBudget(r7MaxResults, r7ConclusionLines.length);
     // R-A3（E3）：同 session 上轮 query 与本轮全等 → 复用上轮搜索结果（免搜索免外呼）。
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
     const sessionReuseTtlMs = cfg.recall?.sessionReuseTtlMs ?? 300_000;
@@ -1437,19 +1534,70 @@ export async function performLayeredRecall(params: {
     memoryLines = searchResult.lines;
     searchTiming = searchResult.timing;
     recallGates = searchResult.gates;
+    // ── #141（2026-10-28）：表示仲裁（arbitrate="redundant"）──
+    // 与已选经验层原文行语义重复的结论行让位，槽位还给经验层：原文既有答案又有时间戳与
+    // 说话人，比摘要信息量大（票面「同一知识两种表示」的正面解，而不是靠关掉结论层回避）。
+    // 比较集 = 本次预算内的经验行（确定性，不做跨轮假设）；让位张数记入 journal gates。
+    let r7ConclusionLinesEff = r7ConclusionLines;
+    let r7ArbitrateDropped = 0;
+    const r7ArbitrateThreshold = Math.min(1, Math.max(0, cfg.recall?.conclusionLayer?.arbitrateThreshold ?? 0.75));
+    const r7ArbitrateEnabled = r7ConclusionLines.length > 0
+      && (cfg.recall?.conclusionLayer?.arbitrate === "redundant" || r7Policy?.arbitrate === true);
+    if (r7ArbitrateEnabled && memoryLines.length > 0) {
+      const r7Arb = arbitrateConclusions({
+        conclusions: r7ConclusionLines,
+        experienceLines: memoryLines.slice(0, r7Budget.experienceLimit),
+        threshold: r7ArbitrateThreshold,
+      });
+      if (r7Arb.dropped.length > 0) {
+        r7ArbitrateDropped = r7Arb.dropped.length;
+        for (let k = 0; k < r7Arb.dropped.length; k++) {
+          const idx = r7Arb.dropped[k];
+          r7PushDropSample(r7Conclusions[idx]?.recordId, r7Arb.reasons[k] ?? "redundant");
+        }
+        r7ConclusionLinesEff = r7Arb.kept.map((i) => r7ConclusionLines[i]);
+        logger?.debug?.(`${TAG} [layered] #141 arbitrate: dropped ${r7ArbitrateDropped}/${r7ConclusionLines.length} redundant conclusion(s) (threshold=${r7ArbitrateThreshold})`);
+      }
+    }
     // R71（2026-10-19）：结论层双门 gate 记录并入 journal（A1 地板 / A2 rerank 门）——
     // 与经验层 rerank gate 并列，观测链同源（logs/recall/*.jsonl gates 段）。
-    if (r71Bm25Gate || r71ConclusionRerankGate) {
+    // #141（2026-10-28）：conclusionRouting 观测门——灰度复核要能区分「没路由到」与
+    // 「路由到了但预算 0 / 证据缺失被丢弃」，否则分阶段改动无法归因。
+    const r7RoutingGate: RecallJournalGates["conclusionRouting"] | undefined =
+      (r7RoutingMode !== "off" || r7PairingRequire || r7Slot || r7ArbitrateEnabled || s2bGate)
+        ? {
+            intent: r7Intent ?? null,
+            mode: r7RoutingMode,
+            budget: r7Policy?.conclusionBudget ?? null,
+            order: r7Policy?.order ?? "conclusion-first",
+            pairing: r7PairingRequire,
+            arbitrate: r7ArbitrateEnabled,
+            ...(r7UnpairedDropped > 0 ? { unpairedDropped: r7UnpairedDropped } : {}),
+            ...(r7ArbitrateEnabled
+              ? { arbitrateDropped: r7ArbitrateDropped, arbitrateThreshold: r7ArbitrateThreshold }
+              : {}),
+            ...(r7Slot ? { slotExperienceLimit: r7Slot.experienceLimit, slotCost: r7SlotCost } : {}),
+            ...(r7PairingDegraded ? { degraded: r7PairingDegraded } : {}),
+            ...(r7DroppedSamples.length > 0 ? { droppedSamples: r7DroppedSamples } : {}),
+          }
+        : undefined;
+    if (r71Bm25Gate || r71ConclusionRerankGate || s2bGate || r7RoutingGate) {
       recallGates = {
         ...(recallGates ?? {}),
         ...(r71Bm25Gate ? { conclusionBm25: r71Bm25Gate } : {}),
         ...(r71ConclusionRerankGate ? { conclusionRerank: r71ConclusionRerankGate } : {}),
         ...(s2bGate ? { smallToBig: s2bGate } : {}),
+        ...(r7RoutingGate ? { conclusionRouting: r7RoutingGate } : {}),
       };
     }
     // ── R7 预算对半切：r7Budget 已在精排接线前计算（rerank cap 消费）——此处只消费。
     // 无结论 → experienceLimit 全额 → slice 恒等 + 组装恒等 → 下游与现状逐位一致（退化安全）。
-    memoryLines = memoryLines.slice(0, r7Budget.experienceLimit);
+    // #141：仲裁让位的结论把槽位还给经验层（回补到宽预算；不超 maxResults）。
+    const r7ExperienceLimitEff = Math.min(
+      r7MaxResults,
+      r7Budget.experienceLimit + r7ArbitrateDropped,
+    );
+    memoryLines = memoryLines.slice(0, r7ExperienceLimitEff);
     // #54（2026-10-19）：召回注入动态 topK——按经验层 scores 分布的 elbow（最大相邻
     // 落差）收缩注入条数（只缩不扩）。缺省 off=逐位现状（固定条数注入）；scores 缺席
     // （keyword FTS 路只回 lines、无平行分数）不调用；span<=0（全同分/非降序）在纯函数
@@ -1466,9 +1614,6 @@ export async function performLayeredRecall(params: {
     }
     // 审查修补（伴随 Critical）：经验行实际条数在 slice 后定格——scores 切片以此为界，
     // 修掉"经验命中不足 experienceLimit 时 scores 多切导致 metric 串位"的潜在错位。
-    const r7ExperienceLineCount = memoryLines.length;
-    memoryLines = assembleLayeredLines(r7ConclusionLines, memoryLines);
-    memoryLines = applyRecallBudget(memoryLines, cfg.recall, logger);
     // ── R71-C（2026-10-19）：fts-only 降级注入帽 ──
     // 向量路死（ftsHits>0 ∧ embeddingHits=0 ∧ strategy≠keyword）时注入块（结论+经验合计）
     // 从尾部裁到 recall.ftsOnlyInjectCap 内（结论前置=头部保留优先）。缺省 2（无结果兜底；
@@ -1479,15 +1624,41 @@ export async function performLayeredRecall(params: {
       searchTiming.ftsHits > 0 && searchTiming.embeddingHits === 0 &&
       effectiveStrategy !== "keyword";
     const r71FtsOnlyCap = cfg.recall?.ftsOnlyInjectCap ?? 2;
-    if (recallDegradedFtsOnly && r71FtsOnlyCap > 0 && memoryLines.length > r71FtsOnlyCap) {
-      logger?.debug?.(`${TAG} [fts-only-cap] degraded injection ${memoryLines.length}->${r71FtsOnlyCap} (cap=${r71FtsOnlyCap})`);
-      memoryLines = memoryLines.slice(0, r71FtsOnlyCap);
+    // #141 修补（评审 #1）：intent 路由的表示顺序——精确事实/时间推理题 turn 优先（结论在后），
+    // 聚合/比较/更新/偏好题结论优先（缺省）。
+    // turn-first 下结论行在**尾部**，而下游两条裁剪（字符预算 applyRecallBudget、fts-only 帽）
+    // 都是从尾部逐行丢 → 会把整块结论切掉。因此 turn-first 的裁剪必须**只作用于经验层、且在拼接之前**：
+    // 结论行整块保留，经验层让出被结论占用的额度（结论行是「表示选择」的结果，不是可选装饰）。
+    const r7TurnFirst = r7Policy?.order === "turn-first";
+    if (r7TurnFirst) {
+      const r7ExpReserve = r7ConclusionLinesEff.length;
+      if (recallDegradedFtsOnly && r71FtsOnlyCap > 0) {
+        const r7ExpCap = Math.max(0, r71FtsOnlyCap - r7ExpReserve);
+        if (memoryLines.length > r7ExpCap) {
+          logger?.debug?.(`${TAG} [fts-only-cap] degraded injection exp ${memoryLines.length}->${r7ExpCap} (cap=${r71FtsOnlyCap}, conclusions=${r7ExpReserve})`);
+          memoryLines = memoryLines.slice(0, r7ExpCap);
+        }
+      }
+      memoryLines = applyRecallBudget(memoryLines, cfg.recall, logger);
+      memoryLines = assembleLayeredLines(memoryLines, r7ConclusionLinesEff);
+    } else {
+      memoryLines = assembleLayeredLines(r7ConclusionLinesEff, memoryLines);
+      memoryLines = applyRecallBudget(memoryLines, cfg.recall, logger);
+      if (recallDegradedFtsOnly && r71FtsOnlyCap > 0 && memoryLines.length > r71FtsOnlyCap) {
+        logger?.debug?.(`${TAG} [fts-only-cap] degraded injection ${memoryLines.length}->${r71FtsOnlyCap} (cap=${r71FtsOnlyCap})`);
+        memoryLines = memoryLines.slice(0, r71FtsOnlyCap);
+      }
     }
+    // 经验层条数在**裁剪之后**定格：scores 切片以此为界（turn-first 也可能被字符/fts 帽收缩）。
+    const r7ExperienceLineCount = Math.min(memoryLines.length, searchResult.lines.length);
 
     // Extract structured RecalledMemory from formatted lines for metric reporting
     // R7：结论行前置 → metric scores 数组同步前插 0（结论非相似度命中，score=0 如实）
-    const r7MetricScores = r7ConclusionLines.length > 0
-      ? [...r7ConclusionLines.map(() => 0), ...(searchResult.scores ?? []).slice(0, r7ExperienceLineCount)]
+    const r7ExpScores = (searchResult.scores ?? []).slice(0, r7ExperienceLineCount);
+    const r7MetricScores = r7ConclusionLinesEff.length > 0
+      ? (r7TurnFirst
+          ? [...r7ExpScores, ...r7ConclusionLinesEff.map(() => 0)]
+          : [...r7ConclusionLinesEff.map(() => 0), ...r7ExpScores])
       : searchResult.scores;
     recalledL1Memories = memoryLines.map((line, i) => {
       const match = line.match(MEMORY_LINE_RE);
@@ -1502,10 +1673,20 @@ export async function performLayeredRecall(params: {
     // ── DS-RECALL-MERGE-001：R7 meta 定格 + 注入块组装（自钩子原位平移，逐位一致）──
     // R71-C：counts 改注入块实测派生——fts-only 帽 / R7 预算 / 动态 topK 从尾部裁剪时，
     // 条数口径与注入块逐位对齐（此前固定值在裁剪态虚高）。无裁剪路径恒等（min/max 同值）。
-    conclusionCount = Math.min(r7ConclusionLines.length, memoryLines.length);
+    // #141 修补（评审 #1）：本条数不再用「位置推断」（min(结论数, 总行数)）——那在结论行被
+    // 局部裁掉时会虚报（例：3 结论 + 2 turn，尾部丢 2 行 → 总行数 3 被读成 3 结论 0 turn）。
+    // 改为按注入块里的实际行文本比对结论行多重集（结论行带 `- [结论…]` 标签，与经验行文本不同域）。
+    const r7ConclusionLineBag = new Map<string, number>();
+    for (const l of r7ConclusionLinesEff) r7ConclusionLineBag.set(l, (r7ConclusionLineBag.get(l) ?? 0) + 1);
+    let r7InjectedConclusions = 0;
+    for (const l of memoryLines) {
+      const n = r7ConclusionLineBag.get(l);
+      if (n !== undefined && n > 0) { r7ConclusionLineBag.set(l, n - 1); r7InjectedConclusions++; }
+    }
+    conclusionCount = r7InjectedConclusions;
     experienceCount = Math.max(0, memoryLines.length - conclusionCount);
     sessionReused = searchCacheHit || conclusionReused;
-    layered = r7ConclusionLines.length > 0;
+    layered = r7InjectedConclusions > 0;
     // #61：l1 段终点（tSearchStart 起含检索+精排+复用缓存+R7 经验行组装）；soul 段起点。
     tPerfL1Ms61 = Math.round(performance.now() - tSearchStart);
     const tPerfSoulStart61 = performance.now();
