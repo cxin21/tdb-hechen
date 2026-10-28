@@ -472,3 +472,76 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 - 相关：bench harness 修了 rerank 子进程 recycle 时的 `EPIPE` 未处理错误（`scripts/lib/bench/rerank-child-host.mjs`），新增 `--rerank-blend` / `--rerank-timeout` 试验键。
 
 **结论**：rerank 的正确用法是「**有界重排 + 噪声过滤**」，不是「主排序器」。生产建议 `rerank.enabled=true` + `rerank.blend≈0.9`（保留噪声过滤与第 2..cap 名次修正），而不是关闭；进一步把 rerank 变成净增益需要分数校准/分类型路由（#145）。
+
+## 14. W3 生产语料灰度复核与 maxExtraLines 定档（issue #138，2026-10-28）
+
+> **触发**：票面要求在生产流量上验证 W3（结论卡 + smallToBig 回捞）并给 `maxExtraLines` 定档，
+> 且 #135 指出「剪枝噪声」会污染定档。用户口径：**不许用关开关收口**——结论层/精排/RAG 配置
+> 本身有价值，错在用法或算法，要修根因。
+> **只读取证**：生产 recall journal（`D:/TDB/data/logs/recall`，12 文件 2485 条，2026-10-12~10-27，
+> 零写入零外呼）；bench 复核全部同 manifest（n=90）同 judge（MiniMax-M3.1-Flash）。
+
+### 14.1 生产语料观测（journal 只读，脚本 `scripts/audit/r138-w3-prod-observation.mjs`）
+
+| 指标 | 实测 |
+|---|---|
+| 结论层（layered）命中率 | **49.6%**（1233/2485） |
+| 每题结论行数分布 | 0 行 50% / 2 行 12.7% / 3 行 6.9% / 4 行 20.9% / 5 行 9.2% |
+| 注入总行数触硬帽（=5） | 10.2% |
+| **结论层命中时经验层 ≤1 行** | **98.4%**（1213/1233） |
+| 表示占比（注入行里谁是主体） | 结论层 **97.8%**（其中 work_fact 42.7%、上下文 0.4%）/ 经验层 **2.2%** |
+| smallToBig 回捞触发率 | **0.2%**（6/2485，均值 0.008 行/题） |
+| 触发时「结论+上下文」占注入行 | 100%（即回捞点亮的 6 条里，原文行全被挤掉） |
+| 精排剪枝 kept≤1 占比 | **35.6%**（kept=0 占 23.6%） |
+| 召回总耗时 P50/P95、精排 P50 | 1721 / 6726 ms、937 ms |
+
+**读法**：生产不是「结论卡偶尔挤掉一行」，而是**结论层几乎单独占满 5 行注入窗口**（97.8%），
+原文行长期只剩 0~1 行——票面担心的「注入行数分布/上下文行占比」在生产上是极端偏斜，不是轻微代价。
+`smallToBig` 的回捞（摘要→源证据）在生产几乎没工作（0.2%），与 bench 同型（9/90）。
+
+### 14.2 bench 复核：同一台机器上的槽位竞争（脚本 `scripts/audit/r138-slot-competition.mjs`）
+
+| 档 | 结论行/题 | 上下文行/题 | 经验行/题 | 经验≤1 行率 | turnCov@5 | 判对 |
+|---|---|---|---|---|---|---|
+| b1off-mm（基线，无 W3） | 0 | 0 | 3.53 | 1.1% | 76.9%¹ | 77.8% |
+| w3x2（maxExtraLines=2） | 1.88 | 0.03 | 2.56 | 10.0% | 73.7%¹ | 81.1% |
+| w3x4（maxExtraLines=4） | 2.36 | 0.04 | 2.12 | **36.7%** | 76.7%¹ | 84.4% |
+| r137fix（#137-F 精排修复 blend .9） | 2.36 | 0.04 | 2.12 | 35.6% | 77.8%¹ | 81.1% |
+
+¹ 逐题均值口径（与 overall 的加权口径略有差异，跨档同口径可比）。
+
+**分桶（W3×4 vs 基线，逐题配对）**：knowledge-update cov **+14.4pp**、multi-session +7.8pp、
+temporal +3.3pp；**single-session-assistant −13.3pp、preference −10pp**——与票面评论 ② 一致。
+
+**逐题根因（bench 7161e7e2，single-session-assistant）**
+
+- 基线注入：`Assistant: … Shift Rotation Sheet … | Sunday | Admon | …`（答案就在这一行）；
+- W3×4 注入：`[结论] The user needs a 1-week shift rotation sheet…`（用户侧摘要）+ `[上下文] [2023-05-24 16:21] User: 7 agents`
+  ——**答案轮被挤掉，换成一条不承载答案的前情行**。
+
+→ 结论层并非「无用」，而是两个实现缺陷叠加：
+① **上下文行与结论行共同挤经验层配额**（`experienceLimit = maxResults − 结论行 − 上下文行`），
+   结论层一旦拿满，原文行归零；
+② **回捞按 store 返回序选证据**，把「用户前情」排在「承载答案的 assistant 轮」之前，且一张卡能吃掉全部帽。
+
+### 14.3 修复（不是关开关）
+
+| 机制 | 落点 | 缺省 |
+|---|---|---|
+| `recall.smallToBig.budget = "shared"\|"additive"` | additive = 上下文行不挤经验层保底（`experienceLimit = maxResults − 结论行`），注入总行数 ≤ maxResults + maxExtraLines | **shared**（逐位现状）；additive 显式开 |
+| `recall.smallToBig.relevanceRanked`（true/false） | 回捞证据按**查询 token 命中数**排序，第一轮每卡至多 1 条（摘要必带源证据），余量再补 | **true**（质量修复，确定性纯函数） |
+| `recall.conclusionLayer.maxConclusions` | 结论行条数上限（与 maxExtraLines 是同一预算的两个旋钮，票面评论 ④） | undefined = `floor(maxResults/2)`（现状公式） |
+| `gates.smallToBig` journal 观测门 | mode/maxExtraLines/ranked/candidates/kept——生产灰度能区分「没触发」与「触发但选错」 | 恒开 |
+
+**行为变更登记**：`relevanceRanked` 缺省 true 会改变既有 W3 档的行序（只改选哪条证据，不改候选/门槛/
+排序层）；`budget` 缺省 shared 保证未配置部署逐位不变。新增单测：`recall-small-to-big.test.ts` ⑧–⑪
+（additive 预算 / 相关性排序 / 回滚档 / 结论条数上限）、`config.small-to-big.test.ts`（三键解析）。
+
+### 14.4 扫参结果（`scripts/run-r138-arms.sh`，additive 档 × maxExtraLines）
+
+（待填：add2 / add4 / add6 同 manifest 同 judge 的 cov/判对/拒答 + 分桶门禁）
+
+### 14.5 定档与生产建议
+
+（待填：结论 + 生产配置组合）
+

@@ -33,7 +33,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, conclusionLayerOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -79,6 +79,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // W3（issue #134）：结论卡证据回捞（#78 R-b smallToBig）——实验档只写沙箱 yaml。
   if (smallToBigOverride && typeof smallToBigOverride === "object" && Object.keys(smallToBigOverride).length) {
     m.recall.smallToBig = { ...(m.recall.smallToBig || {}), ...smallToBigOverride };
+  }
+  // #138（2026-10-28）：结论层试验档（conclusionLayer.maxConclusions 等）——只写沙箱 yaml。
+  if (conclusionLayerOverride && typeof conclusionLayerOverride === "object" && Object.keys(conclusionLayerOverride).length) {
+    m.recall.conclusionLayer = { ...(m.recall.conclusionLayer || {}), ...conclusionLayerOverride };
   }
   // #135 R2/E1（bench/recall-opt）：加权融合试验档（recall.fusion）——只写沙箱 yaml。
   if (fusionOverride && typeof fusionOverride === "object" && Object.keys(fusionOverride).length) {

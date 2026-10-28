@@ -116,6 +116,19 @@ export interface RecallJournalGates {
   conclusionBm25?: RecallJournalConclusionBm25Gate;
   conclusionRerank?: RecallJournalConclusionRerankGate;
   /**
+   * #138（2026-10-28）：结论卡身世回捞（smallToBig）观测门——生产灰度复核需要区分
+   * 「没触发（无 part_of 边/无 work_fact 卡）」与「触发了但证据选错/被预算裁掉」。
+   * candidates = 卡的全部 part_of 证据候选数；kept = 实际注入的上下文行数。
+   */
+  smallToBig?: {
+    mode: "shared" | "additive";
+    maxExtraLines: number;
+    /** true = 按查询相关性排名取证据（#138 修复）；false = 旧序（逐位回滚档）。 */
+    ranked: boolean;
+    candidates: number;
+    kept: number;
+  };
+  /**
    * P1-T7（worthiness importance）：重要度降权观测门——raw vs penalized 双分量
    * （乘子恒真实生效：penalized=实际排序分，raw 为反推值）。类型单一源
    * 在 recall-signals.ts（与乘子实现同文件，防止口径分裂）。

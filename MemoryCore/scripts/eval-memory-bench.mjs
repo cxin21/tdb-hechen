@@ -74,6 +74,11 @@ if (flag("help") || argv.length === 0) {
   --samples N                    LoCoMo 样本数（每样本含 18–26 题）
   --limit N                      题目数上限（默认全部）
   --gen-limit N                  生成+判分题数上限（默认 = limit；0 = 只测检索）
+  --conclusion-cards             W3 结论卡档（蒸馏+part_of+smallToBig 回捞）
+  --conclusion-max-extra N       W3 上下文行全局帽（缺省 2）
+  --conclusion-cap N             #138 结论行条数上限（conclusionLayer.maxConclusions；缺省 floor(maxResults/2)）
+  --conclusion-budget-mode M     #138 上下文行预算归属 shared|additive（缺省 shared=逐位现状）
+  --conclusion-legacy-rank       #138 回滚证据排序（旧序=store 返回序）
   --k N                          检索口径 top-k（默认取生产配置 maxResults）
   --recall-ks 1,3,5,10           B0 多 k 切片（行内平铺 turnCov@k 等键；缺省 1,3,5,10）
   --manifest <path>              B0 抽样清单（caseId 顺序即运行序；配对比较必须同清单）
@@ -234,6 +239,13 @@ async function main() {
   const conclusionCards = flag("conclusion-cards");
   const conclusionMax = num("conclusion-max", 4);
   const conclusionMaxExtra = num("conclusion-max-extra", 2);
+  // #138（2026-10-28）：结论层预算三旋钮——结论条数上限 / 上下文行预算归属 / 证据排序档。
+  const conclusionCapArg = num("conclusion-cap", undefined);
+  const conclusionCap = typeof conclusionCapArg === "number" && Number.isFinite(conclusionCapArg) && conclusionCapArg >= 0
+    ? Math.floor(conclusionCapArg)
+    : undefined;
+  const conclusionBudgetMode = String(arg("conclusion-budget-mode", "shared")) === "additive" ? "additive" : "shared";
+  const conclusionLegacyRank = flag("conclusion-legacy-rank");
 
   // ── 按 groupKey 分组灌库 ──
   const groups = new Map();
@@ -409,11 +421,19 @@ async function main() {
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
     ...(Object.keys(injectOverride).length ? { injectOverride } : {}),
-    ...(conclusionCards ? { smallToBigOverride: { enabled: true, maxExtraLines: conclusionMaxExtra } } : {}),
+    ...(conclusionCards ? {
+      smallToBigOverride: {
+        enabled: true,
+        maxExtraLines: conclusionMaxExtra,
+        budget: conclusionBudgetMode,
+        relevanceRanked: !conclusionLegacyRank,
+      },
+      ...(conclusionCap !== undefined ? { conclusionLayerOverride: { maxConclusions: conclusionCap } } : {}),
+    } : {}),
     ...(factChannelOverride ? { factChannelOverride } : {}),
   });
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
-  if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra }));
+  if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank }) + (conclusionCap !== undefined ? " conclusionLayer=" + JSON.stringify({ maxConclusions: conclusionCap }) : ""));
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));

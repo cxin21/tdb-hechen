@@ -78,6 +78,7 @@ import {
   assembleLayeredLines,
   conclusionFingerprint,
   allocateConclusionPerLineChars,
+  evidenceRelevanceScore,
   formatConclusionLine,
   parseFtsTokens,
   resolveIdempotentConclusionLines,
@@ -1008,7 +1009,11 @@ export async function performLayeredRecall(params: {
       // （最小侵入：一处 slice，选择器/放宽通道/幂等缓存语义零变化，且指纹/经验层防重/
       // metric 对齐全部与最终注入行同源自洽）；无 V2-3 溢出时 length ≤ halfLimit → slice
       // 恒等（逐位现状）。裁剪保留头部 = 命中结论优先于放宽结论（选择器排序语义保持）。
-      r7Conclusions = r7Conclusions.slice(0, r7HalfLimit);
+      // #138（2026-10-28）：上限改为可配（conclusionLayer.maxConclusions）——缺省仍取
+      // floor(maxResults/2)（逐位现状），使「结论条数上限」与 smallToBig.maxExtraLines
+      // 成为同一预算的两个可扫旋钮（票面评论 ④）。
+      const r7ConclusionCap = cfg.recall?.conclusionLayer?.maxConclusions ?? r7HalfLimit;
+      r7Conclusions = r7Conclusions.slice(0, Math.max(0, r7ConclusionCap));
     }
     tPerfL2Ms61 = Math.round(performance.now() - tPerfL2Start61);
     // Task CAL C1（brief 裁决）：结论层注入前截断——纯注入层，不碰门槛/九通道排序。
@@ -1147,19 +1152,28 @@ export async function performLayeredRecall(params: {
     // R-A 红线：上下文行零 valence/arousal/mood 情绪字段。
     const s2bCfg = cfg.recall?.smallToBig;
     const smallToBigLines: string[] = [];
+    // #138（2026-10-28）：回捞可观测化——生产 journal 此前只有「上下文行数」，看不出是
+    // 「没触发」还是「触发了但选错证据」。gates.smallToBig 记候选/入选/排名三段。
+    let s2bGate: RecallJournalGates["smallToBig"] | undefined;
     if (s2bCfg?.enabled === true && r7Conclusions.length > 0 && vectorStore &&
         typeof vectorStore.getLinksBySource === "function" &&
         (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")) {
       try {
         const s2bMaxExtra = Math.max(0, Math.floor(s2bCfg.maxExtraLines ?? 2));
+        const s2bRanked = s2bCfg.relevanceRanked !== false;
+        const s2bTokens = s2bRanked ? parseFtsTokens(buildFtsQuery(r7CleanQuery)) : [];
         if (s2bMaxExtra > 0) {
           const s2bSeen = new Set(r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!));
           const s2bResolveByIds = (ids: string[]) =>
             vectorStore.getL1ByIdsWithArchive
               ? vectorStore.getL1ByIdsWithArchive(ids)
               : vectorStore.getL1ByIds!(ids);
-          for (const s2bConcl of r7Conclusions) {
-            if (smallToBigLines.length >= s2bMaxExtra) break;
+          // ① 收集候选：逐卡拉 part_of 单跳证据，带上「查询 token 命中数」作为相关性分。
+          // #138 根因（bench 7161e7e2 实证）：旧实现按 store 返回序填帽，会把前情行
+          // （`User: 7 agents`）排在承载答案的 assistant 轮之前，且一张卡的证据就能吃满帽。
+          const s2bCandidates: Array<{ ci: number; ord: number; row: L1SearchResult; score: number; sceneName: string }> = [];
+          for (let ci = 0; ci < r7Conclusions.length; ci++) {
+            const s2bConcl = r7Conclusions[ci];
             if (s2bConcl.source !== "work_fact" || !s2bConcl.recordId) continue;
             const s2bLinks = ((await vectorStore.getLinksBySource(s2bConcl.recordId, "part_of")) ?? []) as Array<{ targetId: string; type: string; strength: number; createdAt: string }>;
             const s2bEvIds = s2bLinks
@@ -1167,25 +1181,68 @@ export async function performLayeredRecall(params: {
               .filter((id): id is string => typeof id === "string" && !s2bSeen.has(id));
             if (s2bEvIds.length === 0) continue;
             const s2bRows = ((await s2bResolveByIds(s2bEvIds)) ?? []) as L1SearchResult[];
+            let ord = 0;
             for (const s2bRow of s2bRows) {
-              if (smallToBigLines.length >= s2bMaxExtra) break;
               if (!s2bRow || typeof s2bRow.record_id !== "string" || s2bSeen.has(s2bRow.record_id)) continue;
-              s2bSeen.add(s2bRow.record_id);
-              const s2bContent = typeof s2bRow.content === "string" && s2bRow.content.trim()
-                ? (r7TruncateMode === "sentences"
-                  ? truncateConclusionContentSentences(s2bRow.content, r7ConclusionMaxChars)
-                  : truncateConclusionContent(s2bRow.content, r7ConclusionMaxChars))
-                : "";
-              if (!s2bContent) continue;
-              smallToBigLines.push(`- [上下文${s2bConcl.sceneName ? `|${s2bConcl.sceneName}` : ""}] ${s2bContent}`);
+              s2bCandidates.push({
+                ci,
+                ord: ord++,
+                row: s2bRow,
+                score: s2bRanked ? evidenceRelevanceScore(String(s2bRow.content ?? ""), s2bTokens) : 0,
+                sceneName: s2bConcl.sceneName ?? "",
+              });
             }
           }
+          // ② 排名：相关性降序 → 卡片序 → 边序（全确定性，无外呼）。
+          if (s2bRanked) {
+            s2bCandidates.sort((a, b) => (b.score - a.score) || (a.ci - b.ci) || (a.ord - b.ord));
+          }
+          const s2bEmitted = new Set<string>();
+          const s2bEmit = (cand: (typeof s2bCandidates)[number]): boolean => {
+            if (s2bEmitted.has(cand.row.record_id)) return false;
+            const s2bContent = typeof cand.row.content === "string" && cand.row.content.trim()
+              ? (r7TruncateMode === "sentences"
+                ? truncateConclusionContentSentences(cand.row.content, r7ConclusionMaxChars)
+                : truncateConclusionContent(cand.row.content, r7ConclusionMaxChars))
+              : "";
+            if (!s2bContent) return false;
+            s2bEmitted.add(cand.row.record_id);
+            smallToBigLines.push(`- [上下文${cand.sceneName ? `|${cand.sceneName}` : ""}] ${s2bContent}`);
+            return true;
+          };
+          if (!s2bRanked) {
+            // 回滚档：逐位旧行为（卡片序 → 边序，填满即止）。
+            for (const cand of s2bCandidates) {
+              if (smallToBigLines.length >= s2bMaxExtra) break;
+              s2bEmit(cand);
+            }
+          } else {
+            // ③ 成对回捞：第一轮每卡至多 1 条（摘要必带源证据）；余量按排名补足。
+            const s2bUsedPerCard = new Map<number, number>();
+            for (const cand of s2bCandidates) {
+              if (smallToBigLines.length >= s2bMaxExtra) break;
+              if ((s2bUsedPerCard.get(cand.ci) ?? 0) >= 1) continue;
+              if (s2bEmit(cand)) s2bUsedPerCard.set(cand.ci, (s2bUsedPerCard.get(cand.ci) ?? 0) + 1);
+            }
+            for (const cand of s2bCandidates) {
+              if (smallToBigLines.length >= s2bMaxExtra) break;
+              if (s2bEmitted.has(cand.row.record_id)) continue;
+              s2bEmit(cand);
+            }
+          }
+          s2bGate = {
+            mode: s2bCfg.budget === "additive" ? "additive" : "shared",
+            maxExtraLines: s2bMaxExtra,
+            ranked: s2bRanked,
+            candidates: s2bCandidates.length,
+            kept: smallToBigLines.length,
+          };
           if (smallToBigLines.length > 0) {
-            logger?.debug?.(`${TAG} [small-to-big] R-b context lines: +${smallToBigLines.length} (cap=${s2bMaxExtra})`);
+            logger?.debug?.(`${TAG} [small-to-big] context lines: +${smallToBigLines.length} (cap=${s2bMaxExtra}, candidates=${s2bCandidates.length}, ranked=${s2bRanked})`);
           }
         }
       } catch (err) {
-        logger?.warn?.(`${TAG} [small-to-big] R-b context backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        logger?.warn?.(`${TAG} [small-to-big] context backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // 幂等结论层（spec §2 R7-1，借团队 幂等与防重 模式）：结论未变化 → 复用已存行（不重组，cache 友好）
@@ -1232,8 +1289,16 @@ export async function performLayeredRecall(params: {
     // 经验层配额 ⇒ 注入总行数恒 ≤ maxResults（「预算内附加」验收口径）。上下文行不入精排
     // 额度语义不变。smallToBig 关（无上下文行）→ splitBudget 原语义逐位现状（既有不变式：
     // 结论行 ≤ halfLimit 恒成立，splitBudget 的 half clamp 不触发）。
+    // #138（2026-10-28）：上下文行预算归属——shared（缺省）沿用「附加行并入结论行总数、
+    // 共同挤经验层配额」（上下文多 → 经验层 0 行，生产实测 98.4% 的结论层命中题经验层 ≤1 行）；
+    // additive = 上下文行只随结论层走、不挤经验层保底：experienceLimit 按「结论行」算，
+    // 上下文行在预算外附加（注入总行数 ≤ maxResults + maxExtraLines）——「摘要+源证据」成对
+    // 补信息，而不是用摘要换掉原文行。
+    const r7ContextLines = smallToBigLines.length;
     const r7Budget = smallToBigLines.length > 0
-      ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length) }
+      ? (s2bCfg?.budget === "additive"
+          ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7Conclusions.length) }
+          : { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length) })
       : splitBudget(r7MaxResults, r7ConclusionLines.length);
     // R-A3（E3）：同 session 上轮 query 与本轮全等 → 复用上轮搜索结果（免搜索免外呼）。
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
@@ -1369,6 +1434,7 @@ export async function performLayeredRecall(params: {
         ...(recallGates ?? {}),
         ...(r71Bm25Gate ? { conclusionBm25: r71Bm25Gate } : {}),
         ...(r71ConclusionRerankGate ? { conclusionRerank: r71ConclusionRerankGate } : {}),
+        ...(s2bGate ? { smallToBig: s2bGate } : {}),
       };
     }
     // ── R7 预算对半切：r7Budget 已在精排接线前计算（rerank cap 消费）——此处只消费。

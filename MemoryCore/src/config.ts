@@ -386,6 +386,13 @@ export interface RecallConfig {
      */
     minBm25RelRatio?: number;
     /**
+     * #138（2026-10-28）：结论行条数上限（结论层额度）。缺省 undefined = 运行期取
+     * floor(maxResults/2)（= R7 §1 预算对半切公式，逐位现状）。显式数值 floor + 非负 clamp；
+     * 0 = 结论层零行（经验层全额）。与 smallToBig.maxExtraLines 是同一预算的两个旋钮：
+     * 本键管「摘要行」，maxExtraLines 管「每张卡随附的源证据行」。
+     */
+    maxConclusions?: number;
+    /**
      * R71-A2（2026-10-19）：结论层 rerank 语义门（主门）。mode 缺省 "shadow"
      * （shadow-first：只记录不过滤，journal gates.conclusionRerank 观测定标后切 enforce）；
      * "enforce" = score < minScore 的选中结论在幂等指纹缓存前剔除；"off" = 零开销。
@@ -405,7 +412,25 @@ export interface RecallConfig {
    * 代码缺省关（enabled 缺省 false = 逐位现状）；部署 yaml 显式开（#77 三键同款）。
    * maxExtraLines 负值 → 0（=关）；非数字/非有限回落缺省 2。
    */
-  smallToBig: { enabled: boolean; maxExtraLines: number };
+  smallToBig: {
+    enabled: boolean;
+    maxExtraLines: number;
+    /**
+     * #138（2026-10-28）：上下文行的预算归属——"shared"（缺省，逐位现状）= 上下文行与结论行
+     * 一并计入结论行总数、共同挤经验层配额（context 多 → 经验层 0 行）；
+     * "additive" = 上下文行只挤「结论层」之外仍按 maxResults 保底经验层：
+     * experienceLimit = max(0, maxResults − 结论行)，上下文行不计入 → 注入总行数
+     * ≤ maxResults + maxExtraLines（摘要+源证据成对，不以牺牲原文行为代价）。
+     */
+    budget: "shared" | "additive";
+    /**
+     * #138（2026-10-28）：回捞证据行的查询相关性排序（缺省 true）。true = 对每张卡按
+     * 查询 token 命中数（去重计数）在它的 part_of 证据行里挑最相关的一条先注入，
+     * 且第一轮每卡只取 1 条（成对回捞）；false = 逐位旧行为（按 store 返回序填满帽）。
+     * 纯确定性（无时钟/无随机/无外呼）。
+     */
+    relevanceRanked: boolean;
+  };
   /**
    * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子——
    * compositeScore timeProx 因子 × 0.5^(ageDays/halfLifeDays)（MemOS 对标 30d 半衰期；
@@ -2146,6 +2171,12 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(cl, "minBm25RelRatio");
             return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
           })(),
+          // #138（2026-10-28）：结论行条数上限（缺省 undefined = 运行期取 floor(maxResults/2)；
+          // 非有限/负 → 0 = 结论层零行；正数 floor）
+          maxConclusions: (() => {
+            const raw = num(cl, "maxConclusions");
+            return raw === undefined ? undefined : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+          })(),
           // R71-A2（2026-10-19）：结论层 rerank 门——mode 非法值回落 "shadow"（shadow-first；
           // minScore 非有限回落 undefined=运行期取 -1.0 缺省）
           rerankGate: (() => {
@@ -2171,6 +2202,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(sb, "maxExtraLines");
             return raw === undefined ? 2 : raw > 0 ? Math.floor(raw) : 0;
           })(),
+          // #138（2026-10-28）：上下文行预算归属（缺省 shared = 逐位现状；additive 显式开）
+          budget: str(sb, "budget") === "additive" ? "additive" : "shared",
+          // #138（2026-10-28）：回捞证据行按查询相关性取（缺省 true = 质量修复；false 回滚旧序）
+          relevanceRanked: bool(sb, "relevanceRanked") ?? true,
         };
       })(),
       // R71-C（2026-10-19）：fts-only 降级注入帽（缺省 2；非负整数 floor；非数字=undefined=运行期取 2）

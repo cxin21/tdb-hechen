@@ -245,6 +245,16 @@ memory:
       # #134 LME90 配对：maxExtraLines 2→4 判对 81.1%→84.4%（+14.4pp CI[+6.7,+23.3]，p=0.0023）、
       # 缺口桶回收 4→5/11、turnCov 回到基线（-0.2pp ns）；注入总行数仍由 maxResults 硬帽收口。
       maxExtraLines: 4
+      # #138（2026-10-28 定档待灰度确认）：上下文行预算归属。
+      #   shared（缺省，逐位现状）= 上下文行与结论行共同挤经验层配额（结论层命中时经验层常只剩 0~1 行）；
+      #   additive = 上下文行不挤经验层保底（experienceLimit = maxResults − 结论行），
+      #             「摘要 + 源证据」成对补信息，注入总行数 ≤ maxResults + maxExtraLines。
+      # 生产 journal 实测（2485 条）：结论层命中 49.6%、其中经验层 ≤1 行 98.4%、回捞触发 0.2%
+      # → 问题在「结论层吃满窗口 + 回捞选错证据」，不在结论卡本身（见 docs/optimization-results.md §14）。
+      budget: shared
+      # 回捞证据行按查询 token 命中数排序（缺省 true = 质量修复：先选最可能是答案的源证据，
+      # 且第一轮每卡至多 1 条）；false = 回滚旧序（store 返回序）。
+      relevanceRanked: true
 
     # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
     # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差
