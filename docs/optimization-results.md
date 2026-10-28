@@ -861,3 +861,173 @@ part_of 覆盖率 10.5% → #155；结论卡单源 → #156；在线 24h 灰度�
    b1-off 的 −1.7pp 落在库/环境状态差（同库跨周复用 + query 向量缓存状态），无系统性方向。
 2. 复跑历史档必须显式关掉后来开的生产配置（`--fact-channel-off`、`--validity-mode hard`、`--small-to-big-off`、`--conclusion-layer-off`），
    否则「基线档」里混进生产默认，差异会被误读成本票的回退。
+
+## 16. #141 机制分阶段：W1 双通道 / W2 软失效+属性契约 / W3 表示路由（2026-10-28）
+
+> 前置：§11（#136 属性契约）、§12（#137 W1 双通道）、§13.5（#137-F 融合锚点）、§14（#138 预算口径）。
+> 票面：[#141](https://github.com/cxin21/tdb-hechen/issues/141)。分支 `bench/recall-opt`，提交 `0a130d1`。
+
+### 16.1 为什么是「分阶段」而不是「关开关」
+
+10-27 全开档（W1+W2+W3）判对 77.8%，比只开 W3 的 84.4% 差 6.7pp（p=0.031，6 对 0，**0 题翻盘**）。
+三条机制都在**同一个阶段**（合并后的 Top-5 槽位）竞争边际收益，于是互相覆盖：收益不叠加，代价照收。
+本票不改「开/关」，而是把三条机制各自**挪到一个互不竞争的阶段**，再用因子设计验证 Δ 是否真的 > 0。
+
+| 机制 | 现状误用（根因） | 本票改法（正面解） | 生效键 |
+|---|---|---|---|
+| **W1 事实键** | 事实键与原文主索引**同层打分**：同一份 `maxResults=5` 里抢前缀，事实行挤掉原文行 | 降级为**并行召回通道**：原文排序保持原样，事实键只负责把候选**扩进来**，两路 RRF 融合（`readOnly` 不重写库） | `recall.factChannel.enabled/weight/readOnly` |
+| **W2 supersession** | 把 `(subject, predicate)` 当**函数依赖键**：predicate 是泛化谓词（`is considering` / `wants to create` / `has a … member`），取值不互斥 → 误删旧事件 → temporal 拒答 | 先有**基数契约**（`cardinality: single|multi`，多值永不失效）；validity 只作**融合特征降权**（`SOFT_VALIDITY_PENALTY=0.5`），仅「现在/最新」类查询且**存在更新行**时才硬过滤 | `recall.validity.mode=soft|hard`、`recall.excludeInvalidated` |
+| **W3 结论层** | 结论与原文行是同一知识的两种表示，却抢**同一批槽位**（3.5–4.5 行）→ 零和替换；回捞几乎没触发（`[上下文]` 仅 9/90 题） | 按**题型分配预算**（`exact-fact=0`、`aggregate/update=2`、`preference=1`、`assistant-recall=0`）；结论**按槽计价**（1.5 槽）把成本显式化；`work_fact` 结论**必须带 1 条 part_of 证据行**否则让位；语义重复的结论让位给原文 | `recall.conclusionLayer.routing=intent`、`smallToBig.budget=slot`、`conclusionLayer.pairing=require`、`conclusionLayer.arbitrate=redundant` |
+
+### 16.2 实现落点
+
+**新模块**
+
+- `MemoryCore/src/core/recall/query-intent.ts`（扩展）：`RecallIntent` 七值（`assistant-recall|exact-fact|temporal|update|aggregate|preference|default`），
+  `INTENT_POLICY`（冻结）：`{conclusionBudget, pairing, order: conclusion-first|turn-first, arbitrate}`、`classifyRecallIntent(text)`（中英 cue 表，优先级 assistant-recall > temporal > update > aggregate > preference > exact-fact > default）。
+  **`default` 必须逐位退化**（`budget=undefined`、`pairing/arbitrate=false`）——intent 模式下大多数题会落到 default，它一旦带策略就等于全局改口径。
+- `MemoryCore/src/core/recall/layered-budget.ts`（新）：`computeSlotBudget({maxResults, conclusionCount, slotCost, pairing, maxPairing})` 记账式预算；
+  `arbitrateConclusions({conclusions, experienceLines, threshold=0.75})` 表示仲裁（content token 交集比，剥 `[tag]` 行头；
+  短结论 `token<4` 与**否定极性相反**不误杀——避免把 `… doesn't support` 判成 `… supports` 的重复）。
+- `MemoryCore/scripts/lib/bench/inject-attribution.mjs`（新）：注入行**四类归因**（`conclusion` / `evidence-recall` / `raw-turn` / `unknown`）+ 去掉该类后覆盖率的一阶贡献 `firstOrderDrop`；`evidenceSufficiency`（token 级 gold 覆盖，judge 前的廉价近似）。
+- `MemoryCore/scripts/lib/bench/factorial.mjs` + `bench-factorial.mjs`（新）：因子表、`singleBest`（**在共同判分题集上选**，避免各臂分母不一致）、`combo`、配对 bootstrap 判定与 `formatFactorialMarkdown`。
+
+**接线**
+
+- `auto-recall.ts`：意图 → 结论预算 → 成对回捞 → 槽位记账 → 表示仲裁 → 装配顺序（`turn-first` 时**先预留结论槽位再裁经验层**，fts-only 帽与 `applyRecallBudget` 都不会再从尾部砍掉结论）；`counts.layered/conclusionCount/experienceCount` 改**实测**（不再按位置推断）。
+  成对约束带**降级位** `degraded="pairing-unavailable"`：回捞通道不可用（store 无 `part_of` 读面 / `maxExtraLines=0` / 软失败）时跳过约束并保留结论——「查不到证据」≠「确实没有证据」，否则整层结论会被静默清空。
+- `recall-journal.ts`：`gates.conclusionRouting` 落 intent / mode / budget / order / pairing / arbitrate / `unpairedDropped` / `arbitrateDropped`+threshold / `slotExperienceLimit`+`slotCost` / `droppedSamples`（recordId + 原因，≤3 条）/ `degraded`——灰度过线后复盘要能指名到具体卡。
+- `eval-memory-bench.mjs` 新旗标：`--validity-off`、`--conclusion-budget-mode slot`、`--conclusion-routing intent`、`--conclusion-slot-cost N`、`--conclusion-pairing require`；**未知旗标与 `--k=v` 等号写法一律 exit 2**（负控臂被静默降级会让整张因子表失真）。
+- `store.mjs` 新增 `recallFlatOverride`：`excludeInvalidated` 是 `recall` 根级键，与 `recall.validity.mode` 混写会静默失效。
+
+### 16.3 观测面（能不能归因，决定能不能调参）
+
+- **注入行类型归因**（`lineTypeStats` + `lineTypeTotals`）：每题三类一列行数 / 命中 gold 行数 / 会话数，外加「去掉该类型后覆盖率掉多少」。这是回答「结论层到底在买单还是在挤占」的唯一口径；只看 `turnCovInjected` 会把「结论行占位导致原文减少」和「原文本来就少」混为一谈。
+- **证据充分性**（`evidenceSufficiency`）：token 级近似，`bench-gates --min-evidence-sufficiency` 缺省 **SKIP**（未测量 ≠ 测不过）。
+- **分题型地板**（`bench-gates --per-type-floor temporal=<pp>`、`bench-factorial --floor`）：题型名支持前缀匹配（`temporal` 命中 `temporal-reasoning`），写错题型名**判 FAIL 而不是静默 SKIP**——门禁凭空消失比门禁红更危险。
+- **生效值快照**：报告 `config.conclusionLayer` / `config.validity` 记录 `requested` 与**实际生效**两套值，用于区分「真跑新分阶段」与「静默回落旧档」。
+
+### 16.4 因子跑批（臂定义）
+
+跑批入口：`MemoryCore/scripts/run-r141-factorial.sh`（单进程，`--embed-interval-ms 1200`，禁止并发——豆包 embedding 账号级 RPM）。
+基线库 `lme90-r137-allon`（LME90，90 题/90 租户），每臂从它**复制**一份 `lme90-r141-<arm>`；报告 `.eval-data/bench/r141-<arm>.json`。
+固定项：`--dataset longmemeval --keep --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --b1 --candidate-k 32 --rerank-blend 0.9 --rerank-child-proc --rerank-doc-cap 192`，
+judge/作答 = MiniMax-M3.1-Flash，事实抽取 = MiniMax-M2.7（`--fact-model`）。**注意**：基线库自带生产 yaml（`factChannel.enabled=true`、`validity.mode=soft`、`smallToBig.enabled=true`），
+所以每臂都必须**显式**写全三轴，否则「关」会被库里的继承值覆盖（§15.7 教训）。
+
+| 臂 | W1 事实通道 | W2 效期 | W3 结论层 | 旗标 |
+|---|---|---|---|---|
+| `b0` | off | off（`--validity-off`） | off（`--conclusion-layer-off`） | 三轴全关的**负控** |
+| `w1` | on（`--fact-channel --fact-channel-read-only --fact-channel-weight 0.6`） | off | off | 单档 |
+| `w2h` | off | hard（`--validity-mode hard`） | off | 单档 |
+| `w2s` | off | soft（`--validity-mode soft`） | off | 单档 |
+| `w3` | off | off | 新分阶段（`--conclusion-routing intent --conclusion-budget-mode slot --conclusion-slot-cost 1.5 --conclusion-pairing require`） | 单档（本票主改动） |
+| `w3legacy` | off | off | 旧档（`--conclusion-cards --small-to-big --conclusion-budget-mode additive --conclusion-max-extra 4`） | 旧档对照（§14 生产档） |
+| `w1w3` | on | off | 新 | 组合 |
+| `alls` | on | soft | 新 | 全开（软失效） |
+| `allh` | on | hard | 新 | 全开（硬失效） |
+| `w1w2h` / `w1w2s` / `w2hw3` / `w2sw3` | — | — | — | 其余两两/三三组合（`ARMS` 追加即跑） |
+
+判定口径（`scripts/bench-factorial.mjs`）：`combo` 对 `singleBest`（单档里判对率最高者，**在共同判分题集上选**）做同题配对 bootstrap（10000 次）取 Δ 的 95%CI，**下界 > 0** 才判 `combination-wins`，否则 `keep-single`；
+另跑 `--floor temporal=turnCov=0`（temporal 题型覆盖率不得低于基线）与证据充分性地板。
+
+### 16.5 结果与判定
+
+**主表（8 臂，n=90 同题配对，judge/作答 MiniMax-M3.1-Flash）**
+
+| 臂 | W1 | W2 | W3 | 判对 | 拒答 | 注入 turnCov | 注入行 | 结论行 | 证据回捞行 | 证据充分性 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `b0`（负控） | off | off | off | 78.9% | 12.2% | 72.3% | 3.77 | 0 | 0 | 0.619 |
+| `w1` | on | off | off | 77.8% | 13.3% | 76.7% | 3.93 | 0 | 0 | 0.620 |
+| `w2h` | off | hard | off | 75.6% | 12.2% | 72.3% | 3.79 | 0 | 0 | 0.620 |
+| `w2s` | off | soft | off | 78.9% | 14.4% | 72.3% | 3.79 | 0 | 0 | 0.618 |
+| `w3`（本票新分阶段） | off | off | intent+slot+成对 | 80.0% | 12.2% | 77.8% | 3.86 | 40 | 40 | 0.628 |
+| `w3legacy`（生产旧档） | off | off | additive×4 | **83.3%** | 13.3% | **86.1%** | 5.27 | 57 | 124 | 0.642 |
+| `w1w3` | on | off | 新分阶段 | 81.1% | **7.8%** | 81.6% | 4.03 | 40 | 40 | 0.630 |
+| `alls` | on | soft | 新分阶段 | 80.0% | 10.0% | 81.6% | 4.02 | 40 | 39 | 0.629 |
+
+**分题型（判对% / 注入 turnCov%）**
+
+| 题型 | b0 | w1 | w2h | w2s | w3 | w3legacy | w1w3 | alls |
+|---|---|---|---|---|---|---|---|---|
+| single-session-user | 100/93 | 100/96 | 93/93 | 100/93 | 93/89 | 100/96 | 93/96 | 100/96 |
+| single-session-assistant | 87/80 | 87/80 | 87/80 | 87/80 | 87/80 | 87/80 | 87/80 | 87/80 |
+| single-session-preference | 53/90 | 60/92 | 53/90 | 53/90 | 60/90 | 53/90 | **73/92** | 60/92 |
+| multi-session | 67/53 | 67/67 | 67/53 | 67/53 | 60/60 | 67/79 | 53/69 | 60/69 |
+| temporal-reasoning | 87/60 | 73/70 | 80/60 | 87/60 | **100/79** | 93/86 | **100/83** | 93/83 |
+| knowledge-update | 80/57 | 80/54 | 73/57 | 80/57 | 80/68 | **100/86** | 80/68 | 80/68 |
+
+**判定（`bench-factorial`，组合 vs 单档最好）**
+
+- 单档最好 = `w3legacy` 83.3%；组合最好 = `w1w3` 81.1%；Δ = **−2.2pp**，95%CI [−10.0pp, +5.6pp]，p=0.77 → **`keep-single`**。
+- 即：**本票的「分阶段」版本没有跑赢现行生产档**，按票面判定线（CI 下界 > 0 才算协同）不得上线组合。
+- 分题型门禁：全部通过（temporal 在同口径下只升不降：w3 100%/79% vs b0 87%/60%）。
+
+**为什么输了：三处差异与一个口径 bug**
+
+跑完发现 `w3`/`w1w3`/`alls` 与 `w3legacy` **不是同一口径**——主表脚本里新分阶段臂没传 `--conclusion-max-extra`，
+继承了沙箱库的 `smallToBig.maxExtraLines=2`，而 `w3legacy` 显式传了 4。实测：`w3` 的 `gates.smallToBig.maxExtraLines=2`、每题证据行 0.44（40/90），
+`w3legacy` 为 4、1.38（124/90）。证据行是**答案载体**（`byType['evidence-recall'].goldLines`：w3 21 行 / legacy 67 行），
+这一项差异就足以解释 3.3pp 的判对差与 8pp 的覆盖率差——**不是「分阶段」本身的账**。
+
+所以主表结论只能是「**现口径下**组合不成立」，不能当成「分阶段不行」。为把这条口径 bug 与真实机制效应分开，另跑消融（下一节）。
+
+### 16.6 消融：隔离口径 bug 与机制效应
+
+主表的口径 bug 提示：要判断「分阶段」有没有用，必须把**同一批旗标**下的差异拉平后再比。消融三臂（W1/W2 全关，只动 W3，**全部 `--conclusion-max-extra 4`**）：
+
+| 臂 | 意图路由 | 预算模式 | 成对约束 | 判对 | 拒答 | 注入 turnCov | 注入行 | 结论行 | 证据行 |
+|---|---|---|---|---|---|---|---|---|---|
+| `w3legacy`（旧档） | 关 | additive×4 | 关 | **83.3%** | 13.3% | **86.1%** | 5.27 | 57 | 124 |
+| `w3routeonly` | **开** | additive×4 | 关 | 81.1% | 10.0% | 83.4% | 4.38 | 40 | 54 |
+| `w3x4` | 开 | slot(1.5) | 开 | 78.9% | 12.2% | 81.6% | 4.16 | 40 | 64 |
+| `w1w3x4` | 开（+W1 事实通道） | slot(1.5) | 开 | 78.9% | **10.0%** | **85.5%** | 4.24 | 40 | 61 |
+
+**读数**（n=90，配对 Δ 的 95%CI 都在 ±6pp 量级，2pp 级别差异**不显著**，只能读方向）：
+
+1. **意图路由的净效应是「减结论」**：结论行 57 → 40，证据行 124 → 54，判对 83.3% → 81.1%。
+   机制是链式的：结论预算收紧 → `work_fact` 卡变少 → 成对回捞的**候选卡**变少 → 证据行跟着掉。
+   这恰好是票面根因 ② 的反面教训：**槽位不是唯一稀缺资源，「有卡可回捞」本身也是稀缺的**——先砍结论再谈回捞，回捞池子会一起萎缩。
+2. **slot + 成对约束在路由之后又掉 2.2pp**，但证据行 54 → 64（成对确实把每张卡的证据补齐了）。
+   判对没跟着涨，说明「多 10 行证据」在这批题上不构成答案增益（`evidenceSufficiency` 0.630 → 0.624 甚至略降）——证据行**选得对**比**选得多**更重要。
+3. `w3legacy` 的证据行 124 行、每题 1.38 行，是全表最高的；它的高分主要来自**证据层**，不是结论层（结论行归因恒 0，已知缺口 §16.8-3）。
+
+**回捞触发率**（票面要求的验证项）：`w3` 30/90 题（33%）有 `[上下文]` 行，但**在有结论卡的 38 题里是 30/38 = 79%**，
+相比历史档（`w3b` 9/90 = 10%）已经把「回捞几乎不触发」修好；整体只有 33% 是因为意图预算把大量题的结论层直接归零（这是设计，不是故障）。
+
+### 16.7 生产建议
+
+综合 §16.5/§16.6，**本票不改变生产默认档**（§14 落地档：`smallToBig.budget=additive`、`maxExtraLines=4`、`relevanceRanked=true`、`conclusionLayer.routing=assistantRecall`、`rerank.enabled=true`）。
+理由与逐轴处置：
+
+| 轴 | 处置 | 依据 |
+|---|---|---|
+| **W1 事实通道** | **保持可选、不设默认**（`recall.factChannel.enabled=false`，需要时 `--fact-channel --fact-channel-read-only`） | 单开判对 −1.1pp（不显著）、注入 turnCov **+4.4pp 显著**（CI [+0.4, +9.0]）；它是**覆盖率工具**，不是判对工具 |
+| **W2 效期** | **保留 soft，拒绝 hard** | `w2h` 判对 75.6%（−3.3pp vs b0）；`w2s` 78.9%（±0）。这正是票面根因 ①：`(subject,predicate)` 不是函数依赖键，硬过滤会误删多值属性的旧事件 → 只降权、不删除，机制**不关** |
+| **W3 结论层** | **保留 additive×4 旧档**；新分阶段（intent/slot/成对/仲裁）**保留为 opt-in**，默认 `routing=off`、`budget=shared|additive`、`pairing=off` | 公平口径下 `w3x4` 78.9% < `w3legacy` 83.3%；组合最好 `w1w3x4` 78.9%，对 `w3legacy` Δ=−4.4pp、95%CI [−12.2, +3.3] → `keep-single` |
+| **rerank** | **保持开启** | 全部 90 题档位都在 `--rerank-blend 0.9 --rerank-candidates 32 --rerank-doc-cap 192` 下跑；本票没有任何一格靠关 rerank 换分数（#135 已证明伤害来自 `candidates=12 / minScore=-2` 的过度剪枝，而非重排本身） |
+
+**给后续迭代的三条硬教训**：
+
+1. **在 `maxResults=5` 的固定预算下，slot 记账必然挤掉经验行，而经验行才是这批数据的答案载体**（证据 gold 行 124 vs 64）。
+   所以本票测到的更多是「预算怎么分」而不是「机制如何协同」。要真正验证协同，必须先放开预算上限（`maxResults` 6/8）或引入**证据预留**（conclusion 的 1.5 槽里固定 1 槽归它的源证据，而不是从经验额度里扣）。
+2. **覆盖率与判对是两条曲线**：`w1w3x4` 用 4.24 行注入拿到了 85.5% 覆盖（旧档 5.27 行 / 86.1%），但判对停在 78.9%。
+   若要「省 token 保覆盖」，`w1w3x4` 是有前途的方向；若要「涨判对」，当前证据是**证据选得对**比**多**更重要（充分性 0.642 vs 0.629，方向一致但不显著）。
+3. **n=90 的分辨率只有 ±6pp**：2pp 级别的机制差异在这一档上无论怎么跑都不可判。任何后续「分阶段协同」的结论都必须先上更大 n（LME500 级）再谈上线。
+
+### 16.8 遗留
+
+1. **仲裁无时效感知**（评审 #7）：`arbitrateConclusions` 只比内容，没有先按 recordId 剔除被 supersede 的**旧**经验行 —— 旧值行文字与结论更相似时会把最新结论挤掉。
+   修法：先在经验层按 `recordId → validFrom/validTo` 剥掉已被取代的行，再做仲裁（依赖 #136 的时态字段读面）。
+2. **分题型地板两套口径**（评审 #13）：`bench-gates --per-type-floor` 用**配对判对 Δ**，`bench-factorial --floor` 缺省 `metric=turnCov`。同一张表两个口径容易读出相反结论，应统一为「判对为主、覆盖率可显式指定」。
+3. **结论行归因仍靠正文反查**（评审 #15）：`byType.conclusion.goldLines` 恒 0（结论行是摘要，反查不到 turn），`firstOrderDrop.conclusion` 近似恒 0。
+   修法：用 `gates.conclusionRouting` + 结论卡 recordId 走 `part_of` 证据边，把结论行归因到它自己的证据 turn，而不是正文匹配。
+4. **装配逻辑无单测**（评审 #16）：顺序（turn-first/first-conclusion）+ 裁剪（fts-only 帽、`applyRecallBudget`）+ counts 是这次最容易回归的一段，目前只有 hooks 集成测试覆盖。
+   修法：抽 `resolveLayeredOrdering(pure)`，对「结论 >= 槽位」「fts 帽 < 结论数」「budget 溢出」三种边界各写一例。
+5. **多重比较未校正**（评审 #11）：13 臂两两比较，`singleBest` 选优本身带选择偏差；判定线用单次 95%CI 下界 > 0 仍偏乐观。
+   修法：对 combo 的 Δ 做 Bonferroni/或对 singleBest 的 argmax 做 bootstrap 校正（当前 `reasons` 已写明分母口径，属于**已知未修**）。
+6. **assistant 侧结论卡**：结论层只蒸馏 user 侧事实（§14.7），`assistant-recall` 题型因此恒 0 结论 —— 双源蒸馏是 #156，本票只做到「不给它分配预算」。
+7. **`pairing` 依赖 `part_of` 覆盖率**：生产 10.5%，回捞触发率上不去时成对约束会把 `work_fact` 结论大面积让位（`degraded` 只挡通道不可用，不挡「通道可用但边稀疏」）。#155 补边后需重测。
+8. **slot 记账没有「证据预留」**（本轮实测最大的机制缺口）：`computeSlotBudget` 把 `conclusionCount × 1.5` 从 `maxResults` 里扣，剩余才给经验行——在 `maxResults=5` 下 2 张结论只剩 2 行经验，而经验行才是答案载体。
+   修法：结论的 1.5 槽里**固定 1 槽归它自己的源证据**（从结论额度出，不占经验额度），或允许多行的结论按 `ceil` 而不是 `floor` 取整；改完必须重跑 §16.6 消融。
+9. **只能在 n=90 上判方向**：本轮所有机制差异都在 ±6pp CI 内。要判「分阶段协同」必须上 LME500 级 n（约 5.5×题量、约 2 小时/臂），否则 `keep-single` 可能只是分辨率不足。
