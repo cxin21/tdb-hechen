@@ -186,7 +186,7 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 
 **问题**：报告文件名只带时间戳，`b1-off` 在两种判分器下各存在一份（scm-flash 70.0% / MiniMax 77.8%）。跨 judge 直接配对时，判分器本身的松紧差异会被算进「方法收益」——这正是 10-27 那轮把 +14.4pp/p=0.0023 写进结论、随后被迫作废的原因。
 
-**默认行为**：`bench-gates` 只给一份报告时自动取登记表里的「同 judge 基线」（等价 `--base auto`），不必手写 auto；`bench-baseline check` 报 judge-changed 时门禁直接拒判。
+**默认行为**：`bench-gates` 只给一份报告时自动取登记表里的「同 judge 基线」（等价 `--base auto`），不必手写 auto；`bench-baseline check` 报 judge-changed 时门禁直接拒判。判分器换过之后，`bench-baseline stale --judge <model>` 会列出所有「不是这个判分器判的」基线并打印可执行的重判命令（`--commands` 只出命令、便于脚本断言，exit 3）——「判分器变更 → 强制重跑基线」因此是能进脚本的一步，而不是一句口头约定。
 
 **门禁（四个配对工具统一口径）**：`bench-compare` / `bench-gates` / `bench-ranking` / `fit-fusion-weights` 都会读两侧 `config.judgeModel`（+ `judgePromptVersion`），判定与渲染集中在 `scripts/lib/bench/judge.mjs`（契约见 ADR-0012）：
 
@@ -204,6 +204,8 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 拒绝不是终点，**修复路径写在输出里**（这也是为什么不去关掉这些配置开关——要修的是归因，不是把能力关掉）：
 
 ```
+# 0) 判分器换了：先看哪些基线已过期（exit 3；--commands 只打印命令，可直接喂给 shell）
+node scripts/bench-baseline.mjs stale --judge MiniMax-M3.1-Flash
 # 1) 取「同 judge 基线」重新配对（登记表解析，不再靠文件名猜）
 node scripts/bench-baseline.mjs resolve --judge MiniMax-M3.1-Flash
 node --import tsx scripts/bench-gates.mjs auto <trial.json>     # --base auto = 登记表里的同 judge 基线
@@ -220,7 +222,7 @@ node --import tsx scripts/bench-rejudge.mjs <旧报告.json> --register --tag <t
 | b1-off | scm-flash | lme-v2 | 625ccab | 90 | 70.0% | 79.5% | `longmemeval-oracle-2026-10-26T23-42-59.json` |
 | b1-off-rejudged-mm | MiniMax-M3.1-Flash | lme-v2 | 625ccab | 90 | **68.9%** | 79.5% | `rejudge-b1off-scms-to-mm.json` |
 
-> 报告 JSON 本身是本机 `.eval-data` 评测产物（不入库）；登记表记录它们的 judge 身份、commit 与路径，`bench-baseline.mjs check <报告>` 会告警「判分器已变更，需重跑基线」。
+> 报告 JSON 本身是本机 `.eval-data` 评测产物（不入库）；登记表记录它们的 judge 身份、commit 与路径，`bench-baseline.mjs check <报告>` 会告警「判分器已变更，需重跑基线」，`bench-baseline.mjs stale --judge <model>` 给出受影响清单与可执行重判命令。
 
 **重判实测（把 70.0% 拆开）**：拿 b1-off 的**同一批答案**（90 题、82 行有答案、8 行空答案跳过）按 MiniMax 重判 → **68.9%**，比 scm-flash 的 70.0% 低 **1.1pp**。也就是说：
 

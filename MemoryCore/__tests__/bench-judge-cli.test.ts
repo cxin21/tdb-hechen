@@ -180,6 +180,20 @@ describe("bench CLI 判分器门禁", () => {
     expect(iCross).toBeGreaterThan(iSame); // 跨 judge 档不得靠被抑制的判对数抢占名次
   });
 
+  it("bench-baseline stale: 判分器换了 → 列出受影响基线 + 可执行重判命令（exit 3）", () => {
+    const reg = path.join(tmp, "lme-baselines.json");
+    const regOut = run(["scripts/bench-baseline.mjs", "register", scm, "--registry", reg, "--gate-baseline"]);
+    expect(regOut.code).toBe(0);
+    const stale = run(["scripts/bench-baseline.mjs", "stale", "--judge", "MiniMax-M3.1-Flash", "--manifest", manifest, "--registry", reg]);
+    expect(stale.code).toBe(3);
+    expect(stale.out).toContain("STALE: 1/1");
+    expect(stale.out).toContain("bench-rejudge.mjs");
+    const ok = run(["scripts/bench-baseline.mjs", "stale", "--judge", "scm-flash", "--manifest", manifest, "--registry", reg]);
+    expect(ok.code).toBe(0);
+    const cmds = run(["scripts/bench-baseline.mjs", "stale", "--judge", "MiniMax-M3.1-Flash", "--manifest", manifest, "--registry", reg, "--commands"]);
+    expect(cmds.code).toBe(3);
+    expect(cmds.out.trim().split("\n").filter(Boolean)).toHaveLength(1);
+  });
   it("fit-fusion-weights: 两侧都无判分行（retrieval-only 档）→ 放行并按 E2 算检索 Δ", () => {
     const retrieval = (tag: string, cov: number) => {
       const rep = mkReport(null, tag, { manifest });

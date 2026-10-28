@@ -7,6 +7,7 @@
  *   node scripts/bench-baseline.mjs register <report.json...> [--registry <path>] [--tag <name>] [--gate-baseline]
  *   node scripts/bench-baseline.mjs resolve --judge <model> [--manifest <path>] [--dataset <name>]
  *   node scripts/bench-baseline.mjs check <trial.json> [--registry <path>]
+ *   node scripts/bench-baseline.mjs stale [<trial.json>] --judge <model> [--commands] [--registry <path>]
  *
  * 为什么需要它：报告名只有时间戳，同一个档位名在不同 judge 下有两份（scm-flash 70.0% /
  * MiniMax 77.8%）。门禁要的是「同 judge 的基线」，靠人记不住，靠文件名也推不出来。
@@ -28,7 +29,7 @@ import {
   summarizeRegistryLines,
   upsertEntry,
 } from "./lib/bench/baseline.mjs";
-import { judgeIdentity } from "./lib/bench/judge.mjs";
+import { judgeIdentity, normalizeText } from "./lib/bench/judge.mjs";
 
 const argv = process.argv.slice(2);
 function arg(name) {
@@ -55,7 +56,7 @@ function readReport(file) {
 }
 
 function usage() {
-  console.error("用法: node scripts/bench-baseline.mjs <list|register|resolve|check> ... （见文件头注释）");
+  console.error("用法: node scripts/bench-baseline.mjs <list|register|resolve|check|stale> ... （见文件头注释）");
   process.exit(2);
 }
 
@@ -150,4 +151,51 @@ if (cmd === "check") {
   process.exit(3);
 }
 
+if (cmd === "stale") {
+  const reportFile = positional[1];
+  const report = reportFile ? readReport(reportFile) : null;
+  const manifest = arg("manifest") ?? manifestFor(report) ?? DEFAULT_MANIFEST;
+  const regPath = registryFor(manifest);
+  const reg = loadRegistry(regPath);
+  const currentJudge = normalizeText(arg("judge")) ?? judgeIdentity(report ?? {}).model;
+  if (!currentJudge) {
+    console.error("stale 需要 --judge <model>，或给一份当前判分器的报告让它自己报判分器");
+    process.exit(2);
+  }
+  const sameManifest = (reg.baselines ?? []).filter(
+    (e) => path.basename(e.manifest ?? "") === path.basename(manifest),
+  );
+  const stale = sameManifest.filter((e) => (e.judgeModel ?? null) !== currentJudge);
+  const onlyCommands = argv.includes("--commands");
+  if (!onlyCommands) {
+    console.log(`判分器: ${currentJudge}（manifest=${path.basename(manifest)}）`);
+    console.log(`登记表: ${regPath}`);
+  }
+  if (!sameManifest.length) {
+    if (!onlyCommands) console.error(`REFUSED: 登记表里没有 ${path.basename(manifest)} 的基线——先 register 一份。`);
+    process.exit(3);
+  }
+  if (!stale.length) {
+    if (!onlyCommands) console.log(`OK: 登记的 ${sameManifest.length} 条基线都是 ${currentJudge} 判分，无需重跑。`);
+    process.exit(0);
+  }
+  if (!onlyCommands) {
+    console.error(
+      `STALE: ${stale.length}/${sameManifest.length} 条基线不是 ${currentJudge} 判的——它们与本判分器的新报告不可配对（#140）。`,
+    );
+    for (const e of stale) {
+      console.error(
+        `  - ${e.tag}: judge=${e.judgeModel ?? "（未记录）"} commit=${(e.repoCommit ?? "").slice(0, 7) || "-"} ` +
+          `判对=${e.genJudged ? (e.genCorrect * 100).toFixed(1) + "%" : "-"} 报告=${e.report ?? "（未记录）"}`,
+      );
+    }
+    console.error("修复（重判只花判分调用、不重跑召回；重跑整档见 scripts/run-mm-baselines.sh 先例）:");
+  }
+  for (const e of stale) {
+    if (!e.report) continue;
+    console.log(`node --import tsx scripts/bench-rejudge.mjs ${e.report} --register --gate-baseline`);
+  }
+  if (!onlyCommands) console.error("（--commands 只打印命令，便于脚本执行/CI 断言）");
+  process.exit(3);
+}
 usage();
