@@ -8,12 +8,21 @@
  *     --budget-cards-per-group 缺省不判）
  *
  * 用法：
- *   node --import tsx scripts/bench-gates.mjs <base.json> <trial.json> [--min-recovered 5] [--min-delta-pp 3]
- * 退出码：0 = 全过；1 = 有门禁未过；2 = 参数/读文件错误。
+ *   node --import tsx scripts/bench-gates.mjs <base.json|auto> <trial.json> [--min-recovered 5] [--min-delta-pp 3]
+ *
+ * 判分器一致性（#140）：
+ *  - base 与 trial 的 config.judgeModel 不一致 → 拒绝判定（exit 3），除非 --allow-cross-judge；
+ *  - `--base auto` → 从基线登记表（manifest 同级 lme-baselines.json）解析「同 judge 基线」，
+ *    判分器已变更时报 judge-changed 并要求重跑基线，绝不静默拿旧 judge 基线配对。
+ *
+ * 退出码：0 = 全过；1 = 有门禁未过；2 = 参数/读文件错误；3 = 判分器不一致/基线不可用（拒判）。
  */
 import fs from "node:fs";
+import path from "node:path";
 import { mcnemarExact, pairedBootstrap, pct, pp } from "./lib/bench/stats.mjs";
 import { judgeTokenBudget } from "./lib/bench/stages.mjs";
+import { configDiff, configDiffLine, decidePairing, judgeRepairHint } from "./lib/bench/judge.mjs";
+import { judgeBaselineAudit, loadRegistry, registryPathForManifest } from "./lib/bench/baseline.mjs";
 
 const argv = process.argv.slice(2);
 function arg(name, dflt) {
@@ -34,8 +43,68 @@ const budgetTokensPerTurn = Number(arg("budget-tokens-per-turn", 800));
 // 票面门禁3 还要求「结论卡数量在预算内」。缺省不判（历史报告无此数据）；给了阈值就判。
 const budgetCardsPerGroup = arg("budget-cards-per-group", undefined) === undefined ? null : Number(arg("budget-cards-per-group"));
 
-const A = JSON.parse(fs.readFileSync(baseFile, "utf8"));
+const allowCrossJudge = arg("allow-cross-judge", false) === true;
+
+/** 登记表里存的是登记时的报告路径；先按 cwd，再按 manifest 目录解析。 */
+function resolveReport(ref, manifest) {
+  if (path.isAbsolute(ref)) return ref;
+  const cands = [path.resolve(ref)];
+  if (manifest) cands.push(path.resolve(path.dirname(manifest), ref), path.resolve(path.dirname(manifest), "..", ref));
+  return cands.find((p) => fs.existsSync(p)) ?? cands[0];
+}
+
+// trial 报告只读一次：基线解析与配对判定共用同一份内存对象。
 const B = JSON.parse(fs.readFileSync(trialFile, "utf8"));
+
+// ── 基线解析（#140 目标②）：--base auto = 取「同 judge 基线」──
+let resolvedBase = baseFile;
+let baselineNote = null;
+if (baseFile === "auto") {
+  const manifest = B.config?.manifest ?? null;
+  if (!manifest) {
+    console.error("--base auto 需要 trial 报告记录 config.manifest（无法定位基线登记表）");
+    process.exit(2);
+  }
+  const regPath = registryPathForManifest(manifest);
+  const audit = judgeBaselineAudit(loadRegistry(regPath), B);
+  if (audit.verdict !== "ok") {
+    const lines = ["# 验收门禁（issue #134）", `基线解析: --base auto（登记表 ${regPath}）`];
+    if (audit.verdict === "judge-changed") {
+      lines.push(
+        `REFUSED: 判分器已换成 ${audit.judge ?? "（未记录）"}，登记表里只有 ${audit.staleJudges.join(", ")} 判分的基线——判分器变更必须重跑基线，不能拿旧 judge 基线配对（#140）。`,
+      );
+    } else {
+      lines.push(`REFUSED: 登记表里没有这个 manifest 的基线（判分器 ${audit.judge ?? "（未记录）"}）——先登记一份基线报告。`);
+    }
+    lines.push(...judgeRepairHint({ trialJudge: audit.judge }));
+    lines.push(`登记基线: node scripts/bench-baseline.mjs register <报告.json>`);
+    console.log(lines.join("\n"));
+    process.exit(3);
+  }
+  resolvedBase = resolveReport(audit.baseline.report, manifest);
+  baselineNote = `基线来源: 登记表 ${audit.baseline.tag}（judge=${audit.baseline.judgeModel ?? "（未记录）"}，commit=${(audit.baseline.repoCommit ?? "").slice(0, 7) || "-"}）`;
+  // 登记表入库、报告 JSON 不入库（.eval-data）：异机 clone 后指针必然悬空。给可执行的下一步，而不是抛 ENOENT 栈。
+  if (!fs.existsSync(resolvedBase)) {
+    console.error(
+      [
+        `REFUSED: 登记表指向的基线报告不存在: ${resolvedBase}`,
+        `  （登记项 ${audit.baseline.tag}：judge=${audit.baseline.judgeModel ?? "（未记录）"}，commit=${audit.baseline.repoCommit ?? "-"}）`,
+        "  报告 JSON 是本机 .eval-data 下的评测产物、不入库；换机器后需要重新生成或从原机器拷回。",
+        "  下一步：node scripts/bench-baseline.mjs register <新生成的基线报告.json> --gate-baseline",
+      ].join("\n"),
+    );
+    process.exit(2);
+  }
+}
+
+const A = JSON.parse(fs.readFileSync(resolvedBase, "utf8"));
+const decision = decidePairing({
+  baseReport: A,
+  trialReport: B,
+  allowCrossJudge,
+  baseLabel: resolvedBase,
+  trialLabel: trialFile,
+});
 const mapById = (r) => new Map(r.rows.map((x) => [x.caseId, x]));
 const am = mapById(A);
 const bm = mapById(B);
@@ -43,12 +112,22 @@ const pairs = [...am.keys()].filter((id) => bm.has(id)).map((id) => ({ id, a: am
 
 const L = [];
 L.push("# 验收门禁（issue #134）");
-L.push(`base : ${baseFile} (tag=${A.config?.tag ?? "-"})`);
+L.push(`base : ${resolvedBase} (tag=${A.config?.tag ?? "-"})`);
 L.push(`trial: ${trialFile} (tag=${B.config?.tag ?? "-"})`);
+if (baselineNote) L.push(baselineNote);
+for (const line of decision.lines) L.push(line);
+L.push(configDiffLine(configDiff(A, B)));
 L.push(`配对题数: ${pairs.length}`);
 L.push("");
 let failed = 0;
 let skipped = 0;
+
+// 跨 judge / 身份不可证：先拒判（#140 目标④），别让判对门禁在混尺子下出结论。
+if (!decision.allowed) {
+  L.push("## 结论：拒绝判定（判分器不一致）");
+  console.log(L.join("\n"));
+  process.exit(decision.exitCode);
+}
 
 // ── 门禁 1：召回缺口桶回收 ──
 {
@@ -77,6 +156,16 @@ let skipped = 0;
     skipped++;
     L.push(`## 门禁2 判对（≥+${minDeltaPp}pt 且 CI 下界>0）`);
     L.push("判分: SKIP（两档都没有 genCorrect——retrieval-only 档只比召回覆盖率）");
+    L.push("");
+  } else if (!decision.pairing.judgedComparable) {
+    // --allow-cross-judge 下走到这里：数据只能作参考，不能当门禁结论（#140 目标④）。
+    skipped++;
+    const deltasRef = rows.map((p) => p.b.genCorrect - p.a.genCorrect);
+    const meanRef = deltasRef.reduce((s, x) => s + x, 0) / deltasRef.length;
+    const ciRef = pairedBootstrap(deltasRef, { iters: 10000 });
+    L.push(`## 门禁2 判对（≥+${minDeltaPp}pt 且 CI 下界>0）`);
+    L.push(`参考值: Δ=${pp(meanRef)} 95%CI=[${pp(ciRef.lo)}, ${pp(ciRef.hi)}]（跨判分器，未计入门禁）`);
+    L.push("判分: SKIP（两侧判分器不一致——判对 Δ 混着判分器差异，先对齐 judge 或用 bench-rejudge.mjs 重判基线）");
     L.push("");
   } else {
   const deltas = rows.map((p) => p.b.genCorrect - p.a.genCorrect);

@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "baselines": [
+    {
+      "tag": "b1off-mm",
+      "judgeModel": "MiniMax-M3.1-Flash",
+      "judgePromptVersion": "lme-v2",
+      "judgeHost": "api.minimax.cn",
+      "answerModel": "MiniMax-M3.1-Flash",
+      "repoCommit": "d64004e",
+      "manifest": ".eval-data/bench/lme-manifest.json",
+      "dataset": "longmemeval-oracle",
+      "n": 90,
+      "genJudged": 90,
+      "genCorrect": 0.7777777777777778,
+      "turnCov5": 0.7954022988505748,
+      "report": ".eval-data/bench/longmemeval-oracle-2026-10-27T05-35-29.json",
+      "recordedAt": "2026-10-28T08:49:26.953Z",
+      "gateBaseline": true
+    },
+    {
+      "tag": "b0base-mm",
+      "judgeModel": "MiniMax-M3.1-Flash",
+      "judgePromptVersion": "lme-v2",
+      "judgeHost": "api.minimax.cn",
+      "answerModel": "MiniMax-M3.1-Flash",
+      "repoCommit": "d64004e",
+      "manifest": ".eval-data/bench/lme-manifest.json",
+      "dataset": "longmemeval-oracle",
+      "n": 90,
+      "genJudged": 90,
+      "genCorrect": 0.45555555555555555,
+      "turnCov5": 0.6708812260536399,
+      "report": ".eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json",
+      "recordedAt": "2026-10-28T08:48:56.141Z"
+    },
+    {
+      "tag": "b1-off",
+      "judgeModel": "scm-flash",
+      "judgePromptVersion": "lme-v2",
+      "judgeHost": "10.16.235.171:50003",
+      "answerModel": "scm-flash",
+      "repoCommit": "625ccab",
+      "manifest": ".eval-data/bench/lme-manifest.json",
+      "dataset": "longmemeval-oracle",
+      "n": 90,
+      "genJudged": 90,
+      "genCorrect": 0.7,
+      "turnCov5": 0.7954022988505748,
+      "report": ".eval-data/bench/longmemeval-oracle-2026-10-26T23-42-59.json",
+      "recordedAt": "2026-10-28T08:48:56.145Z"
+    },
+    {
+      "tag": "b1-off-rejudged-mm",
+      "judgeModel": "MiniMax-M3.1-Flash",
+      "judgePromptVersion": "lme-v2",
+      "judgeHost": "api.minimax.cn",
+      "answerModel": "scm-flash",
+      "repoCommit": "625ccab",
+      "manifest": ".eval-data/bench/lme-manifest.json",
+      "dataset": "longmemeval-oracle",
+      "n": 90,
+      "genJudged": 90,
+      "genCorrect": 0.6888888888888889,
+      "turnCov5": 0.7954022988505748,
+      "report": ".eval-data/bench/rejudge-b1off-scms-to-mm.json",
+      "recordedAt": "2026-10-28T08:53:24.150Z"
+    }
+  ],
+  "note": "报告 JSON 是本机 .eval-data 下的评测产物（不入库）；本表只记录它们的 judge 身份、commit 与路径，供门禁（bench-gates --base auto / bench-baseline resolve）解析同 judge 基线。"
+}

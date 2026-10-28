@@ -1023,13 +1023,22 @@ function renderMarkdown(r) {
   L.push(`# 记忆基准评测 · ${r.dataset.name}`, "");
   L.push(`- 生成时间：${r.generatedAt}`);
   L.push(`- 仓库提交：\`${r.repoCommit}\``);
+  // 判分器必须出现在报告头部（#140）：判对率的可比性取决于「谁在判」。
+  L.push(
+    `- 判分器：\`${r.config.judgeModel ?? "（未记录）"}\`（提示版本 \`${r.config.judgePromptVersion ?? "-"}\`，端点 \`${r.config.judgeHost ?? "-"}\`）`,
+  );
+  if (r.config.rejudgedFrom) {
+    L.push(
+      `- 判分器已重判：\`${r.config.rejudgedFrom.judgeModel ?? "（未记录）"}\` → 当前判分器（复用原答案，判对已重算；跨 judge 时先比对这一行）`,
+    );
+  }
   L.push(`- 数据文件：\`${r.dataset.file}\``);
   L.push(`- 题数 / 轮数：${r.dataset.cases} / ${r.dataset.turns}`, "");
 
   L.push("## 被测配置（生产同路）", "");
   L.push("| 项 | 值 |", "| --- | --- |");
   for (const [k2, v] of Object.entries(r.config)) {
-    if (k2 === "ingest") continue;
+    if (k2 === "ingest" || k2 === "rejudgedFrom") continue;
     L.push(`| ${k2} | \`${String(v)}\` |`);
   }
   L.push("");

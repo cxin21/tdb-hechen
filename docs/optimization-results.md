@@ -177,6 +177,53 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 - 分桶（judge 对齐不可用逐题，取各档 MiniMax 判分）：w3b 与 allon 的 knowledge-update 都是 93%（该桶 W2 无额外增益）；allon 在 preference（53% vs 67%）、single-session-user（93% vs 100%）、temporal（80% vs 100%）更差。
 - **结论**：生产最优 = **只开 W3（smallToBig maxExtraLines=4）**；W1/W2 保持关（已回退 yaml）。W2 的账要在**事实级粒度 + 生产语料**上再算（后续票）。
 
+
+### 判分器一致性门禁与基线登记表（#140）
+
+§8 的排名能成立，靠的是一次人工的「judge 对齐复核」；人工复核不可持续，所以把这件事做成了工具链的**硬门禁**。
+
+**问题**：报告文件名只带时间戳，`b1-off` 在两种判分器下各存在一份（scm-flash 70.0% / MiniMax 77.8%）。跨 judge 直接配对时，判分器本身的松紧差异会被算进「方法收益」——这正是 10-27 那轮把 +14.4pp/p=0.0023 写进结论、随后被迫作废的原因。
+
+**门禁（四个配对工具统一口径）**：`bench-compare` / `bench-gates` / `bench-ranking` / `fit-fusion-weights` 都会读两侧 `config.judgeModel`（+ `judgePromptVersion`），判定与渲染集中在 `scripts/lib/bench/judge.mjs`（契约见 ADR-0012）：
+
+| 情况 | 行为 | 退出码 |
+| --- | --- | --- |
+| 同 judge（模型 + 判分提示版本一致） | 正常判定 | 0（gates 仍按门禁给 0/1） |
+| 跨 judge / 判分器未记录但有判分行 | **拒绝判定**：头部打印两侧判分器 + 配置差异 + 修复路径；判对/拒答 Δ 不出数 | **3** |
+| 跨 judge + `--allow-cross-judge` | 放行，但报告内标注「豁免 / 仅参考」，gates 的判对门禁记 SKIP 不计入门禁 | 0 |
+| 两侧都无判分行（retrieval-only 档） | 放行（本比较不涉及判分器） | 0 |
+| `fit-fusion-weights` 跨 judge | **不配对**：不出 Δ、不给 E2 门禁结论，只并列展示两档 turnCov/sessionCov/mrr | **3** |
+
+> 顺带把「这一对到底只差一个因子吗」也做成输出：`configDiff` 用**黑名单**（`judgeModel`/`judgePromptVersion`/`judgeHost`/`tag`/`manifest`/`dataset`/溯源字段）而不是白名单比对两侧 `config` 的键并集——新增实验旋钮默认会被看见，不会静默输出「无差异」。
+
+拒绝不是终点，**修复路径写在输出里**（这也是为什么不去关掉这些配置开关——要修的是归因，不是把能力关掉）：
+
+```
+# 1) 取「同 judge 基线」重新配对（登记表解析，不再靠文件名猜）
+node scripts/bench-baseline.mjs resolve --judge MiniMax-M3.1-Flash
+node --import tsx scripts/bench-gates.mjs auto <trial.json>     # --base auto = 登记表里的同 judge 基线
+# 2) 判分器已变更：用旧报告里已存的答案按当前判分器重判（只花 N 次判分调用，不重跑召回/embedding）
+node --import tsx scripts/bench-rejudge.mjs <旧报告.json> --register --tag <tag>
+```
+
+**基线登记表**（`MemoryCore/.eval-data/bench/lme-baselines.json`，与 `lme-manifest.json` 同级，已入库）：
+
+| 基线 | 判分模型 | 判分提示 | commit | 题数 | 判对 | turnCov@5 | 报告 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **b1off-mm** ⭐（门禁基线） | MiniMax-M3.1-Flash | lme-v2 | d64004e | 90 | 77.8% | 79.5% | `longmemeval-oracle-2026-10-27T05-35-29.json` |
+| b0base-mm | MiniMax-M3.1-Flash | lme-v2 | d64004e | 90 | 45.6% | 67.1% | `longmemeval-oracle-2026-10-27T05-45-51.json` |
+| b1-off | scm-flash | lme-v2 | 625ccab | 90 | 70.0% | 79.5% | `longmemeval-oracle-2026-10-26T23-42-59.json` |
+| b1-off-rejudged-mm | MiniMax-M3.1-Flash | lme-v2 | 625ccab | 90 | **68.9%** | 79.5% | `rejudge-b1off-scms-to-mm.json` |
+
+> 报告 JSON 本身是本机 `.eval-data` 评测产物（不入库）；登记表记录它们的 judge 身份、commit 与路径，`bench-baseline.mjs check <报告>` 会告警「判分器已变更，需重跑基线」。
+
+**重判实测（把 70.0% 拆开）**：拿 b1-off 的**同一批答案**（90 题、82 行有答案、8 行空答案跳过）按 MiniMax 重判 → **68.9%**，比 scm-flash 的 70.0% 低 **1.1pp**。也就是说：
+
+- 「70.0%（scm-flash）→ 77.8%（MiniMax）」这 **+7.8pp 主要是答案侧差异**（两档 commit 不同：625ccab vs d64004e），不是判分器变松；
+- 判分器切换本身在这批答案上只有 **-1.1pp**，但方向与幅度**必须实测**、不能假设为 0——所以门禁照旧保留，`bench-rejudge.mjs` 负责把「判分器贡献」与「答案贡献」分开。
+
+**回归保护**：`__tests__/bench-judge.test.ts`（31 例：身份/配对/拒绝/豁免/登记表/重判语义）+ `__tests__/bench-judge-cli.test.ts`（7 例：compare/gates/ranking/fit-fusion-weights 的 exit 3、`--allow-cross-judge`、`gates --base auto`、`--base auto` 遇 judge-changed 拒判、ranking 的「判分模型」列取 judgeModel 而非 answerModel）。
+
 ### 逐项结论
 
 - **W3（唯一通过答案侧门禁）**：判对 77.8%（judge 对齐基线）→**84.4%（+6.7pp，CI[+0.0,+14.4]，p=0.146，不显著）**、拒答 12.2%→8.9%、cov 持平（79.3%，-0.2pp ns）、缺口桶 5/11（门禁1 PASS；门禁2 严格口径未过）。回捞 2 行档（w3）为 81.1%。**注**：此前 +14.4pp/p=0.0023 是与 scm-flash 判分的旧基线跨判分器比较，已作废（见上一小节）。机制：结论卡（3.56 卡/组 × 90 = 320 卡、769 条 part_of 边）经既有 R7-1 结论层（FTS 词面命中）入候选，`smallToBig`（#78 R-b）单跳回捞源证据行作「上下文行」注入；预算未破（结论行硬上限 floor(maxResults/2)、maxExtraLines=2，注入总行数 ≤ maxResults）。turnCov@5 -3.3pp（ns）：single-session-assistant/preference 桶 -13.3/-12.2pp（结论卡占注入位、gold-turn 覆盖被稀释），但 knowledge-update 桶 **+8.3pp**（结论卡把同一实体的多次更新聚合到一行，正是该桶需要的粒度）。**缺口桶 4/11，差 1 题**。
