@@ -365,9 +365,11 @@ bash scripts/run-r135-rerankfix-arms.sh deep105     # 84.3%
 bash scripts/run-r135-rerankfix-arms.sh filter7deep # 79.3%（R4 filter 模式）
 bash scripts/run-r135-rerankfix-arms.sh deep4       # 80.9%
 bash scripts/run-r135-off-arms.sh allon             # 79.9%（rerank 关）
-node scripts/fit-fusion-weights.mjs \
+node scripts/fit-fusion-weights.mjs compare \
   --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json \
   --arm deep105=.eval-data/bench/longmemeval-oracle-2026-10-27T08-36-53.json
+# 全矩阵排名/诊断/采样计划用 fit（见 §17）：
+# node scripts/fit-fusion-weights.mjs fit --base ... --arm-dir .eval-data/bench
 ```
 
 ## 11. 双时态属性契约与软失效（issue #136，2026-10-27 晚场）
@@ -1031,3 +1033,103 @@ judge/作答 = MiniMax-M3.1-Flash，事实抽取 = MiniMax-M2.7（`--fact-model`
 8. **slot 记账没有「证据预留」**（本轮实测最大的机制缺口）：`computeSlotBudget` 把 `conclusionCount × 1.5` 从 `maxResults` 里扣，剩余才给经验行——在 `maxResults=5` 下 2 张结论只剩 2 行经验，而经验行才是答案载体。
    修法：结论的 1.5 槽里**固定 1 槽归它自己的源证据**（从结论额度出，不占经验额度），或允许多行的结论按 `ceil` 而不是 `floor` 取整；改完必须重跑 §16.6 消融。
 9. **只能在 n=90 上判方向**：本轮所有机制差异都在 ±6pp CI 内。要判「分阶段协同」必须上 LME500 级 n（约 5.5×题量、约 2 小时/臂），否则 `keep-single` 可能只是分辨率不足。
+
+## 17. compare/fit 拆分与真配对 CI（issue #142，2026-10-28）
+
+> **问题**：`fit-fusion-weights.mjs` 名字叫 fit，实际只做配对汇总，没有任何拟合；CI 用合并比例的 1.96·sqrt(p(1−p)/n) 近似（不按 case 配对，忽略题目难度方差）；跨 judge 的拒绝逻辑分散在三个工具里各写一套。票面要求：compare/fit 语义可分、CI 改为按 caseId 配对的 bootstrap、judge 不一致硬失败、用已落盘档位自检并出排名表。
+
+### 17.1 交付
+
+| 子项 | 落点 | 说明 |
+|---|---|---|
+| `compare` 子命令 | `scripts/fit-fusion-weights.mjs` | **只判定**：逐档输出 Δ、配对 bootstrap CI、legacy 近似 CI（并列展示）、McNemar、E2 门禁；无子命令时默认 compare（旧命令行不变） |
+| `fit` 子命令 | 同上 + `scripts/lib/bench/fusion-fit.mjs` | **只拟合**：档位排名表、matched-design 单因子效应、坐标搜索、结构诊断、下一步采样计划；明确「报告没有候选级通道分，未跑组合不预测数值」 |
+| 配对 bootstrap CI | `lib/bench/fusion-fit.mjs` `pairArm` | 按 caseId 配对 → 逐 case Δ 重采样 1000 次 → 2.5/97.5 分位；指标为 null 的 `_abs` 应拒答题**剔除**而不是按 0 计入（n=90→87） |
+| legacy CI | 同上 `legacyCiHalfWidth` | 保留旧口径但只作对照行输出，门禁不再使用 |
+| judge 硬校验 | `lib/bench/judge.mjs` `pairJudges` | compare：不可比档只并列展示；fit：排除该档并 **exit 3**（`--allow-cross-judge` 显式豁免）；retrieval-only 档放行 |
+| 自检 | `--arm-dir .eval-data/bench` | 自动收同 manifest 的报告、按 tag 去重取最新，对已落盘 43 档跑排名/诊断/采样 |
+
+### 17.2 compare 实跑（基线 b0base-mm，同 judge MiniMax-M3.1-Flash）
+
+```text
+$ node scripts/fit-fusion-weights.mjs compare --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json \
+    --arm rfix-deep105=.eval-data/bench/longmemeval-oracle-2026-10-27T08-36-53.json
+
+- arm turnCov@5=84.3%  base=67.1%  Δ=17.24pp
+- 配对 bootstrap CI95=[7.66, 26.25]pp（87 个 case，按 case 重采样，1000 次，2.5/97.5 分位）
+- 旧近似 CI95≈±7.64pp（legacy：合并比例方差，不按 case 配对；与上行之差即配对相关性的修正）
+- ΔsessionCov=+7.19pp  Δmrr=+11.11pp  判对 45.6% → 82.2%（Δ=+36.67pp，McNemar p=0.0000）
+- E2 门禁（Δ≥+3pp 且配对 CI 下界>0）: PASS
+```
+
+**与旧口径的差异**：旧文档写「+16.67pp」是把 3 道应拒答题的 null 指标按 0 计入的 90 题口径；配对口径剔除这 3 题后为 **+17.24pp / n=87**（差 0.57pp）。旧近似 CI ±7.64pp 比配对 CI [7.66, 26.25] 更窄——因为题目间难度方差占了大头，按 case 重采样把「同一题在两个档位同涨同落」的相关性算进去了。
+
+### 17.3 fit 排名表（43 档，节选）
+
+| 档位 | 旋钮 | turnCov@5 | Δpp | 配对 CI95 | legacy | 判对 |
+| --- | --- | --- | --- | --- | --- | --- |
+| rfix-deep105 | cand=32 floor=-10.5 fusion=weighted cK=32 | 84.3% | 17.24 | [7.66, 26.25] | ±7.64 | 82.2% |
+| r138-add-x4-route | blend=0.9 fusion=normalized cK=32 | 83.9% | 16.86 | [9.39, 24.52] | ±7.71 | - |
+| r137-allon-norerank | rerank=off cK=32 | 82.6% | 15.52 | [6.90, 24.14] | ±7.97 | 86.7% |
+| r141-w1w3x4 | blend=0.9 cK=32 | 82.0% | 14.94 | [6.90, 22.61] | ±8.07 | 78.9% |
+| r138-add-x4 | blend=0.9 fusion=normalized cK=32 | 81.6% | 14.56 | [6.51, 22.80] | ±8.13 | 84.4% |
+| rfix-deep4 | cand=32 floor=-4 weighted cK=32 | 80.9% | 13.79 | [4.98, 22.61] | ±8.26 | 80.0% |
+| b1off-mm | rerank=off | 79.5% | 12.45 | [4.02, 20.11] | ±8.48 | 77.8% |
+| r135-allon | rerank=off weighted cK=32 | 79.9% | 12.84 | [3.83, 21.26] | ±8.42 | 72.2% |
+| b0base-mm（基线） | 缺省 | 67.1% | 0.00 | — | ±9.87 | 45.6% |
+| r2-wdef | fusion=weighted | 67.1% | 0.00 | [-3.45, 3.45] | ±9.87 | 44.4% |
+
+### 17.4 matched design 单因子效应
+
+只统计「除一个逻辑旋钮外其余旋钮全同」的档位对（n 小的时候只能当方向）：
+
+| 旋钮 | 效应（matched） | 配对数 |
+|---|---|---|
+| rerank.enabled | off +9.14pp / on −9.14pp | 29 |
+| rerank.blend | 0.9 +3.07pp | 4 |
+| rerank.candidates | 12/32 均 0.00pp | 2 |
+| rerank.minScore | −10.5 +3.45pp（n<2，仅供参考） | 1 |
+| fusion | normalized +2.90pp；weighted +0.38 / 0.00pp；rrf −2.67pp | 56 |
+| recall.candidateK | 32 +6.44pp | 15 |
+
+### 17.5 结构诊断（`fit` 自动产出）
+
+- **fusion-null-effect（warn）**：weighted 档 matched 最大 |Δ|=0.38pp（<1pp，56 对）→ 在 RRF 主序下加性权重是零效应，继续网格搜索权重没有信息量；应先把通道分放进**通道内打分**（`recall.fusion.mode="normalized"`，见 §16 / #137），再做权重拟合。normalized 档已有 **+2.90pp** matched 收益（n=49），说明结构改完后信号才可观测。
+- **rerank-toggle-confounded（info）**：rerank=off 的 matched 平均 +9.14pp（29 对），但 on 的最好档 84.3% 高于 off 最好档 82.6%——off 的优势是「剪枝档位分布」的混杂（浅池 / negative floor 和 off 混在一起比），**不是重排本身**。因此`fit` 永不把 `rerank.enabled` 当作坐标移动，只列在 ignored 里。
+- **best-observed**：矩阵内最优 = rfix-deep105（cand=32 / floor=−10.5 / weighted / cK=32），84.3%。
+
+### 17.6 坐标搜索与下一步采样计划
+
+坐标搜索只允许移动到「已观测 level」，并显式区分 **该组合是否观测过**（level 在别的结构里跑过 ≠ 组合跑过）：
+
+| 旋钮 | 移动 | 预计 | 组合状态 |
+|---|---|---|---|
+| rerank.blend | 0 → 0.9 | +6.13pp（4 对） | **未观测，需重跑** |
+| fusion | weighted → normalized(d0.5/b0.2/f0.3) | +2.52pp（56 对） | **未观测，需重跑** |
+
+采样计划（锚定 rfix-deep105，去重后 10 条）：blend 0.9/0.3/0.5、candidates 24/16、minScore −12/−8、candidateK 24/48、fusion normalized(d0.4/b0.3/f0.3)。**这些都必须重跑**——报告里没有候选级通道分，离线无法评估未跑组合。
+
+### 17.7 验收对照
+
+| 票面验收 | 结果 |
+|---|---|
+| `--help` 里 compare/fit 语义可区分 | ✅ compare=只判定（Δ/CI/门禁）；fit=只拟合（排名/效应/诊断/采样）；并说明不预测未观测组合 |
+| 同一对 JSON 的 bootstrap CI 与旧近似 CI 差异可见 | ✅ 每档两行并列（`配对 bootstrap CI95=…` / `旧近似 CI95≈±…`），并说明差值来自配对相关性 |
+| judge 不一致非零退出并说明 | ✅ fit exit 3；compare 只并列展示；`--allow-cross-judge` 标注仅参考 |
+| 用已落盘档位自检 + 档位排名表 | ✅ 43 档排名表 + matched 效应 + 诊断 + 采样计划（本节） |
+
+### 17.8 复现
+
+```bash
+cd MemoryCore
+node scripts/fit-fusion-weights.mjs --help
+# compare：单档判定（旧命令行兼容）
+node scripts/fit-fusion-weights.mjs compare \
+  --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json \
+  --arm rfix-deep105=.eval-data/bench/longmemeval-oracle-2026-10-27T08-36-53.json
+# fit：全矩阵排名 + 诊断 + 采样计划
+node scripts/fit-fusion-weights.mjs fit \
+  --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-45-51.json \
+  --arm-dir .eval-data/bench
+```
+

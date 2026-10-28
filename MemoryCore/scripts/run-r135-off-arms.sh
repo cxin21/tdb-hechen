@@ -25,4 +25,4 @@ case "${1:-allon}" in
   *) echo "用法: $0 [allon|ablate|one <args>]"; exit 2 ;;
 esac
 [ "$FAILED" -ne 0 ] && { echo "[r135] 有 $FAILED 处失败"; exit 1; }
-echo "[r135] OK — 配对: node scripts/fit-fusion-weights.mjs --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-35-29.json --arm allon=<result.json>"
+echo "[r135] OK — 配对: node scripts/fit-fusion-weights.mjs compare --base .eval-data/bench/longmemeval-oracle-2026-10-27T05-35-29.json --arm allon=<result.json>"

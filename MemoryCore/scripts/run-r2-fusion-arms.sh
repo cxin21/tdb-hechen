@@ -44,4 +44,4 @@ case "${1:-default}" in
   *) echo "用法: $0 [default|grid|one <json> <tag>]"; exit 2 ;;
 esac
 [ "$FAILED" -ne 0 ] && { echo "[r2] 有 $FAILED 处失败"; exit 1; }
-echo "[r2] OK — 汇总: node scripts/fit-fusion-weights.mjs --base <b0base.json> --arm r2-wdef=<arm.json>"
+echo "[r2] OK — 汇总: node scripts/fit-fusion-weights.mjs compare --base <b0base.json> --arm r2-wdef=<arm.json>"
