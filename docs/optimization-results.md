@@ -1105,10 +1105,10 @@ $ node scripts/fit-fusion-weights.mjs compare --base .eval-data/bench/longmemeva
 
 | 旋钮 | 移动 | 预计 | 组合状态 |
 |---|---|---|---|
-| rerank.blend | 0 → 0.9 | +6.13pp（4 对） | **未观测，需重跑** |
-| fusion | weighted → normalized(d0.5/b0.2/f0.3) | +2.52pp（56 对） | **未观测，需重跑** |
+| rerank.blend | 0 → 0.9 | +6.13pp（4 对） | **已重跑，证伪**（实测 −4.21pp，见 §17.9） |
+| fusion | weighted → normalized(d0.5/b0.2/f0.3) | +2.52pp（56 对） | **已重跑，不支持**（α=0 下判对 −2.22pp，见 §17.9） |
 
-采样计划（锚定 rfix-deep105，去重后 10 条）：blend 0.9/0.3/0.5、candidates 24/16、minScore −12/−8、candidateK 24/48、fusion normalized(d0.4/b0.3/f0.3)。**这些都必须重跑**——报告里没有候选级通道分，离线无法评估未跑组合。
+采样计划（锚定 rfix-deep105，去重后 10 条）：blend 0.9/0.3/0.5、candidates 24/16、minScore −12/−8、candidateK 24/48、fusion normalized(d0.4/b0.3/f0.3)。**这些都必须重跑**——报告里没有候选级通道分，离线无法评估未跑组合。前两条已于 §17.9 重跑并被否定，其余 8 条按同节说明暂缓。
 
 ### 17.7 验收对照
 
@@ -1134,3 +1134,42 @@ node scripts/fit-fusion-weights.mjs fit \
   --arm-dir .eval-data/bench
 ```
 
+
+### 17.9 采样实测：两条排序预测均未复现（2026-10-29）
+
+**设定**：复用 `lme90-fix-deep105` 库（`--store` + `--no-write-steps`，纯读侧、库内状态不变），当前分支代码（含 #137/#138/#141/#142），每条臂 90 题、生成与判分同用 MiniMax-M3.1-Flash、同 manifest。基线 `r142-deep105-base0` = deep105 配置（weighted d0.4/b0.3/r0.2/v0.1、candidates 32、minScore −10.5、blend 0）在当前代码上**重跑**——16:20 的 `rfix-deep105` 早于 #137 等读侧改动，直接拿它当基线会把「代码演进」算进旋钮效应。
+
+| 臂 | 配置（其余同 deep105） | turnCov@5 | 判对 | ΔturnCov vs base0 [CI95] | Δ判对 | McNemar p |
+|---|---|---|---|---|---|---|
+| r142-deep105-base0 | weighted，blend 0（对照） | 83.2% | 82.2% | — | — | — |
+| r142-deep105-blend09 | weighted，blend 0.9 | 79.0% | 76.7% | **−4.21pp** [−11.30, 2.30] | −5.56pp | 0.30 |
+| r142-deep105-norm0 | normalized(d0.4/b0.3/r0.2/v0.1)，blend 0 | 85.1% | 80.0% | +1.92pp [−2.87, 6.90] | −2.22pp | 0.75 |
+| r142-deep105-norm09 | normalized，blend 0.9 | 75.7% | 74.4% | **−7.51pp** [−14.98, −0.84] | −7.78pp | 0.14 |
+
+配对 bootstrap 1000 次、按 case 重采样、seed=20261027；n=87（`_abs` 题无对错被剔除）。判分器一致，compare 不触发 exit 3。
+
+**结论**
+
+1. **blend 0 → 0.9 被证伪**：§17.6 预计 +6.13pp（仅 4 对样本），实测点估计 −4.21pp、CI 跨 0。α=0.9 的收益只在其原锚点成立（candidates 12 / minScore −2 / 锚点补位，见 §13.5）；把 α=0.9 移植到 candidates 32 / floor −10.5 的深池档反而丢掉精排对深池的排序能力。→ **深池档保持纯精排（blend 0）**，这不是「关掉精排」，是精排与融合序的混合比例按锚点定。
+2. **normalized 在 α=0 下检索更准、判对没跟上**：turnCov +1.92pp（CI 跨 0）、MRR +2.31pp、nDCG 0.780→0.801，但判对 −2.22pp（n.s.）。§17.4 的 matched +2.90pp 是「判对」指标下的相关效应，不等于「换到深池档就 +2.9pp」；本次实测不支持把 normalized 作为默认档切换。证据质量（检索序）与答案正确性在本基准上并不同步——注入块变多变散会同时抬高 turnCov、压低判对。
+3. **normalized + α=0.9 禁止组合**：−7.51pp，CI 上界 −0.84 已排除 0，两旋钮负向叠加显著。
+4. **代码演进在本锚点中性**：同一 deep105 配置，16:20 档 turnCov 84.3% / 判对 82.2% → 当前代码 83.2% / 82.2%（ΔturnCov −1.1pp、判对不变）。后续 paired 比较请用 `r142-deep105-base0` 作基线，别再用 16:20 的报告。
+
+**过程事故与修复（bench 纪律）**
+
+- 生产 `MemoryCore/tdai-gateway.yaml` 在 #137-F 之后自带 `rerank.blend: 0.9`；bench 以生产 yaml 为底，**不显式传 `--rerank-blend` 就继承 0.9**。首跑的 `r142-deep105-norm` 因此实际是 normalized+α0.9（报告里 `effectiveConfig` 可查），不是纯 normalized；本表里它被改标为 `norm09`，纯 normalized 另跑 `norm0`。
+- 修复落在 `MemoryCore/scripts/run-r142-sampling.sh`：每档显式钉 `--rerank-blend`，并带 `--expect-config recall.rerank.blend=…,recall.fusion.mode=…,recall.rerank.candidates=…,recall.rerank.minScore=…`——生效值与档名不符时在灌库前 exit 2，避免白跑一档。
+- 教训：生产 yaml 是 bench 的默认底层配置，「不传=旧档」的假设会在 yaml 改版后静默失效；**实验档要钉住将被解释的每一个旋钮**，报告只信 `effectiveConfig`，不信命令行。
+
+**剩下 8 条采样项暂不跑**：blend 0.3/0.5、candidates 24/16、minScore −12/−8、candidateK 24/48。前两条排序预测都被证伪，且 n=90 的噪声带（±5pp 量级）大于这些项的拟合预计（多为 1–4 对样本给出的 +2~+6pp）；继续单点采样只会产出判不了的差值。要跑时沿用本脚本模式（`--store` 复用 + `--no-write-steps` + `--expect-config` 钉旋钮）。
+
+**复现**
+
+```bash
+cd MemoryCore
+bash scripts/run-r142-sampling.sh base0     # 对照：deep105 配置 + 当前代码 + blend 0
+bash scripts/run-r142-sampling.sh norm0     # normalized + blend 0
+node scripts/fit-fusion-weights.mjs compare \
+  --base .eval-data/bench/r142-deep105-base0.json \
+  --arm r142-deep105-norm0=.eval-data/bench/r142-deep105-norm0.json
+```
