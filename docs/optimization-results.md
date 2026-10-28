@@ -1046,7 +1046,7 @@ judge/作答 = MiniMax-M3.1-Flash，事实抽取 = MiniMax-M2.7（`--fact-model`
 | `fit` 子命令 | 同上 + `scripts/lib/bench/fusion-fit.mjs` | **只拟合**：档位排名表、matched-design 单因子效应、坐标搜索、结构诊断、下一步采样计划；明确「报告没有候选级通道分，未跑组合不预测数值」 |
 | 配对 bootstrap CI | `lib/bench/fusion-fit.mjs` `pairArm` | 按 caseId 配对 → 逐 case Δ 重采样 1000 次 → 2.5/97.5 分位；指标为 null 的 `_abs` 应拒答题**剔除**而不是按 0 计入（n=90→87） |
 | legacy CI | 同上 `legacyCiHalfWidth` | 保留旧口径但只作对照行输出，门禁不再使用 |
-| judge 硬校验 | `lib/bench/judge.mjs` `pairJudges` | compare：不可比档只并列展示；fit：排除该档并 **exit 3**（`--allow-cross-judge` 显式豁免）；retrieval-only 档放行 |
+| judge 硬校验 | `lib/bench/judge.mjs` `pairJudges` | compare 与 fit 一致：不可比档拒绝并 **exit 3**（各自并列展示检索指标 + 给修复路径；`--allow-cross-judge` 显式豁免，表内标「参考」）；retrieval-only 档放行 |
 | 自检 | `--arm-dir .eval-data/bench` | 自动收同 manifest 的报告、按 tag 去重取最新，对已落盘 43 档跑排名/诊断/采样 |
 
 ### 17.2 compare 实跑（基线 b0base-mm，同 judge MiniMax-M3.1-Flash）
@@ -1064,7 +1064,9 @@ $ node scripts/fit-fusion-weights.mjs compare --base .eval-data/bench/longmemeva
 
 **与旧口径的差异**：旧文档写「+16.67pp」是把 3 道应拒答题的 null 指标按 0 计入的 90 题口径；配对口径剔除这 3 题后为 **+17.24pp / n=87**（差 0.57pp）。旧近似 CI ±7.64pp 比配对 CI [7.66, 26.25] 更窄——因为题目间难度方差占了大头，按 case 重采样把「同一题在两个档位同涨同落」的相关性算进去了。
 
-### 17.3 fit 排名表（43 档，节选）
+### 17.3 fit 排名表（42 档 + 基线，节选）
+
+`--arm-dir` 扫描目录时会跳过与 `--base` 同一文件的档位（自配对 Δ 恒 0，不进排名）；基线本身只出现在头部。
 
 | 档位 | 旋钮 | turnCov@5 | Δpp | 配对 CI95 | legacy | 判对 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1076,7 +1078,6 @@ $ node scripts/fit-fusion-weights.mjs compare --base .eval-data/bench/longmemeva
 | rfix-deep4 | cand=32 floor=-4 weighted cK=32 | 80.9% | 13.79 | [4.98, 22.61] | ±8.26 | 80.0% |
 | b1off-mm | rerank=off | 79.5% | 12.45 | [4.02, 20.11] | ±8.48 | 77.8% |
 | r135-allon | rerank=off weighted cK=32 | 79.9% | 12.84 | [3.83, 21.26] | ±8.42 | 72.2% |
-| b0base-mm（基线） | 缺省 | 67.1% | 0.00 | — | ±9.87 | 45.6% |
 | r2-wdef | fusion=weighted | 67.1% | 0.00 | [-3.45, 3.45] | ±9.87 | 44.4% |
 
 ### 17.4 matched design 单因子效应
@@ -1115,7 +1116,7 @@ $ node scripts/fit-fusion-weights.mjs compare --base .eval-data/bench/longmemeva
 |---|---|
 | `--help` 里 compare/fit 语义可区分 | ✅ compare=只判定（Δ/CI/门禁）；fit=只拟合（排名/效应/诊断/采样）；并说明不预测未观测组合 |
 | 同一对 JSON 的 bootstrap CI 与旧近似 CI 差异可见 | ✅ 每档两行并列（`配对 bootstrap CI95=…` / `旧近似 CI95≈±…`），并说明差值来自配对相关性 |
-| judge 不一致非零退出并说明 | ✅ fit exit 3；compare 只并列展示；`--allow-cross-judge` 标注仅参考 |
+| judge 不一致非零退出并说明 | ✅ compare / fit 均 exit 3 并给修复路径（按 trial judge 对齐）；`--allow-cross-judge` 放行但标注仅参考 |
 | 用已落盘档位自检 + 档位排名表 | ✅ 43 档排名表 + matched 效应 + 诊断 + 采样计划（本节） |
 
 ### 17.8 复现

@@ -2,7 +2,8 @@
  * #142 档位拟合库（fusion-fit.mjs）单测：
  *  - pairArm：按 caseId 配对、null 指标剔除、配对 bootstrap CI 与旧二项近似 CI 并存、
  *    McNemar、判分/拒答分项；两套 CI 在有偏档位上必须给出不同数字（票面验收）；
- *  - judge 门禁：跨判分器/缺判分行/检索档三种情况分别拒绝、放行、允许；
+ *  - judge 门禁（decidePairing）：跨判分器拒绝（退出码 3 + 以 trial judge 给修复路径）/
+ *    检索档放行 / --allow-cross-judge 放行并在排名表标「（参考）」；
  *  - matched design：只差一个旋钮的档位才成对，融合旋钮按逻辑档（rrf/weighted/normalized）归并；
  *  - 结构诊断：weighted 零效应 → fusion-null-effect，并把 normalized 的已观测收益写进文本；
  *  - 坐标搜索：当场组合未观测时标 observed=false（不许把「别的结构里观测过的 level」当免费移动）；
@@ -20,10 +21,12 @@ import {
   knobDiff,
   legacyCiHalfWidth,
   pairArm,
+  rankedTag,
   rankArms,
   samplingPlan,
   singleKnobEffects,
 } from "../scripts/lib/bench/fusion-fit.mjs";
+import { decidePairing, judgeRepairHint } from "../scripts/lib/bench/judge.mjs";
 
 const sameJudge = {
   judgeModel: "MiniMax-M3.1-Flash",
@@ -219,5 +222,49 @@ describe("rankArms", () => {
     expect(best.tag).toBe("up");
     expect(rows[0].stats.mean).toBeCloseTo(1, 10);
     expect(rows[1].stats.mean).toBeCloseTo(0, 10);
+  });
+});
+
+describe("judge 门禁（decidePairing）", () => {
+  const judgedRows = [row("a", 1, true), row("b", 0, false)];
+
+  it("同 judge 放行", () => {
+    const v = decidePairing({ baseReport: report("b", judgedRows), trialReport: report("t", judgedRows) });
+    expect(v.allowed).toBe(true);
+    expect(v.exitCode).toBe(0);
+  });
+
+  it("跨 judge 拒绝且修复路径指向 trial judge", () => {
+    const baseReport = report("b", judgedRows);
+    const trialReport = report("t", judgedRows, { judgeModel: "scm-flash", judgePromptVersion: null });
+    const v = decidePairing({ baseReport, trialReport });
+    expect(v.allowed).toBe(false);
+    expect(v.exitCode).toBe(3);
+    const text = v.lines.join("\n");
+    expect(text).toContain("REFUSED");
+    // 修复路径要按「对齐到 trial 的 judge」给（judge.mjs:182 的规范），不能写回 base 已登记的那把
+    expect(text).toContain("resolve --judge scm-flash");
+    expect(judgeRepairHint({ trialJudge: v.pairing.trial.model }).join("\n")).toContain("resolve --judge scm-flash");
+  });
+
+  it("检索档（两侧无判分行、无 judgeModel）放行", () => {
+    const rows = [{ caseId: "a", "turnCov@5": 1, mrr: 1 }];
+    const baseReport = { ...report("b", rows), config: { ...report("b", rows).config, judgeModel: null, judgePromptVersion: null } };
+    const trialReport = { ...report("t", rows), config: { ...report("t", rows).config, judgeModel: null, judgePromptVersion: null } };
+    const v = decidePairing({ baseReport, trialReport });
+    expect(v.allowed).toBe(true);
+    expect(v.pairing.status).toBe("unknown");
+    expect(v.pairing.judgedMetricsPresent).toBe(false);
+  });
+
+  it("--allow-cross-judge 放行，但排名表标「（参考）」", () => {
+    const baseReport = report("b", judgedRows);
+    const trialReport = report("t", judgedRows, { judgeModel: "scm-flash" });
+    const v = decidePairing({ baseReport, trialReport, allowCrossJudge: true });
+    expect(v.allowed).toBe(true);
+    expect(rankedTag({ tag: "trial", pairing: v.pairing, retrievalOnly: false })).toBe("trial（参考）");
+    const same = decidePairing({ baseReport, trialReport: report("t2", judgedRows) });
+    expect(rankedTag({ tag: "trial2", pairing: same.pairing, retrievalOnly: false })).toBe("trial2");
+    expect(rankedTag({ tag: "retrieval", pairing: v.pairing, retrievalOnly: true })).toBe("retrieval");
   });
 });

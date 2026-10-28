@@ -221,6 +221,12 @@ export function pairArm(baseReport, armReport, { metricKey = "turnCov@5", iters 
  * 把所有档位相对于基线排名（主指标降序；同分看判对）。
  * @returns {{rows: Array, best: object|null}}
  */
+/** 排名表里的档位名：跨判分器但被 --allow-cross-judge 放行的档标「（参考）」，避免被当成合入依据。 */
+export function rankedTag({ tag, pairing, retrievalOnly }) {
+  const reference = !pairing?.judgedComparable && !retrievalOnly;
+  return tag + (reference ? "（参考）" : "");
+}
+
 export function rankArms({ baseReport, arms, metricKey = "turnCov@5", iters = 1000, seed = 20261027 }) {
   const rows = arms.map((a) => ({
     ...a,
@@ -360,7 +366,7 @@ export function diagnoseStructure(arms, { effects, best, metricKey = "turnCov@5"
       diag.push({
         code: "fusion-null-effect",
         severity: "warn",
-        text: "matched 证据：weighted 档相对 rrf/其它融合配置最大 |Δ|=" + (weightedMax * 100).toFixed(2) + "pp（<1pp），" + fusionEff.pairs + " 对 → 在 RRF 主序下加性权重是**零效应**。继续网格搜索权重没有信息量；应把时间/有效性/通道分放进**通道内打分**（recall.fusion.mode=\"normalized\"，见 #137），RRF 只保留名次融合+去重，然后再拟合通道权重。" +
+        text: "matched 证据：weighted 档相对 rrf/其它融合配置最大 |Δ|=" + (weightedMax * 100).toFixed(2) + "pp（<1pp），" + fusionEff.pairs + " 对 → **在本矩阵内**，RRF 主序下加性权重观测不到效应（不是「已被证明不存在」，是当前档位分布下不可辨识）。继续在本矩阵上网格搜索权重没有信息量；应把时间/有效性/通道分放进**通道内打分**（recall.fusion.mode=\"normalized\"，见 #137），RRF 只保留名次融合+去重，然后再拟合通道权重。" +
           (normalized ? "已有 normalized 档的 matched 收益 " + (normalized.meanDelta * 100).toFixed(2) + "pp（n=" + normalized.n + "），说明结构改完后信号才可观测。" : ""),
       });
     } else {

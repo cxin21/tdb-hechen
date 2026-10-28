@@ -34,6 +34,7 @@ import {
   knobsSummary,
   metricOf,
   pairArm,
+  rankedTag,
   rankArms,
   samplingPlan,
   singleKnobEffects,
@@ -205,6 +206,8 @@ if (opts.armDir && opts.armDir !== true) {
     // 只收同基线（同 manifest）且行数一致的档位，避免把别的数据集混进矩阵
     if (base.config?.manifest && report.config?.manifest && report.config.manifest !== base.config.manifest) continue;
     if (report.rows.length !== base.rows.length) continue;
+    // 目录扫描会把 --base 自己扫进来：自配对 Δ 恒为 0，只会污染排名，跳过（显式 --arm 不拦，留着做同 judge 冒烟）。
+    if (path.resolve(path.join(dir, f)) === baseFile.path) continue;
     const tag = report.config?.tag ?? f.replace(/\.json$/, "");
     const prev = byTag.get(tag);
     if (!prev || String(report.generatedAt) > String(prev.report.generatedAt)) {
@@ -240,12 +243,12 @@ function runCompare() {
       refusedTags.push(arm.tag);
       const p = arm.report;
       lines.push(
-        "## " + arm.tag + "（未配对：判分器与基线不一致）",
+        "## " + arm.tag + "（未配对：" + (arm.pairing.status === "cross" ? "判分器与基线不一致" : "判分器身份不可证") + "）",
         "- 判分器: " + arm.pairing.base.label + " → " + arm.pairing.trial.label + "（" + arm.pairing.reasons.join("；") + "）",
         "- 并列展示（不做 Δ、不给门禁结论）: arm turnCov@5=" + pctOf(p.overall?.turnCov ?? overallMetric(p)) + "  sessionCov=" + pctOf(p.overall?.sessionCov) + "  mrr=" + pctOf(p.overall?.mrr),
         "- 基线同口径: turnCov@5=" + pctOf(base.overall?.turnCov ?? overallMetric(base)) + "  sessionCov=" + pctOf(base.overall?.sessionCov) + "  mrr=" + pctOf(base.overall?.mrr),
         "- " + configDiffLine(configDiff(base, p)),
-        "- 修复: 用 --allow-cross-judge 显式看参考值，或先把两档对齐到同一 judge（scripts/bench-rejudge.mjs / scripts/bench-baseline.mjs resolve）",
+        ...judgeRepairHint({ trialJudge: arm.pairing?.trial?.model ?? null }),
         "",
       );
       continue;
@@ -275,9 +278,7 @@ function runCompare() {
     );
   }
   if (refused) {
-    lines.push("## 结论：未配对的档位（" + refusedTags.join("、") + "）");
-    lines.push(...judgeRepairHint({ trialJudge: baseJudge.model }));
-    lines.push("");
+    lines.push("## 结论：未配对的档位（" + refusedTags.join("、") + "）已在上文各自给出修复路径。", "");
   }
   return { text: lines.join("\n"), refused };
 }
@@ -286,6 +287,7 @@ function runCompare() {
 function runFit() {
   const usable = arms.filter((a) => a.pairedOk);
   const skipped = arms.filter((a) => !a.pairedOk);
+  const trialJudge = skipped.find((a) => a.pairing?.trial?.model)?.pairing.trial.model ?? null;
   const lines = [
     "# 档位拟合（fit：矩阵内坐标搜索 + 采样计划）",
     "",
@@ -314,7 +316,7 @@ function runFit() {
     const s = row.stats;
     const acc = s.judged ? (s.judged.arm * 100).toFixed(1) + "%" : "-";
     const ref = s.refused ? (s.refused.arm * 100).toFixed(1) + "%" : "-";
-    const tagCell = row.tag + (!row.pairing.judgedComparable && !row.retrievalOnly ? "（参考）" : "");
+    const tagCell = rankedTag(row);
     lines.push(
       "| " + tagCell + " | " + knobsSummary(row.knobs).replace(/\|/g, "/") + " | " + pctOf(overallMetric(row.report)) +
         " | " + (s.mean * 100).toFixed(2) + " | " + ciText(s.ci) + " | ±" + (s.legacy * 100).toFixed(2) +
@@ -381,7 +383,7 @@ function runFit() {
     for (const a of skipped) lines.push("- " + a.tag + "：" + (a.pairing?.reasons?.join("；") || "不可比"));
     if (!opts.allowCrossJudge) {
       lines.push("", "退出码 3：有 " + skipped.length + " 档判分器不可比、已排除；确认要看参考值再加 --allow-cross-judge（输出会标注「参考」）。");
-      lines.push("", ...judgeRepairHint({ trialJudge: baseJudge.model }));
+      lines.push("", ...judgeRepairHint({ trialJudge }));
     }
     lines.push("");
   }
