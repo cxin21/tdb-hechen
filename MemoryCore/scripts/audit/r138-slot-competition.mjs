@@ -94,7 +94,8 @@ for (const { tag, file } of armSpecs) {
       cov5: r["turnCov@5"] ?? null,
       // genCorrect 在不同档里可能是 boolean 或 0/1（历史产物口径不一）——统一归一
       gen: r.genCorrect === true || r.genCorrect === 1 ? 1 : r.genCorrect === false || r.genCorrect === 0 ? 0 : null,
-      refused: r.refused === true ? 1 : 0,
+      // 行里 refused 可能是布尔或 0/1 数值（与 genCorrect 同类）——两种形状都要认
+      refused: r.refused === true || r.refused === 1 ? 1 : 0,
       kept: r.gates?.rerank?.kept,
       blend: r.gates?.rerank?.blend,
     };
@@ -120,6 +121,10 @@ for (const { tag, file } of armSpecs) {
       starvedRate: pct(per.filter((r) => r.ec <= 1).length, per.length),
       ctxTriggerRate: pct(per.filter((r) => r.ctxN > 0).length, per.length),
       kept1Rate: pct(per.filter((r) => typeof r.kept === "number" && r.kept <= 1).length, per.filter((r) => typeof r.kept === "number").length),
+      // 票面验收要求记录延迟（arm JSON 的 overall 口径：均值/P50/P95）
+      latencyMsMean: j.overall?.latencyMsMean ?? null,
+      latencyMsP50: j.overall?.latencyMsP50 ?? null,
+      latencyMsP95: j.overall?.latencyMsP95 ?? null,
     },
     buckets: Object.fromEntries(
       BUCKETS.map((b) => {
@@ -145,11 +150,11 @@ const base = ok.find((a) => a.tag === "b1off-mm") ?? ok[0];
 
 console.log("# #138 结论层↔经验层槽位竞争取证（bench 只读）");
 console.log("");
-console.log("| 档 | 结论行/题 | 上下文行/题 | 经验行/题 | 总行/题 | 触帽率 | 经验≤1 行率 | kept≤1 | turnCov@5 | 判对 | 拒答 |");
-console.log("|---|---|---|---|---|---|---|---|---|---|---|");
+console.log("| 档 | 结论行/题 | 上下文行/题 | 经验行/题 | 总行/题 | 触帽率 | 经验≤1 行率 | kept≤1 | turnCov@5 | 判对 | 拒答 | 延迟 均值/P95 (ms) |");
+console.log("|---|---|---|---|---|---|---|---|---|---|---|---|");
 for (const a of ok) {
   const o = a.overall;
-  console.log(`| ${a.tag} | ${o.meanConclusion} | ${o.meanContext} | ${o.meanExperience} | ${o.meanTotal} | ${o.hardCapRate}% | ${o.starvedRate}% | ${o.kept1Rate ?? "-"}% | ${o.turnCov5}% | ${o.gen ?? "-"}% | ${o.refused}% |`);
+  console.log(`| ${a.tag} | ${o.meanConclusion} | ${o.meanContext} | ${o.meanExperience} | ${o.meanTotal} | ${o.hardCapRate}% | ${o.starvedRate}% | ${o.kept1Rate ?? "-"}% | ${o.turnCov5}% | ${o.gen ?? "-"}% | ${o.refused}% | ${o.latencyMsMean ?? "-"} / ${o.latencyMsP95 ?? "-"} |`);
 }
 console.log("");
 console.log("## 分桶判对（gen，逐桶 15 题：±1 题 = ±6.7pp，只看方向）");

@@ -83,6 +83,11 @@ const withConclusion = rows.filter((r) => r.shapeConclusion > 0);
 const hardCap = rows.filter((r) => r.totalLines >= maxResults);
 const starved = rows.filter((r) => r.layered && r.shapeExperience <= 1);
 const keptVals = rows.map((r) => r.kept).filter((v) => typeof v === "number");
+// 分区：smallToBig gate 只在 2026-10-28 10:07 上线后才写 journal，之前的记录根本没机会产生上下文行，
+// 拿全量做分母会把触发率稀释成「0.2%」这种伪低值——必须单独给 gated 子集。
+const gatedRows = rows.filter((r) => r.gates?.smallToBig);
+const gatedCtx = gatedRows.filter((r) => r.shapeContext > 0);
+const gatedCandidates = gatedRows.filter((r) => (r.gates?.smallToBig?.candidates ?? 0) > 0);
 const perfVals = rows.map((r) => r.perfMs).filter((v) => typeof v === "number");
 
 const out = {
@@ -111,6 +116,12 @@ const out = {
     slotShareWhenTriggered: withCtx.length
       ? Math.round((withCtx.reduce((a, r) => a + r.shapeConclusion + r.shapeContext, 0) / withCtx.reduce((a, r) => a + Math.max(1, r.totalLines), 0)) * 1000) / 10
       : null,
+    // gated 子集（smallToBig 上线后才有 gate）才是回捞/上下文行的有效样本
+    gated: {
+      n: gatedRows.length,
+      ctxTriggerRate: pct(gatedCtx.length, gatedRows.length),
+      backfillCandidateRate: pct(gatedCandidates.length, gatedRows.length),
+    },
   },
   rerankPruning: {
     provider: [...new Set(rows.map((r) => r.rerankProvider).filter(Boolean))],
@@ -170,7 +181,8 @@ if (asJson) {
   console.log("- 结论层命中时经验层 ≤1 行占比: " + out.injectedLines.starvedRateWhenLayered + "%（" + starved.length + "/" + layered.length + "）");
   console.log("");
   console.log("## ③ 上下文行（smallToBig 回捞）");
-  console.log("- 触发率: " + out.contextLines.triggerRate + "%（" + withCtx.length + "/" + n + "）");
+  console.log("- 触发率（全量分母，混合了 smallToBig 未上线的 epoch，仅供对照）: " + out.contextLines.triggerRate + "%（" + withCtx.length + "/" + n + "）");
+  console.log("- gated 子集: n=" + out.contextLines.gated.n + "，上下文行触发率 " + out.contextLines.gated.ctxTriggerRate + "%，回捞候选出现率 " + out.contextLines.gated.backfillCandidateRate + "%");
   console.log("- 每触发题上下文行数: " + JSON.stringify(out.contextLines.perTriggered));
   console.log("- 全局每题均值: " + out.contextLines.perQueryMean + " 行/题");
   console.log("- 触发时「结论+上下文」占总行数比: " + out.contextLines.slotShareWhenTriggered + "%");
