@@ -393,6 +393,13 @@ export interface RecallConfig {
      */
     maxConclusions?: number;
     /**
+     * #138（2026-10-28）：结论层查询路由——"off"（缺省，逐位现状）| "assistantRecall"。
+     * assistantRecall = 当查询在「回忆 assistant 自己先前的输出」（you said/recommended/wrote…）
+     * 时整层跳过结论层（user 侧事实卡对这类问题系统性不相关，注入只会挤掉承载答案的 assistant 轮），
+     * 预算全额还给经验层。判定纯规则（src/core/recall/query-intent.ts），无模型调用。
+     */
+    routing: "off" | "assistantRecall";
+    /**
      * R71-A2（2026-10-19）：结论层 rerank 语义门（主门）。mode 缺省 "shadow"
      * （shadow-first：只记录不过滤，journal gates.conclusionRerank 观测定标后切 enforce）；
      * "enforce" = score < minScore 的选中结论在幂等指纹缓存前剔除；"off" = 零开销。
@@ -2177,6 +2184,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(cl, "maxConclusions");
             return raw === undefined ? undefined : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
           })(),
+          // #138（2026-10-28）：结论层查询路由（缺省 off = 逐位现状；assistantRecall 显式开）
+          routing: str(cl, "routing") === "assistantRecall" ? "assistantRecall" : "off",
           // R71-A2（2026-10-19）：结论层 rerank 门——mode 非法值回落 "shadow"（shadow-first；
           // minScore 非有限回落 undefined=运行期取 -1.0 缺省）
           rerankGate: (() => {

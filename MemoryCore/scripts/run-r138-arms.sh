@@ -20,9 +20,10 @@ BASE="$S/lme90-r137-allon"   # #137 全开档：事实通道 + W2 契约 + W3 �
 GEN="${GEN_LIMIT:-90}"
 FUSION='{"mode":"normalized","dense":0.5,"bm25":0.2,"fact":0.3}'
 COMMON="--dataset longmemeval --manifest $L/lme-manifest.json --keep --pace 150 --gen-limit $GEN \
-  --recall-ks 1,3,5,10 --b1 --candidate-k 32 --fact-extract --fact-channel --fact-channel-weight 0.6 \
-  --fact-max-facts 5 --write-supersede --conclusion-cards --validity-mode soft \
-  --fact-model MiniMax-M2.7 --embed-interval-ms 1200 --rerank-blend 0.9"
+  --recall-ks 1,3,5,10 --b1 --candidate-k 32 --fact-channel --fact-channel-read-only --fact-channel-weight 0.6 \
+  --conclusion-cards --validity-mode soft \
+  --fact-model MiniMax-M2.7 --embed-interval-ms 1200 --rerank-blend 0.9 \
+  --rerank-child-proc --rerank-doc-cap 192"
 FAILED=0
 run() {
   local tag="$1"; shift
@@ -38,8 +39,9 @@ case "${1:-all}" in
   add6) fresh "$BASE" "$S/lme90-r138-add6"; run r138-add-x6 $COMMON --fusion "$FUSION" --store "$S/lme90-r138-add6" --conclusion-budget-mode additive --conclusion-max-extra 6 ;;
   shared4) fresh "$BASE" "$S/lme90-r138-shared4"; run r138-shared-x4 $COMMON --fusion "$FUSION" --store "$S/lme90-r138-shared4" --conclusion-budget-mode shared --conclusion-max-extra 4 ;;
   shared4-legacy) fresh "$BASE" "$S/lme90-r138-shared4-legacy"; run r138-shared-x4-legacy $COMMON --fusion "$FUSION" --store "$S/lme90-r138-shared4-legacy" --conclusion-budget-mode shared --conclusion-max-extra 4 --conclusion-legacy-rank ;;
+  add4-route) fresh "$BASE" "$S/lme90-r138-add4-route"; run r138-add-x4-route $COMMON --fusion "$FUSION" --store "$S/lme90-r138-add4-route" --conclusion-budget-mode additive --conclusion-max-extra 4 --conclusion-routing assistant-recall ;;
   all) for m in add2 add4 add6; do bash "$0" $m || FAILED=$((FAILED+1)); done ;;
-  *) echo "用法: $0 {add2|add4|add6|shared4|shared4-legacy|all}"; exit 2 ;;
+  *) echo "用法: $0 {add2|add4|add6|add4-route|shared4|shared4-legacy|all}"; exit 2 ;;
 esac
 [ "$FAILED" -ne 0 ] && { echo "[r138] 有 $FAILED 处失败"; exit 1; }
 echo "[r138] OK"

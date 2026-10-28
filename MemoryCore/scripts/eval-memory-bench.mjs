@@ -246,6 +246,8 @@ async function main() {
     : undefined;
   const conclusionBudgetMode = String(arg("conclusion-budget-mode", "shared")) === "additive" ? "additive" : "shared";
   const conclusionLegacyRank = flag("conclusion-legacy-rank");
+  // #138：结论层查询路由（assistantRecall = 回忆 assistant 输出的查询跳过结论层）
+  const conclusionRouting = String(arg("conclusion-routing", "off")) === "assistant-recall" ? "assistantRecall" : "off";
 
   // ── 按 groupKey 分组灌库 ──
   const groups = new Map();
@@ -428,12 +430,14 @@ async function main() {
         budget: conclusionBudgetMode,
         relevanceRanked: !conclusionLegacyRank,
       },
-      ...(conclusionCap !== undefined ? { conclusionLayerOverride: { maxConclusions: conclusionCap } } : {}),
+      ...(conclusionCap !== undefined || conclusionRouting !== "off"
+        ? { conclusionLayerOverride: { ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), ...(conclusionRouting !== "off" ? { routing: conclusionRouting } : {}) } }
+        : {}),
     } : {}),
     ...(factChannelOverride ? { factChannelOverride } : {}),
   });
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
-  if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank }) + (conclusionCap !== undefined ? " conclusionLayer=" + JSON.stringify({ maxConclusions: conclusionCap }) : ""));
+  if (conclusionCards) log("[bench] W3 结论卡试验档(仅沙箱 yaml): smallToBig=" + JSON.stringify({ enabled: true, maxExtraLines: conclusionMaxExtra, budget: conclusionBudgetMode, relevanceRanked: !conclusionLegacyRank }) + " conclusionLayer=" + JSON.stringify({ ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), routing: conclusionRouting }));
   if (ageDecayDays > 0) log("[bench] ageDecay 试验档(仅沙箱 yaml): " + JSON.stringify({ enabled: true, halfLifeDays: ageDecayDays }));
   if (Object.keys(rerankOverride).length) log("[bench] 精排试验档(仅沙箱 yaml): " + JSON.stringify(rerankOverride));
   if (Object.keys(mmrOverride).length) log("[bench] MMR 试验档(仅沙箱 yaml): " + JSON.stringify(mmrOverride));

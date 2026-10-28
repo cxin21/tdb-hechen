@@ -67,6 +67,7 @@ import {
   type ExcludeInvalidated,
   type ValidityMode,
 } from "../recall/validity-policy.js";
+import { isAssistantRecallQuery } from "../recall/query-intent.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import { mmrReorder } from "../recall/mmr.js";
@@ -866,12 +867,21 @@ export async function performLayeredRecall(params: {
     // 结论行空 / 经验层全额 / metric scores 原样），输出与 R7 前基线逐位一致。不另写旁路。
     const tPerfL2Start61 = performance.now();
     const r7ConclusionLayerEnabled = cfg.recall?.conclusionLayer?.enabled !== false;
+    // #138（2026-10-28）：结论层查询路由——「回忆 assistant 自己先前的输出」的查询整层跳过。
+    // 依据（bench 逐桶）：single-session-assistant 的 gold 在 assistant 轮，而结论卡只蒸馏
+    // user 侧事实——卡与查询词面重合却不含答案，注入只挤掉答案轮（cov 80→66.7、判对 93.3→80）。
+    // 判定纯规则（query-intent.ts）；路由命中时结论层零候选、零 store 调用，预算全给经验层。
+    const r7ConclusionRoutingOff = cfg.recall?.conclusionLayer?.routing === "assistantRecall"
+      && isAssistantRecallQuery(r7CleanQuery);
     const r7Candidates: L2ConclusionCandidate[] = [];
     let r7Conclusions: L2ConclusionCandidate[] = [];
     // R71（2026-10-19）：结论层双门 gate 观测（A1 地板 / A2 rerank 门）——入 journal gates
     let r71Bm25Gate: RecallJournalGates["conclusionBm25"] | undefined;
     let r71ConclusionRerankGate: RecallJournalGates["conclusionRerank"] | undefined;
-    if (r7ConclusionLayerEnabled) {
+    if (r7ConclusionRoutingOff) {
+      logger?.debug?.(`${TAG} [layered] #138 routing: assistantRecall query -> skip conclusion layer (full experience budget)`);
+    }
+    if (r7ConclusionLayerEnabled && !r7ConclusionRoutingOff) {
       const r7FtsTokens = parseFtsTokens(buildFtsQuery(r7CleanQuery));
       try {
         if (vectorStore && typeof vectorStore.isFtsAvailable === "function" && vectorStore.isFtsAvailable()) {

@@ -409,5 +409,36 @@ describe("R-b 附加注入", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("⑫#138 查询路由：assistantRecall 查询 → 结论层整层跳过、预算全给经验层", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-routing-"));
+    try {
+      const m = s2bStore({ rows: [wfRow("wf-1", "ConclA", -10), ...episodicRows(5)] });
+      const assistantQ = "Can you remind me what ratio you told me to dilute the tea tree oil with? " + KW;
+      const res = await performLayeredRecall(paramsFor(dir, m.store, assistantQ, makeCfg({
+        conclusionLayer: { routing: "assistantRecall" },
+        ftsOnlyInjectCap: 0,
+      })));
+      expect(res.memoryLines.filter((l) => l.includes("[结论")).length).toBe(0);
+      expect(res.memoryLines.length).toBe(5);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑬#138 查询路由不误伤：请求建议类查询仍走结论层", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-routing2-"));
+    try {
+      const m = s2bStore({ rows: [wfRow("wf-1", "ConclA", -10), ...episodicRows(3)] });
+      const adviceQ = "Can you recommend some resources where I can learn more? " + KW;
+      const res = await performLayeredRecall(paramsFor(dir, m.store, adviceQ, makeCfg({
+        conclusionLayer: { routing: "assistantRecall" },
+        ftsOnlyInjectCap: 0,
+      })));
+      expect(res.memoryLines.some((l) => l.includes("ConclA"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 

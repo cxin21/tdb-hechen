@@ -95,6 +95,11 @@ export function evalRetrieval({ caseObj, hits, resolve, k, kList = [] }) {
   };
 
   const primary = evalOneK(k);
+  // #138（2026-10-28）：注入集覆盖率（口径修正）。结论层 additive 档注入行数可超过 maxResults
+  // （结论 + 上下文 + 经验 ≈ 7 行），turnCov@5 只数前 5 行，会系统性低估这类档；
+  // 「注入集覆盖率」= 对**实际注入的全部行**算 turnCov/sessionCov，是「证据在不在上下文里」的
+  // 忠实口径。旧键全部保留（口径连续），新键并列：turnCovInjected / sessionCovInjected。
+  const injected = evalOneK(Math.max(hits.length, 1));
   const out = {
     k,
     retrieved: primary.ids,
@@ -105,6 +110,9 @@ export function evalRetrieval({ caseObj, hits, resolve, k, kList = [] }) {
     mrr: primary.mrr,
     ndcg: primary.ndcg,
     hasEvidence: evSessions.length > 0 || evTurns.length > 0,
+    injectedLines: hits.length,
+    sessionCovInjected: injected.sessionCov,
+    turnCovInjected: injected.turnCov,
   };
   for (const kk of kList) {
     const r = evalOneK(kk);
@@ -148,6 +156,8 @@ export function tokenF1(pred, gold) {
 export function aggregate(rows) {
   const numeric = [
     "sessionAny", "sessionCov", "turnCov", "mrr", "ndcg", "latencyMs", "genCorrect", "refused", "f1", "blockChars",
+    // #138：注入集覆盖率 + 实际注入行数（口径修正；旧 @k 键继续并列）
+    "sessionCovInjected", "turnCovInjected", "injectedLines",
     // B0 多 k 切片：行数据里的 `@k` 后缀键自动并入聚合
     ...[...new Set(rows.flatMap((r) => Object.keys(r).filter((key) => /^(sessionAny|sessionCov|turnCov|mrr|ndcg)@\d+$/.test(key))))]
       .sort((a, b) => Number(a.match(/\d+$/)[0]) - Number(b.match(/\d+$/)[0])),
