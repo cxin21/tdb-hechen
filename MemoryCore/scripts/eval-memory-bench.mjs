@@ -1025,7 +1025,7 @@ function renderMarkdown(r) {
   L.push(`- 仓库提交：\`${r.repoCommit}\``);
   // 判分器必须出现在报告头部（#140）：判对率的可比性取决于「谁在判」。
   L.push(
-    `- 判分器：\`${r.config.judgeModel ?? "（未记录）"}\`（提示版本 \`${r.config.judgePromptVersion ?? "-"}\`，端点 \`${r.config.judgeHost ?? "-"}\`）`,
+    `- 判分器：\`${r.config.judgeModel ?? "（未记录）"}\`（提示版本 \`${r.config.judgePromptVersion ?? "-"}\`，端点 \`${r.config.judgeHost ?? "-"}\`）——与其他档配对前先核这两项：跨 judge 会被 bench-compare/gates/ranking 拒判（#140）`,
   );
   if (r.config.rejudgedFrom) {
     L.push(

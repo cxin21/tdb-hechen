@@ -66,7 +66,10 @@ for (const spec of armSpecs) {
   const p = eq > 0 ? spec.slice(eq + 1) : spec;
   const arm = JSON.parse(fs.readFileSync(p, "utf8"));
   const pairing = pairJudges(base, arm);
-  const pairedOk = pairing.judgedComparable || allowCrossJudge;
+  // retrieval-only 档（两侧都没有判分行）判分器根本不参与比较 → 放行，
+  // 与 decidePairing 的 carve-out 保持一致（否则 E2 的检索门禁在这类档上永远算不出来）。
+  const retrievalOnly = !pairing.judgedMetricsPresent;
+  const pairedOk = pairing.judgedComparable || retrievalOnly || allowCrossJudge;
   if (!pairedOk) {
     // 不配对：只并列展示（票面要求），并说明为什么、怎么修
     refused++;
@@ -98,10 +101,10 @@ for (const spec of armSpecs) {
   const pVal = binomTwoSided(win, win + loss);
   const gate = mean >= 0.03 && mean - hw > 0;
   const gateText = gate
-    ? (pairing.judgedComparable ? "PASS" : "PASS（跨 judge 参考，不计入合入）")
+    ? (pairing.judgedComparable || retrievalOnly ? "PASS" : "PASS（跨 judge 参考，不计入合入）")
     : "FAIL";
   lines.push(
-    "## " + tag + (pairing.judgedComparable ? "" : "（跨判分器参考值）"),
+    "## " + tag + (pairing.judgedComparable ? "" : retrievalOnly ? "（检索档：无判分行，判分器不参与）" : "（跨判分器参考值）"),
     "- arm turnCov@5=" + (arm.overall.turnCov * 100).toFixed(1) + "%  base=" + (base.overall.turnCov * 100).toFixed(1) + "%  Δ=" + (mean * 100).toFixed(2) + "pp  CI95≈±" + (hw * 100).toFixed(2) + "pp",
     "- ΔsessionCov=" + ((n ? dSessSum / n : 0) * 100).toFixed(2) + "pp  Δmrr=" + ((n ? dMrrSum / n : 0) * 100).toFixed(2) + "pp",
     "- 配对 win/loss/tie=" + win + "/" + loss + "/" + tie + "  符号检验 p=" + pVal.toFixed(4),

@@ -139,6 +139,15 @@ describe("judge.mjs / pairJudges", () => {
   });
 });
 
+  it("单侧缺判分提示版本 → unknown（不让修复产物自证同一把尺子）", () => {
+    const half = report({ config: { judgePromptVersion: undefined } });
+    const p = pairJudges(half, report());
+    expect(p.status).toBe("unknown");
+    expect(p.judgedComparable).toBe(false);
+    // 两侧都缺版本、只剩模型 → 仍按模型判 same（历史报告没有版本字段，不因此判死）
+    const both = report({ config: { judgePromptVersion: undefined } });
+    expect(pairJudges(both, both).status).toBe("same");
+  });
 describe("judge.mjs / decidePairing", () => {
   it("跨 judge 且无豁免 → 拒绝，非 0 退出码，并给出两条修复路径", () => {
     const d = decidePairing({
@@ -354,6 +363,15 @@ describe("rejudge.mjs / 旧报告按当前 judge 重判", () => {
     expect(out.stats.remaining).toBe(1);
   });
 
+  it("regradeReport 写当前判分提示版本", async () => {
+    const src = report({ config: { judgeModel: "scm-flash", judgePromptVersion: "lme-v1" } });
+    const fakeLlm = { info: { model: "MiniMax-M3.1-Flash" }, json: async () => ({ correct: true, refused: false }) };
+    const noVersion = await regradeReport({ report: src, llm: fakeLlm, buildJudgePrompt: () => "p" });
+    expect(noVersion.report.config.judgePromptVersion).toBe("lme-v1");
+    const withVersion = await regradeReport({ report: src, llm: fakeLlm, buildJudgePrompt: () => "p", judgePromptVersion: "lme-v2" });
+    expect(withVersion.report.config.judgePromptVersion).toBe("lme-v2");
+    expect(withVersion.report.config.rejudgedFrom.judgePromptVersion).toBe("lme-v1");
+  });
   it("regradeReport 保留原报告不可变（返回新对象，不原地改）", async () => {
     const src = report();
     const before = JSON.stringify(src);

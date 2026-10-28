@@ -34,7 +34,7 @@
 ## 2. 推荐配置（b1-off 组合档）✅ 已实测
 
 `rerank.enabled=false` + `B1 读侧四件套`（tag=b1-off，23-42-59）：
-**turnCov@5=79.5%（+12.4pp）、判对 70.0%（63/90，+31.1pp，McNemar p<0.001）、拒答 15.6%（<20% 达标）、f1 0.486（基线 0.188）、latP50 159ms（-7.3s）。**
+**turnCov@5=79.5%（+12.4pp）、判对 70.0%（63/90，+31.1pp，McNemar p<0.001；判分器 `scm-flash`——与 MiniMax 判分档不可配对，见 §8）、拒答 15.6%（<20% 达标）、f1 0.486（基线 0.188）、latP50 159ms（-7.3s）。**
 两项收益完全叠加（检索侧来自 T4、答案侧来自 B1），为最终推荐配置。
 
 ## 3. 分阶段结论（对照文档 §7/§8）
@@ -114,7 +114,7 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 
 | 项 | 生产 seam | 缺省 | 证据/说明 |
 |---|---|---|---|
-| **W3 读侧** | `auto-recall.ts` R7-1 结论层 + #78 `smallToBig`（生产既有代码） | yaml `recall.smallToBig.enabled=true`（生产早就开着），`maxExtraLines` **2→4**（本次） | §8 w3b：判对 +14.4pp CI[+6.7,+23.3]，cov 持平；注入总行数由 maxResults 硬帽收口 |
+| **W3 读侧** | `auto-recall.ts` R7-1 结论层 + #78 `smallToBig`（生产既有代码） | yaml `recall.smallToBig.enabled=true`（生产早就开着），`maxExtraLines` **2→4**（本次） | §8 w3b：判对 +14.4pp CI[+6.7,+23.3]（**scm-flash 判分**；judge 对齐后为 +6.7pp/p=0.146，见 §8「判分器注记」），cov 持平；注入总行数由 maxResults 硬帽收口 |
 | **W3 写侧** | `consolidation-worker.ts` / `reflection.ts` 既有 work_fact 结论卡 + `part_of` 边 | 既有能力（生产已在产出） | bench 的蒸馏卡是 bench 侧替身；生产不需要新增写链 |
 | **W1 事实键** | `l1-writer.ts` embedding 键：`embeddingKeyFor(record.content, memory, writePolicy)`；事实来源 = dedup LLM **顺带抽取**的 `metadata.subject`（零额外 LLM 成本） | `memory.write.factKey.enabled=false` | bench +6.7pp 不显著（CI 含负）→ 按票面规则默认关；待生产语料复核后一行配置开启 |
 | **W2 supersession** | `l1-writer.ts` dedup 的 `update/merge` 决策：旧行由「归档」改为 `invalidateL1` 写 `valid_end`（只标记不删除）+ 新行补 `valid_start` | `memory.write.supersession.enabled=false` | bench cov -10.9pp 显著负（LME90 gold 含旧值 turn）→ 默认关；事实级粒度细化留待生产语料验证 |
@@ -140,6 +140,8 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 > **实验方法**：每档**从 b1-off 基线沙箱库复制**，只补写本档差异（`--store` 分阶段写入）——语义等价重灌，避免全量重 embedding（豆包 embedding 账号级 RPM 限流：全量 1591 轮重灌实测 5 组/222s，不可行；分阶段写入 90 组 0-4s）。query 向量走磁盘缓存（embedding 确定性，语义零变化），因此**延迟口径跨档不可横比**，本表不列延迟。
 > **抽取器**：`MiniMax-M2.7`（端点小模型档，非长思考 reasoning 档）离线批处理，`--fact-model` 可配；只抽 user turn（assistant 轮实测抽出世界知识噪声）。**抽样验收门禁**：40 turn / 95 条事实，审计器 M3.1-Flash，**accuracy 92.6% ≥ 90% → PASS**（`fact-gate-2026-10-27T02-17-53.json`）。
 > **口径**：① 缺口桶 = base `turnCov@5` < 0.5 的数值行（11 题；另有 3 题 null=无证据标注不计入），回收 = trial `turnCov@5` ≥ 0.5 **且严格上升**；② 每档独立跑批（同 manifest、同 pace、同宣判口径），w13/combo 为叠加档（从 w1 库复制，表内注明）。
+
+**判分器注记（#140）**：本表所有判对/拒答 Δ 均为 **`scm-flash`** 判分（2026-10-26 批次，判分提示版本 `lme-v2`）；与 10-27 起 MiniMax 判分的档位**不可配对**，跨 judge 配对会被 `bench-compare`/`bench-gates`/`bench-ranking` 拒判（exit 3）。judge 对齐后的数字见本节「Judge 对齐后的最终排名」。
 
 | 档 | 配置（自 b1-off 基线） | turnCov@5（Δ vs b1-off） | 判对（Δ / 95%CI / McNemar p） | 拒答 | 缺口桶回收 | 答案门禁 | 覆盖门禁 |
 |---|---|---|---|---|---|---|---|
@@ -184,15 +186,18 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 
 **问题**：报告文件名只带时间戳，`b1-off` 在两种判分器下各存在一份（scm-flash 70.0% / MiniMax 77.8%）。跨 judge 直接配对时，判分器本身的松紧差异会被算进「方法收益」——这正是 10-27 那轮把 +14.4pp/p=0.0023 写进结论、随后被迫作废的原因。
 
+**默认行为**：`bench-gates` 只给一份报告时自动取登记表里的「同 judge 基线」（等价 `--base auto`），不必手写 auto；`bench-baseline check` 报 judge-changed 时门禁直接拒判。
+
 **门禁（四个配对工具统一口径）**：`bench-compare` / `bench-gates` / `bench-ranking` / `fit-fusion-weights` 都会读两侧 `config.judgeModel`（+ `judgePromptVersion`），判定与渲染集中在 `scripts/lib/bench/judge.mjs`（契约见 ADR-0012）：
 
 | 情况 | 行为 | 退出码 |
 | --- | --- | --- |
 | 同 judge（模型 + 判分提示版本一致） | 正常判定 | 0（gates 仍按门禁给 0/1） |
 | 跨 judge / 判分器未记录但有判分行 | **拒绝判定**：头部打印两侧判分器 + 配置差异 + 修复路径；判对/拒答 Δ 不出数 | **3** |
-| 跨 judge + `--allow-cross-judge` | 放行，但报告内标注「豁免 / 仅参考」，gates 的判对门禁记 SKIP 不计入门禁 | 0 |
+| 跨 judge + `--allow-cross-judge` | 放行，但报告内标注「豁免 / 仅参考」，gates 的判对门禁记 SKIP 不计入门禁 | 由其余门禁决定（全过 0 / 有门禁未过 1）——判分器门禁本身不抬退出码 |
 | 两侧都无判分行（retrieval-only 档） | 放行（本比较不涉及判分器） | 0 |
 | `fit-fusion-weights` 跨 judge | **不配对**：不出 Δ、不给 E2 门禁结论，只并列展示两档 turnCov/sessionCov/mrr | **3** |
+| `fit-fusion-weights` 两侧都无判分行 | 放行（E2 是检索门禁，判分器不参与），ΔturnCov 正常算 | 0/1（按 E2 结论） |
 
 > 顺带把「这一对到底只差一个因子吗」也做成输出：`configDiff` 用**黑名单**（`judgeModel`/`judgePromptVersion`/`judgeHost`/`tag`/`manifest`/`dataset`/溯源字段）而不是白名单比对两侧 `config` 的键并集——新增实验旋钮默认会被看见，不会静默输出「无差异」。
 

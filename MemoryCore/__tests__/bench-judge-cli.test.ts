@@ -143,6 +143,63 @@ describe("bench CLI 判分器门禁", () => {
     expect(r.out).not.toContain("| answer-x |");
   });
 
+  /** 变体：判对全开/全关，用于验证「被抑制的判对数不参与排名」。 */
+  function mkVariant(judgeModel: string, tag: string, correct: number, manifest: string) {
+    const r = mkReport(judgeModel, tag, { manifest });
+    r.rows = r.rows.map((row) => ({ ...row, genCorrect: correct }));
+    return r;
+  }
+
+  it("gates: 只给一份报告 → 默认取登记表的同 judge 基线（不用手写 auto）", () => {
+    const regPath = path.join(tmp, "lme-baselines.json");
+    fs.writeFileSync(
+      regPath,
+      JSON.stringify({
+        version: 1,
+        baselines: [
+          { tag: "b1off-mm", judgeModel: "MiniMax-M3.1-Flash", manifest, dataset: "longmemeval", report: mm, n: 12, genJudged: 12, genCorrect: 0.5, gateBaseline: true },
+        ],
+      }),
+    );
+    const r = run(["--import", "tsx", "scripts/bench-gates.mjs", mm]);
+    expect(r.code).not.toBe(2);
+    expect(r.out).toContain("基线来源: 登记表 b1off-mm");
+  });
+
+  it("ranking: 跨 judge 档即使判对更高也排在合法同 judge 档之后", () => {
+    const scmHigh = path.join(tmp, "scm-high.json");
+    const mmLow = path.join(tmp, "mm-low.json");
+    fs.writeFileSync(scmHigh, JSON.stringify(mkVariant("scm-flash", "cross-highacc", 1, manifest)));
+    fs.writeFileSync(mmLow, JSON.stringify(mkVariant("MiniMax-M3.1-Flash", "same-lowacc", 0, manifest)));
+    const r = run(["scripts/bench-ranking.mjs", "--base", mm, scmHigh, mmLow]);
+    expect(r.code).toBe(3); // 表内含跨 judge 档 → 整体拒判（门禁不认这份排名）
+    // 用表格行定位（档位名在头部声明行里也会出现，不能用裸名字定位）
+    const iSame = r.out.indexOf("| same-lowacc |");
+    const iCross = r.out.indexOf("| cross-highacc |");
+    expect(iSame).toBeGreaterThan(0);
+    expect(iCross).toBeGreaterThan(iSame); // 跨 judge 档不得靠被抑制的判对数抢占名次
+  });
+
+  it("fit-fusion-weights: 两侧都无判分行（retrieval-only 档）→ 放行并按 E2 算检索 Δ", () => {
+    const retrieval = (tag: string, cov: number) => {
+      const rep = mkReport(null, tag, { manifest });
+      rep.rows = rep.rows.map((row) => {
+        const next: Record<string, unknown> = { ...row, "turnCov@5": cov };
+        delete next.genCorrect;
+        delete next.refused;
+        return next;
+      });
+      return rep;
+    };
+    const basePath = path.join(tmp, "retr-base.json");
+    const armPath = path.join(tmp, "retr-arm.json");
+    fs.writeFileSync(basePath, JSON.stringify(retrieval("retr-base", 0.5)));
+    fs.writeFileSync(armPath, JSON.stringify(retrieval("retr-arm", 1)));
+    const r = run(["scripts/fit-fusion-weights.mjs", "--base", basePath, "--arm", "arm=" + armPath]);
+    expect(r.code).not.toBe(3);
+    expect(r.out).toContain("检索档");
+  });
+
   it("fit-fusion-weights: 跨 judge 不配对只并列展示 + exit 3；同 judge 配对；豁免标注参考", () => {
     const cross = run(["scripts/fit-fusion-weights.mjs", "--base", scm, "--arm", "trial=" + mm]);
     expect(cross.code).toBe(3);

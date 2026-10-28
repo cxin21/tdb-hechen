@@ -8,7 +8,8 @@
  *     --budget-cards-per-group 缺省不判）
  *
  * 用法：
- *   node --import tsx scripts/bench-gates.mjs <base.json|auto> <trial.json> [--min-recovered 5] [--min-delta-pp 3]
+ *   node --import tsx scripts/bench-gates.mjs [<base.json|auto>] <trial.json> [--min-recovered 5] [--min-delta-pp 3]
+ *   只给一份报告时自动取登记表的「同 judge 基线」（票面②的默认行为）
  *
  * 判分器一致性（#140）：
  *  - base 与 trial 的 config.judgeModel 不一致 → 拒绝判定（exit 3），除非 --allow-cross-judge；
@@ -32,9 +33,15 @@ function arg(name, dflt) {
   return v === undefined || v.startsWith("--") ? true : v;
 }
 const files = argv.filter((a) => !a.startsWith("--") && !/^[\d.]+$/.test(a));
-const [baseFile, trialFile] = files;
+// 只给一份报告 = 「拿它跟登记表里的同 judge 基线比」（票面②：门禁默认引用同 judge 基线）。
+// 显式给两份时仍按老用法；写 auto 也等价。
+const [firstFile, secondFile] = files;
+const baseFile = secondFile === undefined ? (firstFile ? "auto" : undefined) : firstFile;
+const trialFile = secondFile === undefined ? firstFile : secondFile;
 if (!baseFile || !trialFile) {
-  console.error("用法: node --import tsx scripts/bench-gates.mjs <base.json> <trial.json> [--min-recovered 5] [--min-delta-pp 3] [--budget-tokens-per-turn 800]");
+  console.error(
+    "用法: node --import tsx scripts/bench-gates.mjs [<base.json|auto>] <trial.json> [--min-recovered 5] [--min-delta-pp 3] [--budget-tokens-per-turn 800]\n  只给一份报告时自动用基线登记表的「同 judge 基线」作 base。",
+  );
   process.exit(2);
 }
 const minRecovered = Number(arg("min-recovered", 5));

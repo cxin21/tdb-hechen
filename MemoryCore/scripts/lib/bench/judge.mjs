@@ -67,7 +67,7 @@ export const hasJudgedRows = (report) => (report?.rows ?? []).some((r) => typeof
  * 两侧配对资格判定。
  *  - same    ：同模型 + 同判分提示版本 → 判对指标可配对；
  *  - cross   ：模型或提示版本不一致 → 判对指标不可配对（检索指标不受影响）；
- *  - unknown ：至少一侧没记录 judgeModel → 身份不可证。
+ *  - unknown ：至少一侧没记录 judgeModel，或只有一侧记录判分提示版本 → 身份不可证。
  *             若两侧都没有判分行（retrieval-only 档），这份比较本来就不涉及判分器 → 无害；
  *             只要有判分行，就等于「拿一把没署名的尺子当方法论收益」→ 同样不可配对。
  */
@@ -86,6 +86,12 @@ export function pairJudges(baseReport, trialReport) {
   } else if (base.model !== trial.model) {
     status = "cross";
     reasons.push(`判分模型不同：base=${base.model} / trial=${trial.model}`);
+  } else if (!base.promptVersion !== !trial.promptVersion) {
+    // 只有一侧记了提示版本：无法证明是同一把尺子。若放行，重判产出的新报告会「自我认证」成 same。
+    status = "unknown";
+    reasons.push(
+      `判分提示版本只有一侧记录（base=${base.promptVersion ?? "未记录"} / trial=${trial.promptVersion ?? "未记录"}）→ 无法证明同一把尺子`,
+    );
   } else if (base.promptVersion && trial.promptVersion && base.promptVersion !== trial.promptVersion) {
     status = "cross";
     reasons.push(`判分提示版本不同：base=${base.promptVersion} / trial=${trial.promptVersion}（同模型不同尺子）`);

@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { readLlmCredential } from "./lib/read-llm-credential.ts";
-import { makeLlm, buildJudgePrompt } from "./lib/bench/llm.mjs";
+import { makeLlm, buildJudgePrompt, PROMPT_VERSION } from "./lib/bench/llm.mjs";
 import { judgeIdentity } from "./lib/bench/judge.mjs";
 import { answersOf, regradeReport } from "./lib/bench/rejudge.mjs";
 import {
@@ -69,7 +69,7 @@ if (!cred) {
 const header = [
   "源报告: " + src,
   "原判分器: " + from.label + (from.promptVersion ? "（" + from.promptVersion + "）" : ""),
-  "当前判分器: " + cred.model + "（" + new URL(cred.baseUrl).host + "，key 来源 " + cred.apiKeySource + "）",
+  "当前判分器: " + cred.model + "（提示版本 " + PROMPT_VERSION + "，" + new URL(cred.baseUrl).host + "，key 来源 " + cred.apiKeySource + "）",
   "题数: " + rows.length + "（有判分行 " + judged.length + "，可重判 " + withAnswer + "）",
 ].join("\n");
 console.log(header);
@@ -85,6 +85,7 @@ const { report: out, stats } = await regradeReport({
   report,
   llm,
   buildJudgePrompt,
+  judgePromptVersion: PROMPT_VERSION,
   limit,
   onProgress: ({ done, total }) => {
     if (done % 20 === 0 || done === total) process.stderr.write("  重判 " + done + "/" + total + "\n");

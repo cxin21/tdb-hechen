@@ -40,7 +40,15 @@ function promptArgsOf(row, datasetName) {
  *  - config 里留 rejudgedFrom 溯踪（旧 judge 身份 + 时间 + 来源），审计链不断；
  *  - overall/perType 用 aggregate 从 rows 重算，保持与 eval-memory-bench 同口径。
  */
-export async function regradeReport({ report, llm, buildJudgePrompt, limit = Infinity, datasetName = null, onProgress = null } = {}) {
+export async function regradeReport({
+  report,
+  llm,
+  buildJudgePrompt,
+  limit = Infinity,
+  datasetName = null,
+  judgePromptVersion = null,
+  onProgress = null,
+} = {}) {
   if (!report || !llm) throw new Error("regradeReport: report 与 llm 必填");
   if (typeof buildJudgePrompt !== "function") throw new Error("regradeReport: buildJudgePrompt 必填");
 
@@ -83,6 +91,8 @@ export async function regradeReport({ report, llm, buildJudgePrompt, limit = Inf
     config: {
       ...next.config,
       judgeModel: llm.info?.model ?? next.config?.judgeModel ?? null,
+      // 提示版本随尺子一起换：不写就会沿用旧报告的值（旧报告缺该字段时，配对会自证 same）。
+      judgePromptVersion: judgePromptVersion ?? next.config?.judgePromptVersion ?? null,
       judgeHost: llm.info?.baseUrlHost ?? null,
       judgeApiKeySource: llm.info?.apiKeySource ?? null,
       rejudgedFrom: {

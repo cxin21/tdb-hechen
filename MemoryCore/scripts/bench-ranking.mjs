@@ -78,7 +78,26 @@ for (const f of [baseFile, ...trials]) {
   });
 }
 const baseRow = rows.find((r) => r.isBase);
-const ranked = rows.filter((r) => !r.isBase).sort((x, y) => y.correct - x.correct);
+/**
+ * 排序键：判对被抑制（跨 judge 未豁免 / 无判分行）的档不参与判对名次——
+ * 否则会出现「表格里判对列印『—』，却排在合法同 judge 档前面」的自相矛盾。
+ * 没有可比判对时退回 turnCov@5 排序，并统一排在有判对的档之后。
+ */
+const rankScore = (r) => {
+  if (r.judgedComparable) return r.correct;
+  if (allowCrossJudge && r.judgedPresent) return r.correct; // 显式豁免：按参考值排，单元格带 *
+  return null;
+};
+const ranked = rows
+  .filter((r) => !r.isBase)
+  .sort((x, y) => {
+    const sx = rankScore(x);
+    const sy = rankScore(y);
+    if (sx === null && sy === null) return (y.cov5 ?? 0) - (x.cov5 ?? 0);
+    if (sx === null) return 1;
+    if (sy === null) return -1;
+    return sy - sx || (y.cov5 ?? 0) - (x.cov5 ?? 0);
+  });
 
 const unjudged = rows.filter((r) => !r.isBase && (!r.judgedComparable || !r.judgedPresent));
 const crossArms = rows.filter((r) => !r.isBase && r.judgedPresent && !r.judgedComparable);
