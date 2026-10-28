@@ -53,7 +53,9 @@
     "judge:behavior:drift": "tsx scripts/persona-eval/run-persona-eval.ts --subset full --drift 8",
     "import:opik": "tsx scripts/import-opik-to-memory-core/index.ts",
     "postinstall": "bash scripts/openclaw-after-tool-call-messages.patch.sh 2>/dev/null || true",
-    "bench:memory": "node --import tsx scripts/eval-memory-bench.mjs"
+    "bench:memory": "node --import tsx scripts/eval-memory-bench.mjs",
+    "audit:e3:build": "node scripts/audit/r143-e3-review.mjs build",
+    "audit:e3:summarize": "node scripts/audit/r143-e3-review.mjs summarize"
   },
   "files": [
     "dist/",
