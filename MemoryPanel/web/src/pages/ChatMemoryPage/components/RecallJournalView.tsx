@@ -190,9 +190,7 @@ export default function RecallJournalView() {
             // skip 行（#74 留痕）：query 剥噪后为空、memoryLines 恒空——标题退 rawQuery，
             // 并打「已跳过」徽标，避免再出现「有卡无字」的空卡片。
             const isSkip = typeof e.skipReason === 'string' && e.skipReason !== '';
-            const titleText = isSkip
-              ? skipTitle(e) || t('memory.journal.skippedNoQuery')
-              : e.query;
+            const titleText = isSkip ? skipTitle(e) || t('memory.journal.skippedNoQuery') : e.query;
             return (
               <div
                 className={isSkip ? '_rj-card _rj-card--skip' : '_rj-card'}
@@ -201,7 +199,7 @@ export default function RecallJournalView() {
                 {/* 主标题 = query（skip 行 = rawQuery 首行） */}
                 <div
                   className="_rj-query-title"
-                  title={isSkip ? e.rawQuery ?? '' : e.query}
+                  title={isSkip ? (e.rawQuery ?? '') : e.query}
                   onClick={() => toggleExpand(idx)}
                   role="button"
                   tabIndex={0}
@@ -238,9 +236,7 @@ export default function RecallJournalView() {
                             len: e.rawLen ?? 0,
                           })}
                         </div>
-                        {e.rawQuery ? (
-                          <pre className="_rj-soul-pre">{e.rawQuery}</pre>
-                        ) : null}
+                        {e.rawQuery ? <pre className="_rj-soul-pre">{e.rawQuery}</pre> : null}
                       </div>
                     ) : null}
                     {e.block ? (
