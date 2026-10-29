@@ -825,6 +825,24 @@ export class VectorStore implements IMemoryStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_sessionkey_updated ON l1_records(session_key, updated_time)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_task_updated ON l1_records(task_id, updated_time)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_team_agent_updated ON l1_records(team_id, agent_id, updated_time)");
+    // #146（事实级双时态）：写面按 metadata_json.fact_key 找"同（实体,属性）的旧事实行"。
+    // metadata_json 是 UNINDEXED 列，没有表达式索引时每条单值事实写入都全表扫描一次。
+    // 两个坑必须一起绕：① 老库可能没有 JSON1（json_extract 不存在）→ 建索引失败不致命，只退化成扫描；
+    // ② 本仓**容忍损坏的 metadata_json**（anchorEvidenceValences 测试⑤ 会写入 '{broken'）——
+    //    裸 json_extract 在写坏行时会抛 malformed JSON，把"坏行只跳过"变成"坏行写不进"，
+    //    所以索引用 json_valid 守卫：坏行索引值为 NULL，不进索引也不抛错。
+    try {
+      // 旧定义（无守卫）如有则以新名字重建，避免 IF NOT EXISTS 留着一个会抛错的索引。
+      this.db.exec("DROP INDEX IF EXISTS idx_l1_fact_key");
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_l1_fact_key_valid ON l1_records(" +
+          "json_extract(CASE WHEN json_valid(metadata_json) THEN metadata_json END, '$.fact_key'))",
+      );
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [W2b-fact-rows] fact_key expression index unavailable (falling back to table scan): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     // ── 记忆图（G）：L1↔L1 显式语义边 ──
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS l1_links (
@@ -4502,6 +4520,53 @@ export class VectorStore implements IMemoryStore {
     } catch (err) {
       this.logger?.warn?.(`${TAG} [invalidation] invalidateL1 failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
+    }
+  }
+
+  /**
+   * #146（W2b 事实级双时态）：按事实键（metadata_json.fact_key）批量失效同（实体,属性）的事实行。
+   *
+   * 与 invalidateL1 的分工：invalidateL1 是"已知行 id"的单行回写；本方法把
+   * "同实体同属性的旧事实"这一语义查询下沉到写面（L1QueryFilter 没有 metadata 过滤能力，
+   * 故用 JSON1 直查）。只写 valid_end（失效不删除、不改写正文），已失效行不重复命中；
+   * 命中行仍逐条走 invalidateL1 主表 + l1_fts 双写，FTS 路不读到 stale valid_end。
+   * filter 缺省 = 实例级全量（旧后端/单机兼容）；生产写侧传 team/user/agent 三元组。
+   */
+  invalidateL1ByFactKey(filter: IsolationFilter | undefined, factKey: string, validEndIso: string): number {
+    if (this.degraded) {
+      // 事实行模式下这是**唯一**的失效通道：静默 0 = 失效永久不生效且无任何线索，
+      // 对齐 deleteL1Expired 的 loud warn 口径。
+      this.logger?.warn?.(`${TAG} [W2b-fact-rows] invalidateL1ByFactKey SKIPPED (degraded mode) key=${factKey}`);
+      return 0;
+    }
+    const key = typeof factKey === "string" ? factKey.trim() : "";
+    if (!key) return 0;
+    try {
+      const where = buildIsolationWhere(filter, "");
+      const rows = this.db.prepare(
+        // WHERE 表达式必须与 idx_l1_fact_key_valid 的定义**逐字一致**，否则规划器不选索引（实测
+        // 改成裸 json_extract + json_valid 断言会退化成全表扫描）；json_valid 守卫同时保证
+        // 损坏的 metadata_json 行只被跳过、不会让本语句抛 malformed JSON。
+        `SELECT record_id FROM l1_records
+          WHERE json_extract(CASE WHEN json_valid(metadata_json) THEN metadata_json END, '$.fact_key') = ?
+            AND (valid_end IS NULL OR valid_end = '')` +
+        (where.clause ? ` AND ${where.clause}` : ""),
+      ).all(key, ...where.params) as unknown as Array<{ record_id: string }>;
+      let invalidated = 0;
+      for (const row of rows) {
+        if (this.invalidateL1(row.record_id, validEndIso)) invalidated++;
+      }
+      if (invalidated > 0) {
+        this.logger?.info?.(
+          `${TAG} [W2b-fact-rows] fact_key invalidation: ${invalidated}/${rows.length} row(s) marked valid_end=${validEndIso}`,
+        );
+      }
+      return invalidated;
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [W2b-fact-rows] invalidateL1ByFactKey failed for key=${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
     }
   }
 

@@ -26,6 +26,7 @@ import {
 } from "./fact-key.js";
 import { classifyContentCardinality, isSupersessionEligible } from "./cardinality.js";
 import type { FactCardinality } from "./cardinality.js";
+import type { FactRowOptions } from "./fact-row.js";
 
 /** #137：事实键形态（"replace" = 旧 W1 键替换；"channel" = 平行通道）。 */
 export type FactKeyMode = "replace" | "channel";
@@ -55,9 +56,21 @@ export interface WriteSupersessionConfig {
   cardinalityDefault?: FactCardinality;
 }
 
+/**
+ * #146（W2b）事实级一行策略：抽取器直出三元组时，一个记忆拆成多条事实行落库。
+ * 关 = 逐位现状（一个记忆一行）。
+ */
+export interface WriteFactRowsConfig {
+  enabled: boolean;
+  /** 事实行条数上限（缺省取全局 DEFAULT_MAX_FACTS；与事实键共用唯一 clamp）。 */
+  maxFacts?: number;
+}
+
 export interface WritePolicy {
   factKey: WriteFactKeyConfig;
   supersession: WriteSupersessionConfig;
+  /** #146：事实级粒度（缺省关 = 逐位现状）。 */
+  factRows?: WriteFactRowsConfig;
 }
 
 /** 缺省策略：全关 = 与既有行为逐位一致（生产安全缺省）。 */
@@ -170,6 +183,19 @@ export function factChannelKeyFor(
     maxFacts: opts.maxFacts,
     includeTriples: opts.includeTriples,
   });
+}
+
+/** #146：事实级粒度开关——true = 有可用三元组时一条事实一行（方案 A）。 */
+export function factRowsEnabled(policy?: WritePolicy): boolean {
+  return policy?.factRows?.enabled === true;
+}
+
+/** #146：事实行归一化/裁决选项（条数上限走全局唯一 clamp；缺省基数沿用 supersession 配置）。 */
+export function factRowOptionsOf(policy?: WritePolicy): FactRowOptions {
+  return {
+    maxFacts: clampMaxFacts(policy?.factRows?.maxFacts ?? policy?.factKey?.maxFacts ?? DEFAULT_MAX_FACTS),
+    cardinalityDefault: policy?.supersession?.cardinalityDefault,
+  };
 }
 
 /** W2：update/merge 的旧行处置开关——true = 标记 valid_end（不归档不删除）。 */

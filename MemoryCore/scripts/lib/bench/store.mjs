@@ -252,6 +252,86 @@ export function turnContent(caseObj, turn) {
     : `${turn.speaker}: ${turn.text}`;
 }
 
+// ── #146 事实级双时态：一条事实一行（bench 写面）────────────────────────────────
+/**
+ * 载入 fact-row 契约（src/core/record/fact-row.ts，#146）。
+ * 契约未合并时给出可诊断的错误，而不是把 TypeError 埋在灌库中途（与 #137 通道同纪律）。
+ */
+async function loadFactRowApi() {
+  const mod = await import("../../../src/core/record/fact-row.ts");
+  for (const fn of ["planFactRows", "factRowIdOf", "factRowMetadata"]) {
+    if (typeof mod[fn] !== "function") {
+      throw new Error("src/core/record/fact-row.ts 缺少 " + fn + "（#146 契约未合并？）——无法启用 --fact-rows");
+    }
+  }
+  return mod;
+}
+
+/**
+ * 事实行 content：与 turnContent 同前缀（时间 + 说话人），后挂单条事实。
+ * 为什么不复用 turnContent：它拼的是 turn.text，而事实行载荷是自足短语。前缀必须一致
+ * （召回时间语义与 metrics 的 normHead 映射口径都依赖它），正文换成单条事实。
+ */
+export function turnFactRowContent(caseObj, turn, factContent) {
+  const t = turn.tsISO || caseObj.questionDateISO || "";
+  const body = String(factContent ?? "").trim();
+  return t ? `[${t.replace("T", " ")}] ${turn.speaker}: ${body}` : `${turn.speaker}: ${body}`;
+}
+
+/**
+ * 把一个 turn 的事实三元组规划成「事实行 L1 记录」（纯函数，不碰 store）。
+ * 返回 {hasFacts, rows:[{record, spec, index}], dropped}；hasFacts=false 时调用方回退整行写入。
+ * id/content/metadata 形状与生产 l1-writer 一致：id=factRowIdOf、元数据=facts+fact_of/fact_index/fact_key。
+ */
+export async function buildFactRowRecords({ caseObj, turn, sessionId = "s", turnFacts, cardinalityDefault }) {
+  const { planFactRows, factRowMetadata, factRowIdOf } = await loadFactRowApi();
+  const triples = Array.isArray(turnFacts?.triples) ? turnFacts.triples : [];
+  const opts = {};
+  if (cardinalityDefault === "single" || cardinalityDefault === "multi") opts.cardinalityDefault = cardinalityDefault;
+  const plan = planFactRows(triples, opts);
+  if (!plan.hasFacts) return { hasFacts: false, rows: [], dropped: plan.dropped };
+  const parent = turnToRecord(caseObj, turn, sessionId);
+  const validStart = parent.valid_start || parent.occurred_at || parent.createdAt;
+  const rows = plan.rows.map((spec, index) => ({
+    spec,
+    index,
+    record: {
+      ...parent,
+      id: factRowIdOf(parent.id, index),
+      content: turnFactRowContent(caseObj, turn, spec.content),
+      valid_start: validStart,
+      metadata: { ...parent.metadata, ...factRowMetadata(spec, { parentId: parent.id, index, validStart }) },
+    },
+  }));
+  return { hasFacts: true, rows, dropped: plan.dropped };
+}
+
+/**
+ * 事实行写前失效（#146）：按（实体，属性）定位同键未失效旧行，valid_end = 本 turn 时刻。
+ *  - 与生产 l1-writer 同序：先失效旧行、后写新行（生产用 now，bench 回放历史用 turn 的 ts）；
+ *  - 只有单值行参与（多值可并存，永不失效——#136 契约由调用方先筛 cardinality）；
+ *  - store 无该方法（tcvdb 等）时只计数 + 告警一次，绝不静默等同控制档，也不抛。
+ */
+async function invalidateFactRowByKey({ caseObj, store, record, spec, stats }) {
+  stats.factRowInvalidateOps = (stats.factRowInvalidateOps ?? 0) + 1;
+  const fn = store && typeof store.invalidateL1ByFactKey === "function" ? store.invalidateL1ByFactKey.bind(store) : null;
+  if (!fn) {
+    if (!stats.factRowInvalidateUnsupported) {
+      console.warn("[bench:warn] store 无 invalidateL1ByFactKey（#146 契约未落地/后端不支持）：事实级失效关闭");
+    }
+    stats.factRowInvalidateUnsupported = true;
+    return;
+  }
+  const filter = { teamId: caseObj.tenant.team_id, userId: caseObj.tenant.user_id, agentId: caseObj.tenant.agent_id };
+  const validEndIso = record.valid_start || caseObj.questionDateISO || new Date().toISOString();
+  try {
+    const n = await fn(filter, spec.factKey, validEndIso);
+    if (typeof n === "number") stats.factRowsInvalidated = (stats.factRowsInvalidated ?? 0) + n;
+  } catch {
+    stats.factRowInvalidateFailed = (stats.factRowInvalidateFailed ?? 0) + 1;
+  }
+}
+
 /**
  * 批量取向量：分块 + 限并发 + 退避重试（批上限因模型而异：整批失败再逐条重试）。
  * 返回 { vectors, failed, retries }；vectors 与 texts 逐位对齐（失败位 undefined）。
@@ -341,9 +421,15 @@ async function writeFactChannelVector(writeFn, stats, record, vec) {
  * supersede 需要 facts.triples、conclusions 需要 cards），漏传一个就静默退化成控制档——
  * 一档白跑的代价是 90 题 × 数十分钟。这里把依赖集中校验：该报错就报错。
  *
- * @param {object} [input] {dualWrite, factChannel, supersede, cardinalityGate, conclusions}
+ * #146（事实级双时态）：新增 factRows（一条事实一行）。三处互斥在这里显式报错，
+ * 不做静默降级——同一档既写事实行又走整行键/整行失效，量出来的差异无法归因：
+ *  - factRows × dualWrite：条目已经按事实拆开，整行「原文+事实」的键拼法无落点；
+ *  - factRows × supersede：事实行自带事实级失效，整行失效会把同 turn 的兄弟事实行一起软失效；
+ *  - factRows × factChannel：通道向量按 turn id 落 l1_fact_vec，事实行模式下父行不写，向量会悬空。
+ *
+ * @param {object} [input] {dualWrite, factChannel, supersede, cardinalityGate, factRows, conclusions}
  * @param {{facts?:object, conclusions?:object}} [ctx] 供依赖校验的实际数据
- * @returns {{dualWrite:object|null, factChannel:object|null, supersede:boolean, cardinalityGate:boolean, conclusions:object|null}}
+ * @returns {{dualWrite:object|null, factChannel:object|null, supersede:boolean, cardinalityGate:boolean, factRows:object|null, conclusions:object|null}}
  */
 export function normalizeWritePolicy(input = {}, ctx = {}) {
   const src = input && typeof input === "object" ? input : {};
@@ -361,19 +447,35 @@ export function normalizeWritePolicy(input = {}, ctx = {}) {
     factChannel = { enabled: true, ...src.factChannel };
   }
 
+  // #146 factRows: true | {cardinalityDefault?: "single"|"multi", enabled?} | null
+  let factRows = null;
+  if (src.factRows === true) factRows = { enabled: true };
+  else if (src.factRows && typeof src.factRows === "object" && src.factRows.enabled !== false) {
+    factRows = { enabled: true, ...src.factRows };
+  }
+
   const supersede = src.supersede === true;
   // cardinalityGate 缺省开（#136 契约）；显式 false 才关。
   const cardinalityGate = src.cardinalityGate !== false;
   const concl = src.conclusions && Array.isArray(src.conclusions.cards) ? src.conclusions : conclusions && Array.isArray(conclusions.cards) ? conclusions : null;
 
-  if ((dualWrite || factChannel || supersede) && !facts?.byTurn) {
-    throw new Error("writePolicy: dualWrite/factChannel/supersede 都需要 facts（先跑 --fact-extract；缓存命中也可）");
+  if ((dualWrite || factChannel || supersede || factRows) && !facts?.byTurn) {
+    throw new Error("writePolicy: dualWrite/factChannel/supersede/factRows 都需要 facts（先跑 --fact-extract；缓存命中也可）");
+  }
+  if (factRows && dualWrite) {
+    throw new Error("writePolicy: factRows 与 dualWrite 互斥（事实行已按事实拆行，整行「原文+事实」键拼法无落点）");
+  }
+  if (factRows && supersede) {
+    throw new Error("writePolicy: factRows 与 supersede 互斥（事实行自带事实级失效；整行失效会连带同 turn 的兄弟事实行）");
+  }
+  if (factRows && factChannel) {
+    throw new Error("writePolicy: factRows 与 factChannel 暂不可同时开（通道向量按 turn id 落表，父行不写时悬空）");
   }
   if (concl && concl.cards.length === 0) {
     // 0 卡不是错误（软失败可达），但需要调用方知道本档没有写入面。
-    return { dualWrite, factChannel, supersede, cardinalityGate, conclusions: concl, emptyConclusions: true };
+    return { dualWrite, factChannel, supersede, cardinalityGate, factRows, conclusions: concl, emptyConclusions: true };
   }
-  return { dualWrite, factChannel, supersede, cardinalityGate, conclusions: concl, emptyConclusions: false };
+  return { dualWrite, factChannel, supersede, cardinalityGate, factRows, conclusions: concl, emptyConclusions: false };
 }
 
 /**
@@ -386,6 +488,10 @@ export function normalizeWritePolicy(input = {}, ctx = {}) {
  * W1/C（#137）：facts/factChannel 传入时，另算「事实短语键」文本（不含原文）→ 单独 embed
  * → store.upsertL1FactVector 写平行向量表（l1_vec 主索引完全不动）。与 dualWrite 可同时开：
  * 两者键文本不同、目标表不同，互不干扰。store 无该方法（tcvdb 等）→ 静默跳过并计数。
+ *
+ * #146（事实级双时态）：writePolicy.factRows 打开时改为「一条事实一行」——有可用三元组的
+ * turn 只写 N 条事实行（父行不写），单值行写前按 factKey 失效同键旧行（复合 A 与生产同序）。
+ * contentIndex 对每条事实行回填父 turn id，度量口径不随拆行变化。
  */
 export async function ingestCase({ caseObj, store, embedding, contentIndex, opts = {} }) {
   const { chunkSize = 8, concurrency = 1, onRetry, embedMinIntervalMs = 400, facts, conclusions } = opts;
@@ -394,19 +500,53 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, opts
   const policy = normalizeWritePolicy(opts.writePolicy, { facts, conclusions });
   const dualWrite = policy.dualWrite;
   const factChannel = policy.factChannel;
+  const factRows = policy.factRows;
   const records = [];
   for (const g of caseObj.groups) for (const t of g.turns) records.push({ turn: t, sessionId: g.sessionId });
 
   const stats = { turns: records.length, embedded: 0, embedFailed: 0, written: 0, embedRetries: 0 };
 
-  const payloadTexts = records.map(({ turn }) => turnContent(caseObj, turn));
+  // #146：写入单元 = 一次 upsert。缺省 1 turn = 1 行（逐位现状）；事实行模式下有可用三元组的
+  // turn 展开为 N 条事实行（父行不写，与生产 l1-writer 一致），无三元组的 turn 回退整行。
+  let units = records.map(({ turn, sessionId }) => ({ turn, sessionId, record: turnToRecord(caseObj, turn, sessionId), factRow: null }));
+  if (factRows?.enabled) {
+    const expanded = [];
+    let dropped = 0;
+    let factTurns = 0;
+    let factRowsWritten = 0;
+    for (const { turn, sessionId } of records) {
+      const plan = await buildFactRowRecords({
+        caseObj,
+        turn,
+        sessionId,
+        turnFacts: facts?.byTurn?.[turn.id],
+        cardinalityDefault: factRows.cardinalityDefault,
+      });
+      if (plan.hasFacts) {
+        factTurns++;
+        dropped += plan.dropped;
+        factRowsWritten += plan.rows.length;
+        for (const row of plan.rows) expanded.push({ turn, sessionId, record: row.record, factRow: row.spec });
+      } else {
+        // 宁缺毋滥：没抽出可用三元组就按原文整行写（零行为变化），绝不丢这一轮。
+        expanded.push({ turn, sessionId, record: turnToRecord(caseObj, turn, sessionId), factRow: null });
+      }
+    }
+    units = expanded;
+    // factRows 只数真事实行（不含回退整行）；units 总数里混着回退行，不能当事实行数。
+    stats.factRows = factRowsWritten;
+    stats.factRowTurns = factTurns;
+    stats.factRowDropped = dropped;
+  }
+
+  const payloadTexts = units.map((u) => u.record.content);
   // W1：键文本（缺省 = 载荷文本，逐位现状）。事实按 turn id 对齐；无事实的 turn 键=原文。
   let texts = payloadTexts;
   if (dualWrite?.enabled) {
     const { buildEmbeddingKey } = await import("../../../src/core/record/fact-key.ts");
     let factTurns = 0;
     let factChars = 0;
-    texts = records.map(({ turn }, i) => {
+    texts = units.map(({ turn }, i) => {
       const phrases = facts?.byTurn?.[turn.id]?.phrases ?? [];
       if (phrases.length) factTurns++;
       const key = buildEmbeddingKey(payloadTexts[i], phrases, {
@@ -416,7 +556,7 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, opts
       factChars += key.length - payloadTexts[i].length;
       return key;
     });
-    stats.factKeys = records.length;
+    stats.factKeys = units.length;
     stats.factTurns = factTurns;
     stats.factKeyCharsAdded = factChars;
   }
@@ -459,9 +599,14 @@ export async function ingestCase({ caseObj, store, embedding, contentIndex, opts
   stats.embedRetries += main.retries;
   stats.embedded = vectors.filter(Boolean).length;
 
-  for (let i = 0; i < records.length; i++) {
-    const { turn, sessionId } = records[i];
-    const record = turnToRecord(caseObj, turn, sessionId);
+  for (let i = 0; i < units.length; i++) {
+    const { turn, record, factRow } = units[i];
+    // #146：单值事实行写前先失效同键旧行（与生产 l1-writer 同序：先失效、后写新行）；
+    // 多值行永不失效（#136 契约）。失效时刻 = 本 turn 时刻（bench 是历史回放，不用 now）。
+    if (factRow && factRow.cardinality === "single") {
+      await invalidateFactRowByKey({ caseObj, store, record, spec: factRow, stats });
+    }
+    // 事实行也进 content→turn 映射：召回命中单条事实时 turnCov 仍能落到父 turn（度量口径不崩）。
     contentIndex.set(normHead(record.content), turn.id);
     const ok = store.upsertL1(record, vectors[i]);
     if (ok !== false) stats.written++;

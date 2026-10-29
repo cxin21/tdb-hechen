@@ -26,10 +26,19 @@ import type { Logger } from "../types.js";
 import {
   embeddingKeyFor,
   factChannelKeyFor,
+  factRowOptionsOf,
+  factRowsEnabled,
   supersessionEligibleForContent,
   supersessionEnabled,
   type WritePolicy,
 } from "./write-policy.js";
+import {
+  factRowIdOf,
+  factRowMetadata,
+  isFactRowSupersedable,
+  planFactRowsFromMetadata,
+  type FactRowPlan,
+} from "./fact-row.js";
 
 // ============================
 // Types
@@ -205,6 +214,10 @@ export interface DedupDecision {
 
 const TAG = "[memory-tdai][l1-writer]";
 
+// factRows 开但抽取侧没产出 factTriples 时只 warn 一次（否则每条记忆刷一行，日志洪泛）。
+// 进程级开关，测试不受影响（测试要断言就自己开新进程或看日志）。
+let FACT_ROWS_NO_TRIPLES_WARNED = false;
+
 // ============================
 // Core functions
 // ============================
@@ -346,6 +359,27 @@ export async function writeMemory(params: {
   if (record.arousal == null) record.arousal = 0;
   if (record.significance == null) record.significance = 0.5;
 
+  // #146（W2b 事实级双时态，方案 A）：memory.write.factRows.enabled 且本记忆抽出了可用三元组时，
+  // 一条事实一行（content = 单条事实陈述，metadata 带 subject/predicate/cardinality/fact_key）。
+  // 无可用三元组 → hasFacts=false → 逐位现状（一个记忆一行，零行为变化）。
+  const factPlan: FactRowPlan = factRowsEnabled(writePolicy)
+    ? planFactRowsFromMetadata(
+        memory.metadata && typeof memory.metadata === "object"
+          ? (memory.metadata as Record<string, unknown>)
+          : undefined,
+        factRowOptionsOf(writePolicy),
+      )
+    : { rows: [], dropped: 0, hasFacts: false };
+  const factRowsActive = factPlan.hasFacts;
+  // 开关开了却拿不到三元组 → 每条记忆静默退回整行，等于白开。抽一次 warn 指路
+  // （事实行只吃 metadata.factTriples；它由 extraction.factKey.includeTriples 控制）。
+  if (factRowsEnabled(writePolicy) && !factRowsActive && !FACT_ROWS_NO_TRIPLES_WARNED) {
+    FACT_ROWS_NO_TRIPLES_WARNED = true;
+    logger?.warn?.(
+      "[W2b-fact-rows] memory.write.factRows.enabled=true 但本记忆无可用 factTriples（检查 extraction.factKey.includeTriples）——退回整行粒度",
+    );
+  }
+
   const shardDate = formatLocalDate(new Date());
   const recordKey = StoragePaths.record(shardDate);
 
@@ -377,7 +411,9 @@ export async function writeMemory(params: {
     }
   };
 
-  if ((decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0) {
+  // #146：事实级粒度下整行失效/归档一律跳过——旧事实行的处置由下方 fact_key 精确定位，
+  // 否则同 turn 的兄弟事实会跟着退出检索面（正是本票要消除的爆炸半径）。
+  if (!factRowsActive && (decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0) {
     // 审计修复 B3：update/merge 的旧目标记忆从"硬删"改为"归档软删"（归档优先于删除红线）。
     // 原实现在向量库硬删 target，但 applyDecisions 随后建的 evolve/similar 边仍指向它们
     // → 孤儿边、证据链断裂。归档保留整行（l1_archive），getL1ByIdsWithArchive 可回溯；
@@ -458,24 +494,22 @@ export async function writeMemory(params: {
         );
       }
     }
-    logger?.info?.(`${TAG} jsonl-append start (update/merge) id=${record.id} key=${recordKey}`);
-    try {
-      await appendRecord(JSON.stringify(record) + "\n");
-    } catch (err) {
-      logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
-    }
-    logger?.debug?.(`${TAG} ${decision.action} memory: removed [${decision.target_ids.join(",")}] from VectorStore → ${record.id}: ${finalContent.slice(0, 80)}...`);
-  } else {
-    // store: append a new line
-    // L1-OUTAGE-20261015 breadcrumb：JSONL append 与其后的 vec 双写之间曾发生 43min
-    // 静默悬挂——start/end INFO 夹逼 + DONE 尾标，把任何悬挂定罪到具体 await。
-    logger?.info?.(`${TAG} jsonl-append start id=${record.id} key=${recordKey}`);
-    try {
-      await appendRecord(JSON.stringify(record) + "\n");
-    } catch (err) {
-      logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
-    }
-    logger?.info?.(`${TAG} Stored memory ${record.id}: ${finalContent.slice(0, 80)}...`);
+    logger?.debug?.(`${TAG} ${decision.action} memory: supersede/archive targets [${decision.target_ids.join(",")}] → ${record.id}: ${finalContent.slice(0, 80)}...`);
+  }
+
+  // === 单条记录落库（JSONL append + 向量双写）===
+  // #146：抽成闭包，事实级粒度下逐条事实行调用——每条事实行都是独立 JSONL 行与独立向量，
+  // 不再共用父行的向量落点。参数名遮蔽外层 record/memory 是刻意为之：让既有双写代码逐位复用。
+  // L1-OUTAGE-20261015 breadcrumb：JSONL append 与其后的 vec 双写之间曾发生 43min
+  // 静默悬挂——start/end INFO 夹逼 + DONE 尾标，把任何悬挂定罪到具体 await。
+  const persistOne = async (rec: MemoryRecord, md: { metadata?: unknown }) => {
+  const record = rec;
+  const memory = md;
+  logger?.info?.(`${TAG} jsonl-append start id=${record.id} key=${recordKey}`);
+  try {
+    await appendRecord(JSON.stringify(record) + "\n");
+  } catch (err) {
+    logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // === Vector Store dual-write ===
@@ -545,6 +579,74 @@ export async function writeMemory(params: {
     logger?.debug?.(
       `${TAG} [vec-dual-write] SKIPPED id=${record.id}: vectorStore=${!!vectorStore}`,
     );
+  }
+  logger?.info?.(`${TAG} Stored memory ${record.id}: ${record.content.slice(0, 80)}...`);
+  return record;
+  };
+
+  if (factRowsActive) {
+    // #146 写时失效（本票核心）：先按 fact_key 精确定位同（实体,属性）的旧事实行标 valid_end，
+    // 再落新行——顺序保证 valid_start 可能早于 now 的新行不会被自己刚写的失效命中。
+    // 失效范围 = 隔离三元组（team/user/agent），刻意不按 session 收窄：属性更新必须能跨会话生效。
+    // 只有单值属性（cardinality=single）参与失效；多值 additive 永不失效（#136 契约）。
+    // 失效时刻 = **新事实的有效起点**（valid_start → occurred_at → 写时刻），不是写时刻。
+    // 为什么不用 now：读侧 soft 效期只在「有效期内 + 存在取代它的更新行」时才硬丢旧值，
+    // 「取代」的判据是 candidate.valid_start >= item.valid_end。若把 valid_end 写成 now
+    // （晚于新行 valid_start），旧行永远判不出「被取代」，问当下的硬丢就全落空（#146 验收②）。
+    // 用新事实起点还让区间本身正确：柏林 [3-02, 4-11) → 慕尼黑 [4-11, ∞)。
+    // 乱序写入（新值发生时刻早于旧行 valid_start）会产生倒置区间，读侧按 expired 处理——
+    // 这正是「该行已被更晚写入的事实取代」的期望结果，不额外设防。
+    const validEndIso = record.valid_start || record.occurred_at || new Date().toISOString();
+    // 事实级粒度下父行不落库，但调用方仍拿返回记录：把有效起点补上一处，避免消费方读到
+    // valid_start: undefined（非事实行分支在 dedup 段补，这里补不到那条路面）。
+    if (!record.valid_start) record.valid_start = validEndIso;
+    let supersededCount = 0;
+    if (vectorStore && typeof vectorStore.invalidateL1ByFactKey === "function") {
+      // 隔离 scope 必须与**落库行实际带的值**一致，不能用 writeMemory 的原始入参：
+      // 三个隔离参数都可缺（pipeline 可能整组不传），undefined 会被 buildIsolationWhere
+      // 直接跳过 → filter 变实例级，按 fact_key 跨租户写 valid_end。落库行恒兜
+      // DEFAULT_ISOLATION_ID（见上方 record 构造与 sqlite 绑定），这里同口径。
+      const scope = {
+        teamId: record.teamId || DEFAULT_ISOLATION_ID,
+        userId: record.userId || DEFAULT_ISOLATION_ID,
+        agentId: record.agentId || DEFAULT_ISOLATION_ID,
+      };
+      for (const row of factPlan.rows) {
+        if (!isFactRowSupersedable(row)) continue;
+        try {
+          supersededCount += await vectorStore.invalidateL1ByFactKey(scope, row.factKey, validEndIso);
+        } catch (err) {
+          logger?.warn?.(
+            `${TAG} [W2b-fact-rows] invalidateL1ByFactKey failed for key=${row.factKey}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    } else if (vectorStore) {
+      // 不回落整行失效/归档：那正是本票要消除的爆炸半径；宁可少失效（可观测 loud warn）。
+      logger?.warn?.(
+        `${TAG} [W2b-fact-rows] store lacks invalidateL1ByFactKey — fact-level supersession skipped (no whole-row fallback)`,
+      );
+    }
+    logger?.debug?.(
+      `${TAG} [W2b-fact-rows] memory ${record.id} → ${factPlan.rows.length} fact row(s); superseded ${supersededCount} prior row(s); dropped ${factPlan.dropped} same-key duplicate(s)`,
+    );
+    for (let i = 0; i < factPlan.rows.length; i++) {
+      const row = factPlan.rows[i];
+      const rowValidStart = record.valid_start || record.occurred_at || record.createdAt;
+      const rowRecord: MemoryRecord = {
+        ...record,
+        id: factRowIdOf(record.id, i),
+        content: row.content,
+        valid_start: rowValidStart,
+        metadata: {
+          ...(record.metadata ?? {}),
+          ...factRowMetadata(row, { parentId: record.id, index: i, validStart: rowValidStart }),
+        },
+      };
+      await persistOne(rowRecord, { metadata: rowRecord.metadata });
+    }
+  } else {
+    await persistOne(record, memory);
   }
 
   return record;

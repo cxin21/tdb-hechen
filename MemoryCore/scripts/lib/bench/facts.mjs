@@ -23,7 +23,7 @@ import { cacheFileOf, readCache, writeCache } from "./cache.mjs";
 import { isRetriableHttpError, withRateLimitRetry } from "./retry.mjs";
 import { estimateMessagesTokens, estimateTokens, normalizeUsage } from "./tokens.mjs";
 
-export const FACTS_PROMPT_VERSION = "facts-v2";
+export const FACTS_PROMPT_VERSION = "facts-v3";
 
 const SYSTEM_PROMPT = [
   "You extract concise fact phrases from conversation turns for a memory retrieval index.",
@@ -32,9 +32,20 @@ const SYSTEM_PROMPT = [
   "2. Facts must be about the USER's own life, preferences, plans, records or events (first-person statements). Do NOT record generic world knowledge, advice, definitions or product descriptions.",
   "3. Each fact must be a short self-contained phrase (<= 24 words) preserving exact names, numbers, dates and units as written. At most 4 facts per turn.",
   "4. Skip greetings, questions with no stated fact, filler, and meta talk. Returning an empty array for such turns is correct.",
-  "5. Output JSON only, no prose:",
-  '{"results":[{"id":"<turn id>","facts":[{"subject":"...","predicate":"...","value":"...","phrase":"..."}]}]}',
+  "5. For each fact also give cardinality: \"single\" when the predicate holds at most one value at a time for that subject (current city, phone number, price, count, status, job title, home address), \"multi\" when multiple values can hold at the same time (likes/dislikes, plans, considering, symptoms, friends, skills). Omit cardinality when unsure.",
+  "6. Output JSON only, no prose:",
+  '{"results":[{"id":"<turn id>","facts":[{"subject":"...","predicate":"...","value":"...","phrase":"...","cardinality":"single|multi"}]}]}',
 ].join("\n");
+
+/**
+ * 严格归一 cardinality（#146 事实级双时态）：只认 single/multi，其它值/空值一律 undefined。
+ * 抽取器是外部模型，写错（"Single"、"many"、空串）不能带进下游——下游 fact-key 只接受严格值，
+ * 这里先把它清掉，等于"模型拿不准就当没给"，由 classifyCardinality 自行判断。
+ */
+export function normalizeFactCardinality(raw) {
+  const v = String(raw ?? "").trim().toLowerCase();
+  return v === "single" || v === "multi" ? v : undefined;
+}
 
 /** 缓存文件路径。 */
 export function factsCachePath(cacheDir, caseId) {
@@ -129,7 +140,9 @@ async function extractBatch(llm, batch) {
       const subject = String(f.subject ?? "").trim();
       const predicate = String(f.predicate ?? "").trim();
       const value = String(f.value ?? "").trim();
-      if (subject && predicate) triples.push({ subject, predicate, value });
+      // cardinality 只挂在有主谓的三元组上（phrases 不进它：embedding 键口径不变）。
+      const cardinality = normalizeFactCardinality(f.cardinality);
+      if (subject && predicate) triples.push(cardinality ? { subject, predicate, value, cardinality } : { subject, predicate, value });
     }
     byId.set(r.id, { phrases, triples });
   }
@@ -212,6 +225,8 @@ export function estimateExtractionUsage({ caseObj, byTurn, batchSize = 20, roles
         facts: (got.phrases ?? []).map((phrase) => ({ subject: "", predicate: "", value: "", phrase })),
       };
     });
+    // 注：facts-v3 起真实回包还带 cardinality；这里不重建（不知道真实取值，乱填会虚增估算）。
+    // 缓存档 completion 估算因此偏低几个 token，属已知口径，不影响 prompt 侧证据。
     completion += estimateTokens(JSON.stringify({ results }));
   }
   usage.prompt = prompt;
@@ -250,7 +265,7 @@ export async function factsForCase({ caseObj, cacheDir, llm, model, batchSize = 
       };
     }
   }
-  if (!llm) throw new Error("事实抽取需要 LLM 客户端（--fact-extract / --fact-dual-write）");
+  if (!llm) throw new Error("事实抽取需要 LLM 客户端（--fact-extract / --fact-dual-write / --fact-channel / --fact-rows）");
   const t0 = Date.now();
   const out = await extractFactsForCase({ caseObj, llm, batchSize, concurrency, logger, roles: effectiveRoles });
   if (cacheDir && out.failedBatches === 0) {

@@ -7,6 +7,7 @@
  * Minimal config (zero config): {} — all fields have sensible defaults.
  */
 import { clampMaxFacts, DEFAULT_MAX_FACTS } from "./core/record/fact-key.js";
+import type { WriteFactRowsConfig } from "./core/record/write-policy.js";
 import {
   normalizeRerankFilterKeepRatio,
   normalizeRerankFilterMarginTop,
@@ -1189,6 +1190,12 @@ export interface WriteConfig {
     /** 内容级无线索时的缺省基数（缺省 "single" 保覆盖）。 */
     cardinalityDefault: "single" | "multi";
   };
+  /**
+   * #146（失效粒度降到「一条事实一行」）：开启后写侧把三元组逐条落事实行，
+   * 整行失效/归档被跳过（改由 invalidateL1ByFactKey 精确失效单条事实）。
+   * enabled 缺省 false = 整行粒度逐位现状；maxFacts 未配则写侧回落 factKey.maxFacts。
+   */
+  factRows?: WriteFactRowsConfig;
 }
 
 /** Fully resolved plugin configuration (v3). */
@@ -2020,6 +2027,17 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             enabled: bool(ssGroup, "enabled") ?? false,
             cardinalityGate: bool(ssGroup, "cardinalityGate") ?? true,
             cardinalityDefault: defaultRaw === "multi" ? ("multi" as const) : ("single" as const),
+          };
+        })(),
+        // #146（事实行粒度）：缺省关 = 整行失效语义逐位不变；
+        // maxFacts 未显式配置就不发（写侧 factRowOptionsOf 回落 factKey.maxFacts），
+        // 显式给则走与 extraction.facts/factKey.maxFacts 同一套 clamp（0/负/非法 → 5，上界 12）。
+        factRows: (() => {
+          const frGroup = obj(writeGroup, "factRows");
+          const maxRaw = num(frGroup, "maxFacts");
+          return {
+            enabled: bool(frGroup, "enabled") ?? false,
+            maxFacts: maxRaw === undefined ? undefined : clampMaxFacts(maxRaw),
           };
         })(),
       };

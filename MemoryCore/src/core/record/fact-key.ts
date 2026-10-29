@@ -8,6 +8,8 @@
  * 缺省行为：无事实 → 逐位返回原文（零行为变化的旁路语义）。
  */
 
+import type { FactCardinality } from "./cardinality.js";
+
 export interface EmbeddingKeyOptions {
   /** 事实短语拼接分隔符（缺省 " | "）。 */
   separator?: string;
@@ -65,6 +67,13 @@ export interface FactTriple {
   subject: string;
   predicate: string;
   value: string;
+  /**
+   * #146：抽取器直出的单条事实陈述（自足短语）。事实级一行一事实时用作行 content
+   * （优先于 subject/predicate/value 机械拼接）；缺省由 tripleToPhrase 兜底。
+   */
+  phrase?: string;
+  /** #146：抽取器直出的基数标注（single=函数依赖 / multi=可并存）；缺省按谓词启发式判定。 */
+  cardinality?: FactCardinality;
 }
 
 /** 归一化后的事实集合（短语进键文本；三元组仅在 includeTriples 时展开成短语）。 */
@@ -163,6 +172,10 @@ export function normalizeFactPhrases(raw: unknown, opts: FactNormalizeOptions = 
  */
 export function normalizeFactTriples(raw: unknown, opts: FactNormalizeOptions = {}): FactTriple[] {
   const maxFacts = maxFactsOf(opts);
+  // #146：phrase 与短语同一长度/字符边界（过短过长整条丢标注，不切断）
+  const maxChars = typeof opts.maxPhraseChars === "number" && Number.isFinite(opts.maxPhraseChars) && opts.maxPhraseChars > 0
+    ? Math.floor(opts.maxPhraseChars)
+    : DEFAULT_MAX_PHRASE_CHARS;
   const items = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
   const seen = new Set<string>();
   const out: FactTriple[] = [];
@@ -176,7 +189,13 @@ export function normalizeFactTriples(raw: unknown, opts: FactNormalizeOptions = 
     const key = (subject + "|" + predicate + "|" + value).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ subject, predicate, value });
+    const triple: FactTriple = { subject, predicate, value };
+    if (typeof o.phrase === "string") {
+      const phrase = collapseSpaces(o.phrase);
+      if (phrase && phrase.length <= maxChars && HAS_WORD_CHAR_RE.test(phrase)) triple.phrase = phrase;
+    }
+    if (o.cardinality === "single" || o.cardinality === "multi") triple.cardinality = o.cardinality;
+    out.push(triple);
     if (out.length >= maxFacts) break;
   }
   return out;

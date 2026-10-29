@@ -736,6 +736,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   addLink?(sourceId: string, targetId: string, type: string, strength?: number, now?: string): MaybePromise<boolean>;
   /** GROW-EVO P2（§2.2）：失效回写——只写 valid_end，不覆盖已失效行（失效不删除）。可选：旧后端安静跳过。 */
   invalidateL1?(id: string, validEndIso: string): MaybePromise<boolean>;
+  /**
+   * #146（W2b 事实级双时态）：按事实键（metadata fact_key）失效同（实体,属性）的事实行，
+   * 返回命中行数。事实级粒度下写侧只用它（不回落整行失效/归档）；旧后端未实现时调用方
+   * loud warn 并跳过失效（宁可少失效，也不放大爆炸半径）。
+   */
+  invalidateL1ByFactKey?(filter: IsolationFilter | undefined, factKey: string, validEndIso: string): MaybePromise<number>;
   /** P2-T14（G2）：可选租户 filter——缺省 undefined=旧行为；传入时两步过滤（rowMatchesIsolation 复核）。 */
   getNeighbors?(id: string, types?: string[], maxHop?: number, filter?: IsolationFilter): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }>>;
   /** P4a-P2（层级边，REG-REMAINING-002 #1）：沿边反查（target←sources）/正查（source→targets）；可选 type 过滤。derived_from 边 source=L2 scene block（profile:v1:* 稳定租户唯一）、target=L1 record。可选方法——旧后端可不实现，调用方 feature-detect。 */

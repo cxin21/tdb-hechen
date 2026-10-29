@@ -117,6 +117,10 @@ if (flag("help") || argv.length === 0) {
   --validity-mode soft|hard      #136 效期策略：soft=失效行降权保留（仅当下意图+有更新行才硬丢）
   --validity-off                 #136/#141 对照档：关失效排除（recall.excludeInvalidated=false，不排也不降权）
   --supersede-cardinality off    #136 对照档：关闭 cardinality 门（多值属性也失效=现状 W2）
+  --fact-rows                    #146 事实级双时态**写入面**：一条事实一行（隐含 --fact-extract）；
+                                 单值行写前按 fact_key 失效同键旧行、多值行不失效（事实级失效，
+                                 替代整行 supersede）；与 --fact-dual-write/--fact-channel/
+                                 --write-supersede 互斥；--store 复用库不可用（须重灌）
   --fact-channel                 #137 事实键平行通道试验档（隐含 --fact-extract；事实短语键另写 l1_fact_vec + 沙箱 yaml recall.factChannel）
   --fact-channel-read-only       只开读侧（沙箱 recall.factChannel），不写通道向量——在已灌库上迭代融合参数的零外呼档
   --fact-channel-weight N        #137 事实通道融合权重（缺省 0.6；只进沙箱 yaml，不改写侧）
@@ -150,7 +154,7 @@ const KNOWN_FLAGS = new Set([
   "conclusion-routing", "conclusion-slot-cost", "concurrency", "data", "dataset", "emb-threshold",
   "embed-cache", "embed-interval-ms", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
   "fact-channel", "fact-channel-off", "fact-channel-read-only", "fact-channel-weight", "fact-concurrency", "fact-dual-write",
-  "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-separator", "facts-only",
+  "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-rows", "fact-separator", "facts-only",
   "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
   "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
   "out", "pace", "present-temporal", "prod-config", "prod-data", "quiet",
@@ -277,7 +281,16 @@ async function main() {
   const factChannelWeight = Number.isFinite(fcWeightArg) ? fcWeightArg : 0.6;
   const fcMaxFactsArg = num("fact-max-facts", 5);
   const factMaxFacts = Number.isFinite(fcMaxFactsArg) && fcMaxFactsArg > 0 ? Math.floor(fcMaxFactsArg) : 5;
-  const factExtract = flag("fact-extract") || factDualWrite || writeSupersede || factChannel;
+  // #146（事实级双时态）：--fact-rows 一条事实一行。隐含 --fact-extract；写侧失效降级到事实级
+  // （single 行写前按 fact_key 失效同键旧行，multi 行永不失效），因此与整行档的 --write-supersede、
+  // --fact-dual-write（整行键拼法）、--fact-channel（通道向量按 turn id 落表）互斥。
+  // 混开会让「差异来自哪种写面」无法归因——这类静默降级必须显式失败（#141 纪律）。
+  const factRows = flag("fact-rows");
+  if (factRows && (writeSupersede || factDualWrite || factChannel || factChannelReadOnly)) {
+    console.error("[bench:error] --fact-rows 与 --write-supersede/--fact-dual-write/--fact-channel/--fact-channel-read-only 互斥（事实行档自带事实级失效与事实载荷，混开无法归因）");
+    process.exit(2);
+  }
+  const factExtract = flag("fact-extract") || factDualWrite || writeSupersede || factChannel || factRows;
   const factMaxChars = num("fact-max-chars", 240);
   const factSeparatorArg = arg("fact-separator", undefined);
   const factSeparator = typeof factSeparatorArg === "string" ? factSeparatorArg : undefined;
@@ -453,6 +466,12 @@ async function main() {
   const reuse = strArg("store", undefined);
   const storeDir = makeStoreDir(ds.name, typeof reuse === "string" ? reuse : undefined);
   const reuseMode = typeof reuse === "string";
+  // #146：复用库里的行是上一次写入形状（整行）。再跑 --fact-rows 会在同一 turn 上叠一套事实行，
+  // 库内容变成两种形状混杂 —— 度量既不是事实行档也不是整行档，必须重灌。
+  if (reuseMode && factRows) {
+    console.error("[bench:error] --fact-rows 不能与 --store 复用库同用（库里是上次写入形状，重复写会叠出多套行）——请去掉 --store 重灌");
+    process.exit(2);
+  }
   log(`[bench] 库目录: ${storeDir}${reuseMode ? "（复用）" : ""}`);
 
   const prodData = resolveProdDataDir(prodConfig);
@@ -690,7 +709,7 @@ async function main() {
     const fcred = typeof factModelArg === "string" && factModelArg ? { ...fcred0, model: factModelArg } : fcred0;
     factLlm = makeLlm(fcred);
     factModel = factLlm.info?.model ?? fcred?.model ?? "unknown";
-    if (factExtract) log(`[bench] 事实抽取: model=${factModel} cache=${factCacheDir} dualWrite=${factDualWrite} supersede=${writeSupersede}`);
+    if (factExtract) log(`[bench] 事实抽取: model=${factModel} cache=${factCacheDir} dualWrite=${factDualWrite} supersede=${writeSupersede} factRows=${factRows}`);
     if (conclusionCards) log(`[bench] 结论卡蒸馏: model=${factModel} max=${conclusionMax} cache=${factCacheDir}`);
   }
   // #139 第2项：抽取/蒸馏计数走 stages.mjs 单一实现（缓存命中与实抽同口径，含 token 来源分桶）。
@@ -733,6 +752,8 @@ async function main() {
             factChannel: factChannelOpts,
             supersede: writeSupersede,
             cardinalityGate,
+            // #146：一条事实一行（写面）。cardinalityDefault 留给启发式缺省（default-single）。
+            factRows: factRows ? { enabled: true } : null,
           },
         },
       });
@@ -751,6 +772,11 @@ async function main() {
       if (st.supersedeOpsMulti !== undefined) ingestStats.supersedeOpsMulti = (ingestStats.supersedeOpsMulti ?? 0) + st.supersedeOpsMulti;
       if (st.conclusionsWritten !== undefined) ingestStats.conclusionsWritten = (ingestStats.conclusionsWritten ?? 0) + st.conclusionsWritten;
       if (st.conclusionLinks !== undefined) ingestStats.conclusionLinks = (ingestStats.conclusionLinks ?? 0) + st.conclusionLinks;
+      // #146 事实行写入面计数（0 事实行 = 本档等同整行档，报告里必须看得见）
+      for (const key of ["factRows", "factRowTurns", "factRowDropped", "factRowInvalidateOps", "factRowsInvalidated", "factRowInvalidateFailed"]) {
+        if (st[key] !== undefined) ingestStats[key] = (ingestStats[key] ?? 0) + st[key];
+      }
+      if (st.factRowInvalidateUnsupported) ingestStats.factRowInvalidateUnsupported = true;
       // #137 事实键平行通道计数（写侧有效性证据：0 写入 = 本档等同控制档，不能当成功）
       for (const key of ["factChannelTurns", "factChannelEmbedded", "factChannelEmbedFailed", "factChannelWriteFailed", "factChannelKeyChars"]) {
         if (st[key] !== undefined) ingestStats[key] = (ingestStats[key] ?? 0) + st[key];
@@ -761,6 +787,18 @@ async function main() {
       if (!quiet && (gi % 5 === 0 || gi === groups.size)) {
         log(`[bench] 灌库 ${gi}/${groups.size} 轮数=${ingestStats.turns} 已写=${ingestStats.written} 向量=${ingestStats.embedded}（失败 ${ingestStats.embedFailed}，重试 ${ingestStats.embedRetries}）耗时=${((Date.now() - t0) / 1000).toFixed(0)}s`);
       }
+    }
+    // #141 纪律：0 事实行 = 本档与整行档行为等同，报告里不能当「事实行档」结论用。
+    if (factRows && (ingestStats.factRowTurns ?? 0) === 0) {
+      console.warn("[bench:warn] --fact-rows 打开但 0 个 turn 产出事实行（facts 缓存无可用三元组？）——本档等同整行档，不能作为事实行结论");
+    }
+    if (factRows) {
+      log(
+        `[bench] 事实行写面: 行=${ingestStats.factRows ?? 0}（来自 ${ingestStats.factRowTurns ?? 0} 轮，去重丢弃 ${ingestStats.factRowDropped ?? 0}）` +
+          ` 失效调用=${ingestStats.factRowInvalidateOps ?? 0} 失效旧行=${ingestStats.factRowsInvalidated ?? 0}` +
+          `${ingestStats.factRowInvalidateFailed ? ` 失效失败=${ingestStats.factRowInvalidateFailed}` : ""}` +
+          `${ingestStats.factRowInvalidateUnsupported ? "（store 不支持事实级失效）" : ""}`,
+      );
     }
   } else {
     // 复用模式：仍需 content→id 映射（stub，按召回内容反查不可行 → 直接按规则重建索引）

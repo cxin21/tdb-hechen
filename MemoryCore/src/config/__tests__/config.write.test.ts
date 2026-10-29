@@ -73,4 +73,30 @@ describe("config: write（#134 写面策略）", () => {
     expect(parseConfig({ write: { factKey: { separator: "" } } }).write.factKey.separator).toBe(" | ");
     expect(parseConfig({ write: { factKey: { separator: "   " } } }).write.factKey.separator).toBe(" | ");
   });
+
+  // #146（事实行粒度）：factRows 缺省关 = 整行失效语义逐位不变
+  it("#146 factRows 缺省关闭，不注入 maxFacts（留空交给写侧回落 factKey.maxFacts）", () => {
+    const fr = parseConfig({}).write.factRows;
+    expect(fr?.enabled).toBe(false);
+    // 缺省不发 maxFacts：写侧 factRowOptionsOf 才能回落 factKey.maxFacts（配置不越权改语义）
+    expect(fr?.maxFacts).toBeUndefined();
+  });
+
+  it("#146 factRows yaml 生效 + maxFacts 同一套 clamp", () => {
+    const on = parseConfig({ write: { factRows: { enabled: true } } }).write.factRows;
+    expect(on?.enabled).toBe(true);
+    expect(on?.maxFacts).toBeUndefined();
+    // clamp 与 extraction.facts.maxFacts / factKey.maxFacts 同一套（0/负/非法 → 5；>12 → 12）
+    expect(parseConfig({ write: { factRows: { enabled: true, maxFacts: 3 } } }).write.factRows?.maxFacts).toBe(3);
+    expect(parseConfig({ write: { factRows: { enabled: true, maxFacts: 99 } } }).write.factRows?.maxFacts).toBe(12);
+    expect(parseConfig({ write: { factRows: { enabled: true, maxFacts: 0 } } }).write.factRows?.maxFacts).toBe(5);
+    expect(parseConfig({ write: { factRows: { enabled: true, maxFacts: -2 } } }).write.factRows?.maxFacts).toBe(5);
+  });
+
+  it("#146 factRows 非法/未知值不报错，回落到缺省关", () => {
+    // 非对象 / 字符串 / 未知字段：一律安全回落，不抛
+    expect(parseConfig({ write: { factRows: "bogus" } }).write.factRows?.enabled).toBe(false);
+    expect(parseConfig({ write: { factRows: { enabled: "yes" } } }).write.factRows?.enabled).toBe(false);
+    expect(parseConfig({ write: { factRows: { enabled: 1, whatever: true } } }).write.factRows?.enabled).toBe(false);
+  });
 });

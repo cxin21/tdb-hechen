@@ -93,7 +93,7 @@ import { clampMaxFacts, normalizeFacts, type NormalizedFacts } from "./fact-key.
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
-import { supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
+import { factRowsEnabled, supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
@@ -1230,9 +1230,14 @@ async function applyDecisions(params: {
 
       if (record) {
         storedRecords.push(record);
-        // 记忆图（G）：按 dedup 决策建边。时序关键：writeMemory 内部已把 update/merge 的
-        // 旧 target 归档（archiveL1 会级联清 target 的旧边），此处再建新边——
+        // 记忆图（G）：按 dedup 决策建边。时序关键（**整行路径**）：writeMemory 内部已把
+        // update/merge 的旧 target 归档（archiveL1 会级联清 target 的旧边），此处再建新边——
         // 因此新边不会被误删；真删边只发生在归档/删除记忆的路径上。
+        // ⚠ 事实行模式（#146 factRows）下前提不成立：写面跳过 update/merge 的整行失效与归档
+        // （见 l1-writer 事实行分支），旧边**不会**被级联清理，evolve 链会逐轮累积。
+        // 且边源恒为 record.id = 第 1 条事实行的 id（factRowIdOf 父 id 归 row 0），
+        // 过期的是第 N>1 条时边仍挂在未失效的 row 0 上——属边归属错配，不是失效错配。
+        // 读侧兜底有效（效期过滤在池装配末尾 + 最终硬过滤），故列为 ADR-0015 遗留项。
         // 证据可回溯：邻居解析侧用 getL1ByIdsWithArchive（审计 B3）。
         if (enableMemoryLinks && vectorStore && decision.target_ids.length > 0) {
           try {
@@ -1250,8 +1255,19 @@ async function applyDecisions(params: {
               // 失效 = 写 valid_end（失效不删除）；best-effort 不阻塞写入。
               // #136 属性契约：多值/模态内容的"冲突"多半是同一属性的两个并存值（考虑 A vs 考虑 B），
               // 不是真矛盾——不失效旧行（conflict 边仍建，读侧软失效决定排序）。
+              // #146 事实行粒度：factRows 开启时整行失效一律跳过——旧行里同实体的其它事实
+              // （兄弟事实）会随 valid_end 一起退出检索面，正是本票要消除的爆炸半径；
+              // 单条事实的失效由写侧 invalidateL1ByFactKey 按 fact_key 精确定位（冲突边照建）。
+              const factRowsActive = factRowsEnabled(writePolicy);
+              const observed = (record as { certainty?: string }).certainty === "observed";
               const eligible = supersessionEligibleForContent(record.content, writePolicy);
-              if (eligible && (record as { certainty?: string }).certainty === "observed") {
+              if (factRowsActive) {
+                if (observed) {
+                  logger?.debug?.(
+                    `${TAG} [W3-fact-rows] fact-level granularity — whole-row invalidation skipped (${decision.target_ids.length} target(s) kept; per-fact handled by fact_key)`,
+                  );
+                }
+              } else if (eligible && observed) {
                 const invalidEnd = record.occurred_at || new Date().toISOString();
                 for (const t of decision.target_ids) vectorStore.invalidateL1?.(t, invalidEnd);
               } else if (!eligible) {

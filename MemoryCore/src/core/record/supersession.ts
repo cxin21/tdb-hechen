@@ -10,14 +10,10 @@
 
 import { classifyCardinality, isSupersessionEligible } from "./cardinality.js";
 import type { FactCardinality } from "./cardinality.js";
+import type { FactTriple } from "./fact-key.js";
 
-export interface FactTriple {
-  subject: string;
-  predicate: string;
-  value: string;
-  /** #136：抽取器/调用方显式标注的基数（缺省按谓词启发式判定）。 */
-  cardinality?: FactCardinality;
-}
+/** 事实三元组形状单源在 fact-key.ts（cardinality/phrase 可选）；此处再导出保持既有 import 面。 */
+export type { FactTriple } from "./fact-key.js";
 
 export interface SupersessionOptions {
   /**
@@ -51,6 +47,14 @@ export interface SupersessionOp {
 
 function normKeyPart(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * #146：事实键（实体 + 属性）唯一构造点——supersession 推演与事实级写时失效共用同一口径，
+ * 否则写侧按一套键失效、读侧按另一套判新旧，事实级双时态就会静默错位。
+ */
+export function factKeyOf(subject: string, predicate: string): string {
+  return normKeyPart(subject) + "\u0000" + normKeyPart(predicate);
 }
 
 /**
@@ -94,7 +98,7 @@ export function computeSupersessions(
         : classifyCardinality(predicate, value);
       if (cardinalityGate && !isSupersessionEligible(verdict.cardinality)) continue;
 
-      const key = normKeyPart(subject) + "\u0000" + normKeyPart(predicate);
+      const key = factKeyOf(subject, predicate);
       // 同一 turn 内同键多值：只认首见，不自伤（turn 是原子写入单元）。
       if (seenThisTurn.has(key)) continue;
       seenThisTurn.add(key);

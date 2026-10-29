@@ -4,7 +4,8 @@
  *  - FACTS_BLOCK gated via opts.factsEnabled；缺省关闭 = 逐位现状（prompt 字节不变）；
  *  - 开启时块追加在 gated 链尾、FINAL_FORMAT_SENTENCE 永远最后（P1-1 收口不变式）；
  *  - maxFacts 进提示词（LLM 侧输出预算，clamp 1..12）；includeTriples 时才出现
- *    subject/predicate/value 形状；
+ *    subject/predicate/value 形状（#146 起再扩 phrase/cardinality：cardinality 仅
+ *    single|multi，拿不准省略，写侧启发式兜底）；
  *  - code 模式永不追加（chat 专属语义，同 selfIdentity/sensitivity）。
  */
 import { describe, it, expect } from "vitest";
@@ -69,6 +70,29 @@ describe("#137 FACTS_BLOCK 提示词门", () => {
     expect(on).toContain("predicate");
     expect(on).toContain("value");
     expect(on.endsWith(FINAL_FORMAT_SENTENCE)).toBe(true);
+  });
+
+  // #146：三元组直出属性契约（cardinality）——写侧失效粒度降到一条事实一行，
+  // LLM 顺带把「同属性同一时刻只能一个值 vs 可并存」判掉，写侧启发式只做兜底。
+  it("#146 includeTriples 时三元组字段扩成 subject/predicate/value/phrase/cardinality", () => {
+    const on = getExtractMemoriesSystemPrompt("chat", { factsEnabled: true, factsIncludeTriples: true });
+    expect(on).toContain("phrase");
+    expect(on).toContain("cardinality");
+    // 两个合法取值都点名（避免 LLM 乱造第三档）
+    expect(on).toContain("single");
+    expect(on).toContain("multi");
+    // 口径必须两侧都有示例，且「拿不准省略」= 写侧启发式兜底
+    expect(on).toContain("同一实体同一属性同一时刻只能有一个值");
+    expect(on).toContain("可并存");
+    expect(on).toContain("拿不准");
+    // 省略 cardinality 合法 → 不得逼模型必填
+    expect(on).toMatch(/cardinality\S*（?可选/);
+  });
+
+  it("#146 缺省形态（FACTS_BLOCK）不出现 cardinality（字节不变）", () => {
+    expect(FACTS_BLOCK).not.toContain("cardinality");
+    expect(FACTS_BLOCK).not.toContain("phrase");
+    expect(getExtractMemoriesSystemPrompt("chat", { factsEnabled: true })).not.toContain("cardinality");
   });
 
   it("追加在 gated 链尾（其他 gated 块字节不被挤动）", () => {
