@@ -633,10 +633,17 @@ export async function writeMemory(params: {
     for (let i = 0; i < factPlan.rows.length; i++) {
       const row = factPlan.rows[i];
       const rowValidStart = record.valid_start || record.occurred_at || record.createdAt;
+      // ⚠ 关键设计（可用的前提）：行 content 存**父 turn 原文**，不存单条事实短语。
+      // 理由（第一性原理）：召回打分/BM25/注入的语义单位都是 turn，而效期失效的单位是
+      // (实体,属性)。把 content 换成短语，等于把检索单位偷偷变成片段：同一 turn 的 n 条
+      // 事实各占一个 k 槽（槽位通胀）且丢掉说话人/时间语境（实测 turnCov@5 78.4→68.0、
+      // 偏好桶 0.93→0.56）。因此这里让「存储按事实、检索与呈现按 turn」：
+      // content=父 turn 原文 ⇒ 向量/BM25 与整行基线逐位同分（零检索漂移），
+      // 事实短语落 metadata.fact_phrase，读侧按 fact_of 折叠回 turn、按行效期判新旧。
       const rowRecord: MemoryRecord = {
         ...record,
         id: factRowIdOf(record.id, i),
-        content: row.content,
+        content: record.content,
         valid_start: rowValidStart,
         metadata: {
           ...(record.metadata ?? {}),

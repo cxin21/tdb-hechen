@@ -45,8 +45,63 @@ export interface SupersessionOp {
   cardinality: FactCardinality;
 }
 
+/** 英文限定词/物主代词前缀（the user / my city → user / city）。 */
+const LEADING_DETERMINER_RE = /^(?:the|a|an|my|our|your|his|her|their)\s+/;
+/** 尾随标点（句末句号/冒号/顿号等；中文标点同收）。 */
+const TRAILING_PUNCT_RE = /[.;:,!?。，；：、！？]+$/;
+/** 英文所有格（user's city → user city）。 */
+const POSSESSIVE_RE = /'s\b/g;
+
+/**
+ * #146 算法修复②：属性同义归一（canonical attribute）。
+ *
+ * 为什么必须做：事实键 = (subject, predicate) 的字面量。抽取器直出的 predicate 是自由文本，
+ * 同一属性每次措辞不同（"live in" / "lives in" / "city of residence" / "住在"），
+ * 字面键永不相等 ⇒ 事实级失效在生产语料上几乎不触发。真实语料实测（1796 条三元组，
+ * 1461 个不同 (subject,predicate) 对）只有 219 个跨 turn 重复（15%），其中 142 个含单值裁决
+ * ——即约 15% 的事实本来有资格被事实级失效，其余 85% 因为键不撞而永远撞不上。
+ *
+ * 纪律：只归并**确定同义**的常见属性族（居住地/职业/电话/年龄/价格…），不猜语义；
+ * 表外一律走通用归一（小写/裁限定词/裁标点），保持可解释、可审计。
+ * 归一后的键同时用于写时失效（invalidateL1ByFactKey）与 supersession 推演——必须同一口径。
+ */
+const PREDICATE_SYNONYMS: Record<string, string> = {
+  // 居住地
+  "live in": "residence", "lives in": "residence", "living in": "residence",
+  "reside in": "residence", "resides in": "residence", "residing in": "residence",
+  "based in": "residence", "is based in": "residence", "located in": "residence",
+  location: "residence", residence: "residence", "city of residence": "residence",
+  "home city": "residence", "residence city": "residence",
+  住在: "residence", 居住城市: "residence", 居住地: "residence", 居住于: "residence",
+  // 职业
+  job: "occupation", "job title": "occupation", occupation: "occupation",
+  profession: "occupation", employment: "occupation",
+  职业: "occupation", 职位: "occupation", 工作: "occupation",
+  // 电话
+  phone: "phone", "phone number": "phone", telephone: "phone", mobile: "phone",
+  "mobile phone": "phone", 手机号: "phone", 手机号码: "phone", 电话: "phone",
+  // 年龄
+  age: "age", 年龄: "age",
+  // 价格
+  price: "price", cost: "price", 价格: "price", 价钱: "price",
+};
+
+/** 通用归一：小写、折叠空白、裁限定词/所有格/尾标点（subject 与 predicate 共用底座）。 */
 function normKeyPart(s: string): string {
-  return s.trim().toLowerCase().replace(/\s+/g, " ");
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(POSSESSIVE_RE, "")
+    .replace(/\s+/g, " ")
+    .replace(LEADING_DETERMINER_RE, "")
+    .replace(TRAILING_PUNCT_RE, "")
+    .trim();
+}
+
+/** 属性段归一：通用底座 + 同义族映射（表外不猜）。 */
+function normPredicatePart(s: string): string {
+  const base = normKeyPart(s);
+  return PREDICATE_SYNONYMS[base] ?? base;
 }
 
 /**
@@ -54,7 +109,7 @@ function normKeyPart(s: string): string {
  * 否则写侧按一套键失效、读侧按另一套判新旧，事实级双时态就会静默错位。
  */
 export function factKeyOf(subject: string, predicate: string): string {
-  return normKeyPart(subject) + "\u0000" + normKeyPart(predicate);
+  return normKeyPart(subject) + "\u0000" + normPredicatePart(predicate);
 }
 
 /**

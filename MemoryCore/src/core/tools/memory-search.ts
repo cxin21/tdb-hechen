@@ -18,6 +18,7 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
+import { collapseFactRowsByTurn } from "../recall/fact-turn.js";
 import { shouldHardDropValidity } from "../recall/validity-policy.js";
 import { factChannelWeightOf, type RecallFactChannelConfig } from "../recall/fusion.js";
 import { rowMatchesIsolation } from "../store/isolation.js";
@@ -1506,7 +1507,23 @@ export async function executeMemorySearch(params: {
   // ── Trim to requested limit ──
   // GROW-EVO P2（§2.3）+ A5：失效排除 / time_point 时间旅行（native-hybrid 早退分支同款）
   const exclResults = filterByValidity(results, params.validityNow, params.excludeInvalidated);
-  const trimmed = exclResults.slice(0, limit);
+  // ── #146 W2b：事实行按父 turn 折叠（写侧一条事实一行，读侧一位一 turn）──
+  // 事实行 metadata 带 fact_of（父 turn 记录 id）；同一 turn 的 N 条事实若各占一个返回位，
+  // 会把 k 个槽位吃光（实测 turnCov@5 78.4%→68.0%、偏好桶 93.3%→55.6%）。折叠保留最高分那条、
+  // 位置不变；无 fact_of 的记忆原样通过 → 开关关断时逐位不变。
+  const factOfOfResult = (r: (typeof exclResults)[number]): string | undefined => {
+    const v = r.metadata?.fact_of;
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  };
+  let collapsedResults = exclResults;
+  if (exclResults.some((r) => factOfOfResult(r) !== undefined)) {
+    const collapsed = collapseFactRowsByTurn(exclResults, factOfOfResult, (r) => r.score);
+    collapsedResults = collapsed.items;
+    if (collapsed.stats.collapsed > 0) {
+      logger?.debug?.(`${TAG} [W2b-fact-rows] collapsed ${collapsed.stats.collapsed} fact-row hit(s) into parent turns (${collapsed.stats.before}→${collapsed.stats.after})`);
+    }
+  }
+  const trimmed = collapsedResults.slice(0, limit);
 
   // ── 重巩固（T1-D：提取为 triggerReconsolidation，native-hybrid 分支复用同一函数）──
   triggerReconsolidation(trimmed, vectorStore, logger);

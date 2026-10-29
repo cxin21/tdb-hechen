@@ -131,6 +131,7 @@ const rows = store
       fact_index: md.fact_index ?? null,
       subject: md.subject ?? "",
       predicate: md.predicate ?? "",
+      fact_phrase: md.fact_phrase ?? "",
     };
   })
   .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -141,7 +142,8 @@ console.log("|---|---|---|---|---|---|");
 for (const r of rows) {
   console.log(
     "| " + r.id + " | " + (r.fact_key || "-") + " | " + (r.cardinality || "-") + " | " +
-    (r.valid_start || "-") + " | " + (r.valid_end || "（空=有效）") + " | " + r.content + " |",
+    (r.valid_start || "-") + " | " + (r.valid_end || "（空=有效）") + " | " +
+    (r.fact_phrase || "（非事实行）") + " ⟵ " + r.content + " |",
   );
 }
 
@@ -159,13 +161,18 @@ console.log("- soft + 问当下（presentIntent=true）: kept=[" + ids(present.k
 console.log("- soft + 问历史（presentIntent=false）: kept=[" + ids(history.kept) + "] dropped=[" + ids(history.dropped) + "] demoted=[" + ids(history.demoted) + "]");
 
 console.log("\n## 4. 结论");
-const oldCity = rows.find((r) => r.content.includes("柏林"));
-const newCity = rows.find((r) => r.content.includes("慕尼黑"));
-const hobby1 = rows.find((r) => r.content.includes("摄影"));
-const hobby2 = rows.find((r) => r.content.includes("吉他"));
+// v2 口径：行 content = 父 turn 原文，事实文本在 metadata.fact_phrase → 按 fact_phrase 定位事实行。
+const phraseOf = (r) => r.fact_phrase || "";
+const oldCity = rows.find((r) => phraseOf(r).includes("柏林"));
+const newCity = rows.find((r) => phraseOf(r).includes("慕尼黑"));
+const hobby1 = rows.find((r) => phraseOf(r).includes("摄影"));
+const hobby2 = rows.find((r) => phraseOf(r).includes("吉他"));
 const ok = [];
 ok.push(["旧值（柏林）valid_end 落库", Boolean(oldCity && oldCity.valid_end)]);
-ok.push(["旧值不删除、content 可追溯", Boolean(oldCity && oldCity.content === "用户住在柏林")]);
+ok.push([
+  "旧值不删除、事实文本可追溯（content 存父 turn 原文，fact_phrase 存旧值）",
+  Boolean(oldCity && oldCity.fact_phrase === "用户住在柏林" && oldCity.content.includes("柏林")),
+]);
 ok.push(["新值（慕尼黑）有效", Boolean(newCity && !newCity.valid_end)]);
 ok.push(["同 turn 多值（摄影）不被连坐", Boolean(hobby1 && !hobby1.valid_end)]);
 ok.push(["后续 additive（吉他）仍有效", Boolean(hobby2 && !hobby2.valid_end)]);

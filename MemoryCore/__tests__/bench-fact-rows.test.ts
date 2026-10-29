@@ -108,9 +108,12 @@ describe("#146 事实行规划（一条事实一行）", () => {
     });
     expect(plan.hasFacts).toBe(true);
     expect(plan.rows.map((r) => r.record.id)).toEqual(["t1", "t1#f2"]);
-    // 前缀与 turnContent 同口径：时间（T 换空格）+ 说话人 + 单条事实短语
-    expect(plan.rows[0].record.content).toBe("[2025-12-30 08:00:00Z] user: lives in Berlin");
-    expect(plan.rows[1].record.content).toBe("[2025-12-30 08:00:00Z] user: likes tea");
+    // v2 口径：content = 父 turn 原文（检索与呈现按 turn），事实短语落 metadata.fact_phrase
+    const turnText = "[2025-12-30 08:00:00Z] user: I live in Berlin and I like tea.";
+    expect(plan.rows[0].record.content).toBe(turnText);
+    expect(plan.rows[1].record.content).toBe(turnText);
+    expect(plan.rows[0].record.metadata.fact_phrase).toBe("lives in Berlin");
+    expect(plan.rows[1].record.metadata.fact_phrase).toBe("likes tea");
     const md0 = plan.rows[0].record.metadata;
     expect(md0.fact_of).toBe("t1");
     expect(md0.fact_index).toBe(0);
@@ -143,7 +146,8 @@ describe("#146 事实行规划（一条事实一行）", () => {
     });
     expect(plan.rows).toHaveLength(1);
     expect(plan.dropped).toBe(1);
-    expect(plan.rows[0].record.content).toBe("[2025-12-30 08:00:00Z] user: lives in Berlin");
+    expect(plan.rows[0].record.content).toBe("[2025-12-30 08:00:00Z] user: I live in Berlin and I like tea.");
+    expect(plan.rows[0].record.metadata.fact_phrase).toBe("lives in Berlin");
   });
 
   it("同（实体，属性）多值不同值都进库（去重键含 value）", async () => {
@@ -376,19 +380,20 @@ describe("#146 真库落地：事实级失效只命中同键旧行", () => {
       const byId = new Map(rows.map((r) => [r.id, r]));
       // 旧城市行被本 turn 时刻失效（不是 now）
       expect(byId.get("t1")?.validEnd).toBe("2025-12-31T09:00:00Z");
-      expect(byId.get("t1")?.content).toContain("lives in Berlin");
+      // content 是父 turn 原文（v2），事实短语在 metadata.fact_phrase
+      expect(byId.get("t1")?.content).toContain("I live in Berlin");
       // 新城市行 active（父 turn t3 的第一条事实行沿用 turn id）
-      expect(byId.get("t3")?.content).toContain("lives in Munich");
+      expect(byId.get("t3")?.content).toContain("I moved to Munich");
       expect(byId.get("t3")?.validEnd == null || byId.get("t3")?.validEnd === "").toBe(true);
       // 兄弟 multi 行不被连带失效（事实级失效只碰同 fact_key）
-      expect(byId.get("t3#f2")?.content).toContain("likes tea");
+      expect(byId.get("t3#f2")?.content).toContain("I moved to Munich");
       expect(byId.get("t3#f2")?.validEnd == null || byId.get("t3#f2")?.validEnd === "").toBe(true);
       // 无事实 turn 回退整行，行为零变化
       expect(byId.get("t2")?.content).toContain("Noted.");
       // 度量口径：召回命中任一条事实行都能解析回父 turn（contentIndex 键 = normHead(content)）
-      expect(contentIndex.get("[2025-12-31 09:00:00Z] user: lives in Munich")).toBe("t3");
-      expect(contentIndex.get("[2025-12-31 09:00:00Z] user: likes tea")).toBe("t3");
-      expect(contentIndex.get("[2025-12-30 08:00:00Z] user: lives in Berlin")).toBe("t1");
+      // v2：一条 turn 的所有事实行 content 相同 -> 归一后一个键解析回同一父 turn
+      expect(contentIndex.get("[2025-12-31 09:00:00Z] user: I moved to Munich and still like tea.")).toBe("t3");
+      expect(contentIndex.get("[2025-12-30 08:00:00Z] user: I live in Berlin and I like tea.")).toBe("t1");
       expect(contentIndex.get("[2025-12-30 08:01:00Z] assistant: Noted.")).toBe("t2");
     } finally {
       try { store.close?.(); } catch {}

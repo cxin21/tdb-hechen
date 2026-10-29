@@ -268,9 +268,12 @@ async function loadFactRowApi() {
 }
 
 /**
- * 事实行 content：与 turnContent 同前缀（时间 + 说话人），后挂单条事实。
- * 为什么不复用 turnContent：它拼的是 turn.text，而事实行载荷是自足短语。前缀必须一致
- * （召回时间语义与 metrics 的 normHead 映射口径都依赖它），正文换成单条事实。
+ * 事实行 content（旧口径：时间前缀 + 说话人 + 单条事实）。
+ *
+ * @deprecated #146 修订（2026-10-30）：事实行的 content 现在**就是父 turn 原文**
+ *   （row content = parent.content），与生产 l1-writer 同口径——召回打分/BM25/注入的
+ *   单位是 turn，片段化会让同 turn 的 n 条事实各吃一个 k 槽并把 turnCov@5 打掉 10pp。
+ *   单条事实落在 metadata.fact_phrase。本函数只为历史报告复算保留。
  */
 export function turnFactRowContent(caseObj, turn, factContent) {
   const t = turn.tsISO || caseObj.questionDateISO || "";
@@ -298,7 +301,10 @@ export async function buildFactRowRecords({ caseObj, turn, sessionId = "s", turn
     record: {
       ...parent,
       id: factRowIdOf(parent.id, index),
-      content: turnFactRowContent(caseObj, turn, spec.content),
+      // #146 修订：content = 父 turn 原文（与生产 l1-writer 一致）。检索/注入单位是 turn，
+      // 单条事实短语落 metadata.fact_phrase；这样事实行与整行基线同分同文，读侧按
+      // fact_of 折叠回一条后 k 槽不被同 turn 的兄弟事实吃满（bench 与生产同口径）。
+      content: parent.content,
       valid_start: validStart,
       metadata: { ...parent.metadata, ...factRowMetadata(spec, { parentId: parent.id, index, validStart }) },
     },

@@ -34,6 +34,12 @@ export const FACT_ROW_META = {
   cardinality: "cardinality",
   /** 事实键（factKeyOf(subject,predicate)）——写时按它定位同属性旧行。 */
   factKey: "fact_key",
+  /**
+   * 单条事实陈述（自足短语）。**行 content 不是它**：检索/注入单位是 turn
+   * （见 ADR-0015 决定 2「存储按事实、检索与呈现按 turn」），content 存父 turn 原文，
+   * 事实短语落在本字段，供审计/读侧按事实判效期与展示。
+   */
+  factPhrase: "fact_phrase",
 } as const;
 
 /** 一条待落库的事实行（纯数据，不含 id/时间等写入上下文）。 */
@@ -141,6 +147,7 @@ export function factRowMetadata(
     [FACT_ROW_META.factKey]: row.factKey,
     [FACT_ROW_META.factOf]: ctx.parentId,
     [FACT_ROW_META.factIndex]: ctx.index,
+    [FACT_ROW_META.factPhrase]: row.content,
     facts: [row.content],
     factTriples: [
       { subject: row.subject, predicate: row.predicate, value: row.value, cardinality: row.cardinality, phrase: row.content },

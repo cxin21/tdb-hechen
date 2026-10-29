@@ -135,7 +135,13 @@ describe("writeMemory 事实级粒度（#146 方案 A）", () => {
   it("factRows 开：一个记忆拆成两条事实行，0 号沿用父 id，metadata 可追溯", async () => {
     const { record, calls } = await runWrite({ policy: factPolicy(), metadata: TWO_FACTS });
     expect(calls.upserted.map((u) => u.id)).toEqual(["mem-1", "mem-1#f2"]);
+    // ⚠ 设计要点（可用的前提）：行 content 存**父 turn 原文**，不是单条事实短语——
+    // 召回打分/BM25/注入的单位是 turn，短语只活在 metadata.fact_phrase（审计/效期）。
     expect(calls.upserted.map((u) => u.content)).toEqual([
+      "用户 Instagram 粉丝数涨到 1300，另外他很喜欢徒步",
+      "用户 Instagram 粉丝数涨到 1300，另外他很喜欢徒步",
+    ]);
+    expect(calls.upserted.map((u) => u.metadata?.[FACT_ROW_META.factPhrase])).toEqual([
       "Instagram 粉丝数涨到 1300",
       "用户喜欢徒步",
     ]);
@@ -254,7 +260,7 @@ describe("事实级写时失效端到端（真实 sqlite）", () => {
 
     const rows = (
       store as unknown as {
-        queryL1Records: () => Array<{ record_id: string; valid_end: string | null; valid_start?: string; content: string }>;
+        queryL1Records: () => Array<{ record_id: string; valid_end: string | null; valid_start?: string; content: string; metadata_json?: string }>;
       }
     ).queryL1Records();
     const byId = new Map(rows.map((r) => [r.record_id, r]));
@@ -263,7 +269,10 @@ describe("事实级写时失效端到端（真实 sqlite）", () => {
     // 同 turn 的多值兄弟事实不被连坐（旧值可追溯、不删除）
     expect(byId.get("mem-1#f2")).toBeTruthy();
     expect(byId.get("mem-1#f2")?.valid_end == null || byId.get("mem-1#f2")?.valid_end === "").toBe(true);
-    expect(byId.get("mem-1")?.content).toBe("Instagram 粉丝数 1000");
+    // 事实短语在被失效的那一行 metadata 里仍可追溯（content 是父 turn 原文，两行同形）
+    expect(byId.get("mem-1")?.content).toBe("用户 Instagram 粉丝数涨到 1300，另外他很喜欢徒步");
+    const oldMeta = JSON.parse(String(byId.get("mem-1")?.metadata_json ?? "{}")) as Record<string, unknown>;
+    expect(oldMeta[FACT_ROW_META.factPhrase]).toBe("Instagram 粉丝数 1000");
     // 区间必须首尾相接：旧行 valid_end = 新事实有效起点（不是写时刻），否则读侧
     // 「问当下 + 被取代」的硬丢判据（candidate.valid_start >= item.valid_end）永远不成立。
     expect(byId.get("mem-1")?.valid_end).toBe("2026-04-11T19:40:00.000Z");

@@ -29,8 +29,10 @@ import {
   effectiveRecallSnapshot,
   ingestCase,
   loadBenchConfig,
+  buildFactRowRecords,
   makeRecall,
   makeStoreDir,
+  turnContent,
   openBenchStore,
   prepareBenchYaml,
   reembedFactKeys,
@@ -102,6 +104,8 @@ if (flag("help") || argv.length === 0) {
   --conclusion-legacy-rank       #138 回滚证据排序（旧序=store 返回序）
   --k N                          检索口径 top-k（默认取生产配置 maxResults）
   --recall-ks 1,3,5,10           B0 多 k 切片（行内平铺 turnCov@k 等键；缺省 1,3,5,10）
+  --recall-max-results N         #146 诊断档：沙箱 yaml recall.maxResults（放大行预算；生产不动）
+  --dedupe-hits-by-turn          #146 诊断档：召回行按父 turn 去重后再进指标/注入（需配 --recall-max-results）
   --manifest <path>              B0 抽样清单（caseId 顺序即运行序；配对比较必须同清单）
   --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
@@ -158,7 +162,7 @@ const KNOWN_FLAGS = new Set([
   "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
   "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
   "out", "pace", "present-temporal", "prod-config", "prod-data", "quiet",
-  "recall-ks", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
+  "recall-ks", "recall-max-results", "dedupe-hits-by-turn", "expand-parent-turn", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
   "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
   // #144：filter 的题内相对尺子（floor 在题间量纲漂移下不可校准，见 docs/optimization-results.md §19）
   "rerank-filter-rule", "rerank-margin-top", "rerank-keep-ratio",
@@ -318,6 +322,17 @@ async function main() {
   // --validity-off：#141 的 W2「关」格。失效排除总开关是 recall 根级键（不是 recall.validity.mode），
   // 两者分开写：混在 validityOverride 里会被 prepareBenchYaml 塞进 recall.validity，静默失效。
   const validityOffOverride = flag("validity-off") ? { excludeInvalidated: false } : undefined;
+  // #146 诊断档（事实行预算饥饿）：--recall-max-results N 把沙箱 yaml 的 recall.maxResults 放大，
+  // 配合 --dedupe-hits-by-turn 交付「k 个不同 turn」——用来验证掉分是槽位被同 turn 多条事实行吃掉，
+  // 而不是事实级失效本身有害。两条都只写沙箱 yaml / 只改读侧聚合，生产配置与写面零影响。
+  const recallMaxResultsArg = arg("recall-max-results", undefined);
+  const recallMaxResultsOverride = recallMaxResultsArg !== undefined && recallMaxResultsArg !== true && Number.isFinite(Number(recallMaxResultsArg)) && Number(recallMaxResultsArg) >= 1
+    ? { maxResults: Math.floor(Number(recallMaxResultsArg)) }
+    : undefined;
+  if (flag("dedupe-hits-by-turn") && recallMaxResultsOverride === undefined) {
+    console.error("[bench] --dedupe-hits-by-turn 需要 --recall-max-results N（池子仍是 k 行时去重只会更少，测不出预算饥饿）；已中止。");
+    process.exit(2);
+  }
   const validityOverride = validityModeOverride;
   const supersedeCardinalityArg = String(arg("supersede-cardinality", "") ?? "").toLowerCase();
   const cardinalityGate = supersedeCardinalityArg === "off" ? false : undefined;
@@ -468,8 +483,10 @@ async function main() {
   const reuseMode = typeof reuse === "string";
   // #146：复用库里的行是上一次写入形状（整行）。再跑 --fact-rows 会在同一 turn 上叠一套事实行，
   // 库内容变成两种形状混杂 —— 度量既不是事实行档也不是整行档，必须重灌。
-  if (reuseMode && factRows) {
-    console.error("[bench:error] --fact-rows 不能与 --store 复用库同用（库里是上次写入形状，重复写会叠出多套行）——请去掉 --store 重灌");
+  // 但 --no-write-steps 的只读档例外：此时 --fact-rows 只用于「按同一 planner 重建事实行→父 turn 索引」，
+  // 一个字节都不写库（#146 诊断档要拿冻结库反复比读侧，不重灌才跑得动 90 题档）。
+  if (reuseMode && factRows && !flag("no-write-steps")) {
+    console.error("[bench:error] --fact-rows 不能与 --store 复用库同用（库里是上次写入形状，重复写会叠出多套行）——请去掉 --store 重灌，或加 --no-write-steps 做只读档");
     process.exit(2);
   }
   log(`[bench] 库目录: ${storeDir}${reuseMode ? "（复用）" : ""}`);
@@ -610,7 +627,9 @@ async function main() {
   ...(candidateKOverride !== undefined ? { candidateKOverride } : {}),
   ...(presentTemporalOverride ? { presentTemporalOverride } : {}),
     ...(validityOverride ? { validityOverride } : {}),
-    ...(validityOffOverride ? { recallFlatOverride: validityOffOverride } : {}),
+    ...(validityOffOverride || recallMaxResultsOverride
+      ? { recallFlatOverride: { ...(validityOffOverride || {}), ...(recallMaxResultsOverride || {}) } }
+      : {}),
     ...(supersessionOverride ? { supersessionOverride } : {}),
     ...(embThresholdOverride !== undefined ? { embThresholdOverride } : {}),
     ...(ageDecayDays > 0 ? { ageDecayOverride: { enabled: true, halfLifeDays: ageDecayDays } } : {}),
@@ -804,9 +823,33 @@ async function main() {
     // 复用模式：仍需 content→id 映射（stub，按召回内容反查不可行 → 直接按规则重建索引）
     for (const [key, g] of groups) {
       const contentIndex = new Map();
+      // #146 诊断档踩坑：--fact-rows 库里命中的是「事实行」，内容=事实短语（带 [ts] 说话人 前缀），
+      // 只索引父 turn 原文会让事实行命中全部 unresolved（实测 turnCov 78.4% → 15.5%，纯度量假摔）。
+      // 复用模式没有写入期的回填，只能按同一 planner 重算事实行内容（facts 缓存命中，零外呼）。
+      const reuseFacts = factRows
+        ? await fetchFactsAndConclusions({
+            caseObj: g.corpus,
+            factCacheDir,
+            llm: factLlm,
+            model: factModel,
+            wantFacts: true,
+            wantConclusions: false,
+            factBatchSize,
+            factConcurrency,
+            conclusionMax,
+            logger: { warn: (m) => log("[bench:warn] " + m) },
+          })
+        : null;
       for (const gg of g.corpus.groups) for (const t of gg.turns) {
         const { turnContent } = await import("./lib/bench/store.mjs");
         contentIndex.set(normHead(turnContent(g.corpus, t)), t.id);
+        // 注意嵌套口径：fetchFactsAndConclusions 返回 {facts:<factsForCase 返回>}，byTurn 在 facts.facts.byTurn
+        // （灌库分支同样用 fetched.facts?.facts，见 ingestCase 调用处）。
+        const byTurn = reuseFacts?.facts?.facts?.byTurn;
+        if (byTurn) {
+          const plan = await buildFactRowRecords({ caseObj: g.corpus, turn: t, sessionId: gg.sessionId, turnFacts: byTurn[t.id] });
+          for (const row of plan.rows) contentIndex.set(normHead(row.record.content), t.id);
+        }
       }
       resolvers.set(key, makeIdResolver(contentIndex));
       corpusSummary.push({ groupKey: key, turns: contentIndex.size, reused: true });
@@ -945,6 +988,35 @@ async function main() {
   const embedForRecall = withEmbedCache(embedding, flag("no-embed-cache") ? null : embedCacheDir, `${cfg.embedding?.model ?? "emb"}-${dims}`);
   const recall = makeRecall({ cfg, store, embedding: embedForRecall, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc, rerankFilterOnly, rerankFilterFloor });
   const k = num("k", cfg.recall?.maxResults ?? 5);
+  // #146 诊断档：事实行模式下一个 turn 会占多行（1.5–2 行/turn 实测），k 个槽位装不到 k 个 turn。
+  // --dedupe-hits-by-turn 在**召回之后、指标与注入之前**按父 turn 折叠（保留最高分的首现行），
+  // 配合 --recall-max-results 放大的池子，衡量「同预算下能装几个不同 turn」。
+  // #146 诊断档 2：读侧「父 turn 展开」——命中事实行（拆碎的短句）时，把注入内容换回父 turn 原文。
+  // 模拟生产「读侧把事实行展开回 L0/journal 原文」的可行性：度量仍是父 turn（contentIndex 已回填），
+  // 所以本档只变注入载荷，不变命中集。需要 store 里的 row id → turn 映射，故只能用 turn 文本表反查。
+  const expandParentTurn = flag("expand-parent-turn");
+  const dedupeByTurn = flag("dedupe-hits-by-turn");
+  const dedupeHits = (hits, resolve) => {
+    if (!dedupeByTurn || !Array.isArray(hits)) return { hits, dup: 0 };
+    const seen = new Set();
+    const out = [];
+    let dup = 0;
+    for (const h of hits) {
+      const id = resolve(h?.clean ?? h?.content);
+      if (id) {
+        if (seen.has(id)) { dup++; continue; }
+        seen.add(id);
+      }
+      out.push(h);
+    }
+    return { hits: out, dup };
+  };
+  // #146 诊断档 2：turn id → 原文表（父 turn 展开只换注入载荷；命中集与度量口径不动）
+  const turnTextById = new Map();
+  if (expandParentTurn) {
+    for (const [, g] of groups) for (const gg of g.corpus.groups) for (const t of gg.turns) turnTextById.set(t.id, turnContent(g.corpus, t));
+    log("[bench] #146 诊断档：读侧父 turn 展开开启（命中事实行 → 注入父 turn 原文，命中集不变）");
+  }
   // B0 校尺（bench/recall-opt）：多 k 切片——同一次召回结果上重切，零额外召回成本
   const kList = String(arg("recall-ks", "1,3,5,10"))
     .split(",")
@@ -971,6 +1043,27 @@ async function main() {
       r = { hits: [], block: "", latencyMs: performance.now() - t0, strategy: "error", error: String(e?.message ?? e) };
     }
     if (paceMs > 0) await new Promise((res) => setTimeout(res, paceMs));
+    let dupHits = 0;
+    let expandedHits = 0;
+    if (expandParentTurn && !r.error) {
+      const resolveHit = resolvers.get(c.groupKey);
+      r = {
+        ...r,
+        hits: r.hits.map((h) => {
+          const id = resolveHit(h.clean ?? h.content);
+          const txt = id ? turnTextById.get(id) : null;
+          // clean 保持原样：resolve(clean) → 父 turn id 是度量口径的锚，换掉会让 turnCov 崩。
+          if (!txt || txt === h.clean) return h;
+          expandedHits++;
+          return { ...h, content: txt, expanded: true };
+        }),
+      };
+    }
+    if (dedupeByTurn && !r.error) {
+      const d = dedupeHits(r.hits, resolvers.get(c.groupKey));
+      r = { ...r, hits: d.hits };
+      dupHits = d.dup;
+    }
     const ret = evalRetrieval({ caseObj: c, hits: r.hits, resolve: resolvers.get(c.groupKey), k, kList });
     // #141 / #158：注入行类型归因 + 证据充分性。逐题就地算（hits 是对象数组，
     // 报告里只落 hits 计数，事后无法再归因），跨题汇总交 aggregate 之外的 byTypeTotal 单独落盘。
@@ -1010,6 +1103,10 @@ async function main() {
       ...(b1Mode ? { evidence: evidenceBlock, evidenceChars: evidenceBlock.length } : {}),
       blockChars: (r.block || "").length,
       hits: r.hits.length,
+      // #146 诊断档：被折叠掉的「同 turn 重复行」条数（0 = 未开 --dedupe-hits-by-turn 或池子无重复）
+      dupTurnHits: dupHits,
+      // #146 诊断档 2：本问有几条命中被换回父 turn 原文（0 = 未开 --expand-parent-turn 或没命中事实行）
+      expandedHits,
       topContents: r.hits.slice(0, k).map((h) => h.content.slice(0, 160)),
       ...ret,
       // #141 / #158：注入行类型归因（含去掉某类后的一阶覆盖率损失）与证据充分性。
@@ -1153,6 +1250,11 @@ async function main() {
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
   fusion: fusionOverride ?? null,
       candidateK: candidateKOverride ?? null,
+      // #146 诊断档：行预算放大与同 turn 折叠（只影响读侧聚合，写面不变）
+      recallMaxResults: recallMaxResultsOverride?.maxResults ?? null,
+      dedupeHitsByTurn: dedupeByTurn,
+      // #146 诊断档 2：读侧父 turn 展开（注入载荷换回原文，命中集不变）
+      expandParentTurn,
       // #137 事实键平行通道试验档（写侧选项 + 沙箱 yaml 读侧覆盖，与 fusion/candidateK 同位）
       factChannel: factChannel
         ? {

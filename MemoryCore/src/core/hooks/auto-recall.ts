@@ -58,6 +58,7 @@ import { emotionSalienceOf, buildRankContext,
   type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
+import { collapseFactRowsByTurn } from "../recall/fact-turn.js";
 import { anchorRerankOrder } from "../recall/rerank/anchor.js";
 import {
   SOFT_VALIDITY_PENALTY,
@@ -3668,6 +3669,27 @@ export async function searchHybrid(
     );
   }
 
+  // ── #146（W2b 事实级双时态）：事实行 → turn 的读侧投影 ────────────────────────
+  // 记忆系统三个粒度不共用一个单位：写/失效=属性槽，存储=事实行，**召回预算与注入=turn**。
+  // 事实行模式下若按行计 k，同一 turn 的 n 条事实会各吃一个槽（槽位通胀，实测 turnCov@5
+  // 78.4→68.0、偏好桶 93.3→55.6），且片段化丢语境。这里在截断前按 fact_of 折叠，保留每组
+  // 最高分的那条——它的 content 就是父 turn 原文（写侧保证），与整行基线逐位同分。
+  // 无 fact_of 的普通记忆原样保留（缺省路径零行为变化）。
+  if (sorted.some(([, v]) => v.formatable.factOf)) {
+    const collapsed = collapseFactRowsByTurn(
+      sorted,
+      ([, v]) => v.formatable.factOf,
+      ([, v]) => v.relevance ?? v.rrfScore,
+    );
+    sorted = collapsed.items;
+    if (collapsed.stats.collapsed > 0) {
+      logger?.debug?.(
+        `${TAG} [W2b-fact-rows] collapsed ${collapsed.stats.collapsed} fact-row hit(s) into parent turns` +
+        ` (${collapsed.stats.before}→${collapsed.stats.after})`,
+      );
+    }
+  }
+
   const top = sorted.slice(0, maxResults);
 
   if (top.length > 0) {
@@ -3798,8 +3820,16 @@ interface FormatableMemory {
   valid_start?: string;
   /** R-A2：候选池通道标注（"graph:kind" / "value:锚"；主检索命中恒缺省）。 */
   recall_channel?: string;
-  /** #162（2026-10-29）：写入侧会话 id —— 装配层近重折叠的「同会话免疫」依据（不渲染进行文本）。 */
+  /** #162（2026-10-29）：写入侧会话 id —— 装配层近重折叠的「同会话免疫」依据（不渲染进行文本）。
+   */
   sessionId?: string;
+  /**
+   * #146：事实行的父记忆 id（metadata.fact_of）。读侧据此把同 turn 的 n 条事实折叠回一条
+   * ——召回预算与注入单位是 turn，不是片段（槽位通胀实测见 fact-turn.ts 头注）。
+   */
+  factOf?: string;
+  /** #146：本行承载的单条事实陈述（metadata.fact_phrase；行 content 存父 turn 原文）。 */
+  factPhrase?: string;
 }
 
 // 审计 B4：导出以便独立验证 soul 标注与 metric 正则兼容性（纯函数、无副作用）
@@ -4010,6 +4040,15 @@ export function recordToFormatable(record: MemoryRecord): FormatableMemory {
     recallCount: sigRecallCount,
     identityRefs: sigIdentityRefs,
     evolution: sigEvolution,
+    // #146：事实行聚合信息（native-hybrid/FTS keyword 通道同形透传）
+    factOf: (() => {
+      const v = sigMeta.fact_of;
+      return typeof v === "string" && v.trim() !== "" ? v : undefined;
+    })(),
+    factPhrase: (() => {
+      const v = sigMeta.fact_phrase;
+      return typeof v === "string" && v.trim() !== "" ? v : undefined;
+    })(),
     // F-CLUSTER 折叠接线（2026-09-29）：FTS keyword 通道补折叠元数据——与
     // vectorResultToFormatable(:2363) 对齐；缺此二字段 foldByDurative 引用图建不起来。
     recordId: record.id,
@@ -4035,6 +4074,9 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
   let identRefs: string[] | undefined;
   let evo: unknown;
   let evIds: string[] | undefined;
+  // #146：事实行聚合信息（读侧折叠回 turn 的依据）
+  let factOf: string | undefined;
+  let factPhrase: string | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -4054,6 +4096,9 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
         const evs = (meta.evidence_record_ids as unknown[]).filter((s): s is string => typeof s === "string");
         if (evs.length > 0) evIds = evs;
       }
+      // #146：事实行聚合（fact_of）与单条事实陈述（fact_phrase）；非法/空保持 undefined
+      if (typeof meta?.fact_of === "string" && meta.fact_of.trim() !== "") factOf = meta.fact_of;
+      if (typeof meta?.fact_phrase === "string" && meta.fact_phrase.trim() !== "") factPhrase = meta.fact_phrase;
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -4083,6 +4128,9 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     recallCount: recCount,
     identityRefs: identRefs,
     evolution: evo,
+    // #146：事实行聚合信息（缺省 undefined = 普通整行记忆，逐位现状）
+    factOf,
+    factPhrase,
   };
 }
 
@@ -4098,6 +4146,9 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
   let recCount: number | undefined;
   let identRefs: string[] | undefined;
   let evo: unknown;
+  // #146：事实行聚合信息（FTS 通道同样要让读侧折叠回 turn）
+  let factOf: string | undefined;
+  let factPhrase: string | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -4112,6 +4163,8 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
         if (refs.length > 0) identRefs = refs;
       }
       if (meta?.evolution != null) evo = meta.evolution;
+      if (typeof meta?.fact_of === "string" && meta.fact_of.trim() !== "") factOf = meta.fact_of;
+      if (typeof meta?.fact_phrase === "string" && meta.fact_phrase.trim() !== "") factPhrase = meta.fact_phrase;
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -4139,5 +4192,8 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     recallCount: recCount,
     identityRefs: identRefs,
     evolution: evo,
+    // #146：事实行聚合信息（缺省 undefined = 普通整行记忆，逐位现状）
+    factOf,
+    factPhrase,
   };
 }
