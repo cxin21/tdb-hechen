@@ -1822,3 +1822,133 @@ node scripts/fit-fusion-weights.mjs compare \
 
 代码侧确认：`src` / `scripts` / `__tests__` 里的 `blend` 为零；`config.ts` 不解析该键；云模板 `rerank` 段解析结果为 `{enabled, provider, timeoutMs, candidates, local}`。
 
+## 22. #146 事实级双时态（一条事实一行）：写时失效能精确到（实体,属性）吗（2026-10-29）
+
+§16–§21 把「失效」做了三步：先证明**要**失效（#134 双时态）、再证明**只该失效单值属性**（#136 属性契约 + 软失效）、最后撤掉一批没实测作用的旋钮（§21）。留下一个结构性缺口：#136 的失效仍然落在**整行**——一条记忆 = 一个 turn 的合并正文。同一个 turn 抽出两条事实（`粉丝数 1000` + `喜欢徒步`）时，下一轮真更新粉丝数会把整行写 `valid_end`，兄弟事实连坐退出检索面。本票（#146）把粒度从「行」降到「事实」：**一条事实一行**，失效只落在同 `(subject,predicate)` 的**单值**那一行。
+
+设计见 [ADR-0015](adr/0015-事实级双时态-一条事实一行.md)。本节只记**实测与验收**，含一次被实测推翻的 v1 设计与随之而来的 v2 修正。
+
+### 22.1 写面与读面（机制已钉住，不依赖 bench）
+
+| 证据 | 位置 | 钉住了什么 |
+|---|---|---|
+| 写面集成测试（真实 sqlite） | `MemoryCore/src/core/record/l1-writer.fact-rows.test.ts`（8 条） | turn1 两事实（single 粉丝数 + multi 爱好）→ turn2 更新粉丝数：旧事实行 `valid_end` 落库且 **= 新事实 `valid_start`**，同 turn 的 multi 兄弟与后续 additive 仍 active，行不删除、content 保持父 turn 原文 |
+| 写前失效只按 fact_key | 同上 `fakeStore` 7 条 | 只对 single 行调用 `invalidateL1ByFactKey`；`invalidateL1`/`archiveL1` 零调用（本票核心：不再整行失效）；后端缺该方法时 loud warn 且**不回落整行**；隔离参数全缺时 scope 落 `DEFAULT_ISOLATION_ID`（不跨租户） |
+| 存储方法 | `MemoryCore/src/core/store/__tests__/invalidate-l1-fact-key.test.ts`（4 条，含损坏 `metadata_json` 只跳过不抛错） | `json_extract(CASE WHEN json_valid(metadata_json) THEN metadata_json END,'$.fact_key')` 精确命中 + 隔离三元组；表达式索引 `idx_l1_fact_key_valid` 实测走 SEARCH（0.12ms vs 全表 0.77ms @3000 行）；降级库返回 0 |
+| 抽取器守卫 | `MemoryCore/src/core/record/l1-extractor.fact-rows-guard.test.ts`（2 条） | 事实级粒度下 dedup 冲突分支**不调** `invalidateL1`/`archiveL1(target_ids)`，但仍保留 `target_ids` 给图边 |
+| 读面槽位折叠 | `MemoryCore/src/core/recall/__tests__/fact-turn.test.ts`（5 条） | 同一 `fact_of` 的多条命中折叠成一条（保留最高分、位置不变）；无 `fact_of` 原样通过 → 开关关断逐位不变 |
+| 属性键归一 | `MemoryCore/src/core/record/fact-key-canonical.test.ts`（5 条） | 大小写/空白/首限定词/所有格/尾标点归一 + 5 个语义族；表外不猜（`favourite drink` ≠ `favourite food`） |
+| bench 同口径 | `MemoryCore/__tests__/bench-fact-rows.test.ts`（14 条） | bench 事实行 content = 父 turn 原文，与生产同形；single 先失效后写、multi 不失效 |
+| 读面联动 | l1-writer 测试后 3 条断言 | soft 效期 + 问当下（presentIntent）→ 旧行硬丢；问历史 → 旧行仍在 kept |
+
+**为什么 `valid_end` 必须等于新事实的有效起点而不是写时刻**：读侧「问当下才硬丢」的判据是 `candidate.valid_start >= item.valid_end`（`src/core/recall/validity-policy.ts`）。若 `valid_end` 记 now（晚于新行起点），旧行永远判不出「被取代」，硬丢全线落空——走查脚本首版就栽在这里，失败反推才把语义钉死。区间因此首尾相接：柏林 `[3-02, 4-11)` → 慕尼黑 `[4-11, ∞)`。
+
+### 22.2 机制走查（合成对话，逐判据断言失效语义）
+
+`MemoryCore/scripts/audit/r146-walkthrough.mjs`（真实 `writeMemory` + 真实 sqlite `VectorStore`，零 mock）跑一段日常对话：T1「我住在柏林，最近迷上摄影」、T2「另外我还在学吉他」、T3「我上个月搬到慕尼黑了」。9 条判据全 PASS：
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | 旧值（柏林）`valid_end` 落库 | PASS（`2026-04-11T19:40:00.000Z`） |
+| 2 | 旧值不删除、content 仍可追溯 | PASS（父 turn 原文） |
+| 3 | 新值（慕尼黑）有效 | PASS |
+| 4 | 同 turn 多值（摄影）不被连坐 | PASS |
+| 5 | 后续 additive（吉他）仍有效 | PASS |
+| 6 | 事实级效期在 `metadata_json` 可读（`fact_key`/`cardinality`/`fact_of`/`fact_index`/`fact_phrase`） | PASS |
+| 7 | 旧行 `valid_end` = 新值 `valid_start`（区间首尾相接） | PASS |
+| 8 | 问当下（presentIntent）时旧值硬丢 | PASS（dropped=[turn-1]） |
+| 9 | 问历史时旧值可召回 | PASS（kept 含 turn-1、demoted=[turn-1]） |
+
+### 22.3 真实语料走查（验收④，LongMemEval knowledge-update 切片）
+
+`MemoryCore/scripts/audit/r146-lme-walkthrough.mjs` 不编对话：直接取 LongMemEval oracle 里 knowledge-update 题型的**原始轮次文本 + 原始会话日期**，配 `facts-cache` 里真实 LLM 抽出的三元组，经真实 `writeMemory` + 真实 sqlite 落库后只读库回答三问。示例 case `50635ada`（问「我拿到当前 United 会员等级之前是什么等级」，答案 Premier Silver）24 轮、2 段会话：
+
+| 判据 | 结果 |
+|---|---|
+| 每个含事实的轮次都落成事实行（无整行吞并） | PASS（26 条事实行 / 12 条整行兜底 / 12 个含三元组轮次） |
+| 事实行 `metadata_json` 带 `fact_key`（效期粒度可读） | PASS（26/26） |
+| 事实行 `valid_start` 全可读（双时态起点） | PASS（26/26） |
+| 旧值不删除：失效行仍在库且 content 非空 | PASS（`invalidateL1` 只写 `valid_end`） |
+| 同键多值并存、未被覆盖 | PASS（该 case 5 条更新链全是 multi） |
+
+**真实语料的触发面（重要，别把机制效果读大）**：15 个有缓存的 knowledge-update case / 395 条三元组，基数分布 single 130 / multi 265；同 `(subject,predicate)` 跨轮多值键 52 个，**其中 single 16 个、multi 36 个**。即：抽取器直出 cardinality（facts-v3）之后，KU 切片上真实可触发事实级失效的属性槽只有 16 个——触发面存在但很窄，且谓词逐轮改写（`has united airlines status` 这类少数稳定属性才真正撞键）。
+
+### 22.4 LME90 配对（验收③）：v1 设计被实测推翻
+
+口径：`--rerank-off --b1`（浅池 b1-off 基线，与 #136 读数同仓），manifest 90/500，n=90，同 judge 同生成模型，**只差 `--fact-rows` 一个键**。
+
+| 臂 | turnCov@5 | 判对率 | sessionCov | mrr |
+|---|---|---|---|---|
+| 整行基线（v1，MiniMax 判分） | 78.4% | 75.6% | 93.6% | 76.1% |
+| 事实行 v1（content = 事实短语） | 68.0% | 72.2% | 93.6% | 66.8% |
+| Δ（配对 bootstrap 1000 / seed 20261027） | **−10.38pp**，CI95 [−19.92, −0.77] | −3.33pp（McNemar p=0.61） | −0.93pp | −9.35pp |
+
+分桶 turnCov@5（基线 → v1 事实行）：knowledge-update 0.714→0.512、single-session-preference 0.933→**0.556**、multi-session 0.681→0.643、single-session-assistant 0.733→0.800、single-session-user 0.857→0.857、temporal-reasoning 0.778→0.711。
+
+**诊断（槽位饥饿假设）**：把行预算放大到 10（`--recall-max-results 10`）并按父 turn 折叠（`--dedupe-hits-by-turn`）后 turnCov@5 回到 72.4%——对事实行档 **+4.41pp（CI95 [+0.77, +9.00]，显著为正）**，对整行基线仍 −5.98pp（CI95 [−15.13, +3.56]，不显著）。分桶里只有 temporal-reasoning 反超基线（0.778→0.811），**偏好桶仍停在 0.556**。
+
+结论：槽位饥饿只解释约 4 成损失，另 6 成是「注入的是事实碎片、丢了 turn 语境（说话人/时间/上下文）」。把存储粒度降到事实是对的，但**检索与注入的单位仍是 turn**——三者共用一个单位就必然要付两份成本。
+
+### 22.5 v2 修正：存储按事实、检索与呈现按 turn
+
+三条粒度各归其位（ADR-0015 决定 1/5）：
+
+1. **存储** = 事实行：一条事实一行，`metadata.fact_key/cardinality/fact_of/fact_index/fact_phrase`，写时只失效同键 single 旧行。
+2. **检索面** = 父 turn 原文：行 `content` 不再放事实短语，改放**父 turn 原文**（短语落 `metadata.fact_phrase`）⇒ 向量、BM25、注入文本与整行基线逐位相同，成本从构造上归零。
+3. **注入预算** = turn：读侧截断前按 `fact_of` 折叠（`collapseFactRowsByTurn`，auto-recall 与 memory-search 两条读路都接），同一 turn 的 N 条事实只占 1 个槽位。
+
+v2 配对（同 manifest / 同 judge `scm-flash` / 同生成模型，n=90，**只差 `--fact-rows`**）：
+
+| 指标 | 整行基线 | 事实行 v2 | 配对 Δ |
+|---|---|---|---|
+| turnCov@5 | 76.7% | 74.7% | −1.95pp，CI95 [−5.75, +1.72]（不显著） |
+| sessionCov | 93.0% | 91.9% | −1.11pp |
+| mrr | 73.9% | 73.6% | −0.33pp |
+| 判对率 | 62.2% | **66.7%** | +4.44pp（McNemar p=0.39，不显著） |
+| tokenF1 | 0.435 | 0.430 | −0.005 |
+| win/loss/tie | — | — | 1/5/81（符号检验 p=0.22） |
+
+分桶 turnCov@5（基线 → v2）：knowledge-update 0.679→0.607、multi-session 0.681→0.631、single-session-assistant 0.733→0.733、single-session-preference 0.867→0.867、single-session-user 0.857→0.857、temporal-reasoning 0.778→0.778。分桶判对率：偏好桶 0.267→**0.533**、temporal-reasoning 0.533→0.600、其余持平（KU 0.667 / multi 0.467→0.400）。
+
+**读数怎么读**：
+- v1 的 −10.38pp 回归被消掉：v2 只剩 −1.95pp 且跨零（CI 含 0），判对率反而 +4.44pp（不显著）。**“开了不掉分”从实测上落到“不显著”这一档**，构造上则成立（行 content 与整行基线逐字相同）。
+- 逐 case 只差 6 题（3 题降、3 题升；其中 6b7dfb22 由 0→1 且判对由错转对），不是系统性崩塌；但仍**不是零差异**——推断原因是事实行把 FTS/BM25 语料里同一段 turn 文本重复了约 1.6 倍（2519 行 vs 1591 行），IDF/doc 统计被稀释，个别题的并列分数顺序翻转。这一点没做隔离实验，登记为推断。
+- **不宣称收益**：KU 桶 turnCov 仍 −7.2pp（15 题里 1 题的差），而收益前提（同属性反复提到且判 single）在真实语料只有约 4% 的三元组满足（22.3），加上 22.5 的值级泄漏——结论是：v2 让开关**开启安全**，但“开启有收益”未被证明。
+
+**v2 的已知泄漏（走查直接暴露）**：行 content 是父 turn 原文后，旧值文本会随**兄弟事实行**回流——`turn-1`（居住=柏林，single）失效了，同 turn 的 `turn-1#f2`（爱好=摄影，multi）仍 active 且 content 同为「我住在柏林，最近迷上摄影」，于是「问当下」仍会注入含柏林的文本（见 `r146-walkthrough.mjs` 的 kept 列表）。
+即：**行级正确性成立（旧事实行不再作为"当前单值"返回），值级"不再出现在上下文"不成立**。这是 v1（per-fact content：值干净、检索掉分）与 v2（per-turn content：检索不掉分、值随兄弟回流）之间的真实取舍。修法要改检索/注入口径（值级遮蔽 / 该类 turn 注入 `fact_phrase` / 抽取期把单值属性升成独立 turn 粒度记忆），故本票登记为遗留。
+
+### 22.6 属性键归一：实测 0.0% 收益（别宣称已修复）
+
+`factKeyOf` 现在做通用归一（大小写/空白/首限定词/所有格/尾标点）+ 5 个语义族（居住地/职业/电话/年龄/价格）。在 facts-cache 上量（95 个 case / 1796 条三元组，`scripts/audit/_canon_lift.mts`）：
+
+| 指标 | 归一前（字面键） | 归一后（canonical） |
+|---|---|---|
+| 不同 `(subject,predicate)` 键 | 1461 | 1461 |
+| 跨 turn 重复键 | 219 | 219 |
+| 提升 | — | **+0.0%** |
+
+原因很直接：语料谓词是自由文本（`is considering` 36 次、`likes` 20、`plans to` 18、`is interested in` 16……），同义表打不到；而同 subject 的谓词集合本身就是一堆**语义不同**的动作（`is considering` / `has completed` / `feels`），强行归并会误并。**真正的修法在抽取期**（抽取器直出 canonical attribute，谓词受控词表），列为遗留——本节只登记负结果，不把归一当作已修复。
+
+### 22.7 生产开关与复现
+
+| 项 | 值 |
+|---|---|
+| 生产开关 | `memory.write.factRows.enabled`（**缺省 false**） |
+| `memory.write.factRows.maxFacts` | 未配则回落 `memory.write.factKey.maxFacts`（再回落 5），config 不注入缺省值以免静默覆盖 |
+| 抽取器 | facts schema 增 `phrase`/`cardinality`（`facts-v3` prompt）；「拿不准就省略」 |
+| 后端支持 | 需要 `invalidateL1ByFactKey`：sqlite 已实现（表达式索引 `idx_l1_fact_key_valid`，WHERE 与索引定义逐字一致才走索引）；**TCVDB 未实现**（`store/tcvdb.ts` 既无该方法也无 `invalidateL1`）→ 该部署下事实级失效不生效，只有 loud warn |
+| 开启判据 | 开关语义是**正确性**（旧单值属性不得再算「当前」），不是检索增益；v2 后检索面与整行档逐位相同，故「开了不掉分」由构造保证，收益取决于属性碰撞面（22.3/22.6） |
+
+```bash
+cd MemoryCore
+bash scripts/run-r146-arms.sh v2all     # 整行基线 vs 事实行 v2（scm-flash 生成/判分）
+bash scripts/run-r146-arms.sh all       # v1 四档（b1off / b1off-factrows / deep / deep-factrows）
+node scripts/fit-fusion-weights.mjs compare \
+  --base .eval-data/bench/lme90-r146v2-base.json \
+  --arm factrows=.eval-data/bench/lme90-r146v2-factrows.json
+node --import tsx scripts/audit/r146-walkthrough.mjs
+node --import tsx scripts/audit/r146-lme-walkthrough.mjs --case 50635ada
+```
+
+
