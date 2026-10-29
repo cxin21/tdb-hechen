@@ -8,6 +8,8 @@
 | 文件 | 用途 |
 |---|---|
 | <code>e3-review-30.html</code> | 单文件判定页：逐题读证据 → 选足够/部分/不足/存疑 → 不一致时选归因桶 → 一句话理由；判定存 localStorage，可导出 JSON |
+| <code>e3-review-summary.md</code> | 汇总结果：一致率、高报/低报拆分、分层一致率、分歧逐条、四桶计数（由 summarize 生成，同名 .json 为机读版） |
+| <code>e3-verdicts-*.json</code> | 判定原件（谁判的就叫什么：<code>e3-verdicts-ai-proxy.json</code> 为 AI 代理判定；真人判定另存一份，互不覆盖） |
 | <code>README.md</code> | 本说明（抽样口径与复现命令） |
 
 ## 复现 / 重建
@@ -24,6 +26,8 @@
     npm run audit:e3:summarize -- --verdicts ~/Downloads/e3-review-143-verdicts.json
 
 输出 docs/superpowers/evals/e3-review-30/e3-review-summary.md：人机一致率、分歧逐条（含机器预检与归因桶）、按桶计数——直接回填 #143 票面评论。
+
+判定主体必须在票面注明是「人工」还是「AI 代理（含授权来源）」：同一分母下可叠加两份判定做交叉，换主体只需换 --verdicts，不必重抽样。
 
 ## 抽样口径（摘要）
 
