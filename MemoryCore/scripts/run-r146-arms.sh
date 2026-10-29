@@ -38,11 +38,15 @@ case "${1:-help}" in
   deep-factrows)  run r146-deep-factrows  $CORE $DEEP --fact-rows ;;
   b1off-factrows-dedupe10) run r146-b1off-factrows-dedupe10 $CORE $B1 --fact-rows $DEDUPE ;;
   # v2 口径（行 content = 父 turn 原文 + 读侧按 fact_of 折叠，见 ADR-0015 决定 2）：读侧零成本，预期与整行档逐位持平。
-  v2base)         run r146v2-base      $CORE $B1 $PROD ;;
-  v2factrows)     run r146v2-factrows  $CORE $B1 $PROD --fact-rows ;;
+  v2base)         run r146v2-base      $CORE $B1 $PROD --keep ;;
+  v2factrows)     run r146v2-factrows  $CORE $B1 $PROD --keep --fact-rows ;;
   v2all)          bash "$0" v2base; bash "$0" v2factrows ;;
+  # 深池档（#135 验收前提：candidates 32 / minScore −10.5 / candidateK 32），#146 验收③按此口径。
+  v2deep)         run r146v2-deep      $CORE $DEEP $PROD --keep ;;
+  v2deep-factrows) run r146v2-deep-factrows $CORE $DEEP $PROD --keep --fact-rows ;;
+  v2deepall)      bash "$0" v2deep; bash "$0" v2deep-factrows ;;
   all) for m in b1off b1off-factrows deep deep-factrows; do bash "$0" $m; done ;;
-  *) echo "用法: $0 {b1off|b1off-factrows|deep|deep-factrows|b1off-factrows-dedupe10|v2base|v2factrows|v2all|all}"; exit 2 ;;
+  *) echo "用法: $0 {b1off|b1off-factrows|deep|deep-factrows|b1off-factrows-dedupe10|v2base|v2factrows|v2all|v2deep|v2deep-factrows|v2deepall|all}"; exit 2 ;;
 esac
 if [ "$FAILED" -ne 0 ]; then echo "[r146] 有 $FAILED 处失败"; exit 1; fi
 echo "[r146] OK"
