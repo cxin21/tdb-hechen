@@ -40,6 +40,27 @@ export interface RecallJournalRerankGate {
   threshold01?: number;
   /** #99 F3：优雅降级归因——全员低于阈值不清零，回退未重排顺序注入（预算帽照常生效）。 */
   degraded?: "all-below-minScore";
+  /** B2-b（bench/recall-opt）：pass 池 MMR 多样性重排观测（缺字段 = 未启用）。 */
+  mmr?: { lambda: number; ms: number };
+  /** #135 R4（bench/recall-opt）：作用模式标记（缺字段 = 缺省 "rerank"）。 */
+  mode?: "filter";
+  /**
+   * #144（2026-10-29）：filter 的判定尺子与参数（缺字段 = floor，= 逐位旧行为）。
+   * 只带**当前生效**那个尺子的参数：margin 出 filterMarginTop、quantile 出 filterKeepRatio
+   * （组装走 rerank/filter-ruler.ts 的 filterRulerGateObs，避免两处各写一套）。
+   */
+  filterRule?: "floor" | "margin" | "quantile";
+  filterMarginTop?: number;
+  filterKeepRatio?: number;
+  /**
+   * #144：规则「过线」条数（cap 与 #137-F 补位**之前**）。kept 是 cap 之后的最终注入条数，
+   * 单看 kept 分不清「被尺子裁掉」与「被预算截断」——归因需要这两个数一起看。
+   */
+  passCount?: number;
+  /** #137-F：融合锚点是否被强制保留（true = 精排曾把融合 top-1 挤出窗口）。 */
+  anchor?: boolean;
+  /** #137-F：floor 补位数（达线行不足预算时按融合序补回的候选数；防小窗口被 floor 饿死）。 */
+  floorToppedUp?: number;
 }
 
 /**
@@ -106,11 +127,56 @@ export interface RecallJournalGates {
   conclusionBm25?: RecallJournalConclusionBm25Gate;
   conclusionRerank?: RecallJournalConclusionRerankGate;
   /**
+   * #138（2026-10-28）：结论卡身世回捞（smallToBig）观测门——生产灰度复核需要区分
+   * 「没触发（无 part_of 边/无 work_fact 卡）」与「触发了但证据选错/被预算裁掉」。
+   * candidates = 卡的全部 part_of 证据候选数；kept = 实际注入的上下文行数。
+   */
+  smallToBig?: {
+    /** #141（2026-10-28）：增 "slot" = 复合单元记账（结论+必带源证据按 slotCost 占槽）。 */
+    mode: "shared" | "additive" | "slot";
+    maxExtraLines: number;
+    /** true = 按查询相关性排名取证据（#138 修复）；false = 旧序（逐位回滚档）。 */
+    ranked: boolean;
+    candidates: number;
+    kept: number;
+  };
+  /**
    * P1-T7（worthiness importance）：重要度降权观测门——raw vs penalized 双分量
    * （乘子恒真实生效：penalized=实际排序分，raw 为反推值）。类型单一源
    * 在 recall-signals.ts（与乘子实现同文件，防止口径分裂）。
    */
   importancePenalty?: RecallJournalImportanceGate;
+  /**
+   * #141（2026-10-28）：结论层分阶段路由观测——意图、预算、顺序、成对与仲裁。
+   * 灰度复核要能区分「没路由到（default）」与「路由到了但预算 0 / 证据缺失被丢弃」。
+   */
+  conclusionRouting?: {
+    /** classifyRecallIntent 的结果；routing!=="intent" 时为 null。 */
+    intent: string | null;
+    mode: "off" | "assistantRecall" | "intent";
+    /** 本次生效的结论行预算（null = 沿用 maxConclusions/半切缺省）。 */
+    budget: number | null;
+    order: "conclusion-first" | "turn-first";
+    /** 是否强制结论必带源证据（生效值）。 */
+    pairing: boolean;
+    /** 是否启用表示仲裁（生效值）。 */
+    arbitrate: boolean;
+    /** 成对约束下因无 part_of 证据被丢弃的结论张数。 */
+    unpairedDropped?: number;
+    /** 表示仲裁让位的结论张数与阈值（arbitrate 生效时才写）。 */
+    arbitrateDropped?: number;
+    arbitrateThreshold?: number;
+    /** slot 模式：记账后经验层额度与槽位成本。 */
+    slotExperienceLimit?: number;
+    slotCost?: number;
+    /** 降级原因：回捞通道不可用（store 无 part_of 读面 / maxExtraLines=0 / 软失败）→ 成对约束跳过、结论保留。 */
+    degraded?: "pairing-unavailable";
+    /**
+     * 被丢弃结论的样本（≤3 条，recordId + 原因）。只有计数无法回答「丢的是不是
+     * 那道题的答案卡」——灰度过线后要复盘具体卡，必须能指名到记录。
+     */
+    droppedSamples?: Array<{ recordId: string | null; why: string }>;
+  };
 }
 
 // P1-T7：类型再导出（journal 消费方 import 单一源 recall-journal 即可）

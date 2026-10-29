@@ -325,8 +325,11 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
         paramsFor(dir, store, `${KW} 复用探针`, makeCfg({}, { ...SILICONFLOW_RERANK }), { reranker: fake.reranker }),
       );
       expect(fake.callCount()).toBe(1);
-      // 真实生效：Marker1 被丢弃，注入顺序 = 精排降序
-      expect(orderOf((res1.block ?? "").split("\n"))).toEqual(["Marker5", "Marker4", "Marker3", "Marker2"]);
+      // 真实生效：注入顺序 = 精排降序。**#137-F 契约更新**：融合 top-1（Marker1）即使低于
+      // minScore 也被"救回"到窗口首位——否则 W3 把经验层预算压到 1 行时证据会直接消失
+      // （实测 rerank-on 平均经验行 1.73 < off 2.33，LME90 判对 77.8% vs 86.7%）。
+      // 其余低于 floor 的候选照旧丢弃（本用例只有 Marker1 低于 floor）。
+      expect(orderOf((res1.block ?? "").split("\n"))).toEqual(["Marker5", "Marker4", "Marker3", "Marker2", "Marker1"]);
       // run2：完全关闭
       const res2 = await performLayeredRecall(paramsFor(dir, store, `${KW} 复用探针`, makeCfg({})));
       expect(orderOf((res2.block ?? "").split("\n"))).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
@@ -337,8 +340,10 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       expect(g1).toBeDefined();
       expect(g1?.provider).toBe("siliconflow");
       expect(g1?.shadow).toBeUndefined(); // shadow 键已整体移除
-      expect(g1?.kept).toBe(4); // 真实保留 4 条（Marker1=-5 < minScore -2）
-      expect(g1?.dropped).toBe(1);
+      // #137-F：floor 不再让窗口比预算更饿——Marker1 被 floor 剔除后按融合序补回队尾，
+      // kept=5/dropped=0（预算仍有空间时，floor 只裁"超出窗口"的尾部，不裁证据行）。
+      expect(g1?.kept).toBe(5);
+      expect(g1?.dropped).toBe(0);
       expect(g1?.topScore).toBe(90);
       expect(typeof g1?.ms).toBe("number");
       const g2 = (entries[1].gates as Record<string, unknown> | undefined)?.rerank;
@@ -382,7 +387,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
     }
   });
 
-  it("④b active：minScore 以下丢弃（drop 不垫尾）", async () => {
+  it("④b active：minScore 只裁尾、不饿窗口（#137-F 起：未达线行在预算有余量时按融合序补回）", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-minscore-"));
     try {
       const rows = episodicRows(5);
@@ -402,10 +407,11 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           { reranker: fake.reranker },
         ),
       );
-      expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4"]);
+      // 达线 [Marker2,Marker1,Marker4]；预算 5 有余量 → Marker3/Marker5 按融合序补回队尾
+      expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4", "Marker3", "Marker5"]);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
-      expect(gate.kept).toBe(3);
-      expect(gate.dropped).toBe(2);
+      expect(gate.kept).toBe(5);
+      expect(gate.dropped).toBe(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -460,11 +466,12 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           paramsFor(dir, fallbackStore(rows), `${KW} i99等价探针`, makeCfg({}, { ...LOCAL_RERANK }), { reranker: fake.reranker }),
         );
         // sigmoid 单调：-0.5/2/-0.9 过线（0.3775/0.8808/0.2891 ≥ 0.2689），-3/-1.2 不过（0.0474/0.2315）
-        expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker5"]);
+        // #137-F：达线 [Marker3,Marker1,Marker5]；Marker2/Marker4 按融合序补回队尾
+        expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker5", "Marker2", "Marker4"]);
         const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
         expect(gate.degraded).toBeUndefined();
-        expect(gate.kept).toBe(3);
-        expect(gate.dropped).toBe(2);
+        expect(gate.kept).toBe(5);
+        expect(gate.dropped).toBe(0);
         expect(gate.scoreScale).toBe("logit-sigmoid");
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -485,12 +492,13 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
         const res = await performLayeredRecall(
           paramsFor(dir, fallbackStore(rows), `${KW} i99native探针`, makeCfg({}, { ...SILICONFLOW_RERANK, minScore: 0 }), { reranker: fake.reranker }),
         );
-        expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4"]);
+        // #137-F：达线 [Marker2,Marker1,Marker4]；Marker3/Marker5 按融合序补回队尾
+        expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4", "Marker3", "Marker5"]);
         const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
         expect(gate.scoreScale).toBeUndefined();
         expect(gate.top01).toBeUndefined();
         expect(gate.threshold01).toBeUndefined();
-        expect(gate.kept).toBe(3);
+        expect(gate.kept).toBe(5);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -765,6 +773,302 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       const gates = entries[0].gates as Record<string, unknown> | undefined;
       expect(gates?.rerank).toBeUndefined();
       expect(gates?.nativeMinRRF).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════ #135 R4：精排过滤器化（rerank.mode="filter"）═══════════════
+describe("#135 R4 · rerank.mode=\"filter\"（floor 只滤不清排保原序）", () => {
+  it("①filter：达线保留、未达线剔除、注入序 = 原序（RRF 名次序，非精排分序）；未评分候选保留", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-filter-"));
+    try {
+      const rows = episodicRows(5); // 原序 = RRF 名次 Marker1..Marker5
+      // provider 分序故意逆原序：Marker5 分最高。floor=0.5（cloud 原生 0..1 刻度）
+      // → Marker4(0.4)/Marker5(0.3) 未达线；Marker1..3 达线且保留原序
+      const fake = markerTableReranker([
+        ["Marker1", 0.9], ["Marker2", 0.8], ["Marker3", 0.6], ["Marker4", 0.4], ["Marker5", 0.3],
+      ]);
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5 }),
+          { reranker: fake.reranker },
+        ),
+      );
+      // 保序：非精排分序（若误走 rerank 分序则成 Marker3,2,1）
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      // journal 标记 mode=filter
+      const entries = readJournal(dir);
+      const gates = entries[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.mode).toBe("filter");
+      expect(rerankGate?.kept).toBe(3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②filter 全员低于阈值：F3 优雅降级——保序注入全部行（不清零）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-filter2-"));
+    try {
+      const rows = episodicRows(4);
+      const fake = markerTableReranker([
+        ["Marker1", 0.2], ["Marker2", 0.1], ["Marker3", 0.1], ["Marker4", 0.1],
+      ]);
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5 }),
+          { reranker: fake.reranker },
+        ),
+      );
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4"]);
+      const entries = readJournal(dir);
+      const gates = entries[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.degraded).toBe("all-below-minScore");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════ #144：filter floor 校准的候选分数转储（RERANK_SCORE_DUMP）═══════════════
+// 校准的取样必须无偏：转储里要有**被 floor 滤掉**的行，否则「误滤多少 gold」永远算不出来。
+describe("#144 · rerank 候选分数转储（floor 校准取样）", () => {
+  const readDump = (p: string): Array<Record<string, any>> =>
+    fs.existsSync(p)
+      ? fs.readFileSync(p, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l))
+      : [];
+
+  it("①filter 档：未设 env 零落盘；设 env 落一行全量候选（含被滤行）+ 最终保留序", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-dump-"));
+    const dump = path.join(dir, "rerank-scores.jsonl");
+    try {
+      const rows = episodicRows(5);
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.9], ["Marker2", 0.8], ["Marker3", 0.6], ["Marker4", 0.4], ["Marker5", 0.3],
+      ];
+      // run1：无 env → 不产生文件（缺省零开销）
+      await performLayeredRecall(
+        paramsFor(dir, fallbackStore(rows), `${KW} 项目进展如何`, makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5 }), {
+          reranker: markerTableReranker(table).reranker,
+        }),
+      );
+      expect(fs.existsSync(dump)).toBe(false);
+
+      // run2：开 env → 全量候选（含 0.4/0.3 两条未达线行）都落盘
+      process.env.RERANK_SCORE_DUMP = dump;
+      try {
+        const res = await performLayeredRecall(
+          paramsFor(dir, fallbackStore(rows), `${KW} 项目进展如何`, makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5 }), {
+            reranker: markerTableReranker(table).reranker,
+          }),
+        );
+        expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      } finally {
+        delete process.env.RERANK_SCORE_DUMP;
+      }
+
+      const recs = readDump(dump);
+      expect(recs).toHaveLength(1);
+      const rec = recs[0];
+      expect(rec.mode).toBe("filter");
+      expect(rec.minScore).toBe(0.5);
+      expect(rec.provider).toBe("siliconflow");
+      expect(rec.lineCount).toBe(5);
+      expect(rec.cap).toBe(5);
+      // 核心不变量：**全部**候选进 order，被滤行（rec-4/rec-5）也在
+      expect(rec.order.map((o: any) => o.rec)).toEqual(["rec-1", "rec-2", "rec-3", "rec-4", "rec-5"]);
+      // 召回行原文必须落盘（sqlite fallback 路 metas 为空，只靠 recordId 解析不出证据）
+      expect(rec.order[0].text).toContain("Marker1");
+      expect(rec.order[4].text).toContain("Marker5");
+      expect(rec.order.map((o: any) => o.i)).toEqual([0, 1, 2, 3, 4]);
+      // 分数：5 条全评到，含低于 floor 的 0.4/0.3（校准曲线靠这些点）
+      const byIdx = new Map<number, number>(rec.scored.map((s: any) => [s.i, s.score]));
+      expect(rec.scored).toHaveLength(5);
+      expect(byIdx.get(3)).toBeCloseTo(0.4, 6);
+      expect(byIdx.get(4)).toBeCloseTo(0.3, 6);
+      // final = 原序保留下来的子序（filter 不清排：0,1,2）
+      expect(rec.final).toEqual([0, 1, 2]);
+    } finally {
+      delete process.env.RERANK_SCORE_DUMP;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②rerank 档：降级（全员未达线）也落盘，且记 degraded 供离线区分「真过滤」与「降级原序」", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-dump2-"));
+    const dump = path.join(dir, "rerank-scores.jsonl");
+    process.env.RERANK_SCORE_DUMP = dump;
+    try {
+      const rows = episodicRows(4);
+      await performLayeredRecall(
+        paramsFor(dir, fallbackStore(rows), `${KW} 项目进展如何`, makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.95 }), {
+          reranker: markerTableReranker([
+            ["Marker1", 0.2], ["Marker2", 0.1], ["Marker3", 0.05], ["Marker4", 0.01],
+          ]).reranker,
+        }),
+      );
+      const recs = readDump(dump);
+      expect(recs).toHaveLength(1);
+      expect(recs[0].degraded).toBe("all-below-minScore");
+      expect(recs[0].scored).toHaveLength(4);
+      // 降级时 final = 原序全保留（离线重放必须能复现这一支）
+      expect(recs[0].final).toEqual([0, 1, 2, 3]);
+    } finally {
+      delete process.env.RERANK_SCORE_DUMP;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════ #144：filter 的题内相对尺子（margin / quantile）═══════════════
+// 绝对 floor 在 provider 换版/题间量纲漂移下会整题误杀；两档相对尺子只比同题的分数序。
+describe("#144 · rerank.mode=\"filter\" 的题内相对尺子", () => {
+  it("①margin：保留 top1−marginTop 以内的行，剔除远端噪声，注入序仍为原序", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-margin-"));
+    try {
+      const rows = episodicRows(5); // 原序 Marker1..Marker5
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.9], ["Marker2", 0.8], ["Marker3", 0.7], ["Marker4", 0.1], ["Marker5", 0.05],
+      ];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          // minScore 故意设成会全杀的 -2：非 floor 尺子下它不参与判定（两把尺子不互相盖）
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 2, filterRule: "margin", filterMarginTop: 0.5 }),
+          { reranker: markerTableReranker(table).reranker },
+        ),
+      );
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.mode).toBe("filter");
+      expect(rerankGate?.filterRule).toBe("margin");
+      expect(rerankGate?.filterMarginTop).toBe(0.5);
+      expect(rerankGate?.kept).toBe(3);
+      // 相对尺子生效时 minScore 不参与 → 不允许出现 floor 家族的降级标记
+      expect(rerankGate?.degraded).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("②quantile：按分数保留前 keepRatio 比例（不是按原序前缀），且保留序 = 原序非分数序", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-quantile-"));
+    try {
+      const rows = episodicRows(6);
+      // 分数与原序**故意错位**：原序第一的 Marker1 分数最低（若误按原序前缀保留会把噪声留下）
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.2], ["Marker2", 0.9], ["Marker3", 0.4], ["Marker4", 0.8], ["Marker5", 0.3], ["Marker6", 0.1],
+      ];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 2, filterRule: "quantile", filterKeepRatio: 0.5 }),
+          { reranker: markerTableReranker(table).reranker },
+        ),
+      );
+      // 0.5 × 6 = 3 条：Marker2(0.9)/Marker4(0.8)/Marker3(0.4)；输出按原序 → 2,3,4（不是 2,4,3）
+      expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker3", "Marker4"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.filterRule).toBe("quantile");
+      expect(rerankGate?.filterKeepRatio).toBe(0.5);
+      expect(rerankGate?.kept).toBe(3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("③非法/缺省尺子参数：filterRule 回落 floor，marginTop/keepRatio 回落缺省（config-first 静默）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-rule-default-"));
+    try {
+      const rows = episodicRows(3);
+      const table: Array<[string, number]> = [["Marker1", 0.9], ["Marker2", 0.8], ["Marker3", 0.7]];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 0.5, filterRule: "bogus", filterKeepRatio: 9 }),
+          { reranker: markerTableReranker(table).reranker },
+        ),
+      );
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      // 非法 filterRule → floor 语义（只用 minScore，不带 filterRule 观测键外的相对参数）
+      expect(rerankGate?.filterRule).toBe("floor");
+      expect(rerankGate?.filterKeepRatio).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("④quantile + provider 截断漏排：未评分行无条件原样保留（不参与分母），passCount 如实记录", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-quantile-unscored-"));
+    try {
+      const rows = episodicRows(6);
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.2], ["Marker2", 0.9], ["Marker3", 0.4], ["Marker4", 0.8], ["Marker5", 0.3], ["Marker6", 0.1],
+      ];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          // provider 只评了 2 条（其余 = 截断漏排）：分母是"已评分候选"2 → ceil(2×0.5)=1 条过线
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 2, filterRule: "quantile", filterKeepRatio: 0.5 }),
+          { reranker: markerTableReranker(table, { include: (m) => m === "Marker2" || m === "Marker4" }).reranker },
+        ),
+      );
+      // Marker2 过线；Marker4 被裁；未评分的 1/3/5/6 原位保留 → 原序 1,2,3,5,6
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker5", "Marker6"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.filterRule).toBe("quantile");
+      // kept（=5）说明实际保留比例高于 0.5：分母只数已评分候选，漏排行不参与裁量
+      expect(rerankGate?.kept).toBe(5);
+      expect(rerankGate?.passCount).toBe(5);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑤margin 临界并列：恰好落在 cut（top1−marginTop）上的行保留，低于 1 个最小单位才被裁", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-margin-tie-"));
+    try {
+      const rows = episodicRows(5);
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.9], ["Marker2", 0.5], ["Marker3", 0.4], ["Marker4", 0.39], ["Marker5", 0.1],
+      ];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 2, filterRule: "margin", filterMarginTop: 0.5 }),
+          { reranker: markerTableReranker(table).reranker },
+        ),
+      );
+      // cut = 0.9 − 0.5 = 0.4：Marker3 恰在临界值上 → 保留（宁可多留）；Marker4/5 剔除
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.kept).toBe(3);
+      expect(rerankGate?.passCount).toBe(3);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

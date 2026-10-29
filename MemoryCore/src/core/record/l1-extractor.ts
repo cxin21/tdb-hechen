@@ -70,6 +70,9 @@ export function normalizeImportance(raw: unknown): number | undefined {
   return Math.round(raw);
 }
 
+/** 关闭态的空事实集（共享常量，避免每条 memory 分配）。 */
+const NO_FACTS: NormalizedFacts = { phrases: [], triples: [] };
+
 const WEEKDAY_ZH: Record<string, string> = { MON: "一", TUE: "二", WED: "三", THU: "四", FRI: "五", SAT: "六", SUN: "日" };
 /** 徽章文本：note 首选；省略时回退 cadence+anchor 中文映射。 */
 export function recurrenceLabel(rec: unknown): string | undefined {
@@ -86,9 +89,11 @@ export function recurrenceLabel(rec: unknown): string | undefined {
 }
 
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
+import { clampMaxFacts, normalizeFacts, type NormalizedFacts } from "./fact-key.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
+import { supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
@@ -199,6 +204,8 @@ export async function extractL1Memories(params: {
     enableDedup?: boolean;
     /** 记忆图（G）：是否在 dedup 决策后建 L1↔L1 边（配置项，默认开） */
     enableMemoryLinks?: boolean;
+    /** #134 写面策略（W1 事实键 / W2 写时 supersession；缺省全关=逐位现状）。 */
+    writePolicy?: WritePolicy;
     /**
      * S1（T9 裁决待办收口）：similar 边最低相似度门槛（memory.links.minSimilarity 透传）。
      * 缺省 = MIN_SIMILAR_STRENGTH（0.3，行为逐位不变）；作用于 dedup 路径
@@ -522,16 +529,17 @@ export async function extractL1Memories(params: {
         embeddingService: options.embeddingService,
         storage,
         enableMemoryLinks: options.enableMemoryLinks !== false,
+        writePolicy: options.writePolicy,
       });
 
     } catch (err) {
       logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
       setL1Stage("store-fallback");
-      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity);
+      storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity, options.writePolicy);
     }
   } else {
     setL1Stage("store-fallback");
-    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity);
+    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage, options.enableMemoryLinks !== false, options.minSimilarity, options.writePolicy);
   }
 
   const logStorage = storage ?? new StorageAdapter(new LocalStorageBackend(baseDir));
@@ -745,8 +753,23 @@ async function callLlmExtraction(params: {
   const importanceEnabled =
     (memoryConfig as { worthiness?: { extractionEnabled?: boolean } } | undefined)
       ?.worthiness?.extractionEnabled === true;
+  // #137（W1 双通道）：多事实输出块（gated memory.extraction.facts.enabled，缺省关闭=逐位现状）
+  const factsCfg = (memoryConfig as {
+    extraction?: { facts?: { enabled?: boolean; maxFacts?: number; includeTriples?: boolean } };
+  } | undefined)?.extraction?.facts;
+  const factsEnabled = factsCfg?.enabled === true;
+  const factsMaxFacts = clampMaxFacts(factsCfg?.maxFacts);
+  const factsIncludeTriples = factsCfg?.includeTriples === true;
   const systemPrompt = composeMemorySystemPrompt(
-    getExtractMemoriesSystemPrompt(promptMode, { selfIdentityEnabled, sensitivityEnabled, recurrenceEnabled, importanceEnabled }),
+    getExtractMemoriesSystemPrompt(promptMode, {
+      selfIdentityEnabled,
+      sensitivityEnabled,
+      recurrenceEnabled,
+      importanceEnabled,
+      factsEnabled,
+      factsMaxFacts,
+      factsIncludeTriples,
+    }),
     memoryPrompt,
   );
   // A8（REG-REMAINING-001）：锚候选加载——新颖记忆的 coreRefs 标注机会前移到提取
@@ -814,7 +837,11 @@ async function callLlmExtraction(params: {
   // [l1-debug] RAW OUTPUT — 定位模型到底吐了哪些字段（用于 R4 实证）
   logger?.debug?.(`${TAG} [l1-debug] RAW_OUTPUT:\n${result}`);
 
-  const _scenes = parseExtractionResult(result, logger, valueCandidates, { promptMode });
+  const _scenes = parseExtractionResult(result, logger, valueCandidates, {
+    promptMode,
+    // #137：parse 侧同一道门（关闭时完全忽略 LLM 输出的 facts）
+    facts: { enabled: factsEnabled, maxFacts: factsMaxFacts, includeTriples: factsIncludeTriples },
+  });
   return { scenes: _scenes, systemPrompt, userPrompt, rawOutput: result };
 }
 
@@ -831,7 +858,15 @@ export function parseExtractionResult(
   raw: string,
   logger?: Logger,
   valueCandidates: Array<{ id: string; label: string }> = [],
-  opts?: { promptMode?: MemoryPromptMode },
+  opts?: {
+    promptMode?: MemoryPromptMode;
+    /**
+     * #137（W1 双通道）：多事实落库门。缺省/关闭 = 完全忽略 LLM 输出的 facts
+     * （即使模型意外输出也不落 metadata）；开启 = normalizeFacts 归一化后落
+     * metadata.facts（string[]），includeTriples 且三元组非空时另落 metadata.factTriples。
+     */
+    facts?: { enabled: boolean; maxFacts: number; includeTriples: boolean };
+  },
 ): SceneSegment[] {
   try {
     // Strip markdown code block wrappers if present
@@ -907,6 +942,11 @@ export function parseExtractionResult(
               .map((m) => {
                 // P1-T7 确定性门（防御第二层：提示词未开启时 LLM 意外输出同样被钳制/丢弃）
                 const importance = normalizeImportance(m.importance);
+                // #137 确定性门（同一防御第二层纪律）：关闭时完全忽略 m.facts；开启时由
+                // normalizeFacts 归一化（折叠空白/去重/去噪/封顶 maxFacts），脏形状安静丢弃不抛。
+                const factsOpts = opts?.facts;
+                const factsGate = factsOpts?.enabled === true;
+                const facts = factsGate ? normalizeFacts(m.facts, { maxFacts: clampMaxFacts(factsOpts?.maxFacts) }) : NO_FACTS;
                 return {
                 content: String(m.content),
                 type: String(m.type ?? "episodic"),
@@ -914,7 +954,15 @@ export function parseExtractionResult(
                 priority: typeof m.priority === "number" ? clampNum(m.priority, -1, 100) : 50,
                 source_message_ids: Array.isArray(m.source_message_ids) ? m.source_message_ids.map(String) : [],
                 metadata: (() => {
-                  const base = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
+                  const rawBase = (m.metadata && typeof m.metadata === "object" ? m.metadata : {}) as Record<string, unknown>;
+                  // #137：开启时 facts/factTriples 由提取门独占——先摘掉 LLM 可能塞进 metadata 的
+                  // 原始值，只落归一化结果（避免脏值绕过确定性门）。关闭时不改既有透传行为。
+                  let base = rawBase;
+                  if (factsGate) {
+                    base = { ...rawBase };
+                    delete base.facts;
+                    delete base.factTriples;
+                  }
                   const refs = parseCoreRefs(m.coreRefs, valueCandidates);
                   const out: Record<string, unknown> = refs && refs.length > 0 ? { ...base, coreRefs: refs } : { ...base };
                   // P1-T7：LLM 重要度理由 + 来源标记（仅在分数合法解析时写入——不伪造评分）
@@ -923,6 +971,12 @@ export function parseExtractionResult(
                       out.importance_reason = m.importance_reason;
                     }
                     out.importance_source = "llm";
+                  }
+                  // #137 落位：非空短语 → metadata.facts；includeTriples 且非空三元组 → metadata.factTriples
+                  // （空集不写键 = 现状形状；写侧 write-policy 读这两个键建事实通道键）。
+                  if (facts.phrases.length > 0) out.facts = facts.phrases;
+                  if (factsGate && factsOpts?.includeTriples === true && facts.triples.length > 0) {
+                    out.factTriples = facts.triples;
                   }
                   return out;
                 })(),
@@ -1115,8 +1169,10 @@ async function applyDecisions(params: {
   storage?: StorageAdapter;
   /** 记忆图（G）：是否在 dedup 决策后建边（配置项，默认开） */
   enableMemoryLinks?: boolean;
+  /** #134 写面策略（W1/W2；缺省全关）。 */
+  writePolicy?: WritePolicy;
 }): Promise<MemoryRecord[]> {
-  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, enableMemoryLinks = true } = params;
+  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, enableMemoryLinks = true, writePolicy } = params;
   const storedRecords: MemoryRecord[] = [];
 
   // Build a map from record_id → decision
@@ -1169,6 +1225,7 @@ async function applyDecisions(params: {
         vectorStore,
         embeddingService,
         storage,
+        writePolicy,
       });
 
       if (record) {
@@ -1191,9 +1248,16 @@ async function applyDecisions(params: {
               // GROW-EVO P2（§2.2 方向性守卫）：仅新记忆 observed 才自动失效旧记忆；
               // inferred → 只记 conflict 边（推断不许冒充事实——红线对称应用）。
               // 失效 = 写 valid_end（失效不删除）；best-effort 不阻塞写入。
-              if ((record as { certainty?: string }).certainty === "observed") {
+              // #136 属性契约：多值/模态内容的"冲突"多半是同一属性的两个并存值（考虑 A vs 考虑 B），
+              // 不是真矛盾——不失效旧行（conflict 边仍建，读侧软失效决定排序）。
+              const eligible = supersessionEligibleForContent(record.content, writePolicy);
+              if (eligible && (record as { certainty?: string }).certainty === "observed") {
                 const invalidEnd = record.occurred_at || new Date().toISOString();
                 for (const t of decision.target_ids) vectorStore.invalidateL1?.(t, invalidEnd);
+              } else if (!eligible) {
+                logger?.debug?.(
+                  `${TAG} [W2-cardinality] multi-valued conflict — keeping ${decision.target_ids.length} target(s) valid (no invalidation)`,
+                );
               }
             }
           } catch (err) {
@@ -1246,6 +1310,8 @@ async function storeAllDirectly(
   enableMemoryLinks = true,
   /** S1：similar 边最低相似度门槛（memory.links.minSimilarity），缺省 = MIN_SIMILAR_STRENGTH。 */
   minSimilarity: number = MIN_SIMILAR_STRENGTH,
+  /** #134 写面策略（W1/W2；缺省全关=逐位现状）。 */
+  writePolicy?: WritePolicy,
 ): Promise<MemoryRecord[]> {
   const storedRecords: MemoryRecord[] = [];
   // G4（T9-B）：同批排除——批内新记忆不互当"最相关旧记忆"（对照 dedup 路径的
@@ -1278,6 +1344,7 @@ async function storeAllDirectly(
         vectorStore,
         embeddingService,
         storage,
+        writePolicy,
       });
       logger?.info?.(`${TAG} storeAllDirectly: memory ${memIdx + 1}/${memoriesWithIds.length} writeMemory done id=${memoryWithId.record_id}`);
       if (record) {

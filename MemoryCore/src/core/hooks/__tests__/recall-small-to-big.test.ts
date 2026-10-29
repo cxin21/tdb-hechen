@@ -307,4 +307,138 @@ describe("R-b 附加注入", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // ═══════════════ #138（2026-10-28）：预算归属 + 证据相关性排序 ═══════════════
+
+  it("⑧additive 预算：上下文行不挤经验层保底 → 2 结论 + 2 上下文 + 3 经验 = 7 行", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-additive-"));
+    try {
+      const m = s2bStore({
+        rows: [wfRow("wf-1", "ConclA", -10), wfRow("wf-2", "ConclB", -9), ...episodicRows(3)],
+        links: [
+          { sourceId: "wf-1", targetId: "ev-1", type: "part_of" },
+          { sourceId: "wf-2", targetId: "ev-2", type: "part_of" },
+        ],
+        evidenceRows: [evidenceRow("ev-1", "证据一甲"), evidenceRow("ev-2", "证据二甲")],
+      });
+      const res = await performLayeredRecall(paramsFor(dir, m.store, KW + " 项目进展如何", makeCfg({
+        smallToBig: { enabled: true, budget: "additive" },
+        ftsOnlyInjectCap: 0,
+      })));
+      const concl = res.memoryLines.filter((l) => l.includes("[结论"));
+      const ctx = res.memoryLines.filter((l) => l.includes("[上下文"));
+      const exp = res.memoryLines.filter((l) => l.includes("经验条目内容"));
+      expect(concl).toHaveLength(2);
+      expect(ctx).toHaveLength(2);
+      // 共享模式下经验层只剩 5−4=1 行；additive 按「结论行」计 → 5−2=3 行
+      expect(exp).toHaveLength(3);
+      expect(res.memoryLines.length).toBe(7);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑨证据相关性排序：查询命中第三条证据 → 它排在上下文行首位（成对回捞）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-ranked-"));
+    try {
+      const m = s2bStore({
+        rows: [wfRow("wf-1", "ConclA", -10), ...episodicRows(2)],
+        links: [
+          { sourceId: "wf-1", targetId: "ev-1", type: "part_of" },
+          { sourceId: "wf-1", targetId: "ev-2", type: "part_of" },
+          { sourceId: "wf-1", targetId: "ev-3", type: "part_of" },
+        ],
+        evidenceRows: [
+          evidenceRow("ev-1", "前情：用户先报了一个数字"),
+          evidenceRow("ev-2", "前情：随后补充了人数"),
+          // 查询词 KW 命中 + 明确承载答案的轮次
+          evidenceRow("ev-3", "Assistant: 轮值表 S2bProbekw 周日 Admon 早班"),
+        ],
+      });
+      const res = await performLayeredRecall(paramsFor(dir, m.store, KW + " 周日谁值班", makeCfg({
+        smallToBig: { enabled: true, maxExtraLines: 2 },
+        ftsOnlyInjectCap: 0,
+      })));
+      const ctx = res.memoryLines.filter((l) => l.includes("[上下文"));
+      expect(ctx.length).toBeGreaterThan(0);
+      expect(ctx[0]).toContain("Admon");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑩回滚档：relevanceRanked=false → 旧序（边序首条先注入）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-legacy-"));
+    try {
+      const m = s2bStore({
+        rows: [wfRow("wf-1", "ConclA", -10), ...episodicRows(2)],
+        links: [
+          { sourceId: "wf-1", targetId: "ev-1", type: "part_of" },
+          { sourceId: "wf-1", targetId: "ev-3", type: "part_of" },
+        ],
+        evidenceRows: [
+          evidenceRow("ev-1", "前情：用户先报了一个数字"),
+          evidenceRow("ev-3", "Assistant: 轮值表 S2bProbekw 周日 Admon 早班"),
+        ],
+      });
+      const res = await performLayeredRecall(paramsFor(dir, m.store, KW + " 周日谁值班", makeCfg({
+        smallToBig: { enabled: true, maxExtraLines: 1, relevanceRanked: false },
+        ftsOnlyInjectCap: 0,
+      })));
+      const ctx = res.memoryLines.filter((l) => l.includes("[上下文"));
+      expect(ctx).toHaveLength(1);
+      expect(ctx[0]).toContain("前情");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑪结论条数上限可配：conclusionLayer.maxConclusions=1 → 只注入 1 条结论行", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-maxconcl-"));
+    try {
+      const m = s2bStore({
+        rows: [wfRow("wf-1", "ConclA", -10), wfRow("wf-2", "ConclB", -9), ...episodicRows(2)],
+      });
+      const res = await performLayeredRecall(paramsFor(dir, m.store, KW + " 项目进展如何", makeCfg({
+        conclusionLayer: { maxConclusions: 1 },
+        ftsOnlyInjectCap: 0,
+      })));
+      const concl = res.memoryLines.filter((l) => l.includes("[结论"));
+      expect(concl).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑫#138 查询路由：assistantRecall 查询 → 结论层整层跳过、预算全给经验层", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-routing-"));
+    try {
+      const m = s2bStore({ rows: [wfRow("wf-1", "ConclA", -10), ...episodicRows(5)] });
+      const assistantQ = "Can you remind me what ratio you told me to dilute the tea tree oil with? " + KW;
+      const res = await performLayeredRecall(paramsFor(dir, m.store, assistantQ, makeCfg({
+        conclusionLayer: { routing: "assistantRecall" },
+        ftsOnlyInjectCap: 0,
+      })));
+      expect(res.memoryLines.filter((l) => l.includes("[结论")).length).toBe(0);
+      expect(res.memoryLines.length).toBe(5);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑬#138 查询路由不误伤：请求建议类查询仍走结论层", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-routing2-"));
+    try {
+      const m = s2bStore({ rows: [wfRow("wf-1", "ConclA", -10), ...episodicRows(3)] });
+      const adviceQ = "Can you recommend some resources where I can learn more? " + KW;
+      const res = await performLayeredRecall(paramsFor(dir, m.store, adviceQ, makeCfg({
+        conclusionLayer: { routing: "assistantRecall" },
+        ftsOnlyInjectCap: 0,
+      })));
+      expect(res.memoryLines.some((l) => l.includes("ConclA"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+

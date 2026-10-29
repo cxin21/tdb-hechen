@@ -37,6 +37,7 @@ import { performAutoRecall } from "./hooks/auto-recall.js";
 import { reportRecallMetrics } from "./report/metric-tracking-recall.js";
 import { performAutoCapture } from "./hooks/auto-capture.js";
 import { executeMemorySearch, formatSearchResponse } from "./tools/memory-search.js";
+import { factChannelWeightOf } from "./recall/fusion.js";
 import { executeConversationSearch, formatConversationSearchResponse } from "./tools/conversation-search.js";
 import {
   initDataDirectories,
@@ -483,6 +484,15 @@ export class TdaiCore {
       coreRefBoost: this.cfg?.recall?.coreRefBoost,
       // P0-2（issue #2）：native RRF 共识门槛透传（缺省 undefined → executeMemorySearch 0=关）
       nativeMinRRF: this.cfg?.recall?.nativeMinRRF,
+      // #137（W1 双通道）：事实键平行召回通道透传（缺省 undefined / enabled=false = 通道退出）。
+      // 权重口径与钩子路同源（fusion.fact > factChannel.weight > 0.6）——工具路不实现
+      // normalized 融合，但仍要尊重同一优先级，否则同配置两路行为不一致。
+      factChannel: this.cfg?.recall?.factChannel
+        ? {
+            ...this.cfg.recall.factChannel,
+            weight: factChannelWeightOf(this.cfg.recall.factChannel, this.cfg.recall.fusion),
+          }
+        : undefined,
       // R-A1（结构感知召回 spec §2）：排序层结构信号六开关透传（缺省由
       // executeMemorySearch 内部回落 spec §2 默认值；0=通道完全退出）
       timeBoost: this.cfg?.recall?.timeBoost,
