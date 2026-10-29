@@ -135,7 +135,73 @@ const RECALL_LINE_SEPARATOR = "\n";
 // 在注入前折叠：字符 bigram Jaccard ≥ 0.6 视为近似重复，保留排序靠前的首条。
 // 纯 CPU 零 I/O；剥离行尾活动时间戳后比较（时间不同不代表内容不同）；
 // 阈值保守——真实不同主题记忆的 bigram Jaccard 通常 <0.3。
-export function foldNearDuplicates(lines: string[], threshold = 0.25): string[] {
+/**
+ * #162（2026-10-29）：装配层近重折叠口径。
+ *  - 缺省 / 传数字 = A2 历史口径：字符 bigram Jaccard ≥ threshold，无来源免疫（回归对照用）；
+ *  - 传 options = #162 口径：① 同会话免疫——同 session_id 的不同轮次是同一段对话的连续证据，
+ *    共享话题是常态，不能按「主题相似」折成 1 行；② 跨来源判重从「主题相似」（Jaccard）改为
+ *    「替代关系」（containment ≥ 0.9）——只有一条已被另一条覆盖才算重复。
+ *  两种口径都保留「剥元数据后逐字相同 → 折」的去重能力（同一条记忆被重复召回/写入）。
+ *  ③（2026-10-29 离线门槛补强）：跨来源 containment 还必须**同序覆盖**——短文本（<200 字）
+ *  仅共享话题词就能把 bigram containment 顶到 0.90+（实测 gpt4_b4a80587：风景修图 vs 人像
+ *  回复 0.904，属于不同事实），故要求被覆盖行的 bigram 在覆盖行里按序命中 ≥ 0.9（近似子串），
+ *  主题词散落但顺序打乱的「同领域不同事」不再折。
+ */
+export interface FoldNearDupOptions {
+  /** 跨来源近重判据：containment = |A∩B| / min(|A|,|B|)，clamp [0.5,1]，缺省 0.9。 */
+  containment?: number;
+  /** 行 → 来源会话 id；两行同会话且都已知 → 不互相折叠（逐字相同除外）。 */
+  sessionOf?: (line: string) => string | undefined;
+}
+
+/**
+ * #162：bigram 序列（保留顺序，用于「近似子串」判定）。
+ */
+function bigramSeq(t: string): string[] {
+  const seq: string[] = [];
+  for (let i = 0; i < t.length - 1; i++) seq.push(t.slice(i, i + 2));
+  return seq;
+}
+
+/**
+ * #162：small 的 bigram 序列在 big 序列里**按序**命中的比例（贪心子序列 + 位置二分，近似 LCS 占比）。
+ * 用于区分「一条确实被另一条覆盖（近似子串）」与「同领域话题词散落（containment 虚高）」。
+ */
+function orderedCoverageRatio(smallSeq: string[], bigSeq: string[]): number {
+  if (smallSeq.length === 0 || bigSeq.length === 0) return 0;
+  const positions = new Map<string, number[]>();
+  for (let i = 0; i < bigSeq.length; i++) {
+    const b = bigSeq[i];
+    const arr = positions.get(b);
+    if (arr) arr.push(i);
+    else positions.set(b, [i]);
+  }
+  let last = -1;
+  let matched = 0;
+  for (const s of smallSeq) {
+    const arr = positions.get(s);
+    if (!arr) continue;
+    let lo = 0;
+    let hi = arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (arr[mid] > last) hi = mid;
+      else lo = mid + 1;
+    }
+    if (lo < arr.length) {
+      last = arr[lo];
+      matched++;
+    }
+  }
+  return matched / smallSeq.length;
+}
+
+export function foldNearDuplicates(lines: string[], thresholdOrOptions: number | FoldNearDupOptions = 0.25): string[] {
+  const legacyThreshold = typeof thresholdOrOptions === "number" ? thresholdOrOptions : undefined;
+  const containment = typeof thresholdOrOptions === "object"
+    ? Math.min(1, Math.max(0.5, thresholdOrOptions.containment ?? 0.9))
+    : 0.9;
+  const sessionOf = typeof thresholdOrOptions === "object" ? thresholdOrOptions.sessionOf : undefined;
   // 阈值 0.25 实测校准（2026-09-15）：重复组内 pairwise Jaccard 0.36-0.49，
   // 非重复 ≤0.04 —— 9 倍分离度。0.6 会被转述措辞稀释（实测 4 重复全部漏过）。
   // A2-R1（2026-09-16 对抗性审查回归修复，两步）：相似度必须在**内容**上比较——
@@ -155,21 +221,48 @@ export function foldNearDuplicates(lines: string[], threshold = 0.25): string[] 
     return set;
   };
   const keptGramSets: Set<string>[] = [];
-  const out: string[] = [];
+  const kept: { line: string; content: string; grams: Set<string>; seq: string[]; session: string | undefined }[] = [];
   for (const line of lines) {
-    const g = grams(stripMeta(line));
+    const content = stripMeta(line);
+    const g = grams(content);
+    const seq = bigramSeq(content);
+    const session = sessionOf?.(line);
     let dup = false;
-    for (const kg of keptGramSets) {
+    for (const k of kept) {
+      // ① #162 同会话免疫：同会话两轮只有「逐字相同」才算重复（同一条记忆重复出现）；
+      //    主题/字面相近的不同轮次各自保留——它们是多轮证据，不是重复。
+      if (session !== undefined && k.session !== undefined && session === k.session) {
+        if (k.content !== content) continue;
+        dup = true;
+        break;
+      }
+      // ② 逐字相同（跨来源）：剥元数据后信息量差为零 → 折（去重能力不因口径切换而丢失）。
+      if (k.content === content) {
+        dup = true;
+        break;
+      }
       let inter = 0;
-      for (const x of g) if (kg.has(x)) inter++;
-      if (inter / (g.size + kg.size - inter) >= threshold) { dup = true; break; }
+      for (const x of g) if (k.grams.has(x)) inter++;
+      if (legacyThreshold !== undefined) {
+        // A2 历史口径（无来源信息的调用方 / 回归对照）：Jaccard ≥ threshold。
+        if (inter / (g.size + k.grams.size - inter) >= legacyThreshold) {
+          dup = true;
+          break;
+        }
+      } else if (
+        g.size > 0 && k.grams.size > 0
+        && inter / Math.min(g.size, k.grams.size) >= containment
+        // ③-a 同序覆盖：小者的 bigram 需在长者里按序命中 ≥0.9（近似子串），拒绝「同领域话题散落」。
+        && orderedCoverageRatio(seq.length <= k.seq.length ? seq : k.seq, seq.length <= k.seq.length ? k.seq : seq) >= 0.9
+      ) {
+        // ③ #162 新口径：containment——「一条已被另一条覆盖」才算重复；主题相近但不互相覆盖的保留。
+        dup = true;
+        break;
+      }
     }
-    if (!dup) {
-      out.push(line);
-      keptGramSets.push(g);
-    }
+    if (!dup) kept.push({ line, content, grams: g, seq, session });
   }
-  return out;
+  return kept.map((k) => k.line);
 }
 
 // V2-1（引擎二 PPR）：候选池上限由 pprTopK 接管（默认 10，与工具路同值——两路同层对齐，
@@ -552,7 +645,7 @@ function resolveRerankWiring(
  *    gate（kept/dropped/topScore）保留作 journal 观测。 */
 async function applyRecallRerank(
   query: string,
-  searchResult: { lines: string[]; scores?: number[]; metas?: { recordId?: string; evidenceIds?: string[] }[]; gates?: RecallJournalGates },
+  searchResult: { lines: string[]; scores?: number[]; metas?: { recordId?: string; evidenceIds?: string[]; sessionId?: string }[]; lineSessions?: (string | undefined)[]; gates?: RecallJournalGates },
   wiring: RerankWiring,
   cap: number,
   logger?: Logger,
@@ -732,6 +825,8 @@ async function applyRecallRerank(
   searchResult.lines = final.map((i) => lines[i]);
   if (searchResult.scores) searchResult.scores = final.map((i) => searchResult.scores![i]);
   if (searchResult.metas) searchResult.metas = final.map((i) => searchResult.metas![i]);
+  // #162：来源会话必须与 lines 同步重映射，否则折叠期的「同会话免疫」会张冠李戴。
+  if (searchResult.lineSessions) searchResult.lineSessions = final.map((i) => searchResult.lineSessions![i]);
 }
 
 /**
@@ -1419,7 +1514,7 @@ export async function performLayeredRecall(params: {
       ? JSON.stringify([params.isolationFilter.teamId ?? "", params.isolationFilter.userId ?? "", params.isolationFilter.agentId ?? "", params.sessionKey])
       : params.sessionKey;
     // P0-2 journal 观测：gates 并入 searchResult 载荷类型（与 SearchResult["gates"] 同形）
-    let searchResult: { lines: string[]; timing: SearchTiming; scores?: number[]; gates?: SearchResult["gates"] } | undefined;
+    let searchResult: { lines: string[]; lineSessions?: (string | undefined)[]; timing: SearchTiming; scores?: number[]; gates?: SearchResult["gates"] } | undefined;
     if (sessionReuseTtlMs > 0 && !params.validityNow && params.sessionKey) {
       const entry = sessionReuseCache.get(reuseCacheKey);
       if (entry && entry.query === userText && entry.vectorStore === vectorStore && entry.embeddingService === embeddingService &&
@@ -1532,6 +1627,18 @@ export async function performLayeredRecall(params: {
       }
     }
     memoryLines = searchResult.lines;
+    // ── #162（2026-10-29）：装配层近重折叠的「同会话免疫」数据源 ──
+    // 行 → 来源会话：同 session_id 的不同轮次是同一段对话里的连续证据，不能按「主题相似」折掉。
+    // 以行字符串为键 → 后续 slice/重排/结论行插入都不需要维护平行数组（行被改写后再折叠无意义）。
+    // 无来源（keyword/embedding SELECT 未带出、foldCluster 开启、结论行）→ 该行按跨来源口径判重（降级安全）。
+    const sessionByLine = new Map<string, string>();
+    const lineSessionsOfSearch = searchResult.lineSessions;
+    if (lineSessionsOfSearch) {
+      for (let i = 0; i < memoryLines.length && i < lineSessionsOfSearch.length; i++) {
+        const sid = lineSessionsOfSearch[i];
+        if (sid && !sessionByLine.has(memoryLines[i])) sessionByLine.set(memoryLines[i], sid);
+      }
+    }
     searchTiming = searchResult.timing;
     recallGates = searchResult.gates;
     // ── #141（2026-10-28）：表示仲裁（arbitrate="redundant"）──
@@ -1808,7 +1915,8 @@ export async function performLayeredRecall(params: {
       const orderedLines =
         cfg.recall?.injectTimeSort?.enabled === true ? sortLinesByLeadingTimestamp(memoryLines) : memoryLines;
       // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
-      const foldedLines = foldNearDuplicates(orderedLines);
+      // #162：同会话免疫 + 跨来源 containment + 同序覆盖（判据与实测见 foldNearDuplicates 注释与 docs §18.7）
+      const foldedLines = foldNearDuplicates(orderedLines, { sessionOf: (line) => sessionByLine.get(line) });
       // G1-b：包裹语——neutral 去掉「仅作为参考」贬抑措辞并加如实指引（缺省 legacy=现行文案）
       const wrapperHead =
         cfg.recall?.injectWrapper === "neutral"
@@ -2193,8 +2301,10 @@ export interface SearchTiming {
 interface SearchResult {
   lines: string[];
   timing: SearchTiming;
-  /** 折叠元数据（与 lines 平行）：持续态吸收所需 recordId/evidenceIds。 */
-  metas?: { recordId?: string; evidenceIds?: string[] }[];
+  /** 折叠元数据（与 lines 平行）：持续态吸收所需 recordId/evidenceIds/sessionId。 */
+  metas?: { recordId?: string; evidenceIds?: string[]; sessionId?: string }[];
+  /** #162：行级来源会话 id（与 lines 平行；keyword/embedding 路与折叠开启时缺省 = 无来源信息）。 */
+  lineSessions?: (string | undefined)[];
   /** Per-line similarity scores (parallel to `lines`). Only populated on TCVDB nativeHybridSearch path. */
   scores?: number[];
   /**
@@ -2376,14 +2486,14 @@ async function searchMemories(
     if (effectiveStrategy === "keyword") {
       const tFts = performance.now();
       const { terms: kwTerms, waitMs: kwExpandWaitMs } = await awaitExpansionTerms();
-      const lines = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, layered, kwTerms, isolationFilter);
-      return { lines, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: lines.length, embeddingHits: 0, expandMs: kwExpandWaitMs } };
+      const kw = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, layered, kwTerms, isolationFilter);
+      return { lines: kw.lines, lineSessions: kw.lineSessions, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: kw.lines.length, embeddingHits: 0, expandMs: kwExpandWaitMs } };
     }
 
     if (effectiveStrategy === "embedding") {
       const tEmb = performance.now();
-      const lines = await searchByEmbedding(cleanText, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts, embedCacheTtlMs, layered, isolationFilter);
-      return { lines, timing: { ftsMs: 0, embeddingMs: performance.now() - tEmb, ftsHits: 0, embeddingHits: lines.length } };
+      const emb = await searchByEmbedding(cleanText, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts, embedCacheTtlMs, layered, isolationFilter);
+      return { lines: emb.lines, lineSessions: emb.lineSessions, timing: { ftsMs: 0, embeddingMs: performance.now() - tEmb, ftsHits: 0, embeddingHits: emb.lines.length } };
     }
 
     // Hybrid: if the store natively supports hybrid search (e.g. TCVDB does
@@ -2420,13 +2530,16 @@ async function searchMemories(
       logger?.debug?.(`${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`);
       const fmts = results.map((r) => vectorResultToFormatable(r));
       const linesRaw = fmts.map((f) => formatMemoryLine(f));
-      const linesMeta = fmts.map((f) => ({ recordId: f.recordId, evidenceIds: f.evidenceIds }));
+      const linesMeta = fmts.map((f) => ({ recordId: f.recordId, evidenceIds: f.evidenceIds, sessionId: f.sessionId }));
+      // #162：行级来源会话（同会话免疫数据源）；折叠开启时行与来源不再平行 → 不透传（降级=旧口径）
+      const lineSessionsRaw = fmts.map((f) => f.sessionId);
       const scores = results.map((r) => r.score);
       // F-CLUSTER v2：折叠点=搜索路返回前（budget 之前去冗余，更多信息存活）；cfg.recall.foldClusterEnabled 缺省关
-      const lines = cfg?.recall?.foldClusterEnabled === true
+      const foldedNative = cfg?.recall?.foldClusterEnabled === true;
+      const lines = foldedNative
         ? foldClusterAware(linesRaw, linesMeta)
         : linesRaw;
-      return { lines, scores, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length }, ...(nativeGateStat ? { gates: { nativeMinRRF: nativeGateStat } } : {}) };
+      return { lines, ...(foldedNative ? {} : { lineSessions: lineSessionsRaw }), scores, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length }, ...(nativeGateStat ? { gates: { nativeMinRRF: nativeGateStat } } : {}) };
     }
 
     // Fallback: run keyword + embedding in parallel, merge with client-side RRF (SQLite path)
@@ -2462,8 +2575,11 @@ async function searchMemories(
     // 精排（applyRecallRerank 551-552）已支持 scores/metas 平行重映射，透传即兼容。
     // 折叠开启时 metas 与折叠后行不再平行 → 不透传（防下游错位）。
     const fallbackFolded = cfg?.recall?.foldClusterEnabled === true;
+    // #162：metas.sessionId → 行级来源会话（与 lines 平行）；折叠开启时不再平行 → 不透传（降级=旧口径）
+    const fallbackLineSessions = fallbackFolded ? undefined : hybrid.metas?.map((m) => m.sessionId);
     return {
       lines: fallbackFolded ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines,
+      ...(fallbackLineSessions ? { lineSessions: fallbackLineSessions } : {}),
       // #63：expandMs 在 searchMemories 层测得（灵魂注入性能轮 2026-10-19 起口径=热路实际
       // 等待 waitMs 快照），补进 hybrid.timing
       timing: { ...hybrid.timing, expandMs: fallbackExpandWaitMs },
@@ -2498,7 +2614,7 @@ async function searchByKeyword(
   expansionTerms?: readonly string[],
   /** DS-RECALL-MERGE-001：租户收窄 filter（缺省 undefined = 钩子路旧行为逐位）。 */
   isolationFilter?: IsolationFilter,
-): Promise<string[]> {
+): Promise<{ lines: string[]; lineSessions: (string | undefined)[] }> {
   // R7-1 防重排除集（空 = 零开销恒等）
   const excludeIds = layered && layered.excludeIds.length > 0 ? new Set(layered.excludeIds) : null;
   // Prefer FTS5 if available
@@ -2520,7 +2636,10 @@ async function searchByKeyword(
 
         if (filtered.length > 0) {
           logger?.debug?.(`${TAG} [keyword-fts] FTS5 found ${filtered.length} results (from ${ftsResults.length} raw, threshold=${threshold})`);
-          return filtered.map((r) => formatMemoryLine(ftsResultToFormatable(r)));
+          return {
+            lines: filtered.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
+            lineSessions: filtered.map((r) => (r as { session_id?: string }).session_id || undefined),
+          };
         }
 
         // BM25 absolute scores are unreliable when the document set is very
@@ -2531,9 +2650,13 @@ async function searchByKeyword(
             `${TAG} [keyword-fts] All ${ftsResults.length} results below threshold=${threshold} ` +
             `but document set is small — returning all matched results`,
           );
-          return ftsResults
+          const smallSet = ftsResults
             .filter((r) => !excludeIds || !excludeIds.has(r.record_id))
-            .slice(0, maxResults).map((r) => formatMemoryLine(ftsResultToFormatable(r)));
+            .slice(0, maxResults);
+          return {
+            lines: smallSet.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
+            lineSessions: smallSet.map((r) => (r as { session_id?: string }).session_id || undefined),
+          };
         }
         logger?.debug?.(`${TAG} [keyword-fts] FTS5 returned 0 results above threshold (from ${ftsResults.length} raw)`);
       }
@@ -2542,7 +2665,7 @@ async function searchByKeyword(
 
   // FTS5 not available or returned no results — skip in-memory fallback to avoid O(N) full scan
   logger?.debug?.(`${TAG} [keyword] FTS5 unavailable or no results, skipping keyword search`);
-  return [];
+  return { lines: [], lineSessions: [] };
 }
 
 // ============================
@@ -2563,7 +2686,7 @@ async function searchByEmbedding(
   layered?: R7LayeredContext,
   /** DS-RECALL-MERGE-001：租户收窄 filter（缺省 undefined = 钩子路旧行为逐位）。 */
   isolationFilter?: IsolationFilter,
-): Promise<string[]> {
+): Promise<{ lines: string[]; lineSessions: (string | undefined)[] }> {
   logger?.debug?.(
     `${TAG} [embedding-search] START query="${userText.slice(0, 80)}...", maxResults=${maxResults}, threshold=${threshold}`,
   );
@@ -2580,7 +2703,7 @@ async function searchByEmbedding(
 
   if (vecResults.length === 0) {
     logger?.debug?.(`${TAG} [embedding-search] Returned 0 results`);
-    return [];
+    return { lines: [], lineSessions: [] };
   }
 
   logger?.debug?.(`${TAG} [embedding-search] Got ${vecResults.length} candidates, filtering by threshold=${threshold}`);
@@ -2597,11 +2720,14 @@ async function searchByEmbedding(
 
   if (filtered.length > 0) {
     logger?.debug?.(`${TAG} [embedding-search] Found ${filtered.length} relevant memories above threshold (from ${vecResults.length} candidates)`);
-    return filtered.map((r) => formatMemoryLine(vectorResultToFormatable(r)));
+    return {
+      lines: filtered.map((r) => formatMemoryLine(vectorResultToFormatable(r))),
+      lineSessions: filtered.map((r) => r.session_id || undefined),
+    };
   }
 
   logger?.debug?.(`${TAG} [embedding-search] No results above threshold ${threshold}`);
-  return [];
+  return { lines: [], lineSessions: [] };
 }
 
 // ============================
@@ -3488,7 +3614,7 @@ export async function searchHybrid(
       : undefined;
     return {
       lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)),
-      metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds })),
+      metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds, sessionId: formatable.sessionId })),
       // 2026-10-14 观测性修复：fallback 消费方（searchMemories 1545）此前丢弃 scores →
       // metric 上报全 0；此处随 metas 一并返回（rrfScore 刻度，与 lines 平行，精排重映射兼容）。
       scores: visibleTop.map(([, v]) => v.relevance ?? v.rrfScore),
@@ -3574,6 +3700,8 @@ interface FormatableMemory {
   valid_start?: string;
   /** R-A2：候选池通道标注（"graph:kind" / "value:锚"；主检索命中恒缺省）。 */
   recall_channel?: string;
+  /** #162（2026-10-29）：写入侧会话 id —— 装配层近重折叠的「同会话免疫」依据（不渲染进行文本）。 */
+  sessionId?: string;
 }
 
 // 审计 B4：导出以便独立验证 soul 标注与 metric 正则兼容性（纯函数、无副作用）
@@ -3841,6 +3969,8 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     // F-CLUSTER v2：折叠元数据透传
     recordId: r.record_id,
     evidenceIds: evIds,
+    // #162：来源会话透传（装配层同会话免疫；不渲染进行文本）
+    sessionId: r.session_id || undefined,
     occurred_at: r.occurred_at || undefined,
     certainty: r.certainty || undefined,
     valence: r.valence,
@@ -3893,6 +4023,8 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     activity_start_time: activityStart,
     activity_end_time: activityEnd,
     timestamp: r.timestamp_str || undefined,
+    // #162：来源会话透传（与向量路成对——FTS SELECT 未带出时降级为无来源）
+    sessionId: (r as { session_id?: string }).session_id || undefined,
     // A3（REG-REMAINING-001）修复：灵魂字段透传——与 vectorResultToFormatable 对齐。
     // 此前 FTS 通道结果丢失 soul 字段 → soul 标注只在向量通道出现（实测 1/5 行）。
     occurred_at: r.occurred_at || undefined,
