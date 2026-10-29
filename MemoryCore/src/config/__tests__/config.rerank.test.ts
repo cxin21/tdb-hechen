@@ -21,8 +21,8 @@ describe("P1 task-1 config：memory.recall.rerank（缺省全关 = 零行为变�
     expect(r.baseUrl).toBe("");
     expect(r.model).toBe("");
     expect(r.timeoutMs).toBe(800);
-    expect(r.candidates).toBe(12);
-    expect(r.minScore).toBe(-2.0);
+    expect(r.candidates).toBe(32);
+    expect(r.minScore).toBe(-10.5);
     expect(r.local.modelDir).toBe("");
     expect(r.local.idleUnloadMs).toBe(600_000);
     expect(r.configError).toBeUndefined();
@@ -109,13 +109,30 @@ describe("P1 task-1 config：rerank 数值边界 clamp", () => {
     expect(rerankOf({ recall: { rerank: { candidates: 9999 } } }).candidates).toBe(100);
     expect(rerankOf({ recall: { rerank: { candidates: 12.7 } } }).candidates).toBe(12);
     expect(rerankOf({ recall: { rerank: { candidates: -3 } } }).candidates).toBe(1);
-    expect(rerankOf({ recall: { rerank: { candidates: "x" as unknown as number } } }).candidates).toBe(12);
+    expect(rerankOf({ recall: { rerank: { candidates: "x" as unknown as number } } }).candidates).toBe(32);
   });
 
-  it("minScore：任意有限数透传（负值合法——local logits 刻度门槛可为负）；非数值回落 -2.0", () => {
+  it("minScore：任意有限数透传（负值合法——local logits 刻度门槛可为负）；非数值回落 provider 刻度缺省（local −10.5）", () => {
     expect(rerankOf({ recall: { rerank: { minScore: -999 } } }).minScore).toBe(-999);
     expect(rerankOf({ recall: { rerank: { minScore: 0.5 } } }).minScore).toBe(0.5);
-    expect(rerankOf({ recall: { rerank: { minScore: "x" as unknown as number } } }).minScore).toBe(-2.0);
+    expect(rerankOf({ recall: { rerank: { minScore: "x" as unknown as number } } }).minScore).toBe(-10.5);
+  });
+
+  it("#145：minScore 缺省按 provider 刻度换算（local/none = −10.5 logit；云 = sigmoid(−10.5)）；显式值优先", () => {
+    expect(rerankOf({}).minScore).toBe(-10.5);
+    expect(rerankOf({ recall: { rerank: { enabled: true, provider: "local" } } }).minScore).toBe(-10.5);
+    expect(rerankOf({}).candidates).toBe(32);
+
+    const cloud = rerankOf({ recall: { rerank: { enabled: true, provider: "siliconflow", apiKey: "sk" } } });
+    expect(cloud.minScore).toBeCloseTo(1 / (1 + Math.exp(10.5)), 12);
+    expect(cloud.minScore).toBeGreaterThan(0);
+
+    // 显式配置优先：显式 minScore/candidates 不被 provider 缺省覆盖
+    const explicit = rerankOf({
+      recall: { rerank: { enabled: true, provider: "siliconflow", apiKey: "sk", minScore: 0.25, candidates: 7 } },
+    });
+    expect(explicit.minScore).toBe(0.25);
+    expect(explicit.candidates).toBe(7);
   });
 
   it("local.idleUnloadMs：负值 clamp 0（0 = 常驻，spec §4.3）；缺省 600000", () => {

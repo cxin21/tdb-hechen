@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_RERANK,
+  B0BASE_RERANK,
   KNOB_ORDER,
   armKnobs,
   coordinateSearch,
@@ -101,7 +101,7 @@ describe("pairArm", () => {
 describe("matched design", () => {
   it("只差一个旋钮的档位才成对；融合旋钮按逻辑档归并", () => {
     const base = report("b", []);
-    const off = report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } });
+    const off = report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } });
     expect(knobDiff(armKnobs(base.config), armKnobs(off.config))).toEqual(["rerank.enabled"]);
 
     const weighted = {
@@ -126,7 +126,7 @@ describe("singleKnobEffects", () => {
       {
         tag: "off",
         report: report("off", []),
-        knobs: armKnobs(report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config),
+        knobs: armKnobs(report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config),
         metric: 0.7,
       },
     ];
@@ -171,7 +171,7 @@ describe("coordinateSearch / samplingPlan", () => {
     { tag: "b", knobs: armKnobs(report("b", []).config), metric: 0.6, report: report("b", []) },
     {
       tag: "off",
-      knobs: armKnobs(report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config),
+      knobs: armKnobs(report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config),
       metric: 0.65,
       report: report("off", []),
     },
@@ -184,7 +184,7 @@ describe("coordinateSearch / samplingPlan", () => {
       { tag: "b2", knobs: armKnobs(report("b2", []).config), metric: 0.61, report: report("b2", []) },
       {
         tag: "off2",
-        knobs: armKnobs(report("off2", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config),
+        knobs: armKnobs(report("off2", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config),
         metric: 0.66,
         report: report("off2", []),
       },
@@ -195,7 +195,7 @@ describe("coordinateSearch / samplingPlan", () => {
   });
 
   it("组合未观测时标 observed=false，并进入采样计划且去重", () => {
-    const offKnobs = armKnobs(report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config);
+    const offKnobs = armKnobs(report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config);
     const mixed = { ...best.knobs, "rerank.enabled": false };
     const coord = coordinateSearch([...arms, { tag: "mix", knobs: mixed, metric: 0.9, report: report("mix", []) }], { metricKey: "turnCov@5" });
     const plan = samplingPlan([...arms], best, { moves: coord.moves });

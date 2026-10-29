@@ -85,6 +85,12 @@ import {
   type RerankFilterRuler,
   type RerankRelativeRuler,
 } from "../recall/rerank/filter-ruler.js";
+import {
+  DEFAULT_RERANK_CANDIDATES,
+  defaultRerankMinScore,
+  isLogitScaleProvider,
+  sigmoid01,
+} from "../recall/rerank/defaults.js";
 import { mmrReorder } from "../recall/mmr.js";
 import { sortLinesByLeadingTimestamp } from "./inject-order.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
@@ -619,18 +625,21 @@ function resolveRerankWiring(
     return {
       state: "off",
       provider,
-      minScore: -2,
-      candidates: 12,
+      // #145：off 态这两个值只进展示/journal（不做判定），仍与 parse 期缺省同源，避免两处漂移。
+      minScore: defaultRerankMinScore(provider),
+      candidates: DEFAULT_RERANK_CANDIDATES,
       mode: "rerank",
       blend: 0,
       filterRuler: DEFAULT_RERANK_FILTER_RULER,
     };
   }
-  const minScore = typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : -2;
+  // #145：兜底缺省与 config.ts parse 期同源（provider 刻度感知：local −10.5 logit / 云 sigmoid(−10.5)）。
+  const minScore =
+    typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : defaultRerankMinScore(provider);
   const candidates =
     typeof rc.candidates === "number" && Number.isFinite(rc.candidates) && rc.candidates >= 1
       ? Math.floor(rc.candidates)
-      : 12;
+      : DEFAULT_RERANK_CANDIDATES;
   const reranker = deps?.reranker !== undefined ? deps.reranker : createReranker(rc, { fetchImpl: deps?.fetchImpl });
   if (rc.configError || reranker === null) {
     logger?.warn?.(`${TAG} [rerank] provider=${provider} 不可用（${rc.configError ?? "工厂返回 null"}），降级原序`);
@@ -772,10 +781,10 @@ async function applyRecallRerank(
   // （sigmoid(−1.0)≈0.269，换算出处=生产 config-override rerank.minScore=−1.0 logit 刻度）。
   // journal topScore 恒记 raw（#96 取证口径连续），top01/threshold01/scoreScale 附加归一化观测；
   // 云 provider（siliconflow/dashscope）原生 0..1 相关度不归一（scoreScale 键缺席 = native）。
-  const logitScale = wiring.provider === "local";
-  const sigmoid01 = (s: number): number => 1 / (1 + Math.exp(-s));
+  const logitScale = isLogitScaleProvider(wiring.provider);
+  // sigmoid 变换与缺省门槛同源（recall/rerank/defaults.ts），别在这里另写一份。
   const score01Of = (s: number): number => (logitScale ? sigmoid01(s) : s);
-  const threshold01 = logitScale ? sigmoid01(wiring.minScore) : wiring.minScore;
+  const threshold01 = score01Of(wiring.minScore);
   const rankedPass = clean.filter((r) => score01Of(r.score) >= threshold01);
   let finalIdxs: number[];
   let degraded: "all-below-minScore" | undefined;
@@ -1320,19 +1329,18 @@ export async function performLayeredRecall(params: {
             // 原始 logit 先 sigmoid 归一 0..1 后对门槛（门槛同变换 sigmoid(minScore)，单调等价
             // 不改接受/拒绝边界）；未覆盖候选恒 Infinity 不杀（垫尾语义不变）。journal
             // scoreScale/top01/threshold01 附加归一化观测（topScore 仍记 raw，取证口径连续）。
-            const r71GateLogitScale = r71GateWiring.provider === "local";
-            const r71GateSigmoid01 = (s: number): number => 1 / (1 + Math.exp(-s));
-            const r71GateThreshold01 = r71GateLogitScale ? r71GateSigmoid01(r71GateMin) : r71GateMin;
+            const r71GateLogitScale = isLogitScaleProvider(r71GateWiring.provider);
+            const r71GateThreshold01 = r71GateLogitScale ? sigmoid01(r71GateMin) : r71GateMin;
             const r71GateScore01Of = (i: number): number => {
               const raw = r71GateScoreOf.get(i);
-              return raw === undefined ? Infinity : r71GateLogitScale ? r71GateSigmoid01(raw) : raw;
+              return raw === undefined ? Infinity : r71GateLogitScale ? sigmoid01(raw) : raw;
             };
             const r71WouldDrop = r7Conclusions.reduce((acc, _c, i) => acc + (r71GateScore01Of(i) < r71GateThreshold01 ? 1 : 0), 0);
             const r71GateScaleFields = r71GateLogitScale
               ? {
                   scoreScale: "logit-sigmoid" as const,
                   threshold01: r71GateThreshold01,
-                  ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { top01: r71GateSigmoid01(r71GateTop) } : {}),
+                  ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { top01: sigmoid01(r71GateTop) } : {}),
                 }
               : {};
             r71ConclusionRerankGate = {

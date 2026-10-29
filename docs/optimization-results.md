@@ -7,7 +7,7 @@
 
 ## 0. 一句话结论
 
-> **2026-10-27 下午修正（§10）**：精排本身不是净负项——伤害来自 `candidates=12` + `minScore=-2` 的**过度剪枝**（把 30% 的题剪到只剩 1 行证据）。保留 rerank、把池扩到 32、floor 放到 −10.5，turnCov@5 = **84.3%**（+16.67pp vs b0-base，CI[+9.05,+24.29]，p=0.0005），高于「关掉 rerank」的 79.5%。下文 §0–§2 为下午修正前的原始结论，保留作历史记录。
+> **2026-10-27 下午修正（§10）**：精排本身不是净负项——伤害来自 `candidates=12` + `minScore=-2` 的**过度剪枝**（把 30% 的题剪到只剩 1 行证据）。保留 rerank、把池扩到 32、floor 放到 −10.5，turnCov@5 = **84.3%**（+16.67pp vs b0-base，CI[+9.05,+24.29]，p=0.0005），高于「关掉 rerank」的 79.5%。下文 §0 首段与 §1 表内 b1-off 行（以及 §2 末尾的历史档注）为下午修正前的原始结论，保留作历史记录。
 
 **精排（本地 bge-reranker-base，minScore=-2 logit-sigmoid 闸门）在 LME90 上是净负项：关停 = turnCov@5 +12.0pp（67.1%→79.5%，CI[+4.1,+20.0]）且延迟 -7.3s、答案判对持平；B1 读侧四件套（时间序证据+CoN 引用+NOT_ENOUGH_INFO 出口+英文指令）在答案侧大胜：判对 38.9%→54.4%（+15.6pp，McNemar p=0.001），拒答 51%→30%。B2b 三项（MMR/validityNow/向量门槛）一项显著负、两项无效。**
 
@@ -31,11 +31,30 @@
 
 注：`*` = 95%CI 不含 0。docCap=192 = bench 精排打分前每条文档截断 192 字符（跨档一致，见偏差 5）。b2a-off 首跑（21-55-11）因 override json 吞键无效，已修复重跑为 b2a-off2。
 
-## 2. 推荐配置（b1-off 组合档）✅ 已实测
+## 2. 生产推荐配置（2026-10-29 起：rerank 开 + 深池 32 + floor −10.5 + B1 读侧四件套）✅ 已实测
 
-`rerank.enabled=false` + `B1 读侧四件套`（tag=b1-off，23-42-59）：
-**turnCov@5=79.5%（+12.4pp）、判对 70.0%（63/90，+31.1pp，McNemar p<0.001；判分器 `scm-flash`——与 MiniMax 判分档不可配对，见 §8）、拒答 15.6%（<20% 达标）、f1 0.486（基线 0.188）、latP50 159ms（-7.3s）。**
-两项收益完全叠加（检索侧来自 T4、答案侧来自 B1），为最终推荐配置。
+```yaml
+memory:
+  recall:
+    rerank:
+      enabled: true
+      provider: local
+      candidates: 32     # 池扩到 32（candidateK 同步扩到 32）
+      minScore: -10.5    # logit 刻度；0..1 概率刻度的云 provider 由代码按 sigmoid 换算
+      blend: 0.9         # #137-F：融合锚点 + floor 补位；⚠ 与深池缺省相抵，见 §20（待拍板）
+```
+
+> ⚠ **#145 复核的重要修正（§20）**：上述组合（含 `blend: 0.9`）在 2026-10-29 复跑得 **turnCov@5 = 79.5%**、判对 75.6%；只把 `blend` 归零（其余缺省不动）= **83.2%**、判对 82.2%。即 84.3% 的收益只在「纯精排」下成立——`blend 0.9` 是 #137-F 在**浅池 12 + 硬 floor −2** 时期定的，与新缺省互相抵消。生产 `blend` 现值仍为 0.9（未改），复评待开票。
+
+**检索侧（§10，n=90，judge=MiniMax-M3.1-Flash）**：deep105（32/−10.5）turnCov@5=**84.3%**（+16.67pp vs b0-base 67.1%，CI95[+9.05,+24.29]，p=0.0005，30W/8L/52T），高于「关掉 rerank」的 79.5%；kept≥4 从 38/90 升到 80/90。剪枝才是伤害源，只扩池不加 floor 无收益（T1 Δ=0）。
+**重排融合修复后（§13.5，#137-F）**：blend α=0.9 + 融合锚点 + floor 补位 → 80.5%（MRR 0.761、判对 81.1%），在 #137 全开档口径下仍差 off 5.6pp（McNemar 7/2，p=0.18 不显著）。
+**答案侧**：B1 读侧四件套（时间序证据 + CoN 引用 + `NOT_ENOUGH_INFO` 出口 + 英文指令）单独带来判对 +15.6pp（38.9%→54.4%，McNemar p=0.001）、拒答 51%→30%，与检索侧收益叠加。
+
+**刻度提醒（#145）**：`minScore` 恒按 provider 原生刻度声明——`local` 是 logit（−10.5 在本批日志分布左侧 ≈ 不剪枝，真正剪枝只有 candidates cap）；0..1 概率刻度的云 provider（`siliconflow`/`dashscope`）不能照抄 −10.5（那等于永不剪枝、与 −2 不等价），代码缺省已按 `sigmoid(-10.5)≈2.75e-5` 换算，见 `src/core/recall/rerank/defaults.ts`。不要把 minScore 往 −2/−4 收（实测误杀 gold 33.1%/18.8%，§13.5）。
+**只滤不重排的降级档**：`mode: "filter"` + `filterRule: "quantile", filterKeepRatio: 0.5`（首选）或 `filterRule: "margin", filterMarginTop: 8`（次选）；缺省 `filterRule: "floor"` 保证旧配置逐位不变（§19）。
+**限制**：`mode`/`blend`/`filterRule` 目前只能写 yaml，`settings-override.ts` 的 `RerankSettingsOverride` 不认这些键（§19.9）。
+
+> 历史档（2026-10-27 下午修正前）：「rerank.enabled=false + B1」曾是推荐配置（b1-off，turnCov@5=79.5%、判对 70.0%、拒答 15.6%、latP50 159ms），数据仍在 §1 表内，保留作对照。
 
 ## 3. 分阶段结论（对照文档 §7/§8）
 
@@ -126,7 +145,7 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 
 ## 7. 后续建议（P0–P2）
 
-- **P0 生产 A/B**：生产网关灰度 `rerank.enabled=false`（或 minScore→-10.5 等价于近全开），观测生产侧有效信息率与延迟——bench 证据支持关停方向，但生产语料（短行）需自证。
+- ~~**P0 生产 A/B**：生产网关灰度 `rerank.enabled=false`（或 minScore→-10.5 等价于近全开）~~ —— **已被 §10 推翻并由 #145 落地**：生产默认改为 rerank **开** + `candidates=32` + `minScore=-10.5`（provider 刻度感知），见 §2；关停档降级为历史对照。
 - **P0 B1 生产化**：injector 注入块渲染按 B1 四件套改造（时间序+CoN+NOT_ENOUGH_INFO+中性英文包裹），bench 已验证 +15.6pp。
 - **P0 结论层回捞（W3，§8）**：生产 `recall.smallToBig.enabled=true`，**maxExtraLines=4**——judge 对齐口径 77.8%→84.4%（+6.7pp，CI[+0.0,+14.4]，n=90，p=0.146；点估计最大、拒答 8.9% 最低、cov 持平）；生产结论卡由 consolidation 既有产出，读侧零改动。
 - **W1/W2 维持默认关（§8，yaml 已回退）**：全开档判对与基线打平（Δ 0.0pp）、cov -4.6pp、且比只开 W3 显著更差（-6.7pp，p=0.031）；W1 需多事实键、W2 需事实级粒度 + 生产语料（有失效语义）复核——已立后续票（#136/#137）。
@@ -236,7 +255,7 @@ node --import tsx scripts/bench-rejudge.mjs <旧报告.json> --register --tag <t
 - **W3（唯一通过答案侧门禁）**：判对 77.8%（judge 对齐基线）→**84.4%（+6.7pp，CI[+0.0,+14.4]，p=0.146，不显著）**、拒答 12.2%→8.9%、cov 持平（79.3%，-0.2pp ns）、缺口桶 5/11（门禁1 PASS；门禁2 严格口径未过）。回捞 2 行档（w3）为 81.1%。**注**：此前 +14.4pp/p=0.0023 是与 scm-flash 判分的旧基线跨判分器比较，已作废（见上一小节）。机制：结论卡（3.56 卡/组 × 90 = 320 卡、769 条 part_of 边）经既有 R7-1 结论层（FTS 词面命中）入候选，`smallToBig`（#78 R-b）单跳回捞源证据行作「上下文行」注入；预算未破（结论行硬上限 floor(maxResults/2)、maxExtraLines=2，注入总行数 ≤ maxResults）。turnCov@5 -3.3pp（ns）：single-session-assistant/preference 桶 -13.3/-12.2pp（结论卡占注入位、gold-turn 覆盖被稀释），但 knowledge-update 桶 **+8.3pp**（结论卡把同一实体的多次更新聚合到一行，正是该桶需要的粒度）。**缺口桶 4/11，差 1 题**。
 - **W1**：判对 +6.7pp（CI 含负，不显著）；turnCov -2.5pp（ns）；multi-session +6.0pp / knowledge-update -8.3pp（事实短语把同事实不同时点的行拉近，稀释时间/版本信号）。按票面规则（Δ<3pt 或 CI 含负值即回滚）**默认关**（`--fact-dual-write` 保留能力）。
 - **W2**：机制正确（140 条 valid_end **只标记不删除**、主表+l1_fts 双写同步、读侧既有 `isOutsideValidityWindow(validityNow)` 生效），但 **turnCov -10.9pp 显著负**（knowledge-update 桶尤甚）；判对 +5.6pp（ns）。**与票面预期一致**：LME90 的 gold 证据常包含被取代的旧值 turn，"只留新值"直接丢 gold。→ 默认关（`--write-supersede` + `--b2b-validity`），收益需生产语料（带失效语义）验证。
-- **叠加性**：不叠加。w13 +8.9pp、combo +7.8pp，均低于 w3 单开 +11.1pp——W1/W3 答案收益重叠（都靠补充上下文），W2 的 cov 伤害进一步拖累。**推荐配置 = b1-off + W3**。
+- **叠加性**：不叠加。w13 +8.9pp、combo +7.8pp，均低于 w3 单开 +11.1pp——W1/W3 答案收益重叠（都靠补充上下文），W2 的 cov 伤害进一步拖累。**本波推荐 = b1-off + W3**（仅限 B1 波内口径；读侧四件套的生产默认已由 #145 固化，现行推荐看 §2）。
 
 ### 实现与 seam（零 schema 变更）
 
@@ -1553,7 +1572,7 @@ B. 按题内分位裁剪（保留分数序前 `keepRatio`）：
 2. **要真正「丢噪声」时走相对尺子**：`mode: "filter"` + `filterRule: "quantile"` + `filterKeepRatio: 0.5`（首选：两次实跑 turn_cov 81.1% / 81.6%、session_cov 94.0%，均高于基线）；或 `filterRule: "margin"` + `filterMarginTop: 8`（次选：MRR 0.735→0.776/0.770、nDCG 0.737→0.767/0.762、注入行最少 2.93/题，代价是 turn_cov 与基线打平）。**禁止**在生产把 `filterRule` 设 `floor` 且 `minScore > −9`。
 3. **监控**：看 `gates.rerank.filterRule` / `passCount` / `kept` 三个数——相对尺子下 **`degraded` 根本不会被赋值**（相对分支不会「全杀」：quantile 至少留 1 条、margin 至少留 top1），所以「`degraded` 恒为 0」不能当作相对尺子健康的证据；真正的信号是 `passCount/候选数` 的分布（quantile 0.5 应≈50%，margin 8 随 provider 刻度变化）与 `kept ≤ 1` 的比例。`degraded` 只服务 floor 族，用来发现「绝对门槛在换 provider/语料后整题失灵」。
 4. **兼容性**：`filterRule` 缺省 `floor`，旧配置行为逐位不变；`margin`/`quantile` 只在显式配置时生效，不影响既有部署。
-5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`blend`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。另外 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也没有这三个键。
+5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`blend`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。另外 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也没有这三个键（#145 已把 `blend` 与 `candidateK` 补进云模板，`mode`/`filterRule` 仍未钉）。
 6. **决策记录**：本次机制变更已落 `docs/adr/0013-rerank-filter-题内相对尺子.md`（绝对门槛不可校准的理由、相对尺子的语义与取值、观测字段、被否决的选项）。
 
 ### 19.10 复现
@@ -1582,3 +1601,85 @@ B="--dataset longmemeval --manifest .eval-data/bench/lme-manifest.json --keep --
 node --import tsx scripts/eval-memory-bench.mjs $B --rerank-filter-rule quantile --rerank-keep-ratio 0.5 --report-name lme90-r144-q50 --tag r144-q50
 node --import tsx scripts/eval-memory-bench.mjs $B --rerank-filter-rule margin --rerank-margin-top 8 --report-name lme90-r144-m8 --tag r144-margin8
 ```
+
+## 20. #145 rerank 生产缺省翻转（candidates 32 / minScore −10.5，provider 刻度感知）与 blend 交互的实测复核（2026-10-29）
+
+票 #145 的任务：把「深池 + 近不筛」从 bench 实验档变成**生产缺省**，并复跑 LME90 验收（turnCov@5 ≥84% 且不低于 82%）。本节记录落地内容、复跑结果、以及一个必须写下来的意外发现：**#135 的 84.3% 在现在的生产组合里只剩 79.5%，差额几乎全部来自 `recall.rerank.blend: 0.9`。**
+
+### 20.1 落地内容（代码 / 配置 / 文档）
+
+| 位置 | 改动 |
+|---|---|
+| `MemoryCore/src/core/recall/rerank/defaults.ts`（新增） | 缺省值单一口径源：`DEFAULT_RERANK_CANDIDATES=32`、`DEFAULT_RERANK_MIN_SCORE_LOGIT=-10.5`、`DEFAULT_RERANK_MIN_SCORE_PROB=sigmoid01(-10.5)≈2.75e-5`、`sigmoid01`、`isLogitScaleProvider`、`defaultRerankMinScore(provider)` |
+| `MemoryCore/src/config.ts`（parse 期） | `rerank.candidates` 缺省 12→32；`rerank.minScore` 缺省 −2→**按 provider 刻度**（local logit −10.5 / siliconflow·dashscope 概率刻度 sigmoid(−10.5)）；显式 yaml / override 值逐位优先（`num()` 命中即不取缺省） |
+| `MemoryCore/src/core/hooks/auto-recall.ts`（wiring 兜底） | 与 config 同口径；两处刻度判定（经验层精排 `logitScale`、结论层 `r71GateLogitScale`）统一走 `isLogitScaleProvider`，并删掉本地重复的 sigmoid 实现 |
+| `MemoryCore/src/gateway/boot-warmup.ts` | 预热文档缺省 12→32（与 candidates 缺省对齐；属票外顺带项：预热池小于精排池会让首轮精排退化到原序） |
+| `MemoryCore/tdai-gateway.yaml`（本地，gitignore） | 已钉 `candidateK: 32` / `blend: 0.9`；补 #145 注释说明「扩池后缺省 candidateK 会变 96」 |
+| `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` | 新增 `recall.candidateK: 32`（缺省 `maxResults*3` 会随扩池变 96）与 `recall.rerank.blend: 0.9`（代码缺省 0，不钉就静默回退纯重排） |
+| 测试 | 新增 `defaults.test.ts`（7 条：深池缺省、provider 刻度映射、sigmoid 分位等价、`isLogitScaleProvider` 与取值路径的差异化语义、显式值优先）；`config.rerank.test.ts` / `boot-warmup.test.ts` 断言同步 |
+| 文档 | 本文件 §2 推荐配置重写、§7 的 P0「灰度关 rerank」行标注已被 #145 取代、`CONTEXT.md` 增词条「精排默认值与刻度感知门槛」 |
+
+### 20.2 验收①：默认档复跑 = 79.5%（未达 84%）
+
+```bash
+bash scripts/run-r135-rerankfix-arms.sh one      # 不带任何 --rerank-* 覆盖 = 只吃生产缺省
+```
+
+报告 `MemoryCore/.eval-data/bench/longmemeval-oracle-2026-10-29T04-06-10.json`（tag `rfix-one`，judge `MiniMax-M3.1-Flash` + `lme-v2`，与 #135 同判分器，可配对）：
+
+| 指标 | 值 |
+|---|---|
+| turnCov@5 | **79.5%**（0.7954） |
+| sessionCov@5 / sessionAny | 92.7% / 100% |
+| MRR / nDCG@5 | 0.753 / 0.744 |
+| LLM 判对 / 拒答 | 75.6% / 14.4% |
+| tokenF1 | 0.472 |
+| 注入行/题 · 块字符 | 3.54 · 3655 |
+| 召回延迟 mean / p50 / p95 / max | 1390 / 1179 / 2971 / 5073 ms |
+
+生效配置经报告与 cfg 日志双向确认：`rerankEnabled=true`、`provider=local`、`candidates=32`、`minScore=-10.5`、`blend=0.9`、`candidateK=32`、`rerankOverride=null`（即不缺省被覆盖）。
+
+**floor 已确认不再是伤害源**：90 题里 `gates.rerank.kept` 分布 = {2:5, 3:5, 4:2, **5:78**}，样例 gate `{"provider":"local","kept":5,"dropped":3,"topScore":5.457,"scoreScale":"logit-sigmoid","threshold01":2.755e-5,"top01":0.9957,"passCount":8,"blend":0.9}` —— 与 §19.1 的结论一致（−10.5 ≈ 不筛）。既然没剪枝，79.5% 与 84.3% 的差额只能来自**排序**。
+
+### 20.3 归因：差额来自 `blend=0.9`，不是 candidates/minScore
+
+同一份缺省、同一个库、同 judge，只把 `blend` 归零重跑（`one --rerank-blend 0 --report-name lme90-r145-blend0`）：
+
+| 档位 | blend | candidates / minScore | turnCov@5 | sessionCov | MRR | nDCG@5 | 判对 | 拒答 | 注入行 | p50 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 生产默认（one 档） | **0.9** | 32 / −10.5 | 79.5% | 92.7% | 0.753 | 0.744 | 75.6% | 14.4% | 3.54 | 1179 ms |
+| 只改 blend=0（one 档） | 0 | 32 / −10.5 | **83.2%** | 93.4% | 0.780 | 0.780 | **82.2%** | 11.1% | 2.91 | 1039 ms |
+| #135 deep105（历史，同 judge） | 0 | 32 / −10.5（显式） | 84.3% | — | — | — | 82.2% | 10.0% | — | — |
+
+配对统计（`fit-fusion-weights.mjs compare`，基线 = 生产默认档，n=90，按 case 重采样 1000 次）：
+
+- blend0 vs 默认：**ΔturnCov@5 = +3.64pp**，CI95[−2.87, +10.73]，11W/9L/67T，符号检验 p=0.82；判对 +6.67pp，McNemar p=0.18。**E2 门禁 FAIL（n=90 不足以显著）**，但两个独立指标（召回覆盖与答案判对）同向，且 kept 分布两档都是 {2:4~5, 3:5~6, 4:2, 5:78} —— 没有任何剪枝差异，纯粹是排序不同。
+- #135 deep105 vs 默认：Δ +4.79pp，CI95[−2.11, +12.84]，判对同样 +6.67pp。
+- blend0 vs deep105：83.2% vs 84.3%，差 1.1pp，落在噪声带内（§19.8 记录的基线自重跑差就有 0.6pp，且两档相隔两天、管线多了 #137/#138 的读侧件）。
+
+机制解释（`blend` 语义见 auto-recall 的 `applyRecallRerank`）：`score = α×融合位次先验 + (1−α)×精排归一化分`，**α=0.9 意味着最终序 90% 由融合位次决定、精排只占 10%**。而 deep105 的收益恰恰来自「32 条候选被精排重新排序」；把精排权重压到 10%，等于把 #135 修好的排序优势重新稀释掉。
+
+关键的上下文：**#137-F 定 α=0.9 时的配置是「浅池 12 + 硬 floor −2」**——那一档里纯精排会因为误杀 gold 而变差（§13.5 记录纯重排判对 77.8% / cov 77.6%，α=0.9 是 80.5%）。#145 把池加宽、floor 放到不筛之后，前提变了：纯精排不再误杀，反而能把 32 条候选里的 gold 顶上来。**所以「blend 0.9」与「深池 + 近不筛」不是互补的两个优化，而是互相抵消的两笔账。**
+
+### 20.4 结论与待定项
+
+1. **票面验收①严格未达标**：生产默认（含 yaml 的 `blend: 0.9`）= 79.5%，纯重排缺省 = 83.2%，都不到 84%。但 84.3% 的实质是可复现的（83.2%，与 84.3% 统计不可分），差额不在本票范围内的 `candidates/minScore`。
+2. **本票的机制目标已达成**：floor 不再是伤害源（kept=5 占 86.7%），深池成为缺省，provider 刻度感知正确，显式配置不被覆盖。
+3. **待拍板**：生产要不要把 `recall.rerank.blend` 从 0.9 调回 0（或小 α 如 0.1–0.2，尚未测）。这是 #137-F 的取值，不是 #145 能单方面改的；改动会改变「精排 vs 融合序」的语义，建议单开票复评（同 judge 重跑 α∈{0, 0.1, 0.9} 三档 + 配对门禁）。**在拍板前，生产保持现状（blend 0.9）**，不要把本节的 blend0 数字当生产预期。
+4. **生产 override 已核查**：`D:/TDB/data/config-override.json` 的 `rerank` 段只有 `provider`/`enabled`/`local`，**没有残留 `minScore`/`candidates`**，因此新缺省在现网直接生效（票面「注意」项已完成）。
+
+### 20.5 复现
+
+```bash
+cd MemoryCore
+bash scripts/run-r135-rerankfix-arms.sh one                                # 生产默认档（blend 0.9）
+bash scripts/run-r135-rerankfix-arms.sh one --rerank-blend 0 \
+  --report-name lme90-r145-blend0                                          # 对照档（纯重排）
+node scripts/fit-fusion-weights.mjs compare \
+  --base .eval-data/bench/longmemeval-oracle-2026-10-29T04-06-10.json \
+  --arm blend0=.eval-data/bench/lme90-r145-blend0.json \
+  --arm deep105_135=.eval-data/bench/longmemeval-oracle-2026-10-27T08-36-53.json
+```
+
+⚠ 复跑注意：第一次 `--rerank-blend 0` 臂在 12:09 因 `[rerank] provider=local 返回 null，降级原序` 失败（首载超时，无报告），重跑即正常；判读时以报告里的 `config.rerank` 为准，别只看命令行。
+

@@ -12,6 +12,7 @@ import {
   normalizeRerankFilterMarginTop,
   normalizeRerankFilterRule,
 } from "./core/recall/rerank/filter-ruler.js";
+import { DEFAULT_RERANK_CANDIDATES, defaultRerankMinScore } from "./core/recall/rerank/defaults.js";
 
 // ============================
 // Type definitions
@@ -583,7 +584,9 @@ export interface RecallRerankConfig {
   model: string;
   /** 单次精排 HTTP 超时毫秒（缺省 800；负值 clamp 0——沿 v3Recall「语义自毁不拦 loud 显形」先例）。 */
   timeoutMs: number;
-  /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 12，clamp [1,100] 取整）。 */
+  /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 32，clamp [1,100] 取整）。
+   *  #145（2026-10-29）：深池缺省（#135 deep105 档）——浅池 12 只扩池不加 floor 无收益（T1 Δ=0），
+   *  池深是「不误杀 + 留给 blend/锚点翻盘」的前提，真正的裁剪靠 candidates cap 与题内相对尺子。 */
   candidates: number;
   /**
    * #135 R4（bench/recall-opt）：精排作用模式（缺省 "rerank" = 逐位现状）。
@@ -622,7 +625,9 @@ export interface RecallRerankConfig {
    */
   blend: number;
   /**
-   * 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
+   * 相关度门槛（缺省 #145 起**按 provider 刻度**取值：local = −10.5 logit，云 provider =
+   * sigmoid(−10.5) ≈ 2.75e-5；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
+   * −10.5 在实测分布左侧 ≈ 不筛：不误杀 gold，但也别指望它丢噪声（#144 复核）。
    * #99 F3（2026-10-25）：本键恒按 provider 原生刻度声明（local=logit，云 provider=0..1）；
    * 门边界 local logit 先 sigmoid 归一 0..1、门槛同变换 sigmoid(minScore)（单调等价）；
    * 全员低于阈值不清零——回退未重排顺序（journal gates.rerank degraded 归因）。
@@ -2370,7 +2375,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           baseUrl: str(rr, "baseUrl") ?? "",
           model: str(rr, "model") ?? "",
           timeoutMs: Math.max(0, num(rr, "timeoutMs") ?? 800),
-          candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
+          candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", DEFAULT_RERANK_CANDIDATES, 100))),
           // #135 R4：非法 mode 回落 "rerank"（逐位现状），静默回落
           mode: str(rr, "mode") === "filter" ? ("filter" as const) : ("rerank" as const),
           // #144：filter 的判定尺子（缺省 floor = 逐位现状）。归一/夹取口径见
@@ -2380,7 +2385,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           filterKeepRatio: normalizeRerankFilterKeepRatio(num(rr, "filterKeepRatio")),
           // #137-F：混合比例 clamp [0,1]；缺省 0 = 逐位现状
           blend: Math.min(1, Math.max(0, num(rr, "blend") ?? 0)),
-          minScore: num(rr, "minScore") ?? -2.0,
+          // #145：缺省按 provider 原生刻度取值（local logit −10.5 / 云 0..1 刻度 sigmoid(−10.5)），
+          // 显式 yaml / config-override 值逐位优先（num() 命中即不取缺省）。
+          minScore: num(rr, "minScore") ?? defaultRerankMinScore(provider),
           local: {
             modelDir: optStr(localGroup, "modelDir") ?? "",
             idleUnloadMs: recallSignalBoost(localGroup, "idleUnloadMs", 600_000),
