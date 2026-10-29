@@ -19,6 +19,7 @@
  */
 import type { HealthWarmupInfo } from "./types.js";
 import type { Logger } from "../core/types.js";
+import { DEFAULT_RERANK_CANDIDATES } from "../core/recall/rerank/defaults.js";
 
 export type WarmupStepKey = "jieba" | "storeReady" | "queryExpand" | "rerank";
 
@@ -167,8 +168,8 @@ export const RERANK_WARMUP_CLOUD_DOCS: readonly string[] = ["预热文档：云�
 
 /**
  * S3 本地档位预热文档（#68 档位升级）：真实召回 candidates 档
- * （memory.recall.rerank.candidates，config.ts 解析缺省 12、clamp [1,100]）。
- * 每条为 50-200 字真实长度中文样本（记忆域语料），把首批 12-doc 批量推理
+ * （memory.recall.rerank.candidates，缺省取 rerank/defaults.ts 的 DEFAULT_RERANK_CANDIDATES=32、
+ * clamp [1,100]）。每条为 50-200 字真实长度中文样本（记忆域语料），把首批 candidates-doc 批量推理
  * （tokenize + ORT session 暖机）移出首召回关键路径。
  * 超出语料按模循环——批量规模才是预热目标，语料多样性无关紧要。
  */
@@ -187,10 +188,10 @@ const RERANK_WARMUP_CORPUS: readonly string[] = [
   "运维经验：服务重启后第一波请求延迟普遍偏高，原因包括字典加载、模型加载、连接池冷启动和 DNS 首连；对策是启动阶段逐项预热，并把各步骤耗时暴露到健康检查接口，便于观测。",
 ];
 
-/** 生成 S3 本地档位预热文档：数量=candidates（缺省 12，clamp [1,100]），长度 50-200 字。 */
+/** 生成 S3 本地档位预热文档：数量=candidates（缺省 DEFAULT_RERANK_CANDIDATES，clamp [1,100]），长度 50-200 字。 */
 export function buildRerankWarmupDocs(candidates?: number): string[] {
-  const raw = candidates ?? 12;
-  const n = Number.isFinite(raw) ? Math.max(1, Math.min(100, Math.floor(raw))) : 12;
+  const raw = candidates ?? DEFAULT_RERANK_CANDIDATES;
+  const n = Number.isFinite(raw) ? Math.max(1, Math.min(100, Math.floor(raw))) : DEFAULT_RERANK_CANDIDATES;
   const out: string[] = [];
   for (let i = 0; i < n; i++) out.push(RERANK_WARMUP_CORPUS[i % RERANK_WARMUP_CORPUS.length]);
   return out;

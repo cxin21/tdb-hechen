@@ -106,11 +106,12 @@ if (flag("help") || argv.length === 0) {
   --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
   --rerank-mode filter|rerank   #135 R4 精排试验：filter=floor 只滤不清排（保原序）；缺省 rerank
-  --rerank-blend X              #137-F 精排试验：精排分与检索融合分的混合比例 α∈[0,1]（0=纯精排=旧行为）
   --rerank-timeout MS           精排超时（毫秒；本机 onnx 冷加载可能 >5s，冷启动档放宽到 30000）
   --rerank-filter-only [floor]  精排降级为过滤器（**必须同时加 --rerank-child-proc**，否则直接退出码 2）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
   --rerank-child-proc            精排子进程隔离（onnx 原生崩溃防护；--rerank-filter-only 依赖此路径）
+  --dump-rerank-scores           #144 floor 校准：把每次精排调用的**全量候选分数**落 <out>/<report>-rerank-scores.jsonl
+                                 （含未达线行 + recordId/来源会话 + 最终保留序；只加 IO，不改召回行为）
   --b1                           B1 读侧四件套：时间戳打包证据 + CoN/JSON v3 提示 + NOT_ENOUGH_INFO 拒答出口（英文指令）
   --b2b-validity                 B2-b：召回 validityNow=题目日期（缺省=当前时刻，现状）
   --validity-mode soft|hard      #136 效期策略：soft=失效行降权保留（仅当下意图+有更新行才硬丢）
@@ -153,8 +154,10 @@ const KNOWN_FLAGS = new Set([
   "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
   "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
   "out", "pace", "present-temporal", "prod-config", "prod-data", "quiet",
-  "recall-ks", "recall-timeout", "report-name", "rerank-blend", "rerank-candidates", "rerank-child-proc",
-  "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
+  "recall-ks", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
+  "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
+  // #144：filter 的题内相对尺子（floor 在题间量纲漂移下不可校准，见 docs/optimization-results.md §19）
+  "rerank-filter-rule", "rerank-margin-top", "rerank-keep-ratio",
   "rerank-timeout", "samples", "small-to-big", "small-to-big-max-extra", "small-to-big-off", "store",
   "supersede-cardinality", "tag", "validity-mode", "validity-off", "write-supersede",
 ]);
@@ -467,15 +470,28 @@ async function main() {
   // #135 R4：精排模式（rerank=重排；filter=只丢低于 floor 的行、保原序）。写进 yaml 与 override json，两边一致。
   const rmode = arg("rerank-mode", undefined);
   if (rmode === "filter" || rmode === "rerank") rerankOverride.mode = rmode;
+  // #144：filter 的判定尺子。floor=旧口径（只看 minScore，题间量纲不一致→整题误杀）；
+  // margin/quantile 只比同题分数序，minScore 不参与（两把尺子不互相盖）。
+  const frule = arg("rerank-filter-rule", undefined);
+  if (frule === "floor" || frule === "margin" || frule === "quantile") {
+    rerankOverride.filterRule = frule;
+    if (frule !== "floor") {
+      // 相对尺子要配 --rerank-minscore 极低（让候选全量进入打分），否则 floor 会先把候选剪掉
+      log("[bench] filter 相对尺子生效：minScore 不参与判定；请确认 --rerank-minscore 足够低以放开候选");
+    }
+  }
+  const fmargin = arg("rerank-margin-top", undefined);
+  if (fmargin !== undefined && fmargin !== true && Number.isFinite(Number(fmargin)) && Number(fmargin) > 0) {
+    rerankOverride.filterMarginTop = Number(fmargin);
+  }
+  const fkeep = arg("rerank-keep-ratio", undefined);
+  if (fkeep !== undefined && fkeep !== true && Number.isFinite(Number(fkeep)) && Number(fkeep) > 0 && Number(fkeep) <= 1) {
+    rerankOverride.filterKeepRatio = Number(fkeep);
+  }
   // 精排超时（毫秒；0=不限）——本机 onnx 冷加载可能 >5s，冷启动档需要放宽
   const rtimeout = arg("rerank-timeout", undefined);
   if (rtimeout !== undefined && rtimeout !== true && Number.isFinite(Number(rtimeout))) {
     rerankOverride.timeoutMs = Math.max(0, Number(rtimeout));
-  }
-  // #137-F：精排 × 融合相关度混合比例 α（0=纯精排=旧行为；1=纯融合序）
-  const rblend = arg("rerank-blend", undefined);
-  if (rblend !== undefined && rblend !== true && Number.isFinite(Number(rblend))) {
-    rerankOverride.blend = Math.min(1, Math.max(0, Number(rblend)));
   }
   // B2-b：MMR 试验档（只写沙箱 yaml；生产 yaml 不动——同用户决策②）。声明须在 prepareBenchYaml 之前。
   const mmrOverride = {};
@@ -762,6 +778,25 @@ async function main() {
   // ── 检索评估 ──
   // B2-b：validityNow 用题目日期（--b2b-validity；缺省保持 new Date() 现状）
   const b2bValidity = flag("b2b-validity");
+  // ── #144：filter floor 校准的候选分数转储 ──
+  // 为什么在 bench 侧开：results JSON 只留 kept/dropped 计数，事后无法重建**任何其它 floor** 的
+  // turnCov；一档一跑 = 每档 90 题白烧一次精排。转储全量分数后，任意 floor 都能离线重算。
+  const dumpRerankScores = flag("dump-rerank-scores");
+  let rerankScoreDumpPath;
+  if (dumpRerankScores) {
+    if (rerankOverride.enabled === false) {
+      console.error("[bench] --dump-rerank-scores 需要精排开启（当前 --rerank-off）；已中止，避免落空文件后误判分布。");
+      process.exit(2);
+    }
+    fs.mkdirSync(outDir, { recursive: true });
+    const dumpStamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const dumpReportName = String(strArg("report-name", "") ?? "").trim();
+    const dumpName = dumpReportName || `${datasetName}-${dumpStamp}`;
+    rerankScoreDumpPath = path.join(outDir, `${dumpName}-rerank-scores.jsonl`);
+    fs.rmSync(rerankScoreDumpPath, { force: true });
+    process.env.RERANK_SCORE_DUMP = rerankScoreDumpPath;
+    log("[bench] #144 候选分数转储: " + rerankScoreDumpPath + "（全量候选分数；诊断用，勿把该档延迟当正式口径）");
+  }
     // B0 修复（bench/recall-opt）：--rerank-child-proc 精排子进程隔离（onnx 原生崩溃防护）
   const rerankChildProc = flag("rerank-child-proc");
   // B2a 提速（bench/recall-opt）：rerank 推理耗时治理——文档截断 + onnx 线程数。
@@ -1020,6 +1055,15 @@ async function main() {
       rerank: cfg.recall?.rerank?.provider ?? "none",
       // #135 第1项：报告必须记 enabled（只记 provider 会掩盖"沙箱写 false、生产 override 覆盖成 true"）
       rerankEnabled: cfg.recall?.rerank?.enabled === true,
+      // #144：filter floor 校准的**生效**参数快照——floor 的可比性取决于标度(mode/logitScale)，只记分数会张冠李戴。
+      rerankMode: cfg.recall?.rerank?.mode ?? "rerank",
+      rerankMinScore: cfg.recall?.rerank?.minScore ?? null,
+      rerankCandidates: cfg.recall?.rerank?.candidates ?? null,
+      rerankScoreDump: rerankScoreDumpPath ? path.basename(rerankScoreDumpPath) : null,
+      // #144：filter 判定尺子（floor/margin/quantile）与相对尺子参数——只记 minScore 无法区分「按绝对分剪」与「按题内序剪」。
+      rerankFilterRule: cfg.recall?.rerank?.filterRule ?? null,
+      rerankMarginTop: cfg.recall?.rerank?.filterMarginTop ?? null,
+      rerankKeepRatio: cfg.recall?.rerank?.filterKeepRatio ?? null,
       // #139 第5项：读侧 smallToBig 与写侧 conclusionCards 分开归因
       smallToBig: {
         enabled: cfg.recall?.smallToBig?.enabled === true,

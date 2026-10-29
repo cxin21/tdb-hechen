@@ -58,7 +58,7 @@ import { emotionSalienceOf, buildRankContext,
   type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
-import { anchorRerankOrder, blendRerankOrder, type RerankScored } from "../recall/rerank/blend.js";
+import { anchorRerankOrder } from "../recall/rerank/anchor.js";
 import {
   SOFT_VALIDITY_PENALTY,
   excludeInvalidatedFor,
@@ -76,6 +76,21 @@ import {
 import { arbitrateConclusions, computeSlotBudget } from "../recall/layered-budget.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
+import {
+  DEFAULT_RERANK_FILTER_RULER,
+  filterRulerGateObs,
+  normalizeRerankFilterRuler,
+  relativeKeepIdxSet,
+  type RerankFilterRule,
+  type RerankFilterRuler,
+  type RerankRelativeRuler,
+} from "../recall/rerank/filter-ruler.js";
+import {
+  DEFAULT_RERANK_CANDIDATES,
+  defaultRerankMinScore,
+  isLogitScaleProvider,
+  sigmoid01,
+} from "../recall/rerank/defaults.js";
 import { mmrReorder } from "../recall/mmr.js";
 import { sortLinesByLeadingTimestamp } from "./inject-order.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
@@ -96,6 +111,7 @@ import {
   type L2ConclusionCandidate,
 } from "./recall-layered.js";
 import path from "node:path";
+import fs from "node:fs";
 import { createScopedStorageAdapter, type StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import {
@@ -583,8 +599,8 @@ interface RerankWiring {
   candidates: number;
   /** #135 R4：作用模式（缺省 "rerank" = 逐位现状；"filter" = 只滤不清排保原序）。 */
   mode: "rerank" | "filter";
-  /** #137-F：精排分与检索融合分的混合比例 α∈[0,1]（0 = 逐位现状）。 */
-  blend: number;
+  /** #144：filter 模式的判定尺子（floor=绝对 minScore 阈值，现状；margin/quantile=题内相对尺子）。 */
+  filterRuler: RerankFilterRuler;
 }
 
 /** 每调用解析一次精排接线（off | unavailable | active）。T1 移交：
@@ -604,13 +620,23 @@ function resolveRerankWiring(
   if (!rc || !enabled || provider === "none") {
     // off：完全静默零开销（configError 存在但已停用 → 每调用 warn 一次提示配置问题）
     if (rc?.configError) logger?.warn?.(`${TAG} [rerank] 精排已停用（${rc.configError}）`);
-    return { state: "off", provider, minScore: -2, candidates: 12, mode: "rerank", blend: 0 };
+    return {
+      state: "off",
+      provider,
+      // #145：off 态这两个值只进展示/journal（不做判定），仍与 parse 期缺省同源，避免两处漂移。
+      minScore: defaultRerankMinScore(provider),
+      candidates: DEFAULT_RERANK_CANDIDATES,
+      mode: "rerank",
+      filterRuler: DEFAULT_RERANK_FILTER_RULER,
+    };
   }
-  const minScore = typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : -2;
+  // #145：兜底缺省与 config.ts parse 期同源（provider 刻度感知：local −10.5 logit / 云 sigmoid(−10.5)）。
+  const minScore =
+    typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : defaultRerankMinScore(provider);
   const candidates =
     typeof rc.candidates === "number" && Number.isFinite(rc.candidates) && rc.candidates >= 1
       ? Math.floor(rc.candidates)
-      : 12;
+      : DEFAULT_RERANK_CANDIDATES;
   const reranker = deps?.reranker !== undefined ? deps.reranker : createReranker(rc, { fetchImpl: deps?.fetchImpl });
   if (rc.configError || reranker === null) {
     logger?.warn?.(`${TAG} [rerank] provider=${provider} 不可用（${rc.configError ?? "工厂返回 null"}），降级原序`);
@@ -620,7 +646,7 @@ function resolveRerankWiring(
       minScore,
       candidates,
       mode: rc.mode === "filter" ? "filter" : "rerank",
-      blend: typeof rc.blend === "number" && Number.isFinite(rc.blend) ? Math.min(1, Math.max(0, rc.blend)) : 0,
+      filterRuler: normalizeRerankFilterRuler(rc),
     };
   }
   return {
@@ -631,8 +657,49 @@ function resolveRerankWiring(
     minScore,
     candidates,
     mode: rc.mode === "filter" ? "filter" : "rerank",
-    blend: typeof rc.blend === "number" && Number.isFinite(rc.blend) ? Math.min(1, Math.max(0, rc.blend)) : 0,
+    filterRuler: normalizeRerankFilterRuler(rc),
   };
+}
+
+/** #144：filter floor 校准的候选分数转储（诊断专用；缺省零开销）。
+ *  打开：`RERANK_SCORE_DUMP=<jsonl 路径>`（bench 侧 `--dump-rerank-scores` 透传该 env）。
+ *  每完成一次精排调用落一行 JSONL：**全部候选**的原始 provider 分数（含未达线行）+ recordId + 最终保留序。
+ *  为什么连未达线行一起落：filter 模式的 floor 校准要 gold/噪声的**全量**分数分布；result rows 里只剩
+ *  kept/dropped 计数，事后无法重建任何其它 floor 的 turnCov（一档一跑 = 每档 90 题白烧一次精排）。 */
+export interface RerankScoreDumpRecord {
+  query: string;
+  provider: string;
+  mode: "rerank" | "filter";
+  minScore: number;
+  candidates: number;
+  logitScale: boolean;
+  threshold01: number;
+  cap: number;
+  lineCount: number;
+  /** 已评分候选（原始 provider 分量纲；未评分 = provider 截断漏排，不在此列）。 */
+  scored: { i: number; score: number }[];
+  /** 全候选（精排前原序）：recordId/session 回指召回来源；text 是召回行原文（bench 侧靠它反查 turn id——
+   *  sqlite fallback 路 metas 为空，只落 recordId 会解析不出证据，校准就没法按 gold 分层）。 */
+  order: { i: number; rec: string | null; session: string | null; text: string }[];
+  /** 最终保留的候选下标（filter 模式 = 原序过滤后的子序）。 */
+  final: number[];
+  /** #144：规则过线条数（cap 之前；与 final.length 的差 = 预算截断掉的条数）。 */
+  passCount?: number;
+  /** #144：filter 判定尺子（floor/margin/quantile）+ 参数，供事后归因与离线复算。 */
+  filterRule?: RerankFilterRule;
+  filterMarginTop?: number;
+  filterKeepRatio?: number;
+  degraded?: "all-below-minScore";
+}
+
+/** 追加一行转储。诊断路径：任何 IO 失败都不允许影响召回主流程（宁丢观测不丢召回）。 */
+export function appendRerankScoreDump(dumpPath: string | undefined, rec: RerankScoreDumpRecord): void {
+  if (!dumpPath) return;
+  try {
+    fs.appendFileSync(dumpPath, JSON.stringify(rec) + "\n");
+  } catch {
+    /* 诊断失败静默：不打断召回 */
+  }
 }
 
 /** P1 Task 2（spec §4.5）：精排主体，原位改写 searchResult（lines/scores/metas/gates）。
@@ -709,10 +776,10 @@ async function applyRecallRerank(
   // （sigmoid(−1.0)≈0.269，换算出处=生产 config-override rerank.minScore=−1.0 logit 刻度）。
   // journal topScore 恒记 raw（#96 取证口径连续），top01/threshold01/scoreScale 附加归一化观测；
   // 云 provider（siliconflow/dashscope）原生 0..1 相关度不归一（scoreScale 键缺席 = native）。
-  const logitScale = wiring.provider === "local";
-  const sigmoid01 = (s: number): number => 1 / (1 + Math.exp(-s));
+  const logitScale = isLogitScaleProvider(wiring.provider);
+  // sigmoid 变换与缺省门槛同源（recall/rerank/defaults.ts），别在这里另写一份。
   const score01Of = (s: number): number => (logitScale ? sigmoid01(s) : s);
-  const threshold01 = logitScale ? sigmoid01(wiring.minScore) : wiring.minScore;
+  const threshold01 = score01Of(wiring.minScore);
   const rankedPass = clean.filter((r) => score01Of(r.score) >= threshold01);
   let finalIdxs: number[];
   let degraded: "all-below-minScore" | undefined;
@@ -720,63 +787,61 @@ async function applyRecallRerank(
   let anchorForced = false;
   // B2-b：MMR 重排耗时（gates 观测；声明提到 if/else 外供 gates 组装读取）
   let mmrMs = 0;
-  if (rankedPass.length === 0 && clean.length > 0) {
+  const scoredSet = new Set(clean.map((r) => r.index));
+  /** filter 语义：达线保留；未达线剔除；未被 provider 评分的候选（截断漏排）原样保留。 */
+  const keepByFilter = (passSet: Set<number>): number[] => {
+    const idxs: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (passSet.has(i) || !scoredSet.has(i)) idxs.push(i);
+    }
+    return idxs;
+  };
+  /** #144：filter 的判定尺子（rerank 模式恒 floor 语义，不走题内相对规则）。 */
+  const filterRuler = wiring.mode === "filter" ? wiring.filterRuler : DEFAULT_RERANK_FILTER_RULER;
+  if (filterRuler.rule !== "floor") {
+    // ── #144：题内相对尺子——只比同一题内的分数序，provider 换版/量纲漂移不再整题误杀或整题放行。
+    // 绝对 minScore 此时不参与判定（两把尺子互相盖会让「floor 不生效」与「规则生效」混在一起无法归因）。
+    const passSet = relativeKeepIdxSet(clean, filterRuler as RerankRelativeRuler);
+    finalIdxs = keepByFilter(passSet);
+  } else if (rankedPass.length === 0 && clean.length > 0) {
     // F3 优雅降级：全员低于阈值不清零（P3 病灶：经验层 0 行）——回退未重排顺序
     // （与 null/throw/熔断同族「原序注入」语义），journal degraded 归因；预算帽照常生效。
     degraded = "all-below-minScore";
     finalIdxs = lines.map((_, i) => i);
     logger?.debug?.(`${TAG} [rerank] 全员低于阈值（topScore=${clean[0].score} < minScore=${wiring.minScore}）→ 降级原序注入`);
+  } else if (wiring.mode === "filter") {
+    // #135 R4：floor 档——provider 打分只作绝对门槛，不清排、不改序（保原序注入）。
+    finalIdxs = keepByFilter(new Set(rankedPass.map((r) => r.index)));
   } else {
-    if (wiring.mode === "filter") {
-      // ── #135 R4：过滤器化——provider 打分只作 floor，不清排、不改序（保原序注入）。
-      // bench V2 host 侧实证：floor=-7 无增益；生产应 ≤-10.5（logit）或校准概率门槛。
-      // MMR 是重排器，与 filter 语义互斥——filter 模式下忽略。
-      const passSet = new Set(rankedPass.map((r) => r.index));
-      const scoredSet = new Set(clean.map((r) => r.index));
-      finalIdxs = [];
-      for (let i = 0; i < lines.length; i++) {
-        // 达线保留；未达线剔除；未被 provider 评分的候选（截断漏排）原样保留（floor 只作用于已评分行）
-        if (passSet.has(i) || !scoredSet.has(i)) finalIdxs.push(i);
+    let passIdxs: number[] = rankedPass.map((r) => r.index);
+    // #137-F：精排顺序直接生效——不再叠加任何原序加权（加权混排会稀释精排收益，机制已整体移除，见 docs §21.6）。
+    if (mmr?.enabled && passIdxs.length > 1) {
+      const tM = performance.now();
+      // B2-b：pass 池整体置换（不减员），多样性优先级进序——预算帽照常在 slice 处生效
+      passIdxs = mmrReorder(passIdxs, docs, mmr.lambda);
+      mmrMs = performance.now() - tM;
+    }
+    // #137-F：融合锚点——预算收缩到 1~2 行时（W3 结论层占满 maxResults 的实测形态），
+    // 单条注入行不允许被精排单方面换掉：融合主序 top-1 必须留在截断窗口内。
+    // 有空间（cap≥2）时精排仍可改第 2..cap 名次，锚点只守住最高置信证据。
+    const capInner = Math.max(cap, 0);
+    // 锚点只在「融合 top-1 自己过了 floor」时生效——floor（minScore）语义不被锚点绕过。
+    if (capInner > 0 && lines.length > 1 && passIdxs.includes(0)) {
+      const anchored = anchorRerankOrder(passIdxs, capInner);
+      if (anchored[0] !== passIdxs[0] || anchored.length !== passIdxs.length || !passIdxs.slice(0, capInner).includes(0)) {
+        anchorForced = !passIdxs.slice(0, capInner).includes(0);
       }
-    } else {
-      let passIdxs: number[] = rankedPass.map((r) => r.index);
-      // #137-F：混合排序——α>0 时用「检索融合相关度（池内 max 归一）」与精排分共同裁决，
-      // 精排不再单方面覆盖融合主序（α=0 逐位旧行为；见 recall/rerank/blend.ts 的动机）。
-      if (wiring.blend > 0 && passIdxs.length > 1) {
-        const scored01: RerankScored[] = clean.map((r) => ({ index: r.index, score01: score01Of(r.score) }));
-        const before = passIdxs[0];
-        passIdxs = blendRerankOrder(passIdxs, scored01, lines.length, wiring.blend);
-        if (process.env.RERANK_DEBUG_BLEND === "1") {
-          process.stderr.write(
-            `[rerank-blend] α=${wiring.blend} scores=${searchResult.scores ? searchResult.scores.length : "none"} lines=${lines.length} cap=${cap} topBefore=${before} topAfter=${passIdxs[0]} rel0=${searchResult.scores?.[0]?.toFixed(4) ?? "-"}\n`,
-          );
-        }
-      }
-      if (mmr?.enabled && passIdxs.length > 1) {
-        const tM = performance.now();
-        // B2-b：pass 池整体置换（不减员），多样性优先级进序——预算帽照常在 slice 处生效
-        passIdxs = mmrReorder(passIdxs, docs, mmr.lambda);
-        mmrMs = performance.now() - tM;
-      }
-      // #137-F：融合锚点——预算收缩到 1~2 行时（W3 结论层占满 maxResults 的实测形态），
-      // 单条注入行不允许被精排单方面换掉：融合主序 top-1 必须留在截断窗口内。
-      // 有空间（cap≥2）时精排仍可改第 2..cap 名次，锚点只守住最高置信证据。
-      const capN = Math.max(cap, 0);
-      // 锚点只在「融合 top-1 自己过了 floor」时生效——floor（minScore）语义不被锚点绕过。
-      if (capN > 0 && lines.length > 1 && passIdxs.includes(0)) {
-        const anchored = anchorRerankOrder(passIdxs, capN, 0);
-        if (anchored[0] !== passIdxs[0] || anchored.length !== passIdxs.length || !passIdxs.slice(0, capN).includes(0)) {
-          anchorForced = !passIdxs.slice(0, capN).includes(0);
-        }
-        passIdxs = anchored;
-      }
-      finalIdxs = passIdxs;
-      const rankedSet = new Set(clean.map((r) => r.index));
-      for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
-        if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
-      }
+      passIdxs = anchored;
+    }
+    finalIdxs = passIdxs;
+    const rankedSet = new Set(clean.map((r) => r.index));
+    for (let i = 0; i < lines.length && finalIdxs.length < lines.length; i++) {
+      if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
     }
   }
+  /** #144：规则「过线」条数（cap 与 top-up 之前）。与 kept 分开记——否则「规则裁掉多少」与
+   *  「预算截断多少」在观测里糊成一团，事后无法判断某次调参到底动了哪一层。 */
+  const passCount = finalIdxs.length;
   // #137-F：floor 不饿死小窗口——rerank 模式下降级补位。
   // 实测病灶：cap（经验层预算）常只有 1~2 行，而 minScore 会把融合 top-1 也筛掉
   // （LME90：rerank-on 平均经验行 1.73 < rerank-off 2.33），证据直接变少。
@@ -815,13 +880,47 @@ async function applyRecallRerank(
           }
         : {}),
       ...(degraded ? { degraded } : {}),
-      ...(wiring.mode === "filter" ? { mode: "filter" as const } : {}),
-      ...(wiring.blend > 0 ? { blend: wiring.blend } : {}),
+      // #144：规则过线条数（cap 前）——kept 含预算截断，单看 kept 分不清是尺子还是预算干的。
+      passCount,
+      ...(wiring.mode === "filter"
+        ? {
+            mode: "filter" as const,
+            // #144：判定尺子必须进 gate——事后归因「这题是被哪种尺子裁的」全靠它。
+            ...filterRulerGateObs(filterRuler),
+          }
+        : {}),
       ...(anchorForced ? { anchor: true } : {}),
       ...(floorToppedUp > 0 ? { floorToppedUp } : {}),
       ...(mmr?.enabled ? { mmr: { lambda: mmr.lambda, ms: Math.round(mmrMs) } } : {}),
     },
   };
+  // #144：候选分数转储（诊断；未设 RERANK_SCORE_DUMP 时零开销）。必须在 metas/lineSessions
+  // 重映射之前取，否则落的是「已过滤后的」候选——那正是校准要避免的取样偏差。
+  const scoreDumpPath = process.env.RERANK_SCORE_DUMP;
+  if (scoreDumpPath) {
+    appendRerankScoreDump(scoreDumpPath, {
+      query,
+      provider: wiring.provider,
+      mode: wiring.mode,
+      minScore: wiring.minScore,
+      candidates: wiring.candidates,
+      logitScale,
+      threshold01,
+      cap: Math.max(cap, 0),
+      lineCount: lines.length,
+      scored: clean.map((r) => ({ i: r.index, score: r.score })),
+      order: lines.map((line, i) => ({
+        i,
+        rec: searchResult.metas?.[i]?.recordId ?? null,
+        session: searchResult.lineSessions?.[i] ?? null,
+        text: line,
+      })),
+      final: final.slice(),
+      passCount,
+      ...(wiring.mode === "filter" ? filterRulerGateObs(filterRuler) : {}),
+      ...(degraded ? { degraded } : {}),
+    });
+  }
   searchResult.lines = final.map((i) => lines[i]);
   if (searchResult.scores) searchResult.scores = final.map((i) => searchResult.scores![i]);
   if (searchResult.metas) searchResult.metas = final.map((i) => searchResult.metas![i]);
@@ -1213,19 +1312,18 @@ export async function performLayeredRecall(params: {
             // 原始 logit 先 sigmoid 归一 0..1 后对门槛（门槛同变换 sigmoid(minScore)，单调等价
             // 不改接受/拒绝边界）；未覆盖候选恒 Infinity 不杀（垫尾语义不变）。journal
             // scoreScale/top01/threshold01 附加归一化观测（topScore 仍记 raw，取证口径连续）。
-            const r71GateLogitScale = r71GateWiring.provider === "local";
-            const r71GateSigmoid01 = (s: number): number => 1 / (1 + Math.exp(-s));
-            const r71GateThreshold01 = r71GateLogitScale ? r71GateSigmoid01(r71GateMin) : r71GateMin;
+            const r71GateLogitScale = isLogitScaleProvider(r71GateWiring.provider);
+            const r71GateThreshold01 = r71GateLogitScale ? sigmoid01(r71GateMin) : r71GateMin;
             const r71GateScore01Of = (i: number): number => {
               const raw = r71GateScoreOf.get(i);
-              return raw === undefined ? Infinity : r71GateLogitScale ? r71GateSigmoid01(raw) : raw;
+              return raw === undefined ? Infinity : r71GateLogitScale ? sigmoid01(raw) : raw;
             };
             const r71WouldDrop = r7Conclusions.reduce((acc, _c, i) => acc + (r71GateScore01Of(i) < r71GateThreshold01 ? 1 : 0), 0);
             const r71GateScaleFields = r71GateLogitScale
               ? {
                   scoreScale: "logit-sigmoid" as const,
                   threshold01: r71GateThreshold01,
-                  ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { top01: r71GateSigmoid01(r71GateTop) } : {}),
+                  ...(r71GateRanked.length > 0 && Number.isFinite(r71GateTop) ? { top01: sigmoid01(r71GateTop) } : {}),
                 }
               : {};
             r71ConclusionRerankGate = {

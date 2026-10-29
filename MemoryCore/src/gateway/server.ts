@@ -863,7 +863,7 @@ export class TdaiGateway {
   private async warmRerank(): Promise<void> {
     const rc = (this.config.memory as { recall?: { rerank?: RecallRerankConfig } } | undefined)?.recall?.rerank;
     if (!rc?.enabled) return;
-    // local → candidates 档（缺省 12，clamp [1,100]）真实长度中文样本：真实批量推理
+    // local → candidates 档（缺省见 rerank/defaults.ts，clamp [1,100]）真实长度中文样本：真实批量推理
     // （worker 加载 + tokenize + ORT session 暖机）全落在此步。
     // cloud（siliconflow/dashscope，含 none 兜底）→ 1×1 dummy：预热首连/鉴权/往返。
     const cloud = rc.provider !== "local";

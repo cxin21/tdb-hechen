@@ -341,23 +341,23 @@ describe("S0 jieba 预载合同（真实 sqlite 单例）", () => {
 // ============================ S3：预热档位与常量 ============================
 
 describe("S3 rerank 预热档位（#68 档位升级）", () => {
-  it("buildRerankWarmupDocs：缺省 12 条、每条 50-200 字真实长度样本", () => {
+  it("buildRerankWarmupDocs：缺省 32 条（= rerank 生产缺省）、每条 50-200 字真实长度样本", () => {
     const docs = buildRerankWarmupDocs();
-    expect(docs.length).toBe(12);
+    expect(docs.length).toBe(32);
     for (const d of docs) {
       expect(d.length).toBeGreaterThanOrEqual(50);
       expect(d.length).toBeLessThanOrEqual(200);
     }
   });
 
-  it("candidates 档位 clamp [1,100]（config 解析同口径），非法输入回退 12", () => {
-    expect(buildRerankWarmupDocs(undefined).length).toBe(12);
+  it("candidates 档位 clamp [1,100]（config 解析同口径），非法输入回退 32", () => {
+    expect(buildRerankWarmupDocs(undefined).length).toBe(32);
     expect(buildRerankWarmupDocs(0).length).toBe(1);
     expect(buildRerankWarmupDocs(1).length).toBe(1);
     expect(buildRerankWarmupDocs(5).length).toBe(5);
     expect(buildRerankWarmupDocs(500).length).toBe(100);
-    expect(buildRerankWarmupDocs(Number.NaN).length).toBe(12);
-    expect(buildRerankWarmupDocs(Number.POSITIVE_INFINITY).length).toBe(12);
+    expect(buildRerankWarmupDocs(Number.NaN).length).toBe(32);
+    expect(buildRerankWarmupDocs(Number.POSITIVE_INFINITY).length).toBe(32);
   });
 
   it("cloud dummy：1 query × 1 doc（云端预热目标=首连/鉴权/往返）", () => {

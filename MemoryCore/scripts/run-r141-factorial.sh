@@ -10,6 +10,10 @@
 #   - 末尾非 0 退出（任一步失败或没产出报告都算失败）；
 #   - DRY_RUN=1 只打印命令不执行；ARMS="b0 w1w3" 只跑指定臂（空格分隔，缺省 all）。
 #
+# ⚠ 口径提醒（2026-10-29，#164）：本脚本首跑的档案里，原序加权旋钮（rerank 混合比例）被钉在 0.9，
+#   该旋钮与其逻辑已整体移除，重跑只能得到「纯精排」口径——数字预期会与 docs 里当时那张表不同。
+#   要复现原读数请 git checkout 8168e1a；历史读数见 docs/optimization-results.md §14（及 §13.5 / §21.1）。
+#
 # 用法:
 #   bash scripts/run-r141-factorial.sh            # 跑全部 13 臂 + 出判定表
 #   DRY_RUN=1 ARMS=b0 bash scripts/run-r141-factorial.sh   # 只看命令（不碰库、不耗配额）
@@ -29,7 +33,7 @@ ARMS="${ARMS:-all}"
 COMMON=(
   --dataset longmemeval --manifest "$L/lme-manifest.json" --keep --pace 150 --gen-limit "$GEN"
   --recall-ks 1,3,5,10 --b1 --candidate-k 32 --fact-model MiniMax-M2.7 --embed-interval-ms 1200
-  --rerank-blend 0.9 --rerank-child-proc --rerank-doc-cap 192
+  --rerank-child-proc --rerank-doc-cap 192
 )
 
 # ── 三个因子 ──

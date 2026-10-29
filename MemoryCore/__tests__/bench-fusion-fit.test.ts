@@ -12,13 +12,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_RERANK,
+  B0BASE_RERANK,
   KNOB_ORDER,
   armKnobs,
   coordinateSearch,
   diagnoseStructure,
   fusionLabel,
   knobDiff,
+  knobsSummary,
   legacyCiHalfWidth,
   pairArm,
   rankedTag,
@@ -101,7 +102,7 @@ describe("pairArm", () => {
 describe("matched design", () => {
   it("只差一个旋钮的档位才成对；融合旋钮按逻辑档归并", () => {
     const base = report("b", []);
-    const off = report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } });
+    const off = report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } });
     expect(knobDiff(armKnobs(base.config), armKnobs(off.config))).toEqual(["rerank.enabled"]);
 
     const weighted = {
@@ -117,6 +118,17 @@ describe("matched design", () => {
     const r2 = report("w2", [], { fusion: { ...weighted, dense: 0.3 } });
     expect(knobDiff(armKnobs(r1.config), armKnobs(r2.config))).toEqual(["fusion"]);
   });
+
+  it("历史报告里的原序加权键不再是旋钮（#164 已整体删除）", () => {
+    const old09 = report("old09", [], { rerankOverride: { ...B0BASE_RERANK, blend: 0.9 } });
+    const old00 = report("old00", [], { rerankOverride: { ...B0BASE_RERANK, blend: 0 } });
+    const knobs09 = armKnobs(old09.config);
+    // 旧字段被忽略：带 0.9 与带 0 的报告在新旋钮表里完全同向量
+    expect(knobDiff(knobs09, armKnobs(old00.config))).toEqual([]);
+    expect(Object.keys(knobs09)).not.toContain("rerank.blend");
+    // 因此旧档的 knobsSummary 只会打印「缺省」——判断档位差异要回 checkout 8168e1a
+    expect(knobsSummary(knobs09)).toBe("缺省");
+  });
 });
 
 describe("singleKnobEffects", () => {
@@ -126,7 +138,7 @@ describe("singleKnobEffects", () => {
       {
         tag: "off",
         report: report("off", []),
-        knobs: armKnobs(report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config),
+        knobs: armKnobs(report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config),
         metric: 0.7,
       },
     ];
@@ -171,12 +183,12 @@ describe("coordinateSearch / samplingPlan", () => {
     { tag: "b", knobs: armKnobs(report("b", []).config), metric: 0.6, report: report("b", []) },
     {
       tag: "off",
-      knobs: armKnobs(report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config),
+      knobs: armKnobs(report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config),
       metric: 0.65,
       report: report("off", []),
     },
   ];
-  const best = { tag: "best", knobs: { ...armKnobs(report("best", []).config), "rerank.blend": 0.9 }, metric: 0.8, report: report("best", []) };
+  const best = { tag: "best", knobs: armKnobs(report("best", []).config), metric: 0.8, report: report("best", []) };
   arms.push(best);
 
   it("rerank.enabled 不作为坐标移动", () => {
@@ -184,7 +196,7 @@ describe("coordinateSearch / samplingPlan", () => {
       { tag: "b2", knobs: armKnobs(report("b2", []).config), metric: 0.61, report: report("b2", []) },
       {
         tag: "off2",
-        knobs: armKnobs(report("off2", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config),
+        knobs: armKnobs(report("off2", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config),
         metric: 0.66,
         report: report("off2", []),
       },
@@ -195,7 +207,7 @@ describe("coordinateSearch / samplingPlan", () => {
   });
 
   it("组合未观测时标 observed=false，并进入采样计划且去重", () => {
-    const offKnobs = armKnobs(report("off", [], { rerankOverride: { ...DEFAULT_RERANK, enabled: false } }).config);
+    const offKnobs = armKnobs(report("off", [], { rerankOverride: { ...B0BASE_RERANK, enabled: false } }).config);
     const mixed = { ...best.knobs, "rerank.enabled": false };
     const coord = coordinateSearch([...arms, { tag: "mix", knobs: mixed, metric: 0.9, report: report("mix", []) }], { metricKey: "turnCov@5" });
     const plan = samplingPlan([...arms], best, { moves: coord.moves });

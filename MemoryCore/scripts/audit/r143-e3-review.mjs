@@ -170,7 +170,7 @@ function pickConfig(report) {
   const eff = c.effectiveConfig || {};
   const keys = [
     "recall.maxResults", "recall.candidateK", "recall.rerank.enabled", "recall.rerank.candidates",
-    "recall.rerank.minScore", "recall.rerank.blend", "recall.smallToBig.maxExtraLines",
+    "recall.rerank.minScore", "recall.smallToBig.maxExtraLines",
     "recall.smallToBig.budget", "recall.validity.mode",
   ];
   const out = {};

@@ -165,7 +165,7 @@ describe("#135 生效配置自检", () => {
         maxResults: 5,
         candidateK: 32,
         fusion: { mode: "normalized" },
-        rerank: { enabled: true, provider: "local", candidates: 32, minScore: -10.5, mode: "rerank", blend: 0.9 },
+        rerank: { enabled: true, provider: "local", candidates: 32, minScore: -10.5, mode: "rerank" },
         smallToBig: { enabled: false, maxExtraLines: 4, budget: "shared" },
         conclusionLayer: { enabled: true, maxConclusions: 3 },
         factChannel: { enabled: true, weight: 0.6 },

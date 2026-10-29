@@ -829,7 +829,6 @@ export function effectiveRecallSnapshot(cfg) {
     "recall.rerank.candidates": rr.candidates ?? null,
     "recall.rerank.minScore": rr.minScore ?? null,
     "recall.rerank.mode": rr.mode ?? null,
-    "recall.rerank.blend": rr.blend ?? null,
     "recall.smallToBig.enabled": r.smallToBig?.enabled === true,
     "recall.smallToBig.maxExtraLines": r.smallToBig?.maxExtraLines ?? null,
     "recall.smallToBig.budget": r.smallToBig?.budget ?? null,

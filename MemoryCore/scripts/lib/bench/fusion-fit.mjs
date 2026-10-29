@@ -14,22 +14,36 @@
  *     没跑过的组合，所以这里绝不假装预测数值。
  *
  * 设计口径（与 #135/#137-F 结论一致）：**不把「关开关」当结论**。rerank 的伤害来自
- * 「过度剪枝 + 主序被整体替换」，修法是深池 + blend 混合 + 锚点/补位；weighted 融合在
+ * 「过度剪枝 + 主序被整体替换」，修法是深池 + 锚点/补位；weighted 融合在
  * RRF 主序下是零效应，修法是让时间/有效性信号进通道内打分（normalized），再拟合通道权重。
  * 因此 rerank.enabled 只作为**诊断对象**，永远不进坐标移动；融合权重在 matched 设计里
  * 收成一个逻辑旋钮（模式+权重一起变），避免把「模式和权重」拆成五个伪独立因子。
  */
 import { mcnemarExact, pairedBootstrap } from "./stats.mjs";
 
-/** rerank 缺省值（与 src/config.ts 对齐：candidates=12 / minScore=-2 / mode=rerank / blend=0）。 */
-export const DEFAULT_RERANK = Object.freeze({ candidates: 12, minScore: -2, mode: "rerank", blend: 0 });
+/**
+ * 本模块补缺用的 rerank 基线旋钮（candidates=12 / minScore=-2 / mode=rerank）。
+ *
+ * ⚠️ 这是**历史 bench 基线（b0base 档）**，不是当前代码缺省。#145 已把生产缺省翻成
+ * 32/−10.5，但这里必须留在 12/−2：报告只记录「相对沙箱缺省的 override」，而已经落盘的
+ * 报告（#135/#137-F/#144 全矩阵）都是在该基线下跑出来的——跟着代码缺省改会把「显式写
+ * candidates:12」的历史档误标成非缺省，并让 diag 的「深池修复档」判定
+ * （candidates > 12）静默失效。新基线要比，请在报告里显式写出 override。
+ */
+/**
+ * b0base 精排基线（#135/#144 对照臂的**锚点**，不是生产缺省）。
+ * 用途仅限臂标签/诊断判据的「相对基线是否改过」比较：生产缺省自 #145 起是
+ * candidates=32 / minScore=按 provider 刻度取值（local −10.5）
+ * （单一源 src/core/recall/rerank/defaults.ts + config.ts），
+ * 这里保持 12/−2 是为了让历史修复档继续可算、可复现，别跟着生产缺省改。
+ */
+export const B0BASE_RERANK = Object.freeze({ candidates: 12, minScore: -2, mode: "rerank" });
 /** candidateK 缺省 = maxResults * 3（bench 的 maxResults=5 → 15）。 */
 export const DEFAULT_CANDIDATE_K = 15;
 
 /** 逻辑旋钮（matched design 的比较粒度）。融合的模式+权重合成一个 "fusion"。 */
 export const KNOB_ORDER = Object.freeze([
   "rerank.enabled",
-  "rerank.blend",
   "rerank.candidates",
   "rerank.minScore",
   "rerank.mode",
@@ -61,10 +75,9 @@ export function armKnobs(config = {}) {
   const rerankOn = rr.enabled !== false;
   return {
     "rerank.enabled": rerankOn,
-    "rerank.blend": numOr(rr.blend, DEFAULT_RERANK.blend),
-    "rerank.candidates": numOr(rr.candidates, DEFAULT_RERANK.candidates),
-    "rerank.minScore": numOr(rr.minScore, DEFAULT_RERANK.minScore),
-    "rerank.mode": rr.mode === "filter" ? "filter" : DEFAULT_RERANK.mode,
+    "rerank.candidates": numOr(rr.candidates, B0BASE_RERANK.candidates),
+    "rerank.minScore": numOr(rr.minScore, B0BASE_RERANK.minScore),
+    "rerank.mode": rr.mode === "filter" ? "filter" : B0BASE_RERANK.mode,
     fusion: fusionLabel(config.fusion ?? {}),
     "recall.candidateK": numOr(config.candidateK, DEFAULT_CANDIDATE_K),
   };
@@ -75,9 +88,8 @@ export function knobsSummary(knobs) {
   const parts = [];
   if (!knobs["rerank.enabled"]) parts.push("rerank=off");
   else {
-    if (knobs["rerank.candidates"] !== DEFAULT_RERANK.candidates) parts.push("cand=" + knobs["rerank.candidates"]);
-    if (knobs["rerank.minScore"] !== DEFAULT_RERANK.minScore) parts.push("floor=" + knobs["rerank.minScore"]);
-    if (knobs["rerank.blend"] !== DEFAULT_RERANK.blend) parts.push("blend=" + knobs["rerank.blend"]);
+    if (knobs["rerank.candidates"] !== B0BASE_RERANK.candidates) parts.push("cand=" + knobs["rerank.candidates"]);
+    if (knobs["rerank.minScore"] !== B0BASE_RERANK.minScore) parts.push("floor=" + knobs["rerank.minScore"]);
     if (knobs["rerank.mode"] === "filter") parts.push("rerank=filter");
   }
   if (knobs.fusion && knobs.fusion !== "rrf") parts.push("fusion=" + knobs.fusion);
@@ -320,7 +332,7 @@ export function coordinateSearch(arms, { effects, metricKey = "turnCov@5" } = {}
     if (e.knob === "rerank.enabled") {
       ignored.push({
         knob: e.knob,
-        reason: "结构性开关不做坐标移动；off 的 matched 优势来自剪枝档位分布，先调 blend/candidates/minScore",
+        reason: "结构性开关不做坐标移动；off 的 matched 优势来自剪枝档位分布，先调 candidates/minScore",
       });
       continue;
     }
@@ -394,9 +406,7 @@ export function diagnoseStructure(arms, { effects, best, metricKey = "turnCov@5"
   const onBest = onArms.reduce((acc, a) => Math.max(acc, armMetric(a, metricKey) ?? -1), -1);
   if (toggle && offBest >= 0 && onBest >= 0) {
     const offMatched = toggle.levels.find((L) => L.value === false)?.meanDelta ?? 0;
-    const fixedArms = onArms.filter(
-      (a) => a.knobs["rerank.candidates"] > DEFAULT_RERANK.candidates || a.knobs["rerank.blend"] > 0,
-    );
+    const fixedArms = onArms.filter((a) => a.knobs["rerank.candidates"] > B0BASE_RERANK.candidates);
     const fixedBest = fixedArms.reduce((acc, a) => Math.max(acc, armMetric(a, metricKey) ?? -1), -1);
     const offBetterMatched = offMatched > 0.01;
     const onWinsOverall = onBest >= offBest;
@@ -411,12 +421,12 @@ export function diagnoseStructure(arms, { effects, best, metricKey = "turnCov@5"
       severity: offBetterMatched && !onWinsOverall && fixedBest < offBest ? "warn" : "info",
       text: offBetterMatched
         ? "matched 证据：rerank=off 平均 " + (offMatched * 100).toFixed(2) + "pp（" + toggle.pairs + " 对），但 on 的最好档 " + (onBest * 100).toFixed(1) + "% vs off 最好档 " + (offBest * 100).toFixed(1) + "%" +
-          (fixedBest >= 0 ? "（深池/blend 修复档 " + (fixedBest * 100).toFixed(1) + "%）" : "") + "。" +
+          (fixedBest >= 0 ? "（深池修复档 " + (fixedBest * 100).toFixed(1) + "%）" : "") + "。" +
           (onWinsOverall
-            ? "按**最好档**看 rerank=on 更高 → off 的 matched 优势是「剪枝档位分布」的混杂（浅池/negative floor 与 off 混在一起比），不是重排本身。不要把「关闭 rerank」当结论；下一步在 on 上继续调 blend/candidates/minScore（#137-F）。"
+            ? "按**最好档**看 rerank=on 更高 → off 的 matched 优势是「剪枝档位分布」的混杂（浅池/negative floor 与 off 混在一起比），不是重排本身。不要把「关闭 rerank」当结论；下一步在 on 上继续调 candidates/floor（#137-F）。"
             : fixedBest >= offBest
-              ? "深池/blend 修复档已追平/反超 off → off 的优势来自默认剪枝档（candidates=12/floor=-2），不是重排本身。不要把「关闭 rerank」当结论；下一步在 on 上继续调 blend/candidates/minScore（#137-F）。"
-              : "差距仍在，但机制是剪枝饿死窗口 + 主序被整体替换，不是「rerank 无效」。下一步优先 blend / candidates / floor 校准与分数校准，**不以关闭 rerank 作为验收方案**。")
+              ? "深池修复档已追平/反超 off → off 的优势来自默认剪枝档（candidates=12/floor=-2），不是重排本身。不要把「关闭 rerank」当结论；下一步在 on 上继续调 candidates/floor（#137-F）。"
+              : "差距仍在，但机制是剪枝饿死窗口 + 主序被整体替换，不是「rerank 无效」。下一步优先 candidates / floor 校准与分数校准，**不以关闭 rerank 作为验收方案**。")
         : "rerank=on 最好档 " + (onBest * 100).toFixed(1) + "% ≥ off 最好档 " + (offBest * 100).toFixed(1) + "% → 当前结构下重排是净正/中性；不需要用关闭开关来换收益。",
     });
   }
@@ -432,7 +442,6 @@ export function diagnoseStructure(arms, { effects, best, metricKey = "turnCov@5"
 }
 
 const NEIGHBORS = {
-  "rerank.blend": [0, 0.3, 0.5, 0.7, 0.9, 1],
   "rerank.candidates": [12, 16, 24, 32, 48, 64],
   "rerank.minScore": [-2, -4, -6, -7, -8, -10.5, -12, -14],
   "recall.candidateK": [15, 24, 32, 48, 64],
@@ -474,7 +483,6 @@ export function samplingPlan(arms, best, { diagnosis = [], moves = [] } = {}) {
 
   if (best.knobs["rerank.enabled"]) {
     for (const [knob, why] of [
-      ["rerank.blend", "混合比例：在「融合序」与「精排分」之间找拐点（#137-F α=0.9 只是起点）"],
       ["rerank.candidates", "深池：候选池越浅，剪枝越容易把证据剪光（#135 §10.3）"],
       ["rerank.minScore", "floor 校准：logit 刻度下的阈值，补位机制之外仍影响尾部"],
     ]) {

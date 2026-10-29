@@ -44,8 +44,19 @@ export interface RecallJournalRerankGate {
   mmr?: { lambda: number; ms: number };
   /** #135 R4（bench/recall-opt）：作用模式标记（缺字段 = 缺省 "rerank"）。 */
   mode?: "filter";
-  /** #137-F：精排与融合相关度的混合比例（缺字段 = 0 = 纯精排顺序）。 */
-  blend?: number;
+  /**
+   * #144（2026-10-29）：filter 的判定尺子与参数（缺字段 = floor，= 逐位旧行为）。
+   * 只带**当前生效**那个尺子的参数：margin 出 filterMarginTop、quantile 出 filterKeepRatio
+   * （组装走 rerank/filter-ruler.ts 的 filterRulerGateObs，避免两处各写一套）。
+   */
+  filterRule?: "floor" | "margin" | "quantile";
+  filterMarginTop?: number;
+  filterKeepRatio?: number;
+  /**
+   * #144：规则「过线」条数（cap 与 #137-F 补位**之前**）。kept 是 cap 之后的最终注入条数，
+   * 单看 kept 分不清「被尺子裁掉」与「被预算截断」——归因需要这两个数一起看。
+   */
+  passCount?: number;
   /** #137-F：融合锚点是否被强制保留（true = 精排曾把融合 top-1 挤出窗口）。 */
   anchor?: boolean;
   /** #137-F：floor 补位数（达线行不足预算时按融合序补回的候选数；防小窗口被 floor 饿死）。 */
