@@ -1016,4 +1016,61 @@ describe("#144 · rerank.mode=\"filter\" 的题内相对尺子", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("④quantile + provider 截断漏排：未评分行无条件原样保留（不参与分母），passCount 如实记录", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-quantile-unscored-"));
+    try {
+      const rows = episodicRows(6);
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.2], ["Marker2", 0.9], ["Marker3", 0.4], ["Marker4", 0.8], ["Marker5", 0.3], ["Marker6", 0.1],
+      ];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          // provider 只评了 2 条（其余 = 截断漏排）：分母是"已评分候选"2 → ceil(2×0.5)=1 条过线
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 2, filterRule: "quantile", filterKeepRatio: 0.5 }),
+          { reranker: markerTableReranker(table, { include: (m) => m === "Marker2" || m === "Marker4" }).reranker },
+        ),
+      );
+      // Marker2 过线；Marker4 被裁；未评分的 1/3/5/6 原位保留 → 原序 1,2,3,5,6
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker5", "Marker6"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.filterRule).toBe("quantile");
+      // kept（=5）说明实际保留比例高于 0.5：分母只数已评分候选，漏排行不参与裁量
+      expect(rerankGate?.kept).toBe(5);
+      expect(rerankGate?.passCount).toBe(5);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑤margin 临界并列：恰好落在 cut（top1−marginTop）上的行保留，低于 1 个最小单位才被裁", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-margin-tie-"));
+    try {
+      const rows = episodicRows(5);
+      const table: Array<[string, number]> = [
+        ["Marker1", 0.9], ["Marker2", 0.5], ["Marker3", 0.4], ["Marker4", 0.39], ["Marker5", 0.1],
+      ];
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          fallbackStore(rows),
+          `${KW} 项目进展如何`,
+          makeCfg({}, { ...SILICONFLOW_RERANK, mode: "filter", minScore: 2, filterRule: "margin", filterMarginTop: 0.5 }),
+          { reranker: markerTableReranker(table).reranker },
+        ),
+      );
+      // cut = 0.9 − 0.5 = 0.4：Marker3 恰在临界值上 → 保留（宁可多留）；Marker4/5 剔除
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3"]);
+      const gates = readJournal(dir)[0]?.gates as Record<string, unknown> | undefined;
+      const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
+      expect(rerankGate?.kept).toBe(3);
+      expect(rerankGate?.passCount).toBe(3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -55,6 +55,10 @@ const cases = new Map(ds.cases.map((c) => [c.caseId, c]));
 // 为什么不用 recordId：sqlite fallback 路 metas 为空，转储里的 rec 恒 null；
 // 生产 bench 也从不依赖 metas，而是「stripMemoryLineMeta 剥标注 + 全文 normHead 比对」。
 const { stripMemoryLineMeta } = await import("../src/core/hooks/memory-line-meta.ts");
+// 题内相对尺子（margin/quantile）与生产共用同一实现：见 ADR-0013。
+const { DEFAULT_RERANK_FILTER_RULER, relativeKeepIdxSet } = await import(
+  "../src/core/recall/rerank/filter-ruler.ts"
+);
 const normHead = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const cleanLine = (t) => stripMemoryLineMeta(String(t ?? "")).replace(/^-\s+/, "").trim();
 const contentIndex = new Map();
@@ -96,41 +100,32 @@ for (const line of raw) {
 const rowsByCase = new Map();
 if (result) for (const r of result.rows) rowsByCase.set(r.caseId, r);
 
-const sigmoid = (x) => 1 / (1 + Math.exp(-x));
 const logitOfP = (p) => Math.log(p / (1 - p));
 
 /**
  * 用一条规则生成「保留的候选 id 序列」。
- * rule: {type:"floor", value} | {type:"margin", m} | {type:"quantile", q}
+ * rule: {type:"floor", value} | {type:"prob", value} | {type:"margin", m} | {type:"quantile", q}
+ *
+ * margin/quantile 走 `relativeKeepIdxSet`（生产同一实现，ADR-0013）——离线调参与线上判定
+ * 必须是同一把尺子，否则「按离线曲线选的参数」在生产上不成立。
  */
 function keepIds(rec, rule) {
   const scored = new Map(rec.scored.map((s) => [s.i, s.score]));
-  const ids = (i) => rec.order[i].rec;
-  const kept = [];
+  const clean = rec.scored.map((s) => ({ index: s.i, score: s.score }));
+  let passSet;
   if (rule.type === "floor" || rule.type === "prob") {
     const floor = rule.type === "floor" ? rule.value : logitOfP(rule.value);
-    for (const o of rec.order) {
-      const s = scored.get(o.i);
-      if (s === undefined || s >= floor) kept.push(o.i); // 未评分（provider 截断）照旧保留
-    }
+    passSet = new Set(clean.filter((c) => c.score >= floor).map((c) => c.index));
   } else if (rule.type === "margin") {
-    const top = Math.max(...rec.scored.map((s) => s.score), -Infinity);
-    for (const o of rec.order) {
-      const s = scored.get(o.i);
-      if (s === undefined || s >= top - rule.m) kept.push(o.i);
-    }
+    passSet = relativeKeepIdxSet(clean, { ...DEFAULT_RERANK_FILTER_RULER, rule: "margin", marginTop: rule.m });
   } else if (rule.type === "quantile") {
-    const scores = rec.scored.map((s) => s.score).sort((a, b) => b - a);
-    const nKeep = Math.max(1, Math.ceil(scores.length * rule.q));
-    const cut = scores.length ? scores[nKeep - 1] : -Infinity;
-    let seen = 0;
-    for (const o of rec.order) {
-      const s = scored.get(o.i);
-      if (s === undefined) { kept.push(o.i); continue; }
-      if (s > cut || (s === cut && seen < nKeep)) { kept.push(o.i); seen++; }
-    }
+    passSet = relativeKeepIdxSet(clean, { ...DEFAULT_RERANK_FILTER_RULER, rule: "quantile", keepRatio: rule.q });
+  } else {
+    throw new Error("unknown rule type: " + rule.type);
   }
-  return kept.map(ids).filter((x) => typeof x === "string").slice(0, Math.max(rec.cap, 0));
+  // 未评分（provider 截断）的行无条件保留；保留序 = 候选原序（filter 语义）
+  const kept = rec.order.filter((o) => scored.get(o.i) === undefined || passSet.has(o.i)).map((o) => o.i);
+  return kept.map((i) => rec.order[i].rec).filter((x) => typeof x === "string").slice(0, Math.max(rec.cap, 0));
 }
 
 /** filter 语义下「被 floor 误滤的 gold」：候选池里出现过、但被规则剔掉的证据 turn。 */
@@ -142,7 +137,7 @@ function goldStats(rec, caseId, keptIds) {
   const inPool = ev.filter((t) => candIds.has(t));
   const keptSet = new Set(keptIds);
   const dropped = inPool.filter((t) => !keptSet.has(t));
-  return { ev, inPool: inPool.length, dropped: dropped.length };
+  return { inPool: inPool.length, dropped: dropped.length };
 }
 
 /**
@@ -242,7 +237,6 @@ function scoreDiscrimination() {
 }
 
 const pct = (v) => (v === null || v === undefined ? "-" : (v * 100).toFixed(1) + "%");
-const num = (v) => (v === null || v === undefined ? "-" : Number(v).toFixed(2));
 
 const floorsArg = arg("floors", undefined);
 const floors = typeof floorsArg === "string"

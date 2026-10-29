@@ -76,6 +76,15 @@ import {
 import { arbitrateConclusions, computeSlotBudget } from "../recall/layered-budget.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
 import { createReranker } from "../recall/rerank/factory.js";
+import {
+  DEFAULT_RERANK_FILTER_RULER,
+  filterRulerGateObs,
+  normalizeRerankFilterRuler,
+  relativeKeepIdxSet,
+  type RerankFilterRule,
+  type RerankFilterRuler,
+  type RerankRelativeRuler,
+} from "../recall/rerank/filter-ruler.js";
 import { mmrReorder } from "../recall/mmr.js";
 import { sortLinesByLeadingTimestamp } from "./inject-order.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
@@ -587,11 +596,7 @@ interface RerankWiring {
   /** #137-F：精排分与检索融合分的混合比例 α∈[0,1]（0 = 逐位现状）。 */
   blend: number;
   /** #144：filter 模式的判定尺子（floor=绝对 minScore 阈值，现状；margin/quantile=题内相对尺子）。 */
-  filterRule: "floor" | "margin" | "quantile";
-  /** #144：margin 尺子参数——保留「题内 top1 分 − marginTop」以上的候选（logit 差，越大越宽松）。 */
-  filterMarginTop: number;
-  /** #144：quantile 尺子参数——保留题内分数最高的 ceil(已评分候选数 × keepRatio) 条。 */
-  filterKeepRatio: number;
+  filterRuler: RerankFilterRuler;
 }
 
 /** 每调用解析一次精排接线（off | unavailable | active）。T1 移交：
@@ -618,9 +623,7 @@ function resolveRerankWiring(
       candidates: 12,
       mode: "rerank",
       blend: 0,
-      filterRule: "floor",
-      filterMarginTop: 8,
-      filterKeepRatio: 0.5,
+      filterRuler: DEFAULT_RERANK_FILTER_RULER,
     };
   }
   const minScore = typeof rc.minScore === "number" && Number.isFinite(rc.minScore) ? rc.minScore : -2;
@@ -638,9 +641,7 @@ function resolveRerankWiring(
       candidates,
       mode: rc.mode === "filter" ? "filter" : "rerank",
       blend: typeof rc.blend === "number" && Number.isFinite(rc.blend) ? Math.min(1, Math.max(0, rc.blend)) : 0,
-      filterRule: normalizeFilterRule(rc.filterRule),
-      filterMarginTop: normalizeFilterMarginTop(rc.filterMarginTop),
-      filterKeepRatio: normalizeFilterKeepRatio(rc.filterKeepRatio),
+      filterRuler: normalizeRerankFilterRuler(rc),
     };
   }
   return {
@@ -652,21 +653,8 @@ function resolveRerankWiring(
     candidates,
     mode: rc.mode === "filter" ? "filter" : "rerank",
     blend: typeof rc.blend === "number" && Number.isFinite(rc.blend) ? Math.min(1, Math.max(0, rc.blend)) : 0,
-    filterRule: normalizeFilterRule(rc.filterRule),
-    filterMarginTop: normalizeFilterMarginTop(rc.filterMarginTop),
-    filterKeepRatio: normalizeFilterKeepRatio(rc.filterKeepRatio),
+    filterRuler: normalizeRerankFilterRuler(rc),
   };
-}
-
-/** #144：filter 尺子三参的防御性归一（配置层已归一；直接构造 config 的调用方/测试也走同一口径）。 */
-function normalizeFilterRule(v: unknown): "floor" | "margin" | "quantile" {
-  return v === "margin" || v === "quantile" || v === "floor" ? v : "floor";
-}
-function normalizeFilterMarginTop(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 8;
-}
-function normalizeFilterKeepRatio(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.5;
 }
 
 /** #144：filter floor 校准的候选分数转储（诊断专用；缺省零开销）。
@@ -691,8 +679,10 @@ export interface RerankScoreDumpRecord {
   order: { i: number; rec: string | null; session: string | null; text: string }[];
   /** 最终保留的候选下标（filter 模式 = 原序过滤后的子序）。 */
   final: number[];
+  /** #144：规则过线条数（cap 之前；与 final.length 的差 = 预算截断掉的条数）。 */
+  passCount?: number;
   /** #144：filter 判定尺子（floor/margin/quantile）+ 参数，供事后归因与离线复算。 */
-  filterRule?: "floor" | "margin" | "quantile";
+  filterRule?: RerankFilterRule;
   filterMarginTop?: number;
   filterKeepRatio?: number;
   degraded?: "all-below-minScore";
@@ -706,35 +696,6 @@ export function appendRerankScoreDump(dumpPath: string | undefined, rec: RerankS
   } catch {
     /* 诊断失败静默：不打断召回 */
   }
-}
-
-/** #144：filter 的「题内相对尺子」——按同一次精排调用的分数**序**裁决，不看绝对量纲。
- *  动机（#144 离线校准，90 题 / 997 候选）：local provider 的 logit 在题间的量纲并不一致
- *  （题内 top1−bottom 分差中位 11.1、p10 3.5；gold 分中位 0.1、噪声 −6.3，AUC 0.836），
- *  所以任何**绝对** floor 都等于按「每题自己的分数密度」随机误杀：minScore=−7 已误滤 15.8%
- *  池内 gold，−4 达 18.8%；而同一 kept 比例下题内相对规则只误滤 12.8%（quantile 50%）/
- *  10.5%（margin 8）——且 turnCov@5 反升（86.4% → 87.4% / 88.9%），因为裁掉的是噪声尾巴、
- *  保留序仍是融合原序。
- *  - margin：cut = 题内最高分 − marginTop，保留 score ≥ cut（分数跨题平移时自动跟随）；
- *  - quantile：按分数降序保留 ceil(n × keepRatio) 条（题内候选数变化时保持同一裁量比例）。
- *  只产出「谁保留」的集合；**不排序**——保原序是 filter 语义（见 keepByFilter）。 */
-function filterPassSetByIdx(
-  clean: { index: number; score: number }[],
-  rule: "margin" | "quantile",
-  marginTop: number,
-  keepRatio: number,
-): Set<number> {
-  const pass = new Set<number>();
-  if (clean.length === 0) return pass;
-  const sorted = [...clean].sort((a, b) => b.score - a.score);
-  if (rule === "margin") {
-    const cut = sorted[0].score - Math.max(marginTop, 0);
-    for (const r of sorted) if (r.score >= cut) pass.add(r.index);
-    return pass;
-  }
-  const nKeep = Math.max(1, Math.ceil(sorted.length * Math.min(1, Math.max(keepRatio, 0))));
-  for (const r of sorted.slice(0, nKeep)) pass.add(r.index);
-  return pass;
 }
 
 /** P1 Task 2（spec §4.5）：精排主体，原位改写 searchResult（lines/scores/metas/gates）。
@@ -832,11 +793,11 @@ async function applyRecallRerank(
     return idxs;
   };
   /** #144：filter 的判定尺子（rerank 模式恒 floor 语义，不走题内相对规则）。 */
-  const filterRule = wiring.mode === "filter" ? wiring.filterRule : "floor";
-  if (filterRule === "margin" || filterRule === "quantile") {
+  const filterRuler = wiring.mode === "filter" ? wiring.filterRuler : DEFAULT_RERANK_FILTER_RULER;
+  if (filterRuler.rule !== "floor") {
     // ── #144：题内相对尺子——只比同一题内的分数序，provider 换版/量纲漂移不再整题误杀或整题放行。
     // 绝对 minScore 此时不参与判定（两把尺子互相盖会让「floor 不生效」与「规则生效」混在一起无法归因）。
-    const passSet = filterPassSetByIdx(clean, filterRule, wiring.filterMarginTop, wiring.filterKeepRatio);
+    const passSet = relativeKeepIdxSet(clean, filterRuler as RerankRelativeRuler);
     finalIdxs = keepByFilter(passSet);
   } else if (rankedPass.length === 0 && clean.length > 0) {
     // F3 优雅降级：全员低于阈值不清零（P3 病灶：经验层 0 行）——回退未重排顺序
@@ -885,6 +846,9 @@ async function applyRecallRerank(
       if (!rankedSet.has(i)) finalIdxs.push(i); // 未排序候选（截断漏排）原序垫尾
     }
   }
+  /** #144：规则「过线」条数（cap 与 top-up 之前）。与 kept 分开记——否则「规则裁掉多少」与
+   *  「预算截断多少」在观测里糊成一团，事后无法判断某次调参到底动了哪一层。 */
+  const passCount = finalIdxs.length;
   // #137-F：floor 不饿死小窗口——rerank 模式下降级补位。
   // 实测病灶：cap（经验层预算）常只有 1~2 行，而 minScore 会把融合 top-1 也筛掉
   // （LME90：rerank-on 平均经验行 1.73 < rerank-off 2.33），证据直接变少。
@@ -923,13 +887,13 @@ async function applyRecallRerank(
           }
         : {}),
       ...(degraded ? { degraded } : {}),
+      // #144：规则过线条数（cap 前）——kept 含预算截断，单看 kept 分不清是尺子还是预算干的。
+      passCount,
       ...(wiring.mode === "filter"
         ? {
             mode: "filter" as const,
             // #144：判定尺子必须进 gate——事后归因「这题是被哪种尺子裁的」全靠它。
-            filterRule,
-            ...(filterRule === "margin" ? { filterMarginTop: wiring.filterMarginTop } : {}),
-            ...(filterRule === "quantile" ? { filterKeepRatio: wiring.filterKeepRatio } : {}),
+            ...filterRulerGateObs(filterRuler),
           }
         : {}),
       ...(wiring.blend > 0 ? { blend: wiring.blend } : {}),
@@ -960,13 +924,8 @@ async function applyRecallRerank(
         text: line,
       })),
       final: final.slice(),
-      ...(wiring.mode === "filter"
-        ? {
-            filterRule,
-            ...(filterRule === "margin" ? { filterMarginTop: wiring.filterMarginTop } : {}),
-            ...(filterRule === "quantile" ? { filterKeepRatio: wiring.filterKeepRatio } : {}),
-          }
-        : {}),
+      passCount,
+      ...(wiring.mode === "filter" ? filterRulerGateObs(filterRuler) : {}),
       ...(degraded ? { degraded } : {}),
     });
   }

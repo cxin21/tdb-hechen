@@ -7,6 +7,11 @@
  * Minimal config (zero config): {} — all fields have sensible defaults.
  */
 import { clampMaxFacts, DEFAULT_MAX_FACTS } from "./core/record/fact-key.js";
+import {
+  normalizeRerankFilterKeepRatio,
+  normalizeRerankFilterMarginTop,
+  normalizeRerankFilterRule,
+} from "./core/recall/rerank/filter-ruler.js";
 
 // ============================
 // Type definitions
@@ -592,19 +597,23 @@ export interface RecallRerankConfig {
    *
    * 为什么需要：provider 原始分量纲既非概率也非题间可比——LME90 实测 gold 与噪声的绝对分
    * 分布重叠区极宽（floor 每收紧 1 logit，gold 误杀与噪声丢弃同步上升，AUC 虽 0.836 但
-   * **绝对阈值**挑不出「本题的噪声尾巴」）。题内相对规则只用同一题的分数序，对模型换版、
-   * 分数漂移天然免疫：
+   * **绝对阈值**挑不出「本题的噪声尾巴」）。题内相对规则只用同一题的分数序：
    *  - "floor"    = score ≥ minScore（旧行为，绝对刻度，provider 换版即失效）；
-   *  - "margin"   = score ≥ 题内 top1 − filterMarginTop（相对幅度）；
-   *  - "quantile" = score ≥ 题内 filterKeepRatio 分位（按分数裁掉尾巴，保留原融合序）。
+   *  - "margin"   = score ≥ 题内 top1 − filterMarginTop（跟随题内整体平移；注意参数仍是
+   *    provider 原生**刻度单位**，换 provider 后 8 这个数要重估——它只对题间平移稳健）；
+   *  - "quantile" = 保留题内分数最高的 ceil(已评分候选数 × filterKeepRatio) 条
+   *    （按**条数比例**裁，与刻度单位无关，换 provider/换模型不需要重调；保留原融合序）。
    * 实测（LME90 90 题 / 997 候选，见 docs/optimization-results.md §19）：quantile 0.5 与
    * margin 8 在「保留 37% 候选」处 gold 误杀 12.8%/10.5%，显著低于绝对 floor −7 的 15.8%；
    * 非 floor 规则下 minScore 不参与判定（避免两把尺子互相盖）。
    */
   filterRule: "floor" | "margin" | "quantile";
-  /** filterRule="margin"：保留题内 top1 − margin 以内的行（缺省 8，provider 原生刻度；负数非法→回落缺省）。 */
+  /** filterRule="margin"：保留题内 top1 − margin 以内的行（缺省 8，provider 原生刻度单位；
+   *  非有限或 ≤0 → 回落缺省 8）。换 provider 后需按新刻度重估，否则可能恒不裁或裁光。 */
   filterMarginTop: number;
-  /** filterRule="quantile"：保留题内分数前 keep 比例的行（缺省 0.5，clamp (0,1]）。 */
+  /** filterRule="quantile"：保留题内分数前 keep 比例的已评分候选（缺省 0.5；非有限或 ≤0 → 回落 0.5，
+   *  >1 clamp 1）。分母只数**已评分**候选——provider 截断漏排的行无条件保留，故实际 kept 比例可能高于
+   *  本值（这条在 provider 端截断时才会发生，见 auto-recall 的 keepByFilter）。 */
   filterKeepRatio: number;
   /**
    * #137-F（2026-10-28）：精排与检索融合相关度的混合比例 α∈[0,1]。
@@ -2364,21 +2373,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
           // #135 R4：非法 mode 回落 "rerank"（逐位现状），静默回落
           mode: str(rr, "mode") === "filter" ? ("filter" as const) : ("rerank" as const),
-          // #144：filter 的判定尺子（缺省 floor = 逐位现状）；非法值静默回落 floor
-          filterRule: (() => {
-            const raw = str(rr, "filterRule");
-            return raw === "margin" || raw === "quantile" ? raw : ("floor" as const);
-          })(),
-          // margin 必须为正（0/负 = 与 floor 同族但无意义）；缺省 8
-          filterMarginTop: (() => {
-            const v = num(rr, "filterMarginTop");
-            return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 8;
-          })(),
-          // 分位 clamp (0,1]；缺省 0.5
-          filterKeepRatio: (() => {
-            const v = num(rr, "filterKeepRatio");
-            return typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.5;
-          })(),
+          // #144：filter 的判定尺子（缺省 floor = 逐位现状）。归一/夹取口径见
+          // core/recall/rerank/filter-ruler.ts——与 auto-recall、离线校准脚本同源，别在此另写一套。
+          filterRule: normalizeRerankFilterRule(str(rr, "filterRule")),
+          filterMarginTop: normalizeRerankFilterMarginTop(num(rr, "filterMarginTop")),
+          filterKeepRatio: normalizeRerankFilterKeepRatio(num(rr, "filterKeepRatio")),
           // #137-F：混合比例 clamp [0,1]；缺省 0 = 逐位现状
           blend: Math.min(1, Math.max(0, num(rr, "blend") ?? 0)),
           minScore: num(rr, "minScore") ?? -2.0,

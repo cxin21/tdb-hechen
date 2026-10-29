@@ -1460,6 +1460,8 @@ instrumented 档（`RERANK_SCORE_DUMP` 转储每题全候选原始分）显示�
 
 读法：**−10.5 / −12 / −14 / −20 四档逐位相同**（=不筛，印证 §19.1）；真正开始「丢噪声」要到 −8.5，而同一区间 gold 误滤同步从 14.3% → 15.0% → 15.8%，turnCov 也从 86.4% 单调跌到 84.1%。**绝对 floor 的收益区不存在**：它没有「先丢噪声、后伤 gold」的平台段。
 
+> **口径说明（重要）**：本表的 turnCov 是**离线模拟**（用当次实跑转储的候选分数重放 filter，结构行按注入行数占位），不是 bench 实跑值。模拟器缺 #162 折叠，且 `--present-temporal` 下的时间相关打分不完全可重放，所以**绝对值整体偏高 ≈4–5pp**（例：floor −7 模拟 84.1% vs 实跑 80.5%；floor −8.5 模拟 84.7% vs 实跑 79.9%）。**本表只用于同表内的相对比较**（哪档更少误杀 gold），绝对值以 §19.8 的实跑为准。
+
 ### 19.5 sigmoid 概率阈值（与 floor 单调等价，无新信息）
 
 | 阈值 | kept 比例 | 误滤 gold | 丢弃噪声行 | turnCov@5 |
@@ -1515,9 +1517,11 @@ B. 按题内分位裁剪（保留分数序前 `keepRatio`）：
 | `recall.rerank.filterMarginTop` | number > 0 | `8` | margin 尺子的窗口（logit 单位） |
 | `recall.rerank.filterKeepRatio` | (0,1] | `0.5` | quantile 尺子的保留比例 |
 
-`MemoryCore/src/core/hooks/auto-recall.ts`：`filterPassSetByIdx()` 只算「谁过线」（不排序，保原序是 filter 语义）；选择块按 `filterRule` 分流，`margin`/`quantile` 档**完全不看 `minScore`（两把尺子不互相盖，避免「绝对门槛先把候选砍光、相对尺子无从工作」）；`RerankWiring` 三处（off / unavailable / active）都带归一化字段，非法值静默回落（`floor` / 8 / 0.5）。观测面：`gates.rerank` 增 `filterRule` + 对应参数；`RERANK_SCORE_DUMP` 同步落这三键，事后可归因。
+`MemoryCore/src/core/recall/rerank/filter-ruler.ts`（新增，**唯一实现**，ADR-0013）：`relativeKeepIdxSet()` 只算「谁过线」（返回下标集合，不排序——保原序是 filter 语义）；`normalizeRerankFilterRuler()` 统一归一（非法 rule → `floor`、marginTop 非有限或 ≤0 → 8、keepRatio ≤0 → 0.5 且 >1 clamp 到 1）；`filterRulerGateObs()` 只投影当前生效尺子的参数。
 
-单测：`MemoryCore/src/core/hooks/__tests__/auto-recall-rerank.test.ts` 新增三例 —— ① margin 0.5 配 `minScore: 2`（故意全杀）仍只按相对窗口保留，`degraded` 不出现（证明 minScore 未参与）；② quantile 0.5 分数与原序错位时按分数选、按原序出；③ 非法 `filterRule` + 越界 `keepRatio` 回落 floor。**24 tests 全过**。
+`MemoryCore/src/core/hooks/auto-recall.ts`：选择块按 `filterRule` 分流，`margin`/`quantile` 档**完全不看 `minScore`**（两把尺子不互相盖，避免「绝对门槛先把候选砍光、相对尺子无从工作」）；`RerankWiring` 三处（off / unavailable / active）都带 `filterRuler`，非法值静默回落。观测面：`gates.rerank` 增 `filterRule` + 对应参数 + `passCount`（规则裁量后、预算 cap 之前的条数；与 `kept` 的差 = 被预算截掉的量）；`RERANK_SCORE_DUMP` 同步落这些键，事后可归因。`RecallJournalRerankGate`（`recall-journal.ts`）同步补字段。
+
+单测：`MemoryCore/src/core/recall/rerank/__tests__/filter-ruler.test.ts`（7 例：三键归一、gate 投影三形态、margin 并列临界、quantile ceil/下限 1/空池、Set 与原序的关系）+ `MemoryCore/src/core/hooks/__tests__/auto-recall-rerank.test.ts` 的 #144 五例（转储两例；① margin 配 `minScore: 2` 仍只按相对窗口保留且 `degraded` 不出现；② quantile 分数与原序错位时按分数选、按原序出；③ 非法 rule/越界 ratio 回落 floor；④ provider 截断漏排时未评分行无条件保留且 `passCount` 如实记录；⑤ margin 临界并列保留）。**33 tests 全过**。
 
 ### 19.8 实跑配对（同库 / 同旗标，只换尺子）
 
@@ -1529,10 +1533,11 @@ B. 按题内分位裁剪（保留分数序前 `keepRatio`）：
 |---|---|---|---|---|---|---|---|---|
 | 基线（不筛） | — | 3.58 | 79.3% / 79.9% | 92.5% / 93.0% | 0.735 / 0.735 | 0.737 / 0.740 | 4.70 | 0 |
 | `lme90-r144-floor7` | floor −7 | 3.46 | 80.5% / — | 93.0% / — | 0.733 / — | 0.738 / — | 4.29 | **4/90** |
+| `lme90-r144-floor85` | floor −8.5 | 3.46 | 79.9% / — | 92.5% / — | 0.737 / — | 0.739 / — | 4.35 | 0 |
 | `lme90-r144-q50(-r2)` | quantile 0.5 | 3.20 / 3.27 | **81.1% / 81.6%** | **94.0% / 94.0%** | 0.741 / 0.747 | 0.742 / 0.749 | 4.12 | 0 |
 | `lme90-r144-m8(-r2)` | margin 8 | 2.93 / 2.98 | 79.9% / 79.9% | 92.3% / 92.3% | **0.776 / 0.770** | **0.767 / 0.762** | 4.11 | 0 |
 
-（原始报告：`MemoryCore/.eval-data/bench/lme90-r144-{instr,base-r2,floor7,q50,q50-r2,m8,m8-r2}.json`；`--no-write-steps` 只读同一库。）
+（原始报告：`MemoryCore/.eval-data/bench/lme90-r144-{instr,base-r2,floor7,floor85,q50,q50-r2,m8,m8-r2}.json`；`--no-write-steps` 只读同一库。floor −8.5 是票面点名要的档，补跑后与模拟 84.7% 差 4.8pp——再次印证 §19.4 的口径说明，且实跑上它与不筛（79.3%/79.9%）无差别。）
 
 判读（严格，按"两次跑之间差多少"划线）：
 
@@ -1546,9 +1551,10 @@ B. 按题内分位裁剪（保留分数序前 `keepRatio`）：
 
 1. **默认保持 #145 定档**：rerank 开 + `candidates: 32` + `minScore: −10.5`（= 不筛，安全的 no-op）。**绝不要**把 `minScore` 收到 −2 / −4：§19.4 的 21.5% / 29.2% 误滤就是 #135 里判对率掉到 45.6% 的来源。
 2. **要真正「丢噪声」时走相对尺子**：`mode: "filter"` + `filterRule: "quantile"` + `filterKeepRatio: 0.5`（首选：两次实跑 turn_cov 81.1% / 81.6%、session_cov 94.0%，均高于基线）；或 `filterRule: "margin"` + `filterMarginTop: 8`（次选：MRR 0.735→0.776/0.770、nDCG 0.737→0.767/0.762、注入行最少 2.93/题，代价是 turn_cov 与基线打平）。**禁止**在生产把 `filterRule` 设 `floor` 且 `minScore > −9`。
-3. **监控**：`gates.rerank.filterRule` 与 `kept` 进日志后看两个信号——`degraded`（整题失灵）与 `kept ≤ 1` 的比例；相对尺子下 `degraded` 应恒为 0，一旦出现即说明配置/provider 异常。
+3. **监控**：看 `gates.rerank.filterRule` / `passCount` / `kept` 三个数——相对尺子下 **`degraded` 根本不会被赋值**（相对分支不会「全杀」：quantile 至少留 1 条、margin 至少留 top1），所以「`degraded` 恒为 0」不能当作相对尺子健康的证据；真正的信号是 `passCount/候选数` 的分布（quantile 0.5 应≈50%，margin 8 随 provider 刻度变化）与 `kept ≤ 1` 的比例。`degraded` 只服务 floor 族，用来发现「绝对门槛在换 provider/语料后整题失灵」。
 4. **兼容性**：`filterRule` 缺省 `floor`，旧配置行为逐位不变；`margin`/`quantile` 只在显式配置时生效，不影响既有部署。
-5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`blend`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。
+5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`blend`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。另外 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也没有这三个键。
+6. **决策记录**：本次机制变更已落 `docs/adr/0013-rerank-filter-题内相对尺子.md`（绝对门槛不可校准的理由、相对尺子的语义与取值、观测字段、被否决的选项）。
 
 ### 19.10 复现
 

@@ -796,9 +796,8 @@ async function main() {
     }
     fs.mkdirSync(outDir, { recursive: true });
     const dumpStamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const dumpName = typeof strArg("report-name", undefined) === "string" && strArg("report-name", undefined)
-      ? String(strArg("report-name", undefined))
-      : `${datasetName}-${dumpStamp}`;
+    const dumpReportName = String(strArg("report-name", "") ?? "").trim();
+    const dumpName = dumpReportName || `${datasetName}-${dumpStamp}`;
     rerankScoreDumpPath = path.join(outDir, `${dumpName}-rerank-scores.jsonl`);
     fs.rmSync(rerankScoreDumpPath, { force: true });
     process.env.RERANK_SCORE_DUMP = rerankScoreDumpPath;
