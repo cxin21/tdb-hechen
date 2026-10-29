@@ -74,6 +74,29 @@ export function parseFtsTokens(ftsQuery: string | null | undefined): string[] {
     .filter((t) => t.length > 0);
 }
 
+/**
+ * #138（2026-10-28）：回捞证据行的查询相关性分（去重 token 命中数）——用于在结论卡的
+ * part_of 证据行里挑「最可能是答案的那一条」，而不是按 store 返回序（生产实测旧序会把
+ * 「User: 7 agents」这类前情行排在承载答案的 assistant 轮之前）。确定性纯函数：
+ * 无时钟、无随机、无外呼；token 门槛与 textHit 一致（≥2 字符、大小写不敏感）。
+ */
+export function evidenceRelevanceScore(content: string, ftsTokens: readonly string[]): number {
+  if (typeof content !== "string" || content.length === 0) return 0;
+  const lower = content.toLowerCase();
+  const seen = new Set<string>();
+  let score = 0;
+  for (const t of ftsTokens) {
+    if (t.length < 2) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    if (lower.includes(key)) {
+      seen.add(key);
+      score++;
+    }
+  }
+  return score;
+}
+
 /** 文本命中：token（≥2 字符，防单字噪声）大小写不敏感子串命中结论文本。 */
 function textHit(content: string, ftsTokens: readonly string[]): boolean {
   const lower = content.toLowerCase();

@@ -23,6 +23,13 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
+import {
+  embeddingKeyFor,
+  factChannelKeyFor,
+  supersessionEligibleForContent,
+  supersessionEnabled,
+  type WritePolicy,
+} from "./write-policy.js";
 
 // ============================
 // Types
@@ -238,8 +245,13 @@ export async function writeMemory(params: {
   embeddingService?: EmbeddingService;
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
+  /**
+   * #134 写面策略（W1 事实键 / W2 写时 supersession）。缺省/全关 → 逐位现状
+   * （键=内容；update/merge 旧行归档）。由 pipeline-factory 从 cfg.write 透传。
+   */
+  writePolicy?: WritePolicy;
 }): Promise<MemoryRecord | null> {
-  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage } = params;
+  const { memory, decision, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, writePolicy } = params;
 
   if (decision.action === "skip") {
     logger?.debug?.(`${TAG} Skipping memory: ${memory.content.slice(0, 50)}...`);
@@ -371,10 +383,53 @@ export async function writeMemory(params: {
     // → 孤儿边、证据链断裂。归档保留整行（l1_archive），getL1ByIdsWithArchive 可回溯；
     // 同时 archiveL1 会级联清掉向量/FTS——归档的旧证据不再进入检索面，不污染召回。
     // 检索准确性不受影响（旧内容不再可召回），而演进链/证据链仍可从归档解析。
-    if (vectorStore) {
+    /** #136：多值/模态内容命中的旧行——保持有效且不归档（additive），但保留 target_ids 供建边。 */
+    let keptAlive: Set<string> | null = null;
+    if (vectorStore && supersessionEnabled(writePolicy)) {
+      // W2（#134，config 门控）：旧行只标记 valid_end（不归档、不删除）——双时态版本治理
+      // 的写时落点（dedup 的 update/merge 即「同实体同属性新值」的生产识别点）。
+      // store 未实现 invalidateL1（可选方法）→ loud warn 并退回归档路径（零删除底线不变）。
+      // #136 属性契约（决策 #136-1）：多值/模态内容不失效——新事实是 additive，旧行保持有效。
+      // 既不走 invalidateL1（否则整行 valid_end 会连带删掉同行的其它事实），也不落入下方
+      // archive 分支（归档同样让旧行退出检索面）。两行并存由读侧软失效/融合分决定新旧。
+      // 注意：这里**不改** decision.target_ids——l1-extractor 之后还要用它建 evolve/similar
+      // 记忆图边；只需在归档分支跳过这些行（见下方 keptAlive 过滤）。
+      if (!supersessionEligibleForContent(record.content, writePolicy)) {
+        keptAlive = new Set(decision.target_ids);
+        logger?.debug?.(
+          `${TAG} [W2-cardinality] multi-valued content — keeping ${decision.target_ids.length} target(s) valid (additive write, no supersession)`,
+        );
+      }
+      const superseded: string[] = [];
+      if (!keptAlive && decision.target_ids.length > 0 && typeof vectorStore.invalidateL1 === "function") {
+        const validEndIso = new Date().toISOString();
+        try {
+          for (const tid of decision.target_ids) {
+            const ok = await vectorStore.invalidateL1(tid, validEndIso);
+            if (ok) superseded.push(tid);
+          }
+          // 新行补双时态起点（valid_start 缺省 = 发生时刻 → createdAt 兜底）：两端齐。
+          if (!record.valid_start) record.valid_start = record.occurred_at || record.createdAt;
+          logger?.debug?.(
+            `${TAG} [W2-supersession] marked ${superseded.length}/${decision.target_ids.length} target(s) superseded (valid_end=${validEndIso}); history preserved`,
+          );
+        } catch (err) {
+          logger?.warn?.(
+            `${TAG} [W2-supersession] invalidateL1 failed for ${decision.action}: ${err instanceof Error ? err.message : String(err)} — falling back to archive path`,
+          );
+        }
+      } else {
+        logger?.warn?.(`${TAG} [W2-supersession] store lacks invalidateL1 — falling back to archive path (no hard delete)`);
+      }
+      if (superseded.length > 0) {
+        decision.target_ids = decision.target_ids.filter((tid) => !superseded.includes(tid));
+      }
+    }
+    const archivableIds = decision.target_ids.filter((tid) => !keptAlive?.has(tid));
+    if (vectorStore && archivableIds.length > 0) {
       try {
         let archived = 0;
-        for (const tid of decision.target_ids) {
+        for (const tid of archivableIds) {
           const ok = await vectorStore.archiveL1?.(tid, `dedup-${decision.action}`);
           if (ok) archived++;
         }
@@ -382,10 +437,10 @@ export async function writeMemory(params: {
         // 落空的旧后端）时回退硬删，保住"旧证据不进检索面"。T2 起两大在册后端（sqlite 原生、
         // tcvdb 伴生 SQLite 模式）的 archiveL1 均必然成功——本分支在在册后端上 unreachable，
         // 触达即说明接线/后端能力异常，loud warn 登记而不是静默硬删。
-        if (archived < decision.target_ids.length) {
-          const rest = decision.target_ids.slice(archived);
+        if (archived < archivableIds.length) {
+          const rest = archivableIds.slice(archived);
           logger?.warn?.(
-            `${TAG} [F7-defensive] archiveL1 archived ${archived}/${decision.target_ids.length} — falling back to HARD DELETE for ${rest.length} record(s). ` +
+            `${TAG} [F7-defensive] archiveL1 archived ${archived}/${archivableIds.length} — falling back to HARD DELETE for ${rest.length} record(s). ` +
             `Unreachable on in-registry backends (sqlite native / tcvdb companion-sqlite since T2); if you see this, the backend lacks archive support or archive is failing.`,
           );
           const deleteFilter = teamId || userId || agentId || sessionId
@@ -435,7 +490,10 @@ export async function writeMemory(params: {
 
       if (embeddingService) {
         try {
-          embedding = await embeddingService.embed(record.content);
+          // W1（#134，config 门控，缺省关=逐位现状）：embedding 键 = 内容 + 事实短语拼接
+          // （生产事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
+          const embeddingKeyText = embeddingKeyFor(record.content, memory, writePolicy);
+          embedding = await embeddingService.embed(embeddingKeyText);
           logger?.info?.(
             `${TAG} [vec-dual-write] Embedding OK: dims=${embedding.length}, ` +
             `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
@@ -452,6 +510,31 @@ export async function writeMemory(params: {
 
       const upsertOk = await vectorStore.upsertL1(record, embedding);
       logger?.info?.(`${TAG} [vec-dual-write] DONE upsert result=${upsertOk} id=${record.id}`);
+
+      // #137（W1 双通道）：事实键**平行通道**——原文主索引刚写完（embedding 键逐位=原文），
+      // 再把事实短语单独 embed 成一条向量写进 store 的独立向量表。三条红线：
+      //  ① 主写入已成功才开始（不因通道失败回滚/丢记录）；
+      //  ② feature-detect（store 未实现 = tcvdb 等服务端 embedding 后端 → 通道静默缺失）；
+      //  ③ 失败只 warn（非致命）：单条事实通道缺失 = 该记忆少一条召回路径，不影响准确写入。
+      if (embeddingService && typeof vectorStore.upsertL1FactVector === "function") {
+        const factKeyText = factChannelKeyFor(record, memory, writePolicy);
+        if (factKeyText) {
+          try {
+            const factVector = await embeddingService.embed(factKeyText);
+            if (factVector && factVector.length > 0) {
+              const factOk = await vectorStore.upsertL1FactVector(record.id, factVector, record.updatedAt);
+              logger?.info?.(
+                `${TAG} [vec-dual-write] fact-channel ${factOk ? "DONE" : "SKIPPED"} id=${record.id} keyLen=${factKeyText.length}`,
+              );
+            }
+          } catch (factErr) {
+            logger?.warn?.(
+              `${TAG} [vec-dual-write] fact-channel FAILED (non-fatal, record kept) id=${record.id}: ` +
+              `${factErr instanceof Error ? factErr.message : String(factErr)}`,
+            );
+          }
+        }
+      }
     } catch (err) {
       // Vector write failure should NOT block the main JSONL write
       logger?.warn?.(

@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildRankContext,
   certaintyMultiplierOf,
+  detectPresentTemporalIntent,
+  presentTemporalSignalOf,
   DEFAULT_RANK_SIGNALS,
   moodSignalOf,
   moodSignOf,
@@ -168,6 +170,9 @@ describe("structuralSignalOf 关断矩阵（全 0 → 恒 0）", () => {
       sensitivityPenalty: 0,
       // P1-T7：重要度降权默认关断（gated，缺省 0=逐位现状）。
       importancePenalty: 0,
+      // #135 R3：查询时间感知默认关断（gated，缺省 0=逐位现状；先测后开）。
+      presentTemporalBoost: 0,
+      presentTemporalDays: 30,
     });
   });
 });
@@ -212,5 +217,43 @@ describe("buildRankContext（plan Interfaces：R-A2 复用）", () => {
   it("时间窗解析与 parseTimeWindow 同源（now 快照一致）", async () => {
     const ctx = await buildRankContext("N 天前的记录", [], { now: NOW });
     expect(ctx.timeWindow).toEqual(parseTimeWindow("N 天前的记录", NOW));
+  });
+});
+
+describe("#135 R3 查询时间感知（present-tense intent；缺省关断）", () => {
+  const NOW2 = new Date("2026-09-10T12:00:00Z");
+  it("detectPresentTemporalIntent：中英当下标记命中，过去窗不误命中", () => {
+    expect(detectPresentTemporalIntent("What do I currently like?")).toBe(true);
+    expect(detectPresentTemporalIntent("我现在用哪个编辑器？")).toBe(true);
+    expect(detectPresentTemporalIntent("帮我看看最新的部署方案")).toBe(true);
+    expect(detectPresentTemporalIntent("we discussed lately")).toBe(true);
+    expect(detectPresentTemporalIntent("What did I like last week?")).toBe(false);
+    expect(detectPresentTemporalIntent("上个月的计划")).toBe(false);
+    expect(detectPresentTemporalIntent("")).toBe(false);
+  });
+
+  it("presentTemporalSignalOf：valid 覆盖 now → +boost；已失效 → 0", () => {
+    expect(presentTemporalSignalOf(item({ valid_start: "2026-01-01T00:00:00Z" }), NOW2, 0.08)).toBe(0.08);
+    expect(presentTemporalSignalOf(item({ valid_start: "2026-01-01T00:00:00Z", valid_end: "2026-09-01T00:00:00Z" }), NOW2, 0.08)).toBe(0);
+  });
+
+  it("presentTemporalSignalOf：无 validity 锚时 occurred_at 落最近 recentDays 天 → +boost（未来/超窗 → 0）", () => {
+    expect(presentTemporalSignalOf(item({ occurred_at: "2026-09-05T00:00:00Z" }), NOW2, 0.08, 30)).toBe(0.08);
+    expect(presentTemporalSignalOf(item({ occurred_at: "2026-06-01T00:00:00Z" }), NOW2, 0.08, 30)).toBe(0);
+    expect(presentTemporalSignalOf(item({ occurred_at: "2026-09-12T00:00:00Z" }), NOW2, 0.08, 30)).toBe(0);
+  });
+
+  it("structuralSignalOf：presentTemporal=false 或 boost=0 → 恒 0（关断矩阵）", () => {
+    const cur = item({ occurred_at: "2026-09-05T00:00:00Z" });
+    expect(structuralSignalOf(cur, { timeWindow: null, moodSign: 0, signals: ZERO_RANK_SIGNALS, now: NOW2, presentTemporal: true })).toBe(0);
+    expect(structuralSignalOf(cur, { timeWindow: null, moodSign: 0, signals: { ...ZERO_RANK_SIGNALS, presentTemporalBoost: 0.08 }, now: NOW2, presentTemporal: false })).toBe(0);
+    expect(structuralSignalOf(cur, { timeWindow: null, moodSign: 0, signals: { ...ZERO_RANK_SIGNALS, presentTemporalBoost: 0.08 }, now: NOW2, presentTemporal: true })).toBe(0.08);
+  });
+
+  it("buildRankContext：presentTemporal 随 query 检测", async () => {
+    const ctxA = await buildRankContext("我现在用哪个编辑器", [], { now: NOW2 });
+    expect(ctxA.presentTemporal).toBe(true);
+    const ctxB = await buildRankContext("上周的计划", [], { now: NOW2 });
+    expect(ctxB.presentTemporal).toBe(false);
   });
 });

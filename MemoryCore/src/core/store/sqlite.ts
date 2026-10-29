@@ -499,6 +499,11 @@ export class VectorStore implements IMemoryStore {
   private stmtDeleteMeta!: StatementSync;
   private stmtGetMeta!: StatementSync;
   private stmtSearchVec?: StatementSync;   // optional — only set when vecTablesReady
+  // #137 W1/C：事实键平行向量通道（l1_fact_vec）——独立 vec0 表，与 l1_vec 同维同度量；
+  // 主索引 l1_vec 完全不动。老三件套（delete/insert/search）同样只在 vecTablesReady 时绑定。
+  private stmtDeleteFactVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtInsertFactVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtSearchFactVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtQueryBySessionId!: StatementSync;
   private stmtQueryBySessionIdSince!: StatementSync;
   private stmtQueryBySessionKey!: StatementSync;
@@ -1009,6 +1014,15 @@ export class VectorStore implements IMemoryStore {
           updated_time TEXT DEFAULT ''
         )
       `);
+      // #137 W1/C：事实键平行向量通道表（与 l1_vec 同维、同余弦度量；主索引不动）。
+      // IF NOT EXISTS 即老库自愈，无需迁移脚本。
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS l1_fact_vec USING vec0(
+          record_id TEXT PRIMARY KEY,
+          embedding float[${this.dimensions}] distance_metric=cosine,
+          updated_time TEXT DEFAULT ''
+        )
+      `);
     }
 
     // Prepare statements for reuse
@@ -1054,6 +1068,9 @@ export class VectorStore implements IMemoryStore {
     if (this.dimensions > 0) {
       this.stmtDeleteVec = this.db.prepare("DELETE FROM l1_vec WHERE record_id = ?");
       this.stmtInsertVec = this.db.prepare("INSERT INTO l1_vec (record_id, embedding, updated_time) VALUES (?, ?, ?)");
+      // #137 W1/C：事实键通道平行语句（与主索引用同一 delete+insert 模式，vec0 无 ON CONFLICT）
+      this.stmtDeleteFactVec = this.db.prepare("DELETE FROM l1_fact_vec WHERE record_id = ?");
+      this.stmtInsertFactVec = this.db.prepare("INSERT INTO l1_fact_vec (record_id, embedding, updated_time) VALUES (?, ?, ?)");
     }
     this.stmtDeleteMeta = this.db.prepare("DELETE FROM l1_records WHERE record_id = ?");
 
@@ -1069,6 +1086,14 @@ export class VectorStore implements IMemoryStore {
       this.stmtSearchVec = this.db.prepare(`
         SELECT record_id, distance
         FROM l1_vec
+        WHERE embedding MATCH ?
+          AND k = ?
+        ORDER BY distance
+      `);
+      // #137 W1/C：事实键通道 KNN（同形 SQL，只换表名）
+      this.stmtSearchFactVec = this.db.prepare(`
+        SELECT record_id, distance
+        FROM l1_fact_vec
         WHERE embedding MATCH ?
           AND k = ?
         ORDER BY distance
@@ -1658,7 +1683,9 @@ export class VectorStore implements IMemoryStore {
   private dropVectorTables(): void {
     this.db.exec("DROP TABLE IF EXISTS l1_vec");
     this.db.exec("DROP TABLE IF EXISTS l0_vec");
-    this.logger?.info(`${TAG} Dropped vector tables (l1_vec, l0_vec)`);
+    // #137：维度/模型变更时必须一并重建事实键通道表，否则 IF NOT EXISTS 会保留旧维度表。
+    this.db.exec("DROP TABLE IF EXISTS l1_fact_vec");
+    this.logger?.info(`${TAG} Dropped vector tables (l1_vec, l0_vec, l1_fact_vec)`);
   }
 
   /**
@@ -2070,6 +2097,8 @@ export class VectorStore implements IMemoryStore {
         // update/merge 刚建的 evolve/similar 边（writeMemory 归档 target 后 applyDecisions
         // 才建边，时序安全，但任何"先建边后归档"的路径都会断链）。
         if (this.stmtDeleteVec) this.stmtDeleteVec.run(id);
+        // #137：归档同时清掉事实键通道向量（否则 fact 通道留孤儿行）
+        if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(id);
         if (this.ftsAvailable) this.stmtL1FtsDelete.run(id);
         this.db.exec("COMMIT");
       } catch (e) {
@@ -4049,6 +4078,195 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * W1/C（#137）：写入「事实短语键」的平行向量（l1_fact_vec）。
+   *
+   * 事实键通道与原文主索引 l1_vec 完全解耦：本方法只碰 l1_fact_vec，
+   * 不读不写 l1_vec / l1_records。vec0 无 ON CONFLICT → delete + insert。
+   *
+   * **Fault-tolerant**：degraded / vec 表未就绪 / 空向量 / 全零向量 / 维度不符 →
+   * `false`（不写）；任何异常 log warn 后返回 false，绝不抛。
+   */
+  upsertL1FactVector(recordId: string, embedding: Float32Array, updatedTime?: string): boolean {
+    if (this.degraded) return false;
+    if (!this.vecTablesReady || !this.stmtDeleteFactVec || !this.stmtInsertFactVec) return false;
+    if (!embedding || embedding.length === 0) {
+      this.logger?.debug?.(`${TAG} [L1-fact-vec] skip empty embedding id=${recordId}`);
+      return false;
+    }
+    if (embedding.length !== this.dimensions) {
+      this.logger?.warn(
+        `${TAG} [L1-fact-vec] dimension mismatch id=${recordId} (${embedding.length} != ${this.dimensions}) — skipped`,
+      );
+      return false;
+    }
+    // 零向量：cosine 未定义（vec0 返回 null distance），与 upsertL1 同口径不写入。
+    let nonZero = false;
+    for (let i = 0; i < embedding.length; i++) {
+      if (embedding[i] !== 0) { nonZero = true; break; }
+    }
+    if (!nonZero) {
+      this.logger?.debug?.(`${TAG} [L1-fact-vec] skip zero vector id=${recordId}`);
+      return false;
+    }
+    try {
+      const buf = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+      const ts = updatedTime ?? this.getL1UpdatedTime(recordId) ?? new Date().toISOString();
+      this.db.exec("BEGIN");
+      try {
+        this.stmtDeleteFactVec.run(recordId);
+        this.stmtInsertFactVec.run(recordId, buf, ts);
+        this.db.exec("COMMIT");
+      } catch (txErr) {
+        try { this.db.exec("ROLLBACK"); } catch { /* ignore rollback errors */ }
+        throw txErr;
+      }
+      this.logger?.debug?.(`${TAG} [L1-fact-vec] OK id=${recordId} dims=${embedding.length}`);
+      return true;
+    } catch (err) {
+      this.logger?.warn(
+        `${TAG} [L1-fact-vec] upsert failed (non-fatal) id=${recordId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * W1/C（#137）：按事实键向量检索（KNN over l1_fact_vec）。
+   *
+   * 逐位镜像 searchL1Vector 的容错/映射：over-retrieve（topK + 10，带 filter 时
+   * max(topK*5, topK+10)）→ null/NaN distance 跳过（零向量残留）→ 缺 metadata 的
+   * orphan 跳过 → rowMatchesIsolation 两步过滤 → score = 1 - cosine distance。
+   * degraded / vec 表未就绪 / 任何异常 → []（非致命）。
+   */
+  searchL1FactVector(queryEmbedding: Float32Array, topK = 5, filter?: IsolationFilter): L1SearchResult[] {
+    if (this.degraded || !this.vecTablesReady || !this.stmtSearchFactVec) {
+      if (this.degraded) this.logger?.warn(`${TAG} [L1-fact-search] SKIPPED (degraded mode)`);
+      return [];
+    }
+    try {
+      const ZERO_VEC_BUFFER = 10;
+      const retrieveCount = filter ? Math.max(topK * 5, topK + ZERO_VEC_BUFFER) : topK + ZERO_VEC_BUFFER;
+
+      this.logger?.debug?.(
+        `${TAG} [L1-fact-search] START topK=${topK}, retrieveCount=${retrieveCount}, queryEmbeddingDims=${queryEmbedding.length}`,
+      );
+
+      const rows = this.stmtSearchFactVec.all(
+        Buffer.from(queryEmbedding.buffer, queryEmbedding.byteOffset, queryEmbedding.byteLength),
+        retrieveCount,
+      ) as Array<{ record_id: string; distance: number }>;
+
+      this.logger?.debug?.(`${TAG} [L1-fact-search] vec0 returned ${rows.length} candidate(s)`);
+
+      if (rows.length === 0) return [];
+
+      const results: L1SearchResult[] = [];
+
+      for (const { record_id, distance } of rows) {
+        if (distance == null || Number.isNaN(distance)) {
+          this.logger?.warn(
+            `${TAG} [L1-fact-search] record_id=${record_id} has null/NaN distance (likely zero vector) — skipping`,
+          );
+          continue;
+        }
+
+        const meta = this.stmtGetMeta.get(record_id) as
+          | {
+              content: string;
+              type: string;
+              priority: number;
+              scene_name: string;
+              session_key: string;
+              session_id: string;
+              team_id: string;
+              task_id: string;
+              user_id: string;
+              agent_id: string;
+              version: number;
+              timestamp_str: string;
+              timestamp_start: string;
+              timestamp_end: string;
+              metadata_json: string;
+              occurred_at?: string;
+              valid_start?: string;
+              valid_end?: string;
+              certainty?: string;
+              source?: string;
+              valence?: number;
+              arousal?: number;
+              significance?: number;
+              sensitivity?: string;
+              importance?: number | null;
+            }
+          | undefined;
+
+        if (!meta) {
+          this.logger?.warn(`${TAG} [L1-fact-search] record_id=${record_id} has fact vector but NO metadata (orphan)`);
+          continue;
+        }
+        if (!rowMatchesIsolation(meta, filter)) {
+          continue;
+        }
+
+        const score = 1.0 - distance;
+        results.push({
+          record_id,
+          content: meta.content,
+          type: meta.type,
+          priority: meta.priority,
+          scene_name: meta.scene_name,
+          score,
+          timestamp_str: meta.timestamp_str,
+          timestamp_start: meta.timestamp_start,
+          timestamp_end: meta.timestamp_end,
+          version: meta.version ?? 0,
+          session_key: meta.session_key,
+          session_id: meta.session_id,
+          team_id: meta.team_id ?? "",
+          task_id: meta.task_id ?? "",
+          user_id: meta.user_id ?? "",
+          agent_id: meta.agent_id ?? "",
+          metadata_json: meta.metadata_json,
+          occurred_at: meta.occurred_at ?? undefined,
+          valid_start: meta.valid_start ?? undefined,
+          valid_end: meta.valid_end ?? undefined,
+          certainty: meta.certainty ?? undefined,
+          source: meta.source ?? undefined,
+          valence: meta.valence ?? undefined,
+          arousal: meta.arousal ?? undefined,
+          significance: meta.significance ?? undefined,
+          sensitivity: meta.sensitivity ?? undefined,
+          importance: meta.importance ?? null,
+        });
+      }
+
+      const trimmed = results.slice(0, topK);
+      this.logger?.info(
+        `${TAG} [L1-fact-search] DONE returning ${trimmed.length} result(s) (from ${results.length} valid, ${rows.length} raw)`,
+      );
+      return trimmed;
+    } catch (err) {
+      this.logger?.warn(
+        `${TAG} [L1-fact-search] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /** #137：读 l1_records.updated_time（fact 通道写入缺省沿用它，保证 deleteL1Expired 口径一致）。 */
+  private getL1UpdatedTime(recordId: string): string | undefined {
+    try {
+      const row = this.db.prepare("SELECT updated_time FROM l1_records WHERE record_id = ?").get(recordId) as
+        | { updated_time?: string }
+        | undefined;
+      const ts = row?.updated_time;
+      return typeof ts === "string" && ts !== "" ? ts : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Delete a single record (metadata + vector).
    *
    * **Fault-tolerant**: logs a warning on failure, never throws.
@@ -4065,6 +4283,8 @@ export class VectorStore implements IMemoryStore {
         const result = this.stmtDeleteMeta.run(recordId);
         const deleted = (result as any)?.changes > 0;
         if (this.vecTablesReady) this.stmtDeleteVec!.run(recordId);
+        // #137：硬删同步清事实键通道向量
+        if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(recordId);
         if (this.ftsAvailable) {
           try { this.stmtL1FtsDelete.run(recordId); } catch { /* non-fatal */ }
         }
@@ -4105,6 +4325,8 @@ export class VectorStore implements IMemoryStore {
           }
           this.stmtDeleteMeta.run(id);
           if (this.vecTablesReady) this.stmtDeleteVec!.run(id);
+          // #137：批量硬删同步清事实键通道向量
+          if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(id);
           if (this.ftsAvailable) {
             try { this.stmtL1FtsDelete.run(id); } catch { /* non-fatal */ }
           }
@@ -4315,6 +4537,12 @@ export class VectorStore implements IMemoryStore {
           this.db.prepare(
             "DELETE FROM l1_vec WHERE updated_time != '' AND updated_time < ?",
           ).run(cutoffIso);
+          // #137：过期清理同步清事实键通道（同 updated_time 口径；表可能尚未建立 → 容错）
+          try {
+            this.db.prepare(
+              "DELETE FROM l1_fact_vec WHERE updated_time != '' AND updated_time < ?",
+            ).run(cutoffIso);
+          } catch { /* fact 表可能未建，非致命 */ }
         }
         this.db.prepare(
           "DELETE FROM l1_records WHERE updated_time != '' AND updated_time < ?",
@@ -4391,6 +4619,9 @@ export class VectorStore implements IMemoryStore {
         try {
           this.stmtDeleteVec!.run(record_id);
           this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer), updated_time);
+          // #137：这里只补**主索引**向量（content 重嵌），事实键通道向量不是它的副产品——
+          // 不许顺手删（否则「主向量缺失但事实向量已在」的行会被无谓清空，且不会自动回填）。
+          // 维度/模型换代的全量重建走 reindexAll（那里才删）。
           this.db.exec("COMMIT");
           backfilled++;
         } catch (txErr) {
@@ -5066,6 +5297,8 @@ export class VectorStore implements IMemoryStore {
           try {
             this.stmtDeleteVec!.run(record_id);
             this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer), updated_time);
+            // #137：全量重建（维度/模型变更）后事实键通道旧向量必然失配 → 一并作废
+            if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(record_id);
             this.db.exec("COMMIT");
           } catch (txErr) {
             try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
@@ -5596,6 +5829,8 @@ export class VectorStore implements IMemoryStore {
           l1Deleted++;
           if (this.vecTablesReady) {
             try { this.db.prepare("DELETE FROM l1_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
+            // #137：清空租户内容同步清事实键通道向量
+            try { this.db.prepare("DELETE FROM l1_fact_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
           }
           if (this.ftsAvailable) {
             try { this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?").run(id); } catch { /* fts may not exist */ }

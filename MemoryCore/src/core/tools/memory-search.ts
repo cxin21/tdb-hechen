@@ -18,6 +18,8 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { Logger } from "../types.js";
 import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-window.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
+import { shouldHardDropValidity } from "../recall/validity-policy.js";
+import { factChannelWeightOf, type RecallFactChannelConfig } from "../recall/fusion.js";
 import { rowMatchesIsolation } from "../store/isolation.js";
 import { emotionSalienceOf } from "./recall-signals.js";
 import {
@@ -180,12 +182,20 @@ const RRF_K = 60;
  * returned item is replaced by the RRF score for consistent ranking semantics.
  */
 function rrfMergeL1(...lists: MemorySearchResultItem[][]): MemorySearchResultItem[] {
+  return rrfMergeWeighted(lists.map((items) => ({ items, weight: 1 })));
+}
+
+/**
+ * #137（W1 双通道）：加权多路 RRF——事实通道以 `recall.factChannel.weight` 参与名次分
+ * （weight=1 + 单通道 → 与 rrfMergeL1 逐位一致，排序稳定保序）。
+ */
+function rrfMergeWeighted(parts: Array<{ items: MemorySearchResultItem[]; weight: number }>): MemorySearchResultItem[] {
   const map = new Map<string, { item: MemorySearchResultItem; rrfScore: number }>();
 
-  for (const list of lists) {
+  for (const { items: list, weight } of parts) {
     for (let rank = 0; rank < list.length; rank++) {
       const item = list[rank];
-      const score = 1 / (RRF_K + rank + 1);
+      const score = weight * (1 / (RRF_K + rank + 1));
       const existing = map.get(item.id);
       if (existing) {
         existing.rrfScore += score;
@@ -839,7 +849,8 @@ export async function executeMemorySearch(params: {
   /** 重构式回忆（J）：图邻居扩展默认关闭；开启时按 getNeighbors 扩点（default off，宁缺毋滥）。 */
   neighborExpand?: { enabled?: boolean; maxHop?: number; maxAdd?: number };
   /** GROW-EVO P2（§2.3）：失效排除开关（缺省 true = spec 拍板①；由调用方 cfg 透传） */
-  excludeInvalidated?: boolean;
+  /** #136：true/undefined = 硬排除失效行；false = 通道退出；"soft" = 只丢 future、保留失效行。 */
+  excludeInvalidated?: boolean | "soft";
   /** A5（REG-REMAINING-001）：time_point 时间旅行——提供时切换"当时有效"双时态过滤 */
   validityNow?: Date;
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；由调用方 cfg 透传） */
@@ -893,6 +904,12 @@ export async function executeMemorySearch(params: {
    * query 含候选池中出现的 scene_name → 该场景（含层级前缀子场景）记忆 +sceneBoost。
    */
   sceneBoost?: number;
+  /**
+   * #137（W1 双通道）：事实键平行召回通道（cfg.recall.factChannel 透传）。
+   * 缺省 undefined / enabled=false / store 未实现 searchL1FactVector → 通道退出
+   * （零调用、零行为变化）。通道只扩召回：候选按 `weight × 1/(60+rank+1)` 并入 RRF。
+   */
+  factChannel?: RecallFactChannelConfig;
   /**
    * R-A3（E1）：query embedding TTL 缓存毫秒（默认 60_000，<=0 = 关）。
    * key=query 原文；命中免外呼（同轮多路归一）。缓存不改变任何检索输入（语义零变化）。
@@ -1100,7 +1117,7 @@ export async function executeMemorySearch(params: {
   }
 
   // ── SQLite dual-path: run FTS5 + Vector in parallel, merge with client-side RRF ──
-  const [ftsItems, vecItems] = await Promise.all([
+  const [ftsItems, vecItems, factItemsRaw] = await Promise.all([
     // FTS5 keyword search
     (async (): Promise<MemorySearchResultItem[]> => {
       if (!hasFts) return [];
@@ -1213,20 +1230,95 @@ export async function executeMemorySearch(params: {
         return [];
       }
     })(),
+
+    // #137（W1 双通道）：事实键平行通道——同一 query 向量再打一次 l1_fact_vec。
+    // store 未实现（tcvdb 等）/ 通道未开启 → 空列表（零调用）；失败非致命。
+    (async (): Promise<MemorySearchResultItem[]> => {
+      const factCfg = params.factChannel;
+      if (factCfg?.enabled !== true || !hasEmbedding) return [];
+      if (typeof vectorStore.searchL1FactVector !== "function") return [];
+      try {
+        const queryEmbedding = await cachedQueryEmbedding(embeddingService!, query, queryEmbeddingCacheTtlMs, logger);
+        const factTopK = factCfg.candidateK ?? candidateK;
+        const rows: L1SearchResult[] = isolationFilter
+          ? await vectorStore.searchL1FactVector(queryEmbedding, factTopK, isolationFilter)
+          : await vectorStore.searchL1FactVector(queryEmbedding, factTopK);
+        logger?.debug?.(`${TAG} [hybrid-fact] fact channel returned ${rows.length} candidates`);
+        return rows.map((r) => ({
+          id: r.record_id,
+          content: r.content,
+          type: r.type,
+          priority: r.priority,
+          scene_name: r.scene_name,
+          score: r.score,
+          team_id: r.team_id,
+          user_id: r.user_id,
+          agent_id: r.agent_id,
+          task_id: r.task_id,
+          version: r.version ?? 0,
+          created_at: r.timestamp_start,
+          updated_at: r.timestamp_end,
+          occurred_at: r.occurred_at,
+          valid_start: r.valid_start,
+          valid_end: r.valid_end,
+          certainty: r.certainty,
+          source: r.source,
+          valence: r.valence,
+          arousal: r.arousal,
+          significance: r.significance,
+          sensitivity: (r as { sensitivity?: string }).sensitivity,
+          metadata: parseMetadata(r.metadata_json),
+        }));
+      } catch (err) {
+        logger?.warn?.(
+          `${TAG} [hybrid-fact] fact channel failed (non-fatal, channel skipped): ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return [];
+      }
+    })(),
   ]);
 
   // ── 绝对相关门控（宁缺毋滥）：L1 向量分是 cosine（0–1 绝对可比），
   //    低于 scoreThreshold（默认 0.3）的 embedding 候选不入池 —— 修"排名即注入"。
   const gatedVec = scoreThreshold > 0 ? vecItems.filter((r) => r.score >= scoreThreshold) : vecItems;
 
+  // #137：事实通道候选——余弦下限（缺省回落 scoreThreshold）+ onlyForTypes + 同 id 去重留最高分。
+  const factOnlyTypes =
+    params.factChannel?.onlyForTypes && params.factChannel.onlyForTypes.length > 0
+      ? new Set(params.factChannel.onlyForTypes)
+      : null;
+  const factMinScore =
+    typeof params.factChannel?.minScore === "number" && Number.isFinite(params.factChannel.minScore)
+      ? params.factChannel.minScore
+      : scoreThreshold;
+  const factByScore = new Map<string, MemorySearchResultItem>();
+  if (params.factChannel?.enabled === true) {
+    for (const r of factItemsRaw) {
+      if (factOnlyTypes && !factOnlyTypes.has(r.type)) continue;
+      if (!(typeof r.score === "number" && Number.isFinite(r.score) && r.score >= factMinScore)) continue;
+      const prev = factByScore.get(r.id);
+      if (!prev || r.score > prev.score) factByScore.set(r.id, r);
+    }
+  }
+  // #137 红线：事实通道**只收新候选**——已由 fts/dense 命中的记录不再加分，
+  // 否则双命中会累加两份 RRF、跨通道反超原文 rank1（事实键只扩召回、不裁决排序）。
+  if (params.factChannel?.enabled === true) {
+    for (const r of [...factByScore.keys()]) {
+      if (ftsItems.some((x) => x.id === r) || gatedVec.some((x) => x.id === r)) factByScore.delete(r);
+    }
+  }
+  const factItems = [...factByScore.values()].sort((a, b) => b.score - a.score);
+  const factWeight = factChannelWeightOf(params.factChannel, undefined);
+
   // ── Determine effective strategy ──
   const ftsOk = ftsItems.length > 0;
   const vecOk = gatedVec.length > 0;
+  const factOk = factItems.length > 0;
   let strategy: string;
 
-  if (ftsOk && vecOk) {
+  if ((ftsOk && (vecOk || factOk)) || (vecOk && factOk)) {
     strategy = "hybrid";
-  } else if (vecOk) {
+  } else if (vecOk || factOk) {
     strategy = "embedding";
   } else if (ftsOk) {
     strategy = "fts";
@@ -1236,15 +1328,22 @@ export async function executeMemorySearch(params: {
   }
 
   // ── Merge results ──
+  // #137：事实通道开启时三路加权 RRF（未开启 → factItems 空 + weight 不参与，逐位现状）。
   let results: MemorySearchResultItem[];
   if (strategy === "hybrid") {
-    results = rrfMergeL1(ftsItems, gatedVec);
+    results = factOk
+      ? rrfMergeWeighted([
+          { items: ftsItems, weight: 1 },
+          { items: gatedVec, weight: 1 },
+          { items: factItems, weight: factWeight },
+        ])
+      : rrfMergeL1(ftsItems, gatedVec);
     logger?.debug?.(
-      `${TAG} [hybrid] RRF merged: fts=${ftsItems.length}, vec=${vecItems.length} → ${results.length} unique`,
+      `${TAG} [hybrid] RRF merged: fts=${ftsItems.length}, vec=${vecItems.length}, fact=${factItems.length} → ${results.length} unique`,
     );
   } else {
     // Single-source: use whichever list has results (already sorted by score)
-    results = ftsOk ? ftsItems : gatedVec;
+    results = ftsOk ? ftsItems : vecOk ? gatedVec : factItems;
   }
 
   // ── Apply secondary filters (type, scene) ──
@@ -1532,7 +1631,16 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
 // （valid_start 未来生效同样排除；解析失败/空值保留）——与钩子路共享单一源；导出供
 // filter-invalidated.test.ts「钩子路/工具路一致性」套件同批行同判钉死。
 // 等价性说明：原 validityNow 分支的 clamp（解析失败→0/+∞）与共享谓词的 skip 语义逐位一致。
-export function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(items: T[], validityNow?: Date, excludeInvalidated?: boolean): T[] {
+export function filterByValidity<T extends { valid_start?: string; valid_end?: string }>(
+  items: T[],
+  validityNow?: Date,
+  excludeInvalidated?: boolean | "soft",
+): T[] {
   if (validityNow) return items.filter((i) => !isOutsideValidityWindow(i, validityNow));
-  return excludeInvalidated === false ? items : items.filter((i) => !isOutsideValidityWindow(i));
+  if (excludeInvalidated === false) return items;
+  // #136（W2 软失效）：工具路无法像钩子路那样按预算重排序，因此 soft 的语义是
+  // 「只丢未生效（future），失效行保留」——历史证据不因一次失效标记被删除；
+  // 新旧取舍交给调用方的分数/时间排序。
+  if (excludeInvalidated === "soft") return items.filter((i) => !shouldHardDropValidity(i, new Date(), "soft"));
+  return items.filter((i) => !isOutsideValidityWindow(i));
 }

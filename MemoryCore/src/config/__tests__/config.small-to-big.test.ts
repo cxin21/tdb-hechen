@@ -39,4 +39,30 @@ describe("R-b config：recall.smallToBig", () => {
   it("非布尔 enabled → false（关断恒等）", () => {
     expect(s2bOf({ recall: { smallToBig: { enabled: "yes" as unknown as boolean } } }).enabled).toBe(false);
   });
+
+  // ── #138（2026-10-28）：上下文行预算归属 + 证据相关性排序 + 结论条数上限 ──
+
+  it("#138 预算归属缺省 shared（逐位现状）；additive 显式透传；非法值回落 shared", () => {
+    expect(s2bOf({}).budget).toBe("shared");
+    expect(s2bOf({ recall: { smallToBig: { enabled: true } } }).budget).toBe("shared");
+    expect(s2bOf({ recall: { smallToBig: { enabled: true, budget: "additive" } } }).budget).toBe("additive");
+    expect(s2bOf({ recall: { smallToBig: { enabled: true, budget: "other" } } }).budget).toBe("shared");
+  });
+
+  it("#138 相关性排序缺省 true（质量修复）；显式 false 可回滚旧序", () => {
+    expect(s2bOf({}).relevanceRanked).toBe(true);
+    expect(s2bOf({ recall: { smallToBig: { relevanceRanked: false } } }).relevanceRanked).toBe(false);
+    expect(s2bOf({ recall: { smallToBig: { relevanceRanked: true } } }).relevanceRanked).toBe(true);
+  });
+
+  it("#138 结论条数上限：缺省 undefined（运行期取 floor(maxResults/2)）；正数 floor；0/负/非有限 → 0", () => {
+    const clOf = (raw: Record<string, unknown>) => parseConfig(raw).recall.conclusionLayer;
+    expect(clOf({}).maxConclusions).toBeUndefined();
+    expect(clOf({ recall: { conclusionLayer: { maxConclusions: 3 } } }).maxConclusions).toBe(3);
+    expect(clOf({ recall: { conclusionLayer: { maxConclusions: 2.9 } } }).maxConclusions).toBe(2);
+    expect(clOf({ recall: { conclusionLayer: { maxConclusions: 0 } } }).maxConclusions).toBe(0);
+    expect(clOf({ recall: { conclusionLayer: { maxConclusions: -4 } } }).maxConclusions).toBe(0);
+    // num() 对 NaN 返回 undefined（非有限 → 视为未配置）→ 回落运行期缺省
+    expect(clOf({ recall: { conclusionLayer: { maxConclusions: Number.NaN } } }).maxConclusions).toBeUndefined();
+  });
 });

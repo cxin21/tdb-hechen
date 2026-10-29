@@ -37,6 +37,7 @@ import type { Logger } from "../core/types.js";
 import type { IStateBackend } from "../core/state/types.js";
 import type { PipelineWorker } from "../services/pipeline-worker.js";
 import { executeMemorySearch } from "../core/tools/memory-search.js";
+import { excludeInvalidatedFor } from "../core/recall/validity-policy.js";
 import { executeConversationSearch } from "../core/tools/conversation-search.js";
 import { validateCoreWrite } from "../core/core-memory/guard.js";
 // Task DISC（提议制）：价值锚发现纯函数集（证据重算/weight 公式/去重/宽松解析/prompt 形状）
@@ -1691,8 +1692,12 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     timeWindow: explicitStart || explicitEnd
       ? { start: explicitStart ?? "1970-01-01T00:00:00.000Z", end: explicitEnd ?? "9999-12-31T23:59:59.999Z", label: "explicit" }
       : "auto",
-    // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）
-    excludeInvalidated: (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
+    // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）；
+    // #136：recall.validity.mode=soft 时映射成 "soft"（只丢 future，保留失效行）——单一映射点
+    excludeInvalidated: excludeInvalidatedFor(
+      (deps as { config?: { memory?: { recall?: { validity?: { mode?: "hard" | "soft" } } } } }).config?.memory?.recall?.validity?.mode,
+      (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
+    ),
     // A5：time_point 时间旅行（handleRecall 同款语义）
     validityNow,
     // GROW-EVO P3 R10（§3.2）：情感显著度权重（cfg 透传——缺省 0 = 恒等）

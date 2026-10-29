@@ -202,3 +202,23 @@ NUL
 MemoryPanel/web/NUL
 # 本地一次性推演脚本（内存门控调试用，不入库）
 MemoryCore/.tmp-*.mjs
+
+# ── bench（2026-10-27 记忆检索优化路线）────────────────────────────
+# 数据集与本地评测产物不入库；探针脚本与抽样 manifest 白名单入库
+/.eval-data/
+MemoryCore/.eval-data/**
+!MemoryCore/.eval-data/bench
+!MemoryCore/.eval-data/bench/probe-rerank.mjs
+!MemoryCore/.eval-data/bench/lme-manifest.json
+# 基线登记表（judge 身份 + commit + 报告路径）必须入库：门禁按它解析「同 judge 基线」
+!MemoryCore/.eval-data/bench/lme-baselines.json
+
+# ── 追加（2026-10-28 #140 收尾）：编辑器与本地草稿产物，防 git add -A 误提交 ──
+# 注：docs/agents/workspace.yaml 是**随仓库共享**的插件配置（见文件头注释），刻意不忽略
+.idea/
+.tmp/
+MemoryCore/.scene/
+MemoryCore/.scratch/
+MemoryCore/memory/
+MemoryCore/scratchpad/
+MemoryCore/*_block.md

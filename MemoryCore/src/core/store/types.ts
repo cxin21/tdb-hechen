@@ -938,6 +938,17 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   // ── L1 Search ────────────────────────────────────────────
 
   searchL1Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string, filter?: IsolationFilter): MaybePromise<L1SearchResult[]>;
+  /**
+   * W1/C（#137）：事实键平行召回通道——把「事实短语键」的 embedding 单独存一张 vec0 表
+   * （与 l1_vec 同维、同余弦度量），原文主索引 l1_vec 不动。可选方法——tcvdb 等后端可不实现
+   * （调用方 feature-detect，缺失 = 通道静默关闭）。零向量/未就绪/degraded → false（不写）。
+   */
+  upsertL1FactVector?(recordId: string, embedding: Float32Array, updatedTime?: string): MaybePromise<boolean>;
+  /**
+   * W1/C（#137）：按事实键向量检索，与 searchL1Vector 同形（score = 1 - cosine distance）；
+   * 行形状 = L1SearchResult（metadata 从 l1_records 读，租户 filter 两步过滤，null distance 跳过）。
+   */
+  searchL1FactVector?(queryEmbedding: Float32Array, topK?: number, filter?: IsolationFilter): MaybePromise<L1SearchResult[]>;
   searchL1Fts(ftsQuery: string, limit?: number, filter?: IsolationFilter): MaybePromise<L1FtsResult[]>;
   searchL1Hybrid?(params: {
     query?: string;

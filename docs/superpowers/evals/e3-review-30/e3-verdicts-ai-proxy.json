@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "ticket": "#143",
+  "reviewer": "ai-proxy",
+  "reviewerNote": "由 AI 代理逐题判定，用户 2026-10-29 明示授权（『你自己判吧，你自己弄』）；口径为 AI-vs-系统，不等于人工-vs-系统。",
+  "exportedAt": "2026-10-29T00:59:59.327Z",
+  "verdicts": {
+    "3fe836c9": {
+      "sufficiency": "insufficient",
+      "bucket": null,
+      "reason": "块内只有成交价 $325,000，缺预批 $350,000（该轮未召回），无法算差额。"
+    },
+    "4d6b87c8": {
+      "sufficiency": "sufficient",
+      "bucket": "recall",
+      "reason": "块内『I've got 25 titles on it right now』已含当前数量 25，系统判 insufficient 属低报。"
+    },
+    "50635ada": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有『我的 UA 当前状态是什么』的提问，没有 Premier Silver 这一事实。"
+    },
+    "c8f1aeed": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有议题提问，未出现 Pennsylvania。"
+    },
+    "d596882b": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内是纽约咖啡店推荐，未含 By Chloe。"
+    },
+    "gpt4_1d80365e": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有 2023-05-15 出发那句，没有返回日，算不出天数。"
+    },
+    "06f04340": {
+      "sufficiency": "partial",
+      "bucket": "other",
+      "reason": "块内已有自种香草（罗勒/薄荷）偏好与食谱建议，仅缺樱桃番茄那条，回答仍正确。"
+    },
+    "0e5e2d1a": {
+      "sufficiency": "insufficient",
+      "bucket": "fold",
+      "reason": "38 subjects 所在句已召回，但块内只剩提问，被同会话折叠替换。"
+    },
+    "1568498a": {
+      "sufficiency": "insufficient",
+      "bucket": "fold",
+      "reason": "块内是同会话另一句无关回复，28. Kg3 未注入（jac 0.115，属非阈值命中的装配替换）。"
+    },
+    "58bf7951": {
+      "sufficiency": "insufficient",
+      "bucket": "fold",
+      "reason": "块内摘要只到『去社区剧院看戏』，The Glass Menagerie 被折叠掉。"
+    },
+    "66f24dbb": {
+      "sufficiency": "insufficient",
+      "bucket": "fold",
+      "reason": "块内只说『买了礼物』，yellow dress 未注入（证据已召回，fold 0.265）。"
+    },
+    "720133ac": {
+      "sufficiency": "insufficient",
+      "bucket": "fold",
+      "reason": "块内是助手免责声明，$50 问诊 + $25 跳蚤药都没进块。"
+    },
+    "75832dbd": {
+      "sufficiency": "sufficient",
+      "bucket": "other",
+      "reason": "块内含用户对医学影像 AI 研究文献的偏好，足以给推荐；答错属生成而非覆盖。"
+    },
+    "gpt4_93f6379c": {
+      "sufficiency": "insufficient",
+      "bucket": "fold",
+      "reason": "块内只有 Marketing Professionals，Page Turners 被折叠，无法比较加入先后。"
+    },
+    "031748ae": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有『刚开始带 4 人』，缺『现在带 5 人』，第二问无法回答。"
+    },
+    "10d9b85a": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有 4/17-18 两天工作坊，缺 4/10 讲座那天。"
+    },
+    "129d1232": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有 $5,000，缺 $250 与 $600 两笔。"
+    },
+    "2133c1b5": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内是『住了一个月』的旧状态，缺 10-15 的『3 个月』更新。"
+    },
+    "2ebe6c90": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有 1/31 读完，缺 1/10 开始日，算不出 21 天。"
+    },
+    "35a27287": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内是助手『不知道你的位置』的泛泛建议，缺西语/法语偏好那条。"
+    },
+    "4b24c848": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内是『已买三件』的旧状态，缺 9-30 的『五件』。"
+    },
+    "8e9d538c": {
+      "sufficiency": "sufficient",
+      "bucket": "recall",
+      "reason": "块内直接含 17 skeins 且答对；系统因另一轮助手复述未召回只算 0.5 覆盖，属低报。"
+    },
+    "afdc33df": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有水龙头漏水，缺餐具收纳/花岗岩台面偏好。"
+    },
+    "cc6d1ec1": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有『一个月前参加工作坊』，缺『观鸟三个月』这个起点。"
+    },
+    "0862e8bf": {
+      "sufficiency": "sufficient",
+      "bucket": "other",
+      "reason": "块内直接含 cat's name is Luna。"
+    },
+    "4388e9dd": {
+      "sufficiency": "sufficient",
+      "bucket": "other",
+      "reason": "块内完整保留了人设段，含『untidy, stained white shirt』。"
+    },
+    "545bd2b5": {
+      "sufficiency": "sufficient",
+      "bucket": "other",
+      "reason": "块内直接含『averaging around 2 hours』。"
+    },
+    "577d4d32": {
+      "sufficiency": "sufficient",
+      "bucket": "other",
+      "reason": "块内含『stopping work emails and messages by 7 pm』；判错在措辞不在覆盖。"
+    },
+    "75f70248": {
+      "sufficiency": "sufficient",
+      "bucket": "other",
+      "reason": "块内含猫掉毛与除尘建议，偏好要素齐；漏深度清洁属生成。"
+    },
+    "7161e7e2": {
+      "sufficiency": "insufficient",
+      "bucket": "refuse",
+      "reason": "块内只有排班表标题，没有 Admon 周日 8am-4pm。"
+    }
+  }
+}

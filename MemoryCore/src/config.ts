@@ -6,6 +6,7 @@
  *
  * Minimal config (zero config): {} — all fields have sensible defaults.
  */
+import { clampMaxFacts, DEFAULT_MAX_FACTS } from "./core/record/fact-key.js";
 
 // ============================
 // Type definitions
@@ -46,6 +47,19 @@ export interface ExtractionConfig {
   /** D-4（2026-09-22 拍板）：周期性事实提取块（RECURRENCE_BLOCK 门；缺省 false = 逐位现状）。
    *  落点=既有 memory.extraction 组（ExtractionConfig）——勿另开子树（混合行尾教训再现）。 */
   recurrenceEnabled: boolean;
+  /**
+   * #137（W1 双通道）：多事实抽取块（FACTS_BLOCK 门；缺省 false = prompt 字节逐位不变）。
+   * 开启后每条 memory 多输出 facts（2-5 条自足短语，可选 subject/predicate/value），
+   * parse 侧归一化后落 metadata.facts / metadata.factTriples——写侧事实通道据此建键。
+   * 这是「单短语 metadata.subject 事实覆盖太弱」的治本点（#137 票面根因①）。
+   */
+  facts: {
+    enabled: boolean;
+    /** 每条记忆最多保留几条事实（缺省 5；clamp 1..12）。 */
+    maxFacts: number;
+    /** 是否要求/接受三元组形状（缺省 false——只要短语可减少 LLM 输出体积与幻觉面）。 */
+    includeTriples: boolean;
+  };
   /**
    * 毒批超时（L1-OUTAGE-20261015 定罪修复）：单次提取 LLM 调用超时 ms。
    * 思考型端点延迟∝prompt 体积（生产实测 13K≈298s 贴线、20K>300s 恒超时）→
@@ -123,6 +137,49 @@ export interface RecallConfig {
   enabled: boolean;
   /** Max results to return (default: 5) */
   maxResults: number;
+  /**
+   * #135 R1（检索融合 spec）：hybrid 候选池上游上限 candidateK（FTS/向量两通道各自取
+   * 前 candidateK 进融合）。缺省 undefined = maxResults*3（逐位现状——T1 实测扩池实验
+   * 被此隐式上限锁死）；正整数 floor 生效，非法/非有限 = 缺省。
+   */
+  candidateK?: number;
+  /**
+   * #135 R2（检索融合 spec）：RRF → 加权融合。缺省 mode="rrf" = 恒等权重
+   * （dense/bm25×1、recency/validity×0）逐位现状；"weighted" = 四通道加权和
+   * （dense + BM25 + recency 衰减 + validity 状态，权重由 E1 离线拟合产物经
+   * config 显式填入；未填项回落 0.4/0.3/0.2/0.1 占位）。非法/负权重逐项回落。
+   */
+  fusion?: {
+    /**
+     * "rrf"（缺省）= 逐位现状；"weighted" = RRF 值上加权 + recency/validity 归一分；
+     * "normalized"（#137）= **通道内归一化**融合：dense/fact 用余弦（0..1）、bm25 用通道内
+     * min-max 分位，合成一个可比的 relevance 做主序，rrfScore 退回去重/平局兜底
+     * （#135 实证：合并后的加性小量改不了主序——必须换融合所在层级）。
+     */
+    mode: "rrf" | "weighted" | "normalized";
+    dense?: number;
+    bm25?: number;
+    /** #137：事实通道权重（normalized/weighted 模式；缺省回落 recall.factChannel.weight）。 */
+    fact?: number;
+    recency?: number;
+    validity?: number;
+    recencyHalfLifeDays?: number;
+  };
+  /**
+   * #137（W1 双通道）：事实键平行召回通道（写侧 memory.write.factKey.mode="channel" 建索引）。
+   * 缺省 undefined / enabled=false → 通道退出（零调用、零行为变化）。
+   */
+  factChannel?: {
+    enabled: boolean;
+    /** 事实通道融合权重（缺省 0.6）：rrf/weighted 模式 = weight × 1/(60+rank+1) 的 RRF 贡献。 */
+    weight: number;
+    /** 事实通道上游候选上限（缺省 = candidateK）。 */
+    candidateK?: number;
+    /** 事实通道余弦下限（缺省回落 recall.scoreThreshold）。 */
+    minScore?: number;
+    /** 只对某些 type 的记录生效（缺省空 = 全类型）。 */
+    onlyForTypes?: string[];
+  };
   /** Max characters injected for a single recalled L1 memory. 0 disables the per-memory limit. */
   maxCharsPerMemory: number;
   /** Max total characters injected for all recalled L1 memories. 0 disables the total limit. */
@@ -170,6 +227,13 @@ export interface RecallConfig {
    * journal gates.importancePenalty 仍保留 raw/penalized 双分量观测。
    */
   importancePenalty: { enabled: boolean; penalty: number };
+  /**
+   * #135 R3（bench/recall-opt）：查询时间感知——query 含当下时态标记
+   * （now/currently/现在/目前/最新…）时对「当下成立」的记忆行 +boost。
+   * 铁律：enabled 缺省 false = 排序逐位现状（先测后开）；
+   * boost 缺省 0.08（结构信号加性量级，与 timeBoost 同族）；recentDays 缺省 30。
+   */
+  presentTemporal: { enabled: boolean; boost: number; recentDays: number };
   reinforcementWeight: number;
   moodBoost: number;
   /**
@@ -206,6 +270,13 @@ export interface RecallConfig {
   sessionReuseTtlMs: number;
   /** GROW-EVO P2（§2.3）：召回默认排除失效记忆（valid_end ≤ now）。缺省 true（spec 拍板①：现存库无失效行 = 逐位不变）。 */
   excludeInvalidated: boolean;
+  /**
+   * #136（W2 软失效）：效期判定模式。hard = 逐位旧行为（失效/未来生效行直接排除）；
+   * soft = 效期作为融合特征——expired 行降权保留（排到生效行之后、被预算挤出），
+   * 只有查询显式问"现在/最新"且池里存在更新的有效行时才硬丢。
+   * 缺省 hard（零行为变化）；#136 验证档用 soft。
+   */
+  validity: { mode: "hard" | "soft" };
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）。 */
   emotionSalienceWeight?: number;
   /**
@@ -315,6 +386,47 @@ export interface RecallConfig {
      */
     minBm25RelRatio?: number;
     /**
+     * #138（2026-10-28）：结论行条数上限（结论层额度）。缺省 undefined = 运行期取
+     * floor(maxResults/2)（= R7 §1 预算对半切公式，逐位现状）。显式数值 floor + 非负 clamp；
+     * 0 = 结论层零行（经验层全额）。与 smallToBig.maxExtraLines 是同一预算的两个旋钮：
+     * 本键管「摘要行」，maxExtraLines 管「每张卡随附的源证据行」。
+     */
+    maxConclusions?: number;
+    /**
+     * #138（2026-10-28）：结论层查询路由——"off"（缺省，逐位现状）| "assistantRecall"。
+     * assistantRecall = 当查询在「回忆 assistant 自己先前的输出」（you said/recommended/wrote…）
+     * 时整层跳过结论层（user 侧事实卡对这类问题系统性不相关，注入只会挤掉承载答案的 assistant 轮），
+     * 预算全额还给经验层。判定纯规则（src/core/recall/query-intent.ts），无模型调用。
+     * #141（2026-10-28）新增 "intent"：按查询意图（temporal/exact-fact/update/aggregate/
+     * preference/assistant-recall）分阶段分配表示预算——结论预算、经验层顺序、成对约束与
+     * 表示仲裁都由 INTENT_POLICY 派生（见 query-intent.ts）。缺省仍 off（不改变现行为）。
+     */
+    routing: "off" | "assistantRecall" | "intent";
+    /**
+     * #141（2026-10-28）：结论「必带源证据」约束——"off"（缺省，逐位现状）| "require"。
+     * require = 每条入选的 work_fact 结论必须在 smallToBig 回捞里拿到 ≥1 条 part_of 证据行；
+     * 拿不到的（缺边/证据被预算裁掉）让位给经验层——「无源证据的摘要」比原文信息更少（#155）。
+     * 只在 smallToBig.enabled=true 时生效（否则全体让位等于关层）。结论层路由为 intent 时
+     * 由 INTENT_POLICY.pairing 决定是否强制；本键是全局强开（任一为 require 即生效）。
+     */
+    pairing?: "off" | "require";
+    /**
+     * #141（2026-10-28）：复合单元槽位成本（smallToBig.budget="slot" 时生效）。
+     * 结论 1 槽 + 其必带源证据 0.5 槽 = 1.5（缺省）；clamp [1,3]。
+     * 见 src/core/recall/layered-budget.ts 的 computeSlotBudget。
+     */
+    slotCost?: number;
+    /**
+     * #141（2026-10-28）：表示仲裁——"off"（缺省，逐位现状）| "redundant"。
+     * redundant = 与已选经验层原文行语义重复（token 覆盖率 ≥ arbitrateThreshold）的结论行让位，
+     * 槽位还给经验层：原文既有答案又有时间戳与说话人，比摘要信息量大。这是「同一知识的两种
+     * 表示」的正面解（不是靠关掉结论层回避）。结论层路由为 intent 时由 INTENT_POLICY.arbitrate
+     * 决定；本键是全局强开（任一为 redundant 即生效）。
+     */
+    arbitrate?: "off" | "redundant";
+    /** #141：表示仲裁冗余阈值（缺省 0.75，clamp [0,1]）。 */
+    arbitrateThreshold?: number;
+    /**
      * R71-A2（2026-10-19）：结论层 rerank 语义门（主门）。mode 缺省 "shadow"
      * （shadow-first：只记录不过滤，journal gates.conclusionRerank 观测定标后切 enforce）；
      * "enforce" = score < minScore 的选中结论在幂等指纹缓存前剔除；"off" = 零开销。
@@ -334,7 +446,28 @@ export interface RecallConfig {
    * 代码缺省关（enabled 缺省 false = 逐位现状）；部署 yaml 显式开（#77 三键同款）。
    * maxExtraLines 负值 → 0（=关）；非数字/非有限回落缺省 2。
    */
-  smallToBig: { enabled: boolean; maxExtraLines: number };
+  smallToBig: {
+    enabled: boolean;
+    maxExtraLines: number;
+    /**
+     * #138（2026-10-28）：上下文行的预算归属——"shared"（缺省，逐位现状）= 上下文行与结论行
+     * 一并计入结论行总数、共同挤经验层配额（context 多 → 经验层 0 行）；
+     * "additive" = 上下文行只挤「结论层」之外仍按 maxResults 保底经验层：
+     * experienceLimit = max(0, maxResults − 结论行)，上下文行不计入 → 注入总行数
+     * ≤ maxResults + maxExtraLines（摘要+源证据成对，不以牺牲原文行为代价）。
+     * #141（2026-10-28）"slot" = 复合单元记账：一条结论 + 它必带的 1 条源证据记 1.5 槽
+     * （conclusionLayer.slotCost），经验层额度 = maxResults − 全部复合单元槽位；
+     * 结论行与上下文行都不额外挤经验层（各自已在槽位里记账），注入总行数 ≈ maxResults。
+     */
+    budget: "shared" | "additive" | "slot";
+    /**
+     * #138（2026-10-28）：回捞证据行的查询相关性排序（缺省 true）。true = 对每张卡按
+     * 查询 token 命中数（去重计数）在它的 part_of 证据行里挑最相关的一条先注入，
+     * 且第一轮每卡只取 1 条（成对回捞）；false = 逐位旧行为（按 store 返回序填满帽）。
+     * 纯确定性（无时钟/无随机/无外呼）。
+     */
+    relevanceRanked: boolean;
+  };
   /**
    * Batch C C-b（#77 伴生，2026-10-20 · survey F6b）：检索期重算时间衰减乘子——
    * compositeScore timeProx 因子 × 0.5^(ageDays/halfLifeDays)（MemOS 对标 30d 半衰期；
@@ -342,6 +475,18 @@ export interface RecallConfig {
    * 缺省 enabled=false = 逐位现状（config-first）；halfLifeDays 非有限/负 → 30。
    */
   ageDecay: { enabled: boolean; halfLifeDays: number };
+  /**
+   * B1 生产化（bench/recall-opt G1-a）：注入块时间序打包——开启后注入块内的记忆行
+   * 按行首时间前缀升序（旧→新）重排（无前缀行垫尾，稳定），替代语义分数序。
+   * 依据：LME90 配对实验（docs/optimization-results.md）语义序会把 knowledge-update
+   * 的旧值压过新值（hurt 9/23）。缺省 false = 逐位现状（分数序）。
+   */
+  injectTimeSort: { enabled: boolean };
+  /**
+   * B1 生产化（bench/recall-opt G1-b）：注入块包裹语。legacy = 现行文案（含「仅作为
+   * 参考」贬抑措辞）；neutral = 中性包裹 + 证据不足时如实说明的指引。缺省 legacy。
+   */
+  injectWrapper: "legacy" | "neutral";
   /**
    * Batch C C-b（#77 伴生）：timeProx 时间锚回退——occurredAt 缺失时以记录 createdAt
    * 折算时近因子（治 work_fact 大面积空 occurred_at 期的时近信号全失）。缺省 false
@@ -402,6 +547,17 @@ export interface RecallConfig {
    * （config-first 关断矩阵；yaml 显式开启前任何调用方拿不到精排通道，接线在 Task 2）。
    */
   rerank: RecallRerankConfig;
+  /**
+   * B2-b（bench/recall-opt）：精排后 MMR 多样性重排（memory.recall.mmr.*）。
+   * 铁律：enabled 缺省 false = 逐位现状；只对精排 pass 池做多样性**重排**
+   * （垫尾/预算/门槛语义全部不变；近重复用字符 bigram Jaccard，零新增外呼）。
+   */
+  mmr: {
+    /** 总开关（缺省 false = 逐位现状）。 */
+    enabled: boolean;
+    /** 相关性-多样性权衡（缺省 0.7，clamp [0,1]；1=纯相关序，0=纯多样性）。 */
+    lambda: number;
+  };
 }
 
 /**
@@ -424,6 +580,19 @@ export interface RecallRerankConfig {
   timeoutMs: number;
   /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 12，clamp [1,100] 取整）。 */
   candidates: number;
+  /**
+   * #135 R4（bench/recall-opt）：精排作用模式（缺省 "rerank" = 逐位现状）。
+   * "filter" = 过滤器化：provider 打分后仅按门槛 floor 剔除不达线行、不清排（保原序）。
+   * bench V2 host 侧实证：floor=-7 无增益；生产应 ≤-10.5（logit 刻度）或校准概率门槛。
+   * 非法值回落 "rerank"（config-first 沿 provider 先例）。
+   */
+  mode: "rerank" | "filter";
+  /**
+   * #137-F（2026-10-28）：精排与检索融合相关度的混合比例 α∈[0,1]。
+   * 0 = 旧行为（纯精排顺序，逻辑逐位不变）；1 = 纯检索顺序（精排只剩 floor 语义）；
+   * 0<α<1 = 精排只能在「检索也看好」的候选间翻盘。设计动机见 recall/rerank/blend.ts。
+   */
+  blend: number;
   /**
    * 相关度门槛（缺省 -2.0；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
    * #99 F3（2026-10-25）：本键恒按 provider 原生刻度声明（local=logit，云 provider=0..1）；
@@ -961,12 +1130,48 @@ export interface RecallJournalConfig {
   maxFiles: number;
 }
 
+/**
+ * #134 写面策略（W1 事实键双写 / W2 写时双时态 supersession）。
+ * 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
+ */
+export interface WriteConfig {
+  factKey: {
+    enabled: boolean;
+    /**
+     * #137：「键形态」。
+     * - "replace" = W1 旧形态：原文 + 事实拼成**同一条** embedding 键（#147 实测键替换无净收益，
+     *   且稀释「同实体不同时间」判别信号 → knowledge-update/temporal 掉点）；
+     * - "channel" = 本票形态：原文主索引**逐位不动**，事实短语单独 embed 成平行通道向量。
+     */
+    mode: "replace" | "channel";
+    separator: string;
+    maxFactChars: number;
+    /** 事实通道最多拼几条短语（缺省 5；clamp 1..12）。 */
+    maxFacts: number;
+    /** 三元组展开成短语一起进键（缺省 false）。 */
+    includeTriples: boolean;
+    /** 只对这些 type 建事实通道（空数组 = 全类型；例 ["work_fact"]）。 */
+    onlyForTypes: string[];
+  };
+  supersession: {
+    enabled: boolean;
+    /**
+     * #136 属性契约：多值/模态内容不失效（缺省 true = 修复开启）。false = #136 前逐位行为。
+     */
+    cardinalityGate: boolean;
+    /** 内容级无线索时的缺省基数（缺省 "single" 保覆盖）。 */
+    cardinalityDefault: "single" | "multi";
+  };
+}
+
 /** Fully resolved plugin configuration (v3). */
 export interface MemoryTdaiConfig {
   /** Global prompt family; group-level promptMode can override it. */
   promptMode: MemoryPromptMode;
   capture: CaptureConfig;
   extraction: ExtractionConfig;
+  /** #134：写面策略（缺省全关=逐位现状）。 */
+  write: WriteConfig;
   persona: PersonaConfig;
   pipeline: PipelineTriggerConfig;
   recall: RecallConfig;
@@ -1749,7 +1954,49 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // #46 毒批拆分+批次上限（config-first）：缺省关=逐位现状
       scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,
       sceneBatchMaxChars: Math.max(0, num(extractionGroup, "sceneBatchMaxChars") ?? 0),
+      // #137（W1 双通道）：多事实抽取块（缺省关 = prompt 字节不变；maxFacts clamp 1..12）
+      facts: (() => {
+        const fg = obj(extractionGroup, "facts");
+        return {
+          enabled: bool(fg, "enabled") ?? false,
+          maxFacts: clampMaxFacts(num(fg, "maxFacts") ?? DEFAULT_MAX_FACTS),
+          includeTriples: bool(fg, "includeTriples") ?? false,
+        };
+      })(),
     },
+    // #134（写面策略）：缺省全关=逐位现状；separator 空串回落默认，maxFactChars clamp ≥0
+    write: (() => {
+      const writeGroup = obj(c, "write");
+      const factKeyGroup = obj(writeGroup, "factKey");
+      return {
+        factKey: {
+          enabled: bool(factKeyGroup, "enabled") ?? false,
+          // #137：缺省 replace = W1 旧形态（本票不静默改语义）；channel = 平行通道
+          mode: str(factKeyGroup, "mode") === "channel" ? ("channel" as const) : ("replace" as const),
+          // separator 保原样（不 trim）：" | " 的前后空格是键格式的一部分，与 bench 口径一致；
+          // 空白串/null → 回落默认分隔符。
+          separator: (() => {
+            const raw = factKeyGroup["separator"];
+            return typeof raw === "string" && raw.trim() ? raw : " | ";
+          })(),
+          maxFactChars: Math.max(0, num(factKeyGroup, "maxFactChars") ?? 240),
+          maxFacts: clampMaxFacts(num(factKeyGroup, "maxFacts") ?? DEFAULT_MAX_FACTS),
+          includeTriples: bool(factKeyGroup, "includeTriples") ?? false,
+          onlyForTypes: strArray(factKeyGroup, "onlyForTypes") ?? [],
+        },
+        supersession: (() => {
+          const ssGroup = obj(writeGroup, "supersession");
+          // #136：cardinalityGate 缺省 true（supersession 本身缺省关，故零行为变化）；
+          // 回滚阀门 = 显式 false（回到"凡 update/merge 一律失效"的旧行为）。
+          const defaultRaw = str(ssGroup, "cardinalityDefault");
+          return {
+            enabled: bool(ssGroup, "enabled") ?? false,
+            cardinalityGate: bool(ssGroup, "cardinalityGate") ?? true,
+            cardinalityDefault: defaultRaw === "multi" ? ("multi" as const) : ("single" as const),
+          };
+        })(),
+      };
+    })(),
     persona: {
       triggerEveryN: num(personaGroup, "triggerEveryN") ?? 50,
       maxScenes: num(personaGroup, "maxScenes") ?? 15,
@@ -1772,6 +2019,42 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     recall: {
       enabled: bool(recallGroup, "enabled") ?? true,
       maxResults: num(recallGroup, "maxResults") ?? 5,
+      // #135 R1：候选池上游上限（缺省 undefined = maxResults*3 逐位现状；正整数才生效）
+      candidateK: (() => {
+        const raw = num(recallGroup, "candidateK");
+        return raw !== undefined && Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : undefined;
+      })(),
+      // #135 R2：加权融合（缺省 mode="rrf" 逐位现状；权重非法/负逐项回落占位）
+      fusion: (() => {
+        const fg = obj(recallGroup, "fusion");
+        if (!fg || Object.keys(fg).length === 0) return undefined;
+        const mode = str(fg, "mode");
+        return {
+          mode: mode === "weighted" ? ("weighted" as const) : mode === "normalized" ? ("normalized" as const) : ("rrf" as const),
+          dense: num(fg, "dense"),
+          bm25: num(fg, "bm25"),
+          fact: num(fg, "fact"),
+          recency: num(fg, "recency"),
+          validity: num(fg, "validity"),
+          recencyHalfLifeDays: num(fg, "recencyHalfLifeDays"),
+        };
+      })(),
+      // #137（W1 双通道）：事实键平行召回通道（缺省 undefined = 通道退出；权重 clamp [0,1]）
+      factChannel: (() => {
+        const fc = obj(recallGroup, "factChannel");
+        if (Object.keys(fc).length === 0) return undefined;
+        const weight = num(fc, "weight");
+        const fk = num(fc, "candidateK");
+        const fm = num(fc, "minScore");
+        const only = strArray(fc, "onlyForTypes");
+        return {
+          enabled: bool(fc, "enabled") ?? false,
+          weight: typeof weight === "number" && weight >= 0 ? Math.min(weight, 1) : 0.6,
+          ...(typeof fk === "number" && fk >= 1 ? { candidateK: Math.floor(fk) } : {}),
+          ...(typeof fm === "number" && Number.isFinite(fm) ? { minScore: fm } : {}),
+          ...(only && only.length > 0 ? { onlyForTypes: only } : {}),
+        };
+      })(),
       maxCharsPerMemory: num(recallGroup, "maxCharsPerMemory") ?? 0,
       maxTotalRecallChars: num(recallGroup, "maxTotalRecallChars") ?? 0,
       scoreThreshold: num(recallGroup, "scoreThreshold") ?? 0.3,
@@ -1803,6 +2086,16 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           penalty: recallSignalBoost(ip, "penalty", 0.3, 0.9),
         };
       })(),
+      // #135 R3：查询时间感知（缺省关 = 逐位现状；boost clamp [0,1]、recentDays >=1 取整）
+      presentTemporal: (() => {
+        const pt = obj(recallGroup, "presentTemporal");
+        const rawDays = num(pt, "recentDays");
+        return {
+          enabled: bool(pt, "enabled") ?? false,
+          boost: recallSignalBoost(pt, "boost", 0.08, 1),
+          recentDays: Math.max(1, Math.floor(rawDays !== undefined && Number.isFinite(rawDays) ? rawDays : 30)),
+        };
+      })(),
       reinforcementWeight: recallSignalBoost(recallGroup, "reinforcementWeight", 0.03),
       moodBoost: recallSignalBoost(recallGroup, "moodBoost", 0),
       // R-A2（spec §2 R4/R6）：候选池通道开关（clamp 模式；graph 两旋钮为比值 clamp [0,1]）
@@ -1814,6 +2107,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
       // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
       excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
+      // #136（W2 软失效）：效期判定模式（缺省 hard = 逐位现状）
+      validity: (() => {
+        const vg = obj(recallGroup, "validity");
+        return { mode: str(vg, "mode") === "soft" ? ("soft" as const) : ("hard" as const) };
+      })(),
       // GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）
       emotionSalienceWeight: Math.max(0, num(recallGroup, "emotionSalienceWeight") ?? 0),
       sessionReuseTtlMs: recallSignalBoost(recallGroup, "sessionReuseTtlMs", 300_000),
@@ -1850,6 +2148,15 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           enabled: bool(ad, "enabled") ?? false,
           halfLifeDays: Number.isFinite(hl) && hl > 0 ? Math.floor(hl) : 30,
         };
+      })(),
+      // B1 生产化（bench/recall-opt G1）：注入块时间序 + 包裹语（缺省关/legacy=逐位现状）
+      injectTimeSort: (() => {
+        const its = obj(recallGroup, "injectTimeSort");
+        return { enabled: bool(its, "enabled") ?? false };
+      })(),
+      injectWrapper: (() => {
+        const raw = str(recallGroup, "injectWrapper");
+        return raw === "neutral" ? "neutral" : "legacy";
       })(),
       timeProxFallbackEnabled: bool(recallGroup, "timeProxFallbackEnabled") ?? false,
       // F-CLUSTER v2：召回折叠总开关（缺省 false = 现行为）。类型声明 config.ts:100
@@ -1901,6 +2208,35 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(cl, "minBm25RelRatio");
             return raw === undefined ? undefined : Math.min(1, Math.max(0, raw));
           })(),
+          // #138（2026-10-28）：结论行条数上限（缺省 undefined = 运行期取 floor(maxResults/2)；
+          // 非有限/负 → 0 = 结论层零行；正数 floor）
+          maxConclusions: (() => {
+            const raw = num(cl, "maxConclusions");
+            return raw === undefined ? undefined : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+          })(),
+          // #138（2026-10-28）：结论层查询路由（缺省 off = 逐位现状；assistantRecall 显式开；
+          // #141 增 intent = 按查询意图分阶段分预算）
+          routing: (() => {
+            const raw = str(cl, "routing");
+            return raw === "assistantRecall" || raw === "intent" ? raw : "off";
+          })(),
+          // #141（2026-10-28）：结论必带源证据（缺省 off；require 显式开）
+          pairing: str(cl, "pairing") === "require" ? "require" : "off",
+          // #141：复合单元槽位成本（clamp [1,3]；缺省 undefined → layered-budget 缺省 1.5）
+          slotCost: (() => {
+            const raw = num(cl, "slotCost");
+            return raw === undefined || !Number.isFinite(raw)
+              ? undefined
+              : Math.min(3, Math.max(1, raw));
+          })(),
+          // #141：表示仲裁（缺省 off；redundant 显式开）与冗余阈值（clamp [0,1]）
+          arbitrate: str(cl, "arbitrate") === "redundant" ? "redundant" : "off",
+          arbitrateThreshold: (() => {
+            const raw = num(cl, "arbitrateThreshold");
+            return raw === undefined || !Number.isFinite(raw)
+              ? undefined
+              : Math.min(1, Math.max(0, raw));
+          })(),
           // R71-A2（2026-10-19）：结论层 rerank 门——mode 非法值回落 "shadow"（shadow-first；
           // minScore 非有限回落 undefined=运行期取 -1.0 缺省）
           rerankGate: (() => {
@@ -1926,6 +2262,13 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             const raw = num(sb, "maxExtraLines");
             return raw === undefined ? 2 : raw > 0 ? Math.floor(raw) : 0;
           })(),
+          // #138（2026-10-28）：上下文行预算归属（缺省 shared = 逐位现状；additive 显式开）
+          budget: (() => {
+            const raw = str(sb, "budget");
+            return raw === "additive" || raw === "slot" ? raw : "shared";
+          })(),
+          // #138（2026-10-28）：回捞证据行按查询相关性取（缺省 true = 质量修复；false 回滚旧序）
+          relevanceRanked: bool(sb, "relevanceRanked") ?? true,
         };
       })(),
       // R71-C（2026-10-19）：fts-only 降级注入帽（缺省 2；非负整数 floor；非数字=undefined=运行期取 2）
@@ -2000,12 +2343,27 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           model: str(rr, "model") ?? "",
           timeoutMs: Math.max(0, num(rr, "timeoutMs") ?? 800),
           candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
+          // #135 R4：非法 mode 回落 "rerank"（逐位现状），静默回落
+          mode: str(rr, "mode") === "filter" ? ("filter" as const) : ("rerank" as const),
+          // #137-F：混合比例 clamp [0,1]；缺省 0 = 逐位现状
+          blend: Math.min(1, Math.max(0, num(rr, "blend") ?? 0)),
           minScore: num(rr, "minScore") ?? -2.0,
           local: {
             modelDir: optStr(localGroup, "modelDir") ?? "",
             idleUnloadMs: recallSignalBoost(localGroup, "idleUnloadMs", 600_000),
           },
           configError,
+        };
+      })(),
+      // B2-b：MMR 多样性重排（缺省关=逐位现状）
+      mmr: (() => {
+        const mmrGroup = obj(recallGroup, "mmr");
+        const lambdaRaw = num(mmrGroup, "lambda");
+        return {
+          enabled: bool(mmrGroup, "enabled") ?? false,
+          lambda: lambdaRaw === undefined || !Number.isFinite(lambdaRaw)
+            ? 0.7
+            : Math.min(1, Math.max(0, lambdaRaw)),
         };
       })(),
     },

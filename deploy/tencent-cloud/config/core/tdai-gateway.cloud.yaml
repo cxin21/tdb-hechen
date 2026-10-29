@@ -45,9 +45,53 @@ memory:
   capture:
     enabled: true
 
+  # ── #134 写面策略（W1 事实键双写 / W2 写时双时态 supersession）──────────────
+  # 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
+  #  · factKey.enabled=true：L1 的 embedding 键 = 内容 + 分隔符 + 事实短语
+  #    （事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
+  #    LME90 实测 +6.7pp 判对但不显著（CI 含负）；全开档（W1+W2+W3）判对与基线打平、
+  #    cov -4.6pp（ns）→ 2026-10-27 judge 对齐后复核：**保持关**（生产最优 = 只开 W3，
+  #    见 docs/optimization-results.md §8 排名表）。
+  #  · supersession.enabled=true：dedup 的 update/merge 决策把旧行从"归档"改为
+  #    "valid_end 只标记"（零删除红线，历史可追溯）。
+  #    LME90 实测 turnCov -10.9pp 显著负（gold 含旧值 turn，bench 语料无失效语义）；
+  #    全开档复核：判对与基线打平、cov 更差 → **保持关**，待事实级粒度（后续票）+
+  #    生产语料验证后再议。
+  write:
+    factKey:
+      enabled: false
+      # #137（2026-10-27）：键形态。
+      #  replace（缺省）= W1 旧形态：原文 + 事实拼同一条 embedding 键。#147 全开档实测
+      #    键替换无净收益（判对 −2.2pp ns），且稀释「同实体不同时间」判别信号；
+      #  channel = 本票形态：原文主索引**逐位不动**，事实短语单独 embed 成平行通道向量
+      #    （l1_fact_vec），召回侧只扩召回、不裁决排序。
+      mode: "replace"
+      separator: " | "     # 原文与事实短语的拼接分隔符（空串回落默认）
+      maxFactChars: 240    # 事实部分字符预算（整条截断，不切断单条短语；0=不拼接）
+      maxFacts: 5          # #137：最多拼几条事实短语（clamp 1..12）
+      includeTriples: false # #137：三元组展开成短语一起进键
+      onlyForTypes: []      # #137：只对这些 type 建键（空 = 全类型；例 ["work_fact"]）
+    supersession:
+      enabled: false
+      # #136 属性契约（2026-10-27）：只有单值属性（同一时刻只有一个值）允许失效。
+      # cardinalityGate=true（缺省）= dedup update/merge 时先判谓词基数，多值/模态
+      # （is considering / wants to / likes / 想 / 考虑…）一律 additive，不失效旧行；
+      # false = 回到 #136 前"判 update 就整行 valid_end"。
+      cardinalityGate: true
+      # 内容级无线索时的缺省基数：single（保覆盖，= #136 前行为）/ multi（保守不失效）。
+      cardinalityDefault: "single"
+
   extraction:
     enabled: true
     enableDedup: true
+    # #137（W1 双通道）：多事实抽取块（缺省关 = prompt 字节逐位不变）。
+    # 开启后每条 memory 多输出 2-5 条自足事实短语，落 metadata.facts（可选 metadata.factTriples），
+    # 供写侧事实通道（write.factKey.mode="channel"）建索引。抽取抽样门禁见
+    # scripts/fact-extract-gate.mjs（准确率 ≥ 90% 才允许生产开启）。
+    facts:
+      enabled: false
+      maxFacts: 5          # clamp 1..12
+      includeTriples: false
     # #79（2026-10-25 拍板）：dedup LLM 判重超时毫秒（clamp 60000..3600000；缺省 300000）。
     # 超时→快失败→既有 catch 走 storeAllDirectly 降级（l1-extractor.ts:528），防 300s 悬挂堆积静默死（2026-10-20 三连崩溃根修）。
     dedupTimeoutMs: 90000
@@ -95,6 +139,21 @@ memory:
     nativeMinRRF: 0.016
     strategy: "hybrid"
     foldClusterEnabled: true  # F-CLUSTER v2 召回折叠（2026-09-30 转产：0b7ef5a 三层断点修复+A/B 5/10 触发实证）
+    # ── #137（W1 双通道）事实键平行召回通道（缺省关 = 通道退出，逐位现状）──
+    # 读侧覆盖两处：钩子自动召回（auto-recall.searchHybrid）与 tdai_memory_search 工具路；
+    # 钩子路额外支持 fusion.mode="normalized"（通道内归一化分作主序），工具路只做通道级 RRF。
+    # 前置：写侧 write.factKey.mode="channel" + extraction.facts.enabled=true（否则库里没有
+    # 事实通道向量，开启读侧只是空查）。store 未实现 searchL1FactVector（如 tcvdb 服务端
+    # embedding 后端）时通道自动静默退出。
+    factChannel:
+      enabled: false
+      # 融合权重（唯一来源 fusion.fact > 本键 > 缺省 0.6）：
+      # rrf/weighted = weight × 1/(60+rank+1) 的 RRF 贡献（只加「池里还没有的新候选」，
+      # 原文命中之间的相对序不动）；normalized = 归一化分权重（同优先级，fusion.fact 可覆盖）。
+      weight: 0.6
+      # candidateK: 32     # 通道上游候选上限（缺省 = recall.candidateK）
+      # minScore: 0.3      # 通道余弦下限（缺省回落 scoreThreshold）
+      # onlyForTypes: ["work_fact"]  # 只对某类记录生效（缺省空 = 全类型）
     timeoutMs: 5000
     # ── 结构感知召回九通道（DS-RECALL-STRUCTURE-AWARE-001）→ 2026-09-12 实测关断 ──
     # 关断裁决（结构信号 on/off A/B，runs/2026-09-12T12-08-44 vs 12-11-49，同语料 1168 同 sha 92c4c8bc）：
@@ -140,6 +199,11 @@ memory:
       coreRef: 0
     # ── R7 分层召回 · 结论层（审查修补 2026-09-12 登记；2026-09-12 显式打开 = 缺省值原样落盘）──
     excludeInvalidated: true
+    # #136（W2 软失效）：效期策略。hard = 失效/未来生效行直接排除（逐位旧行为）；
+    # soft = 失效行 relevance 降权保留（仅"问现在/最新 + 内容相关的更新行"才硬丢）。
+    # 缺省 hard（零行为变化）；实证见 docs/optimization-results.md §11。
+    validity:
+      mode: "hard"
     emotionSalienceWeight: 0 # GROW-EVO P3 R10 实验轨：进预注册 A/B 队列，未过 A/B 不得置正
     conclusionLayer:
       enabled: true            # I① 结论层总开关（false = 结论层整体退出，输出与 R7 前基线逐位一致）
@@ -159,6 +223,12 @@ memory:
       truncateMode: sentences  # 截断粒度：sentences=句边界；缺省 chars=码点硬截
       # ⚠️ 2026-10-26 审计：原 textHitMaxTokenRatio（#99 F1 万词面 token 剔除）已退役，
       # config.ts:1884 注释明写静默忽略 → 已删除，避免「看起来开了」的假配置。
+      # ── #138（2026-10-28）：结论层查询路由 ──
+      # assistantRecall = 「回忆 assistant 自己先前输出」的查询（you said/recommended/wrote…）
+      # 整层跳过结论层：结论卡只蒸馏 user 侧事实，对这类问题系统性不相关，注入只会挤掉承载答案的
+      # assistant 轮。bench LME90：该桶 cov 66.7→80.0（回到基线）、90 题路由命中 13/15 assistant 桶、
+      # 其余五桶 0/75（零附带伤害）。off = 逐位现状（缺省）。
+      routing: assistantRecall
 
     # ── #77 Batch C（survey F6b，2026-10-20 拍板开启）：检索期年龄衰减乘子 + 时间锚回退 ──
     # ageDecay：composite 打分 timeFactor 乘子 0.5^(ageDays/halfLifeDays)（floor 0.05；无时间锚不乘）。
@@ -178,7 +248,21 @@ memory:
     # 缺省 false = 逐位现状；代码保守缺省关 + 部署 yaml 显式开（#77 三键同款惯例）。
     smallToBig:
       enabled: true
-      maxExtraLines: 2
+      # #134 LME90 配对：maxExtraLines 2→4 判对 81.1%→84.4%（+14.4pp CI[+6.7,+23.3]，p=0.0023）、
+      # 缺口桶回收 4→5/11、turnCov 回到基线（-0.2pp ns）；注入总行数仍由 maxResults 硬帽收口。
+      maxExtraLines: 4
+      # #138（2026-10-28 定档待灰度确认）：上下文行预算归属。
+      #   shared（缺省，逐位现状）= 上下文行与结论行共同挤经验层配额（结论层命中时经验层常只剩 0~1 行）；
+      #   additive = 上下文行不挤经验层保底（experienceLimit = maxResults − 结论行），
+      #             「摘要 + 源证据」成对补信息，注入总行数 ≤ maxResults + maxExtraLines。
+      # 生产 journal 实测（2485 条）：结论层命中 49.6%、其中经验层 ≤1 行 98.4%、回捞触发 0.2%
+      # → 问题在「结论层吃满窗口 + 回捞选错证据」，不在结论卡本身（见 docs/optimization-results.md §14）。
+      # #138 定档（2026-10-28 bench：add×4 判对 84.4% 不降、经验层 ≤1 行 36.7%→1.1%；
+      # add×2/4/6 扫参 4→6 饱和）→ 云端同步 additive。
+      budget: additive
+      # 回捞证据行按查询 token 命中数排序（缺省 true = 质量修复：先选最可能是答案的源证据，
+      # 且第一轮每卡至多 1 条）；false = 回滚旧序（store 返回序）。
+      relevanceRanked: true
 
     # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
     # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差

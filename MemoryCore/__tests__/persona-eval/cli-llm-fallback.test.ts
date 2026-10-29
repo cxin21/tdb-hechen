@@ -55,6 +55,24 @@ describe("patchLlmFieldsFromCredential（ADR-0006 CLI 回退）", () => {
     expect(patchLlmFieldsFromCredential({ baseUrl: "", apiKey: "", model: "" }, parsed, cred)).toBe(true);
     expect(parsed.baseUrl).toBe(cred.baseUrl);
   });
+
+  it("cred 来自 override 且完整三元组 → 整体覆盖显式 yaml 值（防跨厂商混搭；2026-10-27 MiniMax 实证）", () => {
+    const parsed = { baseUrl: "http://10.16.235.171:50003/v1", apiKey: "", model: "scm-flash", maxTokens: 4096, timeoutMs: 120000 };
+    const ovCred = { baseUrl: "https://api.minimax.cn/v1", apiKey: "ov-key", model: "MiniMax-M3.1-Flash", apiKeySource: "override" as const };
+    expect(patchLlmFieldsFromCredential({ baseUrl: parsed.baseUrl, model: parsed.model }, parsed, ovCred)).toBe(true);
+    expect(parsed.baseUrl).toBe(ovCred.baseUrl);
+    expect(parsed.model).toBe(ovCred.model);
+    expect(parsed.apiKey).toBe(ovCred.apiKey);
+  });
+
+  it("cred 来自 yaml/env（非 override）→ 仍走显式优先，不整体覆盖（原语义保留）", () => {
+    const parsed = { baseUrl: "https://explicit.example/v1", apiKey: "", model: "explicit-model", maxTokens: 4096, timeoutMs: 120000 };
+    const yamlCred = { baseUrl: "https://other.example/v1", apiKey: "y-key", model: "other-model", apiKeySource: "yaml" as const };
+    expect(patchLlmFieldsFromCredential({ baseUrl: "https://explicit.example/v1", model: "explicit-model" }, parsed, yamlCred)).toBe(true);
+    expect(parsed.baseUrl).toBe("https://explicit.example/v1");
+    expect(parsed.model).toBe("explicit-model");
+    expect(parsed.apiKey).toBe("y-key");
+  });
 });
 
 /** CI 修复：isCliDirectExecution——CLI 直接执行守卫，防 import 触发顶层 main()（process.exit）。 */

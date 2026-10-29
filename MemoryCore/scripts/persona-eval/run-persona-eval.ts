@@ -147,10 +147,21 @@ function baselineShapeErrors(baseline: unknown): string[] {
 export function patchLlmFieldsFromCredential(
   rawLlm: { baseUrl?: string; apiKey?: string; model?: string; maxTokens?: number | string } | undefined,
   parsedLlm: { baseUrl: string; apiKey: string; model: string; maxTokens: number; timeoutMs: number; [k: string]: unknown },
-  cred: { baseUrl: string; apiKey: string; model: string; maxTokens?: number; timeoutMs?: number },
+  cred: { baseUrl: string; apiKey: string; model: string; maxTokens?: number; timeoutMs?: number; apiKeySource?: "override" | "yaml" | "env-deprecated" },
 ): boolean {
   const r = rawLlm ?? {};
   let patched = false;
+  // admin settings（config-override.json）是机器唯一凭据 SoT：apiKey 来自 override 且 override 给出完整
+  // baseUrl+model 时，三字段整体采信 override——防「yaml 陈旧端点 × override 新钥匙」跨厂商混搭。
+  // 实证两例：2026-10-25 yaml-ark × override-relay 钥匙 → Ark 拒格式；2026-10-27 yaml-relay × override-MiniMax
+  // 钥匙 → 中转 401 Invalid token（每次 admin settings 换厂商都会重演）。--config 显式字段仅在非 override
+  // 来源（yaml/env 凭据）时保留原「显式优先」语义。
+  if (cred.apiKeySource === "override" && isSetCredential(cred.baseUrl) && isSetCredential(cred.model)) {
+    if (parsedLlm.baseUrl !== cred.baseUrl) { parsedLlm.baseUrl = cred.baseUrl; patched = true; }
+    if (parsedLlm.model !== cred.model) { parsedLlm.model = cred.model; patched = true; }
+    if (!isSetCredential(parsedLlm.apiKey)) { parsedLlm.apiKey = cred.apiKey; patched = true; }
+    return patched;
+  }
   if (!isSetCredential(r.baseUrl)) { parsedLlm.baseUrl = cred.baseUrl; patched = true; }
   if (!isSetCredential(r.apiKey)) { parsedLlm.apiKey = cred.apiKey; patched = true; }
   if (!isSetCredential(r.model)) { parsedLlm.model = cred.model; patched = true; }
