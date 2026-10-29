@@ -3,6 +3,7 @@
 - 状态：接受
 - 日期：2026-10-29
 - 关联：#144（实施票，已实施）、#138（灰度复核）、#145（生产默认值）、ADR-0008（§F3 rerank 刻度校准化与降级）、ADR-0012（口径集中：一把尺子只能有一份实现）
+- 修订：**ADR-0014**（2026-10-29）收窄本文描述的 rerank 配置面——「融合序 × 精排」排序加权键已整体删除（生产与代码都不再存在），本文的决定 6 与配置面只剩 `enabled / provider / candidates / minScore / mode / filterRule / filterMarginTop / filterKeepRatio`；filter 三键与 provider 刻度语义不变。
 - 落点：`MemoryCore/src/core/recall/rerank/filter-ruler.ts`（唯一实现）、`MemoryCore/src/core/hooks/auto-recall.ts`（selection）、`MemoryCore/src/config.ts`（解析归一）、`MemoryCore/scripts/analyze-r144-rerank-floor.mjs`（离线校准共用同一实现）
 
 ## 背景
@@ -45,7 +46,7 @@
 
 ## 后果
 
-- **配置面**：三个新键只能写 yaml `memory.recall.rerank.*`；`gateway/settings-override.ts` 的 `RerankSettingsOverride` 尚不认 `mode/blend/filterRule`（未知键静默忽略），管理台可调需另开票扩 schema + 校验 + 页面。`deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也未含这些键。
+- **配置面**：三个新键只能写 yaml `memory.recall.rerank.*`；`gateway/settings-override.ts` 的 `RerankSettingsOverride` 尚不认 `mode/filterRule`（未知键静默忽略），管理台可调需另开票扩 schema + 校验 + 页面。`deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也未含这些键。
 - **行为不变性**：`mode≠filter` 时 `filterRule` 静默忽略（`filterRuler` 回落缺省），不改变重排/融合路径。
 - **降级信号只服务 floor 族**：相对尺子分支不赋值 `degraded`（它不会「全杀」——quantile 至少留 1 条、margin 至少留 top1），监控应看 `passCount`/`kept`，不要把 `degraded==0` 当作相对尺子健康的证据。
 - **回归保护**：`__tests__/filter-ruler.test.ts`（7 例，归一 + 裁量边界）+ `auto-recall-rerank.test.ts` 的 #144 五例（转储两例、margin、quantile 保序、provider 截断漏排、margin 临界并列）。

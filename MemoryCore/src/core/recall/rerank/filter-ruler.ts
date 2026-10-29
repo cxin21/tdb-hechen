@@ -51,8 +51,10 @@ export function normalizeRerankFilterMarginTop(v: unknown): number {
 
 /**
  * 非有限或 ≤0 回落 0.5；>1 clamp 到 1。
- * 为什么 >1 是 clamp 而不是回落：与邻居 blend 的口径一致（ADR-0008 §F2「越界 clamp、非法回落」），
- * 而 "保留 100%" 是一个有意义的上界（等价不裁），不该被静默改写成 50% 裁量。
+ * 为什么 >1 是 clamp 而不是回落：按 ADR-0008 §F2 的分工——「类型/符号非法 → 回落缺省」、
+ * 「数值越界但语义明确 → clamp 到最近的合法端点」。keepRatio>1 属后者（"保留 100%" = 不裁，
+ * 语义明确），回落 0.5 会把「不裁」静默改写成「裁一半」。
+ * 注意兄弟键并不都这样：minScore 只在非有限时回落（负值合规直通），filterMarginTop 只在 ≤0 回落。
  */
 export function normalizeRerankFilterKeepRatio(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return DEFAULT_RERANK_FILTER_RULER.keepRatio;

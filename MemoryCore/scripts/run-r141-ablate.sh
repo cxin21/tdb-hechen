@@ -4,6 +4,10 @@
 # 差异有三处（预算模式 / 成对约束 / 意图预算），本脚本逐个隔离，回答「是哪一处拖的」，
 # 而不是笼统判定「新的不行、回退旧的」。
 #
+# ⚠ 口径提醒（2026-10-29，#164）：本脚本首跑的档案里，原序加权旋钮（rerank 混合比例）被钉在 0.9，
+#   该旋钮与其逻辑已整体移除，重跑只能得到「纯精排」口径——数字预期会与 docs 里当时那张表不同。
+#   要复现原读数请 git checkout 8168e1a；历史读数见 docs/optimization-results.md §14（及 §13.5 / §21.1）。
+#
 # 用法：
 #   ARMS="w3add4 w3nopair" bash scripts/run-r141-ablate.sh
 #   DRY_RUN=1 ARMS="w3add4" bash scripts/run-r141-ablate.sh
@@ -21,7 +25,7 @@ ARMS="${ARMS:-all}"
 COMMON=(
   --dataset longmemeval --manifest "$L/lme-manifest.json" --keep --pace 150 --gen-limit "$GEN"
   --recall-ks 1,3,5,10 --b1 --candidate-k 32 --fact-model MiniMax-M2.7 --embed-interval-ms 1200
-  --rerank-blend 0.9 --rerank-child-proc --rerank-doc-cap 192
+  --rerank-child-proc --rerank-doc-cap 192
 )
 W1_OFF=(--fact-channel-off)
 W2_OFF=(--validity-off)

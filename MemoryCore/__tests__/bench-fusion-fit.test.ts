@@ -19,6 +19,7 @@ import {
   diagnoseStructure,
   fusionLabel,
   knobDiff,
+  knobsSummary,
   legacyCiHalfWidth,
   pairArm,
   rankedTag,
@@ -117,6 +118,17 @@ describe("matched design", () => {
     const r2 = report("w2", [], { fusion: { ...weighted, dense: 0.3 } });
     expect(knobDiff(armKnobs(r1.config), armKnobs(r2.config))).toEqual(["fusion"]);
   });
+
+  it("历史报告里的原序加权键不再是旋钮（#164 已整体删除）", () => {
+    const old09 = report("old09", [], { rerankOverride: { ...B0BASE_RERANK, blend: 0.9 } });
+    const old00 = report("old00", [], { rerankOverride: { ...B0BASE_RERANK, blend: 0 } });
+    const knobs09 = armKnobs(old09.config);
+    // 旧字段被忽略：带 0.9 与带 0 的报告在新旋钮表里完全同向量
+    expect(knobDiff(knobs09, armKnobs(old00.config))).toEqual([]);
+    expect(Object.keys(knobs09)).not.toContain("rerank.blend");
+    // 因此旧档的 knobsSummary 只会打印「缺省」——判断档位差异要回 checkout 8168e1a
+    expect(knobsSummary(knobs09)).toBe("缺省");
+  });
 });
 
 describe("singleKnobEffects", () => {
@@ -176,7 +188,7 @@ describe("coordinateSearch / samplingPlan", () => {
       report: report("off", []),
     },
   ];
-  const best = { tag: "best", knobs: { ...armKnobs(report("best", []).config), "rerank.blend": 0.9 }, metric: 0.8, report: report("best", []) };
+  const best = { tag: "best", knobs: armKnobs(report("best", []).config), metric: 0.8, report: report("best", []) };
   arms.push(best);
 
   it("rerank.enabled 不作为坐标移动", () => {

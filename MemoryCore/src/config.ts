@@ -586,7 +586,7 @@ export interface RecallRerankConfig {
   timeoutMs: number;
   /** 送精排的候选池大小（原 topK 5 扩池至此，精排后取回 topK；缺省 32，clamp [1,100] 取整）。
    *  #145（2026-10-29）：深池缺省（#135 deep105 档）——浅池 12 只扩池不加 floor 无收益（T1 Δ=0），
-   *  池深是「不误杀 + 留给 blend/锚点翻盘」的前提，真正的裁剪靠 candidates cap 与题内相对尺子。 */
+   *  池深是「不误杀 + 留给锚点翻盘」的前提，真正的裁剪靠 candidates cap 与题内相对尺子。 */
   candidates: number;
   /**
    * #135 R4（bench/recall-opt）：精排作用模式（缺省 "rerank" = 逐位现状）。
@@ -618,12 +618,6 @@ export interface RecallRerankConfig {
    *  >1 clamp 1）。分母只数**已评分**候选——provider 截断漏排的行无条件保留，故实际 kept 比例可能高于
    *  本值（这条在 provider 端截断时才会发生，见 auto-recall 的 keepByFilter）。 */
   filterKeepRatio: number;
-  /**
-   * #137-F（2026-10-28）：精排与检索融合相关度的混合比例 α∈[0,1]。
-   * 0 = 旧行为（纯精排顺序，逻辑逐位不变）；1 = 纯检索顺序（精排只剩 floor 语义）；
-   * 0<α<1 = 精排只能在「检索也看好」的候选间翻盘。设计动机见 recall/rerank/blend.ts。
-   */
-  blend: number;
   /**
    * 相关度门槛（缺省 #145 起**按 provider 刻度**取值：local = −10.5 logit，云 provider =
    * sigmoid(−10.5) ≈ 2.75e-5；任意有限数透传——负值合法，local logits 刻度门槛可为负）。
@@ -2383,8 +2377,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           filterRule: normalizeRerankFilterRule(str(rr, "filterRule")),
           filterMarginTop: normalizeRerankFilterMarginTop(num(rr, "filterMarginTop")),
           filterKeepRatio: normalizeRerankFilterKeepRatio(num(rr, "filterKeepRatio")),
-          // #137-F：混合比例 clamp [0,1]；缺省 0 = 逐位现状
-          blend: Math.min(1, Math.max(0, num(rr, "blend") ?? 0)),
           // #145：缺省按 provider 原生刻度取值（local logit −10.5 / 云 0..1 刻度 sigmoid(−10.5)），
           // 显式 yaml / config-override 值逐位优先（num() 命中即不取缺省）。
           minScore: num(rr, "minScore") ?? defaultRerankMinScore(provider),

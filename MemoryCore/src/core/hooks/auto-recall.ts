@@ -58,7 +58,7 @@ import { emotionSalienceOf, buildRankContext,
   type RecallJournalImportanceGateSpec,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
-import { anchorRerankOrder, blendRerankOrder, type RerankScored } from "../recall/rerank/blend.js";
+import { anchorRerankOrder } from "../recall/rerank/anchor.js";
 import {
   SOFT_VALIDITY_PENALTY,
   excludeInvalidatedFor,
@@ -599,8 +599,6 @@ interface RerankWiring {
   candidates: number;
   /** #135 R4：作用模式（缺省 "rerank" = 逐位现状；"filter" = 只滤不清排保原序）。 */
   mode: "rerank" | "filter";
-  /** #137-F：精排分与检索融合分的混合比例 α∈[0,1]（0 = 逐位现状）。 */
-  blend: number;
   /** #144：filter 模式的判定尺子（floor=绝对 minScore 阈值，现状；margin/quantile=题内相对尺子）。 */
   filterRuler: RerankFilterRuler;
 }
@@ -629,7 +627,6 @@ function resolveRerankWiring(
       minScore: defaultRerankMinScore(provider),
       candidates: DEFAULT_RERANK_CANDIDATES,
       mode: "rerank",
-      blend: 0,
       filterRuler: DEFAULT_RERANK_FILTER_RULER,
     };
   }
@@ -649,7 +646,6 @@ function resolveRerankWiring(
       minScore,
       candidates,
       mode: rc.mode === "filter" ? "filter" : "rerank",
-      blend: typeof rc.blend === "number" && Number.isFinite(rc.blend) ? Math.min(1, Math.max(0, rc.blend)) : 0,
       filterRuler: normalizeRerankFilterRuler(rc),
     };
   }
@@ -661,7 +657,6 @@ function resolveRerankWiring(
     minScore,
     candidates,
     mode: rc.mode === "filter" ? "filter" : "rerank",
-    blend: typeof rc.blend === "number" && Number.isFinite(rc.blend) ? Math.min(1, Math.max(0, rc.blend)) : 0,
     filterRuler: normalizeRerankFilterRuler(rc),
   };
 }
@@ -819,18 +814,7 @@ async function applyRecallRerank(
     finalIdxs = keepByFilter(new Set(rankedPass.map((r) => r.index)));
   } else {
     let passIdxs: number[] = rankedPass.map((r) => r.index);
-    // #137-F：混合排序——α>0 时用「检索融合相关度（池内 max 归一）」与精排分共同裁决，
-    // 精排不再单方面覆盖融合主序（α=0 逐位旧行为；见 recall/rerank/blend.ts 的动机）。
-    if (wiring.blend > 0 && passIdxs.length > 1) {
-      const scored01: RerankScored[] = clean.map((r) => ({ index: r.index, score01: score01Of(r.score) }));
-      const before = passIdxs[0];
-      passIdxs = blendRerankOrder(passIdxs, scored01, lines.length, wiring.blend);
-      if (process.env.RERANK_DEBUG_BLEND === "1") {
-        process.stderr.write(
-          `[rerank-blend] α=${wiring.blend} scores=${searchResult.scores ? searchResult.scores.length : "none"} lines=${lines.length} cap=${cap} topBefore=${before} topAfter=${passIdxs[0]} rel0=${searchResult.scores?.[0]?.toFixed(4) ?? "-"}\n`,
-        );
-      }
-    }
+    // #137-F：精排顺序直接生效——不再叠加任何原序加权（加权混排会稀释精排收益，机制已整体移除，见 docs §21.6）。
     if (mmr?.enabled && passIdxs.length > 1) {
       const tM = performance.now();
       // B2-b：pass 池整体置换（不减员），多样性优先级进序——预算帽照常在 slice 处生效
@@ -843,7 +827,7 @@ async function applyRecallRerank(
     const capInner = Math.max(cap, 0);
     // 锚点只在「融合 top-1 自己过了 floor」时生效——floor（minScore）语义不被锚点绕过。
     if (capInner > 0 && lines.length > 1 && passIdxs.includes(0)) {
-      const anchored = anchorRerankOrder(passIdxs, capInner, 0);
+      const anchored = anchorRerankOrder(passIdxs, capInner);
       if (anchored[0] !== passIdxs[0] || anchored.length !== passIdxs.length || !passIdxs.slice(0, capInner).includes(0)) {
         anchorForced = !passIdxs.slice(0, capInner).includes(0);
       }
@@ -905,7 +889,6 @@ async function applyRecallRerank(
             ...filterRulerGateObs(filterRuler),
           }
         : {}),
-      ...(wiring.blend > 0 ? { blend: wiring.blend } : {}),
       ...(anchorForced ? { anchor: true } : {}),
       ...(floorToppedUp > 0 ? { floorToppedUp } : {}),
       ...(mmr?.enabled ? { mmr: { lambda: mmr.lambda, ms: Math.round(mmrMs) } } : {}),

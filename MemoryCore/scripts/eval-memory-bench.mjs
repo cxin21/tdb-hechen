@@ -106,7 +106,6 @@ if (flag("help") || argv.length === 0) {
   --rerank-minscore X            B2-a 精排试验：改沙箱 yaml rerank.minScore（生产不动）
   --rerank-candidates N          B2-a 精排试验：改沙箱 yaml rerank.candidates（生产不动）
   --rerank-mode filter|rerank   #135 R4 精排试验：filter=floor 只滤不清排（保原序）；缺省 rerank
-  --rerank-blend X              #137-F 精排试验：精排分与检索融合分的混合比例 α∈[0,1]（0=纯精排=旧行为）
   --rerank-timeout MS           精排超时（毫秒；本机 onnx 冷加载可能 >5s，冷启动档放宽到 30000）
   --rerank-filter-only [floor]  精排降级为过滤器（**必须同时加 --rerank-child-proc**，否则直接退出码 2）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
@@ -155,7 +154,7 @@ const KNOWN_FLAGS = new Set([
   "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
   "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
   "out", "pace", "present-temporal", "prod-config", "prod-data", "quiet",
-  "recall-ks", "recall-timeout", "report-name", "rerank-blend", "rerank-candidates", "rerank-child-proc",
+  "recall-ks", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
   "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
   // #144：filter 的题内相对尺子（floor 在题间量纲漂移下不可校准，见 docs/optimization-results.md §19）
   "rerank-filter-rule", "rerank-margin-top", "rerank-keep-ratio",
@@ -493,11 +492,6 @@ async function main() {
   const rtimeout = arg("rerank-timeout", undefined);
   if (rtimeout !== undefined && rtimeout !== true && Number.isFinite(Number(rtimeout))) {
     rerankOverride.timeoutMs = Math.max(0, Number(rtimeout));
-  }
-  // #137-F：精排 × 融合相关度混合比例 α（0=纯精排=旧行为；1=纯融合序）
-  const rblend = arg("rerank-blend", undefined);
-  if (rblend !== undefined && rblend !== true && Number.isFinite(Number(rblend))) {
-    rerankOverride.blend = Math.min(1, Math.max(0, Number(rblend)));
   }
   // B2-b：MMR 试验档（只写沙箱 yaml；生产 yaml 不动——同用户决策②）。声明须在 prepareBenchYaml 之前。
   const mmrOverride = {};

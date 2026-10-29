@@ -31,20 +31,21 @@
 
 注：`*` = 95%CI 不含 0。docCap=192 = bench 精排打分前每条文档截断 192 字符（跨档一致，见偏差 5）。b2a-off 首跑（21-55-11）因 override json 吞键无效，已修复重跑为 b2a-off2。
 
-## 2. 生产推荐配置（2026-10-29 起：rerank 开 + 深池 32 + floor −10.5 + B1 读侧四件套）✅ 已实测
+## 2. 生产推荐配置（2026-10-29 起：rerank 开 + 深池 32 + floor 走 provider 缺省 + B1 读侧四件套）✅ 已实测
 
 ```yaml
 memory:
   recall:
+    candidateK: 32         # 与 rerank.candidates 同步；不钉会随池深变 maxResults×3=96
     rerank:
       enabled: true
       provider: local
-      candidates: 32     # 池扩到 32（candidateK 同步扩到 32）
-      minScore: -10.5    # logit 刻度；0..1 概率刻度的云 provider 由代码按 sigmoid 换算
-      blend: 0.9         # #137-F：融合锚点 + floor 补位；⚠ 与深池缺省相抵，见 §20（待拍板）
+      candidates: 32       # 池扩到 32：kept≥4 从 38/90 → 80/90 的前提
+      # minScore 不钉：缺省按 provider 原生刻度取（local logit −10.5 / 0..1 概率刻度 sigmoid(−10.5)）
+      # blend 键已整体删除：α 混合在深池（−3.64pp）与浅池（−1.15pp）两档都无净收益，排序直接吃精排结果（§21.6）
 ```
 
-> ⚠ **#145 复核的重要修正（§20）**：上述组合（含 `blend: 0.9`）在 2026-10-29 复跑得 **turnCov@5 = 79.5%**、判对 75.6%；只把 `blend` 归零（其余缺省不动）= **83.2%**、判对 82.2%。即 84.3% 的收益只在「纯精排」下成立——`blend 0.9` 是 #137-F 在**浅池 12 + 硬 floor −2** 时期定的，与新缺省互相抵消。生产 `blend` 现值仍为 0.9（未改），复评待开票。
+> ⚠ **只钉「有实测作用」的键（§21 开关台账）**：`minScore` 已从云模板/本地 yaml 撤掉钉子（按 provider 刻度算才安全，钉死 −10.5 在概率刻度 provider 上等于永不过滤）；`blend` 更进一步——深池（−3.64pp）与浅池（−1.15pp）都测不出净收益后，**配置项与混合逻辑已整体删除**（§21.6）。生产口径 = **代码缺省**；落盘的只有必须显式开的 `enabled` 与两个**防漂移型钉子**（`candidates: 32`、`candidateK: 32`，值都等于缺省，钉住是为了不让已验证的池深被静默收回），其余吃缺省。
 
 **检索侧（§10，n=90，judge=MiniMax-M3.1-Flash）**：deep105（32/−10.5）turnCov@5=**84.3%**（+16.67pp vs b0-base 67.1%，CI95[+9.05,+24.29]，p=0.0005，30W/8L/52T），高于「关掉 rerank」的 79.5%；kept≥4 从 38/90 升到 80/90。剪枝才是伤害源，只扩池不加 floor 无收益（T1 Δ=0）。
 **重排融合修复后（§13.5，#137-F）**：blend α=0.9 + 融合锚点 + floor 补位 → 80.5%（MRR 0.761、判对 81.1%），在 #137 全开档口径下仍差 off 5.6pp（McNemar 7/2，p=0.18 不显著）。
@@ -52,7 +53,7 @@ memory:
 
 **刻度提醒（#145）**：`minScore` 恒按 provider 原生刻度声明——`local` 是 logit（−10.5 在本批日志分布左侧 ≈ 不剪枝，真正剪枝只有 candidates cap）；0..1 概率刻度的云 provider（`siliconflow`/`dashscope`）不能照抄 −10.5（那等于永不剪枝、与 −2 不等价），代码缺省已按 `sigmoid(-10.5)≈2.75e-5` 换算，见 `src/core/recall/rerank/defaults.ts`。不要把 minScore 往 −2/−4 收（实测误杀 gold 33.1%/18.8%，§13.5）。
 **只滤不重排的降级档**：`mode: "filter"` + `filterRule: "quantile", filterKeepRatio: 0.5`（首选）或 `filterRule: "margin", filterMarginTop: 8`（次选）；缺省 `filterRule: "floor"` 保证旧配置逐位不变（§19）。
-**限制**：`mode`/`blend`/`filterRule` 目前只能写 yaml，`settings-override.ts` 的 `RerankSettingsOverride` 不认这些键（§19.9）。
+**限制**：`mode`/`filterRule` 目前只能写 yaml，`settings-override.ts` 的 `RerankSettingsOverride` 不认这些键（§19.9）。`blend` 已不是配置项（§21.6 删除）。
 
 > 历史档（2026-10-27 下午修正前）：「rerank.enabled=false + B1」曾是推荐配置（b1-off，turnCov@5=79.5%、判对 70.0%、拒答 15.6%、latP50 159ms），数据仍在 §1 表内，保留作对照。
 
@@ -527,7 +528,7 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 2. **窗口被 floor 饿死**：W3 结论层把经验层预算压到 1~2 行（`experienceLimit = maxResults − 结论行`），而 `minScore` 又会把**融合 top-1 在内的候选**筛掉——rerank-on 平均经验行 **1.73** < rerank-off **2.33**。单条证据由 cross-encoder 单方面决定，错一次就零覆盖。
 3. **混合基准选错**：曾尝试用「原始 scores 数值归一化」做混合，但 `lines` 顺序已被组合精排/work_fact 分层改变，`scores[0]` 并不是池内 max（实测 rel0 仅 0.0468）→ α 越大反而越偏离融合序（α=0.9 cov 76.1% < α=0.3 82.2%）。正解是用**融合序位次先验**（1 − i/(n−1)），它对「最终注入顺序」忠实。
 
-**修复（`src/core/recall/rerank/blend.ts` + `applyRecallRerank`）**
+**修复（`src/core/recall/rerank/blend.ts` + `applyRecallRerank`）** —— ⚠ 该文件在 §21.6 已改名 `anchor.ts` 且 α 混合逻辑删除；下表 `rerank.blend` 一行仅作历史记录，锚点与 floor 补位仍然生效。
 
 | 机制 | 语义 | 关断 |
 |---|---|---|
@@ -548,7 +549,9 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 - 行为变更登记：`minScore` 不再让注入窗口比预算更少（4 个既有单测已按新契约改写：#99 F3 的「drop 不垫尾」→「只裁尾、不饿窗口」）；锚点让「精排把融合 top-1 挤出窗口」不再发生。
 - 相关：bench harness 修了 rerank 子进程 recycle 时的 `EPIPE` 未处理错误（`scripts/lib/bench/rerank-child-host.mjs`），新增 `--rerank-blend` / `--rerank-timeout` 试验键。
 
-**结论**：rerank 的正确用法是「**有界重排 + 噪声过滤**」，不是「主排序器」。生产建议 `rerank.enabled=true` + `rerank.blend≈0.9`（保留噪声过滤与第 2..cap 名次修正），而不是关闭；进一步把 rerank 变成净增益需要分数校准/分类型路由（#145）。
+**结论**：rerank 的正确用法是「**有界重排 + 噪声过滤**」，不是「主排序器」。生产建议 `rerank.enabled=true`（保留噪声过滤），而不是关闭。
+
+> ⚠ **本条建议已在 #145 收尾时修正（§21.1）**：上面的 `blend≈0.9` 只在「浅池 12 + 硬 floor −2」锚点成立；把池扩到 32、floor 放到不筛之后，α>0 三档全负（turnCov −1.15/−3.83/−3.64pp），生产改用纯精排（缺省 0）。
 
 ## 14. W3 生产语料灰度复核与 maxExtraLines 定档（issue #138，2026-10-28）
 
@@ -1179,7 +1182,7 @@ node scripts/fit-fusion-weights.mjs fit \
 **过程事故与修复（bench 纪律）**
 
 - 生产 `MemoryCore/tdai-gateway.yaml` 在 #137-F 之后自带 `rerank.blend: 0.9`；bench 以生产 yaml 为底，**不显式传 `--rerank-blend` 就继承 0.9**。首跑的 `r142-deep105-norm` 因此实际是 normalized+α0.9（报告里 `effectiveConfig` 可查），不是纯 normalized；本表里它被改标为 `norm09`，纯 normalized 另跑 `norm0`。
-- 修复落在 `MemoryCore/scripts/run-r142-sampling.sh`：每档显式钉 `--rerank-blend`，并带 `--expect-config recall.rerank.blend=…,recall.fusion.mode=…,recall.rerank.candidates=…,recall.rerank.minScore=…`——生效值与档名不符时在灌库前 exit 2，避免白跑一档。
+- 修复落在 `MemoryCore/scripts/run-r142-sampling.sh`：每档显式钉 `--rerank-blend`，并带 `--expect-config recall.rerank.blend=…,recall.fusion.mode=…,recall.rerank.candidates=…,recall.rerank.minScore=…`——生效值与档名不符时在灌库前 exit 2，避免白跑一档。（该脚本已于 #164 删除 —— 纯历史 A/B 档、旗标不存在；要复跑直接抄本节的 `--…` 参数）
 - 教训：生产 yaml 是 bench 的默认底层配置，「不传=旧档」的假设会在 yaml 改版后静默失效；**实验档要钉住将被解释的每一个旋钮**，报告只信 `effectiveConfig`，不信命令行。
 
 **剩下 8 条采样项暂不跑**：blend 0.3/0.5、candidates 24/16、minScore −12/−8、candidateK 24/48。前两条排序预测都被证伪，且 n=90 的噪声带（±5pp 量级）大于这些项的拟合预计（多为 1–4 对样本给出的 +2~+6pp）；继续单点采样只会产出判不了的差值。要跑时沿用本脚本模式（`--store` 复用 + `--no-write-steps` + `--expect-config` 钉旋钮）。
@@ -1372,7 +1375,7 @@ node scripts/fit-fusion-weights.mjs compare \
 
 ### 18.7.4 配对跑档（同 judge / 同 manifest / 同库）
 
-配对命令与基线完全一致（`scripts/run-r142-sampling.sh` 的 `base0` 档：`--b1 --candidate-k 32 --present-temporal --recall-ks 1,3,5,10 --no-write-steps --rerank-candidates 32 --rerank-minscore -10.5 --rerank-blend 0 --fusion <weighted α0>`，`--expect-config` 守卫通过），库 = `lme90-r142-deep105-base0` 的副本（`--no-write-steps`），报告 `r162-fold2.json`。
+配对命令与基线完全一致（`scripts/run-r142-sampling.sh` 的 `base0` 档：`--b1 --candidate-k 32 --present-temporal --recall-ks 1,3,5,10 --no-write-steps --rerank-candidates 32 --rerank-minscore -10.5 --rerank-blend 0 --fusion <weighted α0>`，`--expect-config` 守卫通过），库 = `lme90-r142-deep105-base0` 的副本（`--no-write-steps`），报告 `r162-fold2.json`。（脚本已删、`--rerank-blend` 也已移除，参数仅作口径记录；复现需 checkout 8168e1a）
 
 可控性核对：基线 `repoCommit=90416ec`，本次 `HEAD=966e514`，两者之间 `git diff --stat -- MemoryCore/src` 为空（只动了 `scripts/run-r142-sampling.sh` 与 `scripts/audit/r143-e3-review.mjs`），所以运行时唯一差异就是本票对 `auto-recall.ts` 的改动。
 
@@ -1572,7 +1575,7 @@ B. 按题内分位裁剪（保留分数序前 `keepRatio`）：
 2. **要真正「丢噪声」时走相对尺子**：`mode: "filter"` + `filterRule: "quantile"` + `filterKeepRatio: 0.5`（首选：两次实跑 turn_cov 81.1% / 81.6%、session_cov 94.0%，均高于基线）；或 `filterRule: "margin"` + `filterMarginTop: 8`（次选：MRR 0.735→0.776/0.770、nDCG 0.737→0.767/0.762、注入行最少 2.93/题，代价是 turn_cov 与基线打平）。**禁止**在生产把 `filterRule` 设 `floor` 且 `minScore > −9`。
 3. **监控**：看 `gates.rerank.filterRule` / `passCount` / `kept` 三个数——相对尺子下 **`degraded` 根本不会被赋值**（相对分支不会「全杀」：quantile 至少留 1 条、margin 至少留 top1），所以「`degraded` 恒为 0」不能当作相对尺子健康的证据；真正的信号是 `passCount/候选数` 的分布（quantile 0.5 应≈50%，margin 8 随 provider 刻度变化）与 `kept ≤ 1` 的比例。`degraded` 只服务 floor 族，用来发现「绝对门槛在换 provider/语料后整题失灵」。
 4. **兼容性**：`filterRule` 缺省 `floor`，旧配置行为逐位不变；`margin`/`quantile` 只在显式配置时生效，不影响既有部署。
-5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`blend`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。另外 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也没有这三个键（#145 已把 `blend` 与 `candidateK` 补进云模板，`mode`/`filterRule` 仍未钉）。
+5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。另外 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 的 rerank 块也没有这三个键（#145 把 `candidateK` 补进了云模板；`mode`/`filterRule` 仍未钉；排序加权比例键已于 #164 整体删除，见 §21.6）。
 6. **决策记录**：本次机制变更已落 `docs/adr/0013-rerank-filter-题内相对尺子.md`（绝对门槛不可校准的理由、相对尺子的语义与取值、观测字段、被否决的选项）。
 
 ### 19.10 复现
@@ -1614,8 +1617,8 @@ node --import tsx scripts/eval-memory-bench.mjs $B --rerank-filter-rule margin -
 | `MemoryCore/src/config.ts`（parse 期） | `rerank.candidates` 缺省 12→32；`rerank.minScore` 缺省 −2→**按 provider 刻度**（local logit −10.5 / siliconflow·dashscope 概率刻度 sigmoid(−10.5)）；显式 yaml / override 值逐位优先（`num()` 命中即不取缺省） |
 | `MemoryCore/src/core/hooks/auto-recall.ts`（wiring 兜底） | 与 config 同口径；两处刻度判定（经验层精排 `logitScale`、结论层 `r71GateLogitScale`）统一走 `isLogitScaleProvider`，并删掉本地重复的 sigmoid 实现 |
 | `MemoryCore/src/gateway/boot-warmup.ts` | 预热文档缺省 12→32（与 candidates 缺省对齐；属票外顺带项：预热池小于精排池会让首轮精排退化到原序） |
-| `MemoryCore/tdai-gateway.yaml`（本地，gitignore） | 已钉 `candidateK: 32` / `blend: 0.9`；补 #145 注释说明「扩池后缺省 candidateK 会变 96」 |
-| `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` | 新增 `recall.candidateK: 32`（缺省 `maxResults*3` 会随扩池变 96）与 `recall.rerank.blend: 0.9`（代码缺省 0，不钉就静默回退纯重排） |
+| `MemoryCore/tdai-gateway.yaml`（本地，gitignore） | 钉 `candidateK: 32`；补 #145 注释说明「扩池后缺省 candidateK 会变 96」。本票初版还钉过 `blend: 0.9` + `minScore: -10.5`，收尾时按 §21 判决**撤掉两个钉子**（缺省已最优/已刻度感知） |
+| `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` | 新增 `recall.candidateK: 32`（缺省 `maxResults*3` 会随扩池变 96）；初版曾加 `recall.rerank.blend: 0.9`，收尾时已删（§21.2：深池档纯精排更优，钉子只会把旧实验值静默带进生产） |
 | 测试 | 新增 `defaults.test.ts`（7 条：深池缺省、provider 刻度映射、sigmoid 分位等价、`isLogitScaleProvider` 与取值路径的差异化语义、显式值优先）；`config.rerank.test.ts` / `boot-warmup.test.ts` 断言同步 |
 | 文档 | 本文件 §2 推荐配置重写、§7 的 P0「灰度关 rerank」行标注已被 #145 取代、`CONTEXT.md` 增词条「精排默认值与刻度感知门槛」 |
 
@@ -1665,16 +1668,18 @@ bash scripts/run-r135-rerankfix-arms.sh one      # 不带任何 --rerank-* 覆�
 
 1. **票面验收①严格未达标**：生产默认（含 yaml 的 `blend: 0.9`）= 79.5%，纯重排缺省 = 83.2%，都不到 84%。但 84.3% 的实质是可复现的（83.2%，与 84.3% 统计不可分），差额不在本票范围内的 `candidates/minScore`。
 2. **本票的机制目标已达成**：floor 不再是伤害源（kept=5 占 86.7%），深池成为缺省，provider 刻度感知正确，显式配置不被覆盖。
-3. **待拍板**：生产要不要把 `recall.rerank.blend` 从 0.9 调回 0（或小 α 如 0.1–0.2，尚未测）。这是 #137-F 的取值，不是 #145 能单方面改的；改动会改变「精排 vs 融合序」的语义，建议单开票复评（同 judge 重跑 α∈{0, 0.1, 0.9} 三档 + 配对门禁）。**在拍板前，生产保持现状（blend 0.9）**，不要把本节的 blend0 数字当生产预期。
+3. ~~**待拍板**：生产要不要把 `recall.rerank.blend` 从 0.9 调回 0（或小 α 如 0.1–0.2，尚未测）。~~ **已拍板（§21.1）**：α∈{0, 0.1, 0.2, 0.9} 四档扫完，α>0 三档在深池口径下全负（turnCov −1.15/−3.83/−3.64pp，判对 −5.6/−7.8/−6.7pp），生产**不钉** `blend`，让缺省 0 生效（= 本节的 blend0 档，83.2% 才是生产预期）。
 4. **生产 override 已核查**：`D:/TDB/data/config-override.json` 的 `rerank` 段只有 `provider`/`enabled`/`local`，**没有残留 `minScore`/`candidates`**，因此新缺省在现网直接生效（票面「注意」项已完成）。
 
 ### 20.5 复现
 
+> ⚠ 本节命令里的 `--rerank-blend` 已被删除（§21.6）：要复现 20.2 的 79.5% 需先 `git checkout 8168e1a`；当前代码只能复现生产口径（纯精排）。
+
 ```bash
 cd MemoryCore
-bash scripts/run-r135-rerankfix-arms.sh one                                # 生产默认档（blend 0.9）
 bash scripts/run-r135-rerankfix-arms.sh one --rerank-blend 0 \
-  --report-name lme90-r145-blend0                                          # 对照档（纯重排）
+  --report-name lme90-r145-blend0                                          # 生产口径（yaml 已不钉 blend）+ 显式钉 0 防复跑漂移
+bash scripts/run-r135-rerankfix-arms.sh one                                # 2026-10-29 上午那次 blend 0.9 档（yaml 当时还钉着），仅作对照
 node scripts/fit-fusion-weights.mjs compare \
   --base .eval-data/bench/longmemeval-oracle-2026-10-29T04-06-10.json \
   --arm blend0=.eval-data/bench/lme90-r145-blend0.json \
@@ -1682,4 +1687,138 @@ node scripts/fit-fusion-weights.mjs compare \
 ```
 
 ⚠ 复跑注意：第一次 `--rerank-blend 0` 臂在 12:09 因 `[rerank] provider=local 返回 null，降级原序` 失败（首载超时，无报告），重跑即正常；判读时以报告里的 `config.rerank` 为准，别只看命令行。
+
+## 21. #145 收尾：blend 四档复评 + 生产开关台账（2026-10-29）
+
+§20.4 留下的唯一待拍板项是 `recall.rerank.blend`（#137-F 定的 0.9，与深池新缺省互相抵消）。本节把它一次测穿，并顺手把「哪些开关该出现在生产 yaml 里」写成台账 —— 判据只有一条：**开关必须有实测作用，没作用的钉子不留**。
+
+### 21.1 blend 四档：α>0 在深池档全负
+
+同库（`$BENCH_STORE/lme90-mm-b0base`，每臂 fresh 复制）、同 judge（MiniMax-M3.1-Flash）、同 `lme-v2`、n=90 同题配对；公共基线 = 生产缺省 `candidates 32 / minScore 按 provider(−10.5) / candidateK 32 / rerank on`，只改 α：
+
+| α | turnCov@5 | Δ vs α=0 (pp) | CI95 | MRR | nDCG@5 | 判对 | Δ判对 (McNemar p) | 拒答 | 注入行 | p50 | 结果文件 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **0** | **83.18%** | — | — | 0.780 | 0.780 | **82.22%** | — | **11.11%** | 2.91 | 1039 ms | `lme90-r145-blend0.json` |
+| 0.1 | 82.03% | −1.15 | [−7.28, +4.02] | **0.796** | **0.791** | 76.67% | −5.56 (p=0.2266) | 14.44% | 3.11 | 1047 ms | `lme90-r145-blend01.json` |
+| 0.2 | 79.35% | −3.83 | [−10.54, +1.92] | 0.779 | 0.764 | 74.44% | −7.78 (p=0.1185) | 14.44% | 3.14 | 1248 ms | `lme90-r145-blend02.json` |
+| 0.9 | 79.54% | −3.64 | [−10.73, +2.87] | 0.753 | 0.744 | 75.56% | −6.67 (p=0.1796) | 14.44% | 3.54 | 1179 ms | `longmemeval-oracle-2026-10-29T04-06-10.json` |
+
+读法三条，按重要性排：
+
+1. **没有任何一档过 E2 门禁**（n=90 的 CI 宽约 ±6pp，单点差异都不能说显著）。但**方向一致**：turnCov 与判对这两条独立指标上，α>0 的 3/3 档全负；且注入行随 α 单调上涨（2.91→3.14→3.54）、拒答同步上涨（11.1%→14.4%）—— 这是「精排被稀释后把近似噪声摊进上下文」的典型指纹，不是抽样抖动。
+2. **α=0.1 是唯一有亮点的档，但亮点不在对的地方**：MRR 0.780→0.796、nDCG 0.780→0.791 四档最好，判对却掉 5.56pp。检索序更好、答案更差 —— 正好复现 §17.9 的「检索序与判对不同步」：深池档里 gold 已经在 5 条内，尖端顺序的提升不转化为生成质量，多塞进来的近似行反而干扰。
+3. **α=0.9 相对 α=0.2 只有判对微高（75.6% vs 74.4%）、覆盖率更低**，属噪声级差异；两档都远离 α=0。§17.9 在 deep105 锚点下复现过同一结论（blend0 83.2% vs blend09 79.0%，Δ−4.21pp），与本表 −3.64pp 同向同量级。
+
+**判决**：生产**不钉 `blend`**，让代码缺省 0（纯精排）生效。生产预期即本表第一行：**turnCov@5 83.2% / 判对 82.2% / 拒答 11.1%**。
+
+### 21.2 落地：撤掉两个钉子，留下有作用的键
+
+| 文件 | 改动 |
+|---|---|
+| `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` | 删 `recall.rerank.minScore: -10.5`、删 `recall.rerank.blend: 0.9`（各留一行注释指向本节），保留 `enabled/provider/timeoutMs/candidates` 与 `recall.candidateK: 32` |
+| `MemoryCore/tdai-gateway.yaml`（本地，gitignore） | 同上 —— bench 以它为底，清掉实验值后 `one` 臂默认就落在生产口径 |
+
+为什么这两个删、其余不删：
+
+- `minScore` 钉死是**跨 provider 的定时炸弹**：`local` 是 logit 刻度，−10.5 在分布左尾 ≈ 不剪枝；`siliconflow`/`dashscope` 是 0..1 概率刻度，同一个 −10.5 等于「永不过滤」。缺省已按 `defaultRerankMinScore(provider)` 换算（§20.1），钉住反而盖掉这个正确行为。
+- `blend` 钉死等于把一个**只在浅池成立的实验值**（#137-F 的 0.9 定于 `candidates 12 + floor −2`）永久带进深池生产；它在 yaml 里不显眼、后续每轮 bench 都会静默继承（§17.9 踩过）。
+- `candidates: 32` / `recall.candidateK: 32` **反过来必须钉**：前者代码缺省同为 32 但易随池深改动漂移，后者代码缺省是 `maxResults×3`(=96) 会随扩池跳；且 `candidateK 32` 是召回侧唯一有 matched +6.44pp（15 对）的键。
+
+### 21.3 生产开关台账（现行「留/删」依据）
+
+强度标记：**PASS** = 真配对过 E2 门禁；**ns** = 真配对不显著；**matched** = §17.4 的 matched 观测（混杂浅池，只作方向参考）；**机制** = 只有推理、无实测。
+
+| 开关 | 云模板 | 本地 yaml | 代码缺省 | 证据 | 判决 |
+|---|---|---|---|---|---|
+| `recall.rerank.enabled` | true | true | **false** | 深池 83.2%（历史 84.3%）vs 关档最好 82.6%（#137 全开口径）/ 79.5%（b1off） | **留 true**（唯一有实测正收益的大件） |
+| `rerank.provider` | local | local | local | 本地 bge-reranker-base，P50 2.6–4s，离线可用 | 留 |
+| `rerank.candidates` | 32 | 32 | 32 | matched 12 vs 32 = 0.00pp（**不是增益**）；但 kept≥4 38/90→80/90 是 84% 档的前提 | **留 32（防漂移型钉子）**：值与缺省同，钉住防池深被静默收回 |
+| `rerank.minScore` | — | — | 按 provider | matched +3.45pp（n=1）；钉死跨刻度失效 | **删钉**，吃缺省 |
+| `rerank.blend` | — | — | **键已删除** | §21.1 深池四档 α>0 全负；§21.6 浅池配对 −1.15pp | **删机制**（配置项 + 混合逻辑一起删） |
+| `recall.candidateK` | 32 | 32 | `maxResults×3` | matched +6.44pp（15 对），召回侧唯一显著键 | **留 32** |
+| `recall.fusion.mode` | 未设(rrf) | normalized | rrf | matched +2.90pp 判对，但深池锚点 −2.22pp；normalized 是 #137-F 实验档 | **不设**（走 rrf） |
+| `recall.factChannel.enabled` | false | true(#137 实验档) | off | 判对 −1.1pp ns / turnCov +4.4pp 显著 ≠ 答案更好；§16.7 定位它是覆盖率工具 | **生产不设**（本地留实验档） |
+| `validity.mode` | soft | soft | soft | hard −3.3pp | 留 soft |
+| `smallToBig` additive×4 | 同 | 同 | 同 | w3legacy 83.3% 最高（§14） | 留 |
+
+> 台账用法：**证据栏为空的行不该出现在生产 yaml 里**。要加新开关，先在 bench 上拿到至少 matched 级证据，再按上表格式补一行；拿不到就别加。
+>
+> 两类钉子别混：**增益型**（实测优于缺省才钉，如 `candidateK: 32` 的 +6.44pp）与**防漂移型**（值与缺省相同、靠机制证据钉住，如 `candidates: 32` 的 kept≥4 前提）。防漂移型必须在 yaml 行尾写明「防漂移」，否则下一个人会以为它是增益证据而照抄到别的池深配置上。
+
+### 21.4 票面验收判定
+
+- 验收①「改缺省后 `one` 复跑 LME90，turnCov@5 ≥ 84% 且不低于 82%」：**点估计 83.2% —— 不低于 82% 达成，≥84% 未达**。84.3%（#135）与 83.2% 差 1.1pp，落在 n=90 噪声带内（§19.8 记录同档自重跑差 0.6pp，本节四档 CI 半宽 6–7pp），二者统计不可分。
+- 验收② typecheck 零新增 + 全量 vitest 绿：达成（243 个既有错误不变；全量 281 files / **2628** tests —— 删机制后少了 7 条 α 混合用例、又补了 1 条「旧报告字段不当旋钮」回归用例，见 §21.6）。
+- 验收③ 文档与 yaml 模板同步：达成（§2 重写、§20 新增、本节、云模板、CONTEXT.md）。
+- 若必须拿到「点估计 ≥84%」：只能上 LME500（n=90 分辨不了 1pp 级差异）或引入 §16.7 的 W1 事实通道覆盖率方案 —— 都是新工作，不属本票范围。
+
+### 21.5 复现
+
+> ⚠ 下面的 `--rerank-blend` 已被删除（§21.6），直接跑会报未知参数。复现本节四档需先 `git checkout 8168e1a`（删机制前最后一个提交），或只跑 α=0 那一档（当前代码等价）。
+
+```bash
+cd MemoryCore
+for a in 0 0.1 0.2 0.9; do
+  bash scripts/run-r135-rerankfix-arms.sh one --rerank-blend $a --report-name lme90-r145-blend-$(echo $a | tr -d .)
+done
+
+node scripts/fit-fusion-weights.mjs compare \
+  --base .eval-data/bench/lme90-r145-blend0.json \
+  --arm a01=.eval-data/bench/lme90-r145-blend01.json \
+  --arm a02=.eval-data/bench/lme90-r145-blend02.json \
+  --arm a09=.eval-data/bench/longmemeval-oracle-2026-10-29T04-06-10.json
+```
+
+⚠ 首载偶发 `[rerank] provider=local 返回 null，降级原序`（模型首载超时），表现是该臂无报告；重跑即可，判读以报告里的 `config.rerank` 为准。
+### 21.6 α 混合机制已删除（2026-10-29 收尾）
+
+§21.1 只在深池口径（candidates 32 / minScore 按 provider）扫了 α，留了一个漏洞：**α>0 会不会在它原本的浅池锚点仍然净赚？** §13.5 当年正是在「candidates 12 + 硬 floor −2」测到 α=0.9 更好的。所以收尾时回浅池锚点做了同库同 judge 的 n=90 配对，只差 `blend` 一个键。
+
+| 档（candidates 12 / minScore −2 / candidateK 32 / fusion weighted / factChannel on） | turnCov@5 | Δ vs blend0 [CI95] | 判对 | Δ判对（McNemar） | MRR |
+|---|---|---|---|---|---|
+| **blend 0** | **82.4%** | — | **80.0%** | — | — |
+| blend 0.9 | 81.3% | **−1.15pp** [−6.90, +4.02] | 77.8% | −2.22pp（p=0.7539） | +1.91pp |
+
+报告：`MemoryCore/.eval-data/bench/lme90-shallow-blend0.json`、`…/lme90-shallow-blend09.json`；win/loss/tie = 5/8/74，符号检验 p=0.5811，**E2 门禁 FAIL**。
+
+**两条读法**
+
+1. **§13.5 的 +2.9pp 不该记在 blend 头上**：那组对比一次性改了三件事（blend 0.9 + 融合锚点 + floor 补位）。本表两臂里锚点与补位都已生效，隔离出来的 blend 贡献是 **−1.15pp**，即「浅池里的收益来自锚点/补位，blend 是搭便车的第三方」。
+2. **与深池同向同量级**（深池 −3.64pp / 浅池 −1.15pp），且都是 MRR 小涨、判对下降 —— 与 §17.9「检索序改善不同步到答案」同一现象。α>0 在两个池深下都没有一格是净收益。
+
+**判决：删除机制，不只是撤钉子。** 判据是台账那条原则的加强版 —— 开关要有实测作用；**确认「关着更好」之后，留在代码里的旋钮就是死配置**：它不显眼、后续每轮 bench 会静默继承、还会诱使别人再调它一遍。
+
+**删除清单（commit 记录，验证见下）**
+
+| 位置 | 处理 |
+|---|---|
+| `MemoryCore/src/core/recall/rerank/blend.ts` | **改名 `anchor.ts`**，只留 `anchorRerankOrder(order, cap)`（原第三参 `anchorIdx` 唯一调用点恒传 0，一并内联）；删 `blendRerankOrder` / `rankPriorScores` / `RerankScored` |
+| `MemoryCore/src/core/hooks/auto-recall.ts` | `RerankWiring` 去 `blend` 字段，off/unavailable/active 三处接线去 `blend:`，删 `if (wiring.blend > 0 && …)` 混合块（含 `RERANK_DEBUG_BLEND`），gate 不再输出 `blend` |
+| `MemoryCore/src/config.ts` | 删 `recall.rerank.blend` 的类型声明、docblock 与解析（含 0..1 夹取） |
+| `MemoryCore/src/core/recall/recall-journal.ts` | `gates.rerank.blend` 字段删除 |
+| `MemoryCore/scripts/eval-memory-bench.mjs` | 删 `--rerank-blend` 旗标（usage / known-flags / 参数解析） |
+| `MemoryCore/scripts/lib/bench/store.mjs`、`scripts/audit/r143-e3-review.mjs` | 指标键清单去掉 `recall.rerank.blend` |
+| `MemoryCore/scripts/lib/bench/fusion-fit.mjs` | **彻底移除**该旋钮：`B0BASE_RERANK` / `KNOB_ORDER` / `armKnobs` / `knobsSummary` / 深池判定都不再含它；旧报告里的该字段自然被忽略（那些档本来就被否了，不需要再分组）。**副作用要知情**：§21.1 的四档在新旋钮表里向量相同 → `knobsSummary` 对它们都打印「缺省」、配对被跳过；要按档配对请 checkout `8168e1a`。回归测试已钉住「旧字段不被当旋钮」（`MemoryCore/__tests__/bench-fusion-fit.test.ts`） |
+| 历史臂脚本 `run-r138/r139/r141*.sh` | 去掉 `--rerank-blend 0.9`（否则旗标已删、脚本直接报错） |
+| `scripts/run-r142-sampling.sh` | 纯 blend A/B 档脚本，旗标已不存在 → **`git rm` 整脚本删除**（命令与读数在 §13.5 正文里有记录） |
+
+**保留（本节不动）**：融合锚点 `anchorRerankOrder`（cap 内必须含融合 top-1）、floor 补位、`minScore` 的 provider 刻度感知 —— 这三件才是 §13.5 真正测到收益的部分。
+
+**复跑指引**：`--rerank-blend` 旗标已不存在，要复现本节数据需先 `git checkout 8168e1a`（删机制前最后一个提交），再按 §21.5 的命令跑。历史报告文件本身不受影响（`compare` 照常读它们），但**新旧不可按档配对**：旧报告里的该字段现在被忽略，§21.1 四档在新旋钮表里是同一向量，`knobsSummary` 显示「缺省」、`knobDiff` 为空导致配对跳过 —— 要在表里区分它们只能回 `8168e1a` 口径重跑。
+**删净审计（2026-10-29 终审，第二轮）**：第一轮曾把若干命中定性为「有意保留的历史痕迹」，维护者否决了这个口径 —— **残留一律清零**。第二轮删到 `git grep -i blend -- . ':!docs'` 只剩一处无关命中：
+
+| 位置 | 现状 |
+|---|---|
+| `MemoryCore/src/core/recall/rerank/anchor.ts`、`__tests__/anchor.test.ts` | 头注释不再提旧机制，只讲锚点职责 |
+| `MemoryCore/scripts/lib/bench/fusion-fit.mjs` | 旋钮整体移除，文件内零命中（臂标签/坐标系/诊断/深池判定都不再认它） |
+| `MemoryCore/scripts/audit/r138-slot-competition.mjs` | 两个读取字段删除，审计只认 `candidates`/`minScore`/`enabled`/`mode` |
+| `MemoryCore/scripts/run-r142-sampling.sh` | 已 `git rm`（文件不存在） |
+| `MemoryCore/__tests__/bench-fusion-fit.test.ts`、`bench-stages.test.ts` | fixture 里的该键与「历史旋钮」断言行全删；`bench-fusion-fit.test.ts` 保留**一条**回归用例：用旧报告字段名构造 config，断言它不进旋钮向量（唯一有意出现该字符串的代码位置，用于证明旧报告不会被当档位） |
+| `MemoryCore/scripts/eval-memory-bench.mjs` | 连「旗标已删除」的说明注释也不留 |
+| `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml`、`MemoryCore/tdai-gateway.yaml` | 注释清零；yaml 里写这个键属未知键，静默忽略 |
+| `CONTEXT.md` | 词条改写为「融合序×精排的加权排序已整体移除」，不再出现键名 |
+| `docs/`（含本文件 §13.5/§17.9/§20/§21、`docs/adr/0013-*`、`docs/superpowers/evals/**`） | **只有这里保留**：决策记录/历史读数/ADR 不改写，读时按 §21.1 与本节判决理解 |
+| `INSTALL.md:294` | 唯一非 docs 命中，是英文动词 “blended into the system prompt”，与本机制无关 |
+
+代码侧确认：`src` / `scripts` / `__tests__` 里的 `blend` 为零；`config.ts` 不解析该键；云模板 `rerank` 段解析结果为 `{enabled, provider, timeoutMs, candidates, local}`。
 

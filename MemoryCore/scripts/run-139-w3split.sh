@@ -13,6 +13,10 @@
 # 两档都带 --expect-config 断言（#135 第1项）：生产 data/config-override.json 里的
 # rerank/smallToBig 会覆盖沙箱 yaml，不校验就会白跑一档。
 #
+# ⚠ 口径提醒（2026-10-29，#164）：本脚本首跑的档案里，原序加权旋钮（rerank 混合比例）被钉在 0.9，
+#   该旋钮与其逻辑已整体移除，重跑只能得到「纯精排」口径——数字预期会与 docs 里当时那张表不同。
+#   要复现原读数请 git checkout 8168e1a；历史读数见 docs/optimization-results.md §14（及 §13.5 / §21.1）。
+#
 # 缺省 retrieval-only（GEN_LIMIT=0）——只比召回覆盖率，零生成/判分外呼，几分钟出表；
 # 要判对指标（genCorrect）用 GEN_LIMIT=90（成本 ≈ 两档 × 90 题）。
 #
@@ -31,7 +35,7 @@ FUSION='{"mode":"normalized","dense":0.5,"bm25":0.2,"fact":0.3}'
 COMMON="--dataset longmemeval --manifest $L/lme-manifest.json --pace 150 --gen-limit $GEN \
   --recall-ks 1,3,5,10 --b1 --candidate-k 32 --fact-channel --fact-channel-read-only \
   --fact-channel-weight 0.6 --conclusion-cards --validity-mode soft --fact-model MiniMax-M2.7 \
-  --embed-interval-ms 1200 --rerank-blend 0.9 --rerank-child-proc --rerank-doc-cap 192 \
+  --embed-interval-ms 1200 --rerank-child-proc --rerank-doc-cap 192 \
   --no-write-steps"
 FAILED=0
 if [ ! -d "$STORE" ]; then

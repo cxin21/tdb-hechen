@@ -30,13 +30,15 @@ const BUCKETS = [
   "temporal-reasoning",
 ];
 
-// 缺省档：基线 / W3×2 / W3×4 / #137 精排修复(blend0.9) / #137 全开-rerank-off
+// 缺省档：基线 / W3×2 / W3×4 / #137 精排修复 / #137 全开-rerank-off
+// 标签里的 (pre-164) 是 epoch 标记：这批报告跑在 2026-10-29 #164 之前，rerank 档当时还钉着
+// 已被删除的原序加权旋钮（0.9），与现在的纯精排口径不可混比；要复现原配置请 checkout 8168e1a。
 const DEFAULT_ARMS = [
   "b1off-mm=longmemeval-oracle-2026-10-27T05-35-29.json",
   "w3x2=longmemeval-oracle-2026-10-27T04-33-21.json",
   "w3x4=longmemeval-oracle-2026-10-27T04-55-56.json",
-  "r137fix=longmemeval-oracle-2026-10-27T23-58-21.json",
-  "r137norerank=longmemeval-oracle-2026-10-27T14-36-26.json",
+  "r137fix(pre-164)=longmemeval-oracle-2026-10-27T23-58-21.json",
+  "r137norerank(pre-164)=longmemeval-oracle-2026-10-27T14-36-26.json",
 ];
 const armsArg = String(arg("arms", ""));
 // #138 自动发现：tag 以 r138- 开头的档（跑批产物名带时间戳，逐次不同，不写死文件名）
@@ -97,7 +99,6 @@ for (const { tag, file } of armSpecs) {
       // 行里 refused 可能是布尔或 0/1 数值（与 genCorrect 同类）——两种形状都要认
       refused: r.refused === true || r.refused === 1 ? 1 : 0,
       kept: r.gates?.rerank?.kept,
-      blend: r.gates?.rerank?.blend,
     };
   });
   const arm = {
@@ -106,7 +107,6 @@ for (const { tag, file } of armSpecs) {
     n: rows.length,
     config: {
       conclusionCards: j.config?.conclusionCards ?? null,
-      rerankBlend: j.config?.rerankOverride?.blend ?? null,
       candidateK: j.config?.candidateK ?? null,
     },
     overall: {

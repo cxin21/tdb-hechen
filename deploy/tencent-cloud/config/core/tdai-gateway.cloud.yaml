@@ -139,8 +139,9 @@ memory:
     nativeMinRRF: 0.016
     strategy: "hybrid"
     # #145（2026-10-29）：rerank.candidates 缺省 32 后，扩池会把上游 maxResults 抬到 32，
-    # 缺省 candidateK（maxResults*3）随之变 96；bench 定档（84.3%）用的是 candidateK=32，
-    # 这里显式钉住同一档，避免「模板重装 = 候选项翻三倍」的静默漂移。
+    # 缺省 candidateK（maxResults*3）随之变 96；bench 定档（84.3%）用的是 candidateK=32。
+    # 实测（#141 匹配设计，15 对）：candidateK 32 比 15 +6.44pp；96 未测 → 钉住已测档，
+    # 这是本模板里少数「与代码缺省不同、且实测更优」的钉子（§21 开关台账）。
     candidateK: 32
     foldClusterEnabled: true  # F-CLUSTER v2 召回折叠（2026-09-30 转产：0b7ef5a 三层断点修复+A/B 5/10 触发实证）
     # ── #137（W1 双通道）事实键平行召回通道（缺省关 = 通道退出，逐位现状）──
@@ -318,18 +319,16 @@ memory:
     # ⚠️ 2026-10-26 配置审计：本段此前是「全部注释 = 缺省关」，生产却已真开（renderer/rerank 生效
     # source=yaml）→ 模板与生产漂移，重装即静默回退旧行为。现按生产现值显式落盘。
     rerank:
-      enabled: true
+      enabled: true      # 缺省 false；本部署按实测最优档开启（见下）
       provider: "local"
       timeoutMs: 5000  # #63 首载 worker+模型 load ~3.2s，缺省 800 必超时返回 null
       # #145（2026-10-29）：生产默认「深池 + 近不筛」（#135 LME90：32/−10.5 = 84.3% vs 12/−2 = 67.1%；
-      # 剪枝是伤害源，−10.5 在实测分布左侧 ≈ 不筛，真剪枝靠 candidates cap）。代码缺省已同源，
-      # 这里仍显式落盘（2026-10-26 审计惯例：防缺省再次翻转时模板与生产静默漂移）。
-      candidates: 32   # 送精排候选池大小（clamp [1,100]）
-      minScore: -10.5  # 相关度门槛（恒按 provider 原生刻度：local logits；云 provider 用 0..1 等价 sigmoid(−10.5)）
-      # #137-F（2026-10-28）：精排不再当主排序器。blend=α：score = α×融合位次先验 + (1−α)×精排分；
-      # 0=纯精排（旧行为）、1=纯融合序。代码缺省 0，生产值 0.9（+融合锚点 +floor 补位）——
-      # 显式落盘防模板重装静默回退纯重排（LME90 判对 77.8% / cov 77.6%，见 optimization-results §13.5）。
-      blend: 0.9
+      # 剪枝是伤害源，−10.5 在实测分布左侧 ≈ 不筛，真剪枝靠 candidates cap）。
+      # 钉子分两类（§21.3）：①增益型——只有实测更优才钉；②防漂移型——与代码缺省同值，钉住是为了防缺省被
+      # 悄悄改回（改回会把已验证的档位静默降级），行尾必须写明「防漂移」。两类都要在台账里有证据行。
+      candidates: 32   # 防漂移型：池扩到 32 是「kept≥4 从 38/90 → 80/90」的前提；缺省同为 32，钉住防深池被收回
+      # minScore 不在此钉：#145 起缺省按 provider 刻度取值（local logit −10.5 / siliconflow·dashscope
+      # 0..1 刻度 sigmoid(−10.5)≈2.75e-5）。钉死 −10.5 在概率刻度 provider 上等于永不过滤 → 换 provider 即失效。
       local:
         modelDir: ""             # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
         idleUnloadMs: 600000     # 空闲卸载毫秒（0 = 常驻；生产 10 分钟卸载省内存）

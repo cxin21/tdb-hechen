@@ -11,6 +11,10 @@
 #   budget=additive（上下文行不挤经验层保底）× maxExtraLines ∈ {2,4,6}
 #   另跑 shared（逐位现状）+ 新排序档做对照。
 #
+# ⚠ 口径提醒（2026-10-29，#164）：本脚本首跑的档案里，原序加权旋钮（rerank 混合比例）被钉在 0.9，
+#   该旋钮与其逻辑已整体移除，重跑只能得到「纯精排」口径——数字预期会与 docs 里当时那张表不同。
+#   要复现原读数请 git checkout 8168e1a；历史读数见 docs/optimization-results.md §14（及 §13.5 / §21.1）。
+#
 # 用法: bash scripts/run-r138-arms.sh [all|add2|add4|add6|shared4|shared4-legacy]
 cd "$(dirname "$0")/.." || exit 1
 B="node --import tsx scripts/eval-memory-bench.mjs"
@@ -23,7 +27,7 @@ FUSION='{"mode":"normalized","dense":0.5,"bm25":0.2,"fact":0.3}'
 COMMON="--dataset longmemeval --manifest $L/lme-manifest.json --keep --pace 150 --gen-limit $GEN \
   --recall-ks 1,3,5,10 --b1 --candidate-k 32 --fact-channel --fact-channel-read-only --fact-channel-weight 0.6 \
   --conclusion-cards --small-to-big --validity-mode soft \
-  --fact-model MiniMax-M2.7 --embed-interval-ms 1200 --rerank-blend 0.9 \
+  --fact-model MiniMax-M2.7 --embed-interval-ms 1200 \
   --rerank-child-proc --rerank-doc-cap 192"
 FAILED=0
 run() {
