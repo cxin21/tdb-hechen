@@ -1412,3 +1412,167 @@ node scripts/fit-fusion-weights.mjs compare \
 
 **票的处理（2026-10-29）**：#162 由维护者决定**带 caveat 关闭**——代码/单测/文档/两条回归/PR 全部落地，唯独「判对上升、拒答率下降」这一格没有数。读本节时请按这个边界理解：**折叠是主因**有离线门槛（金句 62→108/108、折行 154→0）与十题抽检独立佐证；**端到端判对**尚未验证。补跑不重开票，命令见上（`scripts/run-r142-sampling.sh base0`，对 `r142-deep105-base0` 配对）。
 
+
+## 19. #144 rerank filter 的 floor 校准：绝对门槛不可校准，改用题内相对尺子（2026-10-29）
+
+票 #144 要的是给 `filter` 档（只丢低分行、保留原序）校准 `minScore`，并回答「生产到底开不开、开多少」。维护者同时定了硬约束：**不许靠关掉 rerank 取胜**——rerank 本身有好处，要修的是「用法/算法导致误杀」这一层。本节先证明「全局绝对分阈值不可校准」，再给出落地的替代机制（题内相对尺子）、单测、实跑配对与生产取值。
+
+### 19.1 先确认问题在哪：现网 minScore 等于不筛
+
+instrumented 档（`RERANK_SCORE_DUMP` 转储每题全候选原始分）显示：90 题共 997 个候选，分数全部落在 **[−10.18, +10.28]**，而生产默认 `minScore = −10.5` 在这个区间左侧 —— **filter 档在生产里实际一条都没滤掉**，它只是「保序的 no-op」。所以 §10.3 / #135 看到的「filter 档变差」并不是 floor 设错，而是上游 `candidates = 12` 把候选池剪太小；floor 只有收到 **−9 以上**才开始产生行为差异。
+
+### 19.2 取样口径（可复现）
+
+| 项 | 值 |
+|---|---|
+| 转储 | `MemoryCore/.eval-data/bench/lme90-r144-instr-rerank-scores.jsonl`（90 行/每题一行，含全候选分数、原始行文本、`final` 选择结果） |
+| 结果对齐 | 同一次 run 的 `lme90-r144-instr.json`（配对必须同一次 run：同配置重跑 turn_cov 曾差 2.3pp） |
+| 行→turn 反查 | 复刻 bench 口径：`stripMemoryLineMeta` + `[<ts>] <speaker>: <text>` 归一后查 contentIndex，**解析率 100.0%（997/997）** |
+| gold / 噪声 | gold = `has_answer` 且落在该题候选池内的 turn（**133 行**）；噪声 = 池内非 gold（**864 行**） |
+| 分析脚本 | `MemoryCore/scripts/analyze-r144-rerank-floor.mjs`（离线、零外呼） |
+
+⚠ **模拟器边界**：它只重放「选择」，不重放 #162 的装配折叠，注入行数按结构行占位（`injectedLines − retrieved.length`）补齐。因此**绝对值偏高**（不筛基线模拟 86.4% vs 实跑 79.3%），**只用于同口径相对比较**；绝对判读一律看 §19.8 的实跑。
+
+### 19.3 分数有判别力，但「题间量纲」不一致（核心结论）
+
+- **AUC = 0.836**（gold 133 行 vs 噪声 864 行）——分数排序本身有效，这正是 rerank 应保留的证据。
+- 但两个分布大幅重叠：gold 中位 **0.115**（p25 −2.780）、噪声中位 **−6.302**（p25 −8.806）。
+- 而**题内分差**（top1 − bottom）中位 **11.115**（p10 3.546 / p90 15.787）—— 不同题的整体分数平移可达 10 logit 量级。
+
+一个全局绝对门槛因此只能变成「按题目难度随机砍」：低分题整题被砍、高分题一条不砍。**这就是「绝对 floor 不可校准」的量化表述**，也是本节改用题内相对尺子的理由（换 provider / 换语料后仍然成立）。
+
+### 19.4 floor 曲线（filter 语义：保原序，只剔除低于门槛的行）
+
+| floor | kept 比例 | 误滤 gold | 误滤 gold 题数 | 丢弃噪声行 | turnCov@5 |
+|---|---|---|---|---|---|
+| −20 / −14 / −12 / **−10.5** | 42.4% | 14.3%（19/133） | 16/87 | 548 | 86.4% |
+| −9 | 39.9% | 14.3%（19/133） | 16/87 | 565 | 85.9% |
+| −8.5 | 39.1% | 15.0%（20/133） | 17/87 | 572 | 84.7% |
+| −7.5 | 37.9% | 15.0%（20/133） | 17/87 | 584 | 84.7% |
+| **−7** | 37.2% | 15.8%（21/133） | 17/87 | 590 | 84.1% |
+| −6 | 35.5% | 16.5%（22/133） | 18/87 | 606 | 83.6% |
+| −5 | 32.0% | 17.3%（23/133） | 20/87 | 640 | 80.9% |
+| −4 | 29.2% | 18.8%（25/133） | 21/87 | 665 | 78.0% |
+| −3 | 25.0% | 26.3%（35/133） | 26/87 | 697 | 73.0% |
+| −2 | 21.5% | 33.1%（44/133） | 32/87 | 723 | 66.5% |
+| −1 | 18.1% | 40.6%（54/133） | 39/87 | 747 | 60.0% |
+| 0 | 14.5% | 47.4%（63/133） | 46/87 | 773 | 53.8% |
+
+读法：**−10.5 / −12 / −14 / −20 四档逐位相同**（=不筛，印证 §19.1）；真正开始「丢噪声」要到 −8.5，而同一区间 gold 误滤同步从 14.3% → 15.0% → 15.8%，turnCov 也从 86.4% 单调跌到 84.1%。**绝对 floor 的收益区不存在**：它没有「先丢噪声、后伤 gold」的平台段。
+
+### 19.5 sigmoid 概率阈值（与 floor 单调等价，无新信息）
+
+| 阈值 | kept 比例 | 误滤 gold | 丢弃噪声行 | turnCov@5 |
+|---|---|---|---|---|
+| p=0.1（logit −2.20） | 21.6% | 32.3%（43/133） | 723 | 66.9% |
+| p=0.2（logit −1.39） | 19.6% | 38.3%（51/133） | 735 | 61.3% |
+| p=0.3（logit −0.85） | 17.1% | 42.9%（57/133） | 754 | 57.9% |
+| p=0.5（logit 0.00） | 14.5% | 47.4%（63/133） | 773 | 53.8% |
+| p=0.7（logit 0.85） | 11.8% | 57.9%（77/133） | 785 | 42.5% |
+
+概率只是 floor 的单调变换，**换标度不解决量纲问题**：p=0.1 就误杀 32.3% 的 gold。票面要求的「评估概率阈值」一项，结论是**不推荐**把 filter 建在 sigmoid 上。
+
+### 19.6 题内相对尺子（本轮落地的机制）
+
+A. 相对 top-1 的 margin（保留 `score ≥ top1 − margin`）：
+
+| margin | kept 比例 | 误滤 gold | 误滤 gold 题数 | 丢弃噪声行 | turnCov@5 |
+|---|---|---|---|---|---|
+| top-2 | 18.9% | 30.1%（40/133） | 31/87 | 760 | 73.0% |
+| top-3 | 23.3% | 26.3%（35/133） | 27/87 | 721 | 75.3% |
+| top-4 | 27.0% | 21.1%（28/133） | 23/87 | 691 | 80.5% |
+| top-5 | 29.8% | 18.0%（24/133） | 19/87 | 668 | 83.4% |
+| top-6 | 31.7% | 16.5%（22/133） | 17/87 | 651 | 85.7% |
+| **top-8** | 37.0% | **10.5%（14/133）** | 12/87 | 606 | **88.9%** |
+
+B. 按题内分位裁剪（保留分数序前 `keepRatio`）：
+
+| 分位 | kept 比例 | 误滤 gold | 误滤 gold 题数 | 丢弃噪声行 | turnCov@5 |
+|---|---|---|---|---|---|
+| top 25% | 27.3% | 18.0%（24/133） | 19/87 | 689 | 83.2% |
+| top 33% | 31.8% | 14.3%（19/133） | 14/87 | 650 | 86.2% |
+| **top 50%** | 37.4% | **12.8%（17/133）** | 13/87 | 598 | **87.4%** |
+| top 75% | 41.5% | 13.5%（18/133） | 16/87 | 558 | 87.8% |
+| top 100% | 42.4% | 14.3%（19/133） | 16/87 | 548 | 86.4% |
+
+同 kept 比例对比（这是本节的关键读数）：
+
+| 保留比例 | 规则 | 误滤 gold | turnCov@5 |
+|---|---|---|---|
+| ≈37% | floor −7（绝对） | 15.8%（21/133） | 84.1% |
+| ≈37% | margin top-8（题内） | **10.5%（14/133）** | **88.9%** |
+| ≈37% | quantile 50%（题内） | **12.8%（17/133）** | **87.4%** |
+
+**题内尺子在「剪掉同样多的行」时少误杀 3–5pp 的 gold，并且 turnCov 高于不筛基线（86.4%）**——因为 filter 保原序，只改「保留谁」不改「先后」，把低分噪声挤出去反而让前 5 位的构成更干净。
+
+### 19.7 落地（改机制，不是关开关）
+
+`MemoryCore/src/config.ts`（`RecallRerankConfig`）新增三项，缺省即旧行为：
+
+| 键 | 类型 | 缺省 | 语义 |
+|---|---|---|---|
+| `recall.rerank.filterRule` | `"floor" | "margin" | "quantile"` | `"floor"` | filter 档用哪把尺子；`floor` 与旧版逐位等价 |
+| `recall.rerank.filterMarginTop` | number > 0 | `8` | margin 尺子的窗口（logit 单位） |
+| `recall.rerank.filterKeepRatio` | (0,1] | `0.5` | quantile 尺子的保留比例 |
+
+`MemoryCore/src/core/hooks/auto-recall.ts`：`filterPassSetByIdx()` 只算「谁过线」（不排序，保原序是 filter 语义）；选择块按 `filterRule` 分流，`margin`/`quantile` 档**完全不看 `minScore`（两把尺子不互相盖，避免「绝对门槛先把候选砍光、相对尺子无从工作」）；`RerankWiring` 三处（off / unavailable / active）都带归一化字段，非法值静默回落（`floor` / 8 / 0.5）。观测面：`gates.rerank` 增 `filterRule` + 对应参数；`RERANK_SCORE_DUMP` 同步落这三键，事后可归因。
+
+单测：`MemoryCore/src/core/hooks/__tests__/auto-recall-rerank.test.ts` 新增三例 —— ① margin 0.5 配 `minScore: 2`（故意全杀）仍只按相对窗口保留，`degraded` 不出现（证明 minScore 未参与）；② quantile 0.5 分数与原序错位时按分数选、按原序出；③ 非法 `filterRule` + 越界 `keepRatio` 回落 floor。**24 tests 全过**。
+
+### 19.8 实跑配对（同库 / 同旗标，只换尺子）
+
+90 题、`--b1 --candidate-k 32 --present-temporal --no-write-steps --rerank-candidates 32`、库 = `lme90-r144-instr`（`--no-write-steps`，只读）。基线为「候选全放行」（`minScore −1e9`，等价于不筛）。
+
+每臂各跑**两次**（同库、同旗标、同 manifest；第二次即噪声对照）：
+
+| 臂 | 尺子 | 注入行/题 | turn_cov@k（两次） | session_cov（两次） | MRR（两次） | nDCG（两次） | kept 均值 | 整题降级 |
+|---|---|---|---|---|---|---|---|---|
+| 基线（不筛） | — | 3.58 | 79.3% / 79.9% | 92.5% / 93.0% | 0.735 / 0.735 | 0.737 / 0.740 | 4.70 | 0 |
+| `lme90-r144-floor7` | floor −7 | 3.46 | 80.5% / — | 93.0% / — | 0.733 / — | 0.738 / — | 4.29 | **4/90** |
+| `lme90-r144-q50(-r2)` | quantile 0.5 | 3.20 / 3.27 | **81.1% / 81.6%** | **94.0% / 94.0%** | 0.741 / 0.747 | 0.742 / 0.749 | 4.12 | 0 |
+| `lme90-r144-m8(-r2)` | margin 8 | 2.93 / 2.98 | 79.9% / 79.9% | 92.3% / 92.3% | **0.776 / 0.770** | **0.767 / 0.762** | 4.11 | 0 |
+
+（原始报告：`MemoryCore/.eval-data/bench/lme90-r144-{instr,base-r2,floor7,q50,q50-r2,m8,m8-r2}.json`；`--no-write-steps` 只读同一库。）
+
+判读（严格，按"两次跑之间差多少"划线）：
+
+1. **基线自身的重复跑差异 = 0.6pp turn_cov / 0.5pp session_cov / MRR 0 / nDCG 0.3pp**，这就是本口径的噪声带。
+2. **quantile 0.5 在两次跑里都高于基线**（81.1% / 81.6% vs 79.3% / 79.9%），session_cov 也稳定高 1.0–1.5pp、MRR/nDCG 同向更高，注入行少 0.3–0.4 行/题 → **是可复现的小幅正收益**，不是噪声。原因与 §19.6 一致：保序剔除把低分噪声挤出前 5 位，gold 相对上移。
+3. **margin 8 的 turn_cov 与基线打平**（79.9% 两次逐位相同；因为它的截断点在题内相对位置，几乎不受 recency 加分漂移影响），**但 MRR 0.735→0.776/0.770、nDCG 0.737→0.767/0.762，且注入行最少（2.93 vs 3.58，块字符 274k vs 336k）** —— 它在"保留的先后"上更干净，代价是行数更少。
+4. **floor −7 出现 4/90 题整题降级**（全部候选都低于门槛 → 回落原序），相对尺子恒 0 —— 这是「绝对门槛会在换 provider / 换语料后整题失灵」的实跑侧证据；同一个 provider 上它还比基线多丢 3 行/10 题。
+5. **延迟不作结论**：同一档两次跑的 mean 在 1661–3045ms 之间跳（机器负载），基线自己也从 2772ms跳到 1821ms；只能读"注入行/块字符"这个确定性指标（margin 8 最省）。
+
+### 19.9 生产建议（明确到数值）
+
+1. **默认保持 #145 定档**：rerank 开 + `candidates: 32` + `minScore: −10.5`（= 不筛，安全的 no-op）。**绝不要**把 `minScore` 收到 −2 / −4：§19.4 的 21.5% / 29.2% 误滤就是 #135 里判对率掉到 45.6% 的来源。
+2. **要真正「丢噪声」时走相对尺子**：`mode: "filter"` + `filterRule: "quantile"` + `filterKeepRatio: 0.5`（首选：两次实跑 turn_cov 81.1% / 81.6%、session_cov 94.0%，均高于基线）；或 `filterRule: "margin"` + `filterMarginTop: 8`（次选：MRR 0.735→0.776/0.770、nDCG 0.737→0.767/0.762、注入行最少 2.93/题，代价是 turn_cov 与基线打平）。**禁止**在生产把 `filterRule` 设 `floor` 且 `minScore > −9`。
+3. **监控**：`gates.rerank.filterRule` 与 `kept` 进日志后看两个信号——`degraded`（整题失灵）与 `kept ≤ 1` 的比例；相对尺子下 `degraded` 应恒为 0，一旦出现即说明配置/provider 异常。
+4. **兼容性**：`filterRule` 缺省 `floor`，旧配置行为逐位不变；`margin`/`quantile` 只在显式配置时生效，不影响既有部署。
+5. **配置面现状（后续要补）**：`MemoryCore/src/gateway/settings-override.ts` 的 `RerankSettingsOverride` 只接受 `enabled/provider/baseUrl/apiKey/model/timeoutMs/candidates/minScore/local`，**不认 `mode`/`blend`/`filterRule` 等键**（未知键静默忽略）。也就是说这些新键目前只能写 yaml（`memory.recall.rerank.*`），管理后台的 config-override 改不了它们；要做成管理台可调，得扩 override schema + 校验 + SettingsPage，属于独立票的活。
+
+### 19.10 复现
+
+```bash
+cd MemoryCore
+# 库目录（复用的已灌库沙箱；各臂必须指向同一个库，--no-write-steps 保证只读）
+BENCH_STORE="${BENCH_STORE:-$HOME/AppData/Local/Temp/tdagemem-bench}"
+# ① instrumented 取样（转储每题全候选分数；约 5 分钟）
+node --import tsx scripts/eval-memory-bench.mjs --dataset longmemeval \
+  --manifest .eval-data/bench/lme-manifest.json --keep --pace 150 --gen-limit 0 \
+  --recall-ks 1,3,5,10 --b1 --candidate-k 32 --present-temporal \
+  --store "$BENCH_STORE/lme90-r144-instr" --no-write-steps \
+  --fusion '{"mode":"weighted","dense":0.4,"bm25":0.3,"recency":0.2,"validity":0.1,"recencyHalfLifeDays":30}' \
+  --rerank-candidates 32 --rerank-minscore -1000000000 --rerank-mode filter \
+  --dump-rerank-scores --report-name lme90-r144-instr --tag r144-instr
+
+# ② 离线校准（零外呼，无 LLM）
+node --import tsx scripts/analyze-r144-rerank-floor.mjs \
+  --dump .eval-data/bench/lme90-r144-instr-rerank-scores.jsonl \
+  --result .eval-data/bench/lme90-r144-instr.json \
+  --out .eval-data/bench/lme90-r144-instr-rerank-scores-floor-calibration.json
+
+# ③ 实跑配对（相对尺子两档；B 为公共旗标）
+B="--dataset longmemeval --manifest .eval-data/bench/lme-manifest.json --keep --pace 150 --gen-limit 0 --recall-ks 1,3,5,10 --b1 --candidate-k 32 --present-temporal --store "$BENCH_STORE/lme90-r144-instr" --no-write-steps --fusion '{"mode":"weighted","dense":0.4,"bm25":0.3,"recency":0.2,"validity":0.1,"recencyHalfLifeDays":30}' --rerank-candidates 32 --rerank-minscore -1000000000 --rerank-mode filter"
+node --import tsx scripts/eval-memory-bench.mjs $B --rerank-filter-rule quantile --rerank-keep-ratio 0.5 --report-name lme90-r144-q50 --tag r144-q50
+node --import tsx scripts/eval-memory-bench.mjs $B --rerank-filter-rule margin --rerank-margin-top 8 --report-name lme90-r144-m8 --tag r144-margin8
+```

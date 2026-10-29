@@ -588,6 +588,25 @@ export interface RecallRerankConfig {
    */
   mode: "rerank" | "filter";
   /**
+   * #144（2026-10-29）：mode="filter" 下**用什么尺子**判定保留行（缺省 "floor" = 逐位现状）。
+   *
+   * 为什么需要：provider 原始分量纲既非概率也非题间可比——LME90 实测 gold 与噪声的绝对分
+   * 分布重叠区极宽（floor 每收紧 1 logit，gold 误杀与噪声丢弃同步上升，AUC 虽 0.836 但
+   * **绝对阈值**挑不出「本题的噪声尾巴」）。题内相对规则只用同一题的分数序，对模型换版、
+   * 分数漂移天然免疫：
+   *  - "floor"    = score ≥ minScore（旧行为，绝对刻度，provider 换版即失效）；
+   *  - "margin"   = score ≥ 题内 top1 − filterMarginTop（相对幅度）；
+   *  - "quantile" = score ≥ 题内 filterKeepRatio 分位（按分数裁掉尾巴，保留原融合序）。
+   * 实测（LME90 90 题 / 997 候选，见 docs/optimization-results.md §19）：quantile 0.5 与
+   * margin 8 在「保留 37% 候选」处 gold 误杀 12.8%/10.5%，显著低于绝对 floor −7 的 15.8%；
+   * 非 floor 规则下 minScore 不参与判定（避免两把尺子互相盖）。
+   */
+  filterRule: "floor" | "margin" | "quantile";
+  /** filterRule="margin"：保留题内 top1 − margin 以内的行（缺省 8，provider 原生刻度；负数非法→回落缺省）。 */
+  filterMarginTop: number;
+  /** filterRule="quantile"：保留题内分数前 keep 比例的行（缺省 0.5，clamp (0,1]）。 */
+  filterKeepRatio: number;
+  /**
    * #137-F（2026-10-28）：精排与检索融合相关度的混合比例 α∈[0,1]。
    * 0 = 旧行为（纯精排顺序，逻辑逐位不变）；1 = 纯检索顺序（精排只剩 floor 语义）；
    * 0<α<1 = 精排只能在「检索也看好」的候选间翻盘。设计动机见 recall/rerank/blend.ts。
@@ -2345,6 +2364,21 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           candidates: Math.max(1, Math.floor(recallSignalBoost(rr, "candidates", 12, 100))),
           // #135 R4：非法 mode 回落 "rerank"（逐位现状），静默回落
           mode: str(rr, "mode") === "filter" ? ("filter" as const) : ("rerank" as const),
+          // #144：filter 的判定尺子（缺省 floor = 逐位现状）；非法值静默回落 floor
+          filterRule: (() => {
+            const raw = str(rr, "filterRule");
+            return raw === "margin" || raw === "quantile" ? raw : ("floor" as const);
+          })(),
+          // margin 必须为正（0/负 = 与 floor 同族但无意义）；缺省 8
+          filterMarginTop: (() => {
+            const v = num(rr, "filterMarginTop");
+            return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 8;
+          })(),
+          // 分位 clamp (0,1]；缺省 0.5
+          filterKeepRatio: (() => {
+            const v = num(rr, "filterKeepRatio");
+            return typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.5;
+          })(),
           // #137-F：混合比例 clamp [0,1]；缺省 0 = 逐位现状
           blend: Math.min(1, Math.max(0, num(rr, "blend") ?? 0)),
           minScore: num(rr, "minScore") ?? -2.0,
