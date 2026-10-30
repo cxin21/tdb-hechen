@@ -15,13 +15,20 @@
  *   ③ 事实级效期在 metadata_json 里可读（fact_key / cardinality / fact_of / fact_index）；
  *   ④ 读侧零新机制：soft + presentIntent 才硬丢旧值，问历史时旧值仍可召回。
  *
+ * #166 判据（值级泄漏，与票面验收①对齐）：
+ *   ⑤ 问当下时的**注入文本**不含被取代旧值（柏林）——行级失效之外，文本级也必须干净；
+ *   ⑥ 同 turn 存活兄弟（摄影）仍以事实短语注入（不是整段丢证据）；
+ *   ⑦ 问历史时的注入文本仍含旧值（历史可回溯，遮蔽只发生在 present-intent）。
+ *
  * 运行：cd MemoryCore && node --import tsx scripts/audit/r146-walkthrough.mjs
  */
 import fs from "node:fs";
 import path from "node:path";
 import { writeMemory } from "../../src/core/record/l1-writer.ts";
+import { factValueOfMeta } from "../../src/core/record/fact-row.ts";
 import { VectorStore } from "../../src/core/store/sqlite.ts";
 import { selectByValidity } from "../../src/core/recall/validity-policy.ts";
+import { searchHybrid } from "../../src/core/hooks/auto-recall.ts";
 
 const OUT = path.join(".eval-data", "bench", "r146-walkthrough");
 const BASE = path.join(OUT, "base");
@@ -35,7 +42,9 @@ const POLICY = {
 };
 const embedding = { embed: async () => new Float32Array([1, 0, 0]), getDimensions: () => 3, isReady: () => true };
 
-const store = new VectorStore(path.join(OUT, "vectors.db"), 0);
+// dims=3 且写入时带 embedding：走查要跑**真实召回路径**（FTS + 向量 + RRF），
+// 不是手写模拟注入。真实 provider 下 dims 是 768+，这里用 3 维 stub 只为可复现。
+const store = new VectorStore(path.join(OUT, "vectors.db"), 3);
 const init = store.init();
 if (store.isDegraded()) {
   console.error("临时库降级：" + init.reason);
@@ -132,6 +141,8 @@ const rows = store
       subject: md.subject ?? "",
       predicate: md.predicate ?? "",
       fact_phrase: md.fact_phrase ?? "",
+      // #166：值级遮蔽的校验依据（读取口径与读侧同源，见 fact-row.ts factValueOfMeta）
+      fact_value: factValueOfMeta(md) ?? "",
     };
   })
   .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -157,8 +168,34 @@ const present = selectByValidity(rows, { now: NOW, mode: "soft", presentIntent: 
 const history = selectByValidity(rows, { now: NOW, mode: "soft", presentIntent: false, related });
 const ids = (xs) => xs.map((x) => x.id).join(", ") || "—";
 console.log("\n## 3. 读侧 selectByValidity（now=" + NOW.toISOString() + "）\n");
-console.log("- soft + 问当下（presentIntent=true）: kept=[" + ids(present.kept) + "] dropped=[" + ids(present.dropped) + "]");
+console.log("- shell 口径（related=同 fact_key，仅用于说明区间判定）: present dropped=[" + ids(present.dropped) + "]");
 console.log("- soft + 问历史（presentIntent=false）: kept=[" + ids(history.kept) + "] dropped=[" + ids(history.dropped) + "] demoted=[" + ids(history.demoted) + "]");
+
+// ── 3b. 注入文本（#166 值级泄漏）：走**真实召回路径** ───────────────────────
+// 为什么必须看**文本**而不是只看行：v2 的行 content 是父 turn 原文，单值事实被判过期后，
+// 同 turn 的多值兄弟仍 active，折叠回 turn 时会把含旧值的原文重新注入——行级判据全 PASS
+// 而上下文里照样出现旧值（本票的原始缺陷）。
+//
+// 这里刻意不再手写"模拟注入"（旧版脚本用 related=同 fact_key + 手工 collapse），因为那会与
+// 生产漂移两次：①生产的 related 是 contentTokenOverlap，不是 fact_key；②污染源要按池内
+// expired 判定。改为直接调 searchHybrid（与钩子同一条路径），位置形参按 signature 传：
+// logger(7) 之后的 rest[1..] 里 rest[7]=rerankWeights、rest[9]=excludeInvalidated、
+// rest[10]=validityNow。全 0 之外的因子权重固定为 relevance=1，排除时间/显著度干扰。
+const RELEVANCE_ONLY = { relevance: 1, timeProx: 0, significance: 0, coreRef: 0 };
+async function recall(userText) {
+  const rest = new Array(15).fill(undefined);
+  rest[7] = RELEVANCE_ONLY;
+  rest[9] = "soft";
+  rest[10] = NOW;
+  return searchHybrid(userText, "", 10, 0.1, store, embedding, undefined, ...rest.slice(1));
+}
+const presentRecall = await recall("我现在住在哪里？");
+const historyRecall = await recall("我2026年3月的时候住在哪里？");
+const presentInject = { lines: presentRecall.lines, text: presentRecall.lines.join("\n") };
+const historyInject = { lines: historyRecall.lines, text: historyRecall.lines.join("\n") };
+console.log("\n## 3b. 注入文本（present-intent 值级遮蔽，#166）\n");
+console.log("- present 召回 " + presentInject.lines.length + " 行：\n" + (presentInject.lines.map((l) => "    " + l).join("\n") || "    —"));
+console.log("- history 召回 " + historyInject.lines.length + " 行：\n" + (historyInject.lines.map((l) => "    " + l).join("\n") || "    —"));
 
 console.log("\n## 4. 结论");
 // v2 口径：行 content = 父 turn 原文，事实文本在 metadata.fact_phrase → 按 fact_phrase 定位事实行。
@@ -178,8 +215,15 @@ ok.push(["同 turn 多值（摄影）不被连坐", Boolean(hobby1 && !hobby1.va
 ok.push(["后续 additive（吉他）仍有效", Boolean(hobby2 && !hobby2.valid_end)]);
 ok.push(["事实级效期在 metadata 可读", rows.every((r) => r.fact_key && r.cardinality && r.fact_of)]);
 ok.push(["旧行 valid_end = 新值 valid_start（区间首尾相接）", Boolean(oldCity && newCity && oldCity.valid_end === newCity.valid_start)]);
-ok.push(["问当下时旧值硬丢", present.dropped.some((r) => r.id === oldCity?.id)]);
-ok.push(["问历史时旧值可召回", history.kept.some((r) => r.id === oldCity?.id)]);
+ok.push(["问当下时旧值已过期（valid_end <= now）", Boolean(oldCity && oldCity.valid_end && oldCity.valid_end <= NOW.toISOString())]);
+ok.push(["问历史时旧值可召回", historyInject.text.includes("柏林")]);
+// #166：验收①——行级失效之外，注入**文本**必须干净
+ok.push(["问当下注入文本不含被取代旧值（柏林）", !presentInject.text.includes("柏林")]);
+ok.push(["问当下注入不含含旧值的父 turn 原文", !presentInject.text.includes("我住在柏林")]);
+ok.push(["同 turn 存活兄弟（摄影）仍注入（事实短语口径）", presentInject.text.includes("摄影")]);
+ok.push(["问当下注入以事实短语呈现（未整段丢证据）", presentInject.text.includes("用户最近迷上摄影")]);
+ok.push(["问历史注入文本仍含旧值（可回溯，遮蔽只在 present）", historyInject.text.includes("柏林")]);
+ok.push(["问当下注入仍含新值（慕尼黑）", presentInject.text.includes("慕尼黑")]);
 for (const [name, pass] of ok) console.log("- [" + (pass ? "PASS" : "FAIL") + "] " + name);
 store.close?.();
 process.exit(ok.every(([, p]) => p) ? 0 : 1);

@@ -125,6 +125,11 @@ if (flag("help") || argv.length === 0) {
                                  单值行写前按 fact_key 失效同键旧行、多值行不失效（事实级失效，
                                  替代整行 supersede）；与 --fact-dual-write/--fact-channel/
                                  --write-supersede 互斥；--store 复用库不可用（须重灌）
+  --prune-fact-sibling-index     #166 验收④ 诊断档（只配 --fact-rows）：灌库后把 fact_index>0 的兄弟事实行
+                                 移出 **FTS 索引面**（只删 l1_fts，l1_records 与 l1_vec 全量保留——连向量一起删会让
+                                 候选变稀、读数无法归因到 IDF），效期/失效判定不变。
+                                 用于隔离「同一 turn 文本在语料里重复多次 → BM25 IDF 稀释」——索引文档数
+                                 从事实行数回到 turn 数，其余（写入形状、读侧折叠、精排）逐位不变。
   --fact-channel                 #137 事实键平行通道试验档（隐含 --fact-extract；事实短语键另写 l1_fact_vec + 沙箱 yaml recall.factChannel）
   --fact-channel-read-only       只开读侧（沙箱 recall.factChannel），不写通道向量——在已灌库上迭代融合参数的零外呼档
   --fact-channel-weight N        #137 事实通道融合权重（缺省 0.6；只进沙箱 yaml，不改写侧）
@@ -161,7 +166,7 @@ const KNOWN_FLAGS = new Set([
   "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-rows", "fact-separator", "facts-only",
   "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
   "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
-  "out", "pace", "present-temporal", "prod-config", "prod-data", "quiet",
+  "out", "pace", "present-temporal", "prod-config", "prod-data", "prune-fact-sibling-index", "quiet",
   "recall-ks", "recall-max-results", "dedupe-hits-by-turn", "expand-parent-turn", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
   "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
   // #144：filter 的题内相对尺子（floor 在题间量纲漂移下不可校准，见 docs/optimization-results.md §19）
@@ -292,6 +297,12 @@ async function main() {
   const factRows = flag("fact-rows");
   if (factRows && (writeSupersede || factDualWrite || factChannel || factChannelReadOnly)) {
     console.error("[bench:error] --fact-rows 与 --write-supersede/--fact-dual-write/--fact-channel/--fact-channel-read-only 互斥（事实行档自带事实级失效与事实载荷，混开无法归因）");
+    process.exit(2);
+  }
+  // #166 验收④：IDF 稀释隔离档（诊断）——只对事实行有意义（整行档没有兄弟行可去重）。
+  const pruneFactSiblingIndex = flag("prune-fact-sibling-index");
+  if (pruneFactSiblingIndex && !factRows) {
+    console.error("[bench:error] --prune-fact-sibling-index 只能配 --fact-rows（整行档没有同 turn 兄弟行，去重无意义）");
     process.exit(2);
   }
   const factExtract = flag("fact-extract") || factDualWrite || writeSupersede || factChannel || factRows;
@@ -819,6 +830,44 @@ async function main() {
           `${ingestStats.factRowInvalidateUnsupported ? "（store 不支持事实级失效）" : ""}`,
       );
     }
+    // ── #166 验收④：IDF 稀释隔离档（诊断，不参与生产口径）──
+    // 只删每个 turn 的 fact_index>0 行的 **fts5 索引**，vec0 与主表 l1_records 全量保留：
+    //  - 效期/失效判定、读侧折叠、精排输入、向量候选集全部不变；
+    //  - 变的只有「同一 turn 文本在 FTS 语料里出现几次」= BM25 df / IDF 的唯一变量
+    //    （spec 要隔离的就是这条；连 vec0 一起删会让向量候选变稀，读数无法归因到 IDF）。
+    // 判读：v2 残留掉分若主要来自 IDF 稀释，本档应把 turnCov 拉回整行档附近；若仍低，说明还有槽位/排序因素。
+    if (pruneFactSiblingIndex) {
+      const db = store?.db;
+      if (!db || typeof db.prepare !== "function") {
+        console.error("[bench:error] --prune-fact-sibling-index 需要 sqlite store（store.db 不可用）——本档只对 sqlite 后端起效");
+        process.exit(2);
+      }
+      const all = db.prepare("SELECT record_id, metadata_json FROM l1_records").all();
+      const delFts = db.prepare("DELETE FROM l1_fts WHERE record_id = ?");
+      let pruned = 0;
+      let kept = 0;
+      db.exec("BEGIN");
+      try {
+        for (const row of all) {
+          let md;
+          try { md = JSON.parse(row.metadata_json ?? "{}"); } catch { md = {}; }
+          const fi = typeof md?.fact_index === "number" ? md.fact_index : undefined;
+          if (fi !== undefined && fi > 0) {
+            delFts.run(row.record_id);
+            pruned++;
+          } else {
+            kept++;
+          }
+        }
+        db.exec("COMMIT");
+      } catch (err) {
+        try { db.exec("ROLLBACK"); } catch { /* ignore */ }
+        throw err;
+      }
+      ingestStats.prunedFactSiblingIndex = pruned;
+      ingestStats.indexedRowsAfterPrune = kept;
+      log(`[bench] #166 IDF 隔离档：FTS 面删兄弟行 ${pruned}（仅 fact_index>0），保留 ${kept}；主表 l1_records 与 l1_vec 全量保留（效期/向量候选不变）`);
+    }
   } else {
     // 复用模式：仍需 content→id 映射（stub，按召回内容反查不可行 → 直接按规则重建索引）
     for (const [key, g] of groups) {
@@ -1041,6 +1090,8 @@ async function main() {
       ]);
     } catch (e) {
       r = { hits: [], block: "", latencyMs: performance.now() - t0, strategy: "error", error: String(e?.message ?? e) };
+      // 召回整段失败不中止评测，但必须留痕：报告 rows[].error 与日志双落（否则只剩 strategy=error，事后无从归因）。
+      log("[bench:warn] 召回失败 " + c.caseId + ": " + r.error);
     }
     if (paceMs > 0) await new Promise((res) => setTimeout(res, paceMs));
     let dupHits = 0;
@@ -1093,6 +1144,7 @@ async function main() {
       gold: c.goldAnswer,
       latencyMs: Math.round(r.latencyMs),
       strategy: r.strategy,
+      ...(r.error ? { error: r.error } : {}),
       layered: r.layered,
       conclusionCount: r.conclusionCount,
       experienceCount: r.experienceCount,

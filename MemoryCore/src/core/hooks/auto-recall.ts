@@ -11,7 +11,7 @@
  */
 
 import type { MemoryTdaiConfig } from "../../config.js";
-import { foldClusterAware } from "./recall-fold-cluster.js";
+import { foldClusterAwareWithMeta } from "./recall-fold-cluster.js";
 import { stripMemoryLineMeta } from "./memory-line-meta.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
@@ -48,6 +48,7 @@ import { emotionSalienceOf, buildRankContext,
   sensitivityMultiplierOf,
   DEFAULT_RANK_SIGNALS,
   detectPresentTemporalIntent,
+  detectHistoryTemporalIntent,
   detectSceneHit,
   sceneSignalOf,
   structuralSignalOf,
@@ -59,12 +60,15 @@ import { emotionSalienceOf, buildRankContext,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { collapseFactRowsByTurn } from "../recall/fact-turn.js";
+import { factValueOfMeta, parentTurnIdOf } from "../record/fact-row.js";
 import { anchorRerankOrder } from "../recall/rerank/anchor.js";
 import {
   SOFT_VALIDITY_PENALTY,
   excludeInvalidatedFor,
   selectByValidity,
   shouldHardDropValidity,
+  validityEnabled,
+  validityStateOf,
   type ExcludeInvalidated,
   type ValidityMode,
 } from "../recall/validity-policy.js";
@@ -319,7 +323,8 @@ export interface R7LayeredContext {
 // 换库复用 = 跨库脏读）；TTL 仅作漂移防御（默认 5min，0=关）；上界 200 session 防膨胀。
 interface SessionReuseEntry {
   query: string;
-  result: { lines: string[]; timing: SearchTiming; scores?: number[] };
+  /** 复用缓存存的是召回结果的完整载荷（含 #166 起与 lines 平行的 metas——遮蔽行的 turn 归属靠它）。 */
+  result: SearchResult;
   at: number;
   vectorStore?: IMemoryStore;
   embeddingService?: EmbeddingService;
@@ -351,6 +356,12 @@ export interface RecalledMemory {
   content: string;
   score: number;
   type: string;
+  /**
+   * 该行归属的父 turn id（= 落库 recordId 去掉事实行后缀 `#f<N>`）。
+   * #166：present-intent 值级遮蔽把注入文本换成事实短语后，「文本 → turn」反查必然失配
+   * （短语不是任何 turn 的原文），度量/观测要能精确落到父 turn，就不能再靠内容反查。
+   */
+  turnId?: string;
 }
 
 /**
@@ -713,7 +724,7 @@ export function appendRerankScoreDump(dumpPath: string | undefined, rec: RerankS
  *    gate（kept/dropped/topScore）保留作 journal 观测。 */
 async function applyRecallRerank(
   query: string,
-  searchResult: { lines: string[]; scores?: number[]; metas?: { recordId?: string; evidenceIds?: string[]; sessionId?: string }[]; lineSessions?: (string | undefined)[]; gates?: RecallJournalGates },
+  searchResult: { lines: string[]; scores?: number[]; metas?: ({ recordId?: string; evidenceIds?: string[]; sessionId?: string } | undefined)[]; lineSessions?: (string | undefined)[]; gates?: RecallJournalGates },
   wiring: RerankWiring,
   cap: number,
   logger?: Logger,
@@ -1613,7 +1624,7 @@ export async function performLayeredRecall(params: {
       ? JSON.stringify([params.isolationFilter.teamId ?? "", params.isolationFilter.userId ?? "", params.isolationFilter.agentId ?? "", params.sessionKey])
       : params.sessionKey;
     // P0-2 journal 观测：gates 并入 searchResult 载荷类型（与 SearchResult["gates"] 同形）
-    let searchResult: { lines: string[]; lineSessions?: (string | undefined)[]; timing: SearchTiming; scores?: number[]; gates?: SearchResult["gates"] } | undefined;
+    let searchResult: SearchResult | undefined;
     if (sessionReuseTtlMs > 0 && !params.validityNow && params.sessionKey) {
       const entry = sessionReuseCache.get(reuseCacheKey);
       if (entry && entry.query === userText && entry.vectorStore === vectorStore && entry.embeddingService === embeddingService &&
@@ -1866,15 +1877,26 @@ export async function performLayeredRecall(params: {
           ? [...r7ExpScores, ...r7ConclusionLinesEff.map(() => 0)]
           : [...r7ConclusionLinesEff.map(() => 0), ...r7ExpScores])
       : searchResult.scores;
+    // #166：经验层的 turn 归属与 scores 同规则切片/前插（结论行不是召回命中，无 turn）。
+    // 遮蔽后的行文本是事实短语，反查不出父 turn；recordId 的 `#f<N>` 后缀去掉即父 turn。
+    const r7ExpTurnIds = (searchResult.metas ?? [])
+      .slice(0, r7ExperienceLineCount)
+      .map((m) => (m?.recordId ? parentTurnIdOf(m.recordId) : undefined));
+    const r7MetricTurnIds = r7ConclusionLinesEff.length > 0
+      ? (r7TurnFirst
+          ? [...r7ExpTurnIds, ...r7ConclusionLinesEff.map(() => undefined)]
+          : [...r7ConclusionLinesEff.map(() => undefined), ...r7ExpTurnIds])
+      : r7ExpTurnIds;
     recalledL1Memories = memoryLines.map((line, i) => {
       const match = line.match(MEMORY_LINE_RE);
+      const turnId = r7MetricTurnIds?.[i];
       if (match) {
         const tag = match[1];
         const content = match[2].trim();
         const typePart = tag.includes("|") ? tag.split("|")[0] : tag;
-        return { content, score: r7MetricScores?.[i] ?? 0, type: typePart };
+        return { content, score: r7MetricScores?.[i] ?? 0, type: typePart, ...(turnId ? { turnId } : {}) };
       }
-      return { content: line, score: r7MetricScores?.[i] ?? 0, type: "unknown" };
+      return { content: line, score: r7MetricScores?.[i] ?? 0, type: "unknown", ...(turnId ? { turnId } : {}) };
     });
     // ── DS-RECALL-MERGE-001：R7 meta 定格 + 注入块组装（自钩子原位平移，逐位一致）──
     // R71-C：counts 改注入块实测派生——fts-only 帽 / R7 预算 / 动态 topK 从尾部裁剪时，
@@ -2400,8 +2422,12 @@ export interface SearchTiming {
 interface SearchResult {
   lines: string[];
   timing: SearchTiming;
-  /** 折叠元数据（与 lines 平行）：持续态吸收所需 recordId/evidenceIds/sessionId。 */
-  metas?: { recordId?: string; evidenceIds?: string[]; sessionId?: string }[];
+  /**
+   * 与 lines 平行的行元数据：持续态吸收所需 recordId/evidenceIds/sessionId；#166 起也是
+   * 「行 → 父 turn」的唯一可靠来源（遮蔽行文本已换成事实短语，内容反查必失配）。
+   * 折叠路径缺某行 meta 时对应位置为 undefined（如持续态吸收的落选兄弟）。
+   */
+  metas?: ({ recordId?: string; evidenceIds?: string[]; sessionId?: string } | undefined)[];
   /** #162：行级来源会话 id（与 lines 平行；keyword/embedding 路与折叠开启时缺省 = 无来源信息）。 */
   lineSessions?: (string | undefined)[];
   /** Per-line similarity scores (parallel to `lines`). Only populated on TCVDB nativeHybridSearch path. */
@@ -2634,11 +2660,21 @@ async function searchMemories(
       const lineSessionsRaw = fmts.map((f) => f.sessionId);
       const scores = results.map((r) => r.score);
       // F-CLUSTER v2：折叠点=搜索路返回前（budget 之前去冗余，更多信息存活）；cfg.recall.foldClusterEnabled 缺省关
-      const foldedNative = cfg?.recall?.foldClusterEnabled === true;
-      const lines = foldedNative
-        ? foldClusterAware(linesRaw, linesMeta)
-        : linesRaw;
-      return { lines, ...(foldedNative ? {} : { lineSessions: lineSessionsRaw }), scores, timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length }, ...(nativeGateStat ? { gates: { nativeMinRRF: nativeGateStat } } : {}) };
+      // #166：折叠改走 meta 版，metas 与折叠后行继续平行——遮蔽行（注入文本已换成事实短语）
+      // 只能靠 recordId 回指父 turn，折叠丢弃平行关系会把这类行判成「无来源」。
+      const foldedNative = cfg?.recall?.foldClusterEnabled === true
+        ? foldClusterAwareWithMeta(linesRaw, linesMeta)
+        : undefined;
+      const lines = foldedNative ? foldedNative.lines : linesRaw;
+      return {
+        lines,
+        // #162：行级来源会话（同会话免疫数据源）；折叠开启时行与来源不再平行 → 不透传（降级=旧口径）
+        ...(foldedNative ? {} : { lineSessions: lineSessionsRaw }),
+        metas: foldedNative ? foldedNative.metas : linesMeta,
+        scores,
+        timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length },
+        ...(nativeGateStat ? { gates: { nativeMinRRF: nativeGateStat } } : {}),
+      };
     }
 
     // Fallback: run keyword + embedding in parallel, merge with client-side RRF (SQLite path)
@@ -2672,19 +2708,24 @@ async function searchMemories(
     // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
     // 与 hybrid.scores/metas 全部丢弃——journal 永远无 gates.importancePenalty 的根因；
     // 精排（applyRecallRerank 551-552）已支持 scores/metas 平行重映射，透传即兼容。
-    // 折叠开启时 metas 与折叠后行不再平行 → 不透传（防下游错位）。
-    const fallbackFolded = cfg?.recall?.foldClusterEnabled === true;
+    // #166：折叠改走 meta 版（foldClusterAwareWithMeta），metas 与折叠后行继续平行——遮蔽行
+    // 的注入文本是事实短语、内容反查不出父 turn，只能靠 recordId 回指。
+    const fallbackFolded = cfg?.recall?.foldClusterEnabled === true
+      ? foldClusterAwareWithMeta(hybrid.lines, hybrid.metas)
+      : undefined;
     // #162：metas.sessionId → 行级来源会话（与 lines 平行）；折叠开启时不再平行 → 不透传（降级=旧口径）
-    const fallbackLineSessions = fallbackFolded ? undefined : hybrid.metas?.map((m) => m.sessionId);
+    const fallbackLineSessions = fallbackFolded ? undefined : hybrid.metas?.map((m) => m?.sessionId);
+    const fallbackMetas = fallbackFolded ? fallbackFolded.metas : hybrid.metas;
     return {
-      lines: fallbackFolded ? foldClusterAware(hybrid.lines, hybrid.metas) : hybrid.lines,
+      lines: fallbackFolded ? fallbackFolded.lines : hybrid.lines,
       ...(fallbackLineSessions ? { lineSessions: fallbackLineSessions } : {}),
       // #63：expandMs 在 searchMemories 层测得（灵魂注入性能轮 2026-10-19 起口径=热路实际
       // 等待 waitMs 快照），补进 hybrid.timing
       timing: { ...hybrid.timing, expandMs: fallbackExpandWaitMs },
       ...(hybrid.gates ? { gates: hybrid.gates } : {}),
       ...(hybrid.scores ? { scores: hybrid.scores } : {}),
-      ...(!fallbackFolded && hybrid.metas ? { metas: hybrid.metas } : {}),
+      // #166：折叠也保持 metas 平行（遮蔽行只能靠 recordId 回指父 turn）
+      ...(fallbackMetas ? { metas: fallbackMetas } : {}),
     };
   } catch (err) {
     logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
@@ -3604,12 +3645,40 @@ export async function searchHybrid(
   // 后继续参与组合精排（效期作为融合特征，保留相关度序，不做池级块重排）；
   // 仅当查询显式问"现在/最新"且存在**内容相关**的更新行时才硬丢（related 判定见
   // contentTokenOverlap——任意新记忆不足以成为"取代者"）。
+  // #166：present-intent 同时驱动两件事——过期旧行硬丢，以及（见下方折叠块）该 turn 的
+  // 注入文本降级为存活事实短语，否则同 turn 兄弟行会把旧值所在的原文带回注入。
+  const presentIntent = detectPresentTemporalIntent(userText);
+  // #166：值级遮蔽的触发比 presentIntent 更窄——**混合意图**不遮蔽（既问现在又问过去，如
+  // 「How many do I lead now? … when I just started」：答案本身横跨旧值与新值，遮蔽会把含旧值的
+  // gold turn 整条剔出注入，LME 深池实测该题 turnCov 0.5→0）。口径与 ADR-0015 决定 7 的
+  // 「问历史逐位不变」一致：只有纯当下问句才遮蔽。presentIntent 仍原样喂 #136 的过期硬丢。
+  const valueMaskIntent = presentIntent && !detectHistoryTemporalIntent(userText);
+  // #166：valueMaskIntent 下池内的**过期事实行**（值级泄漏的「污染源」）；非则恒空。
+  // 口径为什么对 **池内** 取 expired 而不是取 sel.dropped：
+  //   ① 默认配置是 hard（excludeInvalidated=true）——过期行在截断后的 applyExclusion 才被
+  //      过滤，折叠发生在其前，兄弟行的父原文照样回流，只覆盖 soft 等于默认档不修；
+  //   ② soft 的 related 判定是 contentTokenOverlap，属性更新前后两句原文常无重叠
+  //      （「我住在柏林，最近迷上摄影」 vs 「我上个月搬到慕尼黑了」），过期行常只被**降权
+  //      保留**（demoted）而不硬丢，只看 dropped 会漏。
+  // 故污染源 = 与模式无关的「池内 expired 行」；future 行不算（那是还没生效，不是旧值）。
+  let supersededRows: [string, MergedPoolValue][] = [];
+  if (validityEnabled(excludeInvalidated) && valueMaskIntent) {
+    const staleNow = validityNow ?? new Date();
+    // 注意刻度：池条目是 [id, value] 元组，validityStateOf 接受的却是**单个条目**——
+    // accessors 必须按 value 写（写成 entry[1] 会重复解元组，拿到 undefined 后在 parseTime 里
+    // 静默按 active 处理，遮蔽整条失效）。
+    const valueAccessors = {
+      validStart: (v: MergedPoolValue) => v.validStart,
+      validEnd: (v: MergedPoolValue) => v.validEnd,
+    };
+    supersededRows = sorted.filter(([, value]) => validityStateOf(value, staleNow, valueAccessors) === "expired");
+  }
   if (excludeInvalidated === "soft") {
     const now = validityNow ?? new Date();
     const sel = selectByValidity(sorted, {
       now,
       mode: "soft",
-      presentIntent: detectPresentTemporalIntent(userText),
+      presentIntent,
       accessors: {
         validStart: (entry) => entry[1].validStart,
         validEnd: (entry) => entry[1].validEnd,
@@ -3675,17 +3744,40 @@ export async function searchHybrid(
   // 78.4→68.0、偏好桶 93.3→55.6），且片段化丢语境。这里在截断前按 fact_of 折叠，保留每组
   // 最高分的那条——它的 content 就是父 turn 原文（写侧保证），与整行基线逐位同分。
   // 无 fact_of 的普通记忆原样保留（缺省路径零行为变化）。
+  // #166（值级泄漏）：行级失效对，文本级不对——单值事实被判过期后，同 turn 的多值兄弟行
+  // 仍 active，折叠回 turn 时又把父原文（含旧值）带回注入。这里把池内过期行（不论硬丢/降权）当污染源：
+  // 该 turn 的存活行改用**自己的事实短语**注入（metadata.fact_phrase），短语缺失或仍含
+  // 任何被取代旧值的行直接剔出注入——宁可少给一条证据，绝不把旧值塞回上下文。
+  // 非 present-intent 时 superseded 为空 → 逐位保持 v2 行为（历史回溯仍可看到旧值）。
   if (sorted.some(([, v]) => v.formatable.factOf)) {
     const collapsed = collapseFactRowsByTurn(
       sorted,
       ([, v]) => v.formatable.factOf,
       ([, v]) => v.relevance ?? v.rrfScore,
+      {
+        superseded: supersededRows,
+        phraseOf: ([, v]) => v.formatable.factPhrase,
+        valueOf: ([, v]) => v.formatable.factValue,
+      },
     );
-    sorted = collapsed.items;
+    sorted = collapsed.displayContent.size > 0
+      ? collapsed.items.map((entry) => {
+          const safe = collapsed.displayContent.get(entry);
+          return safe
+            ? ([entry[0], { ...entry[1], formatable: { ...entry[1].formatable, displayContent: safe } }] as [string, MergedPoolValue])
+            : entry;
+        })
+      : collapsed.items;
     if (collapsed.stats.collapsed > 0) {
       logger?.debug?.(
         `${TAG} [W2b-fact-rows] collapsed ${collapsed.stats.collapsed} fact-row hit(s) into parent turns` +
         ` (${collapsed.stats.before}→${collapsed.stats.after})`,
+      );
+    }
+    if (collapsed.stats.maskedRows > 0 || collapsed.stats.droppedRows > 0) {
+      logger?.debug?.(
+        `${TAG} [W2b-fact-rows] present-intent value masking: ${collapsed.stats.maskedRows} row(s) re-rendered as fact phrase,` +
+        ` ${collapsed.stats.droppedRows} turn(s) left with no injectable row (stale values=${collapsed.stats.staleValues})`,
       );
     }
   }
@@ -3830,6 +3922,17 @@ interface FormatableMemory {
   factOf?: string;
   /** #146：本行承载的单条事实陈述（metadata.fact_phrase；行 content 存父 turn 原文）。 */
   factPhrase?: string;
+  /**
+   * #166：本行承载的事实值（metadata.fact_value；旧库行回退 factTriples[0].value）。
+   * 只在 present-intent 值级遮蔽时用来校验「替换文本是否仍含被取代的旧值」。
+   */
+  factValue?: string;
+  /**
+   * #166：注入文本覆盖（present-intent 值级遮蔽后的安全文本）。
+   * 父 turn 原文含已被取代的旧值时，读侧把注入降级为该行自己的事实短语；
+   * 缺省 = 用 content（零行为变化）。
+   */
+  displayContent?: string;
 }
 
 // 审计 B4：导出以便独立验证 soul 标注与 metric 正则兼容性（纯函数、无副作用）
@@ -3843,8 +3946,9 @@ export function formatMemoryLine(m: FormatableMemory): string {
   // 1. Type tag + optional scene name
   const tag = m.scene_name ? `${m.type}|${m.scene_name}` : m.type;
 
-  // 2. Content (core)
-  let line = `- [${tag}] ${m.content}`;
+  // 2. Content (core)。#166：present-intent 值级遮蔽时用 displayContent（事实短语），
+  //    避免父 turn 原文把已被取代的旧值带回注入；缺省逐字节不变。
+  let line = `- [${tag}] ${m.displayContent ?? m.content}`;
 
   // 3. Time info — prefer activity_start/end range; fall back to timestamp as point-in-time
   const start = formatTimestamp(m.activity_start_time);
@@ -4049,6 +4153,7 @@ export function recordToFormatable(record: MemoryRecord): FormatableMemory {
       const v = sigMeta.fact_phrase;
       return typeof v === "string" && v.trim() !== "" ? v : undefined;
     })(),
+    factValue: factValueOfMeta(sigMeta),
     // F-CLUSTER 折叠接线（2026-09-29）：FTS keyword 通道补折叠元数据——与
     // vectorResultToFormatable(:2363) 对齐；缺此二字段 foldByDurative 引用图建不起来。
     recordId: record.id,
@@ -4077,6 +4182,8 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
   // #146：事实行聚合信息（读侧折叠回 turn 的依据）
   let factOf: string | undefined;
   let factPhrase: string | undefined;
+  // #166：本行事实值（值级遮蔽的校验依据）
+  let factValue: string | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -4099,6 +4206,7 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
       // #146：事实行聚合（fact_of）与单条事实陈述（fact_phrase）；非法/空保持 undefined
       if (typeof meta?.fact_of === "string" && meta.fact_of.trim() !== "") factOf = meta.fact_of;
       if (typeof meta?.fact_phrase === "string" && meta.fact_phrase.trim() !== "") factPhrase = meta.fact_phrase;
+      factValue = factValueOfMeta(meta);
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -4131,6 +4239,7 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
     // #146：事实行聚合信息（缺省 undefined = 普通整行记忆，逐位现状）
     factOf,
     factPhrase,
+    factValue,
   };
 }
 
@@ -4149,6 +4258,8 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
   // #146：事实行聚合信息（FTS 通道同样要让读侧折叠回 turn）
   let factOf: string | undefined;
   let factPhrase: string | undefined;
+  // #166：本行事实值（FTS 路与向量路成对——丢一个=遮蔽单通道）
+  let factValue: string | undefined;
   if (r.metadata_json && r.metadata_json !== "{}") {
     try {
       const meta = typeof r.metadata_json === "string" ? JSON.parse(r.metadata_json) : r.metadata_json;
@@ -4165,6 +4276,7 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
       if (meta?.evolution != null) evo = meta.evolution;
       if (typeof meta?.fact_of === "string" && meta.fact_of.trim() !== "") factOf = meta.fact_of;
       if (typeof meta?.fact_phrase === "string" && meta.fact_phrase.trim() !== "") factPhrase = meta.fact_phrase;
+      factValue = factValueOfMeta(meta);
     } catch { /* ignore parse errors — treat as no metadata */ }
   }
   return {
@@ -4195,5 +4307,6 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
     // #146：事实行聚合信息（缺省 undefined = 普通整行记忆，逐位现状）
     factOf,
     factPhrase,
+    factValue,
   };
 }

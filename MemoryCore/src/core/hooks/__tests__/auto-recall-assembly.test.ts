@@ -436,3 +436,59 @@ describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（
     }
   });
 });
+// ═══════════════ #166 度量归属：RecalledMemory.turnId（遮蔽后 content 反查不出父 turn） ═══════════════
+// 现场：present-intent 值级遮蔽把注入文本换成事实短语，bench 的「文本 → turn」反查必定失配
+// （实测 3 题 knowledge-update 的 turnCov 0.5→0，纯度量假摔）。故召回层要显式透传父 turn：
+// recordId 去掉事实行后缀 `#f<N>` 即父 turn，与 lines/scores 同一套切片/前插规则。
+describe("#166 · RecalledMemory.turnId（父 turn 归属，遮蔽不改变度量口径）", () => {
+  const hit = (id: string, score: number, content: string): L1SearchResult => ({
+    record_id: id,
+    content,
+    type: "episodic",
+    priority: 0,
+    scene_name: "",
+    score,
+    timestamp_str: "",
+    timestamp_start: "",
+    timestamp_end: "",
+    version: 1,
+    session_key: "sk",
+    session_id: "s",
+    team_id: "t",
+    task_id: "",
+    user_id: "u",
+    agent_id: "a",
+    metadata_json: "",
+  } as L1SearchResult);
+
+  it("事实行 recordId 的 #f<N> 后缀归到父 turn；普通行原样", async () => {
+    const rows = [
+      hit("lme-q1-s1-t1#f2", 0.9, "索引归属探针甲：分片键选择结合热点访问路径的冲突概率评估与容量推演记录已归档备查"),
+      hit("lme-q1-s2-t1", 0.8, "索引归属探针乙：缓存策略压测报告定稿，命中率衰减拐点与失效风暴开关完成评审签发"),
+    ];
+    const vectorStore = {
+      isFtsAvailable: () => false,
+      getCapabilities: () => ({ nativeHybridSearch: false }),
+      searchL1Vector: async () => rows,
+    } as unknown as IMemoryStore;
+    const embeddingService = { embed: async () => new Float32Array(4) } as unknown as EmbeddingService;
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "r7fix-turnid-profile-"));
+    try {
+      const res = await performLayeredRecall({
+        userText: "索引归属探针最近有什么进展",
+        sessionKey: "sk-r7fix-turnid",
+        cfg: parseConfig({ recall: { strategy: "hybrid", maxResults: 5 } }),
+        pluginDataDir: dataDir,
+        vectorStore,
+        embeddingService,
+      });
+      const ids = (res?.recalledL1Memories ?? []).map((m) => m.turnId);
+      expect(ids).toContain("lme-q1-s1-t1");
+      expect(ids).toContain("lme-q1-s2-t1");
+      expect(ids).not.toContain("lme-q1-s1-t1#f2");
+    } finally {
+      try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* 无害 */ }
+    }
+  });
+});
+

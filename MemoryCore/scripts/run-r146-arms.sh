@@ -45,8 +45,16 @@ case "${1:-help}" in
   v2deep)         run r146v2-deep      $CORE $DEEP $PROD --keep ;;
   v2deep-factrows) run r146v2-deep-factrows $CORE $DEEP $PROD --keep --fact-rows ;;
   v2deepall)      bash "$0" v2deep; bash "$0" v2deep-factrows ;;
+  #166 验收③：新代码深池回归档（后缀 2 = #166 代码下重跑，对照既有 v2deep-factrows 读数 71.7%/58.9%）
+  v2deep-factrows2) run r146v2-deep-factrows2 $CORE $DEEP $PROD --keep --fact-rows ;;
+  #166 验收④：IDF 稀释隔离档——同一份新代码下配对：控制档重跑 vs FTS 面只留 fact_index=0（l1_vec 不动，纯 BM25 df 变量）
+  v2factrows2)    run r146v2-factrows2  $CORE $B1 $PROD --keep --fact-rows ;;
+  v2factrows-prune) run r146v2-factrows-prune $CORE $B1 $PROD --keep --fact-rows --prune-fact-sibling-index ;;
+  # 控制档复跑：首跑（v2factrows2）在 recall 段整段 strategy=error，当时无留痕；换 tag 复跑取证
+  v2factrows3)    run r146v2-factrows3  $CORE $B1 $PROD --keep --fact-rows ;;
+  idf)            bash "$0" v2factrows2; bash "$0" v2factrows-prune ;;
   all) for m in b1off b1off-factrows deep deep-factrows; do bash "$0" $m; done ;;
-  *) echo "用法: $0 {b1off|b1off-factrows|deep|deep-factrows|b1off-factrows-dedupe10|v2base|v2factrows|v2all|v2deep|v2deep-factrows|v2deepall|all}"; exit 2 ;;
+  *) echo "用法: $0 {b1off|b1off-factrows|deep|deep-factrows|b1off-factrows-dedupe10|v2base|v2factrows|v2all|v2deep|v2deep-factrows|v2deepall|v2deep-factrows2|v2factrows2|v2factrows-prune|v2factrows3|idf|all}"; exit 2 ;;
 esac
 if [ "$FAILED" -ne 0 ]; then echo "[r146] 有 $FAILED 处失败"; exit 1; fi
 echo "[r146] OK"

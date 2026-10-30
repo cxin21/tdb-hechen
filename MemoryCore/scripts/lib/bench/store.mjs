@@ -699,6 +699,8 @@ export function makeRecall({ cfg, store, embedding, dataDir, logger = silentLogg
         clean: clean(m.content),
         score: m.score,
         type: m.type,
+        // #166：遮蔽行注入的是事实短语，内容反查不出父 turn —— 用召回层透传的 turnId。
+        ...(m.turnId ? { turnId: m.turnId } : {}),
       })),
       block: outcome.block || "",
       latencyMs,

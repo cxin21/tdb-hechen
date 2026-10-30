@@ -46,8 +46,9 @@ export function evalRetrieval({ caseObj, hits, resolve, k, kList = [] }) {
   // 单一 k 的口径计算（主 k 与 kList 共用同一实现，禁止两套算法）
   const evalOneK = (kk) => {
     const top = hits.slice(0, kk);
-    // 优先用召回行自带的 record id（灌库即 turn id，精确）；退化才走 content→id 反查。
-    const ids = top.map((h) => resolve(h.clean ?? h.content)).filter(Boolean);
+    // 优先用召回行自带的 turn id（灌库即 turn id，精确）；退化才走 content→id 反查。
+    // #166：present-intent 遮蔽后注入行是事实短语，content 反查必然失配 → 必须走 turnId。
+    const ids = top.map((h) => h.turnId ?? resolve(h.clean ?? h.content)).filter(Boolean);
     const unresolved = top.length - ids.length;
 
     const hitTurnIds = new Set();

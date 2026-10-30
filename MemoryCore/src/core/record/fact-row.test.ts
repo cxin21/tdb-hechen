@@ -112,6 +112,8 @@ describe("planFactRows（#146 事实行契约）", () => {
     expect(md[FACT_ROW_META.factIndex]).toBe(1);
     expect(md[FACT_ROW_META.factKey]).toBe(factKeyOf("用户", "住在"));
     expect(md[FACT_ROW_META.cardinality]).toBe(row.cardinality);
+    // #166：值也落 metadata（present-intent 值级遮蔽要校验「替换文本是否仍含旧值」）
+    expect(md[FACT_ROW_META.value]).toBe("杭州");
     expect(md.subject).toBe("用户");
     expect(md.facts).toEqual(["用户住在杭州"]);
     expect(md.valid_start).toBe("2026-10-01T00:00:00.000Z");

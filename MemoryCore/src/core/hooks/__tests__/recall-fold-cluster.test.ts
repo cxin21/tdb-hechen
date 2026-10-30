@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { foldSameSourceDuplicates, foldByDurative, foldClusterAware } from "../recall-fold-cluster.js";
+import { foldSameSourceDuplicates, foldByDurative, foldClusterAware, foldClusterAwareWithMeta } from "../recall-fold-cluster.js";
 import { foldNearDuplicates } from "../auto-recall.js";
 import { stripMemoryLineMeta } from "../memory-line-meta.js";
 
@@ -100,6 +100,22 @@ describe("F-CLUSTER v2 foldByDurative", () => {
     expect(out).toHaveLength(2);
     expect(out[0]).toContain("·源×2"); // 持续态甲吸收共享源
     expect(out[1]).not.toContain("·源×"); // 持续态乙不重复计数
+  });
+
+  it("#166 foldClusterAwareWithMeta 保持行与 meta 平行：保留行带自己的 meta，遮蔽行仍能回指父 turn", () => {
+    // 遮蔽行的注入文本已换成事实短语（与父 turn 原文不同），下游只能靠 meta.recordId 回指父 turn；
+    // 折叠若丢 meta，这类行在度量里就成了「无来源」。
+    const lines = [
+      "- [semantic|会话A] 事实短语甲 ·(活动时间: 2023-05-28 06:23 ~ 2023-05-28 06:23)",
+      "- [semantic|会话A] 事实短语乙 ·(活动时间: 2023-05-29 07:00 ~ 2023-05-29 07:00)",
+      "- [semantic|会话A] 事实短语乙 ·(活动时间: 2023-05-29 07:00 ~ 2023-05-29 07:00)", // 同文重复
+    ];
+    const metas = [meta("turn-a#f2"), meta("turn-b#f3"), meta("turn-b#f4")];
+    const out = foldClusterAwareWithMeta(lines, metas);
+    expect(out.lines).toHaveLength(2);
+    expect(out.metas).toHaveLength(2); // 平行
+    expect(out.metas[0]?.recordId).toBe("turn-a#f2");
+    expect(out.metas[1]?.recordId).toBe("turn-b#f3"); // 首现行胜出
   });
 
   it("RED-10 foldClusterAware 组合：先 durative 吸收再同文折叠，计数互不重复", () => {

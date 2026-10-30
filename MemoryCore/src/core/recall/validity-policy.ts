@@ -30,6 +30,11 @@ export type ValidityState = "active" | "expired" | "future";
  */
 export type ExcludeInvalidated = boolean | "soft";
 
+/** 效期策略是否生效（三态谓词的唯一写法：false=关闭；true/"soft"=启用）。 */
+export function validityEnabled(flag: ExcludeInvalidated | undefined): boolean {
+  return flag !== false;
+}
+
 export function excludeInvalidatedFor(
   mode: ValidityMode | undefined,
   flag: boolean | undefined,

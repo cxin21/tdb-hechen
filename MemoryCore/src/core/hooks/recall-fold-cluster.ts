@@ -17,20 +17,34 @@ import { stripMemoryLineMeta } from "./memory-line-meta.js";
 const SAME_SOURCE_TAG = "·同源×";
 const SOURCE_TAG = "·源×";
 
-export function foldSameSourceDuplicates(lines: string[]): string[] {
+/**
+ * 同文折叠的 meta 版：行序/文本与 `foldSameSourceDuplicates` 逐位相同，附带**保留行**的原 meta
+ * （首现行胜出，被折叠行的 meta 丢弃——它已不作为独立行注入）。
+ * #166：折叠后行与 meta 必须继续平行，否则下游（召回层 turnId → bench 证据归属）失去回指，
+ * 遮蔽行（注入文本已换成事实短语）就只能靠文本反查、必然失配。
+ */
+export function foldSameSourceDuplicatesWithMeta<T>(
+  lines: string[],
+  metas?: (T | undefined)[],
+): { lines: string[]; metas: (T | undefined)[] } {
+  const aligned = metas && metas.length === lines.length ? metas : undefined;
   const firstIndexOf = new Map<string, number>();
   const out: string[] = [];
-  for (const line of lines) {
+  const outMetas: (T | undefined)[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
     const key = stripMemoryLineMeta(line);
     if (key === "") {
       // 空 strip 行（空串/纯元数据行）不参与折叠，原样保留（防无语义吞行）。
       out.push(line);
+      outMetas.push(aligned?.[i]);
       continue;
     }
     const first = firstIndexOf.get(key);
     if (first === undefined) {
       firstIndexOf.set(key, out.length);
       out.push(line);
+      outMetas.push(aligned?.[i]);
       continue;
     }
     const base = out[first] ?? "";
@@ -41,7 +55,11 @@ export function foldSameSourceDuplicates(lines: string[]): string[] {
       out[first] = `${base} ${SAME_SOURCE_TAG}2`;
     }
   }
-  return out;
+  return { lines: out, metas: outMetas };
+}
+
+export function foldSameSourceDuplicates(lines: string[]): string[] {
+  return foldSameSourceDuplicatesWithMeta(lines).lines;
 }
 
 /** 行折叠元数据：recordId=该行记忆 id；evidenceIds=该行（持续态）引用的证据源 id 列表。 */
@@ -95,8 +113,17 @@ export function foldByDurative(lines: string[], metas?: (LineFoldMeta | undefine
   return { lines: out, metas: outMetas };
 }
 
+/** 组合入口（meta 版）：折叠后行与其 meta 平行，供需要回指（recordId → 父 turn）的下游消费。 */
+export function foldClusterAwareWithMeta<T extends LineFoldMeta>(
+  lines: string[],
+  metas?: (T | undefined)[],
+): { lines: string[]; metas: (T | undefined)[] } {
+  const dur = foldByDurative(lines, metas);
+  // foldByDurative 的静态类型只有 LineFoldMeta，运行时是原对象透传（调用点的 sessionId 等字段不丢）。
+  return foldSameSourceDuplicatesWithMeta(dur.lines, dur.metas as (T | undefined)[]);
+}
+
 /** 组合入口（调用点）：先持续态吸收（v2）→ 再同文折叠（v1）→ 近似 Jaccard 由调用点既有 foldNearDuplicates 续接。 */
 export function foldClusterAware(lines: string[], metas?: (LineFoldMeta | undefined)[]): string[] {
-  const dur = foldByDurative(lines, metas);
-  return foldSameSourceDuplicates(dur.lines);
+  return foldClusterAwareWithMeta(lines, metas).lines;
 }

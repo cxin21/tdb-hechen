@@ -35,12 +35,33 @@ export const FACT_ROW_META = {
   /** 事实键（factKeyOf(subject,predicate)）——写时按它定位同属性旧行。 */
   factKey: "fact_key",
   /**
+   * 本行事实的值（#166）：读侧 present-intent 值级遮蔽需要它来校验「替换文本是否仍含旧值」。
+   * 旧库行没有该字段时，读侧回退解析 factTriples[0].value（向后兼容，不重写库）。
+   */
+  value: "fact_value",
+  /**
    * 单条事实陈述（自足短语）。**行 content 不是它**：检索/注入单位是 turn
    * （见 ADR-0015 决定 2「存储按事实、检索与呈现按 turn」），content 存父 turn 原文，
    * 事实短语落在本字段，供审计/读侧按事实判效期与展示。
    */
   factPhrase: "fact_phrase",
 } as const;
+
+/**
+ * 读一行 metadata 的事实值：fact_value 优先，旧库行回退 factTriples[0].value。
+ * 读侧唯一入口（#166 值级遮蔽需要用它校验替换文本；禁止在调用点散写键名）。
+ */
+export function factValueOfMeta(meta: Record<string, unknown> | undefined): string | undefined {
+  const raw = meta?.[FACT_ROW_META.value];
+  if (typeof raw === "string" && raw.trim() !== "") return raw;
+  const triples = meta?.factTriples;
+  if (!Array.isArray(triples)) return undefined;
+  for (const triple of triples) {
+    const value = (triple as { value?: unknown } | null)?.value;
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return undefined;
+}
 
 /** 一条待落库的事实行（纯数据，不含 id/时间等写入上下文）。 */
 export interface FactRowSpec {
@@ -132,6 +153,11 @@ export function factRowIdOf(parentId: string, index: number): string {
   return index <= 0 ? parentId : `${parentId}#f${index + 1}`;
 }
 
+/** 事实行 id 的逆：去掉 `#f<n>` 后缀回到父 turn（`factRowIdOf` 的单一源对称函数）。 */
+export function parentTurnIdOf(recordId: string): string {
+  return recordId.replace(/#f\d+$/, "");
+}
+
 /**
  * 事实行 metadata：父记忆的 metadata 之上写事实级字段，并让 facts/factTriples 只含本行事实——
  * 事实键构造（embeddingKeyFor / factChannelKeyFor）由此自动按单条事实走，无需额外分支。
@@ -145,6 +171,7 @@ export function factRowMetadata(
     [FACT_ROW_META.predicate]: row.predicate,
     [FACT_ROW_META.cardinality]: row.cardinality,
     [FACT_ROW_META.factKey]: row.factKey,
+    [FACT_ROW_META.value]: row.value,
     [FACT_ROW_META.factOf]: ctx.parentId,
     [FACT_ROW_META.factIndex]: ctx.index,
     [FACT_ROW_META.factPhrase]: row.content,

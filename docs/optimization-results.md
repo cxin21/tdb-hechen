@@ -1912,7 +1912,7 @@ v2 配对（同 manifest / 同 judge `scm-flash` / 同生成模型，n=90，**�
 
 **读数怎么读**：
 - v1 的 −10.38pp 回归被消掉：v2 只剩 −1.95pp 且跨零（CI 含 0），判对率反而 +4.44pp（不显著）。**“开了不掉分”从实测上落到“不显著”这一档**，构造上则成立（行 content 与整行基线逐字相同）。
-- 逐 case 只差 6 题（3 题降、3 题升；其中 6b7dfb22 由 0→1 且判对由错转对），不是系统性崩塌；但仍**不是零差异**——推断原因是事实行把 FTS/BM25 语料里同一段 turn 文本重复了约 1.6 倍（2519 行 vs 1591 行），IDF/doc 统计被稀释，个别题的并列分数顺序翻转。这一点没做隔离实验，登记为推断。
+- 逐 case 只差 6 题（3 题降、3 题升；其中 6b7dfb22 由 0→1 且判对由错转对），不是系统性崩塌；但仍**不是零差异**——曾推断是事实行把 FTS/BM25 语料里同一段 turn 文本重复了约 1.6 倍（2519 行 vs 1591 行），IDF/doc 统计被稀释、个别题的并列分数顺序翻转。#166 做了隔离实验（§22.8「IDF 稀释隔离」）：删掉兄弟行的 FTS 索引后配对读数**没有回升**，该推断被否证——差异来自个别题的证据池成分，不是 doc 统计。
 - **不宣称收益**：KU 桶 turnCov 仍 −7.2pp（15 题里 1 题的差），而收益前提（同属性反复提到且判 single）在真实语料只有约 4% 的三元组满足（22.3），加上 22.5 的值级泄漏——结论是：v2 让开关**开启安全**，但“开启有收益”未被证明。
 
 **深池口径（#135 验收前提：candidates 32 / minScore −10.5 / candidateK 32 / 精排子进程）**：
@@ -1929,8 +1929,8 @@ v2 配对（同 manifest / 同 judge `scm-flash` / 同生成模型，n=90，**�
 
 **验收③判定（按票面「KU/TR 桶 cov 与判对不低于 b1-off」）**：深池口径下 KU/TR 两桶 **cov 完全持平**，但**判对各降 2 题（15 题里）**→ 严格读票面判**未达标**；浅池口径下 KU cov −7.2pp（1 题）、TR 判对 +6.7pp。两套口径的 bucket 噪声都是 ±13pp 量级（n=15），因此结论只能写成「机制对检索**中性**，未观测到收益」，不能写成「不劣」。
 
-**v2 的已知泄漏（走查直接暴露）**：行 content 是父 turn 原文后，旧值文本会随**兄弟事实行**回流——`turn-1`（居住=柏林，single）失效了，同 turn 的 `turn-1#f2`（爱好=摄影，multi）仍 active 且 content 同为「我住在柏林，最近迷上摄影」，于是「问当下」仍会注入含柏林的文本（见 `r146-walkthrough.mjs` 的 kept 列表）。
-即：**行级正确性成立（旧事实行不再作为"当前单值"返回），值级"不再出现在上下文"不成立**。这是 v1（per-fact content：值干净、检索掉分）与 v2（per-turn content：检索不掉分、值随兄弟回流）之间的真实取舍。修法要改检索/注入口径（值级遮蔽 / 该类 turn 注入 `fact_phrase` / 抽取期把单值属性升成独立 turn 粒度记忆），故本票登记为遗留。
+**v2 的已知泄漏（走查直接暴露，#166 已修）**：行 content 是父 turn 原文后，旧值文本会随**兄弟事实行**回流——`turn-1`（居住=柏林，single）失效了，同 turn 的 `turn-1#f2`（爱好=摄影，multi）仍 active 且 content 同为「我住在柏林，最近迷上摄影」，于是「问当下」仍会注入含柏林的文本。
+即：**行级正确性成立（旧事实行不再作为"当前单值"返回），值级"不再出现在上下文"不成立**。这是 v1（per-fact content：值干净、检索掉分）与 v2（per-turn content：检索不掉分、值随兄弟回流）之间的真实取舍。#166 用**读侧值级遮蔽**收口（present-intent 下把污染 turn 的注入降级为事实短语），机制、读数与残留见 §22.8。
 
 ### 22.6 属性键归一：实测 0.0% 收益（别宣称已修复）
 
@@ -1962,7 +1962,60 @@ node scripts/fit-fusion-weights.mjs compare \
   --base .eval-data/bench/lme90-r146v2-base.json \
   --arm factrows=.eval-data/bench/lme90-r146v2-factrows.json
 node --import tsx scripts/audit/r146-walkthrough.mjs
-node --import tsx scripts/audit/r146-lme-walkthrough.mjs --case 50635ada
+node --import tsx scripts/audit/r146-lme-walkthrough.mjs --case 18bc8abd \
+  --present 'What brand of BBQ sauce am I currently obsessed with?' \
+  --history 'What brand of BBQ sauce was I obsessed with before?'   # #166 值级遮蔽走查（换 case 先跑 .eval-data/bench/findcase.cjs）
+bash scripts/run-r146-arms.sh idf       # #166 验收④：v2factrows2 vs v2factrows-prune（FTS 面配对）
+bash scripts/run-r146-arms.sh v2deep-factrows2   # #166 验收③：新代码深池回归
 ```
+
+### 22.8 #166 值级泄漏：present-intent 遮蔽（2026-10-30）
+
+§22.5 尾部把「值级泄漏」登记为遗留：行级 `valid_end` 正确，但兄弟事实行的注入文本是父 turn 原文，旧值随文本回流。本节记录修法与代价。
+
+**修法（票面方案②的读侧变体）**：钩子注入路在按 `fact_of` 折叠事实行时，若查询命中 present-intent（`detectPresentTemporalIntent`）且效期策略未关闭，就把**池内已过期行**当污染源——过期行在 hard 档要等折叠**之后**的 `applyExclusion` 才过滤、在 soft 档常只被降权保留（`related` 是 `contentTokenOverlap`，属性更新前后原文常无词重叠），所以只看 `sel.dropped` 会漏掉默认档与最常见的更新链。其所属 turn 的存活行改为注入**自己的 `metadata.fact_phrase`**（`displayContent`），短语缺失或短语仍含旧值则整行剔出注入（宁缺毋滥）。问历史逐位不变（旧值仍可回溯）。作用域只到 `searchHybrid` 注入路；`memory-search.ts` 的工具路仍返回父原文（工具给结构化行由调用方判读），登记为遗留。
+
+为什么不用方案①（从最终文本里 diff 掉旧值）：抠文本会留下半句，且 `LA` 这类短值会命中 `planning`（走查实测误判），误伤成本高于少给一条证据。为什么不用方案③（写期把单值属性升成独立 turn）：改存储粒度与图边归属，本票不动写面。
+
+**混合意图不遮蔽**：`valueMaskIntent = presentIntent && !detectHistoryTemporalIntent(userText)`（`HISTORY_TEMPORAL_RE` 认 `before/previously/used to/just started/之前/当初/刚开始`）。既问「刚开始」又问「现在」的题标准答案横跨新旧值，遮蔽会把含旧值的 gold turn 整条剔出——LME90 深池 `031748ae`（「我刚当上 Senior 时带几个工程师？现在带几个？」）无闸时 turnCov@5 0.5→0，加闸后恢复 0.5。`presentIntent` 本身不变，仍原样喂 #136 硬丢。
+
+**遮蔽后仍能归因**：注入文本换成短语后「文本→turn」反查必失配，故 `RecalledMemory.turnId` 由 `searchResult.metas[i].recordId` 去 `#f<N>` 后缀透传；折叠路径同时折叠 `metas`（落选兄弟位置置 `undefined`，与 `lines/scores` 平行）——折叠一开 `metas` 原本整条缺席（bench 的 `foldClusterEnabled: true` 是缺省形状），turnId 全空、度量退回文本反查。这是可观测性修复，不改检索结果；修复前深池 turnCov 假摔 1.7pp（3 题 KU 各丢 0.5），修复后与 #166 前逐位相同。
+
+**机制走查**：合成 3 turn 15/15 PASS（present 注入以事实短语呈现、无柏林；同 turn 兄弟仍注入；history 仍含柏林）；真实语料 8/8 PASS（LongMemEval KU case `18bc8abd`，「What brand of BBQ sauce am I currently obsessed with?」）——present 注入无被取代的 `Sweet Baby Ray's`、污染 turn 的 2 条存活行改注入自身事实短语、并仍召回新值 `Kansas City Masterpiece BBQ sauce`，history 注入仍含旧值。判据按 **turn**（同 turn 的注入行是否含旧值），不整段 `includes`——真实语料里地名/品牌满篇出现，整段判定必误判。
+  原默认 case `50635ada`（United 里程）已不可用：facts-cache 2026-10-30 重生成成 facts-v3 后，抽取把旧值/新值落成不同谓词（`User.eligible_for_status` vs `User.reached_status`），写侧「同 fact_key 才失效」不触发 → 判据静默 SKIP。换 case 用 `.eval-data/bench/findcase.cjs` 扫同键更新面（500 题 46 题有同键不同值），问句用 `--present/--history` 传。脚本缺省 case 已改成可判的 `18bc8abd`，并把「本 case 无可判更新链」从静默 SKIP 改成**判 FAIL 退出 1**（空跑不能算过）。
+
+**代价与边界**：被遮蔽 turn 丢说话人/时间/相邻事实语境（只给事实短语），故只在 present-intent 触发；`maskedRows/droppedRows/staleValues` 三项统计随折叠返回并落 debug 日志（可观测，不静默丢命中）。`droppedRows` 在折叠**之后**统计——被剔的落选兄弟本来也不会注入，先数会高估。
+
+**实测 · 验收③（不回退检索：深池，新代码 vs #166 前，n=90，同 manifest / 同 judge `scm-flash`）**：
+
+| 指标 | #166 前（旧代码深池） | #166 后（新代码深池） | Δ |
+|---|---|---|---|
+| turnCov@5 | 71.7% | **72.3%** | +0.57pp |
+| sessionCov | 88.7% | 88.7% | 0.00pp |
+| mrr | 72.0% | 72.5% | +0.54pp |
+| nDCG | 66.4% | 66.8% | +0.44pp |
+| 判对率 | 58.9% | **60.0%**（n=90，scm-flash 判分） | +1.11pp |
+| tokenF1 | 0.283 | 0.271 | −0.012 |
+
+深池逐题只动 **1** 题：`4d6b87c8`（「to-watch 列表现在几部」纯 present）0→0.5——遮蔽腾出槽位给 gold turn。`031748ae` 两侧都是 0.5（它靠混合意图闸保住，不是本票的净收益）。也就是说 +0.57pp 全部来自这一道题的半档位，n=90、单 judge、无区间估计，**不足以称为显著收益**，只作「没有回退」的证据；遮蔽的正当性来自机制走查（注入文本不含旧值），不来自这点涨分。**票面「turnCov@5 与判对不低于 v2 当前读数」两项都转正**（turnCov +0.57pp、判对 +1.11pp；度量修正前 turnCov 假摔 1.7pp，见上「遮蔽后仍能归因」）。
+
+浅池配对（同一保留库 + 带生成/判分整跑，`--rerank-off --b1`，报告 `lme90-r146-r146v2-factrows2-shallow-gen`）：turnCov@5 **75.3%**（v2 当前 74.7%）、判对 **66.7%**（v2 当前 66.7%，逐位相同）、sessionCov 92.5%、mrr 73.8%、nDCG 72.2%、tokenF1 0.2719；degraded 2/90、strategy `error` 0/90（旧控制档首跑因并发 429 整段 error，见下「读数口径」）。浅池判对持平、turnCov +0.57pp，同样只够判「没回退」。一致性校验：只读 recount 与带生成/判分的整跑逐题 turnCov **0 题差异**（`deep-factrows2-recount4` vs `deep-factrows2-final`），说明召回面未被生成段扰动；degraded 行数 2/90 与旧报告同量级。
+
+**实测 · 验收④（IDF 稀释隔离：浅池，同 manifest / 同 judge，只差「同 turn 文本多行进不进 `l1_fts`」）**：
+
+| 指标 | 控制档（兄弟行进 FTS，2519 行） | 隔离档（只删 `fact_index>0` 的 FTS 行，928 删/1591 留） | Δ |
+|---|---|---|---|
+| turnCov@5 | 75.3% | 73.8% | −1.50pp |
+| sessionCov | 92.5% | 90.8% | −1.67pp |
+| mrr | 73.8% | 73.0% | −0.78pp |
+| nDCG | 72.1% | 71.3% | −0.86pp |
+
+隔离档**只删 `l1_fts`，`l1_records` 与 `l1_vec` 全量保留**——连 vec0 一起删会让向量候选变稀，读数就无法归因到 IDF。逐题只有 4 题变动（3 降 1 升：`031748ae` 1→0.5、`7405e8b1` 1→0.5、`f0e564bc` 0.5→0、`gpt4_ab202e7f` 0→0.2）。
+
+**结论要说实话：df 稀释既没被证实、也不算被否定。** 同一对配置还有另一组配对（度量修正前的 `factrows2-recount2` 71.8% vs `factrows-prune-recount2` 74.4%，+2.6pp，符号相反）；同配置的重跑之间 turnCov 也能差 2–3pp（`factrows2` 旧代码 74.7% / 修正前 71.8% / 修正后 75.3%，前两者的差是度量而非代码）。也就是说本档能分辨的效应量小于噪声，±1.5–2.6pp 的位移**不能归因到 IDF**。另外这一档删的是 `l1_fts` 行——关键词候选本身也少了，严格说它测的是「FTS 索引面整件变化」，不是纯 df。可下的结论只有两条：①**没有证据支持**「兄弟行索引把检索拉低 1.95pp」，因此不值得为省索引去删行；②要真判 df 还得做「同 df 但不同候选集」的构造（例如把兄弟行 FTS 文本改写成语料里不存在的去重前缀），本票不做。本档是只读档（`--gen-limit 0`）只比检索面，生成/判分面的配对由验收③的深池整跑承担。
+
+**读数口径与插曲（复现须知）**：三份读数统一用「保留灌库目录 + `--no-write-steps`」的只读 recount 跑（`--gen-limit 0` 只跑检索，判分沿用原跑），因为控制档首跑（`v2factrows2`）整段 90/90 `strategy:"error"`——它与另一臂的灌库并发，429 打穿 query embedding。筛选条件是 `strategy==='hybrid' && searchTiming.embeddingHits===0`（降级 fts-only）行数必须与旧报告同量级（实测 2/90，旧报告同为 2/90）；并发条件下降级行会飙到 10–12/90，读数作废。bench 原先对召回失败只写 `strategy:"error"`、不落 `error` 也不打日志，本票补了 `[bench:warn] 召回失败 <caseId>: <err>` 与行内 `error` 字段。
+
+**残留（自觉放弃，不当作已修）**：①**跨 turn**——遮蔽只作用在被污染 turn 的存活行；若新值所在的更新 turn 原文自己复述旧值（「我上个月从柏林搬到慕尼黑」），该行仍逐字注入。要修得做全局值级 diff（回到方案①的误伤面）。②**旧值读不到时不校验**——过期行既无 `fact_value` 也无 `factTriples` 时只知"这个 turn 脏"，存活行短语无条件注入（只有缺短语才剔）；#166 之前写入的旧库行没有 `fact_value`，真实历史数据会命中这一形状。③工具路未遮蔽（见上）。④**混合意图按字面仍有泄漏**——`presentIntent=true` 但带过去标记的问句（「我刚当上 Senior 时带几个？现在带几个？」）跳过遮蔽以保住 gold turn，此时兄弟行的父原文仍会把旧值带进注入文本；这是刻意的取舍（不跳过就掉点，见上「混合意图不遮蔽」），验收①的「presentIntent 注入不含旧值」只在**纯 present** 问句上成立。⑤**soft 档语义被收紧**——present-intent 下池内过期行一律不注入（它们正是污染源），等价于对这批 turn 收紧了硬丢；#136 的「过期只降权、相关才硬丢」在 present 问句上不再逐位成立，这是为不泄漏旧值付的代价。⑥**旧报告与度量口径**——`RecalledMemory.turnId` 是本票新增字段，bench 的 `makeIdResolver` 改成 `h.turnId ?? 文本反查`；旧报告没有该字段，重算走文本反查、与改动前逐位相同，故「同一把尺子」成立。
 
 

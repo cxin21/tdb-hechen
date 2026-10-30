@@ -387,6 +387,21 @@ export function detectPresentTemporalIntent(query: string): boolean {
 }
 
 /**
+ * 过去时态标记（中英，宁缺毋滥——只在明确指向"过去/起始时点"时命中）。
+ * 用途（#166）：与 `detectPresentTemporalIntent` 一起判**混合意图**——既问现在又问过去
+ * （"How many do I lead now? … when I just started"），这类问句的答案本身就横跨旧值与新值，
+ * 值级遮蔽会把含旧值的 gold turn 整条剔出注入，这里只做意图识别，不改任何召回行为。
+ */
+const HISTORY_TEMPORAL_RE =
+  /\b(before|previously|used to|in the past|earlier|back then|at that time|originally|just started)\b|(之前|以前|原来|从前|原先|当年|当初|当时|刚开始|刚毕业|过去)/i;
+
+/** #166：query 是否带过去时态标记（混合意图判定用；纯函数、确定性）。 */
+export function detectHistoryTemporalIntent(query: string): boolean {
+  if (!query) return false;
+  return HISTORY_TEMPORAL_RE.test(query);
+}
+
+/**
  * R3 加成：当下时态 query 下，「当下成立」的记忆 +boost。
  * 当下成立 = ①valid 区间覆盖 now（vs<=now<=ve，缺侧=开放端，与 timeSignalOf 同口径）；
  * 或 ②无 validity 锚但 occurred_at 落在最近 recentDays 天内（偏新版本兜底）。
