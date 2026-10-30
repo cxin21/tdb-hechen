@@ -224,6 +224,21 @@ export interface AssetListForCallerParams extends AssetFilter {
   team_id: string;
 }
 
+/** collectVisibleAssets 的采集参数（asset/list 与 asset/list-accessible 共用）。 */
+interface CollectVisibleAssetsOptions {
+  /** 要扫描的 team；可多个（list-accessible 不传 team_id 时=用户全部 team）。 */
+  teamIds: string[];
+  pagination: PaginationParams;
+  /** 下推给 store 的字段过滤（asset_type / status / owner_user_id / visibility）。 */
+  filter?: AssetFilter;
+  /** 是否剔除 archived/deprecated/failed，默认 true；调用方显式按 status 过滤时传 false。 */
+  hideFilteredStatuses?: boolean;
+  /** visibility 白名单（权限判定前先剔除）。 */
+  visibility?: AssetEntity["visibility"] | AssetEntity["visibility"][];
+  /** 逐条读判定：返回 true 的资产进入可见集合。 */
+  canRead: (asset: AssetEntity) => Promise<boolean>;
+}
+
 const FILTERED_STATUSES: AssetStatus[] = ["archived", "deprecated", "failed"];
 
 /**
@@ -1109,6 +1124,13 @@ export class MetadataService {
     return result;
   }
 
+  /**
+   * 管理面直通读（**无鉴权**，按 store 返回序）。
+   *
+   * 这是给管理/内部编排用的原始通道；HTTP 端点一律走 `listAssetsForCaller`
+   * （成员校验 + 逐条可见性 + 统一排序），不要把它直接接到路由上——#116 的越权
+   * 就是路由把 caller 丢弃后直读本方法造成的。
+   */
   async listAssetsByTeam(
     teamId: string,
     pagination: PaginationParams = DEFAULT_PAGINATION,
@@ -1147,9 +1169,10 @@ export class MetadataService {
 
   /**
    * asset/list 的调用者视角读（issue #116 水平越权修复）：
-   *   - system_admin：管理面全量（保留原 listAssetsByTeam 语义）；
+   *   - system_admin：管理面全量（不看 visibility；归档仍按下面的默认口径隐藏）；
    *   - 团队成员：owner 资产恒可见，其余逐条 checkAssetPermission（与 list-accessible 同源判定）；
    *   - 非团队成员 / 未解析到调用者：空页（不报错，避免泄露 team 信息）。
+   * 采集/去重/剔除/排序全交给 collectVisibleAssets（与 list-accessible 同一份实现），
    * 权限过滤在分页前完成，保证 total 是「可见集合」的总数。
    */
   async listAssetsForCaller(
@@ -1158,47 +1181,66 @@ export class MetadataService {
     pagination: PaginationParams = DEFAULT_PAGINATION,
   ): Promise<PaginatedResult<AssetEntity>> {
     const { team_id, ...filter } = params;
-    // 归档口径与 list-accessible 对齐：未显式按 status 过滤时，归档/弃用/失败不进默认列表。
-    const hideFilteredStatuses = !filter.status;
-    if (ctx.isSystemAdmin) {
-      if (!hideFilteredStatuses) return this.listAssetsByTeam(team_id, pagination, filter);
-      const all = await this.collectAssetsByTeam(team_id, filter);
-      return paginateArray(all.filter((a) => !isHiddenFromDefaultList(a)), pagination);
+    // 非 admin 必须先是该 team 的 active 成员；不是就返回空页（不报错，避免泄露 team 信息）。
+    if (!ctx.isSystemAdmin) {
+      if (!ctx.userId) return paginateArray([], pagination);
+      const member = await this.store.getTeamMember(team_id, ctx.userId);
+      if (!member || member.status !== "active") return paginateArray([], pagination);
     }
-    if (!ctx.userId) return paginateArray([], pagination);
-    const member = await this.store.getTeamMember(team_id, ctx.userId);
-    if (!member || member.status !== "active") return paginateArray([], pagination);
-
-    const visible: AssetEntity[] = [];
-    let offset = 0;
-    const limit = 100;
-    while (true) {
-      const page = await this.store.listAssetsByTeam(team_id, { limit, offset }, filter);
-      for (const asset of page.items) {
-        if (hideFilteredStatuses && isHiddenFromDefaultList(asset)) continue;
-        if (await this.canReadAsset(asset, ctx.userId)) visible.push(asset);
-      }
-      // 空页提前退出：并发删除等导致 offset 越过 total 时不会原地死循环
-      if (page.items.length === 0) break;
-      if (offset + page.items.length >= page.total) break;
-      offset += limit;
-    }
-    return paginateArray(visible, pagination);
+    const userId = ctx.userId;
+    return this.collectVisibleAssets({
+      teamIds: [team_id],
+      pagination,
+      filter,
+      // 归档口径与 list-accessible 对齐：未显式按 status 过滤时，归档/弃用/失败不进默认列表。
+      hideFilteredStatuses: !filter.status,
+      canRead: ctx.isSystemAdmin || !userId
+        ? async () => true
+        : (asset) => this.canReadAsset(asset, userId),
+    });
   }
 
-  /** 整队资产全量扫描（分页拼装；用于 system_admin 的默认列表口径过滤）。 */
-  private async collectAssetsByTeam(teamId: string, filter: AssetFilter): Promise<AssetEntity[]> {
-    const assets: AssetEntity[] = [];
-    let offset = 0;
-    const limit = 100;
-    while (true) {
-      const page = await this.store.listAssetsByTeam(teamId, { limit, offset }, filter);
-      assets.push(...page.items);
-      if (page.items.length === 0) break;
-      if (offset + page.items.length >= page.total) break;
-      offset += limit;
+  /**
+   * asset/list 与 asset/list-accessible 的同一采集口径（issue #116 收尾 2）：
+   *   - 分页扫描 store，跨 team 去重（同一资产只出现一次）；
+   *   - 归档三态默认剔除，显式按 status 过滤时由调用方关掉；
+   *   - visibility 白名单在权限判定前先剔除，省掉必然拒绝的 checkAssetPermission；
+   *   - 结果统一按 created_at 倒序，**不依赖 store 的返回序**（对 Mongo 等其他实现漂移免疫）。
+   *
+   * 采集在分页前完成，保证 total 是「可见集合」的总数。
+   */
+  private async collectVisibleAssets(opts: CollectVisibleAssetsOptions): Promise<PaginatedResult<AssetEntity>> {
+    const { teamIds, pagination, filter, hideFilteredStatuses = true, canRead } = opts;
+    const visFilter: Set<AssetEntity["visibility"]> | null = opts.visibility
+      ? new Set(Array.isArray(opts.visibility) ? opts.visibility : [opts.visibility])
+      : null;
+
+    const visible: AssetEntity[] = [];
+    const seen = new Set<string>();
+    const pageSize = 100;
+
+    for (const teamId of teamIds) {
+      let offset = 0;
+      while (true) {
+        const page = await this.store.listAssetsByTeam(teamId, { limit: pageSize, offset }, filter);
+        for (const asset of page.items) {
+          if (seen.has(asset.asset_id)) continue;
+          if (hideFilteredStatuses && isHiddenFromDefaultList(asset)) continue;
+          if (visFilter && !visFilter.has(asset.visibility)) continue;
+          if (await canRead(asset)) {
+            seen.add(asset.asset_id);
+            visible.push(asset);
+          }
+        }
+        // 空页 / 越界提前退出：并发删除等导致 offset 越过 total 时不会原地死循环
+        if (page.items.length === 0) break;
+        if (offset + page.items.length >= page.total) break;
+        offset += pageSize;
+      }
     }
-    return assets;
+
+    visible.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return paginateArray(visible, pagination);
   }
 
   async touchAssetUsage(assetId: string): Promise<void> {
@@ -1645,16 +1687,11 @@ export class MetadataService {
     });
   }
 
-  /** 按用户过滤其有权限访问的资产列表（权限聚合后 offset 分页）。 */
+  /** 按用户过滤其有权限访问的资产列表（与 asset/list 共用 collectVisibleAssets 的采集/排序口径）。 */
   async listAccessibleAssets(params: ListAccessibleAssetsParams): Promise<PaginatedResult<AssetEntity>> {
     const userId = await resolveUserId(this, params);
     const action = params.action ?? "read";
     const pagination = this.pag(params);
-
-    // visibility 白名单（服务端过滤，避免前端拿到不该看到的数据）
-    const visFilter: Set<AssetEntity["visibility"]> | null = params.visibility
-      ? new Set(Array.isArray(params.visibility) ? params.visibility : [params.visibility])
-      : null;
 
     let teamIds: string[];
     if (params.team_id) {
@@ -1676,41 +1713,22 @@ export class MetadataService {
       teamIds = allTeams.map((t) => t.team_id);
     }
 
-    const result: AssetEntity[] = [];
-    const seen = new Set<string>();
-
-    for (const teamId of teamIds) {
-      let offset = 0;
-      const limit = 100;
-      while (true) {
-        const page = await this.store.listAssetsByTeam(
-          teamId,
-          { limit, offset },
-          { asset_type: params.asset_type },
-        );
-        for (const asset of page.items) {
-          if (seen.has(asset.asset_id)) continue;
-          if (isHiddenFromDefaultList(asset)) continue;
-          // visibility 白名单过滤（在权限判定前先剔除，节省 checkAssetPermission 开销）
-          if (visFilter && !visFilter.has(asset.visibility)) continue;
-          const perm = await this.checkAssetPermission({
-            user_id: userId,
-            asset_id: asset.asset_id,
-            action,
-            agent_id: params.agent_id,
-          });
-          if (perm.allowed) {
-            seen.add(asset.asset_id);
-            result.push(asset);
-          }
-        }
-        if (offset + page.items.length >= page.total) break;
-        offset += limit;
-      }
-    }
-
-    result.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return paginateArray(result, pagination);
+    return this.collectVisibleAssets({
+      teamIds,
+      pagination,
+      filter: { asset_type: params.asset_type },
+      // visibility 白名单（服务端过滤，避免前端拿到不该看到的数据）
+      visibility: params.visibility,
+      // 判定与 asset/get 同源：checkAssetPermission（含 agent 主体的 ACL）
+      canRead: async (asset) => (
+        await this.checkAssetPermission({
+          user_id: userId,
+          asset_id: asset.asset_id,
+          action,
+          agent_id: params.agent_id,
+        })
+      ).allowed,
+    });
   }
 
   // ============================================================

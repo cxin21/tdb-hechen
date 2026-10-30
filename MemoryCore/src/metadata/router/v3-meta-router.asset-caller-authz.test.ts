@@ -15,7 +15,13 @@ import { SqliteMetadataStore } from "../store/sqlite-adapter.js";
 import { MetadataService } from "../service/metadata-service.js";
 import { handleV3MetaRoute, V3_PREFIX, type V3MetaRouterDeps } from "./v3-meta-router.js";
 import type { ApiResponseEnvelope } from "../../gateway/v2-schemas.js";
-import type { AssetEntity, PaginatedResult } from "../types.js";
+import type {
+  AssetEntity,
+  AssetFilter,
+  ListPage,
+  PaginatedResult,
+  PaginationParams,
+} from "../types.js";
 
 const INSTANCE = "authz-test-instance";
 
@@ -636,3 +642,163 @@ describe("issue #116 收尾 — agent 主体的 ACL", () => {
   });
 });
 
+
+describe("issue #116 收尾 2 — 两个 list 端点同一采集口径", () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await seed();
+  });
+
+  afterEach(() => {
+    fx.store.close();
+  });
+
+  function idsOf(res: RouteResult): string[] {
+    return (res.body.data as PaginatedResult<AssetEntity>).items.map((a) => a.asset_id);
+  }
+
+  function totalOf(res: RouteResult): number {
+    return (res.body.data as PaginatedResult<AssetEntity>).total;
+  }
+
+  /**
+   * 模拟「store 返回序不是 created_at 倒序」的实现（Mongo / 未来的新后端）：
+   * 读取方（service）必须自己负责排序，不能把 store 的返回序当契约。
+   */
+  class AscOrderStore extends SqliteMetadataStore {
+    override listAssetsByTeam(
+      teamId: string,
+      pagination?: PaginationParams | null,
+      filter?: AssetFilter,
+    ): ListPage<AssetEntity> {
+      const page = super.listAssetsByTeam(teamId, pagination, filter);
+      return { ...page, items: [...page.items].sort((a, b) => a.created_at.localeCompare(b.created_at)) };
+    }
+  }
+
+  interface OrderScenario {
+    store: SqliteMetadataStore;
+    deps: V3MetaRouterDeps;
+    aliceKey: string;
+    aliceUserId: string;
+    teamId: string;
+    /** 创建顺序为 older → middle → newer，因此倒序期望是它的反序。 */
+    idsDesc: string[];
+  }
+
+  async function seedOrderScenario(store: SqliteMetadataStore): Promise<OrderScenario> {
+    store.init();
+    const svc = new MetadataService(store, INSTANCE);
+    const deps = createDeps(svc);
+    await svc.initAdminUser({ username: "root" });
+    const alice = await svc.createNormalUser({ username: "alice" });
+    const team = await svc.createTeam({ name: "team-order", owner_user_id: alice.user_id });
+
+    const created: string[] = [];
+    for (const name of ["older", "middle", "newer"]) {
+      // created_at 由 store 取当前毫秒；拉开 5ms 让三条时间戳严格递增
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const asset = await svc.createAsset({
+        asset_id: `asset_order_${name}`,
+        team_id: team.team_id,
+        asset_type: "skill",
+        name,
+        owner_user_id: alice.user_id,
+        source_type: "manual",
+        visibility: "team",
+      });
+      created.push(asset.asset_id);
+    }
+
+    return {
+      store,
+      deps,
+      aliceKey: alice.default_user_key,
+      aliceUserId: alice.user_id,
+      teamId: team.team_id,
+      idsDesc: [...created].reverse(),
+    };
+  }
+
+  it("asset/list 自己负责排序：store 返回 asc 序时仍按 created_at 倒序", async () => {
+    const sc = await seedOrderScenario(new AscOrderStore(":memory:"));
+    try {
+      const res = await callRoute(sc.deps, `${V3_PREFIX}/asset/list`, { team_id: sc.teamId }, sc.aliceKey);
+      expect(res.status).toBe(200);
+      expect(idsOf(res)).toEqual(sc.idsDesc);
+    } finally {
+      sc.store.close();
+    }
+  });
+
+  it("asset/list 与 asset/list-accessible 对同一可见集合返回完全相同的 id 序列", async () => {
+    const sc = await seedOrderScenario(new AscOrderStore(":memory:"));
+    try {
+      const byTeam = await callRoute(sc.deps, `${V3_PREFIX}/asset/list`, { team_id: sc.teamId }, sc.aliceKey);
+      const accessible = await callRoute(
+        sc.deps,
+        `${V3_PREFIX}/asset/list-accessible`,
+        { user_id: sc.aliceUserId, team_id: sc.teamId },
+        sc.aliceKey,
+      );
+
+      expect(idsOf(byTeam)).toEqual(sc.idsDesc);
+      expect(idsOf(accessible)).toEqual(idsOf(byTeam));
+      expect(totalOf(byTeam)).toBe(sc.idsDesc.length);
+      expect(totalOf(accessible)).toBe(sc.idsDesc.length);
+    } finally {
+      sc.store.close();
+    }
+  });
+
+  it("list-accessible 跨 team 合并后仍按 created_at 倒序（不按 team 遍历顺序拼接）", async () => {
+    // carol 已是 team-a 成员；再让她拥有一个 team-c，并在那里放一条更晚创建的资产
+    const teamC = await fx.svc.createTeam({ name: "team-c", owner_user_id: fx.carolUserId });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newest = await fx.svc.createAsset({
+      asset_id: "asset_carol_team_c",
+      team_id: teamC.team_id,
+      asset_type: "skill",
+      name: "carol-team-c",
+      owner_user_id: fx.carolUserId,
+      source_type: "manual",
+      visibility: "team",
+    });
+
+    const res = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list-accessible`,
+      { user_id: fx.carolUserId },
+      fx.carolKey,
+    );
+    const ids = idsOf(res);
+
+    expect(ids[0]).toBe(newest.asset_id);
+    // 可见集合：team-c 的新资产 + team-a 里 visibility=team 的共享资产（private 不可读、archived 默认隐藏）
+    expect(ids).toContain(fx.aliceTeamSharedId);
+    expect(ids).not.toContain(fx.alicePrivateId);
+    expect(ids).not.toContain(fx.aliceArchivedId);
+    expect(ids).toHaveLength(2);
+
+    // 顺序等价于「合并后再按 created_at 倒序」
+    const expected: AssetEntity[] = [];
+    for (const id of ids) expected.push((await fx.svc.getAssetById(id))!);
+    expect(ids).toEqual(
+      [...expected].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((a) => a.asset_id),
+    );
+  });
+
+  it("system_admin 的 asset/list 仍含他人 private，且与 created_at 倒序一致", async () => {
+    const res = await callRoute(fx.deps, `${V3_PREFIX}/asset/list`, { team_id: fx.teamId }, fx.adminKey);
+    const ids = idsOf(res);
+
+    expect(ids).toContain(fx.alicePrivateId);
+    expect(ids).not.toContain(fx.aliceArchivedId);
+    const assets = await Promise.all(ids.map((id) => fx.svc.getAssetById(id)));
+    const expected = [...(assets as AssetEntity[])]
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .map((a) => a.asset_id);
+    expect(ids).toEqual(expected);
+  });
+});
