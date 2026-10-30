@@ -253,6 +253,63 @@ export function buildAnswerPromptTuned({ question, block, questionDate, datasetN
   return lines.join("\n");
 }
 
+
+/** 证据编排版答案提示（#146 后续实验 Y 臂）：不改检索、不改口径，只重构注入块的组织方式。 */
+export const ANSWER_PROMPT_MARSHAL_VERSION = "prod-block-v2-marshal";
+
+/**
+ * 把注入块按「日期 → 条数」重新编排，并在块头给一行证据清点。
+ *
+ * 动机（§24.6 的读数）：k=10 之后仍有 14/24 个错题是「gold 会话全在块里但答不成」，
+ * 其中 9 个还是拒答——块是平铺的一长串 turn 行，跨会话聚合题要在几十行里自己找两处事实。
+ * 编排版只做三件事：把同一天的行聚在一起、在块头写清查点、要求先整理再作答。
+ * 不删行、不做摘要，避免「少给证据」再次诱发拒答。
+ */
+export function marshalBlock(block) {
+  const raw = String(block || "");
+  const lines = raw.split("\n");
+  const dated = [];
+  const rest = [];
+  for (const line of lines) {
+    const m = line.match(/^\s*-\s*\[[^\]]*\]\s*\[(\d{4}-\d{2}-\d{2})/);
+    if (m) dated.push({ date: m[1], line });
+    else rest.push(line);
+  }
+  if (dated.length === 0) return raw;
+  const byDate = new Map();
+  for (const d of dated) {
+    if (!byDate.has(d.date)) byDate.set(d.date, []);
+    byDate.get(d.date).push(d.line);
+  }
+  const dates = [...byDate.keys()].sort();
+  const counts = dates.map((d) => d.slice(5) + "×" + byDate.get(d).length).join("、");
+  const out = [];
+  const head = rest.filter((l) => l.trim()).join("\n").trim();
+  if (head) out.push(head, "");
+  out.push(`【证据清点】共 ${dated.length} 条相关记忆，覆盖 ${dates.length} 个日期（${counts}）；最早 ${dates[0]}，最晚 ${dates[dates.length - 1]}。`);
+  out.push("");
+  for (const d of dates) {
+    out.push(`### ${d}（${byDate.get(d).length} 条）`);
+    out.push(...byDate.get(d));
+    out.push("");
+  }
+  return out.join("\n").trim();
+}
+
+/** 编排版提示：编排块 + 可选口径（currency/preference）与「先整理再答」要求。 */
+export function buildAnswerPromptMarshalled({ question, block, questionDate, datasetName, currency = false, preference = false }) {
+  const body = buildAnswerPromptTuned({ question, block: marshalBlock(block), questionDate, datasetName, currency, preference });
+  const rule = [
+    "",
+    "【作答步骤（重要）】",
+    "1. 先按日期把与问题相关的关键事实整理成 1–3 行笔记（每条写明日期与事实），不要直接下结论；",
+    "2. 同一事实在多处出现只算一次；不同日期给出不同值时，按币值规则取最晚那条；",
+    "3. 需要跨多条记忆聚合（相加、相减、求差、求倍数）时，把参与计算的每条事实与数值都写出来再算，算完检查单位与口径；",
+    "4. 最后另起一行以「答：」给出结论。",
+  ].join("\n");
+  return body.replace(/\n\n直接回答问题本身，简洁。\s*$/, "") + "\n" + rule;
+}
+
 /** B1（bench/recall-opt）答案侧提示版本。 */
 export const ANSWER_PROMPT_VERSION = "answer-v3-b1";
 

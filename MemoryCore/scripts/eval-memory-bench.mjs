@@ -49,6 +49,8 @@ import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvide
 import {
   buildAnswerPrompt,
   buildAnswerPromptTuned,
+  buildAnswerPromptMarshalled,
+  ANSWER_PROMPT_MARSHAL_VERSION,
   ANSWER_PROMPT_CURRENCY_VERSION,
   ANSWER_PROMPT_PREF_VERSION,
   buildJudgePrompt,
@@ -163,7 +165,7 @@ if (flag("help") || argv.length === 0) {
 const KNOWN_FLAGS = new Set([
   "age-decay", "b1", "b2b-validity", "candidate-k", "conclusion-budget-mode", "conclusion-cap",
   "conclusion-cards", "conclusion-layer-off", "conclusion-legacy-rank", "conclusion-max", "conclusion-max-extra", "conclusion-pairing",
-  "conclusion-routing", "conclusion-slot-cost", "concurrency", "currency-prompt", "pref-prompt", "data", "dataset", "emb-threshold",
+  "conclusion-routing", "conclusion-slot-cost", "concurrency", "currency-prompt", "pref-prompt", "marshal-prompt", "data", "dataset", "emb-threshold",
   "embed-cache", "embed-interval-ms", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
   "fact-channel", "fact-channel-off", "fact-channel-read-only", "fact-channel-weight", "fact-concurrency", "fact-dual-write",
   "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-rows", "fact-separator", "facts-only",
@@ -1083,6 +1085,8 @@ async function main() {
   // #146 算法重判：币值口径答案提示（读侧只改措辞，不动检索/存储）。
   const currencyPrompt = flag("currency-prompt");
   const prefPrompt = flag("pref-prompt");
+  // #146 后续 Y 臂：证据编排（按日期分组 + 证据清点 + 先整理再答），只重排注入块，不删行。
+  const marshalPrompt = flag("marshal-prompt");
   const rows = [];
   let i = 0;
   for (const c of casesAll) {
@@ -1192,6 +1196,8 @@ async function main() {
         const answer = await llm.text([
           b1Mode
             ? { role: "user", content: buildAnswerPromptV3({ question: row.question, evidence: row.evidence, questionDate: c?.questionDateISO, datasetName: ds.name }) }
+            : marshalPrompt
+              ? { role: "user", content: buildAnswerPromptMarshalled({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name, currency: !!currencyPrompt, preference: !!prefPrompt }) }
             : currencyPrompt || prefPrompt
               ? { role: "user", content: buildAnswerPromptTuned({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name, currency: !!currencyPrompt, preference: !!prefPrompt }) }
               : { role: "user", content: buildAnswerPrompt({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name }) },
@@ -1297,7 +1303,17 @@ async function main() {
       tag: String(strArg("tag", "")) || null,
       manifest: manifestUsed,
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
-      answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : currencyPrompt && prefPrompt ? ANSWER_PROMPT_CURRENCY_VERSION + "+pref" : currencyPrompt ? ANSWER_PROMPT_CURRENCY_VERSION : prefPrompt ? ANSWER_PROMPT_PREF_VERSION : "prod-block-v2",
+      answerPrompt: b1Mode
+        ? ANSWER_PROMPT_VERSION
+        : marshalPrompt
+          ? ANSWER_PROMPT_MARSHAL_VERSION + (currencyPrompt ? "+currency" : "") + (prefPrompt ? "+pref" : "")
+          : currencyPrompt && prefPrompt
+            ? ANSWER_PROMPT_CURRENCY_VERSION + "+pref"
+            : currencyPrompt
+              ? ANSWER_PROMPT_CURRENCY_VERSION
+              : prefPrompt
+                ? ANSWER_PROMPT_PREF_VERSION
+                : "prod-block-v2",
   rerankChildProc,
       rerankDocCap,
       rerankThreads,

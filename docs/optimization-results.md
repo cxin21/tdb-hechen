@@ -2364,3 +2364,170 @@ TDAI_DATA_DIR=<mvtavhl6> node --import tsx scripts/bench-oracle-probe.mjs --repo
 - 90 题单档、单判分器；噪声地板 1–2 题。X 的 +10 题远在板上，但单因子结论（C/P/W 各自 +2~4）只在方向上成立。
 - bench 的「答案提示」是生产读侧口径的**代理**，宿主侧（真实 agent 拿到注入块后的行为）是否同样生效需生产埋点复核——这条已在 §24.9 落成 config 档位，默认不生效，可灰度。
 - 私有微基准（30–50 条单值身份属性 + 真实 l1-writer/sqlite）仍未建；机制线的「无收益」结论只对 LME90 成立，对「长期运行、真更新密集」的生产语料未证伪。
+
+---
+
+## §25 召回算法与数据结构的最优性审计（#146 收口后）
+
+> 口径：LME90（`--manifest .eval-data/bench/lme-manifest.json`）、同库 `longmemeval-oracle-mvtavhl6`（1591 记录 / 0 事实行）、`--no-write-steps`、深池精排（`--rerank-candidates 32 --rerank-minscore -10.5 --candidate-k 32 --rerank-child-proc`）、`--prod-data .eval-data/bench/llm-shim-scm`、判分 scm-flash 且全部经 `bench-rejudge` 重判（`-rj`）。噪声地板 = 同批答案 raw→rejudge 翻转 1–2 题（1.1–2.2pp）。
+> 本节问题来自用户原话：「这是最优的召回算法和数据结构么，你再好好分析一下，结合所有相关的配置项和逻辑，哪些是无效的需要清理的」。
+
+### 25.1 结论（先给判定）
+
+1. **不是最优，但瓶颈已经不在检索通道。** 90 题里 88 题的 `sessionCov@10 == sessionCov@5`；10 个「证据不全」题在 k=1/3/5/10 上覆盖率完全不变。加宽检索、放余弦门槛（`--emb-threshold 0.15`）在配对子集上都不改变判对数（18/30 vs 18/30，b2/c2）。检索侧已到该语料的饱和点。
+2. **当前最大的结构性缺陷是「注入单元 = 单条 turn，且没有相邻轮扩展」。** X 臂 24 个错题里 14 个「gold 会话全在块里」（`sessionCovInjected=1`），其中 10 个 `turnCovInjected<1` —— 会话对了、那一轮没进来。仓库里唯一做「摘要→源证据」扩展的 `smallToBig` 只挂在**结论卡**上（`auto-recall.ts:1377-1500`，循环对象是 `r7Conclusions`），而本语料 `conclusionCount=0/90`（`ingest.conclusionsWritten=0`），所以这条扩展路径在此压根不触发。
+3. **答案侧口径是已被证实的最大单因子杠杆**（+10.1pp，`p=0.0129`），而「把注入块重新编排 + 要求先做笔记」是**负结果**（−6 题，`b0/c6`，`p=0.031`）。也就是说：给模型更多结构/更多步骤不划算，给模型**更全的证据 + 更少诱导拒答的措辞**才划算。
+4. **配置面有一半是噪音**：104 个 recall 键里承重 5 / 中性 38 / 无证据 45 / 死码 16；另有 9 处「缺省值三处不一致」（注释 / 解析产物 / 消费点），2 处文档承诺的档位根本没实现。
+5. **代码面有约 300 行两基线皆不可达的死码**（事实行投影 + `fact-turn.ts` 遮蔽路径），其输入 `metadata.fact_of` 在 `write.factRows=false`（`write-policy.ts:77`）下生产恒空。
+
+### 25.2 三套「基线」必须先对齐，否则任何 KPI 都不可比
+
+| 基线 | 位置 | 关键差异 |
+|---|---|---|
+| 代码缺省 | `config.ts` 解析 + `defaults.ts` | `foldClusterEnabled=false`、`rerank.enabled=false`、`smallToBig.enabled=false`、`validity.mode=hard` |
+| 本地 yaml（bench 用它） | `MemoryCore/tdai-gateway.yaml` | `foldClusterEnabled: true`(:156)、`rerank` 开、`routing: assistantRecall`(:260)、`timeProxFallbackEnabled: true`(:271)、`graph/scene/coreRef` 全 0、`validity` soft |
+| 云部署 | `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` | 与本地 yaml 同档（:146/:236/:247），`validity` hard |
+
+结论：**本文件所有 §24/§25 读数都是在「本地 yaml」档下测的**，它同时开着两套折叠（`foldNearDuplicates` 无条件 `auto-recall.ts:2040`，F-CLUSTER v2 受 `foldClusterEnabled` 门控 `:2665`）。生产云模板与之在 `validity.mode` 上不一致，这一点在 §21.3 台账里写反过（记为「代码缺省 soft」，代码实为 hard，`config.ts:2156`）。
+
+### 25.3 数据结构判定
+
+**现状**（`sqlite.ts:766-786`）：一张 `l1_records`（`record_id / content / type / priority / scene_name / session_key / session_id / timestamp_str|start|end / created_time / metadata_json`）+ 两套索引面 `l1_fts`（BM25，27 列）+ `l1_vec`（vec0 余弦），事实键另有平行表 `l1_fact_vec`（`:1038`）。**一条记忆 = 一个对话 turn**。
+
+| 判定 | 证据 | 结论 |
+|---|---|---|
+| D1 事实行双写不值得 | `#146` 三臂：整行 62.2% / 事实行 v2 58.9% / 属性+遮蔽 58.9%，McNemar `p=1.0`；事实行让记录数 1591→2539（+60%），多一套折叠与 `@attr:` 键 | 抽出器保留（`#167` 的身份属性能力有独立价值），**存储面降级为 turn 行的注解**（`metadata.factTriples` 已经在了），撤销「一条事实一行」的并行表与投影 |
+| D2 注入单元过细 | X 臂 14 个「会话全覆盖」错题里 10 个 `turnCovInjected<1`；oracle 探针把这 10 个里的 6 个在注入 gold 轮后转对 | **单元应为「turn + 同会话相邻窗」**，不是单 turn |
+| D3 邻接信息已经存在，不需要改表 | `l1_records.session_id` + `timestamp_str/timestamp_start`（`sqlite.ts:766-786`），`L1QueryFilter.sessionId`（`types.ts:167-176`）已能按会话取行 | 相邻扩展是**纯读侧改动**，零迁移成本 |
+| D4 折叠两套并存（本语料下无损） | 三臂逐题 `hits == injectedLines`（90/90，平均丢 0.00 条）；`dupTurnHits/expandedHits=0/90`（flag 未开，开档实测 34.4%/85.6%） | 折叠逻辑在本语料是 inert 的：不产生损失，也不产生收益，属于「该删的复杂度」而非「该调的参数」 |
+| D5 `fact_index` 写而不读 | 全仓唯一写入点，零读取点（`audit-dead-code.md` D 节） | 纯冗余列 |
+
+### 25.4 算法判定
+
+#### 25.4.1 有效候选池本来就很小（k 不是闸门）
+
+k=10 时 `hits` 分布：**2 条 33/90、3 条 13、4 条 7、5 条 7、6 条 7、7 条 6、8 条 6、9 条 4、10 条 7**；`hits<k` **83/90**。k=5 时均值 2.88，k=10 时 4.51。也就是说「行预算」在这份语料上从未被用满 —— 把 `maxResults` 5→10 的收益来自「把剩下的 1–2 条也装进来」，不是「预算更宽」。
+
+放宽余弦门槛（`--emb-threshold 0.15`，30 题配对子集）：判对 18 vs 18（b2/c2）、池 5.07 vs 5.57、`sessionCovInjected` 0.886 vs 0.852、`turnCovInjected` 0.584 vs 0.623 —— **门槛不是截断者**，放宽只会换掉池内组成。
+
+#### 25.4.2 加宽检索已饱和
+
+88/90 题 `sessionCov@10 == sessionCov@5`；10 个「证据不全」题（`a2f3aa27 ba61f0b9 61f8c8f8 157a136e 129d1232 gpt4_ab202e7f ba358f49 gpt4_f49edff3 cc6d1ec1 gpt4_65aabe59`）在 k=1/3/5/10 上 `sessionCov` 逐档相同（例如 `a2f3aa27` 恒 0.50、`61f8c8f8` 恒 0.50）。缺的那条会话**从不进入候选池**，靠 k 救不回来。
+
+#### 25.4.3 剩余损失的形状（X 臂 66/90）
+
+| 证据（`sessionCovInjected`） | 判对 | 判错（其中拒答） |
+|---|---|---|
+| 全（=1） | 63 | **14（9）** |
+| 不全（<1） | 3 | 10（7） |
+
+24 个错题里 **16 个是拒答**；拒答题的 `evidenceSufficiency` 分布：`=0` 10 个（真无证据）、有部分证据 5 个、`=1` 1 个。⇒ 剩余损失第一是「证据在手仍拒答/答错」（14），第二是「证据没拿到」（10）。
+
+#### 25.4.4 证据编排是负结果（Y 臂）
+
+在 X（k=10 + 币值 + 建议口径）之上再加「按日期分组 + 证据清点 + 先整理再答」（`buildAnswerPromptMarshalled`）：**60/90 = 66.7%**，对 X 是 `b0/c6`（**6 输 0 赢**），`p=0.031`。逐题型：KU 13→11、preference 10→8、TR 9→7、multi 5→5、assistant 14→14、user 15→15。拒答 16→13（少拒了 3 题，但换成了答错），答案长度中位 99→167 字。
+
+结论写死：**「把块整理得更漂亮、让模型先写笔记」不是杠杆**，它同时抬高输出长度与判分风险；表格里的 6 个退步（`2133c1b5 031748ae 1c0ddc50 b6025781 gpt4_85da3956 gpt4_af6db32f`）都是原本一句话答对的简单题。
+
+#### 25.4.5 六臂总表（含本节新增两臂）
+
+| 臂 | 变更 | 判对 | 拒答 | vs A |
+|---|---|---|---|---|
+| A | 整行 k=5，旧提示 | 56/90 62.2% | 28 | — |
+| B | 事实行 v4 + present 遮蔽，k=5 | 57/90 63.3% | 27 | b4/c5 p=1.0 |
+| C | k=5 + 币值口径 | 58/90 64.4% | 23 | b1/c3 p=0.625 |
+| W | k=10，旧提示 | 60/90 66.7% | 21 | b4/c8 p=0.388 |
+| P | k=5 + 建议口径 | 58/90 64.4% | 23 | b3/c5 p=0.727 |
+| **X** | **k=10 + 币值 + 建议** | **66/90 73.3%** | **16** | **b2/c12 p=0.0129** |
+| Y | X + 证据编排 | 60/90 66.7% | 13 | vs X b0/c6 p=0.031 |
+| T | X + 余弦 0.15（30 题子集） | 18/30（X 同 18/30） | 6 | b2/c2 |
+
+#### 25.4.6 延迟结构（audit 读数，A 臂 k=5）
+
+检索 p50 1282 ms / p95 2454 ms；其中 embedding 占 94.8%（中位 167 ms）、fts 5.1%、**fact 通道 0.07%（0.118 ms，`factHits=0` 空查）**、expand 恒 0；精排 473 ms ≈ 端到端 p50 的 65%。⇒ 索引结构优化对延迟几乎无收益，真收益在精排批处理/缓存与「关掉空转通道」。
+
+### 25.5 无效项清单（按处置分级）
+
+#### A 直接删（无产品决策，纯减法，~300 行）
+
+| 位置 | 内容 | 为什么可删 |
+|---|---|---|
+| `auto-recall.ts:3752-3788` + `fact-turn.ts:107-190` | 事实行投影 + present-intent 值级遮蔽（`collapseFactRowsByTurn`） | 唯一输入 `metadata.fact_of` 由 `write-policy.ts:77`（`factRows: false`）关闭，两基线皆不可达；#166 的收益在 LME90 上 `p=1.0` |
+| `auto-recall.ts:1849-1900` + intent 矩阵 `:1393-1395 / 1520 / 1598 / 1761-1763` | turn-first 装配 + `routing:"intent"` 策略矩阵 | 需要 `routing:"intent"`，全仓零配置、零测试 |
+| `auto-recall.ts:3664-3675` | `supersededRows` 每轮整池计算后丢弃 | 真·空转：结果只被死分支读 |
+| `auto-recall.ts:3676-3705` | soft 失效块 | 与「硬过滤 + `validity.mode=hard`」并存，生产永远走不到 |
+| `auto-recall.ts:2036`（`injectTimeSort`）、`:2041`（`injectWrapper` 的 legacy/neutral 双档） | 注入排序与包裹语分支 | 两基线都取默认值，分支不可达（包裹语若要动，就按 §24.9 新增 `calibrated` 档，而不是留两档） |
+| `fact_index` 列 | 只写不读 | 见 D5 |
+
+#### B 「开着的但恒不生效」的配置（16 个死码键）
+
+| 键 | 现状 | 判定 |
+|---|---|---|
+| `ageDecay.*` / `timeProxFallbackEnabled` | yaml 开，但 `rerankWeights.timeProx=0`（`tdai-gateway.yaml:212`）使乘子根本不计算（`memory-search.ts:676-681`） | 文档 §5b bit-identical；要么删键，要么把 `timeProx` 权重设非零再测 |
+| `rerank.minScore = -10.5` | 实测候选分全在 [−10.18, +10.28]，恒不触门 | 名存实亡的闸；k 才是闸 |
+| `maxCharsPerMemory` / `maxTotalRecallChars` 双 0 | `auto-recall.ts:4011` 提前 `return lines` | 字符预算整条通道从未生效；若设 6000，A 臂 10/90、X 臂 30/90 会被截 |
+| `importantPenalty`（`importancePenalty`） | 罚中 **0/90 题、0/1644 行**，乘子恒 1 | 未生效 |
+| `nativeMinRRF` | sqlite 后端不可达，yaml 仍设 0.016 | 删或注明仅 native 路 |
+| `graphDiscount / sceneBoost / coreRefBoost` = 0 | 三个补池通道全关 | 已显式关；对应 `ppr*` / `sceneBoost` 派生键一起清 |
+
+#### C 缺省值三处不一致（9 条，最容易再犯的一类）
+
+- `ftsOnlyInjectCap`：接口注释「缺省 2」（`config.ts:508`）→ 解析产物 `undefined`（`:2320`）→ 真实值 2 藏在消费点（`auto-recall.ts:1843`）。
+- `validity.mode`：§21.3 台账写「代码缺省 soft」，代码实为 `hard`（`config.ts:2156`）；本地 yaml soft、云模板 hard。
+- `maxConclusions`（运行期 `floor(maxResults/2)`）、`conclusionLayer.rerankGate.minScore`（−1）、`cacheTtlMs` 同类。
+- `injectWrapper` 的 `"calibrated"` 档：§24.9 承诺的落点，**类型与解析只有 legacy/neutral**（`config.ts:496`）——承诺未实现。
+
+#### D 无证据 / 中性键（38 + 45 = 83 个）
+
+45 个键在 docs 全库零命中、bench 快照也无对照（`foldClusterEnabled` 之外的一批 `ppr*/mood*/scene*/emotion*` 派生键占多数）；38 个测过但差异落在地板内。**处置建议**：不急着删（删键会破坏老 yaml 兼容），而是在 `config.ts` 接口上加 `@evidence` 注释（§号 / 「无对照」），并把「无证据」列进 `docs/agents/` 的复核清单，避免下一轮又对着这些键做「调参」。
+
+#### E 插桩空转（会让所有后续读数失真）
+
+- `lineTypeStats`：`raw-turn 259/259 = 100%`，conclusion / evidence-recall / unknown 各 0 行 —— 抽掉 raw-turn 覆盖率归零，全链只有一层在产出。
+- `conclusionCount=0/90`（`ingest.conclusionsWritten=0`）、`layered=true 0/90`、`experienceCount>0 90/90`。
+- `unresolved=0` / `hasEvidence=true` 在 90 题恒值：语义是「turn id 解析失败数」和「数据集有无标注」，**结构上永不报警**，不能当召回告警用。真缺口要靠 `turnCovInjected`（X 臂 76.7%）与 `evidenceSufficiency=0`（18/90）。
+- 折叠没有插桩字段，但本语料 `hits == injectedLines`（零损失）；`dupTurnHits/expandedHits` 在 bench 里恒 0（flag 未开，开档 34.4% / 85.6%）。
+
+### 25.6 最优算法提案（按「已验证 / 待验证」分开）
+
+**已由本文件读数支持、可直接定档的（读侧）：**
+
+1. `recall.maxResults = 8–10`（§24 已测：+4.5pp 单独、+10.1pp 与口径合用时）。
+2. 答案口径三件套：币值判定 + 建议口径 + 「仅在完全无相关行时拒答」。已在 `llm.mjs` 落成 `buildAnswerPromptTuned`（X 臂）。
+3. 注入包裹语改「calibrated」：现行 legacy「仅作为参考」/neutral「若记忆不足以回答，请如实说明」都在诱导拒答（X 臂仍有 6 个「有证据但拒答」）。**这条要先实现档位**（`config.ts:496` 目前只有两档）。
+
+**最强候选、但尚未实现（下一张票的正当内容）：**
+
+4. **证据包（turn + 同会话相邻窗）**：对每条入选 turn，按 `session_id` 取同会话相邻轮（±1 或整会话 ≤6 轮），按 `timestamp_str` 排序，占用「上下文行」预算（`smallToBig.maxExtraLines` 已有的账本口径）。预期上限 **≤6 题 = ≤6.7pp**（oracle 探针里 10 个 `turnCovInjected<1` 的错题，注入 gold 轮后转对 6 个），实现零迁移（D3）。
+5. **把 `smallToBig` 从「结论卡专用」升级为「命中行通用」**：当前它的循环对象是 `r7Conclusions`；改成「结论卡 → part_of 证据」+「raw turn → 同会话相邻轮」两路同一预算池，是本提案的最小改动形态（`auto-recall.ts:1377-1500` 一处扩写 + 一个 `adjacencyProbe` 注入点）。
+6. **行预算 → 充分性判定**：以 `sessionCovInjected / turnCovInjected / evidenceSufficiency` 为运行期信号，不足时触发二次检索（查询改写或邻接扩展），而不是继续加 k（§25.4.2 已证明加 k 饱和）。
+
+**已否证，不要再试：**
+
+7. 加余弦门槛/放宽余弦门槛、加大 k、事实行双写、present-intent 值级遮蔽（作为 LME 收益来源）、证据编排/先写笔记、`timeProx`/`ageDecay` 这类「开着但乘子为 0」的键。
+
+### 25.7 复现
+
+```bash
+# X 臂（最优已测档）
+cd MemoryCore && node --import tsx scripts/eval-memory-bench.mjs \
+  --dataset longmemeval --manifest .eval-data/bench/lme-manifest.json --pace 150 --gen-limit 90 \
+  --recall-ks 1,3,5,10 --embed-interval-ms 1200 \
+  --rerank-candidates 32 --rerank-minscore -10.5 --candidate-k 32 --rerank-child-proc \
+  --prod-data .eval-data/bench/llm-shim-scm \
+  --store <store> --no-write-steps --recall-max-results 10 --currency-prompt --pref-prompt \
+  --tag r146c-best --report-name lme90-r146-r146c-best
+
+# Y 臂（本节的负结果）：在 X 基础上加 --marshal-prompt
+# T 臂（余弦放宽）：在 X 基础上加 --emb-threshold 0.15
+# 一轮重判：TDAI_DATA_DIR=<store> node --import tsx scripts/bench-rejudge.mjs <report> --out <report>-rj.json
+```
+
+三份审计原文（随本节一并入库）：[2026-10-30-recall-config-surface.md](audit/2026-10-30-recall-config-surface.md)（104 键四档判定 + 缺省三处不一致台账）、[2026-10-30-recall-dead-code.md](audit/2026-10-30-recall-dead-code.md)（A/B/C/D 四节，全部带 `file:line`）、[2026-10-30-recall-instrumentation.md](audit/2026-10-30-recall-instrumentation.md)（触发率/行类型/耗时/预算 8 节）。
+
+### 25.8 边界
+
+- 单语料（LME90）、单判分器；除 X 臂外，其余臂的差值都在或接近噪声地板（1–2 题）。Y 的 −6 题 `p=0.031` 是本节唯一达到 0.05 的负结果，仍属单档结论。
+- 「证据包」的 ≤6.7pp 来自 oracle 探针（直接注入 gold 轮）的**上限**，真实实现要付「同会话噪声轮」的代价，实测低于此值属正常。
+- 本节判的是「LME90 上的召回算法与数据结构」；生产语料（长会话、真更新密集）不在此列，§24.8 的私有微基准仍然欠着。
+- 顺带留档：本次 `npm run typecheck`（`tsconfig.typecheck.json`）在 main 上是红的——243 个 `error TS` 分布在 45 个文件（`src/utils/pipeline-factory.ts`、`src/core/store/sqlite.ts`、`src/gateway/*` 等），全部与本节改动无关（本节只动 `scripts/*.mjs` 与文档）；`npm test` 290 files / 2710 tests 全绿。即「测试绿 + 类型红」的既有负债，清理时应单开一张票处理，别混进召回改动。
