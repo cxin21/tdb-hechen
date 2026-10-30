@@ -19,7 +19,7 @@
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { generateText, streamText, tool, stepCountIs, jsonSchema } from "ai";
+import { APICallError, generateText, streamText, tool, stepCountIs, jsonSchema } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { report } from "../../core/report/reporter.js";
 import type {
@@ -32,6 +32,32 @@ import type {
 import type { LLMUsage } from "../../core/report/metric-tracking-runner.js";
 
 const TAG = "[memory-tdai] [standalone-runner]";
+
+/** APICallError 时补的响应体片段上限（字符）——足够看出端点为什么拒，又不刷屏。 */
+const API_ERROR_BODY_LIMIT = 2048;
+
+/**
+ * #121 8.2：LLM 调用失败日志的定位信息。
+ *
+ * 纯日志增强，不改错误语义：只有 AI SDK 的 APICallError（端点返回 4xx/5xx）才追加
+ * ` (status=..., url=..., body=<前 2048 字符>…(+<剩余>))`；其它错误返回空串，
+ * 保持原日志格式不变。
+ */
+function formatApiErrorDetail(err: unknown): string {
+  if (!APICallError.isInstance(err)) return "";
+  const parts: string[] = [];
+  if (typeof err.statusCode === "number") parts.push(`status=${err.statusCode}`);
+  if (typeof err.url === "string" && err.url.length > 0) parts.push(`url=${err.url}`);
+  const body = typeof err.responseBody === "string" ? err.responseBody : undefined;
+  if (body && body.length > 0) {
+    const snippet =
+      body.length > API_ERROR_BODY_LIMIT
+        ? `${body.slice(0, API_ERROR_BODY_LIMIT)}…(+${body.length - API_ERROR_BODY_LIMIT})`
+        : body;
+    parts.push(`body=${snippet}`);
+  }
+  return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+}
 
 /**
  * 端点 reasoning_effort 能力缓存（进程级，key = `${baseUrl}|${model}`）。
@@ -546,7 +572,7 @@ export class StandaloneLLMRunner implements LLMRunner {
     } catch (err) {
       const totalMs = Date.now() - runStartMs;
       const errMsg = err instanceof Error ? err.message : String(err);
-      this.logger?.error(`${TAG} run() failed after ${totalMs}ms: ${errMsg}`);
+      this.logger?.error(`${TAG} run() failed after ${totalMs}ms: ${errMsg}${formatApiErrorDetail(err)}`);
 
       if (params.instanceId) {
         report("llm_call", {

@@ -846,7 +846,9 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   const pendingL0: L0Record[] = [];
   const seenInBatch = new Set<string>();
   for (const [index, msg] of messages.entries()) {
-    const id = `msg-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    // #121 8.1：不截断 UUID——12 hex 只剩 48 bit 命名空间，生日界下约 2e7 条即有一半概率
+    // 碰撞，1e8 条量级预期撞掉约 18 条（upsert 静默覆盖，取证链断号）。上游保留全 32 hex。
+    const id = `msg-${randomUUID().replace(/-/g, "")}`;
     const ingestRecordedAtMs = ingestBaseMs + index;
     const recordedAtMs = msg.recorded_at
       ? new Date(msg.recorded_at).getTime()

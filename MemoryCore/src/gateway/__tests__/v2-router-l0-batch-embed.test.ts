@@ -176,3 +176,26 @@ describe("L0 落库批量化（B 降调用量）", () => {
     expect(store.rows).toHaveLength(2);
   });
 });
+
+describe("L0 记录 id 唯一性（#121 8.1）", () => {
+  it("新落库的 L0 id 为 msg- + 32 位 hex（不再截断到 12 位）", async () => {
+    const store = makeStore();
+    const embedding = makeEmbedding();
+    const env = await addConversation(makeDeps(store, embedding), {
+      session_id: "s-id-1",
+      messages: [
+        { role: "user", content: "id 形态一" },
+        { role: "assistant", content: "id 形态二" },
+      ],
+    });
+
+    expect(env.code).toBe(0);
+    expect(store.rows).toHaveLength(2);
+    // 12 hex 只剩 48 bit 命名空间，批量导入/多会话并发下生日碰撞会静默覆盖同 id 记录；
+    // 与上游一致：保留 randomUUID() 的完整 32 hex。
+    for (const row of store.rows) {
+      expect(row.id).toMatch(/^msg-[0-9a-f]{32}$/);
+    }
+    expect(new Set(store.rows.map((r) => r.id)).size).toBe(store.rows.length);
+  });
+});

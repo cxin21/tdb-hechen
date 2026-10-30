@@ -84,8 +84,6 @@ let _reclaimTimer: ReturnType<typeof setTimeout> | null = null;
 // Context Engine singleton — survives across registerOffload() calls.
 let _sharedEngine: OffloadContextEngine | null = null;
 let _contextEngineRegistered = false;
-/** Set to true when registerContextEngine returns ok=false or throws — all offload functions disabled. */
-let _contextEngineRejected = false;
 
 // SessionRegistry singleton — MUST be shared between engine and hooks.
 // OpenClaw calls register() N times; hooks from different calls may coexist.
@@ -1005,10 +1003,9 @@ export function registerOffload(api: any, offloadConfig: OffloadConfig): void {
   const _trackedOn = (hookName: string, handler: (...args: any[]) => any) => {
     _hookNames.push(hookName);
     if (typeof api.on === "function") {
-      api.on(hookName, (...args: any[]) => {
-        if (_contextEngineRejected) return; // slot not acquired — all offload disabled
-        return handler(...args);
-      });
+      // #121 8.3：这里不再按 Context Engine 槽位门控——hook 与 CE 注册是两条独立通路
+      // （采集 / 预处理 / L3 压缩不依赖 assemble），槽位不可用只该损失 L1.5 判定与 MMD 注入。
+      api.on(hookName, handler);
     } else {
       logger.error(`[context-offload] api.on not available for hook "${hookName}"! Hook will not fire.`);
     }
@@ -1189,9 +1186,21 @@ export function registerOffload(api: any, offloadConfig: OffloadConfig): void {
 
   // In "collect" mode: skip Context Engine entirely, use legacy compaction.
   // L1/L1.5/L2 still run async but L3 is disabled.
+  const CE_PLUGIN_ID = "memory-tencentdb";
+
+  /**
+   * #121 8.3：Context Engine 只是「L1.5 判定 + MMD 注入」的载体。槽位不归本插件、或被别的
+   * 插件占住时只降级这两项能力——一律只 warn（不再置全局禁用位），因为
+   * after_tool_call 采集 / before_prompt_build 预处理 / llm_input L3 压缩都是与 CE 注册
+   * 无关的独立 hook 通路，reclaim scheduler 也与本段无关，都必须继续工作。
+   */
+  const warnCeUnavailable = (reason: string) => {
+    logger.warn(`[context-offload] ${reason} — L1.5 task judgment and MMD injection unavailable; tool-call collection and L3 compression keep working.`);
+  };
+
   if (offloadConfig.mode === "collect") {
     const _configSlotCE = (api.config as any)?.plugins?.slots?.contextEngine;
-    if (_configSlotCE === "memory-tencentdb") {
+    if (_configSlotCE === CE_PLUGIN_ID) {
       logger.warn(`[context-offload] Mode "collect" but slots.contextEngine="${_configSlotCE}". Context Engine will NOT be registered in collect mode - consider removing the slot or switching to mode "backend".`);
     }
     logger.info(`[context-offload] Mode "collect": L3 disabled, context engine NOT registered (using legacy compaction). L1/L1.5/L2 active.`);
@@ -1225,45 +1234,35 @@ export function registerOffload(api: any, offloadConfig: OffloadConfig): void {
     // If the slot is configured for another engine (e.g. "legacy"), we must NOT
     // register — even if api.registerContextEngine() would return ok:true,
     // the framework won't actually call our assemble(), causing L1.5 to never settle.
-    const CE_PLUGIN_ID = "memory-tencentdb";
     const configSlotCE = (api.config as any)?.plugins?.slots?.contextEngine;
     if (configSlotCE !== CE_PLUGIN_ID) {
-      logger.warn(`[context-offload] Config plugins.slots.contextEngine="${configSlotCE ?? "(not set)"}" (expected "${CE_PLUGIN_ID}"). Context engine slot not assigned to this plugin - ALL offload functions disabled.`);
-      _contextEngineRejected = true;
-      return;
-    }
-
-    // First registration — actually register with the framework
-    let ceSlotOccupied = false;
-    try {
-      const result = api.registerContextEngine(CE_PLUGIN_ID, () => engine) as any;
-      if (result && result.ok === false) {
-        logger.error(`[context-offload] registerContextEngine returned { ok: false, existingOwner: ${result.existingOwner ?? "?"} }. Context engine slot occupied — ALL offload functions disabled!`);
-        ceSlotOccupied = true;
-      } else {
-        _contextEngineRegistered = true;
-        logger.debug?.("[context-offload] Context engine registered successfully (first call)");
-      }
-    } catch (ceErr) {
-      logger.warn(`[context-offload] registerContextEngine factory failed: ${ceErr}, trying direct object`);
-      try {
-        const result2 = api.registerContextEngine(CE_PLUGIN_ID, engine) as any;
-        if (result2 && result2.ok === false) {
-          logger.error(`[context-offload] registerContextEngine direct returned { ok: false }. Context engine slot occupied — ALL offload functions disabled!`);
-          ceSlotOccupied = true;
-        } else {
-          _contextEngineRegistered = true;
-          logger.debug?.("[context-offload] Context engine registered successfully (direct mode)");
+      warnCeUnavailable(`Config plugins.slots.contextEngine="${configSlotCE ?? "(not set)"}" (expected "${CE_PLUGIN_ID}"), context engine not registered`);
+    } else {
+      // 首次注册：factory 形态优先，抛错再退回直传对象；两种形态都失败只降级，不中断后续启动。
+      const attempt = (factory: any, label: string): boolean => {
+        const result = api.registerContextEngine(CE_PLUGIN_ID, factory) as any;
+        if (result && result.ok === false) {
+          warnCeUnavailable(`registerContextEngine ${label} returned { ok: false, existingOwner: ${result.existingOwner ?? "?"} }`);
+          return false;
         }
-      } catch (ceErr2) {
-        logger.error(`[context-offload] registerContextEngine direct also failed: ${ceErr2}. ALL offload functions disabled!`);
-        ceSlotOccupied = true;
+        _contextEngineRegistered = true;
+        logger.debug?.(`[context-offload] Context engine registered successfully (${label})`);
+        return true;
+      };
+      let registered = false;
+      try {
+        registered = attempt(() => engine, "first call");
+      } catch (ceErr) {
+        logger.warn(`[context-offload] registerContextEngine factory failed: ${ceErr}, trying direct object`);
+        try {
+          registered = attempt(engine, "direct mode");
+        } catch (ceErr2) {
+          warnCeUnavailable(`registerContextEngine direct also failed: ${ceErr2}`);
+        }
       }
-    }
-    if (ceSlotOccupied) {
-      _contextEngineRejected = true;
-      logger.error("[context-offload] Offload module DISABLED: context engine slot occupied by another plugin. All hooks will be no-ops.");
-      return; // Early exit — do not start reclaim scheduler either
+      if (!registered) {
+        logger.debug?.("[context-offload] Continuing without a context engine — hooks (collection / preprocessing / L3) stay active, reclaim scheduler still starts.");
+      }
     }
   } else {
     logger.debug?.("[context-offload] Context engine already registered, singleton updated (hot-refresh)");
@@ -2191,7 +2190,11 @@ class OffloadContextEngine {
         } catch { /* ignore */ }
         if (!delegateFn) {
           try {
-            const sdk = await import("openclaw/plugin-sdk" as any);
+            // 运行时可选的宿主 SDK：用变量说明符 + @vite-ignore 避免被静态打包器解析
+            // （本模块的回归测试需要在 vitest/vite 下 import 本文件，静态解析会因
+            //  openclaw 包的 exports 条件不匹配而整文件加载失败）。
+            const sdkModuleId = "openclaw/plugin-sdk";
+            const sdk = await import(/* @vite-ignore */ sdkModuleId);
             delegateFn = sdk.delegateCompactionToRuntime;
             logger.debug?.(`[context-offload] compact: resolved via direct import`);
           } catch { /* ignore */ }
