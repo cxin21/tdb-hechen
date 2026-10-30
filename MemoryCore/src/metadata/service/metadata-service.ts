@@ -1588,9 +1588,18 @@ export class MetadataService {
     });
     if (fast.allowed) return fast;
 
-    // 只有「通过了前置门但角色默认未覆盖」(no_permission) 才需懒加载 ACL 重判
-    if (fast.reason !== "no_permission") return fast;
-    if (membership && roleDefaultCovers(membership.role, action)) return fast;
+    // restricted 是「严格 ACL 白名单」：非 admin 在空 ACL 下必然得到 visibility_restricted，
+    // 这条路必须查表才有意义，否则 acl/grant 对 restricted 资产恒等于无效（issue #116 追加修复）。
+    const needsAclForRestricted =
+      asset.visibility === "restricted" &&
+      fast.reason === "visibility_restricted" &&
+      membership?.role !== "admin";
+
+    // 其余情况只有「通过了前置门但角色默认未覆盖」(no_permission) 才需懒加载 ACL 重判
+    if (!needsAclForRestricted) {
+      if (fast.reason !== "no_permission") return fast;
+      if (membership && roleDefaultCovers(membership.role, action)) return fast;
+    }
 
     const aclRecords = await this.allAclRecords(params.asset_id);
     return checkPermission({

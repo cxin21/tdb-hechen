@@ -70,6 +70,7 @@ interface Fixture {
   carolKey: string;   // 同 team 的普通成员
   bobKey: string;     // 另一个 team 的人，对本 team 完全无关系
   aliceUserId: string;
+  carolUserId: string;
   teamId: string;
   alicePrivateId: string;
   aliceTeamSharedId: string;
@@ -122,6 +123,7 @@ async function seed(): Promise<Fixture> {
     carolKey: carol.default_user_key,
     bobKey: bob.default_user_key,
     aliceUserId: alice.user_id,
+    carolUserId: carol.user_id,
     teamId: team.team_id,
     alicePrivateId: alicePrivate.asset_id,
     aliceTeamSharedId: aliceTeamShared.asset_id,
@@ -279,10 +281,7 @@ describe("issue #116 — asset/list 调用者过滤", () => {
     expect(total(res)).toBe(2);
   });
 
-  it("restricted 资产：非 owner 成员读不到（get 404、list 不含），owner 不受影响", async () => {
-    // 注意：restricted + acl/grant 目前对非 admin 仍一律被拒，因为 checkAssetPermission
-    // 的懒加载 ACL 只在 reason === "no_permission" 时才查表（metadata-service.ts:1592，
-    // pre-existing，与 #116 无关）。这里只钉住「调用者过滤」这一层的行为。
+  it("restricted 资产：ACL 授予后可读（get 200、list 包含），owner 不受影响", async () => {
     const restrictedId = "asset_alice_restricted";
     await fx.svc.createAsset({
       asset_id: restrictedId,
@@ -317,6 +316,57 @@ describe("issue #116 — asset/list 调用者过滤", () => {
     expect(ids(listBefore)).not.toContain(restrictedId);
     expect(ownerGet.status).toBe(200);
     expect((ownerGet.body.data as AssetEntity).asset_id).toBe(restrictedId);
+
+    // restricted = 严格 ACL 白名单：显式授予 read 后，非 admin 成员才可读
+    await fx.svc.grantAcl({
+      asset_id: restrictedId,
+      subject_type: "user",
+      subject_id: fx.carolUserId,
+      permission: "read",
+      granted_by: fx.aliceUserId,
+    });
+
+    const getAfter = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/get`,
+      { asset_id: restrictedId },
+      fx.carolKey,
+    );
+    const listAfter = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId },
+      fx.carolKey,
+    );
+    expect(getAfter.status).toBe(200);
+    expect((getAfter.body.data as AssetEntity).asset_id).toBe(restrictedId);
+    expect(ids(listAfter)).toContain(restrictedId);
+    expect(total(listAfter)).toBe(2);
+  });
+
+  it("private 资产：即使 ACL 授予 read 也读不到（private 严格只有 owner）", async () => {
+    await fx.svc.grantAcl({
+      asset_id: fx.alicePrivateId,
+      subject_type: "user",
+      subject_id: fx.carolUserId,
+      permission: "read",
+      granted_by: fx.aliceUserId,
+    });
+
+    const get = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/get`,
+      { asset_id: fx.alicePrivateId },
+      fx.carolKey,
+    );
+    const list = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId },
+      fx.carolKey,
+    );
+    expect(get.status).toBe(404);
+    expect(ids(list)).not.toContain(fx.alicePrivateId);
   });
 
   it("system_admin 行为不变：全量（含他人 private）", async () => {
