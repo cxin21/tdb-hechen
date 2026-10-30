@@ -25,6 +25,8 @@
 - **生产开关台账（switch ledger）**：#145 收尾建立的口径——生产 yaml 只钉「有实测作用」的键，证据栏为空就不加。现行判决见 docs/optimization-results.md §21.3：留 `rerank.enabled=true` / `candidates=32` / `recall.candidateK=32` / `validity.mode=soft` / `smallToBig additive×4`；**删钉** `rerank.minScore`（改吃 provider 刻度缺省）、排序加权旋钮**整件删除**（键 + 逻辑）；**不设** `fusion.mode` 与 `factChannel.enabled`（matched 增益不转化为答案质量）。强度标记：PASS（真配对过 E2 门禁）/ns（不显著）/matched（混杂浅池，仅方向）/机制（无实测）。**失效旋钮要删代码，不只是撤钉子**——留在仓库里的死配置不显眼，后续每轮 bench 会静默继承，还会诱使别人再调一遍。
 - **Panel UI 小白优先原则**（2026-10-19 用户拍板）：MemoryPanel 一切界面以「第一次接触本系统的运维者」为基准用户，易用易懂优先——①白话标签，禁内部术语直达 UI（slot 名/门名/接口词翻译成人话，未知名的 slot 键也不许直达 UI，兜底「未知提案」，原始键名走悬停提示——如 self_identity → 「我是谁」提案、未知 slot → 「未知提案」）；②状态外显（生效/降级/关闭一眼可辨，配一句解释）；③渐进披露（默认简单视图，技术细节折叠进高级区）；④降级与错误用人话说明（如叙事兜底 → 「已自动回退到原文显示」，不静默）。落点：所有 Panel UI 票的验收标准（首个应用票=R3 叙事预览，待立票；#105 起两页待裁决区落地本词条）。
 
+- **资产读授权口径（caller read authz）**：资产元数据的读可见性有两套意图相关的语义——**单条读**（`asset/get`）system_admin 豁免 → owner 恒可读（含归档）→ 其余走 `checkAssetPermission`，无权映射 **404 且与「不存在」同文案**（绝不 403，不泄露存在性）；**列表读**（`asset/list`、`asset/list-accessible`）非 active 成员空页 `total=0`，权限过滤在分页前完成故 total 恒为可见集合总数。归档口径单一谓词 `isHiddenFromDefaultList`（archived/deprecated/failed）默认隐藏（含 owner 与 admin），只有 `asset/list` 显式 `status` 过滤才返回且仍需通过可见性判定。`private` 恒只有 owner（ACL 不得放宽），`restricted` 是严格 ACL 白名单，agent 主体只在调用显式传 `agent_id` 时参与。判定单一源 `PermissionChecker.checkPermission`。→ ADR-0017
+
 ## 架构决定（ADR）
 
 - [ADR-0001 值信号租户口径与维持现状裁决](docs/adr/0001-值信号租户口径与维持现状裁决.md) —— 值信号 default 桶契约、G-SIMMERGE/q 截断/R4 否定盲区维持现状、coreRef 精排因子 tie-breaker 定位。
@@ -38,4 +40,5 @@
 - [ADR-0011 事实键平行召回通道与多事实键](docs/adr/0011-事实键平行召回通道与多事实键.md) —— W1 键替换形态无净收益（#147），改平行通道：原文主索引不动、事实单独向量表、只扩召回；多事实来源 + 单条归一化 clamp；rrf 档只收新候选（双命中不反超）、normalized 档通道归一化分作主序；缺省三开关全关。
 - [ADR-0016 抽取期受控 attribute（canonical 属性词表）](docs/adr/0016-抽取期受控属性词表.md) —— 封闭 24 名（single 10 / multi 14），抽取期直出；事实键优先 `(normSubject, @attr:<attribute>)`、无 attribute 回落谓词；基数裁决 attribute > 显式 > 启发式（`resolveFactCardinality` 单一源）；别名只做词形容错，歧义词不收；旧谓词键行不迁移。
 - [ADR-0015 事实级双时态：一条事实一行](docs/adr/0015-事实级双时态-一条事实一行.md) —— 写/失效粒度降到（实体,属性）事实行（single 才失效、multi additive）、行 content 保留父 turn 原文以便按 turn 折叠、不做不可逆迁移；决定 7（#166）在 present-intent 下做值级遮蔽，把污染 turn 的注入降级为事实短语。
+- [ADR-0017 资产读授权口径：get / list 与归档可见性](docs/adr/0017-资产读授权口径-get与list.md) —— get=404 不泄露存在性（owner 可读归档）、list=分页前过滤 total 准确、归档口径收敛到 `isHiddenFromDefaultList` 单一谓词、private 不被 ACL 放宽、agent 主体 opt-in。
 - [ADR-0009 服务间鉴权：KNOWLEDGE_SERVICE_KEY fail-closed](docs/adr/0009-服务间鉴权-KNOWLEDGE_SERVICE_KEY.md) —— 空 key=不启用/非空=写管理面 401、只读白名单口径（补齐上游漏掉的 code-graph 8 个动态只读查询）、code-graph 查询名单单一真相源、真实路由表护栏、key 三侧传播与部署侧自动生成。

@@ -226,6 +226,18 @@ export interface AssetListForCallerParams extends AssetFilter {
 
 const FILTERED_STATUSES: AssetStatus[] = ["archived", "deprecated", "failed"];
 
+/**
+ * 列表默认可见性口径（单一源，issue #116 收尾）：
+ * archived / deprecated / failed 不进入默认列表 —— asset/list、asset/list-accessible、
+ * agent-fixed-asset/list-with-detail 共用本谓词，避免各端点各自判断导致口径漂移。
+ *
+ * 显式寻址不受影响：asset/get 对 owner 仍返回归档资产（管理/恢复需要），
+ * asset/list 只有调用方显式传 `status` 过滤时才可能返回这些状态。
+ */
+function isHiddenFromDefaultList(asset: Pick<AssetEntity, "status">): boolean {
+  return FILTERED_STATUSES.includes(asset.status);
+}
+
 export interface MetadataQuotaLimits {
   maxUsersPerInstance: number;
   maxTeamsPerInstance: number;
@@ -1146,8 +1158,12 @@ export class MetadataService {
     pagination: PaginationParams = DEFAULT_PAGINATION,
   ): Promise<PaginatedResult<AssetEntity>> {
     const { team_id, ...filter } = params;
+    // 归档口径与 list-accessible 对齐：未显式按 status 过滤时，归档/弃用/失败不进默认列表。
+    const hideFilteredStatuses = !filter.status;
     if (ctx.isSystemAdmin) {
-      return this.listAssetsByTeam(team_id, pagination, filter);
+      if (!hideFilteredStatuses) return this.listAssetsByTeam(team_id, pagination, filter);
+      const all = await this.collectAssetsByTeam(team_id, filter);
+      return paginateArray(all.filter((a) => !isHiddenFromDefaultList(a)), pagination);
     }
     if (!ctx.userId) return paginateArray([], pagination);
     const member = await this.store.getTeamMember(team_id, ctx.userId);
@@ -1159,6 +1175,7 @@ export class MetadataService {
     while (true) {
       const page = await this.store.listAssetsByTeam(team_id, { limit, offset }, filter);
       for (const asset of page.items) {
+        if (hideFilteredStatuses && isHiddenFromDefaultList(asset)) continue;
         if (await this.canReadAsset(asset, ctx.userId)) visible.push(asset);
       }
       // 空页提前退出：并发删除等导致 offset 越过 total 时不会原地死循环
@@ -1167,6 +1184,21 @@ export class MetadataService {
       offset += limit;
     }
     return paginateArray(visible, pagination);
+  }
+
+  /** 整队资产全量扫描（分页拼装；用于 system_admin 的默认列表口径过滤）。 */
+  private async collectAssetsByTeam(teamId: string, filter: AssetFilter): Promise<AssetEntity[]> {
+    const assets: AssetEntity[] = [];
+    let offset = 0;
+    const limit = 100;
+    while (true) {
+      const page = await this.store.listAssetsByTeam(teamId, { limit, offset }, filter);
+      assets.push(...page.items);
+      if (page.items.length === 0) break;
+      if (offset + page.items.length >= page.total) break;
+      offset += limit;
+    }
+    return assets;
   }
 
   async touchAssetUsage(assetId: string): Promise<void> {
@@ -1503,7 +1535,7 @@ export class MetadataService {
       const asset = await this.getAssetById(b.asset_id);
       if (!asset) continue;
 
-      if (FILTERED_STATUSES.includes(asset.status)) continue;
+      if (isHiddenFromDefaultList(asset)) continue;
 
       if (params.apply_visibility_filter && !canBindAsset(agent, asset)) continue;
 
@@ -1658,7 +1690,7 @@ export class MetadataService {
         );
         for (const asset of page.items) {
           if (seen.has(asset.asset_id)) continue;
-          if (FILTERED_STATUSES.includes(asset.status)) continue;
+          if (isHiddenFromDefaultList(asset)) continue;
           // visibility 白名单过滤（在权限判定前先剔除，节省 checkAssetPermission 开销）
           if (visFilter && !visFilter.has(asset.visibility)) continue;
           const perm = await this.checkAssetPermission({

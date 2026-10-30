@@ -74,6 +74,7 @@ interface Fixture {
   teamId: string;
   alicePrivateId: string;
   aliceTeamSharedId: string;
+  aliceArchivedId: string;
 }
 
 async function seed(): Promise<Fixture> {
@@ -114,6 +115,17 @@ async function seed(): Promise<Fixture> {
     visibility: "team",
   });
 
+  const aliceArchived = await svc.createAsset({
+    asset_id: "asset_alice_archived",
+    team_id: team.team_id,
+    asset_type: "skill",
+    name: "alice-archived",
+    owner_user_id: alice.user_id,
+    source_type: "manual",
+    visibility: "team",
+    status: "archived",
+  });
+
   return {
     store,
     svc,
@@ -127,6 +139,7 @@ async function seed(): Promise<Fixture> {
     teamId: team.team_id,
     alicePrivateId: alicePrivate.asset_id,
     aliceTeamSharedId: aliceTeamShared.asset_id,
+    aliceArchivedId: aliceArchived.asset_id,
   };
 }
 
@@ -381,3 +394,245 @@ describe("issue #116 — asset/list 调用者过滤", () => {
     expect(total(res)).toBe(2);
   });
 });
+
+describe("issue #116 收尾 — 归档口径统一（asset/list 与 asset/list-accessible 同一谓词）", () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await seed();
+  });
+
+  afterEach(() => {
+    fx.store.close();
+  });
+
+  function ids(res: RouteResult): string[] {
+    return (res.body.data as PaginatedResult<AssetEntity>).items.map((a) => a.asset_id);
+  }
+
+  function total(res: RouteResult): number {
+    return (res.body.data as PaginatedResult<AssetEntity>).total;
+  }
+
+  it("owner：默认列表不含自己的归档资产，但按 id 仍可读（显式寻址通道不变）", async () => {
+    const list = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId },
+      fx.aliceKey,
+    );
+    expect(ids(list)).not.toContain(fx.aliceArchivedId);
+    expect(total(list)).toBe(2);
+
+    // get 不受列表口径影响：owner 管理/恢复归档资产仍要能读到
+    const get = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/get`,
+      { asset_id: fx.aliceArchivedId },
+      fx.aliceKey,
+    );
+    expect(get.status).toBe(200);
+    expect((get.body.data as AssetEntity).status).toBe("archived");
+  });
+
+  it("owner：显式 status=archived 才返回归档资产", async () => {
+    const res = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId, status: "archived" },
+      fx.aliceKey,
+    );
+    expect(res.status).toBe(200);
+    expect(ids(res)).toEqual([fx.aliceArchivedId]);
+    expect(total(res)).toBe(1);
+  });
+
+  it("普通成员：显式 status=archived 也拿不到他人归档资产（可见性判定先于 status）", async () => {
+    const res = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId, status: "archived" },
+      fx.carolKey,
+    );
+    expect(res.status).toBe(200);
+    expect(ids(res)).toEqual([]);
+    expect(total(res)).toBe(0);
+  });
+
+  it("system_admin：默认列表同样隐藏归档（口径不随权限放宽）", async () => {
+    const res = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId },
+      fx.adminKey,
+    );
+    expect(res.status).toBe(200);
+    expect(ids(res)).not.toContain(fx.aliceArchivedId);
+    expect(total(res)).toBe(2);
+  });
+
+  it("asset/list-accessible 与 asset/list 口径一致：owner 视角都不含归档", async () => {
+    const accessible = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list-accessible`,
+      { user_id: fx.aliceUserId, team_id: fx.teamId },
+      fx.aliceKey,
+    );
+    expect(accessible.status).toBe(200);
+    expect(ids(accessible)).not.toContain(fx.aliceArchivedId);
+    expect(total(accessible)).toBe(2);
+  });
+
+  it("deprecated 同样不进默认列表（谓词覆盖三态，不只看 archived）", async () => {
+    const deprecatedId = "asset_alice_deprecated";
+    await fx.svc.createAsset({
+      asset_id: deprecatedId,
+      team_id: fx.teamId,
+      asset_type: "skill",
+      name: "alice-deprecated",
+      owner_user_id: fx.aliceUserId,
+      source_type: "manual",
+      visibility: "team",
+      status: "deprecated",
+    });
+
+    const res = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list`,
+      { team_id: fx.teamId },
+      fx.aliceKey,
+    );
+    expect(ids(res)).not.toContain(deprecatedId);
+    expect(total(res)).toBe(2);
+  });
+});
+
+describe("issue #116 收尾 — agent 主体的 ACL", () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await seed();
+  });
+
+  afterEach(() => {
+    fx.store.close();
+  });
+
+  function ids(res: RouteResult): string[] {
+    return (res.body.data as PaginatedResult<AssetEntity>).items.map((a) => a.asset_id);
+  }
+
+  async function seedAgent(): Promise<string> {
+    // 用 store 直建：svc.createAgent 会顺带 ensureChatMemoryAsset，多造资产污染 list 断言
+    const agent = await fx.store.createAgent({
+      team_id: fx.teamId,
+      owner_user_id: fx.aliceUserId,
+      name: "authz-agent",
+    });
+    return agent.agent_id;
+  }
+
+  it("restricted 资产授予 agent：acl/check 只有带 agent_id 才 allowed", async () => {
+    const agentId = await seedAgent();
+    const assetId = "asset_alice_restricted_agent";
+    await fx.svc.createAsset({
+      asset_id: assetId,
+      team_id: fx.teamId,
+      asset_type: "skill",
+      name: "alice-restricted-agent",
+      owner_user_id: fx.aliceUserId,
+      source_type: "manual",
+      visibility: "restricted",
+    });
+    await fx.svc.grantAcl({
+      asset_id: assetId,
+      subject_type: "agent",
+      subject_id: agentId,
+      permission: "read",
+      granted_by: fx.aliceUserId,
+    });
+
+    const withAgent = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/acl/check`,
+      { user_id: fx.carolUserId, asset_id: assetId, action: "read", agent_id: agentId },
+      fx.carolKey,
+    );
+    const withoutAgent = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/acl/check`,
+      { user_id: fx.carolUserId, asset_id: assetId, action: "read" },
+      fx.carolKey,
+    );
+
+    expect(withAgent.status).toBe(200);
+    expect((withAgent.body.data as { allowed: boolean }).allowed).toBe(true);
+    expect(withoutAgent.status).toBe(200);
+    expect((withoutAgent.body.data as { allowed: boolean }).allowed).toBe(false);
+  });
+
+  it("asset/list-accessible：带 agent_id 才包含该 restricted 资产", async () => {
+    const agentId = await seedAgent();
+    const assetId = "asset_alice_restricted_agent_list";
+    await fx.svc.createAsset({
+      asset_id: assetId,
+      team_id: fx.teamId,
+      asset_type: "skill",
+      name: "alice-restricted-agent-list",
+      owner_user_id: fx.aliceUserId,
+      source_type: "manual",
+      visibility: "restricted",
+    });
+    await fx.svc.grantAcl({
+      asset_id: assetId,
+      subject_type: "agent",
+      subject_id: agentId,
+      permission: "read",
+      granted_by: fx.aliceUserId,
+    });
+
+    const withAgent = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list-accessible`,
+      { user_id: fx.carolUserId, team_id: fx.teamId, agent_id: agentId },
+      fx.carolKey,
+    );
+    const withoutAgent = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list-accessible`,
+      { user_id: fx.carolUserId, team_id: fx.teamId },
+      fx.carolKey,
+    );
+
+    expect(ids(withAgent)).toContain(assetId);
+    expect(ids(withoutAgent)).not.toContain(assetId);
+  });
+
+  it("agent ACL 不放宽 private：授予 agent read 后仍然读不到", async () => {
+    const agentId = await seedAgent();
+    await fx.svc.grantAcl({
+      asset_id: fx.alicePrivateId,
+      subject_type: "agent",
+      subject_id: agentId,
+      permission: "read",
+      granted_by: fx.aliceUserId,
+    });
+
+    const check = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/acl/check`,
+      { user_id: fx.carolUserId, asset_id: fx.alicePrivateId, action: "read", agent_id: agentId },
+      fx.carolKey,
+    );
+    const list = await callRoute(
+      fx.deps,
+      `${V3_PREFIX}/asset/list-accessible`,
+      { user_id: fx.carolUserId, team_id: fx.teamId, agent_id: agentId },
+      fx.carolKey,
+    );
+
+    expect((check.body.data as { allowed: boolean }).allowed).toBe(false);
+    expect(ids(list)).not.toContain(fx.alicePrivateId);
+  });
+});
+
