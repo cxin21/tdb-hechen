@@ -48,6 +48,9 @@ import { CONCLUSIONS_PROMPT_VERSION } from "./lib/bench/conclusions.mjs";
 import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "./lib/bench/stages.mjs";
 import {
   buildAnswerPrompt,
+  buildAnswerPromptTuned,
+  ANSWER_PROMPT_CURRENCY_VERSION,
+  ANSWER_PROMPT_PREF_VERSION,
   buildJudgePrompt,
   makeLlm,
   PROMPT_VERSION,
@@ -160,7 +163,7 @@ if (flag("help") || argv.length === 0) {
 const KNOWN_FLAGS = new Set([
   "age-decay", "b1", "b2b-validity", "candidate-k", "conclusion-budget-mode", "conclusion-cap",
   "conclusion-cards", "conclusion-layer-off", "conclusion-legacy-rank", "conclusion-max", "conclusion-max-extra", "conclusion-pairing",
-  "conclusion-routing", "conclusion-slot-cost", "concurrency", "data", "dataset", "emb-threshold",
+  "conclusion-routing", "conclusion-slot-cost", "concurrency", "currency-prompt", "pref-prompt", "data", "dataset", "emb-threshold",
   "embed-cache", "embed-interval-ms", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
   "fact-channel", "fact-channel-off", "fact-channel-read-only", "fact-channel-weight", "fact-concurrency", "fact-dual-write",
   "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-rows", "fact-separator", "facts-only",
@@ -1077,6 +1080,9 @@ async function main() {
   const paceMs = num("pace", 0);
   // B1（bench/recall-opt）：读侧四件套，显式开关——S3 各档不受影响
   const b1Mode = flag("b1");
+  // #146 算法重判：币值口径答案提示（读侧只改措辞，不动检索/存储）。
+  const currencyPrompt = flag("currency-prompt");
+  const prefPrompt = flag("pref-prompt");
   const rows = [];
   let i = 0;
   for (const c of casesAll) {
@@ -1186,7 +1192,9 @@ async function main() {
         const answer = await llm.text([
           b1Mode
             ? { role: "user", content: buildAnswerPromptV3({ question: row.question, evidence: row.evidence, questionDate: c?.questionDateISO, datasetName: ds.name }) }
-            : { role: "user", content: buildAnswerPrompt({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name }) },
+            : currencyPrompt || prefPrompt
+              ? { role: "user", content: buildAnswerPromptTuned({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name, currency: !!currencyPrompt, preference: !!prefPrompt }) }
+              : { role: "user", content: buildAnswerPrompt({ question: row.question, block: row.block, questionDate: c?.questionDateISO, datasetName: ds.name }) },
         ], { maxTokens: cred?.maxTokens && cred.maxTokens > 0 ? cred.maxTokens : 1024 });
         row.answer = answer;
         // B1：v3 提示产出「笔记 + Answer: 行」，判分/F1 只看抽取后的最终答案
@@ -1289,7 +1297,7 @@ async function main() {
       tag: String(strArg("tag", "")) || null,
       manifest: manifestUsed,
       rerankOverride: Object.keys(rerankOverride).length ? rerankOverride : null,
-      answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : "prod-block-v2",
+      answerPrompt: b1Mode ? ANSWER_PROMPT_VERSION : currencyPrompt && prefPrompt ? ANSWER_PROMPT_CURRENCY_VERSION + "+pref" : currencyPrompt ? ANSWER_PROMPT_CURRENCY_VERSION : prefPrompt ? ANSWER_PROMPT_PREF_VERSION : "prod-block-v2",
   rerankChildProc,
       rerankDocCap,
       rerankThreads,

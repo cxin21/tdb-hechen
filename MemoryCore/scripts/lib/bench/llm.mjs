@@ -73,33 +73,13 @@ export function makeLlm(cred) {
     return r.content.trim();
   }
 
-  /** JSON 回答 + usage（token 计量；调用方需计费证据时用）。 */
-  async function jsonWithUsage(messages, opts = {}) {
-    const r = await call({ messages, json: true, ...opts });
-    const raw = r.content.trim();
-    const candidates = [raw];
-    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  /** JSON 宽松解析：原文 → 围栏内 → 首个花括号块；全失败返回 null。 */
+  function parseJsonLoose(raw) {
+    const text = String(raw || "").trim();
+    const candidates = [text];
+    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fence) candidates.push(fence[1].trim());
-    const brace = raw.match(/\{[\s\S]*\}/);
-    if (brace) candidates.push(brace[0]);
-    for (const c of candidates) {
-      try {
-        return { data: JSON.parse(c), usage: r.usage ?? null };
-      } catch {
-        /* 下一个候选 */
-      }
-    }
-    return { data: null, usage: r.usage ?? null };
-  }
-
-  /** JSON 回答：容忍 ```json 围栏与前后噪声；解析失败返回 null（调用方决定降级）。 */
-  async function json(messages, opts = {}) {
-    const r = await call({ messages, json: true, ...opts });
-    const raw = r.content.trim();
-    const candidates = [raw];
-    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence) candidates.push(fence[1].trim());
-    const brace = raw.match(/\{[\s\S]*\}/);
+    const brace = text.match(/\{[\s\S]*\}/);
     if (brace) candidates.push(brace[0]);
     for (const c of candidates) {
       try {
@@ -107,6 +87,41 @@ export function makeLlm(cred) {
       } catch {
         /* 下一个候选 */
       }
+    }
+    return null;
+  }
+
+  /**
+   * JSON 解析修复重试（#146 度量有效性）：判分器偶发返回非 JSON（实测同一档里 1–5 题，
+   * 占 90 题的 1.1–5.6pp），旧实现把它记成 correct=false —— 判分噪声直接混进 A/B 差值。
+   * 这里对「解析失败」重问，最多 3 次；仍失败才返回 null（调用方按 judge-parse-failed 记账）。
+   * 重问只补一句格式约束，不改判定口径，故不构成提示词漂移。
+   */
+  const JSON_REPAIR_NUDGE = Object.freeze({
+    role: "user",
+    content: "上一次输出无法解析为 JSON。请只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码围栏。",
+  });
+
+  /** JSON 回答 + usage（token 计量；调用方需计费证据时用）。 */
+  async function jsonWithUsage(messages, opts = {}) {
+    let usage = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const msgs = attempt === 0 ? messages : [...messages, JSON_REPAIR_NUDGE];
+      const r = await call({ messages: msgs, json: true, ...opts });
+      usage = r.usage ?? usage;
+      const parsed = parseJsonLoose(r.content);
+      if (parsed !== null) return { data: parsed, usage };
+    }
+    return { data: null, usage };
+  }
+
+  /** JSON 回答：容忍 ```json 围栏与前后噪声；解析失败重问（最多 3 次）后返回 null。 */
+  async function json(messages, opts = {}) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const msgs = attempt === 0 ? messages : [...messages, JSON_REPAIR_NUDGE];
+      const r = await call({ messages: msgs, json: true, ...opts });
+      const parsed = parseJsonLoose(r.content);
+      if (parsed !== null) return parsed;
     }
     return null;
   }
@@ -139,6 +154,96 @@ export function buildAnswerPrompt({ question, block, questionDate, datasetName }
     `【提问日期】${questionDate || "未提供"}`,
     `【问题】${question}`,
   ];
+  if (datasetName === "locomo") {
+    lines.push("", "注意：对话发生在多人之间，回答时指明是谁，并尽量给出具体时间。");
+  } else {
+    lines.push("", "注意：涉及时间的问题请给出具体日期/时长；记忆若有更新，以最新一次为准。");
+  }
+  lines.push("", "直接回答问题本身，简洁。");
+  return lines.join("\n");
+}
+
+/**
+ * 币值提示版本（#146 算法重判实验）。
+ *
+ * 动机：深池 90 题里 27/36 个错题是**拒答**（"记忆只到某日，无法确定现在"），而
+ * 事实级失效/值级遮蔽这条线是在"少给证据"，方向与最大损失相反。这一版不动检索、
+ * 不动存储，只把读侧的**币值判定**从"日期不匹配 ⇒ 不敢答"改成"无后续更新 ⇒ 最新
+ * 记录即当前值"，用来隔离"币值口径"本身的增益。
+ */
+export const ANSWER_PROMPT_CURRENCY_VERSION = "prod-block-v2-currency";
+
+/**
+ * 币值口径的答案提示：与 buildAnswerPrompt 同结构，只替换尾部约束段。
+ * 三条规则针对实测失败模式：
+ *  1. 提问日期晚于记录日期 ≠ 信息失效（a2f3aa27 / 1cea1afa 同型拒答）；
+ *  2. 没有更晚记录时，最新一次就是当前值（LME knowledge-update 的 gold 口径）；
+ *  3. 只有「记忆里完全没有相关线索」才拒答；有旧值也必须给出，并注明是最后已知。
+ */
+export function buildAnswerPromptCurrency({ question, block, questionDate, datasetName }) {
+  const lines = [
+    "你是一个长期记忆助手。下面是系统从历史对话记忆中检索到的片段（按相关度排序，时间戳为说话时刻）。",
+    "只依据这些片段回答。片段不足以回答时，直接说明「根据已有记忆无法确定」，不要编造。",
+    "",
+    "【检索到的记忆】",
+    block && block.trim() ? block.trim() : "（无检索结果）",
+    "",
+    `【提问日期】${questionDate || "未提供"}`,
+    `【问题】${question}`,
+    "",
+    "【币值判定规则（重要）】",
+    "1. 提问日期晚于某条记忆的时间戳，**不代表**该记忆失效：记忆是零散的对话片段，不是连续同步。",
+    "2. 若某个属性有多条互相矛盾的记录，以**时间最晚的那条**为当前值；没有更晚记录时，它就是当前状态。",
+    "3. 只有当记忆里**完全没有**与该问题相关的内容时才拒答；有相关记录（哪怕是较早的）就必须给出答案，并注明该记录的时间。",
+    "",
+    "直接回答问题本身，简洁；若答案来自较早记录，用一句话说明「最后已知于 <时间>」。",
+  ];
+  if (datasetName === "locomo") {
+    lines.push("", "注意：对话发生在多人之间，回答时指明是谁，并尽量给出具体时间。");
+  }
+  return lines.join("\n");
+}
+
+/** 偏好题口径的答案提示版本（#146 算法重判实验 E5）。 */
+export const ANSWER_PROMPT_PREF_VERSION = "prod-block-v2-pref";
+
+/**
+ * 可组合的答案提示（#146 算法重判：把读侧策略拆成可独立开关的两条口径，便于逐因子归因）。
+ *
+ *  currency   —— 币值判定：提问日期晚于记录日期不代表失效；无更晚记录时最新记录即当前值；
+ *                仅"完全没有相关线索"才拒答，有旧值也必须答并标注时间。
+ *  preference —— 偏好题口径：建议类问题的答案本来就在用户既有偏好里，先复述偏好再给建议，
+ *                不因"记忆没直接给答案"拒答。
+ */
+export function buildAnswerPromptTuned({ question, block, questionDate, datasetName, currency = false, preference = false }) {
+  const lines = [
+    "你是一个长期记忆助手。下面是系统从历史对话记忆中检索到的片段（按相关度排序，时间戳为说话时刻）。",
+    "只依据这些片段回答。片段不足以回答时，直接说明「根据已有记忆无法确定」，不要编造。",
+    "",
+    "【检索到的记忆】",
+    block && block.trim() ? block.trim() : "（无检索结果）",
+    "",
+    `【提问日期】${questionDate || "未提供"}`,
+    `【问题】${question}`,
+  ];
+  if (currency) {
+    lines.push(
+      "",
+      "【币值判定规则（重要）】",
+      "1. 提问日期晚于某条记忆的时间戳，不代表该记忆失效：记忆是零散的对话片段，不是连续同步。",
+      "2. 若某个属性有多条互相矛盾的记录，以时间最晚的那条为当前值；没有更晚记录时，它就是当前状态。",
+      "3. 只有当记忆里完全没有与该问题相关的内容时才拒答；有相关记录（哪怕是较早的）就必须给出答案，并注明该记录的时间。",
+    );
+  }
+  if (preference) {
+    lines.push(
+      "",
+      "【建议类问题口径（重要）】",
+      "1. 当问题是在征求建议、意见或推荐（tips / ideas / suggestions / 值得吗）时，答案来自用户已经表达过的偏好、习惯与既往选择。",
+      "2. 先明确复述相关的既有偏好（做过什么、喜欢什么、正在坚持什么），再据此给出建议；不要只给泛泛建议。",
+      "3. 只要记忆里有用户的偏好线索，就不要拒答——偏好题的正确答案就是「顺着用户既有偏好给建议」。",
+    );
+  }
   if (datasetName === "locomo") {
     lines.push("", "注意：对话发生在多人之间，回答时指明是谁，并尽量给出具体时间。");
   } else {

@@ -2200,3 +2200,167 @@ bash scripts/run-r146-arms.sh v2deep-factrows-v4
 - 针对性：`fact-attribute.test.ts`（7）、`fact-row.test.ts`（9）、`supersession-cardinality.test.ts`（8）、`bench-fact-rows.test.ts`（15）共 39 tests 全绿。
 
 
+
+## 24. #146 收口后的读侧重判：证据宽度 / 币值口径 / 建议口径（2026-10-30）
+
+§22.7–§22.8 的机制线（写侧事实级失效、值级遮蔽）在 LME90 深池只有 **+0.4pp 且不显著**；#166（present-intent 遮蔽）/ #167（抽取期 attribute）落地后机制完整，收益仍未证实。本节换问题：**读侧还有多少便宜收益**。做法是先用同一把尺子把六臂量齐（先修判分噪声，再逐因子归因），再用 gold 注入探针把「召回绑定」与「作答绑定」的损失分开，最后给出可上线的组合与落点。
+
+### 24.1 先修尺子：判分噪声
+
+scm-flash 判分偶发返回非 JSON，旧实现把它记成 correct=false，等于把「判分器格式抖动」记成「模型答错」。实测四个档各 1–5 题（judgeReason="judge-parse-failed"，4.4pp 量级），与 A/B 差值同量级——**此前所有「无显著差」的结论都建立在含噪读数上**。
+
+修法（只补格式约束，不改判定口径）：
+
+- scripts/lib/bench/llm.mjs：parseJsonLoose(raw)（原文 → 围栏内 → 首个花括号块）＋ JSON_REPAIR_NUDGE，json()/jsonWithUsage() 解析失败重问 ≤3 次，仍失败才返回 null。
+- scripts/bench-rejudge.mjs：不重跑召回/生成，用旧报告里已存的答案按当前判分器重判（scripts/run-rejudge-noise.sh 串起三档）。
+
+**噪声地板**（同批答案 raw → rejudge 的翻转题数）：A 2（升 2）、W 1（降 1）、P 1（降 1）、X 2（降 2）⇒ **1–2 题 = 1.1–2.2pp**。因此后文一律用**配对 McNemar** 读差值，且单看总判对率时要求差值 >2 题才算超过地板。
+
+### 24.2 六臂总表（LME90 深池，同 store / 同判分器 / 同题集）
+
+固定口径：整行基线冻结库 longmemeval-oracle-mvtavhl6（1591 记录 / 0 事实行）、--store --no-write-steps 复用、深池 --rerank-candidates 32 --rerank-minscore -10.5 --candidate-k 32、判分 scm-flash。臂间**只差读侧因子**。
+
+| 臂 | 读侧变更 | 判对率 | 判对数 | 错题中拒答 | jpf |
+|---|---|---:|---:|---:|---:|
+| **A**-base | 整行，maxResults=5，旧提示 | 62.2% | 56/90 | 28 | 1 |
+| **B**-mask | facts-v4 事实行 + 属性 + present-intent 遮蔽，k=5 | 63.3% | 57/90 | 27 | 1 |
+| **C**-currency | 整行，k=5，**币值口径** | 64.4% | 58/90 | 23 | 0 |
+| **W**-wide | 整行，**k=10**，旧提示 | 66.7% | 60/90 | 21 | 0 |
+| **P**-pref | 整行，k=5，**建议口径** | 64.4% | 58/90 | 23 | 1 |
+| **X**-best | 整行，**k=10 + 币值 + 建议** | **73.3%** | **66/90** | **16** | 2 |
+
+配对 McNemar（vs A；b = A 对 X 错，c = A 错 X 对）：
+
+| 对比 | b | c | p |
+|---|---:|---:|---:|
+| A → B（机制线） | 4 | 5 | 1.000 |
+| A → C（币值口径） | 1 | 3 | 0.625 |
+| A → W（k=10） | 4 | 8 | 0.388 |
+| A → P（建议口径） | 3 | 5 | 0.727 |
+| **A → X（三因子组合）** | **2** | **12** | **0.0129** |
+
+单因子都不显著（各自 +1~4 题，落在噪声地板附近），**组合达到显著**：+10 题、p=0.013、拒答 28→16。原因是三个因子各自修的失败模式几乎不重叠（见 24.3–24.5），叠起来才越过噪声地板。
+
+### 24.3 证据宽度（k=5 → 10）是最大单因子
+
+逐题型（A / B / C / W / P / X）：
+
+| 题型 | A | B | C | W | P | X |
+|---|---:|---:|---:|---:|---:|---:|
+| knowledge-update | 9/15 | 9/15 | 10/15 | 11/15 | 8/15 | **13/15** |
+| multi-session | 3/15 | 3/15 | 2/15 | **5/15** | 3/15 | **5/15** |
+| single-session-assistant | 14/15 | 14/15 | 14/15 | 14/15 | 14/15 | 14/15 |
+| single-session-preference | 7/15 | 7/15 | 9/15 | 7/15 | **10/15** | 10/15 |
+| single-session-user | 14/15 | 14/15 | 14/15 | **15/15** | 14/15 | **15/15** |
+| temporal-reasoning | 9/15 | **10/15** | 9/15 | 8/15 | 9/15 | 9/15 |
+
+宽度提升**不是在改排序，而是在补证据**——这点看覆盖率尺子最清楚（A → W）：
+
+| 度量 | knowledge-update | multi-session | temporal-reasoning |
+|---|---:|---:|---:|
+| turnCov@10 | 0.533 → **0.667** | 0.447 → **0.580** | 0.644 → 0.622 |
+| sessionCov@10 | 0.800 → **0.900** | 0.638 → **0.804** | 0.922 → 0.889 |
+| mrr@5 | 0.767 → 0.767 | 0.739 → **0.661** | 0.647 → **0.500** |
+
+即：**k=10 让更多 gold 证据落进注入块，但前 5 位排序反而变差**（多出来的行挤占 top-5 位次）。收益全部来自「证据在不在块里」，不来自「排得好不好」。注入块均值 blockChars 3277 → 5413（+65%，仍在 14000 上限内）。
+
+副作用：temporal-reasoning 9→8（gpt4_85da3956、gpt4_65aabe59 由对转错，两条 cov@10 极低）、knowledge-update 的 4d6b87c8 也由对转错。这是「宽度换精度」的真实代价，不是噪声（X 臂里这两条同样没回来）。
+
+### 24.4 币值口径（C 臂）
+
+失败面在 §22.8 已定位：36 个错题里 27 个是**拒答**，而机制的整条思路是「少给证据」，方向与最大损失相反。币值口径只改读侧解释规则，不动检索/存储：
+
+1. 提问日期晚于记录时间戳 **≠** 该记录失效（记忆是零散片段，不是连续同步）；
+2. 属性有多条矛盾记录时取**时间最晚**那条；没有更晚记录时它**就是**当前状态；
+3. 只有记忆里**完全没有**相关内容才拒答；有旧值也必须答，并标注「最后已知于 <时间>」。
+
+读数：拒答 28→23、总判对 +2 题（KU +1、preference +2）。典型修复：a2f3aa27（"最近明确记录是 2023-05-28 有 1250 名粉丝；之后只提到接近 1300" → 旧口径直接拒答）、1cea1afa（"记忆只到 2023-05-25，无法确定现在"，而 gold 600 就是最后已知值）。
+
+代价：b3c15d39（multi-session）由对转错——模型改成「若按 2 月 5 日下单则 5 天」的条件化回答，被判回避。币值口径倾向「给一个值」，遇到需要条件分支的题会过答。
+
+### 24.5 建议口径（P 臂）
+
+preference 15 题里 13 题 turnCov@5 = 1（证据齐全）却只判对 7 题——纯作答侧问题：模型要求「记忆里直接写着建议」才答，否则拒答。口径三条：
+
+1. 建议类问题（tips / ideas / suggestions / 值得吗）的答案本来就在用户**已表达的偏好、习惯与既往选择**里；
+2. 先复述相关既有偏好，再据此给建议，不要只给泛泛建议；
+3. 只要记忆里有偏好线索，就不要拒答。
+
+读数：preference 7 → **10/15**（重判后），六臂里**单题型最大涨幅**（+20pp），总判对率 +2 题；其它题型基本不动（KU 9→8 在噪声地板内）。这条口径与宽度、币值互不替代——X 臂里 preference 仍是 10/15，与 P 臂相同，说明它已把这一类打满。
+
+### 24.6 gold 注入探针：把两类损失分开（上限口径）
+
+把 A 臂 34 个错题的 **gold 证据轮直接补进已构造的 block**（平均补 1.0 轮，共 35 条），再重新作答+判分。这不是可上线手段，是**上限测量**：
+
+| 题型 | 错题数 | 补全后转对 | 平均注入 | 仍拒答 |
+|---|---:|---:|---:|---:|
+| multi-session | 12 | **9** | 1.3 | 1 |
+| temporal-reasoning | 6 | **5** | 1.3 | 1 |
+| knowledge-update | 6 | 3 | 1.0 | 3 |
+| single-session-preference | 8 | **1** | 0.4 | 6 |
+| single-session-assistant | 1 | 1 | 1.0 | 0 |
+| single-session-user | 1 | 1 | 1.0 | 0 |
+| 合计 | 34 | **20（58.8%）** | 1.0 | 11 |
+
+结论很干净：
+
+- **multi-session / temporal-reasoning 是召回绑定**（9/12、5/6 可转换）——证据一到就能答，这正是 24.3 宽度因子生效的原因；它仍有余量（W 臂只把 multi 从 3 提到 5）。
+- **preference 是口径绑定**（1/8）——补证据几乎无效，因为 gold 从来不写在记忆里，只能靠 24.5 的口径修。
+- **knowledge-update 是混合的**（3/6）：注入后仍拒答的 3 条（a2f3aa27、1cea1afa、22d2cb42）块里已有答案数值，模型仍说「无法确定当前值」——这正是币值口径要治的，也是 X 臂 KU 9→13 的来源。
+- 剩余不可转换项另有性质：71017277（把「吊灯」当「珠宝」实体错配）、efc3f7c2（"周五 6:30 与其他工作日相同，早 0 分钟"算术口径）、gpt4_ab202e7f（空答）。不是检索或口径能修的。
+
+### 24.7 机制线的最终判词
+
+A → B（facts-v4 属性键 + present-intent 值级遮蔽，即 #166+#167 的读侧效果）：4 对 / 5 错，**p = 1.000**。结合 §22.7（+0.4pp）、§23.6（#167 p=1.0）与本节：
+
+> 「写侧事实级失效 / 读侧值级遮蔽」在 LME90 上**没有可测收益**，且作用方向（删/压证据）与最大损失（证据不足导致的拒答，27/36）相反。作为能力保留（factRows / supersession 缺省关，ADR-0015/0016 不动），但不作为 LME 收益来源，也不再往这条线追加预算。
+
+### 24.8 最优算法（当前证据下的最优读侧组合）
+
+**更多证据 + 两条口径解释规则**，即 X 臂：
+
+| 因子 | 落点（生产） | 单因子 | 组合贡献 |
+|---|---|---:|---|
+| 证据宽度 maxResults 5 → 8~10 | config.ts:2066 缺省 5（auto-recall.ts:1073/1720 同源读取） | +4 题 | +10 题（与口径叠加后） |
+| 币值口径 | recall.injectWrapper 新档（auto-recall.ts:2044 wrapperHead） | +2 题 | — |
+| 建议口径 | 同上 | +2 题 | — |
+| 写侧失效 / 遮蔽 | 维持缺省关 | +1 题（不显著） | 不采用 |
+
+X 臂：**73.3%（66/90），拒答 28→16，A→X McNemar p=0.0129**，注入块 +65%（3.3k → 5.4k 字符）。TR 与 assistant 两类无涨无跌（因子不伤它们）；multi-session 已触及「宽度」这一杠杆的上限附近（5/15，探针显示还有 9/12 可转换空间 ⇒ 下一轮若继续，方向是**多会话/跨会话的证据聚合**，而不是继续加宽 k）。
+
+### 24.9 生产落点（全部 config 门，不改缺省行为）
+
+1. **recall.injectWrapper: "calibrated"（新增档位）**：在 auto-recall.ts:2044 的 wrapperHead 里加币值 + 建议两条口径。现行 legacy 文案「仅作为参考」与 neutral 文案「若记忆不足以回答，请如实说明」都会诱导保守拒答，而 27/36 错题正是拒答。
+2. **recall.maxResults 建议档 8–10**：缺省仍 5（token 成本敏感），在长任务/研究型会话配置档位拉到 10。代价可量化：注入块 +65%，仍在 maxTotalRecallChars 安全区。
+3. **memory.write.factRows / supersession 维持缺省关**（ADR-0015/0016 决定不变）。
+4. **不动的**：检索通道（hybrid/RRF）、rerank 32 档、injectTimeSort（§22.5 的 +15.6pp 是另一条独立杠杆，与本组因子正交）。
+
+### 24.10 复现
+
+~~~bash
+cd MemoryCore
+CORE="--dataset longmemeval --manifest .eval-data/bench/lme-manifest.json --pace 150 --gen-limit 90 --recall-ks 1,3,5,10 --fact-model MiniMax-M2.7 --embed-interval-ms 1200"
+DEEP="--rerank-candidates 32 --rerank-minscore -10.5 --candidate-k 32 --rerank-child-proc"
+SHIM="--prod-data .eval-data/bench/llm-shim-scm"     # scm-flash 凭据 shim，绝不入库
+
+# 六臂（复用冻结库，只变读侧）
+node --import tsx scripts/eval-memory-bench.mjs $CORE $DEEP --store <mvtavhl6> --no-write-steps $SHIM
+node --import tsx scripts/eval-memory-bench.mjs $CORE $DEEP --store <mvtavhl6> --no-write-steps $SHIM --recall-max-results 10
+node --import tsx scripts/eval-memory-bench.mjs $CORE $DEEP --store <mvtavhl6> --no-write-steps $SHIM --currency-prompt
+node --import tsx scripts/eval-memory-bench.mjs $CORE $DEEP --store <mvtavhl6> --no-write-steps $SHIM --pref-prompt
+node --import tsx scripts/eval-memory-bench.mjs $CORE $DEEP --store <mvtavhl6> --no-write-steps $SHIM --recall-max-results 10 --currency-prompt --pref-prompt
+
+# 消噪重判（同一把尺子）
+TDAI_DATA_DIR=<mvtavhl6> node --import tsx scripts/bench-rejudge.mjs <report.json> --out <report>-rj.json
+
+# gold 注入上限探针
+TDAI_DATA_DIR=<mvtavhl6> node --import tsx scripts/bench-oracle-probe.mjs --report .eval-data/bench/lme90-r146-r146v2-deep-rj.json --scope fails
+~~~
+
+报告：lme90-r146-r146c-{base,wide,pref,best}.json 及 *-rj.json、oracle-probe-fails.json，均在 MemoryCore/.eval-data/bench/。
+
+### 24.11 边界
+
+- 90 题单档、单判分器；噪声地板 1–2 题。X 的 +10 题远在板上，但单因子结论（C/P/W 各自 +2~4）只在方向上成立。
+- bench 的「答案提示」是生产读侧口径的**代理**，宿主侧（真实 agent 拿到注入块后的行为）是否同样生效需生产埋点复核——这条已在 §24.9 落成 config 档位，默认不生效，可灰度。
+- 私有微基准（30–50 条单值身份属性 + 真实 l1-writer/sqlite）仍未建；机制线的「无收益」结论只对 LME90 成立，对「长期运行、真更新密集」的生产语料未证伪。
