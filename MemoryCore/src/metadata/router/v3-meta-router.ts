@@ -242,15 +242,19 @@ const routeTable: Record<string, Handler> = {
 
   // Asset
   [`${V3_PREFIX}/asset/create`]: bind(S.assetCreateSchema, (d, c, s) => s.createAssetForCaller(d, c)),
-  [`${V3_PREFIX}/asset/get`]: bind(S.assetGetSchema, async (d, _c, s) => orNotFound(await s.getAssetById(d.asset_id), "asset_not_found", d.asset_id)),
+  // 调用者视角读（issue #116 水平越权修复）：无权访问返回 null → 404，不泄露资产存在性
+  [`${V3_PREFIX}/asset/get`]: bind(S.assetGetSchema, async (d, c, s) =>
+    orNotFound(await s.getAssetForCaller(d.asset_id, c), "asset_not_found", d.asset_id),
+  ),
   [`${V3_PREFIX}/asset/update`]: bind(S.assetUpdateSchema, (d, c, s) => {
     const { asset_id, ...patch } = d;
     return s.updateAssetForCaller(asset_id, patch, c);
   }),
   [`${V3_PREFIX}/asset/delete`]: bind(S.assetDeleteSchema, (d, c, s) => s.deleteAssetsForCaller(d.asset_ids, c)),
-  [`${V3_PREFIX}/asset/list`]: bind(S.assetListSchema, (d, _c, s) => {
+  // 调用者视角读（issue #116 水平越权修复）：成员校验 + 逐条 checkAssetPermission，分页前过滤保证 total 准确
+  [`${V3_PREFIX}/asset/list`]: bind(S.assetListSchema, (d, c, s) => {
     const { team_id, limit, offset, ...filter } = d;
-    return s.listAssetsByTeam(team_id, resolvePagination({ limit, offset }), filter);
+    return s.listAssetsForCaller({ team_id, ...filter }, c, resolvePagination({ limit, offset }));
   }),
   [`${V3_PREFIX}/asset/list-accessible`]: bind(S.assetListAccessibleSchema, (d, _c, s) =>
     s.listAccessibleAssets(d)),
