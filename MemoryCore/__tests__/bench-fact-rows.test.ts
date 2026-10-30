@@ -290,6 +290,58 @@ describe("#146 ingestCase 事实行写入", () => {
     expect(invalidated.map((x) => x.validEndIso)).toEqual(["2025-12-30T08:00:00Z", "2025-12-31T09:00:00Z"]);
   });
 
+  // #167：受控 attribute 的全部意义——谓词逐轮改写（lives in / moved to）不再让事实键分裂。
+  it("#167 attribute 让不同谓词的同一属性撞键并跨 turn 失效（lives in -> moved to）", async () => {
+    const c = caseObj();
+    c.groups[0].turns.push({
+      id: "t3",
+      role: "user",
+      speaker: "user",
+      text: "I moved to Munich.",
+      tsISO: "2025-12-31T09:00:00Z",
+    });
+    const { store, invalidated } = makeFakeStore({ invalidatedCount: 0 });
+    await ingestCase({
+      caseObj: c,
+      store,
+      embedding: fakeEmbedding,
+      contentIndex: new Map(),
+      opts: {
+        embedMinIntervalMs: 0,
+        facts: {
+          byTurn: {
+            t1: { triples: [{ subject: "User", predicate: "lives in", value: "Berlin", phrase: "lives in Berlin", attribute: "residence" }] },
+            t3: { triples: [{ subject: "User", predicate: "moved to", value: "Munich", phrase: "lives in Munich", attribute: "residence" }] },
+          },
+        },
+        writePolicy: { factRows: true },
+      },
+    });
+    expect(invalidated).toHaveLength(2);
+    expect(invalidated[0].factKey).toBe(invalidated[1].factKey);
+    // 对照：同样两条事实去掉 attribute 就是两个键（#146 的真实失败模式）。注意假 store 只记
+    // 「调用」不记命中，所以这里能证明的是键不同（旧行因此找不到），不是调用次数不同。
+    const control = makeFakeStore({ invalidatedCount: 0 });
+    await ingestCase({
+      caseObj: c,
+      store: control.store,
+      embedding: fakeEmbedding,
+      contentIndex: new Map(),
+      opts: {
+        embedMinIntervalMs: 0,
+        facts: {
+          byTurn: {
+            t1: { triples: [{ subject: "User", predicate: "lives in", value: "Berlin", phrase: "lives in Berlin", cardinality: "single" }] },
+            t3: { triples: [{ subject: "User", predicate: "moved to", value: "Munich", phrase: "lives in Munich", cardinality: "single" }] },
+          },
+        },
+        writePolicy: { factRows: true },
+      },
+    });
+    expect(control.invalidated).toHaveLength(2);
+    expect(control.invalidated[0].factKey).not.toBe(control.invalidated[1].factKey);
+  });
+
   it("store 不支持 invalidateL1ByFactKey 时只告警一次，事实行照写（不静默等同控制档）", async () => {
     const c = caseObj();
     const { store, upserted } = makeFakeStore({ noInvalidate: true });

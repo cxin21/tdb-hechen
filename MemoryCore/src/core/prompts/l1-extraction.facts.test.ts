@@ -89,10 +89,31 @@ describe("#137 FACTS_BLOCK 提示词门", () => {
     expect(on).toMatch(/cardinality\S*（?可选/);
   });
 
+  // #167：抽取期直出受控 attribute（canonical 词表）——词表逐条进提示词，模型只许照抄。
+  it("#167 includeTriples 时出现受控 attribute 词表与「照抄/省略」纪律", () => {
+    const on = getExtractMemoriesSystemPrompt("chat", { factsEnabled: true, factsIncludeTriples: true });
+    expect(on).toContain("attribute");
+    expect(on).toContain("受控词表");
+    expect(on).toContain("禁止自造");
+    // single 档与 multi 档各点名，且档位随词表固定
+    expect(on).toContain("residence");
+    expect(on).toContain("occupation");
+    expect(on).toContain("marital_status");
+    expect(on).toContain("interest");
+    expect(on).toContain("plan");
+    expect(on).toMatch(/residence：[^\n]*（single）/);
+    expect(on).toMatch(/interest：[^\n]*（multi）/);
+    // 省略合法（不贴切就不标，写侧回落谓词键）
+    expect(on).toMatch(/attribute\S*（?可选/);
+    expect(on.endsWith(FINAL_FORMAT_SENTENCE)).toBe(true);
+  });
+
   it("#146 缺省形态（FACTS_BLOCK）不出现 cardinality（字节不变）", () => {
     expect(FACTS_BLOCK).not.toContain("cardinality");
     expect(FACTS_BLOCK).not.toContain("phrase");
+    expect(FACTS_BLOCK).not.toContain("attribute");
     expect(getExtractMemoriesSystemPrompt("chat", { factsEnabled: true })).not.toContain("cardinality");
+    expect(getExtractMemoriesSystemPrompt("chat", { factsEnabled: true })).not.toContain("attribute");
   });
 
   it("追加在 gated 链尾（其他 gated 块字节不被挤动）", () => {

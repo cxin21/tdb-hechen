@@ -9,6 +9,8 @@
  */
 
 import type { FactCardinality } from "./cardinality.js";
+import { normalizeFactAttribute } from "./fact-attribute.js";
+import type { FactAttributeName } from "./fact-attribute.js";
 
 export interface EmbeddingKeyOptions {
   /** 事实短语拼接分隔符（缺省 " | "）。 */
@@ -74,6 +76,11 @@ export interface FactTriple {
   phrase?: string;
   /** #146：抽取器直出的基数标注（single=函数依赖 / multi=可并存）；缺省按谓词启发式判定。 */
   cardinality?: FactCardinality;
+  /**
+   * #167：抽取器直出的受控属性名（封闭词表见 fact-attribute.ts）。有则事实键按
+   * (subject, attribute) 构造，跨谓词对齐；缺省回落谓词口径（旧数据/旧提示词不变）。
+   */
+  attribute?: FactAttributeName;
 }
 
 /** 归一化后的事实集合（短语进键文本；三元组仅在 includeTriples 时展开成短语）。 */
@@ -195,6 +202,9 @@ export function normalizeFactTriples(raw: unknown, opts: FactNormalizeOptions = 
       if (phrase && phrase.length <= maxChars && HAS_WORD_CHAR_RE.test(phrase)) triple.phrase = phrase;
     }
     if (o.cardinality === "single" || o.cardinality === "multi") triple.cardinality = o.cardinality;
+    // #167：表内 attribute 才保留（表外安静丢弃 → 写侧回落谓词启发式，不猜语义）
+    const attribute = normalizeFactAttribute(o.attribute);
+    if (attribute) triple.attribute = attribute;
     out.push(triple);
     if (out.length >= maxFacts) break;
   }

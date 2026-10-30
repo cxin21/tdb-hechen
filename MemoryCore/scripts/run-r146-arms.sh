@@ -47,6 +47,21 @@ case "${1:-help}" in
   v2deepall)      bash "$0" v2deep; bash "$0" v2deep-factrows ;;
   #166 验收③：新代码深池回归档（后缀 2 = #166 代码下重跑，对照既有 v2deep-factrows 读数 71.7%/58.9%）
   v2deep-factrows2) run r146v2-deep-factrows2 $CORE $DEEP $PROD --keep --fact-rows ;;
+  #167 验收⑤：facts-v4 深池配对档（只换抽取缓存为 v4，其余键位与 v2deep-factrows2 逐位相同）
+  # 注意：v4 缓存由 scm-flash 抽取，缓存校验按 model 命中；CORE 里的 MiniMax-M2.7 会整批失效并走已欠费的 MiniMax 端点，
+  # 故本臂把 fact-model 换成 scm-flash（与缓存/判分/生成同一个 shim 模型）。缓存全命中时 fact-model 只参与缓存校验，
+  # 不产生抽取调用，因此行为变量仍只有一个（facts-v3 缓存 → facts-v4 缓存）；日志与报告里要按 scm-flash 记。
+  v2deep-factrows-v4)
+    CORE_V4="${CORE/--fact-model MiniMax-M2.7/--fact-model scm-flash}"
+    CORE_V4="${CORE_V4/--embed-interval-ms 1200/--embed-interval-ms 3000}"
+    # CORE 是拼出来的字符串，替换失败会静默 no-op 并拿欠费的 MiniMax 端点跑出无效读数；这里显式拦一道。
+    case "$CORE_V4" in
+      *"--fact-model scm-flash"*"--embed-interval-ms 3000"*) ;;
+      *) echo "[abort] CORE 替换失败（fact-model 或 embed-interval），v4 配对档拒绝运行" >&2; exit 2 ;;
+    esac
+    # 北极星 embedding（doubao-embedding-vision）在 1.2s 间隔下会连续 429；本臂单独放慢到 3s，
+    # 只影响灌库速度，不影响任何被测逻辑。其余臂保持 1.2s 不变。
+    run r146v2-deep-factrows-v4 $CORE_V4 $DEEP $PROD --keep --fact-rows --fact-cache $L/facts-cache-v4 ;;
   #166 验收④：IDF 稀释隔离档——同一份新代码下配对：控制档重跑 vs FTS 面只留 fact_index=0（l1_vec 不动，纯 BM25 df 变量）
   v2factrows2)    run r146v2-factrows2  $CORE $B1 $PROD --keep --fact-rows ;;
   v2factrows-prune) run r146v2-factrows-prune $CORE $B1 $PROD --keep --fact-rows --prune-fact-sibling-index ;;
@@ -54,7 +69,7 @@ case "${1:-help}" in
   v2factrows3)    run r146v2-factrows3  $CORE $B1 $PROD --keep --fact-rows ;;
   idf)            bash "$0" v2factrows2; bash "$0" v2factrows-prune ;;
   all) for m in b1off b1off-factrows deep deep-factrows; do bash "$0" $m; done ;;
-  *) echo "用法: $0 {b1off|b1off-factrows|deep|deep-factrows|b1off-factrows-dedupe10|v2base|v2factrows|v2all|v2deep|v2deep-factrows|v2deepall|v2deep-factrows2|v2factrows2|v2factrows-prune|v2factrows3|idf|all}"; exit 2 ;;
+  *) echo "用法: $0 {b1off|b1off-factrows|deep|deep-factrows|b1off-factrows-dedupe10|v2base|v2factrows|v2all|v2deep|v2deep-factrows|v2deepall|v2deep-factrows2|v2deep-factrows-v4|v2factrows2|v2factrows-prune|v2factrows3|idf|all}"; exit 2 ;;
 esac
 if [ "$FAILED" -ne 0 ]; then echo "[r146] 有 $FAILED 处失败"; exit 1; fi
 echo "[r146] OK"

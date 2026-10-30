@@ -20,10 +20,21 @@
  *    缓存命中也带回 usage（缓存档终于能进 bench-gates 门禁3）。
  */
 import { cacheFileOf, readCache, writeCache } from "./cache.mjs";
+import { FACT_ATTRIBUTES, normalizeFactAttribute } from "../../../src/core/record/fact-attribute.js";
 import { isRetriableHttpError, withRateLimitRetry } from "./retry.mjs";
 import { estimateMessagesTokens, estimateTokens, normalizeUsage } from "./tokens.mjs";
 
-export const FACTS_PROMPT_VERSION = "facts-v3";
+export const FACTS_PROMPT_VERSION = "facts-v4";
+
+/**
+ * #167：受控 attribute 词表进提示词（与生产抽取同一份 canonical 词表，单一来源）。
+ * 收紧口径：只允许表内名；都不贴切就省略（写侧回落谓词键，不猜）。
+ */
+const ATTRIBUTE_RULE = [
+  "6. For each fact also give attribute: the canonical property slot the fact belongs to. Choose ONLY from this closed list (name: meaning, fixed cardinality). Never invent a name.",
+  ...FACT_ATTRIBUTES.map((a) => `   - ${a.name}: ${a.description} (${a.cardinality})`),
+  "   If no listed attribute fits, omit attribute entirely (predicate is still required). When attribute is given, its cardinality is fixed by this list.",
+].join("\n");
 
 const SYSTEM_PROMPT = [
   "You extract concise fact phrases from conversation turns for a memory retrieval index.",
@@ -33,8 +44,9 @@ const SYSTEM_PROMPT = [
   "3. Each fact must be a short self-contained phrase (<= 24 words) preserving exact names, numbers, dates and units as written. At most 4 facts per turn.",
   "4. Skip greetings, questions with no stated fact, filler, and meta talk. Returning an empty array for such turns is correct.",
   "5. For each fact also give cardinality: \"single\" when the predicate holds at most one value at a time for that subject (current city, phone number, price, count, status, job title, home address), \"multi\" when multiple values can hold at the same time (likes/dislikes, plans, considering, symptoms, friends, skills). Omit cardinality when unsure.",
-  "6. Output JSON only, no prose:",
-  '{"results":[{"id":"<turn id>","facts":[{"subject":"...","predicate":"...","value":"...","phrase":"...","cardinality":"single|multi"}]}]}',
+  ATTRIBUTE_RULE,
+  "7. Output JSON only, no prose:",
+  '{"results":[{"id":"<turn id>","facts":[{"subject":"...","predicate":"...","value":"...","phrase":"...","cardinality":"single|multi","attribute":"<listed name or omit>"}]}]}',
 ].join("\n");
 
 /**
@@ -140,9 +152,15 @@ async function extractBatch(llm, batch) {
       const subject = String(f.subject ?? "").trim();
       const predicate = String(f.predicate ?? "").trim();
       const value = String(f.value ?? "").trim();
-      // cardinality 只挂在有主谓的三元组上（phrases 不进它：embedding 键口径不变）。
+      // cardinality/attribute 只挂在有主谓的三元组上（phrases 不进它：embedding 键口径不变）。
       const cardinality = normalizeFactCardinality(f.cardinality);
-      if (subject && predicate) triples.push(cardinality ? { subject, predicate, value, cardinality } : { subject, predicate, value });
+      const attribute = normalizeFactAttribute(f.attribute);
+      if (subject && predicate) {
+        const triple = { subject, predicate, value };
+        if (cardinality) triple.cardinality = cardinality;
+        if (attribute) triple.attribute = attribute;
+        triples.push(triple);
+      }
     }
     byId.set(r.id, { phrases, triples });
   }

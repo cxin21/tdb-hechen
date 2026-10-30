@@ -10,6 +10,7 @@
 
 import { classifyCardinality, isSupersessionEligible } from "./cardinality.js";
 import type { FactCardinality } from "./cardinality.js";
+import { normalizeFactAttribute, resolveFactCardinality } from "./fact-attribute.js";
 import type { FactTriple } from "./fact-key.js";
 
 /** 事实三元组形状单源在 fact-key.ts（cardinality/phrase 可选）；此处再导出保持既有 import 面。 */
@@ -105,11 +106,17 @@ function normPredicatePart(s: string): string {
 }
 
 /**
- * #146：事实键（实体 + 属性）唯一构造点——supersession 推演与事实级写时失效共用同一口径，
+ * 事实键（实体 + 属性）唯一构造点——supersession 推演与事实级写时失效共用同一口径，
  * 否则写侧按一套键失效、读侧按另一套判新旧，事实级双时态就会静默错位。
+ *
+ * #167：抽取期直出受控 attribute 时优先按 (normSubject, attribute) 构造键——谓词是自由
+ * 文本（"lives in"/"moved to"/"住在"），同义表打不到；attribute 是封闭词表，跨谓词对齐。
+ * 无 attribute（或表外脏值）才回落 #146 的 (normSubject, normPredicate) 口径，旧数据不变。
+ * "@attr:" 前缀让属性槽与谓词槽不会因字面同名而误撞。
  */
-export function factKeyOf(subject: string, predicate: string): string {
-  return normKeyPart(subject) + "\u0000" + normPredicatePart(predicate);
+export function factKeyOf(subject: string, predicate: string, attribute?: string): string {
+  const attr = normalizeFactAttribute(attribute);
+  return normKeyPart(subject) + "\u0000" + (attr ? "@attr:" + attr : normPredicatePart(predicate));
 }
 
 /**
@@ -148,12 +155,14 @@ export function computeSupersessions(
       // 事实三要素缺一不可：缺 value 的「事实」无法判定新旧（宁缺毋滥，不猜）。
       if (!subject || !predicate || !value) continue;
       // #136 属性契约：多值属性的新值不取代旧值（不进 active 表，也就永不失效）。
-      const verdict = f.cardinality
-        ? { cardinality: f.cardinality, reason: "explicit" }
-        : classifyCardinality(predicate, value);
+      // #167：基数优先级 受控 attribute > 显式 > 谓词启发式——attribute 来自封闭词表，
+      // 词表档位即属性语义（residence 天然 single）；显式是自由文本，只作无 attribute 时的补充。
+      const attribute = normalizeFactAttribute(f.attribute);
+      // 与写侧 fact-row 共用同一阶梯（resolveFactCardinality），不让读写两套优先级漂移。
+      const verdict = resolveFactCardinality(attribute, f.cardinality, classifyCardinality(predicate, value));
       if (cardinalityGate && !isSupersessionEligible(verdict.cardinality)) continue;
 
-      const key = factKeyOf(subject, predicate);
+      const key = factKeyOf(subject, predicate, attribute);
       // 同一 turn 内同键多值：只认首见，不自伤（turn 是原子写入单元）。
       if (seenThisTurn.has(key)) continue;
       seenThisTurn.add(key);

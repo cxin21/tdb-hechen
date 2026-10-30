@@ -2018,4 +2018,185 @@ bash scripts/run-r146-arms.sh v2deep-factrows2   # #166 验收③：新代码深
 
 **残留（自觉放弃，不当作已修）**：①**跨 turn**——遮蔽只作用在被污染 turn 的存活行；若新值所在的更新 turn 原文自己复述旧值（「我上个月从柏林搬到慕尼黑」），该行仍逐字注入。要修得做全局值级 diff（回到方案①的误伤面）。②**旧值读不到时不校验**——过期行既无 `fact_value` 也无 `factTriples` 时只知"这个 turn 脏"，存活行短语无条件注入（只有缺短语才剔）；#166 之前写入的旧库行没有 `fact_value`，真实历史数据会命中这一形状。③工具路未遮蔽（见上）。④**混合意图按字面仍有泄漏**——`presentIntent=true` 但带过去标记的问句（「我刚当上 Senior 时带几个？现在带几个？」）跳过遮蔽以保住 gold turn，此时兄弟行的父原文仍会把旧值带进注入文本；这是刻意的取舍（不跳过就掉点，见上「混合意图不遮蔽」），验收①的「presentIntent 注入不含旧值」只在**纯 present** 问句上成立。⑤**soft 档语义被收紧**——present-intent 下池内过期行一律不注入（它们正是污染源），等价于对这批 turn 收紧了硬丢；#136 的「过期只降权、相关才硬丢」在 present 问句上不再逐位成立，这是为不泄漏旧值付的代价。⑥**旧报告与度量口径**——`RecalledMemory.turnId` 是本票新增字段，bench 的 `makeIdResolver` 改成 `h.turnId ?? 文本反查`；旧报告没有该字段，重算走文本反查、与改动前逐位相同，故「同一把尺子」成立。
 
+## 23. #167 抽取期受控 attribute：把「同义」判定前移到抽取（2026-10-30）
+
+§22.6 的负结果很直接：谓词是抽取器自由文本，写侧同义表在 1796 条真实三元组上收益 **0.0%**。真正的修法不在写侧，而在抽取期——让抽取器直接给受控 attribute。本票把 bench/生产提示词从 facts-v3 升到 **facts-v4**：三元组 schema 增 `attribute`（封闭 24 名），事实键优先按 `(normSubject, attribute)` 构造，无 attribute 才回落 #146 的 `(normSubject, normPredicate)`；基数裁决统一为 **attribute > 显式标注 > 启发式**（`resolveFactCardinality`，写侧 fact-row 与读侧 supersession 共用）。设计见 [ADR-0016](adr/0016-抽取期受控属性词表.md)。
+
+本节只记实测与验收。两套语料：**95-case**（lme-manifest 的 95 个 id，用于与 §22.3 对齐）与 **500-case**（LongMemEval oracle 全量，v4 抽取 500/500 完成，5479 turn、12441 三元组）。
+
+### 23.1 词表与真实语料分布（验收①）
+
+词表在 v4 抽取**之前**定稿（依据 §22 的 1796 条三元组属性分布 + KU 切片复核，人工归纳），不是拿 500-case 结果反推。24 名 = single 10（residence/occupation/employer/education/age/phone/email/address/marital_status/name）+ multi 14（interest/plan/preference/goal/habit/possession/health/skill/activity/travel/relationship/opinion/diet/membership），单一源 `MemoryCore/src/core/record/fact-attribute.ts`。
+
+500-case 实际抽出 22 个名字（phone/email 从未出现），覆盖率 **11947/12441 = 96.0%**；95-case 覆盖 94.2%、出现 19 个（另 employer/marital_status/name 也未出现）。词表比语料宽，属预置通用槽位，不是对样本过拟合。
+
+**500-case top-N（按出现次数；share = 占带 attribute 三元组）**：
+
+| attribute | 档位 | 次数 | share | cases | 抽取器自标 single | 自标 multi |
+|---|---|---:|---:|---:|---:|---:|
+| plan | multi | 3327 | 27.8% | 433 | 18 | 3298 |
+| interest | multi | 2519 | 21.1% | 412 | 1 | 2497 |
+| activity | multi | 1642 | 13.7% | 364 | 22 | 1612 |
+| opinion | multi | 984 | 8.2% | 329 | 3 | 980 |
+| possession | multi | 758 | 6.3% | 213 | 14 | 744 |
+| preference | multi | 693 | 5.8% | 276 | 1 | 692 |
+| habit | multi | 616 | 5.2% | 221 | 4 | 612 |
+| goal | multi | 597 | 5.0% | 243 | 1 | 596 |
+| travel | multi | 177 | 1.5% | 66 | 9 | 168 |
+| relationship | multi | 169 | 1.4% | 93 | 9 | 160 |
+| health | multi | 146 | 1.2% | 47 | 2 | 143 |
+| skill | multi | 118 | 1.0% | 78 | 1 | 117 |
+| membership | multi | 49 | 0.4% | 26 | 2 | 47 |
+| education | single | 47 | 0.4% | 15 | 46 | 1 |
+| occupation | single | 33 | 0.3% | 18 | 33 | 0 |
+| residence | single | 33 | 0.3% | 25 | 33 | 0 |
+| age | single | 18 | 0.2% | 9 | 18 | 0 |
+| address | single | 6 | 0.1% | 6 | 6 | 0 |
+| employer | single | 6 | 0.1% | 3 | 6 | 0 |
+| diet | multi | 6 | 0.1% | 6 | 0 | 6 |
+| name | single | 2 | 0.0% | 2 | 2 | 0 |
+| marital_status | single | 1 | 0.0% | 1 | 1 | 0 |
+
+**single/multi 比**：带 attribute 的三元组里 single 档位只占 **146/11947 = 1.2%**，multi 档位 98.8%。这不是抽取偏差，是这批语料的属性构成——plan/interest/activity 三类就占 62.6%，全是可并存属性。single 属性在 500-case 只出现 146 次，且抽取器自标与词表档位高度一致（见下），因此**事实级失效的触发面天然窄**，后文所有读数都受这一条约束。
+
+**显式 cardinality 与词表档位一致率**：11905 条同时带显式标注与 attribute 的三元组中 11817 条一致 = **99.3%**（95-case 1723/1736 = 99.25%）。即模型大多自己就判对了基数，attribute 的主要作用不是纠基数，而是**让不同谓词落到同一个键**；不一致的 88 条里，词表档位按 ADR-0016 决定 3 压过显式（例如 activity 被标 single）。
+
+### 23.2 抽取质量：30 条人工核对（验收④）
+
+样本：`MemoryCore/scripts/audit/r167-attribute-sample.mjs` 从 95-case v4 缓存在抽样时已落盘的 1128 条带 attribute 事实中按 attribute 分层轮转、seed 20261030 抽 30 条；逐条判定见 `MemoryCore/.eval-data/bench/r167-attribute-audit.md`（含事实原文与判定口径）。
+
+| 判定 | 条数 | 说明 |
+|---|---:|---|
+| ✅ 正确 | 25 | attribute 与事实语义一致（含可接受的宽口径，如「住所类型」标 residence） |
+| △ 边界 | 3 | 能自圆其说但词表描述未覆盖，或主体不是 User 本人 |
+| ❌ 错误 | 2 | 语义明显不符 |
+
+**严格正确率 25/30 = 83.3%；只算明确错误 28/30 = 93.3%。** 明确误判两条：①`activity` 标「has seen woodpeckers」（观察/经历不是活动）；②`possession` 标「bought a gift for…」（购买行为不是拥有）。边界三条：宠物习惯标 `habit`、期望标 `opinion`、身份水平（a moderate hiker）标 `skill`。
+
+误判类型归纳 4 类：**观察/经历→activity、购买→possession、期望/预期→opinion、身份/水平→skill**（宠物主体另记边界）。结论：词表整体可用，**不需要改结构**；这 4 类可靠收紧 description 降低误标，属于下一轮提示词微调，不在本票改表重抽（改表要重跑 500-case，成本约 45 分钟，收益未证明）。
+
+**可复现性边界**：抽样池是抽样当时已落盘的 1128 条，不是最终 1736 条；`r167-attribute-audit.md` 是冻结的人工判定记录，用最终缓存重跑脚本会抽出另一批 30 条，83.3% 不能逐位复现，只能作为该批样本的准确率证据。
+
+### 23.3 同键跨轮重复率：三把尺子，票面口径与真实触发面都未达 40%（验收②）
+
+`MemoryCore/scripts/audit/r167-attribute-metrics.mjs` 同时出两种口径：
+
+- **全局池化**（§22.3 旧口径）：所有 case 的事实放一个池，同 `(subject, 属性)` 跨 turn 出现即算跨轮——**跨 case 也会撞键**。
+- **题内 per-case**：每个 case 独立算「跨 ≥2 turn 的键 / 不同键」，再给 micro（合并键数加权）与 macro（各题 rate 平均）。线上一条记忆只属于一个用户/会话，跨 case 同名属性不可能是更新链；**题内口径才是事实级失效的真实触发面**。
+
+| 语料 | 口径 | v3 谓词键 | v4 属性键 | Δ |
+|---|---|---|---|---|
+| 95-case（1842 三元组） | 池化 | 1107 键 / 215 跨 = 19.4%[^v3drift] | 136 键 / 44 跨 = **32.4%** | +13.0pp |
+| 95-case | 题内 micro | 13.6% | **52.9%** | +39.3pp |
+| 95-case | 题内 macro | 13.0% | **48.7%** | +35.7pp |
+| 500-case（12441 三元组） | 池化 | 4925 键 / 1318 跨 = 26.8% | 521 键 / 107 跨 = **20.5%** | −6.3pp |
+| 500-case | 题内 micro | 17.6% | **58.9%** | +41.3pp |
+| 500-case | 题内 macro | 16.7% | **56.8%** | +40.1pp |
+
+[^v3drift]: 表里的 v3 列不是另跑一遍 v3 抽取，而是把同一份 v4 三元组按 `(subject, predicate)` 重算（`r167-metrics-v4-95-final.json` 的 `keyStats.v3LegacyKey`）。真 v3 缓存重跑的 95-case 读数是 1808 三元组 / 1244 键 / 231 跨 = 18.6%（`r167-metrics-v3-95.json`），与 §22.3 的 15% 差在 v3 缓存被重抽过，不是本次代码差异。
+
+**但上表的题内 58.9% / 52.9% 不是失效收益**：multi 档位按设计永不失效，而题内跨轮键里 96.9% 是 multi（`crossTurnMix` 口径：500-case 2015 个跨轮键中 1952 个组内只有 multi 行，95-case 326 个中 316 个）。把分母限到**解析后 single 的行**，才是真正会触发失效的键：
+
+| 语料 | 仅 single 行，题内 micro | v3 谓词键 | v4 属性键 | 仅 attribute 且 single |
+|---|---|---|---:|---:|---:|
+| 95-case | single 行 91 键 | 8.6% | **9.9%** | 2/15 = 13.3% |
+| 500-case | single 行 428 键 | 12.1% | **14.0%** | 29/84 = 34.5% |
+
+single-only 口径下 v4 只从 12.1% 抬到 14.0%（500）/ 8.6% 到 9.9%（95），**没有达到票面的 15% 基线，更不到 40%**；34.5% 只说明「attribute 自己能把 single 键收敛好」，但这类行只占 84/428 = 19.6%，不能冒充整库收益。原因是词表把 plan/interest/activity 这些真正高频的属性定成 multi，而语料里真单值的 residence/occupation/age 出现太少（23.1 的 146 条）。
+
+**票面「从 15% 提到 ≥40%」按它自己的池化尺子没有达到**：95-case 32.4%、500-case 反而降到 20.5%。池化尺子在 v4 下也已**失去意义**：键空间从 4925 坍缩到 521（所有 case 的 `User|@attr:plan` 并成一个键），分母塌了，跨 case 的同名属性被当成跨轮——500-case 的 107 个跨轮键里绝大多数是不同 case 的 plan/interest，不是同一条记忆的更新。但**题内 58.9% 也不能当收益**：它证明的是「谓词改写后键还能落在同一个属性槽」，其中 96%+ 是永不失效的 multi。真正决定失效收益的 single-only 口径只有 14.0% / 9.9%，低于票面基线，更低于 40%。
+
+**结论（判死，不留给下一节）**：按票面池化口径**未达标**；按真实触发面（single-only）也**未达标**，相对 v3 只多 1.9pp / 1.3pp。因此「抽取期受控 attribute 能在 500-case 上把事实级失效触发面抬到 40%」这个收益假设，在这份 24 名词表 + 这份语料上**不成立**——不是「换把尺子就达标」。机制本身（键收敛、跨谓词失效、读写同一阶梯）是对的，但高频属性都是 multi，single 属性只占 1.2%，收益天花板由语料属性构成决定。要继续这条线，得先补 status/count/favorite 这类高频单值属性，或改从 query 侧定向抽取，而不是继续加通用 multi 槽位。
+
+### 23.4 KU 切片：13 个 single 槽位（去重后 6 条真更新）（验收③）
+
+KU = knowledge-update。500-case 有 **78 个 KU case / 2158 三元组**；解析后判为 single 的三元组 **87 条**，其中带 single attribute 的 25 条。题内同键跨 ≥2 turn 的 single 槽位 **13 个**（脚本 `kuSlots.distinctValueSlots=10`、`repeatedValueOnly=3`；95-case 只有 4 个，因为该清单只覆盖 15 个 KU case）。逐条人工确认如下（值已截断）：
+
+| # | case | attribute | 关键值（旧 → 新） | 判定 |
+|---:|---|---|---|---|
+| 1 | 031748ae | —（team outing） | 5 engineers and a manager → 4 engineers + manager, totaling 5 | ❌ 同值改写，不是更新 |
+| 2 | 031748ae | occupation | Senior Software Engineer ×3 turn | ❌ 同值重复 |
+| 3 | 031748ae | —（leads） | team of 4 engineers → team of five engineers | ✅ 真更新 |
+| 4 | 031748ae_abs | occupation | Senior Software Engineer ×3 turn | ❌ 同值重复（同题改写版） |
+| 5 | 031748ae_abs | —（leads） | team of 4 → team of five | ✅ 真更新（同题改写版） |
+| 6 | 06db6396 | —（has completed） | 4 painting projects ×2 turn | ❌ 同值重复 |
+| 7 | 1cea1afa | —（has） | 500 Instagram followers → 600 followers | ✅ 真更新 |
+| 8 | 2133c1b5_abs | residence | Tokyo → Harajuku for 3 months | ✅ 真更新 |
+| 9 | 3ba21379 | —（is using） | Vallejo paints → Vallejo paints on current project | ❌ 同值细化 |
+| 10 | 4d6b87c8 | —（to-watch list） | 20 titles → 25 titles | ✅ 真更新 |
+| 11 | 6a27ffc2 | —（has completed） | 20 videos → 30 videos | ✅ 真更新 |
+| 12 | ba61f0b9 | —（Rachel's team） | 10 people / half women → 6 women out of 10 | ✅ 真更新 |
+| 13 | e66b632c | residence | the local area → the city of Oakdale | △ 地点细化，可算可不算 |
+
+**计数**：槽位数 13 ≥ 10，验收③的**条数条件满足**；但去掉 3 条同值重复（#2/#4/#6）后是 10 个有不同值的槽位，其中 #3/#5 是同题（031748ae 与 _abs）的同一更新，去重后**独立真更新只有 6 条**（#7/8/10/11/12 + leads），加边界 #13 为 7 条。所以「≥10 条可人工确认的单值触发」成立，「≥10 条真实更新」不成立。为什么不再多：①v3 的 16 条 single 触发面里大量是 `plans to…` 被误判 single，v4 按词表判 multi 是正确性修正，不是收益损失；②真正的单值更新（favorite sauce、follower count、status/level、team size）大多没有对应 attribute（词表缺 `status`/`count`/`favorite`），只能走谓词键；③谓词逐轮改写时，无 attribute 就撞不上键（如 `favorite BBQ sauce is` vs `is currently obsessed with`，§23.5 例）。**这是词表边界决定的不可达，不是实现缺陷**；补 status/count/favorite 需要重抽 500-case 并重新量误标率，列为后续。
+
+95-case 的 4 个槽位（2133c1b5 的 residence、031748ae 的 occupation/leads、603deb26 的同值重复）与之同形，只有 2 条真更新；两套语料结论一致：**single 槽位存在但稀薄**。
+
+**被词表压掉的显式 single**（`suppressedSingleUnderMultiAttr`）：500-case 仅 14 条三元组、1 个多值槽位（852ce960 的贷款额度 $350k→$400k 被标成 plan/multi）。这是 ADR-0016 决定 3 的代价：multi 属性按词表不失效，即使抽取器写了 single。数量小，但说明「attribute > 显式」不是零成本；若后续发现更多此类，应调词表而不是反转优先级。
+
+### 23.5 机制走查与真实案例
+
+合成 3-turn 走查（`lives in Berlin` → `moved to Munich`，谓词不同、attribute 都是 residence）证明：v4 下两个谓词落到同一 `User|@attr:residence` 键，旧行 `valid_end` = 新行 `valid_start`，同 turn 的 `interest`（摄影）不被连坐；同 turn 重复值只留首见。无 attribute 时两键不同、不触发——这正是 #146 在真实语料只有 15% 重复率的原因，也是 #167 要补的缝。
+
+真实 KU 例 `18bc8abd`（BBQ sauce）：`favorite BBQ sauce is Sweet Baby Ray's` → `is currently obsessed with Kansas City Masterpiece` → `favourite BBQ sauce is Kansas City Masterpiece`。v4 把三条都标成 `preference`（multi），因此**不失效**——语义上「最喜欢的酱」是单值，但词表把 preference 定为 multi，宁可少失效也不误失效。这是 23.4「真更新未达 10」的直接原因之一，也说明下一轮该补的是 `favorite` 这类属性，而不是把 preference 改 single。
+
+### 23.6 LME90 配对（验收⑤）
+
+口径与 §22.8 深池一致（n=90，manifest 90/500，candidates 32 / minScore −10.5 / candidateK 32 / 精排子进程，生成与判分 scm-flash），**只换抽取缓存为 facts-v4**。对照基线：#166 后新代码深池 **72.3% / 60.0%**（§22.8），#166 前 71.7% / 58.9%（§22.5）。
+
+本臂命令：`bash scripts/run-r146-arms.sh v2deep-factrows-v4`（臂定义见脚本；与 `v2deep-factrows2` 逐位相同，只把 `--fact-cache` 换成 `.eval-data/bench/facts-cache-v4`，并把 `--fact-model` 改成缓存里的 `scm-flash` 以通过缓存校验）。日志确认 `promptVersion=facts-v4`、`cache=.eval-data/bench/facts-cache-v4`、`factRows=true`；灌库 90/90 零失败零重试，事实行 1656、覆盖 708 turn、失效 op 95、丢弃 2。
+
+| 读数 | v2 深池基线（`*-factrows2-final.json`） | facts-v4 深池 | Δ |
+|---|---:|---:|---:|
+| turnCov@5 | 72.26% | **73.79%** | +1.53pp |
+| 判对率（LLM judge, n=90） | 60.00% | **58.89%** | −1.11pp |
+| sessionCov@5 | 88.67% | 90.33% | +1.67pp |
+| MRR@5 | 72.54% | 72.91% | +0.37pp |
+| 拒答率 | — | 30.0% | — |
+| 检索延迟 p50 / p95 | — | 843ms / 2288ms | — |
+
+**配对检验**（同一 90 题逐题配对，不是只看整体均值）：turnCov 逐题差 +1.48pp，配对 t=1.05（不显著）；判对 4 题变好、5 题变差，精确 McNemar p=1.0（不显著）。基线自身重算在 68.2%–72.3% 间摆动（`recount` 系列），1–1.5pp 的差异落在重复跑噪声内。
+
+**结论**：LME90 深池**没有可检出的回退**（turnCov 点估计 +1.5pp、判对 −1.1pp，统计上都不显著），但也**没有可检出的收益**——与 23.3 的 single-only 判死一致。验收⑤的「不回退」按「无显著回退」记录，不把 +1.5pp 说成收益。
+
+### 23.7 开关、兼容与残留
+
+| 项 | 值 |
+|---|---|
+| 生产开关 | 仍随 `memory.write.factRows.enabled`（缺省 false）；本票不新增开关 |
+| 提示词 | 生产 `l1-extraction.ts` 仅在 `includeTriples` 时出现 attribute 词表；缺省 FACTS_BLOCK 不含 attribute/cardinality/phrase，字节不变 |
+| bench | `FACTS_PROMPT_VERSION = "facts-v4"`；v3 缓存不会被当成 v4（版本不匹配即重抽） |
+| 旧数据 | 谓词键旧行不迁移、不被新 attribute 键失效；升级后旧库仍按旧口径。无 backfill |
+| 表外值 | `normalizeFactAttribute` 返回 undefined，写侧回落谓词键与启发式；别名只收无歧义词形（city/location/relationship_status 故意不收） |
+| 基数 | attribute > 显式 > fallback（含 `cardinalityDefault` 与谓词启发式）；词表单一源，读写共用 `resolveFactCardinality` |
+| 可观测性 | attribute 随 `metadata.factTriples[0].attribute` 落库，不另设 `fact_attribute` 专键 |
+| 未覆盖 | phone/email 在 500-case 从未出现，无法验证；TCVDB 后端仍不支持事实级失效（#146 遗留，本票未动） |
+
+**残留（自觉放弃）**：①词表缺 status/count/favorite，真单值更新仍走谓词键（23.4）；②preference 等 multi 属性按词表不失效，即使语义单值（23.5）；③14 条显式 single 被 multi attribute 压掉（1 个槽位），是优先级选择的代价；④30 条抽样只有 83.3% 严格正确，4 类误标未修；⑤池化口径在 v4 下失真，票面尺子与真实触发面不一致，需票面/ADR 决定是否改口径。
+
+### 23.8 复现
+
+```bash
+cd MemoryCore
+# 全量/子集抽取（内网 shim：.eval-data/bench/llm-shim-v4，scm-flash）
+node --import tsx scripts/eval-memory-bench.mjs --dataset longmemeval --limit 500 \
+  --facts-only --fact-cache .eval-data/bench/facts-cache-v4 \
+  --fact-case-concurrency 6 --prod-data .eval-data/bench/llm-shim-v4
+# 覆盖率 / top-N / 双口径重复率 / KU 槽位
+node --import tsx scripts/audit/r167-attribute-metrics.mjs \
+  --cache .eval-data/bench/facts-cache-v4 --out .eval-data/bench/r167-metrics-v4-500.json
+node --import tsx scripts/audit/r167-attribute-metrics.mjs \
+  --cache .eval-data/bench/facts-cache-v4-95 --out .eval-data/bench/r167-metrics-v4-95-final.json
+# 30 条分层抽样（输出原 turn 文本 + 全部事实，人工判定）
+node --import tsx scripts/audit/r167-attribute-sample.mjs --cache .eval-data/bench/facts-cache-v4-95
+# LME90 深池配对（facts-v4 缓存；v4 缓存由 scm-flash 抽取，臂内把 fact-model 换成 scm-flash）
+bash scripts/run-r146-arms.sh v2deep-factrows-v4
+```
+
+### 23.9 回归（验收⑤）
+
+- 全量：`cd MemoryCore && npm test` → **290 files / 2710 tests passed**（14.24s）。
+- 类型：`npm run typecheck`（`tsc -p tsconfig.typecheck.json`）当前仓库基线 243 个错误（generated schemas/gateway 等历史债）；本次改动文件 `fact-attribute|fact-row|supersession|fact-key|l1-extraction|r167` **零命中**，未新增错误。基线不绿，不能写「typecheck 全绿」。
+- 针对性：`fact-attribute.test.ts`（7）、`fact-row.test.ts`（9）、`supersession-cardinality.test.ts`（8）、`bench-fact-rows.test.ts`（15）共 39 tests 全绿。
+
 

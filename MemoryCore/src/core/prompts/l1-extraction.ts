@@ -7,6 +7,7 @@
  */
 
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
+import { describeAttributes } from "../record/fact-attribute.js";
 import { clampMaxFacts } from "../record/fact-key.js";
 
 // ============================
@@ -523,8 +524,10 @@ export function buildFactsBlock(opts?: { maxFacts?: number; includeTriples?: boo
   // 由 LLM 顺手判「同属性同刻单值 vs 可并存」，写侧 classifyCardinality 只做兜底（拿不准省略）。
   const triples = opts?.includeTriples === true
     ? `
-- **三元组形状（本次允许）**：也可写 {"subject":"主体","predicate":"关系","value":"取值","phrase":"自足短语","cardinality":"single|multi"}（subject/predicate 必填、value 可为空；phrase 可选 = 该条事实的中文自足表述，可与短语二选一或并存；同一事实不要用两种形状重复输出）。
-- **cardinality（可选，仅 single|multi）**：决定同一实体同一属性的新旧取值能否并存——single = 同一实体同一属性同一时刻只能有一个值（如城市/电话/价格/数量/状态/职位/住址/过敏）；multi = 同一实体同一属性可并存多个值（如喜好/计划/考虑中/症状/朋友/技能）。只依据正文判定；拿不准就省略本字段（写侧启发式兜底），不要猜。`
+- **三元组形状（本次允许）**：也可写 {"subject":"主体","predicate":"关系","value":"取值","phrase":"自足短语","cardinality":"single|multi","attribute":"属性名"}（subject/predicate 必填、value 可为空；phrase 可选 = 该条事实的中文自足表述，可与短语二选一或并存；同一事实不要用两种形状重复输出）。
+- **cardinality（可选，仅 single|multi）**：决定同一实体同一属性的新旧取值能否并存——single = 同一实体同一属性同一时刻只能有一个值（如城市/电话/价格/数量/状态/职位/住址/过敏）；multi = 同一实体同一属性可并存多个值（如喜好/计划/考虑中/症状/朋友/技能）。只依据正文判定；拿不准就省略本字段（写侧启发式兜底），不要猜。
+- **attribute（可选，受控词表）**：给该条事实标一个 canonical 属性——只能从下表原样选一个名字（禁止自造、改写或翻译），都不贴切就省略本字段（写侧回落谓词键，不猜）。给出 attribute 时 cardinality 以词表档位为准（标 single 的槽位时刻单值、标 multi 的可并存）；两者都只依据正文判定，拿不准仍以省略为安全。
+${describeAttributes()}`
     : "";
   return `
 

@@ -64,6 +64,15 @@ describe("#136 验收① 一行两事实，只取代其一", () => {
     expect(computeSupersessions(multiOnly).map((o) => o.turnId)).toEqual([]);
     expect(computeSupersessions(multiOnly, { cardinalityGate: false }).map((o) => o.turnId)).toEqual(["m1"]);
   });
+
+  it("#167 attribute 优先：不同谓词同 attribute 撞键失效，显式 multi 也被词表压过", () => {
+    const ops = computeSupersessions([
+      { turnId: "a", timestamp: "2023-05-01T10:00:00", facts: [{ subject: "U", predicate: "lives in", value: "Berlin", attribute: "residence", cardinality: "multi" }] },
+      { turnId: "b", timestamp: "2023-06-01T10:00:00", facts: [{ subject: "U", predicate: "moved to", value: "Munich", attribute: "residence", cardinality: "multi" }] },
+    ]);
+    expect(ops.map((o) => o.turnId)).toEqual(["a"]);
+    expect(ops[0].cardinality).toBe("single");
+  });
 });
 
 describe("#136 生产写侧内容级门控（supersessionEligibleForContent）", () => {

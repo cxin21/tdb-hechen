@@ -4,19 +4,21 @@
  * 背景：#134/#136 的失效落点是**整行**——一个 turn 里有多条事实时，单值属性的一次真更新
  * 会把同一行里的兄弟事实一起软失效（降权甚至条件硬丢）。#136 把爆炸半径从"永久丢失"压到
  * "排序降权"，但没有结构性消除。本模块把写面粒度降到事实级：
- *   - 抽取器直出三元组 {subject,predicate,value,phrase?,cardinality?}；
+ *   - 抽取器直出三元组 {subject,predicate,value,phrase?,cardinality?,attribute?}；
  *   - 每条事实单独一行 L1（content = 自足短语），metadata 带 subject/predicate/cardinality/
  *     fact_key/fact_of，双时态两端 valid_start/valid_end 与 #134 同口径；
- *   - 失效只按（实体，属性）命中同键的**那一条**（factKeyOf），同 turn 其它事实行不受影响。
+ *   - 失效只按（实体，属性）命中同键的**那一条**（factKeyOf(subject,predicate,attribute)），同 turn 其它事实行不受影响。
  *
  * 纪律（与 #134/#136 一致）：
  *   - 纯函数，不碰 store；写侧拿 plan 去落库；
  *   - 三元组缺 subject/predicate 不进事实行（宁缺毋滥，不猜）——调用方回退整行写入；
  *   - 同一记忆内同键多值只留**首见**（与 computeSupersessions 的 seenThisTurn 同口径，
  *     避免同一批写入自伤）；
- *   - 基数缺省判定复用 classifyCardinality 阶梯（启发式仅兜底，抽取器显式标注优先）。
+ *   - 基数裁决走 resolveFactCardinality 单一阶梯：受控 attribute > 显式标注 > 启发式。
  */
 
+import { normalizeFactAttribute, resolveFactCardinality } from "./fact-attribute.js";
+import type { FactAttributeName } from "./fact-attribute.js";
 import { classifyCardinality } from "./cardinality.js";
 import type { FactCardinality } from "./cardinality.js";
 import { mergeFactTriples, tripleToPhrase } from "./fact-key.js";
@@ -70,12 +72,14 @@ export interface FactRowSpec {
   subject: string;
   predicate: string;
   value: string;
-  /** 基数裁决（显式标注优先，缺省走 classifyCardinality 阶梯）。 */
+  /** 基数裁决（attribute > 显式标注 > 启发式，见 resolveFactCardinality）。 */
   cardinality: FactCardinality;
-  /** 裁决理由（explicit / single-cue:x / multi-cue:x / value-list / default-single）。 */
+  /** 裁决理由（attribute:${name} / explicit / default-multi / single-cue:x / multi-cue:x / value-list / default-single）。 */
   cardinalityReason: string;
-  /** 同属性键：factKeyOf(subject, predicate)。 */
+  /** 同属性键：factKeyOf(subject, predicate[, attribute])（#167 起 attribute 优先）。 */
   factKey: string;
+  /** #167：受控属性名（表内才落；缺省 = 走谓词启发式，旧行为）。 */
+  attribute?: FactAttributeName;
 }
 
 export interface FactRowPlan {
@@ -119,13 +123,16 @@ function planFactRowsFromTriples(triples: readonly FactTriple[], opts: FactRowOp
   const rows: FactRowSpec[] = [];
   let dropped = 0;
   for (const t of triples) {
-    const factKey = factKeyOf(t.subject, t.predicate);
-    const verdict = classifyCardinality(t.predicate, t.value, t.cardinality);
-    const cardinality = verdict.reason === "default-single" && opts.cardinalityDefault === "multi"
-      ? ("multi" as FactCardinality)
-      : verdict.cardinality;
-    const reason = cardinality === verdict.cardinality ? verdict.reason : "default-multi";
-    // 去重键：multi 带 value（可并存），single 只按 (subject,predicate)（函数依赖，留首见）。
+    // #167：受控 attribute 优先决定事实键，也优先决定基数——词表档位即属性语义
+    // （residence 即使谓词带 multi 线索、显式写错 multi，也是 single）；无 attribute 才看显式/启发式。
+    const attribute = normalizeFactAttribute(t.attribute);
+    const factKey = factKeyOf(t.subject, t.predicate, attribute);
+    const heuristic = classifyCardinality(t.predicate, t.value);
+    const fallback = heuristic.reason === "default-single" && opts.cardinalityDefault === "multi"
+      ? { cardinality: "multi" as FactCardinality, reason: "default-multi" }
+      : heuristic;
+    const { cardinality, reason } = resolveFactCardinality(attribute, t.cardinality, fallback);
+    // 去重键：multi 带 value（可并存），single 只按 (subject,attribute|predicate)（函数依赖，留首见）。
     const key = cardinality === "multi" ? factKey + "\u0000" + t.value : factKey;
     if (seen.has(key)) {
       dropped++;
@@ -140,6 +147,7 @@ function planFactRowsFromTriples(triples: readonly FactTriple[], opts: FactRowOp
       cardinality,
       cardinalityReason: reason,
       factKey,
+      ...(attribute ? { attribute } : {}),
     });
   }
   return { rows, dropped, hasFacts: rows.length > 0 };
@@ -177,7 +185,14 @@ export function factRowMetadata(
     [FACT_ROW_META.factPhrase]: row.content,
     facts: [row.content],
     factTriples: [
-      { subject: row.subject, predicate: row.predicate, value: row.value, cardinality: row.cardinality, phrase: row.content },
+      {
+        subject: row.subject,
+        predicate: row.predicate,
+        value: row.value,
+        cardinality: row.cardinality,
+        phrase: row.content,
+        ...(row.attribute ? { attribute: row.attribute } : {}),
+      },
     ],
   };
   if (ctx.validStart) metadata.valid_start = ctx.validStart;
