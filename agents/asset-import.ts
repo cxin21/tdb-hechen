@@ -126,6 +126,25 @@ export function readIfExists(p: string): string | null {
   }
 }
 
+/** 读文本；读不到（权限 / 是目录 / 读一半被删）时告警并返回 null——扫盘阶段不让单个文件打断整批。 */
+function readTextOrWarn(p: string): string | null {
+  try {
+    return readFileSync(p, 'utf-8');
+  } catch (e) {
+    console.warn(`[warn] 跳过无法读取的文件: ${p}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** stat 失败（不存在 / 悬空链接）返回 null，供扫盘循环静默跳过。 */
+function statOrNull(p: string) {
+  try {
+    return statSync(p);
+  } catch {
+    return null;
+  }
+}
+
 export function listMd(dir: string): string[] {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
   return readdirSync(dir)
@@ -175,7 +194,8 @@ export function collectSubfiles(skillDir: string, rel: string, acc: { path: stri
       collectSubfiles(skillDir, join(rel, child), acc);
     }
   } else if (st.isFile()) {
-    const text = readFileSync(full, 'utf-8');
+    const text = readTextOrWarn(full);
+    if (text == null) return;
     acc.push({ path: rel.split('\\').join('/'), content: text });
   }
 }
@@ -459,7 +479,8 @@ export function parseJsonlLines(text: string): ImportMessage[] {
       }
       if (pushedAny) recIdx++;
     } catch {
-      // 跳过非 JSON 行
+      // 跳过非 JSON 行：jsonl 里混着日志行 / 半行很常见，逐行告警会淹没文件级告警。
+      // 文件级解析失败另有 `[warn] 跳过非会话/非法 JSON 文件`（见 normalizeResponsesJson），本处保持安静是有意取舍。
     }
   }
   return msgs;
@@ -467,7 +488,20 @@ export function parseJsonlLines(text: string): ImportMessage[] {
 
 export function normalizeResponsesJson(path: string): ImportMessage[] {
   const msgs: ImportMessage[] = [];
-  const obj = JSON.parse(readFileSync(path, 'utf-8'));
+  let obj: any;
+  try {
+    obj = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (e) {
+    // 两种失败都只跳过该文件、不打断整批：目录里可能混入非会话 JSON（如 workbuddy 的 argv.json，
+    // VS Code 风格 JSONC）或写了一半的文件；也可能是文件本身读不出来（权限 / 是目录）。
+    // 两类分开报，排障时不必再从错误原文猜属于哪一类。
+    console.warn(
+      e instanceof SyntaxError
+        ? `[warn] 跳过非会话/非法 JSON 文件: ${path}: ${e.message}`
+        : `[warn] 跳过无法读取的文件: ${path}: ${(e as Error).message}`
+    );
+    return [];
+  }
   const input = obj?.input ?? obj?.messages ?? obj?.response?.output;
   const arr = Array.isArray(input) ? input : [];
   let recIdx = 0;
@@ -559,6 +593,50 @@ export function readJsonObject(p: string): Record<string, unknown> | null {
     return null;
   }
 }
+
+function scanSessionsOverrideImpl(kind: AgentKind, sessionsDir: string): ScannedSession[] {
+  const out: ScannedSession[] = [];
+  // 路径本身不可 stat（不存在 / 悬空链接）时静默返回空：这是 --sessions 参数问题，不是扫盘噪音
+  const st = statOrNull(sessionsDir);
+  if (!st) return out;
+  const jsonlFiles = st.isDirectory()
+    ? listJsonlRecursive(sessionsDir)
+    : sessionsDir.endsWith('.jsonl')
+      ? [sessionsDir]
+      : [];
+  const jsonFiles = st.isDirectory()
+    ? readdirSync(sessionsDir)
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => join(sessionsDir, f))
+    : sessionsDir.endsWith('.json')
+      ? [sessionsDir]
+      : [];
+  for (const full of jsonlFiles) {
+    // 单个 readFileSync 失败（权限 / 是目录 / 读一半被删）只跳过该文件，不让整批扫描中断
+    const text = readTextOrWarn(full);
+    if (text == null) continue;
+    const msgs = parseJsonlLines(text);
+    if (!msgs.length) continue;
+    out.push({
+      sessionId: extractCodexSessionId(full, text),
+      messages: msgs,
+      sourceKey: `session:${kind}:${full}`,
+      origin: full,
+    });
+  }
+  for (const full of jsonFiles) {
+    const msgs = normalizeResponsesJson(full);
+    if (!msgs.length) continue;
+    out.push({
+      sessionId: basename(full, '.json'),
+      messages: msgs,
+      sourceKey: `session:${kind}:${full}`,
+      origin: full,
+    });
+  }
+  return out;
+}
+
 
 // ── 导入引擎：配置与 HTTP 客户端 ──
 interface PanelEnvelope<T = unknown> {
@@ -844,8 +922,9 @@ function loadCheckpoint(path: string): Checkpoint {
   try {
     const obj = JSON.parse(readFileSync(path, 'utf-8'));
     if (Array.isArray(obj?.done)) return { done: obj.done };
-  } catch {
-    // 损坏的 checkpoint 视为空，不静默忽略——告警后继续
+  } catch (e) {
+    // 损坏 / 不可读的 checkpoint 按空处理（等于重新导入一遍），但别静默：磁盘问题要能被看见。
+    console.warn(`[warn] checkpoint 不可用，按空处理: ${path}: ${(e as Error).message}`);
   }
   return { done: [] };
 }
@@ -1645,12 +1724,12 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
   if (!existsSync(sessionsRoot)) return out;
   for (const agentId of readdirSync(sessionsRoot)) {
     const dir = join(sessionsRoot, agentId);
-    if (!statSync(dir).isDirectory()) continue;
+    if (!statOrNull(dir)?.isDirectory()) continue;
     const sessionsDirPath = join(dir, 'sessions');
     if (!existsSync(sessionsDirPath)) continue;
     for (const f of listJsonlRecursive(sessionsDirPath)) {
       if (f.endsWith('.lock') || f.endsWith('.trajectory.jsonl')) continue;
-      const msgs = parseJsonlLines(readFileSync(f, 'utf-8'));
+      const msgs = parseJsonlLines(readTextOrWarn(f) ?? '');
       if (msgs.length) out.push({ sessionId: `${agentId}/${basename(f, '.jsonl')}`, messages: msgs, sourceKey: `session:${KIND}:${f}`, origin: f });
     }
   }
@@ -1659,43 +1738,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
 
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }
@@ -1738,9 +1782,9 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
   if (existsSync(root)) {
     for (const proj of readdirSync(root)) {
       const dir = join(root, proj);
-      if (!statSync(dir).isDirectory()) continue;
+      if (!statOrNull(dir)?.isDirectory()) continue;
       for (const f of listJsonlRecursive(dir)) {
-        const msgs = parseJsonlLines(readFileSync(f, 'utf-8'));
+        const msgs = parseJsonlLines(readTextOrWarn(f) ?? '');
         if (msgs.length) out.push({ sessionId: `${proj}/${basename(f, '.jsonl')}`, messages: msgs, sourceKey: `session:${KIND}:${f}`, origin: f });
       }
     }
@@ -1749,7 +1793,7 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
   const legacy = join(home(), '.codebuddy', 'sessions');
   if (existsSync(legacy)) {
     for (const f of listJsonlRecursive(legacy)) {
-      const msgs = parseJsonlLines(readFileSync(f, 'utf-8'));
+      const msgs = parseJsonlLines(readTextOrWarn(f) ?? '');
       if (msgs.length) out.push({ sessionId: basename(f, '.jsonl'), messages: msgs, sourceKey: `session:${KIND}:${f}`, origin: f });
     }
   }
@@ -1758,43 +1802,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
 
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }
@@ -1848,7 +1857,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
   const sessionsRoot = join(codexHome(), 'sessions');
   if (!existsSync(sessionsRoot)) return out;
   for (const full of listJsonlRecursive(sessionsRoot)) {
-    const text = readFileSync(full, 'utf-8');
+    const text = readTextOrWarn(full);
+    if (text == null) continue;
     const msgs = parseJsonlLines(text);
     if (!msgs.length) continue;
     out.push({ sessionId: extractCodexSessionId(full, text), messages: msgs, sourceKey: `session:${KIND}:${full}`, origin: full });
@@ -1858,43 +1868,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
 
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }
@@ -1934,11 +1909,11 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
   if (!existsSync(root)) return out;
   for (const proj of readdirSync(root)) {
     const pd = join(root, proj);
-    if (!statSync(pd).isDirectory()) continue;
+    if (!statOrNull(pd)?.isDirectory()) continue;
     for (const f of readdirSync(pd)) {
       if (!f.endsWith('.jsonl')) continue;
       const full = join(pd, f);
-      const msgs = parseJsonlLines(readFileSync(full, 'utf-8'));
+      const msgs = parseJsonlLines(readTextOrWarn(full) ?? '');
       if (msgs.length) {
         out.push({ sessionId: f.replace('.jsonl', ''), messages: msgs, sourceKey: `session:${KIND}:${full}`, origin: full });
       }
@@ -1950,43 +1925,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
 // ════════════════════════════════════════════════════════════════════════════
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }
@@ -2027,7 +1967,8 @@ function parseDshSessionLines(text: string): ScannedSession['messages'] {
         if (content && !isHarnessNoise(role, content)) msgs.push({ role, content });
       }
     } catch {
-      // 跳过非 JSON 行
+      // 跳过非 JSON 行：jsonl 里混着日志行 / 半行很常见，逐行告警会淹没文件级告警。
+      // 文件级解析失败另有 `[warn] 跳过非会话/非法 JSON 文件`（见 normalizeResponsesJson），本处保持安静是有意取舍。
     }
   }
   return msgs;
@@ -2173,7 +2114,7 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
   const sessionsRoot = join(dshHome(), 'sessions');
   if (!existsSync(sessionsRoot)) return out;
   for (const full of walkFiles(sessionsRoot, (n) => n === 'session.jsonl.zstd' || n === 'session.jsonl')) {
-    const text = full.endsWith('.zstd') ? readZstdUtf8(full) : readFileSync(full, 'utf-8');
+    const text = full.endsWith('.zstd') ? readZstdUtf8(full) : readTextOrWarn(full);
     if (!text) continue;
     const msgs = parseDshSessionLines(text);
     if (!msgs.length) continue;
@@ -2184,43 +2125,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
 
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }
@@ -2390,7 +2296,8 @@ function scanSessions(sessionsDir?: string, _opts?: ScanOptions): ScannedSession
       return out;
     }
     const Database = sqlite.DatabaseSync ?? sqlite.Database ?? sqlite.default?.Database;
-    db = new Database(dbPath, { readOnly: true });
+    // node:sqlite 的导出随 Node 版本变化（22.5 实验期只有 DatabaseSync），按最小构造签名收口
+    db = new (Database as new (p: string, o?: { readOnly?: boolean }) => unknown)(dbPath, { readOnly: true });
   } catch (e) {
     console.warn(`[warn] 无法打开 state.db (${dbPath}): ${(e as Error).message}`);
     return out;
@@ -2481,43 +2388,8 @@ function hermesRowToMessages(r: {
 
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }
@@ -2567,8 +2439,8 @@ function scanWbSessions(root: string, _opts?: ScanOptions): ScannedSession[] {
   for (const f of readdirSync(root)) {
     if (!f.endsWith('.jsonl') && !f.endsWith('.json')) continue;
     const full = join(root, f);
-    const text = readFileSync(full, 'utf-8');
-    const msgs = f.endsWith('.json') ? normalizeResponsesJson(full) : parseJsonlLines(text);
+    // .json 交给 normalizeResponsesJson 自己读（文件级容错在那里），不再多读一遍盘
+    const msgs = f.endsWith('.json') ? normalizeResponsesJson(full) : parseJsonlLines(readTextOrWarn(full) ?? '');
     if (!msgs.length) continue;
     out.push({ sessionId: basename(f, f.endsWith('.json') ? '.json' : '.jsonl'), messages: msgs, sourceKey: `session:${KIND}:${full}`, origin: full });
   }
@@ -2576,9 +2448,9 @@ function scanWbSessions(root: string, _opts?: ScanOptions): ScannedSession[] {
   if (existsSync(projectsRoot)) {
     for (const proj of readdirSync(projectsRoot)) {
       const dir = join(projectsRoot, proj);
-      if (!statSync(dir).isDirectory()) continue;
+      if (!statOrNull(dir)?.isDirectory()) continue;
       for (const full of listJsonlRecursive(dir)) {
-        const msgs = parseJsonlLines(readFileSync(full, 'utf-8'));
+        const msgs = parseJsonlLines(readTextOrWarn(full) ?? '');
         if (!msgs.length) continue;
         out.push({ sessionId: `${proj}/${basename(full, '.jsonl')}`, messages: msgs, sourceKey: `session:${KIND}:${full}`, origin: full });
       }
@@ -2594,43 +2466,8 @@ function scanSessions(sessionsDir?: string, opts?: ScanOptions): ScannedSession[
 
 
 function scanSessionsOverride(kind: AgentKind, sessionsDir: string): ScannedSession[] {
-  const out: ScannedSession[] = [];
-  if (!existsSync(sessionsDir)) return out;
-  const st = statSync(sessionsDir);
-  const jsonlFiles = st.isDirectory()
-    ? listJsonlRecursive(sessionsDir)
-    : sessionsDir.endsWith('.jsonl')
-      ? [sessionsDir]
-      : [];
-  const jsonFiles = st.isDirectory()
-    ? readdirSync(sessionsDir)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => join(sessionsDir, f))
-    : sessionsDir.endsWith('.json')
-      ? [sessionsDir]
-      : [];
-  for (const full of jsonlFiles) {
-    const text = readFileSync(full, 'utf-8');
-    const msgs = parseJsonlLines(text);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: extractCodexSessionId(full, text),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  for (const full of jsonFiles) {
-    const msgs = normalizeResponsesJson(full);
-    if (!msgs.length) continue;
-    out.push({
-      sessionId: basename(full, '.json'),
-      messages: msgs,
-      sourceKey: `session:${kind}:${full}`,
-      origin: full,
-    });
-  }
-  return out;
+  // 7 个 adapter 的 --sessions 扫描完全一致：统一走一份实现（含读盘容错），本处只保留名字供 adapter 暴露
+  return scanSessionsOverrideImpl(kind, sessionsDir);
 }
   return { kind: KIND, scanSkills, scanSessions, scanSessionsOverride, detect };
 }

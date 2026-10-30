@@ -100,3 +100,26 @@ jobs:
       - name: Prettier format gate (#106)
         working-directory: MemoryPanel/web
         run: pnpm run format:check
+
+  agents-test:
+    # #120：agents/ 是独立 CLI（asset-import 扫盘），此前没有任何 runner 收集它，回归用例等于没上闸门。
+    # 现在 agents/ 自带 package.json + tsconfig，测试与类型检查都在这里跑。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # lockfile 不入库（仓库纪律）——无 frozen 安装；只装 vitest/tsc/@types/node，无原生依赖
+      - name: Install
+        working-directory: agents
+        run: pnpm install --ignore-scripts
+      - name: Typecheck
+        working-directory: agents
+        run: pnpm exec tsc -p tsconfig.json
+      - name: Test
+        working-directory: agents
+        run: pnpm exec vitest run
