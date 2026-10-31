@@ -887,9 +887,25 @@ part_of 覆盖率 10.5% → #155；结论卡单源 → #156；在线 24h 灰度�
    b1-off 的 −1.7pp 落在库/环境状态差（同库跨周复用 + query 向量缓存状态），无系统性方向。
 2. 复跑历史档必须显式关掉后来开的生产配置（`--fact-channel-off`、`--validity-mode hard`、`--small-to-big-off`、`--conclusion-layer-off`），
    否则「基线档」里混进生产默认，差异会被误读成本票的回退。
-   **脚本已固化**（#159）：10 个历史 arm 脚本统一 source `MemoryCore/scripts/lib/bench/arms.sh`——每档强制
-   `--expect-config`（口径不符 exit 2，不再靠人记）、`--report-name` 恒等 tag 并断言报告落盘、路径只走
-   `STORE_ROOT`/`BASE_STORE`；`MemoryCore/__tests__/bench-arms-hygiene.test.ts` 守住这条纪律。
+   **脚本已固化**（#159，含后续收尾）：10 个历史 arm 脚本统一 source `MemoryCore/scripts/lib/bench/arms.sh`——
+   每档强制 `--expect-config`（口径不符 exit 2，不再靠人记）、`--report-name` 恒等 tag 并断言报告落盘、路径只走
+   `STORE_ROOT`/`BASE_STORE`；随后 `run-r141-*.sh`、`run-r146-arms.sh` 补上同样的显式口径与断言，
+   `run-r146-currency{,2}.sh`、`run-rejudge-noise.sh` 去掉个人家目录硬编码（改走 `${STORE_ROOT:-${TMPDIR:-/tmp}/tdagemem-bench}`；本机 git bash 下 `TMPDIR` 就是 `%TEMP%`，与旧硬编码同一物理目录，故读数不变，但**临时目录不持久**，正式跑请给 `STORE_ROOT`）（只跑重判的 `run-rejudge-noise.sh`
+   无 runner 旗标，故不要求 `--expect-config`）。`MemoryCore/__tests__/bench-arms-hygiene.test.ts` 守住这条纪律。
+   `W3_OFF` 现在同时带 `--small-to-big-off`——**只是显式化，读数不变**：结论层关着 ⇒ `r7Conclusions` 恒空
+   （`src/core/hooks/auto-recall.ts` 的收集门），回捞块要求 `r7Conclusions.length > 0`、slot 记账又要求
+   `r7ConclusionLines > 0`，该旗标在此档完全惰性，b0 / w1 / w2h / w2s / w1w2h / w1w2s 与 §14 仍逐位可比。
+   **真正改了读数的是 `W3_NEW` 补的 `--conclusion-max-extra 4`**（原先继承 runner 缺省 2）：w3 / w1w3 / w2hw3 /
+   w2sw3 / alls / allh 六臂因此与 §14/§16 的历史读数不可比（按 §14.4，add×4 的 turnCov 约 +5.9pp），
+   重跑后必须按新口径重读；§16 里「新分阶段臂没传 `--conclusion-max-extra`」这句自此作废。
+   另有两处**本轮才发现的读数缺陷**（都已钉进脚本与断言）：
+   - 结论行上限（`conclusionLayer.maxConclusions`）全程没钉，值来自继承的 `floor(maxResults/2)`；r141 两个脚本
+     现显式 `--conclusion-cap 2` 并断言（= `floor(5/2)` 继承值，读数不变；钉 5 会直接改预算，别抄 r146c wide 档的 5），免得生产 `maxResults` 一漂就静默改预算。
+   - **off 档不可达**（→ #174）：`excludeInvalidatedFor` 是 `mode === "soft" ? "soft" : flag`，所以
+     `--validity-off` 在 `mode=soft` 下被盖住，b0 / w1 / w3 / w3legacy / w1w3 这些「W2 关」格实测仍是**软失效**
+     （与 w2s 同配置——§14 表里 b0 与 w2s 逐位相同即旁证，§15 的「保留 soft」实为 soft-vs-soft）。
+     快照因此新增派生键 `recall.excludeInvalidated.effective`，脚本断言它而不是只断言声明的 `false`；
+     修 #174 后这批臂要重跑、§14/§15 结论按新读数复核。
 
 ## 16. #141 机制分阶段：W1 双通道 / W2 软失效+属性契约 / W3 表示路由（2026-10-28）
 
@@ -995,7 +1011,8 @@ judge/作答 = MiniMax-M3.1-Flash，事实抽取 = MiniMax-M2.7（`--fact-model`
 **为什么输了：三处差异与一个口径 bug**
 
 跑完发现 `w3`/`w1w3`/`alls` 与 `w3legacy` **不是同一口径**——主表脚本里新分阶段臂没传 `--conclusion-max-extra`，
-继承了沙箱库的 `smallToBig.maxExtraLines=2`，而 `w3legacy` 显式传了 4。实测：`w3` 的 `gates.smallToBig.maxExtraLines=2`、每题证据行 0.44（40/90），
+继承了沙箱库的 `smallToBig.maxExtraLines=2`，而 `w3legacy` 显式传了 4。
+（#159 已给 `W3_NEW` 补齐 4，故本节这批读数是 2 的口径、与脚本现口径不再可比——见 §15.7 的说明；要引用请以重跑结果为准。）实测：`w3` 的 `gates.smallToBig.maxExtraLines=2`、每题证据行 0.44（40/90），
 `w3legacy` 为 4、1.38（124/90）。证据行是**答案载体**（`byType['evidence-recall'].goldLines`：w3 21 行 / legacy 67 行），
 这一项差异就足以解释 3.3pp 的判对差与 8pp 的覆盖率差——**不是「分阶段」本身的账**。
 

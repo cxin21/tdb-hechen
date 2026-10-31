@@ -978,6 +978,14 @@ export function withEmbedCache(embedding, cacheDir, tag) {
 
 // ── 生效配置自检（issue #135 白跑档的根因防线）───────────────────────────────
 /**
+ * #159/#174：复刻 src/core/recall/validity-policy.ts:excludeInvalidatedFor 的三态映射。
+ * soft 优先于 flag=false 是**现行行为**（不是本文件的 bug），所以关档必须连派生值一起断言。
+ */
+export function effectiveExcludeInvalidated(mode, flag) {
+  return mode === "soft" ? "soft" : flag === undefined ? null : flag;
+}
+
+/**
  * 回读「最终生效」的召回配置。
  *
  * 背景（#135）：每轮 copyOverrideFrom(prodData, storeDir) 会把生产
@@ -1007,6 +1015,15 @@ export function effectiveRecallSnapshot(cfg) {
     "recall.factChannel.enabled": r.factChannel?.enabled === true,
     "recall.factChannel.weight": r.factChannel?.weight ?? null,
     "recall.validity.mode": r.validity?.mode ?? null,
+    // #159：--validity-off 只改 recall 根级 excludeInvalidated，与 validity.mode 是两个键；
+    // 不记进快照的话「关失效排除」这一档就只有旗标、没有断言可依。
+    "recall.excludeInvalidated": r.excludeInvalidated ?? null,
+    // #159 收尾：只记「声明的旗标」不够——真正生效的是 excludeInvalidatedFor(mode, flag) 的三态，
+    // 而 mode=soft 会盖住 flag=false（soft 优先），于是「关档」旗标写着 false、实测仍是软降权。
+    // 记下派生值，断言才能看出生效态（深挖见 #174）。
+    // 这里重写一遍映射而不 import src（.mjs 被 vitest/tsx 两种加载器都吃，跨到 .ts 会挑加载器）；
+    // 与 src/core/recall/validity-policy.ts 的 excludeInvalidatedFor 保持逐字一致，由单测对拍。
+    "recall.excludeInvalidated.effective": effectiveExcludeInvalidated(r.validity?.mode, r.excludeInvalidated),
     "recall.presentTemporal.enabled": r.presentTemporal?.enabled === true,
   };
 }
@@ -1017,7 +1034,8 @@ export function parseExpectConfig(spec) {
   const list = Array.isArray(spec) ? spec : String(spec ?? "").split(",");
   for (const raw of list) {
     const item = String(raw ?? "").trim();
-    if (!item) continue;
+    // 空段不能静默跳过：脚本里 $EXPECT_X 前向引用会展开成空串，跳过等于静默少断言（#159 评审抓到的假绿）。
+    if (!item) throw new Error("--expect-config 含空段（多半是变量前向引用展开成空）: " + JSON.stringify(String(spec ?? "")));
     const eq = item.indexOf("=");
     if (eq <= 0) throw new Error("--expect-config 需要 key=value，收到: " + item);
     const key = item.slice(0, eq).trim();

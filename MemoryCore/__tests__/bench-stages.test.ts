@@ -13,12 +13,14 @@ import os from "node:os";
 import path from "node:path";
 
 import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "../scripts/lib/bench/stages.mjs";
+import { excludeInvalidatedFor } from "../src/core/recall/validity-policy.ts";
 import { factsForCase, saveCachedFacts, FACTS_PROMPT_VERSION } from "../scripts/lib/bench/facts.mjs";
 import { conclusionsForCase, readConclusionsCacheFile, saveConclusionsCache, CONCLUSIONS_PROMPT_VERSION } from "../scripts/lib/bench/conclusions.mjs";
 import { addUsage as addUsageLedger, emptyUsageTotal } from "../scripts/lib/bench/tokens.mjs";
 import {
   assertExpectedConfig,
   diffExpectedConfig,
+  effectiveExcludeInvalidated,
   effectiveRecallSnapshot,
   normalizeWritePolicy,
   parseExpectConfig,
@@ -171,6 +173,7 @@ describe("#135 生效配置自检", () => {
         conclusionLayer: { enabled: true, maxConclusions: 3 },
         factChannel: { enabled: true, weight: 0.6 },
         validity: { mode: "soft" },
+        excludeInvalidated: false,
         presentTemporal: { enabled: false },
       },
     });
@@ -182,10 +185,46 @@ describe("#135 生效配置自检", () => {
     expect(s["recall.factChannel.weight"]).toBe(0.6);
   });
 
+  it("失效排除（recall.excludeInvalidated）也进快照，能区分 --validity-off 档", () => {
+    const s = snapshot();
+    expect(s["recall.excludeInvalidated"]).toBe(false);
+    const on = effectiveRecallSnapshot({ recall: { excludeInvalidated: true } });
+    expect(on["recall.excludeInvalidated"]).toBe(true);
+    expect(diffExpectedConfig(s, { "recall.excludeInvalidated": true })).toHaveLength(1);
+  });
+
+  it("失效排除的派生三态进快照：flag=false 在 mode=soft 下仍派生 soft（#174）", () => {
+    const eff = (recall) => effectiveRecallSnapshot({ recall })["recall.excludeInvalidated.effective"];
+    expect(eff({ validity: { mode: "soft" }, excludeInvalidated: true })).toBe("soft");
+    expect(eff({ validity: { mode: "soft" }, excludeInvalidated: false })).toBe("soft"); // #174：soft 盖住 false
+    expect(eff({ validity: { mode: "hard" }, excludeInvalidated: false })).toBe(false);
+    expect(eff({ validity: { mode: "hard" }, excludeInvalidated: true })).toBe(true);
+    // 只在旗标键上写 false 的 expect 检查不出上面这条——必须连派生键一起断言。
+    const s = effectiveRecallSnapshot({ recall: { validity: { mode: "soft" }, excludeInvalidated: false } });
+    expect(diffExpectedConfig(s, { "recall.excludeInvalidated": false })).toEqual([]);
+    expect(diffExpectedConfig(s, { "recall.excludeInvalidated.effective": false })).toHaveLength(1);
+  });
+
+  it("store.mjs 的派生映射与 src 的 excludeInvalidatedFor 逐格对拍（防两处漂）", () => {
+    // .mjs 不能 import src 的 .ts（加载器不通），所以映射是内联复刻的；这里把两边摆一起对拍。
+    const modes = ["soft", "hard", undefined];
+    const flags = [true, false, undefined];
+    for (const mode of modes) {
+      for (const flag of flags) {
+        const src = excludeInvalidatedFor(mode, flag);
+        const mine = effectiveExcludeInvalidated(mode, flag);
+        expect(mine).toBe(src === undefined ? null : src);
+      }
+    }
+  });
+
   it("解析 key=value 并做数值/布尔归一", () => {
     const exp = parseExpectConfig("recall.rerank.enabled=false, recall.rerank.candidates=32,recall.fusion.mode=normalized");
     expect(exp).toEqual({ "recall.rerank.enabled": false, "recall.rerank.candidates": 32, "recall.fusion.mode": "normalized" });
     expect(() => parseExpectConfig("nope")).toThrow(/key=value/);
+    // 空段不许静默跳过：前向引用（$EXPECT_B1 还没定义）就长这样。
+    expect(() => parseExpectConfig(",recall.maxResults=10")).toThrow(/空段/);
+    expect(() => parseExpectConfig("recall.maxResults=10,")).toThrow(/空段/);
   });
 
   it("rerank 被生产 override 覆盖时断言失败并指名键", () => {

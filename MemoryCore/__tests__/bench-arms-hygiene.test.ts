@@ -19,19 +19,15 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { effectiveRecallSnapshot } from "../scripts/lib/bench/store.mjs";
 
 const SCRIPTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts");
 const LIB = path.join(SCRIPTS_DIR, "lib", "bench", "arms.sh");
 
-// #159 票面只点 10 个脚本；这些是同源但票面范围外的新档/工具，留给后续票补口径。
-const EXEMPT = new Set([
-  "run-r141-ablate.sh",
-  "run-r141-factorial.sh",
-  "run-r146-arms.sh",
-  "run-r146-currency.sh",
-  "run-r146-currency2.sh",
-  "run-rejudge-noise.sh",
-]);
+// 豁免名单只留「不是档位脚本」的一个：run-rejudge-noise.sh 只调用 bench-rejudge（没有 runner 旗标，
+// 也就没有 --expect-config / --report-name 可写），但它同样受「不写死个人家目录」约束。
+// #159 收尾后，r141 / r146 的档位脚本已全部纳入强制口径——不要再往这里加档位脚本。
+const EXEMPT = new Set(["run-rejudge-noise.sh"]);
 
 const TICKET_SCOPE = [
   "run-b1.sh",
@@ -46,12 +42,25 @@ const TICKET_SCOPE = [
   "run-r2-fusion-arms.sh",
 ];
 
-const scripts = fs
+const ALL_RUN = fs
   .readdirSync(SCRIPTS_DIR)
-  .filter((f) => f.startsWith("run-") && f.endsWith(".sh") && !EXEMPT.has(f))
+  .filter((f) => f.startsWith("run-") && f.endsWith(".sh"))
   .sort();
+const scripts = ALL_RUN.filter((f) => !EXEMPT.has(f));
+
+// 手写跑批脚本（不走共享库或只部分走）：报告落盘断言必须自己写。
+const HANDWRITTEN = [
+  "run-r141-ablate.sh",
+  "run-r141-factorial.sh",
+  "run-r146-arms.sh",
+  "run-r146-currency.sh",
+  "run-r146-currency2.sh",
+];
 
 const read = (f: string) => fs.readFileSync(path.join(SCRIPTS_DIR, f), "utf8");
+
+// 把输出接给 tee/tail 的脚本：管道退出码默认取最后一段，不开 pipefail 会把 runner 的 exit 2 吞成成功。
+const PIPE_SCRIPTS = ALL_RUN.filter((f) => /\|\s*(tee|tail)\s/.test(read(f)));
 
 const hasBash = (() => {
   try {
@@ -109,13 +118,51 @@ describe.skipIf(!hasBash)("bench 档位脚本卫生（#159）", () => {
     expect(scripts).toEqual(expect.arrayContaining(TICKET_SCOPE));
   });
 
-  it.each(scripts)("%s 语法通过（bash -n）", (f) => {
-    // 语法错误直接抛（stderr 带行号）；不吞成 expect 失败，便于定位。
+  it.each(ALL_RUN)("%s 语法通过（bash -n）", (f) => {
+    // 语法错误直接抛（stderr 带行号）；不吞成 expect 失败，便于定位。豁免也要过语法。
     execFileSync("bash", ["-n", path.join(SCRIPTS_DIR, f)], { stdio: "pipe" });
+  });
+
+  it("点名含 | tee 的脚本（下面那条 pipefail 规则不是空跑，且不靠魔法数）", () => {
+    // 不用「至少 N 个」：将来把 tee 换掉会无意义变红。点名当前必须带 pipefail 的几档。
+    expect(PIPE_SCRIPTS).toEqual(
+      expect.arrayContaining(["run-r146-arms.sh", "run-r146-currency.sh", "run-r146-currency2.sh"]),
+    );
+  });
+
+  it.each(PIPE_SCRIPTS)("%s 开 pipefail（否则失败被 tail 吞成成功）", (f) => {
+    expect(read(f)).toMatch(/set -o pipefail/);
+  });
+
+  // 组合串（$EXPECT_B1,$EXPECT_X）一旦前向引用就静默展开成空段，断言会悄悄少几条——
+  // 这条直接让脚本自己把命令打印出来核对（DRY_RUN 只打印，不碰库、不耗配额）。
+  it("r146-arms 的 dedupe10 档拼出的 expect 串完整（防变量前向引用展开成空）", () => {
+    const out = execFileSync("bash", [path.join(SCRIPTS_DIR, "run-r146-arms.sh"), "b1off-factrows-dedupe10"], {
+      encoding: "utf8",
+      stdio: "pipe",
+      env: { ...process.env, DRY_RUN: "1" },
+    });
+    expect(out).toContain("recall.candidateK=32");
+    expect(out).toContain("recall.rerank.enabled=false");
+    expect(out).toContain("recall.rerank.candidates=32");
+    expect(out).toContain("recall.maxResults=10");
+    expect(out).not.toMatch(/--expect-config\s*,\s*/); // 空段/前导逗号
   });
 
   it.each(scripts)("%s 用 --expect-config 写死生效配置", (f) => {
     expect(read(f)).toMatch(/--expect-config/);
+  });
+
+  // --expect-config 的键必须落在 runner 生效快照的键集内（store.mjs effectiveRecallSnapshot，现 19 键）。
+  // 拼错键名（recall.fusion.normalized 之类）不会"忽略"，而是在 runner 里 diff 失败 exit 2；
+  // 但那种失败只在真跑时暴露，这里静态拦住，免得又跑一轮空。
+  // 从模块现算，不手抄：快照加键时这里自动跟上（#159 收尾时手抄的 18 键清单已漂过一次）。
+  const ALLOWED_RECALL_KEYS = new Set(Object.keys(effectiveRecallSnapshot({})));
+
+  it.each(scripts)("%s 的 expect 键都在生效快照键集内", (f) => {
+    const keys = [...new Set([...read(f).matchAll(/recall\.[A-Za-z0-9.]+(?==)/g)].map((m) => m[0]))];
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.filter((k) => !ALLOWED_RECALL_KEYS.has(k))).toEqual([]);
   });
 
   it.each(scripts)("%s 用 --report-name 把报告钉到 tag", (f) => {
@@ -126,6 +173,24 @@ describe.skipIf(!hasBash)("bench 档位脚本卫生（#159）", () => {
     const src = read(f);
     expect(src).not.toMatch(/\/c\/Users\//);
     expect(src).not.toMatch(/[A-Za-z]:[\\/]Users[\\/]/);
+  });
+
+  it("豁免名单只剩非 runner 脚本（防止把档位脚本偷偷豁免掉）", () => {
+    expect([...EXEMPT]).toEqual(["run-rejudge-noise.sh"]);
+    const src = read("run-rejudge-noise.sh");
+    // 只跑重判工具，不碰 runner：豁免的前提成立。
+    expect(src).not.toMatch(/eval-memory-bench\.mjs/);
+    expect(src).toMatch(/bench-rejudge\.mjs/);
+    // 豁免不豁免路径：仍须走 STORE_ROOT / TMPDIR，且不含个人家目录。
+    expect(src).toMatch(/STORE_ROOT/);
+    expect(src).not.toMatch(/\/c\/Users\//);
+    expect(src).not.toMatch(/[A-Za-z]:[\\/]Users[\\/]/);
+  });
+
+  it.each(HANDWRITTEN)("%s 自己断言报告落盘（退出码 0 不算跑完）", (f) => {
+    const src = read(f);
+    expect(src).toMatch(/-f "\$(L\/|report)/);
+    expect(src).toMatch(/\.json/);
   });
 
   it("票面点名的脚本真实走共享库（source + arms_run），不是只写在注释里", () => {
