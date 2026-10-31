@@ -21,7 +21,7 @@ const scene = (mems: object[], name = "测试情境") =>
 
 /** 取第 idx 条 memory 的 metadata（未传 facts 门 = 现状口径）。 */
 const metaOf = (raw: string, facts?: FactsGate, idx = 0) =>
-  parseExtractionResult(raw, undefined, [], facts ? { facts } : undefined)[0].memories[idx].metadata;
+  parseExtractionResult(raw, undefined, [], facts ? { facts } : undefined).scenes[0].memories[idx].metadata;
 
 describe("parseExtractionResult × facts（#137 多事实落库）", () => {
   it("开启：facts 归一化落 metadata.facts（折叠空白 + 去重 + 保留首见顺序）", () => {
@@ -148,7 +148,7 @@ describe("parseExtractionResult × facts（#137 多事实落库）", () => {
       { content: "有事实", type: "persona", facts: ["用户住在杭州"] },
       { content: "无事实", type: "persona" },
     ]);
-    const scenes = parseExtractionResult(raw, undefined, [], { facts: FACTS_ON });
+    const scenes = parseExtractionResult(raw, undefined, [], { facts: FACTS_ON }).scenes;
     expect(scenes[0].memories[0].metadata.facts).toEqual(["用户住在杭州"]);
     expect(scenes[0].memories[1].metadata.facts).toBeUndefined();
   });

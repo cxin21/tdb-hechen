@@ -42,7 +42,7 @@ describe("parseExtractionResult × importance 集成", () => {
     const raw = scene([
       { content: "决定将发布日提前到周五", type: "episodic", importance: 8, importance_reason: "明确的排期决策" },
     ]);
-    const m = parseExtractionResult(raw, undefined, [])[0].memories[0];
+    const m = parseExtractionResult(raw, undefined, []).scenes[0].memories[0];
     expect(m.importance).toBe(8);
     expect(m.metadata.importance_reason).toBe("明确的排期决策");
     expect(m.metadata.importance_source).toBe("llm");
@@ -50,7 +50,7 @@ describe("parseExtractionResult × importance 集成", () => {
 
   it("LLM 未输出 importance → 三处全缺席（现状口径，不伪造）", () => {
     const raw = scene([{ content: "今天天气不错", type: "episodic" }]);
-    const m = parseExtractionResult(raw, undefined, [])[0].memories[0];
+    const m = parseExtractionResult(raw, undefined, []).scenes[0].memories[0];
     expect(m.importance).toBeUndefined();
     expect(m.metadata.importance_reason).toBeUndefined();
     expect(m.metadata.importance_source).toBeUndefined();
@@ -62,7 +62,7 @@ describe("parseExtractionResult × importance 集成", () => {
       { content: "B", type: "episodic", importance: Number.NaN },
       { content: "C", type: "episodic", importance: { level: 8 } },
     ]);
-    const mems = parseExtractionResult(raw, undefined, [])[0].memories;
+    const mems = parseExtractionResult(raw, undefined, []).scenes[0].memories;
     for (const m of mems) {
       expect(m.importance).toBeUndefined();
       expect(m.metadata.importance_source).toBeUndefined();
@@ -75,7 +75,7 @@ describe("parseExtractionResult × importance 集成", () => {
       { content: "Y", type: "episodic", importance: 3.2 },
       { content: "Z", type: "episodic", importance_reason: "光有理由没有分数" },
     ]);
-    const mems = parseExtractionResult(raw, undefined, [])[0].memories;
+    const mems = parseExtractionResult(raw, undefined, []).scenes[0].memories;
     expect(mems[0].importance).toBeUndefined();
     expect(mems[0].metadata.importance_source).toBeUndefined();
     expect(mems[1].importance).toBe(3);
@@ -90,7 +90,7 @@ describe("parseExtractionResult × importance 集成", () => {
       { content: "B", type: "episodic", importance: 7, importance_reason: 42 },
       { content: "C", type: "episodic", importance: 7, importance_reason: "   " },
     ]);
-    const mems = parseExtractionResult(raw, undefined, [])[0].memories;
+    const mems = parseExtractionResult(raw, undefined, []).scenes[0].memories;
     for (const m of mems) {
       expect(m.importance).toBe(7);
       expect(m.metadata.importance_source).toBe("llm");

@@ -153,6 +153,32 @@ interface SceneSegment {
   }>;
 }
 
+/**
+ * #122：0 条提取的原因标签——**闭集**，禁止自由文本。
+ * 上游按 label 聚合（7 处日志口径对齐）；新增值必须同时更新本联合与
+ * `ParseExtractionOutcome` 的消费方，避免日志里出现无法聚合的临时措辞。
+ *
+ * - llm_error：LLM 调用本身失败（端点错误/超时），拿不到响应
+ * - no_json：响应里既没有数组、也不是别的合法 JSON
+ * - parse_fail：抠到了数组片段，但无法解析且无可抢救前缀
+ * - not_array：响应是合法 JSON，但顶层不是数组（场景对象 / 标量 / 字符串都归这一类）
+ * - empty_scenes：没有产出任何场景——顶层是空数组，或数组里每一项都不是对象
+ *
+ * 记忆级丢弃（场景壳还在、记忆被 parse 内容/类型门或 flatten 的 normalizeType 门全丢）
+ * 归到 `normalized_all_dropped`（见 `L1EmptyReportedReason`）。
+ */
+export type L1EmptyReason = "llm_error" | "no_json" | "parse_fail" | "not_array" | "empty_scenes";
+
+/** #122：上报用原因 = parse 闭集 + 归一化阶段的全丢弃兜底。 */
+export type L1EmptyReportedReason = L1EmptyReason | "normalized_all_dropped";
+
+/** #122：parse 结果——scenes 为空时必须带原因，供最终 0 条路径单行上报。 */
+export interface ParseExtractionOutcome {
+  scenes: SceneSegment[];
+  /** scenes 非空时为 undefined（正常路径不产生噪音字段）。 */
+  emptyReason?: L1EmptyReason;
+}
+
 export interface L1ExtractionResult {
   /** Whether extraction succeeded */
   success: boolean;
@@ -311,6 +337,8 @@ export async function extractL1Memories(params: {
 
   // Step 1: LLM extraction (scene segmentation + memory extraction)
   let scenes: SceneSegment[];
+  /** #122：parse 阶段给出的 0 条原因（scenes 非空时 undefined）。 */
+  let emptyReason: L1EmptyReason | undefined;
   let llmRaw: { systemPrompt: string; userPrompt: string; rawOutput: string } | undefined;
   try {
     const out = await callLlmExtraction({
@@ -330,10 +358,13 @@ export async function extractL1Memories(params: {
       vectorStore: options.vectorStore,
     });
     scenes = out.scenes;
+    emptyReason = out.emptyReason;
     llmRaw = { systemPrompt: out.systemPrompt, userPrompt: out.userPrompt, rawOutput: out.rawOutput };
     logger?.debug?.(`${TAG} LLM detected ${scenes.length} scene(s)`);
   } catch (err) {
     logger?.error(`${TAG} LLM extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+    // #122：LLM 调用本身失败也是「0 条」的一种——给同一个单行出口，reason=llm_error
+    logL1Empty(logger, { reason: "llm_error", sessionKey, scenes: 0, inputMsgs: messages.length });
     return { success: false, extractedCount: 0, storedCount: 0, records: [], sceneNames: [] };
   }
 
@@ -429,6 +460,15 @@ export async function extractL1Memories(params: {
       }
     }
     stopL1Watchdog();
+    // #122：LLM 之后 0 条的**唯一**单行出口。LLM 调用前置的空输入/质量门全过滤不在此口径
+    // （仍是 debug 日志，不产生 parse 原因）。parse 已给出原因就用它；否则 = 场景壳还在、
+    // 记忆被归一化阶段全丢弃（parse 内容/类型门、flatten 的 normalizeType 门）→ 闭集兜底。
+    logL1Empty(logger, {
+      reason: emptyReason ?? "normalized_all_dropped",
+      sessionKey,
+      scenes: scenes.length,
+      inputMsgs: messages.length,
+    });
     return {
       success: true,
       extractedCount: 0,
@@ -729,7 +769,7 @@ async function callLlmExtraction(params: {
   extractionTimeoutMs?: number;
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
-}): Promise<{ scenes: SceneSegment[]; systemPrompt: string; userPrompt: string; rawOutput: string }> {
+}): Promise<{ scenes: SceneSegment[]; emptyReason?: L1EmptyReason; systemPrompt: string; userPrompt: string; rawOutput: string }> {
   const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore, reasoningEffort, extractionTimeoutMs } = params;
 
   // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
@@ -837,12 +877,13 @@ async function callLlmExtraction(params: {
   // [l1-debug] RAW OUTPUT — 定位模型到底吐了哪些字段（用于 R4 实证）
   logger?.debug?.(`${TAG} [l1-debug] RAW_OUTPUT:\n${result}`);
 
-  const _scenes = parseExtractionResult(result, logger, valueCandidates, {
+  const parsedOutcome = parseExtractionResult(result, logger, valueCandidates, {
     promptMode,
     // #137：parse 侧同一道门（关闭时完全忽略 LLM 输出的 facts）
     facts: { enabled: factsEnabled, maxFacts: factsMaxFacts, includeTriples: factsIncludeTriples },
   });
-  return { scenes: _scenes, systemPrompt, userPrompt, rawOutput: result };
+  // #122：emptyReason 透传到 extractL1Memories 的 0 条出口（此处不单独上报）
+  return { scenes: parsedOutcome.scenes, emptyReason: parsedOutcome.emptyReason, systemPrompt, userPrompt, rawOutput: result };
 }
 
 // P0-3（2026-10-06）：范围钳制 helper——LLM 越界值不再原样落库（此前 priority:150 / valence:-5 直通）
@@ -851,8 +892,52 @@ const clampNum = (v: number, lo: number, hi: number): number => Math.min(hi, Mat
 const WORK_ONLY_TYPES = new Set(["work_fact", "work_task", "work_method", "work_artifact"]);
 
 /**
+ * #122：内联思考块。思考型端点把推理写进 think 标签里，推理中出现方括号（"看 [索引]"）
+ * 会让下面的贪婪数组锚 /\[[\s\S]*\]/ 从错误位置起锚 → JSON 片段被污染 → 提取恒 0 条。
+ * 只认 think：<thinking> 是另一个标签，不碰。
+ * 非贪婪 + 必须配闭合标签：截断的 think（无闭合）不剥离——宁可让数组锚多看几个字符，
+ * 也不能把标签之后的正文一起吞掉。代价：截断 think 自身带 `[` 时贪婪锚仍可能失手，
+ * 但那条路径不再是静默 0 条，而是可观测的 parse_fail（见回归用例）。
+ */
+const INLINE_THINK_RE = /<think(?:\s[^>]*)?>[\s\S]*?<\/think\s*>/gi;
+
+/** #122：剥离内联 think（可能多段）；无闭合标签的截断 think 原样保留。 */
+export function stripInlineThink(raw: string): string {
+  return raw.replace(INLINE_THINK_RE, "");
+}
+
+/**
+ * #122：0 条唯一的单行可观测出口。闭集 reason + 现场数字（scenes/inputMsgs），
+ * 一行即可聚合、可直接 grep，不再靠翻 RAW_OUTPUT 猜「为什么 0 条」。
+ */
+function logL1Empty(
+  logger: Logger | undefined,
+  /** scenes = 场景数（日志字段名对齐上游口径 scenes=，不是记忆数）。 */
+  params: { reason: L1EmptyReportedReason; sessionKey: string; scenes: number; inputMsgs: number },
+): void {
+  logger?.warn?.(
+    `${TAG} l1-empty reason=${params.reason} sessionKey=${params.sessionKey} scenes=${params.scenes} inputMsgs=${params.inputMsgs}`,
+  );
+}
+
+/**
+ * #122：响应是合法 JSON 但顶层不是数组（典型：只吐了一个场景对象）——报 not_array
+ * 比一律报 no_json 更能定位模型到底错在哪一层。
+ */
+function isNonArrayJson(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === "") return false;
+  try {
+    return !Array.isArray(JSON.parse(sanitizeJsonForParse(trimmed)) as unknown);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Parse the LLM's JSON response into SceneSegment array.
  * Expected format: [{scene_name, message_ids, memories: [...]}]
+ * #122：返回 `{scenes, emptyReason?}`——0 条时必须说明是哪一类 0 条。
  */
 export function parseExtractionResult(
   raw: string,
@@ -867,7 +952,7 @@ export function parseExtractionResult(
      */
     facts?: { enabled: boolean; maxFacts: number; includeTriples: boolean };
   },
-): SceneSegment[] {
+): ParseExtractionOutcome {
   try {
     // Strip markdown code block wrappers if present
     let cleaned = raw.trim();
@@ -875,17 +960,25 @@ export function parseExtractionResult(
       cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
     }
 
+    // #122：先剥离内联 think 再做数组锚——think 里的方括号会把贪婪锚带偏（生产实锤 0 条）。
+    // raw 保持原样：NO_JSON/PARSE_FAIL dump 与 llmRaw.rawOutput 要留给排查口径。
+    const stripped = stripInlineThink(cleaned);
+
     // Try to extract JSON array；抠不到 = 输出被 maxTokens 砍尾时先走截断抢救（P0-1）
-    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-    const jsonSource = arrayMatch ? arrayMatch[0] : salvageTruncatedJsonArray(cleaned);
+    const arrayMatch = stripped.match(/\[[\s\S]*\]/);
+    const jsonSource = arrayMatch ? arrayMatch[0] : salvageTruncatedJsonArray(stripped);
     if (!jsonSource) {
-      logger?.warn?.(`${TAG} No JSON array found in extraction response`);
+      // #122：区分「压根没有 JSON」与「有 JSON 但不是数组」——后者此前一律误报 no_json
+      const reason: L1EmptyReason = isNonArrayJson(stripped) ? "not_array" : "no_json";
+      logger?.warn?.(
+        `${TAG} No JSON array found in extraction response${reason === "not_array" ? " (top-level JSON is not an array)" : ""}`,
+      );
       // [l1-debug] NO_JSON — dump the full raw so we can see what the LLM actually said
       const rawPreview = raw.slice(0, 2048);
       logger?.warn?.(
-        `${TAG} [l1-debug] NO_JSON taskId=l1-extraction, rawLen=${raw.length}, cleanedLen=${cleaned.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`,
+        `${TAG} [l1-debug] NO_JSON taskId=l1-extraction, rawLen=${raw.length}, cleanedLen=${cleaned.length}, strippedLen=${stripped.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`,
       );
-      return [];
+      return { scenes: [], emptyReason: reason };
     }
     if (!arrayMatch) {
       logger?.warn?.(`${TAG} Truncated extraction output salvaged: ${jsonSource.length} chars recovered from prefix`);
@@ -908,7 +1001,7 @@ export function parseExtractionResult(
         }
       } catch {
         // P0-1：正则片段整体不可解析（常见于截断输出里字符串含 ']' 致截取错位）→ 再走前缀抢救
-        const salvaged = arrayMatch ? salvageTruncatedJsonArray(cleaned) : null;
+        const salvaged = arrayMatch ? salvageTruncatedJsonArray(stripped) : null;
         if (!salvaged || salvaged === jsonSource) throw err;
         parsed = JSON.parse(sanitizeJsonForParse(salvaged)) as unknown[];
         logger?.warn?.(`${TAG} Salvaged truncated extraction JSON from prefix: ${salvaged.length} chars`);
@@ -916,8 +1009,9 @@ export function parseExtractionResult(
     }
 
     if (!Array.isArray(parsed)) {
+      // 防御：jsonSource 以 `[` 起头，正常不可达；保留以免将来换锚法后静默吞掉非数组响应。
       logger?.warn?.(`${TAG} Extraction response is not an array`);
-      return [];
+      return { scenes: [], emptyReason: "not_array" };
     }
 
     const scenes: SceneSegment[] = [];
@@ -1003,14 +1097,18 @@ export function parseExtractionResult(
       });
     }
 
-    return scenes;
+    if (scenes.length === 0) {
+      // 不只是空数组：`[1,2]` / `[null]` 这类每项都不是对象的数组也落到这里（没有场景被物化）。
+      return { scenes, emptyReason: "empty_scenes" };
+    }
+    return { scenes };
   } catch (err) {
     logger?.warn?.(`${TAG} Failed to parse extraction result: ${err instanceof Error ? err.message : String(err)}`);
     const rawPreview = raw.slice(0, 2048);
     logger?.warn?.(
       `${TAG} [l1-debug] PARSE_FAIL rawLen=${raw.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`,
     );
-    return [];
+    return { scenes: [], emptyReason: "parse_fail" };
   }
 }
 

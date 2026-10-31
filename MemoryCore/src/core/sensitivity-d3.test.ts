@@ -61,7 +61,7 @@ describe("D-3b: parseExtractionResult sensitivity 透传（丢值根因修复回
       scene_name: "s", message_ids: ["m1"],
       memories: [{ content: "用户体检查出血压偏高", type: "persona", priority: 90, occurred_at: "2026-09-21T00:00:00.000Z", certainty: "observed", valence: -0.3, arousal: 0.4, significance: 0.6, sensitivity: "health" }],
     }]);
-    const scenes = parseExtractionResult(raw, undefined, []);
+    const scenes = parseExtractionResult(raw, undefined, []).scenes;
     expect(scenes[0]?.memories[0]?.sensitivity).toBe("health");
   });
 });
