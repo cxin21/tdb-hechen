@@ -76,9 +76,10 @@ EXPECT_W1_ON="recall.factChannel.enabled=true,recall.factChannel.weight=0.6"
 EXPECT_W1_OFF="recall.factChannel.enabled=false"
 EXPECT_W2_HARD="recall.validity.mode=hard,recall.excludeInvalidated=true,recall.excludeInvalidated.effective=hard"
 EXPECT_W2_SOFT="recall.validity.mode=soft,recall.excludeInvalidated=true,recall.excludeInvalidated.effective=soft"
-# ⚠ 关档不是真关（#174）：mode=soft 会盖住 flag=false，派生值仍是 "soft"，即与 W2_SOFT 同配置。
-# 这里断言派生值而不是假装 false=off——等 #174 修了定序，本行要改成 effective=false 并重跑该档。
-EXPECT_W2_OFF="recall.validity.mode=soft,recall.excludeInvalidated=false,recall.excludeInvalidated.effective=soft"
+# #174 定序已修：显式关优先于 mode——flag=false 派生 "false"（真正关断），不再被 soft 吞成 "soft"。
+# 本行随即同步：断言派生值 false。若这里回退成 "soft"，说明 excludeInvalidatedFor 的定序又被改坏
+# （旧 bug 会让 --validity-off 在 soft 配置下与 w2s 臂同配置，白跑一档且看不出来）。
+EXPECT_W2_OFF="recall.validity.mode=soft,recall.excludeInvalidated=false,recall.excludeInvalidated.effective=false"
 EXPECT_W3_OFF="recall.conclusionLayer.enabled=false,recall.smallToBig.enabled=false"
 EXPECT_W3_LEGACY="recall.conclusionLayer.enabled=true,recall.conclusionLayer.maxConclusions=2,recall.smallToBig.enabled=true,recall.smallToBig.maxExtraLines=4"
 EXPECT_W3_NEW="$EXPECT_W3_LEGACY"

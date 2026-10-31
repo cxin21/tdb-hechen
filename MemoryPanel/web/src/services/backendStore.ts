@@ -25,6 +25,7 @@ import {
   type TeamMember as BackendMember,
   type BackendTask,
 } from '@/lib/teamApi';
+import { normalizeTaskSourceType, type TaskSourceType } from '@/lib/api/tasks';
 import { invalidateBackendCache } from '@/stores/backend';
 
 // ========================= Types（前端展示形状，尽量贴近旧 demoStore，减少调用方改动） =========================
@@ -66,7 +67,12 @@ export interface Agent {
 }
 
 export type TaskStatus = 'running' | 'completed';
-export type TaskSourceType = 'manual' | 'tapd';
+/**
+ * 任务来源（#127）：**不再在本文件重复定义**，改为 re-export canonical 三值
+ * `manual | external | other`（定义见 web/src/lib/api/tasks.ts 的 TaskSourceType）。
+ * 保留 from-here 的导出是为了不破坏 services/index.ts:12 的既有 re-export。
+ */
+export type { TaskSourceType } from '@/lib/api/tasks';
 
 export interface Task {
   task_id: string;
@@ -250,7 +256,11 @@ export function adaptTask(bt: BackendTask, linkedAgents: string[]): Task {
     participants: ui.participants,
     title: bt.title,
     description: bt.description ?? '',
-    source_type: bt.source_type === 'tapd' ? 'tapd' : 'manual',
+    // #127：不再把未知/外部来源折叠成 'manual'（旧实现把 external 显示成 manual，
+    // 来源标签错误）。历史 tapd/github 行归一成 'external'，其余未知值回落 'manual'。
+    // 读侧归一，写侧仍限 4 值 —— 本地 MemoryCore/src/gateway/v2-schemas.ts:260 的 zod
+    // 仍是 manual|github|tapd|other，写 'external' 会被 400 拒；待 core 收窄同步后再放开。
+    source_type: normalizeTaskSourceType(bt.source_type),
     source_url: bt.source_url ?? '',
     linked_agents: linkedAgents,
     status: normalizeTaskStatus(bt.status),

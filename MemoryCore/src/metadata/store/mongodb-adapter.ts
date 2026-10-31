@@ -16,6 +16,7 @@ import type {
   Document,
 } from "mongodb";
 import { mapTeamMemberWithProfile } from "./team-member-view.js";
+import { normalizeTaskSourceType } from "../../core/store/task-source-type.js";
 import { generateId, generateRelationId, ID_PREFIX } from "../utils/id-generator.js";
 import {
   isMongoRelationIdCollision,
@@ -836,7 +837,8 @@ export class MongoMetadataStore implements IMetadataStore {
         creator_user_id: input.creator_user_id,
         title: input.title,
         description: input.description ?? null,
-        source_type: input.source_type ?? "manual",
+        // #127：写边界归一，新数据只落 manual|external|other。
+        source_type: normalizeTaskSourceType(input.source_type ?? "manual"),
         source_url: input.source_url ?? null,
         status: input.status ?? "running",
         auto_assign_floating_assets: input.auto_assign_floating_assets ?? false,
@@ -873,12 +875,27 @@ export class MongoMetadataStore implements IMetadataStore {
     throw new Error("PK collision after max retries");
   }
 
+  /**
+   * #127：MongoDB 里 2.0.x 之前的任务文档可能还带 github/tapd，读出前统一归一成三值。
+   * 写侧（createTask/updateTask）同样归一，所以新数据不会再有四值。
+   */
+  private normalizeTaskDoc(doc: TaskEntity): TaskEntity {
+    return { ...doc, source_type: normalizeTaskSourceType(doc.source_type) };
+  }
+
   async getTaskById(taskId: string): Promise<TaskEntity | null> {
-    return this.col<TaskEntity>("meta_tasks").findOne({ task_id: taskId } as Document, PROJECT_NO_ID) as Promise<TaskEntity | null>;
+    const doc = (await this.col<TaskEntity>("meta_tasks").findOne(
+      { task_id: taskId } as Document,
+      PROJECT_NO_ID,
+    )) as TaskEntity | null;
+    return doc ? this.normalizeTaskDoc(doc) : null;
   }
 
   async updateTask(taskId: string, patch: Partial<TaskEntity>): Promise<TaskEntity | null> {
-    await this.patchOne("meta_tasks", { task_id: taskId }, patch, ["title", "description", "source_type", "source_url", "status", "auto_assign_floating_assets", "risk_level", "metadata_json"], true);
+    const nextPatch = patch.source_type == null
+      ? patch
+      : { ...patch, source_type: normalizeTaskSourceType(patch.source_type) };
+    await this.patchOne("meta_tasks", { task_id: taskId }, nextPatch, ["title", "description", "source_type", "source_url", "status", "auto_assign_floating_assets", "risk_level", "metadata_json"], true);
     return this.getTaskById(taskId);
   }
 
@@ -895,7 +912,7 @@ export class MongoMetadataStore implements IMetadataStore {
     if (filter?.status) q.status = filter.status;
     if (filter?.creator_user_id) q.creator_user_id = filter.creator_user_id;
     if (filter?.title) q.title = filter.title;
-    return this.paginatedFind("meta_tasks", q, pagination, { created_at: -1 }, (d) => d as TaskEntity);
+    return this.paginatedFind("meta_tasks", q, pagination, { created_at: -1 }, (d) => this.normalizeTaskDoc(d as TaskEntity));
   }
 
   async listTasks(filter: TaskFilter, pagination?: PaginationParams | null): Promise<ListPage<TaskEntity>> {
@@ -903,7 +920,7 @@ export class MongoMetadataStore implements IMetadataStore {
     if (filter.status) q.status = filter.status;
     if (filter.creator_user_id) q.creator_user_id = filter.creator_user_id;
     if (filter.title) q.title = filter.title;
-    return this.paginatedFind("meta_tasks", q, pagination, { created_at: -1 }, (d) => d as TaskEntity);
+    return this.paginatedFind("meta_tasks", q, pagination, { created_at: -1 }, (d) => this.normalizeTaskDoc(d as TaskEntity));
   }
 
   // ============================================================

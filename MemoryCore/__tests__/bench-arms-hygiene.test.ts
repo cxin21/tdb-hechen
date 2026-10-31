@@ -157,6 +157,8 @@ describe.skipIf(!hasBash)("bench 档位脚本卫生（#159）", () => {
   // 拼错键名（recall.fusion.normalized 之类）不会"忽略"，而是在 runner 里 diff 失败 exit 2；
   // 但那种失败只在真跑时暴露，这里静态拦住，免得又跑一轮空。
   // 从模块现算，不手抄：快照加键时这里自动跟上（#159 收尾时手抄的 18 键清单已漂过一次）。
+  // #169 收编：evidencePack 两键已进 effectiveRecallSnapshot，这里不再手工补登
+  // （allowlist 必须严格等于快照键集，否则拼错的键名会被放过）。
   const ALLOWED_RECALL_KEYS = new Set(Object.keys(effectiveRecallSnapshot({})));
 
   it.each(scripts)("%s 的 expect 键都在生效快照键集内", (f) => {

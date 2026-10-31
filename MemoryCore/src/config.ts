@@ -14,6 +14,13 @@ import {
   normalizeRerankFilterRule,
 } from "./core/recall/rerank/filter-ruler.js";
 import { DEFAULT_RERANK_CANDIDATES, defaultRerankMinScore } from "./core/recall/rerank/defaults.js";
+import { parseUnknownPrincipalPolicy } from "./gateway/auth-binding.js";
+import {
+  normalizeTeamOwnershipWhitelist,
+  parseTeamOwnershipMode,
+} from "./gateway/team-ownership.js";
+import { injectWrapperModeOf, type InjectWrapperMode } from "./core/recall/inject-wrapper.js";
+import { DEFAULT_IGNORE_SESSION_PATTERNS } from "./utils/session-ignore.js";
 
 // ============================
 // Type definitions
@@ -49,6 +56,18 @@ export interface ExtractionConfig {
   enableDedup: boolean;
   /** Max memories per session (default: 20) */
   maxMemoriesPerSession: number;
+  /**
+   * task-81（接线 task-62 的会话隔离守卫）：L1 抽取语料的会话范围。
+   *
+   *  - "session"（缺省，2026-10-31 起）：一批里出现 >1 个 session_id 时只抽取
+   *    **最靠前的那一个会话**，其余整组延后到下一轮；游标只推进到「被延后行的
+   *    最早 recorded_at_ms − 1」。代价=被选中会话里晚于该水位的行会被重取一次
+   *    （dedup 兜底、不产生重复记忆），换「抽取语料不跨会话」。
+   *  - "profile"：旧行为（多会话同批），仅供排查/灰度，不建议长开。
+   *
+   * 语义依据（用户口径）：检索可以跨会话，抽取不能混。
+   */
+  sessionScope: "session" | "profile";
   /** GROW-EVO P2（§2.2）：durative 效期提取开关（缺省 false = 提取侧不写 valid_start） */
   durativeEnabled: boolean;
   /** D-4（2026-09-22 拍板）：周期性事实提取块（RECURRENCE_BLOCK 门；缺省 false = 逐位现状）。
@@ -81,6 +100,15 @@ export interface ExtractionConfig {
    * （镜像 extractionTimeoutMs 形态）。
    */
   dedupTimeoutMs: number;
+  /**
+   * task-83（生产 L0 测试数据卫生 · 抽取侧卫生闸）：命中这些模式的会话不参与
+   * L1 抽取（不蒸馏成记忆），也不计入 batch 计数。匹配语义 = **前缀匹配 +
+   * `*` 通配**（见 utils/session-ignore.ts），对**行级 session_id 与
+   * sessionKey 都生效**。缺省 `DEFAULT_IGNORE_SESSION_PATTERNS` =
+   * ["probe-", "session-probe-"]（现网探针/测试会话的实际形态）；
+   * 显式配置 `[]` = 关闸（行为与 task-83 之前逐位一致）。
+   */
+  ignoreSessionPatterns?: string[];
   /**
    * #46 毒批拆分（用户拍板 A，2026-10-17）：scene 抽取失败且批内 >1 条时对半
    * 递归重试（镜像 L1 extractGroupWithSplit 先例）。缺省 false=逐位现状。
@@ -140,9 +168,26 @@ export interface PipelineTriggerConfig {
 
 /** Recall settings — controls memory retrieval for context injection. */
 export interface RecallConfig {
+  /**
+   * #173-A @evidence（2026-10-31 只读核实，不改行为）：下列键在本轮审计中被列为「疑似死码」，
+   * 实读判定为 **按后端/按档休眠，非死码，删前见审计修订 §13.1**（docs/audit/
+   * 2026-10-31-open-issues-first-principles.md）：
+   *  - nativeMinRRF：仅 native hybrid 后端路消费（storeBackend=sqlite 时休眠）；
+   *  - coreRefBoost / graphDiscount / sceneBoost / pprDamping / pprTopK / pprIterations：
+   *    生产 yaml 显式写 0 时会被「0 值回落缺省」反向打开通道——删键 ≠ 关通道；
+   *  - maxCharsPerMemory / maxTotalRecallChars：代码缺省 0（按设计关），非死键；
+   *  - rerank.minScore：本地 yaml 已不钉，缺省取 provider 刻度，改键不改行为；
+   *  - importancePenalty：只在 RRF 精确平局组内生效，生效面窄而非死。
+   */
   /** Enable auto-recall (default: true) */
   enabled: boolean;
-  /** Max results to return (default: 5) */
+  /**
+   * 注入条数上限（注入块行预算的基准）。缺省 10（WP1b 缺省对齐，2026-10-31）：
+   * docs/optimization-results.md §24/§25.6 实测 k=10 判对 +4.5pp（单独）、+10.1pp（与口径合用）；
+   * 注：三处均为 10（`deploy/global-images/tdai-gateway.base.yaml:159`、
+   * `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml:140`、本地 `MemoryCore/tdai-gateway.yaml:135`，
+   * 2026-10-31 定档；三处已与代码缺省对齐，改动需 #172-③ 真 bench 复核后同步）。
+   */
   maxResults: number;
   /**
    * #135 R1（检索融合 spec）：hybrid 候选池上游上限 candidateK（FTS/向量两通道各自取
@@ -208,9 +253,10 @@ export interface RecallConfig {
   /** Overall recall timeout in milliseconds (default: 5000). When exceeded, recall is skipped with a warning. */
   timeoutMs: number;
   /**
-   * C1（灵魂记忆 spec §2.2）：coreRef 排序加成幅度（默认 0.05，0=关闭）。
+   * C1（灵魂记忆 spec §2.2）：coreRef 排序加成幅度（**缺省 0 = 关**；WP1b 起与生产 yaml 等值）。
    * 与 priority*1e-6 同族的排序 tiebreak——不参与检索打分、不越过绝对门槛。
    * 负值 clamp 0（宁缺毋滥，不在启动路径抛异常）。
+   * 关档只能写 `coreRefBoost: 0`；**不得靠 delete 该行关**（历史缺省 0.05 会反向打开）。
    */
   coreRefBoost: number;
   /**
@@ -249,14 +295,16 @@ export interface RecallConfig {
    */
   graphMinStrength: number;
   /**
-   * R-A2（R4）：邻居派生分折扣（默认 0.6，clamp [0,1]）。**0 = 图通道完全退出**
-   * （getNeighbors 零调用，spec §3 失效即关）；关联路不适用绝对门槛，
+   * R-A2（R4）：邻居派生分折扣（**缺省 0 = 图通道完全退出**；WP1b 起与生产 yaml 等值）。
+   * 0 = getNeighbors 零调用（spec §3 失效即关）；关联路不适用绝对门槛，
    * 以 `[graph:kind]` 标注自证身份（T2 门/T14 租户过滤照常）。
+   * 关档只能显式 0；不得靠 delete 该行（历史缺省 0.6 会反向打开通道）。
    */
   graphDiscount: number;
   /**
-   * R-A2（spec §2 R6）：场景路由加成（tiebreak 层，默认 0.04，0=关）。
+   * R-A2（spec §2 R6）：场景路由加成（tiebreak 层，**缺省 0 = 关**；WP1b 起与生产 yaml 等值）。
    * query 含候选池中出现的 scene_name → 该场景（含层级前缀子场景）记忆 +sceneBoost。
+   * 关档只能显式 0；不得靠 delete 该行（历史缺省 0.04 会反向打开通道）。
    */
   sceneBoost: number;
   /**
@@ -283,7 +331,19 @@ export interface RecallConfig {
    * 只有查询显式问"现在/最新"且池里存在更新的有效行时才硬丢。
    * 缺省 hard（零行为变化）；#136 验证档用 soft。
    */
-  validity: { mode: "hard" | "soft" };
+  validity: {
+    mode: "hard" | "soft";
+    /**
+     * #148：soft 档 expired 行的降权系数（clamp [0,1]，缺省 0.5）。1 = 不降权（只排序不惩罚），
+     * 0 = 直接沉底。乘子在 validity-policy 的 resolveSoftValidityPenalty 单点解析，两路同源。
+     */
+    softPenalty: number;
+    /**
+     * #148：soft 档下"查询问当下 + 池里存在取代它的更新行"是否允许硬丢（缺省 true = #136 口径）。
+     * false = 这类行也只降权保留（更保守，不误删）。
+     */
+    hardOnPresentIntent: boolean;
+  };
   /** GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）。 */
   emotionSalienceWeight?: number;
   /**
@@ -491,13 +551,42 @@ export interface RecallConfig {
   injectTimeSort: { enabled: boolean };
   /**
    * B1 生产化（bench/recall-opt G1-b）：注入块包裹语。legacy = 现行文案（含「仅作为
-   * 参考」贬抑措辞）；neutral = 中性包裹 + 证据不足时如实说明的指引。缺省 legacy。
+   * 参考」贬抑措辞）；neutral = 中性包裹 + 证据不足时如实说明的指引。
+   * #172-②（2026-10-31）：新增 "calibrated" = 不写「仅作参考」、不诱导拒答，直接指示
+   * 「据此回答；信息不足再说明」（docs/optimization-results.md §24.9）。
+   * WP1b（2026-10-31）：**缺省 legacy → calibrated**（前两档都在先声明「可能不相关」，
+   * 拒答占深池 A 臂错误的 75%）。未知值回落缺省；三档文案与缺省常量单一源 =
+   * core/recall/inject-wrapper.ts。回滚：yaml 显式 injectWrapper: legacy。
    */
-  injectWrapper: "legacy" | "neutral";
+  injectWrapper: InjectWrapperMode;
+  /**
+   * #169 证据包（缺省关）：命中行按「turn + 同会话相邻窗」向外扩邻接行，随注入块一起给
+   * 作答模型（工具路本轮不扩）。零 schema 变更：邻接靠 l1_records.session_id + timestamp_str
+   * 现算；必须有时间窗——实测同 session 相邻行 40.8% 不同场景、±3 位置邻接 33% 超 30min。
+   * 缺省 enabled=false = **等读数，不是否决**：先按 run-r169-evidence-pack.sh 四档
+   * （+0/+1/+2/+3）跑出读数再翻转；台账登记 docs/ops/config-default-ledger.md（归口 #169）。
+   * 键在、gates 观测在（recall.gates.evidencePack 恒出现）、四档脚本在 ⇒ 不是半成品。
+   * 纯函数与判据见 core/recall/evidence-pack.ts。
+   */
+  evidencePack: {
+    enabled: boolean;
+    /** 每侧位置窗口，0..3。 */
+    adjacent: number;
+    /** 时间窗（分钟），0 = 不限。 */
+    windowMinutes: number;
+    /** 单次召回邻接行总帽。 */
+    maxExtraLines: number;
+    /** 单会话行数上限，超过则整段不扩。 */
+    maxSessionRows: number;
+  };
   /**
    * Batch C C-b（#77 伴生）：timeProx 时间锚回退——occurredAt 缺失时以记录 createdAt
    * 折算时近因子（治 work_fact 大面积空 occurred_at 期的时近信号全失）。缺省 false
    * = 逐位现状（无实证不加成，R1 口径不变）。
+   * ⚠️ 依赖提示（WP1b 核实）：本键只有在组合精排的 timeProx 权重 > 0 时才有意义；
+   * 生产两份 yaml 都是 `rerankWeights.timeProx: 0`（tdai-gateway.yaml:212、cloud 同段）
+   * ⇒ 即使置 true 也不改变任何分数。不是死码（auto-recall.ts 有消费点），删它=删可复现
+   * 实验档，故保留；要真生效必须先给 timeProx 权重读数（归口 #135/#154 台账）。
    */
   timeProxFallbackEnabled: boolean;
   /**
@@ -546,6 +635,19 @@ export interface RecallConfig {
     enabled: boolean;
     /** 端点内召回超时毫秒（缺省 5000，与 recall.timeoutMs 同族；超时 → 504，代理降级旧路）。 */
     timeoutMs: number;
+    /**
+     * task-100（预算内降级）：L1 检索（向量腿）预算毫秒。缺省 2000，clamp [200,15000]；
+     * 0 = 关闭预算（逐位旧行为：向量腿想跑多久跑多久）。
+     * 计时起点 = 请求进入 handleRecall 的 tStart，**不是** L1 腿自己开始算——
+     * 预算按「整条 recall 里我还能给 L1 多少」理解（scene/L2 已花掉的不重复扣）。
+     */
+    l1BudgetMs: number;
+    /**
+     * task-100：向量腿超预算/抛错时的回落策略。
+     * 'fts'（缺省）= 用已算完的 FTS 腿结果继续组装（不 504、不空块），meta.degraded='fts'；
+     * 'none' = 不回退（逐位旧行为：等到向量腿结束或端点超时 504）。
+     */
+    l1Fallback: "fts" | "none";
   };
   /**
    * P1 召回质量（spec §4.3，task-1）：召回精排 rerank provider 面（memory.recall.rerank.*）。
@@ -819,6 +921,43 @@ export interface MemoryCoreMemoryConfig {
      *  escapeXmlTags 同级消毒；宁缺毋滥：零 open 整块省略）。 */
     promises: { enabled: boolean };
   };
+}
+
+/** task-73（core wiki 薄转发）团队归属校验档位。 */
+export type WikiTeamVerifyMode = "off" | "warn" | "enforce";
+
+/**
+ * task-73：core 侧 wiki 薄转发配置（yaml memory.wiki.*）。
+ *
+ * 缺省 enabled=true —— 端点由插件按需调用，core 侧不主动出网；关掉后两个端点
+ * 一律 403 WIKI_FORWARDING_DISABLED（不是静默空结果）。
+ * 证据：8421 的 /list 按 caller 自称 team_id 过滤、/search 完全不校验 team
+ * （MemoryKnowledge/src/routes/wiki.ts:244/:712-725）⇒ 团队归属必须在 core 判，
+ * 那么 team 白名单只能来自 metadata（meta_teams / meta_team_members），不能信请求头。
+ */
+export interface WikiForwardConfig {
+  /** 总开关（缺省 true）。 */
+  enabled: boolean;
+  /** MemoryKnowledge 基址（缺省 http://127.0.0.1:8421；env TDB_WIKI_BASE_URL 覆盖）。 */
+  baseUrl: string;
+  /** 8421 的 service_id 头（现网恒 default；env TDB_WIKI_SERVICE_ID 覆盖）。 */
+  serviceId: string;
+  /** 整个请求的总超时（缺省 2500ms，clamp 100..10000；env TDB_WIKI_TIMEOUT_MS 覆盖）。 */
+  timeoutMs: number;
+  /** 单个 wiki 的子超时（缺省 2000ms，clamp 100..10000）。 */
+  perWikiTimeoutMs: number;
+  /** 每个 wiki 取多少条（缺省 4，clamp 1..20）。 */
+  perWikiLimit: number;
+  /** 合并后返回多少条（缺省 6，clamp 1..20）。 */
+  topK: number;
+  /** absScore 下限（缺省 0.02，与 proxy wiki-recall-injector.ts:36 同刻度；clamp 0..10）。 */
+  minScore: number;
+  /** 一次检索最多并发打多少个 wiki（缺省 8，clamp 1..16）。 */
+  maxWikis: number;
+  /** 并发度（缺省 4，clamp 1..8）。 */
+  concurrency: number;
+  /** 团队归属校验档位（缺省 enforce；env TDB_WIKI_TEAM_VERIFY 覆盖）。 */
+  teamVerify: WikiTeamVerifyMode;
 }
 
 /** J 重构式回忆 · 图邻居扩展设置（宁缺毋滥：仅并入 top 种子之邻）。 */
@@ -1160,7 +1299,13 @@ export interface RecallJournalConfig {
 
 /**
  * #134 写面策略（W1 事实键双写 / W2 写时双时态 supersession）。
- * 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
+ *
+ * 缺省 = **生产最优档**（用户 2026-10-31 20:06 拍板：缺省不是「最保守档」）：
+ *  - supersession **开**：long-session-bench 三臂重放实测正收益（当前命中 100% vs 33.3%、
+ *    旧值注入 0% vs 100%、重复值 1.0 vs 7.67），三臂读数见 docs/long-session-bench.md §6；
+ *  - factKey **关**：#149 LME90 A vs B 实测 −2.2pp，等 #168 长会话读数再议；
+ *  - factRows **关**：#146 事实行粒度无正收益读数，显式关（不开半成品）。
+ * 与代码缺省 DEFAULT_WRITE_POLICY（core/record/write-policy.ts）必须同档。
  */
 export interface WriteConfig {
   factKey: {
@@ -1196,6 +1341,28 @@ export interface WriteConfig {
    * enabled 缺省 false = 整行粒度逐位现状；maxFacts 未配则写侧回落 factKey.maxFacts。
    */
   factRows?: WriteFactRowsConfig;
+}
+
+/**
+ * #红队②（task-60）：数据面归属校验（yaml `memory.auth`）。
+ * 三项全部缺省关 = 逐位沿用今天的「服务级信任」（Bearer 通过即认任意 user_id）。
+ * 语义解释与判定在 gateway/auth-binding.ts（纯函数，单源）。
+ */
+export interface MemoryAuthConfig {
+  /** 要求 /v3 数据面 x-tdai-user-key 与请求声明的 user_id 一致（缺省 false）。 */
+  requireUserBinding: boolean;
+  /** 写侧未知主体（entity 表查无）处理档：off / warn / reject（缺省 off）。 */
+  unknownPrincipalPolicy: "off" | "warn" | "reject";
+  /** 允许 admin 显式旁路（system_admin + x-tdai-admin-bypass 双条件；缺省 false）。 */
+  adminBypassEnabled: boolean;
+  /**
+   * task-68：`/v3` 数据面「team 属不属于本调用方」三档。
+   * off（缺省，逐位现状）/ warn（只记日志与计数）/ enforce（403 TEAM_NOT_OWNED）。
+   * 判定纯函数在 gateway/team-ownership.ts（单源）。
+   */
+  requireTeamOwnership: "off" | "warn" | "enforce";
+  /** 归属校验白名单：命中的 team_id 不查询、直接放行（历史脏 team 逃生口）。缺省空。 */
+  teamOwnershipWhitelist: string[];
 }
 
 /** Fully resolved plugin configuration (v3). */
@@ -1244,6 +1411,9 @@ export interface MemoryTdaiConfig {
   };
   /** 场景块治理（DS-SCENE-GOV-001；enabled 缺省 false = 生产行为零变化）。 */
   sceneGovernance: SceneGovernanceConfig;
+  /** task-73：/v3/wiki/{list,search} 薄转发配置（发现面直连 MemoryKnowledge 8421，
+   *  检索面按 absScore 合并）。缺省 enabled=true，不主动出网。 */
+  wiki: WikiForwardConfig;
   /** D-3（2026-09-21）：敏感性标注门（extractionEnabled 缺省 false = 逐位现状）。 */
   sensitivity: {
     extractionEnabled: boolean;
@@ -1259,6 +1429,8 @@ export interface MemoryTdaiConfig {
   extractionExtensions: {
     enabled: boolean;
   };
+  /** #红队②（task-60）：数据面归属校验（缺省三项全关 = 逐位现状）。 */
+  auth: MemoryAuthConfig;
   /**
    * Optional Skill module config. Pass-through to `resolveSkillConfig()` at
    * the host wiring layer; defaults are applied there. When absent, the
@@ -1927,6 +2099,32 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     intervalMs: Math.max(60_000, num(evolutionGroup, "intervalMs") ?? 3_600_000),
   };
 
+  // task-73（core wiki 薄转发）：memory.wiki.* 解析 + clamp + 缺省。
+  // 铁律与仓内其它段一致：解析永不抛（可用性优先），非法值 clamp 回缺省。
+  const wiki: WikiForwardConfig = (() => {
+    const g = obj(c, "wiki");
+    const clamp = (key: string, dflt: number, lo: number, hi: number): number => {
+      const raw = num(g, key);
+      return raw === undefined || !Number.isFinite(raw) ? dflt : Math.min(hi, Math.max(lo, raw));
+    };
+    const rawMode = str(g, "teamVerify");
+    const teamVerify: WikiTeamVerifyMode =
+      rawMode === "off" || rawMode === "warn" || rawMode === "enforce" ? rawMode : "enforce";
+    return {
+      enabled: bool(g, "enabled") ?? true,
+      baseUrl: (str(g, "baseUrl") ?? "http://127.0.0.1:8421").replace(/\/+$/, ""),
+      serviceId: str(g, "serviceId") ?? "default",
+      timeoutMs: clamp("timeoutMs", 2500, 100, 10_000),
+      perWikiTimeoutMs: clamp("perWikiTimeoutMs", 2000, 100, 10_000),
+      perWikiLimit: Math.floor(clamp("perWikiLimit", 4, 1, 20)),
+      topK: Math.floor(clamp("topK", 6, 1, 20)),
+      minScore: clamp("minScore", 0.02, 0, 10),
+      maxWikis: Math.floor(clamp("maxWikis", 8, 1, 16)),
+      concurrency: Math.floor(clamp("concurrency", 4, 1, 8)),
+      teamVerify,
+    };
+  })();
+
   const search: MemoryTdaiConfig["search"] = {
     neighborExpand: {
       enabled: bool(neighborExpandGroup, "enabled") ?? false,
@@ -1969,6 +2167,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       enabled: bool(extractionGroup, "enabled") ?? true,
       enableDedup: bool(extractionGroup, "enableDedup") ?? true,
       maxMemoriesPerSession: num(extractionGroup, "maxMemoriesPerSession") ?? 20,
+      // task-81：会话隔离守卫范围（缺省 "session"；非法值回落缺省，不抛错）
+      sessionScope: str(extractionGroup, "sessionScope") === "profile" ? "profile" : "session",
       // GROW-EVO P2（§2.2）：durative 效期提取开关（缺省 false = 逐位现状）
       durativeEnabled: bool(extractionGroup, "durativeEnabled") ?? false,
       // D-4：周期性事实提取块门（RECURRENCE_BLOCK；缺省 false = 逐位现状）
@@ -1985,6 +2185,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         3_600_000,
         Math.max(60_000, num(extractionGroup, "dedupTimeoutMs") ?? 300_000),
       ),
+      // task-83：抽取侧会话忽略闸。缺省 ["probe-","session-probe-"]（现网探针数据形态），
+      // 显式 [] = 关（逐位回到 task-83 之前）；匹配=前缀+*通配，对 session_id/sessionKey 双生效
+      ignoreSessionPatterns: strArray(extractionGroup, "ignoreSessionPatterns") ?? [...DEFAULT_IGNORE_SESSION_PATTERNS],
       // #46 毒批拆分+批次上限（config-first）：缺省关=逐位现状
       scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,
       sceneBatchMaxChars: Math.max(0, num(extractionGroup, "sceneBatchMaxChars") ?? 0),
@@ -1998,12 +2201,14 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         };
       })(),
     },
-    // #134（写面策略）：缺省全关=逐位现状；separator 空串回落默认，maxFactChars clamp ≥0
+    // #134（写面策略）：缺省=生产最优档（supersession 开 / factKey 关 / factRows 关，
+    // 依据 docs/long-session-bench.md §6 与 #149）；separator 空串回落默认，maxFactChars clamp ≥0
     write: (() => {
       const writeGroup = obj(c, "write");
       const factKeyGroup = obj(writeGroup, "factKey");
       return {
         factKey: {
+          // 缺省关：#149 LME90 实测 −2.2pp（A vs B），等 #168 长会话读数再议（开=负收益）。
           enabled: bool(factKeyGroup, "enabled") ?? false,
           // #137：缺省 replace = W1 旧形态（本票不静默改语义）；channel = 平行通道
           mode: str(factKeyGroup, "mode") === "channel" ? ("channel" as const) : ("replace" as const),
@@ -2020,11 +2225,13 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         },
         supersession: (() => {
           const ssGroup = obj(writeGroup, "supersession");
-          // #136：cardinalityGate 缺省 true（supersession 本身缺省关，故零行为变化）；
-          // 回滚阀门 = 显式 false（回到"凡 update/merge 一律失效"的旧行为）。
+          // 缺省开 = 生产最优档（long-session-bench 三臂读数见 docs/long-session-bench.md §6：
+          // B 臂 当前命中 100% / 旧值注入 0% / 重复值 1.0 vs A 臂 33.3% / 100% / 7.67）。
+          // 回滚阀门 = 显式 enabled:false（回到「旧行归档/硬删」的旧行为）。
+          // #136：cardinalityGate 缺省 true——多值/模态内容不失效，防止误删唯一旧值（拒答根因）。
           const defaultRaw = str(ssGroup, "cardinalityDefault");
           return {
-            enabled: bool(ssGroup, "enabled") ?? false,
+            enabled: bool(ssGroup, "enabled") ?? true,
             cardinalityGate: bool(ssGroup, "cardinalityGate") ?? true,
             cardinalityDefault: defaultRaw === "multi" ? ("multi" as const) : ("single" as const),
           };
@@ -2063,7 +2270,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     },
     recall: {
       enabled: bool(recallGroup, "enabled") ?? true,
-      maxResults: num(recallGroup, "maxResults") ?? 5,
+      // WP1b：缺省 5 → 10（§24/§25.6 k=10 判对 +4.5pp 单独、+10.1pp 与口径合用）。
+      // 注：两份 yaml 仍钉 5，改缺省只影响「不受 yaml 覆盖」的部署（global-images env 档）。
+      maxResults: num(recallGroup, "maxResults") ?? 10,
       // #135 R1：候选池上游上限（缺省 undefined = maxResults*3 逐位现状；正整数才生效）
       candidateK: (() => {
         const raw = num(recallGroup, "candidateK");
@@ -2109,9 +2318,12 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       timeoutMs: num(recallGroup, "timeoutMs") ?? 5000,
       // C1：coreRef 排序加成（默认 0.05；0=关；负值 clamp 0——可用性优先，
       // 与 links.minSimilarity 的"拒绝非法回退默认"惯例同款，不在启动路径抛异常）。
+      // WP1b（#173-B）：缺省 0 = 关（与生产两份 yaml 的 coreRefBoost:0 一致）。
+      // 历史缺省 0.05：删掉 yaml 行会回落 0.05 反向打开通道 ⇒ 缺省必须等值于生产值，
+      // 「关」只能写 0，不得靠 delete 关档。
       coreRefBoost: (() => {
         const raw = num(recallGroup, "coreRefBoost");
-        if (raw === undefined || !Number.isFinite(raw)) return 0.05;
+        if (raw === undefined || !Number.isFinite(raw)) return 0;
         return Math.max(raw, 0);
       })(),
       // R-A1（结构感知召回 spec §2）：排序层结构信号六开关（沿 C1 clamp 模式；
@@ -2145,17 +2357,43 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       moodBoost: recallSignalBoost(recallGroup, "moodBoost", 0),
       // R-A2（spec §2 R4/R6）：候选池通道开关（clamp 模式；graph 两旋钮为比值 clamp [0,1]）
       graphMinStrength: recallSignalBoost(recallGroup, "graphMinStrength", 0.5, 1),
-      graphDiscount: recallSignalBoost(recallGroup, "graphDiscount", 0.6, 1),
-      sceneBoost: recallSignalBoost(recallGroup, "sceneBoost", 0.04),
+      // WP1b（#173-B）：graphDiscount/sceneBoost 缺省 0 = 关（= 生产两份 yaml 的显式 0）。
+      // 历史缺省 0.6/0.04：删 yaml 行会回落成「开」，正是「删键即开通道」的病根；
+      // 现在「关」= 显式 0 与「删行」等价（单测 config.recall-defaults 对拍）。
+      graphDiscount: recallSignalBoost(recallGroup, "graphDiscount", 0, 1),
+      sceneBoost: recallSignalBoost(recallGroup, "sceneBoost", 0),
       // R-A3（性能速赢 E1/E2/E3）：TTL 缓存开关（毫秒，缺省默认开；<=0 = 关；负值 clamp 0）
       queryEmbeddingCacheTtlMs: recallSignalBoost(recallGroup, "queryEmbeddingCacheTtlMs", 60_000),
       valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
       // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
       excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
-      // #136（W2 软失效）：效期判定模式（缺省 hard = 逐位现状）
+      // #136（W2 软失效）：效期判定模式（缺省 soft，见下方 WP1b 注释）
       validity: (() => {
         const vg = obj(recallGroup, "validity");
-        return { mode: str(vg, "mode") === "soft" ? ("soft" as const) : ("hard" as const) };
+        // WP1b（2026-10-31）：缺省 hard → soft。依据 docs/optimization-results.md §11.2
+        // （card-soft vs b1off-mm：turnCov +0.6pp / 判对 +1.1pp ns；而 hard 归档 = 「删对旧值就永久丢证据」，
+        // nogate-soft vs w2 显示 soft 少损 6.5pp、temporal-reasoning 从 −13.3pp 恢复 0.0pp）。
+        // 未知值 → 缺省 soft（不再静默落 hard）。回滚：yaml 显式 validity.mode: hard。
+        // Lead 裁决 D：显式非法值 → 落回缺省 soft + 告警（不再静默；回滚仍是显式 validity.mode: hard）。
+        const modeRaw = str(vg, "mode");
+        const mode: "hard" | "soft" =
+          modeRaw === "hard" || modeRaw === "soft"
+            ? modeRaw
+            : (() => {
+                if (modeRaw !== undefined) {
+                  warnInvalidConfigOnce(
+                    `recall.validity.mode=${modeRaw}`,
+                    `recall.validity.mode 取值非法（"${modeRaw}"，合法：soft|hard），已回落缺省 soft`,
+                  );
+                }
+                return "soft" as const;
+              })();
+        return {
+          mode,
+          // #148：软失效两旋钮（缺省 = #136 逐位行为）
+          softPenalty: Math.min(1, Math.max(0, num(vg, "softPenalty") ?? 0.5)),
+          hardOnPresentIntent: bool(vg, "hardOnPresentIntent") ?? true,
+        };
       })(),
       // GROW-EVO P3 R10（§3.2）：情感显著度权重（缺省 0 = 恒等；实验轨）
       emotionSalienceWeight: Math.max(0, num(recallGroup, "emotionSalienceWeight") ?? 0),
@@ -2199,9 +2437,25 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         const its = obj(recallGroup, "injectTimeSort");
         return { enabled: bool(its, "enabled") ?? false };
       })(),
-      injectWrapper: (() => {
-        const raw = str(recallGroup, "injectWrapper");
-        return raw === "neutral" ? "neutral" : "legacy";
+      // #172-②/WP1b：三档；未知值回落当前缺省（单一常量 inject-wrapper.ts:INJECT_WRAPPER_DEFAULT）。
+      // 缺省 legacy → calibrated：legacy/neutral 都在「先声明可能不相关」（§24.9 拒答占深池 A 臂错误 75%）。
+      injectWrapper: injectWrapperModeOf(str(recallGroup, "injectWrapper")),
+      // #169 证据包：缺省关（enabled=false 时钩子路整段早退，零行为变化）
+      evidencePack: (() => {
+        const ep = obj(recallGroup, "evidencePack");
+        const adjacentRaw = num(ep, "adjacent");
+        const windowRaw = num(ep, "windowMinutes");
+        const maxExtraRaw = num(ep, "maxExtraLines");
+        const maxRowsRaw = num(ep, "maxSessionRows");
+        const clampI = (v: number | undefined, lo: number, hi: number, dflt: number): number =>
+          typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.floor(v))) : dflt;
+        return {
+          enabled: bool(ep, "enabled") ?? false,
+          adjacent: clampI(adjacentRaw, 0, 3, 1),
+          windowMinutes: clampI(windowRaw, 0, 24 * 60, 30),
+          maxExtraLines: clampI(maxExtraRaw, 0, 24, 6),
+          maxSessionRows: clampI(maxRowsRaw, 1, 5000, 400),
+        };
       })(),
       timeProxFallbackEnabled: bool(recallGroup, "timeProxFallbackEnabled") ?? false,
       // F-CLUSTER v2：召回折叠总开关（缺省 false = 现行为）。类型声明 config.ts:100
@@ -2352,6 +2606,17 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         return {
           enabled: bool(vr, "enabled") ?? false,
           timeoutMs: Math.max(0, num(vr, "timeoutMs") ?? 5000),
+          // task-100：L1 向量腿预算（缺省 2000，clamp [200,15000]；0 = 关闭预算 = 逐位旧行为）。
+          // 依据（task-93 真日志 n=144）：recall 端到端 P50=4260ms、l1 占 99.5%，其中远端
+          // embedding 单次 282ms–19.3s；插件侧 recallTimeoutMs=2500 ⇒ 不给腿预算就是过半轮次空手。
+          l1BudgetMs: (() => {
+            const raw = num(vr, "l1BudgetMs");
+            if (raw === undefined) return 2000;
+            if (!Number.isFinite(raw) || raw <= 0) return 0;
+            return Math.min(15000, Math.max(200, Math.floor(raw)));
+          })(),
+          // task-100：超预算回落策略（缺省 fts = 用已算完的 FTS 腿继续组装；none = 旧行为）。
+          l1Fallback: str(vr, "l1Fallback") === "none" ? ("none" as const) : ("fts" as const),
         };
       })(),
       // P1 召回质量（spec §4.3，task-1）：精排 rerank provider 面（与 rerankWeights 不同概念）。
@@ -2502,6 +2767,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     search,
     // 场景块治理（DS-SCENE-GOV-001）：enabled 缺省 false，生产零变化
     sceneGovernance,
+    // task-73：core wiki 薄转发（/v3/wiki/{list,search}）
+    wiki,
     // D-3：敏感性标注门（yaml memory.sensitivity.extractionEnabled；缺省 false）
     sensitivity: {
       extractionEnabled: bool((c.sensitivity ?? {}) as Record<string, unknown>, "extractionEnabled") ?? false,
@@ -2514,6 +2781,25 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     // #28（R5 统一抽取扩展门）：yaml memory.extractionExtensions.enabled；缺省 false=逐位现状。
     extractionExtensions: {
       enabled: bool((c.extractionExtensions ?? {}) as Record<string, unknown>, "enabled") ?? false,
+    },
+    // #红队②（task-60）：yaml memory.auth.*；三项缺省全关 = 逐位沿用今天的服务级信任。
+    // 取值解释（含「写了但写错」的 fail-secure）只在 gateway/auth-binding.ts 一处定义。
+    auth: {
+      requireUserBinding: bool((c.auth ?? {}) as Record<string, unknown>, "requireUserBinding") ?? false,
+      unknownPrincipalPolicy: (() => {
+        const raw = (c.auth as Record<string, unknown> | undefined)?.["unknownPrincipalPolicy"];
+        return parseUnknownPrincipalPolicy(typeof raw === "string" ? raw : undefined, "off");
+      })(),
+      adminBypassEnabled: bool((c.auth ?? {}) as Record<string, unknown>, "adminBypassEnabled") ?? false,
+      // task-68：team 归属三档 + 白名单。取值解释同样只在 gateway/team-ownership.ts
+      // 一处定义（未知非空 → enforce，宁严不松）。
+      requireTeamOwnership: (() => {
+        const raw = (c.auth as Record<string, unknown> | undefined)?.["requireTeamOwnership"];
+        return parseTeamOwnershipMode(typeof raw === "string" ? raw : undefined, "off");
+      })(),
+      teamOwnershipWhitelist: normalizeTeamOwnershipWhitelist(
+        (c.auth as Record<string, unknown> | undefined)?.["teamOwnershipWhitelist"],
+      ),
     },
     // Skill: passthrough — let the host wiring call resolveSkillConfig() with
     // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply
@@ -2563,6 +2849,25 @@ function strArray(src: Record<string, unknown>, key: string): string[] | undefin
   const v = src[key];
   if (!Array.isArray(v)) return undefined;
   return v.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+/**
+ * 非法配置值的一次性告警（Lead 裁决 D，2026-10-31）：显式写了但取值非法时，既要落回缺省，
+ * 也要在日志里留下痕迹——静默回落正是「yaml 里明明写了 hard、实际跑的是别的」这类
+ * 三套真源漂移的温床。同 key+value 只喊一次，避免 parseConfig 被反复调用时刷屏。
+ */
+const CONFIG_WARNED = new Set<string>();
+
+export function __resetConfigWarningsForTests(): void {
+  CONFIG_WARNED.clear();
+}
+
+function warnInvalidConfigOnce(key: string, message: string): void {
+  if (CONFIG_WARNED.has(key)) return;
+  CONFIG_WARNED.add(key);
+  // config 层没有 logger（logger 依赖 config，不能反向引用），直接走 console.warn：
+  // gateway/plugin 均把 console 收进自己的日志流。
+  console.warn(`[tdai-config] ${message}`);
 }
 
 const VALID_STRATEGIES: RecallConfig["strategy"][] = ["embedding", "keyword", "hybrid"];

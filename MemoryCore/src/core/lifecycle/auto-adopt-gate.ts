@@ -32,13 +32,20 @@ export interface SelfIdentityAutoAdoptConfig {
 
 type AutoAdoptRow = { pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string };
 
+/** 落账审计快照（与 store.decidePendingCoreAuto 的 audit 参数同形；post_slot_version 由库内读回）。 */
+type AutoAdoptAudit = { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } };
+
 export interface AutoAdoptDeps {
   store: {
     listReadySelfIdentityPending?(tenant?: unknown, opts?: { votesN?: number; spanHours?: number }): Array<AutoAdoptRow> | Promise<Array<AutoAdoptRow>>;
-    decidePendingCoreAuto?(pendingId: string, tenant?: unknown, audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } }): boolean | Promise<boolean>;
+    decidePendingCoreAuto?(pendingId: string, tenant?: unknown, audit?: AutoAdoptAudit): boolean | Promise<boolean>;
     readCore?(tenant?: unknown): Array<{ slot: string; content: string; version?: number }> | Promise<Array<{ slot: string; content: string; version?: number }>>;
     upsertCore?(slot: string, content: string, source: string, tenant?: unknown): boolean | Promise<boolean>;
     listPendingCore?(tenant?: unknown, opts?: { includeDecided?: boolean }): Array<{ slot?: string; state?: string; content?: string }> | Promise<Array<{ slot?: string; state?: string; content?: string }>>;
+    /** #92 M1：门②专用全量 rejected 查询（不分页不截断）。缺实现 → 回落 listPendingCore + WARN。 */
+    listRejectedSelfIdentityPending?(tenant?: unknown): Array<{ pending_id?: string; content?: string }> | Promise<Array<{ pending_id?: string; content?: string }>>;
+    /** #92 M2：槽写 + pending 落账单事务（decide 失败 → 回滚槽）。缺实现 → 回落两段写 + WARN。 */
+    commitAutoAdoptCore?(pendingId: string, tenant?: unknown, opts?: { slot: string; content: string; source: string; writeSlot?: boolean; audit?: AutoAdoptAudit }): boolean | Promise<boolean>;
   };
   config?: SelfIdentityAutoAdoptConfig;
   logger?: { info?(msg: string): void; warn?(msg: string): void; debug?(msg: string): void };
@@ -58,6 +65,22 @@ export async function runSelfIdentityAutoAdopt(deps: AutoAdoptDeps): Promise<{ r
 
   const candidates = ((await Promise.resolve(store.listReadySelfIdentityPending(undefined, { votesN, spanHours }))) ?? []) as AutoAdoptRow[];
   if (candidates.length === 0) return { ran: true, adopted: 0, blocked: 0, skipped: 0 };
+  // #92 M1：门②必须能看见**全部** rejected。旧路径 listPendingCore 是面板展示查询
+  // （ORDER BY created_at DESC LIMIT 200），生产 rejected=385 ⇒ 185 条更早的人工拒绝对矛盾门不可见，
+  // 漏拦 = 被否过的人格提案被自动采纳（人格污染且不可自动修复）。缺专用查询时回落并显式 WARN。
+  const hasFullRejectedQuery = typeof store.listRejectedSelfIdentityPending === "function";
+  if (!hasFullRejectedQuery) {
+    deps.logger?.warn?.(
+      "[auto-adopt] store lacks listRejectedSelfIdentityPending → gate② falls back to listPendingCore(includeDecided), which is LIMIT 200; rejected rows older than the newest 200 are INVISIBLE to the contradiction gate (#92 M1)",
+    );
+  }
+  // #92 M2：优先单事务落库（槽写 + 审计落账同存同无）；旧 store 回落两段写，落账失败只能尽力回滚槽。
+  const hasAtomicCommit = typeof store.commitAutoAdoptCore === "function";
+  if (!hasAtomicCommit) {
+    deps.logger?.warn?.(
+      "[auto-adopt] store lacks commitAutoAdoptCore → falling back to two-step write (slot then pending); a failed accounting step is only best-effort rolled back (persona slot may change without audit) (#92 M2)",
+    );
+  }
   // 按租户三元组分组逐租户处理（候选查询缺省=全租户，行带租户字段）
   const groups = new Map<string, AutoAdoptRow[]>();
   for (const row of candidates) {
@@ -75,9 +98,12 @@ export async function runSelfIdentityAutoAdopt(deps: AutoAdoptDeps): Promise<{ r
     let slotContent = slotRow?.content ?? "";
     let slotVersion = slotRow?.version ?? 0;
     const slotLines = (): string[] => slotContent.split("\n").map((l) => l.trim().replace(/^-+\s*/, "")).filter((l) => l.length > 0);
-    const rejectedContents = (((await Promise.resolve(store.listPendingCore?.(tenant, { includeDecided: true }))) ?? []) as Array<{ slot?: string; state?: string; content?: string }>)
-      .filter((r) => r.slot === "self_identity" && r.state === "rejected")
-      .map((r) => String(r.content ?? ""));
+    // 门②取数：专用全量查询优先（零 LIMIT）；缺失才回落 LIMIT 200 的展示查询（已在上方 WARN）。
+    const rejectedContents = hasFullRejectedQuery
+      ? (((await Promise.resolve(store.listRejectedSelfIdentityPending?.(tenant))) ?? []) as Array<{ content?: string }>).map((r) => String(r.content ?? ""))
+      : (((await Promise.resolve(store.listPendingCore?.(tenant, { includeDecided: true }))) ?? []) as Array<{ slot?: string; state?: string; content?: string }>)
+          .filter((r) => r.slot === "self_identity" && r.state === "rejected")
+          .map((r) => String(r.content ?? ""));
     for (const row of rows) {
       const content = String(row.content ?? "");
       // 门②：同主题 rejected 矛盾（宁拦勿收——退回人审是安全方向）
@@ -88,7 +114,35 @@ export async function runSelfIdentityAutoAdopt(deps: AutoAdoptDeps): Promise<{ r
       const adoptedLines = content.split("\n").map((l) => escapeXmlTags(l.trim())).filter((l) => l.length > 0);
       const existingIdentity = slotRow ? slotContent : undefined;
       const merged = mergeIdentityFacts(existingIdentity, adoptedLines);
-      if (merged !== (existingIdentity ?? "")) {
+      const writeSlot = merged !== (existingIdentity ?? "");
+      const gate = { votes: votesN, spanHours, contradictionThreshold: contra, dupThreshold: dup };
+      if (hasAtomicCommit) {
+        // ── 原子路径（#92 M2）：槽写 + 审计落账单事务；任一失败整体回滚，人格槽与审计同存同无。
+        const committed = await Promise.resolve(store.commitAutoAdoptCore?.(row.pending_id, tenant, {
+          slot: "self_identity",
+          content: merged,
+          source: "auto-adopt-gate",
+          writeSlot,
+          audit: { prev_slot_content: slotContent, prev_slot_version: slotVersion, prev_slot_existed: slotRow !== undefined, gate },
+        }));
+        if (!committed) {
+          deps.logger?.warn?.("[auto-adopt] commitAutoAdoptCore failed (rolled back) keep pending pid=" + row.pending_id);
+          continue;
+        }
+        adopted++;
+        // 同拍同租户后续候选基于最新槽判定
+        const refreshed = ((await Promise.resolve(store.readCore(tenant))) ?? []).find((s) => s.slot === "self_identity");
+        if (refreshed) {
+          slotContent = refreshed.content;
+          slotVersion = refreshed.version ?? slotVersion;
+        } else {
+          slotContent = merged;
+          if (writeSlot) slotVersion += 1;
+        }
+        continue;
+      }
+      // ── 旧两段写回落（#92 M2 前的后端；无事务，落账失败只能尽力回滚槽）
+      if (writeSlot) {
         const ok = await Promise.resolve(store.upsertCore("self_identity", merged, "auto-adopt-gate", tenant));
         if (!ok) { deps.logger?.warn?.("[auto-adopt] upsertCore failed, keep pending pid=" + row.pending_id); continue; }
       }
@@ -98,7 +152,7 @@ export async function runSelfIdentityAutoAdopt(deps: AutoAdoptDeps): Promise<{ r
         prev_slot_version: slotVersion,
         prev_slot_existed: slotRow !== undefined,
         post_slot_version: postV,
-        gate: { votes: votesN, spanHours, contradictionThreshold: contra, dupThreshold: dup },
+        gate,
       }));
       if (ok2) {
         adopted++;
@@ -106,6 +160,13 @@ export async function runSelfIdentityAutoAdopt(deps: AutoAdoptDeps): Promise<{ r
         slotVersion = postV;
       } else {
         deps.logger?.warn?.("[auto-adopt] decidePendingCoreAuto failed, keep pending pid=" + row.pending_id);
+        if (writeSlot) {
+          // M2 补救：把槽恢复成 prev（本次采纳本不该改人格），失败必须显式喊人。
+          const rolledBack = await Promise.resolve(store.upsertCore("self_identity", slotContent, "auto-adopt-gate-rollback", tenant));
+          deps.logger?.warn?.(rolledBack
+            ? "[auto-adopt] slot rolled back to prev content after failed accounting (pid=" + row.pending_id + ")"
+            : "[auto-adopt] SLOT ROLLBACK FAILED — persona slot may be polluted without audit, manual fix required (pid=" + row.pending_id + ")");
+        }
       }
     }
   }

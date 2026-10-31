@@ -42,6 +42,13 @@ export interface RecallMetricInput {
   recallLatencyMs: number;
   /** 是否召回失败 */
   hasError: boolean;
+  // ── task-100（2026-11-01）：预算内降级观测面（全部可选；老调用方不传 = 不报，逐位旧行为）──
+  /** 向量腿是否降级：'fts' = 超预算只用了 FTS 腿；null/undefined = 未降级 */
+  degraded?: "fts" | null;
+  /** L1 层实际耗时（毫秒） */
+  l1Ms?: number;
+  /** query embedding 进程内缓存的本请求增量（不是累计值） */
+  embedCache?: { hits: number; misses: number };
 }
 
 // ============================
@@ -116,6 +123,55 @@ export function reportRecallMetrics(input: RecallMetricInput): void {
       });
     } catch {
       // 静默失败
+    }
+
+    // ── task-100：降级 / L1 分段耗时 / embedding 缓存命中（度量名独立，不带 label）──
+    // 注：MetricMessage 无 tags 字段（kafka-metric-producer.ts:69），票面写的
+    // recall.degraded.total{reason} 这种 label 形态在此通道表达不了 ⇒ 用独立度量名：
+    //   recall_degraded_total  = 1 表示本轮降级为 fts，0 表示未降级（按 series 聚合即比例）
+    //   recall_l1_ms           = L1 层耗时（含向量腿，降级轮 = 预算值）
+    //   recall_embed_cache_hits / recall_embed_cache_misses = 每请求增量
+    if (input.degraded !== undefined) {
+      try {
+        metricProducer.send({
+          metric: "recall_degraded_total",
+          instanceId: input.instanceId,
+          value: input.degraded === "fts" ? 1 : 0,
+          source: "core",
+        });
+      } catch {
+        // 静默失败
+      }
+    }
+    if (typeof input.l1Ms === "number" && Number.isFinite(input.l1Ms)) {
+      try {
+        metricProducer.send({
+          metric: "recall_l1_ms",
+          instanceId: input.instanceId,
+          value: Math.round(input.l1Ms),
+          source: "core",
+        });
+      } catch {
+        // 静默失败
+      }
+    }
+    if (input.embedCache) {
+      try {
+        metricProducer.send({
+          metric: "recall_embed_cache_hits",
+          instanceId: input.instanceId,
+          value: input.embedCache.hits,
+          source: "core",
+        });
+        metricProducer.send({
+          metric: "recall_embed_cache_misses",
+          instanceId: input.instanceId,
+          value: input.embedCache.misses,
+          source: "core",
+        });
+      } catch {
+        // 静默失败
+      }
     }
   } catch {
     // 最外层 catch — 绝不向外抛

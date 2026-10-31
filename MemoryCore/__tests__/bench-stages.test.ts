@@ -193,16 +193,19 @@ describe("#135 生效配置自检", () => {
     expect(diffExpectedConfig(s, { "recall.excludeInvalidated": true })).toHaveLength(1);
   });
 
-  it("失效排除的派生三态进快照：flag=false 在 mode=soft 下仍派生 soft（#174）", () => {
+  it("失效排除的派生三态进快照：flag=false 在 mode=soft 下派生 false（#174 关档优先）", () => {
     const eff = (recall) => effectiveRecallSnapshot({ recall })["recall.excludeInvalidated.effective"];
     expect(eff({ validity: { mode: "soft" }, excludeInvalidated: true })).toBe("soft");
-    expect(eff({ validity: { mode: "soft" }, excludeInvalidated: false })).toBe("soft"); // #174：soft 盖住 false
+    // #174：显式关优先于 mode——旧实现此处是 "soft"，「--validity-off」在 soft 配置下白跑。
+    expect(eff({ validity: { mode: "soft" }, excludeInvalidated: false })).toBe(false);
     expect(eff({ validity: { mode: "hard" }, excludeInvalidated: false })).toBe(false);
     expect(eff({ validity: { mode: "hard" }, excludeInvalidated: true })).toBe(true);
-    // 只在旗标键上写 false 的 expect 检查不出上面这条——必须连派生键一起断言。
+    // 只在旗标键上写 false 的 expect 检查不出派生值——必须连派生键一起断言。
     const s = effectiveRecallSnapshot({ recall: { validity: { mode: "soft" }, excludeInvalidated: false } });
     expect(diffExpectedConfig(s, { "recall.excludeInvalidated": false })).toEqual([]);
-    expect(diffExpectedConfig(s, { "recall.excludeInvalidated.effective": false })).toHaveLength(1);
+    expect(diffExpectedConfig(s, { "recall.excludeInvalidated.effective": false })).toEqual([]);
+    // 反向：把派生值当声明值写回时必报（证明这一格真的被覆盖到）。
+    expect(diffExpectedConfig(s, { "recall.excludeInvalidated.effective": "soft" })).toHaveLength(1);
   });
 
   it("store.mjs 的派生映射与 src 的 excludeInvalidatedFor 逐格对拍（防两处漂）", () => {

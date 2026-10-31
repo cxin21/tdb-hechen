@@ -85,6 +85,8 @@ export function createStoreBundle(
 
       return {
         store,
+        // #123 注入点③（factory 直连 tcvdb 分支）：同 store-pool 注入点①——服务端 embedding 占位。
+        // 判客户端可用请用 hasClientEmbedding()（provider='noop' ⇒ false），不要用 isReady()/embed()。
         embedding: new NoopEmbeddingService(),
         bm25Encoder,
         storeSnapshot: {

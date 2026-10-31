@@ -35,11 +35,33 @@ export function validityEnabled(flag: ExcludeInvalidated | undefined): boolean {
   return flag !== false;
 }
 
+/**
+ * #174：三态映射的**唯一**实现。定序 = 显式退出优先于 mode——
+ * `excludeInvalidated: false` 是"把效期通道关掉"的显式请求，任何 validity.mode
+ * 都不能把它改写成 "soft"（旧实现 `mode === "soft" ? "soft" : flag` 会把关档吞成软档，
+ * 使 bench 的 `--validity-off` 在 soft 配置下恒定失效）。
+ */
 export function excludeInvalidatedFor(
   mode: ValidityMode | undefined,
   flag: boolean | undefined,
 ): ExcludeInvalidated | undefined {
+  if (flag === false) return false;
   return mode === "soft" ? "soft" : flag;
+}
+
+/**
+ * 效期通道的**派生三态**（#174）：off = 显式关；hard = 硬过滤；soft = 降权保留。
+ * 调用方（结论层预筛、池级过滤、工具路）一律从这里取，禁止各自写 mode/flag 三元式——
+ * 否则"off 只关一半"（钩子路关了、结论层 FTS 预筛还在丢 expired）会反复复发。
+ */
+export type ValidityPolicy = "off" | "hard" | "soft";
+
+export function validityPolicyOf(
+  mode: ValidityMode | undefined,
+  flag: boolean | undefined,
+): ValidityPolicy {
+  if (flag === false) return "off";
+  return mode === "soft" ? "soft" : "hard";
 }
 
 export interface ValidityAccessors<T> {
@@ -68,6 +90,21 @@ export interface SelectValidityOptions<T> {
  * 「效期作为融合特征」的最小实现（不引入新的池级重排，保留相关度序）。
  */
 export const SOFT_VALIDITY_PENALTY = 0.5;
+
+/**
+ * #148：soft 档降权系数的**唯一**解析点（`recall.validity.softPenalty`，clamp[0,1]，
+ * 缺省 0.5）。两路（钩子路 relevance/rrfScore、工具路 score）都从这里取，
+ * 保证"同语义同刻度"——不要再各写一遍 `?? 0.5`。
+ */
+export function resolveSoftValidityPenalty(raw?: number | null): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return SOFT_VALIDITY_PENALTY;
+  return Math.min(1, Math.max(0, raw));
+}
+
+/** expired 行的分数乘子（active/future = 1）——两路共用的单一实现。 */
+export function softValidityMultiplier(state: ValidityState, penalty?: number | null): number {
+  return state === "expired" ? resolveSoftValidityPenalty(penalty) : 1;
+}
 
 export interface ValiditySelection<T> {
   /** 交给下游排序/融合的行：soft 时 = active + 降权保留的 expired；hard 时 = active。 */
@@ -110,12 +147,47 @@ export function validityStateOf<T>(item: T, now: Date, accessors?: ValidityAcces
 export function shouldHardDropValidity<T>(
   item: T,
   now: Date,
-  mode: ValidityMode,
+  mode: ValidityMode | ValidityPolicy,
   accessors?: ValidityAccessors<T>,
 ): boolean {
+  // #174：off = 通道完全退出，一律不丢（含 future）——与工具路
+  // filterByValidity(..., excludeInvalidated=false) 的"原样返回"逐位一致，
+  // 否则同一条 --validity-off 两路行为仍然不同。
+  if (mode === "off") return false;
   const state = validityStateOf(item, now, accessors);
   if (state === "future") return true;
   return state === "expired" && mode === "hard";
+}
+
+export interface SoftValidityDemotion<T> {
+  /** 交给下游排序/截断的行：active 在前，降权后的 expired 在后（各保输入相对序）。 */
+  kept: T[];
+  /** 被硬丢的行（只有 future——工具路无「当下意图」，不硬丢 expired）。 */
+  dropped: T[];
+  /** kept 里被降权的 expired 行（保序）。 */
+  demoted: T[];
+}
+
+/**
+ * #148：工具路/结论层的 soft 对齐——expired **沉底并降权**，future 硬丢（与钩子路
+ * searchHybrid 同乘子、同顺序契约：active 在前、demoted 保原相对序）。
+ *
+ * 为什么不是「只丢 future、原样保留」：那样 soft 在工具路退化成 hard-off 的近义，
+ * 同一条配置两路顺序不同（钩子路 expired ×penalty 沉底、工具路不动）——#148 的
+ * 「对齐」要求就是消掉这个双口径。乘子与解析点统一由 validity-policy 提供，
+ * 工具路不再自写 0.5。
+ */
+export function demoteSoftValidity<T extends { valid_start?: string | null; valid_end?: string | null; score: number }>(
+  items: T[],
+  now: Date,
+  penalty?: number | null,
+): SoftValidityDemotion<T> {
+  const sel = selectByValidity(items, { now, mode: "soft", presentIntent: false });
+  if (sel.demoted.length === 0) return { kept: sel.kept, dropped: sel.dropped, demoted: [] };
+  const p = resolveSoftValidityPenalty(penalty);
+  const demotedSet = new Set<T>(sel.demoted);
+  const kept = sel.kept.map((item) => (demotedSet.has(item) ? { ...item, score: item.score * p } : item));
+  return { kept, dropped: sel.dropped, demoted: sel.demoted };
 }
 
 /**

@@ -16,9 +16,14 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Tag, Input, Button, Form, Modal } from 'tea-component';
+import type { TaskSourceType } from '@/lib/api/tasks';
 import '../styles/task-create-dialog.css';
 
-export type TaskSourceType = 'manual' | 'tapd';
+/**
+ * #127：来源枚举不再在本文件重复定义（曾是第三份 'manual'|'tapd'）。
+ * canonical 三值见 web/src/lib/api/tasks.ts。保留 from-here 的导出以兼容既有 import。
+ */
+export type { TaskSourceType };
 
 export interface TaskDraft {
   team_id: string;

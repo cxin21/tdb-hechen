@@ -18,6 +18,22 @@ import { createHash, randomUUID } from "node:crypto";
 import type http from "node:http";
 import path from "node:path";
 import { classifyError } from "./error-handler.js";
+import {
+  UNKNOWN_PRINCIPAL,
+  decideUnknownPrincipal,
+  decideUserBinding,
+  type AuthBindingConfig,
+  type PrincipalLookup,
+} from "./auth-binding.js";
+// task-68：team 归属闸（缺省 off；warn 只记；enforce ⇒ 403 TEAM_NOT_OWNED）。
+import {
+  TEAM_NOT_OWNED,
+  decideTeamOwnership,
+  recordTeamOwnershipMetric,
+  teamOwnershipNeedsLookup,
+  type TeamOwnershipConfig,
+  type TeamOwnershipLookup,
+} from "./team-ownership.js";
 import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
 import { DEFAULT_ISOLATION_ID, type CoreTenant } from "../core/store/types.js";
 // P1-T7：handleAtomicUpdate/Importance 的 soul 拷贝改用 L1SearchResult 原生窄类型
@@ -38,6 +54,7 @@ import type { IStateBackend } from "../core/state/types.js";
 import type { PipelineWorker } from "../services/pipeline-worker.js";
 import { executeMemorySearch } from "../core/tools/memory-search.js";
 import { excludeInvalidatedFor } from "../core/recall/validity-policy.js";
+import type { RecallFactChannelConfig, RecallFusionConfig } from "../core/recall/fusion.js";
 import { executeConversationSearch } from "../core/tools/conversation-search.js";
 import { validateCoreWrite } from "../core/core-memory/guard.js";
 // Task DISC（提议制）：价值锚发现纯函数集（证据重算/weight 公式/去重/宽松解析/prompt 形状）
@@ -54,6 +71,12 @@ import {
 } from "./core-values-discover.js";
 import type { MemoryRecord } from "../core/record/l1-writer.js";
 import { reportRecallMetrics } from "../core/report/metric-tracking-recall.js";
+import {
+  currentInjectionGuardMode,
+  isPluginDeclared,
+  scanInjectedBlocks,
+  type InjectionGuardMode,
+} from "./injection-guard.js";
 
 // ── Zod schemas (validated types + defaults) ──
 import {
@@ -191,6 +214,12 @@ function collectV3Missing(
   // session_id 不再强制：底层 handler 在缺 session 时按 (team,agent,user) 聚合查询。
   return missing;
 }
+
+/**
+ * task-68：做 team 归属校验的 /v3 子路径（写 + 读各一处，票面指定）。
+ * 其余路径不动：off 档本来零查询；enforce 的灰度也只在这两处先开。
+ */
+const TEAM_OWNERSHIP_GATED_PATHS = new Set<string>(["/conversation/add", "/core/read"]);
 
 /** /v3 强 isolation 覆盖的 L0–L3 子路径（去掉前缀后的 path）。 */
 const V3_ALLOWED_SUBPATHS = new Set<string>([
@@ -384,10 +413,43 @@ export interface V2RouterDeps {
    * `/v3/skill/*` is always exempt.
    */
   v3StrictIsolation?: boolean;
+  /**
+   * #红队②（task-60）：数据面归属校验开关。**未注入 ⇒ 完全不走新分支**，
+   * 行为与今天逐位相同（服务级信任：Bearer 通过即认请求声明的 user_id）。
+   * server.ts 注入 resolveAuthBindingConfig()，其缺省值为三项全关。
+   */
+  authBinding?: AuthBindingConfig;
+  /**
+   * #红队②（task-60）：写侧主体存在性查询（entity_teams / entity_users /
+   * entity_agents）。**未注入 ⇒ 写侧校验整体 no-op**。返回 null 表示本次
+   * 查不了（不拦）；某维度 true/false 才参与 unknownPrincipalPolicy 判定。
+   */
+  lookupPrincipal?: (ids: { teamId?: string; agentId: string; userId: string }) => Promise<PrincipalLookup | null>;
+  /**
+   * task-68：team 归属查询（x-tdai-user-key → userId，再查 team→member 关系）。
+   * 由 server.ts 注入 gateway/team-ownership-resolver.ts 的 LRU 版本；
+   * 未注入 ⇒ 归属闸恒 fail-open（只 warn + 计数 metadata_error）。
+   */
+  checkTeamOwnership?: (input: {
+    instanceId: string;
+    teamId: string;
+    userKey: string;
+  }) => Promise<TeamOwnershipLookup>;
   /** Resolved isolation context for the current request (set by dispatch). */
   requestIsolation?: { teamId?: string; userId: string; agentId: string; sessionId: string; taskId?: string };
   /** When isolation could not be resolved AND legacy_compat_mode is off, the missing fields. */
   requestIsolationMissing?: string[];
+
+  /**
+   * D-8（2026-10-31）：注入块处置档位（allow/skip/reject）。未注入 ⇒ 读环境变量
+   * TDB_INJECTION_GUARD_MODE，仍为空则 skip（见 gateway/injection-guard.ts 顶部论证）。
+   */
+  injectionGuardMode?: InjectionGuardMode;
+  /**
+   * D-8：写侧自我声明的来源种类（请求头 x-tdai-source-kind，如
+   * `plugin:tdb-agemem-dsh`）。与注入标记同时命中才允许 reject 档位升级为 400。
+   */
+  requestSourceKind?: string;
 
   /**
    * C2（spec §3.2）：动机方向（valence）LLM 判定用 runner 的 getter（server.ts 惰性构造
@@ -632,6 +694,9 @@ export async function handleV2Route(
   const isV3Extra = !!extraRouteTable && (
     pathname.startsWith("/v3/skill/") ||
     pathname.startsWith("/v3/knowledge/") ||
+    // task-73：core wiki 薄转发（/v3/wiki/list、/v3/wiki/search）走 extraRouteTable，
+    // 不登记前缀会被下面的 V3_ALLOWED_SUBPATHS 封闭清单拦成 404。
+    pathname.startsWith("/v3/wiki/") ||
     pathname.startsWith("/v3/chat-memory/") ||
     pathname.startsWith("/v3/memory-prompt/") ||
     pathname.startsWith("/v3/memory-generation-log/") ||
@@ -740,6 +805,158 @@ export async function handleV2Route(
       }
     }
 
+    // ── #红队②（task-60）：数据面归属校验（缺省全关 ⇒ 逐位现状） ──
+    // 红队实测：单凭 Bearer 可用任意 user_id 读甚至删 L0。但直接要求
+    // user_id = 凭据主体会把现有 DSH 插件 / MemoryProxy（共享密钥 + 三 header
+    // 身份模型）全部打挂，所以做成可配开关，缺省保持服务级信任。
+    const authBinding = deps.authBinding;
+    if (isV3 && !isV3Extra && authBinding) {
+      const headerOne = (k: string): string => {
+        const raw = headers[k] ?? headers[k.toLowerCase()];
+        const v = Array.isArray(raw) ? raw[0] : raw;
+        return typeof v === "string" ? v.trim() : "";
+      };
+      if (authBinding.requireUserBinding) {
+        // ② 凭据主体与请求声明的 user_id 必须一致（body 优先，其次 x-tdai-user-id）
+        const claimedUserId = String(
+          (body as Record<string, unknown> | undefined)?.user_id ?? headerOne("x-tdai-user-id"),
+        ).trim();
+        const binding = decideUserBinding({
+          config: authBinding,
+          requestUserId: claimedUserId,
+          userKey: headerOne("x-tdai-user-key"),
+          userType: headerOne("x-tdai-user-type"),
+          adminBypass: headerOne("x-tdai-admin-bypass"),
+        });
+        if (!binding.allow) {
+          deps.logger.warn(
+            `${TAG} [${pathname}] ${binding.code} uid=${claimedUserId || "<empty>"} req_id=${requestId}`,
+          );
+          sendJson(res, 403, errorEnvelope(403, `${binding.code}: ${binding.reason}`, requestId, { code: binding.code }));
+          return true;
+        }
+        // ④ admin 显式旁路：放行但留痕（审计可查谁绕过）
+        if (binding.bypassed) {
+          deps.logger.warn(
+            `${TAG} [${pathname}] USER_BINDING_ADMIN_BYPASS uid=${claimedUserId || "<empty>"} req_id=${requestId}`,
+          );
+        }
+      }
+      // ③ 未知主体：off ⇒ 不查；warn ⇒ 记日志放行；reject ⇒ 400。
+      // 判据是 method === "POST"，而 /v3 的读端点（conversation/query 等）同样是 POST
+      // ⇒ **读面同样生效**（2026-11-01 隔离实例实测；旧注释「只对写生效、读面不拦」已证伪，
+      // 见 docs/ops/core-auth-binding.md §2 ③）。
+      if (method === "POST" && authBinding.unknownPrincipalPolicy !== "off" && deps.lookupPrincipal) {
+        try {
+          // teamId 不在 resolveIsolation 的返回类型里（运行时才有），与 user_id 同口径现取
+          const lookupTeamId = String(
+            (body as Record<string, unknown> | undefined)?.team_id ?? headerOne("x-tdai-team-id"),
+          ).trim() || undefined;
+          const lookup = await deps.lookupPrincipal({
+            teamId: lookupTeamId,
+            agentId: isoResolved.ctx.agentId,
+            userId: isoResolved.ctx.userId,
+          });
+          const principal = decideUnknownPrincipal(authBinding.unknownPrincipalPolicy, lookup);
+          if (principal.action === "reject") {
+            deps.logger.warn(
+              `${TAG} [${pathname}] ${UNKNOWN_PRINCIPAL} unknown=${principal.unknown.join(",")} req_id=${requestId}`,
+            );
+            sendJson(res, 400, errorEnvelope(
+              400,
+              `${UNKNOWN_PRINCIPAL}: unknown ${principal.unknown.join(", ")} for team=${lookupTeamId ?? ""} agent=${isoResolved.ctx.agentId} user=${isoResolved.ctx.userId}`,
+              requestId,
+              { code: UNKNOWN_PRINCIPAL, unknown: principal.unknown },
+            ));
+            return true;
+          }
+          if (principal.action === "warn") {
+            deps.logger.warn(
+              `${TAG} [${pathname}] ${UNKNOWN_PRINCIPAL} (warn-only) unknown=${principal.unknown.join(",")} req_id=${requestId}`,
+            );
+          }
+        } catch (err) {
+          // 查询失败不拦写（软失败），但必须留痕，避免静默降级
+          deps.logger.warn(
+            `${TAG} [${pathname}] principal lookup failed (soft) req_id=${requestId}: ${(err as Error)?.message ?? String(err)}`,
+          );
+        }
+      }
+    }
+
+    // ── task-68（#137 跟进）：team 归属闸（缺省 off ⇒ 逐位现状）──
+    //
+    // 缺口：collectV3Missing 只校验三 ID **非空**，任意 team_id 都能开自己的
+    // 命名空间。这里补的正是「这个 team 属不属于本调用方」。
+    // 灰度口径（Lead 拍板）：默认 off；warn 只记审计与计数；enforce 才 403。
+    // enforce 用 403 TEAM_NOT_OWNED 而不是 401/404：调用方身份本身可能是合法的，
+    // 缺的是这一对 (team, user) 的归属，语义上属于「禁止」而不是「未认证」。
+    if (isV3 && !isV3Extra && deps.authBinding && TEAM_OWNERSHIP_GATED_PATHS.has(pathname.slice(V3_PREFIX.length))) {
+      // 显式映射，不把 AuthBindingConfig 当 TeamOwnershipConfig 用（字段同名但语义独立）：
+      // 归属判定只需要 mode + whitelist 两项。
+      const teamOwnership: TeamOwnershipConfig = {
+        mode: deps.authBinding.requireTeamOwnership,
+        whitelist: deps.authBinding.teamOwnershipWhitelist ?? [],
+      };
+      if (teamOwnership.mode !== "off") {
+        const headerRaw = (k: string): string => {
+          const raw = headers[k] ?? headers[k.toLowerCase()];
+          const v = Array.isArray(raw) ? raw[0] : raw;
+          return typeof v === "string" ? v.trim() : "";
+        };
+        // team 只从 body / header 取（IsolationContext 里没有 teamId：team 是
+        // 数据面作用域而不是请求身份的一部分）。两者都空 ⇒ teamId="" ⇒
+        // decideTeamOwnership 按 lookup_unavailable 放行，不因缺 team 打死调用方。
+        const teamId = String(
+          (body as Record<string, unknown> | undefined)?.team_id ?? headerRaw("x-tdai-team-id") ?? "",
+        ).trim();
+        const userKey = headerRaw("x-tdai-user-key");
+        const needsLookup = teamOwnershipNeedsLookup({ config: teamOwnership, teamId, userKey });
+        let lookup: TeamOwnershipLookup | null = null;
+        if (needsLookup && deps.checkTeamOwnership) {
+          try {
+            lookup = await deps.checkTeamOwnership({ instanceId: auth.serviceId, teamId, userKey });
+          } catch (err) {
+            // metadata 抖动不挡写：fail-open，但必须留痕（resolver 已 warn-once，这里计数）
+            lookup = null;
+            deps.logger.warn(
+              `${TAG} [${pathname}] team ownership lookup failed (fail-open) req_id=${requestId}: ` +
+                `${(err as Error)?.message ?? String(err)}`,
+            );
+          }
+        }
+        const decision = decideTeamOwnership({ config: teamOwnership, teamId, userKey, lookup });
+        recordTeamOwnershipMetric(decision.metric);
+        const claimedUserId = String(
+          (body as Record<string, unknown> | undefined)?.user_id ?? headerRaw("x-tdai-user-id") ?? "",
+        ).trim() || (lookup?.callerUserId ?? "");
+        const metricLine =
+          `${TAG} [${pathname}] authz.team_ownership.${decision.metric} ` +
+          `mode=${teamOwnership.mode} why=${decision.why} ` +
+          `team=${teamId || "<empty>"} user=${claimedUserId || "<empty>"} ` +
+          `caller=${lookup?.callerUserId ?? "<none>"} req_id=${requestId}`;
+        if (decision.allow) {
+          if (decision.warn) deps.logger.warn(metricLine);
+          else deps.logger.debug?.(metricLine);
+        } else {
+          deps.logger.warn(metricLine);
+          sendJson(res, 403, errorEnvelope(
+            403,
+            `${TEAM_NOT_OWNED}: ${decision.reason}`,
+            requestId,
+            {
+              code: TEAM_NOT_OWNED,
+              team_id: teamId,
+              user_id: claimedUserId,
+              hint: "x-tdai-user-key must belong to an active member of the requested team; " +
+                "or configure memory.auth.teamOwnershipWhitelist for legacy teams",
+            },
+          ));
+          return true;
+        }
+      }
+    }
+
     const depsWithIsolation: V2RouterDeps = {
       ...resolvedDeps,
       // /v3 路径强制覆盖 isolationConfig.enforce，确保 handler 内部一致地走严格分支
@@ -747,6 +964,13 @@ export async function handleV2Route(
         ? { enforce: true, legacyCompatMode: false, legacyPlaceholder: resolvedDeps.isolationConfig?.legacyPlaceholder ?? "" }
         : resolvedDeps.isolationConfig,
       requestIsolation: isoResolved.ctx,
+      // D-8：把写侧自我声明的来源种类带进 handler（注入守卫用它区分「插件自注」
+      // 与「用户引用」，只有两者同时成立才允许 reject 升级为 400）。
+      requestSourceKind: (() => {
+        const raw = headers["x-tdai-source-kind"] ?? headers["x-tdai-source-kind".toUpperCase()];
+        const v = Array.isArray(raw) ? raw[0] : raw;
+        return typeof v === "string" ? v.trim() : undefined;
+      })(),
       // resolveIsolation always returns { ok: true } — missing fields are filled with defaults.
       // requestIsolationMissing is only set when the caller explicitly needs to reject incomplete
       // isolation (e.g. /v3 strict mode), which is handled separately above via collectV3Missing.
@@ -834,6 +1058,41 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
     }
   }
 
+  // ── D-8（2026-10-31）：注入块服务端守卫 ──
+  //
+  // 探针实测：整段 `【agemem 记忆提示】…` 作为 ordinary user 消息 POST 到这里，
+  // 旧实现 200 收下并落 L0 → 之后每次召回都把它当「用户说过的话」再喂回模型
+  // （自我中毒）。识别规则与三档处置见 gateway/injection-guard.ts 顶部注释。
+  // 识别是窄的（行首标记表），处置缺省 skip：只丢命中的那几条，同批真实发言
+  // 照常落库 —— 不用 400，是因为一次 POST 最多 100 条，硬失败会连带丢掉用户数据。
+  const guardMode = deps.injectionGuardMode ?? currentInjectionGuardMode();
+  const injectedFindings = guardMode === "allow" ? [] : scanInjectedBlocks(messages);
+  const pluginDeclared = isPluginDeclared(deps.requestSourceKind);
+  if (guardMode === "reject" && pluginDeclared && injectedFindings.length > 0) {
+    // 只有「标记命中 + 插件自我声明」双证据才升级为硬失败：单凭文本标记就 400，
+    // 会把用户复制粘贴的一句话变成整批写入失败。
+    deps.logger.warn(
+      `${TAG} [D-8] injected block rejected: count=${injectedFindings.length} ` +
+        `plugin_kind=${deps.requestSourceKind} session=${session_id} marker=${injectedFindings[0].marker}`,
+    );
+    return errorEnvelope(
+      400,
+      `Injected memory block must not be persisted as conversation: ${injectedFindings.length} message(s) start with a registered injection marker`,
+      requestId,
+      { code: "INJECTED_BLOCK", count: injectedFindings.length, markers: [...new Set(injectedFindings.map((f) => f.marker))] },
+    );
+  }
+  if (injectedFindings.length > 0) {
+    // journal 记一次（整批一条，不逐条刷屏）：谁在自注、注入几条、怎么处置的。
+    deps.logger.warn(
+      `${TAG} [D-8] injected block(s) detected: count=${injectedFindings.length} mode=${guardMode} ` +
+        `plugin_kind=${deps.requestSourceKind ?? "<none>"} session=${session_id} ` +
+        `marker=${injectedFindings[0].marker} preview="${injectedFindings[0].preview}"`,
+    );
+  }
+  const injectedIndexes = new Set(injectedFindings.map((f) => f.index));
+  let injectedSkipped = 0;
+
   const embedding = deps.getEmbedding();
   const acceptedIds: string[] = [];
   const acceptedRecords: L0Record[] = [];
@@ -846,6 +1105,11 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   const pendingL0: L0Record[] = [];
   const seenInBatch = new Set<string>();
   for (const [index, msg] of messages.entries()) {
+    // D-8：命中的注入块不进 L0（也不进 embedBatch —— 省一次向量调用）。
+    if (injectedIndexes.has(index)) {
+      injectedSkipped++;
+      continue;
+    }
     // #121 8.1：不截断 UUID——12 hex 只剩 48 bit 命名空间，生日界下约 2e7 条即有一半概率
     // 碰撞，1e8 条量级预期撞掉约 18 条（upsert 静默覆盖，取证链断号）。上游保留全 32 hex。
     const id = `msg-${randomUUID().replace(/-/g, "")}`;
@@ -928,8 +1192,10 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   // Notify pipeline: trigger async L1 extraction (service mode).
   // Each role=user message counts as one conversation round for threshold/timer logic.
   // teamId/agentId 透传给 captureAtomic 决定 hash slot 与锁粒度。
+  // D-8：rounds 只数**真正落库**的 user 消息 —— 被守卫丢弃的注入块不算一轮对话，
+  // 否则「只收到注入块」的批次也会触发一次 L1 提取（零真实语料的空跑）。
   if (deps.notifyPipeline) {
-    const rounds = messages.filter((m) => m.role === "user").length;
+    const rounds = pendingL0.filter((r) => r.role === "user").length;
     if (rounds > 0) {
       try {
         await deps.notifyPipeline(auth.serviceId, session_id, rounds, iso?.teamId, iso?.agentId);
@@ -982,8 +1248,22 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
     deps.quotaManager.reportMemoryAdded(auth.serviceId, acceptedIds.length).catch(() => {});
   }
 
-  return successEnvelope<ConversationAddData>(
-    { accepted_ids: acceptedIds, accepted_versions: acceptedIds.map(() => "v1"), total_count: acceptedIds.length },
+  if (injectedSkipped > 0) {
+    deps.logger.info(
+      `${TAG} [D-8] ${session_id}: ${injectedSkipped} injected block(s) skipped, ` +
+        `${acceptedIds.length} message(s) accepted (mode=${guardMode})`,
+    );
+  }
+
+  // D-8：`skipped` 是**新增可选字段**（generated/types.ts 是 Kubb 生成禁手改，
+  // 这里用交叉类型补上，响应契约对旧调用方向后兼容：不读它 = 逐位现状）。
+  return successEnvelope<ConversationAddData & { skipped?: number }>(
+    {
+      accepted_ids: acceptedIds,
+      accepted_versions: acceptedIds.map(() => "v1"),
+      total_count: acceptedIds.length,
+      ...(injectedSkipped > 0 ? { skipped: injectedSkipped } : {}),
+    },
     requestId,
   );
 }
@@ -1700,6 +1980,12 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
       (deps as { config?: { memory?: { recall?: { validity?: { mode?: "hard" | "soft" } } } } }).config?.memory?.recall?.validity?.mode,
       (deps as { config?: { memory?: { recall?: { excludeInvalidated?: boolean } } } }).config?.memory?.recall?.excludeInvalidated,
     ),
+    // #151/#148/#150：HTTP 路与钩子路**同配置源**——缺这三行，/v3/atomic/search 会静默
+    // 忽略 recall.fusion（normalized 档）、recall.validity.softPenalty 与 recall.factChannel，
+    // 同一条生产配置在两条召回路上给出不同排序（审计 §4.1 #151「工具路无 normalized」）。
+    fusion: (deps as { config?: { memory?: { recall?: { fusion?: RecallFusionConfig } } } }).config?.memory?.recall?.fusion,
+    validitySoftPenalty: (deps as { config?: { memory?: { recall?: { validity?: { softPenalty?: number } } } } }).config?.memory?.recall?.validity?.softPenalty,
+    factChannel: (deps as { config?: { memory?: { recall?: { factChannel?: RecallFactChannelConfig } } } }).config?.memory?.recall?.factChannel,
     // A5：time_point 时间旅行（handleRecall 同款语义）
     validityNow,
     // GROW-EVO P3 R10（§3.2）：情感显著度权重（cfg 透传——缺省 0 = 恒等）
@@ -1884,6 +2170,11 @@ async function handleMemoryMood(_body: unknown, _auth: V2AuthContext, requestId:
 }
 
 
+// task-100：embedding 进程内缓存是**累计**计数器（MemoryCore/src/core/store/embedding.ts:558
+// getCacheStats），指标要的是增量 ⇒ 这里保留上次快照，只上报 delta。首轮快照为 undefined
+// ⇒ 不报（不把「进程启动至今」的累计值当成一次召回的量）。
+let lastEmbedCacheSnapshot: { hits: number; misses: number } | undefined;
+
 async function handleRecall(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const gwCfg = (deps as { config?: { memory?: import("../config.js").MemoryTdaiConfig } }).config;
   const v3Recall = gwCfg?.memory?.recall?.v3Recall;
@@ -1966,6 +2257,18 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
 
   const tStart = performance.now();
   const timeoutMs = v3Recall.timeoutMs ?? 5000;
+  // ── task-100（预算内降级，2026-11-01）──────────────────────────────────────
+  // 真日志读数（task-93，n=144）：recall 端到端 P50=4260ms / P90=17348ms，l1 占 99.5%，
+  // 时间全花在远端 query embedding（单次 282ms–19.3s）。旧行为下只有两种结局：等到
+  // timeoutMs 拿完整结果，或 504 拿空。这里给向量腿一个**绝对**截止时刻：tStart +
+  // l1BudgetMs（scene/L2/expand 已花的自然被扣掉），超了就只用已算完的 FTS 腿继续组装
+  // ——块照样回，只是少召回，并在 meta 上标 degraded。
+  // l1BudgetMs=0 ⇒ 关（逐位旧行为）；l1Fallback='none' ⇒ 也不降级（只观测不改变行为）。
+  const l1BudgetMs = v3Recall.l1BudgetMs ?? 2000;
+  const l1Fallback = v3Recall.l1Fallback ?? "fts";
+  const l1Budget = l1BudgetMs > 0 && l1Fallback === "fts"
+    ? { deadlineAt: tStart + l1BudgetMs, fallback: "fts" as const }
+    : undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const TIMEOUT_SENTINEL = "__recall_timeout__";
 
@@ -2057,6 +2360,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       isolationFilter: searchFilter,
       validityNow,
       capabilities,
+      l1Budget,
     }).finally(() => {
       if (timer) clearTimeout(timer);
     }),
@@ -2070,6 +2374,34 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
   }
 
   const recallLatencyMs = performance.now() - tStart;
+  // ── task-100：降级留痕 ────────────────────────────────────────────────────
+  // degraded='fts' ⇒ 本轮只用了 FTS 腿（少召回但块非空）；degraded=null ⇒ 全量。
+  const degraded: "fts" | null = outcome.searchTiming?.degraded ?? null;
+  const l1Ms = Math.round(outcome.perfMs?.l1 ?? 0);
+  const ftsMs = Math.round(outcome.searchTiming?.ftsMs ?? 0);
+  if (degraded === "fts") {
+    deps.logger.warn(
+      `${TAG} [/v3/recall] l1 degraded to fts (budget=${l1BudgetMs}ms, l1Ms=${l1Ms}ms, ftsMs=${ftsMs}ms, ` +
+      `ftsHits=${outcome.searchTiming?.ftsHits ?? 0}, budgetHit=${outcome.searchTiming?.budgetHit === true}, ` +
+      `latency=${Math.round(recallLatencyMs)}ms, instance=${auth.serviceId})`,
+    );
+  }
+  // embedding 缓存增量（每请求 delta，不是累计值）
+  let embedCacheDelta: { hits: number; misses: number } | undefined;
+  try {
+    const emb = deps.getEmbedding();
+    const withStats = emb as unknown as { getCacheStats?: () => { hits: number; misses: number } };
+    const stats = typeof withStats?.getCacheStats === "function" ? withStats.getCacheStats() : undefined;
+    if (stats && lastEmbedCacheSnapshot) {
+      embedCacheDelta = {
+        hits: Math.max(0, stats.hits - lastEmbedCacheSnapshot.hits),
+        misses: Math.max(0, stats.misses - lastEmbedCacheSnapshot.misses),
+      };
+    }
+    if (stats) lastEmbedCacheSnapshot = { hits: stats.hits, misses: stats.misses };
+  } catch {
+    // 缓存统计是观测面，取不到就不报（绝不影响召回返回）
+  }
   // 非侵入式上报召回指标（与 handleAtomicSearch 同款，静默失败，绝不影响业务返回）
   try {
     reportRecallMetrics({
@@ -2078,6 +2410,10 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       recallStrategy: outcome.effectiveStrategy === "fts" ? "keyword" : outcome.effectiveStrategy,
       recallLatencyMs,
       hasError: false,
+      // task-100 新增（可选字段：老调用方不传即不报，逐位旧行为）
+      degraded,
+      l1Ms,
+      embedCache: embedCacheDelta,
     });
   } catch {
     // 静默失败
@@ -2085,7 +2421,12 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
 
   return successEnvelope<{
     block: string;
-    meta: { conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean; soulVersion?: string; mood?: string; perfMs: RecallJournalPerfMs };
+    meta: {
+      conclusionCount: number; experienceCount: number; sessionReused: boolean; layered: boolean;
+      soulVersion?: string; mood?: string; perfMs: RecallJournalPerfMs;
+      // task-100（新增，老字段一个不动）：向量腿降级标记与分段耗时
+      degraded: "fts" | null; l1Ms: number; ftsMs: number;
+    };
   }>(
     {
       block: outcome.block ?? "",
@@ -2095,6 +2436,10 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
         sessionReused: outcome.sessionReused,
         layered: outcome.layered,
         soulVersion: outcome.soulVersion,
+        // task-100：降级标记 + L1 实际耗时 + FTS 腿耗时（毫秒整数）
+        degraded,
+        l1Ms,
+        ftsMs,
         // S-FEEL-1（M1）：enabled=false/样本不足时 outcome.mood=undefined → 条件展开不出键（逐位现状）。
         ...(outcome.mood !== undefined ? { mood: outcome.mood } : {}),
         // #61（2026-10-18）：分段计时观测（毫秒）——超时黑洞定位（journal perfMs 同源）。

@@ -82,7 +82,10 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   // 该计数作为极端兜底（防止异常情况下无限循环），用户手动调整筛选会随组件重挂载而复位。
   const l0AutoExpandCountRef = useRef(0);
 
-  const fetchBlocks = useCallback(async () => {
+  // options.keepList: 静默重拉（手动刷新用）——保留旧列表直到新数据到达，不闪空不骨架屏；
+  // 缺省 false = 原语义（先清列表再请求）。切 team 时仍走 teamChanged 分支的静默逻辑。
+  const fetchBlocks = useCallback(async (options: { keepList?: boolean } = {}) => {
+    const keepList = options.keepList === true;
     if (!activeTeamId) {
       setBlocks([]);
       setBlocksLoading(false);
@@ -99,7 +102,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     // 切 tab / agent 仍清空 + loading。
     const teamChanged = prevTeamIdRef.current !== activeTeamId;
     prevTeamIdRef.current = activeTeamId;
-    if (!teamChanged) {
+    if (!teamChanged && !keepList) {
       setBlocksLoading(true);
       // 立即清空旧数据 —— 否则切 tab 时会先看到上一个 tab 的列表，
       // 新数据到了才突然替换，视觉上就是"闪一下"。
@@ -130,13 +133,27 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
         // 避免选中一个块就顺带把其余 3 层各 ping 一次（纯预请求用户还没看的东西）。
         layerCounts: buildInitialLayerCounts(b.layer_counts),
       }));
-      setBlocks(mapped);
+      if (keepList) {
+        // 静默刷新：块还在的，保留旧块上「已验证的层计数 / 已加载的层内容 / L0 到底标记」，
+        // 只更新列表元数据（标题、绑定数等）。否则后端 layer_counts 不可靠会把徽章打回未知。
+        setBlocks((prev) =>
+          mapped.map((b) => {
+            const old = prev.find((p) => p.id === b.id);
+            return old
+              ? { ...b, layerCounts: old.layerCounts, layers: old.layers, l0Ended: old.l0Ended }
+              : b;
+          }),
+        );
+      } else {
+        setBlocks(mapped);
+      }
     } catch (e: unknown) {
       if (seq !== fetchSeqRef.current) return;
       tea.notify.error(
         (e instanceof Error ? e.message : String(e)) || t('memory.notify.loadFailed'),
       );
-      setBlocks([]);
+      // 静默刷新失败保留旧列表（否则刷新一失败页面就空了）
+      if (!keepList) setBlocks([]);
     } finally {
       if (seq === fetchSeqRef.current) setBlocksLoading(false);
     }
@@ -149,6 +166,9 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   // 之前直接 `useEffect(() => fetchBlocks(), [fetchBlocks])` 会因 fetchBlocks 引用变化
   // （agentFilter 等依赖异步同步）触发多次，导致同一个接口被反复请求。
   const fetchKeyRef = useRef<string>('');
+  // 手动刷新计数器。列表/详情/层计数三条 effect 都把它放进依赖：点刷新时
+  // 即使筛选参数没变（key 相同）也能真正重发请求。（#124-B2）
+  const [refreshNonce, setRefreshNonce] = useState(0);
   useEffect(() => {
     // 只有 fixed tab 才按 agentFilter 拉取；team tab 的数据源（teamAssets）与选中
     // agent 无关。若把 agentFilter 纳入 team 的 key，ownedTeamAgents 异步加载完后
@@ -162,6 +182,23 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     fetchKeyRef.current = key;
     void fetchBlocks();
   }, [activeTeamId, scopeTab, agentFilter, fetchBlocks]);
+
+  /**
+   * 手动刷新：其它地方只有筛选/翻页会触发请求，用户看不到「数据变了但界面不变」
+   * 之外的补救手段（例如别人刚改了资产、后台抽取出新的 L1）。
+   *
+   * 刷新 = 静默重拉：保留旧列表与当前选中、不清 layerCounts（否则会发一轮必然落空的
+   * 层计数请求；列表清空还会让「选中块不在列表」的 effect 把选中清掉）。列表回来后
+   * 若选中块确实已被删除，由下方「选中块不在列表 → 清空选中」的 effect 回落。
+   *
+   * 注意必须清掉 fetchKeyRef：key 由筛选参数拼成，刷新时参数没变，
+   * 不清就会命中上面的去重直接 return，界面毫无反应。
+   */
+  const handleRefresh = useCallback(() => {
+    fetchKeyRef.current = '';
+    setRefreshNonce((n) => n + 1);
+    void fetchBlocks({ keepList: true });
+  }, [fetchBlocks]);
 
   // 列表变化后，仅当当前选中的记忆块已不在列表中时清空选中。
   // 进入页面不自动选中第一个（与 skill 行为保持一致），由用户点击后再加载详情。
@@ -212,7 +249,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
           // 单层计数失败不阻断其他层，静默忽略
         });
     });
-  }, [selected?.id]);
+  }, [selected?.id, refreshNonce]);
 
   // 切换记忆块时，时间筛选器重置为默认「前一天 ~ 当前」（业务确认：每次打开都重置）
   useEffect(() => {
@@ -296,7 +333,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, layer, layerPage, pageSize, timeRange.start, timeRange.end, t]);
+  }, [selected?.id, layer, layerPage, pageSize, timeRange.start, timeRange.end, t, refreshNonce]);
 
   const handleLayerPageChange = useCallback(
     (nextPage: number) => {
@@ -615,6 +652,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     setScopeTab,
     agentFilter,
     setAgentFilter,
+    refreshNonce,
     // computed
     selected,
     layerPage,
@@ -623,6 +661,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     filtered,
     // handlers
     fetchBlocks,
+    handleRefresh,
     handleLayerPageChange,
     handleL0LoadMore,
     handleLayerItemLoad,

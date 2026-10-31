@@ -54,12 +54,18 @@ memory:
   #    见 docs/optimization-results.md §8 排名表）。
   #  · supersession.enabled=true：dedup 的 update/merge 决策把旧行从"归档"改为
   #    "valid_end 只标记"（零删除红线，历史可追溯）。
-  #    LME90 实测 turnCov -10.9pp 显著负（gold 含旧值 turn，bench 语料无失效语义）；
-  #    全开档复核：判对与基线打平、cov 更差 → **保持关**，待事实级粒度（后续票）+
-  #    生产语料验证后再议。
+  #    2026-10-31 翻转裁决（#153）：长会话 bench（docs/long-session-bench.md 三臂，
+  #    生产同一份 computeSupersessions）B 臂=开：旧值注入率 0% / 当前命中 100% /
+  #    重复值 1.0；A 臂=关：33.3% / 100% / 7.67 ⇒ 不失效旧行是长会话旧值污染的根因。
+  #    误删护栏：cardinalityGate=true（缺省）+ cardinalityDefault="single"——只有单值
+  #    谓词失效，多值/模态一律 additive（#136 属性契约）。
+  #    残留风险（回滚动作见 docs/ops/production-profile.md）：LME90 上 turnCov -10.9pp
+  #    （bench 语料无失效语义）；"问历史旧值"类查询靠 validity=soft 降权保留而非硬丢；
+  #    回滚 = 本键置 false（旧行不再标 valid_end，已标行不回滚）。
   write:
     factKey:
-      enabled: false
+      enabled: false   # 缺省关：#149 LME90 A vs B 判对 −2.2pp（ns）、cov −4.6pp；等 #168 长会话读数再议。
+                       # 开启需同时开 l1_fact_vec 能力位（tcvdb 不支持 ⇒ 该后端开启只是空查）。
       # #137（2026-10-27）：键形态。
       #  replace（缺省）= W1 旧形态：原文 + 事实拼同一条 embedding 键。#147 全开档实测
       #    键替换无净收益（判对 −2.2pp ns），且稀释「同实体不同时间」判别信号；
@@ -72,7 +78,7 @@ memory:
       includeTriples: false # #137：三元组展开成短语一起进键
       onlyForTypes: []      # #137：只对这些 type 建键（空 = 全类型；例 ["work_fact"]）
     supersession:
-      enabled: false
+      enabled: true
       # #136 属性契约（2026-10-27）：只有单值属性（同一时刻只有一个值）允许失效。
       # cardinalityGate=true（缺省）= dedup update/merge 时先判谓词基数，多值/模态
       # （is considering / wants to / likes / 想 / 考虑…）一律 additive，不失效旧行；
@@ -127,7 +133,11 @@ memory:
 
   recall:
     enabled: true
-    maxResults: 5
+    # 2026-10-31（#135 §24 缺省对齐）：5→10。同语料 90 题 k=10 判对 60/90 vs k=5 56/90
+    # （+4.5pp，turn 级覆盖收益：k=5 时 hits 均值 2.88、行预算从未用满）；检索面 sessionCov
+    # 在 k=5 已饱和 ⇒ 收益只在 turn 级。代价：注入块均值 blockChars 3277→5413（+65%，
+    # 仍 <14000 上限）、时延与 token 上升；前 5 位排序反而略差（多出的行挤占 top-5）。
+    maxResults: 10
     scoreThreshold: 0.3
     # ── P0-2（issue #2 打分刻度错配，2026-10-13）──
     # native hybrid（TCVDB 服务端 RRF rerank k=60）返回 rank-only 融合分：单通道 top1≈
@@ -159,6 +169,13 @@ memory:
       # candidateK: 32     # 通道上游候选上限（缺省 = recall.candidateK）
       # minScore: 0.3      # 通道余弦下限（缺省回落 scoreThreshold）
       # onlyForTypes: ["work_fact"]  # 只对某类记录生效（缺省空 = 全类型）
+    # ── #135 R2 / #137：多通道加权融合（缺省 rrf = 逐位现状；2026-10-31 显式落盘防缺省翻转）──
+    # §17.9：normalized 在深池 α=0 档判对 −2.22pp ns ⇒ 维持 rrf；权重字段仅非 rrf 档消费。
+    fusion:
+      mode: "rrf"
+    # ── 注入块包装口径（#172-②，代码缺省 calibrated；显式钉 = 防漂移，不是新行为）──
+    # 回滚 = 置 legacy（bench --inject-wrapper legacy 同口径）。
+    injectWrapper: calibrated
     timeoutMs: 5000
     # ── 结构感知召回九通道（DS-RECALL-STRUCTURE-AWARE-001）→ 2026-09-12 实测关断 ──
     # 关断裁决（结构信号 on/off A/B，runs/2026-09-12T12-08-44 vs 12-11-49，同语料 1168 同 sha 92c4c8bc）：
@@ -206,9 +223,28 @@ memory:
     excludeInvalidated: true
     # #136（W2 软失效）：效期策略。hard = 失效/未来生效行直接排除（逐位旧行为）；
     # soft = 失效行 relevance 降权保留（仅"问现在/最新 + 内容相关的更新行"才硬丢）。
-    # 缺省 hard（零行为变化）；实证见 docs/optimization-results.md §11。
+    # 2026-10-31 翻转（WP1b 代码缺省已 hard→soft，本模板跟随，三方一致）：
+    # §11 同 140 行失效下 overall cov −10.6pp→−4.1pp、temporal-reasoning −13.3pp→0.0pp。
+    # softPenalty 显式钉 0.5（= 代码缺省，只想让审计能一眼看到刻度；不是新调值）。
     validity:
-      mode: "hard"
+      mode: "soft"
+      softPenalty: 0.5
+      # #148：soft 档下「查询问当下 + 池里有取代它的更新行」是否硬丢（缺省 true = #136 口径）。
+      hardOnPresentIntent: true
+    # ── #135 R3：查询时间感知（诞生于 bench，缺省关；2026-10-31 显式落盘防缺省翻转）──
+    # 【evidence: measured（§16：rerank-off 基线上 +0.37pp，n.s. ⇒ 不翻转）】
+    presentTemporal:
+      enabled: false
+      boost: 0.08
+      recentDays: 30
+    # ── #169：证据包邻接扩窗（缺省关 = 等读数，不是否决）──
+    # 【evidence: pending（#169：scripts/run-r169-evidence-pack.sh 四档读数出来再翻转）】
+    evidencePack:
+      enabled: false
+      adjacent: 1
+      windowMinutes: 30
+      maxExtraLines: 6
+      maxSessionRows: 400
     emotionSalienceWeight: 0 # GROW-EVO P3 R10 实验轨：进预注册 A/B 队列，未过 A/B 不得置正
     conclusionLayer:
       enabled: true            # I① 结论层总开关（false = 结论层整体退出，输出与 R7 前基线逐位一致）
@@ -327,6 +363,9 @@ memory:
       # 钉子分两类（§21.3）：①增益型——只有实测更优才钉；②防漂移型——与代码缺省同值，钉住是为了防缺省被
       # 悄悄改回（改回会把已验证的档位静默降级），行尾必须写明「防漂移」。两类都要在台账里有证据行。
       candidates: 32   # 防漂移型：池扩到 32 是「kept≥4 从 38/90 → 80/90」的前提；缺省同为 32，钉住防深池被收回
+      # #135 R4 / #144：rerank | filter（filter 尺子 = floor | margin | quantile）。filter 档有 §19.3
+      # 读数（quantile+keepRatio 0.5 → turnCov 81.1%/81.6%）但未定档 ⇒ 显式钉 rerank = 代码缺省。
+      mode: "rerank"
       # minScore 不在此钉：#145 起缺省按 provider 刻度取值（local logit −10.5 / siliconflow·dashscope
       # 0..1 刻度 sigmoid(−10.5)≈2.75e-5）。钉死 −10.5 在概率刻度 provider 上等于永不过滤 → 换 provider 即失效。
       local:

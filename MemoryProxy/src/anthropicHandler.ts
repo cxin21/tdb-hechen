@@ -858,6 +858,24 @@ export async function handleAnthropicMessages(
       }
 
       if (initResult.intercepted && initResult.response) {
+        // #175 item5:proxy 伪造的 session-init form 帧在**这里就 return 了**,不会经
+        // 过下游的 `createSseThinkingFixStream` / non-stream thinking patch。因此这类
+        // 帧必须自带合法的 `thinking` 字段(空串也算合法 string)+ signature,
+        // 见 `session/dsh/form.ts` 的 `buildDshThinkingBlock`。
+        //
+        // 票面提到的 `STREAM_CLOSED` 在本仓无代码证据(全仓无该字符串,也没有任何
+        // "补流尾"的既有实现);dsh v0.2 的帧现在由 dsh/form.ts 自己发满六事件
+        // (message_start…message_stop),不存在截断。这里只加一条**协议一致性**断言,
+        // 把「OpenAI 帧发给 anthropic 客户端」这类静默错配变成可见日志。
+        if (agentSource === "dsh") {
+          const ct = (initResult.response.headers.get("content-type") ?? "").toLowerCase();
+          const want = isStream ? "text/event-stream" : "application/json";
+          if (!ct.includes(want)) {
+            console.warn(
+              `[session-init:dsh] form frame content-type="${ct}" but request stream=${isStream} (expected ${want})`,
+            );
+          }
+        }
         return initResult.response;
       }
 

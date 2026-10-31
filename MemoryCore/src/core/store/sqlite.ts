@@ -60,6 +60,7 @@ import type {
 } from "./types.js";
 import { DEFAULT_ISOLATION_ID, normalizeCoreTenant, rowMatchesIsolation, type CoreTenant, type PromiseTransitionSource, type SoulPromiseEvent, type SoulPromiseRecord, type SoulPromiseStatus } from "./types.js";
 import { buildIsolationWhere } from "./isolation.js";
+import { normalizeTaskSourceType } from "./task-source-type.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
 import { canTransitionPromise } from "../hooks/soul-promise.js";
@@ -3364,6 +3365,79 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /**
+   * #92 M1（P0）：门②专用查询——该租户全量 rejected 提案内容，不分页不截断。
+   *
+   * 为什么必须专用：listPendingCore 是面板展示查询（ORDER BY created_at DESC LIMIT 200），
+   * 生产 rejected=385 ⇒ 最早的 185 条人工拒绝对门②不可见。门②语义是「任一 rejected 同主题即拦」，
+   * 看不见的拒绝 = 漏拦 = 早期被否掉的人格提案被自动采纳（人格污染，不可自动修复）。
+   * 故按 (slot,tenant) 单列查询，零 LIMIT；只投影 content（门②只需要文本做相似度）。
+   */
+  listRejectedSelfIdentityPending(tenant?: CoreTenant): Array<{ pending_id: string; content: string; created_at: string }> {
+    try {
+      const teamId = tenant?.teamId || "default";
+      const userId = tenant?.userId || "default";
+      const agentId = tenant?.agentId || "default";
+      return (this.db.prepare(
+        "SELECT pending_id, content, created_at FROM core_pending WHERE slot = 'self_identity' AND state = 'rejected' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC",
+      ).all(teamId, userId, agentId) as unknown as Array<{ pending_id: string; content: string; created_at: string }>) ?? [];
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [core_pending] listRejectedSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
+   * #92 M2（P0）：自动采纳事务化落库——槽写 + pending 落账同事务，任一失败整体回滚。
+   *
+   * 旧链（gate 内两段：upsertCore → decidePendingCoreAuto）在落账失败时只 warn ⇒
+   * 人格槽已改但无 auto_adopt 审计快照（无 prev 快照 = 回滚不可达、审计断链）。
+   * 这里合成单事务：decide 失败（行已非 pending/租户不符/写库抛错）→ 回滚槽，槽与审计同存同无。
+   *
+   * 幂等零 version 空转保持：writeSlot=false（合并结果与现行槽相同）→ 不写槽，仅落账，
+   * post_slot_version 取现行 version。
+   *
+   * SAVEPOINT 而非 BEGIN：可安全嵌套（未来若被外层事务包裹不会误回滚外层）；无外层时
+   * SAVEPOINT/RELEASE 自身即一个完整事务。
+   */
+  commitAutoAdoptCore(
+    pendingId: string,
+    tenant: CoreTenant | undefined,
+    opts: {
+      slot: string;
+      content: string;
+      source: string;
+      writeSlot?: boolean;
+      audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } };
+    },
+  ): boolean {
+    const t = normalizeCoreTenant(tenant);
+    this.db.exec("SAVEPOINT sp_auto_adopt_commit");
+    try {
+      if (opts.writeSlot !== false) {
+        const written = this.upsertCore(opts.slot, opts.content, opts.source, tenant);
+        if (!written) throw new Error("upsertCore failed");
+      }
+      const cur = this.db.prepare(
+        "SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+      ).get(opts.slot, t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
+      const postVersion = cur?.version ?? 0;
+      // post_slot_version 由库内读回（同事务内），不接受调用方传入 —— 防两段路径的版本竞态。
+      const decided = this.decidePendingCoreAuto(pendingId, tenant, { ...(opts.audit ?? {}), post_slot_version: postVersion });
+      if (!decided) throw new Error("decidePendingCoreAuto rejected (not pending / tenant mismatch)");
+      this.db.exec("RELEASE sp_auto_adopt_commit");
+      return true;
+    } catch (err) {
+      // 审查先例（:2676 / :2908）：COMMIT 失败引擎可能已自动回滚，ROLLBACK 自兜底不掩蔽原始错误。
+      try { this.db.exec("ROLLBACK TO sp_auto_adopt_commit"); } catch { /* 保存点已不存在 */ }
+      try { this.db.exec("RELEASE sp_auto_adopt_commit"); } catch { /* 已释放 */ }
+      this.logger?.warn?.(
+        `${TAG} [core_pending] commitAutoAdoptCore rolled back pid=${pendingId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
+
   /** 审计回滚：state='auto_adopted' → 'rejected'；版本守卫（现行槽 version ≠ post_slot_version → 拒绝并提示手工处理）；
    *  prev_slot_existed=false → 删除采纳时创建的槽行，否则恢复 prev_slot_content（走 upsertCore 单一写路径 bump version）。零删除（recurrence/attrs 证据全留）。 */
   rollbackAutoAdoptedPending(pendingId: string, tenant?: CoreTenant): { restored: boolean; reason?: string } {
@@ -6021,7 +6095,8 @@ export class VectorStore implements IMemoryStore {
       creator_user_id: String(row.creator_user_id ?? ""),
       title: String(row.title ?? "") || undefined,
       description: String(row.description ?? "") || undefined,
-      source_type: (row.source_type as TaskEntity["source_type"]) || "manual",
+      // #127：库里的历史 github/tapd 读成 external；列为 NOT NULL DEFAULT 'manual'，空值仍退 manual。
+      source_type: row.source_type == null || row.source_type === "" ? "manual" : normalizeTaskSourceType(row.source_type),
       source_url: String(row.source_url ?? "") || undefined,
       agent_ids: this.parseArray(row.agent_ids_json),
       user_ids: this.parseArray(row.user_ids_json),
@@ -6131,8 +6206,10 @@ export class VectorStore implements IMemoryStore {
   createTask(input: Omit<TaskEntity, "created_at" | "updated_at" | "source_type" | "agent_ids" | "user_ids"> & { task_id?: string; source_type?: TaskEntity["source_type"]; agent_ids?: string[]; user_ids?: string[] }): TaskEntity {
     const now = new Date().toISOString();
     const id = input.task_id || this.entityId("task");
-    this.db.prepare("INSERT INTO entity_tasks (task_id, team_id, creator_user_id, title, description, source_type, source_url, status, auto_assign_floating_assets, risk_level, agent_ids_json, user_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.team_id, input.creator_user_id, input.title ?? "", input.description ?? "", input.source_type ?? "manual", input.source_url ?? "", "pending", 0, "low", this.jsonArray(input.agent_ids), this.jsonArray(input.user_ids), now, now);
-    return this.getTask(id) ?? { task_id: id, team_id: input.team_id, creator_user_id: input.creator_user_id, source_type: input.source_type ?? "manual", agent_ids: input.agent_ids ?? [], user_ids: input.user_ids ?? [], created_at: now, updated_at: now };
+    // #127：写边界归一，库里只会出现 manual|external|other（调用方误传历史值也不会落四值）。
+    const sourceType = input.source_type == null ? "manual" : normalizeTaskSourceType(input.source_type);
+    this.db.prepare("INSERT INTO entity_tasks (task_id, team_id, creator_user_id, title, description, source_type, source_url, status, auto_assign_floating_assets, risk_level, agent_ids_json, user_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.team_id, input.creator_user_id, input.title ?? "", input.description ?? "", sourceType, input.source_url ?? "", "pending", 0, "low", this.jsonArray(input.agent_ids), this.jsonArray(input.user_ids), now, now);
+    return this.getTask(id) ?? { task_id: id, team_id: input.team_id, creator_user_id: input.creator_user_id, source_type: sourceType, agent_ids: input.agent_ids ?? [], user_ids: input.user_ids ?? [], created_at: now, updated_at: now };
   }
 
   getTask(taskId: string): TaskEntity | null {
@@ -6143,7 +6220,13 @@ export class VectorStore implements IMemoryStore {
   updateTask(taskId: string, patch: Partial<Pick<TaskEntity, "title" | "description" | "source_type" | "source_url" | "agent_ids" | "user_ids">>): TaskEntity | null {
     const current = this.getTask(taskId);
     if (!current) return null;
-    const next = { ...current, ...patch, updated_at: new Date().toISOString() };
+    const next = {
+      ...current,
+      ...patch,
+      // #127：写边界归一（历史值不会回写进库）。
+      source_type: patch.source_type == null ? current.source_type : normalizeTaskSourceType(patch.source_type),
+      updated_at: new Date().toISOString(),
+    };
     this.db.prepare("UPDATE entity_tasks SET title = ?, description = ?, source_type = ?, source_url = ?, agent_ids_json = ?, user_ids_json = ?, updated_at = ? WHERE task_id = ?").run(next.title ?? "", next.description ?? "", next.source_type, next.source_url ?? "", this.jsonArray(next.agent_ids), this.jsonArray(next.user_ids), next.updated_at, taskId);
     return this.getTask(taskId);
   }
@@ -6689,6 +6772,8 @@ export class VectorStore implements IMemoryStore {
       ftsSearch: this.ftsAvailable,
       nativeHybridSearch: false,
       sparseVectors: false,
+      // #152 ①：本地 sqlite 实现 upsertL1FactVector / searchL1FactVector（l1_fact_vec 表）
+      l1FactVec: true,
     };
   }
 

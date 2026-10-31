@@ -11,10 +11,24 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_lib.sh
+# ── 参数（必须在 source _lib 之前解析：--render-only 要能在无 docker 的机器上跑）──
+# --render-only / --dry-run：只渲染 gateway 配置并打印，不起容器、不碰网络。
+#   这是「配置真源可验证」的出口：CI 与排障都用它核对 base.yaml 渲染结果。
+RENDER_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --render-only|--dry-run) RENDER_ONLY=1 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "[error] 未知参数：${arg}（支持 --render-only / --dry-run / --help）" >&2; exit 1 ;;
+  esac
+done
+export TDAI_SKIP_DOCKER_PROBE="$RENDER_ONLY"
+
 source "$SCRIPT_DIR/_lib.sh"
 
 load_env
 require_vars MEMORY_CORE_IMAGE MEMORY_CORE_PORT MEMORY_CORE_VOLUME
+
 
 # ── Gateway 内部管理凭据 ─────────────────────────────────────────
 # 用 ${VAR-default}（不是 :-default）：允许 .env 里显式设为空字符串来关闭 Bearer gate。
@@ -44,90 +58,99 @@ fi
 CONTAINER=tdai-memory-core
 NETWORK=tdai-memory-stack
 
-# 创建共享网络（幂等）
-if ! $DOCKER network inspect "$NETWORK" >/dev/null 2>&1; then
-  info "创建 docker 网络 $NETWORK"
-  $DOCKER network create "$NETWORK" >/dev/null
+# 网络与镜像准备。--render-only 分支要能脱 docker 运行（CI/排障），故整段受 RENDER_ONLY 门控。
+if [[ "$RENDER_ONLY" -eq 0 ]]; then
+  # 创建共享网络（幂等）
+  if ! $DOCKER network inspect "$NETWORK" >/dev/null 2>&1; then
+    info "创建 docker 网络 $NETWORK"
+    $DOCKER network create "$NETWORK" >/dev/null
+  fi
+
+  pull_image "$MEMORY_CORE_IMAGE"
+  rm_container_if_exists "$CONTAINER"
 fi
 
-pull_image "$MEMORY_CORE_IMAGE"
-rm_container_if_exists "$CONTAINER"
+# ── 渲染 gateway config.yaml，挂到容器 /data/config/tdai-gateway.yaml ──
+# 唯一真源 = 本目录 tdai-gateway.base.yaml（完整生产档，每个决策键带 evidence 标记）。
+# 历史教训：本脚本曾内联 heredoc 拼 yaml，脚本里没写的键在生产就是【代码缺省】——
+# 代码缺省一改，生产静默跟着变（#145/#173 的病根）。现在脚本只做两件事：
+#   cp base → 对 .env 里存在的值做单键占位符替换；不渲染新键，也不删键。
+# 键清单与证据等级见 docs/ops/production-profile.md；三套真源的关系见该文件 §0。
+BASE_CONFIG="$SCRIPT_DIR/tdai-gateway.base.yaml"
+[[ -f "$BASE_CONFIG" ]] || die "缺少 $BASE_CONFIG —— 生产配置真源不在，拒绝用隐式代码缺省启动。"
 
-# ── 生成 gateway config.yaml，挂到容器 /data/config/tdai-gateway.yaml ──
-# 默认镜像里没 config，memory-core 走编译时的默认（skill / knowledge 模块关闭）。
-# 从 .env 里的 MEMORY_LLM_* 生成一份 standalone+skill 的最小配置。
 CORE_CONFIG_DIR="${MEMORY_CORE_CONFIG_DIR:-$SCRIPT_DIR/.memory-core-config}"
 mkdir -p "$CORE_CONFIG_DIR"
 CORE_CONFIG_FILE="$CORE_CONFIG_DIR/tdai-gateway.yaml"
-info "生成 gateway config → $CORE_CONFIG_FILE"
-cat > "$CORE_CONFIG_FILE" <<YAML
-# 由 start-memory-core.sh 自动生成 —— 每次启动覆盖，请不要手动改。
-deployMode: standalone
-stateBackend: local
 
-server:
-  port: 8420
-  host: 0.0.0.0
+# render_key <占位符> <值>：替换 base 里全部同名占位符。
+# sed 元字符转义：值里出现 \\ & | 时不转义会破坏替换（API key/baseUrl 常见 & 与 |）。
+render_key() {
+  local ph="$1" val="$2" esc
+  esc="${val//\\/\\\\}"
+  esc="${esc//&/\\&}"
+  esc="${esc//|/\\|}"
+  sed -i "s|${ph}|${esc}|g" "$CORE_CONFIG_FILE"
+}
 
-data:
-  baseDir: /data/tdai-memory
+info "渲染 gateway config → ${CORE_CONFIG_FILE}（base=$(basename "$BASE_CONFIG")）"
+cp "$BASE_CONFIG" "$CORE_CONFIG_FILE"
 
-llm:
-  baseUrl: "${MEMORY_LLM_BASE_URL:-}"
-  apiKey: "${MEMORY_LLM_API_KEY:-}"
-  model: "${MEMORY_LLM_MODEL:-}"
-  maxTokens: 32000
-  timeoutMs: 300000
+# ── LLM（必填；模型/端点错了记忆流水线整体静默 0 条，故 loud 警告）──
+MEMORY_LLM_BASE_URL="${MEMORY_LLM_BASE_URL:-}"
+MEMORY_LLM_MODEL="${MEMORY_LLM_MODEL:-}"
+MEMORY_LLM_API_KEY="${MEMORY_LLM_API_KEY-}"
+[[ -n "$MEMORY_LLM_BASE_URL" ]] || warn "MEMORY_LLM_BASE_URL 为空 —— 抽取/结论层/扩展门的 LLM 调用会全失败。"
+[[ -n "$MEMORY_LLM_MODEL" ]] || warn "MEMORY_LLM_MODEL 为空 —— 同上。"
+if [[ "$MEMORY_LLM_BASE_URL" == *REPLACE_ME* || "$MEMORY_LLM_MODEL" == *REPLACE_ME* ]]; then
+  warn "MEMORY_LLM_* 仍是模板占位值（REPLACE_ME）——启动后 LLM 调用会失败。"
+fi
+render_key "__MEMORY_LLM_BASE_URL__" "$MEMORY_LLM_BASE_URL"
+render_key "__MEMORY_LLM_API_KEY__" "$MEMORY_LLM_API_KEY"
+render_key "__MEMORY_LLM_MODEL__" "$MEMORY_LLM_MODEL"
 
-memory:
-  # promptMode: chat（默认，通用聊天/教学场景）| code（代码工程场景，
-  # LLM 会重点抽"改了什么/发现什么问题/工具用法"，普通聊天可能抽出 0 条）
-  # 通过 .env 里 MEMORY_PROMPT_MODE 覆盖。
-  promptMode: ${MEMORY_PROMPT_MODE:-chat}
-  capture: { enabled: true }
-  extraction:
-    enabled: true
-    enableDedup: true
-    maxMemoriesPerSession: 20
-  persona:
-    triggerEveryN: 50
-    maxScenes: 15
-  pipeline:
-    everyNConversations: 5
-    enableWarmup: true
-    l1IdleTimeoutSeconds: 600
-    l2DelayAfterL1Seconds: 90
-    l2MinIntervalSeconds: 900
-    l2MaxIntervalSeconds: 3600
-  recall:
-    enabled: true
-    maxResults: 5
-    scoreThreshold: 0.3
-    strategy: hybrid
-    timeoutMs: 5000
-  storeBackend: sqlite
-  embedding:
-    provider: none
+# ── promptMode（缺省 chat；本仓与上游同为 chat —— ADR-0018 铁律 5 修正版）──
+MEMORY_PROMPT_MODE="${MEMORY_PROMPT_MODE:-chat}"
+case "$MEMORY_PROMPT_MODE" in
+  chat|code) ;;
+  *) warn "MEMORY_PROMPT_MODE=$MEMORY_PROMPT_MODE 非法（只认 chat|code）—— 回落 chat。"; MEMORY_PROMPT_MODE=chat ;;
+esac
+render_key "__MEMORY_PROMPT_MODE__" "$MEMORY_PROMPT_MODE"
 
-# ── Skill 模块 ──
-skill:
-  enabled: true
-  routing:
-    mode: bm25
-    searchTopK: 20
-  extraction:
-    enabled: true
-    maxIterations: 16
-    queue:
-      backend: local
-      keyPrefix: tdai
-      resultTtlSeconds: 86400
-      lockTtlMs: 600000
-      maxRetries: 2
-      retryBackoffsMs: [5000, 15000]
-  resources:
-    maxResourceSizeBytes: 5000000
-YAML
+# ── embedding：向量召回的唯一开关。未配 = 纯词法路，必须 loud（不是静默降级）──
+MEMORY_EMBEDDING_PROVIDER="${MEMORY_EMBEDDING_PROVIDER:-none}"
+MEMORY_EMBEDDING_BASE_URL="${MEMORY_EMBEDDING_BASE_URL:-}"
+MEMORY_EMBEDDING_API_KEY="${MEMORY_EMBEDDING_API_KEY-}"
+MEMORY_EMBEDDING_MODEL="${MEMORY_EMBEDDING_MODEL:-}"
+MEMORY_EMBEDDING_DIMENSIONS="${MEMORY_EMBEDDING_DIMENSIONS:-0}"
+if [[ "$MEMORY_EMBEDDING_PROVIDER" != "none" ]]; then
+  if [[ -z "$MEMORY_EMBEDDING_BASE_URL" || -z "$MEMORY_EMBEDDING_MODEL" || "$MEMORY_EMBEDDING_DIMENSIONS" == "0" ]]; then
+    warn "embedding 想开（provider=${MEMORY_EMBEDDING_PROVIDER}）但 baseUrl/model/dimensions 不全 —— 回落 provider=none。"
+    MEMORY_EMBEDDING_PROVIDER=none
+  fi
+fi
+if [[ "$MEMORY_EMBEDDING_PROVIDER" == "none" ]]; then
+  MEMORY_EMBEDDING_BASE_URL=""; MEMORY_EMBEDDING_API_KEY=""; MEMORY_EMBEDDING_MODEL=""; MEMORY_EMBEDDING_DIMENSIONS=0
+  warn "embedding.provider=none —— 混合检索降级为纯词法（bm25）：candidateK/fusion/rerank/smallToBig 的实测档覆盖面变窄。"
+  warn "要开向量路：.env 补齐 MEMORY_EMBEDDING_PROVIDER/BASE_URL/API_KEY/MODEL/DIMENSIONS 后重启。"
+fi
+render_key "__MEMORY_EMBEDDING_PROVIDER__" "$MEMORY_EMBEDDING_PROVIDER"
+render_key "__MEMORY_EMBEDDING_BASE_URL__" "$MEMORY_EMBEDDING_BASE_URL"
+render_key "__MEMORY_EMBEDDING_API_KEY__" "$MEMORY_EMBEDDING_API_KEY"
+render_key "__MEMORY_EMBEDDING_MODEL__" "$MEMORY_EMBEDDING_MODEL"
+render_key "__MEMORY_EMBEDDING_DIMENSIONS__" "$MEMORY_EMBEDDING_DIMENSIONS"
+
+# ── 渲染自检：占位符必须全消。残留 = base 加了键但脚本没喂值（配置会带字面量进运行时）──
+leftover="$(grep -o '__MEMORY_[A-Z_]*__' "$CORE_CONFIG_FILE" | sort -u || true)"
+if [[ -n "$leftover" ]]; then
+  die "渲染后仍有未替换占位符：$(echo "$leftover" | tr '\n' ' ')。检查 base.yaml 与本脚本的键对应关系。"
+fi
+
+if [[ "$RENDER_ONLY" -eq 1 ]]; then
+  info "--render-only：只渲染，不起容器。渲染结果如下 →"
+  cat "$CORE_CONFIG_FILE"
+  exit 0
+fi
 
 info "启动 memory-core (image=$MEMORY_CORE_IMAGE, port=$MEMORY_CORE_PORT)"
 $DOCKER run -d --name "$CONTAINER" \

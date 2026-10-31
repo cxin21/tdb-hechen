@@ -303,19 +303,22 @@ export function createApp(config: ProxyConfig): Hono {
   }
 
   // ── deepseek-harness (dsh) endpoints ──────────────────────────────────────
-  // dsh 是 DeepSeek 官方 agent harness,协议 = 标准 OpenAI Chat Completions
-  // (POST /chat/completions + SSE),body/messages shape 100% 兼容 CB 现有 handler。
+  // dsh 是 DeepSeek 官方 agent harness。**双协议**:
+  //   - v0.1.x:OpenAI Chat Completions(POST /chat/completions + SSE),body/messages
+  //     shape 兼容 CB 现有 handler。
+  //   - v0.2+ (2026-09-29 起):Anthropic Messages(POST /messages + Anthropic SSE)。
+  //     见 agents/dsh/README.md §3.1。
   //
   // 客户端行为差异(抓包 fixtures/*.req.json 实证,
   // 见 docs/dsh-recon/2026-08-14-dsh-capture-analysis.md):
-  //   - dsh 源码 endpoint 常量: `${baseURL}/chat/completions`(**不带 /v1**,
+  //   - v0.1 源码 endpoint 常量: `${baseURL}/chat/completions`(**不带 /v1**,
   //     见 packages/llm/llm-deepseek/src/adapter.ts:301)
   //   - 建议用户配置: OPENAI_BASE_URL=http://<proxy>:8096/dsh/<spaceId>
   //   - 与 CC/CB/Codex/Workbuddy 惯例对齐,同时接受**带 v1** 和**不带 v1**两种路径,
   //     用户可选把 baseURL 配成 `.../dsh/<spaceId>` 或 `.../dsh/<spaceId>/v1`
   //
   // main / title / compaction 三类请求识别不在路由层做,由 agent-adapters/dsh.ts
-  // 的 classifyRequest 按 header + body 特征判(见其 doc)。
+  // 的 classifyRequest 按 header + body 特征判(见其 doc;已同时认两种 wire shape)。
   app.post("/dsh/:spaceId/v1/chat/completions", (c) => handleChatCompletions(c, config));
   app.post("/dsh/:spaceId/chat/completions", (c) => handleChatCompletions(c, config));
   // V12-DSH-SSE-FIX（2026-09-26 何晨报 DSH 更新后 SSE mismatch）：dsh-llm-deepseek 适配器
@@ -323,6 +326,12 @@ export function createApp(config: ProxyConfig): Hono {
   // 返回 OpenAI 格式 SSE——新适配器 :1780 强校验拒绝无 type 字段的帧。
   // 修复=挂到 handleAnthropicMessages（注入管线+Anthropic SSE 输出）。
   app.post("/dsh/:spaceId/messages", (c) => handleAnthropicMessages(c, config));
+  // #175:显式注册带 /v1 的 anthropic 路径。此前只靠下面 :370 附近的通用
+  // `/:agent/:spaceId/v1/messages` 兜住 —— 能命中,但 agent 段来自泛匹配,
+  // marker/成本/日志里 dsh 的识别是隐式的,新增端点(如 count_tokens)也容易漏。
+  // 显式注册后 dsh 的两条 anthropic 形态(带/不带 v1)都在本块自证。
+  app.post("/dsh/:spaceId/v1/messages", (c) => handleAnthropicMessages(c, config));
+  app.post("/dsh/:spaceId/v1/messages/count_tokens", (c) => handleAuxiliaryEndpoint(c, config));
   // dsh 目前抓包未见 embeddings/moderations/completions,预留 aux 端点(与 CC/CB 对称)
   app.post("/dsh/:spaceId/v1/embeddings", (c) => handleAuxiliaryEndpoint(c, config));
   app.post("/dsh/:spaceId/v1/completions", (c) => handleAuxiliaryEndpoint(c, config));

@@ -16,6 +16,7 @@
  */
 
 import type { MemoryRecord } from "../record/l1-writer.js";
+import type { TaskSourceType } from "./task-source-type.js";
 import type { EmbeddingProviderInfo } from "./embedding.js";
 import type { Logger } from "../types.js";
 import type { IsolationFilter } from "./isolation.js";
@@ -346,6 +347,17 @@ export interface StoreCapabilities {
   nativeHybridSearch: boolean;
   /** Whether the store supports sparse vectors (BM25 encoding). */
   sparseVectors: boolean;
+  /**
+   * #152 ①：是否支持 l1_fact_vec 事实向量通道（upsertL1FactVector / searchL1FactVector）。
+   *
+   * 为什么需要能力位：调用点此前靠「方法是否存在」做 feature-detect，方法缺失时直接跳过，
+   * 既不报错也无日志 ⇒ tcvdb 下事实向量写入/检索静默空跑（表现为「有事实记忆但检索不到」）。
+   * 能力位让调用点能显式降级 + WARN（见 capability-guard.ts），而不是静默跳过。
+   *
+   * 可选（非 required）：老 mock / 第三方 store 不回该位时按「不支持」处理，
+   * 且不制造 typecheck 破坏。
+   */
+  l1FactVec?: boolean;
 }
 
 // ============================
@@ -456,7 +468,11 @@ export type TeamStatus = "active" | "archived";
 export type UserStatus = "active" | "inactive";
 export type AgentStatus = "active" | "inactive";
 export type AgentVisibility = "team" | "restricted";
-export type TaskSourceType = "manual" | "github" | "tapd" | "other";
+/**
+ * 任务来源（#127）：三值契约的唯一事实源在 ./task-source-type.ts。
+ * 历史值 github/tapd 由读侧 normalizeTaskSourceType 归一到 external。
+ */
+export type { TaskSourceType };
 
 export interface TeamEntity {
   team_id: string;
@@ -819,6 +835,13 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *  auto_adopted 行）按 post 版本守卫恢复 prev_slot_content（或删除采纳时创建的槽行），零删除。 */
   listReadySelfIdentityPending?(tenant?: CoreTenant, opts?: { votesN?: number; spanHours?: number }): MaybePromise<Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }>>;
   decidePendingCoreAuto?(pendingId: string, tenant?: CoreTenant, audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } }): MaybePromise<boolean>;
+  /** #92 M1（P0）：门②专用全量 rejected 查询——不分页不截断（listPendingCore 的 LIMIT 200 会让
+   *  更早的人工拒绝对门②不可见）。缺实现 → 门回落 listPendingCore 并 WARN（不静默）。 */
+  listRejectedSelfIdentityPending?(tenant?: CoreTenant): MaybePromise<Array<{ pending_id: string; content: string; created_at: string }>>;
+  /** #92 M2（P0）：采纳事务化——槽写 + pending 落账同事务（decide 失败 → 回滚槽）。
+   *  writeSlot=false 保留「合并结果与槽相同 → 幂等零 version 空转」；post_slot_version 由库内读回。
+   *  缺实现 → 门回落两段写并 WARN（旧后端不能保证原子）。 */
+  commitAutoAdoptCore?(pendingId: string, tenant?: CoreTenant, opts?: { slot: string; content: string; source: string; writeSlot?: boolean; audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } } }): MaybePromise<boolean>;
   rollbackAutoAdoptedPending?(pendingId: string, tenant?: CoreTenant): MaybePromise<{ restored: boolean; reason?: string }>;
   getPendingCoreState?(pendingId: string): MaybePromise<string | null>;
   /**

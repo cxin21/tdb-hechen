@@ -189,6 +189,55 @@ export function resolveV3StrictIsolation(): boolean {
   return !V3_STRICT_ISOLATION_OFF_WORDS.has(raw); // 未知取值 fail-secure 视为开启
 }
 
+// ── #红队②（task-60）：数据面归属校验开关 ──
+// 三个 reader 只回原始字符串（缺省空串），语义解释统一交给
+// gateway/auth-binding.ts 的纯函数（parseSwitch / parseUnknownPrincipalPolicy），
+// 这样「显式写了但写错」的 fail-secure 口径只在一处定义、可单测。
+
+/**
+ * 是否要求 /v3 数据面把凭据主体与声明的 user_id 绑定。
+ * 缺省空串 ⇒ 关闭（沿用今天的服务级信任）。取值见 parseSwitch。
+ */
+export function readAuthRequireUserBinding(): string {
+  return ENV.MEMORY_AUTH_REQUIRE_USER_BINDING ?? "";
+}
+
+/**
+ * 写侧未知主体（entity 表查无 team/agent/user）处理档：off / warn / reject。
+ * 缺省空串 ⇒ off（完全不查，行为与今天一致）。
+ */
+export function readAuthUnknownPrincipalPolicy(): string {
+  return ENV.MEMORY_AUTH_UNKNOWN_PRINCIPAL_POLICY ?? "";
+}
+
+/**
+ * 是否允许 admin 显式旁路（需 system_admin + x-tdai-admin-bypass 双条件）。
+ * 缺省空串 ⇒ 关闭。
+ */
+export function readAuthAdminBypassEnabled(): string {
+  return ENV.MEMORY_AUTH_ADMIN_BYPASS_ENABLED ?? "";
+}
+
+// ── task-68：team 归属校验开关（off / warn / enforce）──
+// 与上面三个 reader 同口径：只回原始字符串，语义解释（含「写了但写错」按最严处理）
+// 由 gateway/team-ownership.ts 的 parseTeamOwnershipMode 单点定义。
+
+/**
+ * /v3 数据面是否校验「team 属不属于本调用方」。
+ * 缺省空串 ⇒ off（逐位现状，一次 metadata 查询都不发）。
+ */
+export function readAuthRequireTeamOwnership(): string {
+  return ENV.MEMORY_AUTH_REQUIRE_TEAM_OWNERSHIP ?? "";
+}
+
+/**
+ * 归属校验白名单（逗号分隔的 team_id）：命中即放行且不查询，用于历史脏 team。
+ * 缺省空串 ⇒ 空数组。
+ */
+export function readAuthTeamOwnershipWhitelist(): string {
+  return ENV.MEMORY_AUTH_TEAM_OWNERSHIP_WHITELIST ?? "";
+}
+
 /**
  * Resolve the effective gateway apiKey (P2-T13 鉴权必填，拍板③).
  *

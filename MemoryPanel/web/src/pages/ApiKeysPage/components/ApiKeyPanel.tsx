@@ -329,8 +329,10 @@ export default function ApiKeyPanel() {
                 // OpenAI Chat Completions（POST /v1/chat/completions），与 CB/dsh 同族。
                 // proxy 侧 agent-adapters/opencode.ts 已适配 form 回填 + mem: 命令族全套。
                 { label: 'OpenCode', url: `${base}/opencode/${iid}` },
-                { label: 'OpenClaw', url: `${base}/openclaw/default` },
-                { label: 'Hermes', url: `${base}/hermes/default` },
+                // OpenClaw / Hermes 的 spaceId 同样 = 当前实例 id，与其他 agent 对称。
+                // 此前写死 /default，多实例部署下用户会抄到指向"default 空间"的错 URL。
+                { label: 'OpenClaw', url: `${base}/openclaw/${iid}` },
+                { label: 'Hermes', url: `${base}/hermes/${iid}` },
               ];
               return endpoints.map((ep) => (
                 <div className="_memory-apikey-endpoint" key={ep.label}>

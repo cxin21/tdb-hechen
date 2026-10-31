@@ -233,6 +233,58 @@ describe("R-b 附加注入", () => {
     }
   });
 
+  it("⑭#155 零边回退：卡无 part_of 边但 metadata.evidence_ids 有证据 → 仍注入上下文行（metadata 计一）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-meta-"));
+    try {
+      const m = s2bStore({
+        rows: [wfRow("wf-1", "ConclA", -10, { scene_name: "项目重构" }), ...episodicRows(2)],
+        links: [], // 零边：#155 前的实现到这里就 continue，整批卡被判「没证据」
+        evidenceRows: [
+          // 卡自身行（metadata 携带 canonical evidence_ids）
+          evidenceRow("wf-1", KW + " ConclA：交付节奏承诺持续兑现，当前状态健康。", {
+            metadata_json: JSON.stringify({ evidence_ids: ["ev-1"] }),
+          }),
+          evidenceRow("ev-1", "证据：零边但元数据可回捞的部署窗口"),
+        ],
+      });
+      const res = await performLayeredRecall(paramsFor(dir, m.store, KW + " 项目进展如何", makeCfg({
+        smallToBig: { enabled: true },
+        ftsOnlyInjectCap: 0,
+      })));
+      expect(m.linkCalls).toEqual([{ id: "wf-1", type: "part_of" }]);
+      expect(res.memoryLines.some((l) => l.includes("[上下文|项目重构]") && l.includes("零边但元数据可回捞"))).toBe(true);
+      expect(res.gates?.smallToBig?.evidenceFromLinks).toBe(0);
+      expect(res.gates?.smallToBig?.evidenceFromMetadata).toBe(1);
+      expect(res.gates?.smallToBig?.cardsWithoutEvidence).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑮#155 旧键兼容：卡 metadata 只有 evidence_record_ids（reflection 写面）→ 同样回退成功", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-meta2-"));
+    try {
+      const m = s2bStore({
+        rows: [wfRow("wf-1", "ConclA", -10, { scene_name: "项目重构" }), ...episodicRows(2)],
+        links: [],
+        evidenceRows: [
+          evidenceRow("wf-1", KW + " ConclA：交付节奏承诺持续兑现，当前状态健康。", {
+            metadata_json: JSON.stringify({ evidence_record_ids: ["ev-2"] }),
+          }),
+          evidenceRow("ev-2", "证据：旧键证据源"),
+        ],
+      });
+      const res = await performLayeredRecall(paramsFor(dir, m.store, KW + " 项目进展如何", makeCfg({
+        smallToBig: { enabled: true },
+        ftsOnlyInjectCap: 0,
+      })));
+      expect(res.memoryLines.some((l) => l.includes("旧键证据源"))).toBe(true);
+      expect(res.gates?.smallToBig?.evidenceFromMetadata).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("⑤maxExtraLines 全局帽：2 张卡各 2 条边、cap=2 → 恰 2 条上下文行（跨卡累计）", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "s2b-cap-"));
     try {

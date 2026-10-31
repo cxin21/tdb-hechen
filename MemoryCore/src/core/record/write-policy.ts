@@ -73,7 +73,21 @@ export interface WritePolicy {
   factRows?: WriteFactRowsConfig;
 }
 
-/** 缺省策略：全关 = 与既有行为逐位一致（生产安全缺省）。 */
+/**
+ * 缺省策略 = **生产最优档**（用户 2026-10-31 20:06 拍板：缺省不是「最保守档」，
+ * 凡有读数的按读数定，负收益项显式关并在此写清原因）：
+ *
+ *  - supersession **开**：long-session-bench 三臂重放（docs/long-session-bench.md §6）实测
+ *    B 臂（开）当前命中 100% / 旧值注入 0% / 重复值 1.0，A 臂（关）33.3% / 100% / 7.67
+ *    ⇒ 正收益，且「同实体同属性新值取代旧值」是用户点名的记忆管理能力。
+ *    注意：该读数来自离线机制冒烟（无 LLM 抽取、读侧为生产实现），命中率不是质量读数
+ *    （同文档 §6 警告），所以真正的判据仍以线上桶读数为准，回滚阀门 = enabled:false。
+ *  - factKey **关**：#149 LME90 A vs B 实测 −2.2pp（负收益），等 #168 长会话读数再议。
+ *  - factRows **关**：#146 事实行粒度目前无正收益读数，显式列出（不再用「键缺失」隐式表达）。
+ *
+ * 生产实际生效的是 config.ts 的 write.* 缺省（utils/pipeline-factory.ts 传 cfg.write）；
+ * 本对象是「代码缺省」的单一表达，两者必须同档（config.write.test.ts 钉死）。
+ */
 export const DEFAULT_WRITE_POLICY: WritePolicy = {
   factKey: {
     enabled: false,
@@ -84,7 +98,8 @@ export const DEFAULT_WRITE_POLICY: WritePolicy = {
     includeTriples: false,
     onlyForTypes: [],
   },
-  supersession: { enabled: false },
+  supersession: { enabled: true },
+  factRows: { enabled: false },
 };
 
 /** 事实键配置 → 归一化选项（单点换算，写侧读侧同口径；maxFacts 走全局唯一 clamp）。 */

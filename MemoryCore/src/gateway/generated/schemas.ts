@@ -452,7 +452,10 @@ export const userStatusSchema = z.enum(["active", "inactive"]) as unknown as z.Z
 
 export const agentStatusSchema = z.enum(["active", "inactive"]) as unknown as z.ZodType<AgentStatus>
 
-export const taskSourceTypeSchema = z.enum(["manual", "github", "tapd", "other"]) as unknown as z.ZodType<TaskSourceType>
+// #127 手工同步：Kubb 源 spec（docs/team-api-仅memory.yaml）不在仓内，无法重生成；
+// 三值口径与 core/store/task-source-type.ts 一致。请求体校验用 v2-schemas.ts 里的
+// preprocess 版本（历史 github/tapd → external），此处只是数据模型基线。
+export const taskSourceTypeSchema = z.enum(["manual", "external", "other"]) as unknown as z.ZodType<TaskSourceType>
 
 export const agentVisibilitySchema = z.enum(["team", "restricted"]) as unknown as z.ZodType<AgentVisibility>
 

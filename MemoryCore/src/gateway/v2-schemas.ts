@@ -12,6 +12,11 @@
 
 import { z } from "zod";
 import { DEFAULT_ISOLATION_ID } from "../core/store/types.js";
+import {
+  TASK_SOURCE_TYPES,
+  canonicalizeTaskSourceTypeInput,
+  type TaskSourceType,
+} from "../core/store/task-source-type.js";
 
 // ============================
 // Re-export all generated schemas as-is
@@ -227,7 +232,11 @@ const teamStatusSchema = z.enum(["active", "archived"]);
 const userStatusSchema = z.enum(["active", "inactive"]);
 const agentStatusSchema = z.enum(["active", "inactive"]);
 const agentVisibilitySchema = z.enum(["team", "restricted"]);
-const taskSourceTypeSchema = z.enum(["manual", "github", "tapd", "other"]);
+// #127：写侧只接受三值；历史 github/tapd/jira 由 preprocess 归一为 external 后放行（读旧值要能吃）。
+const taskSourceTypeSchema = z.preprocess(
+  canonicalizeTaskSourceTypeInput,
+  z.enum(TASK_SOURCE_TYPES),
+);
 
 export interface BatchDeleteResult { deleted_ids: string[]; failed: Array<{ id: string; reason: string }> }
 
@@ -257,7 +266,7 @@ export const agentUpdateRequestSchema = z.object({ agent_id: z.string().min(1), 
 export const agentBatchDeleteRequestSchema = z.object({ agent_ids: z.array(z.string().min(1)).min(1).max(100) });
 
 export interface TaskData {
-  task_id: string; team_id: string; creator_user_id: string; title?: string; description?: string; source_type: "manual" | "github" | "tapd" | "other"; source_url?: string; agent_ids: string[]; user_ids: string[]; created_at: string; updated_at: string;
+  task_id: string; team_id: string; creator_user_id: string; title?: string; description?: string; source_type: TaskSourceType; source_url?: string; agent_ids: string[]; user_ids: string[]; created_at: string; updated_at: string;
 }
 export const taskCreateRequestSchema = z.object({ team_id: z.string().min(1), creator_user_id: z.string().min(1), title: z.string().optional(), description: z.string().optional(), source_type: taskSourceTypeSchema.optional(), source_url: z.string().optional(), agent_ids: stringArray.optional(), user_ids: stringArray.optional() });
 export const taskGetRequestSchema = z.object({ task_id: z.string().min(1) });

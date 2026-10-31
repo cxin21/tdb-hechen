@@ -267,3 +267,69 @@ describe('health-utils U-C1', () => {
     expect(degradedView.degradedSince).toBe('2026-09-10T08:00:00.000Z');
   });
 });
+
+// ── #123（Panel 侧）：embedding 四态判定，未配置不再被笼统算成"降级" ──
+//
+// 根因（#123）：旧判定 embeddingOk = memory.embedding === 'ok' 在 noop embedder 下会
+// 因为网关"只要 embedding service 存在就报 ok"而恒绿。core 已在 /health payload 里
+// 补 embeddingProvider / embeddingConfigured（MemoryCore/src/gateway/server.ts:173-204），
+// Panel 侧据此把「未配置」单独标出来。
+
+describe('health-utils #123 embedding 四态', () => {
+  const base = {
+    vectorCoverage: 0.51,
+    vecRows: 0,
+    metaRows: 129,
+    degradedSince: null,
+    lastVecWriteAt: null,
+  } as const;
+
+  it('configured=false + embedding=degraded → unconfigured（不是 degraded，也不绿）', () => {
+    const view = buildMemoryHealthView({
+      ...base,
+      embedding: 'degraded',
+      embeddingProvider: 'noop',
+      embeddingConfigured: false,
+    });
+    expect(view.embeddingState).toBe('unconfigured');
+    expect(view.embeddingOk).toBe(false);
+    expect(view.degraded).toBe(true);
+    expect(view.embeddingConfigured).toBe(false);
+    expect(view.embeddingProvider).toBe('noop');
+  });
+
+  it('configured=true + embedding=ok → ok（绿）', () => {
+    const view = buildMemoryHealthView({
+      ...base,
+      embedding: 'ok',
+      embeddingProvider: 'openai',
+      embeddingConfigured: true,
+    });
+    expect(view.embeddingState).toBe('ok');
+    expect(view.embeddingOk).toBe(true);
+  });
+
+  it('configured=true + embedding=degraded → degraded（真降级，provider 可用于排障）', () => {
+    const view = buildMemoryHealthView({
+      ...base,
+      embedding: 'degraded',
+      embeddingProvider: 'openai',
+      embeddingConfigured: true,
+    });
+    expect(view.embeddingState).toBe('degraded');
+    expect(view.embeddingOk).toBe(false);
+  });
+
+  it('老网关（payload 无 configured/provider）→ 退回只看 embedding，configured 为 null', () => {
+    const view = buildMemoryHealthView({ ...base, embedding: 'ok' });
+    expect(view.embeddingState).toBe('ok');
+    expect(view.embeddingConfigured).toBeNull();
+    expect(view.embeddingProvider).toBeNull();
+  });
+
+  it('缺 memory 子对象 → unknown（不造假绿）', () => {
+    const view = buildMemoryHealthView(undefined);
+    expect(view.embeddingState).toBe('unknown');
+    expect(view.embeddingConfigured).toBeNull();
+  });
+});

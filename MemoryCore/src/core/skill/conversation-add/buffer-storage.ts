@@ -53,6 +53,13 @@ export interface SessionMeta {
   byte_count: number;
   last_appended_at_ms?: number;
   last_archived_at_ms?: number;
+  /**
+   * 入口幂等指纹环（task-26）：最近被 add-handler 接受的消息指纹 + 时间戳。
+   * 归档只清 data-current 与计数，**不清这个环**——跨归档的重试才能被拦住。
+   * 容量/窗口由 handler 的 dedupeWindowMs / dedupeMaxEntries 控制
+   * （缺省 200 条 / 10 分钟，对齐 L0 F-DUP-1）。
+   */
+  recent_fingerprints?: Array<{ h: string; t: number }>;
 }
 
 /** _tasks.json 单个 task 条目（§4.3）。 */
@@ -220,6 +227,21 @@ export class SkillBufferStorage {
     await this.storage.writeFile(this.metaKey(sess), JSON.stringify(meta));
   }
 
+  /**
+   * 读改写 meta：只覆盖 patch 里点名的字段，其余（含未知/未来新增字段）原样保留。
+   *
+   * 所有「归档后重置计数」「只改几个字段」的调用点都必须走这里，不要自己拼
+   * 一个完整 SessionMeta 对象 —— 手拼对象漏字段不会报错，只会在下一次读到时
+   * 表现为「某个能力悄悄失效」（task-26 的 recent_fingerprints 就是这样在
+   * force-archive 路径上被清空的）。身份字段由 readMeta 强制对齐 sess。
+   */
+  async updateMeta(sess: SessionKey, patch: Partial<SessionMeta>): Promise<SessionMeta> {
+    const current = await this.readMeta(sess);
+    const next: SessionMeta = { ...current, ...patch };
+    await this.writeMeta(sess, next);
+    return next;
+  }
+
   private defaultMeta(sess: SessionKey): SessionMeta {
     return {
       session_id: sess.session_id,
@@ -229,6 +251,7 @@ export class SkillBufferStorage {
       agent_id: sess.agent_id,
       tool_call_count: 0,
       byte_count: 0,
+      recent_fingerprints: [],
     };
   }
 

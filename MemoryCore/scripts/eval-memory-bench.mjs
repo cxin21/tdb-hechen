@@ -46,6 +46,11 @@ import { attributeInjectedLines, evidenceSufficiency, INJECT_LINE_TYPES } from "
 import { FACTS_PROMPT_VERSION, factsCoverage, factsForCase } from "./lib/bench/facts.mjs";
 import { CONCLUSIONS_PROMPT_VERSION } from "./lib/bench/conclusions.mjs";
 import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "./lib/bench/stages.mjs";
+// 审计 M6/M8：生效配置三层快照 + 判分存在性门禁（报告自证）。
+import { readEffectiveBenchConfig, formatEffectiveConfig } from "./lib/bench/effective-config.ts";
+import { attachJudgingStatus } from "./lib/bench/report.mjs";
+import { buildCostSection } from "./lib/bench/cost.mjs";
+import { makeOfflineEmbedding, OFFLINE_EMBEDDING_CALIBER } from "./lib/bench/offline-embedding.mjs";
 import { createArgReader } from "./lib/bench/argv.mjs";
 import {
   buildAnswerPrompt,
@@ -134,6 +139,8 @@ if (flag("help") || argv.length === 0) {
   --prod-data <dir>              生产 dataDir（默认 TDAI_DATA_DIR 或 yaml data.baseDir）
   --expect-config k=v[,k=v]      生效配置自检（如 recall.rerank.enabled=false）；不符即退出码 2，防白跑整档
   --no-write-steps               --store 复用库时跳过分阶段写入（纯读侧档：库里状态保持不变）
+  --offline-embedding            用离线 hash 向量代替生产 embedding（零外呼；只验证度量管线，
+                                 读数**不是**检索质量结论；自动禁用 embed-cache，避免污染真实模型缓存）
   --report-name <name>           报告文件名（不含扩展名）；arms 脚本按 tag 定位报告时必传
   --quiet                        只打最终摘要
 `);
@@ -147,11 +154,11 @@ const KNOWN_FLAGS = new Set([
   "age-decay", "b1", "b2b-validity", "candidate-k", "conclusion-budget-mode", "conclusion-cap",
   "conclusion-cards", "conclusion-layer-off", "conclusion-legacy-rank", "conclusion-max", "conclusion-max-extra", "conclusion-pairing",
   "conclusion-routing", "conclusion-slot-cost", "concurrency", "currency-prompt", "pref-prompt", "marshal-prompt", "data", "dataset", "emb-threshold",
-  "embed-cache", "embed-interval-ms", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
+  "embed-cache", "embed-interval-ms", "evidence-pack", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
   "fact-channel", "fact-channel-off", "fact-channel-read-only", "fact-channel-weight", "fact-concurrency", "fact-dual-write",
   "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-rows", "fact-separator", "facts-only",
   "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
-  "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps",
+  "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps", "offline-embedding",
   "out", "pace", "present-temporal", "prod-config", "prod-data", "prune-fact-sibling-index", "quiet",
   "recall-ks", "recall-max-results", "dedupe-hits-by-turn", "expand-parent-turn", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
   "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
@@ -185,6 +192,8 @@ const repo = repoRoot();
 const prodConfig = String(arg("prod-config", path.join(repo, "tdai-gateway.yaml")));
 const outDir = String(arg("out", path.join(repo, ".eval-data", "bench")));
 const quiet = flag("quiet");
+// 端到端验收用：离线 hash 向量（零外呼）。报告里必须显式标注，否则又是一代不可自证的读数。
+const offlineEmbedding = flag("offline-embedding");
 const log = (...a) => {
   if (!quiet) console.log(...a);
 };
@@ -577,11 +586,28 @@ async function main() {
   }
   // G1（bench/recall-opt B1 生产化）：--inject-time-sort / --inject-wrapper neutral|legacy
   const injectTimeSort = flag("inject-time-sort");
-  const injectWrapperRaw = String(arg("inject-wrapper", "legacy"));
-  const injectWrapper = injectWrapperRaw === "neutral" ? "neutral" : "legacy";
+  const injectWrapperRaw = arg("inject-wrapper", undefined);
+  // #172-②/WP1b：三档（legacy | neutral | calibrated）。未指定 = **不覆盖**（继承沙箱 yaml /
+  // 代码缺省 = calibrated）；显式给档则恒写沙箱 yaml，含 legacy——缺省已不是 legacy，
+  // 不再写就等于 `--inject-wrapper legacy` 静默失效（缺省翻转后必须显式钉）。
+  const injectWrapper =
+    injectWrapperRaw === undefined
+      ? undefined
+      : injectWrapperRaw === "neutral" || injectWrapperRaw === "calibrated"
+        ? injectWrapperRaw
+        : "legacy";
   const injectOverride = {};
   if (injectTimeSort) injectOverride.timeSort = { enabled: true };
-  if (injectWrapper !== "legacy") injectOverride.wrapper = injectWrapper;
+  if (injectWrapper !== undefined) injectOverride.wrapper = injectWrapper;
+  // #169（2026-10-31）：证据包四档 --evidence-pack N（每侧邻接行数 0..3；N=0 = 不扩 = 对照档）。
+  // 只写沙箱 yaml（recall.evidencePack）；时间窗/总帽/会话上限用生产缺省（30min / 6 行 / 400 行）。
+  const evidencePackArg = arg("evidence-pack", undefined);
+  const evidencePackOverride = (() => {
+    if (evidencePackArg === undefined) return undefined;
+    const n = evidencePackArg === true ? 1 : Number(evidencePackArg);
+    const adjacent = Number.isFinite(n) ? Math.min(3, Math.max(0, Math.floor(n))) : 1;
+    return { enabled: adjacent > 0, adjacent, windowMinutes: 30, maxExtraLines: 6, maxSessionRows: 400 };
+  })();
   // B0 修复（bench/recall-opt）：rerank 试验键必须同时打进 override json——
   // loadGatewayConfig 合并优先级 override > yaml，生产 config-override.json 带
   // rerank.enabled=true，会吞掉沙箱 yaml 里的 enabled:false（2026-10-27 T4 实锤）。
@@ -615,7 +641,7 @@ async function main() {
     process.exit(2);
   }
 
-  prepareBenchYaml({
+  const sandboxYaml = prepareBenchYaml({
     srcYaml: prodConfig,
     storeDir,
     ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
@@ -656,8 +682,10 @@ async function main() {
         }
       : {}),
     ...(factChannelOverride ? { factChannelOverride } : {}),
+    ...(evidencePackOverride ? { evidencePackOverride } : {}),
   });
   if (Object.keys(injectOverride).length) log("[bench] G1 注入试验档(仅沙箱 yaml): " + JSON.stringify(injectOverride));
+  if (evidencePackOverride) log("[bench] #169 证据包档(仅沙箱 yaml): " + JSON.stringify(evidencePackOverride));
   if (conclusionCards) log("[bench] W3 写入面试验档(仅沙箱 yaml): 蒸馏 + part_of 证据链落库");
   if (conclusionLayerOff) log("[bench] 结论层整体关闭（--conclusion-layer-off）：无卡基线档");
   if (conclusionCap !== undefined || conclusionRouting !== "off" || conclusionSlotCost !== undefined || conclusionPairing !== "off") log("[bench] 结论层读侧试验档(仅沙箱 yaml): " + JSON.stringify({ ...(conclusionCap !== undefined ? { maxConclusions: conclusionCap } : {}), routing: conclusionRouting, ...(conclusionSlotCost !== undefined ? { slotCost: conclusionSlotCost } : {}), ...(conclusionPairing !== "off" ? { pairing: conclusionPairing } : {}) }));
@@ -706,7 +734,22 @@ async function main() {
       process.exit(2);
     }
   }
-  const { store, embedding, dims, init } = await openBenchStore(cfg, storeDir);
+  const opened = await openBenchStore(cfg, storeDir);
+  const { store, init } = opened;
+  let embedding = opened.embedding;
+  let dims = opened.dims;
+  if (offlineEmbedding) {
+    // 维度必须与 vec0 表一致：openBenchStore 的 getDimensions() 在远端 provider 未初始化时返回 0，
+    // 落到默认 256 会与 2048 维表不匹配 —— sqlite 只打 non-fatal warn 并静默丢行（召回全空的假象）。
+    const dim = dims > 0 ? dims : Number(cfg.embedding?.dimensions ?? 0);
+    if (!(dim > 0)) {
+      console.error("[bench] --offline-embedding 无法确定向量维数（dims=0 且 cfg.embedding.dimensions 缺失）：已中止，避免静默丢行");
+      process.exit(2);
+    }
+    embedding = makeOfflineEmbedding(dim);
+    dims = dim;
+    log("[bench] ⚠ 离线 hash 向量模式：" + OFFLINE_EMBEDDING_CALIBER + "，维=" + dim + "；已禁用 embed-cache");
+  }
   log(`[bench] 存储=${cfg.storeBackend} 向量维=${dims} bm25=${cfg.bm25?.enabled ? "on" : "off"} 精排=${cfg.recall?.rerank?.provider ?? "none"}(enabled=${cfg.recall?.rerank?.enabled === true})`);
   if (init && init.needsReindex) log("[bench] 警告: store.init 要求重建索引（embedding 维度变化）");
 
@@ -1020,7 +1063,8 @@ async function main() {
 
   // 查询向量磁盘缓存：同一批题目跨档复用（embedding 确定性，语义零变化），避开账号级 RPM 限流。
   const embedCacheDir = String(arg("embed-cache", path.join(repo, ".eval-data", "bench", "embed-cache")));
-  const embedForRecall = withEmbedCache(embedding, flag("no-embed-cache") ? null : embedCacheDir, `${cfg.embedding?.model ?? "emb"}-${dims}`);
+  // 缓存键按 model+dims 计：hash 向量绝不能进真实模型缓存（否则后续真实档命中脏向量）。
+  const embedForRecall = withEmbedCache(embedding, flag("no-embed-cache") || offlineEmbedding ? null : embedCacheDir, `${cfg.embedding?.model ?? "emb"}-${dims}`);
   const recall = makeRecall({ cfg, store, embedding: embedForRecall, dataDir: storeDir, validityFromCase: b2bValidity, rerankChildProc, rerankFilterOnly, rerankFilterFloor });
   const k = num("k", cfg.recall?.maxResults ?? 5);
   // #146 诊断档：事实行模式下一个 turn 会占多行（1.5–2 行/turn 实测），k 个槽位装不到 k 个 turn。
@@ -1141,7 +1185,12 @@ async function main() {
       experienceCount: r.experienceCount,
       // B0 校尺：检索计时/门观测/相关度分数序列透传进行数据
       searchTiming: r.searchTiming ?? null,
+      // #170：召回层分段计时（total/scene/expand/l2/l1/soul），cost 段据此给分段成本
+      perfMs: r.perfMs ?? null,
       ...(r.gates ? { gates: r.gates } : {}),
+      // #169：证据包观测（enabled=true 时恒有；adjacencyLines 等计数只表示「补进来的上下文」，
+      // 与 turnCov/sessionCov 无关——覆盖率口径只认 seed 行）
+      ...(r.gates?.evidencePack ? { evidencePack: r.gates.evidencePack } : {}),
       scores: r.hits.map((h) => Math.round((h.score ?? 0) * 1e4) / 1e4),
       ...(b1Mode ? { evidence: evidenceBlock, evidenceChars: evidenceBlock.length } : {}),
       blockChars: (r.block || "").length,
@@ -1216,19 +1265,95 @@ async function main() {
       lineTypeTotals[t].sessions += bt[t].sessions;
     }
   }
+  // #169：证据包汇总（独立计数 = Lead 要求的防自我污染口径）。
+  // 「+N 档变好」必须能与「指标被扩行推高」区分开：这里只累计 pack 行与跳过原因，
+  // turnCov/sessionCov 只在 seed 行上算（见 lib/bench/inject-attribution.mjs 口径注释）。
+  const epTotals = {
+    enabledCases: 0,
+    seedLines: 0,
+    seedWithSession: 0,
+    adjacencyLines: 0,
+    skippedNoSession: 0,
+    skippedNoSeedRow: 0,
+    skippedWindow: 0,
+    skippedCap: 0,
+    skippedSessionTooLarge: 0,
+    sessionsQueried: 0,
+  };
+  for (const row of rows) {
+    const ep = row.evidencePack;
+    if (!ep || ep.enabled !== true) continue;
+    epTotals.enabledCases++;
+    epTotals.seedLines += ep.seedLines ?? 0;
+    epTotals.seedWithSession += ep.seedWithSession ?? 0;
+    epTotals.adjacencyLines += ep.adjacencyLines ?? 0;
+    epTotals.skippedNoSession += ep.skippedNoSession ?? 0;
+    epTotals.skippedNoSeedRow += ep.skippedNoSeedRow ?? 0;
+    epTotals.skippedWindow += ep.skippedWindow ?? 0;
+    epTotals.skippedCap += ep.skippedCap ?? 0;
+    epTotals.skippedSessionTooLarge += ep.skippedSessionTooLarge ?? 0;
+    epTotals.sessionsQueried += ep.sessionsQueried ?? 0;
+  }
   const esScores = rows.map((row) => row.evidenceSufficiency?.score).filter((v) => typeof v === "number");
   const evidenceSufficiencySummary = {
     mean: esScores.length ? esScores.reduce((a, b) => a + b, 0) / esScores.length : null,
     cases: esScores.length,
   };
+  // 审计 M6：三层（代码缺省 → 配置文件 → CLI/沙箱）合并后的最终生效值 + 逐键来源。
+  // 底配来自 gitignored 的 tdai-gateway.yaml，只记 CLI 覆盖值等于「读数不可自证」。
+  const effective = await readEffectiveBenchConfig({ sandboxYaml, srcYaml: prodConfig, dataDir: storeDir });
+  if (effective.meta.error) log("[bench] 警告: 生效配置快照失败: " + effective.meta.error);
+  else log("[bench] 生效配置 " + formatEffectiveConfig(effective));
+
+  // 「实验值，非缺省」标注（lead 2026-10-31）：被臂钉死的调参旋钮必须与代码缺省显式区分。
+  // 只列已知会被实验臂改写的旋钮——不是所有非缺省键都算实验（生产 yaml 里的值也是非缺省，但它才是线上口径）。
+  const EXPERIMENTAL_KNOBS = ["recall.validity.softPenalty"];
+  const experimentalKnobs = {};
+  for (const key of EXPERIMENTAL_KNOBS) {
+    const val = effective.values[key];
+    const def = effective.defaults?.[key];
+    if (JSON.stringify(val) === JSON.stringify(def)) continue;
+    experimentalKnobs[key] = { value: val ?? null, defaultValue: def ?? null, source: effective.sources?.[key] ?? "?", note: "实验值，非缺省" };
+  }
+  if (Object.keys(experimentalKnobs).length) log("[bench] ⚠ 实验值（非缺省）: " + JSON.stringify(experimentalKnobs));
+
+  // 库形态（lead 2026-10-31）：失效行数必须是一等字段。
+  // r141 五臂全部读在 inval=0 的库上 ⇒ validity 分档是空实验，而旧报告只记 rows、看不出来。
+  const storeShape = (() => {
+    try {
+      const db = store.getRawDb?.();
+      if (!db) return { error: "store 未暴露 getRawDb（非 sqlite 后端）" };
+      const c = (sql) => Number(db.prepare(sql).get()?.c ?? 0);
+      const l1Rows = c("SELECT COUNT(*) AS c FROM l1_records");
+      const invalidatedRows = c("SELECT COUNT(*) AS c FROM l1_records WHERE valid_end IS NOT NULL AND valid_end <> ''");
+      const sessions = c("SELECT COUNT(DISTINCT session_id) AS c FROM l1_records");
+      return {
+        l1Rows,
+        invalidatedRows,
+        invalidatedPct: l1Rows ? +((invalidatedRows / l1Rows) * 100).toFixed(2) : null,
+        sessions,
+        caliber: "valid_end 非空行即失效行（store 侧原样计数，不按题型/来源过滤）",
+      };
+    } catch (e) {
+      return { error: String(e?.message ?? e) };
+    }
+  })();
+  log(`[bench] 库形态 l1=${storeShape.l1Rows ?? "?"} inval=${storeShape.invalidatedRows ?? "?"} (${storeShape.invalidatedPct ?? "?"}%) sessions=${storeShape.sessions ?? "?"}`);
+
   const report = {
     generatedAt: new Date().toISOString(),
     repoCommit: gitSha(),
     dataset: { ...dsSummary, file: dataPath },
+    // 库形态：inval=0 的库上跑 validity 分档等于空实验（r141 五臂教训），故必须随报告落盘。
+    storeShape,
     config: {
       storeBackend: cfg.storeBackend,
       embeddingModel: cfg.embedding?.model,
       embeddingDims: dims,
+      // 审计：本次到底用哪套向量。hash 向量档必须显式标注，否则读数会被当成生产 embedding 结论。
+      embeddingVector: offlineEmbedding
+        ? { mode: "offline-hash", caliber: OFFLINE_EMBEDDING_CALIBER }
+        : { mode: "provider" },
       bm25: cfg.bm25?.enabled ?? false,
       recallStrategy: cfg.recall?.strategy,
       maxResults: cfg.recall?.maxResults,
@@ -1275,6 +1400,13 @@ async function main() {
       },
       // #135 第1项：最终生效召回配置原始快照（--expect-config 断言对象，也是归因表的事实来源）
       effectiveConfig,
+      // 审计 M6：全量生效值（loadGatewayConfig 解析）+ 逐键来源 default|file|cli + 配置指纹。
+      effective: effective.values,
+      effectiveSources: effective.sources,
+      effectiveFingerprint: effective.fingerprint,
+      effectiveMeta: effective.meta,
+      // 实验臂钉死的非缺省旋钮（值 + 代码缺省 + 来源），避免后人把实验值当生产值。
+      experimentalKnobs,
       v3Recall: cfg.recall?.v3Recall?.enabled ?? false,
       k,
       recallKs: kList,
@@ -1302,7 +1434,9 @@ async function main() {
       rerankFilterFloor: rerankFilterOnly ? rerankFilterFloor : null,
       ageDecayDays: ageDecayDays > 0 ? ageDecayDays : null,
       injectTimeSort,
-      injectWrapper,
+      injectWrapper: injectWrapper ?? null,
+      // #169：证据包档（null = 未指定，继承生产 yaml 的生效值）
+      evidencePack: evidencePackOverride ?? null,
       validityFromCase: b2bValidity,
       mmrOverride: Object.keys(mmrOverride).length ? mmrOverride : null,
   fusion: fusionOverride ?? null,
@@ -1364,22 +1498,57 @@ async function main() {
     overall: agg.overall,
     perType: agg.perType,
     lineTypeTotals,
+    // #169：证据包口径（adjacencyLines 与 turnCov/sessionCov 严格分离，勿混读）
+    injectionAdjacency: epTotals,
     evidenceSufficiency: evidenceSufficiencySummary,
     rows,
   };
 
   fs.mkdirSync(outDir, { recursive: true });
-  // #139：报告名可钉死（--report-name）——arms 脚本按 tag 定位报告，用「全局最新」在并行跑时会串味。
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  // 审计 M7：报告只追加、永不就地覆盖。
+  // 病根：r141 五臂 2026-10-31 被同名重跑覆盖 ⇒ 判分行消失、cov 还在，20 张票的判定被卡住。
+  // 命名 = <base>-<yyyymmdd-HHMMSS>-<配置指纹 sha8>.json；冲突再追加 -2/-3。
+  // ---- 兼容：--report-name=<tag> 时额外写 <tag>.json 副本（arms 脚本按它定位），
+  //      副本只指向本次结果，原件在带时间戳文件里，历史读数永远可追。
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const compact = stamp.replace(/-/g, "").replace("T", "-");
   const reportNameArg = strArg("report-name", undefined);
-  const reportName = typeof reportNameArg === "string" && reportNameArg ? reportNameArg : `${ds.name}-${stamp}`;
-  if (/[\\/]/.test(reportName)) throw new Error("--report-name 只能是文件名，不能带路径分隔符");
-  const base = path.join(outDir, reportName);
+  if (typeof reportNameArg === "string" && /[\\/]/.test(reportNameArg)) {
+    throw new Error("--report-name 只能是文件名，不能带路径分隔符");
+  }
+  const nameBase = typeof reportNameArg === "string" && reportNameArg ? reportNameArg : `bench-${ds.name}`;
+  const fp = effective.fingerprint ?? "nofp";
+  let stem = `${nameBase}-${compact}-${fp}`;
+  for (let n = 2; fs.existsSync(path.join(outDir, stem + ".json")); n++) {
+    stem = `${nameBase}-${compact}-${fp}-${n}`;
+  }
+  // M8：判分实况入报告（judged/total、覆盖率、判分器），下游无需重算即可拒绝 judged=0 的档。
+  attachJudgingStatus(report);
+  // #170：成本与延迟口径段（token / 检索 p50-p95 / 子阶段分段），与 overall 不重复覆盖。
+  report.cost = buildCostSection(report.rows);
+  const base = path.join(outDir, stem);
   fs.writeFileSync(base + ".json", JSON.stringify(report, null, 2), "utf8");
   fs.writeFileSync(base + ".md", renderMarkdown(report), "utf8");
+  if (typeof reportNameArg === "string" && reportNameArg) {
+    fs.copyFileSync(base + ".json", path.join(outDir, reportNameArg + ".json"));
+    fs.copyFileSync(base + ".md", path.join(outDir, reportNameArg + ".md"));
+  }
+  // latest 指针（目录级）：并行/重跑后按它找最近一次，而不是猜文件名。
+  const latestPath = path.join(outDir, "latest.json");
+  let prevLatest = null;
+  try { prevLatest = JSON.parse(fs.readFileSync(latestPath, "utf8")); } catch { /* 首次运行无指针 */ }
+  fs.writeFileSync(latestPath, JSON.stringify({
+    generatedAt: report.generatedAt,
+    report: path.basename(base) + ".json",
+    tag: typeof reportNameArg === "string" && reportNameArg ? reportNameArg : null,
+    fingerprint: fp,
+    nameBase,
+    previous: prevLatest?.report ?? null,
+  }, null, 2) + "\n", "utf8");
 
   console.log(renderConsole(report));
-  console.log(`\n[bench] 报告: ${base}.json / .md`);
+  console.log(`\n[bench] 报告: ${base}.json / .md（latest.json 指向它）`);
 
   if (!flag("keep") && !reuseMode) {
     try {

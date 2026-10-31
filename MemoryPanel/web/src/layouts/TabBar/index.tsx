@@ -3,6 +3,7 @@
  *
  * 使用 Tea Design Token 统一样式。
  */
+import { useTranslation } from 'react-i18next';
 import { ITEM_ICON, usePageMeta, type PageId } from '@/constants/menu';
 import './style.css';
 
@@ -18,6 +19,7 @@ export function TabBar({
   onClose: (id: PageId) => void;
 }) {
   const PAGE_META = usePageMeta();
+  const { t } = useTranslation();
   return (
     <div className="_memory-tabbar">
       {pages.map((id) => {
@@ -32,6 +34,10 @@ export function TabBar({
             data-guide={`tab-${id}`}
             onClick={() => onNavigate(id)}
             onKeyDown={(e) => {
+              // 只响应 tab 自身的键盘事件：内层关闭按钮聚焦时按 Enter/空格，
+              // keydown 会冒泡到这里，若不守卫会被当作"激活该 tab"而误导航，
+              // 关一个后台 tab 反而跳过去。（#124-B3）
+              if (e.target !== e.currentTarget) return;
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 onNavigate(id);
@@ -46,7 +52,7 @@ export function TabBar({
             {!meta.affix && (
               <button
                 type="button"
-                aria-label={`${meta.label} close`}
+                aria-label={t('tabbar.close', { label: meta.label })}
                 onClick={(e) => {
                   e.stopPropagation();
                   onClose(id);

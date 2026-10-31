@@ -7,6 +7,9 @@
  */
 
 import type { RecallResult } from "./hooks/recall.js";
+// 注入文案（单一正文源在 MemoryCore/src/core/prompts/；本仓 src/prompt-context.ts 是构建期镜像，
+// 逐字一致性由 MemoryCore/__tests__/openclaw-format-parity.test.ts 断言）。
+import { MEMORY_TOOLS_GUIDE, RECALL_WRAPPER_HEAD, buildAnswerGuidance } from "./prompt-context.js";
 
 interface L1Item {
   id: string;
@@ -21,36 +24,31 @@ interface SceneEntry {
   updated_at?: string;
 }
 
-// ── Memory Tools Guide ──
-const MEMORY_TOOLS_GUIDE = `<memory-tools-guide>
-## 记忆工具调用指南
-
-当上方注入的记忆片段不足以回答用户问题时，可主动调用以下工具获取更多信息：
-
-- **tdai_memory_search**：搜索结构化记忆（L1），适用于回忆用户偏好、历史事件、规则等。
-- **tdai_conversation_search**：搜索原始对话（L0），适用于查找具体消息原文、时间线、上下文细节。
-- **tdai_read_cos**：读取记忆文件详情（使用下方 Scene Navigation 中的完整相对路径，如 scene_blocks/xxx.md；也可读 persona.md）。
-
-### ⚠️ 调用次数限制
-每轮对话中，tdai_memory_search 和 tdai_conversation_search **合计最多调用 3 次**。
-- 首次搜索无结果时，可换关键词或换工具重试，但总调用次数不要超过 3 次。
-- 若 3 次搜索后仍无结果，说明该信息不在记忆中，请直接根据已有信息回复用户。
-</memory-tools-guide>`;
-
 /**
  * Format L1 memories as prependContext.
  */
 function formatL1Memories(items: L1Item[]): string | undefined {
   if (items.length === 0) return undefined;
 
+  // 口径与钩子路逐字一致（MemoryCore/src/core/hooks/auto-recall.ts:2192-2197）：
+  // 包裹语（calibrated 档，不写「仅作参考」也不诱导拒答）→ 记忆行 → 答案口径段（币值/建议）。
+  // 旧实现只输出裸 <relevant-memories>：既没有「请据此回答」的指示，也没有
+  // 「有相关记录就必须作答并注明时间」的纪律 ⇒ 与钩子路分叉，是 OpenClaw 路径拒答率偏高的机制之一。
   const lines: string[] = [
     "<relevant-memories>",
+    RECALL_WRAPPER_HEAD,
     "",
   ];
 
   for (const item of items) {
     const typeTag = item.type ? `[${item.type}]` : "";
     lines.push(`- ${typeTag} ${item.content}`);
+  }
+
+  const guidance = buildAnswerGuidance();
+  if (guidance) {
+    lines.push("");
+    lines.push(guidance);
   }
 
   lines.push("");

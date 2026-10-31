@@ -147,6 +147,18 @@ export function renderTdaiMemoryToolsBlock(
   return lines.join("\n");
 }
 
+/**
+ * 本 injector 真正渲染给 LLM 的工具名集合（**从渲染结果解析**，不维护第二份手抄名单）。
+ *
+ * 用途：proxy 侧 guide 适配版（memory-tools-guide.proxy.ts）与 parity 测试以它为准，
+ * 保证「提示词里讲的工具」== 「<tdai_memory_tools> 块里注册的工具」——两边不能各说各话。
+ */
+export function listRegisteredToolNames(): string[] {
+  const rendered = renderTdaiMemoryToolsBlock("http://127.0.0.1:0");
+  const names = Array.from(rendered.matchAll(/<tool name="([^"]+)">/g), (m) => m[1]);
+  return [...new Set(names)];
+}
+
 export class TdaiMemoryToolsInjector implements InjectionHook {
   id = "tdai-memory-tools-injector";
   point = "system.suffix" as const;

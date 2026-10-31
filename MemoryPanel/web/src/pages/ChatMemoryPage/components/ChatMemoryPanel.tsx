@@ -127,17 +127,28 @@ function MemoryHealthBar() {
       </div>
     );
   }
-  const degradedTitle = view.degraded
+  // #123：未配置（noop / 读不到 provider）与真降级分开表达——根因不同，处置也不同。
+  const unconfigured = view.embeddingState === 'unconfigured';
+  const degradedTitle = view.degraded && !unconfigured
     ? `${t('memory.health.degradedBanner')}${
         formatDegradedSince(view.degradedSince)
           ? ` · ${formatDegradedSince(view.degradedSince)}`
           : ''
       }`
     : undefined;
+  const unconfiguredTitle = unconfigured
+    ? `${t('memory.health.embeddingUnconfigured')} · provider=${view.embeddingProvider ?? 'unknown'}`
+    : undefined;
   return (
     <div
-      className={`_memory-health-bar${view.degraded ? ' _memory-health-bar--degraded' : ''}`}
-      title={degradedTitle}
+      className={`_memory-health-bar${
+        unconfigured
+          ? ' _memory-health-bar--unconfigured'
+          : view.degraded
+            ? ' _memory-health-bar--degraded'
+            : ''
+      }`}
+      title={unconfiguredTitle ?? degradedTitle}
     >
       <MemoryHealthRing
         pct={view.coveragePct}
@@ -146,9 +157,15 @@ function MemoryHealthBar() {
       />
       <span className="_memory-health-sep">|</span>
       <span>
-        {t(view.embeddingOk ? 'memory.health.embeddingOk' : 'memory.health.embeddingBad')}
+        {t(
+          unconfigured
+            ? 'memory.health.embeddingUnconfigured'
+            : view.embeddingOk
+              ? 'memory.health.embeddingOk'
+              : 'memory.health.embeddingBad',
+        )}
       </span>
-      {view.degraded && (
+      {view.degraded && !unconfigured && (
         <span className="_memory-health-banner">{t('memory.health.degradedBanner')}</span>
       )}
     </div>
@@ -184,6 +201,7 @@ export default function ChatMemoryPanel(
     timeRange,
     setTimeRange,
     rangeTooLarge,
+    handleRefresh,
     showImport,
     setShowImport,
     showAllocate,
@@ -396,6 +414,7 @@ export default function ChatMemoryPanel(
               timeRange={timeRange}
               onTimeRangeChange={setTimeRange}
               rangeTooLarge={rangeTooLarge}
+              onRefresh={handleRefresh}
               canEdit={selected.uploaded_by_user_id === currentUserId}
               onSaveLayerItem={handleSaveLayerItem}
               onSearchLayer={searchLayer}

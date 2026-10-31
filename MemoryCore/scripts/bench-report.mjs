@@ -11,6 +11,10 @@
  */
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
+import { enforceJudgeGate, judgeCoverage } from "./lib/bench/report.mjs";
+
+/** M8：任一报告判分覆盖不足/判分器缺失 ⇒ 渲染后 exit 3（不许静默当正常档贴进文档）。 */
+let anyInvalid = false;
 
 /** Wilson 95% 置信区间：小样本比例必须带区间，否则就是自欺欺人。 */
 function wilson(k, n, z = 1.96) {
@@ -80,7 +84,11 @@ function summarize(file) {
   lines.push(
     `- 灌库：${ing.groups ?? "—"} 组 / ${ing.turns ?? "—"} 轮，写入 ${ing.written ?? "—"}，向量 ${ing.embedded ?? "—"}，失败 ${ing.embedFailed ?? "—"}，429 重试 ${ing.embedRetries ?? "—"}`,
   );
-  lines.push(`- 题数：${rows.length}（判分 ${j.overall?.genJudged ?? 0} 题）；异常/未解析行：${errs}`);
+  const jc = judgeCoverage(j);
+  if (enforceJudgeGate(j, { label: basename(file), allowUnjudged }) !== 0) anyInvalid = true;
+  lines.push(
+    `- 题数：${rows.length}（判分 ${jc.judged}/${jc.total} = ${(jc.coverage * 100).toFixed(1)}%；判分器 ${jc.judgeModel ?? "缺失"}）；异常/未解析行：${errs}`,
+  );
   lines.push("");
   lines.push(table(rows, "类别"));
   lines.push("");
@@ -94,13 +102,18 @@ function summarize(file) {
 const args = process.argv.slice(2);
 const files = args.filter((a) => !a.startsWith("--"));
 if (!files.length) {
-  console.error("用法: node scripts/bench-report.mjs <report.json...> [--md]");
+  console.error("用法: node scripts/bench-report.mjs <report.json...> [--md] [--allow-unjudged]");
   process.exit(1);
 }
+const allowUnjudged = args.includes("--allow-unjudged");
 const mdOnly = args.includes("--md");
 const out = files.map((f) => summarize(f)).join("\n\n---\n\n");
 if (mdOnly) {
   process.stdout.write(out + "\n");
 } else {
   console.log(out);
+}
+if (anyInvalid) {
+  console.error("[bench:invalid] 存在判分覆盖不足的报告（见上）：不可作为结论引用；补 judge 后重跑，或显式 --allow-unjudged");
+  process.exit(3);
 }

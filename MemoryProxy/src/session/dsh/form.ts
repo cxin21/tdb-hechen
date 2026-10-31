@@ -16,11 +16,36 @@
  *   - 顶层 `questions[]` 一次可发多题(workbuddy/CC 通常单题;这里为对齐 dsh
  *     schema 保留数组结构,单题就一元素数组)
  *
- * # 传输
- *   - 协议 = **OpenAI /v1/chat/completions**(与 dsh 客户端 fetch 一致)
- *   - SSE stream 或 non-stream(与请求 `body.stream` 保持一致)
- *   - 骨架完全照抄 workbuddy(chunk 1 = role+tool_call decl / chunk 2 =
- *     arguments delta / chunk 3 = finish_reason:tool_calls / DONE)
+ * # 传输(双协议,由 {@link FormData.protocol} 分派)
+ *   - **Anthropic Messages**(dsh v0.2+ 主口径,`POST {baseURL}/v1/messages`):
+ *     六事件 tool_use SSE —— message_start → content_block_start →
+ *     content_block_delta(input_json_delta) → content_block_stop →
+ *     message_delta(stop_reason:"tool_use") → message_stop;non-stream 为单帧
+ *     `{type:"message", content:[{type:"tool_use",...}], stop_reason:"tool_use"}`。
+ *     形状与 `session/claude-code/form.ts:227-283`(CC 的 AskUserQuestion SSE)
+ *     一致,只有 tool name / tool_call id 前缀 / input schema 不同。
+ *   - **OpenAI /v1/chat/completions**(v0.1.x 兼容):chunk 1 = role+tool_call
+ *     decl / chunk 2 = arguments delta / chunk 3 = finish_reason:tool_calls / DONE
+ *   - stream 与否跟请求 `body.stream` 保持一致,两种协议都支持。
+ *
+ * # anthropic 侧必须发空 thinking 占位
+ *   OpenAI 帧里的 `reasoning_content` 占位(见 REASONING_PLACEHOLDER)是为了满足
+ *   DeepSeek thinking 模式"tool_calls 轮回带非空 reasoning_content"的硬校验。
+ *   Anthropic 分支是**同一校验的另一个入口**:DeepSeek 官方 anthropic 兼容端点在
+ *   thinking mode 下要求历史 assistant 必须带 `thinking` block,否则 400
+ *   `The content[].thinking in the thinking mode must be passed back to the API`
+ *   (依据:`agents/dsh/README.md` §3.6)。proxy 伪造的 assistant 帧下一轮就会变成
+ *   "历史",所以这个占位必须无条件带。
+ *
+ *   签名怎么给:沿用本仓既有的 mem-command 伪响应先例 ——
+ *   `MemoryProxy/src/mem-command/response-builder.ts:14` non-stream 用
+ *   `{type:"thinking", thinking:"...", signature:""}`,:47-59 streaming 只发
+ *   `content_block_start(content_block:{type:"thinking",thinking:""})` +
+ *   `thinking_delta` + `content_block_stop`(不发 `signature_delta`)。本文件照抄
+ *   该形状,只是 thinking 文本留空(表单帧不该抢用户注意力)。
+ *
+ *   ⚠️ 未验证项:DeepSeek 端是否接受空串 signature(远端行为,本仓无抓包证据)。
+ *   若线上出现上述 400,改这一处(`buildDshThinkingBlock` / 流式的 block 0)即可。
  *
  * # 状态机
  *   - 完全复用 CB 状态机(session/codebuddy/init.ts),同 workbuddy 模式;
@@ -78,8 +103,17 @@ export const MORE_LABEL = "更多 →";
  */
 const REASONING_PLACEHOLDER = "[proxy session-init form]";
 
-export const ASSET_CONFIRM_YES = "是,关联团队资产";
-export const ASSET_CONFIRM_NO = "否,本次不关联";
+/**
+ * 轮0 asset_confirm 的两个选项 label。
+ *
+ * **必须与 CB/CC 侧逐字一致(全角逗号)** —— CB 状态机用
+ * `session/claude-code/extractor.ts:58/61` 的 `answerOnly.includes(ASSET_CONFIRM_YES)`
+ * 做精准匹配,label 里的标点只要和 extractor 常量差一个字符,用户选完就识别不到,
+ * 状态机原地等下一轮 → 表单循环弹。所以这里直接 import 语义一致的全角文案
+ * (与 `session/codebuddy/form.ts:29-30` 同字面量)。
+ */
+export const ASSET_CONFIRM_YES = "是，关联团队资产";
+export const ASSET_CONFIRM_NO = "否，本次不关联";
 export const ASSET_CONFIRM_FORM_TITLE = "会话初始化 — 是否关联团队资产";
 
 /**
@@ -119,6 +153,15 @@ export interface FormData {
   retry?: boolean;
   stream?: boolean;
   modelId?: string;
+  /**
+   * 入站请求的 wire protocol。dsh v0.2+ 走 Anthropic Messages
+   * (`POST {baseURL}/v1/messages`),v0.1.x 走 OpenAI Chat Completions。
+   * 由 `session/index.ts` 从 `SessionRequestContext.protocol` 透传
+   * (anthropicHandler 传 "anthropic",handler 传 "openai")。
+   *
+   * 缺省 = "openai"(历史默认,与 `SessionRequestContext.protocol` 注释一致)。
+   */
+  protocol?: "openai" | "anthropic";
 }
 
 // ── ask_user_question input schema (dsh snake_case + 必填 id) ──────────────────
@@ -149,8 +192,8 @@ function buildAskUserQuestionArgs(data: FormData): { questions: DshAskQuestion[]
       question: titlePrefix + "本次对话是否要关联团队资产?" + SKIP_HINT,
       header: "关联资产",
       options: [
-        { label: ASSET_CONFIRM_YES, description: "选择 Team / Agent / Task,注入团队上下文" },
-        { label: ASSET_CONFIRM_NO, description: "本次不注入任何内容,直接放行" },
+        { label: ASSET_CONFIRM_YES, description: "选择 Team / Agent / Task，注入团队上下文" },
+        { label: ASSET_CONFIRM_NO, description: "本次不注入任何内容，直接放行" },
       ],
       multi_select: false,
     });
@@ -242,17 +285,32 @@ function buildAskUserQuestionArgs(data: FormData): { questions: DshAskQuestion[]
 /**
  * Build a dsh `ask_user_question` fake form response.
  *
- * 传输:**OpenAI chat/completions**(stream 或 non-stream)。
- * arguments shape:dsh 原生 `{questions: [{id, question, header, options, multi_select}]}`。
+ * 传输由 {@link FormData.protocol} 分派:
+ *   - `"anthropic"`(dsh v0.2+): Anthropic Messages —— stream 走六事件 tool_use
+ *     SSE,non-stream 走单帧 message。
+ *   - `"openai"` / 缺省(v0.1.x): OpenAI chat/completions。
+ * arguments shape 两种协议相同:dsh 原生
+ * `{questions: [{id, question, header, options, multi_select}]}`。
  */
 export function buildFormResponse(data: FormData): Response {
   const model = data.modelId ?? "unknown";
-  const created = Math.floor(Date.now() / 1000);
-  const id = "dsh-session-init-" + Date.now();
   const toolCallId = TOOLCALL_PREFIX + Date.now();
   const input = buildAskUserQuestionArgs(data);
   const argsStr = JSON.stringify(input);
 
+  if (data.protocol === "anthropic") {
+    // Anthropic message id 用 `msg_` 前缀(上游规范);tool_use id 沿用
+    // `call_dsh_session_init_` 前缀 —— 它是 proxy 自己回捞答复的锚点
+    // (`session/codebuddy/cleaner.ts` 的 tool_use_id 正则),不能换。
+    const msgId = "msg_dsh_session_init_" + Date.now();
+    if (data.stream) {
+      return buildAnthropicStreamingToolUseResponse(msgId, model, toolCallId, argsStr);
+    }
+    return buildAnthropicNonStreamingToolUseResponse(msgId, model, toolCallId, argsStr);
+  }
+
+  const created = Math.floor(Date.now() / 1000);
+  const id = "dsh-session-init-" + Date.now();
   if (data.stream) {
     return buildOpenAIStreamingResponse(id, created, model, toolCallId, argsStr);
   }
@@ -359,6 +417,131 @@ function buildOpenAIStreamingResponse(
       })}\n\n`));
 
       controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
+  });
+}
+
+// ── Anthropic thinking placeholder ────────────────────────────────────────────
+
+/**
+ * 空 thinking 占位块(非流式的完整形态)。
+ *
+ * DeepSeek anthropic 兼容端点在 thinking mode 下硬校验历史 assistant 必须带
+ * `thinking` block(见 `agents/dsh/README.md` §3.6 与头注);形状照抄
+ * `MemoryProxy/src/mem-command/response-builder.ts:14` 的既有先例。
+ */
+function buildDshThinkingBlock(): Record<string, unknown> {
+  return { type: "thinking", thinking: "", signature: "" };
+}
+
+// ── Anthropic non-streaming (tool_use) ─────────────────────────────────────────
+
+/**
+ * Anthropic Messages 的单帧假 form 应答。
+ *
+ * 客户端(dsh v0.2+ 的 anthropic adapter)看到 `stop_reason:"tool_use"` +
+ * `content[0].type:"tool_use"` 就渲染 ask_user_question UI,并在下一轮把用户选择
+ * 作为 `role:"user"` 的 `tool_result` block(`tool_use_id` = 这里的 id)回传。
+ */
+function buildAnthropicNonStreamingToolUseResponse(
+  msgId: string,
+  model: string,
+  toolUseId: string,
+  argsStr: string,
+): Response {
+  return new Response(JSON.stringify({
+    id: msgId,
+    type: "message",
+    role: "assistant",
+    model,
+    content: [
+      buildDshThinkingBlock(),
+      {
+        type: "tool_use",
+        id: toolUseId,
+        name: TOOL_NAME,
+        // 注意:Anthropic 的 tool_use.input 是**对象**(不是 OpenAI 那种 JSON 字符串)。
+        input: JSON.parse(argsStr),
+      },
+    ],
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    usage: { input_tokens: 0, output_tokens: 0 },
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+// ── Anthropic streaming SSE (tool_use) ─────────────────────────────────────────
+
+/**
+ * Anthropic tool_use 的流式应答:tool input 以 `input_json_delta` 的
+ * `partial_json`(JSON **字符串**片段)下发,客户端自己拼接并 JSON.parse。
+ *
+ * 事件序与 `session/claude-code/form.ts:227-283` 完全一致(六事件 + close);
+ * 少任何一个事件都会被严格 SSE parser 判为截断(V12-DSH-SSE-FIX 之后 dsh 的
+ * anthropic adapter 对帧形状有强校验,见 server.ts:321-324)。
+ */
+function buildAnthropicStreamingToolUseResponse(
+  msgId: string,
+  model: string,
+  toolUseId: string,
+  argsStr: string,
+): Response {
+  const encoder = new TextEncoder();
+  const sse = (event: string, data: unknown) =>
+    encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(sse("message_start", {
+        type: "message_start",
+        message: {
+          id: msgId, type: "message", role: "assistant", model,
+          content: [], stop_reason: null, stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }));
+
+      // block 0:空 thinking 占位(见头注「anthropic 侧必须发空 thinking 占位」)
+      controller.enqueue(sse("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "" },
+      }));
+      controller.enqueue(sse("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "" },
+      }));
+      controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
+
+      // block 1: tool_use(表单本体)
+      controller.enqueue(sse("content_block_start", {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: toolUseId, name: TOOL_NAME, input: {} },
+      }));
+
+      controller.enqueue(sse("content_block_delta", {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: argsStr },
+      }));
+
+      controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 1 }));
+
+      controller.enqueue(sse("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use", stop_sequence: null },
+        usage: { output_tokens: 0 },
+      }));
+
+      controller.enqueue(sse("message_stop", { type: "message_stop" }));
       controller.close();
     },
   });

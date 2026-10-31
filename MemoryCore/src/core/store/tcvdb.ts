@@ -764,6 +764,9 @@ export class TcvdbMemoryStore implements IMemoryStore {
       ftsSearch: hasBm25,
       nativeHybridSearch: this.embeddingEnabled && hasBm25,
       sparseVectors: hasBm25,
+      // #152 ①：TCVDB 侧零实现 upsertL1FactVector / searchL1FactVector（无 l1_fact_vec 通道），
+      // 事实向量写入与检索必须显式跳过并 WARN，不能静默空跑。
+      l1FactVec: false,
     };
   }
 

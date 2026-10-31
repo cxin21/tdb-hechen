@@ -35,7 +35,7 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, conclusionLayerOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride, recallFlatOverride }) {
+export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, conclusionLayerOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride, recallFlatOverride, evidencePackOverride }) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -81,6 +81,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // W3（issue #134）：结论卡证据回捞（#78 R-b smallToBig）——实验档只写沙箱 yaml。
   if (smallToBigOverride && typeof smallToBigOverride === "object" && Object.keys(smallToBigOverride).length) {
     m.recall.smallToBig = { ...(m.recall.smallToBig || {}), ...smallToBigOverride };
+  }
+  // #169（2026-10-31）：证据包档（recall.evidencePack：每侧邻接行数/时间窗/总帽）——只写沙箱 yaml。
+  if (evidencePackOverride && typeof evidencePackOverride === "object" && Object.keys(evidencePackOverride).length) {
+    m.recall.evidencePack = { ...(m.recall.evidencePack || {}), ...evidencePackOverride };
   }
   // #138（2026-10-28）：结论层试验档（conclusionLayer.maxConclusions 等）——只写沙箱 yaml。
   if (conclusionLayerOverride && typeof conclusionLayerOverride === "object" && Object.keys(conclusionLayerOverride).length) {
@@ -979,9 +983,11 @@ export function withEmbedCache(embedding, cacheDir, tag) {
 // ── 生效配置自检（issue #135 白跑档的根因防线）───────────────────────────────
 /**
  * #159/#174：复刻 src/core/recall/validity-policy.ts:excludeInvalidatedFor 的三态映射。
- * soft 优先于 flag=false 是**现行行为**（不是本文件的 bug），所以关档必须连派生值一起断言。
+ * #174 起定序 = 显式关优先于 mode：`excludeInvalidated: false` 不再被 soft 改写
+ * （旧实现 soft 盖住 false → --validity-off 在 soft 配置下恒定失效）。
  */
 export function effectiveExcludeInvalidated(mode, flag) {
+  if (flag === false) return false;
   return mode === "soft" ? "soft" : flag === undefined ? null : flag;
 }
 
@@ -1015,6 +1021,9 @@ export function effectiveRecallSnapshot(cfg) {
     "recall.factChannel.enabled": r.factChannel?.enabled === true,
     "recall.factChannel.weight": r.factChannel?.weight ?? null,
     "recall.validity.mode": r.validity?.mode ?? null,
+    // 软惩罚强度（src/config.ts:2219 缺省 0.5）：mode=soft 时真正影响排序的就是这个乘子。
+    // 不进快照的话 vsp 臂（soft + softPenalty=0.25 实验值）与 vs 臂指纹相同、报告无法自证差异。
+    "recall.validity.softPenalty": r.validity?.softPenalty ?? null,
     // #159：--validity-off 只改 recall 根级 excludeInvalidated，与 validity.mode 是两个键；
     // 不记进快照的话「关失效排除」这一档就只有旗标、没有断言可依。
     "recall.excludeInvalidated": r.excludeInvalidated ?? null,
@@ -1025,6 +1034,12 @@ export function effectiveRecallSnapshot(cfg) {
     // 与 src/core/recall/validity-policy.ts 的 excludeInvalidatedFor 保持逐字一致，由单测对拍。
     "recall.excludeInvalidated.effective": effectiveExcludeInvalidated(r.validity?.mode, r.excludeInvalidated),
     "recall.presentTemporal.enabled": r.presentTemporal?.enabled === true,
+    // #169：证据包两键。--evidence-pack N 经 prepareBenchYaml 的 evidencePackOverride 写进
+    // 沙箱 yaml、src/config.ts 已解析；不收进快照则 run-r169 的 --expect-config
+    // "recall.evidencePack.*" 会在 runner 里 diff 失败 exit 2，且测试侧只能靠手工放宽 allowlist
+    // （allowlist 比快照宽 ⇒ 拼错键名被放过，正是 #159/#174 反复抓的「读数不可自证」病）。
+    "recall.evidencePack.enabled": r.evidencePack?.enabled === true,
+    "recall.evidencePack.adjacent": r.evidencePack?.adjacent ?? null,
   };
 }
 

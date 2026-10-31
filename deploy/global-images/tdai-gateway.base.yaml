@@ -1,0 +1,712 @@
+# ============================================================
+# TDAI Gateway 生产基础配置（global-images 单机 docker）
+#   —— 本文件是 deploy/global-images/start-memory-core.sh 的唯一配置真源。
+#   脚本不再内联拼 yaml：cp 本文件 → 按 .env/env 做单键占位符替换 → 挂进容器
+#   /data/config/tdai-gateway.yaml。改生产档只改这里（不要再往脚本里塞 heredoc）。
+#
+# 与另两套真源的关系（三套先分清再谈「哪套说了算」，见 docs/ops/config-default-ledger.md §0）：
+#   1) 本文件 = global-images（docker 单机）生产档；
+#   2) deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml = 腾讯云生产档，
+#      memory.* / skill.* 决策值必须与本文件同值（trim 后逐行 diff 应只剩路径/环境差异）；
+#   3) MemoryCore/src/config.ts 代码缺省 = 零配置用户的缺省，不是生产档。
+#   改任一决策键 = 三处同改（本文件 + 云模板 + 代码缺省/台账），并同步 docs/ops/production-profile.md
+#   （键 / 生产值 / 证据等级 / 归口票 / 回滚动作）。
+#
+# 证据标记约定（每个决策键行尾带一条；没有标记的键 = 结构性/机制键，依据是行内注释）：
+#   【evidence: measured(读数)】= 有 bench/生产实测读数，值与读数方向一致；
+#   【evidence: argued(理由)】  = 无读数但有机制/契约论证，且台账登记了等什么读数；
+#   【evidence: pending(#票)】  = 无读数、未翻转，以显式值落盘，等票面读数；
+#   【evidence: structural】    = 部署拓扑/环境差异，无 A/B 可言。
+#
+# 渲染后自检：bash deploy/global-images/start-memory-core.sh --dry-run 会打印渲染结果；
+#   渲染结果里不应残留 __MEMORY_ 占位符（残留即脚本漏替换）。
+# ============================================================
+
+deployMode: standalone
+stateBackend: "local"
+
+server:
+  port: 8420
+  host: "0.0.0.0"
+  # P2-T13 鉴权必填（拍板③）：不配则每次启动生成临时密钥（本进程有效，重启更换），
+  # 并在启动日志 loud 打印。跨进程调用方（MemoryProxy / Panel / 探针脚本）必须配置
+  # 同一把 key（env TDAI_GATEWAY_APIKEY 或各自配置文件），否则一律 401。
+  # apiKey: "your-key"  # 不配则每次启动生成临时密钥
+  apiKey: "${TDAI_GATEWAY_API_KEY}"
+
+# 数据落到 D 盘（避开 C 盘满问题）
+data:
+  baseDir: "/data/tdai-memory"
+
+# ── LLM（必填；由 start-memory-core.sh 用 .env 的 MEMORY_LLM_* 替换占位符）──
+llm:
+  baseUrl: "__MEMORY_LLM_BASE_URL__"
+  apiKey: "__MEMORY_LLM_API_KEY__"
+  model: "__MEMORY_LLM_MODEL__"
+  # 【evidence: measured（2026-10-25 生产实证：thinking 端点被 4096 帽截成空响应 → 记忆抽取 0 条）】
+  # 0 = 不传 max_tokens（由上游缺省承载）。要控成本就调本行或 maxTokensLimit。
+  maxTokens: 0
+  # 多提供商兼容：max_tokens 上限（按模型声明；缺省 131072=Ark 上限）
+  maxTokensLimit: 131072
+  timeoutMs: 300000
+
+# ── Memory 引擎 (纯记忆, 不依赖 Skill) ──
+memory:
+  recallJournal:
+    enabled: true
+    rotationSizeMB: 5
+    maxFiles: 5
+  # D-3（2026-09-21，用户拍板"全做"）：敏感性标注提取门（A/B ev17b 开启；ev17a 为旧 prompt 对照基线）
+  sensitivity:
+    extractionEnabled: true
+  # 【evidence: argued（ADR-0018 铁律 5 修正版：本仓与上游同为 chat。deploy/global-images/start-memory-core.sh:83-86
+  # 与 .local/upstream-sync/v201/deploy/global-images/start-memory-core.sh:75-78 两处注释逐字同文 ⇒
+  # 不存在「上游 code / 本仓 chat」的语义翻转；promptMode 是场景选择，不是上游同步项）】
+  # 取值 chat | code。默认 chat（通用聊天/教学场景）；code 面向代码工程场景。
+  promptMode: "__MEMORY_PROMPT_MODE__"
+
+  capture:
+    enabled: true
+
+  # ── #134 写面策略（W1 事实键双写 / W2 写时双时态 supersession）──────────────
+  # 缺省全关 = 与既有写入行为逐位一致（生产安全缺省）。
+  #  · factKey.enabled=true：L1 的 embedding 键 = 内容 + 分隔符 + 事实短语
+  #    （事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
+  #    LME90 实测 +6.7pp 判对但不显著（CI 含负）；全开档（W1+W2+W3）判对与基线打平、
+  #    cov -4.6pp（ns）→ 2026-10-27 judge 对齐后复核：**保持关**（生产最优 = 只开 W3，
+  #    见 docs/optimization-results.md §8 排名表）。
+  #  · supersession.enabled=true（2026-10-31 翻转，#153）：dedup 的 update/merge 把旧行从"归档"
+  #    改为"valid_end 只标记"（零删除红线，历史可追溯）。长会话 bench（docs/long-session-bench.md
+  #    三臂，生产同一份 computeSupersessions）：B 臂开 = 旧值注入率 0% / 当前命中 100% / 重复值 1.0，
+  #    A 臂关 = 33.3% / 100% / 7.67 ⇒ 不失效旧行就是长会话旧值污染的根因。
+  #    误删护栏 = cardinalityGate true + cardinalityDefault single（只单值谓词失效，多值/模态 additive）。
+  #    残留风险：LME90 turnCov −10.9pp（bench 语料无失效语义）；「问历史旧值」类查询靠 validity=soft
+  #    降权保留而非硬丢 ⇒ 本键与 validity.mode=soft 是配套对（同开才有读数意义）。
+  write:
+    factKey:
+      enabled: false  # 【evidence: measured-negative（#134 +6.7pp 判对但 CI 含负；#147 全开档 cov −4.6pp ns ⇒ 按读数关，不按「看起来有用」开；等 #168 长会话读数）】
+      # ⚠ 开启前置：需同时开 l1_fact_vec 能力位（tcvdb 后端不支持 ⇒ 在该后端开启只是空查，静默无效）。
+      # #137（2026-10-27）：键形态。
+      #  replace（缺省）= W1 旧形态：原文 + 事实拼同一条 embedding 键。#147 全开档实测
+      #    键替换无净收益（判对 −2.2pp ns），且稀释「同实体不同时间」判别信号；
+      #  channel = 本票形态：原文主索引**逐位不动**，事实短语单独 embed 成平行通道向量
+      #    （l1_fact_vec），召回侧只扩召回、不裁决排序。
+      mode: "replace"
+      separator: " | "     # 原文与事实短语的拼接分隔符（空串回落默认）
+      maxFactChars: 240    # 事实部分字符预算（整条截断，不切断单条短语；0=不拼接）
+      maxFacts: 5          # #137：最多拼几条事实短语（clamp 1..12）
+      includeTriples: false # #137：三元组展开成短语一起进键
+      onlyForTypes: []      # #137：只对这些 type 建键（空 = 全类型；例 ["work_fact"]）
+    supersession:
+      enabled: true  # 【evidence: measured（#153 长会话 bench 三臂：B 开 旧值注入 0%/当前命中 100%/重复值 1.0 vs A 关 33.3%/100%/7.67；误删护栏 cardinalityGate true + cardinalityDefault single）】  # 【evidence: measured-negative（§11：turnCov −10.9pp 显著负 ⇒ 关；配套读侧 validity.mode=soft 已就位，等事实级 (subject,predicate) 粒度再开）】
+      # #136 属性契约（2026-10-27）：只有单值属性（同一时刻只有一个值）允许失效。
+      # cardinalityGate=true（缺省）= dedup update/merge 时先判谓词基数，多值/模态
+      # （is considering / wants to / likes / 想 / 考虑…）一律 additive，不失效旧行；
+      # false = 回到 #136 前"判 update 就整行 valid_end"。
+      cardinalityGate: true
+      # 内容级无线索时的缺省基数：single（保覆盖，= #136 前行为）/ multi（保守不失效）。
+      cardinalityDefault: "single"
+
+  extraction:
+    enabled: true
+    enableDedup: true
+    # #137（W1 双通道）：多事实抽取块（缺省关 = prompt 字节逐位不变）。
+    # 开启后每条 memory 多输出 2-5 条自足事实短语，落 metadata.facts（可选 metadata.factTriples），
+    # 供写侧事实通道（write.factKey.mode="channel"）建索引。抽取抽样门禁见
+    # scripts/fact-extract-gate.mjs（准确率 ≥ 90% 才允许生产开启）。
+    facts:
+      enabled: false  # 【evidence: measured-negative（与 factKey 同源：事实抽取进键/进通道的净收益不显著 ⇒ 关；抽取本身仍在跑，管道不半成品）】
+      maxFacts: 5          # clamp 1..12
+      includeTriples: false
+    # #79（2026-10-25 拍板）：dedup LLM 判重超时毫秒（clamp 60000..3600000；缺省 300000）。
+    # 超时→快失败→既有 catch 走 storeAllDirectly 降级（l1-extractor.ts:528），防 300s 悬挂堆积静默死（2026-10-20 三连崩溃根修）。
+    dedupTimeoutMs: 90000
+    maxMemoriesPerSession: 20
+    durativeEnabled: true # GROW-EVO P2（§2.2）：持续状态事实写 valid_start
+    recurrenceEnabled: true # D-4（2026-09-22 拍板）：周期性事实 RECURRENCE_BLOCK 提取（LLM 只提议、确定性门裁决）
+    # L1-OUTAGE-20261015：单次提取 LLM 调用超时 ms（思考型端点延迟∝prompt 体积，大批恒超时→游标不推进毒批死循环）；
+    # 缺省 300000=逐位现状；clamp 60000..3600000。L1 提取与 L2 场景提取共用本键。
+    # extractionTimeoutMs: 300000
+    # #46 毒批拆分（2026-10-17 拍板 A）：scene 抽取失败且批内 >1 条时对半递归重试（镜像 L1 extractGroupWithSplit 先例）；缺省 false
+    scenePoisonSplit: true
+    # #46 批次上限：scene 抽取前按 memoriesJson 估长贪心预分批防巨批；缺省 0=关（单批现状）
+    sceneBatchMaxChars: 20000
+  # #28（R3，2026-10-17 用户拍板「都开」）：soul-state 观测门——抽取完成 seam 读 soul_state
+  # →rollupStateFromRecords→写回（user_correction/tool_failure/task_switch 冲量 + 48h 半衰期）。
+  # 开启后「当下的状态」尾块随真实行为积累（自然触发，零注入零删除，P1 安全）；缺省 false。
+  extractionExtensions:
+    enabled: true
+
+  persona:
+    triggerEveryN: 50
+    maxScenes: 15
+    # R4(2026-10-12): L2 场景提取关思考；A/B 30 次真调用 p50 −65%、整合率 2/10→10/10、质量代理持平
+    reasoningEffort: "none"
+
+  pipeline:
+    everyNConversations: 5
+    enableWarmup: true
+    l1IdleTimeoutSeconds: 600
+    l2DelayAfterL1Seconds: 90
+    l2MinIntervalSeconds: 900
+    l2MaxIntervalSeconds: 3600
+
+  recall:
+    enabled: true
+    # 【evidence: measured（#135 §24 缺省对齐：同语料 90 题 k=10 判对 60/90 vs k=5 56/90 = +4.5pp，
+    #   turn 级覆盖收益；sessionCov 在 k=5 已饱和。代价 = 注入块均值 blockChars 3277→5413（+65%，
+    #   仍 <14000 上限）、时延/token 上升；前 5 位排序反而略差（多出行挤占 top-5））】
+    maxResults: 10
+    scoreThreshold: 0.3
+    # ── P0-2（issue #2 打分刻度错配，2026-10-13）──
+    # native hybrid（TCVDB 服务端 RRF rerank k=60）返回 rank-only 融合分：单通道 top1≈
+    # 1/61≈0.0164、双通道 top1≈0.0328（刻度自证 verify-t1.ts:202-203）——scoreThreshold
+    # (0.3, 余弦刻度) 对 native 路形同虚设，结果从未被门槛过滤。nativeMinRRF 只约束
+    # native 路（SQLite fallback 路仍走 scoreThreshold 全套精排）。
+    # 0.016 ≈ 单通道 top-2（1/62≈0.0161 过 / 1/63≈0.0159 不过）或任意双通道融合命中
+    # （≥2/69≈0.029）；0 = 关（逐位现状）。golden replay 校准后再调。
+    nativeMinRRF: 0.016  # 【evidence: argued（native 路纯门槛非排序，0.016≈单通道 top-2；golden replay 校准后再调 0≈关）】
+    strategy: "hybrid"
+    # #145（2026-10-29）：rerank.candidates 缺省 32 后，扩池会把上游 maxResults 抬到 32，
+    # 缺省 candidateK（maxResults*3）随之变 96；bench 定档（84.3%）用的是 candidateK=32。
+    # 实测（#141 匹配设计，15 对）：candidateK 32 比 15 +6.44pp；96 未测 → 钉住已测档，
+    # 这是本模板里少数「与代码缺省不同、且实测更优」的钉子（§21 开关台账）。
+    candidateK: 32  # 【evidence: measured（#141 匹配设计 15 对：32 vs 15 +6.44pp；96 未测 → 钉已测档，不做未验证的扩张）】
+    foldClusterEnabled: true  # F-CLUSTER v2 召回折叠（2026-09-30 转产：0b7ef5a 三层断点修复+A/B 5/10 触发实证）
+    # ── #137（W1 双通道）事实键平行召回通道（缺省关 = 通道退出，逐位现状）──
+    # 读侧覆盖两处：钩子自动召回（auto-recall.searchHybrid）与 tdai_memory_search 工具路；
+    # 钩子路额外支持 fusion.mode="normalized"（通道内归一化分作主序），工具路只做通道级 RRF。
+    # 前置：写侧 write.factKey.mode="channel" + extraction.facts.enabled=true（否则库里没有
+    # 事实通道向量，开启读侧只是空查）。store 未实现 searchL1FactVector（如 tcvdb 服务端
+    # embedding 后端）时通道自动静默退出。
+    factChannel:
+      enabled: false  # 【evidence: argued（前置未满足：需 write.factKey.mode=channel + extraction.facts.enabled=true；本档写侧关 ⇒ 读侧开=空查）】
+      # 融合权重（唯一来源 fusion.fact > 本键 > 缺省 0.6）：
+      # rrf/weighted = weight × 1/(60+rank+1) 的 RRF 贡献（只加「池里还没有的新候选」，
+      # 原文命中之间的相对序不动）；normalized = 归一化分权重（同优先级，fusion.fact 可覆盖）。
+      weight: 0.6
+      # candidateK: 32     # 通道上游候选上限（缺省 = recall.candidateK）
+      # minScore: 0.3      # 通道余弦下限（缺省回落 scoreThreshold）
+      # onlyForTypes: ["work_fact"]  # 只对某类记录生效（缺省空 = 全类型）
+    # ── #135 R2 / #137：多通道加权融合（缺省 rrf = 逐位现状）──
+    # 【evidence: measured（§17.9：normalized 在深池 α=0 档判对 −2.22pp ns（turnCov +1.92pp、MRR +2.31pp
+    #   只说明「检索序更准」）；§16 全开档 weighted Δ=0（1W/1L/88T）⇒ 两个非缺省档都没有净收益，
+    #   本档保持 rrf。权重字段 dense/bm25/fact/recency/validity 仅在非 rrf 档被消费)】
+    fusion:
+      mode: "rrf"              # rrf（通道级倒数秩融合）| normalized | weighted
+      # dense: 0.5             # 仅在 normalized/weighted 档消费
+      # bm25: 0.2
+      # fact: 0.3
+      # recency: 0.2           # weighted 档专用（缺 recencyHalfLifeDays 走缺省半衰）
+      # validity: 0.1
+    timeoutMs: 5000
+    # ── 结构感知召回九通道（DS-RECALL-STRUCTURE-AWARE-001）→ 2026-09-12 实测关断 ──
+    # 关断裁决（结构信号 on/off A/B，runs/2026-09-12T12-08-44 vs 12-11-49，同语料 1168 同 sha 92c4c8bc）：
+    # on P@5=0.285 / off P@5=0.325，差 0.04 > 平手线 0.02；逐 query 归因：10 条中 8 条逐位中性、
+    # 2 条有害（q9/q10 各被挤掉 1 条相关记忆）、0 条有益；分层旁证零反向漂移（CC/SD 逐位同，CTR off 略高）。
+    # 依据"golden 实证降精度即关断"先例（beb2022 / router 退役 C3 同款）全量置 0；
+    # 能力保留可重开（历史量级校准记录：RV2-1 ÷170 回 tiebreak 本位 2e-4~3e-4；CAL C2 六档）。
+    # 重开前置：修复伤害模式后按漂移协议重跑 on/off A/B（预注册判据见 DS-P5-REANCHOR-001 §4.1）。
+    timeBoost: 0               # R1 时间窗（关断实测有害：q9/q10 挤位）
+    recencyBoost: 0            # R1 时近性（关断）
+    sigWeight: 0               # R2 重要性（关断）
+    inferredPenalty: 0.1       # R3 置信度分层：inferred 殿后旗标（GOLD-EVO P3 修正：三刀 5fc7962 后已从跨档乘法降为平局组内旗标，实际效果远弱于旧注释描述）
+    reinforcementWeight: 0     # R8 强化闭环（关断）
+    moodBoost: 0               # R9 mood-congruent 弱偏置（关断）
+    graphMinStrength: 0.5      # R4 图一跳阈值旋钮（graphDiscount=0 时零调用；保留备重开）
+    graphDiscount: 0           # R4 图一跳补池（关断实测有害）
+    coreRefBoost: 0            # R5 价值驱动（关断；C1 coreRef 落盘与展示不受影响）
+    sceneBoost: 0              # R6 场景路由（关断）
+    # 性能速赢（TTL 置 0 = 关闭）
+    queryEmbeddingCacheTtlMs: 60000   # E1：同 query 文本 60s 内复用向量（免重复外呼）
+    valuesCacheTtlMs: 60000           # E2：价值锚缓存（五个写路径挂失效钩子；跨进程写漂移窗口=TTL）
+    sessionReuseTtlMs: 300000         # E3：同 session 同 query 复用上轮注入块（5 分钟，空结果不缓存）
+    # ── RV2-2 精排重设计（2026-09-11）→ P5 重锚裁决关断（2026-09-12，DS-P5-REANCHOR-001）──
+    # compositeScore = wRel×relevanceNorm + wTime×timeProx + wSig×sigNorm + wCore×coreRefHit。
+    # relevanceNorm：候选相关度分池内 max 归一（直接命中=fused score；图候选=派生分
+    # maxHitScore×graphDiscount×pprNorm——同一量纲同尺度，E2.1 派生分即相关度折扣分）。
+    # 契约：负值 clamp 0；全 0 = 关断恒等（基线融合排序）；relevance=0 = 退化纯时间/显著排序。
+    # 历史：红牌轨迹 0.325→0.210→0.125→0.105（量纲失配降精度）；RV2-2 相关度主导修复后
+    # 重锚实测（reanchor-2026-09-12T04-26-51.json，corpus/gitSha 双一致）仍降精度：
+    # 精排 off P@5=0.285 / on P@5=0.160，差 0.125 > 平手线 0.02 → 工作点裁决 = off（关断）。
+    # 新验收线 = 重锚基线 0.285 − margin 0.02 = P@5 ≥ 0.265（平面层体系；
+    # 漂移重锚协议见 docs/superpowers/evals/memory-recall-golden/README.md）。
+    # ── 三次重锚（2026-09-12 晚，排序三刀 5fc7962 落地后 A/B，触发条件 2：排序语义变更）──
+    # 字典序新语义下复测：结构信号 on 0.325 / off 0.345（q9 挤位已被刀一修复、q10 平局组内
+    # 重排仍有净伤害，每条 query off 均不劣于 on）→ 信号维持退役不回岗（spec §8.3）。
+    # 工作点 = 纯基线；重锚基线 0.345（corpus 1176，runs/13-33-14；④ 完结重锚 runs/19-46-39
+    # corpus 1246 精确复现 0.345，写副本 sidecar 首跑实证，线 0.325 重确认）。
+    # 现行验收线：**P@5 ≥ 0.325**（= 0.345 − 0.02；同日三次换线均有据登记，数字巧合非复旧）。
+    rerankWeights:
+      relevance: 0
+      timeProx: 0
+      significance: 0
+      coreRef: 0
+    # ── R7 分层召回 · 结论层（审查修补 2026-09-12 登记；2026-09-12 显式打开 = 缺省值原样落盘）──
+    excludeInvalidated: true  # 【evidence: structural（硬失效总闸；与 validity.mode=soft 同源：排除点 excludeInvalidatedFor，档位由 validity.mode 决定）】
+    # #136（W2 软失效）：效期策略。hard = 失效/未来生效行直接排除（逐位旧行为）；
+    # soft = 失效行 relevance 降权保留（仅"问现在/最新 + 内容相关的更新行"才硬丢）。
+    # 代码缺省已由 hard 改 soft（WP1b 2026-10-31，config.ts 未知值也落 soft）；实证见 docs/optimization-results.md §11。
+    # 【evidence: measured（§11：同样 140 行失效语义下 overall cov −10.6pp → −4.1pp（少损 6.5pp）、
+    #   temporal-reasoning −13.3pp → 0.0pp 全恢复；knowledge-update 仍 −16.7pp 未恢复）｜
+    #   本档 write.supersession=false ⇒ 库里不产生 expired 行，读侧 soft/hard 逐位等价 = 前置条件的
+    #   配套读侧：软失效是 supersession 的配套读侧——本档 supersession 已翻 true（#153），二者同开
+    #   才成立；若回滚 supersession=false，库里不再产 expired 行，本档退化为逐位等价（无害）】
+    validity:
+      # 生产档 = soft（配 #148 两旋钮显式落盘，避免靠代码缺省隐式生效）。
+      mode: "soft"
+      # #148：soft 档 expired 行降权系数（clamp [0,1]，缺省 0.5）。1 = 只排序不惩罚；0 = 直接沉底。
+      # 【evidence: measured（SOFT_VALIDITY_PENALTY=0.5 在 §11 三臂里就是 0.5 档；单点解析
+      #   core/recall/validity-policy.ts 的 resolveSoftValidityPenalty，两路同源）】
+      softPenalty: 0.5
+      # #148：soft 档下「查询问当下 + 池里有取代它的更新行」是否硬丢（缺省 true = #136 口径）。
+      # false = 这类行也只降权保留（更保守，不误删）。
+      # 【evidence: argued（#136 的硬丢判据 = 查询意图 + 内容 token 重叠 + 更新时间；关掉它 = 允许
+      #   「旧值」与「新值」同时进 top5 挤占名额。等事实级 (subject,predicate) 精确判定落地后再评）】
+      hardOnPresentIntent: true
+
+    # ── #135 R3：查询时间感知（诞生于 bench，缺省关）──
+    # query 含当下时态标记（now/currently/现在/目前/最新…）时对「当下成立」的行 +boost。
+    # 【evidence: measured（§16：rerank-off 基线上 +0.37pp，n.s. ⇒ 不翻转，保持 false）｜
+    #   boost 0.08 与 timeBoost 同族加性量级、recentDays 30 为「近」的定义窗；三项都是可调旋钮】
+    presentTemporal:
+      enabled: false
+      boost: 0.08
+      recentDays: 30
+
+    # ── #169：证据包邻接扩窗（缺省关 = 等读数，不是否决）──
+    # 【evidence: pending（#169：按 scripts/run-r169-evidence-pack.sh 四档 +0/+1/+2/+3 跑出读数再翻转；
+    #   实测前提见 core/recall/evidence-pack.ts 头注：同 session 相邻行 40.8% 不同场景、±3 位置邻接
+    #   33% 超 30min ⇒ 必须有位置窗 + 时间窗双窗，否则扩出来的是噪声）】
+    # 键在、gates 观测在（recall.gates.evidencePack 恒出现）、四档脚本在 ⇒ 不是半成品。
+    evidencePack:
+      enabled: false
+      adjacent: 1            # 每侧位置窗口 0..3
+      windowMinutes: 30      # 时间窗分钟（0 = 不限）
+      maxExtraLines: 6       # 单次召回邻接行总帽 0..24
+      maxSessionRows: 400    # 单会话行数上限，超过则整段不扩
+
+    # ── 注入块包装口径（#172-②，代码缺省 calibrated）──
+    # calibrated = 注入块不加诱导拒答/免责句，按「可核验事实 + 出处」组织；legacy = 旧包装（显式回滚档）。
+    # 【evidence: argued（#172-② 口径裁决；无 A/B 读数，但缺省即 calibrated ⇒ yaml 显式钉 = 防漂移，
+    #   不是新行为。回滚 = 本键置 legacy（bench --inject-wrapper legacy 同口径））】
+    injectWrapper: calibrated
+    emotionSalienceWeight: 0 # GROW-EVO P3 R10 实验轨：进预注册 A/B 队列，未过 A/B 不得置正
+    conclusionLayer:
+      enabled: true            # I① 结论层总开关（false = 结论层整体退出，输出与 R7 前基线逐位一致）
+      maxCharsPerMemory: 2000  # 单条结论注入前截断字符数（0 = 不截断；Task CAL C1）
+      cacheTtlMs: 300000       # I③ 幂等结论层缓存 TTL 毫秒（0 = 关；显式落盘 = 原"回落 sessionReuseTtlMs"的等价值）
+      minUniqRatio: 0.35       # v18-c 结论块低密度门（何晨拍板「全做」2026-10-05）：句子级去重保留率下限，
+                               # 低于阈值 = 自指回放块跳过取下一名（undefined/0 = 关逐位现状）
+      # #53（2026-10-19）：L2 结论层 IDF 加权计分——true 时候选按 batch 相对 IDF
+      # （idf(t)=ln(1+N/(1+df(t)))，万词面 token 天然低分）重排；层级序（work_fact>scene_block）
+      # 不被反转，平分保调用方序。缺省 false = 调用方序逐位现状。
+      idfWeighted: true
+      # ── R71-A1 后继（2026-10-26 配置审计修正）：绝对分 minBm25Rel（6.5，生产语料定标）
+      # 语料重建即失标 → 换相对门 minBm25RelRatio（分池相对分位，语料无关）。
+      # 解析点 src/config.ts:1861-1903。缺省 undefined = 关 ≠ 0（0 也是显式关）。──
+      minBm25RelRatio: 0.4     # work_fact 候选 bm25 相对相关性地板（rel/(1+rel) 归一后的相对分位）
+      maxTotalChars: 2000      # 结论层整块字符帽（跨卡累计；缺省 undefined=关）
+      truncateMode: sentences  # 截断粒度：sentences=句边界；缺省 chars=码点硬截
+      # ⚠️ 2026-10-26 审计：原 textHitMaxTokenRatio（#99 F1 万词面 token 剔除）已退役，
+      # config.ts:1884 注释明写静默忽略 → 已删除，避免「看起来开了」的假配置。
+      # ── #138（2026-10-28）：结论层查询路由 ──
+      # assistantRecall = 「回忆 assistant 自己先前输出」的查询（you said/recommended/wrote…）
+      # 整层跳过结论层：结论卡只蒸馏 user 侧事实，对这类问题系统性不相关，注入只会挤掉承载答案的
+      # assistant 轮。bench LME90：该桶 cov 66.7→80.0（回到基线）、90 题路由命中 13/15 assistant 桶、
+      # 其余五桶 0/75（零附带伤害）。off = 逐位现状（缺省）。
+      routing: assistantRecall  # 【evidence: measured（#138 bench LME90：assistant 桶 cov 66.7→80.0、90 题路由 13/15 命中、其余五桶 0/75 零附带伤害）】
+
+    # ── #77 Batch C（survey F6b，2026-10-20 拍板开启）：检索期年龄衰减乘子 + 时间锚回退 ──
+    # ageDecay：composite 打分 timeFactor 乘子 0.5^(ageDays/halfLifeDays)（floor 0.05；无时间锚不乘）。
+    # 缺省 false=逐位现状；仅时间维度，零情绪数据（R-A 红线）。14d=现库 0-7d 龄区分度折中（决策包建议）。
+    ageDecay:
+      enabled: true
+      halfLifeDays: 14
+    # timeProxFallbackEnabled：composite timeProx 时间锚回退——occurred_at 缺失时用 created_at（写入
+    # 时刻）兜底；不开则无 occurred_at 的记录 timeProx=0。效果与存量回填写库等价且零写库可逆
+    # （决策包 2026-10-20-d2-d3 D2 选 B）。缺省 false=逐位现状。
+    timeProxFallbackEnabled: true  # 【evidence: structural（⚠ 依赖：rerankWeights.timeProx=0 ⇒ 本键置 true 不改变任何分数；不是死码，但当前档位下无效果。真生效需先给 timeProx 权重读数，归口 #135/#154）】
+
+    # ── #78 R-b（survey F4 small-to-big，2026-10-25 拍板开启）：结论卡父块回链读面 ──
+    # enabled=true 时对 work_fact 结论卡按 part_of 身世边单跳回捞关联证据行，作预算内附加
+    # 「上下文行」注入（[上下文|场景] 前缀）；maxExtraLines = 附加行全局帽（跨卡累计，0=关）。
+    # 附加行挤经验层配额 ⇒ 注入总行数恒 ≤ maxResults（预算内附加）；软失败不阻断召回。
+    # 缺省 false = 逐位现状；代码保守缺省关 + 部署 yaml 显式开（#77 三键同款惯例）。
+    smallToBig:
+      enabled: true
+      # #134 LME90 配对：maxExtraLines 2→4 判对 81.1%→84.4%（+14.4pp CI[+6.7,+23.3]，p=0.0023）、
+      # 缺口桶回收 4→5/11、turnCov 回到基线（-0.2pp ns）；注入总行数仍由 maxResults 硬帽收口。
+      maxExtraLines: 4  # 【evidence: measured（#134 LME90 配对：2→4 判对 81.1%→84.4%（+14.4pp CI[+6.7,+23.3] p=0.0023），turnCov 回基线）】
+      # #138（2026-10-28 定档待灰度确认）：上下文行预算归属。
+      #   shared（缺省，逐位现状）= 上下文行与结论行共同挤经验层配额（结论层命中时经验层常只剩 0~1 行）；
+      #   additive = 上下文行不挤经验层保底（experienceLimit = maxResults − 结论行），
+      #             「摘要 + 源证据」成对补信息，注入总行数 ≤ maxResults + maxExtraLines。
+      # 生产 journal 实测（2485 条）：结论层命中 49.6%、其中经验层 ≤1 行 98.4%、回捞触发 0.2%
+      # → 问题在「结论层吃满窗口 + 回捞选错证据」，不在结论卡本身（见 docs/optimization-results.md §14）。
+      # #138 定档（2026-10-28 bench：add×4 判对 84.4% 不降、经验层 ≤1 行 36.7%→1.1%；
+      # add×2/4/6 扫参 4→6 饱和）→ 云端同步 additive。
+      budget: additive  # 【evidence: measured（#138：add×4 判对 84.4% 不降、经验层≤1行 36.7%→1.1%；add×2/4/6 扫参 4→6 饱和）】
+      # 回捞证据行按查询 token 命中数排序（缺省 true = 质量修复：先选最可能是答案的源证据，
+      # 且第一轮每卡至多 1 条）；false = 回滚旧序（store 返回序）。
+      relevanceRanked: true  # 【evidence: argued（质量修复：先选最可能是答案的源证据，每卡至多 1 条；false=回滚 store 返回序）】
+
+    # ── #54 动态 topK（分数分布 elbow，2026-10-19）──
+    # enabled=true 时 R7 经验层按相似度分数分布自适应收缩注入条数：找最大单步落差
+    # （argmax d(k)=pool[k-1]-pool[k]，全池 k∈[1,pool.length-1]），落差 ≥ dropRatio×span
+    # （首分-末分）才切到 k，并 clamp max(切点, minTopK)——保底=注入下限，不是切点下限。
+    # 刻度无关（纯相对落差，RRF/余弦皆可），scores 缺席（keyword FTS 路）不切。
+    # journal「[dynamic-topk] elbow 收缩 X->Y」。minTopK clamp [1,50] 缺省 2；
+    # dropRatio clamp [0.01,1] 缺省 0.5。缺省 false=逐位现状。
+    dynamicTopK:
+      enabled: true          # 生产已开  【evidence: pending（#135/#154：无独立 A/B；生产已开，等 elbow 收缩率观测读数再决定保留或回退）】
+      minTopK: 2
+      dropRatio: 0.5
+
+    # ── 合并召回 · /v3/recall 核心单点（DS-RECALL-MERGE-001，2026-09-12）──
+    # 端点返回与 auto-recall 钩子同一条组装路径（分层 + 预算 + 幂等结论层）产出的注入块；
+    # MemoryProxy TdaiL1RecallInjector 改调本端点瘦传输（块直接前插），消灭两套组装逻辑。
+    # 代理侧 404/5xx/超时自动降级旧路（/v3/atomic/search 自行组装）+ loud 日志。
+    v3Recall:
+      enabled: true        # 代码缺省 false（逐位现状，端点 404）；true = 瘦传输链路启用  【evidence: measured（DS-RECALL-MERGE-001 生产启用；proxy 侧超时需 ≥ 本端点，2026-10-18 起 8000）】
+      # #61（2026-10-18）：端点内召回超时毫秒。生产 5000→8000；proxy 侧 memory.timeoutMs 需同步 ≥ 此值
+      # （否则 proxy 先断）。响应 meta.perfMs={total,scene,l2,l1,soul} 分段计时 + journal
+      # [recall-perf] 行；2026-10-18 实测 L1 占 74%（含 embedding RTT）——容量优化靶在 L1/embedding。
+      timeoutMs: 8000  # 【evidence: measured（#61 2026-10-18：L1 段占 74%（含 embedding RTT），5000→8000 治 proxy 侧假超时）】
+
+    # ── 查询扩展门（2026-10-26 配置审计固化：代码缺省已开，显式落盘防未来缺省翻转）──
+    # 解析点 src/config.ts:1832-1837：enabled 缺省 true、maxTerms 8、ttlMs 600000、
+    # timeoutMs 8000、hotPathTimeoutMs 1500、negativeTtlMs 30000。
+    queryExpansion:
+      enabled: true
+      maxTerms: 8                        # 每次最多扩展词项数
+      ttlMs: 600000                      # 扩展结果缓存 10 分钟
+      # ⚠️ 云端建议 1200（非缺省 8000）：#63 实测 expand 占 l1 段 ~4s（LLM RTT 2.2-2.4s，
+      # 失败/超时不缓存 → 每轮新 query 重付全额 RTT），超时/失败退化原 query（E1.4）。
+      # 本地开发保持缺省 8000 以便观察扩展质量。
+      timeoutMs: 1200  # 【evidence: measured（#63：expand 占 l1 ~4s，LLM RTT 2.2-2.4s；超时/失败退化原 query）】
+      hotPathTimeoutMs: 1500             # 热路等待帽：帽内未返回→本轮无扩展词检索（0=旧行为全额等待）
+      negativeTtlMs: 30000               # 失败负缓存：LLM 故障期 30s 内短路 [] 不再外呼（0=关）
+    # 探索槽 / 分析型 query 放宽结论层（两者代码缺省 true，显式落盘防翻转）
+    exploreSlot: true                    # 给低分但多样的候选留名额（对冲同质化）
+    conclusionRelaxedForAnalytical: true # 分析型 query（对比/枚举）放宽结论层入选
+
+    # ── 召回精排 rerank（P1 召回质量 spec §4.3，2026-10-13）──
+    # 在 P0 召回门槛之上加精排：原 topK 候选扩池至 candidates → provider rerank →
+    # minScore 门槛 → 取回 topK。失败/超时一律降级原序（精排永不阻断召回主链路）。
+    # 开启即真实生效（shadowMode 已按用户 2026-10-14 拍板整体移除——无开关、无键；
+    # journal.gates.rerank 仍记录 kept/dropped/topScore 供观测）。
+    # local provider = transformers.js bge-reranker-base INT8（模型缺失自动 hf-mirror 下载 ~113MB，
+    # 生产已用 scripts/warmup-reranker.ts 预热，systemd drop-in rerank-warmup.conf 启动即跑）。
+    # ⚠️ 2026-10-26 配置审计：本段此前是「全部注释 = 缺省关」，生产却已真开（renderer/rerank 生效
+    # source=yaml）→ 模板与生产漂移，重装即静默回退旧行为。现按生产现值显式落盘。
+    rerank:
+      enabled: true      # 缺省 false；本部署按实测最优档开启（见下）  【evidence: measured（#145/#135：深池 32 turnCov@5 84.3% vs 关 rerank 79.5% vs 12/−2 67.1%；剪枝才是伤害源）】
+      provider: "local"
+      timeoutMs: 5000  # #63 首载 worker+模型 load ~3.2s，缺省 800 必超时返回 null
+      # #145（2026-10-29）：生产默认「深池 + 近不筛」（#135 LME90：32/−10.5 = 84.3% vs 12/−2 = 67.1%；
+      # 剪枝是伤害源，−10.5 在实测分布左侧 ≈ 不筛，真剪枝靠 candidates cap）。
+      # 钉子分两类（§21.3）：①增益型——只有实测更优才钉；②防漂移型——与代码缺省同值，钉住是为了防缺省被
+      # 悄悄改回（改回会把已验证的档位静默降级），行尾必须写明「防漂移」。两类都要在台账里有证据行。
+      candidates: 32   # 防漂移型：池扩到 32 是「kept≥4 从 38/90 → 80/90」的前提；缺省同为 32，钉住防深池被收回
+      # #135 R4 / #144：rerank | filter。filter 档（floor/margin/quantile 三种尺子）已有读数
+      # （§19.3 quantile+keepRatio 0.5 → turnCov 81.1%/81.6%、sessionCov 94.0），但尚未定档
+      # ⇒ 显式钉 rerank（= 代码缺省），换档需新读数 + 本行 + 台账一行同时改。filterRule 缺省 floor。
+      # 【evidence: pending(#135 R4：filter 定档未裁决；本行 = 显式化当前缺省，防缺省翻转）】
+      mode: "rerank"
+      # minScore 不在此钉：#145 起缺省按 provider 刻度取值（local logit −10.5 / siliconflow·dashscope
+      # 0..1 刻度 sigmoid(−10.5)≈2.75e-5）。钉死 −10.5 在概率刻度 provider 上等于永不过滤 → 换 provider 即失效。
+      local:
+        modelDir: ""             # 缺省 = dataDir/models/reranker/Xenova/bge-reranker-base
+        idleUnloadMs: 600000     # 空闲卸载毫秒（0 = 常驻；生产 10 分钟卸载省内存）
+
+    # ── worthiness importance 降权（P1 召回质量 spec §6，2026-10-13）──
+    # 检索精排之后的「重要度」降权：仅惩罚 importance ≤4 的记忆（LLM 写入时评 1-10+理由，
+    # 低价值=寒暄/流水账）；NULL/缺列不罚（宁缺毋滥：评不出来 ≠ 该罚）。开启即真实生效
+    # （shadowMode 已按用户 2026-10-14 拍板整体移除；gates.importancePenalty 仍记录 raw/penalized 双分量）。
+    # 2026-10-26 审计：enabled 代码缺省 false，生产已开 → 显式落盘防缺省翻转。
+    importancePenalty:
+      enabled: true         # 总开关（代码缺省 false = 逐位现状）  【evidence: argued（生产已开；无 A/B 读数。只罚 importance≤4，NULL/缺列不罚，可逆）】
+      penalty: 0.3          # ≤4 记忆的乘法惩罚（clamp 上限 0.9；越大降权越狠）
+
+  # ── worthiness 写入面（P1 召回质量 spec §6，2026-10-13）——缺省 false = 逐位现状 ──
+  # true = L0→L1 提取在既有单次 LLM 调用里顺带产出 IMPORTANCE_BLOCK（1-10+≤20 字理由）；
+  # 关闭时 prompt 字节逐位不变、importance 字段缺席=召回不罚。越界/畸形分由确定性门拒绝
+  # （不 clamp 不伪造）。面板可对单条记忆手动调级（/atomic/importance，source=manual）。
+  # 2026-10-26 配置审计：代码缺省 false（config.ts:2103-2104），生产已开 → 显式落盘防缺省翻转。
+  worthiness:
+    extractionEnabled: true   # LLM 顺带产出 importance 字段（写侧）；与 recall.importancePenalty（读侧消费）配套。
+
+  storeBackend: "sqlite"
+
+  # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
+  # ⚠️ 解析层级 = memory.sceneGovernance（与 recall 平级）：解析点 src/config.ts:1701
+  # `obj(c,"sceneGovernance")`，c = memory 段对象。2026-10-26 配置审计修正：本块此前误挂在
+  # memory.recall.sceneGovernance 下、解析器从不读取，守卫实际一直处于缺省关断；现移正并显式开启。
+  # 守卫：提取批次后块体 > maxBlockChars 触发 LLM 蒸馏重写，蒸馏失败时码点安全硬截断兜底。
+  # 启用依据（GOV-4 复核实证）：守卫关闭时活跃提取管线 ~10 分钟内把块体复涨破限
+  # （7,728→8,754 且持续增长），时点修复不可持续；守卫启用是该设计闭环的完成动作。
+  # 生产实证底座：分段蒸馏 6000 码点/片 + seg-cache + 空输出重试稳定跑通（spec §6 注记）。
+  sceneGovernance:
+    enabled: true           # 总开关（代码缺省 false = 关断；此处显式开启）
+    maxBlockChars: 8000     # 块体超限阈值（码点数；clamp [500, 100000]；GOV-4 定档见 spec §6）
+    distillTimeoutMs: 60000 # 蒸馏 LLM 调用超时毫秒（负值 clamp 0；0 = runner 缺省超时）
+    hardCapChars: 20000     # 蒸馏失败兜底硬截断上限（clamp 下限 = maxBlockChars）
+
+  # ── embedding（向量召回的唯一开关；未配 = 向量路关，召回退化为词法路）──
+  # 【evidence: structural（本文件不知道 operator 的 embedding 端点，故全走占位符；
+  #   provider=none 时代码层关闭向量路并打 configError，不崩）】
+  # .env：MEMORY_EMBEDDING_PROVIDER=openai_compatible / _BASE_URL / _API_KEY / _MODEL / _DIMENSIONS。
+  # 不配 → 脚本替换成 none 并 loud 警告「hybrid 检索降级为纯词法」。
+  # ⚠ 本档 candidateK / fusion / rerank / smallToBig 的读数都建立在向量路可用之上：
+  #   只有 provider=none 时这些键仍生效但覆盖面窄——上生产请务必配 embedding。
+  embedding:
+    provider: "__MEMORY_EMBEDDING_PROVIDER__"
+    baseUrl: "__MEMORY_EMBEDDING_BASE_URL__"
+    apiKey: "__MEMORY_EMBEDDING_API_KEY__"
+    model: "__MEMORY_EMBEDDING_MODEL__"
+    # ⚠ 数字键：占位符**不能加引号**（config.ts 的 num() 只收 number，"2048" 会静默落 0 → 向量路关）。
+    dimensions: __MEMORY_EMBEDDING_DIMENSIONS__
+    # #61（2026-10-18）：仅召回链路的 embedding 专用超时 ms（undefined = 回落 timeoutMs）。
+    # embedding 慢时到点断开 → hybrid 自动退化 FTS（degraded 标注 recallDegradedFtsOnly），
+    # 用延迟换可用性。
+    recallTimeoutMs: 2000
+
+  bm25:
+    enabled: true
+    language: "zh"
+
+  # ── 真记忆 G–M 新增配置（config-first，全部开启） ──
+  links:
+    enabled: true # G 记忆图：接入时为 l1_links 建边（merge→similar / update→evolve）
+    minSimilarity: 0.3  # similar 边最低相似度门槛（S1：缺省 0.3，越界 clamp [0,1]；显式落盘 = 缺省值原样）
+  coreMemory: # K 核心记忆写入口信任边界（审计 F2）；价值锚纯自发现（GROW-MAINT，B1 种子已退役）
+    # S-FEEL-1（M1，2026-09-24 何晨拍板启用；A/B 13/13 全过）
+    moodLine:
+      enabled: true
+    # S-CHAR-2（M2，2026-09-24 何晨整句授权自定最优启用；A/B 10 组全过+生产快照 17 租户实证）
+    characterTension:
+      enabled: true
+      minInstances: 2
+      maxCandidatesPerPass: 2
+    writeEnabled: true # 允许经 /v3/core-memory/write 写（slot 白名单内）  【evidence: structural（写接口白名单闸；slot 级写入还受 selfIdentity.enabled 交叉门控）】
+    allowedSlots: [identity, core_value, strict_rule, self_identity] # P1(DS-SOUL-MEMORY-002): +agent 自我层(写入仍由 selfIdentity.enabled 门控)
+    maxContentLength: 2000
+    # GROW-MAINT（2026-09-15 拍板）：不再灌种子；价值锚 = LLM 自发现（提议制+护栏）+ 自维护
+    # （低证据退场 / 权重随语料演化）。minEvidence 显式 3（小语料期可达；提案区下限对齐）。
+    anchorDiscovery:
+      enabled: true
+      minEvidence: 3
+      maxPerPass: 2 # P3 散项回切（2026-09-24 整句授权）：FLOW-TEST 演示值 3→登记值 2
+      maxTotal: 15
+      intervalHours: 24
+      maintainIntervalHours: 6 # V10-MAINT-DECOUPLE（2026-09-25 何晨拍板「全部按建议」）：维护面独立节奏小时数（0=每 tick；缺省 6）
+      # DS-SOUL-MEMORY-002 P2（spec §2.6/§5）：人物锚分池（同一 worker 策略化分叉）——
+      # p- 前缀独立命名空间 / 别名维度去重 / QUOTA 分池（人物 maxTotal=6 独立于主题 15（2026-10-04 拍板 character 8→6 回归设计值 §7.2））。
+      person:
+        enabled: true
+        minEvidence: 3 # 与 theme 对齐（小语料期可达；T9 实证：缺省 5 挡掉 3 条女儿语料）
+        maxPerPass: 2
+        maxTotal: 6
+      # P2：GROW-MAINT 身份分支（F15 身份分支）——失撑身份事实只警告永不自动退场（F20 红线）。
+      identityMaintain:
+        enabled: true
+
+      # P3：品格锚池（聚合源=self_identity 槽事实，spike 定案）
+      character:
+        enabled: true
+        minEvidence: 3
+        maxPerPass: 2
+        maxTotal: 6
+      # ── 锚发现增强三门（2026-10-19 用户授权自决开；解析点 src/config.ts:1281-1364，均 clamp 防手滑）──
+      # 2026-10-26 配置审计：三门代码缺省 false，生产已开 → 模板显式落盘防漂移。
+      # similarMerge（G-SIMMERGE）：候选锚 label 与既有 active 锚 bigram Jaccard≥threshold → 不新建、
+      #   证据增量并入命中锚（不删除任何既有锚，仅防锚碎片化）；threshold clamp [0.2,0.95] 缺省 0.5。
+      # reproposal（#19 T12 / V12-REPRO）：rejected 域提案证据≥minEvidenceMultiple×基线时重提案
+      #   （落 pending 提案池 upsertPendingCore 含 Gen 溯源；纯提案制不直改 active）；maxRejectsBeforeCold 后冷却。
+      # descRefresh（#11 T5）：锚描述重述环——LLM 重述+守卫门通过才落库，maxPerPass 节流。
+      similarMerge:
+        enabled: true
+        threshold: 0.5
+      reproposal:
+        enabled: true
+        minEvidenceMultiple: 2
+        maxPerPass: 2
+        maxRejectsBeforeCold: 2
+      descRefresh:
+        enabled: true
+        evidenceMultiple: 2
+        maxPerPass: 2
+    # DS-SOUL-MEMORY-002 P1: agent 自我层(灵魂双槽)——双视角自发现 + 四段渲染
+    selfIdentity:
+      enabled: true
+      maxPerPass: 2
+      intervalHours: 24 # P3 散项回切（2026-09-24 整句授权）：验收期冷却 1→登记值 24
+    soulRender:
+      budgetSelfChars: 600
+      budgetIdentityChars: 900
+      maxRelationLines: 5 # F17（审计补齐）：重要的人 行数上限；5=原行为显式落盘
+      # #10 T4：三行锚列表总长预算（整锚粒度从尾丢，不截半句）。0=关（代码缺省逐位现状）。
+      # 2026-10-26 配置审计：生产已放量 480/400/300，模板此前仍 0/0/0 → 重装即静默回退，现对齐。
+      budgetAnchorChars: 480    # 价值锚行预算（≈10 锚当量；消费点 soul-assembler.ts:535）
+      budgetPersonChars: 400    # 重要的人行预算
+      budgetCharacterChars: 300 # 品格行预算
+      # #42（D9 情境锚选择器，确定性 embedding 相似度，不上 LLM 打分）：
+      # scorer.enabled=true 打分链路通电（embedding=共享 EmbeddingService）；threshold=0 无硬门；
+      # shadowSink 每轮渲染都采集锚分分布（#52 P3 已与裁剪报告门解耦，渲染字节零变化），
+      # 数据供 D9 定标：#57 analyze:anchor-shadow 实测 0.2 为无损收紧带、0.3 断崖。
+      anchorSelect:
+        maxRows: 12
+        scorer:
+          enabled: true
+          threshold: 0
+          # 灵魂注入质量轮（2026-10-19）：MMR 多样性 λ + desc 预嵌软预算 ms（生产已开；代码缺省 0.7/1200）。
+          mmrLambda: 0.7
+          embedBudgetMs: 1200
+        shadowSink:
+          enabled: true
+          file: "/data/tdai-memory/logs/soul-anchor-shadow.jsonl"  # 云端路径；本地为 D:/TDB/data/logs/…
+      # #40（ADR0003 票 B）：capabilities 渲染门——「## 我能做什么」段；清单由 proxy /v3/recall body 传入
+      capabilities:
+        enabled: true
+      # #52 D3：per-turn soul 块省略（我是谁）/（我心中的他）两行（system 侧 core_memory 块已承载同内容）；
+      # false = 省略模式（生产现状）；缺省 true = 每轮渲染（旧行为）；legacy（dual=false）路径不受影响
+      perTurnSlots: false
+      # #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事化门——
+      # true=soul dual 路径身份两行由 renderIdentityNarrative 叙事段替代（模板常量+事实句
+      # 逐字，无 LLM/随机/时钟；生成闸违例或无身份内容→条目渲染兜底），且 /v3/core-memory/read
+      # 支持 format=narrative（身份两槽折叠为 identity_narrative 合成槽，proxy 经 API 透传）。
+      # Park 2411.10109 口径：条目存储+叙事渲染并存；strict_rule/价值锚不动；缺省 false。
+      identityNarrative:
+        enabled: true
+      # #41（D8 证据迁移门）：user 确认话语白名单→refKey 严格相等的 open promise 迁移；
+      # 承诺创建通道由 lifecycle.reflection.promiseProposals→人工采纳承载（LLM 无直改路径）
+      promiseEvidence:
+        enabled: true
+      # T3（未来性渲染面）：「我的承诺：」块注入 soul-identity（品格后红线前）；
+      # 最新 3 条 open 承诺逐字渲染（零 open 整块省略=宁缺毋滥，不伪造）
+      promises:
+        enabled: true
+      # #55（S17，2026-10-19）：soul 渲染近重复去重门（config-first 缺省关，布局级变更不翻 soulVersion）——
+      # strictRuleDedup：红线段近重复行收敛（exact/jaccard≥0.45/containment≥0.9，保长=归一后更长，
+      # winner 原位替换）；anchorDedup：价值锚 label 双向包含且短侧 ≥2 字护栏（完整句优先）。
+      # 生产 A/B 实证：14→13 红线（R03 环境铁律短变体并入 R08）、根因→根因优先。
+      strictRuleDedup:
+        enabled: true             # jaccardThreshold 缺省 0.45
+        maxLines: 8               # 红线段行数上限：去重后从头部保留 N 条（0=不设限；红线墙挤占身份段预算治理）
+        suppressAnchorOverlap: true # 价值锚 desc 与红线行近重复时锚行让位（红线=硬约束承载面优先）
+      anchorDedup:
+        enabled: true             # 价值锚/人物/品格近重复锚对择优（完整句胜，winner 原位替换）
+        embeddingThreshold: 0.85  # label 包含对之外的第二通道：desc 向量 cosine≥0.85 判近重复（0=关缺省）
+  lifecycle:
+    enabled: true # H+I：巩固 + 遗忘的周期调度（每 10 分钟一轮，best-effort）
+    intervalMs: 600000
+    consolidation:
+      enabled: true
+      persist: true # H：把巩固出的持续态写为一个 observed/work_fact L1 记录
+      minCount: 3
+      minSpanDays: 1
+      subjectStrategy: llm # P3-T17（拍板④）：subject 归组策略门——llm=dedup 顺带抽取的语义 subject 优先、词法兜底（默认）；lexical=纯词法前缀
+    forgetting:
+      refProtection: true # P2（F14）：refs 遗忘保护——coreRefs/personRefs/identityRefs 命中仍有效锚或现行身份事实的记录不进归档候选（悬空 refs 不保护）
+      recurrenceProtection: true # D-4（2026-09-22 拍板）：metadata.recurrence（normalize 形状）的周期性事实不进归档候选
+      enabled: true # I：遗忘判定（宁漏勿多；归档标软删，不真删）
+      minAgeDays: 30
+      lowThreshold: 0.12
+      arousalRetention: 0.3 # GROW-EVO P3（§3.1）：闪光灯调制 k（缺省 0 = 逐位现状）
+    # P3-F13：反思触发（Generative Agents 对标；缺省 off）
+    reflection:
+      enabled: true
+      rRef: 2 # 刻度换算：Generative Agents 0-100 刻度的 150 ≈ 本库 significance [0,1] 刻度的 1.5；取 2.0≈3 条高显著记录
+      # #44（D8-(c) 提案通道）：reflection 同调用产 promiseTransitions→vet（verbatim≥12 等）→
+      # dedup→pending 轨（slot=promise_transition）；人工 Panel/API decide adopted→唯一写入口。
+      promiseProposals:
+        enabled: true
+      # #27（S6 反思结论→身份层提案安全门）：slot 白名单 [identity,self_identity]、verbatim≥12 逐字拒绝、
+      # O13 pending→人工采纳；strict_rule 不可提案。缺省 false=零提案。
+      soulProposals:
+        enabled: true
+        # D7 ε shadow 定标：行为零变化，仅旁路记录 bestLen 分布至 data/logs/soul-reflection-shadow.jsonl。
+        # 注意嵌套层级：config.ts 从 soulProposals 组内解析（与 soulProposals 平级=不生效）。
+        shadowCalibration:
+          enabled: true
+        # #60（S22 反思产物契约门，2026-10-19）：LLM 仅提议+确定性校验（第一人称叙事、禁伪造当下体验
+        # /我(现在|此刻|当下)(的)?(感到|觉得|感觉|情绪)/、≤200 字、价值锚引用校验锚集来自 core_value 行）——
+        # 契约不通过拒绝推提案；通过时 anchor_refs 并入提案 attrs。缺省 false=现状。
+        cardContract:
+          enabled: true       # 生产已开
+        # #77 Batch D（survey F1，2026-10-20 拍板开启）：结论卡拆条引导——反思 LLM prompt 附加
+        # 「一句话一件事/≤300 码点/多事拆条/宁缺毋滥」few-shot；≤300 码点机械拒收门已无条件生效
+        # （validateConclusionCard，拒收记 skipped 警告日志），本键只加引导降拒收率。缺省 false=逐位现状。
+        conclusionContract:
+          enabled: true
+      # ── #91/#92 身份提案裁决门（2026-10-23/24/25 用户拍板；解析点 src/config.ts:1621-1679）──
+      # 2026-10-26 配置审计：本段是**条件材料化**——不写=不带键=消费侧缺省全关，生产已开而模板
+      # 整段缺失（重装即人格写入终审权静默回退人工裁决），现按生产现值显式落盘。
+      # recurrence：复现即投票（===true 才开；ttlHours 缺省 24，生产 72 与 spanHours 共用）。
+      # rateLimit（#91 K 阀）：源头硬闸——窗口内该租户 self_identity 新落库 ≥ maxNew → push 支路跳过
+      #   落库（LLM 反思照常、echo/计票路径不受影响；fail 方向=少落库）。maxNew=12 人工带宽口径，窗口 24h。
+      # autoAdopt（#92 stage 2）：确定性自动采纳门——三重门（count≥votes ∧ 跨≥spanHours ∧ 无同主题
+      #   rejected 矛盾 ∧ 非槽内重复）→ 自动采纳落槽（source=auto-adopt-gate），人转审计员；
+      #   回滚=Panel 对 auto_adopted 行 reject。显式开 = 人格写入终审权变更生效（ADR-0007）。
+      selfIdentityGate:
+        recurrence:
+          enabled: true
+          ttlHours: 72
+        rateLimit:
+          enabled: true
+          maxNew: 12
+          windowHours: 24
+        autoAdopt:
+          enabled: true
+          votes: 4                    # N₂（比 stage-1 ready 的 votes=3 严一票）
+          spanHours: 72               # T₂（跨 3 天持续复现才够格，慢变量口径）
+          contradictionThreshold: 0.6 # 同主题 rejected 矛盾线（宁拦勿收：误拦=退回人审）
+          dupThreshold: 0.75          # 槽内重复线（proposal-dedup 单一源标准）
+    # ── embedding 回填（2026-10-26 配置审计：代码缺省已开 true/30/50，显式落盘防翻转）──
+    embedBackfill:
+      enabled: true       # 为缺向量/向量过期的记录批量重算 embedding
+      intervalMinutes: 30 # 扫描周期 30 分钟
+      batchLimit: 50      # 单轮最多回填 50 条（节流，避免打满 embedding 配额）
+
+  evolution: # 受控正文演化（GROW-EVO §4，REG-REMAINING-005 #1）——全系统唯一允许改写已固化正文的路径
+    enabled: true # P4b 验证通过后开启（2026-09-17 live 验证轮；五条件门+单轮上限护栏，门严=不触发良性）
+    maxRewrites: 3
+    intervalMs: 3600000
+  search:
+    neighborExpand: # J：重构式回忆——图邻居扩展（宁缺毋滥，仅并入 top 种子之邻）
+      enabled: true
+      maxHop: 1
+      maxAdd: 3
+
+# Skill 模块（standalone 本地启用）
+#  - contentBackend: local → 数据存 {baseDir}/skills/，无需 COS。
+#  - routing.mode: bm25     → embedding 不可用(none)时自动降级 bm25，非阻塞。
+#  - extraction.enabled: true → 启用 LLM 自动抽取（抽取器+LLM 都在跑才有产出，见官方文档）。
+skill:
+  enabled: true
+  storeBackend: "sqlite"
+  contentBackend: "local"
+  routing:
+    mode: "bm25"
+    searchTopK: 20
+  extraction:
+    enabled: true # 官方：开启 LLM 自动抽取（之前为 false 导致 0 产出）
+    maxIterations: 5 # review agent 最大迭代（2026-10-26 收紧：prompt v3 单 pass 上限 2 条新建，5 回合足够；16→5 见提交 aadae63）
+    archiveBytes: 40960 # 40KB 归档阈值（工具调用 ≥10 或 字节 ≥40KB 触发归档）
+    # O8 拍板 2026-09-17：超大对话（~40KB 归档阈值）提取超 120s 为确定性失败而非瞬时故障，
+    # 曾被无界 transient 重试。以下两旋钮 0 = 不限制（llm-runner GROW-EVO P2.1 语义，
+    # params 显式 0 覆盖 runner 级 llm.timeoutMs/maxTokens 缺省）。
+    timeoutMs: 0
+    maxTokens: 0
+
+# 可观测性本地关闭
+observability:
+  otel:
+    enabled: false
+  clickhouse:
+    enabled: false
+  kafka:
+    enabled: false
+  langfuse:
+    enabled: false

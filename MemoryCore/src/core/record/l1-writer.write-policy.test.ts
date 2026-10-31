@@ -52,6 +52,24 @@ function fakeStore(opts: { withInvalidate?: boolean; withFactVector?: boolean } 
       calls.factWrites.push({ id, updatedAt });
       return true;
     };
+    // #152 ①：事实向量通道改由能力位把关（ensureL1FactVec 读 getCapabilities().l1FactVec），
+    // 不再是「方法是否存在」的隐式探测 ⇒ 支持该通道的 mock 必须同时声明能力位。
+    store.getCapabilities = () => ({
+      vectorSearch: true,
+      ftsSearch: true,
+      nativeHybridSearch: false,
+      sparseVectors: false,
+      l1FactVec: true,
+    });
+  } else {
+    // 不支持通道的 store（tcvdb 等）：能力位缺失/false ⇒ 调用点跳过并 WARN 一次，不额外外呼
+    store.getCapabilities = () => ({
+      vectorSearch: true,
+      ftsSearch: true,
+      nativeHybridSearch: false,
+      sparseVectors: false,
+      l1FactVec: false,
+    });
   }
   const embedding = {
     embed: async (text: string) => {

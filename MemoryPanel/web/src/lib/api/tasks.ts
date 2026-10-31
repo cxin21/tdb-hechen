@@ -6,7 +6,31 @@ import { metaPost, metaListAll, getCurrentUser, request, ApiError } from './base
 import type { MetaEnvelope } from './types';
 
 export type TaskStatus = 'running' | 'completed';
-export type TaskSourceType = 'manual' | 'tapd' | 'github' | 'other';
+
+/**
+ * 任务来源（#127）。canonical 口径 = 上游契约：`manual | external | other`。
+ *
+ * 上游已把 `manual|github|tapd|other` 收窄成这三值，具体外部提供方改读
+ * `metadata_json.external.provider`（见 .local/upstream-sync/diffs/
+ * MemoryCore_src_gateway_v2-schemas.ts.diff，本地 MemoryCore/src/gateway/
+ * v2-schemas.ts:260 尚未跟进，仍是四值 zod）。
+ *
+ * 因此读侧必须容忍历史/跨版本值：`tapd`/`github`/`jira` 都是"外部系统来源"，
+ * 统一归一为 `external`；未知值回落 `manual`（= 旧 adaptTask 的默认行为，
+ * 也保证不会因为脏数据让界面出现非法枚举）。
+ *
+ * 注意：写侧不得主动产出本仓内核还不认的值 —— 本地内核 zod 仍是四值，
+ * 送 `external` 会被 400 拒。当前 UI 唯一写入点是 'manual'。
+ */
+export type TaskSourceType = 'manual' | 'external' | 'other';
+
+/** 把任意历史/跨版本 source_type 归一成 canonical 三值（见上注释）。 */
+export function normalizeTaskSourceType(raw: unknown): TaskSourceType {
+  if (raw === 'manual' || raw === 'external' || raw === 'other') return raw;
+  // 上游收窄前的"外部系统"来源值：语义等价 external（提供方改看 metadata_json.external.provider）
+  if (raw === 'tapd' || raw === 'github' || raw === 'jira') return 'external';
+  return 'manual';
+}
 
 export interface BackendTask {
   task_id: string;

@@ -1,0 +1,7 @@
+# #108：生成物与构建产物不参与格式门禁——生成代码应重生成而非手改（#107 第一大错误源 gateway/generated/schemas.ts 即此类）。
+node_modules/
+dist/
+build/
+coverage/
+src/gateway/generated/
+*.min.js

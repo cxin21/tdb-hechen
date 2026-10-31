@@ -34,14 +34,26 @@ const STOPWORDS = new Set([
  */
 const LINE_RE = /^-\s+\[([^\]]+)\]\s+([\s\S]*)$/;
 
+/**
+ * #169：证据包邻接行的标注。带此标注的行是「命中行之外、为了上下文补进来的邻接行」，
+ * 必须在归因口径里与 seed 行分开：否则扩行会把 turnCov/sessionCov 刷高，
+ * 「+N 档变好」就无法区分「检索更强」与「指标被扩行推高」。
+ */
+export const ADJACENCY_BADGE = "·[邻]";
+
 function parseInjectedLine(line) {
   const s = String(line ?? "");
+  const adjacent = s.includes(ADJACENCY_BADGE);
   const m = s.match(LINE_RE);
-  if (!m) return { content: s, clean: s, type: "" };
+  if (!m) return { content: s, clean: s, type: "", adjacent };
   const type = String(m[1]).split("|")[0].trim();
-  // 剥系统标注（活动时间 / soul 徽章），供 resolve 对齐落库 turn；正文本体保留。
-  const clean = m[2].replace(/\s*·?\(活动时间:[^)]*\)/g, "").replace(/\s*·\([^)]*\)/g, "").trim();
-  return { content: s, clean, type };
+  // 剥系统标注（活动时间 / soul 徽章 / #169 邻接标注），供 resolve 对齐落库 turn；正文本体保留。
+  const clean = m[2]
+    .replace(/\s*·?\(活动时间:[^)]*\)/g, "")
+    .replace(/\s*·\([^)]*\)/g, "")
+    .replace(new RegExp("\\s*" + ADJACENCY_BADGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*$"), "")
+    .trim();
+  return { content: s, clean, type, adjacent };
 }
 
 /**
@@ -99,7 +111,11 @@ function diffOrNull(a, b) {
  *   byType: Record<string, {lines: number, goldLines: number, sessions: number}>,
  *   coverageWithout: Record<string, {turnCov: number|null, sessionCov: number|null, injectedLines: number}>,
  *   firstOrderDrop: Record<string, {turnCov: number|null, sessionCov: number|null}>,
+ *   injectedAdjacencyLines: number,  // #169：证据包邻接行（只计数，不进覆盖率）
+ *   adjacencyByType: Record<string, {lines: number, goldLines: number, sessions: number}>,
  * }}
+ * 口径（#169）：injectedLines / byType / turnCov / sessionCov / coverageWithout / firstOrderDrop
+ * 一律只按 seed 行算；`·[邻]` 标注的 pack 行只进 injectedAdjacencyLines / adjacencyByType。
  */
 export function attributeInjectedLines({ hits, resolve, goldTurnIds, sessionOf, goldSessionIds } = {}) {
   const list = Array.isArray(hits) ? hits : [];
@@ -115,6 +131,11 @@ export function attributeInjectedLines({ hits, resolve, goldTurnIds, sessionOf, 
   const rows = list.map((hit) => {
     const h = typeof hit === "string" ? parseInjectedLine(hit) : hit || {};
     const type = classifyInjectedLine(h);
+    // #169：邻接行判定（字符串行已由 parseInjectedLine 给出；对象行看原文/clean 是否带标注）
+    const adjacent =
+      h.adjacent === true ||
+      (typeof h.content === "string" && h.content.includes(ADJACENCY_BADGE)) ||
+      (typeof h.clean === "string" && h.clean.includes(ADJACENCY_BADGE));
     const clean = typeof h.clean === "string" ? h.clean : typeof h.content === "string" ? h.content : "";
     let turnId = null;
     try {
@@ -123,7 +144,7 @@ export function attributeInjectedLines({ hits, resolve, goldTurnIds, sessionOf, 
       turnId = null;
     }
     turnId = turnId == null ? null : String(turnId);
-    return { type, turnId, sessionId: turnId == null ? null : String(sess(turnId)) };
+    return { type, turnId, sessionId: turnId == null ? null : String(sess(turnId)), adjacent };
   });
 
   const coverage = (subset) => {
@@ -143,11 +164,25 @@ export function attributeInjectedLines({ hits, resolve, goldTurnIds, sessionOf, 
     };
   };
 
+  // #169：覆盖率与 byType 一律只按 seed 行算（pack 行只单列，不进任何覆盖率口径）。
+  const seedRows = rows.filter((r) => !r.adjacent);
+  const adjacencyRows = rows.filter((r) => r.adjacent);
   const byType = {};
   for (const t of INJECT_LINE_TYPES) {
-    const sub = rows.filter((r) => r.type === t);
+    const sub = seedRows.filter((r) => r.type === t);
     const goldRows = sub.filter((r) => r.turnId && goldTurns.has(r.turnId));
     byType[t] = {
+      lines: sub.length,
+      goldLines: goldRows.length,
+      sessions: new Set(goldRows.map((r) => r.sessionId).filter(Boolean)).size,
+    };
+  }
+  // 邻接行按类型单列：它们只回答「补进来的上下文有没有命中 gold」，不参与 base 覆盖率。
+  const adjacencyByType = {};
+  for (const t of INJECT_LINE_TYPES) {
+    const sub = adjacencyRows.filter((r) => r.type === t);
+    const goldRows = sub.filter((r) => r.turnId && goldTurns.has(r.turnId));
+    adjacencyByType[t] = {
       lines: sub.length,
       goldLines: goldRows.length,
       sessions: new Set(goldRows.map((r) => r.sessionId).filter(Boolean)).size,
@@ -156,21 +191,21 @@ export function attributeInjectedLines({ hits, resolve, goldTurnIds, sessionOf, 
 
   // 空注入：口径显式返回 null（0 行没有任何覆盖证据，写 0 会被误读成「全漏」）。
   if (list.length === 0) {
-    const base = { injectedLines: 0, turnCov: null, sessionCov: null };
+    const base = { injectedLines: 0, injectedAdjacencyLines: 0, turnCov: null, sessionCov: null };
     const coverageWithout = {};
     const firstOrderDrop = {};
     for (const t of INJECT_LINE_TYPES) {
       coverageWithout[t] = { turnCov: null, sessionCov: null, injectedLines: 0 };
       firstOrderDrop[t] = { turnCov: null, sessionCov: null };
     }
-    return { ...base, byType, coverageWithout, firstOrderDrop };
+    return { ...base, byType, adjacencyByType, coverageWithout, firstOrderDrop };
   }
 
-  const base = coverage(rows);
+  const base = coverage(seedRows);
   const coverageWithout = {};
   const firstOrderDrop = {};
   for (const t of INJECT_LINE_TYPES) {
-    const c = coverage(rows.filter((r) => r.type !== t));
+    const c = coverage(seedRows.filter((r) => r.type !== t));
     coverageWithout[t] = { turnCov: c.turnCov, sessionCov: c.sessionCov, injectedLines: c.injectedLines };
     firstOrderDrop[t] = {
       turnCov: diffOrNull(base.turnCov, c.turnCov),
@@ -179,10 +214,13 @@ export function attributeInjectedLines({ hits, resolve, goldTurnIds, sessionOf, 
   }
 
   return {
-    injectedLines: list.length,
+    injectedLines: seedRows.length,
+    // #169：证据包扩进来的邻接行数（独立计数；不进 turnCov/sessionCov）
+    injectedAdjacencyLines: adjacencyRows.length,
     turnCov: base.turnCov,
     sessionCov: base.sessionCov,
     byType,
+    adjacencyByType,
     coverageWithout,
     firstOrderDrop,
   };

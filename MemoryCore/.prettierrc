@@ -1,0 +1,32 @@
+# MemoryCore prettier 配置（#108）。YAML 而非 JSON，只为能写注释：
+# prettier 对无扩展名的 .prettierrc 依次尝试 JSON / YAML / JS，参数语义不变。
+#
+# ── 参数怎么选出来的 ──
+# 方法：prettier 3.9.10 --list-different（--config 传候选 JSON），对象 = MemoryCore/src 下全部 .ts。
+# 两个时点各测一遍：首测 646 个 .ts，复测 655 个 .ts（并行票持续加文件，计数会缓慢上漂；重测命令见
+# scripts/format-changed.mjs 的 --probe-config 分支）。下表「首测/复测」并列，取值趋势一致：
+#   缺省配置（printWidth 80）            600 / 607 个文件不一致
+#   套 MemoryPanel/web/.prettierrc      640 / 647（singleQuote:true + printWidth:100；方向反了：本仓是双引号）
+#   printWidth 100                       560 / —
+#   printWidth 120  ← 本配置              547 / 550
+#   printWidth 130                       545 / 549（与 120 只差 1–4，落在并行编辑噪声内）
+#   printWidth 140 / 150                 549 / 555
+#   trailingComma: "es5"（各宽度）        变差 20–70
+#   semi: false                          646（首测最差，确认本仓是 semi 风格）
+#   arrowParens: "avoid"                 570（首测变差）
+# 结论（#108 票面方向是反的，这里按实测走）：
+#   1) 引号用双引号、保留分号、trailingComma "all" —— 离现状最近的方向，不是 Panel 的单引号口径；
+#   2) printWidth 取 120：最优平台在 120–135，545–550 全在噪声内，取平台下沿少压窄长行；
+#   3) **任何**参数下都有 >545 个文件不一致 ⇒ 本仓从未跑过 prettier，一次性 reformat 是纯噪声大 diff。
+#      故格式门禁只对「本次改动的文件」跑（scripts/format-changed.mjs），禁止整仓 reformat；
+#      且分两档：新增 .ts 硬门（新代码生而合规）、改动到的存量 .ts 只告警（存量债务另开纯格式 commit 收口，
+#      该 commit 合入后再设 FORMAT_STRICT_MODIFIED=1 把第二档转硬门）。
+printWidth: 120
+semi: true
+singleQuote: false
+trailingComma: all
+tabWidth: 2
+arrowParens: always
+endOfLine: lf
+bracketSpacing: true
+quoteProps: as-needed

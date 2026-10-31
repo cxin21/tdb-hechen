@@ -17,6 +17,7 @@
 import type { IStateBackend, TaskPayload } from "../core/state/types.js";
 import { serializeTraceContext } from "../core/report/trace-propagation.js";
 import { obsLogger } from "../core/report/obs-logger.js";
+import { describeTaskFailure, failureOf, planTaskRetry, type TaskFailure } from "../utils/task-failure.js";
 
 // ============================
 // Types
@@ -314,16 +315,33 @@ export class PipelineWorker {
         const errMsg = err instanceof Error ? err.message : String(err);
         this.metrics.tasksFailed++;
 
-        if (retryCount < this.config.maxRetries) {
-          const delay = this.config.retryBaseDelayMs * Math.pow(3, retryCount);
-          this.logger.warn(`${TAG} Task failed (lock-free, retry ${retryCount + 1}/${this.config.maxRetries}, delay=${delay}ms): ${errMsg}`);
+        // D-7（2026-10-31）：offload（lock-free）路径与带锁路径共用同一张分类表，
+        // 避免同一种 402 配额故障在一条路径上死信、在另一条上继续退避重试。
+        const failure = failureOf(err);
+        const plan = planTaskRetry(failure, {
+          retryCount,
+          maxRetries: this.config.maxRetries,
+          baseDelayMs: this.config.retryBaseDelayMs,
+        });
+        if (plan.action === "retry") {
+          const delay = plan.delayMs;
+          this.logger.warn(
+            `${TAG} Task failed (lock-free, retry ${retryCount + 1}/${this.config.maxRetries}, ` +
+              `delay=${delay}ms, class=${describeTaskFailure(failure)}): ${errMsg}`,
+          );
           const msgId = (task as any)._msgId;
           if (msgId) { try { await this.backend.ackTask(msgId); } catch { /* best effort */ } }
           await this.sleep(delay);
           await this.reEnqueue(task, retryCount + 1);
           this.metrics.tasksRetried++;
         } else {
-          await this.moveToDeadLetter(task, errMsg, retryCount);
+          if (!failure.retryable) {
+            this.logger.error(
+              `${TAG} Non-retryable task failure → DLQ (lock-free, ${describeTaskFailure(failure)}): ` +
+                `${task.type} [${task.instanceId}/${task.sessionId}] ${errMsg}`,
+            );
+          }
+          await this.moveToDeadLetter(task, errMsg, retryCount, failure);
         }
       } finally {
         this.runningTasks.delete(task.id);
@@ -524,11 +542,23 @@ export class PipelineWorker {
 
       this.metrics.tasksFailed++;
 
-      // 指数退避重试
-      if (retryCount < this.config.maxRetries) {
-        const delay = this.config.retryBaseDelayMs * Math.pow(3, retryCount); // 5s, 15s, 45s
+      // D-7（2026-10-31）：失败分类统一走 utils/task-failure.ts —— 不可重试的类别
+      // （配额 402 / 凭据 401·403 / 数据 400·422）**一次即死信**，不再按 5s/15s/45s
+      // 无差别重试。生产事故：402 配额耗尽被当 transient 每 ~2s 重试且无上限，
+      // 每次重试还会重建注入块（buildRelevantSkillsBlock），把一次配额故障放大成
+      // 持续打点。可重试类别（429/5xx/网络/超时/未知）保持原退避 + 上限语义。
+      const failure = failureOf(err);
+      const plan = planTaskRetry(failure, {
+        retryCount,
+        maxRetries: this.config.maxRetries,
+        baseDelayMs: this.config.retryBaseDelayMs,
+      });
+
+      if (plan.action === "retry") {
+        const delay = plan.delayMs;
         this.logger.warn(
-          `${TAG} Task failed (retry ${retryCount + 1}/${this.config.maxRetries}, delay=${delay}ms): ${errMsg}`,
+          `${TAG} Task failed (retry ${retryCount + 1}/${this.config.maxRetries}, delay=${delay}ms, ` +
+            `class=${describeTaskFailure(failure)}): ${errMsg}`,
         );
         // CR-1 fix: ACK the original message before re-enqueue. Otherwise the original
         // msgId stays in XPENDING and gets re-claimed by stale recovery in parallel
@@ -541,7 +571,14 @@ export class PipelineWorker {
         await this.reEnqueue(task, retryCount + 1);
         this.metrics.tasksRetried++;
       } else {
-        await this.moveToDeadLetter(task, errMsg, retryCount);
+        // 不可重试 → 立即死信；重试耗尽 → 原语义死信。两条都带 failure_class 便于观测。
+        if (!failure.retryable) {
+          this.logger.error(
+            `${TAG} Non-retryable task failure → DLQ (${describeTaskFailure(failure)}): ` +
+              `${task.type} [${task.instanceId}/${task.sessionId}] ${errMsg}`,
+          );
+        }
+        await this.moveToDeadLetter(task, errMsg, retryCount, failure);
       }
     } finally {
       // Step 6: 停止续约 + 释放锁
@@ -737,13 +774,19 @@ export class PipelineWorker {
   // Dead Letter (#13)
   // ============================
 
-  private async moveToDeadLetter(task: TaskPayload, error: string, retryCount: number): Promise<void> {
+  private async moveToDeadLetter(
+    task: TaskPayload,
+    error: string,
+    retryCount: number,
+    failure?: TaskFailure,
+  ): Promise<void> {
     const entry: DeadLetterEntry = { task, error, retryCount, deadAt: Date.now() };
     this.deadLetterQueue.push(entry);
     this.metrics.tasksDeadLettered++;
 
     this.logger.error(
-      `${TAG} Dead letter: ${task.type} [${task.instanceId}/${task.sessionId}] after ${retryCount} retries: ${error}`,
+      `${TAG} Dead letter: ${task.type} [${task.instanceId}/${task.sessionId}] after ${retryCount} retries` +
+        `${failure ? ` (class=${describeTaskFailure(failure)})` : ""}: ${error}`,
     );
 
     // CR-1 fix: ACK the original message to prevent stale recovery from picking it up
@@ -771,6 +814,8 @@ export class PipelineWorker {
       task_id: task.id,
       error,
       retry_count: retryCount,
+      // D-6/D-7：死信可观测——类别 + 是否可重试（人工重放时据此判断配额/凭据是否已恢复）
+      ...(failure ? { failure_class: failure.cls, retryable: failure.retryable } : {}),
     });
 
     // 持久化回调（写 COS / Stream）

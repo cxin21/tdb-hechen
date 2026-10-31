@@ -66,6 +66,16 @@ export {
 } from "./add-handler.js";
 
 export {
+  DEFAULT_DEDUPE_MAX_ENTRIES,
+  DEFAULT_DEDUPE_WINDOW_MS,
+  dedupeMessages,
+  messageFingerprint,
+  type DedupeFingerprint,
+  type DedupeInput,
+  type DedupeOutcome,
+} from "./dedupe.js";
+
+export {
   SkillCoreSink,
   type SkillCoreSinkOptions,
   type MetadataServiceLike,

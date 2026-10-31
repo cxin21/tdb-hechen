@@ -29,9 +29,19 @@
  * classifyRequest 优先级:**compact header > title body-shape > main**;
  * title 判据必须**三合一都满足**才当 aux(单一特征易误判)。
  *
- * # 两个适配点
- *   - `classifyRequest`: 三重信号判(compact / title / main)
- *   - `extractUserText`: content 是 str 直接返回(dsh messages.content 从不用 blocks)
+ * # 双协议(2026-09-29 起 dsh v0.2 换成 Anthropic Messages)
+ *
+ * 上面那套抓包结论只对 **v0.1.x(OpenAI Chat Completions)** 成立。v0.2+ 的 dsh 走
+ * `POST {baseURL}/v1/messages`,wire shape 变成:
+ *   - 系统提示词在 **`body.system`**(string 或 `[{type:"text",text}]`),不在 messages 里
+ *   - user content 是 **block array**(`{type:"text"}` / `{type:"tool_result"}`)
+ *   - tool 结果在 `role:"user"` 的 `tool_result` block 里(不再有独立 `role:"tool"`)
+ *
+ * 因此两个适配点都必须**同时认两种 shape**(v0.1 回归不能坏):
+ *   - `classifyRequest`: 三重信号判(compact / title / main)。title-gen 的 system
+ *     前缀判定对 v0.2 改读 `body.system`,v0.1 仍兜底 `messages[0].role==="system"`。
+ *   - `extractUserText`: str 直接返回;block array 则拼 `type:"text"` 的 text
+ *     (跳过 tool_result / thinking),全是 tool_result 时返回 null。
  *
  * # 不同于 CB 的地方
  *   - dsh 主对话在 body.messages 里塞 4 条 role=user:真实用户输入 +
@@ -75,39 +85,87 @@ function isDshTitleGen(body: Record<string, unknown>): boolean {
   const hasTools = Array.isArray(tools) && tools.length > 0;
   if (hasTools) return false;
 
-  // 条件 2: thinking.type === "disabled"
+  // 条件 2: thinking 显式为 enabled 的才算主对话
+  // - v0.1 抓包:title-gen 恒带 `thinking: { type: "disabled" }` → 放行。
+  // - v0.2(anthropic):该字段可能整体缺省(deepseek anthropic adapter 只在开启时带
+  //   `thinking:{type:"enabled", budget_tokens}`)→ 缺省也必须放行,否则 title-gen
+  //   漏判成 main,标题请求会吃满注入管线(白烧 2-3s + 多次外部调用)。
+  // 只排除显式 enabled:主对话恒为 enabled,title-gen 绝不为 enabled。
   const thinking = body.thinking as { type?: string } | undefined;
-  if (thinking?.type !== "disabled") return false;
+  if (thinking?.type === "enabled") return false;
 
   // 条件 3: max_tokens <= 128
   const maxTokens = body.max_tokens;
   if (typeof maxTokens !== "number" || maxTokens > DSH_TITLE_MAX_TOKENS_CEIL) return false;
 
-  // 条件 4: 首条 system 消息 content 以 title prompt 前缀开头
-  const messages = body.messages;
-  if (!Array.isArray(messages) || messages.length === 0) return false;
-  const first = messages[0] as { role?: string; content?: unknown } | undefined;
-  if (!first || first.role !== "system" || typeof first.content !== "string") return false;
-  if (!first.content.startsWith(DSH_TITLE_SYSTEM_PROMPT_PREFIX)) return false;
+  // 条件 4: 系统提示词以 title prompt 前缀开头
+  const systemText = readDshSystemText(body);
+  if (!systemText || !systemText.startsWith(DSH_TITLE_SYSTEM_PROMPT_PREFIX)) return false;
 
   return true;
+}
+
+/**
+ * 读 dsh 请求的"系统提示词文本"。
+ *
+ * - v0.2(anthropic):`body.system` —— string 或 `[{type:"text",text}]` block array
+ * - v0.1(openai):`messages[0]` 且 role="system"(content 同样是 string 或 block array)
+ *
+ * 取不到返回 null。
+ */
+function readDshSystemText(body: Record<string, unknown>): string | null {
+  const fromUnknown = (v: unknown): string | null => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) {
+      const parts = (v as Array<{ type?: unknown; text?: unknown }>)
+        .filter((b) => b?.type === "text" && typeof b.text === "string")
+        .map((b) => b.text as string);
+      return parts.length > 0 ? parts.join("\n") : null;
+    }
+    return null;
+  };
+
+  const fromBodySystem = fromUnknown(body.system);
+  if (fromBodySystem) return fromBodySystem;
+
+  const messages = body.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const first = messages[0] as { role?: string; content?: unknown } | undefined;
+  if (!first || first.role !== "system") return null;
+  return fromUnknown(first.content);
 }
 
 // ── User text extraction ─────────────────────────────────────────────────────
 
 /**
- * dsh messages.content 是 str,直接返回。
+ * 提取用户真正键入的文本。两种 wire shape 都要认:
  *
- * 抓包实证(fixtures/*.req.json 多条 messages 全 role=user + content:str):
- * dsh 从不用 Anthropic-style content-blocks 数组,连 tool_result 都是独立
- * role=tool 消息(而非嵌在 user 里)。
+ * - v0.1(openai):`content` 是 str —— 抓包实证 dsh 从不用 content-blocks。
+ * - v0.2(anthropic):`content` 是 block array,用户输入是 `type:"text"` 的 block;
+ *   表单答复是 `type:"tool_result"` block(里面才是用户选中的 label 文本)。
+ *
+ * 只有 tool_result / image / thinking、没有 text block 时返回 null(表示"这条 user
+ * 消息里没有用户键入的文本"),让调用方继续往前找 —— 与
+ * `agent-adapters/claude-code.ts:22` 的语义一致。
  *
  * 不做 CB 那种 `<user_query>` wrapper 剥离 —— dsh 主对话就是纯用户输入 +
  * 独立 `<system-reminder>` user 消息,没 wrapper 嵌套。
  */
 function extractDshUserText(content: unknown): string | null {
-  if (typeof content !== "string") return null;
-  return content.length > 0 ? content : null;
+  if (typeof content === "string") {
+    return content.length > 0 ? content : null;
+  }
+  if (!Array.isArray(content)) return null;
+
+  const parts: string[] = [];
+  for (const raw of content as Array<{ type?: unknown; text?: unknown }>) {
+    if (raw?.type !== "text") continue;
+    if (typeof raw.text !== "string") continue;
+    if (raw.text.length === 0) continue;
+    parts.push(raw.text);
+  }
+  if (parts.length === 0) return null;
+  return parts.join("\n");
 }
 
 // ── Adapter export ───────────────────────────────────────────────────────────

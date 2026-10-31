@@ -206,6 +206,10 @@ export async function handleSessionInit(
       retry: cbFd.retry,
       stream: reqCtx.stream,
       modelId: reqCtx.modelId,
+      // 协议 MUST be forwarded(同 CC 分支的注释):dsh v0.2+ 走 Anthropic
+      // Messages,form 帧必须是六事件 tool_use SSE;漏传这个字段就退回 OpenAI
+      // chat.completion 帧,anthropic 客户端解不出表单 → 断流。
+      protocol: reqCtx.protocol,
     };
     result.response = buildDshFormResponse(dshFd);
   }

@@ -13,6 +13,7 @@
  */
 
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
+import { describeLlmFailure } from "../../utils/task-failure.js";
 
 // D-3（2026-09-21）：敏感性枚举白名单（确定性门——LLM 只提议，非法值裁决为 none）
 const SENSITIVITY_ENUM = new Set(["none", "health", "finance", "relationship"]);
@@ -192,6 +193,21 @@ export interface L1ExtractionResult {
   sceneNames: string[];
   /** Last scene name (for continuity in next extraction) */
   lastSceneName?: string;
+  /**
+   * D-6（2026-10-31）：失败原因原文（仅 success=false 时填），供上游把
+   * 「提取失败」判成非成功任务并按错误类别决定重试/死信。
+   */
+  error?: string;
+  /**
+   * D-7（2026-11-01）：LLM 端点的结构化失败信息（HTTP 状态码 / 供应商业务码）。
+   *
+   * 为什么单独带字段而不只靠 error 文本：生产 402 的文案里只有供应商中文（"当前已达到
+   * Token Plan 用量上限…"），没有 `status=402`，下游按文本分类必然落 unknown（可重试）。
+   * 这两个字段由适配器挂在错误对象上，本层原样透传，直到 executeL1 组成
+   * L1ExtractionFailedError 时再参与分类。
+   */
+  failureStatus?: number;
+  failureProviderCode?: string;
 }
 
 // ============================
@@ -362,10 +378,26 @@ export async function extractL1Memories(params: {
     llmRaw = { systemPrompt: out.systemPrompt, userPrompt: out.userPrompt, rawOutput: out.rawOutput };
     logger?.debug?.(`${TAG} LLM detected ${scenes.length} scene(s)`);
   } catch (err) {
-    logger?.error(`${TAG} LLM extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+    const failure = describeLlmFailure(err);
+    const errMessage = failure.message;
+    logger?.error(
+      `${TAG} LLM extraction failed: ${errMessage}`
+        + ` (status=${failure.statusCode ?? "?"}, providerCode=${failure.providerCode ?? "?"})`,
+    );
     // #122：LLM 调用本身失败也是「0 条」的一种——给同一个单行出口，reason=llm_error
     logL1Empty(logger, { reason: "llm_error", sessionKey, scenes: 0, inputMsgs: messages.length });
-    return { success: false, extractedCount: 0, storedCount: 0, records: [], sceneNames: [] };
+    // D-6：带上原始错误；D-7：另带结构化状态码/供应商码（文本里常常没有），上游据此区分
+    // 「配额耗尽（不可重试）」与「偶发超时（可重试）」，不再把失败一律当成功。
+    return {
+      success: false,
+      extractedCount: 0,
+      storedCount: 0,
+      records: [],
+      sceneNames: [],
+      error: errMessage,
+      failureStatus: failure.statusCode,
+      failureProviderCode: failure.providerCode,
+    };
   }
 
   // L1-OUTAGE-20261015（断流定罪基建）：任务内建 watchdog，每 60s 上报当前阶段。

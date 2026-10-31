@@ -360,6 +360,10 @@ export class StorePool {
 
     return {
       store,
+      // #123 注入点①（TCVDB）：向量由 TCVDB collection 服务端生成，客户端无 embedding 能力。
+      // 这是**合法的服务端占位**，不是「客户端 embedding 可用」——hasClientEmbedding() 判 provider='noop'
+      // 会返回 false，/health 如实标 degraded（server.ts 探针 reason=noop-embedder），
+      // 避免旧行为「Noop.isReady() 恒 true ⇒ 恒绿 ⇒ 静默空转」。
       embedding: new NoopEmbeddingService() as unknown as EmbeddingService,
       bm25Encoder: this.sharedBm25Encoder,
     };
@@ -395,6 +399,10 @@ export class StorePool {
 
     return {
       store,
+      // #123 注入点②（SQLite 兜底）：未配置远端 embedding（disabled / provider=none / 缺 apiKey）
+      // 时用 Noop 占位 —— 这是**静默空转真源**：embed() 返回空 Float32Array，L1 永远写不进向量。
+      // 保留 Noop（不 fail-fast，生产可用性优先），但可观测性由 gateway 探针兜住：
+      // hasClientEmbedding() → false ⇒ /health memory.embedding=degraded + WARN(reason=noop-embedder)。
       embedding: (embeddingService ?? new NoopEmbeddingService()) as unknown as EmbeddingService,
       bm25Encoder: this.sharedBm25Encoder,
     };

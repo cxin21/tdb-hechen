@@ -27,6 +27,7 @@ import type { GatewayConfig } from "./config.js";
 import { applyMetadataEnvFromGatewayConfig } from "./metadata-env.js";
 import { initDataDirectories } from "../utils/pipeline-factory.js";
 import { SessionFilter } from "../utils/session-filter.js";
+import { L1ExtractionFailedError } from "../utils/task-failure.js";
 import { WorkerPermitPool } from "../services/worker-permit-pool.js";
 import { createExtractorAdapter, SkillExtractor as SkillExtractorClass } from "../core/skill/skill-extractor.js";
 import type { SkillCore as SkillCoreType } from "../core/skill/skill-core.js";
@@ -65,6 +66,8 @@ import { createReranker } from "../core/recall/rerank/factory.js";
 import type { RecallRerankConfig } from "../config.js";
 import type { MemoryReranker } from "../core/recall/rerank/types.js";
 import { tokenizeForFts } from "../core/store/sqlite.js";
+import { hasClientEmbedding, NOOP_EMBEDDING_PROVIDER } from "../core/store/embedding.js";
+import { ensureL1FactVec } from "../core/store/capability-guard.js";
 import { expandQuery, resolveQueryExpansionRunner } from "../core/recall/query-expand.js";
 import { BootWarmup, RERANK_WARMUP_CLOUD_DOCS, buildRerankWarmupDocs } from "./boot-warmup.js";
 import type { V2RouterDeps } from "./v2-router.js";
@@ -114,12 +117,27 @@ import {
 import type { ISkillExtractor } from "../core/skill/queue/types.js";
 import type { SkillBufferStorage } from "../core/skill/conversation-add/index.js";
 import { makeKnowledgeRouteTable } from "./knowledge-handlers.js";
+// task-73：core wiki 薄转发（/v3/wiki/{list,search}）— team 归属由 metadata 校验，
+// 检索面跨 wiki 按 absScore 合并；8421 只按 caller 自称 team 过滤，不能直接暴露给插件。
+import { makeWikiRouteTable } from "./wiki-handlers.js";
 import { makeChatMemoryRouteTable, clearChatMemoryContentResilient } from "./chat-memory-handlers.js";
 import { makeMemoryPromptRouteTable } from "./memory-prompt-handlers.js";
 import { makeMemoryGenerationLogRouteTable } from "./memory-generation-log-handlers.js";
 import { handleOffloadV2Route } from "../offload_server/router.js";
 import type { OffloadV2Deps } from "../offload_server/router.js";
-import { resolveApiKey, resolveV3StrictIsolation } from "../utils/env-config.js";
+import {
+  readAuthAdminBypassEnabled,
+  readAuthRequireTeamOwnership,
+  readAuthRequireUserBinding,
+  readAuthTeamOwnershipWhitelist,
+  readAuthUnknownPrincipalPolicy,
+  resolveApiKey,
+  resolveV3StrictIsolation,
+} from "../utils/env-config.js";
+import { resolveAuthBindingConfig } from "./auth-binding.js";
+// task-68：team 归属闸的 metadata 查询器（进程内 LRU，缺省 off 时一次都不查）。
+import { createTeamOwnershipResolver } from "./team-ownership-resolver.js";
+import { recordTeamOwnershipMetric } from "./team-ownership.js";
 import { initServerOpikTracer } from "../offload_server/opik-tracer.js";
 import { classifyError } from "./error-handler.js";
 import { LocalStorageBackend } from "../core/storage/local-backend.js";
@@ -150,9 +168,13 @@ export interface MemoryHealthStats {
   embeddingStatus: "ok" | "degraded";
   /** 进入当前 embedding 状态的时刻（ISO）；从未翻转 → null。 */
   degradedSince: string | null;
-  /** 最近一次成功向量写入时刻（进程内内存值）；从未写过 → null。 */
+  /** 当前 embedding provider（getProviderInfo().provider）；无 service → null。#123 Panel 判绿依据之一。 */
+  embeddingProvider: string | null;
+  /** #123：客户端 embedding 是否真可用（hasClientEmbedding 判定；noop/读不到 ⇒ false）。 */
+  embeddingConfigured: boolean;
   /** R2-2：有向量 L1 条数（记录粒度，多 chunk 不重复计）。后端未实现时回退 vecRows。 */
   coveredRows: number;
+  /** 最近一次成功向量写入时刻（进程内内存值）；从未写过 → null。 */
   lastVecWriteAt: string | null;
 }
 
@@ -165,19 +187,37 @@ export interface MemoryHealthInfo {
   embedding: "ok" | "degraded";
   degradedSince: string | null;
   lastVecWriteAt: string | null;
+  /**
+   * #123：embedding provider 原值（"noop" / "local" / "openai" …）；无 service → null。
+   * Panel 侧必须靠 provider + embeddingConfigured 判绿，不能只看 embedding 或 stores.embeddingService
+   * （noop embedder 也满足「service 存在」，只看存在性会恒绿 = #123 false-green 根因）。
+   */
+  embeddingProvider: string | null;
+  /** #123：客户端 embedding 是否真可用（noop / 读不到 provider ⇒ false）。false 时 embedding 恒 degraded。 */
+  embeddingConfigured: boolean;
 }
 
 /**
  * 纯函数：stats → /health 的 memory 子对象（T15-B 抽出便于直测，与 server 实例解耦）。
  */
 export function buildMemoryHealth(stats: MemoryHealthStats): MemoryHealthInfo {
+  // #123（H-15 降级语义，不 fail-fast）：provider 缺失 / noop / 探针失败 三种情况一律降档。
+  // 为什么不硬抛：本仓 RecallErrors.configMissingEmbedding 已硬抛，但那是单次调用失败；
+  // 在 /health 上硬抛会让运维失去「为什么」的可观测面，且生产可用性优先——降级 + WARN + 一次
+  // journal 行（探针状态翻转日志）足以定位，recall 仍可按关键词兜底继续服务。
+  const embeddingDegraded =
+    !stats.embeddingConfigured ||
+    stats.embeddingProvider === NOOP_EMBEDDING_PROVIDER ||
+    stats.embeddingStatus !== "ok";
   return {
     vectorCoverage: stats.coveredRows / Math.max(stats.metaRows, 1),
     vecRows: stats.vecRows,
     metaRows: stats.metaRows,
-    embedding: stats.embeddingStatus,
+    embedding: embeddingDegraded ? "degraded" : "ok",
     degradedSince: stats.degradedSince,
     lastVecWriteAt: stats.lastVecWriteAt,
+    embeddingProvider: stats.embeddingProvider,
+    embeddingConfigured: stats.embeddingConfigured,
   };
 }
 
@@ -247,16 +287,53 @@ export class PayloadTooLargeError extends Error {
   }
 }
 
+/**
+ * Stop buffering an oversize body and discard the remainder *without* closing
+ * the connection.
+ *
+ * CR-7 / task-36: this used to be `req.resume(); req.destroy()` right after the
+ * rejection. Destroying the request reset the TCP connection before the caller
+ * could write its 413 response, so clients (undici/fetch, curl) only observed
+ * `TypeError: fetch failed` / `ECONNRESET` and the one diagnosable fact — the
+ * byte limit — was lost at the transport layer. Now the parser only *stops
+ * retaining* bytes and drains the rest; the caller (top-level handler or the v2
+ * router) writes the 413 JSON first, and the responder sends
+ * `Connection: close` so the socket shuts down after the response is flushed.
+ *
+ * Why draining is bounded: `resume()` discards chunks as they arrive (no
+ * buffering), and the response flush does not wait for the body, so a hostile
+ * multi-hundred-MB upload still gets answered immediately; the connection is
+ * torn down as soon as the 413 is on the wire.
+ *
+ * @param req     incoming request — always drained
+ * @param source  decompression stream when Content-Encoding was gzip/deflate
+ */
+function drainOversizeBody(
+  req: http.IncomingMessage,
+  source?: NodeJS.ReadableStream,
+): void {
+  if (source && (source as unknown) !== (req as unknown)) {
+    // Stop inflating (a gzip bomb is unbounded input). pipe() unpipes the
+    // request when the destination errors, and req.resume() takes over below.
+    try {
+      (source as unknown as { destroy?: () => void }).destroy?.();
+    } catch {
+      /* ignore — the promise is already being rejected */
+    }
+  }
+  req.resume();
+}
+
 export async function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     // Reject early when Content-Length header already exceeds the limit:
     // saves transferring up to MAX_BODY_BYTES of attacker-controlled data.
     const declared = Number.parseInt(req.headers["content-length"] ?? "", 10);
     if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      // No response here (the parser has no ServerResponse): disarm the socket
+      // instead of killing it, so the caller's catch can answer 413.
+      drainOversizeBody(req);
       reject(new PayloadTooLargeError(MAX_BODY_BYTES));
-      // Drain & destroy so the client doesn't keep streaming.
-      req.resume();
-      req.destroy();
       return;
     }
 
@@ -283,8 +360,10 @@ export async function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
       received += chunk.length;
       if (received > MAX_BODY_BYTES) {
         aborted = true;
+        // Drop what we buffered; the 413 is written by the caller's catch.
+        chunks.length = 0;
+        drainOversizeBody(req, source);
         reject(new PayloadTooLargeError(MAX_BODY_BYTES));
-        req.destroy();
         return;
       }
       chunks.push(chunk);
@@ -345,8 +424,16 @@ export class TdaiGateway {
   private startTime = Date.now();
 
   // ── T15-B（向量健康三件套）：embed-only 探活 + memory 健康统计 ──
-  /** embedding 探活状态；翻转时 console.warn 一次（ok→degraded / degraded→ok），不刷屏。 */
-  private embeddingProbe: { status: "ok" | "degraded"; since: string | null } = { status: "ok", since: null };
+  /**
+   * embedding 探活状态；翻转时 WARN 一次（ok→degraded / degraded→ok），不刷屏。
+   * #123：reason 记录降档归因（not-configured / noop-embedder / probe-failed）——
+   * 同一 reason 重复探到只记一条 journal 行，归因变化才再记。
+   */
+  private embeddingProbe: { status: "ok" | "degraded"; since: string | null; reason: string | null } = {
+    status: "ok",
+    since: null,
+    reason: null,
+  };
   /** 探活定时器（5min 周期，unref —— 不阻止进程退出）。 */
   private embeddingProbeTimer: ReturnType<typeof setInterval> | null = null;
   /** vecRows/metaRows/lastVecWriteAt 缓存（60s，防每次 /health 打库）。 */
@@ -711,6 +798,9 @@ export class TdaiGateway {
     // Initialize core
     await this.core.initialize();
 
+    // ── #152 ①：启动能力审计（只 WARN，不阻断启动）──
+    this.auditStoreCapabilities();
+
     // ── Initialize Opik tracer for offload server ──
     await initServerOpikTracer(this.logger);
 
@@ -898,14 +988,55 @@ export class TdaiGateway {
     }
   }
 
+  /** 读 provider 原值；读不到 → null（#123：payload 透出 provider，Panel 据此判绿）。 */
+  private embeddingProviderOf(emb: { getProviderInfo(): { provider: string } } | undefined): string | null {
+    if (!emb) return null;
+    try {
+      return emb.getProviderInfo().provider ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * embed 探针：只 embed 一个探针词，成功 → embedding=ok；抛错 → embedding=degraded。
+   * #123（P0 静默空转）：标记 embedding 降档。
+   * 同一 reason 重复命中只记一条 WARN（journal 行），归因变化才再记 —— 5min 探针不刷屏。
+   */
+  private markEmbeddingDegraded(reason: string, detail: string): void {
+    if (this.embeddingProbe.status === "degraded" && this.embeddingProbe.reason === reason) return;
+    this.embeddingProbe = { status: "degraded", since: new Date().toISOString(), reason };
+    this.logger.warn(`${TAG} [vector-health] embedding degraded: ${detail} (reason=${reason})`);
+  }
+
+  /**
+   * embed 探针：只 embed 一个探针词，成功 → embedding=ok；否则 degraded。
    * 简化裁决（brief T15-B）：不写哨兵行（污染主表），embed-only 探活。
-   * 状态翻转（ok→degraded / degraded→ok）时 warn 一次，不刷屏。
+   *
+   * #123 修正（旧实现两条假绿路径）：
+   *   ① 未配置 → 直接 return，status 停在初值 ok（=永久绿）；
+   *   ② NoopEmbeddingService：embed() 返回空 Float32Array、isReady() 恒 true，
+   *      探针「不抛错」即判 ok（=恒绿 + 向量恒不写）。
+   * 现改为同一杆秤：!emb → not-configured；hasClientEmbedding(emb)===false（provider==='noop'）
+   * → noop-embedder；embed 抛错 → probe-failed。
+   *
+   * H-15 语义：**降级 + WARN + 一次 journal 行**，不 fail-fast。
+   * 理由（生产可用性优先）：embedding 不可用时 recall 应继续以关键词/元数据兜底服务；
+   * 硬抛（本仓 RecallErrors.configMissingEmbedding 即此路）等于让整轮 recall 失败，
+   * 反而比降级更差——可观测面（/health degraded + WARN 归因）已足够运维定位。
    */
   private async runEmbeddingProbe(): Promise<void> {
     const emb = this.core.getEmbeddingService();
-    if (!emb) return; // 未配置 embedding → 无探针语义（health 的 embedding 恒 "ok" 探针缺省态）
+    if (!emb) {
+      this.markEmbeddingDegraded("not-configured", "no embedding service (client embedding not configured)");
+      return;
+    }
+    if (!hasClientEmbedding(emb)) {
+      this.markEmbeddingDegraded(
+        "noop-embedder",
+        `provider=${this.embeddingProviderOf(emb) ?? "unknown"} has no client embedding (noop/server-side embedder)`,
+      );
+      return;
+    }
     const prev = this.embeddingProbe.status;
     try {
       // S3（T15 审计 M-2）：探针词拼时间戳 —— 防 provider 侧对同文本 embedding
@@ -913,16 +1044,30 @@ export class TdaiGateway {
       // 探针 5min 一次，cache-bust 成本可忽略。
       await emb.embed(`tdai-vector-health-probe-${Date.now()}`);
       if (prev === "degraded") {
-        this.embeddingProbe = { status: "ok", since: new Date().toISOString() };
+        this.embeddingProbe = { status: "ok", since: new Date().toISOString(), reason: null };
         this.logger.warn(`${TAG} [vector-health] embedding probe recovered: degraded → ok`);
       }
     } catch (err) {
-      if (prev === "ok") {
-        this.embeddingProbe = { status: "degraded", since: new Date().toISOString() };
-        this.logger.warn(
-          `${TAG} [vector-health] embedding probe failed: ok → degraded (${err instanceof Error ? err.message : String(err)})`,
-        );
-      }
+      this.markEmbeddingDegraded(
+        "probe-failed",
+        `probe embed failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * #152 ①：启动时审计 store 能力位并显式 WARN——「能力位 false + 调用点靠方法存在性探测」
+   * 的组合会让可选通道静默空跑（l1_fact_vec：tcvdb 无 upsertL1FactVector/searchL1FactVector，
+   * 事实向量写入与检索直接跳过，日志零痕迹）。仅告警，不改变启动行为（生产可用性优先）。
+   */
+  private auditStoreCapabilities(): void {
+    try {
+      const store = this.core.getVectorStore();
+      if (!store) return;
+      // 缺能力 → ensureL1FactVec 记一条 WARN（同一 fact 进程级只记一次，5 分钟探针/每轮 recall 不刷屏）
+      ensureL1FactVec(store, this.logger);
+    } catch (err) {
+      this.logger.warn(`${TAG} [capability] store capability audit failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -968,6 +1113,9 @@ export class TdaiGateway {
       lastVecWriteAt: c.lastVecWriteAt,
       embeddingStatus: this.embeddingProbe.status,
       degradedSince: this.embeddingProbe.since,
+      // #123：provider/configured 实时读（不缓存）——provider 是身份信息，缓存只会延长误报。
+      embeddingProvider: this.embeddingProviderOf(this.core.getEmbeddingService()),
+      embeddingConfigured: hasClientEmbedding(this.core.getEmbeddingService()),
     };
   }
 
@@ -1296,6 +1444,55 @@ export class TdaiGateway {
         // C2（spec §3.2）：动机方向（valence）LLM 判定 runner —— /values/derive 路由与
         // values/upsert 后 fire-and-forget 钩子共用（惰性构造 + 进程级缓存）。
         getValueValenceLlmRunner: () => this.buildValenceLlmRunner(),
+        // #红队②（task-60）：数据面归属校验。三项缺省全关 ⇒ 行为与今天逐位相同，
+        // 故本接线本身不改变任何生产响应（回归见 gateway/auth-binding.wire.test.ts）。
+        authBinding: (() => {
+          const resolved = resolveAuthBindingConfig(this.config, {
+            requireUserBinding: readAuthRequireUserBinding(),
+            unknownPrincipalPolicy: readAuthUnknownPrincipalPolicy(),
+            adminBypass: readAuthAdminBypassEnabled(),
+            requireTeamOwnership: readAuthRequireTeamOwnership(),
+            teamOwnershipWhitelist: readAuthTeamOwnershipWhitelist(),
+          });
+          // task-68：启动时把生效档位记进计数与日志（灰度的第一行读数；off 也记，
+          // 便于事后证明「当时确实是关着的」）。归属判定本身每请求另行计数。
+          recordTeamOwnershipMetric("off", resolved.requireTeamOwnership === "off" ? 1 : 0);
+          this.logger.info(
+            `[TEAM-OWNERSHIP] memory.auth.requireTeamOwnership=${resolved.requireTeamOwnership} ` +
+              `whitelist=${resolved.teamOwnershipWhitelist.length}`,
+          );
+          return resolved;
+        })(),
+        // task-68：归属查询（x-tdai-user-key → userId，再查 team→member）。
+        // 与 ensureChatMemoryAsset 同一条热路径：结果进进程内 LRU（TTL 60s、4096 条），
+        // 同 (user_key) / 同 (team,user) 的后续请求不再打 metadata；查询抛错由 dispatch
+        // 统一 fail-open + WARN，不挡写。
+        checkTeamOwnership: createTeamOwnershipResolver({
+          getMetadataService: (instanceId) => this.ensureMetadataService(instanceId),
+          logger: this.logger,
+        }).lookup,
+        // ③ 写侧未知主体查询：只查 entity 三表存在性，不做任何写。
+        // 任一 getter 缺失（自定义 store 未实现实体面）→ 返回 null ⇒ 不参与判定。
+        lookupPrincipal: async (ids) => {
+          const store = this.core.getVectorStore() as unknown as {
+            getTeam?: (id: string) => unknown;
+            getUser?: (id: string) => unknown;
+            getAgent?: (id: string) => unknown;
+          } | undefined;
+          if (!store) return null;
+          const settle = async (fn: (() => unknown) | undefined): Promise<boolean | null> => {
+            if (typeof fn !== "function") return null;
+            try {
+              return (await Promise.resolve(fn())) != null;
+            } catch {
+              return null;
+            }
+          };
+          const teamKnown = ids.teamId && store.getTeam ? await settle(() => store.getTeam!(ids.teamId!)) : null;
+          const agentKnown = await settle(store.getAgent ? () => store.getAgent!(ids.agentId) : undefined);
+          const userKnown = await settle(store.getUser ? () => store.getUser!(ids.userId) : undefined);
+          return { teamKnown, agentKnown, userKnown };
+        },
       };
 
       // Skill module deps — composed alongside V2RouterDeps so v2-router.ts
@@ -1390,13 +1587,18 @@ export class TdaiGateway {
       // Compose deps: V2RouterDeps fields + SkillRouterDeps fields. The
       // route table union of routeTable + makeSkillRouteTable() is what
       // tells the dispatcher which subset of fields each handler reads.
-      const mergedDeps = Object.assign({}, v2Deps, skillDeps);
+      // wikiHeaders：/v3/wiki/* 的团队/用户佐证（与 body.team_id 交叉校验，见 wiki-handlers.ts）。
+      const mergedDeps = Object.assign({}, v2Deps, skillDeps, {
+        wikiHeaders: req.headers as Record<string, string | string[] | undefined>,
+      });
 
       // Merge management-plane extra route tables.
       const extraRoutes = {
         ...makeSkillRouteTable(),
         ...makeKnowledgeRouteTable(),
         ...makeChatMemoryRouteTable(),
+        // task-73：/v3/wiki/* 薄转发（只读 + team 归属校验 + absScore 合并）
+        ...makeWikiRouteTable({ getConfig: () => this.config.memory.wiki }),
         ...makeMemoryPromptRouteTable(),
         ...makeMemoryGenerationLogRouteTable(),
         // /v3/admin/settings/{get,set}（spec §3.2）— 内网信任模型，管理员判定在 Panel 层。
@@ -1476,7 +1678,19 @@ export class TdaiGateway {
       if (err instanceof PayloadTooLargeError) {
         // Fast-path: PayloadTooLargeError messages are already safe (constant + numeric limit).
         this.logger.warn(`Request rejected [${method} ${pathname}]: ${err.message}`);
-        sendError(res, 413, err.message);
+        // CR-7 / task-36：答复必须可诊断，不能让客户端只看到连接被重置。
+        // - 仍然先写 JSON（error/code/limitBytes/hint），limitBytes 让客户端能算出
+        //   要拆成几批；hint 指明明面的两条出路。
+        // - `Connection: close`：超限时余下的请求体只做丢弃（drainOversizeBody），
+        //   不进入 keep-alive，直接关连接，避免把半截 body 当成下一个请求。
+        res.setHeader("Connection", "close");
+        sendJson(res, 413, {
+          error: err.message,
+          code: 413,
+          limitBytes: err.limitBytes,
+          hint: "Split the batch into several smaller requests, or raise MEMORY_MAX_BODY_BYTES.",
+          retryable: false,
+        });
         return;
       }
       // H-13: classify + sanitize before sending to client.
@@ -3403,6 +3617,30 @@ export class TdaiGateway {
           storage ?? undefined,
           resolveCheckpointLock(instanceId),
         );
+
+        // D-6（2026-10-31）：提取失败必须**当失败抛出**，不能静默当成功返回。
+        //
+        // 旧行为：runner 失败时只回 processedCount=0 / hasMore=false，本函数照常返回，
+        // pipeline-worker 便把这个任务记成 completed（生产实测 HTTP 402 配额耗尽：
+        // tasksConsumed=4 / tasksCompleted=4 / tasksFailed=0，l1_records 零新增），
+        // 随后仍 arm L1_idle / enqueue L1_drain，L2 定时器也跟着推进。
+        // 现在抛 typed error 交给 pipeline-worker 的统一失败路径：
+        //   · 不可重试（401/402/403/400/422）→ 立即死信，不再 ~2s 间隔无限打点；
+        //   · 可重试（429/5xx/网络/超时）→ base*3^n 退避 + 次数上限，超限进死信。
+        // H-15 语义：这里不 fail-fast 退出进程，只让任务失败 —— 生产可用性优先，
+        // 单会话批次失败不应拖垮整实例；降级 WARN + journal（obs 事件）由 worker 落。
+        if (result.failed) {
+          const detail = result.failureDetail ?? "L1 extraction failed";
+          gateway.logger.error(
+            `[executor] L1 failed: session=${task.sessionId} instance=${instanceId} stored=${result.storedCount} detail=${detail}`,
+          );
+          // D-7：把结构化状态码/供应商码一并交给分类器——文案里没有 `status=402` 时
+          // 也能一次判成 quota（立即死信），不再把配额故障放大成 3 次退避重试。
+          throw new L1ExtractionFailedError(task.sessionId, detail, result.storedCount, {
+            statusCode: result.failureStatus,
+            providerCode: result.failureProviderCode,
+          });
+        }
 
         (task as any)._l2ProfileScopes = result.profileScopes;
 

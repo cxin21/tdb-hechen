@@ -1671,6 +1671,13 @@
   background: var(--tea-color-bg-warning-lighten-default);
 }
 
+/* #123：未配置（noop / 读不到 provider）——同为黄色警示，但文案与悬浮详情区分于"降级"，
+   避免运维把"没配 embedder"误判成"向量写入失败"。 */
+._memory-health-bar--unconfigured {
+  color: var(--tea-color-text-warning-default);
+  background: var(--tea-color-bg-warning-lighten-default);
+}
+
 ._memory-health-banner {
   font-weight: 500;
   margin-left: 4px;

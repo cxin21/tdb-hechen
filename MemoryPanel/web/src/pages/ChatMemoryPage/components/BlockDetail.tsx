@@ -7,7 +7,7 @@ import { Button, DatePicker, Dropdown, Input, List, Modal, Pagination } from 'te
 import { type MemoryLayer, type MemoryBlock, type AtomicItem } from '../constants/types';
 import { useLayers } from '../constants/constants';
 import { getLayerCount, stripAtMention, extractRole, formatDisplayTime } from '../utils/utils';
-import { stripScenarioMeta, copyToClipboard } from '../utils/memory-utils';
+import { stripScenarioMeta, copyToClipboard, defaultTimeRange } from '../utils/memory-utils';
 import { SoulSection } from './block-detail/SoulSection';
 import { AttributesSection } from './block-detail/AttributesSection';
 import { AttributeBadges } from './block-detail/attribute-badges';
@@ -25,6 +25,7 @@ import {
   TimeIcon,
   SearchIcon,
   MoreIcon,
+  RefreshIcon,
 } from 'tea-icons-react';
 
 const { RangePicker } = DatePicker;
@@ -592,6 +593,7 @@ export function BlockDetail({
   timeRange,
   onTimeRangeChange,
   rangeTooLarge,
+  onRefresh,
   canEdit,
   onSaveLayerItem,
   onSearchLayer,
@@ -616,6 +618,8 @@ export function BlockDetail({
   onTimeRangeChange?: (range: { start: string; end: string }) => void;
   /** 后端探测到筛选范围过大（VDB 无法支撑）时为 true */
   rangeTooLarge?: boolean;
+  /** 手动刷新当前块的数据（列表 / 当前层 / 四层计数）；未传则不显示刷新入口 */
+  onRefresh?: () => void;
   /** 是否显示编辑入口（仅资产 Owner 可编辑） */
   canEdit?: boolean;
   /** 保存单层内容（L1/L2/L3）；未传则不显示编辑入口 */
@@ -635,10 +639,16 @@ export function BlockDetail({
   const safePage = Math.min(layerPage, pageCount - 1);
   // 时间筛选仅对按时间存储的 L0 / L1 生效
   const showTimeFilter = (layer === 'L0' || layer === 'L1') && !!timeRange && !!onTimeRangeChange;
-  const rangeValue: [Moment, Moment] | undefined =
-    timeRange && timeRange.start && timeRange.end
-      ? [moment(timeRange.start), moment(timeRange.end)]
-      : undefined;
+  // 只填一侧也要展示出来：此前要求 start/end 同时存在，否则 value=undefined，
+  // 筛选器退回 placeholder —— 用户明明已经按一侧过滤（后端对单侧参数是支持的），
+  // 界面却装作没筛选。缺失侧用默认窗口边界补齐，保证控件始终反映生效中的条件。
+  const rangeValue: [Moment, Moment] | undefined = (() => {
+    if (!timeRange) return undefined;
+    const { start, end } = timeRange;
+    if (!start && !end) return undefined;
+    const fallback = defaultTimeRange();
+    return [moment(start || fallback.start), moment(end || fallback.end)];
+  })();
   // 上传者展示名（回退 user_id）
   const uploaderName = useUserDisplayName(block.uploaded_by_user_id);
 
@@ -818,6 +828,19 @@ export function BlockDetail({
           </div>
         </div>
 
+        {onRefresh && (
+          <Button
+            type="text"
+            onClick={onRefresh}
+            disabled={layerLoading}
+            title={t('memory.detail.refresh')}
+            aria-label={t('memory.detail.refresh')}
+            className="_memory-detail-refresh"
+          >
+            <RefreshIcon size={14} />
+          </Button>
+        )}
+
         {/* 浏览 / 搜索 模式切换 + 模式对应控件（仅 L0 / L1）。
             浏览：时间范围筛选器；搜索：搜索框。二者互斥，消除「控件在但没用」的误导。 */}
         {searchable && (showTimeFilter || onSearchLayer) && (
@@ -852,7 +875,9 @@ export function BlockDetail({
                   format="YYYY-MM-DD HH:mm"
                   separator="~"
                   clearable={false}
-                  disabledDate={(d) => d.isBefore(moment().endOf('day'))}
+                  // 只禁用「未来」日期。此前的 isBefore(endOf('day')) 把今天与全部
+                  // 历史日期都禁掉了，用户实际只能选到未来的空区间 → 时间筛选形同不可用。
+                  disabledDate={(d) => d.isAfter(moment().endOf('day'))}
                   value={rangeValue}
                   onChange={(v) => {
                     if (v && v[0] && v[1]) {

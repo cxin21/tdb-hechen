@@ -6,6 +6,10 @@
  */
 import { z } from "zod";
 import { paginationInputSchema } from "./pagination.js";
+import {
+  TASK_SOURCE_TYPES,
+  canonicalizeTaskSourceTypeInput,
+} from "../../core/store/task-source-type.js";
 
 // ── 枚举 ──
 const assetType = z.enum(["skill", "llm_wiki", "code_graph", "chat_memory"]);
@@ -21,7 +25,12 @@ const teamStatus = z.enum(["active", "archived"]);
 const memberStatus = z.enum(["active", "removed"]);
 const agentStatus = z.enum(["active", "inactive"]);
 const taskStatus = z.enum(["running", "completed"]);
-const taskSourceType = z.enum(["manual", "tapd", "github", "other"]);
+// #127：与 /v2/task/* 同一三值契约（MemoryPanel 写侧已按 manual|external|other）；
+// 历史值 github/tapd/jira 由 preprocess 归一成 external，非法值仍被 z.enum 拒（→400）。
+const taskSourceType = z.preprocess(
+  canonicalizeTaskSourceTypeInput,
+  z.enum(TASK_SOURCE_TYPES),
+);
 
 const nonEmpty = z.string().min(1);
 const idList = z.array(nonEmpty).min(1);

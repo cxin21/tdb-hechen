@@ -262,6 +262,7 @@ export const zhCN = {
   'common.save': '保存',
   'common.refresh': '刷新',
   'common.close': '关闭',
+  'tabbar.close': '关闭「{{label}}」标签页',
   'common.search': '搜索',
   'common.loading': '加载中…',
   'common.noData': '暂无数据',
@@ -817,6 +818,7 @@ export const zhCN = {
   'memory.health.coverage': '向量覆盖 {{pct}}',
   'memory.health.embeddingOk': '嵌入 ok',
   'memory.health.embeddingBad': '嵌入 degraded',
+  'memory.health.embeddingUnconfigured': '嵌入未配置',
   'memory.health.degradedBanner': '向量召回降级（FTS 兜底中）',
   'memory.health.unknown': '记忆健康状态未知',
   // ---- BlockDetail 扩展 + 归档（Task 4）----
@@ -966,6 +968,7 @@ export const zhCN = {
   'memory.detail.teamPool': '团队记忆池',
   'memory.detail.uploadedBy': '上传：{{user}}',
   'memory.detail.updated': '更新：{{time}}',
+  'memory.detail.refresh': '刷新',
   'memory.detail.noL0': '该记忆块未保留 L0 对话原文。',
   'memory.detail.noL0InRange': '当前时间范围内没有 L0 对话原文，可调整右上角的时间筛选范围试试。',
   'memory.detail.emptyLayerInRange':

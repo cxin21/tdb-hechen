@@ -139,6 +139,33 @@ export interface RecallJournalGates {
     ranked: boolean;
     candidates: number;
     kept: number;
+    /** #155：候选来源拆分——有 part_of 图边的卡数。 */
+    evidenceFromLinks?: number;
+    /** #155：图边为空但卡 metadata（evidence_ids / evidence_record_ids）有 id 而回退的卡数。 */
+    evidenceFromMetadata?: number;
+    /** #155：两条通道都没有证据 id 的卡数（真正的「无身世」卡，才需要补边脚本）。 */
+    cardsWithoutEvidence?: number;
+  };
+  /**
+   * #169 证据包观测门：enabled=true 时**恒出现**（含全零计数）——要能区分「没开」与
+   * 「开了但一行都没扩成」，否则「+N 档没变好」无法归因到窗口/帽/会话缺失。
+   * 口径边界：这些是 pack 行的独立计数，绝不并入 turnCov/sessionCov 等覆盖率指标
+   *（pack 行由 bench 单列 adjacencyLines，见 scripts/lib/bench/inject-attribution.mjs）。
+   */
+  evidencePack?: {
+    enabled: boolean;
+    adjacent: number;
+    windowMinutes: number;
+    maxExtraLines: number;
+    seedLines: number;
+    seedWithSession: number;
+    adjacencyLines: number;
+    skippedNoSession: number;
+    skippedNoSeedRow: number;
+    skippedWindow: number;
+    skippedCap: number;
+    skippedSessionTooLarge: number;
+    sessionsQueried: number;
   };
   /**
    * P1-T7（worthiness importance）：重要度降权观测门——raw vs penalized 双分量

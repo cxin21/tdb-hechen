@@ -81,18 +81,24 @@ describe("sortLinesByLeadingTimestamp（G1 注入块时间序）", () => {
 import { parseConfig } from "../../../config.js";
 
 describe("recall.injectTimeSort / injectWrapper parse（G1）", () => {
-  it("缺省 = 关 + legacy（逐位现状）", () => {
+  it("缺省 = 关 + calibrated（WP1b 缺省对齐生产最优）", () => {
     const cfg = parseConfig({});
     expect(cfg.recall.injectTimeSort).toEqual({ enabled: false });
-    expect(cfg.recall.injectWrapper).toBe("legacy");
+    expect(cfg.recall.injectWrapper).toBe("calibrated");
   });
   it("显式开启/取值", () => {
     const cfg = parseConfig({ recall: { injectTimeSort: { enabled: true }, injectWrapper: "neutral" } });
     expect(cfg.recall.injectTimeSort).toEqual({ enabled: true });
     expect(cfg.recall.injectWrapper).toBe("neutral");
   });
-  it("非法 injectWrapper 回落 legacy", () => {
+  it("非法 injectWrapper 回落缺省 calibrated", () => {
     const cfg = parseConfig({ recall: { injectWrapper: "bogus" } });
-    expect(cfg.recall.injectWrapper).toBe("legacy");
+    expect(cfg.recall.injectWrapper).toBe("calibrated");
+  });
+  // #172-②：三档（calibrated 缺省 / neutral 折中 / legacy 可显式回滚）
+  it("calibrated 是缺省，legacy/neutral 可显式回滚", () => {
+    expect(parseConfig({}).recall.injectWrapper).toBe("calibrated");
+    expect(parseConfig({ recall: { injectWrapper: "legacy" } }).recall.injectWrapper).toBe("legacy");
+    expect(parseConfig({ recall: { injectWrapper: "neutral" } }).recall.injectWrapper).toBe("neutral");
   });
 });

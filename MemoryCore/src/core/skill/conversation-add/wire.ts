@@ -60,6 +60,15 @@ export interface WireConversationAddDeps {
 
   /** COS 子路径（默认 "skill_buffer"） */
   bufferSubPath?: string;
+
+  /**
+   * 入口幂等窗口（ms），默认 10 分钟（对齐 L0 F-DUP-1）；0 = 关闭。
+   * 生产一般不传，交给缺省值；测试/排障可用来验证重复请求行为。
+   */
+  dedupeWindowMs?: number;
+
+  /** 幂等指纹环容量上限，默认 200 条。 */
+  dedupeMaxEntries?: number;
 }
 
 /**
@@ -108,6 +117,8 @@ export function wireConversationAddHandler(
     thresholds: deps.thresholds,
     compressOptions: deps.compressOptions,
     oversizeOptions: deps.oversizeOptions,
+    dedupeWindowMs: deps.dedupeWindowMs,
+    dedupeMaxEntries: deps.dedupeMaxEntries,
   });
 
   const sink = new SkillCoreSink({

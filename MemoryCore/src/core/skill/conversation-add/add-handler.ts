@@ -22,7 +22,12 @@ import {
   type OversizeOptions,
 } from "./oversize-strategy.js";
 import { prepareArchivePayload } from "./prepare-archive.js";
-import type { SkillBufferStorage, SessionKey, SessionMeta } from "./buffer-storage.js";
+import {
+  DEFAULT_DEDUPE_MAX_ENTRIES,
+  DEFAULT_DEDUPE_WINDOW_MS,
+  dedupeMessages,
+} from "./dedupe.js";
+import type { SkillBufferStorage, SessionKey } from "./buffer-storage.js";
 import type { SkillTriggerService } from "./trigger-service.js";
 import { obsLogger } from "../../report/obs-logger.js";
 
@@ -78,8 +83,19 @@ export interface AddConversationInput {
 }
 
 export interface AddConversationResult {
-  /** 语义状态：ok=正常追加 / archived=触发了归档。 */
+  /**
+   * 语义状态：ok=正常追加 / archived=触发了归档。
+   *
+   * 全重复的请求也返回 ok（而不是新增 "duplicate" 枚举），靠 duplicate_skipped
+   * 区分：MemoryProxy 的 core-client 把 status 声明成 "ok" | "archived" 且只对
+   * "archived" 分支取 archived 字段，新增枚举会让类型与运行时不一致。
+   */
   status: "ok" | "archived";
+  /**
+   * 本次请求中被入口幂等判为重复、未入 buffer 的条数（含批内重复）。
+   * >0 时才会出现；全重复时 status=ok 且 buffer/计数完全不变。
+   */
+  duplicate_skipped?: number;
   archived?: {
     task_id: string;
     archived_at_ms: number;
@@ -110,6 +126,13 @@ export interface SkillConversationAddHandlerOptions {
   thresholds?: Partial<HandlerThresholds>;
   compressOptions?: Partial<CompressOptions>;
   oversizeOptions?: Partial<OversizeOptions>;
+  /**
+   * 入口幂等窗口（ms）。缺省 10 分钟，对齐 L0 F-DUP-1；传 0 关闭入口幂等。
+   * 指纹环跨归档保留，用于拦住「归档后到达的重试」。
+   */
+  dedupeWindowMs?: number;
+  /** 指纹环容量上限。缺省 200 条。 */
+  dedupeMaxEntries?: number;
   now?: () => number;
 }
 
@@ -126,6 +149,8 @@ export class SkillConversationAddHandler {
   private readonly thresholds: HandlerThresholds;
   private readonly compressOptions: CompressOptions;
   private readonly oversizeOptions: OversizeOptions;
+  private readonly dedupeWindowMs: number;
+  private readonly dedupeMaxEntries: number;
   private readonly now: () => number;
 
   constructor(opts: SkillConversationAddHandlerOptions) {
@@ -134,6 +159,8 @@ export class SkillConversationAddHandler {
     this.thresholds = { ...DEFAULT_HANDLER_THRESHOLDS, ...opts.thresholds };
     this.compressOptions = { ...DEFAULT_COMPRESS_OPTIONS, ...opts.compressOptions };
     this.oversizeOptions = { ...DEFAULT_OVERSIZE_OPTIONS, ...opts.oversizeOptions };
+    this.dedupeWindowMs = opts.dedupeWindowMs ?? DEFAULT_DEDUPE_WINDOW_MS;
+    this.dedupeMaxEntries = opts.dedupeMaxEntries ?? DEFAULT_DEDUPE_MAX_ENTRIES;
     this.now = opts.now ?? (() => Date.now());
   }
 
@@ -154,21 +181,61 @@ export class SkillConversationAddHandler {
       session_id: input.session_id,
     };
 
-    // ② 计算 raw_bytes
-    const rawBytes = totalMessagesBytes(input.messages);
-
-    // ③ 分路径：读现状 + 走共享 helper 做压缩 + 兜底
-    const useCompress = rawBytes >= this.thresholds.requestCompressThresholdBytes;
+    // ② 读现状 + 入口幂等（task-26）
+    //
+    // 判重必须在算 raw_bytes / 计数 / 压缩之前：重复消息既不入 buffer，
+    // 也不进 byte_count / tool_call_count，否则「3 个唯一 tool_call 重放 4 次
+    // 就把阈值 10 打满」的提前归档仍然会发生。
     const t0Buf = Date.now();
     const [current, meta] = await Promise.all([
       this.buffer.readCurrent(sess),
       this.buffer.readMeta(sess),
     ]);
+    const nowMs = this.now();
+    const dedupe = dedupeMessages({
+      incoming: input.messages,
+      buffered: current.messages,
+      ring: meta.recent_fingerprints,
+      nowMs,
+      windowMs: this.dedupeWindowMs,
+      maxEntries: this.dedupeMaxEntries,
+    });
+    if (dedupe.skipped > 0) {
+      obsLogger.info("skill.add_handler.dedupe", {
+        // rid 可能缺省：LogAttrs 不接受 undefined，缺省时整个 key 省略（同既有事件行为）。
+        ...(rid !== undefined ? { req_id: rid } : {}),
+        session_id: input.session_id, instance_id: input.instance_id,
+        skipped: dedupe.skipped,
+        accepted: dedupe.accepted.length,
+        incoming_msgs: input.messages.length,
+        current_msgs: current.messages.length,
+        ring_size: dedupe.ring.length,
+        window_ms: this.dedupeWindowMs,
+      });
+    }
+    if (dedupe.accepted.length === 0) {
+      // 全重复：buffer/计数一个字节都不动（也不写 last_appended_at），
+      // 只把可区分的读数还给调用方，避免"重试把内容写进去"的假成功。
+      obsLogger.info("skill.add_handler.write_back", {
+        ...(rid !== undefined ? { req_id: rid } : {}),
+        session_id: input.session_id, instance_id: input.instance_id,
+        archived: false,
+        wrote: false,
+        duplicate_skipped: dedupe.skipped,
+      });
+      return { status: "ok", duplicate_skipped: dedupe.skipped };
+    }
+    const acceptedMessages = dedupe.accepted;
+
+    // ③ 计算 raw_bytes（只算真正入 buffer 的唯一消息）+ 分路径
+    const rawBytes = totalMessagesBytes(acceptedMessages);
+    const useCompress = rawBytes >= this.thresholds.requestCompressThresholdBytes;
     obsLogger.info("skill.add_handler.read_buffer", {
       req_id: rid, session_id: input.session_id, instance_id: input.instance_id,
       dur_ms: Date.now() - t0Buf,
       current_msgs: current.messages.length,
       raw_bytes: rawBytes,
+      incoming_msgs: input.messages.length,
       use_compress: useCompress,
     });
 
@@ -180,7 +247,7 @@ export class SkillConversationAddHandler {
     const t0Prep = Date.now();
     const prepared = prepareArchivePayload(
       current.messages as OversizeMessage[],
-      input.messages,
+      acceptedMessages,
       {
         compress: this.compressOptions,
         oversize: this.oversizeOptions,
@@ -200,7 +267,8 @@ export class SkillConversationAddHandler {
     // ④ 更新 meta 计数
     // 只数 tool_call, 不数 tool_result —— 二者 1:1 配对, 数两遍会让阈值 10
     // 变成实际"5 次工具调用即归档", 违背配置语义。详见 TOOL_CALL_ROLES 注释。
-    const addedToolCalls = countRoles(input.messages, TOOL_CALL_ROLES);
+    // 只统计唯一消息：acceptedMessages 已去掉批内/跨请求重复。
+    const addedToolCalls = countRoles(acceptedMessages, TOOL_CALL_ROLES);
     const nextTool = meta.tool_call_count + addedToolCalls;
     const nextBytes = meta.byte_count + rawBytes;
 
@@ -230,36 +298,32 @@ export class SkillConversationAddHandler {
         perfRequestId: input.perfRequestId,
       });
       obsLogger.info("skill.add_handler.trigger_archive", {
-        req_id: rid, session_id: input.session_id, instance_id: input.instance_id, instance_id: input.instance_id,
+        req_id: rid, session_id: input.session_id, instance_id: input.instance_id,
         dur_ms: Date.now() - t0Arch,
         task_id: archiveRes.taskId,
         archive_key: archiveRes.archiveKey,
         reason,
       });
 
-      // 归档后清空 data-current + 计数
-      const nowMs = this.now();
-      const nextMeta: SessionMeta = {
-        session_id: sess.session_id,
-        space_id: sess.space_id,
-        user_id: sess.user_id,
-        team_id: sess.team_id,
-        agent_id: sess.agent_id,
-        tool_call_count: 0,
-        byte_count: 0,
-        last_appended_at_ms: nowMs,
-        last_archived_at_ms: archiveRes.archivedAtMs,
-      };
-
+      // 归档后清空 data-current + 计数，但**保留指纹环**：
+      // 一次 retry 若落在归档之后，buffer 已空，只有环还认得它。
+      // 走 updateMeta 读改写：只覆盖计数/时间，其余字段（含未来新增）原样保留。
       const t0Wb = Date.now();
       await Promise.all([
         this.buffer.writeCurrent(sess, { messages: [] }),
-        this.buffer.writeMeta(sess, nextMeta),
+        this.buffer.updateMeta(sess, {
+          tool_call_count: 0,
+          byte_count: 0,
+          last_appended_at_ms: nowMs,
+          last_archived_at_ms: archiveRes.archivedAtMs,
+          recent_fingerprints: dedupe.ring,
+        }),
       ]);
       obsLogger.info("skill.add_handler.write_back", {
-        req_id: rid, session_id: input.session_id, instance_id: input.instance_id, instance_id: input.instance_id,
+        req_id: rid, session_id: input.session_id, instance_id: input.instance_id,
         dur_ms: Date.now() - t0Wb,
         archived: true,
+        duplicate_skipped: dedupe.skipped,
       });
 
       result = {
@@ -273,32 +337,28 @@ export class SkillConversationAddHandler {
       };
     } else {
       // 未触发归档：直接把拼接后的 data-current 写回
-      const nowMs = this.now();
-      const nextMeta: SessionMeta = {
-        session_id: sess.session_id,
-        space_id: sess.space_id,
-        user_id: sess.user_id,
-        team_id: sess.team_id,
-        agent_id: sess.agent_id,
-        tool_call_count: nextTool,
-        byte_count: nextBytes,
-        last_appended_at_ms: nowMs,
-        last_archived_at_ms: meta.last_archived_at_ms,
-      };
       const t0Wb = Date.now();
       await Promise.all([
         this.buffer.writeCurrent(sess, { messages: combinedMessages as Array<Record<string, unknown>> }),
-        this.buffer.writeMeta(sess, nextMeta),
+        this.buffer.updateMeta(sess, {
+          tool_call_count: nextTool,
+          byte_count: nextBytes,
+          last_appended_at_ms: nowMs,
+          last_archived_at_ms: meta.last_archived_at_ms,
+          recent_fingerprints: dedupe.ring,
+        }),
       ]);
       obsLogger.info("skill.add_handler.write_back", {
-        req_id: rid, session_id: input.session_id, instance_id: input.instance_id, instance_id: input.instance_id,
+        req_id: rid, session_id: input.session_id, instance_id: input.instance_id,
         dur_ms: Date.now() - t0Wb,
         archived: false,
         tool_count: nextTool,
         byte_count: nextBytes,
+        duplicate_skipped: dedupe.skipped,
       });
     }
 
+    if (dedupe.skipped > 0) result.duplicate_skipped = dedupe.skipped;
     return result;
   }
 

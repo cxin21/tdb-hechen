@@ -68,7 +68,9 @@ function mockStore(opts: {
   const factCalls: number[] = [];
   const store: Record<string, unknown> = {
     isFtsAvailable: () => true,
-    getCapabilities: () => ({ nativeHybridSearch: false }),
+    // #152 ①：事实通道判据从「方法是否存在」改为能力位——mock 必须声明 l1FactVec，
+    // 否则 ensureL1FactVec 判不支持（fail-closed + WARN），通道用例会被跳过。
+    getCapabilities: () => ({ nativeHybridSearch: false, l1FactVec: true }),
     searchL1Fts: async () => opts.fts ?? [],
     searchL1Vector: async () => opts.vec ?? [],
     bumpRecallCount: () => true,

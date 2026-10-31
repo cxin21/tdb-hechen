@@ -18,12 +18,34 @@ export function useResizable(
   const startX = useRef(0);
   const startW = useRef(0);
 
+  // 拖拽前宿主原有的 body 内联样式快照。直接置空串会把宿主（例如嵌在 iframe
+  // 或外部布局里时）原本的 cursor/user-select 一起抹掉，导致拖完一次后整页
+  // 交互样式永久改变。（#124-B4）
+  const prevBodyStyles = useRef<{ cursor: string; userSelect: string } | null>(
+    null,
+  );
+
+  const endDrag = useCallback(() => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    const prev = prevBodyStyles.current;
+    document.body.style.cursor = prev ? prev.cursor : '';
+    document.body.style.userSelect = prev ? prev.userSelect : '';
+    prevBodyStyles.current = null;
+  }, []);
+
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       dragging.current = true;
       startX.current = e.clientX;
       startW.current = width;
+      if (!prevBodyStyles.current) {
+        prevBodyStyles.current = {
+          cursor: document.body.style.cursor,
+          userSelect: document.body.style.userSelect,
+        };
+      }
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     },
@@ -40,20 +62,19 @@ export function useResizable(
           : Math.max(min, Math.min(max, startW.current - delta));
       setWidth(newW);
     };
-    const onMouseUp = () => {
-      if (dragging.current) {
-        dragging.current = false;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-      }
-    };
+    // mouseup 可能落在窗口外（拖到浏览器边框外松手），此时 window 收不到 mouseup；
+    // blur 兜底，否则拖拽态与 body 样式会一直卡住。卸载时同理必须收尾。
+    const onMouseUp = () => endDrag();
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('blur', onMouseUp);
     return () => {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('blur', onMouseUp);
+      endDrag();
     };
-  }, [min, max, side]);
+  }, [min, max, side, endDrag]);
 
   return { width, onMouseDown };
 }

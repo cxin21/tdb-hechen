@@ -77,7 +77,28 @@ function facade(st: VectorStore) {
     readCore: vi.fn((t?: Tenant) => st.readCore(t)),
     upsertCore: vi.fn((slot: string, content: string, source: string, t?: Tenant) => st.upsertCore(slot, content, source, t)),
     listPendingCore: vi.fn((t?: Tenant, o?: { includeDecided?: boolean }) => st.listPendingCore(t, o)),
+    listRejectedSelfIdentityPending: vi.fn((t?: Tenant) => st.listRejectedSelfIdentityPending(t)),
+    commitAutoAdoptCore: vi.fn((pid: string, t?: Tenant, o?: unknown) => st.commitAutoAdoptCore(pid, t, o as never)),
   };
+}
+
+/** 老 facade（#92 M1/M2 前的后端能力）：不含专用 rejected 查询与事务化落库 → 走回落路径。 */
+function legacyFacade(st: VectorStore) {
+  const { listRejectedSelfIdentityPending, commitAutoAdoptCore, ...rest } = facade(st);
+  void listRejectedSelfIdentityPending;
+  void commitAutoAdoptCore;
+  return rest;
+}
+
+/** 造一条已 rejected 的提案行，并把 created_at 钉到指定时刻（模拟历史人工拒绝）。 */
+async function seedRejectedRow(st: VectorStore, tenant: Tenant, content: string, createdAt: string): Promise<string> {
+  await st.upsertPendingCore("self_identity", content, 1, tenant);
+  const hit = st.listPendingCore(tenant, { includeDecided: true }).find((r) => r.content === content);
+  if (!hit) throw new Error("seed rejected row not found: " + content);
+  st.decidePendingCore(hit.pending_id, "rejected", tenant);
+  const db = (st as unknown as { db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } } }).db;
+  db.prepare("UPDATE core_pending SET created_at = ? WHERE pending_id = ?").run(createdAt, hit.pending_id);
+  return hit.pending_id;
 }
 
 function attrsOf(st: VectorStore, pid: string): Record<string, unknown> {
@@ -171,6 +192,58 @@ describe("#92 store · 自动采纳三方法", () => {
     expect(st.getPendingCoreState(pid)).toBe("pending");
     expect(st.getPendingCoreState("pd-not-exist")).toBeNull();
   });
+
+  it("A6 #92-M1 listRejectedSelfIdentityPending：零 LIMIT 全量、只取 rejected、租户隔离", async () => {
+    const st = await mkStore();
+    // 再造 250 条 rejected：必须全部可见（listPendingCore 只看得到最新 200 条）
+    for (let i = 0; i < 250; i++) {
+      await seedRejectedRow(st, T1, UNRELATED + " #" + i, new Date(Date.parse("2026-01-01T00:00:00.000Z") + i * 60_000).toISOString());
+    }
+    const oldest = await seedRejectedRow(st, T1, A_TWIN, "2020-01-01T00:00:00.000Z");
+    await st.upsertPendingCore("self_identity", CONTENT_A, 1, T1); // 仍 pending，不该出现
+    await seedRejectedRow(st, T2, "别的租户的拒绝", "2026-02-01T00:00:00.000Z");
+
+    const all = st.listRejectedSelfIdentityPending(T1);
+    expect(all).toHaveLength(251);
+    expect(all.map((r) => r.pending_id)).toContain(oldest);
+    expect(all.some((r) => r.content === CONTENT_A)).toBe(false);
+    expect(st.listRejectedSelfIdentityPending(T2)).toHaveLength(1);
+    // 展示查询确实看不见最早那条（M1 的根因）
+    expect(st.listPendingCore(T1, { includeDecided: true }).some((r) => r.pending_id === oldest)).toBe(false);
+  });
+
+  it("A7 #92-M2 commitAutoAdoptCore：成功=槽写+落账同事务（post_slot_version 库内读回）", async () => {
+    const st = await mkStore();
+    const pid = await seedReadyRow(st, T1, CONTENT_A, 4, 72);
+    st.upsertCore("self_identity", "- 旧事实甲", "test", T1); // v1
+    const ok = st.commitAutoAdoptCore(pid, T1, {
+      slot: "self_identity", content: "- 旧事实甲\n- " + CONTENT_A, source: "auto-adopt-gate",
+      audit: { prev_slot_content: "- 旧事实甲", prev_slot_version: 1, prev_slot_existed: true, gate: { votes: 4, spanHours: 72, contradictionThreshold: 0.6, dupThreshold: 0.75 } },
+    });
+    expect(ok).toBe(true);
+    expect(st.readCore(T1).find((s) => s.slot === "self_identity")?.content).toContain(CONTENT_A);
+    const row = st.listPendingCore(T1, { includeDecided: true }).find((r) => r.pending_id === pid) as unknown as { state: string };
+    expect(row.state).toBe("auto_adopted");
+    const aa = attrsOf(st, pid).auto_adopt as Record<string, unknown>;
+    expect(aa.prev_slot_content).toBe("- 旧事实甲");
+    expect(aa.post_slot_version).toBe(2); // 库内读回（不是调用方传的）
+  });
+
+  it("A8 #92-M2 落账失败 → 整事务回滚（槽不写、pending 仍 pending、无审计残留）", async () => {
+    const st = await mkStore();
+    const pid = await seedReadyRow(st, T1, CONTENT_A, 4, 72);
+    st.upsertCore("self_identity", "- 旧事实甲", "test", T1);
+    // 租户不符 ⇒ decidePendingCoreAuto 匹配不到行 ⇒ throw ⇒ 回滚（含刚写的 T2 槽）
+    const ok = st.commitAutoAdoptCore(pid, T2, {
+      slot: "self_identity", content: "- 不该落地的内容", source: "auto-adopt-gate",
+      audit: { prev_slot_content: "", prev_slot_version: 0, prev_slot_existed: false, gate: { votes: 4, spanHours: 72, contradictionThreshold: 0.6, dupThreshold: 0.75 } },
+    });
+    expect(ok).toBe(false);
+    expect(st.readCore(T2).some((s) => s.slot === "self_identity")).toBe(false);
+    expect(st.readCore(T1).find((s) => s.slot === "self_identity")?.content).toBe("- 旧事实甲");
+    expect(st.getPendingCoreState(pid)).toBe("pending");
+    expect(attrsOf(st, pid).auto_adopt).toBeUndefined();
+  });
 });
 
 // ───────────────────────── Part B：门（runSelfIdentityAutoAdopt）─────────────────────────
@@ -195,9 +268,16 @@ describe("#92 门 · runSelfIdentityAutoAdopt", () => {
     st.upsertCore("self_identity", "- 旧事实甲", "test", T1);
     const res = await runSelfIdentityAutoAdopt({ store: f, config: { enabled: true, votes: 4, spanHours: 72 }, logger: LOG });
     expect(res).toEqual({ ran: true, adopted: 1, blocked: 0, skipped: 0 });
-    expect(f.upsertCore).toHaveBeenCalledTimes(1);
-    const [slot, content, source] = (f.upsertCore as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(slot).toBe("self_identity");
+    // #92 M2：单一入口 = commitAutoAdoptCore（槽写 + 落账同事务），门不再自己做两段写
+    expect(f.commitAutoAdoptCore).toHaveBeenCalledTimes(1);
+    expect(f.upsertCore).not.toHaveBeenCalled();
+    const [pidArg, , optsArg] = (f.commitAutoAdoptCore as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(pidArg).toBe(pid);
+    const opts = optsArg as { slot: string; content: string; source: string; writeSlot: boolean };
+    expect(opts.slot).toBe("self_identity");
+    const content = opts.content;
+    const source = opts.source;
+    expect(opts.writeSlot).toBe(true);
     expect(String(content)).toContain("旧事实甲");
     expect(String(content)).toContain(CONTENT_A);
     expect(source).toBe("auto-adopt-gate");
@@ -252,5 +332,56 @@ describe("#92 门 · runSelfIdentityAutoAdopt", () => {
   it("B6 旧 store 旁路：缺 listReadySelfIdentityPending → ran:false 零调用", async () => {
     const res = await runSelfIdentityAutoAdopt({ store: { readCore: () => [] }, config: { enabled: true }, logger: LOG });
     expect(res.ran).toBe(false);
+  });
+
+  it("B7 #92-M1/M2 能力缺失回落：仍两段写成功，且 WARN 明示（不静默）", async () => {
+    const st = await mkStore();
+    const f = legacyFacade(st);
+    const warns: string[] = [];
+    const pid = await seedReadyRow(st, T1, CONTENT_A, 4, 72);
+    st.upsertCore("self_identity", "- 旧事实甲", "test", T1);
+    const res = await runSelfIdentityAutoAdopt({ store: f, config: { enabled: true, votes: 4, spanHours: 72 }, logger: { ...LOG, warn: (m: string) => warns.push(m) } });
+    expect(res).toEqual({ ran: true, adopted: 1, blocked: 0, skipped: 0 });
+    expect(f.upsertCore).toHaveBeenCalledTimes(1);
+    expect(f.decidePendingCoreAuto).toHaveBeenCalledTimes(1);
+    expect(warns.some((w) => w.includes("listRejectedSelfIdentityPending"))).toBe(true);
+    expect(warns.some((w) => w.includes("commitAutoAdoptCore"))).toBe(true);
+    expect(st.getPendingCoreState(pid)).toBe("auto_adopted");
+  });
+
+  it("B8 #92-M2 事务落库失败 → 槽与审计都不变，pending 留档（可重试），adopted=0", async () => {
+    const st = await mkStore();
+    const f = facade(st);
+    f.commitAutoAdoptCore = vi.fn(() => false);
+    const warns: string[] = [];
+    const pid = await seedReadyRow(st, T1, CONTENT_A, 4, 72);
+    st.upsertCore("self_identity", "- 旧事实甲", "test", T1);
+    const res = await runSelfIdentityAutoAdopt({ store: f, config: { enabled: true, votes: 4, spanHours: 72 }, logger: { ...LOG, warn: (m: string) => warns.push(m) } });
+    expect(res).toEqual({ ran: true, adopted: 0, blocked: 0, skipped: 0 });
+    expect(f.upsertCore).not.toHaveBeenCalled();
+    expect(st.readCore(T1).find((s) => s.slot === "self_identity")?.content).toBe("- 旧事实甲");
+    expect(st.getPendingCoreState(pid)).toBe("pending");
+    expect(warns.some((w) => w.includes("commitAutoAdoptCore failed"))).toBe(true);
+  });
+
+  it("B9 #92-M1 回归：rejected 超过 200 条时门②仍看得见最早那条人工拒绝", async () => {
+    const st = await mkStore();
+    const f = facade(st);
+    const pid = await seedReadyRow(st, T1, CONTENT_A, 4, 72);
+    st.upsertCore("self_identity", "- 旧事实甲", "test", T1);
+    // 最早的人工拒绝（与 CONTENT_A 同主题，sim≥0.6）落在 LIMIT 200 窗口之外
+    const oldReject = await seedRejectedRow(st, T1, A_TWIN, "2020-01-01T00:00:00.000Z");
+    for (let i = 0; i < 205; i++) {
+      await seedRejectedRow(st, T1, UNRELATED + " #" + i, new Date(Date.parse("2026-01-01T00:00:00.000Z") + i * 60_000).toISOString());
+    }
+    // 前提：展示查询（LIMIT 200）确实看不见它
+    const page = st.listPendingCore(T1, { includeDecided: true });
+    expect(page).toHaveLength(200);
+    expect(page.some((r) => r.pending_id === oldReject)).toBe(false);
+    // 门②用它 → 拦下，不采纳
+    const res = await runSelfIdentityAutoAdopt({ store: f, config: { enabled: true, votes: 4, spanHours: 72 }, logger: LOG });
+    expect(res).toEqual({ ran: true, adopted: 0, blocked: 1, skipped: 0 });
+    expect(f.commitAutoAdoptCore).not.toHaveBeenCalled();
+    expect(st.getPendingCoreState(pid)).toBe("pending");
   });
 });

@@ -32,6 +32,7 @@
  *   POST /chat-memory/import          导入历史对话到 agent 的 L0
  */
 import type { Hono } from "hono";
+import { createMiddleware } from "hono/factory";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -244,12 +245,12 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       //   - 解绑操作：允许（清理脏 binding 的入口）
       // 若用 filter=true 会直接把已私密条目从 items 里剔除 → 使用者永远无法
       // 知晓/清理这些残留绑定；filter=false + 前端标记是"感知 + 可清理"的更好体验。
-      // 分页注意：list-with-detail 默认 limit=20（DEFAULT_PAGINATION），排序
-      // priority DESC, created_at DESC。当 agent 绑定资产较多（skill/wiki/code_graph/
-      // chat_memory 混排）时，priority 较低的 chat_memory 绑定会被排到 20 名之外而
-      // 被整页截断 → 固定资产记忆 tab 丢失记忆块。这里做翻页聚合（对齐
-      // MetadataClient.getAgentFixedAssets 的 FA_PAGE_SIZE 循环模式），把该 agent 的
-      // 全部固定资产绑定拉回来再过滤，避免"拍上限"导致 skill 一多仍会丢。
+      // 类型下推：list-with-detail 支持 asset_types 过滤（内核
+      // v3-meta-schemas.ts:293-304 → metadata-service.ts:1569-1573 → 各 store 实现），
+      // 让"只要 chat_memory"这件事在查询层就成立。此前是"拉回该 agent 的全部固定资产
+      // 再在内存里过滤"，混合资产（skill/wiki/code_graph/chat_memory）一多，chat_memory
+      // 会排到分页窗口之外、或撞上内存硬上限 500 而被整片丢弃 → 固定资产记忆 tab 空白。
+      // 翻页仅作"本类型总量 > 单页"的兜底，按 total 自然收敛，**不设硬上限**。
       // list-with-detail 返回的 items（AgentAssetView）不带 owner_user_id
       interface FixedAssetDetailRaw {
         asset_id: string;
@@ -260,7 +261,6 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         created_at: string;
       }
       const FA_PAGE_SIZE = 100;
-      const FA_PAGE_HARD_LIMIT = 500;
       const fixedAssets: FixedAssetDetailRaw[] = [];
       let offset = 0;
       while (true) {
@@ -270,6 +270,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
             agent_id: agentId,
             apply_visibility_filter: false,
             touch_usage: false,
+            asset_types: ["chat_memory"],
             limit: FA_PAGE_SIZE,
             offset,
           },
@@ -282,23 +283,16 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         fixedAssets.push(...page);
         const total =
           typeof data?.total === "number" ? data.total : fixedAssets.length;
-        offset += FA_PAGE_SIZE;
-        if (
-          fixedAssets.length >= total ||
-          page.length === 0 ||
-          offset >= FA_PAGE_HARD_LIMIT
-        )
-          break;
+        offset += page.length;
+        if (fixedAssets.length >= total || page.length === 0) break;
       }
 
-      const items = fixedAssets
-        .filter((it) => it.asset_type === "chat_memory")
-        .filter(
-          (it) =>
-            it.status !== "archived" &&
-            it.status !== "deprecated" &&
-            it.status !== "failed",
-        );
+      const items = fixedAssets.filter(
+        (it) =>
+          it.status !== "archived" &&
+          it.status !== "deprecated" &&
+          it.status !== "failed",
+      );
 
       // 拿真实 owner_user_id 和 updated_at（list-with-detail 不返这两个字段）
       const out: MemoryBlockOut[] = await Promise.all(
@@ -466,7 +460,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   //   1. auth/verify 拿 caller user_id
   //   2. 用 newExternalAssetId('chat_memory') 生成 mem-xxx id
   //   3. 再 asset/create
-  api.post("/chat-memory/create", validatePanelMetaHeaders(deps), async (c) => {
+  api.post(
+    "/chat-memory/create",
+    validatePanelMetaHeaders(deps),
+    requireChatMemoryCaller(deps),
+    async (c) => {
     const ctx = buildCtx(c);
     const body = await readJson(c);
     const teamId = requiredTeamId(body);
@@ -479,9 +477,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     const description =
       typeof body?.description === "string" ? body.description : undefined;
 
-    // 反查 caller user_id
-    const meUserId = await resolveCallerUserId(deps, ctx);
-    if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+    // caller user_id 已由 requireChatMemoryCaller 前置解析（鉴权先于 schema/资产查找）
+    const meUserId = c.get("callerUserId");
 
     const createEnv = await deps.metaKernel.invoke(
       "asset/create",
@@ -492,7 +489,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         name: title,
         description,
         owner_user_id: meUserId,
-        source_type: "uploaded",
+        // 来源如实标注：本接口是「用户手动新建的记忆块」（只有标题/描述，没有文件），
+        // 硬写 "uploaded" 会把无附件的手建资产伪装成上传件，与内核侧的命名对不上：
+        // core 自动登记的 agent chat_memory 用 "auto"（metadata-service.ts:1412），
+        // asset/create 缺省 "manual"（store/sqlite-adapter.ts:1020）。
+        source_type: "manual",
         visibility: scope,
       },
       ctx,
@@ -629,6 +630,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   api.post(
     "/chat-memory/patch-scope",
     validatePanelMetaHeaders(deps),
+    requireChatMemoryCaller(deps),
     async (c) => {
       const ctx = buildCtx(c);
       const body = await readJson(c);
@@ -1082,7 +1084,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   //
   // 只支持系统自动登记的 chat_memory-{team}-{agent}（可反解 agent_id）；
   // 用户自建 UserAsset（mem-xxx）没有关联的 agent，直接返空。
-  api.post("/chat-memory/layer", validatePanelMetaHeaders(deps), async (c) => {
+  api.post(
+    "/chat-memory/layer",
+    validatePanelMetaHeaders(deps),
+    requireChatMemoryCaller(deps),
+    async (c) => {
     const ctx = buildCtx(c);
     const body = await readJson(c);
     const blockId = requiredBlockId(body);
@@ -1120,8 +1126,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     }
 
     // 数据面调用需要额外传 team_id / agent_id / user_id / session_id
-    const meUserId = await resolveCallerUserId(deps, ctx);
-    if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+    // caller 身份已由 requireChatMemoryCaller 前置解析（在任何 schema/资产查找之前）
+    const meUserId = c.get("callerUserId");
 
     // ── ACL 校验：防止知道 asset_id 就能读私密内容 ─────────────
     // 允许读的条件（任一即可）：
@@ -2359,7 +2365,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   // 快速前置拦截（给出可读错误码），最终权威校验在内核
   // `/v3/chat-memory/clear`（那边同样是 Owner-only，且任一 id 不合法整批拒绝）。
   //==========================================================================
-  api.post("/chat-memory/clear", validatePanelMetaHeaders(deps), async (c) => {
+  api.post(
+    "/chat-memory/clear",
+    validatePanelMetaHeaders(deps),
+    requireChatMemoryCaller(deps),
+    async (c) => {
     const ctx = buildCtx(c);
     const body = await readJson(c);
 
@@ -2382,8 +2392,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       return respondControlError(c, 400, "TOO_MANY_MEMORY_IDS");
     }
 
-    const meUserId = await resolveCallerUserId(deps, ctx);
-    if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+    // caller 身份已由 requireChatMemoryCaller 前置解析（鉴权先于 schema/资产查找）
+    const meUserId = c.get("callerUserId");
 
     // 前置整批校验：任一 id 不存在 / 非 chat_memory / 非 owner → 整批拒绝，
     // 一条都不清。与内核语义一致，避免"清了一半才报错"。
@@ -2437,6 +2447,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   api.post(
     "/chat-memory/layer-delete",
     validatePanelMetaHeaders(deps),
+    requireChatMemoryCaller(deps),
     async (c) => {
       const ctx = buildCtx(c);
       const body = await readJson(c);
@@ -2453,8 +2464,8 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       // 用户自建 UserAsset（mem-xxx）没有关联 agent，没有数据面内容可删。
       if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
 
-      const meUserId = await resolveCallerUserId(deps, ctx);
-      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+      // caller 身份已由 requireChatMemoryCaller 前置解析（鉴权先于 schema/资产查找）
+      const meUserId = c.get("callerUserId");
 
       const assetEnv = await deps.metaKernel.invoke(
         "asset/get",
@@ -3396,6 +3407,35 @@ async function resolveCallerUserId(
   if (!data?.valid) return null;
   const uid = data.user?.user_id;
   return typeof uid === "string" && uid.length > 0 ? uid : null;
+}
+
+declare module "hono" {
+  interface ContextVariableMap {
+    callerUserId: string;
+  }
+}
+
+/**
+ * 鉴权前置中间件（红队 2026-11-01 §MEDIUM-存在性预言机）。
+ *
+ * 为什么要单独做一层：此前 layer / layer-delete / clear / patch-scope / create
+ * 五条路由都是「先 schema 校验、再资产查找、最后才 resolveCallerUserId」。
+ * 于是无凭据的调用方能靠响应差异判断 asset_id 是否存在：
+ *   - 假 key + 不存在的 id  → 200/404（走完 schema 分支，没到鉴权）
+ *   - 假 key + 真实 id      → 401
+ * 身份没被证明之前，任何「这个 id 存在吗」的回答都是信息泄漏。
+ *
+ * 现在把这五条路由的鉴权提到最前：先证身份（401 INVALID_USER_KEY），
+ * 再谈 schema 与资产。调用方拿到 401 时，永远不知道 id 是否存在。
+ */
+function requireChatMemoryCaller(deps: PanelDeps) {
+  return createMiddleware(async (c, next) => {
+    const ctx = buildCtx(c);
+    const userId = await resolveCallerUserId(deps, ctx);
+    if (!userId) return respondControlError(c, 401, "INVALID_USER_KEY");
+    c.set("callerUserId", userId);
+    await next();
+  });
 }
 
 /**

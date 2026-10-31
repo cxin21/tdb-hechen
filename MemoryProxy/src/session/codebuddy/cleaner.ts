@@ -45,6 +45,13 @@ export interface RawMessage {
 interface AnthropicBlock {
   type?: unknown;
   text?: unknown;
+  /** `type:"tool_result"`:内层载荷(string 或 text block 数组)。 */
+  content?: unknown;
+  /** `type:"tool_result"`:指向被答复的 tool_use id(anthropic 挂在 block 上)。 */
+  tool_use_id?: unknown;
+  /** `type:"tool_use"`:代理伪造的表单工具调用 id / 名字(anthropic 形态)。 */
+  id?: unknown;
+  name?: unknown;
 }
 
 /**
@@ -86,6 +93,19 @@ export function stripInitArtifacts(messages: RawMessage[]): RawMessage[] {
     }
   }
 
+  // anthropic 形态(dsh v0.2+ 及其它 anthropic 上游):表单调用是 assistant 的
+  // `{type:"tool_use", id}` block,配对答复是 user 的 `{type:"tool_result",
+  // tool_use_id}` block,两者都不在 `tool_calls` / `role:"tool"` 上。
+  for (const m of messages) {
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    for (const b of m.content as AnthropicBlock[]) {
+      if (b.type !== "tool_use") continue;
+      if (typeof b.id === "string" && SESSION_INIT_TOOLCALL_RE.test(b.id)) {
+        stripIds.add(b.id);
+      }
+    }
+  }
+
   // 若没有任何 session-init tool_call，则无可剥离 —— 快速返回。
   if (stripIds.size === 0) return messages;
 
@@ -107,6 +127,42 @@ export function stripInitArtifacts(messages: RawMessage[]): RawMessage[] {
         return false;
       }
       return true;
+    }
+
+    // 1b) anthropic 形态:剥掉 assistant content 里命中前缀的 tool_use block。
+    if (m.role === "assistant" && Array.isArray(m.content)) {
+      const blocks = m.content as AnthropicBlock[];
+      const kept = blocks.filter((b) => !(b.type === "tool_use" && typeof b.id === "string" && SESSION_INIT_TOOLCALL_RE.test(b.id)));
+      if (kept.length !== blocks.length) {
+        // 只剩 thinking 占位 / 空 text 的 assistant 帧毫无语义,留着会被上游判空
+        // 内容(anthropic 要求 content 非空且首块合法),整条剥掉。
+        const meaningful = kept.some(
+          (b) =>
+            (b.type === "text" && typeof b.text === "string" && b.text.length > 0) ||
+            b.type === "tool_use" ||
+            b.type === "tool_result",
+        );
+        if (kept.length > 0 && meaningful) {
+          m.content = kept;
+          return true;
+        }
+        return false;
+      }
+    }
+
+    // 1c) anthropic 形态:剥掉 user content 里配对的 tool_result block。
+    if (m.role === "user" && Array.isArray(m.content)) {
+      const blocks = m.content as AnthropicBlock[];
+      const kept = blocks.filter(
+        (b) => !(b.type === "tool_result" && typeof b.tool_use_id === "string" && stripIds.has(b.tool_use_id)),
+      );
+      if (kept.length !== blocks.length) {
+        if (kept.length > 0) {
+          m.content = kept;
+          return true;
+        }
+        return false;
+      }
     }
 
     // 2) 剥掉配对 role=tool 的回答消息。
@@ -153,7 +209,15 @@ export function getLastUserMessageText(messages: RawMessage[]): string {
     // dsh 的 `call_dsh_session_init_`（dsh/form.ts TOOLCALL_PREFIX）、
     // opencode 的 `call_oc_session_init_`（opencode/form.ts TOOLCALL_PREFIX）。
     const tcid = (messages[i] as any).tool_call_id as string | undefined;
-    if (role === "tool" && tcid && /call_(wb_|dsh_|oc_)?session_init_/.test(tcid)) {
+    if (role === "tool" && tcid && SESSION_INIT_TOOLCALL_RE.test(tcid)) {
+      return text;
+    }
+
+    // Anthropic 形态(dsh v0.2+ / 任何 anthropic 上游):答复是 role:"user" 的
+    // `tool_result` block,id 挂在 block 的 `tool_use_id` 而不是消息的
+    // `tool_call_id` 上。不认这个分支 → getMessageText 拿不到(answer 在
+    // tool_result 内层)、fallback 也空 → 提取失败 → 循环重弹表单。
+    if (role === "user" && hasSessionInitToolUseId(messages[i])) {
       return text;
     }
 
@@ -170,6 +234,19 @@ export function getLastUserMessageText(messages: RawMessage[]): string {
   return best;
 }
 
+/** anthropic 的 `tool_result` block 里是否有指向 session-init 的 tool_use。 */
+function hasSessionInitToolUseId(msg: RawMessage): boolean {
+  const content = msg.content;
+  if (!Array.isArray(content)) return false;
+  for (const raw of content as AnthropicBlock[]) {
+    if (raw.type !== "tool_result") continue;
+    if (typeof raw.tool_use_id === "string" && SESSION_INIT_TOOLCALL_RE.test(raw.tool_use_id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getMessageText(msg: RawMessage): string {
   const content = msg.content;
   if (typeof content === "string") return content;
@@ -178,6 +255,19 @@ function getMessageText(msg: RawMessage): string {
     for (const raw of content as AnthropicBlock[]) {
       if (raw.type === "text" && typeof raw.text === "string") {
         parts.push(raw.text);
+        continue;
+      }
+      // anthropic:用户选择落在 tool_result 内层(string 或 text block 数组)。
+      // 与 `session/claude-code/cleaner.ts:66-75` 同构。
+      if (raw.type === "tool_result") {
+        const inner = raw.content;
+        if (typeof inner === "string") {
+          parts.push(inner);
+        } else if (Array.isArray(inner)) {
+          for (const c of inner as AnthropicBlock[]) {
+            if (c.type === "text" && typeof c.text === "string") parts.push(c.text);
+          }
+        }
       }
     }
     return parts.join("\n");

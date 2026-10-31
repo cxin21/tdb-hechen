@@ -13,6 +13,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { embedForLifecycle } from "./embed-helpers.js";
 import { bindSoulAtWrite } from "./consolidation/content-soul.js";
+import { withEvidenceIds } from "./evidence-ids.js";
+import type { MemoryRecord } from "../record/l1-writer.js";
 import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProposal, VERBATIM_FRAGMENT_MIN_CHARS } from "./soul-reflection-proposals.js";
 import { buildSelfIdentityMarkers, similarSelfIdentityProposalExists, similarSelfIdentityProposalMatch, SIM_GATE_DEFAULT_THRESHOLD, type SelfIdentityMarker } from "./proposal-sim-gate.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
@@ -398,7 +400,13 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
         priority: 80,
         scene_name: "reflection",
         source_message_ids: [],
-        metadata: { reflection: true, question: pr.question, evidence_record_ids: pr.evidence, subject: "反思结论" },
+        // WP7（#155 写面）：证据指针键名单源化——canonical evidence_ids + 兼容别名
+        // evidence_record_ids 双写（同一份 id 集合）。gateway/atomic-by-ids.ts 只读
+        // evidence_ids、auto-recall 只读 evidence_record_ids，单写一个键就有读面取不到证据。
+        metadata: withEvidenceIds(
+          { reflection: true, question: pr.question, subject: "反思结论" },
+          pr.evidence,
+        ) as unknown as MemoryRecord["metadata"],
         timestamps: [now],
         createdAt: now,
         updatedAt: now,

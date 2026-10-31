@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import { rateLimit, type RateLimitOptions } from './middleware/rate-limit.js';
 import { requestLogger } from './middleware/request-logger.js';
 import type { PanelDeps } from '../panel-deps.js';
 import { registerHealthRoutes, registerMetaInstanceRoutes } from './routes/meta/instances.js';
@@ -16,10 +17,23 @@ import { registerSettingsRoutes } from './routes/settings.js';
 
 const API_PREFIX = '/api/v1';
 
-export function buildPanelApp(deps: PanelDeps): Hono {
+export interface PanelAppOptions {
+  /**
+   * 鉴权面限速覆盖（红队 2026-11-01）。false = 关闭（仅测试用）。
+   * 缺省：同 key 120/min、同 IP 60/min；回环地址不参与 IP 维度。
+   */
+  rateLimit?: RateLimitOptions | false;
+}
+
+export function buildPanelApp(deps: PanelDeps, options: PanelAppOptions = {}): Hono {
   const app = new Hono();
 
   app.use('*', requestLogger(deps.logger));
+
+  // 限速要早于业务路由：它的目的就是在鉴权/查询之前把洪泛挡掉。
+  if (options.rateLimit !== false) {
+    app.use(`${API_PREFIX}/*`, rateLimit(options.rateLimit ?? {}));
+  }
 
   registerHealthRoutes(app);
 

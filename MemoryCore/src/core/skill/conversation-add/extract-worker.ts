@@ -32,6 +32,7 @@ import type {
   ISkillExtractor,
 } from "../queue/types.js";
 import { runInRootContext } from "../../report/otel-context.js";
+import { classifyTaskFailure, describeTaskFailure, type TaskFailure } from "../../../utils/task-failure.js";
 import { obsLogger } from "../../report/obs-logger.js";
 import { trace } from "../../report/trace.js";
 
@@ -99,10 +100,16 @@ export interface SkillConversationExtractWorkerOptions {
   //      → retry_count >= permanentMaxRetries 时移到 _tasks_dlq.json
   //      → 无法分类的错误按 A 处理（兜底不丢数据）
   /**
-   * 失败后 requeue 前 sleep 多少 ms，固定值（不做指数退避、不做 jitter）。
-   * 默认 2000。
+   * 失败后 requeue 前 sleep 多少 ms 的**基准值**。默认 2000。
+   *
+   * D-7（2026-10-31）：429 / 5xx 走 `base * 3^attempt` 退避（见 requeueDelayMs），
+   * 其余类别保持固定 base。分类表在 src/utils/task-failure.ts 顶部。
    */
   failureRequeueSleepMs?: number;
+  /**
+   * D-7：退避上限（ms），默认 60_000。避免 429 长尾退避把 worker 占死。
+   */
+  maxRequeueDelayMs?: number;
   /**
    * permanent 错累计多少次进 DLQ，默认 3。
    */
@@ -435,11 +442,32 @@ export class SkillConversationExtractWorker {
             });
           }
         } catch (err) {
-          // 失败分级（对齐设计文档 §3.6 (7) P0 修复）：
-          //   transient → sleep + requeue，retry_count 不变
-          //   permanent → sleep + retry_count++ 回写；达阈值移进 DLQ
-          //   分类兜底 → 按 transient 处理（保守不丢数据）
+          // 失败分级（2026-10-31 D-7 重写；分类表见 src/utils/task-failure.ts 顶部）：
+          //   non-retryable（401/402/403/400/422）→ 立即死信，不再 2s 自旋；
+          //   retryable（429/5xx/网络/超时/未知）→ 退避重试，次数有上限。
+          //
+          // 实证：LLM 供应商 HTTP 402（配额耗尽）此前不落任何分支 → 兜底 transient
+          // → 每 ~2s 一次无上限重试，buildRelevantSkillsBlock 每轮重建注入块把
+          // 一次配额故障放大成持续打点。现在 402 一次即进 DLQ（数据保留可重放）。
           const errMsg = (err as Error).message ?? String(err);
+          const failure = classifyTaskFailure(err);
+          const failureTag = describeTaskFailure(failure);
+
+          if (!failure.retryable) {
+            this.transientFailStreak.delete(head.task_id);
+            this.logger.error(
+              `[skill-conv-worker] non-retryable failure (${failureTag}) → DLQ task=${head.task_id}: ${errMsg.slice(0, 256)}`,
+            );
+            obsLogger.info("skill.worker.task_done", {
+              worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
+              outcome: "dlq_non_retryable", failure_class: failure.cls, dur_ms: Date.now() - t0Task,
+            });
+            await this.handlePermanentFailure(
+              agent, head, `[${failureTag}] ${errMsg}`, mutexOpts, isDowngrade, { forceDeadLetter: true },
+            );
+            break;
+          }
+
           const category = classifyError(err as Error);
           if (category === "transient") {
             this.logTransientFailure(head.task_id, errMsg);
@@ -458,7 +486,7 @@ export class SkillConversationExtractWorker {
                 worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
                 outcome: "dlq_or_retry", dur_ms: Date.now() - t0Task,
               });
-              await sleep(this.opts.failureRequeueSleepMs ?? 2000);
+              await sleep(this.requeueDelayMs(failure, streak));
               await this.handlePermanentFailure(agent, head, errMsg, mutexOpts, isDowngrade);
               break;
             }
@@ -467,9 +495,9 @@ export class SkillConversationExtractWorker {
             // 避免 obsLogger 事件也被算进去。
             obsLogger.info("skill.worker.task_done", {
               worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
-              outcome: "retry_transient", dur_ms: Date.now() - t0Task,
+              outcome: "retry_transient", failure_class: failure.cls, dur_ms: Date.now() - t0Task,
             });
-            await sleep(this.opts.failureRequeueSleepMs ?? 2000);
+            await sleep(this.requeueDelayMs(failure, streak));
             // 2026-08-03: 原子 peek 路径下 agent 仍在 List, task.json 也未动,
             // 下一轮 peek 直接拿到同一 head 重跑; 降级路径显式 requeue。
             if (isDowngrade) await q.requeueAgent(agent);
@@ -576,6 +604,17 @@ export class SkillConversationExtractWorker {
   }
 
   /**
+   * D-7：重试退避。429（rate_limited）/ 5xx（upstream_5xx）走 base * 3^attempt，
+   * 上限 maxRequeueDelayMs（默认 60s）；其余类别保持固定 base（逐位现状）。
+   */
+  private requeueDelayMs(failure: TaskFailure, attempt: number): number {
+    const base = this.opts.failureRequeueSleepMs ?? 2000;
+    if (failure.cls !== "rate_limited" && failure.cls !== "upstream_5xx") return base;
+    const cap = this.opts.maxRequeueDelayMs ?? 60_000;
+    return Math.min(base * Math.pow(3, Math.max(0, attempt)), cap);
+  }
+
+  /**
    * transient 失败日志采样：首次以 error 级别打印，之后每 N 次以 warn 级
    * 打一条摘要，防日志刷屏。N 由 `transientLogSampleEvery` 控制（默认 60）。
    */
@@ -612,6 +651,7 @@ export class SkillConversationExtractWorker {
     errMsg: string,
     mutexOpts: { lockTtlMs: number; waitDeadlineMs: number },
     isDowngrade: boolean,
+    opts?: { forceDeadLetter?: boolean },
   ): Promise<void> {
     const q = this.opts.queue;
     const maxRetries = this.opts.permanentMaxRetries ?? 3;
@@ -637,15 +677,17 @@ export class SkillConversationExtractWorker {
       }
       const cur = doc.tasks[idx]!;
       const nextRetry = (cur.retry_count ?? 0) + 1;
-      if (nextRetry >= maxRetries) {
+      // D-7：非重试类错误（配额/凭据/数据错）一次即死信——重试不会改变结果，
+      // 留着只会反复烧额度。retry_count 仍写实（=1），便于重放器识别。
+      if (opts?.forceDeadLetter === true || nextRetry >= maxRetries) {
         // → DLQ：从 _tasks.json 摘除
         deadTask = { ...cur, retry_count: nextRetry, last_error: truncated };
         doc.tasks.splice(idx, 1);
         doc.updated_at_ms = nowMs();
         await this.opts.buffer.writeTasks(agent, doc);
         this.logger.error(
-          `[skill-conv-worker] permanent failure → DLQ task=${head.task_id} ` +
-            `retries=${nextRetry}/${maxRetries} err=${truncated}`,
+          `[skill-conv-worker] ${opts?.forceDeadLetter ? "non-retryable failure" : "permanent failure"} → DLQ ` +
+            `task=${head.task_id} retries=${nextRetry}/${maxRetries} err=${truncated}`,
         );
       } else {
         doc.tasks[idx] = { ...cur, retry_count: nextRetry, last_error: truncated };
@@ -680,55 +722,21 @@ export class SkillConversationExtractWorker {
 }
 
 /**
- * 把 extract/sink 抛出的 Error 分成 transient (会自愈) 或 permanent (数据/schema)
- * 两类。规则简单，按错误消息里的 HTTP 状态码 + 关键字匹配；识别不出的按 transient
- * 兜底 —— 保守，不丢数据。
+ * 把 extract/sink 抛出的 Error 归成 transient (会自愈) / permanent (数据/schema/凭据/配额)
+ * 两类。**D-7 起唯一分类源是 src/utils/task-failure.ts 的 classifyTaskFailure
+ * （分类表见该文件顶部注释）**，这里只做向后兼容的二元映射，避免第二份口径漂移：
  *
- * 完整分类矩阵见 docs/design/2026-07-21-memorycore-standalone-e2e.md §3.6 (7)。
+ *   data_schema（400/422/JSON/schema）          → permanent
+ *   其它 non-retryable（401/402/403）           → permanent
+ *   retryable（429/5xx/网络/超时/未知）          → transient
+ *
+ * 历史口径（2026-07-21 设计文档 §3.6 (7)）把 401/403 归 transient，已在 D-7 纠正：
+ * 凭据错不会自愈，反复重试只会打点。
  */
 export function classifyError(err: Error): "transient" | "permanent" {
-  const raw = `${err?.name ?? ""} ${err?.message ?? ""}`;
-  const msg = raw.toLowerCase();
-  // AbortError（LLM 请求被 signal cancel / timeout）视为 transient
-  if ((err?.name ?? "") === "AbortError") return "transient";
-
-  // ── permanent 优先匹配：显式的 4xx 数据/schema 错 ──
-  // HTTP 400 / 422
-  if (/(^|[^\d])(400|422)([^\d]|$)/.test(msg)) return "permanent";
-  // JSON 解析错 / schema 校验错 / "invalid response" 类
-  if (
-    msg.includes("json.parse") ||
-    msg.includes("unexpected token") ||
-    msg.includes("invalid json") ||
-    msg.includes("invalid response") ||
-    msg.includes("schema") ||
-    msg.includes("zod") ||
-    msg.includes("validation failed")
-  ) {
-    return "permanent";
-  }
-
-  // ── transient 识别 ──
-  // HTTP 401/403/429/5xx
-  if (/(^|[^\d])(401|403|429|5\d{2})([^\d]|$)/.test(msg)) return "transient";
-  // 网络错误常见错误码 / fetch 层
-  if (
-    msg.includes("econnrefused") ||
-    msg.includes("etimedout") ||
-    msg.includes("enotfound") ||
-    msg.includes("eai_again") ||
-    msg.includes("socket hang up") ||
-    msg.includes("client network socket disconnected") ||
-    msg.includes("fetch failed") ||
-    msg.includes("und_err_") ||
-    msg.includes("timeout") ||
-    msg.includes("timed out")
-  ) {
-    return "transient";
-  }
-
-  // 兜底：识别不出的按 transient 处理（不丢数据）
-  return "transient";
+  const failure = classifyTaskFailure(err);
+  if (failure.cls === "data_schema") return "permanent";
+  return failure.retryable ? "transient" : "permanent";
 }
 
 function sleep(ms: number): Promise<void> {

@@ -716,6 +716,10 @@ export function createEmbeddingService(
  *
  * All embed() calls return an empty Float32Array because the server generates
  * vectors automatically from the text field during upsert/search.
+ *
+ * #123：这不是「客户端 embedding 可用」——embed() 恒空数组 + isReady() 恒 true，
+ * 任何按「service 存在 / isReady / embed 不抛错」判活的探针都会误报 ok（生产静默空转：
+ * /health 恒绿、向量恒不写）。判客户端可用请用下方 hasClientEmbedding()（provider 判据）。
  */
 export class NoopEmbeddingService implements EmbeddingService {
   embed(_text: string): Promise<Float32Array> {
@@ -740,5 +744,27 @@ export class NoopEmbeddingService implements EmbeddingService {
 
   startWarmup(): void {
     // no-op
+  }
+}
+
+/** #123：Noop embedder 的 provider 标识（服务端 embedding 后端的占位实现）。 */
+export const NOOP_EMBEDDING_PROVIDER = "noop";
+
+/**
+ * #123：客户端 embedding 是否真可用（对齐上游 `hasClientEmbedding` 语义：
+ * provider === 'noop' ⇒ false）。
+ *
+ * 为什么需要它：NoopEmbeddingService.embed() 返回空 Float32Array 且 isReady() 恒 true，
+ * 「有没有 service / isReady / embed 会不会抛」三类探针都判不出降级（#123 根因）。
+ * 唯一可靠判据是 provider（getProviderInfo().provider）。
+ *
+ * fail-closed：无 service / 读不到 provider → 一律 false（宁可降档告警，不可误报绿）。
+ */
+export function hasClientEmbedding(svc: EmbeddingService | null | undefined): boolean {
+  if (!svc) return false;
+  try {
+    return svc.getProviderInfo().provider !== NOOP_EMBEDDING_PROVIDER;
+  } catch {
+    return false;
   }
 }

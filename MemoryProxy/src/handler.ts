@@ -22,6 +22,10 @@ import {
   buildLangfuseInputChat,
   buildRequestDebugMetadata,
 } from "./common/langfuse-debug.js";
+import {
+  isSessionInitTailDumpEnabled,
+  summarizeSessionInitTail,
+} from "./common/session-init-tail.js";
 import { countHumanTurns } from "./turnSeq.js";
 import type { ProxyConfig } from "./types.js";
 import {
@@ -676,19 +680,14 @@ export async function handleChatCompletions(
   let messages = Array.isArray(body.messages) ? body.messages : [];
   const isStream = body.stream === true;
 
-  // [debug] Log last 3 message roles and content types to diagnose session-init issues
+  // [debug] 结构摘要（role / content 类型与长度 / tool_call_id 前 8 位）。
+  // 正文不进日志：红队 2026-11-01 §F 发现旧实现把 content.slice(0,80) 直接打到
+  // stdout，用户在日志里可读到消息正文。需要正文时显式设
+  // PROXY_DEBUG_SESSION_INIT_TAIL=1（本地排障），见 common/session-init-tail.ts。
   if (config.sessionInit?.enabled && messages.length > 2) {
-    const tail = messages.slice(-3);
-    const summary = tail.map((m: any, idx: number) => {
-      const role = m.role;
-      const ct = m.content;
-      const contentType = typeof ct === "string" ? `string(${ct.slice(0, 80)})` :
-        Array.isArray(ct) ? `array[${ct.map((b: any) => b.type).join(",")}]` :
-        ct === null ? "null" : typeof ct;
-      const tcid = m.tool_call_id;
-      const tcs = m.tool_calls ? `tool_calls[${m.tool_calls.map((t: any) => t.id).join(",")}]` : "";
-      return `[${idx}]role=${role} content=${contentType} tool_call_id=${tcid} ${tcs}`;
-    }).join(" | ");
+    const summary = summarizeSessionInitTail(messages, {
+      dumpBody: isSessionInitTailDumpEnabled(),
+    });
     console.log(`[session-init-debug] raw-tail msgs=${messages.length} ${summary}`);
   }
 

@@ -30,6 +30,10 @@
     "seed-v2": "node ./bin/seed-v2.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.typecheck.json",
+    "typecheck:gate": "node scripts/typecheck-gate.mjs",
+    "typecheck:baseline": "node scripts/typecheck-gate.mjs --update",
+    "format": "node scripts/format-changed.mjs --write",
+    "format:check": "node scripts/format-changed.mjs",
     "test:oss": "vitest run -c vitest.oss.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -186,6 +190,7 @@
     "@types/node": "^25.5.2",
     "@vitest/coverage-v8": "^4.1.2",
     "mongodb-memory-server": "^10.4.3",
+    "prettier": "^3.9.10",
     "tsdown": "^0.21.10",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"

@@ -261,7 +261,12 @@ async function runLlmJudgment(
   logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories (promptMode=${promptMode})`);
 
   try {
-    const userPrompt = formatBatchConflictPrompt(matches, valueCandidates);
+    // task-62：把当前抽取会话作为 corpus 来源传给 prompt——候选池是跨会话 reference，
+    // 两段必须物理分区且 reference 每条带 source.session_id/agent_id。
+    const userPrompt = formatBatchConflictPrompt(matches, valueCandidates, {
+      sessionId: traceContext?.sessionId,
+      agentId: traceContext?.agentId,
+    });
     const systemPrompt = getConflictDetectionSystemPrompt(promptMode);
     let result: string;
 

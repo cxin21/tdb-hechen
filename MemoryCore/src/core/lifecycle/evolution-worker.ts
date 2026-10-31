@@ -31,6 +31,7 @@
  * 观察期遥测（spec §4.5）：门条件逐项计数，日志行 gate={...}。
  */
 import { embedForLifecycle } from "./embed-helpers.js";
+import { withEvidenceIds } from "./evidence-ids.js";
 import type { IMemoryStore } from "../store/types.js";
 import type { Logger } from "../types.js";
 
@@ -271,7 +272,8 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
         metadata: {
           ...((newer.metadata ?? {}) as Record<string, unknown>),
           subject: sa,
-          evidence_ids: [older.id, newer.id],
+          // WP7（#155 写面）：证据指针键名单源化，canonical + 兼容别名双写（同源同集合）。
+          ...withEvidenceIds({}, [older.id, newer.id]),
           // spec §4.3：created_by='evolution' + metadata.evolution={from,reason}（审计三件套之二，其一是边）
           created_by: "evolution",
           evolution: { from: [older.id, newer.id], reason: parsed.reason ?? "" },

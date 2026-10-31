@@ -22,6 +22,8 @@ import { extractSceneBatches } from "./scene-batch-split.js";
 import { readConversationMessagesGroupedBySessionId } from "../core/conversation/l0-recorder.js";
 import type { ConversationMessage } from "../core/conversation/l0-recorder.js";
 import { CheckpointManager } from "./checkpoint.js";
+import { metricProducer } from "../core/report/kafka-metric-producer.js";
+import { compileSessionIgnorePatterns, DEFAULT_IGNORE_SESSION_PATTERNS } from "./session-ignore.js";
 import type { PipelineSessionState } from "./checkpoint.js";
 import { createStoreBundle } from "../core/store/factory.js";
 import type { IMemoryStore } from "../core/store/types.js";
@@ -428,6 +430,27 @@ export function createL1Runner(opts: {
   /** True iff the over-fetch returned exactly L1_BATCH_QUERY rows (i.e. likely large backlog). */
   hasFullBacklog: boolean;
   profileScopes: string[];
+  /**
+   * D-6（2026-10-31）：本批**提取失败**（LLM 侧失败，游标未推进）。
+   *
+   * 旧口径只用 processedCount=0 / hasMore=false 表达，与「没活干」不可区分，
+   * 上游 executeL1 便把它当成功返回 → pipeline-worker 记 completed、L2 定时器
+   * 继续推进（生产实测 HTTP 402 配额耗尽：tasksCompleted=4/tasksFailed=0）。
+   * runner 仍**不抛错**（l1-runner-failure.test.ts 的既有契约），只把失败位交给
+   * executor，由 executor 抛 typed error 走统一失败/死信路径。
+   */
+  failed?: boolean;
+  /** D-6：失败原因原文（含供应商 HTTP 状态码），用于分类重试。 */
+  failureDetail?: string;
+  /**
+   * D-7（2026-11-01）：LLM 端点的结构化状态码 / 供应商业务码。
+   *
+   * 生产 402 的文案里没有 `status=402`（只有供应商中文），只靠 failureDetail 文本分类
+   * 必然落 unknown（可重试）。适配器把状态码挂在错误对象上 → l1-extractor 原样透传 →
+   * 这里交出去，executor 组成 L1ExtractionFailedError 时一步定罪（quota → 立即死信）。
+   */
+  failureStatus?: number;
+  failureProviderCode?: string;
 }> {
   const { pluginDataDir, cfg, openclawConfig, vectorStore, embeddingService, logger, getInstanceId, llmRunner, storage, checkpointLock } = opts;
   const config = openclawConfig as Record<string, unknown> | undefined;
@@ -522,7 +545,7 @@ export function createL1Runner(opts: {
 
       if (queriedCount === 0) {
         logger.debug?.(`${TAG} [l1] No new L0 messages for session ${sessionKey}`);
-        return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [] };
+        return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [], failed: false };
       }
 
       // Re-sort by recordedAtMs ascending (DB path returns ASC already, but
@@ -570,6 +593,22 @@ export function createL1Runner(opts: {
       // 否则整批都是脚手架时游标不前进 → 同一批被无限重取。
       let gateSkipped = 0;
       const gateSkippedByClass: Record<string, number> = {};
+      // ── 会话卫生闸（task-83）：探针/测试会话不参与 L1 蒸馏 ──
+      //
+      // 生产 L0 里混进 128 行探针数据（session_id `probe-*` / `session-probe-*`，
+      // 23 会话 / 905,703 字符）。删生产行需用户授权（红线），故先在抽取侧挡住：
+      // 命中的行不进候选、不计入 batch。匹配语义见 utils/session-ignore.ts
+      // （前缀 + `*` 通配；行级 session_id 与 sessionKey 双查）。
+      //
+      // cfg 是手工构造（测试 / seed / 旧调用方）时可能没有本字段 → 回落缺省（不是关闸）；
+      // 显式 `[]` 才是关闸（逐位回到 task-83 之前的行为）。
+      const ignorePatternsCfg = (cfg.extraction as { ignoreSessionPatterns?: string[] } | undefined)
+        ?.ignoreSessionPatterns ?? [...DEFAULT_IGNORE_SESSION_PATTERNS];
+      const ignoreMatcher = compileSessionIgnorePatterns(ignorePatternsCfg);
+      let ignoredRowCount = 0;
+      const ignoredSessions = new Map<string, { pattern: string; matchedOn: "session_id" | "session_key"; rows: number }>();
+      /** 被忽略的行：把「不计入 batch」贯彻到会话隔离守卫与 processedCount */
+      const ignoredRows = new Set<object>();
       for (const m of processed) {
         if (m.recordedAtMs > maxRecordedAtMs) maxRecordedAtMs = m.recordedAtMs;
         // 「有内容的脚手架」豁免：压缩摘要段 / 后台回执虽被 proxy 归类为 scaffold，
@@ -578,6 +617,17 @@ export function createL1Runner(opts: {
           gateSkipped++;
           const c = String(m.classification);
           gateSkippedByClass[c] = (gateSkippedByClass[c] ?? 0) + 1;
+          continue;
+        }
+        // 卫生闸：与分类闸同型——先推进 maxRecordedAtMs 再跳过，游标照常前进。
+        // （否则探针行会把游标卡在原地 → 同一批被无限重取。）
+        const ignoreHit = ignoreMatcher.match(m.sessionId, sessionKey);
+        if (ignoreHit) {
+          ignoredRowCount++;
+          ignoredRows.add(m);
+          const seen = ignoredSessions.get(ignoreHit.value);
+          if (seen) seen.rows++;
+          else ignoredSessions.set(ignoreHit.value, { pattern: ignoreHit.pattern, matchedOn: ignoreHit.matchedOn, rows: 1 });
           continue;
         }
         const groupKey = `${m.userId}\u0000${m.agentId}\u0000${m.sessionId}`;
@@ -596,11 +646,100 @@ export function createL1Runner(opts: {
       // the same order they were captured (matches pre-existing behavior).
       groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
 
+      // ── 会话隔离守卫（task-62；用户口径 m02362「检索可以跨会话，抽取不能混」）──
+      //
+      // 数据事实：store 的 L0 分组键是 (team,user,agent,session_id,task)（sqlite.ts:5617），
+      // 而 L1 取数是 `WHERE session_key = ?`（sqlite.ts:1251-1265）——生产里 sessionKey
+      // 通常是 1:1 的 session_id（实测 211 会话 / 211 session_id），但**类型上允许**一个
+      // sessionKey 下出现多个 session_id（key 复用、跨端合并、历史脏数据）。
+      //
+      // 不变量：抽取语料（corpus）必须单会话。跨会话只能出现在 dedup 的 reference 段
+      // （prompts/l1-dedup.ts 的跨会话参考记忆池，带来源标注）。
+      //
+      // 处理策略：一批里出现 >1 个 session_id 时，只处理**最靠前的一组**（groups 已按
+      // 首条时间排序），其余整组延后到下一轮。游标是 sessionKey 级单标量
+      // （checkpoint last_l1_cursor），无法表达多会话水位，因此只推进到
+      // 「被延后行的最早 recordedAtMs − 1」——这是唯一安全的推进点
+      // （下一轮 `recorded_at_ms > cursor` 仍能捞到被延后的行）。代价：被选中会话里
+      // 晚于该水位的行会被重取一次（extraction.enableDedup 兜底，不产生重复记忆），
+      // 换「零丢行」。
+      //
+      // sessionScope 缺省 "session"（单会话抽取）。"profile" 回退到旧的多会话同批行为，
+      // 仅供排查/灰度，不建议长开。task-81 已接线：键在 MemoryTdaiConfig["extraction"]
+      // （config.ts:ExtractionConfig.sessionScope），缺省与非法值归一在 config 加载层，
+      // 这里只需按值分支——不要再做软读取/cast，否则「类型里有、运行时没有」无从对账。
+      const sessionScope: "session" | "profile" =
+        cfg.extraction?.sessionScope === "profile" ? "profile" : "session";
+      // 卫生闸之后「计入 batch」的行（被忽略的行只参与游标推进，不参与会话计
+      // 数/延后判定——否则探针行会被当成「被延后的会话」，把游标压回到它之前）。
+      const effectiveProcessed = ignoredRows.size > 0 ? processed.filter((m) => !ignoredRows.has(m)) : processed;
+      const batchSessionIds = Array.from(
+        new Set(effectiveProcessed.map((m) => m.sessionId).filter((s): s is string => typeof s === "string" && s.length > 0)),
+      );
+      let activeGroups = groups;
+      let deferredSessionIds: string[] = [];
+      let deferredRowCount = 0;
+      let cursorCeilingMs: number | undefined;
+      if (sessionScope === "session" && groups.length > 1 && batchSessionIds.length > 1) {
+        const chosenSessionId = groups[0].sessionId;
+        activeGroups = groups.filter((g) => g.sessionId === chosenSessionId);
+        deferredSessionIds = batchSessionIds.filter((s) => s !== chosenSessionId);
+        let deferredMinMs = Number.POSITIVE_INFINITY;
+        for (const m of effectiveProcessed) {
+          if (m.sessionId === chosenSessionId) continue;
+          deferredRowCount++;
+          if (m.recordedAtMs < deferredMinMs) deferredMinMs = m.recordedAtMs;
+        }
+        if (Number.isFinite(deferredMinMs)) cursorCeilingMs = deferredMinMs - 1;
+        logger.info(
+          `${TAG} [l1] session isolation: ${batchSessionIds.length} session_id in one batch — processing only ` +
+          `session_id=${chosenSessionId} (${activeGroups.length} group(s)); deferred ${deferredSessionIds.length} ` +
+          `session(s) / ${deferredRowCount} L0 row(s), cursor ceiling=${cursorCeilingMs ?? "(none)"} (session=${sessionKey})`,
+        );
+        try {
+          // obs 指标：本批出现几个会话（>1 即命中守卫，供监控判「是否常有跨会话积压」）
+          metricProducer.send({
+            metric: "l1.batch.session_groups",
+            instanceId: getInstanceId?.() ?? "standalone",
+            value: batchSessionIds.length,
+            source: "core",
+          });
+        } catch {
+          // 观测失败不影响业务（与既有 metric 调用一致）
+        }
+      }
+
+
       if (gateSkipped > 0) {
         logger.info(
           `${TAG} [l1] classification gate: ${gateSkipped}/${processed.length} L0 rows skipped ` +
           `(${JSON.stringify(gateSkippedByClass)}), ${groups.length} group(s) remain`,
         );
+      }
+
+      // 卫生闸可观测：命中即留痕（session_id + pattern），并送同族指标。
+      if (ignoredRowCount > 0) {
+        const detail = Array.from(ignoredSessions.entries())
+          .slice(0, 5)
+          .map(([sid, v]) => `${v.matchedOn}=${sid}(pattern=${v.pattern}, rows=${v.rows})`)
+          .join(", ");
+        const more = ignoredSessions.size > 5 ? `, +${ignoredSessions.size - 5} more session(s)` : "";
+        logger.info(
+          `${TAG} [l1] session hygiene gate: ignored ${ignoredRowCount}/${processed.length} L0 rows from ` +
+          `${ignoredSessions.size} session(s): ${detail}${more} (session=${sessionKey}, ` +
+          `remaining ${effectiveProcessed.length} row(s) / ${groups.length} group(s))`,
+        );
+        try {
+          // obs 指标：本批被忽略的会话数（与 l1.batch.session_groups 同族）
+          metricProducer.send({
+            metric: "l1.batch.sessions_ignored",
+            instanceId: getInstanceId?.() ?? "standalone",
+            value: ignoredSessions.size,
+            source: "core",
+          });
+        } catch {
+          // 观测失败不影响业务（与既有 metric 调用一致）
+        }
       }
 
       // ── Step 4: backlog detection ──
@@ -633,7 +772,8 @@ export function createL1Runner(opts: {
 
       const totalMessages = processed.length;
       logger.info(
-        `${TAG} [l1] Processing ${totalMessages} L0 messages across ${groups.length} sessionId group(s) ` +
+        `${TAG} [l1] Processing ${effectiveProcessed.length} L0 messages (of ${totalMessages} sliced, ` +
+        `${ignoredRowCount} ignored by hygiene gate) across ${activeGroups.length} sessionId group(s) ` +
         `for session ${sessionKey} (queried=${queriedCount}, sliceEnd=${sliceEnd}, ` +
         `hasMore=${hasMore}, hasFullBacklog=${hasFullBacklog})`,
       );
@@ -642,6 +782,11 @@ export function createL1Runner(opts: {
       let totalStored = 0;
       let lastSceneName: string | undefined;      // F-EV12-1（REG-REMAINING-006 A-1）：LLM 失败批次不得推进游标（批次级旗标）。
       let extractionFailed = false;
+      // D-6（2026-10-31）：失败原因原文（含供应商 HTTP 状态码），透传给 executor 判类。
+      let extractionFailureDetail: string | undefined;
+      // D-7：结构化失败信息（LLM 适配器挂的 statusCode/providerCode）——与 detail 同源透传
+      let extractionFailureStatus: number | undefined;
+      let extractionFailureProviderCode: string | undefined;
       const profileScopes = new Set<string>();
       const l1PromptTargets = groups.map((group) => ({
         teamId: group.teamId,
@@ -725,10 +870,15 @@ export function createL1Runner(opts: {
           records: [...first.records, ...second.records],
           sceneNames: [...first.sceneNames, ...second.sceneNames],
           lastSceneName: second.lastSceneName ?? first.lastSceneName,
+          // D-6：任一半失败即整组失败，把首个失败原因带回上游。
+          error: first.error ?? second.error,
+          // D-7：结构化字段同样取首个有值的一半（与 error 同源）
+          failureStatus: first.failureStatus ?? second.failureStatus,
+          failureProviderCode: first.failureProviderCode ?? second.failureProviderCode,
         };
       };
 
-      for (const group of groups) {
+      for (const group of activeGroups) {
         logger.debug?.(
           `${TAG} [l1] Group sessionId=${group.sessionId || "(empty)"}: ${group.messages.length} messages`,
         );
@@ -736,7 +886,13 @@ export function createL1Runner(opts: {
         const l1Result = await extractGroupWithSplit(group, 0);
 
         totalExtracted += l1Result.extractedCount;
-        totalStored += l1Result.storedCount;        if (l1Result.success === false) extractionFailed = true;
+        totalStored += l1Result.storedCount;
+        if (l1Result.success === false) {
+          extractionFailed = true;
+          extractionFailureDetail = extractionFailureDetail ?? l1Result.error;
+          extractionFailureStatus = extractionFailureStatus ?? l1Result.failureStatus;
+          extractionFailureProviderCode = extractionFailureProviderCode ?? l1Result.failureProviderCode;
+        }
         if (l1Result.storedCount > 0) {
           // L2/L3 output is team+agent scoped, but each L2 extraction input must
           // stay bounded to the source session that just produced L1. Encode the
@@ -767,14 +923,42 @@ export function createL1Runner(opts: {
         logger.error(
           `${TAG} [l1] L1 extraction FAILED — cursor NOT advanced (session=${sessionKey}, stored=${totalStored}); retry on next conversation/idle/drain trigger`,
         );
-        return { processedCount: 0, storedCount: totalStored, hasMore: false, hasFullBacklog: false, profileScopes: Array.from(profileScopes) };
+        // D-6：显式 failed 位——旧口径只有 hasMore/hasFullBacklog=false + processedCount=0，
+        // 上游（executeL1）无从区分「没活干」与「提取失败」，于是把失败任务记成 completed
+        // 并继续推进 L2 定时器（实测 HTTP 402 配额耗尽时 tasksConsumed=4/completed=4/failed=0，
+        // l1_records 零新增）。现在由 executor 依据 failed 抛错 → 重试/死信。
+        return {
+          processedCount: 0,
+          storedCount: totalStored,
+          hasMore: false,
+          hasFullBacklog: false,
+          profileScopes: Array.from(profileScopes),
+          failed: true,
+          failureDetail: extractionFailureDetail ?? "L1 extraction failed (no detail)",
+          failureStatus: extractionFailureStatus,
+          failureProviderCode: extractionFailureProviderCode,
+        };
       }
-      await checkpoint.markL1ExtractionComplete(sessionKey, totalStored, maxRecordedAtMs || undefined, lastSceneName);
+      // 会话隔离守卫：游标只推进到被延后行的最早 recordedAtMs − 1（见上文守卫注释）。
+      const cursorMs = cursorCeilingMs !== undefined && cursorCeilingMs > 0
+        ? Math.min(maxRecordedAtMs, cursorCeilingMs)
+        : maxRecordedAtMs;
+      await checkpoint.markL1ExtractionComplete(sessionKey, totalStored, cursorMs || undefined, lastSceneName);
       logger.info(
         `${TAG} [l1] L1 complete: extracted=${totalExtracted}, stored=${totalStored} (${groups.length} group(s))`,
       );
 
-      return { processedCount: totalMessages, storedCount: totalStored, hasMore, hasFullBacklog, profileScopes: Array.from(profileScopes) };
+      return {
+        // 守卫命中时 processedCount 只算真正处理过的行（被延后的行留给下一轮）；
+        // 卫生闸忽略的行同样「不计入 batch」（task-83），只用于推进游标。
+        processedCount: Math.max(0, totalMessages - deferredRowCount - ignoredRowCount),
+        storedCount: totalStored,
+        // 守卫命中 → 立即再拉一轮（hasFullBacklog 保持压平，避免续批风暴）
+        hasMore: hasMore || deferredRowCount > 0,
+        hasFullBacklog,
+        profileScopes: Array.from(profileScopes),
+        failed: false,
+      };
     } catch (err) {
       logger.error(`${TAG} [l1] L1 failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       throw err;

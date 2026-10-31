@@ -32,7 +32,13 @@ function taskEntry() {
 
 const TIMEOUT_ERR = () => new Error("The operation was aborted due to timeout");
 
-function makeDeps(opts: { transientMaxRetries?: number; permanentMaxRetries?: number; mode?: "timeout" | "ok" | "contend" } = {}) {
+function makeDeps(opts: {
+  transientMaxRetries?: number;
+  permanentMaxRetries?: number;
+  mode?: "timeout" | "ok" | "contend";
+  /** D-7（task-58）：自定义失败错误，用于验证不可重试类别的处置。 */
+  error?: () => Error;
+} = {}) {
   let tasks: Array<Record<string, unknown>> = [taskEntry()];
   const dlq: Array<Record<string, unknown>> = [];
   const writeShapes: Array<number> = [];
@@ -67,6 +73,7 @@ function makeDeps(opts: { transientMaxRetries?: number; permanentMaxRetries?: nu
       extract: vi.fn(async () => {
         extractCalls();
         if (opts.mode === "ok") return { candidates: [{ name: "s", description: "d", when_to_use: "w", steps: [] }] };
+        if (opts.error) throw opts.error();
         throw TIMEOUT_ERR();
       }),
     } as never,
@@ -124,5 +131,84 @@ describe("skill-conv-worker LIVENESS-CAP（2026-09-17）", () => {
     expect(r.lockContended).toBe(true);
     expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining("extract-lock contended"));
     expect(logger.info).not.toHaveBeenCalled();
+  });
+});
+describe("D-7（task-58）· 失败分类驱动的重试策略", () => {
+  it("402 quota 属不可重试：首轮直接 DLQ，不进 transient 重试", async () => {
+    const { worker, dlq, extractCalls, tasksRef, logger } = makeDeps({
+      transientMaxRetries: 5,
+      permanentMaxRetries: 3,
+      error: () => new Error("LLM request failed: status=402, message=insufficient balance"),
+    });
+
+    const r = await worker.consumeAgent(AGENT);
+
+    expect(extractCalls).toHaveBeenCalledTimes(1);
+    expect(dlq).toHaveLength(1);
+    expect(dlq[0]).toMatchObject({ task_id: "task-1", retry_count: 1 });
+    expect(tasksRef()).toHaveLength(0);
+    expect(r.processedTaskIds).toHaveLength(0);
+    // 日志要能直接定位类别，不靠人肉读错误串
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("non-retryable failure (quota"));
+  });
+
+  it("401/403 auth 同样不可重试（旧口径归 transient 会无限重试）", async () => {
+    const { worker, dlq, tasksRef } = makeDeps({
+      transientMaxRetries: 5,
+      permanentMaxRetries: 3,
+      error: () => new Error("unauthorized: HTTP 401"),
+    });
+
+    await worker.consumeAgent(AGENT);
+
+    expect(dlq).toHaveLength(1);
+    expect(tasksRef()).toHaveLength(0);
+  });
+
+  it("429 rate_limited 可重试：不入 DLQ，保持任务等待退避", async () => {
+    const { worker, dlq, tasksRef, logger } = makeDeps({
+      transientMaxRetries: 5,
+      permanentMaxRetries: 3,
+      error: () => new Error("rate limited: status=429"),
+    });
+
+    await worker.consumeAgent(AGENT);
+
+    expect(dlq).toHaveLength(0);
+    expect(tasksRef()).toHaveLength(1);
+    expect((tasksRef()[0] as { retry_count?: number }).retry_count ?? 0).toBe(0);
+    // 首轮 transient 以 error 级打印（采样策略见 logTransientFailure）
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("transient extract failure"));
+  });
+
+  it("429 退避按 base*3^attempt 放量并封顶，非 429 保持基准（D-7）", () => {
+    const deps = makeDeps({ error: () => new Error("rate limited: status=429") });
+    type Backoff = (failure: unknown, attempt: number) => number;
+    const backoff = (deps.worker as unknown as { requeueDelayMs: Backoff }).requeueDelayMs.bind(deps.worker);
+    const rate = { cls: "rate_limited" as const, retryable: true, httpStatus: 429 };
+    const quota = { cls: "quota" as const, retryable: false, httpStatus: 402 };
+
+    expect(backoff(rate, 0)).toBe(0); // 测试里 failureRequeueSleepMs=0
+    expect(backoff(quota, 0)).toBe(0);
+    // 用不为 0 的 base 验证放量公式与封顶（不 sleep，只算值）
+    const w = deps.worker as unknown as { opts: { failureRequeueSleepMs?: number } };
+    w.opts.failureRequeueSleepMs = 1000;
+    expect(backoff(rate, 0)).toBe(1000);
+    expect(backoff(rate, 2)).toBe(9000);
+    expect(backoff(rate, 9)).toBe(60000); // cap
+    expect(backoff(quota, 2)).toBe(1000); // 不属 429/5xx → 保持基准
+  });
+
+  it("data_schema（400）不可重试：直接 DLQ，避免毒批次空转", async () => {
+    const { worker, dlq, tasksRef } = makeDeps({
+      transientMaxRetries: 5,
+      permanentMaxRetries: 3,
+      error: () => new Error("HTTP 400 bad request: messages[0].content must be string"),
+    });
+
+    await worker.consumeAgent(AGENT);
+
+    expect(dlq).toHaveLength(1);
+    expect(tasksRef()).toHaveLength(0);
   });
 });

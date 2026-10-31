@@ -88,7 +88,9 @@ export interface Asset {
   name: string;
   description?: string;
   owner_user_id: string;
-  source_type: 'uploaded' | 'url' | 'extracted' | 'synced';
+  // manual = 用户在面板里手动创建；auto = 内核自动登记（agent 的 chat_memory 走 auto，
+  // 见 MemoryCore/src/metadata/service/metadata-service.ts:1412）。
+  source_type: 'uploaded' | 'url' | 'extracted' | 'synced' | 'manual' | 'auto';
   source_ref?: string;
   version: number;
   visibility: 'private' | 'task' | 'agent' | 'team' | 'restricted';

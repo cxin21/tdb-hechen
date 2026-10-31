@@ -13,6 +13,7 @@
  */
 import fs from "node:fs";
 import { mcnemarExact, pairedBootstrap, pct, pp } from "./lib/bench/stats.mjs";
+import { enforceJudgeGate } from "./lib/bench/report.mjs";
 
 function arg(name, dflt) {
   const i = process.argv.indexOf("--" + name);
@@ -31,7 +32,11 @@ if (!armSpecs.length) {
   process.exit(2);
 }
 
+const allowUnjudged = process.argv.includes("--allow-unjudged");
 const base = JSON.parse(fs.readFileSync(basePath, "utf8"));
+// M8：判分存在性门禁。judged/total < 95% 或 judge 缺失 ⇒ 该档不可用作结论（exit 3）。
+// 检索-only 档（判分从来就没跑）必须显式 --allow-unjudged，不许静默通过。
+let judgeInvalid = enforceJudgeGate(base, { label: `base ${basePath}`, allowUnjudged }) !== 0;
 const baseRows = new Map(base.rows.map((r) => [r.caseId, r]));
 const buckets = [...new Set(base.rows.map((r) => r.questionType))].sort();
 const fmt = (x) => (x == null ? "n/a" : x.toFixed(4));
@@ -71,6 +76,7 @@ for (const spec of armSpecs) {
   const tag = eq > 0 ? spec.slice(0, eq) : spec;
   const p = eq > 0 ? spec.slice(eq + 1) : spec;
   const arm = JSON.parse(fs.readFileSync(p, "utf8"));
+  if (enforceJudgeGate(arm, { label: `arm ${tag} ${p}`, allowUnjudged }) !== 0) judgeInvalid = true;
   const armRows = new Map(arm.rows.map((r) => [r.caseId, r]));
   const pairsOf = (filter) =>
     [...baseRows.entries()]
@@ -103,6 +109,7 @@ if (gateBuckets.length) {
     const tag = eq > 0 ? spec.slice(0, eq) : spec;
     const p = eq > 0 ? spec.slice(eq + 1) : spec;
     const arm = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (enforceJudgeGate(arm, { label: `arm ${tag} ${p}`, allowUnjudged }) !== 0) judgeInvalid = true;
     const armRows = new Map(arm.rows.map((r) => [r.caseId, r]));
     for (const bucket of gateBuckets) {
       const pairs = [...baseRows.entries()]
@@ -124,4 +131,8 @@ if (gateBuckets.length) {
 }
 
 console.log(lines.join("\n"));
+if (judgeInvalid) {
+  console.error("[bench:invalid] 判分门禁未通过：上表只可作检索侧参考，禁止写进文档结论（补 judge 后重跑）");
+  process.exit(3);
+}
 if (gateFailed) process.exitCode = 1;

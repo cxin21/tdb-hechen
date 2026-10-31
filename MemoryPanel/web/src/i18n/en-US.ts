@@ -279,6 +279,7 @@ export const enUS = {
   'common.save': 'Save',
   'common.refresh': 'Refresh',
   'common.close': 'Close',
+  'tabbar.close': 'Close {{label}} tab',
   'common.search': 'Search',
   'common.loading': 'Loading…',
   'common.noData': 'No data',
@@ -853,6 +854,7 @@ export const enUS = {
   'memory.health.coverage': 'Vector coverage {{pct}}',
   'memory.health.embeddingOk': 'Embedding ok',
   'memory.health.embeddingBad': 'Embedding degraded',
+  'memory.health.embeddingUnconfigured': 'Embedding not configured',
   'memory.health.degradedBanner': 'Vector recall degraded (FTS fallback active)',
   'memory.health.unknown': 'Memory health unknown',
   // ---- BlockDetail extensions + archive (Task 4) ----
@@ -1006,6 +1008,7 @@ export const enUS = {
   'memory.detail.teamPool': 'Team Memory Pool',
   'memory.detail.uploadedBy': 'Uploaded: {{user}}',
   'memory.detail.updated': 'Updated: {{time}}',
+  'memory.detail.refresh': 'Refresh',
   'memory.detail.noL0': 'This memory block has no L0 conversation history.',
   'memory.detail.noL0InRange':
     'No L0 conversation history in the current time range. Try adjusting the time filter in the top-right corner.',

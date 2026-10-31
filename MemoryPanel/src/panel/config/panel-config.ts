@@ -3,14 +3,25 @@ import type { LogLevel } from '../infra/logger.js';
 
 loadDotenv();
 
+/**
+ * 读取环境变量。空串/纯空白一律视为"未设置"→ 回落 fallback，与 envInt/envBool 的
+ * 语义保持一致（此前 `??` 会把 `KNOWLEDGE_AUTH_TOKEN=` 这类空行当有效值，静默把
+ * baseUrl/token 变成空串）。
+ */
 function env(key: string, fallback: string): string {
-  return process.env[key] ?? fallback;
+  const raw = process.env[key];
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  return trimmed === '' ? fallback : trimmed;
 }
 
 function envInt(key: string, fallback: number): number {
   const raw = process.env[key];
-  if (raw === undefined || raw === '') return fallback;
-  const n = Number(raw);
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  // 纯空白同样视为"未设置"：否则 Number('  ') === 0 会把端口/超时静默变成 0。
+  if (trimmed === '') return fallback;
+  const n = Number(trimmed);
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -41,8 +52,9 @@ export interface PanelConfig {
 
 function envBool(key: string, fallback: boolean): boolean {
   const raw = process.env[key];
-  if (raw === undefined || raw === '') return fallback;
-  return raw === 'true' || raw === '1';
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === '') return fallback;
+  return trimmed === 'true' || trimmed === '1';
 }
 
 export function loadPanelConfig(): PanelConfig {

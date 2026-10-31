@@ -493,6 +493,12 @@ export class TdaiCore {
             weight: factChannelWeightOf(this.cfg.recall.factChannel, this.cfg.recall.fusion),
           }
         : undefined,
+      // #151（工具路 normalized）：融合配置透传——缺这一行，工具路会把 recall.fusion
+      // 静默忽略（同配置两路行为分叉）。缺省 undefined = RRF 恒等（逐位现状）。
+      fusion: this.cfg?.recall?.fusion,
+      // #148（工具路 soft 刻度）：soft 档降权乘子透传（缺省 undefined → 内部回落 0.5，
+      // 与钩子路同乘子、同顺序契约）。
+      validitySoftPenalty: this.cfg?.recall?.validity?.softPenalty,
       // R-A1（结构感知召回 spec §2）：排序层结构信号六开关透传（缺省由
       // executeMemorySearch 内部回落 spec §2 默认值；0=通道完全退出）
       timeBoost: this.cfg?.recall?.timeBoost,
@@ -1128,7 +1134,27 @@ export class TdaiCore {
      * standalone 单进程不需要传（进程内 withFileLock 已足够）。
      */
     checkpointLock?: import("../utils/checkpoint.js").CheckpointLockOptions,
-  ): Promise<{ storedCount: number; creditUsed: number; hasMore: boolean; hasFullBacklog: boolean; profileScopes: string[] }> {
+  ): Promise<{
+    storedCount: number;
+    creditUsed: number;
+    hasMore: boolean;
+    hasFullBacklog: boolean;
+    profileScopes: string[];
+    /**
+     * D-6（2026-10-31）：本批 **提取失败**（LLM 侧失败，游标未推进）。
+     * 旧口径只用 hasMore/hasFullBacklog=false + storedCount=0 表达「没多少活」，
+     * 与「提取失败」不可区分，导致 executor 把失败任务记成 completed 并继续
+     * 推进 L2 定时器（生产实测 HTTP 402 配额耗尽时仍 tasksCompleted=4/failed=0）。
+     * 调用方必须把 failed=true 当失败处理（抛错 → 重试/死信），不得视为成功。
+     */
+    failed?: boolean;
+    /** D-6：失败原因原文（含供应商 HTTP 状态码），用于分类重试。 */
+    failureDetail?: string;
+    /** D-7：LLM 端点的结构化状态码（适配器挂载 → 透传给 executor 分类，文本里常常没有）。 */
+    failureStatus?: number;
+    /** D-7：供应商业务码（如 Ark 2067 = 配额耗尽）。 */
+    failureProviderCode?: string;
+  }> {
     const useStandaloneRunner = this.cfg.llm.enabled || this.hostAdapter.hostType !== "openclaw";
     const openclawConfig = (!useStandaloneRunner && this.hostAdapter.hostType === "openclaw")
       ? (this.hostAdapter as { getOpenClawConfig?(): unknown }).getOpenClawConfig?.()
@@ -1172,7 +1198,11 @@ export class TdaiCore {
     const hasMore = result?.hasMore ?? false;
     const hasFullBacklog = result?.hasFullBacklog ?? false;
     const profileScopes = result?.profileScopes ?? [];
-    return { storedCount, creditUsed, hasMore, hasFullBacklog, profileScopes };
+    const failed = result?.failed === true;
+    const failureDetail = (result as { failureDetail?: string } | undefined)?.failureDetail;
+    const failureStatus = (result as { failureStatus?: number } | undefined)?.failureStatus;
+    const failureProviderCode = (result as { failureProviderCode?: string } | undefined)?.failureProviderCode;
+    return { storedCount, creditUsed, hasMore, hasFullBacklog, profileScopes, failed, failureDetail, failureStatus, failureProviderCode };
   }
 
   /**

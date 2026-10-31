@@ -59,6 +59,7 @@ import type {
 } from "../types.js";
 import { DEFAULT_PAGINATION } from "../pagination.js";
 import { buildChatMemoryAssetId } from "../utils/chat-memory-asset.js";
+import { normalizeTaskSourceType } from "../../core/store/task-source-type.js";
 import { DuplicateUserKeyError } from "./interface.js";
 
 const require = createRequire(import.meta.url);
@@ -1003,6 +1004,8 @@ export class SqliteMetadataStore implements IMetadataStore {
   // ============================================================
   createTask(input: CreateTaskInput): TaskEntity {
     const now = nowIso();
+    // #127：写边界归一，库里只落 manual|external|other（历史四值不会新写入）。
+    const sourceType = normalizeTaskSourceType(input.source_type ?? "manual");
     for (let attempt = 0; attempt < PK_RETRY_LIMIT; attempt++) {
       const taskId = input.task_id ?? generateId(ID_PREFIX.task);
       try {
@@ -1017,7 +1020,7 @@ export class SqliteMetadataStore implements IMetadataStore {
             input.creator_user_id,
             input.title,
             input.description ?? null,
-            input.source_type ?? "manual",
+            sourceType,
             input.source_url ?? null,
             input.status ?? "running",
             input.auto_assign_floating_assets ? 1 : 0,
@@ -1059,7 +1062,11 @@ export class SqliteMetadataStore implements IMetadataStore {
     for (const k of allowed) {
       if (k in patch && (patch as Record<string, unknown>)[k] !== undefined) {
         const v = (patch as Record<string, unknown>)[k];
-        normalized[k] = k === "auto_assign_floating_assets" ? (v ? 1 : 0) : (v as SQLInputValue);
+        normalized[k] = k === "auto_assign_floating_assets"
+          ? (v ? 1 : 0)
+          : k === "source_type"
+            ? normalizeTaskSourceType(v)
+            : (v as SQLInputValue);
       }
     }
     this.applyUpdateRaw("meta_tasks", "task_id", taskId, normalized);
@@ -1675,7 +1682,8 @@ export class SqliteMetadataStore implements IMetadataStore {
       creator_user_id: String(r.creator_user_id),
       title: String(r.title),
       description: r.description != null ? String(r.description) : null,
-      source_type: String(r.source_type) as TaskEntity["source_type"],
+      // #127：历史 github/tapd 归一为 external；无法识别的脏值退 other（读路径 fail-safe）。
+      source_type: normalizeTaskSourceType(r.source_type),
       source_url: r.source_url != null ? String(r.source_url) : null,
       status: String(r.status) as TaskEntity["status"],
       auto_assign_floating_assets: Boolean(r.auto_assign_floating_assets),

@@ -334,6 +334,25 @@ if (!decision.allowed) {
     const parts = Object.entries(lt).map(([t, v]) => t + " " + (v?.lines ?? 0) + " 行/gold " + (v?.goldLines ?? 0));
     L.push("注入行类型（trial）: " + parts.join(" · "));
   }
+  // #169 证据包：只做展示，不设门禁——它量的是「补进来的上下文」，与 turnCov/sessionCov 严格分开。
+  const ia = B.injectionAdjacency;
+  if (ia && ia.enabledCases > 0) {
+    L.push(
+      "证据包（trial）: 邻接 +" +
+        (ia.adjacencyLines ?? 0) +
+        " 行 / seed " +
+        (ia.seedLines ?? 0) +
+        " 行 · 越窗拒 " +
+        (ia.skippedWindow ?? 0) +
+        " · 触帽拒 " +
+        (ia.skippedCap ?? 0) +
+        " · 开会话 " +
+        (ia.sessionsQueried ?? 0) +
+        " · 覆盖 " +
+        ia.enabledCases +
+        " 题",
+    );
+  }
   L.push("");
 }
 

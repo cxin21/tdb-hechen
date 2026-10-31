@@ -16,6 +16,7 @@ import type { LLMRunner, Logger } from "../../types.js";
 import { groupBySubject, isObservable, type ConsolidationConfig, type SubjectStrategy, DEFAULT_CONSOLIDATION_CONFIG } from "./grouping.js";
 import { buildDurativeSummary, type DurativeRecord } from "./summarizer.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../identity-discovery.js";
+import { readEvidenceIds, withEvidenceIds } from "../evidence-ids.js";
 
 export type ConsolidationConfigX = ConsolidationConfig & {
   persist?: boolean;
@@ -217,12 +218,30 @@ export async function runConsolidation(deps: ConsolidationWorkerDeps): Promise<C
         }
         const existing = existingDurativeOf(s.subject, all);
         const rec = durativeToMemoryRecord(s.durative, existing, s.evSource, deps.filter);
-        rec.metadata = { ...(rec.metadata ?? {}), evidence_ids: s.sourceIds } as Record<string, unknown> as MemoryRecord["metadata"];
+        // #155 写面一致性：证据指针与 part_of 边必须同口径。addLink 是 ON CONFLICT 幂等累积，
+        // 而本行旧实现每轮把证据整列覆盖成"本轮组内源"——复蒸馏后两套证据链分叉（边=累计 N 轮、
+        // metadata=仅最近一轮），读面回退任一来源都只看到部分证据。改成同样累积 + 去重（顺序保留）：
+        //   读：readEvidenceIds(existing.metadata)（canonical 优先、回退旧键）；不能整体展开
+        //       existing.metadata——那会用上一轮的 occurred_at/observed_count 覆盖本轮真值。
+        //   写：withEvidenceIds 双写 evidence_ids + evidence_record_ids，键名契约单源在
+        //       evidence-ids.ts，两类结论卡（consolidated / reflection）的证据键集合因此完全一致。
+        const evidenceIds = [...readEvidenceIds(existing?.metadata), ...s.sourceIds];
+        rec.metadata = withEvidenceIds(rec.metadata as Record<string, unknown> | undefined, evidenceIds) as unknown as MemoryRecord["metadata"];
         if (deps.store.upsertL1(rec, await embedForLifecycle(deps.embeddingService, String(rec.content ?? ""), "[consolidation]", deps.logger))) {
           persisted++;
           // 时空网络/回忆：持续态(work_fact) → 其点状证据，建 part_of 边（记忆图可见"证据链"）
+          // #155（M3）：addLink 返回 MaybePromise<boolean>（types.ts:736），异步 store 下不 await
+          // 会在 runConsolidation 返回后丢边——边没了，读面 getLinksBySource 就永远空。
+          // 对齐 reflection.ts writeReflectionPartOfEdges：逐边 await + soft-fail（单边失败不阻塞其余）。
           if (deps.store.addLink && s.sourceIds.length > 0) {
-            for (const ev of s.sourceIds) deps.store.addLink(rec.id, ev, "part_of", 1);
+            for (const ev of s.sourceIds) {
+              try {
+                const ok = await Promise.resolve(deps.store.addLink(rec.id, ev, "part_of", 1));
+                if (!ok) deps.logger?.warn?.(`[consolidation] part_of edge soft-failed (returned false): card=${rec.id} evidence=${ev}`);
+              } catch (err) {
+                deps.logger?.warn?.(`[consolidation] part_of edge soft-failed: card=${rec.id} evidence=${ev} err=${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
           }
           deps.logger?.debug?.(
             `[consolidation] ${existing ? "re-consolidate (update)" : "create"} durative "${s.subject}" id=${rec.id} v=${rec.version} sources=${s.sourceIds.length}`,

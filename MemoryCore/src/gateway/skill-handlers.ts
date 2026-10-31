@@ -1090,16 +1090,15 @@ export async function handleForceArchive(
       perfRequestId: requestId,
     });
 
-    // 归档后清空 buffer + 重置 meta（与 add-handler 归档后行为一致）
+    // 归档后清空 buffer + 重置计数（与 add-handler 归档后行为一致）。
+    // 用 updateMeta 读改写而不是手拼对象：force-archive 只该归零计数，
+    // 其余字段（recent_fingerprints / last_appended_at_ms / 未来新增字段）
+    // 必须原样保留 —— 手拼对象会把指纹环清空，让归档窗口内的重试又能重复
+    // 入 buffer（task-33）。
     const nowMs = Date.now();
     await Promise.all([
       wired.buffer.writeCurrent(sess, { messages: [] }),
-      wired.buffer.writeMeta(sess, {
-        session_id: sess.session_id,
-        space_id: sess.space_id,
-        user_id: sess.user_id,
-        team_id: sess.team_id,
-        agent_id: sess.agent_id,
+      wired.buffer.updateMeta(sess, {
         tool_call_count: 0,
         byte_count: 0,
         last_appended_at_ms: nowMs,

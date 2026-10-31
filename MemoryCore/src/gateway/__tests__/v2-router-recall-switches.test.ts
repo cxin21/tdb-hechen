@@ -43,7 +43,7 @@ function routerStore(opts: {
 }): IMemoryStore {
   return {
     isFtsAvailable: () => true,
-    getCapabilities: () => ({ nativeHybridSearch: false }),
+    getCapabilities: () => ({ nativeHybridSearch: false, l1FactVec: true }),
     // 词面过滤（模拟真实 FTS MATCH 语义）：MATCH 表达式 "a" OR "b" → content 含任一 token 的行
     searchL1Fts: (async (ftsQuery: string) => {
       const tokens = String(ftsQuery).split(" OR ").map((t) => t.replaceAll('"', "").trim()).filter(Boolean);
@@ -188,5 +188,103 @@ describe("V2 批 2 I2：工具路（/v3/atomic/search）引擎开关 config 透�
       MOCK_LLM(),
     ), 10, q);
     expect(on.some((id) => id === "exp")).toBe(true);
+  });
+});
+/**
+ * #151 / #148（审计 §4.1）：/v3/atomic/search 的 HTTP 路必须与钩子路同配置源——
+ * 缺透传时 recall.fusion（normalized 档）与 recall.validity.softPenalty 会被静默忽略，
+ * 同一条生产配置在两条召回路上给出不同排序/不同降权刻度。
+ */
+describe("#151/#148 工具路（/v3/atomic/search）fusion 与 softPenalty 透传", () => {
+  const stubEmbedding = {
+    embed: async () => new Float32Array([1, 0, 0]),
+    embedBatch: async (texts: string[]) => texts.map(() => new Float32Array([1, 0, 0])),
+    getDimensions: () => 3,
+    getProviderInfo: () => ({ provider: "stub", model: "stub" }),
+    isReady: () => true,
+    startWarmup: () => undefined,
+  };
+
+  const vecRow = (id: string, score: number): Record<string, unknown> => ({
+    record_id: id,
+    content: `${KW} 记忆条目 ${id}`,
+    type: "episodic",
+    priority: 0,
+    scene_name: "",
+    score,
+    timestamp_str: "",
+    timestamp_start: "",
+    timestamp_end: "",
+    version: 1,
+    session_key: "sk",
+    session_id: "s",
+    team_id: "t",
+    task_id: "",
+    user_id: "u",
+    agent_id: "a",
+    metadata_json: "{}",
+  });
+
+  function channelsStore(opts: { fts: L1FtsResult[]; vec?: Array<Record<string, unknown>>; fact?: Array<Record<string, unknown>> }): IMemoryStore {
+    return {
+      isFtsAvailable: () => true,
+      getCapabilities: () => ({ nativeHybridSearch: false, l1FactVec: true }),
+      searchL1Fts: (async () => opts.fts) as unknown as IMemoryStore["searchL1Fts"],
+      searchL1Vector: (async () => opts.vec ?? []) as unknown as IMemoryStore["searchL1Vector"],
+      searchL1FactVector: (async () => opts.fact ?? []) as unknown as IMemoryStore["searchL1FactVector"],
+      bumpRecallCount: () => true,
+    } as unknown as IMemoryStore;
+  }
+
+  function depsWithEmbedding(store: IMemoryStore, recall: RecallCfg) {
+    const deps = makeDeps(store, recall) as unknown as Record<string, unknown>;
+    deps.getEmbedding = () => stubEmbedding;
+    return deps as unknown as Parameters<typeof handleAtomicSearch>[3];
+  }
+
+  async function searchItems(deps: Parameters<typeof handleAtomicSearch>[3], limit = 10, query = KW) {
+    const env = await handleAtomicSearch({ query, limit }, { apiKey: "test-key", serviceId: "test" } as never, "req-test-fusion", deps);
+    expect(env.code).toBe(0);
+    return ((env.data as { items: Array<{ id: string; score?: number }> }).items ?? []);
+  }
+
+  it("recall.fusion.mode=normalized：主序改由通道内归一化分（缺 fusion 仍加权 RRF）", async () => {
+    const store = channelsStore({
+      fts: [ftsRow("kw")],
+      vec: [vecRow("dense", 0.9)],
+      fact: [vecRow("fact", 0.95)],
+    });
+
+    // 缺 fusion（缺省 rrf）：1/61 / 1/61 / 0.6×1/61 → kw、dense 并列，fact 最后
+    const rrf = await searchItems(depsWithEmbedding(store, { ...ALL_OFF, factChannel: { enabled: true, weight: 0.6 } }));
+    expect(rrf.map((i) => i.id)).toEqual(["kw", "dense", "fact"]);
+
+    // normalized：0.5×0.9=0.45 > 0.3×0.95=0.285 > 0.2×1（bm25 单条归一化满分）
+    const norm = await searchItems(
+      depsWithEmbedding(store, {
+        ...ALL_OFF,
+        factChannel: { enabled: true, weight: 0.6 },
+        fusion: { mode: "normalized", dense: 0.5, bm25: 0.2, fact: 0.3 },
+      }),
+    );
+    expect(norm.map((i) => i.id)).toEqual(["dense", "fact", "kw"]);
+  });
+
+  it("recall.validity.softPenalty：HTTP 路 soft 档按配置乘子沉底（不是硬编码 0.5）", async () => {
+    const rows = () => [
+      ftsRow("expired", { valid_start: "2019-01-01", valid_end: "2020-01-01", score: 0.9 }),
+      ftsRow("live", { valid_start: "2026-01-01", score: 0.5 }),
+    ];
+
+    const soft = await searchItems(
+      depsWithEmbedding(channelsStore({ fts: rows() }), { ...ALL_OFF, excludeInvalidated: true, validity: { mode: "soft", softPenalty: 0.25 } }),
+    );
+    expect(soft.map((i) => i.id)).toEqual(["live", "expired"]);
+    expect(soft.find((i) => i.id === "live")!.score).toBeCloseTo(0.5, 12);
+    expect(soft.find((i) => i.id === "expired")!.score).toBeCloseTo(0.225, 12);
+
+    // 对照：hard 档（缺省）直接丢 expired
+    const hard = await searchItems(depsWithEmbedding(channelsStore({ fts: rows() }), { ...ALL_OFF }));
+    expect(hard.map((i) => i.id)).toEqual(["live"]);
   });
 });

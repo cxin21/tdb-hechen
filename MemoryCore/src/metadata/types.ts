@@ -8,6 +8,8 @@
  * （含 user_key / password / visibility / acl 等）。
  */
 
+import type { TaskSourceType } from "../core/store/task-source-type.js";
+
 // ============================
 // 枚举与字面量类型
 // ============================
@@ -19,7 +21,11 @@ export type TeamRole = "admin" | "member" | "reviewer";
 export type MemberStatus = "active" | "removed";
 export type AgentStatus = "active" | "inactive";
 export type TaskStatus = "running" | "completed";
-export type TaskSourceType = "manual" | "tapd" | "github" | "other";
+/**
+ * #127：任务来源三值（manual | external | other），事实源在 core/store/task-source-type.js。
+ * 历史值 github/tapd 由 store 读映射的 normalizeTaskSourceType 归一到 external。
+ */
+export type { TaskSourceType };
 
 export type AssetType = "skill" | "llm_wiki" | "code_graph" | "chat_memory";
 export type AssetVisibility = "private" | "team" | "restricted" | "agent" | "task";

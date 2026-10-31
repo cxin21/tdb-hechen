@@ -30,6 +30,8 @@ import type {
   Logger,
 } from "../../core/types.js";
 import type { LLMUsage } from "../../core/report/metric-tracking-runner.js";
+// D-7：抛错前把 `statusCode`/`providerCode` 挂到错误对象上（实现在 utils，便于单测）。
+import { annotateLlmError } from "../../utils/llm-error-annotation.js";
 
 const TAG = "[memory-tdai] [standalone-runner]";
 
@@ -587,7 +589,8 @@ export class StandaloneLLMRunner implements LLMRunner {
         });
       }
 
-      throw err;
+      // D-7：把状态码/供应商码挂到错误对象上再抛（日志与上层分类共用同一份事实）。
+      throw annotateLlmError(err);
     }
   }
 }

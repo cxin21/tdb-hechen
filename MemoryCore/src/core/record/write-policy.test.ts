@@ -3,6 +3,7 @@ import {
   DEFAULT_WRITE_POLICY,
   embeddingKeyFor,
   factChannelKeyFor,
+  factRowsEnabled,
   supersessionEnabled,
   writeFactSetOf,
   writeFactsOf,
@@ -30,11 +31,17 @@ describe("write-policy", () => {
     metadata: { facts: ["用户养了一只叫团子的猫", "用户住在杭州", "用户养了一只叫团子的猫"] },
   } as never;
 
-  it("缺省策略：键=原文、supersession 关", () => {
+  it("缺省策略 = 生产最优档：键=原文（factKey 关）、supersession 开、factRows 关", () => {
     expect(embeddingKeyFor("我的粉丝涨到 1300 了", memory)).toBe("我的粉丝涨到 1300 了");
     expect(embeddingKeyFor("我的粉丝涨到 1300 了", memory, DEFAULT_WRITE_POLICY)).toBe("我的粉丝涨到 1300 了");
+    // 未传 policy（调用方没配置）仍按「关」处理——生产恒传 cfg.write，缺省档由 DEFAULT_WRITE_POLICY
+    // 与 config.ts loader 共同表达（config.write.test.ts 钉死两者同档）。
     expect(supersessionEnabled()).toBe(false);
-    expect(supersessionEnabled(DEFAULT_WRITE_POLICY)).toBe(false);
+    // 有读数按读数定（docs/long-session-bench.md §6：B 臂 100%/0%/1.0 vs A 臂 33.3%/100%/7.67）
+    expect(supersessionEnabled(DEFAULT_WRITE_POLICY)).toBe(true);
+    // 负收益/无读数项显式关（#149 −2.2pp；#146 无读数）——不再靠「键缺失」隐式表达
+    expect(DEFAULT_WRITE_POLICY.factKey.enabled).toBe(false);
+    expect(factRowsEnabled(DEFAULT_WRITE_POLICY)).toBe(false);
     expect(factChannelKeyFor({ type: "work_fact" }, multiFactMemory, DEFAULT_WRITE_POLICY)).toBe("");
   });
 

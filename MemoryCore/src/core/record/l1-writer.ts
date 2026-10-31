@@ -19,6 +19,7 @@
 import crypto from "node:crypto";
 import { patchSoulFromContent } from "../lifecycle/consolidation/content-soul.js";
 import { DEFAULT_ISOLATION_ID, type IMemoryStore } from "../store/types.js";
+import { ensureL1FactVec } from "../store/capability-guard.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
@@ -524,13 +525,17 @@ export async function writeMemory(params: {
 
       if (embeddingService) {
         try {
-          // W1（#134，config 门控，缺省关=逐位现状）：embedding 键 = 内容 + 事实短语拼接
+          // W1（#134，config 门控）：embedding 键 = 内容 + 事实短语拼接
           // （生产事实来源 = dedup LLM 顺带抽取的 metadata.subject，零额外 LLM 成本）。
+          // 缺省关（#149 LME90 A vs B 实测 −2.2pp）——「关了有观测」：本行恒打 factKey 档位
+          // 与键是否被改写，开启后可从日志直接读出取数口径，无需再改代码。
           const embeddingKeyText = embeddingKeyFor(record.content, memory, writePolicy);
+          const factKeyOn = writePolicy?.factKey?.enabled === true;
           embedding = await embeddingService.embed(embeddingKeyText);
           logger?.info?.(
             `${TAG} [vec-dual-write] Embedding OK: dims=${embedding.length}, ` +
-            `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
+            `norm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}, ` +
+            `factKey=${factKeyOn ? "on" : "off"}, keyMode=${embeddingKeyText === record.content ? "content" : "content+facts"}`,
           );
         } catch (embedErr) {
           // Embedding failed — pass undefined to upsert() which writes
@@ -548,15 +553,18 @@ export async function writeMemory(params: {
       // #137（W1 双通道）：事实键**平行通道**——原文主索引刚写完（embedding 键逐位=原文），
       // 再把事实短语单独 embed 成一条向量写进 store 的独立向量表。三条红线：
       //  ① 主写入已成功才开始（不因通道失败回滚/丢记录）；
-      //  ② feature-detect（store 未实现 = tcvdb 等服务端 embedding 后端 → 通道静默缺失）；
+      //  ② 能力位守卫（#152 ①）：store 未声明 l1FactVec=true（tcvdb 等服务端 embedding 后端）
+      //     → 跳过并 WARN 一次，不再静默吞掉（旧实现是 typeof 方法探测，缺方法即无声 skip）；
       //  ③ 失败只 warn（非致命）：单条事实通道缺失 = 该记忆少一条召回路径，不影响准确写入。
-      if (embeddingService && typeof vectorStore.upsertL1FactVector === "function") {
+      // 能力位是唯一判据；这里的 bind 只是把方法签名收窄成必存在（TS 无法从能力位推断类型）。
+      const upsertFactVector = vectorStore.upsertL1FactVector?.bind(vectorStore);
+      if (embeddingService && ensureL1FactVec(vectorStore, logger) && upsertFactVector) {
         const factKeyText = factChannelKeyFor(record, memory, writePolicy);
         if (factKeyText) {
           try {
             const factVector = await embeddingService.embed(factKeyText);
             if (factVector && factVector.length > 0) {
-              const factOk = await vectorStore.upsertL1FactVector(record.id, factVector, record.updatedAt);
+              const factOk = await upsertFactVector(record.id, factVector, record.updatedAt);
               logger?.info?.(
                 `${TAG} [vec-dual-write] fact-channel ${factOk ? "DONE" : "SKIPPED"} id=${record.id} keyLen=${factKeyText.length}`,
               );

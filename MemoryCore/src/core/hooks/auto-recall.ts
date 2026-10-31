@@ -21,7 +21,7 @@ import { computeMoodTierFromStore } from "./mood-line.js";
 import { dynamicTopKCount } from "./recall-dynamic-topk.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
 import type { MemoryRecord } from "../record/l1-reader.js";
-import type { IMemoryStore, L1SearchResult, L1FtsResult, CoreTenant, IsolationFilter } from "../store/types.js";
+import type { IMemoryStore, L1RecordRow, L1SearchResult, L1FtsResult, CoreTenant, IsolationFilter } from "../store/types.js";
 import { normalizeCoreTenant } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService, EmbeddingCallOptions } from "../store/embedding.js";
@@ -60,17 +60,19 @@ import { emotionSalienceOf, buildRankContext,
   type ValueRowLike, } from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { collapseFactRowsByTurn } from "../recall/fact-turn.js";
+import { readEvidenceIds } from "../lifecycle/evidence-ids.js";
 import { factValueOfMeta, parentTurnIdOf } from "../record/fact-row.js";
 import { anchorRerankOrder } from "../recall/rerank/anchor.js";
 import {
-  SOFT_VALIDITY_PENALTY,
   excludeInvalidatedFor,
+  resolveSoftValidityPenalty,
   selectByValidity,
   shouldHardDropValidity,
   validityEnabled,
+  validityPolicyOf,
   validityStateOf,
   type ExcludeInvalidated,
-  type ValidityMode,
+  type ValidityPolicy,
 } from "../recall/validity-policy.js";
 import {
   classifyRecallIntent,
@@ -97,6 +99,13 @@ import {
   sigmoid01,
 } from "../recall/rerank/defaults.js";
 import { mmrReorder } from "../recall/mmr.js";
+// #172-②：注入包裹语三档（legacy/neutral/calibrated）单一源
+import { injectWrapperHeadOf } from "../recall/inject-wrapper.js";
+// P0（2026-10-31）：生产答案口径（拒答纪律）单一源，与 bench tuned 逐字同源。
+import { buildAnswerGuidance } from "../prompts/answer-guidance.js";
+// P0 单一源收编：注入块尾部的记忆工具指南不再在本文件留副本（此前三份副本各自漂移）。
+import { MEMORY_TOOLS_GUIDE } from "../prompts/memory-tools-guide.js";
+import { EVIDENCE_PACK_BADGE, evidencePackConfigOf, selectEvidencePackNeighbors } from "../recall/evidence-pack.js";
 import { sortLinesByLeadingTimestamp } from "./inject-order.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
@@ -127,6 +136,20 @@ import {
 import type { Logger } from "../types.js";
 import type { SoulRenderOptions } from "./soul-assembler.js";
 import type { SoulState } from "./soul-state.js";
+import { isRecurrenceMeta, recurrenceLabel } from "../record/l1-extractor.js";
+import {
+  cosineNormOf,
+  factChannelWeightOf,
+  fusionWeightsOf,
+  minMaxNormOf,
+  normalizedFusionEnabled,
+  normalizedRelevanceOf,
+  recencyHalfLifeDaysOf,
+  recencyNormOf,
+  validityNormOf,
+  type RecallFactChannelConfig,
+  type RecallFusionConfig,
+} from "../recall/fusion.js";
 
 const TAG = "[memory-tdai] [recall]";
 
@@ -331,25 +354,19 @@ interface SessionReuseEntry {
 }
 const sessionReuseCache = new Map<string, SessionReuseEntry>();
 const SESSION_REUSE_MAX = 200;
+/**
+ * #169 证据包：单次召回最多为几个会话做邻接查询。
+ * 实测（3514 行 / 975 session）p99=83 行/session、max 204，单会话一次 queryL1Records 足够便宜；
+ * 但跨 6 个以上会话再批量读就退化成「一次召回扫全库」，故设硬帽（命中行通常 ≤ maxResults）。
+ */
+const EVIDENCE_PACK_MAX_SESSIONS = 6;
 
 /**
- * Memory tools usage guide — injected at the end of memory context so the
- * main agent knows how to actively retrieve deeper information.
+ * Memory tools usage guide（注入在记忆上下文尾部）——**单一源**在
+ * core/prompts/memory-tools-guide.ts（版本号 MEMORY_TOOLS_GUIDE_VERSION）；
+ * 这里只做 re-export 供本模块/测试使用，禁止再复制正文（三份副本各自漂移过一次）。
  */
-const MEMORY_TOOLS_GUIDE = `<memory-tools-guide>
-## 记忆工具调用指南
-
-当上方注入的记忆片段不足以回答用户问题时，可主动调用以下工具获取更多信息：
-
-- **tdai_memory_search**：搜索结构化记忆（L1），适用于回忆用户偏好、历史事件节点、规则等关键信息。
-- **tdai_conversation_search**：搜索原始对话（L0），适用于查找具体消息原文、时间线、上下文细节；也可用于补充或校验 memory_search 的结果。
-- **read_file**（Scene Navigation 中的路径）：当已定位到相关情境，且需要该场景的完整画像、事件经过或阶段结论时使用。
-
-### ⚠️ 调用次数限制
-每轮对话中，tdai_memory_search 和 tdai_conversation_search **合计最多调用 3 次**。
-- 首次搜索无结果时，可换关键词或换工具重试，但总调用次数不要超过 3 次。
-- 若 3 次搜索后仍无结果，说明该信息不在记忆中，请直接根据已有信息回复用户，不要继续搜索。
-</memory-tools-guide>`
+export { MEMORY_TOOLS_GUIDE };
 
 /** A single recalled L1 memory with its search score and type. */
 export interface RecalledMemory {
@@ -366,7 +383,7 @@ export interface RecalledMemory {
 
 /**
  * C5（灵魂记忆 spec §2.2 / C1 拍板①后续项）：coreRef 排序加成信号——与工具侧
- * executeMemorySearch 同一加成（memory.recall.coreRefBoost，默认 0.05，0=关闭）：
+ * executeMemorySearch 同一加成（memory.recall.coreRefBoost，**缺省 0 = 关闭**，WP1b 对齐）：
  * query 的 appraisal 命中价值（fired）∧ 记忆 metadata.coreRefs 含之 → hybrid RRF
  * 排序 rankKey +boost。检索层冻结：仅排序（同层内位次），不改门槛、不越 work_fact
  * 分层。宁缺毋滥：fired 为空 / 价值锚读取失败 → 无信号（零加成，旧行为）。
@@ -1004,10 +1021,24 @@ export async function performLayeredRecall(params: {
    *  仅在 coreMemory.soulRender.capabilities.enabled 门开时渲染进 soul 前缀
    *  「## 我能做什么」（渲染行=清单 1:1，#32 合同）；门关或未传=现状零渲染。 */
   capabilities?: string[];
+  /**
+   * task-100（预算内降级）：L1 向量腿预算（缺省 undefined = 逐位旧行为）。
+   * 只有 /v3/recall 端点传（钩子路不传——钩子没有外部调用方的延迟合同）。
+   */
+  l1Budget?: RecallL1Budget;
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
   // #136（W2 软失效）：结论层/放宽通道不能重排序，只做"该不该硬丢"的模式判定。
-  const validityMode: ValidityMode = cfg.recall?.validity?.mode === "soft" ? "soft" : "hard";
+  // #174：从单一派生三态取（off/hard/soft），不再只看 validity.mode——否则
+  // `excludeInvalidated: false` 在 validity.mode=hard 下仍会被本处判成 "hard"，
+  // 结论层 FTS 预筛/放宽通道继续丢 expired，「关档」只关一半。
+  const validityPolicy: ValidityPolicy = validityPolicyOf(
+    cfg.recall?.validity?.mode,
+    cfg.recall?.excludeInvalidated,
+  );
+  // #174 附：结论层预筛与其余分支同源时间（时间旅行/bench --now 必须一致，
+  // 旧代码用 new Date() → 结论层看不见 params.validityNow）。
+  const validityPrescreenNow = params.validityNow ?? new Date();
   // ── #61（2026-10-18）：分段计时打点 ──
   // v3 端点路（/v3/recall → 本函数）此前无任何分段日志：生产 5000ms 硬超时 504 时，
   // journal 时间线只显示 L1 hybrid ~70ms、soul ~130ms，其后 ~3.2s 完全静默——黑洞
@@ -1070,7 +1101,7 @@ export async function performLayeredRecall(params: {
     // 既有文本匹配单一源 buildFtsQuery/searchL1Fts，绕开绝对门槛的结构解）；② scene blocks
     // title+snippet（scene index，历史既有）。命中 = 文本命中 + scene_name 命中（selectL2Conclusions
     // 单一源：detectSceneHit + token 子串）。无命中 → 结论层空 → 全链与现状逐位一致（退化安全）。
-    const r7MaxResults = cfg.recall.maxResults ?? 5;
+    const r7MaxResults = cfg.recall.maxResults ?? 10;
     const r7HalfLimit = Math.floor(r7MaxResults / 2);
     const r7CleanQuery = sanitizeText(userText);
     // ── #141（2026-10-28）：结论层分阶段路由（routing="intent"）──
@@ -1112,7 +1143,7 @@ export async function performLayeredRecall(params: {
             const wfRows = await vectorStore.searchL1Fts(wfQuery, r7HalfLimit * 2, params.isolationFilter);
             for (const r of wfRows ?? []) {
               // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（流程测试实测泄漏点）
-              if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, new Date(), validityMode)) continue;
+              if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, validityPrescreenNow, validityPolicy)) continue;
               if (r.type === "work_fact") {
                 // R71-A1（2026-10-19）：FTS5 raw rank（负=更相关）透传为 raw rel（=-rank）——
                 // bm25 预地板数据源；后端未提供（undefined）→ 地板豁免（宁缺毋滥不误杀）。
@@ -1219,7 +1250,7 @@ export async function performLayeredRecall(params: {
           for (const r of relaxedRows) {
             if (relaxed.length >= 5) break;
             // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（V2-3 放宽通道同款过滤）
-            if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, new Date(), validityMode)) continue;
+            if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, validityPrescreenNow, validityPolicy)) continue;
             if (!r || typeof r.record_id !== "string" || !r.content?.trim()) continue;
             if (selectedIds.has(r.record_id)) continue;
             relaxed.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
@@ -1422,15 +1453,40 @@ export async function performLayeredRecall(params: {
           // ① 收集候选：逐卡拉 part_of 单跳证据，带上「查询 token 命中数」作为相关性分。
           // #138 根因（bench 7161e7e2 实证）：旧实现按 store 返回序填帽，会把前情行
           // （`User: 7 agents`）排在承载答案的 assistant 轮之前，且一张卡的证据就能吃满帽。
+          // #155：三计（图边命中 / metadata 回退命中 / 零证据卡）——灰度复核要能把
+          // 「没边也没元数据」与「有边/有元数据但被预算裁掉」分开。
+          let s2bWithLinks = 0;
+          let s2bFromMetadata = 0;
+          let s2bWithoutEvidence = 0;
           const s2bCandidates: Array<{ ci: number; ord: number; row: L1SearchResult; score: number; sceneName: string }> = [];
           for (let ci = 0; ci < r7Conclusions.length; ci++) {
             const s2bConcl = r7Conclusions[ci];
             if (s2bConcl.source !== "work_fact" || !s2bConcl.recordId) continue;
             const s2bLinks = ((await vectorStore.getLinksBySource(s2bConcl.recordId, "part_of")) ?? []) as Array<{ targetId: string; type: string; strength: number; createdAt: string }>;
-            const s2bEvIds = s2bLinks
+            let s2bEvIds = s2bLinks
               .map((l) => l?.targetId)
               .filter((id): id is string => typeof id === "string" && !s2bSeen.has(id));
-            if (s2bEvIds.length === 0) continue;
+            if (s2bEvIds.length > 0) {
+              s2bWithLinks++;
+            } else {
+              // #155：图边缺失/为空时回退卡自身 metadata 的证据 id（consolidation 写
+              // evidence_ids，reflection 写 evidence_record_ids，两代并存）。
+              // 生产 candidates=0 的机制根因就在这里：旧实现零边即 continue，把
+              // 「卡上已有证据 id」整批当成「没证据」，于是结论层永远不带上下文行。
+              const s2bCardRows = ((await s2bResolveByIds([s2bConcl.recordId])) ?? []) as L1SearchResult[];
+              // 键名单源 = lifecycle/evidence-ids.ts（与三个写面/parity 测试同一个 readEvidenceIds）：
+              // canonical evidence_ids 优先、旧键 evidence_record_ids 兼容，读面不另立实现。
+              const s2bCardMetaRaw = (s2bCardRows.find((r) => r?.record_id === s2bConcl.recordId) ?? s2bCardRows[0])?.metadata_json;
+              let s2bCardMeta: unknown = {};
+              try { s2bCardMeta = s2bCardMetaRaw ? (JSON.parse(s2bCardMetaRaw) as unknown) : {}; } catch { s2bCardMeta = {}; }
+              const s2bMetaIds = readEvidenceIds(s2bCardMeta).filter((id) => !s2bSeen.has(id));
+              s2bEvIds = s2bMetaIds;
+              if (s2bEvIds.length > 0) s2bFromMetadata++;
+            }
+            if (s2bEvIds.length === 0) {
+              s2bWithoutEvidence++;
+              continue;
+            }
             const s2bRows = ((await s2bResolveByIds(s2bEvIds)) ?? []) as L1SearchResult[];
             let ord = 0;
             for (const s2bRow of s2bRows) {
@@ -1492,6 +1548,9 @@ export async function performLayeredRecall(params: {
             ranked: s2bRanked,
             candidates: s2bCandidates.length,
             kept: smallToBigLines.length,
+            evidenceFromLinks: s2bWithLinks,
+            evidenceFromMetadata: s2bFromMetadata,
+            cardsWithoutEvidence: s2bWithoutEvidence,
           };
           if (smallToBigLines.length > 0) {
             logger?.debug?.(`${TAG} [small-to-big] context lines: +${smallToBigLines.length} (cap=${s2bMaxExtra}, candidates=${s2bCandidates.length}, ranked=${s2bRanked})`);
@@ -1638,7 +1697,9 @@ export async function performLayeredRecall(params: {
       // C5/R-A1：coreRef + 结构信号（仅 hybrid——唯一存在 rankKey 合并排序的策略；
       // keyword/embedding 是纯单路名次序，无排序点可加）。best-effort：价值锚读取
       // 失败 / 无价值锚 / appraise 无 fired → 对应信号为零（全链旧行为）。
-      const coreRefBoost = cfg.recall?.coreRefBoost ?? 0.05;
+      // WP1b（#173-B）：回落值与 config.ts 缺省同源 = 0（历史 0.05 会让「没配该键」的
+      // 手工 cfg 反向打开 coreRef 通道，与生产 yaml 的显式 0 不一致）。
+      const coreRefBoost = cfg.recall?.coreRefBoost ?? 0;
       // R-A1 六开关（cfg.recall 解析见 src/config.ts；缺省 = spec §2 默认值）
       // P1-T7：重要度降权门（enabled=入乘子真实降权；缺省关断=恒等）。
       const importanceGateCfg = cfg.recall?.importancePenalty;
@@ -1676,9 +1737,10 @@ export async function performLayeredRecall(params: {
         (signals.presentTemporalBoost ?? 0) > 0;
       const needValues = coreRefBoost > 0 || signals.moodBoost > 0;
       // R-A2：候选池通道开关（cfg.recall；缺省 = spec §2 默认值，0 = 通道退出）
-      const graphDiscount = cfg.recall?.graphDiscount ?? 0.6;
+      // WP1b（#173-B）：回落值 = 0（= 生产 yaml 与 config.ts 缺省）。删除 yaml 行不再等于「开通道」。
+      const graphDiscount = cfg.recall?.graphDiscount ?? 0;
       const graphMinStrength = cfg.recall?.graphMinStrength ?? 0.5;
-      const sceneBoost = cfg.recall?.sceneBoost ?? 0.04;
+      const sceneBoost = cfg.recall?.sceneBoost ?? 0;
       let rank: RecallRankSignal | undefined;
       // P1-T7：importance 降权开启时即使信号全 0 也要建 rank（gate 行采集 = journal 观测前提）
       if (effectiveStrategy === "hybrid" && vectorStore && (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0 || importanceGate !== undefined)) {
@@ -1717,12 +1779,13 @@ export async function performLayeredRecall(params: {
       // （浅拷贝 cfg，仅本次 searchMemories 生效；rank/预算/标签仍读原 cfg）——
       // 扩池给精排更大的候选面，精排后由 cap 收回预算经验层额度。
       const rerankWiring = resolveRerankWiring(cfg, params.rerankDeps, logger);
-      const baseMaxResults = cfg.recall?.maxResults ?? 5;
+      const baseMaxResults = cfg.recall?.maxResults ?? 10;
       const searchCfg =
         rerankWiring.state === "active" && rerankWiring.candidates > baseMaxResults
           ? ({ ...cfg, recall: { ...cfg.recall, maxResults: rerankWiring.candidates } } as MemoryTdaiConfig)
           : cfg;
-      searchResult = await searchMemories(userText, pluginDataDir, searchCfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow);
+      // task-100：l1Budget 只在此处（/v3/recall 端点）透传；钩子路 undefined = 逐位旧行为。
+      searchResult = await searchMemories(userText, pluginDataDir, searchCfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow, params.l1Budget);
       // 精排在复用缓存落位前：缓存持有精排后结果（命中路不再外呼 provider，gate 随缓存复现）。
       await applyRecallRerank(r7CleanQuery, searchResult, rerankWiring, r7Budget.experienceLimit, logger,
       cfg.recall?.mmr?.enabled ? { enabled: true, lambda: cfg.recall.mmr.lambda } : undefined);
@@ -1747,6 +1810,18 @@ export async function performLayeredRecall(params: {
       for (let i = 0; i < memoryLines.length && i < lineSessionsOfSearch.length; i++) {
         const sid = lineSessionsOfSearch[i];
         if (sid && !sessionByLine.has(memoryLines[i])) sessionByLine.set(memoryLines[i], sid);
+      }
+    }
+    // ── #169（2026-10-31）：证据包的行 → 来源 recordId 索引 ──
+    // 与 sessionByLine 同构（行字符串为键，slice/重排/结论行插入后不需维护平行数组）。
+    // metas 与 lines 平行（#166 起折叠也保持平行）；缺失（sqlite fallback 折叠路）→ 该行不参与
+    // 邻接扩展（降级安全：宁少扩，不按错行扩）。
+    const recordIdByLine = new Map<string, string>();
+    const metasOfSearch = searchResult.metas;
+    if (metasOfSearch) {
+      for (let i = 0; i < memoryLines.length && i < metasOfSearch.length; i++) {
+        const rid = metasOfSearch[i]?.recordId;
+        if (rid && !recordIdByLine.has(memoryLines[i])) recordIdByLine.set(memoryLines[i], rid);
       }
     }
     searchTiming = searchResult.timing;
@@ -2038,14 +2113,109 @@ export async function performLayeredRecall(params: {
       // A2：注入前近重折叠（memoryLines 本体保留给 metric，块内用折叠后行集）
       // #162：同会话免疫 + 跨来源 containment + 同序覆盖（判据与实测见 foldNearDuplicates 注释与 docs §18.7）
       const foldedLines = foldNearDuplicates(orderedLines, { sessionOf: (line) => sessionByLine.get(line) });
-      // G1-b：包裹语——neutral 去掉「仅作为参考」贬抑措辞并加如实指引（缺省 legacy=现行文案）
-      const wrapperHead =
-        cfg.recall?.injectWrapper === "neutral"
-          ? "以下是与当前对话可能相关的历史对话记忆（按时间先后排列）。请结合当前对话使用这些记忆；若记忆不足以回答，请如实说明。"
-          : "以下是当前对话召回的相关记忆，不代表当前任务进程，仅作为参考：";
+      // ── #169（2026-10-31）证据包（recall.evidencePack，缺省关）──
+      // 命中行按「同会话 ±adjacent 位置 + ≤windowMinutes」外扩邻接行，插在各自 seed 行之后。
+      // 口径边界（两条都是硬约束）：
+      //  ① pack 行只进注入块，不进 memoryLines 本体（metric/覆盖率口径天然不受污染）；
+      //  ② bench 必须单列 adjacencyLines，绝不许把 pack 行算进 turnCov/sessionCov——
+      //     否则「+N 档变好」可能只是指标被扩行推高（见 scripts/lib/bench/inject-attribution.mjs）。
+      // enabled=false 时整段不进，block 与改动前逐位相同（有单测钉死）。
+      let packStats: NonNullable<RecallJournalGates["evidencePack"]> | undefined;
+      const packLinesBySeed = new Map<string, string[]>();
+      // 缺省归一化：调用点可能只给部分字段（测试/嵌入方直传 cfg），缺的值按 evidencePackConfigOf 的缺省走，
+      // 否则 adjacent/windowMinutes/maxExtraLines 会以 undefined 落进 journal（观测口径残缺）。
+      const packCfg = evidencePackConfigOf(cfg.recall?.evidencePack);
+      if (packCfg.enabled === true && orderedLines.length > 0 && vectorStore && typeof vectorStore.queryL1Records === "function") {
+        const tPackStart = Date.now();
+        const seeds = orderedLines.map((line) => ({
+          recordId: recordIdByLine.get(line) ?? null,
+          sessionId: sessionByLine.get(line) ?? null,
+        }));
+        // 会话上限：一次召回最多为 6 个会话做邻接读（防退化成全库扫）
+        const wantSessions: string[] = [];
+        for (const s of seeds) {
+          if (!s.sessionId || wantSessions.includes(s.sessionId)) continue;
+          if (wantSessions.length >= EVIDENCE_PACK_MAX_SESSIONS) break;
+          wantSessions.push(s.sessionId);
+        }
+        const atOfRow = (row: L1RecordRow): number | null => {
+          const raw = row.timestamp_str || row.timestamp_start || "";
+          const t = raw ? Date.parse(raw) : NaN;
+          return Number.isFinite(t) ? t : null;
+        };
+        const rowsBySession = new Map<
+          string,
+          Array<{ recordId: string; sessionId: string | null; at: number | null; row: L1RecordRow }>
+        >();
+        const isolation = params.isolationFilter ?? {};
+        for (const sid of wantSessions) {
+          try {
+            const rows = (await vectorStore.queryL1Records({ ...isolation, sessionId: sid })) ?? [];
+            rowsBySession.set(
+              sid,
+              rows.map((row) => ({ recordId: row.record_id, sessionId: row.session_id ?? sid, at: atOfRow(row), row })),
+            );
+          } catch (err) {
+            // 软失败：邻接扩展是可选增强，读失败不拖垮主链路（与 soul / smallToBig 同策略）
+            logger?.warn?.(
+              `${TAG} [evidence-pack] queryL1Records failed for session ${sid}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        const sel = selectEvidencePackNeighbors({ seeds, rowsBySession, cfg: packCfg });
+        packStats = { ...sel.stats, sessionsQueried: rowsBySession.size };
+        for (const [si, extras] of sel.extrasBySeed) {
+          const seedLine = orderedLines[si];
+          if (seedLine === undefined) continue;
+          const rendered = extras.map(
+            (x) =>
+              `${formatMemoryLine({
+                type: x.row.type,
+                content: x.row.content,
+                scene_name: x.row.scene_name || undefined,
+                timestamp: x.row.timestamp_str || undefined,
+                recordId: x.row.record_id,
+                sessionId: x.row.session_id || undefined,
+              })} ${EVIDENCE_PACK_BADGE}`,
+          );
+          packLinesBySeed.set(seedLine, [...(packLinesBySeed.get(seedLine) ?? []), ...rendered]);
+        }
+        logger?.info?.(
+          `${TAG} [evidence-pack] seeds=${sel.stats.seedLines} sessioned=${sel.stats.seedWithSession} expanded=${sel.stats.adjacencyLines} skippedWindow=${sel.stats.skippedWindow} skippedCap=${sel.stats.skippedCap} sessions=${rowsBySession.size} ms=${Date.now() - tPackStart}`,
+        );
+      }
+      // pack 行插在各自 seed 行之后；seed 被近重折叠掉时其 pack 行一并丢弃（不留孤儿行）
+      let injectedLines: string[] = [];
+      for (const line of foldedLines) {
+        injectedLines.push(line);
+        const extra = packLinesBySeed.get(line);
+        if (extra && extra.length > 0) injectedLines.push(...extra);
+      }
+      if (packStats) {
+        // enabled=true 时恒写（含全零计数）：要能区分「没开」与「开了但没扩成」
+        recallGates = { ...(recallGates ?? {}), evidencePack: packStats };
+      }
+      // 预算口径（Lead 要求）：pack 行必须与 seed 行吃同一个字符预算。
+      // memoryLines 在 :1919/:1923 已裁过一轮（pack 那时还不存在），这里对「成块后的行集」
+      // 再跑一次同函数：maxCharsPerMemory 幂等、maxTotalRecallChars 从零重算 ⇒ pack 行与
+      // seed 行公平竞争同一额度（先到先得、seed 在前）。预算未配置时该函数原样返回（零行为）。
+      // 未纳同一裁剪的是 fts-only 帽（:1924-1927）：那是「向量路死时的注入条数兜底」，
+      // 语义是「seed 命中太少也少说话」，pack 行属证据辅助、不计入该帽（journal 已单列 adjacencyLines）。
+      if (packLinesBySeed.size > 0) {
+        injectedLines = applyRecallBudget(injectedLines, cfg.recall, logger);
+      }
+      // G1-b / #172-②：包裹语三档（legacy 缺省=现行文案；neutral=如实说明；calibrated=不诱导
+      // 拒答）。文案单一源在 core/recall/inject-wrapper.ts，bench 同源。
+      const wrapperHead = injectWrapperHeadOf(cfg.recall?.injectWrapper);
+      // P0（2026-10-31 深池读数）：生产答案口径必须与 bench tuned 同源，否则同一份记忆
+      // bench 敢答、生产拒答（A 臂 36 个错题里 27 个 = 75% 是拒答）。文案单一源在
+      // core/prompts/answer-guidance.ts（ANSWER_GUIDANCE_VERSION=prod-block-v2-currency+pref），
+      // 两段（币值判定 + 建议类）缺省全开；要配置化再挂 recall.answerGuidance.*，不先做。
+      const answerGuidance = buildAnswerGuidance({ currency: true, preference: true });
+      const guidanceSeg = answerGuidance ? `\n\n${answerGuidance}` : "";
       block =
         soulPrefix +
-        `<relevant-memories>\n${degradedNote}${wrapperHead}\n\n${foldedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
+        `<relevant-memories>\n${degradedNote}${wrapperHead}${guidanceSeg}\n\n${injectedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
     } else if (soulPrefix) {
       // C3：无记忆轮次——身份段常驻（"此刻的我"不因零召回而缺席）
       block = soulPrefix;
@@ -2402,6 +2572,20 @@ interface MergedPoolValue {
   recallCount: number;
 }
 
+/**
+ * task-100（预算内降级）：L1 向量腿预算。
+ *
+ * deadlineAt = **绝对**截止时刻，performance.now() 刻度（同进程同线程比较安全）。调用方
+ * （/v3/recall 的 handleRecall）用「请求进入 handler 的 tStart + l1BudgetMs」算它，
+ * 所以 scene/L2/expand 已经花掉的时间天然被扣掉，不需要再把分段耗时减一遍。
+ *
+ * fallback='fts' 才起预算；'none' / 缺省 = 逐位旧行为（等到向量腿自己结束）。
+ */
+export interface RecallL1Budget {
+  deadlineAt: number;
+  fallback: "fts" | "none";
+}
+
 /** Timing breakdown from memory search（DS-RECALL-MERGE-001：随 LayeredRecallOutcome 导出） */
 export interface SearchTiming {
   ftsMs: number;
@@ -2417,6 +2601,13 @@ export interface SearchTiming {
    * = 未打点，journal 侧 ?? 0 兜底）。
    */
   expandMs?: number;
+  /**
+   * task-100：本轮是否发生了预算内降级（向量腿超预算 → 只用 FTS 腿）。
+   * 缺字段 = 未降级（逐位旧响应形状；老消费方一个字段都不用改）。
+   */
+  degraded?: "fts";
+  /** task-100：预算是否真的触发（= degraded 的布尔镜像，供 journal/日志直接读）。 */
+  budgetHit?: boolean;
 }
 
 interface SearchResult {
@@ -2504,6 +2695,8 @@ async function searchMemories(
   isolationFilter?: IsolationFilter,
   /** GROW-EVO P2.1（§2.4 时间旅行）：查询时点透传（失效排除以该时点为"当前"）。 */
   validityNow?: Date,
+  /** task-100（预算内降级）：L1 向量腿预算（缺省 undefined = 逐位旧行为）。 */
+  l1Budget?: RecallL1Budget,
 ): Promise<SearchResult> {
   const emptyResult: SearchResult = { lines: [], timing: { ftsMs: 0, embeddingMs: 0, ftsHits: 0, embeddingHits: 0 } };
   // Strip gateway-injected inbound metadata (Sender, timestamps, media markers,
@@ -2521,7 +2714,7 @@ async function searchMemories(
     );
   }
 
-  const maxResults = cfg.recall.maxResults ?? 5;
+  const maxResults = cfg.recall.maxResults ?? 10;
   const threshold = cfg.recall.scoreThreshold ?? 0.3;
 
   const embeddingAvailable = !!vectorStore && !!embeddingService;
@@ -2703,6 +2896,11 @@ async function searchMemories(
       cfg.recall?.fusion,
       // #137（W1 双通道）：事实键平行召回通道（缺省 undefined / enabled=false = 通道退出）
       cfg.recall?.factChannel,
+      // #148（soft 刻度配置化）：两旋钮透传（缺省 undefined = #136 逐位：0.5 / 可硬丢）
+      cfg.recall?.validity?.softPenalty,
+      cfg.recall?.validity?.hardOnPresentIntent,
+      // task-100（预算内降级）：向量腿预算（缺省 undefined = 逐位旧行为）
+      l1Budget,
     );
     // F-CLUSTER v2 折叠接线修复（2026-09-29）：fallback 同 native 分支接折叠；metas 缺失时 foldByDurative 自动跳过（宁漏勿错）
     // 2026-10-14 观测性修复：此前只透传 lines+timing，hybrid.gates（importancePenalty 观测）
@@ -2970,6 +3168,18 @@ export async function searchHybrid(
    * （零调用、零行为变化——关断矩阵纪律）。
    */
   factChannel?: RecallFactChannelConfig,
+  /**
+   * #148（soft 刻度配置化）：soft 档的两个旋钮由调用点透传（本函数是「显式形参」函数，
+   * 不持有 cfg —— 旧的 soft 块直接写 cfg 是 typecheck 打红的根源，且会让同一函数
+   * 有两套配置来源）。缺省 = #136 逐位行为：penalty 0.5、presentIntent 可硬丢。
+   */
+  validitySoftPenalty?: number,
+  hardOnPresentIntent?: boolean,
+  /**
+   * task-100（预算内降级）：向量腿预算（缺省 undefined = 逐位旧行为）。
+   * 超预算 → 丢弃向量腿（含事实通道），只用已算完的 FTS 腿走 RRF；timing.degraded="fts"。
+   */
+  l1Budget?: RecallL1Budget,
 ): Promise<SearchResult> {
   // R-A1 形状归一化：C5 旧形状 → 结构信号全 0（与改动前行为逐位一致）
   const rankSignal: RecallRankSignal | undefined = rank
@@ -3004,10 +3214,10 @@ export async function searchHybrid(
   const factWeight = factChannelWeightOf(factChannel, fusion);
   const factTopK = factChannel?.candidateK ?? candidateK;
 
-  const [keywordResult, embeddingResult] = await Promise.all([
+  // task-100：两条腿先各自起跑（IIFE 立即开始），预算判定在下面拼装处。
+  const keywordLegPromise = (async () => {
     // Keyword search: FTS5 only (no in-memory fallback)
-    (async () => {
-      const tStart = performance.now();
+    const tStart = performance.now();
       try {
         // Try FTS5 first
         if (vectorStore.isFtsAvailable()) {
@@ -3071,9 +3281,9 @@ export async function searchHybrid(
         logger?.warn?.(`${TAG} Hybrid: keyword part failed: ${err instanceof Error ? err.message : String(err)}`);
         return { records: [] as ScoredRecord[], ms: performance.now() - tStart };
       }
-    })(),
+  })();
+  const embeddingLegPromise = (async () => {
     // Embedding search
-    (async () => {
       const tStart = performance.now();
       try {
         logger?.debug?.(`${TAG} [hybrid-embedding] Generating query embedding...`);
@@ -3101,8 +3311,57 @@ export async function searchHybrid(
         logger?.warn?.(`${TAG} Hybrid: embedding part failed: ${err instanceof Error ? err.message : String(err)}`);
         return { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: performance.now() - tStart };
       }
-    })(),
-  ]);
+  })();
+
+  // ── task-100（预算内降级）────────────────────────────────────────────────────
+  // 依据 task-93 真日志（n=144，2026-11-01 00:00–01:59）：recall 端到端 P50=4260ms、
+  // P90=17348ms，其中 l1 占 99.5%，时间全在远端 query embedding（单次实测 282ms–19.3s）；
+  // 插件侧 recallTimeoutMs=2500 ⇒ 过半轮次注入拿不到任何东西。这里给向量腿一个**绝对**
+  // 截止时刻（deadlineAt 由调用方按「请求 tStart + 预算」算，scene/L2 已花的自然扣掉），
+  // 超了就只用已算完的 FTS 腿走 RRF：宁可少召回，不许 504，不许空块。
+  //
+  // 注意：向量腿已经起跑，JS 里取消不掉——它会跑完并把 embedding 写进 TTL 缓存
+  // （cachedQueryEmbedding），下一轮同 query 直接命中，这不是浪费而是预热。
+  // 代价：本轮的 fact 通道（在向量腿里）随向量腿一起丢弃 —— 降级轮只保 FTS 一条腿。
+  const budgetMs = l1Budget && l1Budget.fallback === "fts" ? Math.max(0, l1Budget.deadlineAt - performance.now()) : undefined;
+  let budgetHit = false;
+  let keywordResult: Awaited<typeof keywordLegPromise>;
+  let embeddingResult: Awaited<typeof embeddingLegPromise>;
+  if (budgetMs === undefined) {
+    // 逐位旧行为：无预算 / fallback='none'
+    [keywordResult, embeddingResult] = await Promise.all([keywordLegPromise, embeddingLegPromise]);
+  } else if (budgetMs <= 0) {
+    // 预算在进 L1 之前就已耗尽（scene/L2/expand 花超了）：不等待向量腿。
+    budgetHit = true;
+    keywordResult = await keywordLegPromise;
+    embeddingResult = { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: 0 };
+    logger?.info?.(
+      TAG + " [hybrid-budget] L1 budget already exhausted at L1 entry -> FTS-only fallback (ftsHits=" +
+      keywordResult.records.length + ")",
+    );
+  } else {
+    const BUDGET_SENTINEL = "__l1_budget_timeout__";
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    const raced = await Promise.race([
+      embeddingLegPromise,
+      new Promise<typeof BUDGET_SENTINEL>((resolve) => {
+        budgetTimer = setTimeout(() => resolve(BUDGET_SENTINEL), budgetMs);
+      }),
+    ]).finally(() => {
+      if (budgetTimer) clearTimeout(budgetTimer);
+    });
+    keywordResult = await keywordLegPromise;
+    if (raced === BUDGET_SENTINEL) {
+      budgetHit = true;
+      embeddingResult = { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: budgetMs };
+      logger?.warn?.(
+        TAG + " [hybrid-budget] vector leg exceeded L1 budget (" + Math.round(budgetMs) + "ms, fallback=fts) -> " +
+        "FTS-only (ftsHits=" + keywordResult.records.length + ", ftsMs=" + Math.round(keywordResult.ms) + ")",
+      );
+    } else {
+      embeddingResult = raced;
+    }
+  }
 
   const keywordResults = keywordResult.records;
   // L1 向量分是 cosine（0–1，绝对可比）：低于阈值（scoreThreshold，默认 0.3）的候选
@@ -3173,6 +3432,8 @@ export async function searchHybrid(
     ftsHits: keywordResults.length,
     embeddingHits: embeddingResults.length,
     ...(factSearch ? { factMs: embeddingResult.factMs, factHits: factResults.length } : {}),
+    // task-100：降级留痕（缺字段 = 未降级，逐位旧形状）
+    ...(budgetHit ? { degraded: "fts" as const, budgetHit: true } : {}),
   };
 
   if (keywordResults.length === 0 && embeddingResults.length === 0 && factResults.length === 0) {
@@ -3675,10 +3936,14 @@ export async function searchHybrid(
   }
   if (excludeInvalidated === "soft") {
     const now = validityNow ?? new Date();
+    // #148：soft 档两个可调项走配置（缺省 = #136 逐位行为：hardOnPresentIntent=true、
+    // penalty=0.5）。penalty 经由 validity-policy 的单一解析点，工具路同源。
+    const softPenalty = resolveSoftValidityPenalty(validitySoftPenalty);
     const sel = selectByValidity(sorted, {
       now,
       mode: "soft",
       presentIntent,
+      hardOnPresentIntent: hardOnPresentIntent ?? true,
       accessors: {
         validStart: (entry) => entry[1].validStart,
         validEnd: (entry) => entry[1].validEnd,
@@ -3694,9 +3959,9 @@ export async function searchHybrid(
         demotedIds.has(id)
           ? ([id, {
               ...v,
-              rrfScore: v.rrfScore * SOFT_VALIDITY_PENALTY,
+              rrfScore: v.rrfScore * softPenalty,
               // #137：normalized 模式主序是 relevance——降权必须同刻度落在主序上，否则软失效失效
-              ...(v.relevance !== undefined ? { relevance: v.relevance * SOFT_VALIDITY_PENALTY } : {}),
+              ...(v.relevance !== undefined ? { relevance: v.relevance * softPenalty } : {}),
             }] as [string, MergedPoolValue])
           : [id, v],
       );
@@ -3863,21 +4128,6 @@ export async function searchHybrid(
  * 歧义为旧格式已知限制）。解析正则统一定义为本文件导出的 MEMORY_LINE_RE（:560/:910 两
  * 处 metric 解析共用单一源）。
  */
-import { isRecurrenceMeta, recurrenceLabel } from "../record/l1-extractor.js";
-import {
-  cosineNormOf,
-  factChannelWeightOf,
-  fusionWeightsOf,
-  minMaxNormOf,
-  normalizedFusionEnabled,
-  normalizedRelevanceOf,
-  recencyHalfLifeDaysOf,
-  recencyNormOf,
-  validityNormOf,
-  type RecallFactChannelConfig,
-  type RecallFusionConfig,
-} from "../recall/fusion.js";
-
 interface FormatableMemory {
   type: string;
   content: string;
@@ -4154,6 +4404,12 @@ export function recordToFormatable(record: MemoryRecord): FormatableMemory {
       return typeof v === "string" && v.trim() !== "" ? v : undefined;
     })(),
     factValue: factValueOfMeta(sigMeta),
+    // 依赖提示：**#162 同会话免疫依赖 sessionId 传递**（无票缺陷 M13）——本字段缺失时
+    // 免疫判据整段退化为"无来源"，不报错、不告警，最难发现。
+    // #162/#169（2026-10-31）：来源会话透传。FTS 通道的池记录带 record.sessionId
+    // （searchHybrid :3187 已映射），但本函数此前不拷出 ⇒ hybrid.metas.sessionId 恒空
+    // ⇒ #162 的「同会话免疫」与 #169 的「同会话邻接」在这条路上整段降级。
+    sessionId: (record as { sessionId?: string }).sessionId || undefined,
     // F-CLUSTER 折叠接线（2026-09-29）：FTS keyword 通道补折叠元数据——与
     // vectorResultToFormatable(:2363) 对齐；缺此二字段 foldByDurative 引用图建不起来。
     recordId: record.id,

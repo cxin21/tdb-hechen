@@ -1165,10 +1165,11 @@ export type AgentStatusEnumKey = (typeof agentStatusEnum)[keyof typeof agentStat
 */
 export type AgentStatus = AgentStatusEnumKey;
 
+// #127 手工同步：Kubb 源 spec（docs/team-api-仅memory.yaml）不在仓内，无法重生成；
+// 三值口径与 core/store/task-source-type.ts 一致。
 export const taskSourceTypeEnum = {
     manual: "manual",
-    github: "github",
-    tapd: "tapd",
+    external: "external",
     other: "other"
 } as const;
 

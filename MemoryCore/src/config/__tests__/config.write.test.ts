@@ -3,11 +3,12 @@ import { parseConfig } from "../../config.js";
 
 /**
  * #134 生产写面配置（memory.write）：
- *  - 缺省全关（生产安全缺省，逐位现状）
+ *  - 缺省 = 生产最优档（2026-10-31 拍板）：supersession 开（long-session-bench §6 正收益）、
+ *    factKey 关（#149 −2.2pp）、factRows 关（#146 无读数）
  *  - yaml 值生效；maxFactChars clamp ≥0；separator 空串回落默认
  */
 describe("config: write（#134 写面策略）", () => {
-  it("缺省全关", () => {
+  it("缺省 = 生产最优档（supersession 开 / factKey 关 / factRows 关）", () => {
     const c = parseConfig({});
     expect(c.write.factKey).toEqual({
       enabled: false,
@@ -19,7 +20,10 @@ describe("config: write（#134 写面策略）", () => {
       onlyForTypes: [],
     });
     // #136：cardinalityGate 缺省 true（修复开启）；cardinalityDefault 缺省 single（保覆盖）
-    expect(c.write.supersession).toEqual({ enabled: false, cardinalityGate: true, cardinalityDefault: "single" });
+    // supersession 缺省开 = 生产最优档（读数见 docs/long-session-bench.md §6）
+    expect(c.write.supersession).toEqual({ enabled: true, cardinalityGate: true, cardinalityDefault: "single" });
+    // factRows 缺省显式关（不靠键缺失隐式表达）
+    expect(c.write.factRows?.enabled).toBe(false);
   });
 
   it("yaml 值生效 + clamp", () => {

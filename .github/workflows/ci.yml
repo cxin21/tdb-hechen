@@ -62,6 +62,43 @@ jobs:
         working-directory: MemoryCore
         run: pnpm exec vitest run
 
+  memorycore-gates:
+    # #107 typecheck 基线门禁 + #108 只对改动文件的 prettier 门禁。
+    # 为什么不顺手修掉那 243 个既有错误：见 docs/audit/2026-10-31-open-issues-first-principles.md §4.4——
+    # 基线锁定语义是「只允许不增加」，新增错误立刻红并把明细打在日志里（MemoryCore/scripts/typecheck-gate.mjs）；
+    # 收紧基线只能人工确认后 `pnpm run typecheck:baseline` 单独 commit，避免顺手把新错误吞进基线。
+    # 为什么格式门禁只查改动文件：任何参数下存量都有 >545 个文件不一致，整仓 reformat 是纯噪声 diff（#108）。
+    # 格式门禁分两档（MemoryCore/scripts/format-changed.mjs）：新增 .ts 硬门（新代码生而合规），
+    # 改动到的存量 .ts 只告警——存量债务要靠一个独立的纯格式 commit 收口，落地把 FORMAT_STRICT_MODIFIED 设为 1 再转硬门。
+    # 现在就把第二档设成硬门会让所有在飞 PR 一起变红，等于逼人顺手 reformat，与 #108 的「独立 commit」相悖。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 要算「本次改动的文件」必须有 base：默认浅克隆里没有 origin/main，diff 会静默退化成空集
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # lockfile 不入库（仓库纪律，.gitignore:35）——无 frozen 安装
+      - name: Install
+        working-directory: MemoryCore
+        run: pnpm install --ignore-scripts
+      - name: Typecheck baseline gate (#107)
+        working-directory: MemoryCore
+        run: pnpm run typecheck:gate
+      - name: Prettier gate on changed files (#108)
+        working-directory: MemoryCore
+        # PR 事件给 base.sha，push 事件给 before（全 0 时脚本自动回落 origin/main）
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # 纯格式 commit 合入后改成 1：存量改动文件也变硬门
+          FORMAT_STRICT_MODIFIED: "0"
+        run: pnpm run format:check
+
   memoryproxy-test:
     runs-on: ubuntu-latest
     steps:

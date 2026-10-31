@@ -75,7 +75,13 @@ find_docker() {
   die "找不到 docker 命令。请先安装 Docker Desktop / OrbStack / colima + docker CLI。"
 }
 
-DOCKER="$(find_docker)"
+# TDAI_SKIP_DOCKER_PROBE=1 时不做 docker 探测（供 --render-only / CI 在无 docker 机器上
+# 渲染配置用）；默认行为不变：仍要真 docker。
+if [[ "${TDAI_SKIP_DOCKER_PROBE:-0}" == "1" ]]; then
+  DOCKER="docker"
+else
+  DOCKER="$(find_docker)"
+fi
 
 # PULL=1 时拉取镜像最新版本。
 # 默认关闭：docker run 在本地没有镜像时会自动拉，但本地已有同名 :latest 时会直接复用，
