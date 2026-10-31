@@ -16,7 +16,7 @@ model:
   provider: custom
   base_url: http://<proxy-host>:8096/hermes/<spaceId>
   api_key: <业务用户的 sk-mem-... user_key>
-  extra_headers:
+  default_headers:
     x-team-id: <从面板获取的 team_id>
     x-agent-id: <从面板获取的 agent_id>
     x-task-id: <从面板获取的 task_id>
@@ -100,7 +100,7 @@ Proxy 的 header 预选机制要求三 ID 齐全才能完成 session 注册。�
 ## 7. 常见问题
 
 **Q: 记忆注入没生效？**  
-A: 检查 `extra_headers` 四个值是否都填了且正确。任一缺失/错误都会导致 session bypass。
+A: 检查 `default_headers` 四个值是否都填了且正确。任一缺失/错误都会导致 session bypass。
 
 **Q: 怎么获取 team_id / agent_id / task_id？**  
 A: 登录面板 → 对应页面 → 详情里有 ID 字段。或用面板 API `team/list`、`agent/list`、`task/list` 查询。

@@ -49,10 +49,13 @@ cp tdai-gateway.service.yaml tdai-gateway.yaml
 ```bash
 docker run -d --name agent-memory \
   -v $(pwd)/tdai-gateway.yaml:/data/config/tdai-gateway.yaml:ro \
-  -e TDAI_LLM_API_KEY=sk-your-key \  # deprecated（ADR-0006）：SoT=admin settings（config-override.json）
+  -e TDAI_LLM_API_KEY=sk-your-key \
   -p 8420:8420 \
   tencentdb-agent-memory:latest
 ```
+
+> `TDAI_LLM_API_KEY` 已 deprecated（ADR-0006）：SoT = admin settings（`config-override.json`），
+> env 仅作回退。下同。
 
 **Service 模式（需要 Redis）：**
 
@@ -73,7 +76,7 @@ npx tsx scripts/mock-shark-server.ts &
 # 启动 Memory Service
 docker run -d --name agent-memory \
   -v $(pwd)/tdai-gateway.real.yaml:/data/config/tdai-gateway.yaml:ro \
-  -e TDAI_LLM_API_KEY=sk-your-key \  # deprecated（ADR-0006）：SoT=admin settings（config-override.json）
+  -e TDAI_LLM_API_KEY=sk-your-key \
   -p 8420:8420 \
   tencentdb-agent-memory:latest
 ```

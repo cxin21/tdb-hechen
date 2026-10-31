@@ -186,7 +186,7 @@ http://<proxy-host>:<port>/<agent-source>/<spaceId>
 
 ## 新 Agent 接入流程概览
 
-1. **抓包** — 用 mitmproxy 抓 3~5 种典型请求 (main / aux / title-gen)，存入 `docs/<agent>-recon/`
+1. **抓包** — 用 mitmproxy 抓 3~5 种典型请求 (main / aux / title-gen)，存入 `MemoryProxy/docs/<agent>-recon/`
 2. **识别协议** — 确定 wire protocol (Anthropic / Chat / Responses)
 3. **确定 Session ID 来源** — 找 header 或 body 里的唯一会话标识
 4. **选择 Session Init 策略** — 有 tool → 交互式 form；无 tool → header 预选 / headless bypass

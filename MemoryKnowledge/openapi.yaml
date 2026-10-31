@@ -775,6 +775,14 @@ components:
           type: string
         name:
           type: string
+        source_type:
+          type: string
+          nullable: true
+          description: Wiki 源类型；当前仅 git 源（null = 手动上传内容）
+        source_url:
+          type: string
+          nullable: true
+          description: git 源仓库地址（https:// 或 SSH；source_type=git 时有效）
         service_url:
           type: string
           nullable: true
