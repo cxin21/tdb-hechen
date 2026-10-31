@@ -33,6 +33,14 @@ if [[ -n "$MEMORY_CORE_GATEWAY_API_KEY" ]]; then
   warn "本地体验请把 .env 里的 MEMORY_CORE_GATEWAY_API_KEY 留空。"
 fi
 
+# 可选 Bearer 头必须用数组，不能写成 ${VAR:+-H "Authorization: ..."} 直接展开：
+# 那种写法整体未加引号，内层引号不生效，会被分词成 -H / Authorization: / Bearer / <key>
+# 四个 token（curl 把后两个当 URL）—— 配了 key 时两处 curl 必失败。
+AUTH_HEADER=()
+if [[ -n "$MEMORY_CORE_GATEWAY_API_KEY" ]]; then
+  AUTH_HEADER=(-H "Authorization: Bearer ${MEMORY_CORE_GATEWAY_API_KEY}")
+fi
+
 CONTAINER=tdai-memory-core
 NETWORK=tdai-memory-stack
 
@@ -163,10 +171,10 @@ generate_user_key() {
 verify_user_key() {
   local key="$1"
   local code
-  code=$(/usr/bin/curl -sS -o /dev/null -w "%{http_code}" --max-time 5 \
+  code=$("$CURL" -sS -o /dev/null -w "%{http_code}" --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     -H "x-tdai-service-id: default" \
-    ${MEMORY_CORE_GATEWAY_API_KEY:+-H "Authorization: Bearer ${MEMORY_CORE_GATEWAY_API_KEY}"} \
+    "${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"}" \
     "http://localhost:${MEMORY_CORE_PORT}/v3/meta/auth/verify" \
     -d "$(printf '{"user_key":"%s"}' "$key")" 2>/dev/null || echo "000")
   [[ "$code" == "200" ]]
@@ -184,9 +192,9 @@ fi
 
 init_body=$(printf '{"username":"%s","user_key":"%s"}' \
   "$MEMORY_CORE_ADMIN_USERNAME" "$ADMIN_KEY")
-init_resp=$(/usr/bin/curl -sS -o /tmp/init-admin.$$ -w "%{http_code}" \
+init_resp=$("$CURL" -sS -o /tmp/init-admin.$$ -w "%{http_code}" \
   -X POST -H "Content-Type: application/json" \
-  ${MEMORY_CORE_GATEWAY_API_KEY:+-H "Authorization: Bearer ${MEMORY_CORE_GATEWAY_API_KEY}"} \
+  "${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"}" \
   -H "x-tdai-service-id: default" \
   "http://localhost:${MEMORY_CORE_PORT}/v3/internal/meta/user/init-admin" \
   -d "$init_body" 2>/dev/null || echo "000")

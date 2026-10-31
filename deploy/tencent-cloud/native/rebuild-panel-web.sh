@@ -24,7 +24,7 @@ WEB_DIR="$REPO_ROOT/MemoryPanel/web"
 DIST_DIR="$WEB_DIR/dist"
 
 if [[ ! -d "$WEB_DIR" ]]; then
-  echo "✗ 找不到 MemoryPanel/web：$WEB_DIR（脚本需在本仓库内运行）" >&2
+  echo "✗ 找不到 MemoryPanel/web：${WEB_DIR}（脚本需在本仓库内运行）" >&2
   exit 1
 fi
 
