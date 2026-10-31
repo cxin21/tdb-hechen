@@ -328,18 +328,34 @@ run "$DSH_BIN" plugin --profile "$PROFILE" add "$TARBALL_SPEC"
 ensure_installed_build_matches() {
   local local_sum installed_sum installed_entry short_local short_installed
   installed_entry="$PROFILE_DIR/node_modules/$PKG_NAME/dist/index.js"
-  [ -f "$installed_entry" ] || abort_deploy "installed entry not found: node_modules/$PKG_NAME/dist/index.js"
   local_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$REPO_ROOT/dist/index.js")
-  installed_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$installed_entry")
   short_local=$(printf '%s' "$local_sum" | cut -c1-12)
+  if [ ! -f "$installed_entry" ]; then
+    # A dry run must be able to describe a first install (nothing installed yet)
+    # without turning that into a failure or a write.
+    if [ "$DRY_RUN" = "1" ]; then
+      say "installed build: absent — a real run would install, then compare against packed $short_local"
+      return 0
+    fi
+    abort_deploy "installed entry not found: node_modules/$PKG_NAME/dist/index.js (re-run with --skip-tests after a fresh install, or remove the profile entry and deploy again)"
+  fi
+  installed_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$installed_entry")
   short_installed=$(printf '%s' "$installed_sum" | cut -c1-12)
   if [ "$local_sum" = "$installed_sum" ]; then
     say "installed build: fresh (sha256 $short_local)"
     return 0
   fi
+  # DRY RUN MUST NOT DELETE: this branch used to rm -rf the installed package even
+  # under --dry-run (it then crashed on the now-missing entry with a raw ENOENT).
+  # A plan that removes the running plugin is not a plan.
+  if [ "$DRY_RUN" = "1" ]; then
+    say "installed build: STALE (installed $short_installed != packed $short_local) — a real run would rm -rf node_modules/$PKG_NAME and reinstall"
+    return 0
+  fi
   say "installed build: STALE (installed $short_installed != packed $short_local) — forcing one reinstall"
   rm -rf "$PROFILE_DIR/node_modules/$PKG_NAME"
   run "$DSH_BIN" plugin --profile "$PROFILE" add "$TARBALL_SPEC"
+  [ -f "$installed_entry" ] || abort_deploy "reinstall did not produce node_modules/$PKG_NAME/dist/index.js"
   installed_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$installed_entry")
   if [ "$installed_sum" != "$local_sum" ]; then
     abort_deploy "installed build still stale after reinstall"
