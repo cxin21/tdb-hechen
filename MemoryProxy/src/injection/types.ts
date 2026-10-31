@@ -40,6 +40,17 @@ export interface ContextBlock {
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 /**
+ * Metadata key marking the one ContextMessage that was parsed from Anthropic's
+ * top-level `system` field — the only message that may be hoisted back onto
+ * `body.system`. Every other role=system message is a *conversation-level*
+ * prompt (Claude Code ships AGENTS.md that way, #118) and stays in `messages[]`.
+ *
+ * Keying the system prompt off `role` alone conflates the two; both the
+ * adapter (parse/serialize) and {@link getSystemMessage} must use this marker.
+ */
+export const TOP_LEVEL_SYSTEM = "anthropicTopLevelSystem";
+
+/**
  * A standardized message: role + blocks + optional metadata.
  */
 export interface ContextMessage {

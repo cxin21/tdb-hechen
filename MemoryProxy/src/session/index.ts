@@ -125,9 +125,12 @@ export async function handleSessionInit(
       // applyArtifactsAndContext takes the openai path (injects
       // <session_context> into messages as a role=system message) instead of
       // the anthropic path (returns systemAppend that anthropicHandler merges
-      // into body.system). The openai path currently only works because
-      // AnthropicAdapter.serialize() hoists role=system back onto body.system
-      // as a safety net; forwarding the correct protocol keeps intent and
+      // into body.system). The openai path degrades rather than breaks: since
+      // #118 the adapter hoists only the message parsed from the top-level
+      // `system` field and forwards any other role=system message inside
+      // `messages[]`, so a mis-forwarded `<session_context>` still reaches the
+      // model — as a conversation-level system message, not as the system
+      // prompt. Forwarding the correct protocol keeps intent and
       // implementation aligned and survives `injection.enabled=false`.
       reqCtx,
       metadataClient,

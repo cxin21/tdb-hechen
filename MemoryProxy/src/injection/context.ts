@@ -2,6 +2,7 @@
  * AgentContext factory functions and utility methods.
  */
 
+import { TOP_LEVEL_SYSTEM } from "./types.js";
 import type {
   AgentContext,
   AgentContextMetadata,
@@ -40,10 +41,23 @@ export function textMessage(role: MessageRole, content: string): ContextMessage 
 }
 
 /**
- * Get the system message from context (first system role message).
- * Returns undefined if no system message exists.
+ * Get the system prompt from context — the message the adapter will hoist back
+ * onto the provider's top-level system field.
+ *
+ * Anthropic parses that field into a message marked {@link TOP_LEVEL_SYSTEM}
+ * and forwards any *other* role=system message inside `messages[]` (Claude Code
+ * ships AGENTS.md that way, #118). Matching on `role` would return AGENTS.md
+ * when the request carries no top-level system prompt at all — system.prefix /
+ * system.suffix injections would then be glued into the agent's own AGENTS.md
+ * text, and an anchor hit (`pipeline.apply`) would replace it outright.
+ *
+ * Other protocols have no top-level field, so there the first role=system
+ * message *is* the system prompt.
  */
 export function getSystemMessage(ctx: AgentContext): ContextMessage | undefined {
+  const hoisted = ctx.messages.find((m) => m.metadata?.[TOP_LEVEL_SYSTEM] === true);
+  if (hoisted) return hoisted;
+  if (ctx.metadata.protocol === "anthropic") return undefined;
   return ctx.messages.find((m) => m.role === "system");
 }
 

@@ -4,11 +4,14 @@
  *
  * Anthropic message format:
  *   - Top-level "system" field (string or ContentBlock[])
- *   - messages[]: { role: "user"|"assistant", content: ContentBlock[] }
+ *   - messages[]: { role: "user"|"assistant"|"system", content: ContentBlock[] }
+ *     (clients may put extra prompts here as role=system, so a system-role
+ *      message is NOT automatically the system prompt — see #118)
  *   - ContentBlock types: text, tool_use, tool_result, thinking, image
  */
 
 import type { ProtocolAdapter } from "./interface.js";
+import { TOP_LEVEL_SYSTEM } from "../types.js";
 import type {
   AgentContext,
   AgentContextMetadata,
@@ -16,6 +19,14 @@ import type {
   ContextBlock,
   ContextMessage,
 } from "../types.js";
+
+/**
+ * Re-exported so callers can ask "is this message the hoisted system prompt?"
+ * without reaching into metadata keys by hand. The marker itself lives in
+ * `types.ts` because {@link getSystemMessage} needs it too — see the doc there
+ * for why role alone is not enough (#118).
+ */
+export { TOP_LEVEL_SYSTEM };
 
 export class AnthropicAdapter implements ProtocolAdapter {
   readonly protocol = "anthropic" as const;
@@ -26,7 +37,7 @@ export class AnthropicAdapter implements ProtocolAdapter {
     // Anthropic has a top-level "system" field
     if (body.system != null) {
       const systemBlocks = this.parseSystemField(body.system);
-      messages.push({ role: "system", blocks: systemBlocks });
+      messages.push({ role: "system", blocks: systemBlocks, metadata: { [TOP_LEVEL_SYSTEM]: true } });
     }
 
     // Parse conversation messages
@@ -56,9 +67,11 @@ export class AnthropicAdapter implements ProtocolAdapter {
   serialize(ctx: AgentContext): Record<string, unknown> {
     const body: Record<string, unknown> = { ...ctx.requestParams };
 
-    // Separate system message from conversation messages
-    const systemMsg = ctx.messages.find((m) => m.role === "system");
-    const conversationMsgs = ctx.messages.filter((m) => m.role !== "system");
+    // Separate the hoisted top-level system message from conversation messages.
+    // Match on the parse-time marker, not on the role: client-sent role=system
+    // messages (Claude Code's AGENTS.md) must stay in `messages[]`.
+    const systemMsg = ctx.messages.find((m) => m.metadata?.[TOP_LEVEL_SYSTEM] === true);
+    const conversationMsgs = ctx.messages.filter((m) => m !== systemMsg);
 
     // Serialize system as top-level field
     if (systemMsg) {
@@ -89,7 +102,7 @@ export class AnthropicAdapter implements ProtocolAdapter {
   }
 
   private parseMessage(m: Record<string, unknown>): ContextMessage {
-    const role = m.role as "user" | "assistant";
+    const role = m.role as ContextMessage["role"];
     const content = m.content;
     const blocks: ContextBlock[] = [];
 

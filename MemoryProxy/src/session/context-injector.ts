@@ -221,11 +221,14 @@ export function buildSessionContextBlockWithToggles(
  *
  * Why a separate function instead of reusing {@link injectSessionContext}:
  * Anthropic keeps the system prompt at `body.system` (string OR ContentBlock[]),
- * NOT inside `body.messages`. The pipeline adapter parses only `body.system`
- * and serializes only `body.system` — anything we prepend to `body.messages` as
- * `{role:"system",...}` gets silently filtered out by the adapter's system
- * dedup (`find` returns the parsed original, `filter` drops the rest). So on
- * Anthropic the historical `injectSessionContext` was a no-op sink.
+ * NOT inside `body.messages`. The adapter hoists exactly one message back onto
+ * `body.system` — the one it parsed from that top-level field (#118) — and
+ * forwards every other `{role:"system",...}` message verbatim inside
+ * `body.messages`. So prepending via `injectSessionContext` would land the
+ * block as a conversation-level system message rather than extending the system
+ * prompt; before #118 it was dropped outright (the old adapter filtered all
+ * role=system messages out). Both are wrong for this content, hence the
+ * explicit `body.system` writer.
  *
  * This helper reads `body.system` directly and returns the new value the
  * caller should write back. Behaviour mirrors {@link injectSessionContextWithToggles}
