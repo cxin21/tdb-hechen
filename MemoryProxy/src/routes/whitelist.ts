@@ -171,8 +171,15 @@ const PROXY_PREFIX_RE = /^\/proxy\/[^/]+/;
  * 等 codex 端点允许尾斜杠可选（如 `/responses` 是完整路径）。
  * 白名单入口 `/v1/messages`、`/responses` 自身不会被误剥（因为它们不匹配 agent
  * 段——agent 段限定为已知名字）。
+ *
+ * 名单必须覆盖所有会调用**辅助端点**（count_tokens / embeddings / completions /
+ * moderations）的 agent：漏一个，该 agent 的 aux 请求就带着 agent 前缀走不到后缀
+ * 匹配 → `handleAuxiliaryEndpoint` 直接 404 `Unregistered endpoint`。主链路有
+ * `joinUrl` 的 fallback，长期掩盖了这类缺口（#117：缺 `dsh`，aux 端点恒 404）。
+ * 名单本身与 `AgentKind`（agent-adapters/types.ts）没有单一来源，补新 agent 时
+ * 两处都要看。
  */
-const AGENT_PREFIX_RE = /^\/(claude-code|codebuddy|codex|cursor|anthropic|openai|pi)(?:\/[^/]+)?(?=\/v1\/|\/responses(?:\/|$)|\/memories\/|\/realtime\/)/i;
+const AGENT_PREFIX_RE = /^\/(claude-code|codebuddy|codex|cursor|anthropic|openai|dsh|pi)(?:\/[^/]+)?(?=\/v1\/|\/responses(?:\/|$)|\/memories\/|\/realtime\/)/i;
 
 /**
  * `/cost-guard` marker 正则：位于 `/{agent}/{spaceId}` 之后的独立 segment。
