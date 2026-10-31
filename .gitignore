@@ -222,3 +222,14 @@ MemoryCore/.scratch/
 MemoryCore/memory/
 MemoryCore/scratchpad/
 MemoryCore/*_block.md
+
+# ── 本地探针/取证脚本与一次性产物（含真实运行数据，永不入库；2026-11-01 收尾审计追加）──
+scratch/
+MemoryCore/scratch/
+MemoryPanel/scratch/
+.dsh-vision-router/
+MemoryCore/.tmp_distill.md
+MemoryCore/.distill_len_check.md
+MemoryCore/__distilled_block__/
+MemoryCore/.tmp-v3-*.mjs
+MemoryCore/__distilled_block__

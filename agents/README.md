@@ -80,7 +80,7 @@ cp -r agents ~/agents
 | [CodeBuddy](./codebuddy/) | OpenAI Chat Completions | 交互式 Form | `ask_followup_question` | ❌ (无上限) | ❌ | ❌ |
 | [Codex](./codex/) | OpenAI Responses API | 交互式 Form + Default Gate | `request_user_input` | ✅ | ✅ | ❌ |
 | [WorkBuddy](./workbuddy/) | Responses (Desktop) / Chat (Web) | 交互式 Form | `AskUserQuestion` | ✅ (max 4) | ✅ | ✅ (静默透传) |
-| [dsh (DeepSeek Harness)](./dsh/) | OpenAI Chat Completions | 交互式 Form + Headless Bypass | `ask_user_question` | ❌ (无上限) | ❌ | ✅ (无 tool 时) |
+| [dsh (DeepSeek Harness)](./dsh/) | OpenAI Chat (≤v0.1.x) / **Anthropic Messages (v0.2+)** | 交互式 Form + Headless Bypass | `ask_user_question` | ❌ (无上限) | ❌ | ✅ (无 tool 时) |
 | [Hermes](./hermes/) | OpenAI Chat Completions | Header 预选（无 Form） | N/A | N/A | N/A | ✅ (header 缺失时) |
 | [OpenClaw](./openclaw/) | OpenAI Chat Completions | Header 预选（无 Form） | N/A | N/A | N/A | ✅ (header 缺失时) |
 
@@ -142,12 +142,18 @@ tsx agents/asset-import.ts --source claude-code --agent-id <id> --team-id <tid> 
 ## 路由规则
 
 ```
-/:agent/:spaceId/v1/messages          → Anthropic 协议 (CC, CB-Anthropic)
-/:agent/:spaceId/v1/chat/completions  → OpenAI Chat (CB, WB-web, dsh, Hermes, OpenClaw)
-/:agent/:spaceId/chat/completions     → OpenAI Chat 无 v1 前缀 (dsh)
+/:agent/:spaceId/v1/messages          → Anthropic 协议 (CC, CB-Anthropic, dsh v0.2+)
+/:agent/:spaceId/v1/chat/completions  → OpenAI Chat (CB, WB-web, dsh ≤v0.1.x, Hermes, OpenClaw)
+/:agent/:spaceId/chat/completions     → OpenAI Chat 无 v1 前缀 (dsh ≤v0.1.x)
 /:agent/:spaceId/v1/responses         → Responses API (Codex, WB-desktop)
 /:agent/:spaceId/responses            → Responses API 无 v1 前缀 (Codex, WB-desktop)
 ```
+
+> ⚠️ dsh 从 v0.2 起改用 **Anthropic Messages**（`/v1/messages`），v0.1.x 才是 OpenAI Chat。
+> Proxy 侧 dsh 端点两种协议**同时注册**（`MemoryProxy/src/server.ts` 的 dsh 端点块），
+> 并按请求体的帧形态分派 form 帧：anthropic 请求回 Anthropic SSE（`message_start` →
+> `content_block_start(thinking)` → `content_block_*` → `message_stop`），OpenAI 请求回
+> `chat.completion.chunk`。详见 [dsh/README.md](./dsh/README.md) §3。
 
 ---
 

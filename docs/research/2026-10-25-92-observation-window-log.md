@@ -31,10 +31,38 @@
 | 时间 | 拍级行 | 判读 |
 |---|---|---|
 | 2026-10-25 20:54:55 | auto-adopt adopted=0 blocked=0 skipped=0 | 开窗首拍，零候选（pending=0） |
+| 2026-10-26 | 每 10 分钟一拍；重启 08:56/09:01/09:42/16:08/18:07，各存活代均有拍 | 全 0；新提案 2 条 |
+| 2026-10-27 | 同上；重启 09:34/13:09/14:04/15:26/18:45/20:37/21:29 | 全 0；新提案 12 条 |
+| 2026-10-28 | 同上；重启 06:49/10:07×2/10:36/22:39/22:52 | 全 0；新提案 0 |
+| 2026-10-29 | 同上；重启 00:50/11:43/12:27；yaml 13:36 被他票改动（gate 块不变） | 全 0；新提案 10 条（05:59–06:50Z） |
+| 2026-10-30 | 同上；重启 10:40–11:20 多次、23:00 重启（当前代，载入新 yaml） | 全 0；新提案 0 |
+| 2026-10-31 09:30 巡检 | 当前代 08:50–09:30 每 10 分钟连续 | 全 0；新提案 0 |
+
+## 2026-10-31 巡检（窗内第 5.5 天，全窗汇总）
+
+### 生产状态（只读）
+- supervisor startedAt=10/30 23:00:26、restartsUsed=0；core PID 3064 起 10-30 23:00:10；/health 8420 ok、uptime 37861s（~10.5h）、vecRows=3514、warmup done。
+- yaml mtime=2026-10-29 13:36:37、size 49862（开窗 39920）——他票/用户改过配置，但 gate 块完好：L541 selfIdentityGate（recurrence.enabled true / ttlHours 72）、L548 rateLimit（maxNew 12）、L556 autoAdopt（enabled true / votes 4 / spanHours 72 / contradictionThreshold 0.6 / dupThreshold 0.75）；当前 core 载入该 yaml。
+- 日志代际：10-26..10-30 约 30 代（重启频繁，多数与他票工作相关，非本票范围）；**每个存活 ≥10 分钟的代都打出追赶拍，且全部 `adopted=0 blocked=0 skipped=0`；全窗零非零拍；无 `[auto-adopt]` warn/fail 行**。
+
+### DB 计数（readOnly+query_only，探针 .tmp-gate/92-db-probe-v3.mjs）
+- self_identity：rejected=385 / adopted=76 / expired=27（13→27，TTL 扫除）/ **pending=10（0→10）** / auto_adopted=0；全槽 core_pending=564。
+- 窗内新提案 24 条（10-26:2、10-27:12、10-29:10）；当前 pending 10 条（created 10-29 05:59–06:50Z）全部 count=1、span_h=0、first_seen=last_seen=created——**无复现投票累积**。
+- count≥3 的 5 条全部为终态旧行（10-24/10-25）：count 14/span 8.2h adopted、7/4.1h rejected、4/3.2h rejected、4/2.1h rejected、3/1.5h rejected。
+
+### 判读
+- 门健康：拍级连续、无 warn/fail；**零 auto_adopted/blocked/skipped 事件**。
+- 无自然候选：候选条件 pending ∧ count≥4 ∧ span≥72h 无行满足；pending 群体 TTL 72h（最早 11-01 05:59Z 过期），当前无相似提案复现 → 大概率全部过期而不产生自动采纳。
+- 精确率仍不可估（分母 0）；**不能据本窗判定门过严或过松**——只能说明窗内身份主题复现频率 < 4 次/72h（提案总量 24 条，但每条仅出现一次）。
+
+### 下一步（待用户拍板=判断类决策）
+1. 继续观察，等自然复现（复现频率未知，可能 > 数周；零候选本身是保守设计的预期结果）；
+2. 调整观察窗 KPI 口径：由「精确率」改为「零误收 + 零门故障 + 提案质量抽样人工标注」的保守口径（需用户定线）；
+3. 或做 N₂/T₂ 对照实验（config 键已具备，变更需拍板，且会重置观察窗）。
 
 ## 事件台账（auto_adopted / blocked 事件发生时逐条追加：pending_id、内容摘要、门参数、快照版本、后续回滚与否）
 
-（暂无）
+（暂无；窗内零事件，回滚统计不适用）
 
 ## 定线（观察窗收口时用户拍板）
 

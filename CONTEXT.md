@@ -45,3 +45,4 @@
 - [ADR-0015 事实级双时态：一条事实一行](docs/adr/0015-事实级双时态-一条事实一行.md) —— 写/失效粒度降到（实体,属性）事实行（single 才失效、multi additive）、行 content 保留父 turn 原文以便按 turn 折叠、不做不可逆迁移；决定 7（#166）在 present-intent 下做值级遮蔽，把污染 turn 的注入降级为事实短语。
 - [ADR-0017 资产读授权口径：get / list 与归档可见性](docs/adr/0017-资产读授权口径-get与list.md) —— get=404 不泄露存在性（owner 可读归档）、list=分页前过滤 total 准确、两 list 端点合并为 `collectVisibleAssets`（统一取材与 `created_at` 倒序）、归档口径收敛到 `isHiddenFromDefaultList` 单一谓词、private 不被 ACL 放宽、agent 主体 opt-in。
 - [ADR-0009 服务间鉴权：KNOWLEDGE_SERVICE_KEY fail-closed](docs/adr/0009-服务间鉴权-KNOWLEDGE_SERVICE_KEY.md) —— 空 key=不启用/非空=写管理面 401、只读白名单口径（补齐上游漏掉的 code-graph 8 个动态只读查询）、code-graph 查询名单单一真相源、真实路由表护栏、key 三侧传播与部署侧自动生成。
+- [ADR-0018 上游同步边界：五条铁律与两条红线](docs/adr/0018-上游同步边界.md) —— 不跟 pipeline 重构 / 不跟 store 目录化 / 不引入第二套凭据真源 / 不跟 MongoDB 后端（四条铁律按语义不变式而非行号）；第五条已按实测改写：本仓与上游 `promptMode` **同为 chat**，不存在 chat→code 翻转，差异须另证；红线 = `auto-recall.ts` 与 `server.ts` 禁止整文件取上游（前者绕过 ADR-0008 刻度门、后者上游无 `/v3/recall` ⇒ DS-RECALL-MERGE-001 消失）。

@@ -45,7 +45,7 @@ memory:
       # blend 键已整体删除：α 混合在深池（−3.64pp）与浅池（−1.15pp）两档都无净收益，排序直接吃精排结果（§21.6）
 ```
 
-> ⚠ **只钉「有实测作用」的键（§21 开关台账）**：`minScore` 已从云模板/本地 yaml 撤掉钉子（按 provider 刻度算才安全，钉死 −10.5 在概率刻度 provider 上等于永不过滤）；`blend` 更进一步——深池（−3.64pp）与浅池（−1.15pp）都测不出净收益后，**配置项与混合逻辑已整体删除**（§21.6）。生产口径 = **代码缺省**；落盘的只有必须显式开的 `enabled` 与两个**防漂移型钉子**（`candidates: 32`、`candidateK: 32`，值都等于缺省，钉住是为了不让已验证的池深被静默收回），其余吃缺省。
+> ⚠ **只钉「有实测作用」的键（§21 开关台账）**：`minScore` 已从云模板/本地 yaml 撤掉钉子（按 provider 刻度算才安全，钉死 −10.5 在概率刻度 provider 上等于永不过滤）；`blend` 更进一步——深池（−3.64pp）与浅池（−1.15pp）都测不出净收益后，**配置项与混合逻辑已整体删除**（§21.6）。生产口径 = **生产两档 yaml（base / cloud）的显式值**，未写进 yaml 的键才吃代码缺省（2026-10-31 起 base 对决策键全显式，见 `docs/ops/config-default-ledger.md` §0）；必须显式写的有 `enabled` 与两个钉子——`rerank.candidates: 32`（= 代码缺省，**防漂移**）、`candidateK: 32`（> 代码缺省 `maxResults×3`=30，**增益**），钉住是为了不让已验证的池深被静默收回。
 
 **检索侧（§10，n=90，judge=MiniMax-M3.1-Flash）**：deep105（32/−10.5）turnCov@5=**84.3%**（+16.67pp vs b0-base 67.1%，CI95[+9.05,+24.29]，p=0.0005，30W/8L/52T），高于「关掉 rerank」的 79.5%；kept≥4 从 38/90 升到 80/90。剪枝才是伤害源，只扩池不加 floor 无收益（T1 Δ=0）。
 **重排融合修复后（§13.5，#137-F）**：blend α=0.9 + 融合锚点 + floor 补位 → 80.5%（MRR 0.761、判对 81.1%），在 #137 全开档口径下仍差 off 5.6pp（McNemar 7/2，p=0.18 不显著）。
@@ -137,7 +137,7 @@ node scripts/bench-compare.mjs <base.json> <trial.json>
 | **W3 读侧** | `auto-recall.ts` R7-1 结论层 + #78 `smallToBig`（生产既有代码） | yaml `recall.smallToBig.enabled=true`（生产早就开着），`maxExtraLines` **2→4**（本次） | §8 w3b：判对 +14.4pp CI[+6.7,+23.3]（**scm-flash 判分**；judge 对齐后为 +6.7pp/p=0.146，见 §8「判分器注记」），cov 持平；注入总行数由 maxResults 硬帽收口 |
 | **W3 写侧** | `consolidation-worker.ts` / `reflection.ts` 既有 work_fact 结论卡 + `part_of` 边 | 既有能力（生产已在产出） | bench 的蒸馏卡是 bench 侧替身；生产不需要新增写链 |
 | **W1 事实键** | `l1-writer.ts` embedding 键：`embeddingKeyFor(record.content, memory, writePolicy)`；事实来源 = dedup LLM **顺带抽取**的 `metadata.subject`（零额外 LLM 成本） | `memory.write.factKey.enabled=false` | bench +6.7pp 不显著（CI 含负）→ 按票面规则默认关；待生产语料复核后一行配置开启 |
-| **W2 supersession** | `l1-writer.ts` dedup 的 `update/merge` 决策：旧行由「归档」改为 `invalidateL1` 写 `valid_end`（只标记不删除）+ 新行补 `valid_start` | `memory.write.supersession.enabled=false` | bench cov -10.9pp 显著负（LME90 gold 含旧值 turn）→ 默认关；事实级粒度细化留待生产语料验证 |
+| **W2 supersession** | `l1-writer.ts` dedup 的 `update/merge` 决策：旧行由「归档」改为 `invalidateL1` 写 `valid_end`（只标记不删除）+ 新行补 `valid_start` | `memory.write.supersession.enabled`（当时 `false`；**2026-10-31 WP1b 已按长会话三臂翻为缺省 `true`**，见 `docs/long-session-bench.md` §6、`MemoryCore/src/core/record/write-policy.ts:80-84/:101`） | bench cov -10.9pp 显著负（LME90 gold 含旧值 turn）⇒ **当时结论**「默认关」；事实级粒度细化留待生产语料验证 |
 
 - **配置**（两个部署 yaml 均已加，含注释）：`memory.write.factKey.{enabled,separator,maxFactChars}`、`memory.write.supersession.enabled`；`tdai-gateway.yaml` 与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 同步。
 - **测试**（生产 seam，非 bench）：`write-policy.test.ts`（4 例契约）、`l1-writer.write-policy.test.ts`（4 例写面行为：缺省归档 / W1 键拼接 / W2 只标记 + valid_start / 后端无 invalidateL1 回退归档）、`config.write.test.ts`（3 例解析与 clamp）。全量 vitest 253 文件 / 2299 例通过；typecheck 无新增错误（基线 243 条既有）。
@@ -255,7 +255,7 @@ node --import tsx scripts/bench-rejudge.mjs <旧报告.json> --register --tag <t
 
 - **W3（唯一通过答案侧门禁）**：判对 77.8%（judge 对齐基线）→**84.4%（+6.7pp，CI[+0.0,+14.4]，p=0.146，不显著）**、拒答 12.2%→8.9%、cov 持平（79.3%，-0.2pp ns）、缺口桶 5/11（门禁1 PASS；门禁2 严格口径未过）。回捞 2 行档（w3）为 81.1%。**注**：此前 +14.4pp/p=0.0023 是与 scm-flash 判分的旧基线跨判分器比较，已作废（见上一小节）。机制：结论卡（3.56 卡/组 × 90 = 320 卡、769 条 part_of 边）经既有 R7-1 结论层（FTS 词面命中）入候选，`smallToBig`（#78 R-b）单跳回捞源证据行作「上下文行」注入；预算未破（结论行硬上限 floor(maxResults/2)、maxExtraLines=2，注入总行数 ≤ maxResults）。turnCov@5 -3.3pp（ns）：single-session-assistant/preference 桶 -13.3/-12.2pp（结论卡占注入位、gold-turn 覆盖被稀释），但 knowledge-update 桶 **+8.3pp**（结论卡把同一实体的多次更新聚合到一行，正是该桶需要的粒度）。**缺口桶 4/11，差 1 题**。
 - **W1**：判对 +6.7pp（CI 含负，不显著）；turnCov -2.5pp（ns）；multi-session +6.0pp / knowledge-update -8.3pp（事实短语把同事实不同时点的行拉近，稀释时间/版本信号）。按票面规则（Δ<3pt 或 CI 含负值即回滚）**默认关**（`--fact-dual-write` 保留能力）。
-- **W2**：机制正确（140 条 valid_end **只标记不删除**、主表+l1_fts 双写同步、读侧既有 `isOutsideValidityWindow(validityNow)` 生效），但 **turnCov -10.9pp 显著负**（knowledge-update 桶尤甚）；判对 +5.6pp（ns）。**与票面预期一致**：LME90 的 gold 证据常包含被取代的旧值 turn，"只留新值"直接丢 gold。→ 默认关（`--write-supersede` + `--b2b-validity`），收益需生产语料（带失效语义）验证。
+- **W2**：机制正确（140 条 valid_end **只标记不删除**、主表+l1_fts 双写同步、读侧既有 `isOutsideValidityWindow(validityNow)` 生效），但 **turnCov -10.9pp 显著负**（knowledge-update 桶尤甚）；判对 +5.6pp（ns）。**与票面预期一致**：LME90 的 gold 证据常包含被取代的旧值 turn，"只留新值"直接丢 gold。→ **当时结论**：默认关（`--write-supersede` + `--b2b-validity`），收益需生产语料（带失效语义）验证；**2026-10-31 WP1b 按长会话三臂（旧值注入 100%→0%、当前命中 33.3%→100%）把缺省翻为 `true`**，并配套 `validity.mode: soft`（见 `docs/long-session-bench.md` §6）。
 - **叠加性**：不叠加。w13 +8.9pp、combo +7.8pp，均低于 w3 单开 +11.1pp——W1/W3 答案收益重叠（都靠补充上下文），W2 的 cov 伤害进一步拖累。**本波推荐 = b1-off + W3**（仅限 B1 波内口径；读侧四件套的生产默认已由 #145 固化，现行推荐看 §2）。
 
 ### 实现与 seam（零 schema 变更）
@@ -404,8 +404,8 @@ node scripts/fit-fusion-weights.mjs compare \
 | 子项 | 落点 | 缺省 |
 |---|---|---|
 | 属性契约 | `src/core/record/cardinality.ts`：`classifyCardinality`（显式 > 单值词表 > 多值词表 > 值结构线索 > 缺省 single）、`classifyContentCardinality`（内容级，英文 cue 卡词边界） | 生效 |
-| 写面门控 | `write-policy.ts` `supersessionEligibleForContent`；`l1-writer.ts` dedup update/merge 与 `l1-extractor.ts` conflict 分支在 invalidate 前判定；多值 → 不失效、不归档、保留 target_ids 建记忆图边 | `memory.write.supersession.cardinalityGate=true`（supersession 本身仍缺省关）；`false`=回滚到 #136 前 |
-| 读面软失效 | `src/core/recall/validity-policy.ts`：`selectByValidity`（future 恒丢；expired 降权保留；presentIntent + 内容相关更新行才硬丢）、`excludeInvalidatedFor`（单一映射点）、`SOFT_VALIDITY_PENALTY=0.5` | `recall.validity.mode="hard"`（逐位现状）；soft 显式开启 |
+| 写面门控 | `write-policy.ts` `supersessionEligibleForContent`；`l1-writer.ts` dedup update/merge 与 `l1-extractor.ts` conflict 分支在 invalidate 前判定；多值 → 不失效、不归档、保留 target_ids 建记忆图边 | `memory.write.supersession.cardinalityGate=true`（supersession 自身缺省已为 `true`，2026-10-31 WP1b，见 `write-policy.ts:101`）；`false`=回滚到 #136 前 |
+| 读面软失效 | `src/core/recall/validity-policy.ts`：`selectByValidity`（future 恒丢；expired 降权保留；presentIntent + 内容相关更新行才硬丢）、`excludeInvalidatedFor`（单一映射点）、`SOFT_VALIDITY_PENALTY=0.5` | `recall.validity.mode`（当时缺省 `"hard"`；**2026-10-31 WP1b 改缺省 `soft`**，`config.ts:2234-2253`）；soft 显式开启 |
 | 三路读口径 | 钩子路 `searchHybrid`：expired 的 rrfScore × 0.5 后再进组合精排（不块状重排）；结论层两处（`shouldHardDropValidity`）与工具路 `filterByValidity("soft")`：只丢 future、保留 expired（无法重排的通道不硬丢） | 同上 |
 | 测试 | `cardinality.test.ts`（10）、`supersession-cardinality.test.ts`（验收①+内容门控）、`validity-policy.test.ts`（7）、`auto-recall-soft-validity.test.ts`（5，钩子路接线）、`l1-writer.write-policy.test.ts`（+3 写面端到端：多值不失效/单值仍失效/回滚阀门）、`filter-invalidated.test.ts`（+2 工具路 soft） | 全量 vitest 261 文件 / 2362 例通过 |
 
@@ -465,7 +465,7 @@ node --import tsx scripts/audit/r136-corpus-walkthrough.mjs
 
 - **事实级粒度未实施**（票面次优先项）：失效仍落整行，soft + 契约已把误伤从「永久丢失」降为「排序下沉」；后续票 #146（一条事实一行 + 抽取器直出 cardinality）。
 - **判对证据**：card-soft 已于 2026-10-27 20:04 配额恢复后重跑补齐（§11.2）；nogate-soft 的判对仍缺（429 时的消融档，检索侧结论已足）。
-- 生产 yaml（gitignored）与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 已加 `cardinalityGate/cardinalityDefault/validity.mode` 注释与缺省值（均缺省关/硬）。
+- 生产 yaml（gitignored）与 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` 已加 `cardinalityGate/cardinalityDefault/validity.mode` 注释与缺省值——**当时**缺省为 supersession 关 / validity 硬；**2026-10-31 WP1b 后缺省为 supersession `true` / validity `soft`**，且生产两档 yaml 已显式写同值（`write-policy.ts:101`、`config.ts:2234-2253`）。
 - 软失效的硬丢判据是「查询意图 + 内容 token 重叠 + 更新时间」，非实体级同键（行级无 subject 持久化）；事实级落地后应由 metadata.(subject,predicate) 精确判定。
 
 
@@ -1755,15 +1755,17 @@ node scripts/fit-fusion-weights.mjs compare \
 | `rerank.candidates` | 32 | 32 | 32 | matched 12 vs 32 = 0.00pp（**不是增益**）；但 kept≥4 38/90→80/90 是 84% 档的前提 | **留 32（防漂移型钉子）**：值与缺省同，钉住防池深被静默收回 |
 | `rerank.minScore` | — | — | 按 provider | matched +3.45pp（n=1）；钉死跨刻度失效 | **删钉**，吃缺省 |
 | `rerank.blend` | — | — | **键已删除** | §21.1 深池四档 α>0 全负；§21.6 浅池配对 −1.15pp | **删机制**（配置项 + 混合逻辑一起删） |
-| `recall.candidateK` | 32 | 32 | `maxResults×3` | matched +6.44pp（15 对），召回侧唯一显著键 | **留 32** |
-| `recall.fusion.mode` | 未设(rrf) | normalized | rrf | matched +2.90pp 判对，但深池锚点 −2.22pp；normalized 是 #137-F 实验档 | **不设**（走 rrf） |
+| `recall.candidateK` | 32 | 32 | `maxResults×3`（当前 = **30**） | matched +6.44pp（15 对），召回侧唯一显著键 | **留 32** |
+| `recall.fusion.mode` | rrf（显式，cloud `:174-175`） | normalized | rrf | matched +2.90pp 判对，但深池锚点 −2.22pp；normalized 是 #137-F 实验档 | **不设**（走 rrf） |
 | `recall.factChannel.enabled` | false | true(#137 实验档) | off | 判对 −1.1pp ns / turnCov +4.4pp 显著 ≠ 答案更好；§16.7 定位它是覆盖率工具 | **生产不设**（本地留实验档） |
-| `validity.mode` | soft | soft | soft | hard −3.3pp | 留 soft |
-| `smallToBig` additive×4 | 同 | 同 | 同 | w3legacy 83.3% 最高（§14） | 留 |
+| `validity.mode` | soft（cloud `:229-233`） | soft（`MemoryCore/tdai-gateway.yaml:222-223`） | soft（`MemoryCore/src/config.ts:2234-2253`） | hard −3.3pp | 留 soft（**三处一致**。本条 2026-10-31 早间曾「订正为 hard」，同日晚间 WP1b 把代码缺省翻回 soft、云模板跟切换 ⇒ 旧订正作废；收口记录 `docs/ops/defaults-drift-closeout.md`） |
+| `smallToBig` additive×4 | additive×4（cloud `:294`/`:303`） | additive×4 | **false / 2 / shared**（`config.ts:2419` 段；与生产不同档） | w3legacy 83.3% 最高（§14） | 留（**部署侧显式开**，非缺省） |
 
 > 台账用法：**证据栏为空的行不该出现在生产 yaml 里**。要加新开关，先在 bench 上拿到至少 matched 级证据，再按上表格式补一行；拿不到就别加。
 >
 > 两类钉子别混：**增益型**（实测优于缺省才钉，如 `candidateK: 32` 的 +6.44pp）与**防漂移型**（值与缺省相同、靠机制证据钉住，如 `candidates: 32` 的 kept≥4 前提）。防漂移型必须在 yaml 行尾写明「防漂移」，否则下一个人会以为它是增益证据而照抄到别的池深配置上。
+>
+> **三套真源先分清再谈「哪套说了算」**：本表的「云模板」列是生产契约，「本地 yaml」列是 bench 复跑档，此外还有第三套——`deploy/global-images/start-memory-core.sh:60-105` 每次启动用 `MEMORY_*` env **重新生成**的 `tdai-gateway.yaml`（头注写明「每次启动覆盖，请不要手动改」），该档**不含本表任何一个键** ⇒ 走 global-images 部署时九键全部等于代码缺省（写侧全关 / `validity` hard / `rerank.enabled` false）。三套的生效条件、优先级与「怎么自证改到没改到」见 [docs/ops/config-default-ledger.md](ops/config-default-ledger.md) §0。
 
 ### 21.4 票面验收判定
 
@@ -2341,7 +2343,7 @@ A → B（facts-v4 属性键 + present-intent 值级遮蔽，即 #166+#167 的�
 
 | 因子 | 落点（生产） | 单因子 | 组合贡献 |
 |---|---|---:|---|
-| 证据宽度 maxResults 5 → 8~10 | config.ts:2066 缺省 5（auto-recall.ts:1073/1720 同源读取） | +4 题 | +10 题（与口径叠加后） |
+| 证据宽度 maxResults 5 → 8~10 | `config.ts:2138` 现缺省 **10**（2026-10-31 WP1b 对齐；auto-recall 同源读取） | +4 题 | +10 题（与口径叠加后） |
 | 币值口径 | recall.injectWrapper 新档（auto-recall.ts:2044 wrapperHead） | +2 题 | — |
 | 建议口径 | 同上 | +2 题 | — |
 | 写侧失效 / 遮蔽 | 维持缺省关 | +1 题（不显著） | 不采用 |
@@ -2408,7 +2410,7 @@ TDAI_DATA_DIR=<mvtavhl6> node --import tsx scripts/bench-oracle-probe.mjs --repo
 | 本地 yaml（bench 用它） | `MemoryCore/tdai-gateway.yaml` | `foldClusterEnabled: true`(:156)、`rerank` 开、`routing: assistantRecall`(:260)、`timeProxFallbackEnabled: true`(:271)、`graph/scene/coreRef` 全 0、`validity` soft |
 | 云部署 | `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml` | 与本地 yaml 同档（:146/:236/:247），`validity` hard |
 
-结论：**本文件所有 §24/§25 读数都是在「本地 yaml」档下测的**，它同时开着两套折叠（`foldNearDuplicates` 无条件 `auto-recall.ts:2040`，F-CLUSTER v2 受 `foldClusterEnabled` 门控 `:2665`）。生产云模板与之在 `validity.mode` 上不一致，这一点在 §21.3 台账里写反过（记为「代码缺省 soft」，代码实为 hard，`config.ts:2156`）。
+结论：**本文件所有 §24/§25 读数都是在「本地 yaml」档下测的**，它同时开着两套折叠（`foldNearDuplicates` 无条件 `auto-recall.ts:2040`，F-CLUSTER v2 受 `foldClusterEnabled` 门控 `:2665`）。生产云模板与之在 `validity.mode` 上不一致，这一点在 §21.3 台账里写反过（记为「代码缺省 soft」，代码实为 hard，`MemoryCore/src/config.ts:2202`）；**§21.3 该行已于 2026-10-31 订正**，三套真源与「哪套真正生效」见 [docs/ops/config-default-ledger.md](ops/config-default-ledger.md) §0。
 
 ### 25.3 数据结构判定
 
@@ -2495,7 +2497,7 @@ k=10 时 `hits` 分布：**2 条 33/90、3 条 13、4 条 7、5 条 7、6 条 7�
 #### C 缺省值三处不一致（9 条，最容易再犯的一类）
 
 - `ftsOnlyInjectCap`：接口注释「缺省 2」（`config.ts:508`）→ 解析产物 `undefined`（`:2320`）→ 真实值 2 藏在消费点（`auto-recall.ts:1843`）。
-- `validity.mode`：§21.3 台账写「代码缺省 soft」，代码实为 `hard`（`config.ts:2156`）；本地 yaml soft、云模板 hard。
+- `validity.mode`：§21.3 台账曾写「代码缺省 soft」，代码实为 `hard`（`MemoryCore/src/config.ts:2199-2207`，缺省分支在 `:2202`）；本地 yaml `MemoryCore/tdai-gateway.yaml:222-223` = soft、云模板 `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml:210-211` = hard——**2026-10-31 已订正** §21.3 三列，三套真源见 [docs/ops/config-default-ledger.md](ops/config-default-ledger.md) §0。
 - `maxConclusions`（运行期 `floor(maxResults/2)`）、`conclusionLayer.rerankGate.minScore`（−1）、`cacheTtlMs` 同类。
 - `injectWrapper` 的 `"calibrated"` 档：§24.9 承诺的落点，**类型与解析只有 legacy/neutral**（`config.ts:496`）——承诺未实现。
 

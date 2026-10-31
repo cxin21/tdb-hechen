@@ -167,3 +167,15 @@
 - 生产网关重启：8420 监听 pid 34932 → 29832，新进程 2026-10-25 08:57:23 启动；MemoryCore/tdai-gateway.yaml:64 dedupTimeoutMs: 90000 随本次启动加载（进程启动晚于 yaml 写入 08:08:32，mtime 2026-10-25T00:08:32.866Z 佐证），A1 配置化在生产生效。
 - /health 复核：200 正常。
 - 观察口径不变：盯 err.log「Batch conflict detection failed, defaulting all to store」降级行与 DEDUP-FALLBACK 计数（round 39 基线 0）；#79 以受控实证（拍板口径 b）+ 生产配置生效关票，自然风暴长期观察为非阻塞跟进，cloud 版 yaml 随下次部署生效。
+
+
+## #76 观察窗回收（2026-11-01 01:32 CST，顺延）
+
+- 回收点：schedule-9281c35a 提醒触发（occurrence 2026-10-31T17:32Z）；数据口径=生产 journal team-2k12lgb650/agt-2m7buribzz 全量 379 条（ts 2026-10-23T05:41:39Z→2026-10-31T17:32:44Z）。
+- 生效起算：EFF=2026-10-26T00:56:55Z（翻转后首次网关启动 2026-10-26 08:56:55 CST）。pre 119 条 / post 259 条。
+- 读数：pre hit 98.3%、charsAvg 2628、结论行 p50 1042 / p90 2027、截断标记 76；post hit 95.0%、charsAvg 1127、结论行 p50 252 / p90 448、句末标点 315/315、截断标记 0、每卡结论 {0:52,1:75,2:99,3+:39}、smallToBig 上下文行 129。
+- 决定性判定：317 条 post 结论行按 perLine=floor(min(2000/n,2000)) 核，0 条越预算 → **F2 dormant（窗口内从未触发）**；chars -57% 混杂 #99/#78/#134/#135/#138 与卡片重蒸馏，不可归因 F2；hit 95.0% vs 98.3% 以构成变化为主（52 条零结论、13 条空召回）。
+- 异常：11-01 00:29–00:39 LLM Token Plan 配额耗尽（2067）→ recall 超时 ×5 → core 死亡 → watchdog 00:39:10 重启；yaml mtime 01:32:56 外部写入未溯源（内容完整）。
+- 三档现状：本地 :251/:255 两键在；base:309-310、cloud:263-264 两键在（2026-11-01 production-profile 登记）。
+- 处置：未满 7 整天 → 顺延；收口日 2026-11-02 08:56 CST 后复核，若仍 0 触发按「生效+实证 dormant+无劣化」关票并记 dormant 结论；提醒重排 11-02 09:00。Low 项（floor=0 判关）待另票。
+

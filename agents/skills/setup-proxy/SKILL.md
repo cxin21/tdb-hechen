@@ -23,7 +23,7 @@ Memory Proxy 是一个 LLM 请求代理，在请求转发到上游 LLM 之前注
 | codebuddy | `~/.codebuddy/models.json` | OpenAI Chat | models 数组追加条目 |
 | codex | `~/.codex/config.toml` | OpenAI Responses | TOML 格式，必须 `wire_api = "responses"` |
 | workbuddy | `~/.workbuddy/models.json` | OpenAI Chat / Responses | 顶层数组 |
-| dsh | `~/.dsh/settings.yaml` + `~/.dsh/.credentials.yaml` | OpenAI Chat (无 /v1) | 两个文件 + chmod 700/600 |
+| dsh | `~/.dsh/settings.yaml` + `~/.dsh/.credentials.yaml` | **Anthropic Messages (v0.2+)** / OpenAI Chat 无 /v1 (≤v0.1.x) | 两个文件 + chmod 700/600 |
 | hermes | `~/.hermes/config.yaml` | OpenAI Chat | 需 header 预选 (x-team-id/agent-id/task-id) |
 | openclaw | `~/.openclaw/openclaw.json` | OpenAI Chat | 需 header 预选 + allowPrivateNetwork |
 
@@ -102,11 +102,24 @@ curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/${AGENT}/${INSTANCE_ID}/v1/ch
   -H "Authorization: Bearer ${USER_KEY}" \
   -d '{"model":"'${MODEL_ID}'","messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}'
 
-# dsh → OpenAI Chat 但不带 /v1
+# dsh ≥ v0.2 → Anthropic Messages（客户端硬编码 /v1/messages）
+curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/dsh/${INSTANCE_ID}/v1/messages" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${USER_KEY}" \
+  -d '{"model":"'${MODEL_ID}'","max_tokens":1,"stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"ping"}]}]}'
+
+# dsh ≤ v0.1.x → OpenAI Chat 但不带 /v1（旧客户端）
 curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/dsh/${INSTANCE_ID}/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${USER_KEY}" \
   -d '{"model":"'${MODEL_ID}'","messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}'
+
+# 端点对照（proxy 侧两套同时注册，见 MemoryProxy/src/server.ts 的 dsh 端点块）：
+#   /dsh/:spaceId/v1/messages           → Anthropic（v0.2+ 主路径）
+#   /dsh/:spaceId/messages              → Anthropic（无 /v1 别名）
+#   /dsh/:spaceId/v1/chat/completions   → OpenAI（≤v0.1.x）
+#   /dsh/:spaceId/chat/completions      → OpenAI 无 /v1
+# 探测 dsh 前先 dsh --version：用错端点会落到通用兜底路由，表现为 404 / 解析失败，不是协议错误。
 
 # Codex → Responses API
 curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/codex/${INSTANCE_ID}/v1/responses" \
@@ -254,5 +267,6 @@ PANEL_URL="${PANEL_URL}" TDAI_SERVICE_ID="${INSTANCE_ID}" TDAI_USER_KEY="${USER_
 - 脚本会自动备份原配置文件为 `.bak.<timestamp>`
 - CC 的所有模型环境变量（HAIKU/SONNET/OPUS/SUBAGENT）都会统一设置为用户选的模型
 - Codex 首次对话前必须切 Plan 模式（Shift+Tab），这是客户端限制
-- dsh 的 URL 不带 `/v1`，这是客户端硬编码的
+- dsh 的协议随版本变：**≥v0.2 走 Anthropic `/v1/messages`，≤v0.1.x 走 OpenAI `/chat/completions`（不带 `/v1`，客户端硬编码）**；两套端点在 proxy 侧同时注册。先确认 `dsh --version`，再选探测端点。
+- dsh 的 session-init form 帧按**请求协议**回：proxy 会断言返回帧 `content-type` 与请求 `stream` 期望一致，不一致时打日志 `[session-init:dsh] form frame content-type=…`（`MemoryProxy/src/anthropicHandler.ts`）。看到这条 = 客户端协议形态与端点不匹配，先查版本/端点，不是 key 问题。
 - Hermes/OpenClaw 的 x-conversation-id 每次新对话需要手动更换
