@@ -1,0 +1,13 @@
+# Bundle patch layer of @tdb/agemem-dsh.
+#
+# The file must stay a top-level YAML array: dsh-app-boot rejects an overlay
+# patch whose document is not an array, and it must stay EMPTY of entries.
+# This plugin is configured through the settings page, which writes a
+# "- id: tdb-agemem-dsh / config:" override row into the profile patch file.
+# dsh-app-boot appends insert rows without de-duplicating ids, and
+# dsh-config-editor only lists a profile entry whose id occurs exactly once, so
+# an insert of the same id here would take this plugin off the settings page
+# entirely. Declaration only: the layer exists so the profile records this
+# package as a bundle, and future patch entries have a home that is not the
+# deployment-managed block.
+[]

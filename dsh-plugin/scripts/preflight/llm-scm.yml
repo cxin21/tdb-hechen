@@ -1,0 +1,21 @@
+# Preflight overlay: the headless template defaults to the deepseek-official
+# provider, which needs DEEPSEEK_API_KEY. This machine uses the SCM route, so the
+# preflight pins provider/model to it. SCM_API_KEY is read from the credentials
+# store by e2e-preflight.mjs and passed to the child through its ENV only.
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      scm:
+        apiKeyEnv: SCM_API_KEY
+        api: openai-completions
+        baseURL: http://10.16.235.171:50003/v1
+        models:
+          - id: scm-flash
+            contextWindow: 1000000
+            maxTokens: 131072
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: scm
+    model: scm-flash

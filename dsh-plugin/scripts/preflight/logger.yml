@@ -1,0 +1,7 @@
+# Preflight overlay: without a console logger exporter every plugin log line
+# (info/warn) goes into the void, which makes a MISSING segment undebuggable.
+# This is a host logger, not a change to the plugin under test.
+- id: logger-console
+  name: "@deepseek-ai/cordis-plugin-logger-console"
+  config:
+    level: 3
