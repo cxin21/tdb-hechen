@@ -1,0 +1,670 @@
+# ============================================================================
+# MemoryCore 配置模板 — 8420 / 单进程 standalone（deployMode: standalone）
+# 真源：MemoryCore/src/config.ts（memory.* 解析）+ MemoryCore/src/gateway/config.ts（网关段）
+#       + MemoryCore/src/core/skill/skill-config.ts（skill 缺省）+ MemoryCore/tdai-gateway.yaml（现网值）
+#       本模板与之逐键对齐，由 scripts/check-config-templates.mjs 校验（格式契约见 config/SPEC.md）
+# 用法：复制到 MemoryCore/tdai-gateway.yaml（或 TDAI_GATEWAY_CONFIG 指向的路径）后按需删段改值。
+#       值列 = 源码缺省（密钥类写成 ${ENV} 占位），因此全量拷贝 = 与源码缺省同构、不改变行为；
+#       唯一例外是「硬坑 A」的 0 与删键语义差别，以及被 env/config-override.json 覆盖的键。
+#   注意：对象块（recall.fusion / factChannel / conclusionLayer.rerankGate 等）在本模板里是『块存在、子键为 null』，
+#   与源码『整块缺键』在个别 Object.keys(x).length===0 判空处**不等价**；行为仍在缺省档，但要逐位复现
+#   生产形态请整块删除（删块不影响 checker 的键集合，键仍写在本模板里）。
+# 敏感值：一律 ${ENV_NAME} 占位，真实值只进 D:/TDB/etc/env.ps1
+#   （占位符不会被任何加载器替换：拷贝后必须填真实值，或删掉该键走缺省/环境变量）
+# 每条键的注释： # <类型> default=<源码缺省> — <作用> [src:<文件>:<行号>]
+#   default=unset 表示该键可选：不写=undefined（键不存在），写 null 与不写等价。
+# ============================================================================
+
+# 段名说明：skill 是顶层段；memory.skill 是**别名位置**（gateway 把顶层 skill 浅合并后镜像到 memory.skill，
+#   src/gateway/config.ts:617-624），因此运行时能看到成对的 memory.skill.* 叶子，模板只写顶层 skill。
+# ─── 读这份模板前必须知道的四条（顺序即优先级）────────────────────────────────
+# 1) 优先级链（左高右低）：请求级 settings（/v3/recall body.settings 等）
+#      > env 读取器（MemoryCore/src/utils/env-config.ts，仅文末「env-only」列出的键）
+#      > D:/TDB/data/config-override.json（白名单覆盖：llm / embedding / rerank /
+#        importancePenalty / worthiness / extraction.scenePoisonSplit / extraction.sceneBatchMaxChars，
+#        见 MemoryCore/src/gateway/settings-override.ts，合并点 MemoryCore/src/gateway/config.ts:501-519）
+#      > 本文件 yaml > 源码缺省（MemoryCore/src/config.ts parseConfig）
+#    ⇒ 改了 yaml 不见效时，先看 config-override.json 与 env.ps1，别先怀疑 yaml 没被读到。
+# 2) 【硬坑 A】0 ≠ 删键：memory.recall.weights.* 的折扣/加权项（graphDiscount / sceneBoost /
+#    coreRefBoost 等同族）写 0 = 显式关闭该通道；删键或写 null = 回落源码缺省（可能非 0）
+#    ⇒ 通道反而被打开。要关就显式写 0，永远不要用「不写」表达关闭。
+# 3) 【硬坑 B】未知枚举值 fail-secure，不回落：memory.auth.requireTeamOwnership 拼成 "enfroce"
+#    ⇒ 判为 enforce（数据面 403 TEAM_NOT_OWNED）；memory.auth.unknownPrincipalPolicy 拼错 ⇒ reject；
+#    memory.wiki.teamVerify 拼错 ⇒ enforce；memory.recall.injectWrapper.mode 未知 ⇒ 回落 calibrated。
+#    想用缺省请写空串或删键。改档后复测两个入口：/v3/conversation/add 与 /v3/core/read。
+# 4) 【硬坑 C】memory.extraction.enabled 不是有效闸：gateway 路径无条件构建 StatefulPipelineManager
+#    （MemoryCore/src/gateway/server.ts:2500-2510 / :2548-2572），L1 照常入队并真的调 LLM。
+#    能让后台流水线停转的是 memory.lifecycle.enabled（server.ts:2609 早退）与
+#    skill.enabled（server.ts:3095-3099 池闸）。
+
+# ─── env-only 变量（不进 yaml；读取点 MemoryCore/src/utils/env-config.ts）────────
+#   MEMORY_LOG_LEVEL(:64)  MEMORY_MAX_BODY_BYTES(:79)
+#   VDB_ENDPOINT/VDB_APIKEY/VDB_DATABASE/VDB_COLLECTION…(:95-:102)
+#   COS_SECRET_ID/COS_SECRET_KEY/COS_REGION/COS_BUCKET…(:116-:158)
+#   TDAI_API_TRACE_ENABLED(:166)  V3_STRICT_ISOLATION(:186，缺省开；未知值按开处理)
+#   MEMORY_AUTH_REQUIRE_USER_BINDING(:202)  MEMORY_AUTH_UNKNOWN_PRINCIPAL_POLICY(:210)
+#   MEMORY_AUTH_ADMIN_BYPASS_ENABLED(:218)  MEMORY_AUTH_REQUIRE_TEAM_OWNERSHIP(:230)
+#   MEMORY_AUTH_TEAM_OWNERSHIP_WHITELIST(:238，逗号分隔；**覆盖**而非合并 yaml 白名单)
+#   GATEWAY_API_KEY 由 resolveApiKey(:252) 读取；未配则本进程随机生成（重启后旧 key 全失效）
+#   TDAI_SKILL_ENABLED / TDAI_SKILL_WORKER_CONCURRENCY / TDAI_GATEWAY_CONFIG / TDAI_DEPLOY_MODE /
+#   STATE_BACKEND / TDAI_DATA_DIR 见 src/gateway/config.ts 的 env 读取处
+
+# ─── 部署与进程 ───────────────────────────────
+#                              [src:MemoryCore/src/gateway/config.ts]
+deployMode: "standalone"  # enum(standalone|service) default="standalone" — standalone=单进程自包含(默认)；service=多租户云服务(状态外置 IStateBackend、起 TimerScanner/PipelineWorker) [src:config.ts:628]
+stateBackend: null  # enum(local|redis) default=unset — 服务态后端；local=进程内文件/内存，redis=跨副本协调；不写=按 deployMode 自动(standalone→local) [src:config.ts:632]
+instanceId: null  # str default=unset — 服务实例 ID：service 模式必须显式给，standalone 缺省 default；请求头 x-tdai-service-id 可逐调用覆盖 [src:config.ts:637]
+server:
+  port: 8420  # int default=8420 — HTTP 监听端口；env TDAI_GATEWAY_PORT 优先 [src:config.ts:434]
+  host: "127.0.0.1"  # str default="127.0.0.1" — 监听地址；非回环且未配 apiKey 时启动 WARN（裸奔暴露） [src:config.ts:435]
+  apiKey: "${TDAI_GATEWAY_APIKEY}"  # str default=unset — /health 之外所有路由的 Bearer 密钥；不配则启动生成临时 key（重启失效，日志 loud 打印）；env 优先 [src:config.ts:445]
+  corsOrigins: []  # list<str> default=[] — CORS 白名单；[]=不发 Access-Control-* 头（最严，缺省）；["*"]=放行全部(仅本地) [src:config.ts:981]
+data:
+  baseDir: null  # path default=unset — 数据根：sqlite/vectors/journal/skills/config-override.json 都在其下；env TDAI_DATA_DIR 优先 [src:config.ts:450]
+llm:
+  # ─── LLM（顶层）──────────────────────────────
+  #  优先级：config-override.json > yaml > TDAI_LLM_* env(普通字段)，见上方优先级段
+  #                              [src:MemoryCore/src/gateway/config.ts]
+  baseUrl: "https://api.openai.com/v1"  # str default="https://api.openai.com/v1" — LLM 端点（OpenAI 兼容）；env TDAI_LLM_BASE_URL 优先；provider=proxy 时运行期拼 /proxy/<iid>/v1 [src:config.ts:467]
+  apiKey: "${TDAI_LLM_API_KEY}"  # str default="" — LLM 密钥；实际 SoT=config-override.json(admin settings)，yaml 次之，env TDAI_LLM_API_KEY 仅弃用回退 [src:config.ts:470]
+  model: "gpt-4o"  # str default="gpt-4o" — 默认模型名；env TDAI_LLM_MODEL 优先 [src:config.ts:471]
+  maxTokens: 4096  # int default=4096 — 单次 LLM 输出 token 上限；0=不限制（reasoning 模型建议 0，4096 帽会截成空响应） [src:config.ts:472]
+  timeoutMs: 120000  # ms default=120000 — 单次 LLM 调用超时毫秒 [src:config.ts:473]
+  provider: "openai"  # enum(openai|proxy) default="openai" — openai=直连兼容端点；proxy=走 context_proxy 且 Authorization 用 memory 系统用户 key [src:config.ts:463]
+  stream: false  # bool default=false — 是否流式；env TDAI_LLM_STREAM=true/false 可覆盖（显式关也可） [src:config.ts:480]
+  proxy:
+    useMemorySystemUserKey: true  # bool default=true — provider=proxy 时用 metadata 里 memory 系统用户的 userKey 作为 Authorization [src:config.ts:476]
+redis:
+  # ─── 服务态后端（仅 deployMode=service / stateBackend=redis 需要）──────
+  host: "127.0.0.1"  # str default="127.0.0.1" — Redis 地址（stateBackend=redis 时必填） [src:config.ts:643]
+  port: 6379  # int default=6379 — Redis 端口 [src:config.ts:644]
+  password: "${REDIS_PASSWORD}"  # str default=unset — Redis 密码；不配=无鉴权 [src:config.ts:645]
+  db: 0  # int default=0 — Redis 逻辑库号 [src:config.ts:646]
+  keyPrefix: "tdai_memory_v2"  # str default="tdai_memory_v2" — 键前缀；v2 起与旧 tdai_memory 物理隔离（锁 hash tag 语义变更，混跑会破坏互斥） [src:config.ts:651]
+shark:
+  baseUrl: null  # str default=unset — Shark 远端配置服务地址（service 模式拉实例配置） [src:config.ts:657]
+  vdbTtlMs: 300000  # ms default=300000 — 远端 VDB 配置缓存 TTL [src:config.ts:658]
+  cosBufferMs: 120000  # ms default=120000 — COS 配置缓冲刷新间隔 [src:config.ts:659]
+  maxInstances: 1000  # int default=1000 — 本地缓存的实例上限（store maxStores 同源） [src:config.ts:660]
+scanner:
+  instances: "default"  # str default="default" — TimerScanner 扫描实例列表（逗号分隔） [src:config.ts:666]
+  instancesSharkUrl: null  # str default=unset — 从 Shark 动态拉实例列表的地址；配了则覆盖 instances [src:config.ts:667]
+  intervalMs: 500  # ms default=500 — 扫描周期；越小定时任务越准时、DB 压力越大 [src:config.ts:668]
+  nodeId: null  # str default=unset — 节点 ID（多副本分片认领，缺省按主机生成） [src:config.ts:669]
+worker:
+  pollMs: 200  # ms default=200 — PipelineWorker 轮询间隔 [src:config.ts:675]
+  concurrency: 60  # int default=60 — worker 并发协程数；调大提吞吐也压 DB/LLM 配额 [src:config.ts:676]
+cos:
+  domain: null  # str default=unset — COS 访问域名（自定义 CDN 时配） [src:config.ts:682]
+  generationLogRetentionDays: 30  # int default=30 — 生成日志保留天数；0=关闭生命周期管理；非负整数，非法直接启动抛错 [src:config.ts:683]
+observability:
+  otel:
+    # ─── 可观测性（本地三件套全关）──────────────
+    enabled: false  # bool default=false — OTel SDK（trace+log）总开关；env TDAI_OTEL_ENABLED 兜底 [src:config.ts:697]
+    endpoint: "http://localhost:4317"  # str default="http://localhost:4317" — OTLP collector 地址 [src:config.ts:700]
+    protocol: "grpc"  # enum(grpc|http/protobuf) default="grpc" — OTLP 传输协议 [src:config.ts:701]
+    serviceName: "core"  # str default="core" — service.name 资源属性 [src:config.ts:702]
+    serviceVersion: "1.0.0"  # str default="1.0.0" — service.version 资源属性 [src:config.ts:703]
+    tenantId: ""  # str default="" — 智研 APM 租户 ID [src:config.ts:704]
+    logExportInterval: 5  # int default=5 — 日志导出批量间隔（秒） [src:config.ts:705]
+  clickhouse:
+    enabled: false  # bool default=false — ClickHouse 双写开关 [src:config.ts:711]
+    endpoint: ""  # str default="" — ClickHouse HTTP 端点 [src:config.ts:714]
+    username: "default"  # str default="default" — ClickHouse 用户名 [src:config.ts:715]
+    password: "${CLICKHOUSE_PASSWORD}"  # str default="" — ClickHouse 密码 [src:config.ts:716]
+    database: "tdai_eval"  # str default="tdai_eval" — ClickHouse 库名 [src:config.ts:717]
+  kafka:
+    enabled: false  # bool default=false — Kafka 指标上报开关；配了 brokers 时缺省自动 true [src:config.ts:725]
+    brokers: ""  # str default="" — broker 列表（逗号分隔），内部会 split 成数组 [src:config.ts:723]
+    topic: "memory_monitor"  # str default="memory_monitor" — 指标 topic [src:config.ts:724]
+  langfuse:
+    enabled: false  # bool default=false — Langfuse LLM trace 上报开关 [src:config.ts:733]
+    host: ""  # str default="" — Langfuse 实例地址 [src:config.ts:736]
+    publicKey: "${LANGFUSE_PUBLIC_KEY}"  # str default="" — Langfuse 公钥 [src:config.ts:737]
+    secretKey: "${LANGFUSE_SECRET_KEY}"  # str default="" — Langfuse 私钥 [src:config.ts:738]
+metadata:
+  # ─── 元数据模块（users/teams/存储）──────────
+  maxUsersPerInstance: 500  # int default=500 — 单实例用户配额；<=0 回落 500 [src:config.ts:761]
+  maxTeamsPerInstance: 100  # int default=100 — 单实例 team 配额；<=0 回落 100 [src:config.ts:765]
+  configParamsFile: null  # path default=unset — metadata config params JSON 文件路径（env TDAI_METADATA_CONFIG_PARAMS_FILE 优先） [src:config.ts:769]
+  store:
+    sqliteBaseDir: null  # path default=unset — metadata sqlite 根目录（缺省 {data.baseDir}/metadata） [src:config.ts:753]
+    mongoUri: null  # str default=unset — Mongo 连接串；配了走 Mongo 适配器 [src:config.ts:754]
+    mongoTransactions: true  # bool default=true — 是否用 Mongo 事务（需副本集） [src:config.ts:755]
+    storeCacheMaxInstances: null  # int default=unset — metadata store 进程内缓存实例上限 [src:config.ts:756]
+    mongoDbPrefix: "tdai_metadata"  # str default="tdai_metadata" — Mongo 库名前缀，库名 = {prefix}_{instance_id} [src:config.ts:757]
+  systemUser:
+    memory:
+      userId: null  # str default=unset — 内部 memory 系统用户 user_id（仅 auth/verify，不落库） [src:config.ts:775]
+      displayName: null  # str default=unset — 系统用户显示名 [src:config.ts:776]
+      userKey: "${TDAI_MEMORY_SYSTEM_USER_KEY}"  # str default=unset — 系统用户 userKey（llm.provider=proxy 时作为 Authorization 凭据） [src:config.ts:777]
+offload:
+  # ─── 网关级 offload 执行器（与 memory.offload 不是同一块！）──────
+  forceTriggerThreshold: 4  # int default=4 — pending 积压到多少条强制触发 offload [src:config.ts:785]
+  pendingMaxAgeSeconds: 30  # int default=30 — pending 任务最大存活秒数，超龄重投 [src:config.ts:786]
+  l1Temperature: 0.3  # float default=0.3 — offload L1 摘要温度 [src:config.ts:787]
+  l1MaxTokens: 8000  # int default=8000 — offload L1 输出上限 [src:config.ts:788]
+  l1TimeoutMs: 120000  # ms default=120000 — offload L1 超时 [src:config.ts:789]
+  l15Temperature: 0.2  # float default=0.2 — offload L1.5 温度 [src:config.ts:790]
+  l15MaxTokens: 3000  # int default=3000 — offload L1.5 输出上限 [src:config.ts:791]
+  l15TimeoutMs: 120000  # ms default=120000 — offload L1.5 超时 [src:config.ts:792]
+  l2Temperature: 0.4  # float default=0.4 — offload L2 温度 [src:config.ts:793]
+  l2MaxTokens: 16000  # int default=16000 — offload L2 输出上限 [src:config.ts:794]
+  l2TimeoutMs: 120000  # ms default=120000 — offload L2 超时 [src:config.ts:795]
+  l2NullThreshold: 6  # int default=6 — 连续 N 次 L2 空结果即判定无效 [src:config.ts:796]
+  mildOffloadRatio: 0.5  # float default=0.5 — 上下文占用达此比例触发轻度压缩 [src:config.ts:797]
+  aggressiveCompressRatio: 0.85  # float default=0.85 — 达此比例触发激进压缩 [src:config.ts:798]
+  emergencyCompressRatio: 0.95  # float default=0.95 — 达此比例触发应急压缩 [src:config.ts:799]
+  maxRetries: 3  # int default=3 — offload 任务重试次数上限 [src:config.ts:800]
+memory:
+  # ─── memory：prompt / 捕获 / 抽取 / 写面 / 场景 / 管线 ──────────
+  #                              [src:MemoryCore/src/config.ts（c = yaml 的 memory 段）]
+  promptMode: "chat"  # enum(chat|code) default="chat" — 全局 prompt 家族；chat=对话体、code=代码体；组级 extraction.promptMode/persona.promptMode 可覆盖；顶层 promptMode 与 prompts.mode 是别名 [src:config.ts:1466]
+  capture:
+    enabled: true  # bool default=true — L0 捕获总开关：每轮 user/assistant 消息写短期记忆；关=不落 L0（抽取无原料） [src:config.ts:2161]
+    excludeAgents: []  # list<str> default=[] — 不捕获的 agent 名单（按 agent_id 精确匹配） [src:config.ts:2162]
+    l0l1RetentionDays: 0  # int default=0 — L0/L1 保留天数；<=0=关闭清理；1~2 天须同时开 allowAggressiveCleanup 才生效；>=3 直接生效 [src:config.ts:2163]
+    allowAggressiveCleanup: false  # bool default=false — 允许 retentionDays<3 的激进清理（1~2 天） [src:config.ts:1473]
+    cleanTime: "03:00"  # str default="03:00" — 每日清理时刻 HH:mm（本地时区）；格式非法回落 03:00 [src:config.ts:1581]
+  extraction:
+    enabled: true  # bool default=true — L1 抽取总开关（注意：gateway 路径下不是有效闸，只影响 legacy manaCTD；真闸是 pipeline/lifecycle） [src:config.ts:2167]
+    enableDedup: true  # bool default=true — 入库前 LLM 判重合并（相似记忆合并防膨胀） [src:config.ts:2168]
+    maxMemoriesPerSession: 20  # int default=20 — 单会话单批最多抽取条数（防 LLM 失控灌库） [src:config.ts:2169]
+    sessionScope: "session"  # enum(session|profile) default="session" — 抽取语料会话范围；session=只抽最靠前的一个 session_id（其余延后，零丢行）；profile=旧多会话同批；非法值回落 session [src:config.ts:2171]
+    durativeEnabled: false  # bool default=false — 持续性状态事实写 valid_start（缺省关=prompt 字节不变） [src:config.ts:2173]
+    recurrenceEnabled: false  # bool default=false — 周期性事实 RECURRENCE_BLOCK 提取（LLM 只提议、确定性门裁决） [src:config.ts:2175]
+    model: null  # str default=unset — 抽取专用模型名；不写=继承 llm.model [src:config.ts:2176]
+    promptMode: "chat"  # enum(chat|code) default="chat" — 抽取 prompt 家族；缺省跟随全局 promptMode [src:config.ts:2177]
+    extractionTimeoutMs: 300000  # ms default=300000 — 单批抽取超时；clamp [60000,3600000]（毒批 300s 悬挂堆积的根修） [src:config.ts:2179]
+    dedupTimeoutMs: 300000  # ms default=300000 — 判重 LLM 超时；clamp [60000,3600000]；超时走 storeAllDirectly 降级 [src:config.ts:2184]
+    ignoreSessionPatterns: ["probe-","session-probe-"]  # list<str> default=["probe-","session-probe-"] — 命中这些模式的会话不参与 L1 抽取、不计 batch；匹配=前缀+* 通配，对 session_id 与 sessionKey 双生效；写 []=关闸 [src:config.ts:2190]
+    scenePoisonSplit: false  # bool default=false — scene 抽取失败且批内>1 条时对半递归重试（毒批拆分） [src:config.ts:2192]
+    sceneBatchMaxChars: 0  # int default=0 — scene 抽取前按 memoriesJson 估长贪心预分批；0=关 [src:config.ts:2193]
+    facts:
+      enabled: false  # bool default=false — 多事实抽取块：每条记忆多产出 2-5 条自足短语（+可选三元组）落 metadata.facts，供写侧事实通道建键 [src:config.ts:2198]
+      maxFacts: 5  # int default=5 — 多事实短语上限；clamp 1..12（0/负/非法→5） [src:config.ts:2199]
+      includeTriples: false  # bool default=false — 是否把三元组展开成短语一起进 metadata [src:config.ts:2200]
+  write:
+    factKey:
+      #   #134 写面策略：生产最优档 = supersession 开 / factKey 关 / factRows 关
+      enabled: false  # bool default=false — 写面事实键：L1 embedding 键=原文+分隔符+事实短语；LME90 实测负收益，生产保持关（开负收益） [src:config.ts:2212]
+      mode: "replace"  # enum(replace|channel) default="replace" — replace=旧键替换形态；channel=原文主索引逐位不动 + 事实短语独立向量表 l1_fact_vec [src:config.ts:2214]
+      separator: " | "  # str default=" | " — 原文与事实短语的拼接分隔符；空白串/null 回落默认（前后空格是键格式的一部分，不 trim） [src:config.ts:2217]
+      maxFactChars: 240  # int default=240 — 事实部分字符预算（整条截断，不切短语）；0=不拼接 [src:config.ts:2221]
+      maxFacts: 5  # int default=5 — 最多几条事实短语；clamp 1..12 [src:config.ts:2222]
+      includeTriples: false  # bool default=false — 三元组是否也进键 [src:config.ts:2223]
+      onlyForTypes: []  # list<str> default=[] — 只对这些 memory type 建事实键；[]=全类型 [src:config.ts:2224]
+    supersession:
+      enabled: true  # bool default=true — 写时双时态：dedup 的 update/merge 把旧行从归档改为只标 valid_end（零删除）；实测 turnCov 负，生产保持关 [src:config.ts:2234]
+      cardinalityGate: true  # bool default=true — 先判谓词基数：多值/模态（likes/想/考虑…）一律 additive 不失效旧行，防误删唯一旧值 [src:config.ts:2235]
+      cardinalityDefault: "single"  # enum(single|multi) default="single" — 内容级无线索时的缺省基数；single=可失效（保覆盖），multi=保守不失效 [src:config.ts:2236]
+    factRows:
+      enabled: false  # bool default=false — 事实行粒度：一条记忆拆成多行存储；缺省关=整行失效语义逐位不变 [src:config.ts:2246]
+      maxFacts: null  # int default=unset — 显式给才生效（不写则回落 factKey.maxFacts）；clamp 0..12，非法→5 [src:config.ts:2247]
+  persona:
+    # ─── memory.persona（L2 场景） / memory.pipeline ──────────
+    triggerEveryN: 50  # int default=50 — L2 场景整合触发：每 N 条对话归纳一轮场景块 [src:config.ts:2253]
+    maxScenes: 15  # int default=15 — L2 场景块保留上限（超出按活跃度轮转） [src:config.ts:2254]
+    backupCount: 3  # int default=3 — 画像备份保留份数 [src:config.ts:2255]
+    sceneBackupCount: 10  # int default=10 — 场景块备份保留份数 [src:config.ts:2256]
+    model: null  # str default=unset — L2 模型名；不写=继承 llm.model [src:config.ts:2257]
+    promptMode: "chat"  # enum(chat|code) default="chat" — L2 prompt 家族；缺省跟随全局 promptMode [src:config.ts:2258]
+    reasoningEffort: null  # str default=unset — 逐调用思考档；"none"=关深度思考（L2 p50 −65% 实测）；不写=端点默认 [src:config.ts:2260]
+  pipeline:
+    everyNConversations: 5  # int default=5 — 每 N 轮对话触发一次 L1 提取（gateway 路径由 StatefulPipelineManager 消费） [src:config.ts:2263]
+    enableWarmup: true  # bool default=true — 启动预热：服务起来先补跑积压提取任务 [src:config.ts:2264]
+    l1IdleTimeoutSeconds: 600  # int default=600 — 会话静默 N 秒强制触发 L1（不等凑满 N 轮） [src:config.ts:2265]
+    l2DelayAfterL1Seconds: 10  # int default=10 — L1 完成后延迟 N 秒触发 L2（错开写入高峰） [src:config.ts:2266]
+    l2MinIntervalSeconds: 900  # int default=900 — L2 最小间隔（节流） [src:config.ts:2267]
+    l2MaxIntervalSeconds: 3600  # int default=3600 — L2 最大间隔（兜底必跑） [src:config.ts:2268]
+    sessionActiveWindowHours: 24  # int default=24 — 会话活跃窗口小时数：窗口内才视为可继续的同段会话 [src:config.ts:2269]
+  # ─── memory：存储 / 召回（主段）/ journal / 嵌入 / BM25 ──────────
+  #                              [src:MemoryCore/src/config.ts]
+  storeBackend: "sqlite"  # enum(sqlite|tcvdb) default="sqlite" — 存储后端；tcvdb 需 memory.tcvdb.url+apiKey；非法值静默回落 sqlite [src:config.ts:1587]
+  recall:
+    enabled: true  # bool default=true — 召回总开关；false=不做任何召回（注入块为空） [src:config.ts:2272]
+    maxResults: 10  # int default=10 — 基础召回条数上限（注入总行数硬帽；dynamicTopK 可自适应收缩） [src:config.ts:2275]
+    candidateK: null  # int default=unset — 混合检索上游候选池上限（两通道各取前 N 进融合）；不写=maxResults×3 逐位现状 [src:config.ts:2278]
+    fusion:
+      mode: "rrf"  # enum(rrf|weighted|normalized) default="rrf" — 多路融合方式；rrf=排名倒数融合（缺省），weighted/normalized 用下面五个权重/归一化 [src:config.ts:2287]
+      dense: null  # float default=unset — 加权融合·向量通道权重（仅 fusion.mode=weighted 生效，其余模式被忽略） [src:config.ts:2288]
+      bm25: null  # float default=unset — 加权融合·BM25/FTS 通道权重（仅 mode=weighted 生效） [src:config.ts:2289]
+      fact: null  # float default=unset — 加权融合·事实通道权重（仅 mode=weighted 生效） [src:config.ts:2290]
+      recency: null  # float default=unset — 加权融合·新近度权重（仅 mode=weighted 生效） [src:config.ts:2291]
+      validity: null  # float default=unset — 加权融合·有效期权重（仅 mode=weighted 生效） [src:config.ts:2292]
+      recencyHalfLifeDays: null  # float default=unset — 加权融合·新近度半衰期（天，越小越偏新；仅 mode=weighted 生效） [src:config.ts:2293]
+    factChannel:
+      enabled: false  # bool default=false — 事实键平行召回通道（读 l1_fact_vec）；写侧需 write.factKey.mode=channel 才有料 [src:config.ts:2305]
+      weight: 0.6  # float default=0.6 — 事实通道融合权重；clamp [0,1]，越界回落 0.6 [src:config.ts:2306]
+      candidateK: null  # int default=unset — 事实通道上游候选上限（不写=沿用 recall.candidateK；<1 视为不设） [src:config.ts:2301]
+      minScore: null  # float default=unset — 事实通道候选最低分（低于此值不进融合；不写=不设门） [src:config.ts:2302]
+      onlyForTypes: null  # list<str> default=unset — 仅这些 memory type 走事实通道（不写=所有类型） [src:config.ts:2303]
+    maxCharsPerMemory: 0  # int default=0 — 单条记忆注入字符上限；0=不限制 [src:config.ts:2312]
+    maxTotalRecallChars: 0  # int default=0 — 注入块总字符上限；0=不限制 [src:config.ts:2313]
+    scoreThreshold: 0.3  # float default=0.3 — 余弦刻度最低分门槛（native hybrid RRF 路另有 nativeMinRRF） [src:config.ts:2314]
+    nativeMinRRF: null  # float default=unset — native 混合检索的 RRF 共识门槛（不写=关；负值=关；只在多路命中时保留） [src:config.ts:2316]
+    strategy: "hybrid"  # enum(embedding|keyword|hybrid) default="hybrid" — 召回策略；hybrid=向量+BM25 双路 RRF（embedding 故障自动退化 FTS）；非法值回落 hybrid [src:config.ts:2317]
+    timeoutMs: 5000  # ms default=5000 — 单次召回超时毫秒（embedding 专用超时另见 embedding.recallTimeoutMs） [src:config.ts:2318]
+    coreRefBoost: 0  # float default=0 — coreRef 排序加成；0=关（缺省 0，删键也回落 0）；负值 clamp 0 [src:config.ts:2324]
+    timeBoost: 0.05  # float default=0.05 — R1 时间窗信号；0=关；负值 clamp 0（生产置 0 = 关断实测有害） [src:config.ts:2331]
+    recencyBoost: 0.03  # float default=0.03 — R1 时近性信号；0=关 [src:config.ts:2332]
+    sigWeight: 0.03  # float default=0.03 — R2 重要性信号；0=关 [src:config.ts:2333]
+    inferredPenalty: 0.1  # float default=0.1 — R3 置信度分层：inferred 记录降权；clamp [0,1]，1=(1-penalty)=0 反转语义上限 [src:config.ts:2334]
+    sensitivityPenalty: 0  # float default=0 — 敏感性召回降权乘子；0=关断恒等；clamp [0,1] [src:config.ts:2336]
+    importancePenalty:
+      enabled: false  # bool default=false — worthiness importance 读侧降权门；false=零行为变化 [src:config.ts:2342]
+      penalty: 0.3  # float default=0.3 — 低显著度降权幅度；clamp [0,0.9] [src:config.ts:2343]
+    presentTemporal:
+      enabled: false  # bool default=false — 查询时间感知（现在/最新类 query 提权新近记录） [src:config.ts:2351]
+      boost: 0.08  # float default=0.08 — 时间感知加成；clamp [0,1] [src:config.ts:2352]
+      recentDays: 30  # int default=30 — "新近"窗口天数；>=1 取整 [src:config.ts:2353]
+    reinforcementWeight: 0.03  # float default=0.03 — R8 强化闭环信号；0=关 [src:config.ts:2356]
+    moodBoost: 0  # float default=0 — R9 mood 一致性弱偏置；0=关（红线 R-A：mood 不参与排序时保持 0） [src:config.ts:2357]
+    graphMinStrength: 0.5  # float default=0.5 — R4 图一跳补池的相似度门槛；clamp [0,1]；graphDiscount=0 时零调用 [src:config.ts:2359]
+    graphDiscount: 0  # float default=0 — R4 图一跳候选的相关度折扣；0=关（缺省 0；删键仍为 0，不会反向打开） [src:config.ts:2363]
+    sceneBoost: 0  # float default=0 — R6 场景路由加成；0=关（缺省 0） [src:config.ts:2364]
+    queryEmbeddingCacheTtlMs: 60000  # ms default=60000 — 同 query 文本的向量复用 TTL；0=关 [src:config.ts:2366]
+    valuesCacheTtlMs: 60000  # ms default=60000 — 价值锚缓存 TTL（写路径有失效钩子，跨进程漂移窗口=TTL）；0=关 [src:config.ts:2367]
+    excludeInvalidated: true  # bool default=true — 失效行排除总开关；false=失效行照常参与（观察用） [src:config.ts:2369]
+    validity:
+      mode: "soft"  # enum(hard|soft) default="soft" — 效期判定：hard=失效/未来生效行直接排除（旧行为）；soft=降权保留、仅"现在/最新"且存在更新有效行时才硬丢；非法值→soft+告警 [src:config.ts:2379]
+      softPenalty: 0.5  # float default=0.5 — soft 档失效行降权幅度；clamp [0,1] [src:config.ts:2394]
+      hardOnPresentIntent: true  # bool default=true — 查询显式问"现在/最新"时对失效行改硬丢（仅 soft 档） [src:config.ts:2395]
+    emotionSalienceWeight: 0  # float default=0 — 情感显著度权重；0=恒等（实验轨，未过 A/B 不得置正） [src:config.ts:2399]
+    sessionReuseTtlMs: 300000  # ms default=300000 — 同 session 同 query 复用上轮注入块 TTL（空结果不缓存）；0=关 [src:config.ts:2400]
+    pprDamping: 0.85  # float default=0.85 — PPR 阻尼；clamp [0,1]，0=图通道退化关断 [src:config.ts:2403]
+    pprTopK: 10  # int default=10 — PPR 取多少图候选；0=零图候选，clamp ≤100 [src:config.ts:2404]
+    pprIterations: 30  # int default=30 — PPR 迭代次数；>=1，clamp ≤100 [src:config.ts:2405]
+    queryExpansion:
+      enabled: true  # bool default=true — 召回前用 LLM 扩展同义/相关词项（提升 FTS 命中）；关=省一次 LLM 调用 [src:config.ts:2413]
+      maxTerms: 8  # int default=8 — 每次最多扩展词项数；clamp [1,32] [src:config.ts:2414]
+      ttlMs: 600000  # ms default=600000 — 扩展结果 TTL 缓存 [src:config.ts:2415]
+      timeoutMs: 8000  # ms default=8000 — 扩展 LLM 调用超时；>=1000 [src:config.ts:2416]
+      hotPathTimeoutMs: 1500  # ms default=1500 — 热路等待帽：帽内未返回则本轮无扩展词，迟到结果仍落缓存；0=旧行为全额等待 [src:config.ts:2417]
+      negativeTtlMs: 30000  # ms default=30000 — 失败负缓存：LLM 故障期短路 [] 不再外呼；0=关 [src:config.ts:2418]
+    exploreSlot: true  # bool default=true — 探索槽：给低分但多样的候选留名额（对冲同质化） [src:config.ts:2422]
+    conclusionRelaxedForAnalytical: true  # bool default=true — 分析型 query（对比/枚举）放宽结论层入选 [src:config.ts:2423]
+    ageDecay:
+      enabled: false  # bool default=false — 检索期年龄衰减乘子 0.5^(ageDays/halfLifeDays)（floor 0.05；无时间锚不乘） [src:config.ts:2431]
+      halfLifeDays: 30  # int default=30 — 衰减半衰期天数；非有限/负→30 [src:config.ts:2432]
+    injectTimeSort:
+      enabled: false  # bool default=false — 注入块按时间序排列 + 包裹语微调（B1 生产化） [src:config.ts:2438]
+    injectWrapper: "calibrated"  # enum(legacy|neutral|calibrated) default="calibrated" — 注入包裹语档：calibrated=声明"可能不相关"的校准措辞（缺省）；legacy/neutral 为回滚档 [src:config.ts:2442]
+    evidencePack:
+      enabled: false  # bool default=false — 证据包：给结论卡附相邻上下文行；false=钩子路整段早退 [src:config.ts:2453]
+      adjacent: 1  # int default=1 — 前后各取几条相邻轮；clamp [0,3] [src:config.ts:2454]
+      windowMinutes: 30  # int default=30 — 相邻轮的检索时间窗（分钟）；clamp [0,1440] [src:config.ts:2455]
+      maxExtraLines: 6  # int default=6 — 附加行总数上限；clamp [0,24] [src:config.ts:2456]
+      maxSessionRows: 400  # int default=400 — 单次最多扫描的会话行数；clamp [1,5000] [src:config.ts:2457]
+    timeProxFallbackEnabled: false  # bool default=false — timeProx 时间锚回退：occurred_at 缺失时用 created_at 兜底（存量 work_fact 84% 无 occurred_at） [src:config.ts:2460]
+    foldClusterEnabled: false  # bool default=false — F-CLUSTER v2 召回折叠总开关 [src:config.ts:2463]
+    conclusionLayer:
+      #   ── 结论层（R7 分层召回）──
+      enabled: true  # bool default=true — 结论层（L2 结论卡）总开关；false=结论层整体退出 [src:config.ts:2470]
+      maxCharsPerMemory: 2000  # int default=2000 — 单条结论注入前截断字符数；0=不截断 [src:config.ts:2471]
+      truncateMode: "chars"  # enum(chars|sentences) default="chars" — 截断粒度：chars=码点硬截；sentences=句界累积（首句超预算退化 chars） [src:config.ts:2476]
+      maxTotalChars: null  # int default=unset — 结论层注入总字符预算（不写=不限制；0=结论层零内容；正数 floor） [src:config.ts:2480]
+      minUniqRatio: null  # float default=unset — 结论块低密度门：唯一字符占比下限 [0,1]（不写=关） [src:config.ts:2487]
+      cacheTtlMs: null  # ms default=unset — 结论层缓存 TTL 毫秒（不写=回落 sessionReuseTtlMs；0=不缓存） [src:config.ts:2493]
+      idfWeighted: false  # bool default=false — 结论候选按 batch 相对 IDF 重排（层级序不反转、平分保调用方序） [src:config.ts:2497]
+      minBm25Rel: null  # float default=unset — work_fact 候选 bm25 绝对分地板（不写=关；负值 clamp 0；与 minBm25RelRatio 并存时相对门优先） [src:config.ts:2501]
+      minBm25RelRatio: null  # float default=unset — bm25 相对地板 α [0,1]：门槛=α×本候选池最大 raw rel（不写=关，刻度无关） [src:config.ts:2507]
+      maxConclusions: null  # int default=unset — 结论行条数上限（不写=运行期 floor(maxResults/2)；0=零行） [src:config.ts:2513]
+      routing: "off"  # enum(off|assistantRecall|intent) default="off" — 结论层查询路由：assistantRecall=回忆 assistant 自己输出时整层跳过；intent=按意图分阶段分预算 [src:config.ts:2518]
+      pairing: "off"  # enum(off|require) default="off" — 结论必带源证据（require）；off=不校验 [src:config.ts:2523]
+      slotCost: null  # float default=unset — 复合结论单元占用的槽位成本 [1,3]（不写=1.5） [src:config.ts:2526]
+      arbitrate: "off"  # enum(off|redundant) default="off" — 表示仲裁（去冗余）：redundant 显式开 [src:config.ts:2532]
+      arbitrateThreshold: null  # float default=unset — 冗余仲裁阈值 [0,1]（仅 arbitrate=redundant 生效；不写=不仲裁） [src:config.ts:2534]
+      rerankGate:
+        mode: null  # enum(shadow|enforce|off) default=unset — 结论层精排门：enforce=按分拦 / off=关 / shadow=只记不拦（非法值回落 shadow） [src:config.ts:2544]
+        minScore: null  # float default=unset — 结论层精排门分数阈值（不写=运行期取 -1.0） [src:config.ts:2546]
+    smallToBig:
+      enabled: false  # bool default=false — 结论卡父块回链读面（part_of 身世边单跳回捞证据行作上下文行） [src:config.ts:2559]
+      maxExtraLines: 2  # int default=2 — 身世回捞最多附带行数（缺省 2；负数 clamp 0=关；非数字回落 2） [src:config.ts:2561]
+      budget: "shared"  # enum(shared|additive|slot) default="shared" — 上下文行预算归属：shared=与经验层共挤配额；additive=不挤保底（总行数≤maxResults+maxExtraLines） [src:config.ts:2565]
+      relevanceRanked: true  # bool default=true — 回捞证据行按查询 token 命中数排序；false=回滚 store 返回序 [src:config.ts:2570]
+    ftsOnlyInjectCap: null  # int default=unset — fts-only 降级注入帽（缺省 2；0=不注入；非数字回落 2） [src:config.ts:2575]
+    dynamicTopK:
+      enabled: false  # bool default=false — 按分数分布 elbow 自适应收缩注入条数 [src:config.ts:2584]
+      minTopK: 2  # int default=2 — 收缩保底下限；clamp [1,50] [src:config.ts:2585]
+      dropRatio: 0.5  # float default=0.5 — 最大单步落差占 span 达此比例才切；clamp [0.01,1] [src:config.ts:2586]
+    rerankWeights:
+      relevance: 0.7  # float default=0.7 — 精排四因子权重·相关度（契约 relevance≥70%）；全 0=关断恒等 [src:config.ts:2594]
+      timeProx: 0.15  # float default=0.15 — 精排权重·时间邻近 [src:config.ts:2595]
+      significance: 0.1  # float default=0.1 — 精排权重·显著度 [src:config.ts:2596]
+      coreRef: 0.05  # float default=0.05 — 精排权重·价值锚命中 [src:config.ts:2597]
+    v3Recall:
+      enabled: false  # bool default=false — /v3/recall 单点端点（代理瘦传输）；false=端点 404，代理回退自组装 [src:config.ts:2607]
+      timeoutMs: 5000  # ms default=5000 — 端点内召回超时（超时→504→代理降级）；需 ≥ 代理侧 recallTimeoutMs [src:config.ts:2608]
+      l1BudgetMs: 2000  # ms default=2000 — L1 向量腿预算；超预算不 504，改用已完成的 FTS 腿继续组装；0=关预算；clamp [200,15000] [src:config.ts:2612]
+      l1Fallback: "fts"  # enum(fts|none) default="fts" — 超预算回落策略：fts=用 FTS 腿结果（缺省）；none=旧行为（只观测） [src:config.ts:2619]
+    rerank:
+      #   ── 精排（provider 面；与 rerankWeights 不是同一概念）──
+      enabled: false  # bool default=false — 精排总开关（provider 非法或缺 apiKey 会强制 false） [src:config.ts:2631]
+      provider: "none"  # enum(siliconflow|dashscope|local|none) default="none" — 精排提供方；local=本地 cross-encoder（transformers.js），云 provider 需 apiKey；非法值→none+configError [src:config.ts:2629]
+      apiKey: "${RERANK_API_KEY}"  # str default="" — 云精排密钥（siliconflow/dashscope 必填，缺则自动关闭精排） [src:config.ts:2642]
+      baseUrl: ""  # str default="" — 云精排端点；不写=provider 缺省端点 [src:config.ts:2652]
+      model: ""  # str default="" — 精排模型名；不写=provider 缺省模型 [src:config.ts:2653]
+      timeoutMs: 800  # ms default=800 — 精排超时；本地首载约 3s，缺省 800 必超时（生产中设 5000） [src:config.ts:2654]
+      candidates: 32  # int default=32 — 送精排候选池大小；clamp [1,100]；深池 32 是 LME90 实测最优 [src:config.ts:2655]
+      mode: "rerank"  # enum(rerank|filter) default="rerank" — rerank=只重排；filter=按尺子剪枝（配合 filterRule） [src:config.ts:2657]
+      filterRule: "floor"  # enum(floor|margin|quantile) default="floor" — filter 档判定尺子；非法值静默回落 floor [src:config.ts:2660]
+      filterMarginTop: 8  # float default=8 — margin 尺子的相对余量；<=0 回落 8 [src:config.ts:2661]
+      filterKeepRatio: 0.5  # float default=0.5 — quantile 尺子保留比例；<=0 回落 0.5，>1 clamp 1 [src:config.ts:2662]
+      minScore: -10.5  # float default=-10.5 — 精排最低相关度（按 provider 原生刻度；local logit −10.5≈不筛，云刻度自动 sigmoid 换算）；不写=按 provider 取缺省 [src:config.ts:2665]
+      local:
+        modelDir: ""  # path default="" — 本地精排模型目录；空= {data.baseDir}/models/reranker/Xenova/bge-reranker-base（缺失自动下载） [src:config.ts:2667]
+        idleUnloadMs: 600000  # ms default=600000 — 本地模型空闲卸载毫秒；0=常驻 [src:config.ts:2668]
+    mmr:
+      enabled: false  # bool default=false — MMR 多样性重排（缺省关=逐位现状） [src:config.ts:2678]
+      lambda: 0.7  # float default=0.7 — MMR λ：越小越强调多样性；clamp [0,1]；>=1 退化纯 top-K [src:config.ts:2679]
+  recallJournal:
+    enabled: false  # bool default=false — 召回/灵魂注入审计 journal（每次召回落盘 JSONL，仅观测） [src:config.ts:2688]
+    rotationSizeMB: 5  # int default=5 — 单文件轮转阈值 MB；<=0 或非法→5；上限 100 [src:config.ts:2689]
+    maxFiles: 5  # int default=5 — 保留文件数；<1 或非法→5；上限 100 [src:config.ts:2694]
+  embedding:
+    enabled: true  # bool default=true — 向量能力总开关（provider=none 恒关；字段缺失时按 apiKey/baseUrl/model/dimensions 判定后强制关） [src:config.ts:2701]
+    provider: "none"  # enum(none|openai_compatible|qclaw|local) default="none" — 嵌入提供方；none=零配置关闭（不建 vec0 表）；local 不再对外暴露（等同 none） [src:config.ts:2702]
+    baseUrl: ""  # str default="" — /embeddings 端点 [src:config.ts:2703]
+    apiKey: "${EMBEDDING_API_KEY}"  # str default="" — 嵌入密钥（remote 档必填） [src:config.ts:2704]
+    model: ""  # str default="" — 嵌入模型名（remote 档必填） [src:config.ts:2705]
+    dimensions: 0  # int default=0 — 向量维度（必须与已入库向量一致；provider=none 时为 0=不建表） [src:config.ts:2706]
+    sendDimensions: true  # bool default=true — 请求体是否带 dimensions 字段（部分端点不支持需关） [src:config.ts:2707]
+    conflictRecallTopK: 5  # int default=5 — 冲突检测回捞 topK [src:config.ts:2708]
+    proxyUrl: null  # str default=unset — provider=qclaw 时必填的本地代理地址 [src:config.ts:2709]
+    maxInputChars: 5000  # int default=5000 — 单条文本送嵌入的最大字符数 [src:config.ts:2710]
+    timeoutMs: 10000  # ms default=10000 — 嵌入调用超时 [src:config.ts:2711]
+    recallTimeoutMs: null  # ms default=unset — 召回路径 embedding 超时毫秒（不写=沿用 embedding.timeoutMs） [src:config.ts:2712]
+    captureTimeoutMs: null  # ms default=unset — 写入/捕获路径 embedding 超时毫秒（不写=沿用 embedding.timeoutMs） [src:config.ts:2713]
+    modelCacheDir: null  # path default=unset — 本地 embedding 模型缓存目录（不写=包内默认缓存位置） [src:config.ts:2714]
+  tcvdb:
+    url: ""  # str default="" — TCVDB 地址（storeBackend=tcvdb 必填） [src:config.ts:2719]
+    username: "root"  # str default="root" — TCVDB 用户名 [src:config.ts:2720]
+    apiKey: "${TCVDB_API_KEY}"  # str default="" — TCVDB 密钥（tcvdb 必填） [src:config.ts:2721]
+    database: ""  # str default="" — TCVDB 库名 [src:config.ts:2722]
+    alias: ""  # str default="" — TCVDB 别名（多库区分） [src:config.ts:2723]
+    embeddingEnabled: false  # bool default=false — 是否由 TCVDB 侧做嵌入 [src:config.ts:2724]
+    embeddingModel: "bge-large-zh"  # str default="bge-large-zh" — TCVDB 侧嵌入模型 [src:config.ts:2725]
+    timeout: 10000  # ms default=10000 — TCVDB 请求超时 [src:config.ts:2726]
+    caPemPath: null  # path default=unset — CA 证书路径（私有化部署校验用） [src:config.ts:2727]
+  bm25:
+    enabled: true  # bool default=true — BM25 字面检索路（hybrid 双路之一，embedding 故障时唯一兜底）；关=只剩向量腿 [src:config.ts:2730]
+    language: "zh"  # enum(zh|en) default="zh" — 分词语言；zh=中文分词器（非法值回落 zh） [src:config.ts:2731]
+  report:
+    enabled: false  # bool default=false — 本地报表产出开关（插件宿主路径消费；gateway 路径不读） [src:config.ts:2735]
+    type: "local"  # str default="local" — 报表类型；缺省 local [src:config.ts:2736]
+  llm:
+    enabled: false  # bool default=false — 记忆专用 LLM 覆盖：true 时 L1/L2/L3 走这套而非宿主网关；gateway 在顶层 llm 配齐时自动 splice 为 true [src:config.ts:2745]
+    baseUrl: "https://api.openai.com/v1"  # str default="https://api.openai.com/v1" — 记忆专用 LLM 端点 [src:config.ts:2746]
+    apiKey: "${MEMORY_LLM_API_KEY}"  # str default="" — 记忆专用 LLM 密钥 [src:config.ts:2747]
+    model: "gpt-4o"  # str default="gpt-4o" — 记忆专用模型 [src:config.ts:2748]
+    maxTokens: 4096  # int default=4096 — 记忆专用 max_tokens [src:config.ts:2749]
+    timeoutMs: 120000  # ms default=120000 — 记忆专用超时 [src:config.ts:2750]
+    maxTokensLimit: 131072  # int default=131072 — max_tokens 上限钳制（Ark 上限 131072）；仅 memory.llm 内部消费（config.ts:2752 ?? 131072）；生产 tdai-gateway.yaml:40 把它放在顶层 llm: 下，那里不被 gateway 组装透传（src/gateway/config.ts:472 只透传 maxTokens）⇒ 配了不生效，照着现网抄会踩坑 [src:config.ts:2752]
+    provider: "openai"  # enum(openai|proxy) default="openai" — openai=直连；proxy=走 context_proxy 且用 memory 系统用户 key [src:config.ts:2741]
+    stream: false  # bool default=false — 是否流式 [src:config.ts:2754]
+    proxy:
+      useMemorySystemUserKey: true  # bool default=true — proxy 档使用 memory 系统用户 userKey 作为 Authorization [src:config.ts:2757]
+  offload:
+    # ─── memory.llm / memory.offload（插件宿主路径）──────────
+    enabled: false  # bool default=false — 上下文卸载（offload）开关（插件宿主路径消费；gateway 路径用顶层 offload 段） [src:config.ts:1619]
+    mode: "local"  # enum(local|backend|client|collect) default="local" — local=直连 LLM；backend/client/collect=远端 offload server（配了 backendUrl→backend、server.url→client 自动推导） [src:config.ts:1610]
+    model: null  # str default=unset — offload 任务模型；不写=回落主 agent 模型 [src:config.ts:1621]
+    temperature: 0.2  # float default=0.2 — offload 采样温度 [src:config.ts:1622]
+    stream: false  # bool default=false — 是否流式 [src:config.ts:1623]
+    forceTriggerThreshold: 4  # int default=4 — pending 积压到 N 条强制触发 [src:config.ts:1624]
+    dataDir: null  # path default=unset — offload 数据目录；不写=~/.openclaw/context-offload [src:config.ts:1625]
+    defaultContextWindow: 200000  # int default=200000 — 缺省上下文窗口 token 数（用于占比计算） [src:config.ts:1626]
+    maxPairsPerBatch: 20  # int default=20 — 单批最大对话对数 [src:config.ts:1627]
+    l2NullThreshold: 4  # int default=4 — 连续 N 次 L2 空结果判无效 [src:config.ts:1628]
+    l2TimeoutSeconds: 300  # int default=300 — L2 超时秒数 [src:config.ts:1629]
+    mildOffloadRatio: 0.5  # float default=0.5 — 上下文占用达此比例触发轻度卸载 [src:config.ts:1630]
+    aggressiveCompressRatio: 0.85  # float default=0.85 — 达此比例触发激进压缩 [src:config.ts:1631]
+    mmdMaxTokenRatio: 0.2  # float default=0.2 — MMD 文件最大 token 占比 [src:config.ts:1632]
+    backendUrl: null  # str default=unset — backend 模式远端地址（配了则 mode 自动推导为 backend） [src:config.ts:1633]
+    backendApiKey: "${OFFLOAD_BACKEND_API_KEY}"  # str default=unset — backend 模式 Bearer token [src:config.ts:1634]
+    backendTimeoutMs: 120000  # ms default=120000 — backend 调用超时 [src:config.ts:1635]
+    offloadRetentionDays: 0  # int default=0 — offload 产物保留天数；0=不清理 [src:config.ts:1636]
+    logMaxSizeMb: 50  # int default=50 — debug 日志文件总量上限 MB [src:config.ts:1637]
+    userId: null  # str default=unset — offload 归属用户 id（backend 端点 upsert 主键之一） [src:config.ts:1638]
+    serverUrl: null  # str default=unset — client 模式 offload server 地址；不写=回落顶层 server.url [src:config.ts:1640]
+    apiKey: "${OFFLOAD_API_KEY}"  # str default=unset — client 模式密钥；不写=回落顶层 server.apiKey [src:config.ts:1641]
+    serviceId: null  # str default=unset — client 模式服务 id；不写=回落顶层 server.instanceId [src:config.ts:1642]
+    compactionRatio: 0.5  # float default=0.5 — client 模式压缩比 [src:config.ts:1643]
+    ingestTimeoutMs: 5000  # ms default=5000 — client 模式 ingest 超时 [src:config.ts:1644]
+    compactionTimeoutMs: 30000  # ms default=30000 — client 模式压缩超时 [src:config.ts:1645]
+  links:
+    # ─── memory：图 / 核心记忆（K 段）/ 生命周期（H+I）/ 演化 / 场景治理 / wiki / 各门 ──
+    #                              [src:MemoryCore/src/config.ts]
+    enabled: true  # bool default=true — 记忆图：merge→similar / update→evolve 建边（l1_links） [src:config.ts:1658]
+    minSimilarity: 0.3  # float default=0.3 — similar 边最低相似度；clamp [0,1]，非法值回落 0.3 [src:config.ts:1662]
+  coreMemory:
+    writeEnabled: true  # bool default=true — 允许 /v3/core-memory/write 写核心记忆（仍受 slot 白名单与各层门控） [src:config.ts:1683]
+    allowedSlots: ["identity","core_value","strict_rule","self_identity"]  # list<str> default=["identity","core_value","strict_rule","self_identity"] — 允许写入的槽白名单；[]=拒绝全部；显式配置时不再自动补 self_identity（用户白名单权威） [src:config.ts:1687]
+    maxContentLength: 2000  # int default=2000 — 单条核心记忆内容长度上限（字符） [src:config.ts:1688]
+    seedValues: []  # list<map> default=[] — 价值锚种子（core_values 空时灌入）；元素 {id,label,weight(0..1),createdBy}，畸形项被丢弃 [src:config.ts:1689]
+    anchorDiscovery:
+      enabled: true  # bool default=true — 价值锚自发现（GROW）：缺省开 [src:config.ts:1706]
+      minEvidence: 5  # int default=5 — 提议成锚所需最少证据条数；clamp [1,50] [src:config.ts:1707]
+      maxPerPass: 2  # int default=2 — 单轮最多新建锚数；clamp [1,10] [src:config.ts:1708]
+      maxTotal: 15  # int default=15 — 主题锚总量配额；clamp [1,100] [src:config.ts:1709]
+      quotaScope: "total"  # enum(total|auto) default="total" — 配额口径：total=总预算（拍板默认）；auto=旧口径回滚档；其余值落 total [src:config.ts:1711]
+      intervalHours: 24  # int default=24 — 发现轮间隔小时；clamp [1,720] [src:config.ts:1712]
+      maintainIntervalHours: 6  # int default=6 — 维护面（低证据退场/权重演化）独立节奏小时；0=每 tick；clamp [0,168] [src:config.ts:1713]
+      person:
+        enabled: false  # bool default=false — 人物锚分池开关 [src:config.ts:1715]
+        minEvidence: 5  # int default=5 — 人物锚最少证据；clamp [1,50] [src:config.ts:1716]
+        maxPerPass: 1  # int default=1 — 人物锚单轮上限；clamp [1,5] [src:config.ts:1717]
+        maxTotal: 8  # int default=8 — 人物锚总量配额；clamp [1,50] [src:config.ts:1718]
+      identityMaintain:
+        enabled: false  # bool default=false — 身份分支维护（仅警告、永不自动退场） [src:config.ts:1721]
+      similarMerge:
+        enabled: false  # bool default=false — 相似锚合并（bigram Jaccard≥threshold 时并入既有锚，不删锚） [src:config.ts:1727]
+        threshold: 0.5  # float default=0.5 — 合并阈值；clamp [0.2,0.95] [src:config.ts:1729]
+      character:
+        enabled: false  # bool default=false — 品格锚池（源=self_identity 事实） [src:config.ts:1740]
+        minEvidence: 2  # int default=2 — 品格锚最少证据；clamp [1,50] [src:config.ts:1741]
+        maxPerPass: 1  # int default=1 — 品格锚单轮上限；clamp [1,5] [src:config.ts:1742]
+        maxTotal: 8  # int default=8 — 品格锚总量配额；clamp [1,50] [src:config.ts:1743]
+      reproposal:
+        enabled: false  # bool default=false — rejected 域证据升级重提案通道（仅提案，不直改 active） [src:config.ts:1755]
+        minEvidenceMultiple: 2  # int default=2 — 重提案所需证据倍数（相对基线）；clamp [1,10] [src:config.ts:1756]
+        maxPerPass: 2  # int default=2 — 单轮重提案上限；clamp [1,5] [src:config.ts:1757]
+        maxRejectsBeforeCold: 2  # int default=2 — 累计拒绝多少次后冷却；clamp [1,10] [src:config.ts:1758]
+      descRefresh:
+        enabled: false  # bool default=false — 锚描述重述环（LLM 重述+守卫门通过才落库） [src:config.ts:1770]
+        evidenceMultiple: 2  # int default=2 — 证据达基线 N 倍才触发重述；clamp [1,10] [src:config.ts:1771]
+        maxPerPass: 2  # int default=2 — 单轮重述上限；clamp [1,5] [src:config.ts:1772]
+    characterTension:
+      enabled: false  # bool default=false — 品格张力检测（缺省关=逐位现状） [src:config.ts:1786]
+      minInstances: 2  # int default=2 — 判定张力所需最少实例数；clamp [1,50] [src:config.ts:1787]
+      maxCandidatesPerPass: 2  # int default=2 — 单轮候选上限；clamp [1,10] [src:config.ts:1788]
+    selfIdentity:
+      enabled: false  # bool default=false — agent 自我层（灵魂双槽）自发现；写入仍受 allowedSlots 门控 [src:config.ts:1800]
+      maxPerPass: 2  # int default=2 — 单轮自我层提案上限；clamp [1,10] [src:config.ts:1801]
+      intervalHours: 24  # int default=24 — 自我层发现间隔小时；clamp [1,168] [src:config.ts:1802]
+    moodLine:
+      enabled: false  # bool default=false — 近期情绪基调行（红线 R-A：mood 不参与召回排序） [src:config.ts:1815]
+      windowHours: 72  # int default=72 — 情绪统计窗口小时；clamp [1,720] [src:config.ts:1816]
+      maxSamples: 20  # int default=20 — 最多采样条数；clamp [1,200] [src:config.ts:1817]
+      minSamples: 5  # int default=5 — 最少采样条数（不足不渲染）；clamp [1,100] [src:config.ts:1818]
+      posThreshold: 0.15  # float default=0.15 — 正向基调阈值；clamp [-1,1] [src:config.ts:1819]
+      negThreshold: -0.15  # float default=-0.15 — 负向基调阈值；clamp [-1,1] [src:config.ts:1820]
+      halfLifeHours: 48  # float default=48 — 情绪半衰期小时；clamp [0.5,720] [src:config.ts:1821]
+    soulRender:
+      budgetSelfChars: 600  # int default=600 — 自我层渲染预算字符；clamp [100,2000] [src:config.ts:1833]
+      budgetIdentityChars: 900  # int default=900 — 身份段渲染预算字符；clamp [100,2000] [src:config.ts:1834]
+      maxRelationLines: 5  # int default=5 — "重要的人"行数上限；clamp [1,20] [src:config.ts:1835]
+      budgetAnchorChars: 0  # int default=0 — 价值锚行预算字符；0=关（缺省逐位现状）；clamp [0,4000] [src:config.ts:1837]
+      budgetPersonChars: 0  # int default=0 — "重要的人"行预算；0=关；clamp [0,4000] [src:config.ts:1838]
+      budgetCharacterChars: 0  # int default=0 — 品格行预算；0=关；clamp [0,4000] [src:config.ts:1839]
+      snapshotsEnabled: true  # bool default=true — soul 快照旁路开关；显式 false 才关闭（非布尔回退缺省 true） [src:config.ts:1841]
+      perTurnSlots: true  # bool default=true — 每轮渲染身份两行（我是谁/我心中的他）；false 时省略（由 core_memory 块承载）；仅布尔 true 采纳 [src:config.ts:1847]
+      identityNarrative:
+        enabled: false  # bool default=false — 身份叙事化渲染门（两槽折叠为叙事段）；仅布尔 true 开启 [src:config.ts:1853]
+      anchorSelect:
+        maxRows: 999  # int default=999 — 情境锚最多渲染几行；999=现状全注入；clamp [1,999] [src:config.ts:1859]
+        scorer:
+          enabled: false  # bool default=false — 锚相似度打分门（shadow 起步）；非布尔回退 false [src:config.ts:1872]
+          threshold: 0  # float default=0 — 打分硬门阈值；0=无硬门；clamp [0,1] [src:config.ts:1873]
+          mmrLambda: 0.7  # float default=0.7 — MMR 多样性 λ；clamp [0,1]；≥1 退化纯 top-K [src:config.ts:1874]
+          embedBudgetMs: 1200  # ms default=1200 — 锚 desc 预嵌软预算；超预算回退声明序；0=关 [src:config.ts:1875]
+        shadowSink:
+          enabled: false  # bool default=false — 锚分布 shadow 采集落盘门（零写盘为缺省） [src:config.ts:1887]
+          file: "data/logs/soul-anchor-shadow.jsonl"  # path default="data/logs/soul-anchor-shadow.jsonl" — shadow JSONL 路径；空串回落缺省 [src:config.ts:1888]
+      strictRuleDedup:
+        enabled: false  # bool default=false — 红线段近重复去重门（exact/jaccard/containment，保长原位替换） [src:config.ts:1903]
+        jaccardThreshold: 0.45  # float default=0.45 — Jaccard 判重阈值；clamp [0,1] [src:config.ts:1904]
+        maxLines: 0  # int default=0 — 红线段行数上限（从头部保留 N 条）；0=不设限；clamp [0,50] [src:config.ts:1905]
+        suppressAnchorOverlap: false  # bool default=false — 价值锚 desc 与红线行近重复时锚行让位 [src:config.ts:1906]
+      anchorDedup:
+        enabled: false  # bool default=false — 价值锚标签双向包含去重门（短侧≥2 字护栏） [src:config.ts:1913]
+        embeddingThreshold: 0  # float default=0 — desc 向量 cosine 判近重复阈值；0=关；clamp [0,1] [src:config.ts:1914]
+      introspect:
+        snapshotLimit: 20  # int default=20 — soul_introspect 返回快照条数；clamp [1,200] [src:config.ts:1919]
+        evidenceWindowHours: 168  # int default=168 — 自省证据窗小时；clamp [1,2160] [src:config.ts:1923]
+      capabilities:
+        enabled: false  # bool default=false — "我能做什么"段渲染门（清单由代理侧传入） [src:config.ts:1931]
+      promiseEvidence:
+        enabled: false  # bool default=false — 承诺证据迁移门（user 确认话语→refKey 严格相等） [src:config.ts:1936]
+      promises:
+        enabled: false  # bool default=false — 承诺块渲染门（最新 3 条 open 承诺，零 open 整块省略） [src:config.ts:1941]
+  lifecycle:
+    #   ── 生命周期：memory.lifecycle.enabled 是唯一真总闸（false 则整个 setInterval 不建）──
+    enabled: true  # bool default=true — 生命周期调度总闸（真总闸）：false 时 setInterval 根本不建，巩固/遗忘/锚发现/演化/反思/自省/自动采纳全部不起跑 [src:config.ts:1948]
+    intervalMs: 600000  # ms default=600000 — 调度周期毫秒（每轮检查各子任务） [src:config.ts:1949]
+    filter:
+      teamId: null  # str default=unset — 租户过滤：只处理该 team（不写=不过滤，兼容单机）；任一非空才生效 [src:config.ts:1955]
+      userId: null  # str default=unset — 租户过滤：只处理该 user [src:config.ts:1956]
+      agentId: null  # str default=unset — 租户过滤：只处理该 agent [src:config.ts:1957]
+      taskId: null  # str default=unset — 租户过滤：只处理该 task [src:config.ts:1958]
+    embedBackfill:
+      enabled: true  # bool default=true — 向量缺口补偿：为无向量/向量过期行周期补嵌（生命周期产物结构性不传 embedding，靠它补） [src:config.ts:1966]
+      intervalMinutes: 30  # int default=30 — 补偿扫描周期分钟 [src:config.ts:1967]
+      batchLimit: 50  # int default=50 — 单轮最多补嵌条数（节流，防打满配额） [src:config.ts:1968]
+    consolidation:
+      enabled: true  # bool default=true — L1 巩固（多轮事实→持续态） [src:config.ts:1971]
+      persist: true  # bool default=true — 巩固结果写为 observed/work_fact 记录 [src:config.ts:1972]
+      minCount: 3  # int default=3 — 同一 subject ≥N 条才归纳 [src:config.ts:1973]
+      minSpanDays: 1  # int default=1 — 证据至少跨 N 天（防单次事件过度概括） [src:config.ts:1974]
+      subjectStrategy: null  # enum(llm|lexical) default=unset — subject 归组策略：llm=dedup 顺带抽取的语义 subject 优先（缺省）、词法兜底；lexical=纯词法前缀；非法值忽略走缺省 [src:config.ts:1977]
+    forgetting:
+      enabled: true  # bool default=true — 遗忘判定（归档=软删，不真删） [src:config.ts:1982]
+      lambda: 0.01  # float default=0.01 — 可及性衰减 λ [src:config.ts:1983]
+      arousalRetention: 0  # float default=0 — 闪光灯记忆调制 k；clamp [0,0.9] [src:config.ts:1984]
+      sensitivityBias: 0  # float default=0 — 敏感记忆整体降权偏置（更早归档）；0=逐位现状；clamp [0,1] [src:config.ts:1986]
+      lowThreshold: 0.12  # float default=0.12 — 低活跃阈值：可及性低于此且超龄→归档 [src:config.ts:1987]
+      minAgeDays: 30  # int default=30 — 年龄下限：N 天内记录永不进遗忘判定 [src:config.ts:1988]
+      refProtection: false  # bool default=false — refs 遗忘保护：命中仍有效锚/现行身份事实的记录不进归档候选 [src:config.ts:1990]
+      recurrenceProtection: false  # bool default=false — 周期性事实（metadata.recurrence）不进归档候选 [src:config.ts:1991]
+    reflection:
+      enabled: false  # bool default=false — 反思触发（Generative Agents 对标）；false=零反思 [src:config.ts:1995]
+      rRef: 150  # int default=150 — 显著度阈值（[0,1] 刻度，yaml 常写 2≈取 2.0 强度）；clamp [1,100000]，旧下限 10 已修正 [src:config.ts:1998]
+      soulProposals:
+        enabled: false  # bool default=false — 反思结论→身份/自我层提案（slot 白名单+verbatim≥12 逐字拒绝+人工采纳；strict_rule 不可提案） [src:config.ts:2014]
+        shadowCalibration:
+          enabled: null  # bool default=unset — 提案 shadow 定标旁路（JSONL 采集，行为零变化）；yaml 显式写才带键 [src:config.ts:2019]
+          file: null  # path default=unset — shadow JSONL 路径；显式写才带键 [src:config.ts:2020]
+        cardContract:
+          enabled: false  # bool default=false — 反思产物契约门（第一人称叙事、禁伪造当下体验、≤200 字、锚引用校验）；仅 true 带键 [src:config.ts:2023]
+        conclusionContract:
+          enabled: false  # bool default=false — 结论卡拆条引导（一句话一件事/≤300 码点）；仅 true 带键 [src:config.ts:2024]
+      promiseProposals:
+        enabled: false  # bool default=false — 承诺迁移提案通道（LLM 只提议，人工 decide 后唯一写入口落库） [src:config.ts:2028]
+      selfIdentityGate:
+        enabled: null  # bool default=unset — self_identity 提案相似门总开关；整块不写=undefined=消费侧缺省 [src:config.ts:2081]
+        threshold: null  # float default=unset — 提案相似度阈值；不写=消费侧缺省 [src:config.ts:2082]
+        suppression:
+          enabled: null  # bool default=unset — 生成端抑制门；不写=缺省 [src:config.ts:2085]
+          maxPending: null  # int default=unset — 抑制门上限：同主题 pending 达 N 条不再推提案 [src:config.ts:2085]
+        recurrence:
+          enabled: false  # bool default=false — 复现即投票门（===true 才开）；配合 votes/ttlHours/spanHours [src:config.ts:2045]
+          votes: 3  # int default=3 — ready 晋升所需票数（票面标定 3） [src:config.ts:2046]
+          ttlHours: 24  # int default=24 — 票 TTL 小时（C1 单键联动：spanHours 缺省跟随它） [src:config.ts:2047]
+          spanHours: null  # int default=unset — 投票跨度小时；不写=跟随 ttlHours [src:config.ts:2048]
+        rateLimit:
+          enabled: false  # bool default=false — 源头硬闸：窗口内该租户 self_identity 新落库达 maxNew 即跳过落库（LLM 反思照常） [src:config.ts:2057]
+          maxNew: 12  # int default=12 — 窗口内最多新落库条数 [src:config.ts:2058]
+          windowHours: 24  # int default=24 — 限流窗口小时 [src:config.ts:2059]
+        autoAdopt:
+          enabled: false  # bool default=false — 确定性自动采纳门（count≥votes ∧ 跨 spanHours ∧ 无同主题 rejected 矛盾 ∧ 非槽内重复）→ 自动落槽；删块=回到人工裁决 [src:config.ts:2070]
+          votes: 4  # int default=4 — N₂ 采纳票数（比 stage-1 ready 的 3 严一票） [src:config.ts:2071]
+          spanHours: 72  # int default=72 — T₂ 投票跨度小时（慢变量口径） [src:config.ts:2072]
+          contradictionThreshold: 0.6  # float default=0.6 — 同主题 rejected 矛盾线（宁拦勿收） [src:config.ts:2073]
+          dupThreshold: 0.75  # float default=0.75 — 槽内重复线（proposal-dedup 单一源标准） [src:config.ts:2074]
+  evolution:
+    enabled: false  # bool default=false — 受控正文演化（全系统唯一允许改写已固化正文的路径）；缺省关 [src:config.ts:2097]
+    maxRewrites: 3  # int default=3 — 单条正文最多改写次数；clamp [1,20] [src:config.ts:2098]
+    intervalMs: 3600000  # ms default=3600000 — 演化扫描周期；>=60000 [src:config.ts:2099]
+  search:
+    neighborExpand:
+      enabled: false  # bool default=false — 图邻居扩展（重构式回忆，只并入 top 种子的一跳邻居） [src:config.ts:2130]
+      maxHop: 1  # int default=1 — 扩展跳数 [src:config.ts:2131]
+      maxAdd: 3  # int default=3 — 单次最多并入邻居条数 [src:config.ts:2132]
+  sceneGovernance:
+    enabled: false  # bool default=false — 场景块治理（块体超限触发 LLM 蒸馏重写）；缺省关=生产零变化 [src:config.ts:2149]
+    maxBlockChars: 8000  # int default=8000 — 块体超限阈值（码点）；clamp [500,100000] [src:config.ts:2147]
+    distillTimeoutMs: 60000  # ms default=60000 — 蒸馏 LLM 超时；负值 clamp 0（0=runner 缺省超时） [src:config.ts:2151]
+    hardCapChars: 20000  # int default=20000 — 蒸馏失败兜底硬截断上限；不得低于 maxBlockChars（传入更小值会被抬到它） [src:config.ts:2154]
+  wiki:
+    #   ── core wiki 薄转发（/v3/wiki/list|search）──
+    enabled: true  # bool default=true — /v3/wiki/{list,search} 薄转发开关；false→403 WIKI_FORWARDING_DISABLED [src:config.ts:2114]
+    baseUrl: "http://127.0.0.1:8421"  # str default="http://127.0.0.1:8421" — MemoryKnowledge 地址（末尾斜杠自动去掉）；不可用时发现面回落 core 注册表 [src:config.ts:2115]
+    serviceId: "default"  # str default="default" — 转发时用的服务标识（8421 侧鉴权/路由） [src:config.ts:2116]
+    timeoutMs: 2500  # ms default=2500 — 单次转发总超时；clamp [100,10000] [src:config.ts:2117]
+    perWikiTimeoutMs: 2000  # ms default=2000 — 单 wiki 检索子超时；clamp [100,10000] [src:config.ts:2118]
+    perWikiLimit: 4  # int default=4 — 每个 wiki 取多少候选；clamp [1,20] [src:config.ts:2119]
+    topK: 6  # int default=6 — 合并后返回条数；clamp [1,20] [src:config.ts:2120]
+    minScore: 0.02  # float default=0.02 — absScore 下限；clamp [0,10] [src:config.ts:2121]
+    maxWikis: 8  # int default=8 — 一次检索最多查多少个 wiki；clamp [1,16] [src:config.ts:2122]
+    concurrency: 4  # int default=4 — 并发打上游的 wiki 数；clamp [1,8] [src:config.ts:2123]
+    teamVerify: "enforce"  # enum(off|warn|enforce) default="enforce" — team 归属校验档：off/warn（只 WARN 一次放行）/enforce（非成员 403）；未知值→enforce（宁严不松）；判不了时 fail-open [src:config.ts:2111]
+  sensitivity:
+    extractionEnabled: false  # bool default=false — 敏感性标注提取门（关=prompt 字节不变） [src:config.ts:2774]
+  worthiness:
+    extractionEnabled: false  # bool default=false — worthiness importance 写入门（关=不产出 importance 字段，召回不罚） [src:config.ts:2779]
+  extractionExtensions:
+    enabled: false  # bool default=false — 统一抽取扩展门（state rollup/承诺/importance 共用）；关=扩展全跳过 [src:config.ts:2783]
+  auth:
+    #   ── 数据面归属校验（缺省全关=逐位沿用服务级信任）──
+    requireUserBinding: false  # bool default=false — 要求 /v3 数据面把凭据主体与声明 user_id 绑定 [src:config.ts:2788]
+    unknownPrincipalPolicy: "off"  # enum(off|warn|reject) default="off" — 写侧未知主体（entity 查无）处理档；拼错→fail-secure 走 reject [src:config.ts:2789]
+    adminBypassEnabled: false  # bool default=false — 允许 admin 显式旁路（需 system_admin + x-tdai-admin-bypass 双条件） [src:config.ts:2793]
+    requireTeamOwnership: "off"  # enum(off|warn|enforce) default="off" — team 归属校验档（/conversation/add、/core/read）：off=不查零开销；warn=只记 authz.team_ownership.*；enforce=越权 403 TEAM_NOT_OWNED；未知非空值→enforce [src:config.ts:2796]
+    teamOwnershipWhitelist: []  # list<str> default=[] — enforce 档下直接放行且不查询的 team_id 列表；[]=无例外；env MEMORY_AUTH_TEAM_OWNERSHIP_WHITELIST 覆盖（逗号分隔） [src:config.ts:2800]
+skill:
+  # ─── skill（顶层段；也可嵌在 memory.skill 下，两者等价、顶层优先）──────────
+  #   真源：MemoryCore/src/core/skill/skill-config.ts（resolveSkillConfig）+ types.ts:16 SkillConfigInput
+  #   注意：skill.enabled=false 会让 /v3/skill/conversation/add 直接不可用（不是静默丢队列）
+  enabled: false  # bool default=false — Skill 模块总开关；false=不构造 SkillCore、池不启动、/v3/skill/* 不可用；env TDAI_SKILL_ENABLED=true 可强制开 [src:skill-config.ts:68]
+  storeBackend: null  # enum(sqlite|tcvdb) default=unset — 技能索引存储；不写=继承 memory.storeBackend，再回落 sqlite；请求 tcvdb 但无凭据→降级 sqlite+WARN [src:skill-config.ts:76]
+  contentBackend: null  # enum(local|cos) default=unset — 技能正文存储：local={data.baseDir}/skills/；cos 需 COS 凭据，缺失时 strictMode 抛错、否则降级 local [src:skill-config.ts:93]
+  routing:
+    mode: "bm25"  # enum(bm25|embedding|hybrid) default="bm25" — 技能路由检索方式；embedding 不可用时降到 bm25（非阻塞） [src:skill-config.ts:125]
+    hybridAlpha: 0.3  # float default=0.3 — hybrid 档向量权重（1-α 给 BM25） [src:skill-config.ts:231]
+    searchTopK: 20  # int default=20 — 路由候选池条数 [src:skill-config.ts:232]
+    charBudgetPercent: 0.01  # float default=0.01 — 注入技能清单占上下文预算比例 [src:skill-config.ts:233]
+    fastPathMinNameLength: 4  # int default=4 — 名字达到此长度才走 fast path 直查 [src:skill-config.ts:234]
+  extraction:
+    enabled: false  # bool default=false — LLM 自动抽取协议（关=只读不写；true 但无 LLMRunner 时 extract 返回空候选+WARN） [src:skill-config.ts:145]
+    toolCallThreshold: 10  # int default=10 — 工具调用达到多少条触发归档抽取 [src:skill-config.ts:238]
+    model: null  # str default=unset — 抽取专用模型；不写=继承顶层 llm.model [src:skill-config.ts:239]
+    maxIterations: 16  # int default=16 — review agent 最大迭代回合 [src:skill-config.ts:240]
+    archiveBytes: 40960  # int default=40960 — 单一归档尺寸旋钮（字节）；派生 7 个内部阈值：bytesThreshold=archiveBytes、chunkMaxBytes=2×、head/tailKeepBytes=archiveBytes、head/tailChars=archiveBytes [src:skill-config.ts:165]
+    maxTokens: null  # int default=unset — 单次抽取 LLM 输出上限；0=不限制（覆盖 runner 级缺省）；不写=继承 llm.maxTokens [src:skill-config.ts:242]
+    timeoutMs: null  # ms default=unset — 单次抽取 LLM 超时；0=不限制；不写=继承 llm.timeoutMs [src:skill-config.ts:243]
+    prefixSkillsLimit: 20  # int default=20 — 预检索注入的技能清单上限（relevant 检索与 recent 兜底共用）；非正整数→20+WARN [src:skill-config.ts:244]
+  compress:
+    toolContentThresholdBytes: 2048  # int default=2048 — 单条 tool 消息超过多少字节才做头尾压缩 [src:skill-config.ts:261]
+    headBytes: 1024  # int default=1024 — 压缩后保留头部字节 [src:skill-config.ts:262]
+    tailBytes: 1024  # int default=1024 — 压缩后保留尾部字节 [src:skill-config.ts:263]
+  resources:
+    maxResourceSizeBytes: 5000000  # int default=5000000 — 技能资源文件大小上限 [src:skill-config.ts:266]
+    downloadDir: "/tmp/tdai-skill-resources"  # path default="/tmp/tdai-skill-resources" — 资源下载目录 [src:skill-config.ts:268]
+    allowExecutable: false  # bool default=false — 是否允许下载/执行可执行资源（安全闸，缺省禁） [src:skill-config.ts:269]
+  versionTtlDays: 0  # int default=0 — 非 head 版本 TTL 天数；0=不过期（内部换算 versionTtlSeconds=天×86400） [src:skill-config.ts:271]
+  worker:
+    concurrency: 60  # int default=60 — 技能抽取 worker 池并发（全进程共享一条技能队列）；env TDAI_SKILL_WORKER_CONCURRENCY 优先；非正整数→60 [src:skill-config.ts:199]
+    brpopBlockMs: 5000  # ms default=5000 — 单次取活自旋 deadline；非正整数→5000 [src:skill-config.ts:211]
+    extractLockTtlMs: 600000  # ms default=600000 — (instance, agent) 抽取锁 TTL；非正整数→600000 [src:skill-config.ts:213]
+    extractLockRenewIntervalMs: null  # ms default=unset — 锁续约间隔；不写=ttl/4 [src:skill-config.ts:219]

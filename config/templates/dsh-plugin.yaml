@@ -1,0 +1,128 @@
+# ============================================================================
+# dsh-plugin 配置模板 — DSH 宿主进程内插件（无独立端口；随 profile 的 cordis patch 装载）
+# 真源：dsh-plugin/src/config.ts（DEFAULT_CONFIG :323-472 / normalizeConfig :579-705）+ dsh-plugin/src/config-schema.ts；
+#       本模板与之逐键对齐，由 scripts/check-config-templates.mjs 校验
+# 用法：整段粘进 profile 的 cordis.patch.yml 里本插件条目的 config: 块；⚠ 该块是整块替换、不深合并 ——
+#       漏写一个键就回落代码缺省，不是「沿用上一份」
+# 敏感值：用凭据引用名（server.apiKeyRef / server.userKeyRef）或 ${ENV_NAME} 占位，真实值只进 D:/TDB/etc/env.ps1；
+#         宿主不会展开 ${...}，真值字段要自己替换；本模板不含任何明文 key
+# 说明：对象节点（server / volatile / ...）单独成行只为 YAML 容器，四要素注释只覆盖叶子键；
+#       consumed=false 的 6 个键在注释里标了「孤儿」，明细见 config/templates/dsh-plugin.keys.json
+# ============================================================================
+enabled: true   # bool default=true — 插件总开关；false 时 apply() 直接 return，不注册任何段/工具、不建 outbox（连 debug 日志镜像都不建） [src:324]
+
+# ─── server ───────────────────────────────────────────────  [config.ts:326]
+# server 连接与身份（core 基址 / 凭据引用名 / 三段隔离身份）
+server:
+  baseUrl: "http://127.0.0.1:8420"   # str default="http://127.0.0.1:8420" — core 的 origin（结尾斜杠会被剥掉）；指向错端口时所有调用 fail-open 成「没有记忆」，不会报错 [src:326]
+  apiKey: ""   # str default="" — 内联 core API key；非空时压过 apiKeyRef。桌面 profile 无凭据库时才用，填错=全量 401 后进程级停用 [src:328]
+  apiKeyRef: "TDAI_GATEWAY_APIKEY"   # str default="TDAI_GATEWAY_APIKEY" — 凭据名（不是值）：依次查 credentials seam → 同名环境变量。指向 proxy 的 key 会让每次 core 调用静默 401 [src:330]
+  serviceId: "default"   # str default="default" — 作为 x-tdai-service-id 发出；换值等于换一个服务命名空间 [src:331]
+  userKey: ""   # str default="" — 内联用户 key（task-51 身份解析）；非空时压过 userKeyRef。只用于 verify→team/list→agent/list，绝不进日志/提示词 [src:333]
+  userKeyRef: "TDAI_USER_KEY"   # str default="TDAI_USER_KEY" — 用户 key 的凭据名；留空且无内联值时退化为「只用三轴显式身份」 [src:334]
+  teamId: ""   # str default="" — 隔离轴之一；空串时插件保持 inert（记一行日志后停止发请求），避免写进别人账号 [src:337]
+  agentId: ""   # str default="" — 隔离轴之一；与 teamId/userId 任一为空即 inert [src:338]
+  userId: ""   # str default="" — 隔离轴之一；三轴齐备才发数据路由，也才带 x-tdai-user-key [src:339]
+  requestTimeoutMs: 10000   # ms default=10000 — 单次 HTTP 的握手+响应总预算（clamp [100,120000]）；太小会把正常写入拖成超时死信 [src:342]
+  maxResponseBytes: 2097152   # int default=2097152 — 单次响应体的字节上限（源码 2 * 1024 * 1024，clamp [1,16777216]）；0/缺省=用缺省，绝不等于「不限」 [src:345]
+
+# ─── paths ────────────────────────────────────────────────  [config.ts:348]
+# HTTP 路径（换后端要整体改，单改一条即 404）
+paths:
+  coreRead: "/v3/core/read"   # path default="/v3/core/read" — core 只读路径；换后端要整套一起改，单改一条会 404 [src:348]
+  atomicSearch: "/v3/atomic/search"   # path default="/v3/atomic/search" — /v3/recall 不可用时的回退检索路径 [src:349]
+  scenarioLs: "/v3/scenario/ls"   # path default="/v3/scenario/ls" — L2 场景索引列表路径（headPack.includeScenarioIndex / l2Chars 的取数口） [src:350]
+  conversationAdd: "/v3/conversation/add"   # path default="/v3/conversation/add" — L0 回写路径（一期蒸馏管线） [src:351]
+  conversationDelete: "/v3/conversation/delete"   # path default="/v3/conversation/delete" — L0 删除路径 [src:352]
+  skillConversationAdd: "/v3/skill/conversation/add"   # path default="/v3/skill/conversation/add" — 二期技能管线的回写路径，与 conversationAdd 不可互换（喂不同蒸馏器） [src:353]
+  recall: "/v3/recall"   # path default="/v3/recall" — 合并召回路径；服务端 v3Recall.enabled=false 时这里会 404 并回退 atomicSearch [src:354]
+  health: "/health"   # path default="/health" — 健康探针路径；填错只影响探测，不影响召回 [src:355]
+  metaAuthVerify: "/v3/meta/auth/verify"   # path default="/v3/meta/auth/verify" — 用户 key 换身份的第一步（公开读，不需 x-tdai-user-key） [src:356]
+  metaTeamList: "/v3/meta/team/list"   # path default="/v3/meta/team/list" — 第二步：列可访问 team（需 x-tdai-user-key） [src:357]
+  metaAgentList: "/v3/meta/agent/list"   # path default="/v3/meta/agent/list" — 第三步：列 agent；三步任一失败则身份维持空、插件 inert [src:358]
+
+# ─── headPack ─────────────────────────────────────────────  [config.ts:361]
+# 人格头包（DEPLOYMENT_PERSONA_SUFFIX 段）：身份 / 场景索引 / 技能清单的入口
+headPack:
+  enabled: true   # bool default=true — 是否注入「人格头包」段；关掉后模型只拿到 volatile 记忆块 [src:361]
+  orderOffset: 100   # int default=100 — 在宿主 DEPLOYMENT_PERSONA_SUFFIX 段序上加的偏移；越大越靠后 [src:362]
+  maxChars: 20000   # int default=20000 — 头包整段字符上限；超了按行裁，设太小会把 L2 索引挤掉 [src:367]
+  timeoutMs: 10000   # ms default=10000 — 拉取头包的单次预算（floor 100）；超时走竞态，本轮无头包 [src:368]
+  refreshMs: 300000   # ms default=300000 — 头包刷新间隔（floor 100）；越小越新但每轮多一次请求 [src:369]
+  fallbackText: ""   # str default="" — 从未成功拉到头包时的兜底文案；空=直接不注入（fail-open） [src:370]
+  includeScenarioIndex: true   # bool default=true — 是否把 L2 场景索引渲染进头包；关掉后模型不知道有哪些 scene_blocks/ 文件 [src:371]
+  maxScenarioEntries: 20   # int default=20 — composeHeadPack 自带路径列表的旧上限；task-103 后 persona 不再用它 ⇒ 现行无实际效果（孤儿） [src:372]
+  l2Chars: 3000   # int default=3000 — L2 索引段的字符上限（clamp [0,3000]，3000 与段自身 L2_MAX_CHARS 对齐）；按行裁，放不下的整行丢 [src:374]
+
+# ─── volatile ─────────────────────────────────────────────  [config.ts:377]
+# volatile 注入块：每轮 <relevant-memories> 的预算与分片
+volatile:
+  enabled: true   # bool default=true — 是否每轮注入 <relevant-memories> 块；关掉后 soul/wiki/knowledge 也一起没了 [src:377]
+  maxChars: 1500   # int default=1500 — 每轮注入块总上限（含 soul）；实测 1500 只装 4 条、soul 占 600 后记忆只剩 899≈2 条 [src:384]
+# · volatile.soul 子段
+  soul:
+    enabled: true   # bool default=true — 是否注入 <soul-identity> 人格碎片（蒸馏出的红线/身份） [src:386]
+    maxChars: 600   # int default=600 — soul 块上限（clamp [100,3000]）；它从 volatile.maxChars 里切，设大直接压缩记忆条数 [src:389]
+    includeFeeling: true   # bool default=true — 是否连 <soul-feeling>（情绪行，36–40 字符）一起注入 [src:390]
+  timeoutMs: 3000   # ms default=3000 — 整块取数预算（含回退腿，floor 100）；超了本轮注入空块 [src:394]
+  recall: true   # bool default=true — 优先走 /v3/recall；false 强制走 atomic/search 老通道（没有 soul/结论层） [src:395]
+  recallMaxResults: 3   # int default=3 — 交给 /v3/recall 的 maxResults；实测 3 与 2 都只装 2 条（预算先到），调大不加钱但也不加条 [src:396]
+  recallTimeoutMs: 2500   # ms default=2500 — 仅 /v3/recall 的预算（AbortController 真取消，floor 100）；家测 P50 4260ms ⇒ 缺省值下过半轮次回退 [src:401]
+# · volatile.wiki 子段
+  wiki:
+    enabled: false   # bool default=false — 是否注入 <team-wiki> 段；8420 上 /v3/wiki/search 长期 404，缺省关=省一次每轮失败请求 [src:405]
+    topK: 3   # int default=3 — 合并后保留条数（clamp [1,20]） [src:406]
+    perWikiLimit: 4   # int default=4 — 向 core 请求的单 wiki 扇出（clamp [1,20]） [src:407]
+    minScore: 0.02   # float default=0.02 — 传给 core 的相关度下限（clamp [0,10]），本地不再二次过滤；调高后段可能空 [src:408]
+    maxChars: 800   # int default=800 — wiki 段字符上限（clamp [0,2000]，0=不注入）；还得与主块预算抢余量 [src:409]
+    timeoutMs: 2500   # ms default=2500 — 单次 wiki 调用预算（floor 100） [src:410]
+# · volatile.knowledge 子段
+  knowledge:
+    enabled: true   # bool default=true — 是否注入 <knowledge_tools> 段（团队知识库清单） [src:416]
+    maxChars: 3000   # int default=3000 — 该段字符上限（clamp [0,3000]，0=不注入） [src:417]
+    maxResources: 8   # int default=8 — 最多渲染几个知识资源（clamp [1,32]） [src:418]
+    timeoutMs: 2500   # ms default=2500 — 单次 /v3/knowledge/list 预算（floor 100） [src:419]
+
+# ─── writeback ────────────────────────────────────────────  [config.ts:423]
+# 回写（outbox → /v3/conversation/add）：容量、重试、硬顶
+writeback:
+  enabled: true   # bool default=true — 是否把每轮对话回写 core（L0/L2 蒸馏的入口）；关掉后记忆不再增长 [src:423]
+  skillFeed: true   # bool default=true — 是否同时喂二期技能管线；同一身份已被 MemoryProxy 喂过时要设 false，否则每次交互被蒸馏两遍 [src:425]
+  outboxPath: ""   # path default="" — 本地 outbox JSONL 路径；空=派生 $DSH_HOME/agemem/outbox.jsonl [src:426]
+  maxAttempts: 8   # int default=8 — 单条消息重试次数上限（floor 0）；到顶进死信，不再重试 [src:427]
+  retryMs: 30000   # ms default=30000 — 重试间隔（floor 100）；调小会放大 core 故障期的请求量 [src:428]
+  maxMessageChars: 8192   # int default=8192 — 单条消息字符上限（clamp [1,8192]）；超了 core 用 400 拒整批，所以这里是硬顶不是建议 [src:432]
+  maxMessagesPerRequest: 100   # int default=100 — 单请求消息数上限（clamp [1,100] 对齐 core v2-schemas）——注意：归一化后运行期无消费者，批次大小实际无人限制（孤儿） [src:433]
+  maxRequestBytes: 700000   # int default=700000 — 单请求体字节上限（源码 DEFAULT_MAX_REQUEST_BYTES=700000，clamp [1,1000000]）；超过 1MB core 直接 RST，本轮丢失 [src:435]
+  maxOutboxEntries: 500   # int default=500 — outbox 条数容量（clamp [1,100000]）；越界丢最老的并 warn，死信不参与裁剪 [src:438]
+  maxOutboxBytes: 20971520   # int default=20971520 — outbox 文件字节容量（源码 20 * 1024 * 1024，clamp [1024,1e9]）；与条数上限谁先到算谁 [src:439]
+
+# ─── tools ────────────────────────────────────────────────  [config.ts:442]
+# 模型工具面：recall / knowledge 的可用性
+tools:
+  enabled: true   # bool default=true — 是否向模型暴露记忆工具（recall/knowledge）；关掉后只剩被动注入 [src:442]
+  recall: true   # bool default=true — 是否单独暴露 memory_recall 工具 [src:443]
+  recallTopK: 8   # int default=8 — memory_recall 的缺省 top_k；调大只加 token 不加召回质量 [src:444]
+
+# ─── skill ────────────────────────────────────────────────  [config.ts:447]
+# 技能面（task-72）：头包段 + 六个读写工具
+skill:
+  enabled: true   # bool default=true — 技能面总开关（头包段 + 工具）；关掉后模型看不到团队技能库 [src:447]
+  allowLlmWrite: false   # bool default=false — 是否暴露六个写工具（create/patch/delete 共享团队技能）；缺省关=只读，破坏性操作要显式开 [src:449]
+  headPackChars: 8000   # int default=8000 — <available_skills> 段字符上限（clamp [0,64000]）；8000≈90 个技能名 [src:451]
+  searchTopK: 10   # int default=10 — skill_search 缺省 top_k（clamp [1,50]） [src:452]
+  maxResultChars: 20000   # int default=20000 — 单个工具结果回给模型的字符上限（clamp [1000,60000]）；现实测单个技能头 30318 字符 [src:455]
+  timeoutMs: 2500   # ms default=2500 — 每次 /v3/skill/* 预算（floor 100） [src:456]
+
+# ─── assetReflection ──────────────────────────────────────  [config.ts:461]
+# 资产反思段（task-82）——已实现但未接线，改值不产生行为
+assetReflection:
+  enabled: true   # bool default=true — 资产反思段总开关；但注册函数 src 零调用点 ⇒ 现行改值无行为（task-107 已登记） [src:461]
+  triggerToken: "/analyse"   # str default="/analyse" — 触发 token（空白会被归一化回缺省）；同上未接线，改值无行为 [src:463]
+  alwaysOn: false   # bool default=false — 评测会话用：忽略 token 每轮注入；同上未接线 [src:464]
+  maxChars: 600   # int default=600 — 反思块字符上限（clamp [120,4000]）；同上未接线 [src:467]
+
+# ─── 其余顶层开关 ───────────────────────────────────────────────  [config.ts:469]
+# 调试通道：不起时零副作用；开了才有 verbose 日志与文件镜像
+debug: false   # bool default=false — 打开 verbose 日志 + 文件镜像；未显式写布尔时由环境变量 AGEMEM_DEBUG 决定（不为空且非 0/false/no/off 即 true） [src:469]
+debugLogFile: ""   # path default="" — debug 日志镜像路径；空=派生 DSH_HOME/agemem/agemem.log（5MB 轮转为 .1）；GUI 宿主唯一可观测通道 [src:471]

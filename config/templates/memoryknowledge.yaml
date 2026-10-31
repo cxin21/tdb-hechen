@@ -1,0 +1,104 @@
+# ============================================================================
+# MemoryKnowledge 配置模板 — 8421 / 单进程 HTTP 服务（Node 22，hono + better-sqlite3）
+# 真源：MemoryKnowledge/src/config.ts（loadConfig）；引擎级开关散在
+#       src/engines/wiki/index-db.ts、src/store/auto-sync-scheduler.ts、
+#       src/source-fetcher/git-fetcher.ts、src/mcp/server.ts、src/telemetry.ts
+#       本模板与之逐键对齐，由 scripts/check-config-templates.mjs 校验
+# 用法：本服务**只读环境变量**，没有 yaml 配置文件（唯一例外 {dataDir}/config-override.json，
+#       由 admin API 写）。所以下面的键名就是环境变量名，层级只是分组；三个来源任选其一：
+#       抄进 D:/TDB/etc/env.ps1（`$env:NAME = "..."`）｜进程环境直接导出｜
+#       进程 cwd 下的 .env（config.ts:9 `import 'dotenv/config'` 自动加载，优先级低于已存在的进程变量）。
+#       把这份 yaml 原样丢给服务进程不会改变任何行为——要生效必须变成同名环境变量。
+# 敏感值：一律 ${ENV_NAME} 占位，真实值只进 D:/TDB/etc/env.ps1
+# 行号：[src:NN] 指 src/config.ts；跨文件时写全相对路径 [src:src/<path>:NN]
+# ============================================================================
+
+# ─── server / 进程与 HTTP ──────────────────────────────  [config.ts:205-211]
+server:
+  PORT: 8421   # int default=8421 — HTTP 监听端口；docker-compose 映射用 TEAM_KNOWLEDGE_HOST_PORT，容器内恒 8421 [src:205]
+  API_PREFIX: "/v3"   # str default="/v3" — 所有业务路由前缀；改它则鉴权白名单（middleware/auth.ts 的 /tools/list 等）与所有客户端 baseUrl 都要同步改 [src:209]
+  LOG_LEVEL: "debug"   # str default="debug" — 日志级别 enum(debug|info|warn|error)；logger.ts:8 另有一处独立读取同一变量，两处不同源 [src:208]
+  KNOWLEDGE_PUBLIC_BASE_URL: "${KNOWLEDGE_PUBLIC_BASE_URL}"   # str default="" — 对外公布的服务基址（如 http://host:8421/v3，docker entrypoint 强制以 /v3 结尾）；只用于生成 service_url 与回调链接，留空则链接为空 [src:210]
+
+# ─── storage / 数据落盘 ─────────────────────────────────  [config.ts:206-207]
+storage:
+  KNOWLEDGE_DATA_DIR: "./data"   # path default="./data" — 知识资产根目录（git 克隆、wiki 目录、SQLite、config-override.json）；支持 ~/ 前缀展开 [src:206]
+  KNOWLEDGE_DB_PATH: "./data/knowledge.db"   # path default="./data/knowledge.db" — SQLite 主库路径；drizzle.config.ts:8 读同一变量做迁移，改路径要同时迁库 [src:207]
+
+# ─── auth / 服务间鉴权 ────────────────────────────────────  [config.ts:218]
+auth:
+  KNOWLEDGE_SERVICE_KEY: "${KNOWLEDGE_SERVICE_KEY}"   # str default="" — 共享密钥 enum(空=关闭|非空=开启)；空= /v3 全放行，非空= 除只读白名单（tools/list、tools/call、wiki 查询、code-graph 查询、GET auto-sync/status）外一律要求 Authorization: Bearer，fail-closed（新增端点默认受保护） [src:218]
+
+# ─── tmc / 结果回调 ──────────────────────────────────────  [config.ts:211]
+tmc:
+  TMC_CALLBACK_URL: "${TMC_CALLBACK_URL}"   # str default="" — 管控（TMC）根地址；空=完全跳过回调（no-op），非空= ingest 状态变更时 POST {TMC}/api/v1/knowledge/status-callback [src:211]
+
+# ─── rerank / 召回重排（R1，薄客户端）──────────────────────  [config.ts:213-215]
+rerank:
+  KNOWLEDGE_RERANK_URL: "${KNOWLEDGE_RERANK_URL}"   # str default="" — core 网关 /v1/rerank URL（如 http://127.0.0.1:8420/v1/rerank）；**空 = 整体关闭重排（零行为变化）**；配错则 wiki/search 每次多一次失败调用 [src:213]
+  KNOWLEDGE_RERANK_API_KEY: "${KNOWLEDGE_RERANK_API_KEY}"   # str default="" — 调 core rerank 的 Bearer，与 core 侧 TDAI_GATEWAY_APIKEY 同值；URL 非空而此为空 → 401，重排静默失效 [src:214]
+  KNOWLEDGE_RERANK_TIMEOUT_MS: 800   # ms default=800 — 单次重排超时，源码 clamp 100~30000；超时按「无重排」继续，不报错 [src:215]
+
+# ─── llm / wiki ingest 用的上游模型 ──────────────────────  [config.ts:220-228]
+# per-instance llm_binding（/v3/llm-binding/set 写入）优先级高于本段：命中 binding 时 baseUrl/apiKey 被覆盖。
+llm:
+  LLM_MODE: "proxy"   # enum(proxy|custom) default="proxy" — 无 binding 时的全局兜底：proxy=必须走 context_proxy 绑定，缺绑定则 ingest 直接失败（不静默直连）；custom=用下面 baseUrl/apiKey 直连。**除 "custom" 外任何值都静默当 proxy** [src:220]
+  LLM_PROTOCOL: "openai"   # enum(openai|anthropic) default="openai" — 协议：openai 打 /chat/completions，anthropic 打 /messages；未知值静默回落 openai [src:221]
+  LLM_PROVIDER: "custom"   # str default="custom" — 供应商标签，仅用于日志/展示，不参与路由 [src:222]
+  LLM_API_KEY: "${LLM_API_KEY}"   # str default="" — LLM_MODE=custom 时的上游 key；proxy 模式下被清空不用 [src:223]
+  LLM_MODEL: "Memory-Model"   # str default="Memory-Model" — 默认模型名；binding 未指定模型时用它（docker entrypoint 的 --llm-model 帮助文案写 gpt-4o-mini，与本缺省不一致） [src:224]
+  LLM_BASE_URL: "${LLM_BASE_URL}"   # str default="" — OpenAI 兼容 baseUrl（含 /v1）；custom 模式留空则 createLlmClient 直接抛错（不回落直连） [src:225]
+  LLM_MAX_TOKENS: 32768   # int default=32768 — 单次 completion 的 max_tokens 上限；推理模型给小了会把预算烧在 reasoning 上导致正文为空 [src:226]
+  LLM_TIMEOUT_MS: 1200000   # ms default=1200000 — 单次 LLM 请求超时（20min，给推理模型留量）；调小会在大文件抽取上批量超时 [src:227]
+  LLM_STREAM: false   # bool default=false — 是否用流式请求调用上游；**只认字面量 "true"**（"1"/"yes"/"on" 一律当 false，与 KNOWLEDGE_CLICKHOUSE_ENABLED 的解析口径不同） [src:228]
+
+# ─── override / {dataDir}/config-override.json（不是环境变量）─────────────
+# 这一段没有对应 env：由 admin API（/v3/admin/settings/*）写入 JSON，重启后仍生效，优先级高于 LLM_* 环境变量。
+override:
+  maxRetries: 0   # int default=0 — AI SDK 层重试次数 enum(0..10)；**0 = 单次尝试 fail-fast**（admin 校验拒绝负数与 >10） [src:src/engines/wiki/ingest-v2/llm.ts:77]
+  summaryMaxOutputTokens: 4096   # int default=4096 — wiki 摘要专用输出预算；思考模型的 reasoning 计入 completion，给小会导致摘要恒空 [src:src/callback.ts:165]
+
+# ─── embedding / wiki 向量化 ────────────────────────────  [config.ts:231-235]
+# baseUrl/apiKey/model 任一为空或 dimensions<=0 → 整体不启用向量（退化为纯文本检索），不报错。
+embedding:
+  EMBEDDING_PROVIDER: "openai_compatible"   # str default="openai_compatible" — 向量服务协议标签，仅用于日志/展示 [src:231]
+  EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL}"   # str default="" — 向量服务 baseUrl（如火山 doubao endpoint）；空=不启用向量 [src:232]
+  EMBEDDING_API_KEY: "${EMBEDDING_API_KEY}"   # str default="" — 向量服务 key [src:233]
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL}"   # str default="" — 向量模型名（如 doubao-embedding）；注意 wiki 摘要用 LLM_*，向量用 EMBEDDING_*，两套独立 [src:234]
+  EMBEDDING_DIMENSIONS: 0   # int default=0 — 向量维度；0 或负数=不启用；必须与模型真实维度一致，写错会让向量检索静默空转 [src:235]
+
+# ─── wiki / 索引库与并发 ────────────────────────────────  [跨文件，见行号]
+wiki:
+  KNOWLEDGE_WIKI_POOL_MAX: 300   # int default=300 — wiki 索引 SQLite **只读连接池上限**；每连接 WAL 占 3 个 fd，需 ulimit -n ≥ POOL_MAX*3+余量，超 ulimit 则 open 失败 [src:src/engines/wiki/index-db.ts:35]
+  KNOWLEDGE_WIKI_INGEST_CONCURRENCY: 3   # int default=3 — 单 wiki 内阶段 1 并发 LLM 抽取数，clamp 1~10；调大易触发上游 QPS 限流 [src:151]
+  KNOWLEDGE_LLM_GLOBAL_CONCURRENCY: 5   # int default=5 — 跨所有 wiki 的全局 LLM 并发上限（extract + merge 共用），clamp 1~20；这是全服务 LLM 总闸 [src:160]
+
+# ─── autoSync / code graph 与 git wiki 的自动同步 ──────────  [src/store/auto-sync-scheduler.ts:53-55]
+autoSync:
+  KNOWLEDGE_AUTO_SYNC_ENABLED: false   # bool default=false — 自动同步总开关（"true"/"1"/"yes"/"on" 均算开）；false 时调度器不启动，只能手动 POST /v3/auto-sync/trigger [src:src/store/auto-sync-scheduler.ts:53]
+  KNOWLEDGE_AUTO_SYNC_SCAN_INTERVAL_MIN: 10   # float default=10 — 扫描周期（分钟），**源码 clamp 1~1440**（.env.example 与 docker/env.example 都写成 1~60，是文档漂移）；写 0 或负数会被钳成 1 分钟 [src:src/store/auto-sync-scheduler.ts:54]
+  KNOWLEDGE_AUTO_SYNC_MAX_CONCURRENT: 3   # int default=3 — 全局同时同步的仓库数，clamp 1~20；与 KNOWLEDGE_LLM_GLOBAL_CONCURRENCY 相乘才是 LLM 峰值并发 [src:src/store/auto-sync-scheduler.ts:55]
+
+# ─── sourceFetch / git 源拉取 ───────────────────────────  [src/source-fetcher/git-fetcher.ts:39]
+sourceFetch:
+  KNOWLEDGE_SSRF_CHECK: true   # bool default=true — SSRF 私网/环回黑名单；配成 off/false/0/no（大小写不敏感）即关闭。**关闭 = 允许 wiki 源指向 127.0.0.1/10.x**，只在源清单完全可信时才关 [src:src/source-fetcher/git-fetcher.ts:39]
+
+# ─── mcp / stdio MCP 服务（独立进程 pnpm dev:mcp）──────────  [src/mcp/server.ts:94-95]
+mcp:
+  KNOWLEDGE_API_URL: "http://localhost:8421"   # str default="http://localhost:8421" — MCP 进程转发到的 knowledge API 地址（不含 /v3）；MCP 与主服务分进程/分机跑时必配 [src:src/mcp/server.ts:94]
+  KNOWLEDGE_API_TOKEN: "${KNOWLEDGE_API_TOKEN}"   # str default=required — 主服务开了 KNOWLEDGE_SERVICE_KEY 时，MCP 转发必须带同一个 key，否则 tools/call 全 401 [src:src/mcp/server.ts:95]
+
+# ─── telemetry / LLM 链路追踪 + 请求埋点 ─────────────────  [跨文件，见行号]
+telemetry:
+  LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY}"   # str default="" — Langfuse secret key；空=整条 OTel 链路不初始化（静默跳过，不影响主流程） [src:src/telemetry.ts:28]
+  LANGFUSE_BASE_URL: "https://cloud.langfuse.com"   # str default="https://cloud.langfuse.com" — Langfuse 上报地址（自建实例改这里）；扇出失败只影响追踪 [src:src/telemetry.ts:44]
+  KNOWLEDGE_CLICKHOUSE_ENABLED: false   # bool default=false — ClickHouse 埋点总开关（"true"/"1"/"yes"/"on" 均算开）；开而缺 URL 会**启动即抛错**（validateClickHouseConfig fail-fast） [src:191]
+  KNOWLEDGE_CLICKHOUSE_URL: "${KNOWLEDGE_CLICKHOUSE_URL}"   # str default="" — ClickHouse HTTP 端点（只接受 http/https，其它协议启动即抛错）；启用埋点时必填 [src:192]
+  KNOWLEDGE_CLICKHOUSE_DATABASE: "default"   # str default="default" — 目标库名；必须是合法标识符（[A-Za-z_][A-Za-z0-9_]*），否则启动即抛错 [src:193]
+  KNOWLEDGE_CLICKHOUSE_TABLE: "tool_call_logs"   # str default="tool_call_logs" — 目标表名；同样受标识符校验，与 Memory/Skill 共用同一张表结构 [src:194]
+  KNOWLEDGE_CLICKHOUSE_USER: "default"   # str default="default" — ClickHouse 用户名 [src:195]
+  KNOWLEDGE_CLICKHOUSE_PASSWORD: "${KNOWLEDGE_CLICKHOUSE_PASSWORD}"   # str default="" — ClickHouse 密码 [src:196]
+  KNOWLEDGE_CLICKHOUSE_FLUSH_INTERVAL_MS: 5000   # ms default=5000 — 攒批 flush 间隔，校验要求 ≥100，否则启动即抛错 [src:197]
+  KNOWLEDGE_CLICKHOUSE_FLUSH_THRESHOLD: 50   # int default=50 — 攒够多少行立即 flush，校验要求 ≥1 [src:198]
+  KNOWLEDGE_CLICKHOUSE_TTL_DAYS: 90   # int default=90 — 埋点表 TTL（天），校验要求 ≥0；0 表示不过期 [src:199]
+  KNOWLEDGE_CLICKHOUSE_REQUEST_TIMEOUT_MS: 5000   # ms default=5000 — 单次 CH 写入超时，校验要求 ≥100 [src:200]

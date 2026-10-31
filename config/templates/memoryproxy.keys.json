@@ -1,0 +1,1566 @@
+{
+  "service": "memoryproxy",
+  "generatedAt": "2026-11-01T04:35:00+08:00",
+  "sources": [
+    "MemoryProxy/src/config.ts",
+    "MemoryProxy/src/injection/types.ts",
+    "MemoryProxy/src/types.ts",
+    "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts",
+    "MemoryProxy/src/injection/injectors/soul-dedupe.ts"
+  ],
+  "keys": [
+    {
+      "path": "server.host",
+      "type": "str",
+      "default": "0.0.0.0",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:13",
+      "consumed": true
+    },
+    {
+      "path": "server.port",
+      "type": "int",
+      "default": "8096",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:13",
+      "consumed": true
+    },
+    {
+      "path": "server.forwardTimeoutMs",
+      "type": "ms",
+      "default": "600000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:13",
+      "consumed": true
+    },
+    {
+      "path": "upstream.url",
+      "type": "str",
+      "default": "https://llm-upstream.example.com/v2/chat/completions",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:14",
+      "consumed": true
+    },
+    {
+      "path": "upstream.apiKey",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_LLM_API_KEY",
+      "source": "MemoryProxy/src/config.ts:14",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_LLM_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "upstream.agents",
+      "type": "map<str,{url,apiKey}>",
+      "default": "{}",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:14",
+      "consumed": true
+    },
+    {
+      "path": "log.file",
+      "type": "path",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:16",
+      "consumed": true
+    },
+    {
+      "path": "log.verbose",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:17",
+      "consumed": true
+    },
+    {
+      "path": "log.level",
+      "type": "enum(info|debug)",
+      "default": "info",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:18",
+      "consumed": true
+    },
+    {
+      "path": "log.backend",
+      "type": "enum(noop|console)",
+      "default": "console",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:19",
+      "consumed": true
+    },
+    {
+      "path": "log.rotate.maxSizeBytes",
+      "type": "int",
+      "default": "104857600",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:20",
+      "consumed": true,
+      "defaultNote": "源码写作 100 * 1024 * 1024（config.ts:20），本行折算成字节数 104857600"
+    },
+    {
+      "path": "log.rotate.backupLimit",
+      "type": "int",
+      "default": "10",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:20",
+      "consumed": true
+    },
+    {
+      "path": "opik.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:22",
+      "consumed": true
+    },
+    {
+      "path": "opik.url",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:22",
+      "consumed": true
+    },
+    {
+      "path": "opik.apiKey",
+      "type": "str",
+      "default": "",
+      "env": "OPIK_API_KEY",
+      "source": "MemoryProxy/src/config.ts:22",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${OPIK_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "opik.stripRequestLogContent",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:22",
+      "consumed": true
+    },
+    {
+      "path": "langfuse.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true
+    },
+    {
+      "path": "langfuse.host",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true
+    },
+    {
+      "path": "langfuse.publicKey",
+      "type": "str",
+      "default": "",
+      "env": "LANGFUSE_PUBLIC_KEY",
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${LANGFUSE_PUBLIC_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "langfuse.secretKey",
+      "type": "str",
+      "default": "",
+      "env": "LANGFUSE_SECRET_KEY",
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${LANGFUSE_SECRET_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "langfuse.debug",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true
+    },
+    {
+      "path": "langfuse.maxQueueSize",
+      "type": "int",
+      "default": "8192",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true
+    },
+    {
+      "path": "langfuse.flushAt",
+      "type": "int",
+      "default": "256",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true
+    },
+    {
+      "path": "langfuse.flushInterval",
+      "type": "int",
+      "default": "2",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:23",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:25",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.url",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:26",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.database",
+      "type": "str",
+      "default": "context_proxy",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:27",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.table",
+      "type": "str",
+      "default": "usage_logs",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:28",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.rawTable",
+      "type": "str",
+      "default": "usage_raw",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:29",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.user",
+      "type": "str",
+      "default": "default",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:30",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.password",
+      "type": "str",
+      "default": "",
+      "env": "CLICKHOUSE_PASSWORD",
+      "source": "MemoryProxy/src/config.ts:31",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${CLICKHOUSE_PASSWORD}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "clickhouse.flushIntervalMs",
+      "type": "ms",
+      "default": "5000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:32",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.flushThreshold",
+      "type": "int",
+      "default": "50",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:33",
+      "consumed": true
+    },
+    {
+      "path": "clickhouse.ttlDays",
+      "type": "int",
+      "default": "0",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:34",
+      "consumed": true
+    },
+    {
+      "path": "redis.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:37",
+      "consumed": true
+    },
+    {
+      "path": "redis.url",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:38",
+      "consumed": true
+    },
+    {
+      "path": "redis.host",
+      "type": "str",
+      "default": "127.0.0.1",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:39",
+      "consumed": true
+    },
+    {
+      "path": "redis.port",
+      "type": "int",
+      "default": "6379",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:40",
+      "consumed": true
+    },
+    {
+      "path": "redis.password",
+      "type": "str",
+      "default": "",
+      "env": "REDIS_PASSWORD",
+      "source": "MemoryProxy/src/config.ts:41",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${REDIS_PASSWORD}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "redis.db",
+      "type": "int",
+      "default": "0",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:42",
+      "consumed": true
+    },
+    {
+      "path": "redis.keyPrefix",
+      "type": "str",
+      "default": "cg:sess:",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:43",
+      "consumed": true
+    },
+    {
+      "path": "redis.ttlSeconds",
+      "type": "int",
+      "default": "1800",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:44",
+      "consumed": true
+    },
+    {
+      "path": "redis.injectionTtlSeconds",
+      "type": "int",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:480",
+      "consumed": true,
+      "defaultNote": "源码无缺省（config.ts:480 ?? undefined）；留空=undefined（不配），填数值才生效"
+    },
+    {
+      "path": "rateLimit.tpm",
+      "type": "int",
+      "default": "1000000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:47",
+      "consumed": true
+    },
+    {
+      "path": "rateLimit.qpm",
+      "type": "int",
+      "default": "100",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:48",
+      "consumed": true
+    },
+    {
+      "path": "storage.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:51",
+      "consumed": true
+    },
+    {
+      "path": "storage.backend",
+      "type": "enum(cos|sqlite|fs|memory)",
+      "default": "sqlite",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:52",
+      "consumed": true
+    },
+    {
+      "path": "storage.ttlDays",
+      "type": "int",
+      "default": "7",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:53",
+      "consumed": true
+    },
+    {
+      "path": "storage.cos.rootPrefix",
+      "type": "str",
+      "default": "proxy_cache/",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:55",
+      "consumed": true
+    },
+    {
+      "path": "storage.cos.endpointDomain",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:492",
+      "consumed": true,
+      "defaultNote": "源码无缺省（config.ts:492 ?? undefined）；空串=不配 COS"
+    },
+    {
+      "path": "storage.cos.shark.baseUrl",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:57",
+      "consumed": true
+    },
+    {
+      "path": "storage.cos.shark.timeoutMs",
+      "type": "ms",
+      "default": "10000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:58",
+      "consumed": true,
+      "defaultNote": "源码写作 10_000（config.ts:58），本行折算成毫秒数 10000"
+    },
+    {
+      "path": "storage.cos.shark.retryCount",
+      "type": "int",
+      "default": "2",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:59",
+      "consumed": true
+    },
+    {
+      "path": "storage.cos.shark.refreshBufferMs",
+      "type": "ms",
+      "default": "120000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:60",
+      "consumed": true,
+      "defaultNote": "源码写作 2 * 60_000（config.ts:60），本行折算成毫秒数 120000"
+    },
+    {
+      "path": "storage.cos.shark.maxSpaces",
+      "type": "int",
+      "default": "100",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:61",
+      "consumed": true
+    },
+    {
+      "path": "storage.cos.shark.graceCloseDelayMs",
+      "type": "ms",
+      "default": "30000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:62",
+      "consumed": true,
+      "defaultNote": "源码写作 30_000（config.ts:62），本行折算成毫秒数 30000"
+    },
+    {
+      "path": "storage.sqlite.dbPath",
+      "type": "path",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:65",
+      "consumed": true
+    },
+    {
+      "path": "storage.fs.fsRoot",
+      "type": "path",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:66",
+      "consumed": true
+    },
+    {
+      "path": "costGuard.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:69",
+      "consumed": true
+    },
+    {
+      "path": "costGuard.markerOptIn",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:70",
+      "consumed": true
+    },
+    {
+      "path": "costGuard.agentProfile",
+      "type": "str",
+      "default": "auto",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:71",
+      "consumed": true
+    },
+    {
+      "path": "costGuard.anthropicUpstream.url",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:372",
+      "consumed": true,
+      "defaultNote": "源码无缺省（config.ts:372）；留空=不配 anthropic 上游"
+    },
+    {
+      "path": "costGuard.options",
+      "type": "map<str,unknown>",
+      "default": "{}",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:356",
+      "consumed": true,
+      "defaultNote": "缺省空对象（parseCostGuard 只把未知键原样塞进 options，config.ts:344-375）"
+    },
+    {
+      "path": "creditReport.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:75",
+      "consumed": true
+    },
+    {
+      "path": "creditReport.url",
+      "type": "str",
+      "default": "http://gateway.example.com:8000/UpdateMemoryPlusUsage",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:76",
+      "consumed": true
+    },
+    {
+      "path": "creditReport.timeoutMs",
+      "type": "ms",
+      "default": "5000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:77",
+      "consumed": true
+    },
+    {
+      "path": "creditPricing.models",
+      "type": "list<map>",
+      "default": "[]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:512",
+      "consumed": true,
+      "elementFields": [
+        {
+          "field": "name",
+          "type": "str",
+          "required": true,
+          "default": null,
+          "source": "MemoryProxy/src/config.ts:513",
+          "note": "name 为空串的条目解析后被过滤掉（config.ts:523）"
+        },
+        {
+          "field": "modelName",
+          "type": "str",
+          "required": true,
+          "default": null,
+          "source": "MemoryProxy/src/config.ts:517",
+          "note": "缺失时 resolveModelName 回落 name，但 alias -> model_id 反查失效（config.ts:517）"
+        },
+        {
+          "field": "input",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "source": "MemoryProxy/src/config.ts:518",
+          "note": null
+        },
+        {
+          "field": "output",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "source": "MemoryProxy/src/config.ts:519",
+          "note": null
+        },
+        {
+          "field": "cacheRead",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "source": "MemoryProxy/src/config.ts:520",
+          "note": null
+        },
+        {
+          "field": "cacheWrite5m",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "source": "MemoryProxy/src/config.ts:521",
+          "note": null
+        },
+        {
+          "field": "cacheWrite1h",
+          "type": "float",
+          "required": false,
+          "default": "0",
+          "source": "MemoryProxy/src/config.ts:522",
+          "note": null
+        }
+      ]
+    },
+    {
+      "path": "injection.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:81",
+      "consumed": true
+    },
+    {
+      "path": "injection.injectors",
+      "type": "list<str>",
+      "default": "[\"skill\", \"knowledge\", \"tdai-memory\"]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:82",
+      "consumed": true
+    },
+    {
+      "path": "injection.externalGatewayUrl",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:528",
+      "consumed": true,
+      "defaultNote": "源码无缺省（config.ts:528-530 仅非空字符串才采纳）；空串=不配"
+    },
+    {
+      "path": "injection.assetReflection.markerOptIn",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:86",
+      "consumed": true
+    },
+    {
+      "path": "injection.soulOverlapJournal.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:543",
+      "consumed": true,
+      "defaultNote": "soulOverlapJournal 段存在才材料化（config.ts:540-550）；不写该段=undefined（关），与 enabled:false 行为相同但缺省零感"
+    },
+    {
+      "path": "injection.soulOverlapJournal.file",
+      "type": "path",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:546",
+      "consumed": true,
+      "defaultNote": "源码要求非空字符串（config.ts:546-550），空串会被解析成 undefined；enabled=false 时不写文件，这里给的是示例路径"
+    },
+    {
+      "path": "injection.soulTiming.identity",
+      "type": "enum(session_head|session_head_drift_reanchor)",
+      "default": "session_head",
+      "env": null,
+      "source": "MemoryProxy/src/injection/types.ts:258",
+      "consumed": true
+    },
+    {
+      "path": "injection.soulTiming.redline",
+      "type": "enum(session_head|action_proximate)",
+      "default": "session_head",
+      "env": null,
+      "source": "MemoryProxy/src/injection/types.ts:259",
+      "consumed": true
+    },
+    {
+      "path": "injection.soulTiming.feeling",
+      "type": "enum(session_head|every_turn)",
+      "default": "every_turn",
+      "env": null,
+      "source": "MemoryProxy/src/injection/types.ts:260",
+      "consumed": true
+    },
+    {
+      "path": "injection.soulTiming.driftTrigger",
+      "type": "enum(off|shadow|auto)",
+      "default": "off",
+      "env": null,
+      "source": "MemoryProxy/src/injection/types.ts:261",
+      "consumed": true
+    },
+    {
+      "path": "injection.soulTiming.redlineDedup.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:265",
+      "consumed": true,
+      "defaultNote": "仅当 yaml 显式 true 时才材料化该子段（config.ts:265），不写等于 false"
+    },
+    {
+      "path": "injection.soulTiming.redlineDedup.jaccardThreshold",
+      "type": "float",
+      "default": "0.45",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:268",
+      "consumed": true,
+      "defaultNote": "缺省回退常量 DEFAULT_RULE_JACCARD_THRESHOLD=0.45（injectors/soul-dedupe.ts:54）"
+    },
+    {
+      "path": "injection.soulTiming.reanchor.intervalTurns",
+      "type": "int",
+      "default": "20",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:283",
+      "consumed": true,
+      "defaultNote": "reanchor 子段条件材料化（config.ts:281-287）；本值 20 取自该分支兜底，clamp [1,200]"
+    },
+    {
+      "path": "injection.soulTiming.redlineCadence.mode",
+      "type": "enum(every_action_point|turn_head)",
+      "default": "every_action_point",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:297",
+      "consumed": true,
+      "defaultNote": "仅 every_action_point|turn_head 合法时才材料化该子段（config.ts:297），不写等于整段缺席"
+    },
+    {
+      "path": "injection.soulTiming.redlineCadence.depthOverflow",
+      "type": "int",
+      "default": "8",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:298",
+      "consumed": true,
+      "defaultNote": "redlineCadence 子段条件材料化（config.ts:295-300）；本值 8 取自该分支兜底，clamp [1,200]"
+    },
+    {
+      "path": "injection.soulTiming.redlineCadence.riskToolPatterns",
+      "type": "list<str>",
+      "default": "[]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:300",
+      "consumed": true,
+      "defaultNote": "redlineCadence 子段条件材料化（config.ts:295-304）；本值 [] 取自该分支兜底（:304）"
+    },
+    {
+      "path": "injection.toolCapabilities.lines",
+      "type": "list<str>",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:333",
+      "consumed": true
+    },
+    {
+      "path": "injection.toolCapabilities.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:337",
+      "consumed": true,
+      "defaultNote": "解析层只在显式布尔时采纳（config.ts:337）；生效缺省 true 在 injection/index.ts:466 与 tdai-l1-recall-injector.ts:78-82（undefined/true=现状逐位）"
+    },
+    {
+      "path": "extraction.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:96",
+      "consumed": true
+    },
+    {
+      "path": "extraction.extractors",
+      "type": "list<str>",
+      "default": "[\"skill\", \"tdai-memory\"]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:97",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:100",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.maxRetries",
+      "type": "int",
+      "default": "3",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:101",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.injectAgentContext",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:102",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.injectTaskContext",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:103",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.defaultTaskId",
+      "type": "str",
+      "default": "default",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:104",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.headerAutoSelect.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:106",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.headerAutoSelect.teamHeader",
+      "type": "str",
+      "default": "x-team-id",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:107",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.headerAutoSelect.agentHeader",
+      "type": "str",
+      "default": "x-agent-id",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:108",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.headerAutoSelect.taskHeader",
+      "type": "str",
+      "default": "x-task-id",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:109",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.headerAutoSelect.onMismatch",
+      "type": "enum(form|bypass)",
+      "default": "form",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:110",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.debugForceIdentity.team_id",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:577",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.debugForceIdentity.agent_id",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:578",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.debugForceIdentity.task_id",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:582",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.debugForceUserId",
+      "type": "str",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:587",
+      "consumed": true
+    },
+    {
+      "path": "sessionInit.debugVerboseLogging",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:591",
+      "consumed": true
+    },
+    {
+      "path": "tdai.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:116",
+      "consumed": true
+    },
+    {
+      "path": "tdai.endpoint",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:117",
+      "consumed": true
+    },
+    {
+      "path": "tdai.apiKey",
+      "type": "str",
+      "default": "local-proxy",
+      "env": "TDAI_GATEWAY_API_KEY",
+      "source": "MemoryProxy/src/config.ts:118",
+      "consumed": true,
+      "defaultNote": "源码缺省 local-proxy（本机直连 core 的占位 key）；该键会被 config.ts expandEnv 展开（config.ts:600/770），连远端 core 时改成 ${TDAI_GATEWAY_API_KEY} 并确保 env 已设（未设会展开成空串；空串也不必然 401——出站走 resolveBearerToken，env TDAI_GATEWAY_APIKEY > 此处值 > 各链路 serviceToken，见 config.ts:594-600）"
+    },
+    {
+      "path": "tdai.serviceId",
+      "type": "str",
+      "default": "default",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:119",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:121",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.inject",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:122",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.writeL0",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:123",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.recallL1",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:124",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.injectL2L3",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:125",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.l1Limit",
+      "type": "int",
+      "default": "5",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:126",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.l1GlobalTopK",
+      "type": "int",
+      "default": "5",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:128",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.l2Limit",
+      "type": "int",
+      "default": "3",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:129",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.recallQuerySource",
+      "type": "enum(legacy|shadow|intent)",
+      "default": "legacy",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:133",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.l0CaptureMode",
+      "type": "enum(legacy|shadow|classified)",
+      "default": "legacy",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:136",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.recallIntentDedup",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:139",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.recallIntentDedupTtlMs",
+      "type": "ms",
+      "default": "3600000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:142",
+      "consumed": true
+    },
+    {
+      "path": "tdai.memory.timeoutMs",
+      "type": "ms",
+      "default": "3000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:143",
+      "consumed": true
+    },
+    {
+      "path": "appraisal.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:147",
+      "consumed": true
+    },
+    {
+      "path": "appraisal.firedThreshold",
+      "type": "float",
+      "default": "0.4",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:147",
+      "consumed": true
+    },
+    {
+      "path": "appraisal.values",
+      "type": "list<map>",
+      "default": "[]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:629",
+      "consumed": true,
+      "defaultNote": "缺省空数组（DEFAULT_CONFIG.appraisal.values=[] 见 config.ts:147），且必须显式提供数组才材料化（config.ts:623）",
+      "elementFields": [
+        {
+          "field": "id",
+          "type": "str",
+          "required": false,
+          "default": "自动按下标生成",
+          "source": "MemoryProxy/src/config.ts:631",
+          "note": "缺省按数组下标自动生成 v0/v1/…（config.ts:631）"
+        },
+        {
+          "field": "label",
+          "type": "str",
+          "required": true,
+          "default": null,
+          "source": "MemoryProxy/src/config.ts:630",
+          "note": null
+        },
+        {
+          "field": "weight",
+          "type": "float",
+          "required": true,
+          "default": null,
+          "source": "MemoryProxy/src/config.ts:630",
+          "note": null
+        }
+      ]
+    },
+    {
+      "path": "skill.endpoint",
+      "type": "str",
+      "default": "http://127.0.0.1:8420",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:149",
+      "consumed": true
+    },
+    {
+      "path": "skill.serviceToken",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_GATEWAY_API_KEY",
+      "source": "MemoryProxy/src/config.ts:150",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_GATEWAY_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "skill.serviceId",
+      "type": "str",
+      "default": "context-proxy",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:151",
+      "consumed": true
+    },
+    {
+      "path": "skill.timeoutMs",
+      "type": "ms",
+      "default": "1500",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:152",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:155",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.endpoint",
+      "type": "str",
+      "default": "http://127.0.0.1:8420",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:156",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.serviceToken",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_GATEWAY_API_KEY",
+      "source": "MemoryProxy/src/config.ts:157",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_GATEWAY_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "knowledge.serviceId",
+      "type": "str",
+      "default": "context-proxy",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:158",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.timeoutMs",
+      "type": "ms",
+      "default": "1500",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:159",
+      "consumed": true
+    },
+    {
+      "path": "wikiRecall.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:33",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:654 !== false）；不写该段=装配端用 defaultWikiRecallConfig"
+    },
+    {
+      "path": "wikiRecall.perWikiLimit",
+      "type": "int",
+      "default": "8",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:34",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 8 取自 config.ts:655 兜底，与 defaultWikiRecallConfig（wiki-recall-injector.ts:39-52）一致"
+    },
+    {
+      "path": "wikiRecall.globalTopK",
+      "type": "int",
+      "default": "5",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:35",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 5 取自 config.ts:656 兜底，与 defaultWikiRecallConfig 一致"
+    },
+    {
+      "path": "wikiRecall.minScore",
+      "type": "float",
+      "default": "0.02",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:36",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 0.02 取自 config.ts:657 兜底，与 defaultWikiRecallConfig 一致"
+    },
+    {
+      "path": "wikiRecall.hop",
+      "type": "int",
+      "default": "0",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:37",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 0 取自 config.ts:658 兜底，与 defaultWikiRecallConfig 一致"
+    },
+    {
+      "path": "wikiRecall.decay",
+      "type": "float",
+      "default": "0.5",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:38",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 0.5 取自 config.ts:659 兜底，与 defaultWikiRecallConfig 一致"
+    },
+    {
+      "path": "wikiRecall.maxTotalChars",
+      "type": "int",
+      "default": "0",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:39",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 0 取自 config.ts:660 兜底（0=不限），与 defaultWikiRecallConfig 一致"
+    },
+    {
+      "path": "wikiRecall.minInjectNormScore",
+      "type": "float",
+      "default": "0.6",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:40",
+      "consumed": true,
+      "defaultNote": "wikiRecall 整段存在才材料化（config.ts:652）；本值 0.6 取自 config.ts:661 兜底，与 defaultWikiRecallConfig 一致"
+    },
+    {
+      "path": "wikiRecall.minInjectAbsScore",
+      "type": "float",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:663",
+      "consumed": true,
+      "defaultNote": "源码取不到即 undefined（config.ts:664）；留空=不设绝对分下限"
+    },
+    {
+      "path": "wikiRecall.minInjectFtsScore",
+      "type": "float",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:664",
+      "consumed": true,
+      "defaultNote": "源码取不到即 undefined（config.ts:665）；留空=不设 FTS 分下限"
+    },
+    {
+      "path": "wikiRecall.querySource",
+      "type": "enum(legacy|shadow|intent)",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:666",
+      "consumed": true,
+      "defaultNote": "合法值 legacy|shadow|intent（config.ts:669-675）；留空=未设（等同 legacy）"
+    },
+    {
+      "path": "wikiRecall.minStructuralTailNormScore",
+      "type": "float",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:671",
+      "consumed": true,
+      "defaultNote": "源码取不到即 undefined（config.ts:677）；留空=结构页次门关闭"
+    },
+    {
+      "path": "wikiRecall.skipQuery.minChars",
+      "type": "int",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:674",
+      "consumed": true,
+      "defaultNote": "源码取不到即 undefined（config.ts:681）；留空=跳过问句闸关闭"
+    },
+    {
+      "path": "wikiRecall.skipQuery.patterns",
+      "type": "list<str>",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:675",
+      "consumed": true,
+      "defaultNote": "源码取不到即 undefined（config.ts:682-684）；留空=无跳过正则"
+    },
+    {
+      "path": "wikiRecall.jit",
+      "type": "bool",
+      "required": true,
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:683",
+      "consumed": true,
+      "defaultNote": "JIT 三态（config.ts:686）；留空=跟随 meta 能力位，填 true/false 才强制"
+    },
+    {
+      "path": "skillRuntime.allowLlmWrite",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:162",
+      "consumed": true
+    },
+    {
+      "path": "auth.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:165",
+      "consumed": true
+    },
+    {
+      "path": "auth.url",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:166",
+      "consumed": true
+    },
+    {
+      "path": "auth.timeoutMs",
+      "type": "ms",
+      "default": "5000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:167",
+      "consumed": true
+    },
+    {
+      "path": "systemUsers",
+      "type": "list<map>",
+      "default": "[]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:704",
+      "consumed": true,
+      "defaultNote": "缺省空数组（DEFAULT_CONFIG.systemUsers=[] 见 config.ts:169）",
+      "elementFields": [
+        {
+          "field": "name",
+          "type": "str",
+          "required": false,
+          "default": "",
+          "source": "MemoryProxy/src/config.ts:706",
+          "note": null
+        },
+        {
+          "field": "userId",
+          "type": "str",
+          "required": true,
+          "default": null,
+          "source": "MemoryProxy/src/config.ts:707",
+          "note": "userId 为空串的整条记录被过滤掉（config.ts:711）"
+        },
+        {
+          "field": "displayName",
+          "type": "str",
+          "required": false,
+          "default": "",
+          "source": "MemoryProxy/src/config.ts:708",
+          "note": null
+        },
+        {
+          "field": "userKey",
+          "type": "str",
+          "required": false,
+          "default": "",
+          "source": "MemoryProxy/src/config.ts:709",
+          "note": null
+        }
+      ]
+    },
+    {
+      "path": "admin.apiKey",
+      "type": "str",
+      "default": "",
+      "env": "PROXY_ADMIN_API_KEY",
+      "source": "MemoryProxy/src/config.ts:170",
+      "consumed": true,
+      "defaultNote": "留空 = 管理面无鉴权（routes/admin-auth.ts:8 expected 为空即 ok）！生产必须设环境变量 TDAI_PROXY_ADMIN_API_KEY（config.ts:713-718 的 env 兜底，优先级高于本键）；勿写 ${PROXY_ADMIN_API_KEY}：直接 --config 加载时不展开，会成公开字面量密钥"
+    },
+    {
+      "path": "memCommand.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:171",
+      "consumed": true
+    },
+    {
+      "path": "memCommand.allowedCommands",
+      "type": "list<str>",
+      "default": "[]",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:171",
+      "consumed": true
+    },
+    {
+      "path": "memCommand.taskDraft.enabled",
+      "type": "bool",
+      "default": "false",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:732",
+      "consumed": true,
+      "defaultNote": "仅当 yaml.memCommand.taskDraft 段存在时才材料化该子段（config.ts:730-733），不写等于整段缺席（task 命令族报未配置）"
+    },
+    {
+      "path": "memCommand.taskDraft.model",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:733",
+      "consumed": true,
+      "defaultNote": "memCommand.taskDraft 段存在才材料化（config.ts:730-733）；不写该段=整段缺席（task 命令族报未配置）"
+    },
+    {
+      "path": "memCommand.taskDraft.url",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:734",
+      "consumed": true,
+      "defaultNote": "memCommand.taskDraft 段存在才材料化（config.ts:730-733）；不写该段=整段缺席"
+    },
+    {
+      "path": "memCommand.taskDraft.apiKey",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_TASK_DRAFT_API_KEY",
+      "source": "MemoryProxy/src/config.ts:735",
+      "consumed": true,
+      "defaultNote": "直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_TASK_DRAFT_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）"
+    },
+    {
+      "path": "memCommand.taskDraft.timeoutMs",
+      "type": "ms",
+      "default": "20000",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:738",
+      "consumed": true,
+      "defaultNote": "memCommand.taskDraft 段存在才材料化（config.ts:730-733）；本值 20000 取自该分支兜底（:738）"
+    },
+    {
+      "path": "ccRequestRouting.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:172",
+      "consumed": true
+    },
+    {
+      "path": "workbuddyRequestRouting.enabled",
+      "type": "bool",
+      "default": "true",
+      "env": null,
+      "source": "MemoryProxy/src/config.ts:173",
+      "consumed": true
+    },
+    {
+      "path": "wikiRecall.typeWeights.entity",
+      "type": "float",
+      "default": "0.6",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.typeWeights.concept",
+      "type": "float",
+      "default": "0.9",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.typeWeights.overview",
+      "type": "float",
+      "default": "0.6",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.typeWeights.other",
+      "type": "float",
+      "default": "0.3",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.typeWeights.log",
+      "type": "float",
+      "default": "0.3",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.typeWeights.index",
+      "type": "float",
+      "default": "0.3",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.typeWeights.schema",
+      "type": "float",
+      "default": "0.3",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43",
+      "consumed": true,
+      "defaultNote": "typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43"
+    },
+    {
+      "path": "wikiRecall.domainRouter.boost",
+      "type": "float",
+      "default": "1.5",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:51",
+      "consumed": true,
+      "defaultNote": "domainRouter 原样透传（config.ts:680）；缺省表见 defaultWikiRecallConfig（wiki-recall-injector.ts:50-52），boost 缺省 1.5"
+    },
+    {
+      "path": "wikiRecall.domainRouter.keywords",
+      "type": "map<str,list<str>>",
+      "default": "{}",
+      "env": null,
+      "source": "MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:51",
+      "consumed": true,
+      "defaultNote": "domainRouter 原样透传（config.ts:680）；缺省 {}（wiki-recall-injector.ts:51）"
+    }
+  ],
+  "ignored": [
+    {
+      "path": "badcaseCollector",
+      "reason": "legacy 顶层段，只在存在时原样折进 costGuard.options（config.ts:357），无独立语义，模板不暴露"
+    },
+    {
+      "path": "coreSkill.*",
+      "reason": "skill 段的兼容别名（config.ts:634-641），两者同给时 skill 优先；模板只写 skill 以避免双写漂移"
+    }
+  ],
+  "coverage": {
+    "sourceKeys": 172,
+    "templatedKeys": 170,
+    "ignoredKeys": 2,
+    "note": "sourceKeys = 模板键 + 忽略键。3 个 list<map> 键（creditPricing.models / appraisal.values / systemUsers）以 elementFields 记录元素字段，不单独计为键；ignored 是 deprecated 顶层别名（badcaseCollector / coreSkill）。"
+  }
+}

@@ -1,0 +1,416 @@
+{
+  "service": "memoryknowledge",
+  "generatedAt": "2026-11-01T04:05:00+08:00",
+  "sources": [
+    "MemoryKnowledge/src/config.ts",
+    "MemoryKnowledge/src/config-override.ts",
+    "MemoryKnowledge/src/engines/wiki/index-db.ts",
+    "MemoryKnowledge/src/store/auto-sync-scheduler.ts",
+    "MemoryKnowledge/src/source-fetcher/git-fetcher.ts",
+    "MemoryKnowledge/src/mcp/server.ts",
+    "MemoryKnowledge/src/telemetry.ts"
+  ],
+  "keys": [
+    {
+      "path": "server.PORT",
+      "type": "int",
+      "default": 8421,
+      "env": "PORT",
+      "source": "MemoryKnowledge/src/config.ts:205",
+      "consumed": true
+    },
+    {
+      "path": "server.API_PREFIX",
+      "type": "str",
+      "default": "/v3",
+      "env": "API_PREFIX",
+      "source": "MemoryKnowledge/src/config.ts:209",
+      "consumed": true
+    },
+    {
+      "path": "server.LOG_LEVEL",
+      "type": "str",
+      "default": "debug",
+      "env": "LOG_LEVEL",
+      "source": "MemoryKnowledge/src/config.ts:208",
+      "consumed": true
+    },
+    {
+      "path": "server.KNOWLEDGE_PUBLIC_BASE_URL",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_PUBLIC_BASE_URL",
+      "source": "MemoryKnowledge/src/config.ts:210",
+      "consumed": true
+    },
+    {
+      "path": "storage.KNOWLEDGE_DATA_DIR",
+      "type": "path",
+      "default": "./data",
+      "env": "KNOWLEDGE_DATA_DIR",
+      "source": "MemoryKnowledge/src/config.ts:206",
+      "consumed": true
+    },
+    {
+      "path": "storage.KNOWLEDGE_DB_PATH",
+      "type": "path",
+      "default": "./data/knowledge.db",
+      "env": "KNOWLEDGE_DB_PATH",
+      "source": "MemoryKnowledge/src/config.ts:207",
+      "consumed": true
+    },
+    {
+      "path": "auth.KNOWLEDGE_SERVICE_KEY",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_SERVICE_KEY",
+      "source": "MemoryKnowledge/src/config.ts:218",
+      "consumed": true
+    },
+    {
+      "path": "tmc.TMC_CALLBACK_URL",
+      "type": "str",
+      "default": "",
+      "env": "TMC_CALLBACK_URL",
+      "source": "MemoryKnowledge/src/config.ts:211",
+      "consumed": true
+    },
+    {
+      "path": "rerank.KNOWLEDGE_RERANK_URL",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_RERANK_URL",
+      "source": "MemoryKnowledge/src/config.ts:213",
+      "consumed": true
+    },
+    {
+      "path": "rerank.KNOWLEDGE_RERANK_API_KEY",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_RERANK_API_KEY",
+      "source": "MemoryKnowledge/src/config.ts:214",
+      "consumed": true
+    },
+    {
+      "path": "rerank.KNOWLEDGE_RERANK_TIMEOUT_MS",
+      "type": "ms",
+      "default": 800,
+      "env": "KNOWLEDGE_RERANK_TIMEOUT_MS",
+      "source": "MemoryKnowledge/src/config.ts:215",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_MODE",
+      "type": "enum(proxy|custom)",
+      "default": "proxy",
+      "env": "LLM_MODE",
+      "source": "MemoryKnowledge/src/config.ts:220",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_PROTOCOL",
+      "type": "enum(openai|anthropic)",
+      "default": "openai",
+      "env": "LLM_PROTOCOL",
+      "source": "MemoryKnowledge/src/config.ts:221",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_PROVIDER",
+      "type": "str",
+      "default": "custom",
+      "env": "LLM_PROVIDER",
+      "source": "MemoryKnowledge/src/config.ts:222",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_API_KEY",
+      "type": "str",
+      "default": "",
+      "env": "LLM_API_KEY",
+      "source": "MemoryKnowledge/src/config.ts:223",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_MODEL",
+      "type": "str",
+      "default": "Memory-Model",
+      "env": "LLM_MODEL",
+      "source": "MemoryKnowledge/src/config.ts:224",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_BASE_URL",
+      "type": "str",
+      "default": "",
+      "env": "LLM_BASE_URL",
+      "source": "MemoryKnowledge/src/config.ts:225",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_MAX_TOKENS",
+      "type": "int",
+      "default": 32768,
+      "env": "LLM_MAX_TOKENS",
+      "source": "MemoryKnowledge/src/config.ts:226",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_TIMEOUT_MS",
+      "type": "ms",
+      "default": 1200000,
+      "env": "LLM_TIMEOUT_MS",
+      "source": "MemoryKnowledge/src/config.ts:227",
+      "consumed": true
+    },
+    {
+      "path": "llm.LLM_STREAM",
+      "type": "bool",
+      "default": false,
+      "env": "LLM_STREAM",
+      "source": "MemoryKnowledge/src/config.ts:228",
+      "consumed": true,
+      "defaultNote": "源码写成 `process.env.LLM_STREAM === \"true\"`，行内只有 \"true\" 字面量；不设或设成其它任何值都等于 false（MemoryKnowledge/src/config.ts:228）"
+    },
+    {
+      "path": "override.maxRetries",
+      "type": "int",
+      "default": 0,
+      "env": null,
+      "source": "MemoryKnowledge/src/engines/wiki/ingest-v2/llm.ts:77",
+      "consumed": true
+    },
+    {
+      "path": "override.summaryMaxOutputTokens",
+      "type": "int",
+      "default": 4096,
+      "env": null,
+      "source": "MemoryKnowledge/src/callback.ts:165",
+      "consumed": true
+    },
+    {
+      "path": "embedding.EMBEDDING_PROVIDER",
+      "type": "str",
+      "default": "openai_compatible",
+      "env": "EMBEDDING_PROVIDER",
+      "source": "MemoryKnowledge/src/config.ts:231",
+      "consumed": true
+    },
+    {
+      "path": "embedding.EMBEDDING_BASE_URL",
+      "type": "str",
+      "default": "",
+      "env": "EMBEDDING_BASE_URL",
+      "source": "MemoryKnowledge/src/config.ts:232",
+      "consumed": true
+    },
+    {
+      "path": "embedding.EMBEDDING_API_KEY",
+      "type": "str",
+      "default": "",
+      "env": "EMBEDDING_API_KEY",
+      "source": "MemoryKnowledge/src/config.ts:233",
+      "consumed": true
+    },
+    {
+      "path": "embedding.EMBEDDING_MODEL",
+      "type": "str",
+      "default": "",
+      "env": "EMBEDDING_MODEL",
+      "source": "MemoryKnowledge/src/config.ts:234",
+      "consumed": true
+    },
+    {
+      "path": "embedding.EMBEDDING_DIMENSIONS",
+      "type": "int",
+      "default": 0,
+      "env": "EMBEDDING_DIMENSIONS",
+      "source": "MemoryKnowledge/src/config.ts:235",
+      "consumed": true
+    },
+    {
+      "path": "wiki.KNOWLEDGE_WIKI_POOL_MAX",
+      "type": "int",
+      "default": 300,
+      "env": "KNOWLEDGE_WIKI_POOL_MAX",
+      "source": "MemoryKnowledge/src/engines/wiki/index-db.ts:35",
+      "consumed": true
+    },
+    {
+      "path": "wiki.KNOWLEDGE_WIKI_INGEST_CONCURRENCY",
+      "type": "int",
+      "default": 3,
+      "env": "KNOWLEDGE_WIKI_INGEST_CONCURRENCY",
+      "source": "MemoryKnowledge/src/config.ts:151",
+      "consumed": true
+    },
+    {
+      "path": "wiki.KNOWLEDGE_LLM_GLOBAL_CONCURRENCY",
+      "type": "int",
+      "default": 5,
+      "env": "KNOWLEDGE_LLM_GLOBAL_CONCURRENCY",
+      "source": "MemoryKnowledge/src/config.ts:160",
+      "consumed": true
+    },
+    {
+      "path": "autoSync.KNOWLEDGE_AUTO_SYNC_ENABLED",
+      "type": "bool",
+      "default": false,
+      "env": "KNOWLEDGE_AUTO_SYNC_ENABLED",
+      "source": "MemoryKnowledge/src/store/auto-sync-scheduler.ts:53",
+      "consumed": true
+    },
+    {
+      "path": "autoSync.KNOWLEDGE_AUTO_SYNC_SCAN_INTERVAL_MIN",
+      "type": "float",
+      "default": 10,
+      "env": "KNOWLEDGE_AUTO_SYNC_SCAN_INTERVAL_MIN",
+      "source": "MemoryKnowledge/src/store/auto-sync-scheduler.ts:54",
+      "consumed": true
+    },
+    {
+      "path": "autoSync.KNOWLEDGE_AUTO_SYNC_MAX_CONCURRENT",
+      "type": "int",
+      "default": 3,
+      "env": "KNOWLEDGE_AUTO_SYNC_MAX_CONCURRENT",
+      "source": "MemoryKnowledge/src/store/auto-sync-scheduler.ts:55",
+      "consumed": true
+    },
+    {
+      "path": "sourceFetch.KNOWLEDGE_SSRF_CHECK",
+      "type": "bool",
+      "default": true,
+      "env": "KNOWLEDGE_SSRF_CHECK",
+      "source": "MemoryKnowledge/src/source-fetcher/git-fetcher.ts:39",
+      "consumed": true
+    },
+    {
+      "path": "mcp.KNOWLEDGE_API_URL",
+      "type": "str",
+      "default": "http://localhost:8421",
+      "env": "KNOWLEDGE_API_URL",
+      "source": "MemoryKnowledge/src/mcp/server.ts:94",
+      "consumed": true
+    },
+    {
+      "path": "mcp.KNOWLEDGE_API_TOKEN",
+      "type": "str",
+      "default": "required",
+      "env": "KNOWLEDGE_API_TOKEN",
+      "source": "MemoryKnowledge/src/mcp/server.ts:95",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.LANGFUSE_SECRET_KEY",
+      "type": "str",
+      "default": "",
+      "env": "LANGFUSE_SECRET_KEY",
+      "source": "MemoryKnowledge/src/telemetry.ts:28",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.LANGFUSE_BASE_URL",
+      "type": "str",
+      "default": "https://cloud.langfuse.com",
+      "env": "LANGFUSE_BASE_URL",
+      "source": "MemoryKnowledge/src/telemetry.ts:44",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_ENABLED",
+      "type": "bool",
+      "default": false,
+      "env": "KNOWLEDGE_CLICKHOUSE_ENABLED",
+      "source": "MemoryKnowledge/src/config.ts:191",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_URL",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_CLICKHOUSE_URL",
+      "source": "MemoryKnowledge/src/config.ts:192",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_DATABASE",
+      "type": "str",
+      "default": "default",
+      "env": "KNOWLEDGE_CLICKHOUSE_DATABASE",
+      "source": "MemoryKnowledge/src/config.ts:193",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_TABLE",
+      "type": "str",
+      "default": "tool_call_logs",
+      "env": "KNOWLEDGE_CLICKHOUSE_TABLE",
+      "source": "MemoryKnowledge/src/config.ts:194",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_USER",
+      "type": "str",
+      "default": "default",
+      "env": "KNOWLEDGE_CLICKHOUSE_USER",
+      "source": "MemoryKnowledge/src/config.ts:195",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_PASSWORD",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_CLICKHOUSE_PASSWORD",
+      "source": "MemoryKnowledge/src/config.ts:196",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_FLUSH_INTERVAL_MS",
+      "type": "ms",
+      "default": 5000,
+      "env": "KNOWLEDGE_CLICKHOUSE_FLUSH_INTERVAL_MS",
+      "source": "MemoryKnowledge/src/config.ts:197",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_FLUSH_THRESHOLD",
+      "type": "int",
+      "default": 50,
+      "env": "KNOWLEDGE_CLICKHOUSE_FLUSH_THRESHOLD",
+      "source": "MemoryKnowledge/src/config.ts:198",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_TTL_DAYS",
+      "type": "int",
+      "default": 90,
+      "env": "KNOWLEDGE_CLICKHOUSE_TTL_DAYS",
+      "source": "MemoryKnowledge/src/config.ts:199",
+      "consumed": true
+    },
+    {
+      "path": "telemetry.KNOWLEDGE_CLICKHOUSE_REQUEST_TIMEOUT_MS",
+      "type": "ms",
+      "default": 5000,
+      "env": "KNOWLEDGE_CLICKHOUSE_REQUEST_TIMEOUT_MS",
+      "source": "MemoryKnowledge/src/config.ts:200",
+      "consumed": true
+    }
+  ],
+  "ignored": [
+    {
+      "path": "HOSTNAME",
+      "reason": "容器/宿主注入的 ambient 变量（clickhouse-telemetry.ts:113 读它做埋点 host 列），不是本服务配置项，进模板会被误当成可配开关"
+    },
+    {
+      "path": "TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY（历史别名）",
+      "reason": "ingest-v2/llm.ts:64-66 注释明确「不再兜底读 process.env」：历史上读 TDAI_LLM_*，配了也完全不生效，登记以免被当成可用旋钮"
+    }
+  ],
+  "coverage": {
+    "sourceKeys": 50,
+    "ignoredKeys": 2,
+    "note": "sourceKeys = keys 48 + ignored 2；46 个环境变量 + 2 个 config-override.json 字段（override.*，无 env）",
+    "templatedKeys": 48
+  }
+}

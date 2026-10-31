@@ -93,6 +93,8 @@
 
 | [plugin-test-timing.md](plugin-test-timing.md) | 回答「两例固定等待为什么改假时钟、断言有没有变松」：改前后逐例耗时（3228/3237/3284ms → 42/51/39ms）、`settleOnFakeClock` 断言虚拟耗时 `toBe(1600)`、RED 两条变异证明改坏仍能红 | 2026-11-01 | 现行 | task-102 |
 | [verify-l0-clean-review.md](verify-l0-clean-review.md) | 回答「L0 清理脚本真能安全删吗、生产读数对得上吗」：自建隔离实例 6/6 PASS（dry-run 零写含 WAL、三条拒绝 exit 2、身份不符 deleted=0、正确身份删净、导出三处 sha 一致、`default` 永不外传）+ 生产只读 dry-run 23 会话/128 行/934375 字符逐位一致；未验 `l0_vec` 级联 | 2026-11-01 | 取证快照（复核方自带探针，未读交接方报告） | task-108 |
+| [config-templates-delivery.md](config-templates-delivery.md) | 回答「6 份配置模板交付了什么、靠什么自证、哪些地方模板与真实代码走到了岔路」：982 键 checker 读数（core 483 / proxy 170 / knowledge 48 / panel 22 / plugin 76 / env 183，ignored 12/2/2/4/0/6）、七组断言明细 +「可搬运性」为何必要（`strArray` 只认 `Array.isArray` ⇒ 把 JSON 写进 YAML 标量会静默回落缺省）、真 loader 差分四组读数、8 条已查实漂移（maxTokensLimit 放错层 / factKey enabled:true 与注释「保持关」矛盾 / proxy `${VAR}` 展开面与空 admin key 即全放行 / knowledge 三条 / env.ps1 的 BOM 事实）、183 取代 73 的口径更正 | 2026-11-01 | 现行（台账；漂移只登记未修，D2 待拍板） | task-115 |
+| [config-template-memoryproxy.md](config-template-memoryproxy.md) | 回答「MemoryProxy 那 170 个键是怎么从源码缺省渲染出来的、加载器差分能证明什么」：pure-default 128 → template 161 leaves、conflicts 0 / onlyTpl 35（全是条件材料化）/ onlyBase 2（整块对象形状差异，不是键丢失）；live 配置与两份 example 的 yamlOnly 全为 0；并登记 4 类被修掉的真问题（11 个占位符误用、`admin.apiKey` 留空即管理面无鉴权、示例数据被当生效值、`soulOverlapJournal.file` 裸空值） | 2026-11-01 | 现行（模板交付读数，未 commit） | task-110 |
 
 ## ⑤ 方案与待拍板
 

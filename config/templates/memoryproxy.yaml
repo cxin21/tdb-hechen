@@ -1,0 +1,266 @@
+# ============================================================================
+# MemoryProxy 配置模板 — 端口 8096（Node 进程；启动脚本渲染成运行时副本后读取）
+# 真源：MemoryProxy/src/config.ts（DEFAULT_CONFIG + 解析点）、MemoryProxy/src/types.ts、
+#       MemoryProxy/src/injection/types.ts（DEFAULT_SOUL_TIMING）、
+#       MemoryProxy/src/injection/injectors/wiki-recall-injector.ts（DEFAULT_WIKI_RECALL_CONFIG）。
+# 逐键校验：node scripts/check-config-templates.mjs（口径见 config/SPEC.md）。
+# 机器清单：config/templates/memoryproxy.keys.json（每键 type/default/env/source/consumed）。
+#
+# 用法：拷到 etc/proxy-config.yaml 改值；启动时 etc/tdb-services.common.ps1:New-TdbRuntimeConfig
+#       （:33-58）把 ${VAR} 占位符替换成 env.ps1 的值，原子写到
+#       D:/TDB/data/run/proxy-config.runtime.yaml，proxy 以 --config 读那份。未设变量原样保留，
+#       落各子系统自己的 fallback（admin key 的 env 兜底在 config.ts:713-718，变量名
+#       TDAI_PROXY_ADMIN_API_KEY）。整文件缺失才回退 DEFAULT_CONFIG；文件存在但解析为空 fail-fast（:187-191）。
+#
+# 敏感值：一律 ${ENV_NAME} 占位，真实值只进 D:/TDB/etc/env.ps1，模板与 keys.json 不落明文。
+#
+# 注入器挂点台账（11 个 hook + 组名门；point/priority/cacheStrategy 真源在各 injector 文件）：
+#   skill             system.before_tools  prio=200(SKILL)      cache=session_init  skill-injector.ts:153/156/159
+#   skill-tools       system.before_tools  prio=199(SKILL-1)    cache=session_init  skill-tools-injector.ts:200/204/207
+#   knowledge-tools   system.before_tools  prio=300(WIKI)       cache=session_init  knowledge-tools-injector.ts:258/260/262
+#   wiki-recall       user.before          prio=101(MEMORY+1)   cache=none          wiki-recall-injector.ts:171/172/174
+#   profile-memory    system.suffix        prio=110(MEMORY+10)  cache=session_init  tdai-profile-memory-injector.ts:34/36/39
+#   current-feeling   user.before          prio=102(MEMORY+2)   cache=none          tdai-current-feeling-injector.ts:36/38/41
+#   tdai-tools        system.suffix        prio=105(MEMORY+5)   cache=session_init  tdai-tools-injector.ts:164/166/169
+#   l1-recall         user.before          prio=100(MEMORY)     cache=none          tdai-l1-recall-injector.ts:50/51
+#   soul-redline      tools.before_call    prio=100(MEMORY)     cache=none          tdai-soul-redline-event-injector.ts:79/80/83
+#   soul-reanchor     tools.before_call    prio=100(MEMORY)     cache=none          tdai-soul-reanchor-injector.ts:63/64/67
+#   asset-reflection  system.suffix        prio=1000(CUSTOM)    cache=none          asset-reflection-injector.ts:75/76/78
+#   组名门（src/injection/index.ts）："skill"→skill+skill-tools :318-331；"knowledge"→knowledge-tools :333-341 +
+#       wiki-recall :347-371；"tdai-memory"→profile/feeling/redline/reanchor :374-415 + tdai-tools :432 + l1 :435-475；
+#       asset-reflection 独立门 :487-508。分发层 tools.before_call 已有 case（pipeline.ts:511），动作点注入真落地。
+# ============================================================================
+
+systemUsers: []   # <list<map>> default=[] [src:MemoryProxy/src/config.ts:706]
+  #   - name: ""   # <str> default="" [src:MemoryProxy/src/config.ts:706]
+  #     userId: ""   # <str> required [src:MemoryProxy/src/config.ts:707] · userId 为空串的整条记录被过滤掉（config.ts:711）
+  #     displayName: ""   # <str> default="" [src:MemoryProxy/src/config.ts:708]
+  #     userKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:709]
+  # 上面是注释掉的示例元素：生效值是空数组 []（=未启用）；要用就取消注释并按真实字段填值
+server:
+  host: 0.0.0.0   # <str> default=0.0.0.0 [src:MemoryProxy/src/config.ts:13]
+  port: 8096   # <int> default=8096 [src:MemoryProxy/src/config.ts:13]
+  forwardTimeoutMs: 600000   # <ms> default=600000 [src:MemoryProxy/src/config.ts:13]
+upstream:
+  url: "https://llm-upstream.example.com/v2/chat/completions"   # <str> default=https://llm-upstream.example.com/v2/chat/completions [src:MemoryProxy/src/config.ts:14]
+  apiKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:14] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_LLM_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  agents: {}   # <map<str,{url,apiKey}>> default={} [src:MemoryProxy/src/config.ts:14]
+log:
+  file: ""   # <path> default="" [src:MemoryProxy/src/config.ts:16]
+  verbose: false   # <bool> default=false [src:MemoryProxy/src/config.ts:17]
+  level: "info"   # <enum(info|debug)> default=info [src:MemoryProxy/src/config.ts:18]
+  backend: "console"   # <enum(noop|console)> default=console [src:MemoryProxy/src/config.ts:19]
+  rotate:
+    maxSizeBytes: 104857600   # <int> default=104857600 [src:MemoryProxy/src/config.ts:20] · 源码写作 100 * 1024 * 1024（config.ts:20），本行折算成字节数 104857600
+    backupLimit: 10   # <int> default=10 [src:MemoryProxy/src/config.ts:20]
+opik:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:22]
+  url: ""   # <str> default="" [src:MemoryProxy/src/config.ts:22]
+  apiKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:22] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${OPIK_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  stripRequestLogContent: false   # <bool> default=false [src:MemoryProxy/src/config.ts:22]
+langfuse:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:23]
+  host: ""   # <str> default="" [src:MemoryProxy/src/config.ts:23]
+  publicKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:23] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${LANGFUSE_PUBLIC_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  secretKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:23] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${LANGFUSE_SECRET_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  debug: false   # <bool> default=false [src:MemoryProxy/src/config.ts:23]
+  maxQueueSize: 8192   # <int> default=8192 [src:MemoryProxy/src/config.ts:23]
+  flushAt: 256   # <int> default=256 [src:MemoryProxy/src/config.ts:23]
+  flushInterval: 2   # <int> default=2 [src:MemoryProxy/src/config.ts:23]
+clickhouse:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:25]
+  url: ""   # <str> default="" [src:MemoryProxy/src/config.ts:26]
+  database: "context_proxy"   # <str> default=context_proxy [src:MemoryProxy/src/config.ts:27]
+  table: "usage_logs"   # <str> default=usage_logs [src:MemoryProxy/src/config.ts:28]
+  rawTable: "usage_raw"   # <str> default=usage_raw [src:MemoryProxy/src/config.ts:29]
+  user: "default"   # <str> default=default [src:MemoryProxy/src/config.ts:30]
+  password: ""   # <str> default="" [src:MemoryProxy/src/config.ts:31] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${CLICKHOUSE_PASSWORD}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  flushIntervalMs: 5000   # <ms> default=5000 [src:MemoryProxy/src/config.ts:32]
+  flushThreshold: 50   # <int> default=50 [src:MemoryProxy/src/config.ts:33]
+  ttlDays: 0   # <int> default=0 [src:MemoryProxy/src/config.ts:34]
+redis:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:37]
+  url: ""   # <str> default="" [src:MemoryProxy/src/config.ts:38]
+  host: 127.0.0.1   # <str> default=127.0.0.1 [src:MemoryProxy/src/config.ts:39]
+  port: 6379   # <int> default=6379 [src:MemoryProxy/src/config.ts:40]
+  password: ""   # <str> default="" [src:MemoryProxy/src/config.ts:41] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${REDIS_PASSWORD}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  db: 0   # <int> default=0 [src:MemoryProxy/src/config.ts:42]
+  keyPrefix: "cg:sess:"   # <str> default=cg:sess: [src:MemoryProxy/src/config.ts:43]
+  ttlSeconds: 1800   # <int> default=1800 [src:MemoryProxy/src/config.ts:44]
+  injectionTtlSeconds:    # <int> default=required(无缺省) [src:MemoryProxy/src/config.ts:480] · 源码无缺省（config.ts:480 ?? undefined）；留空=undefined（不配），填数值才生效
+rateLimit:
+  tpm: 1000000   # <int> default=1000000 [src:MemoryProxy/src/config.ts:47]
+  qpm: 100   # <int> default=100 [src:MemoryProxy/src/config.ts:48]
+storage:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:51]
+  backend: "sqlite"   # <enum(cos|sqlite|fs|memory)> default=sqlite [src:MemoryProxy/src/config.ts:52]
+  ttlDays: 7   # <int> default=7 [src:MemoryProxy/src/config.ts:53]
+  cos:
+    rootPrefix: "proxy_cache/"   # <str> default=proxy_cache/ [src:MemoryProxy/src/config.ts:55]
+    endpointDomain:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:492] · 源码无缺省（config.ts:492 ?? undefined）；空串=不配 COS
+    shark:
+      baseUrl: ""   # <str> default="" [src:MemoryProxy/src/config.ts:57]
+      timeoutMs: 10000   # <ms> default=10000 [src:MemoryProxy/src/config.ts:58] · 源码写作 10_000（config.ts:58），本行折算成毫秒数 10000
+      retryCount: 2   # <int> default=2 [src:MemoryProxy/src/config.ts:59]
+      refreshBufferMs: 120000   # <ms> default=120000 [src:MemoryProxy/src/config.ts:60] · 源码写作 2 * 60_000（config.ts:60），本行折算成毫秒数 120000
+      maxSpaces: 100   # <int> default=100 [src:MemoryProxy/src/config.ts:61]
+      graceCloseDelayMs: 30000   # <ms> default=30000 [src:MemoryProxy/src/config.ts:62] · 源码写作 30_000（config.ts:62），本行折算成毫秒数 30000
+  sqlite:
+    dbPath: ""   # <path> default="" [src:MemoryProxy/src/config.ts:65]
+  fs:
+    fsRoot: ""   # <path> default="" [src:MemoryProxy/src/config.ts:66]
+costGuard:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:69]
+  markerOptIn: false   # <bool> default=false [src:MemoryProxy/src/config.ts:70]
+  agentProfile: "auto"   # <str> default=auto [src:MemoryProxy/src/config.ts:71]
+  options: {}   # <map<str,unknown>> default={} [src:MemoryProxy/src/config.ts:356] · 缺省空对象（parseCostGuard 只把未知键原样塞进 options，config.ts:344-375）
+  anthropicUpstream:
+    url:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:372] · 源码无缺省（config.ts:372）；留空=不配 anthropic 上游
+creditReport:
+  enabled: true   # <bool> default=true [src:MemoryProxy/src/config.ts:75]
+  url: "http://gateway.example.com:8000/UpdateMemoryPlusUsage"   # <str> default=http://gateway.example.com:8000/UpdateMemoryPlusUsage [src:MemoryProxy/src/config.ts:76]
+  timeoutMs: 5000   # <ms> default=5000 [src:MemoryProxy/src/config.ts:77]
+creditPricing:
+  models: []   # <list<map>> default=[] [src:MemoryProxy/src/config.ts:513]
+    #   - name: example-model   # <str> required [src:MemoryProxy/src/config.ts:513] · name 为空串的条目解析后被过滤掉（config.ts:523）
+    #     modelName: example-model   # <str> required [src:MemoryProxy/src/config.ts:517] · 缺失时 resolveModelName 回落 name，但 alias -> model_id 反查失效（config.ts:517）
+    #     input: 0   # <float> default=0 [src:MemoryProxy/src/config.ts:518]
+    #     output: 0   # <float> default=0 [src:MemoryProxy/src/config.ts:519]
+    #     cacheRead: 0   # <float> default=0 [src:MemoryProxy/src/config.ts:520]
+    #     cacheWrite5m: 0   # <float> default=0 [src:MemoryProxy/src/config.ts:521]
+    #     cacheWrite1h: 0   # <float> default=0 [src:MemoryProxy/src/config.ts:522]
+    # 上面是注释掉的示例元素：生效值是空数组 []（=未启用）；要用就取消注释并按真实字段填值
+injection:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:81]
+  injectors: ["skill", "knowledge", "tdai-memory"]   # <list<str>> default=["skill", "knowledge", "tdai-memory"] [src:MemoryProxy/src/config.ts:82]
+  externalGatewayUrl:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:528] · 源码无缺省（config.ts:528-530 仅非空字符串才采纳）；空串=不配
+  assetReflection:
+    markerOptIn: true   # <bool> default=true [src:MemoryProxy/src/config.ts:86]
+  soulOverlapJournal:
+    enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:543] · soulOverlapJournal 段存在才材料化（config.ts:540-550）；不写该段=undefined（关），与 enabled:false 行为相同但缺省零感
+    file: "D:/TDB/data/proxy/soul-overlap.jsonl"   # <path> default=required(无缺省) [src:MemoryProxy/src/config.ts:546] · 源码要求非空字符串（config.ts:546-550），空串会被解析成 undefined；enabled=false 时不写文件，这里给的是示例路径
+  soulTiming:
+    identity: "session_head"   # <enum(session_head|session_head_drift_reanchor)> default=session_head [src:MemoryProxy/src/injection/types.ts:258]
+    redline: "session_head"   # <enum(session_head|action_proximate)> default=session_head [src:MemoryProxy/src/injection/types.ts:259]
+    feeling: "every_turn"   # <enum(session_head|every_turn)> default=every_turn [src:MemoryProxy/src/injection/types.ts:260]
+    driftTrigger: "off"   # <enum(off|shadow|auto)> default=off [src:MemoryProxy/src/injection/types.ts:261]
+    redlineDedup:
+      enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:265] · 仅当 yaml 显式 true 时才材料化该子段（config.ts:265），不写等于 false
+      jaccardThreshold: 0.45   # <float> default=0.45 [src:MemoryProxy/src/config.ts:268] · 缺省回退常量 DEFAULT_RULE_JACCARD_THRESHOLD=0.45（injectors/soul-dedupe.ts:54）
+    reanchor:
+      intervalTurns: 20   # <int> default=20 [src:MemoryProxy/src/config.ts:283] · reanchor 子段条件材料化（config.ts:281-287）；本值 20 取自该分支兜底，clamp [1,200]
+    redlineCadence:
+      mode: "every_action_point"   # <enum(every_action_point|turn_head)> default=every_action_point [src:MemoryProxy/src/config.ts:297] · 仅 every_action_point|turn_head 合法时才材料化该子段（config.ts:297），不写等于整段缺席
+      depthOverflow: 8   # <int> default=8 [src:MemoryProxy/src/config.ts:298] · redlineCadence 子段条件材料化（config.ts:295-300）；本值 8 取自该分支兜底，clamp [1,200]
+      riskToolPatterns: []   # <list<str>> default=[] [src:MemoryProxy/src/config.ts:300] · redlineCadence 子段条件材料化（config.ts:295-304）；本值 [] 取自该分支兜底（:304）
+  toolCapabilities:
+    lines:    # <list<str>> default=required(无缺省) [src:MemoryProxy/src/config.ts:333]
+    enabled: true   # <bool> default=true [src:MemoryProxy/src/config.ts:337] · 解析层只在显式布尔时采纳（config.ts:337）；生效缺省 true 在 injection/index.ts:466 与 tdai-l1-recall-injector.ts:78-82（undefined/true=现状逐位）
+extraction:
+  enabled: true   # <bool> default=true [src:MemoryProxy/src/config.ts:96]
+  extractors: ["skill", "tdai-memory"]   # <list<str>> default=["skill", "tdai-memory"] [src:MemoryProxy/src/config.ts:97]
+sessionInit:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:100]
+  maxRetries: 3   # <int> default=3 [src:MemoryProxy/src/config.ts:101]
+  injectAgentContext: true   # <bool> default=true [src:MemoryProxy/src/config.ts:102]
+  injectTaskContext: true   # <bool> default=true [src:MemoryProxy/src/config.ts:103]
+  defaultTaskId: "default"   # <str> default=default [src:MemoryProxy/src/config.ts:104]
+  debugForceUserId:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:587]
+  debugVerboseLogging: false   # <bool> default=false [src:MemoryProxy/src/config.ts:591]
+  headerAutoSelect:
+    enabled: true   # <bool> default=true [src:MemoryProxy/src/config.ts:106]
+    teamHeader: "x-team-id"   # <str> default=x-team-id [src:MemoryProxy/src/config.ts:107]
+    agentHeader: "x-agent-id"   # <str> default=x-agent-id [src:MemoryProxy/src/config.ts:108]
+    taskHeader: "x-task-id"   # <str> default=x-task-id [src:MemoryProxy/src/config.ts:109]
+    onMismatch: "form"   # <enum(form|bypass)> default=form [src:MemoryProxy/src/config.ts:110]
+  debugForceIdentity:
+    team_id:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:577]
+    agent_id:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:578]
+    task_id:    # <str> default=required(无缺省) [src:MemoryProxy/src/config.ts:582]
+tdai:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:116]
+  endpoint: ""   # <str> default="" [src:MemoryProxy/src/config.ts:117]
+  apiKey: "local-proxy"   # <str> default=local-proxy [src:MemoryProxy/src/config.ts:118] · 源码缺省 local-proxy（本机直连 core 的占位 key）；该键会被 config.ts expandEnv 展开（config.ts:600/770），连远端 core 时改成 ${TDAI_GATEWAY_API_KEY} 并确保 env 已设（未设会展开成空串；空串也不必然 401——出站走 resolveBearerToken，env TDAI_GATEWAY_APIKEY > 此处值 > 各链路 serviceToken，见 config.ts:594-600）
+  serviceId: "default"   # <str> default=default [src:MemoryProxy/src/config.ts:119]
+  memory:
+    enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:121]
+    inject: false   # <bool> default=false [src:MemoryProxy/src/config.ts:122]
+    writeL0: false   # <bool> default=false [src:MemoryProxy/src/config.ts:123]
+    recallL1: false   # <bool> default=false [src:MemoryProxy/src/config.ts:124]
+    injectL2L3: false   # <bool> default=false [src:MemoryProxy/src/config.ts:125]
+    l1Limit: 5   # <int> default=5 [src:MemoryProxy/src/config.ts:126]
+    l1GlobalTopK: 5   # <int> default=5 [src:MemoryProxy/src/config.ts:128]
+    l2Limit: 3   # <int> default=3 [src:MemoryProxy/src/config.ts:129]
+    recallQuerySource: "legacy"   # <enum(legacy|shadow|intent)> default=legacy [src:MemoryProxy/src/config.ts:133]
+    l0CaptureMode: "legacy"   # <enum(legacy|shadow|classified)> default=legacy [src:MemoryProxy/src/config.ts:136]
+    recallIntentDedup: true   # <bool> default=true [src:MemoryProxy/src/config.ts:139]
+    recallIntentDedupTtlMs: 3600000   # <ms> default=3600000 [src:MemoryProxy/src/config.ts:142]
+    timeoutMs: 3000   # <ms> default=3000 [src:MemoryProxy/src/config.ts:143]
+appraisal:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:147]
+  firedThreshold: 0.4   # <float> default=0.4 [src:MemoryProxy/src/config.ts:147]
+  values: []   # <list<map>> default=[] [src:MemoryProxy/src/config.ts:631]
+    #   - id: v0   # <str> default=自动按下标生成 [src:MemoryProxy/src/config.ts:631] · 缺省按数组下标自动生成 v0/v1/…（config.ts:631）
+    #     label: example   # <str> required [src:MemoryProxy/src/config.ts:630]
+    #     weight: 0   # <float> required [src:MemoryProxy/src/config.ts:630]
+    # 上面是注释掉的示例元素：生效值是空数组 []（=未启用）；要用就取消注释并按真实字段填值
+skill:
+  endpoint: "http://127.0.0.1:8420"   # <str> default=http://127.0.0.1:8420 [src:MemoryProxy/src/config.ts:149]
+  serviceToken: ""   # <str> default="" [src:MemoryProxy/src/config.ts:150] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_GATEWAY_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  serviceId: "context-proxy"   # <str> default=context-proxy [src:MemoryProxy/src/config.ts:151]
+  timeoutMs: 1500   # <ms> default=1500 [src:MemoryProxy/src/config.ts:152]
+knowledge:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:155]
+  endpoint: "http://127.0.0.1:8420"   # <str> default=http://127.0.0.1:8420 [src:MemoryProxy/src/config.ts:156]
+  serviceToken: ""   # <str> default="" [src:MemoryProxy/src/config.ts:157] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_GATEWAY_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+  serviceId: "context-proxy"   # <str> default=context-proxy [src:MemoryProxy/src/config.ts:158]
+  timeoutMs: 1500   # <ms> default=1500 [src:MemoryProxy/src/config.ts:159]
+wikiRecall:
+  enabled: true   # <bool> default=true [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:33] · wikiRecall 整段存在才材料化（config.ts:654 !== false）；不写该段=装配端用 defaultWikiRecallConfig
+  perWikiLimit: 8   # <int> default=8 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:34] · wikiRecall 整段存在才材料化（config.ts:652）；本值 8 取自 config.ts:655 兜底，与 defaultWikiRecallConfig（wiki-recall-injector.ts:39-52）一致
+  globalTopK: 5   # <int> default=5 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:35] · wikiRecall 整段存在才材料化（config.ts:652）；本值 5 取自 config.ts:656 兜底，与 defaultWikiRecallConfig 一致
+  minScore: 0.02   # <float> default=0.02 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:36] · wikiRecall 整段存在才材料化（config.ts:652）；本值 0.02 取自 config.ts:657 兜底，与 defaultWikiRecallConfig 一致
+  hop: 0   # <int> default=0 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:37] · wikiRecall 整段存在才材料化（config.ts:652）；本值 0 取自 config.ts:658 兜底，与 defaultWikiRecallConfig 一致
+  decay: 0.5   # <float> default=0.5 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:38] · wikiRecall 整段存在才材料化（config.ts:652）；本值 0.5 取自 config.ts:659 兜底，与 defaultWikiRecallConfig 一致
+  maxTotalChars: 0   # <int> default=0 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:39] · wikiRecall 整段存在才材料化（config.ts:652）；本值 0 取自 config.ts:660 兜底（0=不限），与 defaultWikiRecallConfig 一致
+  minInjectNormScore: 0.6   # <float> default=0.6 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:40] · wikiRecall 整段存在才材料化（config.ts:652）；本值 0.6 取自 config.ts:661 兜底，与 defaultWikiRecallConfig 一致
+  minInjectAbsScore:    # <float> default=required(无缺省) [src:MemoryProxy/src/config.ts:663] · 源码取不到即 undefined（config.ts:664）；留空=不设绝对分下限
+  minInjectFtsScore:    # <float> default=required(无缺省) [src:MemoryProxy/src/config.ts:664] · 源码取不到即 undefined（config.ts:665）；留空=不设 FTS 分下限
+  querySource:    # <enum(legacy|shadow|intent)> default=required(无缺省) [src:MemoryProxy/src/config.ts:666] · 合法值 legacy|shadow|intent（config.ts:669-675）；留空=未设（等同 legacy）
+  minStructuralTailNormScore:    # <float> default=required(无缺省) [src:MemoryProxy/src/config.ts:671] · 源码取不到即 undefined（config.ts:677）；留空=结构页次门关闭
+  jit:    # <bool> default=required(无缺省) [src:MemoryProxy/src/config.ts:683] · JIT 三态（config.ts:686）；留空=跟随 meta 能力位，填 true/false 才强制
+  skipQuery:
+    minChars:    # <int> default=required(无缺省) [src:MemoryProxy/src/config.ts:674] · 源码取不到即 undefined（config.ts:681）；留空=跳过问句闸关闭
+    patterns:    # <list<str>> default=required(无缺省) [src:MemoryProxy/src/config.ts:675] · 源码取不到即 undefined（config.ts:682-684）；留空=无跳过正则
+  typeWeights:
+    entity: 0.6   # <float> default=0.6 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+    concept: 0.9   # <float> default=0.9 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+    overview: 0.6   # <float> default=0.6 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+    other: 0.3   # <float> default=0.3 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+    log: 0.3   # <float> default=0.3 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+    index: 0.3   # <float> default=0.3 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+    schema: 0.3   # <float> default=0.3 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:43] · typeWeights 原样透传（config.ts:663，无兜底）；缺省表见 wiki-recall-injector.ts:43
+  domainRouter:
+    boost: 1.5   # <float> default=1.5 [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:51] · domainRouter 原样透传（config.ts:680）；缺省表见 defaultWikiRecallConfig（wiki-recall-injector.ts:50-52），boost 缺省 1.5
+    keywords: {}   # <map<str,list<str>>> default={} [src:MemoryProxy/src/injection/injectors/wiki-recall-injector.ts:51] · domainRouter 原样透传（config.ts:680）；缺省 {}（wiki-recall-injector.ts:51）
+skillRuntime:
+  allowLlmWrite: false   # <bool> default=false [src:MemoryProxy/src/config.ts:162]
+auth:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:165]
+  url: ""   # <str> default="" [src:MemoryProxy/src/config.ts:166]
+  timeoutMs: 5000   # <ms> default=5000 [src:MemoryProxy/src/config.ts:167]
+admin:
+  apiKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:170] · 留空 = 管理面无鉴权（routes/admin-auth.ts:8 expected 为空即 ok）！生产必须设环境变量 TDAI_PROXY_ADMIN_API_KEY（config.ts:713-718 的 env 兜底，优先级高于本键）；勿写 ${PROXY_ADMIN_API_KEY}：直接 --config 加载时不展开，会成公开字面量密钥
+memCommand:
+  enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:171]
+  allowedCommands: []   # <list<str>> default=[] [src:MemoryProxy/src/config.ts:171]
+  taskDraft:
+    enabled: false   # <bool> default=false [src:MemoryProxy/src/config.ts:732] · 仅当 yaml.memCommand.taskDraft 段存在时才材料化该子段（config.ts:730-733），不写等于整段缺席（task 命令族报未配置）
+    model: ""   # <str> default="" [src:MemoryProxy/src/config.ts:733] · memCommand.taskDraft 段存在才材料化（config.ts:730-733）；不写该段=整段缺席（task 命令族报未配置）
+    url: ""   # <str> default="" [src:MemoryProxy/src/config.ts:734] · memCommand.taskDraft 段存在才材料化（config.ts:730-733）；不写该段=整段缺席
+    apiKey: ""   # <str> default="" [src:MemoryProxy/src/config.ts:735] · 直接 --config 加载本文件时 config.ts 不展开 ${...}（expandEnv 只作用于 systemUsers.* 与 tdai.apiKey），留空=未配置最安全；走部署链时可在本行写 ${TDAI_TASK_DRAFT_API_KEY}——etc/tdb-services.common.ps1:33-58 会对运行时副本做变量替换，未设该变量则原样保留成字面量（等于把占位串当密钥）
+    timeoutMs: 20000   # <ms> default=20000 [src:MemoryProxy/src/config.ts:738] · memCommand.taskDraft 段存在才材料化（config.ts:730-733）；本值 20000 取自该分支兜底（:738）
+ccRequestRouting:
+  enabled: true   # <bool> default=true [src:MemoryProxy/src/config.ts:172]
+workbuddyRequestRouting:
+  enabled: true   # <bool> default=true [src:MemoryProxy/src/config.ts:173]

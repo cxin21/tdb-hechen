@@ -1,0 +1,216 @@
+{
+  "service": "memorypanel",
+  "generatedAt": "2026-11-01T04:12:00+08:00",
+  "sources": [
+    "MemoryPanel/src/panel/config/panel-config.ts",
+    "MemoryPanel/src/panel/config/instance-registry.ts",
+    "MemoryPanel/src/panel/http/routes/chat-memory.ts",
+    "MemoryPanel/config/metadata-instances.example.json",
+    "MemoryPanel/src/panel/panel-deps.ts",
+    "MemoryPanel/src/panel/http/app.ts",
+    "MemoryPanel/src/panel/http/middleware/validate-panel-headers.ts",
+    "MemoryPanel/web/vite.config.ts"
+  ],
+  "keys": [
+    {
+      "path": "server.HOST",
+      "type": "str",
+      "default": "0.0.0.0",
+      "env": "HOST",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:65",
+      "consumed": true
+    },
+    {
+      "path": "server.PORT",
+      "type": "int",
+      "default": 8123,
+      "env": "PORT",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:66",
+      "consumed": true
+    },
+    {
+      "path": "metadata.METADATA_INSTANCES_CONFIG",
+      "type": "path",
+      "default": "./config/metadata-instances.json",
+      "env": "METADATA_INSTANCES_CONFIG",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:68",
+      "consumed": true
+    },
+    {
+      "path": "metadata.METADATA_REMOTE_TIMEOUT_MS",
+      "type": "ms",
+      "default": "15_000",
+      "env": "METADATA_REMOTE_TIMEOUT_MS",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:69",
+      "consumed": true
+    },
+    {
+      "path": "log.LOG_LEVEL",
+      "type": "enum(debug|info|warn|error)",
+      "default": "info",
+      "env": "LOG_LEVEL",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:61",
+      "consumed": true
+    },
+    {
+      "path": "log.LOG_FORMAT",
+      "type": "enum(json|pretty)",
+      "default": "json",
+      "env": "LOG_FORMAT",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:62",
+      "consumed": true
+    },
+    {
+      "path": "ui.UI_DIST_DIR",
+      "type": "path",
+      "default": "./web/dist",
+      "env": "UI_DIST_DIR",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:70",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.KNOWLEDGE_SERVICE_URL",
+      "type": "str",
+      "default": "http://127.0.0.1:8421",
+      "env": "KNOWLEDGE_SERVICE_URL",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:76",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.KNOWLEDGE_AUTH_TOKEN",
+      "type": "str",
+      "default": "",
+      "env": "KNOWLEDGE_AUTH_TOKEN",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:77",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.KNOWLEDGE_TIMEOUT_MS",
+      "type": "ms",
+      "default": "15_000",
+      "env": "KNOWLEDGE_TIMEOUT_MS",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:78",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.KNOWLEDGE_LLM_BINDING_SYNC",
+      "type": "bool",
+      "default": true,
+      "env": "KNOWLEDGE_LLM_BINDING_SYNC",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:81",
+      "consumed": true
+    },
+    {
+      "path": "knowledge.KNOWLEDGE_LLM_PROXY_BASE_URL",
+      "type": "str",
+      "default": "http://127.0.0.1:8096",
+      "env": "KNOWLEDGE_LLM_PROXY_BASE_URL",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:82",
+      "consumed": true
+    },
+    {
+      "path": "runtime.TDAI_AGENT_TEMPLATE_DIR",
+      "type": "path",
+      "default": "./data/agent-templates",
+      "env": "TDAI_AGENT_TEMPLATE_DIR",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:84",
+      "consumed": true
+    },
+    {
+      "path": "runtime.LLM_PROVIDER_PROXY_BASE_URL",
+      "type": "str",
+      "default": "http://127.0.0.1:8096",
+      "env": "LLM_PROVIDER_PROXY_BASE_URL",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:86",
+      "consumed": true
+    },
+    {
+      "path": "instances.TDAI_GATEWAY_APIKEY",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_GATEWAY_APIKEY",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:91",
+      "consumed": true
+    },
+    {
+      "path": "recallJournal.TDAI_DATA_DIR",
+      "type": "path",
+      "default": "required",
+      "env": "TDAI_DATA_DIR",
+      "source": "MemoryPanel/src/panel/http/routes/chat-memory.ts:66",
+      "consumed": true
+    },
+    {
+      "path": "recallJournal.TDAI_RECALL_JOURNAL_DIR",
+      "type": "path",
+      "default": "",
+      "env": "TDAI_RECALL_JOURNAL_DIR",
+      "source": "MemoryPanel/src/panel/http/routes/chat-memory.ts:64",
+      "consumed": true
+    },
+    {
+      "path": "metadataInstances.instances.<id>.id",
+      "type": "str",
+      "default": "required",
+      "env": "",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:6",
+      "consumed": true
+    },
+    {
+      "path": "metadataInstances.instances.<id>.name",
+      "type": "str",
+      "default": "required",
+      "env": "",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:7",
+      "consumed": true
+    },
+    {
+      "path": "metadataInstances.instances.<id>.gateway_endpoint",
+      "type": "str",
+      "default": "required",
+      "env": "",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:8",
+      "consumed": true
+    },
+    {
+      "path": "metadataInstances.instances.<id>.proxy_endpoint",
+      "type": "str",
+      "default": "",
+      "env": "",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:16",
+      "consumed": true
+    },
+    {
+      "path": "metadataInstances.instances.<id>.api_key",
+      "type": "str",
+      "default": "required",
+      "env": "",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:17",
+      "consumed": true
+    }
+  ],
+  "ignored": [
+    {
+      "path": "VITE_TMC_BACKEND_URL",
+      "reason": "web/vite.config.ts:6 的 TMC_BACKEND_TARGET，只在 `vite dev` 的 /api 代理里生效；`vite build` 下 web/src 零引用，不属服务运行时配置（开发脚本自用变量）"
+    },
+    {
+      "path": "VITE_SKILL_GATEWAY_URL",
+      "reason": "web/vite.config.ts:9 的 SKILL_GATEWAY_TARGET，只在 `vite dev` 的 /v3 代理里生效；同上，属开发脚本自用变量"
+    },
+    {
+      "path": "VITE_ENTRY",
+      "reason": "web/package.json 的 scripts.mock 写 VITE_ENTRY=mock，但 web/src、index.html、vite.config.ts 对它零引用（grep 0 命中）＝失效开关，无真实行为可描述"
+    },
+    {
+      "path": "MOCK_KERNEL_PORT",
+      "reason": "MemoryPanel/scripts/mock-memory-server.ts:67 仓内开发用 mock kernel 脚本自带端口，不进 Docker/部署，属开发脚本自用变量"
+    }
+  ],
+  "coverage": {
+    "sourceKeys": 26,
+    "ignoredKeys": 4,
+    "note": "sourceKeys = keys 22 + ignored 4；其中 17 个环境变量（14 panel-config + TDAI_GATEWAY_APIKEY + 2 召回日志目录）、5 个 metadata-instances.json 字段（无 env）、4 个开发脚本自用变量（进 ignored）",
+    "templatedKeys": 22
+  }
+}

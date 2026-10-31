@@ -1,0 +1,88 @@
+# ============================================================================
+# MemoryPanel 配置模板 — 8123 / 单进程 HTTP（stateless panel + 同源托管 web/dist）
+# 真源：MemoryPanel/src/panel/config/panel-config.ts（env 全量 loadPanelConfig）、
+#       MemoryPanel/src/panel/config/instance-registry.ts（实例 JSON + TDAI_GATEWAY_APIKEY）、
+#       MemoryPanel/src/panel/http/routes/chat-memory.ts（召回日志目录）、
+#       MemoryPanel/config/metadata-instances.example.json（JSON 注册表形状）、
+#       MemoryPanel/web/vite.config.ts（仅 vite dev 的代理目标）
+#       本模板与之逐键对齐，由 scripts/check-config-templates.mjs 校验
+# 用法：本服务**只读环境变量**（+ 一个实例注册表 JSON，由 METADATA_INSTANCES_CONFIG 指向）。
+#       下面的键名就是环境变量名，层级只是分组；生效方式二选一：
+#       抄进 D:/TDB/etc/env.ps1（$env:NAME = "..."）｜进程 cwd 下的 .env（panel-config.ts:4 自动加载）。
+#       把这份 yaml 丢给进程不会改变任何行为——必须变成同名环境变量。
+# 敏感值：一律 ${ENV_NAME} 占位，真实值只进 D:/TDB/etc/env.ps1
+# 行号：[src:NN] 指 panel-config.ts；跨文件时写全相对路径 [src:<path>:NN]
+# ============================================================================
+#
+# 两条口径（决定「删键」与「写空」的区别，源码为证）：
+#   1) 空串/纯空白 = 未设置 → 回落 default（panel-config.ts:11-16 / :18-26 / :53-58）。
+#      所以 `PORT=` 等于没写 PORT（回落 8123），不是「端口 0」。
+#   2) 鉴权**没有** ?token= / 全局 admin token 这类启动旋钮：
+#      请求身份 = 每个请求自带的 x-tdai-user-key（http/middleware/validate-panel-headers.ts）；
+#      system_admin 由后端 /v3/meta/auth/verify 裁定（routes/knowledge/common.ts:69-78），不可配；
+#      Panel → core 的凭据 = 实例 JSON 的 api_key，可被 TDAI_GATEWAY_APIKEY 一把全覆盖；
+#      `?token=` 是 dsh 宿主 web 的启动令牌（agents/dsh/README.md:147），与本服务无关。
+
+# ─── server / 进程与 HTTP ─────────────────────────────  [panel-config.ts:64-67]
+server:
+  HOST: "0.0.0.0"   # str default="0.0.0.0" — 监听地址；0.0.0.0 = 暴露到 LAN（当前真实状态），生产建议 127.0.0.1 [src:65]
+  PORT: 8123   # int default=8123 — HTTP 端口；非数字/空串回落 8123 而非报错 [src:66]
+
+# ─── metadata / 实例注册表读取 ─────────────────────────  [panel-config.ts:68-69]
+metadata:
+  METADATA_INSTANCES_CONFIG: "./config/metadata-instances.json"   # path default="./config/metadata-instances.json" — 实例 JSON 路径；文件缺失直接抛 500（instance-registry.ts:69-75），不是空列表 [src:68]
+  METADATA_REMOTE_TIMEOUT_MS: 15000   # ms default=15_000 — Panel→core 全部转发（meta / skill / llm-providers / settings）的单次超时 [src:69]
+
+# ─── log / 日志 ────────────────────────────────────  [panel-config.ts:61-62]
+log:
+  LOG_LEVEL: "info"   # enum(debug|info|warn|error) default="info" — 非白名单值一律翻成 info（:72）；写 off/silent/verbose 都等于 info [src:61]
+  LOG_FORMAT: "json"   # enum(json|pretty) default="json" — json 给采集，pretty 给本地；非法值翻 json（:73） [src:62]
+
+# ─── ui / 前端静态资源 ────────────────────────────────  [panel-config.ts:70]
+ui:
+  UI_DIST_DIR: "./web/dist"   # path default="./web/dist" — 同源托管的构建产物根；目录不存在时 / 与 SPA 回落 404，/api 不受影响（http/app.ts:70-77） [src:70]
+
+# ─── knowledge / Knowledge Service（Wiki / Code-Graph :8421）──  [panel-config.ts:75-83]
+# serviceId 按请求所属实例注入（HttpKnowledgeClient serviceId = instanceId），不在这里配。
+knowledge:
+  KNOWLEDGE_SERVICE_URL: "http://127.0.0.1:8421"   # str default="http://127.0.0.1:8421" — KS 根地址（Panel 拼 /v3/...） [src:76]
+  KNOWLEDGE_AUTH_TOKEN: "${KNOWLEDGE_AUTH_TOKEN}"   # str default="" — KS Bearer；留空=不带鉴权，而 KS 配了 KNOWLEDGE_SERVICE_KEY 就会 401（ADR 0009：组合部署时回落 KNOWLEDGE_SERVICE_KEY） [src:77]
+  KNOWLEDGE_TIMEOUT_MS: 15000   # ms default=15_000 — Panel→KS 单次超时；.env.example 里写成 30000（漂移，见报告） [src:78]
+  KNOWLEDGE_LLM_BINDING_SYNC: true   # bool default=true — 启动时为每个实例确保 KS LLM binding 存在；**只认 true/1，空串回落 true**（写空≠关，要关写 0/false）；best-effort，失败只 log 不阻塞启动 [src:81]
+  KNOWLEDGE_LLM_PROXY_BASE_URL: "http://127.0.0.1:8096"   # str default="http://127.0.0.1:8096" — binding 走 context proxy（mode=proxy）的入口 [src:82]
+
+# ─── runtime / 落盘与 proxy 透传 ──────────────────────  [panel-config.ts:84-87]
+runtime:
+  TDAI_AGENT_TEMPLATE_DIR: "./data/agent-templates"   # path default="./data/agent-templates" — 默认 Agent 模板落盘根（{dir}/{instanceId}/{team_id}/template.json，routes/meta/proxy.ts:195） [src:84]
+  LLM_PROVIDER_PROXY_BASE_URL: "http://127.0.0.1:8096"   # str default="http://127.0.0.1:8096" — 成员自服务 LLM Provider 透传到 proxy /v3/admin/llm-providers；鉴权用登录用户自己的 user_key，**不要**配共享 admin secret [src:86]
+
+# ─── instances / 服务端凭据覆盖 ───────────────────────  [instance-registry.ts:88-97]
+instances:
+  TDAI_GATEWAY_APIKEY: "${TDAI_GATEWAY_APIKEY}"   # str default="" — 一把 key 覆盖注册表里**所有**实例的 api_key；多实例各配不同 key 时设了它就全部失效 [src:91]
+
+# ─── recallJournal / 召回日志直读（chat-memory 路由）─────  [chat-memory.ts:62-74]
+# 该路由直接读盘（不经 core），所以需要知道 core 的 dataDir。
+recallJournal:
+  TDAI_DATA_DIR: "${TDAI_DATA_DIR}"   # path default=required — 与 MemoryCore 同一 dataDir（单源锚），派生 <dataDir>/logs/recall；缺失则该路由 503 RECALL_JOURNAL_DIR_UNRESOLVED，不是静默读空 [src:66]
+  TDAI_RECALL_JOURNAL_DIR: "${TDAI_RECALL_JOURNAL_DIR}"   # path default="" — 运维显式覆盖目录，优先级高于 dataDir 派生；支持 ~/ 前缀 [src:64]
+
+# ─── metadataInstances / 实例注册表 JSON 的字段（不是 env）─────────────────
+# 真实文件形状（写进 METADATA_INSTANCES_CONFIG 指向的文件，已 gitignore）：
+#   { "instances": [ { "id": "...", "name": "...", "gateway_endpoint": "https://...",
+#                      "proxy_endpoint": "https://...", "api_key": "..." } ] }
+# 下面用映射形式逐键登记（字段集完全相同），便于机器校验与逐键注释；
+# 值里的 <...> 是**字面占位**（该 JSON 不做 env 插值），请替换成真实值再写入；key 只写 <REPLACE_ME>。
+metadataInstances:
+  instances:
+    "<id>":
+      id: "${PANEL_INSTANCE_ID}"   # str default=required — 实例唯一键，同时作为请求 core/KS 的 x-tdai-service-id（本地 default，线上 mem-{slug}） [src:6]
+      name: "${PANEL_INSTANCE_NAME}"   # str default=required — 登录页展示名；仅经 GET /api/v1/meta/instances 输出给前端 [src:7]
+      gateway_endpoint: "${PANEL_GATEWAY_ENDPOINT}"   # str(url) default=required — Panel 后端→core 的转发根；**不是** proxy 地址，不能挪 [src:8]
+      proxy_endpoint: "${PANEL_PROXY_ENDPOINT}"   # str(url) default="" — 可选，仅供 UI「客户端接入地址」展示；缺省回落 gateway_endpoint，Panel 转发不用它 [src:16]
+      api_key: "<REPLACE_ME>"   # str default=required — core Bearer（secret，绝不下发前端）；可被 TDAI_GATEWAY_APIKEY 覆盖 [src:17]
+
+# ─── web 开发期代理目标 —— **不进 keys**：属「开发脚本自用变量」，已登记进 ignored ────
+#   VITE_TMC_BACKEND_URL   （web/vite.config.ts:6  常量 TMC_BACKEND_TARGET）   缺省 http://127.0.0.1:8123
+#   VITE_SKILL_GATEWAY_URL （web/vite.config.ts:9  常量 SKILL_GATEWAY_TARGET） 缺省 http://127.0.0.1:8420
+#   两者只在 `vite dev` 的代理里生效；`vite build` 下 web/src 对它们零引用（grep = 0），不影响生产产物。
+#   另：web/package.json 的 scripts.mock 写 VITE_ENTRY=mock，但仓内对该变量零引用（失效开关，已登记 ignored）。
