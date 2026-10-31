@@ -85,11 +85,13 @@ KNOWLEDGE_SERVICE_URL=http://127.0.0.1:8421
 | `KNOWLEDGE_SERVICE_KEY` | KS → 校验入站 Bearer（写/管理面） | 不要 |
 | Panel `KNOWLEDGE_AUTH_TOKEN` | Panel → 调 KS 时带 Bearer | 不要 |
 
-服务间鉴权（可选）：`KNOWLEDGE_SERVICE_KEY` 非空时，除只读白名单（`/health`、`tools/list`、`tools/call`、
-wiki / code-graph 查询类、`auto-sync/status`）外的 `/v3` 端点必须带
-`Authorization: Bearer <key>`，缺失或错误一律 401。Panel 侧用同一个值配
+服务间鉴权（可选）：`KNOWLEDGE_SERVICE_KEY` 非空时，除只读白名单（`tools/list`、`tools/call`、
+wiki / code-graph 查询类、`GET auto-sync/status`）外的 `/v3` 端点必须带
+`Authorization: Bearer <key>`，缺失或错误一律 401（`POST /auto-sync/trigger` 属写面，需要 key）。
+`/health`、`/docs`、`/openapi.json` 挂在 `/v3` 之外，不受服务密钥影响。Panel 侧用同一个值配
 `KNOWLEDGE_AUTH_TOKEN`，MCP server 侧用 `KNOWLEDGE_API_TOKEN`；部署脚本
-（`deploy/global-images/start-memory-hub.sh`）会自动生成一个稳定 key 并注入两侧。
+（`deploy/global-images/start-memory-hub.sh`）在 `.env` 留空时会自动生成一个稳定 key 并回写、注入两侧
+——注意这只是部署脚本的行为，手动编辑这里的 `.env` 留空仅表示「不启用」，不会被自动补 key。
 
 `LLM_MODE=proxy`（默认）：Wiki 用 Panel 按 `x-tdai-service-id` 推送的 `llm_binding`，本地不必起 Proxy。  
 `LLM_MODE=custom`：在 `.env` 设 `LLM_API_KEY` / `LLM_BASE_URL`（及可选 `LLM_PROTOCOL=anthropic`）。

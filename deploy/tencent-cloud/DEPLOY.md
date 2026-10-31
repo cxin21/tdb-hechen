@@ -77,6 +77,8 @@ TDAI_DATA_DIR=/data/tdai-memory                  # 必填：core dataDir 单一�
 TDAI_LLM_API_KEY=<ark key>   # deprecated（ADR-0006）：LLM 凭据 SoT = 各服务 {dataDir}/config-override.json（admin settings）；env 仅回退
 TDAI_PROXY_ADMIN_API_KEY=<openssl rand -hex 32>  # proxy 运维口实际读取的名字（env > yaml admin.apiKey）
 PROXY_ADMIN_API_KEY=<同上>                       # docker-compose 别名；原生 systemd 不读，写上只为对齐模板
+KNOWLEDGE_SERVICE_KEY=<openssl rand -hex 24>     # KS 校验侧；tdai-knowledge 与 tdai-panel 都读本文件
+KNOWLEDGE_AUTH_TOKEN=<同上>                      # Panel 调用侧，必须与上一行同值，否则 Panel 调 KS 401
 ```
 
 > 两个易踩的坑：
@@ -95,7 +97,7 @@ PROXY_ADMIN_API_KEY=<同上>                       # docker-compose 别名；原
   >
   > 改完务必用 `loadGatewayConfig()` 打生效面核对（见 §7），不要只看 YAML 文本。LLM key 的运行时唯一 SoT = 服务器 `{dataDir}/config-override.json`（ADR-0006）；env 占位展开为空不影响 override 生效。
 - **proxy**：以 `deploy/tencent-cloud/config/proxy/proxy-config.cloud.example.yaml` 为起点（**不是**本地 `MemoryProxy/config.yaml`——它被 `.gitignore` 忽略、从未入库），按同目录 `CLOUD-DIFF.md` 替换 `${VAR}` 占位符（endpoint 指向 core、网关 key、admin key）。**闸门类键**（`recallQuerySource` / `l0CaptureMode` / `recallIntentDedup`）缺省会退回 legacy：落盘后必须 `sudo grep -nE 'recallQuerySource|l0CaptureMode' /opt/tdai/etc/proxy-config.yaml` 确认 2 行都在，否则一个用户消息会按模型步数重复召回。同一条命令顺带核对 `injection.soulTiming` 与 `wikiRecall.jit/querySource`（见 §7）。
-- **knowledge**：`cp deploy/tencent-cloud/config/knowledge/env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。
+- **knowledge**：`cp deploy/tencent-cloud/config/knowledge/env.cloud.template /opt/tdai/td-agemem/MemoryKnowledge/.env`（LLM_MODE=custom 直连 ark）。服务间鉴权 key 建议只写 `/opt/tdai/etc/env`（systemd env 优先于 dotenv，且 Panel 侧 `KNOWLEDGE_AUTH_TOKEN` 只能来自那里）；只填 dotenv 不填 env 文件时，KS 侧生效而 Panel 侧无 Bearer → Panel 调 KS 一律 401。
 - **panel**：Panel 的 core 地址/api_key 配置按其 `config/metadata-instances.json` 格式落盘（指向 http://127.0.0.1:8420 + 同一把 gateway key）。
 
 ## 5. 启动与自启

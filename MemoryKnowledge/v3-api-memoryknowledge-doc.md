@@ -47,9 +47,9 @@ KS 走 **内网信任模型**（租户维度），与 MemoryCore 的 user-key �
 | 唯一必填 Header | `x-tdai-service-id`（租户/service 标识，即内核路由键） |
 | 服务间鉴权（可选） | 环境变量 `KNOWLEDGE_SERVICE_KEY`：**为空 = 不启用**（全部端点放行，向后兼容本地/开发部署）；**非空 = 除只读白名单外的 `/v3` 端点必须带 `Authorization: Bearer <KNOWLEDGE_SERVICE_KEY>`**，缺失或错误一律 `401`（fail-closed） |
 | 只读白名单（启用密钥时仍开放） | `POST /v3/tools/list`、`POST /v3/tools/call`；`POST /v3/wiki/{get,list,search,graph,raw/ls,raw/read,page/ls,page/read}`；`POST /v3/code-graph/{list,get}` 与 8 个动态只读查询（`search`/`explore`/`callers`/`callees`/`impact`/`node`/`status`/`files`）；`GET /v3/auto-sync/status` |
-| 例外 | `POST /v3/internal/llm-binding/list` 不需要 `x-tdai-service-id` 头（返回全部 binding，供 Panel 启动缓存）；`/v3/auto-sync/*` 无鉴权 |
+| 例外 | `POST /v3/internal/llm-binding/list` 不需要 `x-tdai-service-id` 头（返回全部 binding，供 Panel 启动缓存）；`/v3/auto-sync/*` 里只有 `GET /v3/auto-sync/status` 在只读白名单内（免 key），`POST /v3/auto-sync/trigger` 属写面，启用密钥时必须带 Bearer |
 
-> **未设置 `KNOWLEDGE_SERVICE_KEY` 时，整层服务间鉴权不生效**——此时 KS 仍是纯内网信任模型：任何可达者都能写/删知识库，并读取 `/v3/internal/llm-binding`（含 base_url 等绑定信息）。共享或生产部署必须设置该变量。部署脚本（`deploy/global-images/start-memory-hub.sh`）在 `.env` 缺省时自动生成随机 key（`ks-svc-<hex>`）并幂等回写，同一个值分两路注入容器：Knowledge 校验侧 `KNOWLEDGE_SERVICE_KEY`、Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN`。
+> **未设置 `KNOWLEDGE_SERVICE_KEY` 时，整层服务间鉴权不生效**——此时 KS 仍是纯内网信任模型：任何可达者都能写/删知识库，并读取 `/v3/internal/llm-binding`（含 base_url 等绑定信息）。共享或生产部署必须设置该变量。部署脚本（`deploy/global-images/start-memory-hub.sh`）在 `.env` 缺省时自动生成随机 key（`ks-svc-<hex48>`）并幂等回写，同一个值分两路注入容器：Knowledge 校验侧 `KNOWLEDGE_SERVICE_KEY`、Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN`。
 >
 > 鉴权失败的响应体为 `{ "code": 401, "message": "unauthorized: valid service key required", "data": null }`（HTTP 401）。
 >

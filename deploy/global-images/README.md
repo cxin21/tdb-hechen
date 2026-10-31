@@ -80,7 +80,7 @@ cd TencentDB-Agent-Memory/deploy/global-images
 - Memory Gateway：<http://localhost:8420/>
 - Proxy：<http://localhost:8096/>
 
-> **服务间鉴权**：`.env` 里的 `KNOWLEDGE_SERVICE_KEY` 留空时，启动脚本会自动生成随机 key 并幂等写回 `.env`（`ks-svc-<hex>`），同一个值分两路注入容器——Knowledge 校验侧 `KNOWLEDGE_SERVICE_KEY`、Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN`。启用后 `/v3` 写/管理面需带 `Authorization: Bearer <key>`（缺失即 401），只读端点与 `/health`、`/docs` 保持开放。
+> **服务间鉴权**：`.env` 里的 `KNOWLEDGE_SERVICE_KEY` 留空时，启动脚本会自动生成随机 key 并幂等写回 `.env`（`ks-svc-<hex48>`），同一个值分两路注入容器——Knowledge 校验侧 `KNOWLEDGE_SERVICE_KEY`、Panel 调用侧 `KNOWLEDGE_AUTH_TOKEN`。启用后 `/v3` 写/管理面需带 `Authorization: Bearer <key>`（缺失即 401），只读端点与 `/health`、`/docs` 保持开放。
 
 ## 两组独立参数
 
