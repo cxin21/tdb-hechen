@@ -887,6 +887,9 @@ part_of 覆盖率 10.5% → #155；结论卡单源 → #156；在线 24h 灰度�
    b1-off 的 −1.7pp 落在库/环境状态差（同库跨周复用 + query 向量缓存状态），无系统性方向。
 2. 复跑历史档必须显式关掉后来开的生产配置（`--fact-channel-off`、`--validity-mode hard`、`--small-to-big-off`、`--conclusion-layer-off`），
    否则「基线档」里混进生产默认，差异会被误读成本票的回退。
+   **脚本已固化**（#159）：10 个历史 arm 脚本统一 source `MemoryCore/scripts/lib/bench/arms.sh`——每档强制
+   `--expect-config`（口径不符 exit 2，不再靠人记）、`--report-name` 恒等 tag 并断言报告落盘、路径只走
+   `STORE_ROOT`/`BASE_STORE`；`MemoryCore/__tests__/bench-arms-hygiene.test.ts` 守住这条纪律。
 
 ## 16. #141 机制分阶段：W1 双通道 / W2 软失效+属性契约 / W3 表示路由（2026-10-28）
 
