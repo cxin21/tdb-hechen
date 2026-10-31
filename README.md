@@ -2,78 +2,155 @@
 
 # TDB · TencentDB Agent Memory（hechen 定制版）
 
-**基于腾讯开源 [TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory) v2.0.1 的深度定制 fork**
+**一套可本地直跑的四服务记忆系统 + 一个直接挂进 DeepSeek Harness 的原生记忆插件（`@tdb/agemem-dsh`）**
 
-原仓库 · [English](./docs/upstream/README.en.md) · [简体中文（原文档）](./README_CN.md) · [安装指南](./INSTALL_CN.md)
+基于腾讯开源 [TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory) v2.0.1 深度定制 ·
+原仓库 [English](./docs/upstream/README.en.md) · [上游原始中文文档](./README_CN.md) · [改动清单](./CHANGELOG.md)
 
 </div>
 
 ---
 
-## 这是什么
+## 1. 这个仓库现在是什么
 
-先说原仓库：**TencentDB Agent Memory** 是腾讯开源的 Agent 记忆系统——给 Agent 一个能记住人和事的大脑（L0-L3 四级记忆）、一个会积累经验的 Skill 库、一张同时看懂文档和代码的知识地图，以及一个由人掌握的团队记忆面板（Memory Hub）。四个模块协同工作：
+三条并存的形态，按你手上有什么选一条：
 
-| 模块 | 职责 |
+| 形态 | 你得到什么 | 入口 |
+|---|---|---|
+| **A. DSH 原生记忆插件（推荐）** | 在 DeepSeek Harness 的会话里直接带记忆：系统段注入人格/场景/技能、每轮注入相关记忆、两条写回（L0 事实链 + L2 场景链） | [§4](#4-dsh-原生记忆插件深度集成推荐形态) · [`dsh-plugin/README.md`](./dsh-plugin/README.md) |
+| **B. 本机四服务直跑（Windows）** | `:8420` 核心 / `:8096` 注入管线 / `:8421` 知识服务 / `:8123` 管控台，一套脚本拉起，数据落 SQLite | [§3](#3-快速开始windows-本机四服务) · [`INSTALL_CN.md`](./INSTALL_CN.md) |
+| **C. 腾讯云部署** | systemd 四服务 + Caddy + 占位符派生生产配置 | [`deploy/tencent-cloud/DEPLOY.md`](./deploy/tencent-cloud/DEPLOY.md) |
+
+> 形态 A 不代理 LLM：插件挂在宿主自己的钩子上，只从本机核心读写记忆。模型仍然是你配的那个模型。
+
+## 2. 组件与端口
+
+| 组件 | 端口 | 进程形态 | 职责 |
+|---|---|---|---|
+| **MemoryCore** | `8420` | `node --import tsx src/gateway/server.ts` | 记忆核心：L0–L3 记忆、召回 `/v3/recall`、写入 `/v3/conversation/add`、技能 `/v3/skill/*`、场景 `/v3/scenario/ls`、人格槽 `/v3/core-memory/read`、元数据与租户隔离 |
+| **MemoryProxy** | `8096` | `node --import tsx/esm src/index.ts --config <runtime.yaml>` | 老一代注入管线：12 个注入器、多客户端适配。DSH 路径已不依赖它（插件直连核心），保留给其它客户端 |
+| **MemoryKnowledge** | `8421` | `node --import tsx src/server.ts` | 知识服务：wiki / code-graph 摄取与检索、`/tools/call` |
+| **MemoryPanel** | `8123` | `node --import tsx src/...` + `web/` | 管控台：用户/团队/Agent/知识源管理；**也是唯一能事后审计召回的地方**（recall journal 落在 `D:/TDB/data/logs/recall/`） |
+| **dsh-plugin** | — | DSH 宿主内（Cordis 插件） | 宿主侧原生记忆：三段注入面 + 两条写回链 + 原生工具（`memory_recall` / `skill_*` / `knowledge_*`） |
+
+四服务都提供 `/health`，就绪判据统一为 `GET /health == 200`。
+
+## 3. 快速开始（Windows 本机四服务）
+
+**前置**：Node **≥ 22.16**（`MemoryCore/package.json` 的 `engines`）、pnpm、PowerShell 7。
+
+```powershell
+# 1) 密钥只放这一处，永不入库、永不 echo
+#    D:\TDB\etc\env.ps1  ← 模板见 config/templates/env.ps1
+# 2) 拉起四服务（顺序 core → proxy → knowledge → panel，每个都等 /health）
+pwsh -NoProfile -File D:\TDB\etc\start-tdb.ps1
+
+# 3) 冒烟
+curl.exe -s -o NUL -w "%{http_code}\n" http://127.0.0.1:8420/health   # 200
+# 管控台
+start http://127.0.0.1:8123
+```
+
+- DSH 在跑时，由 `dsh-tdb-lifecycle` bundle 改用 `D:/TDB/etc/start-tdb-supervised.ps1` 托管进程（DSH 退出时一并停）。
+- 代理配置里的 `${VAR}` 由 `etc/tdb-services.common.ps1` 的 `New-TdbRuntimeConfig` 展开成**临时**运行时副本（`D:/TDB/data/run/`），健康后立即删除——密钥不会落第二份持久文件。
+- 只跑核心也能满足插件形态 A：`8420` 起来即可。
+
+## 4. DSH 原生记忆插件（深度集成，推荐形态）
+
+`@tdb/agemem-dsh` 挂在宿主的三个点上，全部能力都能单独关：
+
+| 注入面 | 宿主挂点 | 内容 |
+|---|---|---|
+| **head pack**（一次/会话，compaction 后重注） | `ctx.systemPrompt.section` | `<core_memory>` 人格与严格规则 → 场景索引（L2）→ `<available_skills>` → `<knowledge_tools>` |
+| **volatile**（每轮） | 预步骤追加一条 `user/message` | `<soul-identity>` + `<soul-feeling>` + `<relevant-memories>`（来自 `/v3/recall`）+ `<team-wiki>` |
+| **tools** | 宿主原生工具注册 | `memory_recall`、`skill_search`/`skill_view`/`skill_files_read`/`skill_extract`、`knowledge_search`/`knowledge_read`（写工具 6 个在 `skill.allowLlmWrite` 开启后注册） |
+
+写回两条链，缺一条就有一半记忆不长：
+
+| 链 | 端点 | 产物 |
+|---|---|---|
+| L0 | `POST /v3/conversation/add` | 逐轮原文 → L1 事实抽取 |
+| L2 | `POST /v3/skill/conversation/add` | 缓冲累积到阈值 → 归档 → 场景抽取 → `scene_blocks` |
+
+```bash
+# 构建 + 装进指定 profile（身份三轴必填，否则插件挂上但 inert）
+cd dsh-plugin && npm ci && npm run build
+bash scripts/deploy.sh --identity <team>,<agent>,<user> --base-url http://127.0.0.1:8420
+
+# 装完重启宿主，然后取证（读会话归档，不需要宿主内部接口）
+node scripts/verify-installed.mjs
+bash scripts/rollback.sh          # 回滚到上一次部署前的备份
+```
+
+一切配置都在宿主 profile 的 `cordis.patch.yml` 的 `config:` 块里——**整块替换、不深合并**，所以漏一个键就回落代码缺省。全量键见 [`config/templates/dsh-plugin.yaml`](./config/templates/dsh-plugin.yaml)。
+
+细节（能力矩阵、已知边界、排他用法）：[`dsh-plugin/README.md`](./dsh-plugin/README.md)、[`docs/ops/all-on-capability-matrix.md`](./docs/ops/all-on-capability-matrix.md)。
+
+## 5. 配置
+
+**每个服务一份全量、逐键注释的模板**——这是本文档里唯一需要你照抄的东西：
+
+| 服务 | 模板 | 机器清单 |
+|---|---|---|
+| MemoryCore | [`config/templates/memorycore.yaml`](./config/templates/memorycore.yaml) | `memorycore.keys.json` |
+| MemoryProxy | [`config/templates/memoryproxy.yaml`](./config/templates/memoryproxy.yaml) | `memoryproxy.keys.json` |
+| MemoryKnowledge | [`config/templates/memoryknowledge.yaml`](./config/templates/memoryknowledge.yaml) | `memoryknowledge.keys.json` |
+| MemoryPanel | [`config/templates/memorypanel.yaml`](./config/templates/memorypanel.yaml) | `memorypanel.keys.json` |
+| dsh-plugin | [`config/templates/dsh-plugin.yaml`](./config/templates/dsh-plugin.yaml) | `dsh-plugin.keys.json` |
+| 密钥（本机） | [`config/templates/env.ps1`](./config/templates/env.ps1) | — |
+
+格式契约在 [`config/SPEC.md`](./config/SPEC.md)：每个键必须带 **类型 / 源码缺省值 / 一句话作用 / 源码行号**，机器清单与模板双向对齐，改一个键不注释就会被 `node scripts/check-config-templates.mjs` 打回。
+
+**优先级链**（四服务同构）：
+
+```
+env.ps1 / 进程环境变量  >  {dataDir}/config-override.json（管控台写入）  >  yaml  >  代码缺省
+```
+
+三个最容易配错的地方：
+
+1. **`0` 是"关"，删键是"开"**。`graphDiscount` / `sceneBoost` / `coreRefBoost` 这类通道权重，写 `0` 才是关闭；把键删掉会回落缺省值、把通道重新打开。
+2. **未知枚举会翻成最严档**。例如 `requireTeamOwnership` 拼错 → `enforce`（403），`unknownPrincipalPolicy` 拼错同理。宁可留空让它走缺省。
+3. **密钥只认一处**。LLM 密钥运行时唯一可信源是 `{dataDir}/config-override.json`（管控台写入），其次 yaml，最后才是 `TDAI_LLM_*` env（deprecated）；占位符整串（`__X__` / `${X}`）视为未设置。
+
+## 6. 测试与门禁
+
+```bash
+cd MemoryCore      && npx vitest run          # 核心：召回/写入/抽取/网关
+cd MemoryProxy     && npx vitest run
+cd MemoryKnowledge && npx vitest run
+cd MemoryPanel     && npx vitest run
+cd dsh-plugin      && npx vitest run && npx tsc --noEmit && npm run build
+
+# 核心类型门禁：与基线逐文件逐错误码比对，多一个就红
+cd MemoryCore && node scripts/typecheck-gate.mjs
+# 文档索引双向校验（未索引 / 悬空链接）
+node docs/ops/scripts/check-ops-index.mjs
+# 配置模板 ↔ 源码双向校验
+node scripts/check-config-templates.mjs
+```
+
+纪律：**任何召回/排序类改动都必须带同语料 A/B 与裁决记录**，降精度即关断（见 `CONTEXT.md` 与 `docs/adr/`）。
+
+## 7. 文档地图
+
+| 想去哪 | 去哪 |
 |---|---|
-| MemoryCore | 记忆核心：L0-L3 记忆、召回、元数据、Skill 抽取（网关 :8420） |
-| MemoryProxy | 注入管线：多客户端接入、上下文注入、记忆/知识/Skill 注入（:8096） |
-| MemoryKnowledge | 知识服务：wiki / code-graph 摄取与检索（:8421） |
-| MemoryPanel | TMC 管控台：用户/团队/Agent/知识源管理（:8123） |
+| 域词典（价值锚 / 严格规则 / 事实行 / 软失效 / 属性基数…） | [`CONTEXT.md`](./CONTEXT.md) |
+| 架构决定（ADR-0001 … 0018） | [`docs/adr/`](./docs/adr/) |
+| 运维与取证台账（69 份，带索引校验） | [`docs/ops/README.md`](./docs/ops/README.md) |
+| 生产配置口径与回滚 | [`docs/ops/production-profile.md`](./docs/ops/production-profile.md) |
+| 插件能力矩阵 / parity 对照 | [`docs/ops/all-on-capability-matrix.md`](./docs/ops/all-on-capability-matrix.md)、[`docs/ops/proxy-parity-matrix.md`](./docs/ops/proxy-parity-matrix.md) |
+| 插件发布与验收 checklist | [`docs/ops/dsh-plugin-release-checklist.md`](./docs/ops/dsh-plugin-release-checklist.md) |
+| 跨机部署（HTTP 直连 + userkey 身份流） | [`docs/ops/cross-host-deployment.md`](./docs/ops/cross-host-deployment.md) |
+| 改动清单 | [`CHANGELOG.md`](./CHANGELOG.md) |
 
-本仓库在其基础上做了**私有部署落地 + 记忆质量深度定制**，以"实证裁决"为纪律：每一项召回/排序类改动都带同语料 A/B 评测（golden corpus）和裁决记录，降精度即关断，绝不无据合入。部署形态为腾讯云 systemd 四服务原生直跑，部署手册见 [`deploy/tencent-cloud/DEPLOY.md`](./deploy/tencent-cloud/DEPLOY.md)。
+## 8. 与上游的关系
 
-## 与上游 v2.0.1 的差异总览
-
-> 基线：上游 tag `v2.0.1`（2026-08-25）。截至 2026-09-14 的文件级 diff：**新增 131 文件、修改 937 文件、删除 0 文件**（不含 node_modules / 运行时配置）。所有变更登记在 [CHANGELOG.md](./CHANGELOG.md) 的 `[Unreleased]` 段，每项带设计文档编号（DS-xxx / P 系列任务号）。
-
-### 一、记忆召回与排序（MemoryCore）
-
-| 改动 | 说明 |
-|---|---|
-| ✚ `/v3/recall` 核心单点合并召回 | DS-RECALL-MERGE-001。九通道检索 + R7 分层 + 预算切分 + 幂等结论层收敛为一条组装路径 `performLayeredRecall`，端点返回块与 auto-recall 钩子逐位一致；`memory.recall.v3Recall` 配置开关 |
-| ✚ R7 分层召回 · 结论层 | `conclusionLayer`：经验层之上产出结论层，CAL C1 截断 + 幂等结论缓存 |
-| ✚ 结构感知九通道召回 + RV2-2 精排 | 完整实现（R1-R9 通道、compositeScore 精排），并按 golden A/B 实证**裁决关断**（结构信号 on 0.325 / off 0.345，降精度即退役），能力保留、配置一键可重开；现行验收线 P@5 ≥ 0.325 |
-| ✚ E1-E3 性能缓存 | query 向量 60s 复用、价值锚缓存、同 session 同 query 注入块 5 分钟复用 |
-| ✚ 真记忆 G–M 全家 | 记忆图 `links`（similar/evolve 建边）、`coreMemory` 写入口信任边界、价值锚自发现/自维护（GROW-MAINT：证据重算采纳/退场、权重随语料演化）、`lifecycle` 巩固/遗忘周期调度、`search.neighborExpand` 重构式回忆（图邻居扩展） |
-
-### 二、记忆可信性（M1-M4 修复系列）
-
-| 改动 | 说明 |
-|---|---|
-| ✚ M3 网关鉴权必填 | **行为变更（无兼容期）**：MemoryCore 不再"无 key 放行"，未配置时启动生成临时密钥并 loud 打印；跨进程调用方三处同源，否则一律 401。含数据库迁移回滚预案 |
-| ✚ T12 core 租户化 / T14 租户隔离 | 元数据与记忆检索按 (team, user, agent, task) 严格收窄，闭合租户隔离红线 |
-| ✚ M4 语义补全 | T15/T16/T17/T17.5：subject 归组策略门（llm/lexical）、行映射根治等 |
-| ✚ M1 数据止血 + S1/S2 小件清零 | P0 级修复与类型层清理 |
-| ✚ C1-C4 第三档 | 价值信号全链流动，router 退役 |
-
-### 三、注入管线与知识召回（MemoryProxy / MemoryKnowledge）
-
-| 改动 | 说明 |
-|---|---|
-| ✚ `TdaiL1RecallInjector` 瘦传输 | 改调 `/v3/recall` 直接前插现成块；404/5xx/超时自动降级旧路（`/v3/atomic/search` 自行组装）+ loud 日志，防静默降级 |
-| ✚ 场景块治理 `sceneGovernance` | 提取批次后块体超限触发 LLM 蒸馏重写（6000 码点/片 + seg-cache），失败硬截断兜底（DS-SCENE-GOV-001） |
-| ✚ wiki 自动召回 `wikiRecall` | WikiRecallInjector：相对归一门控 + 绝对相关门控（absScore）+ typeWeights 结构页降权 + 跨库软定域；domainRouter 经 C3 实验默认退役 |
-| ✚ wikiRecall 调参实证 | minInjectNormScore 0.6、minInjectAbsScore 1.5 等经 golden 实测校准 |
-
-### 四、运维、部署与仓库治理
-
-| 改动 | 说明 |
-|---|---|
-| ✚ 腾讯云部署资产 | `deploy/tencent-cloud/`：init-server.sh、systemd 四服务、Caddyfile 模板、cloud yaml 模板（`${}` 占位符派生生产配置）、CLOUD-DIFF、DEPLOY.md 实战手册 |
-| ✚ `creditReport.enabled` 总开关 | Credit 计费上报整链短路开关（缺省 true = 逐位现状；upstream 非 TokenHub 时 CreditDelta 恒 0，建议关闭） |
-| ✚ MemoryCore `pi-plugin` | 新增插件宿主 |
-| ✚ 评估 harness 与验证脚本 | MemoryCore/scripts 下 50+ 个 verify/audit/eval 脚本：golden 评估、漂移重锚协议、逐任务验证（t1-t21） |
-| ✚ docs/ | superpowers（specs / plans / reviews / evals）设计-审查-评估全链文档 + tdai-v2-technical-ops.md |
-
-### 仓库治理（不入库清单）
-
-含真实密钥的运行时配置（`tdai-gateway*.yaml`、`MemoryPanel/config/metadata-instances.json`）、硬编码密钥的本地运维脚本、评估产物 `runs/`（语料含私有记忆内容）均已在 `.gitignore` 排除；生产配置从 `deploy/tencent-cloud/config/` 占位符模板派生。
-
-## 同步上游
-
-上游演进到新版本时：clone 对应 tag → 按本表与 CHANGELOG `[Unreleased]` 逐项重放 → 重跑 golden 评估（召回/排序语义变更必须重锚）→ 更新 CHANGELOG。回滚 = `git checkout` 上一 tag + restart，数据卷不受影响。
+- 基线：上游 tag `v2.0.1`。本仓库的定制全部登记在 `CHANGELOG.md` 的 `[Unreleased]` 段，每项带设计文档编号。
+- 同步边界见 [ADR-0018](./docs/adr/0018-上游同步边界.md)：召回/排序语义一旦变更必须重锚 golden 语料，不允许直接 merge 上游。
+- 不入库清单：含真实密钥的运行时配置（`tdai-gateway*.yaml`、`MemoryPanel/config/metadata-instances.json`）、本地取证产物（`scratch/`）、评估产物 `runs/` 均已在 `.gitignore` 排除；模板从 `config/templates/` 派生。
 
 ## License
 
-跟随原仓库 [MIT License](./LICENSE)。所有上游版权与商标归腾讯/TencentCloud 所有；本 fork 的定制部分同样以 MIT 提供。
+跟随原仓库 [MIT License](./LICENSE)。上游版权与商标归腾讯 / TencentCloud 所有；本 fork 的定制部分同样以 MIT 提供。
