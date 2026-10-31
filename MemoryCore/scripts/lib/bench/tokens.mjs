@@ -87,10 +87,23 @@ export function estimateMessagesUsage(messages, completionText) {
   };
 }
 
+/**
+ * 把一次 usage 的 prompt/completion 就地累进任意计数槽（#160 第3项：唯一算术实现）。
+ *
+ * 总账（addUsage）与来源分桶（stages.mjs）都走这里，避免「改一处漏一处」。
+ * @param {{prompt:number, completion:number}} target
+ * @param {{prompt?:number, completion?:number}} u
+ */
+export function accumulateUsage(target, u) {
+  if (!target || !u) return target;
+  target.prompt += Number(u.prompt) || 0;
+  target.completion += Number(u.completion) || 0;
+  return target;
+}
+
 export function addUsage(total, u) {
   if (!total || !u) return total;
-  total.prompt += u.prompt ?? 0;
-  total.completion += u.completion ?? 0;
+  accumulateUsage(total, u);
   if (u.reported) total.reportedCalls = (total.reportedCalls ?? 0) + 1;
   else if (u.estimated) total.estimatedCalls = (total.estimatedCalls ?? 0) + 1;
   return total;

@@ -15,6 +15,7 @@
 
 import { factsForCase } from "./facts.mjs";
 import { conclusionsForCase } from "./conclusions.mjs";
+import { accumulateUsage, addUsage, emptyUsageTotal } from "./tokens.mjs";
 
 /** 两段统计的初始形状（报告 config.factExtraction.stats / conclusionCards.stats 直接用）。 */
 export function createStageStats() {
@@ -27,7 +28,7 @@ export function createStageStats() {
       phrases: 0,
       extractMs: 0,
       failedBatches: 0,
-      usage: { prompt: 0, completion: 0 },
+      usage: emptyUsageTotal(),
       usageBySource: {},
     },
     conclusions: {
@@ -36,24 +37,24 @@ export function createStageStats() {
       cards: 0,
       ms: 0,
       failed: 0,
-      usage: { prompt: 0, completion: 0 },
+      usage: emptyUsageTotal(),
       usageBySource: {},
     },
   };
 }
 
-/** 把一次取数的 usage 记账（总账 + 来源分桶）。 */
-function addUsage(stat, usage, source) {
+/**
+ * 把一次取数的 usage 记账：总账走 tokens.addUsage（唯一算术实现，含 reported/estimated 计数），
+ * 本函数只补「按 usageSource 分桶」这一层（#160 第3项：不再有第二份累加算术）。
+ * 命名刻意与 tokens.addUsage 区分：这里记的是「一个 stage 的账」，不是账本本身。
+ */
+function accountUsage(stat, usage, source) {
   if (!usage) return;
-  const prompt = Number(usage.prompt) || 0;
-  const completion = Number(usage.completion) || 0;
-  stat.usage.prompt += prompt;
-  stat.usage.completion += completion;
+  addUsage(stat.usage, usage);
   const src = source || "none";
   const bucket = (stat.usageBySource[src] ??= { calls: 0, prompt: 0, completion: 0 });
   bucket.calls++;
-  bucket.prompt += prompt;
-  bucket.completion += completion;
+  accumulateUsage(bucket, usage);
 }
 
 /**
@@ -125,7 +126,7 @@ export function mergeStageStats(stats, { facts = null, conclusions = null } = {}
     s.extractMs += facts.ms ?? 0;
     if (facts.failedBatches) s.failedBatches += facts.failedBatches;
     // #139 第4项：缓存档也带 usage（estimated-cache 或 cache），一律入账。
-    addUsage(s, facts.usage, facts.usageSource);
+    accountUsage(s, facts.usage, facts.usageSource);
     const cov = facts.coverage ?? { turns: 0, turnsWithFacts: 0, phrases: 0 };
     s.turns += cov.turns ?? 0;
     s.turnsWithFacts += cov.turnsWithFacts ?? 0;
@@ -139,7 +140,7 @@ export function mergeStageStats(stats, { facts = null, conclusions = null } = {}
     // 耗时无论是否命中都累加（命中 0）——旧分阶段分支漏记此项。
     s.ms += conclusions.ms ?? 0;
     if (conclusions.failed) s.failed++;
-    addUsage(s, conclusions.usage, conclusions.usageSource);
+    accountUsage(s, conclusions.usage, conclusions.usageSource);
   }
   return stats;
 }

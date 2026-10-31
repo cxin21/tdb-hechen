@@ -46,6 +46,7 @@ import { attributeInjectedLines, evidenceSufficiency, INJECT_LINE_TYPES } from "
 import { FACTS_PROMPT_VERSION, factsCoverage, factsForCase } from "./lib/bench/facts.mjs";
 import { CONCLUSIONS_PROMPT_VERSION } from "./lib/bench/conclusions.mjs";
 import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "./lib/bench/stages.mjs";
+import { createArgReader } from "./lib/bench/argv.mjs";
 import {
   buildAnswerPrompt,
   buildAnswerPromptTuned,
@@ -64,29 +65,9 @@ import {
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 
+// #160：取参规则单一源（裸 flag / 非数值一律 exit 2，不再静默走默认值或 NaN）。
 const argv = process.argv.slice(2);
-function arg(name, dflt) {
-  const i = argv.indexOf("--" + name);
-  if (i < 0) return dflt;
-  const v = argv[i + 1];
-  return v === undefined || v.startsWith("--") ? true : v;
-}
-function num(name, dflt) {
-  const v = arg(name, undefined);
-  return v === undefined ? dflt : Number(v);
-}
-function flag(name) {
-  return argv.includes("--" + name);
-}
-/** 取值参数：裸 flag（后面紧跟 -- 或到底）必须显式失败，不能静默退化成默认路径。 */
-function strArg(name, dflt) {
-  const v = arg(name, dflt);
-  if (v === true) {
-    console.error(`[bench] --${name} 需要一个值（只给了裸 flag）；已中止，避免静默走默认路径白跑。`);
-    process.exit(2);
-  }
-  return v;
-}
+const { arg, flag, num, strArg } = createArgReader(argv);
 
 if (flag("help") || argv.length === 0) {
   console.log(`记忆系统基准评测

@@ -30,6 +30,8 @@ import {
   sanitizeCaseId,
   writeCache,
 } from "../scripts/lib/bench/cache.mjs";
+import { embedWithRetry, isRetriableEmbedError } from "../scripts/lib/bench/store.mjs";
+import { createArgReader } from "../scripts/lib/bench/argv.mjs";
 
 const tmpDirs: string[] = [];
 function tmpDir(): string {
@@ -221,5 +223,122 @@ describe("cache.mjs", () => {
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.mkdirSync(f); // 目录占位 → rename 必失败
     expect(() => writeCache(frozen, "facts", "x", { a: 1 })).toThrow();
+  });
+});
+
+describe("store.mjs / embedWithRetry 可重试判定（#160 第1项）", () => {
+  it("5xx 可重试、其余 4xx 不可重试（状态码口径）", () => {
+    expect(isRetriableEmbedError(Object.assign(new Error("x"), { status: 500 }))).toBe(true);
+    expect(isRetriableEmbedError(Object.assign(new Error("x"), { status: 502 }))).toBe(true);
+    expect(isRetriableEmbedError(Object.assign(new Error("x"), { status: 503 }))).toBe(true);
+    expect(isRetriableEmbedError(Object.assign(new Error("x"), { status: 400 }))).toBe(false);
+  });
+
+  it("无状态码时按文案判 5xx（历史 5dd 笔误的回归点）", () => {
+    expect(isRetriableEmbedError(new Error("HTTP 502 Bad Gateway"))).toBe(true);
+    expect(isRetriableEmbedError(new Error("embedding 503"))).toBe(true);
+    expect(isRetriableEmbedError(new Error("socket hang up"))).toBe(true);
+    expect(isRetriableEmbedError(new Error("ETIMEDOUT"))).toBe(true);
+    expect(isRetriableEmbedError(new Error("HTTP 429 Too Many Requests"))).toBe(true);
+    expect(isRetriableEmbedError(new Error("rate limit exceeded"))).toBe(true);
+    expect(isRetriableEmbedError(new Error("HTTP 400 Bad Request"))).toBe(false);
+    // 「输入条数超限」不是限流：无状态码时也不能靠 too many 兜进重试
+    expect(isRetriableEmbedError(new Error("too many inputs"))).toBe(false);
+  });
+
+  it("有状态码时状态码口径优先于文案（400 + too many requests 也不重试）", () => {
+    expect(isRetriableEmbedError(Object.assign(new Error("too many requests"), { status: 400 }))).toBe(false);
+    expect(isRetriableEmbedError(Object.assign(new Error("too many requests"), { status: 429 }))).toBe(true);
+  });
+
+  it("四位数字串不被误判成 5xx（retry after 5000ms ≠ HTTP 500）", () => {
+    expect(isRetriableEmbedError(new Error("retry after 5000ms"))).toBe(false);
+  });
+
+  it("embedWithRetry 对无状态码的 5xx 文案同样重试（text-only 路径）", async () => {
+    let n = 0;
+    const flaky = {
+      embedBatch: async () => {
+        n++;
+        if (n < 2) throw new Error("HTTP 502 Bad Gateway");
+        return [[0.3]];
+      },
+    };
+    await expect(embedWithRetry(flaky, ["t"], { tries: 3, baseMs: 1, minIntervalMs: 0 })).resolves.toEqual([[0.3]]);
+    expect(n).toBe(2);
+  });
+
+  it("embedWithRetry 在 503 上重试、400 上立即抛出", async () => {
+    let n = 0;
+    const flaky = {
+      embedBatch: async () => {
+        n++;
+        if (n < 3) throw Object.assign(new Error("gateway"), { status: 503 });
+        return [[0.1, 0.2]];
+      },
+    };
+    await expect(embedWithRetry(flaky, ["t"], { tries: 3, baseMs: 1, minIntervalMs: 0 })).resolves.toEqual([[0.1, 0.2]]);
+    expect(n).toBe(3);
+
+    let m = 0;
+    const bad = {
+      embedBatch: async () => {
+        m++;
+        throw Object.assign(new Error("HTTP 400: too many inputs"), { status: 400 });
+      },
+    };
+    await expect(embedWithRetry(bad, ["t"], { tries: 3, baseMs: 1, minIntervalMs: 0 })).rejects.toThrow(/400/);
+    expect(m).toBe(1);
+  });
+});
+
+describe("argv.mjs / bench 取参（#160 第4项）", () => {
+  const exitThrow = () =>
+    vi.fn((code: number) => {
+      throw new Error("exit " + code);
+    });
+
+  it("正常取值与缺省", () => {
+    const r = createArgReader(["--k", "3", "--dataset", "locomo"]);
+    expect(r.num("k", 5)).toBe(3);
+    expect(r.num("limit", 7)).toBe(7);
+    expect(r.strArg("dataset", "")).toBe("locomo");
+    expect(r.flag("k")).toBe(true);
+    expect(r.flag("nope")).toBe(false);
+    expect(r.arg("missing")).toBeUndefined();
+  });
+
+  it("裸 flag：arg 返回 true，但 num/strArg 必须 exit 2（不静默 NaN/默认值）", () => {
+    const exit = exitThrow();
+    const logError = vi.fn();
+    const r = createArgReader(["--k", "--dataset"], { exit, logError });
+    expect(r.arg("k", undefined)).toBe(true);
+    expect(() => r.num("k", 5)).toThrow(/exit 2/);
+    expect(exit).toHaveBeenCalledWith(2);
+    expect(logError.mock.calls[0][0]).toMatch(/--k 需要一个数值/);
+  });
+
+  it("--k 在行尾（后面到底）同样 exit 2", () => {
+    const exit = exitThrow();
+    const logError = vi.fn();
+    const r = createArgReader(["--k"], { exit, logError });
+    expect(() => r.num("k", 5)).toThrow(/exit 2/);
+    expect(logError.mock.calls[0][0]).toMatch(/裸 flag/);
+  });
+
+  it("非数值取值也 exit 2（不回退成 NaN）", () => {
+    const exit = exitThrow();
+    const logError = vi.fn();
+    const r = createArgReader(["--k", "abc"], { exit, logError });
+    expect(() => r.num("k", 5)).toThrow(/exit 2/);
+    expect(logError.mock.calls[0][0]).toMatch(/需要数值/);
+  });
+
+  it("strArg 裸 flag 与历史文案一致（exit 2）", () => {
+    const exit = exitThrow();
+    const logError = vi.fn();
+    const r = createArgReader(["--dataset"], { exit, logError });
+    expect(() => r.strArg("dataset", "")).toThrow(/exit 2/);
+    expect(logError.mock.calls[0][0]).toMatch(/需要一个值/);
   });
 });

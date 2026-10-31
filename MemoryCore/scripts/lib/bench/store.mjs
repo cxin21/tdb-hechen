@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { cacheFileOf, readCache, writeCache } from "./cache.mjs";
+import { isRetriableHttpError, statusOf } from "./retry.mjs";
 import { normHead } from "./metrics.mjs";
 import path from "node:path";
 import os from "node:os";
@@ -183,6 +184,23 @@ async function paceGate(minIntervalMs) {
   _lastEmbedAt = Date.now();
 }
 
+/**
+ * embedding 外呼错误是否可重试（#160 第1项）。
+ *
+ * 有状态码时**照抄 retry.mjs 的 isRetriableHttpError**（429/5xx 可重试，其余 4xx 一律不可），
+ * 不再在本地复述一遍状态码规则；没有状态码的纯文案错误才退化到网络/限流字样——
+ * 否则带 status=400 的「too many inputs」（输入条数超限）会被当成限流反复重试。
+ * 历史坑：这里曾写成 `5dd`（`5\d\d` 的笔误），HTTP 500/502/503 永远不判可重试，
+ * 与 llm.mjs / conclusions.mjs 的口径不一致。字号边界 `\b5\d\d\b` 避免
+ * "retry after 5000ms" 这类数字串被误判成 5xx；无状态码的 "HTTP 429" 仍要能认出来，
+ * 故文案里单列 `\b429\b`，而 "too many" 收窄成 "too many requests"（"too many inputs" 不是限流）。
+ */
+export function isRetriableEmbedError(err) {
+  if (statusOf(err) !== undefined) return isRetriableHttpError(err);
+  const msg = String(err?.message ?? err);
+  return /rate.?limit|too many requests|timeout|ETIMEDOUT|ECONNRESET|socket hang up|\b429\b|\b5\d\d\b/i.test(msg);
+}
+
 export async function embedWithRetry(embedding, texts, opts = {}) {
   const tries = opts.tries ?? 5;
   const baseMs = opts.baseMs ?? 1200;
@@ -195,8 +213,7 @@ export async function embedWithRetry(embedding, texts, opts = {}) {
     } catch (e) {
       lastErr = e;
       const msg = String(e?.message ?? e);
-      const retriable = /429|rate.?limit|too many|timeout|ETIMEDOUT|ECONNRESET|socket hang up|5dd/i.test(msg);
-      if (!retriable || attempt === tries - 1) throw e;
+      if (!isRetriableEmbedError(e) || attempt === tries - 1) throw e;
       opts.onRetry?.(attempt + 1, msg);
       await new Promise((r) => setTimeout(r, Math.round(baseMs * 2 ** attempt * (1 + Math.random() * 0.3))));
     }

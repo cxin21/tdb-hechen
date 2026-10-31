@@ -7,14 +7,15 @@
  *  - 「分阶段分支漏记 conclusionStats.ms」→ mergeStageStats 计入 ms；
  *  - 「#135 生产 override 吞沙箱 yaml」→ assertExpectedConfig 能报出 rerank.enabled 不符。
  */
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { createStageStats, fetchFactsAndConclusions, mergeStageStats, tokenEvidence } from "../scripts/lib/bench/stages.mjs";
 import { factsForCase, saveCachedFacts, FACTS_PROMPT_VERSION } from "../scripts/lib/bench/facts.mjs";
-import { conclusionsForCase, saveConclusionsCache, CONCLUSIONS_PROMPT_VERSION } from "../scripts/lib/bench/conclusions.mjs";
+import { conclusionsForCase, readConclusionsCacheFile, saveConclusionsCache, CONCLUSIONS_PROMPT_VERSION } from "../scripts/lib/bench/conclusions.mjs";
+import { addUsage as addUsageLedger, emptyUsageTotal } from "../scripts/lib/bench/tokens.mjs";
 import {
   assertExpectedConfig,
   diffExpectedConfig,
@@ -247,5 +248,64 @@ describe("#139 估算口径必须可见、判定不被估算改变", () => {
     expect(tok.estimatedCalls).toBe(2);
     expect(tok.liveCalls).toBe(1);
     expect(tok.hasEstimated).toBe(true);
+  });
+});
+
+describe("#160 bench 卫生债", () => {
+  it("结论缓存失效把原因打出来（不再只有「重蒸了」没有「为什么」）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const caseId = "case-stale";
+      saveConclusionsCache(tmp, caseId, {
+        promptVersion: "concl-v0",
+        model: "m",
+        caseId,
+        maxCards: 4,
+        cards: [],
+      });
+      expect(readConclusionsCacheFile(tmp, caseId, "m")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/promptVersion concl-v0≠concl-v1/);
+      // 只报一次：同一原因不刷屏，但缓存仍然不命中（不会悄悄复用旧卡）
+      expect(readConclusionsCacheFile(tmp, caseId, "m")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("模型口径变化同样打出 reason（跨 --fact-model 必须重蒸）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const caseId = "case-stale-model";
+      saveConclusionsCache(tmp, caseId, {
+        promptVersion: CONCLUSIONS_PROMPT_VERSION,
+        model: "old-model",
+        caseId,
+        maxCards: 4,
+        cards: [],
+      });
+      expect(readConclusionsCacheFile(tmp, caseId, "new-model")).toBeNull();
+      expect(String(warn.mock.calls[0][0])).toMatch(/model old-model≠new-model/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stage 总账与 tokens.addUsage 同源（#160 第3项：只有一份累加算术）", () => {
+    const factsUsage = { prompt: 10, completion: 4, reported: true };
+    const stats = createStageStats();
+    mergeStageStats(stats, {
+      facts: { cacheHit: false, ms: 5, usage: factsUsage, usageSource: "live", coverage: { turns: 2, turnsWithFacts: 1, phrases: 3 } },
+      conclusions: null,
+    });
+    const ledger = emptyUsageTotal();
+    addUsageLedger(ledger, factsUsage);
+    // 总账字段（含 reported/estimated 计数）必须与 tokens 账本一字不差
+    expect(stats.facts.usage.prompt).toBe(ledger.prompt);
+    expect(stats.facts.usage.completion).toBe(ledger.completion);
+    expect(stats.facts.usage.reportedCalls).toBe(ledger.reportedCalls);
+    // 来源分桶仍是 stages 自己的那层（调用次数 + 同源算术）
+    expect(stats.facts.usageBySource.live).toEqual({ calls: 1, prompt: 10, completion: 4 });
   });
 });
