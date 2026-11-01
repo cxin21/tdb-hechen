@@ -131,7 +131,6 @@ async function runExtraction(writePolicy?: WritePolicy) {
       userId: "user-x",
       agentId: "agent-x",
       baseDir: dir,
-      config: cfg,
       memoryConfig: cfg,
       logger,
       options: {

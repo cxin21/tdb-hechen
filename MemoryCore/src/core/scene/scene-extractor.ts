@@ -68,7 +68,6 @@ export interface ExtractionResult {
 
 export interface SceneExtractorOptions {
   dataDir: string;
-  config: unknown;
   model?: string;
   maxScenes?: number;
   /** Prompt family for L2 scene extraction (default: chat). */

@@ -55,7 +55,6 @@ function makeOpts(dir: string, groups: FixtureGroup[], llmRunner: unknown, logge
   return {
     pluginDataDir: dir,
     cfg,
-    openclawConfig: undefined,
     vectorStore,
     embeddingService: undefined,
     logger,

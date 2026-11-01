@@ -54,20 +54,20 @@ function makeRunner(ret: string) {
 describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", () => {
   it("未传 deps.reasoningEffort 时主调不带该字段（端点默认，缺省 200）", async () => {
     const { llmRunner, calls } = makeRunner("[]");
-    await enrichSoulFields([mem(NEUTRAL)], { config: {}, llmRunner });
+    await enrichSoulFields([mem(NEUTRAL)], { llmRunner });
     expect(calls).toHaveLength(1);
     expect(calls[0].reasoningEffort).toBeUndefined();
   });
 
   it("deps.reasoningEffort 原样透传（支持的端点仍享关思考优化）", async () => {
     const { llmRunner, calls } = makeRunner("[]");
-    await enrichSoulFields([mem(NEUTRAL)], { config: {}, llmRunner, reasoningEffort: "none" });
+    await enrichSoulFields([mem(NEUTRAL)], { llmRunner, reasoningEffort: "none" });
     expect(calls[0].reasoningEffort).toBe("none");
   });
 
   it("taskId / timeoutMs 保持既有语义（回归）", async () => {
     const { llmRunner, calls } = makeRunner("[]");
-    await enrichSoulFields([mem(NEUTRAL)], { config: {}, llmRunner });
+    await enrichSoulFields([mem(NEUTRAL)], { llmRunner });
     expect(calls[0].taskId).toBe("l1-enrich");
     expect(calls[0].timeoutMs).toBe(30_000);
   });
@@ -76,7 +76,7 @@ describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", 
 describe("R3 提示词契约（M1/M4/M5/S3/S4）", () => {
   it("system prompt 含 index 数字契约+编号不连续说明+中性缺省+收口句", async () => {
     const { llmRunner, calls } = makeRunner("[]");
-    await enrichSoulFields([mem(NEUTRAL)], { config: {}, llmRunner });
+    await enrichSoulFields([mem(NEUTRAL)], { llmRunner });
     const sys = calls[0].systemPrompt ?? "";
     expect(sys).toContain("记忆字段补全器");
     expect(sys).toContain("编号可能不连续"); // M1：只送缺字段行 → 编号天然不连续
@@ -92,7 +92,7 @@ describe("R3 规则回填后重过滤（S1）", () => {
   it("规则已全填的行不再发起 LLM 调用（零浪费）", async () => {
     const { llmRunner, calls } = makeRunner("[]");
     // 时间锚(昨天)+情感(开心)+重要性(关键/决定) → 规则可回填全部 5 字段
-    await enrichSoulFields([mem("昨天完成了关键决定，非常开心。")], { config: {}, llmRunner });
+    await enrichSoulFields([mem("昨天完成了关键决定，非常开心。")], { llmRunner });
     expect(calls).toHaveLength(0);
   });
 
@@ -100,7 +100,7 @@ describe("R3 规则回填后重过滤（S1）", () => {
     const { llmRunner, calls } = makeRunner("[]");
     const filled = mem("昨天完成了关键决定，非常开心。"); // 行 0：规则全填 → 不进 prompt
     const open = mem(NEUTRAL2); // 行 1：规则填不齐 → 仍缺
-    await enrichSoulFields([filled, open], { config: {}, llmRunner });
+    await enrichSoulFields([filled, open], { llmRunner });
     expect(calls).toHaveLength(1);
     expect(calls[0].prompt).toContain("1. ");
     expect(calls[0].prompt).not.toContain("0. ");
@@ -113,7 +113,7 @@ describe("R3 消费侧加固（M2/M3）", () => {
       JSON.stringify([{ index: "0", occurred_at: "", certainty: "observed", valence: 0.1, arousal: 0.2, significance: 0.3 }]),
     );
     const m = mem(NEUTRAL);
-    await enrichSoulFields([m], { config: {}, llmRunner });
+    await enrichSoulFields([m], { llmRunner });
     expect(m.valence).toBe(0.1);
     expect(m.significance).toBe(0.3);
   });
@@ -123,7 +123,7 @@ describe("R3 消费侧加固（M2/M3）", () => {
       JSON.stringify([{ index: 0, occurred_at: "", certainty: "observed", valence: 3.7, arousal: -0.5, significance: 9 }]),
     );
     const m = mem(NEUTRAL);
-    await enrichSoulFields([m], { config: {}, llmRunner });
+    await enrichSoulFields([m], { llmRunner });
     expect(m.valence).toBe(1);
     expect(m.arousal).toBe(0);
     expect(m.significance).toBe(1);
@@ -134,7 +134,7 @@ describe("R3 消费侧加固（M2/M3）", () => {
       JSON.stringify([{ index: 0, occurred_at: "昨天下午", certainty: "inferred", valence: 0, arousal: 0, significance: 0.5 }]),
     );
     const m = mem(NEUTRAL);
-    await enrichSoulFields([m], { config: {}, llmRunner });
+    await enrichSoulFields([m], { llmRunner });
     expect(m.occurred_at).toBeFalsy();
   });
 
@@ -143,7 +143,7 @@ describe("R3 消费侧加固（M2/M3）", () => {
       JSON.stringify([{ index: 0, occurred_at: "", certainty: "inferred", valence: 0.9, arousal: 0.9, significance: 0.9 }]),
     );
     const m = mem(NEUTRAL, { valence: 0.4 });
-    await enrichSoulFields([m], { config: {}, llmRunner });
+    await enrichSoulFields([m], { llmRunner });
     expect(m.valence).toBe(0.4);
   });
 });

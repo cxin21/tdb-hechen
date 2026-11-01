@@ -43,7 +43,6 @@ function makeExtractor(dataDir: string, runner: LLMRunner, info: string[], error
   } as unknown as Logger;
   return new SceneExtractor({
     dataDir,
-    config: {},
     maxScenes: 15,
     timeoutMs: 300_000,
     logger,

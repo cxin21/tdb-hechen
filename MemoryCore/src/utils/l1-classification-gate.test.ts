@@ -52,7 +52,6 @@ function makeRunnerOpts(dir: string, llmRunner: unknown, messages: Msg[]) {
   return {
     pluginDataDir: dir,
     cfg,
-    openclawConfig: undefined,
     vectorStore,
     embeddingService: undefined,
     logger: loggerStub,

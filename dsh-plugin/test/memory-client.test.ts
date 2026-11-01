@@ -300,12 +300,6 @@ describe('memory client (v3 data plane)', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('deletes a session through /v3/conversation/delete', async () => {
-    const { fetchImpl, calls } = coreFixture();
-    await expect(createClient(fetchImpl).deleteConversation('sess-1')).resolves.toBe(true);
-    expect(calls[0].body).toEqual({ team_id: 'team-1', agent_id: 'agt-1', user_id: 'usr-1', session_ids: ['sess-1'] });
-  });
-
   it('fails open on transport errors, timeouts and non-JSON bodies', async () => {
     const log = { debug: vi.fn() };
     const refused = createClient((async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch, { log });

@@ -66,7 +66,6 @@ describe("R4 SceneExtractor 接线与 no-progress 契约", () => {
     const captured: Array<Record<string, unknown>> = [];
     const ex = new SceneExtractor({
       dataDir,
-      config: {},
       maxScenes: 15,
       reasoningEffort: "none",
       llmRunner: captureRunner(captured),
@@ -83,7 +82,6 @@ describe("R4 SceneExtractor 接线与 no-progress 契约", () => {
     const captured: Array<Record<string, unknown>> = [];
     const ex = new SceneExtractor({
       dataDir,
-      config: {},
       maxScenes: 15,
       llmRunner: captureRunner(captured),
     });
@@ -97,7 +95,6 @@ describe("R4 SceneExtractor 接线与 no-progress 契约", () => {
     const captured: Array<Record<string, unknown>> = [];
     const ex = new SceneExtractor({
       dataDir,
-      config: {},
       maxScenes: 15,
       llmRunner: captureRunner(captured),
     });
@@ -113,7 +110,6 @@ describe("R4 SceneExtractor 接线与 no-progress 契约", () => {
     const captured: Array<Record<string, unknown>> = [];
     const ex = new SceneExtractor({
       dataDir,
-      config: {},
       maxScenes: 15,
       llmRunner: captureRunner(captured),
     });
@@ -145,7 +141,6 @@ describe("R5 治理链接线（Phase 5c scene-governor adapter）", () => {
     const captured: Array<Record<string, unknown>> = [];
     const ex = new SceneExtractor({
       dataDir,
-      config: {},
       maxScenes: 15,
       reasoningEffort: "none",
       llmRunner: captureRunner(captured),

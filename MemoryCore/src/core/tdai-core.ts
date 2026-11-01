@@ -734,34 +734,23 @@ export class TdaiCore {
     // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
     // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
     // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
-    const useStandaloneRunner = true;
-
-    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
-    // 待 HostAdapter 面一并收敛时删除。
-    const openclawConfig: unknown = undefined;
-
     // DSH 特化（ADR-0020）：不再有"覆盖 factory"这条分支。历史上它只在
     // provider=proxy 时成立（要把 baseUrl 重写成 /proxy/<iid>/v1、换 sk-mem key），
     // 该 provider 已随 MemoryProxy 退场；现在 factory 恒由 StandaloneHostAdapter
     // 提供的 StandaloneLLMRunnerFactory 链承担，这里的 runnerFactory 就是它。
-    let runnerFactory = this.runnerFactory;
+    const runnerFactory = this.runnerFactory;
 
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     // Kafka 未配置时 metricProducer.send() 是 no-op，零开销
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
 
-    const l1LlmRunner = useStandaloneRunner
-      ? trackingFactory.createRunner({ enableTools: false })
-      : undefined;
-    const l2l3LlmRunner = useStandaloneRunner
-      ? trackingFactory.createRunner({ enableTools: true })
-      : undefined;
+    const l1LlmRunner = trackingFactory.createRunner({ enableTools: false });
+    const l2l3LlmRunner = trackingFactory.createRunner({ enableTools: true });
 
     // L1 runner
     this.scheduler.setL1Runner(createL1Runner({
       pluginDataDir: this.dataDir,
       cfg: this.cfg,
-      openclawConfig,
       vectorStore: this.vectorStore,
       embeddingService: this.embeddingService,
       logger: this.logger,
@@ -778,7 +767,6 @@ export class TdaiCore {
       const l2Runner = createL2Runner({
         pluginDataDir: this.dataDir,
         cfg: this.cfg,
-        openclawConfig,
         vectorStore: this.vectorStore,
         logger: this.logger,
         instanceId: this.instanceId,
@@ -793,7 +781,6 @@ export class TdaiCore {
       const l3Runner = createL3Runner({
         pluginDataDir: this.dataDir,
         cfg: this.cfg,
-        openclawConfig,
         vectorStore: this.vectorStore,
         logger: this.logger,
         instanceId: this.instanceId,
@@ -1106,22 +1093,14 @@ export class TdaiCore {
     // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
     // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
     // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
-    const useStandaloneRunner = true;
-    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
-    // 待 HostAdapter 面一并收敛时删除。
-    const openclawConfig: unknown = undefined;
-
-    let runnerFactory = this.runnerFactory;
+    const runnerFactory = this.runnerFactory;
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
-    const llmRunner = useStandaloneRunner
-      ? trackingFactory.createRunner({ enableTools: false })
-      : undefined;
+    const llmRunner = trackingFactory.createRunner({ enableTools: false });
 
     const runner = createL1Runner({
       pluginDataDir: this.dataDir,
       cfg: this.cfg,
-      openclawConfig,
       vectorStore: store,
       embeddingService: embedding,
       logger: this.logger,
@@ -1152,22 +1131,14 @@ export class TdaiCore {
     // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
     // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
     // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
-    const useStandaloneRunner = true;
-    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
-    // 待 HostAdapter 面一并收敛时删除。
-    const openclawConfig: unknown = undefined;
-
-    let runnerFactory = this.runnerFactory;
+    const runnerFactory = this.runnerFactory;
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
-    const llmRunner = useStandaloneRunner
-      ? trackingFactory.createRunner({ enableTools: true })
-      : undefined;
+    const llmRunner = trackingFactory.createRunner({ enableTools: true });
 
     const runner = createL2Runner({
       pluginDataDir: this.dataDir,
       cfg: this.cfg,
-      openclawConfig,
       vectorStore: store,
       logger: this.logger,
       instanceId: this.instanceId,
@@ -1196,22 +1167,14 @@ export class TdaiCore {
     // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
     // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
     // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
-    const useStandaloneRunner = true;
-    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
-    // 待 HostAdapter 面一并收敛时删除。
-    const openclawConfig: unknown = undefined;
-
-    let runnerFactory = this.runnerFactory;
+    const runnerFactory = this.runnerFactory;
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
-    const llmRunner = useStandaloneRunner
-      ? trackingFactory.createRunner({ enableTools: true })
-      : undefined;
+    const llmRunner = trackingFactory.createRunner({ enableTools: true });
 
     const runner = createL3Runner({
       pluginDataDir: this.dataDir,
       cfg: this.cfg,
-      openclawConfig,
       vectorStore: store,
       logger: this.logger,
       instanceId: this.instanceId,

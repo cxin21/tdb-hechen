@@ -219,8 +219,7 @@ export interface L1ExtractionResult {
  *
  * @param messages - Filtered conversation messages (from L0 or directly from hook)
  * @param sessionKey - The session key
- * @param baseDir - Base data directory (~/.openclaw/memory-tdai/)
- * @param config - OpenClaw config (for LLM access)
+ * @param baseDir - Base data directory
  * @param options - Extraction options
  * @param logger - Optional logger
  */
@@ -233,9 +232,7 @@ export async function extractL1Memories(params: {
   userId?: string;
   agentId?: string;
   baseDir: string;
-  config: unknown;
-  /** host-neutral MemoryTdaiConfig（parsed）——selfIdentity gating 权威读取源（D-R5-1 实证：
-   * config 形参收 openclawConfig 无 coreMemory 子树 → AGENT_ACT_BLOCK gating 恒 false）。 */
+  /** host-neutral MemoryTdaiConfig（parsed）——selfIdentity / 敏感性 / 周期事实的权威读取源。 */
   memoryConfig?: unknown;
   options?: {
     /** Max new messages to send in one extraction call */
@@ -312,7 +309,7 @@ export async function extractL1Memories(params: {
    */
   storage?: StorageAdapter;
 }): Promise<L1ExtractionResult> {
-  const { messages, sessionKey, sessionId, taskId, teamId, userId, agentId, baseDir, config, memoryConfig, logger, instanceId: metricInstanceId, storage } = params;
+  const { messages, sessionKey, sessionId, taskId, teamId, userId, agentId, baseDir, memoryConfig, logger, instanceId: metricInstanceId, storage } = params;
   const options = params.options ?? {};
   const maxNewMessages = options.maxMessagesPerExtraction ?? 10;
   const maxBgMessages = options.maxBackgroundMessages ?? 5;
@@ -362,7 +359,6 @@ export async function extractL1Memories(params: {
       backgroundMessages,
       previousSceneName: options.previousSceneName,
       memoryConfig,
-      config,
       logger,
       model: options.model,
       promptMode: options.promptMode,
@@ -465,7 +461,6 @@ export async function extractL1Memories(params: {
   // 后置字段补全：模型有时不吐灵魂字段——用一次 LLM 从 content 抽字段回填（best-effort，绝不阻塞）
   try {
     await enrichSoulFields(allExtracted, {
-      config,
       logger,
       model: options.model,
       llmRunner: options.llmRunner,
@@ -542,7 +537,6 @@ export async function extractL1Memories(params: {
       const dedupStartMs = Date.now();
       const decisions = await batchDedup({
         memories: memoriesWithIds,
-        config,
         logger,
         model: options.model,
         promptMode: options.promptMode,
@@ -785,7 +779,6 @@ async function callLlmExtraction(params: {
   newMessages: ConversationMessage[];
   backgroundMessages: ConversationMessage[];
   previousSceneName?: string;
-  config: unknown;
   memoryConfig?: unknown;
   logger?: Logger;
   model?: string;
@@ -802,16 +795,13 @@ async function callLlmExtraction(params: {
   /** langfuse 上报身份四元组（team/user/agent/session）。 */
   traceContext?: TraceContext;
 }): Promise<{ scenes: SceneSegment[]; emptyReason?: L1EmptyReason; systemPrompt: string; userPrompt: string; rawOutput: string }> {
-  const { newMessages, backgroundMessages, previousSceneName, config, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore, reasoningEffort, extractionTimeoutMs } = params;
+  const { newMessages, backgroundMessages, previousSceneName, memoryConfig, logger, model, promptMode = "chat", memoryPrompt, llmRunner, traceContext, vectorStore, reasoningEffort, extractionTimeoutMs } = params;
 
   // DS-SOUL-MEMORY-002 P1：agent 行为事实视角（gated）。composeMemorySystemPrompt 的
   // 自定义 memoryPrompt 策略优先级不变——自定义时内置 base 被其覆盖，agentAct 块随之
-  // 不生效（自定义策略=用户权威，不篡改）。config 形参为 host-neutral unknown，窄化读取。
-  // D-R5-1：memoryConfig（MemoryTdaiConfig）优先——openclawConfig 无 coreMemory 子树
+  // 不生效（自定义策略=用户权威，不篡改）。读取源是 host-neutral MemoryTdaiConfig。
   const selfIdentityEnabled =
     (memoryConfig as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
-      ?.coreMemory?.selfIdentity?.enabled === true ||
-    (config as { coreMemory?: { selfIdentity?: { enabled?: boolean } } } | undefined)
       ?.coreMemory?.selfIdentity?.enabled === true;
   // D-3（2026-09-21）：敏感性标注（gated，缺省关闭=逐位现状）
   const sensitivityEnabled =
@@ -1186,7 +1176,7 @@ function buildEnrichPrompt(memories: Array<{ m: ExtractedMemory; i: number }>): 
  */
 export async function enrichSoulFields(
   memories: ExtractedMemory[],
-  deps: { config: unknown; memoryConfig?: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; reasoningEffort?: string; traceContext?: TraceContext },
+  deps: { memoryConfig?: unknown; logger?: Logger; model?: string; llmRunner?: LLMRunner; reasoningEffort?: string; traceContext?: TraceContext },
 ): Promise<void> {
   if (!memories || memories.length === 0) return;
   const missing = memories

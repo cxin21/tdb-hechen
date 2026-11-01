@@ -37,7 +37,6 @@ export class PersonaGenerator {
 
   constructor(opts: {
     dataDir: string;
-    config: unknown;
     model?: string;
     /** Prompt family for L3 generation (default: chat). */
     promptMode?: MemoryPromptMode;

@@ -200,8 +200,6 @@ export interface PipelineFactoryOptions {
   pluginDataDir: string;
   /** Parsed memory-tdai config. */
   cfg: MemoryTdaiConfig;
-  /** OpenClaw config object (needed for LLM calls in L1). */
-  openclawConfig: unknown;
   /** Logger instance. */
   logger: PipelineLogger;
   /** Session filter (optional, defaults to empty). */
@@ -402,7 +400,6 @@ async function _doInitStores(
 export function createL1Runner(opts: {
   pluginDataDir: string;
   cfg: MemoryTdaiConfig;
-  openclawConfig: unknown;
   vectorStore: IMemoryStore | undefined;
   embeddingService: EmbeddingService | undefined;
   logger: PipelineLogger;
@@ -452,14 +449,13 @@ export function createL1Runner(opts: {
   failureStatus?: number;
   failureProviderCode?: string;
 }> {
-  const { pluginDataDir, cfg, openclawConfig, vectorStore, embeddingService, logger, getInstanceId, llmRunner, storage, checkpointLock } = opts;
-  const config = openclawConfig as Record<string, unknown> | undefined;
+  const { pluginDataDir, cfg, vectorStore, embeddingService, logger, getInstanceId, llmRunner, storage, checkpointLock } = opts;
   // #137：写读开关联动护栏（错配 = 静默空跑；只提示一次，不改行为）
   warnFactChannelMismatch(cfg, logger);
 
   return async ({ sessionKey }) => {
-    if (!config && !llmRunner) {
-      logger.debug?.(`${TAG} [l1] No OpenClaw config and no LLM runner, skipping L1 extraction`);
+    if (!llmRunner) {
+      logger.debug?.(`${TAG} [l1] No LLM runner, skipping L1 extraction`);
       return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [] };
     }
 
@@ -814,9 +810,7 @@ export function createL1Runner(opts: {
           userId: group.userId,
           agentId: group.agentId,
           baseDir: pluginDataDir,
-          config,
-          // D-R5-1：MemoryTdaiConfig 权威接线（selfIdentity gating 读取源）——
-          // openclawConfig 无 coreMemory 子树（宿主配置），AGENT_ACT_BLOCK 恒死配置。
+          // D-R5-1：MemoryTdaiConfig 是 selfIdentity / 敏感性 / 周期事实的权威读取源。
           memoryConfig: cfg,
           options: {
             enableDedup: cfg.extraction.enableDedup,
@@ -1001,7 +995,6 @@ export function createPersister(
 export function createL2Runner(opts: {
   pluginDataDir: string;
   cfg: MemoryTdaiConfig;
-  openclawConfig: unknown;
   vectorStore: IMemoryStore | undefined;
   logger: PipelineLogger;
   instanceId?: string;
@@ -1015,7 +1008,7 @@ export function createL2Runner(opts: {
    */
   checkpointLock?: import("./checkpoint.js").CheckpointLockOptions;
 }): L2Runner {
-  const { pluginDataDir, cfg, openclawConfig, vectorStore, logger, instanceId, llmRunner, storage, checkpointLock } = opts;
+  const { pluginDataDir, cfg, vectorStore, logger, instanceId, llmRunner, storage, checkpointLock } = opts;
   let profileBaseline = new Map<string, { version: number; contentMd5: string; createdAtMs: number }>();
 
   return async (sessionKey: string, cursor?: string) => {
@@ -1024,8 +1017,8 @@ export function createL2Runner(opts: {
       `${TAG} [L2] session=${sessionKey}, profile=${profileFilter ? buildIsolationScope(profileFilter) : "(legacy-session)"}, updatedAfter=${cursor ?? "(full)"}`,
     );
 
-    if (!openclawConfig && !llmRunner) {
-      logger.warn(`${TAG} [L2] No OpenClaw config and no LLM runner, skipping scene extraction`);
+    if (!llmRunner) {
+      logger.warn(`${TAG} [L2] No LLM runner, skipping scene extraction`);
       return;
     }
 
@@ -1113,7 +1106,6 @@ export function createL2Runner(opts: {
 
       const extractor = new SceneExtractor({
         dataDir: groupDataDir,
-        config: openclawConfig!,
         model: cfg.persona.model,
         promptMode: cfg.persona.promptMode,
         memoryPrompt: l2Prompts.get(memoryPromptResolveKey({
@@ -1307,7 +1299,6 @@ export function createL2Runner(opts: {
 export function createL3Runner(opts: {
   pluginDataDir: string;
   cfg: MemoryTdaiConfig;
-  openclawConfig: unknown;
   vectorStore?: IMemoryStore;
   logger: PipelineLogger;
   instanceId?: string;
@@ -1316,7 +1307,7 @@ export function createL3Runner(opts: {
   /** StorageAdapter for file operations (COS/local). */
   storage?: StorageAdapter;
 }): L3Runner {
-  const { pluginDataDir, cfg, openclawConfig, vectorStore, logger, instanceId, llmRunner, storage } = opts;
+  const { pluginDataDir, cfg, vectorStore, logger, instanceId, llmRunner, storage } = opts;
 
   return async () => {
     const scopes = await discoverProfileScopes(pluginDataDir, storage, logger);
@@ -1346,8 +1337,8 @@ export function createL3Runner(opts: {
         continue;
       }
 
-      if (!openclawConfig && !llmRunner) {
-        logger.warn(`${TAG} [L3] No OpenClaw config and no LLM runner, skipping persona generation`);
+      if (!llmRunner) {
+        logger.warn(`${TAG} [L3] No LLM runner, skipping persona generation`);
         return;
       }
 
@@ -1379,7 +1370,6 @@ export function createL3Runner(opts: {
       }));
       const generator = new PersonaGenerator({
         dataDir: scopedDir,
-        config: openclawConfig,
         model: cfg.persona.model,
         promptMode: cfg.persona.promptMode,
         memoryPrompt: resolvedL3Prompt,
@@ -1534,7 +1524,7 @@ export function createPipelineManager(
  * and `createL3Runner()` from this module.
  */
 export async function createPipeline(opts: PipelineFactoryOptions): Promise<PipelineInstance> {
-  const { pluginDataDir, cfg, openclawConfig, logger, sessionFilter, l1LlmRunner } = opts;
+  const { pluginDataDir, cfg, logger, sessionFilter, l1LlmRunner } = opts;
 
   // Ensure data directories exist
   initDataDirectories(pluginDataDir);
@@ -1550,7 +1540,6 @@ export async function createPipeline(opts: PipelineFactoryOptions): Promise<Pipe
   scheduler.setL1Runner(createL1Runner({
     pluginDataDir,
     cfg,
-    openclawConfig,
     vectorStore,
     embeddingService,
     logger,

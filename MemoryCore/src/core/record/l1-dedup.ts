@@ -73,7 +73,6 @@ export const MIN_SIMILAR_STRENGTH = 0.3;
  * nor FTS is available, we skip dedup rather than paying the O(N) full-file-scan cost.
  *
  * @param memories - Newly extracted memories (with record_id)
- * @param config - OpenClaw config (for LLM access)
  * @param logger - Optional logger
  * @param model - Optional model override
  * @param vectorStore - Optional vector store for cosine similarity search
@@ -83,7 +82,6 @@ export const MIN_SIMILAR_STRENGTH = 0.3;
  */
 export async function batchDedup(params: {
   memories: Array<ExtractedMemory & { record_id: string }>;
-  config: unknown;
   logger?: Logger;
   model?: string;
   /** Prompt family for conflict detection (default: chat). */
@@ -113,7 +111,7 @@ export async function batchDedup(params: {
   /** S1：similar 边最低相似度门槛（memory.links.minSimilarity），缺省 = MIN_SIMILAR_STRENGTH。 */
   minSimilarity?: number;
 }): Promise<DedupDecision[]> {
-  const { memories, config, logger, model, promptMode = "chat", vectorStore, embeddingService, llmRunner, filter, traceContext } = params;
+  const { memories, logger, model, promptMode = "chat", vectorStore, embeddingService, llmRunner, filter, traceContext } = params;
   const topK = params.conflictRecallTopK ?? 5;
   const minSimilarity = params.minSimilarity ?? MIN_SIMILAR_STRENGTH;
 
@@ -201,7 +199,7 @@ export async function batchDedup(params: {
   // prompt 候选与解析过滤用同一份（防幻觉 id，P-D）。读取失败 → 空清单（LLM 回 []，
   // 宁缺毋滥降级，绝不阻塞写入）。
   const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
-  const decisions = await runLlmJudgment(matches, memories, config, logger, model, promptMode, llmRunner, traceContext, valueCandidates, params.reasoningEffort, params.dedupTimeoutMs);
+  const decisions = await runLlmJudgment(matches, memories, logger, model, promptMode, llmRunner, traceContext, valueCandidates, params.reasoningEffort, params.dedupTimeoutMs);
   return attachTopCandidates(decisions, matches, minSimilarity);
 }
 
@@ -244,7 +242,6 @@ export async function loadValueCandidates(
 async function runLlmJudgment(
   matches: CandidateMatch[],
   memories: Array<ExtractedMemory & { record_id: string }>,
-  config: unknown,
   logger: Logger | undefined,
   model: string | undefined,
   promptMode: MemoryPromptMode,

@@ -37,7 +37,6 @@ export interface AgememPaths {
   atomicSearch: string;
   scenarioLs: string;
   conversationAdd: string;
-  conversationDelete: string;
   /**
    * The SECOND write pipeline (skill buffer → threshold archive → extractor →
    * L2 scene_blocks). Not interchangeable with conversationAdd: the two feed
@@ -451,7 +450,6 @@ export const DEFAULT_CONFIG: AgememConfig = {
     atomicSearch: '/v3/atomic/search',
     scenarioLs: '/v3/scenario/ls',
     conversationAdd: '/v3/conversation/add',
-    conversationDelete: '/v3/conversation/delete',
     skillConversationAdd: '/v3/skill/conversation/add',
     recall: '/v3/recall',
     health: '/health',

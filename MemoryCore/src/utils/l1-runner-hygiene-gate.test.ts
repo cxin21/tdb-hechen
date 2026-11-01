@@ -96,7 +96,6 @@ function makeRunnerOpts(
   return {
     pluginDataDir: dir,
     cfg,
-    openclawConfig: undefined,
     vectorStore,
     embeddingService: undefined,
     logger,

@@ -60,7 +60,6 @@ async function runExtraction(raw: string | Error) {
       messages: MSGS,
       sessionKey: "sess-122",
       baseDir,
-      config: undefined,
       options: { enableDedup: false, llmRunner, maxMemoriesPerSession: 10 },
       logger: logger as never,
     });

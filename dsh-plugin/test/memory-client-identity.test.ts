@@ -26,7 +26,7 @@ function createClient(fetchImpl: typeof fetch, overrides: Partial<MemoryClientDe
 const BOUND = { serviceId: 'default', teamId: 'team-2', agentId: 'agt-2', userId: 'usr-2' };
 
 describe('per-session identity (task-117)', () => {
-  it('sends the BOUND session triple on recall, L0, skill and delete', async () => {
+  it('sends the BOUND session triple on recall, L0 and skill', async () => {
     const { fetchImpl, calls } = coreFixture();
     const client = createClient(fetchImpl, {
       identityFor: (sessionId?: string) => (sessionId === 'sess-1' ? BOUND : undefined),
@@ -35,7 +35,6 @@ describe('per-session identity (task-117)', () => {
     await client.recallBlock('采购订单', { sessionId: 'sess-1' });
     await client.addConversationResult('sess-1', [{ role: 'user', content: 'hi', timestamp: '2026-11-01T00:00:00Z' }]);
     await client.skillConversationAdd('sess-1', [{ role: 'user', content: 'hi' }]);
-    await client.deleteConversation('sess-1');
 
     // Recall echoes no isolation in the body (its schema has no triple); the
     // headers still carry the session's team/agent/user.
@@ -51,8 +50,6 @@ describe('per-session identity (task-117)', () => {
       expect(call.body).toMatchObject({ team_id: 'team-2', agent_id: 'agt-2', user_id: 'usr-2' });
       expect(call.headers['x-tdai-team-id']).toBe('team-2');
     }
-    // Delete addresses the same pool as the writes it removes.
-    expect(callsTo(calls, '/v3/conversation/delete')[0].body).toMatchObject({ team_id: 'team-2', agent_id: 'agt-2' });
   });
 
   it('falls back to the configured triple while the session is still unbound', async () => {

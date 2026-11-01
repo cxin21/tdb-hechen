@@ -2,7 +2,7 @@
 
 # TDB · TencentDB Agent Memory（hechen 定制版）
 
-**一套可本地直跑的四服务记忆系统 + 一个直接挂进 DeepSeek Harness 的原生记忆插件（`@tdb/agemem-dsh`）**
+**一套可本地直跑的三服务记忆系统 + 一个直接挂进 DeepSeek Harness 的原生记忆插件（`@tdb/agemem-dsh`）**
 
 基于腾讯开源 [TencentCloud/TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory) v2.0.1 深度定制 ·
 原仓库 [English](./docs/upstream/README.en.md) · [上游原始中文文档](./README_CN.md) · [改动清单](./CHANGELOG.md)
@@ -13,36 +13,42 @@
 
 ## 1. 这个仓库现在是什么
 
-三条并存的形态，按你手上有什么选一条：
+只有一种接入方式：**DeepSeek Harness → `dsh-plugin` → MemoryCore `:8420`**。
+不代理 LLM，不接其它客户端，也不再有 8096 注入管线。
 
 | 形态 | 你得到什么 | 入口 |
 |---|---|---|
-| **A. DSH 原生记忆插件（推荐）** | 在 DeepSeek Harness 的会话里直接带记忆：系统段注入人格/场景/技能、每轮注入相关记忆、两条写回（L0 事实链 + L2 场景链） | [§4](#4-dsh-原生记忆插件深度集成推荐形态) · [`dsh-plugin/README.md`](./dsh-plugin/README.md) |
-| **B. 本机四服务直跑（Windows）** | `:8420` 核心 / `:8096` 注入管线 / `:8421` 知识服务 / `:8123` 管控台，一套脚本拉起，数据落 SQLite | [§3](#3-快速开始windows-本机四服务) · [`INSTALL_CN.md`](./INSTALL_CN.md) |
-| **C. 腾讯云部署** | systemd 四服务 + Caddy + 占位符派生生产配置 | [`deploy/tencent-cloud/DEPLOY.md`](./deploy/tencent-cloud/DEPLOY.md) |
+| **A. DSH 原生记忆插件（唯一接入）** | 在 DeepSeek Harness 的会话里直接带记忆：系统段注入人格/场景/技能、每轮注入相关记忆、两条写回（L0 事实链 + L2 场景链） | [§4](#4-dsh-原生记忆插件) · [`dsh-plugin/README.md`](./dsh-plugin/README.md) |
+| **B. 本机三服务直跑（Windows）** | `:8420` 核心 / `:8421` 知识服务 / `:8123` 管控台，一套脚本拉起，数据落 SQLite | [§3](#3-快速开始windows-本机三服务) · [`INSTALL_CN.md`](./INSTALL_CN.md) |
+| **C. 腾讯云部署** | systemd 三服务 + Caddy + 占位符派生生产配置 | [`deploy/tencent-cloud/DEPLOY.md`](./deploy/tencent-cloud/DEPLOY.md) |
 
-> 形态 A 不代理 LLM：插件挂在宿主自己的钩子上，只从本机核心读写记忆。模型仍然是你配的那个模型。
+插件挂在宿主自己的钩子上，只从本机核心读写记忆。模型仍然是你配的那个模型。
 
 ## 2. 组件与端口
 
 | 组件 | 端口 | 进程形态 | 职责 |
 |---|---|---|---|
 | **MemoryCore** | `8420` | `node --import tsx src/gateway/server.ts` | 记忆核心：L0–L3 记忆、召回 `/v3/recall`、写入 `/v3/conversation/add`、技能 `/v3/skill/*`、场景 `/v3/scenario/ls`、人格槽 `/v3/core-memory/read`、元数据与租户隔离 |
-| **MemoryProxy** | `8096` | `node --import tsx/esm src/index.ts --config <runtime.yaml>` | 老一代注入管线：12 个注入器、多客户端适配。DSH 路径已不依赖它（插件直连核心），保留给其它客户端 |
 | **MemoryKnowledge** | `8421` | `node --import tsx src/server.ts` | 知识服务：wiki / code-graph 摄取与检索、`/tools/call` |
 | **MemoryPanel** | `8123` | `node --import tsx src/...` + `web/` | 管控台：用户/团队/Agent/知识源管理；**也是唯一能事后审计召回的地方**（recall journal 落在 `D:/TDB/data/logs/recall/`） |
 | **dsh-plugin** | — | DSH 宿主内（Cordis 插件） | 宿主侧原生记忆：三段注入面 + 两条写回链 + 原生工具（`memory_recall` / `skill_*` / `knowledge_*`） |
 
-四服务都提供 `/health`，就绪判据统一为 `GET /health == 200`。
+三服务都提供 `/health`，就绪判据统一为 `GET /health == 200`。
 
-## 3. 快速开始（Windows 本机四服务）
+**已退场，不要再找：**
+
+- **MemoryProxy `:8096`** — 整包删除（[ADR-0020](./docs/adr/0020-MemoryProxy退场五个唯一能力放弃不迁移.md)）。计费、DSAT、限流、`mem:` 命令、成员 LLM Provider 五个能力一并放弃，不迁移。
+- **`sdk/memory-core`** 与 **`agents/`** — 给其它客户端用的 SDK 与 `setup-proxy.sh` 接入面，仓库内已无消费者，同批删除。
+- **`llm.provider=proxy`** — MemoryCore 解析到这个值会直接失败，不会再去打 8096。
+
+## 3. 快速开始（Windows 本机三服务）
 
 **前置**：Node **≥ 22.16**（`MemoryCore/package.json` 的 `engines`）、pnpm、PowerShell 7。
 
 ```powershell
 # 1) 密钥只放这一处，永不入库、永不 echo
 #    D:\TDB\etc\env.ps1  ← 模板见 config/templates/env.ps1
-# 2) 拉起四服务（顺序 core → proxy → knowledge → panel，每个都等 /health）
+# 2) 拉起三服务（顺序 core → knowledge → panel，每个都等 /health）
 pwsh -NoProfile -File D:\TDB\etc\start-tdb.ps1
 
 # 3) 冒烟
@@ -52,10 +58,9 @@ start http://127.0.0.1:8123
 ```
 
 - DSH 在跑时，由 `dsh-tdb-lifecycle` bundle 改用 `D:/TDB/etc/start-tdb-supervised.ps1` 托管进程（DSH 退出时一并停）。
-- 代理配置里的 `${VAR}` 由 `etc/tdb-services.common.ps1` 的 `New-TdbRuntimeConfig` 展开成**临时**运行时副本（`D:/TDB/data/run/`），健康后立即删除——密钥不会落第二份持久文件。
 - 只跑核心也能满足插件形态 A：`8420` 起来即可。
 
-## 4. DSH 原生记忆插件（深度集成，推荐形态）
+## 4. DSH 原生记忆插件
 
 `@tdb/agemem-dsh` 挂在宿主的三个点上，全部能力都能单独关：
 
@@ -93,7 +98,6 @@ bash scripts/rollback.sh          # 回滚到上一次部署前的备份
 | 服务 | 模板 | 机器清单 |
 |---|---|---|
 | MemoryCore | [`config/templates/memorycore.yaml`](./config/templates/memorycore.yaml) | `memorycore.keys.json` |
-| MemoryProxy | [`config/templates/memoryproxy.yaml`](./config/templates/memoryproxy.yaml) | `memoryproxy.keys.json` |
 | MemoryKnowledge | [`config/templates/memoryknowledge.yaml`](./config/templates/memoryknowledge.yaml) | `memoryknowledge.keys.json` |
 | MemoryPanel | [`config/templates/memorypanel.yaml`](./config/templates/memorypanel.yaml) | `memorypanel.keys.json` |
 | dsh-plugin | [`config/templates/dsh-plugin.yaml`](./config/templates/dsh-plugin.yaml) | `dsh-plugin.keys.json` |
@@ -101,7 +105,7 @@ bash scripts/rollback.sh          # 回滚到上一次部署前的备份
 
 格式契约在 [`config/SPEC.md`](./config/SPEC.md)：每个键必须带 **类型 / 源码缺省值 / 一句话作用 / 源码行号**，机器清单与模板双向对齐，改一个键不注释就会被 `node scripts/check-config-templates.mjs` 打回。
 
-**优先级链**（四服务同构）：
+**优先级链**（三服务同构）：
 
 ```
 env.ps1 / 进程环境变量  >  {dataDir}/config-override.json（管控台写入）  >  yaml  >  代码缺省
@@ -117,7 +121,6 @@ env.ps1 / 进程环境变量  >  {dataDir}/config-override.json（管控台写�
 
 ```bash
 cd MemoryCore      && npx vitest run          # 核心：召回/写入/抽取/网关
-cd MemoryProxy     && npx vitest run
 cd MemoryKnowledge && npx vitest run
 cd MemoryPanel     && npx vitest run
 cd dsh-plugin      && npx vitest run && npx tsc --noEmit && npm run build
@@ -137,10 +140,11 @@ node scripts/check-config-templates.mjs
 | 想去哪 | 去哪 |
 |---|---|
 | 域词典（价值锚 / 严格规则 / 事实行 / 软失效 / 属性基数…） | [`CONTEXT.md`](./CONTEXT.md) |
-| 架构决定（ADR-0001 … 0018） | [`docs/adr/`](./docs/adr/) |
-| 运维与取证台账（69 份，带索引校验） | [`docs/ops/README.md`](./docs/ops/README.md) |
+| 架构决定（ADR-0001 … 0022） | [`docs/adr/`](./docs/adr/) |
+| 代理退场与五个放弃能力 | [ADR-0020](./docs/adr/0020-MemoryProxy退场五个唯一能力放弃不迁移.md) |
+| 运维与取证台账（带索引校验） | [`docs/ops/README.md`](./docs/ops/README.md) |
 | 生产配置口径与回滚 | [`docs/ops/production-profile.md`](./docs/ops/production-profile.md) |
-| 插件能力矩阵 / parity 对照 | [`docs/ops/all-on-capability-matrix.md`](./docs/ops/all-on-capability-matrix.md)、[`docs/ops/proxy-parity-matrix.md`](./docs/ops/proxy-parity-matrix.md) |
+| 插件能力矩阵 | [`docs/ops/all-on-capability-matrix.md`](./docs/ops/all-on-capability-matrix.md) |
 | 插件发布与验收 checklist | [`docs/ops/dsh-plugin-release-checklist.md`](./docs/ops/dsh-plugin-release-checklist.md) |
 | 跨机部署（HTTP 直连 + userkey 身份流） | [`docs/ops/cross-host-deployment.md`](./docs/ops/cross-host-deployment.md) |
 | 改动清单 | [`CHANGELOG.md`](./CHANGELOG.md) |
@@ -148,7 +152,7 @@ node scripts/check-config-templates.mjs
 ## 8. 与上游的关系
 
 - 基线：上游 tag `v2.0.1`。本仓库的定制全部登记在 `CHANGELOG.md` 的 `[Unreleased]` 段，每项带设计文档编号。
-- 同步边界见 [ADR-0018](./docs/adr/0018-上游同步边界.md)：召回/排序语义一旦变更必须重锚 golden 语料，不允许直接 merge 上游。
+- 同步边界见 [ADR-0018](./docs/adr/0018-上游同步边界.md)：召回/排序语义一旦变更必须重锚 golden 语料，不允许直接 merge 上游。[ADR-0020](./docs/adr/0020-MemoryProxy退场五个唯一能力放弃不迁移.md) 取代了其中「不接受删掉五个 handler」那一句；画像只读、不写回上游的边界仍然有效。
 - 不入库清单：含真实密钥的运行时配置（`tdai-gateway*.yaml`、`MemoryPanel/config/metadata-instances.json`）、本地取证产物（`scratch/`）、评估产物 `runs/` 均已在 `.gitignore` 排除；模板从 `config/templates/` 派生。
 
 ## License

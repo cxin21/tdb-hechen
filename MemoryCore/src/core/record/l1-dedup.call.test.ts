@@ -71,7 +71,6 @@ describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", 
 
     await batchDedup({
       memories: [mem("n1")],
-      config: {},
       vectorStore: makeStore(),
       embeddingService: makeEmbedding(),
       llmRunner,
@@ -92,7 +91,6 @@ describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", 
 
     await batchDedup({
       memories: [mem("n1")],
-      config: {},
       vectorStore: makeStore(),
       embeddingService: makeEmbedding(),
       llmRunner,
@@ -113,7 +111,6 @@ describe("思考开关 config-first 透传（2026-10-14 端点兼容修订）", 
 
     await batchDedup({
       memories: [mem("n1")],
-      config: {},
       vectorStore: makeStore(),
       embeddingService: makeEmbedding(),
       llmRunner,
@@ -138,7 +135,6 @@ describe("#79 dedupTimeoutMs 透传（config-first）", () => {
 
     await batchDedup({
       memories: [mem("n1")],
-      config: {},
       vectorStore: makeStore(),
       embeddingService: makeEmbedding(),
       llmRunner,

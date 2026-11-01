@@ -66,7 +66,6 @@ describe('config', () => {
       atomicSearch: '/v3/atomic/search',
       scenarioLs: '/v3/scenario/ls',
       conversationAdd: '/v3/conversation/add',
-      conversationDelete: '/v3/conversation/delete',
       // Second, independent pipeline: L0 feeds L1 facts, skill feeds L2 scenes.
       skillConversationAdd: '/v3/skill/conversation/add',
       // DS-RECALL-MERGE-001: merged soul + layered memory block; opt-in on the

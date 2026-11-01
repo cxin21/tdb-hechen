@@ -71,7 +71,6 @@ async function runExtraction(params: {
       messages: params.messages as never,
       sessionKey: "sess-156",
       baseDir,
-      config: undefined,
       memoryConfig: { coreMemory: { selfIdentity: { enabled: params.selfIdentity } } } as never,
       options: { enableDedup: false, llmRunner, maxMemoriesPerSession: 10 },
       logger: logger as never,

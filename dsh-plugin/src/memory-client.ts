@@ -1110,19 +1110,6 @@ export class MemoryClient {
     return { ok: true, archived, chunks: chunks.length, truncated };
   }
 
-  /** L0 delete for one session (used by tests/ops, never on the turn path). */
-  async deleteConversation(sessionId: string, timeoutMs?: number): Promise<boolean> {
-    const session = nonEmpty(sessionId);
-    if (session === undefined) return false;
-    const data = await this.post<Record<string, unknown>>(
-      this.deps.paths.conversationDelete,
-      { session_ids: [session] },
-      timeoutMs,
-      session,
-    );
-    return data !== undefined;
-  }
-
   // ---------------------------------------------------------------------
   // Identity resolution (task-51): one user key -> user -> teams -> agents.
   // All three are READ-ONLY metadata routes and every failure is fail-open.
