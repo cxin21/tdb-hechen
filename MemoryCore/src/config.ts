@@ -1117,30 +1117,13 @@ export interface BM25Config {
   language: "zh" | "en";
 }
 
-/** Tencent Cloud VectorDB configuration. */
-export interface TcvdbConfig {
-  /** Instance URL (e.g. "http://10.0.1.1:80" or external domain) */
-  url: string;
-  /** Account name (default: "root") */
-  username: string;
-  /** API Key */
-  apiKey: string;
-  /** Database name (auto-generated from instance_id if empty) */
-  database: string;
-  /** User-friendly alias for this database (optional, for identification in database.json) */
-  alias: string;
-  /** Whether to enable VectorDB server-side dense embedding/vector index. Default false: BM25 sparse only. */
-  embeddingEnabled?: boolean;
-  /** Built-in embedding model (default: "bge-large-zh"; used only when embeddingEnabled=true) */
-  embeddingModel: string;
-  /** Request timeout in ms (default: 10000) */
-  timeout: number;
-  /** Path to CA certificate PEM file (for HTTPS connections) */
-  caPemPath?: string;
-}
+/**
+ * TCVDB 后端已在 DSH-only 构建中整组退场（docs/adr/0021）：
+ * 不再有 "tcvdb" 配置块，读到 storeBackend: "tcvdb" 会在解析期直接抛错。
+ */
 
-/** Storage backend type. */
-export type StoreBackend = "sqlite" | "tcvdb";
+/** Storage backend type (DSH-only: TCVDB retired, see docs/adr/0021). */
+export type StoreBackend = "sqlite";
 
 /** Report settings — controls metric/event reporting. */
 export interface ReportConfig {
@@ -1281,10 +1264,8 @@ export interface MemoryTdaiConfig {
   /** T5（2026-09-22 拍板）：召回/灵魂注入日志（缺省关闭=逐位现状）。 */
   recallJournal?: RecallJournalConfig;
   embedding: EmbeddingConfig;
-  /** Storage backend: "sqlite" (default) or "tcvdb" */
+  /** Storage backend. Only "sqlite" exists in the DSH-only build (docs/adr/0021). */
   storeBackend: StoreBackend;
-  /** Tencent Cloud VectorDB configuration (required when storeBackend = "tcvdb") */
-  tcvdb: TcvdbConfig;
   /** BM25 sparse vector encoding (local @tencentdb-agent-memory/tcvdb-text) */
   bm25: BM25Config;
   /** Local JSONL cleanup settings */
@@ -1473,11 +1454,18 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   const bm25Group = obj(c, "bm25");
 
   // --- Store backend ---
+  // DSH-only: the "tcvdb" backend was retired (docs/adr/0021). Fail loud rather than
+  // silently falling back to sqlite: a silent switch would leave an old deployment
+  // reading an empty local database while looking healthy.
   const storeBackendRaw = str(c, "storeBackend") ?? "sqlite";
-  const storeBackend: StoreBackend = storeBackendRaw === "tcvdb" ? "tcvdb" : "sqlite";
-
-  // --- TCVDB config ---
-  const tcvdbGroup = obj(c, "tcvdb");
+  if (storeBackendRaw !== "sqlite") {
+    throw new Error(
+      `[config] storeBackend "${storeBackendRaw}" has been retired in the DSH-only build ` +
+        `(the TCVDB backend was removed). Set storeBackend: "sqlite" and migrate the data ` +
+        `to the local SQLite store — see docs/adr/0021.`,
+    );
+  }
+  const storeBackend: StoreBackend = "sqlite";
 
   const memoryCleanup: MemoryCleanupConfig = {
     retentionDays,
@@ -2554,17 +2542,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       configError: embeddingConfigError,
     },
     storeBackend,
-    tcvdb: {
-      url: str(tcvdbGroup, "url") ?? "",
-      username: str(tcvdbGroup, "username") ?? "root",
-      apiKey: str(tcvdbGroup, "apiKey") ?? "",
-      database: str(tcvdbGroup, "database") ?? "",
-      alias: str(tcvdbGroup, "alias") ?? "",
-      embeddingEnabled: bool(tcvdbGroup, "embeddingEnabled") ?? false,
-      embeddingModel: str(tcvdbGroup, "embeddingModel") ?? "bge-large-zh",
-      timeout: num(tcvdbGroup, "timeout") ?? 10000,
-      caPemPath: str(tcvdbGroup, "caPemPath") || undefined,
-    },
     bm25: {
       enabled: bool(bm25Group, "enabled") ?? true,
       language: (str(bm25Group, "language") === "en" ? "en" : "zh") as "zh" | "en",

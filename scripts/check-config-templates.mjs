@@ -144,6 +144,9 @@ for (const svc of SERVICES) {
   }
 
   // 4/5. 逐键断言
+  // 本服务的真实命中计数：此前汇总行打印的是 keys.length（键总数冒充命中数），
+  // 只要有键漏锚，汇总就自己在说假话。svcChecked 才是可信口径。
+  let svcChecked = 0;
   for (const k of keysJson.keys) {
     totalKeys += 1;
     if (!k.path || typeof k.path !== 'string') { fail(svc.id, '存在无 path 的键'); continue; }
@@ -154,6 +157,7 @@ for (const svc of SERVICES) {
     const r = sourceLineOk(srcPath, Number(srcLineRaw), k.path);
     if (!r.ok) { fail(svc.id, `${k.path} — ${r.why}`); continue; }
     totalChecked += 1;
+    svcChecked += 1;
     // 显式声明的「无缺省」与「空串缺省」不参与字面量核对：
     //   required: true 或 default: "required" → 源码调不出缺省值（必填项），靠 type + 注释交代
     //   default: ""                          → 空串即缺省，字面量在源码里可能写成 `?? ''` 或 helper 返回值，逐字找必然落空
@@ -245,7 +249,7 @@ for (const svc of SERVICES) {
   }
 
   const mark = failures.some((f) => f.startsWith(`[${svc.id}]`)) ? 'FAIL' : 'OK  ';
-  console.log(`${mark} ${svc.label.padEnd(16)} 键 ${String(keysJson.keys.length).padStart(4)} | ignored ${String(keysJson.ignored?.length ?? 0).padStart(3)} | 行号命中 ${keysJson.keys.length}`);
+  console.log(`${mark} ${svc.label.padEnd(16)} 键 ${String(keysJson.keys.length).padStart(4)} | ignored ${String(keysJson.ignored?.length ?? 0).padStart(3)} | 行号命中 ${String(svcChecked).padStart(4)}/${keysJson.keys.length}`);
 }
 
 // ── env.ps1（非 YAML 模板，单独一套断言） ──────────────────────────────────

@@ -13,7 +13,7 @@
  *   5. dedupLatencyMs 为 null 表示未走去重路径，不上报 dedup 指标
  */
 
-import { metricProducer } from "./kafka-metric-producer.js";
+import { metricProducer } from "./metric-producer.js";
 
 // ============================
 // Input Interface

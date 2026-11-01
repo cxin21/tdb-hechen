@@ -2,7 +2,7 @@
  * #152 ①：store 能力位（l1_fact_vec）+ WARN-once 守卫。
  *
  * 合同：
- *   C1 sqlite 声明 l1FactVec=true（有 upsertL1FactVector/searchL1FactVector）；tcvdb 声明 false；
+ *   C1 sqlite 声明 l1FactVec=true（有 upsertL1FactVector/searchL1FactVector）；
  *   C2 能力位为 true 才算可用；undefined（老 store/mock）按不可用处理（fail-closed）；
  *   C3 不可用时 WARN 一次（同 capability+impact 不重复刷屏），返回 false → 调用点显式跳过；
  *   C4 getCapabilities 抛错不炸调用方（按不可用处理）。
@@ -12,7 +12,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VectorStore } from "./sqlite.js";
-import { TcvdbMemoryStore } from "./tcvdb.js";
 import { ensureCapability, ensureL1FactVec, __resetCapabilityWarnings } from "./capability-guard.js";
 
 const dirs: string[] = [];
@@ -38,13 +37,6 @@ describe("#152 ① 能力位声明", () => {
     expect(typeof st.searchL1FactVector).toBe("function");
   });
 
-  it("C1b tcvdb l1FactVec=false；且确实没有事实向量方法（对照）", () => {
-    const fake = { bm25Encoder: null, embeddingEnabled: true, degraded: false };
-    const caps = TcvdbMemoryStore.prototype.getCapabilities.call(fake as never);
-    expect(caps.l1FactVec).toBe(false);
-    expect(typeof (TcvdbMemoryStore.prototype as unknown as Record<string, unknown>).upsertL1FactVector).toBe("undefined");
-    expect(typeof (TcvdbMemoryStore.prototype as unknown as Record<string, unknown>).searchL1FactVector).toBe("undefined");
-  });
 });
 
 describe("#152 ① WARN-once 守卫", () => {

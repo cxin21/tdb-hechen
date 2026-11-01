@@ -864,9 +864,8 @@ export class TdaiCore {
     try {
       // Build the env probe — describes ambient capabilities to the resolver
       // so it can downgrade with proper warn lines (M0 §0.3).
-      const tcvdbHasCreds = !!(
-        this.cfg.tcvdb?.url && this.cfg.tcvdb?.apiKey && this.cfg.tcvdb?.database
-      );
+      // TCVDB retired in the DSH-only build (docs/adr/0021): no credentials can exist.
+      const tcvdbHasCreds = false;
       const cosHasCreds = !!(
         this.cfg.cos?.secretId &&
         this.cfg.cos?.secretKey &&

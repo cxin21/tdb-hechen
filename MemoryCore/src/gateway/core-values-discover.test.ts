@@ -9,7 +9,8 @@
  *   - 宽松 JSON 解析（code fence / garbage / 非 JSON）
  *   - prompt 形状（截断 200 字 / 已有锚清单 / JSON 输出指令）
  *
- * harness 仿 scripts/verify-c2.ts 的 depsFor（mock store + iso + mock runner），
+ * harness：mock store + iso + mock runner（原仿 scripts/verify-c2.ts 的 depsFor，
+ * 该脚本已随 DSH 特化 Wave 2 退场；端到端覆盖迁到 __tests__/core-values-wire.test.ts），
  * 纯函数直引 ./core-values-discover.js（无 LLM、无 IO、确定性）。
  */
 import { describe, it, expect, vi } from "vitest";

@@ -143,7 +143,7 @@ export interface KnowledgeModule {
   wikiMgr: WikiSourceManager;
   store: IKnowledgeStore;
   instancePool: CodeGraphInstancePool;
-  /** Per-instance LLM routing binding (proxy/byo), keyed by service_id. */
+  /** Per-instance LLM routing binding（只剩 mode='custom'），keyed by service_id。 */
   llmBindingStore: ILlmBindingStore;
   /** 定时自动同步调度器（需显式 start/stop）。 */
   autoSyncScheduler: AutoSyncScheduler;
@@ -163,9 +163,10 @@ export function createKnowledgeModule(config: KnowledgeModuleConfig): KnowledgeM
   // Store
   const store = new SqliteKnowledgeStore(db);
 
-  // Per-instance LLM routing binding + resolver (proxy/byo → effective LlmConfig).
-  // No binding → global LLM_MODE decides: 'custom' uses global LLM_* direct,
-  // 'proxy' (default) blanks creds so ingest fails loudly (no silent fallback).
+  // Per-instance LLM routing binding + resolver（mode='custom' → effective LlmConfig）。
+  // 无绑定 → 直接用全局 LLM_*（LLM_MODE=custom 直连）。
+  // 库里遗留的 mode='proxy' 绑定 → resolveLlmConfig 抛 LlmBindingRetiredError（fail-loud），
+  // 绝不静默回落成「没配置」。
   const llmBindingStore = createLlmBindingStore(db);
   const resolveLlm = (serviceId: string): LlmConfig =>
     resolveLlmConfig(serviceId, llmBindingStore.get(serviceId), llmConfig);
@@ -307,7 +308,7 @@ export function createKnowledgeModule(config: KnowledgeModuleConfig): KnowledgeM
 
     setInternalStatus("ingesting");
 
-    // Per-instance LLM routing (proxy/byo/global fallback), keyed by service_id.
+    // Per-instance LLM routing（custom 绑定优先，否则全局 LLM_MODE=custom 的 LLM_BASE_URL/LLM_API_KEY）。
     const effectiveLlm = resolveLlm(serviceId);
     // 进度只推 Panel（Panel 内存 store + wiki/get 聚合）；KS 不落进度态
     const onProgress = config.tmcCallbackUrl

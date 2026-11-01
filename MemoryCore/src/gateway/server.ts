@@ -21,7 +21,7 @@ import zlib from "node:zlib";
 import dayjs from "dayjs";
 import { TdaiCore } from "../core/tdai-core.js";
 import { StandaloneHostAdapter } from "../adapters/standalone/host-adapter.js";
-import { loadGatewayConfig, parseBrokers } from "./config.js";
+import { loadGatewayConfig } from "./config.js";
 import type { GatewayConfig } from "./config.js";
 import { applyMetadataEnvFromGatewayConfig } from "./metadata-env.js";
 import { initDataDirectories } from "../utils/pipeline-factory.js";
@@ -47,9 +47,7 @@ import type {
 import type { Logger } from "../core/types.js";
 import { InstanceConfigProvider } from "../core/instance-config-provider.js";
 import { wrapWithTrace } from "../core/report/trace-middleware.js";
-import { initOTelSDK, shutdownOTelSDK } from "../core/report/otel-sdk-init.js";
 import { initObservabilityBackend } from "../core/report/factory.js";
-import type { ObservabilityConfig as CoreObservabilityConfig } from "../core/report/types.js";
 import { TracedTaskExecutor } from "../core/report/traced-task-executor.js";
 import { StorePool } from "../core/store/store-pool.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
@@ -97,14 +95,12 @@ import { makeRerankModelAdminRouteTable } from "./rerank-model-admin.js";
 import { getReindexState } from "../utils/reindex-state.js";
 import {
   wireConversationAddHandler,
-  RedisSkillAgentTaskQueue,
   LocalSkillAgentTaskQueue,
   SkillWorkerPool,
   parseAgentTuple as parseSkillAgentTuple,
   type ISkillAgentTaskQueue,
   type WiredConversationAddHandler,
   type WireConversationAddDeps,
-  type SkillAgentTaskQueueRedisLike,
   type SkillCandidatesSink,
 } from "../core/skill/conversation-add/index.js";
 import type { ISkillExtractor } from "../core/skill/queue/types.js";
@@ -594,7 +590,7 @@ export class TdaiGateway {
         this.ensureMetadataStore(instanceId),
         this.ensureMetadataStorePool(),
       ]);
-      const storeSource = pool.backend === "mongodb" ? "mongodb-adapter.ts" : "sqlite-adapter.ts";
+      const storeSource = "sqlite-adapter.ts";
       const rawSvc = new MetadataService(
         wrapApiStoreForTrace(store, storeSource),
         instanceId,
@@ -699,86 +695,15 @@ export class TdaiGateway {
     initApiTraceConfig(metadataPool.backend, { enabled: readApiTraceEnabled() });
 
     // ── 初始化可观测性门面层全局后端 ──
-    // 必须在 initOTelSDK 之前调用，因为 LangfuseFilteringProcessor 构造时
-    // 会通过 getObservabilityBackend().llmTrace.createSpanProcessor() 获取处理器。
-    // 如果不先初始化，门面层所有 API（trace.report / metricProducer.send / obsLogger）
-    // 都会走 NoopBackend，导致 Metric、Langfuse、业务 Trace 全部丢失。
+    // DSH-only: 只剩 noop / console 两个后端（docs/adr/0021）。OTel SDK、ClickHouse 双写、
+    // Kafka metric 与 Langfuse 已整组退场；配置里仍 enable 它们时 loadGatewayConfig 直接抛错。
     const obsCfg = this.config.observability;
     try {
-      const clickhouseConfig = Object.fromEntries([
-        ["enabled", obsCfg.clickhouse.enabled],
-        ["endpoint", obsCfg.clickhouse.endpoint],
-        ["username", obsCfg.clickhouse.username],
-        ["password", obsCfg.clickhouse.password],
-        ["database", obsCfg.clickhouse.database],
-      ]) as CoreObservabilityConfig["clickhouse"];
-      const langfuseConfig = Object.fromEntries([
-        ["enabled", obsCfg.langfuse.enabled],
-        ["host", obsCfg.langfuse.host],
-        ["publicKey", obsCfg.langfuse.publicKey],
-        ["secretKey", obsCfg.langfuse.secretKey],
-      ]) as CoreObservabilityConfig["langfuse"];
-      const coreObsCfg: CoreObservabilityConfig = {
-        type: "internal",
-        otel: {
-          enabled: obsCfg.otel.enabled,
-          endpoint: obsCfg.otel.endpoint,
-          protocol: obsCfg.otel.protocol,
-          serviceName: obsCfg.otel.serviceName,
-          tenantId: obsCfg.otel.tenantId,
-        },
-        clickhouse: clickhouseConfig,
-        kafka: {
-          brokers: parseBrokers(obsCfg.kafka.brokers),
-          topic: obsCfg.kafka.topic,
-          enabled: obsCfg.kafka.enabled,
-        },
-        langfuse: langfuseConfig,
-      };
-      await initObservabilityBackend(coreObsCfg);
-      this.logger.info("Observability backend initialized (type=internal)");
+      await initObservabilityBackend({ type: obsCfg.type });
+      this.logger.info(`Observability backend initialized (type=${obsCfg.type})`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Observability backend init failed (non-fatal): ${msg}`);
-    }
-
-    // ── 初始化 OTel SDK（Trace + Log + ClickHouse 双写 + Langfuse）──
-    // 必须在 HTTP server 创建之前初始化，否则 wrapWithTrace 中的 Tracer 是 NoopTracer
-    // 注意：即使 otel.enabled=false，只要 langfuse.enabled=true 也需要初始化 SDK
-    // （Langfuse 通过 OTel SDK 的 spanProcessor 上报 LLM span）
-    const needOTelSDK = obsCfg.otel.enabled || obsCfg.langfuse.enabled;
-    if (needOTelSDK) {
-      try {
-        const otelOk = await initOTelSDK({
-          serviceName: obsCfg.otel.serviceName,
-          serviceVersion: obsCfg.otel.serviceVersion,
-          // 仅当 otel 启用时才传 endpoint，避免 langfuse-only 模式下创建无效的 gRPC exporter
-          endpoint: obsCfg.otel.enabled ? obsCfg.otel.endpoint : undefined,
-          protocol: obsCfg.otel.protocol,
-          tenantId: obsCfg.otel.tenantId,
-          logExportIntervalMs: obsCfg.otel.logExportInterval * 1000,
-          clickhouse: obsCfg.clickhouse.enabled
-            ? Object.fromEntries([
-                ["endpoint", obsCfg.clickhouse.endpoint],
-                ["username", obsCfg.clickhouse.username],
-                ["password", obsCfg.clickhouse.password],
-                ["database", obsCfg.clickhouse.database],
-              ])
-            : false,
-          langfuse: obsCfg.langfuse.enabled
-            ? Object.fromEntries([
-                ["host", obsCfg.langfuse.host],
-                ["publicKey", obsCfg.langfuse.publicKey],
-                ["secretKey", obsCfg.langfuse.secretKey],
-              ])
-            : false,
-        });
-        this.logger.info(`OTel SDK initialized: ${otelOk ? "enabled" : "skipped (deps not available)"}`);
-      } catch (err) {
-        // 可观测性初始化失败不影响主业务
-        const msg = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`OTel SDK init failed (non-fatal): ${msg}`);
-      }
     }
 
     // Initialize core
@@ -1189,12 +1114,7 @@ export class TdaiGateway {
     // T15-B：先停探活定时器，避免关闭期间再触发探针
     this.stopEmbeddingProbe();
 
-    // 优雅关闭 OTel SDK（flush 剩余 Span/Log）
-    try {
-      await shutdownOTelSDK();
-    } catch {
-      // Best-effort shutdown，不影响主流程
-    }
+    // 可观测性：OTel SDK 已随四组件退场（docs/adr/0021），无需 flush。
 
     // Stop integrated services first
     if (this.pipelineWorker) {
@@ -1512,10 +1432,7 @@ export class TdaiGateway {
         const logger = this.logger;
 
         v2Deps.resolveStore = async (instanceId: string) => {
-          const vdbConfig = storePool["mode"] === "tcvdb"
-            ? await configProvider.resolveVdb(instanceId)
-            : null;
-          const pooled = await storePool.getStore(instanceId, vdbConfig);
+          const pooled = await storePool.getStore(instanceId);
           return { store: pooled.store, embedding: pooled.embedding };
         };
 
@@ -1540,26 +1457,15 @@ export class TdaiGateway {
           v2Deps.quotaManager = this.quotaManager;
         }
 
-        // ── Skill: per-instance resolver (TcvdbSkillStore + COS storage) ──
-        // 复用 Memory 侧的 COS adapter，创建 per-instance SkillCore。
-        // Skill queue + worker 如果已在 tdai-core 中启动则复用；否则
-        // service 模式下可在此处单独启动。
-        if (storePool.mode === "tcvdb") {
-          // per-instance resolvers 抽到了私有方法（同一份实现被 handler 和 skill worker 共用）。
-          skillDeps.resolveSkillCore = (instanceId: string) => this.resolveSkillCoreForInstance(instanceId);
-          skillDeps.buildSkillExtractor = (core, instanceId) => this.buildSkillExtractorForInstance(core, instanceId);
-        }
-        // /v3/skill/conversation/add + /v3/skill/extract{,result} wiring:
-        //   - tcvdb (service): 走 ensureConversationAddForInstance (per-instance TCVDB + COS)
-        //   - sqlite (standalone): 走 ensureConversationAddForStandalone (单例 SqliteSkillStore + LocalStorage/内存队列)
+        // ── Skill: conversation-add 走 standalone 路径（单例 SqliteSkillStore + 本地/内存队列） ──
+        // TCVDB per-instance skill store 已随后端退场（docs/adr/0021），不再注册 per-instance 的
+        // resolveSkillCore / buildSkillExtractor。
         //
         // 返回完整 WiredConversationAdd:
         //   - handleConversationAdd 用 .handler
         //   - handleExtract 用 .trigger (direct-trigger)
         skillDeps.resolveConversationAdd = async (instanceId: string) => {
-          const wired = storePool.mode === "tcvdb"
-            ? await this.ensureConversationAddForInstance(instanceId)
-            : await this.ensureConversationAddForStandalone(instanceId);
+          const wired = await this.ensureConversationAddForStandalone(instanceId);
           return wired;
         };
       }
@@ -2031,11 +1937,9 @@ export class TdaiGateway {
   }
 
   private async startIntegratedServices(): Promise<void> {
-    // Determine backend type from config (env > yaml > auto from deployMode):
-    //   - "standalone" → local (in-process Map/setTimeout, zero dependencies)
-    //   - "service"    → remote state backend
-    const backendType: "redis" | "local" =
-      this.config.stateBackend ?? (this.config.deployMode === "service" ? "redis" : "local");
+    // State backend: DSH-only 只剩进程内 local 后端（docs/adr/0021）。Redis 状态后端及其
+    // 依赖的私有 src/integrations/ 子模块已退场；配置仍要求 redis 时 loadGatewayConfig 直接抛错。
+    const backendType = "local" as const;
 
     this.logger.info(`Starting integrated services (deployMode=${this.config.deployMode}, state_backend=${backendType})...`);
 
@@ -2043,7 +1947,7 @@ export class TdaiGateway {
     const { createStateBackend } = await import("../core/state/index.js");
     this.stateBackend = await createStateBackend({
       type: backendType,
-      local: backendType === "local" ? {
+      local: {
         onTimerExpired: (entry) => {
           // Pipeline memory timer. The member may be legacy "sessionId:L1_idle"
           // or scoped "scope:team:T|agent:A|session:S:L1_idle"; scope is member
@@ -2077,14 +1981,7 @@ export class TdaiGateway {
             this.logger.error(`[local-timer] Failed to enqueue task for ${member}: ${err instanceof Error ? err.message : String(err)}`);
           });
         },
-      } : undefined,
-      redis: backendType === "redis" ? Object.fromEntries([
-        ["host", this.config.redis.host],
-        ["port", this.config.redis.port],
-        ["password", this.config.redis.password],
-        ["db", this.config.redis.db],
-        ["keyPrefix", this.config.redis.keyPrefix],
-      ]) : undefined,
+      },
     });
     this.logger.info(`State Backend created (${backendType})`);
 
@@ -2093,40 +1990,18 @@ export class TdaiGateway {
     // constructor above. No cross-module shared client, no startup-order
     // coupling with `setStorage()` / `ensureSkillModuleWired()`.
 
-    // 1.2. Pick adapter set (default for standalone, enhanced for service).
-    // InstanceConfigProvider/QuotaManager depend only on core abstractions;
-    // concrete implementations are chosen at gateway startup.
-    //
-    // Optional deployment adapters are loaded dynamically. When unavailable,
-    // standalone falls back to LocalConfigSource + NoopQuotaReporter; service
-    // mode fails fast because it requires deployment-specific adapters.
-    let adapterDeps: { configSource: import("../core/abstractions/index.js").IConfigSource; quotaReporter: import("../core/abstractions/index.js").IQuotaReporter };
-    try {
-      const { createAdapterDeps } = await import("../integrations/factory.js");
-      adapterDeps = await createAdapterDeps({
-        deployMode: this.config.deployMode,
-        sharkBaseUrl: this.config.shark.baseUrl,
-        logger: this.logger,
-      });
-    } catch (err) {
-      if (this.config.deployMode === "service") {
-        throw new Error(
-          `[gateway] deployMode=service requires src/integrations/ (private submodule), ` +
-            `but it could not be loaded. Either initialize the submodule or set ` +
-            `deployMode=standalone. Original error: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      this.logger.warn(
-        `[gateway] integrations/ not available (${err instanceof Error ? err.message : String(err)}); ` +
-          `falling back to inline LocalConfigSource + NoopQuotaReporter (standalone only).`,
-      );
-      const { LocalConfigSource } = await import("../core/instance-config-provider.js");
-      const { NoopQuotaReporter } = await import("../core/quota/noop-quota-reporter.js");
-      adapterDeps = {
-        configSource: new LocalConfigSource(this.logger),
-        quotaReporter: new NoopQuotaReporter(),
-      };
-    }
+    // 1.2. Deployment adapters: DSH-only 构建只保留 standalone 一套（docs/adr/0021）。
+    // 私有的 src/integrations/ 子模块（service 模式的 Shark 配置源 / 计费上报）已退场，
+    // deployMode=service 在 loadGatewayConfig() 阶段就抛错，因此这里恒为本地实现。
+    const { LocalConfigSource } = await import("../core/instance-config-provider.js");
+    const { NoopQuotaReporter } = await import("../core/quota/noop-quota-reporter.js");
+    const adapterDeps: {
+      configSource: import("../core/abstractions/index.js").IConfigSource;
+      quotaReporter: import("../core/abstractions/index.js").IQuotaReporter;
+    } = {
+      configSource: new LocalConfigSource(this.logger),
+      quotaReporter: new NoopQuotaReporter(),
+    };
 
     this.configProvider = new InstanceConfigProvider({
       source: adapterDeps.configSource,
@@ -2146,23 +2021,25 @@ export class TdaiGateway {
       });
       this.logger.info("QuotaManager initialized (memoryLimit=10000, creditLimit=1000)");
     }
-    // Allow overriding store mode independently from deployMode. Useful for
-    // service-mode integration smoke tests where Redis + COS are real but no
-    // VDB is available — set STORE_MODE=sqlite to keep the VDB-dependent
-    // pieces local while exercising the rest of the service-mode wiring.
-    const storeModeOverride = process.env.STORE_MODE === "sqlite" || process.env.STORE_MODE === "tcvdb"
-      ? (process.env.STORE_MODE as "sqlite" | "tcvdb")
-      : undefined;
+    // Store backend: DSH-only 只剩 SQLite（docs/adr/0021）。STORE_MODE 只接受 "sqlite"，
+    // 其它值（含历史遗留的 "tcvdb"）构造期直接抛错，不静默降级。
+    const storeModeOverride = process.env.STORE_MODE?.trim();
+    if (
+      storeModeOverride !== undefined &&
+      storeModeOverride !== "" &&
+      storeModeOverride !== "sqlite"
+    ) {
+      throw new Error(
+        `[gateway] STORE_MODE="${storeModeOverride}" has been retired in the DSH-only build ` +
+          `(the TCVDB store backend was removed). Remove STORE_MODE or set it to "sqlite" — ` +
+          `see docs/adr/0021.`,
+      );
+    }
     this.storePool = new StorePool({
-      mode: storeModeOverride ?? (this.config.deployMode === "service" ? "tcvdb" : "sqlite"),
+      mode: "sqlite",
       memoryCfg: this.config.memory,
       dataDir: this.config.data.baseDir,
       maxStores: this.config.shark.maxInstances,
-      kafka: {
-        brokers: parseBrokers(this.config.observability.kafka.brokers),
-        topic: this.config.observability.kafka.topic,
-        enabled: this.config.observability.kafka.enabled,
-      },
       logger: this.logger,
     });
     this.logger.info(`Instance Config Provider + Store Pool initialized (mode=${this.config.deployMode})`);
@@ -2206,7 +2083,7 @@ export class TdaiGateway {
       // （游标未落 checkpoint，session-h 实锤 12 条滞留）。数据源取并集：
       // runner_states ∪ L0 全会话键；扩面键由游标治理空跑兜底（无积压零成本）。
       // listL0SessionIds 为可选能力，缺失时回退 runner_states（现状语义）。
-      const recoveryStore = (await this.storePool.getStore(instanceId, null)).store as { listL0SessionIds?: () => string[] };
+      const recoveryStore = (await this.storePool.getStore(instanceId)).store as { listL0SessionIds?: () => string[] };
       const l0SessionKeys = recoveryStore.listL0SessionIds?.() ?? [];
       // D-R3-2（任务6，2026-09-24）：boot recovery 前过滤无 L0 数据的死键——runner_states
       // 残留键（测试会话清理/游标终结后）不再白挂 L1_drain（活体实锚 2026-09-24：单次 boot
@@ -2435,8 +2312,7 @@ export class TdaiGateway {
     const logger = this.logger;
     const sharedCosClient = this.sharedCosClient;
 
-    const vdbConfig = await configProvider.resolveVdb(instanceId);
-    const skillStore = await storePool.getSkillStore(instanceId, vdbConfig);
+    const skillStore = await storePool.getSkillStore(instanceId);
 
     let storage: StorageAdapter;
     const cachedStorage = this.cosStorageCache?.get(instanceId);
@@ -2655,62 +2531,9 @@ export class TdaiGateway {
       return { tuples_removed: 0, locks_removed: 0, backend: "none" };
     }
     const prefixSegment = `${instanceId}|`;
-    const memoryPrefix = this.config.redis?.keyPrefix ?? "tdai_memory";
-    const keyPrefix = `${memoryPrefix}:skill-conv`;
 
-    // Redis 后端: 直接从 stateBackend 拿 ioredis 客户端做 SCAN
-    const redisClient = this.getSharedIoRedisClient();
-    if (redisClient && queue instanceof RedisSkillAgentTaskQueue) {
-      const client = redisClient as unknown as {
-        sscan(k: string, cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
-        scan(cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
-        srem(k: string, ...members: string[]): Promise<number>;
-        lrem(k: string, count: number, value: string): Promise<number>;
-        del(...keys: string[]): Promise<number>;
-      };
-      const setKey = `${keyPrefix}:pending-agents-set`;
-      const listKey = `${keyPrefix}:pending-agents`;
-      let tuplesRemoved = 0;
-      // SSCAN + MATCH 匹配 5 段 tuple
-      let cursor = "0";
-      do {
-        const [next, members] = await client.sscan(setKey, cursor, "MATCH", `${prefixSegment}*`, "COUNT", 500);
-        cursor = next;
-        for (const m of members) {
-          await client.srem(setKey, m);
-          await client.lrem(listKey, 0, m);
-          tuplesRemoved++;
-        }
-      } while (cursor !== "0");
-
-      // 4 段 legacy tuple 如果 instanceId 恰好是 space_id 值也会命中 space_id
-      // 段的前缀; 不做启发式匹配以免误伤, 靠 pool 自身 legacy 分支处理 (见
-      // worker-pool.ts)。若确定要清可以另开脚本, 本次仅清 5 段。
-
-      // SCAN + MATCH 清 extract-lock / tasks-mutex
-      const patterns = [
-        `${keyPrefix}:extract-lock:${prefixSegment}*`,
-        `${keyPrefix}:tasks-mutex:${prefixSegment}*`,
-      ];
-      let locksRemoved = 0;
-      for (const pattern of patterns) {
-        let cur = "0";
-        do {
-          const [next, keys] = await client.scan(cur, "MATCH", pattern, "COUNT", 500);
-          cur = next;
-          if (keys.length > 0) {
-            const deleted = await client.del(...keys);
-            locksRemoved += deleted;
-          }
-        } while (cur !== "0");
-      }
-      this.logger.info(
-        `[skill-queue-purge] instance=${instanceId} redis: tuples=${tuplesRemoved} locks=${locksRemoved}`,
-      );
-      return { tuples_removed: tuplesRemoved, locks_removed: locksRemoved, backend: "redis" };
-    }
-
-    // Local backend: 走 _snapshot 反向过滤
+    // Local (in-memory) backend — the only remaining one after the Redis state backend
+    // was retired (docs/adr/0021): filter the private list/set snapshots directly.
     if (queue instanceof LocalSkillAgentTaskQueue) {
       const snap = queue._snapshot();
       let tuplesRemoved = 0;
@@ -2737,23 +2560,10 @@ export class TdaiGateway {
 
   private ensureSkillSharedQueue(): ISkillAgentTaskQueue {
     if (this.skillSharedQueue) return this.skillSharedQueue;
-    const memoryPrefix = this.config.redis?.keyPrefix ?? "tdai_memory";
-    const keyPrefix = `${memoryPrefix}:skill-conv`;
-    const redisClient = this.getSharedIoRedisClient();
-    if (redisClient) {
-      this.skillSharedQueue = new RedisSkillAgentTaskQueue({
-        client: redisClient as SkillAgentTaskQueueRedisLike,
-        keyPrefix,
-      });
-      this.logger.info(`[skill-worker-pool] shared queue ready: backend=redis prefix=${keyPrefix}`);
-    } else {
-      // Local state backend / standalone 无 redis → 单节点内存队列
-      this.skillSharedQueue = new LocalSkillAgentTaskQueue();
-      this.logger.warn(
-        `[skill-worker-pool] no shared ioredis (deployMode=${this.config.deployMode}); ` +
-          `falling back to in-memory queue (single-node only) prefix=${keyPrefix}`,
-      );
-    }
+    // DSH-only: the Redis state backend was retired (docs/adr/0021), so the shared skill
+    // queue is always the in-process implementation (single node).
+    this.skillSharedQueue = new LocalSkillAgentTaskQueue();
+    this.logger.info("[skill-worker-pool] shared queue ready: backend=local (single-node)");
     return this.skillSharedQueue;
   }
 
@@ -2945,10 +2755,7 @@ export class TdaiGateway {
     let store: IMemoryStore | undefined;
 
     if (this.storePool && this.configProvider) {
-      const vdbConfig = this.storePool.mode === "tcvdb"
-        ? await this.configProvider.resolveVdb(instanceId)
-        : null;
-      const pooled = await this.storePool.getStore(instanceId, vdbConfig);
+      const pooled = await this.storePool.getStore(instanceId);
       store = pooled.store;
     } else {
       store = this.core.getVectorStore();
@@ -3023,20 +2830,6 @@ export class TdaiGateway {
     return adapter;
   }
 
-  /**
-   * 从 RedisStateBackend 取 ioredis 客户端；非 Redis backend 返回 null。
-   */
-  private getSharedIoRedisClient(): SkillAgentTaskQueueRedisLike | null {
-    if (!this.stateBackend) return null;
-    // duck-type：只 RedisStateBackend 有 getClient()
-    const maybe = this.stateBackend as unknown as { getClient?: () => unknown };
-    if (typeof maybe.getClient !== "function") return null;
-    try {
-      return maybe.getClient() as SkillAgentTaskQueueRedisLike;
-    } catch {
-      return null;
-    }
-  }
 
   /**
    * Initialize SharedCosClient with retry. Called at startup and lazily from resolveStorage.
@@ -3146,10 +2939,7 @@ export class TdaiGateway {
       if (!instanceId) {
         throw new Error(`Task ${task.id} missing instanceId in service mode (task.data.instanceId is required)`);
       }
-      const vdbConfig = storePool.mode === "tcvdb"
-        ? await configProvider.resolveVdb(instanceId)
-        : null;
-      return storePool.getStore(instanceId, vdbConfig);
+      return storePool.getStore(instanceId);
     };
 
     const resolveStorage = async (task: TaskPayload) => {

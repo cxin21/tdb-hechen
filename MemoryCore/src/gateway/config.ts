@@ -38,13 +38,6 @@ import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImpor
  */
 export type DeployMode = "standalone" | "service";
 
-export interface RedisConfig {
-  host: string;
-  port: number;
-  password?: string;
-  db: number;
-  keyPrefix: string;
-}
 
 export interface SharkConfig {
   baseUrl?: string;
@@ -72,162 +65,24 @@ export interface CosExtraConfig {
   generationLogRetentionDays: number;
 }
 
-export interface KafkaConfig {
-  /** 是否启用 Kafka (默认: false) */
-  enabled: boolean;
-  /** Kafka Broker 列表 (逗号分隔) */
-  brokers: string;
-  /** Topic 名称 (默认: "memory_monitor") */
-  topic: string;
-  /** 消费者组 ID（仅 Consumer 使用，如 Monitor） */
-  groupId?: string;
-  /** 分区总数（仅 Producer 使用，用于 hash 分区） */
-  totalPartitions?: number;
-}
-
-export interface OTelConfig {
-  /** 是否启用 OTel SDK (默认: false) */
-  enabled: boolean;
-  /** Collector endpoint (默认: http://localhost:4317) */
-  endpoint: string;
-  /** 协议: "grpc" | "http/protobuf" (默认: "grpc") */
-  protocol: "grpc" | "http/protobuf";
-  /** OTLP 请求头，用于鉴权等，格式 key=value 逗号分隔 */
-  headers?: string;
-  /** 服务名 (默认: "core") */
-  serviceName: string;
-  /** 服务版本 */
-  serviceVersion: string;
-  /** 实例标识 */
-  instanceId?: string;
-  /** 智研 APM 租户 ID */
-  tenantId: string;
-  /** Metric 导出间隔 (秒, 默认: 60) */
-  metricExportInterval?: number;
-  /** Log 导出间隔 (秒, 默认: 5) */
-  logExportInterval: number;
-}
-
-export interface ClickHouseConfig {
-  /** 是否启用 ClickHouse 双写 (默认: false) */
-  enabled: boolean;
-  /** ClickHouse HTTP endpoint */
-  endpoint: string;
-  /** 用户名 */
-  username: string;
-  /** 密码 */
-  password: string;
-  /** 数据库名 */
-  database: string;
-  /** 写入的目标表名（Monitor 使用，其他组件可留空） */
-  table?: string;
-  /** 批量写入最大条数 */
-  maxBatchSize?: number;
-  /** 刷新间隔（秒） */
-  flushInterval?: number;
-  /** 缓冲队列最大长度，超出时丢弃数据 */
-  maxQueueSize?: number;
-}
-
-export interface LangfuseConfig {
-  /** 是否启用 Langfuse LLM trace 上报 (默认: false) */
-  enabled: boolean;
-  /** Langfuse 实例地址 (如 http://langfuse.example.local:3000) */
-  host: string;
-  /** Langfuse 公钥 */
-  publicKey: string;
-  /** Langfuse 私钥 */
-  secretKey: string;
-}
-
 /**
- * 可观测性配置（统一格式，四组件共用）。
- * 各组件按需启用对应子配置，未使用的子配置保持 enabled=false 即可。
+ * 可观测性配置（DSH-only）。
  *
- * 各子配置按部署需要启用；未使用的子配置保持 enabled=false 即可。
+ * 四组件架构（OTel SDK / ClickHouse 双写 / Kafka / Langfuse）已整组退场
+ * （docs/adr/0021）：只剩进程内的 noop 与 console 两个后端。
  *
  * yaml 示例:
  * ```yaml
  * observability:
- *   otel:
- *     enabled: true
- *     endpoint: "http://otel.example.com:4317"
- *     protocol: "grpc"
- *     serviceName: "core"
- *     serviceVersion: "1.0.0"
- *     tenantId: "<APM_TENANT_ID>"
- *     metricExportInterval: 60
- *     logExportInterval: 5
- *   clickhouse:
- *     enabled: true
- *     endpoint: "http://clickhouse.example.local:8123"
- *     username: "default"
- *     password: "xxx"
- *     database: "tdai_eval"
- *     maxBatchSize: 1000
- *     flushInterval: 5
- *     maxQueueSize: 10000
- *   kafka:
- *     enabled: true
- *     brokers: "kafka.example.local:9092"
- *     topic: "memory_monitor"
- *     totalPartitions: 32
- *   langfuse:
- *     enabled: true
- *     host: "http://langfuse.example.local:3000"
- *     publicKey: "pk-lf-xxx"
- *     secretKey: "sk-lf-yyy"
+ *   type: "noop"   # 或 "console"
  * ```
+ *
+ * 仍写着 otel/clickhouse/kafka/langfuse 段的旧配置：enabled=false 会被忽略并打一条
+ * 警告；enabled=true 直接启动失败（不做静默降级）。
  */
 export interface ObservabilityConfig {
-  /** OTel SDK 配置 (Trace + Log)。 */
-  otel: OTelConfig;
-  /** ClickHouse 双写配置。 */
-  clickhouse: ClickHouseConfig;
-  /** Kafka 配置。 */
-  kafka: KafkaConfig;
-  /** Barad 云监控上报配置。 */
-  barad?: BaradConfig;
-  /** 智研监控宝 Metric 上报配置。 */
-  zhiyan?: ZhiYanConfig;
-  /** Langfuse LLM trace 上报配置。 */
-  langfuse: LangfuseConfig;
-}
-
-/** Barad 云监控上报配置。 */
-export interface BaradConfig {
-  /** 是否启用 Barad 上报 (默认: false) */
-  enabled: boolean;
-  /** 上报地域，如 ap-guangzhou */
-  region: string;
-  /** 命名空间 (默认: "qce/memory") */
-  namespace: string;
-  /** 上报频率（秒）(默认: 60) */
-  freq: number;
-  /** 测试环境上报地址（覆盖默认的 region 拼接地址） */
-  testEndpoint?: string;
-  /** 测试环境查询地址（用于集成测试验证数据） */
-  testQueryEndpoint?: string;
-  /** 采集间隔（秒）(默认: 10) */
-  collectInterval?: number;
-}
-
-/** 智研监控宝 Metric 上报配置。使用组件: Monitor ✓ */
-export interface ZhiYanConfig {
-  /** 是否启用智研 Metric 上报 (默认: false) */
-  enabled: boolean;
-  /** 智研监控宝上报地址 */
-  endpoint: string;
-  /** 应用标识（智研监控宝必需），格式: {业务ID}_{应用ID}_{应用名} */
-  appMark: string;
-  /** 分组名称 (默认: "default") */
-  group: string;
-  /** 环境标识，如 dev/test/prod */
-  env: string;
-  /** 指标命名空间前缀 (默认: "memory") */
-  namespace: string;
-  /** 上报间隔（秒）(默认: 60) */
-  exportInterval: number;
+  /** 观测后端。"noop"（默认，零副作用）或 "console"（打到 stdout）。 */
+  type: "noop" | "console";
 }
 
 export interface GatewayConfig {
@@ -295,10 +150,10 @@ export interface GatewayConfig {
   // ── Service-mode config (also settable via env vars, env takes priority) ──
 
   /** State backend type. env: STATE_BACKEND. yaml: stateBackend */
-  stateBackend?: "redis" | "local";
+  stateBackend?: "local";
   /** Default instance ID for standalone pipeline. env: TDAI_INSTANCE_ID. yaml: instanceId */
   instanceId: string;
-  redis: RedisConfig;
+
   shark: SharkConfig;
   scanner: ScannerConfig;
   worker: WorkerConfig;
@@ -316,8 +171,7 @@ export interface GatewayConfig {
 /** v3 元数据 Gateway yaml 配置（§6.3）。 */
 export interface GatewayMetadataStoreConfig {
   sqliteBaseDir?: string;
-  mongoUri?: string;
-  mongoTransactions?: boolean;
+  /** 内存中最多缓存多少个实例 store 连接（LRU 驱逐）。 */
   storeCacheMaxInstances?: number;
   /** 元数据库名前缀，默认 tdai_metadata；库名 {prefix}_{instance_id} */
   mongoDbPrefix?: string;
@@ -350,21 +204,7 @@ export interface GatewayMetadataConfig {
 // Utility Functions
 // ============================
 
-/**
- * 将 Kafka brokers 配置值转换为 string[] 数组。
- *
- * 背景：gateway config 中 KafkaConfig.brokers 类型为 string（逗号分隔），
- * 但 MetricBackendConfig.brokers 期望 string[]。如果直接传入字符串，
- * KafkaJS 会按字符解析导致端口号变成 NaN。
- *
- * @param brokers - 逗号分隔的 broker 地址字符串，或已经是 string[] 数组
- * @returns broker 地址数组（已 trim，已过滤空元素）
- */
-export function parseBrokers(brokers: string | string[]): string[] {
-  if (Array.isArray(brokers)) return brokers;
-  if (!brokers) return [];
-  return brokers.split(",").map(s => s.trim()).filter(Boolean);
-}
+
 
 /**
  * Load gateway config from file + environment variables.
@@ -594,32 +434,32 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     memory.skill = skillFromAnywhere;
   }
 
-  // Deploy mode: "standalone" (open-source single-node) or "service" (cloud multi-tenant)
+  // Deploy mode. "service" depended on the Redis state backend, the TCVDB memory store, the
+  // MongoDB metadata store and the private integrations submodule — all retired in the
+  // DSH-only build (docs/adr/0021). Fail startup instead of degrading to a lookalike.
   const rawMode = env("TDAI_DEPLOY_MODE") ?? str(fileConfig, "deployMode") ?? "standalone";
-  const deployMode: DeployMode = rawMode === "service" ? "service" : "standalone";
+  if (rawMode !== "standalone") {
+    throw new Error(
+      `[gateway-config] deployMode "${rawMode}" has been retired in the DSH-only build ` +
+        `(Redis state backend + TCVDB memory store + MongoDB metadata store + private ` +
+        `integrations submodule were removed). Set deployMode: "standalone" — see docs/adr/0021.`,
+    );
+  }
+  const deployMode: DeployMode = "standalone";
 
-  // State backend (env > yaml > auto from deployMode)
+  // State backend: only the in-process "local" backend remains.
   const rawBackend = env("STATE_BACKEND") ?? str(fileConfig, "stateBackend");
-  const stateBackend = rawBackend === "redis" || rawBackend === "local" ? rawBackend : undefined;
+  if (rawBackend !== undefined && rawBackend !== "" && rawBackend !== "local") {
+    throw new Error(
+      `[gateway-config] stateBackend "${rawBackend}" has been retired in the DSH-only build ` +
+        `(the Redis state backend was removed). Set stateBackend: "local" or drop the key — ` +
+        `see docs/adr/0021.`,
+    );
+  }
+  const stateBackend: "local" = "local";
 
-  // Instance ID: service mode requires explicit instanceId from request headers (x-tdai-service-id),
-  // standalone mode uses configured or defaults to "default".
-  const instanceId = env("TDAI_INSTANCE_ID") ?? str(fileConfig, "instanceId")
-    ?? (deployMode === "standalone" ? "default" : undefined);
-
-  // Remote state backend config
-  const redisConfig = obj(fileConfig, "redis");
-  const redis: RedisConfig = {
-    host: env("REDIS_HOST") ?? str(redisConfig, "host") ?? "127.0.0.1",
-    port: envInt("REDIS_PORT") ?? num(redisConfig, "port") ?? 6379,
-    password: env("REDIS_PASSWORD") ?? str(redisConfig, "password"),
-    db: envInt("REDIS_DB") ?? num(redisConfig, "db") ?? 0,
-    // v2 默认 prefix：与升级前的 "tdai_memory" 物理隔离。
-    // 升级原因：sk/bk 的 hash tag 从 {p:inst} 升级到 {p:inst:tid:aid}，
-    // 旧 key 与新 key 不互斥，混跑会破坏锁互斥语义；切 prefix 直接物理隔离，
-    // 老数据丢弃。升级时若需保留 redis 中 pending 任务，先停服务 + 等队列空。
-    keyPrefix: env("REDIS_KEY_PREFIX") ?? str(redisConfig, "keyPrefix") ?? "tdai_memory_v2",
-  };
+  // Instance ID: standalone mode uses the configured value or defaults to "default".
+  const instanceId = env("TDAI_INSTANCE_ID") ?? str(fileConfig, "instanceId") ?? "default";
 
   // Remote config source settings
   const sharkConfig = obj(fileConfig, "shark");
@@ -658,74 +498,66 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     throw new Error("cos.generationLogRetentionDays must be a non-negative integer");
   }
 
-  // Observability config (yaml: observability.{otel,clickhouse,kafka}, env 兜底)
+  // Observability config (DSH-only): only the in-process noop / console backends remain.
+  // A config that still enables otel / clickhouse / kafka / langfuse fails startup instead
+  // of silently dropping telemetry (docs/adr/0021).
   const observabilityConfig = obj(fileConfig, "observability");
-
-  // OTel config
-  const otelConfig = obj(observabilityConfig, "otel");
-  const otel: OTelConfig = {
-    enabled: otelConfig.enabled !== undefined
-      ? Boolean(otelConfig.enabled)
-      : env("TDAI_OTEL_ENABLED") === "true",
-    endpoint: str(otelConfig, "endpoint") ?? env("OTEL_EXPORTER_OTLP_ENDPOINT") ?? "http://localhost:4317",
-    protocol: (str(otelConfig, "protocol") ?? env("OTEL_EXPORTER_OTLP_PROTOCOL") ?? "grpc") as "grpc" | "http/protobuf",
-    serviceName: str(otelConfig, "serviceName") ?? env("OTEL_SERVICE_NAME") ?? "core",
-    serviceVersion: str(otelConfig, "serviceVersion") ?? "1.0.0",
-    tenantId: str(otelConfig, "tenantId") ?? env("OTEL_TENANT_ID") ?? "",
-    logExportInterval: num(otelConfig, "logExportInterval") ?? envInt("OTEL_LOG_EXPORT_INTERVAL") ?? 5,
+  const rawObservabilityType =
+    env("TDAI_OBSERVABILITY_TYPE") ?? str(observabilityConfig, "type") ?? "noop";
+  if (rawObservabilityType !== "noop" && rawObservabilityType !== "console") {
+    throw new Error(
+      `[gateway-config] observability.type "${rawObservabilityType}" has been retired in the ` +
+        `DSH-only build (only "noop" and "console" remain). Set observability.type: "noop" ` +
+        `and remove the otel/clickhouse/kafka/langfuse blocks — see docs/adr/0021.`,
+    );
+  }
+  const retiredObservabilityBlocks: string[] = [];
+  for (const blockName of ["otel", "clickhouse", "kafka", "langfuse"] as const) {
+    const block = obj(observabilityConfig, blockName);
+    if (Object.keys(block).length === 0) continue;
+    if (block.enabled === true) {
+      throw new Error(
+        `[gateway-config] observability.${blockName}.enabled=true has been retired in the ` +
+          `DSH-only build (the ${blockName} backend was removed). Delete the block or set ` +
+          `observability.${blockName}.enabled=false, and rely on observability.type: "noop"|"console" ` +
+          `— see docs/adr/0021.`,
+      );
+    }
+    retiredObservabilityBlocks.push(blockName);
+  }
+  if (retiredObservabilityBlocks.length > 0) {
+    console.warn(
+      `[gateway-config] ignoring retired observability blocks (all disabled): ` +
+        `${retiredObservabilityBlocks.join(", ")} — see docs/adr/0021`,
+    );
+  }
+  const observability: ObservabilityConfig = {
+    type: rawObservabilityType as ObservabilityConfig["type"],
   };
-
-  // ClickHouse config
-  const chConfig = obj(observabilityConfig, "clickhouse");
-  const clickhouse: ClickHouseConfig = {
-    enabled: chConfig.enabled !== undefined
-      ? Boolean(chConfig.enabled)
-      : env("CLICKHOUSE_ENABLED") === "true",
-    endpoint: str(chConfig, "endpoint") ?? env("CLICKHOUSE_ENDPOINT") ?? "",
-    username: str(chConfig, "username") ?? env("CLICKHOUSE_USERNAME") ?? "default",
-    password: str(chConfig, "password") ?? env("CLICKHOUSE_PASSWORD") ?? "",
-    database: str(chConfig, "database") ?? env("CLICKHOUSE_DATABASE") ?? "tdai_eval",
-  };
-
-  // Kafka config
-  const kafkaConfig = obj(observabilityConfig, "kafka");
-  const kafka: KafkaConfig = {
-    brokers: str(kafkaConfig, "brokers") ?? env("KAFKA_METRIC_BROKERS") ?? "",
-    topic: str(kafkaConfig, "topic") ?? env("KAFKA_METRIC_TOPIC") ?? "memory_monitor",
-    enabled: kafkaConfig.enabled !== undefined
-      ? Boolean(kafkaConfig.enabled)
-      : (env("KAFKA_METRIC_ENABLED") === "true" || Boolean(str(kafkaConfig, "brokers") ?? env("KAFKA_METRIC_BROKERS"))),
-  };
-
-  // Langfuse config
-  const langfuseConfig = obj(observabilityConfig, "langfuse");
-  const langfuse: LangfuseConfig = {
-    enabled: langfuseConfig.enabled !== undefined
-      ? Boolean(langfuseConfig.enabled)
-      : env("LANGFUSE_ENABLED") === "true",
-    host: str(langfuseConfig, "host") ?? env("LANGFUSE_HOST") ?? "",
-    publicKey: str(langfuseConfig, "publicKey") ?? env("LANGFUSE_PUBLIC_KEY") ?? "",
-    secretKey: str(langfuseConfig, "secretKey") ?? env("LANGFUSE_SECRET_KEY") ?? "",
-  };
-
-  const observability: ObservabilityConfig = { otel, clickhouse, kafka, langfuse };
 
   const metadataConfig = obj(fileConfig, "metadata");
   const storeYaml = obj(metadataConfig, "store");
   const systemUserYaml = obj(metadataConfig, "systemUser");
   const memorySystemUserYaml = obj(systemUserYaml, "memory");
-  const metadataStore: GatewayMetadataStoreConfig | undefined =
-    str(storeYaml, "sqliteBaseDir") || str(storeYaml, "mongoUri") ||
-    str(storeYaml, "mongoDbPrefix") ||
-    bool(storeYaml, "mongoTransactions") !== undefined || num(storeYaml, "storeCacheMaxInstances") !== undefined
-      ? {
-          sqliteBaseDir: str(storeYaml, "sqliteBaseDir"),
-          mongoUri: str(storeYaml, "mongoUri"),
-          mongoTransactions: bool(storeYaml, "mongoTransactions") ?? true,
-          storeCacheMaxInstances: num(storeYaml, "storeCacheMaxInstances"),
-          mongoDbPrefix: str(storeYaml, "mongoDbPrefix"),
-        }
-      : undefined;
+  const metadataStore: GatewayMetadataStoreConfig | undefined = (() => {
+    const explicitMongoUri = str(storeYaml, "mongoUri");
+    if (explicitMongoUri) {
+      throw new Error(
+        `[gateway-config] metadata.store.mongoUri has been retired in the DSH-only build ` +
+          `(the MongoDB metadata adapter was removed). Delete the option and keep ` +
+          `metadata.store.sqliteBaseDir — see docs/adr/0021.`,
+      );
+    }
+    const sqliteBaseDir = str(storeYaml, "sqliteBaseDir");
+    const cacheMax = num(storeYaml, "storeCacheMaxInstances");
+    const dbPrefix = str(storeYaml, "mongoDbPrefix");
+    if (!sqliteBaseDir && cacheMax === undefined && !dbPrefix) return undefined;
+    return {
+      sqliteBaseDir,
+      storeCacheMaxInstances: cacheMax,
+      mongoDbPrefix: dbPrefix,
+    };
+  })();
   const metadata: GatewayMetadataConfig = {
     maxUsersPerInstance: positiveQuotaLimit(
       envInt("TDAI_METADATA_MAX_USERS") ?? num(metadataConfig, "maxUsersPerInstance"),
@@ -757,7 +589,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     data: { baseDir },
     llm,
     memory,
-    redis,
     shark,
     scanner,
     worker,

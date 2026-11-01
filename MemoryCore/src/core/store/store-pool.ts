@@ -1,18 +1,16 @@
 /**
  * StorePool — per-instanceId 的 Store 实例池
  *
- * 双模式支持:
- *   - standalone: 使用 SQLite 本地存储 (每个 instanceId 一个 SQLite 文件)
- *   - service: 使用 TCVDB 向量数据库 (每个 instanceId 一个远程 VDB 连接)
+ * DSH-only 构建只有一个存储模式（docs/adr/0021「可选后端退场」）：
+ *   - sqlite: 本地 SQLite（每个 instanceId 一个文件），standalone 部署
  *
- * 与 InstanceConfigProvider 配合:
- *   1. 请求到达时, 从 InstanceConfigProvider 获取该 instanceId 的 VDB 配置
- *   2. 用 VDB 配置创建/复用 Store 实例
- *   3. 池化管理, 避免重复创建连接
+ * 历史沿革：这里原本支持 "service" 模式（TCVDB 远端向量库 + 服务端 embedding +
+ * 混合检索），配套 VDB 配置指纹、per-instance VDB 连接池、TCVDB Skill store 缓存。
+ * TCVDB 整组退场后这些能力一并移除；构造期若仍被要求 tcvdb 模式**直接抛错**，
+ * 不静默回落 sqlite。
  *
- * standalone 模式下:
- *   - VdbConfig 为空或来自环境变量 → 创建 SQLite Store
- *   - 固定一个 "default" instanceId, 行为与原 createStoreBundle 一致
+ * 与 InstanceConfigProvider 的关系保留：per-instance 的 dataDir/存储解析仍走它，
+ * 但不再有 VDB 凭据解析。
  */
 
 import path from "node:path";
@@ -22,13 +20,10 @@ import type { IMemoryStore, StoreLogger } from "./types.js";
 import type { EmbeddingService } from "./embedding.js";
 import { createEmbeddingService, NoopEmbeddingService } from "./embedding.js";
 import { VectorStore } from "./sqlite.js";
-import { TcvdbMemoryStore } from "./tcvdb.js";
-import { TcvdbSkillStore } from "./tcvdb-skill-store.js";
 import { createBM25Encoder } from "./bm25-local.js";
 import type { BM25LocalEncoder } from "./bm25-local.js";
-import type { VdbConfig } from "../instance-config-provider.js";
 import type { ISkillStore } from "../skill/skill-store.interface.js";
-import { metricProducer } from "../report/kafka-metric-producer.js";
+import { RetiredStoreBackendError } from "./factory.js";
 
 const TAG = "[store-pool]";
 
@@ -44,7 +39,7 @@ export interface PooledStore {
 
 interface PoolEntry {
   pooledStore: PooledStore;
-  /** VDB 配置指纹, 用于检测配置变更 */
+  /** 配置指纹, 用于检测配置变更 */
   configFingerprint: string;
   lastAccessedAt: number;
 }
@@ -56,20 +51,12 @@ interface Logger {
   error: (message: string) => void;
 }
 
-export type StoreMode = "sqlite" | "tcvdb";
-
-export interface KafkaMetricOptions {
-  /** Kafka Broker 列表 (逗号分隔或数组) */
-  brokers?: string[] | string;
-  /** Topic 名称 (默认: "memory_monitor") */
-  topic?: string;
-  /** 是否启用 (默认: 根据 brokers 是否非空自动判断) */
-  enabled?: boolean;
-}
+/** 唯一受支持的存储模式。 */
+export type StoreMode = "sqlite";
 
 export interface StorePoolOptions {
-  /** 存储模式: "sqlite" (standalone 本地) 或 "tcvdb" (service 远程) */
-  mode: StoreMode;
+  /** 存储模式：DSH-only 构建只有 "sqlite"（其它值构造期抛错） */
+  mode?: StoreMode;
   /** 记忆插件配置 (用于 BM25/embedding 设置) */
   memoryCfg: MemoryTdaiConfig;
   /** 数据目录 (SQLite 模式下使用) */
@@ -78,8 +65,6 @@ export interface StorePoolOptions {
   maxStores?: number;
   /** 最大 Skill store 缓存数, 默认 100 */
   maxSkillStores?: number;
-  /** Kafka 指标上报配置 (可选, 不配置则不上报) */
-  kafka?: KafkaMetricOptions;
   logger: Logger;
 }
 
@@ -102,8 +87,6 @@ export class StorePool {
   /** Skill store 最后访问时间 (LRU 淘汰用) */
   private skillStoreAccessTimes = new Map<string, number>();
 
-
-
   /**
    * Grace-close 跟踪：已从 pool 移除但底层 close 推迟执行的 entries。
    * CR-5 mitigation (2026-05-19): evict / config-change 不立刻 close 底层 store,
@@ -116,9 +99,13 @@ export class StorePool {
   private graceCloseDelayMs = 30_000;
 
   constructor(opts: StorePoolOptions) {
+    // fail-loud：TCVDB 模式已退场，任何非 sqlite 的诉求都在构造期断掉
+    if (opts.mode !== undefined && opts.mode !== "sqlite") {
+      throw new RetiredStoreBackendError(String(opts.mode));
+    }
     this.maxStores = opts.maxStores ?? 100;
     this.maxSkillStores = opts.maxSkillStores ?? 100;
-    this.mode = opts.mode;
+    this.mode = "sqlite";
     this.memoryCfg = opts.memoryCfg;
     this.dataDir = opts.dataDir ?? ".";
     this.logger = opts.logger;
@@ -126,53 +113,15 @@ export class StorePool {
     // 初始化时创建一次 BM25 编码器, 所有 Store 共享
     this.sharedBm25Encoder = createBM25Encoder(this.memoryCfg.bm25, this.logger as StoreLogger);
 
-    // 初始化 Kafka Metric Producer（异步，不阻塞构造）
-    this.initKafkaMetricProducer(opts.kafka);
-
     this.logger.info(`${TAG} Initialized: mode=${this.mode}, maxStores=${this.maxStores}, maxSkillStores=${this.maxSkillStores}, bm25=${this.sharedBm25Encoder ? "shared" : "disabled"}`);
   }
 
   /**
-   * 初始化 Kafka Metric Producer。
-   * 异步执行，不阻塞 StorePool 构造。初始化失败静默忽略。
-   * 配置优先级：StorePoolOptions.kafka > 环境变量（兜底）
+   * 获取指定 instanceId 对应的 Store 实例（SQLite）。
    */
-  private initKafkaMetricProducer(kafka?: KafkaMetricOptions): void {
-    // 配置优先，环境变量仅作兜底
-    const rawBrokers = kafka?.brokers ?? "";
-    const brokers = Array.isArray(rawBrokers)
-      ? rawBrokers
-      : rawBrokers.split(",").map(s => s.trim()).filter(Boolean);
-
-    const enabled = kafka?.enabled ?? brokers.length > 0;
-    if (!enabled || brokers.length === 0) {
-      this.logger.info(`${TAG} Kafka metric producer disabled (no brokers configured)`);
-      return;
-    }
-
-    // 异步初始化，不阻塞业务
-    metricProducer.initialize({
-      brokers,
-      topic: kafka?.topic ?? "memory_monitor",
-      enabled: true,
-    }).catch((err) => {
-      // 初始化失败静默处理，不影响业务
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`${TAG} Kafka metric producer init failed: ${msg}. Metrics disabled.`);
-    });
-  }
-
-  /**
-   * 获取指定 instanceId 对应的 Store 实例
-   *
-   * - standalone (sqlite): vdbConfig 可以为 null, 创建 SQLite Store
-   * - service (tcvdb): 根据 vdbConfig 创建 TCVDB Store
-   */
-  async getStore(instanceId: string, vdbConfig: VdbConfig | null): Promise<PooledStore> {
+  async getStore(instanceId: string): Promise<PooledStore> {
     const now = Date.now();
-    const fingerprint = this.mode === "tcvdb" && vdbConfig
-      ? this.computeFingerprint(vdbConfig)
-      : `sqlite:${instanceId}`;
+    const fingerprint = `sqlite:${instanceId}`;
     const cached = this.pool.get(instanceId);
 
     // 命中且配置未变
@@ -193,9 +142,7 @@ export class StorePool {
     }
 
     // 创建新 Store
-    const pooledStore = this.mode === "tcvdb" && vdbConfig
-      ? this.createTcvdbStore(vdbConfig)
-      : this.createSqliteStore(instanceId);
+    const pooledStore = this.createSqliteStore(instanceId);
 
     this.pool.set(instanceId, {
       pooledStore,
@@ -203,11 +150,8 @@ export class StorePool {
       lastAccessedAt: now,
     });
 
-    const storeDesc = this.mode === "tcvdb" && vdbConfig
-      ? `${vdbConfig.url} / ${vdbConfig.database}`
-      : `sqlite @ ${this.getSqlitePath(instanceId)}`;
     this.logger.info(
-      `${TAG} Created ${this.mode} store for ${instanceId}: ${storeDesc} (pool size: ${this.pool.size})`,
+      `${TAG} Created ${this.mode} store for ${instanceId}: sqlite @ ${this.getSqlitePath(instanceId)} (pool size: ${this.pool.size})`,
     );
 
     // 初始化 Store (建表/检查连接)
@@ -296,78 +240,18 @@ export class StorePool {
   has(instanceId: string): boolean { return this.pool.has(instanceId); }
 
   /**
-   * 获取指定 instanceId 的 Skill Store (TCVDB).
+   * 获取指定 instanceId 的 Skill Store。
    *
-   * 与 getStore() 使用相同的 VDB 实例，只是不同的 Collection ({db}_skills)。
-   * Skill store 有独立缓存 (skillStoreCache)，不受 Memory store 池化管理影响。
+   * 历史上这是 TCVDB 后端的 per-instance collection（{db}_skills）。TCVDB 退场后
+   * skill 数据只走 SqliteSkillStore（见 skill/skill-store.ts），本方法保留签名但
+   * **恒抛错**：任何仍在走这条路径的部署都必须显式迁移，而不是拿到一个空 store。
    */
-  async getSkillStore(instanceId: string, vdbConfig: VdbConfig): Promise<ISkillStore> {
-    const key = `skill:${instanceId}`;
-    const cached = this.skillStoreCache.get(key);
-    if (cached) {
-      this.skillStoreAccessTimes.set(key, Date.now());
-      return cached;
-    }
-
-    // LRU 淘汰
-    if (this.skillStoreCache.size >= this.maxSkillStores) {
-      this.evictSkillStoreLru();
-    }
-
-    const store = new TcvdbSkillStore({
-      url: vdbConfig.url,
-      username: vdbConfig.user,
-      apiKey: vdbConfig.apiKey,
-      database: vdbConfig.database,
-      embeddingModel: this.memoryCfg.tcvdb?.embeddingModel ?? "bge-large-zh",
-      timeout: this.memoryCfg.tcvdb?.timeout ?? 10000,
-      logger: this.logger as StoreLogger,
-      bm25Encoder: this.sharedBm25Encoder,
-    });
-    store.init();
-    this.skillStoreCache.set(key, store);
-    this.skillStoreAccessTimes.set(key, Date.now());
-    this.logger.info(`${TAG} Created skill store for ${instanceId}: ${vdbConfig.url}/${vdbConfig.database} (cached: ${this.skillStoreCache.size})`);
-    return store;
+  async getSkillStore(instanceId: string): Promise<ISkillStore> {
+    void instanceId;
+    throw new RetiredStoreBackendError("tcvdb-skill-store");
   }
 
   private skillStoreCache = new Map<string, ISkillStore>();
-
-  // ════════════════════════════════════════════════════════
-  // Internal — TCVDB Store
-  // ════════════════════════════════════════════════════════
-
-  private createTcvdbStore(vdbConfig: VdbConfig): PooledStore {
-    // [DEBUG] 本地调试用: 公网 HTTPS 连接 VDB 时需要 CA 证书。
-    // 内网部署走 HTTP 80 端口无需此逻辑。
-    // 通过环境变量 VDB_CA_PEM_PATH 指定 PEM 文件路径。
-    const caPemPath = vdbConfig.url.startsWith("https://")
-      ? (process.env.VDB_CA_PEM_PATH || undefined)
-      : undefined;
-
-    const store = new TcvdbMemoryStore({
-      url: vdbConfig.url,
-      username: vdbConfig.user,
-      apiKey: vdbConfig.apiKey,
-      database: vdbConfig.database,
-      embeddingEnabled: this.memoryCfg.tcvdb?.embeddingEnabled,
-      embeddingModel: this.memoryCfg.tcvdb?.embeddingModel ?? "bge-large-zh",
-      timeout: this.memoryCfg.tcvdb?.timeout ?? 10000,
-      caPemPath,
-      logger: this.logger as StoreLogger,
-      bm25Encoder: this.sharedBm25Encoder ?? undefined,
-    });
-
-    return {
-      store,
-      // #123 注入点①（TCVDB）：向量由 TCVDB collection 服务端生成，客户端无 embedding 能力。
-      // 这是**合法的服务端占位**，不是「客户端 embedding 可用」——hasClientEmbedding() 判 provider='noop'
-      // 会返回 false，/health 如实标 degraded（server.ts 探针 reason=noop-embedder），
-      // 避免旧行为「Noop.isReady() 恒 true ⇒ 恒绿 ⇒ 静默空转」。
-      embedding: new NoopEmbeddingService() as unknown as EmbeddingService,
-      bm25Encoder: this.sharedBm25Encoder,
-    };
-  }
 
   // ════════════════════════════════════════════════════════
   // Internal — SQLite Store
@@ -418,14 +302,6 @@ export class StorePool {
       return path.join(this.dataDir, "vectors.db");
     }
     return path.join(this.dataDir, "instances", instanceId, "vectors.db");
-  }
-
-  // ════════════════════════════════════════════════════════
-  // Internal — Common
-  // ════════════════════════════════════════════════════════
-
-  private computeFingerprint(cfg: VdbConfig): string {
-    return `tcvdb:${cfg.url}|${cfg.database}|${cfg.apiKey}`;
   }
 
   private async closeEntry(instanceId: string, entry: PoolEntry): Promise<void> {

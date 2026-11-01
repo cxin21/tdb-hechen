@@ -17,9 +17,6 @@ import http from "node:http";
 import { getObservabilityBackend } from "./factory.js";
 import type { ISpan } from "./types.js";
 
-// 重导出 Span 类型（保持向后兼容）
-export type { Span } from "@opentelemetry/api";
-
 /**
  * 包装 HTTP 请求处理器，添加 Trace 埋点。
  *

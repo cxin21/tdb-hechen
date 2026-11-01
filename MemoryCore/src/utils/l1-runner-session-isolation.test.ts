@@ -21,7 +21,7 @@ import path from "node:path";
 
 import { createL1Runner } from "./pipeline-factory.js";
 import { CheckpointManager } from "./checkpoint.js";
-import { metricProducer } from "../core/report/kafka-metric-producer.js";
+import { metricProducer } from "../core/report/metric-producer.js";
 
 type Row = { id: string; role: "user" | "assistant"; content: string; timestamp: number; recordedAtMs: number };
 

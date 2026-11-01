@@ -22,7 +22,10 @@ export interface ApiTracePolicy {
 }
 
 export function resolveProfile(backend: MetadataBackend = "sqlite"): ApiTraceProfile {
-  return backend === "mongodb" ? "full" : "lite";
+  // MongoDB 后端已在 DSH-only 构建中退场（docs/adr/0021），"full" 档位随之退场：
+  // 只剩 sqlite，档位恒为 "lite"。参数保留是为了不改调用方签名。
+  void backend;
+  return "lite";
 }
 
 export function resolvePolicy(backend: MetadataBackend = "sqlite"): ApiTracePolicy {

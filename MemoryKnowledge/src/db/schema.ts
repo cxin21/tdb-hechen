@@ -132,13 +132,14 @@ export const knowledgeCodeGraphAudit = sqliteTable(
 
 // ───────────────────────── llm_binding ─────────────────────────
 // Per-instance (service_id) LLM routing for wiki ingest/summary.
-// mode='proxy' → call context_proxy with a dedicated knowledge-service user_key;
-// mode='byo'   → call a user-supplied OpenAI-compatible endpoint.
-
+// DSH 特化（Wave 3）：mode 只写 'custom' —— 该 instance 直连一个 OpenAI 兼容端点。
+// 历史注记：mode='proxy'（走 context_proxy 的 knowledge-service 记账通道）与
+// proxy_base_url 列已随 MemoryProxy 退场；老库可能仍有该列与 mode='proxy' 行，
+// 读取侧标 migration_required、解析侧 fail-loud（见 store/llm-binding-store.ts）。
+// mode='byo' 是 'custom' 的历史别名，读取时归一。
 export const llmBinding = sqliteTable("llm_binding", {
   serviceId: text("service_id").primaryKey(),
-  mode: text("mode").notNull().default("proxy"),
-  proxyBaseUrl: text("proxy_base_url"),
+  mode: text("mode").notNull().default("custom"),
   apiKey: text("api_key"),
   baseUrl: text("base_url"),
   enabled: integer("enabled").notNull().default(1),

@@ -22,7 +22,7 @@ import { extractSceneBatches } from "./scene-batch-split.js";
 import { readConversationMessagesGroupedBySessionId } from "../core/conversation/l0-recorder.js";
 import type { ConversationMessage } from "../core/conversation/l0-recorder.js";
 import { CheckpointManager } from "./checkpoint.js";
-import { metricProducer } from "../core/report/kafka-metric-producer.js";
+import { metricProducer } from "../core/report/metric-producer.js";
 import { compileSessionIgnorePatterns, DEFAULT_IGNORE_SESSION_PATTERNS } from "./session-ignore.js";
 import type { PipelineSessionState } from "./checkpoint.js";
 import { createStoreBundle } from "../core/store/factory.js";

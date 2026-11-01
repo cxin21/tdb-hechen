@@ -585,21 +585,22 @@ POST /v3/tools/list
 
 ### POST /v3/internal/llm-binding/set
 
-upsert binding（`proxy`\|`byo`）。**幂等**：重复 set 覆盖。
+upsert binding（**只剩 `custom`**）。**幂等**：重复 set 覆盖。
+
+> DSH 特化（Wave 3）：`mode=proxy`（旧 MemoryProxy 记账通道）与 `mode=byo`（custom 的历史别名）**均已退役**，写面一律 400；`proxy_base_url` 字段也不再被接受（带上即 400 —— 静默忽略会让调用方误以为设置成功）。
 
 **请求体**
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| mode | string | 是 | `proxy` / `byo` |
-| proxy_base_url | string | proxy 必填 | 代理 LLM 地址 |
-| base_url | string | byo 必填 | 自建 LLM 地址 |
+| mode | string | 是 | 只接受 `custom`（`proxy` / `byo` 已退役 → 400）|
+| base_url | string | 是 | 该 instance 直连的 OpenAI 兼容端点 |
 | api_key | string | 首次必填 | 已存在记录不传则保留原值 |
 | enabled | boolean | 否 | 默认 true |
 
 **响应** `data`：`{ service_id, mode, enabled, updated_at }`（**不含 api_key**）。
 
-**错误**：`400`(mode 非法 / 缺地址 / 首次缺 api_key)。
+**错误**：`400`(mode 非 custom / 未知或退役字段 / 缺 base_url / 首次缺 api_key)。
 
 ### POST /v3/internal/llm-binding/status
 
@@ -612,14 +613,16 @@ upsert binding（`proxy`\|`byo`）。**幂等**：重复 set 覆盖。
 | bound | boolean | 是否已配置 binding |
 | mode | string\|null | `proxy` / `byo`；未配置为 `null` |
 | enabled | boolean | 是否启用；未配置为 `false` |
+| migration_required | boolean | 库里是遗留 `proxy` 绑定时为 true，须先迁移 |
 
-> 未配置时返回 `{ bound: false, mode: null, enabled: false }`。
+> 未配置时返回 `{ bound: false, mode: null, enabled: false, migration_required: false }`。
+> 遗留 `mode=proxy` 的行：status/list 只标 `migration_required`；真正解析配置（wiki ingest）时抛 `LLM_BINDING_MODE_RETIRED` 并带迁移命令 —— 不会静默按 custom 走。
 
 ### POST /v3/internal/llm-binding/list
 
 列出全部 binding（**不需要 `x-tdai-service-id` 头**）。
 
-**响应** `data`：`{ items: [{ service_id, mode, proxy_base_url, base_url, has_api_key, enabled }] }`。
+**响应** `data`：`{ items: [{ service_id, mode, base_url, has_api_key, enabled, migration_required }] }`（不再返回 `proxy_base_url`）。
 
 ---
 

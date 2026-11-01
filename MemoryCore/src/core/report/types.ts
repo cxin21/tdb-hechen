@@ -154,13 +154,17 @@ export interface MetricMessage {
   traceId?: string;
 }
 
-/** Kafka Metric 配置 */
+/**
+ * Metric 后端配置。
+ *
+ * 历史上这是 Kafka Producer 的配置形状（brokers/topic/enabled）。Kafka 已在
+ * DSH-only 构建中退场（docs/adr/0021），但 noop/console 后端的 initialize()
+ * 仍按此形状接收配置，故保留为「可选字段」的空壳，避免改动 IMetricBackend 契约。
+ */
 export interface MetricBackendConfig {
-  /** Kafka Broker 列表 */
-  brokers: string[];
-  /** Topic 名称 (默认: "memory_monitor") */
+  /** 已退场：仅为兼容旧配置形状保留，无消费者 */
+  brokers?: string[];
   topic?: string;
-  /** 是否启用 (默认: false) */
   enabled?: boolean;
 }
 
@@ -189,18 +193,6 @@ export interface IMetricBackend {
 // ============================
 // ILLMTraceBackend — AI/LLM Trace 抽象
 // ============================
-
-/** Langfuse 配置 */
-export interface LLMTraceConfig {
-  /** 是否启用 */
-  enabled: boolean;
-  /** Langfuse 实例地址 */
-  host?: string;
-  /** Langfuse 公钥 */
-  publicKey?: string;
-  /** Langfuse 私钥 */
-  secretKey?: string;
-}
 
 /**
  * LLM Trace 后端接口。
@@ -341,69 +333,19 @@ export interface IObservabilityBackend {
 // Configuration
 // ============================
 
-/** OTel 配置 */
-export interface OTelConfig {
-  /** 是否启用 */
-  enabled: boolean;
-  /** OTel Collector 端点 */
-  endpoint?: string;
-  /** 协议 (grpc | http | http/protobuf) */
-  protocol?: "grpc" | "http" | "http/protobuf";
-  /** 服务名 */
-  serviceName?: string;
-  /** 租户 ID */
-  tenantId?: string;
-}
-
-/** ClickHouse 配置 */
-export interface ClickHouseConfig {
-  /** 是否启用 */
-  enabled: boolean;
-  /** ClickHouse HTTP 端点 */
-  endpoint?: string;
-  /** 用户名 */
-  username?: string;
-  /** 密码 */
-  password?: string;
-  /** 数据库名 */
-  database?: string;
-}
-
 /**
  * 可观测性总配置。
  *
- * 后端类型说明：
- * - "noop"     — 空操作，零开销（默认，不配置时使用）
- * - "console"  — 输出到 stdout，用于开发调试
- * - "otlp"     — 标准 OTLP 协议后端（开源用户推荐）
- *                配置 otel.endpoint 即可将 Trace/Log/Metric 上报到任何支持 OTLP 的后端
- *                （如 ClickHouse、Jaeger、Grafana Tempo/Loki/Mimir、SigNoz、OTel Collector 等）
- * - "internal" — 内部私有模块（通过 git submodule 引入，智研 + Kafka + Langfuse）
+ * DSH-only 构建只保留两个后端（docs/adr/0021）：
+ * - "noop"    — 空操作，零开销（默认）
+ * - "console" — 输出到 stdout，用于开发调试
+ *
+ * 其余后端（otlp / internal / clickhouse / kafka / langfuse）已整组退场，
+ * 读到即抛错（见 factory.ts createObservabilityBackend）。
  */
 export interface ObservabilityConfig {
-  /** 后端类型：noop | console | otlp | internal */
-  type: "noop" | "console" | "otlp" | "internal" | string;
-
-  /**
-   * OTel 配置（otlp 和 internal 模式使用）。
-   *
-   * 开源用户使用 "otlp" 模式时，只需配置：
-   *   otel: {
-   *     enabled: true,
-   *     endpoint: "http://localhost:4318",  // 你的 OTLP 后端地址
-   *     serviceName: "my-memory-service",   // 可选，默认 "tdai-memory"
-   *   }
-   */
-  otel?: OTelConfig;
-
-  /** ClickHouse 配置（internal 模式使用） */
-  clickhouse?: ClickHouseConfig;
-
-  /** Kafka Metric 配置（internal 模式使用） */
-  kafka?: MetricBackendConfig;
-
-  /** Langfuse LLM Trace 配置（internal 模式使用） */
-  langfuse?: LLMTraceConfig;
+  /** 后端类型：noop | console（其它值一律视为已退场并抛错） */
+  type: "noop" | "console";
 }
 
 // ============================

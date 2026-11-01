@@ -27,7 +27,7 @@
  *   5. llmDurationMs 为 null 表示无 LLM 调用计时，不上报 l2_llm_duration_ms
  */
 
-import { metricProducer } from "./kafka-metric-producer.js";
+import { metricProducer } from "./metric-producer.js";
 
 // ============================
 // Input Interface

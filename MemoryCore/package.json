@@ -4,17 +4,13 @@
   "description": "Four-layer local memory system plugin for DeepSeek Harness — auto-captures, structures, and profiles conversational knowledge using local LLM + SQLite vector search (L0→L1→L2→L3 pipeline)",
   "type": "module",
   "bin": {
-    "migrate-sqlite-to-tcvdb": "./bin/migrate-sqlite-to-tcvdb.mjs",
-    "export-tencent-vdb": "./bin/export-tencent-vdb.mjs",
     "read-local-memory": "./bin/read-local-memory.mjs"
   },
   "scripts": {
     "build": "npm run build:scripts",
-    "build:scripts": "npm run build:migrate-sqlite-to-vdb && npm run build:export-tencent-vdb && npm run build:read-local-memory",
+    "build:scripts": "npm run build:read-local-memory",
     "prepack": "npm run build",
-    "build:migrate-sqlite-to-vdb": "tsc -p scripts/migrate-sqlite-to-tcvdb/tsconfig.json --noEmitOnError false",
     "migrate-sqlite-to-tcvdb": "node ./bin/migrate-sqlite-to-tcvdb.mjs",
-    "build:export-tencent-vdb": "tsc --project scripts/export-tencent-vdb/tsconfig.json",
     "export-tencent-vdb": "node ./bin/export-tencent-vdb.mjs",
     "build:read-local-memory": "tsc --project scripts/read-local-memory/tsconfig.json",
     "read-local-memory": "node ./bin/read-local-memory.mjs",
@@ -47,15 +43,8 @@
     "audit:e3:summarize": "node scripts/audit/r143-e3-review.mjs summarize"
   },
   "files": [
-    "bin/migrate-sqlite-to-tcvdb.mjs",
-    "bin/export-tencent-vdb.mjs",
     "bin/read-local-memory.mjs",
-    "scripts/migrate-sqlite-to-tcvdb/dist/",
-    "scripts/export-tencent-vdb/dist/",
     "scripts/read-local-memory/dist/",
-    "scripts/import-opik-to-memory-core/",
-    "scripts/memory-tencentdb-ctl.sh",
-    "scripts/README.memory-tencentdb-ctl.md",
     "src",
     "README.md",
     "README_CN.md",
@@ -88,19 +77,8 @@
     "@ai-sdk/openai-compatible": "^2.0.75",
     "@huggingface/transformers": "^4.3.1",
     "@node-rs/jieba": "^2.0.1",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/api-logs": "^0.218.0",
-    "@opentelemetry/exporter-logs-otlp-http": "^0.218.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
-    "@opentelemetry/resources": "^2.7.1",
-    "@opentelemetry/sdk-logs": "^0.218.0",
-    "@opentelemetry/sdk-node": "^0.218.0",
-    "@opentelemetry/sdk-trace-base": "^2.7.1",
-    "@opentelemetry/semantic-conventions": "^1.41.1",
-    "@tencentdb-agent-memory/memory-sdk-ts-v2": "1.0.1-beta.1",
     "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
     "ai": "^6.0.164",
-    "crc-32": "^1.2.2",
     "dayjs": "^1.11.20",
     "fflate": "^0.8.3",
     "js-tiktoken": "^1.0.18",
@@ -112,15 +90,6 @@
     "undici": "^8.1.0",
     "yaml": "^2.8.3",
     "zod": "^4.4.3"
-  },
-  "optionalDependencies": {
-    "@clickhouse/client": "^1.18.5",
-    "@opentelemetry/context-async-hooks": "^2.7.1",
-    "@opentelemetry/exporter-logs-otlp-grpc": "^0.218.0",
-    "@opentelemetry/exporter-trace-otlp-grpc": "^0.218.0",
-    "ioredis": "^5.10.1",
-    "kafkajs": "^2.2.4",
-    "mongodb": "^6.21.0"
   },
   "peerDependencies": {
     "node-llama-cpp": "^3.16.2"
@@ -138,7 +107,6 @@
     "@kubb/plugin-zod": "^4.37.7",
     "@types/node": "^25.5.2",
     "@vitest/coverage-v8": "^4.1.2",
-    "mongodb-memory-server": "^10.4.3",
     "prettier": "^3.9.10",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"

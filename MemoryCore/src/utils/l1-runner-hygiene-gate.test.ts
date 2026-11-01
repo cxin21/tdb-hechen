@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { metricProducer } from "../core/report/kafka-metric-producer.js";
+import { metricProducer } from "../core/report/metric-producer.js";
 import { CheckpointManager } from "./checkpoint.js";
 import { createL1Runner } from "./pipeline-factory.js";
 

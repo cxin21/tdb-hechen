@@ -31,7 +31,6 @@ import type {
   ExtractorLogger,
   ISkillExtractor,
 } from "../queue/types.js";
-import { runInRootContext } from "../../report/otel-context.js";
 import { classifyTaskFailure, describeTaskFailure, type TaskFailure } from "../../../utils/task-failure.js";
 import { obsLogger } from "../../report/obs-logger.js";
 import { trace } from "../../report/trace.js";
@@ -162,7 +161,8 @@ export class SkillConversationExtractWorker {
     // 永久继承"启动那一刻"的 active span，导致之后每次抽取的 LLM span 都挂进
     // 那条请求 trace，被 Langfuse 合并成一条（tags 跨多 agent、sessionId 混乱）。
     // 详见 report/otel-context.ts。
-    this.loopPromise = runInRootContext(() => this.runLoop());
+    // OTel trace 通路已退场（docs/adr/0021），不再需要 ROOT_CONTEXT 隔离包装。
+    this.loopPromise = this.runLoop();
     // 静默 unhandled rejection
     this.loopPromise.catch(() => { /* logged inside */ });
   }

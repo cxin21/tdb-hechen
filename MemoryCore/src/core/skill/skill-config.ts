@@ -72,22 +72,8 @@ export function resolveSkillConfig(
   const degradations: SkillDegradation[] = [];
 
   // --------------- store ---------------
-  const requestedStore =
-    input.storeBackend ?? probe.outerStoreBackend ?? "sqlite";
-  let storeBackend: "sqlite" | "tcvdb" = requestedStore;
-  if (storeBackend === "tcvdb" && !probe.hasTcvdbCredentials) {
-    degradations.push({
-      field: "storeBackend",
-      from: "tcvdb",
-      to: "sqlite",
-      reason: "TCVDB credentials missing (url / apiKey / database)",
-      level: "warn",
-    });
-    logger.warn(
-      `${TAG} storeBackend=tcvdb requested but credentials missing — degrading to sqlite`,
-    );
-    storeBackend = "sqlite";
-  }
+  // TCVDB retired in the DSH-only build (docs/adr/0021): the only skill backend is sqlite.
+  const storeBackend: "sqlite" = "sqlite";
 
   // --------------- content ---------------
   const explicitContent = input.contentBackend;

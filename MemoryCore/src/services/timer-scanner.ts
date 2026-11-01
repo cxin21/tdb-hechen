@@ -232,15 +232,9 @@ export class TimerScanner {
 export async function startTimerScanner(): Promise<TimerScanner> {
   const { createStateBackend } = await import("../core/state/index.js");
 
-  const backend = await createStateBackend({
-    type: (process.env.STATE_BACKEND as "redis" | "local") || "redis",
-    redis: {
-      host: process.env.REDIS_HOST || "127.0.0.1",
-      port: parseInt(process.env.REDIS_PORT || "6379", 10),
-      password: process.env.REDIS_PASSWORD || undefined,
-      keyPrefix: process.env.REDIS_KEY_PREFIX || "tdai_memory",
-    },
-  });
+  // DSH-only: the Redis state backend was retired (docs/adr/0021); the standalone entry
+  // point therefore always builds the in-process local backend.
+  const backend = await createStateBackend({ type: "local" });
 
   const scanner = new TimerScanner(backend, {
     scanIntervalMs: parseInt(process.env.SCANNER_INTERVAL_MS || "2000", 10),

@@ -26,9 +26,6 @@
 import { getObservabilityBackend } from "./factory.js";
 import type { TraceAttrs, ISpan } from "./types.js";
 
-// 从 @opentelemetry/api 重导出 Span 类型（仅类型，不影响运行时）
-export type { Span } from "@opentelemetry/api";
-
 export type { TraceAttrs } from "./types.js";
 
 /**

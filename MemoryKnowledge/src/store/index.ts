@@ -37,13 +37,19 @@ export {
 export { BuildQueue } from "./build-queue.js";
 export { SerialQueue } from "./serial-queue.js";
 
-export { createLlmBindingStore, resolveLlmConfig } from "./llm-binding-store.js";
+export {
+  createLlmBindingStore,
+  resolveLlmConfig,
+  LlmBindingRetiredError,
+  LLM_BINDING_PROXY_RETIRED_HINT,
+} from "./llm-binding-store.js";
 export type {
   ILlmBindingStore,
   LlmBindingRow,
   LlmBindingInput,
   LlmBindingStatus,
   LlmBindingMode,
+  StoredLlmBindingMode,
 } from "./llm-binding-store.js";
 
 export { CodeGraphService } from "./code-graph-service.js";

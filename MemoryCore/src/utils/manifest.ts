@@ -19,17 +19,18 @@ import path from "node:path";
 // Types
 // ============================
 
+/**
+ * Manifest 里记录的 store 绑定。
+ *
+ * 历史上还有 type="tcvdb" 分支（TCVDB 服务模式）。该后端已在 DSH-only 构建中
+ * 整体退场（docs/adr/0021），新写的 manifest 只会是 sqlite；读旧 manifest 时若
+ * 遇到 type="tcvdb"，diffStoreBinding 会报 "store type changed: tcvdb → sqlite"。
+ */
 export interface ManifestStoreInfo {
-  type: "sqlite" | "tcvdb";
+  type: "sqlite";
   sqlite?: {
     /** Relative path to the SQLite DB file (relative to dataDir). */
     path: string;
-  };
-  tcvdb?: {
-    url: string;
-    database: string;
-    /** User-friendly alias (optional). */
-    alias?: string;
   };
 }
 
@@ -101,28 +102,15 @@ export function writeManifest(dataDir: string, manifest: Manifest): void {
 // ============================
 
 export interface StoreConfigSnapshot {
-  type: "sqlite" | "tcvdb";
+  type: "sqlite";
   sqlitePath?: string;
-  tcvdbUrl?: string;
-  tcvdbDatabase?: string;
-  tcvdbAlias?: string;
 }
 
 /**
  * Build a ManifestStoreInfo from the current store config snapshot.
  */
 export function buildStoreInfo(snapshot: StoreConfigSnapshot): ManifestStoreInfo {
-  const info: ManifestStoreInfo = { type: snapshot.type };
-  if (snapshot.type === "sqlite") {
-    info.sqlite = { path: snapshot.sqlitePath ?? "vectors.db" };
-  } else {
-    info.tcvdb = {
-      url: snapshot.tcvdbUrl!,
-      database: snapshot.tcvdbDatabase!,
-      alias: snapshot.tcvdbAlias || undefined,
-    };
-  }
-  return info;
+  return { type: snapshot.type, sqlite: { path: snapshot.sqlitePath ?? "vectors.db" } };
 }
 
 /**
@@ -143,15 +131,6 @@ export function diffStoreBinding(
   if (persisted.type === "sqlite" && current.type === "sqlite") {
     if (persisted.sqlite?.path !== current.sqlite?.path) {
       diffs.push(`sqlite path changed: ${persisted.sqlite?.path} → ${current.sqlite?.path}`);
-    }
-  }
-
-  if (persisted.type === "tcvdb" && current.type === "tcvdb") {
-    if (persisted.tcvdb?.url !== current.tcvdb?.url) {
-      diffs.push(`tcvdb url changed: ${persisted.tcvdb?.url} → ${current.tcvdb?.url}`);
-    }
-    if (persisted.tcvdb?.database !== current.tcvdb?.database) {
-      diffs.push(`tcvdb database changed: ${persisted.tcvdb?.database} → ${current.tcvdb?.database}`);
     }
   }
 

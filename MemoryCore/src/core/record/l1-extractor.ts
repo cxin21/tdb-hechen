@@ -103,7 +103,7 @@ import { applyPromiseEvidence, collectPromiseEvidenceFromExtraction, promiseEvid
 import type { L1SearchResult } from "../store/types.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import { report } from "../report/reporter.js";
-import { metricProducer } from "../report/kafka-metric-producer.js";
+import { metricProducer } from "../report/metric-producer.js";
 import { reportL1LatencyMetrics } from "../report/metric-tracking-l1-latency.js";
 import type { LLMRunner, Logger, TraceContext } from "../types.js";
 import { buildTraceParams } from "../types.js";

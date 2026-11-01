@@ -19,15 +19,12 @@ function expandHome(filepath: string): string {
 
 export interface LlmConfig {
   /**
-   * Global default routing when NO per-instance llm_binding exists:
-   *   - 'proxy' (default): wiki ingest must go through context_proxy via a
-   *     TMC-pushed binding. No silent direct fallback — if a binding is missing,
-   *     ingest fails loudly (see resolveLlmConfig / createLlmClient).
-   *   - 'custom': use the global baseUrl/apiKey below to call an OpenAI-compatible
-   *     endpoint directly (BYO).
-   * Per-instance bindings always override this default.
+   * 全局 LLM 路由。DSH 特化（Wave 3）后只剩 'custom'：用下面的 baseUrl/apiKey 直连一个
+   * OpenAI 兼容端点。历史注记：'proxy'（经 MemoryProxy 的 per-instance 记账通道）已随
+   * MemoryProxy 退场，环境里残留 LLM_MODE=proxy 会在加载配置时直接抛错（见 resolveGlobalLlmMode）。
+   * Per-instance 绑定（llm_binding mode='custom'）仍然优先于此默认。
    */
-  mode: "proxy" | "custom";
+  mode: "custom";
   /** LLM 协议：openai 走 /chat/completions，anthropic 走 /messages。默认 openai（向后兼容）。 */
   protocol: "openai" | "anthropic";
   provider: string;
@@ -167,6 +164,24 @@ function envBool(key: string, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(val.toLowerCase());
 }
 
+/**
+ * 全局 LLM 路由模式。DSH 特化（Wave 3）后只剩 'custom'（直连 LLM_BASE_URL / LLM_API_KEY）。
+ * 历史注记：'proxy' 原表示「走 MemoryProxy 的 per-instance 记账通道」，MemoryProxy 已整包退场，
+ * 该值现在是死路 —— 环境里残留时**直接抛错并给迁移命令**（fail-loud），绝不静默降级。
+ */
+function resolveGlobalLlmMode(): "custom" {
+  const raw = (process.env.LLM_MODE ?? "").trim().toLowerCase();
+  if (raw === "" || raw === "custom") return "custom";
+  if (raw === "proxy") {
+    throw new Error(
+      "LLM_MODE=proxy is retired（MemoryProxy 已随 DSH 特化退场）：请改为 LLM_MODE=custom 并配置 " +
+        "LLM_BASE_URL + LLM_API_KEY；若用 per-instance 绑定，则 POST /v3/internal/llm-binding/set 传 " +
+        "mode='custom' + base_url + api_key。",
+    );
+  }
+  throw new Error(`LLM_MODE=${raw} 不是合法值：只接受 'custom'（'proxy' / 'byo' 均已退役）。`);
+}
+
 function validateClickHouseConfig(config: ClickHouseTelemetryConfig): void {
   if (!config.enabled) return;
   if (!config.url) throw new Error("KNOWLEDGE_CLICKHOUSE_URL is required when telemetry is enabled");
@@ -217,10 +232,10 @@ export function loadConfig(): ServiceConfig {
     clickhouse,
     auth: { serviceKey: env("KNOWLEDGE_SERVICE_KEY", "") },
     llm: {
-      // DSH 特化（Wave 2A）：MemoryProxy 已退出链路，缺省改为 custom（BYO 直连 LLM_BASE_URL）。
-      // 仍可显式设 LLM_MODE=proxy 走旧的 per-instance proxy 绑定，但不再是缺省 ——
-      // 否则没有 proxy 时 wiki ingest 会在第一次调用就报错（不静默直连）。
-      mode: env("LLM_MODE", "custom") === "proxy" ? "proxy" : "custom",
+      // DSH 特化（Wave 3）：LLM_MODE 不再是路由开关 —— MemoryProxy 已退场，只剩
+      // 「直连自带端点」一种语义。环境里残留 LLM_MODE=proxy 时**直接抛错**（fail-loud），
+      // 不静默忽略、也不静默直连。
+      mode: resolveGlobalLlmMode(),
       protocol: env("LLM_PROTOCOL", "openai") === "anthropic" ? "anthropic" : "openai",
       provider: env("LLM_PROVIDER", "custom"),
       apiKey: env("LLM_API_KEY", ""),

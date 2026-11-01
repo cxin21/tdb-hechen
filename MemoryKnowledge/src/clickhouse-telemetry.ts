@@ -144,7 +144,9 @@ function tableDdl(config: ClickHouseTelemetryConfig): string {
     "  request_body_hash FixedString(16) DEFAULT '',",
     "  upstream_status UInt16 DEFAULT 0,",
     "  elapsed_ms UInt32 DEFAULT 0,",
-    "  source_tag LowCardinality(String) DEFAULT 'proxy',",
+    // 历史注记：该列默认值原为 'proxy'（早期经 MemoryProxy 写入的埋点）；MemoryProxy 已退场，
+    // 现行写入统一带 source_tag='knowledge'（见本文件上方 values），故默认值同步对齐。
+    "  source_tag LowCardinality(String) DEFAULT 'knowledge',",
     "  host LowCardinality(String)",
     ") ENGINE = MergeTree()",
     "ORDER BY (space_id, session_key, timestamp)",

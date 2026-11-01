@@ -14,7 +14,7 @@
  *   5. 召回 0 条时仍上报 hit_count=0 + latency，但不上报 top_score
  */
 
-import { metricProducer } from "./kafka-metric-producer.js";
+import { metricProducer } from "./metric-producer.js";
 
 // ============================
 // Strategy Encoding (numeric for ClickHouse storage)

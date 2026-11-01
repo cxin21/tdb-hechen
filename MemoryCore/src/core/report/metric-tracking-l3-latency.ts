@@ -23,7 +23,7 @@
  *   4. 无 instanceId 时不上报
  */
 
-import { metricProducer } from "./kafka-metric-producer.js";
+import { metricProducer } from "./metric-producer.js";
 
 // ============================
 // Input Interface

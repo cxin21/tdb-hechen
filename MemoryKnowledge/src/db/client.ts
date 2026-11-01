@@ -147,8 +147,7 @@ export function migrate(_db: Db, raw: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS llm_binding (
       service_id     TEXT PRIMARY KEY,
-      mode           TEXT NOT NULL DEFAULT 'proxy',
-      proxy_base_url TEXT,
+      mode           TEXT NOT NULL DEFAULT 'custom',
       api_key        TEXT,
       model          TEXT,
       base_url       TEXT,

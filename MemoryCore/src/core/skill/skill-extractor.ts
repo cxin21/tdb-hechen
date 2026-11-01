@@ -18,7 +18,7 @@ import type {
   ConversationMessage,
   ExtractedCandidate,
 } from "./queue/types.js";
-import { metricProducer } from "../report/kafka-metric-producer.js";
+import { metricProducer } from "../report/metric-producer.js";
 import { trace } from "../report/trace.js";
 import { obsLogger } from "../report/obs-logger.js";
 

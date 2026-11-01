@@ -22,9 +22,6 @@ export type {
   LogAttrs,
   MetricMessage,
   MetricBackendConfig,
-  LLMTraceConfig,
-  OTelConfig,
-  ClickHouseConfig,
   ObservabilityConfig,
   ObservabilityLogger,
 } from "./types.js";
@@ -62,33 +59,16 @@ export {
   ConsoleTracePropagation,
 } from "./console-backend.js";
 
-export {
-  OtlpObservabilityBackend,
-  OtlpTraceBackend,
-  OtlpLogBackend,
-  OtlpMetricBackend,
-  OtlpLLMTraceBackend,
-  OtlpTraceMiddleware,
-  OtlpTracePropagation,
-} from "./otlp-backend.js";
-
 // ============================
 // Facade Modules (backward-compatible)
 // ============================
 export { trace } from "./trace.js";
 export { log } from "./log.js";
 export { obsLogger } from "./obs-logger.js";
-export { metricProducer, calculatePartition } from "./kafka-metric-producer.js";
+export { metricProducer } from "./metric-producer.js";
 export { wrapWithTrace, startChildSpan, withSpan } from "./trace-middleware.js";
-export { serializeTraceContext, deserializeTraceContext } from "./trace-propagation.js";
+export { serializeTraceContext } from "./trace-context.js";
 export { TracedTaskExecutor } from "./traced-task-executor.js";
-export {
-  LangfuseFilteringProcessor,
-  parseLangfuseConfig,
-  isLLMRelatedSpan,
-  createLangfuseSpanProcessor,
-} from "./langfuse-span-processor.js";
-export type { LangfuseConfig, LangfuseConfigEnabled, LangfuseConfigDisabled } from "./langfuse-span-processor.js";
 
 // ============================
 // Metric Tracking (unchanged)

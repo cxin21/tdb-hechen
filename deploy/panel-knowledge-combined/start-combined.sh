@@ -109,8 +109,9 @@ KNOWLEDGE_SERVICE_KEY="${KS_SERVICE_KEY}" \
   | tee -a "$KNOWLEDGE_LOG" &
 KNOWLEDGE_PID=$!
 
-# 等 KS 就绪再起 panel：panel 启动时会调 KS /v3/internal/llm-binding/status
-# 检查 binding 是否存在（ensureKnowledgeLlmBindings），KS 没起来会 fetch failed。
+# 等 KS 就绪再起 panel：panel 的知识页走 KS 的 /v3 数据面，/health 是就绪锚。
+# 注：panel 侧的 ensureKnowledgeLlmBindings（启动期调 KS llm-binding/status）已随
+# DSH 特化 Wave 2A 移除，不再有它引起的 fetch failed；这里的等待纯粹是数据面依赖。
 for i in $(seq 1 120); do
   if curl -fsS "http://127.0.0.1:${KNOWLEDGE_PORT}/health" >/dev/null 2>&1; then
     echo "knowledge service ready on :${KNOWLEDGE_PORT}"

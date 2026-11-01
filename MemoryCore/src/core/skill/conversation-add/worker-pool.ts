@@ -26,7 +26,6 @@ import {
 } from "./agent-task-queue.js";
 import type { SkillBufferStorage } from "./buffer-storage.js";
 import type { ExtractorLogger, ISkillExtractor } from "../queue/types.js";
-import { runInRootContext } from "../../report/otel-context.js";
 import { obsLogger } from "../../report/obs-logger.js";
 import {
   SkillConversationExtractWorker,
@@ -178,7 +177,7 @@ export class SkillWorkerPool {
     // ROOT_CONTEXT 里跑 (跟老 SkillConversationExtractWorker 对齐), 防止
     // 无限循环继承"启动那一刻"的 active span 污染 LLM trace。
     for (let i = 0; i < n; i++) {
-      const p = runInRootContext(() => this.workerLoop(i));
+      const p = this.workerLoop(i);
       p.catch(() => { /* logged inside */ });
       this.loopPromises.push(p);
     }

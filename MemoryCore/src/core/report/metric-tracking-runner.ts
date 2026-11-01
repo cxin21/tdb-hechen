@@ -36,7 +36,7 @@ import type {
   LLMRunnerFactory,
   LLMRunnerCreateOptions,
 } from "../types.js";
-import { metricProducer } from "./kafka-metric-producer.js";
+import { metricProducer } from "./metric-producer.js";
 
 // ============================
 // taskId → 指标名映射

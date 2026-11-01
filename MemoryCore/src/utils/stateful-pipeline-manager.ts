@@ -23,7 +23,7 @@ import { buildPipelineTimerMember } from "../core/state/timer-member.js";
 import type { PipelineSessionState as CheckpointPipelineSessionState } from "./checkpoint.js";
 import { SessionFilter } from "./session-filter.js";
 import { report } from "../core/report/reporter.js";
-import { serializeTraceContext } from "../core/report/trace-propagation.js";
+import { serializeTraceContext } from "../core/report/trace-context.js";
 
 // ============================
 // Types (兼容原 pipeline-manager.ts 导出)

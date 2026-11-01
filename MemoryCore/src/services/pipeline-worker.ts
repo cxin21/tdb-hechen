@@ -15,7 +15,7 @@
  */
 
 import type { IStateBackend, TaskPayload } from "../core/state/types.js";
-import { serializeTraceContext } from "../core/report/trace-propagation.js";
+import { serializeTraceContext } from "../core/report/trace-context.js";
 import { obsLogger } from "../core/report/obs-logger.js";
 import { describeTaskFailure, failureOf, planTaskRetry, type TaskFailure } from "../utils/task-failure.js";
 

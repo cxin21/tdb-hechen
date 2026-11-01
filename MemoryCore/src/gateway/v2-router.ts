@@ -1382,30 +1382,6 @@ async function handleConversationSearch(body: unknown, auth: V2AuthContext, requ
     // 静默失败
   }
 
-  // 非侵入式在当前 Span 上记录 recall query 和 results
-  try {
-    const otelApi = await import("@opentelemetry/api");
-    const activeSpan = otelApi.trace.getSpan(otelApi.context.active());
-    if (activeSpan) {
-      activeSpan.setAttribute("tdai.recall.query", query);
-      activeSpan.setAttribute("tdai.recall.hitCount", convResults.length);
-      activeSpan.setAttribute("tdai.recall.strategy", result.strategy || "unknown");
-      activeSpan.setAttribute("tdai.recall.level", "l0");
-      if (result.results.length > 0) {
-        activeSpan.setAttribute("tdai.recall.topScore", Math.max(...convResults.map(r => r.score)));
-        const truncatedResults = convResults.slice(0, 5).map(r => ({
-          content: r.content.substring(0, 200),
-          score: r.score,
-        }));
-        activeSpan.setAttribute("tdai.recall.results", JSON.stringify(truncatedResults));
-      } else {
-        activeSpan.setAttribute("tdai.recall.results", "[]");
-      }
-    }
-  } catch {
-    // 静默失败
-  }
-
   const messages: ConversationSearchHit[] = convResults.map((r) => ({
     id: r.id, role: r.role as ConversationSearchHit["role"], content: r.content, timestamp: r.recorded_at, score: r.score,
   }));
@@ -2029,41 +2005,6 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
       recallLatencyMs,
       hasError: false,
     });
-  } catch {
-    // 静默失败
-  }
-
-  // 非侵入式在当前 Span 上记录 recall query 和 results，供在线评测系统消费
-  try {
-    const { getObservabilityBackend } = await import("../core/report/factory.js");
-    const ctx = getObservabilityBackend().tracePropagation.serializeTraceContext();
-    if (ctx && (ctx as any)._traceId) {
-      // 通过 OTel API 在当前 span 上添加属性
-      try {
-        const otelApi = await import("@opentelemetry/api");
-        const activeSpan = otelApi.trace.getSpan(otelApi.context.active());
-        if (activeSpan) {
-          activeSpan.setAttribute("tdai.recall.query", query);
-          activeSpan.setAttribute("tdai.recall.hitCount", result.results.length);
-          activeSpan.setAttribute("tdai.recall.strategy", result.strategy || "unknown");
-          if (result.results.length > 0) {
-            activeSpan.setAttribute("tdai.recall.topScore", Math.max(...result.results.map(r => r.score)));
-            // 限制 results 属性长度（OTel 属性不宜过长），最多前 5 条
-            const truncatedResults = result.results.slice(0, 5).map(r => ({
-              content: r.content.substring(0, 200),
-              score: r.score,
-              type: r.type,
-            }));
-            activeSpan.setAttribute("tdai.recall.results", JSON.stringify(truncatedResults));
-          } else {
-            activeSpan.setAttribute("tdai.recall.results", "[]");
-          }
-          activeSpan.setAttribute("tdai.recall.level", type === "l0" ? "l0" : "l1");
-        }
-      } catch {
-        // OTel API 不可用时静默降级
-      }
-    }
   } catch {
     // 静默失败
   }

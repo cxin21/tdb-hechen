@@ -206,6 +206,13 @@ export interface IMetadataStore {
 }
 
 /** 后端类型。 */
-export type MetadataBackend = "sqlite" | "mongodb" | "mysql";
+/**
+ * 元数据后端。
+ *
+ * DSH-only 构建只保留 sqlite（docs/adr/0021）：mongodb 实现已删除，
+ * mysql 从未实现。留给调用方的是「读到别的值就抛错」的 fail-loud 校验，
+ * 见 metadata/store/factory.ts。
+ */
+export type MetadataBackend = "sqlite";
 
 export type { TeamRole };

@@ -107,14 +107,14 @@ export function createLlmClient(raw: RawLlmConfig | undefined): LlmClient {
   const config = normalizeLlmConfig(raw);
   if (!config.apiKey) {
     throw new Error(
-      "LLM apiKey 未配置：proxy 模式需 TMC 为该 service_id 推送 llm_binding；" +
-      "或设 LLM_MODE=custom + LLM_API_KEY 走自带端点",
+      "LLM apiKey 未配置：请设 LLM_API_KEY（全局直连），或为该 service_id 写 " +
+      "llm_binding（mode='custom' + base_url + api_key）",
     );
   }
   if (!config.baseUrl) {
     throw new Error(
-      "LLM baseUrl 未配置：proxy 模式需 TMC 为该 service_id 推送 llm_binding；" +
-      "或设 LLM_MODE=custom + LLM_BASE_URL 走自带端点",
+      "LLM baseUrl 未配置：请设 LLM_BASE_URL（全局直连），或为该 service_id 写 " +
+      "llm_binding（mode='custom' + base_url + api_key）",
     );
   }
 

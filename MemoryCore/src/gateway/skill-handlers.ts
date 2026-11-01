@@ -54,7 +54,7 @@ import { DEFAULT_OVERSIZE_OPTIONS } from "../core/skill/conversation-add/oversiz
 import { prepareArchivePayload } from "../core/skill/conversation-add/prepare-archive.js";
 import type { CompressibleMessage } from "../core/skill/conversation-add/message-compressor.js";
 import { trace } from "../core/report/trace.js";
-import { metricProducer } from "../core/report/kafka-metric-producer.js";
+import { metricProducer } from "../core/report/metric-producer.js";
 import { obsLogger } from "../core/report/obs-logger.js";
 
 const TAG = "[skill-handlers]";
