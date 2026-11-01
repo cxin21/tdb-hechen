@@ -369,7 +369,11 @@ export interface ServicesConfig {
   repoRoot: string;
   /** KEY=VALUE 的服务环境变量文件（含密钥）；空=只用宿主环境。 */
   envFile: string;
-  /** 跑服务的 node；空=用宿主自己的 process.execPath。 */
+  /**
+   * 跑服务的 node；空=先找 PATH 上的 `node`/`node.exe`，PATH 上没有才回落到
+   * `process.execPath` + `ELECTRON_RUN_AS_NODE=1`（宿主是 Electron，直接用它的
+   * 二进制会再开一个 GUI，不是跑服务）。
+   */
   nodePath: string;
   /** logtee 预载模块 URL；空=不预载。 */
   logteeModule: string;

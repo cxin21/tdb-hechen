@@ -30,6 +30,8 @@ interface HarnessOptions {
   healthTimeoutMs?: number;
   files?: Record<string, string>;
   livePids?: number[];
+  /** Simulate "the node path is the Electron binary" (see node-path.ts). */
+  electronRunAsNode?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -92,6 +94,9 @@ function harness(options: HarnessOptions = {}) {
     logDir: 'D:/repo/data/logs',
     runDir: 'D:/repo/data/run',
     statePath: STATE_PATH,
+    ...(options.electronRunAsNode !== undefined
+      ? { electronRunAsNode: options.electronRunAsNode }
+      : {}),
     ...(options.envFile !== undefined ? { envFile: options.envFile } : {}),
     autoRestart: options.autoRestart ?? true,
     maxRestarts: options.maxRestarts ?? 3,
@@ -183,6 +188,22 @@ describe('service supervisor: start order', () => {
     for (const tee of tees) expect(tee).toMatch(/\.out\.log\.tee\.log$/);
     // stdout/stderr are file descriptors we opened, not the host's console.
     expect(first!.options.stdio).toEqual(['ignore', 3, 3]);
+  });
+
+  it('marks the child as plain node when the node path is really the host binary', async () => {
+    const h = harness({ electronRunAsNode: true });
+    await h.supervisor.start();
+    for (const call of h.calls) {
+      // Without this the Electron binary would open a second GUI instead of
+      // running a service (services/node-path.ts explains when this happens).
+      expect(call.options.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    }
+  });
+
+  it('leaves ELECTRON_RUN_AS_NODE alone when a real node runs the services', async () => {
+    const h = harness();
+    await h.supervisor.start();
+    for (const call of h.calls) expect(call.options.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
   });
 
   it('aborts the order when a service never answers /health, and records why', async () => {

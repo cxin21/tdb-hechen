@@ -87,6 +87,12 @@ export interface SupervisorOptions {
   specs: readonly ServiceSpec[];
   /** Absolute path of the node executable that runs the services. */
   nodePath: string;
+  /**
+   * True when `nodePath` is really the Electron binary (the host itself): the
+   * child then needs ELECTRON_RUN_AS_NODE=1 or it opens a second GUI instead of
+   * running a service. See services/node-path.ts for how the default is chosen.
+   */
+  electronRunAsNode?: boolean;
   /** `--import file:///…/logtee.mjs` preload; '' disables the tee. */
   logteeModule?: string;
   /** Where per-run stdout/stderr/tee files go. */
@@ -321,6 +327,9 @@ export function createServiceSupervisor(options: SupervisorOptions): ServiceSupe
   async function childEnv(): Promise<Record<string, string | undefined>> {
     const ambient = options.ambientEnv ?? process.env;
     const env: Record<string, string | undefined> = { ...ambient };
+    // Set once, here, so every early return below carries it: a child launched as
+    // the Electron binary must be told to behave as plain node.
+    if (options.electronRunAsNode) env.ELECTRON_RUN_AS_NODE = '1';
     const envFile = options.envFile?.trim() ?? '';
     if (envFile === '') return env;
     let parsed: Awaited<ReturnType<typeof readEnvFile>>;

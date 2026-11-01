@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import type { AgememContext, LoggerLike } from '../types.js';
 import type { ServicesConfig } from '../config.js';
 import { startControlServer, createControlDispatcher, type ControlServer } from './control.js';
+import { resolveNodePath } from './node-path.js';
 import { defaultServiceTable, type ServiceSpec } from './service-table.js';
 import { createServiceSupervisor, type ServiceSupervisor, type SupervisorLog } from './supervisor.js';
 
@@ -107,10 +108,17 @@ export function installServices(input: InstallServicesInput): InstalledServices 
   const specs = defaultServiceTable({ repoRoot: config.repoRoot });
   const statePath =
     config.statePath !== '' ? config.statePath : join(config.runDir, 'tdb-services.state.json');
-  const nodePath = config.nodePath !== '' ? config.nodePath : (input.execPath ?? process.execPath);
+  const node = resolveNodePath({ configured: config.nodePath, execPath: input.execPath });
+  if (node.source === 'host') {
+    // Correct but surprising: the process list will show the host's own binary.
+    log?.warn?.('services: no node on PATH; launching services with the host binary + ELECTRON_RUN_AS_NODE=1 (set services.nodePath to silence this)');
+  } else {
+    log?.debug?.('services: node for the service stack = ' + node.path + ' (via ' + node.source + ')');
+  }
   const supervisor = (input.createSupervisor ?? createServiceSupervisor)({
     specs,
-    nodePath,
+    nodePath: node.path,
+    electronRunAsNode: node.electronRunAsNode,
     logteeModule: config.logteeModule,
     logDir: config.logDir,
     runDir: config.runDir,
