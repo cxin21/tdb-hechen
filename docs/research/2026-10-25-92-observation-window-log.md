@@ -37,6 +37,7 @@
 | 2026-10-29 | 同上；重启 00:50/11:43/12:27；yaml 13:36 被他票改动（gate 块不变） | 全 0；新提案 10 条（05:59–06:50Z） |
 | 2026-10-30 | 同上；重启 10:40–11:20 多次、23:00 重启（当前代，载入新 yaml） | 全 0；新提案 0 |
 | 2026-10-31 09:30 巡检 | 当前代 08:50–09:30 每 10 分钟连续 | 全 0；新提案 0 |
+| 2026-11-01 09:30 巡检 | 今日 8 代 core（00:29/00:39/02:08/02:11/03:57/07:49/07:52/08:29）全部有拍，共 48 行，当前代 08:29–09:29 每 10 分钟连续；yaml 03:02 又被改动（size 54639，gate 块完好） | 全 0；新提案 0；pending 10 条仍 count=1（10-29 群体，今日 13:59–14:50 +08 TTL 到期） |
 
 ## 2026-10-31 巡检（窗内第 5.5 天，全窗汇总）
 
@@ -59,6 +60,24 @@
 1. 继续观察，等自然复现（复现频率未知，可能 > 数周；零候选本身是保守设计的预期结果）；
 2. 调整观察窗 KPI 口径：由「精确率」改为「零误收 + 零门故障 + 提案质量抽样人工标注」的保守口径（需用户定线）；
 3. 或做 N₂/T₂ 对照实验（config 键已具备，变更需拍板，且会重置观察窗）。
+
+## 2026-11-01 巡检（窗内第 7 天）
+
+### 生产状态（只读）
+- supervisor startedAt=2026-11-01 08:29:27、restartsUsed=0；core PID 38712 起 08:29:11；/health 8420 ok、uptime 3653s（~1h）、vecRows=3514、warmup done。
+- 今日 core 共 8 代：00:29、00:39、02:08、02:11、03:57、07:49、07:52、08:29——重启频繁（他票/环境操作，非本票范围）。
+- yaml mtime=2026-11-01 03:02:23、size 54639（开窗 39920 / 10-29 49862）；gate 块 L597-617 完好：recurrence.enabled true / ttlHours 72、rateLimit.enabled true / maxNew 12 / windowHours 24、autoAdopt.enabled true / votes 4 / spanHours 72 / contradictionThreshold 0.6 / dupThreshold 0.75。当前 core（08:29 起）载入该 yaml。
+- 拍级：今日 48 行 `self_identity auto-adopt adopted=0 blocked=0 skipped=0`，各代 10 分钟节拍连续；全窗（含本日）零非零拍，无 `[auto-adopt]` warn/fail 行。
+
+### DB 计数（readOnly+query_only，探针 .tmp-gate/92-db-probe-daily.mjs）
+- self_identity：rejected=385 / adopted=76 / expired=27 / **pending=10** / **auto_adopted=0**；全槽 core_pending=564（与 10-31 完全一致）。
+- 10-31 与 11-01 均为零新提案（新提案流自 10-29 后停止 2.5 天）；pending 10 条（10-29 05:59–06:50Z 创建）仍全部 count=1、span_h=0——**无复现投票累积**。
+- TTL 推算：该群体 72h 到期点 = 11-01 13:59–14:50 +08（今日下午）；届时 expired 预计 27→37，pending→0，仍不产生 auto_adopted。
+
+### 判读
+- 门健康、零事件：与 10-31 相同；候选条件（pending ∧ count≥4 ∧ span≥72h）无行满足。
+- 若今日下午 cohort 全过期、且无新提案，则「7 天窗内零候选、零事件」事实成立；精确率分母仍为 0，不可估。
+- 观察窗继续开放；收口口径仍待用户拍板（10-31 已呈报三选项：继续等自然复现 / 保守口径收口 / N₂-T₂ 对照实验）。
 
 ## 事件台账（auto_adopted / blocked 事件发生时逐条追加：pending_id、内容摘要、门参数、快照版本、后续回滚与否）
 

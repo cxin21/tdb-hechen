@@ -457,7 +457,7 @@ window.__ModuleLoader__.load({
 			};
 		}
 
-		const css = "._tdbAgemem_section{display:grid;gap:10px}._tdbAgemem_toggleRow{color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:flex-start;gap:16px;font-size:13px;line-height:1.5;display:flex}._tdbAgemem_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}._tdbAgemem_divider{color:var(--dsw-alias-label-tertiary);margin:2px 0 0;padding-top:10px;border-top:1px solid var(--dsw-alias-border-secondary);font-size:12px;line-height:1.5}";
+		const css = "._tdbAgemem_page{display:grid;gap:12px}._tdbAgemem_heading{color:var(--dsw-alias-label-primary);margin:0;font-size:15px;font-weight:600;line-height:1.4}._tdbAgemem_section{display:grid;gap:10px}._tdbAgemem_toggleRow{color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:flex-start;gap:16px;font-size:13px;line-height:1.5;display:flex}._tdbAgemem_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}._tdbAgemem_divider{color:var(--dsw-alias-label-tertiary);margin:2px 0 0;padding-top:10px;border-top:1px solid var(--dsw-alias-border-secondary);font-size:12px;line-height:1.5}";
 		const cssId = "@tdb/agemem-dsh/client.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(cssId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -558,15 +558,12 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The TDB memory settings page: a one-liner in the Plugins list, and the
-		 * full form once opened. Every row reads the same staged form, so one save
-		 * covers config and credentials together.
+		 * The form body: the same three sections under every surface, so the Plugins
+		 * card and the Settings page can never drift apart.
 		 */
-		function AgememCard(props) {
+		function formBody(props, state) {
 			const t = props.t;
-			const state = props.useTdbAgememCard((snapshot) => snapshot);
-			if (props.view === "summary") return t("description");
-			const sections = SECTIONS.map((section, index) => {
+			return SECTIONS.map((section, index) => {
 				const children = section.fields.map((key) => renderItem(props, state, key));
 				if (index === 0) return px("div", { className: "_tdbAgemem_section", key: "section-0", children: children });
 				return pxs("div", {
@@ -575,12 +572,46 @@ window.__ModuleLoader__.load({
 					children: [px("p", { className: "_tdbAgemem_divider", children: t("restartHint") }), ...children]
 				});
 			});
+		}
+
+		/**
+		 * The TDB memory page inside the Plugins list: a one-liner in the list, and
+		 * the full form once opened. Every row reads the same staged form, so one
+		 * save covers config and credentials together.
+		 */
+		function AgememCard(props) {
+			const t = props.t;
+			const state = props.useTdbAgememCard((snapshot) => snapshot);
+			if (props.view === "summary") return t("description");
 			return px(primitives.SettingsForm, {
 				labels: formLabels(t),
 				state: state,
 				onSave: props.save,
 				onDiscard: props.discard,
-				children: sections
+				children: formBody(props, state)
+			});
+		}
+
+		/**
+		 * The TDB memory section of the Settings panel. The shell draws the
+		 * navigation row, so the page only adds the panel copy above the same form.
+		 */
+		function AgememSection(props) {
+			const t = props.t;
+			const state = props.useTdbAgememCard((snapshot) => snapshot);
+			return pxs("div", {
+				className: "_tdbAgemem_page",
+				children: [
+					px("h2", { className: "_tdbAgemem_heading", children: t("title") }),
+					px("p", { className: "_tdbAgemem_hint", children: t("description") }),
+					px(primitives.SettingsForm, {
+						labels: formLabels(t),
+						state: state,
+						onSave: props.save,
+						onDiscard: props.discard,
+						children: formBody(props, state)
+					})
+				]
 			});
 		}
 
@@ -600,14 +631,34 @@ window.__ModuleLoader__.load({
 				card.dispose();
 			}, "tdb-agemem: form subscription");
 			ctx.effect(() => ctx.remote.$on("credentials/reference-updated", () => card.readCredentials()), "tdb-agemem: credential invalidations");
-			ctx.effect(() => ctx.configForms.whileServed([ENTRY_ID], () => ctx.slots.inject("plugins.item", () => ctx.slots.register({
-				name: "plugins.item",
-				id: "tdb-agemem",
-				order: 40,
-				label: () => t("title"),
-				locale: NS,
-				inject: () => card.inject()
-			}, AgememCard))), "tdb-agemem: page");
+			ctx.effect(() => ctx.configForms.whileServed([ENTRY_ID], () => {
+				const face = () => card.inject();
+				const dropCard = ctx.slots.inject("plugins.item", () => ctx.slots.register({
+					name: "plugins.item",
+					id: "tdb-agemem",
+					order: 40,
+					label: () => t("title"),
+					locale: NS,
+					inject: face
+				}, AgememCard));
+				/*
+				 * The Plugins list is managed by the desktop profile itself, so the same
+				 * form also needs a seat the desktop shell always renders: the Settings
+				 * navigation. Both slots share one staged form and one save path.
+				 */
+				const dropSection = ctx.slots.inject("settings.section", () => ctx.slots.register({
+					name: "settings.section",
+					id: "tdb-agemem",
+					order: 30,
+					label: () => t("title"),
+					locale: NS,
+					inject: face
+				}, AgememSection));
+				return () => {
+					if (typeof dropSection === "function") dropSection();
+					if (typeof dropCard === "function") dropCard();
+				};
+			}), "tdb-agemem: page");
 		}
 
 		exports.NS = NS;

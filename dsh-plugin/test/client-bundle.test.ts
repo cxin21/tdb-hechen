@@ -101,7 +101,7 @@ function loadClient() {
 }
 
 /** Build the browser-side context the client half expects. */
-function fakeContext(overrides: AnyRecord = {}) {
+function fakeContext(overrides: AnyRecord = {}, options: { serve?: boolean } = {}) {
   const dictionaries: AnyRecord = {};
   const registrations: AnyRecord[] = [];
   const served: string[][] = [];
@@ -154,7 +154,7 @@ function fakeContext(overrides: AnyRecord = {}) {
       },
       whileServed: (namespaces: string[], register: () => void) => {
         served.push(namespaces);
-        register();
+        if (options.serve !== false) register();
         return () => {};
       }
     },
@@ -183,27 +183,41 @@ function fakeContext(overrides: AnyRecord = {}) {
   return { ctx, scope, registrations, served, dictionaries };
 }
 
-/** Mount the page and return the face its slot registration injects. */
-function mount(overrides: AnyRecord = {}) {
+/** Mount the page and return the face its slot registrations inject. */
+function mount(overrides: AnyRecord = {}, options: { serve?: boolean } = {}) {
   const loaded = loadClient();
-  const fake = fakeContext(overrides);
+  const fake = fakeContext(overrides, options);
   loaded.exports.apply(fake.ctx);
-  const registration = fake.registrations[0]!;
-  const injected = registration.options.inject() as AnyRecord;
+  const card = fake.registrations.find((entry) => entry.options.name === "plugins.item");
+  const section = fake.registrations.find((entry) => entry.options.name === "settings.section");
+  if (card === undefined) throw new Error("client.js registered no plugins.item page");
+  if (section === undefined) throw new Error("client.js registered no settings.section page");
+  const injected = card.options.inject() as AnyRecord;
   const store = (injected.hooks as AnyRecord).tdbAgememCard as AnyRecord;
   const t = fake.ctx.locale.bind("settings.tdbAgemem") as (key: string) => string;
-  return { ...loaded, ...fake, registration, injected, store, t };
+  return { ...loaded, ...fake, registration: card, section, injected, store, t };
+}
+
+/** Render a slot component the way the Host does, returning the element tree. */
+function render(mounted: ReturnType<typeof mount>, registration: AnyRecord, extra: AnyRecord = {}) {
+  const component = registration.component as AnyRecord;
+  return component({
+    t: mounted.t,
+    close: () => {},
+    ...mounted.injected,
+    useTdbAgememCard: (selector: (snapshot: unknown) => unknown) => selector(mounted.store.getSnapshot()),
+    ...extra
+  }) as AnyRecord;
 }
 
 /** Render the page the way the Host does, returning the element tree. */
 function renderPage(mounted: ReturnType<typeof mount>, view = "page") {
-  const component = mounted.registration.component as AnyRecord;
-  return component({
-    t: mounted.t,
-    view,
-    ...mounted.injected,
-    useTdbAgememCard: (selector: (snapshot: unknown) => unknown) => selector(mounted.store.getSnapshot())
-  }) as AnyRecord;
+  return render(mounted, mounted.registration, { view });
+}
+
+/** Render the section the settings shell mounts, returning the element tree. */
+function renderSection(mounted: ReturnType<typeof mount>) {
+  return render(mounted, mounted.section);
 }
 
 /** Collect every element id in a rendered tree. */
@@ -234,6 +248,22 @@ function collectElements(node: unknown, out: AnyRecord[] = []): AnyRecord[] {
   return out;
 }
 
+/** Collect every rendered text node in a tree. */
+function collectText(node: unknown, out: string[] = []): string[] {
+  if (node === null || node === undefined) return out;
+  if (Array.isArray(node)) {
+    for (const child of node) collectText(child, out);
+    return out;
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    out.push(String(node));
+    return out;
+  }
+  if (typeof node !== "object") return out;
+  collectText((node as AnyRecord).props?.children, out);
+  return out;
+}
+
 describe("client half: registration", () => {
   it("registers itself under the plugin id", () => {
     const { record } = loadClient();
@@ -260,15 +290,37 @@ describe("client half: mounting", () => {
     expect(mounted.scope.namespace).toBe("tdb-agemem-dsh");
   });
 
-  it("registers one page into the plugins item slot", () => {
+  it("registers the card into the plugins item slot and the page into the settings navigation", () => {
     const mounted = mount();
-    expect(mounted.registrations).toHaveLength(1);
-    const options = mounted.registrations[0]!.options;
-    expect(options.name).toBe("plugins.item");
-    expect(options.id).toBe("tdb-agemem");
-    expect(options.locale).toBe("settings.tdbAgemem");
-    expect(typeof options.label()).toBe("string");
-    expect(options.label().length).toBeGreaterThan(0);
+    expect(mounted.registrations).toHaveLength(2);
+    expect(mounted.served).toEqual([["tdb-agemem-dsh"]]);
+
+    const card = mounted.registrations.find((entry) => entry.options.name === "plugins.item")!;
+    expect(card.options).toMatchObject({ id: "tdb-agemem", order: 40, locale: "settings.tdbAgemem" });
+    expect(typeof card.options.label()).toBe("string");
+    expect(card.options.label().length).toBeGreaterThan(0);
+
+    const section = mounted.registrations.find((entry) => entry.options.name === "settings.section")!;
+    expect(section.options).toMatchObject({ id: "tdb-agemem", order: 30, locale: "settings.tdbAgemem" });
+    expect(section.options.label()).toBe(mounted.t("title"));
+    expect(typeof section.component).toBe("function");
+  });
+
+  it("hands both slots the same staged form face", () => {
+    const mounted = mount();
+    const cardFace = mounted.registration.options.inject() as AnyRecord;
+    const sectionFace = mounted.section.options.inject() as AnyRecord;
+    expect((sectionFace.hooks as AnyRecord).tdbAgememCard).toBe((cardFace.hooks as AnyRecord).tdbAgememCard);
+    expect(typeof sectionFace.save).toBe("function");
+    expect(typeof sectionFace.discard).toBe("function");
+  });
+
+  it("registers nothing while the Host serves no profile entry for this plugin", () => {
+    const loaded = loadClient();
+    const fake = fakeContext({}, { serve: false });
+    loaded.exports.apply(fake.ctx);
+    expect(fake.served).toEqual([["tdb-agemem-dsh"]]);
+    expect(fake.registrations).toHaveLength(0);
   });
 
   it("registers both dictionaries with the same key set", () => {
@@ -394,6 +446,22 @@ describe("client half: rendering", () => {
   it("renders the one-liner in the summary view", () => {
     const mounted = mount();
     expect(renderPage(mounted, "summary")).toBe(mounted.t("description"));
+  });
+
+  it("renders the settings section with the panel copy above the same form", () => {
+    const mounted = mount();
+    const view = renderSection(mounted);
+    expect(view.type).toBe("div");
+    expect(view.props.className).toBe("_tdbAgemem_page");
+    const text = collectText(view);
+    expect(text).toContain(mounted.t("title"));
+    expect(text).toContain(mounted.t("description"));
+    const form = collectElements(view).find((element) => element.type === mounted.primitives.SettingsForm);
+    expect(form).toBeDefined();
+    const ids = collectIds(view);
+    for (const path of EXPECTED_FIELD_PATHS) expect(ids).toContain("tdb-agemem-" + path);
+    expect(ids).toContain("tdb-agemem-secret-apiKey");
+    expect(ids).toContain("tdb-agemem-secret-userKey");
   });
 
   it("renders one SettingsForm covering every volatile field and both credential rows", () => {

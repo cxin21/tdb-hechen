@@ -67,9 +67,11 @@
 
 | 项 | 读数 |
 | --- | --- |
-| `npx tsc -p tsconfig.json --noEmit` | EXIT=0 |
-| `npm run build` | EXIT=0（dist 产出） |
-| 全量 vitest（收尾跑） | **29 files / 519 tests passed**（02:48:04，含并行队友新增的 knowledge 用例） |
+| `node ../MemoryCore/node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | EXIT=0（09:56 与 09:57 两次） |
+| `npm run build` | rc=0（09:57，dist 产出） |
+| 全量 vitest（task-72 收口） | **36 files / 632 tests passed**，48.88s（09:57:33） |
+| 全量 vitest（task-72 开工时基线） | 36 files / 626 tests（+6：skill-client 4 条、head-pack 1 条、index 1 条） |
+| 全量 vitest（本文件首次成文时） | 29 files / 519 tests passed（02:48:04；那是并行队友还在加 knowledge 用例的中间态，只作历史留档） |
 | 全量 vitest（前一跑，对照） | 28 files / 500 tests，499 passed，唯一红是 `test/index.test.ts:505 mirrors the log into a file only when debug is on` 超时 10000ms（单跑 1.73s 绿，见 §6） |
 | `test/index.test.ts + test/segments.test.ts` | 68 passed（新增两条 head pack 技能段用例） |
 | `test/skill-client.test.ts` | 13 passed（含 40901 重读重试调用序 get/patch/get/patch、二次 stale 原样回报） |
@@ -105,11 +107,57 @@ skill_view        → skill_view failed (code 40401): SKILL_NOT_FOUND: no skill 
 
 垫片同时逐请求校验 `x-tdai-team-id / x-tdai-agent-id / x-tdai-user-id` 与 `Authorization: Bearer`：**0 违规**，证明 v3 缝的 header 路径没在 skill 面上失守。
 
-### 4.3 未真机复核（必须写明）
+### 4.3 未真机复核（**02:xx 那轮的记录；8420 恢复后见 §4.4**）
 
 - **真 core 基线没跑**：票面要求的 `skill_search` 基线（query「采购订单 行号」→ top1 `ncc-ct-to-order-generation-chain` / score 12.88 / 86ms）与 `skill_view content 30318 字符`、`skill_files_read skl-2Un5xJjHBU0Y 的 overlap-snapshot.mts（2000 字节）` 都**未**在本轮复核——8420 宕机。脚本里 `score=12.88` 是垫片照着基线形状写死的常量，**不是**真 core 读数，不得当基线用。
 - **`tool/ptc-dispatch` 证据**：本会话宿主只暴露 `run_code`（`request/header.tools` 恒 1 项），且 desktop 仍跑旧 build（`2c72dbae5911`），10 个工具尚未装进任何运行中的宿主 ⇒ 无 ptc-dispatch 行可引。等一次 build+装+重启后，用 `grep -c 'tool/ptc-dispatch'` 与 `skill_search` 的调用来补这条证据。
 
+### 4.4 真 core 对拍（2026-11-01 09:4x；8420 已恢复，走插件自己的 client）
+
+脚本 `scratch/e2e-skill/accept.mjs`：`import` 插件的 `dist/{config,memory-client,skill-client}.js`，用 `DEFAULT_CONFIG.paths`、真 key（`~/.dsh/.credentials.yaml` 的 `TDAI_GATEWAY_APIKEY`）、`userKey:'hechen'`、identity `team-2k12lgb650 / agt-2m7buribzz / usr-2m7b1144d9`，`new SkillClient({ call: (p,b) => client.v3(p,b), timeoutMs })`。**不是**另写的探针：每个写口都走插件自己的 RMW 与 body 构造。
+
+| 项 | 读数 | 与 Lead 基线的对照 |
+| --- | --- | --- |
+| `skill_search('采购订单 行号', 10)` | 41ms；top1 `ncc-ct-to-order-generation-chain` **score 12.878187917361604**、v42；top2 `ncc-crowno-filling-vorownoutils` 10.42；top3 `ncc-scm-pu-chain-api-findings` 10.39 | 基线 top1 12.88 / 86ms — **一致**（延迟差异是同机冷热的量级，不作判据） |
+| `get-by-name(..., includeContent)` | `contentLen 30318`、v42 | 基线 30318 — **逐字相等** |
+| 同路由 `curl` 直连 | `contentLen 30318` | 插件与直连**同值** ⇒ 中间层没改写正文 |
+| `skill.listing(6000)` | `listing` **6004 字符**、`hits` 20、首尾 `<available_skills>` / `</available_skills>` 都在 | 基线 6004 — **一致** |
+| 死端点 `http://127.0.0.1:9` | search / get-by-name / listing 全部 `{ok:false, code:null, error:'transport failure: fetch failed'}`，**无 throw** | 失败是值不是异常（模块契约） |
+
+写链（技能名 `probe-dsh-skill-<rand>`，末尾删净）：
+
+```text
+create            → v1   （body 自带 frontmatter，模型不写 fence）
+get               → manifest [{"path":"notes.md","size_bytes":34,"mime_type":"text/markdown","is_executable":false}]
+patch             → v2
+files_write       → v3   （模型不传版本，插件读 v3 后 quoted）
+files_read        → extra.txt 'echo hi\n' = 8 bytes
+resource_read     → notes.md 'hello from probe-dsh-skill-…' = 34 bytes  ← 与 manifest size_bytes 相等
+files_remove      → v4
+update            → v5   （纯 markdown 正文 ⇒ 借用 head 的 name/description 合成 fence）
+delete            → ok
+get (after delete) → {ok:false, code:40401, error:'SKILL_NOT_FOUND: SKILL_NOT_FOUND'}
+```
+
+**两条字节级对拍**（票面要求的「文件内容与 manifest 一致」）：`notes.md` 34 bytes = manifest `size_bytes:34`；`extra.txt` 8 bytes = 写入的 `'echo hi\n'` 长度。**Lead 举例的 `skl-2Un5xJjHBU0Y` / `overlap-snapshot.mts` 在本机已 40401**（该技能不存在了），listing 前 20 个 head 的 `manifest` 全是 `[]`（本团队没有带资源文件的既有技能）⇒ 用 D 段自建技能做字节对拍是唯一可行路径，**不是偷懒**。
+
+### 4.5 本轮因真 core 暴露并修掉的三处 schema 事实
+
+| 事实（实测原文） | 插件怎么吸收 | 位置 |
+| --- | --- | --- |
+| resources 缺 `encoding` → 40001 `resources.0.encoding: Invalid option: expected one of "utf-8"|"base64"` | `create` / `filesWrite` 统一补 `encoding: 'utf-8'`（已是 base64 的保留） | `src/skill-client.ts` 两个 map |
+| 裸 markdown 正文 → 42203 `[skill][format] missing frontmatter`（core `MemoryCore/src/core/skill/skill-format.ts:49` 要求 `---` 头带 name/description） | `withFrontmatter()`：已带 fence 原样返回，否则用 name + description 合成（description 走 `JSON.stringify` 安全引用；name 不合 `^[a-z0-9][a-z0-9-]*$` 时也加引号） | 同上 + `create()` / `update()` |
+| `update` 换整篇正文时也会 42203 | 借**那次版本读取**带回的 head record 合成 fence（`writeWithVersion` 的 build 回调扩成 `(version, record)`，`versionOf` 返回 `{version, record}`）⇒ **一次写仍只有一次 `/v3/skill/get`** | `src/skill-client.ts` `HeadVersion` |
+
+工具的入参也跟着改了：`skill_create` 的 `description` 现在进 `description`（原来错误地塞进 `metadata.description`），工具说明写明「不要自己写 YAML frontmatter，name/description 参数会变成它」。
+### 4.6 同 build 里顺手修的两处「假警报」（与技能面无关，Lead 探针实测暴露）
+
+| 症状（实测原文） | 根因 | 修法 |
+| --- | --- | --- |
+| `agemem: head pack has no parseable scene index; falling back to bare truncation {"rawChars":14204,"firstLine":"# User Narrative Profile","hasHeading":true}` | `hasHeading:true` 说明**认出了标题**（L2 段头 `## 长期记忆 · 场景索引（L2）` 命中 `SCENE_INDEX_HEADING` 的 `场景索引`），但 task-103 之后 pack 是**分段拼出来的**，场景行是 `- scene_blocks/<name>（更新 D）— summary`，永远没有 `### Path:` 主体 ⇒ 解析器判「上游变形状」，可 reduce 的对象其实是**我们自己刚产出的形状** | `isCompressedHeadPack()` 增加第二种产物形状 `L2_SECTION_LINE = /^-\s+scene_blocks\/\S+/m`：认出来 = 幂等，不再 warn、也不再尝试结构化（分段已各自按预算裁过） |
+| `agemem: session identity not bound yet; using the configured triple for this call`（出现在 mount 早期、**根本没有 configured triple** 的 profile 上） | 一句文案覆盖两种完全不同的状态。身份走 user key 的 profile 在三元组解析完成前是**空的**，那次调用其实**不带任何隔离头**，文案却让人去查一个不存在的 config | 抽出 `unboundIdentityMessage(hasConfiguredTriple)` 分两句：有 config 才说「using the configured triple」，没有则明说「no configured triple; this call carries no isolation identity while the user key resolves」 |
+
+两条都有回归用例：`test/head-pack.test.ts > recognises the segment-composed pack, whose persona no longer carries a scene tail`、`test/index.test.ts > unbound session diagnostics`。
 ## 5. README 同步
 
 - 新增「head pack 的注入时机（一次/会话）」小节：首轮注入、`compaction/*` 重注一次、`refreshMs` 只刷缓存不重注，以及分段配额表（core_memory 3000 / persona=剩余 / skills 8000 / knowledge 3000 / wiki 2000）与丢弃优先级。
@@ -120,8 +168,16 @@ skill_view        → skill_view failed (code 40401): SKILL_NOT_FOUND: no skill 
 
 `test/index.test.ts:505 it('mirrors the log into a file only when debug is on')`：28 文件并行时曾在 10000ms 超时；`vitest run test/index.test.ts -t 'mirrors the log into a file'` 单跑 **1.73s 通过**；随后全量复跑 **29 files / 519 tests 全绿**（02:48:04）。两次读数都在此，结论：并行负载下的超时抖动，不是断言问题。
 
+## 5.1 README 这次补的两处（task-72 收口）
+
+- 部署节改成「身份缺省走 `--user-key-ref`，`--identity` 是例外路径」：patch 里只留 ref 名（附渲染出的 config 片段）、
+  `--identity` 与按 user key 部署互斥、**半截身份 exit 2**（原来只 warn 就装，等于把会话绑到错误 team）、
+  缺 user key 时打印一次性 `credentials-util.mjs set` 命令。
+- 技能面写清「模型不写 YAML frontmatter」与 `encoding` 缺省（42203 / 40001 的实测原因与自动吸收方式）。
+
 ## 7. 复现 / 清理
 
-- 单测与构建：`cd dsh-plugin && npx tsc -p tsconfig.json --noEmit && npm run build && npx vitest run`
-- socket 全链：见 §4.2（垫片不需要 core 在跑，不留文件、不留端口占用）。
-- 本票未安装到任何 profile、未改 `~/.dsh`、未 commit。
+- 单测与构建：`cd dsh-plugin && node ../MemoryCore/node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && npm run build && node ../MemoryCore/node_modules/vitest/vitest.mjs run`
+- 垫片全链（8420 不在也能跑）：`node scripts/verify-skills.mjs`；真 core 对拍见 §4.4：`node ../scratch/e2e-skill/accept.mjs`（读 `~/.dsh/.credentials.yaml` 的真 key，会在 core 上建一个 `probe-dsh-skill-<rand>` 再删掉；**末尾断言 40401**，失败就说明有残留技能）。
+- 清理：`scratch/e2e-skill/` 保留（accept.mjs 是复核入口，已删净 core 上的探针技能）；本轮未安装到任何 profile、未改 `~/.dsh`（只读凭据）、未 commit。
+- 注意：§4.4 的读数跑在 **`9a4721eb165d`**（Lead 09:50 装进 desktop 的那版）之上，它**已含** §4.5 的技能面三处修复；§4.6 的两处假警报修复发生在装机之后（当前 dist `6c5b726e10e6`），只影响诊断文本，需下次装机才生效。
