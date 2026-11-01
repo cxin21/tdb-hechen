@@ -16,7 +16,7 @@
       "type": "int",
       "default": 8421,
       "env": "PORT",
-      "source": "MemoryKnowledge/src/config.ts:205",
+      "source": "MemoryKnowledge/src/config.ts:220",
       "consumed": true
     },
     {
@@ -24,7 +24,7 @@
       "type": "str",
       "default": "/v3",
       "env": "API_PREFIX",
-      "source": "MemoryKnowledge/src/config.ts:209",
+      "source": "MemoryKnowledge/src/config.ts:224",
       "consumed": true
     },
     {
@@ -32,7 +32,7 @@
       "type": "str",
       "default": "debug",
       "env": "LOG_LEVEL",
-      "source": "MemoryKnowledge/src/config.ts:208",
+      "source": "MemoryKnowledge/src/config.ts:223",
       "consumed": true
     },
     {
@@ -40,7 +40,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_PUBLIC_BASE_URL",
-      "source": "MemoryKnowledge/src/config.ts:210",
+      "source": "MemoryKnowledge/src/config.ts:225",
       "consumed": true
     },
     {
@@ -48,7 +48,7 @@
       "type": "path",
       "default": "./data",
       "env": "KNOWLEDGE_DATA_DIR",
-      "source": "MemoryKnowledge/src/config.ts:206",
+      "source": "MemoryKnowledge/src/config.ts:221",
       "consumed": true
     },
     {
@@ -56,7 +56,7 @@
       "type": "path",
       "default": "./data/knowledge.db",
       "env": "KNOWLEDGE_DB_PATH",
-      "source": "MemoryKnowledge/src/config.ts:207",
+      "source": "MemoryKnowledge/src/config.ts:222",
       "consumed": true
     },
     {
@@ -64,7 +64,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_SERVICE_KEY",
-      "source": "MemoryKnowledge/src/config.ts:218",
+      "source": "MemoryKnowledge/src/config.ts:233",
       "consumed": true
     },
     {
@@ -72,7 +72,7 @@
       "type": "str",
       "default": "",
       "env": "TMC_CALLBACK_URL",
-      "source": "MemoryKnowledge/src/config.ts:211",
+      "source": "MemoryKnowledge/src/config.ts:226",
       "consumed": true
     },
     {
@@ -80,7 +80,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_RERANK_URL",
-      "source": "MemoryKnowledge/src/config.ts:213",
+      "source": "MemoryKnowledge/src/config.ts:228",
       "consumed": true
     },
     {
@@ -88,7 +88,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_RERANK_API_KEY",
-      "source": "MemoryKnowledge/src/config.ts:214",
+      "source": "MemoryKnowledge/src/config.ts:229",
       "consumed": true
     },
     {
@@ -96,7 +96,7 @@
       "type": "ms",
       "default": 800,
       "env": "KNOWLEDGE_RERANK_TIMEOUT_MS",
-      "source": "MemoryKnowledge/src/config.ts:215",
+      "source": "MemoryKnowledge/src/config.ts:230",
       "consumed": true
     },
     {
@@ -104,7 +104,7 @@
       "type": "enum(proxy|custom)",
       "default": "custom",
       "env": "LLM_MODE",
-      "source": "MemoryKnowledge/src/config.ts:223",
+      "source": "MemoryKnowledge/src/config.ts:173",
       "consumed": true
     },
     {
@@ -112,7 +112,7 @@
       "type": "enum(openai|anthropic)",
       "default": "openai",
       "env": "LLM_PROTOCOL",
-      "source": "MemoryKnowledge/src/config.ts:224",
+      "source": "MemoryKnowledge/src/config.ts:239",
       "consumed": true
     },
     {
@@ -120,7 +120,7 @@
       "type": "str",
       "default": "custom",
       "env": "LLM_PROVIDER",
-      "source": "MemoryKnowledge/src/config.ts:225",
+      "source": "MemoryKnowledge/src/config.ts:240",
       "consumed": true
     },
     {
@@ -128,7 +128,7 @@
       "type": "str",
       "default": "",
       "env": "LLM_API_KEY",
-      "source": "MemoryKnowledge/src/config.ts:226",
+      "source": "MemoryKnowledge/src/config.ts:241",
       "consumed": true
     },
     {
@@ -136,7 +136,7 @@
       "type": "str",
       "default": "Memory-Model",
       "env": "LLM_MODEL",
-      "source": "MemoryKnowledge/src/config.ts:227",
+      "source": "MemoryKnowledge/src/config.ts:242",
       "consumed": true
     },
     {
@@ -144,7 +144,7 @@
       "type": "str",
       "default": "",
       "env": "LLM_BASE_URL",
-      "source": "MemoryKnowledge/src/config.ts:228",
+      "source": "MemoryKnowledge/src/config.ts:243",
       "consumed": true
     },
     {
@@ -152,7 +152,7 @@
       "type": "int",
       "default": 32768,
       "env": "LLM_MAX_TOKENS",
-      "source": "MemoryKnowledge/src/config.ts:229",
+      "source": "MemoryKnowledge/src/config.ts:244",
       "consumed": true
     },
     {
@@ -160,7 +160,7 @@
       "type": "ms",
       "default": 1200000,
       "env": "LLM_TIMEOUT_MS",
-      "source": "MemoryKnowledge/src/config.ts:230",
+      "source": "MemoryKnowledge/src/config.ts:245",
       "consumed": true
     },
     {
@@ -168,7 +168,7 @@
       "type": "bool",
       "default": false,
       "env": "LLM_STREAM",
-      "source": "MemoryKnowledge/src/config.ts:231",
+      "source": "MemoryKnowledge/src/config.ts:246",
       "consumed": true,
       "defaultNote": "源码写成 `process.env.LLM_STREAM === \"true\"`，行内只有 \"true\" 字面量；不设或设成其它任何值都等于 false（MemoryKnowledge/src/config.ts:228）"
     },
@@ -193,7 +193,7 @@
       "type": "str",
       "default": "openai_compatible",
       "env": "EMBEDDING_PROVIDER",
-      "source": "MemoryKnowledge/src/config.ts:234",
+      "source": "MemoryKnowledge/src/config.ts:249",
       "consumed": true
     },
     {
@@ -201,7 +201,7 @@
       "type": "str",
       "default": "",
       "env": "EMBEDDING_BASE_URL",
-      "source": "MemoryKnowledge/src/config.ts:235",
+      "source": "MemoryKnowledge/src/config.ts:250",
       "consumed": true
     },
     {
@@ -209,7 +209,7 @@
       "type": "str",
       "default": "",
       "env": "EMBEDDING_API_KEY",
-      "source": "MemoryKnowledge/src/config.ts:236",
+      "source": "MemoryKnowledge/src/config.ts:251",
       "consumed": true
     },
     {
@@ -217,7 +217,7 @@
       "type": "str",
       "default": "",
       "env": "EMBEDDING_MODEL",
-      "source": "MemoryKnowledge/src/config.ts:237",
+      "source": "MemoryKnowledge/src/config.ts:252",
       "consumed": true
     },
     {
@@ -225,7 +225,7 @@
       "type": "int",
       "default": 0,
       "env": "EMBEDDING_DIMENSIONS",
-      "source": "MemoryKnowledge/src/config.ts:238",
+      "source": "MemoryKnowledge/src/config.ts:253",
       "consumed": true
     },
     {
@@ -241,7 +241,7 @@
       "type": "int",
       "default": 3,
       "env": "KNOWLEDGE_WIKI_INGEST_CONCURRENCY",
-      "source": "MemoryKnowledge/src/config.ts:151",
+      "source": "MemoryKnowledge/src/config.ts:148",
       "consumed": true
     },
     {
@@ -249,7 +249,7 @@
       "type": "int",
       "default": 5,
       "env": "KNOWLEDGE_LLM_GLOBAL_CONCURRENCY",
-      "source": "MemoryKnowledge/src/config.ts:160",
+      "source": "MemoryKnowledge/src/config.ts:157",
       "consumed": true
     },
     {
@@ -305,7 +305,7 @@
       "type": "bool",
       "default": false,
       "env": "KNOWLEDGE_CLICKHOUSE_ENABLED",
-      "source": "MemoryKnowledge/src/config.ts:191",
+      "source": "MemoryKnowledge/src/config.ts:206",
       "consumed": true
     },
     {
@@ -313,7 +313,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_CLICKHOUSE_URL",
-      "source": "MemoryKnowledge/src/config.ts:192",
+      "source": "MemoryKnowledge/src/config.ts:207",
       "consumed": true
     },
     {
@@ -321,7 +321,7 @@
       "type": "str",
       "default": "default",
       "env": "KNOWLEDGE_CLICKHOUSE_DATABASE",
-      "source": "MemoryKnowledge/src/config.ts:193",
+      "source": "MemoryKnowledge/src/config.ts:208",
       "consumed": true
     },
     {
@@ -329,7 +329,7 @@
       "type": "str",
       "default": "tool_call_logs",
       "env": "KNOWLEDGE_CLICKHOUSE_TABLE",
-      "source": "MemoryKnowledge/src/config.ts:194",
+      "source": "MemoryKnowledge/src/config.ts:209",
       "consumed": true
     },
     {
@@ -337,7 +337,7 @@
       "type": "str",
       "default": "default",
       "env": "KNOWLEDGE_CLICKHOUSE_USER",
-      "source": "MemoryKnowledge/src/config.ts:195",
+      "source": "MemoryKnowledge/src/config.ts:210",
       "consumed": true
     },
     {
@@ -345,7 +345,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_CLICKHOUSE_PASSWORD",
-      "source": "MemoryKnowledge/src/config.ts:196",
+      "source": "MemoryKnowledge/src/config.ts:211",
       "consumed": true
     },
     {
@@ -353,7 +353,7 @@
       "type": "ms",
       "default": 5000,
       "env": "KNOWLEDGE_CLICKHOUSE_FLUSH_INTERVAL_MS",
-      "source": "MemoryKnowledge/src/config.ts:197",
+      "source": "MemoryKnowledge/src/config.ts:212",
       "consumed": true
     },
     {
@@ -361,7 +361,7 @@
       "type": "int",
       "default": 50,
       "env": "KNOWLEDGE_CLICKHOUSE_FLUSH_THRESHOLD",
-      "source": "MemoryKnowledge/src/config.ts:198",
+      "source": "MemoryKnowledge/src/config.ts:213",
       "consumed": true
     },
     {
@@ -369,7 +369,7 @@
       "type": "int",
       "default": 90,
       "env": "KNOWLEDGE_CLICKHOUSE_TTL_DAYS",
-      "source": "MemoryKnowledge/src/config.ts:199",
+      "source": "MemoryKnowledge/src/config.ts:214",
       "consumed": true
     },
     {
@@ -377,7 +377,7 @@
       "type": "ms",
       "default": 5000,
       "env": "KNOWLEDGE_CLICKHOUSE_REQUEST_TIMEOUT_MS",
-      "source": "MemoryKnowledge/src/config.ts:200",
+      "source": "MemoryKnowledge/src/config.ts:215",
       "consumed": true
     }
   ],
