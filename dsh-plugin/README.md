@@ -37,8 +37,12 @@ dsh 原生记忆插件 v0。把 TDB 长期记忆接进 dsh 宿主的三条缝隙
 
 ## 配置
 
-所有开关有缺省值。身份（teamId/agentId/userId）**缺省为空**：不配身份时插件是 inert 的，
-一次请求都不发（防止几个 profile 共用一份默认身份互相串记忆）。token 不落提示词、不落配置文件。
+所有开关有缺省值。身份三轴（teamId/agentId/userId）**不在设置页里**：mount 时由 user key 解析，每会话再
+由该用户自己的 session_init 配置决定（见「身份」一节）。设置页只留 baseUrl / serviceId 与两个凭据引用——
+表单里给一个身份输入框，只会让宿主和 core 各说一套。三元组仍可写进 patch（`deploy.sh --identity` /
+`scripts/agemem-identity.mjs`），供「core 在本机解析不了 key」的机器兜底；它**缺省为空**，不配且解析
+不成功时插件是 inert 的，一次请求都不发（防止几个 profile 共用一份默认身份互相串记忆）。
+token 不落提示词、不落配置文件。
 
 这里有**两层不同的凭据**，别混：
 
@@ -64,7 +68,9 @@ dsh 原生记忆插件 v0。把 TDB 长期记忆接进 dsh 宿主的三条缝隙
           userKey: ""                         # 身份层 key（短 key）；配了就自动解析 team/agent
           userKeyRef: TDAI_USER_KEY           # 或走凭据库/env 的这个 ref 名
           serviceId: default
-          teamId: ""                          # 三个身份缺省为空 = inert，不发请求
+          # 三轴不在设置页里，只由 patch 提供（deploy.sh --identity / agemem-identity.mjs）；
+          # 留空 = 交给 user key 解析，解析不了则 inert
+          teamId: ""
           agentId: ""
           userId: ""
           requestTimeoutMs: 10000             # atomic/search 冷启动实测 6.4s

@@ -25,12 +25,6 @@ window.__ModuleLoader__.load({
 			baseUrlHint: "The TDB core's HTTP root, such as http://127.0.0.1:8420.",
 			serviceIdLabel: "Service id",
 			serviceIdHint: "Defaults to default; change it only for a multi-tenant core.",
-			teamIdLabel: "Team id",
-			teamIdHint: "Required: an empty team makes the plugin inert.",
-			agentIdLabel: "Agent id",
-			agentIdHint: "Required: the agent whose memories this host reads and writes.",
-			userIdLabel: "User id",
-			userIdHint: "Required: the human the session speaks for.",
 			apiKeyRefLabel: "API key reference",
 			apiKeyRefHint: "Name of the stored core key. The key itself is never written to the settings file.",
 			userKeyRefLabel: "User key reference",
@@ -75,12 +69,6 @@ window.__ModuleLoader__.load({
 			baseUrlHint: "TDB 核心的 HTTP 根地址，例如 http://127.0.0.1:8420。",
 			serviceIdLabel: "服务 id",
 			serviceIdHint: "默认 default，多租户核心才需要改。",
-			teamIdLabel: "团队 id",
-			teamIdHint: "必填：留空时插件整体不起作用。",
-			agentIdLabel: "智能体 id",
-			agentIdHint: "必填：本宿主读写的记忆属于哪个智能体。",
-			userIdLabel: "用户 id",
-			userIdHint: "必填：会话代表哪个人。",
 			apiKeyRefLabel: "核心密钥引用名",
 			apiKeyRefHint: "核心密钥在凭据库里的名字；密钥本身永不写入设置文件。",
 			userKeyRefLabel: "用户密钥引用名",
@@ -120,17 +108,20 @@ window.__ModuleLoader__.load({
 		 * One editable field. path is the settings path inside this entry's config,
 		 * and it is why this page does not use SettingsFormModel: the shared model
 		 * addresses single-segment fields (sectionValue(name), path: [name]), while
-		 * this plugin's surface is nested (server.teamId, writeback.enabled, ...).
+		 * this plugin's surface is nested (server.baseUrl, writeback.enabled, ...).
 		 * The transport behind the scope accepts multi-segment paths; the
 		 * convenience layer above it does not.
+		 *
+		 * Deliberately absent: the identity triple (server.teamId / agentId /
+		 * userId). It is resolved from the user key at mount and from the user's
+		 * own session_init config on every session, so a field here could only
+		 * make this host disagree with the core. A core that cannot resolve the
+		 * key gets the triple from `deploy.sh --identity` instead.
 		 */
 		const FIELDS = [
 			{ path: ["enabled"], kind: "boolean", label: "enableLabel", hint: "enableHint" },
 			{ path: ["server", "baseUrl"], kind: "string", label: "baseUrlLabel", hint: "baseUrlHint" },
 			{ path: ["server", "serviceId"], kind: "string", label: "serviceIdLabel", hint: "serviceIdHint" },
-			{ path: ["server", "teamId"], kind: "string", label: "teamIdLabel", hint: "teamIdHint" },
-			{ path: ["server", "agentId"], kind: "string", label: "agentIdLabel", hint: "agentIdHint" },
-			{ path: ["server", "userId"], kind: "string", label: "userIdLabel", hint: "userIdHint" },
 			{ path: ["server", "apiKeyRef"], kind: "string", label: "apiKeyRefLabel", hint: "apiKeyRefHint" },
 			{ path: ["server", "userKeyRef"], kind: "string", label: "userKeyRefLabel", hint: "userKeyRefHint" },
 			{ path: ["writeback", "enabled"], kind: "boolean", label: "writebackLabel", hint: "writebackHint" },
@@ -441,7 +432,7 @@ window.__ModuleLoader__.load({
 
 		/** Pages whose rows are read from the same staged form. */
 		const SECTIONS = [
-			{ fields: ["enabled", "server.baseUrl", "server.serviceId", "server.teamId", "server.agentId", "server.userId"] },
+			{ fields: ["enabled", "server.baseUrl", "server.serviceId"] },
 			{ fields: ["server.apiKeyRef", "secret:apiKey", "server.userKeyRef", "secret:userKey"] },
 			{ fields: ["writeback.enabled", "writeback.skillFeed", "volatile.enabled", "volatile.maxChars", "tools.enabled", "tools.recall", "debug"] }
 		];

@@ -365,45 +365,66 @@ run "$DSH_BIN" plugin --profile "$PROFILE" add "$TARBALL_SPEC"
 # pnpm keys a file: dependency by its tarball PATH + version, not by content, so
 # re-running this script with the same version leaves the PREVIOUS build in
 # node_modules and every later check still passes ("dist entry: present"). That
-# already shipped a stale build once (the apiKeyRef change sat in the repo while
-# the profile kept running the old dist). Compare the packed entry with what is
-# actually installed and force-refresh once instead of trusting the install.
+# already shipped a stale build twice: the apiKeyRef change, and 2026-11-01 when
+# only src/config-schema.ts + client/client.js changed — dist/index.js was
+# byte-identical, the old single-file check said "fresh", and the profile kept
+# the schema that still asked the user for teamId/agentId/userId.
+#
+# So compare the WHOLE shipped set: scripts/build-manifest.mjs hashes every
+# `files[]` entry of package.json (paths + contents) into one number, computed
+# the same way on both sides.
+manifest_of() {
+  node "$REPO_ROOT/scripts/build-manifest.mjs" "$1" 2>/dev/null |
+    sed -n 's/^hash=\([0-9a-f]\{64\}\) files=\([0-9]\{1,\}\)$/\1 \2/p'
+}
+
 ensure_installed_build_matches() {
-  local local_sum installed_sum installed_entry short_local short_installed
-  installed_entry="$PROFILE_DIR/node_modules/$PKG_NAME/dist/index.js"
-  local_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$REPO_ROOT/dist/index.js")
-  short_local=$(printf '%s' "$local_sum" | cut -c1-12)
-  if [ ! -f "$installed_entry" ]; then
+  local local_manifest local_hash local_count installed_dir installed_manifest installed_hash installed_count short_local short_installed
+  installed_dir="$PROFILE_DIR/node_modules/$PKG_NAME"
+  local_manifest=$(manifest_of "$REPO_ROOT")
+  if [ -z "$local_manifest" ]; then
+    abort_deploy "cannot hash the packed set (node scripts/build-manifest.mjs $REPO_ROOT failed)"
+  fi
+  local_hash=${local_manifest%% *}
+  local_count=${local_manifest##* }
+  short_local=$(printf '%s' "$local_hash" | cut -c1-12)
+  if [ ! -f "$installed_dir/package.json" ]; then
     # A dry run must be able to describe a first install (nothing installed yet)
     # without turning that into a failure or a write.
     if [ "$DRY_RUN" = "1" ]; then
-      say "installed build: absent — a real run would install, then compare against packed $short_local"
+      say "installed build: absent — a real run would install, then compare against packed $short_local ($local_count files)"
       return 0
     fi
-    abort_deploy "installed entry not found: node_modules/$PKG_NAME/dist/index.js (re-run with --skip-tests after a fresh install, or remove the profile entry and deploy again)"
+    abort_deploy "installed package not found: node_modules/$PKG_NAME/package.json (re-run with --skip-tests after a fresh install, or remove the profile entry and deploy again)"
   fi
-  installed_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$installed_entry")
-  short_installed=$(printf '%s' "$installed_sum" | cut -c1-12)
-  if [ "$local_sum" = "$installed_sum" ]; then
-    say "installed build: fresh (sha256 $short_local)"
+  installed_manifest=$(manifest_of "$installed_dir")
+  if [ -z "$installed_manifest" ]; then
+    abort_deploy "cannot hash the installed set (node scripts/build-manifest.mjs $installed_dir failed)"
+  fi
+  installed_hash=${installed_manifest%% *}
+  installed_count=${installed_manifest##* }
+  short_installed=$(printf '%s' "$installed_hash" | cut -c1-12)
+  if [ "$local_hash" = "$installed_hash" ]; then
+    say "installed build: fresh (manifest $short_local, $local_count files)"
     return 0
   fi
   # DRY RUN MUST NOT DELETE: this branch used to rm -rf the installed package even
   # under --dry-run (it then crashed on the now-missing entry with a raw ENOENT).
   # A plan that removes the running plugin is not a plan.
   if [ "$DRY_RUN" = "1" ]; then
-    say "installed build: STALE (installed $short_installed != packed $short_local) — a real run would rm -rf node_modules/$PKG_NAME and reinstall"
+    say "installed build: STALE (installed $short_installed/$installed_count files != packed $short_local/$local_count files) — a real run would rm -rf node_modules/$PKG_NAME and reinstall"
     return 0
   fi
-  say "installed build: STALE (installed $short_installed != packed $short_local) — forcing one reinstall"
-  rm -rf "$PROFILE_DIR/node_modules/$PKG_NAME"
+  say "installed build: STALE (installed $short_installed/$installed_count files != packed $short_local/$local_count files) — forcing one reinstall"
+  rm -rf "$installed_dir"
   run "$DSH_BIN" plugin --profile "$PROFILE" add "$TARBALL_SPEC"
-  [ -f "$installed_entry" ] || abort_deploy "reinstall did not produce node_modules/$PKG_NAME/dist/index.js"
-  installed_sum=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$installed_entry")
-  if [ "$installed_sum" != "$local_sum" ]; then
-    abort_deploy "installed build still stale after reinstall"
+  [ -f "$installed_dir/package.json" ] || abort_deploy "reinstall did not produce node_modules/$PKG_NAME/package.json"
+  installed_manifest=$(manifest_of "$installed_dir")
+  installed_hash=${installed_manifest%% *}
+  if [ "$installed_hash" != "$local_hash" ]; then
+    abort_deploy "installed build still stale after reinstall (installed ${installed_hash:0:12} != packed $short_local)"
   fi
-  say "installed build: refreshed (sha256 $short_local)"
+  say "installed build: refreshed (manifest $short_local, $local_count files)"
 }
 ensure_installed_build_matches
 

@@ -98,7 +98,11 @@ describeGroup('Config schema shape', () => {
     // askAtSessionStart / askTimeoutMs / rememberSession / skipDefault.
     // 29 -> 30: identity.followUserSessionInit, the "honour the per-user
     // session_init config" switch that decides whether a card appears at all.
-    expect(volatile).toHaveLength(30);
+    // 30 -> 27: the identity triple (server.teamId / agentId / userId) left the
+    // form — it is resolved from the user key at mount and from the user's own
+    // session_init config on every session, so a form field could only make the
+    // host disagree with the core. It stays patch-only (deploy.sh --identity).
+    expect(volatile).toHaveLength(27);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {
@@ -230,7 +234,10 @@ describeGroup.skipIf(!realAvailable)('real schemastery integration', () => {
       server: { teamId: 'team-real', apiKey: 'sk-secret' },
     }) as Record<string, any>;
     expect(isVolatileRef(resolved.enabled)).toBe(true);
-    expect(isVolatileRef(resolved.server.teamId)).toBe(true);
+    // A form field is volatile; the identity triple is patch-only, so it must
+    // come through as a plain value even when the patch supplies one.
+    expect(isVolatileRef(resolved.server.baseUrl)).toBe(true);
+    expect(isVolatileRef(resolved.server.teamId)).toBe(false);
     const { config } = resolvePluginConfig(resolved);
     expect(config.enabled).toBe(false);
     expect(config.server.teamId).toBe('team-real');

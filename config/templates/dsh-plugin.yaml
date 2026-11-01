@@ -12,7 +12,7 @@
 enabled: true   # bool default=true — 插件总开关；false 时 apply() 直接 return，不注册任何段/工具、不建 outbox（连 debug 日志镜像都不建） [src:324]
 
 # ─── server ───────────────────────────────────────────────  [config.ts:326]
-# server 连接与身份（core 基址 / 凭据引用名 / 三段隔离身份）
+# server 连接与身份（core 基址 / 凭据引用名；三段隔离身份只在 patch 里，不在设置页）
 server:
   baseUrl: "http://127.0.0.1:8420"   # str default="http://127.0.0.1:8420" — core 的 origin（结尾斜杠会被剥掉）；指向错端口时所有调用 fail-open 成「没有记忆」，不会报错 [src:326]
   apiKey: ""   # str default="" — 内联 core API key；非空时压过 apiKeyRef。桌面 profile 无凭据库时才用，填错=全量 401 后进程级停用 [src:328]
@@ -20,9 +20,9 @@ server:
   serviceId: "default"   # str default="default" — 作为 x-tdai-service-id 发出；换值等于换一个服务命名空间 [src:331]
   userKey: ""   # str default="" — 内联用户 key（task-51 身份解析）；非空时压过 userKeyRef。只用于 verify→team/list→agent/list，绝不进日志/提示词 [src:333]
   userKeyRef: "TDAI_USER_KEY"   # str default="TDAI_USER_KEY" — 用户 key 的凭据名；留空且无内联值时退化为「只用三轴显式身份」 [src:334]
-  teamId: ""   # str default="" — 隔离轴之一；空串时插件保持 inert（记一行日志后停止发请求），避免写进别人账号 [src:337]
-  agentId: ""   # str default="" — 隔离轴之一；与 teamId/userId 任一为空即 inert [src:338]
-  userId: ""   # str default="" — 隔离轴之一；三轴齐备才发数据路由，也才带 x-tdai-user-key [src:339]
+  teamId: ""   # str default="" — 隔离轴之一；不在设置页里（身份由 user key + 用户级 session_init 决定），只由 patch 兜底写入；空串且解析不成功时插件保持 inert [src:337]
+  agentId: ""   # str default="" — 隔离轴之一；不在设置页里，只由 patch 兜底写入；与 teamId/userId 任一为空即 inert [src:338]
+  userId: ""   # str default="" — 隔离轴之一；不在设置页里，只由 patch 兜底写入；三轴齐备才发数据路由，也才带 x-tdai-user-key [src:339]
   requestTimeoutMs: 10000   # ms default=10000 — 单次 HTTP 的握手+响应总预算（clamp [100,120000]）；太小会把正常写入拖成超时死信 [src:342]
   maxResponseBytes: 2097152   # int default=2097152 — 单次响应体的字节上限（源码 2 * 1024 * 1024，clamp [1,16777216]）；0/缺省=用缺省，绝不等于「不限」 [src:345]
 

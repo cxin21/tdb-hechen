@@ -51,7 +51,7 @@ ctx.slots.inject("settings.section", () => ctx.slots.register({
 1. `registers the card into the plugins item slot and the page into the settings navigation`：两个槽都在、`registrations` 长度 2、plugins.item `{id:'tdb-agemem', order:40}`、settings.section `{id:'tdb-agemem', order:30, label:()=>t('title')}`、`served` 仍是 `[["tdb-agemem-dsh"]]`（都在服务态内注册）；
 2. `hands both slots the same staged form face`：两槽 `inject()` 的 `hooks.tdbAgememCard` 是同一个对象，`save/discard` 都是函数；
 3. `registers nothing while the Host serves no profile entry`：inert 时 `registrations` 为 0、`served` 仍记录请求；
-4. `renders the settings section with the panel copy above the same form`：根节点 `div._tdbAgemem_page`、文本含 `title`+`description`、有 `SettingsForm`、15 个字段 id + 两个 secret id 全在；
+4. `renders the settings section with the panel copy above the same form`：根节点 `div._tdbAgemem_page`、文本含 `title`+`description`、有 `SettingsForm`、`EXPECTED_FIELD_PATHS` 里的字段 id + 两个 secret id 全在（当时 15 个；身份三轴移出后 12 个，见 §5）；
 5. 原有 `renders the one-liner in the summary view` 保持不变（summary 仍只返回 `description`）。
 
 ## 4. 门禁读数
@@ -73,3 +73,16 @@ ctx.slots.inject("settings.section", () => ctx.slots.register({
 - 装同一份 build 后跑同一个探针，期望 `sections=["general","models","plugins","tdb-agemem",...]`（order 30 排在 plugins 15 之后）；侧栏出现「TDB 记忆」。
 - 本次**没有**真机渲染截图（未安装、未重启宿主是红线），只做了 vm 沙箱内的槽注册与组件树断言。
 - 若真机上出现双重标题（设置页外壳自己画了标题），删 `AgememSection` 里那行 `<h2>` 即可；当前契约（`SettingsSectionOwnerProps` 只有 `close`）不投影标题，故保留。
+
+## 7. 后续（2026-11-01 14:0x）：身份三轴已从表单移除
+
+设置页面对「填团队 id / 智能体 id / 用户 id」这条要求已经过时：身份在 mount 时由 user key 解析、
+每会话再由该用户自己的 `session_init` 配置决定（`docs/ops/dsh-plugin-session-identity-popup.md`），
+表单里再放三个输入框只会让宿主和 core 各说一套。改动：
+
+| 面 | 改动 |
+| --- | --- |
+| 宿主设置表单 | `src/config-schema.ts` 的 `VOLATILE_PATHS` 去掉 `server.teamId` / `agentId` / `userId`（30 → 27），对应 `DESCRIPTIONS` 三条删除 |
+| 插件自己的卡片/设置页 | `client/client.js` 的 `FIELDS` 与 `SECTIONS[0]`、中英文字典里的六个标签/提示一并删除（15 → 12 字段） |
+| 配置本体 | 三个键**保留**在 `config.ts` / `DEFAULT_CONFIG.server` 里，作为 patch-only 兜底（`deploy.sh --identity`、`scripts/agemem-identity.mjs`），`normalizeConfig` 照旧解析 |
+| 测试 | `config-schema.test.ts` 数量 30→27、并断言三元组不再是 volatile；`client-bundle.test.ts` 的 `EXPECTED_FIELD_PATHS` 去掉三条，原来拿 `server.teamId` 当「随便一个文本框」的用例改用 `server.baseUrl` |

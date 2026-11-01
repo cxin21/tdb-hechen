@@ -14,9 +14,6 @@ const EXPECTED_FIELD_PATHS = [
   "enabled",
   "server.baseUrl",
   "server.serviceId",
-  "server.teamId",
-  "server.agentId",
-  "server.userId",
   "server.apiKeyRef",
   "server.userKeyRef",
   "writeback.enabled",
@@ -343,11 +340,11 @@ describe("client half: mounting", () => {
 describe("client half: staged writes", () => {
   it("saves a nested text field as a multi-segment path at the snapshot revision", async () => {
     const mounted = mount();
-    mounted.injected.edit(["server", "teamId"], "team-1");
+    mounted.injected.edit(["server", "baseUrl"], "http://127.0.0.1:9999");
     await mounted.injected.save();
     expect(mounted.scope.mutate).toHaveBeenCalledTimes(1);
     const [ops, revision] = mounted.scope.mutate.mock.calls[0]!;
-    expect(ops).toEqual([{ op: "set", path: ["server", "teamId"], value: "team-1" }]);
+    expect(ops).toEqual([{ op: "set", path: ["server", "baseUrl"], value: "http://127.0.0.1:9999" }]);
     expect(revision).toBe(7);
   });
 
@@ -376,15 +373,15 @@ describe("client half: staged writes", () => {
 
   it("clears an override only where the user layer stores the path", async () => {
     const plain = mount();
-    plain.injected.edit(["server", "userId"], "");
+    plain.injected.edit(["server", "baseUrl"], "");
     await plain.injected.save();
     expect(plain.scope.mutate).not.toHaveBeenCalled();
 
-    const stored = mount({ user: { server: { userId: "u-1" } } });
-    stored.injected.edit(["server", "userId"], "");
+    const stored = mount({ user: { server: { baseUrl: "http://127.0.0.1:9000" } } });
+    stored.injected.edit(["server", "baseUrl"], "");
     await stored.injected.save();
     const [ops] = stored.scope.mutate.mock.calls[0]!;
-    expect(ops).toEqual([{ op: "unset", path: ["server", "userId"] }]);
+    expect(ops).toEqual([{ op: "unset", path: ["server", "baseUrl"] }]);
   });
 
   it("refuses an unparsable number instead of writing it", async () => {
@@ -418,7 +415,7 @@ describe("client half: staged writes", () => {
   it("keeps the drafts and reports failure when the Host refuses", async () => {
     const mounted = mount();
     mounted.scope.mutate.mockResolvedValueOnce(false);
-    mounted.injected.edit(["server", "teamId"], "team-1");
+    mounted.injected.edit(["server", "baseUrl"], "http://127.0.0.1:9999");
     await mounted.injected.save();
     const state = mounted.store.getSnapshot();
     expect(state.failed).toBe(true);
@@ -427,7 +424,7 @@ describe("client half: staged writes", () => {
 
   it("does not write while the scope reports itself read-only", async () => {
     const mounted = mount({ writable: false });
-    mounted.injected.edit(["server", "teamId"], "team-1");
+    mounted.injected.edit(["server", "baseUrl"], "http://127.0.0.1:9999");
     await mounted.injected.save();
     expect(mounted.scope.mutate).not.toHaveBeenCalled();
     expect(mounted.store.getSnapshot().writable).toBe(false);
@@ -435,7 +432,7 @@ describe("client half: staged writes", () => {
 
   it("drops every draft on discard", async () => {
     const mounted = mount();
-    mounted.injected.edit(["server", "teamId"], "team-1");
+    mounted.injected.edit(["server", "baseUrl"], "http://127.0.0.1:9999");
     expect(mounted.store.getSnapshot().dirty).toBe(true);
     mounted.injected.discard();
     expect(mounted.store.getSnapshot().dirty).toBe(false);

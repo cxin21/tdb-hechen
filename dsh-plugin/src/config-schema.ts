@@ -63,9 +63,12 @@ export const VOLATILE_PATHS = [
   'enabled',
   'server.baseUrl',
   'server.serviceId',
-  'server.teamId',
-  'server.agentId',
-  'server.userId',
+  // server.teamId / agentId / userId are deliberately NOT volatile: the
+  // identity is resolved from the user key at mount and from the user's own
+  // session_init config on every session, so a form field could only make the
+  // host disagree with the core. They stay in the config as a patch-only
+  // fallback written by `deploy.sh --identity` (for a core that cannot resolve
+  // the key on this machine).
   'server.apiKeyRef',
   'server.userKeyRef',
   'writeback.enabled',
@@ -113,9 +116,6 @@ const DESCRIPTIONS: Record<string, string> = {
   enabled: 'Master switch for the whole memory plugin (head pack, volatile block, writeback, recall tool).',
   'server.baseUrl': 'tdai-gateway base URL, e.g. http://127.0.0.1:8420',
   'server.serviceId': 'Gateway service id used for every /v3 call.',
-  'server.teamId': 'Team bound to this session (identity). Leave empty to resolve it from the user key.',
-  'server.agentId': 'Agent (context) bound to this session. Leave empty to resolve it together with teamId.',
-  'server.userId': 'End-user id for per-user memory. Leave empty to resolve it from the user key.',
   'server.apiKeyRef': 'Credential NAME holding the gateway API key (not the key itself).',
   'server.userKeyRef': 'Credential NAME holding the user key (not the key itself).',
   'writeback.enabled': 'Write finished turns back into memory.',
