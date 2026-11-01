@@ -7,31 +7,642 @@
   ],
   "keys": [
     {
-      "path": "assetReflection.alwaysOn",
+      "path": "enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:414",
+      "consumed": true
+    },
+    {
+      "path": "server.baseUrl",
+      "type": "str",
+      "default": "http://127.0.0.1:8420",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:416",
+      "consumed": true
+    },
+    {
+      "path": "server.apiKey",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_GATEWAY_APIKEY",
+      "source": "dsh-plugin/src/config.ts:418",
+      "consumed": true
+    },
+    {
+      "path": "server.apiKeyRef",
+      "type": "str",
+      "default": "TDAI_GATEWAY_APIKEY",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:420",
+      "consumed": true
+    },
+    {
+      "path": "server.serviceId",
+      "type": "str",
+      "default": "default",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:421",
+      "consumed": true
+    },
+    {
+      "path": "server.userKey",
+      "type": "str",
+      "default": "",
+      "env": "TDAI_USER_KEY",
+      "source": "dsh-plugin/src/config.ts:423",
+      "consumed": true
+    },
+    {
+      "path": "server.userKeyRef",
+      "type": "str",
+      "default": "TDAI_USER_KEY",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:424",
+      "consumed": true
+    },
+    {
+      "path": "server.teamId",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:427",
+      "consumed": true
+    },
+    {
+      "path": "server.agentId",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:428",
+      "consumed": true
+    },
+    {
+      "path": "server.userId",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:429",
+      "consumed": true
+    },
+    {
+      "path": "server.requestTimeoutMs",
+      "type": "ms",
+      "default": 10000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:432",
+      "consumed": true
+    },
+    {
+      "path": "server.maxResponseBytes",
+      "type": "int",
+      "default": 2097152,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:435",
+      "consumed": true,
+      "defaultNote": "源码字面量 2 * 1024 * 1024；取值见 dsh-plugin/src/http-capped.ts:26"
+    },
+    {
+      "path": "paths.coreRead",
+      "type": "path",
+      "default": "/v3/core/read",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:438",
+      "consumed": true
+    },
+    {
+      "path": "paths.atomicSearch",
+      "type": "path",
+      "default": "/v3/atomic/search",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:439",
+      "consumed": true
+    },
+    {
+      "path": "paths.scenarioLs",
+      "type": "path",
+      "default": "/v3/scenario/ls",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:440",
+      "consumed": true
+    },
+    {
+      "path": "paths.conversationAdd",
+      "type": "path",
+      "default": "/v3/conversation/add",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:441",
+      "consumed": true
+    },
+    {
+      "path": "paths.conversationDelete",
+      "type": "path",
+      "default": "/v3/conversation/delete",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:442",
+      "consumed": true
+    },
+    {
+      "path": "paths.skillConversationAdd",
+      "type": "path",
+      "default": "/v3/skill/conversation/add",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:443",
+      "consumed": true
+    },
+    {
+      "path": "paths.recall",
+      "type": "path",
+      "default": "/v3/recall",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:444",
+      "consumed": true
+    },
+    {
+      "path": "paths.health",
+      "type": "path",
+      "default": "/health",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:445",
+      "consumed": true
+    },
+    {
+      "path": "paths.metaAuthVerify",
+      "type": "path",
+      "default": "/v3/meta/auth/verify",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:446",
+      "consumed": true
+    },
+    {
+      "path": "paths.metaTeamList",
+      "type": "path",
+      "default": "/v3/meta/team/list",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:447",
+      "consumed": true
+    },
+    {
+      "path": "paths.metaAgentList",
+      "type": "path",
+      "default": "/v3/meta/agent/list",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:448",
+      "consumed": true
+    },
+    {
+      "path": "paths.metaUserConfig",
+      "type": "path",
+      "default": "/v3/meta/config/user/get",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:449",
+      "consumed": true
+    },
+    {
+      "path": "headPack.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:452",
+      "consumed": true
+    },
+    {
+      "path": "headPack.orderOffset",
+      "type": "int",
+      "default": 100,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:453",
+      "consumed": true
+    },
+    {
+      "path": "headPack.maxChars",
+      "type": "int",
+      "default": 20000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:458",
+      "consumed": true
+    },
+    {
+      "path": "headPack.timeoutMs",
+      "type": "ms",
+      "default": 10000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:459",
+      "consumed": true
+    },
+    {
+      "path": "headPack.refreshMs",
+      "type": "ms",
+      "default": 300000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:460",
+      "consumed": true
+    },
+    {
+      "path": "headPack.fallbackText",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:461",
+      "consumed": true
+    },
+    {
+      "path": "headPack.includeScenarioIndex",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:462",
+      "consumed": true
+    },
+    {
+      "path": "headPack.maxScenarioEntries",
+      "type": "int",
+      "default": 20,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:463",
+      "consumed": false,
+      "orphan": true,
+      "reason": "孤儿：只在 src/head-pack-compose.ts:57 的 options.maxScenarioEntries ?? 20 里有缺省，唯一调用方 src/segments/persona.ts:30-35 不传 ⇒ 恒 20（task-107 已登记）"
+    },
+    {
+      "path": "headPack.l2Chars",
+      "type": "int",
+      "default": 3000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:465",
+      "consumed": true
+    },
+    {
+      "path": "volatile.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:468",
+      "consumed": true
+    },
+    {
+      "path": "volatile.maxChars",
+      "type": "int",
+      "default": 6000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:480",
+      "consumed": true
+    },
+    {
+      "path": "volatile.soul.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:482",
+      "consumed": true
+    },
+    {
+      "path": "volatile.soul.maxChars",
+      "type": "int",
+      "default": 4400,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:488",
+      "consumed": true
+    },
+    {
+      "path": "volatile.soul.includeFeeling",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:489",
+      "consumed": true
+    },
+    {
+      "path": "volatile.soul.oncePerSession",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:493",
+      "consumed": true
+    },
+    {
+      "path": "volatile.timeoutMs",
+      "type": "ms",
+      "default": 3000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:497",
+      "consumed": true
+    },
+    {
+      "path": "volatile.recall",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:498",
+      "consumed": true
+    },
+    {
+      "path": "volatile.recallMaxResults",
+      "type": "int",
+      "default": 3,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:499",
+      "consumed": true
+    },
+    {
+      "path": "volatile.recallTimeoutMs",
+      "type": "ms",
+      "default": 2500,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:504",
+      "consumed": true
+    },
+    {
+      "path": "volatile.wiki.enabled",
       "type": "bool",
       "default": false,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:545",
+      "source": "dsh-plugin/src/config.ts:508",
+      "consumed": true
+    },
+    {
+      "path": "volatile.wiki.topK",
+      "type": "int",
+      "default": 3,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:509",
+      "consumed": true
+    },
+    {
+      "path": "volatile.wiki.perWikiLimit",
+      "type": "int",
+      "default": 4,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:510",
+      "consumed": true
+    },
+    {
+      "path": "volatile.wiki.minScore",
+      "type": "float",
+      "default": 0.02,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:511",
+      "consumed": true
+    },
+    {
+      "path": "volatile.wiki.maxChars",
+      "type": "int",
+      "default": 800,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:512",
+      "consumed": true
+    },
+    {
+      "path": "volatile.wiki.timeoutMs",
+      "type": "ms",
+      "default": 2500,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:513",
+      "consumed": true
+    },
+    {
+      "path": "volatile.knowledge.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:519",
+      "consumed": true
+    },
+    {
+      "path": "volatile.knowledge.maxChars",
+      "type": "int",
+      "default": 3000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:520",
+      "consumed": true
+    },
+    {
+      "path": "volatile.knowledge.maxResources",
+      "type": "int",
+      "default": 8,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:521",
+      "consumed": true
+    },
+    {
+      "path": "volatile.knowledge.timeoutMs",
+      "type": "ms",
+      "default": 2500,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:522",
+      "consumed": true
+    },
+    {
+      "path": "writeback.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:526",
+      "consumed": true
+    },
+    {
+      "path": "writeback.skillFeed",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:528",
+      "consumed": true
+    },
+    {
+      "path": "writeback.outboxPath",
+      "type": "path",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:529",
+      "consumed": true
+    },
+    {
+      "path": "writeback.maxAttempts",
+      "type": "int",
+      "default": 8,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:530",
+      "consumed": true
+    },
+    {
+      "path": "writeback.retryMs",
+      "type": "ms",
+      "default": 30000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:531",
+      "consumed": true
+    },
+    {
+      "path": "writeback.maxMessageChars",
+      "type": "int",
+      "default": 8192,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:535",
+      "consumed": true
+    },
+    {
+      "path": "writeback.maxMessagesPerRequest",
+      "type": "int",
+      "default": 100,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:536",
       "consumed": false,
       "orphan": true,
-      "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
+      "reason": "孤儿：src/config.ts:662-667 归一化后再无消费者，批次大小无人限制（task-107 已登记；模板保留以示存在）"
+    },
+    {
+      "path": "writeback.maxRequestBytes",
+      "type": "int",
+      "default": 700000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:538",
+      "consumed": true,
+      "defaultNote": "源码字面量 DEFAULT_MAX_REQUEST_BYTES；取值见 dsh-plugin/src/wire-limits.ts:91"
+    },
+    {
+      "path": "writeback.maxOutboxEntries",
+      "type": "int",
+      "default": 500,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:541",
+      "consumed": true
+    },
+    {
+      "path": "writeback.maxOutboxBytes",
+      "type": "int",
+      "default": 20971520,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:542",
+      "consumed": true,
+      "defaultNote": "源码字面量 20 * 1024 * 1024；取值见 dsh-plugin/src/config.ts:439"
+    },
+    {
+      "path": "tools.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:545",
+      "consumed": true
+    },
+    {
+      "path": "tools.recall",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:546",
+      "consumed": true
+    },
+    {
+      "path": "tools.recallTopK",
+      "type": "int",
+      "default": 8,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:547",
+      "consumed": true
+    },
+    {
+      "path": "identity.askAtSessionStart",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:552",
+      "consumed": true
+    },
+    {
+      "path": "identity.followUserSessionInit",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:555",
+      "consumed": true
+    },
+    {
+      "path": "identity.askTimeoutMs",
+      "type": "ms",
+      "default": 60000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:558",
+      "consumed": true
+    },
+    {
+      "path": "identity.rememberSession",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:559",
+      "consumed": true
+    },
+    {
+      "path": "identity.skipDefault",
+      "type": "bool",
+      "default": false,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:560",
+      "consumed": true
+    },
+    {
+      "path": "identity.statePath",
+      "type": "path",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:561",
+      "consumed": true
+    },
+    {
+      "path": "skill.enabled",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:590",
+      "consumed": true
+    },
+    {
+      "path": "skill.allowLlmWrite",
+      "type": "bool",
+      "default": false,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:592",
+      "consumed": true
+    },
+    {
+      "path": "skill.headPackChars",
+      "type": "int",
+      "default": 8000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:594",
+      "consumed": true
+    },
+    {
+      "path": "skill.searchTopK",
+      "type": "int",
+      "default": 10,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:595",
+      "consumed": true
+    },
+    {
+      "path": "skill.maxResultChars",
+      "type": "int",
+      "default": 20000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:598",
+      "consumed": true
+    },
+    {
+      "path": "skill.timeoutMs",
+      "type": "ms",
+      "default": 2500,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:599",
+      "consumed": true
     },
     {
       "path": "assetReflection.enabled",
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:542",
-      "consumed": false,
-      "orphan": true,
-      "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
-    },
-    {
-      "path": "assetReflection.maxChars",
-      "type": "int",
-      "default": 600,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:548",
+      "source": "dsh-plugin/src/config.ts:604",
       "consumed": false,
       "orphan": true,
       "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
@@ -41,17 +652,141 @@
       "type": "str",
       "default": "/analyse",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:544",
+      "source": "dsh-plugin/src/config.ts:606",
       "consumed": false,
       "orphan": true,
       "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
+    },
+    {
+      "path": "assetReflection.alwaysOn",
+      "type": "bool",
+      "default": false,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:607",
+      "consumed": false,
+      "orphan": true,
+      "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
+    },
+    {
+      "path": "assetReflection.maxChars",
+      "type": "int",
+      "default": 600,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:610",
+      "consumed": false,
+      "orphan": true,
+      "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
+    },
+    {
+      "path": "services.enabled",
+      "type": "bool",
+      "default": false,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:567",
+      "consumed": true
+    },
+    {
+      "path": "services.repoRoot",
+      "type": "str",
+      "default": "D:/TDB/td-agemem",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:568",
+      "consumed": true
+    },
+    {
+      "path": "services.envFile",
+      "type": "str",
+      "default": "D:/TDB/etc/services.env",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:571",
+      "consumed": true
+    },
+    {
+      "path": "services.nodePath",
+      "type": "str",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:574",
+      "consumed": true
+    },
+    {
+      "path": "services.logteeModule",
+      "type": "str",
+      "default": "file:///D:/TDB/etc/logtee.mjs",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:577",
+      "consumed": true
+    },
+    {
+      "path": "services.logDir",
+      "type": "path",
+      "default": "D:/TDB/data/logs",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:578",
+      "consumed": true
+    },
+    {
+      "path": "services.runDir",
+      "type": "path",
+      "default": "D:/TDB/data/run",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:579",
+      "consumed": true
+    },
+    {
+      "path": "services.statePath",
+      "type": "path",
+      "default": "",
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:582",
+      "consumed": true
+    },
+    {
+      "path": "services.controlPort",
+      "type": "int",
+      "default": 8444,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:583",
+      "consumed": true
+    },
+    {
+      "path": "services.healthTimeoutMs",
+      "type": "ms",
+      "default": 90000,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:584",
+      "consumed": true
+    },
+    {
+      "path": "services.maxRestarts",
+      "type": "int",
+      "default": 3,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:585",
+      "consumed": true
+    },
+    {
+      "path": "services.autoRestart",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:586",
+      "consumed": true
+    },
+    {
+      "path": "services.stopOnDispose",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:587",
+      "consumed": true
     },
     {
       "path": "debug",
       "type": "bool",
       "default": false,
       "env": "AGEMEM_DEBUG",
-      "source": "dsh-plugin/src/config.ts:550",
+      "source": "dsh-plugin/src/config.ts:612",
       "consumed": true
     },
     {
@@ -59,639 +794,15 @@
       "type": "path",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:552",
-      "consumed": true
-    },
-    {
-      "path": "enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:378",
-      "consumed": true
-    },
-    {
-      "path": "headPack.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:416",
-      "consumed": true
-    },
-    {
-      "path": "headPack.fallbackText",
-      "type": "str",
-      "default": "",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:425",
-      "consumed": true
-    },
-    {
-      "path": "headPack.includeScenarioIndex",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:426",
-      "consumed": true
-    },
-    {
-      "path": "headPack.l2Chars",
-      "type": "int",
-      "default": 3000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:429",
-      "consumed": true
-    },
-    {
-      "path": "headPack.maxChars",
-      "type": "int",
-      "default": 20000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:422",
-      "consumed": true
-    },
-    {
-      "path": "headPack.maxScenarioEntries",
-      "type": "int",
-      "default": 20,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:427",
-      "consumed": false,
-      "orphan": true,
-      "reason": "孤儿：只在 src/head-pack-compose.ts:57 的 options.maxScenarioEntries ?? 20 里有缺省，唯一调用方 src/segments/persona.ts:30-35 不传 ⇒ 恒 20（task-107 已登记）"
-    },
-    {
-      "path": "headPack.orderOffset",
-      "type": "int",
-      "default": 100,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:417",
-      "consumed": true
-    },
-    {
-      "path": "headPack.refreshMs",
-      "type": "ms",
-      "default": 300000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:424",
-      "consumed": true
-    },
-    {
-      "path": "headPack.timeoutMs",
-      "type": "ms",
-      "default": 10000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:423",
-      "consumed": true
-    },
-    {
-      "path": "identity.askAtSessionStart",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:516",
-      "consumed": true
-    },
-    {
-      "path": "identity.askTimeoutMs",
-      "type": "ms",
-      "default": 60000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:522",
-      "consumed": true
-    },
-    {
-      "path": "identity.followUserSessionInit",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:519",
-      "consumed": true
-    },
-    {
-      "path": "identity.rememberSession",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:523",
-      "consumed": true
-    },
-    {
-      "path": "identity.skipDefault",
-      "type": "bool",
-      "default": false,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:524",
-      "consumed": true
-    },
-    {
-      "path": "identity.statePath",
-      "type": "path",
-      "default": "",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:525",
-      "consumed": true
-    },
-    {
-      "path": "paths.atomicSearch",
-      "type": "path",
-      "default": "/v3/atomic/search",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:403",
-      "consumed": true
-    },
-    {
-      "path": "paths.conversationAdd",
-      "type": "path",
-      "default": "/v3/conversation/add",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:405",
-      "consumed": true
-    },
-    {
-      "path": "paths.conversationDelete",
-      "type": "path",
-      "default": "/v3/conversation/delete",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:406",
-      "consumed": true
-    },
-    {
-      "path": "paths.coreRead",
-      "type": "path",
-      "default": "/v3/core/read",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:402",
-      "consumed": true
-    },
-    {
-      "path": "paths.health",
-      "type": "path",
-      "default": "/health",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:409",
-      "consumed": true
-    },
-    {
-      "path": "paths.metaAgentList",
-      "type": "path",
-      "default": "/v3/meta/agent/list",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:412",
-      "consumed": true
-    },
-    {
-      "path": "paths.metaAuthVerify",
-      "type": "path",
-      "default": "/v3/meta/auth/verify",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:410",
-      "consumed": true
-    },
-    {
-      "path": "paths.metaTeamList",
-      "type": "path",
-      "default": "/v3/meta/team/list",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:411",
-      "consumed": true
-    },
-    {
-      "path": "paths.recall",
-      "type": "path",
-      "default": "/v3/recall",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:408",
-      "consumed": true
-    },
-    {
-      "path": "paths.scenarioLs",
-      "type": "path",
-      "default": "/v3/scenario/ls",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:404",
-      "consumed": true
-    },
-    {
-      "path": "paths.skillConversationAdd",
-      "type": "path",
-      "default": "/v3/skill/conversation/add",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:407",
-      "consumed": true
-    },
-    {
-      "path": "server.agentId",
-      "type": "str",
-      "default": "",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:392",
-      "consumed": true
-    },
-    {
-      "path": "server.apiKey",
-      "type": "str",
-      "default": "",
-      "env": "TDAI_GATEWAY_APIKEY",
-      "source": "dsh-plugin/src/config.ts:382",
-      "consumed": true
-    },
-    {
-      "path": "server.apiKeyRef",
-      "type": "str",
-      "default": "TDAI_GATEWAY_APIKEY",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:384",
-      "consumed": true
-    },
-    {
-      "path": "server.baseUrl",
-      "type": "str",
-      "default": "http://127.0.0.1:8420",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:380",
-      "consumed": true
-    },
-    {
-      "path": "server.maxResponseBytes",
-      "type": "int",
-      "default": 2097152,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:399",
-      "consumed": true,
-      "defaultNote": "源码字面量 2 * 1024 * 1024；取值见 dsh-plugin/src/http-capped.ts:26"
-    },
-    {
-      "path": "server.requestTimeoutMs",
-      "type": "ms",
-      "default": 10000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:396",
-      "consumed": true
-    },
-    {
-      "path": "server.serviceId",
-      "type": "str",
-      "default": "default",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:385",
-      "consumed": true
-    },
-    {
-      "path": "server.teamId",
-      "type": "str",
-      "default": "",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:391",
-      "consumed": true
-    },
-    {
-      "path": "server.userId",
-      "type": "str",
-      "default": "",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:393",
-      "consumed": true
-    },
-    {
-      "path": "server.userKey",
-      "type": "str",
-      "default": "",
-      "env": "TDAI_USER_KEY",
-      "source": "dsh-plugin/src/config.ts:387",
-      "consumed": true
-    },
-    {
-      "path": "server.userKeyRef",
-      "type": "str",
-      "default": "TDAI_USER_KEY",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:388",
-      "consumed": true
-    },
-    {
-      "path": "skill.allowLlmWrite",
-      "type": "bool",
-      "default": false,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:530",
-      "consumed": true
-    },
-    {
-      "path": "skill.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:528",
-      "consumed": true
-    },
-    {
-      "path": "skill.headPackChars",
-      "type": "int",
-      "default": 8000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:532",
-      "consumed": true
-    },
-    {
-      "path": "skill.maxResultChars",
-      "type": "int",
-      "default": 20000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:536",
-      "consumed": true
-    },
-    {
-      "path": "skill.searchTopK",
-      "type": "int",
-      "default": 10,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:533",
-      "consumed": true
-    },
-    {
-      "path": "skill.timeoutMs",
-      "type": "ms",
-      "default": 2500,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:537",
-      "consumed": true
-    },
-    {
-      "path": "tools.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:509",
-      "consumed": true
-    },
-    {
-      "path": "tools.recall",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:510",
-      "consumed": true
-    },
-    {
-      "path": "tools.recallTopK",
-      "type": "int",
-      "default": 8,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:511",
-      "consumed": true
-    },
-    {
-      "path": "volatile.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:432",
-      "consumed": true
-    },
-    {
-      "path": "volatile.knowledge.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:483",
-      "consumed": true
-    },
-    {
-      "path": "volatile.knowledge.maxChars",
-      "type": "int",
-      "default": 3000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:484",
-      "consumed": true
-    },
-    {
-      "path": "volatile.knowledge.maxResources",
-      "type": "int",
-      "default": 8,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:485",
-      "consumed": true
-    },
-    {
-      "path": "volatile.knowledge.timeoutMs",
-      "type": "ms",
-      "default": 2500,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:486",
-      "consumed": true
-    },
-    {
-      "path": "volatile.maxChars",
-      "type": "int",
-      "default": 6000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:444",
-      "consumed": true
-    },
-    {
-      "path": "volatile.recall",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:462",
-      "consumed": true
-    },
-    {
-      "path": "volatile.recallMaxResults",
-      "type": "int",
-      "default": 3,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:463",
-      "consumed": true
-    },
-    {
-      "path": "volatile.recallTimeoutMs",
-      "type": "ms",
-      "default": 2500,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:468",
-      "consumed": true
-    },
-    {
-      "path": "volatile.soul.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:446",
-      "consumed": true
-    },
-    {
-      "path": "volatile.soul.includeFeeling",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:453",
-      "consumed": true
-    },
-    {
-      "path": "volatile.soul.maxChars",
-      "type": "int",
-      "default": 4400,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:452",
-      "consumed": true
-    },
-    {
-      "path": "volatile.soul.oncePerSession",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:457",
-      "consumed": true
-    },
-    {
-      "path": "volatile.timeoutMs",
-      "type": "ms",
-      "default": 3000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:461",
-      "consumed": true
-    },
-    {
-      "path": "volatile.wiki.enabled",
-      "type": "bool",
-      "default": false,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:472",
-      "consumed": true
-    },
-    {
-      "path": "volatile.wiki.maxChars",
-      "type": "int",
-      "default": 800,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:476",
-      "consumed": true
-    },
-    {
-      "path": "volatile.wiki.minScore",
-      "type": "float",
-      "default": 0.02,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:475",
-      "consumed": true
-    },
-    {
-      "path": "volatile.wiki.perWikiLimit",
-      "type": "int",
-      "default": 4,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:474",
-      "consumed": true
-    },
-    {
-      "path": "volatile.wiki.timeoutMs",
-      "type": "ms",
-      "default": 2500,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:477",
-      "consumed": true
-    },
-    {
-      "path": "volatile.wiki.topK",
-      "type": "int",
-      "default": 3,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:473",
-      "consumed": true
-    },
-    {
-      "path": "writeback.enabled",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:490",
-      "consumed": true
-    },
-    {
-      "path": "writeback.maxAttempts",
-      "type": "int",
-      "default": 8,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:494",
-      "consumed": true
-    },
-    {
-      "path": "writeback.maxMessageChars",
-      "type": "int",
-      "default": 8192,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:499",
-      "consumed": true
-    },
-    {
-      "path": "writeback.maxMessagesPerRequest",
-      "type": "int",
-      "default": 100,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:500",
-      "consumed": false,
-      "orphan": true,
-      "reason": "孤儿：src/config.ts:662-667 归一化后再无消费者，批次大小无人限制（task-107 已登记；模板保留以示存在）"
-    },
-    {
-      "path": "writeback.maxOutboxBytes",
-      "type": "int",
-      "default": 20971520,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:506",
-      "consumed": true,
-      "defaultNote": "源码字面量 20 * 1024 * 1024；取值见 dsh-plugin/src/config.ts:439"
-    },
-    {
-      "path": "writeback.maxOutboxEntries",
-      "type": "int",
-      "default": 500,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:505",
-      "consumed": true
-    },
-    {
-      "path": "writeback.maxRequestBytes",
-      "type": "int",
-      "default": 700000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:502",
-      "consumed": true,
-      "defaultNote": "源码字面量 DEFAULT_MAX_REQUEST_BYTES；取值见 dsh-plugin/src/wire-limits.ts:91"
-    },
-    {
-      "path": "writeback.outboxPath",
-      "type": "path",
-      "default": "",
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:493",
-      "consumed": true
-    },
-    {
-      "path": "writeback.retryMs",
-      "type": "ms",
-      "default": 30000,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:495",
-      "consumed": true
-    },
-    {
-      "path": "writeback.skillFeed",
-      "type": "bool",
-      "default": true,
-      "env": null,
-      "source": "dsh-plugin/src/config.ts:492",
+      "source": "dsh-plugin/src/config.ts:614",
       "consumed": true
     }
   ],
   "ignored": [],
   "coverage": {
-    "sourceKeys": 83,
+    "sourceKeys": 97,
+    "templateKeys": 97,
     "ignoredKeys": 0,
-    "note": "83 个叶子全部进模板（Wave 2 后补登记 identity.followUserSessionInit 与 volatile.soul.oncePerSession 两条模板里有、清单漏登的键）；其中 6 个 consumed:false 是孤儿/死接线（见各自 orphan+reason），仍留在 keys[] 以便使用者看得见",
-    "templatedKeys": 83,
-    "templateKeys": 83
+    "note": "97 个叶子全部进模板；其中 6 个 consumed:false 是孤儿/死接线（见各自 orphan+reason），仍留在 keys[] 以便使用者看得见"
   }
 }

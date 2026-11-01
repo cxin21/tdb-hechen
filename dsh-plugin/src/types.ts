@@ -81,6 +81,28 @@ export interface SessionEventLike {
   data?: Record<string, any>;
 }
 
+export interface WebServerRoute {
+  kind?: string;
+  path: string;
+  handler: (req: any, res: any) => unknown;
+}
+
+export interface WebServerService {
+  register(route: WebServerRoute): () => void;
+}
+
+/**
+ * `inject` is the host's own sub-context form used by every bundle that touches
+ * a service that may not be mounted yet (`ctx.inject(['webServer'], sub => …)`).
+ * Optional: a host build without it simply has no same-origin route surface, and
+ * the loopback control server is the fallback.
+ */
+export interface InjectScope {
+  webServer?: WebServerService;
+  effect?: (factory: () => unknown, label?: string) => unknown;
+  [key: string]: unknown;
+}
+
 export interface AgememContext {
   systemPrompt: SystemPromptService;
   on(
@@ -90,4 +112,5 @@ export interface AgememContext {
   ): () => void;
   logger?: LoggerLike;
   reflect?: { get(name: string, strict?: boolean): unknown };
+  inject?: (deps: string[] | string, callback: (sub: InjectScope) => unknown) => unknown;
 }

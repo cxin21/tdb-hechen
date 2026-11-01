@@ -91,6 +91,7 @@ function loadClient() {
     if (name === "react/jsx-runtime") return jsxRuntime;
     if (name === "@deepseek-ai/dsh-client-ui-primitives") return primitives;
     if (name === "@deepseek-ai/dsh-client-store") return { createSnapshotStore: (initial: unknown) => snapshotStore(initial) };
+    if (name === "react") return { useState: () => [undefined, () => undefined], useEffect: () => undefined, useRef: () => ({ current: undefined }), useCallback: (fn: unknown) => fn };
     throw new Error("unexpected require: " + name);
   };
   const exports = (record as AnyRecord).factory(requireStub) as AnyRecord;
@@ -287,9 +288,10 @@ describe("client half: mounting", () => {
     expect(mounted.scope.namespace).toBe("tdb-agemem-dsh");
   });
 
-  it("registers the card into the plugins item slot and the page into the settings navigation", () => {
+  it("registers the card, the settings page and the service-stack page", () => {
     const mounted = mount();
-    expect(mounted.registrations).toHaveLength(2);
+    // Wave 4 folded the retired tdb-lifecycle bundle in: three slots, one form.
+    expect(mounted.registrations).toHaveLength(3);
     expect(mounted.served).toEqual([["tdb-agemem-dsh"]]);
 
     const card = mounted.registrations.find((entry) => entry.options.name === "plugins.item")!;
@@ -301,6 +303,14 @@ describe("client half: mounting", () => {
     expect(section.options).toMatchObject({ id: "tdb-agemem", order: 30, locale: "settings.tdbAgemem" });
     expect(section.options.label()).toBe(mounted.t("title"));
     expect(typeof section.component).toBe("function");
+
+    // The service stack page: its own slot id, same locale namespace, and no
+    // dependency on the config form being served (a status page must render even
+    // when the form cannot).
+    const services = mounted.registrations.find((entry) => entry.options.id === "tdb-services")!;
+    expect(services.options).toMatchObject({ name: "settings.section", locale: "settings.tdbAgemem" });
+    expect(services.options.label()).toBe(mounted.t("servicesNav"));
+    expect(typeof services.component).toBe("function");
   });
 
   it("hands both slots the same staged form face", () => {
@@ -312,12 +322,14 @@ describe("client half: mounting", () => {
     expect(typeof sectionFace.discard).toBe("function");
   });
 
-  it("registers nothing while the Host serves no profile entry for this plugin", () => {
+  it("registers only the service-stack page while the Host serves no profile entry", () => {
     const loaded = loadClient();
     const fake = fakeContext({}, { serve: false });
     loaded.exports.apply(fake.ctx);
     expect(fake.served).toEqual([["tdb-agemem-dsh"]]);
-    expect(fake.registrations).toHaveLength(0);
+    // No config form without a served namespace... but the supervisor page is
+    // independent of it: a stack that is down must still be visible.
+    expect(fake.registrations.map((entry) => entry.options.id)).toEqual(["tdb-services"]);
   });
 
   it("registers both dictionaries with the same key set", () => {

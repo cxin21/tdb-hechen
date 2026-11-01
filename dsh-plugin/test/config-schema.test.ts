@@ -104,7 +104,11 @@ describeGroup('Config schema shape', () => {
     // host disagree with the core. It stays patch-only (deploy.sh --identity).
     // 27 -> 28: volatile.soul.oncePerSession, the "full persona once per session"
     // switch that let the soul budget grow to the whole identity.
-    expect(volatile).toHaveLength(28);
+    // 28 -> 35: the service stack (services.enabled / repoRoot / controlPort /
+    // healthTimeoutMs / maxRestarts / autoRestart / stopOnDispose). The plugin
+    // spawns and supervises the three services itself now, so the knobs that
+    // decide *who* starts them belong in the form.
+    expect(volatile).toHaveLength(35);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {

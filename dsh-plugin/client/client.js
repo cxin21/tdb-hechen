@@ -437,6 +437,81 @@ window.__ModuleLoader__.load({
 			{ fields: ["writeback.enabled", "writeback.skillFeed", "volatile.enabled", "volatile.maxChars", "tools.enabled", "tools.recall", "debug"] }
 		];
 
+
+	/**
+	 * Wave 4: the service-stack page used to live in a separate bundle
+	 * (`tdb-lifecycle`). Its dictionary is merged here, in the same namespace, so
+	 * one locale registration covers both pages.
+	 */
+	const servicesZh = {
+		"servicesNav": "TDB 服务",
+		"servicesTitle": "TDB 服务栈",
+		"servicesDesc": "三个 TDB 服务（记忆核心、知识库、管理面板）由本插件随 DSH 启动与看护：健康检查通过才算起来，子服务挂了自己重拉。",
+		"servicesSupervisor": "看护状态",
+		"servicesRunning": "运行中",
+		"servicesStopped": "已停止",
+		"servicesAdopted": "（由另一个 DSH 窗口看护）",
+		"servicesAutoRestart": "自动重启",
+		"servicesBudget": "重启预算",
+		"servicesStartedAt": "启动于",
+		"servicesService": "服务",
+		"servicesPort": "端口",
+		"servicesStatus": "状态",
+		"servicesPid": "PID",
+		"servicesActions": "操作",
+		"servicesHealthy": "运行",
+		"servicesDown": "停止",
+		"servicesNotOwned": "非本插件拉起",
+		"servicesStartAll": "启动全部",
+		"servicesStopAll": "停止全部",
+		"servicesRestart": "重启",
+		"servicesBusy": "处理中…",
+		"servicesLoadFailed": "控制服务不可达（插件未启用、刚启动，或端口被占用）",
+		"servicesConfirmStop": "停止会同时关闭三个 TDB 服务。确定停止？",
+		"servicesNoteRestarting": "已请求重启，自动重启会在数秒内拉起该服务。",
+		"servicesNoteStarted": "已请求启动，健康检查最长需要 90 秒。",
+		"servicesNoteStopped": "已请求停止。",
+		"servicesErrAlreadyRunning": "服务栈已在运行",
+		"servicesErrNotRunning": "看护未运行",
+		"servicesErrAutoRestartDisabled": "自动重启已关闭，无法单服务重启",
+		"servicesErrNotOwned": "该服务不是本插件拉起的",
+		"servicesErrWatchdogPending": "服务已停止，自动重启会拉起它"
+};
+	const servicesEn = {
+		"servicesNav": "TDB services",
+		"servicesTitle": "TDB service stack",
+		"servicesDesc": "The three TDB services (memory core, knowledge, panel) start and are watched by this plugin: a service counts as up only once /health passes, and a crashed child is respawned.",
+		"servicesSupervisor": "Supervisor",
+		"servicesRunning": "Running",
+		"servicesStopped": "Stopped",
+		"servicesAdopted": "(supervised by another DSH window)",
+		"servicesAutoRestart": "Auto-restart",
+		"servicesBudget": "Restart budget",
+		"servicesStartedAt": "Started at",
+		"servicesService": "Service",
+		"servicesPort": "Port",
+		"servicesStatus": "Status",
+		"servicesPid": "PID",
+		"servicesActions": "Actions",
+		"servicesHealthy": "Up",
+		"servicesDown": "Down",
+		"servicesNotOwned": "Not started by this plugin",
+		"servicesStartAll": "Start all",
+		"servicesStopAll": "Stop all",
+		"servicesRestart": "Restart",
+		"servicesBusy": "Working…",
+		"servicesLoadFailed": "Control service unreachable (plugin off, still starting, or the port is taken)",
+		"servicesConfirmStop": "Stopping also shuts down the three TDB services. Stop now?",
+		"servicesNoteRestarting": "Restart requested; auto-restart brings the service back within seconds.",
+		"servicesNoteStarted": "Start requested; health checks can take up to 90 seconds.",
+		"servicesNoteStopped": "Stop requested.",
+		"servicesErrAlreadyRunning": "The stack is already running",
+		"servicesErrNotRunning": "Supervisor is not running",
+		"servicesErrAutoRestartDisabled": "Auto-restart is off; cannot restart a single service",
+		"servicesErrNotOwned": "That service is not owned by this plugin",
+		"servicesErrWatchdogPending": "Service already down; auto-restart will bring it back"
+};
+
 		/** The form frame's copy, read from this page's dictionary. */
 		function formLabels(t) {
 			return {
@@ -448,7 +523,7 @@ window.__ModuleLoader__.load({
 			};
 		}
 
-		const css = "._tdbAgemem_page{display:grid;gap:12px}._tdbAgemem_heading{color:var(--dsw-alias-label-primary);margin:0;font-size:15px;font-weight:600;line-height:1.4}._tdbAgemem_section{display:grid;gap:10px}._tdbAgemem_toggleRow{color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:flex-start;gap:16px;font-size:13px;line-height:1.5;display:flex}._tdbAgemem_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}._tdbAgemem_divider{color:var(--dsw-alias-label-tertiary);margin:2px 0 0;padding-top:10px;border-top:1px solid var(--dsw-alias-border-secondary);font-size:12px;line-height:1.5}";
+		const css = "._tdbAgemem_page{display:grid;gap:12px}._tdbAgemem_heading{color:var(--dsw-alias-label-primary);margin:0;font-size:15px;font-weight:600;line-height:1.4}._tdbAgemem_section{display:grid;gap:10px}._tdbAgemem_toggleRow{color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:flex-start;gap:16px;font-size:13px;line-height:1.5;display:flex}._tdbAgemem_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}._tdbAgemem_divider{color:var(--dsw-alias-label-tertiary);margin:2px 0 0;padding-top:10px;border-top:1px solid var(--dsw-alias-border-secondary);font-size:12px;line-height:1.5}._tdbAgemem_table{width:100%;border-collapse:collapse;font-size:13px}._tdbAgemem_th{text-align:left;font-weight:500;padding:6px 8px;color:var(--dsw-alias-label-tertiary);border-bottom:1px solid var(--dsw-alias-border-secondary)}._tdbAgemem_cell{padding:7px 8px;color:var(--dsw-alias-label-primary);border-bottom:1px solid var(--dsw-alias-border-secondary)}._tdbAgemem_dot{display:inline-block;width:8px;height:8px;border-radius:8px;margin-right:6px;vertical-align:middle}._tdbAgemem_dotOn{background:#2f9e44}._tdbAgemem_dotOff{background:#e03131}._tdbAgemem_button{cursor:pointer;border-radius:8px;border:1px solid var(--dsw-alias-border-secondary);background:transparent;color:var(--dsw-alias-label-primary);padding:4px 12px;font-size:13px;font-family:inherit}._tdbAgemem_buttonPrimary{background:var(--dsw-alias-interactive-bg-brand,#4c6ef5);color:#fff;border:none}._tdbAgemem_buttonDanger{color:#e03131}._tdbAgemem_button:disabled{opacity:.45;cursor:default}._tdbAgemem_error{color:#e03131}";
 		const cssId = "@tdb/agemem-dsh/client.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(cssId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -606,6 +681,200 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+
+		/** One boolean-ish status dot: green when the service answers /health. */
+		function statusDot(ok) {
+			return px("span", {
+				className: ok ? "_tdbAgemem_dot _tdbAgemem_dotOn" : "_tdbAgemem_dot _tdbAgemem_dotOff",
+				"aria-hidden": "true"
+			});
+		}
+
+		/**
+		 * The service stack page. Same-origin first: the host web server serves
+		 * /tdb-lifecycle/*, so no CORS and no loopback assumption. A 404/405 means the
+		 * host has no route registration, and the loopback control server takes over.
+		 */
+		function ServicesSection(props) {
+			const t = props.t;
+			const { useCallback, useEffect, useRef, useState } = require("react");
+			const [status, setStatus] = useState(null);
+			const [loadFailed, setLoadFailed] = useState(false);
+			const [busy, setBusy] = useState("");
+			const [note, setNote] = useState("");
+			const [noteError, setNoteError] = useState(false);
+			const mounted = useRef(true);
+			const base = useRef("/tdb-lifecycle");
+
+			useEffect(() => () => {
+				mounted.current = false;
+			}, []);
+
+			const call = useCallback(async (subPath, init) => {
+				const send = (prefix) => fetch(prefix + subPath, init);
+				let response = await send(base.current);
+				if (base.current === "/tdb-lifecycle" && (response.status === 404 || response.status === 405)) {
+					// No same-origin routes on this host build: use the loopback server.
+					base.current = "http://127.0.0.1:8444";
+					response = await send(base.current);
+				}
+				return response;
+			}, []);
+
+			const refresh = useCallback(async () => {
+				try {
+					const response = await call("/status");
+					if (!response.ok) throw new Error("HTTP " + response.status);
+					const data = await response.json();
+					if (mounted.current) {
+						setStatus(data);
+						setLoadFailed(false);
+					}
+				} catch {
+					if (mounted.current) setLoadFailed(true);
+				}
+			}, [call]);
+
+			useEffect(() => {
+				refresh();
+				const timer = setInterval(refresh, 5000);
+				return () => clearInterval(timer);
+			}, [refresh]);
+
+			const act = useCallback(async (subPath, body, key, noteKey) => {
+				setBusy(key);
+				try {
+					const response = await call(subPath, {
+						method: "POST",
+						headers: { "Content-Type": "application/json", "X-Tdb-Control": "1" },
+						body: JSON.stringify(body === undefined ? {} : body)
+					});
+					const data = await response.json().catch(() => ({}));
+					if (!response.ok) {
+						const known = {
+							"already-running": "servicesErrAlreadyRunning",
+							"supervisor-not-running": "servicesErrNotRunning",
+							"auto-restart-disabled": "servicesErrAutoRestartDisabled",
+							"service-not-owned": "servicesErrNotOwned",
+							"service-already-down-watchdog-will-restart": "servicesErrWatchdogPending"
+						};
+						setNoteError(true);
+						setNote(known[data && data.error] ? t(known[data.error]) : String((data && data.error) || ("HTTP " + response.status)));
+					} else {
+						setNoteError(false);
+						setNote(noteKey ? t(noteKey) : "");
+					}
+					await refresh();
+				} catch {
+					setNoteError(true);
+					setNote(t("servicesLoadFailed"));
+				} finally {
+					if (mounted.current) setBusy("");
+				}
+			}, [call, refresh, t]);
+
+			const services = status && Array.isArray(status.services) ? status.services : [];
+			const row = (svc) => pxs("tr", {
+				key: svc.name,
+				children: [
+					px("td", { className: "_tdbAgemem_cell", children: svc.name }),
+					px("td", { className: "_tdbAgemem_cell", children: String(svc.port) }),
+					px("td", {
+						className: "_tdbAgemem_cell",
+						children: [
+							statusDot(svc.healthy === true),
+							px("span", { children: svc.healthy ? t("servicesHealthy") : t("servicesDown") }),
+							svc.healthy && !svc.owned
+								? px("span", { className: "_tdbAgemem_hint", children: " " + t("servicesNotOwned") })
+								: null
+						]
+					}),
+					px("td", { className: "_tdbAgemem_cell", children: svc.pid && svc.pidAlive ? String(svc.pid) : "—" }),
+					px("td", {
+						className: "_tdbAgemem_cell",
+						children: px("button", {
+							type: "button",
+							className: "_tdbAgemem_button",
+							id: "tdb-agemem-restart-" + svc.name,
+							disabled: busy !== "" || svc.owned !== true || status.running !== true || status.autoRestart !== true,
+							onClick: () => act("/restart", { name: svc.name }, "restart:" + svc.name, "servicesNoteRestarting"),
+							children: busy === "restart:" + svc.name ? t("servicesBusy") : t("servicesRestart")
+						})
+					})
+				]
+			});
+
+			return pxs("div", {
+				className: "_tdbAgemem_page",
+				children: [
+					px("h2", { className: "_tdbAgemem_heading", children: t("servicesTitle") }),
+					px("p", { className: "_tdbAgemem_hint", children: t("servicesDesc") }),
+					px("p", {
+						className: "_tdbAgemem_hint",
+						id: "tdb-agemem-services-summary",
+						children: loadFailed || status === null
+							? t("servicesLoadFailed")
+							: [
+								t("servicesSupervisor") + ": ",
+								status.running ? t("servicesRunning") : t("servicesStopped"),
+								" · " + t("servicesAutoRestart") + ": " + (status.autoRestart ? "✓" : "✕"),
+								" · " + t("servicesBudget") + ": " + String(status.restartsUsed) + "/" + String(status.maxRestarts),
+								status.startedAt ? " · " + t("servicesStartedAt") + ": " + status.startedAt : ""
+							].join("")
+					}),
+					pxs("div", {
+						className: "_tdbAgemem_section",
+						children: [
+							px("button", {
+								type: "button",
+								className: "_tdbAgemem_button _tdbAgemem_buttonPrimary",
+								id: "tdb-agemem-services-start",
+								disabled: busy !== "" || status === null || status.running === true,
+								onClick: () => act("/start", undefined, "start", "servicesNoteStarted"),
+								children: busy === "start" ? t("servicesBusy") : t("servicesStartAll")
+							}),
+							px("button", {
+								type: "button",
+								className: "_tdbAgemem_button _tdbAgemem_buttonDanger",
+								id: "tdb-agemem-services-stop",
+								disabled: busy !== "" || status === null || status.running !== true,
+								onClick: () => {
+									if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(t("servicesConfirmStop"))) return;
+									act("/stop", undefined, "stop", "servicesNoteStopped");
+								},
+								children: busy === "stop" ? t("servicesBusy") : t("servicesStopAll")
+							})
+						]
+					}),
+					pxs("table", {
+						className: "_tdbAgemem_table",
+						id: "tdb-agemem-services-table",
+						children: [
+							px("thead", {
+								children: pxs("tr", {
+									children: [
+										px("th", { className: "_tdbAgemem_th", children: t("servicesService") }),
+										px("th", { className: "_tdbAgemem_th", children: t("servicesPort") }),
+										px("th", { className: "_tdbAgemem_th", children: t("servicesStatus") }),
+										px("th", { className: "_tdbAgemem_th", children: t("servicesPid") }),
+										px("th", { className: "_tdbAgemem_th", children: t("servicesActions") })
+									]
+								})
+							}),
+							px("tbody", { children: services.map(row) })
+						]
+					}),
+					note !== "" || loadFailed
+						? px("p", {
+							className: noteError ? "_tdbAgemem_hint _tdbAgemem_error" : "_tdbAgemem_hint",
+							id: "tdb-agemem-services-note",
+							children: loadFailed ? t("servicesLoadFailed") : note
+						})
+						: null
+				]
+			});
+		}
+
 		/** Required services (cordis fiber inject). */
 		const inject = ["slots", "locale", "remote", "remote.credentials", "configForms"];
 
@@ -616,7 +885,9 @@ window.__ModuleLoader__.load({
 		 */
 		function apply(ctx) {
 			const t = ctx.locale.bind(NS);
-			ctx.effect(() => ctx.locale.register(NS, { zh, en }), "tdb-agemem: dictionaries");
+			// One namespace, two pages: the service-stack page joined this plugin in
+			// Wave 4, so its copy rides the same registration.
+			ctx.effect(() => ctx.locale.register(NS, { zh: { ...zh, ...servicesZh }, en: { ...en, ...servicesEn } }), "tdb-agemem: dictionaries");
 			const card = new AgememFormController(ctx.configForms.get(ENTRY_ID), ctx);
 			ctx.effect(() => () => {
 				card.dispose();
@@ -650,6 +921,21 @@ window.__ModuleLoader__.load({
 					if (typeof dropCard === "function") dropCard();
 				};
 			}), "tdb-agemem: page");
+
+			/*
+			 * Wave 4: the service stack page. It renders even when the config form is
+			 * unavailable (a host that serves no form still serves live status), which is
+			 * the whole point of a supervisor page.
+			 */
+			const dropServices = ctx.slots.inject("settings.section", () => ctx.slots.register({
+				name: "settings.section",
+				id: "tdb-services",
+				order: 31,
+				label: () => t("servicesNav"),
+				locale: NS,
+				inject: () => ({ t })
+			}, ServicesSection));
+			if (typeof dropServices === "function") ctx.effect(() => dropServices, "tdb-agemem: service stack page");
 		}
 
 		exports.NS = NS;

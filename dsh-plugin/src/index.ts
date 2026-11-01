@@ -25,6 +25,9 @@ import { l2StatusForDebug, l2StatusSummary } from './segments/l2.js';
 // Session-start identity (task-117 v3): the host's own question card, asked from
 // agent/pre-step, bound per session and used by every later v3 call.
 import { installSessionIdentity, SessionIdentityStore, type UserQuestionsLike } from './session-identity.js';
+// Service stack lifecycle (Wave 4): the plugin supervises core/knowledge/panel
+// itself instead of relying on an out-of-tree bundle plus a PowerShell keeper.
+import { installServices } from './services/install.js';
 import { SESSION_INIT_MODULE, resolveUserSessionInitDecision } from './user-session-init.js';
 import { SkillClient } from './skill-client.js';
 // Tool surfaces are modules too: src/tools/*.ts self-register, and the loop in
@@ -588,6 +591,20 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     },
   });
   disposers.push(() => sessionIdentity.dispose());
+  // 服务栈生命周期（Wave 4）：插件自己拉起/看护 core + knowledge + panel。
+  // 缺省关；打开后由本插件直接 spawn（不再有外部 bundle + PowerShell 看护进程
+  // 那三层结构）。fail-open：栈起不来只 warn，插件的记忆能力照常工作。
+  const installedServices = installServices({
+    config: config.services,
+    ctx,
+    log,
+    disposers,
+  });
+  if (installedServices !== undefined) {
+    log?.debug?.(
+      'agemem: service stack owns ' + installedServices.specs.map((spec) => spec.name + ':' + spec.port).join(','),
+    );
+  }
   // Transport for the skill surface (src/skill-client.ts): the same v3 seam as
   // every other call, so identity headers, envelope unwrapping and the API key
   // have exactly one implementation.

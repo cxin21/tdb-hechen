@@ -110,6 +110,17 @@ export const VOLATILE_PATHS = [
   // task-82: the reflection block is an eval-only knob, but it changes what the
   // model is told, so an operator must be able to switch it without a rebuild.
   'debug',
+  // Wave 4: the service stack lifecycle moved into this plugin (it used to be a
+  // separate bundle plus a PowerShell keeper). Only the knobs a human actually
+  // touches are exposed; the log/state directories stay patch-only, because a
+  // form that can point `statePath` at the wrong file breaks ownership silently.
+  'services.enabled',
+  'services.repoRoot',
+  'services.controlPort',
+  'services.healthTimeoutMs',
+  'services.maxRestarts',
+  'services.autoRestart',
+  'services.stopOnDispose',
 ] as const;
 
 /** Values the host must never return in clear text; the form only edits the ref. */
@@ -144,6 +155,13 @@ const DESCRIPTIONS: Record<string, string> = {
   'volatile.knowledge.enabled': 'Inject the <knowledge_tools> resource list into the per-turn volatile block.',
   'volatile.knowledge.maxChars': 'Character ceiling for the <knowledge_tools> segment (0-3000).',
   debug: 'Verbose plugin logging (never logs secrets).',
+  'services.enabled': 'Supervise the TDB service stack (core/knowledge/panel) from this plugin instead of a separate bundle. Off by default: this decides who spawns the services.',
+  'services.repoRoot': 'Repository root holding MemoryCore, MemoryKnowledge and MemoryPanel.',
+  'services.controlPort': 'Loopback control port for the settings page (0 disables it; the same-origin routes still work).',
+  'services.healthTimeoutMs': 'How long one service may take to answer /health before the start order aborts (5000-600000).',
+  'services.maxRestarts': 'Restart budget for the whole host session (0 disables restarts).',
+  'services.autoRestart': 'Restart a supervised service that dies on its own.',
+  'services.stopOnDispose': 'Stop the services this plugin started when DSH shuts down. Services it did not start are never touched.',
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

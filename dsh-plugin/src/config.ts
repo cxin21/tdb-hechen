@@ -353,6 +353,41 @@ export interface SkillConfig {
   timeoutMs: number;
 }
 
+/**
+ * 服务栈生命周期（Wave 4）：插件自己拉起/看护 core、knowledge、panel。
+ *
+ * 为什么进插件：原先由独立 bundle `tdb-lifecycle` 起一个 PowerShell 看护进程，
+ * 三层进程、两份服务表。删 proxy 那次就是教训——磁盘上的表改成三服务，正在跑
+ * 的看护进程内存里还是四服务，于是它继续把刚删掉的 proxy 拉回来。
+ *
+ * 缺省 **关**：打开等于换掉「谁拉起服务栈」，属于部署决策，不该由一次插件
+ * 升级替用户决定。关着时本插件不 spawn 进程、不读 env 文件、不开控制端口。
+ */
+export interface ServicesConfig {
+  enabled: boolean;
+  /** 仓库根：三服务包 = <repoRoot>/MemoryCore|MemoryKnowledge|MemoryPanel。 */
+  repoRoot: string;
+  /** KEY=VALUE 的服务环境变量文件（含密钥）；空=只用宿主环境。 */
+  envFile: string;
+  /** 跑服务的 node；空=用宿主自己的 process.execPath。 */
+  nodePath: string;
+  /** logtee 预载模块 URL；空=不预载。 */
+  logteeModule: string;
+  logDir: string;
+  runDir: string;
+  /** 所有权状态文件；空=runDir/tdb-services.state.json。 */
+  statePath: string;
+  /** 回环控制面端口；0=不起。 */
+  controlPort: number;
+  /** 单服务健康门预算。 */
+  healthTimeoutMs: number;
+  /** 看护期的重启预算（本进程生命周期内累计）。 */
+  maxRestarts: number;
+  autoRestart: boolean;
+  /** 宿主收尾时停掉自己拉起的服务（非自己拉起的绝不碰）。 */
+  stopOnDispose: boolean;
+}
+
 export interface AgememConfig {
   enabled: boolean;
   server: ServerConfig;
@@ -362,6 +397,7 @@ export interface AgememConfig {
   writeback: WritebackConfig;
   tools: ToolsConfig;
   identity: IdentityConfig;
+  services: ServicesConfig;
   skill: SkillConfig;
   assetReflection: AssetReflectionConfig;
   debug: boolean;
@@ -524,6 +560,32 @@ export const DEFAULT_CONFIG: AgememConfig = {
     skipDefault: false,
     statePath: '',
   },
+  services: {
+    // Off by default: this decides WHO spawns the stack, which is a deployment
+    // decision. A fresh install must never start three node processes because a
+    // plugin was upgraded.
+    enabled: false,
+    repoRoot: 'D:/TDB/td-agemem',
+    // One file, KEY=VALUE, so the plugin and the manual PowerShell path read the
+    // same secrets (etc/env.ps1 loads this file; see its header).
+    envFile: 'D:/TDB/etc/services.env',
+    // Empty = the host's own node. The services run through `--import tsx`, so
+    // the executable only has to be a Node that tsx supports.
+    nodePath: '',
+    // Application-level log mirror: cmd/redirect alone dropped writes on long
+    // detached runs (see tdb-services.common.ps1 history).
+    logteeModule: 'file:///D:/TDB/etc/logtee.mjs',
+    logDir: 'D:/TDB/data/logs',
+    runDir: 'D:/TDB/data/run',
+    // Empty = runDir/tdb-services.state.json. Deliberately NOT the retired
+    // supervisor's file name: that process may still be alive and mid-rewrite.
+    statePath: '',
+    controlPort: 8444,
+    healthTimeoutMs: 90000,
+    maxRestarts: 3,
+    autoRestart: true,
+    stopOnDispose: true,
+  },
   skill: {
     enabled: true,
     // Destructive (create/patch/delete on shared team skills): opt-in.
@@ -639,6 +701,7 @@ function cloneDefaults(): AgememConfig {
     writeback: { ...DEFAULT_CONFIG.writeback },
     tools: { ...DEFAULT_CONFIG.tools },
     identity: { ...DEFAULT_CONFIG.identity },
+    services: { ...DEFAULT_CONFIG.services },
     skill: { ...DEFAULT_CONFIG.skill },
     assetReflection: { ...DEFAULT_CONFIG.assetReflection },
   };
@@ -751,6 +814,39 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     300000,
   ));
   identity.statePath = typeof identity.statePath === 'string' ? identity.statePath.trim() : '';
+  const services = mergeSection(DEFAULT_CONFIG.services, raw.services, warnings, 'services.');
+  for (const key of ['repoRoot', 'envFile', 'nodePath', 'logteeModule', 'logDir', 'runDir', 'statePath'] as const) {
+    services[key] = typeof services[key] === 'string' ? services[key].trim() : '';
+  }
+  // 0 disables the control port; everything else is a real port. A negative or
+  // fractional value is a typo, and silently clamping it to 0 would look like a
+  // deliberate "no control plane".
+  services.controlPort = Math.floor(pickNumber(
+    services.controlPort,
+    DEFAULT_CONFIG.services.controlPort,
+    0,
+    65535,
+  ));
+  // 5s is below every cold-start measurement on this machine (core needs ~25s
+  // with a cold embedding cache); 10 minutes is the ceiling where a broken
+  // service would look like a hung host.
+  services.healthTimeoutMs = Math.floor(pickNumber(
+    services.healthTimeoutMs,
+    DEFAULT_CONFIG.services.healthTimeoutMs,
+    5000,
+    600000,
+  ));
+  services.maxRestarts = Math.floor(pickNumber(
+    services.maxRestarts,
+    DEFAULT_CONFIG.services.maxRestarts,
+    0,
+    50,
+  ));
+  // An enabled supervisor with a blank repo root would spawn nothing and report
+  // "up": refuse the combination loudly instead of pretending.
+  if (services.enabled && services.repoRoot === '') {
+    warnings.push('services.enabled is on but services.repoRoot is empty; the service stack will not start');
+  }
   const skill = mergeSection(DEFAULT_CONFIG.skill, raw.skill, warnings, 'skill.');
   skill.headPackChars = Math.floor(pickNumber(skill.headPackChars, DEFAULT_CONFIG.skill.headPackChars, 0, 64000));
   skill.searchTopK = Math.floor(pickNumber(skill.searchTopK, DEFAULT_CONFIG.skill.searchTopK, 1, 50));
@@ -800,6 +896,7 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     writeback,
     tools: mergeSection(DEFAULT_CONFIG.tools, raw.tools, warnings, 'tools.'),
     identity,
+    services,
     skill,
     assetReflection,
     // Explicit config wins; otherwise AGEMEM_DEBUG decides.

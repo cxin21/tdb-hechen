@@ -594,6 +594,51 @@ DSH_PROFILE=desktop bash scripts/deploy.sh \
   bash scripts/deploy.sh --identity team-x,agt-y,usr-z --config-extra=/tmp/agemem-extra.yml
   ```
 
+## 服务栈看护（插件自己拉起 core / knowledge / panel）
+
+ADR-0022：原来由外部 bundle `tdb-lifecycle` 起的 PowerShell 看护进程（`start-tdb-supervised.ps1`）已经整条退役，
+改由本插件自己拉起并看护三服务。原因是**服务表必须只有一个真源**——那次改了三服务表，磁盘上的表是对的，
+但正在跑的看护进程内存里还是四服务表，于是它把已经退场的 proxy 反复拉回来，还占着 `MemoryProxy/` 目录不放。
+
+**缺省关**（`services.enabled: false`）：谁启动服务栈是部署决定，装/升级插件不该顺带起三个 node 进程。
+本机在 patch 里显式打开：
+
+```yaml
+      config:
+        services:
+          enabled: true
+```
+
+打开后插件在 `apply()` 里做四件事，全部可观测、全部 fail-open（拉不起来只 warn，绝不让插件挂载失败）：
+
+1. **按表启动**：`tdai-core` 8420 → `tdai-knowledge` 8421 → `tdai-panel` 8123（顺序即健康门顺序）；
+   已经健康的服务直接跳过并且**不记 owned**（别人的进程我不碰）。
+2. **健康门**：每个服务 spawn 后等 `/health` 200，预算 `healthTimeoutMs`（缺省 90s，core 冷启要跑 jieba/embedding 预热）。
+   超时就杀掉、记 `failed[]` 并抛出「<name> did not answer /health on port …」，与旧看护进程的 abort 语义一致。
+3. **崩溃重拉**：子进程 exit 后按 `maxRestarts`（缺省 3）重拉，用尽后写 `failed[]` 停手；`autoRestart: false` 则只启动不重拉。
+4. **状态留痕**：`<runDir>/tdb-services.state.json` 记 `hostPid` 与 `owned{name:pid}`。
+   - 再次启动时若 `hostPid` 还活着且不是自己 ⇒ **adopt**（不 spawn，避免两个 DSH 窗口抢端口）；
+   - 若 `hostPid` 已死 ⇒ 先 `reapOrphans()` 杀掉上次留下的孤儿；
+   - `stopOnDispose: false` ⇒ detach（把 `hostPid: 0` 写进状态后走人，下次不回收也不 kill）。
+
+**环境变量**只认一个文件：`services.envFile`（缺省 `D:/TDB/etc/services.env`，KEY=VALUE，支持 `${VAR}`，
+先查本文件已定义再查宿主环境）。`D:/TDB/etc/env.ps1` 现在也只是读这份文件再导出，两条启动路径读到的是同一组值；
+每次 spawn 都重读，换 key 下次重启即生效。**展开失败只报变量名，绝不回显值**。
+
+**控制面**（`services.controlPort`，缺省 8444，只绑 127.0.0.1）：
+
+| 请求 | 语义 |
+| --- | --- |
+| `GET /status` | supervisor 状态 + 三服务表（healthy / pid / owned / dir） |
+| `POST /start` · `POST /stop` | 起/停自己 owned 的服务，202 |
+| `POST /restart` `{"name":"tdai-core"}` | 只 kill，由看门狗复拉（与崩溃同一路径） |
+
+POST 一律要 `X-Tdb-Control: 1` 头（缺了 403），浏览器同源路由是 `/tdb-lifecycle/*`，设置页「TDB 服务」直接用它。
+设置页那块**不依赖配置表单可用**：表单挂掉时仍要看得到服务死活。
+
+配置键全表见 `config/templates/dsh-plugin.yaml` 的 `services:` 段（13 个键），这里只列会改变行为的三个：
+`enabled`（谁启动栈）、`healthTimeoutMs`（冷启预算）、`stopOnDispose`（退出时是否连带停服务）。
+
 ## 跨机部署（插件在 A 机，core 在 B 机）
 
 结论先说：**跨机就是这个插件换个 `server.baseUrl`，全程走 HTTP 直连**。宿主侧的 LLM 流量依然不经过任何代理，
@@ -659,7 +704,12 @@ agemem: ready (endpoint=…, serviceId=default, identity=configured, keySource=c
 - outbox 有上限（`maxOutboxEntries` 500 / `maxOutboxBytes` 20 MiB），超限丢**最旧**并 warn 一次，
   不会把磁盘塞满；死信文件只追加不删。
 - 重连后不需要人工干预：`startTimer` 按线性退避继续投递；死信里的条目要显式 `requeueDead()`。
-## 与 MemoryProxy 路径的排他
+## 与 MemoryProxy 路径的排他（历史）
+
+> MemoryProxy 已在 ADR-0020 整包退场（272 文件 / 62,926 行、8096 端口、计费/DSAT/限流/mem: 五个唯一能力一并放弃）。
+> 下面这张表只作为**历史对照**保留：它解释了当年为什么两条路径不能同时喂写，也解释了插件里
+> `writeback.skillFeed` 这个键的来历（缺省 true，在纯插件部署里方向是反的）。如今 dsh 是唯一接入方式，
+> 排他约束自然满足。
 
 两条路径都能把记忆接进 dsh，**同一个记忆身份只能选一条喂写**：
 
