@@ -4,9 +4,11 @@
  * 目的：量化"给 checkpoint mutate 加实例级锁"之后能支撑多少 QPS，
  * 以及在什么并发/数据规模下会成为 L1 流水线的瓶颈。
  *
- * 用真实 CheckpointManager + 真实 Redis 锁 + 真实 COS/本地存储，
- * 通过环境变量选择后端：
- *   REDIS_HOST/REDIS_PORT/REDIS_PASSWORD  → 真实 Redis 锁（未设置则用进程内锁）
+ * 用真实 CheckpointManager + 真实锁后端 + 真实 COS/本地存储。
+ *
+ * 锁后端是 `LocalStateBackend`（ADR-0021 之后 local 是唯一存活的 state 后端；
+ * 原先的 Redis 锁实现随 redis state backend 一起退场，脚本不再读
+ * REDIS_HOST/REDIS_PORT/REDIS_PASSWORD —— 那三个变量也已从模板里删除）。
  *
  * 运行：
  *   npx tsx scripts/bench-checkpoint-lock.ts [--sessions 500] [--concurrency 60]
@@ -15,6 +17,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { LocalStateBackend } from "../src/core/state/local-backend.js";
 import { CheckpointManager, type CheckpointDistributedLock } from "../src/utils/checkpoint.js";
 
 interface BenchResult {
@@ -34,47 +37,19 @@ function percentile(sorted: number[], p: number): number {
   return sorted[idx]!;
 }
 
-/** 真实 Redis 锁（若配置了REDIS_HOST） */
-async function createRedisLock(): Promise<{ lock: CheckpointDistributedLock; close: () => Promise<void> } | null> {
-  const host = process.env.REDIS_HOST;
-  if (!host) return null;
-
-  const { default: Redis } = await import("ioredis");
-  const client = new Redis({
-    host,
-    port: Number(process.env.REDIS_PORT ?? 6379),
-    password: process.env.REDIS_PASSWORD,
-    maxRetriesPerRequest: 2,
-  });
-
-  const lock: CheckpointDistributedLock = {
-    async acquireLock(key, ownerId, ttlMs) {
-      const res = await client.set(`bench:lock:${key}`, ownerId, "PX", ttlMs, "NX");
-      return res === "OK";
+/** 真实锁后端：与生产同一条路径（LocalStateBackend 的四件锁 API） */
+function createStateLock(): { lock: CheckpointDistributedLock; close: () => Promise<void> } {
+  const backend = new LocalStateBackend();
+  return {
+    lock: {
+      acquireLock: (key, ownerId, ttlMs) => backend.acquireLock(key, ownerId, ttlMs),
+      renewLock: (key, ownerId, ttlMs) => backend.renewLock(key, ownerId, ttlMs),
+      releaseLock: (key, ownerId) => backend.releaseLock(key, ownerId),
     },
-    async renewLock(key, ownerId, ttlMs) {
-      // 只续自己持有的锁（与生产Redis backend 语义一致）
-      const res = await client.eval(
-        `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) else return 0 end`,
-        1,
-        `bench:lock:${key}`,
-        ownerId,
-        String(ttlMs),
-      );
-      return res === 1;
-    },
-    async releaseLock(key, ownerId) {
-      // 只释放自己持有的锁（与生产 Redis backend 语义一致）
-      await client.eval(
-        `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`,
-        1,
-        `bench:lock:${key}`,
-        ownerId,
-      );
+    close: async () => {
+      await backend.destroy?.();
     },
   };
-
-  return { lock, close: async () => { await client.quit(); } };
 }
 
 /**
@@ -161,11 +136,9 @@ async function main() {
   const sessions = Number(values.sessions);
   const concurrency = Number(values.concurrency);
 
-  const redis = await createRedisLock();
-  const lock = redis?.lock ?? null;
-  console.log(
-    `checkpoint lock benchmark — lock backend: ${redis ? "real Redis" : "in-process only"}`,
-  );
+  const stateLock = createStateLock();
+  const lock = stateLock.lock;
+  console.log("checkpoint lock benchmark — lock backend: LocalStateBackend");
 
   try {
     const rows: BenchResult[] = [];
@@ -205,7 +178,7 @@ async function main() {
       `checkpoint 写入需求 ≈ ${(60 / 5).toFixed(0)} QPS，远低于上述峰值。`,
     );
   } finally {
-    await redis?.close();
+    await stateLock.close();
   }
 }
 
