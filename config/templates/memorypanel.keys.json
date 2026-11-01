@@ -17,7 +17,7 @@
       "type": "str",
       "default": "0.0.0.0",
       "env": "HOST",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:65",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:45",
       "consumed": true
     },
     {
@@ -25,7 +25,7 @@
       "type": "int",
       "default": 8123,
       "env": "PORT",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:66",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:46",
       "consumed": true
     },
     {
@@ -33,7 +33,7 @@
       "type": "path",
       "default": "./config/metadata-instances.json",
       "env": "METADATA_INSTANCES_CONFIG",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:68",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:48",
       "consumed": true
     },
     {
@@ -41,7 +41,7 @@
       "type": "ms",
       "default": "15_000",
       "env": "METADATA_REMOTE_TIMEOUT_MS",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:69",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:49",
       "consumed": true
     },
     {
@@ -49,7 +49,7 @@
       "type": "enum(debug|info|warn|error)",
       "default": "info",
       "env": "LOG_LEVEL",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:61",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:41",
       "consumed": true
     },
     {
@@ -57,7 +57,7 @@
       "type": "enum(json|pretty)",
       "default": "json",
       "env": "LOG_FORMAT",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:62",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:42",
       "consumed": true
     },
     {
@@ -65,7 +65,7 @@
       "type": "path",
       "default": "./web/dist",
       "env": "UI_DIST_DIR",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:70",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:50",
       "consumed": true
     },
     {
@@ -73,7 +73,7 @@
       "type": "str",
       "default": "http://127.0.0.1:8421",
       "env": "KNOWLEDGE_SERVICE_URL",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:76",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:56",
       "consumed": true
     },
     {
@@ -81,7 +81,7 @@
       "type": "str",
       "default": "",
       "env": "KNOWLEDGE_AUTH_TOKEN",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:77",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:57",
       "consumed": true
     },
     {
@@ -89,23 +89,7 @@
       "type": "ms",
       "default": "15_000",
       "env": "KNOWLEDGE_TIMEOUT_MS",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:78",
-      "consumed": true
-    },
-    {
-      "path": "knowledge.KNOWLEDGE_LLM_BINDING_SYNC",
-      "type": "bool",
-      "default": true,
-      "env": "KNOWLEDGE_LLM_BINDING_SYNC",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:81",
-      "consumed": true
-    },
-    {
-      "path": "knowledge.KNOWLEDGE_LLM_PROXY_BASE_URL",
-      "type": "str",
-      "default": "http://127.0.0.1:8096",
-      "env": "KNOWLEDGE_LLM_PROXY_BASE_URL",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:82",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:58",
       "consumed": true
     },
     {
@@ -113,15 +97,7 @@
       "type": "path",
       "default": "./data/agent-templates",
       "env": "TDAI_AGENT_TEMPLATE_DIR",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:84",
-      "consumed": true
-    },
-    {
-      "path": "runtime.LLM_PROVIDER_PROXY_BASE_URL",
-      "type": "str",
-      "default": "http://127.0.0.1:8096",
-      "env": "LLM_PROVIDER_PROXY_BASE_URL",
-      "source": "MemoryPanel/src/panel/config/panel-config.ts:86",
+      "source": "MemoryPanel/src/panel/config/panel-config.ts:60",
       "consumed": true
     },
     {
@@ -129,7 +105,7 @@
       "type": "str",
       "default": "",
       "env": "TDAI_GATEWAY_APIKEY",
-      "source": "MemoryPanel/src/panel/config/instance-registry.ts:91",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:78",
       "consumed": true
     },
     {
@@ -173,19 +149,11 @@
       "consumed": true
     },
     {
-      "path": "metadataInstances.instances.<id>.proxy_endpoint",
-      "type": "str",
-      "default": "",
-      "env": "",
-      "source": "MemoryPanel/src/panel/config/instance-registry.ts:16",
-      "consumed": true
-    },
-    {
       "path": "metadataInstances.instances.<id>.api_key",
       "type": "str",
       "default": "required",
       "env": "",
-      "source": "MemoryPanel/src/panel/config/instance-registry.ts:17",
+      "source": "MemoryPanel/src/panel/config/instance-registry.ts:12",
       "consumed": true
     }
   ],
@@ -208,9 +176,10 @@
     }
   ],
   "coverage": {
-    "sourceKeys": 26,
+    "sourceKeys": 22,
     "ignoredKeys": 4,
-    "note": "sourceKeys = keys 22 + ignored 4；其中 17 个环境变量（14 panel-config + TDAI_GATEWAY_APIKEY + 2 召回日志目录）、5 个 metadata-instances.json 字段（无 env）、4 个开发脚本自用变量（进 ignored）",
-    "templatedKeys": 22
+    "note": "sourceKeys = keys 18 + ignored 4；其中 12 个环境变量（panel-config.ts 现行 62 行）、4 个 metadata-instances.json 字段（无 env）、4 个开发脚本自用变量（进 ignored）。Wave 2A（多 agent 编排三块退场 + 8096 默认值改向 8420）后删除 4 键：knowledge.KNOWLEDGE_LLM_BINDING_SYNC、knowledge.KNOWLEDGE_LLM_PROXY_BASE_URL、runtime.LLM_PROVIDER_PROXY_BASE_URL、metadataInstances.instances[].proxy_endpoint（源码已无对应读取点，instance-registry.ts 仅剩退役注释）⇒ sourceKeys 26→22。",
+    "templatedKeys": 18,
+    "templateKeys": 18
   }
 }

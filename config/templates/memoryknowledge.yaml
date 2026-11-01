@@ -42,15 +42,15 @@ rerank:
 # ─── llm / wiki ingest 用的上游模型 ──────────────────────  [config.ts:220-228]
 # per-instance llm_binding（/v3/llm-binding/set 写入）优先级高于本段：命中 binding 时 baseUrl/apiKey 被覆盖。
 llm:
-  LLM_MODE: "proxy"   # enum(proxy|custom) default="proxy" — 无 binding 时的全局兜底：proxy=必须走 context_proxy 绑定，缺绑定则 ingest 直接失败（不静默直连）；custom=用下面 baseUrl/apiKey 直连。**除 "custom" 外任何值都静默当 proxy** [src:220]
-  LLM_PROTOCOL: "openai"   # enum(openai|anthropic) default="openai" — 协议：openai 打 /chat/completions，anthropic 打 /messages；未知值静默回落 openai [src:221]
-  LLM_PROVIDER: "custom"   # str default="custom" — 供应商标签，仅用于日志/展示，不参与路由 [src:222]
-  LLM_API_KEY: "${LLM_API_KEY}"   # str default="" — LLM_MODE=custom 时的上游 key；proxy 模式下被清空不用 [src:223]
-  LLM_MODEL: "Memory-Model"   # str default="Memory-Model" — 默认模型名；binding 未指定模型时用它（docker entrypoint 的 --llm-model 帮助文案写 gpt-4o-mini，与本缺省不一致） [src:224]
-  LLM_BASE_URL: "${LLM_BASE_URL}"   # str default="" — OpenAI 兼容 baseUrl（含 /v1）；custom 模式留空则 createLlmClient 直接抛错（不回落直连） [src:225]
-  LLM_MAX_TOKENS: 32768   # int default=32768 — 单次 completion 的 max_tokens 上限；推理模型给小了会把预算烧在 reasoning 上导致正文为空 [src:226]
-  LLM_TIMEOUT_MS: 1200000   # ms default=1200000 — 单次 LLM 请求超时（20min，给推理模型留量）；调小会在大文件抽取上批量超时 [src:227]
-  LLM_STREAM: false   # bool default=false — 是否用流式请求调用上游；**只认字面量 "true"**（"1"/"yes"/"on" 一律当 false，与 KNOWLEDGE_CLICKHOUSE_ENABLED 的解析口径不同） [src:228]
+  LLM_MODE: "custom"   # enum(proxy|custom) default="custom" — Wave 2A 起 MemoryProxy 退出链路，缺省改为 custom（用下面 baseUrl/apiKey 直连 LLM_BASE_URL）；proxy=仍可显式选的旧路径，必须走 context_proxy 绑定，缺绑定则 ingest 直接失败（不静默直连）。**除 "proxy" 外任何值都静默当 custom** [src:223]
+  LLM_PROTOCOL: "openai"   # enum(openai|anthropic) default="openai" — 协议：openai 打 /chat/completions，anthropic 打 /messages；未知值静默回落 openai [src:224]
+  LLM_PROVIDER: "custom"   # str default="custom" — 供应商标签，仅用于日志/展示，不参与路由 [src:225]
+  LLM_API_KEY: "${LLM_API_KEY}"   # str default="" — LLM_MODE=custom 时的上游 key；proxy 模式下被清空不用 [src:226]
+  LLM_MODEL: "Memory-Model"   # str default="Memory-Model" — 默认模型名；binding 未指定模型时用它（docker entrypoint 的 --llm-model 帮助文案写 gpt-4o-mini，与本缺省不一致） [src:227]
+  LLM_BASE_URL: "${LLM_BASE_URL}"   # str default="" — OpenAI 兼容 baseUrl（含 /v1）；custom 模式留空则 createLlmClient 直接抛错（不回落直连） [src:228]
+  LLM_MAX_TOKENS: 32768   # int default=32768 — 单次 completion 的 max_tokens 上限；推理模型给小了会把预算烧在 reasoning 上导致正文为空 [src:229]
+  LLM_TIMEOUT_MS: 1200000   # ms default=1200000 — 单次 LLM 请求超时（20min，给推理模型留量）；调小会在大文件抽取上批量超时 [src:230]
+  LLM_STREAM: false   # bool default=false — 是否用流式请求调用上游；**只认字面量 "true"**（"1"/"yes"/"on" 一律当 false，与 KNOWLEDGE_CLICKHOUSE_ENABLED 的解析口径不同） [src:231]
 
 # ─── override / {dataDir}/config-override.json（不是环境变量）─────────────
 # 这一段没有对应 env：由 admin API（/v3/admin/settings/*）写入 JSON，重启后仍生效，优先级高于 LLM_* 环境变量。
@@ -61,11 +61,11 @@ override:
 # ─── embedding / wiki 向量化 ────────────────────────────  [config.ts:231-235]
 # baseUrl/apiKey/model 任一为空或 dimensions<=0 → 整体不启用向量（退化为纯文本检索），不报错。
 embedding:
-  EMBEDDING_PROVIDER: "openai_compatible"   # str default="openai_compatible" — 向量服务协议标签，仅用于日志/展示 [src:231]
-  EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL}"   # str default="" — 向量服务 baseUrl（如火山 doubao endpoint）；空=不启用向量 [src:232]
-  EMBEDDING_API_KEY: "${EMBEDDING_API_KEY}"   # str default="" — 向量服务 key [src:233]
-  EMBEDDING_MODEL: "${EMBEDDING_MODEL}"   # str default="" — 向量模型名（如 doubao-embedding）；注意 wiki 摘要用 LLM_*，向量用 EMBEDDING_*，两套独立 [src:234]
-  EMBEDDING_DIMENSIONS: 0   # int default=0 — 向量维度；0 或负数=不启用；必须与模型真实维度一致，写错会让向量检索静默空转 [src:235]
+  EMBEDDING_PROVIDER: "openai_compatible"   # str default="openai_compatible" — 向量服务协议标签，仅用于日志/展示 [src:234]
+  EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL}"   # str default="" — 向量服务 baseUrl（如火山 doubao endpoint）；空=不启用向量 [src:235]
+  EMBEDDING_API_KEY: "${EMBEDDING_API_KEY}"   # str default="" — 向量服务 key [src:236]
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL}"   # str default="" — 向量模型名（如 doubao-embedding）；注意 wiki 摘要用 LLM_*，向量用 EMBEDDING_*，两套独立 [src:237]
+  EMBEDDING_DIMENSIONS: 0   # int default=0 — 向量维度；0 或负数=不启用；必须与模型真实维度一致，写错会让向量检索静默空转 [src:238]
 
 # ─── wiki / 索引库与并发 ────────────────────────────────  [跨文件，见行号]
 wiki:
@@ -82,11 +82,6 @@ autoSync:
 # ─── sourceFetch / git 源拉取 ───────────────────────────  [src/source-fetcher/git-fetcher.ts:39]
 sourceFetch:
   KNOWLEDGE_SSRF_CHECK: true   # bool default=true — SSRF 私网/环回黑名单；配成 off/false/0/no（大小写不敏感）即关闭。**关闭 = 允许 wiki 源指向 127.0.0.1/10.x**，只在源清单完全可信时才关 [src:src/source-fetcher/git-fetcher.ts:39]
-
-# ─── mcp / stdio MCP 服务（独立进程 pnpm dev:mcp）──────────  [src/mcp/server.ts:94-95]
-mcp:
-  KNOWLEDGE_API_URL: "http://localhost:8421"   # str default="http://localhost:8421" — MCP 进程转发到的 knowledge API 地址（不含 /v3）；MCP 与主服务分进程/分机跑时必配 [src:src/mcp/server.ts:94]
-  KNOWLEDGE_API_TOKEN: "${KNOWLEDGE_API_TOKEN}"   # str default=required — 主服务开了 KNOWLEDGE_SERVICE_KEY 时，MCP 转发必须带同一个 key，否则 tools/call 全 401 [src:src/mcp/server.ts:95]
 
 # ─── telemetry / LLM 链路追踪 + 请求埋点 ─────────────────  [跨文件，见行号]
 telemetry:

@@ -11,7 +11,7 @@
       "type": "bool",
       "default": false,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:464",
+      "source": "dsh-plugin/src/config.ts:545",
       "consumed": false,
       "orphan": true,
       "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
@@ -21,7 +21,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:461",
+      "source": "dsh-plugin/src/config.ts:542",
       "consumed": false,
       "orphan": true,
       "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
@@ -31,7 +31,7 @@
       "type": "int",
       "default": 600,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:467",
+      "source": "dsh-plugin/src/config.ts:548",
       "consumed": false,
       "orphan": true,
       "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
@@ -41,7 +41,7 @@
       "type": "str",
       "default": "/analyse",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:463",
+      "source": "dsh-plugin/src/config.ts:544",
       "consumed": false,
       "orphan": true,
       "reason": "死接线：只被 src/asset-reflection.ts:266-296 读到，而 registerAssetReflection（src/asset-reflection.ts:310-318）在 src 零调用点 ⇒ 改配置无行为（task-107 已登记；模板保留以便接线后生效）"
@@ -51,7 +51,7 @@
       "type": "bool",
       "default": false,
       "env": "AGEMEM_DEBUG",
-      "source": "dsh-plugin/src/config.ts:469",
+      "source": "dsh-plugin/src/config.ts:550",
       "consumed": true
     },
     {
@@ -59,7 +59,7 @@
       "type": "path",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:471",
+      "source": "dsh-plugin/src/config.ts:552",
       "consumed": true
     },
     {
@@ -67,7 +67,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:324",
+      "source": "dsh-plugin/src/config.ts:378",
       "consumed": true
     },
     {
@@ -75,7 +75,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:361",
+      "source": "dsh-plugin/src/config.ts:416",
       "consumed": true
     },
     {
@@ -83,7 +83,7 @@
       "type": "str",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:370",
+      "source": "dsh-plugin/src/config.ts:425",
       "consumed": true
     },
     {
@@ -91,7 +91,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:371",
+      "source": "dsh-plugin/src/config.ts:426",
       "consumed": true
     },
     {
@@ -99,7 +99,7 @@
       "type": "int",
       "default": 3000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:374",
+      "source": "dsh-plugin/src/config.ts:429",
       "consumed": true
     },
     {
@@ -107,7 +107,7 @@
       "type": "int",
       "default": 20000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:367",
+      "source": "dsh-plugin/src/config.ts:422",
       "consumed": true
     },
     {
@@ -115,7 +115,7 @@
       "type": "int",
       "default": 20,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:372",
+      "source": "dsh-plugin/src/config.ts:427",
       "consumed": false,
       "orphan": true,
       "reason": "孤儿：只在 src/head-pack-compose.ts:57 的 options.maxScenarioEntries ?? 20 里有缺省，唯一调用方 src/segments/persona.ts:30-35 不传 ⇒ 恒 20（task-107 已登记）"
@@ -125,7 +125,7 @@
       "type": "int",
       "default": 100,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:362",
+      "source": "dsh-plugin/src/config.ts:417",
       "consumed": true
     },
     {
@@ -133,7 +133,7 @@
       "type": "ms",
       "default": 300000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:369",
+      "source": "dsh-plugin/src/config.ts:424",
       "consumed": true
     },
     {
@@ -141,7 +141,7 @@
       "type": "ms",
       "default": 10000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:368",
+      "source": "dsh-plugin/src/config.ts:423",
       "consumed": true
     },
     {
@@ -149,7 +149,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:471",
+      "source": "dsh-plugin/src/config.ts:516",
       "consumed": true
     },
     {
@@ -157,7 +157,15 @@
       "type": "ms",
       "default": 60000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:474",
+      "source": "dsh-plugin/src/config.ts:522",
+      "consumed": true
+    },
+    {
+      "path": "identity.followUserSessionInit",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:519",
       "consumed": true
     },
     {
@@ -165,7 +173,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:475",
+      "source": "dsh-plugin/src/config.ts:523",
       "consumed": true
     },
     {
@@ -173,7 +181,7 @@
       "type": "bool",
       "default": false,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:476",
+      "source": "dsh-plugin/src/config.ts:524",
       "consumed": true
     },
     {
@@ -181,7 +189,7 @@
       "type": "path",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:477",
+      "source": "dsh-plugin/src/config.ts:525",
       "consumed": true
     },
     {
@@ -189,7 +197,7 @@
       "type": "path",
       "default": "/v3/atomic/search",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:349",
+      "source": "dsh-plugin/src/config.ts:403",
       "consumed": true
     },
     {
@@ -197,7 +205,7 @@
       "type": "path",
       "default": "/v3/conversation/add",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:351",
+      "source": "dsh-plugin/src/config.ts:405",
       "consumed": true
     },
     {
@@ -205,7 +213,7 @@
       "type": "path",
       "default": "/v3/conversation/delete",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:352",
+      "source": "dsh-plugin/src/config.ts:406",
       "consumed": true
     },
     {
@@ -213,7 +221,7 @@
       "type": "path",
       "default": "/v3/core/read",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:348",
+      "source": "dsh-plugin/src/config.ts:402",
       "consumed": true
     },
     {
@@ -221,7 +229,7 @@
       "type": "path",
       "default": "/health",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:355",
+      "source": "dsh-plugin/src/config.ts:409",
       "consumed": true
     },
     {
@@ -229,7 +237,7 @@
       "type": "path",
       "default": "/v3/meta/agent/list",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:358",
+      "source": "dsh-plugin/src/config.ts:412",
       "consumed": true
     },
     {
@@ -237,7 +245,7 @@
       "type": "path",
       "default": "/v3/meta/auth/verify",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:356",
+      "source": "dsh-plugin/src/config.ts:410",
       "consumed": true
     },
     {
@@ -245,7 +253,7 @@
       "type": "path",
       "default": "/v3/meta/team/list",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:357",
+      "source": "dsh-plugin/src/config.ts:411",
       "consumed": true
     },
     {
@@ -253,7 +261,7 @@
       "type": "path",
       "default": "/v3/recall",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:354",
+      "source": "dsh-plugin/src/config.ts:408",
       "consumed": true
     },
     {
@@ -261,7 +269,7 @@
       "type": "path",
       "default": "/v3/scenario/ls",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:350",
+      "source": "dsh-plugin/src/config.ts:404",
       "consumed": true
     },
     {
@@ -269,7 +277,7 @@
       "type": "path",
       "default": "/v3/skill/conversation/add",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:353",
+      "source": "dsh-plugin/src/config.ts:407",
       "consumed": true
     },
     {
@@ -277,7 +285,7 @@
       "type": "str",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:338",
+      "source": "dsh-plugin/src/config.ts:392",
       "consumed": true
     },
     {
@@ -285,7 +293,7 @@
       "type": "str",
       "default": "",
       "env": "TDAI_GATEWAY_APIKEY",
-      "source": "dsh-plugin/src/config.ts:328",
+      "source": "dsh-plugin/src/config.ts:382",
       "consumed": true
     },
     {
@@ -293,7 +301,7 @@
       "type": "str",
       "default": "TDAI_GATEWAY_APIKEY",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:330",
+      "source": "dsh-plugin/src/config.ts:384",
       "consumed": true
     },
     {
@@ -301,7 +309,7 @@
       "type": "str",
       "default": "http://127.0.0.1:8420",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:326",
+      "source": "dsh-plugin/src/config.ts:380",
       "consumed": true
     },
     {
@@ -309,7 +317,7 @@
       "type": "int",
       "default": 2097152,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:345",
+      "source": "dsh-plugin/src/config.ts:399",
       "consumed": true,
       "defaultNote": "源码字面量 2 * 1024 * 1024；取值见 dsh-plugin/src/http-capped.ts:26"
     },
@@ -318,7 +326,7 @@
       "type": "ms",
       "default": 10000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:342",
+      "source": "dsh-plugin/src/config.ts:396",
       "consumed": true
     },
     {
@@ -326,7 +334,7 @@
       "type": "str",
       "default": "default",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:331",
+      "source": "dsh-plugin/src/config.ts:385",
       "consumed": true
     },
     {
@@ -334,7 +342,7 @@
       "type": "str",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:337",
+      "source": "dsh-plugin/src/config.ts:391",
       "consumed": true
     },
     {
@@ -342,7 +350,7 @@
       "type": "str",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:339",
+      "source": "dsh-plugin/src/config.ts:393",
       "consumed": true
     },
     {
@@ -350,7 +358,7 @@
       "type": "str",
       "default": "",
       "env": "TDAI_USER_KEY",
-      "source": "dsh-plugin/src/config.ts:333",
+      "source": "dsh-plugin/src/config.ts:387",
       "consumed": true
     },
     {
@@ -358,7 +366,7 @@
       "type": "str",
       "default": "TDAI_USER_KEY",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:334",
+      "source": "dsh-plugin/src/config.ts:388",
       "consumed": true
     },
     {
@@ -366,7 +374,7 @@
       "type": "bool",
       "default": false,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:449",
+      "source": "dsh-plugin/src/config.ts:530",
       "consumed": true
     },
     {
@@ -374,7 +382,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:447",
+      "source": "dsh-plugin/src/config.ts:528",
       "consumed": true
     },
     {
@@ -382,7 +390,7 @@
       "type": "int",
       "default": 8000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:451",
+      "source": "dsh-plugin/src/config.ts:532",
       "consumed": true
     },
     {
@@ -390,7 +398,7 @@
       "type": "int",
       "default": 20000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:455",
+      "source": "dsh-plugin/src/config.ts:536",
       "consumed": true
     },
     {
@@ -398,7 +406,7 @@
       "type": "int",
       "default": 10,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:452",
+      "source": "dsh-plugin/src/config.ts:533",
       "consumed": true
     },
     {
@@ -406,7 +414,7 @@
       "type": "ms",
       "default": 2500,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:456",
+      "source": "dsh-plugin/src/config.ts:537",
       "consumed": true
     },
     {
@@ -414,7 +422,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:442",
+      "source": "dsh-plugin/src/config.ts:509",
       "consumed": true
     },
     {
@@ -422,7 +430,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:443",
+      "source": "dsh-plugin/src/config.ts:510",
       "consumed": true
     },
     {
@@ -430,7 +438,7 @@
       "type": "int",
       "default": 8,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:444",
+      "source": "dsh-plugin/src/config.ts:511",
       "consumed": true
     },
     {
@@ -438,7 +446,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:377",
+      "source": "dsh-plugin/src/config.ts:432",
       "consumed": true
     },
     {
@@ -446,7 +454,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:416",
+      "source": "dsh-plugin/src/config.ts:483",
       "consumed": true
     },
     {
@@ -454,7 +462,7 @@
       "type": "int",
       "default": 3000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:417",
+      "source": "dsh-plugin/src/config.ts:484",
       "consumed": true
     },
     {
@@ -462,7 +470,7 @@
       "type": "int",
       "default": 8,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:418",
+      "source": "dsh-plugin/src/config.ts:485",
       "consumed": true
     },
     {
@@ -470,15 +478,15 @@
       "type": "ms",
       "default": 2500,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:419",
+      "source": "dsh-plugin/src/config.ts:486",
       "consumed": true
     },
     {
       "path": "volatile.maxChars",
       "type": "int",
-      "default": 1500,
+      "default": 6000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:384",
+      "source": "dsh-plugin/src/config.ts:444",
       "consumed": true
     },
     {
@@ -486,7 +494,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:395",
+      "source": "dsh-plugin/src/config.ts:462",
       "consumed": true
     },
     {
@@ -494,7 +502,7 @@
       "type": "int",
       "default": 3,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:396",
+      "source": "dsh-plugin/src/config.ts:463",
       "consumed": true
     },
     {
@@ -502,7 +510,7 @@
       "type": "ms",
       "default": 2500,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:401",
+      "source": "dsh-plugin/src/config.ts:468",
       "consumed": true
     },
     {
@@ -510,7 +518,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:386",
+      "source": "dsh-plugin/src/config.ts:446",
       "consumed": true
     },
     {
@@ -518,15 +526,23 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:390",
+      "source": "dsh-plugin/src/config.ts:453",
       "consumed": true
     },
     {
       "path": "volatile.soul.maxChars",
       "type": "int",
-      "default": 600,
+      "default": 4400,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:389",
+      "source": "dsh-plugin/src/config.ts:452",
+      "consumed": true
+    },
+    {
+      "path": "volatile.soul.oncePerSession",
+      "type": "bool",
+      "default": true,
+      "env": null,
+      "source": "dsh-plugin/src/config.ts:457",
       "consumed": true
     },
     {
@@ -534,7 +550,7 @@
       "type": "ms",
       "default": 3000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:394",
+      "source": "dsh-plugin/src/config.ts:461",
       "consumed": true
     },
     {
@@ -542,7 +558,7 @@
       "type": "bool",
       "default": false,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:405",
+      "source": "dsh-plugin/src/config.ts:472",
       "consumed": true
     },
     {
@@ -550,7 +566,7 @@
       "type": "int",
       "default": 800,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:409",
+      "source": "dsh-plugin/src/config.ts:476",
       "consumed": true
     },
     {
@@ -558,7 +574,7 @@
       "type": "float",
       "default": 0.02,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:408",
+      "source": "dsh-plugin/src/config.ts:475",
       "consumed": true
     },
     {
@@ -566,7 +582,7 @@
       "type": "int",
       "default": 4,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:407",
+      "source": "dsh-plugin/src/config.ts:474",
       "consumed": true
     },
     {
@@ -574,7 +590,7 @@
       "type": "ms",
       "default": 2500,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:410",
+      "source": "dsh-plugin/src/config.ts:477",
       "consumed": true
     },
     {
@@ -582,7 +598,7 @@
       "type": "int",
       "default": 3,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:406",
+      "source": "dsh-plugin/src/config.ts:473",
       "consumed": true
     },
     {
@@ -590,7 +606,7 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:423",
+      "source": "dsh-plugin/src/config.ts:490",
       "consumed": true
     },
     {
@@ -598,7 +614,7 @@
       "type": "int",
       "default": 8,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:427",
+      "source": "dsh-plugin/src/config.ts:494",
       "consumed": true
     },
     {
@@ -606,7 +622,7 @@
       "type": "int",
       "default": 8192,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:432",
+      "source": "dsh-plugin/src/config.ts:499",
       "consumed": true
     },
     {
@@ -614,7 +630,7 @@
       "type": "int",
       "default": 100,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:433",
+      "source": "dsh-plugin/src/config.ts:500",
       "consumed": false,
       "orphan": true,
       "reason": "孤儿：src/config.ts:662-667 归一化后再无消费者，批次大小无人限制（task-107 已登记；模板保留以示存在）"
@@ -624,7 +640,7 @@
       "type": "int",
       "default": 20971520,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:439",
+      "source": "dsh-plugin/src/config.ts:506",
       "consumed": true,
       "defaultNote": "源码字面量 20 * 1024 * 1024；取值见 dsh-plugin/src/config.ts:439"
     },
@@ -633,7 +649,7 @@
       "type": "int",
       "default": 500,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:438",
+      "source": "dsh-plugin/src/config.ts:505",
       "consumed": true
     },
     {
@@ -641,7 +657,7 @@
       "type": "int",
       "default": 700000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:435",
+      "source": "dsh-plugin/src/config.ts:502",
       "consumed": true,
       "defaultNote": "源码字面量 DEFAULT_MAX_REQUEST_BYTES；取值见 dsh-plugin/src/wire-limits.ts:91"
     },
@@ -650,7 +666,7 @@
       "type": "path",
       "default": "",
       "env": null,
-      "source": "dsh-plugin/src/config.ts:426",
+      "source": "dsh-plugin/src/config.ts:493",
       "consumed": true
     },
     {
@@ -658,7 +674,7 @@
       "type": "ms",
       "default": 30000,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:428",
+      "source": "dsh-plugin/src/config.ts:495",
       "consumed": true
     },
     {
@@ -666,15 +682,16 @@
       "type": "bool",
       "default": true,
       "env": null,
-      "source": "dsh-plugin/src/config.ts:425",
+      "source": "dsh-plugin/src/config.ts:492",
       "consumed": true
     }
   ],
   "ignored": [],
   "coverage": {
-    "sourceKeys": 81,
+    "sourceKeys": 83,
     "ignoredKeys": 0,
-    "note": "81 个叶子全部进模板；其中 6 个 consumed:false 是孤儿/死接线（见各自 orphan+reason），仍留在 keys[] 以便使用者看得见",
-    "templatedKeys": 81
+    "note": "83 个叶子全部进模板（Wave 2 后补登记 identity.followUserSessionInit 与 volatile.soul.oncePerSession 两条模板里有、清单漏登的键）；其中 6 个 consumed:false 是孤儿/死接线（见各自 orphan+reason），仍留在 keys[] 以便使用者看得见",
+    "templatedKeys": 83,
+    "templateKeys": 83
   }
 }

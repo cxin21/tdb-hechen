@@ -102,9 +102,9 @@
     {
       "path": "llm.LLM_MODE",
       "type": "enum(proxy|custom)",
-      "default": "proxy",
+      "default": "custom",
       "env": "LLM_MODE",
-      "source": "MemoryKnowledge/src/config.ts:220",
+      "source": "MemoryKnowledge/src/config.ts:223",
       "consumed": true
     },
     {
@@ -112,7 +112,7 @@
       "type": "enum(openai|anthropic)",
       "default": "openai",
       "env": "LLM_PROTOCOL",
-      "source": "MemoryKnowledge/src/config.ts:221",
+      "source": "MemoryKnowledge/src/config.ts:224",
       "consumed": true
     },
     {
@@ -120,7 +120,7 @@
       "type": "str",
       "default": "custom",
       "env": "LLM_PROVIDER",
-      "source": "MemoryKnowledge/src/config.ts:222",
+      "source": "MemoryKnowledge/src/config.ts:225",
       "consumed": true
     },
     {
@@ -128,7 +128,7 @@
       "type": "str",
       "default": "",
       "env": "LLM_API_KEY",
-      "source": "MemoryKnowledge/src/config.ts:223",
+      "source": "MemoryKnowledge/src/config.ts:226",
       "consumed": true
     },
     {
@@ -136,7 +136,7 @@
       "type": "str",
       "default": "Memory-Model",
       "env": "LLM_MODEL",
-      "source": "MemoryKnowledge/src/config.ts:224",
+      "source": "MemoryKnowledge/src/config.ts:227",
       "consumed": true
     },
     {
@@ -144,7 +144,7 @@
       "type": "str",
       "default": "",
       "env": "LLM_BASE_URL",
-      "source": "MemoryKnowledge/src/config.ts:225",
+      "source": "MemoryKnowledge/src/config.ts:228",
       "consumed": true
     },
     {
@@ -152,7 +152,7 @@
       "type": "int",
       "default": 32768,
       "env": "LLM_MAX_TOKENS",
-      "source": "MemoryKnowledge/src/config.ts:226",
+      "source": "MemoryKnowledge/src/config.ts:229",
       "consumed": true
     },
     {
@@ -160,7 +160,7 @@
       "type": "ms",
       "default": 1200000,
       "env": "LLM_TIMEOUT_MS",
-      "source": "MemoryKnowledge/src/config.ts:227",
+      "source": "MemoryKnowledge/src/config.ts:230",
       "consumed": true
     },
     {
@@ -168,7 +168,7 @@
       "type": "bool",
       "default": false,
       "env": "LLM_STREAM",
-      "source": "MemoryKnowledge/src/config.ts:228",
+      "source": "MemoryKnowledge/src/config.ts:231",
       "consumed": true,
       "defaultNote": "源码写成 `process.env.LLM_STREAM === \"true\"`，行内只有 \"true\" 字面量；不设或设成其它任何值都等于 false（MemoryKnowledge/src/config.ts:228）"
     },
@@ -193,7 +193,7 @@
       "type": "str",
       "default": "openai_compatible",
       "env": "EMBEDDING_PROVIDER",
-      "source": "MemoryKnowledge/src/config.ts:231",
+      "source": "MemoryKnowledge/src/config.ts:234",
       "consumed": true
     },
     {
@@ -201,7 +201,7 @@
       "type": "str",
       "default": "",
       "env": "EMBEDDING_BASE_URL",
-      "source": "MemoryKnowledge/src/config.ts:232",
+      "source": "MemoryKnowledge/src/config.ts:235",
       "consumed": true
     },
     {
@@ -209,7 +209,7 @@
       "type": "str",
       "default": "",
       "env": "EMBEDDING_API_KEY",
-      "source": "MemoryKnowledge/src/config.ts:233",
+      "source": "MemoryKnowledge/src/config.ts:236",
       "consumed": true
     },
     {
@@ -217,7 +217,7 @@
       "type": "str",
       "default": "",
       "env": "EMBEDDING_MODEL",
-      "source": "MemoryKnowledge/src/config.ts:234",
+      "source": "MemoryKnowledge/src/config.ts:237",
       "consumed": true
     },
     {
@@ -225,7 +225,7 @@
       "type": "int",
       "default": 0,
       "env": "EMBEDDING_DIMENSIONS",
-      "source": "MemoryKnowledge/src/config.ts:235",
+      "source": "MemoryKnowledge/src/config.ts:238",
       "consumed": true
     },
     {
@@ -282,22 +282,6 @@
       "default": true,
       "env": "KNOWLEDGE_SSRF_CHECK",
       "source": "MemoryKnowledge/src/source-fetcher/git-fetcher.ts:39",
-      "consumed": true
-    },
-    {
-      "path": "mcp.KNOWLEDGE_API_URL",
-      "type": "str",
-      "default": "http://localhost:8421",
-      "env": "KNOWLEDGE_API_URL",
-      "source": "MemoryKnowledge/src/mcp/server.ts:94",
-      "consumed": true
-    },
-    {
-      "path": "mcp.KNOWLEDGE_API_TOKEN",
-      "type": "str",
-      "default": "required",
-      "env": "KNOWLEDGE_API_TOKEN",
-      "source": "MemoryKnowledge/src/mcp/server.ts:95",
       "consumed": true
     },
     {
@@ -404,13 +388,14 @@
     },
     {
       "path": "TDAI_LLM_BASE_URL / TDAI_LLM_API_KEY（历史别名）",
-      "reason": "ingest-v2/llm.ts:64-66 注释明确「不再兜底读 process.env」：历史上读 TDAI_LLM_*，配了也完全不生效，登记以免被当成可用旋钮"
+      "reason": "MemoryKnowledge/src/engines/wiki/ingest-v2/llm.ts:64-66 注释明确「不再兜底读 process.env」：历史上读 TDAI_LLM_*，本服务侧已无消费点（全仓 ts/mjs 内 TDAI_LLM_BASE_URL 仅 MemoryCore/src/gateway/config.ts:446 一处生产读取），登记以免被当成可用旋钮"
     }
   ],
   "coverage": {
-    "sourceKeys": 50,
+    "sourceKeys": 48,
     "ignoredKeys": 2,
-    "note": "sourceKeys = keys 48 + ignored 2；46 个环境变量 + 2 个 config-override.json 字段（override.*，无 env）",
-    "templatedKeys": 48
+    "note": "sourceKeys = keys 46 + ignored 2；44 个环境变量 + 2 个 config-override.json 字段（override.*，无 env）。Wave 2 后删除 mcp.KNOWLEDGE_API_URL / mcp.KNOWLEDGE_API_TOKEN 两键（消费文件 MemoryKnowledge/src/mcp/server.ts 整文件已删）⇒ sourceKeys 50→48。",
+    "templatedKeys": 46,
+    "templateKeys": 46
   }
 }
