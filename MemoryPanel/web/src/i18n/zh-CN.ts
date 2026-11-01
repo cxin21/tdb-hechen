@@ -131,7 +131,7 @@ export const zhCN = {
   'settings.caption': '设置 · 权限管理',
   'settings.title': '资源管理模块开关',
   'settings.desc':
-    '开关按当前登录用户保存。关闭后，proxy 不会为该用户注入对应原子能力；变更对新会话即时生效。',
+    '开关按当前登录用户保存。关闭后，插件不再为该用户注入对应原子能力；变更对新会话即时生效。',
   'settings.loadingConfig': '正在读取当前用户资源配置…',
   'settings.tag.saving': '保存中',
   'settings.tag.enabled': '已开启',

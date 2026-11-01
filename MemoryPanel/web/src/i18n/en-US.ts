@@ -140,7 +140,7 @@ export const enUS = {
   'settings.caption': 'Settings · Permissions',
   'settings.title': 'Resource Module Toggles',
   'settings.desc':
-    'Toggles are saved for the current user. When disabled, the proxy will not inject the corresponding capability for that user. Changes take effect immediately for new sessions.',
+    'Toggles are saved for the current user. When disabled, the plugin will not inject the corresponding capability for that user. Changes take effect immediately for new sessions.',
   'settings.loadingConfig': 'Loading current user resource configuration…',
   'settings.tag.saving': 'Saving',
   'settings.tag.enabled': 'Enabled',

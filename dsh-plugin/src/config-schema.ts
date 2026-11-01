@@ -129,7 +129,7 @@ export const SECRET_PATHS = ['server.apiKey', 'server.userKey'] as const;
 
 const DESCRIPTIONS: Record<string, string> = {
   enabled: 'Master switch for the whole memory plugin (head pack, volatile block, writeback, recall tool).',
-  'server.baseUrl': 'tdai-gateway base URL, e.g. http://127.0.0.1:8420',
+  'server.baseUrl': 'MemoryCore base URL, e.g. http://127.0.0.1:8420',
   'server.serviceId': 'Gateway service id used for every /v3 call.',
   'server.apiKeyRef': 'Credential NAME holding the gateway API key (not the key itself).',
   'server.userKeyRef': 'Credential NAME holding the user key (not the key itself).',
