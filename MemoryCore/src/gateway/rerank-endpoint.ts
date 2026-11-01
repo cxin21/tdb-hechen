@@ -140,7 +140,7 @@ export interface RerankRouteDeps {
 /**
  * 处理 POST /v1/rerank。命中并处理完毕返回 true；路径/方法不匹配返回 false
  * （由调用方继续后续 dispatch）。Bearer 鉴权由 server.ts dispatch 层先行
- * （与 /v2/instance/destroy 同级 v1 门禁），本函数不做鉴权。
+ * （v1 style 门禁：只校验 Bearer apiKey），本函数不做鉴权。
  */
 export async function handleRerankRoute(
   req: http.IncomingMessage,

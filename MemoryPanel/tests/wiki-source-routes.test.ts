@@ -65,7 +65,6 @@ function makeDeps(opts?: { aclAllowed?: boolean; assetMissing?: boolean }): {
   const deps = {
     config: {
       knowledge: { baseUrl: KS_BASE, authToken: 'ks-tok', timeoutMs: 1000 },
-      llmProvider: { proxyBaseUrl: 'http://proxy-test:3' },
       metadataRemoteTimeoutMs: 1000,
     },
     logger: { debug() {}, info() {}, warn() {}, error() {} },

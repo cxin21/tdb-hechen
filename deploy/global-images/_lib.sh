@@ -151,7 +151,6 @@ print_endpoints() {
   printf "  │ Knowledge API  http://localhost:%-24s│\n" "${KNOWLEDGE_PORT}/v3/"
   printf "  │ Knowledge Docs http://localhost:%-24s│\n" "${KNOWLEDGE_PORT}/docs"
   printf "  │ Memory Core     http://localhost:%-24s│\n" "${MEMORY_CORE_PORT}/"
-  printf "  │ Proxy          http://localhost:%-24s│\n" "${PROXY_PORT}/"
   echo "  └─────────────────────────────────────────────────────────┘"
 }
 
@@ -349,10 +348,11 @@ ensure_knowledge_service_key() {
 }
 
 # interactive_llm_setup
-#   交互式引导填写 LLM 两组（memory + proxy）→ 通路检查（可重试）→ 写回 .env。
-#   会更新内存中的 MEMORY_LLM_* / PROXY_UPSTREAM_* 变量（已 export），并写回 .env 持久化。
+#   交互式引导填写 memory 组 LLM → 通路检查（可重试）→ 写回 .env。
+#   会更新内存中的 MEMORY_LLM_* 变量（已 export），并写回 .env 持久化。
+#   2026-11-01 DSH 特化 Wave 2B：proxy 退场，原「proxy 组 LLM」整块删除（ADR-0020）。
 interactive_llm_setup() {
-  local base key model proto reuse_same
+  local base key model proto
 
   echo ""
   info "═══ 交互式配置 LLM（回车 = 保留当前值） ═══════════════════"
@@ -375,42 +375,6 @@ interactive_llm_setup() {
     prompt_confirm "是否重新输入？" 1 || die "用户放弃，退出。"
   done
 
-  # ── proxy 组 ──
-  # 默认复用（回车即复用）的情况：
-  #   1) .env 里 proxy 组与刚填的 memory 组完全相同；
-  #   2) proxy 组仍为空 / REPLACE_ME（首次使用尚未配置，默认复用更顺手）。
-  reuse_same=0
-  if [[ "${PROXY_UPSTREAM_URL:-}" == "$MEMORY_LLM_BASE_URL" && \
-        "${PROXY_UPSTREAM_API_KEY:-}" == "$MEMORY_LLM_API_KEY" && \
-        "${PROXY_UPSTREAM_MODEL:-}" == "$MEMORY_LLM_MODEL" ]]; then
-    reuse_same=1
-  elif [[ -z "${PROXY_UPSTREAM_URL:-}" || "${PROXY_UPSTREAM_URL:-}" == "REPLACE_ME" ]] && \
-       [[ -z "${PROXY_UPSTREAM_API_KEY:-}" || "${PROXY_UPSTREAM_API_KEY:-}" == "REPLACE_ME" ]] && \
-       [[ -z "${PROXY_UPSTREAM_MODEL:-}" || "${PROXY_UPSTREAM_MODEL:-}" == "REPLACE_ME" ]]; then
-    reuse_same=1
-  fi
-
-  if prompt_confirm "proxy 组是否复用 memory 组的 LLM 配置？" "$reuse_same"; then
-    PROXY_UPSTREAM_URL="$MEMORY_LLM_BASE_URL"
-    PROXY_UPSTREAM_API_KEY="$MEMORY_LLM_API_KEY"
-    PROXY_UPSTREAM_MODEL="$MEMORY_LLM_MODEL"
-    ok "proxy 组复用 memory 组配置，跳过重复检查"
-  else
-    while true; do
-      base=$(prompt_with_default "proxy 组 UPSTREAM_URL" "${PROXY_UPSTREAM_URL:-}")
-      key=$(prompt_with_default "proxy 组 UPSTREAM_API_KEY" "${PROXY_UPSTREAM_API_KEY:-}")
-      model=$(prompt_with_default "proxy 组 UPSTREAM_MODEL" "${PROXY_UPSTREAM_MODEL:-}")
-
-      if check_llm_group "proxy 组" "$base" "$key" "$model" openai; then
-        PROXY_UPSTREAM_URL="$base"
-        PROXY_UPSTREAM_API_KEY="$key"
-        PROXY_UPSTREAM_MODEL="$model"
-        break
-      fi
-      warn "proxy 组 LLM 通路检查未通过。"
-      prompt_confirm "是否重新输入？" 1 || die "用户放弃，退出。"
-    done
-  fi
 
   # ── 写回 .env ──
   info "写回 LLM 配置 → $ENV_FILE"
@@ -418,9 +382,6 @@ interactive_llm_setup() {
   set_env_value MEMORY_LLM_API_KEY "$MEMORY_LLM_API_KEY" "$ENV_FILE"
   set_env_value MEMORY_LLM_MODEL "$MEMORY_LLM_MODEL" "$ENV_FILE"
   set_env_value MEMORY_LLM_PROTOCOL "$MEMORY_LLM_PROTOCOL" "$ENV_FILE"
-  set_env_value PROXY_UPSTREAM_URL "$PROXY_UPSTREAM_URL" "$ENV_FILE"
-  set_env_value PROXY_UPSTREAM_API_KEY "$PROXY_UPSTREAM_API_KEY" "$ENV_FILE"
-  set_env_value PROXY_UPSTREAM_MODEL "$PROXY_UPSTREAM_MODEL" "$ENV_FILE"
   ok "LLM 配置已保存到 $ENV_FILE"
 }
 
@@ -446,7 +407,7 @@ port_in_use() {
 #   这些端口是「自己人」占用，会在启动时被 rm_container_if_exists 重建，不算冲突。
 tdai_self_ports() {
   local c p ports=""
-  for c in tdai-proxy tdai-memory-hub tdai-memory-core; do
+  for c in tdai-memory-hub tdai-memory-core; do
     if $DOCKER ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
       p="$($DOCKER port "$c" 2>/dev/null | grep -oE '[0-9]+$' | sort -u | tr '\n' ' ' || true)"
       ports="$ports $p"
@@ -462,7 +423,7 @@ check_ports() {
   local self_ports port_var port conflict=0
   self_ports=" $(tdai_self_ports) "
   info "═══ 端口预检 ══════════════════════════════════════════"
-  for port_var in MEMORY_CORE_PORT PANEL_PORT KNOWLEDGE_PORT PROXY_PORT; do
+  for port_var in MEMORY_CORE_PORT PANEL_PORT KNOWLEDGE_PORT; do
     port="${!port_var:-}"
     if [[ -z "$port" ]]; then continue; fi
     if [[ "$self_ports" == *" $port "* ]]; then

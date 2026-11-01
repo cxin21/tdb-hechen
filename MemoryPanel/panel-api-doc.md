@@ -63,7 +63,6 @@
 
 - 内核 list 接口默认 `DEFAULT_PAGINATION = { limit: 20 }`：**前端直接调 `meta/*` 的 list action 若不传 limit，只返回前 20 条**。
 - Panel 层聚合/业务接口（如 `chat-memory/*`、`knowledge/*/team-assets`）内部已用分页拉全量，无需前端翻页。
-- `task/list-with-agents` 的 `limit` 上限 200；不传时内核按默认 20 条返回，但响应 `limit` 字段回显 50（已知不一致，见 §3.5）。
 
 ### 1.6 幂等约定
 
@@ -99,9 +98,7 @@
 | POST | `/api/v1/chat-memory/layer-delete` | 分层批量删除（L0/L1） |
 | POST | `/api/v1/chat-memory/layer-update` | 分层编辑（L1/L2/L3） |
 | POST | `/api/v1/chat-memory/search` | 分层关键词检索（L0/L1） |
-| POST | `/api/v1/task/list-with-agents` | Task 列表聚合（含 linked agents） |
 | POST | `/api/v1/agent-overview/bootstrap` | Agent 概览引导数据聚合 |
-| POST | `/api/v1/agent/delete-cascade` | 删除 Agent（级联清 skill 后 archive） |
 | POST | `/api/v1/knowledge/wiki/*` | Wiki 知识库业务路由（14 个，见 §3.8） |
 | POST | `/api/v1/knowledge/code-graph/*` | Code-Graph 业务路由（8 个，见 §3.9） |
 | POST | `/api/v1/knowledge/allocate` 等 | 知识分配/授权（5 个，见 §3.10） |
@@ -147,8 +144,7 @@
 | instances | object[] | 实例公开信息列表（`instanceRegistry.listPublic()`，**`api_key` 是 secret 不下发**） |
 | instances[].instance_id | string | 实例 ID |
 | instances[].name | string | 实例名称 |
-| instances[].gateway_endpoint | string | Panel → Kernel 转发地址（非 secret，前端用于拼接客户端接入地址） |
-| instances[].proxy_endpoint | string? | 可选，客户端接入 baseUrl；未配置则前端回落 `gateway_endpoint` |
+| instances[].gateway_endpoint | string | Panel → Kernel 转发地址（非 secret，也是 DSH 插件等客户端的接入地址；历史 `proxy_endpoint` 字段已随 MemoryProxy 退役删除） |
 
 ---
 
@@ -644,58 +640,9 @@ L0/L1 列表批量删除。**仅资产 Owner**。
 
 ## 3.5 Task
 
-### POST /task/list-with-agents
-
-聚合 `task/list` + 批量 `task-agent/list`，一次返回 task 及其关联 agents，消除前端 N+1（否则需 2N+1 次请求）。
-
-**上游**：`meta/task/list`、`meta/task-agent/list`。
-
-**请求体**
-
-| 字段 | 类型 | 必填 | 默认 | 说明 |
-|---|---|---|---|---|
-| team_id | string | 是 | — | 团队 ID |
-| limit | number | 否 | — | 单页数量，上限 200。**注意**：不传 `limit` 时响应 `limit` 字段回显 50，但内核 `task/list` 实际按默认 20 条返回 |
-| offset | number | 否 | 0 | 偏移 |
-| status | string | 否 | — | 按状态过滤 |
-| title | string | 否 | — | 标题过滤 |
-
-**响应** `data`
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| items | TaskWithAgents[] | task 列表，每条含 `agents` 子数组 |
-| total | number | 总数 |
-| limit | number | 本次实际 limit |
-| offset | number | 本次实际 offset |
-
-**TaskWithAgents**：task 字段（`task_id`、`team_id`、`title`、`description?`、`status`、`source_type?`、`risk_level?`、`created_at`、`updated_at`）+ `agents: TaskAgent[]`（`agent_id`、`task_id`、`team_id`、`status`、`created_at`）。
-
-**错误**：`MISSING_TEAM_ID`。
-
-**示例**
-
-```json
-// 请求
-{ "team_id": "t_1", "limit": 10 }
-
-// 响应
-{
-  "code": 0,
-  "message": "ok",
-  "request_id": "abc-123",
-  "data": {
-    "items": [
-      { "task_id": "tsk_1", "title": "灰度验证", "status": "active", "agents": [ { "agent_id": "agt_1" } ] }
-    ],
-    "total": 1,
-    "limit": 10,
-    "offset": 0
-  }
-}
-```
-
----
+DSH 特化（Wave 2A）：任务工作台整面退役 —— `POST /api/v1/task/list-with-agents`（原「Task 列表聚合」）
+连同前端 WorkbenchPage、任务 CRUD/写回算子一并删除。唯一接入方 DSH 插件不使用任何 task 端点
+（其端点面只有 recall / core/read / atomic / scenario / conversation / wiki / knowledge / skill / meta）。
 
 ## 3.6 Agent 概览
 
@@ -748,39 +695,9 @@ L0/L1 列表批量删除。**仅资产 Owner**。
 
 ## 3.7 Agent 生命周期
 
-### POST /agent/delete-cascade
-
-删除 Agent：先级联删除其名下所有 active skill，再调内核 `agent/archive`（archive 内部会顺手清 chat_memory）。
-
-**上游**：`skill/list`、`skill/delete`、`meta/agent/archive`。
-
-**请求体**：`{ agent_id: string }`
-
-**响应** `data`
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| archived | boolean | 固定 `true` |
-| agent_id | string | 被归档的 agent |
-| deleted_skill_count | number | 已删 skill 数 |
-| deleted_skill_ids | string[] | 已删 skill ID 列表 |
-
-**错误**：`MISSING_AGENT_ID`、`INVALID_USER_KEY`、`AGENT_NOT_FOUND`、`NOT_YOUR_AGENT`；任一 skill 删除失败返回 `500 SKILL_DELETE_FAILED`（含 `failed_skill_id`、`deleted_skill_ids`），此时 agent 不会 archive。
-
-**示例**
-
-```json
-// 请求
-{ "agent_id": "agt_1" }
-
-// 响应
-{
-  "code": 0,
-  "message": "ok",
-  "request_id": "abc-123",
-  "data": { "archived": true, "agent_id": "agt_1", "deleted_skill_count": 2, "deleted_skill_ids": ["skl_1", "skl_2"] }
-}
-```
+DSH 特化（Wave 2A）：`POST /agent/delete-cascade` 与 `POST /task/list-with-agents` 已随
+多 agent 编排面一起删除。删除 Agent 走 `meta/agent/archive`；面板前端在归档前
+自行逐条 `skill/delete` 清 active skill（见 web/src/lib/api/agents.ts:delete）。
 
 ---
 

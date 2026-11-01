@@ -84,7 +84,6 @@ import type { MemorySystemUserConfig } from "../metadata/system-user.js";
 import { validateLlmProviderConfig, LlmResolveError } from "./llm-resolver.js";
 import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
 import { resolveStandaloneLlmForRuntime } from "../adapters/standalone/llm-provider-resolver.js";
-import { resolveReportedCredit } from "./quota-credit-policy.js";
 import {
   initApiTraceConfig,
   wrapApiServiceForTrace,
@@ -115,8 +114,6 @@ import { makeKnowledgeRouteTable } from "./knowledge-handlers.js";
 // 检索面跨 wiki 按 absScore 合并；8421 只按 caller 自称 team 过滤，不能直接暴露给插件。
 import { makeWikiRouteTable } from "./wiki-handlers.js";
 import { makeChatMemoryRouteTable, clearChatMemoryContentResilient } from "./chat-memory-handlers.js";
-import { makeMemoryPromptRouteTable } from "./memory-prompt-handlers.js";
-import { makeMemoryGenerationLogRouteTable } from "./memory-generation-log-handlers.js";
 import {
   readAuthAdminBypassEnabled,
   readAuthRequireTeamOwnership,
@@ -679,12 +676,7 @@ export class TdaiGateway {
     // 只兜底 systemUser / baseUrl 这类启动即可确定的错误，避免走到第一次抽取才炸。
     try {
       validateLlmProviderConfig(this.config.llm, this.config.metadata);
-      if (this.config.llm.provider === "proxy") {
-        this.logger.info(
-          `[LLM] provider=proxy, baseUrl=${this.config.llm.baseUrl}, ` +
-          `useMemorySystemUserKey=${this.config.llm.proxy?.useMemorySystemUserKey ?? true}`,
-        );
-      }
+      this.logger.info(`[LLM] provider=openai, baseUrl=${this.config.llm.baseUrl}, model=${this.config.llm.model}`);
     } catch (err) {
       if (err instanceof LlmResolveError) {
         throw new Error(`[LLM] provider 配置校验失败: ${err.message}`);
@@ -1280,28 +1272,8 @@ export class TdaiGateway {
     }
 
     try {
-      // ── /v2/instance/destroy — admin endpoint, gated by the v1-style
-      //    Bearer apiKey only (no service-id / per-request envelope).
-      //    拍板③翻转后 server.apiKey 恒有值（缺失时 start() 已生成临时密钥），
-      //    此接口恒受 Bearer 门禁保护；运维可在启动日志看到 auth posture。
-      if (method === "POST" && pathname === "/v2/instance/destroy") {
-        if (!this.checkAuth(req, res)) return;
-        return await this.handleInstanceDestroy(req, res);
-      }
-
-      // ── /v3/instance/destroy — v3 兼容版本。
-      //    请求/响应契约与 v2 一致；鉴权同 v2（Bearer apiKey，运维接口，
-      //    不走租户 x-tdai-user-key）。
-      //    实现上先复用 v2 的通用清理（state / store / cos / quota），再预留
-      //    v3 独有的 metadata 清理（team/user/asset/acl 等），后续由负责 v3
-      //    metadata 的同学补上。此处不做完全复用，避免把 v3 侧清理静默漏掉。
-      if (method === "POST" && pathname === "/v3/instance/destroy") {
-        if (!this.checkAuth(req, res)) return;
-        return await this.handleInstanceDestroyV3(req, res);
-      }
-
       // ── /v1/rerank —— 精排资源端点（wiki 召回重排 R1，2026-10-16）。
-      //    Bearer 门禁与 /v2/instance/destroy 同级（v1 style，无 user-key）；
+      //    Bearer 门禁为 v1 style（只校验 apiKey，无 service-id / user-key）；
       //    reranker 惰性构建自 memory.recall.rerank（与 auto-recall 同源配置，
       //    local provider 走进程级单例池，不重复加载模型）。未配置 → 503。
       if (method === "POST" && pathname === "/v1/rerank") {
@@ -1433,7 +1405,7 @@ export class TdaiGateway {
       // its existing semantics. When `server.apiKey` is unset, this gate
       // is a no-op (default-open), matching the develop_server_test
       // baseline.
-      if (pathname.startsWith("/v2/") || pathname.startsWith("/v3/")) {
+      if (pathname.startsWith("/v3/")) {
         if (!this.checkAuthForV2(req, res)) return;
       }
 
@@ -1447,9 +1419,9 @@ export class TdaiGateway {
         deployMode: this.config.deployMode,
         // J 重构式回忆：把 gateway config 递给 v2-router（memory.search.neighborExpand 等从这里读）
         config: this.config,
-        // Inject pipeline introspection deps for /v2/pipeline/status (standalone-only).
-        // Both can be undefined in legacy standalone (no stateBackend configured) —
-        // the handler returns 503 in that case.
+        // 流水线自省 deps：原为 /v2/pipeline/status 服务，该端点已随 /v2 面整体下线
+        // （DSH 特化 2026-11-01）；字段保留注入，便于后续管理面直接读队列状态而不重新接线。
+        // 两者在 legacy standalone 下可为 undefined。
         stateBackend: this.stateBackend ?? undefined,
         pipelineWorker: this.pipelineWorker ?? undefined,
         logger: this.logger,
@@ -1607,8 +1579,6 @@ export class TdaiGateway {
         ...makeChatMemoryRouteTable(),
         // task-73：/v3/wiki/* 薄转发（只读 + team 归属校验 + absScore 合并）
         ...makeWikiRouteTable({ getConfig: () => this.config.memory.wiki }),
-        ...makeMemoryPromptRouteTable(),
-        ...makeMemoryGenerationLogRouteTable(),
         // /v3/admin/settings/{get,set}（spec §3.2）— 内网信任模型，管理员判定在 Panel 层。
         ...makeAdminSettingsRouteTable({
           baseDir: this.config.data.baseDir,
@@ -1846,172 +1816,6 @@ export class TdaiGateway {
   // ============================
   // Route handlers
   // ============================
-
-  /**
-   * POST /v2/instance/destroy — Purge all data for a destroyed instance.
-   * Intended for trusted internal callers only.
-   *
-   * Request body: { instance_id: string }
-   * Response: { code, message, data: { instance_id, cleaned: { ... } } }
-   */
-  private async handleInstanceDestroy(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await parseJsonBody<{ instance_id?: string }>(req);
-    const instanceId = body?.instance_id;
-
-    if (!instanceId || typeof instanceId !== "string") {
-      sendJson(res, 400, { code: 400, message: "Missing required field: instance_id" });
-      return;
-    }
-
-    this.logger.info(`[instance/destroy] Purging instance: ${instanceId}`);
-    const cleaned = await this.purgeInstanceCommon(instanceId, "v2");
-
-    sendJson(res, 200, {
-      code: 0,
-      message: "ok",
-      data: { instance_id: instanceId, cleaned },
-    });
-  }
-
-  /**
-   * POST /v3/instance/destroy — v3 兼容路由。
-   *
-   * 请求/响应契约与 v2 完全一致，调用方零改动即可切换。
-   *
-   * 在通用清理之上 drop 该实例元数据库（v3.0 分库：`MetadataStorePool.purgeInstance`）。
-   */
-  private async handleInstanceDestroyV3(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await parseJsonBody<{ instance_id?: string }>(req);
-    const instanceId = body?.instance_id;
-
-    if (!instanceId || typeof instanceId !== "string") {
-      sendJson(res, 400, { code: 400, message: "Missing required field: instance_id" });
-      return;
-    }
-
-    this.logger.info(`[instance/destroy] [v3] Purging instance: ${instanceId}`);
-    const cleaned = await this.purgeInstanceCommon(instanceId, "v3");
-
-    cleaned.v3_metadata = await this.purgeV3Metadata(instanceId);
-
-    sendJson(res, 200, {
-      code: 0,
-      message: "ok",
-      data: { instance_id: instanceId, cleaned },
-    });
-  }
-
-  /**
-   * 通用清理步骤（state / store / cos / quota），v2 与 v3 共用。
-   * @param source 仅用于日志前缀，便于分辨调用方。
-   */
-  private async purgeInstanceCommon(
-    instanceId: string,
-    source: "v2" | "v3",
-  ): Promise<Record<string, unknown>> {
-    const tag = `[instance/destroy] [${source}]`;
-    const cleaned: Record<string, unknown> = {};
-
-    // 1. Purge state backend (timers, sessions, buffers, pending tasks)
-    if (this.stateBackend?.purgeInstance) {
-      try {
-        const result = await this.stateBackend.purgeInstance(instanceId);
-        cleaned.state = result;
-        this.logger.info(`${tag} State purged: sessions=${result.sessions}, timers=${result.timers}, buffers=${result.buffers}`);
-      } catch (err) {
-        this.logger.error(`${tag} State purge failed: ${err instanceof Error ? err.message : String(err)}`);
-        cleaned.state_error = err instanceof Error ? err.message : String(err);
-      }
-    }
-
-    // 2. Evict store from StorePool (Memory + Skill)
-    if (this.storePool) {
-      try {
-        await this.storePool.evict(instanceId);
-        this.storePool.evictSkillStore(instanceId);
-        cleaned.store_evicted = true;
-        cleaned.skill_store_evicted = true;
-      } catch (err) {
-        this.logger.error(`${tag} Store evict failed: ${err instanceof Error ? err.message : String(err)}`);
-        cleaned.store_evicted = false;
-        cleaned.skill_store_evicted = false;
-      }
-    }
-
-    // 3. Delete COS objects for this instance
-    if (this.cosStorageCache?.has(instanceId)) {
-      this.cosStorageCache.delete(instanceId);
-    }
-    if (this.sharedCosClient && this.configProvider) {
-      try {
-        const cosConfig = await this.configProvider.resolveCos();
-        if (cosConfig?.cosUrl) {
-          const { CosStorageBackend } = await import("../integrations/cos/cos-backend.js");
-          const prefix = `${cosConfig.pathPrefix.replace(/\/$/, '')}/${instanceId}/`;
-          const backend = new CosStorageBackend({
-            sharedClient: this.sharedCosClient,
-            prefix,
-            logger: this.logger,
-          });
-          const deletedCount = await backend.deleteByPrefix("");
-          cleaned.cos_objects_deleted = deletedCount;
-          this.logger.info(`${tag} COS objects deleted: ${deletedCount}`);
-        }
-      } catch (err) {
-        this.logger.error(`${tag} COS cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-        cleaned.cos_error = err instanceof Error ? err.message : String(err);
-      }
-    }
-
-    // 4. Purge skill queue residue (2026-07-30)
-    //
-    // 全进程共享一条 skill agent LIST + SET, key 里不含 instanceId。要清掉
-    // 属于本 instance 的 tuple, 需要 SSCAN + LREM 按 `{instanceId}|` 前缀
-    // 匹配 5 段 tuple; 同时清 extract-lock:{instanceId}|* / tasks-mutex:*
-    // 相关的锁 key (SCAN + DEL)。Standalone / 无 redis 场景走内存队列, 用
-    // Local queue 的 _snapshot 迭代删除。
-    try {
-      const skillPurged = await this.purgeSkillQueueForInstance(instanceId);
-      cleaned.skill_queue = skillPurged;
-    } catch (err) {
-      this.logger.error(`${tag} Skill queue purge failed: ${err instanceof Error ? err.message : String(err)}`);
-      cleaned.skill_queue_error = err instanceof Error ? err.message : String(err);
-    }
-
-    // Clear handler bundle cache for this instance
-    if (this.conversationAddByInstance.has(instanceId)) {
-      this.conversationAddByInstance.delete(instanceId);
-      cleaned.skill_handler_cache_cleared = true;
-    }
-
-    // 5. Clear QuotaManager cache
-    if (this.quotaManager) {
-      (this.quotaManager as any).cache?.delete?.(instanceId);
-      cleaned.quota_cache_cleared = true;
-    }
-
-    return cleaned;
-  }
-
-  /**
-   * v3 独有：drop 该实例元数据库（MongoDB dropDatabase / SQLite 删目录）。
-   * 失败时写入返回结构，不抛出，与 purgeInstanceCommon 一致。
-   */
-  private async purgeV3Metadata(instanceId: string): Promise<Record<string, unknown>> {
-    try {
-      const pool = await this.ensureMetadataStorePool();
-      const result = await pool.purgeInstance(instanceId);
-      this.metadataServiceByInstance.delete(instanceId);
-      this.logger.info(
-        `[instance/destroy] [v3] metadata purged: db=${result.db_name} dropped=${result.dropped}`,
-      );
-      return { db_name: result.db_name, dropped: result.dropped };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[instance/destroy] [v3] metadata purge failed: ${msg}`);
-      return { dropped: false, error: msg };
-    }
-  }
 
   private async handleHealth(res: http.ServerResponse): Promise<void> {
     // T15-B：memory 子对象（向量覆盖率 / embed 探活 / 最近向量写入）
@@ -3664,17 +3468,12 @@ export class TdaiGateway {
   }
 
   /**
-   * 应上报的 CreditDelta：provider=proxy 时归零（proxy 已上报，避免重复计费），
-   * 否则原样传递。见 quota-credit-policy.ts 详解。
+   * 应上报的 CreditDelta。provider=proxy 下线后内核是唯一 credit 上报方 ⇒ 原样传递。
+   * 原 quota-credit-policy.ts（provider=proxy 时归零以避免与 context_proxy 重复计费）
+   * 已随 MemoryProxy 退出链路删除。
    */
-  private reportedCreditFor(rawCreditUsed: number, level: "L1" | "L2" | "L3"): number {
-    const reported = resolveReportedCredit(rawCreditUsed, this.config.llm.provider);
-    if (reported === 0 && rawCreditUsed > 0) {
-      this.logger.debug?.(
-        `[quota] ${level} creditUsed=${rawCreditUsed} 由 context_proxy 上报，内核跳过 credit 部分`,
-      );
-    }
-    return reported;
+  private reportedCreditFor(rawCreditUsed: number, _level: "L1" | "L2" | "L3"): number {
+    return rawCreditUsed;
   }
 
 }

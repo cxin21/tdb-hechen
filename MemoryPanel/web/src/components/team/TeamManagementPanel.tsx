@@ -190,7 +190,7 @@ export default function TeamManagementPanel({
     });
     if (!ok) return;
     try {
-      await agentsApi.delete(agent.agent_id);
+      await agentsApi.delete(agent.agent_id, agent.team_id);
       invalidateBackendCache();
     } catch (err) {
       // SKILL_DELETE_FAILED：控制台层已删了一部分 skill 但被中断，agent 未 archive

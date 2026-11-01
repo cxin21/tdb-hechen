@@ -1,9 +1,9 @@
 /**
  * api/agents.ts — Agent 管理（meta/agent/* + meta/agent-fixed-asset/*）。
  */
-import { getPanelSession } from '../panelSession';
-import { metaPost, metaListAll, getCurrentUser, request, ApiError } from './base';
-import type { MetaEnvelope, Agent, AssetType, AssetStatus, FixedAssetBinding } from './types';
+import { metaPost, metaListAll, getCurrentUser, ApiError } from './base';
+import { skillApi } from './skills';
+import type { Agent, AssetType, AssetStatus, FixedAssetBinding } from './types';
 
 // ========================= 默认 Agent 模板 =========================
 
@@ -87,41 +87,41 @@ export const agentsApi = {
   ) => metaPost<Agent>('agent/update', { agent_id: agentId, ...data }),
 
   /**
-   * 删除 agent：走业务路由 /api/v1/agent/delete-cascade。
+   * 删除 agent（归档）。
    *
-   * 该路由会先把 owner_agent_id = 当前 agent 的所有 active skill 走 skill/delete，
-   * 全部成功后才调 meta/agent/archive；任一 skill 删失败即中断，agent 不会被 archive，
-   * 抛出 SKILL_DELETE_FAILED 让调用方给用户展示（错误 data 里带上已删的 skill_ids
-   * 和失败的 skill_id）。归档时后端会顺手清 chat_memory asset。
+   * DSH 特化（Wave 2A）：原专用路由 `/api/v1/agent/delete-cascade` 已随 agent-lifecycle
+   * 面退役，这里改为**前端就地复刻同一语义**：
+   *   1) 先列出 owner_agent_id = 该 agent 的 active skill，逐个走 `skill/delete`
+   *      （带 expected_version 乐观锁）；任一失败即中断并抛 `SKILL_DELETE_FAILED`，
+   *      agent 不会被归档（错误文本里带 agent_id / 已删 / 失败 skill_id）；
+   *   2) 全部成功后再走 `meta/agent/archive`。
+   * `teamId` 用于列出该 agent 名下 skill；不传则退化为"只归档、不动 skill"。
    */
-  delete: async (agentId: string) => {
-    const session = getPanelSession();
-    if (!session) {
-      throw new ApiError(401, 'Unauthorized', 'no active panel session');
+  delete: async (agentId: string, teamId?: string) => {
+    if (teamId) {
+      const skills = await skillApi.listByAgent(teamId, agentId).catch(() => []);
+      const deleted: string[] = [];
+      for (const skill of skills) {
+        if (skill.status !== 'active') continue;
+        try {
+          await skillApi.delete(teamId, agentId, skill.skill_id, skill.version);
+          deleted.push(skill.skill_id);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          throw new ApiError(
+            200,
+            `SKILL_DELETE_FAILED agent_id=${agentId} deleted=${
+              deleted.join(',') || '-'
+            } failed=${skill.skill_id} ${detail}`,
+            '',
+            { code: 'SKILL_DELETE_FAILED', rawMessage: detail },
+          );
+        }
+      }
     }
-    const envelope = await request<
-      MetaEnvelope<{
-        archived: boolean;
-        agent_id: string;
-        deleted_skill_count: number;
-        deleted_skill_ids: string[];
-      }>
-    >(
-      'POST',
-      '/api/v1/agent/delete-cascade',
-      { agent_id: agentId },
-      {
-        'X-Tdai-Service-Id': session.instanceId,
-        'X-Tdai-User-Key': session.userKey,
-      },
-    );
-    if (envelope.code !== 0) {
-      throw new ApiError(200, envelope.message, '', {
-        code: envelope.code,
-        requestId: envelope.request_id,
-        rawMessage: envelope.message,
-      });
-    }
+    await metaPost<{ archived: boolean; agent_id: string }>('agent/archive', {
+      agent_id: agentId,
+    });
   },
 
   /** 获取 agent 的资产聚合视图（binding + asset 详情）。

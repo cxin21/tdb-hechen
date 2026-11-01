@@ -2,7 +2,7 @@
  * api/settings.ts — 管理员设置（Wiki 设置 / Memory 设置，spec §4）。
  *
  * 后端链路：本 client → Panel /api/v1/settings/{target}/:action → KS / Core 的 /v3/admin/settings/*。
- * 鉴权：与 llm-providers.ts 同范式 —— 前端把登录实例 instance_id 与登录用户 user_key
+ * 鉴权：Panel 统一范式 —— 前端把登录实例 instance_id 与登录用户 user_key
  *   注入请求头（X-Tdai-Service-Id / X-Tdai-User-Key），走 request() 第 4 参 extraHeaders；
  *   body 只放业务载荷（服务端只读 JSON body 的业务字段，auth 一律走 header）。
  */
@@ -184,64 +184,6 @@ export const rerankModelApi = {
     );
     if (env.code !== 0) {
       throw new ApiError(200, env.message || 'rerank download request failed', '', {
-        code: env.code,
-        rawMessage: env.message,
-      });
-    }
-    return env.data;
-  },
-};
-
-// ========================= Proxy 计费价目表（spec §9.3） =========================
-
-/** 单条计费价目（与 MemoryProxy PricingEntry 对齐；价格为每百万 token 积分）。 */
-export interface PricingEntry {
-  name: string;
-  modelName: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite5m: number;
-  cacheWrite1h: number;
-}
-
-/** 价目表视图：source=yaml 底表 / override（storage 覆盖生效中）。 */
-export interface PricingView {
-  source: 'yaml' | 'override';
-  models: PricingEntry[];
-}
-
-/**
- * Proxy 计费价目表（Panel /api/v1/settings/proxy-pricing/:action → MemoryProxy
- * /v3/admin/credit-pricing）。Panel 侧将 POST 翻译为上游 GET/PUT，此处统一 POST。
- * 保存为整表替换，热生效（下一请求读取新价目，无需重启）。
- */
-export const proxyPricingApi = {
-  get: async (): Promise<PricingView> => {
-    const env = await request<Envelope<PricingView>>(
-      'POST',
-      '/api/v1/settings/proxy-pricing/get',
-      undefined,
-      authHeaders(),
-    );
-    if (env.code !== 0) {
-      throw new ApiError(200, env.message || 'settings request failed', '', {
-        code: env.code,
-        rawMessage: env.message,
-      });
-    }
-    return env.data;
-  },
-
-  set: async (models: PricingEntry[]): Promise<PricingView> => {
-    const env = await request<Envelope<PricingView>>(
-      'POST',
-      '/api/v1/settings/proxy-pricing/set',
-      { models },
-      authHeaders(),
-    );
-    if (env.code !== 0) {
-      throw new ApiError(200, env.message || 'settings request failed', '', {
         code: env.code,
         rawMessage: env.message,
       });

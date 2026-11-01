@@ -1,12 +1,14 @@
 /**
  * 路由表定义
  *
- * 使用 react-router 的 createBrowserRouter / RouterProvider。
+ * 使用 react-router 的 createHashRouter / RouterProvider。
  * ConsoleLayout 作为父路由，各页面作为子路由。
+ *
+ * DSH 特化（Wave 2A）：任务工作台 / LLM Provider 自服务 / 多 agent 接入指引三页已退场，
+ * 首页重定向到资产管理（wiki）——不再有"工作台看板"概念。
  */
-import { createHashRouter, type RouteObject } from 'react-router-dom';
+import { createHashRouter, Navigate, type RouteObject } from 'react-router-dom';
 import { ConsoleLayout } from '@/layouts/ConsoleLayout';
-import { WorkbenchPage } from '@/pages/WorkbenchPage';
 import { WikiPage } from '@/pages/WikiPage';
 import { CodePage } from '@/pages/CodePage';
 import { SkillsPage } from '@/pages/SkillsPage';
@@ -15,16 +17,14 @@ import { SoulPage } from '@/pages/SoulPage';
 import { MembersPage } from '@/pages/MembersPage';
 import { AgentsPage } from '@/pages/AgentsPage';
 import { ApiKeysPage } from '@/pages/ApiKeysPage';
-import { LlmProviderPage } from '@/pages/LlmProviderPage';
 import { SettingsPage } from '@/pages/SettingsPage';
-import { GuidePage } from '@/pages/GuidePage';
 
 export const routes: RouteObject[] = [
   {
     path: '/',
     element: <ConsoleLayout />,
     children: [
-      { index: true, element: <WorkbenchPage /> },
+      { index: true, element: <Navigate to="/wiki" replace /> },
       { path: 'wiki', element: <WikiPage /> },
       { path: 'code', element: <CodePage /> },
       { path: 'skills', element: <SkillsPage /> },
@@ -33,9 +33,7 @@ export const routes: RouteObject[] = [
       { path: 'team/members', element: <MembersPage /> },
       { path: 'team/agents', element: <AgentsPage /> },
       { path: 'team/api-keys', element: <ApiKeysPage /> },
-      { path: 'llm-provider', element: <LlmProviderPage /> },
       { path: 'settings', element: <SettingsPage /> },
-      { path: 'guide', element: <GuidePage /> },
     ],
   },
 ];

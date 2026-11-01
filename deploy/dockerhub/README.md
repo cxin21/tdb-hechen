@@ -1,6 +1,6 @@
 # Docker Hub 镜像发布
 
-把三件套镜像构建并推送到 Docker Hub 的
+把 core 与 hub 两套镜像构建并推送到 Docker Hub 的
 [`agentmemory`](https://hub.docker.com/u/agentmemory) namespace。
 
 `publish.sh` 是自包含的：只依赖各组件自己的 Dockerfile、
@@ -11,7 +11,6 @@
 | 组件 | 构建上下文 | 镜像 |
 |---|---|---|
 | `memory-core` | `MemoryCore/` | `agentmemory/memory-core` |
-| `memory-proxy` | `MemoryProxy/`（rsync 到临时 context） | `agentmemory/memory-proxy` |
 | `memory-hub` | `MemoryPanel/` + `MemoryKnowledge/` 合并 | `agentmemory/memory-hub` |
 
 ## 前置
@@ -26,12 +25,11 @@ docker buildx version           # 需要 buildx（脚本会自动创建 builder�
 ```bash
 cd deploy/dockerhub
 
-# 三件套一次发布
+# 全量一次发布
 VERSION=1.0.0 ./publish.sh all
 
 # 单个组件
 VERSION=1.0.0 ./publish.sh memory-core
-VERSION=1.0.0 ./publish.sh memory-proxy
 VERSION=1.0.0 ./publish.sh memory-hub
 
 # 干跑：只做 secret-scan 和 context 准备，不构建不推送
@@ -72,9 +70,7 @@ APT_MIRROR=<your-debian-mirror> VERSION=1.0.0 ./publish.sh all
 
 ## 关于可选私有模块
 
-- `MemoryProxy/packages/cost-guard` 是可选扩展，不进公开镜像。`publish.sh` 会在
-  临时 context 里生成一个 stub 包让依赖图能解析；运行时 `src/guard-adapter.ts`
-  的动态 import 失败后自动降级为直通转发。
+- （原 `MemoryProxy/packages/cost-guard` 说明随 MemoryProxy 整包退场删除，ADR-0020。）
 - `MemoryCore/src/integrations` 同理，已在 `MemoryCore/.dockerignore` 中排除，
   运行时走 fallback。
 

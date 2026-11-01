@@ -143,7 +143,7 @@ describe("ADR-0006 回归：override 补齐 embedding 后须重跑 enabled 判�
       expect(cfg.memory.embedding.configError).toBeTruthy();
     });
   });
-  it("qclaw 缺 proxyUrl → 不救回（configError 保留）", () => {
+  it("qclaw 已下线（provider 被移除）→ override 不救回（configError 保留）", () => {
     writeYaml([
       "memory:",
       "  embedding:",

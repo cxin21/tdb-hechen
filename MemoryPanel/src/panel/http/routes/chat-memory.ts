@@ -1469,7 +1469,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   // degradedSince）。上游 GET /health 是网关唯一免鉴权探活端点（MemoryCore
   // server.ts 明示豁免），Panel 侧仍要求有效 caller（auth/verify），与文件内其它
   // 路由的门控口径一致。
-  // POST→GET 翻译照 settings.ts proxy-pricing 既有先例；网关 /health 返回原生
+  // POST→GET 翻译是 Panel 对网关的习惯用法（原 settings.ts proxy-pricing 先例已随 DSH 特化退役）；网关 /health 返回原生
   // JSON（非信封），缺 memory 子对象按 502 如实失败（不造默认值，防静默降级）。
   // ==========================================================================
   api.post("/chat-memory/health", validatePanelMetaHeaders(deps), async (c) => {

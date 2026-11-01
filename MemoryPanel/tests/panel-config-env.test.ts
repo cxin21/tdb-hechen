@@ -16,8 +16,6 @@ const KEYS = [
   'KNOWLEDGE_SERVICE_URL',
   'KNOWLEDGE_AUTH_TOKEN',
   'KNOWLEDGE_TIMEOUT_MS',
-  'KNOWLEDGE_LLM_BINDING_SYNC',
-  'LLM_PROVIDER_PROXY_BASE_URL',
   'PORT',
   'HOST',
 ] as const;
@@ -40,7 +38,6 @@ describe('loadPanelConfig 环境变量空值语义（#125-B7）', () => {
     expect(cfg.knowledge.baseUrl).toBe('http://127.0.0.1:8421');
     expect(cfg.knowledge.authToken).toBe('');
     expect(cfg.server.host).toBe('0.0.0.0');
-    expect(cfg.llmProvider.proxyBaseUrl).toBe('http://127.0.0.1:8096');
   });
 
   it('字符串键：空串 → fallback（不再静默变成空串）', () => {
@@ -55,10 +52,10 @@ describe('loadPanelConfig 环境变量空值语义（#125-B7）', () => {
 
   it('字符串键：纯空白 → fallback；两侧空白被裁剪', () => {
     process.env.KNOWLEDGE_SERVICE_URL = '   ';
-    process.env.LLM_PROVIDER_PROXY_BASE_URL = '  http://proxy:9000  ';
+    process.env.HOST = '  10.0.0.9  ';
     const cfg = loadPanelConfig();
     expect(cfg.knowledge.baseUrl).toBe('http://127.0.0.1:8421');
-    expect(cfg.llmProvider.proxyBaseUrl).toBe('http://proxy:9000');
+    expect(cfg.server.host).toBe('10.0.0.9');
   });
 
   it('整数键：空串/纯空白 → fallback（不是 0）', () => {
@@ -75,13 +72,5 @@ describe('loadPanelConfig 环境变量空值语义（#125-B7）', () => {
     const cfg = loadPanelConfig();
     expect(cfg.server.port).toBe(8124);
     expect(cfg.knowledge.timeoutMs).toBe(2500);
-  });
-
-  it('布尔键：纯空白 → fallback，显式 false 仍生效', () => {
-    process.env.KNOWLEDGE_LLM_BINDING_SYNC = '   ';
-    expect(loadPanelConfig().knowledgeLlmBinding.sync).toBe(true);
-
-    process.env.KNOWLEDGE_LLM_BINDING_SYNC = 'false';
-    expect(loadPanelConfig().knowledgeLlmBinding.sync).toBe(false);
   });
 });

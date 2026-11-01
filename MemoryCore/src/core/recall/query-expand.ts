@@ -251,8 +251,7 @@ export interface QueryExpansionLlmConfig {
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
-  provider?: "openai" | "proxy";
-  proxy?: { useMemorySystemUserKey?: boolean };
+  provider?: "openai";
   stream?: boolean;
 }
 

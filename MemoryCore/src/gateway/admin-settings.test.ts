@@ -15,7 +15,7 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 const deps = () => ({
   baseDir: dir,
   getEffective: () => ({
-    llm: { baseUrl: "https://a.b", apiKey: "sk-12345678", model: "m1", maxTokens: 10, timeoutMs: 20, provider: "openai" as const, proxy: { useMemorySystemUserKey: true }, stream: false },
+    llm: { baseUrl: "https://a.b", apiKey: "sk-12345678", model: "m1", maxTokens: 10, timeoutMs: 20, provider: "openai" as const, stream: false },
     embedding: { provider: "openai_compatible", apiKey: "ek-87654321", model: "e1", baseUrl: "https://e.b", dimensions: 8, sendDimensions: true, enabled: true },
     rerank: { enabled: false, provider: "local", apiKey: "rk-99998888", model: "bge-r", timeoutMs: 800, candidates: 12, minScore: -2, configError: null, local: { modelDir: "eff-dir", idleUnloadMs: 600000 } },
   }),

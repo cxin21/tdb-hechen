@@ -28,22 +28,7 @@ jobs:
         working-directory: MemoryCore
         run: pnpm exec vitest run
 
-  memoryproxy-nightly:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 12.11.2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install
-        working-directory: MemoryProxy
-        run: pnpm install
-      - name: Full test suite
-        working-directory: MemoryProxy
-        run: pnpm exec vitest run
+  # 2026-11-01 DSH 特化 Wave 2B：MemoryProxy 整包退场，proxy 夜间 job 随之删除（ADR-0020）。
 
   # ── #66 R2 行为级人格回归评测（persona-eval）夜间全量 ──
   # 设计 §2.5：27→26 探针全量 + 漂移 8 轮 ≤90 调用（--max-calls 缺省 90 硬帽，runner 内置）；

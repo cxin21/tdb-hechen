@@ -99,25 +99,8 @@ jobs:
           FORMAT_STRICT_MODIFIED: "0"
         run: pnpm run format:check
 
-  memoryproxy-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 12.11.2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install
-        working-directory: MemoryProxy
-        run: pnpm install
-      - name: Typecheck
-        working-directory: MemoryProxy
-        run: pnpm exec tsc --noEmit
-      - name: Full test suite
-        working-directory: MemoryProxy
-        run: pnpm exec vitest run
+  # 2026-11-01 DSH 特化 Wave 2B：MemoryProxy 整包退场，proxy 的 test job 随之删除
+  # （原 job 覆盖 64 files / 568 tests，随包删除；ADR-0020 记录放弃理由）。
 
   panel-format:
     # #106 格式门禁：prettier --check 必须绿（格式修复与门禁同 PR，落地即绿）

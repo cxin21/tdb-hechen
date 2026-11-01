@@ -3,7 +3,8 @@
  *
  * 契约（cxin21/tdb-hechen#84；前置 #83 已合入，影子期经用户豁免走真实数据验收）：
  * - 目标 = l0_conversations 中 role='user' 且 classification='unclassified' 的存量行；
- * - 判定 = 单一事实源 MemoryProxy/src/common/intent-classifier.ts 逐行独立分类；
+ * - 判定 = 单一事实源 MemoryCore/src/core/l0-ingress/intent-classifier.ts 逐行独立分类
+ *   （2026-11-01 DSH 特化：判定器随 MemoryProxy 退场 vendor 进 core，与原实现字节级同源）；
  *   历史 session-probe 测试行（整条精确等于
  *   「探针消息：验证 L0 写入链路，本条可安全忽略。」，票面指名的软失效对象）显式覆写为 scaffold（分类器对其判 real，需按票面覆写；不物理删除）；
  * - 写 = UPDATE 仅 classification 列，WHERE 带 AND classification='unclassified' 双保险
@@ -16,7 +17,7 @@
  *   node --import tsx scripts/backfill-l0-classification.ts --db <vectors.db> --write    # 执行
  *   可选 --limit N（只处理前 N 行）、--report <json 路径>（计划与统计落盘）
  */
-import { classifyInbound } from "../../MemoryProxy/src/common/intent-classifier.js";
+import { classifyInbound } from "../src/core/l0-ingress/intent-classifier.js";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 

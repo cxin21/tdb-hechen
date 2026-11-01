@@ -16,9 +16,8 @@
 
 ## 占位符约定
 
-- `${VAR}`：**功能性占位符**。proxy（`MemoryProxy/src/config.ts` 支持 `${VAR}` / `${VAR:-default}`）
-  与 MemoryCore（`MemoryCore/src/gateway/config.ts` `expandEnvVars`）加载时由同名环境变量展开，
-  部署时只需把真实值写进 `/opt/tdai/etc/env`。
+- `${VAR}`：**功能性占位符**。MemoryCore（`MemoryCore/src/gateway/config.ts` `expandEnvVars`）
+  加载时由同名环境变量展开（proxy 已退场，ADR-0020），部署时只需把真实值写进 `/opt/tdai/etc/env`。
 - `<REPLACE_WITH_*>` / `<your-server-ip>` / `<LAN_IP_*>`：**部署时手工替换**的文本占位
   （env、Knowledge、config-override 等不做 `${VAR}` 展开的文件）。
 
@@ -30,8 +29,6 @@
 
 ## 派生与修复记录
 
-- `proxy/proxy-config.cloud.example.yaml` 派生自生产 `proxy-config.yaml`。该生产文件中文注释曾因
-  UTF-8/GBK 双重编码损坏，2026-10-06 两轮修复收口（值部零语义变更、15 处密钥行经备份逐字节对拍原样保留；
-  残留 14 行注释/label 全部恢复：7 行 gb18030 严格往返零损失可证、5 行与 `MemoryProxy/config.example.yaml`
-  同键注释逐字互证、2 行原生字节物理丢失按残片语义最小拟写），示例取自修复后版本。
+- `proxy/proxy-config.cloud.example.yaml` 及其所在 `config/proxy/` 目录已于 2026-11-01 随 MemoryProxy 整包退场删除
+  （ADR-0020）。历史派生/编码修复记录保留在 git 历史与 `deploy/tencent-cloud/CLOUD-DIFF.md` 的替代票中。
 - `core/tdai-gateway.cloud.yaml` 为 2026-10-06 重写的生产同构版（旧 213 行模板中文注释已损坏且落后于生产 269 行）。

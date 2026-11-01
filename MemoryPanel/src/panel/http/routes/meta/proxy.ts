@@ -8,7 +8,6 @@ import type { PanelDeps } from '../../../panel-deps.js';
 import { validatePanelMetaHeaders } from '../../middleware/validate-panel-headers.js';
 import { respondControlError, respondEnvelope } from '../../envelope.js';
 import type { MetaCallContext } from '../../../kernel/types.js';
-import { KNOWLEDGE_SERVICE_USERNAME } from '../../../startup/ensure-knowledge-llm-binding.js';
 import { DEFAULT_SKILLS } from './default-skills.js';
 import { extractListItems, isCallerSystemAdmin, resolveCallerUserId } from '../knowledge/common.js';
 import {
@@ -16,6 +15,15 @@ import {
   saveAgentTemplate as writeTemplateFile,
   type AgentTemplateConfig,
 } from '../../../state/agent-template-store.js';
+
+/**
+ * 内核里保存 knowledge-service LLM key 的内部记账用户名（历史遗留）。
+ *
+ * 该用户由已退役的「启动时确保 KS LLM 绑定」逻辑创建（design 009 §4.2，走 proxy
+ * 记账）；DSH 特化后不再创建、也不再更新它，但既有部署的库里仍有这条记录，
+ * 而 panel 的用户列表不该把它当成真人显示 —— 故过滤器保留，常量就近定义。
+ */
+const KNOWLEDGE_SERVICE_USERNAME = 'knowledge-service';
 
 /**
  * Hide the internal per-instance `knowledge-service` billing user from panel user

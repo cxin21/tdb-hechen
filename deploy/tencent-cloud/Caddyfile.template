@@ -3,9 +3,10 @@
 {$CADDY_DOMAIN} {
 	encode zstd gzip
 
-	# Agent 注入/工具链路 → MemoryProxy
+# 2026-11-01 DSH 特化 Wave 2B：proxy（8096）整包退场，公网入口直指 MemoryCore 网关（ADR-0020）。
+	# DSH 插件直连 core 的 /v3/*，鉴权由 core 的 tdai apikey 承担。
 	handle {
-		reverse_proxy proxy:8096
+		reverse_proxy core:8420
 	}
 }
 
@@ -23,6 +24,6 @@
 # 	encode zstd gzip
 # 	# 建议配合腾讯云安全组 IP 白名单使用
 # 	handle {
-# 		reverse_proxy proxy:8096
+# 		reverse_proxy core:8420
 # 	}
 # }

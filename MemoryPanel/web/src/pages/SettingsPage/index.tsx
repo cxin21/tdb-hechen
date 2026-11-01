@@ -1,12 +1,14 @@
 /**
  * SettingsPage — 管理员设置（spec §4 / §9.3）。
  *
- * 四个页签：Wiki 设置（MemoryKnowledge）/ Memory 设置（MemoryCore）/ Rerank（独立页签，
- * 2026-10-16 自 Memory 页签拆出，配置仍存 Core 单一事实源，只提交 rerank 段）/ Proxy 计费（MemoryProxy）。
+ * 三个页签：Wiki 设置（MemoryKnowledge）/ Memory 设置（MemoryCore）/ Rerank（独立页签，
+ * 2026-10-16 自 Memory 页签拆出，配置仍存 Core 单一事实源，只提交 rerank 段）。
  * 仅全局 admin 可见/可用（useCurrentRole() === 'admin'，路由与侧边导航两处都做门控）。
  * apiKey 输入框留空 = 保留原值；placeholder 显示尾 4 位掩码。
  * 保存成功提示「重启后生效」；embedding 变更追加重建警示；rebuildStatus 以 Tag 展示。
- * Proxy 计费为整表热生效（下一请求生效，无需重启）。
+ *
+ * DSH 特化（Wave 2A）：原「Proxy 计费」页签随 MemoryProxy 退出链路一并删除
+ * （其端点 `/api/v1/settings/proxy-pricing/*` → MemoryProxy `/v3/admin/credit-pricing` 已退役）。
  *
  * 组件适配说明（行为契约不变，API 以项目内 tea-component 真实签名为准）：
  *   - Tabs 面板用 <TabPanel id="…">（tea-component 无 Tabs.Tab）；
@@ -20,11 +22,8 @@ import { Tabs, TabPanel, Form, Input, Button, Tag, Checkbox, Select, Text } from
 import {
   settingsApi,
   rerankModelApi,
-  proxyPricingApi,
   type SettingsTarget,
   type SettingsView,
-  type PricingEntry,
-  type PricingView,
   type RerankModelStatus,
 } from '@/lib/api/settings';
 import { useCurrentRole } from '@/services';
@@ -715,131 +714,6 @@ function RerankSettingsPanel() {
   );
 }
 
-const PRICE_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h'] as const;
-
-/** Proxy 计费价目表（spec §9.3）：可编辑行表格（增/删/改行 + 整表保存，热生效）。 */
-function ProxyPricingPanel() {
-  const [view, setView] = useState<PricingView | null>(null);
-  const [rows, setRows] = useState<PricingEntry[]>([]);
-  const [saving, setSaving] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const v = await proxyPricingApi.get();
-      setView(v);
-      setRows(v.models);
-    } catch (e) {
-      tea.notify.error(e);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const setRow = (i: number, patch: Partial<PricingEntry>) =>
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const v = await proxyPricingApi.set(rows);
-      setView(v);
-      setRows(v.models);
-      tea.notify.success('已保存，下一请求生效');
-    } catch (e) {
-      tea.notify.error(e);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (!view) return <div style={{ padding: 24 }}>加载中…</div>;
-
-  const addRow = () =>
-    setRows([
-      ...rows,
-      {
-        name: '',
-        modelName: '',
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite5m: 0,
-        cacheWrite1h: 0,
-      },
-    ]);
-
-  return (
-    <Form>
-      <Form.Title>计费价目表（source: {view.source}）</Form.Title>
-      <div style={{ display: 'grid', gap: 8, padding: '0 0 12px' }}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr repeat(5, 100px) auto',
-            gap: 8,
-            fontWeight: 600,
-          }}
-        >
-          <span>model_id</span>
-          <span>展示名</span>
-          {PRICE_FIELDS.map((f) => (
-            <span key={f}>{f}</span>
-          ))}
-          <span />
-        </div>
-        {rows.map((r, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr repeat(5, 100px) auto',
-              gap: 8,
-              alignItems: 'center',
-            }}
-          >
-            <Input
-              value={r.name}
-              onChange={(v) => setRow(i, { name: v })}
-              placeholder="model_id"
-              disabled={saving}
-            />
-            <Input
-              value={r.modelName}
-              onChange={(v) => setRow(i, { modelName: v })}
-              placeholder="展示名"
-              disabled={saving}
-            />
-            {PRICE_FIELDS.map((f) => (
-              <Input
-                key={f}
-                value={String(r[f])}
-                onChange={(v) => setRow(i, { [f]: Number(v) } as Partial<PricingEntry>)}
-                disabled={saving}
-              />
-            ))}
-            <Button
-              onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))}
-              disabled={saving}
-            >
-              删除
-            </Button>
-          </div>
-        ))}
-      </div>
-      <Form.Action>
-        <Button onClick={addRow} disabled={saving}>
-          新增行
-        </Button>
-        <Button type="primary" disabled={saving} loading={saving} onClick={() => void save()}>
-          {saving ? '保存中…' : '保存'}
-        </Button>
-      </Form.Action>
-    </Form>
-  );
-}
-
 export function SettingsPage() {
   const role = useCurrentRole();
   if (role !== 'admin') return <div style={{ padding: 24 }}>仅管理员可访问设置页</div>;
@@ -850,7 +724,6 @@ export function SettingsPage() {
           { id: 'knowledge', label: 'Wiki 设置' },
           { id: 'memory', label: 'Memory 设置' },
           { id: 'rerank', label: 'Rerank' },
-          { id: 'pricing', label: 'Proxy 计费' },
         ]}
       >
         <TabPanel id="knowledge">
@@ -861,9 +734,6 @@ export function SettingsPage() {
         </TabPanel>
         <TabPanel id="rerank">
           <RerankSettingsPanel />
-        </TabPanel>
-        <TabPanel id="pricing">
-          <ProxyPricingPanel />
         </TabPanel>
       </Tabs>
     </div>

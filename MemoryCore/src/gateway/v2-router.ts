@@ -8,7 +8,7 @@
  *   L2 Scenario:     ls / read / write / rm
  *   L3 Core:         read / write
  *
- * All routes are prefixed with `/v2/`.
+ * All data-plane routes are prefixed with `/v3/`（DSH 特化后 /v2 前缀已下线）。
  * Authentication: Authorization Bearer + x-tdai-service-id.
  * Request validation: Zod v4 safeParse → 400 on failure.
  * Response envelope: { code, message, request_id, data }.
@@ -161,8 +161,7 @@ import { appendRecallJournal, type RecallJournalPerfMs } from "../core/recall/re
 // #74（Batch A，2026-10-20）：端点路查询两级剥噪（sanitizeText/sanitizeRecallQuery 单一源在 utils/sanitize.ts）。
 import { sanitizeRecallQuery } from "../utils/sanitize.js";
 
-const TAG = "[tdai-gateway][v2]";
-const V2_PREFIX = "/v2";
+const TAG = "[tdai-gateway][v3]";
 
 /**
  * /v3 是 L0–L3 数据面接口的"严格 isolation 版本"：
@@ -172,12 +171,12 @@ const V2_PREFIX = "/v2";
  *     —— 满足"agent 跨 session 聚合视图"（如治理面板的 L0/L1 总数）和
  *     "L2/L3 团队级聚合"（profile scope 公式忽略 session）两类场景
  *   - 不接受 legacy_compat_mode 退化
- *   - 与 /v2 共享 handler 实现，仅在 dispatch 层换一套 isolation 校验
  *
- * 同名 /v2 路径保持现有行为（team_id 可选、user_id fallback、可走 legacyCompatMode），
- * 这样调用方按需选 v2/v3，互不影响。
- *
- * L0–L3 数据面 endpoint（含 count）上 v3；team/user/agent/task/pipeline 等管理面接口保留 v2 唯一入口。
+ * DSH 特化（2026-11-01）：本网关唯一接入方是 DeepSeek Harness 插件（HTTP 直连），
+ * 原先"同一 handler 双挂 /v2 + /v3"的孪生展开、16 条 @deprecated v2 entity 路由
+ * （team/user/agent/task）与 /v2/pipeline/status 已整体下线；管理面元数据统一走
+ * `/v3/meta/*`（metadata/router/v3-meta-router.ts）。`x-tdai-service-id` 必需校验保留
+ * 在 parseV2Auth 内（v2 前缀没了，但 service-id 仍是 DSH 的调用身份来源）。
  */
 const V3_PREFIX = "/v3";
 
@@ -379,17 +378,13 @@ export interface V2RouterDeps {
   getMetadataService?: (instanceId: string) => Promise<import("../metadata/service/metadata-service.js").MetadataService>;
 
   /**
-   * State backend handle, used by /v2/pipeline/status to call listQueuedTasks().
-   * Wired in standalone and service modes, but the status endpoint itself is
-   * standalone-only. The handler returns 404 in service mode before touching
-   * this field, so remote backends do not need to implement listQueuedTasks().
+   * State backend handle（listQueuedTasks 为可选实现）。原 /v2/pipeline/status 已随
+   * DSH 特化下线；本字段保留，server.ts 仍按既有路径注入。
    */
   stateBackend?: IStateBackend;
 
   /**
-   * Pipeline worker handle, used by /v2/pipeline/status to call getRunningTasks()
-   * for per-L-type in-flight stats. Service mode never invokes this getter
-   * (status endpoint returns 404 in service mode).
+   * Pipeline worker handle。原 /v2/pipeline/status 已下线；字段保留（server.ts 仍注入）。
    */
   pipelineWorker?: PipelineWorker;
 
@@ -559,8 +554,8 @@ type RouteHandler = (
 ) => Promise<ApiResponseEnvelope>;
 
 /**
- * L0–L3 数据面 handler 映射（子路径 → handler）。历史接口同时挂载 /v2/* 与 /v3/*；
- * count 接口按 sdk-v3.yaml 仅挂载 /v3/*。/v3 走严格 isolation 校验；/v2 沿用现有 enforce/legacyCompat 配置。
+ * L0–L3 数据面 handler 映射（子路径 → handler）。DSH 特化后一律只挂 `/v3/*`
+ * （/v2 孪生展开已下线），全部走严格 isolation 校验。
  */
 const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/conversation/add": handleConversationAdd,
@@ -582,7 +577,7 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/atomic/archive/restore": handleArchiveRestore,
   "/core-memory/read": handleCoreMemoryRead,
   "/core-memory/write": handleCoreMemoryWrite,
-  // S1（K7/M-5）：core_values 写 API（/v2 孪生由 routeTable 双前缀展开自动获得）
+  // S1（K7/M-5）：core_values 写 API
   "/core-memory/values/upsert": handleCoreMemoryValuesUpsert,
   "/core-memory/values/delete": handleCoreMemoryValuesDelete,
   // GROW：钉住/退休/恢复
@@ -594,7 +589,7 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/core-memory/values/restore": handleCoreMemoryValuesRestore,
   // C2（spec §3.1.3）：动机方向重判入口
   "/core-memory/values/derive": handleCoreMemoryValuesDerive,
-  // DISC（提议制）：价值锚发现（/v2 孪生由 routeTable 双前缀展开自动获得）
+  // DISC（提议制）：价值锚发现
   "/core-memory/values/discover": handleCoreMemoryValuesDiscover,
   "/atomic/delete": handleAtomicDelete,
   "/atomic/count": handleAtomicCount,
@@ -609,42 +604,12 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
 };
 
 const routeTable: Record<string, RouteHandler> = {
-  // L0–L3 数据面：历史读写接口保留 /v2 与 /v3 双入口；count 仅按 sdk-v3.yaml 暴露 /v3。
+  // L0–L3 数据面：DSH 特化后只保留 /v3 入口（/v2 孪生展开已于 2026-11-01 下线）。
   ...Object.fromEntries(
-    Object.entries(DATAPLANE_HANDLERS).flatMap(([sub, h]) => {
-      const v3Route = [`${V3_PREFIX}${sub}`, h] as const;
-      if (sub.endsWith("/count")) return [v3Route];
-      return [[`${V2_PREFIX}${sub}`, h] as const, v3Route];
-    }),
+    Object.entries(DATAPLANE_HANDLERS).map(([sub, h]) => [`${V3_PREFIX}${sub}`, h] as const),
   ),
-  // ──────────────────────────────────────────────────────────────────────────
-  // @deprecated v2 entity 路由（team/user/agent/task，16 条）。仅 /v2。
-  // 元数据已由 v3 `/v3/meta/*`（规范化 meta_* 表 + MetadataService）接管，control
-  // 面板 remote 模式直接走 v3。以下路由仍走旧 `entity_*` 聚合数组模型，**仅为兼容现网
-  // 保留、行为不变**，不再演进，新接入方一律改用 v3。计划在确认无外部调用方后整体删除。
-  // 决策（2026-06-26，per user）：标记废弃、代码暂留，不适配 MetadataService。
-  // 见 team-memory-control/docs/architecture/08-metadata-migration-and-permission-design.md §8.5。
-  // ──────────────────────────────────────────────────────────────────────────
-  [`${V2_PREFIX}/team/create`]: handleTeamCreate, // @deprecated 改用 /v3/meta/team/create
-  [`${V2_PREFIX}/team/get`]: handleTeamGet, // @deprecated 改用 /v3/meta/team/get
-  [`${V2_PREFIX}/team/update`]: handleTeamUpdate, // @deprecated 改用 /v3/meta/team/update
-  [`${V2_PREFIX}/team/delete`]: handleTeamDelete, // @deprecated 改用 /v3/meta/team/delete
-  [`${V2_PREFIX}/user/create`]: handleUserCreate, // @deprecated 改用 /v3/meta/user/create
-  [`${V2_PREFIX}/user/get`]: handleUserGet, // @deprecated 改用 /v3/meta/user/get
-  [`${V2_PREFIX}/user/update`]: handleUserUpdate, // @deprecated 改用 /v3/meta/user/update
-  [`${V2_PREFIX}/user/delete`]: handleUserDelete, // @deprecated 改用 /v3/meta/user/delete
-  [`${V2_PREFIX}/agent/create`]: handleAgentCreate, // @deprecated 改用 /v3/meta/agent/create
-  [`${V2_PREFIX}/agent/get`]: handleAgentGet, // @deprecated 改用 /v3/meta/agent/get
-  [`${V2_PREFIX}/agent/update`]: handleAgentUpdate, // @deprecated 改用 /v3/meta/agent/update
-  [`${V2_PREFIX}/agent/delete`]: handleAgentDelete, // @deprecated 改用 /v3/meta/agent/delete
-  [`${V2_PREFIX}/task/create`]: handleTaskCreate, // @deprecated 改用 /v3/meta/task/create
-  [`${V2_PREFIX}/task/get`]: handleTaskGet, // @deprecated 改用 /v3/meta/task/get
-  [`${V2_PREFIX}/task/update`]: handleTaskUpdate, // @deprecated 改用 /v3/meta/task/update
-  [`${V2_PREFIX}/task/delete`]: handleTaskDelete, // @deprecated 改用 /v3/meta/task/delete
-  // ── end @deprecated v2 entity 路由 ──
-  [`${V2_PREFIX}/pipeline/status`]: handlePipelineStatus,
   // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 仅挂 v3 入口（严格 isolation 家族；
-  // 新接入方一律 v3——不进 DATAPLANE_HANDLERS 以免自动获得 /v2 孪生路由）。
+  // 不进 DATAPLANE_HANDLERS，因为它不是 L0–L3 单层端点而是分层组装入口）。
   [`${V3_PREFIX}/recall`]: handleRecall,
   // S-FEEL-1（M1/S6）：近期情绪基调只读端点——Panel BFF /chat-memory/mood 上游（不要求完整召回；
   // enabled=false 时返回 {tier:null}，逐位现状语义）。
@@ -663,9 +628,9 @@ export async function handleV2Route(
    * Optional: extra routes contributed by other modules (e.g.
    * /v3/skill/* from `makeSkillRouteTable()`). Looked up only when the
    * built-in `routeTable` doesn't contain the pathname, so module-level
-   * routes always win on collision. Supports `/v2/*`, `/v3/*` (L0–L3
-   * data-plane + extraRouteTable for /v3/skill/*, /v3/knowledge/* and
-   * /v3/chat-memory/*).
+   * routes always win on collision. Supports `/v3/*` (L0–L3
+   * data-plane + extraRouteTable for /v3/skill/*, /v3/knowledge/*,
+   * /v3/wiki/*, /v3/chat-memory/*, /v3/admin/*).
    *
    * The handler's `deps` parameter is intentionally typed `unknown` here:
    * extra modules (skill/*, future namespaces) declare their own deps
@@ -678,16 +643,10 @@ export async function handleV2Route(
     (body: unknown, auth: V2AuthContext, requestId: string, deps: unknown) => Promise<ApiResponseEnvelope>
   >,
 ): Promise<boolean> {
-  const isPromptRead = method === "GET" && (
-    pathname === "/v3/memory-prompt/get" ||
-    pathname === "/v3/memory-prompt/setting/list" ||
-    pathname === "/v3/memory-prompt/log" ||
-    pathname === "/v3/memory-generation-log/list" ||
-    pathname === "/v3/memory-generation-log/get"
-  );
-  if (method !== "POST" && !isPromptRead) return false;
+  // DSH 特化（2026-11-01）：/v3/memory-prompt/* 与 /v3/memory-generation-log/* 已整包下线
+  // （dsh-plugin 与 MemoryPanel 双向 grep 均 0 客户端），原先为它们开的 GET 放行例外一并删除。
+  if (method !== "POST") return false;
   const isV3 = pathname.startsWith(`${V3_PREFIX}/`);
-  const isV2 = pathname.startsWith(`${V2_PREFIX}/`);
   // Management-plane modules are provided by extraRouteTable, not by the
   // built-in V3 data-plane list. They bypass strict L0-L3 isolation because
   // each module validates its own target semantics.
@@ -698,13 +657,11 @@ export async function handleV2Route(
     // 不登记前缀会被下面的 V3_ALLOWED_SUBPATHS 封闭清单拦成 404。
     pathname.startsWith("/v3/wiki/") ||
     pathname.startsWith("/v3/chat-memory/") ||
-    pathname.startsWith("/v3/memory-prompt/") ||
-    pathname.startsWith("/v3/memory-generation-log/") ||
     // spec §3.2：admin settings 路由经 extraRouteTable 分发，必须放行前缀，
     // 否则 isV3 && !isV3Extra 走 V3_ALLOWED_SUBPATHS 封闭清单 → 永远 404。
     pathname.startsWith("/v3/admin/")
   );
-  if (!isV2 && !isV3) return false;
+  if (!isV3) return false;
 
   // /v3 暴露 L0–L3 数据面 14 条（V3_ALLOWED_SUBPATHS）+ /v3/skill/* + /v3/knowledge/*（extraRouteTable）；
   // 其他 /v3 子路径直接走 404
@@ -762,9 +719,9 @@ export async function handleV2Route(
     };
 
     const bodyStart = Date.now();
-    const body = method === "GET"
-      ? Object.fromEntries(new URL(req.url ?? pathname, "http://localhost").searchParams.entries())
-      : await parseJsonBody(req);
+    // dispatch 门已把非 POST 全部拒掉（原 GET 放行只服务 memory-prompt /
+    // memory-generation-log 两族读接口，DSH 特化后已下线）⇒ 这里恒走 JSON body。
+    const body = await parseJsonBody(req);
     perfMark("parseJsonBody", `dur=${Date.now() - bodyStart}ms len=${req.headers["content-length"] ?? "?"}`);
 
     // Tenancy isolation — pulled from body (preferred) or x-tdai-* headers
@@ -773,13 +730,12 @@ export async function handleV2Route(
     // changing every handler signature.
     //
     // We only attempt resolution; whether missing fields are fatal is up
-    // to each handler (some endpoints don't need isolation at all, e.g.
-    // /v2/pipeline/status). See resolveIsolation() in v2-schemas.
+    // to each handler. See resolveIsolation() in v2-schemas.
     //
     // /v3 走严格校验：必须同时提供 team_id + agent_id + user_id + session_id，
-    // 缺任意一个直接 422，且不走 legacyCompatMode 退化。
+    // 缺任意一个直接 422，且不走 legacyCompatMode 退化（/v2 已下线，恒 false）。
     const headers = (req.headers ?? {}) as Record<string, string | string[] | undefined>;
-    const isoLegacyCompat = isV3 ? false : (deps.isolationConfig?.legacyCompatMode ?? false);
+    const isoLegacyCompat = false;
     const isoResolved = resolveIsolation(body as Record<string, unknown> | undefined, headers, {
       legacyCompatMode: isoLegacyCompat,
       legacyPlaceholder: deps.isolationConfig?.legacyPlaceholder,
@@ -3326,208 +3282,6 @@ async function handleAtomicDelete(body: unknown, auth: V2AuthContext, requestId:
 }
 
 // ============================
-// Entity Metadata Handlers (Team / User / Agent / Task)
-// ============================
-
-type EntityStore = IMemoryStore & {
-  createTeam?: (input: any) => TeamData | Promise<TeamData>;
-  getTeam?: (id: string) => TeamData | null | Promise<TeamData | null>;
-  updateTeam?: (id: string, patch: any) => TeamData | null | Promise<TeamData | null>;
-  deleteTeams?: (ids: string[]) => BatchDeleteResult | Promise<BatchDeleteResult>;
-  createUser?: (input: any) => UserData | Promise<UserData>;
-  getUser?: (id: string) => UserData | null | Promise<UserData | null>;
-  updateUser?: (id: string, patch: any) => UserData | null | Promise<UserData | null>;
-  deleteUsers?: (ids: string[]) => BatchDeleteResult | Promise<BatchDeleteResult>;
-  createAgent?: (input: any) => AgentData | Promise<AgentData>;
-  getAgent?: (id: string) => AgentData | null | Promise<AgentData | null>;
-  updateAgent?: (id: string, patch: any) => AgentData | null | Promise<AgentData | null>;
-  deleteAgents?: (ids: string[]) => BatchDeleteResult | Promise<BatchDeleteResult>;
-  createTask?: (input: any) => TaskData | Promise<TaskData>;
-  getTask?: (id: string) => TaskData | null | Promise<TaskData | null>;
-  updateTask?: (id: string, patch: any) => TaskData | null | Promise<TaskData | null>;
-  deleteTasks?: (ids: string[]) => BatchDeleteResult | Promise<BatchDeleteResult>;
-};
-
-function getEntityStore(deps: V2RouterDeps): EntityStore | undefined {
-  return deps.getStore() as EntityStore | undefined;
-}
-
-function missingEntityStore(requestId: string): ApiResponseEnvelope {
-  return errorEnvelope(503, "Entity metadata store not available", requestId);
-}
-
-/* ============================================================================
- * @deprecated v2 entity handlers（team/user/agent/task，下方 16 个）。
- *
- * 这些 handler 走旧 `entity_*` 聚合数组模型（EntityStore 可选方法）。元数据已迁移到
- * v3 规范化模型（`/v3/meta/*` + MetadataService），control 面板 remote 模式直连 v3。
- * 保留这些 handler 仅为兼容现网既有调用方，**行为冻结、不再演进**；新接入方一律用 v3。
- * 计划：确认无外部调用方后，连同 routeTable 中对应条目与 `entity_*` 表一并删除。
- * 决策（2026-06-26，per user）：标记废弃 + 代码暂留，不适配 MetadataService。
- * ========================================================================== */
-
-/** @deprecated 改用 `/v3/meta/team/create`（MetadataService.createTeam）。 */
-async function handleTeamCreate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = teamCreateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.createTeam) return missingEntityStore(requestId);
-  return successEnvelope<TeamData>(await store.createTeam(parsed.data), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/team/get`。 */
-async function handleTeamGet(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = teamGetRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.getTeam) return missingEntityStore(requestId);
-  const data = await store.getTeam(parsed.data.team_id);
-  return data ? successEnvelope<TeamData>(data, requestId) : errorEnvelope(404, "Team not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/team/update`。 */
-async function handleTeamUpdate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = teamUpdateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { team_id, ...patch } = parsed.data;
-  const store = getEntityStore(deps);
-  if (!store?.updateTeam) return missingEntityStore(requestId);
-  const data = await store.updateTeam(team_id, patch);
-  return data ? successEnvelope<TeamData>(data, requestId) : errorEnvelope(404, "Team not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/team/delete`。 */
-async function handleTeamDelete(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = teamBatchDeleteRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.deleteTeams) return missingEntityStore(requestId);
-  return successEnvelope<BatchDeleteResult>(await store.deleteTeams(parsed.data.team_ids), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/user/create`。 */
-async function handleUserCreate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = userCreateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.createUser) return missingEntityStore(requestId);
-  return successEnvelope<UserData>(await store.createUser(parsed.data), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/user/get`。 */
-async function handleUserGet(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = userGetRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.getUser) return missingEntityStore(requestId);
-  const data = await store.getUser(parsed.data.user_id);
-  return data ? successEnvelope<UserData>(data, requestId) : errorEnvelope(404, "User not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/user/update`。 */
-async function handleUserUpdate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = userUpdateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { user_id, ...patch } = parsed.data;
-  const store = getEntityStore(deps);
-  if (!store?.updateUser) return missingEntityStore(requestId);
-  const data = await store.updateUser(user_id, patch);
-  return data ? successEnvelope<UserData>(data, requestId) : errorEnvelope(404, "User not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/user/delete`。 */
-async function handleUserDelete(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = userBatchDeleteRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.deleteUsers) return missingEntityStore(requestId);
-  return successEnvelope<BatchDeleteResult>(await store.deleteUsers(parsed.data.user_ids), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/agent/create`。 */
-async function handleAgentCreate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = agentCreateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.createAgent) return missingEntityStore(requestId);
-  return successEnvelope<AgentData>(await store.createAgent(parsed.data), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/agent/get`。 */
-async function handleAgentGet(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = agentGetRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.getAgent) return missingEntityStore(requestId);
-  const data = await store.getAgent(parsed.data.agent_id);
-  if (!data) return errorEnvelope(404, "Agent not found", requestId);
-  if (parsed.data.team_id && data.team_id !== parsed.data.team_id) return errorEnvelope(403, "Agent team_id mismatch", requestId);
-  return successEnvelope<AgentData>(data, requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/agent/update`。 */
-async function handleAgentUpdate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = agentUpdateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { agent_id, team_id, ...patch } = parsed.data;
-  const store = getEntityStore(deps);
-  if (!store?.updateAgent) return missingEntityStore(requestId);
-  const current = store.getAgent ? await store.getAgent(agent_id) : null;
-  if (!current) return errorEnvelope(404, "Agent not found", requestId);
-  if (team_id && current.team_id !== team_id) return errorEnvelope(403, "Agent team_id mismatch", requestId);
-  const data = await store.updateAgent(agent_id, patch);
-  return data ? successEnvelope<AgentData>(data, requestId) : errorEnvelope(404, "Agent not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/agent/delete`。 */
-async function handleAgentDelete(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = agentBatchDeleteRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.deleteAgents) return missingEntityStore(requestId);
-  return successEnvelope<BatchDeleteResult>(await store.deleteAgents(parsed.data.agent_ids), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/task/create`。 */
-async function handleTaskCreate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = taskCreateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.createTask) return missingEntityStore(requestId);
-  return successEnvelope<TaskData>(await store.createTask(parsed.data), requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/task/get`。 */
-async function handleTaskGet(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = taskGetRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.getTask) return missingEntityStore(requestId);
-  const data = await store.getTask(parsed.data.task_id);
-  return data ? successEnvelope<TaskData>(data, requestId) : errorEnvelope(404, "Task not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/task/update`。 */
-async function handleTaskUpdate(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = taskUpdateRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { task_id, ...patch } = parsed.data;
-  const store = getEntityStore(deps);
-  if (!store?.updateTask) return missingEntityStore(requestId);
-  const data = await store.updateTask(task_id, patch);
-  return data ? successEnvelope<TaskData>(data, requestId) : errorEnvelope(404, "Task not found", requestId);
-}
-
-/** @deprecated 改用 `/v3/meta/task/delete`。 */
-async function handleTaskDelete(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = taskBatchDeleteRequestSchema.safeParse(body);
-  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const store = getEntityStore(deps);
-  if (!store?.deleteTasks) return missingEntityStore(requestId);
-  return successEnvelope<BatchDeleteResult>(await store.deleteTasks(parsed.data.task_ids), requestId);
-}
-
-// ============================
 // L2/L3 Profile Sync Helpers (write-through to VDB)
 // ============================
 
@@ -4119,122 +3873,6 @@ async function handleCoreWrite(body: unknown, _auth: V2AuthContext, requestId: s
   }, requestId);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// /v2/pipeline/status — standalone-only introspection.
-// Returns per-L-type queue/in-flight stats by reading the in-memory task
-// queue (LocalStateBackend.listQueuedTasks) and worker's running set
-// (PipelineWorker.getRunningTasks). idle = queued===0 && running===0.
-// Mirrors the old MemoryPipelineManager.getQueueSizes() {l1Idle,l2Idle,l3Idle}
-// semantics so seed clients can wait specifically for L1 to drain (without
-// being blocked by slow L2/L3 cascades).
-// Service mode returns 404 (route not exposed).
-// ─────────────────────────────────────────────────────────────────────────
-
-interface LayerStatus {
-  /** Tasks waiting to be consumed (in queue). */
-  queued: number;
-  /** Tasks consumed by worker but not yet completed/failed. */
-  running: number;
-  /** Distinct sessionIds of queued tasks (for diagnostics). */
-  queued_sessions: string[];
-  /** Distinct sessionIds of running tasks (for diagnostics). */
-  running_sessions: string[];
-  /** True iff queued===0 && running===0. */
-  idle: boolean;
-}
-
-interface PipelineStatusData {
-  l1: LayerStatus;
-  l2: LayerStatus;
-  l3: LayerStatus;
-}
-
-function emptyLayer(): LayerStatus {
-  return { queued: 0, running: 0, queued_sessions: [], running_sessions: [], idle: true };
-}
-
-async function handlePipelineStatus(
-  _body: unknown,
-  _auth: V2AuthContext,
-  requestId: string,
-  deps: V2RouterDeps,
-): Promise<ApiResponseEnvelope> {
-  // Service mode does not expose this endpoint — pretend it's not routed.
-  if (deps.deployMode !== "standalone") {
-    return errorEnvelope(404, "Not found", requestId);
-  }
-
-  // Legacy standalone (no stateBackend / no worker) — pipeline isn't running.
-  if (!deps.stateBackend || !deps.pipelineWorker) {
-    return errorEnvelope(503, "Pipeline not running (legacy standalone mode)", requestId);
-  }
-
-  // listQueuedTasks is optional on IStateBackend; LocalStateBackend implements
-  // it, remote backends may not. Service mode never reaches here anyway.
-  if (!deps.stateBackend.listQueuedTasks) {
-    return errorEnvelope(
-      503,
-      "stateBackend does not support listQueuedTasks (status endpoint requires LocalStateBackend)",
-      requestId,
-    );
-  }
-
-  const queued = await deps.stateBackend.listQueuedTasks();
-  const running = deps.pipelineWorker.getRunningTasks();
-
-  const layers: Record<"L1" | "L2" | "L3", LayerStatus> = {
-    L1: emptyLayer(),
-    L2: emptyLayer(),
-    L3: emptyLayer(),
-  };
-  // Track sessionIds in a Set per layer/category for de-dup, then materialize.
-  const queuedSessionSets: Record<"L1" | "L2" | "L3", Set<string>> = {
-    L1: new Set(),
-    L2: new Set(),
-    L3: new Set(),
-  };
-  const runningSessionSets: Record<"L1" | "L2" | "L3", Set<string>> = {
-    L1: new Set(),
-    L2: new Set(),
-    L3: new Set(),
-  };
-
-  for (const t of queued) {
-    if (t.type === "L1" || t.type === "L2" || t.type === "L3") {
-      layers[t.type].queued++;
-      queuedSessionSets[t.type].add(t.sessionId);
-    }
-    // "flush" tasks behave like L1 work (see executor.executeFlush fallback);
-    // tally them under L1 so the seed-v2 idle wait doesn't miss them.
-    if (t.type === "flush") {
-      layers.L1.queued++;
-      queuedSessionSets.L1.add(t.sessionId);
-    }
-  }
-  for (const t of running) {
-    if (t.type === "L1" || t.type === "L2" || t.type === "L3") {
-      layers[t.type].running++;
-      runningSessionSets[t.type].add(t.sessionId);
-    }
-    if (t.type === "flush") {
-      layers.L1.running++;
-      runningSessionSets.L1.add(t.sessionId);
-    }
-  }
-  for (const k of ["L1", "L2", "L3"] as const) {
-    layers[k].queued_sessions = Array.from(queuedSessionSets[k]).sort();
-    layers[k].running_sessions = Array.from(runningSessionSets[k]).sort();
-    layers[k].idle = layers[k].queued === 0 && layers[k].running === 0;
-  }
-
-  const data: PipelineStatusData = {
-    l1: layers.L1,
-    l2: layers.L2,
-    l3: layers.L3,
-  };
-
-  return successEnvelope<PipelineStatusData>(data, requestId);
-}
 
 // ============================
 // Helpers
@@ -4293,21 +3931,4 @@ export {
   handleCoreRead,
   handleCoreWrite,
   handleCoreCount,
-  handleTeamCreate,
-  handleTeamGet,
-  handleTeamUpdate,
-  handleTeamDelete,
-  handleUserCreate,
-  handleUserGet,
-  handleUserUpdate,
-  handleUserDelete,
-  handleAgentCreate,
-  handleAgentGet,
-  handleAgentUpdate,
-  handleAgentDelete,
-  handleTaskCreate,
-  handleTaskGet,
-  handleTaskUpdate,
-  handleTaskDelete,
-  handlePipelineStatus,
 };

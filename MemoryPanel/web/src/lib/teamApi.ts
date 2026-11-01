@@ -8,7 +8,6 @@
  *   - api/auth.ts          登录验活 + 环境绑定
  *   - api/teams.ts         Team + Member
  *   - api/agents.ts        Agent
- *   - api/tasks.ts         Task + ParticipationLog
  *   - api/users.ts         User + UserKey + UserConfig
  *   - api/assets.ts        Asset
  *   - api/skills.ts        Skill 数据面
@@ -32,18 +31,6 @@ export { teamsApi, membersApi } from './api/teams';
 
 // ── Agents ──
 export { agentsApi, type AgentTemplateConfig, type AgentTemplateAssetIds } from './api/agents';
-
-// ── Tasks + Participation Logs ──
-export {
-  tasksApi,
-  participationLogsApi,
-  type TaskStatus,
-  type TaskSourceType,
-  type BackendTask,
-  type BackendTaskAgent,
-  type BackendTaskWithAgents,
-  type ParticipationLogEntity,
-} from './api/tasks';
 
 // ── Users + UserKeys + UserConfig ──
 export {

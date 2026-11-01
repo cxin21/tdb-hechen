@@ -726,25 +726,6 @@ export class TdaiCore {
     };
   }
 
-  /**
-   * Whether this call site must override the host-provided runner factory
-   * with a `StandaloneLLMRunnerFactory` built from `cfg.llm`.
-   *
-   * The DSH-only build has one host (the gateway) whose runner factory comes
-   * from this repo, so the historical "hostType=openclaw always overrides"
-   * branch is gone. What remains is the explicit `provider=proxy` request,
-   * which must rewrite baseUrl to `${base}/proxy/<iid>/v1` and swap in the
-   * sk-mem-xxx system key — that is the whole point of that config value.
-   *
-   * `useStandaloneRunner` must be true (it is, unconditionally, since the
-   * embedded runner left with OpenClaw) and cfg.llm must be enabled
-   * (otherwise `resolveRuntimeLlm` has nothing to work with).
-   */
-  private shouldOverrideRunnerFactory(useStandaloneRunner: boolean): boolean {
-    if (!useStandaloneRunner || !this.cfg.llm.enabled) return false;
-    return this.cfg.llm.provider === "proxy";
-  }
-
   private wirePipelineRunners(): void {
     if (!this.scheduler) return;
 
@@ -759,41 +740,11 @@ export class TdaiCore {
     // 待 HostAdapter 面一并收敛时删除。
     const openclawConfig: unknown = undefined;
 
-    // When standalone runner is active, create LLM runners from the factory.
-    // Override the host-provided factory whenever `cfg.llm` is enabled and
-    // either (a) we're in OpenClaw in-process mode, or (b) the user set
-    // `provider=proxy` (which requires resolver-rewritten baseUrl + sk-mem
-    // apiKey and MUST NOT go through the raw host runner). See
-    // `shouldOverrideRunnerFactory` for the full rationale.
-    //
-    // Note: in service mode this factory is a fallback — every request
-    // routes through `runL{1,2,3}WithStore` below, which reconstructs its
-    // own factory with the per-request instanceId. `wirePipelineRunners`
-    // runs at construction time (instanceId may still be `__unset__`), so
-    // if resolver would throw we swallow it and keep the host runner as
-    // fallback — the per-call site will succeed once instanceId is set.
+    // DSH 特化（ADR-0020）：不再有"覆盖 factory"这条分支。历史上它只在
+    // provider=proxy 时成立（要把 baseUrl 重写成 /proxy/<iid>/v1、换 sk-mem key），
+    // 该 provider 已随 MemoryProxy 退场；现在 factory 恒由 StandaloneHostAdapter
+    // 提供的 StandaloneLLMRunnerFactory 链承担，这里的 runnerFactory 就是它。
     let runnerFactory = this.runnerFactory;
-    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
-      try {
-        const runtimeLlm = this.resolveRuntimeLlm();
-        runnerFactory = new StandaloneLLMRunnerFactory({
-          config: runtimeLlm,
-          logger: this.logger,
-        });
-        this.logger.debug?.(
-          `${TAG} Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
-          `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
-        );
-      } catch (err) {
-        // Most common at construction time: instanceId is still `__unset__`
-        // (service mode) and provider=proxy resolver refuses to build a URL.
-        // Not fatal — per-call sites (runL1WithStore etc.) will rebuild the
-        // factory with the real instanceId when the request lands.
-        this.logger.debug?.(
-          `${TAG} wirePipelineRunners: standalone LLM override deferred: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
 
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     // Kafka 未配置时 metricProducer.send() 是 no-op，零开销
@@ -1162,17 +1113,6 @@ export class TdaiCore {
     const openclawConfig: unknown = undefined;
 
     let runnerFactory = this.runnerFactory;
-    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
-      const runtimeLlm = this.resolveRuntimeLlm();
-      runnerFactory = new StandaloneLLMRunnerFactory({
-        config: runtimeLlm,
-        logger: this.logger,
-      });
-      this.logger.debug?.(
-        `${TAG} [L1] Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
-        `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
-      );
-    }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
     const llmRunner = useStandaloneRunner
@@ -1219,17 +1159,6 @@ export class TdaiCore {
     const openclawConfig: unknown = undefined;
 
     let runnerFactory = this.runnerFactory;
-    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
-      const runtimeLlm = this.resolveRuntimeLlm();
-      runnerFactory = new StandaloneLLMRunnerFactory({
-        config: runtimeLlm,
-        logger: this.logger,
-      });
-      this.logger.debug?.(
-        `${TAG} [L2] Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
-        `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
-      );
-    }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
     const llmRunner = useStandaloneRunner
@@ -1274,17 +1203,6 @@ export class TdaiCore {
     const openclawConfig: unknown = undefined;
 
     let runnerFactory = this.runnerFactory;
-    if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
-      const runtimeLlm = this.resolveRuntimeLlm();
-      runnerFactory = new StandaloneLLMRunnerFactory({
-        config: runtimeLlm,
-        logger: this.logger,
-      });
-      this.logger.debug?.(
-        `${TAG} [L3] Using standalone LLM override: provider=${this.cfg.llm.provider ?? "openai"}, ` +
-        `model=${runtimeLlm.model}, baseUrl=${runtimeLlm.baseUrl}`,
-      );
-    }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
     const llmRunner = useStandaloneRunner

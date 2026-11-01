@@ -33,7 +33,6 @@ MemoryKnowledge/
 │   │   └── code/           # CodeGraph bridge
 │   ├── store/              # SQLite（Drizzle）+ 构建队列 + llm_binding
 │   ├── source-fetcher/     # Git 拉取
-│   ├── mcp/                # MCP stdio（转发到本机 HTTP API）
 │   ├── db/                 # schema / client
 │   └── middleware/
 ├── docs/                   # 设计与 API 细节
@@ -89,7 +88,7 @@ KNOWLEDGE_SERVICE_URL=http://127.0.0.1:8421
 wiki / code-graph 查询类、`GET auto-sync/status`）外的 `/v3` 端点必须带
 `Authorization: Bearer <key>`，缺失或错误一律 401（`POST /auto-sync/trigger` 属写面，需要 key）。
 `/health`、`/docs`、`/openapi.json` 挂在 `/v3` 之外，不受服务密钥影响。Panel 侧用同一个值配
-`KNOWLEDGE_AUTH_TOKEN`，MCP server 侧用 `KNOWLEDGE_API_TOKEN`；部署脚本
+`KNOWLEDGE_AUTH_TOKEN`；部署脚本
 （`deploy/global-images/start-memory-hub.sh`）在 `.env` 留空时会自动生成一个稳定 key 并回写、注入两侧
 ——注意这只是部署脚本的行为，手动编辑这里的 `.env` 留空仅表示「不启用」，不会被自动补 key。
 
@@ -100,7 +99,6 @@ wiki / code-graph 查询类、`GET auto-sync/status`）外的 `/v3` 端点必须
 
 ```bash
 pnpm dev          # HTTP API（tsx 热更）
-pnpm dev:mcp      # MCP stdio（另开终端；需 HTTP 已起）
 pnpm typecheck
 pnpm test
 pnpm build        # tsdown → dist/

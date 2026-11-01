@@ -51,8 +51,8 @@ export default function ApiKeyPanel() {
   const [keys, setKeys] = useState<UserKey[]>([]);
   const [loading, setLoading] = useState(true);
   // 客户端接入 base 地址（来自当前登录的 instance 元数据；每个实例不同）。
-  // 优先取 proxy_endpoint —— 开源本地部署 core+proxy 分开时客户端要接的是 proxy；
-  // 未配置时回落 gateway_endpoint，等同老行为（线上 gateway 前置 proxy，两者合一）。
+  // DSH 特化（Wave 2A）：MemoryProxy 已退出链路，客户端（DSH 插件）直连 gateway_endpoint，
+  // 原「优先 proxy_endpoint(8096)、回落 gateway_endpoint」的回落链已删除。
   const [clientBaseUrl, setClientBaseUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -66,7 +66,7 @@ export default function ApiKeyPanel() {
       .then((list) => {
         if (cancelled) return;
         const hit = list.find((i) => i.instance_id === auth.instance_id);
-        setClientBaseUrl(hit?.proxy_endpoint ?? hit?.gateway_endpoint ?? null);
+        setClientBaseUrl(hit?.gateway_endpoint ?? null);
       })
       .catch(() => {
         if (!cancelled) setClientBaseUrl(null);

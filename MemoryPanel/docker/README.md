@@ -71,7 +71,6 @@ docker run -d --name tmc-control \
   -e METADATA_INSTANCES_CONFIG=/app/config/metadata-instances.json \
   -e KNOWLEDGE_SERVICE_URL=http://host.docker.internal:8421 \
   -e KNOWLEDGE_AUTH_TOKEN=<ks-token> \
-  -e KNOWLEDGE_LLM_PROXY_BASE_URL=http://host.docker.internal:8096 \
   -v "$(pwd)/config/metadata-instances.json:/app/config/metadata-instances.json:ro" \
   team-memory-control:local
 ```
@@ -104,8 +103,6 @@ docker build \
 | `KNOWLEDGE_SERVICE_URL` | `http://127.0.0.1:8421` | Knowledge Service（KS）地址，容器内须指向容器可访问的 KS |
 | `KNOWLEDGE_AUTH_TOKEN` | — | 调 KS 的 bearer token，按部署填充 |
 | `KNOWLEDGE_TIMEOUT_MS` | `15000` | 调 KS 超时 |
-| `KNOWLEDGE_LLM_BINDING_SYNC` | `true` | 启动时为每个实例确保 KS 的 LLM 绑定（走 proxy 记账）；`false` 跳过 |
-| `KNOWLEDGE_LLM_PROXY_BASE_URL` | `http://127.0.0.1:8096` | LLM 记账 proxy 地址（容器内须可达） |
 | `LOG_LEVEL` / `LOG_FORMAT` | `info` / `json` | 本地可设 `LOG_FORMAT=pretty` |
 
 > 注：`LLM_MODEL`（wiki ingest 模型）不在 Panel 配置，统一由 KS 侧 `LLM_MODEL` 决定（默认 `Memory-Model`）。
@@ -142,4 +139,3 @@ BuildKit 会优先使用 `<dockerfile>.dockerignore`（而非仓库根 `.dockeri
 | `GET /` 404 | `UI_DIST_DIR` 未设为 `./web/dist`，或前端 stage `npm run build` 失败 |
 | 登录后 API 401 / 无 team | `metadata-instances.json` 中 `gateway_endpoint` 不可达，或 `api_key` 与 Gateway 不一致 |
 | 知识资产加载失败 / 500 | `KNOWLEDGE_SERVICE_URL` 容器内不可达，或 `KNOWLEDGE_AUTH_TOKEN` 不匹配 |
-| 启动卡在「ensure LLM binding」 | `KNOWLEDGE_LLM_PROXY_BASE_URL` 容器内不可达；可设 `KNOWLEDGE_LLM_BINDING_SYNC=false` 临时跳过 |

@@ -4,6 +4,9 @@
  * 构造最小 Hono app（registerSettingsRoutes + validatePanelMetaHeaders 既有挂载方式），
  * stub deps.metaKernel.invoke（auth/verify 按 userType 返回）与 config，
  * 全局 fetch 用 vi.spyOn mock —— 不触达真实上游。
+ *
+ * DSH 特化 Wave 2A：proxy-pricing 透传（→ MemoryProxy /v3/admin/credit-pricing）已删除，
+ * 末尾用例改为「路由不存在 → 404」的守卫，防止有人把 8096 通道重新接回来。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Hono } from 'hono';
@@ -12,7 +15,6 @@ import { registerSettingsRoutes } from '../src/panel/http/routes/settings.js';
 
 const KS_BASE = 'http://ks-test:1';
 const CORE_BASE = 'http://core-test:2';
-const PROXY_BASE = 'http://proxy-test:3';
 const KS_TOKEN = 'ks-tok';
 
 interface InvokeEnvelope {
@@ -37,7 +39,6 @@ function makeDeps(userType: string): { deps: PanelDeps; invoke: ReturnType<typeo
   const deps = {
     config: {
       knowledge: { baseUrl: KS_BASE, authToken: KS_TOKEN, timeoutMs: 1000 },
-      llmProvider: { proxyBaseUrl: PROXY_BASE },
       metadataRemoteTimeoutMs: 1000,
     },
     logger: { debug() {}, info() {}, warn() {}, error() {} },
@@ -184,53 +185,14 @@ describe('settings passthrough（admin 门控）', () => {
   });
 });
 
-describe('settings proxy-pricing 透传（spec §9.3）', () => {
-  it('非 admin 不可访问 proxy-pricing（403，不触达上游）', async () => {
-    const { deps, invoke } = makeDeps('member');
-    const res = await callSettings(deps, 'proxy-pricing', 'get', { userType: 'member' });
-    expect(res.status).toBe(403);
-    expect(fetchMock).not.toHaveBeenCalled();
-    const invokedActions = invoke.mock.calls.map((c) => c[0] as string);
-    expect(invokedActions).toEqual(['auth/verify']);
-  });
-
-  it('admin get 透传为上游 GET → proxy /v3/admin/credit-pricing', async () => {
-    const { deps } = makeDeps('system_admin');
+describe('settings proxy-pricing 已退役（DSH 特化 Wave 2A）', () => {
+  it('POST /settings/proxy-pricing/get 不再有路由（404）', async () => {
+    const { deps, invoke } = makeDeps('system_admin');
     const res = await callSettings(deps, 'proxy-pricing', 'get', { userType: 'system_admin' });
-    expect(res.status).toBe(200);
-    expect(fetchMock.mock.calls.length).toBe(1);
-    const [url, init] = fetchMock.mock.calls.at(-1)! as [string, RequestInit];
-    expect(url).toContain('/v3/admin/credit-pricing');
-    expect(url).toContain(PROXY_BASE);
-    // 上游只有 GET/PUT/DELETE —— panel POST 必须翻译为 GET（无 body）
-    expect(init.method).toBe('GET');
-    expect(init.body).toBeUndefined();
-    const resBody = (await res.json()) as InvokeEnvelope;
-    expect(resBody.code).toBe(0);
-  });
-
-  it('admin set 透传为上游 PUT 且 body 原样透传（{ models }）', async () => {
-    const { deps } = makeDeps('system_admin');
-    const payload = {
-      models: [
-        { name: 'model_a', modelName: 'model_a', input: 1, output: 2, cacheRead: 0.1, cacheWrite5m: 0.2, cacheWrite1h: 0.3 },
-      ],
-    };
-    const res = await callSettings(deps, 'proxy-pricing', 'set', {
-      userType: 'system_admin',
-      body: payload,
-    });
-    expect(res.status).toBe(200);
-    const [url, init] = fetchMock.mock.calls.at(-1)! as [string, RequestInit];
-    expect(url).toContain('/v3/admin/credit-pricing');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body as string)).toEqual(payload);
-  });
-
-  it('action 限定 get|set，其余 400', async () => {
-    const { deps } = makeDeps('system_admin');
-    const res = await callSettings(deps, 'proxy-pricing', 'delete', { userType: 'system_admin' });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
+    // 门控都没跑：路由不存在，请求到不了 validatePanelMetaHeaders
+    const invokedActions = invoke.mock.calls.map((c) => c[0] as string);
+    expect(invokedActions).toEqual([]);
   });
 });

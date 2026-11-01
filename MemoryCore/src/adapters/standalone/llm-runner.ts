@@ -147,12 +147,8 @@ export interface StandaloneLLMConfig {
    *   - "proxy":  走 context_proxy，运行时会自动把 baseUrl 拼成
    *               `${baseUrl}/proxy/<instanceId>/v1`，apiKey 用 metadata.systemUser.memory.userKey
    */
-  provider?: "openai" | "proxy";
-  /** provider=proxy 时的可选配置。 */
-  proxy?: {
-    /** 是否用 memory systemUser.userKey 作为 Authorization（默认 true）。 */
-    useMemorySystemUserKey?: boolean;
-  };
+  /** 唯一取值 "openai"（OpenAI 兼容端点直连）；"proxy" 随 MemoryProxy 退场下线（ADR-0020）。 */
+  provider?: "openai";
   /**
    * 是否用流式请求(streamText)调用上游。默认 false(generateText 非流式)。
    * 个别 OpenAI 兼容上游只接受流式请求时置 true。

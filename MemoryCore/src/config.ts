@@ -1084,8 +1084,6 @@ export interface EmbeddingConfig {
   sendDimensions: boolean;
   /** Top-K candidates to recall during conflict detection (default: 5) */
   conflictRecallTopK: number;
-  /** Proxy URL for qclaw provider — when provider="qclaw", requests are forwarded through this local proxy */
-  proxyUrl?: string;
   /** Max input text length in characters before truncation (default: 5000). Texts exceeding this limit are truncated with a warning. */
   maxInputChars: number;
   /** Timeout per embedding API call in milliseconds (default: 10000). */
@@ -1177,19 +1175,11 @@ export interface StandaloneLLMOverrideConfig {
   /** 多提供商兼容（T2）：max_tokens 上限（按模型声明，缺省 131072=Ark 上限）。 */
   maxTokensLimit?: number;
   /**
-   * LLM 访问模式：
-   *   - "openai": 直连 OpenAI 兼容服务（默认）
-   *   - "proxy":  走 context_proxy，运行时把 baseUrl 拼成
-   *               `${baseUrl}/proxy/<instanceId>/v1`，Authorization 用 memory 系统用户 key
-   * gateway 层负责在构造 runner 前把 baseUrl / apiKey 换成解析后的最终值，
-   * 因此 runner 无需感知 provider 字段。
+   * LLM 访问模式：唯一取值 "openai"（直连 OpenAI 兼容服务）。
+   * 原 "proxy"（走 context_proxy + memory 系统用户 key）随 MemoryProxy 退场下线（ADR-0020），
+   * 类型面已收窄，任何残留的 provider: "proxy" 配置在启动期即报错（gateway/llm-resolver.ts）。
    */
-  provider?: "openai" | "proxy";
-  /** provider=proxy 时的可选配置。 */
-  proxy?: {
-    /** 是否用 memory systemUser.userKey 作为 Authorization（默认 true）。 */
-    useMemorySystemUserKey?: boolean;
-  };
+  provider?: "openai";
   /**
    * 是否用流式请求(streamText)调用上游。默认 false(generateText 非流式)。
    * 个别 OpenAI 兼容上游只接受流式请求时置 true。
@@ -1417,11 +1407,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   const embeddingProviderRaw = str(embeddingGroup, "provider") ?? "none";
   const embeddingModelRaw = str(embeddingGroup, "model") ?? "";
   const embeddingDimensionsRaw = num(embeddingGroup, "dimensions");
-  const embeddingProxyUrl = str(embeddingGroup, "proxyUrl");
 
   // provider="none" → embedding disabled (default for zero-config users)
   // provider="local" → no longer exposed to users; treated as disabled at entry level
-  // provider="qclaw" → requires proxyUrl for local proxy forwarding
+  // provider="qclaw" → 已下线（MemoryProxy 退出链路）：恒 disabled + 明确 configError
   // Any other value → remote mode (requires apiKey, baseUrl, model, dimensions)
   let embeddingProvider: string;
   let embeddingEnabled = bool(embeddingGroup, "enabled") ?? true;
@@ -1439,24 +1428,13 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       "Local embedding provider is not available in user config. " +
       "Please configure a remote embedding provider (e.g. openai, deepseek). Embedding has been disabled.";
   } else if (embeddingProviderRaw === "qclaw") {
-    // qclaw provider: requires proxyUrl for local proxy forwarding
-    const missingFields: string[] = [];
-    if (!embeddingProxyUrl) missingFields.push("proxyUrl");
-    if (!embeddingBaseUrl) missingFields.push("baseUrl");
-    if (!embeddingApiKey) missingFields.push("apiKey");
-    if (!embeddingModelRaw) missingFields.push("model");
-    if (embeddingDimensionsRaw == null || embeddingDimensionsRaw <= 0) missingFields.push("dimensions");
-
-    if (missingFields.length > 0) {
-      const errorMsg =
-        `Embedding provider 'qclaw' requires 'proxyUrl', 'baseUrl', 'apiKey', 'model', and 'dimensions' to be set. ` +
-        `Missing: ${missingFields.join(", ")}. Embedding has been disabled.`;
-      embeddingConfigError = errorMsg;
-      embeddingEnabled = false;
-      embeddingProvider = embeddingProviderRaw;
-    } else {
-      embeddingProvider = embeddingProviderRaw;
-    }
+    // DSH 特化（2026-11-01）：qclaw 是 MemoryProxy 的本地转发 provider，随代理层整体下线。
+    // 保留分支只为了给老配置一条明确报错，不再校验 proxyUrl（该键已无意义）。
+    embeddingProvider = "none";
+    embeddingEnabled = false;
+    embeddingConfigError =
+      "Embedding provider 'qclaw' has been removed (MemoryProxy retired, DSH-only build). " +
+      "Please configure a remote embedding provider (e.g. openai, deepseek). Embedding has been disabled.";
   } else {
     // Remote mode — validate all required fields
     const missingFields: string[] = [];
@@ -2568,7 +2546,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       dimensions: num(embeddingGroup, "dimensions") ?? defaultDimensions,
       sendDimensions: bool(embeddingGroup, "sendDimensions") ?? true,
       conflictRecallTopK: num(embeddingGroup, "conflictRecallTopK") ?? 5,
-      proxyUrl: embeddingProxyUrl,
       maxInputChars: num(embeddingGroup, "maxInputChars") ?? 5000,
       timeoutMs: num(embeddingGroup, "timeoutMs") ?? 10_000,
       recallTimeoutMs: num(embeddingGroup, "recallTimeoutMs") ?? undefined,
@@ -2599,10 +2576,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     },
     llm: (() => {
       const llmGroup = obj(c, "llm");
-      const rawProvider = str(llmGroup, "provider");
-      const provider: "openai" | "proxy" =
-        rawProvider === "proxy" ? "proxy" : "openai";
-      const proxyGroup = obj(llmGroup, "proxy");
+      // DSH 特化（2026-11-01，ADR-0020）：provider 唯一取值 "openai"（OpenAI 兼容端点直连）。
+      // 原 "proxy"（走 context_proxy + memory 系统用户 key）随 MemoryProxy 整包退场下线；
+      // 类型已收窄到单值，残留的 yaml provider: "proxy" 在启动期由 gateway/llm-resolver.ts 报错。
+      const provider: "openai" = "openai";
       return {
         enabled: bool(llmGroup, "enabled") ?? false,
         baseUrl: str(llmGroup, "baseUrl") ?? "https://api.openai.com/v1",
@@ -2614,10 +2591,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         maxTokensLimit: num(llmGroup, "maxTokensLimit") ?? 131072,
         provider,
         stream: bool(llmGroup, "stream") ?? false,
-        proxy: {
-          // 默认 true：走 proxy 时用 memory 系统用户 key 作为 Authorization。
-          useMemorySystemUserKey: bool(proxyGroup, "useMemorySystemUserKey") ?? true,
-        },
       };
     })(),
     // G/H/I/J 真记忆生命周期（config-first：yaml 值真实生效）

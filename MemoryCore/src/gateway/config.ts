@@ -434,16 +434,14 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
 
   // LLM config
   //
-  // provider 支持两种模式：
-  //   - "openai"（默认）：直连 OpenAI 兼容服务
-  //   - "proxy"：走 context_proxy，运行期把 baseUrl 拼成 `${baseUrl}/proxy/<iid>/v1`，
-  //             Authorization 用 memory 系统用户 key。gateway 层负责最终解析，
-  //             见 src/gateway/llm-resolver.ts 的 resolveEffectiveLlmConfig。
+  // provider 唯一取值 "openai"（OpenAI 兼容端点直连）。原 "proxy"（走 context_proxy、
+  // 运行期把 baseUrl 拼成 `${baseUrl}/proxy/<iid>/v1`、Authorization 用 memory 系统
+  // 用户 key）已随 MemoryProxy 退出链路整体下线（DSH 特化 2026-11-01）。
   const llmConfig = obj(fileConfig, "llm");
-  const llmProxyConfig = obj(llmConfig, "proxy");
-  const rawLlmProvider = env("TDAI_LLM_PROVIDER") ?? str(llmConfig, "provider");
-  const llmProvider: "openai" | "proxy" =
-    rawLlmProvider === "proxy" ? "proxy" : "openai";
+  // DSH 特化（2026-11-01）：MemoryProxy 退出链路 ⇒ provider 只保留 "openai"（OpenAI 兼容端点）。
+  // 历史配置里 provider: "proxy" 的取值不再被采用：baseUrl 若仍指向 8096，运行期会在
+  // gateway/llm-resolver.ts 得到明确的「proxy 已下线」错误，而不是静默走到错误端点。
+  const llmProvider: "openai" = "openai";
   const llm: StandaloneLLMConfig = {
     baseUrl: env("TDAI_LLM_BASE_URL") ?? str(llmConfig, "baseUrl") ?? "https://api.openai.com/v1",
     // ADR-0006（#70）：apiKey yaml 优先，env 仅 deprecated 回退（loud 告警）；
@@ -453,9 +451,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     maxTokens: envInt("TDAI_LLM_MAX_TOKENS") ?? num(llmConfig, "maxTokens") ?? 4096,
     timeoutMs: envInt("TDAI_LLM_TIMEOUT_MS") ?? num(llmConfig, "timeoutMs") ?? 120_000,
     provider: llmProvider,
-    proxy: {
-      useMemorySystemUserKey: bool(llmProxyConfig, "useMemorySystemUserKey") ?? true,
-    },
     // env 存在时直接用 env 解析(可显式关闭 yaml);
     // env 未设置才回退 yaml,与其他 LLM 字段语义一致。
     stream: (() => {
@@ -506,10 +501,8 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   // configured (baseUrl + apiKey), splice it onto memory.llm so the
   // SkillExtractor / L1 / L2 / L3 runners see a usable runner without
   // requiring the user to duplicate the block under `memory.llm`.
-  // provider=proxy 模式下即使 apiKey 为空也要 splice —— 因为最终 apiKey 由
-  // memory systemUser.userKey 提供，llm.apiKey 只是 provider=openai 时的显式配置。
-  const shouldSpliceLlm =
-    !memory.llm.enabled && llm.baseUrl && (llm.apiKey || llm.provider === "proxy");
+  // provider=proxy 已下线 ⇒ 只有显式配置了 llm.apiKey 才 splice（空 apiKey = 未配置）。
+  const shouldSpliceLlm = !memory.llm.enabled && Boolean(llm.baseUrl) && Boolean(llm.apiKey);
   if (shouldSpliceLlm) {
     memory.llm = {
       enabled: true,
@@ -519,9 +512,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
       maxTokens: llm.maxTokens ?? 4096,
       timeoutMs: llm.timeoutMs ?? 120_000,
       provider: llm.provider,
-      proxy: {
-        useMemorySystemUserKey: llm.proxy?.useMemorySystemUserKey ?? true,
-      },
     };
   }
 
@@ -545,7 +535,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
       timeoutMs: num(topLevelEmbedding, "timeoutMs") ?? memory.embedding.timeoutMs,
       recallTimeoutMs: num(topLevelEmbedding, "recallTimeoutMs") ?? memory.embedding.recallTimeoutMs,
       captureTimeoutMs: num(topLevelEmbedding, "captureTimeoutMs") ?? memory.embedding.captureTimeoutMs,
-      proxyUrl: str(topLevelEmbedding, "proxyUrl") ?? memory.embedding.proxyUrl,
     };
   }
 
@@ -563,7 +552,8 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     // （一把 key 同源设计），env 键按 ADR-0006 迁移删除后 expandEnvVars 整串展开为空串 →
     // parseConfig 判 disabled（configError 记 missing apiKey）。override 补齐字段后必须
     // 重跑判定救回：enabled 的最终状态只能由最终合并值决定，不能由合并前的中间态定死。
-    // 判定语义与 parseConfig embedding 块对齐：none/local 恒 disabled；qclaw 另需 proxyUrl；
+    // 判定语义与 parseConfig embedding 块对齐：none/local 恒 disabled；（qclaw 已随
+    // MemoryProxy 下线，不再单独要求 proxyUrl）。
     // 其余 remote 需 apiKey/baseUrl/model/dimensions>0 全齐。
     const me = memory.embedding as typeof memory.embedding & { configError?: string };
     const embProvider = me.provider;
@@ -573,8 +563,7 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
         !me.baseUrl && "baseUrl",
         !me.model && "model",
         !(typeof me.dimensions === "number" && me.dimensions > 0) && "dimensions",
-        ...(embProvider === "qclaw" ? [!me.proxyUrl && "proxyUrl"] : []),
-      ].filter((x): x is string => Boolean(x));
+        ].filter((x): x is string => Boolean(x));
       if (missing.length === 0) {
         me.enabled = true;
         me.configError = undefined;

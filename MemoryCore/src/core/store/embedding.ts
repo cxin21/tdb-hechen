@@ -20,7 +20,7 @@ import type { Logger } from "../types.js";
 // ============================
 
 export interface OpenAIEmbeddingConfig {
-  /** Provider identifier — any value other than "local" (e.g. "openai", "deepseek", "azure", "qclaw") */
+  /** Provider identifier (e.g. "openai", "deepseek", "azure"). "qclaw" 已随 MemoryProxy 退场下线（ADR-0020）。 */
   provider: string;
   /** API base URL (required — must be specified by user, e.g. "https://api.openai.com/v1") */
   baseUrl: string;
@@ -37,8 +37,6 @@ export interface OpenAIEmbeddingConfig {
    * unknown `dimensions` parameters with HTTP 400; set this to `false` for those.
    */
   sendDimensions?: boolean;
-  /** Local proxy URL (only for provider="qclaw") — requests are forwarded through this proxy with Remote-URL header */
-  proxyUrl?: string;
   /** Max input text length in characters before truncation (default: 5000). */
   maxInputChars?: number;
   /** Timeout per API call in milliseconds (default: 10000). */
@@ -417,7 +415,6 @@ export class OpenAIEmbeddingService implements EmbeddingService {
   private readonly dims: number;
   private readonly sendDimensions: boolean;
   private readonly providerName: string;
-  private readonly proxyUrl?: string;
   private readonly maxInputChars?: number;
   private readonly timeoutMs: number;
   private readonly logger?: Logger;
@@ -449,7 +446,6 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     this.dims = config.dimensions;
     this.sendDimensions = config.sendDimensions ?? true;
     this.providerName = config.provider || "openai";
-    this.proxyUrl = config.proxyUrl?.trim() || undefined;
     this.maxInputChars = config.maxInputChars && config.maxInputChars > 0 ? config.maxInputChars : undefined;
     this.timeoutMs = config.timeoutMs && config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_API_TIMEOUT_MS;
     this.logger = logger;
@@ -599,20 +595,12 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       body.dimensions = this.dims;
     }
 
-    // Determine fetch URL and headers based on proxy mode
-    const useProxy = this.providerName === "qclaw" && !!this.proxyUrl;
-    const fetchUrl = useProxy ? this.proxyUrl! : `${this.baseUrl}/embeddings`;
+    // DSH 特化（ADR-0020）：qclaw/context_proxy 转发随 MemoryProxy 退场下线，恒直连 baseUrl。
+    const fetchUrl = `${this.baseUrl}/embeddings`;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.apiKey}`,
     };
-    if (useProxy) {
-      headers["Remote-URL"] = `${this.baseUrl}/embeddings`;
-      this.logger?.debug?.(
-        `${TAG} [qclaw-proxy] Forwarding embedding request via proxy: ${fetchUrl}, Remote-URL: ${headers["Remote-URL"]}`,
-      );
-    }
-
     // Retry loop: 429 有界重试 + 全局冷却；其余错误一次即抛（保持旧语义）
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {

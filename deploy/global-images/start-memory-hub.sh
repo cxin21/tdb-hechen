@@ -30,7 +30,9 @@ ensure_knowledge_service_key
 MEMORY_CORE_GATEWAY_API_KEY="${MEMORY_CORE_GATEWAY_API_KEY:-local}"
 
 # Panel UI "客户端接入地址"卡片显示的 base URL（供 CodeBuddy / ClaudeCode 拷贝使用）。
-# 开源本地部署 core 和 proxy 分开跑，客户端要接的是 proxy，不是 core/gateway。
+# 2026-11-01 DSH 特化 Wave 2B：proxy 退场后客户端（DSH 插件）直连 memory-core 网关，
+# 该卡片指向 core 端口（变量名 MEMORY_HUB_PROXY_PUBLIC_URL 与 Panel 侧 proxy_endpoint 字段仍沿用，
+# 改名属 MemoryPanel 范围，另票处置）。
 #
 # 默认按下面顺序探测宿主机对外可达地址：
 #   1) Linux 上 `hostname -I` 首个非 127 的 IPv4（LAN IP）
@@ -63,11 +65,11 @@ detect_host_ip() {
 }
 
 if [[ -z "${MEMORY_HUB_PROXY_PUBLIC_URL+x}" ]]; then
-  # 未设 → 用探测出的 IP + PROXY_PORT 拼默认值
+  # 未设 → 用探测出的 IP + MEMORY_CORE_PORT 拼默认值
   _host_ip=$(detect_host_ip)
-  MEMORY_HUB_PROXY_PUBLIC_URL="http://${_host_ip}:${PROXY_PORT:-8096}"
+  MEMORY_HUB_PROXY_PUBLIC_URL="http://${_host_ip}:${MEMORY_CORE_PORT:-8420}"
   info "自动探测宿主机地址: MEMORY_HUB_PROXY_PUBLIC_URL=$MEMORY_HUB_PROXY_PUBLIC_URL"
-  info "  (如需覆盖，在 .env 里显式设 MEMORY_HUB_PROXY_PUBLIC_URL=http://<your-ip>:${PROXY_PORT:-8096})"
+  info "  (如需覆盖，在 .env 里显式设 MEMORY_HUB_PROXY_PUBLIC_URL=http://<your-ip>:${MEMORY_CORE_PORT:-8420})"
 fi
 
 CONTAINER=tdai-memory-hub

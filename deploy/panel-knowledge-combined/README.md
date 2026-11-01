@@ -126,7 +126,7 @@ docker run -d --name memory-hub \
 | `TMC_CALLBACK_URL` | `http://127.0.0.1:8125` | KS ingest 完成回调 Panel 的根地址（容器内自动回环，一般不用改） |
 | `KNOWLEDGE_TIMEOUT_MS` | `15000` | Panel 调 KS 的请求超时 |
 | `METADATA_REMOTE_TIMEOUT_MS` | `15000` | Panel 调远端 Gateway 的请求超时 |
-| `REMOTE_INSTANCE_PROXY_URL` | 空 | Panel UI "客户端接入地址"卡片显示的 base URL。开源本地部署 core+proxy 分开跑时填 proxy 的外部地址（如 `http://host.docker.internal:8096`），Panel UI 复制的 CodeBuddy/ClaudeCode 接入地址就会指向 proxy。留空则老行为 —— UI 回落到 `gateway_endpoint`。**Panel 后端 → Kernel 的转发始终走 `REMOTE_INSTANCE_URL`，与此变量无关。**（挂载了 `metadata-instances.json` 时忽略此变量，直接在 JSON 里加 `proxy_endpoint` 字段） |
+| `REMOTE_INSTANCE_PROXY_URL` | 空 | Panel UI "客户端接入地址"卡片显示的 base URL。**proxy 已退场（ADR-0020）**，2026-11-01 起 `start-memory-hub.sh` 用它拼 core 端口（`http://<host-ip>:8420`），客户端（DSH 插件）直连 core。留空则老行为 —— UI 回落到 `gateway_endpoint`。**Panel 后端 → Kernel 的转发始终走 `REMOTE_INSTANCE_URL`，与此变量无关。**（变量名与 `proxy_endpoint` 字段沿用不改，改名属 MemoryPanel 范围） |
 
 ### TLS 证书
 

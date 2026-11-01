@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 构建并发布三件套镜像到 Docker Hub 的 agentmemory namespace。
+# 构建并发布镜像到 Docker Hub 的 agentmemory namespace。
 #
 # 本脚本是**自包含**的：只依赖仓库里的 Dockerfile、
 # deploy/panel-knowledge-combined/build.sh 和 MemoryPanel/scripts/secret-scan.sh，
@@ -7,7 +7,6 @@
 #
 # 组件与镜像名：
 #   memory-core   MemoryCore/                        → agentmemory/memory-core
-#   memory-proxy  MemoryProxy/                       → agentmemory/memory-proxy
 #   memory-hub    MemoryPanel/ + MemoryKnowledge/    → agentmemory/memory-hub
 #
 # 用法（VERSION 必填，避免误发浮动 tag）：
@@ -55,9 +54,9 @@ usage() { sed -n '2,26p' "$0"; exit 1; }
 # ── 参数校验 ────────────────────────────────────────────────────────
 TARGET="${1:-}"
 case "$TARGET" in
-  memory-core|memory-proxy|memory-hub|all) ;;
+  memory-core|memory-hub|all) ;;
   -h|--help|"") usage ;;
-  *) die "未知组件: ${TARGET}（可选 memory-core | memory-proxy | memory-hub | all）" ;;
+  *) die "未知组件: ${TARGET}（可选 memory-core | memory-hub | all）" ;;
 esac
 
 [[ -n "${VERSION:-}" ]] || die "请显式指定 VERSION，例：VERSION=1.0.0 ./publish.sh $TARGET"
@@ -152,88 +151,7 @@ build_memory_core() {
   build_image "$image" "$src"
 }
 
-# ── memory-proxy ────────────────────────────────────────────────────
-# packages/cost-guard 是私有 submodule，不进开源镜像。但 package.json 把它声明
-# 成 file: 依赖、Dockerfile 也会 COPY 它，所以在独立 context 里放一个 stub 包，
-# 让 npm 能解析依赖图；运行时 dynamic import 失败会走 passthrough fallback。
-build_memory_proxy() {
-  local image="${REGISTRY}/${NAMESPACE}/memory-proxy"
-  [[ "$REGISTRY" == "docker.io" ]] && image="${NAMESPACE}/memory-proxy"
-  local src="$REPO_ROOT/MemoryProxy"
-  local ctx="${CTX_DIR:-$WORKSPACE_ROOT/dockerhub-memory-proxy-ctx}"
-
-  info "═══ memory-proxy → ${image}:${VERSION} ═══"
-  [[ -f "$src/Dockerfile" ]] || die "缺少 $src/Dockerfile"
-  scan "$src" src package.json
-
-  [[ "$KEEP_CTX" == "1" ]] || rm -rf "$ctx"
-  mkdir -p "$ctx"
-  info "rsync $src → $ctx"
-  rsync -a --delete \
-    --exclude '.git' \
-    --exclude 'node_modules' \
-    --exclude 'dist' \
-    --exclude 'coverage' \
-    --exclude 'packages/cost-guard/*' \
-    --exclude 'packages/cost-guard/.*' \
-    --exclude '.env' \
-    --exclude '.env.*' \
-    --exclude '**/.env' \
-    --exclude '**/.env.*' \
-    --exclude 'config.yaml' \
-    --exclude 'config.*.local.yaml' \
-    "$src"/ "$ctx"/
-
-  make_cost_guard_stub "$ctx/packages/cost-guard"
-
-  # 源 lockfile 记录的是真实 submodule 结构，与 stub 冲突；换成空壳让 npm 重解析。
-  cat > "$ctx/package-lock.json" <<'JSON'
-{
-  "name": "context-proxy",
-  "version": "0.0.0",
-  "lockfileVersion": 3,
-  "requires": true,
-  "packages": {}
-}
-JSON
-
-  scan "$ctx" src package.json packages
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    ok "DRY_RUN=1 → context 就绪在 ${ctx}，跳过 build/push"
-    return 0
-  fi
-  build_image "$image" "$ctx"
-  info "context 保留在 $ctx"
-}
-
-make_cost_guard_stub() {
-  local dir="$1"
-  if [[ -d "$dir" ]] && [[ -n "$(ls -A "$dir" 2>/dev/null)" ]]; then
-    die "$dir 非空 —— 私有 submodule 不能打进公开镜像，请检查 rsync 排除规则"
-  fi
-  info "生成 cost-guard stub → $dir"
-  mkdir -p "$dir/src"
-  cat > "$dir/package.json" <<'JSON'
-{
-  "name": "@context-proxy/cost-guard",
-  "version": "0.0.0-stub",
-  "description": "Placeholder for the optional cost-guard extension. The proxy falls back to passthrough routing when the real module is absent.",
-  "type": "module",
-  "main": "src/index.js",
-  "exports": { ".": "./src/index.js" },
-  "private": true
-}
-JSON
-  cat > "$dir/src/index.js" <<'JS'
-// Placeholder for the optional @context-proxy/cost-guard extension.
-// src/guard-adapter.ts imports this package dynamically and degrades to
-// passthrough routing when the real implementation is unavailable.
-export const CostGuard = undefined;
-export const setAnalyzerDebug = undefined;
-export const resolveAgentProfile = undefined;
-JS
-}
+# 2026-11-01 DSH 特化 Wave 2B：memory-proxy 制品随 MemoryProxy 整包退场删除（ADR-0020）。
 
 # ── memory-hub ──────────────────────────────────────────────────────
 # 复用 panel-knowledge-combined/build.sh 的 context 准备逻辑（PREPARE_ONLY=1），
@@ -279,11 +197,9 @@ fi
 
 case "$TARGET" in
   memory-core)  build_memory_core ;;
-  memory-proxy) build_memory_proxy ;;
   memory-hub)   build_memory_hub ;;
   all)
     build_memory_core
-    build_memory_proxy
     build_memory_hub
     ;;
 esac

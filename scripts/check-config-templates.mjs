@@ -24,7 +24,6 @@ const TEMPLATE_DIR = resolve(ROOT, 'config/templates');
 
 const SERVICES = [
   { id: 'memorycore', label: 'MemoryCore', port: 8420 },
-  { id: 'memoryproxy', label: 'MemoryProxy', port: 8096 },
   { id: 'memoryknowledge', label: 'MemoryKnowledge', port: 8421 },
   { id: 'memorypanel', label: 'MemoryPanel', port: 8123 },
   { id: 'dsh-plugin', label: 'dsh-plugin', port: null },

@@ -4,7 +4,7 @@ import type { LogLevel } from '../infra/logger.js';
 loadDotenv();
 
 /**
- * 读取环境变量。空串/纯空白一律视为"未设置"→ 回落 fallback，与 envInt/envBool 的
+ * 读取环境变量。空串/纯空白一律视为"未设置"→ 回落 fallback，与 envInt 的
  * 语义保持一致（此前 `??` 会把 `KNOWLEDGE_AUTH_TOKEN=` 这类空行当有效值，静默把
  * baseUrl/token 变成空串）。
  */
@@ -33,28 +33,8 @@ export interface PanelConfig {
   log: { level: LogLevel; format: 'json' | 'pretty' };
   /** Knowledge Service (KS :8421) 连接配置。serviceId 按请求 instanceId 注入。 */
   knowledge: { baseUrl: string; authToken: string; timeoutMs: number };
-  /**
-   * 启动时为每个实例确保 knowledge-service LLM 绑定（走 proxy 记账）。
-   * sync=false 时完全跳过（不改变现有部署行为）。
-   */
-  knowledgeLlmBinding: {
-    sync: boolean;
-    proxyBaseUrl: string;
-  };
   /** 默认 Agent 模板文件的本地存储目录根（存 Panel 本地，按 {dir}/{instanceId}/{team_id}/template.json）。 */
   agentTemplateDir: string;
-  /**
-   * 成员自定义 LLM Provider 自服务页 → MemoryProxy /v3/admin/llm-providers 的透传根地址。
-   * 鉴权始终用登录用户自己的 user_key，**不可**在这里配共享 admin secret。
-   */
-  llmProvider: { proxyBaseUrl: string };
-}
-
-function envBool(key: string, fallback: boolean): boolean {
-  const raw = process.env[key];
-  const trimmed = raw?.trim();
-  if (trimmed === undefined || trimmed === '') return fallback;
-  return trimmed === 'true' || trimmed === '1';
 }
 
 export function loadPanelConfig(): PanelConfig {
@@ -77,13 +57,6 @@ export function loadPanelConfig(): PanelConfig {
       authToken: env('KNOWLEDGE_AUTH_TOKEN', ''),
       timeoutMs: envInt('KNOWLEDGE_TIMEOUT_MS', 15_000),
     },
-    knowledgeLlmBinding: {
-      sync: envBool('KNOWLEDGE_LLM_BINDING_SYNC', true),
-      proxyBaseUrl: env('KNOWLEDGE_LLM_PROXY_BASE_URL', 'http://127.0.0.1:8096'),
-    },
     agentTemplateDir: env('TDAI_AGENT_TEMPLATE_DIR', './data/agent-templates'),
-    llmProvider: {
-      proxyBaseUrl: env('LLM_PROVIDER_PROXY_BASE_URL', 'http://127.0.0.1:8096'),
-    },
   };
 }

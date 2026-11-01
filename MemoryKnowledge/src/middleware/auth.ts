@@ -20,7 +20,7 @@
  * 与上游的差异（本仓补齐）：上游白名单只列了 /code-graph/list 与 /code-graph/get，
  * 漏掉了 code-graph 动态注册的 8 个只读查询端点（/code-graph/search|explore|callers|
  * callees|impact|node|status|files）。上游启用 key 后这批端点会 401，而它们正是
- * Agent 查询面（src/mcp/tools.ts 的 8 个 MCP 工具转发到它们）。票面验收要求
+ * Agent 查询面（KS /v3/tools/* 的 8 个工具转发到它们，DSH 插件直连）。票面验收要求
  * 「查询不受影响」，故本仓用同一份真相源（src/codegraph-tool-names.ts）把它们纳入白名单。
  */
 

@@ -11,7 +11,7 @@
 #   3. .env 中所有必填参数已填写（非 REPLACE_ME 且非空）
 #   4. 三个镜像是否已在本地（未在本地也不算失败，只 warn）
 #   5. 目标端口是否被占用
-#   6. LLM 上游通路（memory 组 + proxy 组，各自预检）
+#   6. LLM 上游通路（memory 组预检）
 #      - openai 协议：GET {base}/models，不消耗 token
 #      - anthropic 协议：POST {base}/v1/messages max_tokens=1，消耗 ≤ 10 token
 #      - 若容器已运行，额外 docker exec 从容器内再打一次（验证容器 → LLM 网络可达）
@@ -192,12 +192,11 @@ else
   # 3. 必填参数
   MISSING=()
   for var in \
-    MEMORY_CORE_IMAGE MEMORY_HUB_IMAGE PROXY_IMAGE \
-    MEMORY_CORE_PORT PANEL_PORT KNOWLEDGE_PORT PROXY_PORT \
+    MEMORY_CORE_IMAGE MEMORY_HUB_IMAGE \
+    MEMORY_CORE_PORT PANEL_PORT KNOWLEDGE_PORT \
     MEMORY_CORE_VOLUME PANEL_VOLUME \
     MEMORY_LLM_BASE_URL MEMORY_LLM_API_KEY MEMORY_LLM_MODEL \
-    KNOWLEDGE_PUBLIC_BASE_URL \
-    PROXY_UPSTREAM_URL PROXY_UPSTREAM_API_KEY PROXY_UPSTREAM_MODEL; do
+    KNOWLEDGE_PUBLIC_BASE_URL; do
     val="${!var:-}"
     if [[ -z "$val" || "$val" == "REPLACE_ME" ]]; then
       MISSING+=("$var")
@@ -211,7 +210,7 @@ else
   fi
 
   # 4. 镜像是否本地存在
-  for img_var in MEMORY_CORE_IMAGE MEMORY_HUB_IMAGE PROXY_IMAGE; do
+  for img_var in MEMORY_CORE_IMAGE MEMORY_HUB_IMAGE; do
     img="${!img_var:-}"
     if [[ -z "$img" ]]; then continue; fi
     if $DOCKER image inspect "$img" >/dev/null 2>&1; then
@@ -223,7 +222,7 @@ else
   done
 
   # 5. 端口占用（仅提醒）
-  for port_var in MEMORY_CORE_PORT PANEL_PORT KNOWLEDGE_PORT PROXY_PORT; do
+  for port_var in MEMORY_CORE_PORT PANEL_PORT KNOWLEDGE_PORT; do
     port="${!port_var:-}"
     if [[ -z "$port" ]]; then continue; fi
     if lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -253,20 +252,6 @@ else
       "$MEMORY_LLM_BASE_URL" "$MEMORY_LLM_API_KEY" "$MEMORY_LLM_MODEL" \
       "${MEMORY_LLM_PROTOCOL:-openai}"
 
-    # proxy 组（如果与 memory 组值完全一样，说明用户填的是同一份，只验 1 次即可）
-    if [[ "$PROXY_UPSTREAM_URL" == "$MEMORY_LLM_BASE_URL" && \
-          "$PROXY_UPSTREAM_API_KEY" == "$MEMORY_LLM_API_KEY" && \
-          "$PROXY_UPSTREAM_MODEL" == "$MEMORY_LLM_MODEL" ]]; then
-      ok "proxy 组 与 memory 组完全相同，跳过重复检查"
-    else
-      # proxy 组默认按 openai 协议（与 config.yaml 一致）
-      if ! check_llm_group "proxy 组" "$PROXY_UPSTREAM_URL" "$PROXY_UPSTREAM_API_KEY" \
-           "$PROXY_UPSTREAM_MODEL" openai; then
-        ERRORS=$((ERRORS+1))
-      fi
-      check_llm_from_container tdai-proxy "proxy 组 (from container)" \
-        "$PROXY_UPSTREAM_URL" "$PROXY_UPSTREAM_API_KEY" "$PROXY_UPSTREAM_MODEL" openai
-    fi
   fi
 fi
 

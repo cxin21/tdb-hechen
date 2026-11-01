@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 单独拉起 memory-core（内核 gateway，端口 8420），首次启动自动 init-admin +
-# 把生成的 user_key 持久化到 .admin-key 供 proxy / claude-code 使用。
+# 把生成的 user_key 持久化到 .admin-key 供 DSH 插件 / CLI 使用。
 #
 # 用法：
 #   ./start-memory-core.sh
@@ -33,9 +33,9 @@ require_vars MEMORY_CORE_IMAGE MEMORY_CORE_PORT MEMORY_CORE_VOLUME
 # ── Gateway 内部管理凭据 ─────────────────────────────────────────
 # 用 ${VAR-default}（不是 :-default）：允许 .env 里显式设为空字符串来关闭 Bearer gate。
 #
-# 当前 memory-core 的 Bearer gate 与 proxy auth 存在**已知不兼容**：proxy 调
-# /v3/meta/auth/verify 时不带 Bearer（源码遗漏，见 MemoryProxy/src/auth.ts），
-# 所以 proxy 启用 auth 时必须把 MEMORY_CORE_GATEWAY_API_KEY 留空。默认已置空。
+# 2026-11-01 DSH 特化 Wave 2B：proxy 已随 MemoryProxy 整包退场，原「proxy 调
+# /v3/meta/auth/verify 不带 Bearer」的不兼容前提不再存在；此处保持默认置空以维持既有部署形态。
+# 若后续启用 Bearer gate，需同时确认 DSH 插件的 authorization 头形态。
 MEMORY_CORE_GATEWAY_API_KEY="${MEMORY_CORE_GATEWAY_API_KEY-}"
 MEMORY_CORE_ADMIN_USERNAME="${MEMORY_CORE_ADMIN_USERNAME:-admin}"
 
@@ -43,7 +43,7 @@ MEMORY_CORE_ADMIN_USERNAME="${MEMORY_CORE_ADMIN_USERNAME:-admin}"
 ADMIN_KEY_FILE="${MEMORY_CORE_ADMIN_KEY_FILE:-$SCRIPT_DIR/.admin-key}"
 
 if [[ -n "$MEMORY_CORE_GATEWAY_API_KEY" ]]; then
-  warn "MEMORY_CORE_GATEWAY_API_KEY 非空 —— proxy 的 sessionInit/auth 目前会因缺 Bearer 而失败。"
+  warn "MEMORY_CORE_GATEWAY_API_KEY 非空 —— 请确认所有调用方（DSH 插件）都带 authorization: Bearer。"
   warn "本地体验请把 .env 里的 MEMORY_CORE_GATEWAY_API_KEY 留空。"
 fi
 

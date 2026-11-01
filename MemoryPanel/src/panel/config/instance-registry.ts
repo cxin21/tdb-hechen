@@ -6,14 +6,9 @@ const instanceSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   gateway_endpoint: z.string().url(),
-  // 可选：客户端接入地址（如 CodeBuddy / ClaudeCode CLI 的 baseUrl）。
-  // 与 `gateway_endpoint` 的区别：
-  //   - `gateway_endpoint` 一定是 Panel 后端 → Kernel 的转发地址（core / gateway）,
-  //     线上是 gateway，本地开源部署可直接指 core；这个字段控制 **面板转发**，绝对不能挪。
-  //   - `proxy_endpoint` 仅供前端"客户端接入地址"卡片拼接展示。
-  //     线上部署时 gateway 前置了 proxy，两个值合一（缺省即可，回落到 gateway_endpoint 保持老行为）；
-  //     开源本地部署时 core 和 proxy 分开跑，客户端要接的是 proxy，才需要显式填这个字段。
-  proxy_endpoint: z.string().url().optional(),
+  // DSH 特化（Wave 2A）：历史可选字段 `proxy_endpoint`（客户端接 MemoryProxy 8096 的 baseUrl）
+  // 已退役 —— 唯一接入方是 DSH 插件，直连 `gateway_endpoint`(core)，没有需要单独展示的 proxy 地址。
+  // 旧配置文件若仍带该键，zod 默认忽略未知键，不会启动失败。
   api_key: z.string().min(1),
 });
 
@@ -25,8 +20,6 @@ export interface InstanceEntry {
   instance_id: string;
   name: string;
   gateway_endpoint: string;
-  /** 见 instanceSchema.proxy_endpoint 上方注释；未配置则前端回落 gateway_endpoint。 */
-  proxy_endpoint?: string;
   api_key: string;
 }
 
@@ -35,16 +28,10 @@ export interface PublicInstance {
   name: string;
   /**
    * Panel 后端 → Kernel 的转发地址（如 https://memory.ap-beijing.tencenttdai.com）。
-   * 不是 secret —— CodeBuddy / ClaudeCode CLI 用户历史上也拿它去配 baseUrl；
    * 前端不能硬编码，每个实例的 endpoint 都不同（dev/staging/prod）。
    * `api_key` 是 secret，不下发。
    */
   gateway_endpoint: string;
-  /**
-   * 可选：客户端接入 baseUrl（前端"客户端接入地址"卡片显示时用）。
-   * 缺省时前端回落到 `gateway_endpoint`，等同老行为。**Panel 转发链路不使用**。
-   */
-  proxy_endpoint?: string;
 }
 
 export class InstanceRegistryError extends Error {
@@ -93,7 +80,6 @@ export class InstanceRegistry {
       instance_id: row.id,
       name: row.name,
       gateway_endpoint: row.gateway_endpoint,
-      proxy_endpoint: row.proxy_endpoint,
       api_key: envGatewayKey || row.api_key,
     }));
     return new InstanceRegistry(entries);
@@ -108,12 +94,10 @@ export class InstanceRegistry {
   }
 
   listPublic(): PublicInstance[] {
-    return [...this.byId.values()].map(({ instance_id, name, gateway_endpoint, proxy_endpoint }) => ({
+    return [...this.byId.values()].map(({ instance_id, name, gateway_endpoint }) => ({
       instance_id,
       name,
       gateway_endpoint,
-      // 不填就不下发字段（不是显式 undefined，前端 `??` 回落更干净）
-      ...(proxy_endpoint ? { proxy_endpoint } : {}),
     }));
   }
 

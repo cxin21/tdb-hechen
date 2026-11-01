@@ -16,9 +16,11 @@ import { ITEM_ICON, usePageMeta, GROUP_ORDER_KEYS, type PageId } from '@/constan
 
 const { Body, Sider, Content } = Layout;
 
-/** 路由 path → PageId */
+/** 首页与已退役页（工作台 / LLM Provider / 接入指引）的落点 */
+const HOME_PATH = '/wiki';
+
+/** 路由 path → PageId（首页 '/' 由路由表重定向到 /wiki，故不在此表） */
 const PATH_TO_PAGE: Record<string, PageId> = {
-  '/': 'workbench_board',
   '/wiki': 'wiki',
   '/code': 'code',
   '/skills': 'skills',
@@ -27,7 +29,6 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   '/team/members': 'team_members',
   '/team/agents': 'team_agents',
   '/team/api-keys': 'api_keys',
-  '/llm-provider': 'llm_provider',
   '/settings': 'settings',
 };
 
@@ -48,7 +49,16 @@ function legacyHashToPath(): string | null {
   if (leaf === 'agents' || leaf === 'team_agents') return '/team/agents';
   if (leaf === 'team' || leaf === 'members' || leaf === 'team_members') return '/team/members';
   if (leaf === 'api_keys' || leaf === 'apikey' || leaf === 'api-keys') return '/team/api-keys';
-  if (leaf === 'llm_provider' || leaf === 'llm-provider') return '/llm-provider';
+  // 已退役页的旧链接（工作台 / llm-provider / 接入指引）：页面已不存在，落到首页
+  if (
+    leaf === 'workbench' ||
+    leaf === 'workbench_board' ||
+    leaf === 'guide' ||
+    leaf === 'llm_provider' ||
+    leaf === 'llm-provider'
+  ) {
+    return HOME_PATH;
+  }
   return null;
 }
 
@@ -61,10 +71,10 @@ export function ConsoleLayout() {
   const PAGE_META = usePageMeta();
 
   const activePage: PageId = useMemo(() => {
-    const match = Object.entries(PATH_TO_PAGE).find(
-      ([path]) => path !== '/' && location.pathname.startsWith(path),
+    const match = Object.entries(PATH_TO_PAGE).find(([path]) =>
+      location.pathname.startsWith(path),
     );
-    return match ? match[1] : 'workbench_board';
+    return match ? match[1] : 'wiki';
   }, [location.pathname]);
 
   useEffect(() => {
@@ -74,16 +84,11 @@ export function ConsoleLayout() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 使用说明页为独立页（自带返回按钮与页头），不占用多标签页栏
-  const isGuide = location.pathname === '/guide';
-
-  const [openPages, setOpenPages] = useState<PageId[]>(() => (isGuide ? [] : [activePage]));
+  const [openPages, setOpenPages] = useState<PageId[]>(() => [activePage]);
 
   useEffect(() => {
-    // /guide 独立页不把 workbench_board 等页面追加进标签栏，避免返回时多出标签
-    if (isGuide) return;
     setOpenPages((prev) => (prev.includes(activePage) ? prev : [...prev, activePage]));
-  }, [activePage, isGuide]);
+  }, [activePage]);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false,
@@ -110,13 +115,6 @@ export function ConsoleLayout() {
     setOnboardingVisible(true);
   }, [currentUserId]);
 
-  // GuidePage 底部「引导回放」通过自定义事件触发与「我的资料 → 回顾引导」一致的链路
-  useEffect(() => {
-    const onReplay = () => handleReplayOnboarding();
-    window.addEventListener('tdai-replay-onboarding', onReplay);
-    return () => window.removeEventListener('tdai-replay-onboarding', onReplay);
-  }, [handleReplayOnboarding]);
-
   const navigateTo = useCallback(
     (id: PageId) => {
       const path = PAGE_TO_PATH[id];
@@ -128,6 +126,9 @@ export function ConsoleLayout() {
   const closePage = useCallback(
     (id: PageId) => {
       setOpenPages((prev) => {
+        // 退役 workbench（affix 固定标签）后不再有永远打开的标签页：
+        // 关掉最后一个标签会导致空标签栏且无处可跳，故保留最后一个。
+        if (prev.length <= 1) return prev;
         const next = prev.filter((p) => p !== id);
         if (id === activePage && next.length > 0) {
           navigateTo(next[next.length - 1]);
@@ -160,10 +161,6 @@ export function ConsoleLayout() {
         items: byGroup.get(g)!.sort((a, b) => a.order - b.order),
       }));
   }, [userRole, PAGE_META, t]);
-
-  const workbenchGroupTitle = t('menu.group.workbench');
-  const pinnedGroup = menuGroups.find((g) => g.title === workbenchGroupTitle);
-  const restGroups = menuGroups.filter((g) => g.title !== workbenchGroupTitle);
 
   const renderMenuItem = (item: (typeof PAGE_META)[PageId]) => {
     const isActive = activePage === item.id;
@@ -199,8 +196,7 @@ export function ConsoleLayout() {
           <Sider>
             {/* 品牌已在全局 Header 展示，侧栏只承载导航（与 Memory项目公共壳层一致）。 */}
             <Menu collapsable collapsed={sidebarCollapsed} onCollapsedChange={setSidebarCollapsed}>
-              {pinnedGroup?.items.map((item) => renderMenuItem(item))}
-              {restGroups.map((group) => (
+              {menuGroups.map((group) => (
                 <Menu.Group key={group.title} title={group.title}>
                   {group.items.map((item) => renderMenuItem(item))}
                 </Menu.Group>
@@ -208,14 +204,12 @@ export function ConsoleLayout() {
             </Menu>
           </Sider>
           <Content>
-            {!isGuide && (
-              <TabBar
-                pages={openPages}
-                activePage={activePage}
-                onNavigate={navigateTo}
-                onClose={closePage}
-              />
-            )}
+            <TabBar
+              pages={openPages}
+              activePage={activePage}
+              onNavigate={navigateTo}
+              onClose={closePage}
+            />
             <Content.Body className="_memory-content-body">
               {/* key 绑定 pathname：路由切换时重挂载页面帧，触发 _page-enter 过渡，保持跨页连续性 */}
               <main key={location.pathname} className="_memory-page-frame">

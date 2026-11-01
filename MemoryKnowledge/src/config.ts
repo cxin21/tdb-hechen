@@ -217,7 +217,10 @@ export function loadConfig(): ServiceConfig {
     clickhouse,
     auth: { serviceKey: env("KNOWLEDGE_SERVICE_KEY", "") },
     llm: {
-      mode: env("LLM_MODE", "proxy") === "custom" ? "custom" : "proxy",
+      // DSH 特化（Wave 2A）：MemoryProxy 已退出链路，缺省改为 custom（BYO 直连 LLM_BASE_URL）。
+      // 仍可显式设 LLM_MODE=proxy 走旧的 per-instance proxy 绑定，但不再是缺省 ——
+      // 否则没有 proxy 时 wiki ingest 会在第一次调用就报错（不静默直连）。
+      mode: env("LLM_MODE", "custom") === "proxy" ? "proxy" : "custom",
       protocol: env("LLM_PROTOCOL", "openai") === "anthropic" ? "anthropic" : "openai",
       provider: env("LLM_PROVIDER", "custom"),
       apiKey: env("LLM_API_KEY", ""),

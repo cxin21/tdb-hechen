@@ -22,7 +22,7 @@ fi
 MEMORY_CORE_VOLUME="${MEMORY_CORE_VOLUME:-tdai-memory-core-data}"
 PANEL_VOLUME="${PANEL_VOLUME:-tdai-panel-data}"
 
-for c in tdai-proxy tdai-memory-hub tdai-memory-core; do
+for c in tdai-memory-hub tdai-memory-core; do
   if $DOCKER ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
     info "停止并移除 $c"
     $DOCKER rm -f "$c" >/dev/null
@@ -46,11 +46,6 @@ if (( PURGE == 1 )); then
   ADMIN_KEY_FILE="${MEMORY_CORE_ADMIN_KEY_FILE:-$SCRIPT_DIR/.admin-key}"
   if [[ -f "$ADMIN_KEY_FILE" ]]; then
     rm -f "$ADMIN_KEY_FILE" && ok "已删除 admin key 文件 $ADMIN_KEY_FILE"
-  fi
-  # 顺带清 proxy / memory-core 生成的 config
-  PROXY_CFG_DIR="${PROXY_CONFIG_DIR:-$SCRIPT_DIR/.proxy-config}"
-  if [[ -d "$PROXY_CFG_DIR" ]]; then
-    rm -rf "$PROXY_CFG_DIR" && ok "已删除 proxy config 目录 $PROXY_CFG_DIR"
   fi
   CORE_CFG_DIR="${MEMORY_CORE_CONFIG_DIR:-$SCRIPT_DIR/.memory-core-config}"
   if [[ -d "$CORE_CFG_DIR" ]]; then

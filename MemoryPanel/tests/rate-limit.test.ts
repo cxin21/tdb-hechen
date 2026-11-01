@@ -179,7 +179,6 @@ describe('rateLimit 中间件', () => {
       config: {
         ui: { distDir: 'tests' },
         knowledge: { baseUrl: 'http://ks-test:1', authToken: 'k', timeoutMs: 1000 },
-        llmProvider: { proxyBaseUrl: 'http://proxy-test:3' },
         metadataRemoteTimeoutMs: 1000,
       },
       logger: {

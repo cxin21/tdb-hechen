@@ -1,7 +1,7 @@
 /**
  * /api/v1/settings/{knowledge,memory}/:action — 管理员设置透传（spec §4）。
  *
- * 门控顺序（照抄 llm-providers.ts / skill/proxy.ts 既有挂载方式，逐路由挂
+ * 门控顺序（照抄 skill/proxy.ts 既有挂载方式，逐路由挂
  * validatePanelMetaHeaders —— 本仓库该中间件为 per-route，不在 app.ts 级挂载）：
  *   validatePanelMetaHeaders（解析 panelMeta：instanceId / gatewayEndpoint /
  *   gatewayApiKey / userKey）→ isCallerSystemAdmin（auth/verify → user_type）。
@@ -11,11 +11,8 @@
  *   knowledge → deps.config.knowledge.baseUrl + authToken（共享 KS 实例凭据）；
  *   memory    → panelMeta.gatewayEndpoint + gatewayApiKey（登录实例自己的 Core）。
  *   action ∈ get|set|revectorize；revectorize 仅 knowledge（Core 无此端点）。
- *   proxy-pricing → deps.config.llmProvider.proxyBaseUrl + /v3/admin/credit-pricing
- *   （MemoryProxy，内网信任模型无鉴权头；POST 翻译为上游 GET/PUT，spec §9.3）。
  *
- * 上游错误映射 Control envelope（504 超时 / 502 失败），照 routes/llm-providers.ts
- * forwardToProxy 既有模式。
+ * 上游错误映射 Control envelope（504 超时 / 502 失败）。
  */
 import type { Context } from 'hono';
 import type { Hono } from 'hono';
@@ -31,19 +28,13 @@ async function forwardJson(
   c: Context,
   url: string,
   headers: Record<string, string>,
-  opts?: { method?: string; body?: string },
 ): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), deps.config.metadataRemoteTimeoutMs);
   try {
-    // opts 提供时 body 以 opts.body 为准（GET 显式无 body）；否则沿用客户端方法语义
-    const body = opts
-      ? opts.body
-      : c.req.method === 'POST'
-        ? JSON.stringify(await c.req.json().catch(() => ({})))
-        : undefined;
+    const body = c.req.method === 'POST' ? JSON.stringify(await c.req.json().catch(() => ({}))) : undefined;
     const resp = await fetch(url, {
-      method: opts?.method ?? c.req.method,
+      method: c.req.method,
       headers: { 'content-type': 'application/json', ...headers },
       body,
       signal: ctrl.signal,
@@ -122,21 +113,5 @@ export function registerSettingsRoutes(api: Hono, deps: PanelDeps): void {
     };
     if (ctx.gatewayApiKey) headers.Authorization = `Bearer ${ctx.gatewayApiKey}`;
     return forwardJson(deps, c, `${coreBase}/v3/admin/rerank-model/${action}`, headers);
-  });
-
-  // ── Proxy 计费价目表（spec §9.3）：get|set 透传 MemoryProxy /v3/admin/credit-pricing ──
-  // 上游仅有 GET/PUT/DELETE（Task 10），故 Panel 的 POST 必须翻译方法：
-  //   get → GET（无 body）；set → PUT（body { models: [...] } 原样透传）。
-  // 上游为内网信任模型（与 rate-limits 一致），无需注入鉴权头。
-  api.post('/settings/proxy-pricing/:action', validatePanelMetaHeaders(deps), async (c: Context) => {
-    const action = c.req.param('action') ?? '';
-    if (action !== 'get' && action !== 'set') return respondControlError(c, 400, 'INVALID_ACTION');
-    const ctx = buildCtx(c);
-    if (!(await isCallerSystemAdmin(deps, ctx))) return respondControlError(c, 403, 'FORBIDDEN');
-    const base = deps.config.llmProvider.proxyBaseUrl.replace(/\/+$/, '');
-    const url = `${base}/v3/admin/credit-pricing`;
-    if (action === 'get') return forwardJson(deps, c, url, {}, { method: 'GET' });
-    const body = JSON.stringify(await c.req.json().catch(() => ({})));
-    return forwardJson(deps, c, url, {}, { method: 'PUT', body });
   });
 }

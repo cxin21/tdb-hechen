@@ -33,7 +33,6 @@ function makeDeps(): { deps: PanelDeps } {
   const deps = {
     config: {
       knowledge: { baseUrl: 'http://ks-test:1', authToken: 'ks-tok', timeoutMs: 1000 },
-      llmProvider: { proxyBaseUrl: 'http://proxy-test:3' },
       metadataRemoteTimeoutMs: 1000,
     },
     logger: { debug() {}, info() {}, warn() {}, error() {} },

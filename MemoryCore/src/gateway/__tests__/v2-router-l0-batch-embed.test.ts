@@ -76,6 +76,12 @@ async function addConversation(
   deps: Record<string, unknown>,
   body: unknown,
 ): Promise<CaptureResult> {
+  // /v3 严格隔离校验：team_id / agent_id / user_id 必填（原 /v2 的
+  // legacyCompatMode 退化路径已随 /v2 下线删除，测试按新契约补齐身份三元组）。
+  const payload = Object.assign(
+    { team_id: "team-test", agent_id: "agent-test", user_id: "user-test" },
+    body as Record<string, unknown>,
+  );
   const req = {
     headers: { authorization: "Bearer test-key", "x-tdai-service-id": "test" },
   } as unknown as IncomingMessage;
@@ -84,9 +90,9 @@ async function addConversation(
   const handled = await handleV2Route(
     req,
     res,
-    "/v2/conversation/add",
+    "/v3/conversation/add",
     "POST",
-    async <T,>() => body as T,
+    async <T,>() => payload as T,
     (_res, _status, payload) => {
       captured = payload as CaptureResult;
     },
