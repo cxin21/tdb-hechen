@@ -191,6 +191,13 @@ export interface MemoryClientDeps {
   /** Credentials reference name (never the secret itself). */
   apiKeyRef: string;
   identity: MemoryIdentity;
+  /**
+   * Per-session identity (task-117). A session bound through the start-of-session
+   * picker overrides the configured triple for THAT session's calls; undefined
+   * means "use `identity`". MUST be synchronous and IO-free: headers() is not
+   * async and runs on every request.
+   */
+  identityFor?: (sessionId?: string) => MemoryIdentity | undefined;
   requestTimeoutMs: number;
   /**
    * Byte budget for one request body. The core destroys an oversized body
@@ -281,6 +288,8 @@ export interface IdentityListResult<T> {
  */
 interface V3CallOptions {
   timeoutMs?: number;
+  /** Session this call belongs to (selects the per-session identity, task-117). */
+  sessionId?: string;
   /** Extra request headers (e.g. x-tdai-session-id, x-tdai-user-key). */
   extraHeaders?: Record<string, string>;
   /**
@@ -451,23 +460,41 @@ export class MemoryClient {
     return `${base}${path}`;
   }
 
+  /**
+   * The identity ONE call travels with: the session binding first, the configured
+   * triple second. Synchronous by contract (see MemoryClientDeps.identityFor) and
+   * defensive: a broken seam degrades to the config triple, never to a throw.
+   */
+  private identityOf(sessionId?: string): MemoryIdentity {
+    const resolver = this.deps.identityFor;
+    if (resolver !== undefined) {
+      try {
+        const bound = resolver(sessionId);
+        if (bound !== undefined) return bound;
+      } catch {
+        // Fall through to the configured triple.
+      }
+    }
+    return this.deps.identity;
+  }
+
   /** Isolation triple; missing pieces mean "not configured", not "empty string". */
-  private isolation(): Record<string, string> {
-    const { teamId, agentId, userId } = this.deps.identity;
+  private isolation(sessionId?: string): Record<string, string> {
+    const { teamId, agentId, userId } = this.identityOf(sessionId);
     return { team_id: teamId, agent_id: agentId, user_id: userId };
   }
 
-  private missingIdentity(): string | undefined {
-    const { teamId, agentId, userId } = this.deps.identity;
+  private missingIdentity(sessionId?: string): string | undefined {
+    const { teamId, agentId, userId } = this.identityOf(sessionId);
     if (nonEmpty(teamId) === undefined) return 'teamId';
     if (nonEmpty(agentId) === undefined) return 'agentId';
     if (nonEmpty(userId) === undefined) return 'userId';
     return undefined;
   }
 
-  private async headers(extra?: Record<string, string>): Promise<Record<string, string>> {
+  private async headers(extra?: Record<string, string>, sessionId?: string): Promise<Record<string, string>> {
     const headers: Record<string, string> = { ...DEFAULT_HEADERS, ...(extra ?? {}) };
-    const { serviceId, teamId, agentId, userId } = this.deps.identity;
+    const { serviceId, teamId, agentId, userId } = this.identityOf(sessionId);
     const service = nonEmpty(serviceId);
     if (service !== undefined) headers['x-tdai-service-id'] = service;
     // Isolation triple as HEADERS: every v3 route validates them before the
@@ -580,7 +607,7 @@ export class MemoryClient {
     // (verify / team list / agent list) is the exception: it runs precisely
     // because the triple is still missing, and those routes do not want it.
     if (options.requireIdentity !== false) {
-      const missing = this.missingIdentity();
+      const missing = this.missingIdentity(options.sessionId);
       if (missing !== undefined) {
         this.deps.log?.debug?.(`agemem: ${path} skipped, identity missing (${missing})`);
         return { ok: false, reason: `identity missing (${missing})` };
@@ -607,8 +634,8 @@ export class MemoryClient {
         this.url(path),
         {
           method: 'POST',
-          headers: await this.headers(options.extraHeaders),
-          body: JSON.stringify(options.echoIsolationInBody === false ? body : { ...this.isolation(), ...body }),
+          headers: await this.headers(options.extraHeaders, options.sessionId),
+          body: JSON.stringify(options.echoIsolationInBody === false ? body : { ...this.isolation(options.sessionId), ...body }),
           signal: controller.signal,
         },
         { maxBytes: this.maxResponseBytes(), timeoutMs: 0, fetchImpl: this.fetchImpl },
@@ -699,7 +726,7 @@ export class MemoryClient {
   async v3<T>(
     path: string,
     body: Record<string, unknown>,
-    options: { timeoutMs?: number; extraHeaders?: Record<string, string> } = {},
+    options: { timeoutMs?: number; extraHeaders?: Record<string, string>; sessionId?: string } = {},
   ): Promise<{
     ok: boolean;
     status?: number;
@@ -712,24 +739,30 @@ export class MemoryClient {
     return this.call<T>(path, body, {
       timeoutMs: options.timeoutMs,
       extraHeaders: options.extraHeaders,
+      sessionId: options.sessionId,
     });
   }
 
-  private async post<T>(path: string, body: Record<string, unknown>, timeoutMs?: number): Promise<T | undefined> {
-    const result = await this.call<T>(path, body, { timeoutMs });
+  private async post<T>(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutMs?: number,
+    sessionId?: string,
+  ): Promise<T | undefined> {
+    const result = await this.call<T>(path, body, { timeoutMs, sessionId });
     return result.ok ? result.data : undefined;
   }
 
   /** L3 persona (head pack body). Missing persona reads as an empty string. */
-  async readCore(timeoutMs?: number): Promise<CoreReadResult | undefined> {
-    const data = await this.post<CoreReadData>(this.deps.paths.coreRead, {}, timeoutMs);
+  async readCore(timeoutMs?: number, sessionId?: string): Promise<CoreReadResult | undefined> {
+    const data = await this.post<CoreReadData>(this.deps.paths.coreRead, {}, timeoutMs, sessionId);
     if (data === undefined) return undefined;
     const updatedAt = nonEmpty(data.updated_at);
     return { content: typeof data.content === 'string' ? data.content : '', updatedAt };
   }
 
   /** L1 recall: natural-language query over atomic memories. */
-  async searchAtomic(query: string, limit: number, timeoutMs?: number): Promise<RecallHit[]> {
+  async searchAtomic(query: string, limit: number, timeoutMs?: number, sessionId?: string): Promise<RecallHit[]> {
     const trimmed = query.trim();
     if (trimmed === '') return [];
     const safeLimit = Math.min(50, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 5)));
@@ -737,6 +770,7 @@ export class MemoryClient {
       this.deps.paths.atomicSearch,
       { query: trimmed, limit: safeLimit },
       timeoutMs,
+      sessionId,
     );
     if (data === undefined) return [];
     return parseHits(data.items).slice(0, safeLimit);
@@ -749,8 +783,8 @@ export class MemoryClient {
    * rendering must use `listScenariosRich()` below — the two states need
    * opposite operator responses.
    */
-  async listScenarios(timeoutMs?: number): Promise<string[]> {
-    const data = await this.post<ScenarioListData>(this.deps.paths.scenarioLs, {}, timeoutMs);
+  async listScenarios(timeoutMs?: number, sessionId?: string): Promise<string[]> {
+    const data = await this.post<ScenarioListData>(this.deps.paths.scenarioLs, {}, timeoutMs, sessionId);
     if (data === undefined) return [];
     return parseScenarios(data.entries);
   }
@@ -763,8 +797,8 @@ export class MemoryClient {
    * Directory entries come back as `dir/`; the scene index lists files, so they
    * are dropped here instead of rendering a dangling `- scene_blocks/dir/` line.
    */
-  async listScenariosRich(timeoutMs?: number): Promise<L2FetchOutcome> {
-    const result = await this.call<ScenarioListData>(this.deps.paths.scenarioLs, {}, { timeoutMs });
+  async listScenariosRich(timeoutMs?: number, sessionId?: string): Promise<L2FetchOutcome> {
+    const result = await this.call<ScenarioListData>(this.deps.paths.scenarioLs, {}, { timeoutMs, sessionId });
     if (!result.ok) return { ok: false, reason: scenarioFailureReason(result) };
     const outcome = parseL2Outcome(result.data);
     if (!outcome.ok) return outcome;
@@ -805,7 +839,7 @@ export class MemoryClient {
     const result = await this.call<{ block?: unknown; meta?: unknown }>(
       this.deps.paths.recall,
       body,
-      { timeoutMs: options.timeoutMs, extraHeaders: headers, echoIsolationInBody: false },
+      { timeoutMs: options.timeoutMs, sessionId: options.sessionId, extraHeaders: headers, echoIsolationInBody: false },
     );
     if (!result.ok) return { ok: false, status: result.status, reason: result.reason, aborted: result.aborted };
     const raw = result.data?.block;
@@ -824,11 +858,11 @@ export class MemoryClient {
    * all issued in parallel and settled independently, so one failing leg never
    * removes the others. Mirrors MemoryCore/openclaw-plugin/src/hooks/recall.ts.
    */
-  async recallCombined(query: string, limit: number, options: RecallCombinedOptions = {}, timeoutMs?: number): Promise<RecallCombined> {
+  async recallCombined(query: string, limit: number, options: RecallCombinedOptions = {}, timeoutMs?: number, sessionId?: string): Promise<RecallCombined> {
     const [search, persona, scenarios] = await Promise.allSettled([
-      this.searchAtomic(query, limit, timeoutMs),
-      options.includePersona === true ? this.readCore(timeoutMs) : Promise.resolve(undefined),
-      options.includeScenarios === true ? this.listScenarios(timeoutMs) : Promise.resolve([]),
+      this.searchAtomic(query, limit, timeoutMs, sessionId),
+      options.includePersona === true ? this.readCore(timeoutMs, sessionId) : Promise.resolve(undefined),
+      options.includeScenarios === true ? this.listScenarios(timeoutMs, sessionId) : Promise.resolve([]),
     ]);
     return {
       hits: search.status === 'fulfilled' ? search.value : [],
@@ -840,8 +874,8 @@ export class MemoryClient {
   /**
    * Backwards-compatible alias used by the recall tool and the volatile block.
    */
-  async recall(query: string, topK: number, timeoutMs?: number): Promise<RecallHit[]> {
-    return this.searchAtomic(query, topK, timeoutMs);
+  async recall(query: string, topK: number, timeoutMs?: number, sessionId?: string): Promise<RecallHit[]> {
+    return this.searchAtomic(query, topK, timeoutMs, sessionId);
   }
 
   /**
@@ -911,7 +945,7 @@ export class MemoryClient {
     // per request as a whole, and the core drops a body near 1 MiB by destroying
     // the socket (ECONNRESET, no 413). Both are enforced on the payload, so a
     // long turn becomes several ordered requests instead of one lost turn.
-    const envelope = { ...this.isolation(), session_id: session };
+    const envelope = { ...this.isolation(session), session_id: session };
     const envelopeBytes = jsonByteLength({ ...envelope, messages: [] }) - 2;
     const maxBytes = this.maxRequestBytes();
     const fitted: Array<{ role: string; content: string; timestamp: string }> = [];
@@ -937,7 +971,7 @@ export class MemoryClient {
       const result = await this.call<Record<string, unknown>>(
         this.deps.paths.conversationAdd,
         { session_id: session, messages: chunks[index] },
-        { timeoutMs },
+        { timeoutMs, sessionId: session },
       );
       if (!result.ok) {
         const prefix = chunks.length > 1 ? `chunk ${index + 1}/${chunks.length}: ` : '';
@@ -979,7 +1013,7 @@ export class MemoryClient {
       this.deps.log?.debug?.("agemem: skill/conversation/add skipped, session_id contains '|'");
       return { ok: false, reason: "session_id must not contain '|'" };
     }
-    for (const [field, value] of Object.entries(this.isolation())) {
+    for (const [field, value] of Object.entries(this.isolation(session))) {
       if (value.includes('|')) {
         this.deps.log?.debug?.(`agemem: skill/conversation/add skipped, ${field} contains '|'`);
         return { ok: false, reason: `${field} must not contain '|'` };
@@ -1021,7 +1055,7 @@ export class MemoryClient {
     // extractor the same exchange twice and double the L2 buffer. The byte
     // budget applies here too — a 3.75 MB turn was reset by the core's socket
     // guard with no 413, so it never reached the extractor at all.
-    const envelope = { ...this.isolation(), session_id: session };
+    const envelope = { ...this.isolation(session), session_id: session };
     const envelopeBytes = jsonByteLength({ ...envelope, messages: [] }) - 2;
     const maxBytes = this.maxRequestBytes();
     const fitted: SkillConversationMessage[] = [];
@@ -1040,7 +1074,7 @@ export class MemoryClient {
       const result = await this.call<Record<string, unknown>>(
         this.deps.paths.skillConversationAdd,
         { session_id: session, messages: chunks[index] },
-        { timeoutMs },
+        { timeoutMs, sessionId: session },
       );
       if (!result.ok) {
         const prefix = chunks.length > 1 ? `chunk ${index + 1}/${chunks.length}: ` : '';
@@ -1084,6 +1118,7 @@ export class MemoryClient {
       this.deps.paths.conversationDelete,
       { session_ids: [session] },
       timeoutMs,
+      session,
     );
     return data !== undefined;
   }
@@ -1164,6 +1199,61 @@ export class MemoryClient {
       if (agentId === undefined) return undefined;
       return { agentId, name: nonEmpty(item.name), teamId: nonEmpty(item.team_id) };
     }, options.timeoutMs);
+  }
+
+  /**
+   * POST /v3/meta/config/user/get { user_id, module } -> `{ param_name:
+   * effective_value }` (MemoryProxy/src/meta/client.ts:290-300).
+   *
+   * The kernel's config route forces `assertCallerIsOwner`, so the user key we
+   * send must belong to `userId` — callers pass the id resolved from that very
+   * key, never one from config. This route needs `x-tdai-user-key` like the
+   * other /v3/meta/* routes, and a missing key is a 401 there, not a core-key
+   * problem, so auth failures are not reported as such.
+   *
+   * `null` means "could not read" (timeout, non-200, malformed envelope) and
+   * the caller degrades to `{ kind: 'ask' }`: a core that is down must not
+   * change how the session starts.
+   */
+  async getUserSessionInit(
+    userId: string,
+    module: string,
+    options: { userKey?: string; timeoutMs?: number } = {},
+  ): Promise<Record<string, string> | null> {
+    const user = nonEmpty(userId);
+    const mod = nonEmpty(module);
+    if (user === undefined || mod === undefined) return null;
+    const key = nonEmpty(options.userKey);
+    const extraHeaders: Record<string, string> = {};
+    if (key !== undefined) extraHeaders['x-tdai-user-key'] = key;
+    // Exactly the two fields the kernel schema declares; the identity triple is
+    // NOT part of this body.
+    const result = await this.call<{ items?: unknown }>(
+      this.deps.paths.metaUserConfig,
+      { user_id: user, module: mod },
+      {
+        timeoutMs: options.timeoutMs,
+        extraHeaders,
+        echoIsolationInBody: false,
+        // The user key names the row; a caller with no resolved identity yet is
+        // exactly who asks this question.
+        requireIdentity: false,
+        reportAuthFailure: false,
+      },
+    );
+    if (!result.ok) return null;
+    const raw = result.data?.items;
+    if (!Array.isArray(raw)) return null;
+    const out: Record<string, string> = {};
+    for (const entry of raw) {
+      if (entry === null || typeof entry !== 'object') continue;
+      const item = entry as Record<string, unknown>;
+      const name = nonEmpty(item.param_name);
+      const value = item.effective_value;
+      if (name === undefined || typeof value !== 'string') continue;
+      out[name] = value;
+    }
+    return out;
   }
 
   /** Shared plumbing for the two metadata list routes. */

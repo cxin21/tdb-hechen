@@ -33,6 +33,14 @@ export interface RecallToolDeps {
   defaultLimit: number;
   timeoutMs: number;
   log?: LoggerLike;
+  /**
+   * The session this host is serving right now, when it knows one. The tool
+   * call itself carries no session, so without this the search would use the
+   * configured triple while the volatile block of the same turn used the
+   * session's bound one — two identities in one turn (measured in the
+   * task-117 e2e: recall hit agent A, memory_recall hit agent B).
+   */
+  sessionId?: () => string | undefined;
 }
 
 export function createRecallTool(deps: RecallToolDeps): ToolDefinitionShape {
@@ -71,7 +79,7 @@ export function createRecallTool(deps: RecallToolDeps): ToolDefinitionShape {
       const requested = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : deps.defaultLimit;
       const limit = Math.min(50, Math.max(1, Math.floor(requested)));
       try {
-        const hits = await deps.client.recall(query, limit, deps.timeoutMs);
+        const hits = await deps.client.recall(query, limit, deps.timeoutMs, deps.sessionId?.());
         return formatHits(hits);
       } catch (error) {
         deps.log?.warn?.('agemem: recall tool failed', error);

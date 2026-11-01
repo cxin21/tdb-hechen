@@ -91,7 +91,24 @@ export function createFakeContext(options?: {
       return (listeners.get(event) ?? []).length;
     },
     firstListener(event: string) {
-      return (listeners.get(event) ?? [])[0];
+      const bucket = listeners.get(event) ?? [];
+      if (bucket.length <= 1) return bucket[0];
+      // The plugin now registers TWO pre-step listeners (the identity picker
+      // task-117 and the volatile block). Handing back only the first one
+      // silently skipped the volatile injection in every test that drove a
+      // step, so a multi-listener event is composed the way the host runs it:
+      // listener 1 -> next() -> listener 2 -> ... -> the caller's next().
+      return (...args: any[]) => {
+        const [payload, terminal] = args;
+        let index = 0;
+        const step = async (): Promise<unknown> => {
+          const listener = bucket[index];
+          if (listener === undefined) return typeof terminal === 'function' ? terminal() : terminal;
+          index += 1;
+          return listener(payload, step);
+        };
+        return step();
+      };
     },
     sectionText() {
       const last = sections[sections.length - 1];

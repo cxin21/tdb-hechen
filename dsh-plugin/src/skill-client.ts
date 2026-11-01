@@ -31,13 +31,18 @@ export interface SkillCallResult<T> {
 export type SkillCaller = <T>(
   path: string,
   body: Record<string, unknown>,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; sessionId?: string },
 ) => Promise<SkillCallResult<T>>;
 
 export interface SkillClientDeps {
   call: SkillCaller;
   /** Default per-call budget, from `skill.timeoutMs`. */
   timeoutMs: number;
+  /**
+   * Session whose bound identity these calls travel with (task-117). Read per
+   * call: a skill read happens inside a turn, after that session was bound.
+   */
+  sessionId?: () => string | undefined;
   log?: LoggerLike;
 }
 
@@ -70,6 +75,12 @@ export interface SkillRecord {
   content?: string;
   manifest?: unknown;
   [key: string]: unknown;
+}
+
+/** One `/v3/skill/get` answer while a write is in flight: version + the head record. */
+interface HeadVersion {
+  version: number;
+  record: SkillRecord;
 }
 
 export interface SkillSearchItem extends SkillRecord {
@@ -128,6 +139,25 @@ export const SKILL_ROUTES = {
   forceArchive: '/v3/skill/conversation/force-archive',
 } as const;
 
+/**
+ * The core parses every skill body as a SKILL.md file, so `content` must start
+ * with YAML frontmatter carrying `name` and `description` — a bare markdown body
+ * answers code 42203 `[skill][format] missing frontmatter` (measured 2026-11-01,
+ * MemoryCore/src/core/skill/skill-format.ts:49). The model should not have to
+ * know that: when the caller passes plain markdown we synthesize the fence from
+ * the name (which the tool already requires) and the one-line description.
+ */
+function withFrontmatter(name: string, content: string, description?: string): string {
+  if (/^---\r?\n/.test(content)) return content;
+  const firstLine = content
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .find((line) => line !== '') ?? name;
+  const summary = (description ?? firstLine).replace(/\s+/g, ' ').trim().slice(0, 160) || name;
+  const yamlName = /^[a-z0-9][a-z0-9-]*$/.test(name) ? name : JSON.stringify(name);
+  return ['---', `name: ${yamlName}`, `description: ${JSON.stringify(summary)}`, '---', '', content.trim(), ''].join('\n');
+}
+
 /** SKILL_VERSION_STALE: the version we sent is no longer the head. */
 const STALE_VERSION_CODE = 40901;
 
@@ -146,7 +176,16 @@ export class SkillClient {
     timeoutMs?: number,
   ): Promise<SkillOutcome<T>> {
     try {
-      const result = await this.deps.call<T>(path, body, { timeoutMs: timeoutMs ?? this.timeoutMs });
+      // One seam for the session (task-117): every skill read/write travels with
+      // the identity the human picked at session start, not the mount triple.
+      const sessionId = this.deps.sessionId?.();
+      const result = await this.deps.call<T>(
+        path,
+        body,
+        sessionId === undefined
+          ? { timeoutMs: timeoutMs ?? this.timeoutMs }
+          : { timeoutMs: timeoutMs ?? this.timeoutMs, sessionId },
+      );
       if (result.ok) return { ok: true, data: result.data };
       return {
         ok: false,
@@ -262,6 +301,12 @@ export class SkillClient {
   async create(input: {
     name: string;
     content: string;
+    /**
+     * One sentence on when to use the skill. Goes into the YAML frontmatter
+     * the core requires; when the caller's markdown already carries frontmatter
+     * this is ignored.
+     */
+    description?: string;
     resources?: Array<{ path: string; content: string; encoding?: 'utf-8' | 'base64'; mime_type?: string; is_executable?: boolean }>;
     metadata?: Record<string, unknown>;
   }): Promise<SkillOutcome<SkillRecord>> {
@@ -269,8 +314,18 @@ export class SkillClient {
     if (name === '') return { ok: false, error: 'empty skill name' };
     if (typeof input.content !== 'string' || input.content === '') return { ok: false, error: 'empty skill content' };
     if (name.length > 64) return { ok: false, error: 'skill name longer than 64 characters' };
-    const body: Record<string, unknown> = { name, content: input.content };
-    if (Array.isArray(input.resources) && input.resources.length > 0) body.resources = input.resources.slice(0, 100);
+    const body: Record<string, unknown> = { name, content: withFrontmatter(name, input.content, input.description) };
+    // The core's schema makes `encoding` a REQUIRED enum on every resource
+    // (measured 2026-11-01: omitting it answers code 40001
+    // `resources.0.encoding: Invalid option: expected one of "utf-8"|"base64"`),
+    // while our own type calls it optional. Normalize here so a caller — the
+    // model included — never has to know that quirk.
+    if (Array.isArray(input.resources) && input.resources.length > 0) {
+      body.resources = input.resources.slice(0, 100).map((file) => ({
+        ...file,
+        encoding: file?.encoding === 'base64' ? 'base64' : 'utf-8',
+      }));
+    }
     if (input.metadata !== undefined) body.metadata = input.metadata;
     return this.post<SkillRecord>(SKILL_ROUTES.create, body);
   }
@@ -278,7 +333,15 @@ export class SkillClient {
   /** Replace a skill's body. Version comes from a fresh read (see header). */
   async update(skillId: string, content: string): Promise<SkillOutcome<SkillRecord>> {
     if (typeof content !== 'string' || content === '') return { ok: false, error: 'empty skill content' };
-    return this.writeWithVersion<SkillRecord>(SKILL_ROUTES.update, skillId, (version) => ({ skill_id: skillId, expected_version: version, content }));
+    // A replacement body still has to be a valid SKILL.md; the model naturally
+    // sends plain markdown, so borrow the head's name/description for the fence.
+    // The head record comes from the version read writeWithVersion already
+    // performs — no extra round trip.
+    const needFence = !/^---\r?\n/.test(content);
+    return this.writeWithVersion<SkillRecord>(SKILL_ROUTES.update, skillId, (version, record) => {
+      const next = needFence ? withFrontmatter(String(record.name ?? ''), content, record.description as string | undefined) : content;
+      return { skill_id: skillId, expected_version: version, content: next };
+    });
   }
 
   /** Replace one literal span inside a skill's body. */
@@ -308,10 +371,15 @@ export class SkillClient {
     const list = Array.isArray(files) ? files : [];
     if (list.length === 0) return { ok: false, error: 'empty files list' };
     if (list.length > 100) return { ok: false, error: 'more than 100 files in one call' };
+    // Same schema quirk as `create`: `encoding` is required by the core.
+    const normalized = list.map((file) => ({
+      ...file,
+      encoding: file?.encoding === 'base64' ? 'base64' : 'utf-8',
+    }));
     return this.writeWithVersion<SkillRecord>(SKILL_ROUTES.filesWrite, skillId, (version) => ({
       skill_id: skillId,
       expected_version: version,
-      files: list,
+      files: normalized,
     }));
   }
 
@@ -348,15 +416,21 @@ export class SkillClient {
 
   // ── version plumbing ─────────────────────────────────────────────────
 
-  /** Read the head version a write must quote. */
-  private async versionOf(skillId: string): Promise<SkillOutcome<number>> {
+  /**
+   * Read the head version a write must quote, plus the head record itself.
+   *
+   * The record rides along so a caller that has to DERIVE the body (update()
+   * borrowing the head name/description for the frontmatter fence) does not
+   * pay a second read: one /v3/skill/get per write, whatever the body needs.
+   */
+  private async versionOf(skillId: string): Promise<SkillOutcome<HeadVersion>> {
     const res = await this.get(skillId, { includeContent: false, includeManifest: false });
     if (!res.ok) return { ok: false, code: res.code, status: res.status, error: res.error };
     const version = Number(res.data?.version);
     if (!Number.isFinite(version) || version <= 0) {
       return { ok: false, error: 'core returned no usable version for ' + skillId };
     }
-    return { ok: true, data: Math.floor(version) };
+    return { ok: true, data: { version: Math.floor(version), record: res.data ?? ({} as SkillRecord) } };
   }
 
   /**
@@ -368,17 +442,17 @@ export class SkillClient {
   private async writeWithVersion<T>(
     path: string,
     skillId: string,
-    build: (version: number) => Record<string, unknown>,
+    build: (version: number, record: SkillRecord) => Record<string, unknown>,
   ): Promise<SkillOutcome<T>> {
     const trimmed = typeof skillId === 'string' ? skillId.trim() : '';
     if (trimmed === '') return { ok: false, error: 'empty skill_id' };
     const first = await this.versionOf(trimmed);
     if (!first.ok) return { ok: false, code: first.code, status: first.status, error: first.error };
-    const attempt = await this.post<T>(path, build(first.data as number));
+    const attempt = await this.post<T>(path, build(first.data!.version, first.data!.record));
     if (attempt.ok || attempt.code !== STALE_VERSION_CODE) return attempt;
     this.deps.log?.debug?.('agemem: skill write hit a stale version; re-reading once', { path: SKILL_ROUTES.get });
     const second = await this.versionOf(trimmed);
     if (!second.ok) return attempt;
-    return this.post<T>(path, build(second.data as number));
+    return this.post<T>(path, build(second.data!.version, second.data!.record));
   }
 }

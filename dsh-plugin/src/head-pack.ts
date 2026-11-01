@@ -50,6 +50,21 @@ const SCENE_UPDATED = /\*\*更新\*\*:\s*(\d{4}-\d{2}-\d{2})/;
 const TRUNCATION_MARKER = /\[agemem head pack truncated at \d+ chars\]/;
 /** One line of an ALREADY compressed index: `- <path>（热度 N，更新 YYYY-MM-DD）`. */
 const COMPRESSED_SCENE_LINE = /^-\s+\S+（热度 \d+，更新 \d{4}-\d{2}-\d{2}）$/m;
+/**
+ * One line of the SEGMENT-composed L2 index (task-103 shape):
+ * `- scene_blocks/<name>（更新 YYYY-MM-DD）— summary` (the date part is optional
+ * and the summary may be missing, so only the path prefix is required).
+ *
+ * Why this exists: since task-103 the pack is composed from budgeted segments,
+ * so its scene index never looks like the old `### Path:` block the structural
+ * parser was written for. Measured on 2026-11-01 against a live mount:
+ * `agemem: head pack has no parseable scene index; falling back to bare
+ * truncation {"rawChars":14204,"hasHeading":true}` — the heading WAS the L2
+ * segment header (`## 长期记忆 · 场景索引（L2）`), which matches
+ * SCENE_INDEX_HEADING, but there are no `### Path:` bodies, so the parser gave
+ * up and the (already budgeted) pack was reported as an upstream shape change.
+ */
+const L2_SECTION_LINE = /^-\s+scene_blocks\/\S+/m;
 
 export interface HeadPackScene {
   path: string;
@@ -113,18 +128,24 @@ export function compressHeadPack(text: string): string {
 /**
  * True when `text` is already the compressed shape this module produces: the
  * scene-index heading plus at least one `- <path>（热度 N，更新 YYYY-MM-DD）`
- * line and no `### Path:` bodies.
+ * line and no `### Path:` bodies — or the segment-composed L2 index (task-103
+ * shape, `- scene_blocks/<name>…`), which is the everyday shape now that
+ * index.ts composes from budgeted segments.
  *
  * Production always feeds HeadPack exactly this shape (`index.ts` compresses
  * before its budget maths, see fetchHeadPack), so a second structure pass is
  * guaranteed to fail there — that is idempotence, not a parse error. The
  * diagnostic below has to tell the two apart: the unconditional version fired
- * on every mount of the live e2e profile and read as a real bug.
+ * on every mount of the live e2e profile and read as a real bug. It raised
+ * that false alarm again on 2026-11-01 against a live mount: `hasHeading:true`
+ * (the L2 header `## 长期记忆 · 场景索引（L2）` matches SCENE_INDEX_HEADING) with
+ * zero `### Path:` bodies — a pack of exactly the shape this module produces
+ * itself.
  */
 export function isCompressedHeadPack(text: string): boolean {
   if (text === '') return false;
   if (!SCENE_INDEX_HEADING.test(text)) return false;
-  return COMPRESSED_SCENE_LINE.test(text);
+  return COMPRESSED_SCENE_LINE.test(text) || L2_SECTION_LINE.test(text);
 }
 
 export interface HeadPackDeps {
@@ -132,6 +153,15 @@ export interface HeadPackDeps {
   maxChars: number;
   refreshMs: number;
   fallbackText: string;
+  /**
+   * Asked ONCE per fetch, before any request leaves the process. The head pack
+   * is a team-scoped read (persona / scenario index / skill list) and every
+   * fetch is triggered by the machinery around the pack — mount, turn/start,
+   * the section render — all of which can run BEFORE the session knows who it
+   * is. A user whose session_init says default_associate=0 must cause none of
+   * them, so the gate lives here instead of at each call site.
+   */
+  allowFetch?: () => Promise<boolean>;
   log?: LoggerLike;
   now?: () => number;
 }
@@ -215,6 +245,9 @@ export class HeadPack {
     if (this.refreshing) return this.refreshing;
     this.refreshing = (async () => {
       try {
+        // Every path that fetches (mount, turn/start, the section render) funnels
+        // through here, so this is the one place that has to respect an opt-out.
+        if (this.deps.allowFetch !== undefined && !(await this.deps.allowFetch())) return;
         const fetched = await this.deps.fetchHeadPack();
         if (typeof fetched === 'string' && fetched.trim() !== '') {
           this.text = fetched;

@@ -59,6 +59,12 @@ export interface AgememPaths {
   metaAuthVerify: string;
   metaTeamList: string;
   metaAgentList: string;
+  /**
+   * Per-user module config (`module: "session_init"`). Read before the first
+   * card of a session: it decides ask / bypass / preset, exactly like the
+   * proxy's own init flow.
+   */
+  metaUserConfig: string;
 }
 
 export interface ServerConfig {
@@ -264,6 +270,41 @@ export interface ToolsConfig {
   recallTopK: number;
 }
 
+/**
+ * 会话开始选身份（task-117 v3）：把 proxy 的「会话初始化 — 选择 Team / Agent」
+ * 卡片搬到宿主原生 userQuestions 上。
+ *
+ * 为什么放在 pre-step 而不是 Settings：用户原话是「在会话开始的时候弹窗」——
+ * team/agent 是**这个会话**的记忆范围，不是一份全局配置；同一个用户换会话
+ * 可能要换 team。绑定按 session 持久化，config 三 ID 退化成兜底。
+ */
+export interface IdentityConfig {
+  /**
+   * 会话开始的**总开关**：false = 完全不读用户级配置、不弹卡，回落 config 三
+   * ID。给自动化/脚本场景用（那里没有人类回答问题）。
+   *
+   * true 时「弹不弹卡」不由这里决定，而由用户级 session_init 配置决定（见
+   * followUserSessionInit）：preset/bypass 静默，ask 每会话弹。
+   */
+  askAtSessionStart: boolean;
+  /**
+   * 遵循 TDB 用户级 `session_init` 配置（manual_select / default_associate /
+   * default_team_id / default_agent_id），与原 MemoryProxy 流程一致。
+   *
+   * true（缺省）：读配置 → preset 静默绑定 / bypass 不关联 / ask 弹卡；
+   * false：跳过读配置，一律按 ask 走（即每会话弹卡）。
+   */
+  followUserSessionInit: boolean;
+  /** 提问到人回答的总预算；超时按「跳过」落一条绑定，下一轮不再弹。 */
+  askTimeoutMs: number;
+  /** 绑定写状态文件：重启后同 session 不再弹。false = 只记内存。 */
+  rememberSession: boolean;
+  /** 把「跳过」选项放在第一位（缺省行为是「不关联」，不是随机选一个 team）。 */
+  skipDefault: boolean;
+  /** 绑定状态文件路径；空 = 由 outbox 目录推导，只在 rememberSession 时写。 */
+  statePath: string;
+}
+
 /** 资产反思段（task-82）：DSH 侧的 asset_reflection 等价实现。 */
 export interface AssetReflectionConfig {
   /** 总开关：关掉后连 section 都不注册，提示词零改动。 */
@@ -308,6 +349,7 @@ export interface AgememConfig {
   volatile: VolatileConfig;
   writeback: WritebackConfig;
   tools: ToolsConfig;
+  identity: IdentityConfig;
   skill: SkillConfig;
   assetReflection: AssetReflectionConfig;
   debug: boolean;
@@ -356,6 +398,7 @@ export const DEFAULT_CONFIG: AgememConfig = {
     metaAuthVerify: '/v3/meta/auth/verify',
     metaTeamList: '/v3/meta/team/list',
     metaAgentList: '/v3/meta/agent/list',
+    metaUserConfig: '/v3/meta/config/user/get',
   },
   headPack: {
     enabled: true,
@@ -442,6 +485,20 @@ export const DEFAULT_CONFIG: AgememConfig = {
     enabled: true,
     recall: true,
     recallTopK: 8,
+  },
+  identity: {
+    // On by default: it is the proxy's own behaviour, and it is fail-open -- a
+    // composition without the question service logs one warn and uses config.
+    askAtSessionStart: true,
+    // Faithful to the proxy: the per-user session_init config decides whether a
+    // card appears at all (preset/bypass silent, ask every session).
+    followUserSessionInit: true,
+    // One minute: long enough that a human reading the card still answers, short
+    // enough that a step is never parked on a card nobody will see.
+    askTimeoutMs: 60000,
+    rememberSession: true,
+    skipDefault: false,
+    statePath: '',
   },
   skill: {
     enabled: true,
@@ -552,6 +609,7 @@ function cloneDefaults(): AgememConfig {
     },
     writeback: { ...DEFAULT_CONFIG.writeback },
     tools: { ...DEFAULT_CONFIG.tools },
+    identity: { ...DEFAULT_CONFIG.identity },
     skill: { ...DEFAULT_CONFIG.skill },
     assetReflection: { ...DEFAULT_CONFIG.assetReflection },
   };
@@ -645,6 +703,16 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     REFLECTION_MIN_CHARS,
     REFLECTION_MAX_CHARS,
   ));
+  const identity = mergeSection(DEFAULT_CONFIG.identity, raw.identity, warnings, 'identity.');
+  // A 0ms question budget would abort before the card is painted; 5 minutes is
+  // the ceiling where a parked step would look like a hung host.
+  identity.askTimeoutMs = Math.floor(pickNumber(
+    identity.askTimeoutMs,
+    DEFAULT_CONFIG.identity.askTimeoutMs,
+    1000,
+    300000,
+  ));
+  identity.statePath = typeof identity.statePath === 'string' ? identity.statePath.trim() : '';
   const skill = mergeSection(DEFAULT_CONFIG.skill, raw.skill, warnings, 'skill.');
   skill.headPackChars = Math.floor(pickNumber(skill.headPackChars, DEFAULT_CONFIG.skill.headPackChars, 0, 64000));
   skill.searchTopK = Math.floor(pickNumber(skill.searchTopK, DEFAULT_CONFIG.skill.searchTopK, 1, 50));
@@ -693,6 +761,7 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     volatile,
     writeback,
     tools: mergeSection(DEFAULT_CONFIG.tools, raw.tools, warnings, 'tools.'),
+    identity,
     skill,
     assetReflection,
     // Explicit config wins; otherwise AGEMEM_DEBUG decides.

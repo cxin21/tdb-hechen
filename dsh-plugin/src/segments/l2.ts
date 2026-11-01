@@ -57,14 +57,16 @@ export function resetL2StatusForTests(): void {
 
 /** The L2 fetch never throws: a failure is an outcome with a reason. */
 async function fetchOutcome(
-  client: { listScenariosRich?: (timeoutMs?: number) => Promise<L2FetchOutcome> },
+  client: { listScenariosRich?: (timeoutMs?: number, sessionId?: string) => Promise<L2FetchOutcome> },
   timeoutMs: number,
+  sessionId?: string,
 ): Promise<L2FetchOutcome> {
   // A test fake (or an older client) may not carry the rich method; the failure
   // is reported as such instead of throwing inside the assembler.
   if (typeof client.listScenariosRich !== 'function') return { ok: false, reason: 'no_client' };
   try {
-    return await client.listScenariosRich(timeoutMs);
+    // sessionId selects the per-session identity (task-117).
+    return await client.listScenariosRich(timeoutMs, sessionId);
   } catch (error) {
     return { ok: false, reason: classifyL2Failure(error) };
   }
@@ -91,9 +93,9 @@ registerHeadPackSegment({
   // the model which L2 scenes exist'; it now selects this segment instead of a
   // bare path list appended to the persona.
   enabled: (config) => config.headPack.enabled && config.headPack.includeScenarioIndex,
-  fetch: async ({ client, config, log }) => {
+  fetch: async ({ client, config, log, sessionId }) => {
     const budget = l2Budget(config);
-    const outcome = await fetchOutcome(client, config.headPack.timeoutMs);
+    const outcome = await fetchOutcome(client, config.headPack.timeoutMs, sessionId?.());
     const section = renderL2Section(outcome.ok ? outcome.entries : [], { budget });
     lastLabel = l2StatusLabel(outcome, section);
     if (!outcome.ok) {

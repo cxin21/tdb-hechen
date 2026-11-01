@@ -720,6 +720,74 @@ describe('recall block (DS-RECALL-MERGE-001)', () => {
       expect(calls[1].body.limit).toBe(1);
     });
 
+    it('reads the per-user session_init params as a flat map', async () => {
+      const { fetchImpl, calls } = metaFixture((path) =>
+        path === '/v3/meta/config/user/get'
+          ? envelope({
+            user_id: 'usr-2m7b1144d9',
+            module: 'session_init',
+            items: [
+              { module: 'session_init', param_name: 'manual_select', param_key: 'session_init.manual_select', effective_value: '0' },
+              { module: 'session_init', param_name: 'default_associate', param_key: 'session_init.default_associate', effective_value: '1' },
+              { module: 'session_init', param_name: 'default_team_id', param_key: 'session_init.default_team_id', effective_value: 'team-2k12lgb650' },
+            ],
+          })
+          : undefined,
+      );
+      const result = await createClient(fetchImpl, { identity: emptyIdentity })
+        .getUserSessionInit('usr-2m7b1144d9', 'session_init', { userKey: 'user-key-abc' });
+
+      expect(result).toEqual({
+        manual_select: '0',
+        default_associate: '1',
+        default_team_id: 'team-2k12lgb650',
+      });
+      expect(calls[0].path).toBe('/v3/meta/config/user/get');
+      expect(calls[0].body).toEqual({ user_id: 'usr-2m7b1144d9', module: 'session_init' });
+      expect(calls[0].headers['x-tdai-user-key']).toBe('user-key-abc');
+    });
+
+    it('returns an empty map (not null) when the user has no session_init row', async () => {
+      const { fetchImpl } = metaFixture(() => envelope({ items: [] }));
+      await expect(
+        createClient(fetchImpl, { identity: emptyIdentity }).getUserSessionInit('usr-9', 'session_init', { userKey: 'k' }),
+      ).resolves.toEqual({});
+    });
+
+    it('returns null — "unreadable, so ask" — for a non-array item list or a failure', async () => {
+      const noItems = metaFixture(() => envelope({ user_id: 'usr-9' }));
+      await expect(
+        createClient(noItems.fetchImpl, { identity: emptyIdentity }).getUserSessionInit('usr-9', 'session_init', { userKey: 'k' }),
+      ).resolves.toBeNull();
+
+      const down = metaFixture(() => new Response(JSON.stringify({ code: 503, message: 'down' }), { status: 503 }));
+      await expect(
+        createClient(down.fetchImpl, { identity: emptyIdentity }).getUserSessionInit('usr-9', 'session_init', { userKey: 'k' }),
+      ).resolves.toBeNull();
+    });
+
+    it('never calls out with a blank user id or module', async () => {
+      const { fetchImpl, calls } = metaFixture(() => undefined);
+      const client = createClient(fetchImpl, { identity: emptyIdentity });
+      await expect(client.getUserSessionInit('  ', 'session_init', { userKey: 'k' })).resolves.toBeNull();
+      await expect(client.getUserSessionInit('usr-9', '  ', { userKey: 'k' })).resolves.toBeNull();
+      expect(calls).toHaveLength(0);
+    });
+
+    it('drops entries whose effective_value is not a string (no guessing)', async () => {
+      const { fetchImpl } = metaFixture(() => envelope({
+        items: [
+          { param_name: 'manual_select', effective_value: '0' },
+          { param_name: 'default_associate', effective_value: 1 },
+          { param_name: '', effective_value: 'team-x' },
+          { effective_value: 'orphan' },
+        ],
+      }));
+      await expect(
+        createClient(fetchImpl, { identity: emptyIdentity }).getUserSessionInit('usr-9', 'session_init', { userKey: 'k' }),
+      ).resolves.toEqual({ manual_select: '0' });
+    });
+
     it('rejects an empty team id for the agent list without calling out', async () => {
       const { fetchImpl, calls } = metaFixture(() => undefined);
       await expect(createClient(fetchImpl, { identity: emptyIdentity }).listAgents('  ', 'usr-9', { userKey: 'k' }))

@@ -105,12 +105,15 @@ describe('SkillClient writes are model-transparent (read-modify-write)', () => {
       () => ({ ok: true, data: { ...RECORD, version: 4 } }),
     ]);
 
-    const outcome = await client.update('skl-1', 'new body');
+    // A body that already has its fence is passed through byte for byte, and
+    // the version read is still exactly one round trip.
+    const body = '---' + LF + 'name: ct-to-order' + LF + 'description: mine' + LF + '---' + LF + LF + 'new body' + LF;
+    const outcome = await client.update('skl-1', body);
 
     expect(outcome.ok).toBe(true);
     expect(calls.map((entry) => entry.path)).toEqual(['/v3/skill/get', '/v3/skill/update']);
     expect(calls[0]?.body).toMatchObject({ skill_id: 'skl-1', include_content: false, include_manifest: false });
-    expect(calls[1]?.body).toMatchObject({ skill_id: 'skl-1', content: 'new body', expected_version: 3 });
+    expect(calls[1]?.body).toMatchObject({ skill_id: 'skl-1', content: body, expected_version: 3 });
   });
 
   it('re-reads once after 40901 and retries with the fresh version', async () => {
@@ -169,7 +172,58 @@ describe('SkillClient writes are model-transparent (read-modify-write)', () => {
     expect(outcome.ok).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.path).toBe('/v3/skill/create');
-    expect(calls[0]?.body).toMatchObject({ name: 'probe', content: 'body', metadata: { description: 'd' } });
+    expect(calls[0]?.body).toMatchObject({ name: 'probe', metadata: { description: 'd' } });
+  });
+
+  // Measured 2026-11-01 against the real core: a bare markdown body answers
+  // 42203 `[skill][format] missing frontmatter`, and a resource without
+  // `encoding` answers 40001. Both are core schema facts the model should not
+  // have to know, so the client fills them in.
+  it('synthesizes the frontmatter the core demands when the body is plain markdown', async () => {
+    const { calls, client } = scriptedTransport([() => ({ ok: true, data: { ...RECORD, version: 1 } })]);
+
+    await client.create({ name: 'probe-skill', content: '# 何时用' + LF + LF + '转单时。', description: 'create an order from a contract' });
+
+    const content = String(calls[0]?.body.content ?? '');
+    expect(content.startsWith('---' + LF)).toBe(true);
+    expect(content).toContain('name: probe-skill');
+    expect(content).toContain('description: "create an order from a contract"');
+    expect(content.endsWith('转单时。' + LF)).toBe(true);
+  });
+
+  it('leaves markdown that already carries frontmatter untouched', async () => {
+    const { calls, client } = scriptedTransport([() => ({ ok: true, data: { ...RECORD, version: 1 } })]);
+    const body = '---' + LF + 'name: probe-skill' + LF + 'description: mine' + LF + '---' + LF + LF + 'body' + LF;
+
+    await client.create({ name: 'probe-skill', content: body, description: 'ignored' });
+
+    expect(calls[0]?.body.content).toBe(body);
+  });
+
+  it('defaults every resource encoding to utf-8 before sending', async () => {
+    const { calls, client } = scriptedTransport([() => ({ ok: true, data: { ...RECORD, version: 1 } })]);
+
+    await client.create({ name: 'probe-skill', content: 'body', resources: [{ path: 'a.md', content: 'x' }, { path: 'b.bin', content: 'eA==', encoding: 'base64' }] });
+
+    expect(calls[0]?.body.resources).toEqual([
+      { path: 'a.md', content: 'x', encoding: 'utf-8' },
+      { path: 'b.bin', content: 'eA==', encoding: 'base64' },
+    ]);
+  });
+
+  it('borrows the head name and description when update gets a plain body', async () => {
+    const { calls, client } = scriptedTransport([
+      (body) => ('include_content' in body || 'skill_id' in body ? { ok: true, data: RECORD } : undefined),
+      () => ({ ok: true, data: { ...RECORD, version: 4 } }),
+    ]);
+
+    await client.update('skl-1', '# new body');
+
+    const content = String(calls[1]?.body.content ?? '');
+    expect(content.startsWith('---' + LF)).toBe(true);
+    expect(content).toContain('name: ct-to-order');
+    expect(content).toContain('description: "采购订单转单"');
+    expect(calls[1]?.body.expected_version).toBe(3);
   });
 
   it('writes and removes files with the same version handshake', async () => {

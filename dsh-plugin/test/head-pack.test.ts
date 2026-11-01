@@ -27,6 +27,32 @@ function makePack(fetchHeadPack: () => Promise<string | undefined>, overrides?: 
 }
 
 describe('head pack', () => {
+  it('never fetches while allowFetch says no, and fetches once it says yes', async () => {
+    const fetchHeadPack = vi.fn(async () => 'HEAD-PACK');
+    let allowed = false;
+    const pack = new HeadPack({
+      fetchHeadPack,
+      maxChars: 1000,
+      refreshMs: 1000,
+      fallbackText: 'fallback',
+      allowFetch: async () => allowed,
+      now: () => 0,
+    });
+
+    // Every fetch path funnels through refresh(), so one gate holds no matter who
+    // pulls: the section render (current) or a turn/start ensureFresh.
+    expect(pack.current()).toBe('fallback');
+    pack.ensureFresh();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fetchHeadPack).not.toHaveBeenCalled();
+    expect(pack.peek()).toBe('');
+
+    allowed = true;
+    pack.ensureFresh();
+    await vi.waitFor(() => expect(pack.peek()).toBe('HEAD-PACK'));
+    expect(fetchHeadPack).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the fallback before the first fetch and never throws', () => {
     const { pack } = makePack(async () => 'HEAD', { fallbackText: 'fallback' });
     expect(pack.peek()).toBe('');
@@ -223,6 +249,37 @@ describe('head pack structuring (narrative verbatim + one line per L2 scene)', (
     await pack.refresh();
     expect(warn).not.toHaveBeenCalled();
     expect(pack.current()).toContain('Scene Navigation');
+  });
+
+  it('recognises the segment-composed pack, whose persona no longer carries a scene tail', async () => {
+    // Measured 2026-11-01 on a live mount (task-103 shape): persona keeps only
+    // the narrative (its `### Path:` tail is stripped), the L2 segment renders
+    // `- scene_blocks/…（更新 D）— summary` under its own header. The old
+    // predicate only knew the pre-segment index, so this pack was reported as a
+    // shape change: {rawChars:14204, firstLine:'# User Narrative Profile',
+    // hasHeading:true}. The heading matches (the L2 header contains 场景索引)
+    // and there is not a single `### Path:` line — exactly our own output.
+    const composed = [
+      FIXTURE_NARRATIVE,
+      '## 长期记忆 · 场景索引（L2）',
+      '- scene_blocks/ct-order-rowno.md（更新 2026-10-31）— 行号为空根因',
+      '- scene_blocks/deploy.md（更新 2026-10-30）— 部署链路',
+    ].join('\n\n');
+    expect(structureHeadPack(composed)).toBeUndefined();
+    expect(isCompressedHeadPack(composed)).toBe(true);
+
+    const warn = vi.fn();
+    const pack = new HeadPack({
+      fetchHeadPack: async () => composed,
+      maxChars: 20_000,
+      refreshMs: 60_000,
+      fallbackText: '',
+      log: { warn, debug: vi.fn() },
+      now: () => 0,
+    });
+    await pack.refresh();
+    expect(warn).not.toHaveBeenCalled();
+    expect(pack.current()).toBe(composed);
   });
 
   it('warns once, with the raw shape, when the upstream structure really changed', async () => {

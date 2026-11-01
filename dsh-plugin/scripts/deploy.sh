@@ -36,12 +36,22 @@
 #   TDB_CORE_API_KEY   (default: server.apiKey read from ../MemoryCore/tdai-gateway.yaml,
 #                       which only exists on the core's own machine)
 #   TDB_API_KEY_REF    (default TDAI_GATEWAY_APIKEY) credentials ref / env var name
-#   TDB_TEAM_ID / TDB_AGENT_ID / TDB_USER_ID  memory isolation identity
+#   TDB_USER_KEY_REF   (default TDAI_USER_KEY) credentials ref / env var name for the
+#                      IDENTITY-layer user key (the short key that maps to a user)
+#   TDB_TEAM_ID / TDB_AGENT_ID / TDB_USER_ID  memory isolation identity (OPTIONAL)
 # Flags: --identity team,agent,user   --base-url URL   --api-key KEY
-#        --api-key-ref REF   --inline-key   --no-store-key
+#        --api-key-ref REF   --user-key-ref REF
+#        --inline-key   --no-store-key
 #        (both "flag value" and "flag=value" spellings are accepted)
 #   --api-key KEY      the core's server key; stored under --api-key-ref
 #   --api-key-ref REF  name in the credentials store (default TDAI_GATEWAY_APIKEY)
+#   --user-key-ref REF name of the identity-layer user key (default TDAI_USER_KEY).
+#                      Prefer this over --identity: the patch then carries only the
+#                      ref name, and the mount resolves user -> team -> agent itself
+#                      (invalid/ambiguous key => inert, never another user's pool).
+#   --identity a,b,c   pin the triple in the patch. OPTIONAL and mutually exclusive
+#                      with an identity-by-user-key deployment; leave it out unless
+#                      the core cannot resolve the user key on this machine.
 #   --inline-key       write the value into the patch (legacy, plaintext; warns)
 #   --no-store-key     do not touch the credentials store; the ref must already
 #                      resolve there or in env[REF], otherwise the run aborts
@@ -75,6 +85,9 @@ SERVICE_ID="${TDB_SERVICE_ID:-default}"
 # Name of the credentials ref (and the env var fallback) that carries the
 # core server key. The VALUE is never written into the patch.
 API_KEY_REF="${TDB_API_KEY_REF:-TDAI_GATEWAY_APIKEY}"
+# Identity layer: a short user key whose VALUE also never enters the patch. When
+# the triple below is empty the mount resolves user -> team -> agent from it.
+USER_KEY_REF="${TDB_USER_KEY_REF:-TDAI_USER_KEY}"
 INLINE_KEY=0
 STORE_KEY=1
 KEY_STORED=0
@@ -97,6 +110,8 @@ while [ "$#" -gt 0 ]; do
     --api-key) shift; CORE_KEY="${1:-}" ;;
     --api-key-ref=*) API_KEY_REF="${arg#*=}" ;;
     --api-key-ref) shift; API_KEY_REF="${1:-}" ;;
+    --user-key-ref=*) USER_KEY_REF="${arg#*=}" ;;
+    --user-key-ref) shift; USER_KEY_REF="${1:-}" ;;
     --inline-key) INLINE_KEY=1 ;;
     --no-store-key) STORE_KEY=0 ;;
     --identity=*)
@@ -147,6 +162,15 @@ if [ -f "$CREDENTIALS_FILE" ] && node "$CREDENTIALS_UTIL" has "$CREDENTIALS_FILE
 fi
 ENV_HAS_KEY=0
 if [ -n "${!API_KEY_REF:-}" ]; then ENV_HAS_KEY=1; fi
+# The identity-layer key is only consulted when the patch carries no triple, but
+# the plan prints whether it is available either way (an inert install is the
+# most common "deploy succeeded but nothing happens" report).
+REF_HAS_USER_KEY=0
+if [ -f "$CREDENTIALS_FILE" ] && node "$CREDENTIALS_UTIL" has "$CREDENTIALS_FILE" "$USER_KEY_REF" >/dev/null 2>&1; then
+  REF_HAS_USER_KEY=1
+fi
+ENV_HAS_USER_KEY=0
+if [ -n "${!USER_KEY_REF:-}" ]; then ENV_HAS_USER_KEY=1; fi
 
 # Never silently install an inert, unauthenticated plugin. On a cross-host
 # deploy the local tdai-gateway.yaml does not exist at all, so the old silent
@@ -192,11 +216,30 @@ say "state dir   : $STATE_DIR"
 say "tarball     : $TARBALL"
 say "core        : $CORE_BASE_URL (service $SERVICE_ID)"
 say "api key     : $([ -n "$CORE_KEY" ] && { [ "$INLINE_KEY" = "1" ] && echo "set (${#CORE_KEY} chars, written INLINE into the patch)" || echo "set (${#CORE_KEY} chars, will be stored under $API_KEY_REF)"; } || { [ "$INLINE_KEY" = "1" ] && echo "MISSING — --inline-key needs --api-key or TDB_CORE_API_KEY"; } || { [ "$STORE_KEY" = "1" ] && echo "not read here: the host resolves the ref $API_KEY_REF at runtime (credentials, then env)"; } || echo "not managed here (--no-store-key): the host must already have $API_KEY_REF")"
-say "identity    : team=$TEAM_ID agent=$AGENT_ID user=$USER_ID"
-if [ -z "$TEAM_ID" ] || [ -z "$AGENT_ID" ] || [ -z "$USER_ID" ]; then
-  printf '   !! identity incomplete: the plugin mounts but stays INERT (no read, no write).\n'
-  printf '      Pass --identity team,agent,user (or TDB_TEAM_ID/TDB_AGENT_ID/TDB_USER_ID)\n'
-  printf '      using the values the core stored your memory under.\n'
+# The triple is all-or-nothing. Empty = identity comes from the user key at mount
+# (the supported default); HALF a triple is a misconfiguration that would bind a
+# session to the wrong team, so refuse instead of installing it.
+IDENTITY_KEYS_SET=0
+for pair in "TDB_TEAM_ID:$TEAM_ID" "TDB_AGENT_ID:$AGENT_ID" "TDB_USER_ID:$USER_ID"; do
+  if [ -n "${pair#*:}" ]; then IDENTITY_KEYS_SET=$((IDENTITY_KEYS_SET + 1)); fi
+done
+if [ "$IDENTITY_KEYS_SET" != "0" ] && [ "$IDENTITY_KEYS_SET" != "3" ]; then
+  echo "identity is incomplete: set all three or none" >&2
+  echo "  got team='$TEAM_ID' agent='$AGENT_ID' user='$USER_ID'" >&2
+  echo "  none  => resolve user -> team -> agent from the user key ($USER_KEY_REF) at mount" >&2
+  echo "  three => pin them with --identity team,agent,user" >&2
+  exit 2
+fi
+if [ "$IDENTITY_KEYS_SET" = "3" ]; then
+  say "identity    : pinned team=$TEAM_ID agent=$AGENT_ID user=$USER_ID"
+else
+  say "identity    : from the user key at mount (ref $USER_KEY_REF; nothing to fill in)"
+  if [ "$REF_HAS_USER_KEY" = "0" ] && [ "$ENV_HAS_USER_KEY" = "0" ]; then
+    printf '   !! no user key found: the plugin mounts but stays INERT (no read, no write).\n'
+    printf '      Set it once:  printf %%s <user_key> | node scripts/credentials-util.mjs set %s %s\n' \
+      "$CREDENTIALS_FILE" "$USER_KEY_REF"
+    printf '      or pass --identity team,agent,user to pin the triple instead.\n'
+  fi
 fi
 
 [ -d "$PROFILE_DIR" ] || { echo "profile not initialized: $PROFILE_DIR" >&2; exit 1; }
@@ -387,9 +430,16 @@ render_entry() {
   else
     echo "          apiKeyRef: \"$API_KEY_REF\""
   fi
-  echo "          teamId: \"$TEAM_ID\""
-  echo "          agentId: \"$AGENT_ID\""
-  echo "          userId: \"$USER_ID\""
+  # Identity layer, same rule as the core key above: the patch carries the ref
+  # NAME only. With no pinned triple the mount resolves user -> team -> agent
+  # from this key (single candidate = auto-select, several = the session-start
+  # card, invalid/ambiguous = inert rather than another user's memory pool).
+  echo "          userKeyRef: \"$USER_KEY_REF\""
+  if [ "$IDENTITY_KEYS_SET" = "3" ]; then
+    echo "          teamId: \"$TEAM_ID\""
+    echo "          agentId: \"$AGENT_ID\""
+    echo "          userId: \"$USER_ID\""
+  fi
   # Operator-supplied keys (writeback.skillFeed, volatile.maxChars, debug …).
   # Indented by 8 spaces to sit under `config:`; the fragment is YAML, not a
   # list, so a stray "- " line here is a user error we surface instead of

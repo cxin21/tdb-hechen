@@ -2,13 +2,14 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { apply, composeHeadPack, inject, name } from '../src/index.js';
+import { apply, composeHeadPack, inject, name, unboundIdentityMessage } from '../src/index.js';
 import { ATOMIC_ITEMS, PERSONA, SCENARIO_ENTRIES, callsTo, coreFixture, envelope } from './helpers/core-fixtures.js';
 import { createFakeContext, runPreStep, type FakeContext } from './helpers/fake-ctx.js';
 import { userMessage } from './helpers/messages.js';
 import { VOLATILE_SOURCE_KIND } from '../src/volatile.js';
 import { VOLATILE_HEADER } from '../src/recall-source.js';
 import { resetSkillsSegmentHealthForTests } from '../src/segments/skills.js';
+
 
 // The skill listing has a process-wide circuit breaker (task-98): a case that
 // makes `/v3/skill/listing` fail three times would otherwise leave the next
@@ -43,6 +44,7 @@ function installFetch(options?: Parameters<typeof coreFixture>[0]) {
 }
 
 const applied: FakeContext[] = [];
+
 
 /** Test identity: the shipped defaults are empty on purpose (never the author's). */
 const TEST_IDENTITY = { teamId: 'team-test', agentId: 'agt-test', userId: 'usr-test' };
@@ -116,7 +118,10 @@ describe('plugin entry', () => {
     expect(section.order).toBe(10300);
     expect(section.interpolate).toBe(false);
     expect(typeof section.text).toBe('function');
-    expect(fake.listenerCount('agent/pre-step')).toBe(1);
+    // Two listeners by design (task-117): the session-start identity picker runs
+    // first, the volatile block second. One listener would mean the picker was
+    // silently dropped (a card that never appears).
+    expect(fake.listenerCount('agent/pre-step')).toBe(2);
     expect(fake.listenerCount('agent/turn-stopping')).toBe(1);
   });
 
@@ -152,7 +157,17 @@ describe('plugin entry', () => {
     // Mount-time reachability: "mounted but the core is unreachable" and "no
     // memories matched" look identical everywhere else.
     expect(line).toContain('health=ok');
+    // task-117: what the session-start picker did in this process. 'on' means
+    // the card is armed; the off/inert forms are the boot-time readings an
+    // operator compares an e2e run against.
+    expect(line).toContain('sessionIdentity=on');
+    // task-117: the settings-page loopback API is archived to
+    // scratch/archive/identity-server.ts - the session popup replaced it, so no
+    // port may appear in the ready line again.
+    expect(line).not.toContain('identityApi=');
+    expect(line).not.toContain('identityPort');
   });
+
 
   it('probes health exactly once at mount and reports a dead core in the ready line', async () => {
     const fixture = installFetch({
@@ -166,6 +181,29 @@ describe('plugin entry', () => {
     expect(callsTo(fixture.calls, '/health')).toHaveLength(1);
   });
 
+  // The host hands every `.volatile()` field over as a cosmokit reference (the
+  // Settings form writes through it), not as a plain value. `apply()` must unwrap
+  // before validating: with a bare `normalizeConfig` the endpoint silently falls
+  // back to the 8420 default and the config identity triple to empty — invisible
+  // on a host whose defaults happen to work, fatal everywhere else.
+  it('reads settings the host hands over as volatile references', async () => {
+    const fixture = installFetch();
+    const volatileRef = (value: unknown) => ({ [Symbol.for('cosmokit.volatile.write')]: true, get: () => value });
+    await startApp({
+      server: {
+        baseUrl: volatileRef('http://127.0.0.1:19999'),
+        teamId: volatileRef('team-vol'),
+        agentId: volatileRef('agt-vol'),
+        userId: volatileRef('usr-vol'),
+      },
+    });
+
+    const health = callsTo(fixture.calls, '/health')[0];
+    expect(health.url.startsWith('http://127.0.0.1:19999/')).toBe(true);
+    expect(health.headers['x-tdai-team-id']).toBe('team-vol');
+    expect(health.headers['x-tdai-agent-id']).toBe('agt-vol');
+    expect(health.headers['x-tdai-user-id']).toBe('usr-vol');
+  });
   it('reports a missing identity by field name only, and resolves the key source', async () => {
     installFetch();
     const resolve = vi.fn(async () => ({ value: 'from-store' }));
@@ -220,6 +258,243 @@ describe('plugin entry', () => {
       // The user key authenticates the user, not the core: it must not be
       // promoted to the Bearer token.
       expect(recall.headers.authorization).toBeUndefined();
+    });
+
+    it('asks through reflect when a bare property read would throw (task-117 e2e)', async () => {
+      // Measured on the real host: this plugin declares `inject = ['systemPrompt']`,
+      // so reading `ctx.userQuestions` as a property throws
+      // `cannot get property "userQuestions" without inject` and the picker died
+      // with source=skipped. The service is still reachable through
+      // `reflect.get(name, false)`, which is the path this case pins.
+      const fixture = installFetch({
+        fail: metaRoutes({
+          ...RESOLVED,
+          '/v3/meta/agent/list': {
+            items: [
+              { agent_id: 'agt-main', team_id: 'team-key', name: 'Main' },
+              { agent_id: 'agt-other', team_id: 'team-key', name: 'Other' },
+            ],
+            total: 2,
+          },
+        }),
+      });
+      // The asset_confirm card comes first (the config endpoint is not stubbed,
+      // so the read fails and the plugin asks), then the agent question.
+      const ask = vi.fn(async (request: any) => {
+        if (request.questions[0]?.id === 'asset_confirm') {
+          return { answers: [{ id: 'asset_confirm', selected: ['是，关联团队资产'] }] };
+        }
+        return { answers: [{ id: 'agent_select', selected: ['Other (gt-other)'] }] };
+      });
+      const fake = await startApp({ server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } }, { userQuestions: { ask } });
+      Object.defineProperty(fake.ctx, 'userQuestions', {
+        configurable: true,
+        get() { throw new Error('cannot get property "userQuestions" without inject'); },
+      });
+
+      const listener = fake.firstListener('agent/pre-step')!;
+      await runPreStep(listener, { agent: { session: { id: 's-card' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
+
+      expect(ask).toHaveBeenCalledTimes(2);
+      // The step that asked may still race the answer; the bound identity must be
+      // what the NEXT step's data call sends.
+      await runPreStep(listener, { agent: { session: { id: 's-card' } }, turn: 1, step: 2 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
+      const recalls = callsTo(fixture.calls, '/v3/recall').filter((call) => call.body.query !== 'warmup');
+      expect(recalls.length).toBeGreaterThan(0);
+      expect(recalls[recalls.length - 1].headers['x-tdai-agent-id']).toBe('agt-other');
+    });
+
+    it('gives the memory_recall tool the same session identity as the volatile block', async () => {
+      // The tool call carries no session of its own. Measured in the task-117
+      // e2e: the volatile block searched with the bound agent while
+      // memory_recall searched with the configured one, so one turn read two
+      // different memories. `sessionId` is the fix; this case pins it.
+      const fixture = installFetch({
+        fail: metaRoutes({
+          ...RESOLVED,
+          '/v3/meta/agent/list': {
+            items: [
+              { agent_id: 'agt-main', team_id: 'team-key', name: 'Main' },
+              { agent_id: 'agt-other', team_id: 'team-key', name: 'Other' },
+            ],
+            total: 2,
+          },
+        }),
+      });
+      const registered: Array<{ name: string; execute: (args: any) => Promise<string> }> = [];
+      const tools = { register: (definition: any) => { registered.push(definition); return () => {}; } };
+      const ask = vi.fn(async (request: any) => {
+        if (request.questions[0]?.id === 'asset_confirm') {
+          return { answers: [{ id: 'asset_confirm', selected: ['是，关联团队资产'] }] };
+        }
+        return { answers: [{ id: 'agent_select', selected: ['Other (gt-other)'] }] };
+      });
+      const fake = await startApp(
+        { server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } },
+        { userQuestions: { ask }, tools },
+      );
+
+      const listener = fake.firstListener('agent/pre-step')!;
+      await runPreStep(listener, { agent: { session: { id: 's-tool' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
+      const recallTool = registered.find((definition) => definition.name === 'memory_recall')!;
+      await recallTool.execute({ query: 'pnpm' });
+
+      const searches = callsTo(fixture.calls, '/v3/atomic/search');
+      expect(searches.length).toBeGreaterThan(0);
+      expect(searches[searches.length - 1].headers['x-tdai-agent-id']).toBe('agt-other');
+    });
+
+    it('binds the per-user preset silently and sends ITS identity (no card)', async () => {
+      const fixture = installFetch({
+        sessionInit: {
+          manual_select: '0',
+          default_associate: '1',
+          default_team_id: 'team-key',
+          default_agent_id: 'agt-preset',
+        },
+        fail: metaRoutes({
+          ...RESOLVED,
+          // Two agents in the team: the mount cannot resolve one on its own, so
+          // only the user-level preset can name agt-preset.
+          '/v3/meta/agent/list': {
+            items: [
+              { agent_id: 'agt-key', team_id: 'team-key', name: 'Main' },
+              { agent_id: 'agt-preset', team_id: 'team-key', name: 'Preset' },
+            ],
+            total: 2,
+          },
+        }),
+      });
+      const ask = vi.fn(async () => ({ answers: [] }));
+      const fake = await startApp(
+        { server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } },
+        { userQuestions: { ask } },
+      );
+
+      const listener = fake.firstListener('agent/pre-step')!;
+      const decision = await runPreStep(
+        listener,
+        { agent: { session: { id: 's-preset' } }, turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+
+      expect(ask).not.toHaveBeenCalled();
+      expect(decision.messages).toHaveLength(2);
+      const recalls = callsTo(fixture.calls, '/v3/recall').filter((call) => call.body.query !== 'warmup');
+      expect(recalls[recalls.length - 1].headers['x-tdai-team-id']).toBe('team-key');
+      expect(recalls[recalls.length - 1].headers['x-tdai-agent-id']).toBe('agt-preset');
+    });
+
+    it('injects NOTHING on a bypass user (no data calls at all)', async () => {
+      const fixture = installFetch({
+        sessionInit: { manual_select: '0', default_associate: '0' },
+        fail: metaRoutes(RESOLVED),
+      });
+      const ask = vi.fn(async () => ({ answers: [] }));
+      const fake = await startApp(
+        { server: { teamId: '', agentId: '', userId: '', userKey: 'user-key-abc' } },
+        { userQuestions: { ask } },
+      );
+
+      const listener = fake.firstListener('agent/pre-step')!;
+      const decision = await runPreStep(
+        listener,
+        { agent: { session: { id: 's-bypass' } }, turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+
+      expect(ask).not.toHaveBeenCalled();
+      // The empty binding makes missingIdentity() report teamId, so the whole
+      // data plane stays quiet instead of falling back to the configured team.
+      expect(decision.messages).toHaveLength(1);
+      expect(callsTo(fixture.calls, '/v3/recall').filter((call) => call.body.query !== 'warmup')).toHaveLength(0);
+      expect(callsTo(fixture.calls, '/v3/atomic/search')).toHaveLength(0);
+      // The config read itself is the one call bypass is ALLOWED to make.
+      expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(1);
+      // A deliberate no-association session must not look like a broken one.
+      expect(fake.logs.filter((line) => line.startsWith('warn') && line.includes('/v3/recall'))).toHaveLength(0);
+    });
+
+    it('fails OPEN when the user config cannot be read (warmup runs, the card asks)', async () => {
+      const fixture = installFetch({
+        // The mount read decides whether background reads may run. A 5xx must NOT
+        // be read as "opted out": losing the warmup costs a cold turn, so the
+        // gate opens and the picker falls back to asking.
+        fail: metaRoutes(RESOLVED, (path) =>
+          path.endsWith('/v3/meta/config/user/get') ? new Response('boom', { status: 500 }) : undefined),
+      });
+      const ask = vi.fn(async () => ({ answers: [] }));
+      const fake = await startApp(
+        { server: { teamId: 'team-key', agentId: 'agt-key', userId: 'usr-key', userKey: 'user-key-abc' } },
+        { userQuestions: { ask } },
+      );
+      await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(1));
+      // The warmup is team-scoped data, and it must still happen for this user.
+      await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/core/read').length).toBeGreaterThan(0));
+
+      const listener = fake.firstListener('agent/pre-step')!;
+      await runPreStep(
+        listener,
+        { agent: { session: { id: 's-fail-open' } }, turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+      expect(ask).toHaveBeenCalled();
+      expect(ask.mock.calls[0][0].questions[0].id).toBe('asset_confirm');
+    });
+
+    it('keeps the background warmup quiet for a bypass user (no team read before the decision)', async () => {
+      const fixture = installFetch({
+        sessionInit: { manual_select: '0', default_associate: '0' },
+        fail: metaRoutes(RESOLVED),
+      });
+      // A CONFIGURED triple is the dangerous case: without the gate the mount
+      // head pack + the embedding prewarm would read team data seconds before
+      // anyone asked the user -- exactly what default_associate=0 opted out of.
+      const fake = await startApp({
+        server: { teamId: 'team-cfg', agentId: 'agt-cfg', userId: 'usr-cfg', userKey: 'user-key-abc' },
+      });
+      fake.emit('agent/created', { agent: {} });
+      // turn/start and the section render are the two paths that fired the leak
+      // in e2e: both must be gated by the same allowFetch, not just the mount.
+      fake.emit('session/event', { id: 's-bypass-warmup' }, { type: 'turn/start', data: {} });
+      expect(fake.sectionText()).toBe('');
+      await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(callsTo(fixture.calls, '/v3/core/read')).toHaveLength(0);
+      expect(callsTo(fixture.calls, '/v3/scenario/ls')).toHaveLength(0);
+      expect(callsTo(fixture.calls, '/v3/skill/listing')).toHaveLength(0);
+      expect(callsTo(fixture.calls, '/v3/recall')).toHaveLength(0);
+      expect(callsTo(fixture.calls, '/v3/atomic/search')).toHaveLength(0);
+    });
+
+    it('reads the user config once per session, reusing the mount read for the first', async () => {
+      const fixture = installFetch({
+        sessionInit: { manual_select: '1' },
+        fail: metaRoutes(RESOLVED),
+      });
+      const fake = await startApp({
+        server: { teamId: 'team-key', agentId: 'agt-key', userId: 'usr-key', userKey: 'user-key-abc' },
+      });
+      // Mount reads it for the warmup gate; session 1 consumes that same value
+      // instead of paying for a second round-trip.
+      await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(1));
+      const listener = fake.firstListener('agent/pre-step')!;
+      await runPreStep(
+        listener,
+        { agent: { session: { id: 's-one' } }, turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('第一句')] },
+      );
+      expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(1);
+
+      // A NEW session reads it again: a config change must not be pinned for the
+      // lifetime of the process.
+      await runPreStep(
+        listener,
+        { agent: { session: { id: 's-two' } }, turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('第二句')] },
+      );
+      expect(callsTo(fixture.calls, '/v3/meta/config/user/get')).toHaveLength(2);
     });
 
     it('waits for a credentials seam that the composition mounts after this plugin', async () => {
@@ -530,7 +805,7 @@ describe('plugin entry', () => {
     expect(definition.parameters).toMatchObject({ type: 'object', required: ['query'] });
     expect(definition.parameters.properties.query.type).toBe('string');
     expect(definition.output.schema).toEqual({ type: 'string' });
-    expect(fake.listenerCount('agent/pre-step')).toBe(1);
+    expect(fake.listenerCount('agent/pre-step')).toBe(2);
   });
 
   it('waits for a tools service that mounts after apply (mount-timing)', async () => {
@@ -545,7 +820,7 @@ describe('plugin entry', () => {
     setTimeout(() => { services.tools = { register }; }, 50);
     const fake = await started;
     expect(register.mock.calls.map((call) => (call[0] as any).name)).toContain('memory_recall');
-    expect(fake.listenerCount('agent/pre-step')).toBe(1);
+    expect(fake.listenerCount('agent/pre-step')).toBe(2);
   });
 
   it('names the violated rule when the host rejects the tool definition', async () => {
@@ -1223,7 +1498,19 @@ describe('composeHeadPack', () => {
     expect(capped).not.toContain('- c.md');
   });
 
+
   it('returns an empty section for a zero budget', () => {
     expect(composeHeadPack(PERSONA, ['a.md'], { maxChars: 0, includeScenarioIndex: true })).toBe('');
+  });
+});
+
+describe('unbound session diagnostics', () => {
+  // Measured 2026-11-01 01:52:21 on a mount whose identity comes from the user
+  // key: the old single line said "using the configured triple" when there was
+  // no triple at all, and the call actually carried no isolation headers.
+  it('says which fallback the call really used', () => {
+    expect(unboundIdentityMessage(true)).toContain('using the configured triple');
+    expect(unboundIdentityMessage(false)).toContain('no configured triple');
+    expect(unboundIdentityMessage(false)).toContain('no isolation identity');
   });
 });

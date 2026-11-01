@@ -217,6 +217,26 @@ dsh 原生记忆插件 v0。把 TDB 长期记忆接进 dsh 宿主的三条缝隙
 - `AGEMEM_DEBUG=1` 打开详细日志（等价 `debug: true`；配置里显式写的 `debug` 优先于环境变量）。
 - 未知配置键只 warn 不报错；数字越界会被 clamp。
 
+## 设置入口（设置 → TDB 记忆）
+
+页面主入口是**设置面板左侧导航里的「TDB 记忆」**（注册进 `settings.section`，`id: tdb-agemem`、`order: 30`）：
+桌面 App 里这是唯一保证能看到的入口 —— 「插件」页的 profile 条目由 Electron 自己管理，
+`managementAvailable !== true` 时插件页不渲染卡片，而设置导航始终由 `ui-settings-general` 提供。
+
+同一份表单**也**注册进「插件」页（`plugins.item`，`order: 40`），给 CLI / 宿主托管 profile 用；
+两个槽共享同一个 `AgememFormController` 与同一个 save 路径，任何一处改完另一处立刻一致（不会各存一份）。
+
+| 槽 | 何时出现 | 内容 |
+| --- | --- | --- |
+| `settings.section` | 桌面版（设置 → TDB 记忆） | `title` 标题 + `description` 说明 + 完整表单 |
+| `plugins.item` | `managementAvailable === true` 的 profile（插件 → 本插件） | 同理：列表里一行 `description`，点开是同一份表单 |
+
+- 两处都只在宿主**正在服务本插件的 profile 条目**时注册（`ctx.configForms.whileServed([ENTRY_ID], …)`）；
+  没挂载就没有这个命名空间，也就不会出现一个点开是空白的设置项。
+- 导航名与标题都取字典里的 `title`（`TDB 记忆` / `TDB memory`），说明取 `description`；
+  「插件」列表的 summary 仍是那一行 `description`，页面内不再重复这段文案。
+- 样式只用 `_tdbAgemem_*` 前缀的类，不写死宽度，跟随设置面板的主题变量（`--dsw-alias-*`）。
+
 ## 身份：user key → 用户 → team/agent
 
 静态三元组（`teamId/agentId/userId`）是「这台机器永远写这个人的记忆」。多机、多人、换人时更好的做法是
@@ -256,6 +276,51 @@ node scripts/agemem-identity.mjs --profile desktop --team team-xxx --agent agt-x
 - 非 TTY 且候选不唯一 ⇒ 打印候选清单后 exit 2；`--json` 模式不弹交互。
 - **user key 永远不写进 patch**（patch 会被 `--dump-config` 打印、被复制、被 grep），只留在凭据库或 env。
 - 写回后要重启宿主才生效（配置在挂载时读）。
+
+### 会话开始时选 Team / Agent（弹卡片，不是命令行）
+
+静态三元组 = 「这台机器永远用这个身份」；多团队的人每天在不同 team 之间切换，改 patch 再重启不是办法。所以身份的第二条入口是**会话开始时的宿主原生卡片**（`ctx.userQuestions.ask`，和 proxy 那边的会话初始化表单同一套语义）。
+
+**弹不弹卡由用户级 `session_init` 配置决定，与候选数量无关**（照抄 `MemoryProxy/src/session/user-session-init-preset.ts:20-40` 的决策表）：首次 `agent/pre-step` 读
+`POST /v3/meta/config/user/get {user_id, module:"session_init"}`，拿 `manual_select` / `default_associate` / `default_team_id` / `default_agent_id` 四个生效值：
+
+| 条件 | 行为 |
+| --- | --- |
+| 本 session 已绑定 | 不再弹，直接用绑定值（也不再读配置） |
+| `manual_select=0` + `default_associate=1` + `default_team_id` 有值 | **preset**：静默绑定该 team；`default_agent_id` 有值就用它，没值则取该 team 下唯一的 agent（0 个或多个 ⇒ 视为预设失效）。一次卡都不弹，`source=user-preset` |
+| `manual_select=0` + `default_associate=0` | **bypass**：`source=user-bypass`，写**空三元组** ⇒ 本 session**不注入团队资产、也不写回**，一次卡都不弹 |
+| 其余（未配置 / `manual_select≠0` / 配了关联但没 team / 配置读不到） | **ask**：先弹「请确认本次对话是否要关联团队资产？」，答「是」之后才继续 |
+| 答「是，关联团队资产」 | 此时才按候选数折叠：1 team 不问 team 题、1 agent 不问 agent 题；多候选各弹一题（`team_select` / `agent_select`），`source=picked` |
+| 答「否，本次不关联」/ 选「本次不关联(跳过注入,直接放行)」/ 自由文本写「跳过」 | 本 session 记 `source=skipped` + 空三元组，**不注入团队上下文**（proxy 的 bypass 语义），也不再弹 |
+| 子代理 / 无人类应答者（`DELEGATED_CALLER`） | 静默跳过，回落 config 三轴，不打 warn（否则子代理日志里一片红） |
+| headless / 无凭据库 | 没有 user key ⇒ 直接 inert，不弹卡 |
+| 超时（`identity.askTimeoutMs`）、无 `userQuestions` 服务 | 记 skipped + warn 一次，会话照常继续（绝不把 turn 卡住） |
+| 读配置的时机 | mount 读一次（`bypass` 要据此关掉后台预热与头包预取），**首个**会话复用这次的结果，之后每个新会话各读一次 —— 一个会话恰一次往返，改配置也不需要重启 |
+
+「空三元组」是 bypass / 答「否」的实现方式：绑定里的 `teamId/agentId/userId` 全为空串，`memory-client` 的 `missingIdentity()` 因此报 `teamId`，recall / head pack / 工具面 / 写回**全部不发请求**——这比「回落 config 三元组」更彻底，否则同一台机器上 bypass 的人依然会读到配置里那个 team 的记忆。
+
+bypass 还要管住**决策之前**的那次读：mount 期会做 embedding 预热（`/v3/core/read` + 一次 `/v3/recall`）和头包预取（persona / 场景索引 / 技能清单三发），轮次开始（`turn/start`）与 system-prompt 渲染时又会各自触发一次头包取数，那时都还没有绑定。所以 mount 也读一次 `session_init`，并把结果交给 `HeadPackDeps.allowFetch` 这一个闸门 —— 它覆盖**全部**取数路径（mount 刷新 / `turn/start` / `current()` 渲染 / `onBound`），判定 `bypass` 就整轮不发（e2e 里连 `head pack composed` 都不出现），绑定的时候也不再刷新头包；读配置失败则 **fail-open**（照常预热、卡片照弹）——少一次预热只丢一个冷启动，替一个明确选了「不关联」的人读团队数据补不回来。
+
+绑定按 **session** 持久化：默认写 `$DSH_HOME/agemem/session-identity.json`（与 outbox 同目录；`identity.statePath` 可显式指定，`identity.rememberSession=false` 则只留内存）。文件里只有 `teamId/agentId/userId/source/at`，**没有 key**。
+
+**关掉卡片 ≠ 忘掉绑定**：`identity.askAtSessionStart=false` 且 `identity.rememberSession=true` 时，状态文件照旧加载，里面已有的 session 绑定**继续对 recall / writeback（L0、skill buffer）以及 head pack 生效**——关掉的只是「问」这一步，不是「上次选的那个」。所以同一台机器上「卡片关掉 + 老 session 继续用点上来的身份」是支持的组合，不会悄悄退回 config 三轴。
+
+状态文件最多留 **200 个 session**，超出时淘汰 `at` 最旧的那条（不是拒绝新增、也不会静默留个空值）：被淘汰的 session 下次再来就是「没绑定」，会重新弹一次卡。`identity.askAtSessionStart=false` 只是不再弹卡，**不卸载状态文件**——已经由人点过的绑定继续生效（关掉的是「问」这件事，不是「忘掉我上次选的」）；这也保证同一个 session 不会因为关了卡片就悄悄退回 config 身份、与别的会话混用两个身份。
+
+| 配置键 | 缺省 | 作用 |
+| --- | --- | --- |
+| `identity.askAtSessionStart` | `true` | 总开关：关掉后**完全不读用户级配置、不弹卡**（纯静态三元组 / 自动化模式）；状态文件里已有的绑定仍然生效 |
+| `identity.followUserSessionInit` | `true` | 是否遵循用户级 `session_init`：`true` = preset/bypass 静默生效、ask 才弹卡；`false` = 跳过读配置，一律弹卡（老行为） |
+| `identity.askTimeoutMs` | `60000` | 等人点卡片的上限，到点 abort + 记 skipped |
+| `identity.rememberSession` | `true` | 绑定是否跨重启保留（按 session id） |
+| `identity.skipDefault` | `false` | 把「跳过」放到选项第一位（团队多、平时只闲聊的人更省一次点击） |
+| `identity.statePath` | 空 | 空 = outbox 同目录的 `session-identity.json` |
+
+绑定生效后，**读取面（recall / head pack / core_memory / skills）和写入面（L0 / skill buffer）全部用该 session 的身份**：`memory-client` 的 `isolation()` / `headers()` 走 `identityFor(sessionId)`，命中用绑定值、未命中回落 config 三轴，且这条解析是**同步**的（未绑定时立刻回落，不会 await 一张还没人点的卡片）。ready 行报 `sessionIdentity=on|off(config)|inert(no-key)|bound(<source>)`。
+
+**工具面与上面同一条链**：`memory_recall`（以及 skills / wiki 这些走同一个 client 的工具）在 `agent/pre-step` 里就通过 `onSessionSeen` 拿到当前 session id，再经 `identityFor(sessionId)` 解析身份 —— 它与 volatile 块、head pack 用的是**同一次解析结果**，不是 config 兜底。早期版本这里曾经分叉过（volatile 用绑定值、工具用 config 值，同一轮查了两份记忆，见 e2e 记录），现在有回归用例 `gives the memory_recall tool the same session identity as the volatile block` 钉住。
+
+一个已知边界（属设计选择）：head pack 在会话第一轮之前就可能已经用 mount 时的身份取过一次；绑定成功后插件会`headPack.invalidate()` + 重新取，所以第二轮起一定是新身份。第一轮里如果 personas 段已用旧身份渲染，那一条消息会留着旧身份的口径——它本来就来自「配置身份」，与绑定前的行为一致。
 
 ## 排障
 
@@ -357,8 +422,8 @@ core 的 17 条 skill 路由里，插件只用其中 10 条做工具，另外用
 | `skill_view` | 读 | `/v3/skill/get-by-name` 或 `/v3/skill/get` | body + manifest；`content` 超 `skill.maxResultChars`（20000）截断并**显式标原始长度** |
 | `skill_files_read` | 读 | `/v3/skill/files/read` | 读附件（脚本/模板/夹具），附字节数 |
 | `skill_extract` | 读 | `/v3/skill/conversation/force-archive` | 触发本会话的归档抽取（见下「偏差」） |
-| `skill_create` | 写 | `/v3/skill/create` | 支持 `resources[]` 一次带附件 |
-| `skill_update` | 写 | `/v3/skill/update` | 整体覆盖正文 |
+| `skill_create` | 写 | `/v3/skill/create` | `name`/`description` 参数就是 frontmatter；支持 `resources[]` 一次带附件 |
+| `skill_update` | 写 | `/v3/skill/update` | 整体覆盖正文；纯 markdown 会借 head 的 name/description 补 fence |
 | `skill_patch` | 写 | `/v3/skill/patch` | 精确替换一段，其余字节不变 |
 | `skill_delete` | 写 | `/v3/skill/delete` | 删一个 skill |
 | `skill_files_write` | 写 | `/v3/skill/files/write` | 附件写入/替换（≤100 个/次） |
@@ -378,6 +443,13 @@ core 的五个写路由都要求 `expected_version`（`skill-schemas.ts:101/108/
 4. 第二次仍 40901 就把 core 的原文回给模型（不无限重试，也不首次即放弃）。
 
 判成功只看 `body.code`（HTTP 一律 200）。失败文案原样回给模型，含 `code` 与 `message`。
+
+**模型不写 YAML frontmatter**：core 要求 `SKILL.md` 以 `---` 开头并含 `name`/`description`
+（`MemoryCore/src/core/skill/skill-format.ts:49`），否则 42203 `[skill][format] missing frontmatter`。
+所以 `skill_create` 的 `name`/`description` 参数会变成 fence，`skill_update` 收到裸 markdown 时
+用**那次版本读取**带回的 head record 补上（不多打一次 `/v3/skill/get`）。resources 同理：
+每条自动补 `encoding: 'utf-8'`（core 缺它报 40001 `resources.0.encoding: Invalid option`）。
+两处都是 2026-11-01 对真 core 实测出来的，不是猜的。
 
 ### 偏差（有意不照 proxy 的做法）
 
@@ -450,6 +522,11 @@ bash scripts/drill-patch-layer.sh   # 演练：在一次性 profile 上验「写
 所以这一块就是全部配置）：
 
 ```bash
+# 常态：patch 只留 ref 名，挂载时用 user key 解析 user → team → agent
+DSH_PROFILE=desktop bash scripts/deploy.sh            # 缺省 --user-key-ref TDAI_USER_KEY
+bash scripts/deploy.sh --user-key-ref MY_USER_KEY_REF # 换一个 ref 名
+
+# 例外：core 在这台机器上真的解析不出 user key 时，才把三元组钉进 patch
 DSH_PROFILE=desktop bash scripts/deploy.sh \
   --identity team-xxx,agt-xxx,usr-xxx     # 或 TDB_TEAM_ID/TDB_AGENT_ID/TDB_USER_ID
 # 可选：--base-url=http://host:8420  --api-key=<core server.apiKey>
@@ -458,10 +535,32 @@ DSH_PROFILE=desktop bash scripts/deploy.sh \
 # 一个都找不到就 exit 2，不会静默装一个 401 的插件；--inline-key / --no-store-key 可改写入方式
 ```
 
-- 身份不全时脚本会明说「plugin mounts but stays INERT」：**这不是失败**，是防串记忆的安全缺省。
-  想走 user key 的话，部署时可以不传三元组，改用
-  `--config-extra` 提供 `server.userKeyRef`（或 `server.userKey`），挂载时自动解析；
-  多候选再用 `node scripts/agemem-identity.mjs --profile <p>` 一次性选定（见上一节「身份」）。
+- **身份：缺省走 user key，不写三元组**。脚本只用 `--user-key-ref`（缺省 `TDAI_USER_KEY`）把
+  **ref 名**写进 patch，价值在于「同一份 patch 可以给不同的人用」：值留在各人的凭据库里，
+  运行时由宿主解析，patch 里没有别人的 team/agent id。渲染出来的 config 长这样：
+
+  ```yaml
+  server:
+    baseUrl: "http://127.0.0.1:8420"
+    serviceId: "default"
+    apiKeyRef: "TDAI_GATEWAY_APIKEY"
+    userKeyRef: "TDAI_USER_KEY"
+  ```
+
+  挂载时 `userKeyRef` 解析出 user → 该 user 名下的 team/agent，ready 行打
+  `identity=resolved(user_key)`；解析不出（key 无效、多个候选）就是 inert，绝不猜。
+  `--identity a,b,c` 仍然保留，但它是**例外路径**（core 在这台机器上解析不出 user key 时），
+  与「按 user key 部署」互斥：脚本会明说走的是哪一条。
+- **半截身份直接 exit 2**。只给 team 不给 agent/user 是会把会话绑到错误 team 的配置错误，
+  以前只 warn 一句就装进去（= 装了个「看起来成功」的错包），现在拒绝安装并打印两条修法：
+  要么全不传（走 user key），要么三件全传（钉死三元组）。
+- 缺 user key 时脚本打印一次性的写入命令，不会替你读、也不会把值打进 patch：
+
+  ```bash
+  printf '%s' <user_key> | node scripts/credentials-util.mjs set ~/.dsh/.credentials.yaml TDAI_USER_KEY
+  ```
+
+  （`~/.dsh` 按 `DSH_HOME` 解析；`--no-store-key` 时不碰凭据库，只要求 ref 已经能解析。）
 - **key 缺省不进 patch**：deploy.sh 把它写进宿主凭据库（`$DSH_HOME/.credentials.yaml` 的 `refs:`），patch 只留
   `apiKeyRef`；`--inline-key` 恢复「key 直接写 patch」的老行为，`--no-store-key` 完全不碰凭据库。
   跨机部署（插件在 A 机、core 在 B 机）见「跨机部署」一节。

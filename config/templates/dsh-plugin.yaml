@@ -104,6 +104,18 @@ tools:
   recall: true   # bool default=true — 是否单独暴露 memory_recall 工具 [src:443]
   recallTopK: 8   # int default=8 — memory_recall 的缺省 top_k；调大只加 token 不加召回质量 [src:444]
 
+# ─── identity ─────────────────────────────────────────────  [config.ts:486]
+# 会话级身份选择（task-117）：弹不弹卡由用户级 session_init 配置决定——
+# preset/bypass 静默生效（source=user-preset / user-bypass），ask 才弹卡；
+# 选中值按 session 记忆并接管该会话所有读写；不注入时回落 server 三轴。
+identity:
+  askAtSessionStart: true   # bool default=true — 总开关：关掉=完全不读用户级配置、不弹卡（纯静态三元组/自动化模式；已记住的绑定仍生效） [src:492]
+  followUserSessionInit: true   # bool default=true — 是否遵循用户级 session_init：true=preset/bypass 静默、ask 弹卡；false=跳过读配置一律弹卡（老行为） [src:495]
+  askTimeoutMs: 60000   # ms default=60000 — 等人点卡片的上限（clamp [1000,300000]）；到点 abort 并记 skipped，绝不卡 turn [src:498]
+  rememberSession: true   # bool default=true — 绑定是否写盘跨重启保留（按 session id，最多 200 条，超出淘汰最旧的） [src:499]
+  skipDefault: false   # bool default=false — 把「跳过」放到选项第一位 [src:500]
+  statePath: ""   # path default="" — 绑定状态文件；空=与 outbox 同目录的 session-identity.json，rememberSession=false 时只留内存 [src:501]
+
 # ─── skill ────────────────────────────────────────────────  [config.ts:447]
 # 技能面（task-72）：头包段 + 六个读写工具
 skill:

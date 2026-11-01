@@ -24,13 +24,15 @@ describe('memory_recall tool', () => {
     const recall = vi.fn(async () => [{ text: 'hit' }]);
     const output = await tool(recall).execute({ query: '  deploy steps  ', limit: 500 });
     expect(output).toBe('- hit');
-    expect(recall).toHaveBeenCalledWith('deploy steps', 50, 500);
+    // The 4th argument is the session id: undefined here because this fake host
+    // never told the plugin which session it serves (task-117 threading).
+    expect(recall).toHaveBeenCalledWith('deploy steps', 50, 500, undefined);
   });
 
   it('uses the default limit when none is given', async () => {
     const recall = vi.fn(async () => []);
     expect(await tool(recall, 6).execute({ query: 'x' })).toBe('no memory hits');
-    expect(recall).toHaveBeenCalledWith('x', 6, 500);
+    expect(recall).toHaveBeenCalledWith('x', 6, 500, undefined);
   });
 
   it('refuses an empty query without calling the core', async () => {

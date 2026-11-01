@@ -59,6 +59,14 @@ export interface VolatileDeps {
   maxChars?: number;
   timeoutMs: number;
   getBlock: (turnText: string, context: VolatileTurnContext) => Promise<string | undefined>;
+  /**
+   * Bind the session's identity before the block is fetched (task-117). The
+   * install order already puts the picker first, so in practice this is a map
+   * hit; it is here so a step that raced the picker still recalls with the
+   * identity the human picked, not the mount triple. Must be cheap when the
+   * session is already bound (the picker returns before creating any timer).
+   */
+  ensureIdentity?: (agent: unknown, signal?: unknown) => Promise<void>;
   log?: LoggerLike;
   now?: () => number;
 }
@@ -225,6 +233,12 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
         }
         const turnText = claim.text;
         if (turnText === '') return decision;
+        // Identity first: the recall below must use the session's bound triple.
+        // ensureIdentity is a no-op (and allocation-free) once bound or when the
+        // picker is off, so this costs nothing on the steady-state turn.
+        if (deps.ensureIdentity !== undefined) {
+          await withTimeout(deps.ensureIdentity(payload?.agent, payload?.signal), deps.timeoutMs);
+        }
         const block = await withTimeout(deps.getBlock(turnText, { turn: payload?.turn, sessionId: scope }), deps.timeoutMs);
         const text = typeof block === 'string' ? block.trim() : '';
         if (text === '') return decision;

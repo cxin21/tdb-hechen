@@ -24,8 +24,10 @@ registerHeadPackSegment({
   order: 10,
   cap: 'remainder',
   enabled: (config) => config.headPack.enabled,
-  fetch: async ({ client, config }) => {
-    const core = await client.readCore(config.headPack.timeoutMs);
+  fetch: async ({ client, config, sessionId }) => {
+    // sessionId selects the per-session identity (task-117); undefined keeps the
+    // configured triple, which is what a mount-time fetch uses.
+    const core = await client.readCore(config.headPack.timeoutMs, sessionId?.());
     const narrative = stripSceneNavigation(core?.content ?? '');
     const text = composeHeadPack(narrative, [], {
       // The assembler clamps to the real remainder; this is only the persona's

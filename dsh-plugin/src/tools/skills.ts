@@ -214,7 +214,8 @@ export function buildSkillTools(deps: SkillToolsDeps): ToolDefinitionShape[] {
     textTool(
       'skill_create',
       'Create a new team skill (a reusable procedure others can find by search). '
-      + 'The body is markdown; put prerequisites, steps and pitfalls in it.',
+      + 'The body is markdown; put prerequisites, steps and pitfalls in it. '
+      + 'Do not write YAML frontmatter yourself — the name and description arguments become it.',
       {
         type: 'object',
         properties: {
@@ -256,7 +257,9 @@ export function buildSkillTools(deps: SkillToolsDeps): ToolDefinitionShape[] {
         const result = await client.create({
           name: str(args, 'name'),
           content: str(args, 'content'),
-          ...(description === '' ? {} : { metadata: { description } }),
+          // The client turns this into the frontmatter the core requires; it is
+          // NOT free-form metadata (that path answers 42203 for a bare body).
+          ...(description === '' ? {} : { description }),
           ...(resources.length === 0 ? {} : { resources }),
         });
         if (!result.ok) return failure('skill_create', result.error, result.code);

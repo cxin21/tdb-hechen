@@ -63,6 +63,11 @@ export interface CoreFixtureOptions {
   fail?: (path: string, call: RecordedCall) => Response | undefined;
   /** /v3/recall payload; defaults to RECALL_BLOCK. */
   recallBlock?: string;
+  /**
+   * Per-user session_init params served by /v3/meta/config/user/get.
+   * Omitted = empty item list = "not configured" = the plugin asks.
+   */
+  sessionInit?: Record<string, string>;
 }
 
 export function envelope(data: unknown, code = 0, message = 'ok'): Response {
@@ -87,6 +92,20 @@ export function coreFixture(options: CoreFixtureOptions = {}): { fetchImpl: type
     });
     const failure = options.fail?.(path, calls[calls.length - 1]);
     if (failure) return failure;
+    if (path.endsWith('/v3/meta/config/user/get')) {
+      const module = typeof body?.module === 'string' ? body.module : '';
+      return envelope({
+        user_id: body?.user_id,
+        module,
+        items: Object.entries(options.sessionInit ?? {}).map(([param_name, effective_value]) => ({
+          module,
+          param_name,
+          param_key: module === '' ? param_name : `${module}.${param_name}`,
+          description: '',
+          effective_value,
+        })),
+      });
+    }
     if (path.endsWith('/v3/core/read')) {
       return envelope({
         content: options.persona ?? PERSONA,

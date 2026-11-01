@@ -9,12 +9,13 @@ import { registerToolModule } from './registry.js';
 registerToolModule({
   name: 'recall',
   enabled: (config) => config.tools.enabled && config.tools.recall,
-  build: ({ client, config, log }) => [
+  build: ({ client, config, log, sessionId }) => [
     createRecallTool({
       client,
       defaultLimit: config.tools.recallTopK,
       timeoutMs: config.server.requestTimeoutMs,
       log,
+      sessionId,
     }),
   ],
 });

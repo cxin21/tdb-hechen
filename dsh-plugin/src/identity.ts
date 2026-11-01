@@ -23,6 +23,7 @@
  */
 
 import type { MemoryClient, MemoryIdentity, TeamSummary, AgentSummary } from './memory-client.js';
+import type { AgentChoice, CandidatesResult, TeamChoice } from './session-identity.js';
 import type { LoggerLike } from './types.js';
 
 export interface IdentityResolutionInput {
@@ -114,6 +115,54 @@ export async function resolveIdentityFromUserKey(input: IdentityResolutionInput)
     userId,
     teamName: team.name,
     agentName: agent.name,
+  };
+}
+
+/**
+ * verify -> teams (-> agents when the team is already known).
+ *
+ * The session-start picker (src/session-identity.ts) needs the candidate lists
+ * WITHOUT committing to a pick: a user in two teams must choose, and a user with
+ * one team and one agent is auto-bound. resolveIdentityFromUserKey() above is the
+ * mount-time, all-or-nothing path and stays untouched -- other callers depend on
+ * its 'ambiguous means inert' semantics.
+ */
+export async function listCandidates(input: {
+  client: Pick<MemoryClient, 'verifyUserKey' | 'listTeams' | 'listAgents'>;
+  userKey: string;
+  /** Scope the agent list to one team (the team the human just picked). */
+  teamId?: string;
+  timeoutMs?: number;
+  log?: LoggerLike;
+}): Promise<CandidatesResult> {
+  const { client, userKey, timeoutMs, log } = input;
+  const verification = await client.verifyUserKey(userKey, timeoutMs);
+  if (!verification.ok) return { kind: 'failed', reason: verification.reason ?? 'verify failed' };
+  if (verification.valid !== true) return { kind: 'failed', reason: 'the core says this user key is not valid' };
+  const userId = verification.userId;
+  if (userId === undefined) return { kind: 'failed', reason: 'the core verified the key but returned no user_id' };
+
+  const teams = await client.listTeams(userId, { userKey, timeoutMs });
+  if (!teams.ok) return { kind: 'failed', reason: teams.reason ?? 'team list failed' };
+  const teamChoices: TeamChoice[] = teams.items.map((team) => ({ teamId: team.teamId, name: team.name }));
+
+  const scope = input.teamId !== undefined && input.teamId.trim() !== ''
+    ? input.teamId.trim()
+    : teamChoices.length === 1 ? teamChoices[0].teamId : undefined;
+  if (scope === undefined) return { kind: 'ok', userId, teams: teamChoices };
+
+  const agents = await client.listAgents(scope, userId, { userKey, timeoutMs });
+  if (!agents.ok) {
+    // The team list is still useful: a failed agent leg means the picker asks the
+    // agent question with no options, which the caller reports as 'no agent'.
+    log?.debug?.('agemem: candidate agent list failed', agents.reason);
+    return { kind: 'ok', userId, teams: teamChoices, agents: [] };
+  }
+  return {
+    kind: 'ok',
+    userId,
+    teams: teamChoices,
+    agents: agents.items.map((agent) => ({ agentId: agent.agentId, name: agent.name })),
   };
 }
 

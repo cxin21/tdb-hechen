@@ -77,6 +77,9 @@ describe('config', () => {
       metaAuthVerify: '/v3/meta/auth/verify',
       metaTeamList: '/v3/meta/team/list',
       metaAgentList: '/v3/meta/agent/list',
+      // The per-user session_init config the picker reads before its first card
+      // (same source as the proxy: MemoryProxy/src/meta/client.ts:290-300).
+      metaUserConfig: '/v3/meta/config/user/get',
     });
     // The user key that resolves the triple is NOT the core api key: separate
     // fields, separate refs, and neither is shipped with a value.

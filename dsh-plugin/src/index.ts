@@ -1,12 +1,17 @@
-import { normalizeConfig } from './config.js';
+import { dirname, join } from 'node:path';
+// The host hands `.volatile()` fields over as cosmokit references, not values
+// (settings form write-through). `resolvePluginConfig` unwraps them first; calling
+// `normalizeConfig` directly drops every volatile path back to its default —
+// baseUrl → 8420, debug → false, the config identity triple → empty.
+import { resolvePluginConfig } from './config-schema.js';
 import { combineLoggers, createDebugLog, resolveDebugLogPath } from './debug-log.js';
 // 答案口径段（task-15）：把 MemoryCore 单一源的作答纪律接到 system prompt。
 import { GUIDANCE_TEXT, GUIDANCE_VERSION } from './guidance.js';
 import { sessionKey } from './ids.js';
 import { compressHeadPack, HeadPack } from './head-pack.js';
-import { applyIdentity, identityStateOf, resolveIdentityFromUserKey } from './identity.js';
+import { applyIdentity, identityStateOf, listCandidates, resolveIdentityFromUserKey } from './identity.js';
 import { MemoryClient, type ConversationMessage, type MemoryIdentity, type RecallBlockResult, type TurnEndPayload } from './memory-client.js';
-import { Outbox } from './outbox.js';
+import { defaultOutboxPath, Outbox } from './outbox.js';
 import { recallKey, RECALL_INFLIGHT_MAX_ENTRIES, RecallCache, RecallInflight } from './recall-cache.js';
 import { extractSoul, measureSoul, recallBlockText, renderSoulBlock } from './recall-source.js';
 // One runner for the head pack and one for the volatile block: every segment
@@ -17,6 +22,10 @@ import { runHeadPackSegments, runVolatileSegments, segmentSummary, type SegmentD
 // head-pack debug line both quote it, so a scene index that failed reads as
 // `l2=fail:http_404` instead of silently emptying half the head pack.
 import { l2StatusForDebug, l2StatusSummary } from './segments/l2.js';
+// Session-start identity (task-117 v3): the host's own question card, asked from
+// agent/pre-step, bound per session and used by every later v3 call.
+import { installSessionIdentity, SessionIdentityStore, type UserQuestionsLike } from './session-identity.js';
+import { SESSION_INIT_MODULE, resolveUserSessionInitDecision } from './user-session-init.js';
 import { SkillClient } from './skill-client.js';
 // Tool surfaces are modules too: src/tools/*.ts self-register, and the loop in
 // section 4 registers whatever the config leaves enabled.
@@ -24,7 +33,6 @@ import { enabledToolModules } from './tools/index.js';
 import type { AgememContext, LoggerLike, ToolDefinitionShape, ToolsService } from './types.js';
 import { extractTurnClaim, formatVolatileBlock, installVolatile, type VolatileTurnContext } from './volatile.js';
 import { installWriteback, type SkillWritebackPayload } from './writeback.js';
-
 /**
  * dsh native memory plugin (@tdb/agemem-dsh).
  *
@@ -42,26 +50,21 @@ import { installWriteback, type SkillWritebackPayload } from './writeback.js';
  * conversation/add) — the `/v3/dsh/*` endpoints in the spec have no
  * implementation in MemoryCore and are not used anywhere below.
  */
-
 export const name = 'tdb-agemem-dsh';
-
 /**
  * Only `systemPrompt` is injected: Cordis 4 treats every injected service as
  * required, and headless compositions may not provide `credentials` or
  * `tools`. Those two are read through `ctx.reflect.get`, which never throws.
  */
 export const inject = ['systemPrompt'];
-
 /** Host section order for the deployment persona suffix (this build: 10200). */
 const DEPLOYMENT_PERSONA_SUFFIX_ORDER = 10200;
-
 /**
  * Mount-time budget for identity resolution (three sequential metadata calls).
  * Mount is one-shot, not a turn, so a short stall is acceptable — but never a
  * long one: an unreachable core would otherwise delay the whole host start.
  */
 const IDENTITY_RESOLUTION_BUDGET_MS = 4000;
-
 /** Resolve with a deadline; a stalled promise becomes `undefined`, never a hang. */
 function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return new Promise<T | undefined>((resolve) => {
@@ -75,14 +78,12 @@ function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined
     promise.then(done, () => done(undefined));
   });
 }
-
 // composeHeadPack lives in its own module so the segment modules can use it
 // without an import cycle; re-exported here because the tests and the docs
 // reference it through the plugin entry.
 import { composeHeadPack } from './head-pack-compose.js';
 export { composeHeadPack, personaListsPath } from './head-pack-compose.js';
 export type { ComposeHeadPackOptions } from './head-pack-compose.js';
-
 /** One volatile-block fetch: the text plus what produced it (for the debug line). */
 interface VolatileBlock {
   text: string;
@@ -95,7 +96,6 @@ interface VolatileBlock {
   /** Characters contributed by the capability segments (wiki / knowledge). */
   extrasChars?: number;
 }
-
 /**
  * Resolve on `promise` or after `timeoutMs`, whichever comes first. Used for
  * the optional capability segments: their round trips are nice-to-have, and a
@@ -119,7 +119,6 @@ async function withDeadlineMs<T>(promise: Promise<T>, timeoutMs: number): Promis
     if (timer !== undefined) clearTimeout(timer);
   }
 }
-
 /** The core's soul version (`meta.soulVersion`), verbatim, never the soul text. */
 function soulVersionOf(meta: Record<string, unknown> | undefined): string | undefined {
   const raw = meta?.soulVersion;
@@ -127,7 +126,6 @@ function soulVersionOf(meta: Record<string, unknown> | undefined): string | unde
   if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
   return undefined;
 }
-
 /** Text blocks in a host message (blocks or a plain string). */
 export function textOfContent(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -139,9 +137,6 @@ export function textOfContent(content: unknown): string {
   }
   return parts.join('\n');
 }
-
-
-
 function getService<T>(ctx: AgememContext, serviceName: string): T | undefined {
   try {
     const found = ctx.reflect?.get(serviceName);
@@ -150,12 +145,58 @@ function getService<T>(ctx: AgememContext, serviceName: string): T | undefined {
     return undefined;
   }
 }
+/**
+ * The host's question service.
+ *
+ * Read through `reflect.get(name, false)` and never as a bare property: this
+ * plugin declares `inject = ['systemPrompt']`, and the host's context proxy
+ * throws `cannot get property "userQuestions" without inject` on a property
+ * read of an undeclared service (measured in the task-117 e2e — the direct
+ * read killed the picker and the session fell back to `source: skipped`).
+ * `strict: false` also returns a service whose provider fiber is not (yet)
+ * active, which is what a sibling entry composed later looks like from here.
+ */
+/**
+ * Debug line for an unbound session. Two cases, two meanings — and the old
+ * single message lied in the second one:
+ *
+ *  * a configured triple exists ⇒ this call really does use it (the session
+ *    just has not picked an agent yet);
+ *  * no triple (identity comes from the user key, which is still resolving, or
+ *    failed) ⇒ the call carries NO isolation identity. Saying "using the
+ *    configured triple" there sent a live e2e hunting a config bug that did not
+ *    exist (measured 2026-11-01 01:52:21, resolution finished at :22.763).
+ */
+export function unboundIdentityMessage(hasConfiguredTriple: boolean): string {
+  return hasConfiguredTriple
+    ? 'agemem: session identity not bound yet; using the configured triple for this call'
+    : 'agemem: session identity not bound yet and no configured triple; this call carries no isolation identity while the user key resolves';
+}
 
+function questionService(ctx: AgememContext): UserQuestionsLike | undefined {
+  try {
+    const found = (ctx.reflect as { get?: (name: string, strict?: boolean) => unknown } | undefined)
+      ?.get?.('userQuestions', false) as UserQuestionsLike | undefined;
+    return found !== undefined && typeof found.ask === 'function' ? found : undefined;
+  } catch {
+    return undefined;
+  }
+}
+/**
+ * Where the per-session bindings live. Next to the outbox by default: both are
+ * this plugin's own state under DSH_HOME, and keeping them together means one
+ * directory to delete when an operator wants a clean slate.
+ */
+function sessionStatePathFor(configured: string, outboxPath: string): string {
+  const explicit = typeof configured === 'string' ? configured.trim() : '';
+  if (explicit !== '') return explicit;
+  const outbox = typeof outboxPath === 'string' && outboxPath.trim() !== '' ? outboxPath.trim() : defaultOutboxPath();
+  return join(dirname(outbox), 'session-identity.json');
+}
 /** The credentials seam as this plugin uses it: a ref resolves to its value. */
 interface CredentialsLike {
   resolve(ref: string): Promise<{ value?: string } | undefined>;
 }
-
 /** How long mount waits for a lazily-provided seam, and how often it re-checks. */
 const SEAM_WAIT_MS = 800;
 const SEAM_POLL_MS = 25;
@@ -167,7 +208,6 @@ const SEAM_POLL_MS = 25;
  * while no error was logged, because the branch just took the else path).
  */
 const TOOLS_WAIT_MS = 800;
-
 /**
  * Wait (briefly) for a seam that a SIBLING entry provides.
  *
@@ -197,8 +237,6 @@ async function waitForService<T>(
     });
   }
 }
-
-
 /**
  * Dead-letter reason class for a write failure. Auth is its own class because it
  * is a configuration bug (wrong key), not a core outage: retrying it burns
@@ -226,15 +264,13 @@ function describeRegistrationError(error: unknown): string {
   // host loggers disagree on how they render nested values ([object Object]).
   return parts.length > 0 ? parts.join(' ') : String(error);
 }
-
 function classifyWriteFailure(status: number | undefined, family: string): string {
   if (status === 401 || status === 403) return 'auth';
   if (typeof status === 'number') return family + '-http';
   return family + '-transport';
 }
-
 export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<void> {
-  const { config, warnings } = normalizeConfig(rawConfig);
+  const { config, warnings } = resolvePluginConfig(rawConfig);
   // A desktop/GUI host has no readable stderr, so a debug install mirrors every
   // line into a file as well (see debug-log.ts). Constructed only when debug is
   // on: a plain install must not create files or directories.
@@ -248,7 +284,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     log?.debug?.('agemem: disabled by config');
     return;
   }
-
   // The seam is looked up PER CALL and waited for once: see waitForService. A
   // single mount-time lookup silently disabled both credential layers on a real
   // composition (the entry was composed, the service object was not there yet).
@@ -284,7 +319,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     const fromEnv = process.env[ref];
     return typeof fromEnv === 'string' && fromEnv.trim() !== '' ? fromEnv.trim() : undefined;
   };
-
   /**
    * Same three-step order as the core key: explicit server.userKey →
    * credentials.resolve(userKeyRef) → env[userKeyRef]. The user key only
@@ -300,7 +334,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     const fromEnv = process.env[ref];
     return typeof fromEnv === 'string' && fromEnv.trim() !== '' ? fromEnv.trim() : undefined;
   };
-
   /** Where the USER key would come from — never the value itself. */
   const userKeySource = async (): Promise<string> => {
     if (config.server.userKey.trim() !== '') return 'config';
@@ -310,7 +343,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return 'env:' + ref;
     return 'none';
   };
-
   // One warning per failure CLASS, not per request: a misconfigured core
   // otherwise floods the log on every recall/head-pack/writeback attempt while
   // still failing open. Everything below stays silent after its first warn.
@@ -336,7 +368,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     if (context === undefined) log?.warn?.(message);
     else log?.warn?.(message, context);
   };
-
   // A MUTABLE identity box: the client reads it per request (isolation headers,
   // missingIdentity), so resolving from a user key after construction updates
   // every later call without rebuilding the client.
@@ -346,7 +377,17 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     agentId: config.server.agentId.trim(),
     userId: config.server.userId.trim(),
   };
-
+  /** Every listener/effect this mount owns; drained on dispose (and by tests). */
+  const disposers: Array<() => void> = [];
+  // Session bindings live here (not in the box above): a binding overrides the
+  // configured triple for ONE session and must never leak into the fallback
+  // every other session relies on.
+  const identityStore = new SessionIdentityStore({
+    statePath: config.identity.rememberSession ? sessionStatePathFor(config.identity.statePath, config.writeback.outboxPath) : undefined,
+    log,
+  });
+  let warnedUnbound = false;
+  let warnedNoIdentity = false;
   const client = new MemoryClient({
     baseUrl: config.server.baseUrl,
     maxRequestBytes: config.writeback.maxRequestBytes,
@@ -354,6 +395,30 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     apiKey: config.server.apiKey,
     apiKeyRef: config.server.apiKeyRef,
     identity,
+    // Synchronous and IO-free by contract: this runs inside headers() on every
+    // request. A miss is silent (debug once) and means "use the triple above".
+    identityFor: (sessionId?: string) => {
+      const bound = identityStore.get(sessionId);
+      if (bound !== undefined) {
+        return { serviceId: identity.serviceId, teamId: bound.teamId, agentId: bound.agentId, userId: bound.userId };
+      }
+      // Two different cases used to share one line, and the misleading one led a
+      // live e2e down the wrong path: on a mount whose identity comes from the
+      // user key there is no configured triple at all, yet the old text claimed we
+      // were "using the configured triple" — the box was still empty and the call
+      // carried no isolation headers.
+      const hasConfiguredTriple = identity.teamId !== '' || identity.agentId !== '' || identity.userId !== '';
+      if (hasConfiguredTriple) {
+        if (!warnedUnbound && config.identity.askAtSessionStart) {
+          warnedUnbound = true;
+          log?.debug?.(unboundIdentityMessage(true));
+        }
+      } else if (!warnedNoIdentity) {
+        warnedNoIdentity = true;
+        log?.debug?.(unboundIdentityMessage(false));
+      }
+      return undefined;
+    },
     requestTimeoutMs: config.server.requestTimeoutMs,
     paths: config.paths,
     resolveApiKey,
@@ -374,7 +439,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     },
     log,
   });
-
   // 3b. Identity from one user key (task-51 v2). Mount-time only: a profile with
   //     an explicit triple never makes a metadata round-trip, and a profile that
   //     cannot resolve stays inert (it must not fall back to SOME team — writing
@@ -428,16 +492,113 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       }
     }
   }
-
+  // 3d. The user-level session_init config decides whether a card appears at
+  //     all (the picker reads it at the first pre-step) AND — before any session
+  //     exists — whether background reads may touch team-scoped data at all.
+  //     Mount reads it once, like MemoryProxy does at its own ask stage
+  //     (MemoryProxy/src/session/init.ts:943-953), and hands that value to the
+  //     FIRST session that asks for it: a one-session run costs exactly one
+  //     read, while a second session still sees a config change (no TTL cache
+  //     that would silently pin a stale preference for the process lifetime).
+  let sessionInitHandoff: { userId: string; value: Record<string, string> | null } | undefined;
+  const readSessionInit = async (input: { userKey: string; userId: string; timeoutMs?: number }): Promise<Record<string, string> | null> => {
+    if (sessionInitHandoff !== undefined && sessionInitHandoff.userId === input.userId) {
+      const { value } = sessionInitHandoff;
+      sessionInitHandoff = undefined;
+      return value;
+    }
+    return client.getUserSessionInit(input.userId, SESSION_INIT_MODULE, { userKey: input.userKey, timeoutMs: input.timeoutMs });
+  };
+  // Background warmup (embedding prewarm + the mount-time head pack) reads
+  // team-scoped data BEFORE the user answered anything. A user whose config says
+  // default_associate=0 (bypass) asked for exactly the opposite, so keep those
+  // reads out of the process entirely. Anything else — including a failed read —
+  // fails OPEN: losing the warmup costs one cold turn, losing team data for
+  // someone who opted out cannot be undone.
+  let warmupGate: Promise<boolean> | undefined;
+  const warmupAllowed = (): Promise<boolean> => {
+    if (warmupGate === undefined) warmupGate = computeWarmupAllowed();
+    return warmupGate;
+  };
+  const computeWarmupAllowed = async (): Promise<boolean> => {
+    if (!config.identity.followUserSessionInit) return true;
+    const userId = identity.userId.trim();
+    if (userId === '') return true;
+    const userKey = mountUserKey ?? (await resolveUserKey()) ?? '';
+    let values: Record<string, string> | null = null;
+    try {
+      values = await client.getUserSessionInit(userId, SESSION_INIT_MODULE, { userKey, timeoutMs: IDENTITY_RESOLUTION_BUDGET_MS });
+    } catch {
+      values = null;
+    }
+    sessionInitHandoff = { userId, value: values };
+    if (resolveUserSessionInitDecision(values).kind !== 'bypass') return true;
+    log?.debug?.('agemem: background warmup skipped, the user config says default_associate=0 (bypass)');
+    return false;
+  };
+  // 3c. Session-start identity (task-117 v3).
+  //
+  //     Registered BEFORE the volatile block, and both listeners use
+  //     {prepend:true}. Do NOT rely on that ordering: the host may unshift
+  //     prepended listeners (later registration runs first), and nothing in
+  //     the event API promises a fixed rank. Two properties make the order
+  //     irrelevant instead: the picker de-dupes per session (inFlight) and
+  //     volatile awaits sessionIdentity.ensureBound() before asking for the
+  //     recall block. So whichever runs first, there is at most one card, and
+  //     the block of the step that follows a pick already carries the new
+  //     identity; a step that raced the card falls back to the configured
+  //     triple for that one step only.
+  const sessionIdentity = installSessionIdentity(ctx, {
+    settings: {
+      askAtSessionStart: config.identity.askAtSessionStart,
+      followUserSessionInit: config.identity.followUserSessionInit,
+      askTimeoutMs: config.identity.askTimeoutMs,
+      rememberSession: config.identity.rememberSession,
+      skipDefault: config.identity.skipDefault,
+      statePath: config.identity.rememberSession ? sessionStatePathFor(config.identity.statePath, config.writeback.outboxPath) : '',
+    },
+    base: identity,
+    resolveUserKey,
+    candidates: (input) => listCandidates({
+      client,
+      userKey: input.userKey,
+      teamId: input.teamId,
+      timeoutMs: input.timeoutMs,
+      log,
+    }),
+    // Same source the proxy's init reads (spec §5): the per-user session_init
+    // module. Failures are null and the picker turns them into 'ask'.
+    getUserSessionInit: (input) => readSessionInit(input),
+    store: identityStore,
+    getQuestions: () => questionService(ctx),
+    // Same budget the mount-time resolution uses: three metadata calls, bounded.
+    timeoutMs: Math.min(config.server.requestTimeoutMs, IDENTITY_RESOLUTION_BUDGET_MS),
+    log,
+    onSessionSeen: (sessionId) => { latestSessionId = sessionId; },
+    onBound: (_sessionId, binding) => {
+      // A "no association" binding (user said 否 / default_associate=0) carries an
+      // empty triple on purpose. Nothing to fetch, and fetching would be the very
+      // team-scoped read that binding opted out of.
+      if (binding.teamId === '') return;
+      // The head pack is frozen once fetched; it was built with the mount triple,
+      // so a session that just got bound must refetch instead of serving the
+      // wrong team's persona/scene index for the rest of the session.
+      headPack.invalidate();
+      void headPack.refresh();
+    },
+  });
+  disposers.push(() => sessionIdentity.dispose());
   // Transport for the skill surface (src/skill-client.ts): the same v3 seam as
   // every other call, so identity headers, envelope unwrapping and the API key
   // have exactly one implementation.
   const skillClient = new SkillClient({
     call: (path, body, options) => client.v3(path, body, options),
     timeoutMs: config.skill.timeoutMs,
+    // Skill reads/writes run inside a turn, so they travel with the identity
+    // that turn's session was bound to (falls back inside the client).
+    sessionId: () => latestSessionId,
     log,
   });
-
   // The newest session id this process has seen. Only the extract tool needs it
   // (force-archive is session-scoped); everything else takes the session from
   // the event or turn context it is already handling.
@@ -449,7 +610,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     skillClient,
     sessionId: () => latestSessionId,
   };
-
   const headPack = new HeadPack({
     fetchHeadPack: async () => {
       // Segments, not one blob: every provider self-registers in
@@ -471,9 +631,12 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     maxChars: config.headPack.maxChars,
     refreshMs: config.headPack.refreshMs,
     fallbackText: config.headPack.fallbackText,
+    // An opted-out user (session_init default_associate=0) must cause no
+    // team-scoped read at all -- not at mount, not on turn/start, not from the
+    // section render. One gate inside the pack covers every one of those paths.
+    allowFetch: warmupAllowed,
     log,
   });
-
   // 4. One-shot reachability probe. Started here so it overlaps the rest of the
   // wiring, and awaited only by the ready line (its own 3s cap) — never by a
   // turn. This is the single most useful line for a cross-host deploy: without
@@ -489,7 +652,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       return 'fail(error)';
     }
   })();
-
   /** Where the key would come from — never the value itself. */
   const keySource = async (): Promise<string> => {
     if (config.server.apiKey.trim() !== '') return 'config';
@@ -499,7 +661,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return 'env:' + ref;
     return 'none';
   };
-
   // Circuit breaker. Two different kinds of failure, two different policies:
   //
   //  * 422 is permanent for this process. The live probe (scratch/lead/recall-headers.mjs)
@@ -512,9 +673,17 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   const RECALL_UNAVAILABLE_MS = 10 * 60 * 1000;
   let recallUnavailableUntil = 0;
   let recallUnavailableStatus: number | undefined;
-
   // One warn per recall failure class; the actionable hint differs by status.
   const warnRecallFailure = (result: RecallBlockResult): void => {
+    // A session deliberately without an identity triple — the user picked
+    // "否，本次不关联" or their session_init config says default_associate=0 —
+    // did not fail: /v3/recall was skipped on purpose, so nothing is broken and
+    // nothing should be injected. Keep it at debug so a bypass user does not see
+    // an error-looking warn on every launch.
+    if (typeof result.reason === 'string' && result.reason.startsWith('identity missing')) {
+      log?.debug?.('agemem: /v3/recall skipped, this session associates no assets (' + result.reason + ')');
+      return;
+    }
     const status = result.status;
     const detail = status !== undefined ? 'HTTP ' + status : (result.reason ?? 'no block');
     const hint = status === 404
@@ -545,9 +714,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     }
     warnOnce('recall', 'agemem: /v3/recall failed (' + detail + '): ' + hint);
   };
-
-  const disposers: Array<() => void> = [];
-
   // 0. Embedding prewarm: the first atomic/search after an idle period measured
   // ~6.4s against the local core (cold embedding model) — past the volatile
   // block's budget, so the first turn after a restart would silently lose its
@@ -559,6 +725,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     prewarmed = true;
     void (async () => {
       try {
+        // Opted-out users (session_init default_associate=0) never get here: the
+        // warmup itself is a team-scoped read.
+        if (!(await warmupAllowed())) return;
         await Promise.allSettled([
           client.readCore(config.headPack.timeoutMs),
           // Warm the embedding model through the SAME endpoint the volatile
@@ -577,7 +746,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   } catch (error) {
     log?.debug?.('agemem: prewarm watch unavailable', error);
   }
-
   // 1. Answer-guidance section (task-15): the memory answer discipline the
   // MemoryCore read path already injects (answer-guidance + memory-tools-guide).
   //
@@ -609,7 +777,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   } catch (error) {
     log?.warn?.('agemem: answer-guidance section registration failed; continuing without it', error);
   }
-
   // 2. Head pack section (stable prefix, frozen within a session).
   if (config.headPack.enabled) {
     try {
@@ -621,12 +788,12 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         text: () => headPack.current(),
       });
       disposers.push(dispose);
+      // The pack itself refuses the fetch for an opted-out user (see allowFetch).
       void headPack.refresh();
     } catch (error) {
       log?.warn?.('agemem: head pack section registration failed; continuing without it', error);
     }
   }
-
   // 2. Per-turn volatile block (appended at the tail, once per turn).
   //
   // Latency, measured against the local core with one NEW turn text per round:
@@ -648,10 +815,8 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   //     minutes would freeze the fallback in place.
   const recallCache = new RecallCache();
   const inflight = new RecallInflight<VolatileBlock>(RECALL_INFLIGHT_MAX_ENTRIES, log);
-
   const countEntries = (text: string): number =>
     text === '' ? 0 : text.split('\n').filter((line) => line.startsWith('- [')).length;
-
   /**
    * Supply order: /v3/recall (merged, R7-layered, budgeted) → the older
    * atomic/search summary. Recall is server-side opt-in and can be disabled
@@ -697,7 +862,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       extrasChars: text.length,
     };
   };
-
   const fetchBlock = async (turnText: string, context: VolatileTurnContext): Promise<VolatileBlock> => {
     const started = Date.now();
     let base: VolatileBlock = { text: '', source: 'none', entriesKept: 0, soulChars: 0 };
@@ -748,6 +912,7 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         config.tools.recallTopK,
         { includePersona: false, includeScenarios: false },
         remaining,
+        context.sessionId,
       );
       const text = formatVolatileBlock(recalled.hits, config.volatile.maxChars);
       // The atomic fallback has no soul leg by design: a degraded path must not
@@ -756,7 +921,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     }
     return appendCapabilitySegments(base, turnText, started);
   };
-
   /**
    * Fire-and-forget prefetch for one turn's user text. Keyed exactly like the
    * pre-step path (same recallKey/`extractTurnClaim`), so a repeated key shares
@@ -785,7 +949,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         // Prefetch is an optimisation: the pre-step retries the same key.
       });
   };
-
   if (config.volatile.enabled) {
     disposers.push(
       installVolatile(ctx, {
@@ -793,6 +956,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         maxChars: config.volatile.maxChars,
         timeoutMs: config.volatile.timeoutMs,
         log,
+        // Second line of defence (task-117): the picker listener is registered
+        // first, but a step that raced it must not recall with the mount triple.
+        ensureIdentity: (agent, signal) => sessionIdentity.ensureBound(agent, signal),
         getBlock: async (turnText: string, context: VolatileTurnContext) => {
           const key = recallKey(context.sessionId, context.turn, turnText);
           const cached = recallCache.get(key);
@@ -831,7 +997,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       }),
     );
   }
-
   // 4. Turn writeback (local outbox; delivery never blocks the turn).
   if (config.writeback.enabled) {
     try {
@@ -1053,7 +1218,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       log?.warn?.('agemem: writeback setup failed; turns will not be written back', error);
     }
   }
-
   // 4. Tools (optional: the composition may not mount a tool service).
   //
   // Every surface is a module (src/tools/*.ts) that self-registers with its own
@@ -1100,7 +1264,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       log?.warn?.('agemem: tools service unavailable; no tools registered');
     }
   }
-
   // 5. Session events: turn start is a cheap freshness check, the first real user
   //    message warms the cache for a REPEATED text (measured: this event lands
   //    after agent/pre-step, so it cannot help the turn it belongs to), and turn
@@ -1134,7 +1297,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   } catch (error) {
     log?.debug?.('agemem: session/event watch unavailable', error);
   }
-
   // 6. Compaction invalidation. Verified against app.asar: the host emits
   //    `compaction/start`, `compaction/prune`, `compaction/summary`,
   //    `compaction/end`, `compaction/summary-error`. The older
@@ -1154,7 +1316,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       log?.debug?.('agemem: ' + event + ' watch unavailable', error);
     }
   }
-
   // One mount-time info line: enough to know whether memory is actually wired
   // in this process, without leaking identity ids or the key value. The e2e run
   // had to read the core DB to answer "is the plugin even mounted?" — this line
@@ -1220,6 +1381,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         : 'off'
     )
     + ', health=' + (await healthProbe)
+    // off(config) is the explicit opt-out reading; bound(...)/inert(...) say what
+    // the picker actually did in this process.
+    + ', sessionIdentity=' + sessionIdentity.status()
     + ', ' + capabilities
     + ', guidance=' + GUIDANCE_VERSION
     + ', ' + timeouts
@@ -1227,7 +1391,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     + (debugLog !== undefined ? ', logFile=' + debugLog.path : '')
     + ')',
   );
-
   const disposeAll = (): void => {
     for (const dispose of disposers.splice(0).reverse()) {
       try {
@@ -1237,7 +1400,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       }
     }
   };
-
   try {
     // Cordis emits 'dispose' when the owning fiber tears down.
     ctx.on('dispose', disposeAll);
@@ -1245,7 +1407,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     // Older host: event listeners and effects are disposed with the fiber.
   }
 }
-
 /**
  * Settings page (档 2): the host reads `Config` off the plugin module namespace
  * (dsh-settings/lib/index.js `schema(entry)` -> `entry.fiber.runtime.Config`) and

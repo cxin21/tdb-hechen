@@ -94,7 +94,11 @@ describeGroup('Config schema shape', () => {
     // 18 -> 21: the skill surface (skill.enabled / allowLlmWrite / headPackChars)
     // joined when the skill listing and its ten tools shipped (task-72).
     // 21 -> 25: the wiki/knowledge segments' enable+ceiling pairs.
-    expect(volatile).toHaveLength(25);
+    // 25 -> 29: the session-start identity picker (task-117):
+    // askAtSessionStart / askTimeoutMs / rememberSession / skipDefault.
+    // 29 -> 30: identity.followUserSessionInit, the "honour the per-user
+    // session_init config" switch that decides whether a card appears at all.
+    expect(volatile).toHaveLength(30);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {
