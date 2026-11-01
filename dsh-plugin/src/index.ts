@@ -815,6 +815,21 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   //     minutes would freeze the fallback in place.
   const recallCache = new RecallCache();
   const inflight = new RecallInflight<VolatileBlock>(RECALL_INFLIGHT_MAX_ENTRIES, log);
+  /**
+   * sessionId -> the soul version already injected into that session.
+   *
+   * `volatile.soul.oncePerSession` (default) puts the WHOLE persona in on the
+   * first block only: the block is appended as durable `user/message` history,
+   * so the first copy stays visible while later turns pay only for memories.
+   * A new `soulVersion` from the core (the persona was re-distilled) puts it
+   * back in, which is the one case where paying twice is correct.
+   */
+  const soulGate = new Map<string, string>();
+  const SOUL_GATE_MAX_ENTRIES = 200;
+  /** Memory slice when the soul leg is OFF: the historical 1500 budget. The
+   * total cap now carries a 3.6K persona slot that does not exist in that mode,
+   * so the memory-only block must not silently grow into it. */
+  const MEMORY_ONLY_CEILING_CHARS = 1500;
   const countEntries = (text: string): number =>
     text === '' ? 0 : text.split('\n').filter((line) => line.startsWith('- [')).length;
   /**
@@ -875,14 +890,39 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         // The soul is a SLICE of the turn budget, taken before the entries so a
         // long persona can never push memories out of the block; when soul is
         // absent/empty/disabled the memory budget is exactly today's.
-        const soulText = config.volatile.soul.enabled
+        //
+        // Full persona (2026-11-01): at 600 chars the slice cut the 3384-char
+        // identity mid-sentence and the `## 不可逾越（红线）` section — which
+        // sits in the MIDDLE of it — never reached the prompt. The budget is now
+        // 4400 (the whole persona) and, with `oncePerSession`, it is paid once
+        // per session instead of every turn.
+        const soulVersion = soulVersionOf(result.meta) ?? '';
+        const soulDue = config.volatile.soul.enabled
+          && (!config.volatile.soul.oncePerSession || soulGate.get(context.sessionId) !== soulVersion);
+        const soulText = soulDue
           ? renderSoulBlock(extractSoul(result.block), {
             maxChars: config.volatile.soul.maxChars,
             includeFeeling: config.volatile.soul.includeFeeling,
           })
           : '';
+        if (soulText !== '') {
+          soulGate.delete(context.sessionId);
+          soulGate.set(context.sessionId, soulVersion);
+          if (soulGate.size > SOUL_GATE_MAX_ENTRIES) {
+            const oldest = soulGate.keys().next();
+            if (!oldest.done) soulGate.delete(oldest.value);
+          }
+        }
         const soulChars = soulText === '' ? 0 : soulText.length;
-        const memoryBudget = Math.max(0, config.volatile.maxChars - (soulChars === 0 ? 0 : soulChars + 1));
+        // The slot stays RESERVED on turns that skip the persona: the earlier
+        // copy is still in history, and memories must not expand into space the
+        // persona would have used — that would make later turns bigger, not
+        // smaller.
+        const soulSlot = config.volatile.soul.enabled ? config.volatile.soul.maxChars : 0;
+        const memoryCeiling = soulSlot > 0
+          ? config.volatile.maxChars
+          : Math.min(config.volatile.maxChars, MEMORY_ONLY_CEILING_CHARS);
+        const memoryBudget = Math.max(0, memoryCeiling - (soulChars === 0 ? soulSlot : soulChars + 1));
         const memories = recallBlockText(result.block, memoryBudget);
         const text = soulText === '' ? memories : (memories === '' ? soulText : soulText + String.fromCharCode(10) + memories);
         if (text !== '') {

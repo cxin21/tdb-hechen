@@ -8,6 +8,7 @@ import {
   VOLATILE_HEADER,
   clampBlockByLines,
   clipEntry,
+  clipSoulIdentity,
   dedupeEntries,
   extractRelevantMemories,
   extractSoul,
@@ -210,5 +211,91 @@ describe('recall block -> volatile lines', () => {
     expect(renderMemoryBlock([], 100)).toBe('');
     // The header alone already blows the budget: append nothing at all.
     expect(renderMemoryBlock(['- [L1] x'], 5)).toBe('');
+  });
+});
+
+/**
+ * The 2026-11-01 incident: the live identity is 3384 chars laid out as
+ *
+ *   ## 此刻的我        (2509)
+ *   ## 不可逾越（红线） (815, 8 of 16 rules — the core capped the rest)
+ *   ## 当下的状态      (42)
+ *
+ * and the 600-char soul budget cut it at 536 chars — mid-sentence, BEFORE the
+ * red-line section. The persona's hard rules therefore never reached a prompt.
+ * A budget cut must now keep the whole red-line section and never slice a line.
+ */
+describe('soul clipping keeps the red line (clipSoulIdentity)', () => {
+  const persona = [
+    '## 此刻的我',
+    '我是何晨的数字分身，负责把决定落地成证据。',
+    '我坚持先取证再拍板，不假手于人的审查。',
+    '## 不可逾越（红线）',
+    '- [strict_rule] 零自行 commit/push。',
+    '- [strict_rule] 记忆零删零注入。',
+    '- [strict_rule] 测试数据不注入生产。',
+    '## 当下的状态',
+    '刚跑完四域取证，正在收口。',
+  ].join(NL);
+  const redline = [
+    '## 不可逾越（红线）',
+    '- [strict_rule] 零自行 commit/push。',
+    '- [strict_rule] 记忆零删零注入。',
+    '- [strict_rule] 测试数据不注入生产。',
+  ].join(NL);
+
+  it('keeps the whole persona when the budget allows it', () => {
+    expect(clipSoulIdentity(persona, 5000)).toBe(persona);
+    expect(clipSoulIdentity(persona, persona.length)).toBe(persona);
+  });
+
+  it('keeps the red-line section when the budget cannot hold the persona', () => {
+    // The old head slice returned only the first 536 chars — this budget is
+    // smaller than the preamble, so ONLY a red-line-first clip can pass.
+    const clipped = clipSoulIdentity(persona, 120);
+    expect(clipped).toContain('## 不可逾越（红线）');
+    expect(clipped).toContain('零自行 commit/push');
+    expect(clipped.length).toBeLessThanOrEqual(120);
+    expect(clipped).not.toContain('## 当下的状态');
+  });
+
+  it('never slices a line in half: every kept line is an original line', () => {
+    const originals = new Set(persona.split(NL));
+    for (const budget of [60, 90, 120, 160, 200, 260]) {
+      const clipped = clipSoulIdentity(persona, budget);
+      expect(clipped.length).toBeLessThanOrEqual(budget);
+      for (const line of clipped.split(NL)) {
+        // Either a complete original line, or one that only lost a trailing ellipsis.
+        const bare = line.endsWith('…') ? line.slice(0, -1) : line;
+        expect(originals.has(bare)).toBe(true);
+      }
+    }
+  });
+
+  it('fills the remaining room with whole lines from the other sections', () => {
+    // Room for the red-line section plus two preamble lines.
+    const budget = redline.length + 60;
+    const clipped = clipSoulIdentity(persona, budget);
+    expect(clipped.startsWith('## 此刻的我')).toBe(true);
+    expect(clipped).toContain(redline);
+    expect(clipped.length).toBeLessThanOrEqual(budget);
+  });
+
+  it('falls back to a head slice when the persona carries no red line', () => {
+    const plain = '第一行' + NL + '第二行' + NL + '第三行';
+    expect(clipSoulIdentity(plain, 100)).toBe(plain);
+    // Whole lines only: at 8 chars the two 3-char lines fit and the third is
+    // dropped with the ellipsis; at 5 only the first line survives.
+    expect(clipSoulIdentity(plain, 8)).toBe('第一行' + NL + '第二行…');
+    expect(clipSoulIdentity(plain, 5)).toBe('第一行…');
+    expect(clipSoulIdentity('', 100)).toBe('');
+    expect(clipSoulIdentity(plain, 0)).toBe('');
+  });
+
+  it('keeps the red line through renderSoulBlock when the budget forces a cut', () => {
+    const soul = renderSoulBlock({ identity: persona, feeling: '平静' }, { maxChars: 200 });
+    expect(soul.length).toBeLessThanOrEqual(200);
+    expect(soul.startsWith(SOUL_IDENTITY_OPEN)).toBe(true);
+    expect(soul).toContain('## 不可逾越（红线）');
   });
 });

@@ -58,12 +58,13 @@ headPack:
 # volatile 注入块：每轮 <relevant-memories> 的预算与分片
 volatile:
   enabled: true   # bool default=true — 是否每轮注入 <relevant-memories> 块；关掉后 soul/wiki/knowledge 也一起没了 [src:377]
-  maxChars: 1500   # int default=1500 — 每轮注入块总上限（含 soul）；实测 1500 只装 4 条、soul 占 600 后记忆只剩 899≈2 条 [src:384]
+  maxChars: 6000   # int default=6000 — 每轮注入块总上限（clamp [200,20000]）；= soul ≤4400 + 记忆 ≈900 + 能力段 ≈700 [src:444]
 # · volatile.soul 子段
   soul:
     enabled: true   # bool default=true — 是否注入 <soul-identity> 人格碎片（蒸馏出的红线/身份） [src:386]
-    maxChars: 600   # int default=600 — soul 块上限（clamp [100,3000]）；它从 volatile.maxChars 里切，设大直接压缩记忆条数 [src:389]
-    includeFeeling: true   # bool default=true — 是否连 <soul-feeling>（情绪行，36–40 字符）一起注入 [src:390]
+    maxChars: 4400   # int default=4400 — soul 块上限（clamp [100,6000]）；整段人格约 4200（16 条红线全渲染），从 volatile.maxChars 里切 [src:452]
+    includeFeeling: true   # bool default=true — 是否连 <soul-feeling>（情绪行，36–40 字符）一起注入 [src:453]
+    oncePerSession: true   # bool default=true — 每会话只注入一次完整人格（块在历史里留着），core 的 soulVersion 变了再注入；关=每轮都带 [src:457]
   timeoutMs: 3000   # ms default=3000 — 整块取数预算（含回退腿，floor 100）；超了本轮注入空块 [src:394]
   recall: true   # bool default=true — 优先走 /v3/recall；false 强制走 atomic/search 老通道（没有 soul/结论层） [src:395]
   recallMaxResults: 3   # int default=3 — 交给 /v3/recall 的 maxResults；实测 3 与 2 都只装 2 条（预算先到），调大不加钱但也不加条 [src:396]

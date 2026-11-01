@@ -78,6 +78,9 @@ export const VOLATILE_PATHS = [
   'volatile.soul.enabled',
   'volatile.soul.maxChars',
   'volatile.soul.includeFeeling',
+  // Full persona once per session (the block is append-only, so the first copy
+  // stays in history) instead of a per-turn slice that cut the red line off.
+  'volatile.soul.oncePerSession',
   'tools.enabled',
   'tools.recall',
   // task-117: the session-start Team/Agent picker. Four knobs, all of them
@@ -121,10 +124,11 @@ const DESCRIPTIONS: Record<string, string> = {
   'writeback.enabled': 'Write finished turns back into memory.',
   'writeback.skillFeed': 'Include skill-feed turns in writeback.',
   'volatile.enabled': 'Inject the per-turn volatile memory block.',
-  'volatile.maxChars': 'Hard character cap for the per-turn volatile block (soul and memories together).',
+  'volatile.maxChars': 'Hard character cap for the per-turn volatile block (soul, memories and segments together; 200-20000).',
   'volatile.soul.enabled': 'Inject the distilled soul (persona) fragments ahead of the memory entries.',
-  'volatile.soul.maxChars': 'Character cap for the soul slice of the volatile block (100-3000).',
+  'volatile.soul.maxChars': 'Character cap for the soul slice of the volatile block (100-6000); 4400 carries the whole persona including every red-line rule.',
   'volatile.soul.includeFeeling': 'Keep the <soul-feeling> mood line next to <soul-identity>.',
+  'volatile.soul.oncePerSession': 'Inject the full soul once per session (and when its version changes) instead of every turn.',
   'tools.enabled': 'Register the memory tools (recall/write).',
   'tools.recall': 'Register the read-only recall tool.',
   'identity.askAtSessionStart': 'Master switch for the session-start card: off means never read the user config and never ask (automation).',

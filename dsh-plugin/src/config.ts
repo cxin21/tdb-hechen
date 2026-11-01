@@ -140,10 +140,22 @@ export interface HeadPackConfig {
 export interface VolatileSoulConfig {
   /** Inject the soul fragments ahead of the memory entries. */
   enabled: boolean;
-  /** Ceiling for the rendered soul block (tags included), clamped to [100, 3000]. */
+  /** Ceiling for the rendered soul block (tags included), clamped to [100, 5000]. */
   maxChars: number;
   /** Keep `<soul-feeling>` (the mood line) alongside `<soul-identity>`. */
   includeFeeling: boolean;
+  /**
+   * Inject the WHOLE soul on the first block of a session and then leave it
+   * alone (the block is append-only, so the earlier copy stays in history).
+   *
+   * Why: the identity is 3384 chars with the `## 不可逾越（红线）` section in the
+   * MIDDLE. Slicing it to a per-turn budget cut at 536 chars, i.e. before the
+   * red line ever started — the persona's hard rules never reached the prompt.
+   * Full injection per turn would append ~3.5K chars every turn, so the soul
+   * goes in once per session (and again when the core's soulVersion changes),
+   * while the per-turn memory slice stays at its historical size.
+   */
+  oncePerSession: boolean;
 }
 
 export interface VolatileConfig {
@@ -418,19 +430,31 @@ export const DEFAULT_CONFIG: AgememConfig = {
   },
   volatile: {
     enabled: true,
-    // 1500 chars per turn = 600 soul + ~900 memory. Measured recall payloads:
-    // 1 entry = 450 chars, 2 entries = 1214 chars; entries are clipped to 360
-    // chars before budgeting. The old 1200 was all memory: the soul fragments
-    // (identity 3343-3388 chars, feeling 36-40) never fit and were dropped
-    // outright by recallBlockText, so the plugin injected memories without the
-    // persona the proxy path always had.
-    maxChars: 1500,
+    // 6000 chars per turn = 4400 soul + ~900 memory + ~700 segments. Measured
+    // recall payloads: 1 entry = 450 chars, 2 entries = 1214 chars; entries are
+    // clipped to 360 chars before budgeting.
+    //
+    // Why the soul slice jumped from 600 to 4400 (2026-11-01): the core renders
+    // a 3384-char identity — `## 此刻的我` / `## 不可逾越（红线）` /
+    // `## 当下的状态` — and the old 600-char slice cut it at 536 chars,
+    // mid-sentence and BEFORE the red line, so the persona's hard rules never
+    // entered the prompt (verified against the real injection events in the
+    // session archive). The red line is also what `clipSoulIdentity` now keeps
+    // first when a budget forces a cut.
+    maxChars: 6000,
     soul: {
       enabled: true,
-      // 600 chars: a trimmed persona brief, not the full 3.3K identity (which
-      // would crowd out every memory entry). 100 floor / 3000 ceiling.
-      maxChars: 600,
+      // 4400 = the measured identity once ALL red-line rules render (8 rules ->
+      // 3384 chars; the core cap went 8 -> 16, so 16 rules -> ~4200) + tag
+      // overhead + the mood line.
+      // Slicing it smaller is what silently dropped the red line. 100 floor /
+      // 5000 ceiling.
+      maxChars: 4400,
       includeFeeling: true,
+      // Full soul once per session, not every turn: the volatile block is
+      // append-only (`user/message` history), so the first copy stays visible
+      // while later turns keep paying only for memories.
+      oncePerSession: true,
     },
     // Deliberately below the core's cold-start cost: the volatile block rides in
     // pre-step, so losing one turn's injection beats stalling the step.
@@ -549,10 +573,15 @@ function pickBool(value: unknown, fallback: boolean): boolean {
  * instead of showing up as an error.
  */
 const TIME_FLOOR_MS = 100;
-/** Soul slot bounds: below 100 the tag overhead alone eats it; 3000 is the
- * point where the soul is the whole turn budget. */
+/** Soul slot bounds: below 100 the tag overhead alone eats it; 5000 is above
+ * the full 16-rule identity (+tags/feeling, ~4300), so the default 4400
+ * can carry the WHOLE persona including its red-line section. */
 const SOUL_MIN_CHARS = 100;
-const SOUL_MAX_CHARS = 3000;
+const SOUL_MAX_CHARS = 6000;
+/** Total volatile block bounds: below 200 no tag pair plus one entry fits, and
+ * 20000 already exceeds any sane per-turn prompt budget. */
+const VOLATILE_MIN_CHARS = 200;
+const VOLATILE_MAX_CHARS = 20000;
 /** 反思块边界：低于 120 连标记行都放不下；4000 已超过任何合理提示词预算。 */
 const REFLECTION_MIN_CHARS = 120;
 const REFLECTION_MAX_CHARS = 4000;
@@ -669,8 +698,17 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
   headPack.l2Chars = Math.floor(pickNumber(headPack.l2Chars, DEFAULT_CONFIG.headPack.l2Chars, 0, 3000));
   volatile.timeoutMs = Math.max(TIME_FLOOR_MS, Math.floor(volatile.timeoutMs));
   volatile.recallTimeoutMs = Math.max(TIME_FLOOR_MS, Math.floor(volatile.recallTimeoutMs));
+  // The total cap carries the soul slot, the memory slice and the capability
+  // segments, so it needs a floor above the soul default and a ceiling that a
+  // typo cannot turn into a whole-prompt flood.
+  volatile.maxChars = Math.floor(pickNumber(
+    volatile.maxChars,
+    DEFAULT_CONFIG.volatile.maxChars,
+    VOLATILE_MIN_CHARS,
+    VOLATILE_MAX_CHARS,
+  ));
   // The soul slot is a SLICE of volatile.maxChars, not an addition: clamping it
-  // to [100, 3000] keeps a typo (0 or 100000) from erasing the memories or the
+  // to [100, 5000] keeps a typo (0 or 100000) from erasing the memories or the
   // whole turn budget.
   volatile.soul.maxChars = Math.floor(pickNumber(
     volatile.soul.maxChars,

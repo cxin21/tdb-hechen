@@ -1219,8 +1219,8 @@ describe('plugin entry', () => {
     expect(text).toContain('【agemem 记忆提示】');
     expect(text).toContain(ATOMIC_ITEMS[0].content);
     expect(text.indexOf('<soul-identity>')).toBeLessThan(text.indexOf('【agemem 记忆提示】'));
-    // soul 600 + memories, both under the one ceiling the caller configured.
-    expect(text.length).toBeLessThanOrEqual(1500);
+    // soul (whole persona) + memories, both under the one ceiling the caller configured.
+    expect(text.length).toBeLessThanOrEqual(6000);
     // soulChars/soulVersion ride in the debug payload; the soul body never does.
     const payload = fake.rawLogs
       .filter((entry) => entry.level === 'debug' && entry.parts[0] === 'agemem: volatile block ready')
@@ -1230,6 +1230,43 @@ describe('plugin entry', () => {
     expect(payload!.soulChars).toBeGreaterThan(0);
     expect(payload!.soulVersion).toBe('1');
     expect(JSON.stringify(payload)).not.toContain('你是用户的记忆助手');
+  });
+
+  /**
+   * Full persona = ~4400 chars (the 3384-char identity once every red-line rule
+   * renders + tags + the mood line). Paying that on EVERY turn would append a
+   * second and a half of tokens per turn to durable history, so the persona goes
+   * in on the session's first block and the later turns carry memories only —
+   * the earlier block is still in the conversation.
+   */
+  it('injects the persona once per session, and only memories after that', async () => {
+    installFetch();
+    const fake = await startApp();
+    const listener = fake.firstListener('agent/pre-step');
+    if (!listener) throw new Error('pre-step listener not installed');
+    const first = await runPreStep(
+      listener,
+      { agent: { session: { id: 's1' } }, turn: 1, step: 1 },
+      { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+    );
+    expect(first.messages[1].content[0].text.startsWith('<soul-identity>')).toBe(true);
+
+    const second = await runPreStep(
+      listener,
+      { agent: { session: { id: 's1' } }, turn: 2, step: 1 },
+      { kind: 'enter', messages: [userMessage('tsconfig 怎么配?')] },
+    );
+    const secondText = second.messages[1].content[0].text;
+    expect(secondText).not.toContain('<soul-identity>');
+    expect(secondText).toContain('【agemem 记忆提示】');
+
+    // Another session is a fresh audience: it gets the persona again.
+    const other = await runPreStep(
+      listener,
+      { agent: { session: { id: 's2' } }, turn: 1, step: 1 },
+      { kind: 'enter', messages: [userMessage('帮我看看召回')] },
+    );
+    expect(other.messages[1].content[0].text.startsWith('<soul-identity>')).toBe(true);
   });
 
   it('returns to the memory-only block when the soul switch is off', async () => {

@@ -87,8 +87,8 @@ token 不落提示词、不落配置文件。
           metaAgentList: /v3/meta/agent/list    # 该 team 下本人 agent（owner 过滤）
           health: /health
         headPack:  { enabled: true, orderOffset: 100, maxChars: 20000, refreshMs: 300000, timeoutMs: 10000 }
-        volatile:  { enabled: true, maxChars: 1500, timeoutMs: 3000,
-                     soul: { enabled: true, maxChars: 600, includeFeeling: true },
+        volatile:  { enabled: true, maxChars: 6000, timeoutMs: 3000,
+                     soul: { enabled: true, maxChars: 4400, includeFeeling: true, oncePerSession: true },
                      recall: true, recallMaxResults: 3, recallTimeoutMs: 2500 }
         writeback: { enabled: true, skillFeed: true, maxAttempts: 8, retryMs: 30000, outboxPath: "",
                      maxMessageChars: 8192, maxMessagesPerRequest: 100,
@@ -164,11 +164,19 @@ token 不落提示词、不落配置文件。
   2. `<relevant-memories>` 内的 `- [` 行——块头部那 ~300 字符的【币值判定规则】【建议类问题口径】
      与已注入的 answer-guidance 段重复，丢掉不重注。
   404/504/超时/无条目一律退回 `/v3/atomic/search` 摘要（**atomic 路没有 soul 段，也不许编造**），全失败就不注入。
-  - **预算怎么分**：`volatile.maxChars` 1500 = soul 最多 600 + 记忆约 900。soul 是**从总预算里切走的**，不是额外叠加：
-    先渲染 soul（`volatile.soul.maxChars` 600，clamp [100,3000]），剩下的 `1500 - soul - 1` 才给记忆装填。
-    `volatile.soul.enabled: false` 时记忆预算逐位回到旧形态（1500 全给记忆）。
+  - **预算怎么分**：`volatile.maxChars` 6000 = soul 最多 4400 + 记忆约 900 + 能力段约 700。soul 是**从总预算里切走的**，不是额外叠加：
+    先渲染 soul（`volatile.soul.maxChars` 4400，clamp [100,6000]），其余才给记忆装填。
+    `volatile.soul.enabled: false` 时记忆退回到 `min(maxChars, 1500)`（旧口径）。
+  - **全量注入（2026-11-01 事故修）**：旧预算 600 把 3384 字符的人格在第 536 字符处硬切——**切在句子中间、而且在
+    `## 不可逾越（红线）` 之前**，所以人格的硬约束从来没进过 prompt（用 3 个真实注入事件核对过：soulLen 均 536、
+    含红线段=false）。现在 soul 预算 4400 装得下整段人格（红线规则全开时约 4200），并且：
+    ① `clipSoulIdentity` 改成**红线优先 + 整行**裁剪（预算不够时先把 `## 不可逾越（红线）` 整段留下，再按文档顺序补其它段；
+    遇到被截的段落结尾加 `…`，绝不把一行切成两半，也不会把半段读成完整人格）；
+    ② `volatile.soul.oncePerSession`（缺省 **true**）——每会话第一次注入**完整人格**，之后每轮只带记忆。
+    块是追加进会话历史的 `user/message`，第一次那份还在上下文里，所以不必每轮重付 4200 字符；core 的 `soulVersion` 变了
+    （人格被重新蒸馏）才会再注入一次。关掉此开关=回到「每轮都带人格」。
   - **人格缺失是可降级的**：块里没有 soul 标签、核心超时、`includeFeeling: false` 都只是少一段，不影响记忆注入；
-    每轮 debug 行带 `soulChars` / `soulVersion`（只版本串，不打正文），mount 行带 `soul=on(600,feeling)|off`。
+    每轮 debug 行带 `soulChars` / `soulVersion`（只版本串，不打正文），mount 行带 `soul=on(4400,feeling,once)|off`。
   - **隔离三轴是 header，不是 body**：core 的 v2 层对所有 `/v3/*` 强制 `x-tdai-team-id` / `x-tdai-agent-id` /
     `x-tdai-user-id`（+`x-tdai-service-id`），缺一个就是 **422 `missing team_id, agent_id, user_id`**；
     `session` 不强制（header 或 body 给一个就行）。插件里这些头由唯一一处 `headers()` 统一附加，
@@ -182,7 +190,7 @@ token 不落提示词、不落配置文件。
   超预算才裁——不会切在一条记忆中间。同一次查询里前缀相同的重复条目只留一条。
   **单条上限固定 360，不随可用预算放大**：只有 1 条可选时预算还剩 ~840 字符也不再放宽——
   token 成本可预测、测试面小，比「池子薄时临时放宽到 720」值。
-  `volatile.maxChars` 1500（soul ≤600 + 记忆 ≈900）；`recallMaxResults` 3（多要一条不多花 embedding：l1 只 embed 一次 query）。
+  `volatile.maxChars` 6000（soul ≤4400 + 记忆 ≈900 + 能力段 ≈700）；`recallMaxResults` 3（多要一条不多花 embedding：l1 只 embed 一次 query）。
 - **每轮的时间预算**（pre-step 里是同步 await，所以每一档都要能 fail-open）：
 
   | 档位 | 缺省 | 作用 |
@@ -391,7 +399,7 @@ mount 行与 `agemem: head pack composed` debug 行：`ok(N,chars)` / `empty` / 
 
 | 段 | 上限（字符） | 预算从哪来 | 失败时的行为 |
 | --- | --- | --- | --- |
-| 记忆块（soul + `/v3/recall`） | `volatile.maxChars`（1500） | 独占，先消费 | 回落 `atomic/search`，再不行零字符 |
+| 记忆块（soul + `/v3/recall`） | `volatile.maxChars`（6000，soul ≤4400 + 记忆 ≈900） | 独占，先消费 | 回落 `atomic/search`，再不行零字符 |
 | `<team-wiki>` | `volatile.wiki.maxChars`（800） | `order 50`，吃记忆块**剩下的** | 零字符，debug `wiki=... fail=http_404` |
 | `<knowledge_tools>` | `volatile.knowledge.maxChars`（3000） | `order 60`，再吃剩下的 | 零字符，debug `knowledge=... fail=<reason>` |
 
@@ -579,9 +587,9 @@ DSH_PROFILE=desktop bash scripts/deploy.sh \
   writeback:
     skillFeed: false
   volatile:
-    maxChars: 1500
+    maxChars: 6000
     soul:
-      maxChars: 600
+      maxChars: 4400
   YAML
   bash scripts/deploy.sh --identity team-x,agt-y,usr-z --config-extra=/tmp/agemem-extra.yml
   ```

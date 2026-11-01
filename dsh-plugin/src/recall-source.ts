@@ -213,6 +213,102 @@ export interface SoulRenderOptions {
   includeFeeling?: boolean;
 }
 
+/** The red-line section heading the core renders (`## 不可逾越（红线）`). */
+const SOUL_REDLINE_HEADING = /^##\s*不可逾越/;
+
+/** One `## ` section of the identity text (the first one may be heading-less). */
+interface SoulSection {
+  heading: string;
+  lines: string[];
+}
+
+function soulSections(identity: string): SoulSection[] {
+  const out: SoulSection[] = [];
+  for (const line of identity.split(/\r?\n/)) {
+    if (line.startsWith('## ')) out.push({ heading: line, lines: [line] });
+    else if (out.length === 0) out.push({ heading: '', lines: [line] });
+    else out[out.length - 1].lines.push(line);
+  }
+  return out;
+}
+
+/** Keep whole leading lines of a block that fit `room` chars (never mid-line). */
+function fitLines(lines: string[], room: number): { lines: string[]; truncated: boolean } {
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const cost = (kept.length === 0 ? 0 : 1) + line.length;
+    if (used + cost > room) return { lines: kept, truncated: true };
+    kept.push(line);
+    used += cost;
+  }
+  return { lines: kept, truncated: false };
+}
+
+/**
+ * Clip the soul identity to `room` chars WITHOUT ever losing the red line.
+ *
+ * Measured live (2026-11-01): the identity is 3384 chars with three sections
+ * (`## 此刻的我` / `## 不可逾越（红线）` / `## 当下的状态`) and the old
+ * `clipEntry` slice cut it at 536 chars — mid-sentence, before the red line
+ * even started, so the persona's hard rules never reached the prompt. The
+ * order of the document puts the red line in the MIDDLE, which is exactly the
+ * part a head slice throws away.
+ *
+ * So: reserve the red-line section first, then fill the remaining room with
+ * whole lines from the other sections in document order. A section that cannot
+ * fit is dropped whole (never spliced into another section), and any partial
+ * section ends with an ellipsis so a truncated persona never reads as a
+ * complete one.
+ */
+export function clipSoulIdentity(identity: string, maxChars: number): string {
+  const limit = limitOf(maxChars);
+  if (limit <= 0 || typeof identity !== 'string') return '';
+  if (identity.length <= limit) return identity;
+  const sections = soulSections(identity);
+  if (sections.length <= 1) {
+    const only = fitLines(identity.split(/\r?\n/), Math.max(0, limit - 1));
+    return only.lines.join('\n') + (only.truncated ? '…' : '');
+  }
+  const redlineIndex = sections.findIndex((section) => SOUL_REDLINE_HEADING.test(section.heading));
+  const joined = (section: SoulSection): string => section.lines.join('\n');
+  // No red line present: plain head slice at line boundaries.
+  if (redlineIndex < 0) {
+    const head = fitLines(identity.split(/\r?\n/), Math.max(0, limit - 1));
+    return head.lines.join('\n') + (head.truncated ? '…' : '');
+  }
+  const redline = joined(sections[redlineIndex]);
+  const redlineText = redline.length > limit
+    // A red line alone over budget still gets clipped, but it keeps its heading.
+    ? fitLines(sections[redlineIndex].lines, Math.max(0, limit - 1)).lines.join('\n') + '…'
+    : redline;
+  let room = limit - redlineText.length - 1;
+  const rendered = new Map<number, string>();
+  for (let i = 0; i < sections.length; i += 1) {
+    if (i === redlineIndex) continue;
+    if (room <= 1) break;
+    const section = sections[i];
+    const text = joined(section);
+    if (text.length <= room) {
+      rendered.set(i, text);
+      room -= text.length + 1;
+      continue;
+    }
+    const partial = fitLines(section.lines, Math.max(0, room - 1));
+    if (partial.lines.length > 1) {
+      rendered.set(i, partial.lines.join('\n') + '…');
+      room = 0;
+    }
+    break;
+  }
+  const parts: string[] = [];
+  for (let i = 0; i < sections.length; i += 1) {
+    if (i === redlineIndex) parts.push(redlineText);
+    else if (rendered.has(i)) parts.push(rendered.get(i) as string);
+  }
+  return parts.join('\n');
+}
+
 /**
  * Render the soul fragments as a self-contained block, clipped per fragment at
  * code-point boundaries (the same rule as clipEntry: never cut a surrogate
@@ -241,7 +337,9 @@ export function renderSoulBlock(parts: SoulParts, options: SoulRenderOptions): s
   const feelingBudget = feeling === '' ? 0 : Math.min(feeling.length, Math.max(FEELING_MIN_CHARS, Math.floor(limit * 0.2)));
   const reservedForFeeling = feeling === '' ? 0 : Math.min(limit, feelingBudget + feelingOverhead + 1);
   const identityRoom = Math.max(0, limit - reservedForFeeling - identityOverhead);
-  const renderedIdentity = identity === '' ? '' : wrap(SOUL_IDENTITY_OPEN, SOUL_IDENTITY_CLOSE, clipEntry(identity, identityRoom));
+  // Section-aware clip, red line mandatory: a head slice would drop the
+  // `## 不可逾越（红线）` section, which sits after the persona preamble.
+  const renderedIdentity = identity === '' ? '' : wrap(SOUL_IDENTITY_OPEN, SOUL_IDENTITY_CLOSE, clipSoulIdentity(identity, identityRoom));
 
   const feelingRoom = Math.max(0, limit - (renderedIdentity === '' ? 0 : renderedIdentity.length + 1) - feelingOverhead);
   const renderedFeeling = feeling === '' || feelingRoom <= 0

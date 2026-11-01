@@ -173,13 +173,24 @@ describe('config', () => {
     expect(config.headPack.timeoutMs).toBeGreaterThan(6400);
     // The volatile block rides in pre-step: bounded well below the read budget.
     expect(config.volatile.timeoutMs).toBeLessThan(config.server.requestTimeoutMs);
-    // v0 ceiling for the per-step block, locked so a stray edit cannot raise it.
-    // 1500 = 600 soul + ~900 memory. 1200 (was 800) was all memory: the soul
-    // fragments never fit, so the plugin injected a personality-free block.
-    expect(config.volatile.maxChars).toBe(1500);
-    expect(DEFAULT_CONFIG.volatile.maxChars).toBe(1500);
-    // The soul slice: on by default, 600 chars, feeling included.
-    expect(config.volatile.soul).toEqual({ enabled: true, maxChars: 600, includeFeeling: true });
+    // Ceiling for the per-step block, locked so a stray edit cannot raise it.
+    // 6000 = 4400 soul + ~900 memory + ~700 segments.
+    //
+    // 1500 (600 soul + ~900 memory) was the pre-2026-11-01 shape: at 600 the
+    // soul slice cut the 3384-char identity at 536 chars — mid-sentence and
+    // BEFORE its red-line section, so the persona's hard rules never reached
+    // the prompt (verified against real injection events).
+    expect(config.volatile.maxChars).toBe(6000);
+    expect(DEFAULT_CONFIG.volatile.maxChars).toBe(6000);
+    // The soul slice: on by default, 4400 chars (the WHOLE persona once the core
+    // renders all 16 red-line rules), feeling included, injected once per
+    // session instead of every turn.
+    expect(config.volatile.soul).toEqual({
+      enabled: true,
+      maxChars: 4400,
+      includeFeeling: true,
+      oncePerSession: true,
+    });
     // /v3/recall is session-aware and measured at 5.0s cold / 1.25-2.26s warm with
     // a fresh turn text: keep its own budget inside pre-step instead of the read
     // budget. 2500ms covers that distribution to ~p90 and still leaves 500ms of

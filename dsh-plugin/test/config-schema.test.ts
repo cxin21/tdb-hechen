@@ -102,7 +102,9 @@ describeGroup('Config schema shape', () => {
     // form — it is resolved from the user key at mount and from the user's own
     // session_init config on every session, so a form field could only make the
     // host disagree with the core. It stays patch-only (deploy.sh --identity).
-    expect(volatile).toHaveLength(27);
+    // 27 -> 28: volatile.soul.oncePerSession, the "full persona once per session"
+    // switch that let the soul budget grow to the whole identity.
+    expect(volatile).toHaveLength(28);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {
