@@ -95,7 +95,7 @@ import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } 
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
 import { factRowsEnabled, supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
-import { CleanContextRunner } from "../../utils/clean-context-runner.js";
+
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
 import type { IMemoryStore } from "../store/types.js";
 import { extractionExtensionsEnabled, rollupStateFromRecords } from "../hooks/soul-state-machine.js";
@@ -287,7 +287,7 @@ export async function extractL1Memories(params: {
     embeddingTimeoutMs?: number;
     /**
      * Host-neutral LLM runner. When provided, used instead of creating
-     * a CleanContextRunner (decouples from OpenClaw runtime).
+     * the host-injected runner (required, see `requireLlmRunner`).
      */
     llmRunner?: LLMRunner;
     /**
@@ -791,7 +791,7 @@ async function callLlmExtraction(params: {
   model?: string;
   promptMode?: MemoryPromptMode;
   memoryPrompt?: ResolvedMemoryPrompt;
-  /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
+  /** Host-injected LLM runner — required, see `requireLlmRunner`. */
   llmRunner?: LLMRunner;
   /** A8：锚候选加载需要 vectorStore（listValues 按租户读锚） */
   vectorStore?: IMemoryStore;
@@ -855,7 +855,7 @@ async function callLlmExtraction(params: {
 
   // [l1-debug] ENTRY — what are we about to ask the LLM to extract?
   logger?.debug?.(
-    `${TAG} [l1-debug] ENTRY taskId=l1-extraction, promptMode=${promptMode}, newMsgs=${newMessages.length}, bgMsgs=${backgroundMessages.length}, userPromptLen=${userPrompt.length}, sysPromptLen=${systemPrompt.length}, model=${model ?? "(default)"}, previousSceneName=${previousSceneName ? JSON.stringify(previousSceneName) : "(none)"}, runnerKind=${llmRunner ? "llmRunner" : "CleanContextRunner"}`,
+    `${TAG} [l1-debug] ENTRY taskId=l1-extraction, promptMode=${promptMode}, newMsgs=${newMessages.length}, bgMsgs=${backgroundMessages.length}, userPromptLen=${userPrompt.length}, sysPromptLen=${systemPrompt.length}, model=${model ?? "(default)"}, previousSceneName=${previousSceneName ? JSON.stringify(previousSceneName) : "(none)"}, runnerKind=${llmRunner ? "llmRunner" : "(none)"}`,
   );
 
   let result: string;
@@ -889,21 +889,9 @@ async function callLlmExtraction(params: {
       ...traceParams,
     });
   } else {
-    // Fallback: create CleanContextRunner (OpenClaw path)
-    const runner = new CleanContextRunner({
-      config,
-      modelRef: model,
-      enableTools: false,
-      logger,
-    });
-
-    result = await runner.run({
-      prompt: userPrompt,
-      systemPrompt,
-      taskId: "l1-extraction",
-      timeoutMs: extractionTimeoutMs ?? 300_000,
-      ...traceParams,
-    });
+    // OpenClaw embedded-runner fallback removed in the DSH-only build: the
+    // host-neutral LLMRunner is the single LLM seam (src/core/llm-runner-guard.ts).
+    throw new Error("LLMRunner is required but was not injected (OpenClaw fallback removed)");
   }
 
   // [l1-debug] RAW OUTPUT — 定位模型到底吐了哪些字段（用于 R4 实证）
@@ -1238,11 +1226,8 @@ export async function enrichSoulFields(
         ...(deps.traceContext ?? {}),
       });
     } else {
-      const runner = new CleanContextRunner({ config: deps.config, modelRef: deps.model, enableTools: false, logger: deps.logger });
-      result = await runner.run({
-        prompt, systemPrompt: ENRICH_SYSTEM, taskId: "l1-enrich", timeoutMs: 30_000,
-        ...(deps.traceContext ?? {}),
-      });
+      // OpenClaw embedded-runner fallback removed in the DSH-only build (see src/core/llm-runner-guard.ts).
+      throw new Error("LLMRunner is required but was not injected (OpenClaw fallback removed)");
     }
   } catch (err) {
     deps.logger?.warn?.(`${TAG} enrich LLM call failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);

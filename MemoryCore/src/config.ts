@@ -1202,94 +1202,6 @@ export interface StandaloneLLMOverrideConfig {
   stream?: boolean;
 }
 
-/** Context Offload settings — controls multi-layer context compression. */
-export interface OffloadConfig {
-  /** Enable context offload (default: false) */
-  enabled: boolean;
-  /**
-   * LLM execution mode for L1/L1.5/L2 tasks.
-   * - "local": call LLM directly via AI SDK (uses offload.model or main agent model)
-   * - "backend": route through remote backend service (requires backendUrl)
-   * - "client": stateless client mode — all compression delegated to offload server v2
-   * - "collect": data collection only — runs L1/L1.5/L2 asynchronously but disables
-   *   L3 compression and does NOT occupy the contextEngine slot (uses legacy compaction)
-   * Default: "local" (auto-detects based on backendUrl presence for backward compat)
-   */
-  mode: "local" | "backend" | "client" | "collect";
-  /** LLM model for offload tasks, format: "provider/model-id". Falls back to agents.defaults.model when omitted. */
-  model?: string;
-  /** LLM temperature (default: 0.2) */
-  temperature: number;
-  /**
-   * 是否用流式请求(streamText)调用上游(仅 mode="local" 生效)。默认 false(非流式)。
-   * 个别只接受流式请求的 OpenAI 兼容上游需置 true。
-   *
-   * ⚠️ mode="backend"/"client"/"collect" 由远端 offload server 主导调用,
-   * 本地 stream 开关被忽略。也不会把增量 token 透传给调用方,只是"以流式协议
-   * 请求上游后等待完整文本",给只接受流式的兼容后端做兼容层用。
-   */
-  stream?: boolean;
-  /** Force-trigger L1 when pending tool pairs >= this threshold (default: 4) */
-  forceTriggerThreshold: number;
-  /** Custom data directory (absolute path). Default: ~/.openclaw/context-offload */
-  dataDir?: string;
-  /** Default context window size (default: 200000) */
-  defaultContextWindow: number;
-  /** Max tool pairs per L1 batch (default: 20) */
-  maxPairsPerBatch: number;
-  /** Trigger L2 when node_id=null entries >= this count (default: 4) */
-  l2NullThreshold: number;
-  /** Trigger L2 if hasn't run for this many seconds (default: 300) */
-  l2TimeoutSeconds: number;
-  /** Mild compression ratio threshold (default: 0.5) */
-  mildOffloadRatio: number;
-  /** Aggressive compression ratio threshold (default: 0.85) */
-  aggressiveCompressRatio: number;
-  /** MMD injection token budget ratio (default: 0.2) */
-  mmdMaxTokenRatio: number;
-  /** Backend service URL. When set, L1/L1.5/L2/L4 LLM calls go through the backend. */
-  backendUrl?: string;
-  /** Backend API authentication token */
-  backendApiKey?: string;
-  /** Backend call timeout in milliseconds (default: 10000) */
-  backendTimeoutMs: number;
-  /**
-   * Offload data retention days. Sessions/refs/mmds older than this are cleaned up.
-   * 0 = disabled (default). Values in (0, 3) are treated as invalid and forced to 0.
-   * Minimum effective value: 3.
-   */
-  offloadRetentionDays: number;
-  /**
-   * Max total size in MB for offload debug log files (*.log in dataRoot).
-   * When exceeded, the largest logs are truncated to zero.
-   * 0 = disabled. Default: 50.
-   */
-  logMaxSizeMb: number;
-  /**
-   * User identifier sent as `X-User-Id` on backend requests. This is the
-   * primary key used by the backend `/offload/v1/store` endpoint to upsert
-   * per-user state. When omitted the plugin falls back to the machine's
-   * primary non-loopback IPv4 address.
-   */
-  userId?: string;
-
-  // ── Client mode fields (used when mode === "client") ──────────────
-  /** Offload server v2 base URL (e.g. "http://localhost:9100"). */
-  serverUrl?: string;
-  /** Bearer token for offload server v2 Authorization header. */
-  apiKey?: string;
-  /** X-TDAI-Service-Id header value. */
-  serviceId?: string;
-  /** Agent name used in storage path (default: "default"). */
-  agentName?: string;
-  /** Client-side threshold: skip compaction when ratio < this value (default: 0.5). */
-  compactionRatio?: number;
-  /** Ingest request timeout in ms (default: 5000). */
-  ingestTimeoutMs?: number;
-  /** Compaction request timeout in ms (default: 30000). */
-  compactionTimeoutMs?: number;
-}
-
 /** T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志旋钮（缺省 enabled=false=逐位现状）。 */
 export interface RecallJournalConfig {
   enabled: boolean;
@@ -1396,7 +1308,6 @@ export interface MemoryTdaiConfig {
    * Default: disabled (uses host LLM).
    */
   llm: StandaloneLLMOverrideConfig;
-  offload: OffloadConfig;
   /** G 记忆图开关（默认 enabled=true）。 */
   links: MemoryLinksConfig;
   /** K 核心记忆写入口信任边界（默认白名单 identity/core_value/strict_rule，长度 2000）。 */
@@ -1594,55 +1505,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     retentionDays,
     enabled: retentionDays != null,
     cleanTime,
-  };
-
-  // --- Offload ---
-  const offloadGroup = obj(c, "offload");
-
-  // Auto-derive offload serverUrl/apiKey/serviceId from top-level server config
-  // when offload client fields are not explicitly set.
-  const serverGroup = obj(c, "server");
-  const serverUrl = optStr(serverGroup, "url");
-  const serverApiKey = optStr(serverGroup, "apiKey");
-  const serverInstanceId = optStr(serverGroup, "instanceId");
-
-  const offloadMode: "local" | "backend" | "client" | "collect" = (() => {
-    const raw = optStr(offloadGroup, "mode");
-    if (raw === "local" || raw === "backend" || raw === "client" || raw === "collect") return raw;
-    // Auto-derive: if backendUrl is set → "backend"; if server.url is set → "client"; else "local"
-    if (optStr(offloadGroup, "backendUrl")) return "backend";
-    if (serverUrl) return "client";
-    return "local";
-  })();
-
-  const offload: OffloadConfig = {
-    enabled: bool(offloadGroup, "enabled") ?? false,
-    mode: offloadMode,
-    model: optStr(offloadGroup, "model"),
-    temperature: num(offloadGroup, "temperature") ?? 0.2,
-    stream: bool(offloadGroup, "stream") ?? false,
-    forceTriggerThreshold: num(offloadGroup, "forceTriggerThreshold") ?? 4,
-    dataDir: optStr(offloadGroup, "dataDir"),
-    defaultContextWindow: num(offloadGroup, "defaultContextWindow") ?? 200000,
-    maxPairsPerBatch: num(offloadGroup, "maxPairsPerBatch") ?? 20,
-    l2NullThreshold: num(offloadGroup, "l2NullThreshold") ?? 4,
-    l2TimeoutSeconds: num(offloadGroup, "l2TimeoutSeconds") ?? 300,
-    mildOffloadRatio: num(offloadGroup, "mildOffloadRatio") ?? 0.5,
-    aggressiveCompressRatio: num(offloadGroup, "aggressiveCompressRatio") ?? 0.85,
-    mmdMaxTokenRatio: num(offloadGroup, "mmdMaxTokenRatio") ?? 0.2,
-    backendUrl: optStr(offloadGroup, "backendUrl"),
-    backendApiKey: optStr(offloadGroup, "backendApiKey"),
-    backendTimeoutMs: num(offloadGroup, "backendTimeoutMs") ?? 120000,
-    offloadRetentionDays: normalizeOffloadRetentionDays(num(offloadGroup, "offloadRetentionDays") ?? 0),
-    logMaxSizeMb: num(offloadGroup, "logMaxSizeMb") ?? 50,
-    userId: optStr(offloadGroup, "userId"),
-    // Client mode fields — fall back to top-level server config when not explicitly set
-    serverUrl: optStr(offloadGroup, "serverUrl") ?? serverUrl,
-    apiKey: optStr(offloadGroup, "apiKey") ?? serverApiKey,
-    serviceId: optStr(offloadGroup, "serviceId") ?? serverInstanceId,
-    compactionRatio: num(offloadGroup, "compactionRatio") ?? 0.5,
-    ingestTimeoutMs: num(offloadGroup, "ingestTimeoutMs") ?? 5000,
-    compactionTimeoutMs: num(offloadGroup, "compactionTimeoutMs") ?? 30000,
   };
 
   // --- G/H/I/J 真记忆生命周期 ---
@@ -2758,7 +2620,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         },
       };
     })(),
-    offload,
     // G/H/I/J 真记忆生命周期（config-first：yaml 值真实生效）
     links,
     coreMemory,
@@ -2917,17 +2778,4 @@ function normalizeCleanTime(input: string | undefined): string | undefined {
   if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return undefined;
 
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-}
-
-/**
- * Normalize offload retention days.
- *
- * - `<= 0` → 0 (disabled)
- * - `(0, 3)` → 0 (invalid, force disabled)
- * - `>= 3` → as-is
- */
-function normalizeOffloadRetentionDays(value: number): number {
-  if (value <= 0) return 0;
-  if (value < 3) return 0;
-  return value;
 }

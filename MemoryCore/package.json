@@ -1,24 +1,16 @@
 {
   "name": "@tencentdb-agent-memory/memory-tencentdb-v2",
   "version": "2.0.0-beta.1",
-  "description": "Four-layer local memory system plugin for OpenClaw — auto-captures, structures, and profiles conversational knowledge using local LLM + SQLite vector search (L0→L1→L2→L3 pipeline)",
+  "description": "Four-layer local memory system plugin for DeepSeek Harness — auto-captures, structures, and profiles conversational knowledge using local LLM + SQLite vector search (L0→L1→L2→L3 pipeline)",
   "type": "module",
-  "main": "./dist/index.mjs",
   "bin": {
     "migrate-sqlite-to-tcvdb": "./bin/migrate-sqlite-to-tcvdb.mjs",
     "export-tencent-vdb": "./bin/export-tencent-vdb.mjs",
     "read-local-memory": "./bin/read-local-memory.mjs"
   },
-  "exports": {
-    ".": {
-      "import": "./dist/index.mjs",
-      "default": "./dist/index.mjs"
-    }
-  },
   "scripts": {
-    "build": "npm run build:plugin && npm run build:scripts",
-    "build:plugin": "tsdown",
-    "build:scripts": "npm run build:migrate-sqlite-to-vdb && npm run build:export-tencent-vdb && npm run build:read-local-memory && npm run build:seed-v2",
+    "build": "npm run build:scripts",
+    "build:scripts": "npm run build:migrate-sqlite-to-vdb && npm run build:export-tencent-vdb && npm run build:read-local-memory",
     "prepack": "npm run build",
     "build:migrate-sqlite-to-vdb": "tsc -p scripts/migrate-sqlite-to-tcvdb/tsconfig.json --noEmitOnError false",
     "migrate-sqlite-to-tcvdb": "node ./bin/migrate-sqlite-to-tcvdb.mjs",
@@ -26,8 +18,6 @@
     "export-tencent-vdb": "node ./bin/export-tencent-vdb.mjs",
     "build:read-local-memory": "tsc --project scripts/read-local-memory/tsconfig.json",
     "read-local-memory": "node ./bin/read-local-memory.mjs",
-    "build:seed-v2": "tsc --project scripts/seed-v2/tsconfig.json",
-    "seed-v2": "node ./bin/seed-v2.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "typecheck:gate": "node scripts/typecheck-gate.mjs",
@@ -37,10 +27,6 @@
     "test:oss": "vitest run -c vitest.oss.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:standalone:memory": "bash __tests__/standalone/e2e.sh",
-    "test:standalone:skill": "bash __tests__/standalone/skill-e2e.sh",
-    "test:standalone:conv": "bash __tests__/standalone/all-e2e.sh",
-    "test:standalone:all": "bash scripts/e2e-standalone.sh",
     "lint:skill-isolation": "bash scripts/ci/check-skill-queue-isolation.sh",
     "smoke:skill:llm": "tsx scripts/smoke-skill/smoke-skill-llm.ts",
     "smoke:skill:manage": "tsx scripts/smoke-skill/smoke-skill-manage.ts",
@@ -56,32 +42,21 @@
     "judge:behavior:full": "tsx scripts/persona-eval/run-persona-eval.ts --subset full",
     "judge:behavior:drift": "tsx scripts/persona-eval/run-persona-eval.ts --subset full --drift 8",
     "import:opik": "tsx scripts/import-opik-to-memory-core/index.ts",
-    "postinstall": "bash scripts/openclaw-after-tool-call-messages.patch.sh 2>/dev/null || true",
     "bench:memory": "node --import tsx scripts/eval-memory-bench.mjs",
     "audit:e3:build": "node scripts/audit/r143-e3-review.mjs build",
     "audit:e3:summarize": "node scripts/audit/r143-e3-review.mjs summarize"
   },
   "files": [
-    "dist/",
     "bin/migrate-sqlite-to-tcvdb.mjs",
     "bin/export-tencent-vdb.mjs",
     "bin/read-local-memory.mjs",
-    "index.ts",
     "scripts/migrate-sqlite-to-tcvdb/dist/",
     "scripts/export-tencent-vdb/dist/",
     "scripts/read-local-memory/dist/",
     "scripts/import-opik-to-memory-core/",
     "scripts/memory-tencentdb-ctl.sh",
-    "scripts/install_hermes_memory_tencentdb.sh",
-    "scripts/install-hermes-plugin-v2.sh",
-    "scripts/install-openclaw-plugin.sh",
     "scripts/README.memory-tencentdb-ctl.md",
     "src",
-    "scripts/openclaw-after-tool-call-messages.patch.sh",
-    "scripts/setup-offload.sh",
-    "hermes-plugin/",
-    "openclaw-plugin/",
-    "openclaw.plugin.json",
     "README.md",
     "README_CN.md",
     "CHANGELOG.md",
@@ -89,13 +64,9 @@
     "!src/integrations/",
     "!src/**/*.test.ts",
     "!src/**/*.spec.ts",
-    "!src/**/__tests__/",
-    "!hermes-plugin/**/__pycache__/**",
-    "!hermes-plugin/**/*.pyc"
+    "!src/**/__tests__/"
   ],
   "keywords": [
-    "openclaw",
-    "openclaw-plugin",
     "memory",
     "ai-memory",
     "long-term-memory",
@@ -147,38 +118,16 @@
     "@opentelemetry/context-async-hooks": "^2.7.1",
     "@opentelemetry/exporter-logs-otlp-grpc": "^0.218.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.218.0",
-    "cos-nodejs-sdk-v5": "^3.0.0",
     "ioredis": "^5.10.1",
     "kafkajs": "^2.2.4",
-    "mongodb": "^6.21.0",
-    "opik": "^1.11.14"
+    "mongodb": "^6.21.0"
   },
   "peerDependencies": {
-    "node-llama-cpp": "^3.16.2",
-    "openclaw": ">=2026.3.7"
+    "node-llama-cpp": "^3.16.2"
   },
   "peerDependenciesMeta": {
-    "openclaw": {
-      "optional": true
-    },
     "node-llama-cpp": {
       "optional": true
-    }
-  },
-  "openclaw": {
-    "extensions": [
-      "./index.ts"
-    ],
-    "compat": {
-      "pluginApi": ">=2026.3.13",
-      "minGatewayVersion": ">=2026.3.13"
-    },
-    "build": {
-      "openclawVersion": "2026.3.13",
-      "pluginSdkVersion": "2026.3.13"
-    },
-    "bundle": {
-      "stageRuntimeDependencies": true
     }
   },
   "devDependencies": {
@@ -191,7 +140,6 @@
     "@vitest/coverage-v8": "^4.1.2",
     "mongodb-memory-server": "^10.4.3",
     "prettier": "^3.9.10",
-    "tsdown": "^0.21.10",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
   }

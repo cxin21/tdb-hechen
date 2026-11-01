@@ -7,7 +7,7 @@
  *
  * Design:
  *   - Recognized error types → preserve their (already safe) code + message
- *     (e.g. PayloadTooLargeError = CR-7, RecallFailure = H-15, SeedValidationError)
+ *     (e.g. PayloadTooLargeError = CR-7, RecallFailure = H-15)
  *   - Anything else (5xx) → generic "Internal server error" + traceId
  *   - Server log: traceId + full err.message + stack (for debugging)
  *   - Client log: only the safe message + traceId so the user can quote it
@@ -48,7 +48,6 @@ export interface ClassifiedError {
  *   - PayloadTooLargeError (CR-7) — detected via duck-typing on statusCode === 413
  *   - Invalid JSON body — parseJsonBody throws Error("Invalid JSON body") on malformed input
  *   - RecallFailure (H-15) — code from RecallError taxonomy
- *   - SeedValidationError — 400 with generic message
  *   - Anything else — 500 Internal server error
  */
 export function classifyError(err: unknown): ClassifiedError {
@@ -111,17 +110,7 @@ export function classifyError(err: unknown): ClassifiedError {
     };
   }
 
-  // 3. SeedValidationError — known user-input class
-  if (err && typeof err === "object" && (err as { name?: string }).name === "SeedValidationError") {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    return {
-      status: 400,
-      client: { code: 400, message: "Invalid seed input", trace_id, retryable: false },
-      logLine: `[${trace_id}] SeedValidationError: ${sanitize(errMsg)}`,
-    };
-  }
-
-  // 4. Generic 5xx — strictly hide err.message from client
+  // 3. Generic 5xx — strictly hide err.message from client
   const errMsg = err instanceof Error ? err.message : String(err);
   const errStack = err instanceof Error ? err.stack : undefined;
   return {

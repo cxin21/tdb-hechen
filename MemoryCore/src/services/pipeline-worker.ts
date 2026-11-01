@@ -43,9 +43,6 @@ export interface TaskExecutor {
   executeL2(task: TaskPayload, signal?: AbortSignal): Promise<void>;
   executeL3(task: TaskPayload, signal?: AbortSignal): Promise<void>;
   executeFlush?(task: TaskPayload, signal?: AbortSignal): Promise<void>;
-  executeOffloadL1?(task: TaskPayload, signal?: AbortSignal): Promise<void>;
-  executeOffloadL15?(task: TaskPayload, signal?: AbortSignal): Promise<void>;
-  executeOffloadL2?(task: TaskPayload, signal?: AbortSignal): Promise<void>;
 }
 
 export interface PipelineWorkerConfig {
@@ -282,7 +279,7 @@ export class PipelineWorker {
 
     // permitPool acquire：memory pipeline 内部并发限流 (历史上跨 skill V2 共用，
     // 2026-07 后 skill 侧不再用信号量做并发上限)。未注入 pool 时是 no-op。
-    // lock-free 与 with-lock 两条分支都要 finally release —— 用 releasePermitOnce 幂等。
+    // 每条退出路径都要 finally release —— 用 releasePermitOnce 幂等。
     const permitPool = this.config.permitPool;
     if (permitPool) {
       await permitPool.acquire();
@@ -299,85 +296,10 @@ export class PipelineWorker {
       }
     };
 
-    // Lock-free path: offload-l1 doesn't need distributed lock
-    if (lockKey === null) {
-      this.runningTasks.set(task.id, task);
-      try {
-        await this.executeTask(task, undefined);
-
-        // ACK
-        const msgId = (task as any)._msgId;
-        if (msgId) await this.backend.ackTask(msgId);
-
-        this.metrics.tasksCompleted++;
-        this.logger?.debug?.(`${TAG} Task completed (lock-free): ${task.type} [${task.instanceId}/${task.sessionId}]`);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.metrics.tasksFailed++;
-
-        // D-7（2026-10-31）：offload（lock-free）路径与带锁路径共用同一张分类表，
-        // 避免同一种 402 配额故障在一条路径上死信、在另一条上继续退避重试。
-        const failure = failureOf(err);
-        const plan = planTaskRetry(failure, {
-          retryCount,
-          maxRetries: this.config.maxRetries,
-          baseDelayMs: this.config.retryBaseDelayMs,
-        });
-        if (plan.action === "retry") {
-          const delay = plan.delayMs;
-          this.logger.warn(
-            `${TAG} Task failed (lock-free, retry ${retryCount + 1}/${this.config.maxRetries}, ` +
-              `delay=${delay}ms, class=${describeTaskFailure(failure)}): ${errMsg}`,
-          );
-          const msgId = (task as any)._msgId;
-          if (msgId) { try { await this.backend.ackTask(msgId); } catch { /* best effort */ } }
-          await this.sleep(delay);
-          await this.reEnqueue(task, retryCount + 1);
-          this.metrics.tasksRetried++;
-        } else {
-          if (!failure.retryable) {
-            this.logger.error(
-              `${TAG} Non-retryable task failure → DLQ (lock-free, ${describeTaskFailure(failure)}): ` +
-                `${task.type} [${task.instanceId}/${task.sessionId}] ${errMsg}`,
-            );
-          }
-          await this.moveToDeadLetter(task, errMsg, retryCount, failure);
-        }
-      } finally {
-        this.runningTasks.delete(task.id);
-        releasePermitOnce();
-
-        // Deferred enqueue (same as locked path)
-        const deferred = (task as any)._deferredEnqueue as TaskPayload[] | undefined;
-        if (deferred?.length) {
-          for (const dTask of deferred) {
-            try {
-              await this.backend.enqueueTask(dTask);
-              this.logger?.debug?.(`${TAG} Deferred enqueue: ${dTask.type} [${dTask.id}]`);
-            } catch (err) {
-              this.logger?.warn?.(`${TAG} Deferred enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-        }
-      }
-      return;
-    }
-
     // Step 1: 抢分布式锁
     const locked = await this.backend.acquireLock(lockKey, this.config.workerId, this.config.lockTtlMs);
     if (!locked) {
       this.metrics.lockConflicts++;
-
-      // offload-l2: skip immediately on lock conflict (idempotent timer will re-trigger)
-      if (task.type === "offload-l2") {
-        this.logger?.debug?.(`${TAG} Lock conflict [offload-l2] (task=${task.id}): ${lockKey}, skip (timer will re-trigger)`);
-        const msgId = (task as any)._msgId;
-        if (msgId) {
-          try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
-        }
-        releasePermitOnce();
-        return;
-      }
 
       // Lock conflict: current coroutine waits locally (no re-enqueue to stream).
       // Exponential backoff: 200ms → 600ms → 1.8s → 5s (capped), retry until lockTtlMs exhausted.
@@ -610,9 +532,6 @@ export class PipelineWorker {
       case "L2": return this.executor.executeL2(task, signal);
       case "L3": return this.executor.executeL3(task, signal);
       case "flush": return this.executor.executeFlush?.(task, signal) ?? this.executor.executeL1(task, signal);
-      case "offload-l1": return this.executor.executeOffloadL1?.(task, signal);
-      case "offload-l15": return this.executor.executeOffloadL15?.(task, signal);
-      case "offload-l2": return this.executor.executeOffloadL2?.(task, signal);
       default:
         this.logger.warn(`${TAG} Unknown task type: ${task.type}`);
     }
@@ -705,7 +624,7 @@ export class PipelineWorker {
    * 跨 agent 完全并发：不同 (tid, aid) 散到不同 Redis Cluster slot，
    * 避免单 instance 集中到一个 hash slot 形成大 key 热点。
    *
-   * teamId / agentId 缺失（旧调用 / offload）时退化到 "_:_" 占位，
+   * teamId / agentId 缺失（旧调用）时退化到 "_:_" 占位，
    * 等价于按 instance 维度落同一 slot —— 兼容老行为，不会破坏锁互斥。
    *
    * lockGranularity="instance" (legacy CR-1 缓解):
@@ -717,22 +636,7 @@ export class PipelineWorker {
    *   互斥。本次升级已通过 keyPrefix 从 tdai_memory → tdai_memory_v2 物理隔离，
    *   新老 pod 走不同 redis 命名空间，无交叉。
    */
-  private getLockKey(task: TaskPayload): string | null {
-    // offload-l1 is lock-free: rename guarantees exclusive file ownership,
-    // appendFile is atomic (O_APPEND), and state.json is read-only for L1.
-    if (task.type === "offload-l1") return null;
-
-    // offload-l2: per-MMD lock so different MMDs can be processed concurrently.
-    if (task.type === "offload-l2") {
-      const mmdFile = (task.data as any)?.targetMmdFile ?? "default";
-      return `pipeline:{${task.instanceId}}:offload-l2:${mmdFile}`;
-    }
-
-    // offload-l15: lock-free at worker level. The executor acquires a short
-    // lock only during the final write phase (state.json update), allowing
-    // multiple L1.5 LLM calls to run concurrently without blocking each other.
-    if (task.type === "offload-l15") return null;
-
+  private getLockKey(task: TaskPayload): string {
     if (this.config.lockGranularity === "instance") {
       return `pipeline:{${task.instanceId}}`;
     }

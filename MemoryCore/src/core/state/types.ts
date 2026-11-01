@@ -58,12 +58,12 @@ export interface TimerEntry {
 
 export interface TaskPayload {
   id: string;
-  type: "L1" | "L2" | "L3" | "flush" | "offload-l1" | "offload-l15" | "offload-l2";
+  type: "L1" | "L2" | "L3" | "flush";
   instanceId: string;
   sessionId: string;
   /**
    * 租户身份（可选）。v2 pipeline 用 (teamId, agentId) 决定锁粒度与
-   * Redis hash tag，避免 single-instance 大 key 热点；offload 子系统不依赖。
+   * Redis hash tag，避免 single-instance 大 key 热点。
    * 缺失时锁/key 退化到 instance 级（兼容旧调用方）。
    */
   teamId?: string;

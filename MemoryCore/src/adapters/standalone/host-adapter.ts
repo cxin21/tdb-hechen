@@ -27,8 +27,6 @@ export interface StandaloneHostAdapterOptions {
   logger: Logger;
   /** Default user ID (can be overridden per-request). */
   defaultUserId?: string;
-  /** Platform identifier. */
-  platform?: string;
 }
 
 // ============================
@@ -42,13 +40,11 @@ export class StandaloneHostAdapter implements HostAdapter {
   private logger: Logger;
   private runnerFactory: StandaloneLLMRunnerFactory;
   private defaultUserId: string;
-  private platform: string;
 
   constructor(opts: StandaloneHostAdapterOptions) {
     this.dataDir = opts.dataDir;
     this.logger = opts.logger;
     this.defaultUserId = opts.defaultUserId ?? "default_user";
-    this.platform = opts.platform ?? "gateway";
 
     this.runnerFactory = new StandaloneLLMRunnerFactory({
       config: opts.llmConfig,
@@ -61,7 +57,6 @@ export class StandaloneHostAdapter implements HostAdapter {
       userId: this.defaultUserId,
       sessionId: "",
       sessionKey: "",
-      platform: this.platform,
       workspaceDir: this.dataDir,
       dataDir: this.dataDir,
     };
@@ -75,13 +70,11 @@ export class StandaloneHostAdapter implements HostAdapter {
     userId?: string;
     sessionId?: string;
     sessionKey?: string;
-    platform?: string;
   }): RuntimeContext {
     return {
       userId: params.userId ?? this.defaultUserId,
       sessionId: params.sessionId ?? "",
       sessionKey: params.sessionKey ?? params.sessionId ?? "",
-      platform: params.platform ?? this.platform,
       workspaceDir: this.dataDir,
       dataDir: this.dataDir,
     };

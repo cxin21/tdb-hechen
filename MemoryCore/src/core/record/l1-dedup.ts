@@ -15,7 +15,6 @@ import type { MemoryPromptMode } from "../../config.js";
 import type { ExtractedMemory, MemoryRecord, DedupDecision, MemoryType } from "./l1-writer.js";
 import { formatBatchConflictPrompt, getConflictDetectionSystemPrompt, type CoreValueCandidate } from "../prompts/l1-dedup.js";
 import type { CandidateMatch } from "../prompts/l1-dedup.js";
-import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, salvageTruncatedJsonArray } from "../../utils/sanitize.js";
 import type { IMemoryStore, IsolationFilter, CoreTenant } from "../store/types.js";
 import { normalizeCoreTenant } from "../store/types.js";
@@ -99,7 +98,7 @@ export async function batchDedup(params: {
   embeddingTimeoutMs?: number;
   /** #79 dedup 判重 LLM 调用超时（config-first）：缺省 300_000 = 逐位现状 */
   dedupTimeoutMs?: number;
-  /** Host-neutral LLM runner — when provided, used instead of CleanContextRunner. */
+  /** Host-injected LLM runner — required, see `requireLlmRunner`. */
   llmRunner?: LLMRunner;
   /**
    * 逐调用思考开关（config-first，2026-10-14）：缺省 undefined = 不带 reasoning_effort
@@ -292,22 +291,9 @@ async function runLlmJudgment(
         ...traceParams,
       });
     } else {
-      // Fallback: create CleanContextRunner (OpenClaw path)
-      const runner = new CleanContextRunner({
-        config,
-        modelRef: model,
-        enableTools: false,
-        logger,
-      });
-
-      result = await runner.run({
-        prompt: userPrompt,
-        systemPrompt,
-        taskId: "l1-conflict-detection",
-        // #79：dedupTimeoutMs 可配置（config-first），缺省 300_000=逐位现状
-        timeoutMs: dedupTimeoutMs ?? 300_000,
-        ...traceParams,
-      });
+      // OpenClaw embedded-runner fallback removed in the DSH-only build: the
+      // host-neutral LLMRunner is the single LLM seam (src/core/llm-runner-guard.ts).
+      throw new Error("LLMRunner is required but was not injected (OpenClaw fallback removed)");
     }
 
     // R2 P1-3：统一候选记忆池（幻觉 target 过滤的白名单）——与 prompt 注入同源

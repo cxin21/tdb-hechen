@@ -1,10 +1,10 @@
 /**
  * PersonaGenerator: generates or updates user persona using the four-layer
- * deep scan model via CleanContextRunner.
+ * deep scan model via the injected LLMRunner.
  */
 
 import type { MemoryPromptMode } from "../../config.js";
-import { CleanContextRunner } from "../../utils/clean-context-runner.js";
+import { requireLlmRunner } from "../llm-runner-guard.js";
 import { CheckpointManager } from "../../utils/checkpoint.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
@@ -48,8 +48,7 @@ export class PersonaGenerator {
     /** Plugin instance ID for metric reporting (optional) */
     instanceId?: string;
     /**
-     * Host-neutral LLM runner. When provided, used instead of creating
-     * a CleanContextRunner (decouples from OpenClaw runtime).
+     * Host-injected LLM runner (required — see `requireLlmRunner`).
      * Must be configured with `enableTools: true`.
      */
     llmRunner?: LLMRunner;
@@ -69,13 +68,7 @@ export class PersonaGenerator {
     this.storage = opts.storage;
     this.traceContext = opts.traceContext;
     this.durativesProvider = opts.duratives;
-    // Use injected LLMRunner if available, otherwise fall back to CleanContextRunner
-    this.runner = opts.llmRunner ?? new CleanContextRunner({
-      config: opts.config,
-      modelRef: opts.model,
-      enableTools: true,
-      logger: opts.logger,
-    });
+    this.runner = requireLlmRunner(opts.llmRunner, "persona-generation");
     this.logger?.debug?.(`${TAG} Generator created: model=${opts.model ?? "(default)"}, promptMode=${this.promptMode}, dataDir=${opts.dataDir}`);
   }
 

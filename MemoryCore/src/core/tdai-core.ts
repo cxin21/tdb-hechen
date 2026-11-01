@@ -730,23 +730,18 @@ export class TdaiCore {
    * Whether this call site must override the host-provided runner factory
    * with a `StandaloneLLMRunnerFactory` built from `cfg.llm`.
    *
-   * Historical rule was "only when hostType=openclaw + cfg.llm.enabled" —
-   * that skipped the override in gateway/service mode, which meant
-   * `provider=proxy` never got a chance to rewrite baseUrl to
-   * `${base}/proxy/<iid>/v1` or swap in the sk-mem-xxx system key, so
-   * memory L1/L2/L3 quietly hit the raw upstream (or 401'd on proxy
-   * fallback routes). We now ALSO override whenever the user explicitly
-   * asked for `provider=proxy`, regardless of host — that's the whole
-   * point of that config value.
+   * The DSH-only build has one host (the gateway) whose runner factory comes
+   * from this repo, so the historical "hostType=openclaw always overrides"
+   * branch is gone. What remains is the explicit `provider=proxy` request,
+   * which must rewrite baseUrl to `${base}/proxy/<iid>/v1` and swap in the
+   * sk-mem-xxx system key — that is the whole point of that config value.
    *
-   * `useStandaloneRunner=true` is a precondition (else the host runner
-   * IS the runner, and there's nothing to override) and cfg.llm must
-   * actually be enabled (otherwise `resolveRuntimeLlm` has nothing to
-   * work with).
+   * `useStandaloneRunner` must be true (it is, unconditionally, since the
+   * embedded runner left with OpenClaw) and cfg.llm must be enabled
+   * (otherwise `resolveRuntimeLlm` has nothing to work with).
    */
   private shouldOverrideRunnerFactory(useStandaloneRunner: boolean): boolean {
     if (!useStandaloneRunner || !this.cfg.llm.enabled) return false;
-    if (this.hostAdapter.hostType === "openclaw") return true;
     return this.cfg.llm.provider === "proxy";
   }
 
@@ -755,11 +750,14 @@ export class TdaiCore {
 
     // Determine whether to use standalone LLM runner for extraction.
     // Priority: cfg.llm.enabled (explicit override) > hostType detection.
-    const useStandaloneRunner = this.cfg.llm.enabled || this.hostAdapter.hostType !== "openclaw";
+    // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
+    // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
+    // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
+    const useStandaloneRunner = true;
 
-    const openclawConfig = (!useStandaloneRunner && this.hostAdapter.hostType === "openclaw")
-      ? (this.hostAdapter as { getOpenClawConfig?(): unknown }).getOpenClawConfig?.()
-      : undefined;
+    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
+    // 待 HostAdapter 面一并收敛时删除。
+    const openclawConfig: unknown = undefined;
 
     // When standalone runner is active, create LLM runners from the factory.
     // Override the host-provided factory whenever `cfg.llm` is enabled and
@@ -1155,10 +1153,13 @@ export class TdaiCore {
     /** D-7：供应商业务码（如 Ark 2067 = 配额耗尽）。 */
     failureProviderCode?: string;
   }> {
-    const useStandaloneRunner = this.cfg.llm.enabled || this.hostAdapter.hostType !== "openclaw";
-    const openclawConfig = (!useStandaloneRunner && this.hostAdapter.hostType === "openclaw")
-      ? (this.hostAdapter as { getOpenClawConfig?(): unknown }).getOpenClawConfig?.()
-      : undefined;
+    // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
+    // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
+    // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
+    const useStandaloneRunner = true;
+    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
+    // 待 HostAdapter 面一并收敛时删除。
+    const openclawConfig: unknown = undefined;
 
     let runnerFactory = this.runnerFactory;
     if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
@@ -1209,10 +1210,13 @@ export class TdaiCore {
    * Run L2 scene extraction using an externally provided Store.
    */
   async runL2WithStore(sessionKey: string, store: IMemoryStore, storage?: StorageAdapter, cursor?: string): Promise<{ creditUsed: number; skipped: boolean }> {
-    const useStandaloneRunner = this.cfg.llm.enabled || this.hostAdapter.hostType !== "openclaw";
-    const openclawConfig = (!useStandaloneRunner && this.hostAdapter.hostType === "openclaw")
-      ? (this.hostAdapter as { getOpenClawConfig?(): unknown }).getOpenClawConfig?.()
-      : undefined;
+    // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
+    // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
+    // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
+    const useStandaloneRunner = true;
+    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
+    // 待 HostAdapter 面一并收敛时删除。
+    const openclawConfig: unknown = undefined;
 
     let runnerFactory = this.runnerFactory;
     if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {
@@ -1261,10 +1265,13 @@ export class TdaiCore {
    * Run L3 persona generation using an externally provided Store.
    */
   async runL3WithStore(store: IMemoryStore, storage?: StorageAdapter): Promise<{ creditUsed: number }> {
-    const useStandaloneRunner = this.cfg.llm.enabled || this.hostAdapter.hostType !== "openclaw";
-    const openclawConfig = (!useStandaloneRunner && this.hostAdapter.hostType === "openclaw")
-      ? (this.hostAdapter as { getOpenClawConfig?(): unknown }).getOpenClawConfig?.()
-      : undefined;
+    // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
+    // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
+    // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
+    const useStandaloneRunner = true;
+    // 遗留形参：OpenClaw 宿主已退场，恒为 undefined；下游 createL1/L2/L3Runner 仍接受该参数，
+    // 待 HostAdapter 面一并收敛时删除。
+    const openclawConfig: unknown = undefined;
 
     let runnerFactory = this.runnerFactory;
     if (this.shouldOverrideRunnerFactory(useStandaloneRunner)) {

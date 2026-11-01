@@ -311,25 +311,6 @@ export interface GatewayConfig {
    * env: TDAI_METADATA_*
    */
   metadata: GatewayMetadataConfig;
-  /** Offload server executor 配置 (yaml: offload) */
-  offload: {
-    forceTriggerThreshold: number;
-    pendingMaxAgeSeconds: number;
-    l1Temperature: number;
-    l1MaxTokens: number;
-    l1TimeoutMs: number;
-    l15Temperature: number;
-    l15MaxTokens: number;
-    l15TimeoutMs: number;
-    l2Temperature: number;
-    l2MaxTokens: number;
-    l2TimeoutMs: number;
-    l2NullThreshold: number;
-    mildOffloadRatio: number;
-    aggressiveCompressRatio: number;
-    emergencyCompressRatio: number;
-    maxRetries: number;
-  };
 }
 
 /** v3 元数据 Gateway yaml 配置（§6.3）。 */
@@ -740,7 +721,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
 
   const observability: ObservabilityConfig = { otel, clickhouse, kafka, langfuse };
 
-  // Offload executor config (yaml: offload)
   const metadataConfig = obj(fileConfig, "metadata");
   const storeYaml = obj(metadataConfig, "store");
   const systemUserYaml = obj(metadataConfig, "systemUser");
@@ -780,26 +760,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
       : undefined,
   };
 
-  const offloadConfig = obj(fileConfig, "offload");
-  const offload = {
-    forceTriggerThreshold: num(offloadConfig, "forceTriggerThreshold") ?? 4,
-    pendingMaxAgeSeconds: num(offloadConfig, "pendingMaxAgeSeconds") ?? 30,
-    l1Temperature: num(offloadConfig, "l1Temperature") ?? 0.3,
-    l1MaxTokens: num(offloadConfig, "l1MaxTokens") ?? 8000,
-    l1TimeoutMs: num(offloadConfig, "l1TimeoutMs") ?? 120_000,
-    l15Temperature: num(offloadConfig, "l15Temperature") ?? 0.2,
-    l15MaxTokens: num(offloadConfig, "l15MaxTokens") ?? 3000,
-    l15TimeoutMs: num(offloadConfig, "l15TimeoutMs") ?? 120_000,
-    l2Temperature: num(offloadConfig, "l2Temperature") ?? 0.4,
-    l2MaxTokens: num(offloadConfig, "l2MaxTokens") ?? 16000,
-    l2TimeoutMs: num(offloadConfig, "l2TimeoutMs") ?? 120_000,
-    l2NullThreshold: num(offloadConfig, "l2NullThreshold") ?? 6,
-    mildOffloadRatio: num(offloadConfig, "mildOffloadRatio") ?? 0.5,
-    aggressiveCompressRatio: num(offloadConfig, "aggressiveCompressRatio") ?? 0.85,
-    emergencyCompressRatio: num(offloadConfig, "emergencyCompressRatio") ?? 0.95,
-    maxRetries: num(offloadConfig, "maxRetries") ?? 3,
-  };
-
   const base: GatewayConfig = {
     deployMode,
     stateBackend,
@@ -815,7 +775,6 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
     cos,
     observability,
     metadata,
-    offload,
     skill: skillFromAnywhere,
   };
 

@@ -10,6 +10,14 @@ export interface ParsedPipelineTimerMember extends PipelineTimerMemberContext {
   timerType: string;
   taskType: TaskPayload["type"];
   priority: number;
+  /**
+   * False when `timerType` matches none of the known pipeline timers (L1/L2/L3).
+   * Such members are leftovers from retired subsystems (e.g. the removed
+   * context-offload timers `offload-l15`/`offload-l2`) or plain garbage, and
+   * callers must skip them instead of falling back to a `flush` task for a
+   * bogus sessionId.
+   */
+  recognized: boolean;
 }
 
 const SCOPED_TIMER_PREFIX = "scope:";
@@ -22,11 +30,11 @@ function safeDecodeURIComponent(value: string): string {
   }
 }
 
-function classifyTimerType(timerType: string): Pick<ParsedPipelineTimerMember, "taskType" | "priority"> {
-  if (timerType.startsWith("L1")) return { taskType: "L1", priority: 0 };
-  if (timerType.startsWith("L2")) return { taskType: "L2", priority: 1 };
-  if (timerType.startsWith("L3")) return { taskType: "L3", priority: 2 };
-  return { taskType: "flush", priority: 0 };
+function classifyTimerType(timerType: string): Pick<ParsedPipelineTimerMember, "taskType" | "priority" | "recognized"> {
+  if (timerType.startsWith("L1")) return { taskType: "L1", priority: 0, recognized: true };
+  if (timerType.startsWith("L2")) return { taskType: "L2", priority: 1, recognized: true };
+  if (timerType.startsWith("L3")) return { taskType: "L3", priority: 2, recognized: true };
+  return { taskType: "flush", priority: 0, recognized: false };
 }
 
 export function buildPipelineTimerMember(
@@ -73,7 +81,7 @@ export function parsePipelineTimerMember(member: string): ParsedPipelineTimerMem
 
   const lastColon = member.lastIndexOf(":");
   if (lastColon <= 0) {
-    return { sessionId: member, timerType: "L1_idle", taskType: "L1", priority: 0 };
+    return { sessionId: member, timerType: "L1_idle", taskType: "L1", priority: 0, recognized: true };
   }
 
   const sessionId = member.slice(0, lastColon);

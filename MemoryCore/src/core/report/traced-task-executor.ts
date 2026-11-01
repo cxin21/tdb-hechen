@@ -62,24 +62,6 @@ export class TracedTaskExecutor implements TaskExecutor {
     return this.executeL1(task);
   }
 
-  async executeOffloadL1?(task: TaskPayload, signal?: AbortSignal): Promise<void> {
-    if (this.inner.executeOffloadL1) {
-      return this.executeWithTrace("offload-l1", task, () => this.inner.executeOffloadL1!(task, signal));
-    }
-  }
-
-  async executeOffloadL15?(task: TaskPayload, signal?: AbortSignal): Promise<void> {
-    if (this.inner.executeOffloadL15) {
-      return this.executeWithTrace("offload-l15", task, () => this.inner.executeOffloadL15!(task, signal));
-    }
-  }
-
-  async executeOffloadL2?(task: TaskPayload, signal?: AbortSignal): Promise<void> {
-    if (this.inner.executeOffloadL2) {
-      return this.executeWithTrace("offload-l2", task, () => this.inner.executeOffloadL2!(task, signal));
-    }
-  }
-
   /**
    * 核心方法：在 Trace Context 中执行任务。
    *

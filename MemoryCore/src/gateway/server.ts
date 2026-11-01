@@ -8,8 +8,7 @@
  *   POST /search/memories     — L1 memory search
  *   POST /search/conversations — L0 conversation search
  *   POST /session/end         — Session end + flush
- *   POST /seed               — Batch seed historical conversations (L0 → L1)
- *
+  *
  * Built with Node.js native `http` module — no Express/Fastify dependency.
  * Designed to run as a managed sidecar alongside Hermes.
  */
@@ -43,8 +42,6 @@ import type {
   ConversationSearchResponse,
   SessionEndRequest,
   SessionEndResponse,
-  SeedRequest,
-  SeedResponse,
   GatewayErrorResponse,
 } from "./types.js";
 import type { Logger } from "../core/types.js";
@@ -55,9 +52,6 @@ import { initObservabilityBackend } from "../core/report/factory.js";
 import type { ObservabilityConfig as CoreObservabilityConfig } from "../core/report/types.js";
 import { TracedTaskExecutor } from "../core/report/traced-task-executor.js";
 import { StorePool } from "../core/store/store-pool.js";
-import { validateAndNormalizeRaw, SeedValidationError } from "../core/seed/input.js";
-import { executeSeed } from "../core/seed/seed-runtime.js";
-import type { SeedProgress } from "../core/seed/types.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
 import { handleRerankRoute } from "./rerank-endpoint.js";
 import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
@@ -123,8 +117,6 @@ import { makeWikiRouteTable } from "./wiki-handlers.js";
 import { makeChatMemoryRouteTable, clearChatMemoryContentResilient } from "./chat-memory-handlers.js";
 import { makeMemoryPromptRouteTable } from "./memory-prompt-handlers.js";
 import { makeMemoryGenerationLogRouteTable } from "./memory-generation-log-handlers.js";
-import { handleOffloadV2Route } from "../offload_server/router.js";
-import type { OffloadV2Deps } from "../offload_server/router.js";
 import {
   readAuthAdminBypassEnabled,
   readAuthRequireTeamOwnership,
@@ -138,7 +130,6 @@ import { resolveAuthBindingConfig } from "./auth-binding.js";
 // task-68：team 归属闸的 metadata 查询器（进程内 LRU，缺省 off 时一次都不查）。
 import { createTeamOwnershipResolver } from "./team-ownership-resolver.js";
 import { recordTeamOwnershipMetric } from "./team-ownership.js";
-import { initServerOpikTracer } from "../offload_server/opik-tracer.js";
 import { classifyError } from "./error-handler.js";
 import { LocalStorageBackend } from "../core/storage/local-backend.js";
 import { StorageAdapter } from "../core/storage/adapter.js";
@@ -147,6 +138,7 @@ import type { TaskExecutor } from "../services/pipeline-worker.js";
 import type { IStateBackend } from "../core/state/types.js";
 import type { TimerScanner } from "../services/timer-scanner.js";
 import type { PipelineWorker } from "../services/pipeline-worker.js";
+import type { LocalMemoryCleaner } from "../utils/memory-cleaner.js";
 import type { StatefulPipelineManager } from "../utils/stateful-pipeline-manager.js";
 import type { PipelineLogger } from "../utils/pipeline-factory.js";
 import { parsePipelineTimerMember } from "../core/state/timer-member.js";
@@ -259,7 +251,7 @@ function createConsoleLogger(): Logger {
  * Default request body size limit: 1 MiB (1,048,576 bytes).
  *
  * Override via env `MEMORY_MAX_BODY_BYTES` (must be a positive integer).
- * Capture / seed routes typically need more than 1 MB; if that becomes a
+ * Capture routes typically need more than 1 MB; if that becomes a
  * recurring issue, raise the env or split per-route limits.
  *
  * Implementation note: env-variable access is delegated to
@@ -455,6 +447,9 @@ export class TdaiGateway {
   private stateBackend: IStateBackend | null = null;
   private timerScanner: TimerScanner | null = null;
   private pipelineWorker: PipelineWorker | null = null;
+  /** L0/L1 JSONL 日清理器（capture.l0l1RetentionDays 配了才启动）。
+   *  原先只挂在已退役的 OpenClaw 宿主入口上；DSH 特化后唯一宿主是 gateway，故接线于此。 */
+  private memoryCleaner: LocalMemoryCleaner | null = null;
   /**
    * 跨模块共享的并发信号量 —— memory PipelineWorker 用；skill 侧走
    * conversation-add wire 出的 SkillConversationExtractWorker (agent 级串行 lock,
@@ -502,7 +497,6 @@ export class TdaiGateway {
       dataDir: this.config.data.baseDir,
       llmConfig: this.config.llm,
       logger: this.logger,
-      platform: "gateway",
     });
 
     // Create core
@@ -798,11 +792,25 @@ export class TdaiGateway {
     // Initialize core
     await this.core.initialize();
 
+    // L0/L1 JSONL 日清理器（capture.l0l1RetentionDays 配了才启用；默认关闭=零行为变化）
+    const cleanup = this.config.memory.memoryCleanup;
+    if (cleanup.enabled && cleanup.retentionDays != null) {
+      const { LocalMemoryCleaner } = await import("../utils/memory-cleaner.js");
+      this.memoryCleaner = new LocalMemoryCleaner({
+        baseDir: this.config.data.baseDir,
+        retentionDays: cleanup.retentionDays,
+        cleanTime: cleanup.cleanTime,
+        logger: this.logger,
+        vectorStore: this.core.getVectorStore(),
+      });
+      this.memoryCleaner.start();
+      this.logger.info(
+        `[memory-cleaner] started (retentionDays=${cleanup.retentionDays}, cleanTime=${cleanup.cleanTime})`,
+      );
+    }
+
     // ── #152 ①：启动能力审计（只 WARN，不阻断启动）──
     this.auditStoreCapabilities();
-
-    // ── Initialize Opik tracer for offload server ──
-    await initServerOpikTracer(this.logger);
 
     // ── Start integrated services (Scanner + Worker + State Backend) ──
     // In service mode, startIntegratedServices() also invokes
@@ -1238,6 +1246,17 @@ export class TdaiGateway {
       });
     }
 
+    if (this.memoryCleaner) {
+      try {
+        this.memoryCleaner.destroy();
+      } catch (err) {
+        this.logger.warn(
+          `[memory-cleaner] stop failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      this.memoryCleaner = null;
+    }
+
     await this.core.destroy();
     this.logger.info("Gateway stopped");
   }
@@ -1573,17 +1592,6 @@ export class TdaiGateway {
         };
       }
 
-      // ── Offload V2 routes (async ingest + mmd query) ──
-      const offloadDeps: OffloadV2Deps = {
-        resolveStorage: v2Deps.resolveStorage,
-        getStorage: v2Deps.getStorage ?? (() => undefined),
-        logger: this.logger,
-        stateBackend: this.stateBackend,
-        config: { ...this.config.offload, l1Model: "", l15Model: "", l2Model: "" },
-      };
-      const offloadHandled = await handleOffloadV2Route(req, res, pathname, method, parseJsonBody, sendJson, offloadDeps);
-      if (offloadHandled) return;
-
       // Compose deps: V2RouterDeps fields + SkillRouterDeps fields. The
       // route table union of routeTable + makeSkillRouteTable() is what
       // tells the dispatcher which subset of fields each handler reads.
@@ -1669,8 +1677,6 @@ export class TdaiGateway {
           return await this.handleSearchConversations(req, res);
         case "POST /session/end":
           return await this.handleSessionEnd(req, res);
-        case "POST /seed":
-          return await this.handleSeed(req, res);
         default:
           sendError(res, 404, `Not found: ${method} ${pathname}`);
       }
@@ -2165,103 +2171,6 @@ export class TdaiGateway {
     sendJson(res, 200, response);
   }
 
-  private async handleSeed(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await parseJsonBody<SeedRequest>(req);
-
-    if (!body.data) {
-      sendError(res, 400, "Missing required field: data");
-      return;
-    }
-
-    // Validate and normalize input (reuses seed CLI's validation layers 2-6)
-    let input;
-    try {
-      input = validateAndNormalizeRaw(body.data, {
-        sessionKey: body.session_key,
-        strictRoundRole: body.strict_round_role,
-        autoFillTimestamps: body.auto_fill_timestamps ?? true,
-      });
-    } catch (err) {
-      if (err instanceof SeedValidationError) {
-        sendJson(res, 400, {
-          error: err.message,
-          validation_errors: err.errors,
-        });
-        return;
-      }
-      throw err;
-    }
-
-    this.logger.info(
-      `Seed request: ${input.sessions.length} session(s), ` +
-      `${input.totalRounds} round(s), ${input.totalMessages} message(s)`,
-    );
-
-    // Resolve output directory: use gateway's data dir with a timestamped subfolder
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const ts =
-      `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-` +
-      `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    const outputDir = `${this.config.data.baseDir}/seed-${ts}`;
-
-    // Merge config overrides if provided
-    // Start with the base memory config + inject llm config from gateway settings
-    const baseConfig = this.config.memory as unknown as Record<string, unknown>;
-    let pluginConfig: Record<string, unknown> = {
-      ...baseConfig,
-      llm: Object.fromEntries([
-        ["enabled", true],
-        ["baseUrl", this.config.llm.baseUrl],
-        ["apiKey", this.config.llm.apiKey],
-        ["model", this.config.llm.model],
-        ["maxTokens", this.config.llm.maxTokens],
-        ["timeoutMs", this.config.llm.timeoutMs],
-      ]),
-    };
-    if (body.config_override) {
-      for (const key of Object.keys(body.config_override)) {
-        const baseVal = pluginConfig[key];
-        const overVal = body.config_override[key];
-        if (baseVal && typeof baseVal === "object" && !Array.isArray(baseVal) &&
-            overVal && typeof overVal === "object" && !Array.isArray(overVal)) {
-          pluginConfig[key] = { ...(baseVal as Record<string, unknown>), ...(overVal as Record<string, unknown>) };
-        } else {
-          pluginConfig[key] = overVal;
-        }
-      }
-    }
-
-    // Execute seed pipeline (blocking — this may take minutes for large inputs)
-    const summary = await executeSeed(input, {
-      outputDir,
-      openclawConfig: {},
-      pluginConfig,
-      logger: this.logger as PipelineLogger,
-      onProgress: (progress: SeedProgress) => {
-        this.logger.debug?.(
-          `Seed progress: [${progress.currentRound}/${progress.totalRounds}] ` +
-          `session=${progress.sessionKey} stage=${progress.stage}`,
-        );
-      },
-    });
-
-    this.logger.info(
-      `Seed complete: sessions=${summary.sessionsProcessed}, rounds=${summary.roundsProcessed}, ` +
-      `l0=${summary.l0RecordedCount}, duration=${(summary.durationMs / 1000).toFixed(1)}s`,
-    );
-
-    const response: SeedResponse = {
-      sessions_processed: summary.sessionsProcessed,
-      rounds_processed: summary.roundsProcessed,
-      messages_processed: summary.messagesProcessed,
-      l0_recorded: summary.l0RecordedCount,
-      duration_ms: summary.durationMs,
-      output_dir: summary.outputDir,
-    };
-    sendJson(res, 200, response);
-  }
-
   // ============================
   // Integrated Services (Scanner + Worker)
   // ============================
@@ -2332,57 +2241,21 @@ export class TdaiGateway {
       type: backendType,
       local: backendType === "local" ? {
         onTimerExpired: (entry) => {
-          // Parse timer member by prefix: "offload-{type}:{instanceId}:{sessionId}[:{extra}]"
-          // or legacy "session:L2_schedule"
+          // Pipeline memory timer. The member may be legacy "sessionId:L1_idle"
+          // or scoped "scope:team:T|agent:A|session:S:L1_idle"; scope is member
+          // data only and does not affect Redis key slotting.
           const member = entry.member;
-          let taskType: string;
-          let instanceId: string;
-          let sessionId: string;
-          let teamId: string | undefined;
-          let agentId: string | undefined;
-
-          const firstColon = member.indexOf(":");
-          const prefix = firstColon > 0 ? member.slice(0, firstColon) : member;
-
-          if (prefix === "offload-l1" || prefix === "offload-l15" || prefix === "offload-l2") {
-            taskType = prefix;
-            // Format: "offload-{type}:{instanceId}:{sessionId}[:{mmdFile}]"
-            // instanceId is the segment right after the prefix
-            const rest = member.slice(firstColon + 1);
-            const instanceEnd = rest.indexOf(":");
-            if (instanceEnd > 0) {
-              instanceId = rest.slice(0, instanceEnd);
-              sessionId = rest.slice(instanceEnd + 1);
-            } else {
-              instanceId = this.config.instanceId ?? "default";
-              sessionId = rest;
-            }
-            // For offload-l2: strip trailing ":{mmdFile}" from sessionId
-            // (mmdFile is extracted separately from timerMember in the executor)
-            if (prefix === "offload-l2" && sessionId.endsWith(".mmd")) {
-              const lastColon = sessionId.lastIndexOf(":");
-              if (lastColon > 0) {
-                sessionId = sessionId.slice(0, lastColon);
-              }
-            }
-          } else {
-            // Pipeline memory timer. The member may be legacy "sessionId:L1_idle"
-            // or scoped "scope:team:T|agent:A|session:S:L1_idle"; scope is member
-            // data only and does not affect Redis key slotting.
-            const parsed = parsePipelineTimerMember(member);
-            sessionId = parsed.sessionId;
-            taskType = parsed.taskType;
-            teamId = parsed.teamId;
-            agentId = parsed.agentId;
-            instanceId = entry.instanceId ?? this.config.instanceId ?? "default";
+          const parsed = parsePipelineTimerMember(member);
+          if (!parsed.recognized) {
+            this.logger.warn(`[local-timer] Skipping timer member with an unrecognised timer type: ${JSON.stringify(member)} — leftover from a retired subsystem (e.g. context-offload), not enqueued.`);
+            return;
           }
+          const sessionId = parsed.sessionId;
+          const taskType = parsed.taskType;
+          const teamId = parsed.teamId;
+          const agentId = parsed.agentId;
+          const instanceId = entry.instanceId ?? this.config.instanceId ?? "default";
           const now = Date.now();
-          // Extract targetMmdFile from member for offload-l2 (needed by pipeline-worker lockKey)
-          let targetMmdFile: string | undefined;
-          if (taskType === "offload-l2") {
-            const mmdMatch = member.match(/(\d+-[^:]+\.mmd)$/);
-            if (mmdMatch) targetMmdFile = mmdMatch[1];
-          }
           const task = {
             id: `${taskType}-${sessionId}-${now}`,
             type: taskType as any,
@@ -2392,7 +2265,7 @@ export class TdaiGateway {
             agentId,
             priority: 0,
             createdAt: now,
-            data: { triggeredBy: "timer_scanner", timerMember: member, instanceId, targetMmdFile, teamId, agentId },
+            data: { triggeredBy: "timer_scanner", timerMember: member, instanceId, teamId, agentId },
           };
           this.stateBackend!.enqueueTask(task).then(() => {
             this.logger.info(`[local-timer] Timer fired: ${member} → enqueued ${taskType} task`);
@@ -3787,64 +3660,6 @@ export class TdaiGateway {
         await core.handleSessionEnd(task.sessionId);
       },
 
-      // ── Offload executors (L1 summary, L1.5 task judgment, L2 MMD update) ──
-      async executeOffloadL1(task: TaskPayload, signal?: AbortSignal) {
-        if (signal?.aborted) return;
-        const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
-        const storage = await resolveStorage(task);
-        if (!storage) return;
-        const llmClient = gateway.buildOffloadLlmClient(task.instanceId);
-        if (!llmClient) {
-          gateway.logger.warn(`[executor] offload-l1 skipped: no LLM client available`);
-          return;
-        }
-        const executor = new OffloadTaskExecutor({
-          resolveStorage: async () => storage,
-          llmClient,
-          stateBackend: gateway.stateBackend!,
-          config: { ...gateway.config.offload, l1Model: "", l15Model: "", l2Model: "" },
-          logger: gateway.logger,
-        });
-        await executor.executeOffloadL1(task, signal);
-      },
-      async executeOffloadL15(task: TaskPayload, signal?: AbortSignal) {
-        if (signal?.aborted) return;
-        const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
-        const storage = await resolveStorage(task);
-        if (!storage) return;
-        const llmClient = gateway.buildOffloadLlmClient(task.instanceId);
-        if (!llmClient) {
-          gateway.logger.warn(`[executor] offload-l15 skipped: no LLM client available`);
-          return;
-        }
-        const executor = new OffloadTaskExecutor({
-          resolveStorage: async () => storage,
-          llmClient,
-          stateBackend: gateway.stateBackend!,
-          config: { ...gateway.config.offload, l1Model: "", l15Model: "", l2Model: "" },
-          logger: gateway.logger,
-        });
-        await executor.executeOffloadL15(task, signal);
-      },
-      async executeOffloadL2(task: TaskPayload, signal?: AbortSignal) {
-        if (signal?.aborted) return;
-        const { OffloadTaskExecutor } = await import("../offload_server/offload-task-executor.js");
-        const storage = await resolveStorage(task);
-        if (!storage) return;
-        const llmClient = gateway.buildOffloadLlmClient(task.instanceId);
-        if (!llmClient) {
-          gateway.logger.warn(`[executor] offload-l2 skipped: no LLM client available`);
-          return;
-        }
-        const executor = new OffloadTaskExecutor({
-          resolveStorage: async () => storage,
-          llmClient,
-          stateBackend: gateway.stateBackend!,
-          config: { ...gateway.config.offload, l1Model: "", l15Model: "", l2Model: "" },
-          logger: gateway.logger,
-        });
-        await executor.executeOffloadL2(task, signal);
-      },
     };
   }
 
@@ -3862,75 +3677,6 @@ export class TdaiGateway {
     return reported;
   }
 
-  /**
-   * Build a simple LLM client for offload executors using gateway's LLM config.
-   *
-   * instanceId 用于 provider=proxy 场景把 baseUrl 拼成 /proxy/<iid>/v1；
-   * provider=openai 场景可以传 undefined。
-   */
-  private buildOffloadLlmClient(instanceId?: string) {
-    const llmCfg = this.config.llm;
-    if (!llmCfg.baseUrl || !llmCfg.model) return null;
-    // provider=openai 时仍要求显式 apiKey；provider=proxy 时 apiKey 由 resolver 从 env 注入
-    if ((llmCfg.provider ?? "openai") === "openai" && !llmCfg.apiKey) return null;
-
-    let effective: StandaloneLLMConfig;
-    try {
-      effective = resolveStandaloneLlmForRuntime(llmCfg, instanceId);
-    } catch (err) {
-      this.logger.warn(
-        `[offload-llm] provider 解析失败, skipped: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return null;
-    }
-    const logger = this.logger;
-
-    return {
-      async chat(params: {
-        model: string;
-        messages: Array<{ role: "system" | "user"; content: string }>;
-        temperature: number;
-        max_tokens: number;
-        timeoutMs?: number;
-      }): Promise<string> {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 30000);
-        try {
-          const response = await fetch(`${effective.baseUrl}/chat/completions`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${effective.apiKey}`,
-            },
-            body: JSON.stringify({
-              model: effective.model || params.model,
-              messages: params.messages,
-              temperature: params.temperature,
-              max_tokens: params.max_tokens,
-            }),
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-          if (!response.ok) {
-            throw new Error(`LLM API returned ${response.status}: ${await response.text()}`);
-          }
-          const json = (await response.json()) as any;
-          const finishReason = json.choices?.[0]?.finish_reason;
-          if (finishReason === "length") {
-            const content = json.choices?.[0]?.message?.content ?? "";
-            logger.warn(
-              `[offload-llm] Response truncated (finish_reason=length, max_tokens=${params.max_tokens}), ` +
-              `content=${content.length} chars`,
-            );
-          }
-          return json.choices?.[0]?.message?.content ?? "";
-        } catch (err) {
-          clearTimeout(timer);
-          throw err;
-        }
-      },
-    };
-  }
 }
 
 // ============================

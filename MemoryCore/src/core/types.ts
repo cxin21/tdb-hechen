@@ -45,12 +45,6 @@ export interface RuntimeContext {
   sessionId: string;
   /** Session key (stable across reconnects, used for L0/L1 grouping). */
   sessionKey: string;
-  /** Host platform identifier. */
-  platform: "openclaw" | "hermes" | "cli" | "gateway" | string;
-  /** Agent identity / profile name (optional). */
-  agentIdentity?: string;
-  /** Agent execution context — primary agent, subagent, cron job, or flush task. */
-  agentContext?: "primary" | "subagent" | "cron" | "flush";
   /** Workspace directory (for tool sandbox, if applicable). */
   workspaceDir: string;
   /** Plugin/provider data directory (L0, records, scene_blocks, etc.). */
@@ -179,11 +173,13 @@ export function buildTraceParams(traceName: string, ctx?: TraceContext): {
 /**
  * Unified LLM execution interface.
  *
- * Replaces direct usage of `CleanContextRunner` throughout TDAI Core.
+ * The single port through which TDAI Core talks to an LLM. The host (the
+ * gateway today) must inject one — see `requireLlmRunner` in llm-runner-guard.ts;
+ * there is no in-process fallback any more (the OpenClaw embedded runner that
+ * used to provide one left with the DSH-only build).
  *
- * Implementations:
- * - `OpenClawLLMRunner`: wraps `CleanContextRunner` / `runEmbeddedPiAgent` (OpenClaw host)
- * - `StandaloneLLMRunner`: direct OpenAI-compatible HTTP calls (Gateway / Hermes host)
+ * Implementation:
+ * - `StandaloneLLMRunner`: direct OpenAI-compatible HTTP calls (Gateway host)
  */
 export interface LLMRunner {
   /**
@@ -245,8 +241,12 @@ export interface LLMRunnerFactory {
  * - "Where do I log?"                 → `getLogger()`
  */
 export interface HostAdapter {
-  /** Identifies the host type for conditional behavior (should be rare). */
-  readonly hostType: "openclaw" | "hermes" | "standalone";
+  /**
+   * Host type. The DSH-only build has exactly one host (the gateway), so this is
+   * a fixed literal: any `hostType === "openclaw"` branch is dead code and a
+   * type error by construction.
+   */
+  readonly hostType: "standalone";
 
   /** Get the unified runtime context for the current session. */
   getRuntimeContext(): RuntimeContext;

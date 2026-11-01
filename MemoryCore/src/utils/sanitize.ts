@@ -18,7 +18,9 @@ export function sanitizeText(text: string): string {
   cleaned = cleaned.replace(/<relevant-scenes>[\s\S]*?<\/relevant-scenes>/g, "");
   cleaned = cleaned.replace(/<scene-navigation>[\s\S]*?<\/scene-navigation>/g, "");
 
-  // Remove offload-injected task context blocks (MMD mermaid diagrams)
+  // Legacy context-offload task blocks (MMD mermaid diagrams). The offload
+  // subsystem is gone, but rows written before its removal still carry these
+  // markers, so the strippers stay as data hygiene.
   cleaned = cleaned.replace(/<current_task_context>[\s\S]*?<\/current_task_context>/g, "");
   cleaned = cleaned.replace(/<history_task_context[\s\S]*?<\/history_task_context>/g, "");
 
