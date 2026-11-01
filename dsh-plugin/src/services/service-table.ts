@@ -32,6 +32,9 @@ export interface ServiceTableOptions {
 
 export const SERVICE_NAMES = ['tdai-core', 'tdai-knowledge', 'tdai-panel'] as const;
 
+/** A name this plugin knows how to start; see scope.ts for whether it should. */
+export type ServiceName = (typeof SERVICE_NAMES)[number];
+
 const BASE_TABLE: ReadonlyArray<Omit<ServiceSpec, 'port'> & { port: number }> = [
   { name: 'tdai-core', dir: 'MemoryCore', args: ['--import', 'tsx', 'src/gateway/server.ts'], port: 8420 },
   { name: 'tdai-knowledge', dir: 'MemoryKnowledge', args: ['--import', 'tsx', 'src/server.ts'], port: 8421 },

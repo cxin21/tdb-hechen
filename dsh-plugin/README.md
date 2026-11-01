@@ -596,6 +596,12 @@ DSH_PROFILE=desktop bash scripts/deploy.sh \
 
 ## 服务栈看护（插件自己拉起 core / knowledge / panel）
 
+**跨机部署：只有 core 在本机时才会拉起栈。** 判断依据是 `server.baseUrl` 的 host 是否回环
+（`src/services/scope.ts`）：core 在另一台机器上时，插件不 spawn 任何进程、不开控制端口、不读 env 文件——
+本地栈拿不到流量，只会白占三个端口并造成「本地栈活着但没人用」的 split-brain。远端栈在那台机器上自己起
+（systemd / Windows 服务 / 启动脚本）。混合部署（core 本机、knowledge 在 wiki 机）用 `services.include`
+只挑本机要托管的那几个；此时设置页显示「本机不托管服务栈」+ 原因，而不是一张空表。
+
 ADR-0022：原来由外部 bundle `tdb-lifecycle` 起的 PowerShell 看护进程（`start-tdb-supervised.ps1`）已经整条退役，
 改由本插件自己拉起并看护三服务。原因是**服务表必须只有一个真源**——那次改了三服务表，磁盘上的表是对的，
 但正在跑的看护进程内存里还是四服务表，于是它把已经退场的 proxy 反复拉回来，还占着 `MemoryProxy/` 目录不放。

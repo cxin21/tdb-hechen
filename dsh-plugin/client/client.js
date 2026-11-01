@@ -447,6 +447,11 @@ window.__ModuleLoader__.load({
 		"servicesNav": "TDB 服务",
 		"servicesTitle": "TDB 服务栈",
 		"servicesDesc": "三个 TDB 服务（记忆核心、知识库、管理面板）由本插件随 DSH 启动与看护：健康检查通过才算起来，子服务挂了自己重拉。",
+		"servicesNoStack": "本机不托管服务栈",
+		"servicesReasonRemote": "记忆核心在另一台机器上（{host}），本地再起三个服务只会白占端口——请在那台机器上用 systemd / Windows 服务 / 启动脚本自行拉起。",
+		"servicesReasonOff": "本机托管已关闭（services.enabled=false）。要由本插件拉起 core / knowledge / panel，请在插件配置里打开。",
+		"servicesReasonNone": "services.include 里没有本插件认识的服务名；空值代表三个全都托管。",
+		"servicesCoreHost": "记忆核心地址",
 		"servicesSupervisor": "看护状态",
 		"servicesRunning": "运行中",
 		"servicesStopped": "已停止",
@@ -481,6 +486,11 @@ window.__ModuleLoader__.load({
 		"servicesNav": "TDB services",
 		"servicesTitle": "TDB service stack",
 		"servicesDesc": "The three TDB services (memory core, knowledge, panel) start and are watched by this plugin: a service counts as up only once /health passes, and a crashed child is respawned.",
+		"servicesNoStack": "This host does not run the stack",
+		"servicesReasonRemote": "The memory core lives on another machine ({host}); a local stack would only hold three ports hostage. Start it there (systemd / Windows service / a plain script).",
+		"servicesReasonOff": "Local hosting is switched off (services.enabled=false). Turn it on in the plugin config to have this plugin start core / knowledge / panel.",
+		"servicesReasonNone": "services.include names no service this plugin knows; empty means all three.",
+		"servicesCoreHost": "Memory core address",
 		"servicesSupervisor": "Supervisor",
 		"servicesRunning": "Running",
 		"servicesStopped": "Stopped",
@@ -721,6 +731,18 @@ window.__ModuleLoader__.load({
 				return response;
 			}, []);
 
+			// A remote core is a normal deployment, not a fault: say which one it is
+			// instead of showing an empty table with dead buttons.
+			const unmanagedText = status !== null && status.managed === false
+				? t("servicesNoStack") + " — " + (
+					status.reason === "remote-core"
+						? t("servicesReasonRemote").replace("{host}", String(status.coreHost || "?"))
+						: status.reason === "no-services"
+						? t("servicesReasonNone")
+						: t("servicesReasonOff")
+				)
+				: "";
+
 			const refresh = useCallback(async () => {
 				try {
 					const response = await call("/status");
@@ -814,13 +836,12 @@ window.__ModuleLoader__.load({
 						id: "tdb-agemem-services-summary",
 						children: loadFailed || status === null
 							? t("servicesLoadFailed")
-							: [
-								t("servicesSupervisor") + ": ",
-								status.running ? t("servicesRunning") : t("servicesStopped"),
-								" · " + t("servicesAutoRestart") + ": " + (status.autoRestart ? "✓" : "✕"),
-								" · " + t("servicesBudget") + ": " + String(status.restartsUsed) + "/" + String(status.maxRestarts),
-								status.startedAt ? " · " + t("servicesStartedAt") + ": " + status.startedAt : ""
-							].join("")
+							: status.managed === false
+							? unmanagedText
+							: t("servicesSupervisor") + ": " + (status.running ? t("servicesRunning") : t("servicesStopped"))
+								+ " · " + t("servicesAutoRestart") + ": " + (status.autoRestart ? "✓" : "✕")
+								+ " · " + t("servicesBudget") + ": " + String(status.restartsUsed) + "/" + String(status.maxRestarts)
+								+ (status.startedAt ? " · " + t("servicesStartedAt") + ": " + status.startedAt : "")
 					}),
 					pxs("div", {
 						className: "_tdbAgemem_section",
@@ -829,7 +850,7 @@ window.__ModuleLoader__.load({
 								type: "button",
 								className: "_tdbAgemem_button _tdbAgemem_buttonPrimary",
 								id: "tdb-agemem-services-start",
-								disabled: busy !== "" || status === null || status.running === true,
+								disabled: busy !== "" || status === null || status.managed === false || status.running === true,
 								onClick: () => act("/start", undefined, "start", "servicesNoteStarted"),
 								children: busy === "start" ? t("servicesBusy") : t("servicesStartAll")
 							}),
@@ -837,7 +858,7 @@ window.__ModuleLoader__.load({
 								type: "button",
 								className: "_tdbAgemem_button _tdbAgemem_buttonDanger",
 								id: "tdb-agemem-services-stop",
-								disabled: busy !== "" || status === null || status.running !== true,
+								disabled: busy !== "" || status === null || status.managed === false || status.running !== true,
 								onClick: () => {
 									if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(t("servicesConfirmStop"))) return;
 									act("/stop", undefined, "stop", "servicesNoteStopped");
@@ -846,7 +867,8 @@ window.__ModuleLoader__.load({
 							})
 						]
 					}),
-					pxs("table", {
+					status !== null && status.managed !== false
+						? pxs("table", {
 						className: "_tdbAgemem_table",
 						id: "tdb-agemem-services-table",
 						children: [
@@ -863,7 +885,8 @@ window.__ModuleLoader__.load({
 							}),
 							px("tbody", { children: services.map(row) })
 						]
-					}),
+					})
+						: null,
 					note !== "" || loadFailed
 						? px("p", {
 							className: noteError ? "_tdbAgemem_hint _tdbAgemem_error" : "_tdbAgemem_hint",

@@ -595,12 +595,21 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   // 缺省关；打开后由本插件直接 spawn（不再有外部 bundle + PowerShell 看护进程
   // 那三层结构）。fail-open：栈起不来只 warn，插件的记忆能力照常工作。
   const installedServices = installServices({
+    // Decides whether a local stack makes sense at all: a remote core means
+    // somebody else owns the three services (services/scope.ts).
+    coreBaseUrl: config.server.baseUrl,
     config: config.services,
     ctx,
     log,
     disposers,
   });
-  if (installedServices !== undefined) {
+  if (!installedServices.managed) {
+    // Not a failure: a remote core (or a switched-off stack) is a normal
+    // deployment. One debug line; the settings page carries the explanation.
+    log?.debug?.(
+      'agemem: service stack is not managed here (' + installedServices.reason + '): ' + installedServices.detail,
+    );
+  } else {
     log?.debug?.(
       'agemem: service stack owns ' + installedServices.specs.map((spec) => spec.name + ':' + spec.port).join(','),
     );

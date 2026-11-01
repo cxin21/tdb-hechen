@@ -365,6 +365,14 @@ export interface SkillConfig {
  */
 export interface ServicesConfig {
   enabled: boolean;
+  /**
+   * 只托管哪些服务（逗号分隔，空=三个都托管）：
+   * `tdai-core,tdai-knowledge,tdai-panel` 中取子集。
+   * 用途是混合部署——core 在本机、knowledge 在另一台机器时，把 knowledge 去掉。
+   * 注意：`server.baseUrl` 不是回环时，enabled 打开也不会 spawn 任何进程
+   * （跨机时本地栈拿不到流量，只会白占端口），见 services/scope.ts。
+   */
+  include: string;
   /** 仓库根：三服务包 = <repoRoot>/MemoryCore|MemoryKnowledge|MemoryPanel。 */
   repoRoot: string;
   /** KEY=VALUE 的服务环境变量文件（含密钥）；空=只用宿主环境。 */
@@ -569,6 +577,9 @@ export const DEFAULT_CONFIG: AgememConfig = {
     // decision. A fresh install must never start three node processes because a
     // plugin was upgraded.
     enabled: false,
+    // Empty = all three. Narrow it for a mixed deployment (core here, wiki box
+    // elsewhere). A remote server.baseUrl turns the whole thing off anyway.
+    include: '',
     repoRoot: 'D:/TDB/td-agemem',
     // One file, KEY=VALUE, so the plugin and the manual PowerShell path read the
     // same secrets (etc/env.ps1 loads this file; see its header).
@@ -819,7 +830,7 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
   ));
   identity.statePath = typeof identity.statePath === 'string' ? identity.statePath.trim() : '';
   const services = mergeSection(DEFAULT_CONFIG.services, raw.services, warnings, 'services.');
-  for (const key of ['repoRoot', 'envFile', 'nodePath', 'logteeModule', 'logDir', 'runDir', 'statePath'] as const) {
+  for (const key of ['include', 'repoRoot', 'envFile', 'nodePath', 'logteeModule', 'logDir', 'runDir', 'statePath'] as const) {
     services[key] = typeof services[key] === 'string' ? services[key].trim() : '';
   }
   // 0 disables the control port; everything else is a real port. A negative or

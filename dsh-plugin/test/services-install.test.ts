@@ -5,6 +5,9 @@ import type { AgememContext } from '../src/types.js';
 import type { ServiceSupervisor } from '../src/services/supervisor.js';
 import type { ControlServer } from '../src/services/control.js';
 
+/** A loopback core: the case where this host does manage the stack. */
+const LOOPBACK_CORE = 'http://127.0.0.1:8420';
+
 function servicesConfig(overrides: Partial<ServicesConfig> = {}): ServicesConfig {
   return { ...DEFAULT_CONFIG.services, enabled: true, ...overrides };
 }
@@ -80,18 +83,21 @@ function fakeSupervisor(): ServiceSupervisor & { calls: string[] } {
 }
 
 describe('services install: wiring', () => {
-  it('spawns nothing and opens no port when the feature is off', () => {
+  it('spawns nothing and opens no port when the feature is off, but still answers why', () => {
     const { ctx } = fakeCtx();
     const createSupervisor = vi.fn();
     const startControl = vi.fn();
     const result = installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig({ enabled: false }),
       ctx,
       disposers: [],
       createSupervisor: createSupervisor as never,
       startControl: startControl as never,
     });
-    expect(result).toBeUndefined();
+    // Not undefined anymore: the settings page needs a reason, not a 404.
+    expect(result.managed).toBe(false);
+    expect(result.reason).toBe('disabled-by-config');
     expect(createSupervisor).not.toHaveBeenCalled();
     expect(startControl).not.toHaveBeenCalled();
   });
@@ -101,6 +107,7 @@ describe('services install: wiring', () => {
     const supervisor = fakeSupervisor();
     const createSupervisor = vi.fn(() => supervisor);
     installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig({ repoRoot: 'D:/repo/', runDir: 'D:/repo/data/run' }),
       ctx,
       disposers: [],
@@ -127,6 +134,7 @@ describe('services install: wiring', () => {
     const createSupervisor = vi.fn(() => fakeSupervisor());
     const startControl = vi.fn(() => Promise.resolve(null));
     installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig({ statePath: 'D:/state.json', controlPort: 9999 }),
       ctx,
       disposers: [],
@@ -140,6 +148,7 @@ describe('services install: wiring', () => {
   it('registers the four same-origin routes under the retired prefix', () => {
     const { ctx, routes, effects } = fakeCtx();
     installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig(),
       ctx,
       disposers: [],
@@ -160,6 +169,7 @@ describe('services install: wiring', () => {
     for (const options of [{ withRegister: false }, { withInject: false }]) {
       const { ctx } = fakeCtx(options);
       const result = installServices({
+      coreBaseUrl: LOOPBACK_CORE,
         config: servicesConfig(),
         ctx,
         disposers: [],
@@ -179,6 +189,7 @@ describe('services install: wiring', () => {
     };
     const warnings: string[] = [];
     const result = installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig(),
       ctx,
       log: { warn: (message: string) => warnings.push(message) },
@@ -198,6 +209,7 @@ describe('services install: wiring', () => {
       const supervisor = fakeSupervisor();
       const disposers: Array<() => void> = [];
       installServices({
+      coreBaseUrl: LOOPBACK_CORE,
         config: servicesConfig(),
         ctx,
         disposers,
@@ -216,6 +228,7 @@ describe('services install: wiring', () => {
       const supervisor = fakeSupervisor();
       const disposers: Array<() => void> = [];
       installServices({
+      coreBaseUrl: LOOPBACK_CORE,
         config: servicesConfig({ stopOnDispose: false }),
         ctx,
         disposers,
@@ -235,6 +248,7 @@ describe('services install: wiring', () => {
     const close = vi.fn(async () => undefined);
     const disposers: Array<() => void> = [];
     installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig(),
       ctx,
       disposers,
@@ -249,6 +263,7 @@ describe('services install: wiring', () => {
     const { ctx: ctx2 } = fakeCtx();
     const disposers2: Array<() => void> = [];
     installServices({
+      coreBaseUrl: LOOPBACK_CORE,
       config: servicesConfig(),
       ctx: ctx2,
       disposers: disposers2,
@@ -258,5 +273,50 @@ describe('services install: wiring', () => {
     expect(() => {
       for (const dispose of disposers2) dispose();
     }).not.toThrow();
+  });
+
+  it('spawns nothing at all when the configured core is on another machine', () => {
+    const { ctx, routes } = fakeCtx();
+    const createSupervisor = vi.fn();
+    const startControl = vi.fn();
+    const warnings: string[] = [];
+    const result = installServices({
+      coreBaseUrl: 'http://10.16.235.171:8420',
+      config: servicesConfig(),
+      ctx,
+      log: { warn: (message: string) => warnings.push(message) },
+      disposers: [],
+      createSupervisor: createSupervisor as never,
+      startControl: startControl as never,
+    });
+    // The whole point: a remote core means somebody else owns the stack.
+    expect(result.managed).toBe(false);
+    expect(result.reason).toBe('remote-core');
+    expect(result.specs).toEqual([]);
+    expect(createSupervisor).not.toHaveBeenCalled();
+    expect(startControl).not.toHaveBeenCalled();
+    expect(warnings.join(String.fromCharCode(10))).toContain('10.16.235.171');
+    // The page still gets an answer, with the reason instead of a 404.
+    expect(routes.map((route) => route.path)).toEqual([
+      CONTROL_ROUTE_PREFIX + '/status',
+      CONTROL_ROUTE_PREFIX + '/start',
+      CONTROL_ROUTE_PREFIX + '/stop',
+      CONTROL_ROUTE_PREFIX + '/restart',
+    ]);
+  });
+
+  it('manages only the services listed in include (core here, wiki elsewhere)', () => {
+    const { ctx } = fakeCtx();
+    const createSupervisor = vi.fn(() => fakeSupervisor());
+    installServices({
+      coreBaseUrl: LOOPBACK_CORE,
+      config: servicesConfig({ include: 'tdai-core,tdai-panel' }),
+      ctx,
+      disposers: [],
+      createSupervisor: createSupervisor as never,
+      startControl: (() => Promise.resolve(null)) as never,
+    });
+    const options = createSupervisor.mock.calls[0]![0] as { specs: Array<{ name: string }> };
+    expect(options.specs.map((spec) => spec.name)).toEqual(['tdai-core', 'tdai-panel']);
   });
 });

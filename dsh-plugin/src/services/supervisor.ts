@@ -66,6 +66,15 @@ export interface SupervisorStatus {
   maxRestarts: number;
   services: ServiceStatus[];
   updatedAt: string;
+  /**
+   * False when this host does not manage a stack at all (remote core, config
+   * off). Those payloads come from install.ts; a real supervisor always says so.
+   */
+  managed?: boolean;
+  /** Why it is unmanaged; see services/scope.ts. */
+  reason?: string;
+  /** Host part of the configured core baseUrl, for the settings page. */
+  coreHost?: string;
 }
 
 export interface SpawnOptionsLike {

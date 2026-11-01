@@ -115,6 +115,7 @@ export const VOLATILE_PATHS = [
   // touches are exposed; the log/state directories stay patch-only, because a
   // form that can point `statePath` at the wrong file breaks ownership silently.
   'services.enabled',
+  'services.include',
   'services.repoRoot',
   'services.controlPort',
   'services.healthTimeoutMs',
@@ -155,6 +156,8 @@ const DESCRIPTIONS: Record<string, string> = {
   'volatile.knowledge.enabled': 'Inject the <knowledge_tools> resource list into the per-turn volatile block.',
   'volatile.knowledge.maxChars': 'Character ceiling for the <knowledge_tools> segment (0-3000).',
   debug: 'Verbose plugin logging (never logs secrets).',
+  'services.include':
+    'Which services this host starts (comma separated; empty = all three). Narrow it when core runs here but wiki runs on another box.',
   'services.enabled': 'Supervise the TDB service stack (core/knowledge/panel) from this plugin instead of a separate bundle. Off by default: this decides who spawns the services.',
   'services.repoRoot': 'Repository root holding MemoryCore, MemoryKnowledge and MemoryPanel.',
   'services.controlPort': 'Loopback control port for the settings page (0 disables it; the same-origin routes still work).',

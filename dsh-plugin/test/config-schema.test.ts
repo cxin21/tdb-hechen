@@ -108,7 +108,10 @@ describeGroup('Config schema shape', () => {
     // healthTimeoutMs / maxRestarts / autoRestart / stopOnDispose). The plugin
     // spawns and supervises the three services itself now, so the knobs that
     // decide *who* starts them belong in the form.
-    expect(volatile).toHaveLength(35);
+    // 35 -> 36: services.include, for the mixed deployment where core runs here
+    // but the wiki box is somewhere else. (A remote server.baseUrl turns the
+    // whole stack off, so this is about which services *this* host owns.)
+    expect(volatile).toHaveLength(36);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {
