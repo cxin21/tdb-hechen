@@ -86,3 +86,34 @@
 ## 定线（观察窗收口时用户拍板）
 
 - 待数据。精确率 = 1 − 回滚数 / auto_adopted 总数；N₂/T₂/阈值按 #80 法真实数据复核可调（config 键承载）。
+
+## 收口（2026-11-02，用户拍板「关票吧」）
+
+### 用户拍板
+- 2026-11-02 09:02 +08 用户直接指令「关票吧」——未选 10-31 呈报的三选项（继续等自然复现 / 保守口径收口 / N₂-T₂ 对照实验），即：**按 7 天窗事实直接关票**，不再延长观察。
+
+### 关票前置质量门（本机亲跑，门绿）
+- `cd MemoryCore && pnpm run typecheck:gate` → 当前 202 errors / 30 files；基线 202 errors / 30 files；Δ=+0；PASS。
+- `pnpm run typecheck`（tsconfig.typecheck.json）→ 202 errors = 既有基线（末条 `src/utils/pipeline-factory.ts(1463,9) TS2322`），无新增。
+- `pnpm exec vitest run` → Test Files 342 passed (342) / Tests 3354 passed (3354)，19.87s。
+- 注：MemoryProxy 整包 2026-11-01 退场（ADR-0020），原「两包门」proxy 侧已不存在；MemoryCore 全量门即当前唯一必需门。
+
+### 10-31 票面更正两项 P0 缺陷：已闭环
+- 缺陷 1（门② 取数 LIMIT 200 截断）→ 专用查询 `MemoryCore/src/core/store/sqlite.ts:3376-3388 listRejectedSelfIdentityPending`（零 LIMIT）；门侧优先消费 `auto-adopt-gate.ts:102-106`，缺实现回落并 WARN。
+- 缺陷 2（写入非原子）→ `MemoryCore/src/core/store/sqlite.ts:3403-3439 commitAutoAdoptCore` SAVEPOINT 单事务（槽写+落账同存同无）；门侧原子路径优先 `auto-adopt-gate.ts:119-142`。
+- 证据：commit 7165fbb（2026-11-01 03:51:11 +0800，批量收口含 #92 M1/M2）；`auto-adopt-gate.test.ts` 含「再造 250 条 rejected 必须全部可见」与原子失败回滚用例，全量 vitest 全绿。
+- 生产实效：当前 core（PID 38712）起于 2026-11-01 08:29:11，晚于 7165fbb → 生产运行含 M1/M2 的版本；10-31「修复前建议 enabled=false」的前提已消失，`autoAdopt.enabled: true` 维持。
+
+### 窗终结果（t=0 2026-10-25 20:54:55 → 2026-11-02 09:0x）
+- 拍级：全窗每个存活代均有拍级行，**adopted=0 / blocked=0 / skipped=0**；无 `[auto-adopt]` warn/fail。
+- 终态 DB（只读探针 .tmp-gate/92-db-probe-daily.mjs）：rejected=385 / adopted=76 / **expired=37**（10-29 cohort 10 条已按 TTL 到期）/ **pending=0** / **auto_adopted=0**；全槽 564。
+- 精确率分母=0 不可估；窗内候选条件（pending ∧ count≥4 ∧ span≥72h）零行满足——门未做过自动采纳决策，属保守设计预期结果，不构成门精度正/负判定。
+
+### 定线（收口口径）
+- 本窗**不立精确率线**（无数据）；以「零误收 + 零门故障 + 提案质量抽样人工标注」为后续启用期验收口径（若未来门有产出再据此复核）。
+- N₂/T₂/阈值保持 4/72h/0.60/0.75（用户 2026-10-25 拍板），后续调整须另行拍板。
+
+### 收口后状态
+- #92 关闭；#100 面板审计视图保持 open（ready-for-agent）。
+- `autoAdopt.enabled: true` 维持开闸；关闭/调整走用户拍板。
+- 每日 09:30 只读巡检定时器已删除。

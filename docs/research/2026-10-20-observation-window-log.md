@@ -179,3 +179,14 @@
 - 三档现状：本地 :251/:255 两键在；base:309-310、cloud:263-264 两键在（2026-11-01 production-profile 登记）。
 - 处置：未满 7 整天 → 顺延；收口日 2026-11-02 08:56 CST 后复核，若仍 0 触发按「生效+实证 dormant+无劣化」关票并记 dormant 结论；提醒重排 11-02 09:00。Low 项（floor=0 判关）待另票。
 
+
+
+## #76 观察窗收口（2026-11-02 09:00 CST，满 7 天，关票）
+
+- 窗口：EFF=2026-10-26T00:56:55Z → 2026-11-02T01:00:00Z；journal .1+当前档 446 条（skip 14 / warmup 32 / 真实 query 400）。
+- 决定性读数：470 条结论行 0 越预算、0 截断标记 → F2 全程 dormant；最紧余量 n=5 时 365/400（余 35 字符），n=1 1147/2000、n=2 736/1000。
+- 命中率：真实 query 400/400=100%（pre 98.9%），无劣化；11-01 评论 95.0% 系 warmup 探针污染分母，已更正。
+- 配置三档：本地 :273 truncateMode / :277 maxTotalChars（行号漂移 +22，键值未变）；base :309-310、cloud :263-264 同在。
+- 运维：LLM Token Plan 配额仍耗尽（当前 core run 累计 11,780 条 2067；11-02 08:56 仍在失败，consolidation/identity-discovery/lifecycle 降级）；DSH host 11-01 多次重启，服务健康（core uptime≈14.2h，/health ok）。
+- 收口：#76 关票（dormant + 无劣化 + 三档生效）；F2 保持 armed；门 4 Low 项另开 #178（floor=0 判关潜伏边界）。
+
