@@ -219,6 +219,7 @@ MemoryCore/.eval-data/**
 .tmp/
 MemoryCore/.scene/
 MemoryCore/.scratch/
+.scratch/
 MemoryCore/memory/
 MemoryCore/scratchpad/
 MemoryCore/*_block.md

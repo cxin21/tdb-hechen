@@ -53,6 +53,45 @@ export interface ExtractionSettingsOverride {
   scenePoisonSplit?: boolean;
   sceneBatchMaxChars?: number;
 }
+/**
+ * layerRuler 段（#179 S5，keys：memory.recall.layerRuler.*）。
+ * 字段语义与 MemoryCore/src/config.ts parseConfig 的 layerRuler 块一致：
+ * 非法 mode / 非有限 keepRatio / minPerLayer<1 一律在 parse 回落「今天行为」
+ * （off / 0.67 / 1），这里只做形状校验，不做 clamp 决策。
+ */
+export interface LayerRulerSettingsOverride {
+  mode?: "off" | "shadow" | "enforce";
+  keepRatio?: number;
+  minPerLayer?: number;
+  /** null = 不设地板（诚实 no-op）；{model,dims,value} 需与当前 embedding 端点同 model@dims 才生效。 */
+  floor?: { model: string; dims: number; value: number } | null;
+  /** v2 名次折扣 λ（0 = 纯余弦；缺省 0）。 */
+  lengthLambda?: number;
+  /** v2 层内相对 margin（null = 不裁；缺省 null）。 */
+  margin?: number | null;
+  /** v2 近重复抑制阈值（null = 不裁；缺省 null）。 */
+  dedupeSim?: number | null;
+  /** v3 单轮选线预算（毫秒，50..5000；缺省 300）。到点整段 bypass，走字符预算兜底。 */
+  budgetMs?: number;
+}
+/**
+ * injection 段（#179 S5，keys：memory.recall.injection.*）。
+ * 代码缺省 foldIdentical=false、budgetByIntent 全 null（逐位现状）；
+ * 服务上线切换时由这里写入生产建议值（规格 §4.3）。
+ */
+export interface InjectionSettingsOverride {
+  foldIdentical?: boolean;
+  /** v2 单行渲染上限（null = 不截断；缺省 null）。 */
+  maxLineChars?: number | null;
+  /** v3 本轮总字符预算（null = 不限；缺省 null）。 */
+  maxChars?: number | null;
+  budgetByIntent?: {
+    empty?: number | null;
+    continuation?: number | null;
+    self?: number | null;
+    info?: number | null;
+  };
+}
 export interface SettingsOverride {
   llm?: LlmSettingsOverride;
   embedding?: EmbeddingSettingsOverride;
@@ -60,6 +99,8 @@ export interface SettingsOverride {
   importancePenalty?: ImportancePenaltySettingsOverride;
   worthiness?: WorthinessSettingsOverride;
   extraction?: ExtractionSettingsOverride;
+  layerRuler?: LayerRulerSettingsOverride;
+  injection?: InjectionSettingsOverride;
 }
 
 const OVERRIDE_FILE = "config-override.json";
@@ -230,6 +271,107 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
     }
     if (Object.keys(ex).length) out.extraction = ex;
   }
+  if (b.layerRuler) {
+    const lr: LayerRulerSettingsOverride = {};
+    if (b.layerRuler.mode !== undefined) {
+      if (b.layerRuler.mode === "off" || b.layerRuler.mode === "shadow" || b.layerRuler.mode === "enforce")
+        lr.mode = b.layerRuler.mode;
+      else errors.push("layerRuler.mode 必须是 off|shadow|enforce");
+    }
+    if (b.layerRuler.keepRatio !== undefined) {
+      const n = Number(b.layerRuler.keepRatio);
+      if (!Number.isFinite(n) || n <= 0 || n > 1) errors.push("layerRuler.keepRatio 必须是 (0,1] 的数字");
+      else lr.keepRatio = n;
+    }
+    if (b.layerRuler.minPerLayer !== undefined) {
+      const n = Number(b.layerRuler.minPerLayer);
+      if (Number.isInteger(n) && n >= 1) lr.minPerLayer = n;
+      else errors.push("layerRuler.minPerLayer 必须是 ≥1 的整数");
+    }
+    if (Object.prototype.hasOwnProperty.call(b.layerRuler, "floor")) {
+      const f = b.layerRuler.floor;
+      if (f === null) lr.floor = null;
+      else if (f && typeof f === "object") {
+        const model = typeof f.model === "string" ? f.model.trim() : "";
+        const dims = Number(f.dims);
+        const value = Number(f.value);
+        if (!model) errors.push("layerRuler.floor.model 必须是非空字符串");
+        else if (!Number.isInteger(dims) || dims <= 0) errors.push("layerRuler.floor.dims 必须是正整数");
+        else if (!Number.isFinite(value) || value < 0 || value > 1)
+          errors.push("layerRuler.floor.value 必须是 [0,1] 的数字");
+        else lr.floor = { model, dims, value };
+      } else errors.push("layerRuler.floor 必须是 null 或 {model,dims,value}");
+    }
+    if (b.layerRuler.lengthLambda !== undefined) {
+      const n = Number(b.layerRuler.lengthLambda);
+      if (Number.isFinite(n) && n >= 0 && n <= 1) lr.lengthLambda = n;
+      else errors.push("layerRuler.lengthLambda 必须是 [0,1] 的数字");
+    }
+    if (Object.prototype.hasOwnProperty.call(b.layerRuler, "margin")) {
+      const raw = b.layerRuler.margin;
+      if (raw === null) lr.margin = null;
+      else {
+        const n = Number(raw);
+        if (Number.isFinite(n) && n >= 0 && n <= 2) lr.margin = n;
+        else errors.push("layerRuler.margin 必须是 null 或 [0,2] 的数字");
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(b.layerRuler, "dedupeSim")) {
+      const raw = b.layerRuler.dedupeSim;
+      if (raw === null) lr.dedupeSim = null;
+      else {
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0 && n <= 1) lr.dedupeSim = n;
+        else errors.push("layerRuler.dedupeSim 必须是 null 或 (0,1] 的数字");
+      }
+    }
+    if (b.layerRuler.budgetMs !== undefined) {
+      const n = Number(b.layerRuler.budgetMs);
+      if (Number.isInteger(n) && n >= 50 && n <= 5000) lr.budgetMs = n;
+      else errors.push("layerRuler.budgetMs 必须是 50..5000 的整数毫秒");
+    }
+    if (Object.keys(lr).length) out.layerRuler = lr;
+  }
+  if (b.injection) {
+    const inj: InjectionSettingsOverride = {};
+    if (b.injection.foldIdentical !== undefined) {
+      if (typeof b.injection.foldIdentical === "boolean") inj.foldIdentical = b.injection.foldIdentical;
+      else errors.push("injection.foldIdentical 必须是 boolean");
+    }
+    if (Object.prototype.hasOwnProperty.call(b.injection, "maxLineChars")) {
+      const raw = b.injection.maxLineChars;
+      if (raw === null) inj.maxLineChars = null;
+      else {
+        const n = Number(raw);
+        if (Number.isInteger(n) && n > 0) inj.maxLineChars = n;
+        else errors.push("injection.maxLineChars 必须是 null 或正整数");
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(b.injection, "maxChars")) {
+      const raw = b.injection.maxChars;
+      if (raw === null) inj.maxChars = null;
+      else {
+        const n = Number(raw);
+        if (Number.isInteger(n) && n > 0) inj.maxChars = n;
+        else errors.push("injection.maxChars 必须是 null 或正整数");
+      }
+    }
+    if (b.injection.budgetByIntent) {
+      const bb: NonNullable<InjectionSettingsOverride["budgetByIntent"]> = {};
+      for (const key of ["empty", "continuation", "self", "info"] as const) {
+        const raw = (b.injection.budgetByIntent as Record<string, unknown>)[key];
+        if (raw === undefined) continue;
+        if (raw === null) bb[key] = null;
+        else {
+          const n = Number(raw);
+          if (Number.isInteger(n) && n >= 0) bb[key] = n;
+          else errors.push(`injection.budgetByIntent.${key} 必须是 null 或非负整数`);
+        }
+      }
+      if (Object.keys(bb).length) inj.budgetByIntent = bb;
+    }
+    if (Object.keys(inj).length) out.injection = inj;
+  }
   if (errors.length) return { ok: false, errors };
   return { ok: true, value: out };
 }
@@ -298,6 +440,52 @@ export function applyWorthinessOverrideToRaw(
   const wRaw = { ...((next.worthiness as Record<string, unknown> | undefined) ?? {}) };
   Object.assign(wRaw, picked);
   next.worthiness = wRaw;
+  return next;
+}
+
+/**
+ * layerRuler override 注入 memory 段原始配置（#179 S5）。必须在 parseConfig 之前并入：
+ * mode 白名单 / keepRatio clamp / minPerLayer 取整 / floor 形状的全部不变量都在
+ * parseConfig 的 layerRuler 块内，parse 后再合并会绕过它们。
+ */
+export function applyLayerRulerOverrideToRaw(
+  memoryCompatRaw: Record<string, unknown>,
+  override: LayerRulerSettingsOverride | undefined,
+): Record<string, unknown> {
+  const picked = pickDefined(override);
+  if (!override || Object.keys(picked).length === 0) return memoryCompatRaw;
+  const next: Record<string, unknown> = { ...memoryCompatRaw };
+  const recallRaw = { ...((next.recall as Record<string, unknown> | undefined) ?? {}) };
+  const lrRaw = { ...((recallRaw.layerRuler as Record<string, unknown> | undefined) ?? {}) };
+  Object.assign(lrRaw, picked);
+  recallRaw.layerRuler = lrRaw;
+  next.recall = recallRaw;
+  return next;
+}
+
+/**
+ * injection override 注入 memory 段原始配置（#179 S5）。必须在 parseConfig 之前并入：
+ * budgetByIntent 的「null / 非负整数」语义在 parseConfig 落地。
+ */
+export function applyInjectionOverrideToRaw(
+  memoryCompatRaw: Record<string, unknown>,
+  override: InjectionSettingsOverride | undefined,
+): Record<string, unknown> {
+  const picked = pickDefined(override);
+  if (!override || Object.keys(picked).length === 0) return memoryCompatRaw;
+  const next: Record<string, unknown> = { ...memoryCompatRaw };
+  const recallRaw = { ...((next.recall as Record<string, unknown> | undefined) ?? {}) };
+  const injRaw = { ...((recallRaw.injection as Record<string, unknown> | undefined) ?? {}) };
+  if (picked.foldIdentical !== undefined) injRaw.foldIdentical = picked.foldIdentical;
+  if (picked.maxLineChars !== undefined) injRaw.maxLineChars = picked.maxLineChars;
+  if (picked.maxChars !== undefined) injRaw.maxChars = picked.maxChars;
+  if (picked.budgetByIntent !== undefined) {
+    const bRaw = { ...((injRaw.budgetByIntent as Record<string, unknown> | undefined) ?? {}) };
+    Object.assign(bRaw, pickDefined(picked.budgetByIntent));
+    injRaw.budgetByIntent = bRaw;
+  }
+  recallRaw.injection = injRaw;
+  next.recall = recallRaw;
   return next;
 }
 

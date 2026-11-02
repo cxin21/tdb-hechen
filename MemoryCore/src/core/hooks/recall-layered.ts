@@ -15,6 +15,7 @@
  * 确定性：命中判定只依赖 query/候选文本与调用方传入 token 集，无时钟、无随机。
  */
 import { detectSceneHit } from "../tools/recall-signals.js";
+import { layerRulerSelect, type LayerRulerDropReason } from "../recall/selection/layer-ruler.js";
 
 export type L2ConclusionSource = "work_fact" | "scene_block";
 
@@ -60,6 +61,38 @@ export interface L2MatchInputs {
    * scene_block）与调用方序（平分保序）不变。纯确定性：无时钟、无随机。
    */
   idfWeighted?: boolean;
+  /**
+   * #179 S2（2026-11-02）：层尺接线——提供时存活候选喂 layerRulerSelect（层内按名次切
+   * keepRatio、每层至少 minPerLayer、层间不竞争、limit 当总预算）；undefined = mode:off
+   * = 今天行为逐位一致（先取前 limit 名存活候选，再稳定排序）。结论层无相似度可用，
+   * floor 只可能来自调用方显式给定（缺省 null = 不设地板）。
+   */
+  layerRuler?: L2RulerInput;
+}
+
+/** #179：结论层尺参数（配置 recall.layerRuler.* 的子集——mode 判断在调用方）。 */
+export interface L2RulerInput {
+  keepRatio: number;
+  minPerLayer: number;
+  floor?: number | null;
+}
+
+/** #179 S4：候选池级观测明细（不记行全文到 journal，hash 由观测面自己算）。 */
+export interface L2SelectionEntry {
+  text: string;
+  layer: L2ConclusionSource;
+  score: number;
+  /** 原候选数组下标（诊断用，等价于调用方顺序）。 */
+  order: number;
+  kept: boolean;
+  /** 仅在层尺裁掉时存在；mode:off 全 undefined（观测面记 0，不假装裁过）。 */
+  reason?: LayerRulerDropReason;
+}
+
+/** #179 S4：详细选择结果（selected 与旧签名输出逐位一致）。 */
+export interface L2SelectionResult {
+  selected: L2Conclusion[];
+  pool: L2SelectionEntry[];
 }
 
 /**
@@ -167,9 +200,27 @@ export function selectL2Conclusions(
   inputs: L2MatchInputs,
   limit: number,
 ): L2Conclusion[] {
-  if (!query || query.trim().length === 0) return [];
-  if (!candidates || candidates.length === 0) return [];
-  if (!(limit > 0)) return [];
+  return selectL2ConclusionsDetailed(query, candidates, inputs, limit).selected;
+}
+
+/**
+ * #179 S2 · 同上的详细版：额外返回候选池级明细（kept / droppedBy 归因）供 journal 观测面。
+ *
+ * 两条路径共享同一份存活判定（命中 / 密度门 / 去重）——尺子只在存活池上工作：
+ *   - inputs.layerRuler 缺省（mode:off）：取前 limit 名存活候选 → 今天行为逐位一致；
+ *   - 提供（shadow/enforce）：喂 layerRulerSelect（layer=source、score=idf 分、order=池内序、
+ *     budget=limit），层内按名次切 keepRatio、每层至少 minPerLayer、层间不竞争。
+ * 选中集仍按今天的排序口径输出（层→idf 降序→调用方序），仅"选谁"由尺子决定。
+ */
+export function selectL2ConclusionsDetailed(
+  query: string,
+  candidates: readonly L2ConclusionCandidate[],
+  inputs: L2MatchInputs,
+  limit: number,
+): L2SelectionResult {
+  if (!query || query.trim().length === 0) return { selected: [], pool: [] };
+  if (!candidates || candidates.length === 0) return { selected: [], pool: [] };
+  if (!(limit > 0)) return { selected: [], pool: [] };
   const tokens = inputs?.ftsTokens ?? [];
   // #99 F1（2026-10-25）：候选集占比万词面剔除退役（P3 自指病灶）——旧 ratioGate 用
   // 「token 命中候选占比」判水词，而候选集经 buildFtsQuery(query) FTS 预筛天然含查询
@@ -183,11 +234,10 @@ export function selectL2Conclusions(
   const idfOn = inputs?.idfWeighted === true;
   const idfScores = idfOn ? conclusionIdfScores(candidates, matchTokens) : [];
   const seen = new Set<string>();
-  const out: { c: L2Conclusion; i: number; score: number }[] = [];
+  const survivors: { c: L2Conclusion; i: number; score: number }[] = [];
   let idx = -1;
   for (const c of candidates) {
     idx++;
-    if (out.length >= limit) break;
     if (!c || typeof c.content !== "string" || c.content.trim().length === 0) continue;
     const sceneHit = c.sceneName ? detectSceneHit(query, [c.sceneName]) : null;
     if (!sceneHit && !textHit(c.content, matchTokens)) continue;
@@ -202,11 +252,53 @@ export function selectL2Conclusions(
     const key = `${c.sceneName}\u0000${c.content}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ c: { sceneName: c.sceneName, content: c.content, source: c.source, recordId: c.recordId }, i: idx, score: idfOn ? (idfScores[idx] ?? 0) : 0 });
+    survivors.push({
+      c: { sceneName: c.sceneName, content: c.content, source: c.source, recordId: c.recordId },
+      i: idx,
+      score: idfOn ? (idfScores[idx] ?? 0) : 0,
+    });
   }
+  const ruler = inputs?.layerRuler;
+  const keptFlags: boolean[] = survivors.map(() => false);
+  const reasons: (LayerRulerDropReason | undefined)[] = survivors.map(() => undefined);
+  if (ruler) {
+    const outcome = layerRulerSelect({
+      candidates: survivors.map((s, pos) => ({
+        text: s.c.content,
+        layer: s.c.source,
+        score: s.score,
+        order: pos,
+      })),
+      keepRatio: ruler.keepRatio,
+      minPerLayer: ruler.minPerLayer,
+      floor: ruler.floor ?? null,
+      budget: limit,
+    });
+    const keptSet = new Set(outcome.kept);
+    for (let pos = 0; pos < survivors.length; pos++) keptFlags[pos] = keptSet.has(pos);
+    for (const d of outcome.decisions) {
+      if (!d.kept && d.reason != null) reasons[d.index] = d.reason;
+    }
+  } else {
+    // mode:off：前 limit 名存活候选（与旧循环的 `out.length>=limit` 早退逐位等价）
+    for (let pos = 0; pos < survivors.length && pos < limit; pos++) keptFlags[pos] = true;
+  }
+  const pool: L2SelectionEntry[] = survivors.map((s, pos) => {
+    const entry: L2SelectionEntry = {
+      text: s.c.content,
+      layer: s.c.source,
+      score: s.score,
+      order: s.i,
+      kept: keptFlags[pos],
+    };
+    const reason = reasons[pos];
+    if (reason !== undefined) entry.reason = reason;
+    return entry;
+  });
   // work_fact 优先（稳定结论 > 场景块摘要）；#53 开启时同层内按 IDF 分降序（稀有 token
   // 命中者先于万词面命中者），平分回落调用方序——稳定排序。off = 逐位现状。
-  return out
+  const selected = survivors
+    .filter((_, pos) => keptFlags[pos])
     .sort((a, b) => {
       const layer = rankOf(a.c) - rankOf(b.c);
       if (layer !== 0) return layer;
@@ -214,6 +306,7 @@ export function selectL2Conclusions(
       return a.i - b.i;
     })
     .map(({ c }) => c);
+  return { selected, pool };
 }
 
 /** 预算切分结果（spec §1：注入 limit 对半；结论不足时余额给经验层）。 */

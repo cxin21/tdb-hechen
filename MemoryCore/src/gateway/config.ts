@@ -16,7 +16,7 @@ import { isSetCredential } from "../utils/credential.js";
 import { parseConfig as parseMemoryConfig } from "../config.js";
 import type { MemoryTdaiConfig } from "../config.js";
 import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
-import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImportancePenaltyOverrideToRaw, applyWorthinessOverrideToRaw, applyExtractionOverrideToRaw } from "./settings-override.js";
+import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImportancePenaltyOverrideToRaw, applyWorthinessOverrideToRaw, applyExtractionOverrideToRaw, applyLayerRulerOverrideToRaw, applyInjectionOverrideToRaw } from "./settings-override.js";
 
 // ============================
 // Gateway config types
@@ -317,15 +317,23 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   const settingsOverride = readSettingsOverride(baseDir);
   // P1 task-7：importancePenalty/worthiness 段同样必须并入 parse 之前的 raw
   //（enabled/penalty clamp/extractionEnabled 缺省语义在 parseConfig 内）。
-  const memoryCompatWithRerank = applyImportancePenaltyOverrideToRaw(
-    applyWorthinessOverrideToRaw(
-      applyExtractionOverrideToRaw(
-        applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank),
-        settingsOverride?.extraction,
+  // #179 S5：layerRuler/injection 段同样在 parse 之前并入（mode 白名单 / keepRatio
+  // clamp / minPerLayer 取整 / floor 形状 / budgetByIntent null 语义都在 parseConfig 内）。
+  const memoryCompatWithRerank = applyInjectionOverrideToRaw(
+    applyLayerRulerOverrideToRaw(
+      applyImportancePenaltyOverrideToRaw(
+        applyWorthinessOverrideToRaw(
+          applyExtractionOverrideToRaw(
+            applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank),
+            settingsOverride?.extraction,
+          ),
+          settingsOverride?.worthiness,
+        ),
+        settingsOverride?.importancePenalty,
       ),
-      settingsOverride?.worthiness,
+      settingsOverride?.layerRuler,
     ),
-    settingsOverride?.importancePenalty,
+    settingsOverride?.injection,
   );
   const memory = parseMemoryConfig(memoryCompatWithRerank);
 

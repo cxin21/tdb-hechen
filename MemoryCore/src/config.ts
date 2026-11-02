@@ -506,6 +506,56 @@ export interface RecallConfig {
     rerankGate?: { mode: "off" | "shadow" | "enforce"; minScore?: number };
   };
   /**
+   * #179（2026-11-02）：分层选线尺——层内按名次取前 keepRatio、每层至少 minPerLayer 条、
+   * 层间不竞争（纯函数 src/core/recall/selection/layer-ruler.ts），外加标定地板
+   * （查询×无关行相似度分布 p95）。**代码缺省 = 今天行为**（off / 0.67 / 1 / null）：
+   * 上线切换是「把 mode 写进生产配置 override」，不是改代码缺省（回退 = 一行改回 off）。
+   * floor 显式声明 {model,dims,value}：与当前 embedding 端点的 model@dims 不符即视为
+   * 未标定（不拿别家模型的地板砍行）；标定产物命中时 journal floorSource="calibration"。
+   */
+  layerRuler?: {
+    mode: "off" | "shadow" | "enforce";
+    /** 层内保留比例（clamp (0,1]；缺省 0.67）。 */
+    keepRatio: number;
+    /** 每层下限条数（≥1；缺省 1）——名次切是公平机制，压缩真正来自地板。 */
+    minPerLayer: number;
+    floor: { model: string; dims: number; value: number } | null;
+    /**
+     * v2（2026-11-02）：名次折扣 λ（缺省 0 = 纯余弦现状）。rankScore = cos − λ·log10(1+chars/100)，
+     * 只影响层内名次与预算，floor/margin 仍判原始 cos。实测 λ=0.06 把 golden hi 召回
+     * 0.75→0.90（长「批次总结」被压到短事实之下）。
+     */
+    lengthLambda: number;
+    /** v2：层内相对 margin（原始 cos 刻度；null = 不裁，缺省=现状）。低于本层最高分 − Δ 的丢。 */
+    margin: number | null;
+    /** v2：近重复抑制阈值（余弦，null = 不裁，缺省=现状）；与已留者 ≥ 阈值即丢。生产实测重复对 0.938。 */
+    dedupeSim: number | null;
+    /**
+     * v3（2026-11-02）：单轮选线预算（毫秒，缺省 300 = 规格验收门 e）。到点整段 bypass。
+     * 实测远端 embedding RTT 111-382ms（p50≈175、p75≈300），300ms 预算下「查询嵌入一次」
+     * 就可能超时 → 选线恒降级为原序截断（名次与地板失效）。生产值 800 = 查询嵌入 + 一批候选。
+     */
+    budgetMs: number;
+  };
+  /**
+   * #179：注入装配开关（与选线尺独立）。**缺省 = 今天行为**（false / 全 null）。
+   * foldIdentical = 同会话相邻「回合」注入行逐字节相同 → 折叠为 0 行（端点路不参与台账）；
+   * budgetByIntent = 按意图给注入行上限，null = 不裁。
+   * 规格 §4.3 里的 empty:0 / continuation:1 / self:1 / info:null 是切换时写进生产配置的
+   * 建议值（见 injection-stage.ts:PRODUCTION_INJECTION_BUDGET），不是代码缺省。
+   */
+  injection?: {
+    foldIdentical: boolean;
+    budgetByIntent: { empty: number | null; continuation: number | null; self: number | null; info: number | null };
+    /** v2：单行渲染上限（码点；null = 不截断，缺省=现状）。句界收口，截断不改判定。 */
+    maxLineChars: number | null;
+    /**
+     * v3：本轮注入总字符预算（null = 不限，缺省=现状）。
+     * 与 budgetByIntent 的行数配额叠加：选线后按名次装填，装不下的记 droppedBy.chars。
+     */
+    maxChars: number | null;
+  };
+  /**
    * #78 R-b（2026-10-25，survey F4 small-to-big 下半段）：结论卡身世回捞——读面独立开关
    * （不挂 conclusionLayer 语义）。开启时 work_fact 结论候选命中后按 recordId 单跳回捞
    * part_of 证据行，作预算内附加「上下文行」注入（行形态 `- [上下文|场景] 内容`）；
@@ -2289,6 +2339,73 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // F-CLUSTER v2：召回折叠总开关（缺省 false = 现行为）。类型声明 config.ts:100
       // 自 09-26 存在，但逐键装载遗漏 → yaml true 装不进运行时（2026-09-30 实锤 fcVal=undefined）。
       foldClusterEnabled: bool(recallGroup, "foldClusterEnabled") ?? false,
+      // #179（2026-11-02）：选线尺 + 注入装配。新键缺省 = 今天行为（mode off / fold 关 / 预算全 null）。
+      layerRuler: (() => {
+        const lr = obj(recallGroup, "layerRuler");
+        const modeRaw = str(lr, "mode");
+        const ratioRaw = num(lr, "keepRatio");
+        const minRaw = num(lr, "minPerLayer");
+        const fl = obj(lr, "floor");
+        const lambdaRaw = num(lr, "lengthLambda");
+        const marginRaw = num(lr, "margin");
+        const dedupeRaw = num(lr, "dedupeSim");
+        const budgetRaw = num(lr, "budgetMs");
+        const flModel = str(fl, "model");
+        const flDims = num(fl, "dims");
+        const flValue = num(fl, "value");
+        return {
+          mode: modeRaw === "shadow" || modeRaw === "enforce" ? modeRaw : "off",
+          keepRatio:
+            typeof ratioRaw === "number" && Number.isFinite(ratioRaw) && ratioRaw > 0 ? Math.min(1, ratioRaw) : 0.67,
+          minPerLayer: typeof minRaw === "number" && Number.isFinite(minRaw) && minRaw >= 1 ? Math.floor(minRaw) : 1,
+          floor:
+            flModel &&
+            typeof flDims === "number" &&
+            Number.isFinite(flDims) &&
+            flDims > 0 &&
+            typeof flValue === "number" &&
+            Number.isFinite(flValue)
+              ? { model: flModel, dims: Math.floor(flDims), value: flValue }
+              : null,
+          // v2：非有限/负 → 缺省（0=不折扣 / null=不裁）；上限 1 避免把余弦压成负数主导
+          lengthLambda:
+            typeof lambdaRaw === "number" && Number.isFinite(lambdaRaw) && lambdaRaw > 0 ? Math.min(1, lambdaRaw) : 0,
+          margin: typeof marginRaw === "number" && Number.isFinite(marginRaw) && marginRaw >= 0 ? marginRaw : null,
+          dedupeSim:
+            typeof dedupeRaw === "number" && Number.isFinite(dedupeRaw) && dedupeRaw > 0 && dedupeRaw <= 1
+              ? dedupeRaw
+              : null,
+          // v3：预算过小（<50）视为手滑回落缺省 300；上限 5000 = 与 /v3/recall 同步硬超时同量级
+          budgetMs:
+            typeof budgetRaw === "number" && Number.isFinite(budgetRaw) && budgetRaw >= 50
+              ? Math.min(5000, Math.floor(budgetRaw))
+              : 300,
+        };
+      })(),
+      injection: (() => {
+        const inj = obj(recallGroup, "injection");
+        const bi = obj(inj, "budgetByIntent");
+        const budgetOf = (k: "empty" | "continuation" | "self" | "info"): number | null => {
+          const v = num(bi, k);
+          return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : null;
+        };
+        const capRaw = num(inj, "maxLineChars");
+        const maxCharsRaw = num(inj, "maxChars");
+        return {
+          foldIdentical: bool(inj, "foldIdentical") ?? false,
+          maxLineChars: typeof capRaw === "number" && Number.isFinite(capRaw) && capRaw > 0 ? Math.floor(capRaw) : null,
+          maxChars:
+            typeof maxCharsRaw === "number" && Number.isFinite(maxCharsRaw) && maxCharsRaw > 0
+              ? Math.floor(maxCharsRaw)
+              : null,
+          budgetByIntent: {
+            empty: budgetOf("empty"),
+            continuation: budgetOf("continuation"),
+            self: budgetOf("self"),
+            info: budgetOf("info"),
+          },
+        };
+      })(),
       // Task CAL C1：结论层注入前截断（默认 2000，0=不截断；负值/非有限沿 recallSignalBoost clamp 模式）
       // 审查修补 I①：enabled 总开关（缺省 true=现行为）；I③：cacheTtlMs 独立 TTL
       // （缺省 undefined → 运行期回落 sessionReuseTtlMs；显式 0=关；负值 clamp 0）

@@ -213,6 +213,26 @@ async function main() {
   for (const holder of [cfg.recall, cfg.memory && cfg.memory.recall]) {
     if (holder && holder.v3Recall) holder.v3Recall.timeoutMs = 60000;
   }
+  // #179 门槛 b：评测层覆写 recall 子树（不改生产 config-override）——用于同批查询对照
+  // mode:off / mode:enforce 的注入口径。只影响本次临时网关。
+  const patchRaw = process.env.GOLDEN_RECALL_PATCH;
+  let recallPatch = null;
+  if (patchRaw) {
+    recallPatch = JSON.parse(patchRaw);
+    const target = cfg.memory && cfg.memory.recall;
+    if (!target) throw new Error("GOLDEN_RECALL_PATCH 需要 cfg.memory.recall 存在");
+    Object.assign(target, recallPatch);
+    log("GOLDEN_RECALL_PATCH applied: " + JSON.stringify(recallPatch));
+  }
+  // #179 标定产物跟随：临时 baseDir 下没有 calibration/ 时，从生产 dataDir 只读复制一份，
+  // 让 enforce 跑分用与生产同一把地板（缺失则诚实 uncalibrated）。
+  const calSrc = path.join(String(baseDir), "calibration", "embedding-sim-floor.json");
+  if (fs.existsSync(calSrc)) {
+    fs.mkdirSync(path.join(tmpDir, "calibration"), { recursive: true });
+    fs.copyFileSync(calSrc, path.join(tmpDir, "calibration", "embedding-sim-floor.json"));
+    log("calibration artifact copied from " + calSrc);
+  }
+
   const yamlFile = path.join(tmpDir, "gateway.yaml");
   fs.writeFileSync(yamlFile, YAML.stringify(cfg), "utf8");
 
@@ -352,6 +372,7 @@ async function main() {
     dataset: DATASET_FILE, tenant, dbCopyUsed: dbCopy,
     evalMode: productionMode ? "production-copy" : "seed-fixture",
     seedFixture: productionMode ? undefined : { dir: SEED_DIR, manifest: (() => { try { return JSON.parse(fs.readFileSync(path.join(SEED_DIR, "seed-manifest.json"), "utf8")); } catch { return null; } })() },
+    recallPatch,
     configSnapshot: { recall: cfg.memory ? cfg.memory.recall : null, companionDisabled: ["memory.lifecycle", "memory.capture", "memory.extraction", "skill.extraction"], tempGatewayPort: PORT },
     summary, cleanRuns, rawRuns, probeRuns,
     redCards, metaNotes: [meta.discrepancy, ...anchorDriftNotes].filter(Boolean),

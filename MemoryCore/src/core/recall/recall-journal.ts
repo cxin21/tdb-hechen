@@ -230,6 +230,95 @@ export interface RecallJournalPerfMs {
   soul: number;
 }
 
+/**
+ * #179（2026-11-02）：选线观测面（mode:off 也记录——观测面不是行为开关）。
+ *
+ * 口径差：`kept` 是**本回合判定保留数**（fold 也计入淘汰档，故折叠后为 0——
+ * 「判定保留」与「实际注入」在 fold 面前是同一个数，否则恒等式不成立），
+ * `injected` 是**实际注入行数**。两者在 enforce/off 下相等；shadow 下
+ * injected = kept + (ruler 判定丢弃数)，因为 shadow 只记录不裁剪。
+ * 恒等式：kept + droppedBy.rank + .floor + .margin + .dup + .budget + .fold = candidates.total。
+ *
+ * v2（2026-11-02）：margin=层内相对尺淘汰、dup=近重复抑制淘汰；capped=被行长上限截断的
+ * 渲染行数（截断不改判定，故不进恒等式）。
+ */
+export interface RecallJournalSelection {
+  kept: number;
+  injected: number;
+  droppedBy: {
+    rank: number;
+    floor: number;
+    margin: number;
+    dup: number;
+    budget: number;
+    /** v3：超出本轮字符预算（injection.maxChars）而丢的行数。 */
+    chars: number;
+    fold: number;
+  };
+  capped?: number;
+  /**
+   * v3（2026-11-02）：候选池字符数（选前）。**口径澄清**：`memoryLines` 记的是候选池
+   * （ruler 关闭时池=注入），所以「注入字符」只能从这里读——否则会误把池当注入（实测
+   * 05:57:02 那轮池 1400 字符、注入 562）。
+   */
+  poolChars?: number;
+  /** v3：实际注入字符数（选后 + 折叠后）。恒有 `injectedChars <= poolChars`。 */
+  injectedChars?: number;
+}
+
+/** 尺子元信息：谁在生效、地板从哪来、是否降级 bypass、以及新增耗时（嵌入+纯选择）。 */
+export interface RecallJournalRuler {
+  mode: "off" | "shadow" | "enforce";
+  /** 地板来源：config（配置显式）/ calibration（标定产物命中）/ uncalibrated（未标定=诚实 no-op）。 */
+  floorSource: "config" | "calibration" | "uncalibrated";
+  floor: number | null;
+  keepRatio?: number;
+  minPerLayer?: number;
+  /** v2 生效参数（缺省即 off/0/null：不折扣、不相对裁、不去重、不截断）。 */
+  lengthLambda?: number;
+  margin?: number | null;
+  dedupeSim?: number | null;
+  maxLineChars?: number | null;
+  /** v3：本轮字符预算（缺省 null = 未启用）。 */
+  maxChars?: number | null;
+  /**
+   * 降级归因：注入与 mode:off 逐位一致。
+   * - ruler-unavailable：嵌入报错/空向量/维度不符/长度不符；
+   * - ruler-budget：本轮选线耗时超预算（SELECTION_BUDGET_MS=300），到点放弃。
+   */
+  bypass?: "ruler-unavailable" | "ruler-budget";
+  /** v3：bypass 时改走原序字符预算兜底（配了 injection.maxChars 才出现）。 */
+  fallback?: "char-budget";
+  /** 新增耗时（毫秒）：嵌入批次 + 纯选择（规格 §5-e 的 300ms 判据用的是这个数）。 */
+  ms?: number;
+}
+
+/** 同回合折叠观测：identicalLines>0 表示本轮注入被折叠为 0 行。 */
+export interface RecallJournalFold {
+  identicalLines: number;
+}
+
+/** 候选池逐条观测：只记可对账指纹，绝不行全文（规格 §4.6）。 */
+export interface RecallJournalCandidateLine {
+  layer: string;
+  hash8: string;
+  /** 查询×行 的余弦相似度（3 位小数）；未跑 embedding（off/bypass）时缺字段。 */
+  scoreQ?: number;
+  /** 注入层没有 BM25 相对分；结论层内部的 bm25Rel 不跨层搬。 */
+  bm25Rel?: number;
+  kept: boolean;
+  droppedBy?: "rank" | "floor" | "margin" | "dup" | "budget" | "chars" | "fold";
+}
+
+export interface RecallJournalCandidates {
+  total: number;
+  byLayer: Record<string, number>;
+  bm25Exempt: number;
+  /** 上限 40 条；超限 truncated=true，但 total/byLayer/droppedBy 汇总完整。 */
+  lines: RecallJournalCandidateLine[];
+  truncated?: true;
+}
+
 export interface RecallJournalEntry {
   ts: string;
   query: string;
@@ -266,6 +355,14 @@ export interface RecallJournalEntry {
   rawHash8?: string;
   /** #88：skip 行剥噪残差（sanitizeRecallQuery.residualChars）。 */
   residualChars?: number;
+  /** #179：选线判定（mode:off 也记录；缺字段 = 旧入口未接线）。 */
+  selection?: RecallJournalSelection;
+  /** #179：尺子元信息（含 bypass 降级归因与新增耗时）。 */
+  ruler?: RecallJournalRuler;
+  /** #179：同回合折叠观测。 */
+  fold?: RecallJournalFold;
+  /** #179：候选池观测（≤40 条，单轮新增 <4KB）。 */
+  candidates?: RecallJournalCandidates;
 }
 
 export interface RecallJournalTenant {
@@ -293,7 +390,12 @@ function rotateOldFiles(basePath: string, maxFiles: number): void {
     const from = i === 1 ? basePath : `${stem}.${i - 1}.jsonl`;
     const to = `${stem}.${i}.jsonl`;
     if (fs.existsSync(from)) {
-      try { fs.rmSync(to, { force: true }); fs.renameSync(from, to); } catch { /* 单轮失败不影响写入 */ }
+      try {
+        fs.rmSync(to, { force: true });
+        fs.renameSync(from, to);
+      } catch {
+        /* 单轮失败不影响写入 */
+      }
     }
   }
 }
@@ -310,7 +412,11 @@ export function appendRecallJournal(
     const file = path.join(journalDir, recallJournalFileName(tenant));
     const line = `${JSON.stringify(entry)}\n`;
     let size = 0;
-    try { size = fs.statSync(file).size; } catch { /* 新文件 */ }
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      /* 新文件 */
+    }
     const limit = Math.max(opts.rotationSizeMB ?? 5, 0) * 1024 * 1024;
     if (size > 0 && limit > 0 && size + Buffer.byteLength(line, "utf8") > limit) {
       rotateOldFiles(file, Math.max(opts.maxFiles ?? 5, 1));

@@ -142,6 +142,37 @@ describe("审查修补 Critical · V2-3 溢出 → 最终注入总行数 ≤ max
   // 无 V2-3 溢出）由下方 Important④-1/④-2 的"召回专项"场景覆盖。
 });
 
+// ═══════════════ #179 v3 · 零行纪律：选线判空 → 不输出空壳 <relevant-memories> ═══════════════
+
+describe("#179 v3 · 选线判空时不输出空壳记忆段", () => {
+  const ROWS = [
+    mk("wf-z1", { type: "work_fact", scene_name: "空段专项", content: "空段专项的持续结论条目甲", significance: 0.05 }),
+    mk("anchor-z", { content: "空段专项最近有什么新进展的记录" }),
+  ];
+
+  it("maxChars=1（兜底也装不下一行）→ 注入 0 行且块内无 <relevant-memories>", async () => {
+    const { store, dir } = makeStore(ROWS);
+    try {
+      const res = await recall(store, "空段专项最近有什么新进展", "sk-r7fix-zero-rows", {
+        layerRuler: { mode: "enforce", keepRatio: 1, minPerLayer: 1, floor: null },
+        injection: { maxChars: 1 },
+      });
+      expect(injectedLines(res?.prependContext)).toEqual([]);
+      // 空壳段等于「说有记忆却一行不给」，比不注入更差 → 必须整段缺席
+      expect(res?.prependContext ?? "").not.toContain("<relevant-memories>");
+      // 对照：预算够时同一查询照常出段（证明不是这段代码恒不出块）
+      const on = await recall(store, "空段专项最近有什么新进展", "sk-r7fix-zero-rows-on", {
+        layerRuler: { mode: "enforce", keepRatio: 1, minPerLayer: 1, floor: null },
+        injection: { maxChars: 600 },
+      });
+      expect((on?.prependContext ?? "").includes("<relevant-memories>")).toBe(true);
+      expect(injectedLines(on?.prependContext).length).toBeGreaterThan(0);
+    } finally {
+      cleanup(store, dir);
+    }
+  });
+});
+
 // ═══════════════ I①：conclusionLayer.enabled 关断（复用退化路径） ═══════════════
 
 describe("审查修补 I① · conclusionLayer.enabled=false → 结论层整体退出（基线逐位）", () => {

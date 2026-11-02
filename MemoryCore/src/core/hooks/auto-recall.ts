@@ -126,6 +126,10 @@ import {
 } from "./recall-layered.js";
 import path from "node:path";
 import fs from "node:fs";
+// #179（2026-11-02）：注入装配选线（意图预算 → 名次尺/地板 → 同回合折叠）。
+// 判定全在纯函数 selection/injection-stage.ts，这里只接线；关断时零开销零行为。
+import { runInjectionSelection } from "../recall/selection/injection-wiring.js";
+import type { InjectionStageOutcome } from "../recall/selection/injection-stage.js";
 import { createScopedStorageAdapter, type StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import {
@@ -354,6 +358,26 @@ interface SessionReuseEntry {
 }
 const sessionReuseCache = new Map<string, SessionReuseEntry>();
 const SESSION_REUSE_MAX = 200;
+/**
+ * #179（2026-11-02）：同回合折叠台账——sessionKey → 上一回合「实际注入行」指纹。
+ *
+ * 只由钩子路（performAutoRecallCore）传入并更新；/v3/recall 端点路不传这份台账，
+ * 所以「同一 turn 的钩子调用 + 端点调用」不会互相误触发折叠（生产 journal 实测：
+ * 同会话相邻两次召回 dt p50=0.0s 的那 93 对正是这两条路径，不是跨回合重复）。
+ * 上限 200 与 sessionReuseCache 同档：超限按插入序驱逐最旧键。
+ */
+const injectionFoldLedger = new Map<string, string>();
+const INJECTION_FOLD_LEDGER_MAX = 200;
+function rememberInjectionFold(ledger: Map<string, string>, sessionKey: string, hash: string): void {
+  if (!sessionKey) return;
+  ledger.delete(sessionKey);
+  ledger.set(sessionKey, hash);
+  while (ledger.size > INJECTION_FOLD_LEDGER_MAX) {
+    const oldest = ledger.keys().next().value;
+    if (oldest === undefined) break;
+    ledger.delete(oldest);
+  }
+}
 /**
  * #169 证据包：单次召回最多为几个会话做邻接查询。
  * 实测（3514 行 / 975 session）p99=83 行/session、max 204，单会话一次 queryL1Records 足够便宜；
@@ -1026,6 +1050,11 @@ export async function performLayeredRecall(params: {
    * 只有 /v3/recall 端点传（钩子路不传——钩子没有外部调用方的延迟合同）。
    */
   l1Budget?: RecallL1Budget;
+  /**
+   * #179：同回合折叠台账（sessionKey → 上一回合注入指纹）。只有钩子路传——
+   * 端点路不传即「不折叠」，避免同一 turn 的两次召回互相打掉（见 injectionFoldLedger 注释）。
+   */
+  foldLedger?: Map<string, string>;
 }): Promise<LayeredRecallOutcome> {
   const { userText, cfg, pluginDataDir, logger, vectorStore, embeddingService, storage } = params;
   // #136（W2 软失效）：结论层/放宽通道不能重排序，只做"该不该硬丢"的模式判定。
@@ -1082,6 +1111,8 @@ export async function performLayeredRecall(params: {
   // P0-2 journal 观测（issue #2，Spec 终审 a1）：门槛淘汰计数（native 分支捕获 →
   // journal gates 字段；缺省 undefined = 门未启用/未淘汰，journal 缺字段同义）。
   let recallGates: SearchResult["gates"];
+  // #179：选线观测（mode:off 也记；undefined = 旧分支未走到注入装配）
+  let injectionObservation: InjectionStageOutcome | undefined;
   let conclusionCount = 0;
   let experienceCount = 0;
   let sessionReused = false;
@@ -1231,12 +1262,30 @@ export async function performLayeredRecall(params: {
       // #99 F1（2026-10-25）：textHitMaxTokenRatio 万词面剔除门退役——候选经 FTS 预筛天然
       // 含查询 token，候选集占比自指（恒≈1）致最贴题 token 反被剔（P3 结论层 0 行）。
       // 万词面降权回归 BM25 IDF 单一源（#53 idfWeighted 排序消歧），不再裁剪匹配集。
-      r7Conclusions = selectL2Conclusions(r7CleanQuery, r7Candidates, {
-        ftsTokens: r7FtsTokens,
-        minUniqRatio: cfg.recall?.conclusionLayer?.minUniqRatio,
-        // #53：textHit IDF 加权排序透传（conclusionLayer.idfWeighted；缺省 false=逐位现状）
-        idfWeighted: cfg.recall?.conclusionLayer?.idfWeighted === true,
-      }, r7HalfLimit);
+      // #179（2026-11-02）：enforce 时结论层走与注入层同一份名次尺（S2：两层共用一份实现）。
+      // 只在 enforce 生效——shadow 的观测面在注入装配层，那里一次能看到所有层的行；
+      // 结论层分数是 IDF 而不是余弦，所以地板恒 null（相似度地板对结论层无意义）。
+      const layerRulerCfg = cfg.recall?.layerRuler;
+      r7Conclusions = selectL2Conclusions(
+        r7CleanQuery,
+        r7Candidates,
+        {
+          ftsTokens: r7FtsTokens,
+          minUniqRatio: cfg.recall?.conclusionLayer?.minUniqRatio,
+          // #53：textHit IDF 加权排序透传（conclusionLayer.idfWeighted；缺省 false=逐位现状）
+          idfWeighted: cfg.recall?.conclusionLayer?.idfWeighted === true,
+          ...(layerRulerCfg && layerRulerCfg.mode === "enforce"
+            ? {
+                layerRuler: {
+                  keepRatio: layerRulerCfg.keepRatio,
+                  minPerLayer: layerRulerCfg.minPerLayer,
+                  floor: null,
+                },
+              }
+            : {}),
+        },
+        r7HalfLimit,
+      );
       // ── V2-3（引擎三 E3.2 结论层放宽）：分析型 query → L2 结论层追加 "significance top-5
       // 的 durative 结论"（无需 scene/text 命中——蒸馏结论对分析问题浮出）。数据源 =
       // store.searchL1ByType("work_fact", 5)（significance DESC；可选方法 feature-detect——
@@ -2204,6 +2253,48 @@ export async function performLayeredRecall(params: {
       if (packLinesBySeed.size > 0) {
         injectedLines = applyRecallBudget(injectedLines, cfg.recall, logger);
       }
+      // ── #179（2026-11-02）：注入选线生产装配（意图预算 → 名次尺/地板 → 同回合折叠）──
+      // 关断纪律：layerRuler.mode="off" + injection 缺省 ⇒ 一行不解、embedding 不调、
+      // droppedBy 全 0；但观测面照记（观测不是行为开关）。
+      // 降级纪律：任何异常都退回「本段之前的行集」——既不放宽成"全收"，也不因此清空。
+      try {
+        const outcome = await runInjectionSelection({
+          lines: injectedLines,
+          query: r7CleanQuery,
+          cfg: cfg.recall,
+          pluginDataDir,
+          embeddingService: params.embeddingService,
+          previousHash: params.foldLedger?.get(params.sessionKey),
+        });
+        injectedLines = outcome.lines;
+        injectionObservation = outcome;
+        // 台账只记"实际注入行"指纹：下一回合若逐字节相同则折成 0 行（跨回合，不跨调用）。
+        // 写调用方给的那份台账（不是模块级常量），否则注入点与 T 检验/端点路各写各的。
+        if (params.foldLedger) rememberInjectionFold(params.foldLedger, params.sessionKey, outcome.foldHash);
+      } catch (err) {
+        // 观测构建失败也留痕：journal 里 ruler.bypass 说明本段没生效，行集保持原样
+        logger?.warn?.(`${TAG} [injection-selection] bypass: ${err instanceof Error ? err.message : String(err)}`);
+        injectionObservation = {
+          lines: injectedLines,
+          foldHash: "",
+          fold: { identicalLines: 0 },
+          selection: {
+            kept: injectedLines.length,
+            injected: injectedLines.length,
+            droppedBy: { rank: 0, floor: 0, margin: 0, dup: 0, budget: 0, chars: 0, fold: 0 },
+            capped: 0,
+            poolChars: injectedLines.reduce((n, s) => n + s.length, 0),
+            injectedChars: injectedLines.reduce((n, s) => n + s.length, 0),
+          },
+          ruler: {
+            mode: cfg.recall?.layerRuler?.mode ?? "off",
+            floorSource: "uncalibrated",
+            floor: null,
+            bypass: "ruler-unavailable",
+          },
+          candidates: { total: injectedLines.length, byLayer: {}, bm25Exempt: 0, lines: [] },
+        };
+      }
       // G1-b / #172-②：包裹语三档（legacy 缺省=现行文案；neutral=如实说明；calibrated=不诱导
       // 拒答）。文案单一源在 core/recall/inject-wrapper.ts，bench 同源。
       const wrapperHead = injectWrapperHeadOf(cfg.recall?.injectWrapper);
@@ -2213,9 +2304,14 @@ export async function performLayeredRecall(params: {
       // 两段（币值判定 + 建议类）缺省全开；要配置化再挂 recall.answerGuidance.*，不先做。
       const answerGuidance = buildAnswerGuidance({ currency: true, preference: true });
       const guidanceSeg = answerGuidance ? `\n\n${answerGuidance}` : "";
+      // v3 零行纪律：选线可以把整轮判空（全低于地板 / 同回合折叠 / 意图预算 0）。
+      // 此时**不输出空壳段**——"`<relevant-memories>` + 空格 + `</relevant-memories>`"
+      // 等于对模型说「有相关记忆」却一行不给，比不注入更差。只留身份段。
       block =
-        soulPrefix +
-        `<relevant-memories>\n${degradedNote}${wrapperHead}${guidanceSeg}\n\n${injectedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`;
+        injectedLines.length > 0
+          ? soulPrefix +
+            `<relevant-memories>\n${degradedNote}${wrapperHead}${guidanceSeg}\n\n${injectedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`
+          : soulPrefix;
     } else if (soulPrefix) {
       // C3：无记忆轮次——身份段常驻（"此刻的我"不因零召回而缺席）
       block = soulPrefix;
@@ -2263,6 +2359,15 @@ export async function performLayeredRecall(params: {
           perfMs: perfMs61,
           block,
           memoryLines,
+          // #179 选线观测面（mode:off 也记；字段见 recall-journal.ts 的 RecallJournal*）
+          ...(injectionObservation
+            ? {
+                selection: injectionObservation.selection,
+                ruler: injectionObservation.ruler,
+                fold: injectionObservation.fold,
+                candidates: injectionObservation.candidates,
+              }
+            : {}),
         },
         journalCfg,
       );
@@ -2322,7 +2427,8 @@ async function performAutoRecallCore(params: {
   const tRecallStart = performance.now();
   const tSearchStart = performance.now();
 
-  const layeredOutcome = await performLayeredRecall(params);
+  // #179：钩子路是「同回合折叠」的唯一台账来源（端点路不传 ⇒ 不折叠）
+  const layeredOutcome = await performLayeredRecall({ ...params, foldLedger: injectionFoldLedger });
   const tSearchEnd = performance.now();
   const memoryLines = layeredOutcome.memoryLines;
   const searchTiming = layeredOutcome.searchTiming;
