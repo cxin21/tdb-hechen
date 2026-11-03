@@ -90,6 +90,7 @@ export function recurrenceLabel(rec: unknown): string | undefined {
 }
 
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
+import { annotateAgentNarration, reconcileAgentNarrationMetadata } from "./agent-narration.js";
 import { clampMaxFacts, normalizeFacts, type NormalizedFacts } from "./fact-key.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
@@ -423,7 +424,9 @@ export async function extractL1Memories(params: {
         logger?.warn?.(`${TAG} Skipping memory with invalid type "${mem.type}"`);
         continue;
       }
-      allExtracted.push({
+      // A3-2（2026-11-02）：agent 自述标注（gated extraction.actorTagging，缺省关闭=不改 metadata）
+      allExtracted.push(
+        annotateAgentNarration({
         content: mem.content,
         type: memType,
         priority: typeof mem.priority === "number" ? mem.priority : 50,
@@ -451,7 +454,8 @@ export async function extractL1Memories(params: {
         sensitivity: normalizeSensitivity((mem as { sensitivity?: string }).sensitivity),
         // P1-T7 确定性门：round(clamp 1..10)；非法/缺省 → undefined（不伪造默认分）
         importance: normalizeImportance((mem as { importance?: unknown }).importance),
-      });
+        }, memoryConfig),
+      );
     }
   }
 
@@ -535,6 +539,11 @@ export async function extractL1Memories(params: {
     try {
       setL1Stage("dedup");
       const dedupStartMs = Date.now();
+      // B4（2026-11-02）：dedup 前置门槛（gated extraction.dedupPrefilter，缺省关闭=逐位现状）
+      const dedupPrefilterCfg = (memoryConfig as {
+        extraction?: { dedupPrefilter?: { enabled?: boolean; minCos?: number } };
+      } | undefined)?.extraction?.dedupPrefilter;
+      const dedupStats = { llmCalls: 0, prefiltered: 0 };
       const decisions = await batchDedup({
         memories: memoriesWithIds,
         logger,
@@ -558,8 +567,16 @@ export async function extractL1Memories(params: {
         // 看不到其它会话的记忆 → dedup 永远 store 且零候选 → 记忆零关联（生产实锤根因）。
         // 租户隔离仍由 teamId/userId/agentId/taskId 守住（never crosses tenants 语义不变）。
         ...((teamId || userId || agentId || taskId) ? { filter: { teamId, userId, agentId, taskId } } : {}),
+        // B4：门槛配置 + 每批 LLM 调用计数（关闭时不打日志，保持现状）
+        dedupPrefilter: dedupPrefilterCfg,
+        stats: dedupStats,
       });
       dedupLatencyMs = Date.now() - dedupStartMs;
+      if (dedupPrefilterCfg?.enabled === true) {
+        logger?.info?.(
+          `${TAG} dedup prefilter: prefiltered=${dedupStats.prefiltered} llmCalls=${dedupStats.llmCalls} of ${memoriesWithIds.length}`,
+        );
+      }
 
       // ── 评测指标：去重决策分布 ──
       if (metricInstanceId) {
@@ -596,6 +613,7 @@ export async function extractL1Memories(params: {
         storage,
         enableMemoryLinks: options.enableMemoryLinks !== false,
         writePolicy: options.writePolicy,
+        memoryConfig,
       });
 
     } catch (err) {
@@ -822,6 +840,10 @@ async function callLlmExtraction(params: {
   const factsEnabled = factsCfg?.enabled === true;
   const factsMaxFacts = clampMaxFacts(factsCfg?.maxFacts);
   const factsIncludeTriples = factsCfg?.includeTriples === true;
+  // A3-1（2026-11-02）：原子性拆分红线 + 改写形态（gated，缺省 300/false = 逐位现状）
+  const atomicityCfg = (memoryConfig as {
+    extraction?: { atomicMaxChars?: number; atomicityRewrite?: boolean };
+  } | undefined)?.extraction;
   const systemPrompt = composeMemorySystemPrompt(
     getExtractMemoriesSystemPrompt(promptMode, {
       selfIdentityEnabled,
@@ -831,6 +853,9 @@ async function callLlmExtraction(params: {
       factsEnabled,
       factsMaxFacts,
       factsIncludeTriples,
+      // 非法/缺失值由 prompt 侧 resolveAtomicMaxChars 归一到 clamp 区间
+      atomicMaxChars: atomicityCfg?.atomicMaxChars,
+      atomicityRewrite: atomicityCfg?.atomicityRewrite === true,
     }),
     memoryPrompt,
   );
@@ -1276,8 +1301,27 @@ async function applyDecisions(params: {
   enableMemoryLinks?: boolean;
   /** #134 写面策略（W1/W2；缺省全关）。 */
   writePolicy?: WritePolicy;
+  /** 抽取配置（A4：actorTagging 门 —— 复判标签时只看这一位）。 */
+  memoryConfig?: unknown;
 }): Promise<MemoryRecord[]> {
-  const { memoriesWithIds, decisions, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, vectorStore, embeddingService, storage, enableMemoryLinks = true, writePolicy } = params;
+  const {
+    memoriesWithIds,
+    decisions,
+    baseDir,
+    sessionKey,
+    sessionId,
+    taskId,
+    teamId,
+    userId,
+    agentId,
+    logger,
+    vectorStore,
+    embeddingService,
+    storage,
+    enableMemoryLinks = true,
+    writePolicy,
+    memoryConfig,
+  } = params;
   const storedRecords: MemoryRecord[] = [];
 
   // Build a map from record_id → decision
@@ -1316,8 +1360,29 @@ async function applyDecisions(params: {
             },
           }
         : memoryWithId;
+      // A4（2026-11-03）：标签必须按**最终落库文本**复判——dedup 的 merge/update 会用
+      // merged_content 改写 content（l1-writer：`finalContent = merged_content ?? content`），
+      // 而 annotate 是在合并前打的。不复判就会出现「落库文本已变、标签停在旧文本」的
+      // 双向错标（自述→非自述仍带标签＝读侧误杀；非自述→自述漏标＝读侧漏过）。
+      const finalContent =
+        decision.action === "merge" || decision.action === "update"
+          ? (decision.merged_content ?? memoryToWrite.content)
+          : memoryToWrite.content;
+      const reconciledMetadata = reconcileAgentNarrationMetadata(
+        finalContent,
+        memoryToWrite.metadata as Record<string, unknown> | undefined,
+        memoryConfig,
+      );
+      // 未变化时沿用原对象（零额外分配）；变化才浅拷贝（metadata 是唯一被改的键）。
+      let memoryToPersist: typeof memoryToWrite = memoryToWrite;
+      if (reconciledMetadata !== memoryToWrite.metadata) {
+        memoryToPersist = {
+          ...memoryToWrite,
+          metadata: reconciledMetadata,
+        } as typeof memoryToWrite;
+      }
       const record = await writeMemory({
-        memory: memoryToWrite as never,
+        memory: memoryToPersist as never,
         decision,
         baseDir,
         sessionKey,

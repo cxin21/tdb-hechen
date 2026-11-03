@@ -2657,3 +2657,446 @@ export type DeleteTaskMutation = {
     Request: DeleteTaskMutationRequest;
     Errors: any;
 };
+
+// ---------------------------------------------------------------------------
+// #127 手工同步补充（2026-11-02）：wiki / code-graph 资产层类型
+//
+// 成因：Kubb 源 spec（docs/team-api-仅memory.yaml）不在仓内，无法重生成；
+//       该 spec 从未入库（上游 4 分支 + 229 提交全历史 + GitHub 全站检索 +
+//       npm tarball 均为阴性，2026-11-02 取证）。
+// 定义来源：TencentCloud/TencentDB-Agent-Memory @ ecc01a5
+//           MemoryKnowledge/openapi.yaml 的 components.schemas。
+// 未验证边界：
+//   1. 该文件属 MemoryKnowledge 服务契约，与本仓 team-api.yaml 原契约未必逐字
+//      等价。已知差异：本仓 create 响应复用 `AssetMutateData`（见 schemas.ts
+//      的 createWiki200Schema / createCodeGraph200Schema），而上游 create 返回
+//      `WikiDetail` —— 本文件按**本仓已有生成代码**为准。
+//   2. `WikiUpdateRequest` 上游无对应定义（MemoryKnowledge 无 /wiki/update），
+//      按 `WikiCreateRequest` 推导，标记为推导项。
+// ---------------------------------------------------------------------------
+
+export type WikiDetail = {
+    /**
+     * @type string
+    */
+    wiki_id: string;
+    /**
+     * @type string
+    */
+    team_id: string;
+    /**
+     * @type string
+    */
+    name: string;
+    /**
+     * @description 来源类型（如 'iwiki'）；null = 手工上传。决定详情页 UI 走「上传文件」还是「从外部拉取」。
+     * @type string | undefined
+    */
+    source_type?: string;
+    /**
+     * @description 外部来源根地址；仅 source_type 非 null 时有值。
+     * @type string | undefined
+    */
+    source_url?: string;
+    /**
+     * @description Tools self-discovery base URL (includes API prefix, e.g. http://host:8421/v3)
+     * @type string | undefined
+    */
+    service_url?: string;
+    /**
+     * @maxLength 256
+     * @type string | undefined
+    */
+    summary?: string;
+    /**
+     * @description draft = 建壳未加工（仅 create 一次性出现）；pending/processing = in-flight；ready = 可查询；failed = 可重试。
+     * @type string
+    */
+    status: "draft" | "pending" | "processing" | "ready" | "failed";
+    /**
+     * @type string | undefined
+    */
+    sync_error?: string;
+    /**
+     * @type string
+    */
+    version: string;
+    /**
+     * @type string | undefined
+    */
+    owner_user_id?: string;
+    /**
+     * @type integer | undefined
+    */
+    page_count?: number;
+    /**
+     * @type string | undefined
+    */
+    last_sync_at?: string;
+    /**
+     * @type string
+    */
+    created_at: string;
+    /**
+     * @type string
+    */
+    updated_at: string;
+};
+
+export type WikiCreateRequest = (IdFields & {
+    /**
+     * @type string
+    */
+    team_id: string;
+    /**
+     * @type string
+    */
+    name: string;
+    /**
+     * @description 来源类型（如 'iwiki'）；决定详情页 UI 走「上传文件」还是「从外部拉取」。
+     * @type string | undefined
+    */
+    source_type?: string;
+    /**
+     * @description 外部来源根地址（形如 <站点>/spaces/<spaceKey> 或 <站点>/p/<docId>）。
+     * @type string | undefined
+    */
+    source_url?: string;
+});
+
+/**
+ * @description **推导项**：上游 MemoryKnowledge 契约无 `/wiki/update` 定义，
+ * 本类型按 `WikiCreateRequest` 推导（id + 可选的变更字段）。
+ * 不确定处：是否允许改 `name` / `source_type` / `source_url` 无一手依据。
+*/
+export type WikiUpdateRequest = (IdFields & {
+    /**
+     * @type string
+    */
+    wiki_id: string;
+    /**
+     * @type string | undefined
+    */
+    name?: string;
+    /**
+     * @maxLength 256
+     * @type string | undefined
+    */
+    summary?: string;
+    /**
+     * @type string | undefined
+    */
+    source_type?: string;
+    /**
+     * @type string | undefined
+    */
+    source_url?: string;
+});
+
+export type WikiListRequest = (IdFields & {
+    /**
+     * @type string
+    */
+    team_id: string;
+    /**
+     * @type string | undefined
+    */
+    status?: "draft" | "pending" | "processing" | "ready" | "failed";
+    /**
+     * @default 20
+     * @type integer | undefined
+    */
+    limit?: number;
+    /**
+     * @default 0
+     * @type integer | undefined
+    */
+    offset?: number;
+});
+
+export type WikiListData = {
+    /**
+     * @type array
+    */
+    items: WikiDetail[];
+    /**
+     * @type integer
+    */
+    total: number;
+};
+
+export type WikiDeleteRequest = {
+    /**
+     * @type array
+    */
+    wiki_ids: string[];
+};
+
+export type CodeGraphStats = {
+    /**
+     * @type integer | undefined
+    */
+    files?: number;
+    /**
+     * @type integer | undefined
+    */
+    nodes?: number;
+    /**
+     * @type integer | undefined
+    */
+    edges?: number;
+};
+
+export type CodeGraphDetail = {
+    /**
+     * @type string
+    */
+    code_graph_id: string;
+    /**
+     * @type string
+    */
+    team_id: string;
+    /**
+     * @type string
+    */
+    repo_name: string;
+    /**
+     * @type string
+    */
+    repo_url: string;
+    /**
+     * @type string
+    */
+    branch: string;
+    /**
+     * @type string | undefined
+    */
+    commit_hash?: string;
+    /**
+     * @description Tools self-discovery base URL (includes API prefix, e.g. http://host:8421/v3)
+     * @type string | undefined
+    */
+    service_url?: string;
+    /**
+     * @maxLength 256
+     * @type string | undefined
+    */
+    summary?: string;
+    /**
+     * @type string
+    */
+    status: "pending" | "processing" | "ready" | "failed";
+    /**
+     * @type string | undefined
+    */
+    sync_error?: string;
+    /**
+     * @type string
+    */
+    version: string;
+    /**
+     * @type string | undefined
+    */
+    owner_user_id?: string;
+    /**
+     * @type object | undefined
+    */
+    stats?: CodeGraphStats;
+    /**
+     * @type string | undefined
+    */
+    last_sync_at?: string;
+    /**
+     * @type string
+    */
+    created_at: string;
+    /**
+     * @type string
+    */
+    updated_at: string;
+};
+
+export type CodeGraphCreateRequest = (IdFields & {
+    /**
+     * @type string
+    */
+    team_id: string;
+    /**
+     * @type string
+    */
+    repo_url: string;
+    /**
+     * @default main
+     * @type string | undefined
+    */
+    branch?: string;
+    /**
+     * @type string | undefined
+    */
+    repo_name?: string;
+});
+
+export type CodeGraphListRequest = (IdFields & {
+    /**
+     * @type string
+    */
+    team_id: string;
+    /**
+     * @type string | undefined
+    */
+    status?: "pending" | "processing" | "ready" | "failed";
+    /**
+     * @default 20
+     * @type integer | undefined
+    */
+    limit?: number;
+    /**
+     * @default 0
+     * @type integer | undefined
+    */
+    offset?: number;
+});
+
+export type CodeGraphListData = {
+    /**
+     * @type array
+    */
+    items: CodeGraphDetail[];
+    /**
+     * @type integer
+    */
+    total: number;
+};
+
+export type CodeGraphSyncRequest = {
+    /**
+     * @type string
+    */
+    code_graph_id: string;
+};
+
+export type CodeGraphDeleteRequest = {
+    /**
+     * @type array
+    */
+    code_graph_ids: string[];
+};
+
+// --- wiki mutation 类型（Kubb 命名：{Operation}200 / Error / MutationRequest / MutationResponse） ---
+
+export type ListWiki200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: WikiListData;
+});
+
+export type ListWikiError = ApiResponseEnvelope;
+
+export type ListWikiMutationRequest = WikiListRequest;
+
+export type ListWikiMutationResponse = ListWiki200;
+
+export type CreateWiki200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: AssetMutateData;
+});
+
+export type CreateWikiError = ApiResponseEnvelope;
+
+export type CreateWikiMutationRequest = WikiCreateRequest;
+
+export type CreateWikiMutationResponse = CreateWiki200;
+
+export type UpdateWiki200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: WikiDetail;
+});
+
+export type UpdateWikiError = ApiResponseEnvelope;
+
+export type UpdateWikiMutationRequest = WikiUpdateRequest;
+
+export type UpdateWikiMutationResponse = UpdateWiki200;
+
+export type DeleteWiki200 = ApiResponseEnvelope;
+
+export type DeleteWikiError = ApiResponseEnvelope;
+
+export type DeleteWikiMutationRequest = WikiDeleteRequest;
+
+export type DeleteWikiMutationResponse = DeleteWiki200;
+
+export type SearchWiki200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: AssetSearchData;
+});
+
+export type SearchWikiError = ApiResponseEnvelope;
+
+export type SearchWikiMutationRequest = AssetSearchRequest;
+
+export type SearchWikiMutationResponse = SearchWiki200;
+
+// --- code-graph mutation 类型（同构命名） ---
+
+export type ListCodeGraph200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: CodeGraphListData;
+});
+
+export type ListCodeGraphError = ApiResponseEnvelope;
+
+export type ListCodeGraphMutationRequest = CodeGraphListRequest;
+
+export type ListCodeGraphMutationResponse = ListCodeGraph200;
+
+export type CreateCodeGraph200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: AssetMutateData;
+});
+
+export type CreateCodeGraphError = ApiResponseEnvelope;
+
+export type CreateCodeGraphMutationRequest = CodeGraphCreateRequest;
+
+export type CreateCodeGraphMutationResponse = CreateCodeGraph200;
+
+export type SyncCodeGraph200 = ApiResponseEnvelope;
+
+export type SyncCodeGraphError = ApiResponseEnvelope;
+
+export type SyncCodeGraphMutationRequest = CodeGraphSyncRequest;
+
+export type SyncCodeGraphMutationResponse = SyncCodeGraph200;
+
+export type DeleteCodeGraph200 = ApiResponseEnvelope;
+
+export type DeleteCodeGraphError = ApiResponseEnvelope;
+
+export type DeleteCodeGraphMutationRequest = CodeGraphDeleteRequest;
+
+export type DeleteCodeGraphMutationResponse = DeleteCodeGraph200;
+
+export type SearchCodeGraph200 = (ApiResponseEnvelope & {
+    /**
+     * @type object | undefined
+    */
+    data?: AssetSearchData;
+});
+
+export type SearchCodeGraphError = ApiResponseEnvelope;
+
+export type SearchCodeGraphMutationRequest = AssetSearchRequest;
+
+export type SearchCodeGraphMutationResponse = SearchCodeGraph200;

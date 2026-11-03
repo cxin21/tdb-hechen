@@ -54,6 +54,11 @@ export interface WriteSupersessionConfig {
   cardinalityGate?: boolean;
   /** 内容级判定无线索时的缺省基数（缺省 "single" 保覆盖；"multi" = 保守不失效）。 */
   cardinalityDefault?: FactCardinality;
+  /**
+   * B2（P3）写侧双时态落位（config-first，缺省 false = 逐位现状：supersession 判定只归档，
+   * 不置 valid_end）。开启后判定为「取代」时把旧行 valid_end 置为当前 ISO 时间；
+   * 被 cardinality 门放过的多值场景不置位（两行并存）。回滚 = false。
+   */
 }
 
 /**

@@ -52,6 +52,26 @@ export interface WorthinessSettingsOverride {
 export interface ExtractionSettingsOverride {
   scenePoisonSplit?: boolean;
   sceneBatchMaxChars?: number;
+  /** A3：单条记忆目标字符上限（parse 内 clamp 120..2000，缺省 300 = 逐位现状）。 */
+  atomicMaxChars?: number;
+  /** A3：超长记忆允许 LLM 改写为「一条只记一个可验证断言」（缺省 false）。 */
+  atomicityRewrite?: boolean;
+  /** A3：命中 AI 自述形态的记忆写 metadata.actor="agent"（缺省 false）。 */
+  actorTagging?: boolean;
+  /** B4：入库前 embedding 前置门槛（cos ≥ minCos 才进 LLM 判重；缺省关）。 */
+  dedupPrefilter?: { enabled?: boolean; minCos?: number };
+  /** A2：多事实抽取块开关（关闭即 prompt 不再付 facts 的 token；缺省 false）。 */
+  facts?: { enabled?: boolean; maxFacts?: number; includeTriples?: boolean };
+}
+/**
+ * memory 段的 recall / persona / lifecycle 整段透传（2026-11-02 记忆分层优化）。
+ * 这些段的缺省/clamp 语义全部在 config.ts parseConfig 内，这里只在 parse 之前
+ * 做**深合并**——不认字段名，避免每加一个键就漏一处（漏了就落盘不生效）。
+ */
+export interface MemorySectionsSettingsOverride {
+  recall?: Record<string, unknown>;
+  persona?: Record<string, unknown>;
+  lifecycle?: Record<string, unknown>;
 }
 /**
  * layerRuler 段（#179 S5，keys：memory.recall.layerRuler.*）。
@@ -101,6 +121,9 @@ export interface SettingsOverride {
   extraction?: ExtractionSettingsOverride;
   layerRuler?: LayerRulerSettingsOverride;
   injection?: InjectionSettingsOverride;
+  recall?: Record<string, unknown>;
+  persona?: Record<string, unknown>;
+  lifecycle?: Record<string, unknown>;
 }
 
 const OVERRIDE_FILE = "config-override.json";
@@ -504,7 +527,54 @@ export function applyExtractionOverrideToRaw(
   if (!override || Object.keys(picked).length === 0) return memoryCompatRaw;
   const next: Record<string, unknown> = { ...memoryCompatRaw };
   const exRaw = { ...((next.extraction as Record<string, unknown> | undefined) ?? {}) };
-  Object.assign(exRaw, picked);
+  for (const [k, v] of Object.entries(picked)) {
+    // facts / dedupPrefilter 是子块：深合并，避免 override 只写 enabled 就把
+    // yaml 里的 maxFacts/includeTriples 整块冲掉（后者是 config.ts 的缺省来源）。
+    const cur = exRaw[k];
+    exRaw[k] = isPlainObject(v) && isPlainObject(cur) ? deepMergePlain(cur, v) : v;
+  }
   next.extraction = exRaw;
+  return next;
+}
+
+/** 纯对象（不含数组 / null）：只有这种值才深合并。 */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** 递归深合并：plain object 递归，其余（含数组）整体替换；undefined 不覆盖。不改入参。 */
+function deepMergePlain(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    const cur = out[k];
+    out[k] = isPlainObject(v) && isPlainObject(cur) ? deepMergePlain(cur, v) : v;
+  }
+  return out;
+}
+
+/**
+ * recall / persona / lifecycle 三段 override 注入 memory 段原始配置（2026-11-02）。
+ * 必须在 parseConfig 之前并入：selfNarration.enabled 的缺省 false、l2Gate 的
+ * minPendingL1/minIntervalHours clamp、l2Form.maxBlockBytes clamp、
+ * attributeGrouping.minCos clamp 全在 parseConfig 内，parse 后再合并会绕过它们。
+ * 做法是整段深合并（不枚举字段名），新增键无需再改这里；override 为空时原样返回。
+ */
+export function applyMemorySectionsOverrideToRaw(
+  memoryCompatRaw: Record<string, unknown>,
+  override: MemorySectionsSettingsOverride | null | undefined,
+): Record<string, unknown> {
+  if (!override) return memoryCompatRaw;
+  const sections = ["recall", "persona", "lifecycle"] as const;
+  const src = override as MemorySectionsSettingsOverride;
+  const patches = sections
+    .map((s) => [s, src[s]] as const)
+    .filter(([, patch]) => isPlainObject(patch) && Object.keys(patch).length > 0);
+  if (patches.length === 0) return memoryCompatRaw;
+  const next: Record<string, unknown> = { ...memoryCompatRaw };
+  for (const [name, patch] of patches) {
+    const cur = next[name];
+    next[name] = isPlainObject(cur) ? deepMergePlain(cur, patch as Record<string, unknown>) : patch;
+  }
   return next;
 }

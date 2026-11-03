@@ -114,6 +114,11 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
         logger: deps.logger,
         store: deps.store,
         embeddingService: deps.embeddingService,
+        // B1 修正（2026-11-02）：池内补齐前先复用 l1_vec 已入库向量——store 支持才传；
+        // 不实现的后端退化为"有上限补齐"（绝不逐条重嵌全表）。
+        loadVectors: deps.store?.getL1VectorsByIds
+          ? (ids: string[]) => Promise.resolve(deps.store.getL1VectorsByIds!(ids))
+          : undefined,
         // P2-T14（H-B2）：写路径带同一 filter——源记忆租户缺失时，持续态归属兜底为 filter 值
         filter: deps.config.filter,
       });

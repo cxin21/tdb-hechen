@@ -56,6 +56,76 @@ function warnLegacyCountFallbackOnce(logger: Logger | undefined): void {
  */
 export const MIN_SIMILAR_STRENGTH = 0.3;
 
+// ── B4（2026-11-02）：dedup 前置 embedding 门槛（config-first，缺省关闭 = 逐位现状）──
+/**
+ * F4（2026-11-02）实测校准：缺省 0.82（原值 0.9 与本域分布不符）。
+ *
+ * 只读复测（生产 vectors.db 3913 条 / 2048 维，topScore = 排除本批后 top-1 真实 cosine）：
+ * - 应合并对 10 组：min 0.8587 / max 0.9918 —— 0.9 会把最弱真重复（0.8587）误拦，
+ *   结果是把重复记忆重新入库（前置门槛的**唯一真实代价**）；
+ * - 无关对 10 组：max 0.3630；
+ * - 域内同模板换实体的硬负例 9 组：0.5670 ~ 0.8568。
+ * 故 0.82 落在 0.363 ~ 0.8587 的干净空窗内（下沿余量 0.039、上沿余量 0.457），
+ * 与 lifecycle.consolidation.attributeGrouping.minCos 缺省同值。
+ *
+ * 口径说明：前置门槛的"错拦"只影响本次是否问 LLM —— 判 store 是**非重复的正确结果**，
+ * 所以宁可放行也不可拦掉真重复；0.86 以上开始丢真重复，故不取。
+ */
+export const DEFAULT_PREFILTER_MIN_COS = 0.82;
+
+/** 非法 minCos（NaN/缺失/超界）→ 缺省 DEFAULT_PREFILTER_MIN_COS；其余 clamp 0..1（cos 取值域）。 */
+export function resolvePrefilterMinCos(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_PREFILTER_MIN_COS;
+  return Math.min(Math.max(value, 0), 1);
+}
+
+/** batchDedup 的可读计数（调用方传入对象，原地写；返回值签名保持 DedupDecision[] 不变）。 */
+export interface DedupStats {
+  /** 本批实际发起的判重 LLM 调用次数（门槛拦空 → 0）。 */
+  llmCalls: number;
+  /** 被前置门槛拦下、未进 LLM 的记忆条数。 */
+  prefiltered: number;
+}
+
+/** dedup 前置门槛开关（来自 extraction.dedupPrefilter）。 */
+export interface DedupPrefilterOptions {
+  enabled?: boolean;
+  minCos?: number;
+}
+
+/**
+ * 纯函数：按 topScore（真实 cosine）把候选匹配分成"进 LLM"与"直接判不重复"两组。
+ *
+ * fail-open 纪律（宁可多花一次 LLM，也不得漏判重复）：
+ * - 关闭 → 原样全 kept；
+ * - 候选为空 → skipped（无对可比）；
+ * - topScore 缺失/NaN（FTS 召回或旧后端不给分）→ kept；
+ * - cos < minCos → skipped；cos === minCos → kept（边界含等号）。
+ */
+export function prefilterCandidateMatches(
+  matches: CandidateMatch[],
+  options?: DedupPrefilterOptions,
+): { kept: CandidateMatch[]; skipped: CandidateMatch[] } {
+  if (options?.enabled !== true) return { kept: matches, skipped: [] };
+  const minCos = resolvePrefilterMinCos(options.minCos);
+  const kept: CandidateMatch[] = [];
+  const skipped: CandidateMatch[] = [];
+  for (const match of matches) {
+    if (match.candidates.length === 0) {
+      skipped.push(match);
+      continue;
+    }
+    const score = match.topScore;
+    if (typeof score !== "number" || !Number.isFinite(score)) {
+      kept.push(match);
+      continue;
+    }
+    if (score >= minCos) kept.push(match);
+    else skipped.push(match);
+  }
+  return { kept, skipped };
+}
+
 // ============================
 // Core function (batch mode)
 // ============================
@@ -110,10 +180,20 @@ export async function batchDedup(params: {
   traceContext?: TraceContext;
   /** S1：similar 边最低相似度门槛（memory.links.minSimilarity），缺省 = MIN_SIMILAR_STRENGTH。 */
   minSimilarity?: number;
+  /** B4（2026-11-02）：前置 embedding 门槛（extraction.dedupPrefilter），缺省关闭 = 逐位现状。 */
+  dedupPrefilter?: DedupPrefilterOptions;
+  /** B4：可读计数（原地写；不传 = 不统计）。 */
+  stats?: DedupStats;
 }): Promise<DedupDecision[]> {
   const { memories, logger, model, promptMode = "chat", vectorStore, embeddingService, llmRunner, filter, traceContext } = params;
   const topK = params.conflictRecallTopK ?? 5;
   const minSimilarity = params.minSimilarity ?? MIN_SIMILAR_STRENGTH;
+  // B4：门槛开关（关闭 = 今天的路径，一次都不多走）
+  const prefilterEnabled = params.dedupPrefilter?.enabled === true;
+  if (params.stats) {
+    params.stats.llmCalls = 0;
+    params.stats.prefiltered = 0;
+  }
 
   if (memories.length === 0) {
     return [];
@@ -173,7 +253,24 @@ export async function batchDedup(params: {
   if (hasVectorData && embeddingService) {
     // === Tier 1: Vector recall mode ===
     logger?.debug?.(`${TAG} Using vector recall mode (topK=${topK})`);
-    matches = await findCandidatesByVector(memories, vectorStore!, embeddingService, topK, logger, params.embeddingTimeoutMs, filter);
+    if (prefilterEnabled) {
+      // B4：门槛开时，向量侧失败不得让整批去重塌成"抛错→上层全 store"，
+      // 先降级到 FTS（仍进 LLM，不漏判）；无 FTS 才全 store（=关闭时的降级结果）。
+      try {
+        matches = await findCandidatesByVector(memories, vectorStore!, embeddingService, topK, logger, params.embeddingTimeoutMs, filter);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!hasFts) {
+          logger?.warn?.(`${TAG} dedup prefilter: vector recall failed (${msg}) and no FTS — storing all`);
+          return storeAll();
+        }
+        logger?.warn?.(`${TAG} dedup prefilter: vector recall failed (${msg}), falling back to FTS recall`);
+        matches = await findCandidatesByFts(memories, vectorStore!, logger, filter);
+      }
+    } else {
+      // 缺省关闭：保持原语义（异常向上抛，由 l1-extractor 兜 storeAllDirectly）
+      matches = await findCandidatesByVector(memories, vectorStore!, embeddingService, topK, logger, params.embeddingTimeoutMs, filter);
+    }
   } else if (hasFts) {
     // === Tier 2: FTS keyword recall ===
     logger?.debug?.(`${TAG} Using FTS keyword recall mode (no embedding service or no vector data)`);
@@ -199,8 +296,48 @@ export async function batchDedup(params: {
   // prompt 候选与解析过滤用同一份（防幻觉 id，P-D）。读取失败 → 空清单（LLM 回 []，
   // 宁缺毋滥降级，绝不阻塞写入）。
   const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
-  const decisions = await runLlmJudgment(matches, memories, logger, model, promptMode, llmRunner, traceContext, valueCandidates, params.reasoningEffort, params.dedupTimeoutMs);
-  return attachTopCandidates(decisions, matches, minSimilarity);
+
+  // B4：前置门槛——cos < minCos 的候选对不必问 LLM（判"不重复"）。
+  // 关闭时 kept === matches、skipped 空 → 与今天逐位一致。
+  const { kept, skipped } = prefilterCandidateMatches(matches, params.dedupPrefilter);
+  if (params.stats) params.stats.prefiltered = skipped.length;
+  if (prefilterEnabled) {
+    logger?.debug?.(
+      `${TAG} dedup prefilter (minCos=${resolvePrefilterMinCos(params.dedupPrefilter?.minCos)}): ` +
+        `kept=${kept.length} prefiltered=${skipped.length} llmCalls=${kept.length > 0 ? 1 : 0}`,
+    );
+    if (kept.length === 0) {
+      return attachTopCandidates(storeAll(), matches, minSimilarity);
+    }
+  }
+
+  const decisions = await runLlmJudgment(
+    kept,
+    kept.map((m) => m.newMemory),
+    logger,
+    model,
+    promptMode,
+    llmRunner,
+    traceContext,
+    valueCandidates,
+    params.reasoningEffort,
+    params.dedupTimeoutMs,
+    params.stats,
+  );
+  if (!prefilterEnabled) return attachTopCandidates(decisions, matches, minSimilarity);
+
+  // 门槛开：被拦下的记忆补 store 决策，并按**原 memories 顺序**合批（下游按数组顺序消费）。
+  const byId = new Map(decisions.map((d) => [d.record_id, d] as const));
+  const merged: DedupDecision[] = memories.map(
+    (m) =>
+      byId.get(m.record_id) ?? {
+        record_id: m.record_id,
+        action: "store" as const,
+        target_ids: [],
+      },
+  );
+  // 建边语义与今天一致：用全量 matches（含被拦下的行）补 top_candidate。
+  return attachTopCandidates(merged, matches, minSimilarity);
 }
 
 /**
@@ -253,6 +390,8 @@ async function runLlmJudgment(
   reasoningEffort?: string,
   /** #79 dedup 判重超时（config-first）：undefined = 缺省 300_000（逐位现状）。 */
   dedupTimeoutMs?: number,
+  /** B4：可读计数（原地写；llmCalls 只在实际发起 LLM 调用前 +1）。 */
+  stats?: DedupStats,
 ): Promise<DedupDecision[]> {
   logger?.debug?.(`${TAG} Running batch conflict detection for ${memories.length} memories (promptMode=${promptMode})`);
 
@@ -271,6 +410,7 @@ async function runLlmJudgment(
     const traceParams = buildTraceParams("memory.l1-dedup", traceContext);
 
     if (llmRunner) {
+      if (stats) stats.llmCalls += 1;
       // Use the host-neutral LLMRunner interface
       // R2 P0-3（关思考）：端点 mimo-v2.6-flash 默认开思考，思考烧时延+输出预算——
       // 生产 10/138 整批超时降级全属思考所致（2026-10-06 取证），R1 v21 十组 A/B

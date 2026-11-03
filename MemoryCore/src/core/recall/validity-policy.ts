@@ -159,6 +159,39 @@ export function shouldHardDropValidity<T>(
   return state === "expired" && mode === "hard";
 }
 
+export interface ValidityFilterStats {
+  active: number;
+  expired: number;
+  future: number;
+  /** 该通道（mode）下会被硬丢弃的行数——逐行等价于 shouldHardDropValidity。 */
+  dropped: number;
+}
+
+/**
+ * B2 读侧可观测性：把一批行的效期状态分布与"该通道要丢多少"一次算清。
+ *
+ * 为什么需要：读侧此前只有"丢不丢"的谓词，journal 里没有任何"丢了几行"的可算数值，
+ * 排查"某条记忆为什么召回不到"只能靠猜。本函数是这些计数的**唯一**来源：
+ * active/expired/future 来自 validityStateOf，dropped 来自 shouldHardDropValidity
+ * （off → 0、soft → 只数 future、hard → future + expired），不引入任何新语义。
+ *
+ * 纯函数、零依赖：不读写存储、不依赖时钟（now 由调用方给，便于离线复放）。
+ */
+export function validityFilterStats<T>(
+  rows: readonly T[],
+  now: Date | number,
+  mode: ValidityMode | ValidityPolicy,
+  accessors?: ValidityAccessors<T>,
+): ValidityFilterStats {
+  const at = typeof now === "number" ? new Date(now) : now;
+  const stats: ValidityFilterStats = { active: 0, expired: 0, future: 0, dropped: 0 };
+  for (const row of rows) {
+    stats[validityStateOf(row, at, accessors)] += 1;
+    if (shouldHardDropValidity(row, at, mode, accessors)) stats.dropped += 1;
+  }
+  return stats;
+}
+
 export interface SoftValidityDemotion<T> {
   /** 交给下游排序/截断的行：active 在前，降权后的 expired 在后（各保输入相对序）。 */
   kept: T[];

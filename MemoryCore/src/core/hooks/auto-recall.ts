@@ -21,7 +21,14 @@ import { computeMoodTierFromStore } from "./mood-line.js";
 import { dynamicTopKCount } from "./recall-dynamic-topk.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
 import type { MemoryRecord } from "../record/l1-reader.js";
-import type { IMemoryStore, L1RecordRow, L1SearchResult, L1FtsResult, CoreTenant, IsolationFilter } from "../store/types.js";
+import type {
+  IMemoryStore,
+  L1RecordRow,
+  L1SearchResult,
+  L1FtsResult,
+  CoreTenant,
+  IsolationFilter,
+} from "../store/types.js";
 import { normalizeCoreTenant } from "../store/types.js";
 import { buildFtsQuery } from "../store/sqlite.js";
 import type { EmbeddingService, EmbeddingCallOptions } from "../store/embedding.js";
@@ -69,6 +76,7 @@ import {
   selectByValidity,
   shouldHardDropValidity,
   validityEnabled,
+  validityFilterStats,
   validityPolicyOf,
   validityStateOf,
   type ExcludeInvalidated,
@@ -82,6 +90,7 @@ import {
 } from "../recall/query-intent.js";
 import { arbitrateConclusions, computeSlotBudget } from "../recall/layered-budget.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
+import { filterSelfNarrationLines, loadActorByIds } from "../recall/self-narration-filter.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import {
   DEFAULT_RERANK_FILTER_RULER,
@@ -132,11 +141,7 @@ import { runInjectionSelection } from "../recall/selection/injection-wiring.js";
 import type { InjectionStageOutcome } from "../recall/selection/injection-stage.js";
 import { createScopedStorageAdapter, type StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
-import {
-  DEFAULT_PROFILE_SCOPE,
-  buildProfileIsolationScope,
-  type ProfileIsolation,
-} from "../profile/profile-sync.js";
+import { DEFAULT_PROFILE_SCOPE, buildProfileIsolationScope, type ProfileIsolation } from "../profile/profile-sync.js";
 import type { Logger } from "../types.js";
 import type { SoulRenderOptions } from "./soul-assembler.js";
 import type { SoulState } from "./soul-state.js";
@@ -170,7 +175,9 @@ const RELATED_STOPWORDS = new Set([
 function contentTokenOverlap(a?: string, b?: string): boolean {
   if (!a || !b) return false;
   const tokensOf = (s: string): Set<string> =>
-    new Set((s.toLowerCase().match(/[a-z0-9]{4,}|[\u4e00-\u9fff]{3,}/g) ?? []).filter((t) => !RELATED_STOPWORDS.has(t)));
+    new Set(
+      (s.toLowerCase().match(/[a-z0-9]{4,}|[\u4e00-\u9fff]{3,}/g) ?? []).filter((t) => !RELATED_STOPWORDS.has(t)),
+    );
   const left = tokensOf(a);
   for (const t of tokensOf(b)) if (left.has(t)) return true;
   return false;
@@ -298,10 +305,11 @@ export function foldNearDuplicates(lines: string[], thresholdOrOptions: number |
           break;
         }
       } else if (
-        g.size > 0 && k.grams.size > 0
-        && inter / Math.min(g.size, k.grams.size) >= containment
+        g.size > 0 &&
+        k.grams.size > 0 &&
+        inter / Math.min(g.size, k.grams.size) >= containment &&
         // ③-a 同序覆盖：小者的 bigram 需在长者里按序命中 ≥0.9（近似子串），拒绝「同领域话题散落」。
-        && orderedCoverageRatio(seq.length <= k.seq.length ? seq : k.seq, seq.length <= k.seq.length ? k.seq : seq) >= 0.9
+        orderedCoverageRatio(seq.length <= k.seq.length ? seq : k.seq, seq.length <= k.seq.length ? k.seq : seq) >= 0.9
       ) {
         // ③ #162 新口径：containment——「一条已被另一条覆盖」才算重复；主题相近但不互相覆盖的保留。
         dup = true;
@@ -518,9 +526,7 @@ export async function performAutoRecall(params: {
     // "recall timed out" (result.error.code === 20001) in the response envelope.
     new Promise<RecallResult>((resolve) => {
       timer = setTimeout(() => {
-        logger?.warn?.(
-          `${TAG} ⚠️ Recall timed out after ${timeoutMs}ms — surfacing as RecallResult.error`,
-        );
+        logger?.warn?.(`${TAG} ⚠️ Recall timed out after ${timeoutMs}ms — surfacing as RecallResult.error`);
         resolve({
           prependContext: "",
           appendSystemContext: "",
@@ -765,7 +771,13 @@ export function appendRerankScoreDump(dumpPath: string | undefined, rec: RerankS
  *    gate（kept/dropped/topScore）保留作 journal 观测。 */
 async function applyRecallRerank(
   query: string,
-  searchResult: { lines: string[]; scores?: number[]; metas?: ({ recordId?: string; evidenceIds?: string[]; sessionId?: string } | undefined)[]; lineSessions?: (string | undefined)[]; gates?: RecallJournalGates },
+  searchResult: {
+    lines: string[];
+    scores?: number[];
+    metas?: ({ recordId?: string; evidenceIds?: string[]; sessionId?: string } | undefined)[];
+    lineSessions?: (string | undefined)[];
+    gates?: RecallJournalGates;
+  },
   wiring: RerankWiring,
   cap: number,
   logger?: Logger,
@@ -800,7 +812,9 @@ async function applyRecallRerank(
   try {
     ranked = await reranker.rerank(query, docs);
   } catch (err) {
-    logger?.warn?.(`${TAG} [rerank] provider=${wiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），降级原序`);
+    logger?.warn?.(
+      `${TAG} [rerank] provider=${wiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），降级原序`,
+    );
     ranked = null;
   }
   const ms = performance.now() - t0;
@@ -861,7 +875,9 @@ async function applyRecallRerank(
     // （与 null/throw/熔断同族「原序注入」语义），journal degraded 归因；预算帽照常生效。
     degraded = "all-below-minScore";
     finalIdxs = lines.map((_, i) => i);
-    logger?.debug?.(`${TAG} [rerank] 全员低于阈值（topScore=${clean[0].score} < minScore=${wiring.minScore}）→ 降级原序注入`);
+    logger?.debug?.(
+      `${TAG} [rerank] 全员低于阈值（topScore=${clean[0].score} < minScore=${wiring.minScore}）→ 降级原序注入`,
+    );
   } else if (wiring.mode === "filter") {
     // #135 R4：floor 档——provider 打分只作绝对门槛，不清排、不改序（保原序注入）。
     finalIdxs = keepByFilter(new Set(rankedPass.map((r) => r.index)));
@@ -1061,10 +1077,7 @@ export async function performLayeredRecall(params: {
   // #174：从单一派生三态取（off/hard/soft），不再只看 validity.mode——否则
   // `excludeInvalidated: false` 在 validity.mode=hard 下仍会被本处判成 "hard"，
   // 结论层 FTS 预筛/放宽通道继续丢 expired，「关档」只关一半。
-  const validityPolicy: ValidityPolicy = validityPolicyOf(
-    cfg.recall?.validity?.mode,
-    cfg.recall?.excludeInvalidated,
-  );
+  const validityPolicy: ValidityPolicy = validityPolicyOf(cfg.recall?.validity?.mode, cfg.recall?.excludeInvalidated);
   // #174 附：结论层预筛与其余分支同源时间（时间旅行/bench --now 必须一致，
   // 旧代码用 new Date() → 结论层看不见 params.validityNow）。
   const validityPrescreenNow = params.validityNow ?? new Date();
@@ -1161,7 +1174,9 @@ export async function performLayeredRecall(params: {
     let r71Bm25Gate: RecallJournalGates["conclusionBm25"] | undefined;
     let r71ConclusionRerankGate: RecallJournalGates["conclusionRerank"] | undefined;
     if (r7ConclusionRoutingOff) {
-      logger?.debug?.(`${TAG} [layered] #138 routing: assistantRecall query -> skip conclusion layer (full experience budget)`);
+      logger?.debug?.(
+        `${TAG} [layered] #138 routing: assistantRecall query -> skip conclusion layer (full experience budget)`,
+      );
     }
     if (r7ConclusionLayerEnabled && !r7ConclusionRoutingOff) {
       const r7FtsTokens = parseFtsTokens(buildFtsQuery(r7CleanQuery));
@@ -1171,10 +1186,23 @@ export async function performLayeredRecall(params: {
           if (wfQuery) {
             // DS-RECALL-MERGE-001：isolationFilter 透传（undefined = 钩子路旧行为逐位；
             // 端点路 = 三元组收窄，store 层 P2-T14 家族既有能力，不改打分语义）
-            const wfRows = await vectorStore.searchL1Fts(wfQuery, r7HalfLimit * 2, params.isolationFilter);
+            const wfRows = await vectorStore.searchL1Fts(wfQuery, r7HalfLimit * 2, params.isolationFilter, {
+              // 2026-11-03：结论层只消费 work_fact（下方 if 分支唯一入口），却与全库 episodic
+              // 在同一 bm25 池子里竞争 top-N → 长文 consolidated 卡被词频占优的短行挤出榜外
+              // （生产实测：目标卡 4021 行里 #37/50，type 收窄后 #5/9）。先过滤再 LIMIT 严格
+              // 不丢候选：被过滤掉的行本就不会进 r7Candidates。
+              type: "work_fact",
+            });
             for (const r of wfRows ?? []) {
               // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（流程测试实测泄漏点）
-              if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, validityPrescreenNow, validityPolicy)) continue;
+              if (
+                shouldHardDropValidity(
+                  r as { valid_start?: string; valid_end?: string },
+                  validityPrescreenNow,
+                  validityPolicy,
+                )
+              )
+                continue;
               if (r.type === "work_fact") {
                 // R71-A1（2026-10-19）：FTS5 raw rank（负=更相关）透传为 raw rel（=-rank）——
                 // bm25 预地板数据源；后端未提供（undefined）→ 地板豁免（宁缺毋滥不误杀）。
@@ -1192,7 +1220,9 @@ export async function performLayeredRecall(params: {
           }
         }
       } catch (err) {
-        logger?.debug?.(`${TAG} [layered] work_fact conclusion candidates unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        logger?.debug?.(
+          `${TAG} [layered] work_fact conclusion candidates unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
       // T-D（第一性原理）：scene_block 注入门——对抗内容三级传播链的最后无门通道
       // （L1 → consolidation 蒸馏[已门] → scene_block 文件 → 注入块）。scene_index.json
@@ -1256,7 +1286,9 @@ export async function performLayeredRecall(params: {
           mode: r71FloorMode,
           ...(r71FloorMode === "relative" ? { alpha: r71MinBm25RelRatio, topRel: r71TopRel } : {}),
         };
-        logger?.debug?.(`${TAG} [layered] R71-A1 bm25 floor(${r71FloorMode}): dropped=${r71Bm25Gate.dropped} kept=${r71Bm25Gate.kept} (minRel=${r71FloorThreshold}${r71TopRel !== undefined ? `, topRel=${r71TopRel}` : ""})`);
+        logger?.debug?.(
+          `${TAG} [layered] R71-A1 bm25 floor(${r71FloorMode}): dropped=${r71Bm25Gate.dropped} kept=${r71Bm25Gate.kept} (minRel=${r71FloorThreshold}${r71TopRel !== undefined ? `, topRel=${r71TopRel}` : ""})`,
+        );
       }
       // v18-c：minUniqRatio 透传（conclusionLayer.minUniqRatio；undefined/0 = 关逐位现状）
       // #99 F1（2026-10-25）：textHitMaxTokenRatio 万词面剔除门退役——候选经 FTS 预筛天然
@@ -1299,17 +1331,33 @@ export async function performLayeredRecall(params: {
           for (const r of relaxedRows) {
             if (relaxed.length >= 5) break;
             // GROW-EVO P2（§2.3）+ Task 8（bi-temporal 补口）：失效/未来生效记忆不进结论层候选（V2-3 放宽通道同款过滤）
-            if (shouldHardDropValidity(r as { valid_start?: string; valid_end?: string }, validityPrescreenNow, validityPolicy)) continue;
+            if (
+              shouldHardDropValidity(
+                r as { valid_start?: string; valid_end?: string },
+                validityPrescreenNow,
+                validityPolicy,
+              )
+            )
+              continue;
             if (!r || typeof r.record_id !== "string" || !r.content?.trim()) continue;
             if (selectedIds.has(r.record_id)) continue;
-            relaxed.push({ sceneName: r.scene_name ?? "", content: r.content, source: "work_fact", recordId: r.record_id });
+            relaxed.push({
+              sceneName: r.scene_name ?? "",
+              content: r.content,
+              source: "work_fact",
+              recordId: r.record_id,
+            });
           }
           if (relaxed.length > 0) {
             r7Conclusions = [...r7Conclusions, ...relaxed];
-            logger?.debug?.(`${TAG} [layered] V2-3 analytical relaxation: +${relaxed.length} significance-top durative conclusions`);
+            logger?.debug?.(
+              `${TAG} [layered] V2-3 analytical relaxation: +${relaxed.length} significance-top durative conclusions`,
+            );
           }
         } catch (err) {
-          logger?.debug?.(`${TAG} [layered] analytical conclusion relaxation unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          logger?.debug?.(
+            `${TAG} [layered] analytical conclusion relaxation unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
       // ── 审查修补 Critical（R7 spec §1 预算模型）：结论侧硬上限 = floor(maxResults/2) ──
@@ -1330,7 +1378,9 @@ export async function performLayeredRecall(params: {
         : r7ConclusionCapCfg;
       r7Conclusions = r7Conclusions.slice(0, Math.max(0, r7ConclusionCap));
       if (r7Intent) {
-        logger?.debug?.(`${TAG} [layered] #141 intent=${r7Intent} cap=${r7ConclusionCap} order=${r7Policy?.order ?? "-"} pairing=${r7Policy?.pairing ?? false} arbitrate=${r7Policy?.arbitrate ?? false}`);
+        logger?.debug?.(
+          `${TAG} [layered] #141 intent=${r7Intent} cap=${r7ConclusionCap} order=${r7Policy?.order ?? "-"} pairing=${r7Policy?.pairing ?? false} arbitrate=${r7Policy?.arbitrate ?? false}`,
+        );
       }
     }
     tPerfL2Ms61 = Math.round(performance.now() - tPerfL2Start61);
@@ -1370,9 +1420,20 @@ export async function performLayeredRecall(params: {
       if (r71GateMode !== "off" && r7Conclusions.length > 0) {
         const r71GateWiring = resolveRerankWiring(cfg, params.rerankDeps, logger);
         if (r71GateWiring.state !== "active" || !r71GateWiring.breaker || r71GateWiring.breaker.isOpen()) {
-          const r71Bypass = r71GateWiring.state === "off" ? "rerank-off"
-            : r71GateWiring.state === "unavailable" ? "rerank-unavailable" : "breaker-open";
-          r71ConclusionRerankGate = { mode: r71GateMode, provider: r71GateWiring.provider, ms: 0, kept: r7Conclusions.length, dropped: 0, bypass: r71Bypass };
+          const r71Bypass =
+            r71GateWiring.state === "off"
+              ? "rerank-off"
+              : r71GateWiring.state === "unavailable"
+                ? "rerank-unavailable"
+                : "breaker-open";
+          r71ConclusionRerankGate = {
+            mode: r71GateMode,
+            provider: r71GateWiring.provider,
+            ms: 0,
+            kept: r7Conclusions.length,
+            dropped: 0,
+            bypass: r71Bypass,
+          };
         } else {
           const r71GateReranker = r71GateWiring.reranker!;
           const r71GateBreaker = r71GateWiring.breaker;
@@ -1382,13 +1443,22 @@ export async function performLayeredRecall(params: {
           try {
             r71GateRanked = await r71GateReranker.rerank(r7CleanQuery, r71GateDocs);
           } catch (err) {
-            logger?.warn?.(`${TAG} [rerank-gate] provider=${r71GateWiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），结论门降级旁路`);
+            logger?.warn?.(
+              `${TAG} [rerank-gate] provider=${r71GateWiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），结论门降级旁路`,
+            );
             r71GateRanked = null;
           }
           const r71GateMs = performance.now() - r71GateT0;
           if (r71GateRanked === null) {
             r71GateBreaker.recordFailure();
-            r71ConclusionRerankGate = { mode: r71GateMode, provider: r71GateWiring.provider, ms: r71GateMs, kept: r7Conclusions.length, dropped: 0, bypass: "rerank-failed" };
+            r71ConclusionRerankGate = {
+              mode: r71GateMode,
+              provider: r71GateWiring.provider,
+              ms: r71GateMs,
+              kept: r7Conclusions.length,
+              dropped: 0,
+              bypass: "rerank-failed",
+            };
           } else {
             r71GateBreaker.recordSuccess();
             // 防御性整形（与 applyRecallRerank 同款）：index 去重首见 + 非有限/越界剔除
@@ -1410,7 +1480,10 @@ export async function performLayeredRecall(params: {
               const raw = r71GateScoreOf.get(i);
               return raw === undefined ? Infinity : r71GateLogitScale ? sigmoid01(raw) : raw;
             };
-            const r71WouldDrop = r7Conclusions.reduce((acc, _c, i) => acc + (r71GateScore01Of(i) < r71GateThreshold01 ? 1 : 0), 0);
+            const r71WouldDrop = r7Conclusions.reduce(
+              (acc, _c, i) => acc + (r71GateScore01Of(i) < r71GateThreshold01 ? 1 : 0),
+              0,
+            );
             const r71GateScaleFields = r71GateLogitScale
               ? {
                   scoreScale: "logit-sigmoid" as const,
@@ -1442,13 +1515,19 @@ export async function performLayeredRecall(params: {
                   ...r71GateScaleFields,
                   degraded: "all-below-minScore",
                 };
-                logger?.debug?.(`${TAG} [rerank-gate] enforce all-below → 降级旁路保留 ${r7Conclusions.length} 条结论 (minScore=${r71GateMin})`);
+                logger?.debug?.(
+                  `${TAG} [rerank-gate] enforce all-below → 降级旁路保留 ${r7Conclusions.length} 条结论 (minScore=${r71GateMin})`,
+                );
               } else {
                 r7Conclusions = r71Kept;
-                logger?.debug?.(`${TAG} [rerank-gate] enforce: dropped=${r71WouldDrop} kept=${r7Conclusions.length} (minScore=${r71GateMin})`);
+                logger?.debug?.(
+                  `${TAG} [rerank-gate] enforce: dropped=${r71WouldDrop} kept=${r7Conclusions.length} (minScore=${r71GateMin})`,
+                );
               }
             } else if (r71GateMode === "shadow" && r71WouldDrop > 0) {
-              logger?.debug?.(`${TAG} [rerank-gate] shadow: would-drop=${r71WouldDrop}/${r7Conclusions.length} (minScore=${r71GateMin})`);
+              logger?.debug?.(
+                `${TAG} [rerank-gate] shadow: would-drop=${r71WouldDrop}/${r7Conclusions.length} (minScore=${r71GateMin})`,
+              );
             }
           }
         }
@@ -1507,11 +1586,22 @@ export async function performLayeredRecall(params: {
           let s2bWithLinks = 0;
           let s2bFromMetadata = 0;
           let s2bWithoutEvidence = 0;
-          const s2bCandidates: Array<{ ci: number; ord: number; row: L1SearchResult; score: number; sceneName: string }> = [];
+          const s2bCandidates: Array<{
+            ci: number;
+            ord: number;
+            row: L1SearchResult;
+            score: number;
+            sceneName: string;
+          }> = [];
           for (let ci = 0; ci < r7Conclusions.length; ci++) {
             const s2bConcl = r7Conclusions[ci];
             if (s2bConcl.source !== "work_fact" || !s2bConcl.recordId) continue;
-            const s2bLinks = ((await vectorStore.getLinksBySource(s2bConcl.recordId, "part_of")) ?? []) as Array<{ targetId: string; type: string; strength: number; createdAt: string }>;
+            const s2bLinks = ((await vectorStore.getLinksBySource(s2bConcl.recordId, "part_of")) ?? []) as Array<{
+              targetId: string;
+              type: string;
+              strength: number;
+              createdAt: string;
+            }>;
             let s2bEvIds = s2bLinks
               .map((l) => l?.targetId)
               .filter((id): id is string => typeof id === "string" && !s2bSeen.has(id));
@@ -1551,16 +1641,17 @@ export async function performLayeredRecall(params: {
           }
           // ② 排名：相关性降序 → 卡片序 → 边序（全确定性，无外呼）。
           if (s2bRanked) {
-            s2bCandidates.sort((a, b) => (b.score - a.score) || (a.ci - b.ci) || (a.ord - b.ord));
+            s2bCandidates.sort((a, b) => b.score - a.score || a.ci - b.ci || a.ord - b.ord);
           }
           const s2bEmitted = new Set<string>();
           const s2bEmit = (cand: (typeof s2bCandidates)[number]): boolean => {
             if (s2bEmitted.has(cand.row.record_id)) return false;
-            const s2bContent = typeof cand.row.content === "string" && cand.row.content.trim()
-              ? (r7TruncateMode === "sentences"
-                ? truncateConclusionContentSentences(cand.row.content, r7ConclusionMaxChars)
-                : truncateConclusionContent(cand.row.content, r7ConclusionMaxChars))
-              : "";
+            const s2bContent =
+              typeof cand.row.content === "string" && cand.row.content.trim()
+                ? r7TruncateMode === "sentences"
+                  ? truncateConclusionContentSentences(cand.row.content, r7ConclusionMaxChars)
+                  : truncateConclusionContent(cand.row.content, r7ConclusionMaxChars)
+                : "";
             if (!s2bContent) return false;
             s2bEmitted.add(cand.row.record_id);
             const s2bLine = `- [上下文${cand.sceneName ? `|${cand.sceneName}` : ""}] ${s2bContent}`;
@@ -1602,11 +1693,15 @@ export async function performLayeredRecall(params: {
             cardsWithoutEvidence: s2bWithoutEvidence,
           };
           if (smallToBigLines.length > 0) {
-            logger?.debug?.(`${TAG} [small-to-big] context lines: +${smallToBigLines.length} (cap=${s2bMaxExtra}, candidates=${s2bCandidates.length}, ranked=${s2bRanked})`);
+            logger?.debug?.(
+              `${TAG} [small-to-big] context lines: +${smallToBigLines.length} (cap=${s2bMaxExtra}, candidates=${s2bCandidates.length}, ranked=${s2bRanked})`,
+            );
           }
         }
       } catch (err) {
-        logger?.warn?.(`${TAG} [small-to-big] context backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        logger?.warn?.(
+          `${TAG} [small-to-big] context backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     // ── #141（2026-10-28）：成对约束执行 ──
@@ -1628,7 +1723,9 @@ export async function performLayeredRecall(params: {
     if (r7PairingRequire && r7Conclusions.length > 0) {
       if (!r7PairingAvailable) {
         r7PairingDegraded = "pairing-unavailable";
-        logger?.warn?.(`${TAG} [small-to-big] #141 pairing skipped: backfill unavailable (store/maxExtraLines=0/soft-fail); keeping ${r7Conclusions.length} conclusion(s)`);
+        logger?.warn?.(
+          `${TAG} [small-to-big] #141 pairing skipped: backfill unavailable (store/maxExtraLines=0/soft-fail); keeping ${r7Conclusions.length} conclusion(s)`,
+        );
       } else {
         const s2bKeep: number[] = [];
         for (let i = 0; i < r7Conclusions.length; i++) {
@@ -1645,7 +1742,9 @@ export async function performLayeredRecall(params: {
           r7Conclusions = s2bKeep.map((i) => r7Conclusions[i]);
           smallToBigLines = s2bKeep.flatMap((i) => s2bCardLines.get(i) ?? []);
           if (s2bGate) s2bGate = { ...s2bGate, kept: smallToBigLines.length };
-          logger?.debug?.(`${TAG} [small-to-big] #141 pairing: dropped ${r7UnpairedDropped} unpaired conclusion(s) (kept=${r7Conclusions.length}, context=${smallToBigLines.length})`);
+          logger?.debug?.(
+            `${TAG} [small-to-big] #141 pairing: dropped ${r7UnpairedDropped} unpaired conclusion(s) (kept=${r7Conclusions.length}, context=${smallToBigLines.length})`,
+          );
         }
       }
     }
@@ -1653,7 +1752,7 @@ export async function performLayeredRecall(params: {
     // 审查修补 I③（TTL 解耦）：conclusionLayer.cacheTtlMs 独立键——缺省（未配置）回落
     // sessionReuseTtlMs 保持现行为；显式 0 = 关（每次重组，不缓存）。负值/非有限由 config
     // 解析层 clamp 0（同 maxCharsPerMemory 模式）。
-    const r7ConclusionTtlMs = cfg.recall?.conclusionLayer?.cacheTtlMs ?? (cfg.recall?.sessionReuseTtlMs ?? 300_000);
+    const r7ConclusionTtlMs = cfg.recall?.conclusionLayer?.cacheTtlMs ?? cfg.recall?.sessionReuseTtlMs ?? 300_000;
     // DS-RECALL-MERGE-001：reused 标志上浮为端点 meta.sessionReused 的一部分（行为零变化）
     // F-EV12-2-b（REG-REMAINING-006 A-2 硬化）：结论层幂等缓存键并入租户三元组——
     // 端点路 sessionKey 被 resolveIsolation 缺省填充为 "default"（v2-schemas.ts:393，
@@ -1677,15 +1776,18 @@ export async function performLayeredRecall(params: {
     const conclusionReused = r7ConclusionResolved.reused;
     // R7 经验层上下文（R7-1 防重排除 + R7-2 scene 反查源）；无结论 = undefined = 全链退化现状
     //（DS-RECALL-MERGE-001：原局部名 `layered` 改 `r7LayeredCtx`——外层 let layered 是端点 meta）
-    const r7LayeredCtx: R7LayeredContext | undefined = r7Conclusions.length > 0
-      ? {
-          excludeIds: r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!),
-          conclusionRefs: r7Conclusions
-            .filter((c) => c.source === "work_fact" && c.recordId)
-            .map((c) => ({ id: c.recordId!, sceneName: c.sceneName })),
-          sceneNames: [...new Set(r7Conclusions.map((c) => c.sceneName).filter((s) => typeof s === "string" && s.length > 0))],
-        }
-      : undefined;
+    const r7LayeredCtx: R7LayeredContext | undefined =
+      r7Conclusions.length > 0
+        ? {
+            excludeIds: r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!),
+            conclusionRefs: r7Conclusions
+              .filter((c) => c.source === "work_fact" && c.recordId)
+              .map((c) => ({ id: c.recordId!, sceneName: c.sceneName })),
+            sceneNames: [
+              ...new Set(r7Conclusions.map((c) => c.sceneName).filter((s) => typeof s === "string" && s.length > 0)),
+            ],
+          }
+        : undefined;
     // R7 预算对半切（spec §1）——提前到精排之前：rerank cap 消费经验层额度（结论行不入
     // 精排，精排只消费经验池，选出行数不得超过预算给经验层的额度）。
     // #78 R-b（2026-10-25）：smallToBig 开启时附加「上下文行」并入结论行序列，预算按结论行
@@ -1716,9 +1818,15 @@ export async function performLayeredRecall(params: {
     const r7Budget = r7Slot
       ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: r7Slot.experienceLimit }
       : smallToBigLines.length > 0
-        ? (s2bCfg?.budget === "additive"
-            ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7Conclusions.length) }
-            : { conclusionLimit: r7ConclusionLines.length, experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length) })
+        ? s2bCfg?.budget === "additive"
+          ? {
+              conclusionLimit: r7ConclusionLines.length,
+              experienceLimit: Math.max(0, r7MaxResults - r7Conclusions.length),
+            }
+          : {
+              conclusionLimit: r7ConclusionLines.length,
+              experienceLimit: Math.max(0, r7MaxResults - r7ConclusionLines.length),
+            }
         : splitBudget(r7MaxResults, r7ConclusionLines.length);
     // R-A3（E3）：同 session 上轮 query 与本轮全等 → 复用上轮搜索结果（免搜索免外呼）。
     // sessionReuseTtlMs<=0 = 通道关；query 变化 / 不同 session / TTL 过期 → 正常搜索。
@@ -1729,7 +1837,12 @@ export async function performLayeredRecall(params: {
     // ②缓存键并入租户三元组——sessionKey 单键会让同 query 的不同租户在 TTL 内
     //   互相复用注入记忆列表（A桶→P桶 跨用户泄漏活体实证 2026-09-19）。
     const reuseCacheKey = params.isolationFilter
-      ? JSON.stringify([params.isolationFilter.teamId ?? "", params.isolationFilter.userId ?? "", params.isolationFilter.agentId ?? "", params.sessionKey])
+      ? JSON.stringify([
+          params.isolationFilter.teamId ?? "",
+          params.isolationFilter.userId ?? "",
+          params.isolationFilter.agentId ?? "",
+          params.sessionKey,
+        ])
       : params.sessionKey;
     // P0-2 journal 观测：gates 并入 searchResult 载荷类型（与 SearchResult["gates"] 同形）
     let searchResult: SearchResult | undefined;
@@ -1834,14 +1947,39 @@ export async function performLayeredRecall(params: {
           ? ({ ...cfg, recall: { ...cfg.recall, maxResults: rerankWiring.candidates } } as MemoryTdaiConfig)
           : cfg;
       // task-100：l1Budget 只在此处（/v3/recall 端点）透传；钩子路 undefined = 逐位旧行为。
-      searchResult = await searchMemories(userText, pluginDataDir, searchCfg, logger, effectiveStrategy as "keyword" | "embedding" | "hybrid", vectorStore, embeddingService, rank, r7LayeredCtx, params.isolationFilter, params.validityNow, params.l1Budget);
+      searchResult = await searchMemories(
+        userText,
+        pluginDataDir,
+        searchCfg,
+        logger,
+        effectiveStrategy as "keyword" | "embedding" | "hybrid",
+        vectorStore,
+        embeddingService,
+        rank,
+        r7LayeredCtx,
+        params.isolationFilter,
+        params.validityNow,
+        params.l1Budget,
+      );
       // 精排在复用缓存落位前：缓存持有精排后结果（命中路不再外呼 provider，gate 随缓存复现）。
-      await applyRecallRerank(r7CleanQuery, searchResult, rerankWiring, r7Budget.experienceLimit, logger,
-      cfg.recall?.mmr?.enabled ? { enabled: true, lambda: cfg.recall.mmr.lambda } : undefined);
+      await applyRecallRerank(
+        r7CleanQuery,
+        searchResult,
+        rerankWiring,
+        r7Budget.experienceLimit,
+        logger,
+        cfg.recall?.mmr?.enabled ? { enabled: true, lambda: cfg.recall.mmr.lambda } : undefined,
+      );
       // 审查 #3 修补：空结果不入复用缓存——瞬时失败（如外呼抖动/瞬时空召回）不放大成
       // TTL 窗口内的持续空召回；lines.length>0 才视为可用注入块。
       if (sessionReuseTtlMs > 0 && params.sessionKey && searchResult.lines.length > 0 && !params.validityNow) {
-        sessionReuseCache.set(reuseCacheKey, { query: userText, result: searchResult, at: Date.now(), vectorStore, embeddingService });
+        sessionReuseCache.set(reuseCacheKey, {
+          query: userText,
+          result: searchResult,
+          at: Date.now(),
+          vectorStore,
+          embeddingService,
+        });
         if (sessionReuseCache.size > SESSION_REUSE_MAX) {
           const oldest = sessionReuseCache.keys().next().value;
           if (oldest !== undefined) sessionReuseCache.delete(oldest);
@@ -1873,6 +2011,53 @@ export async function performLayeredRecall(params: {
         if (rid && !recordIdByLine.has(memoryLines[i])) recordIdByLine.set(memoryLines[i], rid);
       }
     }
+    // ── A3（P1，2026-11-02）：agent 自述行的注入面过滤 ──
+    // 写侧命中自述形态（"我/AI 已完成 X"）的行带 metadata.actor="agent"（extraction.actorTagging）；
+    // 这类行讲的是"AI 做了什么"，默认不该占注入预算。缺省 recall.selfNarration.enabled=false
+    // → 整段不执行（零 I/O、零分配 = 逐位现状）。查询自指（isAssistantRecallQuery）时不过滤：
+    // 用户问"你刚说了什么"，这批行正是答案。
+    // 口径：只按 recordId 批量读 metadata（≤20/片）；fetch 抛错 = 该片按未知保留（宁留勿误杀）。
+    let selfNarrationGate: RecallJournalGates["selfNarration"];
+    if (cfg.recall?.selfNarration?.enabled === true) {
+      const candidateIds = (searchResult.metas ?? [])
+        .map((m) => m?.recordId)
+        .filter((rid): rid is string => typeof rid === "string" && rid.length > 0);
+      const actorOf =
+        vectorStore && candidateIds.length > 0
+          ? await loadActorByIds(candidateIds, async (ids) => {
+              const rows = await vectorStore.queryL1Records({ recordIds: ids, ...(params.isolationFilter ?? {}) });
+              return rows ?? [];
+            })
+          : new Map<string, string | undefined>();
+      const filtered = filterSelfNarrationLines({
+        lines: memoryLines,
+        metas: searchResult.metas,
+        actorOf,
+        enabled: true,
+        isSelfQuery: isAssistantRecallQuery(r7CleanQuery),
+      });
+      if (filtered.dropped > 0) {
+        const keep = filtered.keptIndexes;
+        const prevLines = memoryLines;
+        const prevMetas = searchResult.metas;
+        const prevScores = searchResult.scores;
+        const prevSessions = searchResult.lineSessions;
+        memoryLines = keep.map((i) => prevLines[i]);
+        searchResult.lines = memoryLines.slice();
+        if (prevMetas) searchResult.metas = keep.map((i) => prevMetas[i]);
+        if (prevScores) searchResult.scores = keep.map((i) => prevScores[i]);
+        if (prevSessions) searchResult.lineSessions = keep.map((i) => prevSessions[i]);
+      }
+      selfNarrationGate = {
+        enabled: true,
+        dropped: filtered.dropped,
+        scanned: filtered.scanned,
+        ...(filtered.skipped ? { skipped: filtered.skipped } : {}),
+      };
+      logger?.debug?.(
+        `${TAG} [self-narration] dropped ${filtered.dropped}/${filtered.scanned} agent lines (skipped=${filtered.skipped ?? "-"})`,
+      );
+    }
     searchTiming = searchResult.timing;
     recallGates = searchResult.gates;
     // ── #141（2026-10-28）：表示仲裁（arbitrate="redundant"）──
@@ -1897,7 +2082,9 @@ export async function performLayeredRecall(params: {
           r7PushDropSample(r7Conclusions[idx]?.recordId, r7Arb.reasons[k] ?? "redundant");
         }
         r7ConclusionLinesEff = r7Arb.kept.map((i) => r7ConclusionLines[i]);
-        logger?.debug?.(`${TAG} [layered] #141 arbitrate: dropped ${r7ArbitrateDropped}/${r7ConclusionLines.length} redundant conclusion(s) (threshold=${r7ArbitrateThreshold})`);
+        logger?.debug?.(
+          `${TAG} [layered] #141 arbitrate: dropped ${r7ArbitrateDropped}/${r7ConclusionLines.length} redundant conclusion(s) (threshold=${r7ArbitrateThreshold})`,
+        );
       }
     }
     // R71（2026-10-19）：结论层双门 gate 记录并入 journal（A1 地板 / A2 rerank 门）——
@@ -1905,7 +2092,7 @@ export async function performLayeredRecall(params: {
     // #141（2026-10-28）：conclusionRouting 观测门——灰度复核要能区分「没路由到」与
     // 「路由到了但预算 0 / 证据缺失被丢弃」，否则分阶段改动无法归因。
     const r7RoutingGate: RecallJournalGates["conclusionRouting"] | undefined =
-      (r7RoutingMode !== "off" || r7PairingRequire || r7Slot || r7ArbitrateEnabled || s2bGate)
+      r7RoutingMode !== "off" || r7PairingRequire || r7Slot || r7ArbitrateEnabled || s2bGate
         ? {
             intent: r7Intent ?? null,
             mode: r7RoutingMode,
@@ -1922,9 +2109,10 @@ export async function performLayeredRecall(params: {
             ...(r7DroppedSamples.length > 0 ? { droppedSamples: r7DroppedSamples } : {}),
           }
         : undefined;
-    if (r71Bm25Gate || r71ConclusionRerankGate || s2bGate || r7RoutingGate) {
+    if (r71Bm25Gate || r71ConclusionRerankGate || s2bGate || r7RoutingGate || selfNarrationGate) {
       recallGates = {
         ...(recallGates ?? {}),
+        ...(selfNarrationGate ? { selfNarration: selfNarrationGate } : {}),
         ...(r71Bm25Gate ? { conclusionBm25: r71Bm25Gate } : {}),
         ...(r71ConclusionRerankGate ? { conclusionRerank: r71ConclusionRerankGate } : {}),
         ...(s2bGate ? { smallToBig: s2bGate } : {}),
@@ -1934,10 +2122,7 @@ export async function performLayeredRecall(params: {
     // ── R7 预算对半切：r7Budget 已在精排接线前计算（rerank cap 消费）——此处只消费。
     // 无结论 → experienceLimit 全额 → slice 恒等 + 组装恒等 → 下游与现状逐位一致（退化安全）。
     // #141：仲裁让位的结论把槽位还给经验层（回补到宽预算；不超 maxResults）。
-    const r7ExperienceLimitEff = Math.min(
-      r7MaxResults,
-      r7Budget.experienceLimit + r7ArbitrateDropped,
-    );
+    const r7ExperienceLimitEff = Math.min(r7MaxResults, r7Budget.experienceLimit + r7ArbitrateDropped);
     memoryLines = memoryLines.slice(0, r7ExperienceLimitEff);
     // #54（2026-10-19）：召回注入动态 topK——按经验层 scores 分布的 elbow（最大相邻
     // 落差）收缩注入条数（只缩不扩）。缺省 off=逐位现状（固定条数注入）；scores 缺席
@@ -1949,7 +2134,9 @@ export async function performLayeredRecall(params: {
     if (dynTopKCfg54?.enabled === true && dynScores54 !== undefined && dynScores54.length > 0) {
       const dynK54 = dynamicTopKCount(dynScores54, memoryLines.length, dynTopKCfg54);
       if (dynK54 < memoryLines.length) {
-        logger?.debug?.(`${TAG} [dynamic-topk] elbow 收缩 ${memoryLines.length}->${dynK54}（minTopK=${dynTopKCfg54.minTopK}, dropRatio=${dynTopKCfg54.dropRatio}）`);
+        logger?.debug?.(
+          `${TAG} [dynamic-topk] elbow 收缩 ${memoryLines.length}->${dynK54}（minTopK=${dynTopKCfg54.minTopK}, dropRatio=${dynTopKCfg54.dropRatio}）`,
+        );
         memoryLines = memoryLines.slice(0, dynK54);
       }
     }
@@ -1976,7 +2163,9 @@ export async function performLayeredRecall(params: {
       if (recallDegradedFtsOnly && r71FtsOnlyCap > 0) {
         const r7ExpCap = Math.max(0, r71FtsOnlyCap - r7ExpReserve);
         if (memoryLines.length > r7ExpCap) {
-          logger?.debug?.(`${TAG} [fts-only-cap] degraded injection exp ${memoryLines.length}->${r7ExpCap} (cap=${r71FtsOnlyCap}, conclusions=${r7ExpReserve})`);
+          logger?.debug?.(
+            `${TAG} [fts-only-cap] degraded injection exp ${memoryLines.length}->${r7ExpCap} (cap=${r71FtsOnlyCap}, conclusions=${r7ExpReserve})`,
+          );
           memoryLines = memoryLines.slice(0, r7ExpCap);
         }
       }
@@ -1986,7 +2175,9 @@ export async function performLayeredRecall(params: {
       memoryLines = assembleLayeredLines(r7ConclusionLinesEff, memoryLines);
       memoryLines = applyRecallBudget(memoryLines, cfg.recall, logger);
       if (recallDegradedFtsOnly && r71FtsOnlyCap > 0 && memoryLines.length > r71FtsOnlyCap) {
-        logger?.debug?.(`${TAG} [fts-only-cap] degraded injection ${memoryLines.length}->${r71FtsOnlyCap} (cap=${r71FtsOnlyCap})`);
+        logger?.debug?.(
+          `${TAG} [fts-only-cap] degraded injection ${memoryLines.length}->${r71FtsOnlyCap} (cap=${r71FtsOnlyCap})`,
+        );
         memoryLines = memoryLines.slice(0, r71FtsOnlyCap);
       }
     }
@@ -1996,21 +2187,23 @@ export async function performLayeredRecall(params: {
     // Extract structured RecalledMemory from formatted lines for metric reporting
     // R7：结论行前置 → metric scores 数组同步前插 0（结论非相似度命中，score=0 如实）
     const r7ExpScores = (searchResult.scores ?? []).slice(0, r7ExperienceLineCount);
-    const r7MetricScores = r7ConclusionLinesEff.length > 0
-      ? (r7TurnFirst
+    const r7MetricScores =
+      r7ConclusionLinesEff.length > 0
+        ? r7TurnFirst
           ? [...r7ExpScores, ...r7ConclusionLinesEff.map(() => 0)]
-          : [...r7ConclusionLinesEff.map(() => 0), ...r7ExpScores])
-      : searchResult.scores;
+          : [...r7ConclusionLinesEff.map(() => 0), ...r7ExpScores]
+        : searchResult.scores;
     // #166：经验层的 turn 归属与 scores 同规则切片/前插（结论行不是召回命中，无 turn）。
     // 遮蔽后的行文本是事实短语，反查不出父 turn；recordId 的 `#f<N>` 后缀去掉即父 turn。
     const r7ExpTurnIds = (searchResult.metas ?? [])
       .slice(0, r7ExperienceLineCount)
       .map((m) => (m?.recordId ? parentTurnIdOf(m.recordId) : undefined));
-    const r7MetricTurnIds = r7ConclusionLinesEff.length > 0
-      ? (r7TurnFirst
+    const r7MetricTurnIds =
+      r7ConclusionLinesEff.length > 0
+        ? r7TurnFirst
           ? [...r7ExpTurnIds, ...r7ConclusionLinesEff.map(() => undefined)]
-          : [...r7ConclusionLinesEff.map(() => undefined), ...r7ExpTurnIds])
-      : r7ExpTurnIds;
+          : [...r7ConclusionLinesEff.map(() => undefined), ...r7ExpTurnIds]
+        : r7ExpTurnIds;
     recalledL1Memories = memoryLines.map((line, i) => {
       const match = line.match(MEMORY_LINE_RE);
       const turnId = r7MetricTurnIds?.[i];
@@ -2150,9 +2343,9 @@ export async function performLayeredRecall(params: {
     tPerfSoulMs61 = Math.round(performance.now() - tPerfSoulStart61);
     if (memoryLines.length > 0) {
       const degradedNote = recallDegradedFtsOnly
-        // I-1 复核修补：两义措辞 —— ftsHits>0∧embeddingHits=0 只证明"本轮向量召回无贡献"，
-        // 无法区分向量层降级与相关度门滤除，禁止假警报式单因断言。
-        ? "[degraded: fts-only] 本轮记忆召回仅来自关键词检索（FTS），向量召回无贡献（向量层降级或相关度门滤除），召回质量可能不完整。\n\n"
+        ? // I-1 复核修补：两义措辞 —— ftsHits>0∧embeddingHits=0 只证明"本轮向量召回无贡献"，
+          // 无法区分向量层降级与相关度门滤除，禁止假警报式单因断言。
+          "[degraded: fts-only] 本轮记忆召回仅来自关键词检索（FTS），向量召回无贡献（向量层降级或相关度门滤除），召回质量可能不完整。\n\n"
         : "";
       // G1-a（bench/recall-opt B1 生产化）：注入块时间序打包——config 门
       //（recall.injectTimeSort.enabled，缺省 false=分数序逐位现状）。依据 LME90 配对实验：
@@ -2329,7 +2522,9 @@ export async function performLayeredRecall(params: {
     l1: tPerfL1Ms61,
     soul: tPerfSoulMs61,
   };
-  logger?.info?.(`${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} expand=${perfMs61.expand} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}`);
+  logger?.info?.(
+    `${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} expand=${perfMs61.expand} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}`,
+  );
 
   // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——采集点单一源（钩子与路由两路
   // 共用于本函数返回点，禁第二份）。best-effort：writer 自吞错 + 本 try 兜底，零影响主链路。
@@ -2367,7 +2562,25 @@ export async function performLayeredRecall(params: {
                 fold: injectionObservation.fold,
                 candidates: injectionObservation.candidates,
               }
-            : {}),
+            : {
+                // 空池轮（三路全无命中，选线段没跑）：也写零观测 + emptyPool。
+                // 否则 zeroInjectionRate 的分母只统计「有池子的轮」，空池被静默排除（生产实测
+                // coverage 只到 18%），指标偏好；这里如实记 0 行 0 字符并把病因标成 emptyPool。
+                selection: {
+                  kept: 0,
+                  injected: 0,
+                  droppedBy: { rank: 0, floor: 0, margin: 0, dup: 0, budget: 0, chars: 0, fold: 0 },
+                  capped: 0,
+                  poolChars: 0,
+                  injectedChars: 0,
+                  emptyPool: true,
+                },
+                ruler: {
+                  mode: cfg.recall?.layerRuler?.mode ?? "off",
+                  floorSource: "uncalibrated",
+                  floor: null,
+                },
+              }),
         },
         journalCfg,
       );
@@ -2577,9 +2790,7 @@ async function performAutoRecallInner(params: {
     const re = fail.recallError;
     // Always log at warn; for internal errors, also dump the cause at error level
     // to make root-cause investigation possible.
-    params.logger?.warn?.(
-      `${TAG} recall failed: code=${re.code} category=${re.category} msg="${re.message}"`,
-    );
+    params.logger?.warn?.(`${TAG} recall failed: code=${re.code} category=${re.category} msg="${re.message}"`);
     if (re.category === "internal" && fail.cause) {
       const causeStr = fail.cause instanceof Error
         ? (fail.cause.stack ?? fail.cause.message)
@@ -2629,9 +2840,7 @@ async function computeRecallValueSignals(
     const rows = await listValues.call(vectorStore, tenant);
     const ctx = await buildRankContext(userText, [], {
       readValues: () =>
-        ((rows ?? []) as unknown as ValueRowLike[]).filter(
-          (v) => v && typeof v.label === "string" && v.label.trim(),
-        ),
+        ((rows ?? []) as unknown as ValueRowLike[]).filter((v) => v && typeof v.label === "string" && v.label.trim()),
     });
     return { firedLabels: ctx.firedLabels, moodSign: ctx.moodSign };
   } catch (err) {
@@ -2815,9 +3024,7 @@ async function searchMemories(
   }
 
   if (cleanText.length !== userText.length) {
-    logger?.debug?.(
-      `${TAG} userText sanitized: ${userText.length} → ${cleanText.length} chars`,
-    );
+    logger?.debug?.(`${TAG} userText sanitized: ${userText.length} → ${cleanText.length} chars`);
   }
 
   const maxResults = cfg.recall.maxResults ?? 10;
@@ -2866,11 +3073,7 @@ async function searchMemories(
       if (expansionTermsCache) return expansionTermsCache;
       const qeCfg = cfg.recall?.queryExpansion;
       if (!qeCfg?.enabled) return (expansionTermsCache = []);
-      const qeRunner = await resolveQueryExpansionRunner(
-        cfg.llm,
-        (cfg as { instanceId?: string }).instanceId,
-        logger,
-      );
+      const qeRunner = await resolveQueryExpansionRunner(cfg.llm, (cfg as { instanceId?: string }).instanceId, logger);
       // 运行期预算 clamp（E1.4 失败安全优先）：recall 有整体 timeoutMs（默认 5000），
       // 扩展外呼若超出预算会触发整体超时（注入全空，比无扩展更糟）。config 默认 8000
       // 保留给无外层预算的工具路；auto-recall 路 clamp 到 召回预算-1s（至少 1s），留出
@@ -2878,7 +3081,9 @@ async function searchMemories(
       const recallBudget = cfg.recall?.timeoutMs ?? 5000;
       const timeoutMs = Math.min(qeCfg.timeoutMs, Math.max(1000, recallBudget - 1000));
       if (timeoutMs !== qeCfg.timeoutMs) {
-        logger?.debug?.(`${TAG} [query-expand] timeoutMs clamped into recall budget: ${qeCfg.timeoutMs} → ${timeoutMs}ms`);
+        logger?.debug?.(
+          `${TAG} [query-expand] timeoutMs clamped into recall budget: ${qeCfg.timeoutMs} → ${timeoutMs}ms`,
+        );
       }
       expansionTermsCache = await expandQuery(cleanText, qeRunner, {
         maxTerms: qeCfg.maxTerms,
@@ -2890,7 +3095,9 @@ async function searchMemories(
         negativeTtlMs: qeCfg.negativeTtlMs,
         logger,
       });
-      logger?.debug?.(`${TAG} [query-expand] llm settled in ${Math.round(performance.now() - tLlm63)}ms (cache miss, hot-wait capped)`);
+      logger?.debug?.(
+        `${TAG} [query-expand] llm settled in ${Math.round(performance.now() - tLlm63)}ms (cache miss, hot-wait capped)`,
+      );
       return expansionTermsCache;
     };
 
@@ -2910,14 +3117,49 @@ async function searchMemories(
     if (effectiveStrategy === "keyword") {
       const tFts = performance.now();
       const { terms: kwTerms, waitMs: kwExpandWaitMs } = await awaitExpansionTerms();
-      const kw = await searchByKeyword(cleanText, pluginDataDir, maxResults, threshold, logger, vectorStore, layered, kwTerms, isolationFilter);
-      return { lines: kw.lines, lineSessions: kw.lineSessions, timing: { ftsMs: performance.now() - tFts, embeddingMs: 0, ftsHits: kw.lines.length, embeddingHits: 0, expandMs: kwExpandWaitMs } };
+      const kw = await searchByKeyword(
+        cleanText,
+        pluginDataDir,
+        maxResults,
+        threshold,
+        logger,
+        vectorStore,
+        layered,
+        kwTerms,
+        isolationFilter,
+      );
+      return {
+        lines: kw.lines,
+        lineSessions: kw.lineSessions,
+        timing: {
+          ftsMs: performance.now() - tFts,
+          embeddingMs: 0,
+          ftsHits: kw.lines.length,
+          embeddingHits: 0,
+          expandMs: kwExpandWaitMs,
+        },
+      };
     }
 
     if (effectiveStrategy === "embedding") {
       const tEmb = performance.now();
-      const emb = await searchByEmbedding(cleanText, maxResults, threshold, vectorStore!, embeddingService!, logger, embeddingCallOpts, embedCacheTtlMs, layered, isolationFilter);
-      return { lines: emb.lines, lineSessions: emb.lineSessions, timing: { ftsMs: 0, embeddingMs: performance.now() - tEmb, ftsHits: 0, embeddingHits: emb.lines.length } };
+      const emb = await searchByEmbedding(
+        cleanText,
+        maxResults,
+        threshold,
+        vectorStore!,
+        embeddingService!,
+        logger,
+        embeddingCallOpts,
+        embedCacheTtlMs,
+        layered,
+        isolationFilter,
+      );
+      return {
+        lines: emb.lines,
+        lineSessions: emb.lineSessions,
+        timing: { ftsMs: 0, embeddingMs: performance.now() - tEmb, ftsHits: 0, embeddingHits: emb.lines.length },
+      };
     }
 
     // Hybrid: if the store natively supports hybrid search (e.g. TCVDB does
@@ -2934,11 +3176,11 @@ async function searchMemories(
       // 其 scoreThreshold 全套精排保留。刻度依据 verify-t1.ts:202-203。
       const nativeMinRRF = cfg?.recall?.nativeMinRRF ?? 0;
       // DS-RECALL-MERGE-001：filter 透传（isolationFilter 缺省 = 旧行为逐位）
-      const rawNative = (((await vectorStore.searchL1Hybrid?.({
+      const rawNative = ((await vectorStore.searchL1Hybrid?.({
         query: cleanText,
         topK: maxResults,
         ...(isolationFilter ? { filter: isolationFilter } : {}),
-      })) ?? []) as L1SearchResult[]);
+      })) ?? []) as L1SearchResult[];
       const results = rawNative
         .filter((r) => !(nativeMinRRF > 0) || r.score >= nativeMinRRF)
         .filter((r) => !excludeIds || !excludeIds.has(r.record_id));
@@ -2948,10 +3190,14 @@ async function searchMemories(
       let nativeGateStat: { gate: number; kept: number; dropped: number } | undefined;
       if (nativeMinRRF > 0 && results.length < rawNative.length) {
         nativeGateStat = { gate: nativeMinRRF, kept: results.length, dropped: rawNative.length - results.length };
-        logger?.info?.(`${TAG} [hybrid-native] nativeMinRRF gate: kept=${results.length} dropped=${rawNative.length - results.length}/${rawNative.length} gate=${nativeMinRRF}`);
+        logger?.info?.(
+          `${TAG} [hybrid-native] nativeMinRRF gate: kept=${results.length} dropped=${rawNative.length - results.length}/${rawNative.length} gate=${nativeMinRRF}`,
+        );
       }
       const nativeMs = performance.now() - tNative;
-      logger?.debug?.(`${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`);
+      logger?.debug?.(
+        `${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`,
+      );
       const fmts = results.map((r) => vectorResultToFormatable(r));
       const linesRaw = fmts.map((f) => formatMemoryLine(f));
       const linesMeta = fmts.map((f) => ({ recordId: f.recordId, evidenceIds: f.evidenceIds, sessionId: f.sessionId }));
@@ -3032,7 +3278,9 @@ async function searchMemories(
       ...(fallbackMetas ? { metas: fallbackMetas } : {}),
     };
   } catch (err) {
-    logger?.warn?.(`${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`);
+    logger?.warn?.(
+      `${TAG} Memory search failed (strategy=${effectiveStrategy}): ${err instanceof Error ? err.message : String(err)}`,
+    );
     return emptyResult;
   }
 }
@@ -3079,7 +3327,9 @@ async function searchByKeyword(
           .slice(0, maxResults);
 
         if (filtered.length > 0) {
-          logger?.debug?.(`${TAG} [keyword-fts] FTS5 found ${filtered.length} results (from ${ftsResults.length} raw, threshold=${threshold})`);
+          logger?.debug?.(
+            `${TAG} [keyword-fts] FTS5 found ${filtered.length} results (from ${ftsResults.length} raw, threshold=${threshold})`,
+          );
           return {
             lines: filtered.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
             lineSessions: filtered.map((r) => (r as { session_id?: string }).session_id || undefined),
@@ -3134,7 +3384,13 @@ async function searchByEmbedding(
   logger?.debug?.(
     `${TAG} [embedding-search] START query="${userText.slice(0, 80)}...", maxResults=${maxResults}, threshold=${threshold}`,
   );
-  const queryEmbedding = await cachedQueryEmbedding(embeddingService, userText, embedCacheTtlMs ?? 0, logger, embeddingCallOpts);
+  const queryEmbedding = await cachedQueryEmbedding(
+    embeddingService,
+    userText,
+    embedCacheTtlMs ?? 0,
+    logger,
+    embeddingCallOpts,
+  );
   logger?.debug?.(
     `${TAG} [embedding-search] Query embedding OK: dims=${queryEmbedding.length}, ` +
     `norm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}, ` +
@@ -3163,7 +3419,9 @@ async function searchByEmbedding(
     .slice(0, maxResults);
 
   if (filtered.length > 0) {
-    logger?.debug?.(`${TAG} [embedding-search] Found ${filtered.length} relevant memories above threshold (from ${vecResults.length} candidates)`);
+    logger?.debug?.(
+      `${TAG} [embedding-search] Found ${filtered.length} relevant memories above threshold (from ${vecResults.length} candidates)`,
+    );
     return {
       lines: filtered.map((r) => formatMemoryLine(vectorResultToFormatable(r))),
       lineSessions: filtered.map((r) => r.session_id || undefined),
@@ -3324,99 +3582,120 @@ export async function searchHybrid(
   const keywordLegPromise = (async () => {
     // Keyword search: FTS5 only (no in-memory fallback)
     const tStart = performance.now();
-      try {
-        // Try FTS5 first
-        if (vectorStore.isFtsAvailable()) {
-          // V2-2（E1.3）：扩展词 OR 并入 MATCH（原词在前）；无扩展 → 逐位原 ftsQuery。
-          const ftsQuery = mergeFtsQueryWithExpansion(buildFtsQuery(userText), expansionTerms);
-          if (ftsQuery) {
-            const ftsResults = await vectorStore.searchL1Fts(ftsQuery, candidateK, isolationFilter);
-            if (ftsResults.length > 0) {
-              logger?.debug?.(`${TAG} [hybrid-keyword-fts] FTS5 found ${ftsResults.length} candidates`);
-              // Convert FtsSearchResult to ScoredRecord for RRF merge
-              const records = ftsResults.map((r): ScoredRecord => {
-                const metadata: Record<string, unknown> = r.metadata_json
-                  ? (() => { try { return JSON.parse(r.metadata_json) as Record<string, unknown>; } catch { return {}; } })()
-                  : {};
-                return {
-                  record: {
-                    id: r.record_id,
-                    content: r.content,
-                    type: r.type as MemoryRecord["type"],
-                    priority: r.priority,
-                    scene_name: r.scene_name,
-                    source_message_ids: [],
-                    metadata,
-                    timestamps: [r.timestamp_str].filter(Boolean),
-                    createdAt: "",
-                    updatedAt: "",
-                    sessionKey: r.session_key,
-                    sessionId: r.session_id,
-                  },
-                  score: r.score,
-                  // R-A1：soul 字段透传（recordToFormatable 不带 soul——信号源单独携带）
-                  soul: {
-                    occurred_at: r.occurred_at,
-                    valid_start: r.valid_start,
-                    valid_end: r.valid_end,
-                    certainty: r.certainty,
-                    valence: r.valence,
-                    significance: r.significance,
-                    // D-3：敏感性透传（分层候选池 soul 源——徽章/R11）
-                    sensitivity: (r as { sensitivity?: string }).sensitivity,
-                    // P1-T7：重要度透传（降权乘子/影子门信号源——NULL=未评分=不罚）
-                    importance: r.importance ?? null,
-                    metadata,
-                    // D-4：周期性事实透传（分层候选池 soul 源——丢值点⑤同位）
-                    recurrence: isRecurrenceMeta((metadata as { recurrence?: unknown } | undefined)?.recurrence)
-                      ? (metadata as { recurrence: { cadence: string; anchor: string | null; note: string } }).recurrence
-                      : undefined,
-                    // V6-1a：唤醒度透传（kw 路 ·强烈 徽章源——RankSignalItem 已扩 arousal）
-                    arousal: (r as { arousal?: number }).arousal,
-                  },
-                };
-              });
-              return { records, ms: performance.now() - tStart };
-            }
+    try {
+      // Try FTS5 first
+      if (vectorStore.isFtsAvailable()) {
+        // V2-2（E1.3）：扩展词 OR 并入 MATCH（原词在前）；无扩展 → 逐位原 ftsQuery。
+        const ftsQuery = mergeFtsQueryWithExpansion(buildFtsQuery(userText), expansionTerms);
+        if (ftsQuery) {
+          const ftsResults = await vectorStore.searchL1Fts(ftsQuery, candidateK, isolationFilter);
+          if (ftsResults.length > 0) {
+            logger?.debug?.(`${TAG} [hybrid-keyword-fts] FTS5 found ${ftsResults.length} candidates`);
+            // Convert FtsSearchResult to ScoredRecord for RRF merge
+            const records = ftsResults.map((r): ScoredRecord => {
+              const metadata: Record<string, unknown> = r.metadata_json
+                ? (() => {
+                    try {
+                      return JSON.parse(r.metadata_json) as Record<string, unknown>;
+                    } catch {
+                      return {};
+                    }
+                  })()
+                : {};
+              return {
+                record: {
+                  id: r.record_id,
+                  content: r.content,
+                  type: r.type as MemoryRecord["type"],
+                  priority: r.priority,
+                  scene_name: r.scene_name,
+                  source_message_ids: [],
+                  metadata,
+                  timestamps: [r.timestamp_str].filter(Boolean),
+                  createdAt: "",
+                  updatedAt: "",
+                  sessionKey: r.session_key,
+                  sessionId: r.session_id,
+                },
+                score: r.score,
+                // R-A1：soul 字段透传（recordToFormatable 不带 soul——信号源单独携带）
+                soul: {
+                  occurred_at: r.occurred_at,
+                  valid_start: r.valid_start,
+                  valid_end: r.valid_end,
+                  certainty: r.certainty,
+                  valence: r.valence,
+                  significance: r.significance,
+                  // D-3：敏感性透传（分层候选池 soul 源——徽章/R11）
+                  sensitivity: (r as { sensitivity?: string }).sensitivity,
+                  // P1-T7：重要度透传（降权乘子/影子门信号源——NULL=未评分=不罚）
+                  importance: r.importance ?? null,
+                  metadata,
+                  // D-4：周期性事实透传（分层候选池 soul 源——丢值点⑤同位）
+                  recurrence: isRecurrenceMeta((metadata as { recurrence?: unknown } | undefined)?.recurrence)
+                    ? (metadata as { recurrence: { cadence: string; anchor: string | null; note: string } }).recurrence
+                    : undefined,
+                  // V6-1a：唤醒度透传（kw 路 ·强烈 徽章源——RankSignalItem 已扩 arousal）
+                  arousal: (r as { arousal?: number }).arousal,
+                },
+              };
+            });
+            return { records, ms: performance.now() - tStart };
           }
         }
-        // FTS5 not available or returned no results — skip in-memory fallback
-        logger?.debug?.(`${TAG} [hybrid-keyword] FTS5 unavailable or no results, skipping keyword part`);
-        return { records: [] as ScoredRecord[], ms: performance.now() - tStart };
-      } catch (err) {
-        logger?.warn?.(`${TAG} Hybrid: keyword part failed: ${err instanceof Error ? err.message : String(err)}`);
-        return { records: [] as ScoredRecord[], ms: performance.now() - tStart };
       }
+      // FTS5 not available or returned no results — skip in-memory fallback
+      logger?.debug?.(`${TAG} [hybrid-keyword] FTS5 unavailable or no results, skipping keyword part`);
+      return { records: [] as ScoredRecord[], ms: performance.now() - tStart };
+    } catch (err) {
+      logger?.warn?.(`${TAG} Hybrid: keyword part failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { records: [] as ScoredRecord[], ms: performance.now() - tStart };
+    }
   })();
   const embeddingLegPromise = (async () => {
     // Embedding search
-      const tStart = performance.now();
-      try {
-        logger?.debug?.(`${TAG} [hybrid-embedding] Generating query embedding...`);
-        const queryEmbedding = await cachedQueryEmbedding(embeddingService, userText, embedCacheTtlMs ?? 0, logger, embeddingCallOpts);
-        logger?.debug?.(
-          `${TAG} [hybrid-embedding] Embedding OK, dims=${queryEmbedding.length}, searching top-${candidateK}...`,
-        );
-        const results = await vectorStore.searchL1Vector(queryEmbedding, candidateK, userText, isolationFilter);
-        logger?.debug?.(`${TAG} [hybrid-embedding] Got ${results.length} candidates`);
-        // #137：同一 query 向量再打一次事实通道（原文主索引不动；失败非致命——通道静默退出）
-        let factResults: L1SearchResult[] = [];
-        let factMs = 0;
-        if (factSearch) {
-          const tFact = performance.now();
-          try {
-            factResults = ((await factSearch(queryEmbedding, factTopK, isolationFilter)) ?? []) as L1SearchResult[];
-          } catch (err) {
-            logger?.warn?.(`${TAG} Hybrid: fact channel failed (non-fatal, channel skipped): ${err instanceof Error ? err.message : String(err)}`);
-          }
-          factMs = performance.now() - tFact;
-          logger?.debug?.(`${TAG} [hybrid-fact] Got ${factResults.length} candidates in ${factMs.toFixed(0)}ms (topK=${factTopK})`);
+    const tStart = performance.now();
+    try {
+      logger?.debug?.(`${TAG} [hybrid-embedding] Generating query embedding...`);
+      const queryEmbedding = await cachedQueryEmbedding(
+        embeddingService,
+        userText,
+        embedCacheTtlMs ?? 0,
+        logger,
+        embeddingCallOpts,
+      );
+      logger?.debug?.(
+        `${TAG} [hybrid-embedding] Embedding OK, dims=${queryEmbedding.length}, searching top-${candidateK}...`,
+      );
+      const results = await vectorStore.searchL1Vector(queryEmbedding, candidateK, userText, isolationFilter);
+      logger?.debug?.(`${TAG} [hybrid-embedding] Got ${results.length} candidates`);
+      // #137：同一 query 向量再打一次事实通道（原文主索引不动；失败非致命——通道静默退出）
+      let factResults: L1SearchResult[] = [];
+      let factMs = 0;
+      if (factSearch) {
+        const tFact = performance.now();
+        try {
+          factResults = ((await factSearch(queryEmbedding, factTopK, isolationFilter)) ?? []) as L1SearchResult[];
+        } catch (err) {
+          logger?.warn?.(
+            `${TAG} Hybrid: fact channel failed (non-fatal, channel skipped): ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
-        return { results, factResults, factMs, ms: performance.now() - tStart };
-      } catch (err) {
-        logger?.warn?.(`${TAG} Hybrid: embedding part failed: ${err instanceof Error ? err.message : String(err)}`);
-        return { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: performance.now() - tStart };
+        factMs = performance.now() - tFact;
+        logger?.debug?.(
+          `${TAG} [hybrid-fact] Got ${factResults.length} candidates in ${factMs.toFixed(0)}ms (topK=${factTopK})`,
+        );
       }
+      return { results, factResults, factMs, ms: performance.now() - tStart };
+    } catch (err) {
+      logger?.warn?.(`${TAG} Hybrid: embedding part failed: ${err instanceof Error ? err.message : String(err)}`);
+      return {
+        results: [] as L1SearchResult[],
+        factResults: [] as L1SearchResult[],
+        factMs: 0,
+        ms: performance.now() - tStart,
+      };
+    }
   })();
 
   // ── task-100（预算内降级）────────────────────────────────────────────────────
@@ -3459,7 +3738,12 @@ export async function searchHybrid(
     keywordResult = await keywordLegPromise;
     if (raced === BUDGET_SENTINEL) {
       budgetHit = true;
-      embeddingResult = { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: budgetMs };
+      embeddingResult = {
+        results: [] as L1SearchResult[],
+        factResults: [] as L1SearchResult[],
+        factMs: 0,
+        ms: budgetMs,
+      };
       logger?.warn?.(
         TAG + " [hybrid-budget] vector leg exceeded L1 budget (" + Math.round(budgetMs) + "ms, fallback=fts) -> " +
         "FTS-only (ftsHits=" + keywordResult.records.length + ", ftsMs=" + Math.round(keywordResult.ms) + ")",
@@ -3544,7 +3828,25 @@ export async function searchHybrid(
 
   if (keywordResults.length === 0 && embeddingResults.length === 0 && factResults.length === 0) {
     logger?.debug?.(`${TAG} Hybrid search: all channels returned 0 results`);
-    return { lines: [], metas: [], timing };
+    // F7：零召回也带 validity 门（全零）——区分「没开」与「开了但这一轮零召回」。
+    return {
+      lines: [],
+      metas: [],
+      timing,
+      ...(validityEnabled(excludeInvalidated)
+        ? {
+            gates: {
+              validity: {
+                mode: excludeInvalidated === "soft" ? ("soft" as const) : ("hard" as const),
+                pool: { active: 0, expired: 0, future: 0, dropped: 0 },
+                top: { active: 0, expired: 0, future: 0, dropped: 0 },
+                injected: { active: 0, expired: 0, future: 0, dropped: 0 },
+                validEndFiltered: 0,
+              },
+            },
+          }
+        : {}),
+    };
   }
 
   // #137：normalized 融合需要先在各通道内部归一（BM25 无绝对刻度 → 通道内 min-max；
@@ -3605,28 +3907,34 @@ export async function searchHybrid(
         arousal: (r.soul as { arousal?: number } | undefined)?.arousal,
         formatable: {
           ...recordToFormatable(r.record),
-          ...(kwSoul ? {
-            occurred_at: kwSoul.occurred_at || undefined,
-            certainty: kwSoul.certainty || undefined,
-            valence: kwSoul.valence,
-            significance: kwSoul.significance,
-            // F-R12 修补：kwSoul 缺值不再抹掉 recordToFormatable 已透传的 sensitivity/recurrence
-            //（原无条件 spread 用 undefined 覆盖=徽章丢失根因）
-            ...((kwSoul as { sensitivity?: string }).sensitivity !== undefined
-              ? { sensitivity: (kwSoul as { sensitivity?: string }).sensitivity }
-              : {}),
-            // D-4：周期性事实透传（kwSoul→formatable 徽章链）
-            ...((kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence !== undefined
-              ? { recurrence: (kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence }
-              : {}),
-            // V6-1a：唤醒度/时效起点（分层池 soul 源透传；条件并回防 undefined 抹值——F-R12 同教训）
-            ...((kwSoul as { arousal?: number }).arousal !== undefined
-              ? { arousal: (kwSoul as { arousal?: number }).arousal }
-              : {}),
-            ...((kwSoul as { valid_start?: string }).valid_start !== undefined
-              ? { valid_start: (kwSoul as { valid_start?: string }).valid_start }
-              : {}),
-          } : {}),
+          ...(kwSoul
+            ? {
+                occurred_at: kwSoul.occurred_at || undefined,
+                certainty: kwSoul.certainty || undefined,
+                valence: kwSoul.valence,
+                significance: kwSoul.significance,
+                // F-R12 修补：kwSoul 缺值不再抹掉 recordToFormatable 已透传的 sensitivity/recurrence
+                //（原无条件 spread 用 undefined 覆盖=徽章丢失根因）
+                ...((kwSoul as { sensitivity?: string }).sensitivity !== undefined
+                  ? { sensitivity: (kwSoul as { sensitivity?: string }).sensitivity }
+                  : {}),
+                // D-4：周期性事实透传（kwSoul→formatable 徽章链）
+                ...((kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } }).recurrence !==
+                undefined
+                  ? {
+                      recurrence: (kwSoul as { recurrence?: { cadence: string; anchor: string | null; note: string } })
+                        .recurrence,
+                    }
+                  : {}),
+                // V6-1a：唤醒度/时效起点（分层池 soul 源透传；条件并回防 undefined 抹值——F-R12 同教训）
+                ...((kwSoul as { arousal?: number }).arousal !== undefined
+                  ? { arousal: (kwSoul as { arousal?: number }).arousal }
+                  : {}),
+                ...((kwSoul as { valid_start?: string }).valid_start !== undefined
+                  ? { valid_start: (kwSoul as { valid_start?: string }).valid_start }
+                  : {}),
+              }
+            : {}),
         },
         coreRefHit: coreRefHitOf(r.record.metadata as Record<string, unknown> | undefined),
         signal,
@@ -3782,9 +4090,13 @@ export async function searchHybrid(
   const sceneBoostVal = rankSignal?.sceneBoost ?? 0;
   // GROW-EVO P3 R10（§3.2）：情感显著度权重——缺省 0 = 不计算不比较（可证恒等）。
   const emotionWeight = rankSignal?.signals.emotionSalienceWeight ?? 0;
-  const sceneHit = sceneBoostVal > 0
-    ? detectSceneHit(userText, [...mergedMap.values()].map((v) => v.formatable.scene_name))
-    : null;
+  const sceneHit =
+    sceneBoostVal > 0
+      ? detectSceneHit(
+          userText,
+          [...mergedMap.values()].map((v) => v.formatable.scene_name),
+        )
+      : null;
   // ── 排序三刀语义对齐（2026-09-12，5fc7962 工具侧同构）：主序 = 纯 RRF 相关度证据
   //    （score 严格优先——相邻名次差 ~2.8e-4 不可被信号和（可达 ~6e-4）翻越，q9 病灶
   //    同构消除）；coreRefHit / scene / signal / mult（R3 确定性）降为精确平局组内次级
@@ -3794,8 +4106,26 @@ export async function searchHybrid(
   //    组内旗标（mult 仅平局组内生效，与工具侧 R3 平移一致）。 ──
   const sceneSignalOfEntry = (v: FormatableMemory) => sceneSignalOf(v, sceneHit, sceneBoostVal);
   const compareLex = (
-    a: { rrfScore: number; relevance?: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
-    b: { rrfScore: number; relevance?: number; coreRefHit: number; signal: number; mult: number; valence?: number; arousal?: number; formatable: FormatableMemory },
+    a: {
+      rrfScore: number;
+      relevance?: number;
+      coreRefHit: number;
+      signal: number;
+      mult: number;
+      valence?: number;
+      arousal?: number;
+      formatable: FormatableMemory;
+    },
+    b: {
+      rrfScore: number;
+      relevance?: number;
+      coreRefHit: number;
+      signal: number;
+      mult: number;
+      valence?: number;
+      arousal?: number;
+      formatable: FormatableMemory;
+    },
   ): number => {
     // #137：normalized 融合模式主序 = 通道内归一化融合分（0..1），rrfScore 只在平局时兜底。
     if (normalizedMode && (b.relevance ?? 0) !== (a.relevance ?? 0)) return (b.relevance ?? 0) - (a.relevance ?? 0);
@@ -3886,12 +4216,16 @@ export async function searchHybrid(
               added++;
             }
             if (added > 0) sorted = sortEntries();
-            logger?.debug?.(`${TAG} [pool-expand] V2-1 ppr: +${added} graph candidates (edges=${edges.length}, seeds=${seeds.size}), pool=${mergedMap.size}`);
+            logger?.debug?.(
+              `${TAG} [pool-expand] V2-1 ppr: +${added} graph candidates (edges=${edges.length}, seeds=${seeds.size}), pool=${mergedMap.size}`,
+            );
           }
         }
       }
     } catch (err) {
-      logger?.warn?.(`${TAG} [pool-expand] V2-1 ppr failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      logger?.warn?.(
+        `${TAG} [pool-expand] V2-1 ppr failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -3906,8 +4240,9 @@ export async function searchHybrid(
       for (const r of rows) {
         if (mergedMap.has(r.record_id)) continue;
         const metadata = parseMetadataJson(r.metadata_json);
-        const refs = (Array.isArray(metadata.coreRefs) ? metadata.coreRefs : [])
-          .filter((s): s is string => typeof s === "string" && rankSignal.firedLabels.includes(s));
+        const refs = (Array.isArray(metadata.coreRefs) ? metadata.coreRefs : []).filter(
+          (s): s is string => typeof s === "string" && rankSignal.firedLabels.includes(s),
+        );
         if (refs.length === 0) continue; // store 粗筛结果须复核交集（宁缺毋滥）
         mergedMap.set(r.record_id, {
           rrfScore: 0,
@@ -3922,9 +4257,13 @@ export async function searchHybrid(
         added++;
       }
       if (added > 0) sorted = sortEntries();
-      logger?.debug?.(`${TAG} [pool-expand] R5 value backfill: fired=${JSON.stringify(rankSignal.firedLabels)}, +${added}`);
+      logger?.debug?.(
+        `${TAG} [pool-expand] R5 value backfill: fired=${JSON.stringify(rankSignal.firedLabels)}, +${added}`,
+      );
     } catch (err) {
-      logger?.warn?.(`${TAG} [pool-expand] R5 backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      logger?.warn?.(
+        `${TAG} [pool-expand] R5 backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -3970,16 +4309,25 @@ export async function searchHybrid(
       try {
         for (const ref of layered.conclusionRefs) {
           if (sorted.length + r7Added >= maxResults) break;
-          const neighbors = ((await vectorStore.getNeighbors(ref.id, ["part_of"], 1, isolationFilter)) ?? []) as Array<{ id: string; type: string; strength: number; hop: number }>;
+          const neighbors = ((await vectorStore.getNeighbors(ref.id, ["part_of"], 1, isolationFilter)) ?? []) as Array<{
+            id: string;
+            type: string;
+            strength: number;
+            hop: number;
+          }>;
           const evIds = neighbors
             .map((nb) => nb?.id)
-            .filter((id): id is string => typeof id === "string" && !r7Seen.has(id) && !(r7Excluded && r7Excluded.has(id)));
+            .filter(
+              (id): id is string => typeof id === "string" && !r7Seen.has(id) && !(r7Excluded && r7Excluded.has(id)),
+            );
           if (evIds.length === 0) continue;
           const rows = ((await r7ResolveByIds(evIds)) ?? []) as L1SearchResult[];
           r7AddToPool(rows, () => ref.sceneName);
         }
       } catch (err) {
-        logger?.warn?.(`${TAG} [pool-expand] R7 part_of evidence backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        logger?.warn?.(
+          `${TAG} [pool-expand] R7 part_of evidence backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     // ② 同 scene 过滤（补池行标注取自身 scene_name，诚实归属）
@@ -3989,14 +4337,20 @@ export async function searchHybrid(
         const remaining = maxResults - sorted.length - r7Added;
         const rows = ((await vectorStore.searchL1ByScene([...layered.sceneNames], remaining, isolationFilter)) ?? []) as L1SearchResult[];
         const fallbackScene = layered.sceneNames[0];
-        r7AddToPool(rows, (r) => (typeof r.scene_name === "string" && r.scene_name ? r.scene_name.split("/")[0] : fallbackScene));
+        r7AddToPool(rows, (r) =>
+          typeof r.scene_name === "string" && r.scene_name ? r.scene_name.split("/")[0] : fallbackScene,
+        );
       } catch (err) {
-        logger?.warn?.(`${TAG} [pool-expand] R7 scene backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        logger?.warn?.(
+          `${TAG} [pool-expand] R7 scene backfill failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     if (r7Added > 0) {
       sorted = sortEntries();
-      logger?.debug?.(`${TAG} [pool-expand] R7 scene backfill: scenes=${JSON.stringify(layered.sceneNames)}, +${r7Added}, pool=${mergedMap.size}`);
+      logger?.debug?.(
+        `${TAG} [pool-expand] R7 scene backfill: scenes=${JSON.stringify(layered.sceneNames)}, +${r7Added}, pool=${mergedMap.size}`,
+      );
     }
   }
 
@@ -4040,6 +4394,26 @@ export async function searchHybrid(
     };
     supersededRows = sorted.filter(([, value]) => validityStateOf(value, staleNow, valueAccessors) === "expired");
   }
+  // ── B2/F7（P3，2026-11-02）：效期过滤的可观测计数（journal）──
+  // 读侧此前只有"丢不丢"的谓词，journal 里没有"这一轮丢了几行效期"的可算数值，
+  // 排查"某条记忆为什么召回不到"只能靠猜。计数来自 validity-policy 的单一源
+  // validityFilterStats（与下面真正的 soft/hard 过滤同语义、同 accessors 口径）。
+  //
+  // F7（2026-11-02 复验发现）：旧实现只在**截断前的全池**上算一次，却把它当成
+  // "这一轮丢了多少注入行"——两个口径不同层：池里有 106 条过期 ≠ 注入少了 106 行
+  // （过期的行本来就可能排在 top 之外）。所以三个层各自算、各自命名：
+  //   pool     = 合并后全池（截断前）—— 诊断"库里有多少失效行被这一路看见"
+  //   top      = 截断后候选（maxResults 条）—— "进榜的里有多少失效"
+  //   injected = 最终注入集（hard 档过滤后）—— "真正少注入的" = top.dropped 的落地值
+  // 缺省 excludeInvalidated=true（hard）→ 恒有 gate（含全零），能区分"没开"与"开了没丢"。
+  const validityMode: "soft" | "hard" = excludeInvalidated === "soft" ? "soft" : "hard";
+  const validityAccessors = {
+    validStart: (v: MergedPoolValue) => v.validStart,
+    validEnd: (v: MergedPoolValue) => v.validEnd,
+  };
+  const validityStatsOf = (rows: readonly MergedPoolValue[]) =>
+    validityFilterStats(rows, validityNow ?? new Date(), validityMode, validityAccessors);
+  const validityPoolStats = validityEnabled(excludeInvalidated) ? validityStatsOf(sorted.map(([, v]) => v)) : undefined;
   if (excludeInvalidated === "soft") {
     const now = validityNow ?? new Date();
     // #148：soft 档两个可调项走配置（缺省 = #136 逐位行为：hardOnPresentIntent=true、
@@ -4063,12 +4437,15 @@ export async function searchHybrid(
       .filter(([id]) => !droppedIds.has(id))
       .map(([id, v]) =>
         demotedIds.has(id)
-          ? ([id, {
-              ...v,
-              rrfScore: v.rrfScore * softPenalty,
-              // #137：normalized 模式主序是 relevance——降权必须同刻度落在主序上，否则软失效失效
-              ...(v.relevance !== undefined ? { relevance: v.relevance * softPenalty } : {}),
-            }] as [string, MergedPoolValue])
+          ? ([
+              id,
+              {
+                ...v,
+                rrfScore: v.rrfScore * softPenalty,
+                // #137：normalized 模式主序是 relevance——降权必须同刻度落在主序上，否则软失效失效
+                ...(v.relevance !== undefined ? { relevance: v.relevance * softPenalty } : {}),
+              },
+            ] as [string, MergedPoolValue])
           : [id, v],
       );
   }
@@ -4131,14 +4508,18 @@ export async function searchHybrid(
         valueOf: ([, v]) => v.formatable.factValue,
       },
     );
-    sorted = collapsed.displayContent.size > 0
-      ? collapsed.items.map((entry) => {
-          const safe = collapsed.displayContent.get(entry);
-          return safe
-            ? ([entry[0], { ...entry[1], formatable: { ...entry[1].formatable, displayContent: safe } }] as [string, MergedPoolValue])
-            : entry;
-        })
-      : collapsed.items;
+    sorted =
+      collapsed.displayContent.size > 0
+        ? collapsed.items.map((entry) => {
+            const safe = collapsed.displayContent.get(entry);
+            return safe
+              ? ([entry[0], { ...entry[1], formatable: { ...entry[1].formatable, displayContent: safe } }] as [
+                  string,
+                  MergedPoolValue,
+                ])
+              : entry;
+          })
+        : collapsed.items;
     if (collapsed.stats.collapsed > 0) {
       logger?.debug?.(
         `${TAG} [W2b-fact-rows] collapsed ${collapsed.stats.collapsed} fact-row hit(s) into parent turns` +
@@ -4154,6 +4535,39 @@ export async function searchHybrid(
   }
 
   const top = sorted.slice(0, maxResults);
+  // F7：注入点过滤（hard 档）从 if 块里提出来——统计点必须等于真删点。放在块外还有
+  // 一个作用：空池早退也能带上 validity 门（否则「开了但没召回」在 journal 上等于没开）。
+  const applyExclusion = excludeInvalidated !== false && excludeInvalidated !== "soft";
+  let visibleTop = top;
+  if (applyExclusion && visibleTop.length > 0) {
+    const exclusionNow = validityNow ?? new Date();
+    visibleTop = visibleTop.filter(
+      ([, v]) => !isOutsideValidityWindow({ valid_start: v.validStart, valid_end: v.validEnd }, exclusionNow),
+    );
+  }
+  // F7：三层效期计数（pool / top / injected）。
+  // 注意 injected 不能对 visibleTop 求 stats——幸存集里按定义没有失效行，那样算出来的
+  // dropped 恒为 0（"注入口径"就会退化成永远没问题）。注入层要统计的是**被移出 top 的
+  // 那些行**：active = 真正注入的行数，dropped = 注入少了的行数，expired/future 拆原因。
+  const validityGate = validityPoolStats
+    ? (() => {
+        const visibleIds = new Set(visibleTop.map(([id]) => id));
+        const removedAtInjection = top.filter(([id]) => !visibleIds.has(id)).map(([, v]) => v);
+        const removedStats = validityStatsOf(removedAtInjection);
+        return {
+          mode: validityMode,
+          pool: validityPoolStats,
+          top: validityStatsOf(top.map(([, v]) => v)),
+          injected: {
+            active: visibleTop.length,
+            expired: removedStats.expired,
+            future: removedStats.future,
+            dropped: removedAtInjection.length,
+          },
+          validEndFiltered: validityPoolStats.dropped,
+        };
+      })()
+    : undefined;
 
   if (top.length > 0) {
     logger?.debug?.(
@@ -4168,15 +4582,8 @@ export async function searchHybrid(
     // valid_start/valid_end 保留不误删）。池携带 validStart/validEnd（keyword soul /
     // embedding 行双通道注入），一致性由 filter-invalidated.test.ts 与
     // bitemporal-two-path.test.ts 钉死。
-    // #136：soft 已在截断前处理（排序/硬丢），此处不再二次过滤；true/undefined 逐位不变。
-    const applyExclusion = excludeInvalidated !== false && excludeInvalidated !== "soft";
-    let visibleTop = top;
-    if (applyExclusion) {
-      const now = validityNow ?? new Date();
-      visibleTop = visibleTop.filter(([, v]) =>
-        !isOutsideValidityWindow({ valid_start: v.validStart, valid_end: v.validEnd }, now),
-      );
-    }
+    // #136：soft 已在截断前处理（排序/硬丢），注入点不再二次过滤；true/undefined 逐位不变。
+    // （F7 起过滤与可见集上移到 top 之后，见上面的 applyExclusion / visibleTop。）
     // GROW-EVO P1（R8 数据前提）：钩子路 recall_count 计数补齐——top-3 observed
     // （工具路重巩固白名单同款红线），只加计数、不刷 updated_time（防扰动既有排序）。
     // best-effort：失败静默（计数非排序语义）；bumpRecallCount 缺失的后端安静跳过。
@@ -4186,7 +4593,9 @@ export async function searchHybrid(
         const recallNow = new Date().toISOString();
         for (const [bumpId, bumpVal] of visibleTop.slice(0, 3)) {
           if (bumpVal.certainty !== "observed") continue;
-          void Promise.resolve(bumpStore.bumpRecallCount(bumpId, recallNow, { touchUpdatedTime: false })).catch(() => {});
+          void Promise.resolve(bumpStore.bumpRecallCount(bumpId, recallNow, { touchUpdatedTime: false })).catch(
+            () => {},
+          );
         }
       }
     } catch { /* bookkeeping best-effort */ }
@@ -4195,19 +4604,29 @@ export async function searchHybrid(
     const importanceGateOut = rankSignal?.importanceGate
       ? { importancePenalty: importanceGateStats(importanceGateRows, rankSignal.importanceGate) }
       : undefined;
+    const gatesOut = {
+      ...(importanceGateOut ?? {}),
+      ...(validityGate ? { validity: validityGate } : {}),
+    };
     return {
       lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)),
-      metas: visibleTop.map(([, { formatable }]) => ({ recordId: formatable.recordId, evidenceIds: formatable.evidenceIds, sessionId: formatable.sessionId })),
+      metas: visibleTop.map(([, { formatable }]) => ({
+        recordId: formatable.recordId,
+        evidenceIds: formatable.evidenceIds,
+        sessionId: formatable.sessionId,
+      })),
       // 2026-10-14 观测性修复：fallback 消费方（searchMemories 1545）此前丢弃 scores →
       // metric 上报全 0；此处随 metas 一并返回（rrfScore 刻度，与 lines 平行，精排重映射兼容）。
       scores: visibleTop.map(([, v]) => v.relevance ?? v.rrfScore),
       timing,
-      ...(importanceGateOut ? { gates: importanceGateOut } : {}),
+      ...(Object.keys(gatesOut).length > 0 ? { gates: gatesOut } : {}),
     };
   }
 
   logger?.debug?.(`${TAG} Hybrid search: no results after merge`);
-  return { lines: [], metas: [], timing };
+  // F7：空池也带 validity 门（全零）——区分「没开」与「开了但这一轮零召回」，
+  // 否则 /v3/recall 探针在空池上永远看不到效期段。
+  return { lines: [], metas: [], timing, ...(validityGate ? { gates: { validity: validityGate } } : {}) };
 }
 
 // ============================
@@ -4356,11 +4775,7 @@ export function formatMemoryLine(m: FormatableMemory): string {
   return line;
 }
 
-function applyRecallBudget(
-  lines: string[],
-  recall: MemoryTdaiConfig["recall"],
-  logger?: Logger,
-): string[] {
+function applyRecallBudget(lines: string[], recall: MemoryTdaiConfig["recall"], logger?: Logger): string[] {
   const maxCharsPerMemory = normalizeBudgetLimit(recall.maxCharsPerMemory);
   const maxTotalRecallChars = normalizeBudgetLimit(recall.maxTotalRecallChars);
 
@@ -4480,7 +4895,7 @@ export function recordToFormatable(record: MemoryRecord): FormatableMemory {
     scene_name: record.scene_name || undefined,
     activity_start_time: meta?.activity_start_time || undefined,
     activity_end_time: meta?.activity_end_time || undefined,
-    timestamp: (record.timestamps && record.timestamps.length > 0) ? record.timestamps[0] : undefined,
+    timestamp: record.timestamps && record.timestamps.length > 0 ? record.timestamps[0] : undefined,
     // A3（REG-REMAINING-001）补齐：native-hybrid 路径（merged pool 1520）soul 透传——
     // R-A1 时代信号单独携带，但 B4 行内标注需要 formatable 携带；额外字段不破坏信号路径。
     occurred_at: (record as { occurred_at?: string }).occurred_at || undefined,
@@ -4554,7 +4969,8 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
       // D-4：周期性事实透传（normalize 形状重验，防垃圾入库渲染）
       if (isRecurrenceMeta(meta?.recurrence)) activityRec = meta.recurrence;
       // V6-1a：属性信号透传（recall_count 数值合法才收；identityRefs 过滤非字符串、空则不透传）
-      if (typeof meta?.recall_count === "number" && Number.isFinite(meta.recall_count) && meta.recall_count > 0) recCount = meta.recall_count;
+      if (typeof meta?.recall_count === "number" && Number.isFinite(meta.recall_count) && meta.recall_count > 0)
+        recCount = meta.recall_count;
       if (Array.isArray(meta?.identityRefs)) {
         const refs = (meta.identityRefs as unknown[]).filter((s): s is string => typeof s === "string");
         if (refs.length > 0) identRefs = refs;
@@ -4569,7 +4985,9 @@ export function vectorResultToFormatable(r: L1SearchResult): FormatableMemory {
       if (typeof meta?.fact_of === "string" && meta.fact_of.trim() !== "") factOf = meta.fact_of;
       if (typeof meta?.fact_phrase === "string" && meta.fact_phrase.trim() !== "") factPhrase = meta.fact_phrase;
       factValue = factValueOfMeta(meta);
-    } catch { /* ignore parse errors — treat as no metadata */ }
+    } catch {
+      /* ignore parse errors — treat as no metadata */
+    }
   }
   return {
     type: r.type,
@@ -4630,7 +5048,8 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
       // D-4：周期性事实透传（FTS 路——与向量路成对，丢一个=徽章单通道）
       if (isRecurrenceMeta(meta?.recurrence)) activityRec = meta.recurrence;
       // V6-1a：属性信号透传（与向量路成对）
-      if (typeof meta?.recall_count === "number" && Number.isFinite(meta.recall_count) && meta.recall_count > 0) recCount = meta.recall_count;
+      if (typeof meta?.recall_count === "number" && Number.isFinite(meta.recall_count) && meta.recall_count > 0)
+        recCount = meta.recall_count;
       if (Array.isArray(meta?.identityRefs)) {
         const refs = (meta.identityRefs as unknown[]).filter((s): s is string => typeof s === "string");
         if (refs.length > 0) identRefs = refs;
@@ -4639,7 +5058,9 @@ export function ftsResultToFormatable(r: L1FtsResult): FormatableMemory {
       if (typeof meta?.fact_of === "string" && meta.fact_of.trim() !== "") factOf = meta.fact_of;
       if (typeof meta?.fact_phrase === "string" && meta.fact_phrase.trim() !== "") factPhrase = meta.fact_phrase;
       factValue = factValueOfMeta(meta);
-    } catch { /* ignore parse errors — treat as no metadata */ }
+    } catch {
+      /* ignore parse errors — treat as no metadata */
+    }
   }
   return {
     type: r.type,

@@ -269,6 +269,8 @@ export class StorePool {
         model: embCfg.model,
         dimensions: embCfg.dimensions,
         maxInputChars: embCfg.maxInputChars,
+        // F3：单批条数上限随配置走（生产 ark 端点上限 10 → config 必须设 10）
+        maxBatchSize: embCfg.maxBatchSize,
       }, this.logger as StoreLogger);
     }
 

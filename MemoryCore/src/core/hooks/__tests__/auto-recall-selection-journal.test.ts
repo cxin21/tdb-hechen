@@ -293,4 +293,47 @@ describe("#179 选线装配 · 观测面与行为", () => {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * 空池轮（L1/scene/persona 三路全空，选线段根本没跑）也必须留观测。
+   *
+   * 生产实测 00:0x：journal 里「无 selection」的轮占大头（coverage 186/1033=18%），
+   * zeroInjectionRate 的分母只统计「有池子的轮」，于是空池轮被静默排除在分母外——
+   * 指标看起来比真实情况好。修法：空池写零观测 + emptyPool:true，让分母回到真实轮数，
+   * 同时用 emptyPool 把「池空」与「池非空但一行没注入」分开，避免把两者混成一个坏数。
+   */
+  it("空池轮：写 selection 零观测 + emptyPool=true（不静默排除在 zeroInjectionRate 分母外）", async () => {
+    const { store, dir } = makeStore([]);
+    const dataDir = makeDataDir();
+    const fake = fakeEmbedding();
+    try {
+      const res = await performAutoRecall({
+        userText: query,
+        actorId: "r7sel",
+        sessionKey: "sel-empty-1",
+        cfg: cfgOf(),
+        pluginDataDir: dataDir,
+        vectorStore: store as unknown as IMemoryStore,
+        embeddingService: fake.svc,
+      });
+      expect(injectedLines(res?.prependContext)).toEqual([]);
+      const entry = readJournal(dataDir)[0]!;
+      // 空池仍要有一条可对账的观测（selection 存在即计入 zeroInjectionRate 分母）
+      expect(entry.selection).toMatchObject({
+        kept: 0,
+        injected: 0,
+        poolChars: 0,
+        injectedChars: 0,
+        emptyPool: true,
+        droppedBy: { rank: 0, floor: 0, margin: 0, dup: 0, budget: 0, chars: 0, fold: 0 },
+      });
+      // ruler 元信息也要在，且如实标 uncalibrated（空池没跑尺子，不能假装是 config 地板）
+      expect(entry.ruler).toMatchObject({ mode: "off", floorSource: "uncalibrated", floor: null });
+      // 空池不得造出假候选
+      expect((entry.candidates as { total: number } | undefined)?.total ?? 0).toBe(0);
+    } finally {
+      cleanup(store, dir);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });

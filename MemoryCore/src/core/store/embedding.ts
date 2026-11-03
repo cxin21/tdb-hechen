@@ -41,6 +41,12 @@ export interface OpenAIEmbeddingConfig {
   maxInputChars?: number;
   /** Timeout per API call in milliseconds (default: 10000). */
   timeoutMs?: number;
+  /**
+   * F3（2026-11-02）单批最多几条文本（缺省 256 = 逐位现状，clamp 1..2048）。
+   * provider 有输入条数上限（生产 ark doubao-embedding-vision 上限 10）时必须下调，
+   * 否则整批 400 → 调用方降级 FTS → dedup 前置门槛恒空转。来自 config.embedding.maxBatchSize。
+   */
+  maxBatchSize?: number;
 }
 
 export interface LocalEmbeddingConfig {
@@ -360,8 +366,10 @@ export class LocalEmbeddingService implements EmbeddingService {
 // OpenAI-compatible implementation
 // ============================
 
-/** Max texts per batch (OpenAI limit is 2048, we use a safe value) */
-const MAX_BATCH_SIZE = 256;
+/** 缺省单批文本条数（OpenAI 上限 2048，这里保守取 256）。F3：可被 config.embedding.maxBatchSize 覆盖。 */
+export const DEFAULT_MAX_BATCH_SIZE = 256;
+/** maxBatchSize 的取值域（与 config.ts 解析 clamp 同域）。 */
+const MAX_BATCH_SIZE_LIMIT = 2048;
 
 /** B（2026-10-26 降调用量）：内容寻址向量缓存的条数上限。
  *  2048 维 float32 ≈ 8KB/条 → 512 条 ≈ 4MB，上限固定，超出按插入序淘汰最旧（LRU）。 */
@@ -397,6 +405,16 @@ class EmbeddingApiError extends Error {
   }
 }
 
+/**
+ * F3：provider 输入的条数上限错误（生产 ark：HTTP 400 +
+ * "Embeddings API input limit exceeded: max 10, got 15"）。只有这一类错误值得折半重试。
+ */
+function isInputLimitExceededError(err: unknown): boolean {
+  if (!(err instanceof EmbeddingApiError)) return false;
+  if (err.httpStatus !== 400) return false;
+  return /input limit exceeded/i.test(err.message);
+}
+
 interface OpenAIEmbeddingResponse {
   data: Array<{
     index: number;
@@ -417,6 +435,8 @@ export class OpenAIEmbeddingService implements EmbeddingService {
   private readonly providerName: string;
   private readonly maxInputChars?: number;
   private readonly timeoutMs: number;
+  /** F3：单批文本条数上限（实例参数，来自 config.embedding.maxBatchSize）。 */
+  private readonly maxBatchSize: number;
   private readonly logger?: Logger;
   /** B（2026-10-26 降调用量）：内容寻址缓存，键 = model + "\u0000" + 文本。
    *  同一文本只打一次 provider；L1 dedup 批量算过的向量被写入侧/相似搜索直接复用。 */
@@ -448,6 +468,12 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     this.providerName = config.provider || "openai";
     this.maxInputChars = config.maxInputChars && config.maxInputChars > 0 ? config.maxInputChars : undefined;
     this.timeoutMs = config.timeoutMs && config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_API_TIMEOUT_MS;
+    // F3：非法值（NaN/非有限）→ 缺省 256；其余 floor 后 clamp 1..2048（0/负数 → 1）
+    const rawBatch =
+      typeof config.maxBatchSize === "number" && Number.isFinite(config.maxBatchSize)
+        ? Math.floor(config.maxBatchSize)
+        : DEFAULT_MAX_BATCH_SIZE;
+    this.maxBatchSize = Math.min(MAX_BATCH_SIZE_LIMIT, Math.max(1, rawBatch));
     this.logger = logger;
   }
 
@@ -506,11 +532,12 @@ export class OpenAIEmbeddingService implements EmbeddingService {
       this.logger?.debug?.(TAG + " [embed-cache] hit " + cacheHits + "/" + processedTexts.length);
     }
 
-    // 只对未命中的去重文本调 API（仍按 MAX_BATCH_SIZE 分块）
+    // 只对未命中的去重文本调 API（按实例参数 maxBatchSize 分块；L0 单条 embed 与
+    // dedup 批量 embedBatch 共用这一条路径，不存在第二份分批逻辑）
     const uniqueTexts = [...pending.values()].map((p) => p.text);
-    for (let i = 0; i < uniqueTexts.length; i += MAX_BATCH_SIZE) {
-      const chunk = uniqueTexts.slice(i, i + MAX_BATCH_SIZE);
-      const chunkResults = await this._callApi(chunk, options?.timeoutMs);
+    for (let i = 0; i < uniqueTexts.length; i += this.maxBatchSize) {
+      const chunk = uniqueTexts.slice(i, i + this.maxBatchSize);
+      const chunkResults = await this._callApiChunk(chunk, options?.timeoutMs);
       for (let j = 0; j < chunk.length; j++) {
         const text = chunk[j];
         const vec = chunkResults[j];
@@ -584,6 +611,32 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     if (waitMs <= 0) return;
     this.logger?.debug?.(`${TAG} waiting ${waitMs}ms for rate-limit cooldown`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  /**
+   * F3（2026-11-02）：带 "input limit exceeded" 折半重试的单批调用。
+   *
+   * provider 的 input 条数上限未配置正确时（生产 ark 端点上限 10、配置仍 256），整批 400
+   * 会让调用方降级 FTS（dedup 前置门槛因此恒空转）。这里对**这一类 400** 折半重试：
+   * - chunk.length > 1 → 拆两半各发一次（递归，仍超限就继续拆）+ warn；
+   * - chunk.length === 1 → 原样抛（不可能更小，明确失败给调用方）；
+   * - 其余错误（5xx/超时/别的 4xx）不折半，一次即抛（保持旧语义，不拖长预算）。
+   */
+  private async _callApiChunk(texts: string[], timeoutOverride?: number): Promise<Float32Array[]> {
+    try {
+      return await this._callApi(texts, timeoutOverride);
+    } catch (err) {
+      if (!isInputLimitExceededError(err) || texts.length <= 1) throw err;
+      const mid = Math.ceil(texts.length / 2);
+      const head = texts.slice(0, mid);
+      const tail = texts.slice(mid);
+      this.logger?.warn?.(
+        `${TAG} embedding input limit exceeded for ${texts.length} texts — retrying as ${head.length}+${tail.length}`,
+      );
+      const headVecs = await this._callApiChunk(head, timeoutOverride);
+      const tailVecs = await this._callApiChunk(tail, timeoutOverride);
+      return [...headVecs, ...tailVecs];
+    }
   }
 
   private async _callApi(texts: string[], timeoutOverride?: number): Promise<Float32Array[]> {

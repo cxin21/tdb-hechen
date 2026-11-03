@@ -11,6 +11,39 @@ import { describeAttributes } from "../record/fact-attribute.js";
 import { clampMaxFacts } from "../record/fact-key.js";
 
 // ============================
+// A3-1（2026-11-02）：原子性拆分红线参数化（config-first）
+// 缺省 300 / 不改写 = 2026-11-02 之前写死在 prompt 里的字面文本，逐字节不变。
+// 只在实际参数偏离缺省时才替换，故缺省产出的 prompt 与历史完全一致。
+// ============================
+
+/** 原子性拆分红线（字符）。缺省 300 = 历史逐字常量。 */
+export const DEFAULT_ATOMIC_MAX_CHARS = 300;
+/** 与 config.ts 的 clamp 同界：prompt 侧不再自造边界。 */
+export const MIN_ATOMIC_MAX_CHARS = 120;
+export const MAX_ATOMIC_MAX_CHARS = 2000;
+
+/** 非法/缺失 → 缺省 300；其余 round 后 clamp 120..2000（绝不产出 "超过 NaN 字"）。 */
+export function resolveAtomicMaxChars(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_ATOMIC_MAX_CHARS;
+  return Math.min(Math.max(Math.round(value), MIN_ATOMIC_MAX_CHARS), MAX_ATOMIC_MAX_CHARS);
+}
+
+/** 历史上两处硬编码文本（chat L40 / code 第 8 条）。 */
+const ATOMIC_MAX_CHARS_LITERAL = "超过 300 字";
+const ATOMIC_ONE_THING_LITERAL = "一条记忆只记一件事";
+/** A3 改写形态：一条记忆只记一个可验证断言（主语+谓词+值/时间）。 */
+const ATOMIC_ONE_ASSERTION_LITERAL = "一条记忆只记一个可验证断言（主语 + 谓词 + 值/时间）";
+
+function applyAtomicityTuning(prompt: string, atomicMaxChars: number, atomicityRewrite: boolean): string {
+  let out = prompt;
+  if (atomicityRewrite) out = out.split(ATOMIC_ONE_THING_LITERAL).join(ATOMIC_ONE_ASSERTION_LITERAL);
+  if (atomicMaxChars !== DEFAULT_ATOMIC_MAX_CHARS) {
+    out = out.split(ATOMIC_MAX_CHARS_LITERAL).join(`超过 ${atomicMaxChars} 字`);
+  }
+  return out;
+}
+
+// ============================
 // System Prompt
 // ============================
 
@@ -447,9 +480,17 @@ export function getExtractMemoriesSystemPrompt(
     factsMaxFacts?: number;
     /** #137：是否允许 {subject,predicate,value} 三元组形状（缺省 false）。 */
     factsIncludeTriples?: boolean;
+    /** A3（2026-11-02）：原子性拆分红线（字符，clamp 120..2000；缺省 300 = 逐位现状）。 */
+    atomicMaxChars?: number;
+    /** A3（2026-11-02）：原子性改写——"只记一件事" → "只记一个可验证断言"（缺省 false = 逐位现状）。 */
+    atomicityRewrite?: boolean;
   },
 ): string {
-  const base = mode === "code" ? EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT : EXTRACT_MEMORIES_SYSTEM_PROMPT;
+  const base = applyAtomicityTuning(
+    mode === "code" ? EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT : EXTRACT_MEMORIES_SYSTEM_PROMPT,
+    resolveAtomicMaxChars(opts?.atomicMaxChars),
+    opts?.atomicityRewrite === true,
+  );
   let out = opts?.selfIdentityEnabled && mode !== "code" ? base + AGENT_ACT_BLOCK : base;
   // D-3（2026-09-21，用户拍板"全做"）：敏感性输出要求（gated；缺省关闭=逐位现状，prompt 字节不变）
   if (opts?.sensitivityEnabled && mode !== "code") out += SENSITIVITY_BLOCK;

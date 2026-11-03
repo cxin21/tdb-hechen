@@ -138,11 +138,41 @@ describe("P1-T7 importance NULL/缺省：永不计数、永不罚", () => {
 });
 
 describe("P1-T7 关断口径", () => {
-  it("无 importanceGate → 结果无 gates 字段（缺字段=门未启用）", async () => {
+  it("无 importanceGate → gates 里没有 importancePenalty（缺字段=门未启用）", async () => {
     const f = fixture({ importance: 2 }, { importance: 2 }, {});
     const res = await runDual(f.vec, f.fts, rank({
       signals: { ...ZERO_RANK_SIGNALS, importancePenalty: 0 },
     }));
-    expect(res.res.gates).toBeUndefined();
+    // B2（2026-11-02）：gates 现在恒带 validity（效期门，excludeInvalidated 缺省 true）——
+    // 本用例的真实意图是「没开重要度门 ⇒ 没有 importancePenalty」，收窄断言而不是放宽门槛。
+    expect(res.res.gates?.importancePenalty).toBeUndefined();
+    // F8-2（2026-11-02 复验）：收窄后要补一条显式断言，证明「门未启用」不是靠别的键撑着——
+    // 此时 gates 里只允许有效期门这一个键。
+    expect(Object.keys(res.res.gates ?? {})).toEqual(["validity"]);
+  });
+
+  it("所有门都关（excludeInvalidated=false 且无 importanceGate）→ gates 字段整体缺省", async () => {
+    const f = fixture({ importance: 2 }, { importance: 2 }, {});
+    const { vectorStore, embeddingService } = mockStoreDual(f.vec, f.fts);
+    const res = await searchHybrid(
+      "T7IMP 查询",
+      "",
+      10,
+      0.3,
+      vectorStore,
+      embeddingService,
+      undefined, // logger
+      undefined, // embeddingCallOpts
+      rank({ signals: { ...ZERO_RANK_SIGNALS, importancePenalty: 0 } }), // rank
+      0, // embedCacheTtlMs
+      undefined, // layered
+      undefined, // expansionTerms
+      false, // exploreSlot
+      { relevance: 0, timeProx: 0, significance: 0, coreRef: 0 }, // rerankWeights
+      undefined, // isolationFilter
+      false, // excludeInvalidated = 关
+      new Date(), // validityNow
+    );
+    expect(res.gates).toBeUndefined();
   });
 });

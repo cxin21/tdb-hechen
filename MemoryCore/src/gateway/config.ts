@@ -16,7 +16,7 @@ import { isSetCredential } from "../utils/credential.js";
 import { parseConfig as parseMemoryConfig } from "../config.js";
 import type { MemoryTdaiConfig } from "../config.js";
 import type { StandaloneLLMConfig } from "../adapters/standalone/llm-runner.js";
-import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImportancePenaltyOverrideToRaw, applyWorthinessOverrideToRaw, applyExtractionOverrideToRaw, applyLayerRulerOverrideToRaw, applyInjectionOverrideToRaw } from "./settings-override.js";
+import { readSettingsOverride, pickDefined, applyRerankOverrideToRaw, applyImportancePenaltyOverrideToRaw, applyWorthinessOverrideToRaw, applyExtractionOverrideToRaw, applyLayerRulerOverrideToRaw, applyInjectionOverrideToRaw, applyMemorySectionsOverrideToRaw } from "./settings-override.js";
 
 // ============================
 // Gateway config types
@@ -319,21 +319,27 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   //（enabled/penalty clamp/extractionEnabled 缺省语义在 parseConfig 内）。
   // #179 S5：layerRuler/injection 段同样在 parse 之前并入（mode 白名单 / keepRatio
   // clamp / minPerLayer 取整 / floor 形状 / budgetByIntent null 语义都在 parseConfig 内）。
-  const memoryCompatWithRerank = applyInjectionOverrideToRaw(
-    applyLayerRulerOverrideToRaw(
-      applyImportancePenaltyOverrideToRaw(
-        applyWorthinessOverrideToRaw(
-          applyExtractionOverrideToRaw(
-            applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank),
-            settingsOverride?.extraction,
+  // 2026-11-02（记忆分层优化）：recall / persona / lifecycle 三段走通用深合并，
+  // 作为**最外层**并入 —— 它是新增键的逃生口，同键若有专用 applier（layerRuler /
+  // injection / importancePenalty）则本层优先（最后一手写入）。
+  const memoryCompatWithRerank = applyMemorySectionsOverrideToRaw(
+    applyInjectionOverrideToRaw(
+      applyLayerRulerOverrideToRaw(
+        applyImportancePenaltyOverrideToRaw(
+          applyWorthinessOverrideToRaw(
+            applyExtractionOverrideToRaw(
+              applyRerankOverrideToRaw(memoryCompatRaw, settingsOverride?.rerank),
+              settingsOverride?.extraction,
+            ),
+            settingsOverride?.worthiness,
           ),
-          settingsOverride?.worthiness,
+          settingsOverride?.importancePenalty,
         ),
-        settingsOverride?.importancePenalty,
+        settingsOverride?.layerRuler,
       ),
-      settingsOverride?.layerRuler,
+      settingsOverride?.injection,
     ),
-    settingsOverride?.injection,
+    settingsOverride,
   );
   const memory = parseMemoryConfig(memoryCompatWithRerank);
 

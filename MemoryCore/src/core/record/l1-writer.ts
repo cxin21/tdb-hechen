@@ -455,7 +455,10 @@ export async function writeMemory(params: {
             `${TAG} [W2-supersession] invalidateL1 failed for ${decision.action}: ${err instanceof Error ? err.message : String(err)} — falling back to archive path`,
           );
         }
-      } else {
+      } else if (!keptAlive && decision.target_ids.length > 0) {
+        // 只有「本来要失效、但后端没实现该方法」才是真能力缺失。多值（keptAlive）与空目标
+        // 是**设计上不失效**，此前被同一个 else 罩住，日志把二者读成"后端缺能力"——
+        // 排查"这条为什么没失效"时会被假警报带偏（B2 可观测性补口）。
         logger?.warn?.(`${TAG} [W2-supersession] store lacks invalidateL1 — falling back to archive path (no hard delete)`);
       }
       if (superseded.length > 0) {

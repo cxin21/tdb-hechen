@@ -135,6 +135,7 @@ import type { LocalMemoryCleaner } from "../utils/memory-cleaner.js";
 import type { StatefulPipelineManager } from "../utils/stateful-pipeline-manager.js";
 import type { PipelineLogger } from "../utils/pipeline-factory.js";
 import { parsePipelineTimerMember } from "../core/state/timer-member.js";
+import { bootRecoveryWarnLine } from "../core/scene/l2-admission.js";
 
 const TAG = "[tdai-gateway]";
 const VERSION = "0.1.0";
@@ -2094,6 +2095,11 @@ export class TdaiGateway {
         .filter((sessionKey) => (hasL0Session ? hasL0Session(sessionKey) : true));
       const recovered = await statefulManager.recoverPendingSessions(recoveryKeys);
       if (recovered > 0) this.logger.info(`[pipeline-v2] boot recovery done: ${recovered} session(s) re-armed`);
+      // F2：manager 里那份 bootRecoveryWarnSessions WARN 在生产上是死代码（生产 L2 不走
+      // manager 定时器），把同一判据落到 boot recovery 这个真实挂载点上，日志里留下
+      // 「这次重启会一次唤醒多少会话的 L2」的证据。
+      const bootRecoveryWarn = bootRecoveryWarnLine(recovered, this.config.memory.persona.l2Gate);
+      if (bootRecoveryWarn) this.logger.warn(bootRecoveryWarn);
     } catch (err) {
       this.logger.warn(`[pipeline-v2] boot recovery failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2122,6 +2128,13 @@ export class TdaiGateway {
       onL2Complete: statefulManager.armL2MaxInterval.bind(statefulManager),
       // 与 skill worker 共享的节点级并发上限
       permitPool: this.workerPermitPool ?? undefined,
+      // F2（2026-11-02）· 全局速率门透传：生产 L2 由 state-backend timer 直接
+      // enqueue，不经过 MemoryPipelineManager，所以门必须由 worker 自己执行
+      // （在抢锁之前）。两个上限都 <=0 ⇒ 不加门，逐位等于今天的行为。
+      l2Gate: {
+        maxRunsPerHour: this.config.memory.persona.l2Gate.maxRunsPerHour,
+        maxSessionsPerRound: this.config.memory.persona.l2Gate.maxSessionsPerRound,
+      },
     }, this.logger);
     await this.pipelineWorker.start();
     this.logger.info("Pipeline Worker started");
@@ -2150,6 +2163,12 @@ export class TdaiGateway {
               baseUrl: effective.baseUrl,
               apiKey: effective.apiKey,
               model: effective.model ?? "default",
+              // B1 生产缺陷（2026-11-02）：原先只传 baseUrl/apiKey/model/timeoutMs/stream，
+              // Runner 的 rawMaxTokens = params.maxTokens ?? this.config.maxTokens ?? 4096
+              // 因此巩固 LLM 恒 4096 上限，llm.maxTokens=131072 被绕开（FLOW-E 同款
+              // "不接线即死配置"）。实测：40 成员的属性组在 4096 档推理吃满
+              // finish_reason=length / 正文 0 字符，巩固直接丢卡（20 组丢 3 组）。
+              maxTokens: effective.maxTokens,
               timeoutMs: effective.timeoutMs ?? 120_000,
               stream: effective.stream ?? false,
             },

@@ -22,6 +22,7 @@
  */
 
 import type { MemoryPromptMode } from "../../config.js";
+import { buildStructuredFormGuidance } from "../scene/scene-structured.js";
 
 export interface SceneExtractionPromptParams {
   memoriesJson: string;
@@ -34,6 +35,12 @@ export interface SceneExtractionPromptParams {
   maxScenes: number;
   /** Prompt family for L2 scene extraction (default: chat). */
   promptMode?: MemoryPromptMode;
+  /**
+   * B3 结构化形态（persona.l2Form）：enabled=true 时在 user prompt 追加
+   * 「摘要 / 主张(heat) / 事件流(append-only) + 单块字节上限」的形态要求。
+   * 缺省 undefined/false ⇒ 提示词逐位等于今天（既有测试钉死）。
+   */
+  structuredForm?: { enabled?: boolean; maxBlockBytes?: number };
 }
 
 export interface SceneExtractionPromptResult {
@@ -552,6 +559,7 @@ export function buildSceneExtractionPrompt(params: SceneExtractionPromptParams):
     existingSceneFiles,
     maxScenes,
     promptMode = "chat",
+    structuredForm,
   } = params;
 
   const warningSection = sceneCountWarning
@@ -561,6 +569,11 @@ export function buildSceneExtractionPrompt(params: SceneExtractionPromptParams):
   const fileListSection = existingSceneFiles && existingSceneFiles.length > 0
     ? `### 📁 已有场景文件清单（仅以下文件可 read）\n${existingSceneFiles.map((f) => `- \`${f}\``).join("\n")}\n`
     : `### 📁 已有场景文件清单\n（当前无已有场景文件）\n`;
+
+  // B3：结构化形态要求只在开启时追加；缺省路径的 userPrompt 逐位不变。
+  const structuredSection = structuredForm?.enabled === true
+    ? `\n${buildStructuredFormGuidance(structuredForm.maxBlockBytes ?? 4096)}\n`
+    : "";
 
   const userPrompt = `**输出语言**：场景文件内容使用下方 New Memories List 中记忆的主导语言。
 ${warningSection}
@@ -573,7 +586,7 @@ ${sceneSummaries}
 ### 3️⃣ Current Timestamp
 ${currentTimestamp}
 
-${fileListSection}`;
+${fileListSection}${structuredSection}`;
 
   return {
     systemPrompt: getSceneSystemPrompt(maxScenes, promptMode),

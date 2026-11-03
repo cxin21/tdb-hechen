@@ -90,6 +90,8 @@ export function createStoreBundle(
       dimensions: config.embedding.dimensions,
       sendDimensions: config.embedding.sendDimensions,
       maxInputChars: config.embedding.maxInputChars,
+      // F3：单批条数上限随配置走（生产 ark 端点上限 10 → config 必须设 10，否则整批 400）
+      maxBatchSize: config.embedding.maxBatchSize,
     }, logger);
   }
 

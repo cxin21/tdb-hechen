@@ -15,10 +15,7 @@ import {
 } from "./core/recall/rerank/filter-ruler.js";
 import { DEFAULT_RERANK_CANDIDATES, defaultRerankMinScore } from "./core/recall/rerank/defaults.js";
 import { parseUnknownPrincipalPolicy } from "./gateway/auth-binding.js";
-import {
-  normalizeTeamOwnershipWhitelist,
-  parseTeamOwnershipMode,
-} from "./gateway/team-ownership.js";
+import { normalizeTeamOwnershipWhitelist, parseTeamOwnershipMode } from "./gateway/team-ownership.js";
 import { injectWrapperModeOf, type InjectWrapperMode } from "./core/recall/inject-wrapper.js";
 import { DEFAULT_IGNORE_SESSION_PATTERNS } from "./utils/session-ignore.js";
 
@@ -87,6 +84,31 @@ export interface ExtractionConfig {
     includeTriples: boolean;
   };
   /**
+   * A3（P1）原子性字符上限（config-first，2026-11-02）：一条记忆只记一个可验证断言，
+   * 合并后超过该字符数必须拆分。缺省 300 = 逐位现状（prompt 文本不变）；生产按离线复放
+   * 校准后上调（600）。clamp 120..2000。
+   */
+  atomicMaxChars: number;
+  /**
+   * A3（P1）原子性措辞重写（config-first，缺省 false = prompt 字节逐位不变）：
+   * 开启后「一条记忆只记一件事」→「一条记忆只记一个可验证断言（主语+谓词+值/时间）」。
+   */
+  atomicityRewrite: boolean;
+  /**
+   * A3（P2）写侧主语标注（config-first，缺省 false = 逐位现状）：命中 agent 自述形态的
+   * 记忆在 metadata.actor 写 "agent"；读侧按住户配置决定是否注入（recall.selfNarration）。
+   */
+  actorTagging: boolean;
+  /**
+   * B4 dedup 前置门槛（config-first，缺省 false = 逐位现状：每批先 LLM 判重）。
+   * 开启后先用 embedding 余弦筛（≥minCos 才进 LLM 判重），把每批 LLM 调用降到 ≤1.3 次均值。
+   */
+  dedupPrefilter: {
+    enabled: boolean;
+    /** 进 LLM 判重的最小余弦（缺省 0.90；clamp 0..1）。 */
+    minCos: number;
+  };
+  /**
    * 毒批超时（L1-OUTAGE-20261015 定罪修复）：单次提取 LLM 调用超时 ms。
    * 思考型端点延迟∝prompt 体积（生产实测 13K≈298s 贴线、20K>300s 恒超时）→
    * 大批恒超时 → 游标不推进（F-EV12-1）→ 毒批 5min 死循环。缺省 300_000=逐位现状；
@@ -146,6 +168,43 @@ export interface PersonaConfig {
    * → providerOptions.openaiCompatible.reasoningEffort.
    */
   reasoningEffort?: string;
+  /**
+   * A1（P5）L2 触发门（config-first，缺省 enabled:false = 逐位现状：每次调度都跑）。
+   * 开启后：未处理 L1 ≥ minPendingL1 **或** 距上次成功 L2 ≥ minIntervalHours 才跑；
+   * triggerEveryN 仍作为对话条数上限在前置链路生效。手动强制触发口 = POST /v3/scene/force。
+   */
+  l2Gate: {
+    enabled: boolean;
+    /** 未处理 L1 条数阈值（缺省 30；clamp 1..1000）。 */
+    minPendingL1: number;
+    /** 距上次成功 L2 的小时数阈值（缺省 6；clamp 0.1..168）。 */
+    minIntervalHours: number;
+    /**
+     * F2（2026-11-02）全局速率门：滑动 60 分钟内最多放行几次真实 L2 运行
+     * （缺省 0 = 不限，逐位现状）。per-session 条数门仍是第二道；本键只防
+     * 「242 个会话各有 ≥30 backlog → 同时全放行」的洪泛。
+     */
+    maxRunsPerHour: number;
+    /**
+     * F2 单轮最多放行几个 session 的 L2（缺省 0 = 不限，逐位现状）。
+     * 用于把一次 boot recovery 的 242 个会话排成队列，而不是同一 tick 全放。
+     */
+    maxSessionsPerRound: number;
+    /**
+     * F2：boot recovery 一次挂载超过该会话数时打 WARN（缺省 50；clamp 1..10000）。
+     * 只告警不改行为——用于在日志里留下"这次重启会引发多少 L2 唤醒"的证据。
+     */
+    bootRecoveryWarnSessions: number;
+  };
+  /**
+   * B3（P5）L2 结构化卡形态（config-first，缺省 structured:false = 逐位现状整篇重写）。
+   * 开启后 scene 块 = summary/claims/heat + append-only 事件段，单块上限 maxBlockBytes。
+   */
+  l2Form: {
+    structured: boolean;
+    /** 单块字节上限（缺省 4096；clamp 1024..65536）。 */
+    maxBlockBytes: number;
+  };
 }
 
 /** Pipeline trigger settings (L1→L2→L3 scheduling). */
@@ -325,6 +384,16 @@ export interface RecallConfig {
   sessionReuseTtlMs: number;
   /** GROW-EVO P2（§2.3）：召回默认排除失效记忆（valid_end ≤ now）。缺省 true（spec 拍板①：现存库无失效行 = 逐位不变）。 */
   excludeInvalidated: boolean;
+  /**
+   * A3（P1，2026-11-02）：agent 自述行的注入面过滤（config-first，缺省 false = 逐位现状）。
+   * 写侧命中自述形态的记忆带 `metadata.actor="agent"`（`extraction.actorTagging`）；
+   * 开本键后这类行不进注入候选（省预算给用户/项目事实），但**查询自指**
+   * （`isAssistantRecallQuery`："你刚才说了什么"）时不过滤——那正是用户要的。
+   * 读侧只做一次按 recordId 的 metadata 读（≤20/片），fetch 失败 = 全部按未知保留。
+   */
+  selfNarration: {
+    enabled: boolean;
+  };
   /**
    * #136（W2 软失效）：效期判定模式。hard = 逐位旧行为（失效/未来生效行直接排除）；
    * soft = 效期作为融合特征——expired 行降权保留（排到生效行之后、被预算挤出），
@@ -939,7 +1008,11 @@ export interface MemoryCoreMemoryConfig {
      *  并行 embed 仍 ~3s 顶穿 5000ms v3 召回预算；超预算→scorer 回退声明序+降级渲染不入缓存，
      *  in-flight embed 后台落缓存下一请求即完整渲染。缺省 1200；0=关（无预算，旧行为）。
      *  embedder/queryEmbedding 运行时注入，不入 config。 */
-    anchorSelect: { maxRows: number; scorer: { enabled: boolean; threshold: number; mmrLambda: number; embedBudgetMs: number }; shadowSink: { enabled: boolean; file: string } };
+    anchorSelect: {
+      maxRows: number;
+      scorer: { enabled: boolean; threshold: number; mmrLambda: number; embedBudgetMs: number };
+      shadowSink: { enabled: boolean; file: string };
+    };
     /** soul 去重门（soul-dedupe，2026-10-19）：strictRuleDedup=红线段近重复行收敛
      *  （exact / Jaccard≥阈值 / containment；阈值 clamp 0..1 缺省 0.45，与 soul-dedupe.ts
      *  DEFAULT_RULE_JACCARD_THRESHOLD 标定一致）；anchorDedup=价值锚近重复对收敛
@@ -1059,6 +1132,22 @@ export interface MemoryLifecycleConfig {
      * "lexical" = 纯词法前缀（修复前行为）。embedding 聚类登记为后续可选项。
      */
     subjectStrategy?: "llm" | "lexical";
+    /**
+     * B1（P6）属性键归组（config-first，缺省 enabled:false = 逐位现状：subject 整串相等）。
+     * 开启后幂等键 = (entity, attribute) 归一：entity 从 work_object/coreRefs/实体词抽，
+     * attribute 从谓词抽；无法归一时用 embedding 聚类兜底（cos ≥ minCos）。
+     */
+    attributeGrouping: {
+      enabled: boolean;
+      /** embedding 聚类兜底阈值（缺省 0.82；clamp 0.5..1）。 */
+      minCos: number;
+      /**
+       * B1 修正（2026-11-02）：每次巩固最多补嵌多少条"库里没有向量"的池内记录（缺省 64；clamp 0..10000）。
+       * 生产实证：1903 条进池、逐条重嵌 → 88 次 429/分钟、lifecycle tick 10 分钟不结束；
+       * 现已先复用 l1_vec 已入库向量，仅对真正缺失的做有上限补齐，超上限的单条成组（不丢证据）。
+       */
+      maxPoolEmbeds: number;
+    };
   };
   /** I 遗忘（默认 enabled）。宁漏勿多：仅 observed 自动归档。 */
   forgetting: {
@@ -1106,7 +1195,13 @@ export interface MemoryLifecycleConfig {
       /** #91 K 阀（2026-10-24）：源头硬闸缺省 off=逐位现状；窗口内该租户 self_identity 新落库 >= maxNew → push 支路跳过。maxNew 标定 12、窗口缺省 24h。 */
       rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
       /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门缺省 off=逐位现状；N₂/T₂ 缺省 4/72、矛盾线 0.60（宁拦勿收）、重复线 0.75（单一源标准）。生产启用由部署面显式写 yaml（人格写入终审权变更的最后一道闸）。 */
-      autoAdopt?: { enabled?: boolean; votes?: number; spanHours?: number; contradictionThreshold?: number; dupThreshold?: number };
+      autoAdopt?: {
+        enabled?: boolean;
+        votes?: number;
+        spanHours?: number;
+        contradictionThreshold?: number;
+        dupThreshold?: number;
+      };
     };
   };
 }
@@ -1138,6 +1233,12 @@ export interface EmbeddingConfig {
   maxInputChars: number;
   /** Timeout per embedding API call in milliseconds (default: 10000). */
   timeoutMs: number;
+  /**
+   * F3（2026-11-02）单批最多几条文本（缺省 256 = 逐位现状）。provider 有输入条数上限
+   * （生产 ark 端点上限 10）时必须下调，否则整批 400 → 调用方降级 FTS，预筛恒空转。
+   * clamp 1..2048。
+   */
+  maxBatchSize: number;
   /** Override timeoutMs for recall-path embedding calls (user-facing, should be shorter). Falls back to timeoutMs. */
   recallTimeoutMs?: number;
   /** Override timeoutMs for capture-path embedding calls (background L1 dedup, can be longer). Falls back to timeoutMs. */
@@ -1493,9 +1594,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   // creation entirely (deferred until a real embedding provider is configured).
   // This avoids creating vec0 tables with a placeholder dimension that would
   // mismatch if the user later enables a different-dimensional provider.
-  const defaultDimensions =
-    embeddingProvider === "none" ? 0 :
-    embeddingDimensionsRaw ?? 0;
+  const defaultDimensions = embeddingProvider === "none" ? 0 : (embeddingDimensionsRaw ?? 0);
   const defaultModel = embeddingProvider === "none" ? "" : embeddingModelRaw;
 
   const cleanTime = normalizeCleanTime(str(captureGroup, "cleanTime")) ?? "03:00";
@@ -1739,9 +1838,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 999)) : 999;
           })(),
           scorer: (() => {
-            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["scorer"] as
-              | Record<string, unknown>
-              | undefined;
+            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.[
+              "scorer"
+            ] as Record<string, unknown> | undefined;
             const en = s?.["enabled"];
             const th = s?.["threshold"];
             const ml = s?.["mmrLambda"];
@@ -1757,9 +1856,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           // enabled 仅布尔 true 采纳；file 仅非空 string 采纳，否则缺省
           // data/logs/soul-anchor-shadow.jsonl（reflection shadow sink 同路径惯例）。
           shadowSink: (() => {
-            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.["shadowSink"] as
-              | Record<string, unknown>
-              | undefined;
+            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.[
+              "shadowSink"
+            ] as Record<string, unknown> | undefined;
             const f = s?.["file"];
             return {
               enabled: s?.["enabled"] === true,
@@ -1855,6 +1954,16 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         const v = str(lifecycleConsolidationGroup, "subjectStrategy");
         return v === "llm" || v === "lexical" ? v : undefined;
       })(),
+      // B1（P6）属性键归组：缺省 false = 逐位现状（subject 整串相等）。
+      attributeGrouping: (() => {
+        const ag = obj(lifecycleConsolidationGroup, "attributeGrouping");
+        const minRaw = num(ag, "minCos");
+        return {
+          enabled: bool(ag, "enabled") ?? false,
+          minCos: Math.min(1, Math.max(0.5, minRaw ?? 0.82)),
+          maxPoolEmbeds: Math.min(10000, Math.max(0, Math.floor(num(ag, "maxPoolEmbeds") ?? 64))),
+        };
+      })(),
     },
     forgetting: {
       enabled: bool(lifecycleForgettingGroup, "enabled") ?? true,
@@ -1903,7 +2012,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         };
       })(),
       // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状
-      promiseProposals: { enabled: bool(obj(obj(lifecycleGroup, "reflection"), "promiseProposals"), "enabled") ?? false },
+      promiseProposals: {
+        enabled: bool(obj(obj(lifecycleGroup, "reflection"), "promiseProposals"), "enabled") ?? false,
+      },
       // #81/#91：self_identity 提案相似门——条件材料化（FLOW-E「不接线即死配置」修复，2026-10-24 实证
       // yaml 写了 selfIdentityGate 但 parse 白名单剥离 → recOn 恒 false → #91 机制生产全旁路）。
       // 语义：yaml 显式写的键才带（undefined 省略=消费侧缺省逐位）；整键未写=undefined=现状。
@@ -1960,7 +2071,12 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           ...(threshold === undefined ? {} : { threshold }),
           ...(supEnabled === undefined && supMax === undefined
             ? {}
-            : { suppression: { ...(supEnabled === undefined ? {} : { enabled: supEnabled }), ...(supMax === undefined ? {} : { maxPending: supMax }) } }),
+            : {
+                suppression: {
+                  ...(supEnabled === undefined ? {} : { enabled: supEnabled }),
+                  ...(supMax === undefined ? {} : { maxPending: supMax }),
+                },
+              }),
           ...(hasRec ? { recurrence: rec } : {}),
           ...(hasRl ? { rateLimit: rl } : {}),
           ...(hasAa ? { autoAdopt: aa } : {}),
@@ -2059,10 +2175,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         Math.max(60_000, num(extractionGroup, "extractionTimeoutMs") ?? 300_000),
       ),
       // #79 dedup 判重超时（config-first）：缺省 300_000=逐位现状；clamp 60s..1h（镜像 extractionTimeoutMs）
-      dedupTimeoutMs: Math.min(
-        3_600_000,
-        Math.max(60_000, num(extractionGroup, "dedupTimeoutMs") ?? 300_000),
-      ),
+      dedupTimeoutMs: Math.min(3_600_000, Math.max(60_000, num(extractionGroup, "dedupTimeoutMs") ?? 300_000)),
       // task-83：抽取侧会话忽略闸。缺省 ["probe-","session-probe-"]（现网探针数据形态），
       // 显式 [] = 关（逐位回到 task-83 之前）；匹配=前缀+*通配，对 session_id/sessionKey 双生效
       ignoreSessionPatterns: strArray(extractionGroup, "ignoreSessionPatterns") ?? [...DEFAULT_IGNORE_SESSION_PATTERNS],
@@ -2070,6 +2183,31 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       scenePoisonSplit: bool(extractionGroup, "scenePoisonSplit") ?? false,
       sceneBatchMaxChars: Math.max(0, num(extractionGroup, "sceneBatchMaxChars") ?? 0),
       // #137（W1 双通道）：多事实抽取块（缺省关 = prompt 字节不变；maxFacts clamp 1..12）
+      // A3（P1）原子性上限：clamp 120..2000。
+      // 2026-11-03 缺省 300 → 600，对齐 ADR 0023 的校准值（docs/ops/memory-metrics.md 实测
+      // 300↔600 使 atomicityRate 81.5%→33.0%，不是噪声）。生产 config-override 本就显式写 600，
+      // 故线上逐位不变；回滚 = 显式配 atomicMaxChars: 300（或删本行缺省改动）。
+      atomicMaxChars: (() => {
+        const raw = num(extractionGroup, "atomicMaxChars");
+        return Math.min(2000, Math.max(120, raw ?? 600));
+      })(),
+      atomicityRewrite: bool(extractionGroup, "atomicityRewrite") ?? false,
+      // A3（P2）写侧主语标注：缺省 false = 逐位现状。
+      actorTagging: bool(extractionGroup, "actorTagging") ?? false,
+      // B4 dedup 前置门槛：缺省 false = 逐位现状（每批先 LLM 判重）。
+      // 2026-11-03 minCos 缺省 0.9 → 0.82：0.9 落在"应合并对 0.8587~0.9918"与"硬负例 0.5670~0.8568"
+      // 之间的高侧，只开 enabled 不配 minCos 会把真重复放过去（≠ 逐位现状，而是门恒空转）。
+      // 0.82 与 DEFAULT_PREFILTER_MIN_COS（core/record/l1-dedup.ts:74）同值，单一事实源由
+      // config-prefilter-mincos-parity.test.ts 断言（此处不 import 该模块：config 被面板等
+      // 轻量运行时加载，不能把 store/sqlite 链拖进配置解析）。
+      dedupPrefilter: (() => {
+        const dg = obj(extractionGroup, "dedupPrefilter");
+        const minRaw = num(dg, "minCos");
+        return {
+          enabled: bool(dg, "enabled") ?? false,
+          minCos: Math.min(1, Math.max(0, minRaw ?? 0.82)),
+        };
+      })(),
       facts: (() => {
         const fg = obj(extractionGroup, "facts");
         return {
@@ -2136,6 +2274,41 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       promptMode: normalizePromptMode(str(personaGroup, "promptMode"), globalPromptMode),
       // R4：逐调用思考开关（缺省 undefined=端点默认；"none"=关深度思考）
       reasoningEffort: optStr(personaGroup, "reasoningEffort"),
+      // A1（P5）L2 触发门：缺省 enabled:false = 逐位现状。
+      l2Gate: (() => {
+        const g = obj(personaGroup, "l2Gate");
+        const pendingRaw = num(g, "minPendingL1");
+        const intervalRaw = num(g, "minIntervalHours");
+        const runsRaw = num(g, "maxRunsPerHour");
+        const sessionsRaw = num(g, "maxSessionsPerRound");
+        return {
+          enabled: bool(g, "enabled") ?? false,
+          minPendingL1: Math.min(1000, Math.max(1, Math.floor(pendingRaw ?? 30))),
+          minIntervalHours: Math.min(168, Math.max(0.1, intervalRaw ?? 6)),
+          // F2：0 = 不限（逐位现状）；>0 时取整下限 1，上限 1000/100。
+          maxRunsPerHour:
+            runsRaw === undefined || !Number.isFinite(runsRaw) || runsRaw <= 0
+              ? 0
+              : Math.min(1000, Math.max(1, Math.floor(runsRaw))),
+          maxSessionsPerRound:
+            sessionsRaw === undefined || !Number.isFinite(sessionsRaw) || sessionsRaw <= 0
+              ? 0
+              : Math.min(100, Math.max(1, Math.floor(sessionsRaw))),
+          bootRecoveryWarnSessions: Math.min(
+            10000,
+            Math.max(1, Math.floor(num(g, "bootRecoveryWarnSessions") ?? 50)),
+          ),
+        };
+      })(),
+      // B3（P5）L2 结构化卡形态：缺省 structured:false = 逐位现状。
+      l2Form: (() => {
+        const g = obj(personaGroup, "l2Form");
+        const maxRaw = num(g, "maxBlockBytes");
+        return {
+          structured: bool(g, "structured") ?? false,
+          maxBlockBytes: Math.min(65536, Math.max(1024, Math.floor(maxRaw ?? 4096))),
+        };
+      })(),
     },
     pipeline: {
       everyNConversations: num(pipelineGroup, "everyNConversations") ?? 5,
@@ -2245,6 +2418,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
       // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
       excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
+      // A3（P1，2026-11-02）：agent 自述行注入面过滤（缺省 false = 逐位现状）
+      selfNarration: {
+        enabled: bool(obj(recallGroup, "selfNarration"), "enabled") ?? false,
+      },
       // #136（W2 软失效）：效期判定模式（缺省 soft，见下方 WP1b 注释）
       validity: (() => {
         const vg = obj(recallGroup, "validity");
@@ -2423,9 +2600,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
           })(),
           maxTotalChars: (() => {
             const raw = num(cl, "maxTotalChars");
-            return raw === undefined
-              ? undefined
-              : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+            return raw === undefined ? undefined : Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
           })(),
           // v18-c：结论块低密度门阈值（clamp [0,1]；缺省 undefined = 关逐位现状）
           minUniqRatio: (() => {
@@ -2653,6 +2828,11 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       conflictRecallTopK: num(embeddingGroup, "conflictRecallTopK") ?? 5,
       maxInputChars: num(embeddingGroup, "maxInputChars") ?? 5000,
       timeoutMs: num(embeddingGroup, "timeoutMs") ?? 10_000,
+      maxBatchSize: (() => {
+        const raw = num(embeddingGroup, "maxBatchSize");
+        if (raw === undefined || !Number.isFinite(raw)) return 256;
+        return Math.min(2048, Math.max(1, Math.floor(raw)));
+      })(),
       recallTimeoutMs: num(embeddingGroup, "recallTimeoutMs") ?? undefined,
       captureTimeoutMs: num(embeddingGroup, "captureTimeoutMs") ?? undefined,
       modelCacheDir: optStr(embeddingGroup, "modelCacheDir"),
@@ -2732,9 +2912,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     // Skill: passthrough — let the host wiring call resolveSkillConfig() with
     // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply
     // defaults here so the resolver remains the single source of truth.
-    skill: (c.skill && typeof c.skill === "object" && !Array.isArray(c.skill))
-      ? (c.skill as import("./core/skill/types.js").SkillConfigInput)
-      : undefined,
+    skill:
+      c.skill && typeof c.skill === "object" && !Array.isArray(c.skill)
+        ? (c.skill as import("./core/skill/types.js").SkillConfigInput)
+        : undefined,
   };
 }
 
@@ -2745,7 +2926,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
 /** Get sub-object by key, or empty object if missing. */
 function obj(c: Record<string, unknown>, key: string): Record<string, unknown> {
   const v = c[key];
-  return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 function str(src: Record<string, unknown>, key: string): string | undefined {

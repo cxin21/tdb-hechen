@@ -11,7 +11,18 @@ export interface DurativeRecord {
   subject?: string;
   occurred_at: string;      // 组内最新
   valid_start?: string;     // 组内最早
-  valid_end?: string;       // 组内最新
+  /**
+   * 活动窗口末（组内最新）——**只进 metadata.activity_end_time，不落 valid_end 列**。
+   *
+   * F1 生产缺陷（2026-11-02）：持续态原本把"组内最新"同时写成 valid_end，于是每张
+   * 巩固卡出生即过期（30/30 张 valid_end 在过去），读侧 hard 模式
+   * （excludeInvalidated=true）一律硬丢 —— 写出来的卡永远不可召回。
+   * 持续态是**开区间**：卡表述的是"截至窗口末仍成立的现状"，没有确定失效时点，
+   * 故 valid_end 留空（语义 = 未知/未失效）。窗口末信息不能丢，落 metadata 供展示
+   * （auto-recall 段事件读 activity_end_time）。若将来某条结论被真实推翻，由
+   * 写入侧 supersession 置 valid_end（与 L1 同一条失效链路），而不是在出生时预设。
+   */
+  activity_end_at?: string; // 组内最新（窗口末，仅 metadata）
   significance: number;     // 组内 max
   certainty: "observed";    // 持续态只基于 observed（reconsolidation 红线）
   /** 该结论被观察到的次数 = 组内源记忆条数（真实计数，供 M 反漂移 minObserved 用） */
@@ -22,15 +33,58 @@ export interface SummarizerConfig {
   model?: string;
   /** 生成持续态的 system prompt 前缀（可整体覆盖） */
   promptPrefix?: string;
+  /**
+   * 单次摘要的 LLM 超时（毫秒）。
+   *
+   * B1 生产缺陷（2026-11-02）：原值写死 30_000。放开 maxTokens 后实测同一属性组
+   * （40 成员 / prompt 10312 字符）单卡需 89.1s（finish=stop, completion=16678），
+   * 30s 会把**所有**本该成功的卡打成超时——即修好截断又撞超时。缺省抬到 180s
+   * 覆盖最大组（实测 44 成员 12847 字符），需要更细的预算时经
+   * consolidation.summarizeTimeoutMs 覆盖。
+   */
+  timeoutMs?: number;
 }
+
+/** 单次摘要超时缺省值：覆盖实测最大属性组（44 成员，≈90–120s）。 */
+export const DEFAULT_SUMMARIZE_TIMEOUT_MS = 180_000;
 
 const DEFAULT_PROMPT_PREFIX =
   "你是记忆巩固器。把同一主题的多条点状记忆合并成一条【持续态摘要】——概括稳定现状、变化轨迹与当前结论，" +
   "不要编造组内没有的事实。只输出JSON：{content, certainty:'observed'}，不要其他文字。";
 
+/**
+ * 摘要实现版本（B，2026-11-03）：并入 source_fingerprint，使"摘要实现变了"也能触发重算。
+ *
+ * 原因：旧指纹只含 (attribute_key, subject, 源 id 集合)，不含 prompt / maxTokens / 模型——
+ * 改 prompt 或换模型后，同证据会继续命中旧指纹而永久复用旧卡，新实现形同未生效。
+ *
+ * 升级语义（**改这里 = 全量重算，必须人工确认成本**）：
+ *   - 什么时候必须 +1：改 DEFAULT_PROMPT_PREFIX / buildSummarizePrompt 结构、改 maxTokens 或
+ *     taskId 等 LLM 调用参数、改 DurativeRecord 语义（例如不再开区间）。
+ *   - 成本：每个组一次 LLM 调用；生产实测单卡 30–90s（40 成员组 89.1s），20 组约 20–30 分钟，
+ *     且每个 tick 内串行——升级后首轮可能跑满 tick 预算，须在维护窗口执行。
+ *   - 模型名变化由 summarizeImplementationId(model) 自动纳入指纹，不需要改版本号。
+ */
+export const CONSOLIDATION_SUMMARY_VERSION = "2";
+
+/**
+ * 摘要实现标识 = `${版本}|${模型}`（模型缺省/空白 → "default"，首尾空白忽略）。
+ * 指纹与实现标识同源：这里改口径，等于全量重算（见 CONSOLIDATION_SUMMARY_VERSION）。
+ */
+export function summarizeImplementationId(model?: string, version: string = CONSOLIDATION_SUMMARY_VERSION): string {
+  const m = typeof model === "string" ? model.trim() : "";
+  return `${version}|${m || "default"}`;
+}
+
 export function buildSummarizePrompt(group: ConsolidationGroup): string {
   const lines = group.memories.map((m) => `- [${m.type}] ${m.content}`).join("\n");
-  return `主题：${group.subject}\n\n组内记忆：\n${lines}\n\n输出合并后的持续态摘要。`;
+  // B1：属性组把 (entity, attribute) 写进主题行——LLM 才知道"只概括这个实体的这一类属性"，
+  // 而不是把一批跨主题反思揉成一段泛泛结论。非属性组（无 entity/attribute）逐字保持旧 header。
+  const header =
+    group.entity && group.attribute
+      ? `主题：${group.entity} · ${group.attribute}（${group.subject}）`
+      : `主题：${group.subject}`;
+  return `${header}\n\n组内记忆：\n${lines}\n\n输出合并后的持续态摘要。`;
 }
 
 /**
@@ -47,7 +101,7 @@ export async function buildDurativeSummary(
       prompt: buildSummarizePrompt(group),
       systemPrompt: sys,
       taskId: "l1-consolidation",
-      timeoutMs: 30_000,
+      timeoutMs: cfg.timeoutMs ?? DEFAULT_SUMMARIZE_TIMEOUT_MS,
     });
     let parsed: { content?: string; certainty?: string };
     try { parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "")); }
@@ -82,7 +136,8 @@ export async function buildDurativeSummary(
       content: parsed.content.trim(),
       occurred_at: latest,
       valid_start: earliest,
-      valid_end: latest,
+      // F1：不写 valid_end（开区间），窗口末只走 activity_end_at → metadata。
+      activity_end_at: latest,
       significance,
       // 防御断言（登记，不加代码）：此处 certainty 恒 "observed" 的前提是上游
       // consolidation-worker 的 sourceMemories 已过滤 inferred（P0-T1 守卫）。

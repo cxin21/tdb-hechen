@@ -82,6 +82,14 @@ import { ManagedTimer } from "./managed-timer.js";
 import { SerialQueue } from "./serial-queue.js";
 import { report } from "../core/report/reporter.js";
 import type { Logger } from "../core/types.js";
+import {
+  decideL2PostRun,
+  isL2GateSkip,
+  planL2RetryAtMs,
+  pruneL2RunTimestamps,
+  type L2ThrottleDecision,
+} from "../core/scene/l2-gate.js";
+import { admitL2Run, getL2AdmissionSnapshot, settleL2Run } from "../core/scene/l2-admission.js";
 
 // ============================
 // Types
@@ -138,6 +146,24 @@ export interface PipelineConfig {
      */
     sessionActiveWindowHours: number;
   };
+
+  /**
+   * F2 · 全局速率门（pipeline-manager 的 L2 触发/执行路径）。
+   *
+   * per-session 的 l2Gate（A1 门，在 pipeline-factory 里按 records.length 判）只回答
+   * "这个会话该不该抽"；它拦不住 boot recovery 把 242 个会话的 timer 在同一毫秒放行。
+   * 这里补的是**全局**额度：滑动 60 分钟窗口 + 单轮 session 上限。
+   *
+   * 缺省/键缺失 ⇒ 两个上限都 0 ⇒ 不限（逐位等于加门之前的行为）。
+   */
+  l2Gate?: {
+    /** 滑动 60 分钟内最多放行几次真实 L2 运行；0 = 不限。 */
+    maxRunsPerHour?: number;
+    /** 单轮（60s 桶）最多放行几个 session；0 = 不限。 */
+    maxSessionsPerRound?: number;
+    /** boot recovery 挂载会话数超过此值打 WARN；缺省 50。 */
+    bootRecoveryWarnSessions?: number;
+  };
 }
 
 /** Result returned by the L1 runner. */
@@ -175,6 +201,11 @@ export interface L2RunnerResult {
   latestCursor?: string;
   /** True if no new records were found and extraction was skipped. */
   skipped?: boolean;
+  /**
+   * skip 的原因（A1 用）："l2-gate" = 被触发门拦下（records 未消费，不得刷新
+   * 「上次成功 L2」时间戳）；缺省/其它 = legacy「无增量」语义。
+   */
+  reason?: string;
 }
 
 /** L2 extraction runner — processes a single session's records. */
@@ -203,6 +234,15 @@ interface SessionTimerState {
   l2Queued: boolean;
   /** Consecutive L1 failure count for retry limiting. Reset on success or new conversation. */
   l1RetryCount: number;
+}
+
+/** boot recovery 挂载会话数的缺省 WARN 阈值（与 config.ts 的缺省对齐）。 */
+const DEFAULT_BOOT_RECOVERY_WARN_SESSIONS = 50;
+
+/** 全局门上限定归一：undefined/非数/<=0 ⇒ 0（= 不限）。 */
+function normalizeThrottleLimit(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
 }
 
 export class MemoryPipelineManager {
@@ -239,6 +279,30 @@ export class MemoryPipelineManager {
   // Per-session L2 last run time (epoch ms, for minInterval floor)
   private readonly l2LastRunTime = new Map<string, number>();
 
+  // F2 · 全局速率门（两个上限都 0 ⇒ 整段不生效，逐位等于加门之前）
+  /** 滑动 60 分钟内最多几次真实 L2 运行（0 = 不限）。 */
+  private readonly l2MaxRunsPerHour: number;
+  /** 单轮最多放行几个 session（0 = 不限）。 */
+  private readonly l2MaxSessionsPerRound: number;
+  /** boot recovery 挂载会话数的 WARN 阈值。 */
+  private readonly l2BootRecoveryWarnSessions: number;
+  /** 两个上限任一 > 0 才启用（否则不记账、不重挂、日志与行为逐位不变）。 */
+  private readonly l2ThrottleEnabled: boolean;
+  /**
+   * F2 账本**不在本类里**：窗口时间戳 / in-flight / 本轮放行数全部由
+   * `core/scene/l2-admission.ts` 的模块单例持有（gateway 的 worker 也用同一个单例，
+   * 因此"worker 吃掉额度 ⇒ manager 侧立刻可见"，反之亦然；口径不会再两边各记一套）。
+   * 这里只留诊断用的镜像字段。
+   */
+  /** 上一次观察到的轮次起点（epoch ms；仅用于统计"上一轮放行数"）。 */
+  private l2RoundStartedAtMs = 0;
+  /** 共享账本里本轮已放行数的最新镜像（诊断用）。 */
+  private l2RoundAdmittedSnapshot = 0;
+  /** 上一轮最终放行数（诊断用）。 */
+  private l2LastRoundAdmitted = 0;
+  /** 被全局门拦下的累计次数。 */
+  private l2ThrottleSkipCount = 0;
+
   // Callbacks
   private l1Runner: L1Runner | null = null;
   private l2Runner: L2Runner | null = null;
@@ -271,17 +335,23 @@ export class MemoryPipelineManager {
     this.l2MinIntervalMs = config.l2.minIntervalSeconds * 1000;
     this.l2MaxIntervalMs = config.l2.maxIntervalSeconds * 1000;
     this.sessionActiveWindowMs = config.l2.sessionActiveWindowHours * 60 * 60 * 1000;
+    const l2Gate = config.l2Gate;
+    this.l2MaxRunsPerHour = normalizeThrottleLimit(l2Gate?.maxRunsPerHour);
+    this.l2MaxSessionsPerRound = normalizeThrottleLimit(l2Gate?.maxSessionsPerRound);
+    this.l2BootRecoveryWarnSessions =
+      normalizeThrottleLimit(l2Gate?.bootRecoveryWarnSessions) || DEFAULT_BOOT_RECOVERY_WARN_SESSIONS;
+    this.l2ThrottleEnabled = this.l2MaxRunsPerHour > 0 || this.l2MaxSessionsPerRound > 0;
     this.logger = logger;
     this.sessionFilter = sessionFilter ?? new SessionFilter();
 
     this.logger?.debug?.(
       `${TAG} Initialized: everyNConversations=${config.everyNConversations}, ` +
-      `warmup=${config.enableWarmup ? "enabled" : "disabled"}, ` +
-      `l1IdleTimeout=${config.l1.idleTimeoutSeconds}s, ` +
-      `l2DelayAfterL1=${config.l2.delayAfterL1Seconds}s, ` +
-      `l2MinInterval=${config.l2.minIntervalSeconds}s, ` +
-      `l2MaxInterval=${config.l2.maxIntervalSeconds}s, ` +
-      `sessionActiveWindow=${config.l2.sessionActiveWindowHours}h`,
+        `warmup=${config.enableWarmup ? "enabled" : "disabled"}, ` +
+        `l1IdleTimeout=${config.l1.idleTimeoutSeconds}s, ` +
+        `l2DelayAfterL1=${config.l2.delayAfterL1Seconds}s, ` +
+        `l2MinInterval=${config.l2.minIntervalSeconds}s, ` +
+        `l2MaxInterval=${config.l2.maxIntervalSeconds}s, ` +
+        `sessionActiveWindow=${config.l2.sessionActiveWindowHours}h`,
     );
 
     // Wire up queue debug logging
@@ -337,7 +407,7 @@ export class MemoryPipelineManager {
       }
       this.logger?.info(
         `${TAG} Restored ${this.sessionStates.size} session state(s) from checkpoint` +
-        (skipped > 0 ? ` (filtered ${skipped} internal)` : ""),
+          (skipped > 0 ? ` (filtered ${skipped} internal)` : ""),
       );
     }
 
@@ -414,13 +484,11 @@ export class MemoryPipelineManager {
     this.messageBuffers.set(sessionKey, buffer);
 
     const effectiveThreshold = this.getEffectiveThreshold(state);
-    const warmupInfo = this.enableWarmup && state.warmup_threshold > 0
-      ? ` (warmup: ${state.warmup_threshold})`
-      : "";
+    const warmupInfo = this.enableWarmup && state.warmup_threshold > 0 ? ` (warmup: ${state.warmup_threshold})` : "";
 
     this.logger?.debug?.(
       `${TAG} [${sessionKey}] notify: conversation_count=${state.conversation_count}/${effectiveThreshold}${warmupInfo}, ` +
-      `buffered_messages=${buffer.length} (+${messages.length} new)`,
+        `buffered_messages=${buffer.length} (+${messages.length} new)`,
     );
 
     await this.persistStates();
@@ -436,9 +504,7 @@ export class MemoryPipelineManager {
 
     // Path B: below threshold → reset L1 idle timer (catch residual later)
     timers.l1Idle.schedule(this.l1IdleTimeoutMs, () => this.onL1IdleTimeout(sessionKey));
-    this.logger?.debug?.(
-      `${TAG} [${sessionKey}] L1 idle timer reset (${this.l1IdleTimeoutMs / 1000}s)`,
-    );
+    this.logger?.debug?.(`${TAG} [${sessionKey}] L1 idle timer reset (${this.l1IdleTimeoutMs / 1000}s)`);
 
     // Periodic GC: evict cold sessions from memory
     this.notifyCounter += 1;
@@ -532,9 +598,7 @@ export class MemoryPipelineManager {
     if (this.destroyed) return;
     this.destroyed = true;
 
-    this.logger?.info(
-      `${TAG} Destroying pipeline (timeout=${this.DESTROY_TIMEOUT_MS}ms)...`,
-    );
+    this.logger?.info(`${TAG} Destroying pipeline (timeout=${this.DESTROY_TIMEOUT_MS}ms)...`);
 
     try {
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -550,7 +614,7 @@ export class MemoryPipelineManager {
     } catch (err) {
       this.logger?.warn(
         `${TAG} Pipeline flush timed out or failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Pending work will be recovered on next startup.`,
+          `Pending work will be recovered on next startup.`,
       );
     }
 
@@ -599,10 +663,7 @@ export class MemoryPipelineManager {
 
     // Step 4: Wait for all remaining queues to drain
     this.logger?.debug?.(`${TAG} Waiting for queues to drain (l2=${this.l2Queue.size}, l3=${this.l3Queue.size})`);
-    await Promise.all([
-      this.l2Queue.onIdle(),
-      this.l3Queue.onIdle(),
-    ]);
+    await Promise.all([this.l2Queue.onIdle(), this.l3Queue.onIdle()]);
   }
 
   // ============================
@@ -655,15 +716,18 @@ export class MemoryPipelineManager {
       });
     }
 
-    this.l1Queue.add(async () => {
-      await this.runL1(sessionKey);
-    }).catch((err) => {
-      this.logger?.error(
-        `${TAG} [${sessionKey}] L1 task failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
-      );
-    }).finally(() => {
-      timers.l1Queued = false;
-    });
+    this.l1Queue
+      .add(async () => {
+        await this.runL1(sessionKey);
+      })
+      .catch((err) => {
+        this.logger?.error(
+          `${TAG} [${sessionKey}] L1 task failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+        );
+      })
+      .finally(() => {
+        timers.l1Queued = false;
+      });
   }
 
   /**
@@ -714,12 +778,10 @@ export class MemoryPipelineManager {
         bg_msg: [], // reserved for future use
       });
 
-      this.logger?.debug?.(
-        `${TAG} [${sessionKey}] L1 complete: processed ${buffer.length} messages`,
-      );
+      this.logger?.debug?.(`${TAG} [${sessionKey}] L1 complete: processed ${buffer.length} messages`);
     } catch (err) {
       this.logger?.error(
-        `${TAG} [${sessionKey}] L1 runner failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+        `${TAG} [${sessionKey}] L1 runner failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
       );
       // On failure: put messages back into the buffer for retry
       const currentBuffer = this.messageBuffers.get(sessionKey) ?? [];
@@ -735,13 +797,13 @@ export class MemoryPipelineManager {
         timers.l1Idle.schedule(this.L1_RETRY_DELAY_MS, () => this.onL1IdleTimeout(sessionKey));
         this.logger?.debug?.(
           `${TAG} [${sessionKey}] L1 retry scheduled in ${this.L1_RETRY_DELAY_MS / 1000}s ` +
-          `(attempt ${timers.l1RetryCount}/${this.L1_MAX_RETRIES})`,
+            `(attempt ${timers.l1RetryCount}/${this.L1_MAX_RETRIES})`,
         );
       } else {
         this.logger?.warn(
           `${TAG} [${sessionKey}] L1 max retries reached (${this.L1_MAX_RETRIES}), ` +
-          `giving up auto-retry. ${buffer.length + currentBuffer.length} messages remain buffered. ` +
-          `Will resume on next user conversation.`,
+            `giving up auto-retry. ${buffer.length + currentBuffer.length} messages remain buffered. ` +
+            `Will resume on next user conversation.`,
         );
       }
 
@@ -775,9 +837,7 @@ export class MemoryPipelineManager {
     //     drain semantics, just a normal idle re-trigger.
     if (runnerResult && typeof runnerResult === "object") {
       if (runnerResult.hasFullBacklog) {
-        this.logger?.debug?.(
-          `${TAG} [${sessionKey}] L0 backlog detected (full batch) — enqueueing next L1 round`,
-        );
+        this.logger?.debug?.(`${TAG} [${sessionKey}] L0 backlog detected (full batch) — enqueueing next L1 round`);
         this.enqueueL1(sessionKey, "idle_timeout");
       } else if (runnerResult.hasMore) {
         this.logger?.debug?.(
@@ -814,21 +874,79 @@ export class MemoryPipelineManager {
     // Desired fire time: delay after L1, but no earlier than minInterval floor
     const desiredTime = Math.max(now + this.l2DelayAfterL1Ms, minIntervalFloor);
 
-    const advanced = timers.l2Schedule.tryAdvanceTo(desiredTime, () => this.onL2TimerFired(sessionKey, "delay-after-l1"));
+    const advanced = timers.l2Schedule.tryAdvanceTo(desiredTime, () =>
+      this.onL2TimerFired(sessionKey, "delay-after-l1"),
+    );
 
     if (advanced) {
       const delaySec = Math.round((desiredTime - now) / 1000);
       this.logger?.debug?.(
         `${TAG} [${sessionKey}] L2 timer advanced: firing in ${delaySec}s` +
-        (timers.l2Schedule.scheduledTime > 0
-          ? ` (was ${Math.round((timers.l2Schedule.scheduledTime - now) / 1000)}s)`
-          : " (newly armed)"),
+          (timers.l2Schedule.scheduledTime > 0
+            ? ` (was ${Math.round((timers.l2Schedule.scheduledTime - now) / 1000)}s)`
+            : " (newly armed)"),
       );
     } else {
-      this.logger?.debug?.(
-        `${TAG} [${sessionKey}] L2 timer not advanced: current schedule is already earlier`,
-      );
+      this.logger?.debug?.(`${TAG} [${sessionKey}] L2 timer not advanced: current schedule is already earlier`);
     }
+  }
+
+  // ============================
+  // Internal: F2 global throttle
+  // ============================
+
+  /**
+   * 全局门判定 + 记账（同步、在 runner 执行前调用一次）。
+   *
+   * 账本走 `l2-admission` 的模块单例（与 gateway 的 pipeline-worker 同一份）：
+   * 本类不再维护第二套 runTimestamps / inFlight / roundAdmitted —— 旧实现那样会在
+   * 两条路径之间漂移（worker 吃掉额度 manager 不知道，反之亦然）。计数口径仍是
+   * "runner 真的跑了"（`settleL2Run(isRealRun)`），入队从不计数。
+   */
+  private tryAdmitL2Run(): L2ThrottleDecision {
+    const decision = admitL2Run({
+      maxRunsPerHour: this.l2MaxRunsPerHour,
+      maxSessionsPerRound: this.l2MaxSessionsPerRound,
+    });
+
+    if (decision.roundStartedAtMs !== this.l2RoundStartedAtMs) {
+      if (this.l2RoundStartedAtMs > 0) this.l2LastRoundAdmitted = this.l2RoundAdmittedSnapshot;
+      this.l2RoundStartedAtMs = decision.roundStartedAtMs;
+    }
+    this.l2RoundAdmittedSnapshot = decision.roundAdmitted;
+    return decision;
+  }
+
+  /** 结算一次放行：`isRealRun` 时把时间戳推进滑动窗口（共享账本）。 */
+  private settleL2Run(isRealRun: boolean): void {
+    if (!this.l2ThrottleEnabled) return;
+    settleL2Run(isRealRun);
+    this.l2RoundAdmittedSnapshot = getL2AdmissionSnapshot().roundAdmitted;
+  }
+
+  /**
+   * 被全局门拦下后的重挂：时刻由 `planL2RetryAtMs` 单一计算（与 pipeline-worker
+   * 同一口径，不再两边各写一套 candidates）。
+   *
+   * 只动内存里的 timer，不碰 state（pending / 时间戳 / cursor 全部保留）——这正是
+   * "被拦会话的下一次机会仍然存在"与"不刷新上次成功 L2"两条要求的落点。
+   */
+  private armL2ThrottleRetry(sessionKey: string, decision: L2ThrottleDecision): void {
+    if (this.destroyed) return;
+
+    const now = Date.now();
+    const fireAt = planL2RetryAtMs({ decision, nowMs: now, sessionKey });
+    const delayMs = Math.max(0, fireAt - now);
+
+    const timers = this.getOrCreateTimers(sessionKey);
+    timers.l2Schedule.scheduleAt(fireAt, () => this.onL2TimerFired(sessionKey, "throttle-retry"));
+
+    this.logger?.debug?.(
+      `${TAG} [${sessionKey}] L2 throttle-retry armed in ${Math.round(delayMs / 1000)}s ` +
+        `(roundRemaining=${decision.roundRemaining === Number.POSITIVE_INFINITY ? "∞" : decision.roundRemaining}` +
+        `, windowRemaining=${decision.windowRemaining === Number.POSITIVE_INFINITY ? "∞" : decision.windowRemaining}` +
+        `, fireAt=${new Date(fireAt).toISOString()})`,
+    );
   }
 
   /**
@@ -858,8 +976,10 @@ export class MemoryPipelineManager {
    * - "delay-after-l1": fired shortly after L1 completed — skip cold check
    *   because L1 completion itself proves recent activity.
    * - "max-interval": periodic timer — apply cold check normally.
+   * - "throttle-retry": F2 全局门拦下后的重挂（保留 pending）——同样走冷会话检查，
+   *   否则被拦的冷会话会一直重挂、永远不释放 timer。
    */
-  private onL2TimerFired(sessionKey: string, source: "delay-after-l1" | "max-interval"): void {
+  private onL2TimerFired(sessionKey: string, source: "delay-after-l1" | "max-interval" | "throttle-retry"): void {
     const state = this.sessionStates.get(sessionKey);
     if (!state) return;
 
@@ -868,11 +988,11 @@ export class MemoryPipelineManager {
     // Cold session check: only applies to periodic (maxInterval) triggers.
     // Delay-after-L1 triggers are exempt because L1 just completed, proving
     // the session was recently active.
-    if (source === "max-interval" && now - state.last_active_time >= this.sessionActiveWindowMs) {
+    if (source !== "delay-after-l1" && now - state.last_active_time >= this.sessionActiveWindowMs) {
       this.logger?.debug?.(
         `${TAG} [${sessionKey}] L2 timer fired but session is cold ` +
-        `(inactive ${Math.round((now - state.last_active_time) / 3600_000)}h), timer stopped. ` +
-        `Will re-arm on next L1 event.`,
+          `(inactive ${Math.round((now - state.last_active_time) / 3600_000)}h), timer stopped. ` +
+          `Will re-arm on next L1 event.`,
       );
       return; // timer not re-armed — advanceL2Timer() in runL1 will revive it
     }
@@ -894,7 +1014,7 @@ export class MemoryPipelineManager {
     if (timers.l2Queued) {
       this.logger?.warn(
         `${TAG} [${sessionKey}] L2 enqueue conflict on queue "${this.l2Queue.name}": ` +
-        `task already queued/running (trigger=${trigger}), skipping`,
+          `task already queued/running (trigger=${trigger}), skipping`,
       );
       return;
     }
@@ -902,15 +1022,18 @@ export class MemoryPipelineManager {
     timers.l2Queued = true;
     this.logger?.debug?.(`${TAG} [${sessionKey}] Enqueuing L2 (trigger=${trigger}, queue=${this.l2Queue.name})`);
 
-    this.l2Queue.add(async () => {
-      await this.runL2(sessionKey);
-    }).catch((err) => {
-      this.logger?.error(
-        `${TAG} [${sessionKey}] L2 task failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
-      );
-    }).finally(() => {
-      timers.l2Queued = false;
-    });
+    this.l2Queue
+      .add(async () => {
+        await this.runL2(sessionKey);
+      })
+      .catch((err) => {
+        this.logger?.error(
+          `${TAG} [${sessionKey}] L2 task failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+        );
+      })
+      .finally(() => {
+        timers.l2Queued = false;
+      });
   }
 
   private async runL2(sessionKey: string): Promise<void> {
@@ -922,40 +1045,68 @@ export class MemoryPipelineManager {
       return;
     }
 
-    this.logger?.debug?.(
-      `${TAG} [${sessionKey}] L2 running: l2_pending_l1_count=${state.l2_pending_l1_count}`,
-    );
+    this.logger?.debug?.(`${TAG} [${sessionKey}] L2 running: l2_pending_l1_count=${state.l2_pending_l1_count}`);
 
     const cursor = state.last_extraction_updated_time || undefined;
+
+    // F2 · 全局速率门：在**真实执行前**同步判定（不放进 enqueue —— 计数口径是
+    // "runner 真的跑了"，不是 "入队了"）。被拦时只重挂内存 timer：
+    // pending 保留、l2_last_extraction_time / last_extraction_time / cursor 逐位不动。
+    if (this.l2ThrottleEnabled) {
+      const decision = this.tryAdmitL2Run();
+      if (!decision.admit) {
+        this.l2ThrottleSkipCount += 1;
+        this.logger?.debug?.(
+          `${TAG} [${sessionKey}] L2 gate-skip (reason=l2-throttle): keep l2_last_extraction_time unchanged ` +
+            `(pending=${state.l2_pending_l1_count}, windowUsed=${decision.windowUsed}/${decision.maxRunsPerHour || "unlimited"}, ` +
+            `roundAdmitted=${decision.roundAdmitted}/${decision.maxSessionsPerRound || "unlimited"})`,
+        );
+        this.armL2ThrottleRetry(sessionKey, decision);
+        return;
+      }
+    }
 
     let result: L2RunnerResult | void;
     try {
       result = await this.l2Runner(sessionKey, cursor);
     } catch (err) {
+      // 失败 = records 未消费，不计入"真实运行"额度（否则错误风暴会让窗口永久满）。
+      this.settleL2Run(false);
       this.logger?.error(
-        `${TAG} [${sessionKey}] L2 runner failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+        `${TAG} [${sessionKey}] L2 runner failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
       );
       // Even on failure, arm maxInterval so we retry eventually
       this.armL2MaxInterval(sessionKey);
       return;
     }
 
-    // After L2: update state
-    const now = Date.now();
-    state.l2_pending_l1_count = 0;
+    // 结算额度：只有真正跑了 records 的轮次才计入滑动窗口。
+    this.settleL2Run(result?.skipped !== true);
 
+    // After L2: update state（语义收敛到 decideL2PostRun，见 core/scene/l2-gate.ts）。
+    const now = Date.now();
+    const isFirstL2 = !this.l2LastRunTime.has(sessionKey);
     // Cold-start optimization: if this is the very first L2 run for this session
     // and it was skipped (no new records), do NOT update l2LastRunTime.
     // This prevents l2MinIntervalSeconds from blocking the next L2 trigger
     // when the first L1 extraction produces actual memories shortly after.
-    const isFirstL2 = !this.l2LastRunTime.has(sessionKey);
-    const wasSkipped = result?.skipped === true;
+    const postRun = decideL2PostRun(result, { isFirstRun: isFirstL2 });
+    if (postRun.resetPending) state.l2_pending_l1_count = 0;
 
-    if (isFirstL2 && wasSkipped) {
-      this.logger?.info?.(
-        `${TAG} [${sessionKey}] L2 cold-start skip: not updating l2LastRunTime ` +
-        `(minInterval won't block next trigger)`,
-      );
+    if (!postRun.recordSuccess) {
+      if (isL2GateSkip(result)) {
+        // A1：门拦下的轮次不得刷新「上次成功 L2」时间戳——否则时间门被自己的 skip
+        // 不断推后，生产上退化成纯条数门；records 未消费，pending 继续累积。
+        this.logger?.debug?.(
+          `${TAG} [${sessionKey}] L2 gate-skip: keep l2_last_extraction_time unchanged ` +
+            `(pending=${state.l2_pending_l1_count})`,
+        );
+      } else {
+        this.logger?.info?.(
+          `${TAG} [${sessionKey}] L2 cold-start skip: not updating l2LastRunTime ` +
+            `(minInterval won't block next trigger)`,
+        );
+      }
       this.armL2MaxInterval(sessionKey);
       await this.persistStates();
       return;
@@ -1005,21 +1156,22 @@ export class MemoryPipelineManager {
 
     this.logger?.debug?.(`${TAG} Enqueuing L3 (queue=${this.l3Queue.name})`);
 
-    this.l3Queue.add(async () => {
-      await this.runL3();
-    }).catch((err) => {
-      this.logger?.error(
-        `${TAG} L3 task failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
-      );
-    }).finally(() => {
-      this.l3Running = false;
+    this.l3Queue
+      .add(async () => {
+        await this.runL3();
+      })
+      .catch((err) => {
+        this.logger?.error(`${TAG} L3 task failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+      })
+      .finally(() => {
+        this.l3Running = false;
 
-      // If new L2 completions happened while L3 was running, run again
-      if (this.l3Pending && !this.destroyed) {
-        this.logger?.debug?.(`${TAG} L3 has pending work, re-running`);
-        this.enqueueL3();
-      }
-    });
+        // If new L2 completions happened while L3 was running, run again
+        if (this.l3Pending && !this.destroyed) {
+          this.logger?.debug?.(`${TAG} L3 has pending work, re-running`);
+          this.enqueueL3();
+        }
+      });
   }
 
   private async runL3(): Promise<void> {
@@ -1033,9 +1185,7 @@ export class MemoryPipelineManager {
       await this.l3Runner();
       this.logger?.debug?.(`${TAG} L3 complete`);
     } catch (err) {
-      this.logger?.error(
-        `${TAG} L3 runner failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
-      );
+      this.logger?.error(`${TAG} L3 runner failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     }
   }
 
@@ -1090,9 +1240,7 @@ export class MemoryPipelineManager {
       this.logger?.debug?.(`Persisting states: ${JSON.stringify(obj)}`);
       await this.persister(obj);
     } catch (err) {
-      this.logger?.error(
-        `${TAG} Failed to persist states: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.error(`${TAG} Failed to persist states: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1136,8 +1284,7 @@ export class MemoryPipelineManager {
 
     if (evictedCount > 0) {
       this.logger?.debug?.(
-        `${TAG} Session GC: evicted ${evictedCount} cold session(s), ` +
-        `${this.sessionStates.size} remaining`,
+        `${TAG} Session GC: evicted ${evictedCount} cold session(s), ` + `${this.sessionStates.size} remaining`,
       );
     }
   }
@@ -1155,12 +1302,14 @@ export class MemoryPipelineManager {
    * because the pipeline may be starting during management commands.
    */
   private recoverPendingSessions(): void {
+    let armed = 0;
     for (const [sessionKey, state] of this.sessionStates) {
       if (state.conversation_count === 0 && state.l2_pending_l1_count === 0) continue;
+      armed += 1;
 
       this.logger?.debug?.(
         `${TAG} [${sessionKey}] Recovery: conversation_count=${state.conversation_count}, ` +
-        `l2_pending_l1_count=${state.l2_pending_l1_count}, arming L2 timer`,
+          `l2_pending_l1_count=${state.l2_pending_l1_count}, arming L2 timer`,
       );
 
       // Reset conversation_count since we can't recover the messages
@@ -1169,6 +1318,16 @@ export class MemoryPipelineManager {
 
       // Arm L2 timer with delay (gives the system time to fully start)
       this.advanceL2Timer(sessionKey);
+    }
+
+    // F2 · boot recovery 爆发预警：重启后一次性恢复的会话数是"同一 tick 全放行"的
+    // 规模因子，超过阈值就必须在日志里留下可归因的痕迹（而不是等 Lock conflict 爆炸）。
+    if (armed > this.l2BootRecoveryWarnSessions) {
+      this.logger?.warn(
+        `${TAG} Boot recovery armed L2 for ${armed} session(s), above bootRecoveryWarnSessions=` +
+          `${this.l2BootRecoveryWarnSessions}: L2 will fire in a burst (throttle=` +
+          `${this.l2ThrottleEnabled ? `on, maxRunsPerHour=${this.l2MaxRunsPerHour || "unlimited"}, maxSessionsPerRound=${this.l2MaxSessionsPerRound || "unlimited"}` : "off"})`,
+      );
     }
   }
 
@@ -1197,11 +1356,41 @@ export class MemoryPipelineManager {
     return this.destroyed;
   }
 
+  /** F2 · 全局门现状（诊断/验收用；账本来自 l2-admission 的共享单例）。 */
+  getL2ThrottleStats(): {
+    enabled: boolean;
+    maxRunsPerHour: number;
+    maxSessionsPerRound: number;
+    windowRuns: number;
+    inFlightRuns: number;
+    roundAdmitted: number;
+    lastRoundAdmitted: number;
+    throttleSkips: number;
+  } {
+    const snapshot = getL2AdmissionSnapshot();
+    return {
+      enabled: this.l2ThrottleEnabled,
+      maxRunsPerHour: this.l2MaxRunsPerHour,
+      maxSessionsPerRound: this.l2MaxSessionsPerRound,
+      windowRuns: pruneL2RunTimestamps(snapshot.runTimestamps, Date.now()).length,
+      inFlightRuns: snapshot.inFlight,
+      roundAdmitted: snapshot.roundAdmitted,
+      lastRoundAdmitted: this.l2LastRoundAdmitted,
+      throttleSkips: this.l2ThrottleSkipCount,
+    };
+  }
+
   /** Queue sizes and running state for monitoring. */
   getQueueSizes(): {
-    l1: number; l2: number; l3: number;
-    l1Pending: boolean; l2Pending: boolean; l3Pending: boolean;
-    l1Idle: boolean; l2Idle: boolean; l3Idle: boolean;
+    l1: number;
+    l2: number;
+    l3: number;
+    l1Pending: boolean;
+    l2Pending: boolean;
+    l3Pending: boolean;
+    l1Idle: boolean;
+    l2Idle: boolean;
+    l3Idle: boolean;
   } {
     return {
       l1: this.l1Queue.size,

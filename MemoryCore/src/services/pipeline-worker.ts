@@ -14,10 +14,20 @@
  * - 幂等：VDB upsert by record_id, COS 覆盖写
  */
 
+import path from "node:path";
 import type { IStateBackend, TaskPayload } from "../core/state/types.js";
 import { serializeTraceContext } from "../core/report/trace-context.js";
 import { obsLogger } from "../core/report/obs-logger.js";
 import { describeTaskFailure, failureOf, planTaskRetry, type TaskFailure } from "../utils/task-failure.js";
+import {
+  admitL2Run,
+  configureL2AdmissionPersistence,
+  isL2AdmissionEnabled,
+  settleL2Run,
+  type L2AdmissionLimits,
+} from "../core/scene/l2-admission.js";
+import { planL2RetryAtMs } from "../core/scene/l2-gate.js";
+import { buildPipelineTimerMember } from "../core/state/timer-member.js";
 
 // ============================
 // Types
@@ -102,6 +112,39 @@ export interface PipelineWorkerConfig {
    * pipeline 一个 consumer。未注入时行为不变。processTask 入口 acquire、finally release。
    */
   permitPool?: import("./worker-permit-pool.js").WorkerPermitPool;
+
+  /**
+   * F2 · 全局速率门（**生产路径**：state-backend timer → worker → executor）。
+   *
+   * 生产 L2 不经过 MemoryPipelineManager 的定时器，所以门必须落在 worker 的
+   * **抢锁之前**：被拦的会话连 agent 级锁都不排（否则 250+ 个 L2 任务共抢
+   * 一把锁，一次重启就打出几万条 lock conflict）。
+   *
+   * 两个上限任意 >0 即启用；都 <=0 / 未配置 ⇒ 逐位等于加门之前。
+   */
+  l2Gate?: L2AdmissionLimits;
+
+  /**
+   * F2 · 账本落盘路径（跨重启保留滑动窗口里已消费的额度）。
+   *
+   * - 字符串 ⇒ 用它；
+   * - `null` ⇒ 显式关闭持久化（进程内账本）；
+   * - 不传 ⇒ `TDAI_L2_ADMISSION_FILE` → `$TDAI_DATA_DIR/l2-admission.json`（生产
+   *   `etc/services.env` 设了 `TDAI_DATA_DIR=D:\TDB\data`）；都未设置 ⇒ 不落盘。
+   *
+   * 只在门开启（任一上限 >0）时才会真的读/写磁盘。
+   */
+  l2AdmissionFilePath?: string | null;
+}
+
+/** 落盘路径解析：显式 > env 覆盖 > 数据根目录派生 > 不落盘。 */
+function resolveL2AdmissionFilePath(configured: string | null | undefined): string | null {
+  if (configured === null) return null;
+  if (configured) return configured;
+  const explicit = process.env.TDAI_L2_ADMISSION_FILE;
+  if (explicit) return explicit;
+  const dataDir = process.env.TDAI_DATA_DIR;
+  return dataDir ? path.join(dataDir, "l2-admission.json") : null;
 }
 
 export interface DeadLetterEntry {
@@ -130,11 +173,18 @@ const MAX_LOCK_REQUEUE = 15;
 export class PipelineWorker {
   private backend: IStateBackend;
   private executor: TaskExecutor;
-  private config: Required<Omit<PipelineWorkerConfig, "onDeadLetter" | "onL1Complete" | "onL2Complete" | "permitPool">> & {
+  private config: Required<
+    Omit<
+      PipelineWorkerConfig,
+      "onDeadLetter" | "onL1Complete" | "onL2Complete" | "permitPool" | "l2Gate" | "l2AdmissionFilePath"
+    >
+  > & {
     onDeadLetter?: PipelineWorkerConfig["onDeadLetter"];
     onL1Complete?: PipelineWorkerConfig["onL1Complete"];
     onL2Complete?: PipelineWorkerConfig["onL2Complete"];
     permitPool?: PipelineWorkerConfig["permitPool"];
+    l2Gate?: PipelineWorkerConfig["l2Gate"];
+    l2AdmissionFilePath?: PipelineWorkerConfig["l2AdmissionFilePath"];
   };
   private logger: Logger;
 
@@ -167,6 +217,8 @@ export class PipelineWorker {
     lockLostDuringExecution: 0,
     /** H-11 Step 2: number of times an executor was aborted via AbortSignal due to lockLost. */
     executionAborted: 0,
+    /** F2 · 全局速率门拦下的 L2 次数（重挂 timer、未抢锁）。 */
+    l2ThrottleSkips: 0,
   };
 
   constructor(backend: IStateBackend, executor: TaskExecutor, config?: PipelineWorkerConfig, logger?: Logger) {
@@ -188,7 +240,17 @@ export class PipelineWorker {
       onL2Complete: config?.onL2Complete,
       lockGranularity: config?.lockGranularity ?? "session",
       permitPool: config?.permitPool,
+      l2Gate: config?.l2Gate,
+      l2AdmissionFilePath: config?.l2AdmissionFilePath,
     };
+
+    // F2 · 账本持久化：只有门开启时才注入路径；门关着 ⇒ 不读不写磁盘（逐位等于今天）。
+    configureL2AdmissionPersistence({
+      filePath: isL2AdmissionEnabled(this.config.l2Gate)
+        ? resolveL2AdmissionFilePath(this.config.l2AdmissionFilePath)
+        : null,
+      warn: (message) => this.logger.warn(message),
+    });
   }
 
   // ============================
@@ -216,17 +278,24 @@ export class PipelineWorker {
     this.running = false;
 
     // 停止 pending recovery
-    if (this.recoveryTimer) { clearInterval(this.recoveryTimer); this.recoveryTimer = null; }
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
 
     // 释放所有活跃锁
     for (const lockKey of this.activeLocks) {
-      try { await this.backend.releaseLock(lockKey, this.config.workerId); } catch { /* best effort */ }
+      try {
+        await this.backend.releaseLock(lockKey, this.config.workerId);
+      } catch {
+        /* best effort */
+      }
     }
     this.activeLocks.clear();
 
     this.logger.info(
       `${TAG} Stopped (consumed=${this.metrics.tasksConsumed}, completed=${this.metrics.tasksCompleted}, ` +
-      `failed=${this.metrics.tasksFailed}, deadLettered=${this.metrics.tasksDeadLettered})`,
+        `failed=${this.metrics.tasksFailed}, deadLettered=${this.metrics.tasksDeadLettered})`,
     );
   }
 
@@ -289,12 +358,78 @@ export class PipelineWorker {
       if (permitReleased) return;
       permitReleased = true;
       if (permitPool) {
-        try { permitPool.release(); }
-        catch (err) {
+        try {
+          permitPool.release();
+        } catch (err) {
           this.logger.warn(`${TAG} permitPool release error: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     };
+
+    // Step 0 (F2): 全局速率门 —— **必须在抢锁之前**。
+    //
+    // 生产 L2 由 state-backend timer 直接 enqueue（server.ts onTimerExpired →
+    // enqueueTask({type:"L2"})），不经过 MemoryPipelineManager，所以放在 manager
+    // 里的门在生产上永远走不到（2026-11-02 17:37 后 4h：112 次 distinct L2、
+    // 44047 条 lock conflict、0 条 reason=l2-throttle）。
+    //
+    // 在这里拦下：不排 agent 级锁、不动 session state（pending /
+    // l2_last_extraction_time / cursor 全保持），只把 L2_schedule timer 重挂到
+    // 下一轮桶口或下一次窗口滑出，并 ACK 本条消息。
+    let l2AdmissionHeld = false;
+    let l2RealRun = false;
+    const settleAdmissionOnce = (isRealRun: boolean): void => {
+      if (!l2AdmissionHeld) return;
+      l2AdmissionHeld = false;
+      settleL2Run(isRealRun, Date.now());
+    };
+    if (task.type === "L2" && isL2AdmissionEnabled(this.config.l2Gate)) {
+      const decision = admitL2Run(this.config.l2Gate);
+      if (!decision.admit) {
+        this.metrics.l2ThrottleSkips++;
+        const nowMs = Date.now();
+        // 单一事实源：重挂时刻 = 下一轮桶口 / 下一个真实窗口槽位 + 会话稳定抖动。
+        // 旧实现无条件把 roundResetAt 塞进候选，inFlight 占满时退化成固定 ~60s 齐醒。
+        const retryAtMs = planL2RetryAtMs({ decision, nowMs, sessionKey: task.sessionId });
+        const retryInMs = Math.max(0, retryAtMs - nowMs);
+        const tid = task.teamId ?? (task.data as Record<string, unknown> | undefined)?.teamId;
+        const aid = task.agentId ?? (task.data as Record<string, unknown> | undefined)?.agentId;
+        try {
+          await this.backend.setTimer(
+            task.instanceId,
+            buildPipelineTimerMember(task.sessionId, "L2_schedule", {
+              teamId: typeof tid === "string" ? tid : undefined,
+              agentId: typeof aid === "string" ? aid : undefined,
+            }),
+            nowMs + retryInMs,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `${TAG} [L2] Re-arm timer after throttle failed (task=${task.id}, session=${task.sessionId}): ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        // 行格式与 core/metrics/observation-scan.ts 的 RE_L2_THROTTLE_SKIP 对齐
+        // （`L2 gate-skip (reason=l2-throttle):`），否则读数会被静默漏计。
+        this.logger.info(
+          `${TAG} L2 gate-skip (reason=l2-throttle): ` +
+            `windowUsed=${decision.windowUsed}/${decision.maxRunsPerHour || "unlimited"}, ` +
+            `roundAdmitted=${decision.roundAdmitted}/${decision.maxSessionsPerRound || "unlimited"}, ` +
+            `retryIn=${Math.round(retryInMs / 1000)}s (task=${task.id}, session=${task.sessionId})`,
+        );
+        const throttledMsgId = (task as any)._msgId;
+        if (throttledMsgId) {
+          try {
+            await this.backend.ackTask(throttledMsgId);
+          } catch {
+            /* best effort */
+          }
+        }
+        releasePermitOnce();
+        return;
+      }
+      l2AdmissionHeld = true;
+    }
 
     // Step 1: 抢分布式锁
     const locked = await this.backend.acquireLock(lockKey, this.config.workerId, this.config.lockTtlMs);
@@ -312,7 +447,9 @@ export class PipelineWorker {
       let delay = 200;
       while (Date.now() < deadline && this.running) {
         attempt++;
-        this.logger?.debug?.(`${TAG} Lock conflict [${task.type}] (task=${task.id}): ${lockKey}, retry ${attempt} after ${delay}ms`);
+        this.logger?.debug?.(
+          `${TAG} Lock conflict [${task.type}] (task=${task.id}): ${lockKey}, retry ${attempt} after ${delay}ms`,
+        );
         await this.sleep(delay);
         acquired = await this.backend.acquireLock(lockKey, this.config.workerId, this.config.lockTtlMs);
         if (acquired) break;
@@ -346,18 +483,23 @@ export class PipelineWorker {
           } catch (err) {
             this.logger?.warn?.(
               `${TAG} Lock conflict requeue failed [${task.type}] (task=${task.id}): ` +
-              (err instanceof Error ? err.message : String(err)),
+                (err instanceof Error ? err.message : String(err)),
             );
           }
 
           if (enqueued) {
             this.logger?.info?.(
               `${TAG} Lock conflict timeout [${task.type}] (task=${task.id}): ${lockKey}, ` +
-              `requeued as ${requeued.id} (attempt ${retryCount + 1}/${MAX_LOCK_REQUEUE})`,
+                `requeued as ${requeued.id} (attempt ${retryCount + 1}/${MAX_LOCK_REQUEUE})`,
             );
             if (msgId) {
-              try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
+              try {
+                await this.backend.ackTask(msgId);
+              } catch {
+                /* best effort */
+              }
             }
+            settleAdmissionOnce(false); // 没真正跑：退还本轮额度
             releasePermitOnce();
             return;
           }
@@ -365,13 +507,18 @@ export class PipelineWorker {
         } else {
           this.logger?.error?.(
             `${TAG} Lock conflict exhausted [${task.type}] (task=${task.id}): ${lockKey}, ` +
-            `dropping after ${retryCount} requeues`,
+              `dropping after ${retryCount} requeues`,
           );
         }
 
         if (msgId) {
-          try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
+          try {
+            await this.backend.ackTask(msgId);
+          } catch {
+            /* best effort */
+          }
         }
+        settleAdmissionOnce(false); // 没真正跑：退还本轮额度
         releasePermitOnce();
         return;
       }
@@ -396,7 +543,7 @@ export class PipelineWorker {
           this.metrics.lockRenewFailed++;
           this.logger.warn(
             `${TAG} Lock renew failed for ${lockKey} (worker=${this.config.workerId}); ` +
-            `marking lockLost and aborting executor`,
+              `marking lockLost and aborting executor`,
           );
           lockLost = true;
           clearInterval(renewTimer);
@@ -409,9 +556,7 @@ export class PipelineWorker {
         }
       } catch (e) {
         this.metrics.lockRenewFailed++;
-        this.logger.warn(
-          `${TAG} Lock renew threw for ${lockKey}: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        this.logger.warn(`${TAG} Lock renew threw for ${lockKey}: ${e instanceof Error ? e.message : String(e)}`);
         lockLost = true;
         clearInterval(renewTimer);
         if (!abortController.signal.aborted) {
@@ -424,6 +569,8 @@ export class PipelineWorker {
     // Step 3: 执行任务
     try {
       await this.executeTask(task, abortController.signal);
+      // F2：被 A1 门/无增量 skip 的轮次不算真实运行（不占滑动窗口）
+      l2RealRun = (task as any)._l2Skipped !== true;
 
       // H-11 Step 1: re-check lockLost after successful executeTask.
       // If the lock was lost mid-execution we must NOT ack and NOT cascade
@@ -434,8 +581,8 @@ export class PipelineWorker {
         this.metrics.lockLostDuringExecution++;
         this.logger.warn(
           `${TAG} Lock lost during execution but task body returned; ` +
-          `skipping ACK + cascadeSchedule so another worker can re-process: ` +
-          `${task.type} [${task.instanceId}/${task.sessionId}]`,
+            `skipping ACK + cascadeSchedule so another worker can re-process: ` +
+            `${task.type} [${task.instanceId}/${task.sessionId}]`,
         );
         // NOTE: rely on L1/L2/L3 idempotency (vectorStore.upsert by memoryId
         // is idempotent; jsonl appends use ETag/append-position so concurrent
@@ -457,7 +604,9 @@ export class PipelineWorker {
 
       // 检查锁是否丢失 → 如果丢失，不重试（避免重复执行）
       if (lockLost) {
-        this.logger.warn(`${TAG} Lock lost during execution, aborting: ${task.type} [${task.instanceId}/${task.sessionId}]`);
+        this.logger.warn(
+          `${TAG} Lock lost during execution, aborting: ${task.type} [${task.instanceId}/${task.sessionId}]`,
+        );
         this.metrics.tasksFailed++;
         return;
       }
@@ -487,7 +636,11 @@ export class PipelineWorker {
         // with the retry, causing the same task to run twice.
         const msgId = (task as any)._msgId;
         if (msgId) {
-          try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
+          try {
+            await this.backend.ackTask(msgId);
+          } catch {
+            /* best effort */
+          }
         }
         await this.sleep(delay);
         await this.reEnqueue(task, retryCount + 1);
@@ -503,11 +656,18 @@ export class PipelineWorker {
         await this.moveToDeadLetter(task, errMsg, retryCount, failure);
       }
     } finally {
+      // F2：结算全局门额度（失败/重投都算非真实运行；只有成功跑完且未被 skip 才占窗口）
+      settleAdmissionOnce(l2RealRun);
+
       // Step 6: 停止续约 + 释放锁
       clearInterval(renewTimer);
       this.activeLocks.delete(lockKey);
       this.runningTasks.delete(task.id);
-      try { await this.backend.releaseLock(lockKey, this.config.workerId); } catch { /* best effort */ }
+      try {
+        await this.backend.releaseLock(lockKey, this.config.workerId);
+      } catch {
+        /* best effort */
+      }
       releasePermitOnce();
 
       // Step 7: 延迟入队 — executor 可通过 task._deferredEnqueue 暂存需要在锁释放后才入队的任务，
@@ -528,10 +688,14 @@ export class PipelineWorker {
 
   private async executeTask(task: TaskPayload, signal?: AbortSignal): Promise<void> {
     switch (task.type) {
-      case "L1": return this.executor.executeL1(task, signal);
-      case "L2": return this.executor.executeL2(task, signal);
-      case "L3": return this.executor.executeL3(task, signal);
-      case "flush": return this.executor.executeFlush?.(task, signal) ?? this.executor.executeL1(task, signal);
+      case "L1":
+        return this.executor.executeL1(task, signal);
+      case "L2":
+        return this.executor.executeL2(task, signal);
+      case "L3":
+        return this.executor.executeL3(task, signal);
+      case "flush":
+        return this.executor.executeFlush?.(task, signal) ?? this.executor.executeL1(task, signal);
       default:
         this.logger.warn(`${TAG} Unknown task type: ${task.type}`);
     }
@@ -548,9 +712,15 @@ export class PipelineWorker {
 
     if (task.type === "L1" || task.type === "flush") {
       // L1 完成 → reset session-level L1 state, then advance agent/profile-level L2 timers.
-      await this.backend.updateSessionState(task.instanceId, task.sessionId, {
-        conversation_count: 0,
-      }, tid, aid);
+      await this.backend.updateSessionState(
+        task.instanceId,
+        task.sessionId,
+        {
+          conversation_count: 0,
+        },
+        tid,
+        aid,
+      );
       const profileScopes = Array.isArray((task as any)._l2ProfileScopes)
         ? ((task as any)._l2ProfileScopes as string[]).filter(Boolean)
         : [];
@@ -561,17 +731,23 @@ export class PipelineWorker {
             await this.backend.updateSessionState(task.instanceId, l2Key, { l2_pending_l1_count: 1 }, tid, aid);
             await this.config.onL1Complete(l2Key, task.instanceId, tid, aid);
           } catch (err) {
-            this.logger?.warn?.(`${TAG} onL1Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+            this.logger?.warn?.(
+              `${TAG} onL1Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
       }
-      this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L1 done → L2 timer advanced (${l2Keys.join(",")})`);
+      this.logger?.debug?.(
+        `${TAG} [${task.instanceId}/${task.sessionId}] L1 done → L2 timer advanced (${l2Keys.join(",")})`,
+      );
     }
 
     if (task.type === "L2") {
       // If L2 was skipped (no new L1 records), don't cascade to L3 or arm timer
       if ((task as any)._l2Skipped) {
-        this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L2 skipped (no new data), not arming timer or enqueuing L3`);
+        this.logger?.debug?.(
+          `${TAG} [${task.instanceId}/${task.sessionId}] L2 skipped (no new data), not arming timer or enqueuing L3`,
+        );
         return;
       }
 
@@ -585,19 +761,29 @@ export class PipelineWorker {
         teamId: tid,
         agentId: aid,
         priority: 2,
-        data: task.data ? { ...task.data, ...serializeTraceContext() } : { teamId: tid, agentId: aid, ...serializeTraceContext() },
+        data: task.data
+          ? { ...task.data, ...serializeTraceContext() }
+          : { teamId: tid, agentId: aid, ...serializeTraceContext() },
         createdAt: now,
       });
-      await this.backend.updateSessionState(task.instanceId, task.sessionId, {
-        l2_pending_l1_count: 0,
-        l2_last_extraction_time: new Date().toISOString(),
-      }, tid, aid);
+      await this.backend.updateSessionState(
+        task.instanceId,
+        task.sessionId,
+        {
+          l2_pending_l1_count: 0,
+          l2_last_extraction_time: new Date().toISOString(),
+        },
+        tid,
+        aid,
+      );
       // onL2Complete 由 server.ts 注入 statefulManager.armL2MaxInterval
       if (this.config.onL2Complete) {
         try {
           await this.config.onL2Complete(task.sessionId, task.instanceId, tid, aid);
         } catch (err) {
-          this.logger?.warn?.(`${TAG} onL2Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          this.logger?.warn?.(
+            `${TAG} onL2Complete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
       this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L2 done → L3 enqueued`);
@@ -699,16 +885,28 @@ export class PipelineWorker {
     // worker pool (root-caused from a production incident).
     const msgId = (task as any)._msgId;
     if (msgId) {
-      try { await this.backend.ackTask(msgId); } catch { /* best effort */ }
+      try {
+        await this.backend.ackTask(msgId);
+      } catch {
+        /* best effort */
+      }
     }
 
     // Clean up timers for this session to prevent ghost triggers
     try {
       const tid = task.teamId ?? (task.data as any)?.teamId;
       const aid = task.agentId ?? (task.data as any)?.agentId;
-      await this.backend.removeTimer(task.instanceId, buildPipelineTimerMember(task.sessionId, "L1_idle", { teamId: tid, agentId: aid }));
-      await this.backend.removeTimer(task.instanceId, buildPipelineTimerMember(task.sessionId, "L2_schedule", { teamId: tid, agentId: aid }));
-    } catch { /* best effort */ }
+      await this.backend.removeTimer(
+        task.instanceId,
+        buildPipelineTimerMember(task.sessionId, "L1_idle", { teamId: tid, agentId: aid }),
+      );
+      await this.backend.removeTimer(
+        task.instanceId,
+        buildPipelineTimerMember(task.sessionId, "L2_schedule", { teamId: tid, agentId: aid }),
+      );
+    } catch {
+      /* best effort */
+    }
 
     // 关键节点日志：任务进入死信队列
     obsLogger.error("core.task.dead_letter", {
@@ -787,6 +985,9 @@ export class PipelineWorker {
   // ============================
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((r) => { const t = setTimeout(r, ms); t.unref(); });
+    return new Promise((r) => {
+      const t = setTimeout(r, ms);
+      t.unref();
+    });
   }
 }

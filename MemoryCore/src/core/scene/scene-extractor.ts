@@ -25,6 +25,7 @@ import { parseSceneBlock } from "../scene/scene-format.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
 import { normalizeSceneFilenames } from "./filename-normalizer.js";
 import { SceneGovernor } from "./scene-governor.js";
+import { applyStructuredForm } from "./scene-structured.js";
 import type { MemoryPromptMode, SceneGovernanceConfig } from "../../config.js";
 import { buildSceneExtractionPrompt } from "../prompts/scene-extraction.js";
 import { report } from "../report/reporter.js";
@@ -100,6 +101,13 @@ export interface SceneExtractorOptions {
    * config-first：由 cfg.persona.reasoningEffort 注入，A/B 实证后再落产线值。
    */
   reasoningEffort?: string;
+  /**
+   * B3 结构化形态（persona.l2Form）。enabled/structured=true 时：
+   * prompt 追加三段形态要求，抽取完成后把场景块改写成
+   * 摘要 / 主张(heat) / 事件流(append-only) 并压到 maxBlockBytes 以内。
+   * 缺省 undefined/false ⇒ 全链路逐位等于今天。
+   */
+  l2Form?: { structured?: boolean; maxBlockBytes?: number };
 }
 
 /**
@@ -139,6 +147,7 @@ export class SceneExtractor {
   private traceContext: TraceContext | undefined;
   private sceneGovernance: SceneGovernanceConfig | undefined;
   private reasoningEffort: string | undefined;
+  private l2Form: { structured?: boolean; maxBlockBytes?: number } | undefined;
 
   constructor(opts: SceneExtractorOptions) {
     this.dataDir = opts.dataDir;
@@ -153,6 +162,7 @@ export class SceneExtractor {
     this.traceContext = opts.traceContext;
     this.sceneGovernance = opts.sceneGovernance;
     this.reasoningEffort = opts.reasoningEffort;
+    this.l2Form = opts.l2Form;
 
     this.runner = requireLlmRunner(opts.llmRunner, "scene-extraction");
 
@@ -268,6 +278,7 @@ export class SceneExtractor {
       existingSceneFiles,
       maxScenes: this.maxScenes,
       promptMode: this.promptMode,
+      ...(this.l2Form ? { structuredForm: { enabled: this.l2Form.structured === true, maxBlockBytes: this.l2Form.maxBlockBytes } } : {}),
     });
     const systemPrompt = composeMemorySystemPrompt(baseSystemPrompt, this.memoryPrompt);
     this.logger?.debug?.(`${TAG} extract() prompt built: ${userPrompt.length} chars (${Date.now() - promptStartMs}ms)`);
@@ -464,6 +475,68 @@ export class SceneExtractor {
         // 治理异常绝不外抛阻断 extract 主流程：loud warn + 照常继续索引同步。
         this.logger?.warn(`${TAG} extract() scene governance error (non-fatal, extract continues): ${govErr instanceof Error ? govErr.message : String(govErr)}`);
       }
+    }
+
+    // Phase 5d: B3 结构化形态（persona.l2Form.structured）。
+    //
+    // 门控缺省关闭 ⇒ 不读也不改任何场景块（legacy 逐位不变）。开启时把每块改写成
+    // 摘要 / 主张(heat) / 事件流(append-only)，并压到 maxBlockBytes 以内；
+    // META 四字段保留 ⇒ scene_index（14 行索引）与 auto-recall 读路径不变。
+    // 放在治理之后、syncSceneIndex 之前：索引与其他读者只看得到最终形态。
+    if (this.l2Form?.structured === true) {
+      const formStartMs = Date.now();
+      const maxBlockBytes = this.l2Form.maxBlockBytes ?? 4096;
+      let rewritten = 0;
+      let formFailed = 0;
+      try {
+        let formNames: string[];
+        if (this.storage) {
+          formNames = await this.storage.readdirNames(StoragePaths.sceneBlocksDir, ".md");
+        } else {
+          const fs = await import("node:fs/promises");
+          formNames = (await fs.default.readdir(sceneBlocksDir)).filter((f: string) => f.endsWith(".md"));
+        }
+        for (const name of formNames) {
+          try {
+            let raw: string | null;
+            if (this.storage) {
+              raw = await this.storage.readFile(`${StoragePaths.sceneBlocksDir}${name}`);
+            } else {
+              const fs = await import("node:fs/promises");
+              const path = await import("node:path");
+              raw = await fs.default.readFile(path.default.join(this.dataDir, "scene_blocks", name), "utf-8");
+            }
+            if (!raw || raw.trim().length === 0 || raw.trim() === "[DELETED]") continue;
+            const next = applyStructuredForm({
+              raw,
+              previousRaw: preExtractContent.get(name) ?? null,
+              maxBlockBytes,
+            });
+            if (next === raw) continue;
+            if (this.storage) {
+              await this.storage.writeFile(`${StoragePaths.sceneBlocksDir}${name}`, next);
+            } else {
+              const fs = await import("node:fs/promises");
+              const path = await import("node:path");
+              await fs.default.writeFile(path.default.join(this.dataDir, "scene_blocks", name), next, "utf-8");
+            }
+            rewritten++;
+          } catch (blockErr) {
+            // 单块失败不阻断其它块：保留原块（最坏=该块仍是 legacy 形态）。
+            formFailed++;
+            this.logger?.warn(
+              `${TAG} extract() structured form failed for ${name} (non-fatal, block kept as-is): ${blockErr instanceof Error ? blockErr.message : String(blockErr)}`,
+            );
+          }
+        }
+      } catch (formErr) {
+        this.logger?.warn(
+          `${TAG} extract() structured form error (non-fatal, extract continues): ${formErr instanceof Error ? formErr.message : String(formErr)}`,
+        );
+      }
+      this.logger?.info(
+        `${TAG} extract() structured form: rewritten=${rewritten}, failed=${formFailed}, maxBlockBytes=${maxBlockBytes} (${Date.now() - formStartMs}ms)`,
+      );
     }
 
     // Phase 6: Sync scene index (rebuilds from remaining non-empty files)

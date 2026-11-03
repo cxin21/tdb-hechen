@@ -50,6 +50,8 @@ import {
   type Manifest,
 } from "./manifest.js";
 import { SceneExtractor } from "../core/scene/scene-extractor.js";
+import { decideL2Gate, type L2GateSkipResult } from "../core/scene/l2-gate.js";
+import { isL2ForceRequested } from "../core/scene/l2-force-context.js";
 import { PersonaTrigger } from "../core/persona/persona-trigger.js";
 import { PersonaGenerator } from "../core/persona/persona-generator.js";
 import {
@@ -1007,6 +1009,11 @@ export function createL2Runner(opts: {
    * service 模式下必须提供，否则同instance 的多节点并发会丢失计数器修复结果。
    */
   checkpointLock?: import("./checkpoint.js").CheckpointLockOptions;
+  /**
+   * A1：强制触发通道——true 时绕过 persona.l2Gate 触发门。
+   * 手动/运维场景用；跨服务调用方也可用 withL2Force 上下文（l2-force-context.ts）。
+   */
+  force?: boolean;
 }): L2Runner {
   const { pluginDataDir, cfg, vectorStore, logger, instanceId, llmRunner, storage, checkpointLock } = opts;
   let profileBaseline = new Map<string, { version: number; contentMd5: string; createdAtMs: number }>();
@@ -1071,6 +1078,31 @@ export function createL2Runner(opts: {
       logger.debug?.(`${TAG} [L2] No new L1 records found (session=${sessionKey}), skipping scene extraction`);
       return;
     }
+
+    // A1 · L2 触发门：把「有增量就跑」改成「攒够条数，或距上次成功抽取超时间阈值才跑」。
+    // 缺省 persona.l2Gate.enabled=false ⇒ 本段整体不生效，逐位等于今天的行为。
+    // 门拦下时必须原地返回：不得推进 L2 cursor、不得消费 records（records 已是只读快照）。
+    const forceL2Run = opts.force === true || isL2ForceRequested();
+    if (cfg.persona.l2Gate?.enabled === true && !forceL2Run) {
+      const gateDecision = decideL2Gate({
+        enabled: true,
+        pendingCount: records.length,
+        lastExtractionAt: (
+          await new CheckpointManager(pluginDataDir, logger, storage, checkpointLock).read()
+        ).pipeline_states?.[sessionKey]?.l2_last_extraction_time,
+        nowMs: Date.now(),
+        minPendingL1: cfg.persona.l2Gate.minPendingL1,
+        minIntervalHours: cfg.persona.l2Gate.minIntervalHours,
+        force: false,
+      });
+      if (gateDecision.skip) {
+        logger.debug?.(
+          `${TAG} [L2] Gate skipped (l2-gate): pending=${gateDecision.pendingCount}<${gateDecision.minPendingL1}, lastExtraction=${gateDecision.elapsedMs ?? "never"}ms<${gateDecision.minIntervalHours}h (session=${sessionKey})`,
+        );
+        const gateResult: L2GateSkipResult = { skipped: true, reason: "l2-gate" };
+        return gateResult;
+      }
+    }
     // R4 观测面（UR-3 工程侧）：增量窗口无上界，超大批次是 300s 超时/超长 prompt
     // 的风险源。切片限流涉及 cursor 水位线语义（latestCursor 取全窗口 max(updatedAt)，
     // 切错=丢数据），本轮只告警不改切片，登记为后续工程项。
@@ -1127,6 +1159,9 @@ export function createL2Runner(opts: {
         storage: groupStorage,
         // 场景块治理（DS-SCENE-GOV-001）：cfg.sceneGovernance 恒解析，门控 extractor 内部用 .enabled
         sceneGovernance: cfg.sceneGovernance,
+        // B3 结构化形态（persona.l2Form）：structured=false（缺省）时不透传，
+        // 抽取器提示词与写出的场景块逐位等于今天。
+        ...(cfg.persona.l2Form?.structured === true ? { l2Form: cfg.persona.l2Form } : {}),
         // langfuse: 透传身份四元组，UI 上可按 user/session 列过滤
         traceContext: { teamId: ctx.teamId, userId: ctx.userId, agentId: ctx.agentId, sessionId: ctx.sessionId },
       });
@@ -1280,6 +1315,21 @@ export function createL2Runner(opts: {
     if (processedTotal > 0) {
       const latestCursor = records.reduce((latest, r) => r.updatedAt > latest ? r.updatedAt : latest, "");
       logger.debug?.(`${TAG} [L2] Extraction complete: processed=${processedTotal}, latestCursor=${latestCursor}`);
+      // A1：记录本轮成功抽取时刻（既有键 l2_last_extraction_time，保持 ISO 格式），
+      // 触发门用它判时间阈值；只在门开启时写，缺省路径不动 checkpoint。
+      if (cfg.persona.l2Gate?.enabled === true) {
+        try {
+          await new CheckpointManager(pluginDataDir, logger, storage, checkpointLock).mergePipelineStates({
+            [sessionKey]: {
+              l2_last_extraction_time: new Date().toISOString(),
+            } as unknown as PipelineSessionState,
+          });
+        } catch (stampErr) {
+          logger.warn(
+            `${TAG} [L2] Failed to record l2_last_extraction_time (session=${sessionKey}): ${(stampErr as Error)?.message ?? String(stampErr)}`,
+          );
+        }
+      }
       return { latestCursor: latestCursor || undefined };
     }
     if (anyEmptyExtraction) return { skipped: true };
@@ -1504,6 +1554,13 @@ export function createPipelineManager(
         minIntervalSeconds: cfg.pipeline.l2MinIntervalSeconds,
         maxIntervalSeconds: cfg.pipeline.l2MaxIntervalSeconds,
         sessionActiveWindowHours: cfg.pipeline.sessionActiveWindowHours,
+      },
+      // F2 · 全局速率门（滑动 60 分钟 + 单轮 session 上限）透传给 manager。
+      // 两个上限都 0 ⇒ manager 内整段不生效，逐位等于加门之前。
+      l2Gate: {
+        maxRunsPerHour: cfg.persona.l2Gate.maxRunsPerHour,
+        maxSessionsPerRound: cfg.persona.l2Gate.maxSessionsPerRound,
+        bootRecoveryWarnSessions: cfg.persona.l2Gate.bootRecoveryWarnSessions,
       },
     },
     logger,

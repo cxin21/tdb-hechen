@@ -68,8 +68,14 @@ export function formatMeta(meta: SceneBlockMeta): string {
   ].join("\n");
 }
 
+/**
+ * 取 META 单字段值。
+ * 分隔空白必须是 `[ \t]*` 而非 `\s*`：后者在值为空时会**跨行**吞掉下一行，
+ * 生产后果是 `summary:` 为空时把 `heat: 74` 读成 summary、heat 归 0
+ * （2026-11-03 修，RED 见 scene/__tests__/scene-format-meta.test.ts）。
+ */
 function extractMetaField(metaBlock: string, field: string): string {
-  const re = new RegExp(`^${field}:\\s*(.*)$`, "m");
+  const re = new RegExp(`^${field}:[ \\t]*(.*)$`, "m");
   const m = metaBlock.match(re);
   return m ? m[1]!.trim() : "";
 }

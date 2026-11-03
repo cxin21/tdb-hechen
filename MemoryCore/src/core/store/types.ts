@@ -978,7 +978,25 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * 行形状 = L1SearchResult（metadata 从 l1_records 读，租户 filter 两步过滤，null distance 跳过）。
    */
   searchL1FactVector?(queryEmbedding: Float32Array, topK?: number, filter?: IsolationFilter): MaybePromise<L1SearchResult[]>;
-  searchL1Fts(ftsQuery: string, limit?: number, filter?: IsolationFilter): MaybePromise<L1FtsResult[]>;
+  /**
+   * B1 修正（2026-11-02）：按 record_id 批量读 l1_vec 已入库向量（巩固层属性归组的
+   * embedding 兜底复用它们，不再逐条重嵌）。可选方法——未实现 = 调用方只做有上限的补齐；
+   * 未就绪/degraded/SQL 失败 → 空 Map（不抛，不重试）。
+   */
+  getL1VectorsByIds?(ids: string[]): MaybePromise<Map<string, Float32Array>>;
+  /**
+   * FTS5 关键词检索。
+   *
+   * `opts.type`（2026-11-03，可选）：**先按 type 过滤再 LIMIT** 的收窄检索。结论层只消费
+   * work_fact，旧写法让长文 consolidated 卡与短 episodic 行在同一 bm25 池子里竞争 top-N，
+   * 被系统性挤出榜外。不传 opts 时逐位等于旧行为。
+   */
+  searchL1Fts(
+    ftsQuery: string,
+    limit?: number,
+    filter?: IsolationFilter,
+    opts?: { type?: string },
+  ): MaybePromise<L1FtsResult[]>;
   searchL1Hybrid?(params: {
     query?: string;
     queryEmbedding?: Float32Array;

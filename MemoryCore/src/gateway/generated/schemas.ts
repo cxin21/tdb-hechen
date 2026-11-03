@@ -4,7 +4,7 @@
 */
 
 import * as z from "zod";
-import type { ActorRef, ApiResponseEnvelope, IdFields, ConversationRole, Pagination, AssetType, AssetMutateData, AssetSearchRequest, AssetSearchHit, AssetSearchData, ConversationItem, ConversationAddRequest, ConversationAddData, ConversationQueryRequest, ConversationQueryData, ConversationSearchRequest, ConversationSearchHit, ConversationSearchData, ConversationDeleteRequest, ConversationDeleteData, AtomicDetail, AtomicUpdateRequest, AtomicUpdateData, AtomicQueryRequest, AtomicQueryData, AtomicSearchRequest, AtomicSearchHit, AtomicSearchData, AtomicDeleteRequest, AtomicDeleteData, ScenarioEntry, ScenarioFile, ScenarioListRequest, ScenarioListData, ScenarioReadRequest, ScenarioWriteRequest, ScenarioWriteData, ScenarioRmRequest, CoreFile, CoreReadRequest, CoreWriteRequest, CoreWriteData, SkillSummary, SkillDetail, SkillListRequest, SkillListData, SkillGetRequest, SkillFile, SkillCreateRequest, SkillUpdateRequest, SkillMutateData, SkillDeleteRequest, SkillSearchRequest, SkillSearchHit, SkillSearchData, SkillImportRole, SkillImportMessage, SkillImportRequest, SkillImportDiagnostic, SkillImportData, TeamStatus, UserStatus, AgentStatus, TaskSourceType, AgentVisibility, BatchDeleteResult, TeamBatchDeleteRequest, UserBatchDeleteRequest, AgentBatchDeleteRequest, TaskBatchDeleteRequest, TeamData, TeamCreateRequest, TeamGetRequest, TeamUpdateRequest, UserData, UserCreateRequest, UserUpdateRequest, UserGetRequest, AgentData, AgentCreateRequest, AgentGetRequest, AgentUpdateRequest, TaskData, TaskCreateRequest, TaskGetRequest, TaskUpdateRequest, AddConversation200, AddConversationError, AddConversationMutationRequest, AddConversationMutationResponse, QueryConversation200, QueryConversationError, QueryConversationMutationRequest, QueryConversationMutationResponse, SearchConversation200, SearchConversationError, SearchConversationMutationRequest, SearchConversationMutationResponse, DeleteConversation200, DeleteConversationError, DeleteConversationMutationRequest, DeleteConversationMutationResponse, UpdateAtomic200, UpdateAtomicError, UpdateAtomicMutationRequest, UpdateAtomicMutationResponse, QueryAtomic200, QueryAtomicError, QueryAtomicMutationRequest, QueryAtomicMutationResponse, SearchAtomic200, SearchAtomicError, SearchAtomicMutationRequest, SearchAtomicMutationResponse, DeleteAtomic200, DeleteAtomicError, DeleteAtomicMutationRequest, DeleteAtomicMutationResponse, LsScenario200, LsScenarioError, LsScenarioMutationRequest, LsScenarioMutationResponse, ReadScenario200, ReadScenarioError, ReadScenarioMutationRequest, ReadScenarioMutationResponse, WriteScenario200, WriteScenarioError, WriteScenarioMutationRequest, WriteScenarioMutationResponse, RmScenario200, RmScenarioError, RmScenarioMutationRequest, RmScenarioMutationResponse, ReadCore200, ReadCoreError, ReadCoreMutationRequest, ReadCoreMutationResponse, WriteCore200, WriteCoreError, WriteCoreMutationRequest, WriteCoreMutationResponse, ListSkill200, ListSkillError, ListSkillMutationRequest, ListSkillMutationResponse, GetSkill200, GetSkillError, GetSkillMutationRequest, GetSkillMutationResponse, CreateSkill200, CreateSkillError, CreateSkillMutationRequest, CreateSkillMutationResponse, UpdateSkill200, UpdateSkillError, UpdateSkillMutationRequest, UpdateSkillMutationResponse, DeleteSkill200, DeleteSkillError, DeleteSkillMutationRequest, DeleteSkillMutationResponse, SearchSkill200, SearchSkillError, SearchSkillMutationRequest, SearchSkillMutationResponse, ImportSkill200, ImportSkillError, ImportSkillMutationRequest, ImportSkillMutationResponse, CreateTeam200, CreateTeamError, CreateTeamMutationRequest, CreateTeamMutationResponse, GetTeam200, GetTeamError, GetTeamMutationRequest, GetTeamMutationResponse, UpdateTeam200, UpdateTeamError, UpdateTeamMutationRequest, UpdateTeamMutationResponse, DeleteTeam200, DeleteTeamError, DeleteTeamMutationRequest, DeleteTeamMutationResponse, CreateUser200, CreateUserError, CreateUserMutationRequest, CreateUserMutationResponse, GetUser200, GetUserError, GetUserMutationRequest, GetUserMutationResponse, UpdateUser200, UpdateUserError, UpdateUserMutationRequest, UpdateUserMutationResponse, DeleteUser200, DeleteUserError, DeleteUserMutationRequest, DeleteUserMutationResponse, CreateAgent200, CreateAgentError, CreateAgentMutationRequest, CreateAgentMutationResponse, GetAgent200, GetAgentError, GetAgentMutationRequest, GetAgentMutationResponse, UpdateAgent200, UpdateAgentError, UpdateAgentMutationRequest, UpdateAgentMutationResponse, DeleteAgent200, DeleteAgentError, DeleteAgentMutationRequest, DeleteAgentMutationResponse, CreateTask200, CreateTaskError, CreateTaskMutationRequest, CreateTaskMutationResponse, GetTask200, GetTaskError, GetTaskMutationRequest, GetTaskMutationResponse, UpdateTask200, UpdateTaskError, UpdateTaskMutationRequest, UpdateTaskMutationResponse, DeleteTask200, DeleteTaskError, DeleteTaskMutationRequest, DeleteTaskMutationResponse } from "./types.ts";
+import type { ActorRef, ApiResponseEnvelope, IdFields, ConversationRole, Pagination, AssetType, AssetMutateData, AssetSearchRequest, AssetSearchHit, AssetSearchData, ConversationItem, ConversationAddRequest, ConversationAddData, ConversationQueryRequest, ConversationQueryData, ConversationSearchRequest, ConversationSearchHit, ConversationSearchData, ConversationDeleteRequest, ConversationDeleteData, AtomicDetail, AtomicUpdateRequest, AtomicUpdateData, AtomicQueryRequest, AtomicQueryData, AtomicSearchRequest, AtomicSearchHit, AtomicSearchData, AtomicDeleteRequest, AtomicDeleteData, ScenarioEntry, ScenarioFile, ScenarioListRequest, ScenarioListData, ScenarioReadRequest, ScenarioWriteRequest, ScenarioWriteData, ScenarioRmRequest, CoreFile, CoreReadRequest, CoreWriteRequest, CoreWriteData, SkillSummary, SkillDetail, SkillListRequest, SkillListData, SkillGetRequest, SkillFile, SkillCreateRequest, SkillUpdateRequest, SkillMutateData, SkillDeleteRequest, SkillSearchRequest, SkillSearchHit, SkillSearchData, SkillImportRole, SkillImportMessage, SkillImportRequest, SkillImportDiagnostic, SkillImportData, TeamStatus, UserStatus, AgentStatus, TaskSourceType, AgentVisibility, BatchDeleteResult, TeamBatchDeleteRequest, UserBatchDeleteRequest, AgentBatchDeleteRequest, TaskBatchDeleteRequest, TeamData, TeamCreateRequest, TeamGetRequest, TeamUpdateRequest, UserData, UserCreateRequest, UserUpdateRequest, UserGetRequest, AgentData, AgentCreateRequest, AgentGetRequest, AgentUpdateRequest, TaskData, TaskCreateRequest, TaskGetRequest, TaskUpdateRequest, AddConversation200, AddConversationError, AddConversationMutationRequest, AddConversationMutationResponse, QueryConversation200, QueryConversationError, QueryConversationMutationRequest, QueryConversationMutationResponse, SearchConversation200, SearchConversationError, SearchConversationMutationRequest, SearchConversationMutationResponse, DeleteConversation200, DeleteConversationError, DeleteConversationMutationRequest, DeleteConversationMutationResponse, UpdateAtomic200, UpdateAtomicError, UpdateAtomicMutationRequest, UpdateAtomicMutationResponse, QueryAtomic200, QueryAtomicError, QueryAtomicMutationRequest, QueryAtomicMutationResponse, SearchAtomic200, SearchAtomicError, SearchAtomicMutationRequest, SearchAtomicMutationResponse, DeleteAtomic200, DeleteAtomicError, DeleteAtomicMutationRequest, DeleteAtomicMutationResponse, LsScenario200, LsScenarioError, LsScenarioMutationRequest, LsScenarioMutationResponse, ReadScenario200, ReadScenarioError, ReadScenarioMutationRequest, ReadScenarioMutationResponse, WriteScenario200, WriteScenarioError, WriteScenarioMutationRequest, WriteScenarioMutationResponse, RmScenario200, RmScenarioError, RmScenarioMutationRequest, RmScenarioMutationResponse, ReadCore200, ReadCoreError, ReadCoreMutationRequest, ReadCoreMutationResponse, WriteCore200, WriteCoreError, WriteCoreMutationRequest, WriteCoreMutationResponse, ListSkill200, ListSkillError, ListSkillMutationRequest, ListSkillMutationResponse, GetSkill200, GetSkillError, GetSkillMutationRequest, GetSkillMutationResponse, CreateSkill200, CreateSkillError, CreateSkillMutationRequest, CreateSkillMutationResponse, UpdateSkill200, UpdateSkillError, UpdateSkillMutationRequest, UpdateSkillMutationResponse, DeleteSkill200, DeleteSkillError, DeleteSkillMutationRequest, DeleteSkillMutationResponse, SearchSkill200, SearchSkillError, SearchSkillMutationRequest, SearchSkillMutationResponse, ImportSkill200, ImportSkillError, ImportSkillMutationRequest, ImportSkillMutationResponse, CreateTeam200, CreateTeamError, CreateTeamMutationRequest, CreateTeamMutationResponse, GetTeam200, GetTeamError, GetTeamMutationRequest, GetTeamMutationResponse, UpdateTeam200, UpdateTeamError, UpdateTeamMutationRequest, UpdateTeamMutationResponse, DeleteTeam200, DeleteTeamError, DeleteTeamMutationRequest, DeleteTeamMutationResponse, CreateUser200, CreateUserError, CreateUserMutationRequest, CreateUserMutationResponse, GetUser200, GetUserError, GetUserMutationRequest, GetUserMutationResponse, UpdateUser200, UpdateUserError, UpdateUserMutationRequest, UpdateUserMutationResponse, DeleteUser200, DeleteUserError, DeleteUserMutationRequest, DeleteUserMutationResponse, CreateAgent200, CreateAgentError, CreateAgentMutationRequest, CreateAgentMutationResponse, GetAgent200, GetAgentError, GetAgentMutationRequest, GetAgentMutationResponse, UpdateAgent200, UpdateAgentError, UpdateAgentMutationRequest, UpdateAgentMutationResponse, DeleteAgent200, DeleteAgentError, DeleteAgentMutationRequest, DeleteAgentMutationResponse, CreateTask200, CreateTaskError, CreateTaskMutationRequest, CreateTaskMutationResponse, GetTask200, GetTaskError, GetTaskMutationRequest, GetTaskMutationResponse, UpdateTask200, UpdateTaskError, UpdateTaskMutationRequest, UpdateTaskMutationResponse, DeleteTask200, DeleteTaskError, DeleteTaskMutationRequest, DeleteTaskMutationResponse, WikiDetail, WikiCreateRequest, WikiUpdateRequest, WikiListRequest, WikiListData, WikiDeleteRequest, CodeGraphStats, CodeGraphDetail, CodeGraphCreateRequest, CodeGraphListRequest, CodeGraphListData, CodeGraphSyncRequest, CodeGraphDeleteRequest, ListWiki200, ListWikiError, ListWikiMutationRequest, ListWikiMutationResponse, CreateWiki200, CreateWikiError, CreateWikiMutationRequest, CreateWikiMutationResponse, UpdateWiki200, UpdateWikiError, UpdateWikiMutationRequest, UpdateWikiMutationResponse, DeleteWiki200, DeleteWikiError, DeleteWikiMutationRequest, DeleteWikiMutationResponse, SearchWiki200, SearchWikiError, SearchWikiMutationRequest, SearchWikiMutationResponse, ListCodeGraph200, ListCodeGraphError, ListCodeGraphMutationRequest, ListCodeGraphMutationResponse, CreateCodeGraph200, CreateCodeGraphError, CreateCodeGraphMutationRequest, CreateCodeGraphMutationResponse, SyncCodeGraph200, SyncCodeGraphError, SyncCodeGraphMutationRequest, SyncCodeGraphMutationResponse, DeleteCodeGraph200, DeleteCodeGraphError, DeleteCodeGraphMutationRequest, DeleteCodeGraphMutationResponse, SearchCodeGraph200, SearchCodeGraphError, SearchCodeGraphMutationRequest, SearchCodeGraphMutationResponse } from "./types.ts";
 
 /**
  * @description 统一响应外壳。`code = 0` 表示成功；非 0 表示业务错误。\n常见业务错误语义：\n  - `400`：参数不合法（如关键 ID 缺失、互斥字段同时出现、空入参等）；\n  - `401`：鉴权失败；\n  - `403`：**全接口统一**——多个业务字段均可见但归属一致性校验\n    失败（如 `(team_id, agent_id)` 不构成有效 Agent 归属、\n    `task_id` 不属于 `team_id`、`(task_id, agent_id) ∉\n    task_agents`、`creator_user_id` 不是该 team 成员等）；\n    写审计日志；\n  - `404`：资源不存在或不属于当前调用上下文（记忆原子层 / 资产层 /\n    实体 CRUD 一律按 404，与 offload.yaml 同契约，不暴露存在性）；\n  - `409`：会话级 / 资产级并发竞争超时；\n  - `422`：Schema 校验通过但业务规则不通过（如 Skill 重名 / 版本冲突）；\n  - `429`：频控触发；\n  - `500`：内部错误，可有限重试；\n  - `503-LLM_UNAVAILABLE` / `503-STORAGE_UNAVAILABLE`：依赖不可用；\n  - `504`：请求超时。\n
@@ -1337,6 +1337,120 @@ export const deleteTaskErrorSchema = z.lazy(() => apiResponseEnvelopeSchema).des
 export const deleteTaskMutationRequestSchema = z.lazy(() => taskBatchDeleteRequestSchema) as unknown as z.ZodType<DeleteTaskMutationRequest>
 
 export const deleteTaskMutationResponseSchema = z.lazy(() => deleteTask200Schema) as unknown as z.ZodType<DeleteTaskMutationResponse>
+
+// ---------------------------------------------------------------------------
+// #127 手工同步补充（2026-11-02）：wiki / code-graph 资产层 schema
+//
+// 下列 schema 常量缺失，导致本文件 51 处 Cannot find name（TS2304 / TS2552）。
+// 成因、定义来源与未验证边界见 src/gateway/generated/types.ts 尾部的同段落注释。
+// 顺带补齐 codeGraphStats / codeGraphDetail：它们被 codeGraphListData 依赖，
+// 虽未直接出现在报错清单里，但同样缺失。
+// ---------------------------------------------------------------------------
+
+export const wikiDetailSchema = z.object({
+    "wiki_id": z.string(),
+    "team_id": z.string(),
+    "name": z.string(),
+    "source_type": z.optional(z.string().describe("来源类型（如 'iwiki'）；null = 手工上传。决定详情页 UI 走「上传文件」还是「从外部拉取」。")),
+    "source_url": z.optional(z.string().describe("外部来源根地址；仅 source_type 非 null 时有值。")),
+    "service_url": z.optional(z.string().describe("Tools self-discovery base URL (includes API prefix, e.g. http://host:8421/v3)")),
+    "summary": z.optional(z.string().max(256)),
+    "status": z.enum(["draft", "pending", "processing", "ready", "failed"]).describe("draft = 建壳未加工（仅 create 一次性出现）；pending/processing = in-flight；ready = 可查询；failed = 可重试。"),
+    "sync_error": z.optional(z.string()),
+    "version": z.string(),
+    "owner_user_id": z.optional(z.string()),
+    "page_count": z.optional(z.int()),
+    "last_sync_at": z.optional(z.string()),
+    "created_at": z.string(),
+    "updated_at": z.string()
+}) as unknown as z.ZodType<WikiDetail>
+
+export const wikiCreateRequestSchema = z.lazy(() => idFieldsSchema).and(z.object({
+    "team_id": z.string(),
+    "name": z.string(),
+    "source_type": z.optional(z.string().describe("来源类型（如 'iwiki'）；决定详情页 UI 走「上传文件」还是「从外部拉取」。")),
+    "source_url": z.optional(z.string().describe("外部来源根地址（形如 <站点>/spaces/<spaceKey> 或 <站点>/p/<docId>）。"))
+})) as unknown as z.ZodType<WikiCreateRequest>
+
+export const wikiUpdateRequestSchema = z.lazy(() => idFieldsSchema).and(z.object({
+    "wiki_id": z.string(),
+    "name": z.optional(z.string()),
+    "summary": z.optional(z.string().max(256)),
+    "source_type": z.optional(z.string()),
+    "source_url": z.optional(z.string())
+})) as unknown as z.ZodType<WikiUpdateRequest>
+
+export const wikiListRequestSchema = z.lazy(() => idFieldsSchema).and(z.object({
+    "team_id": z.string(),
+    "status": z.optional(z.enum(["draft", "pending", "processing", "ready", "failed"])),
+    "limit": z.optional(z.int().default(20)),
+    "offset": z.optional(z.int().default(0))
+})) as unknown as z.ZodType<WikiListRequest>
+
+export const wikiListDataSchema = z.object({
+    get "items"(){
+                return z.array(wikiDetailSchema)
+              },
+"total": z.int()
+    }) as unknown as z.ZodType<WikiListData>
+
+export const wikiDeleteRequestSchema = z.object({
+    "wiki_ids": z.array(z.string()).max(100)
+}) as unknown as z.ZodType<WikiDeleteRequest>
+
+export const codeGraphStatsSchema = z.object({
+    "files": z.optional(z.int()),
+    "nodes": z.optional(z.int()),
+    "edges": z.optional(z.int())
+}) as unknown as z.ZodType<CodeGraphStats>
+
+export const codeGraphDetailSchema = z.object({
+    "code_graph_id": z.string(),
+    "team_id": z.string(),
+    "repo_name": z.string(),
+    "repo_url": z.string(),
+    "branch": z.string(),
+    "commit_hash": z.optional(z.string()),
+    "service_url": z.optional(z.string().describe("Tools self-discovery base URL (includes API prefix, e.g. http://host:8421/v3)")),
+    "summary": z.optional(z.string().max(256)),
+    "status": z.enum(["pending", "processing", "ready", "failed"]),
+    "sync_error": z.optional(z.string()),
+    "version": z.string(),
+    "owner_user_id": z.optional(z.string()),
+    "stats": z.optional(z.lazy(() => codeGraphStatsSchema)),
+    "last_sync_at": z.optional(z.string()),
+    "created_at": z.string(),
+    "updated_at": z.string()
+}) as unknown as z.ZodType<CodeGraphDetail>
+
+export const codeGraphCreateRequestSchema = z.lazy(() => idFieldsSchema).and(z.object({
+    "team_id": z.string(),
+    "repo_url": z.string(),
+    "branch": z.optional(z.string().default("main")),
+    "repo_name": z.optional(z.string())
+})) as unknown as z.ZodType<CodeGraphCreateRequest>
+
+export const codeGraphListRequestSchema = z.lazy(() => idFieldsSchema).and(z.object({
+    "team_id": z.string(),
+    "status": z.optional(z.enum(["pending", "processing", "ready", "failed"])),
+    "limit": z.optional(z.int().default(20)),
+    "offset": z.optional(z.int().default(0))
+})) as unknown as z.ZodType<CodeGraphListRequest>
+
+export const codeGraphListDataSchema = z.object({
+    get "items"(){
+                return z.array(codeGraphDetailSchema)
+              },
+"total": z.int()
+    }) as unknown as z.ZodType<CodeGraphListData>
+
+export const codeGraphSyncRequestSchema = z.object({
+    "code_graph_id": z.string()
+}) as unknown as z.ZodType<CodeGraphSyncRequest>
+
+export const codeGraphDeleteRequestSchema = z.object({
+    "code_graph_ids": z.array(z.string()).max(100)
+}) as unknown as z.ZodType<CodeGraphDeleteRequest>
 
 /**
  * @description 列举成功

@@ -567,6 +567,8 @@ export class VectorStore implements IMemoryStore {
   private stmtL1FtsInsert!: StatementSync;
   private stmtL1FtsDelete!: StatementSync;
   private stmtL1FtsSearch!: StatementSync;
+  /** 类型收窄版（2026-11-03）：结论层候选只要 work_fact，先过滤再 LIMIT。 */
+  private stmtL1FtsSearchByType?: StatementSync;
 
   // Prepared statements — FTS5 L0 (initialized in init())
   private stmtL0FtsInsert!: StatementSync;
@@ -1523,6 +1525,23 @@ export class VectorStore implements IMemoryStore {
         LIMIT ?
       `);
 
+      // 类型收窄版（2026-11-03）：**先过滤再 LIMIT**。结论层只消费 work_fact，但旧写法把
+      // episodic（短、词频高）与 work_fact 放在同一池子里按 bm25 竞争 top-N，长文 consolidated
+      // 卡被系统性挤出榜外（生产实测：4021 行里 #37/50，按 type 收窄后 #5/9）。
+      // type 是 l1_fts 的 UNINDEXED 列，SQL 层过滤 + 同一 bm25 排序，排名语义不变。
+      this.stmtL1FtsSearchByType = this.db.prepare(`
+        SELECT record_id, content_original AS content, type, priority, scene_name,
+               session_key, session_id, team_id, task_id, user_id, agent_id, version,
+               timestamp_str, timestamp_start, timestamp_end,
+               metadata_json,
+               ${SOUL_SELECT_FRAGMENT},
+               bm25(l1_fts) AS rank
+        FROM l1_fts
+        WHERE l1_fts MATCH ? AND type = ?
+        ORDER BY rank ASC
+        LIMIT ?
+      `);
+
       // L0 FTS prepared statements
       this.stmtL0FtsInsert = this.db.prepare(`
         INSERT INTO l0_fts (message_text, message_text_original, record_id,
@@ -1785,7 +1804,7 @@ export class VectorStore implements IMemoryStore {
         if (!skipVec) {
           // vec0 does not support ON CONFLICT → delete then insert
           this.stmtDeleteVec!.run(recordId);
-          this.stmtInsertVec!.run(recordId, Buffer.from(embedding!.buffer), record.updatedAt);
+          this.stmtInsertVec!.run(recordId, Buffer.from(embedding!.buffer, embedding!.byteOffset, embedding!.byteLength), record.updatedAt);
         } else {
           this.logger?.debug?.(
             `${TAG} [L1-upsert] Skipping vec write (${embedding ? "zero vector" : "no embedding"}) id=${recordId}`,
@@ -4035,6 +4054,42 @@ export class VectorStore implements IMemoryStore {
    * **Fault-tolerant**: returns an empty array on any error (e.g. dimension
    * mismatch, corrupted DB) so callers can fall back to keyword search.
    */
+  /**
+   * B1 修正（2026-11-02）：按 record_id 批量读 l1_vec 的已入库向量。
+   *
+   * 为什么需要：巩固层属性归组的 embedding 兜底曾对池内记录逐条 `embed()`——生产实证
+   * （3861 行进池 1903 条）→ 88 次 429/分钟、lifecycle tick 10 分钟不结束、L1 写入与召回
+   * 全线降级。库里本来就有这些向量，重嵌是纯浪费配额。
+   *
+   * 合同：分片 IN 查询（避开 SQLITE 变量上限）；维度不符/空向量/未就绪 → 跳过该行；
+   * 任何异常 → 返回尽力而为的 Map（warn 一次），绝不抛给调用方。
+   */
+  getL1VectorsByIds(ids: string[]): Map<string, Float32Array> {
+    const out = new Map<string, Float32Array>();
+    if (this.degraded || !this.vecTablesReady || this.dimensions <= 0) return out;
+    const uniq = Array.from(new Set(ids.filter((id) => typeof id === "string" && id.length > 0)));
+    if (uniq.length === 0) return out;
+    const CHUNK = 400;
+    try {
+      for (let i = 0; i < uniq.length; i += CHUNK) {
+        const chunk = uniq.slice(i, i + CHUNK);
+        const sql = `SELECT record_id, embedding FROM l1_vec WHERE record_id IN (${chunk.map(() => "?").join(",")})`;
+        const rows = this.db.prepare(sql).all(...chunk) as Array<{ record_id: string; embedding: Uint8Array }>;
+        for (const row of rows) {
+          const raw = row.embedding as unknown as Uint8Array | null;
+          if (!raw || typeof raw.byteLength !== "number" || raw.byteLength !== this.dimensions * 4) continue;
+          const buf = Buffer.from(raw.buffer as ArrayBuffer, raw.byteOffset, raw.byteLength);
+          const vec = new Float32Array(this.dimensions);
+          for (let k = 0; k < this.dimensions; k++) vec[k] = buf.readFloatLE(k * 4);
+          out.set(String(row.record_id), vec);
+        }
+      }
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [L1-vectors] batch read failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return out;
+  }
+
   searchL1Vector(queryEmbedding: Float32Array, topK = 5, _queryText?: string, filter?: IsolationFilter): VectorSearchResult[] {
     if (this.degraded || !this.vecTablesReady) {
       if (this.degraded) this.logger?.warn(`${TAG} [L1-search] SKIPPED (degraded mode)`);
@@ -4058,7 +4113,7 @@ export class VectorStore implements IMemoryStore {
       );
 
       const rows = this.stmtSearchVec!.all(
-        Buffer.from(queryEmbedding.buffer),
+        Buffer.from(queryEmbedding.buffer, queryEmbedding.byteOffset, queryEmbedding.byteLength),
         retrieveCount,
       ) as Array<{ record_id: string; distance: number }>;
 
@@ -4757,7 +4812,7 @@ export class VectorStore implements IMemoryStore {
         this.db.exec("BEGIN");
         try {
           this.stmtDeleteVec!.run(record_id);
-          this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer), updated_time);
+          this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), updated_time);
           // #137：这里只补**主索引**向量（content 重嵌），事实键通道向量不是它的副产品——
           // 不许顺手删（否则「主向量缺失但事实向量已在」的行会被无谓清空，且不会自动回填）。
           // 维度/模型换代的全量重建走 reindexAll（那里才删）。
@@ -5009,7 +5064,7 @@ export class VectorStore implements IMemoryStore {
         if (!skipVec) {
           // vec0 does not support ON CONFLICT → delete then insert
           this.stmtL0DeleteVec!.run(record.id);
-          this.stmtL0InsertVec!.run(record.id, Buffer.from(embedding!.buffer), record.recordedAt);
+          this.stmtL0InsertVec!.run(record.id, Buffer.from(embedding!.buffer, embedding!.byteOffset, embedding!.byteLength), record.recordedAt);
         } else {
           this.logger?.debug?.(
             `${TAG} [L0-upsert] Skipping vec write (${embedding ? "zero vector" : "no embedding"}) id=${record.id}`,
@@ -5091,7 +5146,7 @@ export class VectorStore implements IMemoryStore {
       this.db.exec("BEGIN");
       try {
         this.stmtL0DeleteVec!.run(recordId);
-        this.stmtL0InsertVec!.run(recordId, Buffer.from(embedding.buffer), meta.recorded_at);
+        this.stmtL0InsertVec!.run(recordId, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), meta.recorded_at);
         this.db.exec("COMMIT");
       } catch (err) {
         try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
@@ -5134,7 +5189,7 @@ export class VectorStore implements IMemoryStore {
       );
 
       const rows = this.stmtL0SearchVec!.all(
-        Buffer.from(queryEmbedding.buffer),
+        Buffer.from(queryEmbedding.buffer, queryEmbedding.byteOffset, queryEmbedding.byteLength),
         retrieveCount,
       ) as Array<{ record_id: string; distance: number }>;
 
@@ -5435,7 +5490,7 @@ export class VectorStore implements IMemoryStore {
           this.db.exec("BEGIN");
           try {
             this.stmtDeleteVec!.run(record_id);
-            this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer), updated_time);
+            this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), updated_time);
             // #137：全量重建（维度/模型变更）后事实键通道旧向量必然失配 → 一并作废
             if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(record_id);
             this.db.exec("COMMIT");
@@ -5462,7 +5517,7 @@ export class VectorStore implements IMemoryStore {
           this.db.exec("BEGIN");
           try {
             this.stmtL0DeleteVec!.run(record_id);
-            this.stmtL0InsertVec!.run(record_id, Buffer.from(embedding.buffer), recorded_at);
+            this.stmtL0InsertVec!.run(record_id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), recorded_at);
             this.db.exec("COMMIT");
           } catch (txErr) {
             try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
@@ -6343,11 +6398,29 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL1Fts(ftsQuery: string, limit = 20, filter?: IsolationFilter): FtsSearchResult[] {
+  searchL1Fts(
+    ftsQuery: string,
+    limit = 20,
+    filter?: IsolationFilter,
+    opts?: { type?: string },
+  ): FtsSearchResult[] {
     if (this.degraded || !this.ftsAvailable) return [];
     try {
+      // 2026-11-03：类型收窄（结论层只要 work_fact）。先过滤再 LIMIT，排名语义不变；
+      // 缺省（不传 opts.type）走原语句 → 逐位等于旧行为。
+      const typeScope = typeof opts?.type === "string" && opts.type.length > 0 ? opts.type : undefined;
+      if (typeScope && !this.stmtL1FtsSearchByType) {
+        // 调用方要求类型收窄却拿不到收窄语句时，**不得**回落到全库语句——那会把
+        // episodic 混进只应含该类行的候选池（正是本次修复要消掉的行为）。宁可返回空。
+        this.logger?.warn?.(
+          `${TAG} [L1-fts-search] type scope "${typeScope}" requested but statement unavailable (FTS off); returning empty`,
+        );
+        return [];
+      }
       const retrieveLimit = filter ? Math.max(limit * 5, limit) : limit;
-      const rows = this.stmtL1FtsSearch.all(ftsQuery, retrieveLimit) as Array<{
+      const rows = (typeScope
+        ? this.stmtL1FtsSearchByType!.all(ftsQuery, typeScope, retrieveLimit)
+        : this.stmtL1FtsSearch.all(ftsQuery, retrieveLimit)) as Array<{
         record_id: string;
         content: string;
         type: string;

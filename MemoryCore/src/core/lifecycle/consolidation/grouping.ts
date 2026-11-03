@@ -3,6 +3,12 @@
  * 纯逻辑、无副作用、可单测。阈值来自配置（memory.consolidation）。
  */
 import type { MemoryRecord } from "../../record/l1-writer.js";
+import { deriveAttributeKey, subjectOf } from "./attribute-key.js";
+import { cosineSimilarity } from "../../hooks/soul-anchor-scorer.js";
+
+// B1：subjectOf 实体已迁 attribute-key.ts（与 deriveAttributeKey 共用同一主语口径，
+// 避免两套抽取漂移）；此处 re-export 保持既有 import 面不变。
+export { subjectOf } from "./attribute-key.js";
 
 export interface ConsolidationConfig {
   enabled: boolean;
@@ -32,7 +38,21 @@ export interface ConsolidationGroup {
   /** 组内最早的 occurred_at（ISO，用于判定跨期跨度） */
   earliestTs: number;
   latestTs: number;
+  /** B1：属性键（entity|attribute）；仅属性归组产出，旧的 subject 归组保持 undefined。 */
+  attributeKey?: string;
+  entity?: string;
+  attribute?: string;
 }
+
+/** B1：embedding 兜底默认阈值（与 config lifecycle.consolidation.attributeGrouping.minCos 缺省同值）。 */
+export const DEFAULT_ATTRIBUTE_MIN_COS = 0.82;
+
+/**
+ * B1 防大卡：单张巩固卡最多吸收多少条源记忆。
+ * 超过则按属性键均分切卡（后缀 #2/#3…，各自独立幂等/证据链），
+ * 绝不把一整批同键记录压成一张巨卡——那正是 862 条反思合成一张卡的老病。
+ */
+export const MAX_RECORDS_PER_CARD = 50;
 
 /**
  * P2-T14（H-B2 数据级双保险）：租户一致性键。
@@ -57,18 +77,6 @@ function occurredTs(m: MemoryRecord): number {
   const ts = m.timestamps?.[0];
   if (ts) return new Date(ts).getTime();
   return Number.NaN;
-}
-
-/** 从一条记忆内容提取"主体/归并键"。保守规则：取首个顿号/冒号前，或前 N 字符主题词。 */
-export function subjectOf(m: MemoryRecord, maxLen = 24): string {
-  const c = m.content ?? "";
-  if (!c) return "unknown";
-  for (const sep of ["：", ":", " — "]) {
-    const idx = c.indexOf(sep);
-    if (idx > 0 && idx <= maxLen) return c.slice(0, idx).trim();
-  }
-  const n = Math.min(Math.max(4, maxLen), c.length);
-  return c.slice(0, n);
 }
 
 /** T17-B（H1，拍板④）：归组策略——llm=语义 subject 优先词法兜底（默认）；lexical=纯词法前缀。 */
@@ -136,6 +144,188 @@ export function groupBySubject(
     });
   }
   // 按跨度从大到小（优先合并时间跨度大的成熟主题）
+  groups.sort((a, b) => b.latestTs - b.earliestTs - (a.latestTs - a.earliestTs));
+  return cfg.maxPerRun > 0 ? groups.slice(0, cfg.maxPerRun) : groups;
+}
+
+/** 属性归组选项：embedding 兜底阈值与向量来源（worker 侧异步 embed，本层保持纯同步）。 */
+export interface AttributeGroupingOptions {
+  /** cos ≥ minCos 才同簇；缺省 DEFAULT_ATTRIBUTE_MIN_COS。 */
+  minCos?: number;
+  /** 记录 id → 向量。缺向量/零向量的记录各自成组（不静默丢弃）。 */
+  vectors?: ReadonlyMap<string, Float32Array>;
+}
+
+/** 待成组的中间态（属性键组或 embedding 簇）。 */
+interface PendingGroup {
+  subject: string;
+  attributeKey?: string;
+  entity?: string;
+  attribute?: string;
+  memories: MemoryRecord[];
+}
+
+/**
+ * B1：只返回"属性键归一不了"的记录（进 embedding 待聚类池）。
+ * worker 用它对池内记录按需 embed；导出以便单测与调用方保持同一判定口径。
+ */
+export function poolRecordsOf(memories: MemoryRecord[]): MemoryRecord[] {
+  return (Array.isArray(memories) ? memories : []).filter((m) => deriveAttributeKey(m) === null);
+}
+
+/** 单链聚类：与簇内任一成员 cos ≥ minCos 即并入（可传递合并多个簇）。 */
+function clusterByEmbedding(
+  memories: MemoryRecord[],
+  minCos: number,
+  vectors?: ReadonlyMap<string, Float32Array>,
+): MemoryRecord[][] {
+  const clusters: Array<{ members: MemoryRecord[]; vecs: Float32Array[] }> = [];
+  for (const m of memories) {
+    const v = vectors?.get(String(m.id ?? ""));
+    if (!v || v.length === 0) {
+      clusters.push({ members: [m], vecs: [] });
+      continue;
+    }
+    const hits: number[] = [];
+    clusters.forEach((c, i) => {
+      if (c.vecs.some((cv) => cosineSimilarity(cv, v) >= minCos)) hits.push(i);
+    });
+    if (hits.length === 0) {
+      clusters.push({ members: [m], vecs: [v] });
+      continue;
+    }
+    // 单链：命中多簇时全并入首簇（hits 升序，倒序 splice 保索引有效）
+    const target = clusters[hits[0]];
+    target.members.push(m);
+    target.vecs.push(v);
+    for (const i of hits.slice(1).reverse()) {
+      const c = clusters[i];
+      target.members.push(...c.members);
+      target.vecs.push(...c.vecs);
+      clusters.splice(i, 1);
+    }
+  }
+  return clusters.map((c) => c.members);
+}
+
+/** 池簇的稳定 subject（无法归一时用最早记录 id 标识，便于日志/去重排查）。 */
+function poolSubjectOf(cluster: MemoryRecord[]): string {
+  const ids = cluster.map((m) => String(m.id ?? "")).filter(Boolean).sort();
+  return `pool:${ids[0] ?? "unknown"}`;
+}
+
+/** minCount/租户/跨期校验 + 组内时间升序（与 groupBySubject 同口径，独立成函数以便切卡前后复算）。 */
+function finalizePending(
+  pending: PendingGroup,
+  cfg: ConsolidationConfig,
+  log?: { warn?: (msg: string) => void },
+): ConsolidationGroup | null {
+  const mems = pending.memories;
+  if (mems.length < cfg.minCount) return null;
+  const tenantKeys = new Set(mems.map((m) => tenantKeyOf(m)));
+  if (tenantKeys.size > 1) {
+    log?.warn?.(
+      `[consolidation] mixed-tenant group dropped (key="${pending.subject}", tenants=${tenantKeys.size}, members=${mems.length})` +
+        ` — 跨租户同键不串组（H-B2 数据级双保险）`,
+    );
+    return null;
+  }
+  const ts = mems.map(occurredTs).filter((t) => !Number.isNaN(t)).sort((a, b) => a - b);
+  const spanDays = ts.length >= 2 ? (ts[ts.length - 1] - ts[0]) / 86_400_000 : 0;
+  if (ts.length >= 2 && spanDays < cfg.minSpanDays) return null;
+  const sorted = [...mems].sort((a, b) => (occurredTs(a) || 0) - (occurredTs(b) || 0));
+  return {
+    subject: pending.subject,
+    attributeKey: pending.attributeKey,
+    entity: pending.entity,
+    attribute: pending.attribute,
+    memories: sorted,
+    earliestTs: ts[0] ?? 0,
+    latestTs: ts[ts.length - 1] ?? 0,
+  };
+}
+
+/** 防大卡切分：均分到 ceil(n/max) 段（60 条/50 上限 → 30+30，而不是 50+10）。 */
+function splitChunks(memories: MemoryRecord[], max: number): MemoryRecord[][] {
+  const n = memories.length;
+  if (max <= 0 || n <= max) return [memories];
+  const parts = Math.ceil(n / max);
+  const base = Math.floor(n / parts);
+  const rem = n - base * parts;
+  const out: MemoryRecord[][] = [];
+  let cursor = 0;
+  for (let i = 0; i < parts; i++) {
+    const size = base + (i < rem ? 1 : 0);
+    out.push(memories.slice(cursor, cursor + size));
+    cursor += size;
+  }
+  return out;
+}
+
+/**
+ * B1：按 (entity, attribute) 归组，属性归一不了的记录进池内 embedding 单链聚类兜底。
+ *
+ * 与 groupBySubject 的差别只在"键"：键来自 deriveAttributeKey，池内簇用 cos ≥ minCos 连通。
+ * 关闭开关时 worker 根本不走本函数（groupBySubject 行为逐位不变）。
+ *
+ * 防大卡：单组超过 MAX_RECORDS_PER_CARD 按序均分，后续段 subject/attributeKey 加 #2/#3 后缀，
+ * 各自独立幂等（否则第二段会复用第一段的卡，又把巨卡合回来）。
+ */
+export function groupByAttribute(
+  memories: MemoryRecord[],
+  cfg: ConsolidationConfig = DEFAULT_CONSOLIDATION_CONFIG,
+  log?: { warn?: (msg: string) => void },
+  options: AttributeGroupingOptions = {},
+): ConsolidationGroup[] {
+  const list = Array.isArray(memories) ? memories : [];
+  const minCos =
+    typeof options.minCos === "number" && Number.isFinite(options.minCos)
+      ? options.minCos
+      : DEFAULT_ATTRIBUTE_MIN_COS;
+  const byKey = new Map<string, PendingGroup>();
+  const pool: MemoryRecord[] = [];
+  for (const m of list) {
+    const k = deriveAttributeKey(m);
+    if (!k) {
+      pool.push(m);
+      continue;
+    }
+    const g = byKey.get(k.key) ?? {
+      subject: k.key,
+      attributeKey: k.key,
+      entity: k.entity,
+      attribute: k.attribute,
+      memories: [],
+    };
+    g.memories.push(m);
+    byKey.set(k.key, g);
+  }
+  const pending: PendingGroup[] = [...byKey.values()];
+  for (const cluster of clusterByEmbedding(pool, minCos, options.vectors)) {
+    pending.push({ subject: poolSubjectOf(cluster), memories: cluster });
+  }
+
+  const groups: ConsolidationGroup[] = [];
+  for (const p of pending) {
+    const group = finalizePending(p, cfg, log);
+    if (!group) continue;
+    const chunks = splitChunks(group.memories, MAX_RECORDS_PER_CARD);
+    if (chunks.length === 1) {
+      groups.push(group);
+      continue;
+    }
+    chunks.forEach((members, i) => {
+      const suffix = i === 0 ? "" : `#${i + 1}`;
+      groups.push({
+        ...group,
+        subject: group.subject + suffix,
+        attributeKey: group.attributeKey ? group.attributeKey + suffix : undefined,
+        memories: members,
+        earliestTs: occurredTs(members[0]) || group.earliestTs,
+        latestTs: occurredTs(members[members.length - 1]) || group.latestTs,
+      });
+    });
+  }
   groups.sort((a, b) => b.latestTs - b.earliestTs - (a.latestTs - a.earliestTs));
   return cfg.maxPerRun > 0 ? groups.slice(0, cfg.maxPerRun) : groups;
 }

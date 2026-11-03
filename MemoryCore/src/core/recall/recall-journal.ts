@@ -10,6 +10,7 @@ import path from "node:path";
 // P1-T7：类型单一源在 recall-signals.ts——import type 供本文件接口引用，
 // 再 re-export 供 journal 消费方单点 import。
 import type { RecallJournalImportanceGate } from "../tools/recall-signals.js";
+import type { ValidityFilterStats } from "./validity-policy.js";
 
 export interface RecallJournalSearchTiming {
   ftsMs: number;
@@ -152,6 +153,38 @@ export interface RecallJournalGates {
    * 口径边界：这些是 pack 行的独立计数，绝不并入 turnCov/sessionCov 等覆盖率指标
    *（pack 行由 bench 单列 adjacencyLines，见 scripts/lib/bench/inject-attribution.mjs）。
    */
+  /**
+   * A3（P1，2026-11-02）自述行过滤门：`recall.selfNarration.enabled=true` 时**恒出现**
+   * （含全零计数）——要能区分「没开」「开了但库里没有 actor=agent 行」与「开了且真丢了 N 行」。
+   * 口径：`scanned` 只数**有 recordId 的行**（metas 缺失行按未知保留、不计入），
+   * `dropped` 是真正被移出注入候选池的行数；`skipped` 说明提前退出原因。
+   */
+  /**
+   * B2（P3，2026-11-02）效期门；**F7（2026-11-02）改为三层口径**。
+   *
+   * 旧版只在截断前的全池上算一次、却命名为"这一轮丢了多少"——池里过期 ≠ 注入变少
+   *（过期的行本来就可能落在 top 之外）。三层的定义与唯一用途：
+   * - `pool`：合并后全池（截断前）。诊断"库里失效行被这一路看见多少"，**不可**当注入差额。
+   * - `top`：截断后候选（maxResults 条）。诊断"进榜的里有多少失效"。
+   * - `injected`：最终注入集。`injected.dropped` 就是本轮真被效期过滤掉、注入行数变少的量
+   *   （hard 档；soft/off 档为 0，因为那时注入点不再二次过滤）。
+   * 每层都是 `validityFilterStats` 的单一源输出（同一谓词、同一 accessors）。
+   * `validEndFiltered` 保留 = pool.dropped，兼容既有读数脚本；新代码请直接用三层。
+   */
+  validity?: {
+    mode: "soft" | "hard";
+    pool: ValidityFilterStats;
+    top: ValidityFilterStats;
+    injected: ValidityFilterStats;
+    /** @deprecated 等于 pool.dropped（池口径），不要当"少注入了多少行"。 */
+    validEndFiltered: number;
+  };
+  selfNarration?: {
+    enabled: boolean;
+    dropped: number;
+    scanned: number;
+    skipped?: "disabled" | "self-query" | "empty";
+  };
   evidencePack?: {
     enabled: boolean;
     adjacent: number;
@@ -264,6 +297,15 @@ export interface RecallJournalSelection {
   poolChars?: number;
   /** v3：实际注入字符数（选后 + 折叠后）。恒有 `injectedChars <= poolChars`。 */
   injectedChars?: number;
+  /**
+   * v3（2026-11-03）：本轮候选池为空（L1/scene/persona 三路全无命中），选线段根本没跑。
+   *
+   * 为什么仍要写这条零观测：`zeroInjectionRate` 的分母是「带 selection 的轮」，若空池轮
+   * 什么都不写，它们就被静默排除在分母外，指标会系统性偏好（生产实测分母 1054、真实轮数
+   * 远大于此）。同时用本字段把「池空」与「池非空但一行没注入」区分开——前者是召回缺失，
+   * 后者是选线过紧，两种病不该合成一个数。
+   */
+  emptyPool?: boolean;
 }
 
 /** 尺子元信息：谁在生效、地板从哪来、是否降级 bypass、以及新增耗时（嵌入+纯选择）。 */
