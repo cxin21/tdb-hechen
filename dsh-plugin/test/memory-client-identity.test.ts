@@ -73,6 +73,30 @@ describe('per-session identity (task-117)', () => {
     expect(callsTo(calls, '/v3/core/read')[2].body).toMatchObject({ team_id: 'team-1' });
   });
 
+  it('sends x-tdai-task-id only when the bound session picked a work item', async () => {
+    const { fetchImpl, calls } = coreFixture();
+    const client = createClient(fetchImpl, {
+      identityFor: (sessionId?: string) => {
+        if (sessionId === 'sess-1') return { ...BOUND, taskId: 'task-12345678' };
+        if (sessionId === 'sess-2') return { ...BOUND, taskId: '' };
+        return undefined;
+      },
+    });
+
+    await client.recallBlock('采购订单', { sessionId: 'sess-1' });
+    await client.recallBlock('采购订单', { sessionId: 'sess-2' });
+    await client.recallBlock('采购订单', { sessionId: 'sess-3' });
+
+    const recalls = callsTo(calls, '/v3/recall');
+    expect(recalls[0].headers['x-tdai-task-id']).toBe('task-12345678');
+    // An EMPTY task id is the same as none: a blank header would read as
+    // "task scope supplied, and empty", which the core cannot distinguish.
+    expect(recalls[1].headers['x-tdai-task-id']).toBeUndefined();
+    expect(recalls[2].headers['x-tdai-task-id']).toBeUndefined();
+    // The rest of the triple is unaffected by the optional axis.
+    expect(recalls[0].headers['x-tdai-team-id']).toBe('team-2');
+  });
+
   it('never awaits or throws from the resolver (headers() is synchronous)', async () => {
     const { fetchImpl, calls } = coreFixture();
     const client = createClient(fetchImpl, {

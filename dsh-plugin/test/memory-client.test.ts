@@ -705,6 +705,35 @@ describe('recall block (DS-RECALL-MERGE-001)', () => {
       expect(calls[0].headers['x-tdai-user-key']).toBe('user-key-abc');
     });
 
+    it("lists running tasks of one team (the picker's third question)", async () => {
+      const { fetchImpl, calls } = metaFixture((path) =>
+        path === '/v3/meta/task/list'
+          ? envelope({
+            items: [{ task_id: 'task-12345678', team_id: 'team-1', title: '燕京 2305 客开', status: 'running' }],
+            total: 1,
+          })
+          : undefined,
+      );
+      const result = await createClient(fetchImpl, { identity: emptyIdentity })
+        .listTasks('team-1', { userKey: 'user-key-abc' });
+
+      expect(result).toEqual({
+        ok: true,
+        items: [{ taskId: 'task-12345678', title: '燕京 2305 客开', status: 'running' }],
+        total: 1,
+      });
+      expect(calls[0].path).toBe('/v3/meta/task/list');
+      // team + status only: the kernel requires a team (or a creator), and a
+      // COMPLETED work item must never be offered as a pick -- the proxy's own
+      // listTasks call behaves the same way.
+      expect(calls[0].body).toEqual({ team_id: 'team-1', status: 'running', limit: 100 });
+      expect(calls[0].headers['x-tdai-user-key']).toBe('user-key-abc');
+
+      // Blank team => no call at all (mirrors listAgents).
+      await createClient(fetchImpl, { identity: emptyIdentity }).listTasks('   ');
+      expect(calls).toHaveLength(1);
+    });
+
     it('caps the metadata page size at the core limit of 100', async () => {
       const { fetchImpl, calls } = metaFixture(() => envelope({ items: [] }));
       const client = createClient(fetchImpl, { identity: emptyIdentity });

@@ -403,7 +403,15 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     identityFor: (sessionId?: string) => {
       const bound = identityStore.get(sessionId);
       if (bound !== undefined) {
-        return { serviceId: identity.serviceId, teamId: bound.teamId, agentId: bound.agentId, userId: bound.userId };
+        // taskId is the optional fourth scope axis: absent (not '') when the
+        // session did not pick a work item, so headers() omits the header.
+        return {
+          serviceId: identity.serviceId,
+          teamId: bound.teamId,
+          agentId: bound.agentId,
+          userId: bound.userId,
+          ...(bound.taskId !== undefined ? { taskId: bound.taskId } : {}),
+        };
       }
       // Two different cases used to share one line, and the misleading one led a
       // live e2e down the wrong path: on a mount whose identity comes from the
@@ -558,6 +566,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       askTimeoutMs: config.identity.askTimeoutMs,
       rememberSession: config.identity.rememberSession,
       skipDefault: config.identity.skipDefault,
+      // The proxy's third question (task_select): the answer becomes the
+      // optional x-tdai-task-id scope. Off = never ask, never send it.
+      askForTask: config.identity.askForTask,
       statePath: config.identity.rememberSession ? sessionStatePathFor(config.identity.statePath, config.writeback.outboxPath) : '',
     },
     base: identity,

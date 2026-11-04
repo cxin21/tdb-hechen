@@ -49,9 +49,17 @@ import { resolveUserSessionInitDecision, type UserInitDecision } from './user-se
  *    path, with no warn (a sub-agent hits it every turn).
  */
 
-/** Question ids are fixed: the proxy's form uses the same two. */
+/** Question ids are fixed: the proxy's form uses the same three. */
 export const TEAM_QUESTION_ID = 'team_select';
 export const AGENT_QUESTION_ID = 'agent_select';
+/** The proxy's THIRD stage (form.ts:252-274): which work item this session is for. */
+export const TASK_QUESTION_ID = 'task_select';
+/**
+ * The proxy's virtual "default task" (form.ts:254-259), unshifted ahead of the
+ * real tasks. Selecting it means NO task scope -- it must never be read as
+ * "skip the whole association", because team/agent were already answered.
+ */
+export const TASK_NO_TASK_LABEL = '本次不关联任务';
 
 /** Verbatim from MemoryProxy/src/session/dsh/form.ts (SKIP_LABEL / SKIP_HINT). */
 export const SKIP_LABEL = '本次不关联(跳过注入,直接放行)';
@@ -82,6 +90,11 @@ export interface SessionBinding {
   teamId: string;
   agentId: string;
   userId: string;
+  /**
+   * Optional work item (Task). Empty = "this session is not associated with a
+   * task"; it narrows nothing. Only ever set from the task card.
+   */
+  taskId?: string;
   source: IdentitySource;
   /** Why it was skipped/resolved; free text, never a secret. */
   reason?: string;
@@ -129,9 +142,15 @@ export interface AgentChoice {
   description?: string;
 }
 
+/** One work item as the task card needs it (metadata task/list, status=running). */
+export interface TaskChoice {
+  taskId: string;
+  title?: string;
+}
+
 /** What the metadata routes produced (see identity.ts listCandidates). */
 export type CandidatesResult =
-  | { kind: 'ok'; userId: string; teams: TeamChoice[]; agents?: AgentChoice[] }
+  | { kind: 'ok'; userId: string; teams: TeamChoice[]; agents?: AgentChoice[]; tasks?: TaskChoice[] }
   | { kind: 'failed'; reason: string };
 
 export interface SessionIdentitySettings {
@@ -142,6 +161,8 @@ export interface SessionIdentitySettings {
   askTimeoutMs: number;
   rememberSession: boolean;
   skipDefault: boolean;
+  /** Ask the task (work item) question after team/agent; false = never send x-tdai-task-id. */
+  askForTask: boolean;
   /** '' -> no file (memory only); otherwise the JSON state path. */
   statePath: string;
 }
@@ -209,6 +230,8 @@ export class SessionIdentityStore {
           teamId: binding.teamId,
           agentId: binding.agentId,
           userId: binding.userId,
+          // Optional scope: an old state file simply has no taskId.
+          ...(typeof binding.taskId === 'string' && binding.taskId !== '' ? { taskId: binding.taskId } : {}),
           source: binding.source ?? 'picked',
           reason: typeof binding.reason === 'string' ? binding.reason : undefined,
           at: typeof binding.at === 'number' && Number.isFinite(binding.at) ? binding.at : 0,
@@ -368,6 +391,7 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       source: binding.source,
       team: binding.teamId,
       agent: binding.agentId,
+      task: binding.taskId,
       reason: binding.reason,
     });
     try {
@@ -624,6 +648,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
 
     let team: TeamChoice;
     let agents = first.agents ?? [];
+    // Tasks travel with the SAME scoped candidate call (metadata task/list):
+    // first.tasks is populated whenever listCandidates knew the team.
+    let tasks = first.tasks ?? [];
     if (first.teams.length === 1) {
       team = first.teams[0];
     } else {
@@ -647,11 +674,13 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       team = first.teams.find((entry) => entry.teamId === picked.id) ?? { teamId: picked.id };
       const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
       agents = scoped.kind === 'ok' ? scoped.agents ?? [] : [];
+      tasks = scoped.kind === 'ok' ? scoped.tasks ?? [] : tasks;
     }
 
     if (agents.length === 0) {
       const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
       agents = scoped.kind === 'ok' ? scoped.agents ?? [] : [];
+      if (scoped.kind === 'ok' && (scoped.tasks ?? []).length > 0) tasks = scoped.tasks ?? [];
     }
     if (agents.length === 0) {
       bindSkipped(sessionId, 'this user owns no agent in the picked team');
@@ -682,9 +711,44 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       agentId = picked.id;
     }
 
+    // The proxy's THIRD stage (form.ts:252-274): Task / work item. This is an
+    // OPTIONAL scope axis, so every path below degrades to "no task" -- it must
+    // never sink an association the user already answered for team + agent.
+    let taskId: string | undefined;
+    if (settings.askForTask) {
+      if (tasks.length === 0 && team.teamId !== '') {
+        const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
+        if (scoped.kind === 'ok') tasks = scoped.tasks ?? [];
+      }
+      if (tasks.length > 0) {
+        // The proxy unshifted a virtual "default task" and treated it as "no
+        // task for this session"; the same option is first here, always, so
+        // ignoring the card can never silently attach a work item.
+        const choices: Choice[] = [
+          { label: TASK_NO_TASK_LABEL, id: '' },
+          ...tasks.map((entry) => ({ label: labelOf(entry.title, entry.taskId), id: entry.taskId })),
+        ];
+        const asked = await ask([{
+          id: TASK_QUESTION_ID,
+          header: 'TDB 记忆',
+          question: '「' + (team.name ?? team.teamId) + '」下本次会话关联哪个工作项（Task）？选「' + TASK_NO_TASK_LABEL + '」= 不按任务收窄: ' + SKIP_HINT,
+          options: choices.map((choice) => ({ label: choice.label })),
+          multiSelect: false,
+        }], agent, signal);
+        if (asked.kind === 'answers') {
+          const pickedTask = resolveChoice(asked.answers, TASK_QUESTION_ID, choices);
+          // '' is the explicit "no task" option; a skip answer means the same.
+          if (pickedTask.kind === 'picked' && pickedTask.id !== '') taskId = pickedTask.id;
+        }
+      }
+    }
+
     submit(sessionId, {
       teamId: team.teamId,
       agentId,
+      // Absent (not empty) when nothing was picked: the client only sends the
+      // header for a real task, and absence means "no task scope".
+      ...(taskId !== undefined ? { taskId } : {}),
       // The VERIFIED user id, not server.userId: the whole point of the picker
       // is that the config triple may be empty or stale.
       userId: first.userId,

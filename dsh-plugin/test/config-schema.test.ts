@@ -111,7 +111,9 @@ describeGroup('Config schema shape', () => {
     // 35 -> 36: services.include, for the mixed deployment where core runs here
     // but the wiki box is somewhere else. (A remote server.baseUrl turns the
     // whole stack off, so this is about which services *this* host owns.)
-    expect(volatile).toHaveLength(36);
+    // 36 -> 37: identity.askForTask, the third session-start question (the
+    // proxy's task_select stage): the answer becomes the optional task scope.
+    expect(volatile).toHaveLength(37);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {

@@ -93,6 +93,9 @@ export const VOLATILE_PATHS = [
   'identity.askTimeoutMs',
   'identity.rememberSession',
   'identity.skipDefault',
+  // The THIRD session-start question (the proxy's task_select stage). Optional
+  // scope: off means x-tdai-task-id is never sent.
+  'identity.askForTask',
   // task-72: the skill surface. Two knobs an operator must be able to flip
   // without a rebuild — the listing (read) and the six destructive write tools
   // (opt-in) — plus the listing's own budget.
@@ -148,6 +151,7 @@ const DESCRIPTIONS: Record<string, string> = {
   'identity.askTimeoutMs': 'How long the session-start picker waits for an answer before falling back (1000-300000).',
   'identity.rememberSession': 'Remember the pick per session on disk, so a restart does not ask again.',
   'identity.skipDefault': 'Put the "do not associate" option first: ignoring the card means no team context.',
+  'identity.askForTask': 'Ask which Task (work item) the session belongs to, after Team and Agent: the answer becomes the optional task scope (x-tdai-task-id).',
   'skill.enabled': 'Inject the <available_skills> listing into the head pack and register the skill tools.',
   'skill.allowLlmWrite': 'Let the model create, patch and delete shared team skills (six write tools). Off by default.',
   'skill.headPackChars': 'Character budget for the <available_skills> head-pack section (0-64000).',

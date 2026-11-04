@@ -23,7 +23,7 @@
  */
 
 import type { MemoryClient, MemoryIdentity, TeamSummary, AgentSummary } from './memory-client.js';
-import type { AgentChoice, CandidatesResult, TeamChoice } from './session-identity.js';
+import type { AgentChoice, CandidatesResult, TaskChoice, TeamChoice } from './session-identity.js';
 import type { LoggerLike } from './types.js';
 
 export interface IdentityResolutionInput {
@@ -128,7 +128,7 @@ export async function resolveIdentityFromUserKey(input: IdentityResolutionInput)
  * its 'ambiguous means inert' semantics.
  */
 export async function listCandidates(input: {
-  client: Pick<MemoryClient, 'verifyUserKey' | 'listTeams' | 'listAgents'>;
+  client: Pick<MemoryClient, 'verifyUserKey' | 'listTeams' | 'listAgents' | 'listTasks'>;
   userKey: string;
   /** Scope the agent list to one team (the team the human just picked). */
   teamId?: string;
@@ -151,18 +151,30 @@ export async function listCandidates(input: {
     : teamChoices.length === 1 ? teamChoices[0].teamId : undefined;
   if (scope === undefined) return { kind: 'ok', userId, teams: teamChoices };
 
-  const agents = await client.listAgents(scope, userId, { userKey, timeoutMs });
+  // Agents and tasks are independent legs of the same scope, so they run
+  // together. Tasks are the picker's THIRD question (the proxy's task_select):
+  // an OPTIONAL scope whose list may legitimately be empty (a team with no
+  // running work item), and a failed leg is logged but never sinks the picker.
+  const [agents, tasks] = await Promise.all([
+    client.listAgents(scope, userId, { userKey, timeoutMs }),
+    client.listTasks(scope, { userKey, timeoutMs }),
+  ]);
+  const taskChoices: TaskChoice[] = tasks.ok
+    ? tasks.items.map((task) => ({ taskId: task.taskId, title: task.title }))
+    : [];
+  if (!tasks.ok) log?.debug?.('agemem: candidate task list failed', tasks.reason);
   if (!agents.ok) {
     // The team list is still useful: a failed agent leg means the picker asks the
     // agent question with no options, which the caller reports as 'no agent'.
     log?.debug?.('agemem: candidate agent list failed', agents.reason);
-    return { kind: 'ok', userId, teams: teamChoices, agents: [] };
+    return { kind: 'ok', userId, teams: teamChoices, agents: [], tasks: taskChoices };
   }
   return {
     kind: 'ok',
     userId,
     teams: teamChoices,
     agents: agents.items.map((agent) => ({ agentId: agent.agentId, name: agent.name })),
+    tasks: taskChoices,
   };
 }
 

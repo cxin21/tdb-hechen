@@ -11,6 +11,8 @@ import {
   isSkipAnswer,
   SessionIdentityStore,
   SKIP_LABEL,
+  TASK_NO_TASK_LABEL,
+  TASK_QUESTION_ID,
   TEAM_QUESTION_ID,
   type SessionIdentityDeps,
 } from '../src/session-identity.js';
@@ -42,6 +44,10 @@ interface HarnessOptions {
   askTimeoutMs?: number;
   askAtSessionStart?: boolean;
   followUserSessionInit?: boolean;
+  /** Work items (Task) offered by the task card; default none. */
+  tasks?: Array<{ taskId: string; title?: string }>;
+  /** Ask the task card after team/agent; default true (matches DEFAULT_CONFIG). */
+  askForTask?: boolean;
   /** What the per-user session_init read returns; default null = unreadable. */
   sessionInit?: Record<string, string> | null;
   getUserSessionInit?: SessionIdentityDeps['getUserSessionInit'];
@@ -71,6 +77,7 @@ function harness(options: HarnessOptions = {}) {
   });
   const teams = options.teams ?? [{ teamId: 'team-a', name: '北方团队' }];
   const agents = options.agents ?? [{ agentId: 'agt-a', name: '采购助手' }];
+  const tasks = options.tasks ?? [];
   const readInit = vi.fn(options.getUserSessionInit
     ?? (async () => (options.sessionInit === undefined ? null : options.sessionInit)));
   const deps: SessionIdentityDeps = {
@@ -80,11 +87,12 @@ function harness(options: HarnessOptions = {}) {
       askTimeoutMs: options.askTimeoutMs ?? 60000,
       rememberSession: true,
       skipDefault: false,
+      askForTask: options.askForTask ?? true,
       statePath: options.statePath ?? '',
     },
     base: BASE,
     resolveUserKey: options.resolveUserKey ?? (async () => 'user-key-1'),
-    candidates: options.candidates ?? (async () => ({ kind: 'ok', userId: 'usr-a', teams, agents })),
+    candidates: options.candidates ?? (async () => ({ kind: 'ok', userId: 'usr-a', teams, agents, tasks })),
     getUserSessionInit: readInit,
     store,
     getQuestions: options.getQuestions ?? (() => ({ ask })),
@@ -222,6 +230,68 @@ describe('installSessionIdentity', () => {
     expect(h.askIds()).toEqual([ASSET_CONFIRM_QUESTION_ID, AGENT_QUESTION_ID]);
     expect(h.asks[1].questions[0].question).toContain('请选择「北方团队」下要使用的 Agent:');
     expect(h.store.get('sess-1')).toMatchObject({ teamId: 'team-a', agentId: 'agt-b', source: 'picked' });
+  });
+
+  // The proxy's THIRD stage (task_select): after team + agent, an OPTIONAL work
+  // item. A real task becomes taskId; the virtual "no task" option is always
+  // first and binds nothing -- it must not undo the team/agent answer.
+  it('asks the task question after team+agent and binds the picked work item', async () => {
+    const statePath = tempStatePath();
+    const h = harness({
+      statePath,
+      tasks: [
+        { taskId: 'task-12345678', title: '燕京 2305 客开' },
+        { taskId: 'task-87654321', title: 'DSH 记忆插件' },
+      ],
+      answers: async (request) => ({
+        answers: [{ id: request.questions[0].id, selected: [request.questions[0].options[1].label] }],
+      }),
+    });
+
+    await h.step();
+
+    expect(h.askIds()).toEqual([ASSET_CONFIRM_QUESTION_ID, TASK_QUESTION_ID]);
+    expect(h.asks[1].questions[0].question).toContain('关联哪个工作项（Task）');
+    expect(h.asks[1].questions[0].options[0].label).toBe(TASK_NO_TASK_LABEL);
+    expect(h.asks[1].questions[0].options[1].label).toBe('燕京 2305 客开 (12345678)');
+    expect(h.store.get('sess-1')).toMatchObject({
+      teamId: 'team-a',
+      agentId: 'agt-a',
+      taskId: 'task-12345678',
+      source: 'picked',
+    });
+    // The pick survives a restart: the state file carries it too.
+    expect(new SessionIdentityStore({ statePath }).get('sess-1')?.taskId).toBe('task-12345678');
+  });
+
+  it('binds team+agent but no task when the user picks 本次不关联任务', async () => {
+    const h = harness({
+      tasks: [{ taskId: 'task-12345678', title: '燕京 2305 客开' }],
+      answers: async (request) => ({
+        answers: [{ id: request.questions[0].id, selected: [request.questions[0].options[0].label] }],
+      }),
+    });
+
+    await h.step();
+
+    expect(h.askIds()).toEqual([ASSET_CONFIRM_QUESTION_ID, TASK_QUESTION_ID]);
+    const binding = h.store.get('sess-1');
+    // The association still happened: only the optional task axis stays empty,
+    // and it is ABSENT rather than '', so headers() sends no task header.
+    expect(binding).toMatchObject({ teamId: 'team-a', agentId: 'agt-a', source: 'picked' });
+    expect(binding?.taskId).toBeUndefined();
+  });
+
+  it('never asks the task question with askForTask=false or with no task candidates', async () => {
+    const off = harness({ tasks: [{ taskId: 'task-12345678' }], askForTask: false });
+    await off.step();
+    expect(off.askIds()).toEqual([ASSET_CONFIRM_QUESTION_ID]);
+    expect(off.store.get('sess-1')?.taskId).toBeUndefined();
+
+    const none = harness({ tasks: [] });
+    await none.step();
+    expect(none.askIds()).toEqual([ASSET_CONFIRM_QUESTION_ID]);
+    expect(none.store.get('sess-1')?.taskId).toBeUndefined();
   });
 
   // THE RED CASE for this change: the card is NOT a function of candidate

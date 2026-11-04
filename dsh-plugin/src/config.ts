@@ -59,6 +59,12 @@ export interface AgememPaths {
   metaTeamList: string;
   metaAgentList: string;
   /**
+   * Work items (Task) of one team: the session-start picker's THIRD question,
+   * the same one the proxy's form asked (task_select). Optional scope — the
+   * core only narrows recall/writes when a task was picked.
+   */
+  metaTaskList: string;
+  /**
    * Per-user module config (`module: "session_init"`). Read before the first
    * card of a session: it decides ask / bypass / preset, exactly like the
    * proxy's own init flow.
@@ -312,6 +318,15 @@ export interface IdentityConfig {
   rememberSession: boolean;
   /** 把「跳过」选项放在第一位（缺省行为是「不关联」，不是随机选一个 team）。 */
   skipDefault: boolean;
+  /**
+   * 选完 team/agent 后再问一次「这件事属于哪个工作项（Task）」（proxy 的
+   * task_select 阶段）。缺省开：Task 是可选作用域，答「本次不关联任务」或跳过
+   * 都只把 taskId 留空，**不影响** team/agent 的绑定。
+   *
+   * 关掉它 = 从不发 x-tdai-task-id：适合把 Task 只当工作台视图、不作为记忆作用
+   * 域的团队。
+   */
+  askForTask: boolean;
   /** 绑定状态文件路径；空 = 由 outbox 目录推导，只在 rememberSession 时写。 */
   statePath: string;
 }
@@ -456,6 +471,7 @@ export const DEFAULT_CONFIG: AgememConfig = {
     metaAuthVerify: '/v3/meta/auth/verify',
     metaTeamList: '/v3/meta/team/list',
     metaAgentList: '/v3/meta/agent/list',
+    metaTaskList: '/v3/meta/task/list',
     metaUserConfig: '/v3/meta/config/user/get',
   },
   headPack: {
@@ -568,6 +584,10 @@ export const DEFAULT_CONFIG: AgememConfig = {
     askTimeoutMs: 60000,
     rememberSession: true,
     skipDefault: false,
+    // The proxy asked task_select too; keeping parity means a session can be
+    // scoped to one work item without any extra config. Fail-open: no task
+    // candidates (or a changed mind on the card) simply leaves taskId empty.
+    askForTask: true,
     statePath: '',
   },
   services: {

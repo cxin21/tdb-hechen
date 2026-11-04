@@ -169,6 +169,13 @@ export interface MemoryIdentity {
   teamId: string;
   agentId: string;
   userId: string;
+  /**
+   * Which WORK ITEM (Task) this session reads/writes, when the user picked one
+   * at session start. The core treats it as a fourth, OPTIONAL scope axis
+   * (x-tdai-task-id: recall filter + L0/L1 write scope, gateway/server.ts) --
+   * empty/absent means "not associated", never "the default task".
+   */
+  taskId?: string;
 }
 
 /** A rejected API key: the one failure that must be diagnosable, not just absent. */
@@ -259,6 +266,13 @@ export interface AgentSummary {
   agentId: string;
   name?: string;
   teamId?: string;
+}
+
+/** One task (work item) as the identity flow needs it (metadata task/list). */
+export interface TaskSummary {
+  taskId: string;
+  title?: string;
+  status?: string;
 }
 
 /** Result of POST /v3/meta/auth/verify. */
@@ -508,6 +522,13 @@ export class MemoryClient {
     if (agent !== undefined) headers['x-tdai-agent-id'] = agent;
     const user = nonEmpty(userId);
     if (user !== undefined) headers['x-tdai-user-id'] = user;
+    // The OPTIONAL fourth scope axis (task-117 follow-up, parity with the proxy's
+    // task_select stage): which work item this session belongs to. Attached only
+    // when a task was picked — an empty header would read as "task scope
+    // supplied, and empty", and the core's isolation filter treats a missing
+    // task_id as "no task axis" anyway.
+    const task = nonEmpty(this.identityOf(sessionId).taskId);
+    if (task !== undefined) headers['x-tdai-task-id'] = task;
     // USER KEY as an identity header (task-69). The triple above says WHICH
     // store the request addresses; this says WHOSE memory inside it, which is
     // what the core's ownership check (task-60) needs. Three rules, all
@@ -1185,6 +1206,32 @@ export class MemoryClient {
       const agentId = nonEmpty(item.agent_id);
       if (agentId === undefined) return undefined;
       return { agentId, name: nonEmpty(item.name), teamId: nonEmpty(item.team_id) };
+    }, options.timeoutMs);
+  }
+
+  /**
+   * POST /v3/meta/task/list { team_id, status } — the work items a session may
+   * be associated with (the proxy's own listTasks call: team + running, so
+   * completed work items never show up as a pick).
+   *
+   * The kernel requires at least one of team_id / creator_user_id; team scope is
+   * what the picker needs (the task belongs to the team the user just chose).
+   */
+  async listTasks(
+    teamId: string,
+    options: { userKey?: string; timeoutMs?: number; limit?: number; status?: string } = {},
+  ): Promise<IdentityListResult<TaskSummary>> {
+    const team = nonEmpty(teamId);
+    if (team === undefined) return { ok: false, items: [], reason: 'empty team id' };
+    const body: Record<string, unknown> = {
+      team_id: team,
+      status: options.status ?? 'running',
+      limit: metaLimit(options.limit),
+    };
+    return this.metaList<TaskSummary>(this.deps.paths.metaTaskList, body, options.userKey, (item) => {
+      const taskId = nonEmpty(item.task_id);
+      if (taskId === undefined) return undefined;
+      return { taskId, title: nonEmpty(item.title), status: nonEmpty(item.status) };
     }, options.timeoutMs);
   }
 
