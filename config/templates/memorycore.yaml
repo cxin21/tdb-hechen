@@ -196,7 +196,7 @@ memory:
     coreRefBoost: 0  # float default=0 — coreRef 排序加成；0=关（缺省 0，删键也回落 0）；负值 clamp 0 [src:config.ts:2152]
     timeBoost: 0.05  # float default=0.05 — R1 时间窗信号；0=关；负值 clamp 0（生产置 0 = 关断实测有害） [src:config.ts:2159]
     recencyBoost: 0.03  # float default=0.03 — R1 时近性信号；0=关 [src:config.ts:2160]
-    sigWeight: 0.03  # float default=0.03 — R2 重要性信号；0=关 [src:config.ts:2161]
+    sigWeight: 0.03  # float default=0.03 — R2 重要性信号；0=关（生产 2026-11-04 A/B lme-oracle 90题/2725轮采用 0.03，Δ 在噪声内，见 docs/research/2026-11-04-recall-weight-ab.md；回滚=置 0）
     inferredPenalty: 0.1  # float default=0.1 — R3 置信度分层：inferred 记录降权；clamp [0,1]，1=(1-penalty)=0 反转语义上限 [src:config.ts:2162]
     sensitivityPenalty: 0  # float default=0 — 敏感性召回降权乘子；0=关断恒等；clamp [0,1] [src:config.ts:2164]
     importancePenalty:
@@ -207,7 +207,7 @@ memory:
       boost: 0.08  # float default=0.08 — 时间感知加成；clamp [0,1] [src:config.ts:2180]
       recentDays: 30  # int default=30 — "新近"窗口天数；>=1 取整 [src:config.ts:2181]
     reinforcementWeight: 0.03  # float default=0.03 — R8 强化闭环信号；0=关 [src:config.ts:2184]
-    moodBoost: 0  # float default=0 — R9 mood 一致性弱偏置；0=关（红线 R-A：mood 不参与排序时保持 0） [src:config.ts:2185]
+    moodBoost: 0.03  # float default=0 — R9 mood 一致性弱偏置；0=关（生产 2026-11-04 采用 0.03；bench 无 L2 价值锚，该档未受 bench 约束；回滚=置 0）
     graphMinStrength: 0.5  # float default=0.5 — R4 图一跳补池的相似度门槛；clamp [0,1]；graphDiscount=0 时零调用 [src:config.ts:2187]
     graphDiscount: 0  # float default=0 — R4 图一跳候选的相关度折扣；0=关（缺省 0；删键仍为 0，不会反向打开） [src:config.ts:2191]
     sceneBoost: 0  # float default=0 — R6 场景路由加成；0=关（缺省 0） [src:config.ts:2192]
@@ -218,7 +218,7 @@ memory:
       mode: "soft"  # enum(hard|soft) default="soft" — 效期判定：hard=失效/未来生效行直接排除（旧行为）；soft=降权保留、仅"现在/最新"且存在更新有效行时才硬丢；非法值→soft+告警 [src:config.ts:2207]
       softPenalty: 0.5  # float default=0.5 — soft 档失效行降权幅度；clamp [0,1] [src:config.ts:2222]
       hardOnPresentIntent: true  # bool default=true — 查询显式问"现在/最新"时对失效行改硬丢（仅 soft 档） [src:config.ts:2223]
-    emotionSalienceWeight: 0  # float default=0 — 情感显著度权重；0=恒等（实验轨，未过 A/B 不得置正） [src:config.ts:2227]
+    emotionSalienceWeight: 0.05  # float default=0 — 情感显著度权重；0=恒等（生产 2026-11-04 A/B 采用 0.05，Δ 在噪声内，见 docs/research/2026-11-04-recall-weight-ab.md；回滚=置 0）
     sessionReuseTtlMs: 300000  # ms default=300000 — 同 session 同 query 复用上轮注入块 TTL（空结果不缓存）；0=关 [src:config.ts:2228]
     pprDamping: 0.85  # float default=0.85 — PPR 阻尼；clamp [0,1]，0=图通道退化关断 [src:config.ts:2231]
     pprTopK: 10  # int default=10 — PPR 取多少图候选；0=零图候选，clamp ≤100 [src:config.ts:2232]
