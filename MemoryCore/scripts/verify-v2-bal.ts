@@ -32,6 +32,7 @@ import { parseConfig } from "../src/config.js";
 import { VectorStore } from "../src/core/store/sqlite.js";
 import type { MemoryRecord } from "../src/core/record/l1-writer.js";
 import type { IMemoryStore, L1SearchResult } from "../src/core/store/types.js";
+import { LINK_TYPES } from "../src/core/store/types.js";
 import type { EmbeddingService } from "../src/core/store/embedding.js";
 import { ZERO_RANK_SIGNALS } from "../src/core/tools/recall-signals.js";
 
@@ -155,10 +156,10 @@ console.log("=".repeat(72));
     mk("n1", { content: "图邻居条目（不含关键词）" }),
   ]);
   try {
-    store.addLink("a", "n1", "causal", 0.9);
+    store.addLink("a", "n1", LINK_TYPES.DERIVED_FROM, 0.9);
     const res = await toolSearch(store, { graphDiscount: 0.6, graphMinStrength: 0.5, limit: 3 });
-    check("B1 探索位：低频结构命中占末席 + graph:ppr:causal:explore 标注",
-      res.results.map((r) => r.id).join(",") === "a,b,n1" && res.results[2]?.recall_channel === "graph:ppr:causal:explore",
+    check("B1 探索位：低频结构命中占末席 + graph:ppr:derived_from:explore 标注",
+      res.results.map((r) => r.id).join(",") === "a,b,n1" && res.results[2]?.recall_channel === `graph:ppr:${LINK_TYPES.DERIVED_FROM}:explore`,
       `ids=[${res.results.map((r) => r.id).join(", ")}], ch=${res.results[2]?.recall_channel}`);
 
     const off = await toolSearch(store, { graphDiscount: 0.6, graphMinStrength: 0.5, limit: 3, exploreSlot: false });
@@ -202,7 +203,7 @@ console.log("=".repeat(72));
     isFtsAvailable: () => false,
     getCapabilities: () => ({ nativeHybridSearch: false }),
     searchL1Vector: async () => ["a", "b", "c", "d", "e"].map((id) => vecHit(id, { metadata_json: JSON.stringify({ recall_count: 10 }) })),
-    getNeighbors: () => [{ id: "n1", type: "causal", strength: 0.9, hop: 1 }],
+    getNeighbors: () => [{ id: "n1", type: LINK_TYPES.DERIVED_FROM, strength: 0.9, hop: 1 }],
     getL1ByIdsWithArchive: (ids: string[]) => ids.map((id) => vecHit(id, { score: 0 })),
   } as unknown as IMemoryStore;
   const emb = { embed: async () => new Float32Array(4) } as unknown as EmbeddingService;
@@ -211,8 +212,8 @@ console.log("=".repeat(72));
     signals: ZERO_RANK_SIGNALS, now: new Date(), graph: { minStrength: 0.5, discount: 0.6 },
   };
   const on = await searchHybrid(`${KW} 探索位探针`, "", 3, 0.3, vectorStore, emb, undefined, undefined, rank, 0, undefined, undefined, true);
-  check("C1 auto-recall 同层探索位：n1 占末席 + [graph:ppr:causal:explore] 标注",
-    on.lines.length === 3 && on.lines[2]?.includes("条目 n1") && on.lines[2]?.includes("graph:ppr:causal:explore"),
+  check("C1 auto-recall 同层探索位：n1 占末席 + [graph:ppr:derived_from:explore] 标注",
+    on.lines.length === 3 && on.lines[2]?.includes("条目 n1") && on.lines[2]?.includes(`graph:ppr:${LINK_TYPES.DERIVED_FROM}:explore`),
     `lines=${JSON.stringify(on.lines)}`);
   const off = await searchHybrid(`${KW} 探索位探针`, "", 3, 0.3, vectorStore, emb, undefined, undefined, rank, 0, undefined, undefined, false);
   check("C2 auto-recall exploreSlot=false → 退出（与工具路同参数语义）",

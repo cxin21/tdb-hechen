@@ -18,7 +18,8 @@
 
 import crypto from "node:crypto";
 import { patchSoulFromContent } from "../lifecycle/consolidation/content-soul.js";
-import { DEFAULT_ISOLATION_ID, type IMemoryStore } from "../store/types.js";
+import { DEFAULT_ISOLATION_ID, type IMemoryStore, type L1RecordRow } from "../store/types.js";
+import { parseSourceMessageIds } from "../store/l1-column-coerce.js";
 import { ensureL1FactVec } from "../store/capability-guard.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
@@ -127,7 +128,7 @@ export interface MemoryRecord {
   valid_end?: string;
   /** 观察 vs 推断 —— 信任边界（推断不冒充事实） */
   certainty?: "observed" | "inferred";
-  /** 来源标记（如消息 id / 工具调用） */
+  /** @deprecated ADR-0025 C2（2026-11-04）：L1 source 列已删（零判定读点），写读两侧都不再填。 */
   source?: string;
   /** 情感色调 -1..1 */
   valence?: number;
@@ -137,7 +138,11 @@ export interface MemoryRecord {
   significance?: number;
   /** D-3：敏感性枚举（写入层 record 类型补齐）。 */
   sensitivity?: string;
-  /** P1-T7（worthiness）：LLM/人工 importance 1-10；undefined = 未评分（NULL 落库，永不降权——不伪造默认分）。 */
+  /**
+   * P1-T7（worthiness）：LLM/人工 importance 1-10；undefined = 未评分（NULL 落库，永不降权——不伪造默认分）。
+   * ADR-0025 C5：metadata.importance_source（llm/manual）保留 —— 它是 /atomic/update 人工改分的
+   * 唯一防篡改痕迹；同批停写的 importance_reason 才是零读点的纯审计字段。
+   */
   importance?: number | null;
 }
 
@@ -158,6 +163,7 @@ export interface ExtractedMemory {
   valid_start?: string;
   valid_end?: string;
   certainty?: "observed" | "inferred";
+  /** @deprecated ADR-0025 C2：L1 source 列已删，提取侧不再透传。 */
   source?: string;
   valence?: number;
   arousal?: number;
@@ -224,6 +230,48 @@ let FACT_ROWS_NO_TRIPLES_WARNED = false;
 // ============================
 
 /**
+ * 取代（update/merge）时的行级原话溯源合并：旧行 ∪ 新行。
+ *
+ * 顺序合同：旧行在前（按 target_ids 返回顺序）、新行在后，保序去重——读侧据此把
+ * 证据按"历史→本次"排列。旧行列是 JSON 文本（可能 NULL/脏值），经
+ * parseSourceMessageIds 兜底成 []（坏值绝不抛，否则一条脏行能阻断整次写入）。
+ */
+function unionSourceMessageIds(rows: L1RecordRow[], incoming: string[] | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (ids: string[] | undefined): void => {
+    for (const id of ids ?? []) {
+      if (typeof id !== "string" || id === "" || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  };
+  for (const row of rows) push(parseSourceMessageIds(row.source_message_ids));
+  push(incoming);
+  return out;
+}
+
+/**
+ * 取代时的敏感度继承（sensitivity 是注入门，只升不降）：
+ *  - 新值明确给出具体类（非空、非 'none'）→ 用新值（含升级：unclassified/health → finance）；
+ *  - 否则（本次未判定 / 缺省 none）→ 继承旧行最严值：unclassified（fail-closed，一律拦）
+ *    优先，其次任一具体类。没有旧值可继承时原样返回（调用方随后落 none 缺省）。
+ *
+ * 为什么不区分"显式 none"：提取侧缺省即 none（SOUL_FIELD_DEFAULTS），与"主动判定不敏感"
+ * 不可区分；把不可区分的输入当降级用 = 敏感记忆可被任意整行重写洗白（宁可多拦）。
+ */
+function inheritSensitivity(rows: L1RecordRow[], incoming: string | undefined): string | undefined {
+  const declared = typeof incoming === "string" ? incoming.trim() : "";
+  if (declared !== "" && declared.toLowerCase() !== "none") return incoming;
+  const oldValues = rows
+    .map((row) => (typeof row.sensitivity === "string" ? row.sensitivity.trim() : ""))
+    .filter((v) => v !== "" && v.toLowerCase() !== "none");
+  if (oldValues.length === 0) return incoming;
+  const unclassified = oldValues.find((v) => v.toLowerCase() === "unclassified");
+  return unclassified ?? oldValues[0];
+}
+
+/**
  * Generate a unique memory ID.
  */
 export function generateMemoryId(): string {
@@ -274,11 +322,14 @@ export async function writeMemory(params: {
 
   const now = new Date().toISOString();
 
+  // update/merge 是"取代"语义：旧行即将归档/失效，新行必须接手它的血统（行级原话溯源）
+  // 与不可降级属性（sensitivity 注入门）。版本号与合并用同一批行，只读一次。
+  let existingRows: L1RecordRow[] = [];
   let nextVersion = 0;
   if ((decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0 && vectorStore) {
     try {
-      const existing = await vectorStore.queryL1Records({ recordIds: decision.target_ids });
-      const maxVersion = existing.reduce((max, row) => Math.max(max, row.version ?? 0), 0);
+      existingRows = await vectorStore.queryL1Records({ recordIds: decision.target_ids });
+      const maxVersion = existingRows.reduce((max, row) => Math.max(max, row.version ?? 0), 0);
       nextVersion = maxVersion + 1;
     } catch (err) {
       logger?.warn?.(`${TAG} Failed to read existing memory version, defaulting to v0: ${err instanceof Error ? err.message : String(err)}`);
@@ -330,7 +381,7 @@ export async function writeMemory(params: {
     valid_start: memory.valid_start,
     valid_end: memory.valid_end,
     certainty: memory.certainty ?? "observed",
-    source: memory.source,
+    // ADR-0025 C2：source 列已删（零判定读点，凭据由 source_message_ids + memory_audit 承担）——不再写。
     valence: memory.valence,
     arousal: memory.arousal,
     significance: memory.significance,
@@ -340,6 +391,15 @@ export async function writeMemory(params: {
     // 刻意不进下方 P0 合标块——spec §6"不伪造默认分"，没评过分 ≠ 低分，永不降权）
     importance: memory.importance,
   };
+
+  // 缺陷 B（task-2）：取代新行接手旧行血统。旧行已在归档/失效分支处置，但它的原话证据与
+  // 敏感度不会自己出现在本次抽取结果里——不合并即静默丢失（"溯源只增不减"契约）。
+  // 位置在 D-3 缺省合标**之前**：合并结果才是本次要落库的"意图"。
+  if (existingRows.length > 0 && (decision.action === "update" || decision.action === "merge")) {
+    record.source_message_ids = unionSourceMessageIds(existingRows, record.source_message_ids);
+    const inheritedSensitivity = inheritSensitivity(existingRows, record.sensitivity);
+    if (inheritedSensitivity) record.sensitivity = inheritedSensitivity;
+  }
 
   // 数据可靠性兜底（确定性规则，零 LLM）：模型没吐时从 content 抽时间锚/情感/重要性，只填空字段。
   // 放在写入唯一 choke point，保证每条都兜底——不依赖管道路由/异步/LLM 稳定性。
@@ -352,10 +412,10 @@ export async function writeMemory(params: {
   // D-3：敏感缺省合标（undefined→none，防 update/merge 路径旁路产生 NULL）
   if (!record.sensitivity) record.sensitivity = "none";
   // P0 · soul 字段 100% 合标（设计 §7 要求每条必填）：无显式时间→取提取时刻；
-  // source 缺→'extraction'；情感/重要度缺→中性默认。放在写入唯一 choke point，保证满列。
+  // 情感/重要度缺→中性默认。放在写入唯一 choke point，保证满列。
   if (!record.occurred_at) record.occurred_at = record.createdAt || new Date().toISOString();
   if (!record.certainty) record.certainty = "observed";
-  if (!record.source) record.source = (record as { source?: string }).source || "extraction";
+  // ADR-0025 C2：源标记不再合成默认值（列已删）。
   if (record.valence == null) record.valence = 0;
   if (record.arousal == null) record.arousal = 0;
   if (record.significance == null) record.significance = 0.5;

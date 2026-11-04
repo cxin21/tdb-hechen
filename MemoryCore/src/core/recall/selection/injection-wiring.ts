@@ -24,6 +24,8 @@ export interface InjectionWiringInput {
   /** 插件数据目录（生产 D:\TDB\data）；标定产物在 <pluginDataDir>/calibration/ 下。 */
   pluginDataDir: string;
   embeddingService?: EmbeddingService;
+  /** 与 lines 平行的来源会话（session_id）；缺省 = 不按会话分摊字符预算。 */
+  sessions?: ReadonlyArray<string | null | undefined>;
   /** 上一回合注入行指纹（钩子路台账；缺省 = 不折叠）。 */
   previousHash?: string;
   now?: () => number;
@@ -176,6 +178,7 @@ export async function runInjectionSelection(input: InjectionWiringInput): Promis
     ...(rulerCfg?.budgetMs !== undefined ? { budgetMs: rulerCfg.budgetMs } : {}),
     foldIdentical: injectionCfg?.foldIdentical ?? false,
     budgetByIntent: injectionCfg?.budgetByIntent ?? NO_BUDGET,
+    sessions: input.sessions,
     previousHash: input.previousHash,
     calibration,
     model,

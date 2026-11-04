@@ -51,6 +51,8 @@ export async function performAutoCapture(params: {
   teamId?: string;
   userId?: string;
   agentId?: string;
+  /** 作用域键（可选）：透传到 L0 落库与 pipeline 分组，未带时 L0 task_id 留空。 */
+  taskId?: string;
   cfg: MemoryTdaiConfig;
   pluginDataDir: string;
   logger?: Logger;
@@ -126,6 +128,7 @@ export async function performAutoCapture(params: {
         filteredMessages = await recordConversation({
           sessionKey,
           sessionId,
+          taskId: params.taskId,
           rawMessages: messages,
           baseDir: pluginDataDir,
           logger,
@@ -193,6 +196,8 @@ export async function performAutoCapture(params: {
           teamId: params.teamId,
           userId: params.userId,
           agentId: params.agentId,
+          // 作用域键：仅在有值时写库（缺省保持既有空值行为）。
+          ...(params.taskId ? { taskId: params.taskId } : {}),
           role: msg.role,
           messageText: msg.content,
           recordedAt: now,

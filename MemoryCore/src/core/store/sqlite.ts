@@ -27,6 +27,8 @@ import path from "node:path";
 import type { DatabaseSync, StatementSync, SQLInputValue } from "node:sqlite";
 import type { MemoryRecord } from "../record/l1-writer.js";
 import type { EmbeddingProviderInfo } from "./embedding.js";
+// 读侧归一化与 l1-reader.rowToMemoryRecord 共用同一实现（空串/NULL/脏 JSON 口径一致）。
+import { optionalNumber, optionalText, parseSourceMessageIds } from "./l1-column-coerce.js";
 import type {
   IMemoryStore,
   StoreCapabilities,
@@ -39,6 +41,7 @@ import type {
   L1RecordRow,
   L1QueryFilter,
   L0CountFilter,
+  L0ByIdsFilter,
   L0PaginatedFilter,
   L0PaginatedResult,
   L1CountFilter,
@@ -58,7 +61,19 @@ import type {
   AuditEntry,
   AuditQueryFilter,
 } from "./types.js";
-import { DEFAULT_ISOLATION_ID, normalizeCoreTenant, rowMatchesIsolation, type CoreTenant, type PromiseTransitionSource, type SoulPromiseEvent, type SoulPromiseRecord, type SoulPromiseStatus } from "./types.js";
+import {
+  DEFAULT_ISOLATION_ID,
+  LINK_TYPES,
+  normalizeCoreTenant,
+  rowMatchesIsolation,
+  type CoreTenant,
+  type SoulSnapshotRow,
+  type PromiseTransitionSource,
+  type SoulPromiseEvent,
+  type SoulPromiseRecord,
+  type SoulPromiseStatus,
+  type LinkType,
+} from "./types.js";
 import { buildIsolationWhere } from "./isolation.js";
 import { normalizeTaskSourceType } from "./task-source-type.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
@@ -87,7 +102,9 @@ export type { L1RecordRow } from "./types.js";
 // 建表 DDL / INSERT 语句 / 旧库迁移全部由这里生成，禁止第三份手抄（R1 教训）。
 // ============================
 
-/** l1_fts 基础 17 列 DDL（soul 列之前的固定部分；content 是唯一全文索引主列） */
+/** l1_fts 基础 16 列 DDL（soul 列之前的固定部分；content 是唯一全文索引主列）。
+ *  ADR-0025 C3（2026-11-04）：原 `timestamp_start` 列已删——与 timestamp_str 4225/4225 逐位相等，
+ *  保留它等于给同一事实存两份副本（读侧还各自 fallback，制造了两个可能不一致的"创建时间"）。 */
 const L1_FTS_BASE_COLUMN_DEFS = [
   "content",
   "content_original UNINDEXED",
@@ -103,7 +120,6 @@ const L1_FTS_BASE_COLUMN_DEFS = [
   "agent_id UNINDEXED",
   "version UNINDEXED",
   "timestamp_str UNINDEXED",
-  "timestamp_start UNINDEXED",
   "timestamp_end UNINDEXED",
   "metadata_json UNINDEXED",
 ] as const;
@@ -111,23 +127,19 @@ const L1_FTS_BASE_COLUMN_DEFS = [
 /** soul 8 列 DDL 片段：`name ftsSuffix`（ftsSuffix=UNINDEXED —— soul 是过滤元数据不参与全文索引） */
 const L1_FTS_SOUL_COLUMN_DEFS = SOUL_COLUMNS.map((c) => `${c.name} ${c.ftsSuffix}`);
 
-/** l1_fts 建表列定义（27 列 = 基础 17 + soul 10） */
+/** l1_fts 建表列定义（25 列 = 基础 16 + soul 9） */
 const L1_FTS_TABLE_DDL = [...L1_FTS_BASE_COLUMN_DEFS, ...L1_FTS_SOUL_COLUMN_DEFS];
 
 /** l1_fts 全部列名（25 个，INSERT 列清单/迁移共用；顺序与建表一致） */
-const L1_FTS_ALL_COL_NAMES = [
-  ...L1_FTS_BASE_COLUMN_DEFS.map((d) => d.split(" ")[0]),
-  ...SOUL_COL_NAMES,
-];
+const L1_FTS_ALL_COL_NAMES = [...L1_FTS_BASE_COLUMN_DEFS.map((d) => d.split(" ")[0]), ...SOUL_COL_NAMES];
 
-/** soul 10 字段写入缺省值（与 l1_records 建表默认一致；主表/FTS/restore 共用）。
+/** soul 9 字段（ADR-0025 C2 删 source 后）写入缺省值（与 l1_records 建表默认一致；主表/FTS/restore 共用）。
  *  P1-T7：importance 缺省 null = 未评分 = 召回面永不降权（宁缺毋滥，不伪造默认分）。 */
 const SOUL_FIELD_DEFAULTS: Record<SoulColumnName, string | number | null> = {
   occurred_at: "",
   valid_start: "",
   valid_end: "",
   certainty: "observed",
-  source: "",
   valence: null,
   arousal: null,
   significance: null,
@@ -136,7 +148,7 @@ const SOUL_FIELD_DEFAULTS: Record<SoulColumnName, string | number | null> = {
 };
 
 /**
- * soul 8 字段绑定值（单一取值源）：主表 stmtUpsertMeta / FTS stmtL1FtsInsert /
+ * soul 9 字段绑定值（单一取值源）：主表 stmtUpsertMeta / FTS stmtL1FtsInsert /
  * restoreL1 FTS 重建 / rebuildFtsIndex 共用，序与 SOUL_COL_NAMES 严格一致。
  * @internal
  */
@@ -157,6 +169,8 @@ export interface VectorSearchResult {
   /** Cosine similarity score (1.0 - cosine_distance) */
   score: number;
   timestamp_str: string;
+  /** @deprecated ADR-0025 C3（2026-11-04）：列已删，映射为 timestamp_str 的派生副本
+   *  （历史值 4225/4225 逐位相等）。对外 created_at 口径不变；新代码请直接用 timestamp_str。 */
   timestamp_start: string;
   timestamp_end: string;
   version: number;
@@ -166,8 +180,29 @@ export interface VectorSearchResult {
   task_id: string;
   user_id: string;
   agent_id: string;
+  /**
+   * B 项（ADR-0025 决定 9，2026-11-04）：行最近更新时间（l1_records.updated_time）。
+   * 与 timestamp_end（事件结束时刻）语义不同；消费方 updated_at 取本列。
+   */
+  updated_time?: string;
   /** Raw metadata JSON string (e.g., contains activity_start_time / activity_end_time for episodic) */
   metadata_json: string;
+  // soul 9 字段 + 溯源列（P0-1，2026-11-04）：向量路此前只声明 16 个基础字段，
+  // searchL1Vector 的 push 已塞入 soul 值 → 类型漂移（TS2353）且消费方拿不到 sensitivity。
+  // 列口径以 soul-columns.ts SOUL_COL_NAMES 为单一事实源。
+  occurred_at?: string;
+  valid_start?: string;
+  valid_end?: string;
+  certainty?: string;
+  valence?: number;
+  arousal?: number;
+  significance?: number;
+  /** D-3 敏感注入门的判定输入（health/finance/relationship → 仅私有上下文注入）。 */
+  sensitivity?: string;
+  /** P1-T7：importance 1-10（null=未评分=不罚）。 */
+  importance?: number | null;
+  /** 溯源：该行由哪些 L0 消息蒸馏而来（原 source 列删除后的唯一溯源字段）。 */
+  source_message_ids?: string[];
 }
 
 /** L0 single-message vector search result. */
@@ -270,10 +305,46 @@ function getJieba(): JiebaInstance | null {
  * Kept small on purpose — only high-frequency function words.
  */
 const ZH_STOP_WORDS = new Set([
-  "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
-  "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着",
-  "没有", "看", "好", "自己", "这", "他", "她", "它", "们", "那",
-  "吗", "吧", "呢", "啊", "呀", "哦", "嗯",
+  "的",
+  "了",
+  "在",
+  "是",
+  "我",
+  "有",
+  "和",
+  "就",
+  "不",
+  "人",
+  "都",
+  "一",
+  "一个",
+  "上",
+  "也",
+  "很",
+  "到",
+  "说",
+  "要",
+  "去",
+  "你",
+  "会",
+  "着",
+  "没有",
+  "看",
+  "好",
+  "自己",
+  "这",
+  "他",
+  "她",
+  "它",
+  "们",
+  "那",
+  "吗",
+  "吧",
+  "呢",
+  "啊",
+  "呀",
+  "哦",
+  "嗯",
 ]);
 
 /**
@@ -422,6 +493,7 @@ export interface FtsSearchResult {
   /** R71-A1（2026-10-19）：FTS5 raw rank（负=更相关）；L1 行透传（L0 行不透传）。 */
   rank?: number;
   timestamp_str: string;
+  /** @deprecated ADR-0025 C3（2026-11-04）：列已删，映射为 timestamp_str（派生副本）。 */
   timestamp_start: string;
   timestamp_end: string;
   version: number;
@@ -432,19 +504,30 @@ export interface FtsSearchResult {
   user_id: string;
   agent_id: string;
   metadata_json: string;
-  // soul 8 字段（P1-T7 / W1）：列名以 soul-columns.ts SOUL_COL_NAMES 为单一事实源，
+  /**
+   * B 项（ADR-0025 决定 9，2026-11-04）：行最近更新时间。l1_fts 表**不存**该列——检索
+   * SELECT 与 source_message_ids 同款走相关子查询从 l1_records 带出。
+   */
+  updated_time?: string;
+  // soul 9 字段（P1-T7 / W1）：列名以 soul-columns.ts SOUL_COL_NAMES 为单一事实源（ADR-0025 C2 删 source），
   // 列清单/建表/绑定值均由其展开；此处为类型声明（类型无法由字符串数组推导），
   // 类型口径与 L1RecordRow 的 soul 字段一致。新增字段：先改 soul-columns.ts，这里会漏 → verify-p1-t7 断言组 2 红。
   occurred_at?: string;
   valid_start?: string;
   valid_end?: string;
   certainty?: string;
+  /** @deprecated ADR-0025 C2（2026-11-04）：source 列已删，运行时恒 undefined；字段仅为兼容旧
+   *  取值方保留。新代码用 source_message_ids 溯源。 */
   source?: string;
   valence?: number;
   arousal?: number;
   significance?: number;
   /** P1-T7：importance 1-10（null=未评分=不罚）。 */
   importance?: number | null;
+  /** D-3 敏感注入门的判定输入（P0-1，2026-11-04）：此前读投影漏掉该列。 */
+  sensitivity?: string;
+  /** 溯源（P0-1）：l1_fts 不存该列，检索 SELECT 用相关子查询回 l1_records 取。 */
+  source_message_ids?: string[];
 }
 
 /** FTS5 search result for L0 records. */
@@ -495,16 +578,16 @@ export class VectorStore implements IMemoryStore {
 
   // Prepared statements — L1 (initialized in init())
   private stmtUpsertMeta!: StatementSync;
-  private stmtDeleteVec?: StatementSync;   // optional — only set when vecTablesReady
-  private stmtInsertVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtDeleteVec?: StatementSync; // optional — only set when vecTablesReady
+  private stmtInsertVec?: StatementSync; // optional — only set when vecTablesReady
   private stmtDeleteMeta!: StatementSync;
   private stmtGetMeta!: StatementSync;
-  private stmtSearchVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtSearchVec?: StatementSync; // optional — only set when vecTablesReady
   // #137 W1/C：事实键平行向量通道（l1_fact_vec）——独立 vec0 表，与 l1_vec 同维同度量；
   // 主索引 l1_vec 完全不动。老三件套（delete/insert/search）同样只在 vecTablesReady 时绑定。
-  private stmtDeleteFactVec?: StatementSync;   // optional — only set when vecTablesReady
-  private stmtInsertFactVec?: StatementSync;   // optional — only set when vecTablesReady
-  private stmtSearchFactVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtDeleteFactVec?: StatementSync; // optional — only set when vecTablesReady
+  private stmtInsertFactVec?: StatementSync; // optional — only set when vecTablesReady
+  private stmtSearchFactVec?: StatementSync; // optional — only set when vecTablesReady
   private stmtQueryBySessionId!: StatementSync;
   private stmtQueryBySessionIdSince!: StatementSync;
   private stmtQueryBySessionKey!: StatementSync;
@@ -514,11 +597,11 @@ export class VectorStore implements IMemoryStore {
 
   // Prepared statements — L0 (initialized in init())
   private stmtL0UpsertMeta!: StatementSync;
-  private stmtL0DeleteVec?: StatementSync;   // optional — only set when vecTablesReady
-  private stmtL0InsertVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtL0DeleteVec?: StatementSync; // optional — only set when vecTablesReady
+  private stmtL0InsertVec?: StatementSync; // optional — only set when vecTablesReady
   private stmtL0DeleteMeta!: StatementSync;
   private stmtL0GetMeta!: StatementSync;
-  private stmtL0SearchVec?: StatementSync;   // optional — only set when vecTablesReady
+  private stmtL0SearchVec?: StatementSync; // optional — only set when vecTablesReady
   /** L0 query for L1 runner: all messages for a session key */
   private stmtL0QueryAll!: StatementSync;
   /** L0 query for L1 runner: messages after a timestamp cursor */
@@ -541,7 +624,24 @@ export class VectorStore implements IMemoryStore {
   // ── R-A3（E2 性能速赢）：listValues 租户级缓存（GROW 写路径 upsert/delete/pin/
   // retire/restore/derive/restoreValence/resetValence 八处统一失效；TTL 仅作跨进程写
   // 漂移防御，默认 60s，0=缓存关）──
-  private valuesCache = new Map<string, { rows: Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>; at: number }>();
+  private valuesCache = new Map<
+    string,
+    {
+      rows: Array<{
+        value_id: string;
+        label: string;
+        weight: number;
+        created_by: string;
+        valence: number | null;
+        origin: "seed" | "manual" | "auto";
+        pinned: 0 | 1;
+        state: "active" | "retired" | "vetoed";
+        node_type: "theme" | "person" | "character";
+        attrs_json: string;
+      }>;
+      at: number;
+    }
+  >();
   private valuesCacheTtlMs = 60_000;
   /** E2 观测计数器（miss=真实 DB 查询次数；hit=缓存命中次数）——测试与运维诊断共用。 */
   valuesCacheHits = 0;
@@ -638,7 +738,6 @@ export class VectorStore implements IMemoryStore {
     return this.degraded;
   }
 
-
   /**
    * Load sqlite-vec extension and initialize database schema.
    * Must be called once after construction.
@@ -663,7 +762,7 @@ export class VectorStore implements IMemoryStore {
         const message = err instanceof Error ? err.message : String(err);
         this.logger?.error(
           `${TAG} Failed to load sqlite-vec extension: ${message}. ` +
-          `VectorStore entering degraded mode — all operations will be no-ops.`,
+            `VectorStore entering degraded mode — all operations will be no-ops.`,
         );
         this.degraded = true;
         return { needsReindex: false, reason: `sqlite-vec load failed: ${message}` };
@@ -677,10 +776,7 @@ export class VectorStore implements IMemoryStore {
       return this.initSchema(providerInfo);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger?.error(
-        `${TAG} Schema initialization failed: ${message}. ` +
-        `VectorStore entering degraded mode.`,
-      );
+      this.logger?.error(`${TAG} Schema initialization failed: ${message}. ` + `VectorStore entering degraded mode.`);
       this.degraded = true;
       return { needsReindex: false, reason: `schema init failed: ${message}` };
     }
@@ -719,8 +815,7 @@ export class VectorStore implements IMemoryStore {
           reindexReason = reasons.join(", ");
 
           this.logger?.info(
-            `${TAG} Embedding config changed (${reindexReason}). ` +
-            `Dropping vector tables for rebuild...`,
+            `${TAG} Embedding config changed (${reindexReason}). ` + `Dropping vector tables for rebuild...`,
           );
 
           // Drop and re-create vector tables with new dimensions
@@ -741,7 +836,7 @@ export class VectorStore implements IMemoryStore {
         if (l1Count > 0 || l0Count > 0) {
           this.logger?.info(
             `${TAG} No embedding_meta found but existing data exists ` +
-            `(L1=${l1Count}, L0=${l0Count}). Dropping vector tables for safety...`,
+              `(L1=${l1Count}, L0=${l0Count}). Dropping vector tables for safety...`,
           );
           this.dropVectorTables();
           needsReindex = true;
@@ -752,7 +847,7 @@ export class VectorStore implements IMemoryStore {
           // get re-created with the correct dimensions below.
           this.logger?.info(
             `${TAG} vec0 table dimension mismatch (existing=${existingVecDims}, ` +
-            `required=${this.dimensions}). Dropping vector tables for rebuild...`,
+              `required=${this.dimensions}). Dropping vector tables for rebuild...`,
           );
           this.dropVectorTables();
           // No needsReindex — there's no data to re-embed
@@ -779,49 +874,149 @@ export class VectorStore implements IMemoryStore {
         user_id TEXT NOT NULL DEFAULT 'default',
         agent_id TEXT NOT NULL DEFAULT 'default',
         version INTEGER NOT NULL DEFAULT 0,
+        -- ADR-0025 C3（2026-11-04）：timestamp_start 已删（恒等于 timestamp_str，见幂等 DROP COLUMN 段）
         timestamp_str TEXT DEFAULT '',
-        timestamp_start TEXT DEFAULT '',
         timestamp_end TEXT DEFAULT '',
         created_time TEXT DEFAULT '',
         updated_time TEXT DEFAULT '',
-        metadata_json TEXT DEFAULT '{}'
+        metadata_json TEXT DEFAULT '{}',
+        -- 原话溯源（行级）：JSON 数组文本，缺省 '[]'（老库幂等 ALTER 见下）
+        source_message_ids TEXT NOT NULL DEFAULT '[]'
       )
     `);
 
     // Online migration: pre-isolation DBs lack user_id/agent_id columns. ALTER ADD is
     // idempotent-safe: a try/catch around each statement is the SQLite-3 standard idiom.
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN team_id TEXT DEFAULT 'default'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN version INTEGER NOT NULL DEFAULT 0"); } catch { /* exists */ }
-    this.db.prepare("UPDATE l1_records SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
-    this.db.prepare("UPDATE l1_records SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
-    this.db.prepare("UPDATE l1_records SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
-    this.db.prepare("UPDATE l1_records SET session_id = ? WHERE session_id = '' OR session_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN team_id TEXT DEFAULT 'default'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN task_id TEXT DEFAULT ''");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      /* exists */
+    }
+    this.db
+      .prepare("UPDATE l1_records SET team_id = ? WHERE team_id = '' OR team_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
+    this.db
+      .prepare("UPDATE l1_records SET user_id = ? WHERE user_id = '' OR user_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
+    this.db
+      .prepare("UPDATE l1_records SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
+    this.db
+      .prepare("UPDATE l1_records SET session_id = ? WHERE session_id = '' OR session_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
     this.db.exec("UPDATE l1_records SET version = 0 WHERE version IS NULL OR version < 0");
     // ── 灵魂记忆字段（P2a）：时空 / 观察推断 / 情感 —— 幂等 ALTER，已有库在线加列 ──
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN occurred_at TEXT DEFAULT ''"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN valid_start TEXT DEFAULT ''"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN valid_end TEXT DEFAULT ''"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN certainty TEXT DEFAULT 'observed'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN source TEXT DEFAULT ''"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN valence REAL"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN arousal REAL"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN significance REAL"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN occurred_at TEXT DEFAULT ''");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN valid_start TEXT DEFAULT ''");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN valid_end TEXT DEFAULT ''");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN certainty TEXT DEFAULT 'observed'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN valence REAL");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN arousal REAL");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN significance REAL");
+    } catch {
+      /* exists */
+    }
     // D-3（2026-09-21）：敏感性第 9 soul 列（幂等 ALTER；缺省 none=逐位现状）
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN sensitivity TEXT DEFAULT 'none'"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN sensitivity TEXT DEFAULT 'none'");
+    } catch {
+      /* exists */
+    }
     // P1-T7（2026-10-13，worthiness importance）：第 10 soul 列。TINYINT 无 DEFAULT →
     // 既有行 NULL = 未评分 = 召回降权门永不命中（宁缺毋滥；spec §6 shadow-first）。
-    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN importance TINYINT"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN importance TINYINT");
+    } catch {
+      /* exists */
+    }
+    // 原话溯源（行级 source_message_ids）：JSON 数组文本。老行经 ADD COLUMN 的常量 DEFAULT 回填 '[]'，
+    // 与读侧「非法/空/NULL → []」兜底同语义；不用可空列，避免存量行出现 NULL 三态。
+    try {
+      this.db.exec("ALTER TABLE l1_records ADD COLUMN source_message_ids TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* exists */
+    }
+
+    // ── ADR-0025 C2/C3/C4（2026-11-04）：L1 死列与死索引剪除（幂等在线迁移） ──
+    // C3 timestamp_start：与 timestamp_str 4225/4225 逐位相等（写入侧只差一次 min 归约），
+    //   读侧投影一律改取 timestamp_str，对外 created_at 值逐位不变。
+    // C2 source：全仓零判定读点（详见 soul-columns.ts 注释），行级原话溯源由 source_message_ids
+    //   + memory_audit 承担。
+    // C4 两条单列索引（idx_l1_ts_start / idx_l1_ts_end）无任何 WHERE/ORDER BY 命中 → 一并清掉。
+    // 顺序硬约束：先 DROP INDEX 再 DROP COLUMN（SQLite 不允许删除被索引引用的列）；
+    // 列/索引已不在时 ALTER/DROP 抛错由 catch 吞掉 = 天然幂等。
+    try {
+      this.db.exec("DROP INDEX IF EXISTS idx_l1_ts_start");
+    } catch {
+      /* 已不在 */
+    }
+    try {
+      this.db.exec("DROP INDEX IF EXISTS idx_l1_ts_end");
+    } catch {
+      /* 已不在 */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records DROP COLUMN timestamp_start");
+    } catch {
+      /* 列已不在 */
+    }
+    try {
+      this.db.exec("ALTER TABLE l1_records DROP COLUMN source");
+    } catch {
+      /* 列已不在 */
+    }
 
     // Indexes for common queries
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_type ON l1_records(type)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_session_key ON l1_records(session_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_session_id ON l1_records(session_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_scene ON l1_records(scene_name)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_ts_start ON l1_records(timestamp_start)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_ts_end ON l1_records(timestamp_end)");
+    // ADR-0025 C4：idx_l1_ts_start / idx_l1_ts_end 两条死索引已删（无查询命中，只增写入放大）。
     // Composite index: session_id exact match + updated_time range scan (for incremental L2 queries)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_session_updated ON l1_records(session_id, updated_time)");
     // Composite index: session_key exact match + updated_time range scan (for pipeline cursor queries)
@@ -912,17 +1107,41 @@ export class VectorStore implements IMemoryStore {
     // 位置在 migrateCoreTenantTables 之后：存量库若走 T12 重建，先重建再补列，
     // 保证 ALTER 不会在建表 DDL 与重建之间被回滚丢失（新库 DDL 已带列，此 ALTER 空转）。
     // +1=趋近推进、-1=审慎回避、0=中性；NULL=未判定（LLM 未判 / 用户未微调）。
-    try { this.db.exec("ALTER TABLE core_values ADD COLUMN valence REAL"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE core_values ADD COLUMN valence REAL");
+    } catch {
+      /* exists */
+    }
     // GROW（价值锚自生长）：origin/pinned/state 三列（幂等 ALTER，T12 模式）。
     // 位置在 migrateCoreTenantTables 之后（同 valence 的理由：存量库先重建再补列）。
     // 存量行默认 seed/0/active —— 存量行全部来自启动种子灌入（B1），origin='seed' 与史实一致。
-    try { this.db.exec("ALTER TABLE core_values ADD COLUMN origin TEXT NOT NULL DEFAULT 'seed'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE core_values ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE core_values ADD COLUMN state TEXT NOT NULL DEFAULT 'active'"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE core_values ADD COLUMN origin TEXT NOT NULL DEFAULT 'seed'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE core_values ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE core_values ADD COLUMN state TEXT NOT NULL DEFAULT 'active'");
+    } catch {
+      /* exists */
+    }
     // DS-SOUL-MEMORY-002 P2（spec §2.6）：人物锚双节点列——幂等 ALTER（T12 模式），
     // 缺省 'theme'/'{}' = 逐位现状；sqlite 不可删列，回滚策略=列保留无害、缺省值即现状。
-    try { this.db.exec("ALTER TABLE core_values ADD COLUMN node_type TEXT NOT NULL DEFAULT 'theme'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE core_values ADD COLUMN attrs_json TEXT NOT NULL DEFAULT '{}'"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE core_values ADD COLUMN node_type TEXT NOT NULL DEFAULT 'theme'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE core_values ADD COLUMN attrs_json TEXT NOT NULL DEFAULT '{}'");
+    } catch {
+      /* exists */
+    }
     // #30（S9/R5，2026-10-16）：soul 快照 append-only 账本——双时态状态史（Graphiti bi-temporal
     // 同构；禁删哲学=只追加不更新不删除）。capture point=渲染路径（buildSoulPrefix）：指纹变化后
     // 首次渲染落行（at-least-once），last-hash 去重=指纹不变零落行（防膨胀）。payload_json=soul
@@ -935,9 +1154,40 @@ export class VectorStore implements IMemoryStore {
       ts TEXT NOT NULL,
       content_hash TEXT NOT NULL,
       payload_json TEXT NOT NULL,
-      "trigger" TEXT NOT NULL DEFAULT 'render'
+      "trigger" TEXT NOT NULL DEFAULT 'render',
+      version INTEGER NOT NULL DEFAULT 0,
+      parent_hash TEXT,
+      reason_detail TEXT NOT NULL DEFAULT '',
+      slots_json TEXT NOT NULL DEFAULT '{}'
     )`);
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_snapshots_tenant_ts ON soul_snapshots(team_id, user_id, agent_id, ts)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_snapshots_tenant_ts ON soul_snapshots(team_id, user_id, agent_id, ts)",
+    );
+    // 缺口 A（2026-11-04）：版本链与漂移审计四列——幂等 ALTER（T12 模式），存量库补列。
+    // 语义：version=该 tenant 维度单调递增（旧行缺省 0=反填前，读侧按行序补位）；
+    // parent_hash=上一版 content_hash（首版 NULL）；reason_detail=归因细节；
+    // slots_json=slot 图（键级 diff 源，payload_json 仍是渲染全文，时间旅行合同不变）。
+    // 回滚策略=列保留无害：旧读侧 SELECT 白名单不含新列，缺省值即现状。
+    try {
+      this.db.exec("ALTER TABLE soul_snapshots ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE soul_snapshots ADD COLUMN parent_hash TEXT");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE soul_snapshots ADD COLUMN reason_detail TEXT NOT NULL DEFAULT ''");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE soul_snapshots ADD COLUMN slots_json TEXT NOT NULL DEFAULT '{}'");
+    } catch {
+      /* exists */
+    }
     // #28（R5）：soul_state——会话级当下 state 单行存储（每 agent 一行，upsert 覆盖；
     // 历史轨迹重建走 soul_snapshots/时间旅行，本表只存当前值）。
     this.db.exec(`CREATE TABLE IF NOT EXISTS soul_state (
@@ -966,7 +1216,9 @@ export class VectorStore implements IMemoryStore {
       resolved_at TEXT,
       updated_at TEXT NOT NULL
     )`);
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_promises_tenant ON soul_promises(team_id, user_id, agent_id, status)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_promises_tenant ON soul_promises(team_id, user_id, agent_id, status)",
+    );
     this.db.exec(`CREATE TABLE IF NOT EXISTS soul_promise_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       promise_id TEXT NOT NULL,
@@ -981,8 +1233,16 @@ export class VectorStore implements IMemoryStore {
     )`);
     // #41（ADR0003-P3 实施票 C）：#35 库增量列迁移（幂等 try/ALTER 惯例）——
     // soul_promises.ref_key（证据关联键）+ soul_promise_events.source（判定来源溯源）。
-    try { this.db.exec("ALTER TABLE soul_promises ADD COLUMN ref_key TEXT NOT NULL DEFAULT ''"); } catch { /* 列已存在 */ }
-    try { this.db.exec("ALTER TABLE soul_promise_events ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"); } catch { /* 列已存在 */ }
+    try {
+      this.db.exec("ALTER TABLE soul_promises ADD COLUMN ref_key TEXT NOT NULL DEFAULT ''");
+    } catch {
+      /* 列已存在 */
+    }
+    try {
+      this.db.exec("ALTER TABLE soul_promise_events ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+    } catch {
+      /* 列已存在 */
+    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_promise_events_promise ON soul_promise_events(promise_id, id)");
     // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
     // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
@@ -1002,16 +1262,36 @@ export class VectorStore implements IMemoryStore {
     )`);
     // V12-CV（拍板执行⑤）：提案转换层字段——幂等 ALTER（T12 模式），存量库补列；
     // 缺省 NULL = 旧提案逐位现状，label 门在采纳端（coerceCoreValueAnchor），NULL label 采纳即 422。
-    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN label TEXT"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN description TEXT"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE core_pending ADD COLUMN label TEXT");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE core_pending ADD COLUMN description TEXT");
+    } catch {
+      /* exists */
+    }
     // #19 T12（2026-10-14 拍板）：重提溯源字段——reproposal 通道把 {reproposed, supersedes, generation}
     // 写进 attrs_json；Panel/审计可读。幂等 ALTER，存量库缺省 NULL = 旧提案逐位现状。
-    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN attrs_json TEXT"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE core_pending ADD COLUMN attrs_json TEXT");
+    } catch {
+      /* exists */
+    }
     // #91（复现即投票 + 默认终局）：复现计票与预嵌向量专列——幂等 ALTER（T12 模式），
     // 存量库缺省 NULL = 旧提案逐位现状（无计票语义、无向量）；两列不参与 pending_id 派生，
     // upsertPendingCore 的 INSERT/ON CONFLICT 集合不含它们（A6：重推不碰复现状态）。
-    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN recurrence_json TEXT"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE core_pending ADD COLUMN embedding_json TEXT"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE core_pending ADD COLUMN recurrence_json TEXT");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE core_pending ADD COLUMN embedding_json TEXT");
+    } catch {
+      /* exists */
+    }
     // GROW：自生长调度状态 kv（last_discovery_at / last_corpus_count）——重启不失忆，
     // 避免每次重启后 interval 门失效白烧一次发现 LLM 调用。
     this.db.exec("CREATE TABLE IF NOT EXISTS anchor_growth_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -1053,22 +1333,25 @@ export class VectorStore implements IMemoryStore {
     this.stmtUpsertMeta = this.db.prepare(`
       INSERT INTO l1_records (
         record_id, content, type, priority, scene_name, session_key, session_id,
-        team_id, task_id, version, timestamp_str, timestamp_start, timestamp_end,
+        team_id, task_id, version, timestamp_str, timestamp_end,
         created_time, updated_time, metadata_json,
         user_id, agent_id,
-        occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity,
-        importance
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_at, valid_start, valid_end, certainty, valence, arousal, significance, sensitivity,
+        importance, source_message_ids
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         content=excluded.content,
         type=excluded.type,
         priority=excluded.priority,
         scene_name=excluded.scene_name,
         team_id=excluded.team_id,
-        task_id=excluded.task_id,
+        -- ADR-0025 D3/C1（2026-11-04）：隔离轴与溯源是"粘性"列——同 record_id 的整行重写
+        -- （编辑/重要度/失效三条重建链）可能不带这些字段，直接 excluded 覆盖会把已存值刷成
+        -- ''/'[]'，等于把记忆从它的隔离桶里抹掉、把证据链抹掉。取 NULLIF 后 COALESCE：
+        -- 新值非空则用新值，空则保留库中旧值；INSERT 分支仍是缺省空串。
+        task_id=COALESCE(NULLIF(excluded.task_id, ''), task_id),
         version=excluded.version,
         timestamp_str=excluded.timestamp_str,
-        timestamp_start=excluded.timestamp_start,
         timestamp_end=excluded.timestamp_end,
         updated_time=excluded.updated_time,
         metadata_json=excluded.metadata_json,
@@ -1076,14 +1359,28 @@ export class VectorStore implements IMemoryStore {
         agent_id=excluded.agent_id,
         occurred_at=excluded.occurred_at,
         valid_start=excluded.valid_start,
-        valid_end=excluded.valid_end,
+        -- 粘性列（task-2 / ADR-0025 D3 家族）：valid_end 的"空串"与"没带"不可区分
+        -- （SOUL_FIELD_DEFAULTS.valid_end = ''），excluded 直覆盖 = 已失效行被编辑链复活
+        -- （下游效期策略把它当 active 召回）。空 → 保留库中旧值；显式时间仍以新值为准。
+        valid_end=COALESCE(NULLIF(excluded.valid_end, ''), valid_end),
         certainty=excluded.certainty,
-        source=excluded.source,
         valence=excluded.valence,
         arousal=excluded.arousal,
         significance=excluded.significance,
-        sensitivity=excluded.sensitivity,
-        importance=excluded.importance
+        -- 粘性列：sensitivity 是"注入门"而非可覆盖属性。整行重写链（编辑/重要度/失效）
+        -- 一律送缺省 'none'，若直覆盖就把 health/finance/relationship 降级成可注；
+        -- 而提取侧缺省也是 'none'，无法区分"本次判定为不敏感"与"本次没判定"——宁可多拦：
+        -- 新值为空/NULL/'none' 时保留库中旧值，只有明确的具体类才覆盖（fail-closed）。
+        sensitivity=CASE
+          WHEN excluded.sensitivity IS NULL
+            OR excluded.sensitivity = ''
+            OR lower(trim(excluded.sensitivity)) = 'none'
+          THEN sensitivity
+          ELSE excluded.sensitivity
+        END,
+        importance=excluded.importance,
+        -- 同 task_id：溯源只增不减。空数组视为"本次没带"，而不是"清空证据"。
+        source_message_ids=COALESCE(NULLIF(excluded.source_message_ids, '[]'), source_message_ids)
     `);
 
     if (this.dimensions > 0) {
@@ -1091,15 +1388,21 @@ export class VectorStore implements IMemoryStore {
       this.stmtInsertVec = this.db.prepare("INSERT INTO l1_vec (record_id, embedding, updated_time) VALUES (?, ?, ?)");
       // #137 W1/C：事实键通道平行语句（与主索引用同一 delete+insert 模式，vec0 无 ON CONFLICT）
       this.stmtDeleteFactVec = this.db.prepare("DELETE FROM l1_fact_vec WHERE record_id = ?");
-      this.stmtInsertFactVec = this.db.prepare("INSERT INTO l1_fact_vec (record_id, embedding, updated_time) VALUES (?, ?, ?)");
+      this.stmtInsertFactVec = this.db.prepare(
+        "INSERT INTO l1_fact_vec (record_id, embedding, updated_time) VALUES (?, ?, ?)",
+      );
     }
     this.stmtDeleteMeta = this.db.prepare("DELETE FROM l1_records WHERE record_id = ?");
 
     this.stmtGetMeta = this.db.prepare(`
       SELECT content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
-             version, timestamp_str, timestamp_start, timestamp_end, metadata_json, created_time,
-             occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity,
-             importance
+             version, timestamp_str, timestamp_end, metadata_json, created_time,
+             occurred_at, valid_start, valid_end, certainty, valence, arousal, significance, sensitivity,
+             importance, source_message_ids,
+             -- B 项（ADR-0025 决定 9，2026-11-04）：行最近更新时间。getL1ByIds / searchL1Vector /
+             -- searchL1FactVector 的 updated_time 都由本语句带出——漏这一列会让 updated_at 静默回退
+             -- timestamp_end（2026-11-04 真库探针实测发现并补齐）。
+             updated_time
       FROM l1_records WHERE record_id = ?
     `);
 
@@ -1147,21 +1450,49 @@ export class VectorStore implements IMemoryStore {
     try {
       this.db.exec("ALTER TABLE l0_conversations ADD COLUMN timestamp INTEGER DEFAULT 0");
       this.logger?.debug?.(`${TAG} Migrated l0_conversations: added timestamp column`);
-    } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN team_id TEXT DEFAULT 'default'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l0_conversations ADD COLUMN team_id TEXT DEFAULT 'default'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l0_conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l0_conversations ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE l0_conversations ADD COLUMN task_id TEXT DEFAULT ''");
+    } catch {
+      /* exists */
+    }
     // #83 入口单点定源：L0 行级分类标签（real/artifact/echo/scaffold/dup/unknown）。
     // 存量行缺省 'unclassified'；#84 存量回填走 UPDATE-only（零删除红线内）。
     try {
       this.db.exec("ALTER TABLE l0_conversations ADD COLUMN classification TEXT NOT NULL DEFAULT 'unclassified'");
       this.logger?.debug?.(`${TAG} Migrated l0_conversations: added classification column`);
-    } catch { /* exists */ }
-    this.db.prepare("UPDATE l0_conversations SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
-    this.db.prepare("UPDATE l0_conversations SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
-    this.db.prepare("UPDATE l0_conversations SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
-    this.db.prepare("UPDATE l0_conversations SET session_id = ? WHERE session_id = '' OR session_id IS NULL").run(DEFAULT_ISOLATION_ID);
+    } catch {
+      /* exists */
+    }
+    this.db
+      .prepare("UPDATE l0_conversations SET team_id = ? WHERE team_id = '' OR team_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
+    this.db
+      .prepare("UPDATE l0_conversations SET user_id = ? WHERE user_id = '' OR user_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
+    this.db
+      .prepare("UPDATE l0_conversations SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
+    this.db
+      .prepare("UPDATE l0_conversations SET session_id = ? WHERE session_id = '' OR session_id IS NULL")
+      .run(DEFAULT_ISOLATION_ID);
 
     // Skill schema belongs to the same vectors.db. Initialize its base tables
     // with the SQLite store so a freshly installed in-process OpenClaw plugin
@@ -1184,7 +1515,9 @@ export class VectorStore implements IMemoryStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_recorded ON l0_conversations(recorded_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_timestamp ON l0_conversations(timestamp)");
     // Isolation indexes (three-dim tenancy)
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_user_agent_session ON l0_conversations(user_id, agent_id, session_id)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_l0_user_agent_session ON l0_conversations(user_id, agent_id, session_id)",
+    );
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_user_recorded  ON l0_conversations(user_id, recorded_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_agent_recorded ON l0_conversations(agent_id, recorded_at)");
 
@@ -1211,7 +1544,8 @@ export class VectorStore implements IMemoryStore {
         recorded_at=excluded.recorded_at,
         timestamp=excluded.timestamp,
         team_id=excluded.team_id,
-        task_id=excluded.task_id,
+        -- 同 L1：同一条消息被重放时不因本侧缺 taskId 抹掉隔离轴（ADR-0025 D3）。
+        task_id=COALESCE(NULLIF(excluded.task_id, ''), task_id),
         user_id=excluded.user_id,
         agent_id=excluded.agent_id
     `);
@@ -1350,10 +1684,26 @@ export class VectorStore implements IMemoryStore {
       )
     `);
     // 在线迁移：老库补 agent_id 列（预留 binding 维度，绑定权威在 meta_assets）
-    try { this.db.exec("ALTER TABLE entity_knowledge ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE entity_teams ADD COLUMN user_ids_json TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE entity_teams ADD COLUMN agent_ids_json TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
-    try { this.db.exec("ALTER TABLE entity_tasks ADD COLUMN user_ids_json TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
+    try {
+      this.db.exec("ALTER TABLE entity_knowledge ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE entity_teams ADD COLUMN user_ids_json TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE entity_teams ADD COLUMN agent_ids_json TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* exists */
+    }
+    try {
+      this.db.exec("ALTER TABLE entity_tasks ADD COLUMN user_ids_json TEXT NOT NULL DEFAULT '[]'");
+    } catch {
+      /* exists */
+    }
     this.db.exec("DROP INDEX IF EXISTS idx_entity_teams_name");
     this.db.exec("DROP INDEX IF EXISTS idx_entity_agents_team_name");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_entity_teams_name ON entity_teams(name)");
@@ -1375,7 +1725,9 @@ export class VectorStore implements IMemoryStore {
         audit_id      TEXT PRIMARY KEY,
         record_id     TEXT NOT NULL,
         layer         TEXT NOT NULL CHECK (layer IN ('L1','L2','L3')),
-        action        TEXT NOT NULL CHECK (action IN ('update','delete')),
+        -- action 枚举必须与 store/types.ts 的 AuditEntry['action'] 保持同一集合：
+        -- 'sensitivity'（ADR-0025 决定 10：显式降敏）与 update/delete 同等留痕。
+        action        TEXT NOT NULL CHECK (action IN ('update','delete','sensitivity')),
         team_id       TEXT,
         agent_id      TEXT,
         user_id       TEXT,
@@ -1386,7 +1738,13 @@ export class VectorStore implements IMemoryStore {
       )
     `);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_record    ON memory_audit(record_id, updated_at_ms)");
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_isolation ON memory_audit(team_id, agent_id, user_id, task_id)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_memory_audit_isolation ON memory_audit(team_id, agent_id, user_id, task_id)",
+    );
+    // 存量库的 CHECK 枚举（只有 update/delete）会把新 action 写成异常 → recordAudit 的
+    // catch 吞掉 → 审计静默丢失（A 项 wire 用例实测复现）。SQLite 无法 ALTER CHECK，
+    // 只能轻量重建（CREATE new + INSERT SELECT + DROP + RENAME，同 T12/FTS 迁移模式）。
+    this.migrateMemoryAuditActionEnum();
 
     // ── Custom Memory Prompt ──
     this.db.exec(`
@@ -1515,9 +1873,11 @@ export class VectorStore implements IMemoryStore {
       this.stmtL1FtsSearch = this.db.prepare(`
         SELECT record_id, content_original AS content, type, priority, scene_name,
                session_key, session_id, team_id, task_id, user_id, agent_id, version,
-               timestamp_str, timestamp_start, timestamp_end,
+               timestamp_str, timestamp_end,
                metadata_json,
                ${SOUL_SELECT_FRAGMENT},
+               (SELECT lr.source_message_ids FROM l1_records lr WHERE lr.record_id = l1_fts.record_id) AS source_message_ids,
+               (SELECT lr.updated_time FROM l1_records lr WHERE lr.record_id = l1_fts.record_id) AS updated_time,
                bm25(l1_fts) AS rank
         FROM l1_fts
         WHERE l1_fts MATCH ?
@@ -1532,9 +1892,11 @@ export class VectorStore implements IMemoryStore {
       this.stmtL1FtsSearchByType = this.db.prepare(`
         SELECT record_id, content_original AS content, type, priority, scene_name,
                session_key, session_id, team_id, task_id, user_id, agent_id, version,
-               timestamp_str, timestamp_start, timestamp_end,
+               timestamp_str, timestamp_end,
                metadata_json,
                ${SOUL_SELECT_FRAGMENT},
+               (SELECT lr.source_message_ids FROM l1_records lr WHERE lr.record_id = l1_fts.record_id) AS source_message_ids,
+               (SELECT lr.updated_time FROM l1_records lr WHERE lr.record_id = l1_fts.record_id) AS updated_time,
                bm25(l1_fts) AS rank
         FROM l1_fts
         WHERE l1_fts MATCH ? AND type = ?
@@ -1573,7 +1935,7 @@ export class VectorStore implements IMemoryStore {
       this.ftsAvailable = false;
       this.logger?.warn(
         `${TAG} FTS5 tables NOT available (fts5 may not be compiled in): ${message}. ` +
-        `FTS-based keyword search will be unavailable; recall will use in-memory scoring if needed.`,
+          `FTS-based keyword search will be unavailable; recall will use in-memory scoring if needed.`,
       );
     }
 
@@ -1593,9 +1955,11 @@ export class VectorStore implements IMemoryStore {
     // candidate-pool / l1-reader) can enforce isolation downstream.
     const l1QueryCols = `record_id, content, type, priority, scene_name, session_key, session_id,
       team_id, task_id, user_id, agent_id, version,
-      timestamp_str, timestamp_start, timestamp_end,
+      timestamp_str, timestamp_end,
       created_time, updated_time, metadata_json,
-      occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance`;
+      occurred_at, valid_start, valid_end, certainty, valence, arousal, significance,
+      sensitivity, importance,
+      source_message_ids`;
 
     this.stmtQueryBySessionId = this.db.prepare(`
       SELECT ${l1QueryCols} FROM l1_records
@@ -1648,9 +2012,8 @@ export class VectorStore implements IMemoryStore {
 
   private readEmbeddingMeta(): EmbeddingMeta | null {
     try {
-      const row = this.db
-        .prepare("SELECT value FROM embedding_meta WHERE key = ?")
-        .get("embedding_provider_info") as { value: string } | undefined;
+      const row = this.db.prepare("SELECT value FROM embedding_meta WHERE key = ?").get("embedding_provider_info") as
+        { value: string } | undefined;
       if (!row) return null;
       return JSON.parse(row.value) as EmbeddingMeta;
     } catch {
@@ -1659,9 +2022,11 @@ export class VectorStore implements IMemoryStore {
   }
 
   private writeEmbeddingMeta(meta: EmbeddingMeta): void {
-    this.db.prepare(
-      "INSERT INTO embedding_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-    ).run("embedding_provider_info", JSON.stringify(meta));
+    this.db
+      .prepare(
+        "INSERT INTO embedding_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      )
+      .run("embedding_provider_info", JSON.stringify(meta));
   }
 
   /** Allowed table names for row counting (whitelist to prevent SQL injection). */
@@ -1682,9 +2047,7 @@ export class VectorStore implements IMemoryStore {
       return 0;
     }
     try {
-      const row = this.db
-        .prepare(`SELECT COUNT(*) AS cnt FROM ${table}`)
-        .get() as { cnt: number } | undefined;
+      const row = this.db.prepare(`SELECT COUNT(*) AS cnt FROM ${table}`).get() as { cnt: number } | undefined;
       return row?.cnt ?? 0;
     } catch {
       return 0;
@@ -1702,9 +2065,8 @@ export class VectorStore implements IMemoryStore {
    */
   private getVecTableDimensions(): number | null {
     try {
-      const row = this.db
-        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
-        .get("l1_vec") as { sql: string } | undefined;
+      const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get("l1_vec") as
+        { sql: string } | undefined;
       if (!row?.sql) return null;
       const match = row.sql.match(/float\[(\d+)\]/);
       return match ? Number(match[1]) : null;
@@ -1749,25 +2111,20 @@ export class VectorStore implements IMemoryStore {
     try {
       const { id: recordId, timestamps } = record;
       const tsStr = timestamps[0] ?? "";
-      const tsStart =
-        timestamps.length > 0
-          ? timestamps.reduce((a, b) => (a < b ? a : b))
-          : tsStr;
-      const tsEnd =
-        timestamps.length > 0
-          ? timestamps.reduce((a, b) => (a > b ? a : b))
-          : tsStr;
+      // ADR-0025 C3（2026-11-04）：只留区间右端。原 tsStart=min(timestamps) 在生产 4225/4225 行
+      // 与 tsStr 逐位相等（timestamps 首值即最小），已随列删除。
+      const tsEnd = timestamps.length > 0 ? timestamps.reduce((a, b) => (a > b ? a : b)) : tsStr;
 
-      const skipVec = !embedding || embedding.every(v => v === 0) || !this.vecTablesReady;
+      const skipVec = !embedding || embedding.every((v) => v === 0) || !this.vecTablesReady;
 
       this.logger?.debug?.(
         `${TAG} [L1-upsert] START id=${recordId}, type=${record.type}, ` +
-        `content="${record.content.slice(0, 60)}..."` +
-        (embedding
-          ? `, embeddingDims=${embedding.length}, ` +
-            `embeddingNorm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}` +
-            `${skipVec ? " (ZERO VECTOR or vec tables not ready — vec write will be skipped)" : ""}`
-          : " (no embedding — metadata-only write)"),
+          `content="${record.content.slice(0, 60)}..."` +
+          (embedding
+            ? `, embeddingDims=${embedding.length}, ` +
+              `embeddingNorm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}` +
+              `${skipVec ? " (ZERO VECTOR or vec tables not ready — vec write will be skipped)" : ""}`
+            : " (no embedding — metadata-only write)"),
       );
 
       this.db.exec("BEGIN");
@@ -1790,7 +2147,6 @@ export class VectorStore implements IMemoryStore {
           record.taskId || "",
           record.version ?? 0,
           tsStr,
-          tsStart,
           tsEnd,
           record.createdAt,
           record.updatedAt,
@@ -1799,12 +2155,19 @@ export class VectorStore implements IMemoryStore {
           (record as MemoryRecord & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
           // 灵魂记忆字段（P2a）：末尾追加，与预处理语句列序一致（P1-T7 收敛为 soulBindValues 单一取值源）
           ...soulBindValues(record as unknown as Record<string, unknown>),
+          // 原话溯源（行级）：必须显式绑定——列缺省只在 INSERT 缺列时生效，
+          // 而本语句是「全列 upsert + ON CONFLICT DO UPDATE」，漏绑=老值被 excluded 覆盖成空。
+          JSON.stringify(Array.isArray(record.source_message_ids) ? record.source_message_ids : []),
         );
 
         if (!skipVec) {
           // vec0 does not support ON CONFLICT → delete then insert
           this.stmtDeleteVec!.run(recordId);
-          this.stmtInsertVec!.run(recordId, Buffer.from(embedding!.buffer, embedding!.byteOffset, embedding!.byteLength), record.updatedAt);
+          this.stmtInsertVec!.run(
+            recordId,
+            Buffer.from(embedding!.buffer, embedding!.byteOffset, embedding!.byteLength),
+            record.updatedAt,
+          );
         } else {
           this.logger?.debug?.(
             `${TAG} [L1-upsert] Skipping vec write (${embedding ? "zero vector" : "no embedding"}) id=${recordId}`,
@@ -1816,10 +2179,22 @@ export class VectorStore implements IMemoryStore {
         // filtering doesn't require a join.
         if (this.ftsAvailable) {
           try {
+            // task-2：FTS 是 delete+insert 的整行投影。若按调用方入参绑定，主表刚被
+            // ON CONFLICT 保住的粘性列（valid_end / sensitivity / task_id）会在镜像里
+            // 写成缺省 ''/'none' —— 已失效/已判敏感的行由此在 FTS 腿复活（同一条记忆
+            // 在两条召回腿给出两种判定）。故镜像一律以 upsert 后的主表权威值为准。
+            const authoritative = this.stmtGetMeta.get(recordId) as
+              { task_id?: string | null; valid_end?: string | null; sensitivity?: string | null } | undefined;
+            const soulSrc: Record<string, unknown> = { ...(record as unknown as Record<string, unknown>) };
+            if (authoritative) {
+              soulSrc.task_id = authoritative.task_id ?? "";
+              soulSrc.valid_end = authoritative.valid_end ?? "";
+              soulSrc.sensitivity = authoritative.sensitivity ?? "";
+            }
             this.stmtL1FtsDelete.run(recordId);
             this.stmtL1FtsInsert.run(
               tokenizeForFts(record.content), // content — segmented for indexing
-              record.content,                 // content_original — raw for display
+              record.content, // content_original — raw for display
               recordId,
               record.type,
               record.priority,
@@ -1827,16 +2202,15 @@ export class VectorStore implements IMemoryStore {
               record.sessionKey,
               record.sessionId || DEFAULT_ISOLATION_ID,
               (record as MemoryRecord & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
-              record.taskId || "",
+              ((soulSrc.task_id as string | undefined) ?? "") || "",
               (record as MemoryRecord & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
               (record as MemoryRecord & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
               record.version ?? 0,
               tsStr,
-              tsStart,
               tsEnd,
               JSON.stringify(record.metadata),
-              // soul 8 字段（P1-T7）：与主表绑定同源（soulBindValues 单一取值源，避免第三份手抄）
-              ...soulBindValues(record as unknown as Record<string, unknown>),
+              // soul 字段（P1-T7）：soulSrc = 入参 + 主表权威粘性列覆盖，单一取值源仍是 soulBindValues
+              ...soulBindValues(soulSrc),
             );
           } catch (ftsErr) {
             // FTS write failure is non-fatal — log and continue
@@ -1850,7 +2224,9 @@ export class VectorStore implements IMemoryStore {
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
       this.logger?.debug?.(`${TAG} [L1-upsert] OK id=${recordId}${skipVec ? " (meta-only)" : ""}`);
@@ -1870,7 +2246,7 @@ export class VectorStore implements IMemoryStore {
   /**
    * 记忆图：写入一条 L1↔L1 语义边（G）。同 (s,t,type) 幂等，重复建边更新强度/时间。
    */
-  addLink(sourceId: string, targetId: string, type: string, strength = 1, now = new Date().toISOString()): boolean {
+  addLink(sourceId: string, targetId: string, type: LinkType, strength = 1, now = new Date().toISOString()): boolean {
     try {
       this.db
         .prepare(
@@ -1894,7 +2270,12 @@ export class VectorStore implements IMemoryStore {
    * 只放行租户匹配的邻居（同时剪枝后续跳的遍历，不穿过跨租户节点）。
    * filter 缺省（undefined）= 旧行为，完全兼容单机/无隔离调用方。
    */
-  getNeighbors(id: string, types?: string[], maxHop = 1, filter?: IsolationFilter): Array<{ id: string; type: string; strength: number; hop: number }> {
+  getNeighbors(
+    id: string,
+    types?: string[],
+    maxHop = 1,
+    filter?: IsolationFilter,
+  ): Array<{ id: string; type: string; strength: number; hop: number }> {
     try {
       const out: Array<{ id: string; type: string; strength: number; hop: number }> = [];
       const seen = new Set<string>([id]);
@@ -1905,7 +2286,7 @@ export class VectorStore implements IMemoryStore {
         const rows = this.db
           .prepare(
             `SELECT target_id AS nid, type, strength FROM l1_links WHERE source_id IN (${ph}) ` +
-            `UNION SELECT source_id AS nid, type, strength FROM l1_links WHERE target_id IN (${ph})`,
+              `UNION SELECT source_id AS nid, type, strength FROM l1_links WHERE target_id IN (${ph})`,
           )
           .all(...frontier, ...frontier) as Array<{ nid: string; type: string; strength: number }>;
         let candidates = rows;
@@ -1914,9 +2295,7 @@ export class VectorStore implements IMemoryStore {
           // 无法解析到行（记录不存在）的边一并丢弃——租户归属不可验证时宁缺毋滥。
           const nids = [...new Set(candidates.map((r) => String(r.nid)))];
           const recs = this.getL1ByIdsWithArchive(nids);
-          const okIds = new Set(
-            recs.filter((rec) => rowMatchesIsolation(rec, filter)).map((rec) => rec.record_id),
-          );
+          const okIds = new Set(recs.filter((rec) => rowMatchesIsolation(rec, filter)).map((rec) => rec.record_id));
           candidates = candidates.filter((r) => okIds.has(String(r.nid)));
         }
         const next: string[] = [];
@@ -1943,16 +2322,29 @@ export class VectorStore implements IMemoryStore {
    * （profile:v1:* 稳定 id，租户唯一）、target=L1 record——失效一条 L1 时由此定位
    * 受影响 scene block（精确失效传播的查询基础）。
    */
-  getLinksByTarget(targetId: string, type?: string): Array<{ sourceId: string; type: string; strength: number; createdAt: string }> {
+  getLinksByTarget(
+    targetId: string,
+    type?: string,
+  ): Array<{ sourceId: string; type: string; strength: number; createdAt: string }> {
     try {
       const rows = (
         type
-          ? this.db.prepare("SELECT source_id, type, strength, created_at FROM l1_links WHERE target_id = ? AND type = ? ORDER BY created_at").all(targetId, type)
-          : this.db.prepare("SELECT source_id, type, strength, created_at FROM l1_links WHERE target_id = ? ORDER BY created_at").all(targetId)
+          ? this.db
+              .prepare(
+                "SELECT source_id, type, strength, created_at FROM l1_links WHERE target_id = ? AND type = ? ORDER BY created_at",
+              )
+              .all(targetId, type)
+          : this.db
+              .prepare(
+                "SELECT source_id, type, strength, created_at FROM l1_links WHERE target_id = ? ORDER BY created_at",
+              )
+              .all(targetId)
       ) as Array<{ source_id: string; type: string; strength: number; created_at: string }>;
       return rows.map((r) => ({ sourceId: r.source_id, type: r.type, strength: r.strength, createdAt: r.created_at }));
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_links] getLinksByTarget failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_links] getLinksByTarget failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -1961,17 +2353,68 @@ export class VectorStore implements IMemoryStore {
    * 记忆图：沿边正查（G）。返回 sourceId 发出的边（它指向谁）；可选 type 过滤。
    * 与 getLinksByTarget 对偶——L2 侧身世查询："这个 scene block 由哪些 L1 蒸馏而来"。
    */
-  getLinksBySource(sourceId: string, type?: string): Array<{ targetId: string; type: string; strength: number; createdAt: string }> {
+  getLinksBySource(
+    sourceId: string,
+    type?: string,
+  ): Array<{ targetId: string; type: string; strength: number; createdAt: string }> {
     try {
       const rows = (
         type
-          ? this.db.prepare("SELECT target_id, type, strength, created_at FROM l1_links WHERE source_id = ? AND type = ? ORDER BY created_at").all(sourceId, type)
-          : this.db.prepare("SELECT target_id, type, strength, created_at FROM l1_links WHERE source_id = ? ORDER BY created_at").all(sourceId)
+          ? this.db
+              .prepare(
+                "SELECT target_id, type, strength, created_at FROM l1_links WHERE source_id = ? AND type = ? ORDER BY created_at",
+              )
+              .all(sourceId, type)
+          : this.db
+              .prepare(
+                "SELECT target_id, type, strength, created_at FROM l1_links WHERE source_id = ? ORDER BY created_at",
+              )
+              .all(sourceId)
       ) as Array<{ target_id: string; type: string; strength: number; created_at: string }>;
       return rows.map((r) => ({ targetId: r.target_id, type: r.type, strength: r.strength, createdAt: r.created_at }));
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_links] getLinksBySource failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_links] getLinksBySource failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
+    }
+  }
+
+  /**
+   * P0-1（2026-11-04 L1 属性复核）：L2 块的 derived_from 溯源敏感画像——按块 id 一次
+   * GROUP BY，返回该块蒸馏过的**仍在主表**的行数与其中敏感行数。
+   *
+   * 为什么要这个查询：结论层注入的是场景块**摘要**（N 行蒸馏后的聚合），要判定"这段聚合
+   * 里有没有健康/财务/关系类内容"只能回到它的派生来源。链接对是 (profile:v1:…, L1 id)，
+   * 生产单块可达 3400+ 条 —— 逐块 getLinksBySource + 逐行回读会把召回拖成秒级，故此处
+   * 由 SQL 聚合，只回两个整数。已归档行（l1_archive）不计入 targets：主表没有它，就既
+   * 不能证其敏感、也不该算作覆盖（调用方按 targets=0 走"不可判定"分支）。
+   */
+  getDerivedSensitivityStats(sourceIds: string[]): Record<string, { targets: number; sensitive: number }> {
+    const ids = (sourceIds ?? []).filter((s): s is string => typeof s === "string" && s.length > 0);
+    if (ids.length === 0) return {};
+    if (this.degraded) return {};
+    try {
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = this.db
+        .prepare(
+          `SELECT l.source_id AS sid,
+                  COUNT(DISTINCT l.target_id) AS targets,
+                  COUNT(DISTINCT CASE WHEN lower(COALESCE(r.sensitivity, 'none')) <> 'none' THEN l.target_id END) AS sensitive
+             FROM l1_links l
+             JOIN l1_records r ON r.record_id = l.target_id
+            WHERE l.type = 'derived_from' AND l.source_id IN (${placeholders})
+            GROUP BY l.source_id`,
+        )
+        .all(...ids) as Array<{ sid: string; targets: number; sensitive: number }>;
+      const out: Record<string, { targets: number; sensitive: number }> = {};
+      for (const r of rows) out[r.sid] = { targets: Number(r.targets) || 0, sensitive: Number(r.sensitive) || 0 };
+      return out;
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [l1_links] getDerivedSensitivityStats failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {};
     }
   }
 
@@ -1980,12 +2423,32 @@ export class VectorStore implements IMemoryStore {
    * conflict 边扫描底座。单条索引查询（O(边数)），取代"逐 id getLinksByTarget/Source"
    * 的 O(N) 逐条扫描（设计最优性审查定案 #3）。与上两方法同款模式。
    */
-  getLinksByType(type: string): Array<{ sourceId: string; targetId: string; type: string; strength: number; createdAt: string }> {
+  getLinksByType(
+    type: LinkType,
+  ): Array<{ sourceId: string; targetId: string; type: string; strength: number; createdAt: string }> {
     try {
-      const rows = this.db.prepare("SELECT source_id, target_id, type, strength, created_at FROM l1_links WHERE type = ? ORDER BY created_at").all(type) as Array<{ source_id: string; target_id: string; type: string; strength: number; created_at: string }>;
-      return rows.map((r) => ({ sourceId: r.source_id, targetId: r.target_id, type: r.type, strength: r.strength, createdAt: r.created_at }));
+      const rows = this.db
+        .prepare(
+          "SELECT source_id, target_id, type, strength, created_at FROM l1_links WHERE type = ? ORDER BY created_at",
+        )
+        .all(type) as Array<{
+        source_id: string;
+        target_id: string;
+        type: string;
+        strength: number;
+        created_at: string;
+      }>;
+      return rows.map((r) => ({
+        sourceId: r.source_id,
+        targetId: r.target_id,
+        type: r.type,
+        strength: r.strength,
+        createdAt: r.created_at,
+      }));
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_links] getLinksByType failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_links] getLinksByType failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -2002,7 +2465,13 @@ export class VectorStore implements IMemoryStore {
    * filter 缺省（undefined）= 旧行为，完全兼容单机/无隔离调用方。
    * 环路安全：seen 集合（含起点）防 A→B→A 死循环。
    */
-  getPath(startId: string, endId: string, maxHop = 3, types?: string[], filter?: IsolationFilter): Array<{ id: string; type: string; strength: number; hop: number }> | null {
+  getPath(
+    startId: string,
+    endId: string,
+    maxHop = 3,
+    types?: string[],
+    filter?: IsolationFilter,
+  ): Array<{ id: string; type: string; strength: number; hop: number }> | null {
     try {
       if (!startId || !endId) return null;
       if (startId === endId) return [];
@@ -2023,7 +2492,7 @@ export class VectorStore implements IMemoryStore {
         const rows = this.db
           .prepare(
             `SELECT target_id AS nid, source_id AS other, type, strength FROM l1_links WHERE source_id IN (${ph}) ` +
-            `UNION SELECT source_id AS nid, target_id AS other, type, strength FROM l1_links WHERE target_id IN (${ph})`,
+              `UNION SELECT source_id AS nid, target_id AS other, type, strength FROM l1_links WHERE target_id IN (${ph})`,
           )
           .all(...frontier, ...frontier) as Array<{ nid: string; other: string; type: string; strength: number }>;
         let candidates = rows;
@@ -2032,9 +2501,7 @@ export class VectorStore implements IMemoryStore {
           // 无法解析到行的边一并丢弃——租户归属不可验证时宁缺毋滥。
           const nids = [...new Set(candidates.map((r) => String(r.nid)))];
           const recs = this.getL1ByIdsWithArchive(nids);
-          const okIds = new Set(
-            recs.filter((rec) => rowMatchesIsolation(rec, filter)).map((rec) => rec.record_id),
-          );
+          const okIds = new Set(recs.filter((rec) => rowMatchesIsolation(rec, filter)).map((rec) => rec.record_id));
           candidates = candidates.filter((r) => okIds.has(String(r.nid)));
         }
         const frontierIds = new Set(frontier);
@@ -2077,7 +2544,9 @@ export class VectorStore implements IMemoryStore {
       this.db.prepare("DELETE FROM l1_links WHERE source_id = ? OR target_id = ?").run(id, id);
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_links] deleteLinksFor failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_links] deleteLinksFor failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -2089,16 +2558,20 @@ export class VectorStore implements IMemoryStore {
    */
   pruneOrphanLinks(): number {
     try {
-      const result = this.db.prepare(
-        `DELETE FROM l1_links
+      const result = this.db
+        .prepare(
+          `DELETE FROM l1_links
          WHERE (source_id NOT IN (SELECT record_id FROM l1_records) AND source_id NOT IN (SELECT record_id FROM l1_archive))
             OR (target_id NOT IN (SELECT record_id FROM l1_records) AND target_id NOT IN (SELECT record_id FROM l1_archive))`,
-      ).run();
+        )
+        .run();
       const pruned = (result as any)?.changes ?? 0;
       if (pruned > 0) this.logger?.info?.(`${TAG} [l1_links] pruned ${pruned} orphan edge(s)`);
       return pruned;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_links] pruneOrphanLinks failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_links] pruneOrphanLinks failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return -1;
     }
   }
@@ -2110,21 +2583,30 @@ export class VectorStore implements IMemoryStore {
    */
   archiveL1(id: string, reason = "forgetting"): boolean {
     try {
-      const row = this.db.prepare(
-        // P1-T7：importance 入档（归档→恢复 roundtrip 保值；P0-T3 家族"漏拷=刷空"合同）。
-        // T7 审稿 M-3：sensitivity 补入清单（整行 JSON.stringify 入档，SELECT 列=归档键），
-        // 闭环 restoreL1 既有 d.sensitivity ?? "none" 回填——归档/恢复 roundtrip 全 soul 列保值。
-        `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity, importance FROM l1_records WHERE record_id = ?`,
-      ).get(id);
+      const row = this.db
+        .prepare(
+          // P1-T7：importance 入档（归档→恢复 roundtrip 保值；P0-T3 家族"漏拷=刷空"合同）。
+          // T7 审稿 M-3：sensitivity 补入清单（整行 JSON.stringify 入档，SELECT 列=归档键），
+          // 闭环 restoreL1 既有 d.sensitivity ?? "none" 回填——归档/恢复 roundtrip 全 soul 列保值。
+          // ADR-0025 C2/C3：归档 SELECT 同步收窄（timestamp_start / source 已删列；少拷=不必要的死字段）。
+          `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, valence, arousal, significance, sensitivity, importance, source_message_ids FROM l1_records WHERE record_id = ?`,
+        )
+        .get(id);
       if (!row) return false;
       this.db.exec("BEGIN");
       try {
         // SEC-1：INSERT 带租户三列（从被归档 l1_records 行取——归档行必须带归属；
         // 缺省兜 default 桶，与 l1_records 存量归一口径一致）。
         const r = row as Record<string, unknown>;
-        this.db.prepare("INSERT INTO l1_archive (record_id, data, archived_at, reason, team_id, user_id, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        this.db
+          .prepare(
+            "INSERT INTO l1_archive (record_id, data, archived_at, reason, team_id, user_id, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          )
           .run(
-            id, JSON.stringify(row), new Date().toISOString(), reason,
+            id,
+            JSON.stringify(row),
+            new Date().toISOString(),
+            reason,
             typeof r.team_id === "string" && r.team_id.trim() !== "" ? r.team_id : DEFAULT_ISOLATION_ID,
             typeof r.user_id === "string" && r.user_id.trim() !== "" ? r.user_id : DEFAULT_ISOLATION_ID,
             typeof r.agent_id === "string" && r.agent_id.trim() !== "" ? r.agent_id : DEFAULT_ISOLATION_ID,
@@ -2146,7 +2628,9 @@ export class VectorStore implements IMemoryStore {
       this.logger?.debug?.(`${TAG} [l1_archive] archived ${id} (${reason})`);
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_archive] archive failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_archive] archive failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -2161,34 +2645,68 @@ export class VectorStore implements IMemoryStore {
    */
   restoreL1(id: string, filter?: IsolationFilter): boolean {
     try {
-      const row = this.db.prepare("SELECT data, team_id, user_id, agent_id FROM l1_archive WHERE record_id = ?").get(id) as { data: string; team_id?: string; user_id?: string; agent_id?: string } | undefined;
+      const row = this.db
+        .prepare("SELECT data, team_id, user_id, agent_id FROM l1_archive WHERE record_id = ?")
+        .get(id) as { data: string; team_id?: string; user_id?: string; agent_id?: string } | undefined;
       if (!row) return false;
-      if (filter && !rowMatchesIsolation(
-        {
-          team_id: row.team_id || DEFAULT_ISOLATION_ID,
-          user_id: row.user_id || DEFAULT_ISOLATION_ID,
-          agent_id: row.agent_id || DEFAULT_ISOLATION_ID,
-        },
-        filter,
-      )) {
-        this.logger?.warn?.(`${TAG} [l1_archive] restore ${id} rejected: archive tenant <${row.team_id}/${row.user_id}/${row.agent_id}> does not match requester isolation`);
+      if (
+        filter &&
+        !rowMatchesIsolation(
+          {
+            team_id: row.team_id || DEFAULT_ISOLATION_ID,
+            user_id: row.user_id || DEFAULT_ISOLATION_ID,
+            agent_id: row.agent_id || DEFAULT_ISOLATION_ID,
+          },
+          filter,
+        )
+      ) {
+        this.logger?.warn?.(
+          `${TAG} [l1_archive] restore ${id} rejected: archive tenant <${row.team_id}/${row.user_id}/${row.agent_id}> does not match requester isolation`,
+        );
         return false;
       }
       const d = JSON.parse(row.data) as Record<string, unknown>;
       this.db.exec("BEGIN");
       try {
         // 注意：27 列 ↔ 27 个 ?（P2a 加 soul 列时占位符数与列清单曾失配 → restoreL1 恒失败，
-        // 审计 F5 修复：数齐。P1-T7 加 importance（28 列）。FTS 重建见下方 F5 块。）
-        this.db.prepare(
-          `INSERT OR REPLACE INTO l1_records (record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity, importance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        ).run(
-          d.record_id, d.content, d.type, d.priority, d.scene_name, d.session_key, d.session_id,
-          d.team_id, d.task_id, d.user_id, d.agent_id, d.version, d.timestamp_str,
-          d.timestamp_start, d.timestamp_end, d.created_time, d.updated_time, d.metadata_json,
-          d.occurred_at, d.valid_start, d.valid_end, d.certainty, d.source, d.valence, d.arousal, d.significance,
-          d.sensitivity ?? "none",
-          d.importance ?? null,
-        );
+        // 审计 F5 修复：数齐。P1-T7 加 importance，2026-11-04 加 source_message_ids，
+        // ADR-0025 C2/C3 删 timestamp_start/source 后回到 27 列——改列清单必须同步数 ?）。
+        // 老归档行（含已删列）多出的键在 JSON 里被忽略，读回靠 d.timestamp_str 单一来源。
+        // FTS 重建见下方 F5 块。）
+        this.db
+          .prepare(
+            `INSERT OR REPLACE INTO l1_records (record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, valence, arousal, significance, sensitivity, importance, source_message_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            d.record_id,
+            d.content,
+            d.type,
+            d.priority,
+            d.scene_name,
+            d.session_key,
+            d.session_id,
+            d.team_id,
+            d.task_id,
+            d.user_id,
+            d.agent_id,
+            d.version,
+            d.timestamp_str,
+            d.timestamp_end,
+            d.created_time,
+            d.updated_time,
+            d.metadata_json,
+            d.occurred_at,
+            d.valid_start,
+            d.valid_end,
+            d.certainty,
+            d.valence,
+            d.arousal,
+            d.significance,
+            d.sensitivity ?? "none",
+            d.importance ?? null,
+            // 原话溯源（行级）：归档行缺字段（老归档）→ '[]'，与列缺省同语义。
+            typeof d.source_message_ids === "string" ? d.source_message_ids : "[]",
+          );
         this.db.prepare("DELETE FROM l1_archive WHERE record_id = ?").run(id);
         // 审计 F5：恢复时重建 FTS 行（archive 时被删了）——否则恢复的记忆只能在
         // getL1ByIds/向量侧命中，BM25/FTS 召回不到。向量无法在此重建（需 embedding 服务，
@@ -2199,15 +2717,28 @@ export class VectorStore implements IMemoryStore {
               // P1-T8（H-B9）：content 必须与写入侧同一函数分词（archive 存的 data.content
               // 是原文），否则恢复的中文记忆在 FTS 里是未分词整串，BM25 搜不到。
               tokenizeForFts(String(d.content ?? "")),
-              d.content, d.record_id, d.type, d.priority, d.scene_name,
-              d.session_key, d.session_id, d.team_id ?? "", d.task_id ?? "", d.user_id ?? "", d.agent_id ?? "",
-              d.version ?? 0, d.timestamp_str, d.timestamp_start, d.timestamp_end,
+              d.content,
+              d.record_id,
+              d.type,
+              d.priority,
+              d.scene_name,
+              d.session_key,
+              d.session_id,
+              d.team_id ?? "",
+              d.task_id ?? "",
+              d.user_id ?? "",
+              d.agent_id ?? "",
+              d.version ?? 0,
+              d.timestamp_str,
+              d.timestamp_end,
               d.metadata_json ?? "{}",
-              // soul 8 字段（P1-T7）：与写入侧同源取值（缺省语义一致）
+              // soul 9 字段（P1-T7）：与写入侧同源取值（ADR-0025 C2 已删 source）（缺省语义一致）
               ...soulBindValues(d),
             );
           } catch (err) {
-            this.logger?.warn?.(`${TAG} [l1_archive] restoreL1 FTS rebuild failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+            this.logger?.warn?.(
+              `${TAG} [l1_archive] restoreL1 FTS rebuild failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
         this.db.exec("COMMIT");
@@ -2217,7 +2748,9 @@ export class VectorStore implements IMemoryStore {
       }
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_archive] restore failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_archive] restore failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -2229,17 +2762,41 @@ export class VectorStore implements IMemoryStore {
    * 行内新列，buildIsolationWhere 同族）；filter 缺省 = 旧行为（实例级全量，单机/
    * verify 调用方兼容）。出参带 team_id/user_id/agent_id（面板归属徽标消费）。
    */
-  listArchived(limit = 100, offset = 0, filter?: IsolationFilter): Array<{ record_id: string; archived_at: string; reason: string; content: string; occurred_at?: string; team_id: string; user_id: string; agent_id: string }> {
+  listArchived(
+    limit = 100,
+    offset = 0,
+    filter?: IsolationFilter,
+  ): Array<{
+    record_id: string;
+    archived_at: string;
+    reason: string;
+    content: string;
+    occurred_at?: string;
+    team_id: string;
+    user_id: string;
+    agent_id: string;
+  }> {
     try {
       const where = buildIsolationWhere(filter, "a.");
-      const rows = this.db.prepare(
-        `SELECT a.record_id, a.archived_at, a.reason,
+      const rows = this.db
+        .prepare(
+          `SELECT a.record_id, a.archived_at, a.reason,
                 COALESCE(NULLIF(a.team_id,''),'${DEFAULT_ISOLATION_ID}') AS team_id,
                 COALESCE(NULLIF(a.user_id,''),'${DEFAULT_ISOLATION_ID}') AS user_id,
                 COALESCE(NULLIF(a.agent_id,''),'${DEFAULT_ISOLATION_ID}') AS agent_id,
                 CAST(json_extract(a.data,'$.content') AS TEXT) AS content, json_extract(a.data,'$.occurred_at') AS occurred_at
          FROM l1_archive a${where.clause ? ` WHERE ${where.clause}` : ""} ORDER BY a.archived_at DESC LIMIT ? OFFSET ?`,
-      ).all(...where.params, limit, offset) as unknown as Array<{ record_id: string; archived_at: string; reason: string; content: string; occurred_at?: string; team_id: string; user_id: string; agent_id: string }>;
+        )
+        .all(...where.params, limit, offset) as unknown as Array<{
+        record_id: string;
+        archived_at: string;
+        reason: string;
+        content: string;
+        occurred_at?: string;
+        team_id: string;
+        user_id: string;
+        agent_id: string;
+      }>;
       return rows ?? [];
     } catch (err) {
       this.logger?.warn?.(`${TAG} [l1_archive] list failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2271,7 +2828,11 @@ export class VectorStore implements IMemoryStore {
         this.db.exec("BEGIN");
         try {
           for (const col of missing) {
-            try { this.db.exec(`ALTER TABLE l1_archive ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${dflt}'`); } catch { /* exists */ }
+            try {
+              this.db.exec(`ALTER TABLE l1_archive ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${dflt}'`);
+            } catch {
+              /* exists */
+            }
           }
           const { backfilled, corrupted } = this.backfillArchiveTenantColumns(true);
           this.db.exec("COMMIT");
@@ -2279,8 +2840,8 @@ export class VectorStore implements IMemoryStore {
           // loud 打印（安全级拍板：存量归属变更须知，T12 同款）
           this.logger?.warn?.(
             `${TAG} [archive-tenant-migrate] 存量 l1_archive 已租户化：${backfilled} 行按 data JSON 回填归属` +
-            `${corrupted > 0 ? `（其中 ${corrupted} 行 JSON 损坏/缺字段 → 回填 <${dflt}/${dflt}/${dflt}>）` : ""}。` +
-            `如需变更归属请 UPDATE l1_archive SET team_id/user_id/agent_id。`,
+              `${corrupted > 0 ? `（其中 ${corrupted} 行 JSON 损坏/缺字段 → 回填 <${dflt}/${dflt}/${dflt}>）` : ""}。` +
+              `如需变更归属请 UPDATE l1_archive SET team_id/user_id/agent_id。`,
           );
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -2290,14 +2851,16 @@ export class VectorStore implements IMemoryStore {
         // 列已存在（新库 / 已迁移库）：防御性归一 NULL/'' 行（正常 0 行，幂等）
         const { backfilled, corrupted } = this.backfillArchiveTenantColumns(false);
         if (backfilled > 0 || corrupted > 0) {
-          this.logger?.warn?.(`${TAG} [archive-tenant-migrate] 防御回填 l1_archive 租户列：${backfilled} 行（损坏 ${corrupted} 行 → default）`);
+          this.logger?.warn?.(
+            `${TAG} [archive-tenant-migrate] 防御回填 l1_archive 租户列：${backfilled} 行（损坏 ${corrupted} 行 → default）`,
+          );
         }
         this.db.exec(`CREATE INDEX IF NOT EXISTS idx_l1_archive_tenant ON l1_archive(team_id, user_id, agent_id)`);
       }
     } catch (err) {
       this.logger?.warn?.(
         `${TAG} [archive-tenant-migrate] l1_archive 租户化迁移失败（幂等，下次 init 重试）: ` +
-        `${err instanceof Error ? err.message : String(err)}`,
+          `${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -2310,9 +2873,12 @@ export class VectorStore implements IMemoryStore {
    */
   private backfillArchiveTenantColumns(allRows: boolean): { backfilled: number; corrupted: number } {
     const dflt = DEFAULT_ISOLATION_ID;
-    const rows = (allRows
-      ? this.db.prepare("SELECT record_id, data FROM l1_archive")
-      : this.db.prepare("SELECT record_id, data FROM l1_archive WHERE team_id IS NULL OR team_id = '' OR user_id IS NULL OR user_id = '' OR agent_id IS NULL OR agent_id = ''")
+    const rows = (
+      allRows
+        ? this.db.prepare("SELECT record_id, data FROM l1_archive")
+        : this.db.prepare(
+            "SELECT record_id, data FROM l1_archive WHERE team_id IS NULL OR team_id = '' OR user_id IS NULL OR user_id = '' OR agent_id IS NULL OR agent_id = ''",
+          )
     ).all() as Array<{ record_id: string; data: string }>;
     if (rows.length === 0) return { backfilled: 0, corrupted: 0 };
     const upd = this.db.prepare("UPDATE l1_archive SET team_id = ?, user_id = ?, agent_id = ? WHERE record_id = ?");
@@ -2339,6 +2905,71 @@ export class VectorStore implements IMemoryStore {
     }
     return { backfilled, corrupted };
   }
+
+  /**
+ * A 项（ADR-0025 决定 10）后置迁移：memory_audit.action 的 CHECK 枚举扩容。
+ *
+ * 为什么必须迁移而不是只改 TS union：CHECK 是**库级**约束，老库（生产 vectors.db 的
+ * memory_audit 建于本批之前）里只有 ('update','delete')。写入 'sensitivity' 会被 CHECK
+ * 拒绝 → recordAudit 的 catch 只 warn（审计失败不得影响用户写操作）→ 结果是降敏成功但
+ * 审计静默丢失。A 项 wire 用例 ① 就是这么抓到的（audit.length === 0）。
+ *
+ * SQLite 不支持 ALTER CHECK ⇒ 轻量重建（12-step 简化版，本表无外键/触发器）：
+ * 建新表 → 整表 INSERT SELECT → DROP 旧表 → RENAME → 重建两个索引。
+ * 幂等判据：sqlite_master 里的 DDL 已含 'sensitivity' 就跳过（新库 / 已迁移库）。
+ * 失败：warn 后继续（与 T12 迁移同策，不 degrade 整个 store），下次 init 重试；
+ * 期间新 action 的审计会被库级 CHECK 拒绝，日志明写后果，不静默。
+ */
+private migrateMemoryAuditActionEnum(): void {
+  try {
+    const row = this.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_audit'")
+      .get() as { sql?: string } | undefined;
+    if (!row?.sql || row.sql.includes("'sensitivity'")) return;
+    let count = 0;
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec(`
+        CREATE TABLE memory_audit_t12 (
+          audit_id      TEXT PRIMARY KEY,
+          record_id     TEXT NOT NULL,
+          layer         TEXT NOT NULL CHECK (layer IN ('L1','L2','L3')),
+          action        TEXT NOT NULL CHECK (action IN ('update','delete','sensitivity')),
+          team_id       TEXT,
+          agent_id      TEXT,
+          user_id       TEXT,
+          task_id       TEXT,
+          version       INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          request_id    TEXT
+        )
+      `);
+      this.db.exec(`
+        INSERT OR REPLACE INTO memory_audit_t12
+          (audit_id, record_id, layer, action, team_id, agent_id, user_id, task_id, version, updated_at_ms, request_id)
+        SELECT audit_id, record_id, layer, action, team_id, agent_id, user_id, task_id, version, updated_at_ms, request_id
+        FROM memory_audit
+      `);
+      count = (this.db.prepare("SELECT COUNT(*) AS n FROM memory_audit_t12").get() as { n: number }).n;
+      this.db.exec("DROP TABLE memory_audit");
+      this.db.exec("ALTER TABLE memory_audit_t12 RENAME TO memory_audit");
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_record    ON memory_audit(record_id, updated_at_ms)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_memory_audit_isolation ON memory_audit(team_id, agent_id, user_id, task_id)",
+    );
+    this.logger?.warn?.(`${TAG} [audit-action-migrate] memory_audit.action 枚举已扩容至 update/delete/sensitivity：重建保留 ${count} 行。`);
+  } catch (err) {
+    this.logger?.warn?.(
+      `${TAG} [audit-action-migrate] memory_audit.action 枚举扩容失败（幂等，下次 init 重试；` +
+        `期间 action='sensitivity' 的审计会被库级 CHECK 拒绝并丢失）: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
   /**
    * P2-T12（K1）core 两表租户化迁移（幂等，init 时自动执行）。
@@ -2395,17 +3026,21 @@ export class VectorStore implements IMemoryStore {
           this.db.exec(`
             CREATE TABLE ${spec.table}_t12 (
               ${spec.pkCol} TEXT NOT NULL,
-              ${spec.table === "core_memory"
-                ? "content TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT ''"
-                : "label TEXT NOT NULL DEFAULT '', weight REAL NOT NULL DEFAULT 0.5, created_by TEXT NOT NULL DEFAULT ''"}${hasValence ? ",\n              valence REAL" : ""},
+              ${
+                spec.table === "core_memory"
+                  ? "content TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT ''"
+                  : "label TEXT NOT NULL DEFAULT '', weight REAL NOT NULL DEFAULT 0.5, created_by TEXT NOT NULL DEFAULT ''"
+              }${hasValence ? ",\n              valence REAL" : ""},
               team_id TEXT NOT NULL DEFAULT '${DEFAULT_ISOLATION_ID}',
               user_id TEXT NOT NULL DEFAULT '${DEFAULT_ISOLATION_ID}',
               agent_id TEXT NOT NULL DEFAULT '${DEFAULT_ISOLATION_ID}'
             )
           `);
-          this.db.prepare(
-            `INSERT INTO ${spec.table}_t12 (${dataSel}, team_id, user_id, agent_id) SELECT ${dataSel}, ${teamSel}, ?, ? FROM ${spec.table}`,
-          ).run(backfill, backfill, backfill);
+          this.db
+            .prepare(
+              `INSERT INTO ${spec.table}_t12 (${dataSel}, team_id, user_id, agent_id) SELECT ${dataSel}, ${teamSel}, ?, ? FROM ${spec.table}`,
+            )
+            .run(backfill, backfill, backfill);
           const count = (this.db.prepare(`SELECT COUNT(*) AS n FROM ${spec.table}_t12`).get() as { n: number }).n;
           this.db.exec(`DROP TABLE ${spec.table}`);
           this.db.exec(`ALTER TABLE ${spec.table}_t12 RENAME TO ${spec.table}`);
@@ -2414,8 +3049,8 @@ export class VectorStore implements IMemoryStore {
           // loud 打印（拍板⑤升级须知）：存量行归属 + 变更指引
           this.logger?.warn?.(
             `${TAG} [core-tenant-migrate] 存量 ${spec.table} 已租户化：${count} 行回填归属 ` +
-            `<${backfill}/${backfill}/${backfill}>（team/user/agent，拍板⑤）。` +
-            `如需变更归属请 UPDATE ${spec.table} SET team_id/user_id/agent_id。`,
+              `<${backfill}/${backfill}/${backfill}>（team/user/agent，拍板⑤）。` +
+              `如需变更归属请 UPDATE ${spec.table} SET team_id/user_id/agent_id。`,
           );
         } catch (e) {
           this.db.exec("ROLLBACK");
@@ -2424,7 +3059,7 @@ export class VectorStore implements IMemoryStore {
       } catch (err) {
         this.logger?.warn?.(
           `${TAG} [core-tenant-migrate] ${spec.table} 租户化迁移失败（幂等，下次 init 重试）: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
+            `${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -2452,24 +3087,44 @@ export class VectorStore implements IMemoryStore {
    */
   private fanoutDefaultValuesToAgents(): void {
     try {
-      const idx = this.db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='core_values' AND name='idx_core_values_tenant'",
-      ).get() as { name?: string } | undefined;
+      const idx = this.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='core_values' AND name='idx_core_values_tenant'",
+        )
+        .get() as { name?: string } | undefined;
       if (!idx?.name) {
-        this.logger?.warn?.(`${TAG} [values-per-agent-migrate] idx_core_values_tenant 唯一索引缺失，跳过 default 锚扇出（幂等，索引修复后下次 init 重试）`);
+        this.logger?.warn?.(
+          `${TAG} [values-per-agent-migrate] idx_core_values_tenant 唯一索引缺失，跳过 default 锚扇出（幂等，索引修复后下次 init 重试）`,
+        );
         return;
       }
-      const defaultAnchors = this.db.prepare(
-        "SELECT value_id, label, weight, created_by, valence, origin, pinned, state FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?",
-      ).all(DEFAULT_ISOLATION_ID, DEFAULT_ISOLATION_ID, DEFAULT_ISOLATION_ID) as Array<{
-        value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: string; pinned: number; state: string;
+      const defaultAnchors = this.db
+        .prepare(
+          "SELECT value_id, label, weight, created_by, valence, origin, pinned, state FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .all(DEFAULT_ISOLATION_ID, DEFAULT_ISOLATION_ID, DEFAULT_ISOLATION_ID) as Array<{
+        value_id: string;
+        label: string;
+        weight: number;
+        created_by: string;
+        valence: number | null;
+        origin: string;
+        pinned: number;
+        state: string;
       }>;
       if (defaultAnchors.length === 0) return;
-      const tripletRows = this.db.prepare(
-        "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM l1_records",
-      ).all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
+      const tripletRows = this.db
+        .prepare(
+          "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM l1_records",
+        )
+        .all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
       const targets = tripletRows.filter(
-        (r) => !(r.team_id === DEFAULT_ISOLATION_ID && r.user_id === DEFAULT_ISOLATION_ID && r.agent_id === DEFAULT_ISOLATION_ID),
+        (r) =>
+          !(
+            r.team_id === DEFAULT_ISOLATION_ID &&
+            r.user_id === DEFAULT_ISOLATION_ID &&
+            r.agent_id === DEFAULT_ISOLATION_ID
+          ),
       );
       if (targets.length === 0) return;
       this.db.exec("BEGIN");
@@ -2477,11 +3132,22 @@ export class VectorStore implements IMemoryStore {
         let inserted = 0;
         const insert = this.db.prepare(
           "INSERT OR IGNORE INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id) " +
-          "VALUES (?, ?, ?, ?, ?, 'seed', ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, 'seed', ?, ?, ?, ?, ?)",
         );
         for (const t of targets) {
           for (const a of defaultAnchors) {
-            const res = insert.run(a.value_id, a.label, a.weight, a.created_by, a.valence, a.pinned, a.state, t.team_id, t.user_id, t.agent_id);
+            const res = insert.run(
+              a.value_id,
+              a.label,
+              a.weight,
+              a.created_by,
+              a.valence,
+              a.pinned,
+              a.state,
+              t.team_id,
+              t.user_id,
+              t.agent_id,
+            );
             inserted += Number(res.changes);
           }
         }
@@ -2489,8 +3155,8 @@ export class VectorStore implements IMemoryStore {
         if (inserted > 0) {
           this.logger?.warn?.(
             `${TAG} [values-per-agent-migrate] default 锚扇出：有记忆 agent ${targets.length} 个 × default 锚 ${defaultAnchors.length} 条，` +
-            `新写入 ${inserted} 行（origin='seed'，pinned/valence/state 沿用；无记忆 agent 不扇出；幂等 INSERT OR IGNORE）。` +
-            `生产影响预警：重启后各 agent 锚桶 = default 扇出副本，此后自生长按 agent 分叉演化。`,
+              `新写入 ${inserted} 行（origin='seed'，pinned/valence/state 沿用；无记忆 agent 不扇出；幂等 INSERT OR IGNORE）。` +
+              `生产影响预警：重启后各 agent 锚桶 = default 扇出副本，此后自生长按 agent 分叉演化。`,
           );
         }
       } catch (e) {
@@ -2500,7 +3166,7 @@ export class VectorStore implements IMemoryStore {
     } catch (err) {
       this.logger?.warn?.(
         `${TAG} [values-per-agent-migrate] default 锚扇出迁移失败（幂等，下次 init 重试）: ` +
-        `${err instanceof Error ? err.message : String(err)}`,
+          `${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -2513,28 +3179,44 @@ export class VectorStore implements IMemoryStore {
   upsertCore(slot: string, content: string, source = "manual", tenant?: CoreTenant): boolean {
     const t = normalizeCoreTenant(tenant);
     try {
-      const prev = this.db.prepare(
-        "SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
-      ).get(slot, t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
+      const prev = this.db
+        .prepare("SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?")
+        .get(slot, t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
       const version = (prev?.version ?? 0) + 1;
-      this.db.prepare(
-        "INSERT INTO core_memory (slot, content, source, version, updated_at, team_id, user_id, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT(slot, team_id, user_id, agent_id) DO UPDATE SET content=excluded.content, source=excluded.source, version=excluded.version, updated_at=excluded.updated_at",
-      ).run(slot, content, source, version, new Date().toISOString(), t.teamId, t.userId, t.agentId);
+      this.db
+        .prepare(
+          "INSERT INTO core_memory (slot, content, source, version, updated_at, team_id, user_id, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT(slot, team_id, user_id, agent_id) DO UPDATE SET content=excluded.content, source=excluded.source, version=excluded.version, updated_at=excluded.updated_at",
+        )
+        .run(slot, content, source, version, new Date().toISOString(), t.teamId, t.userId, t.agentId);
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_memory] upsertCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_memory] upsertCore failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
 
   /** P2-T12（K1）：按租户读 —— 只返回本租户的 slots；返回结构不变（slots 数组）。 */
-  readCore(tenant?: CoreTenant): Array<{ slot: string; content: string; source: string; version: number; updated_at: string }> {
+  readCore(
+    tenant?: CoreTenant,
+  ): Array<{ slot: string; content: string; source: string; version: number; updated_at: string }> {
     const t = normalizeCoreTenant(tenant);
     try {
-      return (this.db.prepare(
-        "SELECT slot, content, source, version, updated_at FROM core_memory WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY slot",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ slot: string; content: string; source: string; version: number; updated_at: string }>) ?? [];
+      return (
+        (this.db
+          .prepare(
+            "SELECT slot, content, source, version, updated_at FROM core_memory WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY slot",
+          )
+          .all(t.teamId, t.userId, t.agentId) as unknown as Array<{
+          slot: string;
+          content: string;
+          source: string;
+          version: number;
+          updated_at: string;
+        }>) ?? []
+      );
     } catch (err) {
       this.logger?.warn?.(`${TAG} [core_memory] readCore failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -2553,32 +3235,47 @@ export class VectorStore implements IMemoryStore {
    *     （retired → 即恢复；vetoed → 即撤销否决）；自动管道的 veto 不可重提由
    *     自生长去重查全态保证，与本写路径正交。origin/pinned 冲突不改写（裁定 3）。
    */
-  upsertValue(valueId: string, label: string, weight: number, createdBy = "manual", tenant?: CoreTenant, valence?: number, origin: "seed" | "manual" | "auto" = "manual", nodeType: "theme" | "person" | "character" = "theme", attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] }): boolean {
+  upsertValue(
+    valueId: string,
+    label: string,
+    weight: number,
+    createdBy = "manual",
+    tenant?: CoreTenant,
+    valence?: number,
+    origin: "seed" | "manual" | "auto" = "manual",
+    nodeType: "theme" | "person" | "character" = "theme",
+    attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] },
+  ): boolean {
     const t = normalizeCoreTenant(tenant);
     const v = valence === undefined ? null : Math.min(1, Math.max(-1, Math.round(valence)));
     // P2（spec §2.6）：attrs_json 序列化单点——role/aliases/description/source/facts 可选字段按需并入（F2：品格采纳通道）；
     // DO UPDATE 不碰 node_type（A8：类型归属写定后不随重写漂移），attrs_json 仅显式传入时更新。
     // 立项①（2026-09-23 拍板）：rationale 通道——description 并入 attrs_json（锚语义持久化）
-    const attrsJson = attrs === undefined
-      ? "{}"
-      : JSON.stringify({
-          ...(attrs.role === undefined ? {} : { role: attrs.role }),
-          ...(attrs.aliases === undefined ? {} : { aliases: attrs.aliases }),
-          ...(attrs.description === undefined ? {} : { description: attrs.description }),
-          ...(attrs.source === undefined ? {} : { source: attrs.source }),
-          ...(attrs.facts === undefined ? {} : { facts: attrs.facts }),
-        });
+    const attrsJson =
+      attrs === undefined
+        ? "{}"
+        : JSON.stringify({
+            ...(attrs.role === undefined ? {} : { role: attrs.role }),
+            ...(attrs.aliases === undefined ? {} : { aliases: attrs.aliases }),
+            ...(attrs.description === undefined ? {} : { description: attrs.description }),
+            ...(attrs.source === undefined ? {} : { source: attrs.source }),
+            ...(attrs.facts === undefined ? {} : { facts: attrs.facts }),
+          });
     try {
-      this.db.prepare(
-        "INSERT INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id, node_type, attrs_json) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?) " +
-        "ON CONFLICT(value_id, team_id, user_id, agent_id) DO UPDATE SET label=excluded.label, weight=excluded.weight, state='active'" +
-        (v === null ? "" : ", valence=excluded.valence") +
-        (attrs === undefined ? "" : ", attrs_json=excluded.attrs_json"),
-      ).run(valueId, label, weight, createdBy, v, origin, t.teamId, t.userId, t.agentId, nodeType, attrsJson);
+      this.db
+        .prepare(
+          "INSERT INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id, node_type, attrs_json) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?) " +
+            "ON CONFLICT(value_id, team_id, user_id, agent_id) DO UPDATE SET label=excluded.label, weight=excluded.weight, state='active'" +
+            (v === null ? "" : ", valence=excluded.valence") +
+            (attrs === undefined ? "" : ", attrs_json=excluded.attrs_json"),
+        )
+        .run(valueId, label, weight, createdBy, v, origin, t.teamId, t.userId, t.agentId, nodeType, attrsJson);
       this.invalidateValuesCache(); // E2 失效钩子（写路径 1/8）
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] upsertValue failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] upsertValue failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -2598,7 +3295,21 @@ export class VectorStore implements IMemoryStore {
    *  （GROW：两个读面是独立缓存条目）；全部 core_values 写路径（八处，见类字段注释）
    *  统一挂 invalidateValuesCache 钩子，TTL 仅作跨进程写漂移防御（默认 60s，0=缓存关）。
    *  缓存命中返回行克隆（防调用方就地改写缓存）。 */
-  listValues(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }> {
+  listValues(
+    tenant?: CoreTenant,
+    opts?: { includeRetired?: boolean },
+  ): Array<{
+    value_id: string;
+    label: string;
+    weight: number;
+    created_by: string;
+    valence: number | null;
+    origin: "seed" | "manual" | "auto";
+    pinned: 0 | 1;
+    state: "active" | "retired" | "vetoed";
+    node_type: "theme" | "person" | "character";
+    attrs_json: string;
+  }> {
     const t = normalizeCoreTenant(tenant);
     const includeRetired = opts?.includeRetired === true;
     // S7 第 9 项（批 2 审查 M-6）：JSON.stringify 取代 `|` 裸拼接（沿 S2 模式）——
@@ -2609,7 +3320,9 @@ export class VectorStore implements IMemoryStore {
       const hit = this.valuesCache.get(cacheKey);
       if (hit && Date.now() - hit.at < this.valuesCacheTtlMs) {
         this.valuesCacheHits++;
-        this.logger?.debug?.(`${TAG} [core_values] listValues cache HIT (age=${Date.now() - hit.at}ms) tenant=${cacheKey}`);
+        this.logger?.debug?.(
+          `${TAG} [core_values] listValues cache HIT (age=${Date.now() - hit.at}ms) tenant=${cacheKey}`,
+        );
         return hit.rows.map((r) => ({ ...r }));
       }
       if (hit) this.valuesCache.delete(cacheKey); // 过期条目清除
@@ -2618,9 +3331,22 @@ export class VectorStore implements IMemoryStore {
       // GROW：state 过滤（active-only 默认 / active+retired 退休区读）。vetoed 永不出现。
       const stateFilter = includeRetired ? " AND state IN ('active','retired')" : " AND state='active'";
       const readRows = (teamId: string, userId: string, agentId: string) =>
-        (this.db.prepare(
-          `SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY weight DESC`,
-        ).all(teamId, userId, agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>) ?? [];
+        (this.db
+          .prepare(
+            `SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY weight DESC`,
+          )
+          .all(teamId, userId, agentId) as unknown as Array<{
+          value_id: string;
+          label: string;
+          weight: number;
+          created_by: string;
+          valence: number | null;
+          origin: "seed" | "manual" | "auto";
+          pinned: 0 | 1;
+          state: "active" | "retired" | "vetoed";
+          node_type: "theme" | "person" | "character";
+          attrs_json: string;
+        }>) ?? [];
       const rows = readRows(t.teamId, t.userId, t.agentId);
       // PA：严格无兜底——空桶返回 []，不再读时回退 default 桶（原 S6 第 5 项分支移除）。
       // S7 第 9 项（批 2 审查 M-6）：miss 计数移到真实读成功之后——计数器语义是
@@ -2632,7 +3358,9 @@ export class VectorStore implements IMemoryStore {
       }
       return rows;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] listValues failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] listValues failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -2640,15 +3368,26 @@ export class VectorStore implements IMemoryStore {
   /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源（单一源聚合在 mood-line.ts，本方法只做取数）。
    *  只读零写库；租户三元组硬隔离（F18 同款）；occurred_at ≥ now−windowHours（UTC ISO 字典序）DESC 取 ≤maxSamples；
    *  valence IS NOT NULL（全 NULL 租户返回 []=基调行静默省略）。 */
-  recentAffectSignals(tenant?: CoreTenant, opts?: { windowHours: number; maxSamples: number }): Array<{ valence: number; arousal: number | null; occurred_at: string }> {
+  recentAffectSignals(
+    tenant?: CoreTenant,
+    opts?: { windowHours: number; maxSamples: number },
+  ): Array<{ valence: number; arousal: number | null; occurred_at: string }> {
     const t = normalizeCoreTenant(tenant);
     const windowHours = Number(opts?.windowHours) > 0 ? Number(opts?.windowHours) : 72;
     const maxSamples = Number(opts?.maxSamples) > 0 ? Math.min(500, Math.floor(Number(opts?.maxSamples))) : 20;
     const sinceIso = new Date(Date.now() - windowHours * 3600e3).toISOString();
     try {
-      return (this.db.prepare(
-        "SELECT valence, arousal, occurred_at FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?",
-      ).all(t.teamId, t.userId, t.agentId, sinceIso, maxSamples) as unknown as Array<{ valence: number; arousal: number | null; occurred_at: string }>) ?? [];
+      return (
+        (this.db
+          .prepare(
+            "SELECT valence, arousal, occurred_at FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?",
+          )
+          .all(t.teamId, t.userId, t.agentId, sinceIso, maxSamples) as unknown as Array<{
+          valence: number;
+          arousal: number | null;
+          occurred_at: string;
+        }>) ?? []
+      );
     } catch (err) {
       this.logger?.warn?.(`${TAG} [recentAffectSignals] failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -2656,19 +3395,45 @@ export class VectorStore implements IMemoryStore {
   }
   /** #28（R5）：soul_state 单行 upsert/读（F18 三元组隔离；soul_snapshots 同款范式；
    *  抽取扩展门 on 才写——本方法本身不做门判断，门在调用方 l1-extractor）。 */
-  writeSoulState(tenant: CoreTenant, state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string }): void {
+  writeSoulState(
+    tenant: CoreTenant,
+    state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string },
+  ): void {
     const t = normalizeCoreTenant(tenant);
-    this.db.prepare(
-      "INSERT OR REPLACE INTO soul_state (team_id, user_id, agent_id, valence, arousal, top_value, turn_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(t.teamId, t.userId, t.agentId, state.valence, state.arousal, state.topValue ?? null, state.turnSeq ?? null, state.updatedAt);
+    this.db
+      .prepare(
+        "INSERT OR REPLACE INTO soul_state (team_id, user_id, agent_id, valence, arousal, top_value, turn_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        t.teamId,
+        t.userId,
+        t.agentId,
+        state.valence,
+        state.arousal,
+        state.topValue ?? null,
+        state.turnSeq ?? null,
+        state.updatedAt,
+      );
   }
-  readSoulState(tenant: CoreTenant): { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null {
+  readSoulState(
+    tenant: CoreTenant,
+  ): { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null {
     const t = normalizeCoreTenant(tenant);
-    const row = this.db.prepare(
-      "SELECT valence, arousal, top_value, turn_seq, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
-    ).get(t.teamId, t.userId, t.agentId) as unknown as { valence: number; arousal: number; top_value: string | null; turn_seq: number | null; updated_at: string } | undefined;
+    const row = this.db
+      .prepare(
+        "SELECT valence, arousal, top_value, turn_seq, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+      )
+      .get(t.teamId, t.userId, t.agentId) as unknown as
+      | { valence: number; arousal: number; top_value: string | null; turn_seq: number | null; updated_at: string }
+      | undefined;
     if (!row) return null;
-    return { valence: row.valence, arousal: row.arousal, topValue: row.top_value, turnSeq: row.turn_seq, updatedAt: row.updated_at };
+    return {
+      valence: row.valence,
+      arousal: row.arousal,
+      topValue: row.top_value,
+      turnSeq: row.turn_seq,
+      updatedAt: row.updated_at,
+    };
   }
 
   /* —— #35（R5）：promise 承诺层四方法 ——
@@ -2676,7 +3441,10 @@ export class VectorStore implements IMemoryStore {
    * 调用方）；transition 的业务拒绝（非法迁移/他租户 promiseId）走 { ok:false }
    * 裁决返回（零写入、不抛），状态机判定复用 canTransitionPromise 单一源。 */
 
-  upsertSoulPromise(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string; refKey?: string }): { promiseId: string } {
+  upsertSoulPromise(
+    tenant: CoreTenant,
+    input: { content: string; source: string; createdAt?: string; refKey?: string },
+  ): { promiseId: string } {
     const t = normalizeCoreTenant(tenant);
     const now = new Date().toISOString();
     const promiseId = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2686,26 +3454,39 @@ export class VectorStore implements IMemoryStore {
     // #45（D8 存储加固）：promise 行与创建事件行同事务——第二步故障整体回滚，无半写。
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare(
-        "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, ref_key, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL, ?)",
-      ).run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, refKey, createdAt, now);
-      this.db.prepare(
-        "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, 'manual')",
-      ).run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
+      this.db
+        .prepare(
+          "INSERT INTO soul_promises (promise_id, team_id, user_id, agent_id, content, status, source, ref_key, created_at, resolved_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, NULL, ?)",
+        )
+        .run(promiseId, t.teamId, t.userId, t.agentId, input.content, input.source, refKey, createdAt, now);
+      this.db
+        .prepare(
+          "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, NULL, 'open', ?, ?, 'manual')",
+        )
+        .run(promiseId, t.teamId, t.userId, t.agentId, createdAt, `created via ${input.source}`);
       this.db.exec("COMMIT");
     } catch (err) {
       // 审查 A-low：COMMIT 失败时引擎可能已自动回滚——ROLLBACK 需自兜底，不掩蔽原始错误（:2908 先例同款）。
-      try { this.db.exec("ROLLBACK"); } catch { /* 事务已不存在 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务已不存在 */
+      }
       throw err;
     }
     return { promiseId };
   }
 
-  transitionSoulPromise(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string; source?: PromiseTransitionSource }): { ok: true } | { ok: false; reason: string } {
+  transitionSoulPromise(
+    tenant: CoreTenant,
+    promiseId: string,
+    to: SoulPromiseStatus,
+    opts?: { at?: string; note?: string; source?: PromiseTransitionSource },
+  ): { ok: true } | { ok: false; reason: string } {
     const t = normalizeCoreTenant(tenant);
-    const row = this.db.prepare(
-      "SELECT status FROM soul_promises WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
-    ).get(promiseId, t.teamId, t.userId, t.agentId) as unknown as { status: string } | undefined;
+    const row = this.db
+      .prepare("SELECT status FROM soul_promises WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?")
+      .get(promiseId, t.teamId, t.userId, t.agentId) as unknown as { status: string } | undefined;
     if (!row) return { ok: false, reason: `promise-not-found:${promiseId}` };
     const from = row.status as SoulPromiseStatus;
     if (!canTransitionPromise(from, to)) return { ok: false, reason: `invalid-transition:${from}->${to}` };
@@ -2714,17 +3495,25 @@ export class VectorStore implements IMemoryStore {
     // 状态行与事件行要么同存要么同无（事件溯源不断链）；业务拒绝已在上方零写入返回。
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare(
-        "UPDATE soul_promises SET status = ?, resolved_at = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
-      ).run(to, at, at, promiseId, t.teamId, t.userId, t.agentId);
+      this.db
+        .prepare(
+          "UPDATE soul_promises SET status = ?, resolved_at = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .run(to, at, at, promiseId, t.teamId, t.userId, t.agentId);
       // #41：事件溯源列 source（判定来源 manual/evidence/proposal，缺省 manual）。
-      this.db.prepare(
-        "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null, opts?.source ?? "manual");
+      this.db
+        .prepare(
+          "INSERT INTO soul_promise_events (promise_id, team_id, user_id, agent_id, from_status, to_status, at, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(promiseId, t.teamId, t.userId, t.agentId, from, to, at, opts?.note ?? null, opts?.source ?? "manual");
       this.db.exec("COMMIT");
     } catch (err) {
       // 审查 A-low：同上，ROLLBACK 自兜底（:2908 先例同款）。
-      try { this.db.exec("ROLLBACK"); } catch { /* 事务已不存在 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务已不存在 */
+      }
       throw err;
     }
     return { ok: true };
@@ -2743,7 +3532,16 @@ export class VectorStore implements IMemoryStore {
         : this.db.prepare(
             `SELECT promise_id, content, status, source, ref_key, created_at, resolved_at, updated_at FROM soul_promises WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at DESC LIMIT ${limit}`,
           )
-      ).all(t.teamId, t.userId, t.agentId, ...(opts?.status ? [opts.status] : [])) as unknown as Array<{ promise_id: string; content: string; status: string; source: string; ref_key: string | null; created_at: string; resolved_at: string | null; updated_at: string }>;
+      ).all(t.teamId, t.userId, t.agentId, ...(opts?.status ? [opts.status] : [])) as unknown as Array<{
+        promise_id: string;
+        content: string;
+        status: string;
+        source: string;
+        ref_key: string | null;
+        created_at: string;
+        resolved_at: string | null;
+        updated_at: string;
+      }>;
       return rows.map((r) => ({
         promiseId: r.promise_id,
         content: r.content,
@@ -2763,9 +3561,18 @@ export class VectorStore implements IMemoryStore {
   readSoulPromiseEvents(tenant: CoreTenant, promiseId: string): SoulPromiseEvent[] {
     const t = normalizeCoreTenant(tenant);
     try {
-      const rows = this.db.prepare(
-        "SELECT promise_id, from_status, to_status, at, note, source FROM soul_promise_events WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC",
-      ).all(promiseId, t.teamId, t.userId, t.agentId) as unknown as Array<{ promise_id: string; from_status: string | null; to_status: string; at: string; note: string | null; source: string | null }>;
+      const rows = this.db
+        .prepare(
+          "SELECT promise_id, from_status, to_status, at, note, source FROM soul_promise_events WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC",
+        )
+        .all(promiseId, t.teamId, t.userId, t.agentId) as unknown as Array<{
+        promise_id: string;
+        from_status: string | null;
+        to_status: string;
+        at: string;
+        note: string | null;
+        source: string | null;
+      }>;
       return rows.map((r) => ({
         promiseId: r.promise_id,
         fromStatus: (r.from_status ?? null) as SoulPromiseEvent["fromStatus"],
@@ -2775,7 +3582,9 @@ export class VectorStore implements IMemoryStore {
         source: (r.source ?? "manual") as PromiseTransitionSource,
       }));
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [soul_promise_events] read failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [soul_promise_events] read failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -2784,26 +3593,120 @@ export class VectorStore implements IMemoryStore {
    *  租户三元组硬隔离（F18 同款）。R5-F5：write/readLast 不吞错——吞错单点在调用方
    *  （soul-assembler 捕获后 warn+不置旗标，下次渲染自动补账）；list 为 Panel 读取面，
    *  warn+安全返回。 */
-  writeSoulSnapshot(tenant: CoreTenant, snap: { ts: string; contentHash: string; payloadJson: string; trigger: string }): void {
+  writeSoulSnapshot(
+    tenant: CoreTenant,
+    snap: {
+      ts: string;
+      contentHash: string;
+      payloadJson: string;
+      /** 受控枚举（soul-versioning.SOUL_CHANGE_REASONS）；缺省回落 layout。 */
+      reasonCode?: string;
+      reasonDetail?: string;
+      /** slot 图 JSON（键级 diff 源）；缺省 '{}'。 */
+      slotsJson?: string;
+      /** @deprecated 旧自由文本列（历史调用方传 "render"）；内部等价 reasonCode。 */
+      trigger?: string;
+    },
+  ): void {
     const t = normalizeCoreTenant(tenant);
-    this.db.prepare(
-      "INSERT INTO soul_snapshots (team_id, user_id, agent_id, ts, content_hash, payload_json, \"trigger\") VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(t.teamId, t.userId, t.agentId, snap.ts, snap.contentHash, snap.payloadJson, snap.trigger);
+    const reason = (snap.reasonCode ?? snap.trigger ?? "layout").trim() || "layout";
+    const slotsJson = snap.slotsJson ?? "{}";
+    // 版本链与幂等在同一写事务内完成：先读上一版，再判同内容零落行，最后定 version/parent_hash。
+    // 不吞错（R5-F5 同款：吞错单点在调用方 soul-assembler）。
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const last = this.db
+        .prepare(
+          "SELECT content_hash, version FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .get(t.teamId, t.userId, t.agentId) as unknown as { content_hash: string; version: number } | undefined;
+      if (last && last.content_hash === snap.contentHash) {
+        this.db.exec("COMMIT");
+        return; // 内容未变：零落行，不刷版本号
+      }
+      // 旧行（迁移前）version 缺省 0 → 用行数续号，保证单调且不撞号。
+      const agg = this.db
+        .prepare(
+          "SELECT COUNT(*) AS c, MAX(version) AS m FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .get(t.teamId, t.userId, t.agentId) as unknown as { c: number; m: number | null } | undefined;
+      const maxVersion = Number(agg?.m ?? 0);
+      const count = Number(agg?.c ?? 0);
+      const version = maxVersion > 0 ? maxVersion + 1 : count + 1;
+      this.db
+        .prepare(
+          'INSERT INTO soul_snapshots (team_id, user_id, agent_id, ts, content_hash, payload_json, "trigger", version, parent_hash, reason_detail, slots_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          t.teamId,
+          t.userId,
+          t.agentId,
+          snap.ts,
+          snap.contentHash,
+          snap.payloadJson,
+          reason,
+          version,
+          last?.content_hash ?? null,
+          snap.reasonDetail ?? "",
+          slotsJson,
+        );
+      this.db.exec("COMMIT");
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务已结束 */
+      }
+      throw err;
+    }
   }
   readLastSoulSnapshotHash(tenant: CoreTenant): string | null {
     const t = normalizeCoreTenant(tenant);
-    const row = this.db.prepare(
-      "SELECT content_hash FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1",
-    ).get(t.teamId, t.userId, t.agentId) as unknown as { content_hash: string } | undefined;
+    const row = this.db
+      .prepare(
+        "SELECT content_hash FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1",
+      )
+      .get(t.teamId, t.userId, t.agentId) as unknown as { content_hash: string } | undefined;
     return row?.content_hash ?? null;
   }
-  listSoulSnapshots(tenant: CoreTenant, limit?: number): Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }> {
+  /** 缺口 A：最近一版整行（版本链判据 + 上一版 slot 图 diff 源）；空库 null。 */
+  readLastSoulSnapshot(tenant: CoreTenant): SoulSnapshotRow | null {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const row = this.db
+        .prepare(
+          'SELECT ts, content_hash, payload_json, "trigger", version, parent_hash, reason_detail, slots_json FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT 1',
+        )
+        .get(t.teamId, t.userId, t.agentId) as unknown as SoulSnapshotRow | undefined;
+      return row ?? null;
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_snapshots] readLast failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+  /**
+   * 最近 N 次快照（按 id 升序返回，即"从旧到新"的窗口末端）。
+   *
+   * 修正（2026-11-04 复核 P2）：原实现是 `ORDER BY id ASC LIMIT ?`——取的是**最早** N 条。
+   * 生产 soul_snapshots 已有 1619 行，默认 limit=20 时面板"版本链"看到的是最初 20 次渲染，
+   * 最近变更一次都看不到；上层 `tail = all.slice(-limit)` 是 no-op（就是全部），
+   * 于是 `soul-introspect.ts:7`「最近 N 次快照」的自述与实现不符。
+   * 现在改为子查询取最新 N 条、外层再按 id 升序——输出仍是升序（相邻行 diff 的 prev 语义不变），
+   * 但窗口落在末端。
+   */
+  listSoulSnapshots(tenant: CoreTenant, limit?: number): SoulSnapshotRow[] {
     const t = normalizeCoreTenant(tenant);
     const lim = Number(limit) > 0 ? Math.min(1000, Math.floor(Number(limit))) : 100;
     try {
-      return (this.db.prepare(
-        "SELECT ts, content_hash, payload_json, \"trigger\" FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id ASC LIMIT ?",
-      ).all(t.teamId, t.userId, t.agentId, lim) as unknown as Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }>) ?? [];
+      return (
+        (this.db
+          .prepare(
+            'SELECT ts, content_hash, payload_json, "trigger", version, parent_hash, reason_detail, slots_json FROM (SELECT * FROM soul_snapshots WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC',
+          )
+          .all(t.teamId, t.userId, t.agentId, lim) as unknown as SoulSnapshotRow[]) ?? []
+      );
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_snapshots] list failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -2812,12 +3715,16 @@ export class VectorStore implements IMemoryStore {
   /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 证据分裂检测数据源（单一源检测在 character-tension.ts，本方法只做取数）。
    *  只读零写库；租户三元组硬隔离（F18 同款）；metadata_json 含 coreRefs/identityRefs 键族且 valence IS NOT NULL；
    *  node 侧 JSON.parse 后按 label 展开（单查询全量+进程内聚合）；损坏 metadata_json 行跳过（宽松解析不造假值，C5 同款）。 */
-  anchorEvidenceValences(tenant?: CoreTenant): Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> {
+  anchorEvidenceValences(
+    tenant?: CoreTenant,
+  ): Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> {
     const t = normalizeCoreTenant(tenant);
     try {
-      const rows = this.db.prepare(
-        "SELECT metadata_json, valence FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND (metadata_json LIKE '%coreRefs%' OR metadata_json LIKE '%identityRefs%')",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ metadata_json: string | null; valence: number }>;
+      const rows = this.db
+        .prepare(
+          "SELECT metadata_json, valence FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND (metadata_json LIKE '%coreRefs%' OR metadata_json LIKE '%identityRefs%')",
+        )
+        .all(t.teamId, t.userId, t.agentId) as unknown as Array<{ metadata_json: string | null; valence: number }>;
       const out: Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> = [];
       for (const row of rows) {
         let meta: unknown;
@@ -2839,7 +3746,9 @@ export class VectorStore implements IMemoryStore {
       }
       return out;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [anchorEvidenceValences] failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [anchorEvidenceValences] failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -2849,14 +3758,44 @@ export class VectorStore implements IMemoryStore {
    * 专用两个调用方：① 自生长去重（veto 永不重提 + 名额计数）；② server 种子判空
    * （全种子被 veto 后重启不得复活——active-only 判空会误判空桶重灌）。
    */
-  listValuesAnyState(tenant?: CoreTenant): Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }> {
+  listValuesAnyState(
+    tenant?: CoreTenant,
+  ): Array<{
+    value_id: string;
+    label: string;
+    weight: number;
+    created_by: string;
+    valence: number | null;
+    origin: "seed" | "manual" | "auto";
+    pinned: 0 | 1;
+    state: "active" | "retired" | "vetoed";
+    node_type: "theme" | "person" | "character";
+    attrs_json: string;
+  }> {
     const t = normalizeCoreTenant(tenant);
     try {
-      return (this.db.prepare(
-        "SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed"; node_type: "theme" | "person" | "character"; attrs_json: string }>) ?? [];
+      return (
+        (this.db
+          .prepare(
+            "SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
+          )
+          .all(t.teamId, t.userId, t.agentId) as unknown as Array<{
+          value_id: string;
+          label: string;
+          weight: number;
+          created_by: string;
+          valence: number | null;
+          origin: "seed" | "manual" | "auto";
+          pinned: 0 | 1;
+          state: "active" | "retired" | "vetoed";
+          node_type: "theme" | "person" | "character";
+          attrs_json: string;
+        }>) ?? []
+      );
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] listValuesAnyState failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] listValuesAnyState failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -2884,29 +3823,50 @@ export class VectorStore implements IMemoryStore {
    */
   async deriveValueValences(
     tenant?: CoreTenant,
-    llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> },
+    llmRunner?: {
+      run(params: {
+        prompt: string;
+        systemPrompt?: string;
+        taskId: string;
+        timeoutMs?: number;
+        maxTokens?: number;
+      }): Promise<string>;
+    },
   ): Promise<{ derived: number; skipped: number }> {
     const t = normalizeCoreTenant(tenant);
     try {
       if (!llmRunner) return { derived: 0, skipped: 0 };
-      const rows = this.db.prepare(
-        "SELECT value_id, label FROM core_values WHERE valence IS NULL AND state='active' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string }>;
+      const rows = this.db
+        .prepare(
+          "SELECT value_id, label FROM core_values WHERE valence IS NULL AND state='active' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
+        )
+        .all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string }>;
       if (rows.length === 0) return { derived: 0, skipped: 0 };
       // 判定的是该价值的**语义倾向**（如"正确"→趋近类），不是情绪——渲染措辞保持陈述性（spec §3.1）。
       const systemPrompt =
         "你是价值方向判定器。判定每个团队价值锚的动机方向：1=趋近类（达成它会推动行动，如正确/可靠/高效）；" +
         "-1=审慎回避类（它提醒风险需要谨慎，如安全/风险/合规红线）；0=中性或无法判定。" +
-        "只输出 JSON：{\"valences\":[{\"value_id\":\"<id>\",\"valence\":1|-1|0}]}，不要其他文字。" +
+        '只输出 JSON：{"valences":[{"value_id":"<id>","valence":1|-1|0}]}，不要其他文字。' +
         "不确定给 0；严禁输出清单之外的 value_id；宁缺毋滥，拿不准就给 0。";
       const prompt =
         "价值锚清单：\n" +
         rows.map((r) => `- ${r.value_id}（${r.label}）`).join("\n") +
         "\n\n判定每个价值锚的动机方向。";
-      const raw = await llmRunner.run({ prompt, systemPrompt, taskId: "core-values-valence-derive", timeoutMs: 0, maxTokens: 0 });
+      const raw = await llmRunner.run({
+        prompt,
+        systemPrompt,
+        taskId: "core-values-valence-derive",
+        timeoutMs: 0,
+        maxTokens: 0,
+      });
       let parsed: { valences?: unknown };
       try {
-        parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, ""));
+        parsed = JSON.parse(
+          raw
+            .trim()
+            .replace(/^```(?:json)?\s*\n?/, "")
+            .replace(/\n?```\s*$/, ""),
+        );
       } catch {
         return { derived: 0, skipped: rows.length };
       }
@@ -2924,15 +3884,19 @@ export class VectorStore implements IMemoryStore {
         // Critical-1（C2 复审）：`AND (valence IS NULL)` 守卫——SELECT NULL 清单后、
         // LLM 窗口内用户微调落库的值不被无条件覆盖（三方语义 1 的写回侧闭环）。
         // derived 取真实 changes：微调拦截行不计数，重复 value_id 不双计。
-        const res = this.db.prepare(
-          "UPDATE core_values SET valence = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (valence IS NULL)",
-        ).run(val, id, t.teamId, t.userId, t.agentId);
+        const res = this.db
+          .prepare(
+            "UPDATE core_values SET valence = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (valence IS NULL)",
+          )
+          .run(val, id, t.teamId, t.userId, t.agentId);
         derived += Number(res.changes);
       }
       if (derived > 0) this.invalidateValuesCache(); // E2 失效钩子（写路径 6/8：有真实写出才失效）
       return { derived, skipped: rows.length - derived };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] deriveValueValences failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] deriveValueValences failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return { derived: 0, skipped: 0 };
     }
   }
@@ -2960,20 +3924,31 @@ export class VectorStore implements IMemoryStore {
   resetValueValences(tenant?: CoreTenant): Array<{ value_id: string; valence: number }> {
     const t = normalizeCoreTenant(tenant);
     try {
-      const snapshot = (this.db.prepare(
-        "SELECT value_id, valence FROM core_values WHERE valence IS NOT NULL AND state = 'active' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY value_id",
-      ).all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; valence: number | null }>)
-        .filter((r): r is { value_id: string; valence: number } => typeof r.value_id === "string" && r.value_id !== "" && r.valence !== null)
+      const snapshot = (
+        this.db
+          .prepare(
+            "SELECT value_id, valence FROM core_values WHERE valence IS NOT NULL AND state = 'active' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY value_id",
+          )
+          .all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; valence: number | null }>
+      )
+        .filter(
+          (r): r is { value_id: string; valence: number } =>
+            typeof r.value_id === "string" && r.value_id !== "" && r.valence !== null,
+        )
         .map((r) => ({ value_id: r.value_id, valence: r.valence }));
       if (snapshot.length > 0) {
-        this.db.prepare(
-          "UPDATE core_values SET valence = NULL WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL",
-        ).run(t.teamId, t.userId, t.agentId);
+        this.db
+          .prepare(
+            "UPDATE core_values SET valence = NULL WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL",
+          )
+          .run(t.teamId, t.userId, t.agentId);
         this.invalidateValuesCache(); // E2 失效钩子（写路径 7/8）
       }
       return snapshot;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] resetValueValences failed (throwing to handler): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] resetValueValences failed (throwing to handler): ${err instanceof Error ? err.message : String(err)}`,
+      );
       throw err;
     }
   }
@@ -2998,17 +3973,25 @@ export class VectorStore implements IMemoryStore {
       for (const s of snapshot) {
         if (typeof s?.value_id !== "string" || s.value_id === "") continue;
         if (s.valence !== -1 && s.valence !== 0 && s.valence !== 1) continue;
-        const res = this.db.prepare(
-          "UPDATE core_values SET valence = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (valence IS NULL)",
-        ).run(s.valence, s.value_id, t.teamId, t.userId, t.agentId);
+        const res = this.db
+          .prepare(
+            "UPDATE core_values SET valence = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (valence IS NULL)",
+          )
+          .run(s.valence, s.value_id, t.teamId, t.userId, t.agentId);
         restored += Number(res.changes);
       }
       this.db.exec("COMMIT");
       this.invalidateValuesCache(); // E2 失效钩子（写路径 8/8）
       return restored;
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* RAISE(ABORT) 等场景下引擎可能已回滚 */ }
-      this.logger?.warn?.(`${TAG} [core_values] restoreValueValences failed (rolled back, throwing to handler): ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* RAISE(ABORT) 等场景下引擎可能已回滚 */
+      }
+      this.logger?.warn?.(
+        `${TAG} [core_values] restoreValueValences failed (rolled back, throwing to handler): ${err instanceof Error ? err.message : String(err)}`,
+      );
       throw err;
     }
   }
@@ -3023,13 +4006,17 @@ export class VectorStore implements IMemoryStore {
   deleteValue(valueId: string, tenant?: CoreTenant): boolean {
     const t = normalizeCoreTenant(tenant);
     try {
-      const res = this.db.prepare(
-        "UPDATE core_values SET state='vetoed' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
-      ).run(valueId, t.teamId, t.userId, t.agentId);
+      const res = this.db
+        .prepare(
+          "UPDATE core_values SET state='vetoed' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
+        )
+        .run(valueId, t.teamId, t.userId, t.agentId);
       this.invalidateValuesCache(); // E2 失效钩子（写路径 2/8）
       return Number(res.changes) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] deleteValue failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] deleteValue failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -3038,13 +4025,17 @@ export class VectorStore implements IMemoryStore {
   setValuePinned(valueId: string, pinned: boolean, tenant?: CoreTenant): boolean {
     const t = normalizeCoreTenant(tenant);
     try {
-      const res = this.db.prepare(
-        "UPDATE core_values SET pinned = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
-      ).run(pinned ? 1 : 0, valueId, t.teamId, t.userId, t.agentId);
+      const res = this.db
+        .prepare(
+          "UPDATE core_values SET pinned = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
+        )
+        .run(pinned ? 1 : 0, valueId, t.teamId, t.userId, t.agentId);
       this.invalidateValuesCache(); // E2 失效钩子（写路径 3/8）
       return Number(res.changes) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] setValuePinned failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] setValuePinned failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -3053,13 +4044,17 @@ export class VectorStore implements IMemoryStore {
   retireValue(valueId: string, tenant?: CoreTenant): boolean {
     const t = normalizeCoreTenant(tenant);
     try {
-      const res = this.db.prepare(
-        "UPDATE core_values SET state='retired' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
-      ).run(valueId, t.teamId, t.userId, t.agentId);
+      const res = this.db
+        .prepare(
+          "UPDATE core_values SET state='retired' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
+        )
+        .run(valueId, t.teamId, t.userId, t.agentId);
       this.invalidateValuesCache(); // E2 失效钩子（写路径 4/8）
       return Number(res.changes) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] retireValue failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] retireValue failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -3068,13 +4063,17 @@ export class VectorStore implements IMemoryStore {
   restoreValue(valueId: string, tenant?: CoreTenant): boolean {
     const t = normalizeCoreTenant(tenant);
     try {
-      const res = this.db.prepare(
-        "UPDATE core_values SET state='active' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'retired'",
-      ).run(valueId, t.teamId, t.userId, t.agentId);
+      const res = this.db
+        .prepare(
+          "UPDATE core_values SET state='active' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'retired'",
+        )
+        .run(valueId, t.teamId, t.userId, t.agentId);
       this.invalidateValuesCache(); // E2 失效钩子（写路径 5/8）
       return Number(res.changes) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] restoreValue failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] restoreValue failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -3085,14 +4084,21 @@ export class VectorStore implements IMemoryStore {
    * 与旧调用形状不变）；非 default 三元组用 per-tenant 独立键（双门基线按 agent 隔离）。
    */
   /** 自维护观测（D8）：一次查询返回全部自计数（每 tick 一次，成本可忽略）。 */
-  getSelfObsStats(): { l1: number; conflict: number; evolve: number; similar: number; archived: number; anchors: number } {
+  getSelfObsStats(): {
+    l1: number;
+    conflict: number;
+    evolve: number;
+    similar: number;
+    archived: number;
+    anchors: number;
+  } {
     try {
       const one = (sql: string) => Number(this.db.prepare(sql).get()?.n ?? 0);
       return {
         l1: one("SELECT COUNT(*) AS n FROM l1_records"),
-        conflict: one("SELECT COUNT(*) AS n FROM l1_links WHERE type = 'conflict'"),
-        evolve: one("SELECT COUNT(*) AS n FROM l1_links WHERE type = 'evolve'"),
-        similar: one("SELECT COUNT(*) AS n FROM l1_links WHERE type = 'similar'"),
+        conflict: one(`SELECT COUNT(*) AS n FROM l1_links WHERE type = '${LINK_TYPES.CONFLICT}'`),
+        evolve: one(`SELECT COUNT(*) AS n FROM l1_links WHERE type = '${LINK_TYPES.EVOLVE}'`),
+        similar: one(`SELECT COUNT(*) AS n FROM l1_links WHERE type = '${LINK_TYPES.SIMILAR}'`),
         archived: one("SELECT COUNT(*) AS n FROM l1_archive"),
         anchors: one("SELECT COUNT(*) AS n FROM core_values WHERE state = 'active'"),
       };
@@ -3111,12 +4117,19 @@ export class VectorStore implements IMemoryStore {
    * （人物锚，F12 证据链）/identityRefs（身份事实 20 字切片弱口径，GROW-MAINT F15/F14 数据前提）。
    * 同键去重（已含 label → 幂等 false）；metadata + l1_fts 双写（与 backfillCoreRef 同款）。
    */
-  backfillMemoryRef(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): boolean {
+  backfillMemoryRef(
+    recordId: string,
+    key: "coreRefs" | "personRefs" | "identityRefs",
+    label: string,
+    tenant?: CoreTenant,
+  ): boolean {
     try {
       const t = normalizeCoreTenant(tenant);
-      const row = this.db.prepare(
-        "SELECT metadata_json FROM l1_records WHERE record_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
-      ).get(recordId, t.teamId, t.userId, t.agentId) as { metadata_json?: string } | undefined;
+      const row = this.db
+        .prepare(
+          "SELECT metadata_json FROM l1_records WHERE record_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .get(recordId, t.teamId, t.userId, t.agentId) as { metadata_json?: string } | undefined;
       if (!row) return false;
       const meta = row.metadata_json && row.metadata_json !== "{}" ? JSON.parse(row.metadata_json) : {};
       const refs = Array.isArray(meta[key]) ? meta[key] : [];
@@ -3129,19 +4142,35 @@ export class VectorStore implements IMemoryStore {
       }
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] backfillMemoryRef failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] backfillMemoryRef failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
 
   // ── O13（P2）：core_pending 三方法（同步——与 upsertCore/listValues 同款 sqlite 语义）────
 
-  upsertPendingCore(slot: string, content: string, evidence: number, tenant?: CoreTenant, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): boolean {
+  upsertPendingCore(
+    slot: string,
+    content: string,
+    evidence: number,
+    tenant?: CoreTenant,
+    extra?: {
+      label?: string;
+      description?: string;
+      attrs?: Record<string, unknown>;
+      reproposalOf?: string;
+      reproposalGen?: number;
+    },
+  ): boolean {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
-      let pid = "pd-" + createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
+      let pid =
+        "pd-" +
+        createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
       // #19 T12：重提通道——同 slot|content 的 ON CONFLICT 更新被 WHERE state='pending' 挡住
       // （rejected 行不可复活=V12 语义），重提案须生成新 id：基础 id + 生成代数后缀（确定性、
       // 同代幂等；不同代并存互不覆盖，supersedes 溯源在 attrs_json）。
@@ -3159,41 +4188,124 @@ export class VectorStore implements IMemoryStore {
         pid += "-" + createHash("sha256").update(canonical).digest("hex").slice(0, 8);
       }
       const attrsJson = extra?.attrs && Object.keys(extra.attrs).length > 0 ? JSON.stringify(extra.attrs) : null;
-      this.db.prepare(`INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at, label, description, attrs_json)
+      this.db
+        .prepare(
+          `INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at, label, description, attrs_json)
         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(pending_id) DO UPDATE SET evidence = excluded.evidence, created_at = excluded.created_at, label = excluded.label, description = excluded.description, attrs_json = excluded.attrs_json
-        WHERE core_pending.state = 'pending'`).run(pid, slot, content, Math.max(0, Math.floor(evidence)), teamId, userId, agentId, new Date().toISOString(), extra?.label ?? null, extra?.description ?? null, attrsJson);
+        WHERE core_pending.state = 'pending'`,
+        )
+        .run(
+          pid,
+          slot,
+          content,
+          Math.max(0, Math.floor(evidence)),
+          teamId,
+          userId,
+          agentId,
+          new Date().toISOString(),
+          extra?.label ?? null,
+          extra?.description ?? null,
+          attrsJson,
+        );
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] upsertPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] upsertPendingCore failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
 
-  listPendingCore(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null; recurrence_json?: string | null; embedding_json?: string | null }> {
+  listPendingCore(
+    tenant?: CoreTenant,
+    opts?: { includeDecided?: boolean },
+  ): Array<{
+    pending_id: string;
+    slot: string;
+    content: string;
+    evidence: number;
+    state: string;
+    created_at: string;
+    decided_at: string | null;
+    label?: string | null;
+    description?: string | null;
+    attrs_json?: string | null;
+    recurrence_json?: string | null;
+    embedding_json?: string | null;
+  }> {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
       const stateFilter = opts?.includeDecided ? "" : " AND state = 'pending'";
-      return this.db.prepare(`SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description, attrs_json, recurrence_json, embedding_json FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`).all(teamId, userId, agentId) as Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null; recurrence_json?: string | null; embedding_json?: string | null }>;
+      return this.db
+        .prepare(
+          `SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description, attrs_json, recurrence_json, embedding_json FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`,
+        )
+        .all(teamId, userId, agentId) as Array<{
+        pending_id: string;
+        slot: string;
+        content: string;
+        evidence: number;
+        state: string;
+        created_at: string;
+        decided_at: string | null;
+        label?: string | null;
+        description?: string | null;
+        attrs_json?: string | null;
+        recurrence_json?: string | null;
+        embedding_json?: string | null;
+      }>;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] listPendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] listPendingCore failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
 
-  decidePendingCore(pendingId: string, decision: "adopted" | "rejected", tenant?: CoreTenant): { slot: string; content: string; label?: string | null; description?: string | null } | null {
+  decidePendingCore(
+    pendingId: string,
+    decision: "adopted" | "rejected",
+    tenant?: CoreTenant,
+  ): { slot: string; content: string; label?: string | null; description?: string | null } | null {
     try {
-      const row = this.db.prepare("SELECT slot, content, state, team_id, user_id, agent_id, label, description FROM core_pending WHERE pending_id = ?").get(pendingId) as { slot: string; content: string; state: string; team_id: string; user_id: string; agent_id: string; label?: string | null; description?: string | null } | undefined;
+      const row = this.db
+        .prepare(
+          "SELECT slot, content, state, team_id, user_id, agent_id, label, description FROM core_pending WHERE pending_id = ?",
+        )
+        .get(pendingId) as
+        | {
+            slot: string;
+            content: string;
+            state: string;
+            team_id: string;
+            user_id: string;
+            agent_id: string;
+            label?: string | null;
+            description?: string | null;
+          }
+        | undefined;
       if (!row || row.state !== "pending") return null;
       if (tenant) {
-        if (row.team_id !== (tenant.teamId || "default") || row.user_id !== (tenant.userId || "default") || row.agent_id !== (tenant.agentId || "default")) return null;
+        if (
+          row.team_id !== (tenant.teamId || "default") ||
+          row.user_id !== (tenant.userId || "default") ||
+          row.agent_id !== (tenant.agentId || "default")
+        )
+          return null;
       }
-      const r = this.db.prepare("UPDATE core_pending SET state = ?, decided_at = ? WHERE pending_id = ? AND state = 'pending'").run(decision, new Date().toISOString(), pendingId);
-      return Number(r.changes) > 0 ? { slot: row.slot, content: row.content, label: row.label ?? null, description: row.description ?? null } : null;
+      const r = this.db
+        .prepare("UPDATE core_pending SET state = ?, decided_at = ? WHERE pending_id = ? AND state = 'pending'")
+        .run(decision, new Date().toISOString(), pendingId);
+      return Number(r.changes) > 0
+        ? { slot: row.slot, content: row.content, label: row.label ?? null, description: row.description ?? null }
+        : null;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] decidePendingCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] decidePendingCore failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
@@ -3203,24 +4315,69 @@ export class VectorStore implements IMemoryStore {
   // evidence_record_ids=全局去重并集（插入序）；embedding_json=首写不覆盖；两列不参与 pending_id 派生、
   // 不在 upsertPendingCore 的 INSERT/ON CONFLICT 集合内（重推不碰复现状态）。
 
-  private parsePendingRecurrence(json: string | null | undefined): { count: number; first_seen: string; last_seen: string; episodes: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>; evidence_record_ids: string[] } | null {
+  private parsePendingRecurrence(
+    json: string | null | undefined,
+  ): {
+    count: number;
+    first_seen: string;
+    last_seen: string;
+    episodes: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>;
+    evidence_record_ids: string[];
+  } | null {
     if (!json) return null;
     try {
-      const v = JSON.parse(json) as { count?: unknown; first_seen?: string; last_seen?: string; episodes?: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>; evidence_record_ids?: string[] };
+      const v = JSON.parse(json) as {
+        count?: unknown;
+        first_seen?: string;
+        last_seen?: string;
+        episodes?: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>;
+        evidence_record_ids?: string[];
+      };
       if (typeof v.count !== "number") return null;
-      return { count: v.count, first_seen: v.first_seen ?? "", last_seen: v.last_seen ?? "", episodes: Array.isArray(v.episodes) ? v.episodes : [], evidence_record_ids: Array.isArray(v.evidence_record_ids) ? v.evidence_record_ids : [] };
+      return {
+        count: v.count,
+        first_seen: v.first_seen ?? "",
+        last_seen: v.last_seen ?? "",
+        episodes: Array.isArray(v.episodes) ? v.episodes : [],
+        evidence_record_ids: Array.isArray(v.evidence_record_ids) ? v.evidence_record_ids : [],
+      };
     } catch {
       return null;
     }
   }
 
-  updatePendingRecurrence(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
+  updatePendingRecurrence(
+    pendingId: string,
+    episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
+    opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant },
+  ): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
     try {
-      const row = this.db.prepare("SELECT slot, state, team_id, user_id, agent_id, created_at, recurrence_json, embedding_json FROM core_pending WHERE pending_id = ?").get(pendingId) as { slot: string; state: string; team_id: string; user_id: string; agent_id: string; created_at: string; recurrence_json: string | null; embedding_json: string | null } | undefined;
+      const row = this.db
+        .prepare(
+          "SELECT slot, state, team_id, user_id, agent_id, created_at, recurrence_json, embedding_json FROM core_pending WHERE pending_id = ?",
+        )
+        .get(pendingId) as
+        | {
+            slot: string;
+            state: string;
+            team_id: string;
+            user_id: string;
+            agent_id: string;
+            created_at: string;
+            recurrence_json: string | null;
+            embedding_json: string | null;
+          }
+        | undefined;
       if (!row || row.slot !== "self_identity") return null;
       // rejected/adopted 已裁决行不可计票；expired 行可复活（软失效可逆，继承计数）。
       if (row.state !== "pending" && row.state !== "expired") return null;
-      if (opts?.tenant && (row.team_id !== (opts.tenant.teamId || "default") || row.user_id !== (opts.tenant.userId || "default") || row.agent_id !== (opts.tenant.agentId || "default"))) return null;
+      if (
+        opts?.tenant &&
+        (row.team_id !== (opts.tenant.teamId || "default") ||
+          row.user_id !== (opts.tenant.userId || "default") ||
+          row.agent_id !== (opts.tenant.agentId || "default"))
+      )
+        return null;
       const now = new Date().toISOString();
       const ts = episode.ts ?? now;
       const prev = this.parsePendingRecurrence(row.recurrence_json);
@@ -3229,48 +4386,90 @@ export class VectorStore implements IMemoryStore {
       const first_seen = prev?.first_seen || ts;
       const last_seen = ts;
       const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = { ts, content: episode.content ?? "" };
-      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0) ep.evidenceRecordIds = [...episode.evidenceRecordIds];
+      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0)
+        ep.evidenceRecordIds = [...episode.evidenceRecordIds];
       const episodes = [...(prev?.episodes ?? []), ep];
       const union = [...new Set([...(prev?.evidence_record_ids ?? []), ...(episode.evidenceRecordIds ?? [])])];
       const votesN = Math.max(1, Math.floor(opts?.votesN ?? 3));
       const spanHours = Math.max(0, opts?.spanHours ?? 24);
       const from = Date.parse(first_seen);
       const to = Date.parse(last_seen);
-      const ready = count >= votesN && Number.isFinite(from) && Number.isFinite(to) && to - from >= spanHours * 3_600_000;
-      this.db.prepare("UPDATE core_pending SET recurrence_json = ?, state = 'pending' WHERE pending_id = ?").run(JSON.stringify({ count, first_seen, last_seen, episodes, evidence_record_ids: union }), pendingId);
-      if (episode.embedding && !row.embedding_json) { // 首写不覆盖
-        this.db.prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?").run(JSON.stringify(episode.embedding), pendingId);
+      const ready =
+        count >= votesN && Number.isFinite(from) && Number.isFinite(to) && to - from >= spanHours * 3_600_000;
+      this.db
+        .prepare("UPDATE core_pending SET recurrence_json = ?, state = 'pending' WHERE pending_id = ?")
+        .run(JSON.stringify({ count, first_seen, last_seen, episodes, evidence_record_ids: union }), pendingId);
+      if (episode.embedding && !row.embedding_json) {
+        // 首写不覆盖
+        this.db
+          .prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?")
+          .run(JSON.stringify(episode.embedding), pendingId);
       }
       return { count, first_seen, last_seen, ready, revived };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] updatePendingRecurrence failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] updatePendingRecurrence failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
 
-  initPendingRecurrenceByContent(slot: string, content: string, tenant: CoreTenant | undefined, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
+  initPendingRecurrenceByContent(
+    slot: string,
+    content: string,
+    tenant: CoreTenant | undefined,
+    episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
+  ): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
-      const row = this.db.prepare("SELECT pending_id, recurrence_json, embedding_json FROM core_pending WHERE slot = ? AND content = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'pending'").get(slot, content, teamId, userId, agentId) as { pending_id: string; recurrence_json: string | null; embedding_json: string | null } | undefined;
+      const row = this.db
+        .prepare(
+          "SELECT pending_id, recurrence_json, embedding_json FROM core_pending WHERE slot = ? AND content = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'pending'",
+        )
+        .get(slot, content, teamId, userId, agentId) as
+        { pending_id: string; recurrence_json: string | null; embedding_json: string | null } | undefined;
       if (!row) return null;
       if (this.parsePendingRecurrence(row.recurrence_json)) return null; // 重推不双计
       const ts = episode.ts ?? new Date().toISOString();
-      const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = { ts, content: episode.content ?? content };
-      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0) ep.evidenceRecordIds = [...episode.evidenceRecordIds];
-      this.db.prepare("UPDATE core_pending SET recurrence_json = ? WHERE pending_id = ?").run(JSON.stringify({ count: 1, first_seen: ts, last_seen: ts, episodes: [ep], evidence_record_ids: [...new Set(episode.evidenceRecordIds ?? [])] }), row.pending_id);
-      if (episode.embedding && !row.embedding_json) { // 首写不覆盖
-        this.db.prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?").run(JSON.stringify(episode.embedding), row.pending_id);
+      const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = {
+        ts,
+        content: episode.content ?? content,
+      };
+      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0)
+        ep.evidenceRecordIds = [...episode.evidenceRecordIds];
+      this.db
+        .prepare("UPDATE core_pending SET recurrence_json = ? WHERE pending_id = ?")
+        .run(
+          JSON.stringify({
+            count: 1,
+            first_seen: ts,
+            last_seen: ts,
+            episodes: [ep],
+            evidence_record_ids: [...new Set(episode.evidenceRecordIds ?? [])],
+          }),
+          row.pending_id,
+        );
+      if (episode.embedding && !row.embedding_json) {
+        // 首写不覆盖
+        this.db
+          .prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?")
+          .run(JSON.stringify(episode.embedding), row.pending_id);
       }
       return { count: 1, first_seen: ts, last_seen: ts, ready: false, revived: false };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] initPendingRecurrenceByContent failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] initPendingRecurrenceByContent failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
 
-  sweepExpiredSelfIdentityPending(tenant?: CoreTenant, opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number }): Array<{ pending_id: string; content: string }> {
+  sweepExpiredSelfIdentityPending(
+    tenant?: CoreTenant,
+    opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number },
+  ): Array<{ pending_id: string; content: string }> {
     try {
       // #91 R1 返工（2026-10-23）：① tenant 缺省=全租户（终局清理语义；修复原 ||"default" 吞租户
       // 致生产 0 行静默空转），传值=逐字段精确限定（全部现网调用方传完整三元组，行为不变）；
@@ -3278,14 +4477,32 @@ export class VectorStore implements IMemoryStore {
       // ③ ready 行（count>=votesN 且 span>=spanHours）排除——待人工裁决不进默认终局。
       const conds = ["slot = 'self_identity'", "state = 'pending'"];
       const params: string[] = [];
-      if (tenant?.teamId) { conds.push("team_id = ?"); params.push(tenant.teamId); }
-      if (tenant?.userId) { conds.push("user_id = ?"); params.push(tenant.userId); }
-      if (tenant?.agentId) { conds.push("agent_id = ?"); params.push(tenant.agentId); }
+      if (tenant?.teamId) {
+        conds.push("team_id = ?");
+        params.push(tenant.teamId);
+      }
+      if (tenant?.userId) {
+        conds.push("user_id = ?");
+        params.push(tenant.userId);
+      }
+      if (tenant?.agentId) {
+        conds.push("agent_id = ?");
+        params.push(tenant.agentId);
+      }
       const ttlHours = Math.max(0, opts?.ttlHours ?? 24);
       const votesN = Math.max(1, Math.floor(opts?.votesN ?? 3));
       const spanHours = Math.max(0, opts?.spanHours ?? ttlHours);
       const nowMs = Date.parse(opts?.now ?? new Date().toISOString());
-      const rows = this.db.prepare(`SELECT pending_id, content, recurrence_json, created_at FROM core_pending WHERE ${conds.join(" AND ")}`).all(...params) as Array<{ pending_id: string; content: string; recurrence_json: string | null; created_at: string }>;
+      const rows = this.db
+        .prepare(
+          `SELECT pending_id, content, recurrence_json, created_at FROM core_pending WHERE ${conds.join(" AND ")}`,
+        )
+        .all(...params) as Array<{
+        pending_id: string;
+        content: string;
+        recurrence_json: string | null;
+        created_at: string;
+      }>;
       const swept: Array<{ pending_id: string; content: string }> = [];
       for (const row of rows) {
         const rec = this.parsePendingRecurrence(row.recurrence_json);
@@ -3293,18 +4510,24 @@ export class VectorStore implements IMemoryStore {
         if (rec) {
           const from = Date.parse(rec.first_seen);
           const to = Date.parse(rec.last_seen);
-          if (Number.isFinite(from) && Number.isFinite(to) && count >= votesN && to - from >= spanHours * 3_600_000) continue; // ready：待人工裁决
+          if (Number.isFinite(from) && Number.isFinite(to) && count >= votesN && to - from >= spanHours * 3_600_000)
+            continue; // ready：待人工裁决
         }
-        const anchor = count === 1 ? (rec?.first_seen || row.created_at) : (rec?.last_seen || rec?.first_seen || row.created_at);
+        const anchor =
+          count === 1 ? rec?.first_seen || row.created_at : rec?.last_seen || rec?.first_seen || row.created_at;
         const t = Date.parse(anchor);
         if (!Number.isFinite(t) || !Number.isFinite(nowMs)) continue;
         if (nowMs - t <= ttlHours * 3_600_000) continue; // 严格大于 TTL 才过期
-        const r = this.db.prepare("UPDATE core_pending SET state = 'expired' WHERE pending_id = ? AND state = 'pending'").run(row.pending_id);
+        const r = this.db
+          .prepare("UPDATE core_pending SET state = 'expired' WHERE pending_id = ? AND state = 'pending'")
+          .run(row.pending_id);
         if (Number(r.changes) > 0) swept.push({ pending_id: row.pending_id, content: row.content });
       }
       return swept;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] sweepExpiredSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] sweepExpiredSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -3314,17 +4537,30 @@ export class VectorStore implements IMemoryStore {
     try {
       const conds = ["slot = 'self_identity'"];
       const params: string[] = [];
-      if (tenant?.teamId) { conds.push("team_id = ?"); params.push(tenant.teamId); }
-      if (tenant?.userId) { conds.push("user_id = ?"); params.push(tenant.userId); }
-      if (tenant?.agentId) { conds.push("agent_id = ?"); params.push(tenant.agentId); }
+      if (tenant?.teamId) {
+        conds.push("team_id = ?");
+        params.push(tenant.teamId);
+      }
+      if (tenant?.userId) {
+        conds.push("user_id = ?");
+        params.push(tenant.userId);
+      }
+      if (tenant?.agentId) {
+        conds.push("agent_id = ?");
+        params.push(tenant.agentId);
+      }
       const wh = Math.max(0, windowHours ?? 24);
       const since = new Date(Date.now() - wh * 3_600_000).toISOString();
       conds.push("created_at >= ?");
       params.push(since);
-      const row = this.db.prepare(`SELECT COUNT(*) AS n FROM core_pending WHERE ${conds.join(" AND ")}`).get(...params) as { n: number } | undefined;
+      const row = this.db
+        .prepare(`SELECT COUNT(*) AS n FROM core_pending WHERE ${conds.join(" AND ")}`)
+        .get(...params) as { n: number } | undefined;
       return Number(row?.n ?? 0);
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] countSelfIdentityRecent failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] countSelfIdentityRecent failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return 0;
     }
   }
@@ -3333,41 +4569,104 @@ export class VectorStore implements IMemoryStore {
   // 候选查询：state='pending' ∧ recurrence ready（count≥votesN ∧ 跨度≥spanHours，口径与 sweep 同构）；
   // tenant 缺省=全租户（R1 先例），行带租户三元组供调度分组；显式传值=逐字段精确过滤。
 
-  listReadySelfIdentityPending(tenant?: CoreTenant, opts?: { votesN?: number; spanHours?: number }): Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }> {
+  listReadySelfIdentityPending(
+    tenant?: CoreTenant,
+    opts?: { votesN?: number; spanHours?: number },
+  ): Array<{
+    pending_id: string;
+    content: string;
+    recurrence_json: string | null;
+    attrs_json: string | null;
+    team_id: string;
+    user_id: string;
+    agent_id: string;
+    created_at: string;
+  }> {
     try {
       const conds = ["slot = 'self_identity'", "state = 'pending'"];
       const params: string[] = [];
-      if (tenant?.teamId) { conds.push("team_id = ?"); params.push(tenant.teamId); }
-      if (tenant?.userId) { conds.push("user_id = ?"); params.push(tenant.userId); }
-      if (tenant?.agentId) { conds.push("agent_id = ?"); params.push(tenant.agentId); }
+      if (tenant?.teamId) {
+        conds.push("team_id = ?");
+        params.push(tenant.teamId);
+      }
+      if (tenant?.userId) {
+        conds.push("user_id = ?");
+        params.push(tenant.userId);
+      }
+      if (tenant?.agentId) {
+        conds.push("agent_id = ?");
+        params.push(tenant.agentId);
+      }
       const votesN = Math.max(1, Math.floor(opts?.votesN ?? 4));
       const spanHours = Math.max(0, opts?.spanHours ?? 72);
       const nowMs = Date.now();
-      const rows = this.db.prepare(`SELECT pending_id, content, recurrence_json, attrs_json, team_id, user_id, agent_id, created_at FROM core_pending WHERE ${conds.join(" AND ")}`).all(...params) as Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }>;
+      const rows = this.db
+        .prepare(
+          `SELECT pending_id, content, recurrence_json, attrs_json, team_id, user_id, agent_id, created_at FROM core_pending WHERE ${conds.join(" AND ")}`,
+        )
+        .all(...params) as Array<{
+        pending_id: string;
+        content: string;
+        recurrence_json: string | null;
+        attrs_json: string | null;
+        team_id: string;
+        user_id: string;
+        agent_id: string;
+        created_at: string;
+      }>;
       return rows.filter((row) => {
         const rec = this.parsePendingRecurrence(row.recurrence_json);
         if (!rec) return false;
         const from = Date.parse(rec.first_seen);
         const to = Date.parse(rec.last_seen);
-        return rec.count >= votesN && Number.isFinite(from) && Number.isFinite(to) && to - from >= spanHours * 3_600_000 && nowMs >= to;
+        return (
+          rec.count >= votesN &&
+          Number.isFinite(from) &&
+          Number.isFinite(to) &&
+          to - from >= spanHours * 3_600_000 &&
+          nowMs >= to
+        );
       });
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] listReadySelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] listReadySelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
 
   /** 自动采纳落账：state='auto_adopted' + attrs_json.auto_adopt 审计（prev 内容/版本/存在性、post 版本、门参数）；仅 pending 行可落，非 pending/租户不符 → false。 */
-  decidePendingCoreAuto(pendingId: string, tenant?: CoreTenant, audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } }): boolean {
+  decidePendingCoreAuto(
+    pendingId: string,
+    tenant?: CoreTenant,
+    audit?: {
+      prev_slot_content?: string;
+      prev_slot_version?: number;
+      prev_slot_existed?: boolean;
+      post_slot_version?: number;
+      gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
+    },
+  ): boolean {
     try {
-      const row = this.db.prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?").get(pendingId) as { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
+      const row = this.db
+        .prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?")
+        .get(pendingId) as
+        { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
       if (!row || row.state !== "pending") return false;
-      if (tenant && (row.team_id !== (tenant.teamId || "default") || row.user_id !== (tenant.userId || "default") || row.agent_id !== (tenant.agentId || "default"))) return false;
+      if (
+        tenant &&
+        (row.team_id !== (tenant.teamId || "default") ||
+          row.user_id !== (tenant.userId || "default") ||
+          row.agent_id !== (tenant.agentId || "default"))
+      )
+        return false;
       let attrs: Record<string, unknown> = {};
       try {
         const parsed = JSON.parse(row.attrs_json ?? "{}");
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) attrs = parsed as Record<string, unknown>;
-      } catch { /* 坏 attrs → 以审计对象覆盖（复现证据以 recurrence_json 为准，不受影响） */ }
+      } catch {
+        /* 坏 attrs → 以审计对象覆盖（复现证据以 recurrence_json 为准，不受影响） */
+      }
       attrs.auto_adopt = {
         adopted_at: new Date().toISOString(),
         ...(audit?.prev_slot_content !== undefined ? { prev_slot_content: audit.prev_slot_content } : {}),
@@ -3376,10 +4675,16 @@ export class VectorStore implements IMemoryStore {
         ...(audit?.post_slot_version !== undefined ? { post_slot_version: audit.post_slot_version } : {}),
         ...(audit?.gate ? { gate: audit.gate } : {}),
       };
-      const r = this.db.prepare("UPDATE core_pending SET state = 'auto_adopted', decided_at = ?, attrs_json = ? WHERE pending_id = ? AND state = 'pending'").run(new Date().toISOString(), JSON.stringify(attrs), pendingId);
+      const r = this.db
+        .prepare(
+          "UPDATE core_pending SET state = 'auto_adopted', decided_at = ?, attrs_json = ? WHERE pending_id = ? AND state = 'pending'",
+        )
+        .run(new Date().toISOString(), JSON.stringify(attrs), pendingId);
       return Number(r.changes) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] decidePendingCoreAuto failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] decidePendingCoreAuto failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -3392,16 +4697,28 @@ export class VectorStore implements IMemoryStore {
    * 看不见的拒绝 = 漏拦 = 早期被否掉的人格提案被自动采纳（人格污染，不可自动修复）。
    * 故按 (slot,tenant) 单列查询，零 LIMIT；只投影 content（门②只需要文本做相似度）。
    */
-  listRejectedSelfIdentityPending(tenant?: CoreTenant): Array<{ pending_id: string; content: string; created_at: string }> {
+  listRejectedSelfIdentityPending(
+    tenant?: CoreTenant,
+  ): Array<{ pending_id: string; content: string; created_at: string }> {
     try {
       const teamId = tenant?.teamId || "default";
       const userId = tenant?.userId || "default";
       const agentId = tenant?.agentId || "default";
-      return (this.db.prepare(
-        "SELECT pending_id, content, created_at FROM core_pending WHERE slot = 'self_identity' AND state = 'rejected' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC",
-      ).all(teamId, userId, agentId) as unknown as Array<{ pending_id: string; content: string; created_at: string }>) ?? [];
+      return (
+        (this.db
+          .prepare(
+            "SELECT pending_id, content, created_at FROM core_pending WHERE slot = 'self_identity' AND state = 'rejected' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC",
+          )
+          .all(teamId, userId, agentId) as unknown as Array<{
+          pending_id: string;
+          content: string;
+          created_at: string;
+        }>) ?? []
+      );
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] listRejectedSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] listRejectedSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -3427,7 +4744,13 @@ export class VectorStore implements IMemoryStore {
       content: string;
       source: string;
       writeSlot?: boolean;
-      audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } };
+      audit?: {
+        prev_slot_content?: string;
+        prev_slot_version?: number;
+        prev_slot_existed?: boolean;
+        post_slot_version?: number;
+        gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
+      };
     },
   ): boolean {
     const t = normalizeCoreTenant(tenant);
@@ -3437,19 +4760,30 @@ export class VectorStore implements IMemoryStore {
         const written = this.upsertCore(opts.slot, opts.content, opts.source, tenant);
         if (!written) throw new Error("upsertCore failed");
       }
-      const cur = this.db.prepare(
-        "SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
-      ).get(opts.slot, t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
+      const cur = this.db
+        .prepare("SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?")
+        .get(opts.slot, t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
       const postVersion = cur?.version ?? 0;
       // post_slot_version 由库内读回（同事务内），不接受调用方传入 —— 防两段路径的版本竞态。
-      const decided = this.decidePendingCoreAuto(pendingId, tenant, { ...(opts.audit ?? {}), post_slot_version: postVersion });
+      const decided = this.decidePendingCoreAuto(pendingId, tenant, {
+        ...(opts.audit ?? {}),
+        post_slot_version: postVersion,
+      });
       if (!decided) throw new Error("decidePendingCoreAuto rejected (not pending / tenant mismatch)");
       this.db.exec("RELEASE sp_auto_adopt_commit");
       return true;
     } catch (err) {
       // 审查先例（:2676 / :2908）：COMMIT 失败引擎可能已自动回滚，ROLLBACK 自兜底不掩蔽原始错误。
-      try { this.db.exec("ROLLBACK TO sp_auto_adopt_commit"); } catch { /* 保存点已不存在 */ }
-      try { this.db.exec("RELEASE sp_auto_adopt_commit"); } catch { /* 已释放 */ }
+      try {
+        this.db.exec("ROLLBACK TO sp_auto_adopt_commit");
+      } catch {
+        /* 保存点已不存在 */
+      }
+      try {
+        this.db.exec("RELEASE sp_auto_adopt_commit");
+      } catch {
+        /* 已释放 */
+      }
       this.logger?.warn?.(
         `${TAG} [core_pending] commitAutoAdoptCore rolled back pid=${pendingId}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -3461,31 +4795,66 @@ export class VectorStore implements IMemoryStore {
    *  prev_slot_existed=false → 删除采纳时创建的槽行，否则恢复 prev_slot_content（走 upsertCore 单一写路径 bump version）。零删除（recurrence/attrs 证据全留）。 */
   rollbackAutoAdoptedPending(pendingId: string, tenant?: CoreTenant): { restored: boolean; reason?: string } {
     try {
-      const row = this.db.prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?").get(pendingId) as { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
-      if (!row || row.state !== "auto_adopted") return { restored: false, reason: row ? "not-auto-adopted" : "not-found" };
-      if (tenant && (row.team_id !== (tenant.teamId || "default") || row.user_id !== (tenant.userId || "default") || row.agent_id !== (tenant.agentId || "default"))) return { restored: false, reason: "tenant-mismatch" };
-      let audit: { prev_slot_content?: unknown; prev_slot_version?: unknown; prev_slot_existed?: unknown; post_slot_version?: unknown } = {};
+      const row = this.db
+        .prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?")
+        .get(pendingId) as
+        { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
+      if (!row || row.state !== "auto_adopted")
+        return { restored: false, reason: row ? "not-auto-adopted" : "not-found" };
+      if (
+        tenant &&
+        (row.team_id !== (tenant.teamId || "default") ||
+          row.user_id !== (tenant.userId || "default") ||
+          row.agent_id !== (tenant.agentId || "default"))
+      )
+        return { restored: false, reason: "tenant-mismatch" };
+      let audit: {
+        prev_slot_content?: unknown;
+        prev_slot_version?: unknown;
+        prev_slot_existed?: unknown;
+        post_slot_version?: unknown;
+      } = {};
       try {
         const parsed = JSON.parse(row.attrs_json ?? "{}") as Record<string, unknown>;
         const aa = parsed && typeof parsed === "object" ? parsed.auto_adopt : undefined;
         if (aa && typeof aa === "object" && !Array.isArray(aa)) audit = aa as typeof audit;
-      } catch { /* 坏 attrs → 视为缺审计 */ }
+      } catch {
+        /* 坏 attrs → 视为缺审计 */
+      }
       if (typeof audit.post_slot_version !== "number") return { restored: false, reason: "audit-missing-post-version" };
       const t = normalizeCoreTenant(tenant);
-      const cur = this.db.prepare("SELECT version FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?").get(t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
+      const cur = this.db
+        .prepare(
+          "SELECT version FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .get(t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
       const curVersion = cur?.version ?? 0;
-      if (curVersion !== audit.post_slot_version) return { restored: false, reason: `slot-version-changed (current=${curVersion} != adopt-time=${audit.post_slot_version})` };
+      if (curVersion !== audit.post_slot_version)
+        return {
+          restored: false,
+          reason: `slot-version-changed (current=${curVersion} != adopt-time=${audit.post_slot_version})`,
+        };
       const prevExisted = audit.prev_slot_existed !== false; // 缺审计字段按存在处理（宁保守不误删）
       if (prevExisted) {
         const prevContent = typeof audit.prev_slot_content === "string" ? audit.prev_slot_content : "";
         this.upsertCore("self_identity", prevContent, "auto-adopt-rollback", tenant);
       } else {
-        this.db.prepare("DELETE FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?").run(t.teamId, t.userId, t.agentId);
+        this.db
+          .prepare(
+            "DELETE FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?",
+          )
+          .run(t.teamId, t.userId, t.agentId);
       }
-      const r = this.db.prepare("UPDATE core_pending SET state = 'rejected', decided_at = ? WHERE pending_id = ? AND state = 'auto_adopted'").run(new Date().toISOString(), pendingId);
+      const r = this.db
+        .prepare(
+          "UPDATE core_pending SET state = 'rejected', decided_at = ? WHERE pending_id = ? AND state = 'auto_adopted'",
+        )
+        .run(new Date().toISOString(), pendingId);
       return Number(r.changes) > 0 ? { restored: true } : { restored: false, reason: "state-flip-raced" };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] rollbackAutoAdoptedPending failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] rollbackAutoAdoptedPending failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return { restored: false, reason: "internal" };
     }
   }
@@ -3493,107 +4862,195 @@ export class VectorStore implements IMemoryStore {
   /** 单行 state 读（decide 路由分支用——列表读 LIMIT 面外/已决行不可达）。 */
   getPendingCoreState(pendingId: string): string | null {
     try {
-      const row = this.db.prepare("SELECT state FROM core_pending WHERE pending_id = ?").get(pendingId) as { state: string } | undefined;
+      const row = this.db.prepare("SELECT state FROM core_pending WHERE pending_id = ?").get(pendingId) as
+        { state: string } | undefined;
       return row?.state ?? null;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_pending] getPendingCoreState failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_pending] getPendingCoreState failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
 
   /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
-  getIdentityDiscoveryState(tenant?: CoreTenant): { lastAttemptAt: string | null; lastCorpusCount: number | null; supportMap?: Record<string, string[]> } {
+  getIdentityDiscoveryState(tenant?: CoreTenant): {
+    lastAttemptAt: string | null;
+    lastCorpusCount: number | null;
+    supportMap?: Record<string, string[]>;
+  } {
     try {
       const t = normalizeCoreTenant(tenant);
-      const suffix = (t.teamId === "default" && t.userId === "default" && t.agentId === "default") ? "" : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
+      const suffix =
+        t.teamId === "default" && t.userId === "default" && t.agentId === "default"
+          ? ""
+          : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
       // A-7b：supportMap（事实→支撑 record_ids）随身份状态持久化（第三键 JSON）——此前仅两键，
       // 写入侧 supportMap 被静默丢弃，GROW-MAINT 确定性重验无从读取（ev15 实证）。
-      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?)").all(`identity_last_attempt_at${suffix}`, `identity_last_corpus_count${suffix}`, `identity_support_map${suffix}`) as unknown as Array<{ k: string; v: string }>;
+      const rows = this.db
+        .prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?)")
+        .all(
+          `identity_last_attempt_at${suffix}`,
+          `identity_last_corpus_count${suffix}`,
+          `identity_support_map${suffix}`,
+        ) as unknown as Array<{ k: string; v: string }>;
       const map = new Map(rows.map((r) => [r.k, r.v]));
       const countRaw = map.get(`identity_last_corpus_count${suffix}`);
-      const count = countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
+      const count =
+        countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
       let supportMap: Record<string, string[]> | undefined;
       try {
         const rawSupport = map.get(`identity_support_map${suffix}`);
         if (rawSupport) supportMap = JSON.parse(rawSupport) as Record<string, string[]>;
-      } catch { /* 损坏 supportMap 视同缺失（宁缺毋滥，回退滑窗） */ }
-      return { lastAttemptAt: map.get(`identity_last_attempt_at${suffix}`) ?? null, lastCorpusCount: count, supportMap };
+      } catch {
+        /* 损坏 supportMap 视同缺失（宁缺毋滥，回退滑窗） */
+      }
+      return {
+        lastAttemptAt: map.get(`identity_last_attempt_at${suffix}`) ?? null,
+        lastCorpusCount: count,
+        supportMap,
+      };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [identity_discovery] getState failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [identity_discovery] getState failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return { lastAttemptAt: null, lastCorpusCount: null };
     }
   }
 
   /** SOUL：身份自发现状态写（独立键族——与锚状态互不覆盖）。 */
-  setIdentityDiscoveryState(state: { lastAttemptAt: string; lastCorpusCount: number; supportMap?: Record<string, string[]> }, tenant?: CoreTenant): void {
+  setIdentityDiscoveryState(
+    state: { lastAttemptAt: string; lastCorpusCount: number; supportMap?: Record<string, string[]> },
+    tenant?: CoreTenant,
+  ): void {
     try {
       const t = normalizeCoreTenant(tenant);
-      const suffix = (t.teamId === "default" && t.userId === "default" && t.agentId === "default") ? "" : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
+      const suffix =
+        t.teamId === "default" && t.userId === "default" && t.agentId === "default"
+          ? ""
+          : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
       const up = "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
       this.db.prepare(up).run(`identity_last_attempt_at${suffix}`, state.lastAttemptAt);
-      this.db.prepare(up).run(`identity_last_corpus_count${suffix}`, String(Math.max(0, Math.floor(state.lastCorpusCount))));
+      this.db
+        .prepare(up)
+        .run(`identity_last_corpus_count${suffix}`, String(Math.max(0, Math.floor(state.lastCorpusCount))));
       if (state.supportMap && Object.keys(state.supportMap).length > 0) {
         this.db.prepare(up).run(`identity_support_map${suffix}`, JSON.stringify(state.supportMap));
       }
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [identity_discovery] setState failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [identity_discovery] setState failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
-  getAnchorGrowthState(tenant?: CoreTenant): { lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null; lastMaintAt?: string | null } {
+  getAnchorGrowthState(tenant?: CoreTenant): {
+    lastDiscoveryAt: string | null;
+    lastCorpusCount: number | null;
+    lastAttemptAt?: string | null;
+    lastAdoptedAt?: string | null;
+    lastMaintAt?: string | null;
+  } {
     try {
       const keys = this.growthStateKeys(tenant);
-      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?, ?, ?)").all(keys.at, keys.count, keys.attempt, keys.adopted, keys.maint) as unknown as Array<{ k: string; v: string }>;
+      const rows = this.db
+        .prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?, ?, ?)")
+        .all(keys.at, keys.count, keys.attempt, keys.adopted, keys.maint) as unknown as Array<{ k: string; v: string }>;
       const map = new Map(rows.map((r) => [r.k, r.v]));
       const countRaw = map.get(keys.count);
-      const count = countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
-      return { lastDiscoveryAt: map.get(keys.at) ?? null, lastCorpusCount: count, lastAttemptAt: map.get(keys.attempt) ?? null, lastAdoptedAt: map.get(keys.adopted) ?? null, lastMaintAt: map.get(keys.maint) ?? null };
+      const count =
+        countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
+      return {
+        lastDiscoveryAt: map.get(keys.at) ?? null,
+        lastCorpusCount: count,
+        lastAttemptAt: map.get(keys.attempt) ?? null,
+        lastAdoptedAt: map.get(keys.adopted) ?? null,
+        lastMaintAt: map.get(keys.maint) ?? null,
+      };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [anchor_growth] getAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [anchor_growth] getAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return { lastDiscoveryAt: null, lastCorpusCount: null };
     }
   }
 
   /** PA：growth state kv 键——default/缺省 = 旧键（兼容存量状态）；非 default 三元组 = per-tenant 后缀键。
    *  后缀用 JSON.stringify 编码三元组（段内含分隔符也不碰撞，同 listValues cacheKey 的 S7 M-6 教训）。 */
-  private growthStateKeys(tenant?: CoreTenant): { at: string; count: string; attempt: string; adopted: string; maint: string } {
-    if (!tenant) return { at: "last_discovery_at", count: "last_corpus_count", attempt: "last_attempt_at", adopted: "last_adopted_at", maint: "last_maint_at" };
+  private growthStateKeys(tenant?: CoreTenant): {
+    at: string;
+    count: string;
+    attempt: string;
+    adopted: string;
+    maint: string;
+  } {
+    if (!tenant)
+      return {
+        at: "last_discovery_at",
+        count: "last_corpus_count",
+        attempt: "last_attempt_at",
+        adopted: "last_adopted_at",
+        maint: "last_maint_at",
+      };
     const t = normalizeCoreTenant(tenant);
     if (t.teamId === "default" && t.userId === "default" && t.agentId === "default") {
-      return { at: "last_discovery_at", count: "last_corpus_count", attempt: "last_attempt_at", adopted: "last_adopted_at", maint: "last_maint_at" };
+      return {
+        at: "last_discovery_at",
+        count: "last_corpus_count",
+        attempt: "last_attempt_at",
+        adopted: "last_adopted_at",
+        maint: "last_maint_at",
+      };
     }
     const suffix = JSON.stringify([t.teamId, t.userId, t.agentId]);
-    return { at: `last_discovery_at:${suffix}`, count: `last_corpus_count:${suffix}`, attempt: `last_attempt_at:${suffix}`, adopted: `last_adopted_at:${suffix}`, maint: `last_maint_at:${suffix}` };
+    return {
+      at: `last_discovery_at:${suffix}`,
+      count: `last_corpus_count:${suffix}`,
+      attempt: `last_attempt_at:${suffix}`,
+      adopted: `last_adopted_at:${suffix}`,
+      maint: `last_maint_at:${suffix}`,
+    };
   }
 
   /** GROW：自生长调度状态写（发现轮次完成后调用；失败重抛——由自生长模块整体 catch）。
    *  PA：tenant 语义同 getAnchorGrowthState（default/缺省旧键，非 default per-tenant 键）。 */
-  setAnchorGrowthState(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string; lastMaintAt?: string }, tenant?: CoreTenant): void {
+  setAnchorGrowthState(
+    state: {
+      lastDiscoveryAt: string;
+      lastCorpusCount: number;
+      lastAttemptAt?: string;
+      lastAdoptedAt?: string;
+      lastMaintAt?: string;
+    },
+    tenant?: CoreTenant,
+  ): void {
     try {
       const keys = this.growthStateKeys(tenant);
-      this.db.prepare(
-        "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-      ).run(keys.at, state.lastDiscoveryAt);
-      this.db.prepare(
-        "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-      ).run(keys.count, String(Math.max(0, Math.floor(state.lastCorpusCount))));
+      this.db
+        .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+        .run(keys.at, state.lastDiscoveryAt);
+      this.db
+        .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+        .run(keys.count, String(Math.max(0, Math.floor(state.lastCorpusCount))));
       if (state.lastAttemptAt !== undefined) {
-        this.db.prepare(
-          "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        ).run(keys.attempt, state.lastAttemptAt);
+        this.db
+          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+          .run(keys.attempt, state.lastAttemptAt);
       }
       if (state.lastAdoptedAt !== undefined) {
-        this.db.prepare(
-          "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        ).run(keys.adopted, state.lastAdoptedAt);
+        this.db
+          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+          .run(keys.adopted, state.lastAdoptedAt);
       }
       if (state.lastMaintAt !== undefined) {
-        this.db.prepare(
-          "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        ).run(keys.maint, state.lastMaintAt);
+        this.db
+          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+          .run(keys.maint, state.lastMaintAt);
       }
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [anchor_growth] setAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [anchor_growth] setAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       throw err;
     }
   }
@@ -3603,27 +5060,36 @@ export class VectorStore implements IMemoryStore {
    *  与 growth state 四键分立：写入方（self-obs 块）不得 clobber 调度状态。 */
   getSelfObsBaseline(): { l1: number; archived: number } | null {
     try {
-      const rows = this.db.prepare("SELECT k, v FROM anchor_growth_state WHERE k IN ('obs_l1_total', 'obs_archive_total')").all() as unknown as Array<{ k: string; v: string }>;
+      const rows = this.db
+        .prepare("SELECT k, v FROM anchor_growth_state WHERE k IN ('obs_l1_total', 'obs_archive_total')")
+        .all() as unknown as Array<{ k: string; v: string }>;
       const map = new Map(rows.map((r) => [r.k, r.v]));
       const l1 = Number(map.get("obs_l1_total"));
       const archived = Number(map.get("obs_archive_total"));
       if (!Number.isFinite(l1) || !Number.isFinite(archived)) return null;
       return { l1, archived };
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [anchor_growth] getSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [anchor_growth] getSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   }
 
   setSelfObsBaseline(baseline: { l1: number; archived: number }): void {
     try {
-      for (const pair of [["obs_l1_total", baseline.l1], ["obs_archive_total", baseline.archived]] as const) {
-        this.db.prepare(
-          "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        ).run(pair[0], String(Math.max(0, Math.floor(pair[1]))));
+      for (const pair of [
+        ["obs_l1_total", baseline.l1],
+        ["obs_archive_total", baseline.archived],
+      ] as const) {
+        this.db
+          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+          .run(pair[0], String(Math.max(0, Math.floor(pair[1]))));
       }
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [anchor_growth] setSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [anchor_growth] setSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -3635,12 +5101,16 @@ export class VectorStore implements IMemoryStore {
   listL1TenantTriplets(): CoreTenant[] {
     if (this.degraded) return [];
     try {
-      const rows = this.db.prepare(
-        "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM l1_records",
-      ).all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
+      const rows = this.db
+        .prepare(
+          "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM l1_records",
+        )
+        .all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
       return rows.map((r) => normalizeCoreTenant({ teamId: r.team_id, userId: r.user_id, agentId: r.agent_id }));
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [L1-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [L1-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -3654,12 +5124,16 @@ export class VectorStore implements IMemoryStore {
   listNullValenceTenantTriplets(): CoreTenant[] {
     if (this.degraded) return [];
     try {
-      const rows = this.db.prepare(
-        "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM core_values WHERE valence IS NULL AND state='active'",
-      ).all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
+      const rows = this.db
+        .prepare(
+          "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM core_values WHERE valence IS NULL AND state='active'",
+        )
+        .all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
       return rows.map((r) => normalizeCoreTenant({ teamId: r.team_id, userId: r.user_id, agentId: r.agent_id }));
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values-null-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values-null-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -3672,7 +5146,27 @@ export class VectorStore implements IMemoryStore {
     const out: Array<import("./types.js").L1SearchResult> = [];
     try {
       for (const rid of ids) {
-        const meta = this.stmtGetMeta.get(rid) as { content: string; type: string; priority: number; scene_name: string; timestamp_start: string; timestamp_end: string; occurred_at?: string; valid_start?: string; certainty?: string; source?: string; valence?: number; arousal?: number; significance?: number; importance?: number | null; sensitivity?: string } | undefined;
+        const meta = this.stmtGetMeta.get(rid) as
+          | {
+              content: string;
+              type: string;
+              priority: number;
+              scene_name: string;
+              timestamp_str?: string;
+              timestamp_end: string;
+              occurred_at?: string;
+              valid_start?: string;
+              certainty?: string;
+              valence?: number;
+              arousal?: number;
+              significance?: number;
+              importance?: number | null;
+              sensitivity?: string;
+              source_message_ids?: string;
+              /** B 项：stmtGetMeta 已 SELECT updated_time（行最近更新时间）。 */
+              updated_time?: string;
+            }
+          | undefined;
         if (!meta) continue;
         out.push({
           record_id: rid,
@@ -3681,8 +5175,9 @@ export class VectorStore implements IMemoryStore {
           priority: meta.priority,
           scene_name: meta.scene_name,
           score: 0,
-          timestamp_str: (meta as { timestamp_str?: string }).timestamp_str ?? "",
-          timestamp_start: meta.timestamp_start,
+          timestamp_str: meta.timestamp_str ?? "",
+          // ADR-0025 C3：列已删，对外字段取 timestamp_str（历史值逐位相等）
+          timestamp_start: meta.timestamp_str ?? "",
           timestamp_end: meta.timestamp_end,
           version: 0,
           session_key: (meta as { session_key?: string }).session_key ?? "",
@@ -3695,18 +5190,22 @@ export class VectorStore implements IMemoryStore {
           // P1-T7：created_time 读回——v2 编辑/人工调整链 upsert 时 createdAt 需要原值，
           // 否则每次编辑把 created_time 列刷空（node:sqlite undefined 绑定行为依赖实现细节）。
           created_time: (meta as { created_time?: string }).created_time ?? "",
-          occurred_at: meta.occurred_at ?? undefined,
-          valid_start: meta.valid_start ?? undefined,
-          valid_end: (meta as { valid_end?: string }).valid_end ?? undefined,
-          certainty: meta.certainty ?? undefined,
-          source: meta.source ?? undefined,
-          valence: meta.valence ?? undefined,
-          arousal: meta.arousal ?? undefined,
-          significance: meta.significance ?? undefined,
+          occurred_at: optionalText(meta.occurred_at),
+          valid_start: optionalText(meta.valid_start),
+          valid_end: optionalText((meta as { valid_end?: string }).valid_end),
+          certainty: optionalText(meta.certainty),
+          valence: optionalNumber(meta.valence),
+          arousal: optionalNumber(meta.arousal),
+          significance: optionalNumber(meta.significance),
           // D-3：敏感性透传（getL1ByIds 精确读回——v2 编辑链/人工调整链以本方法取 soul 全量，
           // 漏映射会在 excluded.* 重写时把既有 sensitivity 刷回默认；与向量路 3529 同口径）。
-          sensitivity: meta.sensitivity ?? undefined,
+          sensitivity: optionalText(meta.sensitivity),
           importance: meta.importance ?? null,
+          // P0：行级原话溯源——v2 编辑/人工调整链以本方法取行后原样重建再 upsertL1
+          // （ON CONFLICT 对 soul 列 excluded.* 整行覆盖），此处漏映射 = 编辑一次刷空。
+          source_message_ids: parseSourceMessageIds(meta.source_message_ids),
+          // B 项：行最近更新时间（stmtGetMeta 已 SELECT updated_time）
+          updated_time: meta.updated_time || undefined,
         });
       }
       return out;
@@ -3729,7 +5228,8 @@ export class VectorStore implements IMemoryStore {
     const out = [...live];
     try {
       for (const id of missing) {
-        const row = this.db.prepare("SELECT data FROM l1_archive WHERE record_id = ?").get(id) as { data: string } | undefined;
+        const row = this.db.prepare("SELECT data FROM l1_archive WHERE record_id = ?").get(id) as
+          { data: string } | undefined;
         if (!row) continue;
         const d = JSON.parse(row.data) as Record<string, unknown>;
         out.push({
@@ -3740,7 +5240,8 @@ export class VectorStore implements IMemoryStore {
           scene_name: String(d.scene_name ?? ""),
           score: 0,
           timestamp_str: String(d.timestamp_str ?? ""),
-          timestamp_start: String(d.timestamp_start ?? ""),
+          // ADR-0025 C3：老归档 JSON 里的 timestamp_start 键被忽略，统一取 timestamp_str
+          timestamp_start: String(d.timestamp_str ?? ""),
           timestamp_end: String(d.timestamp_end ?? ""),
           version: Number(d.version ?? 0),
           session_key: String(d.session_key ?? ""),
@@ -3754,16 +5255,19 @@ export class VectorStore implements IMemoryStore {
           valid_start: (d.valid_start as string) || undefined,
           valid_end: (d.valid_end as string) || undefined,
           certainty: (d.certainty as string) || undefined,
-          source: (d.source as string) || undefined,
           valence: (d.valence as number) ?? undefined,
           arousal: (d.arousal as number) ?? undefined,
           significance: (d.significance as number) ?? undefined,
           importance: (d.importance as number | null | undefined) ?? null,
+          // B 项：归档 JSON 里若带 updated_time 则原样带回（缺省/空串 → undefined，消费方回退 timestamp_end）
+          updated_time: (d.updated_time as string) || undefined,
         });
       }
       return out;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [l1_links] getL1ByIdsWithArchive failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [l1_links] getL1ByIdsWithArchive failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return out;
     }
   }
@@ -3775,7 +5279,11 @@ export class VectorStore implements IMemoryStore {
    * 租户 filter 两步过滤（T14 同形：rowMatchesIsolation 复核；filter 缺省=旧行为）。
    * 返回按 updated_time DESC 的至多 limit 行（score 恒 0——相关度由调用方排序层赋予）。
    */
-  searchL1ByCoreRefs(labels: string[], limit = 10, filter?: IsolationFilter): Array<import("./types.js").L1SearchResult> {
+  searchL1ByCoreRefs(
+    labels: string[],
+    limit = 10,
+    filter?: IsolationFilter,
+  ): Array<import("./types.js").L1SearchResult> {
     if (!labels || labels.length === 0 || limit <= 0) return [];
     const wanted = new Set(labels.filter((l) => typeof l === "string" && l.trim().length > 0));
     if (wanted.size === 0) return [];
@@ -3784,7 +5292,7 @@ export class VectorStore implements IMemoryStore {
       const rows = this.db
         .prepare(
           `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
-                  version, timestamp_str, timestamp_start, timestamp_end, metadata_json,
+                  version, timestamp_str, timestamp_end, metadata_json, source_message_ids, updated_time,
                   ${SOUL_SELECT_FRAGMENT}
            FROM l1_records WHERE (metadata_json LIKE '%coreRefs%' OR metadata_json LIKE '%personRefs%') ORDER BY updated_time DESC LIMIT ?`,
         )
@@ -3802,6 +5310,7 @@ export class VectorStore implements IMemoryStore {
         agent_id: string;
         version: number;
         timestamp_str: string;
+        /** @deprecated ADR-0025 C3：列已删，恒取 timestamp_str。 */
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
@@ -3809,11 +5318,13 @@ export class VectorStore implements IMemoryStore {
         valid_start?: string | null;
         valid_end?: string | null;
         certainty?: string | null;
-        source?: string | null;
+        sensitivity?: string | null;
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
         importance?: number | null;
+        source_message_ids?: string | null;
+        updated_time?: string | null;
       }>;
       const out: Array<import("./types.js").L1SearchResult> = [];
       for (const r of rows) {
@@ -3842,7 +5353,7 @@ export class VectorStore implements IMemoryStore {
           scene_name: r.scene_name,
           score: 0,
           timestamp_str: r.timestamp_str,
-          timestamp_start: r.timestamp_start,
+          timestamp_start: r.timestamp_str,
           timestamp_end: r.timestamp_end,
           version: r.version ?? 0,
           session_key: r.session_key,
@@ -3856,16 +5367,81 @@ export class VectorStore implements IMemoryStore {
           valid_start: r.valid_start ?? undefined,
           valid_end: r.valid_end ?? undefined,
           certainty: r.certainty ?? undefined,
-          source: r.source ?? undefined,
+          sensitivity: r.sensitivity ?? undefined,
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
           importance: r.importance ?? null,
+          source_message_ids: parseSourceMessageIds(r.source_message_ids),
+          // B 项：行最近更新时间（l1_records.updated_time 直取）
+          updated_time: r.updated_time || undefined,
         });
       }
       return out;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_values] searchL1ByCoreRefs failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [core_values] searchL1ByCoreRefs failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * task-9（2026-11-04，来源证据主键）：按 source_message_ids（L0 原话 id）反查 L1 记忆。
+   * LIKE 预筛（id 子串命中，粗读成本有界）+ parseSourceMessageIds 精确集合复核（宁缺毋滥：
+   * 无交集/坏 JSON 行不返回）+ rowMatchesIsolation 租户复核（filter 缺省=旧行为，不窄化）。
+   * 返回按 updated_time DESC 的至多 limit 行；limit 硬上限 50（提取期只需「存在覆盖者」）。
+   */
+  findL1BySourceMessageIds(
+    ids: string[],
+    filter?: IsolationFilter,
+    limit = 50,
+  ): Array<{ record_id: string; source_message_ids: string[] }> {
+    const wanted = Array.from(
+      new Set(
+        (Array.isArray(ids) ? ids : []).filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        ),
+      ),
+    ).slice(0, 20);
+    if (wanted.length === 0) return [];
+    const cap = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 50) : 50;
+    try {
+      // LIKE 通配符转义：id 里的 %/_/反斜杠 按字面匹配（JS 侧仍做精确复核，转义只为少读）。
+      const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (ch) => "\\" + ch);
+      const retrieveLimit = Math.min(Math.max(cap * 20, 100), 500);
+      const where = wanted.map(() => "source_message_ids LIKE ? ESCAPE '\\'").join(" OR ");
+      const rows = this.db
+        .prepare(
+          `SELECT record_id, source_message_ids, team_id, user_id, agent_id, session_id, task_id, session_key, updated_time
+           FROM l1_records WHERE (${where}) ORDER BY updated_time DESC LIMIT ?`,
+        )
+        .all(...wanted.map((id) => `%${escapeLike(id)}%`), retrieveLimit) as Array<{
+        record_id: string;
+        source_message_ids: string | null;
+        team_id: string;
+        user_id: string;
+        agent_id: string;
+        session_id: string;
+        task_id: string;
+        session_key: string;
+        updated_time?: string | null;
+      }>;
+      const wantedSet = new Set(wanted);
+      const out: Array<{ record_id: string; source_message_ids: string[] }> = [];
+      for (const row of rows) {
+        if (out.length >= cap) break;
+        if (!rowMatchesIsolation(row, filter)) continue;
+        const parsed = parseSourceMessageIds(row.source_message_ids);
+        if (parsed.length === 0) continue;
+        if (!parsed.some((id) => wantedSet.has(id))) continue;
+        out.push({ record_id: row.record_id, source_message_ids: parsed });
+      }
+      return out;
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [source_ids] findL1BySourceMessageIds failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -3878,13 +5454,17 @@ export class VectorStore implements IMemoryStore {
    * 复核；filter 缺省 = L1 召回全局路径旧行为）。返回按 updated_time DESC 的至多 limit 行
    * （score 恒 0——相关度由调用方排序层赋予）。
    */
-  searchL1ByScene(sceneNames: string[], limit = 10, filter?: IsolationFilter): Array<import("./types.js").L1SearchResult> {
+  searchL1ByScene(
+    sceneNames: string[],
+    limit = 10,
+    filter?: IsolationFilter,
+  ): Array<import("./types.js").L1SearchResult> {
     if (!sceneNames || sceneNames.length === 0 || limit <= 0) return [];
-    const wanted = [...new Set(
-      sceneNames
-        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-        .map((s) => s.trim()),
-    )];
+    const wanted = [
+      ...new Set(
+        sceneNames.filter((s): s is string => typeof s === "string" && s.trim().length > 0).map((s) => s.trim()),
+      ),
+    ];
     if (wanted.length === 0) return [];
     try {
       const conds = wanted.map(() => "(scene_name = ? OR scene_name LIKE ? || '/%')").join(" OR ");
@@ -3893,7 +5473,7 @@ export class VectorStore implements IMemoryStore {
       const rows = this.db
         .prepare(
           `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
-                  version, timestamp_str, timestamp_start, timestamp_end, metadata_json,
+                  version, timestamp_str, timestamp_end, metadata_json, source_message_ids, updated_time,
                   ${SOUL_SELECT_FRAGMENT}
            FROM l1_records WHERE (${conds}) ORDER BY updated_time DESC LIMIT ?`,
         )
@@ -3911,6 +5491,7 @@ export class VectorStore implements IMemoryStore {
         agent_id: string;
         version: number;
         timestamp_str: string;
+        /** @deprecated ADR-0025 C3：列已删，恒取 timestamp_str。 */
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
@@ -3918,11 +5499,13 @@ export class VectorStore implements IMemoryStore {
         valid_start?: string | null;
         valid_end?: string | null;
         certainty?: string | null;
-        source?: string | null;
+        sensitivity?: string | null;
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
         importance?: number | null;
+        source_message_ids?: string | null;
+        updated_time?: string | null;
       }>;
       const out: Array<import("./types.js").L1SearchResult> = [];
       for (const r of rows) {
@@ -3936,7 +5519,7 @@ export class VectorStore implements IMemoryStore {
           scene_name: r.scene_name,
           score: 0,
           timestamp_str: r.timestamp_str,
-          timestamp_start: r.timestamp_start,
+          timestamp_start: r.timestamp_str,
           timestamp_end: r.timestamp_end,
           version: r.version ?? 0,
           session_key: r.session_key,
@@ -3950,16 +5533,21 @@ export class VectorStore implements IMemoryStore {
           valid_start: r.valid_start ?? undefined,
           valid_end: r.valid_end ?? undefined,
           certainty: r.certainty ?? undefined,
-          source: r.source ?? undefined,
+          sensitivity: r.sensitivity ?? undefined,
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
           importance: r.importance ?? null,
+          source_message_ids: parseSourceMessageIds(r.source_message_ids),
+          // B 项：行最近更新时间（l1_records.updated_time 直取）
+          updated_time: r.updated_time || undefined,
         });
       }
       return out;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [scene] searchL1ByScene failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [scene] searchL1ByScene failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -3976,7 +5564,7 @@ export class VectorStore implements IMemoryStore {
       const rows = this.db
         .prepare(
           `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
-                  version, timestamp_str, timestamp_start, timestamp_end, metadata_json,
+                  version, timestamp_str, timestamp_end, metadata_json, source_message_ids, updated_time,
                   ${SOUL_SELECT_FRAGMENT}
            FROM l1_records WHERE type = ? ORDER BY significance DESC LIMIT ?`,
         )
@@ -3994,6 +5582,7 @@ export class VectorStore implements IMemoryStore {
         agent_id: string;
         version: number;
         timestamp_str: string;
+        /** @deprecated ADR-0025 C3：列已删，恒取 timestamp_str。 */
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
@@ -4001,11 +5590,13 @@ export class VectorStore implements IMemoryStore {
         valid_start?: string | null;
         valid_end?: string | null;
         certainty?: string | null;
-        source?: string | null;
+        sensitivity?: string | null;
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
         importance?: number | null;
+        source_message_ids?: string | null;
+        updated_time?: string | null;
       }>;
       const out: Array<import("./types.js").L1SearchResult> = [];
       for (const r of rows) {
@@ -4019,7 +5610,7 @@ export class VectorStore implements IMemoryStore {
           scene_name: r.scene_name,
           score: 0,
           timestamp_str: r.timestamp_str,
-          timestamp_start: r.timestamp_start,
+          timestamp_start: r.timestamp_str,
           timestamp_end: r.timestamp_end,
           version: r.version ?? 0,
           session_key: r.session_key,
@@ -4033,16 +5624,21 @@ export class VectorStore implements IMemoryStore {
           valid_start: r.valid_start ?? undefined,
           valid_end: r.valid_end ?? undefined,
           certainty: r.certainty ?? undefined,
-          source: r.source ?? undefined,
+          sensitivity: r.sensitivity ?? undefined,
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
           importance: r.importance ?? null,
+          source_message_ids: parseSourceMessageIds(r.source_message_ids),
+          // B 项：行最近更新时间（l1_records.updated_time 直取）
+          updated_time: r.updated_time || undefined,
         });
       }
       return out;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [recall] searchL1ByType failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [recall] searchL1ByType failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
       return [];
     }
   }
@@ -4090,7 +5686,12 @@ export class VectorStore implements IMemoryStore {
     return out;
   }
 
-  searchL1Vector(queryEmbedding: Float32Array, topK = 5, _queryText?: string, filter?: IsolationFilter): VectorSearchResult[] {
+  searchL1Vector(
+    queryEmbedding: Float32Array,
+    topK = 5,
+    _queryText?: string,
+    filter?: IsolationFilter,
+  ): VectorSearchResult[] {
     if (this.degraded || !this.vecTablesReady) {
       if (this.degraded) this.logger?.warn(`${TAG} [L1-search] SKIPPED (degraded mode)`);
       return [];
@@ -4108,8 +5709,8 @@ export class VectorStore implements IMemoryStore {
 
       this.logger?.debug?.(
         `${TAG} [L1-search] START topK=${topK}, retrieveCount=${retrieveCount}, ` +
-        `queryEmbeddingDims=${queryEmbedding.length}, ` +
-        `queryNorm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
+          `queryEmbeddingDims=${queryEmbedding.length}, ` +
+          `queryNorm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
       );
 
       const rows = this.stmtSearchVec!.all(
@@ -4147,6 +5748,7 @@ export class VectorStore implements IMemoryStore {
               agent_id: string;
               version: number;
               timestamp_str: string;
+              /** @deprecated ADR-0025 C3：列已删，恒取 timestamp_str。 */
               timestamp_start: string;
               timestamp_end: string;
               metadata_json: string;
@@ -4154,12 +5756,14 @@ export class VectorStore implements IMemoryStore {
               valid_start?: string;
               valid_end?: string;
               certainty?: string;
-              source?: string;
               valence?: number;
               arousal?: number;
               significance?: number;
               sensitivity?: string;
               importance?: number | null;
+              source_message_ids?: string | null;
+              /** B 项：stmtGetMeta 已 SELECT updated_time（行最近更新时间）。 */
+              updated_time?: string;
             }
           | undefined;
 
@@ -4174,7 +5778,7 @@ export class VectorStore implements IMemoryStore {
         const score = 1.0 - distance;
         this.logger?.debug?.(
           `${TAG} [L1-search] HIT id=${record_id}, distance=${distance.toFixed(4)}, score=${score.toFixed(4)}, ` +
-          `type=${meta.type}, content="${meta.content.slice(0, 60)}..."`,
+            `type=${meta.type}, content="${meta.content.slice(0, 60)}..."`,
         );
 
         results.push({
@@ -4185,7 +5789,7 @@ export class VectorStore implements IMemoryStore {
           scene_name: meta.scene_name,
           score,
           timestamp_str: meta.timestamp_str,
-          timestamp_start: meta.timestamp_start,
+          timestamp_start: meta.timestamp_str,
           timestamp_end: meta.timestamp_end,
           version: meta.version ?? 0,
           session_key: meta.session_key,
@@ -4199,7 +5803,6 @@ export class VectorStore implements IMemoryStore {
           valid_start: meta.valid_start ?? undefined,
           valid_end: meta.valid_end ?? undefined,
           certainty: meta.certainty ?? undefined,
-          source: meta.source ?? undefined,
           valence: meta.valence ?? undefined,
           arousal: meta.arousal ?? undefined,
           significance: meta.significance ?? undefined,
@@ -4207,6 +5810,10 @@ export class VectorStore implements IMemoryStore {
           sensitivity: meta.sensitivity ?? undefined,
           // P1-T7：importance 透传（NULL→null，未评分=召回面永不降权）
           importance: meta.importance ?? null,
+          // P0-1：溯源列透传（stmtGetMeta 已 SELECT source_message_ids）
+          source_message_ids: parseSourceMessageIds(meta.source_message_ids),
+          // B 项：行最近更新时间透传（stmtGetMeta 已 SELECT updated_time）
+          updated_time: meta.updated_time || undefined,
         });
       }
 
@@ -4249,7 +5856,10 @@ export class VectorStore implements IMemoryStore {
     // 零向量：cosine 未定义（vec0 返回 null distance），与 upsertL1 同口径不写入。
     let nonZero = false;
     for (let i = 0; i < embedding.length; i++) {
-      if (embedding[i] !== 0) { nonZero = true; break; }
+      if (embedding[i] !== 0) {
+        nonZero = true;
+        break;
+      }
     }
     if (!nonZero) {
       this.logger?.debug?.(`${TAG} [L1-fact-vec] skip zero vector id=${recordId}`);
@@ -4264,7 +5874,11 @@ export class VectorStore implements IMemoryStore {
         this.stmtInsertFactVec.run(recordId, buf, ts);
         this.db.exec("COMMIT");
       } catch (txErr) {
-        try { this.db.exec("ROLLBACK"); } catch { /* ignore rollback errors */ }
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+          /* ignore rollback errors */
+        }
         throw txErr;
       }
       this.logger?.debug?.(`${TAG} [L1-fact-vec] OK id=${recordId} dims=${embedding.length}`);
@@ -4331,6 +5945,7 @@ export class VectorStore implements IMemoryStore {
               agent_id: string;
               version: number;
               timestamp_str: string;
+              /** @deprecated ADR-0025 C3：列已删，恒取 timestamp_str。 */
               timestamp_start: string;
               timestamp_end: string;
               metadata_json: string;
@@ -4338,12 +5953,14 @@ export class VectorStore implements IMemoryStore {
               valid_start?: string;
               valid_end?: string;
               certainty?: string;
-              source?: string;
               valence?: number;
               arousal?: number;
               significance?: number;
               sensitivity?: string;
               importance?: number | null;
+              source_message_ids?: string | null;
+              /** B 项：stmtGetMeta 已 SELECT updated_time（行最近更新时间）。 */
+              updated_time?: string;
             }
           | undefined;
 
@@ -4364,7 +5981,7 @@ export class VectorStore implements IMemoryStore {
           scene_name: meta.scene_name,
           score,
           timestamp_str: meta.timestamp_str,
-          timestamp_start: meta.timestamp_start,
+          timestamp_start: meta.timestamp_str,
           timestamp_end: meta.timestamp_end,
           version: meta.version ?? 0,
           session_key: meta.session_key,
@@ -4378,12 +5995,15 @@ export class VectorStore implements IMemoryStore {
           valid_start: meta.valid_start ?? undefined,
           valid_end: meta.valid_end ?? undefined,
           certainty: meta.certainty ?? undefined,
-          source: meta.source ?? undefined,
           valence: meta.valence ?? undefined,
           arousal: meta.arousal ?? undefined,
           significance: meta.significance ?? undefined,
           sensitivity: meta.sensitivity ?? undefined,
           importance: meta.importance ?? null,
+          // P0-1：溯源列透传（stmtGetMeta 已 SELECT source_message_ids）
+          source_message_ids: parseSourceMessageIds(meta.source_message_ids),
+          // B 项：行最近更新时间透传（stmtGetMeta 已 SELECT updated_time）
+          updated_time: meta.updated_time || undefined,
         });
       }
 
@@ -4404,8 +6024,7 @@ export class VectorStore implements IMemoryStore {
   private getL1UpdatedTime(recordId: string): string | undefined {
     try {
       const row = this.db.prepare("SELECT updated_time FROM l1_records WHERE record_id = ?").get(recordId) as
-        | { updated_time?: string }
-        | undefined;
+        { updated_time?: string } | undefined;
       const ts = row?.updated_time;
       return typeof ts === "string" && ts !== "" ? ts : undefined;
     } catch {
@@ -4422,7 +6041,8 @@ export class VectorStore implements IMemoryStore {
     if (this.degraded) return false;
     try {
       if (filter) {
-        const meta = this.stmtGetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
+        const meta = this.stmtGetMeta.get(recordId) as
+          { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
         if (!meta || !rowMatchesIsolation(meta, filter)) return false;
       }
       this.db.exec("BEGIN");
@@ -4433,22 +6053,30 @@ export class VectorStore implements IMemoryStore {
         // #137：硬删同步清事实键通道向量
         if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(recordId);
         if (this.ftsAvailable) {
-          try { this.stmtL1FtsDelete.run(recordId); } catch { /* non-fatal */ }
+          try {
+            this.stmtL1FtsDelete.run(recordId);
+          } catch {
+            /* non-fatal */
+          }
         }
         // 图设计 §5：删除时级联删除其边（硬删路径；archive 路径不删——边指向归档记录合法）。
-        try { this.deleteLinksFor(recordId); } catch { /* non-fatal */ }
+        try {
+          this.deleteLinksFor(recordId);
+        } catch {
+          /* non-fatal */
+        }
         this.db.exec("COMMIT");
         return deleted;
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
     } catch (err) {
-      this.logger?.warn(
-        `${TAG} delete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.warn(`${TAG} delete failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -4467,7 +6095,8 @@ export class VectorStore implements IMemoryStore {
       try {
         for (const id of recordIds) {
           if (filter) {
-            const meta = this.stmtGetMeta.get(id) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
+            const meta = this.stmtGetMeta.get(id) as
+              { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
             if (!meta || !rowMatchesIsolation(meta, filter)) continue;
           }
           this.stmtDeleteMeta.run(id);
@@ -4475,23 +6104,31 @@ export class VectorStore implements IMemoryStore {
           // #137：批量硬删同步清事实键通道向量
           if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(id);
           if (this.ftsAvailable) {
-            try { this.stmtL1FtsDelete.run(id); } catch { /* non-fatal */ }
+            try {
+              this.stmtL1FtsDelete.run(id);
+            } catch {
+              /* non-fatal */
+            }
           }
           // 图设计 §5：硬删批量时也级联删边。
-          try { this.deleteLinksFor(id); } catch { /* non-fatal */ }
+          try {
+            this.deleteLinksFor(id);
+          } catch {
+            /* non-fatal */
+          }
         }
         this.db.exec("COMMIT");
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
       return true;
     } catch (err) {
-      this.logger?.warn(
-        `${TAG} deleteBatch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.warn(`${TAG} deleteBatch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -4512,16 +6149,24 @@ export class VectorStore implements IMemoryStore {
   updateL1Metadata(id: string, patch: Record<string, unknown>): boolean {
     if (this.degraded) return false;
     try {
-      const row = this.db.prepare("SELECT metadata_json FROM l1_records WHERE record_id = ?").get(id) as { metadata_json?: string } | undefined;
+      const row = this.db.prepare("SELECT metadata_json FROM l1_records WHERE record_id = ?").get(id) as
+        { metadata_json?: string } | undefined;
       if (!row) return false;
       let meta: Record<string, unknown> = {};
-      try { meta = row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : {}; } catch { meta = {}; }
+      try {
+        meta = row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : {};
+      } catch {
+        meta = {};
+      }
       const merged = JSON.stringify({ ...meta, ...patch });
-      const res = this.db.prepare("UPDATE l1_records SET metadata_json = ?, updated_time = ? WHERE record_id = ?")
+      const res = this.db
+        .prepare("UPDATE l1_records SET metadata_json = ?, updated_time = ? WHERE record_id = ?")
         .run(merged, new Date().toISOString(), id);
       return ((res as unknown as { changes?: number }).changes ?? 0) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [reconsolidation] updateL1Metadata failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [reconsolidation] updateL1Metadata failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -4535,7 +6180,9 @@ export class VectorStore implements IMemoryStore {
     if (corruptJsonWarnedIds.has(id)) return;
     if (corruptJsonWarnedIds.size < CORRUPT_JSON_WARN_MAX_IDS) {
       corruptJsonWarnedIds.add(id);
-      this.logger?.warn?.(`${TAG} [reconsolidation] bumpRecallCount 跳过损坏 metadata_json（每行仅 warn 一次）record_id=${id}: ${detail}`);
+      this.logger?.warn?.(
+        `${TAG} [reconsolidation] bumpRecallCount 跳过损坏 metadata_json（每行仅 warn 一次）record_id=${id}: ${detail}`,
+      );
       return;
     }
     corruptJsonOverflowCount += 1;
@@ -4568,8 +6215,8 @@ export class VectorStore implements IMemoryStore {
       // 此处先显式裁决，再由 WHERE json_valid 过滤兜底。
       // 注意：json_type() 对损坏 JSON 会抛错（malformed JSON），必须先单独
       // json_valid 判定、仅对合法 JSON 再取 json_type —— 两者不可合并为一条语句。
-      const cur = this.db.prepare("SELECT metadata_json FROM l1_records WHERE record_id = ?")
-        .get(id) as { metadata_json?: string | null } | undefined;
+      const cur = this.db.prepare("SELECT metadata_json FROM l1_records WHERE record_id = ?").get(id) as
+        { metadata_json?: string | null } | undefined;
       if (!cur) return false;
       const mj = cur.metadata_json;
       if (mj != null) {
@@ -4608,7 +6255,9 @@ export class VectorStore implements IMemoryStore {
       const res = this.db.prepare(updateSql).run(...(touch ? [nowIso, nowIso, id] : [nowIso, id]));
       return ((res as unknown as { changes?: number }).changes ?? 0) > 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [reconsolidation] bumpRecallCount failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [reconsolidation] bumpRecallCount failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -4626,13 +6275,15 @@ export class VectorStore implements IMemoryStore {
     try {
       // 主表 + l1_fts 副本同步（soul 8 列在 FTS 表有副本，只改主表会让 FTS 路
       // 召回读到 stale valid_end——P2 验证实测踩过）。主表 0 行 = 行不存在/已失效 → false。
-      const res = this.db.prepare(
-        "UPDATE l1_records SET valid_end = ?, updated_time = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
-      ).run(validEndIso, new Date().toISOString(), id);
+      const res = this.db
+        .prepare(
+          "UPDATE l1_records SET valid_end = ?, updated_time = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
+        )
+        .run(validEndIso, new Date().toISOString(), id);
       if (((res as unknown as { changes?: number }).changes ?? 0) === 0) return false;
-      this.db.prepare(
-        "UPDATE l1_fts SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')",
-      ).run(validEndIso, id);
+      this.db
+        .prepare("UPDATE l1_fts SET valid_end = ? WHERE record_id = ? AND (valid_end IS NULL OR valid_end = '')")
+        .run(validEndIso, id);
       // P4a-P2（层级边，REG-REMAINING-002 #1）：失效沿 derived_from 边定位受影响
       // scene block 并宣告（精确失效传播的定位步）。逐块自动重蒸馏按分析文档分期：
       // 存量块无溯源日志可回填输入史，自动重建会静默丢掉建边前的贡献——等边覆盖
@@ -4644,11 +6295,69 @@ export class VectorStore implements IMemoryStore {
             `${TAG} [P4a-P2] invalidation ${id} → ${affected.length} scene block(s) affected: ${affected.map((a) => a.sourceId).join(", ")}`,
           );
         }
-      } catch { /* 定位失败不影响失效回写 */ }
+      } catch {
+        /* 定位失败不影响失效回写 */
+      }
       return true;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [invalidation] invalidateL1 failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} [invalidation] invalidateL1 failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
+    }
+  }
+
+  /**
+   * A 项（ADR-0025 决定 10，2026-11-04）：显式降敏——L1 行 sensitivity 单向棘轮下调。
+   *
+   * 与 upsertL1 的分工：upsert 的粘性 CASE（:1358-1371）把 'none'/'' 当作「本次未判定」，
+   * 只能用新值**升**级或继承旧值，永远无法把已分类行降回 none——所以降敏必须走单条
+   * UPDATE（CAS：AND sensitivity = expect）。
+   *
+   * 三件必做事（缺一即错）：
+   *   1. CAS 条件带 expect，changes === 0 → false（行不存在 / expect 不符 / 并发已改，
+   *      三者不区分，不泄漏行存在性；调用方映射 409）；
+   *   2. l1_fts 双写——sensitivity 是 soul 列，FTS 表存 UNINDEXED 副本，只改主表会让
+   *      FTS 召回路读到 stale 敏感标注（invalidateL1 踩过同款，P2 实测）；
+   *   3. bump updated_time——否则「最近更新」看不出这次人工动作（L2 增量游标也随之漏）。
+   *
+   * 单向棘轮的下限不带任何「升级」逻辑：value 由调用方给出（网关侧白名单四项枚举），
+   * 本方法只负责「把值写下去且并发安全」，判定权在网关 + 面板二次确认。
+   * 返回值语义（2026-11-04 对抗评审 P1 修复）：
+   *   - `true`  = 主表 + l1_fts 同一事务提交成功；
+   *   - `false` = 纯 CAS 未命中（行不存在 / expect 不符 / 并发已改）——调用方映射 409；
+   *   - **抛错** = degraded / SQL 失败——调用方映射 503。此前两类都返回 false，网关一律回
+   *     409「CAS 未命中」，且主表已 commit、FTS 写失败时客户端按并发冲突重试永远失败、
+   *     审计也没有行（三方分裂）。异常必须能区分，故用 throw 而不是 false。
+   *
+   * 原子性：两条 UPDATE 不在一个事务里时，第二条失败会留下「主表已降、FTS 仍敏感」的
+   * 半写状态（FTS 是 UNINDEXED 副本，召回走 FTS 腿仍拦），因此整体 BEGIN IMMEDIATE。
+   */
+  setL1Sensitivity(recordId: string, value: string, expect: string): boolean {
+    if (this.degraded) throw new Error("store degraded（无法执行显式降敏）");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const now = new Date().toISOString();
+      // COALESCE(sensitivity,'none')：存量行（#83 之前）列值为 NULL，语义等同 none；
+      // 其余脏值（如 'unclassified' 以外的任意串）严格相等才命中——脏行改不了，留给人工修。
+      const res = this.db
+        .prepare(
+          "UPDATE l1_records SET sensitivity = ?, updated_time = ? WHERE record_id = ? AND COALESCE(sensitivity, 'none') = ?",
+        )
+        .run(value, now, recordId, expect);
+      if (((res as unknown as { changes?: number }).changes ?? 0) === 0) {
+        this.db.exec("ROLLBACK");
+        return false;
+      }
+      this.db.prepare("UPDATE l1_fts SET sensitivity = ? WHERE record_id = ?").run(value, recordId);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      try { this.db.exec("ROLLBACK"); } catch { /* 事务可能已结束 */ }
+      this.logger?.warn?.(
+        `${TAG} [sensitivity] setL1Sensitivity failed for ${recordId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
@@ -4672,15 +6381,16 @@ export class VectorStore implements IMemoryStore {
     if (!key) return 0;
     try {
       const where = buildIsolationWhere(filter, "");
-      const rows = this.db.prepare(
-        // WHERE 表达式必须与 idx_l1_fact_key_valid 的定义**逐字一致**，否则规划器不选索引（实测
-        // 改成裸 json_extract + json_valid 断言会退化成全表扫描）；json_valid 守卫同时保证
-        // 损坏的 metadata_json 行只被跳过、不会让本语句抛 malformed JSON。
-        `SELECT record_id FROM l1_records
+      const rows = this.db
+        .prepare(
+          // WHERE 表达式必须与 idx_l1_fact_key_valid 的定义**逐字一致**，否则规划器不选索引（实测
+          // 改成裸 json_extract + json_valid 断言会退化成全表扫描）；json_valid 守卫同时保证
+          // 损坏的 metadata_json 行只被跳过、不会让本语句抛 malformed JSON。
+          `SELECT record_id FROM l1_records
           WHERE json_extract(CASE WHEN json_valid(metadata_json) THEN metadata_json END, '$.fact_key') = ?
-            AND (valid_end IS NULL OR valid_end = '')` +
-        (where.clause ? ` AND ${where.clause}` : ""),
-      ).all(key, ...where.params) as unknown as Array<{ record_id: string }>;
+            AND (valid_end IS NULL OR valid_end = '')` + (where.clause ? ` AND ${where.clause}` : ""),
+        )
+        .all(key, ...where.params) as unknown as Array<{ record_id: string }>;
       let invalidated = 0;
       for (const row of rows) {
         if (this.invalidateL1(row.record_id, validEndIso)) invalidated++;
@@ -4705,22 +6415,20 @@ export class VectorStore implements IMemoryStore {
       return 0;
     }
     try {
-      const row = this.db.prepare(
-        "SELECT COUNT(*) AS cnt FROM l1_records WHERE updated_time != '' AND updated_time < ?",
-      ).get(cutoffIso) as { cnt: number } | undefined;
+      const row = this.db
+        .prepare("SELECT COUNT(*) AS cnt FROM l1_records WHERE updated_time != '' AND updated_time < ?")
+        .get(cutoffIso) as { cnt: number } | undefined;
       const expiredCount = row?.cnt ?? 0;
       if (expiredCount <= 0) return 0;
 
       // Ratio protection: refuse to delete > 80% in one pass
-      const totalRow = this.db.prepare(
-        "SELECT COUNT(*) AS cnt FROM l1_records",
-      ).get() as { cnt: number };
+      const totalRow = this.db.prepare("SELECT COUNT(*) AS cnt FROM l1_records").get() as { cnt: number };
       const total = totalRow.cnt;
       const ratio = total > 0 ? expiredCount / total : 0;
       if (ratio > 0.8) {
         this.logger?.warn(
           `${TAG} [L1-deleteExpired] BLOCKED: would delete ${expiredCount}/${total} ` +
-          `(${(ratio * 100).toFixed(1)}%) — exceeds 80% safety threshold, cutoff=${cutoffIso}`,
+            `(${(ratio * 100).toFixed(1)}%) — exceeds 80% safety threshold, cutoff=${cutoffIso}`,
         );
         return 0;
       }
@@ -4728,28 +6436,24 @@ export class VectorStore implements IMemoryStore {
       this.db.exec("BEGIN");
       try {
         if (this.vecTablesReady) {
-          this.db.prepare(
-            "DELETE FROM l1_vec WHERE updated_time != '' AND updated_time < ?",
-          ).run(cutoffIso);
+          this.db.prepare("DELETE FROM l1_vec WHERE updated_time != '' AND updated_time < ?").run(cutoffIso);
           // #137：过期清理同步清事实键通道（同 updated_time 口径；表可能尚未建立 → 容错）
           try {
-            this.db.prepare(
-              "DELETE FROM l1_fact_vec WHERE updated_time != '' AND updated_time < ?",
-            ).run(cutoffIso);
-          } catch { /* fact 表可能未建，非致命 */ }
+            this.db.prepare("DELETE FROM l1_fact_vec WHERE updated_time != '' AND updated_time < ?").run(cutoffIso);
+          } catch {
+            /* fact 表可能未建，非致命 */
+          }
         }
-        this.db.prepare(
-          "DELETE FROM l1_records WHERE updated_time != '' AND updated_time < ?",
-        ).run(cutoffIso);
+        this.db.prepare("DELETE FROM l1_records WHERE updated_time != '' AND updated_time < ?").run(cutoffIso);
         this.db.exec("COMMIT");
-        this.logger?.info?.(
-          `${TAG} [L1-deleteExpired] Deleted ${expiredCount}/${total} records (cutoff=${cutoffIso})`,
-        );
+        this.logger?.info?.(`${TAG} [L1-deleteExpired] Deleted ${expiredCount}/${total} records (cutoff=${cutoffIso})`);
         return expiredCount;
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
     } catch (err) {
@@ -4812,7 +6516,11 @@ export class VectorStore implements IMemoryStore {
         this.db.exec("BEGIN");
         try {
           this.stmtDeleteVec!.run(record_id);
-          this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), updated_time);
+          this.stmtInsertVec!.run(
+            record_id,
+            Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
+            updated_time,
+          );
           // #137：这里只补**主索引**向量（content 重嵌），事实键通道向量不是它的副产品——
           // 不许顺手删（否则「主向量缺失但事实向量已在」的行会被无谓清空，且不会自动回填）。
           // 维度/模型换代的全量重建走 reindexAll（那里才删）。
@@ -4841,7 +6549,9 @@ export class VectorStore implements IMemoryStore {
         .get() as { n: number };
       return row?.n ?? 0;
     } catch (err) {
-      this.logger?.warn?.(`${TAG} countL1WithVectors failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(
+        `${TAG} countL1WithVectors failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
       return 0;
     }
   }
@@ -4920,9 +6630,8 @@ export class VectorStore implements IMemoryStore {
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-      const row = this.db
-        .prepare(`SELECT COUNT(*) AS cnt FROM l1_records ${where}`)
-        .get(...params) as { cnt: number } | undefined;
+      const row = this.db.prepare(`SELECT COUNT(*) AS cnt FROM l1_records ${where}`).get(...params) as
+        { cnt: number } | undefined;
       const total = row?.cnt ?? 0;
       this.logger?.debug?.(`${TAG} [L1-count] total=${total}`);
       return total;
@@ -4971,7 +6680,7 @@ export class VectorStore implements IMemoryStore {
       if (raw.length > 0 && !("record_id" in raw[0] && "content" in raw[0])) {
         this.logger?.warn(
           `${TAG} [L1-query] Schema mismatch: first row missing expected columns. ` +
-          `Got keys: [${Object.keys(raw[0]).join(", ")}]`,
+            `Got keys: [${Object.keys(raw[0]).join(", ")}]`,
         );
         return [];
       }
@@ -4995,12 +6704,12 @@ export class VectorStore implements IMemoryStore {
 
       this.logger?.info(
         `${TAG} [L1-query] filter={sessionKey=${sessionKey ?? "(all)"}, sessionId=${sessionId ?? "(all)"}, teamId=${filter?.teamId ?? "(all)"}, userId=${filter?.userId ?? "(all)"}, agentId=${filter?.agentId ?? "(all)"}, taskId=${taskId ?? "(all)"}, updatedAfter=${updatedAfter ?? "(none)"}}, ` +
-        `returned ${rows.length} record(s)`,
+          `returned ${rows.length} record(s)`,
       );
       return rows;
     } catch (err) {
       this.logger?.warn(
-        `${TAG} [L1-query] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`
+        `${TAG} [L1-query] FAILED (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
     }
@@ -5028,16 +6737,16 @@ export class VectorStore implements IMemoryStore {
       return false;
     }
     try {
-      const skipVec = !embedding || embedding.every(v => v === 0) || !this.vecTablesReady;
+      const skipVec = !embedding || embedding.every((v) => v === 0) || !this.vecTablesReady;
 
       this.logger?.debug?.(
         `${TAG} [L0-upsert] START id=${record.id}, session=${record.sessionKey}, role=${record.role}, ` +
-        `text="${record.messageText.slice(0, 60)}..."` +
-        (embedding
-          ? `, embeddingDims=${embedding.length}, ` +
-            `embeddingNorm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}` +
-            `${skipVec ? " (ZERO VECTOR or vec tables not ready — vec write will be skipped)" : ""}`
-          : " (no embedding — metadata-only write)"),
+          `text="${record.messageText.slice(0, 60)}..."` +
+          (embedding
+            ? `, embeddingDims=${embedding.length}, ` +
+              `embeddingNorm=${Math.sqrt(Array.from(embedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}` +
+              `${skipVec ? " (ZERO VECTOR or vec tables not ready — vec write will be skipped)" : ""}`
+            : " (no embedding — metadata-only write)"),
       );
 
       this.db.exec("BEGIN");
@@ -5064,7 +6773,11 @@ export class VectorStore implements IMemoryStore {
         if (!skipVec) {
           // vec0 does not support ON CONFLICT → delete then insert
           this.stmtL0DeleteVec!.run(record.id);
-          this.stmtL0InsertVec!.run(record.id, Buffer.from(embedding!.buffer, embedding!.byteOffset, embedding!.byteLength), record.recordedAt);
+          this.stmtL0InsertVec!.run(
+            record.id,
+            Buffer.from(embedding!.buffer, embedding!.byteOffset, embedding!.byteLength),
+            record.recordedAt,
+          );
         } else {
           this.logger?.debug?.(
             `${TAG} [L0-upsert] Skipping vec write (${embedding ? "zero vector" : "no embedding"}) id=${record.id}`,
@@ -5079,7 +6792,7 @@ export class VectorStore implements IMemoryStore {
             this.stmtL0FtsDelete.run(record.id);
             this.stmtL0FtsInsert.run(
               tokenizeForFts(record.messageText), // message_text — segmented for indexing
-              record.messageText,                 // message_text_original — raw for display
+              record.messageText, // message_text_original — raw for display
               record.id,
               record.sessionKey,
               record.sessionId || DEFAULT_ISOLATION_ID,
@@ -5103,7 +6816,9 @@ export class VectorStore implements IMemoryStore {
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
       this.logger?.debug?.(`${TAG} [L0-upsert] OK id=${record.id}${skipVec ? " (meta-only)" : ""}`);
@@ -5131,7 +6846,7 @@ export class VectorStore implements IMemoryStore {
     if (this.degraded || !this.vecTablesReady) {
       return false;
     }
-    if (!embedding || embedding.every(v => v === 0)) {
+    if (!embedding || embedding.every((v) => v === 0)) {
       this.logger?.debug?.(`${TAG} [L0-update-embedding] Skipping zero vector for ${recordId}`);
       return false;
     }
@@ -5146,10 +6861,18 @@ export class VectorStore implements IMemoryStore {
       this.db.exec("BEGIN");
       try {
         this.stmtL0DeleteVec!.run(recordId);
-        this.stmtL0InsertVec!.run(recordId, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), meta.recorded_at);
+        this.stmtL0InsertVec!.run(
+          recordId,
+          Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
+          meta.recorded_at,
+        );
         this.db.exec("COMMIT");
       } catch (err) {
-        try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+          /* ignore */
+        }
         throw err;
       }
       return true;
@@ -5167,7 +6890,12 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL0Vector(queryEmbedding: Float32Array, topK = 5, _queryText?: string, filter?: IsolationFilter): L0VectorSearchResult[] {
+  searchL0Vector(
+    queryEmbedding: Float32Array,
+    topK = 5,
+    _queryText?: string,
+    filter?: IsolationFilter,
+  ): L0VectorSearchResult[] {
     if (this.degraded || !this.vecTablesReady) {
       if (this.degraded) this.logger?.warn(`${TAG} [L0-search] SKIPPED (degraded mode)`);
       return [];
@@ -5180,12 +6908,14 @@ export class VectorStore implements IMemoryStore {
       // in KNN results.
       // NOTE: "AND distance IS NOT NULL" is NOT usable because vec0 does not
       // support that constraint — it causes an empty result set.
-      const retrieveCount = filter ? Math.max(topK * 5, topK + VectorStore.ZERO_VEC_BUFFER) : topK + VectorStore.ZERO_VEC_BUFFER;
+      const retrieveCount = filter
+        ? Math.max(topK * 5, topK + VectorStore.ZERO_VEC_BUFFER)
+        : topK + VectorStore.ZERO_VEC_BUFFER;
 
       this.logger?.debug?.(
         `${TAG} [L0-search] START topK=${topK}, retrieveCount=${retrieveCount}, ` +
-        `queryEmbeddingDims=${queryEmbedding.length}, ` +
-        `queryNorm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
+          `queryEmbeddingDims=${queryEmbedding.length}, ` +
+          `queryNorm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
       );
 
       const rows = this.stmtL0SearchVec!.all(
@@ -5235,7 +6965,7 @@ export class VectorStore implements IMemoryStore {
         const score = 1.0 - distance;
         this.logger?.debug?.(
           `${TAG} [L0-search] HIT id=${record_id}, distance=${distance.toFixed(4)}, score=${score.toFixed(4)}, ` +
-          `role=${meta.role}, session=${meta.session_key}, text="${meta.message_text.slice(0, 60)}..."`,
+            `role=${meta.role}, session=${meta.session_key}, text="${meta.message_text.slice(0, 60)}..."`,
         );
 
         results.push({
@@ -5277,7 +7007,8 @@ export class VectorStore implements IMemoryStore {
     if (this.degraded) return false;
     try {
       if (filter) {
-        const meta = this.stmtL0GetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
+        const meta = this.stmtL0GetMeta.get(recordId) as
+          { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
         if (!meta || !rowMatchesIsolation(meta, filter)) return false;
       }
       this.db.exec("BEGIN");
@@ -5286,20 +7017,24 @@ export class VectorStore implements IMemoryStore {
         const deleted = (result as any)?.changes > 0;
         if (this.vecTablesReady) this.stmtL0DeleteVec!.run(recordId);
         if (this.ftsAvailable) {
-          try { this.stmtL0FtsDelete.run(recordId); } catch { /* non-fatal */ }
+          try {
+            this.stmtL0FtsDelete.run(recordId);
+          } catch {
+            /* non-fatal */
+          }
         }
         this.db.exec("COMMIT");
         return deleted;
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
     } catch (err) {
-      this.logger?.warn(
-        `${TAG} deleteL0 failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.warn(`${TAG} deleteL0 failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -5317,22 +7052,20 @@ export class VectorStore implements IMemoryStore {
     }
 
     try {
-      const row = this.db.prepare(
-        "SELECT COUNT(*) AS cnt FROM l0_conversations WHERE recorded_at != '' AND recorded_at < ?",
-      ).get(cutoffIso) as { cnt: number } | undefined;
+      const row = this.db
+        .prepare("SELECT COUNT(*) AS cnt FROM l0_conversations WHERE recorded_at != '' AND recorded_at < ?")
+        .get(cutoffIso) as { cnt: number } | undefined;
       const expiredCount = row?.cnt ?? 0;
       if (expiredCount <= 0) return 0;
 
       // Ratio protection: refuse to delete > 80% in one pass
-      const totalRow = this.db.prepare(
-        "SELECT COUNT(*) AS cnt FROM l0_conversations",
-      ).get() as { cnt: number };
+      const totalRow = this.db.prepare("SELECT COUNT(*) AS cnt FROM l0_conversations").get() as { cnt: number };
       const total = totalRow.cnt;
       const ratio = total > 0 ? expiredCount / total : 0;
       if (ratio > 0.8) {
         this.logger?.warn(
           `${TAG} [L0-deleteExpired] BLOCKED: would delete ${expiredCount}/${total} ` +
-          `(${(ratio * 100).toFixed(1)}%) — exceeds 80% safety threshold, cutoff=${cutoffIso}`,
+            `(${(ratio * 100).toFixed(1)}%) — exceeds 80% safety threshold, cutoff=${cutoffIso}`,
         );
         return 0;
       }
@@ -5340,22 +7073,18 @@ export class VectorStore implements IMemoryStore {
       this.db.exec("BEGIN");
       try {
         if (this.vecTablesReady) {
-          this.db.prepare(
-            "DELETE FROM l0_vec WHERE recorded_at != '' AND recorded_at < ?",
-          ).run(cutoffIso);
+          this.db.prepare("DELETE FROM l0_vec WHERE recorded_at != '' AND recorded_at < ?").run(cutoffIso);
         }
-        this.db.prepare(
-          "DELETE FROM l0_conversations WHERE recorded_at != '' AND recorded_at < ?",
-        ).run(cutoffIso);
+        this.db.prepare("DELETE FROM l0_conversations WHERE recorded_at != '' AND recorded_at < ?").run(cutoffIso);
         this.db.exec("COMMIT");
-        this.logger?.info?.(
-          `${TAG} [L0-deleteExpired] Deleted ${expiredCount}/${total} records (cutoff=${cutoffIso})`,
-        );
+        this.logger?.info?.(`${TAG} [L0-deleteExpired] Deleted ${expiredCount}/${total} records (cutoff=${cutoffIso})`);
         return expiredCount;
       } catch (err) {
         try {
           this.db.exec("ROLLBACK");
-        } catch { /* ignore rollback errors */ }
+        } catch {
+          /* ignore rollback errors */
+        }
         throw err;
       }
     } catch (err) {
@@ -5407,9 +7136,8 @@ export class VectorStore implements IMemoryStore {
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-      const row = this.db
-        .prepare(`SELECT COUNT(*) AS cnt FROM l0_conversations ${where}`)
-        .get(...params) as { cnt: number } | undefined;
+      const row = this.db.prepare(`SELECT COUNT(*) AS cnt FROM l0_conversations ${where}`).get(...params) as
+        { cnt: number } | undefined;
       const total = row?.cnt ?? 0;
       this.logger?.debug?.(`${TAG} [L0-count] total=${total}`);
       return total;
@@ -5430,13 +7158,13 @@ export class VectorStore implements IMemoryStore {
   getAllL1Texts(): Array<{ record_id: string; content: string; updated_time: string }> {
     if (this.degraded) return [];
     try {
-      return this.db
-        .prepare("SELECT record_id, content, updated_time FROM l1_records")
-        .all() as Array<{ record_id: string; content: string; updated_time: string }>;
+      return this.db.prepare("SELECT record_id, content, updated_time FROM l1_records").all() as Array<{
+        record_id: string;
+        content: string;
+        updated_time: string;
+      }>;
     } catch (err) {
-      this.logger?.warn(
-        `${TAG} getAllL1Texts failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.warn(`${TAG} getAllL1Texts failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }
@@ -5448,13 +7176,13 @@ export class VectorStore implements IMemoryStore {
   getAllL0Texts(): Array<{ record_id: string; message_text: string; recorded_at: string }> {
     if (this.degraded) return [];
     try {
-      return this.db
-        .prepare("SELECT record_id, message_text, recorded_at FROM l0_conversations")
-        .all() as Array<{ record_id: string; message_text: string; recorded_at: string }>;
+      return this.db.prepare("SELECT record_id, message_text, recorded_at FROM l0_conversations").all() as Array<{
+        record_id: string;
+        message_text: string;
+        recorded_at: string;
+      }>;
     } catch (err) {
-      this.logger?.warn(
-        `${TAG} getAllL0Texts failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.warn(`${TAG} getAllL0Texts failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }
@@ -5490,12 +7218,20 @@ export class VectorStore implements IMemoryStore {
           this.db.exec("BEGIN");
           try {
             this.stmtDeleteVec!.run(record_id);
-            this.stmtInsertVec!.run(record_id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), updated_time);
+            this.stmtInsertVec!.run(
+              record_id,
+              Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
+              updated_time,
+            );
             // #137：全量重建（维度/模型变更）后事实键通道旧向量必然失配 → 一并作废
             if (this.stmtDeleteFactVec) this.stmtDeleteFactVec.run(record_id);
             this.db.exec("COMMIT");
           } catch (txErr) {
-            try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
+            try {
+              this.db.exec("ROLLBACK");
+            } catch {
+              /* ignore */
+            }
             throw txErr;
           }
         } catch (err) {
@@ -5517,10 +7253,18 @@ export class VectorStore implements IMemoryStore {
           this.db.exec("BEGIN");
           try {
             this.stmtL0DeleteVec!.run(record_id);
-            this.stmtL0InsertVec!.run(record_id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), recorded_at);
+            this.stmtL0InsertVec!.run(
+              record_id,
+              Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength),
+              recorded_at,
+            );
             this.db.exec("COMMIT");
           } catch (txErr) {
-            try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
+            try {
+              this.db.exec("ROLLBACK");
+            } catch {
+              /* ignore */
+            }
             throw txErr;
           }
         } catch (err) {
@@ -5532,15 +7276,11 @@ export class VectorStore implements IMemoryStore {
         onProgress?.(l0Done, l0Rows.length, "L0");
       }
 
-      this.logger?.info(
-        `${TAG} Reindex complete: L1=${l1Done}/${l1Rows.length}, L0=${l0Done}/${l0Rows.length}`,
-      );
+      this.logger?.info(`${TAG} Reindex complete: L1=${l1Done}/${l1Rows.length}, L0=${l0Done}/${l0Rows.length}`);
 
       return { l1Count: l1Done, l0Count: l0Done };
     } catch (err) {
-      this.logger?.error(
-        `${TAG} reindexAll failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.error(`${TAG} reindexAll failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return { l1Count: 0, l0Count: 0 };
     }
   }
@@ -5555,11 +7295,7 @@ export class VectorStore implements IMemoryStore {
    * Used by L1 runner to read L0 data from DB. The runner is responsible for
    * batching/slicing the returned rows (e.g. process N, defer the rest).
    */
-  queryL0ForL1(
-    sessionKey: string,
-    afterRecordedAtMs?: number,
-    limit = 50,
-  ): L0QueryRow[] {
+  queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit = 50): L0QueryRow[] {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query] SKIPPED (degraded mode)`);
       return [];
@@ -5578,7 +7314,7 @@ export class VectorStore implements IMemoryStore {
 
       this.logger?.info(
         `${TAG} [L0-query] session=${sessionKey}, afterRecordedAtMs=${afterRecordedAtMs ?? "(all)"}, ` +
-        `limit=${limit}, returned ${rows.length} row(s)`,
+          `limit=${limit}, returned ${rows.length} row(s)`,
       );
 
       return rows.map((r) => ({
@@ -5610,9 +7346,9 @@ export class VectorStore implements IMemoryStore {
   listL0SessionIds(): string[] {
     if (this.degraded) return [];
     try {
-      const rows = this.db.prepare(
-        "SELECT DISTINCT session_id FROM l0_conversations WHERE session_id != ''",
-      ).all() as Array<{ session_id: string }>;
+      const rows = this.db
+        .prepare("SELECT DISTINCT session_id FROM l0_conversations WHERE session_id != ''")
+        .all() as Array<{ session_id: string }>;
       return rows.map((r) => r.session_id);
     } catch (err) {
       this.logger?.warn(`${TAG} [L0-sessions] list failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -5628,12 +7364,12 @@ export class VectorStore implements IMemoryStore {
     const sid = String(sessionId ?? "");
     if (sid === "") return false;
     try {
-      const row = this.db.prepare(
-        "SELECT 1 FROM l0_conversations WHERE session_id = ? LIMIT 1",
-      ).get(sid);
+      const row = this.db.prepare("SELECT 1 FROM l0_conversations WHERE session_id = ? LIMIT 1").get(sid);
       return row !== undefined;
     } catch (err) {
-      this.logger?.warn(`${TAG} [L0-sessions] hasL0Session failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn(
+        `${TAG} [L0-sessions] hasL0Session failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -5652,12 +7388,16 @@ export class VectorStore implements IMemoryStore {
     if (w <= 0) return false;
     const sinceIso = new Date(Date.now() - w).toISOString();
     try {
-      const row = this.db.prepare(
-        "SELECT 1 FROM l0_conversations WHERE session_key = ? AND role = ? AND message_text = ? AND recorded_at >= ? LIMIT 1",
-      ).get(sk, r, c, sinceIso);
+      const row = this.db
+        .prepare(
+          "SELECT 1 FROM l0_conversations WHERE session_key = ? AND role = ? AND message_text = ? AND recorded_at >= ? LIMIT 1",
+        )
+        .get(sk, r, c, sinceIso);
       return row !== undefined;
     } catch (err) {
-      this.logger?.warn(`${TAG} [L0-dup] hasRecentL0Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn(
+        `${TAG} [L0-dup] hasRecentL0Duplicate failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   }
@@ -5673,7 +7413,21 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; classification?: string }> }> {
+  ): Array<{
+    sessionId: string;
+    teamId?: string;
+    taskId?: string;
+    userId: string;
+    agentId: string;
+    messages: Array<{
+      id: string;
+      role: string;
+      content: string;
+      timestamp: number;
+      recordedAtMs: number;
+      classification?: string;
+    }>;
+  }> {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query-grouped] SKIPPED (degraded mode)`);
       return [];
@@ -5682,14 +7436,24 @@ export class VectorStore implements IMemoryStore {
       const rows = this.queryL0ForL1(sessionKey, afterRecordedAtMs, limit);
 
       // Group by full isolation tuple + session_id to avoid cross-tenant merging.
-      const groupMap = new Map<string, {
-        sessionId: string;
-        teamId?: string;
-        taskId?: string;
-        userId: string;
-        agentId: string;
-        messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; classification?: string }>;
-      }>();
+      const groupMap = new Map<
+        string,
+        {
+          sessionId: string;
+          teamId?: string;
+          taskId?: string;
+          userId: string;
+          agentId: string;
+          messages: Array<{
+            id: string;
+            role: string;
+            content: string;
+            timestamp: number;
+            recordedAtMs: number;
+            classification?: string;
+          }>;
+        }
+      >();
       for (const row of rows) {
         const sid = row.session_id || "";
         const teamId = row.team_id || undefined;
@@ -5713,7 +7477,21 @@ export class VectorStore implements IMemoryStore {
       }
 
       // Convert to array, sorted by earliest message timestamp
-      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; classification?: string }> }> = [];
+      const groups: Array<{
+        sessionId: string;
+        teamId?: string;
+        taskId?: string;
+        userId: string;
+        agentId: string;
+        messages: Array<{
+          id: string;
+          role: string;
+          content: string;
+          timestamp: number;
+          recordedAtMs: number;
+          classification?: string;
+        }>;
+      }> = [];
       for (const group of groupMap.values()) {
         if (group.messages.length > 0) {
           groups.push(group);
@@ -5723,7 +7501,7 @@ export class VectorStore implements IMemoryStore {
 
       this.logger?.info(
         `${TAG} [L0-query-grouped] session=${sessionKey}, afterRecordedAtMs=${afterRecordedAtMs ?? "(all)"}, ` +
-        `${rows.length} messages across ${groups.length} group(s)`,
+          `${rows.length} messages across ${groups.length} group(s)`,
       );
 
       return groups;
@@ -5843,6 +7621,47 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * L0 batch read by record_id (ADR-0025 行级溯源：L1.source_message_ids → 原始消息)。
+   *
+   * 空 ids 直接返回 []（不拼 SQL、不触库）；iso 各轴按 `!== undefined` 收窄
+   * ——与 queryL0Paginated 同口径，跨租户 id 因此静默查不到（不泄露存在性）。
+   * 返回序按 timestamp 升序（原话按发生顺序读，不是分页倒序）。
+   */
+  queryL0ByIds(ids: string[], filter: L0ByIdsFilter = {}): L0QueryRow[] {
+    if (this.degraded || ids.length === 0) return [];
+
+    try {
+      const placeholders = ids.map(() => "?").join(", ");
+      const conditions: string[] = [`record_id IN (${placeholders})`];
+      const params: SQLInputValue[] = [...ids];
+
+      // Isolation dimensions — same axes as queryL0Paginated.
+      if (filter.teamId !== undefined) {
+        conditions.push("team_id = ?");
+        params.push(filter.teamId);
+      }
+      if (filter.userId !== undefined) {
+        conditions.push("user_id = ?");
+        params.push(filter.userId);
+      }
+      if (filter.agentId !== undefined) {
+        conditions.push("agent_id = ?");
+        params.push(filter.agentId);
+      }
+      if (filter.taskId !== undefined) {
+        conditions.push("task_id = ?");
+        params.push(filter.taskId);
+      }
+
+      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations WHERE ${conditions.join(" AND ")} ORDER BY timestamp ASC, record_id ASC`;
+      return this.db.prepare(dataSql).all(...params) as unknown as L0QueryRow[];
+    } catch (err) {
+      this.logger?.warn(`[sqlite] queryL0ByIds failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
    * L1 paginated query for v2 `/atomic/query`.
    * Uses SQL WHERE + LIMIT + OFFSET, no full-table scan.
    */
@@ -5906,7 +7725,7 @@ export class VectorStore implements IMemoryStore {
       // isolation in downstream filters / Coordinator candidate pool.
       // TIMEFIX-v2：排序同改 occurred_at DESC——时间线的排序键与过滤键/显示日期
       // 三者一致（原 updated_time 排序在回填/重巩固刷写后产生 9.11/9.10/9.7 乱序）。
-      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, source, valence, arousal, significance, sensitivity FROM l1_records ${where} ORDER BY occurred_at DESC LIMIT ? OFFSET ?`;
+      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_end, created_time, updated_time, metadata_json, occurred_at, valid_start, valid_end, certainty, valence, arousal, significance, sensitivity, importance, source_message_ids FROM l1_records ${where} ORDER BY occurred_at DESC LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L1RecordRow[];
 
       return { rows, total };
@@ -5934,11 +7753,18 @@ export class VectorStore implements IMemoryStore {
       // 必须把 rowMatchesIsolation 会检查的**所有**列都取出来
       // （team_id / task_id 早期漏取，导致带 teamId 的 isolation filter
       // 永远判不匹配 → 按session 删除恒返回 0）。
-      const rows = this.db.prepare(
-        "SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id FROM l0_conversations WHERE session_key = ? OR session_id = ?"
-      ).all(sessionIdTrimmed, sessionIdTrimmed) as Array<{
-        record_id: string; session_key: string; session_id: string;
-        team_id: string; task_id: string; user_id: string; agent_id: string;
+      const rows = this.db
+        .prepare(
+          "SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id FROM l0_conversations WHERE session_key = ? OR session_id = ?",
+        )
+        .all(sessionIdTrimmed, sessionIdTrimmed) as Array<{
+        record_id: string;
+        session_key: string;
+        session_id: string;
+        team_id: string;
+        task_id: string;
+        user_id: string;
+        agent_id: string;
       }>;
 
       if (rows.length === 0) return 0;
@@ -5952,10 +7778,18 @@ export class VectorStore implements IMemoryStore {
           if (((result as any)?.changes ?? 0) <= 0) continue;
           deletedCount++;
           if (this.vecTablesReady) {
-            try { this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(row.record_id); } catch { /* vec may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(row.record_id);
+            } catch {
+              /* vec may not exist */
+            }
           }
           if (this.ftsAvailable) {
-            try { this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?").run(row.record_id); } catch { /* fts may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?").run(row.record_id);
+            } catch {
+              /* fts may not exist */
+            }
           }
         }
         this.db.exec("COMMIT");
@@ -5992,12 +7826,16 @@ export class VectorStore implements IMemoryStore {
     const params: string[] = userId ? [teamId, agentId, userId] : [teamId, agentId];
 
     try {
-      const l0Ids = (this.db.prepare(
-        `SELECT record_id FROM l0_conversations WHERE ${where}`,
-      ).all(...params) as Array<{ record_id: string }>).map((r) => r.record_id);
-      const l1Ids = (this.db.prepare(
-        `SELECT record_id FROM l1_records WHERE ${where}`,
-      ).all(...params) as Array<{ record_id: string }>).map((r) => r.record_id);
+      const l0Ids = (
+        this.db.prepare(`SELECT record_id FROM l0_conversations WHERE ${where}`).all(...params) as Array<{
+          record_id: string;
+        }>
+      ).map((r) => r.record_id);
+      const l1Ids = (
+        this.db.prepare(`SELECT record_id FROM l1_records WHERE ${where}`).all(...params) as Array<{
+          record_id: string;
+        }>
+      ).map((r) => r.record_id);
 
       if (l0Ids.length === 0 && l1Ids.length === 0) return empty;
 
@@ -6009,10 +7847,18 @@ export class VectorStore implements IMemoryStore {
           if (((res as any)?.changes ?? 0) <= 0) continue;
           l0Deleted++;
           if (this.vecTablesReady) {
-            try { this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(id);
+            } catch {
+              /* vec may not exist */
+            }
           }
           if (this.ftsAvailable) {
-            try { this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?").run(id); } catch { /* fts may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?").run(id);
+            } catch {
+              /* fts may not exist */
+            }
           }
         }
 
@@ -6022,12 +7868,24 @@ export class VectorStore implements IMemoryStore {
           if (((res as any)?.changes ?? 0) <= 0) continue;
           l1Deleted++;
           if (this.vecTablesReady) {
-            try { this.db.prepare("DELETE FROM l1_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l1_vec WHERE record_id = ?").run(id);
+            } catch {
+              /* vec may not exist */
+            }
             // #137：清空租户内容同步清事实键通道向量
-            try { this.db.prepare("DELETE FROM l1_fact_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l1_fact_vec WHERE record_id = ?").run(id);
+            } catch {
+              /* vec may not exist */
+            }
           }
           if (this.ftsAvailable) {
-            try { this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?").run(id); } catch { /* fts may not exist */ }
+            try {
+              this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?").run(id);
+            } catch {
+              /* fts may not exist */
+            }
           }
         }
 
@@ -6048,7 +7906,9 @@ export class VectorStore implements IMemoryStore {
   }
 
   private jsonArray(value: unknown): string {
-    return JSON.stringify(Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : []);
+    return JSON.stringify(
+      Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [],
+    );
   }
 
   private parseArray(value: unknown): string[] {
@@ -6079,10 +7939,14 @@ export class VectorStore implements IMemoryStore {
       if (ownerUserId) userIds.add(ownerUserId);
       team.user_ids = Array.from(userIds).sort();
       const agentIds = new Set<string>(this.parseArray(row.agent_ids_json));
-      const agents = this.db.prepare("SELECT agent_id FROM entity_agents WHERE team_id = ? AND status = 'active' ORDER BY agent_id").all(teamId) as any[];
+      const agents = this.db
+        .prepare("SELECT agent_id FROM entity_agents WHERE team_id = ? AND status = 'active' ORDER BY agent_id")
+        .all(teamId) as any[];
       for (const agent of agents) agentIds.add(String(agent.agent_id));
       team.agent_ids = Array.from(agentIds).sort();
-      team.task_ids = (this.db.prepare("SELECT task_id FROM entity_tasks WHERE team_id = ? ORDER BY task_id").all(teamId) as any[]).map((r) => String(r.task_id));
+      team.task_ids = (
+        this.db.prepare("SELECT task_id FROM entity_tasks WHERE team_id = ? ORDER BY task_id").all(teamId) as any[]
+      ).map((r) => String(r.task_id));
     }
     return team;
   }
@@ -6101,23 +7965,34 @@ export class VectorStore implements IMemoryStore {
       updated_at: String(row.updated_at ?? ""),
     };
     if (includeDerived) {
-      const teams = this.db.prepare("SELECT team_id, owner_user_id, user_ids_json FROM entity_teams WHERE status = 'active'").all() as any[];
+      const teams = this.db
+        .prepare("SELECT team_id, owner_user_id, user_ids_json FROM entity_teams WHERE status = 'active'")
+        .all() as any[];
       user.team_ids = teams
-        .filter((team) => String(team.owner_user_id ?? "") === userId || this.parseArray(team.user_ids_json).includes(userId))
+        .filter(
+          (team) => String(team.owner_user_id ?? "") === userId || this.parseArray(team.user_ids_json).includes(userId),
+        )
         .map((team) => String(team.team_id))
         .sort();
-      const tasks = this.db.prepare("SELECT task_id, creator_user_id, user_ids_json, agent_ids_json FROM entity_tasks ORDER BY task_id").all() as any[];
+      const tasks = this.db
+        .prepare("SELECT task_id, creator_user_id, user_ids_json, agent_ids_json FROM entity_tasks ORDER BY task_id")
+        .all() as any[];
       const taskIds = new Set<string>();
       const taskAgentIds = new Set<string>();
       for (const task of tasks) {
-        const participates = String(task.creator_user_id ?? "") === userId || this.parseArray(task.user_ids_json).includes(userId);
+        const participates =
+          String(task.creator_user_id ?? "") === userId || this.parseArray(task.user_ids_json).includes(userId);
         if (!participates) continue;
         taskIds.add(String(task.task_id));
         for (const agentId of this.parseArray(task.agent_ids_json)) taskAgentIds.add(agentId);
       }
       user.task_ids = Array.from(taskIds).sort();
       user.task_agent_ids = Array.from(taskAgentIds).sort();
-      user.owned_agent_ids = (this.db.prepare("SELECT agent_id FROM entity_agents WHERE owner_user_id = ? AND status = 'active' ORDER BY agent_id").all(userId) as any[]).map((r) => String(r.agent_id));
+      user.owned_agent_ids = (
+        this.db
+          .prepare("SELECT agent_id FROM entity_agents WHERE owner_user_id = ? AND status = 'active' ORDER BY agent_id")
+          .all(userId) as any[]
+      ).map((r) => String(r.agent_id));
     }
     return user;
   }
@@ -6138,7 +8013,9 @@ export class VectorStore implements IMemoryStore {
     };
     if (includeDerived) {
       const tasks = this.db.prepare("SELECT task_id, agent_ids_json FROM entity_tasks ORDER BY task_id").all() as any[];
-      agent.task_ids = tasks.filter((task) => this.parseArray(task.agent_ids_json).includes(agentId)).map((task) => String(task.task_id));
+      agent.task_ids = tasks
+        .filter((task) => this.parseArray(task.agent_ids_json).includes(agentId))
+        .map((task) => String(task.task_id));
     }
     return agent;
   }
@@ -6151,7 +8028,8 @@ export class VectorStore implements IMemoryStore {
       title: String(row.title ?? "") || undefined,
       description: String(row.description ?? "") || undefined,
       // #127：库里的历史 github/tapd 读成 external；列为 NOT NULL DEFAULT 'manual'，空值仍退 manual。
-      source_type: row.source_type == null || row.source_type === "" ? "manual" : normalizeTaskSourceType(row.source_type),
+      source_type:
+        row.source_type == null || row.source_type === "" ? "manual" : normalizeTaskSourceType(row.source_type),
       source_url: String(row.source_url ?? "") || undefined,
       agent_ids: this.parseArray(row.agent_ids_json),
       user_ids: this.parseArray(row.user_ids_json),
@@ -6160,11 +8038,39 @@ export class VectorStore implements IMemoryStore {
     };
   }
 
-  createTeam(input: Omit<TeamEntity, "created_at" | "updated_at" | "status" | "user_ids" | "agent_ids" | "task_ids"> & { team_id?: string; status?: TeamEntity["status"] }): TeamEntity {
+  createTeam(
+    input: Omit<TeamEntity, "created_at" | "updated_at" | "status" | "user_ids" | "agent_ids" | "task_ids"> & {
+      team_id?: string;
+      status?: TeamEntity["status"];
+    },
+  ): TeamEntity {
     const now = new Date().toISOString();
     const id = input.team_id || this.entityId("team");
-    this.db.prepare("INSERT INTO entity_teams (team_id, name, description, owner_user_id, user_ids_json, agent_ids_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.name, input.description ?? "", input.owner_user_id, this.jsonArray([input.owner_user_id]), this.jsonArray([]), input.status ?? "active", now, now);
-    return this.getTeam(id) ?? { team_id: id, name: input.name, owner_user_id: input.owner_user_id, status: input.status ?? "active", created_at: now, updated_at: now };
+    this.db
+      .prepare(
+        "INSERT INTO entity_teams (team_id, name, description, owner_user_id, user_ids_json, agent_ids_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        input.name,
+        input.description ?? "",
+        input.owner_user_id,
+        this.jsonArray([input.owner_user_id]),
+        this.jsonArray([]),
+        input.status ?? "active",
+        now,
+        now,
+      );
+    return (
+      this.getTeam(id) ?? {
+        team_id: id,
+        name: input.name,
+        owner_user_id: input.owner_user_id,
+        status: input.status ?? "active",
+        created_at: now,
+        updated_at: now,
+      }
+    );
   }
 
   getTeam(teamId: string): TeamEntity | null {
@@ -6172,16 +8078,35 @@ export class VectorStore implements IMemoryStore {
     return row ? this.teamFromRow(row, true) : null;
   }
 
-  updateTeam(teamId: string, patch: Partial<Pick<TeamEntity, "name" | "description" | "owner_user_id" | "user_ids" | "agent_ids" | "status">>): TeamEntity | null {
+  updateTeam(
+    teamId: string,
+    patch: Partial<Pick<TeamEntity, "name" | "description" | "owner_user_id" | "user_ids" | "agent_ids" | "status">>,
+  ): TeamEntity | null {
     const row = this.db.prepare("SELECT * FROM entity_teams WHERE team_id = ?").get(teamId) as any;
     if (!row) return null;
     const current = this.teamFromRow(row, true);
     const ownerUserId = patch.owner_user_id ?? current.owner_user_id;
-    const userIds = patch.user_ids !== undefined ? Array.from(new Set([...patch.user_ids, ownerUserId])).sort() : this.parseArray(row.user_ids_json);
+    const userIds =
+      patch.user_ids !== undefined
+        ? Array.from(new Set([...patch.user_ids, ownerUserId])).sort()
+        : this.parseArray(row.user_ids_json);
     if (ownerUserId && !userIds.includes(ownerUserId)) userIds.push(ownerUserId);
     const agentIds = patch.agent_ids !== undefined ? patch.agent_ids : this.parseArray(row.agent_ids_json);
     const next = { ...current, ...patch, owner_user_id: ownerUserId, updated_at: new Date().toISOString() };
-    this.db.prepare("UPDATE entity_teams SET name = ?, description = ?, owner_user_id = ?, user_ids_json = ?, agent_ids_json = ?, status = ?, updated_at = ? WHERE team_id = ?").run(next.name, next.description ?? "", ownerUserId, this.jsonArray(userIds), this.jsonArray(agentIds), next.status, next.updated_at, teamId);
+    this.db
+      .prepare(
+        "UPDATE entity_teams SET name = ?, description = ?, owner_user_id = ?, user_ids_json = ?, agent_ids_json = ?, status = ?, updated_at = ? WHERE team_id = ?",
+      )
+      .run(
+        next.name,
+        next.description ?? "",
+        ownerUserId,
+        this.jsonArray(userIds),
+        this.jsonArray(agentIds),
+        next.status,
+        next.updated_at,
+        teamId,
+      );
     return this.getTeam(teamId);
   }
 
@@ -6189,18 +8114,48 @@ export class VectorStore implements IMemoryStore {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of teamIds) {
       const row = this.getTeam(id);
-      if (!row) { result.failed.push({ id, reason: "not_found" }); continue; }
+      if (!row) {
+        result.failed.push({ id, reason: "not_found" });
+        continue;
+      }
       this.updateTeam(id, { status: "archived" });
       result.deleted_ids.push(id);
     }
     return result;
   }
 
-  createUser(input: Pick<UserEntity, "name"> & Partial<Pick<UserEntity, "job_description" | "status">> & { user_id?: string }): UserEntity {
+  createUser(
+    input: Pick<UserEntity, "name"> & Partial<Pick<UserEntity, "job_description" | "status">> & { user_id?: string },
+  ): UserEntity {
     const now = new Date().toISOString();
     const id = input.user_id || this.entityId("user");
-    this.db.prepare("INSERT INTO entity_users (user_id, name, job_description, team_ids_json, task_ids_json, owned_agent_ids_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.name, input.job_description ?? "", this.jsonArray([]), this.jsonArray([]), this.jsonArray([]), input.status ?? "active", now, now);
-    return this.getUser(id) ?? { user_id: id, name: input.name, team_ids: [], task_ids: [], owned_agent_ids: [], status: input.status ?? "active", created_at: now, updated_at: now };
+    this.db
+      .prepare(
+        "INSERT INTO entity_users (user_id, name, job_description, team_ids_json, task_ids_json, owned_agent_ids_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        input.name,
+        input.job_description ?? "",
+        this.jsonArray([]),
+        this.jsonArray([]),
+        this.jsonArray([]),
+        input.status ?? "active",
+        now,
+        now,
+      );
+    return (
+      this.getUser(id) ?? {
+        user_id: id,
+        name: input.name,
+        team_ids: [],
+        task_ids: [],
+        owned_agent_ids: [],
+        status: input.status ?? "active",
+        created_at: now,
+        updated_at: now,
+      }
+    );
   }
 
   getUser(userId: string): UserEntity | null {
@@ -6208,31 +8163,71 @@ export class VectorStore implements IMemoryStore {
     return row ? this.userFromRow(row, true) : null;
   }
 
-  updateUser(userId: string, patch: Partial<Pick<UserEntity, "name" | "job_description" | "status">>): UserEntity | null {
+  updateUser(
+    userId: string,
+    patch: Partial<Pick<UserEntity, "name" | "job_description" | "status">>,
+  ): UserEntity | null {
     const current = this.getUser(userId);
     if (!current) return null;
     const next = { ...current, ...patch, updated_at: new Date().toISOString() };
-    this.db.prepare("UPDATE entity_users SET name = ?, job_description = ?, status = ?, updated_at = ? WHERE user_id = ?").run(next.name, next.job_description ?? "", next.status, next.updated_at, userId);
+    this.db
+      .prepare("UPDATE entity_users SET name = ?, job_description = ?, status = ?, updated_at = ? WHERE user_id = ?")
+      .run(next.name, next.job_description ?? "", next.status, next.updated_at, userId);
     return this.getUser(userId);
   }
 
   deleteUsers(userIds: string[]): BatchDeleteResult {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of userIds) {
-      if (!this.getUser(id)) { result.failed.push({ id, reason: "not_found" }); continue; }
+      if (!this.getUser(id)) {
+        result.failed.push({ id, reason: "not_found" });
+        continue;
+      }
       this.updateUser(id, { status: "inactive" });
       result.deleted_ids.push(id);
     }
     return result;
   }
 
-  createAgent(input: Omit<AgentEntity, "created_at" | "updated_at" | "status" | "visibility" | "task_ids"> & { agent_id?: string; status?: AgentEntity["status"]; visibility?: AgentEntity["visibility"] }): AgentEntity {
+  createAgent(
+    input: Omit<AgentEntity, "created_at" | "updated_at" | "status" | "visibility" | "task_ids"> & {
+      agent_id?: string;
+      status?: AgentEntity["status"];
+      visibility?: AgentEntity["visibility"];
+    },
+  ): AgentEntity {
     const now = new Date().toISOString();
     const id = input.agent_id || this.entityId("agent");
-    this.db.prepare("INSERT INTO entity_agents (agent_id, team_id, name, description, prompt, owner_user_id, visibility, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.team_id, input.name, input.description ?? "", input.prompt ?? "", input.owner_user_id ?? "", input.visibility ?? "team", input.status ?? "active", now, now);
+    this.db
+      .prepare(
+        "INSERT INTO entity_agents (agent_id, team_id, name, description, prompt, owner_user_id, visibility, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        input.team_id,
+        input.name,
+        input.description ?? "",
+        input.prompt ?? "",
+        input.owner_user_id ?? "",
+        input.visibility ?? "team",
+        input.status ?? "active",
+        now,
+        now,
+      );
     const team = this.getTeam(input.team_id);
-    if (team && !(team.agent_ids ?? []).includes(id)) this.updateTeam(input.team_id, { agent_ids: [...(team.agent_ids ?? []), id] });
-    return this.getAgent(id) ?? { agent_id: id, team_id: input.team_id, name: input.name, visibility: input.visibility ?? "team", status: input.status ?? "active", created_at: now, updated_at: now };
+    if (team && !(team.agent_ids ?? []).includes(id))
+      this.updateTeam(input.team_id, { agent_ids: [...(team.agent_ids ?? []), id] });
+    return (
+      this.getAgent(id) ?? {
+        agent_id: id,
+        team_id: input.team_id,
+        name: input.name,
+        visibility: input.visibility ?? "team",
+        status: input.status ?? "active",
+        created_at: now,
+        updated_at: now,
+      }
+    );
   }
 
   getAgent(agentId: string): AgentEntity | null {
@@ -6240,31 +8235,87 @@ export class VectorStore implements IMemoryStore {
     return row ? this.agentFromRow(row) : null;
   }
 
-  updateAgent(agentId: string, patch: Partial<Pick<AgentEntity, "name" | "description" | "prompt" | "owner_user_id" | "visibility" | "status">>): AgentEntity | null {
+  updateAgent(
+    agentId: string,
+    patch: Partial<Pick<AgentEntity, "name" | "description" | "prompt" | "owner_user_id" | "visibility" | "status">>,
+  ): AgentEntity | null {
     const current = this.getAgent(agentId);
     if (!current) return null;
     const next = { ...current, ...patch, updated_at: new Date().toISOString() };
-    this.db.prepare("UPDATE entity_agents SET name = ?, description = ?, prompt = ?, owner_user_id = ?, visibility = ?, status = ?, updated_at = ? WHERE agent_id = ?").run(next.name, next.description ?? "", next.prompt ?? "", next.owner_user_id ?? "", next.visibility, next.status, next.updated_at, agentId);
+    this.db
+      .prepare(
+        "UPDATE entity_agents SET name = ?, description = ?, prompt = ?, owner_user_id = ?, visibility = ?, status = ?, updated_at = ? WHERE agent_id = ?",
+      )
+      .run(
+        next.name,
+        next.description ?? "",
+        next.prompt ?? "",
+        next.owner_user_id ?? "",
+        next.visibility,
+        next.status,
+        next.updated_at,
+        agentId,
+      );
     return this.getAgent(agentId);
   }
 
   deleteAgents(agentIds: string[]): BatchDeleteResult {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of agentIds) {
-      if (!this.getAgent(id)) { result.failed.push({ id, reason: "not_found" }); continue; }
+      if (!this.getAgent(id)) {
+        result.failed.push({ id, reason: "not_found" });
+        continue;
+      }
       this.updateAgent(id, { status: "inactive" });
       result.deleted_ids.push(id);
     }
     return result;
   }
 
-  createTask(input: Omit<TaskEntity, "created_at" | "updated_at" | "source_type" | "agent_ids" | "user_ids"> & { task_id?: string; source_type?: TaskEntity["source_type"]; agent_ids?: string[]; user_ids?: string[] }): TaskEntity {
+  createTask(
+    input: Omit<TaskEntity, "created_at" | "updated_at" | "source_type" | "agent_ids" | "user_ids"> & {
+      task_id?: string;
+      source_type?: TaskEntity["source_type"];
+      agent_ids?: string[];
+      user_ids?: string[];
+    },
+  ): TaskEntity {
     const now = new Date().toISOString();
     const id = input.task_id || this.entityId("task");
     // #127：写边界归一，库里只会出现 manual|external|other（调用方误传历史值也不会落四值）。
     const sourceType = input.source_type == null ? "manual" : normalizeTaskSourceType(input.source_type);
-    this.db.prepare("INSERT INTO entity_tasks (task_id, team_id, creator_user_id, title, description, source_type, source_url, status, auto_assign_floating_assets, risk_level, agent_ids_json, user_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(id, input.team_id, input.creator_user_id, input.title ?? "", input.description ?? "", sourceType, input.source_url ?? "", "pending", 0, "low", this.jsonArray(input.agent_ids), this.jsonArray(input.user_ids), now, now);
-    return this.getTask(id) ?? { task_id: id, team_id: input.team_id, creator_user_id: input.creator_user_id, source_type: sourceType, agent_ids: input.agent_ids ?? [], user_ids: input.user_ids ?? [], created_at: now, updated_at: now };
+    this.db
+      .prepare(
+        "INSERT INTO entity_tasks (task_id, team_id, creator_user_id, title, description, source_type, source_url, status, auto_assign_floating_assets, risk_level, agent_ids_json, user_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        input.team_id,
+        input.creator_user_id,
+        input.title ?? "",
+        input.description ?? "",
+        sourceType,
+        input.source_url ?? "",
+        "pending",
+        0,
+        "low",
+        this.jsonArray(input.agent_ids),
+        this.jsonArray(input.user_ids),
+        now,
+        now,
+      );
+    return (
+      this.getTask(id) ?? {
+        task_id: id,
+        team_id: input.team_id,
+        creator_user_id: input.creator_user_id,
+        source_type: sourceType,
+        agent_ids: input.agent_ids ?? [],
+        user_ids: input.user_ids ?? [],
+        created_at: now,
+        updated_at: now,
+      }
+    );
   }
 
   getTask(taskId: string): TaskEntity | null {
@@ -6272,7 +8323,10 @@ export class VectorStore implements IMemoryStore {
     return row ? this.taskFromRow(row) : null;
   }
 
-  updateTask(taskId: string, patch: Partial<Pick<TaskEntity, "title" | "description" | "source_type" | "source_url" | "agent_ids" | "user_ids">>): TaskEntity | null {
+  updateTask(
+    taskId: string,
+    patch: Partial<Pick<TaskEntity, "title" | "description" | "source_type" | "source_url" | "agent_ids" | "user_ids">>,
+  ): TaskEntity | null {
     const current = this.getTask(taskId);
     if (!current) return null;
     const next = {
@@ -6282,14 +8336,30 @@ export class VectorStore implements IMemoryStore {
       source_type: patch.source_type == null ? current.source_type : normalizeTaskSourceType(patch.source_type),
       updated_at: new Date().toISOString(),
     };
-    this.db.prepare("UPDATE entity_tasks SET title = ?, description = ?, source_type = ?, source_url = ?, agent_ids_json = ?, user_ids_json = ?, updated_at = ? WHERE task_id = ?").run(next.title ?? "", next.description ?? "", next.source_type, next.source_url ?? "", this.jsonArray(next.agent_ids), this.jsonArray(next.user_ids), next.updated_at, taskId);
+    this.db
+      .prepare(
+        "UPDATE entity_tasks SET title = ?, description = ?, source_type = ?, source_url = ?, agent_ids_json = ?, user_ids_json = ?, updated_at = ? WHERE task_id = ?",
+      )
+      .run(
+        next.title ?? "",
+        next.description ?? "",
+        next.source_type,
+        next.source_url ?? "",
+        this.jsonArray(next.agent_ids),
+        this.jsonArray(next.user_ids),
+        next.updated_at,
+        taskId,
+      );
     return this.getTask(taskId);
   }
 
   deleteTasks(taskIds: string[]): BatchDeleteResult {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of taskIds) {
-      if (!this.getTask(id)) { result.failed.push({ id, reason: "not_found" }); continue; }
+      if (!this.getTask(id)) {
+        result.failed.push({ id, reason: "not_found" });
+        continue;
+      }
       this.db.prepare("DELETE FROM entity_tasks WHERE task_id = ?").run(id);
       result.deleted_ids.push(id);
     }
@@ -6318,16 +8388,47 @@ export class VectorStore implements IMemoryStore {
   createKnowledge(input: Omit<KnowledgeEntity, "created_at" | "updated_at">): KnowledgeEntity {
     const now = new Date().toISOString();
     // Upsert: if knowledge_id exists, update; else insert
-    const existing = this.db.prepare("SELECT created_at FROM entity_knowledge WHERE knowledge_id = ?").get(input.knowledge_id) as any;
+    const existing = this.db
+      .prepare("SELECT created_at FROM entity_knowledge WHERE knowledge_id = ?")
+      .get(input.knowledge_id) as any;
     if (existing) {
-      this.db.prepare(
-        "UPDATE entity_knowledge SET type=?, service_url=?, name=?, summary=?, team_id=?, agent_id=?, user_id=?, repo_url=?, branch=?, updated_at=? WHERE knowledge_id=?"
-      ).run(input.type, input.service_url, input.name, input.summary ?? null, input.team_id, input.agent_id ?? "", input.user_id ?? null, input.repo_url ?? null, input.branch ?? null, now, input.knowledge_id);
+      this.db
+        .prepare(
+          "UPDATE entity_knowledge SET type=?, service_url=?, name=?, summary=?, team_id=?, agent_id=?, user_id=?, repo_url=?, branch=?, updated_at=? WHERE knowledge_id=?",
+        )
+        .run(
+          input.type,
+          input.service_url,
+          input.name,
+          input.summary ?? null,
+          input.team_id,
+          input.agent_id ?? "",
+          input.user_id ?? null,
+          input.repo_url ?? null,
+          input.branch ?? null,
+          now,
+          input.knowledge_id,
+        );
       return this.getKnowledge(input.knowledge_id)!;
     }
-    this.db.prepare(
-      "INSERT INTO entity_knowledge (knowledge_id, type, service_url, name, summary, team_id, agent_id, user_id, repo_url, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(input.knowledge_id, input.type, input.service_url, input.name, input.summary ?? null, input.team_id, input.agent_id ?? "", input.user_id ?? null, input.repo_url ?? null, input.branch ?? null, now, now);
+    this.db
+      .prepare(
+        "INSERT INTO entity_knowledge (knowledge_id, type, service_url, name, summary, team_id, agent_id, user_id, repo_url, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        input.knowledge_id,
+        input.type,
+        input.service_url,
+        input.name,
+        input.summary ?? null,
+        input.team_id,
+        input.agent_id ?? "",
+        input.user_id ?? null,
+        input.repo_url ?? null,
+        input.branch ?? null,
+        now,
+        now,
+      );
     return this.getKnowledge(input.knowledge_id)!;
   }
 
@@ -6336,17 +8437,35 @@ export class VectorStore implements IMemoryStore {
     return row ? this.knowledgeFromRow(row) : null;
   }
 
-  updateKnowledge(knowledgeId: string, patch: Partial<Pick<KnowledgeEntity, "name" | "summary" | "service_url" | "repo_url" | "branch">>): KnowledgeEntity | null {
+  updateKnowledge(
+    knowledgeId: string,
+    patch: Partial<Pick<KnowledgeEntity, "name" | "summary" | "service_url" | "repo_url" | "branch">>,
+  ): KnowledgeEntity | null {
     const current = this.getKnowledge(knowledgeId);
     if (!current) return null;
     const now = new Date().toISOString();
     const sets: string[] = ["updated_at = ?"];
     const args: SQLInputValue[] = [now];
-    if (patch.name !== undefined) { sets.push("name = ?"); args.push(patch.name); }
-    if (patch.summary !== undefined) { sets.push("summary = ?"); args.push(patch.summary); }
-    if (patch.service_url !== undefined) { sets.push("service_url = ?"); args.push(patch.service_url); }
-    if (patch.repo_url !== undefined) { sets.push("repo_url = ?"); args.push(patch.repo_url); }
-    if (patch.branch !== undefined) { sets.push("branch = ?"); args.push(patch.branch); }
+    if (patch.name !== undefined) {
+      sets.push("name = ?");
+      args.push(patch.name);
+    }
+    if (patch.summary !== undefined) {
+      sets.push("summary = ?");
+      args.push(patch.summary);
+    }
+    if (patch.service_url !== undefined) {
+      sets.push("service_url = ?");
+      args.push(patch.service_url);
+    }
+    if (patch.repo_url !== undefined) {
+      sets.push("repo_url = ?");
+      args.push(patch.repo_url);
+    }
+    if (patch.branch !== undefined) {
+      sets.push("branch = ?");
+      args.push(patch.branch);
+    }
     args.push(knowledgeId);
     this.db.prepare(`UPDATE entity_knowledge SET ${sets.join(", ")} WHERE knowledge_id = ?`).run(...args);
     return this.getKnowledge(knowledgeId);
@@ -6356,15 +8475,27 @@ export class VectorStore implements IMemoryStore {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of knowledgeIds) {
       const row = this.getKnowledge(id);
-      if (!row) { result.failed.push({ id, reason: "not_found" }); continue; }
-      if (teamId && row.team_id !== teamId) { result.failed.push({ id, reason: "team_mismatch" }); continue; }
+      if (!row) {
+        result.failed.push({ id, reason: "not_found" });
+        continue;
+      }
+      if (teamId && row.team_id !== teamId) {
+        result.failed.push({ id, reason: "team_mismatch" });
+        continue;
+      }
       this.db.prepare("DELETE FROM entity_knowledge WHERE knowledge_id = ?").run(id);
       result.deleted_ids.push(id);
     }
     return result;
   }
 
-  listKnowledge(input: { team_id: string; type?: KnowledgeType; knowledge_ids?: string[]; limit?: number; offset?: number }): KnowledgeListResult {
+  listKnowledge(input: {
+    team_id: string;
+    type?: KnowledgeType;
+    knowledge_ids?: string[];
+    limit?: number;
+    offset?: number;
+  }): KnowledgeListResult {
     const limit = Math.min(Math.max(input.limit ?? 20, 1), 1000);
     const offset = Math.max(input.offset ?? 0, 0);
     // knowledge_ids 过滤（Proxy 按 id 批量联查明细）；空数组 → 空结果
@@ -6374,8 +8505,14 @@ export class VectorStore implements IMemoryStore {
 
     let sql = "SELECT * FROM entity_knowledge WHERE team_id = ?";
     const args: SQLInputValue[] = [input.team_id];
-    if (input.type) { sql += " AND type = ?"; args.push(input.type); }
-    if (idClause) { sql += idClause; args.push(...ids!); }
+    if (input.type) {
+      sql += " AND type = ?";
+      args.push(input.type);
+    }
+    if (idClause) {
+      sql += idClause;
+      args.push(...ids!);
+    }
     sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?";
     args.push(limit, offset);
     const rows = this.db.prepare(sql).all(...args) as any[];
@@ -6383,8 +8520,14 @@ export class VectorStore implements IMemoryStore {
 
     let countSql = "SELECT COUNT(*) as total FROM entity_knowledge WHERE team_id = ?";
     const countArgs: SQLInputValue[] = [input.team_id];
-    if (input.type) { countSql += " AND type = ?"; countArgs.push(input.type); }
-    if (idClause) { countSql += idClause; countArgs.push(...ids!); }
+    if (input.type) {
+      countSql += " AND type = ?";
+      countArgs.push(input.type);
+    }
+    if (idClause) {
+      countSql += idClause;
+      countArgs.push(...ids!);
+    }
     const totalRow = this.db.prepare(countSql).get(...countArgs) as any;
     return { items, total: totalRow?.total ?? 0 };
   }
@@ -6398,12 +8541,7 @@ export class VectorStore implements IMemoryStore {
    *
    * **Fault-tolerant**: returns an empty array on any error.
    */
-  searchL1Fts(
-    ftsQuery: string,
-    limit = 20,
-    filter?: IsolationFilter,
-    opts?: { type?: string },
-  ): FtsSearchResult[] {
+  searchL1Fts(ftsQuery: string, limit = 20, filter?: IsolationFilter, opts?: { type?: string }): FtsSearchResult[] {
     if (this.degraded || !this.ftsAvailable) return [];
     try {
       // 2026-11-03：类型收窄（结论层只要 work_fact）。先过滤再 LIMIT，排名语义不变；
@@ -6418,9 +8556,11 @@ export class VectorStore implements IMemoryStore {
         return [];
       }
       const retrieveLimit = filter ? Math.max(limit * 5, limit) : limit;
-      const rows = (typeScope
-        ? this.stmtL1FtsSearchByType!.all(ftsQuery, typeScope, retrieveLimit)
-        : this.stmtL1FtsSearch.all(ftsQuery, retrieveLimit)) as Array<{
+      const rows = (
+        typeScope
+          ? this.stmtL1FtsSearchByType!.all(ftsQuery, typeScope, retrieveLimit)
+          : this.stmtL1FtsSearch.all(ftsQuery, retrieveLimit)
+      ) as Array<{
         record_id: string;
         content: string;
         type: string;
@@ -6434,19 +8574,24 @@ export class VectorStore implements IMemoryStore {
         agent_id: string;
         version: number;
         timestamp_str: string;
+        /** @deprecated ADR-0025 C3：列已删，恒取 timestamp_str。 */
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
-        // soul 10 列（P1-T7：SELECT 由 SOUL_SELECT_FRAGMENT 带出）
+        // soul 9 列（P1-T7：SELECT 由 SOUL_SELECT_FRAGMENT 带出；ADR-0025 C2 删 source）
         occurred_at?: string | null;
         valid_start?: string | null;
         valid_end?: string | null;
         certainty?: string | null;
-        source?: string | null;
+        sensitivity?: string | null;
         valence?: number | null;
         arousal?: number | null;
         significance?: number | null;
         importance?: number | null;
+        /** 溯源（P0-1）：SELECT 用相关子查询从 l1_records 带出。 */
+        source_message_ids?: string | null;
+        /** B 项：SELECT 用相关子查询从 l1_records 带出（l1_fts 不存该列）。 */
+        updated_time?: string | null;
         rank: number;
       }>;
 
@@ -6462,7 +8607,7 @@ export class VectorStore implements IMemoryStore {
           score: bm25RankToScore(r.rank),
           rank: r.rank,
           timestamp_str: r.timestamp_str,
-          timestamp_start: r.timestamp_start,
+          timestamp_start: r.timestamp_str,
           timestamp_end: r.timestamp_end,
           version: r.version ?? 0,
           session_key: r.session_key,
@@ -6478,11 +8623,14 @@ export class VectorStore implements IMemoryStore {
           valid_start: r.valid_start ?? undefined,
           valid_end: r.valid_end ?? undefined,
           certainty: r.certainty ?? undefined,
-          source: r.source ?? undefined,
+          sensitivity: r.sensitivity ?? undefined,
           valence: r.valence ?? undefined,
           arousal: r.arousal ?? undefined,
           significance: r.significance ?? undefined,
           importance: r.importance ?? null,
+          source_message_ids: parseSourceMessageIds(r.source_message_ids),
+          // B 项：行最近更新时间（相关子查询带出；缺列/空值由消费方回退 timestamp_end）
+          updated_time: r.updated_time || undefined,
         }));
     } catch (err) {
       this.logger?.warn(
@@ -6563,14 +8711,10 @@ export class VectorStore implements IMemoryStore {
    * @returns `migrated` 是否执行了重建；`rows` 迁移行数（跳过时为当前行数）。
    */
   migrateL1FtsSoul(): { migrated: boolean; rows: number } {
-    const tableExists = this.db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='l1_fts'")
-      .get();
+    const tableExists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='l1_fts'").get();
     if (!tableExists) return { migrated: false, rows: 0 };
 
-    const cols = this.db
-      .prepare("SELECT name FROM pragma_table_info('l1_fts')")
-      .all() as Array<{ name: string }>;
+    const cols = this.db.prepare("SELECT name FROM pragma_table_info('l1_fts')").all() as Array<{ name: string }>;
     if (cols.some((c) => c.name === "importance")) {
       // 已含全部 soul 列（P1-T7 后=27 列；含则跳过——幂等）
       const n = (this.db.prepare("SELECT COUNT(*) AS n FROM l1_fts").get() as { n: number }).n;
@@ -6591,13 +8735,15 @@ export class VectorStore implements IMemoryStore {
       // 17 基础列从旧表原样拷贝（content 已是分词产物）；soul 8 列从主表回填，
       // 主表缺行（理论不可能，FTS 与主表同事务写）时 soul 列为 NULL。
       this.db
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO l1_fts_new (${L1_FTS_ALL_COL_NAMES.join(", ")})
           SELECT old.${L1_FTS_BASE_COLUMN_DEFS.map((d) => d.split(" ")[0]).join(", old.")},
                  rec.${SOUL_COL_NAMES.join(", rec.")}
           FROM l1_fts AS old
           LEFT JOIN l1_records AS rec ON old.record_id = rec.record_id
-        `)
+        `,
+        )
         .run();
       const newCount = (this.db.prepare("SELECT COUNT(*) AS n FROM l1_fts_new").get() as { n: number }).n;
       if (newCount !== oldCount) {
@@ -6616,7 +8762,9 @@ export class VectorStore implements IMemoryStore {
       // 失败必须 ROLLBACK，不留半建表（旧 17 列表原样保留，可重试）
       try {
         this.db.exec("ROLLBACK");
-      } catch { /* ignore rollback errors */ }
+      } catch {
+        /* ignore rollback errors */
+      }
       this.logger?.warn(
         `${TAG} l1_fts soul migration FAILED (rolled back, FTS will degrade): ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -6637,9 +8785,7 @@ export class VectorStore implements IMemoryStore {
   private migrateFtsTablesIfNeeded(): boolean {
     try {
       // Check if l1_fts exists at all
-      const l1Exists = this.db
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='l1_fts'")
-        .get();
+      const l1Exists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='l1_fts'").get();
       if (!l1Exists) {
         // Fresh install — tables will be created with v2 schema.
         // Still need rebuild if there's existing data in l1_records.
@@ -6649,17 +8795,19 @@ export class VectorStore implements IMemoryStore {
 
       // Check if the v2 column `content_original` exists.
       // FTS5 tables appear in pragma_table_info with their column names.
-      const cols = this.db
-        .prepare("SELECT name FROM pragma_table_info('l1_fts')")
-        .all() as Array<{ name: string }>;
+      const cols = this.db.prepare("SELECT name FROM pragma_table_info('l1_fts')").all() as Array<{ name: string }>;
       const hasV2Col = cols.some((c) => c.name === "content_original");
       // v3 marker: isolation columns added (user_id / agent_id).
-      const hasV3Col = cols.some((c) => c.name === "user_id")
-        && cols.some((c) => c.name === "agent_id");
+      const hasV3Col = cols.some((c) => c.name === "user_id") && cols.some((c) => c.name === "agent_id");
       const hasV4Col = cols.some((c) => c.name === "version");
       const hasV5Col = cols.some((c) => c.name === "task_id");
+      // v6 marker（ADR-0025 C2/C3）：冗余列必须已消失。
+      //  - timestamp_start 与 timestamp_str 曾在存量里 4225/4225 逐位相等（纯重复）；
+      //  - source 零判定读点（959 行为空串），凭据由 source_message_ids + memory_audit 承担。
+      // 任一列仍在 = 旧版 FTS 表，走 DROP + rebuild 自愈。
+      const hasV6Pruned = !cols.some((c) => c.name === "timestamp_start") && !cols.some((c) => c.name === "source");
 
-      if (hasV2Col && hasV3Col && hasV4Col && hasV5Col) {
+      if (hasV2Col && hasV3Col && hasV4Col && hasV5Col && hasV6Pruned) {
         return false; // Already current — no migration needed
       }
 
@@ -6675,6 +8823,8 @@ export class VectorStore implements IMemoryStore {
         this.logger?.info(`${TAG} Migrating FTS5 tables v3 → v4 (add version column)`);
       } else if (!hasV5Col) {
         this.logger?.info(`${TAG} Migrating FTS5 tables v4 → v5 (add task_id column)`);
+      } else if (!hasV6Pruned) {
+        this.logger?.info(`${TAG} Migrating FTS5 tables v5 → v6 (prune timestamp_start / source — ADR-0025 C2/C3)`);
       }
       this.db.exec("DROP TABLE IF EXISTS l1_fts");
       this.db.exec("DROP TABLE IF EXISTS l0_fts");
@@ -6700,8 +8850,16 @@ export class VectorStore implements IMemoryStore {
   rebuildFtsIndex(): void {
     if (!this.ftsAvailable) return;
 
+    // P0-3（2026-11-04）：重建必须原子。旧实现是 DELETE + 逐行 try/catch warn + 外层
+    // catch「non-fatal」——重建中途抛错会留下一张被清空后只灌了一半的**半截索引**，
+    // 而且告警不升级（检索静默少命中，比崩掉更难查）。改为「BEGIN → 清空/重灌 →
+    // 行数校验 → COMMIT」，任一步失败就 ROLLBACK 到重建前状态并向上抛（fail-loud）：
+    // 调用点 init() 的外层 catch 会把 ftsAvailable 置 false（本会话 FTS 明确关闭），
+    // 而不是带着残缺索引继续跑。范式同 migrateL1FtsSoul（见本方法上方）。
     try {
       this.logger?.info(`${TAG} Rebuilding FTS5 index with jieba segmentation…`);
+
+      this.db.exec("BEGIN");
 
       // ── Rebuild L1 FTS ──
       // Clear existing FTS data
@@ -6710,127 +8868,138 @@ export class VectorStore implements IMemoryStore {
       // Read all L1 records from metadata table.
       // Include user_id / agent_id so the rebuilt FTS rows carry isolation info.
       const l1Rows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT record_id, content, type, priority, scene_name,
                  session_key, session_id, team_id, task_id, user_id, agent_id, version,
-                 timestamp_str, timestamp_start, timestamp_end, metadata_json,
+                 timestamp_str, timestamp_end, metadata_json,
                  ${SOUL_SELECT_FRAGMENT}
           FROM l1_records
-        `)
+        `,
+        )
         .all() as Array<{
-          record_id: string;
-          content: string;
-          type: string;
-          priority: number;
-          scene_name: string;
-          session_key: string;
-          session_id: string;
-          team_id: string;
-          task_id: string;
-          user_id: string;
-          agent_id: string;
-          version: number;
-          timestamp_str: string;
-          timestamp_start: string;
-          timestamp_end: string;
-          metadata_json: string;
-          occurred_at?: string;
-          valid_start?: string;
-          valid_end?: string;
-          certainty?: string;
-          source?: string;
-          valence?: number | null;
-          arousal?: number | null;
-          significance?: number | null;
-        }>;
+        record_id: string;
+        content: string;
+        type: string;
+        priority: number;
+        scene_name: string;
+        session_key: string;
+        session_id: string;
+        team_id: string;
+        task_id: string;
+        user_id: string;
+        agent_id: string;
+        version: number;
+        timestamp_str: string;
+        timestamp_end: string;
+        metadata_json: string;
+        occurred_at?: string;
+        valid_start?: string;
+        valid_end?: string;
+        certainty?: string;
+        sensitivity?: string | null;
+        valence?: number | null;
+        arousal?: number | null;
+        significance?: number | null;
+        importance?: number | null;
+      }>;
 
-      let l1Count = 0;
       for (const r of l1Rows) {
-        try {
-          this.stmtL1FtsInsert.run(
-            tokenizeForFts(r.content),  // content — segmented
-            r.content,                   // content_original — raw
-            r.record_id,
-            r.type,
-            r.priority,
-            r.scene_name,
-            r.session_key,
-            r.session_id || DEFAULT_ISOLATION_ID,
-            r.team_id || "",
-            r.task_id || "",
-            r.user_id || DEFAULT_ISOLATION_ID,
-            r.agent_id || DEFAULT_ISOLATION_ID,
-            r.version ?? 0,
-            r.timestamp_str,
-            r.timestamp_start,
-            r.timestamp_end,
-            r.metadata_json,
-            // soul 8 字段（P1-T7）：与写入侧同源取值
-            ...soulBindValues(r as unknown as Record<string, unknown>),
-          );
-          l1Count++;
-        } catch (err) {
-          this.logger?.warn?.(
-            `${TAG} FTS rebuild skip L1 ${r.record_id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        // P0-3：不再逐行吞错——单行失败即整体失败并回滚（半截索引不可接受）
+        this.stmtL1FtsInsert.run(
+          tokenizeForFts(r.content), // content — segmented
+          r.content, // content_original — raw
+          r.record_id,
+          r.type,
+          r.priority,
+          r.scene_name,
+          r.session_key,
+          r.session_id || DEFAULT_ISOLATION_ID,
+          r.team_id || "",
+          r.task_id || "",
+          r.user_id || DEFAULT_ISOLATION_ID,
+          r.agent_id || DEFAULT_ISOLATION_ID,
+          r.version ?? 0,
+          r.timestamp_str,
+          r.timestamp_end,
+          r.metadata_json,
+          // soul 9 字段（P1-T7）：与写入侧同源取值（ADR-0025 C2 已删 source）
+          ...soulBindValues(r as unknown as Record<string, unknown>),
+        );
       }
 
       // ── Rebuild L0 FTS ──
       this.db.exec("DELETE FROM l0_fts");
 
       const l0Rows = this.db
-        .prepare(`
+        .prepare(
+          `
           SELECT record_id, message_text, session_key, session_id, team_id, task_id, user_id, agent_id,
                  role, recorded_at, timestamp
           FROM l0_conversations
-        `)
+        `,
+        )
         .all() as Array<{
-          record_id: string;
-          message_text: string;
-          session_key: string;
-          session_id: string;
-          team_id: string;
-          task_id: string;
-          user_id: string;
-          agent_id: string;
-          role: string;
-          recorded_at: string;
-          timestamp: number;
-        }>;
+        record_id: string;
+        message_text: string;
+        session_key: string;
+        session_id: string;
+        team_id: string;
+        task_id: string;
+        user_id: string;
+        agent_id: string;
+        role: string;
+        recorded_at: string;
+        timestamp: number;
+      }>;
 
-      let l0Count = 0;
       for (const r of l0Rows) {
-        try {
-          this.stmtL0FtsInsert.run(
-            tokenizeForFts(r.message_text),  // message_text — segmented
-            r.message_text,                   // message_text_original — raw
-            r.record_id,
-            r.session_key,
-            r.session_id,
-            r.team_id ?? "",
-            r.task_id ?? "",
-            r.user_id ?? "",
-            r.agent_id ?? "",
-            r.role,
-            r.recorded_at,
-            r.timestamp,
-          );
-          l0Count++;
-        } catch (err) {
-          this.logger?.warn?.(
-            `${TAG} FTS rebuild skip L0 ${r.record_id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        // P0-3：同 L1——单行失败即整体失败并回滚
+        this.stmtL0FtsInsert.run(
+          tokenizeForFts(r.message_text), // message_text — segmented
+          r.message_text, // message_text_original — raw
+          r.record_id,
+          r.session_key,
+          r.session_id,
+          r.team_id ?? "",
+          r.task_id ?? "",
+          r.user_id ?? "",
+          r.agent_id ?? "",
+          r.role,
+          r.recorded_at,
+          r.timestamp,
+        );
       }
 
+      // P0-3：行数校验——插入语句静默丢行（约束/触发器/未来列漂移）不能靠肉眼发现。
+      // 期望值=主表行数（本方法不做任何过滤），不符即视为重建失败。
+      const l1FtsCount = Number((this.db.prepare("SELECT COUNT(*) AS n FROM l1_fts").get() as { n: number }).n);
+      if (l1FtsCount !== l1Rows.length) {
+        throw new Error(`FTS rebuild row-count mismatch (L1): l1_fts=${l1FtsCount} vs l1_records=${l1Rows.length}`);
+      }
+      const l0FtsCount = Number((this.db.prepare("SELECT COUNT(*) AS n FROM l0_fts").get() as { n: number }).n);
+      if (l0FtsCount !== l0Rows.length) {
+        throw new Error(
+          `FTS rebuild row-count mismatch (L0): l0_fts=${l0FtsCount} vs l0_conversations=${l0Rows.length}`,
+        );
+      }
+
+      this.db.exec("COMMIT");
+
       this.logger?.info(
-        `${TAG} FTS5 rebuild complete: L1=${l1Count}/${l1Rows.length}, L0=${l0Count}/${l0Rows.length}`,
+        `${TAG} FTS5 rebuild complete: L1=${l1FtsCount}/${l1Rows.length}, L0=${l0FtsCount}/${l0Rows.length}`,
       );
     } catch (err) {
+      // P0-3：回滚到重建前状态，并把错误抛给调用点（init 的外层 catch 会关掉本次 FTS）
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务可能未开启（BEGIN 前就失败）——无可回滚 */
+      }
       this.logger?.warn(
-        `${TAG} FTS5 rebuild failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        `${TAG} FTS5 rebuild FAILED — rolled back, index left at pre-rebuild state: ${err instanceof Error ? err.message : String(err)}`,
       );
+      throw err;
     }
   }
 
@@ -6880,15 +9049,42 @@ export class VectorStore implements IMemoryStore {
   queryAudit(filter: AuditQueryFilter): AuditEntry[] {
     const conds: string[] = [];
     const args: SQLInputValue[] = [];
-    if (filter.record_id !== undefined) { conds.push("record_id = ?"); args.push(filter.record_id); }
-    if (filter.layer !== undefined)     { conds.push("layer = ?");     args.push(filter.layer); }
-    if (filter.action !== undefined)    { conds.push("action = ?");    args.push(filter.action); }
-    if (filter.team_id !== undefined)   { conds.push("team_id = ?");   args.push(filter.team_id); }
-    if (filter.agent_id !== undefined)  { conds.push("agent_id = ?");  args.push(filter.agent_id); }
-    if (filter.user_id !== undefined)   { conds.push("user_id = ?");   args.push(filter.user_id); }
-    if (filter.task_id !== undefined)   { conds.push("task_id = ?");   args.push(filter.task_id); }
-    if (filter.since_ms !== undefined)  { conds.push("updated_at_ms >= ?"); args.push(filter.since_ms); }
-    if (filter.until_ms !== undefined)  { conds.push("updated_at_ms <= ?"); args.push(filter.until_ms); }
+    if (filter.record_id !== undefined) {
+      conds.push("record_id = ?");
+      args.push(filter.record_id);
+    }
+    if (filter.layer !== undefined) {
+      conds.push("layer = ?");
+      args.push(filter.layer);
+    }
+    if (filter.action !== undefined) {
+      conds.push("action = ?");
+      args.push(filter.action);
+    }
+    if (filter.team_id !== undefined) {
+      conds.push("team_id = ?");
+      args.push(filter.team_id);
+    }
+    if (filter.agent_id !== undefined) {
+      conds.push("agent_id = ?");
+      args.push(filter.agent_id);
+    }
+    if (filter.user_id !== undefined) {
+      conds.push("user_id = ?");
+      args.push(filter.user_id);
+    }
+    if (filter.task_id !== undefined) {
+      conds.push("task_id = ?");
+      args.push(filter.task_id);
+    }
+    if (filter.since_ms !== undefined) {
+      conds.push("updated_at_ms >= ?");
+      args.push(filter.since_ms);
+    }
+    if (filter.until_ms !== undefined) {
+      conds.push("updated_at_ms <= ?");
+      args.push(filter.until_ms);
+    }
 
     const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
     const limit = Math.min(Math.max(filter.limit ?? 100, 1), 1000);
@@ -6957,10 +9153,16 @@ export class VectorStore implements IMemoryStore {
     try {
       for (const record of records) {
         stmt.run(
-          record.generation_ref_id, record.layer, record.memory_id,
-          record.generation_id, record.generation_log_id, record.generation_log_key,
-          record.memory_prompt_id, record.memory_prompt_version,
-          record.memory_prompt_source, record.created_at_ms,
+          record.generation_ref_id,
+          record.layer,
+          record.memory_id,
+          record.generation_id,
+          record.generation_log_id,
+          record.generation_log_key,
+          record.memory_prompt_id,
+          record.memory_prompt_version,
+          record.memory_prompt_source,
+          record.created_at_ms,
         );
       }
       this.db.exec("COMMIT");
@@ -6972,9 +9174,11 @@ export class VectorStore implements IMemoryStore {
 
   getMemoryGenerationRef(layer: MemoryGenerationLayer, memoryId: string): MemoryGenerationRefRecord | null {
     const id = buildMemoryGenerationRefId(layer, memoryId);
-    return (this.db.prepare(
-      "SELECT * FROM memory_generation_refs WHERE generation_ref_id = ? AND layer = ? AND memory_id = ?",
-    ).get(id, layer, memoryId) as unknown as MemoryGenerationRefRecord | undefined) ?? null;
+    return (
+      (this.db
+        .prepare("SELECT * FROM memory_generation_refs WHERE generation_ref_id = ? AND layer = ? AND memory_id = ?")
+        .get(id, layer, memoryId) as unknown as MemoryGenerationRefRecord | undefined) ?? null
+    );
   }
 
   // ─────────────────────────────────────────────────────────
@@ -6987,40 +9191,58 @@ export class VectorStore implements IMemoryStore {
   }
 
   createMemoryPrompt(record: MemoryPromptRecord): MemoryPromptRecord {
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO memory_prompts
         (memory_prompt_id, name, layer, prompt, version, status,
          created_by, updated_by, created_at_ms, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      record.memory_prompt_id, record.name, record.layer, record.prompt,
-      record.version, record.status, record.created_by ?? null,
-      record.updated_by ?? null, record.created_at_ms, record.updated_at_ms,
-    );
+    `,
+      )
+      .run(
+        record.memory_prompt_id,
+        record.name,
+        record.layer,
+        record.prompt,
+        record.version,
+        record.status,
+        record.created_by ?? null,
+        record.updated_by ?? null,
+        record.created_at_ms,
+        record.updated_at_ms,
+      );
     return record;
   }
 
   getMemoryPrompts(ids: string[]): MemoryPromptRecord[] {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
-    return this.db.prepare(
-      `SELECT * FROM memory_prompts WHERE memory_prompt_id IN (${placeholders})`,
-    ).all(...ids) as unknown as MemoryPromptRecord[];
+    return this.db
+      .prepare(`SELECT * FROM memory_prompts WHERE memory_prompt_id IN (${placeholders})`)
+      .all(...ids) as unknown as MemoryPromptRecord[];
   }
 
   listMemoryPrompts(filter: MemoryPromptListFilter): MemoryPromptRecord[] {
     const conds = ["status = 'active'"];
     const args: SQLInputValue[] = [];
-    if (filter.layer) { conds.push("layer = ?"); args.push(filter.layer); }
+    if (filter.layer) {
+      conds.push("layer = ?");
+      args.push(filter.layer);
+    }
     const order = filter.timeOrder === "asc" ? "ASC" : "DESC";
     const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
     const offset = Math.max(filter.offset ?? 0, 0);
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM memory_prompts
       WHERE ${conds.join(" AND ")}
       ORDER BY updated_at_ms ${order}, memory_prompt_id ${order}
       LIMIT ? OFFSET ?
-    `).all(...args, limit, offset) as unknown as MemoryPromptRecord[];
+    `,
+      )
+      .all(...args, limit, offset) as unknown as MemoryPromptRecord[];
   }
 
   updateMemoryPrompt(
@@ -7035,12 +9257,18 @@ export class VectorStore implements IMemoryStore {
 
     const sets = ["version = version + 1", "updated_at_ms = ?", "updated_by = ?"];
     const args: SQLInputValue[] = [patch.updated_at_ms, patch.updated_by ?? null];
-    if (patch.name !== undefined) { sets.push("name = ?"); args.push(patch.name); }
-    if (patch.prompt !== undefined) { sets.push("prompt = ?"); args.push(patch.prompt); }
+    if (patch.name !== undefined) {
+      sets.push("name = ?");
+      args.push(patch.name);
+    }
+    if (patch.prompt !== undefined) {
+      sets.push("prompt = ?");
+      args.push(patch.prompt);
+    }
     args.push(id);
-    const result = this.db.prepare(
-      `UPDATE memory_prompts SET ${sets.join(", ")} WHERE memory_prompt_id = ? AND status = 'active'`,
-    ).run(...args);
+    const result = this.db
+      .prepare(`UPDATE memory_prompts SET ${sets.join(", ")} WHERE memory_prompt_id = ? AND status = 'active'`)
+      .run(...args);
     if (Number(result.changes ?? 0) === 0) return null;
     return this.getMemoryPrompts([id])[0] ?? null;
   }
@@ -7048,34 +9276,50 @@ export class VectorStore implements IMemoryStore {
   getMemoryPromptSettings(ids: string[]): MemoryPromptSettingRecord[] {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
-    return this.db.prepare(
-      `SELECT * FROM memory_prompt_settings WHERE setting_id IN (${placeholders})`,
-    ).all(...ids) as unknown as MemoryPromptSettingRecord[];
+    return this.db
+      .prepare(`SELECT * FROM memory_prompt_settings WHERE setting_id IN (${placeholders})`)
+      .all(...ids) as unknown as MemoryPromptSettingRecord[];
   }
 
   listMemoryPromptSettings(filter: MemoryPromptSettingListFilter): MemoryPromptSettingRecord[] {
     const conds: string[] = [];
     const args: SQLInputValue[] = [];
-    if (filter.memoryPromptId) { conds.push("memory_prompt_id = ?"); args.push(filter.memoryPromptId); }
-    if (filter.targetType) { conds.push("target_type = ?"); args.push(filter.targetType); }
-    if (filter.teamId) { conds.push("team_id = ?"); args.push(filter.teamId); }
-    if (filter.agentId) { conds.push("agent_id = ?"); args.push(filter.agentId); }
-    if (filter.layer) { conds.push("layer = ?"); args.push(filter.layer); }
+    if (filter.memoryPromptId) {
+      conds.push("memory_prompt_id = ?");
+      args.push(filter.memoryPromptId);
+    }
+    if (filter.targetType) {
+      conds.push("target_type = ?");
+      args.push(filter.targetType);
+    }
+    if (filter.teamId) {
+      conds.push("team_id = ?");
+      args.push(filter.teamId);
+    }
+    if (filter.agentId) {
+      conds.push("agent_id = ?");
+      args.push(filter.agentId);
+    }
+    if (filter.layer) {
+      conds.push("layer = ?");
+      args.push(filter.layer);
+    }
     const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
     const order = filter.timeOrder === "asc" ? "ASC" : "DESC";
     const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
     const offset = Math.max(filter.offset ?? 0, 0);
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM memory_prompt_settings ${where}
       ORDER BY updated_at_ms ${order}, setting_id ${order}
       LIMIT ? OFFSET ?
-    `).all(...args, limit, offset) as unknown as MemoryPromptSettingRecord[];
+    `,
+      )
+      .all(...args, limit, offset) as unknown as MemoryPromptSettingRecord[];
   }
 
-  upsertMemoryPromptSettings(
-    records: MemoryPromptSettingRecord[],
-    logs: MemoryPromptSettingLogRecord[],
-  ): void {
+  upsertMemoryPromptSettings(records: MemoryPromptSettingRecord[], logs: MemoryPromptSettingLogRecord[]): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const upsert = this.db.prepare(`
@@ -7090,9 +9334,14 @@ export class VectorStore implements IMemoryStore {
       `);
       for (const record of records) {
         upsert.run(
-          record.setting_id, record.target_type, record.team_id ?? null,
-          record.agent_id ?? null, record.layer, record.memory_prompt_id,
-          record.updated_by ?? null, record.updated_at_ms,
+          record.setting_id,
+          record.target_type,
+          record.team_id ?? null,
+          record.agent_id ?? null,
+          record.layer,
+          record.memory_prompt_id,
+          record.updated_by ?? null,
+          record.updated_at_ms,
         );
       }
       this.insertMemoryPromptSettingLogs(logs);
@@ -7126,25 +9375,36 @@ export class VectorStore implements IMemoryStore {
     `);
     for (const log of logs) {
       insert.run(
-        log.setting_log_id, log.target_type, log.team_id ?? null,
-        log.agent_id ?? null, log.layer, log.action, log.reason,
-        log.before_memory_prompt_id ?? null, log.after_memory_prompt_id ?? null,
-        log.operator_id ?? null, log.operated_at_ms,
+        log.setting_log_id,
+        log.target_type,
+        log.team_id ?? null,
+        log.agent_id ?? null,
+        log.layer,
+        log.action,
+        log.reason,
+        log.before_memory_prompt_id ?? null,
+        log.after_memory_prompt_id ?? null,
+        log.operator_id ?? null,
+        log.operated_at_ms,
       );
     }
   }
 
-  deleteMemoryPrompts(ids: string[], operatorId?: string): {
+  deleteMemoryPrompts(
+    ids: string[],
+    operatorId?: string,
+  ): {
     deleted_prompt_ids: string[];
     cleared_settings: Record<MemoryPromptTargetType, number>;
   } {
     const prompts = this.getMemoryPrompts(ids);
-    if (prompts.length !== ids.length) return { deleted_prompt_ids: [], cleared_settings: { instance: 0, team: 0, agent: 0 } };
+    if (prompts.length !== ids.length)
+      return { deleted_prompt_ids: [], cleared_settings: { instance: 0, team: 0, agent: 0 } };
     const cleared: Record<MemoryPromptTargetType, number> = { instance: 0, team: 0, agent: 0 };
     const placeholders = ids.map(() => "?").join(",");
-    const settings = this.db.prepare(
-      `SELECT * FROM memory_prompt_settings WHERE memory_prompt_id IN (${placeholders})`,
-    ).all(...ids) as unknown as MemoryPromptSettingRecord[];
+    const settings = this.db
+      .prepare(`SELECT * FROM memory_prompt_settings WHERE memory_prompt_id IN (${placeholders})`)
+      .all(...ids) as unknown as MemoryPromptSettingRecord[];
     const now = Date.now();
     const logs: MemoryPromptSettingLogRecord[] = settings.map((setting) => {
       cleared[setting.target_type] += 1;
@@ -7164,7 +9424,9 @@ export class VectorStore implements IMemoryStore {
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare(`UPDATE memory_prompts SET status = 'deleting' WHERE memory_prompt_id IN (${placeholders})`).run(...ids);
+      this.db
+        .prepare(`UPDATE memory_prompts SET status = 'deleting' WHERE memory_prompt_id IN (${placeholders})`)
+        .run(...ids);
       this.db.prepare(`DELETE FROM memory_prompt_settings WHERE memory_prompt_id IN (${placeholders})`).run(...ids);
       this.insertMemoryPromptSettingLogs(logs);
       this.db.prepare(`DELETE FROM memory_prompts WHERE memory_prompt_id IN (${placeholders})`).run(...ids);
@@ -7183,20 +9445,39 @@ export class VectorStore implements IMemoryStore {
       conds.push("(before_memory_prompt_id = ? OR after_memory_prompt_id = ?)");
       args.push(filter.memoryPromptId, filter.memoryPromptId);
     }
-    if (filter.teamId) { conds.push("team_id = ?"); args.push(filter.teamId); }
-    if (filter.agentId) { conds.push("agent_id = ?"); args.push(filter.agentId); }
-    if (filter.action) { conds.push("action = ?"); args.push(filter.action); }
-    if (filter.startTimeMs !== undefined) { conds.push("operated_at_ms >= ?"); args.push(filter.startTimeMs); }
-    if (filter.endTimeMs !== undefined) { conds.push("operated_at_ms <= ?"); args.push(filter.endTimeMs); }
+    if (filter.teamId) {
+      conds.push("team_id = ?");
+      args.push(filter.teamId);
+    }
+    if (filter.agentId) {
+      conds.push("agent_id = ?");
+      args.push(filter.agentId);
+    }
+    if (filter.action) {
+      conds.push("action = ?");
+      args.push(filter.action);
+    }
+    if (filter.startTimeMs !== undefined) {
+      conds.push("operated_at_ms >= ?");
+      args.push(filter.startTimeMs);
+    }
+    if (filter.endTimeMs !== undefined) {
+      conds.push("operated_at_ms <= ?");
+      args.push(filter.endTimeMs);
+    }
     const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
     const order = filter.timeOrder === "asc" ? "ASC" : "DESC";
     const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
     const offset = Math.max(filter.offset ?? 0, 0);
-    return this.db.prepare(`
+    return this.db
+      .prepare(
+        `
       SELECT * FROM memory_prompt_setting_logs ${where}
       ORDER BY operated_at_ms ${order}, setting_log_id ${order}
       LIMIT ? OFFSET ?
-    `).all(...args, limit, offset) as unknown as MemoryPromptSettingLogRecord[];
+    `,
+      )
+      .all(...args, limit, offset) as unknown as MemoryPromptSettingLogRecord[];
   }
 
   /**
@@ -7209,9 +9490,7 @@ export class VectorStore implements IMemoryStore {
     try {
       this.db.close();
     } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} Error closing database: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.logger?.warn?.(`${TAG} Error closing database: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

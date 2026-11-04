@@ -20,12 +20,33 @@ import path from "node:path";
 
 import { isRerankModelReady, startRerankModelDownload } from "./downloader.js";
 import type { RerankModelFileSpec } from "./downloader.js";
+import { resolveRerankInferTimeoutMs, resolveRerankTuning } from "./tuning.js";
+import type { RerankTuning } from "./tuning.js";
 import type { MemoryReranker, RerankResult } from "./types.js";
+
+/**
+ * worker 启动数据（2026-11-04）。threads/docCap 的缺省值单点定义在 ./tuning.ts（实测标定表在那边），
+ * 这里只负责下发，避免 worker 与主线程各写一份常量后漂移。
+ */
+export function buildRerankWorkerData(opts: {
+  modelDir: string;
+  transformersEntryUrl?: string;
+  tuning?: RerankTuning;
+}): {
+  modelDir: string;
+  transformersEntryUrl?: string;
+  tuning: RerankTuning;
+} {
+  return {
+    modelDir: opts.modelDir,
+    transformersEntryUrl: opts.transformersEntryUrl,
+    tuning: opts.tuning ?? resolveRerankTuning(),
+  };
+}
 
 /** 父→worker 消息。 */
 export type RerankWorkerRequest =
-  | { type: "load"; modelDir: string }
-  | { type: "score"; id: number; query: string; docs: string[] };
+  { type: "load"; modelDir: string } | { type: "score"; id: number; query: string; docs: string[] };
 
 /** worker→父消息。 */
 export type RerankWorkerResponse =
@@ -44,6 +65,8 @@ export interface RerankWorkerLike {
 
 export type LocalRerankerState = "idle" | "loading" | "ready" | "failed";
 
+// 2026-11-04：推理参数与硬预算的实测缺省（threads=2 / docCap=320 / 4s）见 ./tuning.ts 的标定表。
+
 export interface LocalRerankerOptions {
   /** 模型目录（…/Xenova/bge-reranker-base；worker 内 env.localModelPath=dirname，modelId=basename）。 */
   modelDir: string;
@@ -55,8 +78,13 @@ export interface LocalRerankerOptions {
   idleUnloadMs?: number;
   /** load 超时毫秒（缺省 300000）。 */
   loadTimeoutMs?: number;
-  /** 单次 score 超时毫秒（假死击杀；缺省 30000）。 */
+  /**
+   * 单次 score 超时毫秒（假死击杀）。缺省 = tuning.ts 的 4s（实测最坏 ≈1.6s 的 2.5× 余量），
+   * 可用 TDAI_RERANK_INFER_TIMEOUT_MS 覆盖（bench A/B 用）。
+   */
   inferTimeoutMs?: number;
+  /** 推理参数（threads/docCap）。缺省 = tuning.ts 的实测最优点（2 / 320），env 可覆盖。 */
+  tuning?: RerankTuning;
   /** failed 冷却毫秒（缺省 60000）。 */
   failureRetryMs?: number;
   /** 模型缺失时是否自动触发下载（缺省 true）。 */
@@ -80,7 +108,10 @@ interface PendingLoad {
 
 export class LocalReranker implements MemoryReranker {
   private readonly opts: Required<
-    Pick<LocalRerankerOptions, "modelDir" | "idleUnloadMs" | "loadTimeoutMs" | "inferTimeoutMs" | "failureRetryMs" | "allowAutoDownload">
+    Pick<
+      LocalRerankerOptions,
+      "modelDir" | "idleUnloadMs" | "loadTimeoutMs" | "inferTimeoutMs" | "failureRetryMs" | "allowAutoDownload"
+    >
   > &
     LocalRerankerOptions;
   private worker: RerankWorkerLike | null = null;
@@ -100,7 +131,9 @@ export class LocalReranker implements MemoryReranker {
     this.opts = {
       idleUnloadMs: 600_000,
       loadTimeoutMs: 300_000,
-      inferTimeoutMs: 30_000,
+      // 2026-11-04 实测标定：32 候选 @2 线程 ≈1.6s（docCap 320），留 2.5× 余量 → 4s。
+      // 旧缺省 30s 会让一次推理假死吃掉插件 2.5s 的召回窗口（60s 超时事故的成因之一）。
+      inferTimeoutMs: resolveRerankInferTimeoutMs(),
       failureRetryMs: 60_000,
       allowAutoDownload: true,
       ...opts,
@@ -115,11 +148,7 @@ export class LocalReranker implements MemoryReranker {
     if (this.disposed) return null;
     if (docs.length === 0) return [];
     const now = Date.now();
-    if (
-      this.currentState === "failed" &&
-      this.failedAt !== null &&
-      now - this.failedAt < this.opts.failureRetryMs
-    ) {
+    if (this.currentState === "failed" && this.failedAt !== null && now - this.failedAt < this.opts.failureRetryMs) {
       return null; // 冷却期内：直接 null，不重 spawn
     }
     if (!isRerankModelReady(this.opts.modelDir, this.opts.modelFiles)) {
@@ -131,6 +160,22 @@ export class LocalReranker implements MemoryReranker {
       return null; // ensureLoaded 内部已 markFailed
     }
     return await this.postScore(query, docs);
+  }
+
+  /**
+   * 预热：显式等待模型加载完成（冷启动 ≈0.9s），让调用方把「加载」排除在打分预算之外。
+   * 2026-11-04：滚动预算按 400ms 计，冷启动 900ms 会让首块直接判超时 ⇒ 整题丢精排；
+   * 实测并发臂里 3 题连丢就把熔断推到 open（后续 61 题跳过精排）。
+   * 模型缺失/加载失败不抛：与 rerank 同语义（本次降级，下次再试）。
+   */
+  async warmup(): Promise<void> {
+    if (this.disposed) return;
+    if (!isRerankModelReady(this.opts.modelDir, this.opts.modelFiles)) return;
+    try {
+      await this.ensureLoaded();
+    } catch {
+      /* 加载失败由 rerank 的降级路径处理，这里只负责「别把加载时间算进预算」 */
+    }
   }
 
   /** 显式卸载（池 reset / 优雅关停用）。 */
@@ -190,7 +235,7 @@ export class LocalReranker implements MemoryReranker {
 
   private defaultSpawnWorker(): RerankWorkerLike {
     return new Worker(new URL("./rerank-worker.mjs", import.meta.url), {
-      workerData: { modelDir: this.opts.modelDir, transformersEntryUrl: this.opts.transformersEntryUrl },
+      workerData: buildRerankWorkerData(this.opts),
     }) as unknown as RerankWorkerLike;
   }
 
@@ -259,9 +304,7 @@ export class LocalReranker implements MemoryReranker {
       if (scores.length !== docs.length || !scores.every((s) => Number.isFinite(s))) {
         return null; // 非有限分数/长度不符 → 降级（worker 留存，不计 failed）
       }
-      return scores
-        .map((score, index) => ({ index, score }))
-        .sort((a, b) => b.score - a.score);
+      return scores.map((score, index) => ({ index, score })).sort((a, b) => b.score - a.score);
     });
   }
 
@@ -314,8 +357,7 @@ export class LocalReranker implements MemoryReranker {
   private triggerDownloadAndDegrade(): Promise<RerankResult[] | null> {
     if (this.opts.allowAutoDownload && !this.downloadPromise) {
       const starter =
-        this.opts.downloadStarter ??
-        ((o: { modelDir: string }) => startRerankModelDownload({ modelDir: o.modelDir }));
+        this.opts.downloadStarter ?? ((o: { modelDir: string }) => startRerankModelDownload({ modelDir: o.modelDir }));
       this.downloadPromise = starter({ modelDir: this.opts.modelDir })
         .catch(() => false)
         .then((ok) => {

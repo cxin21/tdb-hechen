@@ -33,6 +33,8 @@ const full = {
   timestamp_start: '2026-09-22T01:00:00Z',
   timestamp_end: '2026-09-22T02:00:00Z',
   sensitivity: 'none',
+  importance: 7,
+  source_message_ids: ['m1', 'm2'],
 } as unknown as Parameters<typeof mapLayerItem>[0];
 
 describe('mapLayerItem 属性全景透传（F-T4-1）', () => {
@@ -51,6 +53,16 @@ describe('mapLayerItem 属性全景透传（F-T4-1）', () => {
     expect(m.version).toBe(2);
     expect(m.sensitivity).toBe('none');
     expect(m.metadata).toEqual({ recall_count: 3 });
+  });
+
+  // ADR-0025 复核：importance 与行级溯源此前在内核/BFF/映射三层都缺——
+  // 属性表「能改不能看」且看不到原话。此处锁住映射不再丢这两列（空数组也不造值）。
+  it('importance 与 source_message_ids 透传（复核补漏）', () => {
+    const m = mapLayerItem(full);
+    expect(m.importance).toBe(7);
+    expect(m.source_message_ids).toEqual(['m1', 'm2']);
+    const empty = mapLayerItem({ ...full, source_message_ids: [] });
+    expect(empty.source_message_ids).toEqual([]);
   });
 
   it('缺失字段不造值（undefined 保持，宁缺毋滥）', () => {

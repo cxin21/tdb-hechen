@@ -18,7 +18,8 @@
 import { createHash } from "node:crypto";
 
 import { isAssistantRecallQuery } from "../../recall/query-intent.js";
-import { layerRulerSelect, type LayerRulerDropReason } from "./layer-ruler.js";
+import { fillCharBudgetBySession, layerRulerSelect, type LayerRulerDropReason } from "./layer-ruler.js";
+import { buildEvidenceWindow } from "./evidence-window.js";
 import { resolveEmbeddingSimFloor } from "./floor-calibration.js";
 
 /** 注入预算的意图档位（对应规格 §4.3 的 budgetByIntent 四键）。 */
@@ -165,6 +166,12 @@ export interface InjectionSelectionInput {
   ruler: InjectionRulerConfig;
   foldIdentical: boolean;
   budgetByIntent: InjectionBudgetByIntent;
+  /**
+   * 2026-11-03 LME90 归因标准行为（无开关）：enforce 模式下候选池非空、意图不是
+   * empty/continuation 时绝不允许输出零行 —— 空块对模型等于「没有相关记忆」。
+   * 实测 13 行空块（12 self + 1 info）13/13 拒答，是基线 90 题全部拒答的 27.7%。
+   * 保护只保回装得进 maxChars 的行，且只作用于 fold 之前（同回合已注入则仍 0 行）。
+   */
   /** 上一回合注入行指纹（调用方台账；缺省 = 不折叠）。 */
   previousHash?: string;
   /** 标定产物（`${model}@${dims}` → p95 地板）。 */
@@ -179,6 +186,8 @@ export interface InjectionSelectionInput {
    */
   budgetMs?: number;
   now?: () => number;
+  /** 与 lines 平行的来源会话（session_id）；候选跨 ≥2 个会话时按 60%/会话分摊字符预算。 */
+  sessions?: ReadonlyArray<string | null | undefined>;
   /** 预判意图（缺省按 query 判；测试/调用方可显式给）。 */
   intent?: InjectionIntent;
   /** v2：单行渲染上限（码点）；优先级 输入 > ruler.maxLineChars > 不截断。 */
@@ -197,6 +206,8 @@ export interface InjectionCandidateLine {
   bm25Rel?: number;
   kept: boolean;
   droppedBy?: LayerRulerDropReason;
+  /** 2026-11-03 LME90：本行由零行保护保回（kept=true 且原本被判 drop）——审计面用。 */
+  rescued?: true;
 }
 
 export interface InjectionStageOutcome {
@@ -221,6 +232,10 @@ export interface InjectionStageOutcome {
     };
     /** v2：本轮被行长上限截断的行数（截断不改判定，只改渲染）。 */
     capped: number;
+    /** 2026-11-03：零行保护保回的条数（0 = 未触发）。 */
+    rescued: number;
+    /** 2026-11-03：因整行装不进预算而被换成证据窗的行数（0 = 未触发）。 */
+    windowed: number;
     /**
      * #179 v3：候选池字符数（选前，= 输入行长度之和）。
      * 与 injectedChars 一起构成 journal 自证口径：不读 memoryLines 也能复盘压缩率。
@@ -268,6 +283,19 @@ export interface InjectionStageOutcome {
 }
 
 const CANDIDATE_LINE_CAP = 40;
+/**
+ * 2026-11-03 残预算回填：剩余预算小于它就收手——为了「把预算用满」注入一堆 60 字碎片，
+ * 只会把块变成噪声（预算不是必须花完的配额）。
+ */
+const BACKFILL_MIN_CHARS = 200;
+// 单条证据最多吃掉整块预算的 3/5（与跨会话份额同比例）：长轮窗化后仍留四成给别的候选。
+const LINE_SHARE_NUM = 3;
+const LINE_SHARE_DEN = 5;
+
+/** 渲染上限的唯一取值口径（与 ⑤ 渲染步骤同源：调用方优先，其次 ruler，其次 null）。 */
+function rescueMaxLineCharsOf(input: InjectionSelectionInput): number | null | undefined {
+  return input.maxLineChars ?? input.ruler.maxLineChars ?? null;
+}
 
 /** v2：单行渲染上限的句界字符（不切半个字；找不到句界就硬切并加省略号）。 */
 const SENTENCE_ENDS = new Set(["。", "！", "？", "；", "\n", ".", "!", "?", ";"]);
@@ -322,8 +350,42 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | "timeout">
 export async function applyInjectionSelection(input: InjectionSelectionInput): Promise<InjectionStageOutcome> {
   const now = input.now ?? (() => Date.now());
   const t0 = now();
-  const lines = input.lines;
-  const total = lines.length;
+  const rawLines = input.lines;
+  const total = rawLines.length;
+  // ①′ 证据窗（2026-11-03 LME90 归因）：只在「整行绝对装不进预算」时，把长轮换成
+  // 「头 + 命中窗 + 尾」的节选——否则选线会整条丢弃（实测 7 道题借此留出 1287 字空预算）。
+  // 预算是硬上限：预算未配（null）时不动任何行。mode=off 是显式回滚通道，必须与改动前
+  // 逐位一致，故 windowing 只在非 off 模式生效。
+  const windowBudget =
+    input.ruler.mode !== "off" &&
+    typeof input.maxChars === "number" &&
+    Number.isFinite(input.maxChars) &&
+    input.maxChars > 0
+      ? Math.floor(input.maxChars)
+      : null;
+  // 单行窗预算 = 整块预算的 3/5（与跨会话份额同一比例），下限 BACKFILL_MIN_CHARS。
+  // 反面教训（win 臂实测）：给每条超预算行「全量 maxChars」，一条 3000 字长轮窗一填满就
+  // 独占整块（afdc33df/35a27287 的块从 5–6 行塌成 1 行，偏好题的其它证据全灭）。一条证据
+  // 最多占六成，剩下四成留给其它候选——长轮仍有充足窗，别处也还有位置。
+  const windowPerLine =
+    windowBudget === null
+      ? null
+      : Math.max(BACKFILL_MIN_CHARS, Math.floor((windowBudget * LINE_SHARE_NUM) / LINE_SHARE_DEN));
+  const lineWindowBudget =
+    windowBudget === null || windowPerLine === null ? null : Math.min(windowBudget, windowPerLine);
+  let windowedCount = 0;
+  const lines: readonly string[] =
+    lineWindowBudget === null
+      ? rawLines
+      : rawLines.map((line) => {
+          // 触发口径不变：只有「整行超过整块预算」的长轮才窗化；份额只决定窗的大小，
+          // 绝不把本来装得下的普通行也切短（否则 poolChars/注入内容都会无端缩水）。
+          if (line.length <= windowBudget!) return line;
+          const win = buildEvidenceWindow(line, input.query, lineWindowBudget);
+          if (win === null) return line;
+          windowedCount++;
+          return win;
+        });
   const layers = lines.map(layerOfMemoryLine);
   const dropOf = new Map<number, LayerRulerDropReason>();
   const intent = input.intent ?? classifyInjectionIntent(input.query);
@@ -426,9 +488,10 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
           : null;
       const decision = layerRulerSelect({
         candidates: budgetAlive.map((idx, pos) => {
-          const len = lines[idx].length;
+          const text = lines[idx]!;
+          const len = text.length;
           return {
-            text: lines[idx],
+            text,
             layer: layers[idx],
             score: scores[pos],
             // v2：排序分 = cos − λ·lengthFactor（对排序单调、对 floor 无影响）
@@ -451,6 +514,8 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
             : { similarity: (i, j) => cosine(lineVecs[i], lineVecs[j]) ?? 0, threshold: dedupeSim },
         budget: null,
         charBudget: ruler.maxChars ?? null,
+        // 候选下标 → 原始行下标（budgetAlive 映射），再取该行的来源会话。
+        sessionOf: input.sessions ? (i: number) => input.sessions?.[budgetAlive[i] ?? -1] ?? null : null,
       });
       judgeKept = new Set<number>();
       for (const d of decision.decisions) {
@@ -467,24 +532,23 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
     // bypass 的成本兜底：拿不到分数也要守住字符预算（原序装填，不引入新排序）。
     if (ruler.bypass && ruler.maxChars !== null) {
       const cap = ruler.maxChars;
-      const keptByChars = new Set<number>();
-      let used = 0;
-      for (const idx of budgetAlive) {
-        const len = lines[idx].length;
-        if (used + len <= cap) {
-          keptByChars.add(idx);
-          used += len;
-        }
-      }
+      // 与 ⑥ 名次装填共用同一份装填实现（含会话份额）：bypass 只是拿不到分数，
+      // 预算切分规则不该因此分叉——本机实测 ruler 常走 bypass，若这里不分份额，
+      // 份额机制在真实链路上等于没接（2026-11-04 定位：dbg 显示 ⑥ 分支从未进入）。
+      const fill = fillCharBudgetBySession({
+        order: budgetAlive,
+        lenOf: (idx: number) => lines[idx]!.length,
+        sessionOf: input.sessions ? (idx: number) => input.sessions?.[idx] ?? null : null,
+        charBudget: cap,
+      });
+      const keptByChars = fill.kept;
       // 无论装下几行（含 0 行）都必须接管：若这里在 size=0 时跳过，judgeKept 仍为 null
       // → enforce=false → 退回全量注入，预算被静默绕过（比判空更坏：声称守预算却全量注）。
       ruler.fallback = "char-budget";
       judgeKept = keptByChars;
-      for (const idx of budgetAlive) {
-        if (!keptByChars.has(idx)) {
-          dropOf.set(idx, "chars");
-          counts.chars++;
-        }
+      for (const idx of fill.droppedByChars) {
+        dropOf.set(idx, "chars");
+        counts.chars++;
       }
     }
     ruler.ms = Math.max(0, Math.round(now() - t0));
@@ -493,8 +557,108 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
   // ③ 同回合折叠：只对「会真正注入的行」判等（enforce 用判定集，shadow/off 用预算后全集）
   // bypass 时判定集缺省为 null：注入必须与 mode=off 逐位一致（绝不因降级把行砍光）
   const enforce = input.ruler.mode === "enforce" && judgeKept !== null;
-  const preFold: number[] = enforce ? budgetAlive.filter((idx) => judgeKept!.has(idx)) : [...budgetAlive];
-  const foldHashCandidate = hashLines(preFold.map((i) => lines[i]));
+  // 零行保护（2026-11-03 LME90 归因，标准行为、无配置项）：自指意图（"你上次说过什么"）在
+  // budget self:1 下只剩 1 行，再被 0.3 地板或 maxChars 砍掉就是 blockChars=0 的空块 —— 空块对
+  // 模型等于「没有相关记忆」，实测 13 行空块 13/13 拒答。池非空且意图不是 empty/continuation
+  // 时保回最高分一行（须装得进 maxChars），宁可给弱证据也不给空壳。
+  const rescueBudget = ruler.maxChars ?? null;
+  const rescuedIdx = new Set<number>();
+  if (
+    enforce &&
+    !ruler.bypass &&
+    judgeKept!.size === 0 &&
+    budgetAlive.length > 0 &&
+    intent !== "empty" &&
+    intent !== "continuation"
+  ) {
+    // 选行判据：在「渲染后装得进 maxChars」的子集里取分数最高者——先选后验会把
+    // 「最高分行超预算、次高分行装得下」这种最常见情形判成放弃（LME90 13 个空块题里
+    // 9 题本来就有 ≤600 字的候选，只是位次不在第一）。渲染长度按 capMemoryLine 实算，
+    // 否则配了 maxLineChars 时会把最终必然被裁短的行误判为装不下。
+    let bestIdx: number | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const idx of budgetAlive) {
+      const rendered = capMemoryLine(lines[idx]!, rescueMaxLineCharsOf(input)).text.length;
+      if (rescueBudget !== null && rendered > rescueBudget) continue;
+      const sc = scoreQ.get(idx);
+      const score = typeof sc === "number" && Number.isFinite(sc) ? sc : Number.NEGATIVE_INFINITY;
+      if (bestIdx === null || score > bestScore) {
+        bestScore = score;
+        bestIdx = idx;
+      }
+    }
+    // 兜底：一行都装不下时不硬塞——击穿成本契约（单行 3541 字 = 600 预算的 5.9 倍）
+    // 比空块更糟；此时仍输出 0 行，由调用方按「无可注入记忆」处理。
+    if (bestIdx !== null) {
+      const why = dropOf.get(bestIdx);
+      if (why) {
+        counts[why] = Math.max(0, counts[why] - 1);
+        dropOf.delete(bestIdx);
+      }
+      judgeKept!.add(bestIdx);
+      rescuedIdx.add(bestIdx);
+    }
+  }
+  // ②‴ 残预算回填（2026-11-03 LME90 归因，标准行为、无配置键）：名次尺按 rankScore 贪心装填，
+  // 遇到「整行装不下」就整条丢，剩余预算空着不用——实测 23/90 题只注入 1–2 条，而金标轮就在
+  // 被字符预算丢掉的候选里（830ce83f：金标已在检索结果里却 0 字进块，块内 5 行全是旧轮）。
+  // 这里把被 chars 丢弃的候选按分数降序取出，用证据窗裁到「剩余预算」再注入，直到连最小窗都
+  // 装不下。与零行保护同族：宁可给压短的弱证据，也不留空预算。mode=off / bypass 逐位不变。
+  const backfilledIdx = new Set<number>();
+  const backfillOrder: number[] = [];
+  const windowText = new Map<number, string>();
+  const backfillCap = ruler.maxChars;
+  // 2026-11-04：撤掉 `!ruler.bypass` 这道门——本机实测 ruler 在本基准里**常态走 bypass**
+  // （选线嵌入要外呼，800ms 到点就降级），于是回填在真实链路上等于没接，1287 字级别的
+  // 空预算照旧闲置。bypass 已经把「整行装不下就丢」换成了原序字符预算兜底（fallback=char-budget），
+  // 回填同属「把预算用满」的兜底，与 mode=off（judgeKept=null → enforce=false）仍逐位不同。
+  if (enforce && typeof backfillCap === "number" && backfillCap > 0) {
+    const cap = backfillCap;
+    let used = 0;
+    for (const idx of budgetAlive) if (judgeKept!.has(idx)) used += lines[idx]!.length;
+    const rejected = budgetAlive
+      .filter((idx) => dropOf.get(idx) === "chars")
+      .sort((a, b) => (scoreQ.get(b) ?? Number.NEGATIVE_INFINITY) - (scoreQ.get(a) ?? Number.NEGATIVE_INFINITY));
+    for (const idx of rejected) {
+      const room = cap - used;
+      if (room < BACKFILL_MIN_CHARS) break;
+      const win = buildEvidenceWindow(lines[idx]!, input.query, room);
+      // null = 这一行本来就装得下（不可能，它在 chars 里）或窗连 60 字都放不下
+      if (win === null || win.length > room) continue;
+      windowText.set(idx, win);
+      backfilledIdx.add(idx);
+      backfillOrder.push(idx);
+      used += win.length;
+      const why = dropOf.get(idx);
+      if (why) {
+        counts[why] = Math.max(0, counts[why] - 1);
+        dropOf.delete(idx);
+      }
+      judgeKept!.add(idx);
+    }
+  }
+  // 残预算扩窗（2026-11-04，标准行为、无配置项）：回填与名次装填之后，块尾常剩 200–500 字空预算
+  // ——那不是「没有候选」，而是长轮被压成证据窗时按份额裁掉的上下文（实测 eaca4986 剩 386 字、
+  // 18dcd5a5 剩 191 字、e8a79c70 剩 171 字，三题都是「答案句落在窗后面 / 整行没进块」）。
+  // 与其往空预算里塞新候选（稀释上下文，句级压缩实验已证劣化），不如把**已入选的那条窗扩回去**：
+  // 同一份证据给更多上下文，命中句不容易被切掉，也不会引入新噪声。
+  if (enforce && typeof ruler.maxChars === "number" && ruler.maxChars > 0) {
+    const ex = expandKeptWindows({
+      kept: judgeKept!,
+      order: budgetAlive,
+      lines,
+      windowText,
+      query: input.query,
+      maxChars: ruler.maxChars,
+      scoreOf: scoreQ,
+    });
+  }
+
+  // 回填行排在名次行之后：它们是「被压短的碎片」，不该抢在完整证据前面。
+  const preFold: number[] = enforce
+    ? [...budgetAlive.filter((idx) => judgeKept!.has(idx) && !backfilledIdx.has(idx)), ...backfillOrder]
+    : [...budgetAlive];
+  const foldHashCandidate = hashLines(preFold.map((i) => windowText.get(i) ?? lines[i]!));
   let foldedIdx: number[] = [];
   if (input.foldIdentical && input.previousHash && preFold.length > 0 && input.previousHash === foldHashCandidate) {
     foldedIdx = preFold;
@@ -506,11 +670,24 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
   const folded = new Set(foldedIdx);
 
   const outputIdx = preFold.filter((idx) => !folded.has(idx));
+
+  // ①″ 折叠不得把「保护」重新打回 0 行（2026-11-03 对抗审查 P1）：单轮 QA 里 previousHash 命中
+  // 的往往是唯一装得下的那行，折叠把它删掉就等于空块——观测还会自相矛盾（rescued=1 但 0 行）。
+  // 折叠的目的是「别在同一会话里重复注入」，空块比重复更糟，故此时只撤掉一行折叠。
+  if (outputIdx.length === 0 && foldedIdx.length > 0 && rescuedIdx.size > 0 && !ruler.bypass) {
+    const keep = foldedIdx.find((idx) => rescuedIdx.has(idx));
+    if (keep !== undefined) {
+      folded.delete(keep);
+      dropOf.delete(keep);
+      counts.fold = Math.max(0, counts.fold - 1);
+      outputIdx.push(keep);
+    }
+  }
   // ⑤ 渲染上限（v2）：只改渲染、不改判定；截断计数进观测面（capped）。
   const maxLineChars = input.maxLineChars ?? input.ruler.maxLineChars ?? null;
   let cappedCount = 0;
   const injected = outputIdx.map((i) => {
-    const capped = capMemoryLine(lines[i], maxLineChars);
+    const capped = capMemoryLine(windowText.get(i) ?? lines[i]!, maxLineChars);
     if (capped.capped) cappedCount++;
     return capped.text;
   });
@@ -521,6 +698,7 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
   const candLines: InjectionCandidateLine[] = [];
   for (let i = 0; i < total && candLines.length < CANDIDATE_LINE_CAP; i++) {
     const entry: InjectionCandidateLine = { layer: layers[i], hash8: hash8(lines[i]), kept: !dropOf.has(i) };
+    if (rescuedIdx.has(i)) entry.rescued = true;
     const s = scoreQ.get(i);
     if (typeof s === "number" && Number.isFinite(s)) entry.scoreQ = round3(s);
     const why = dropOf.get(i);
@@ -545,12 +723,59 @@ export async function applyInjectionSelection(input: InjectionSelectionInput): P
       injected: injected.length,
       droppedBy: counts,
       capped: cappedCount,
+      rescued: rescuedIdx.size,
+      // 窗压缩过的行 = 选前整行超预算 + 选后回填时被裁短的行（同一口径：注入文本是节选）
+      windowed: windowedCount + backfilledIdx.size,
       poolChars: lines.reduce((n, s) => n + s.length, 0),
       injectedChars: injected.reduce((n, s) => n + s.length, 0),
     },
     ruler,
     candidates,
   };
+}
+
+/**
+ * 残预算扩窗（2026-11-04，标准行为、无配置项）。
+ *
+ * 装填结束时若还有 ≥BACKFILL_MIN_CHARS 的预算没花掉，而某条**已入选**的行是「整行被压成窗」
+ * （lines 比实际注入文本长），就把这条窗按剩余预算扩回去：同一份证据给更多上下文，
+ * 命中句不容易被切在窗后面，也不会引入新候选稀释块。
+ *
+ * 只在 enforce 分支调用；mode=off / 无 maxChars 时逐位不变。返回扩窗条数（供观测与测试）。
+ */
+export function expandKeptWindows(args: {
+  readonly kept: ReadonlySet<number>;
+  readonly order: readonly number[];
+  readonly lines: readonly string[];
+  readonly windowText: Map<number, string>;
+  readonly query: string;
+  readonly maxChars: number;
+  readonly scoreOf?: ReadonlyMap<number, number>;
+}): number {
+  const { kept, order, lines, windowText, query, maxChars, scoreOf } = args;
+  // 单行扩窗上限同样是 3/5 份额：否则「先扩第一条到吃掉全部余量」会重演块塌成 1 行的回归。
+  const lineCap = Math.max(BACKFILL_MIN_CHARS, Math.floor((maxChars * LINE_SHARE_NUM) / LINE_SHARE_DEN));
+  let used = 0;
+  for (const idx of kept) used += (windowText.get(idx) ?? lines[idx]!).length;
+  let room = maxChars - used;
+  if (room < BACKFILL_MIN_CHARS) return 0;
+  const expandable = order
+    .filter((idx) => kept.has(idx))
+    .filter((idx) => lines[idx]!.length > (windowText.get(idx) ?? lines[idx]!).length)
+    .sort((a, b) => (scoreOf?.get(b) ?? Number.NEGATIVE_INFINITY) - (scoreOf?.get(a) ?? Number.NEGATIVE_INFINITY));
+  let expanded = 0;
+  for (const idx of expandable) {
+    if (room < BACKFILL_MIN_CHARS) break;
+    const current = windowText.get(idx) ?? lines[idx]!;
+    const target = Math.min(current.length + room, Math.max(current.length, lineCap));
+    if (target <= current.length) break;
+    const wider = buildEvidenceWindow(lines[idx]!, query, target);
+    if (wider === null || wider.length <= current.length) continue;
+    windowText.set(idx, wider);
+    room -= wider.length - current.length;
+    expanded++;
+  }
+  return expanded;
 }
 
 function countedFold(n: number): number {

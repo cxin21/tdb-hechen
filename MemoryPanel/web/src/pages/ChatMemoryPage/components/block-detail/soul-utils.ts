@@ -2,7 +2,7 @@
  * soul-utils —— BlockDetail 灵魂区纯函数（U-A1，DS-PANEL-UI-VISUAL-001 §2 S2）。
  *
  * 数据源：L1 条目出参顶层 soul 8 字段（occurred_at / valid_start / valid_end /
- * certainty / source / valence / arousal / significance，P2a/R4 已在生产）+
+ * certainty / valence / arousal / significance，P2a/R4 已在生产）+
  * metadata（coreRefs / recall_count / last_recalled_at，C1/896ee5d 透传）。
  *
  * 零 import（照 anchor-utils 先例，可被根 vitest node 环境直接单测；
@@ -16,7 +16,8 @@ export interface SoulInput {
   valid_start?: unknown;
   valid_end?: unknown;
   certainty?: unknown;
-  source?: unknown;
+  /** D-3（ADR-0025 决定 4）：敏感度标注（none/health/finance/relationship/unclassified）。 */
+  sensitivity?: unknown;
   valence?: unknown;
   arousal?: unknown;
   significance?: unknown;
@@ -31,6 +32,11 @@ export interface SoulInput {
 
 export type ValencePolarity = 'negative' | 'neutral' | 'positive';
 export type CertaintyKind = 'observed' | 'inferred';
+/**
+ * 敏感度档位（与 MemoryCore/src/core/recall/sensitivity-policy.ts 同词表）。
+ * none = 未标注敏感（默认放行）；unclassified = 有标注但不在白名单内（注入门一律拦）。
+ */
+export type SensitivityKind = 'health' | 'finance' | 'relationship' | 'unclassified';
 
 /** 灵魂区视图模型（SoulSection 的唯一入参；批 2 图详情卡复用）。 */
 export interface SoulView {
@@ -54,7 +60,10 @@ export interface SoulView {
   certainty?: string;
   certaintyKind: CertaintyKind | null;
   certaintyLabel: string | null;
-  source?: string;
+  /** 🚫 敏感度：命中时才渲染徽章（none/缺失 → null，不打扰）。 */
+  sensitivity?: string;
+  sensitivityKind: SensitivityKind | null;
+  sensitivityLabel: string | null;
   /** 🎯 价值锚 label 数组（损坏/缺失 → []）。 */
   coreRefs: string[];
   /** 👥 人物锚 label 数组（S2 chips 扩展，U3；损坏/缺失 → []）。 */
@@ -134,9 +143,28 @@ function certaintyOf(v: unknown): {
 }
 
 /**
+ * sensitivity 归一（D-3）：none/空 → null（不渲染）；词表内 → 对应档位 + 档位值；
+ * 词表外非空值 → unclassified（注入门对它一律 fail-closed，UI 必须让运维看见）。
+ * P0（task-10）：label 只放**值**（健康/财务/关系/未归类(x)），字段名「敏感度」由
+ * 展示层统一走 @/lib/attr-labels 的 attrLabel('sensitivity') 拼出——两处硬编码「敏感·」
+ * 曾让 chip 正文与字段名重复（敏感度·敏感·健康），且与全站译名单一源冲突。
+ */
+function sensitivityOf(v: unknown): {
+  sensitivity?: string;
+  kind: SensitivityKind | null;
+  label: string | null;
+} {
+  if (typeof v !== 'string' || !v || v === 'none') return { kind: null, label: null };
+  if (v === 'health') return { sensitivity: v, kind: 'health', label: '健康' };
+  if (v === 'finance') return { sensitivity: v, kind: 'finance', label: '财务' };
+  if (v === 'relationship') return { sensitivity: v, kind: 'relationship', label: '关系' };
+  return { sensitivity: v, kind: 'unclassified', label: `未归类(${v})` };
+}
+
+/**
  * L1 条目 → 灵魂区视图模型。
  * hasSoul = 任一 soul 字段有效在场（含 metadata 产物）——组件据此决定渲染与否，
- * 语义与既有 AtomicHead 灵魂段门控一致（并扩展 arousal/significance/source/有效期）。
+ * 语义与既有 AtomicHead 灵魂段门控一致（并扩展 arousal/significance/sensitivity/有效期）。
  */
 export function buildSoulView(item?: SoulInput | null): SoulView {
   const occurredAt =
@@ -145,8 +173,8 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
     typeof item?.valid_start === 'string' && item.valid_start ? item.valid_start : undefined;
   const validEnd =
     typeof item?.valid_end === 'string' && item.valid_end ? item.valid_end : undefined;
-  const source = typeof item?.source === 'string' && item.source ? item.source : undefined;
   const certainty = certaintyOf(item?.certainty);
+  const sensitivity = sensitivityOf(item?.sensitivity);
   const valence = finiteOf(item?.valence);
   const valencePct = valencePercent(item?.valence);
   const arousalPct = ratio01Percent(item?.arousal);
@@ -169,7 +197,7 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
     !!validStart ||
     !!validEnd ||
     certainty.kind !== null ||
-    !!source ||
+    sensitivity.kind !== null ||
     valence !== null ||
     arousalPct !== null ||
     significancePct !== null ||
@@ -193,7 +221,9 @@ export function buildSoulView(item?: SoulInput | null): SoulView {
     certainty: certainty.certainty,
     certaintyKind: certainty.kind,
     certaintyLabel: certainty.label,
-    source,
+    sensitivity: sensitivity.sensitivity,
+    sensitivityKind: sensitivity.kind,
+    sensitivityLabel: sensitivity.label,
     coreRefs,
     personRefs,
     identityRefs,

@@ -15,7 +15,16 @@ const iso = (t: number) => new Date(t).toISOString();
 function makeStore(over: {
   slots?: Array<{ slot: string; content: string }>;
   rows?: Array<Record<string, unknown>>;
-  snaps?: Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }>;
+  snaps?: Array<{
+    ts: string;
+    content_hash: string;
+    payload_json: string;
+    trigger: string;
+    version?: number;
+    parent_hash?: string | null;
+    reason_detail?: string;
+    slots_json?: string;
+  }>;
   withSnapshotSurface?: boolean;
   writeSpy?: { calls: number };
 }) {
@@ -106,6 +115,51 @@ describe("#36 introspectSoul 三段+零写入", () => {
     const noEvidence = await introspectSoul(store, TENANT, {});
     expect(noEvidence.orphanAnchors.map((o) => o.label).sort()).toEqual(["孤儿锚", "根因"]);
     expect(noEvidence.notes.join("\n")).toContain("evidence-corpus-empty");
+    expect(spy.calls).toBe(0);
+  });
+
+  it("缺口 A：版本链与变更原因可读（version/parentHash/reasonCode/reasonDetail/slotDiff）；老行不带受控原因", async () => {
+    const spy = { calls: 0 };
+    const v1Slots = { "slot:self_identity": "我是测试者。", "slot:identity": "用户是工程师。" };
+    const v2Slots = { ...v1Slots, "slot:strict_rule": "禁止注入测试数据。" };
+    const store = makeStore({
+      slots: [{ slot: "identity", content: "我是测试。" }],
+      writeSpy: spy,
+      snaps: [
+        {
+          ts: iso(NOW - 2000),
+          content_hash: "h1",
+          payload_json: "p1",
+          trigger: "first-version",
+          version: 1,
+          parent_hash: null,
+          reason_detail: "keys=slot:identity,slot:self_identity",
+          slots_json: JSON.stringify(v1Slots),
+        },
+        {
+          ts: iso(NOW - 1000),
+          content_hash: "h2",
+          payload_json: "p2",
+          trigger: "core-values",
+          version: 2,
+          parent_hash: "h1",
+          reason_detail: "keys=slot:strict_rule",
+          slots_json: JSON.stringify(v2Slots),
+        },
+        // 老行（迁移前）：无 version/slots_json，trigger 是自由文本 ⇒ 不冒充受控原因
+        { ts: iso(NOW - 500), content_hash: "h3", payload_json: "p3", trigger: "render" },
+      ],
+    });
+    const out = await introspectSoul(store, TENANT, { snapshotLimit: 5 });
+    expect(out.snapshots.map((s) => s.version)).toEqual([1, 2, undefined]);
+    expect(out.snapshots[1]!.parentHash).toBe("h1");
+    expect(out.snapshots[1]!.reasonCode).toBe("core-values");
+    expect(out.snapshots[1]!.reasonDetail).toContain("slot:strict_rule");
+    // 首版 diff 相对空 = 全 added；第二版只新增 strict_rule
+    expect(out.snapshots[0]!.slotDiff).toMatchObject({ added: 2, removed: 0, changed: 0 });
+    expect(out.snapshots[1]!.slotDiff).toMatchObject({ added: 1, removed: 0, changed: 0 });
+    expect(out.snapshots[1]!.slotDiff!.summary).toContain("added=1");
+    expect(out.snapshots[2]!.reasonCode).toBeUndefined();
     expect(spy.calls).toBe(0);
   });
 });

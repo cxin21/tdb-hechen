@@ -86,4 +86,19 @@ describe("T5: recall-journal writer", () => {
     expect(rows[1]!.skipReason).toBe("scaffold-query");
     expect(rows[1]!.strategy).toBe("scaffold-skip");
   });
+  // ADR-0025 决定 8 / 缺口 B：L2 触发词命中观测——缺字段=本轮无触发词命中（旧口径逐位不变），
+  // 有命中则 blocks 与展平后的命中词必须完整落盘，否则「触发词生效」在生产不可分辨。
+  it("layeredKeywords：无命中缺键 + 命中往返（blocks 与命中词）", () => {
+    appendRecallJournal(dir, tenant, base as never, opts);
+    appendRecallJournal(
+      dir,
+      tenant,
+      { ...base, layeredKeywords: { blocks: 2, keywords: ["库表迁移", "切应用层", "库表迁移"] } } as never,
+      opts,
+    );
+    const rows = linesOf(path.join(dir, "recall-journal-team-a-agt-a.jsonl"));
+    expect(rows).toHaveLength(2);
+    expect("layeredKeywords" in rows[0]!).toBe(false);
+    expect(rows[1]!.layeredKeywords).toEqual({ blocks: 2, keywords: ["库表迁移", "切应用层", "库表迁移"] });
+  });
 });

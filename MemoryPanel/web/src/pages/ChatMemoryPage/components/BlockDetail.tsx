@@ -209,7 +209,11 @@ function AtomicHead({
           行为不变、渲染重排（补 valence 双色条/强度·重要性进度条/有效期/上次回忆）。 */}
       <SoulSection soul={buildSoulView(item)} durative={item.title === 'work_fact'} />
       {/* UI 2.0 Phase 2（拍板③）：19 列属性表（可得字段全透传，缺列诚实；折叠段宁缺毋滥） */}
-      {layer === 'L1' ? <AttributesSection item={item} blockId={blockId} /> : null}
+      {/* canEditItem = 本人资产（ownership）：属性表内的 Owner-only 写入口（重要度/
+          失效/解除敏感标记）据此决定是否露出，真实归属校验仍在 BFF。 */}
+      {layer === 'L1' ? (
+        <AttributesSection item={item} blockId={blockId} canEdit={canEditItem} />
+      ) : null}
       {blockId && layer === 'L1' ? <RelatedSection blockId={blockId} itemId={item.id} /> : null}
       <span className="_memory-detail-atomic-head-right">
         {time && (
@@ -624,8 +628,10 @@ export function BlockDetail({
   canEdit?: boolean;
   /** 保存单层内容（L1/L2/L3）；未传则不显示编辑入口 */
   onSaveLayerItem?: (l: 'L1' | 'L2' | 'L3', id: string, content: string) => Promise<void>;
-  /** 分层语义搜索（L0 = 对话消息，L1 = 原子记忆）；未传则不显示搜索框 */
-  onSearchLayer?: (l: 'L0' | 'L1', query: string) => Promise<ChatMemorySearchHit[]>;
+  /** 分层语义搜索（L0 = 对话消息，L1 = 原子记忆）；未传则不显示搜索框。
+   *  第三参 type 仅对 L1 生效：按 L1 type 过滤（episodic/work_fact/...），
+   *  由 BFF 透传到内核 searchL1 的 type 条件。 */
+  onSearchLayer?: (l: 'L0' | 'L1', query: string, type?: string) => Promise<ChatMemorySearchHit[]>;
 }) {
   const { t } = useTranslation();
   const LAYERS = useLayers();
@@ -696,6 +702,9 @@ export function BlockDetail({
   // ── 分层搜索（L0 对话 / L1 原子记忆，跨 session 语义召回）──
   const [searchInput, setSearchInput] = useState('');
   const [searchResults, setSearchResults] = useState<ChatMemorySearchHit[] | null>(null);
+  // P2（2026-11-04）：L1 搜索的类型过滤（空串 = 全部类型）。内核/BFF 早已支持该参数，
+  // 此前 UI 未接线 ⇒ 用户只能全类型混搜，无法只找 work_fact 之类的某个面。
+  const [searchType, setSearchType] = useState('');
   const [searching, setSearching] = useState(false);
   // L1 视图模式：list(平铺=含日期分组时间轴) | graph(记忆图 canvas)
   const [l1View, setL1View] = useState<'list' | 'graph'>('list');
@@ -712,6 +721,7 @@ export function BlockDetail({
   useEffect(() => {
     setSearchResults(null);
     setSearchInput('');
+    setSearchType('');
     setMode('browse');
   }, [block.id, layer]);
 
@@ -720,7 +730,8 @@ export function BlockDetail({
     if (!q || !onSearchLayer || !searchable) return;
     setSearching(true);
     try {
-      const hits = await onSearchLayer(layer as 'L0' | 'L1', q);
+      // type 只对 L1 有意义（L0 消息没有 type 列），空串 = 不过滤。
+      const hits = await onSearchLayer(layer as 'L0' | 'L1', q, layer === 'L1' ? searchType || undefined : undefined);
       setSearchResults(hits);
     } catch (e) {
       tea.notify.error(e instanceof Error ? e.message : t('memory.notify.searchFailed'));
@@ -933,6 +944,30 @@ export function BlockDetail({
             )}
             disabled={searching}
           />
+          {layer === 'L1' && (
+            /* 类型过滤（仅 L1）：值集合 = 内核 L1 type 写点实测（episodic/work_fact/
+               instruction/persona/work_method/work_task），空串 = 全部。 */
+            <select
+              className="_memory-detail-search-type"
+              value={searchType}
+              onChange={(ev) => setSearchType(ev.target.value)}
+              disabled={searching}
+              aria-label={t('memory.detail.searchTypeAria', { defaultValue: '记忆类型过滤' })}
+              title={t('memory.detail.searchTypeTip', {
+                defaultValue: '只搜某一类原子记忆（不选 = 全部类型）',
+              })}
+            >
+              <option value="">
+                {t('memory.detail.searchTypeAll', { defaultValue: '全部类型' })}
+              </option>
+              <option value="episodic">episodic（经历）</option>
+              <option value="work_fact">work_fact（事实）</option>
+              <option value="instruction">instruction（指示）</option>
+              <option value="persona">persona（人格）</option>
+              <option value="work_method">work_method（方法）</option>
+              <option value="work_task">work_task（任务）</option>
+            </select>
+          )}
           <Button
             type="primary"
             onClick={() => void doSearch()}

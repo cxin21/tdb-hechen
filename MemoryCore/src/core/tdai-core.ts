@@ -31,6 +31,7 @@ import type {
 } from "./types.js";
 import type { MemoryTdaiConfig } from "../config.js";
 import type { IMemoryStore } from "./store/types.js";
+import type { IsolationFilter } from "./store/isolation.js";
 import type { EmbeddingService } from "./store/embedding.js";
 import type { StorageAdapter } from "./storage/adapter.js";
 import { performAutoRecall } from "./hooks/auto-recall.js";
@@ -402,7 +403,18 @@ export class TdaiCore {
    * Handle recall (memory retrieval) before an LLM turn.
    * Maps to: OpenClaw `before_prompt_build` / Hermes `prefetch()`.
    */
-  async handleBeforeRecall(userText: string, sessionKey: string): Promise<RecallResult> {
+  /**
+   * 钩子路召回（链路 B）。
+   *
+   * `isolation` 可选：HTTP 兼容路由会把它从 x-tdai-* 三元组头带进来——只有带上 userId
+   * 才能让 ADR-0025 的敏感度注入门拿到「可证的私有归属」，否则归属 undeclared、敏感行
+   * fail-closed 不注入。程序式调用（OpenClaw/Hermes 风格宿主）不传 = 旧行为逐位。
+   */
+  async handleBeforeRecall(
+    userText: string,
+    sessionKey: string,
+    isolation?: IsolationFilter,
+  ): Promise<RecallResult> {
     await this.storeReady?.catch(() => {});
 
     const tStart = performance.now();
@@ -416,6 +428,7 @@ export class TdaiCore {
       vectorStore: this.vectorStore,
       embeddingService: this.embeddingService,
       storage: this.storage,
+      ...(isolation ? { isolationFilter: isolation } : {}),
     });
     const recallLatencyMs = performance.now() - tStart;
 
@@ -452,6 +465,8 @@ export class TdaiCore {
       teamId: turn.teamId,
       userId: turn.userId,
       agentId: turn.agentId,
+      // 作用域键（可选）：与租户三元组同路透传，最终落在 L0 行 task_id。
+      taskId: turn.taskId,
       cfg: this.cfg,
       pluginDataDir: this.dataDir,
       logger: this.logger,
@@ -470,7 +485,13 @@ export class TdaiCore {
    * Search L1 structured memories.
    * Maps to: `tdai_memory_search` tool.
    */
-  async searchMemories(params: MemorySearchParams): Promise<{ text: string; total: number; strategy: string }> {
+  async searchMemories(params: MemorySearchParams): Promise<{
+    text: string;
+    total: number;
+    strategy: string;
+    /** D-3 观测：被敏感度注入门拦下的条数（`# 已过滤` 提示用，不含内容）。 */
+    sensitivity?: { audience?: string; scanned: number; blocked: number; byReason?: Record<string, number> };
+  }> {
     const result = await executeMemorySearch({
       query: params.query,
       limit: params.limit ?? 5,
@@ -526,12 +547,16 @@ export class TdaiCore {
       queryExpansion: this.cfg?.recall?.queryExpansion
         ? { ...this.cfg.recall.queryExpansion, llm: this.cfg?.llm }
         : undefined,
+      // 2026-11-04 对抗评审 P1：工具路此前不透传归属 → audience 恒 undeclared、敏感行
+      // 全拦（与 HTTP 路相反）。调用方给了归属就透传；不传仍 fail-closed（旧行为逐位）。
+      ...(params.isolationFilter ? { filter: params.isolationFilter } : {}),
     });
 
     return {
       text: formatSearchResponse(result),
       total: result.total,
       strategy: result.strategy,
+      ...(result.sensitivity ? { sensitivity: result.sensitivity } : {}),
     };
   }
 

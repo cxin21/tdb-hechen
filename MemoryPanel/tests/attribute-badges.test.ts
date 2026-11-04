@@ -51,6 +51,11 @@ describe('deriveAttributeBadges P1-T8（bi-temporal 补口：已失效徽章）'
     expect(b!.cls).toBe('invalidated');
     expect(b!.icon).toBe('⛔');
     expect(b!.labelKey).toBe('memory.badges.invalidated');
+    // P0（task-10）：tooltip 不得再声称「两路召回均排除」——内核 soft 档是降权保留
+    // （recall/validity-policy.ts:57 派生三态 off|hard|soft），面板无从得知部署档位。
+    expect(b!.tooltip).toContain('soft 模式降权保留');
+    expect(b!.tooltip).toContain('硬失效模式才排除');
+    expect(b!.tooltip).not.toContain('两路召回均排除');
   });
   it('valid_end 未来 / 空 / 缺失 / 解析失败 → 无已失效徽章', () => {
     expect(deriveAttributeBadges(item({ valid_end: '2999-01-01T00:00:00.000Z' })).some(x => x.key === 'invalidated')).toBe(false);

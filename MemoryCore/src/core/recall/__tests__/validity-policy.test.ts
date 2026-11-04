@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  applyKeptOrder,
   demoteSoftValidity,
   excludeInvalidatedFor,
   selectByValidity,
@@ -159,5 +160,47 @@ describe("#148 demoteSoftValidity（沉底 + 降权，唯一乘子解析点）",
     );
     expect(out.kept.map((r) => r.id)).toEqual(["live"]);
     expect(out.dropped.map((r) => r.id)).toEqual(["future"]);
+  });
+});
+
+/**
+ * 2026-11-04（soft 沉底修复）：钩子路此前只把 demoted 行的分数乘 penalty、却从原数组
+ * filter/map 重算顺序 ⇒ kept 顺序被丢弃，过期行原地不动。生产 rerankWeights 全 0
+ * （比较器恒等）时「降权保留」完全无效。applyKeptOrder 是沉底的唯一实现，这里钉死契约。
+ */
+describe("#136/#148 applyKeptOrder（钩子路沉底的唯一实现）", () => {
+  it("过期行名次最高也沉底：active 保序在前、demoted 保序在后", () => {
+    // 输入顺序 = 相关度序（过期行在第一，模拟"旧值仍是最高分命中"）
+    const entries = [
+      mk("expiredTop", "2026-01-01", "2026-02-01"),
+      mk("liveA", "2026-03-01"),
+      mk("expiredMid", "2026-01-02", "2026-02-02"),
+      mk("liveB", "2026-03-02"),
+    ];
+    const sel = selectByValidity(entries, { now: NOW, mode: "soft", presentIntent: false });
+    expect(applyKeptOrder(entries, sel.kept).map((x) => x.id)).toEqual([
+      "liveA",
+      "liveB",
+      "expiredTop",
+      "expiredMid",
+    ]);
+  });
+
+  it("不在 kept 里的行（future / hard 档 expired）被剔除", () => {
+    const entries = [mk("live", "2026-03-01"), mk("future", "2027-01-01"), mk("gone", "2026-01-01", "2026-02-01")];
+    const soft = selectByValidity(entries, { now: NOW, mode: "soft", presentIntent: false });
+    expect(applyKeptOrder(entries, soft.kept).map((x) => x.id)).toEqual(["live", "gone"]);
+    const hard = selectByValidity(entries, { now: NOW, mode: "hard" });
+    expect(applyKeptOrder(entries, hard.kept).map((x) => x.id)).toEqual(["live"]);
+  });
+
+  it("无过期行：顺序逐位不变（不引入重排副作用）", () => {
+    const entries = [mk("b", "2026-03-01"), mk("a", "2026-03-02"), mk("c", "2026-03-03")];
+    const sel = selectByValidity(entries, { now: NOW, mode: "soft", presentIntent: false });
+    expect(applyKeptOrder(entries, sel.kept).map((x) => x.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("kept 为空：返回空数组", () => {
+    expect(applyKeptOrder([mk("x")], [])).toEqual([]);
   });
 });

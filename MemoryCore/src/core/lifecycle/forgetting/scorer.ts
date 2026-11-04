@@ -13,8 +13,6 @@ export interface ForgettingConfig {
   /** GROW-EVO P3（§3.1）：闪光灯记忆调制 k——effectiveλ = λ×(1-k×arousal)。
    *  缺省 0 = 逐位现状；生产 0.3。config 解析层 clamp [0, 0.9]（防 λ→0/负）。 */
   arousalRetention: number;
-  /** D-3（2026-09-21）：敏感偏置——敏感记忆（≠none）整体分值 ×(1-bias)，缺省 0=关断。 */
-  sensitivityBias?: number;
   /** 归档分数阈值：低于此值且 age 超 minAgeDays 才归档 */
   lowThreshold: number;
   /** 至少经过多少天才可归档（防刚写就归档） */
@@ -28,18 +26,22 @@ export interface ForgettingConfig {
   /** D-4（2026-09-22 拍板）：周期性事实遗忘保护——metadata.recurrence（normalize 形状）
    *  的记录不进归档候选；缺省 false = 逐位现状。 */
   recurrenceProtection: boolean;
+  /** 2026-11-04：importance retention 乘子 k（缺省 0.2）。importance（1–10）是价值维度，
+   *  与 significance（情绪显著性）正交——此前完全没参与遗忘判定。factor 见 importanceFactor()；
+   *  clamp [0, 0.5]（k>0.5 会让低重要度记录被过度惩罚）。k=0 = 逐位回到旧打分。 */
+  importanceRetention?: number;
 }
 
 export const DEFAULT_FORGETTING_CONFIG: ForgettingConfig = {
   enabled: true,
   lambda: 0.01,
   arousalRetention: 0,
-  sensitivityBias: 0,
   lowThreshold: 0.12,
   minAgeDays: 30,
   maxPerRun: 100,
   refProtection: false,
   recurrenceProtection: false,
+  importanceRetention: 0.2,
 };
 
 /**
@@ -112,7 +114,7 @@ export function decay(ageDays: number, lambda: number): number {
   return Math.exp(-lambda * ageDays);
 }
 
-function ageDaysOf(m: MemoryRecord & { timestamp_start?: string; occurred_at?: string; created_time?: string }, now = Date.now()): number {
+function ageDaysOf(m: MemoryRecord & { timestamp_str?: string; occurred_at?: string; created_time?: string }, now = Date.now()): number {
   // v4#5 验证轮修复（2026-09-16 深夜，session-h 实锤）：遗忘年龄 = **记忆系统年龄**
   // （createdAt/created_time 起），非事件年龄。此前沿用 A2 的 occurred_at 优先链——
   // P2a 溯源落地后，occurred_at 越精确指向过去的事件，刚出生的记忆 decay 越低、越快
@@ -132,7 +134,8 @@ function ageDaysOf(m: MemoryRecord & { timestamp_start?: string; occurred_at?: s
     ?? meta.activity_start_time
     ?? meta.occurred_at
     ?? m.timestamps?.[0]
-    ?? (m as { timestamp_start?: string }).timestamp_start;
+    // ADR-0025 C3：timestamp_start 已删列，末位回退取 timestamp_str（存量里逐位相等）。
+    ?? m.timestamp_str;
   if (typeof t === "string" && t) {
     const ts = new Date(t).getTime();
     if (!Number.isNaN(ts)) return Math.max(0, (now - ts) / 86_400_000);
@@ -140,17 +143,49 @@ function ageDaysOf(m: MemoryRecord & { timestamp_start?: string; occurred_at?: s
   return 0;
 }
 
+/**
+ * 2026-11-04：importance 双源读取（顶层优先、metadata 兜底、clamp [1,10]）。
+ * 顶层 importance 是 l1_records 列（P2a 真实落库形状，生产 3334 行有值）；
+ * metadata.importance 只兜底旧形状/兼容行。
+ * 缺失（NULL/未评分，生产 997 行）→ undefined：**未评分不是低分**，不得借此加速归档。
+ */
+export function importanceOf(m: MemoryRecord): number | undefined {
+  const clamp = (v: number): number => Math.min(Math.max(v, 1), 10);
+  const top = m as unknown as { importance?: unknown };
+  if (typeof top.importance === "number" && Number.isFinite(top.importance)) return clamp(top.importance);
+  const meta = m.metadata && typeof m.metadata === "object" ? (m.metadata as Record<string, unknown>) : {};
+  const imp = meta.importance;
+  if (typeof imp === "number" && Number.isFinite(imp)) return clamp(imp);
+  return undefined;
+}
+
+/**
+ * importance retention 乘子：factor = clamp(1 + k×((imp-5.5)/4.5), 1-k, 1+k)。
+ * - imp∈[1,10] → (imp-5.5)/4.5 ∈ [-1,+1]，线性映射到 [1-k, 1+k]；5.5 为中性点（factor=1）。
+ * - k = clamp(cfg.importanceRetention ?? 0.2, 0, 0.5)：缺省 0.2（imp=10 → ×1.2，imp=1 → ×0.8，
+ *   跨度 ±20%，足以改变临界线归属又不至于让任一维度一票否决）。
+ * - imp 缺失（NULL）→ factor=1 中性：未评分既不奖励也不惩罚（避免对 997 行 NULL 误伤）。
+ * - k=0 → 恒 1：逐位回到改动前的打分（本模块单测显式对比此基线）。
+ */
+export function importanceFactor(m: MemoryRecord, cfg: ForgettingConfig = DEFAULT_FORGETTING_CONFIG): number {
+  const k = Math.min(Math.max(cfg.importanceRetention ?? 0.2, 0), 0.5);
+  if (k === 0) return 1;
+  const imp = importanceOf(m);
+  if (imp === undefined) return 1;
+  const raw = 1 + k * ((imp - 5.5) / 4.5);
+  // 双端 clamp：imp 已被 clamp 到 [1,10] 时 raw 本就在界内，此处再做数值防御。
+  return Math.min(Math.max(raw, 1 - k), 1 + k);
+}
+
 export function scoreFor(m: MemoryRecord, cfg: ForgettingConfig = DEFAULT_FORGETTING_CONFIG, now = Date.now()): number {
   // GROW-EVO P3（§3.1）：闪光灯调制——effectiveλ = λ×(1-k×arousal)，高唤醒衰减更慢。
   // k 缺省 0 → 恒等（逐位现状）；双 0.9 上限防 λ→0/负（clamp 在 config 解析层，此处再防）。
   const effectiveLambda = cfg.lambda * (1 - Math.min(0.9, cfg.arousalRetention) * arousalOf(m));
-  const base = significanceOf(m) * priorityOf(m) * decay(ageDaysOf(m, now), effectiveLambda) + recallCountBoost(m);
-  // D-3：敏感偏置（gated；bias=0 或 none → 恒等）
-  const bias = cfg.sensitivityBias ?? 0;
-  if (bias > 0) {
-    const s = (m as unknown as { sensitivity?: string }).sensitivity;
-    if (s && s !== "none") return Math.min(1, base * (1 - bias));
-  }
+  // 2026-11-04：importance 以乘子参与「价值轴」——只缩放 decay 项，不叠加到 recallCountBoost
+  //（boost 是重巩固信号，不该被重要度放大）。缺失/k=0 → factor=1，逐位保持旧行为。
+  const base = significanceOf(m) * priorityOf(m) * importanceFactor(m, cfg) * decay(ageDaysOf(m, now), effectiveLambda) + recallCountBoost(m);
+  // 2026-11-04：sensitivity 不再参与遗忘打分（旧 sensitivityBias 缺省 0=空挂）。
+  // 属性改作「不外泄/不注入」门：core/recall/sensitivity-policy.ts。
   return Math.min(1, base);
 }
 

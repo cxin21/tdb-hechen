@@ -13,8 +13,9 @@
  *      DEFAULT_EDGE_PROGRAM_CLASSES 内置注册 arrow/line，已由
  *      tests/memory-graph-semantic.test.ts 对实际安装包做运行时断言——f53b173
  *      的教训是业务类型串 "similar" 等非注册名会抛 "could not find a suitable
- *      program" 崩整图；'arrow' 是注册名，可用）。similar/causal/part_of 语义
- *      仍走颜色通道（EDGE_KIND_COLOR），不加箭头。
+ *      program" 崩整图；'arrow' 是注册名，可用）。similar/derived_from/part_of/
+ *      evolved_from 语义仍走颜色通道（EDGE_KIND_COLOR），不加箭头（D 项 2026-11-04：
+ *      词表以内核 LINK_TYPES 为单一源，causal 已剔除）。
  *
  * 零 import（照 soul-utils 先例，根 vitest node 环境直接单测；web 侧与 vitest
  * 共用本文件）。宽松校验：非法色值/无效 valence 一律原样返回，不抛错不造假。

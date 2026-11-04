@@ -27,6 +27,62 @@
 /** 丢行原因（journal 的 selection.droppedBy 词汇）。 */
 export type LayerRulerDropReason = "rank" | "floor" | "margin" | "dup" | "budget" | "chars" | "fold";
 
+/**
+ * 会话份额（2026-11-04，标准行为，无开关）：字符预算步里单个来源会话最多吃 3/5。
+ * 依据 = LME90 逐题取证：9 道 multi-session 错题中 6 道「两会话都进了候选池，
+ * 注入块只有一个会话」；单轮 800–1300 字时一个会话 2–3 行就顶满旧 2400 字预算
+ * （2026-11-04 标准档抬到 6000 后仍是同构风险：长轮次一条就能吃掉半块）。
+ * 只在候选跨 ≥2 个会话时才生效（单会话候选池逐位等于旧行为）。
+ * 写成整数比（不是小数常量）的原因：本模块禁绝对阈值小数常量（见单测「不写绝对阈值常数」）——
+ * 份额是预算切分比例、不是相似度刻度，且代码缺省即标准（不加配置项）。
+ */
+const SESSION_SHARE_NUM = 3;
+const SESSION_SHARE_DEN = 5;
+
+/**
+ * 字符预算装填（⑥ 名次装填与 bypass 兜底共用同一实现，避免两条路径行为分叉）。
+ *
+ * 规则：按给定顺序贪心装填（装得下就装、装不下跳过并记 chars）；候选跨 ≥2 个来源会话时
+ * 启用会话份额——单会话累计字符不得超过预算的 3/5。每个会话的**首条豁免**：该会话还没有
+ * 任何行进块时只看全局预算，否则一条超份额的长轮会把该会话整段落空、预算白白闲置。
+ * 份额只在「池子本来就装不下」时才有差别；全部装得下时与旧行为逐位相同。
+ */
+export function fillCharBudgetBySession(input: {
+  order: readonly number[];
+  lenOf: (index: number) => number;
+  sessionOf: ((index: number) => string | null | undefined) | null;
+  charBudget: number;
+}): { kept: Set<number>; droppedByChars: number[] } {
+  const { order, lenOf, sessionOf, charBudget } = input;
+  let shareCap: number | null = null;
+  if (sessionOf) {
+    const sessions = new Set<string>();
+    for (const i of order) {
+      const sid = sessionOf(i);
+      if (sid) sessions.add(sid);
+    }
+    if (sessions.size >= 2) shareCap = Math.max(1, Math.floor((charBudget * SESSION_SHARE_NUM) / SESSION_SHARE_DEN));
+  }
+  const perSession = new Map<string, number>();
+  const kept = new Set<number>();
+  const droppedByChars: number[] = [];
+  let used = 0;
+  for (const i of order) {
+    const len = lenOf(i);
+    const sid = sessionOf?.(i) ?? null;
+    const sUsed = sid ? (perSession.get(sid) ?? 0) : 0;
+    const shareOk = shareCap === null || !sid || sUsed === 0 || sUsed + len <= shareCap;
+    if (used + len <= charBudget && shareOk) {
+      kept.add(i);
+      used += len;
+      if (sid) perSession.set(sid, sUsed + len);
+    } else {
+      droppedByChars.push(i);
+    }
+  }
+  return { kept, droppedByChars };
+}
+
 /** 候选行（本模块只比大小，不解析文本内容）。 */
 export interface LayerRulerCandidate {
   /** 行原文（逐字节折叠与 journal hash 的原件）。 */
@@ -78,6 +134,12 @@ export interface LayerRulerInput {
    * 两者可叠加，先名次配额 → 字符预算 → 行数预算。
    */
   charBudget?: number | null;
+  /**
+   * 候选下标 → 来源会话标识（null = 未知/不计份额）。
+   * 字符预算装填时用于「会话份额」：跨 ≥2 会话时单会话累计不超过预算 3/5（首条豁免）。
+   * 未给 = 旧行为（只守全局预算），逐位不变。
+   */
+  sessionOf?: ((index: number) => string | null | undefined) | null;
   /** 折叠谓词（true = 该候选在本轮已注入过）；纯函数由调用方注入，本模块不碰会话状态。 */
   isFolded?: (candidate: LayerRulerCandidate, index: number) => boolean;
 }
@@ -230,16 +292,19 @@ export function layerRulerSelect(input: LayerRulerInput): LayerRulerOutcome {
   if (charBudget !== null && charBudget >= 0) {
     const ranked = [...keptSet].sort((a, b) => compareRank(a, b, candidates));
     keptSet.clear();
-    let used = 0;
-    for (const i of ranked) {
-      const len = candidates[i].text.length;
-      if (used + len <= charBudget) {
-        keptSet.add(i);
-        used += len;
-      } else {
-        reason[i] = "chars";
-      }
-    }
+    // ⑥b 会话份额（2026-11-04，标准行为）：候选跨 ≥2 个来源会话时，单会话累计字符
+    // 不得超过预算的 SESSION_SHARE。LME90 的 9 道 multi-session 错题里 6 道是
+    // 「两个会话都进了候选池，块里只有一个会话」——一个会话的三条长轮吃满整块，
+    // 第二跳证据挤不进来。份额只作用于「候选池本来就装不下」的情形（装得下时循环
+    // 全中，与旧行为逐位相同），且只按名次装填，不重排、不补位。
+    const fill = fillCharBudgetBySession({
+      order: ranked,
+      lenOf: (i: number) => candidates[i].text.length,
+      sessionOf: typeof input.sessionOf === "function" ? input.sessionOf : null,
+      charBudget,
+    });
+    for (const i of fill.kept) keptSet.add(i);
+    for (const i of fill.droppedByChars) reason[i] = "chars";
   }
 
   if (budget !== null && keptSet.size > budget) {

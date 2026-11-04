@@ -19,6 +19,7 @@
 import type { CoreTenant, IMemoryStore } from "../store/types.js";
 import type { Logger } from "../types.js";
 import { buildSoulPrefix, type SoulRenderOptions } from "./soul-assembler.js";
+import { SOUL_CHANGE_REASONS, diffSoulSlots, parseSoulSlotMap, summarizeSoulDiff } from "./soul-versioning.js";
 
 export interface IntrospectProbe {
   id: string;
@@ -29,10 +30,31 @@ export interface IntrospectProbe {
   expectRegex?: string;
 }
 
+/**
+ * 快照条目（缺口 A：版本与漂移审计）。
+ *  - ts/content_hash/trigger/diff 为既有行级面（逐位不变）；
+ *  - version/parentHash/reasonCode/reasonDetail/slotDiff 仅当库里有版本列（新写入的
+ *    快照）时出现——旧行/老 store 不写这些字段，旧断言逐位不受影响。
+ */
+export interface SoulIntrospectSnapshotEntry {
+  ts: string;
+  content_hash: string;
+  trigger: string;
+  diff?: { addedLines: number; removedLines: number };
+  /** 该 tenant+slot 维度单调递增的版本号（首版=1）。 */
+  version?: number;
+  parentHash?: string | null;
+  /** 受控变更原因枚举（soul-versioning.SOUL_CHANGE_REASONS）。 */
+  reasonCode?: string;
+  reasonDetail?: string;
+  /** 键级 diff 摘要（slot:/value:/block: 键空间）。 */
+  slotDiff?: { added: number; removed: number; changed: number; summary: string };
+}
+
 export interface SoulIntrospectResult {
   rendered: string;
   soulVersion?: string;
-  snapshots: Array<{ ts: string; content_hash: string; trigger: string; diff?: { addedLines: number; removedLines: number } }>;
+  snapshots: SoulIntrospectSnapshotEntry[];
   probes: Array<{ id: string; category: string; layer: string; passed: boolean; reason?: string }> | null;
   orphanAnchors: Array<{ label: string; evidenceHits: number }>;
   evidenceWindowHours: number;
@@ -77,7 +99,26 @@ export async function introspectSoul(
       const all = await store.listSoulSnapshots(tenant, snapshotLimit);
       const tail = all.slice(-snapshotLimit);
       tail.forEach((r, i) => {
-        const entry: SoulIntrospectResult["snapshots"][number] = { ts: r.ts, content_hash: r.content_hash, trigger: r.trigger };
+        const entry: SoulIntrospectSnapshotEntry = { ts: r.ts, content_hash: r.content_hash, trigger: r.trigger };
+        // 缺口 A：版本链与变更原因（老行缺列 → 字段不出现，旧形状逐位不变）
+        if (typeof r.version === "number" && r.version > 0) entry.version = r.version;
+        if (r.parent_hash !== undefined) entry.parentHash = r.parent_hash;
+        if (typeof r.trigger === "string" && (SOUL_CHANGE_REASONS as readonly string[]).includes(r.trigger)) {
+          entry.reasonCode = r.trigger;
+        }
+        if (typeof r.reason_detail === "string" && r.reason_detail.length > 0) entry.reasonDetail = r.reason_detail;
+        const prevRow = i > 0 ? tail[i - 1] : undefined;
+        const prevSlots = parseSoulSlotMap(prevRow?.slots_json);
+        const curSlots = parseSoulSlotMap(r.slots_json);
+        if (Object.keys(curSlots).length > 0) {
+          const d = diffSoulSlots(prevRow ? prevSlots : null, curSlots);
+          entry.slotDiff = {
+            added: d.added.length,
+            removed: d.removed.length,
+            changed: d.changed.length,
+            summary: summarizeSoulDiff(d),
+          };
+        }
         if (i > 0) {
           const prev = new Set(tail[i - 1].payload_json.split("\n"));
           const cur = r.payload_json.split("\n");

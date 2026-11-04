@@ -405,7 +405,7 @@ describe("applyInjectionSelection", () => {
       query: "",
       ruler: { mode: "enforce", keepRatio: 0.67, minPerLayer: 1, floor: null },
       foldIdentical: true,
-      budgetByIntent: PRODUCTION_INJECTION_BUDGET,
+      budgetByIntent: { ...PRODUCTION_INJECTION_BUDGET },
       embedBatch: fakeEmbed([]),
     });
     expect(out.lines).toEqual([]);
@@ -639,6 +639,56 @@ describe("#179 v3 · bypass 时的字符预算兜底（fallback=char-budget）",
     expect(out.lines).toEqual(lines.slice(0, 2));
   });
 
+  it("跨会话 + 配了 maxChars → 兜底也守会话份额（第二个会话的首条不被长轮挤掉）", async () => {
+    const out = await applyInjectionSelection({
+      lines,
+      query: "采购订单报错",
+      ruler: { mode: "enforce", keepRatio: 1, minPerLayer: 1, floor: 0.3 },
+      foldIdentical: false,
+      budgetByIntent: NO_BUDGET,
+      maxChars: 600,
+      // 前两行属于会话 A、后两行属于会话 B：份额 = floor(600×3/5) = 360
+      // ⇒ 会话 A 只能进首条（第二条起受份额约束），省下的预算留给会话 B 的首条。
+      sessions: ["sA", "sA", "sB", "sB"],
+    });
+    expect(out.ruler.bypass).toBe("ruler-unavailable");
+    expect(out.ruler.fallback).toBe("char-budget");
+    expect(out.lines).toEqual([lines[0], lines[2]]);
+    expect(out.selection.droppedBy.chars).toBe(2);
+  });
+
+  it("bypass + 剩余预算 → 用证据窗回填被 chars 丢掉的长行（不留空预算）", async () => {
+    const huge = line("work_fact", "字".repeat(2000));
+    const out = await applyInjectionSelection({
+      lines: [huge, ...lines],
+      query: "采购订单报错",
+      ruler: { mode: "enforce", keepRatio: 1, minPerLayer: 1, floor: 0.3 },
+      foldIdentical: false,
+      budgetByIntent: NO_BUDGET,
+      maxChars: 900,
+    });
+    expect(out.ruler.bypass).toBe("ruler-unavailable");
+    expect(out.ruler.fallback).toBe("char-budget");
+    // 首条 2000 字整行装不进 900：先被 chars 丢掉，再由回填裁成证据窗注入
+    expect(out.selection.windowed).toBeGreaterThanOrEqual(1);
+    const total = out.lines.reduce((n, l) => n + l.length, 0);
+    expect(total).toBeLessThanOrEqual(900);
+    expect(out.lines.join("")).toContain("（节选）");
+  });
+
+  it("单会话候选池 → 份额不生效（与旧行为逐位相同）", async () => {
+    const out = await applyInjectionSelection({
+      lines,
+      query: "采购订单报错",
+      ruler: { mode: "enforce", keepRatio: 1, minPerLayer: 1, floor: 0.3 },
+      foldIdentical: false,
+      budgetByIntent: NO_BUDGET,
+      maxChars: 600,
+      sessions: ["sA", "sA", "sA", "sA"],
+    });
+    expect(out.lines).toEqual(lines.slice(0, 2));
+  });
+
   it("预算小到一行都装不下 → 注入 0 行（仍算兜底生效，绝不退回全量）", async () => {
     const out = await applyInjectionSelection({
       lines,
@@ -646,8 +696,8 @@ describe("#179 v3 · bypass 时的字符预算兜底（fallback=char-budget）",
       ruler: { mode: "enforce", keepRatio: 1, minPerLayer: 1, floor: 0.3 },
       foldIdentical: false,
       budgetByIntent: NO_BUDGET,
-      // 每行 260+ 字符 > cap：贪心装填一行都放不下
-      maxChars: 100,
+      // 每行 260+ 字符 > cap，且 cap 小到证据窗都放不下（cap−12 < 60）：贪心装填一行都放不下
+      maxChars: 50,
     });
     expect(out.ruler.bypass).toBe("ruler-unavailable");
     expect(out.ruler.fallback).toBe("char-budget");
@@ -669,5 +719,124 @@ describe("#179 v3 · bypass 时的字符预算兜底（fallback=char-budget）",
     expect(out.lines).toEqual(lines);
     expect(out.ruler.fallback).toBeUndefined();
     expect(out.selection.droppedBy.chars).toBe(0);
+  });
+});
+
+// 2026-11-03：零行保护（LME90 归因后的契约，TDD 追补用例）。
+describe("零行保护：自指/信息型意图不许注入空块", () => {
+  const ENFORCE: InjectionRulerConfig = { mode: "enforce", keepRatio: 0.67, minPerLayer: 1, floor: 0.3 };
+
+  it("self 意图 + 唯一候选低于地板 → 仍保留 1 行（不给空块）", async () => {
+    const lines = [line("work_fact", "你上次说的部署脚本叫 deploy.ps1")];
+    const out = await applyInjectionSelection({
+      lines,
+      query: "你上次说的部署脚本叫什么",
+      ruler: ENFORCE,
+      foldIdentical: false,
+      budgetByIntent: { ...PRODUCTION_INJECTION_BUDGET },
+      embedBatch: fakeEmbed([0.1]), // 低于 0.3 地板
+    });
+    expect(out.selection.droppedBy.budget).toBe(0);
+    expect(out.lines).toHaveLength(1);
+    expect(out.selection.kept).toBe(1);
+  });
+
+  it("continuation 意图 + 低于地板 → 保持 0 行（本就不该注）", async () => {
+    const lines = [line("work_fact", "继续上次那个话题的细节")];
+    const out = await applyInjectionSelection({
+      lines,
+      query: "继续",
+      ruler: ENFORCE,
+      foldIdentical: false,
+      budgetByIntent: { ...PRODUCTION_INJECTION_BUDGET },
+      embedBatch: fakeEmbed([0.1]),
+    });
+    expect(out.lines).toHaveLength(0);
+  });
+
+  it("info 意图 + 全部行超 maxChars → 证据窗装进预算（不再整行丢弃留空块）", async () => {
+    const lines = [line("work_fact", "长".repeat(700)), line("work_fact", "也很长".repeat(200))];
+    const out = await applyInjectionSelection({
+      lines,
+      query: "我们上次讨论的向量维度是多少",
+      ruler: ENFORCE,
+      maxChars: 600,
+      foldIdentical: false,
+      budgetByIntent: NO_BUDGET,
+      embedBatch: fakeEmbed([0.1, 0.2]),
+    });
+    // 2026-11-03：整行装不下 → 换成「头+命中窗+尾」的节选后装进 600；成本契约仍然成立。
+    expect(out.selection.windowed).toBe(2);
+    expect(out.lines.length).toBeGreaterThan(0);
+    for (const l of out.lines) expect(l.length).toBeLessThanOrEqual(600);
+  });
+
+  it("最高分行超预算 → 用证据窗压进预算后再按分数取行（不再整行放弃）", async () => {
+    const long = line("work_fact", "超长事实".repeat(200)); // 800 字 ≫ 预算
+    const short = line("work_fact", "召回选线用的是余弦地板 0.3");
+    const out = await applyInjectionSelection({
+      lines: [long, short],
+      query: "召回选线地板是多少",
+      ruler: ENFORCE,
+      maxChars: 600,
+      foldIdentical: false,
+      budgetByIntent: NO_BUDGET,
+      embedBatch: fakeEmbed([0.29, 0.25]), // 两行都在 0.3 地板下；长行分更高但装不下
+    });
+    expect(out.lines.length).toBeGreaterThanOrEqual(1);
+    // 窗化后长行也装得进 600：胜负回到分数本身，但没有任何一行超预算（成本契约不变）。
+    for (const l of out.lines) expect(l.length).toBeLessThanOrEqual(600);
+    expect(out.selection.windowed).toBe(1);
+  });
+
+  it("超长行只领自己的份额（不为它一条吃掉整块，其它证据仍有位置）", async () => {
+    const lines = [
+      line("work_fact", "超长事实".repeat(750)), // 3000 字 ≫ 预算
+      line("work_fact", "厨房收纳：餐具架按用途分层"),
+      line("work_fact", "客厅除尘：吸尘器和空气净化器"),
+      line("work_fact", "猫 Luna 掉毛多，需要常清洗猫窝"),
+    ];
+    const out = await applyInjectionSelection({
+      lines,
+      query: "厨房怎么收纳更整洁",
+      ruler: ENFORCE,
+      maxChars: 800,
+      foldIdentical: false,
+      budgetByIntent: NO_BUDGET,
+      embedBatch: fakeEmbed([0.9, 0.8, 0.7, 0.6]),
+    });
+    // 2026-11-04（win 臂回归）：窗预算是 maxChars/候选数 —— 800/4=200，长行只拿 200，
+    // 其余短行照常进块；旧行为是长行窗到 800 独占整块（afdc33df/35a27287 块塌成 1 行）。
+    expect(out.selection.windowed).toBe(1);
+    expect(out.lines.length).toBeGreaterThanOrEqual(3);
+    for (const l of out.lines) expect(l.length).toBeLessThanOrEqual(800);
+  });
+
+  it("保回的行在观测面打 rescued 标记（kept=true 但仍记 droppedBy 原账已冲销）", async () => {
+    const lines = [line("work_fact", "你上次说的部署脚本叫 deploy.ps1")];
+    const out = await applyInjectionSelection({
+      lines,
+      query: "你上次说的部署脚本叫什么",
+      ruler: ENFORCE,
+      maxChars: 600,
+      foldIdentical: false,
+      budgetByIntent: { ...PRODUCTION_INJECTION_BUDGET },
+      embedBatch: fakeEmbed([0.1]),
+    });
+    expect(out.selection.rescued).toBe(1);
+    expect(out.selection.droppedBy.floor).toBe(0);
+    expect(out.candidates.lines[0]).toMatchObject({ kept: true, rescued: true });
+  });
+
+  it("池为空 → 0 行（保护不凭空造证据）", async () => {
+    const out = await applyInjectionSelection({
+      lines: [],
+      query: "你还记得我之前说过的部署偏好吗",
+      ruler: ENFORCE,
+      foldIdentical: false,
+      budgetByIntent: { ...PRODUCTION_INJECTION_BUDGET },
+      embedBatch: fakeEmbed([]),
+    });
+    expect(out.lines).toEqual([]);
   });
 });

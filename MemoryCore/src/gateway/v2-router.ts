@@ -145,6 +145,8 @@ import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
 // D-0（2026-09-21）：/v3/atomic/query 出参映射单一源——7 字段补齐 + 既有字段逐位。
 import { handleAtomicQueryShape, handleAtomicSearchShape } from "./atomic-query-fields.js";
 import { handleAtomicByIds } from "./atomic-by-ids.js";
+// ADR-0025 行级溯源：L1.source_message_ids → L0 原话批量回读（面板「查看原话」数据端）。
+import { handleConversationByIds } from "./conversation-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
 import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
 // #82：self_identity 采纳落槽（merge-on-adopt）唯一合并源——与 worker 演化语义同构，互不复制。
@@ -224,10 +226,18 @@ const TEAM_OWNERSHIP_GATED_PATHS = new Set<string>(["/conversation/add", "/core/
 const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/conversation/add",
   "/conversation/query",
+  // ADR-0025 行级溯源：按 L0 record_id 批量回读原话（面板证据抽屉）。
+  "/conversation/by-ids",
   "/conversation/search",
   "/conversation/delete",
   "/conversation/count",
   "/atomic/update",
+  // P1 task-7：人工重要度调整。**补登**：handler 早就在 DATAPLANE_HANDLERS 里注册，
+  // 但封闭清单一直漏了这一条 → /v3/atomic/importance 实际 404（面板滑杆调级线上不可用）。
+  // A 项（2026-11-04）核对新端点时发现，一并修掉（只加清单项，语义零改动）。
+  "/atomic/importance",
+  // A 项（ADR-0025 决定 10）：显式降敏（Panel 记忆详情「解除敏感标记」上游）
+  "/atomic/sensitivity",
   // P1 task-8：记忆软失效/撤销失效（bi-temporal 补口；handleAtomicUpdate valid_end 写路的语义化薄封装）
   "/atomic/invalidate",
   "/atomic/query",
@@ -285,7 +295,8 @@ async function recordAudit(
   args: {
     record_id: string;
     layer: "L1" | "L2" | "L3";
-    action: "update" | "delete";
+    /** 'sensitivity'（A 项）：显式降敏——安全相关的人工动作，必须与 update/delete 同等留痕。 */
+    action: "update" | "delete" | "sensitivity";
     iso?: { teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string };
     version: number;
     requestId: string;
@@ -560,12 +571,16 @@ type RouteHandler = (
 const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/conversation/add": handleConversationAdd,
   "/conversation/query": handleConversationQuery,
+  // ADR-0025 行级溯源（同 /atomic/by-ids 先例）：按 id 批量回读 L0 原话。
+  "/conversation/by-ids": handleConversationByIds,
   "/conversation/search": handleConversationSearch,
   "/conversation/delete": handleConversationDelete,
   "/conversation/count": handleConversationCount,
   "/atomic/update": handleAtomicUpdate,
   // P1 task-7：人工重要度调整（Panel 记忆详情）
   "/atomic/importance": handleAtomicImportance,
+  // A 项（ADR-0025 决定 10）：显式降敏（sensitivity 单向棘轮下限的唯一写路）
+  "/atomic/sensitivity": handleAtomicSensitivity,
   // P1 task-8：记忆软失效/撤销失效（Panel 记忆详情「标记失效/撤销失效」上游）
   "/atomic/invalidate": handleAtomicInvalidate,
   "/atomic/query": handleAtomicQuery,
@@ -1491,7 +1506,9 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     type: record.type as any,
     priority: record.priority ?? 50,
     scene_name: background !== undefined ? background : (record.scene_name ?? ""),
-    source_message_ids: [],
+    // P0：行级原话溯源从既有行原样透传——upsertL1 的 excluded.* 整行覆盖，
+    // 漏拷 = 编辑/调分/失效恢复一次即把该行的 source_message_ids 刷成 []。
+    source_message_ids: record.source_message_ids ?? [],
     metadata: parseMetadataJson(record.metadata_json),
     timestamps: record.timestamp_str ? [record.timestamp_str] : [],
     createdAt: record.created_time || record.timestamp_str || now,
@@ -1509,7 +1526,6 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     valid_start: record.valid_start,
     valid_end: record.valid_end,
     certainty: record.certainty as MemoryRecord["certainty"],
-    source: record.source,
     valence: record.valence,
     arousal: record.arousal,
     significance: record.significance,
@@ -1603,7 +1619,9 @@ export async function handleAtomicImportance(body: unknown, _auth: V2AuthContext
     type: record.type as any,
     priority: record.priority ?? 50,
     scene_name: record.scene_name ?? "",
-    source_message_ids: [],
+    // P0：行级原话溯源从既有行原样透传——upsertL1 的 excluded.* 整行覆盖，
+    // 漏拷 = 编辑/调分/失效恢复一次即把该行的 source_message_ids 刷成 []。
+    source_message_ids: record.source_message_ids ?? [],
     metadata,
     timestamps: record.timestamp_str ? [record.timestamp_str] : [],
     createdAt: record.created_time || record.timestamp_str || new Date().toISOString(),
@@ -1621,7 +1639,6 @@ export async function handleAtomicImportance(body: unknown, _auth: V2AuthContext
     valid_start: record.valid_start,
     valid_end: record.valid_end,
     certainty: record.certainty as MemoryRecord["certainty"],
-    source: record.source,
     valence: record.valence,
     arousal: record.arousal,
     significance: record.significance,
@@ -1644,6 +1661,106 @@ export async function handleAtomicImportance(body: unknown, _auth: V2AuthContext
 
   return successEnvelope(
     { id, version: `v${updatedVersion}`, importance, importance_source: "manual" },
+    requestId,
+  );
+}
+
+/** 可写 sensitivity 白名单（ADR-0025 决定 10）：'unclassified' 是脏值归一结果，不是可写值。 */
+const WRITABLE_SENSITIVITY = new Set(["none", "health", "finance", "relationship"]);
+
+/**
+ * A 项（ADR-0025 决定 10，2026-11-04）：POST /atomic/sensitivity — 显式降敏。
+ *
+ * 为什么必须是独立端点（而不是复用 /atomic/update）：upsertL1 的 sensitivity 是**粘性列**
+ * （sqlite.ts:1364-1370：新值 'none'/''/NULL 等于「本次未判定」→ 保留库中旧值），
+ * 整行重写链永远无法把已分类行降回 none。这正是「单向棘轮」的存储层表达：
+ * 自动路径只升不降，降敏只能由人显式发起、单条 UPDATE、且带 CAS。
+ *
+ * 合同：
+ * - body { id, sensitivity, expect, reason? }；
+ *   - sensitivity 必须是 none|health|finance|relationship（'unclassified' → 400）；
+ *   - **expect 必填**（body 里显式给出当前值）：SQL 条件 AND sensitivity = expect，
+ *     changes===0 → 409。并发改写/值不符/行被删三者不区分（不泄漏行存在性）。
+ *     不带 expect = 盲覆盖 → 400（拒绝）。
+ * - 未知行 404 / 跨租户三轴 403 / store 无 setL1Sensitivity → 501（fail-loud，不静默成功）。
+ * - 成功后写 memory_audit（action='sensitivity'）；不 bump version、不改正文
+ *   （只是标注位 + updated_time，见 store.setL1Sensitivity）。
+ * - 不做「取值必须更低」的方向校验：网关保持通用写能力（health→finance 这类重分类将来
+ *   可能有用），**保守约束放在 UI**——面板只提供「解除敏感标记 → none」这一步。
+ */
+export async function handleAtomicSensitivity(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const b = (body ?? {}) as { id?: unknown; sensitivity?: unknown; expect?: unknown; reason?: unknown };
+  const id = typeof b.id === "string" && b.id.trim() ? b.id.trim() : undefined;
+  if (!id) return errorEnvelope(400, "id 必须是非空字符串", requestId);
+  if (typeof b.sensitivity !== "string" || !WRITABLE_SENSITIVITY.has(b.sensitivity)) {
+    return errorEnvelope(400, "sensitivity 必须是 none/health/finance/relationship 之一", requestId);
+  }
+  if (typeof b.expect !== "string" || !WRITABLE_SENSITIVITY.has(b.expect)) {
+    return errorEnvelope(400, "expect 必须显式提供且是 none/health/finance/relationship 之一（CAS 条件）", requestId);
+  }
+  if (b.reason !== undefined && typeof b.reason !== "string") {
+    return errorEnvelope(400, "reason 必须是字符串", requestId);
+  }
+  const sensitivity = b.sensitivity;
+  const expect = b.expect;
+
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  if (typeof store.setL1Sensitivity !== "function") {
+    // fail-loud：后端没实现 = 降敏不可用，绝不当成功回执（否则面板以为解除了、召回仍拦截）
+    return errorEnvelope(501, "后端不支持显式降敏（setL1Sensitivity 未实现）", requestId);
+  }
+  const records = (await store.getL1ByIds?.([id])) ?? [];
+  const record = records[0];
+  if (!record) return errorEnvelope(404, `Atomic note ${id} not found`, requestId);
+
+  const iso = deps.requestIsolation;
+  if (iso?.teamId && record.team_id && record.team_id !== iso.teamId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different team`, requestId);
+  }
+  if (iso?.userId && record.user_id && record.user_id !== iso.userId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different user`, requestId);
+  }
+  if (iso?.agentId && record.agent_id && record.agent_id !== iso.agentId) {
+    return errorEnvelope(403, `Atomic note ${id} belongs to a different agent`, requestId);
+  }
+
+  // 失败二分（对抗评审 P1）：false = 纯 CAS 未命中 → 409；抛错 = degraded/SQL 失败 → 503。
+  // 混成一个 409 会让客户端按并发冲突重试（而值其实已改），且丢审计、语义错位。
+  let ok: boolean;
+  try {
+    ok = await store.setL1Sensitivity(id, sensitivity, expect);
+  } catch (err) {
+    deps.logger?.warn?.(
+      `[atomic-sensitivity] store write failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return errorEnvelope(
+      503,
+      `sensitivity 写入失败（store 不可用或底层错误）: ${err instanceof Error ? err.message : String(err)}`,
+      requestId,
+    );
+  }
+  if (!ok) {
+    return errorEnvelope(
+      409,
+      `sensitivity CAS 未命中（expect=${expect} 与库中当前值不符或行已被并发修改）: ${id}`,
+      requestId,
+    );
+  }
+
+  // 降敏不改正文/版本：audit 记当前版本（version 未 bump，与 update 语义区分靠 action 位）。
+  await recordAudit(store, {
+    record_id: id,
+    layer: "L1",
+    action: "sensitivity",
+    iso,
+    version: record.version ?? 0,
+    requestId,
+    logger: deps.logger,
+  });
+
+  return successEnvelope(
+    { id, sensitivity, previous: expect, version: `v${record.version ?? 0}`, sensitivity_source: "manual" },
     requestId,
   );
 }
@@ -1712,7 +1829,9 @@ export async function handleAtomicInvalidate(body: unknown, _auth: V2AuthContext
     type: record.type as any,
     priority: record.priority ?? 50,
     scene_name: record.scene_name ?? "",
-    source_message_ids: [],
+    // P0：行级原话溯源从既有行原样透传——upsertL1 的 excluded.* 整行覆盖，
+    // 漏拷 = 编辑/调分/失效恢复一次即把该行的 source_message_ids 刷成 []。
+    source_message_ids: record.source_message_ids ?? [],
     metadata,
     timestamps: record.timestamp_str ? [record.timestamp_str] : [],
     createdAt: record.created_time || record.timestamp_str || new Date().toISOString(),
@@ -1730,7 +1849,6 @@ export async function handleAtomicInvalidate(body: unknown, _auth: V2AuthContext
     valid_start: record.valid_start,
     valid_end: mode === "restore" ? "" : record.valid_end,
     certainty: record.certainty as MemoryRecord["certainty"],
-    source: record.source,
     valence: record.valence,
     arousal: record.arousal,
     significance: record.significance,
@@ -1953,6 +2071,9 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
               pprIterations?: number;
               sceneBoost?: number;
               exploreSlot?: boolean;
+              // P1-T7（2026-11-04 定案）：importance≤4 降权——工具路与 hook 同参，
+              // 配置形状沿用 yaml 的 {enabled, penalty}（见 config.ts 解析）。
+              importancePenalty?: { enabled?: boolean; penalty?: number } | number;
               // P0-2（issue #2）：native RRF 共识门槛（0/缺省=关=逐位现状）
               nativeMinRRF?: number;
               // RV2-2：精排重设计四因子（relevance/timeProx/significance/coreRef，相关度主导）
@@ -1982,6 +2103,13 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
         pprTopK: recallCfg?.pprTopK,
         pprIterations: recallCfg?.pprIterations,
         sceneBoost: recallCfg?.sceneBoost,
+        // P1-T7：importance 降权同参透传（hook 路 auto-recall.ts:2136-2149 同源配置）——
+        // 未传 = 0 = 逐位现状；不再由工具路硬编码 DEFAULT(0) 静默忽略生产开关。
+        importancePenalty: (() => {
+          const imp = recallCfg?.importancePenalty;
+          if (typeof imp === "number") return imp;
+          return imp?.enabled === true ? (imp.penalty ?? 0) : 0;
+        })(),
         // P0-2（issue #2）：native RRF 共识门槛透传（缺省 undefined → executeMemorySearch 0=关）
         nativeMinRRF: recallCfg?.nativeMinRRF,
         // V2 批 2（I2 修补）：引擎三 exploreSlot/rerankWeights + 引擎一 queryExpansion

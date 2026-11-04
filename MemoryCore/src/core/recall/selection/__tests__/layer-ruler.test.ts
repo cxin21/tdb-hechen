@@ -167,6 +167,67 @@ describe("layerRulerSelect · 折叠与预算（跨层只在这里相遇）", ()
   });
 });
 
+describe("layerRulerSelect · 字符预算的会话份额（2026-11-04）", () => {
+  // 60% 的取证来源：LME90 的 9 道 multi-session 错题里 6 道「两会话都进了候选池，
+  // 注入块只有一个会话」——单轮 800–1300 字时一个会话 2–3 行就顶满 2400 字。
+  const long = (tag: string, n: number, score: number, order: number) => ({
+    text: tag + "x".repeat(Math.max(0, n - tag.length)),
+    layer: "experience",
+    score,
+    order,
+  });
+
+  it("单会话候选池：份额不生效，逐位等于旧行为（装满为止）", () => {
+    const candidates = [long("a", 100, 0.9, 0), long("b", 100, 0.8, 1), long("c", 100, 0.7, 2)];
+    const out = layerRulerSelect({
+      candidates,
+      keepRatio: 1,
+      minPerLayer: 1,
+      charBudget: 250,
+      sessionOf: () => "s1",
+    });
+    expect(out.kept).toEqual([0, 1]);
+    expect(reasonsOf(out.decisions)).toEqual(["chars"]);
+  });
+
+  it("跨两会话：第一会话吃满 60% 后，第二会话的行仍能进（旧行为会被挤掉）", () => {
+    const candidates = [long("a", 200, 0.9, 0), long("b", 200, 0.8, 1), long("c", 200, 0.7, 2), long("g", 300, 0.1, 3)];
+    const sessions: Record<number, string> = { 0: "s1", 1: "s1", 2: "s1", 3: "s2" };
+    const out = layerRulerSelect({
+      candidates,
+      keepRatio: 1,
+      minPerLayer: 1,
+      charBudget: 1000,
+      sessionOf: (i) => sessions[i] ?? null,
+    });
+    // s1 份额 = 600 → 只能装 3 条里的 3×200=600（正好）
+    expect(out.kept).toEqual([0, 1, 2, 3]);
+    expect(out.decisions[0]).toMatchObject({ kept: true });
+    expect(out.decisions[3]).toMatchObject({ kept: true });
+  });
+
+  it("跨两会话且第一会话行更长：超份额的行记 chars，第二会话保住位置", () => {
+    const candidates = [long("a", 700, 0.9, 0), long("b", 700, 0.8, 1), long("g", 200, 0.2, 2)];
+    const sessions: Record<number, string> = { 0: "s1", 1: "s1", 2: "s2" };
+    const out = layerRulerSelect({
+      candidates,
+      keepRatio: 1,
+      minPerLayer: 1,
+      charBudget: 1000,
+      sessionOf: (i) => sessions[i] ?? null,
+    });
+    // 份额 600：首条 700 享「首条豁免」进块；第二条 700 撞份额 → chars；g 进（200）
+    expect(out.kept).toEqual([0, 2]);
+    expect(reasonsOf(out.decisions)).toEqual(["chars"]);
+  });
+
+  it("无 sessionOf（缺省）→ 份额不生效（逐位旧行为）", () => {
+    const candidates = [long("a", 700, 0.9, 0), long("b", 700, 0.8, 1), long("g", 200, 0.2, 2)];
+    const out = layerRulerSelect({ candidates, keepRatio: 1, minPerLayer: 1, charBudget: 1000 });
+    expect(out.kept).toEqual([0, 2]);
+  });
+});
+
 describe("layerRulerSelect · 性质：单调变换不变", () => {
   const base = [0.62, 0.41, 0.37, 0.05, 0.9, 0.33, 0.7];
   const candidates = base.map((score, i) => ({ text: "t" + i, layer: i % 2 === 0 ? "A" : "B", score, order: i }));

@@ -956,3 +956,114 @@
   overflow: hidden;
   overflow-wrap: anywhere;
 }
+
+/* ===== task-3：灵魂版本链 / 漂移审计（2026-11-04） =====
+ * 复用 V* 既有 token（--soul-*）与 chip 类；只新增 _soul-ver-* 局部样式，
+ * 不引入新设计变量。旧快照降级提示用中性底，避免被读成错误。 */
+._soul-ver-hint {
+  margin: var(--soul-sp-2) 0 0;
+  padding: 8px 10px;
+  border-radius: var(--soul-radius-inset);
+  background: var(--soul-fill-muted);
+  color: var(--soul-text-2);
+  font-size: var(--soul-fz-meta);
+  line-height: var(--soul-lh-body);
+  overflow-wrap: anywhere;
+}
+
+._soul-ver-list {
+  list-style: none;
+  margin: var(--soul-sp-3) 0 0;
+  padding: 0;
+  border-top: 1px solid var(--soul-border-soft);
+}
+
+._soul-ver-row {
+  display: flex;
+  gap: var(--soul-sp-3);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--soul-border-soft);
+}
+
+._soul-ver-row:hover {
+  background: var(--soul-fill-hover);
+}
+
+._soul-ver-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--soul-person);
+}
+
+._soul-ver-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+._soul-ver-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: var(--soul-fz-sub);
+  color: var(--soul-text-1);
+}
+
+._soul-ver-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--soul-text-2);
+}
+
+._soul-ver-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--soul-fz-badge);
+  color: var(--soul-text-3);
+  overflow-wrap: anywhere;
+}
+
+._soul-ver-diff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+
+._soul-ver-summary {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-2);
+  overflow-wrap: anywhere;
+}
+
+._soul-ver-notes {
+  margin-top: var(--soul-sp-2);
+}
+
+._soul-ver-note {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-cau);
+  line-height: var(--soul-lh-body);
+  overflow-wrap: anywhere;
+}
+
+._soul-ver-rendered {
+  margin-top: var(--soul-sp-3);
+}
+
+._soul-ver-pre {
+  margin: var(--soul-sp-2) 0 0;
+  padding: 10px;
+  border-radius: var(--soul-radius-inset);
+  background: var(--soul-fill-muted);
+  color: var(--soul-text-2);
+  font-size: var(--soul-fz-meta);
+  line-height: var(--soul-lh-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}
+

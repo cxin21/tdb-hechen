@@ -18,6 +18,7 @@ import forceAtlas2 from 'graphology-layout-forceatlas2';
 import { chatMemoryApi } from '@/lib/teamApi';
 import type { AtomicItem } from '../constants/types';
 import { buildSoulView } from './block-detail/soul-utils';
+import { attrLabel } from '@/lib/attr-labels';
 import {
   directedEdgeType,
   isDirectedKind,
@@ -45,11 +46,14 @@ interface MemEdge {
   kind: string;
 }
 
+// D 项（2026-11-04）：与内核 LINK_TYPES 六值对齐（causal 零写点/零存量已剔除；
+// derived_from 是生产最大户 4.3 万条、evolved_from 由 evolution-worker 写入，二者此前恒灰）。
 const EDGE_KIND_COLOR: Record<string, string> = {
   similar: '#5b6bff',
   evolve: '#1a9d63',
   conflict: '#e5484d',
-  causal: '#e8872a',
+  derived_from: '#16a34a',
+  evolved_from: '#e8872a',
   part_of: '#8b5cf6',
 };
 function readTeaColor(token: string): string {
@@ -398,8 +402,12 @@ export function MemoryGraphView({ blockId, items }: { blockId?: string; items: A
                 {selected.certainty && (
                   <span>{selected.certainty === 'inferred' ? '推断' : '实见'}</span>
                 )}
+                {/* 展示名统一：significance 一律取 attrLabel('significance')，
+                    与 importance 的「重要度(1-10)」是两个不同字段，别混叫。 */}
                 {selected.significance != null && (
-                  <span>重要 {selected.significance.toFixed(2)}</span>
+                  <span>
+                    {attrLabel('significance')} {selected.significance.toFixed(2)}
+                  </span>
                 )}
                 {soul.valencePct !== null && (
                   <span title={`情感方向：${directionLabel}`}>

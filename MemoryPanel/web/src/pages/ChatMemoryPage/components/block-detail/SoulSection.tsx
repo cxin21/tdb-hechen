@@ -2,7 +2,7 @@
  * SoulSection —— 灵魂区组件（U-A1，DS-PANEL-UI-VISUAL-001 §2 S2「灵魂解剖面板」第一步拆分）。
  *
  * 职责：把 L1 条目的灵魂数据渲染成一段自洽的可视区：
- *   ⏱ occurred_at / valid_range → 🎈 valence 双色条 + 强度/重要性进度条 →
+ *   ⏱ occurred_at / valid_range → 🎈 valence 双色条 + 唤醒度/显著性进度条 →
  *   [实见/推断] 徽章 + source → 🎯 coreRef 价值 chips → 🔥 recall_count/last_recalled_at。
  *
  * 行为不变、渲染重排：本组件从 BlockDetail.AtomicHead 的灵魂 chip 段（原 :238 附近）
@@ -13,6 +13,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { type SoulView } from './soul-utils';
+import { attrLabel } from '@/lib/attr-labels';
 
 export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boolean }) {
   const { t } = useTranslation();
@@ -78,9 +79,21 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
           {soul.certaintyLabel}
         </span>
       )}
-      {soul.source && (
-        <span className="_soul-chip" title="来源">
-          src {soul.source}
+      {/* 🚫 敏感度徽章（D-3 / ADR-0025 决定 4）：命中才渲染；title 说明它控制的是
+          「能不能进上下文」而不是「排第几」——注入门只放行本人私有上下文。 */}
+      {soul.sensitivityLabel && (
+        <span
+          className={`_soul-chip _soul-chip--sensitive${soul.sensitivityKind === 'unclassified' ? ' _soul-chip--sensitive-unclassified' : ''}`}
+          title={
+            soul.sensitivityKind === 'unclassified'
+              ? `${attrLabel('sensitivity')}标注 ${soul.sensitivity ?? ''} 不在白名单内：注入门一律拦截（任何上下文都不注入）`
+              : `${attrLabel('sensitivity')}：只在本人私有上下文注入；群聊/共享/外部/可见性未声明时不注入`
+          }
+        >
+          {/* P0（task-10）：此前后正文是字面量「x」（占位漏改）——徽章既不说明
+              它是什么字段，也不给出档位值。改为「字段译名·档位值」，译名走单一源
+              attrLabel('sensitivity')（未登记时回退原键），title 保留完整语义说明。 */}
+          {attrLabel('sensitivity')}·{soul.sensitivityLabel}
         </span>
       )}
       {/* 🎈 valence 双色条：负红左 / 正绿右，标记落点 + 数值（S1 情感色可视化） */}
@@ -92,9 +105,11 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
           {(soul.valence ?? 0).toFixed(1)}
         </span>
       )}
-      {/* 强度 / 重要性进度条（SoulView 已归一 0..100；无效值不渲染） */}
+      {/* 两条 0..1 进度条：唤醒度（arousal）/ 显著性（significance）。
+          这里原先叫「强度 / 重要性」，与 significance 的显示名「重要度(1-10)」撞车——
+          两者是不同字段，展示名统一走 @/lib/attr-labels 的译名（唤醒度 / 显著性）。 */}
       {soul.arousalPct !== null && (
-        <span className="_soul-meter" title="情绪强度 (0..1)">
+        <span className="_soul-meter" title={`${attrLabel('arousal')} (0..1)`}>
           <span className="_soul-meter-track" aria-hidden>
             <span className="_soul-meter-fill" style={{ width: `${soul.arousalPct}%` }} />
           </span>
@@ -102,7 +117,7 @@ export function SoulSection({ soul, durative }: { soul: SoulView; durative?: boo
         </span>
       )}
       {soul.significancePct !== null && (
-        <span className="_soul-meter" title="重要程度 (0..1)">
+        <span className="_soul-meter" title={`${attrLabel('significance')}`}>
           <span className="_soul-meter-track" aria-hidden>
             <span
               className="_soul-meter-fill _soul-meter-fill--significance"

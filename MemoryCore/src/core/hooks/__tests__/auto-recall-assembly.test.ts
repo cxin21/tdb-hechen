@@ -19,6 +19,11 @@ import path from "node:path";
 
 import { performAutoRecall, performLayeredRecall } from "../auto-recall.js";
 import { parseConfig } from "../../../config.js";
+
+function testCfg(raw: Parameters<typeof parseConfig>[0]) {
+  const c = parseConfig(raw);
+  return c;
+}
 import { VectorStore } from "../../store/sqlite.js";
 import type { MemoryRecord } from "../../record/l1-writer.js";
 import type { IMemoryStore, L1SearchResult, L1FtsResult } from "../../store/types.js";
@@ -41,6 +46,9 @@ const mk = (id: string, over: Partial<MemoryRecord> = {}): MemoryRecord =>
     version: 0,
     sessionKey: "k",
     sessionId: "r7fix-assembly",
+    // 私有归属（与下面 recall() 的 isolationFilter 同轴）：生产 dsh-plugin 恒带 user_id，
+    // 缺省 eth 桶在 ADR-0025 决定 4 下不算私有 ⇒ 结论层敏感门会 fail-closed。
+    userId: "usr-r7fix",
     ...over,
   }) as MemoryRecord;
 
@@ -80,11 +88,17 @@ async function recall(
         "utf-8",
       );
     }
+    const cfg = testCfg({ recall: { strategy: "keyword", maxResults: 5, ...cfgOverrides } });
     return await performAutoRecall({
       userText,
       actorId: "r7fix",
       sessionKey,
-      cfg: parseConfig({ recall: { strategy: "keyword", maxResults: 5, ...cfgOverrides } }),
+      // 生产形态：dsh-plugin 走 /v3/recall 恒带三元组头（user_id ⇒ 可证的私有上下文），
+      // 钩子链把同一字段原样透传（auto-recall.ts performAutoRecall.isolationFilter）。
+      // 缺省（undeclared）时 ADR-0025 决定 4 的结论层敏感门会 fail-closed 拦块，本文件只
+      // 测装配/预算，故显式声明。
+      isolationFilter: { userId: "usr-r7fix" },
+      cfg,
       pluginDataDir: dataDir,
       vectorStore: store as unknown as IMemoryStore,
     });
@@ -329,7 +343,7 @@ describe("审查修补 Important④-3 · metric scores 前插对齐（结论 0 �
         userText: "召回专项最近有什么新进展",
         actorId: "r7fix",
         sessionKey: "sk-r7fix-metric",
-        cfg: parseConfig({ recall: { strategy: "hybrid", maxResults: 5 } }),
+        cfg: testCfg({ recall: { strategy: "hybrid", maxResults: 5 } }),
         pluginDataDir: dataDir,
         vectorStore,
         embeddingService,
@@ -375,7 +389,7 @@ describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（
       return await performLayeredRecall({
         userText,
         sessionKey,
-        cfg: parseConfig({ recall: { strategy: "keyword" }, ...(cfgOverrides ?? {}) }),
+        cfg: testCfg({ recall: { strategy: "keyword" }, ...(cfgOverrides ?? {}) }),
         pluginDataDir: dataDir,
         vectorStore: store as unknown as IMemoryStore,
         isolationFilter: tenantFor(n),
@@ -508,7 +522,7 @@ describe("#166 · RecalledMemory.turnId（父 turn 归属，遮蔽不改变度�
       const res = await performLayeredRecall({
         userText: "索引归属探针最近有什么进展",
         sessionKey: "sk-r7fix-turnid",
-        cfg: parseConfig({ recall: { strategy: "hybrid", maxResults: 5 } }),
+        cfg: testCfg({ recall: { strategy: "hybrid", maxResults: 5 } }),
         pluginDataDir: dataDir,
         vectorStore,
         embeddingService,

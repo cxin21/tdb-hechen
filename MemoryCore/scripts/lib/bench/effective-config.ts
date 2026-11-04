@@ -49,6 +49,8 @@ function snapshot(cfg: any): Record<string, unknown> {
   const ep = r.evidencePack ?? {};
   const fk = w.factKey ?? {};
   const ss = w.supersession ?? {};
+  const inj = r.injection ?? {};
+  const bi = inj.budgetByIntent ?? {};
   return {
     "recall.maxResults": pick(r.maxResults),
     "recall.candidateK": pick(r.candidateK),
@@ -76,6 +78,16 @@ function snapshot(cfg: any): Record<string, unknown> {
     // #169 证据包两键：与 store.mjs effectiveRecallSnapshot 对齐（M6 自证要能看出 ep0/1/2 的差异）。
     "recall.evidencePack.enabled": ep.enabled === true,
     "recall.evidencePack.adjacent": pick(ep.adjacent),
+    // 2026-11-04：注入装配三键（标准档 6000 的自证口径）。早前快照漏了整组 injection，
+    // 导致 --expect-config recall.injection.maxChars=6000 恒报「实际 null」，生产路径臂无法
+    // 自证生效值；补键后 fingerprint 会变一次（= 快照键集变化，不是配置变化）。
+    "recall.injection.maxChars": pick(inj.maxChars),
+    "recall.injection.maxLineChars": pick(inj.maxLineChars),
+    "recall.injection.foldIdentical": inj.foldIdentical === true,
+    "recall.injection.budgetByIntent.empty": pick(bi.empty),
+    "recall.injection.budgetByIntent.continuation": pick(bi.continuation),
+    "recall.injection.budgetByIntent.self": pick(bi.self),
+    "recall.injection.budgetByIntent.info": pick(bi.info),
     "write.factKey.enabled": fk.enabled === true,
     "write.factKey.mode": pick(fk.mode),
     "write.factKey.maxFacts": pick(fk.maxFacts),

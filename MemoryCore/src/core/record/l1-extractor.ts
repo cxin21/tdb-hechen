@@ -14,6 +14,7 @@
 
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
 import { describeLlmFailure } from "../../utils/task-failure.js";
+import { LINK_TYPES } from "../store/types.js";
 
 // D-3（2026-09-21）：敏感性枚举白名单（确定性门——LLM 只提议，非法值裁决为 none）
 const SENSITIVITY_ENUM = new Set(["none", "health", "finance", "relationship"]);
@@ -98,7 +99,7 @@ import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from ".
 import { factRowsEnabled, supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
 
 import { sanitizeJsonForParse, salvageTruncatedJsonArray, shouldExtractL1 } from "../../utils/sanitize.js";
-import type { IMemoryStore } from "../store/types.js";
+import type { IMemoryStore, IsolationFilter } from "../store/types.js";
 import { extractionExtensionsEnabled, rollupStateFromRecords } from "../hooks/soul-state-machine.js";
 import { applyPromiseEvidence, collectPromiseEvidenceFromExtraction, promiseEvidenceGateEnabled } from "../hooks/soul-promise-evidence.js";
 import type { L1SearchResult } from "../store/types.js";
@@ -446,7 +447,7 @@ export async function extractL1Memories(params: {
         valid_start: options.durativeEnabled === true && (mem as { durative?: boolean }).durative === true ? ((mem as { valid_start?: string }).valid_start || (mem as { occurred_at?: string }).occurred_at) : undefined,
         valid_end: undefined,
         certainty: (mem.certainty ?? "observed") as "observed" | "inferred",
-        source: mem.source,
+        // ADR-0025 C2：source 列已删，提取侧不再传（信息由 source_message_ids 承担）。
         valence: mem.valence,
         arousal: mem.arousal,
         significance: mem.significance,
@@ -460,6 +461,34 @@ export async function extractL1Memories(params: {
   }
 
   logger?.debug?.(`${TAG} Total extracted memories: ${allExtracted.length} across ${scenes.length} scene(s)`);
+
+  // task-9（2026-11-04，来源证据主键）：幻觉 id 剔除。
+  // prompt 合同只许引用本批新消息（background 仅作上下文）；越界 id 会让同源覆盖判定
+  // 认到不存在/别人的消息，故在归一阶段与当批 id 求交（日志只记计数，不泄露 id 正文）。
+  {
+    const allowedMessageIds = new Set(
+      newMessages.map((message) => message.id).filter((id) => typeof id === "string" && id !== ""),
+    );
+    if (allowedMessageIds.size > 0) {
+      let droppedIds = 0;
+      let affected = 0;
+      for (const memory of allExtracted) {
+        const declared = Array.isArray(memory.source_message_ids) ? memory.source_message_ids : [];
+        if (declared.length === 0) continue;
+        const kept = declared.filter((id) => typeof id === "string" && allowedMessageIds.has(id));
+        if (kept.length === declared.length) continue;
+        droppedIds += declared.length - kept.length;
+        affected++;
+        memory.source_message_ids = kept;
+      }
+      if (droppedIds > 0) {
+        logger?.warn?.(
+          `${TAG} source_message_ids: dropped ${droppedIds} hallucinated id(s) not in current batch across ${affected} memory(ies) (batch ids=${allowedMessageIds.size})`,
+        );
+      }
+    }
+  }
+
   setL1Stage("enrich");
 
   // 后置字段补全：模型有时不吐灵魂字段——用一次 LLM 从 content 抽字段回填（best-effort，绝不阻塞）
@@ -595,6 +624,17 @@ export async function extractL1Memories(params: {
           // 静默忽略，不影响业务逻辑
         }
       }
+
+      // task-9（2026-11-04，来源证据主键）：同源完全覆盖 → store 决策改 update。
+      // 放在 dedup 指标块之后：l1_dedup_* 分布口径逐位不变（只改写入决策，不改统计口径）。
+      await upgradeFullyCoveredStores({
+        memories: memoriesWithIds,
+        decisions,
+        vectorStore: options.vectorStore,
+        // 与 dedup 候选召回同口径：**不带 sessionId**（L1 关联是 agent 维度语义）
+        filter: (teamId || userId || agentId || taskId) ? { teamId, userId, agentId, taskId } : undefined,
+        logger,
+      });
 
       setL1Stage("store");
       storedRecords = await applyDecisions({
@@ -1094,11 +1134,10 @@ export function parseExtractionResult(
                   }
                   const refs = parseCoreRefs(m.coreRefs, valueCandidates);
                   const out: Record<string, unknown> = refs && refs.length > 0 ? { ...base, coreRefs: refs } : { ...base };
-                  // P1-T7：LLM 重要度理由 + 来源标记（仅在分数合法解析时写入——不伪造评分）
+                  // P1-T7：来源标记（仅在分数合法解析时写入——不伪造评分）
+                  // ADR-0025 C5（2026-11-04）：importance_reason 零判定读点（纯审计），停写；
+                  // importance_source 保留（区分 manual/llm，是 /atomic/update 唯一防篡改痕迹）。
                   if (importance !== undefined) {
-                    if (typeof m.importance_reason === "string" && m.importance_reason.trim() !== "") {
-                      out.importance_reason = m.importance_reason;
-                    }
                     out.importance_source = "llm";
                   }
                   // #137 落位：非空短语 → metadata.facts；includeTriples 且非空三元组 → metadata.factTriples
@@ -1117,7 +1156,7 @@ export function parseExtractionResult(
                 valid_end: typeof m.valid_end === "string" ? m.valid_end : undefined,
                 certainty: m.certainty === "inferred" ? "inferred" : "observed",
                 // A8：coreRefs 原样透传（parseCoreRefs 过滤在调用方——候选清单在其作用域）
-                source: typeof m.source === "string" ? m.source : undefined,
+                // ADR-0025 C2：source 列已删，不再透传。
                 // P0-3：情感/重要度三值钳制到合法区间（此前 typeof number 即原样放行）
                 valence: typeof m.valence === "number" ? clampNum(m.valence, -1, 1) : undefined,
                 arousal: typeof m.arousal === "number" ? clampNum(m.arousal, 0, 1) : undefined,
@@ -1281,6 +1320,69 @@ export async function enrichSoulFields(
 }
 
 /**
+ * task-9（2026-11-04，来源证据主键）：同源完全覆盖 → 决策 store 改 update。
+ *
+ * 动机：source_message_ids 此前只写不读（生产当日新增 106 行中 94 行有值、零决策读取）。
+ * 语义：既有行来源集合 ⊇ 新记忆来源集合 = 同一批原话的再提取（不是新事实）——以 update
+ * 取代该行（旧行归档/失效、新行接手来源并集），而不是并排复制一行。
+ * 边界：只改 action==="store"（LLM 已判 update/merge/skip 不动）；新记忆来源为空不反查
+ * （空集被任何集合覆盖，会误吞一切）；多条覆盖取来源集最大者；方法缺失/失败 fail-open。
+ */
+async function upgradeFullyCoveredStores(params: {
+  memories: Array<{ record_id: string; source_message_ids?: string[] }>;
+  decisions: DedupDecision[];
+  vectorStore?: IMemoryStore;
+  filter?: IsolationFilter;
+  logger?: Logger;
+}): Promise<number> {
+  const { memories, decisions, vectorStore, filter, logger } = params;
+  const find = vectorStore?.findL1BySourceMessageIds;
+  if (typeof find !== "function" || decisions.length === 0) return 0;
+  const memoryById = new Map(memories.map((memory) => [memory.record_id, memory]));
+  let upgraded = 0;
+  for (const decision of decisions) {
+    if (decision.action !== "store") continue;
+    const declared = memoryById.get(decision.record_id)?.source_message_ids;
+    const ids = Array.isArray(declared) ? declared.filter((id) => typeof id === "string" && id !== "") : [];
+    if (ids.length === 0) continue;
+    try {
+      const hits = (await find.call(vectorStore, ids, filter)) ?? [];
+      const wanted = new Set(ids);
+      let best: { record_id: string; size: number } | null = null;
+      for (const hit of hits) {
+        if (!hit || hit.record_id === decision.record_id) continue;
+        const existing = new Set(Array.isArray(hit.source_message_ids) ? hit.source_message_ids : []);
+        if (existing.size === 0) continue;
+        let covers = true;
+        for (const id of wanted) {
+          if (!existing.has(id)) {
+            covers = false;
+            break;
+          }
+        }
+        if (!covers) continue;
+        if (!best || existing.size > best.size) best = { record_id: hit.record_id, size: existing.size };
+      }
+      if (best) {
+        decision.action = "update";
+        decision.target_ids = [best.record_id];
+        upgraded++;
+      }
+    } catch (err) {
+      logger?.warn?.(
+        `${TAG} source-coverage lookup failed (non-fatal, keeping store): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  if (upgraded > 0) {
+    logger?.info?.(
+      `${TAG} source-coverage: ${upgraded}/${decisions.length} store decision(s) upgraded to update (same-source supersede)`,
+    );
+  }
+  return upgraded;
+}
+
+/**
  * Apply batch dedup decisions — write memories according to their decisions.
  */
 async function applyDecisions(params: {
@@ -1411,15 +1513,16 @@ async function applyDecisions(params: {
         // 证据可回溯：邻居解析侧用 getL1ByIdsWithArchive（审计 B3）。
         if (enableMemoryLinks && vectorStore && decision.target_ids.length > 0) {
           try {
-            // G 设计§3/§5 红线：evolve/causal 只允许 observed 层记忆自动建（推断不冒充因果）
+            // G 设计§3/§5 红线：evolve（演进边）只允许 observed 层记忆自动建（推断不冒充因果）
+            // 边型字面量单一源：store/types.ts 的 LINK_TYPES（D 项受控词表）。
             const observedOnly = (record as { certainty?: string }).certainty !== "inferred";
             if (decision.action === "update" && observedOnly) {
-              for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, "evolve", 1);
+              for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, LINK_TYPES.EVOLVE, 1);
             } else if (decision.action === "merge") {
-              for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, "similar", 1);
+              for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, LINK_TYPES.SIMILAR, 1);
             } else if (decision.action === "conflict") {
               // P4：冲突边（矛盾双方都保留），无 observed 限制——冲突是关系事实
-              for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, "conflict", 1);
+              for (const t of decision.target_ids) vectorStore.addLink?.(record.id, t, LINK_TYPES.CONFLICT, 1);
               // GROW-EVO P2（§2.2 方向性守卫）：仅新记忆 observed 才自动失效旧记忆；
               // inferred → 只记 conflict 边（推断不许冒充事实——红线对称应用）。
               // 失效 = 写 valid_end（失效不删除）；best-effort 不阻塞写入。
@@ -1460,7 +1563,7 @@ async function applyDecisions(params: {
           (record as { certainty?: string }).certainty !== "inferred"
         ) {
           try {
-            vectorStore.addLink(record.id, decision.top_candidate.record_id, "similar", decision.top_candidate.score);
+            vectorStore.addLink(record.id, decision.top_candidate.record_id, LINK_TYPES.SIMILAR, decision.top_candidate.score);
             logger?.debug?.(`${TAG} store-decision similar edge: ${record.id} → ${decision.top_candidate.record_id} (score=${decision.top_candidate.score})`);
           } catch (err) {
             logger?.warn?.(`${TAG} store similar edge failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -1554,7 +1657,7 @@ async function storeAllDirectly(
           if (top && aboveThreshold && (top as { certainty?: string }).certainty !== "inferred") {
             try {
               const strength = typeof top.score === "number" ? Math.min(Math.max(top.score, 0), 1) : 0.5;
-              vectorStore?.addLink!(record.id, top.record_id, "similar", strength);
+              vectorStore?.addLink!(record.id, top.record_id, LINK_TYPES.SIMILAR, strength);
             } catch (err) {
               logger?.warn?.(`${TAG} top-1 similar edge failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
             }

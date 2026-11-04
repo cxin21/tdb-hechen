@@ -68,13 +68,14 @@ let stallSkips = 0; // 连续跳过计数：≥10 次 warn 一次（互斥引入
 export function mapL1RowToRecord(r: Record<string, unknown>): Record<string, unknown> {
   const rec = r as {
     record_id?: string; team_id?: string; user_id?: string; agent_id?: string; task_id?: string;
-    timestamp_start?: string; timestamp_str?: string; occurred_at?: string; metadata?: object; metadata_json?: string;
+    timestamp_str?: string; occurred_at?: string; metadata?: object; metadata_json?: string;
   };
   const parsedMeta = (() => {
     try { return JSON.parse(rec.metadata_json ?? "{}") as Record<string, unknown>; } catch { return {}; }
   })();
   const derived: Record<string, unknown> = {};
-  if (rec.timestamp_start) derived.activity_start_time = rec.timestamp_start;
+  // ADR-0025 C3：timestamp_start 列已删 → 左端语义取 timestamp_str（存量里两者逐位相等）。
+  if (rec.timestamp_str) derived.activity_start_time = rec.timestamp_str;
   if (rec.occurred_at) derived.occurred_at = rec.occurred_at;
   return {
     ...rec,
@@ -83,7 +84,7 @@ export function mapL1RowToRecord(r: Record<string, unknown>): Record<string, unk
     userId: rec.user_id,
     agentId: rec.agent_id,
     taskId: rec.task_id,
-    timestamps: [rec.timestamp_start ?? rec.timestamp_str ?? ""].filter(Boolean),
+    timestamps: [rec.timestamp_str ?? ""].filter(Boolean),
     metadata: {
       ...parsedMeta,
       ...(rec.metadata ?? {}), // 保留行上原有 metadata 字段（非 store 裸行来源兼容）

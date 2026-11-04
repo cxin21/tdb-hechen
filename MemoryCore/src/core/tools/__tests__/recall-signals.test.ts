@@ -166,14 +166,19 @@ describe("structuralSignalOf 关断矩阵（全 0 → 恒 0）", () => {
       moodBoost: 0,
       // R10（REG-R10-AB-001）：情感显著度信号默认关断（A/B 未过不得置正，实验轨红线）。
       emotionSalienceWeight: 0,
-      // D-3（R11）：敏感降权默认关断（gated，缺省 0=逐位现状）。
-      sensitivityPenalty: 0,
       // P1-T7：重要度降权默认关断（gated，缺省 0=逐位现状）。
       importancePenalty: 0,
       // #135 R3：查询时间感知默认关断（gated，缺省 0=逐位现状；先测后开）。
       presentTemporalBoost: 0,
       presentTemporalDays: 30,
     });
+  });
+});
+
+describe("D-3 遗留乘子删除（属性改作注入门）", () => {
+  it("sensitivityMultiplierOf 不再导出（排序侧无 sensitivity 降权通道）", async () => {
+    const mod = (await import("../recall-signals.js")) as Record<string, unknown>;
+    expect(mod.sensitivityMultiplierOf).toBeUndefined();
   });
 });
 

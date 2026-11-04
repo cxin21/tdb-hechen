@@ -15,6 +15,8 @@ import type { MemoryRecord, MemoryType, EpisodicMetadata } from "./l1-writer.js"
 import type { IMemoryStore, L1RecordRow, L1QueryFilter } from "../store/types.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
+// 灵魂列 / JSON 列的读侧归一化：与 sqlite.getL1ByIds 共用同一实现（禁止两处各写一套）。
+import { optionalNumber, optionalText, parseSourceMessageIds } from "../store/l1-column-coerce.js";
 
 // Re-export types that readers need
 export type { MemoryRecord, MemoryType, EpisodicMetadata } from "./l1-writer.js";
@@ -63,11 +65,12 @@ function rowToMemoryRecord(row: L1RecordRow): MemoryRecord {
     // malformed JSON — use empty object
   }
 
-  // Reconstruct timestamps array from timestamp_start / timestamp_end
+  // Reconstruct timestamps array from timestamp_str / timestamp_end
+  // ADR-0025 C3（2026-11-04）：timestamp_start 列已删（与 timestamp_str 4225/4225 逐位相等），
+  // 不再参与重建——左端语义由 timestamp_str 唯一承担，对外时序数组逐位不变。
   const timestamps: string[] = [];
   if (row.timestamp_str) timestamps.push(row.timestamp_str);
-  if (row.timestamp_start && row.timestamp_start !== row.timestamp_str) timestamps.push(row.timestamp_start);
-  if (row.timestamp_end && row.timestamp_end !== row.timestamp_str && row.timestamp_end !== row.timestamp_start) {
+  if (row.timestamp_end && row.timestamp_end !== row.timestamp_str) {
     timestamps.push(row.timestamp_end);
   }
 
@@ -77,7 +80,8 @@ function rowToMemoryRecord(row: L1RecordRow): MemoryRecord {
     type: row.type as MemoryType,
     priority: row.priority,
     scene_name: row.scene_name,
-    source_message_ids: [], // not stored in SQLite (vector search doesn't need them)
+    // 2026-11-04：行级原话溯源已落库（TEXT JSON 数组）。此前恒为 [] 使读回链丢掉证据引用。
+    source_message_ids: parseSourceMessageIds(row.source_message_ids),
     metadata,
     timestamps,
     createdAt: row.created_time,
@@ -89,7 +93,20 @@ function rowToMemoryRecord(row: L1RecordRow): MemoryRecord {
     teamId: row.team_id,
     userId: row.user_id,
     agentId: row.agent_id,
-    valid_end: row.valid_end || undefined,
+    // ── 灵魂字段补映射（2026-11-04）：此前只映射了 valid_end，导致 SQLite 读回比
+    // JSONL 少 9 个字段，消费方（编辑/审计/面板）拿到 undefined 而误判"未填"。
+    // 口径：空串/NULL/NaN → undefined（不是 0 / ''）；0 是真值，保持 0。
+    occurred_at: optionalText(row.occurred_at),
+    valid_start: optionalText(row.valid_start),
+    valid_end: optionalText(row.valid_end),
+    // 枚举只有两值；库里的其它字符串按"未填"处理（宁缺毋滥，不伪造判定）。
+    certainty: row.certainty === "observed" || row.certainty === "inferred" ? row.certainty : undefined,
+    // ADR-0025 C2：L1 source 列已删，此处不再映射（MemoryRecord.source 保留为兼容字段，恒 undefined）。
+    valence: optionalNumber(row.valence),
+    arousal: optionalNumber(row.arousal),
+    significance: optionalNumber(row.significance),
+    sensitivity: optionalText(row.sensitivity),
+    importance: optionalNumber(row.importance),
   };
 }
 

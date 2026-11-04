@@ -78,7 +78,7 @@ describe('buildSoulView', () => {
       valid_start: '2026-09-01T00:00:00Z',
       valid_end: '2026-10-01T00:00:00Z',
       certainty: 'inferred',
-      source: 'distill',
+      sensitivity: 'health',
       valence: 0.8,
       arousal: 0.5,
       significance: 0.9,
@@ -98,7 +98,10 @@ describe('buildSoulView', () => {
     expect(view.significancePct).toBe(90);
     expect(view.certaintyKind).toBe('inferred');
     expect(view.certaintyLabel).toBe('推断');
-    expect(view.source).toBe('distill');
+    // D-3：敏感度是注入门判据，视图必须解析出档位与档位值
+    // P0（task-10）：label 只放裸值，字段译名由展示层 attrLabel('sensitivity') 拼
+    expect(view.sensitivityKind).toBe('health');
+    expect(view.sensitivityLabel).toBe('健康');
     expect(view.coreRefs).toEqual(['正确', '私有部署']);
     expect(view.recallCount).toBe(3);
     expect(view.lastRecalledText).not.toBeNull();

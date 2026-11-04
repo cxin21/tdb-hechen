@@ -16,14 +16,17 @@
 import path from "node:path";
 import { parentPort } from "node:worker_threads";
 
-// B2a/B2-b bench 提速（仅环境变量显式开启时生效，生产默认关闭）：
-// - RERANK_THREADS>0 → onnx session intra_op_num_threads（onnxruntime-node q8 默认线程扩展性差）
-// - RERANK_DOC_CAP>0 → 精排打分前截断每条文档到 N 字符（相关性信号主要在行首；
-//   A/B 全档一致截断保证对比公平，生产行短不受影响）
-const RERANK_THREADS = Number(process.env.RERANK_THREADS ?? "0") || 0;
-const RERANK_DOC_CAP = Number(process.env.RERANK_DOC_CAP ?? "0") || 0;
+// 推理参数（2026-11-04 实测标定，缺省即最优点，零配置）：
+// - intra_op_num_threads：实测 1/2/4/8 线程 = 3257/1939/3245/3850ms（32 候选 × 400 字符），2 是唯一收益档。
+// - docCap：耗时随「候选数 × 文档前缀长度」线性增长，1200 字符以上撞 tokenizer 512-token 截断后不再增长；
+//   生产 L1 行 p50=497 字符（bench 库 1591 条实测），截到 320 字符 → ≈1.6s。
+// 下发优先级：workerData.tuning（./tuning.ts 单点定义）> 环境变量（仅 A/B 复现用）> 内置缺省。
+const { workerData } = await import("node:worker_threads"); // 必须先于下方常量（TDZ）
 
-const { workerData } = await import("node:worker_threads");
+const ENV_THREADS = Number(process.env.RERANK_THREADS ?? "0") || 0;
+const ENV_DOC_CAP = Number(process.env.RERANK_DOC_CAP ?? "0") || 0;
+const RERANK_THREADS = Number(workerData?.tuning?.threads ?? "0") || ENV_THREADS || 2;
+const RERANK_DOC_CAP = Number(workerData?.tuning?.docCap ?? "0") || ENV_DOC_CAP || 320;
 
 const modelLib = workerData?.transformersEntryUrl
   ? await import(workerData.transformersEntryUrl)
@@ -47,7 +50,7 @@ parentPort.on("message", async (msg) => {
         dtype: "q8",
         ...(RERANK_THREADS > 0
           ? { session_options: { intra_op_num_threads: RERANK_THREADS } }
-          : {}),
+          : {}), // 缺省 2（实测最优）；0 只用 env 显式关闭时才可能出现
       });
       parentPort.postMessage({ type: "loaded" });
       return;

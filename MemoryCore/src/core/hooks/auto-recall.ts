@@ -39,7 +39,9 @@ import {
   applyCompositeRerank,
   applyExploreSlot,
   DEFAULT_COMPOSITE_WEIGHTS,
+  gateSensitivityForInjection,
   type CompositeWeights,
+  type SensitivityObservation,
 } from "../tools/memory-search.js";
 import {
   expandQuery,
@@ -48,11 +50,25 @@ import {
   resolveQueryExpansionRunner,
 } from "../recall/query-expand.js";
 import { PPR_DEFAULTS, runPPRDetail } from "../recall/ppr.js";
-import { emotionSalienceOf, buildRankContext,
+// D-3（ADR-0025 决定 4）：sensitivity = 注入门（不是排序乘子）。纯函数，零 DB/时钟。
+import {
+  audienceOfOwnerScope,
+  countBlockedByReason,
+  decideDerivedInjection,
+  decideSensitivityInjection,
+  isSensitiveRecord,
+  resolveAudience,
+  type RecallAudience,
+  type SensitivityBlockReason,
+  type SensitivityDecision,
+} from "../recall/sensitivity-policy.js";
+import { DEFAULT_ISOLATION_ID } from "../store/isolation.js";
+import {
+  emotionSalienceOf,
+  buildRankContext,
   certaintyMultiplierOf,
   importanceMultiplierOf,
   importanceGateStats,
-  sensitivityMultiplierOf,
   DEFAULT_RANK_SIGNALS,
   detectPresentTemporalIntent,
   detectHistoryTemporalIntent,
@@ -64,7 +80,8 @@ import { emotionSalienceOf, buildRankContext,
   type RankSignalItem,
   type RankSignals,
   type RecallJournalImportanceGateSpec,
-  type ValueRowLike, } from "../tools/recall-signals.js";
+  type ValueRowLike,
+} from "../tools/recall-signals.js";
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { collapseFactRowsByTurn } from "../recall/fact-turn.js";
 import { readEvidenceIds } from "../lifecycle/evidence-ids.js";
@@ -73,6 +90,7 @@ import { anchorRerankOrder } from "../recall/rerank/anchor.js";
 import {
   excludeInvalidatedFor,
   resolveSoftValidityPenalty,
+  applyKeptOrder,
   selectByValidity,
   shouldHardDropValidity,
   validityEnabled,
@@ -117,6 +135,7 @@ import { MEMORY_TOOLS_GUIDE } from "../prompts/memory-tools-guide.js";
 import { EVIDENCE_PACK_BADGE, evidencePackConfigOf, selectEvidencePackNeighbors } from "../recall/evidence-pack.js";
 import { sortLinesByLeadingTimestamp } from "./inject-order.js";
 import type { MemoryReranker, RerankResult } from "../recall/rerank/types.js";
+import { rerankWithinBudget } from "../recall/rerank/score-budget.js";
 import { parseTimeWindow, type TimeWindow } from "../tools/content-time-window.js";
 import { sanitizeText } from "../../utils/sanitize.js";
 import {
@@ -127,7 +146,7 @@ import {
   formatConclusionLine,
   parseFtsTokens,
   resolveIdempotentConclusionLines,
-  selectL2Conclusions,
+  selectL2ConclusionsDetailed,
   splitBudget,
   truncateConclusionContent,
   truncateConclusionContentSentences,
@@ -141,7 +160,12 @@ import { runInjectionSelection } from "../recall/selection/injection-wiring.js";
 import type { InjectionStageOutcome } from "../recall/selection/injection-stage.js";
 import { createScopedStorageAdapter, type StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
-import { DEFAULT_PROFILE_SCOPE, buildProfileIsolationScope, type ProfileIsolation } from "../profile/profile-sync.js";
+import {
+  DEFAULT_PROFILE_SCOPE,
+  buildProfileIsolationScope,
+  buildProfileStableId,
+  type ProfileIsolation,
+} from "../profile/profile-sync.js";
 import type { Logger } from "../types.js";
 import type { SoulRenderOptions } from "./soul-assembler.js";
 import type { SoulState } from "./soul-state.js";
@@ -164,8 +188,18 @@ const TAG = "[memory-tdai] [recall]";
 
 /** #136：软失效硬丢前的"取代者"相关性判定用停用词（高频但不承载事实的词）。 */
 const RELATED_STOPWORDS = new Set([
-  "user", "users", "have", "that", "this", "with", "their", "from", "about",
-  "记忆", "用户", "条目",
+  "user",
+  "users",
+  "have",
+  "that",
+  "this",
+  "with",
+  "their",
+  "from",
+  "about",
+  "记忆",
+  "用户",
+  "条目",
 ]);
 
 /**
@@ -253,9 +287,8 @@ function orderedCoverageRatio(smallSeq: string[], bigSeq: string[]): number {
 
 export function foldNearDuplicates(lines: string[], thresholdOrOptions: number | FoldNearDupOptions = 0.25): string[] {
   const legacyThreshold = typeof thresholdOrOptions === "number" ? thresholdOrOptions : undefined;
-  const containment = typeof thresholdOrOptions === "object"
-    ? Math.min(1, Math.max(0.5, thresholdOrOptions.containment ?? 0.9))
-    : 0.9;
+  const containment =
+    typeof thresholdOrOptions === "object" ? Math.min(1, Math.max(0.5, thresholdOrOptions.containment ?? 0.9)) : 0.9;
   const sessionOf = typeof thresholdOrOptions === "object" ? thresholdOrOptions.sessionOf : undefined;
   // 阈值 0.25 实测校准（2026-09-15）：重复组内 pairwise Jaccard 0.36-0.49，
   // 非重复 ≤0.04 —— 9 倍分离度。0.6 会被转述措辞稀释（实测 4 重复全部漏过）。
@@ -511,6 +544,19 @@ export async function performAutoRecall(params: {
   storage?: StorageAdapter;
   /** L2/L3 profile scope. Defaults to the standalone default team and agent. */
   profileIsolation?: ProfileIsolation;
+  /**
+   * 可选租户收窄（L1/L0 候选池）。缺省 = 旧行为逐位（钩子路是全局池）。
+   *
+   * 为什么要显式声明：ADR-0025 决定 4 的敏感度注入门按**池归属**推导可见性
+   *（recall/sensitivity-policy.ts audienceOfOwnerScope）——只有「池按 userId 收窄且
+   * userId ≠ DEFAULT_ISOLATION_ID」才是可证的私有上下文。钩子链不传本字段时归属恒
+   * undeclared，sensitivity≠none 的行一律不注入（fail-closed）。
+   *
+   * 生产 dsh-plugin 走 /v3/recall（恒带三元组头），本字段供 /v3/recall 兼容路由与
+   * 自建宿主把同一语义接到钩子路径；此前运行时已通过 `{ ...params }` 透传生效，只是
+   * 类型上没有声明——把它补成契约，避免「能生效但不在接口上」的暗开关。
+   */
+  isolationFilter?: IsolationFilter;
 }): Promise<RecallResult | undefined> {
   const { cfg, logger } = params;
   const timeoutMs = cfg.recall.timeoutMs ?? 5000;
@@ -552,9 +598,11 @@ export async function performAutoRecall(params: {
  * 提取铁律（spec §4.1 / 验收 2）：只提取编排，不改行为——钩子路径输出与提取前逐位一致；
  * 检索层零触碰（打分/门槛/RRF/字典序——5fc7962 语义原样复用）。
  *
- * isolationFilter（可选租户收窄）：钩子路径不传（undefined = 旧行为逐位——auto-recall
- * L1 召回本就是全局路径）；/v3/recall 端点传请求的三元组隔离（(team,user,agent[,task])，
- * 与 /v3/atomic/search 的 handleAtomicSearch 同形）。透传只收窄候选集（store 层既有
+ * isolationFilter（可选租户收窄）：缺省 undefined = 旧行为逐位（auto-recall L1 召回
+ * 本就是全局路径）；/v3/recall 端点传请求的三元组隔离（(team,user,agent[,task])，
+ * 与 /v3/atomic/search 的 handleAtomicSearch 同形）；钩子链（performAutoRecall）现在
+ * 也接受同一字段并原样透传——生产 dsh-plugin 走 /v3/recall，兼容路由把三元组头接进钩子
+ * 时才有值。透传只收窄候选集（store 层既有
  * IsolationFilter 能力，P2-T14 家族），不改任何打分/排序语义。
  */
 export interface LayeredRecallOutcome {
@@ -787,10 +835,30 @@ async function applyRecallRerank(
   if (wiring.state === "off") return;
   const lines = searchResult.lines;
   if (lines.length === 0) return;
+  // 精排文档 = 剥离注入元数据后的纯内容（tag/·soul/·(活动时间) 不参与语义打分）；
+  // 剥空则退回原行（防全元数据行变空串）。工作量的两个口径在这里先算好：
+  // 池子口径（poolDocs/poolChars）给降级 gate 用，实际送评口径（scoredDocs/scoredChars）
+  // 在滚动预算停下后覆盖——两者不区分会把「没送评的候选」算成已评分，归因失真。
+  const docs = lines.map((l) => stripMemoryLineMeta(l) || l);
+  const poolChars = docs.reduce((n, d) => n + d.length, 0);
+  let scoredDocs = docs.length;
+  let scoredChars = poolChars;
+  /** 预热耗时（含模型加载；冷启动 ≈0.9s）——单列出来才能证明「加载没吃打分预算」。
+   *  必须声明在 degradeGate 之前：provider 不可用/熔断开启都会在 warmup 之前就调它（TDZ 实测踩过）。 */
+  let warmupMs = 0;
   const degradeGate = (ms: number): void => {
     searchResult.gates = {
       ...searchResult.gates,
-      rerank: { provider: wiring.provider, ms, kept: lines.length, dropped: 0 },
+      rerank: {
+        provider: wiring.provider,
+        ms,
+        ...(warmupMs >= 1 ? { warmupMs: Math.round(warmupMs) } : {}),
+        kept: lines.length,
+        dropped: 0,
+        docs: scoredDocs,
+        chars: scoredChars,
+        ...(docs.length > scoredDocs ? { unscored: docs.length - scoredDocs } : {}),
+      },
     };
   };
   if (wiring.state === "unavailable") {
@@ -804,13 +872,33 @@ async function applyRecallRerank(
     degradeGate(0);
     return;
   }
-  // 精排文档 = 剥离注入元数据后的纯内容（tag/·soul/·(活动时间) 不参与语义打分）；
-  // 剥空则退回原行（防全元数据行变空串）。
-  const docs = lines.map((l) => stripMemoryLineMeta(l) || l);
+  // 2026-11-04：本地 provider 走**滚动打分预算**（见 rerank/score-budget.ts 的取证与理由）——
+  // 一次性整池打分的尾延迟由「池子多大 + 机器多忙」决定（p50 0.3s / p95 1.6–2.5s，压测里还会打穿
+  // 推理硬预算返回 null）；改按 4 条一块、总预算 400ms（单块再套 250ms 宽限），到点即停，
+  // 剩余候选按融合原序垫尾。
+  // 云 provider 保持单次调用（延迟由网络 RTT 主导，拆块只多付 RTT）。
   const t0 = performance.now();
   let ranked: RerankResult[] | null = null;
+  /** 本次是否因调用方预算到点放弃（≠ provider 故障，不推熔断）。 */
+  let softTimedOut = false;
   try {
-    ranked = await reranker.rerank(query, docs);
+    if (wiring.provider !== "local") {
+      ranked = await reranker.rerank(query, docs);
+    } else {
+      // 冷启动（≈0.9s）必须先做掉，否则首块 400ms 预算必被判超时 → 整题丢精排。
+      const tw = performance.now();
+      await reranker.warmup?.();
+      warmupMs = performance.now() - tw;
+      // 注：超时后**不**去终止在途推理（推理中 terminate onnx worker 会原生崩溃带走进程），
+      // 被放弃的那一块自然跑完后丢弃，代价是「一块的延迟记到下一题头上」，与整进程崩溃相比可接受。
+      const out = await rerankWithinBudget(docs, (batch) => reranker.rerank(query, batch));
+      ranked = out.ranked;
+      softTimedOut = out.timedOut === true;
+      if (out.ranked !== null) {
+        scoredDocs = out.scoredDocs;
+        scoredChars = out.scoredChars;
+      }
+    }
   } catch (err) {
     logger?.warn?.(
       `${TAG} [rerank] provider=${wiring.provider} 抛错（${err instanceof Error ? err.message : String(err)}），降级原序`,
@@ -819,8 +907,13 @@ async function applyRecallRerank(
   }
   const ms = performance.now() - t0;
   if (ranked === null) {
-    breaker.recordFailure();
-    logger?.warn?.(`${TAG} [rerank] provider=${wiring.provider} 返回 null，降级原序`);
+    // 调用方主动放弃（预算到点）不算 provider 故障：推熔断会让后续题全部跳过精排。
+    if (softTimedOut) {
+      logger?.debug?.(`${TAG} [rerank] provider=${wiring.provider} 本块预算到点（调用方放弃），本轮回退原序`);
+    } else {
+      breaker.recordFailure();
+      logger?.warn?.(`${TAG} [rerank] provider=${wiring.provider} 返回 null，降级原序`);
+    }
     degradeGate(ms);
     return;
   }
@@ -829,7 +922,8 @@ async function applyRecallRerank(
   const seen = new Set<number>();
   const clean: RerankResult[] = [];
   for (const r of ranked) {
-    if (!r || !Number.isFinite(r.score) || !Number.isInteger(r.index) || r.index < 0 || r.index >= lines.length) continue;
+    if (!r || !Number.isFinite(r.score) || !Number.isInteger(r.index) || r.index < 0 || r.index >= lines.length)
+      continue;
     if (seen.has(r.index)) continue;
     seen.add(r.index);
     clean.push({ index: r.index, score: r.score });
@@ -897,7 +991,11 @@ async function applyRecallRerank(
     // 锚点只在「融合 top-1 自己过了 floor」时生效——floor（minScore）语义不被锚点绕过。
     if (capInner > 0 && lines.length > 1 && passIdxs.includes(0)) {
       const anchored = anchorRerankOrder(passIdxs, capInner);
-      if (anchored[0] !== passIdxs[0] || anchored.length !== passIdxs.length || !passIdxs.slice(0, capInner).includes(0)) {
+      if (
+        anchored[0] !== passIdxs[0] ||
+        anchored.length !== passIdxs.length ||
+        !passIdxs.slice(0, capInner).includes(0)
+      ) {
         anchorForced = !passIdxs.slice(0, capInner).includes(0);
       }
       passIdxs = anchored;
@@ -933,13 +1031,31 @@ async function applyRecallRerank(
     }
   }
   const final = finalIdxs.slice(0, Math.max(cap, 0));
+  // 2026-11-03（rerank 轮，三臂实测定案）：**精排定集合、融合定呈现**。
+  // 机制：rerank 档的「集合」不比融合序差（LME90 逐题账里 gold 行在精排序 #3~#6、在融合序 #1~#2，
+  // 两臂都在集合内），但**块内位置**决定作答模型的注意力——精排把决定性证据从头部推到中部后，
+  // 模型改从头部噪声行作答（gpt4_8c8961ae/1d80365e/93f6379c 等 5 例 LOSS 同形态）。
+  // 因此精排只负责「取舍」（成员与 cap），呈现顺序回到融合序（下标升序=原融合名次）。
+  // filter 档本来就是原序，不受影响；rerank-off 不进本函数 ⇒ 逐位不变。
+  // 2026-11-03（本会话四臂实测定案，LME90 同 judge）：
+  //   rerank-on 纯精排序 66/90 → 换成「集合由精排定、呈现回融合序」72/90（vs 精排档互比 9 胜 3 负），
+  //   且检索指标从 turnCov 87.7% 升到 91.6%、sessionCov 96.1%→98.9%（MRR 0.774 / nDCG 0.837 全臂最高）。
+  // 结论：交叉编码器在本库上「会挑集合、不会排序次」——它的分序把决定性证据从头部推到中部
+  // （gpt4_8c8961ae / gpt4_1d80365e / gpt4_93f6379c 等 9 例同形态），而融合序（向量+BM25+事实通道+
+  // 时效）才是块内注意力的正确先验。故精排只负责成员取舍，呈现顺序恒回融合序（下标升序）。
+  const presentIdxs = wiring.mode === "filter" ? final : final.slice().sort((a, b) => a - b);
   searchResult.gates = {
     ...searchResult.gates,
     rerank: {
       provider: wiring.provider,
       ms,
+      // 预热（模型加载）单列：ms 含它，但打分预算不含——不拆开看会把冷启动误读成精排慢。
+      ...(warmupMs >= 1 ? { warmupMs: Math.round(warmupMs) } : {}),
       kept: final.length,
       dropped: lines.length - final.length,
+      docs: scoredDocs,
+      chars: scoredChars,
+      ...(docs.length > scoredDocs ? { unscored: docs.length - scoredDocs } : {}),
       ...(clean.length > 0 ? { topScore: clean[0].score } : {}),
       ...(logitScale
         ? {
@@ -961,6 +1077,8 @@ async function applyRecallRerank(
       ...(anchorForced ? { anchor: true } : {}),
       ...(floorToppedUp > 0 ? { floorToppedUp } : {}),
       ...(mmr?.enabled ? { mmr: { lambda: mmr.lambda, ms: Math.round(mmrMs) } } : {}),
+      // 2026-11-03：呈现顺序归融合序（集合仍由精排决定）——归因用。
+      ...(wiring.mode === "filter" ? {} : { presentation: "fusion" as const }),
     },
   };
   // #144：候选分数转储（诊断；未设 RERANK_SCORE_DUMP 时零开销）。必须在 metas/lineSessions
@@ -990,11 +1108,11 @@ async function applyRecallRerank(
       ...(degraded ? { degraded } : {}),
     });
   }
-  searchResult.lines = final.map((i) => lines[i]);
-  if (searchResult.scores) searchResult.scores = final.map((i) => searchResult.scores![i]);
-  if (searchResult.metas) searchResult.metas = final.map((i) => searchResult.metas![i]);
+  searchResult.lines = presentIdxs.map((i) => lines[i]);
+  if (searchResult.scores) searchResult.scores = presentIdxs.map((i) => searchResult.scores![i]);
+  if (searchResult.metas) searchResult.metas = presentIdxs.map((i) => searchResult.metas![i]);
   // #162：来源会话必须与 lines 同步重映射，否则折叠期的「同会话免疫」会张冠李戴。
-  if (searchResult.lineSessions) searchResult.lineSessions = final.map((i) => searchResult.lineSessions![i]);
+  if (searchResult.lineSessions) searchResult.lineSessions = presentIdxs.map((i) => searchResult.lineSessions![i]);
 }
 
 /**
@@ -1104,9 +1222,10 @@ export async function performLayeredRecall(params: {
   const profileDataDir = isScopedProfile
     ? path.join(pluginDataDir, "profiles", encodeURIComponent(profileScope))
     : pluginDataDir;
-  const profileStorage = storage && isScopedProfile
-    ? createScopedStorageAdapter(storage, `profiles/${encodeURIComponent(profileScope)}/`)
-    : storage;
+  const profileStorage =
+    storage && isScopedProfile
+      ? createScopedStorageAdapter(storage, `profiles/${encodeURIComponent(profileScope)}/`)
+      : storage;
 
   // ── R7：scene index 一次读取，两处消费 ──
   // ① L2 结论层 scene_block 候选（title+snippet 通道，需在 L1 检索前就位）；
@@ -1130,6 +1249,8 @@ export async function performLayeredRecall(params: {
   let experienceCount = 0;
   let sessionReused = false;
   let layered = false;
+  /** 缺口 B 观测：本轮 L2 场景块触发词命中（undefined = 无命中，journal 不写字段）。 */
+  let layeredKeywordHits: { blocks: number; keywords: string[] } | undefined;
   // 立项③：灵魂指纹（函数级——hook/端点双路共享）
   let soulVersion: string | undefined;
   /** S-FEEL-1（M1）：近期情绪基调档位（enabled=false 或样本不足=undefined=meta 不出键）。 */
@@ -1166,13 +1287,15 @@ export async function performLayeredRecall(params: {
     // user 侧事实——卡与查询词面重合却不含答案，注入只挤掉答案轮（cov 80→66.7、判对 93.3→80）。
     // 判定纯规则（query-intent.ts）；路由命中时结论层零候选、零 store 调用，预算全给经验层。
     // #141：intent 路由把 assistant-recall 也并进同一张策略表（INTENT_POLICY 里预算 0）。
-    const r7ConclusionRoutingOff = (r7RoutingMode === "assistantRecall" && isAssistantRecallQuery(r7CleanQuery))
-      || r7Intent === "assistant-recall";
+    const r7ConclusionRoutingOff =
+      (r7RoutingMode === "assistantRecall" && isAssistantRecallQuery(r7CleanQuery)) || r7Intent === "assistant-recall";
     const r7Candidates: L2ConclusionCandidate[] = [];
     let r7Conclusions: L2ConclusionCandidate[] = [];
     // R71（2026-10-19）：结论层双门 gate 观测（A1 地板 / A2 rerank 门）——入 journal gates
     let r71Bm25Gate: RecallJournalGates["conclusionBm25"] | undefined;
     let r71ConclusionRerankGate: RecallJournalGates["conclusionRerank"] | undefined;
+    // P0-1（2026-11-04）：结论层敏感门观测（只在真拦下东西时才有值——全放行不塞噪声）
+    let r7ConclusionSensitivityGate: RecallJournalGates["sensitivityConclusions"] | undefined;
     if (r7ConclusionRoutingOff) {
       logger?.debug?.(
         `${TAG} [layered] #138 routing: assistantRecall query -> skip conclusion layer (full experience budget)`,
@@ -1213,6 +1336,8 @@ export async function performLayeredRecall(params: {
                   content: r.content,
                   source: "work_fact",
                   recordId: r.record_id,
+                  // P0-1：行级 sensitivity 随候选透传（同一行同一列，结论层门与经验层门同源）
+                  ...(typeof r.sensitivity === "string" ? { sensitivity: r.sensitivity } : {}),
                   ...(r71Bm25Rel !== undefined ? { bm25Rel: r71Bm25Rel } : {}),
                 });
               }
@@ -1235,7 +1360,17 @@ export async function performLayeredRecall(params: {
           logger?.debug?.(`${TAG} [layered] scene_block gate rejected "${e.filename}" (identity gate)`);
           continue;
         }
-        r7Candidates.push({ sceneName: e.filename.replace(/\.md$/i, ""), content: e.summary, source: "scene_block" });
+        // 缺口 B：触发词随候选透传（META keywords → 注入侧条件必注入）。
+        // 空数组/缺省 = 该块只走旧的语义双通道，行为逐位不变。
+        r7Candidates.push({
+          sceneName: e.filename.replace(/\.md$/i, ""),
+          content: e.summary,
+          source: "scene_block",
+          // P0-1：溯源 id——与 profile-sync 写 derived_from 边时同一个稳定 id（唯一真源），
+          // 结论层敏感门据此回到该块蒸馏过的行（见 sensitivity-policy.decideDerivedInjection）。
+          provenanceId: buildProfileStableId(profileScope, "l2", e.filename),
+          ...(Array.isArray(e.keywords) && e.keywords.length > 0 ? { keywords: e.keywords } : {}),
+        });
       }
       // ── R71-A1（2026-10-19）：work_fact 候选 bm25 rel 预地板（纯分数统计，零词表）──
       // #99 F2（2026-10-25）：绝对地板相对化——BM25 分数是语料相对值（corpus statistics，
@@ -1298,7 +1433,8 @@ export async function performLayeredRecall(params: {
       // 只在 enforce 生效——shadow 的观测面在注入装配层，那里一次能看到所有层的行；
       // 结论层分数是 IDF 而不是余弦，所以地板恒 null（相似度地板对结论层无意义）。
       const layerRulerCfg = cfg.recall?.layerRuler;
-      r7Conclusions = selectL2Conclusions(
+      // 缺口 B：改用 detailed 版以读取 keywordTriggered 可观测计数（selected 逐位一致）。
+      const r7Selection = selectL2ConclusionsDetailed(
         r7CleanQuery,
         r7Candidates,
         {
@@ -1318,14 +1454,30 @@ export async function performLayeredRecall(params: {
         },
         r7HalfLimit,
       );
+      r7Conclusions = r7Selection.selected;
+      if (r7Selection.keywordTriggered) {
+        // 同一份计数既进 debug 日志也进 journal（本人只读观测面）；两条留痕同源，禁各写一份。
+        layeredKeywordHits = {
+          blocks: r7Selection.keywordTriggered.blocks,
+          keywords: r7Selection.keywordTriggered.keywords.flat(),
+        };
+        logger?.debug?.(
+          `${TAG} [layered] scene keywords triggered=${r7Selection.keywordTriggered.blocks} keywords=${r7Selection.keywordTriggered.keywords.flat().join(",")}`,
+        );
+      }
       // ── V2-3（引擎三 E3.2 结论层放宽）：分析型 query → L2 结论层追加 "significance top-5
       // 的 durative 结论"（无需 scene/text 命中——蒸馏结论对分析问题浮出）。数据源 =
       // store.searchL1ByType("work_fact", 5)（significance DESC；可选方法 feature-detect——
       // 未实现的后端通道退出，宁缺毋滥降级）。非分析型 / 开关关断 → 现状逐位。 ──
-      if (cfg.recall?.conclusionRelaxedForAnalytical !== false && isAnalyticalQuery(r7CleanQuery) &&
-          vectorStore && typeof vectorStore.searchL1ByType === "function") {
+      if (
+        cfg.recall?.conclusionRelaxedForAnalytical !== false &&
+        isAnalyticalQuery(r7CleanQuery) &&
+        vectorStore &&
+        typeof vectorStore.searchL1ByType === "function"
+      ) {
         try {
-          const relaxedRows = ((await vectorStore.searchL1ByType("work_fact", 5, params.isolationFilter)) ?? []) as L1SearchResult[];
+          const relaxedRows = ((await vectorStore.searchL1ByType("work_fact", 5, params.isolationFilter)) ??
+            []) as L1SearchResult[];
           const selectedIds = new Set(r7Conclusions.map((c) => c.recordId).filter((id): id is string => !!id));
           const relaxed: L2ConclusionCandidate[] = [];
           for (const r of relaxedRows) {
@@ -1346,6 +1498,7 @@ export async function performLayeredRecall(params: {
               content: r.content,
               source: "work_fact",
               recordId: r.record_id,
+              ...(typeof r.sensitivity === "string" ? { sensitivity: r.sensitivity } : {}),
             });
           }
           if (relaxed.length > 0) {
@@ -1358,6 +1511,75 @@ export async function performLayeredRecall(params: {
           logger?.debug?.(
             `${TAG} [layered] analytical conclusion relaxation unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
           );
+        }
+      }
+      // ── P0-1（2026-11-04 L1 属性复核）：结论层敏感门 ──
+      // 此前结论行是唯一绕开敏感门的注入通道：经验行在 searchHybrid 池内有门、自述行有
+      // filterSelfNarrationLines，而结论行在两道门之后才拼进注入块，且 work_fact 原文直出、
+      // scene_block 摘要直出。生产实测（16 个在场块，4 个含敏感行）证明这条通道是活的。
+      // 门分两档（判定全在 recall/sensitivity-policy.ts，此处只取数与分流）：
+      //   · work_fact：单行原文 ⇒ 与经验行同一谓词 decideSensitivityInjection；
+      //   · scene_block：N 行蒸馏聚合 ⇒ 只能按派生来源判，一次 GROUP BY 取画像
+      //     （store.getDerivedSensitivityStats）；溯源不可判定 ⇒ 非 private 不注入。
+      // 位置选在条数上限之前：被拦行不该占结论预算（名额让给可注入结论）；被拦的
+      // work_fact 行仍有经验层自己的行级门兜底，不会因未进排除集而漏回注入块。
+      {
+        const r7ConclusionSensCtx = audienceOfOwnerScope(
+          { userId: params.isolationFilter?.userId },
+          DEFAULT_ISOLATION_ID,
+        );
+        if (r7Conclusions.length > 0) {
+          const r7SensScanned = r7Conclusions.length;
+          const r7SensByReason: Partial<Record<SensitivityBlockReason, number>> = {};
+          let r7SensBlocked = 0;
+          const r7DerivedIds = [
+            ...new Set(
+              r7Conclusions
+                .filter((c) => c.source === "scene_block" && !!c.provenanceId)
+                .map((c) => c.provenanceId as string),
+            ),
+          ];
+          let r7DerivedStats: Record<string, { targets: number; sensitive: number }> = {};
+          if (r7DerivedIds.length > 0 && vectorStore && typeof vectorStore.getDerivedSensitivityStats === "function") {
+            try {
+              r7DerivedStats = (await vectorStore.getDerivedSensitivityStats(r7DerivedIds)) ?? {};
+            } catch (err) {
+              // 取数失败 = 溯源不可判定（不是"证明干净"）：留空让门走 derived-unknown。
+              logger?.debug?.(
+                `${TAG} [layered] derived sensitivity stats unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+              );
+              r7DerivedStats = {};
+            }
+          }
+          const r7KeptConclusions: L2ConclusionCandidate[] = [];
+          for (const c of r7Conclusions) {
+            const verdict =
+              c.source === "scene_block"
+                ? decideDerivedInjection(
+                    c.provenanceId ? r7DerivedStats[c.provenanceId] : undefined,
+                    r7ConclusionSensCtx,
+                  )
+                : decideSensitivityInjection({ sensitivity: c.sensitivity }, r7ConclusionSensCtx);
+            if (verdict.injectable) {
+              r7KeptConclusions.push(c);
+              continue;
+            }
+            r7SensBlocked += 1;
+            const reason = verdict.blockedBy ?? "unclassified";
+            r7SensByReason[reason] = (r7SensByReason[reason] ?? 0) + 1;
+            logger?.debug?.(
+              `${TAG} [layered] conclusion blocked by sensitivity gate: source=${c.source} reason=${reason} scene="${c.sceneName}"`,
+            );
+          }
+          r7Conclusions = r7KeptConclusions;
+          if (r7SensBlocked > 0) {
+            r7ConclusionSensitivityGate = {
+              audience: resolveAudience(r7ConclusionSensCtx),
+              scanned: r7SensScanned,
+              blocked: r7SensBlocked,
+              byReason: r7SensByReason,
+            };
+          }
         }
       }
       // ── 审查修补 Critical（R7 spec §1 预算模型）：结论侧硬上限 = floor(maxResults/2) ──
@@ -1373,9 +1595,10 @@ export async function performLayeredRecall(params: {
       // #141（2026-10-28）：intent 路由档下策略预算与配置上限取 min（策略表是「按题型」更严的那条）：
       // exact-fact=0（精确事实靠原文行）、temporal/preference=1、update/aggregate=2。
       const r7ConclusionCapCfg = cfg.recall?.conclusionLayer?.maxConclusions ?? r7HalfLimit;
-      const r7ConclusionCap = r7Policy?.conclusionBudget !== undefined
-        ? Math.min(r7ConclusionCapCfg, r7Policy.conclusionBudget)
-        : r7ConclusionCapCfg;
+      const r7ConclusionCap =
+        r7Policy?.conclusionBudget !== undefined
+          ? Math.min(r7ConclusionCapCfg, r7Policy.conclusionBudget)
+          : r7ConclusionCapCfg;
       r7Conclusions = r7Conclusions.slice(0, Math.max(0, r7ConclusionCap));
       if (r7Intent) {
         logger?.debug?.(
@@ -1401,11 +1624,18 @@ export async function performLayeredRecall(params: {
     if (r7PerLineMaxChars > 0) {
       r7Conclusions = r7Conclusions.map((c) => ({
         ...c,
-        content: r7TruncateMode === "sentences"
-          ? truncateConclusionContentSentences(c.content, r7PerLineMaxChars)
-          : truncateConclusionContent(c.content, r7PerLineMaxChars),
+        content:
+          r7TruncateMode === "sentences"
+            ? truncateConclusionContentSentences(c.content, r7PerLineMaxChars)
+            : truncateConclusionContent(c.content, r7PerLineMaxChars),
       }));
     }
+    // 2026-11-03（本会话）：门控前的结论 recordId 快照——enforce 门把结论剔除后，它**不得**
+    // 通过 L1 搜索原路重新进入经验层（下面 excludeIds 必须用快照，而不是门控后的列表；
+    // 否则被门判死的结论会以"普通行"身份回到注入块，门等于没生效）。
+    const r7ConclusionExcludeIdsBeforeGate = r7Conclusions
+      .filter((c) => typeof c.recordId === "string" && c.recordId.length > 0)
+      .map((c) => c.recordId!);
     // ── R71-A2（2026-10-19）：结论层 rerank 语义门（主门）──
     // 选中结论按注入行形态（formatConclusionLine 去 "- " 前缀）统一 rerank，score <
     // rerankGate.minScore（local logits 缺省 -1.0）者剔除。门在幂等指纹缓存前（缓存态=
@@ -1465,11 +1695,21 @@ export async function performLayeredRecall(params: {
             const r71GateScoreOf = new Map<number, number>();
             let r71GateTop = -Infinity;
             for (const rr of r71GateRanked) {
-              if (!rr || !Number.isFinite(rr.score) || !Number.isInteger(rr.index) || rr.index < 0 || rr.index >= r7Conclusions.length) continue;
+              if (
+                !rr ||
+                !Number.isFinite(rr.score) ||
+                !Number.isInteger(rr.index) ||
+                rr.index < 0 ||
+                rr.index >= r7Conclusions.length
+              )
+                continue;
               if (!r71GateScoreOf.has(rr.index)) r71GateScoreOf.set(rr.index, rr.score);
               if (rr.score > r71GateTop) r71GateTop = rr.score;
             }
-            const r71GateMin = typeof r71GateCfg?.minScore === "number" && Number.isFinite(r71GateCfg.minScore) ? r71GateCfg.minScore : -1;
+            const r71GateMin =
+              typeof r71GateCfg?.minScore === "number" && Number.isFinite(r71GateCfg.minScore)
+                ? r71GateCfg.minScore
+                : -1;
             // #99 F3（2026-10-25）：与经验层 applyRecallRerank 同款刻度校准——local provider
             // 原始 logit 先 sigmoid 归一 0..1 后对门槛（门槛同变换 sigmoid(minScore)，单调等价
             // 不改接受/拒绝边界）；未覆盖候选恒 Infinity 不杀（垫尾语义不变）。journal
@@ -1549,8 +1789,8 @@ export async function performLayeredRecall(params: {
     const s2bCfg = cfg.recall?.smallToBig;
     // #141（2026-10-28）：成对约束与槽位记账的生效值——全局键强开 或 intent 策略要求。
     // 成对（pairing）只在回捞开启时生效（否则全体让位 = 关层，不是本票要的语义）。
-    const r7PairingRequire = s2bCfg?.enabled === true
-      && (cfg.recall?.conclusionLayer?.pairing === "require" || r7Policy?.pairing === true);
+    const r7PairingRequire =
+      s2bCfg?.enabled === true && (cfg.recall?.conclusionLayer?.pairing === "require" || r7Policy?.pairing === true);
     const r7SlotMode = s2bCfg?.budget === "slot";
     let smallToBigLines: string[] = [];
     /** #141：上下文行按「结论卡下标」记账——成对约束丢弃结论时，其证据行必须同步移除。 */
@@ -1558,9 +1798,13 @@ export async function performLayeredRecall(params: {
     // #138（2026-10-28）：回捞可观测化——生产 journal 此前只有「上下文行数」，看不出是
     // 「没触发」还是「触发了但选错证据」。gates.smallToBig 记候选/入选/排名三段。
     let s2bGate: RecallJournalGates["smallToBig"] | undefined;
-    if (s2bCfg?.enabled === true && r7Conclusions.length > 0 && vectorStore &&
-        typeof vectorStore.getLinksBySource === "function" &&
-        (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")) {
+    if (
+      s2bCfg?.enabled === true &&
+      r7Conclusions.length > 0 &&
+      vectorStore &&
+      typeof vectorStore.getLinksBySource === "function" &&
+      (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")
+    ) {
       try {
         // #141：slot 模式或成对约束下，每张结论至少 1 条源证据（否则「必带证据」不可能满足）；
         // 其余档位维持 maxExtraLines 帽（逐位现状）。
@@ -1575,9 +1819,7 @@ export async function performLayeredRecall(params: {
         if (s2bMaxExtra > 0) {
           const s2bSeen = new Set(r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!));
           const s2bResolveByIds = (ids: string[]) =>
-            vectorStore.getL1ByIdsWithArchive
-              ? vectorStore.getL1ByIdsWithArchive(ids)
-              : vectorStore.getL1ByIds!(ids);
+            vectorStore.getL1ByIdsWithArchive ? vectorStore.getL1ByIdsWithArchive(ids) : vectorStore.getL1ByIds!(ids);
           // ① 收集候选：逐卡拉 part_of 单跳证据，带上「查询 token 命中数」作为相关性分。
           // #138 根因（bench 7161e7e2 实证）：旧实现按 store 返回序填帽，会把前情行
           // （`User: 7 agents`）排在承载答案的 assistant 轮之前，且一张卡的证据就能吃满帽。
@@ -1615,9 +1857,14 @@ export async function performLayeredRecall(params: {
               const s2bCardRows = ((await s2bResolveByIds([s2bConcl.recordId])) ?? []) as L1SearchResult[];
               // 键名单源 = lifecycle/evidence-ids.ts（与三个写面/parity 测试同一个 readEvidenceIds）：
               // canonical evidence_ids 优先、旧键 evidence_record_ids 兼容，读面不另立实现。
-              const s2bCardMetaRaw = (s2bCardRows.find((r) => r?.record_id === s2bConcl.recordId) ?? s2bCardRows[0])?.metadata_json;
+              const s2bCardMetaRaw = (s2bCardRows.find((r) => r?.record_id === s2bConcl.recordId) ?? s2bCardRows[0])
+                ?.metadata_json;
               let s2bCardMeta: unknown = {};
-              try { s2bCardMeta = s2bCardMetaRaw ? (JSON.parse(s2bCardMetaRaw) as unknown) : {}; } catch { s2bCardMeta = {}; }
+              try {
+                s2bCardMeta = s2bCardMetaRaw ? (JSON.parse(s2bCardMetaRaw) as unknown) : {};
+              } catch {
+                s2bCardMeta = {};
+              }
               const s2bMetaIds = readEvidenceIds(s2bCardMeta).filter((id) => !s2bSeen.has(id));
               s2bEvIds = s2bMetaIds;
               if (s2bEvIds.length > 0) s2bFromMetadata++;
@@ -1730,7 +1977,10 @@ export async function performLayeredRecall(params: {
         const s2bKeep: number[] = [];
         for (let i = 0; i < r7Conclusions.length; i++) {
           const c = r7Conclusions[i];
-          if (c.source !== "work_fact" || !c.recordId) { s2bKeep.push(i); continue; }
+          if (c.source !== "work_fact" || !c.recordId) {
+            s2bKeep.push(i);
+            continue;
+          }
           if ((s2bCardLines.get(i)?.length ?? 0) > 0) s2bKeep.push(i);
         }
         r7UnpairedDropped = r7Conclusions.length - s2bKeep.length;
@@ -1763,9 +2013,10 @@ export async function performLayeredRecall(params: {
       ? `${params.sessionKey}#${params.isolationFilter.teamId ?? ""}#${params.isolationFilter.userId ?? ""}#${params.isolationFilter.agentId ?? ""}`
       : params.sessionKey;
     // #78 R-b：上下文行并入 freshLines（缓存态=注入态；smallToBigLines 空 → 恒等数组=逐位现状）
-    const r7FreshLines = smallToBigLines.length > 0
-      ? [...r7Conclusions.map(formatConclusionLine), ...smallToBigLines]
-      : r7Conclusions.map(formatConclusionLine);
+    const r7FreshLines =
+      smallToBigLines.length > 0
+        ? [...r7Conclusions.map(formatConclusionLine), ...smallToBigLines]
+        : r7Conclusions.map(formatConclusionLine);
     const r7ConclusionResolved = resolveIdempotentConclusionLines(
       conclusionCacheKey,
       conclusionFingerprint(r7Conclusions),
@@ -1779,7 +2030,13 @@ export async function performLayeredRecall(params: {
     const r7LayeredCtx: R7LayeredContext | undefined =
       r7Conclusions.length > 0
         ? {
-            excludeIds: r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!),
+            // 门控前快照 ∪ 门控后剩余（去重）——见 r7ConclusionExcludeIdsBeforeGate 注释
+            excludeIds: [
+              ...new Set([
+                ...r7ConclusionExcludeIdsBeforeGate,
+                ...r7Conclusions.filter((c) => c.recordId).map((c) => c.recordId!),
+              ]),
+            ],
             conclusionRefs: r7Conclusions
               .filter((c) => c.source === "work_fact" && c.recordId)
               .map((c) => ({ id: c.recordId!, sceneName: c.sceneName })),
@@ -1805,16 +2062,17 @@ export async function performLayeredRecall(params: {
     // （conclusionLayer.slotCost，clamp [1,3]）。经验层额度 = floor(maxResults − 复合单元槽位)：
     // 「摘要 + 源证据」成对补信息，代价只按 1.5 行记，而不是把两行都算成挤占经验层。
     const r7SlotCost = Math.min(3, Math.max(1, cfg.recall?.conclusionLayer?.slotCost ?? 1.5));
-    const r7Slot = r7SlotMode && r7ConclusionLines.length > 0
-      ? computeSlotBudget({
-          maxResults: r7MaxResults,
-          conclusionCount: r7Conclusions.length,
-          slotCost: r7SlotCost,
-          // #141 修补（评审 #9）：成对未开时槽位记账按 1 记（复合单元只在「必带证据」时成立），
-          // 否则会凭空把经验层额度扣掉 0.5×结论数行。
-          pairing: r7PairingRequire,
-        })
-      : undefined;
+    const r7Slot =
+      r7SlotMode && r7ConclusionLines.length > 0
+        ? computeSlotBudget({
+            maxResults: r7MaxResults,
+            conclusionCount: r7Conclusions.length,
+            slotCost: r7SlotCost,
+            // #141 修补（评审 #9）：成对未开时槽位记账按 1 记（复合单元只在「必带证据」时成立），
+            // 否则会凭空把经验层额度扣掉 0.5×结论数行。
+            pairing: r7PairingRequire,
+          })
+        : undefined;
     const r7Budget = r7Slot
       ? { conclusionLimit: r7ConclusionLines.length, experienceLimit: r7Slot.experienceLimit }
       : smallToBigLines.length > 0
@@ -1846,10 +2104,21 @@ export async function performLayeredRecall(params: {
       : params.sessionKey;
     // P0-2 journal 观测：gates 并入 searchResult 载荷类型（与 SearchResult["gates"] 同形）
     let searchResult: SearchResult | undefined;
+    // 精排是否真的改了行序/分数：dynamicTopK 的 elbow 是「融合分几何」上的经验启发
+    // （cosine/RRF 同量纲的相邻落差），精排把 scores 换成 cross-encoder 归一分后该几何已失效
+    // （实测 031748ae：10 行 rerank 分 [.46,.43,.47,.43,.21,...] 在 4→5 处出现 0.22 落差 =
+    // span 的 103%，elbow 直接砍到 4 行、答案行被切掉）。精排档的选行口径由精排自己的
+    // cap + minScore 决定，故精排生效时不再叠 elbow（零新配置键，纯代码缺省）。
+    let rerankApplied = false;
     if (sessionReuseTtlMs > 0 && !params.validityNow && params.sessionKey) {
       const entry = sessionReuseCache.get(reuseCacheKey);
-      if (entry && entry.query === userText && entry.vectorStore === vectorStore && entry.embeddingService === embeddingService &&
-          Date.now() - entry.at < sessionReuseTtlMs) {
+      if (
+        entry &&
+        entry.query === userText &&
+        entry.vectorStore === vectorStore &&
+        entry.embeddingService === embeddingService &&
+        Date.now() - entry.at < sessionReuseTtlMs
+      ) {
         searchResult = entry.result;
         searchCacheHit = true;
         logger?.debug?.(`${TAG} [session-reuse] HIT (age=${Date.now() - entry.at}ms) session=${params.sessionKey}`);
@@ -1876,14 +2145,10 @@ export async function performLayeredRecall(params: {
         reinforcementWeight: cfg.recall?.reinforcementWeight ?? DEFAULT_RANK_SIGNALS.reinforcementWeight,
         moodBoost: cfg.recall?.moodBoost ?? DEFAULT_RANK_SIGNALS.moodBoost,
         emotionSalienceWeight: cfg.recall?.emotionSalienceWeight ?? DEFAULT_RANK_SIGNALS.emotionSalienceWeight,
-        // D-3：敏感性降权（缺省 0=关断恒等）
-        sensitivityPenalty: cfg.recall?.sensitivityPenalty ?? DEFAULT_RANK_SIGNALS.sensitivityPenalty,
         // P1-T7：重要度降权（enabled 才入乘子；关断恒 0=排序逐位不变）
         importancePenalty: importanceGate ? importanceGate.penalty : 0,
         // #135 R3：查询时间感知（enabled 才加成；缺省关=排序逐位现状）
-        presentTemporalBoost: cfg.recall?.presentTemporal?.enabled
-          ? (cfg.recall.presentTemporal.boost ?? 0.08)
-          : 0,
+        presentTemporalBoost: cfg.recall?.presentTemporal?.enabled ? (cfg.recall.presentTemporal.boost ?? 0.08) : 0,
         presentTemporalDays: cfg.recall?.presentTemporal?.recentDays ?? 30,
       };
       const signalsActive =
@@ -1894,7 +2159,6 @@ export async function performLayeredRecall(params: {
         signals.reinforcementWeight > 0 ||
         signals.moodBoost > 0 ||
         signals.emotionSalienceWeight > 0 ||
-        signals.sensitivityPenalty > 0 ||
         signals.importancePenalty > 0 ||
         (signals.presentTemporalBoost ?? 0) > 0;
       const needValues = coreRefBoost > 0 || signals.moodBoost > 0;
@@ -1905,7 +2169,11 @@ export async function performLayeredRecall(params: {
       const sceneBoost = cfg.recall?.sceneBoost ?? 0;
       let rank: RecallRankSignal | undefined;
       // P1-T7：importance 降权开启时即使信号全 0 也要建 rank（gate 行采集 = journal 观测前提）
-      if (effectiveStrategy === "hybrid" && vectorStore && (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0 || importanceGate !== undefined)) {
+      if (
+        effectiveStrategy === "hybrid" &&
+        vectorStore &&
+        (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0 || importanceGate !== undefined)
+      ) {
         const { firedLabels, moodSign } = needValues
           ? await computeRecallValueSignals(sanitizeText(userText), vectorStore, params.profileIsolation, logger)
           : { firedLabels: [] as string[], moodSign: 0 };
@@ -1928,7 +2196,8 @@ export async function performLayeredRecall(params: {
           },
           sceneBoost,
           // #135 R3：当下时态检测（boost>0 才 parse——timeWindow 先例；regex 纯函数零 I/O）
-          presentTemporal: (signals.presentTemporalBoost ?? 0) > 0 ? detectPresentTemporalIntent(sanitizeText(userText)) : undefined,
+          presentTemporal:
+            (signals.presentTemporalBoost ?? 0) > 0 ? detectPresentTemporalIntent(sanitizeText(userText)) : undefined,
           // P1-T7：重要度降权门参数（searchHybrid 消费：active 入乘子 + 双模式影子日志）
           ...(importanceGate ? { importanceGate } : {}),
         };
@@ -1970,6 +2239,7 @@ export async function performLayeredRecall(params: {
         logger,
         cfg.recall?.mmr?.enabled ? { enabled: true, lambda: cfg.recall.mmr.lambda } : undefined,
       );
+      rerankApplied = rerankWiring.state === "active";
       // 审查 #3 修补：空结果不入复用缓存——瞬时失败（如外呼抖动/瞬时空召回）不放大成
       // TTL 窗口内的持续空召回；lines.length>0 才视为可用注入块。
       if (sessionReuseTtlMs > 0 && params.sessionKey && searchResult.lines.length > 0 && !params.validityNow) {
@@ -1991,13 +2261,21 @@ export async function performLayeredRecall(params: {
     // 行 → 来源会话：同 session_id 的不同轮次是同一段对话里的连续证据，不能按「主题相似」折掉。
     // 以行字符串为键 → 后续 slice/重排/结论行插入都不需要维护平行数组（行被改写后再折叠无意义）。
     // 无来源（keyword/embedding SELECT 未带出、foldCluster 开启、结论行）→ 该行按跨来源口径判重（降级安全）。
+    // 2026-11-04：lineSessions 只在「不折叠」分支透传（:3258/:3313），折叠开启时为空；
+    // 而 metas 折叠后仍与行平行（#166）且带 sessionId（:3247）⇒ 两源合一，缺一不降级。
+    // 会话标识的下游消费者：注入选线的「会话份额」（injectionSessions）。
     const sessionByLine = new Map<string, string>();
+    // 前缀索引（同源，供「行被预算截断后再查」用）：截断只砍尾部，前 64 字符稳定。
+    // 行字符串全等查不到的行（applyRecallBudget 的 maxCharsPerMemory 截断、pack 行）走前缀。
+    const sessionByPrefix = new Map<string, string>();
     const lineSessionsOfSearch = searchResult.lineSessions;
-    if (lineSessionsOfSearch) {
-      for (let i = 0; i < memoryLines.length && i < lineSessionsOfSearch.length; i++) {
-        const sid = lineSessionsOfSearch[i];
-        if (sid && !sessionByLine.has(memoryLines[i])) sessionByLine.set(memoryLines[i], sid);
-      }
+    const metasOfSearchSession = searchResult.metas;
+    for (let i = 0; i < memoryLines.length; i++) {
+      const sid = lineSessionsOfSearch?.[i] ?? metasOfSearchSession?.[i]?.sessionId;
+      if (!sid) continue;
+      if (!sessionByLine.has(memoryLines[i])) sessionByLine.set(memoryLines[i], sid);
+      const key = memoryLines[i].slice(0, 64);
+      if (key.length > 0 && !sessionByPrefix.has(key)) sessionByPrefix.set(key, sid);
     }
     // ── #169（2026-10-31）：证据包的行 → 来源 recordId 索引 ──
     // 与 sessionByLine 同构（行字符串为键，slice/重排/结论行插入后不需维护平行数组）。
@@ -2067,8 +2345,9 @@ export async function performLayeredRecall(params: {
     let r7ConclusionLinesEff = r7ConclusionLines;
     let r7ArbitrateDropped = 0;
     const r7ArbitrateThreshold = Math.min(1, Math.max(0, cfg.recall?.conclusionLayer?.arbitrateThreshold ?? 0.75));
-    const r7ArbitrateEnabled = r7ConclusionLines.length > 0
-      && (cfg.recall?.conclusionLayer?.arbitrate === "redundant" || r7Policy?.arbitrate === true);
+    const r7ArbitrateEnabled =
+      r7ConclusionLines.length > 0 &&
+      (cfg.recall?.conclusionLayer?.arbitrate === "redundant" || r7Policy?.arbitrate === true);
     if (r7ArbitrateEnabled && memoryLines.length > 0) {
       const r7Arb = arbitrateConclusions({
         conclusions: r7ConclusionLines,
@@ -2109,12 +2388,20 @@ export async function performLayeredRecall(params: {
             ...(r7DroppedSamples.length > 0 ? { droppedSamples: r7DroppedSamples } : {}),
           }
         : undefined;
-    if (r71Bm25Gate || r71ConclusionRerankGate || s2bGate || r7RoutingGate || selfNarrationGate) {
+    if (
+      r71Bm25Gate ||
+      r71ConclusionRerankGate ||
+      s2bGate ||
+      r7RoutingGate ||
+      selfNarrationGate ||
+      r7ConclusionSensitivityGate
+    ) {
       recallGates = {
         ...(recallGates ?? {}),
         ...(selfNarrationGate ? { selfNarration: selfNarrationGate } : {}),
         ...(r71Bm25Gate ? { conclusionBm25: r71Bm25Gate } : {}),
         ...(r71ConclusionRerankGate ? { conclusionRerank: r71ConclusionRerankGate } : {}),
+        ...(r7ConclusionSensitivityGate ? { sensitivityConclusions: r7ConclusionSensitivityGate } : {}),
         ...(s2bGate ? { smallToBig: s2bGate } : {}),
         ...(r7RoutingGate ? { conclusionRouting: r7RoutingGate } : {}),
       };
@@ -2131,7 +2418,7 @@ export async function performLayeredRecall(params: {
     // 切点在 r7ExperienceLineCount（下方）定格之前 → metric scores 切片自动对齐不串位。
     const dynScores54 = searchResult.scores;
     const dynTopKCfg54 = cfg.recall?.dynamicTopK;
-    if (dynTopKCfg54?.enabled === true && dynScores54 !== undefined && dynScores54.length > 0) {
+    if (!rerankApplied && dynTopKCfg54?.enabled === true && dynScores54 !== undefined && dynScores54.length > 0) {
       const dynK54 = dynamicTopKCount(dynScores54, memoryLines.length, dynTopKCfg54);
       if (dynK54 < memoryLines.length) {
         logger?.debug?.(
@@ -2148,8 +2435,10 @@ export async function performLayeredRecall(params: {
     // 0=off=逐位现状）；非降级路径零触碰。帽在 R7 预算/动态 topK 之后（帽=无结果兜底的
     // 最后闸门，只可能更小）。T15-C 降级常量随之上移（degradedNote 消费点不变）。
     const recallDegradedFtsOnly =
-      !!vectorStore && !!embeddingService &&
-      searchTiming.ftsHits > 0 && searchTiming.embeddingHits === 0 &&
+      !!vectorStore &&
+      !!embeddingService &&
+      searchTiming.ftsHits > 0 &&
+      searchTiming.embeddingHits === 0 &&
       effectiveStrategy !== "keyword";
     const r71FtsOnlyCap = cfg.recall?.ftsOnlyInjectCap ?? 2;
     // #141 修补（评审 #1）：intent 路由的表示顺序——精确事实/时间推理题 turn 优先（结论在后），
@@ -2226,7 +2515,10 @@ export async function performLayeredRecall(params: {
     let r7InjectedConclusions = 0;
     for (const l of memoryLines) {
       const n = r7ConclusionLineBag.get(l);
-      if (n !== undefined && n > 0) { r7ConclusionLineBag.set(l, n - 1); r7InjectedConclusions++; }
+      if (n !== undefined && n > 0) {
+        r7ConclusionLineBag.set(l, n - 1);
+        r7InjectedConclusions++;
+      }
     }
     conclusionCount = r7InjectedConclusions;
     experienceCount = Math.max(0, memoryLines.length - conclusionCount);
@@ -2269,7 +2561,9 @@ export async function performLayeredRecall(params: {
         if (stateStore && typeof stateStore.readSoulState === "function") {
           try {
             const row = await stateStore.readSoulState?.({
-              teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default",
+              teamId: it.teamId ?? "default",
+              userId: it.userId ?? "default",
+              agentId: it.agentId ?? "default",
             });
             if (row) {
               soulState = {
@@ -2300,7 +2594,7 @@ export async function performLayeredRecall(params: {
             budgetPersonChars: cfg.coreMemory?.soulRender?.budgetPersonChars,
             budgetCharacterChars: cfg.coreMemory?.soulRender?.budgetCharacterChars,
             // S-FEEL-1（M1）：近期基调行（null/undefined=不渲染=逐位现状）。
-            moodTier: moodTierResult,            // S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚仍混渲染于价值锚行）。
+            moodTier: moodTierResult, // S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚仍混渲染于价值锚行）。
             // #28→#34（2026-10-17 接线）：当下状态行——soul_state 行非 null 才传（读取点见上，
             // mood 计算后）；缺省 undefined=不渲染=逐位现状；指纹隔离由 soul-assembler 保证
             //（state 只进进程内 cacheKey，不进 soulVersion）。
@@ -2367,7 +2661,12 @@ export async function performLayeredRecall(params: {
       // 缺省归一化：调用点可能只给部分字段（测试/嵌入方直传 cfg），缺的值按 evidencePackConfigOf 的缺省走，
       // 否则 adjacent/windowMinutes/maxExtraLines 会以 undefined 落进 journal（观测口径残缺）。
       const packCfg = evidencePackConfigOf(cfg.recall?.evidencePack);
-      if (packCfg.enabled === true && orderedLines.length > 0 && vectorStore && typeof vectorStore.queryL1Records === "function") {
+      if (
+        packCfg.enabled === true &&
+        orderedLines.length > 0 &&
+        vectorStore &&
+        typeof vectorStore.queryL1Records === "function"
+      ) {
         const tPackStart = Date.now();
         const seeds = orderedLines.map((line) => ({
           recordId: recordIdByLine.get(line) ?? null,
@@ -2450,6 +2749,12 @@ export async function performLayeredRecall(params: {
       // 关断纪律：layerRuler.mode="off" + injection 缺省 ⇒ 一行不解、embedding 不调、
       // droppedBy 全 0；但观测面照记（观测不是行为开关）。
       // 降级纪律：任何异常都退回「本段之前的行集」——既不放宽成"全收"，也不因此清空。
+      // ── 2026-11-04：来源会话透传给选线（字符预算的「会话份额」用）──
+      // 行→会话映射在装配层已建（sessionByLine，:2028）；这里只做纯查表，缺映射的行给 null
+      // （按「无会话」处理，不参与份额分摊）。压/折叠/重排都不需要维护平行数组：行字符串为键。
+      const injectionSessions = injectedLines.map(
+        (line) => sessionByLine.get(line) ?? sessionByPrefix.get(line.slice(0, 64)) ?? null,
+      );
       try {
         const outcome = await runInjectionSelection({
           lines: injectedLines,
@@ -2457,6 +2762,7 @@ export async function performLayeredRecall(params: {
           cfg: cfg.recall,
           pluginDataDir,
           embeddingService: params.embeddingService,
+          sessions: injectionSessions,
           previousHash: params.foldLedger?.get(params.sessionKey),
         });
         injectedLines = outcome.lines;
@@ -2476,6 +2782,8 @@ export async function performLayeredRecall(params: {
             injected: injectedLines.length,
             droppedBy: { rank: 0, floor: 0, margin: 0, dup: 0, budget: 0, chars: 0, fold: 0 },
             capped: 0,
+            rescued: 0,
+            windowed: 0,
             poolChars: injectedLines.reduce((n, s) => n + s.length, 0),
             injectedChars: injectedLines.reduce((n, s) => n + s.length, 0),
           },
@@ -2547,6 +2855,7 @@ export async function performLayeredRecall(params: {
           sessionKey: params.sessionKey,
           sessionReused,
           layered,
+          ...(layeredKeywordHits ? { layeredKeywords: layeredKeywordHits } : {}),
           conclusionCount,
           experienceCount,
           searchTiming,
@@ -2585,7 +2894,9 @@ export async function performLayeredRecall(params: {
         journalCfg,
       );
     }
-  } catch { /* 兜底：writer 已吞错，此处再兜一层 */ }
+  } catch {
+    /* 兜底：writer 已吞错，此处再兜一层 */
+  }
 
   return {
     memoryLines,
@@ -2635,6 +2946,8 @@ async function performAutoRecallCore(params: {
   embeddingService?: EmbeddingService;
   storage?: StorageAdapter;
   profileIsolation?: ProfileIsolation;
+  /** 透传给 performLayeredRecall（下面的 spread 已带上，这里只是把契约写明）。 */
+  isolationFilter?: IsolationFilter;
 }): Promise<RecallResult | undefined> {
   const { cfg, logger } = params;
   const tRecallStart = performance.now();
@@ -2683,7 +2996,7 @@ async function performAutoRecallCore(params: {
       sceneNavigation = generateSceneNavigation(sceneIndexEntries, profileDataDir, useCos);
       logger?.debug?.(
         `${TAG} Scene navigation generated: ${sceneIndexEntries.length} scenes ` +
-        `(scope=${profileScope}, useCos=${useCos})`,
+          `(scope=${profileScope}, useCos=${useCos})`,
       );
     }
   } catch {
@@ -2695,11 +3008,11 @@ async function performAutoRecallCore(params: {
     const totalMs = performance.now() - tRecallStart;
     logger?.info(
       `${TAG} ⏱ Recall timing: total=${totalMs.toFixed(0)}ms, ` +
-      `search=${(tSearchEnd - tSearchStart).toFixed(0)}ms(strategy=${effectiveStrategy},hits=${memoryLines.length},` +
-      `fts=${searchTiming.ftsMs.toFixed(0)}ms/${searchTiming.ftsHits}hits,` +
-      `vec=${searchTiming.embeddingMs.toFixed(0)}ms/${searchTiming.embeddingHits}hits), ` +
-      `persona=${(tPersonaEnd - tPersonaStart).toFixed(0)}ms, ` +
-      `scene=${(tSceneEnd - tSceneStart).toFixed(0)}ms — no context to inject`,
+        `search=${(tSearchEnd - tSearchStart).toFixed(0)}ms(strategy=${effectiveStrategy},hits=${memoryLines.length},` +
+        `fts=${searchTiming.ftsMs.toFixed(0)}ms/${searchTiming.ftsHits}hits,` +
+        `vec=${searchTiming.embeddingMs.toFixed(0)}ms/${searchTiming.embeddingHits}hits), ` +
+        `persona=${(tPersonaEnd - tPersonaStart).toFixed(0)}ms, ` +
+        `scene=${(tSceneEnd - tSceneStart).toFixed(0)}ms — no context to inject`,
     );
     logger?.debug?.(`${TAG} No memories/persona/scenes to inject`);
     return undefined;
@@ -2740,11 +3053,11 @@ async function performAutoRecallCore(params: {
   const totalMs = performance.now() - tRecallStart;
   logger?.info(
     `${TAG} ⏱ Recall timing: total=${totalMs.toFixed(0)}ms, ` +
-    `search=${(tSearchEnd - tSearchStart).toFixed(0)}ms(strategy=${effectiveStrategy},hits=${memoryLines.length},` +
-    `fts=${searchTiming.ftsMs.toFixed(0)}ms/${searchTiming.ftsHits}hits,` +
-    `vec=${searchTiming.embeddingMs.toFixed(0)}ms/${searchTiming.embeddingHits}hits), ` +
-    `persona=${(tPersonaEnd - tPersonaStart).toFixed(0)}ms(${personaContent ? `${personaContent.length}chars` : "none"}), ` +
-    `scene=${(tSceneEnd - tSceneStart).toFixed(0)}ms(${sceneNavigation ? "loaded" : "none"})`,
+      `search=${(tSearchEnd - tSearchStart).toFixed(0)}ms(strategy=${effectiveStrategy},hits=${memoryLines.length},` +
+      `fts=${searchTiming.ftsMs.toFixed(0)}ms/${searchTiming.ftsHits}hits,` +
+      `vec=${searchTiming.embeddingMs.toFixed(0)}ms/${searchTiming.embeddingHits}hits), ` +
+      `persona=${(tPersonaEnd - tPersonaStart).toFixed(0)}ms(${personaContent ? `${personaContent.length}chars` : "none"}), ` +
+      `scene=${(tSceneEnd - tSceneStart).toFixed(0)}ms(${sceneNavigation ? "loaded" : "none"})`,
   );
 
   if (!appendSystemContext && !prependContext) {
@@ -2782,6 +3095,8 @@ async function performAutoRecallInner(params: {
   embeddingService?: EmbeddingService;
   storage?: StorageAdapter;
   profileIsolation?: ProfileIsolation;
+  /** 与 performAutoRecall 同名字段：原样透传给 performLayeredRecall（见该处注释）。 */
+  isolationFilter?: IsolationFilter;
 }): Promise<RecallResult | undefined> {
   try {
     return await performAutoRecallCore(params);
@@ -2792,9 +3107,7 @@ async function performAutoRecallInner(params: {
     // to make root-cause investigation possible.
     params.logger?.warn?.(`${TAG} recall failed: code=${re.code} category=${re.category} msg="${re.message}"`);
     if (re.category === "internal" && fail.cause) {
-      const causeStr = fail.cause instanceof Error
-        ? (fail.cause.stack ?? fail.cause.message)
-        : String(fail.cause);
+      const causeStr = fail.cause instanceof Error ? (fail.cause.stack ?? fail.cause.message) : String(fail.cause);
       params.logger?.error?.(`${TAG} unexpected recall error cause: ${causeStr}`);
     }
     return {
@@ -3034,9 +3347,9 @@ async function searchMemories(
 
   logger?.debug?.(
     `${TAG} [searchMemories] strategy=${strategy}, embeddingAvailable=${embeddingAvailable}, ` +
-    `vectorStore=${vectorStore ? "available" : "UNAVAILABLE"}, ` +
-    `embeddingService=${embeddingService ? "available" : "UNAVAILABLE"}, ` +
-    `maxResults=${maxResults}, threshold=${threshold}`,
+      `vectorStore=${vectorStore ? "available" : "UNAVAILABLE"}, ` +
+      `embeddingService=${embeddingService ? "available" : "UNAVAILABLE"}, ` +
+      `maxResults=${maxResults}, threshold=${threshold}`,
   );
 
   // Determine effective strategy — no degradation: if embedding is configured but unavailable, fail
@@ -3131,6 +3444,8 @@ async function searchMemories(
       return {
         lines: kw.lines,
         lineSessions: kw.lineSessions,
+        // P0-1b：keyword 支在 searchByKeyword 内已过记录级敏感门，门观测随路回传进 journal
+        ...(kw.sensitivity ? { gates: { sensitivity: kw.sensitivity } } : {}),
         timing: {
           ftsMs: performance.now() - tFts,
           embeddingMs: 0,
@@ -3158,6 +3473,8 @@ async function searchMemories(
       return {
         lines: emb.lines,
         lineSessions: emb.lineSessions,
+        // P0-1b：embedding 支同上
+        ...(emb.sensitivity ? { gates: { sensitivity: emb.sensitivity } } : {}),
         timing: { ftsMs: 0, embeddingMs: performance.now() - tEmb, ftsHits: 0, embeddingHits: emb.lines.length },
       };
     }
@@ -3198,18 +3515,21 @@ async function searchMemories(
       logger?.debug?.(
         `${TAG} [hybrid-native] Single-call hybrid: ${results.length} results in ${nativeMs.toFixed(0)}ms`,
       );
-      const fmts = results.map((r) => vectorResultToFormatable(r));
+      // P0-1b：native hybrid 支早退，注入前必须过记录级敏感门（纯减法）。放在
+      // nativeMinRRF 记账之后，两门的计数口径互不污染（gates 里各占一个键）。
+      const gatedNative = gateSensitivityForInjection(results, isolationFilter, logger);
+      const nativeVisible = gatedNative.visible;
+      const fmts = nativeVisible.map((r) => vectorResultToFormatable(r));
       const linesRaw = fmts.map((f) => formatMemoryLine(f));
       const linesMeta = fmts.map((f) => ({ recordId: f.recordId, evidenceIds: f.evidenceIds, sessionId: f.sessionId }));
       // #162：行级来源会话（同会话免疫数据源）；折叠开启时行与来源不再平行 → 不透传（降级=旧口径）
       const lineSessionsRaw = fmts.map((f) => f.sessionId);
-      const scores = results.map((r) => r.score);
+      const scores = nativeVisible.map((r) => r.score);
       // F-CLUSTER v2：折叠点=搜索路返回前（budget 之前去冗余，更多信息存活）；cfg.recall.foldClusterEnabled 缺省关
       // #166：折叠改走 meta 版，metas 与折叠后行继续平行——遮蔽行（注入文本已换成事实短语）
       // 只能靠 recordId 回指父 turn，折叠丢弃平行关系会把这类行判成「无来源」。
-      const foldedNative = cfg?.recall?.foldClusterEnabled === true
-        ? foldClusterAwareWithMeta(linesRaw, linesMeta)
-        : undefined;
+      const foldedNative =
+        cfg?.recall?.foldClusterEnabled === true ? foldClusterAwareWithMeta(linesRaw, linesMeta) : undefined;
       const lines = foldedNative ? foldedNative.lines : linesRaw;
       return {
         lines,
@@ -3217,8 +3537,15 @@ async function searchMemories(
         ...(foldedNative ? {} : { lineSessions: lineSessionsRaw }),
         metas: foldedNative ? foldedNative.metas : linesMeta,
         scores,
-        timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: results.length },
-        ...(nativeGateStat ? { gates: { nativeMinRRF: nativeGateStat } } : {}),
+        timing: { ftsMs: 0, embeddingMs: nativeMs, ftsHits: 0, embeddingHits: nativeVisible.length },
+        ...(nativeGateStat || gatedNative.observation
+          ? {
+              gates: {
+                ...(nativeGateStat ? { nativeMinRRF: nativeGateStat } : {}),
+                ...(gatedNative.observation ? { sensitivity: gatedNative.observation } : {}),
+              },
+            }
+          : {}),
       };
     }
 
@@ -3229,10 +3556,21 @@ async function searchMemories(
     // 迟到 LLM 结果仍落 TTL/负缓存惠及后续轮次（见 awaitExpansionTerms 注释）。
     const { terms: expansionTerms, waitMs: fallbackExpandWaitMs } = await awaitExpansionTerms();
     const hybrid = await searchHybrid(
-      cleanText, pluginDataDir, maxResults, threshold, vectorStore!, embeddingService!, logger,
-      embeddingCallOpts, rank, embedCacheTtlMs, layered, expansionTerms,
+      cleanText,
+      pluginDataDir,
+      maxResults,
+      threshold,
+      vectorStore!,
+      embeddingService!,
+      logger,
+      embeddingCallOpts,
+      rank,
+      embedCacheTtlMs,
+      layered,
+      expansionTerms,
       // V2-3（引擎三）：探索位 + 组合分精排（config 透传——缺省默认开/均等权重）
-      cfg.recall?.exploreSlot !== false, cfg.recall?.rerankWeights,
+      cfg.recall?.exploreSlot !== false,
+      cfg.recall?.rerankWeights,
       // DS-RECALL-MERGE-001：租户收窄 filter（钩子路缺省 undefined = 旧行为逐位）
       isolationFilter,
       // GROW-EVO P2（§2.3）：失效排除开关（cfg 透传——缺省 true）；
@@ -3260,9 +3598,8 @@ async function searchMemories(
     // 精排（applyRecallRerank 551-552）已支持 scores/metas 平行重映射，透传即兼容。
     // #166：折叠改走 meta 版（foldClusterAwareWithMeta），metas 与折叠后行继续平行——遮蔽行
     // 的注入文本是事实短语、内容反查不出父 turn，只能靠 recordId 回指。
-    const fallbackFolded = cfg?.recall?.foldClusterEnabled === true
-      ? foldClusterAwareWithMeta(hybrid.lines, hybrid.metas)
-      : undefined;
+    const fallbackFolded =
+      cfg?.recall?.foldClusterEnabled === true ? foldClusterAwareWithMeta(hybrid.lines, hybrid.metas) : undefined;
     // #162：metas.sessionId → 行级来源会话（与 lines 平行）；折叠开启时不再平行 → 不透传（降级=旧口径）
     const fallbackLineSessions = fallbackFolded ? undefined : hybrid.metas?.map((m) => m?.sessionId);
     const fallbackMetas = fallbackFolded ? fallbackFolded.metas : hybrid.metas;
@@ -3306,7 +3643,7 @@ async function searchByKeyword(
   expansionTerms?: readonly string[],
   /** DS-RECALL-MERGE-001：租户收窄 filter（缺省 undefined = 钩子路旧行为逐位）。 */
   isolationFilter?: IsolationFilter,
-): Promise<{ lines: string[]; lineSessions: (string | undefined)[] }> {
+): Promise<{ lines: string[]; lineSessions: (string | undefined)[]; sensitivity?: SensitivityObservation }> {
   // R7-1 防重排除集（空 = 零开销恒等）
   const excludeIds = layered && layered.excludeIds.length > 0 ? new Set(layered.excludeIds) : null;
   // Prefer FTS5 if available
@@ -3319,7 +3656,7 @@ async function searchByKeyword(
       if (ftsResults.length > 0) {
         logger?.debug?.(
           `${TAG} [keyword-fts] FTS5 raw results (${ftsResults.length}): ` +
-          ftsResults.map((r) => `id=${r.record_id} score=${r.score.toFixed(6)}`).join(", "),
+            ftsResults.map((r) => `id=${r.record_id} score=${r.score.toFixed(6)}`).join(", "),
         );
         const filtered = ftsResults
           .filter((r) => !excludeIds || !excludeIds.has(r.record_id))
@@ -3330,9 +3667,13 @@ async function searchByKeyword(
           logger?.debug?.(
             `${TAG} [keyword-fts] FTS5 found ${filtered.length} results (from ${ftsResults.length} raw, threshold=${threshold})`,
           );
+          // P0-1b：记录级敏感门——keyword 支早退，不经 searchHybrid 的门，必须就地过门。
+          // 门是纯减法（只从已选好的候选里去掉敏感行），不改排序/选择语义。
+          const gated = gateSensitivityForInjection(filtered, isolationFilter, logger);
           return {
-            lines: filtered.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
-            lineSessions: filtered.map((r) => (r as { session_id?: string }).session_id || undefined),
+            lines: gated.visible.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
+            lineSessions: gated.visible.map((r) => (r as { session_id?: string }).session_id || undefined),
+            ...(gated.observation ? { sensitivity: gated.observation } : {}),
           };
         }
 
@@ -3342,14 +3683,15 @@ async function searchByKeyword(
         if (ftsResults.length <= maxResults) {
           logger?.debug?.(
             `${TAG} [keyword-fts] All ${ftsResults.length} results below threshold=${threshold} ` +
-            `but document set is small — returning all matched results`,
+              `but document set is small — returning all matched results`,
           );
-          const smallSet = ftsResults
-            .filter((r) => !excludeIds || !excludeIds.has(r.record_id))
-            .slice(0, maxResults);
+          const smallSet = ftsResults.filter((r) => !excludeIds || !excludeIds.has(r.record_id)).slice(0, maxResults);
+          // P0-1b：同上——小文档集兜底路也必须过敏感门
+          const gatedSmall = gateSensitivityForInjection(smallSet, isolationFilter, logger);
           return {
-            lines: smallSet.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
-            lineSessions: smallSet.map((r) => (r as { session_id?: string }).session_id || undefined),
+            lines: gatedSmall.visible.map((r) => formatMemoryLine(ftsResultToFormatable(r))),
+            lineSessions: gatedSmall.visible.map((r) => (r as { session_id?: string }).session_id || undefined),
+            ...(gatedSmall.observation ? { sensitivity: gatedSmall.observation } : {}),
           };
         }
         logger?.debug?.(`${TAG} [keyword-fts] FTS5 returned 0 results above threshold (from ${ftsResults.length} raw)`);
@@ -3380,7 +3722,7 @@ async function searchByEmbedding(
   layered?: R7LayeredContext,
   /** DS-RECALL-MERGE-001：租户收窄 filter（缺省 undefined = 钩子路旧行为逐位）。 */
   isolationFilter?: IsolationFilter,
-): Promise<{ lines: string[]; lineSessions: (string | undefined)[] }> {
+): Promise<{ lines: string[]; lineSessions: (string | undefined)[]; sensitivity?: SensitivityObservation }> {
   logger?.debug?.(
     `${TAG} [embedding-search] START query="${userText.slice(0, 80)}...", maxResults=${maxResults}, threshold=${threshold}`,
   );
@@ -3393,13 +3735,15 @@ async function searchByEmbedding(
   );
   logger?.debug?.(
     `${TAG} [embedding-search] Query embedding OK: dims=${queryEmbedding.length}, ` +
-    `norm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}, ` +
-    `searching top-${maxResults * 2}...`,
+      `norm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}, ` +
+      `searching top-${maxResults * 2}...`,
   );
   // Retrieve more candidates for subsequent filtering
   // R7-1：结论层已收编的记录从经验层排除（防重——命中已存不重组）
   const excludeIds = layered && layered.excludeIds.length > 0 ? new Set(layered.excludeIds) : null;
-  const vecResults: L1SearchResult[] = ((await vectorStore.searchL1Vector(queryEmbedding, maxResults * 2, undefined, isolationFilter)) ?? []).filter((r) => !excludeIds || !excludeIds.has(r.record_id));
+  const vecResults: L1SearchResult[] = (
+    (await vectorStore.searchL1Vector(queryEmbedding, maxResults * 2, undefined, isolationFilter)) ?? []
+  ).filter((r) => !excludeIds || !excludeIds.has(r.record_id));
 
   if (vecResults.length === 0) {
     logger?.debug?.(`${TAG} [embedding-search] Returned 0 results`);
@@ -3410,21 +3754,22 @@ async function searchByEmbedding(
   for (const r of vecResults) {
     logger?.debug?.(
       `${TAG} [embedding-search] candidate id=${r.record_id}, score=${r.score.toFixed(4)}, ` +
-      `type=${r.type}, content="${r.content.slice(0, 60)}..."`,
+        `type=${r.type}, content="${r.content.slice(0, 60)}..."`,
     );
   }
 
-  const filtered = vecResults
-    .filter((r) => r.score >= threshold)
-    .slice(0, maxResults);
+  const filtered = vecResults.filter((r) => r.score >= threshold).slice(0, maxResults);
 
   if (filtered.length > 0) {
     logger?.debug?.(
       `${TAG} [embedding-search] Found ${filtered.length} relevant memories above threshold (from ${vecResults.length} candidates)`,
     );
+    // P0-1b：embedding 支早退，同样就地过记录级敏感门（纯减法）
+    const gated = gateSensitivityForInjection(filtered, isolationFilter, logger);
     return {
-      lines: filtered.map((r) => formatMemoryLine(vectorResultToFormatable(r))),
-      lineSessions: filtered.map((r) => r.session_id || undefined),
+      lines: gated.visible.map((r) => formatMemoryLine(vectorResultToFormatable(r))),
+      lineSessions: gated.visible.map((r) => r.session_id || undefined),
+      ...(gated.observation ? { sensitivity: gated.observation } : {}),
     };
   }
 
@@ -3572,9 +3917,10 @@ export async function searchHybrid(
   // #137（W1 双通道）：事实键平行通道——store 未实现（如 tcvdb 服务端 embedding）或未开启
   // → 通道退出（零调用）。normalized 模式下通道分进归一化融合、否则按 RRF 贡献并入池。
   const normalizedMode = normalizedFusionEnabled(fusion);
-  const factSearch = factChannel?.enabled === true && typeof vectorStore.searchL1FactVector === "function"
-    ? vectorStore.searchL1FactVector.bind(vectorStore)
-    : undefined;
+  const factSearch =
+    factChannel?.enabled === true && typeof vectorStore.searchL1FactVector === "function"
+      ? vectorStore.searchL1FactVector.bind(vectorStore)
+      : undefined;
   const factWeight = factChannelWeightOf(factChannel, fusion);
   const factTopK = factChannel?.candidateK ?? candidateK;
 
@@ -3708,7 +4054,8 @@ export async function searchHybrid(
   // 注意：向量腿已经起跑，JS 里取消不掉——它会跑完并把 embedding 写进 TTL 缓存
   // （cachedQueryEmbedding），下一轮同 query 直接命中，这不是浪费而是预热。
   // 代价：本轮的 fact 通道（在向量腿里）随向量腿一起丢弃 —— 降级轮只保 FTS 一条腿。
-  const budgetMs = l1Budget && l1Budget.fallback === "fts" ? Math.max(0, l1Budget.deadlineAt - performance.now()) : undefined;
+  const budgetMs =
+    l1Budget && l1Budget.fallback === "fts" ? Math.max(0, l1Budget.deadlineAt - performance.now()) : undefined;
   let budgetHit = false;
   let keywordResult: Awaited<typeof keywordLegPromise>;
   let embeddingResult: Awaited<typeof embeddingLegPromise>;
@@ -3721,8 +4068,10 @@ export async function searchHybrid(
     keywordResult = await keywordLegPromise;
     embeddingResult = { results: [] as L1SearchResult[], factResults: [] as L1SearchResult[], factMs: 0, ms: 0 };
     logger?.info?.(
-      TAG + " [hybrid-budget] L1 budget already exhausted at L1 entry -> FTS-only fallback (ftsHits=" +
-      keywordResult.records.length + ")",
+      TAG +
+        " [hybrid-budget] L1 budget already exhausted at L1 entry -> FTS-only fallback (ftsHits=" +
+        keywordResult.records.length +
+        ")",
     );
   } else {
     const BUDGET_SENTINEL = "__l1_budget_timeout__";
@@ -3745,8 +4094,15 @@ export async function searchHybrid(
         ms: budgetMs,
       };
       logger?.warn?.(
-        TAG + " [hybrid-budget] vector leg exceeded L1 budget (" + Math.round(budgetMs) + "ms, fallback=fts) -> " +
-        "FTS-only (ftsHits=" + keywordResult.records.length + ", ftsMs=" + Math.round(keywordResult.ms) + ")",
+        TAG +
+          " [hybrid-budget] vector leg exceeded L1 budget (" +
+          Math.round(budgetMs) +
+          "ms, fallback=fts) -> " +
+          "FTS-only (ftsHits=" +
+          keywordResult.records.length +
+          ", ftsMs=" +
+          Math.round(keywordResult.ms) +
+          ")",
       );
     } else {
       embeddingResult = raced;
@@ -3761,9 +4117,10 @@ export async function searchHybrid(
   // 同 id 去重留最高分（store 已按距离排序，这里只做防御性归并）。
   const factOnlyTypes =
     factChannel?.onlyForTypes && factChannel.onlyForTypes.length > 0 ? new Set(factChannel.onlyForTypes) : null;
-  const factMinScore = typeof factChannel?.minScore === "number" && Number.isFinite(factChannel.minScore)
-    ? factChannel.minScore
-    : threshold;
+  const factMinScore =
+    typeof factChannel?.minScore === "number" && Number.isFinite(factChannel.minScore)
+      ? factChannel.minScore
+      : threshold;
   const factByScore = new Map<string, L1SearchResult>();
   for (const r of factSearch ? embeddingResult.factResults : []) {
     if (!r || typeof r.record_id !== "string") continue;
@@ -3781,17 +4138,13 @@ export async function searchHybrid(
     if (!json) return {};
     try {
       const parsed = JSON.parse(json) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
     } catch {
       return {};
     }
   };
   const coreRefHitOf = (metadata: Record<string, unknown> | undefined): number =>
-    coreRefActive && metadata
-      ? resolveCoreRefBoost({ metadata }, rankSignal!.firedLabels, rankSignal!.boost)
-      : 0;
+    coreRefActive && metadata ? resolveCoreRefBoost({ metadata }, rankSignal!.firedLabels, rankSignal!.boost) : 0;
   // R-A1：结构信号预处理（rankSignal 缺席 = 纯基线；在场但全 0 = 关断恒等）
   const signalCtx = rankSignal
     ? {
@@ -3800,8 +4153,7 @@ export async function searchHybrid(
         signals: rankSignal.signals,
         now: rankSignal.now,
         // #135 R3：query 当下时态命中 × 配置开关（关断时恒 false = 零加成）
-        presentTemporal:
-          (rankSignal.signals.presentTemporalBoost ?? 0) > 0 && rankSignal.presentTemporal,
+        presentTemporal: (rankSignal.signals.presentTemporalBoost ?? 0) > 0 && rankSignal.presentTemporal,
       }
     : undefined;
   const structOf = (src: RankSignalItem | undefined): { signal: number; mult: number } =>
@@ -3810,7 +4162,6 @@ export async function searchHybrid(
           signal: structuralSignalOf(src, signalCtx),
           mult:
             certaintyMultiplierOf(src, signalCtx.signals.inferredPenalty) *
-            sensitivityMultiplierOf(src, signalCtx.signals.sensitivityPenalty ?? 0) *
             // P1-T7：重要度降权乘子（enabled 时非 0；关断恒 0 → 恒 1 = 排序逐位不变）
             importanceMultiplierOf(src, signalCtx.signals.importancePenalty ?? 0),
         }
@@ -3897,7 +4248,8 @@ export async function searchHybrid(
       // A3（REG-REMAINING-001）终极修复：keyword 通道的 soul 单独携带（R-A1 设计）但池插入
       // 只用 r.record 构造 formatable → 分离的 soul 从未并回 → FTS 通道行无 soul 标注。
       // 修复：并回标注所需四字段（与 embedding 通道 vectorResultToFormatable 对齐）。
-      const kwSoul = r.soul as { occurred_at?: string; certainty?: string; valence?: number; significance?: number } | undefined;
+      const kwSoul = r.soul as
+        { occurred_at?: string; certainty?: string; valence?: number; significance?: number } | undefined;
       mergedMap.set(id, {
         rrfScore: fusionContribution,
         certainty: (r.soul as { certainty?: string } | undefined)?.certainty,
@@ -4074,7 +4426,8 @@ export async function searchHybrid(
           dense: cs.dense,
           bm25: cs.bm25,
           fact: cs.fact,
-          recency: fusionW.recency > 0 ? recencyNormOf(v.formatable.occurred_at, fusionNow, fusionHalfLifeDays) : undefined,
+          recency:
+            fusionW.recency > 0 ? recencyNormOf(v.formatable.occurred_at, fusionNow, fusionHalfLifeDays) : undefined,
           validity: fusionW.validity > 0 ? validityNormOf(v.validStart, v.validEnd, fusionNow) : undefined,
         },
         normWeights,
@@ -4143,13 +4496,12 @@ export async function searchHybrid(
     return b.mult - a.mult;
   };
   const sortEntries = () =>
-    [...mergedMap.entries()]
-      .sort((a, b) => {
-        const aDur = a[1].formatable.type === "work_fact" ? 0 : 1;
-        const bDur = b[1].formatable.type === "work_fact" ? 0 : 1;
-        if (aDur !== bDur) return aDur - bDur;
-        return compareLex(a[1], b[1]);
-      });
+    [...mergedMap.entries()].sort((a, b) => {
+      const aDur = a[1].formatable.type === "work_fact" ? 0 : 1;
+      const bDur = b[1].formatable.type === "work_fact" ? 0 : 1;
+      if (aDur !== bDur) return aDur - bDur;
+      return compareLex(a[1], b[1]);
+    });
   let sorted = sortEntries();
   /** R5 触发判定锚：主检索结果数（R4 扩展前，与工具侧同口径"主检索结果 < limit 一半"）。 */
   const mainHitCount = sorted.length;
@@ -4159,15 +4511,17 @@ export async function searchHybrid(
   // 候选分 = maxHitScore×discount×pprNorm（非种子天花板 = maxHitScore×discount，折扣语义
   // 保持）+ [graph:ppr:kind] 标注。auto-recall L1 召回为全局路径（无 IsolationFilter，
   // 与主检索现状一致）；graph.discount=0 / rank 缺 graph → 通道退出（getNeighbors 零调用）。 ──
-  if (rankSignal?.graph && rankSignal.graph.discount > 0 && mainHitCount > 0 &&
-      typeof vectorStore.getNeighbors === "function" &&
-      (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")) {
+  if (
+    rankSignal?.graph &&
+    rankSignal.graph.discount > 0 &&
+    mainHitCount > 0 &&
+    typeof vectorStore.getNeighbors === "function" &&
+    (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")
+  ) {
     try {
       const graph = rankSignal.graph;
       const resolveByIds = (ids: string[]) =>
-        vectorStore.getL1ByIdsWithArchive
-          ? vectorStore.getL1ByIdsWithArchive(ids)
-          : vectorStore.getL1ByIds!(ids);
+        vectorStore.getL1ByIdsWithArchive ? vectorStore.getL1ByIdsWithArchive(ids) : vectorStore.getL1ByIds!(ids);
       const seen = new Set(mergedMap.keys());
       const seedScoreSum = sorted.reduce((s, [, v]) => s + (v.rrfScore > 0 ? v.rrfScore : 0), 0);
       if (seedScoreSum > 0) {
@@ -4182,9 +4536,7 @@ export async function searchHybrid(
         if (edges.length > 0) {
           const maxHitScore = Math.max(...sorted.map(([, v]) => v.rrfScore));
           // #137：normalized 模式下图扩散分按 relevance 刻度派生（同量纲，不混刻度）
-          const maxHitRelevance = normalizedMode
-            ? Math.max(...sorted.map(([, v]) => v.relevance ?? v.rrfScore))
-            : 0;
+          const maxHitRelevance = normalizedMode ? Math.max(...sorted.map(([, v]) => v.relevance ?? v.rrfScore)) : 0;
           const detail = runPPRDetail(seeds, edges, {
             damping: graph.pprDamping ?? PPR_DEFAULTS.damping,
             topK: graph.pprTopK ?? PPR_DEFAULTS.topK,
@@ -4232,10 +4584,16 @@ export async function searchHybrid(
   // ── R-A2（R5 价值反查补池）：主检索结果数 < limit 一半 + fired 锚 → 反查 coreRefs
   // 匹配记忆补池（rrfScore=0 + [value:锚] 标注；位次由 coreRef 通道加成赋予）。
   // boost=0（值通道关）→ 不触发。 ──
-  if (rankSignal && rankSignal.boost > 0 && rankSignal.firedLabels.length > 0 &&
-      mainHitCount * 2 < maxResults && typeof vectorStore.searchL1ByCoreRefs === "function") {
+  if (
+    rankSignal &&
+    rankSignal.boost > 0 &&
+    rankSignal.firedLabels.length > 0 &&
+    mainHitCount * 2 < maxResults &&
+    typeof vectorStore.searchL1ByCoreRefs === "function"
+  ) {
     try {
-      const rows = ((await vectorStore.searchL1ByCoreRefs([...rankSignal.firedLabels], maxResults, isolationFilter)) ?? []) as L1SearchResult[];
+      const rows = ((await vectorStore.searchL1ByCoreRefs([...rankSignal.firedLabels], maxResults, isolationFilter)) ??
+        []) as L1SearchResult[];
       let added = 0;
       for (const r of rows) {
         if (mergedMap.has(r.record_id)) continue;
@@ -4278,9 +4636,7 @@ export async function searchHybrid(
     const r7Seen = new Set(mergedMap.keys());
     const r7Excluded = layered.excludeIds.length > 0 ? new Set(layered.excludeIds) : null;
     const r7ResolveByIds = (ids: string[]) =>
-      vectorStore.getL1ByIdsWithArchive
-        ? vectorStore.getL1ByIdsWithArchive(ids)
-        : vectorStore.getL1ByIds!(ids);
+      vectorStore.getL1ByIdsWithArchive ? vectorStore.getL1ByIdsWithArchive(ids) : vectorStore.getL1ByIds!(ids);
     let r7Added = 0;
     const r7AddToPool = (rows: L1SearchResult[], sceneOf: (r: L1SearchResult) => string) => {
       for (const r of rows) {
@@ -4304,8 +4660,11 @@ export async function searchHybrid(
       }
     };
     // ① part_of 证据链优先（consolidation 建的证据边，现成数据）
-    if (layered.conclusionRefs.length > 0 && typeof vectorStore.getNeighbors === "function" &&
-        (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")) {
+    if (
+      layered.conclusionRefs.length > 0 &&
+      typeof vectorStore.getNeighbors === "function" &&
+      (typeof vectorStore.getL1ByIdsWithArchive === "function" || typeof vectorStore.getL1ByIds === "function")
+    ) {
       try {
         for (const ref of layered.conclusionRefs) {
           if (sorted.length + r7Added >= maxResults) break;
@@ -4331,11 +4690,15 @@ export async function searchHybrid(
       }
     }
     // ② 同 scene 过滤（补池行标注取自身 scene_name，诚实归属）
-    if (layered.sceneNames.length > 0 && sorted.length + r7Added < maxResults &&
-        typeof vectorStore.searchL1ByScene === "function") {
+    if (
+      layered.sceneNames.length > 0 &&
+      sorted.length + r7Added < maxResults &&
+      typeof vectorStore.searchL1ByScene === "function"
+    ) {
       try {
         const remaining = maxResults - sorted.length - r7Added;
-        const rows = ((await vectorStore.searchL1ByScene([...layered.sceneNames], remaining, isolationFilter)) ?? []) as L1SearchResult[];
+        const rows = ((await vectorStore.searchL1ByScene([...layered.sceneNames], remaining, isolationFilter)) ??
+          []) as L1SearchResult[];
         const fallbackScene = layered.sceneNames[0];
         r7AddToPool(rows, (r) =>
           typeof r.scene_name === "string" && r.scene_name ? r.scene_name.split("/")[0] : fallbackScene,
@@ -4414,6 +4777,16 @@ export async function searchHybrid(
   const validityStatsOf = (rows: readonly MergedPoolValue[]) =>
     validityFilterStats(rows, validityNow ?? new Date(), validityMode, validityAccessors);
   const validityPoolStats = validityEnabled(excludeInvalidated) ? validityStatsOf(sorted.map(([, v]) => v)) : undefined;
+  let validitySoftDemoted: number | undefined;
+  /**
+   * #148 伴生（ADR-0025 D5）：**软降权之前**的池内 max relevance。
+   *
+   * 精排的 relevanceNorm 是「自身分 ÷ 池内 max」。soft 档先把 expired 行 ×penalty 再精排，
+   * 若分母仍取降权后的池，分母同步缩水 → 降权行的归一值又回到 1，降权在 relevance 项上
+   * 被抵消；工具路已由 relevanceScalePreSoft 参数修好，钩子路此前**没传**（同一缺陷的第二半）。
+   * 口径：分母必须覆盖降权后仍在池里的所有正分 = kept 里的降权前最大值。
+   */
+  let relevancePreSoft: number | undefined;
   if (excludeInvalidated === "soft") {
     const now = validityNow ?? new Date();
     // #148：soft 档两个可调项走配置（缺省 = #136 逐位行为：hardOnPresentIntent=true、
@@ -4431,23 +4804,35 @@ export async function searchHybrid(
       related: ([, expired], [, active]) =>
         contentTokenOverlap(expired.formatable?.content, active.formatable?.content),
     });
-    const droppedIds = new Set(sel.dropped.map(([id]) => id));
+    // #136/#148（2026-11-04）：soft 的顺序契约由 selectByValidity 给出——kept =
+    // 「active 保序在前 + demoted 保序在后」。必须**按 kept 重排**，不能只改分数再从原 sorted
+    // filter：后者丢掉 kept 顺序，过期行原地不动，「降权保留」在钩子路退化成「只降权不沉底」，
+    // 与工具路（memory-search → demoteSoftValidity → 直接用 kept）顺序契约不一致。
+    // 分数乘子保留：精排权重非 0 时它是 relevance 刻度的降权证据；权重为 0（生产 rerankWeights
+    // 全 0 → 比较器恒等）时，靠这里的确定性沉底仍然生效。
     const demotedIds = new Set(sel.demoted.map(([id]) => id));
-    sorted = sorted
-      .filter(([id]) => !droppedIds.has(id))
-      .map(([id, v]) =>
-        demotedIds.has(id)
-          ? ([
-              id,
-              {
-                ...v,
-                rrfScore: v.rrfScore * softPenalty,
-                // #137：normalized 模式主序是 relevance——降权必须同刻度落在主序上，否则软失效失效
-                ...(v.relevance !== undefined ? { relevance: v.relevance * softPenalty } : {}),
-              },
-            ] as [string, MergedPoolValue])
-          : [id, v],
-      );
+    validitySoftDemoted = demotedIds.size;
+    // kept 里的 value 仍是降权前的对象（乘子只落在下面重排出的新元组上），此处取最大值即为
+    // 「降权前池内 max」；被 future/hard 丢掉的行不在 kept 里，不参与分母。
+    relevancePreSoft = sel.kept.reduce((m, [, v]) => {
+      const r = v.relevance ?? v.rrfScore;
+      return Number.isFinite(r) && r > m ? r : m;
+    }, 0);
+    // applyKeptOrder 同时完成两件事：丢掉不在 kept 里的行（= dropped/future），并按 kept 顺序
+    // 重排（active 原序在前、demoted 原序沉底）。
+    sorted = applyKeptOrder(sorted, sel.kept).map(([id, v]) =>
+      demotedIds.has(id)
+        ? ([
+            id,
+            {
+              ...v,
+              rrfScore: v.rrfScore * softPenalty,
+              // #137：normalized 模式主序是 relevance——降权必须同刻度落在主序上，否则软失效失效
+              ...(v.relevance !== undefined ? { relevance: v.relevance * softPenalty } : {}),
+            },
+          ] as [string, MergedPoolValue])
+        : [id, v],
+    );
   }
 
   // ── RV2-2（精排重设计 + E3.1 探索位）：与工具路 executeMemorySearch 截断前同层
@@ -4458,14 +4843,16 @@ export async function searchHybrid(
   // now 锚点沿 R-A1 纪律（rankSignal.now 快照；缺省 new Date()）。 ──
   const v2Now = rankSignal?.now ?? new Date();
   // Batch C C-b（#77 伴生 · survey F6b）：衰减乘子/时间锚回退（缺省 undefined/false = 逐位现状）
-  const r7AgeDecay = ageDecay && Number.isFinite(ageDecay.halfLifeDays) && ageDecay.halfLifeDays > 0 ? ageDecay : undefined;
+  const r7AgeDecay =
+    ageDecay && Number.isFinite(ageDecay.halfLifeDays) && ageDecay.halfLifeDays > 0 ? ageDecay : undefined;
   sorted = applyCompositeRerank(
     sorted,
     ([, v]) => ({
       // #137：normalized 模式下 relevance 已是 0..1 的通道归一化融合分（主序口径）
       relevance: v.relevance ?? v.rrfScore,
       // fallback 锚=formatable.timestamp（记录创建时刻：kw 路 record.timestamps[0] :2938 / 向量路 r.timestamp_str :3010，两 converter 均带）
-      occurredAt: v.formatable.occurred_at ?? (timeProxFallbackEnabled === true ? (v.formatable.timestamp ?? null) : null),
+      occurredAt:
+        v.formatable.occurred_at ?? (timeProxFallbackEnabled === true ? (v.formatable.timestamp ?? null) : null),
       significance: v.formatable.significance,
       coreRefCount: v.coreRefCount,
       isWorkFact: v.formatable.type === "work_fact",
@@ -4473,6 +4860,8 @@ export async function searchHybrid(
     rerankWeights ?? DEFAULT_COMPOSITE_WEIGHTS,
     v2Now,
     r7AgeDecay,
+    // 只有 soft 档才需要降权前分母；其余档传 undefined = 逐位现状（分母=当前池 max）。
+    relevancePreSoft,
   );
   if (exploreSlot !== false) {
     sorted = applyExploreSlot(
@@ -4523,13 +4912,13 @@ export async function searchHybrid(
     if (collapsed.stats.collapsed > 0) {
       logger?.debug?.(
         `${TAG} [W2b-fact-rows] collapsed ${collapsed.stats.collapsed} fact-row hit(s) into parent turns` +
-        ` (${collapsed.stats.before}→${collapsed.stats.after})`,
+          ` (${collapsed.stats.before}→${collapsed.stats.after})`,
       );
     }
     if (collapsed.stats.maskedRows > 0 || collapsed.stats.droppedRows > 0) {
       logger?.debug?.(
         `${TAG} [W2b-fact-rows] present-intent value masking: ${collapsed.stats.maskedRows} row(s) re-rendered as fact phrase,` +
-        ` ${collapsed.stats.droppedRows} turn(s) left with no injectable row (stale values=${collapsed.stats.staleValues})`,
+          ` ${collapsed.stats.droppedRows} turn(s) left with no injectable row (stale values=${collapsed.stats.staleValues})`,
       );
     }
   }
@@ -4545,13 +4934,61 @@ export async function searchHybrid(
       ([, v]) => !isOutsideValidityWindow({ valid_start: v.validStart, valid_end: v.validEnd }, exclusionNow),
     );
   }
+  // ── D-3（ADR-0025 决定 4）：敏感度注入门（唯一注入点，排序不读 sensitivity）────────
+  // 语义：sensitivity 不是「排后面」，而是「这行能不能出现在本轮上下文里」。放行面只有
+  // private（可验证归属的本人会话），其余一律 fail-closed。可见性由候选池归属推导
+  //（audienceOfOwnerScope：池按 user_id 收窄且非 default 兜底桶 ⇒ private），不猜群聊。
+  // 生产库非 none 标注只有个位数行，全在本人会话里 → 本门今天逐位不改行为；被拦行
+  // 计数进 gates.sensitivity（scanned=0 时整块缺省，不给 journal 塞噪声）。
+  const validityVisible = visibleTop;
+  const sensitivityCtx = audienceOfOwnerScope({ userId: isolationFilter?.userId }, DEFAULT_ISOLATION_ID);
+  let sensitivityGate:
+    | {
+        audience: RecallAudience;
+        scanned: number;
+        blocked: number;
+        byReason?: Partial<Record<SensitivityBlockReason, number>>;
+      }
+    | undefined;
+  if (visibleTop.length > 0) {
+    const kept: typeof visibleTop = [];
+    const blocked: Array<{ item: (typeof visibleTop)[number]; decision: SensitivityDecision }> = [];
+    let scanned = 0;
+    for (const entry of visibleTop) {
+      const formatable = entry[1].formatable;
+      if (isSensitiveRecord(formatable)) scanned += 1;
+      const decision = decideSensitivityInjection(formatable, sensitivityCtx);
+      if (decision.injectable) kept.push(entry);
+      else blocked.push({ item: entry, decision });
+    }
+    if (scanned > 0) {
+      const byReason = countBlockedByReason({ blocked });
+      sensitivityGate = {
+        audience: resolveAudience(sensitivityCtx),
+        scanned,
+        blocked: blocked.length,
+        ...(Object.keys(byReason).length > 0 ? { byReason } : {}),
+      };
+    }
+    if (blocked.length > 0) {
+      visibleTop = kept;
+      logger?.debug?.(
+        `${TAG} [D-3-sensitivity] blocked ${blocked.length} sensitive row(s) from injection ` +
+          `(audience=${resolveAudience(sensitivityCtx)}, scanned=${scanned})`,
+      );
+    }
+  }
+
   // F7：三层效期计数（pool / top / injected）。
   // 注意 injected 不能对 visibleTop 求 stats——幸存集里按定义没有失效行，那样算出来的
   // dropped 恒为 0（"注入口径"就会退化成永远没问题）。注入层要统计的是**被移出 top 的
   // 那些行**：active = 真正注入的行数，dropped = 注入少了的行数，expired/future 拆原因。
+  // 与 D-3 的关系：效期口径只数效期（removedAtInjection 取 D-3 之前的快照 validityVisible），
+  // 敏感门拦掉的行不进 validity.dropped，单独记在 gates.sensitivity.blocked；三者对账恒等式
+  // top.length = validity.injected.active + validity.injected.dropped + sensitivity.blocked。
   const validityGate = validityPoolStats
     ? (() => {
-        const visibleIds = new Set(visibleTop.map(([id]) => id));
+        const visibleIds = new Set(validityVisible.map(([id]) => id));
         const removedAtInjection = top.filter(([id]) => !visibleIds.has(id)).map(([, v]) => v);
         const removedStats = validityStatsOf(removedAtInjection);
         return {
@@ -4565,6 +5002,9 @@ export async function searchHybrid(
             dropped: removedAtInjection.length,
           },
           validEndFiltered: validityPoolStats.dropped,
+          // soft 档实际沉底的行数（hard/off 无此字段）。没有它，journal 里
+          // pool/top/injected.dropped 在 soft 恒 0（只数 future），无法证明降权发生过。
+          ...(validitySoftDemoted !== undefined ? { demoted: validitySoftDemoted } : {}),
         };
       })()
     : undefined;
@@ -4572,7 +5012,7 @@ export async function searchHybrid(
   if (top.length > 0) {
     logger?.debug?.(
       `${TAG} Hybrid search found ${top.length} results ` +
-      `(keyword=${keywordResults.length}, embedding=${embeddingResults.length})`,
+        `(keyword=${keywordResults.length}, embedding=${embeddingResults.length})`,
     );
     // GROW-EVO P2（§2.3）：召回默认排除失效记忆（excludeInvalidated，spec 拍板①缺省
     // true；现存库无失效行 = 逐位不变）。过滤在 bump 之前——失效记忆连 recall_count
@@ -4588,7 +5028,8 @@ export async function searchHybrid(
     // （工具路重巩固白名单同款红线），只加计数、不刷 updated_time（防扰动既有排序）。
     // best-effort：失败静默（计数非排序语义）；bumpRecallCount 缺失的后端安静跳过。
     try {
-      const bumpStore = vectorStore as { bumpRecallCount?: (id: string, now?: string, opts?: { touchUpdatedTime?: boolean }) => boolean } | undefined;
+      const bumpStore = vectorStore as
+        { bumpRecallCount?: (id: string, now?: string, opts?: { touchUpdatedTime?: boolean }) => boolean } | undefined;
       if (bumpStore && typeof bumpStore.bumpRecallCount === "function") {
         const recallNow = new Date().toISOString();
         for (const [bumpId, bumpVal] of visibleTop.slice(0, 3)) {
@@ -4598,7 +5039,9 @@ export async function searchHybrid(
           );
         }
       }
-    } catch { /* bookkeeping best-effort */ }
+    } catch {
+      /* bookkeeping best-effort */
+    }
     // P1-T7：重要度降权观测日志（rank.importanceGate 在场即产出——penalized=实际分，raw=反推值）。
     // 无 gate = 缺字段 = 门未启用（journal/下游口径）；空池早退不产出（无可观测语义）。
     const importanceGateOut = rankSignal?.importanceGate
@@ -4607,6 +5050,7 @@ export async function searchHybrid(
     const gatesOut = {
       ...(importanceGateOut ?? {}),
       ...(validityGate ? { validity: validityGate } : {}),
+      ...(sensitivityGate ? { sensitivity: sensitivityGate } : {}),
     };
     return {
       lines: visibleTop.map(([, { formatable }]) => formatMemoryLine(formatable)),
@@ -4745,13 +5189,15 @@ export function formatMemoryLine(m: FormatableMemory): string {
   }
   // If all three are empty → no time info appended (graceful)
 
-  // 审计 B4：灵魂字段标注（发生时刻/确定性/情感/重要度），与 tdai_memory_search 的回忆片段对齐。
+  // 审计 B4：灵魂字段标注（发生时刻/确定性/情感/显著性），与 tdai_memory_search 的回忆片段对齐。
   // 只在有值时追加，宁缺毋滥；保持行首 "- [tag] content" 结构，metric 解析正则（^-\s+\[([^\]]+)\]）不被破坏。
+  // 译名（ADR-0025 决定 13 / C 项）：significance 一律称「显著性」，不叫「重要度」——
+  // 「重要度」是 importance（1-10 整数、人工可调）的专名，两者语义不同（0-1 连续 vs 1-10 评分）。
   const soul: string[] = [];
   if (m.occurred_at) soul.push(`发生 ${m.occurred_at.slice(0, 10)}`);
   if (m.certainty) soul.push(m.certainty === "inferred" ? "推断" : "实见");
   if (m.valence != null) soul.push(`情感 ${m.valence.toFixed(1)}`);
-  if (m.significance != null) soul.push(`重要度 ${m.significance.toFixed(2)}`);
+  if (m.significance != null) soul.push(`显著性 ${m.significance.toFixed(2)}`);
   // D-3：敏感性徽章（none/缺失 → 不标注；宁缺毋滥）
   const SENS_LABEL: Record<string, string> = { health: "健康", finance: "财务", relationship: "关系" };
   if (m.sensitivity && m.sensitivity !== "none" && SENS_LABEL[m.sensitivity]) {
@@ -4790,9 +5236,7 @@ function applyRecallBudget(lines: string[], recall: MemoryTdaiConfig["recall"], 
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const perMemoryBounded = maxCharsPerMemory
-      ? truncateRecallLine(line, maxCharsPerMemory)
-      : line;
+    const perMemoryBounded = maxCharsPerMemory ? truncateRecallLine(line, maxCharsPerMemory) : line;
     let wasTruncated = perMemoryBounded !== line;
 
     if (!maxTotalRecallChars) {
@@ -4829,8 +5273,8 @@ function applyRecallBudget(lines: string[], recall: MemoryTdaiConfig["recall"], 
   if (truncatedCount > 0 || droppedCount > 0) {
     logger?.debug?.(
       `${TAG} Recall budget applied: input=${lines.length}, output=${budgeted.length}, ` +
-      `truncated=${truncatedCount}, dropped=${droppedCount}, ` +
-      `maxCharsPerMemory=${recall.maxCharsPerMemory}, maxTotalRecallChars=${recall.maxTotalRecallChars}`,
+        `truncated=${truncatedCount}, dropped=${droppedCount}, ` +
+        `maxCharsPerMemory=${recall.maxCharsPerMemory}, maxTotalRecallChars=${recall.maxTotalRecallChars}`,
     );
   }
 
@@ -4851,7 +5295,10 @@ function truncateRecallLine(line: string, maxChars: number): string {
   if (maxChars <= RECALL_TRUNCATION_SUFFIX.length) {
     return cps.slice(0, maxChars).join("");
   }
-  return `${cps.slice(0, maxChars - RECALL_TRUNCATION_SUFFIX.length).join("").trimEnd()}${RECALL_TRUNCATION_SUFFIX}`;
+  return `${cps
+    .slice(0, maxChars - RECALL_TRUNCATION_SUFFIX.length)
+    .join("")
+    .trimEnd()}${RECALL_TRUNCATION_SUFFIX}`;
 }
 
 /**

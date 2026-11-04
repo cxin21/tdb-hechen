@@ -36,7 +36,8 @@
   --mem-sem-similar: #5b6bff;
   --mem-sem-evolve: #1a9d63;
   --mem-sem-conflict: #e5484d;
-  --mem-sem-causal: #e8872a;
+  --mem-sem-derived_from: #16a34a;
+  --mem-sem-evolved_from: #e8872a;
   --mem-sem-part_of: #8b5cf6;
   --mem-sem-coreref-gold: #f5c542;
   --mem-sem-valence-pos: #5c9a1e;
@@ -88,7 +89,8 @@
   --mem-sem-similar: #8b96ff;
   --mem-sem-evolve: #3ecf8e;
   --mem-sem-conflict: #ff6b70;
-  --mem-sem-causal: #ffa14f;
+  --mem-sem-derived_from: #4ade80;
+  --mem-sem-evolved_from: #ffa14f;
   --mem-sem-part_of: #b18cff;
   --mem-sem-coreref-gold: #ffd966;
   --mem-sem-valence-pos: #8fce4e;
@@ -1138,6 +1140,19 @@
   color: var(--mem-sem-inferred);
   background: var(--mem-soft-inferred);
 }
+/* D-3（ADR-0025 决定 4）：敏感度 = 注入门（不是排序）。命中时卡片上必须看得见，
+   否则运维无法判断「这行为什么没被注入」。unclassified 用更重的红（门恒拦）。 */
+._soul-chip--sensitive {
+  color: var(--mem-sem-inferred);
+  background: var(--mem-soft-inferred);
+  font-weight: 600;
+}
+._soul-chip--sensitive-unclassified {
+  color: var(--mem-sem-inferred);
+  background: var(--mem-soft-inferred);
+  border: 1px solid var(--mem-sem-inferred);
+  font-weight: 600;
+}
 
 /* ── U-A1 灵魂区（SoulSection）：valence 双色条 / 强度·重要性进度条 ──
    双色条：负红左、正绿右，中线为零点，深色标记 = 当前值落点（-1..1 → 0..100%）。 */
@@ -1278,6 +1293,18 @@
   font-size: var(--mem-fs-meta);
   color: var(--mem-ink-faint);
   padding: 2px 0;
+}
+/* 邻居属性摘要（P2，2026-11-04）：内核已返回 significance/certainty/valid_*/occurred_at，
+   这里以紧凑 chips 呈现；内容溢出用省略号，完整文本走 title。 */
+._nb-attrs {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--mem-ink-faint);
 }
 
 /* ── U-A3 关联链（RelatedSection）：getPath 两节点最短路径可视化 ── */
@@ -1576,6 +1603,19 @@
   white-space: nowrap;
 }
 
+/* 类型过滤（仅 L1）：与搜索框同排，窄宽不抢输入区；原生 select 以保持零依赖。 */
+._memory-detail-search-type {
+  flex: 0 0 auto;
+  max-width: 168px;
+  height: 32px;
+  padding: 0 8px;
+  font-size: var(--mem-fs-meta);
+  color: var(--tea-color-text-primary);
+  background: var(--tea-color-bg-primary);
+  border: 1px solid var(--tea-color-border);
+  border-radius: 4px;
+}
+
 ._memory-detail-search-score {
   font-size: var(--mem-fs-meta);
   color: var(--tea-color-text-tertiary);
@@ -1847,7 +1887,7 @@
 ._nb-edge--part_of {
   color: #8b5cf6;
 }
-._nb-edge--causal {
+._nb-edge--evolved_from {
   color: #e8872a;
 }
 ._nb-edge--other {

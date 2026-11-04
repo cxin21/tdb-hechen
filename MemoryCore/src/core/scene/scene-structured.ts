@@ -487,7 +487,9 @@ export function buildStructuredFormGuidance(maxBlockBytes: number): string {
   return [
     "## 输出形态要求（结构化场景块，必须遵守）",
     "",
-    "每个场景块 <project>/scene_blocks/<name>.md 的正文必须按以下三段组织，META 段保持既有四字段（created / updated / summary / heat）不变：",
+    "每个场景块 <project>/scene_blocks/<name>.md 的正文必须按以下三段组织，META 段保持既有四字段（created / updated / summary / heat）不变，并在 heat 之后追加一行触发词：",
+    "",
+    "   META 追加行 keywords: <触发词，3-8 个中文原词短语，用「，」分隔> ——必须取自对话原文里真实出现过的词，不要造词、不要同义词扩写；用户提问命中其中任一短语时该场景块会被直接注入，所以要么精确、要么不写。",
     "",
     "1. " + SUMMARY_HEADING + "：1-3 句、不超过 200 字的事实性摘要，用于 14 行索引与召回（必须能独立读懂）。",
     "2. " +

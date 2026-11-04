@@ -11,7 +11,7 @@
  */
 import { createHash } from "node:crypto";
 import { embedForLifecycle } from "../embed-helpers.js";
-import type { IMemoryStore } from "../../store/types.js";
+import { LINK_TYPES, type IMemoryStore } from "../../store/types.js";
 import type { MemoryRecord } from "../../record/l1-writer.js";
 import type { LLMRunner, Logger } from "../../types.js";
 import {
@@ -535,7 +535,7 @@ export async function runConsolidation(deps: ConsolidationWorkerDeps): Promise<C
           if (deps.store.addLink && s.sourceIds.length > 0) {
             for (const ev of s.sourceIds) {
               try {
-                const ok = await Promise.resolve(deps.store.addLink(rec.id, ev, "part_of", 1));
+                const ok = await Promise.resolve(deps.store.addLink(rec.id, ev, LINK_TYPES.PART_OF, 1));
                 if (!ok) deps.logger?.warn?.(`[consolidation] part_of edge soft-failed (returned false): card=${rec.id} evidence=${ev}`);
               } catch (err) {
                 deps.logger?.warn?.(`[consolidation] part_of edge soft-failed: card=${rec.id} evidence=${ev} err=${err instanceof Error ? err.message : String(err)}`);

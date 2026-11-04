@@ -329,7 +329,8 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       // minScore 也被"救回"到窗口首位——否则 W3 把经验层预算压到 1 行时证据会直接消失
       // （实测 rerank-on 平均经验行 1.73 < off 2.33，LME90 判对 77.8% vs 86.7%）。
       // 其余低于 floor 的候选照旧丢弃（本用例只有 Marker1 低于 floor）。
-      expect(orderOf((res1.block ?? "").split("\n"))).toEqual(["Marker5", "Marker4", "Marker3", "Marker2", "Marker1"]);
+      // 2026-11-03 定案（LME90 四臂）：精排只定集合、呈现回融合序 ⇒ 块内顺序 = 融合下标升序。
+      expect(orderOf((res1.block ?? "").split("\n"))).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
       // run2：完全关闭
       const res2 = await performLayeredRecall(paramsFor(dir, store, `${KW} 复用探针`, makeCfg({})));
       expect(orderOf((res2.block ?? "").split("\n"))).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
@@ -339,6 +340,7 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
       const g1 = (entries[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown> | undefined;
       expect(g1).toBeDefined();
       expect(g1?.provider).toBe("siliconflow");
+      expect(g1?.presentation).toBe("fusion"); // 精排定集合、融合定呈现（本会话定案）
       expect(g1?.shadow).toBeUndefined(); // shadow 键已整体移除
       // #137-F：floor 不再让窗口比预算更饿——Marker1 被 floor 剔除后按融合序补回队尾，
       // kept=5/dropped=0（预算仍有空间时，floor 只裁"超出窗口"的尾部，不裁证据行）。
@@ -375,8 +377,8 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           { reranker: fake.reranker },
         ),
       );
-      // 精排序 [Marker3,Marker1,Marker2] + 未排序尾 [Marker4,Marker5]（原序）= 5 条；Marker6 被预算裁掉
-      expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker2", "Marker4", "Marker5"]);
+      // 精排集合 {3,1,2} + 未排序尾 {4,5} = 5 条（Marker6 被预算裁掉）；呈现恒为融合序（下标升序）
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
       expect(gate.shadow).toBeUndefined(); // shadow 键已整体移除
       expect(gate.kept).toBe(5);
@@ -407,8 +409,8 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           { reranker: fake.reranker },
         ),
       );
-      // 达线 [Marker2,Marker1,Marker4]；预算 5 有余量 → Marker3/Marker5 按融合序补回队尾
-      expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4", "Marker3", "Marker5"]);
+      // 达线集合 {2,1,4}；预算 5 有余量 → Marker3/Marker5 补回；呈现恒为融合序（下标升序）
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
       expect(gate.kept).toBe(5);
       expect(gate.dropped).toBe(0);
@@ -466,8 +468,8 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           paramsFor(dir, fallbackStore(rows), `${KW} i99等价探针`, makeCfg({}, { ...LOCAL_RERANK }), { reranker: fake.reranker }),
         );
         // sigmoid 单调：-0.5/2/-0.9 过线（0.3775/0.8808/0.2891 ≥ 0.2689），-3/-1.2 不过（0.0474/0.2315）
-        // #137-F：达线 [Marker3,Marker1,Marker5]；Marker2/Marker4 按融合序补回队尾
-        expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker5", "Marker2", "Marker4"]);
+        // #137-F：达线集合 {3,1,5}；Marker2/Marker4 补回；呈现恒为融合序（下标升序）
+        expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
         const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
         expect(gate.degraded).toBeUndefined();
         expect(gate.kept).toBe(5);
@@ -492,8 +494,8 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
         const res = await performLayeredRecall(
           paramsFor(dir, fallbackStore(rows), `${KW} i99native探针`, makeCfg({}, { ...SILICONFLOW_RERANK, minScore: 0 }), { reranker: fake.reranker }),
         );
-        // #137-F：达线 [Marker2,Marker1,Marker4]；Marker3/Marker5 按融合序补回队尾
-        expect(orderOf(res.memoryLines)).toEqual(["Marker2", "Marker1", "Marker4", "Marker3", "Marker5"]);
+        // #137-F：达线集合 {2,1,4}；Marker3/Marker5 补回；呈现恒为融合序（下标升序）
+        expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
         const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
         expect(gate.scoreScale).toBeUndefined();
         expect(gate.top01).toBeUndefined();
@@ -719,7 +721,8 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
         ),
       );
       expect(res.effectiveStrategy).toBe("hybrid");
-      expect(orderOf(res.memoryLines)).toEqual(["Marker3", "Marker1", "Marker2", "Marker4"]);
+      // 精排分序 [3,1,2,4] → 呈现回融合序
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4"]);
       const gate = (readJournal(dir)[0].gates as Record<string, unknown> | undefined)?.rerank as Record<string, unknown>;
       expect(gate.shadow).toBeUndefined();
       expect(gate.kept).toBe(4);
@@ -752,10 +755,10 @@ describe("P1 Task 2 · performLayeredRecall 精排接入（spec §4.5）", () =>
           { reranker: fake.reranker },
         ),
       );
-      expect(orderOf(res.memoryLines)).toEqual(["Marker5", "Marker4", "Marker3", "Marker2", "Marker1"]);
-      // scores 与行同源平行：重排后 scores[i] = 重排前行 scores[finalIdx]（浮点经管道透传，
-      // 允许机器精度误差）
-      const expectedScores = [0.75, 0.79, 0.83, 0.87, 0.91];
+      // 精排分序 [5,4,3,2,1] → 呈现回融合序（下标升序）
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
+      // scores 与行同源平行：呈现序下 scores[i] = 原序 scores[i]（Marker1→0.91 … Marker5→0.75）
+      const expectedScores = [0.91, 0.87, 0.83, 0.79, 0.75];
       res.recalledL1Memories.forEach((m, i) => expect(m.score).toBeCloseTo(expectedScores[i], 10));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1069,6 +1072,65 @@ describe("#144 · rerank.mode=\"filter\" 的题内相对尺子", () => {
       const rerankGate = gates?.rerank as Record<string, unknown> | undefined;
       expect(rerankGate?.kept).toBe(3);
       expect(rerankGate?.passCount).toBe(3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑧精排档不叠 dynamicTopK elbow：重排后 scores 已非名次序列，elbow 不得再砍注入（LME 031748ae 回归）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-dyntopk-gate-"));
+    try {
+      // 原始名次分单调缓降（相邻落差 0.02、span 0.08 → elbow 门槛 0.04，不切）；
+      // 精排把行序改成 M1,M5,M3,M4,M2 → 平行移植后的 scores 序列出现 0.08 落差
+      // （= span，≥ 门槛）→ 旧实现会 elbow 砍到 minTopK=2，把答案行切掉。
+      const nativeRows: L1SearchResult[] = episodicRows(5).map((r, i) => ({
+        ...r,
+        score: 0.91 - i * 0.02,
+      }));
+      const fake = markerTableReranker([
+        ["Marker1", 50],
+        ["Marker5", 40],
+        ["Marker3", 30],
+        ["Marker4", 20],
+        ["Marker2", 10],
+      ]);
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          nativeStore(nativeRows),
+          `${KW} 精排 elbow 探针`,
+          makeCfg(
+            { dynamicTopK: { enabled: true, minTopK: 2, dropRatio: 0.5 } },
+            { ...SILICONFLOW_RERANK, candidates: 12 },
+          ),
+          { reranker: fake.reranker },
+        ),
+      );
+      // 精排生效 → 选行口径交给精排 cap（=5 全额），elbow 不再参与收缩
+      expect(orderOf(res.memoryLines)).toEqual(["Marker1", "Marker2", "Marker3", "Marker4", "Marker5"]);
+      expect(res.memoryLines).toHaveLength(5);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("⑧b 对照：精排关断时 dynamicTopK elbow 照旧生效（同一分数几何不切）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rk2-dyntopk-off-"));
+    try {
+      const nativeRows: L1SearchResult[] = episodicRows(5).map((r, i) => ({
+        ...r,
+        score: 0.91 - i * 0.08,
+      }));
+      const res = await performLayeredRecall(
+        paramsFor(
+          dir,
+          nativeStore(nativeRows),
+          `${KW} 关档 elbow 探针`,
+          makeCfg({ dynamicTopK: { enabled: true, minTopK: 2, dropRatio: 0.5 } }),
+        ),
+      );
+      // 0.91/0.83/0.75/0.67/0.59：span=0.32、门槛 0.16、最大落差 0.08 < 门槛 → 不切
+      expect(res.memoryLines).toHaveLength(5);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

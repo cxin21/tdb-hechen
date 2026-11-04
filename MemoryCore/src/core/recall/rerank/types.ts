@@ -19,6 +19,18 @@ export interface RerankResult {
 /** spec §4.1 精排器统一接口（云端/local 各 provider adapter 均实现此接口）。 */
 export interface MemoryReranker {
   rerank(query: string, docs: string[]): Promise<RerankResult[] | null>;
+  /**
+   * 2026-11-04（可选）：预热 = 把「模型加载」显式移出打分预算。
+   * 本地 provider 冷启动 ≈0.9s，而滚动预算以 400ms 计时——不预热的话每轮首个块必被判超时，
+   * 整题丢精排（实测：并发臂里 3 题连丢就把熔断推到 open，后续 61 题全部跳过）。
+   * 云 provider 不实现（无加载成本）。
+   */
+  warmup?(): Promise<void>;
+  // 2026-11-04：曾设计过 cancelPending()「软超时取消 = 终止 worker 丢掉在途推理」，
+  // 实测**不可用**：onnxruntime 推理进行中 terminate worker 会触发原生崩溃带走整个进程
+  // （bench 侧 90 题臂 exit 127 / ACCESS_VIOLATION，5 题探针稳定复现；去掉该调用后同参数 exit 0）。
+  // 结论：放弃等待即可，**不要**为省 CPU 去杀在途推理——代价上限只是「一块（≤4 条）的延迟
+  // 记到下一题头上」，而杀 worker 的代价是整进程。
 }
 
 export type RerankProviderId = "siliconflow" | "dashscope" | "local" | "none";

@@ -34,6 +34,8 @@ import { renderStateLine, type SoulState } from "./soul-state.js";
 // #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事组装单一源
 //（模板常量+事实句逐字，无 LLM/随机/时钟；生成闸/写入闸/预算闸三闸内建）。
 import { NARRATIVE_TEMPLATE_VERSION, renderIdentityNarrative } from "./identity-narrative.js";
+// 缺口 A（2026-11-04）：人设版本与漂移审计——slot 图 / 键级 diff / 受控归因（纯函数层同一源）。
+import { buildSoulSlotMap, classifySoulChange, diffSoulSlots, parseSoulSlotMap, type SoulSlotSignals } from "./soul-versioning.js";
 
 /**
  * D-1（2026-09-21，用户拍板"全做"）：F17 截断改按行（事实）边界。
@@ -278,7 +280,7 @@ export function computeSoulVersion(
  *  负数 toString(16) 会产出 sv--xxx 双横线畸形——P14/P50 探针抓到后修正）。
  *  R5-F2：sv（人格指纹=slots/values/mood）与快照 contentHash（渲染字节哈希）共用
  *  本算法但语义不同——同 sv 可有多个布局 payload，contentHash 逐一入账不互抑。 */
-function fnv1a32Hex(s: string): string {
+export function fnv1a32Hex(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -287,10 +289,63 @@ function fnv1a32Hex(s: string): string {
   return h.toString(16).padStart(8, "0");
 }
 
+/** 缺口 A（2026-11-04）：soul 快照写入统一入口——版本链 + 受控归因 + slot 图。
+ *  保留既有语义：contentHash=渲染字节哈希（非 sv），同 hash 零落行（防膨胀，不刷版本号）；
+ *  新增：reasonCode（受控枚举）/ reasonDetail / slotsJson；version 与 parent_hash 由 store 在同一
+ *  写事务内从上一版推出（该 tenant 维度单调）。返回是否已确认落账（false=调用方下次重试）。
+ *  R5-F5 不变：吞错单点在调用方，本函数不抛出。 */
+async function recordSoulSnapshot(
+  store: IMemoryStore,
+  tenant: CoreTenant,
+  rendered: string,
+  signals: SoulSlotSignals,
+  logger?: Logger,
+): Promise<boolean> {
+  try {
+    const contentHash = fnv1a32Hex(rendered);
+    const last = store.readLastSoulSnapshot ? await Promise.resolve(store.readLastSoulSnapshot(tenant)) : null;
+    const lastHash = store.readLastSoulSnapshot
+      ? (last?.content_hash ?? null)
+      : ((await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant))) ?? null);
+    if (lastHash === contentHash) return true; // 内容未变：零落行（幂等，不刷版本号）
+    const slotMap = buildSoulSlotMap(signals);
+    const prevSlots = last ? parseSoulSlotMap(last.slots_json ?? null) : null;
+    // 旧行（迁移前）无 slots_json：上一版 slot 图不可得 → 如实归因 slots/previous-slots-unavailable，
+    // 不得冒充 first-version（版本链仍然有效，diff 退化为全 added）。
+    const prevSlotsAvailable = !last || Object.keys(prevSlots ?? {}).length > 0;
+    const diff = diffSoulSlots(prevSlotsAvailable ? prevSlots : null, slotMap);
+    const reason = classifySoulChange(diff, { previousSlotsAvailable: prevSlotsAvailable });
+    if (store.writeSoulSnapshot) {
+      await Promise.resolve(store.writeSoulSnapshot(tenant, {
+        ts: new Date().toISOString(),
+        contentHash,
+        payloadJson: rendered,
+        reasonCode: reason.code,
+        reasonDetail: reason.detail,
+        slotsJson: JSON.stringify(slotMap),
+      }));
+    }
+    return true;
+  } catch (err) {
+    logger?.warn?.(`[soul] soul snapshot capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 /** 立项③ TDB 内部完整实现（2026-09-23 拍板）：soul 前缀会话级缓存——指纹未变化跳过渲染，
  *  变化时重渲染并打「人格变更」日志（审计面）。Map 按租户隔离，上限 100 条。
  *  零外部依赖——整个优化闭环在 TDB 内核完成。 */
-const soulPrefixCache = new Map<string, { version: string; text: string; snapshotted?: boolean }>();
+/**
+ * 渲染结果缓存。`parts` 一并缓存（缺口 A 修正，ADR-0025 复核）：快照 slot 图由
+ * slots/values/**parts** 三段合成（soul-versioning.buildSoulSlotMap），而缓存命中路径的补账
+ * 拿不到当次渲染的 parts（函数局部数组已清空），只写 slots/values 会让同一个渲染字节在不同
+ * 写入路径产出两种 slot 图 —— 版本链上表现为「block:* 全部 removed 又 added」的幽灵变更。
+ * 因此把 parts 快照进缓存条目，命中路径用真实值补账，不做任何推测。
+ */
+const soulPrefixCache = new Map<
+  string,
+  { version: string; text: string; snapshotted?: boolean; parts?: string[] }
+>();
 const SOUL_CACHE_MAX = 100;
 
 /** #42 审查加固（F3 静默错红线）：scorer.enabled=true 但向量面缺席（embedder/query 向量均不在位）
@@ -314,9 +369,15 @@ export async function buildSoulPrefix(
   // 质量轮（2026-10-19）：降级渲染旗标——scorer embed 失败/超预算回退声明序时置位；
   // 函数尾 soulPrefixCache/soul 快照写入门守卫（降级串不得冒充完整渲染入缓存/账本）。
   let soulRenderDegraded = false;
+  // 缺口 A：尾写点（结果组装在 assemble try/catch 之外）也要能归因——信号提升到函数作用域。
+  // assembleOk=false（渲染中途抛错/降级）时不落 slot 图：宁可如实 slots/previous-slots-unavailable，
+  // 也不拿半截信号伪造 removed。
+  let snapshotSignals: SoulSlotSignals = {};
+  let assembleOk = false;
   try {
     const slots = ((await Promise.resolve(store.readCore?.(tenant))) ?? []) as Array<{ slot: string; content: string }>;
     const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ value_id?: string; label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
+    snapshotSignals = { slots, values };
     const activeAll = values.filter((v) => v.state === undefined || v.state === "active");
     // P2（spec §2.7）：person 锚分流——主题锚渲染不变（undefined → theme 旧库兼容）；
     // 人物锚进「重要的人」行（weight DESC，行数上限 opts.maxRelationLines 缺省 5），不与价值审慎/趋近语义混淆。
@@ -393,24 +454,16 @@ export async function buildSoulPrefix(
       // snapshotted 旗标=已确认落账（或确认无需写）→ 零额外查询；未确认才做一次
       // last-hash 去重检查（payload=缓存文本=同指纹同渲染，字节一致）。
       if (opts?.snapshotsEnabled !== false && !cached.snapshotted && cached.text !== "") {
-        try {
-          // R5-F2：contentHash=渲染字节哈希（非 sv）——同 sv 不同布局（渲染参数变体）
-          // 各自成行，账本对注入字节完整可查。
-          const contentHash = fnv1a32Hex(cached.text);
-          const lastHash = await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant));
-          if (lastHash !== contentHash && store.writeSoulSnapshot) {
-            await Promise.resolve(store.writeSoulSnapshot(tenant, {
-              ts: new Date().toISOString(),
-              contentHash,
-              payloadJson: cached.text,
-              trigger: "render",
-            }));
-          }
-          cached.snapshotted = true;
-        } catch (err) {
-          // R5-F5：吞错单点在调用方（store 直接抛出）；失败不置旗标 → 下次渲染自动补账。
-          logger?.warn?.(`[soul] soul snapshot capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-        }
+        // R5-F5：吞错单点在 recordSoulSnapshot（内部 warn）；失败不置旗标 → 下次渲染自动补账。
+        // 缺口 A 修正：parts 取缓存里的当次渲染分段（旧条目无该字段时退回空数组=只写 slots/values，
+        // 与历史行为一致，不伪造 block 键）。
+        cached.snapshotted = await recordSoulSnapshot(
+          store,
+          tenant,
+          cached.text,
+          { slots, values, parts: cached.parts ?? [] },
+          logger,
+        );
       }
       return cached.text;
     }
@@ -932,6 +985,7 @@ export async function buildSoulPrefix(
       }
       if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的状态\n${feel.join("\n")}\n</soul-feeling>`);
     }
+    assembleOk = true;
   } catch (err) {
     logger?.warn?.(`[soul] assemble failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -944,28 +998,19 @@ export async function buildSoulPrefix(
       const oldest = soulPrefixCache.keys().next().value;
       if (oldest !== undefined) soulPrefixCache.delete(oldest);
     }
-    const entry: { version: string; text: string; snapshotted?: boolean } = { version: soulVer, text: result };
+    const entry: { version: string; text: string; snapshotted?: boolean; parts?: string[] } = {
+      version: soulVer,
+      text: result,
+      parts: [...parts],
+    };
     // #30（S9/R5，2026-10-16）：soul 快照旁路落账——渲染尾单咽喉 append（at-least-once 语义：
     // 锚变更→指纹变化→下次渲染必经此处）。R5-F2：contentHash=渲染字节哈希（非 sv），
     // last-hash 去重=内容不变零落行防膨胀；同 sv 布局变体各自成行。
     // R5-F5：store 不吞错（直接抛出），吞错单点在此——失败 warn+不置旗标 → 下次渲染自动补账；
     // 空渲染不落行（宁缺毋滥）；写成功（或确认库中已有）→ entry.snapshotted=true，缓存命中零额外查询。
     if (result !== "" && opts?.snapshotsEnabled !== false) {
-      try {
-        const contentHash = fnv1a32Hex(result);
-        const lastHash = await Promise.resolve(store.readLastSoulSnapshotHash?.(tenant));
-        if (lastHash !== contentHash && store.writeSoulSnapshot) {
-          await Promise.resolve(store.writeSoulSnapshot(tenant, {
-            ts: new Date().toISOString(),
-            contentHash,
-            payloadJson: result,
-            trigger: "render",
-          }));
-        }
-        entry.snapshotted = true;
-      } catch (err) {
-        logger?.warn?.(`[soul] soul snapshot capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-      }
+      // 缺口 A：版本链 + 受控归因在此单咽喉落账；失败不置旗标 → 下次渲染自动补账（R5-F5 不变）。
+      entry.snapshotted = await recordSoulSnapshot(store, tenant, result, assembleOk ? { ...snapshotSignals, parts } : {}, logger);
     }
     soulPrefixCache.set(cacheKey, entry);
   }

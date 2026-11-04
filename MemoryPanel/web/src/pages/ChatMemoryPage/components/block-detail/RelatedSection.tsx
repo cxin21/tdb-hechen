@@ -10,6 +10,7 @@
  * getPath 时也是 null，不伪成功）。
  */
 import { useState, useEffect, useMemo } from 'react';
+import { neighborAttrChips, type Neighbor } from './neighbor-attrs';
 import { Button, Modal } from 'tea-component';
 import { chatMemoryApi } from '@/lib/teamApi';
 import { createPathRequestController } from './path-request';
@@ -22,7 +23,9 @@ const EDGE_CLS: Record<string, string> = {
   conflict: 'conflict',
   derived_from: 'derived_from',
   part_of: 'part_of',
-  causal: 'causal',
+  // D 项（2026-11-04）：词表以内核 store/types.ts LINK_TYPES 为单一源（六值）；
+  // causal 生产零写点/零存量已从词表剔除，evolved_from 是 evolution-worker 的真实写点。
+  evolved_from: 'evolved_from',
 };
 function edgeCls(t: string): string {
   return EDGE_CLS[t] ?? 'other';
@@ -31,9 +34,7 @@ function edgeCls(t: string): string {
 export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: string }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [neighbors, setNeighbors] = useState<
-    Array<{ id: string; type: string; strength?: number; content?: string }>
-  >([]);
+  const [neighbors, setNeighbors] = useState<Neighbor[]>([]);
   const [path, setPath] = useState<PathState | null>(null);
 
   // 关联链查询控制器：请求令牌丢弃迟到响应 + 同邻居 toggle 收起（批 1 审查 Important）。
@@ -113,6 +114,10 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
                   <i className="_nb-dot" style={{ background: '#8b5cf6' }} />
                   part_of
                 </span>
+                <span>
+                  <i className="_nb-dot" style={{ background: '#e8872a' }} />
+                  evolved_from
+                </span>
               </div>
               <ul className="_memory-detail-atomic-neighbors-list">
                 {loading ? (
@@ -120,10 +125,17 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
                 ) : neighbors.length === 0 ? (
                   <li className="_nb-muted">无关联记忆</li>
                 ) : (
-                  neighbors.map((n) => (
+                  neighbors.map((n) => {
+                    const chips = neighborAttrChips(n);
+                    return (
                     <li key={n.id} className="_memory-detail-atomic-neighbor">
                       <span className={'_nb-edge _nb-edge--' + edgeCls(n.type)}>{n.type}</span>
                       <span className="_nb-content">{n.content ?? n.id}</span>
+                      {chips.length > 0 ? (
+                        <span className="_nb-attrs" title={chips.join(' · ')}>
+                          {chips.join(' · ')}
+                        </span>
+                      ) : null}
                       {typeof n.strength === 'number' ? (
                         <span className="_nb-strength">{n.strength.toFixed(1)}</span>
                       ) : null}
@@ -136,7 +148,8 @@ export function RelatedSection({ blockId, itemId }: { blockId: string; itemId: s
                         🔗链
                       </button>
                     </li>
-                  ))
+                    );
+                  })
                 )}
               </ul>
               {path?.loading && <div className="_nb-muted">关联链查询中…</div>}

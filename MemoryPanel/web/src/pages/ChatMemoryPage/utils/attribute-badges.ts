@@ -72,8 +72,12 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
       values: { date: item.valid_start.slice(0, 10) },
     });
   }
-  // P1-T8（bi-temporal 补口）：已失效徽章——valid_end 非空、可解析且 ≤ now。
-  // 软失效语义（可撤销恢复）：失效后钩子路/工具路召回均排除。
+  // P1-T8（bi-temporal 补口）：已过期徽章——valid_end 非空、可解析且 ≤ now。
+  // P0（task-10）：此前后注释/tooltip 说「两路召回均排除」，与内核效期策略矛盾——
+  // 内核 recall/validity-policy.ts:57 是派生三态 off|hard|soft：
+  //   hard = 硬过滤（钩子路/工具路都排除）；soft = 降权保留并沉底（:105 softValidityMultiplier、
+  //   :205 工具路 soft 对齐）；off = 不判效期。
+  // 面板无从得知当前部署档位，故 tooltip 只陈述两种模式的分支，不对效果打包票。
   if (
     typeof item.valid_end === 'string' &&
     item.valid_end !== '' &&
@@ -85,7 +89,7 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
       labelKey: 'memory.badges.invalidated',
       cls: 'invalidated',
       icon: '⛔',
-      tooltip: `valid_end = ${item.valid_end}（已失效：两路召回均排除；撤销失效即恢复）`,
+      tooltip: `valid_end = ${item.valid_end}（已过期：soft 模式降权保留，硬失效模式才排除）`,
     });
   }
   return out;

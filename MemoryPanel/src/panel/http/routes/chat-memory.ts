@@ -1308,6 +1308,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
               timestamp_end: r.timestamp_end,
               // D-3：敏感性枚举透传（内核 atomic/query 已返回）
               sensitivity: r.sensitivity,
+              // ADR-0025 复核（2026-11-04）：importance 与行级溯源此前 BFF 未透传，
+              // 属性表恒缺两列（importance 能改不能看）。内核出参已补，这里同步透传；
+              // 缺省 undefined / []，UI 侧宁缺毋滥。
+              importance: r.importance,
+              source_message_ids: r.source_message_ids,
               updated_at: (typeof r.updated_at === "string" && r.updated_at) || msToIso(r.updated_time_ms) || undefined,
               // metadata 透传（C1：coreRefs / recall_count 落库在 metadata_json）。
               // 前向兼容：网关 /v3/atomic/query 今日出参映射不含 metadata（见任务报告
@@ -2720,6 +2725,98 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
   );
 
   // ==========================================================================
+  // POST /chat-memory/sensitivity
+  //   body: { block_id, id /* L1 记录主键 */, sensitivity, expect, reason? }
+  //
+  // A 项（ADR-0025 决定 10，2026-11-04）：显式降敏透传 → 网关 /v3/atomic/sensitivity。
+  // 为什么必须独立端点：upsertL1 的 sensitivity 是**粘性列**（none/''/NULL = 本次未判定
+  // → 保留库中旧值），整行重写永远无法把已分类行降回 none——自动路径只升不降，
+  // 降敏只能由人显式发起：单条 UPDATE + CAS（expect = 调用方看到的当前值）。
+  // 面板只露「解除敏感标记 → none」这一步（保守约束在 UI，网关保持通用写能力）。
+  // 数据面 mutation：Owner-only（与 importance / invalidate 同口径）。
+  // 网关侧错误（400 取值非法 / 403 跨租户 / 404 行不存在 / 409 CAS 未命中 /
+  // 501 后端不支持 / 503 store 不可用）一律**原样信封透传**——绝不吞成成功回执，
+  // 否则面板以为解除了、召回仍在拦截。
+  // ==========================================================================
+  /** 可写 sensitivity 白名单（与内核 v2-router.ts:1669 WRITABLE_SENSITIVITY 同集合；
+   *  跨包不 import——MemoryPanel 不依赖 MemoryCore 源码——改动两处同步）。
+   *  取值先 trim().toLowerCase() 再查表：内核 :1695/:1698 是对原始串做集合判定（大小写敏感、
+   *  不 trim），故 BFF 归一后**转发归一值**，既能让 'None ' 这类输入落回规范值，
+   *  也不会把内核不认的写法透传过去。
+   *  'unclassified' 是脏值归一结果、不是可写值；词表外取值一律 400，不替用户猜。 */
+  const WRITABLE_SENSITIVITY = new Set(["none", "health", "finance", "relationship"]);
+  api.post(
+    "/chat-memory/sensitivity",
+    validatePanelMetaHeaders(deps),
+    async (c) => {
+      const ctx = buildCtx(c);
+      const body = await readJson(c);
+      const blockId = requiredBlockId(body);
+      const recordId = typeof body?.id === "string" ? body.id.trim() : "";
+      // 归一（trim + lower）后再查表并转发：白名单项全小写，与内核集合判定口径对齐。
+      const sensitivity =
+        typeof body?.sensitivity === "string" ? body.sensitivity.trim().toLowerCase() : "";
+      const expect = typeof body?.expect === "string" ? body.expect.trim().toLowerCase() : "";
+      const reason = typeof body?.reason === "string" ? body.reason.trim() : undefined;
+      if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+      if (!recordId) return respondControlError(c, 400, "MISSING_ID");
+      if (!sensitivity) return respondControlError(c, 400, "MISSING_SENSITIVITY");
+      if (!WRITABLE_SENSITIVITY.has(sensitivity)) {
+        return respondControlError(c, 400, "INVALID_SENSITIVITY");
+      }
+      if (!expect) return respondControlError(c, 400, "MISSING_EXPECT");
+      if (!WRITABLE_SENSITIVITY.has(expect)) return respondControlError(c, 400, "INVALID_EXPECT");
+
+      const parsed = parseChatMemoryAssetId(blockId);
+      // 用户自建 UserAsset（mem-xxx）没有关联 agent，没有数据面可调。
+      if (!parsed) return respondControlError(c, 400, "NOT_AGENT_MEMORY");
+
+      const meUserId = await resolveCallerUserId(deps, ctx);
+      if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+
+      const assetEnv = await deps.metaKernel.invoke(
+        "asset/get",
+        { asset_id: blockId },
+        ctx,
+      );
+      if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+        return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+      }
+      if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+      const asset = assetEnv.data as AssetRaw;
+      if (asset.asset_type !== "chat_memory")
+        return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+      if (asset.owner_user_id !== meUserId)
+        return respondControlError(c, 403, "NOT_ASSET_OWNER");
+
+      const cred = toKernelCredentials(ctx, { timeoutMs: 15_000 });
+      try {
+        const env = await deps.kernelHttp.postEnvelope<unknown>(
+          "/v3/atomic/sensitivity",
+          {
+            team_id: parsed.teamId,
+            agent_id: parsed.agentId,
+            user_id: asset.owner_user_id,
+            session_id: "default",
+            id: recordId,
+            sensitivity,
+            expect,
+            ...(reason ? { reason } : {}),
+          },
+          cred,
+        );
+        return respondEnvelope(c, env);
+      } catch (err) {
+        return respondControlError(
+          c,
+          500,
+          "SENSITIVITY_UPDATE_FAILED: " + (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    },
+  );
+
+  // ==========================================================================
   // POST /chat-memory/invalidate
   //   body: { block_id, id /* L1 记录主键 */, mode?: "invalidate" | "restore" }
   //
@@ -2986,6 +3083,59 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     }
   });
 
+  // ==========================================================================
+  // POST /chat-memory/source-messages
+  //   body: { block_id, ids: string[] }
+  //
+  // ADR-0025 行级溯源：L1 行的 source_message_ids 存的是 L0 record_id，详情页
+  // 需要把「证据 id 串」换回原话（与 evidence-by-ids 同构的抽屉先例）。
+  // 权限：读权限（owner / team-shared / borrowed，与 /chat-memory/layer 一致）。
+  // 上游：内核 /v3/conversation/by-ids（行级四轴租户过滤在内核侧纵深双保险）。
+  // ==========================================================================
+  api.post("/chat-memory/source-messages", validatePanelMetaHeaders(deps), async (c) => {
+    const ctx = buildCtx(c);
+    const body = await readJson(c);
+    const blockId = requiredBlockId(body);
+    const ids = Array.isArray(body?.ids)
+      ? body.ids.filter((x: unknown): x is string => typeof x === "string" && x.length > 0)
+      : [];
+    if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+    if (ids.length === 0 || ids.length > 100) return respondControlError(c, 400, "INVALID_IDS");
+
+    const parsed = parseChatMemoryAssetId(blockId);
+    if (!parsed) return respondEnvelope(c, okEnvelope(c, { items: [] }));
+    const meUserId = await resolveCallerUserId(deps, ctx);
+    if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
+    const assetEnv = await deps.metaKernel.invoke("asset/get", { asset_id: blockId }, ctx);
+    if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data))
+      return respondControlError(c, 404, "BLOCK_NOT_FOUND");
+    if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
+    const asset = assetEnv.data as AssetRaw;
+    if (asset.asset_type !== "chat_memory") return respondControlError(c, 400, "NOT_CHAT_MEMORY");
+    const canRead = await authorizeChatMemoryRead(deps, ctx, asset, meUserId, blockId);
+    if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+
+    const idFields = {
+      team_id: parsed.teamId,
+      agent_id: parsed.agentId,
+      user_id: asset.owner_user_id,
+      session_id: "default",
+    };
+    const cred = toKernelCredentials(ctx, { timeoutMs: 30_000 });
+    try {
+      const env = await deps.kernelHttp.postEnvelope<{ items?: unknown[] }>(
+        "/v3/conversation/by-ids",
+        { ...idFields, ids },
+        cred,
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      const items = (env.data as { items?: unknown[] } | null)?.items ?? [];
+      return respondEnvelope(c, okEnvelope(c, { items }));
+    } catch {
+      return respondControlError(c, 502, "KERNEL_UNAVAILABLE");
+    }
+  });
+
   api.post("/chat-memory/search", validatePanelMetaHeaders(deps), async (c) => {
     const ctx = buildCtx(c);
     const body = await readJson(c);
@@ -3104,7 +3254,11 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         valid_start: r.valid_start,
         valid_end: r.valid_end,
         certainty: r.certainty,
-        source: r.source,
+        // P0-a（ADR-0025 复核）：敏感度是注入门的判据，浏览卡与搜索卡必须同形，
+        // 否则搜索态的敏感行看不见「为什么不会被注入」。
+        sensitivity: r.sensitivity,
+        // P2-14：source 列已从内核 L1 记录删除（C2），不再产出于任何查询路；
+        // 此处曾转发 r.source 属死字段（layer 映射已删），一并移除。
         valence: r.valence,
         arousal: r.arousal,
         significance: r.significance,
@@ -3120,6 +3274,9 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
         // D-0b：search 行可得字段透传（同查询路语义）
         scene_name: r.scene_name,
         priority: r.priority,
+        // ADR-0025 复核：与查询路同口径（重要度/溯源在两张卡片上都要能看）。
+        importance: r.importance,
+        source_message_ids: r.source_message_ids,
         created_at:
           (typeof r.created_at === "string" && r.created_at) ||
           msToIso(r.created_time_ms) ||

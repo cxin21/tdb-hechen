@@ -61,6 +61,13 @@ export interface EmbeddingConfig {
   apiKey: string;
   model: string;
   dimensions: number;
+  /**
+   * 2026-11-03：两次 embedding 请求最小间隔（ms）。未配/0 = 不节流（逐位旧行为）。
+   * 仅 wiki 侧发车节流，与记忆侧同名同义；clamp 在 getEmbeddingConfig 内做。
+   */
+  paceMinIntervalMs?: number;
+  /** 2026-11-03：60s 窗口字符预算。未配/0 = 不限。 */
+  charsPerMinute?: number;
 }
 
 export interface ClickHouseTelemetryConfig {
@@ -251,6 +258,9 @@ export function loadConfig(): ServiceConfig {
       apiKey: env("EMBEDDING_API_KEY", ""),
       model: env("EMBEDDING_MODEL", ""),
       dimensions: Number(env("EMBEDDING_DIMENSIONS", "0") || "0"),
+      // 2026-11-03：限流防护旋钮（默认 0 = 关，逐位旧行为）。生产改值须点名授权 + 重启。
+      paceMinIntervalMs: Number(env("EMBEDDING_PACE_MIN_INTERVAL_MS", "0") || "0"),
+      charsPerMinute: Number(env("EMBEDDING_CHARS_PER_MINUTE", "0") || "0"),
     },
   };
   // Admin settings override（{dataDir}/config-override.json）优先级高于 env。见 spec §3.1。

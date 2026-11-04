@@ -213,7 +213,7 @@ export interface ChatMemoryLayerItem {
   valid_start?: string;
   valid_end?: string;
   certainty?: string;
-  source?: string;
+  // 注：L1 `source` 列已由 ADR-0025 C2 删除（零读点、恒 'extraction'），此处不再声明。
   valence?: number;
   arousal?: number;
   significance?: number;
@@ -238,11 +238,29 @@ export interface ChatMemoryLayerItem {
   sensitivity?: string;
   /** P1-T7：重要度 1-10（LLM 标注或人工调整；缺省 = 未评分 NULL，不渲染） */
   importance?: number;
+  /** ADR-0025 复核：行级原话溯源（L0 消息 id 数组）。缺省 = 上游老版本未返回；
+   *  空数组 = 该行确实无溯源（改前存量行），两者在 UI 上都不渲染，但抽屉按空数组短路。 */
+  source_message_ids?: string[];
 }
 
 /** L1 语义搜索命中项：在分层条目基础上附带相关度 score（越大越相关） */
 export interface ChatMemorySearchHit extends ChatMemoryLayerItem {
   score?: number;
+}
+
+/** ADR-0025 行级溯源：L1.source_message_ids 批量回读到的 L0 原话（面板「查看原话」） */
+export interface ChatMemorySourceMessage {
+  id: string;
+  role: string;
+  content: string;
+  /** 原消息 recorded_at（ISO 8601） */
+  timestamp: string;
+  session_key?: string;
+  session_id?: string;
+  team_id?: string;
+  user_id?: string;
+  agent_id?: string;
+  task_id?: string;
 }
 
 /** 任务5（D-8 拍板定案，2026-09-22）：召回/灵魂注入日志单条——与 writer 侧
@@ -336,6 +354,9 @@ export const chatMemoryApi = {
   // F-CLUSTER §5：证据源按 id 批量回读（/chat-memory/evidence-by-ids，含归档回退）
   evidenceByIds: (blockId: string, ids: string[]) =>
     chatMemoryCall<{ items: Array<Record<string, unknown>> }>('evidence-by-ids', { blockId, ids }),
+  // ADR-0025 行级溯源：L1.source_message_ids → L0 原话批量回读（抽屉按 id 打开）
+  sourceMessages: (blockId: string, ids: string[]) =>
+    chatMemoryCall<{ items: ChatMemorySourceMessage[] }>('source-messages', { blockId, ids }),
   recallJournal: (
     teamId: string,
     agentId: string,
@@ -482,6 +503,32 @@ export const chatMemoryApi = {
       ...(reason && reason.trim() !== '' ? { reason: reason.trim() } : {}),
     }),
 
+  /** A 项（ADR-0025 决策 10，2026-11-04）：显式降敏（Owner-only）。
+   *  sensitivity 是粘性列（'none'/''/NULL = 本次未判定 → 保留旧值），整行重写无法降回
+   *  none —— 只能走这条单条 UPDATE 路；`expect` 是 CAS 条件（当前值），不符/并发改写 → 409。
+   *  可写值仅 none|health|finance|relationship（'unclassified' 是脏值归一结果，不可写）。
+   *  面板只用于「解除敏感标记 → none」。 */
+  setSensitivity: (
+    blockId: string,
+    id: string,
+    sensitivity: string,
+    expect?: string,
+    reason?: string,
+  ) =>
+    chatMemoryCall<{
+      id?: string;
+      sensitivity?: string;
+      previous?: string;
+      version?: string;
+      sensitivity_source?: string;
+    }>('sensitivity', {
+      block_id: blockId,
+      id,
+      sensitivity,
+      ...(expect !== undefined && expect.trim() !== '' ? { expect: expect.trim() } : {}),
+      ...(reason && reason.trim() !== '' ? { reason: reason.trim() } : {}),
+    }),
+
   /** P1-T8：标记失效 / 撤销失效（Owner-only）。软失效语义：invalidate 把 valid_end
    *  置为 now（或显式 ISO），restore 清空 valid_end 恢复；不删记忆。失效/未来生效
    *  记忆在钩子路与工具路召回中均被排除（bi-temporal 补口）。 */
@@ -515,6 +562,8 @@ export const chatMemoryApi = {
   ) =>
     chatMemoryCall<{
       id: string;
+      /* 与内核 v2-router.ts handleAtomicNeighbors 出参对齐（P2：属性摘要缺失会让
+         面板只能显示 type/content，邻接属性被静默丢弃）。 */
       neighbors: Array<{
         id: string;
         type: string;
@@ -522,8 +571,11 @@ export const chatMemoryApi = {
         hop?: number;
         content?: string;
         occurred_at?: string;
+        valid_start?: string;
+        valid_end?: string;
         certainty?: string;
         valence?: number;
+        arousal?: number;
         significance?: number;
       }>;
     }>('neighbors', {

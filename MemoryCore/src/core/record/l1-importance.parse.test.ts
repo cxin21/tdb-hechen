@@ -38,13 +38,15 @@ describe("normalizeImportance（确定性门）", () => {
 });
 
 describe("parseExtractionResult × importance 集成", () => {
-  it("合法 importance + 理由 → 字段落位 + metadata 标记（source=llm）", () => {
+  it("合法 importance → 字段落位 + metadata 标记（source=llm）；理由字段按 ADR-0025 C5 停写", () => {
     const raw = scene([
+      // 对抗输入：LLM 若仍吐出 importance_reason（旧 prompt 记忆），也不许再落库（零判定读点，纯审计冗余）。
       { content: "决定将发布日提前到周五", type: "episodic", importance: 8, importance_reason: "明确的排期决策" },
     ]);
     const m = parseExtractionResult(raw, undefined, []).scenes[0].memories[0];
     expect(m.importance).toBe(8);
-    expect(m.metadata.importance_reason).toBe("明确的排期决策");
+    expect(m.metadata.importance_reason).toBeUndefined();
+    // importance_source 保留：区分 manual/llm，是 /atomic/update 唯一防篡改痕迹。
     expect(m.metadata.importance_source).toBe("llm");
   });
 

@@ -72,7 +72,13 @@ function autoReplyWorker(scoresFor: (query: string, docs: string[]) => number[])
 /** 建一个通过 readiness 校验的模型目录（配合注入的 tiny modelFiles 门槛）。 */
 function makeReadyModelDir(root: string): string {
   const dir = path.join(root, "Xenova", "bge-reranker-base");
-  for (const rel of ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "onnx/model_quantized.onnx"]) {
+  for (const rel of [
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "onnx/model_quantized.onnx",
+  ]) {
     fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
     fs.writeFileSync(path.join(dir, rel), "x".repeat(8), "utf-8");
   }
@@ -101,22 +107,26 @@ afterEach(async () => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-function makeReranker(overrides: {
-  modelDir?: string;
-  spawn?: () => MockWorker;
-  starter?: (o: { modelDir: string }) => Promise<boolean>;
-} & Partial<ConstructorParameters<typeof LocalReranker>[0]> = {}): { r: LocalReranker; workers: MockWorker[]; starterCalls: Array<{ modelDir: string }> } {
+function makeReranker(
+  overrides: {
+    modelDir?: string;
+    spawn?: () => MockWorker;
+    starter?: (o: { modelDir: string }) => Promise<boolean>;
+  } & Partial<ConstructorParameters<typeof LocalReranker>[0]> = {},
+): { r: LocalReranker; workers: MockWorker[]; starterCalls: Array<{ modelDir: string }> } {
   const workers: MockWorker[] = [];
   const starterCalls: Array<{ modelDir: string }> = [];
   const modelDir = overrides.modelDir ?? makeReadyModelDir(tmpRoot);
   const r = new LocalReranker({
     modelDir,
     ...overrides,
-    spawnWorker: overrides.spawn ? () => asWorkerLike(overrides.spawn!()) : () => {
-      const w = autoReplyWorker((q, docs) => docs.map((d) => (d.includes("b") ? 2 : d.includes("a") ? 0.5 : -1)));
-      workers.push(w);
-      return asWorkerLike(w);
-    },
+    spawnWorker: overrides.spawn
+      ? () => asWorkerLike(overrides.spawn!())
+      : () => {
+          const w = autoReplyWorker((q, docs) => docs.map((d) => (d.includes("b") ? 2 : d.includes("a") ? 0.5 : -1)));
+          workers.push(w);
+          return asWorkerLike(w);
+        },
     downloadStarter: overrides.starter
       ? async (o) => {
           starterCalls.push(o);
@@ -283,12 +293,21 @@ describe("P1 task-3 LocalReranker：模型缺失与自动下载触发", () => {
           resolveDownload = resolve;
         }),
     );
-    const { r, starterCalls } = makeReranker({ modelDir: emptyDir, starter: starter as unknown as (o: { modelDir: string }) => Promise<boolean> });
+    const { r, starterCalls } = makeReranker({
+      modelDir: emptyDir,
+      starter: starter as unknown as (o: { modelDir: string }) => Promise<boolean>,
+    });
     expect(await r.rerank("q", ["a"])).toBeNull(); // 模型缺失 → 触发下载 → 本次 null
     expect(await r.rerank("q", ["a"])).toBeNull(); // 下载仍在进行 → 仍 null，且不重复触发
     expect(starterCalls.length).toBe(1);
     // 模拟下载完成：文件就位 + promise resolve
-    for (const rel of ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "onnx/model_quantized.onnx"]) {
+    for (const rel of [
+      "config.json",
+      "tokenizer.json",
+      "tokenizer_config.json",
+      "special_tokens_map.json",
+      "onnx/model_quantized.onnx",
+    ]) {
       fs.mkdirSync(path.join(emptyDir, path.dirname(rel)), { recursive: true });
       fs.writeFileSync(path.join(emptyDir, rel), "x".repeat(8), "utf-8");
     }
@@ -344,7 +363,9 @@ describe("P1 task-3 LocalReranker：进程级单例池", () => {
 
 describe("P1 task-3 LocalReranker：真 worker_threads bootstrap 协议（fixture stub 模块）", () => {
   it("eval worker 加载 stub transformers 模块：env 关远端开本地、localModelPath=dirname(modelDir)、text_pair 编码、scores 回传", async () => {
-    const fixtureUrl = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-transformers.mjs")).href;
+    const fixtureUrl = pathToFileURL(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-transformers.mjs"),
+    ).href;
     const dir = makeReadyModelDir(tmpRoot);
     const r = new LocalReranker({
       modelDir: dir,
@@ -357,5 +378,32 @@ describe("P1 task-3 LocalReranker：真 worker_threads bootstrap 协议（fixtur
       { index: 1, score: 0.5 },
     ]);
     await r.dispose();
+  });
+});
+
+/**
+ * 2026-11-04：滚动打分预算（score-budget.ts）的配套能力——预热。
+ * 病根：冷启动 ≈0.9s 若算进 400ms 打分预算，首块必被判超时 ⇒ 整题丢精排；
+ * 实测并发臂里 3 题连丢就把熔断推到 open（后续 61 题被这样废掉）。预热把加载移出预算窗口。
+ *
+ * 反例留档：曾经还有 cancelPending()「软超时 = 杀 worker 丢掉在途推理」，实测推理中 terminate
+ * 会让 onnxruntime 原生崩溃带走整进程（bench exit 127，5 题探针稳定复现、去掉该调用即 exit 0），
+ * 已删除；现在的语义是「放弃等待，但不杀在途推理」。
+ */
+describe("warmup（滚动预算配套）", () => {
+  it("warmup 提前 spawn 并 load，之后的 rerank 复用同一 worker", async () => {
+    const { r, workers } = makeReranker();
+    await r.warmup();
+    expect(workers.length).toBe(1);
+    expect(workers[0].sent.map((m) => m.type)).toEqual(["load"]);
+    await r.rerank("q", ["a"]);
+    expect(workers.length).toBe(1);
+    expect(workers[0].sent.map((m) => m.type)).toEqual(["load", "score"]);
+  });
+
+  it("模型未就绪时 warmup 是空操作（不 spawn、不抛）", async () => {
+    const { r, workers } = makeReranker({ modelDir: path.join(tmpRoot, "missing") });
+    await expect(r.warmup()).resolves.toBeUndefined();
+    expect(workers.length).toBe(0);
   });
 });

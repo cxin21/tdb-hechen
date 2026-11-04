@@ -18,6 +18,7 @@ import { SoulIdentityDual } from './SoulIdentityDual';
 import { SoulFeelingBar } from './SoulFeelingBar';
 import { SoulPendingRail } from './SoulPendingRail';
 import { PersonSection } from './PersonSection';
+import { SoulVersionChain } from './SoulVersionChain';
 import ValueAnchorsPanel from '@/pages/ChatMemoryPage/components/ValueAnchorsPanel';
 import './soul-page.css';
 
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { id: '_soul-person-section', label: '重要的人' },
   { id: '_soul-sec-pending', label: '待裁决' },
   { id: '_soul-sec-anchors', label: '价值锚' },
+  { id: '_soul-sec-versions', label: '版本链' },
 ];
 
 function scroll_to_section(id: string) {
@@ -127,6 +129,9 @@ export function SoulPage() {
               </div>
               <ValueAnchorsPanel blockIdOverride={blockId} hideIdentityPending variant="soul" />
             </section>
+
+            {/* 版本链 / 漂移审计（task-3）：快照何时变、为何变、变了什么 */}
+            <SoulVersionChain teamId={activeTeamId ?? ''} agentId={agentId} />
           </>
         )}
       </div>

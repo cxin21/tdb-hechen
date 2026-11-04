@@ -28,11 +28,7 @@ import type { MemoryGenerationRefStore } from "../memory-generation-log/types.js
 export type { MemoryRecord, EmbeddingProviderInfo };
 
 // Re-export isolation primitives so all store consumers import from here.
-export type {
-  IsolationContext,
-  IsolationFilter,
-  IsolationConfig,
-} from "./isolation.js";
+export type { IsolationContext, IsolationFilter, IsolationConfig } from "./isolation.js";
 export {
   DEFAULT_ISOLATION_ID,
   LEGACY_ISOLATION_PLACEHOLDER,
@@ -98,6 +94,10 @@ export interface L1SearchResult {
    */
   score: number;
   timestamp_str: string;
+  /**
+   * @deprecated ADR-0025 C3（2026-11-04）：l1_records.timestamp_start 列已删
+   * （与 timestamp_str 4225/4225 逐位相等）。字段保留仅为类型兼容，读回值恒等于 timestamp_str。
+   */
   timestamp_start: string;
   timestamp_end: string;
   version: number;
@@ -110,12 +110,22 @@ export interface L1SearchResult {
   metadata_json: string;
   /** P1-T7：创建时间（getL1ByIds 精确读回；native 路径可能缺省 → 消费方回退 timestamp_str）。 */
   created_time?: string;
+  /**
+   * B 项（ADR-0025 决定 9，2026-11-04）：行最近更新时间（l1_records.updated_time）。
+   * 与 timestamp_end（事件结束时刻）是两件事：memory_search 的 updated_at 取本列，
+   * event_end_at 取 timestamp_end。旧后端/未补列路径缺省 → 消费方回退 timestamp_end。
+   */
+  updated_time?: string;
 
   // ── 灵魂记忆字段（P2a，读回）：时空/观察推断/情感 ──
   occurred_at?: string;
   valid_start?: string;
   valid_end?: string;
   certainty?: string;
+  /**
+   * @deprecated ADR-0025 C2（2026-11-04）：l1_records.source 列已删（零判定读点）。
+   * 字段保留仅为类型兼容，读回值恒为 undefined；凭据由 source_message_ids + memory_audit 承担。
+   */
   source?: string;
   valence?: number;
   arousal?: number;
@@ -124,6 +134,12 @@ export interface L1SearchResult {
   sensitivity?: string;
   /** P1-T7：importance 1-10（null/缺省=未评分=召回面永不降权）。 */
   importance?: number | null;
+  /**
+   * 行级原话溯源（l1_records.source_message_ids JSON 列的解析值，已解析成数组）。
+   * 读侧对非法 JSON/空串/NULL 一律回落 []（不抛）。
+   * v2 编辑/人工调整/失效链取行重建 MemoryRecord 时必须原样透传，否则 upsert 整行覆盖会刷空。
+   */
+  source_message_ids?: string[];
 }
 
 /** Result from an L1 FTS keyword search. */
@@ -141,6 +157,10 @@ export interface L1FtsResult {
    */
   rank?: number;
   timestamp_str: string;
+  /**
+   * @deprecated ADR-0025 C3（2026-11-04）：l1_records.timestamp_start 列已删
+   * （与 timestamp_str 4225/4225 逐位相等）。字段保留仅为类型兼容，读回值恒等于 timestamp_str。
+   */
   timestamp_start: string;
   timestamp_end: string;
   version: number;
@@ -151,18 +171,39 @@ export interface L1FtsResult {
   user_id: string;
   agent_id: string;
   metadata_json: string;
-  // soul 8 字段（P1-T7 / W1）：列名以 soul-columns.ts SOUL_COL_NAMES 为单一事实源，
+  // soul 9 字段（P1-T7 / W1）：列名以 soul-columns.ts SOUL_COL_NAMES 为单一事实源（ADR-0025 C2 删 source），
   // 类型口径与 L1RecordRow 的 soul 字段一致（occurred_at?: string / valence?: number…）。
   occurred_at?: string;
   valid_start?: string;
   valid_end?: string;
   certainty?: string;
+  /**
+   * @deprecated ADR-0025 C2（2026-11-04）：l1_records.source 列已删（零判定读点）。
+   * 字段保留仅为类型兼容，读回值恒为 undefined；凭据由 source_message_ids + memory_audit 承担。
+   */
   source?: string;
   valence?: number;
   arousal?: number;
   significance?: number;
+  /**
+   * D-3 敏感性枚举（none/health/finance/relationship）。FTS SELECT 由
+   * SOUL_SELECT_FRAGMENT 展开自动带出；结论层敏感门消费它（P0-1，2026-11-04）——
+   * work_fact 结论是原文直出，必须与经验行同一道门。
+   */
+  sensitivity?: string;
   /** P1-T7：importance（FTS SELECT 由 SOUL_SELECT_FRAGMENT 展开，自动带出）。 */
   importance?: number | null;
+  /**
+   * 溯源（P0-1，2026-11-04）：l1_fts 表**不存**该列——检索 SELECT 用相关子查询
+   * （`SELECT lr.source_message_ids FROM l1_records lr WHERE lr.record_id = l1_fts.record_id`）
+   * 从主表带出。ADR-0025 C2 删 source 列后，这是 FTS 命中行唯一的溯源入口。
+   */
+  source_message_ids?: string[];
+  /**
+   * B 项（ADR-0025 决定 9，2026-11-04）：行最近更新时间。l1_fts 不存该列——同 source_message_ids
+   * 走相关子查询从 l1_records 带出（updated_time 不在 SOUL_COLUMNS 里，FTS SELECT 不会自动带）。
+   */
+  updated_time?: string;
 }
 
 /** Filter options for querying L1 records. */
@@ -195,16 +236,24 @@ export interface L1RecordRow {
   agent_id: string;
   version: number;
   timestamp_str: string;
+  /**
+   * @deprecated ADR-0025 C3（2026-11-04）：l1_records.timestamp_start 列已删
+   * （与 timestamp_str 4225/4225 逐位相等）。字段保留仅为类型兼容，读回值恒等于 timestamp_str。
+   */
   timestamp_start: string;
   timestamp_end: string;
   created_time: string;
   updated_time: string;
   metadata_json: string;
-  /** soul 10 列（P4a：rowToMemoryRecord 的 valid_end 透传所需；SELECT 已带出、类型此前未声明） */
+  /** soul 9 列（P4a：rowToMemoryRecord 的 valid_end 透传所需；SELECT 已带出、类型此前未声明；ADR-0025 C2 删 source） */
   occurred_at?: string;
   valid_start?: string;
   valid_end?: string;
   certainty?: string;
+  /**
+   * @deprecated ADR-0025 C2（2026-11-04）：l1_records.source 列已删（零判定读点）。
+   * 字段保留仅为类型兼容，读回值恒为 undefined；凭据由 source_message_ids + memory_audit 承担。
+   */
   source?: string;
   valence?: number;
   arousal?: number;
@@ -212,6 +261,12 @@ export interface L1RecordRow {
   sensitivity?: string;
   /** P1-T7：importance 1-10（NULL=未评分）。 */
   importance?: number | null;
+  /**
+   * L1 行级原话溯源（2026-11-04）：JSON 数组文本（TEXT NOT NULL DEFAULT '[]'）。
+   * 读侧 rowToMemoryRecord 解析成 string[]；非法/空/NULL → []。缺省仅出现在
+   * 未走 l1QueryCols 的旧 SELECT（如外部只读视图），消费方需自行兜底。
+   */
+  source_message_ids?: string;
 }
 
 // ============================
@@ -420,6 +475,17 @@ export interface L0PaginatedFilter extends L0CountFilter {
   limit: number;
   /** Page offset. */
   offset: number;
+}
+
+/**
+ * Filter for L0 batch-by-ids read (ADR-0025 行级溯源：L1.source_message_ids → L0 原话)。
+ * 只含租户隔离轴；session 刻意不参与——溯源证据天然跨 session（同 L1 跨 session 语义）。
+ */
+export interface L0ByIdsFilter {
+  teamId?: string;
+  userId?: string;
+  agentId?: string;
+  taskId?: string;
 }
 
 /** Result of v2 L0 paginated query. */
@@ -635,6 +701,38 @@ export interface SoulPromiseEvent {
 }
 
 // ============================
+// L1 记忆边受控词表（D 项）
+// ============================
+
+/**
+ * L1 记忆边受控词表（D 项，2026-11-04）。
+ *
+ * 单一事实源：所有写点（l1-extractor / consolidation-worker / reflection /
+ * evolution-worker / pipeline-factory）与读点（getLinksByType 等）都从这里取字面量，
+ * 不再散落字符串。词表 = 生产 l1_links 存量实测分布（2026-11-04 只读探针，53964 条）：
+ * derived_from / similar / part_of / evolve / evolved_from / conflict（causal 零行，已剔除）。
+ *
+ * 存量不符型处置见 docs/research 报告；删除/重命名存量边必须走数据迁移，禁止静默删。
+ */
+export const LINK_TYPES = {
+  /** L2 场景块 → L1 记录（pipeline-factory 蒸馏出处的正向溯源）。 */
+  DERIVED_FROM: "derived_from",
+  /** 语义近邻（去重/合并候选），边权=相似度。 */
+  SIMILAR: "similar",
+  /** 结论/反思卡 → 证据行（组成关系）。 */
+  PART_OF: "part_of",
+  /** 相互矛盾的两条记忆（双方都保留）。 */
+  CONFLICT: "conflict",
+  /** 新旧事实的演进（extractor update 动作）。 */
+  EVOLVE: "evolve",
+  /** 演化合并边：merged ← 被合并的旧行（evolution-worker）。 */
+  EVOLVED_FROM: "evolved_from",
+} as const;
+export type LinkType = (typeof LINK_TYPES)[keyof typeof LINK_TYPES];
+/** 词表全集（测试断言「写点词表 ⊆ LINK_TYPES」用）。 */
+export const LINK_TYPE_VALUES: readonly LinkType[] = Object.values(LINK_TYPES);
+
+// ============================
 // Memory Audit (修改审计)
 // ============================
 
@@ -658,7 +756,12 @@ export interface AuditEntry {
    */
   record_id: string;
   layer: "L1" | "L2" | "L3";
-  action: "update" | "delete";
+  /**
+   * 变更类型。'sensitivity'（A 项，2026-11-04）记显式降敏：L1 行 sensitivity 单向棘轮
+   * 下调（health/finance/relationship → none）是安全相关动作，必须留痕（旧值/新值在
+   * 载荷里由 gateway 写 reason，这里只记「谁在何时调了哪条」）。
+   */
+  action: "update" | "delete" | "sensitivity";
   /** 外部请求 IdFields 副本，来源是调用方传入的 body / header（resolveIsolation 后）。 */
   team_id?: string;
   agent_id?: string;
@@ -676,7 +779,7 @@ export interface AuditEntry {
 export interface AuditQueryFilter {
   record_id?: string;
   layer?: "L1" | "L2" | "L3";
-  action?: "update" | "delete";
+  action?: "update" | "delete" | "sensitivity";
   team_id?: string;
   agent_id?: string;
   user_id?: string;
@@ -685,8 +788,21 @@ export interface AuditQueryFilter {
   since_ms?: number;
   /** 只返 updated_at_ms ≤ until_ms 的事件。 */
   until_ms?: number;
-  limit?: number;   // 默认 100，上限 1000
+  limit?: number; // 默认 100，上限 1000
   offset?: number;
+}
+
+/** 缺口 A：soul 快照行（append-only 账本）。version 单调递增（迁移前旧行缺省 0）、 */
+/** parent_hash 指向上一版 content_hash（首版 null）、trigger=受控原因枚举、slots_json=slot 图。 */
+export interface SoulSnapshotRow {
+  ts: string;
+  content_hash: string;
+  payload_json: string;
+  trigger: string;
+  version?: number;
+  parent_hash?: string | null;
+  reason_detail?: string;
+  slots_json?: string;
 }
 
 export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStore {
@@ -749,7 +865,24 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   getAllL1Texts(): MaybePromise<Array<{ record_id: string; content: string; updated_time: string }>>;
 
   // ── 记忆图（G）：L1↔L1 显式边 ──
-  addLink?(sourceId: string, targetId: string, type: string, strength?: number, now?: string): MaybePromise<boolean>;
+  addLink?(sourceId: string, targetId: string, type: LinkType, strength?: number, now?: string): MaybePromise<boolean>;
+  /**
+   * A 项（ADR-0025 决定 10，2026-11-04）：显式降敏——L1 行 sensitivity 单向棘轮下调。
+   *
+   * CAS 语义：SQL 条件里带 AND sensitivity = expect（body 必带 expect，防止盲覆盖并发改写）；
+   * changes === 0 → 返回 false（调用方映射 409 CAS_CONFLICT：行不存在 / expect 不符 /
+   * 已被别的请求改过，三者不区分——不泄漏行存在性）。
+   *
+   * 不走 upsertL1：upsert 的粘性 CASE（sqlite.ts:1358-1371）把 'none' 当作「未判定」，
+   * 永远无法把已分类行降回 none——棘轮下限只有单条 UPDATE 能表达。
+   * 必须同时 UPDATE l1_fts（sensitivity 是 soul 列，FTS 表有 UNINDEXED 副本，
+   * 双写模板同 invalidateL1）；updated_time 同步 bump（审计可见"最近更新"）。
+   * 两条 UPDATE 在同一事务内（半写会让 FTS 腿继续按旧标注拦/放，见 sqlite.ts 实现注释）。
+   * **失败语义**：false = 纯 CAS 未命中（409）；实现异常/degraded 必须抛出（调用方映射 503），
+   * 不得把「存储不可用」伪装成「并发冲突」。
+   * 可选方法——旧后端/未实现 = 降敏不可用（调用方 fail-loud，不静默降级）。
+   */
+  setL1Sensitivity?(recordId: string, value: string, expect: string): MaybePromise<boolean>;
   /** GROW-EVO P2（§2.2）：失效回写——只写 valid_end，不覆盖已失效行（失效不删除）。可选：旧后端安静跳过。 */
   invalidateL1?(id: string, validEndIso: string): MaybePromise<boolean>;
   /**
@@ -757,20 +890,53 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * 返回命中行数。事实级粒度下写侧只用它（不回落整行失效/归档）；旧后端未实现时调用方
    * loud warn 并跳过失效（宁可少失效，也不放大爆炸半径）。
    */
-  invalidateL1ByFactKey?(filter: IsolationFilter | undefined, factKey: string, validEndIso: string): MaybePromise<number>;
+  invalidateL1ByFactKey?(
+    filter: IsolationFilter | undefined,
+    factKey: string,
+    validEndIso: string,
+  ): MaybePromise<number>;
   /** P2-T14（G2）：可选租户 filter——缺省 undefined=旧行为；传入时两步过滤（rowMatchesIsolation 复核）。 */
-  getNeighbors?(id: string, types?: string[], maxHop?: number, filter?: IsolationFilter): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }>>;
+  getNeighbors?(
+    id: string,
+    types?: string[],
+    maxHop?: number,
+    filter?: IsolationFilter,
+  ): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }>>;
   /** P4a-P2（层级边，REG-REMAINING-002 #1）：沿边反查（target←sources）/正查（source→targets）；可选 type 过滤。derived_from 边 source=L2 scene block（profile:v1:* 稳定租户唯一）、target=L1 record。可选方法——旧后端可不实现，调用方 feature-detect。 */
-  getLinksByTarget?(targetId: string, type?: string): MaybePromise<Array<{ sourceId: string; type: string; strength: number; createdAt: string }>>;
-  getLinksBySource?(sourceId: string, type?: string): MaybePromise<Array<{ targetId: string; type: string; strength: number; createdAt: string }>>;
+  getLinksByTarget?(
+    targetId: string,
+    type?: string,
+  ): MaybePromise<Array<{ sourceId: string; type: string; strength: number; createdAt: string }>>;
+  getLinksBySource?(
+    sourceId: string,
+    type?: string,
+  ): MaybePromise<Array<{ targetId: string; type: string; strength: number; createdAt: string }>>;
+  /**
+   * P0-1（2026-11-04 L1 属性复核）：按 L2 块 id 聚合 `derived_from` 溯源画像——该块蒸馏过的
+   * **仍在主表**的 L1 行数，以及其中敏感行（sensitivity 非 none）数。一次 GROUP BY，不逐块
+   * 扫链接、不把上千个 target 读进内存。语义与消费者见 core/recall/sensitivity-policy.ts
+   * `decideDerivedInjection`（结论层敏感门的唯一判定源）。
+   * 可选方法——未实现 = 溯源不可判定，门按 fail-closed 处理（非 private 上下文不注入聚合块）。
+   */
+  getDerivedSensitivityStats?(
+    sourceIds: string[],
+  ): MaybePromise<Record<string, { targets: number; sensitive: number }>>;
   /** P4b（REG-REMAINING-005 #1）：按 type 全量取边（evolution-worker conflict 扫描底座，单条索引查询）。可选方法——旧后端可不实现，调用方 feature-detect。 */
-  getLinksByType?(type: string): MaybePromise<Array<{ sourceId: string; targetId: string; type: string; strength: number; createdAt: string }>>;
+  getLinksByType?(
+    type: LinkType,
+  ): MaybePromise<Array<{ sourceId: string; targetId: string; type: string; strength: number; createdAt: string }>>;
   /**
    * C6（graph 设计 §4 / spec §6.4 #1）：两节点间 BFS 最短路径；不可达返回 null，
    * 起点即终点返回 []。可选租户 filter（T14 同形：新图接口第一天即带 isolation）。
    * 可选方法——tcvdb 等后端可不实现（F7 家族先例），调用方 feature-detect。
    */
-  getPath?(startId: string, endId: string, maxHop?: number, types?: string[], filter?: IsolationFilter): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }> | null>;
+  getPath?(
+    startId: string,
+    endId: string,
+    maxHop?: number,
+    types?: string[],
+    filter?: IsolationFilter,
+  ): MaybePromise<Array<{ id: string; type: string; strength: number; hop: number }> | null>;
   deleteLinksFor?(id: string): MaybePromise<boolean>;
   /** 审计 F5：清理两端都消失的孤儿边；返回删除数，-1=失败。 */
   pruneOrphanLinks?(): MaybePromise<number>;
@@ -790,7 +956,22 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * SEC-1：可选 IsolationFilter 租户过滤（filter 缺省 = 旧行为实例级全量）；
    * 出参带 team_id/user_id/agent_id 归属（面板徽标消费）。
    */
-  listArchived?(limit?: number, offset?: number, filter?: IsolationFilter): MaybePromise<Array<{ record_id: string; archived_at: string; reason: string; content: string; occurred_at?: string; team_id: string; user_id: string; agent_id: string }>>;
+  listArchived?(
+    limit?: number,
+    offset?: number,
+    filter?: IsolationFilter,
+  ): MaybePromise<
+    Array<{
+      record_id: string;
+      archived_at: string;
+      reason: string;
+      content: string;
+      occurred_at?: string;
+      team_id: string;
+      user_id: string;
+      agent_id: string;
+    }>
+  >;
   /** 核心记忆 + 价值锚（K，设计§2/§3）：稳定锚定 / agent 可维护 / 情感参照系。
    *
    * P2-T12（K1）core 租户化：四个方法均按 tenant 三元组过滤（team/user/agent）。
@@ -801,88 +982,268 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    *     价值锚）保持旧行为 —— 这些调用无请求上下文，语义上属实例级数据。
    */
   upsertCore?(slot: string, content: string, source?: string, tenant?: CoreTenant): MaybePromise<boolean>;
-  readCore?(tenant?: CoreTenant): MaybePromise<Array<{ slot: string; content: string; source: string; version: number; updated_at: string }>>;
+  readCore?(
+    tenant?: CoreTenant,
+  ): MaybePromise<Array<{ slot: string; content: string; source: string; version: number; updated_at: string }>>;
   /**
    * GROW：origin（seed|manual|auto，来源徽标；缺省 manual）。冲突路径 state='active'
    * （显式重建=撤销退休/否决；自动管道的 veto 不可重提由自生长去重查全态保证）。
    */
-  upsertValue?(valueId: string, label: string, weight: number, createdBy?: string, tenant?: CoreTenant, valence?: number, origin?: "seed" | "manual" | "auto", nodeType?: "theme" | "person" | "character", attrs?: { role?: string; aliases?: string[]; source?: string; facts?: string[]; description?: string }): MaybePromise<boolean>;
+  upsertValue?(
+    valueId: string,
+    label: string,
+    weight: number,
+    createdBy?: string,
+    tenant?: CoreTenant,
+    valence?: number,
+    origin?: "seed" | "manual" | "auto",
+    nodeType?: "theme" | "person" | "character",
+    attrs?: { role?: string; aliases?: string[]; source?: string; facts?: string[]; description?: string },
+  ): MaybePromise<boolean>;
   /** P2：通用 refs 回填键族（coreRefs/personRefs/identityRefs 单源；旧后端可缺省）。 */
-  backfillMemoryRef?(recordId: string, key: "coreRefs" | "personRefs" | "identityRefs", label: string, tenant?: CoreTenant): MaybePromise<boolean>
+  backfillMemoryRef?(
+    recordId: string,
+    key: "coreRefs" | "personRefs" | "identityRefs",
+    label: string,
+    tenant?: CoreTenant,
+  ): MaybePromise<boolean>;
   /** O13（P2）：core_pending——红线类提案人工采纳落点（三方法，缺省=store 不支持时调用方安静跳过）。 */
-  upsertPendingCore?(slot: string, content: string, evidence: number, tenant?: CoreTenant, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }): MaybePromise<boolean>;
-  listPendingCore?(tenant?: CoreTenant, opts?: { includeDecided?: boolean }): MaybePromise<Array<{ pending_id: string; slot: string; content: string; evidence: number; state: string; created_at: string; decided_at: string | null; label?: string | null; description?: string | null; attrs_json?: string | null; recurrence_json?: string | null; embedding_json?: string | null }>>;
-  decidePendingCore?(pendingId: string, decision: "adopted" | "rejected", tenant?: CoreTenant): MaybePromise<{ slot: string; content: string; label?: string | null; description?: string | null } | null>;
+  upsertPendingCore?(
+    slot: string,
+    content: string,
+    evidence: number,
+    tenant?: CoreTenant,
+    extra?: {
+      label?: string;
+      description?: string;
+      attrs?: Record<string, unknown>;
+      reproposalOf?: string;
+      reproposalGen?: number;
+    },
+  ): MaybePromise<boolean>;
+  listPendingCore?(
+    tenant?: CoreTenant,
+    opts?: { includeDecided?: boolean },
+  ): MaybePromise<
+    Array<{
+      pending_id: string;
+      slot: string;
+      content: string;
+      evidence: number;
+      state: string;
+      created_at: string;
+      decided_at: string | null;
+      label?: string | null;
+      description?: string | null;
+      attrs_json?: string | null;
+      recurrence_json?: string | null;
+      embedding_json?: string | null;
+    }>
+  >;
+  decidePendingCore?(
+    pendingId: string,
+    decision: "adopted" | "rejected",
+    tenant?: CoreTenant,
+  ): MaybePromise<{ slot: string; content: string; label?: string | null; description?: string | null } | null>;
   /** #91（复现即投票）：命中已登记 pending 行时计票——episodes 独立 episode 追加、evidence 联合并集、
    *  复活继承计数（expired→pending）；count>=votesN 且跨度>=spanHours → ready。行缺/slot 不符/状态不符 → null。 */
-  updatePendingRecurrence?(pendingId: string, episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }, opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant }): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
+  updatePendingRecurrence?(
+    pendingId: string,
+    episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
+    opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant },
+  ): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
   /** #91：push 支路落库后按 (slot,content,tenant,state=pending) 初始化复现账本；行 recurrence_json 已存在 → null（重推不双计）。 */
-  initPendingRecurrenceByContent?(slot: string, content: string, tenant?: CoreTenant, episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] }): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
+  initPendingRecurrenceByContent?(
+    slot: string,
+    content: string,
+    tenant?: CoreTenant,
+    episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
+  ): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
   /** #91（默认终局；2026-10-23 R1 返工）：TTL sweep——self_identity 且 state=pending；ready 行
    *  （count>=votesN 且 span>=spanHours）排除（待人工裁决不进终局）；其余锚=count=1 → first_seen??created_at、
    *  count>=2 → last_seen（复现停止后 TTL 退场，消除 count>=2 永生僵尸）；age 严格大于 ttlHours →
    *  state=expired（软失效可逆，行保留在匹配语料与计数图谱）。tenant 缺省=全租户（终局清理语义，
    *  修复原 ||"default" 吞租户空转）；传值=逐字段精确限定。 */
-  sweepExpiredSelfIdentityPending?(tenant?: { teamId?: string; userId?: string; agentId?: string }, opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number }): MaybePromise<Array<{ pending_id: string; content: string }>>;
+  sweepExpiredSelfIdentityPending?(
+    tenant?: { teamId?: string; userId?: string; agentId?: string },
+    opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number },
+  ): MaybePromise<Array<{ pending_id: string; content: string }>>;
   /** #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数（含全部后续 state——保护人工带宽
    *  口径）；created_at >= now−windowHours（ISO 字典序比较）。tenant 传值=逐字段精确限定（拍级调用方
    *  传真实三元组）；缺实现=调用方旁路（宽容降级=现状逐位）。 */
-  countSelfIdentityRecent?(tenant?: { teamId?: string; userId?: string; agentId?: string }, windowHours?: number): MaybePromise<number>;
+  countSelfIdentityRecent?(
+    tenant?: { teamId?: string; userId?: string; agentId?: string },
+    windowHours?: number,
+  ): MaybePromise<number>;
   /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门可选面（缺实现 → 门整体旁路=现状逐位）。
    *  候选=state='pending' ∧ recurrence ready（count≥votesN ∧ 跨度≥spanHours，口径与 sweep 同构）；
    *  tenant 缺省=全租户（#91 R1 先例），行带租户三元组供调度分组；显式传值=逐字段精确过滤。
    *  auto_adopted 落账带审计快照（prev 内容/版本/存在性、post 版本、门参数）——回滚（rejected 打在
    *  auto_adopted 行）按 post 版本守卫恢复 prev_slot_content（或删除采纳时创建的槽行），零删除。 */
-  listReadySelfIdentityPending?(tenant?: CoreTenant, opts?: { votesN?: number; spanHours?: number }): MaybePromise<Array<{ pending_id: string; content: string; recurrence_json: string | null; attrs_json: string | null; team_id: string; user_id: string; agent_id: string; created_at: string }>>;
-  decidePendingCoreAuto?(pendingId: string, tenant?: CoreTenant, audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } }): MaybePromise<boolean>;
+  listReadySelfIdentityPending?(
+    tenant?: CoreTenant,
+    opts?: { votesN?: number; spanHours?: number },
+  ): MaybePromise<
+    Array<{
+      pending_id: string;
+      content: string;
+      recurrence_json: string | null;
+      attrs_json: string | null;
+      team_id: string;
+      user_id: string;
+      agent_id: string;
+      created_at: string;
+    }>
+  >;
+  decidePendingCoreAuto?(
+    pendingId: string,
+    tenant?: CoreTenant,
+    audit?: {
+      prev_slot_content?: string;
+      prev_slot_version?: number;
+      prev_slot_existed?: boolean;
+      post_slot_version?: number;
+      gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
+    },
+  ): MaybePromise<boolean>;
   /** #92 M1（P0）：门②专用全量 rejected 查询——不分页不截断（listPendingCore 的 LIMIT 200 会让
    *  更早的人工拒绝对门②不可见）。缺实现 → 门回落 listPendingCore 并 WARN（不静默）。 */
-  listRejectedSelfIdentityPending?(tenant?: CoreTenant): MaybePromise<Array<{ pending_id: string; content: string; created_at: string }>>;
+  listRejectedSelfIdentityPending?(
+    tenant?: CoreTenant,
+  ): MaybePromise<Array<{ pending_id: string; content: string; created_at: string }>>;
   /** #92 M2（P0）：采纳事务化——槽写 + pending 落账同事务（decide 失败 → 回滚槽）。
    *  writeSlot=false 保留「合并结果与槽相同 → 幂等零 version 空转」；post_slot_version 由库内读回。
    *  缺实现 → 门回落两段写并 WARN（旧后端不能保证原子）。 */
-  commitAutoAdoptCore?(pendingId: string, tenant?: CoreTenant, opts?: { slot: string; content: string; source: string; writeSlot?: boolean; audit?: { prev_slot_content?: string; prev_slot_version?: number; prev_slot_existed?: boolean; post_slot_version?: number; gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number } } }): MaybePromise<boolean>;
-  rollbackAutoAdoptedPending?(pendingId: string, tenant?: CoreTenant): MaybePromise<{ restored: boolean; reason?: string }>;
+  commitAutoAdoptCore?(
+    pendingId: string,
+    tenant?: CoreTenant,
+    opts?: {
+      slot: string;
+      content: string;
+      source: string;
+      writeSlot?: boolean;
+      audit?: {
+        prev_slot_content?: string;
+        prev_slot_version?: number;
+        prev_slot_existed?: boolean;
+        post_slot_version?: number;
+        gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
+      };
+    },
+  ): MaybePromise<boolean>;
+  rollbackAutoAdoptedPending?(
+    pendingId: string,
+    tenant?: CoreTenant,
+  ): MaybePromise<{ restored: boolean; reason?: string }>;
   getPendingCoreState?(pendingId: string): MaybePromise<string | null>;
   /**
    * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
    * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。
    */
-  listValues?(tenant?: CoreTenant, opts?: { includeRetired?: boolean }): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;  /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源。可选签名（ILogBackend debug? 先例）：
+  listValues?(
+    tenant?: CoreTenant,
+    opts?: { includeRetired?: boolean },
+  ): MaybePromise<
+    Array<{
+      value_id: string;
+      label: string;
+      weight: number;
+      created_by: string;
+      valence: number | null;
+      origin: "seed" | "manual" | "auto";
+      pinned: 0 | 1;
+      state: "active" | "retired" | "vetoed";
+    }>
+  >; /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源。可选签名（ILogBackend debug? 先例）：
    *  缺实现时调用侧静默省略基调行（宁缺毋滥）。租户三元组硬隔离（F18 同款）；样本窗=occurred_at ≥ now−windowHours
    *  （UTC ISO 字典序比较），occurred_at DESC 取 ≤maxSamples；valence IS NOT NULL。只读、零写库、零 LLM。 */
-  recentAffectSignals?(tenant?: CoreTenant, opts?: { windowHours: number; maxSamples: number }): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string }>>;
+  recentAffectSignals?(
+    tenant?: CoreTenant,
+    opts?: { windowHours: number; maxSamples: number },
+  ): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string }>>;
   /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 数据源。可选签名（recentAffectSignals 同位先例）：
    *  缺实现时调用侧静默省略张力候选（宁缺毋滥）。租户三元组硬隔离（F18 同款）；metadata_json coreRefs/identityRefs
    *  键族展开为 {label, valence, ref_kind} 行（identityRefs=20 字切片弱口径，如实透传由消费方匹配）；只读、零写库、零 LLM。 */
-  anchorEvidenceValences?(tenant?: CoreTenant): MaybePromise<Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }>>;
+  anchorEvidenceValences?(
+    tenant?: CoreTenant,
+  ): MaybePromise<Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }>>;
 
   /** #30（S9/R5，2026-10-16）：soul 快照 append-only 账本（三方法可选签名，缺实现=调用侧静默跳过）。
    *  只追加不更新不删除（禁删红线同构）；payload_json=soul 渲染全文，时间旅行可重建任一时点；
    *  capture point=渲染路径，指纹变化后首次渲染落行（at-least-once），last-hash 去重零落行防膨胀。 */
-  writeSoulSnapshot?(tenant: CoreTenant, snap: { ts: string; contentHash: string; payloadJson: string; trigger: string }): MaybePromise<void>;
+  writeSoulSnapshot?(
+    tenant: CoreTenant,
+    snap: {
+      ts: string;
+      contentHash: string;
+      payloadJson: string;
+      /** 受控枚举（SOUL_CHANGE_REASONS）；缺省回落 layout。 */
+      reasonCode?: string;
+      reasonDetail?: string;
+      slotsJson?: string;
+      /** @deprecated 旧自由文本列；等价 reasonCode。 */
+      trigger?: string;
+    },
+  ): MaybePromise<void>;
   /** #30：最近一次快照 content_hash（去重判据；null=该租户无快照史）。 */
   readLastSoulSnapshotHash?(tenant: CoreTenant): MaybePromise<string | null>;
+  /** 缺口 A：最近一版整行（版本链判据 + 上一版 slot 图 diff 源）；无可选实现时调用侧回落 readLastSoulSnapshotHash。 */
+  readLastSoulSnapshot?(tenant: CoreTenant): MaybePromise<SoulSnapshotRow | null>;
   /** #30：快照时间旅行读（id ASC ≤limit，limit 缺省 100 上限 1000）。 */
-  listSoulSnapshots?(tenant: CoreTenant, limit?: number): MaybePromise<Array<{ ts: string; content_hash: string; payload_json: string; trigger: string }>>;
+  listSoulSnapshots?(tenant: CoreTenant, limit?: number): MaybePromise<SoulSnapshotRow[]>;
   /** #28（R5）：会话级当下 state 单行 upsert/读（观测旁路；抽取扩展门 on 才写；F18 三元组隔离）。 */
-  writeSoulState?(tenant: CoreTenant, state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string }): MaybePromise<void>;
-  readSoulState?(tenant: CoreTenant): MaybePromise<{ valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null>;
+  writeSoulState?(
+    tenant: CoreTenant,
+    state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string },
+  ): MaybePromise<void>;
+  readSoulState?(
+    tenant: CoreTenant,
+  ): MaybePromise<{
+    valence: number;
+    arousal: number;
+    topValue?: string | null;
+    turnSeq?: number | null;
+    updatedAt: string;
+  } | null>;
 
   /* —— #35（R5）：promise 承诺层数据面 ——
    * 义务不是倾向：promise 独立于 core_values 生命周期（无 reweight/decay/similarMerge/
    * anchor-growth 参与，见 soul-promise.ts 头注释排除条款）。
    * 状态机单向：open → kept | broken | withdrawn（终态不可再迁，同态迁移亦拒绝）。
    * 双时态留痕：soul_promise_events 逐迁移 append（含创建事件 ∅→open），只增不改。 */
-  upsertSoulPromise?(tenant: CoreTenant, input: { content: string; source: string; createdAt?: string; refKey?: string }): MaybePromise<{ promiseId: string }>;
+  upsertSoulPromise?(
+    tenant: CoreTenant,
+    input: { content: string; source: string; createdAt?: string; refKey?: string },
+  ): MaybePromise<{ promiseId: string }>;
   /** 非法迁移/他租户 promiseId → { ok:false, reason }，零写入（不抛——裁决面非异常面）。
    *  #41：opts.source 落事件溯源列（manual/evidence/proposal，缺省 manual）。 */
-  transitionSoulPromise?(tenant: CoreTenant, promiseId: string, to: SoulPromiseStatus, opts?: { at?: string; note?: string; source?: PromiseTransitionSource }): MaybePromise<{ ok: true } | { ok: false; reason: string }>;
-  listSoulPromises?(tenant: CoreTenant, opts?: { status?: SoulPromiseStatus; limit?: number }): MaybePromise<SoulPromiseRecord[]>;
+  transitionSoulPromise?(
+    tenant: CoreTenant,
+    promiseId: string,
+    to: SoulPromiseStatus,
+    opts?: { at?: string; note?: string; source?: PromiseTransitionSource },
+  ): MaybePromise<{ ok: true } | { ok: false; reason: string }>;
+  listSoulPromises?(
+    tenant: CoreTenant,
+    opts?: { status?: SoulPromiseStatus; limit?: number },
+  ): MaybePromise<SoulPromiseRecord[]>;
   readSoulPromiseEvents?(tenant: CoreTenant, promiseId: string): MaybePromise<SoulPromiseEvent[]>;
 
   /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
-  listValuesAnyState?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; label: string; weight: number; created_by: string; valence: number | null; origin: "seed" | "manual" | "auto"; pinned: 0 | 1; state: "active" | "retired" | "vetoed" }>>;
+  listValuesAnyState?(
+    tenant?: CoreTenant,
+  ): MaybePromise<
+    Array<{
+      value_id: string;
+      label: string;
+      weight: number;
+      created_by: string;
+      valence: number | null;
+      origin: "seed" | "manual" | "auto";
+      pinned: 0 | 1;
+      state: "active" | "retired" | "vetoed";
+    }>
+  >;
   /** GROW（钉住）：pinned 翻转；只作用 active|retired（vetoed 拒绝）。 */
   setValuePinned?(valueId: string, pinned: boolean, tenant?: CoreTenant): MaybePromise<boolean>;
   /** GROW（手动退休）：state → 'retired'（退休区可见，可恢复/可钉住）。 */
@@ -893,17 +1254,46 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * PA：自生长调度状态读（interval/语料基线；重启不失忆）。
    * tenant 缺省/default 桶 = 旧键旧行为；非 default 三元组 = per-agent 独立基线。
    */
-  getAnchorGrowthState?(tenant?: CoreTenant): MaybePromise<{ lastDiscoveryAt: string | null; lastCorpusCount: number | null; lastAttemptAt?: string | null; lastAdoptedAt?: string | null; lastMaintAt?: string | null }>;
+  getAnchorGrowthState?(
+    tenant?: CoreTenant,
+  ): MaybePromise<{
+    lastDiscoveryAt: string | null;
+    lastCorpusCount: number | null;
+    lastAttemptAt?: string | null;
+    lastAdoptedAt?: string | null;
+    lastMaintAt?: string | null;
+  }>;
   /** GROW：自生长调度状态写（发现轮次完成后调用）。PA：tenant 语义同 getAnchorGrowthState。
    *  GROW-MAINT：lastAttemptAt/lastAdoptedAt 可选——冷却分级（0 采纳 1h 短冷却 / 有采纳 intervalHours）。 */
-  setAnchorGrowthState?(state: { lastDiscoveryAt: string; lastCorpusCount: number; lastAttemptAt?: string; lastAdoptedAt?: string; lastMaintAt?: string }, tenant?: CoreTenant): MaybePromise<void>;
+  setAnchorGrowthState?(
+    state: {
+      lastDiscoveryAt: string;
+      lastCorpusCount: number;
+      lastAttemptAt?: string;
+      lastAdoptedAt?: string;
+      lastMaintAt?: string;
+    },
+    tenant?: CoreTenant,
+  ): MaybePromise<void>;
   /** SOUL：身份自发现状态（identity_* 前缀键族，与锚状态独立） */
-  getIdentityDiscoveryState?(tenant?: CoreTenant): MaybePromise<{ lastAttemptAt: string | null; lastCorpusCount: number | null }>;
-  setIdentityDiscoveryState?(state: { lastAttemptAt: string; lastCorpusCount: number }, tenant?: CoreTenant): MaybePromise<void>;
+  getIdentityDiscoveryState?(
+    tenant?: CoreTenant,
+  ): MaybePromise<{ lastAttemptAt: string | null; lastCorpusCount: number | null }>;
+  setIdentityDiscoveryState?(
+    state: { lastAttemptAt: string; lastCorpusCount: number },
+    tenant?: CoreTenant,
+  ): MaybePromise<void>;
   /** 自维护观测（REG-REMAINING-001 D8）：系统自计数（conflict 边/归档/锚/语料）。 */
-  getSelfObsStats?(): MaybePromise<{ l1: number; conflict: number; evolve: number; similar: number; archived: number; anchors: number }>;
+  getSelfObsStats?(): MaybePromise<{
+    l1: number;
+    conflict: number;
+    evolve: number;
+    similar: number;
+    archived: number;
+    anchors: number;
+  }>;
   /** GROW-EVO P2.1（锚↔记忆双向链路）：锚采纳时把 label 回填进支持记录的 metadata.coreRefs（双表同步）。 */
-  backfillCoreRef?(recordId: string, label: string, tenant?: CoreTenant): MaybePromise<boolean>
+  backfillCoreRef?(recordId: string, label: string, tenant?: CoreTenant): MaybePromise<boolean>;
   /**
    * PA（价值锚 per-agent 严格独立）：l1_records 的 distinct (team,user,agent) 三元组——
    * "有记忆的 agent"清单（default 锚扇出迁移与自生长 per-agent 化共用来源，单源禁第二份）。
@@ -920,7 +1310,9 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    */
   deriveValueValences?(
     tenant?: CoreTenant,
-    llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number }): Promise<string> },
+    llmRunner?: {
+      run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number }): Promise<string>;
+    },
   ): MaybePromise<{ derived: number; skipped: number }>;
   /**
    * REG-REMAINING-003 #1：列出存在 valence IS NULL 活跃锚的租户三元组（boot 逐租户 derive 的输入）。
@@ -937,13 +1329,26 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    */
   resetValueValences?(tenant?: CoreTenant): MaybePromise<Array<{ value_id: string; valence: number }>>;
   /** 从快照恢复仍为 NULL 的 valence（逐行 `valence IS NULL` 守卫），返回真实恢复行数。 */
-  restoreValueValences?(tenant?: CoreTenant, snapshot?: Array<{ value_id: string; valence: number }>): MaybePromise<number>;
+  restoreValueValences?(
+    tenant?: CoreTenant,
+    snapshot?: Array<{ value_id: string; valence: number }>,
+  ): MaybePromise<number>;
   /**
    * R-A2（R5，结构感知召回 spec §2）：按 coreRefs 价值锚 label 反查 L1 记忆（候选池补池）。
    * 可选方法——tcvdb 等后端可不实现（F7 家族先例，调用方 feature-detect，缺失=补池通道静默关闭）。
    * 返回行 score 恒 0（无相关度实证）；租户 filter 由实现负责（T14 同形）。
    */
   searchL1ByCoreRefs?(labels: string[], limit?: number, filter?: IsolationFilter): MaybePromise<Array<L1SearchResult>>;
+  /**
+   * task-9（2026-11-04，来源证据主键）：按 source_message_ids（L0 原话 id）反查 L1 记忆。
+   * 提取期用它把「同一批原话的再提取」认出来：既有行来源集合 ⊇ 新记忆来源集合 → 决策改 update。
+   * 可选方法——tcvdb 等后端可不实现（feature-detect，缺失 = 同源覆盖判定静默关闭，fail-open）。
+   * 返回 = 命中行的 record_id + 解析后的来源 id 数组（JSON 文本不泄漏到调用方）；租户 filter 由实现负责。
+   */
+  findL1BySourceMessageIds?(
+    ids: string[],
+    filter?: IsolationFilter,
+  ): MaybePromise<Array<{ record_id: string; source_message_ids: string[] }>>;
   /**
    * R7-2（分层召回 spec DS-RECALL-LAYERED-R7-001 §2）：按场景名反查 L1 记忆（同 scene 过滤，
    * 层级前缀 `scene = ? OR scene LIKE ? || '/%'` 与 sceneSignalOf 前缀语义对称）。
@@ -966,7 +1371,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
 
   // ── L1 Search ────────────────────────────────────────────
 
-  searchL1Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string, filter?: IsolationFilter): MaybePromise<L1SearchResult[]>;
+  searchL1Vector(
+    queryEmbedding: Float32Array,
+    topK?: number,
+    queryText?: string,
+    filter?: IsolationFilter,
+  ): MaybePromise<L1SearchResult[]>;
   /**
    * W1/C（#137）：事实键平行召回通道——把「事实短语键」的 embedding 单独存一张 vec0 表
    * （与 l1_vec 同维、同余弦度量），原文主索引 l1_vec 不动。可选方法——tcvdb 等后端可不实现
@@ -977,7 +1387,11 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * W1/C（#137）：按事实键向量检索，与 searchL1Vector 同形（score = 1 - cosine distance）；
    * 行形状 = L1SearchResult（metadata 从 l1_records 读，租户 filter 两步过滤，null distance 跳过）。
    */
-  searchL1FactVector?(queryEmbedding: Float32Array, topK?: number, filter?: IsolationFilter): MaybePromise<L1SearchResult[]>;
+  searchL1FactVector?(
+    queryEmbedding: Float32Array,
+    topK?: number,
+    filter?: IsolationFilter,
+  ): MaybePromise<L1SearchResult[]>;
   /**
    * B1 修正（2026-11-02）：按 record_id 批量读 l1_vec 已入库向量（巩固层属性归组的
    * embedding 兜底复用它们，不再逐条重嵌）。可选方法——未实现 = 调用方只做有上限的补齐；
@@ -1017,7 +1431,11 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
 
   countL0(filter?: L0CountFilter): MaybePromise<number>;
   queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
-  queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
+  queryL0GroupedBySessionId(
+    sessionKey: string,
+    afterRecordedAtMs?: number,
+    limit?: number,
+  ): MaybePromise<L0SessionGroup[]>;
   getAllL0Texts(): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
   /**
    * v4#5 验证轮补口（2026-09-16 深夜）：枚举 L0 会话键（boot recovery 数据源二）。
@@ -1037,7 +1455,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
 
   // ── L0 Search ────────────────────────────────────────────
 
-  searchL0Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string, filter?: IsolationFilter): MaybePromise<L0SearchResult[]>;
+  searchL0Vector(
+    queryEmbedding: Float32Array,
+    topK?: number,
+    queryText?: string,
+    filter?: IsolationFilter,
+  ): MaybePromise<L0SearchResult[]>;
   searchL0Fts(ftsQuery: string, limit?: number, filter?: IsolationFilter): MaybePromise<L0FtsResult[]>;
   searchL0Hybrid?(params: {
     query?: string;
@@ -1079,6 +1502,13 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   queryL0Paginated?(filter: L0PaginatedFilter): MaybePromise<L0PaginatedResult>;
 
   /**
+   * L0 batch read by record_id (ADR-0025 行级溯源: L1.source_message_ids → 原始消息).
+   * 空 ids 必须直接返回 []（不拼 SQL）；缺失 id 静默跳过；返回序按 timestamp 升序。
+   * 可选能力：未实现时网关 503 明示（fail-loud，不静默伪装成空结果）。
+   */
+  queryL0ByIds?(ids: string[], filter?: L0ByIdsFilter): MaybePromise<L0QueryRow[]>;
+
+  /**
    * L1 paginated query for v2 API `/atomic/query`.
    * Returns rows matching the filter, paginated by limit/offset,
    * plus the total count of matching rows.
@@ -1103,32 +1533,73 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   clearMemoryContent?(filter: MemoryContentClearFilter): MaybePromise<MemoryContentClearResult>;
 
   // ── Entity metadata (Team / User / Agent / Task) ───────────
-  createTeam?(input: Omit<TeamEntity, "created_at" | "updated_at" | "status" | "user_ids" | "agent_ids" | "task_ids"> & { team_id?: string; status?: TeamStatus }): MaybePromise<TeamEntity>;
+  createTeam?(
+    input: Omit<TeamEntity, "created_at" | "updated_at" | "status" | "user_ids" | "agent_ids" | "task_ids"> & {
+      team_id?: string;
+      status?: TeamStatus;
+    },
+  ): MaybePromise<TeamEntity>;
   getTeam?(teamId: string): MaybePromise<TeamEntity | null>;
-  updateTeam?(teamId: string, patch: Partial<Pick<TeamEntity, "name" | "description" | "owner_user_id" | "user_ids" | "agent_ids" | "status">>): MaybePromise<TeamEntity | null>;
+  updateTeam?(
+    teamId: string,
+    patch: Partial<Pick<TeamEntity, "name" | "description" | "owner_user_id" | "user_ids" | "agent_ids" | "status">>,
+  ): MaybePromise<TeamEntity | null>;
   deleteTeams?(teamIds: string[]): MaybePromise<BatchDeleteResult>;
 
-  createUser?(input: Pick<UserEntity, "name"> & Partial<Pick<UserEntity, "job_description" | "status">> & { user_id?: string }): MaybePromise<UserEntity>;
+  createUser?(
+    input: Pick<UserEntity, "name"> & Partial<Pick<UserEntity, "job_description" | "status">> & { user_id?: string },
+  ): MaybePromise<UserEntity>;
   getUser?(userId: string): MaybePromise<UserEntity | null>;
-  updateUser?(userId: string, patch: Partial<Pick<UserEntity, "name" | "job_description" | "status">>): MaybePromise<UserEntity | null>;
+  updateUser?(
+    userId: string,
+    patch: Partial<Pick<UserEntity, "name" | "job_description" | "status">>,
+  ): MaybePromise<UserEntity | null>;
   deleteUsers?(userIds: string[]): MaybePromise<BatchDeleteResult>;
 
-  createAgent?(input: Omit<AgentEntity, "created_at" | "updated_at" | "status" | "visibility"> & { agent_id?: string; status?: AgentStatus; visibility?: AgentVisibility }): MaybePromise<AgentEntity>;
+  createAgent?(
+    input: Omit<AgentEntity, "created_at" | "updated_at" | "status" | "visibility"> & {
+      agent_id?: string;
+      status?: AgentStatus;
+      visibility?: AgentVisibility;
+    },
+  ): MaybePromise<AgentEntity>;
   getAgent?(agentId: string): MaybePromise<AgentEntity | null>;
-  updateAgent?(agentId: string, patch: Partial<Pick<AgentEntity, "name" | "description" | "prompt" | "owner_user_id" | "visibility" | "status">>): MaybePromise<AgentEntity | null>;
+  updateAgent?(
+    agentId: string,
+    patch: Partial<Pick<AgentEntity, "name" | "description" | "prompt" | "owner_user_id" | "visibility" | "status">>,
+  ): MaybePromise<AgentEntity | null>;
   deleteAgents?(agentIds: string[]): MaybePromise<BatchDeleteResult>;
 
-  createTask?(input: Omit<TaskEntity, "created_at" | "updated_at" | "source_type" | "agent_ids" | "user_ids"> & { task_id?: string; source_type?: TaskSourceType; agent_ids?: string[]; user_ids?: string[] }): MaybePromise<TaskEntity>;
+  createTask?(
+    input: Omit<TaskEntity, "created_at" | "updated_at" | "source_type" | "agent_ids" | "user_ids"> & {
+      task_id?: string;
+      source_type?: TaskSourceType;
+      agent_ids?: string[];
+      user_ids?: string[];
+    },
+  ): MaybePromise<TaskEntity>;
   getTask?(taskId: string): MaybePromise<TaskEntity | null>;
-  updateTask?(taskId: string, patch: Partial<Pick<TaskEntity, "title" | "description" | "source_type" | "source_url" | "agent_ids" | "user_ids">>): MaybePromise<TaskEntity | null>;
+  updateTask?(
+    taskId: string,
+    patch: Partial<Pick<TaskEntity, "title" | "description" | "source_type" | "source_url" | "agent_ids" | "user_ids">>,
+  ): MaybePromise<TaskEntity | null>;
   deleteTasks?(taskIds: string[]): MaybePromise<BatchDeleteResult>;
 
   // ── Knowledge entity (wiki / code-graph metadata) ───────────
   createKnowledge?(input: Omit<KnowledgeEntity, "created_at" | "updated_at">): MaybePromise<KnowledgeEntity>;
   getKnowledge?(knowledgeId: string): MaybePromise<KnowledgeEntity | null>;
-  updateKnowledge?(knowledgeId: string, patch: Partial<Pick<KnowledgeEntity, "name" | "summary" | "service_url" | "repo_url" | "branch">>): MaybePromise<KnowledgeEntity | null>;
+  updateKnowledge?(
+    knowledgeId: string,
+    patch: Partial<Pick<KnowledgeEntity, "name" | "summary" | "service_url" | "repo_url" | "branch">>,
+  ): MaybePromise<KnowledgeEntity | null>;
   deleteKnowledge?(knowledgeIds: string[], teamId?: string): MaybePromise<BatchDeleteResult>;
-  listKnowledge?(input: { team_id: string; type?: KnowledgeType; knowledge_ids?: string[]; limit?: number; offset?: number }): MaybePromise<KnowledgeListResult>;
+  listKnowledge?(input: {
+    team_id: string;
+    type?: KnowledgeType;
+    knowledge_ids?: string[];
+    limit?: number;
+    offset?: number;
+  }): MaybePromise<KnowledgeListResult>;
 
   // ── Memory Audit（修改审计；optional 让 store 可以选择不实现）──
   appendAudit?(entry: AuditEntry): MaybePromise<void>;

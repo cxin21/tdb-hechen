@@ -52,7 +52,9 @@ const mkRecord = (id: string, over: Partial<MemoryRecord> = {}): MemoryRecord =>
 
 describe("P1 Task 7 soul-columns 第 10 列（单一事实源）", () => {
   it("SOUL_COLUMNS 追加 importance TINYINT UNINDEXED；SELECT 片段/列名同步", () => {
-    expect(SOUL_COLUMNS.length).toBe(10);
+    // ADR-0025 C2（2026-11-04）：soul 列从 10 收到 9（`source` 删列），importance 由第 10 变第 9。
+    expect(SOUL_COLUMNS.length).toBe(9);
+    expect(SOUL_COL_NAMES).not.toContain("source");
     const imp = SOUL_COLUMNS.find((c) => c.name === "importance");
     expect(imp).toBeDefined();
     expect(imp!.sqlType).toBe("TINYINT");

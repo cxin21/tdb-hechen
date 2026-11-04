@@ -12,6 +12,8 @@ export interface SceneIndexEntry {
   heat: number;
   created: string;
   updated: string;
+  /** 触发词（缺口 B）：注入侧命中即条件必注入。无触发词的历史块不写该字段。 */
+  keywords?: string[];
 }
 
 // ── fs fallback helpers (used when no StorageAdapter is provided) ──
@@ -65,12 +67,16 @@ export async function readSceneIndex(dataDir: string, storage?: StorageAdapter):
       const filename = typeof item.filename === "string" ? item.filename : "";
       if (!filename) continue;
 
+      const keywords = Array.isArray(item.keywords)
+        ? item.keywords.filter((k): k is string => typeof k === "string")
+        : undefined;
       entries.push({
         filename,
         summary: typeof item.summary === "string" ? item.summary : "",
         heat: typeof item.heat === "number" ? item.heat : 0,
         created: typeof item.created === "string" ? item.created : "",
         updated: typeof item.updated === "string" ? item.updated : "",
+        ...(keywords && keywords.length > 0 ? { keywords } : {}),
       });
     }
     return entries;
@@ -120,12 +126,14 @@ export async function syncSceneIndex(dataDir: string, storage?: StorageAdapter):
       }
       if (!raw) continue;
       const block = parseSceneBlock(raw, file);
+      const keywords = block.meta.keywords;
       entries.push({
         filename: file,
         summary: block.meta.summary,
         heat: block.meta.heat,
         created: block.meta.created,
         updated: block.meta.updated,
+        ...(keywords && keywords.length > 0 ? { keywords } : {}),
       });
     } catch {
       continue;

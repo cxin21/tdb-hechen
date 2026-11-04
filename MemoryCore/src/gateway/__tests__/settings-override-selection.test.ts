@@ -125,8 +125,9 @@ describe("apply*OverrideToRaw（#179 S5）", () => {
     expect(cfg.recall.injection).toEqual({
       foldIdentical: true,
       maxLineChars: null,
-      maxChars: null,
+      maxChars: 6000,
       budgetByIntent: { empty: 0, continuation: 1, self: 1, info: null },
+      // 2026-11-04（LME90 重标定）：maxChars 缺省 = 标准档 6000（不再要求部署方填数字）。
     });
   });
 
@@ -149,7 +150,7 @@ describe("apply*OverrideToRaw（#179 S5）", () => {
     expect(applyInjectionOverrideToRaw(raw, {})).toBe(raw);
   });
 
-  it("partial injection override 保留未给出的档位", () => {
+  it("partial injection override 保留 fixture 里显式写出的档位（null = 不限）", () => {
     const raw = applyInjectionOverrideToRaw(structuredClone(baseRaw), { budgetByIntent: { info: 3 } });
     const cfg = parseConfig(raw);
     expect(cfg.recall.injection?.budgetByIntent).toEqual({ empty: null, continuation: null, self: null, info: 3 });

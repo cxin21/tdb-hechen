@@ -34,7 +34,15 @@ const DEFAULT_SLOTS = [
   { slot: "strict_rule", content: "禁止注入测试数据。" },
 ];
 
-interface SnapRow { ts: string; contentHash: string; payloadJson: string; trigger: string }
+interface SnapRow {
+  ts: string;
+  contentHash: string;
+  payloadJson: string;
+  trigger?: string;
+  reasonCode?: string;
+  reasonDetail?: string;
+  slotsJson?: string;
+}
 
 function makeStore(rows: Record<string, unknown>[], failWrites = 0, slots: Array<{ slot: string; content: string }> = DEFAULT_SLOTS) {
   const snapshots: SnapRow[] = [];
@@ -61,7 +69,10 @@ describe("#30 soul snapshots", () => {
     await buildSoulPrefix(store, { teamId: "ts1", userId: "u1", agentId: "a1" }, LOG, { ...CT });
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].contentHash).toMatch(/^[0-9a-f]{8}$/);
-    expect(snapshots[0].trigger).toBe("render");
+    // 缺口 A（2026-11-04）：trigger 自由文本 "render" 升级为受控原因枚举；首版归因 first-version。
+    expect(snapshots[0].reasonCode).toBe("first-version");
+    expect(snapshots[0].reasonDetail).toContain("keys=");
+    expect(snapshots[0].slotsJson).toContain("slot:self_identity");
     expect(snapshots[0].payloadJson).toContain("根因(趋近)");
   });
 
@@ -96,6 +107,22 @@ describe("#30 soul snapshots", () => {
     await buildSoulPrefix(store, t, LOG, { ...CT }); // cache hit + !snapshotted → 补账 → 1 行
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].payloadJson).toContain("根因(趋近)");
+  });
+
+  it("缓存命中补账也写 block:* 段信号（缺口 A 修正：两条写入路径产出同一种 slot 图）", async () => {
+    const rows = [row({ value_id: "v1", label: "根因", weight: 0.8, valence: 1 })];
+    const { store, snapshots } = makeStore(rows, 1); // 首次写失败 → 旗标未置 → 下次命中补账
+    const t = { teamId: "ts7b", userId: "u1", agentId: "a1" };
+    await buildSoulPrefix(store, t, LOG, { ...CT });
+    expect(snapshots).toHaveLength(0);
+    await buildSoulPrefix(store, t, LOG, { ...CT }); // cache hit → 补账
+    expect(snapshots).toHaveLength(1);
+    const slotsJson = snapshots[0].slotsJson ?? "";
+    // 渲染路径首次落行会带 block: 键（parts 分段）；缓存命中路径若丢 parts 则只有 slot:/value:，
+    // 同一个渲染字节产出两种 slot 图 → 版本链出现幽灵「block 全 removed 又 added」。
+    expect(slotsJson).toContain("block:");
+    expect(slotsJson).toContain("slot:self_identity");
+    expect(slotsJson).toContain("value:v1");
   });
 
   it("同 sv 布局变体各自成行（R5-F2：contentHash=渲染字节哈希）", async () => {

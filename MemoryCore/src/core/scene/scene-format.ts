@@ -2,11 +2,18 @@
  * Scene Block file format: parse and format the META-delimited Markdown files.
  */
 
+import { normalizeSceneKeywords } from "./scene-keywords.js";
+
 export interface SceneBlockMeta {
   created: string;
   updated: string;
   summary: string;
   heat: number;
+  /**
+   * 触发词（缺口 B）：注入侧命中即条件必注入。
+   * 缺省/空数组时 formatMeta 逐位等于旧六行格式（历史块不受影响）。
+   */
+  keywords?: string[];
 }
 
 export interface SceneBlock {
@@ -37,11 +44,17 @@ export function parseSceneBlock(raw: string, filename: string): SceneBlock {
   const metaBlock = raw.slice(startIdx + META_START.length, endIdx).trim();
   const content = raw.slice(endIdx + META_END.length).trim();
 
+  const keywords = extractMetaField(metaBlock, "keywords")
+    .split(/[，,、]/)
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+
   const meta: SceneBlockMeta = {
     created: extractMetaField(metaBlock, "created"),
     updated: extractMetaField(metaBlock, "updated"),
     summary: extractMetaField(metaBlock, "summary"),
     heat: parseInt(extractMetaField(metaBlock, "heat"), 10) || 0,
+    ...(keywords.length > 0 ? { keywords } : {}),
   };
 
   return { filename, meta, content };
@@ -58,12 +71,14 @@ export function formatSceneBlock(meta: SceneBlockMeta, content: string): string 
  * Format the META section.
  */
 export function formatMeta(meta: SceneBlockMeta): string {
+  const keywords = normalizeSceneKeywords(meta.keywords);
   return [
     META_START,
     `created: ${meta.created}`,
     `updated: ${meta.updated}`,
     `summary: ${meta.summary}`,
     `heat: ${meta.heat}`,
+    ...(keywords.length > 0 ? [`keywords: ${keywords.join("，")}`] : []),
     META_END,
   ].join("\n");
 }

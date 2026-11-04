@@ -104,6 +104,7 @@ if (flag("help") || argv.length === 0) {
   --rerank-timeout MS           精排超时（毫秒；本机 onnx 冷加载可能 >5s，冷启动档放宽到 30000）
   --rerank-filter-only [floor]  精排降级为过滤器（**必须同时加 --rerank-child-proc**，否则直接退出码 2）
   --rerank-off                   B2-a 精排对照：沙箱 yaml rerank.enabled=false
+--rerank-on                    B2-a 精排实验：沙箱 yaml rerank.enabled=true（覆盖生产 override 的 false）
   --rerank-child-proc            精排子进程隔离（onnx 原生崩溃防护；--rerank-filter-only 依赖此路径）
   --dump-rerank-scores           #144 floor 校准：把每次精排调用的**全量候选分数**落 <out>/<report>-rerank-scores.jsonl
                                  （含未达线行 + recordId/来源会话 + 最终保留序；只加 IO，不改召回行为）
@@ -154,14 +155,14 @@ const KNOWN_FLAGS = new Set([
   "age-decay", "b1", "b2b-validity", "candidate-k", "conclusion-budget-mode", "conclusion-cap",
   "conclusion-cards", "conclusion-layer-off", "conclusion-legacy-rank", "conclusion-max", "conclusion-max-extra", "conclusion-pairing",
   "conclusion-routing", "conclusion-slot-cost", "concurrency", "currency-prompt", "pref-prompt", "marshal-prompt", "data", "dataset", "emb-threshold",
-  "embed-cache", "embed-interval-ms", "evidence-pack", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
+  "embed-cache", "embed-interval-ms", "embed-pace", "embed-chars-per-minute", "evidence-pack", "expect-config", "fact-batch-size", "fact-cache", "fact-case-concurrency",
   "fact-channel", "fact-channel-off", "fact-channel-read-only", "fact-channel-weight", "fact-concurrency", "fact-dual-write",
   "fact-extract", "fact-max-chars", "fact-max-facts", "fact-model", "fact-rows", "fact-separator", "facts-only",
-  "fusion", "gen-limit", "help", "inject-time-sort", "inject-wrapper", "keep",
+  "fusion", "gen-limit", "help", "inject-json", "inject-time-sort", "inject-wrapper", "keep",
   "limit", "manifest", "mmr", "mmr-lambda", "no-embed-cache", "no-write-steps", "offline-embedding",
   "out", "pace", "present-temporal", "prod-config", "prod-data", "prune-fact-sibling-index", "quiet",
   "recall-ks", "recall-max-results", "dedupe-hits-by-turn", "expand-parent-turn", "recall-timeout", "report-name", "rerank-candidates", "rerank-child-proc",
-  "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-threads",
+  "dump-rerank-scores", "rerank-doc-cap", "rerank-filter-only", "rerank-minscore", "rerank-mode", "rerank-off", "rerank-on", "rerank-threads",
   // #144：filter 的题内相对尺子（floor 在题间量纲漂移下不可校准，见 docs/optimization-results.md §19）
   "rerank-filter-rule", "rerank-margin-top", "rerank-keep-ratio",
   "rerank-timeout", "samples", "small-to-big", "small-to-big-max-extra", "small-to-big-off", "store",
@@ -345,6 +346,18 @@ async function main() {
   const supersessionOverride = cardinalityGate === false ? { cardinalityGate: false } : undefined;
   // embedding 节流（豆包账号级 RPM 限制）：请求间隔下限，避免突发触发 429 重试风暴
   const embedIntervalMs = num("embed-interval-ms", 400);
+  // 2026-11-03（授权）：把节流下沉到 provider 层——只写沙箱 yaml，生产配置不动。
+  // 背景：Ark 端点账号级 429（同步返回、无 Retry-After、惩罚窗 ≥30–60s），
+  // 实测 1200ms 间隔 / 1.9M chars/min 稳，4.4M chars/min 必撞。
+  const embeddingOverride = {};
+  const embedPaceArg = num("embed-pace", undefined);
+  if (embedPaceArg !== undefined && Number.isFinite(embedPaceArg) && embedPaceArg > 0) {
+    embeddingOverride.paceMinIntervalMs = Math.min(60_000, Math.floor(embedPaceArg));
+  }
+  const embedCharsPerMinArg = num("embed-chars-per-minute", undefined);
+  if (embedCharsPerMinArg !== undefined && Number.isFinite(embedCharsPerMinArg) && embedCharsPerMinArg > 0) {
+    embeddingOverride.charsPerMinute = Math.max(1_000, Math.floor(embedCharsPerMinArg));
+  }
   // W3（issue #134）：结论卡（work_fact）接入召回——蒸馏 + part_of 证据链 + smallToBig 回捞。
   const conclusionCards = flag("conclusion-cards");
   const conclusionMax = num("conclusion-max", 4);
@@ -505,6 +518,16 @@ async function main() {
   // B2-a：精排试验档（只改沙箱 bench-gateway.yaml；生产 tdai-gateway.yaml 不动）
   const rerankOverride = {};
   if (flag("rerank-off")) rerankOverride.enabled = false;
+  // 2026-11-03：沙箱显式开精排（生产 override 里 rerank.enabled=false 会被 copyOverrideFrom
+  // 带进沙箱并吞掉 yaml 缺省 true，导致「不写 --rerank-off」也跑成精排关档）。只改沙箱副本，
+  // 生产 config-override.json 不动；与 --rerank-off 互斥（同时给视为配置错误）。
+  if (flag("rerank-on")) {
+    if (flag("rerank-off")) {
+      console.error("[bench:error] --rerank-on 与 --rerank-off 互斥");
+      process.exit(2);
+    }
+    rerankOverride.enabled = true;
+  }
   const rms = arg("rerank-minscore", undefined);
   if (rms !== undefined && rms !== true) rerankOverride.minScore = Number(rms);
   const rcand = arg("rerank-candidates", undefined);
@@ -530,10 +553,14 @@ async function main() {
   if (fkeep !== undefined && fkeep !== true && Number.isFinite(Number(fkeep)) && Number(fkeep) > 0 && Number(fkeep) <= 1) {
     rerankOverride.filterKeepRatio = Number(fkeep);
   }
-  // 精排超时（毫秒；0=不限）——本机 onnx 冷加载可能 >5s，冷启动档需要放宽
+  // 精排超时（毫秒；0=不限）——本机 onnx 冷加载可能 >5s，冷启动档需要放宽。
+  // 2026-11-04：config.rerank.timeoutMs 只作用于**云端** provider 的 fetch（local 走 worker 推理预算，
+  // 旧实现里该键对 local 完全无效 → 命令行传 --rerank-timeout 像「没生效」）。
+  // 这里同时把它映射到推理硬预算，缺省 4s（见 MemoryCore/src/core/recall/rerank/tuning.ts 的实测标定），显式传值才会放宽/收紧。
   const rtimeout = arg("rerank-timeout", undefined);
   if (rtimeout !== undefined && rtimeout !== true && Number.isFinite(Number(rtimeout))) {
     rerankOverride.timeoutMs = Math.max(0, Number(rtimeout));
+    process.env.TDAI_RERANK_INFER_TIMEOUT_MS = String(Math.max(1, Number(rtimeout)));
   }
   // B2-b：MMR 试验档（只写沙箱 yaml；生产 yaml 不动——同用户决策②）。声明须在 prepareBenchYaml 之前。
   const mmrOverride = {};
@@ -597,6 +624,27 @@ async function main() {
         ? injectWrapperRaw
         : "legacy";
   const injectOverride = {};
+  // 通用注入试验档（仅沙箱 yaml）：--inject-json '{"maxChars":1200}'，用于同一批 90 例上做
+  // 「一因子一跑」的读侧消融，生产配置零改动。
+  const injectJsonRaw = arg("inject-json", undefined);
+  if (injectJsonRaw !== undefined) {
+    if (injectJsonRaw === true) {
+      console.error("[bench:error] --inject-json 需要 JSON 对象，例如 '{\"maxChars\":1200}'");
+      process.exit(2);
+    }
+    let parsedInject;
+    try {
+      parsedInject = JSON.parse(String(injectJsonRaw));
+    } catch (err) {
+      console.error("[bench:error] --inject-json 不是合法 JSON：" + (err instanceof Error ? err.message : String(err)));
+      process.exit(2);
+    }
+    if (!parsedInject || typeof parsedInject !== "object" || Array.isArray(parsedInject)) {
+      console.error("[bench:error] --inject-json 必须是 JSON 对象");
+      process.exit(2);
+    }
+    Object.assign(injectOverride, parsedInject);
+  }
   if (injectTimeSort) injectOverride.timeSort = { enabled: true };
   if (injectWrapper !== undefined) injectOverride.wrapper = injectWrapper;
   // #169（2026-10-31）：证据包四档 --evidence-pack N（每侧邻接行数 0..3；N=0 = 不扩 = 对照档）。
@@ -623,6 +671,25 @@ async function main() {
     }
   }
 
+  // 2026-11-03：注入试验键（--inject-json / --inject-time-sort）同理必须同步进 override json——
+  // 生产 config-override.json 自带 recall.injection（foldIdentical/maxChars 600），override > yaml，
+  // 只写沙箱 yaml 等于白跑一档（本轮已实锤：v1 maxChars 1200 与对照 blockChars 逐位相同）。
+  if (Object.keys(injectOverride).length && overrideCopied) {
+    try {
+      const ojPath = overrideCopied;
+      const oj = JSON.parse(fs.readFileSync(ojPath, "utf8"));
+      const rec = { ...(oj.recall ?? {}) };
+      if (injectOverride.timeSort) rec.injectTimeSort = { ...(rec.injectTimeSort ?? {}), ...injectOverride.timeSort };
+      if (injectOverride.wrapper) rec.injectWrapper = injectOverride.wrapper;
+      if (injectOverride.injection) rec.injection = { ...(rec.injection ?? {}), ...injectOverride.injection };
+      oj.recall = rec;
+      fs.writeFileSync(ojPath, JSON.stringify(oj, null, 2) + "\n", "utf8");
+      log("[bench] 注入试验键同步进 override json: " + JSON.stringify(injectOverride));
+    } catch (e) {
+      log("[bench] 警告: override json 注入补丁失败，试验键可能被生产 override 吞掉: " + String(e?.message ?? e));
+    }
+  }
+
   // #141 评审 #6：slot 预算 / 槽位成本 / 成对执行都依赖读侧回捞（smallToBig.enabled）。
   // 没有 --small-to-big 时这些键会被 yaml gate 掉，臂名写着 slot/require、实际跑的是旧档。
   if (!smallToBigEnabled) {
@@ -644,6 +711,7 @@ async function main() {
   const sandboxYaml = prepareBenchYaml({
     srcYaml: prodConfig,
     storeDir,
+    ...(Object.keys(embeddingOverride).length ? { embeddingOverride } : {}),
     ...(Object.keys(rerankOverride).length ? { rerankOverride } : {}),
     ...(Object.keys(mmrOverride).length ? { mmrOverride } : {}),
   ...(fusionOverride ? { fusionOverride } : {}),
@@ -712,6 +780,39 @@ async function main() {
   // （rerank.enabled=true 吞掉 enabled:false 的教训），只信解析后的 cfg，不信自己写过什么。
   const effectiveConfig = effectiveRecallSnapshot(cfg);
   for (const [k, v] of Object.entries(effectiveConfig)) log(`[bench] cfg ${k}=${JSON.stringify(v)}`);
+  // 2026-11-03：embedding 节流档必须真生效——写进沙箱 yaml 却被 config-override 吞掉就是白跑一档
+  // （#135 的 rerank 老教训）。这里对**解析后的生效值**断言。
+  if (embeddingOverride.paceMinIntervalMs !== undefined || embeddingOverride.charsPerMinute !== undefined) {
+    const effEmb = {
+      paceMinIntervalMs: cfg.embedding?.paceMinIntervalMs,
+      charsPerMinute: cfg.embedding?.charsPerMinute,
+    };
+    log("[bench] cfg embedding.throttle=" + JSON.stringify(effEmb));
+    const mismatch = [];
+    if (
+      embeddingOverride.paceMinIntervalMs !== undefined &&
+      Math.floor(Number(effEmb.paceMinIntervalMs) || 0) !== embeddingOverride.paceMinIntervalMs
+    ) {
+      mismatch.push("paceMinIntervalMs");
+    }
+    if (
+      embeddingOverride.charsPerMinute !== undefined &&
+      Math.floor(Number(effEmb.charsPerMinute) || 0) !== embeddingOverride.charsPerMinute
+    ) {
+      mismatch.push("charsPerMinute");
+    }
+    if (mismatch.length) {
+      console.error(
+        "[bench:error] embedding 节流未生效（沙箱 yaml 被 config-override 覆盖？）: " +
+          mismatch.join(",") +
+          " 期望=" +
+          JSON.stringify(embeddingOverride) +
+          " 生效=" +
+          JSON.stringify(effEmb),
+      );
+      process.exit(2);
+    }
+  }
   // #135 第2项残留：--rerank-filter-only 的 filter 模式只在 ChildProcessReranker 里生效，
   // 而 store 只在 rerankChildProc && rerank.enabled && provider==='local' 时建子进程。
   // 所以 rerank.enabled 被关掉时，--rerank-child-proc 是空转、--rerank-filter-only 静默失效

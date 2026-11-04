@@ -224,6 +224,25 @@ export function demoteSoftValidity<T extends { valid_start?: string | null; vali
 }
 
 /**
+ * 把一批（与 kept 同一引用集的）条目按 `selectByValidity` 的 kept 顺序重排。
+ *
+ * 为什么需要这个函数：soft 的语义是「降权**并沉底**」，而 kept 顺序（active 保序在前、
+ * demoted 保序在后）就是这个契约的唯一表达。调用方若只用 kept 做过滤/集合判断、却从
+ * 原数组重算顺序（钩子路 2026-11-04 前的形态），过期行原地不动，软失效退化成
+ * 「只改分数」——精排权重为 0 时（生产 rerankWeights 全 0 ⇒ 比较器恒等）等于完全失效。
+ *
+ * 身份比较（Map 引用键）：kept 必须与 items 共享同一批对象引用；不在 kept 里的条目被丢弃
+ *（即 dropped：future 或 hard 档 expired）。
+ */
+export function applyKeptOrder<T>(items: readonly T[], kept: readonly T[]): T[] {
+  const rank = new Map<T, number>();
+  kept.forEach((item, i) => rank.set(item, i));
+  return items
+    .filter((item) => rank.has(item))
+    .sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
+}
+
+/**
  * 按效期选择候选（hard = 逐位旧行为；soft = #136 新口径）。
  * 顺序契约：kept 中 active 在前、demoted 的 expired 在后且保持输入相对序。
  */

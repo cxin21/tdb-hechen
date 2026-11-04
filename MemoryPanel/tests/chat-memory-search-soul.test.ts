@@ -128,6 +128,8 @@ describe('POST /chat-memory/search L1 soul 透传', () => {
               valid_start: '2026-09-01T00:00:00Z',
               valid_end: '2026-10-01T00:00:00Z',
               certainty: 'inferred',
+              // P2-14：内核 C2 已删 L1 source 列（atomic-query-fields.ts:49），
+              // 这里故意保留脏字段，钉住「BFF 不再转发它」。
               source: 'distill',
               valence: 0.8,
               arousal: 0.5,
@@ -146,7 +148,7 @@ describe('POST /chat-memory/search L1 soul 透传', () => {
     expect(items[0].valid_start).toBe('2026-09-01T00:00:00Z');
     expect(items[0].valid_end).toBe('2026-10-01T00:00:00Z');
     expect(items[0].certainty).toBe('inferred');
-    expect(items[0].source).toBe('distill');
+    expect(items[0].source).toBeUndefined(); // P2-14：死字段不再转发
     expect(items[0].valence).toBe(0.8);
     expect(items[0].arousal).toBe(0.5);
     expect(items[0].significance).toBe(0.9);

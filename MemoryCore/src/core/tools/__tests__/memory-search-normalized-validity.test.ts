@@ -207,6 +207,26 @@ describe("#148 soft 效期（工具路：沉底 + 降权）", () => {
     expect(res.results[1]!.score).toBeCloseTo(0.5, 12);
   });
 
+  it("soft + 非零 rerank 权重：归一基数必须是降权前的池内 max（降权行不得因分母缩小反超普通行）", async () => {
+    // 构造：被降权的最高分行（expiredTop，1.0 → ×0.5 = 0.5）+ 一个普通行（liveLow 0.31，
+    // occurred_at=now 拿满 timeProx）。relevance 权重 0.7 / timeProx 0.15。
+    // 正确归一（分母 = 降权前 max = 1.0）：expiredTop 0.5×0.7 = 0.35 < liveLow 0.31×0.7+0.15 = 0.367。
+    // 错误归一（分母 = 降权后 max = 0.5）：expiredTop 1.0×0.7 = 0.70 > liveLow 0.62×0.7+0.15 = 0.584
+    // → 降权行的 relevance 因子被分母缩水"还回去"，反超普通行，软失效沉底失效。
+    const now = new Date();
+    const store = mockStore({
+      vec: [
+        vecRow("expiredTop", 1.0, { valid_start: "2019-01-01", valid_end: "2020-01-01" }),
+        vecRow("liveLow", 0.31, { valid_start: "2026-01-01", occurred_at: now.toISOString() }),
+      ],
+    });
+    const res = await run(store, {
+      excludeInvalidated: "soft",
+      rerankWeights: { relevance: 0.7, timeProx: 0.15, significance: 0, coreRef: 0 },
+    });
+    expect(res.results.map((r) => r.id)).toEqual(["liveLow", "expiredTop"]);
+  });
+
   it("时间旅行（validityNow）：按当时有效判定，不走降权", async () => {
     const res = await run(mockStore({ vec: rows() }), {
       excludeInvalidated: "soft",

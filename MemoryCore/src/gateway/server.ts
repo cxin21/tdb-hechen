@@ -1758,7 +1758,26 @@ export class TdaiGateway {
     }
 
     const startMs = Date.now();
-    const result = await this.core.handleBeforeRecall(body.query, body.session_key);
+    // 租户三元组头（可选）：带上时 L1 候选池按 user 收窄，ADR-0025 的敏感度注入门
+    // 才能拿到可证的私有归属；不带则归属 undeclared、敏感行 fail-closed（旧行为逐位）。
+    // 与 /capture 的租户头同一口径（A6/REG-REMAINING-001），此处此前漏读。
+    const tenant = {
+      teamId: (req.headers["x-tdai-team-id"] as string) || undefined,
+      userId: (req.headers["x-tdai-user-id"] as string) || undefined,
+      agentId: (req.headers["x-tdai-agent-id"] as string) || undefined,
+      // 作用域键（可选）：进 IsolationFilter.taskId，召回候选池按 task 收窄。
+      taskId: ((req.headers["x-tdai-task-id"] as string) || "").trim() || undefined,
+    };
+    const hasTenant =
+      tenant.teamId !== undefined ||
+      tenant.userId !== undefined ||
+      tenant.agentId !== undefined ||
+      tenant.taskId !== undefined;
+    const result = await this.core.handleBeforeRecall(
+      body.query,
+      body.session_key,
+      hasTenant ? tenant : undefined,
+    );
     const elapsed = Date.now() - startMs;
 
     // H-15: distinguish "no recall content to inject" from "recall failed".
@@ -1800,6 +1819,9 @@ export class TdaiGateway {
       userId: (req.headers["x-tdai-user-id"] as string) || undefined,
       agentId: (req.headers["x-tdai-agent-id"] as string) || undefined,
     };
+    // 作用域键（可选）：x-tdai-task-id → L0 行 task_id → L1 分组/召回作用域过滤。
+    // 与租户三元组头同口径：trim 后非空才生效，不带时行为逐位不变（task_id 留空）。
+    const taskId = ((req.headers["x-tdai-task-id"] as string) || "").trim() || undefined;
     const result = await this.core.handleTurnCommitted({
       userText: body.user_content,
       assistantText: body.assistant_content,
@@ -1812,6 +1834,7 @@ export class TdaiGateway {
       teamId: tenant.teamId,
       userId: tenant.userId,
       agentId: tenant.agentId,
+      taskId,
     });
     const elapsed = Date.now() - startMs;
 
@@ -1832,17 +1855,35 @@ export class TdaiGateway {
       return;
     }
 
+    // 租户三元组头（可选）：与 /recall、/capture 同口径。带上时工具路才拿得到「可证的
+    // 私有归属」，敏感行按私有上下文放行；不带则 undeclared、敏感行 fail-closed（旧行为逐位）。
+    // 2026-11-04 对抗评审 P1：此前工具路既不传归属、也不回观测，与 HTTP 路对同一敏感行相反。
+    const tenantFilter = {
+      teamId: (req.headers["x-tdai-team-id"] as string) || undefined,
+      userId: (req.headers["x-tdai-user-id"] as string) || undefined,
+      agentId: (req.headers["x-tdai-agent-id"] as string) || undefined,
+      // 作用域键（可选）：与 /capture、/recall 同口径，工具路按 task 收窄候选池。
+      taskId: ((req.headers["x-tdai-task-id"] as string) || "").trim() || undefined,
+    };
+    const hasTenant =
+      tenantFilter.teamId !== undefined ||
+      tenantFilter.userId !== undefined ||
+      tenantFilter.agentId !== undefined ||
+      tenantFilter.taskId !== undefined;
+
     const result = await this.core.searchMemories({
       query: body.query,
       limit: body.limit,
       type: body.type,
       scene: body.scene,
+      ...(hasTenant ? { isolationFilter: tenantFilter } : {}),
     });
 
     const response: MemorySearchResponse = {
       results: result.text,
       total: result.total,
       strategy: result.strategy,
+      ...(result.sensitivity ? { sensitivity: result.sensitivity } : {}),
     };
     sendJson(res, 200, response);
   }

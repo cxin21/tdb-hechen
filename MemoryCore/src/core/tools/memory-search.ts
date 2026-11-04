@@ -21,6 +21,17 @@ import { parseTimeWindow, inTimeWindow, type TimeWindow } from "./content-time-w
 import { isOutsideValidityWindow } from "../recall/filter-invalidated.js";
 import { collapseFactRowsByTurn } from "../recall/fact-turn.js";
 import { demoteSoftValidity, shouldHardDropValidity } from "../recall/validity-policy.js";
+// D-3（ADR-0025 决定 4）：敏感度注入门——工具路与钩子路同一谓词、同一可见性推导。
+import {
+  audienceOfOwnerScope,
+  countBlockedByReason,
+  isSensitiveRecord,
+  partitionBySensitivity,
+  resolveAudience,
+  type RecallAudience,
+  type SensitivityBlockReason,
+} from "../recall/sensitivity-policy.js";
+import { DEFAULT_ISOLATION_ID } from "../store/isolation.js";
 import {
   cosineNormOf,
   factChannelWeightOf,
@@ -68,12 +79,24 @@ export interface MemorySearchResultItem {
   score: number;
   version: number;
   created_at: string;
-  updated_at: string;
+  /**
+   * B 项（ADR-0025 决定 9，2026-11-04）：updated_at = 行的**最近更新时间**
+   * （l1_records.updated_time）。列缺失**或空串**（DDL DEFAULT ''）时回退 event_end_at
+   * （timestamp_end，事件结束时刻）；两列都空 → undefined（与 `/v3/atomic/*` 的 text() 归一化同口径，
+   * 绝不吐 ""——空串当时间基线与任何时间比较都为真，比缺失更危险）。
+   */
+  updated_at?: string;
+  /**
+   * B 项（ADR-0025 决定 9，2026-11-04）：event_end_at = 该行承载的**事件结束时刻**
+   * （l1_records.timestamp_end，列保留不变）。与 updated_at（最近更新时间）是两个语义。
+   */
+  event_end_at?: string;
   // 灵魂记忆字段读回（P2a）——供 R4/J 等使用
   occurred_at?: string;
   valid_start?: string;
   valid_end?: string;
   certainty?: string;
+  /** @deprecated ADR-0025 C2：L1 source 列已删，此项恒 undefined（保留仅为类型兼容）。 */
   source?: string;
   valence?: number;
   arousal?: number;
@@ -101,8 +124,21 @@ export interface MemorySearchResultItem {
   recall_channel?: string;
 }
 
+/**
+ * D-3（ADR-0025 决定 4）：敏感度注入门观测（工具路）。
+ * `audience` 是本轮裁决口径；`scanned=0`（池里没有敏感行）时整块缺省——不给调用方塞噪声。
+ */
+export interface SensitivityObservation {
+  audience: RecallAudience;
+  scanned: number;
+  blocked: number;
+  byReason?: Partial<Record<SensitivityBlockReason, number>>;
+}
+
 export interface MemorySearchResult {
   results: MemorySearchResultItem[];
+  /** D-3：本轮敏感度门的观测（池里没有敏感行时不产出）。 */
+  sensitivity?: SensitivityObservation;
   total: number;
   strategy: string;
   /**
@@ -246,6 +282,12 @@ function rrfMergeWeighted(
       const norm = norms?.[rank];
       if (existing) {
         existing.rrfScore += score;
+        // D-3（2026-11-04 P0 修复）：RRF 只并分数不并字段，而 ftsItems 在 hybrid 合并顺序里
+        // 先入（:1517）→ 同一条记录胜出对象来自 FTS 腿、sensitivity 为 undefined，注入门
+        // 读不到标注即判 none。并分时补齐敏感度：先到者为空则用后者（任一侧带标注就算敏感）。
+        if (existing.item.sensitivity === undefined && item.sensitivity !== undefined) {
+          existing.item.sensitivity = item.sensitivity;
+        }
         if (channel && norm !== undefined) existing.channelScores[channel] = norm;
       } else {
         // #151：诚实原则——事实路独占命中的条目自证通道（下游 ·[fact] 标注）；
@@ -580,16 +622,20 @@ async function expandCandidatePool(
                 agent_id: nr.agent_id,
                 task_id: nr.task_id,
                 version: nr.version ?? 0,
-                created_at: nr.timestamp_start,
-                updated_at: nr.timestamp_end,
+                created_at: nr.timestamp_str,
+                updated_at: nr.updated_time || nr.timestamp_end || undefined,
+                // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+                event_end_at: nr.timestamp_end,
                 occurred_at: nr.occurred_at,
                 valid_start: nr.valid_start,
                 valid_end: nr.valid_end,
                 certainty: nr.certainty,
-                source: nr.source,
                 valence: nr.valence,
                 arousal: nr.arousal,
                 significance: nr.significance,
+                // D-3（2026-11-04 P0 修复）：敏感度必须随行透传——注入门读 item.sensitivity，
+                // 缺这一行该腿候选一律被 audienceOfOwnerScope 判 none = 可注入（漏投影=静默绕过）。
+                sensitivity: (nr as { sensitivity?: string }).sensitivity,
                 metadata: parseMetadata(nr.metadata_json),
                 recall_channel: `graph:ppr:${kind}`,
               });
@@ -621,13 +667,14 @@ async function expandCandidatePool(
           agent_id: r.agent_id,
           task_id: r.task_id,
           version: r.version ?? 0,
-          created_at: r.timestamp_start,
-          updated_at: r.timestamp_end,
+          created_at: r.timestamp_str,
+          updated_at: r.updated_time || r.timestamp_end || undefined,
+          // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+          event_end_at: r.timestamp_end,
           occurred_at: r.occurred_at,
           valid_start: r.valid_start,
           valid_end: r.valid_end,
           certainty: r.certainty,
-          source: r.source,
           valence: r.valence,
           arousal: r.arousal,
           significance: r.significance,
@@ -734,9 +781,13 @@ export function compositeScoreOf(
   const wTime = weights.timeProx > 0 ? weights.timeProx : 0;
   const wSig = weights.significance > 0 ? weights.significance : 0;
   const wCore = weights.coreRef > 0 ? weights.coreRef : 0;
+  // ADR-0025 伴生修复（#148 relevanceNorm 顺序）：除以池内 max 后 **clamp 到 1**——分母
+  // 若取自软降权之后的池（见 applyCompositeRerank 的 relevanceScalePreSoft 注），个别行
+  // 的比值会 >1 把 relevance 项撑破其余因子权重；clamp 只做上界钳制，正常分母（≥池内
+  // 所有正分）下逐位无变化。
   const rel =
     wRel > 0 && maxRelevance > 0 && Number.isFinite(f.relevance) && f.relevance > 0
-      ? f.relevance / maxRelevance
+      ? Math.min(1, f.relevance / maxRelevance)
       : 0;
   const time = wTime > 0 ? occurredRecencyFactor(f.occurredAt, now) : 0;
   // Batch C C-b：衰减乘子只在 time 因子非零时计算（time>0 蕴含 occurredAt 非空且可解析）
@@ -769,10 +820,25 @@ export function applyCompositeRerank<T>(
   now: Date,
   /** Batch C C-b（#77 伴生）：衰减乘子透传（缺省不传 = 逐位现状）。 */
   ageDecay?: { halfLifeDays: number; floor?: number },
+  /**
+   * #148 伴生修复（ADR-0025）：**软降权之前**的池内 max relevance（缺省不传 = 逐位现状）。
+   *
+   * 为什么必须由调用方传：soft 档先在池内把 expired 行的 score ×penalty（缺省 0.5）再精排；
+   * 若这里仍按「当前池」取 max，分母随降权一起缩水 → 被降权行的 relevanceNorm 又回到 1，
+   * 软降权在 relevance 项上被完全抵消，而降权行与非降权行的 relevance 差被同倍放大，
+   * 非零 rerank 权重下即可反超普通行（memory-search-normalized-validity.test.ts 的
+   * expiredTop 1.0 vs liveLow 0.31 用例锁死该回归）。传降权前 max 后分母恒定，
+   * 降权行的 relevance 项真降一半。调用方须保证该值 ≥ 池内所有现存正分（本实现再 clamp 1）。
+   */
+  relevanceScalePreSoft?: number,
 ): T[] {
   const w = weights ?? DEFAULT_COMPOSITE_WEIGHTS;
   const factors = items.map(factorsOf);
-  const maxRel = factors.reduce((m, f) => (Number.isFinite(f.relevance) && f.relevance > m ? f.relevance : m), 0);
+  const poolMax = factors.reduce((m, f) => (Number.isFinite(f.relevance) && f.relevance > m ? f.relevance : m), 0);
+  const maxRel =
+    typeof relevanceScalePreSoft === "number" && Number.isFinite(relevanceScalePreSoft) && relevanceScalePreSoft > 0
+      ? Math.max(poolMax, relevanceScalePreSoft)
+      : poolMax;
   return factors
     .map((f, i) => ({ f, i, score: compositeScoreOf(f, w, now, maxRel, ageDecay) }))
     .sort((a, b) => (a.f.isWorkFact ? 0 : 1) - (b.f.isWorkFact ? 0 : 1) || b.score - a.score || a.i - b.i)
@@ -952,6 +1018,13 @@ export async function executeMemorySearch(params: {
   reinforcementWeight?: number;
   moodBoost?: number;
   /**
+   * P1-T7（worthiness）：importance≤4 召回降权（memory.recall.importancePenalty）。
+   * 2026-11-04 定案：工具路与 hook 同参——此前工具路硬编码 DEFAULT(0)、hook 按 cfg 开启，
+   * 同一条记忆两条入口打分不一致（属性「在一条路上生效」不算生效）。
+   * 缺省 0 = 逐位现状；由调用方 cfg 透传（tdai-core.searchMemories / v2-router）。
+   */
+  importancePenalty?: number;
+  /**
    * R-A2（spec §2 R4）：图通道——边强度门槛（默认 0.5）与派生分折扣（默认 0.6）。
    * graphDiscount=0 → 通道完全退出（getNeighbors 零调用，spec §3 失效即关）。
    */
@@ -1042,6 +1115,7 @@ export async function executeMemorySearch(params: {
     inferredPenalty = DEFAULT_RANK_SIGNALS.inferredPenalty,
     reinforcementWeight = DEFAULT_RANK_SIGNALS.reinforcementWeight,
     moodBoost = DEFAULT_RANK_SIGNALS.moodBoost,
+    importancePenalty = DEFAULT_RANK_SIGNALS.importancePenalty,
     graphMinStrength = 0.5,
     graphDiscount = 0.6,
     pprDamping = 0.85,
@@ -1056,9 +1130,9 @@ export async function executeMemorySearch(params: {
     fusion,
     validitySoftPenalty,
   } = params;
-  // D-3：敏感性降权（缺省 0=关断恒等）。P1-T7：importancePenalty 工具路同样缺省 0
-  // （降权只在 auto-recall hook 路由 config 承载；工具路为确定性检索，保持现状）
-  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight, sensitivityPenalty: DEFAULT_RANK_SIGNALS.sensitivityPenalty, importancePenalty: DEFAULT_RANK_SIGNALS.importancePenalty };
+  // P1-T7（2026-11-04 定案）：importancePenalty 由调用方 cfg 透传，与 auto-recall hook 同参；
+  // 不传时 DEFAULT=0（关断 = 逐位现状）。sensitivity 不进排序——它只做注入门。
+  const signals: RankSignals = { timeBoost, recencyBoost, sigWeight, inferredPenalty, reinforcementWeight, moodBoost, emotionSalienceWeight, importancePenalty };
 
   logger?.debug?.(
     `${TAG} CALLED: query="${query.slice(0, 100)}", limit=${limit}, ` +
@@ -1161,16 +1235,20 @@ export async function executeMemorySearch(params: {
       agent_id: r.agent_id,
       task_id: r.task_id,
       version: r.version ?? 0,
-      created_at: r.timestamp_start,
-      updated_at: r.timestamp_end,
+      created_at: r.timestamp_str,
+      updated_at: r.updated_time || r.timestamp_end || undefined,
+      // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+      event_end_at: r.timestamp_end,
       occurred_at: r.occurred_at,
       valid_start: r.valid_start,
       valid_end: r.valid_end,
       certainty: r.certainty,
-      source: r.source,
+      // ADR-0025 C2：L1 source 列已删——不再投影（兼容字段 MemorySearchResultItem.source 恒 undefined）。
       valence: r.valence,
       arousal: r.arousal,
       significance: r.significance,
+      // D-3：透传敏感度（native-hybrid 与双路/图路同一 gate，漏投影=静默放行）
+      sensitivity: (r as { sensitivity?: string }).sensitivity,
       metadata: parseMetadata(r.metadata_json),
     }));
 
@@ -1189,7 +1267,10 @@ export async function executeMemorySearch(params: {
     }
     // GROW-EVO P2（§2.3）+ A5：失效排除 / time_point 时间旅行（validityNow 提供时切换双时态）
     const exclItems = filterByValidity(items, params.validityNow, params.excludeInvalidated);
-    const trimmed = exclItems.slice(0, limit);
+    // D-3：敏感度注入门（工具路）——先过门**再截断**再重巩固，被拦行不积累重巩固计数。
+    // 顺序与主路径同款（对抗评审 P2-11：截断后过门会让敏感行白吃名额）。
+    const sensGated = gateSensitivityForInjection(exclItems, isolationFilter, logger);
+    const trimmed = sensGated.visible.slice(0, limit);
     // T1-D（F7 收官）：native-hybrid 早退前同样执行重巩固 —— 此前提前 return
     // 跳过了主路径尾部的 reconsolidation 块（T17.5 审计确认缺口）。
     triggerReconsolidation(trimmed, vectorStore, logger);
@@ -1197,7 +1278,12 @@ export async function executeMemorySearch(params: {
       `${TAG} RESULT (strategy=native-hybrid): returning ${trimmed.length} memories ` +
       `(scores: [${trimmed.map((r) => r.score.toFixed(3)).join(", ")}])`,
     );
-    return { results: trimmed, total: trimmed.length, strategy: "hybrid" };
+    return {
+      results: trimmed,
+      total: trimmed.length,
+      strategy: "hybrid",
+      ...(sensGated.observation ? { sensitivity: sensGated.observation } : {}),
+    };
   }
 
   // ── SQLite dual-path: run FTS5 + Vector in parallel, merge with client-side RRF ──
@@ -1248,8 +1334,10 @@ export async function executeMemorySearch(params: {
       agent_id: r.agent_id,
       task_id: r.task_id,
       version: r.version ?? 0,
-          created_at: r.timestamp_start,
-          updated_at: r.timestamp_end,
+          created_at: r.timestamp_str,
+          updated_at: r.updated_time || r.timestamp_end || undefined,
+          // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+          event_end_at: r.timestamp_end,
           occurred_at: r.occurred_at,
           // R-A1（R1 时间窗 valid 区间相交分量）：FTS 行 valid_* 补映射——
           // L1FtsResult 类型已带（W1 soul 列），此前漏映射导致 FTS 行持续态信号死读
@@ -1259,6 +1347,9 @@ export async function executeMemorySearch(params: {
           valence: r.valence,
           arousal: r.arousal,
           significance: r.significance,
+          // D-3：FTS 腿必须透传 sensitivity——hybrid 模式下 ftsItems 先入 RRF，
+          // 缺此字段时同一条记录会以「无敏感标注」的 FTS 对象胜出（见 rrfMergeWeighted）。
+          sensitivity: (r as { sensitivity?: string }).sensitivity,
           // C1：FTS 行 metadata 读回（此前不携带——coreRefs 在 FTS 路径死读）
           metadata: parseMetadata(r.metadata_json),
         }));
@@ -1296,13 +1387,14 @@ export async function executeMemorySearch(params: {
       agent_id: r.agent_id,
       task_id: r.task_id,
       version: r.version ?? 0,
-          created_at: r.timestamp_start,
-          updated_at: r.timestamp_end,
+          created_at: r.timestamp_str,
+          updated_at: r.updated_time || r.timestamp_end || undefined,
+          // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+          event_end_at: r.timestamp_end,
           occurred_at: r.occurred_at,
           valid_start: r.valid_start,
           valid_end: r.valid_end,
           certainty: r.certainty,
-          source: r.source,
           valence: r.valence,
           arousal: r.arousal,
           significance: r.significance,
@@ -1349,13 +1441,14 @@ export async function executeMemorySearch(params: {
           agent_id: r.agent_id,
           task_id: r.task_id,
           version: r.version ?? 0,
-          created_at: r.timestamp_start,
-          updated_at: r.timestamp_end,
+          created_at: r.timestamp_str,
+          updated_at: r.updated_time || r.timestamp_end || undefined,
+          // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+          event_end_at: r.timestamp_end,
           occurred_at: r.occurred_at,
           valid_start: r.valid_start,
           valid_end: r.valid_end,
           certainty: r.certainty,
-          source: r.source,
           valence: r.valence,
           arousal: r.arousal,
           significance: r.significance,
@@ -1571,8 +1664,10 @@ export async function executeMemorySearch(params: {
             scene_name: nr.scene_name,
             score: 0.2, // 邻居弱相关，仅作扩展补齐（宁缺毋滥：不过强相关门槛）
             version: nr.version ?? 0,
-            created_at: nr.timestamp_start,
-            updated_at: nr.timestamp_end,
+            created_at: nr.timestamp_str,
+            updated_at: nr.updated_time || nr.timestamp_end || undefined,
+            // B 项：列缺失或空串（DDL DEFAULT ''）都视为未写 → 回退事件结束时刻
+            event_end_at: nr.timestamp_end,
             occurred_at: nr.occurred_at,
             // GROW-EVO P2.1：邻居条目补 soul 有效期字段——否则失效排除过滤器对
             // 邻居项失明（归档+已失效记忆经 archive-aware 邻居解析回流注入块，实测）。
@@ -1582,6 +1677,8 @@ export async function executeMemorySearch(params: {
             valence: nr.valence,
             arousal: nr.arousal,
             significance: nr.significance,
+            // D-3：邻居扩展行同款透传（否则扩展回流可绕过注入门）
+            sensitivity: (nr as { sensitivity?: string }).sensitivity,
           });
         }
       }
@@ -1601,6 +1698,11 @@ export async function executeMemorySearch(params: {
   // #148：soft 档「expired 沉底 + 降权」——必须在组合精排**之前**（精排读 relevance=r.score，
   // 在截断后才降权只改展示分、改不了主序）。乘子与钩子路同源（validity-policy 单一解析点）；
   // 时间旅行（validityNow）按"当时有效"精确判定，不走降权。
+  // #148 伴生修复（ADR-0025）：归一基数取**降权之前**的池内 max relevance。soft 降权会先把
+  // expired 行 score ×penalty，若精排再按降权后的池取 max，分母跟着缩水，被降权行的
+  // relevanceNorm 反弹回 1（降权在 relevance 项上被抵消），非零 rerank 权重下可反超普通行。
+  // 非 soft / 时间旅行路径恒等：max 与精排自算的池内 max 相同。
+  const preSoftMaxRel = results.reduce((m, r) => (Number.isFinite(r.score) && r.score > m ? r.score : m), 0);
   if (params.excludeInvalidated === "soft" && !params.validityNow) {
     const demoted = demoteSoftValidity(results, rankContext?.now ?? new Date(), validitySoftPenalty);
     results = demoted.kept;
@@ -1620,6 +1722,7 @@ export async function executeMemorySearch(params: {
     rerankWeights ?? DEFAULT_COMPOSITE_WEIGHTS,
     rankContext?.now ?? new Date(),
     msAgeDecay,
+    preSoftMaxRel > 0 ? preSoftMaxRel : undefined,
   );
 
   // ── V2-3（E3.1 探索位）：最终排序后、截断前——结构命中且 recall_count < 池内中位数
@@ -1656,7 +1759,11 @@ export async function executeMemorySearch(params: {
       logger?.debug?.(`${TAG} [W2b-fact-rows] collapsed ${collapsed.stats.collapsed} fact-row hit(s) into parent turns (${collapsed.stats.before}→${collapsed.stats.after})`);
     }
   }
-  const trimmed = collapsedResults.slice(0, limit);
+  // D-3：敏感度注入门（工具路，与钩子路同一谓词）——**先过门再截断**，再重巩固
+  // （被拦行不被"用到"）。顺序修正（对抗评审 P2-11）：截断后过门会让敏感行白吃名额，
+  // 返回条数无故小于 limit、total 也缩水；先门后切保证「返回条数 = 可见候选里取前 N」。
+  const gated = gateSensitivityForInjection(collapsedResults, isolationFilter, logger);
+  const trimmed = gated.visible.slice(0, limit);
 
   // ── 重巩固（T1-D：提取为 triggerReconsolidation，native-hybrid 分支复用同一函数）──
   triggerReconsolidation(trimmed, vectorStore, logger);
@@ -1670,6 +1777,7 @@ export async function executeMemorySearch(params: {
     results: trimmed,
     total: trimmed.length,
     strategy,
+    ...(gated.observation ? { sensitivity: gated.observation } : {}),
     // T15-C 降级可见：embedding 已配置但实际只走了 FTS → 标注降级
     degraded: strategy === "fts" && hasEmbedding,
     // #151：事实通道观测（通道未开启 = enabled:false 且其余为 0；不虚构调用）。
@@ -1719,7 +1827,7 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
 
   // J 重构式回忆（设计§2/§3）：不是 top-k 取件清单，而是组装"回忆片段"——
   // 持续态(work_fact)优先（稳定结论 > 零碎点），按时间线分组（occurred_at 升序），
-  // 每条带确定性/情感/重要度（感知层），保持宁缺毋滥的既有门控不变。
+  // 每条带确定性/情感/显著性（感知层），保持宁缺毋滥的既有门控不变。
   const items = [...result.results];
   const duratives = items.filter((i) => i.type === "work_fact");
   const points = items.filter((i) => i.type !== "work_fact");
@@ -1756,7 +1864,8 @@ function formatSearchResponseInner(result: MemorySearchResult): string {
     if (m.occurred_at) soul.push(`发生 ${m.occurred_at}`);
     if (m.certainty) soul.push(m.certainty === "inferred" ? "推断" : "实见");
     if (m.valence != null) soul.push(`情感 ${m.valence.toFixed(1)}`);
-    if (m.significance != null) soul.push(`重要 ${m.significance.toFixed(2)}`);
+    // 译名（ADR-0025 决定 13 / C 项）：significance → 显著性，与「重要度」（importance 1-10）区分
+  if (m.significance != null) soul.push(`显著性 ${m.significance.toFixed(2)}`);
     // D-3：敏感性徽章（工具路 summary 行；与注入行同语义）
     const sens = (item as { sensitivity?: string }).sensitivity;
     const SENS_LABEL: Record<string, string> = { health: "健康", finance: "财务", relationship: "关系" };
@@ -1802,4 +1911,42 @@ export function filterByValidity<T extends { valid_start?: string; valid_end?: s
   // 保留本分支的职责边界：本函数是「硬丢阶段」，不承担分数语义。
   if (excludeInvalidated === "soft") return items.filter((i) => !shouldHardDropValidity(i, new Date(), "soft"));
   return items.filter((i) => !isOutsideValidityWindow(i));
+}
+
+/**
+ * D-3（ADR-0025 决定 4）：敏感度注入门（工具路）。
+ *
+ * 为什么工具路也要这道门：`memory_search` 的返回会原样进入模型上下文，跟注入块一样是
+ * "会被第三方看到的内容面"。同一谓词、同一可见性推导（`audienceOfOwnerScope`）在钩子路
+ * 与工具路各调一次，避免两条路对同一条敏感行给出相反答案（F7 效期门踩过的坑）。
+ *
+ * 只做"能不能展示"，不改顺序、不改分数：被拦行既不出现在 results 里，也不触发重巩固
+ * （看不见的内容不该被"用到"）。返回 observation 供调用方带出（scanned=0 时缺省）。
+ */
+export function gateSensitivityForInjection<T extends { sensitivity?: string | null }>(
+  items: readonly T[],
+  isolationFilter: IsolationFilter | undefined,
+  logger?: Logger,
+): { visible: T[]; observation?: SensitivityObservation } {
+  if (items.length === 0) return { visible: [] };
+  const ctx = audienceOfOwnerScope({ userId: isolationFilter?.userId }, DEFAULT_ISOLATION_ID);
+  const scanned = items.reduce((n, item) => (isSensitiveRecord(item) ? n + 1 : n), 0);
+  const partition = partitionBySensitivity(items, ctx);
+  const byReason = countBlockedByReason(partition);
+  if (partition.blocked.length > 0) {
+    logger?.debug?.(
+      `${TAG} [D-3-sensitivity] blocked ${partition.blocked.length} sensitive row(s) from tool result ` +
+      `(audience=${resolveAudience(ctx)}, scanned=${scanned})`,
+    );
+  }
+  if (scanned === 0) return { visible: partition.injectable };
+  return {
+    visible: partition.injectable,
+    observation: {
+      audience: resolveAudience(ctx),
+      scanned,
+      blocked: partition.blocked.length,
+      ...(Object.keys(byReason).length > 0 ? { byReason } : {}),
+    },
+  };
 }

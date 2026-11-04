@@ -11,6 +11,8 @@
  * 消费方：v2-router.ts handleAtomicQuery（唯一调用点——铁律 2 单一源）。
  */
 
+import { parseSourceMessageIds } from "../core/store/l1-column-coerce.js";
+
 /** 行形状：queryL1Paginated 返回的 L1RecordRow 子集（unknown 容错——列可为缺失）。 */
 type RowLike = Record<string, unknown>;
 
@@ -37,13 +39,14 @@ export function handleAtomicQueryShape(r: RowLike): Record<string, unknown> {
     agent_id: r.agent_id,
     task_id: r.task_id,
     created_at: r.created_time,
-    updated_at: r.updated_time,
+    // B 项：空串 = 未写（DDL DEFAULT ''）按缺省处理——出参恒为可用时间戳，不吐 ""。
+    updated_at: text(r.updated_time) ?? text(r.timestamp_end),
     // 灵魂字段透传（时空网格 UI 依赖）——逐位既有行为
     occurred_at: r.occurred_at,
     valid_start: r.valid_start,
     valid_end: r.valid_end,
     certainty: r.certainty,
-    source: r.source,
+    // ADR-0025 C2：L1 source 列已删——API 字段名仍由 Kubb schema 声明，但已无任何来源（恒 undefined）。
     valence: r.valence,
     arousal: r.arousal,
     significance: r.significance,
@@ -55,10 +58,18 @@ export function handleAtomicQueryShape(r: RowLike): Record<string, unknown> {
     session_key: text(r.session_key),
     session_id: text(r.session_id),
     timestamp_str: text(r.timestamp_str),
-    timestamp_start: text(r.timestamp_start),
+    // ADR-0025 C3：列已删，对外 timestamp_start 改取 timestamp_str（存量逐位相等，出参值不变）。
+    timestamp_start: text(r.timestamp_str) ?? text(r.timestamp_start),
     timestamp_end: text(r.timestamp_end),
+    // B 项（ADR-0025 决定 9，2026-11-04）：event_end_at = 事件结束时刻（新字段，与 updated_at
+    // 「最近更新时间」分属两语义）。行上无 timestamp_end（search shape）时取行自带 event_end_at。
+    event_end_at: text(r.timestamp_end) ?? text(r.event_end_at),
     // D-3：敏感性枚举透传（UI 属性表/徽章）
     sensitivity: text(r.sensitivity),
+    // ADR-0025 复核补漏：importance 与行级溯源此前都没进入出参（面板因此恒缺两列）。
+    // importance NULL=未评分 → undefined（宁缺毋滥，不伪造 0）；source_message_ids 恒为数组。
+    importance: numOrUndef(r.importance),
+    source_message_ids: parseSourceMessageIds(r.source_message_ids),
   };
 }
 
@@ -93,13 +104,17 @@ export function handleAtomicSearchShape(r: RowLike): Record<string, unknown> {
     agent_id: r.agent_id,
     task_id: r.task_id,
     created_at: r.created_at,
-    updated_at: r.updated_at,
+    // B 项：行内 updated_at 已按「updated_time || timestamp_end」解析；此处只归一空串。
+    updated_at: text(r.updated_at) ?? text(r.event_end_at),
+    // B 项（ADR-0025 决定 9，2026-11-04）：event_end_at = 事件结束时刻（memory_search 行已带
+    // event_end_at=timestamp_end；query shape 同口径，两端属性表不再一端缺列）。
+    event_end_at: text(r.timestamp_end) ?? text(r.event_end_at),
     score: r.score,
     occurred_at: r.occurred_at,
     valid_start: r.valid_start,
     valid_end: r.valid_end,
     certainty: r.certainty,
-    source: r.source,
+    // ADR-0025 C2：L1 source 列已删——API 字段名仍由 Kubb schema 声明，但已无任何来源（恒 undefined）。
     valence: r.valence,
     arousal: r.arousal,
     significance: r.significance,
@@ -107,5 +122,8 @@ export function handleAtomicSearchShape(r: RowLike): Record<string, unknown> {
     scene_name: text(r.scene_name),
     priority: numOrUndef(r.priority),
     sensitivity: text(r.sensitivity),
+    // ADR-0025 复核补漏：搜索路与查询路同口径（面板搜索结果同样能看重要度与溯源）。
+    importance: numOrUndef(r.importance),
+    source_message_ids: parseSourceMessageIds(r.source_message_ids),
   };
 }

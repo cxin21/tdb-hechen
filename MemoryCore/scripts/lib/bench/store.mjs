@@ -35,7 +35,26 @@ export function repoRoot() {
  * 计时与成本的旁路（capture 提取、生命周期、进化），显式开 v3Recall。
  * 返回写好的沙箱 yaml 路径。
  */
-export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverride, embThresholdOverride, ageDecayOverride, injectOverride, smallToBigOverride, conclusionLayerOverride, fusionOverride, candidateKOverride, presentTemporalOverride, validityOverride, supersessionOverride, factChannelOverride, recallFlatOverride, evidencePackOverride }) {
+export function prepareBenchYaml({
+  srcYaml,
+  storeDir,
+  rerankOverride,
+  mmrOverride,
+  embThresholdOverride,
+  ageDecayOverride,
+  injectOverride,
+  smallToBigOverride,
+  conclusionLayerOverride,
+  fusionOverride,
+  candidateKOverride,
+  presentTemporalOverride,
+  validityOverride,
+  supersessionOverride,
+  factChannelOverride,
+  recallFlatOverride,
+  evidencePackOverride,
+  embeddingOverride,
+}) {
   const YAML = require_yaml();
   const raw = YAML.parse(fs.readFileSync(srcYaml, "utf8")) || {};
   const out = JSON.parse(JSON.stringify(raw));
@@ -77,6 +96,10 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   if (injectOverride && typeof injectOverride === "object" && Object.keys(injectOverride).length) {
     m.recall.injectTimeSort = { ...(m.recall.injectTimeSort || {}), ...(injectOverride.timeSort ?? {}) };
     if (injectOverride.wrapper) m.recall.injectWrapper = injectOverride.wrapper;
+    // 通用注入档：--inject-json '{"injection":{...}}' 直落 recall.injection（只写沙箱 yaml）。
+    if (injectOverride.injection && typeof injectOverride.injection === "object" && !Array.isArray(injectOverride.injection)) {
+      m.recall.injection = { ...(m.recall.injection || {}), ...injectOverride.injection };
+    }
   }
   // W3（issue #134）：结论卡证据回捞（#78 R-b smallToBig）——实验档只写沙箱 yaml。
   if (smallToBigOverride && typeof smallToBigOverride === "object" && Object.keys(smallToBigOverride).length) {
@@ -120,6 +143,11 @@ export function prepareBenchYaml({ srcYaml, storeDir, rerankOverride, mmrOverrid
   // validityOverride 落 recall.validity.mode；excludeInvalidated 是 recall 根级键，两者不能混写。
   if (recallFlatOverride && typeof recallFlatOverride === "object" && Object.keys(recallFlatOverride).length) {
     Object.assign(m.recall, recallFlatOverride);
+  }
+  // 2026-11-03（授权）：embedding 发车节流（paceMinIntervalMs / charsPerMinute）。只写沙箱 yaml；
+  // 生产 config-override.json 的 embedding 组不含这两个键，故不会被 override 覆盖掉。
+  if (embeddingOverride && typeof embeddingOverride === "object" && Object.keys(embeddingOverride).length) {
+    m.embedding = { ...(m.embedding || {}), ...embeddingOverride };
   }
   const file = path.join(storeDir, "bench-gateway.yaml");
   fs.writeFileSync(file, YAML.stringify(out), "utf8");
@@ -1040,6 +1068,17 @@ export function effectiveRecallSnapshot(cfg) {
     // （allowlist 比快照宽 ⇒ 拼错键名被放过，正是 #159/#174 反复抓的「读数不可自证」病）。
     "recall.evidencePack.enabled": r.evidencePack?.enabled === true,
     "recall.evidencePack.adjacent": r.evidencePack?.adjacent ?? null,
+    // 2026-11-04：注入装配整组补进快照。病根与 #135 同族——这一组是生产 config-override.json
+    // 最常钉死的键（现实网里 injection.maxChars=2400），而快照漏了整组 ⇒ 报告里看不到
+    // 「本臂实际注入预算是多少」，--expect-config recall.injection.maxChars=6000 恒报实际 null。
+    // 补键后 fingerprint 会变一次（= 快照键集变化，不是配置变化），此后 6000 档与 override 回滚档可自证。
+    "recall.injection.maxChars": r.injection?.maxChars ?? null,
+    "recall.injection.maxLineChars": r.injection?.maxLineChars ?? null,
+    "recall.injection.foldIdentical": r.injection?.foldIdentical === true,
+    "recall.injection.budgetByIntent.empty": r.injection?.budgetByIntent?.empty ?? null,
+    "recall.injection.budgetByIntent.continuation": r.injection?.budgetByIntent?.continuation ?? null,
+    "recall.injection.budgetByIntent.self": r.injection?.budgetByIntent?.self ?? null,
+    "recall.injection.budgetByIntent.info": r.injection?.budgetByIntent?.info ?? null,
   };
 }
 

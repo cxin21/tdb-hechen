@@ -26,7 +26,7 @@ import { metricProducer } from "../core/report/metric-producer.js";
 import { compileSessionIgnorePatterns, DEFAULT_IGNORE_SESSION_PATTERNS } from "./session-ignore.js";
 import type { PipelineSessionState } from "./checkpoint.js";
 import { createStoreBundle } from "../core/store/factory.js";
-import type { IMemoryStore } from "../core/store/types.js";
+import { LINK_TYPES, type IMemoryStore } from "../core/store/types.js";
 import { memoryPromptResolveKey, resolveMemoryPrompts } from "../core/memory-prompt/resolver.js";
 import {
   buildGenerationLogIdentity,
@@ -1029,7 +1029,7 @@ export function createL2Runner(opts: {
       return;
     }
 
-    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string; valid_end?: string }>;
+    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string; valid_end?: string; certainty?: string }>;
 
     if (vectorStore && !vectorStore.isDegraded()) {
       const { queryMemoryRecords } = await import("../core/record/l1-reader.js");
@@ -1069,6 +1069,7 @@ export function createL2Runner(opts: {
         sessionId: r.sessionId,
         taskId: r.taskId,
         valid_end: r.valid_end,
+        certainty: r.certainty,
       }));
     } else {
       throw new Error(`${TAG} [L2] VectorStore unavailable — cannot read L1 memories for scene extraction (session=${sessionKey})`);
@@ -1170,9 +1171,19 @@ export function createL2Runner(opts: {
       // 混合窗口（失效+活跃并存）时失效记录仍混入提取 prompt——scene_blocks 会重新
       // 吸收已失效内容。此处按组过滤，对齐上方注释块自述语义；cursor 仍取全窗口
       // （失效记录 bump 推进游标，不会造成重查询循环）。
-      const activeGroupRecords = groupRecords.filter((r) => !r.valid_end);
+      // P0-2（2026-11-04 L1 属性复核）：推断行（certainty=inferred）不进 L2 蒸馏输入。
+      // L2 写的是长期场景块（会被注入层原文引用），把"提取器猜的"与"实际发生的"同等
+      // 蒸馏，等于把猜测固化成事实；L3 duratives 早已有同款门（:1454 certainty!=='inferred'），
+      // L2 此前缺这一道。被排除的行仍留在库里可被 L1 通道召回（含 certainty 徽标）。
+      const inferredDropped = groupRecords.filter((r) => r.certainty === "inferred").length;
+      if (inferredDropped > 0) {
+        logger.debug?.(
+          `${TAG} [L2] Drop ${inferredDropped} inferred record(s) from distillation input (scope=${groupScope})`,
+        );
+      }
+      const activeGroupRecords = groupRecords.filter((r) => !r.valid_end && r.certainty !== "inferred");
       if (activeGroupRecords.length === 0) {
-        logger.debug?.(`${TAG} [L2] Group all-invalidated (scope=${groupScope}), skipping extraction`);
+        logger.debug?.(`${TAG} [L2] Group all-invalidated/inferred (scope=${groupScope}), skipping extraction`);
         continue;
       }
       const memories = activeGroupRecords.map((r) => ({
@@ -1261,7 +1272,7 @@ export function createL2Runner(opts: {
         let derivedEdges = 0;
         for (const profile of edgeProfiles) {
           for (const r of activeGroupRecords) {
-            if (vectorStore.addLink(profile.id, r.id, "derived_from", 1) === true) derivedEdges++;
+            if (vectorStore.addLink(profile.id, r.id, LINK_TYPES.DERIVED_FROM, 1) === true) derivedEdges++;
           }
         }
         if (derivedEdges > 0) {
@@ -1285,7 +1296,9 @@ export function createL2Runner(opts: {
         task_id: ctx.taskId,
         prompt: l2PromptRef,
         anchor_memory_id: changedProfiles[0]?.id,
-        input_refs: groupRecords.map((record) => ({ layer: "l1", record_id: record.id })),
+        // 取证如实（对抗评审 P2-8）：prompt 只吃 activeGroupRecords（已剔除 valid_end /
+        // certainty='inferred'），input_refs 却记了未过滤的 groupRecords ⇒ 生成日志虚报证据。
+        input_refs: activeGroupRecords.map((record) => ({ layer: "l1", record_id: record.id })),
         output_refs: changedProfiles.map((profile) => ({ layer: "l2", record_id: profile.id })),
         model: cfg.persona.model,
         prompt_mode: cfg.persona.promptMode,

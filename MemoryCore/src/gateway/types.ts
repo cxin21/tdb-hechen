@@ -108,6 +108,11 @@ export interface MemorySearchResponse {
   results: string;
   total: number;
   strategy: string;
+  /**
+   * 敏感度注入观测（可选，2026-11-04 对抗评审 P1）：`blocked > 0` 时附带，
+   * 让宿主能把「有 N 条因敏感未注入」告知模型，而不是静默少内容。
+   */
+  sensitivity?: { audience?: string; scanned: number; blocked: number; byReason?: Record<string, number> };
 }
 
 // ============================

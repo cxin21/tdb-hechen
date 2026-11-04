@@ -11,6 +11,7 @@ import path from "node:path";
 // 再 re-export 供 journal 消费方单点 import。
 import type { RecallJournalImportanceGate } from "../tools/recall-signals.js";
 import type { ValidityFilterStats } from "./validity-policy.js";
+import type { RecallAudience, SensitivityBlockReason } from "./sensitivity-policy.js";
 
 export interface RecallJournalSearchTiming {
   ftsMs: number;
@@ -29,6 +30,19 @@ export interface RecallJournalRerankGate {
   ms: number;
   kept: number;
   dropped: number;
+  /**
+   * 2026-11-04：本次调用的**工作量**（docs=送评条数、chars=送评总字符，已按 provider
+   * 单条上限截断后的口径）。加这两个数是「精排 ms 尾因」可归因的前提：90 题实测里
+   * docs=8 的一次耗时 2492ms、docs=21 的一次只有 2080ms —— 单看 ms 无法区分「池子大」
+   * 与「同一池子被主线程/embedding 争用」，归因会跑偏。缺字段 = 旧条目。
+   */
+  docs?: number;
+  chars?: number;
+  /**
+   * 2026-11-04：滚动预算（rerank/score-budget.ts，400ms + 单块 250ms 宽限）未送评的候选条数。
+   * 这些候选按融合原序垫尾（不清排），故缺字段/0 = 本轮精排覆盖了整个池子。
+   */
+  unscored?: number;
   topScore?: number;
   /**
    * #99 F3（2026-10-25）：local provider 原始 logit 经 sigmoid 归一 0..1 后对门槛——
@@ -178,6 +192,48 @@ export interface RecallJournalGates {
     injected: ValidityFilterStats;
     /** @deprecated 等于 pool.dropped（池口径），不要当"少注入了多少行"。 */
     validEndFiltered: number;
+    /**
+     * soft 档实际被降权沉底的行数（hard/off 档缺省）。
+     * 为什么需要：soft 下 pool/top/injected.dropped 只数 future，生产实测 297 轮恒 0，
+     * 「降权发生过没有」在 journal 里不可读——没有这个计数就只剩不可证伪的读数。
+     */
+    demoted?: number;
+  };
+  /**
+   * D-3（ADR-0025 决定 4）敏感度注入门口径。
+   *
+   * 语义：sensitivity 不是相关度，是"这行能不能出现在这个上下文里"。门只在注入点
+   * 生效（排序/打分不读它），放行面只有 `private`（可证明的本人私有会话）。
+   *
+   * 三个读数各管一件事，缺一个就无法证伪：
+   * - `audience`：本轮裁决用的可见性终态；`private` 之外的取值意味着敏感行被拦。
+   * - `scanned`：候选池里带敏感标注的行数（含 unclassified）。**0 行不等于门没生效**
+   *   ——生产库非 none 标注只有个位数行，多数轮次本就扫不到。
+   * - `blocked`/`byReason`：真被移出注入集的行数与原因（只出非 0 项）。
+   * `scanned=0` 时整块缺省，不给 journal 塞噪声。
+   */
+  sensitivity?: {
+    audience: RecallAudience;
+    scanned: number;
+    blocked: number;
+    byReason?: Partial<Record<SensitivityBlockReason, number>>;
+  };
+  /**
+   * P0-1（2026-11-04 L1 属性复核）结论层敏感门口径。
+   *
+   * 与上面的行级 `sensitivity` 是**两道门**：那道门管经验行（searchHybrid 池内），
+   * 这道门管结论行（work_fact 原文直出 + L2 场景块蒸馏块）——结论行在两道门之后才拼进
+   * 注入块，此前完全绕开。
+   * - `scanned`：本轮通过条数上限后的结论行数。
+   * - `blocked`/`byReason`：被门移出注入集的条数（derived-sensitive=派生来源含敏感行；
+   *   derived-unknown=来源不可判定；unclassified=work_fact 行已不在主表）。
+   * **缺字段 = 本轮没有一条结论行被门拦下**（全放行时不给 journal 塞噪声）。
+   */
+  sensitivityConclusions?: {
+    audience: RecallAudience;
+    scanned: number;
+    blocked: number;
+    byReason?: Partial<Record<SensitivityBlockReason, number>>;
   };
   selfNarration?: {
     enabled: boolean;
@@ -289,6 +345,13 @@ export interface RecallJournalSelection {
     fold: number;
   };
   capped?: number;
+  /** 2026-11-03：零行保护保回的条数（0/缺省 = 未触发）。 */
+  rescued?: number;
+  /**
+   * 2026-11-03：证据窗改写的行数（整行装不进 maxChars → 换成「头+命中窗+尾」节选）。
+   * 与 `rescued` 分开记：前者是「行被压短」，后者是「行被保回」，两者可同时发生。
+   */
+  windowed?: number;
   /**
    * v3（2026-11-02）：候选池字符数（选前）。**口径澄清**：`memoryLines` 记的是候选池
    * （ruler 关闭时池=注入），所以「注入字符」只能从这里读——否则会误把池当注入（实测
@@ -350,6 +413,11 @@ export interface RecallJournalCandidateLine {
   bm25Rel?: number;
   kept: boolean;
   droppedBy?: "rank" | "floor" | "margin" | "dup" | "budget" | "chars" | "fold";
+  /**
+   * 2026-11-03：该行是零行保护保回的（`kept=true` 且原 `droppedBy` 已冲销）。
+   * 规格 §4.6 承诺可对账：保回不算「按名次选上」，必须能单独数出来。
+   */
+  rescued?: true;
 }
 
 export interface RecallJournalCandidates {
@@ -371,6 +439,15 @@ export interface RecallJournalEntry {
   sessionKey?: string;
   sessionReused: boolean;
   layered: boolean;
+  /**
+   * 缺口 B（ADR-0025 决定 8）：L2 场景块**触发词命中**观测。
+   *
+   * 与 `layered` 的区别：`layered` 只说"有没有注入结论层"，这里说明"是靠什么进的"——
+   * 命中 `keywords` 的块会越过纯语义质量门（显式意图优先于启发式密度门），因此必须可数：
+   * 没有这一项，触发词生效与"恰好语义也命中"在生产 journal 上不可分辨。
+   * 缺字段 = 本轮无触发词命中（逐位等于旧口径）。
+   */
+  layeredKeywords?: { blocks: number; keywords: string[] };
   conclusionCount: number;
   experienceCount: number;
   searchTiming: RecallJournalSearchTiming;

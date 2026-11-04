@@ -174,11 +174,11 @@ describe("P4b evolution-worker：合并/失效边界 golden（v5 硬要求）", 
       store: store as never,
     });
     expect(res.rewrites).toBe(1);
-    // 合并单条：created_by='evolution' + metadata.evolution={from,reason} + source='evolution'
+    // 合并单条：metadata.evolution={from,reason}（ADR-0025 C2 删 L1 source 列、C6 停写 metadata.created_by）
     expect(upserts).toHaveLength(1);
     const rec = upserts[0];
-    expect(rec.source).toBe("evolution");
-    expect((rec.metadata as Record<string, unknown>).created_by).toBe("evolution");
+    expect(rec.source).toBeUndefined();
+    expect((rec.metadata as Record<string, unknown>).created_by).toBeUndefined();
     expect((rec.metadata as Record<string, unknown>).evolution).toEqual({ from: ["m_plan_old", "m_plan_new"], reason: "同字段计划时间真矛盾" });
     expect(rec.certainty).toBe("observed");
     // bi-temporal：occurred_at 取新值，valid_start 沿用旧值起点

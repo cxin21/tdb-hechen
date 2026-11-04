@@ -28,6 +28,7 @@ import { parseConfig } from "../src/config.js";
 import { VectorStore } from "../src/core/store/sqlite.js";
 import type { MemoryRecord } from "../src/core/record/l1-writer.js";
 import type { IsolationFilter } from "../src/core/store/types.js";
+import { LINK_TYPES } from "../src/core/store/types.js";
 
 const KW = "RA2PIN"; // 唯一 ASCII 关键词（jieba 原样保留，FTS 稳定命中）
 
@@ -100,9 +101,9 @@ console.log("=".repeat(72));
 {
   const { store, dir } = makeStore([mk("a"), mk("n1")]);
   try {
-    store.addLink("a", "n1", "causal", 0.9);
+    store.addLink("a", "n1", LINK_TYPES.DERIVED_FROM, 0.9);
     const nb = store.getNeighbors("a");
-    const a1 = nb.length === 1 && nb[0].id === "n1" && nb[0].type === "causal" && nb[0].strength === 0.9;
+    const a1 = nb.length === 1 && nb[0].id === "n1" && nb[0].type === LINK_TYPES.DERIVED_FROM && nb[0].strength === 0.9;
     console.log(`A1 getNeighbors 读回：${JSON.stringify(nb)}`);
 
     store.upsertL1(mk("v-mem", { content: "价值条目", metadata: { coreRefs: ["正确性"] } }), undefined);
@@ -126,14 +127,14 @@ console.log("=".repeat(72));
     // 邻居记录 content 不含 KW——保证其只能经图通道入池（不被 FTS 主检索命中）
     const { store, dir } = makeStore([mk("a"), mk("n1", { content: "邻居条目一（不含关键词）" })]);
     try {
-      store.addLink("a", "n1", "causal", 0.9);
+      store.addLink("a", "n1", LINK_TYPES.DERIVED_FROM, 0.9);
       const on = await search(store, { graphDiscount: 0.6, graphMinStrength: 0.5 });
       const a = on.results.find((r) => r.id === "a");
       const n1 = on.results.find((r) => r.id === "n1");
       // V2-1：单邻居 = PPR 非种子最大者 → pprNorm=1 → 分数天花板 = a.score×0.6（折扣语义保持）
-      const b1 = !!n1 && !!a && Math.abs(n1.score - a.score * 0.6) < 1e-9 && n1.recall_channel === "graph:ppr:causal";
+      const b1 = !!n1 && !!a && Math.abs(n1.score - a.score * 0.6) < 1e-9 && n1.recall_channel === `graph:ppr:${LINK_TYPES.DERIVED_FROM}`;
       const text = formatSearchResponse(on);
-      check("R4→PPR：唯一邻居以 0.6×命中分入池（pprNorm=1）+ [graph:ppr:causal] 标注（文本可见）", b1 && text.includes("[graph:ppr:causal]"),
+      check("R4→PPR：唯一邻居以 0.6×命中分入池（pprNorm=1）+ [graph:ppr:derived_from] 标注（文本可见）", b1 && text.includes(`[graph:ppr:${LINK_TYPES.DERIVED_FROM}]`),
         `a.score=${a?.score.toFixed(4)}, n1.score=${n1?.score.toFixed(4)}, channel=${n1?.recall_channel}`);
 
       const off = await search(store);
@@ -159,8 +160,8 @@ console.log("=".repeat(72));
     try {
       s3.store.addLink("a", "a", "similar", 0.9); // 自环
       for (let i = 1; i <= 12; i++) {
-        s3.store.addLink("a", `n${i}`, "causal", 0.9);
-        s3.store.addLink(`n${i}`, "a", "causal", 0.9); // 反向成环
+        s3.store.addLink("a", `n${i}`, LINK_TYPES.DERIVED_FROM, 0.9);
+        s3.store.addLink(`n${i}`, "a", LINK_TYPES.DERIVED_FROM, 0.9); // 反向成环
       }
       const res = await search(s3.store, { graphDiscount: 0.6, graphMinStrength: 0.5, limit: 20 });
       const ids = res.results.map((r) => r.id);
@@ -234,7 +235,7 @@ console.log("=".repeat(72));
     mk("n1", { certainty: "inferred" } as Partial<MemoryRecord>),
   ]);
   try {
-    store.addLink("a", "n1", "causal", 0.9);
+    store.addLink("a", "n1", LINK_TYPES.DERIVED_FROM, 0.9);
     // 三次召回：observed 种子 recall_count 应累加到 3；inferred 邻居应恒缺
     for (let i = 0; i < 3; i++) await search(store, { graphDiscount: 0.6, graphMinStrength: 0.5 });
     const rows = store.queryL1Records() as Array<{ record_id: string; metadata_json?: string }>;
@@ -259,7 +260,7 @@ console.log("=".repeat(72));
   const { store, dir } = makeStore([mk("a")]);
   try {
     store.upsertL1(mk("alien", { content: `${KW} 邻居条目 alien`, teamId: "other-team", userId: "ou", agentId: "oa" }), undefined);
-    store.addLink("a", "alien", "causal", 0.9);
+    store.addLink("a", "alien", LINK_TYPES.DERIVED_FROM, 0.9);
     const filter: IsolationFilter = { teamId: "default", userId: "default", agentId: "default" };
     const res = await search(store, { graphDiscount: 0.6, graphMinStrength: 0.5, filter });
     check("[D] 跨租户邻居被 T14 filter 排除", !res.results.some((r) => r.id === "alien"),

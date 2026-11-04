@@ -29,6 +29,7 @@ import {
 } from "../src/core/tools/memory-search.js";
 import { parseConfig } from "../src/config.js";
 import type { IMemoryStore, L1FtsResult, L1SearchResult } from "../src/core/store/types.js";
+import { LINK_TYPES } from "../src/core/store/types.js";
 
 const results: Array<{ name: string; pass: boolean; detail: string }> = [];
 const check = (name: string, pass: boolean, detail = "") => {
@@ -117,7 +118,7 @@ console.log("=".repeat(72));
         isFtsAvailable: () => true,
         getCapabilities: () => ({ nativeHybridSearch: false }),
         searchL1Fts: async () => rows,
-        getNeighbors: () => [{ id: "n1", type: "causal", strength: 0.9, hop: 1 }],
+        getNeighbors: () => [{ id: "n1", type: LINK_TYPES.DERIVED_FROM, strength: 0.9, hop: 1 }],
         getL1ByIdsWithArchive: (ids: string[]) => [vecRow("n1")].filter((r) => ids.includes(r.record_id)),
         bumpRecallCount: () => true,
       } as unknown as IMemoryStore,
@@ -131,7 +132,7 @@ console.log("=".repeat(72));
     { graphDiscount: 0.15, graphMinStrength: 0.5, rerankWeights: { relevance: 0.7, timeProx: 0, significance: 0, coreRef: 0 } },
   );
   check("B1 图候选以派生相关度分入池：relevance-only 权重下排全部直击命中之后（折扣语义保持）",
-    relOnly.map((r) => r.id).join(",") === "a,b,c,n1" && relOnly[3]!.recall_channel === "graph:ppr:causal",
+    relOnly.map((r) => r.id).join(",") === "a,b,c,n1" && relOnly[3]!.recall_channel === `graph:ppr:${LINK_TYPES.DERIVED_FROM}`,
     `[${relOnly.map((r) => `${r.id}(${r.recall_channel ?? "hit"})`)}]`);
 
   // B2 默认权重：b 的满额结构因子（时近 0.15 + 显著 0.1）不得翻越 a-b 相关度差

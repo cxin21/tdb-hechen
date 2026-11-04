@@ -97,7 +97,6 @@ describe("#28 R-A 回归锚：recall-signals 零新增字段", () => {
     "presentTemporalDays",
     "recencyBoost",
     "reinforcementWeight",
-    "sensitivityPenalty",
     "sigWeight",
     "timeBoost",
   ].sort();

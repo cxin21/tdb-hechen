@@ -8,6 +8,7 @@ import { registerHealthRoutes, registerMetaInstanceRoutes } from './routes/meta/
 import { registerMetaProxyRoutes } from './routes/meta/proxy.js';
 import { registerSkillProxyRoutes } from './routes/skill/proxy.js';
 import { registerChatMemoryRoutes } from './routes/chat-memory.js';
+import { registerChatMemorySoulRoutes } from './routes/chat-memory-soul.js';
 import { registerAgentOverviewRoutes } from './routes/agent-overview.js';
 import { registerKnowledgeRoutes } from './routes/knowledge/index.js';
 import { registerSettingsRoutes } from './routes/settings.js';
@@ -41,6 +42,8 @@ export function buildPanelApp(deps: PanelDeps, options: PanelAppOptions = {}): H
   registerSkillProxyRoutes(api, deps);
   // Chat Memory 面板 3-tab 专属业务路由（12.3 决策例外，见 chat-memory.ts 顶注释）
   registerChatMemoryRoutes(api, deps);
+  // 灵魂快照版本链 / 漂移审计读面（task-3）：/api/v1/chat-memory/soul-versions
+  registerChatMemorySoulRoutes(api, deps);
   registerAgentOverviewRoutes(api, deps);
   registerKnowledgeRoutes(api, deps);
   // 管理员设置透传（Wiki/Memory 设置，spec §4）

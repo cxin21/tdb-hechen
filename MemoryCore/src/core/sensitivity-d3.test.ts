@@ -35,21 +35,26 @@ describe("D-3: 注入行敏感性徽章", () => {
   });
 });
 
-describe("D-3: 遗忘敏感偏置（gated，缺省 0=逐位现状）", () => {
+describe("D-3: sensitivity 不进遗忘打分（sensitivityBias 死乘子已删除）", () => {
+  // 2026-11-04 定案（用户拍板）：sensitivity 的正确语义是「不外泄/不注入」门
+  // （src/core/recall/sensitivity-policy.ts），不是排序/遗忘降权。旧 sensitivityBias 缺省与
+  // 生产都是 0，属空挂配置项，已连同 config 键一并删除；此处锚定「删掉后逐位等于旧 bias=0」。
   const base: Record<string, unknown> = {
     id: "r1", content: "c", priority: 50, significance: 0.5, arousal: 0.5,
     created_time: new Date(Date.now() - 40 * 86400_000).toISOString(), metadata: {},
   };
-  it("bias=0（缺省）与无 sensitivity 行为一致", () => {
-    const cfg = { lambda: 0.01, lowThreshold: 0.12, arousalRetention: 0.3, sensitivityBias: 0 };
-    const plain = scoreFor(base as never, cfg as never);
-    expect(plain).toBeGreaterThan(0);
-  });
-  it("sensitivity=health + bias>0 → 分数更低（更早归档）", () => {
-    const cfg = { lambda: 0.01, lowThreshold: 0.12, arousalRetention: 0, sensitivityBias: 0.5 };
+  const cfg = { lambda: 0.01, lowThreshold: 0.12, arousalRetention: 0.3 };
+
+  it("sensitivity=none 与 sensitivity=health 的分数逐位相同（属性不参与衰减公式）", () => {
     const noneRow = scoreFor({ ...base, sensitivity: "none" } as never, cfg as never);
     const healthRow = scoreFor({ ...base, sensitivity: "health" } as never, cfg as never);
-    expect(healthRow).toBeLessThan(noneRow);
+    expect(healthRow).toBe(noneRow);
+  });
+
+  it("遗留 sensitivityBias 配置键不再有任何效果（不降分、不 throw）", () => {
+    const plain = scoreFor({ ...base, sensitivity: "health" } as never, cfg as never);
+    const legacy = scoreFor({ ...base, sensitivity: "health" } as never, { ...cfg, sensitivityBias: 0.5 } as never);
+    expect(legacy).toBe(plain);
   });
 });
 

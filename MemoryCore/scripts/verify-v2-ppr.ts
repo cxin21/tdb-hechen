@@ -27,6 +27,7 @@ import { VectorStore } from "../src/core/store/sqlite.js";
 import { searchHybrid } from "../src/core/hooks/auto-recall.js";
 import type { MemoryRecord } from "../src/core/record/l1-writer.js";
 import type { IMemoryStore, IsolationFilter, L1SearchResult } from "../src/core/store/types.js";
+import { LINK_TYPES } from "../src/core/store/types.js";
 import type { EmbeddingService } from "../src/core/store/embedding.js";
 import { ZERO_RANK_SIGNALS, type RankSignals } from "../src/core/tools/recall-signals.js";
 
@@ -60,8 +61,8 @@ console.log("=".repeat(72));
 {
   // A1 多跳扩散：A→B→C 链 seeds={A} → B 与 C 都浮现且 C < B（一跳 BFS 做不到）
   const chain: PPREdge[] = [
-    { src: "a", tgt: "b", strength: 0.9, kind: "causal" },
-    { src: "b", tgt: "c", strength: 0.9, kind: "evolve" },
+    { src: "a", tgt: "b", strength: 0.9, kind: LINK_TYPES.DERIVED_FROM },
+    { src: "b", tgt: "c", strength: 0.9, kind: LINK_TYPES.EVOLVE },
   ];
   const d1 = runPPRDetail(new Map([["a", 1]]), chain, {});
   const hasB = d1.pprNorm.get("b") ?? 0;
@@ -69,12 +70,12 @@ console.log("=".repeat(72));
   check("A1 多跳一步到位：B、C 都浮现且 C<B", hasB > 0 && hasC > 0 && hasC < hasB,
     `pprNorm(b)=${hasB.toFixed(6)}, pprNorm(c)=${hasC.toFixed(6)}`);
   check("A1b 归一化天花板：pprNorm(max非种子)=1", Math.abs(Math.max(...d1.pprNorm.values()) - 1) < 1e-12);
-  check("A1c 主导边类型（累积扩散量）：b=causal, c=evolve",
-    d1.kinds.get("b") === "causal" && d1.kinds.get("c") === "evolve",
+  check("A1c 主导边类型（累积扩散量）：b=derived_from, c=evolve",
+    d1.kinds.get("b") === LINK_TYPES.DERIVED_FROM && d1.kinds.get("c") === LINK_TYPES.EVOLVE,
     `kinds=${JSON.stringify([...d1.kinds.entries()])}`);
 
   // A1-ORACLE（V2 收口 · I-1）：A→B→C 链手算 PPR 数值 fixture（容差 1e-9）。
-  // 手算（精确有理数迭代，BigInt 校验）：边 a-b(0.9, causal)、b-c(0.9, evolve)（无向）；
+  // 手算（精确有理数迭代，BigInt 校验）：边 a-b(0.9, derived_from)、b-c(0.9, evolve)（无向）；
   // deg(a)=deg(c)=0.9, deg(b)=1.8；seeds={a:1} → p={a:1}；d=0.85。
   //   递推：a' = 3/20 + (17/40)·b ; b' = (17/20)·(a + c) ; c' = (17/40)·b
   //   r¹ = {a:3/20, b:17/20, c:0}；r² = {a:409/800, b:51/400, c:289/800}
@@ -138,7 +139,7 @@ console.log("=".repeat(72));
   check("A4 种子权重归一化：等比缩放输出逐位一致", mapEq(d4a.pprNorm, d4b.pprNorm));
 
   // A5 topK 上限：5 个合格邻居只出 topK=3
-  const star: PPREdge[] = Array.from({ length: 5 }, (_, i) => ({ src: "a", tgt: `n${i}`, strength: 0.9, kind: "causal" }));
+  const star: PPREdge[] = Array.from({ length: 5 }, (_, i) => ({ src: "a", tgt: `n${i}`, strength: 0.9, kind: LINK_TYPES.DERIVED_FROM }));
   const d5 = runPPRDetail(new Map([["a", 1]]), star, { topK: 3 });
   check("A5 topK 上限：5 邻居只出 3", d5.pprNorm.size === 3, `size=${d5.pprNorm.size}`);
 
@@ -147,11 +148,11 @@ console.log("=".repeat(72));
   check("A6 damping=0 → 零非种子输出", d6.pprNorm.size === 0);
 
   // A7 无向遍历：仅存 a→b 一条有向边，seeds={b} → a 浮现（召回语义对称）
-  const d7 = runPPRDetail(new Map([["b", 1]]), [{ src: "a", tgt: "b", strength: 0.9, kind: "causal" }], {});
+  const d7 = runPPRDetail(new Map([["b", 1]]), [{ src: "a", tgt: "b", strength: 0.9, kind: LINK_TYPES.DERIVED_FROM }], {});
   check("A7 无向遍历：反向端浮现", (d7.pprNorm.get("a") ?? 0) > 0);
 
   // A8 自环安全：自环边不炸、不入输出
-  const d8 = runPPRDetail(new Map([["a", 1]]), [{ src: "a", tgt: "a", strength: 0.9, kind: "causal" }], {});
+  const d8 = runPPRDetail(new Map([["a", 1]]), [{ src: "a", tgt: "a", strength: 0.9, kind: LINK_TYPES.DERIVED_FROM }], {});
   check("A8 自环安全", d8.pprNorm.size === 0);
 }
 
@@ -211,8 +212,8 @@ console.log("=".repeat(72));
     mk("c", { content: "链末端条目（不含关键词）" }),
   ]);
   try {
-    store.addLink("a", "b", "causal", 0.9);
-    store.addLink("b", "c", "evolve", 0.9);
+    store.addLink("a", "b", LINK_TYPES.DERIVED_FROM, 0.9);
+    store.addLink("b", "c", LINK_TYPES.EVOLVE, 0.9);
     const on = await search(store, { graphDiscount: 0.6, graphMinStrength: 0.5 });
     const a = on.results.find((r) => r.id === "a");
     const b = on.results.find((r) => r.id === "b");
@@ -220,14 +221,14 @@ console.log("=".repeat(72));
     const b1 = !!a && !!b && !!c && c.score < b.score;
     check("B1 多跳一步到位：A→B→C 链 seeds={A} → B 与 C 都浮现且 C<B", b1,
       `ids=[${on.results.map((r) => r.id).join(", ")}]`);
-    check("B1b 标注自证：b=[graph:ppr:causal], c=[graph:ppr:evolve]",
-      b?.recall_channel === "graph:ppr:causal" && c?.recall_channel === "graph:ppr:evolve",
+    check("B1b 标注自证：b=[graph:ppr:derived_from], c=[graph:ppr:evolve]",
+      b?.recall_channel === `graph:ppr:${LINK_TYPES.DERIVED_FROM}` && c?.recall_channel === `graph:ppr:${LINK_TYPES.EVOLVE}`,
       `b=${b?.recall_channel}, c=${c?.recall_channel}`);
     check("B1c 折扣语义保持：非种子天花板 = maxHitScore×graphDiscount（b 为最大非种子）",
       !!a && !!b && Math.abs(b.score - a.score * 0.6) < 1e-9,
       `a=${a?.score.toFixed(6)}, b=${b?.score.toFixed(6)}`);
     const text = formatSearchResponse(on);
-    check("B1d 响应文本可见 [graph:ppr:*]", text.includes("[graph:ppr:causal]"));
+    check("B1d 响应文本可见 [graph:ppr:*]", text.includes(`[graph:ppr:${LINK_TYPES.DERIVED_FROM}]`));
 
     // 关断矩阵：graphDiscount=0 → 零图候选（b、c 均不出现）
     const off = await search(store);
@@ -245,8 +246,8 @@ console.log("=".repeat(72));
     mk("c", { content: "弱边末端（不含关键词）" }),
   ]);
   try {
-    s2.store.addLink("a", "b", "causal", 0.4);
-    s2.store.addLink("b", "c", "evolve", 0.9);
+    s2.store.addLink("a", "b", LINK_TYPES.DERIVED_FROM, 0.4);
+    s2.store.addLink("b", "c", LINK_TYPES.EVOLVE, 0.9);
     const res = await search(s2.store, { graphDiscount: 0.6, graphMinStrength: 0.5 });
     check("B3 边强度门槛：0.4<0.5 弱边不入图（宁缺毋滥，下游不扩散）",
       !res.results.some((r) => r.id === "b" || r.id === "c"),
@@ -259,7 +260,7 @@ console.log("=".repeat(72));
   const s3 = makeStore([mk("a")]);
   try {
     s3.store.upsertL1(mk("alien", { content: "跨租户邻居", teamId: "other-team", userId: "ou", agentId: "oa" }), undefined);
-    s3.store.addLink("a", "alien", "causal", 0.9);
+    s3.store.addLink("a", "alien", LINK_TYPES.DERIVED_FROM, 0.9);
     const filter: IsolationFilter = { teamId: "default", userId: "default", agentId: "default" };
     const res = await search(s3.store, { graphDiscount: 0.6, graphMinStrength: 0.5, filter });
     check("B4 T14 租户过滤照常：跨租户邻居不入池",
@@ -272,7 +273,7 @@ console.log("=".repeat(72));
   // B5 pprTopK=0（config 0 可设）→ 零图候选
   const s4 = makeStore([mk("a"), mk("n1", { content: "邻居条目（不含关键词）" })]);
   try {
-    s4.store.addLink("a", "n1", "causal", 0.9);
+    s4.store.addLink("a", "n1", LINK_TYPES.DERIVED_FROM, 0.9);
     const res = await search(s4.store, {
       graphDiscount: 0.6, graphMinStrength: 0.5, pprTopK: 0,
     });
@@ -311,9 +312,9 @@ console.log("=".repeat(72));
     ...over,
   });
   const NB_BY_ID: Record<string, Array<{ id: string; type: string; strength: number; hop: number }>> = {
-    a: [{ id: "b", type: "causal", strength: 0.9, hop: 1 }],
-    b: [{ id: "a", type: "causal", strength: 0.9, hop: 1 }, { id: "c", type: "evolve", strength: 0.9, hop: 1 }],
-    c: [{ id: "b", type: "evolve", strength: 0.9, hop: 1 }],
+    a: [{ id: "b", type: LINK_TYPES.DERIVED_FROM, strength: 0.9, hop: 1 }],
+    b: [{ id: "a", type: LINK_TYPES.DERIVED_FROM, strength: 0.9, hop: 1 }, { id: "c", type: LINK_TYPES.EVOLVE, strength: 0.9, hop: 1 }],
+    c: [{ id: "b", type: LINK_TYPES.EVOLVE, strength: 0.9, hop: 1 }],
   };
   const vectorStore = {
     isFtsAvailable: () => false,
@@ -336,8 +337,8 @@ console.log("=".repeat(72));
   const cLine = res.lines.find((l) => l.includes("条目 c"));
   check("C1 auto-recall 同层多跳：B 与 C 都浮现（注入行）", !!bLine && !!cLine,
     `lines=${res.lines.length}`);
-  check("C2 auto-recall 标注自证：[graph:ppr:causal] / [graph:ppr:evolve]",
-    bLine?.includes("[graph:ppr:causal]") === true && cLine?.includes("[graph:ppr:evolve]") === true);
+  check("C2 auto-recall 标注自证：[graph:ppr:derived_from] / [graph:ppr:evolve]",
+    bLine?.includes(`[graph:ppr:${LINK_TYPES.DERIVED_FROM}]`) === true && cLine?.includes(`[graph:ppr:${LINK_TYPES.EVOLVE}]`) === true);
 }
 
 // ══════════════════════════════════════════════════════════

@@ -92,6 +92,9 @@ export function createStoreBundle(
       maxInputChars: config.embedding.maxInputChars,
       // F3：单批条数上限随配置走（生产 ark 端点上限 10 → config 必须设 10，否则整批 400）
       maxBatchSize: config.embedding.maxBatchSize,
+        // 2026-11-03 发车节流（缺省 0 = 关 = 逐位现状）
+        paceMinIntervalMs: config.embedding.paceMinIntervalMs,
+        charsPerMinute: config.embedding.charsPerMinute,
     }, logger);
   }
 

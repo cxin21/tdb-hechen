@@ -19,6 +19,7 @@ import { bestVerbatimOverlapLen, proposalAlreadyKnown, vetReflectionIdentityProp
 import { buildSelfIdentityMarkers, similarSelfIdentityProposalExists, similarSelfIdentityProposalMatch, SIM_GATE_DEFAULT_THRESHOLD, type SelfIdentityMarker } from "./proposal-sim-gate.js";
 import { vetPromiseCreationProposal, vetPromiseTransitionProposal } from "../hooks/soul-promise-proposal.js";
 import { REFLECTION_CARD_CONTRACT_PROMPT, REFLECTION_CONCLUSION_CONTRACT_PROMPT, labelsFromCoreValueRows, validateConclusionCard, validateReflectionCardContract } from "../hooks/soul-reflection-contract.js";
+import { LINK_TYPES } from "../store/types.js";
 import type { Logger } from "../types.js";
 
 // #ε-定标（ADR0003 D7）：shadow 定标旁路（行为零变化）——被判定提案的 best verbatim
@@ -133,7 +134,7 @@ export async function writeReflectionPartOfEdges(
     if (!evId || evId === cardId || seen.has(evId)) continue;
     seen.add(evId);
     try {
-      const ok = await Promise.resolve(addLink.call(store, cardId, evId, "part_of", 1));
+      const ok = await Promise.resolve(addLink.call(store, cardId, evId, LINK_TYPES.PART_OF, 1));
       if (ok === false) {
         logger?.warn?.(`[reflection] W-a part_of edge soft-failed (returned false): card=${cardId} evidence=${evId}`);
         continue;

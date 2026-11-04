@@ -32,7 +32,7 @@
  */
 import { embedForLifecycle } from "./embed-helpers.js";
 import { withEvidenceIds } from "./evidence-ids.js";
-import type { IMemoryStore } from "../store/types.js";
+import { LINK_TYPES, type IMemoryStore } from "../store/types.js";
 import type { Logger } from "../types.js";
 
 /** memory.evolution 配置（config-first：enabled 缺省 false = 逐位现状）。 */
@@ -161,11 +161,11 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
   };
   const log = deps.logger;
   try {
-    const edges = await store.getLinksByType("conflict");
+    const edges = await store.getLinksByType(LINK_TYPES.CONFLICT);
     // 幂等集：已参与 evolved_from 边的端点（本 worker 与既有审计边的联合记忆）。
     const evolved = new Set<string>();
     try {
-      for (const e of (await store.getLinksByType("evolved_from")) ?? []) {
+      for (const e of (await store.getLinksByType(LINK_TYPES.EVOLVED_FROM)) ?? []) {
         evolved.add(e.sourceId); evolved.add(e.targetId);
       }
     } catch { /* 审计边读取失败不阻断扫描（首次运行为空集） */ }
@@ -274,8 +274,8 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
           subject: sa,
           // WP7（#155 写面）：证据指针键名单源化，canonical + 兼容别名双写（同源同集合）。
           ...withEvidenceIds({}, [older.id, newer.id]),
-          // spec §4.3：created_by='evolution' + metadata.evolution={from,reason}（审计三件套之二，其一是边）
-          created_by: "evolution",
+          // spec §4.3：metadata.evolution={from,reason}（审计三件套之二，其一是边）
+          // ADR-0025 C6（2026-11-04）：created_by 零读点 0 行，删写入（成因已由 evolution.from + 边永久可溯）。
           evolution: { from: [older.id, newer.id], reason: parsed.reason ?? "" },
         },
         occurred_at: newer.occurred_at ?? nowIso,
@@ -283,7 +283,6 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
         valid_start: (older.valid_start ?? "") || (older.occurred_at ?? ""),
         valid_end: "",
         certainty: "observed",
-        source: "evolution",
         valence: newer.valence ?? null,
         arousal: newer.arousal ?? null,
         significance: sigOld !== null || sigNew !== null ? Math.max(sigOld ?? 0, sigNew ?? 0) : null,
@@ -295,8 +294,8 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
       }
       // 审计边 + 失效（invalidateL1 首次权威不覆盖：旧值多半已被 P2 内联失效，此处幂等收尾；
       // 旧值失效时点语义 = 新观察发生时（与 P2 内联一致），新值失效时点 = 演化发生时）。
-      store.addLink(merged.id, older.id!, "evolved_from", 1);
-      store.addLink(merged.id, newer.id!, "evolved_from", 1);
+      store.addLink(merged.id, older.id!, LINK_TYPES.EVOLVED_FROM, 1);
+      store.addLink(merged.id, newer.id!, LINK_TYPES.EVOLVED_FROM, 1);
       store.invalidateL1(older.id!, newer.occurred_at || nowIso);
       store.invalidateL1(newer.id!, nowIso);
       evolved.add(older.id!); evolved.add(newer.id!);

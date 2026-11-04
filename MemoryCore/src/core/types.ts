@@ -278,6 +278,8 @@ export interface CompletedTurn {
   teamId?: string;
   userId?: string;
   agentId?: string;
+  /** 作用域键（可选）：网关 x-tdai-task-id → L0/L1 落库 task_id → 召回作用域过滤。 */
+  taskId?: string;
   /** Epoch ms when this turn started. */
   startedAt?: number;
   /**
@@ -336,6 +338,14 @@ export interface MemorySearchParams {
   limit?: number;
   type?: string;
   scene?: string;
+  /**
+   * 调用方已证明的归属（可选）。带上时敏感度注入门才能拿到「可证的私有归属」；
+   * 不传 = undeclared，敏感行 fail-closed（与 handleBeforeRecall 同口径）。
+   * 2026-11-04 对抗评审 P1：此前工具路完全不透传 → 同一谓词在工具路/HTTP 路给出相反答案。
+   */
+  isolationFilter?: { teamId?: string; userId?: string; agentId?: string; taskId?: string };
+  /** 敏感度注入观测（`blocked>0` 时附带；供宿主把「有 N 条被拦」显式告知模型，而不是静默少内容）。 */
+  includeSensitivityObservation?: boolean;
 }
 
 /** Search parameters for L0 conversation search. */

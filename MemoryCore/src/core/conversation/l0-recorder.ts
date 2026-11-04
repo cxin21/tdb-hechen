@@ -50,6 +50,8 @@ export interface L0MessageRecord {
    *  docs/l0l3-tenant-isolation-design.md. */
   userId?: string;
   agentId?: string;
+  /** 作用域键（可选）：仅在有值时写入，旧调用方 JSONL 行逐字节不变。 */
+  taskId?: string;
   recordedAt: string; // ISO timestamp
   id: string;
   role: "user" | "assistant";
@@ -96,6 +98,8 @@ export async function recordConversation(params: {
   /** Three-dim tenancy isolation, propagated into every L0 record written. */
   userId?: string;
   agentId?: string;
+  /** 作用域键（可选）：写入每条 L0 记录的 taskId（未带则不出现该字段）。 */
+  taskId?: string;
   rawMessages: unknown[];
   baseDir: string;
   logger?: Logger;
@@ -113,7 +117,7 @@ export async function recordConversation(params: {
   /** StorageAdapter for file operations (COS/local). Falls back to fs when absent. */
   storage?: StorageAdapter;
 }): Promise<ConversationMessage[]> {
-  const { sessionKey, sessionId, userId, agentId, rawMessages, baseDir, logger, originalUserText, afterTimestamp, originalUserMessageCount, storage } = params;
+  const { sessionKey, sessionId, userId, agentId, taskId, rawMessages, baseDir, logger, originalUserText, afterTimestamp, originalUserMessageCount, storage } = params;
 
   // Step 1: Position slice + extract user/assistant messages.
   //
@@ -281,6 +285,8 @@ export async function recordConversation(params: {
       // Tenancy isolation — missing fields go to the default compatibility bucket.
       userId: userId || DEFAULT_ISOLATION_ID,
       agentId: agentId || DEFAULT_ISOLATION_ID,
+      // 作用域键：有值才写（缺省不写，兼容既有 JSONL 消费者与逐字节断言）。
+      ...(taskId ? { taskId } : {}),
       recordedAt: now,
       id: msg.id,
       role: msg.role,

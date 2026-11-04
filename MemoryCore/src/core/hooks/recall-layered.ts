@@ -15,6 +15,7 @@
  * 确定性：命中判定只依赖 query/候选文本与调用方传入 token 集，无时钟、无随机。
  */
 import { detectSceneHit } from "../tools/recall-signals.js";
+import { matchSceneKeywords } from "../scene/scene-keywords.js";
 import { layerRulerSelect, type LayerRulerDropReason } from "../recall/selection/layer-ruler.js";
 
 export type L2ConclusionSource = "work_fact" | "scene_block";
@@ -34,6 +35,26 @@ export interface L2ConclusionCandidate {
    * 的行 = undefined = 地板豁免（宁缺毋滥不误杀）。
    */
   bm25Rel?: number;
+  /**
+   * 缺口 B（2026-11-04）：场景块触发词（META keywords 透传，见 scene/scene-keywords.ts）。
+   * 命中任一词 ⇒ 越过纯语义命中门槛与低密度门，并在预算内优先占位（条件必注入）；
+   * undefined/空数组 ⇒ 该候选只走旧的双通道，行为逐位不变。
+   */
+  keywords?: string[];
+  /**
+   * P0-1（2026-11-04 L1 属性复核）：场景块的溯源 id（= `profile:v1:<sha256>`，由
+   * profile/profile-sync.ts `buildProfileStableId(scope,"l2",filename)` 产出）。
+   * scene_block 摘要不是某一行原文而是 N 行蒸馏聚合，判定"这段聚合里有没有敏感内容"
+   * 只能沿 `derived_from` 边回到派生行——本字段就是那条边的 source 端。
+   * undefined ⇒ 无法定位溯源 ⇒ 结论层敏感门按"不可判定"处理（非 private 上下文不注入）。
+   */
+  provenanceId?: string;
+  /**
+   * P0-1（2026-11-04 L1 属性复核）：work_fact 源的行级 sensitivity 原值（FTS/SELECT 同源带出）。
+   * 结论行是**原文直出**，故与经验行同一道门（recall/sensitivity-policy.ts
+   * `decideSensitivityInjection`）；缺省 = 历史行未标注（写入侧保证 undef→none）。
+   */
+  sensitivity?: string;
 }
 
 export type L2Conclusion = L2ConclusionCandidate;
@@ -87,12 +108,19 @@ export interface L2SelectionEntry {
   kept: boolean;
   /** 仅在层尺裁掉时存在；mode:off 全 undefined（观测面记 0，不假装裁过）。 */
   reason?: LayerRulerDropReason;
+  /** 缺口 B：命中的触发词（仅命中时存在）。 */
+  triggered?: string[];
 }
 
 /** #179 S4：详细选择结果（selected 与旧签名输出逐位一致）。 */
 export interface L2SelectionResult {
   selected: L2Conclusion[];
   pool: L2SelectionEntry[];
+  /**
+   * 缺口 B：触发词命中计（可观测，非开关）。仅当至少一个场景块被触发词命中时存在，
+   * 保证「无触发词命中」的结果对象与旧形状逐位相同（既有 toEqual 断言不受影响）。
+   */
+  keywordTriggered?: { blocks: number; keywords: string[][] };
 }
 
 /**
@@ -235,25 +263,39 @@ export function selectL2ConclusionsDetailed(
   const idfScores = idfOn ? conclusionIdfScores(candidates, matchTokens) : [];
   const seen = new Set<string>();
   const survivors: { c: L2Conclusion; i: number; score: number }[] = [];
+  // 缺口 B：触发词命中登记（survivors 下标 → 命中词），用于预算预留与可观测计数
+  const triggeredByPos = new Map<number, string[]>();
   let idx = -1;
   for (const c of candidates) {
     idx++;
     if (!c || typeof c.content !== "string" || c.content.trim().length === 0) continue;
-    const sceneHit = c.sceneName ? detectSceneHit(query, [c.sceneName]) : null;
-    if (!sceneHit && !textHit(c.content, matchTokens)) continue;
-    // v18-c：低密度自指回放块跳过（取下一名候选 = 让位语义；undefined/0 = 关，逐位现状）
-    if (
-      inputs.minUniqRatio != null &&
-      inputs.minUniqRatio > 0 &&
-      conclusionUniqRatio(c.content) < inputs.minUniqRatio
-    ) {
-      continue;
+    const kwHits =
+      Array.isArray(c.keywords) && c.keywords.length > 0 ? matchSceneKeywords(query, c.keywords, matchTokens) : [];
+    if (kwHits.length === 0) {
+      const sceneHit = c.sceneName ? detectSceneHit(query, [c.sceneName]) : null;
+      if (!sceneHit && !textHit(c.content, matchTokens)) continue;
+      // v18-c：低密度自指回放块跳过（取下一名候选 = 让位语义；undefined/0 = 关，逐位现状）
+      // 缺口 B：触发词 = 显式意图，越过密度门是有意为之（Lead 2026-11-04 定案）——
+      // 语义门槛/密度门是「没命中信号时的启发式补位」，层级低于用户显式指定的触发词；
+      // 若要恢复密度门，只需把命中分支从本 if 里挪出（即 kwHits.length > 0 时也过密度判据）。
+      if (
+        inputs.minUniqRatio != null &&
+        inputs.minUniqRatio > 0 &&
+        conclusionUniqRatio(c.content) < inputs.minUniqRatio
+      ) {
+        continue;
+      }
     }
     const key = `${c.sceneName}\u0000${c.content}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    if (kwHits.length > 0) triggeredByPos.set(survivors.length, kwHits);
     survivors.push({
-      c: { sceneName: c.sceneName, content: c.content, source: c.source, recordId: c.recordId },
+      // P0-1（2026-11-04）：候选必须整条透传（{...c}），不能只挑四个基础字段——
+      // 结论层敏感门在选择器**之后**才跑，它要读 sensitivity（work_fact 行级）与
+      // provenanceId（scene_block 溯源）；挑字段重建会把这两个证据抹成 undefined，
+      // 门就拿不到判据（实测症状：敏感结论照常注入且 journal 无 gate 记录）。
+      c: { ...c },
       i: idx,
       score: idfOn ? (idfScores[idx] ?? 0) : 0,
     });
@@ -283,6 +325,37 @@ export function selectL2ConclusionsDetailed(
     // mode:off：前 limit 名存活候选（与旧循环的 `out.length>=limit` 早退逐位等价）
     for (let pos = 0; pos < survivors.length && pos < limit; pos++) keptFlags[pos] = true;
   }
+  // 缺口 B：预算预留——触发词命中的场景块条件必注入。没有命中时下面的循环体为空，
+  // keptFlags 与旧路径逐位相同（无触发词 = 行为一字不变）。
+  if (triggeredByPos.size > 0) {
+    const outputRank = (pos: number): [number, number, number] => {
+      const s = survivors[pos]!;
+      return [rankOf(s.c), idfOn ? -s.score : 0, s.i];
+    };
+    for (const pos of triggeredByPos.keys()) {
+      if (keptFlags[pos]) continue;
+      // 让位对象 = 已保留、非触发的最后一名（按最终输出排序口径），保证被挤掉的是最弱的
+      let evict = -1;
+      let evictRank: [number, number, number] | null = null;
+      for (let p = 0; p < survivors.length; p++) {
+        if (!keptFlags[p] || triggeredByPos.has(p)) continue;
+        const rank = outputRank(p);
+        if (
+          evictRank === null ||
+          rank[0] > evictRank[0] ||
+          (rank[0] === evictRank[0] && rank[1] > evictRank[1]) ||
+          (rank[0] === evictRank[0] && rank[1] === evictRank[1] && rank[2] > evictRank[2])
+        ) {
+          evictRank = rank;
+          evict = p;
+        }
+      }
+      // 无可让位者 = 预算已被其它触发块占满，本块不注入（诚实降级，不超预算）
+      if (evict === -1) continue;
+      keptFlags[evict] = false;
+      keptFlags[pos] = true;
+    }
+  }
   const pool: L2SelectionEntry[] = survivors.map((s, pos) => {
     const entry: L2SelectionEntry = {
       text: s.c.content,
@@ -293,6 +366,8 @@ export function selectL2ConclusionsDetailed(
     };
     const reason = reasons[pos];
     if (reason !== undefined) entry.reason = reason;
+    const triggered = triggeredByPos.get(pos);
+    if (triggered !== undefined) entry.triggered = triggered;
     return entry;
   });
   // work_fact 优先（稳定结论 > 场景块摘要）；#53 开启时同层内按 IDF 分降序（稀有 token
@@ -306,7 +381,15 @@ export function selectL2ConclusionsDetailed(
       return a.i - b.i;
     })
     .map(({ c }) => c);
-  return { selected, pool };
+  const result: L2SelectionResult = { selected, pool };
+  if (triggeredByPos.size > 0) {
+    // 可观测计数（journal/debug 侧读它，别做无声开关）：触发块数 + 命中的触发词
+    result.keywordTriggered = {
+      blocks: triggeredByPos.size,
+      keywords: [...triggeredByPos.values()],
+    };
+  }
+  return result;
 }
 
 /** 预算切分结果（spec §1：注入 limit 对半；结论不足时余额给经验层）。 */

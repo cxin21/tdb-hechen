@@ -47,6 +47,16 @@ export interface OpenAIEmbeddingConfig {
    * 否则整批 400 → 调用方降级 FTS → dedup 前置门槛恒空转。来自 config.embedding.maxBatchSize。
    */
   maxBatchSize?: number;
+  /**
+   * 2026-11-03 发车节流：两次 provider 请求之间的最小间隔（ms）。0/缺省 = 不节流（逐位现状）。
+   * 来自 config.embedding.paceMinIntervalMs。
+   */
+  paceMinIntervalMs?: number;
+  /**
+   * 2026-11-03 发车节流：分钟级字符预算（0/缺省 = 不限，逐位现状）。
+   * 实测 Ark coding 端点 ≈1.9M chars/min 稳、≈4.4M chars/min 必 429。来自 config.embedding.charsPerMinute。
+   */
+  charsPerMinute?: number;
 }
 
 export interface LocalEmbeddingConfig {
@@ -376,16 +386,92 @@ const MAX_BATCH_SIZE_LIMIT = 2048;
 const EMBED_CACHE_MAX_ENTRIES = 512;
 
 /**
- * 429 重试次数（2026-10-26 起；此前是 0=不重试）。
+ * 429 重试次数（2026-10-26 起；2026-11-03 授权从 2 提到 4）。
  * 生产实测：Ark coding 端点的 429 是 43ms 内秒拒的突发限制（4rps 匀速 20/20 成功，
- * 3 次快速连打即全灭），单发重试 400ms 后基本必成 —— 不重试等于白丢向量。
+ * 3 次快速连打即全灭）。2026-11-03 基准灌库再测：撞限后的惩罚窗 ≥30–60s，
+ * 旧退避 400/800/1200ms 全部落在窗内 → 重试只是继续撞墙；故次数上调、档距指数化。
  * 只对 429 重试；超时/5xx/4xx 语义保持不变（一次即抛，避免拖长调用方预算）。
  */
-const MAX_429_RETRIES = 2;
-/** 429 后的退避基数：第 n 次失败等 n×400ms，并让后续调用一起排队等（全局冷却）。 */
-const RATE_LIMIT_BACKOFF_MS = 400;
+const MAX_429_RETRIES = 4;
+/** 429 退避基数：第 n 次失败等 base×2^n + 抖动，并让后续调用一起排队等（全局冷却）。 */
+const RATE_LIMIT_BACKOFF_BASE_MS = 1_000;
+/** 单档退避上限：避免第 5 档把调用方预算拖穿（base×2^4=16s，帽 30s 兜底）。 */
+const RATE_LIMIT_BACKOFF_MAX_MS = 30_000;
+/** 退避抖动上限（ms）：并发调用撞限后错峰重试，不再齐步走。 */
+const RATE_LIMIT_JITTER_MS = 250;
+/** 字符预算窗口（ms）。 */
+const CHARS_WINDOW_MS = 60_000;
 /** Default timeout per API call in milliseconds */
 const DEFAULT_API_TIMEOUT_MS = 10_000;
+
+/**
+ * 发车节流账本（2026-11-03）。
+ *
+ * 纯记账 + 查询，不 sleep（便于单测与假时钟）。规则：
+ * 1) 两次请求之间 ≥ paceMinIntervalMs；
+ * 2) 任意 60s 窗口内字符数 ≤ charsPerMinute（超额等到窗口结束）。
+ * 两项都缺省 0 = 不节流 = 逐位现状。
+ */
+export class EmbeddingPacer {
+  private readonly paceMs: number;
+  private readonly charsPerMinute: number;
+  private lastRequestAt = 0;
+  private windowStart = 0;
+  private windowChars = 0;
+
+  constructor(options: EmbeddingPaceOptions = {}) {
+    const pace = options.paceMinIntervalMs;
+    this.paceMs = typeof pace === "number" && Number.isFinite(pace) && pace > 0 ? Math.floor(pace) : 0;
+    const chars = options.charsPerMinute;
+    this.charsPerMinute = typeof chars === "number" && Number.isFinite(chars) && chars > 0 ? Math.floor(chars) : 0;
+  }
+
+  /** 现在发一发（带 chars 字符的批）还要等多久；0 = 立刻可发。不改账。 */
+  delayMs(now: number, chars: number): number {
+    let wait = 0;
+    if (this.paceMs > 0 && this.lastRequestAt > 0) {
+      wait = Math.max(0, this.paceMs - (now - this.lastRequestAt));
+    }
+    if (this.charsPerMinute > 0 && chars > 0) {
+      const at = now + wait;
+      const inWindow = at - this.windowStart < CHARS_WINDOW_MS;
+      if (inWindow && this.windowChars > 0 && this.windowChars + chars > this.charsPerMinute) {
+        wait = Math.max(wait, CHARS_WINDOW_MS - (at - this.windowStart));
+      }
+    }
+    return Math.max(0, Math.ceil(wait));
+  }
+
+  /** 记账：一次请求已在 now 发出，吃掉 chars 字符预算。 */
+  charge(now: number, chars: number): void {
+    this.lastRequestAt = now;
+    if (this.charsPerMinute <= 0) return;
+    if (this.windowChars === 0 || now - this.windowStart >= CHARS_WINDOW_MS) {
+      this.windowStart = now;
+      this.windowChars = 0;
+    }
+    this.windowChars += Math.max(0, chars);
+  }
+}
+
+export interface EmbeddingPaceOptions {
+  /** 两次请求之间的最小间隔（ms）；0/缺省 = 不节流。 */
+  paceMinIntervalMs?: number;
+  /** 60s 窗口字符预算；0/缺省 = 不限。 */
+  charsPerMinute?: number;
+}
+
+/** 解析 Retry-After（秒数或 HTTP 日期）；缺失/非法返回 undefined。 */
+function parseRetryAfterMs(header: string | null, now: number): number | undefined {
+  if (!header) return undefined;
+  const trimmed = header.trim();
+  if (!trimmed) return undefined;
+  const secs = Number(trimmed);
+  if (Number.isFinite(secs) && secs >= 0) return Math.ceil(secs * 1000);
+  const at = Date.parse(trimmed);
+  if (Number.isFinite(at)) return Math.max(0, at - now);
+  return undefined;
+}
 
 /**
  * Custom error class for embedding API errors that carries HTTP status code.
@@ -446,6 +532,8 @@ export class OpenAIEmbeddingService implements EmbeddingService {
   /** 429 全局冷却截止时刻（ms）：撞限后所有调用一起等待，避免继续撞枪口。 */
   private cooldownUntil = 0;
   private rateLimitHits = 0;
+  /** 2026-11-03：发车节流账本（两项都缺省关 = 逐位现状）。 */
+  private readonly pacer: EmbeddingPacer;
 
   constructor(config: OpenAIEmbeddingConfig, logger?: Logger) {
     if (!config.apiKey) {
@@ -474,6 +562,10 @@ export class OpenAIEmbeddingService implements EmbeddingService {
         ? Math.floor(config.maxBatchSize)
         : DEFAULT_MAX_BATCH_SIZE;
     this.maxBatchSize = Math.min(MAX_BATCH_SIZE_LIMIT, Math.max(1, rawBatch));
+    this.pacer = new EmbeddingPacer({
+      paceMinIntervalMs: config.paceMinIntervalMs,
+      charsPerMinute: config.charsPerMinute,
+    });
     this.logger = logger;
   }
 
@@ -595,10 +687,18 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     return text.slice(0, this.maxInputChars);
   }
 
-  /** 429 撞限：记一次并让全局冷却顺延（第 n 次失败等 n×400ms）。 */
-  private noteRateLimit(attempt: number): void {
+  /**
+   * 429 撞限：记一次并让全局冷却顺延。
+   *
+   * 2026-11-03（授权变更）：旧实现等 (attempt+1)×400ms，全部落在实测 ≥30–60s 的
+   * 惩罚窗内，重试形同虚设。现在 = 指数退避 base×2^attempt（1s/2s/4s/8s）+ 0–250ms
+   * 抖动；响应若带 Retry-After，则以其为下界（服务端说了算）。
+   */
+  private noteRateLimit(attempt: number, retryAfterMs?: number): void {
     this.rateLimitHits += 1;
-    const waitMs = RATE_LIMIT_BACKOFF_MS * (attempt + 1);
+    const backoff = Math.min(RATE_LIMIT_BACKOFF_MAX_MS, RATE_LIMIT_BACKOFF_BASE_MS * 2 ** attempt);
+    const jitter = Math.floor(Math.random() * RATE_LIMIT_JITTER_MS);
+    const waitMs = Math.max(backoff + jitter, retryAfterMs ?? 0);
     this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + waitMs);
     this.logger?.warn?.(
       `${TAG} rate limited (429), attempt ${attempt + 1}/${MAX_429_RETRIES + 1}; cooling down ${waitMs}ms`,
@@ -611,6 +711,19 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     if (waitMs <= 0) return;
     this.logger?.debug?.(`${TAG} waiting ${waitMs}ms for rate-limit cooldown`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  /**
+   * 2026-11-03：发车节流（间隔 + 字符预算），未配置时零开销直接返回。
+   * 记账在 wait 之后、fetch 之前完成，保证「已发出的请求」口径一致。
+   */
+  private async awaitPace(chars: number): Promise<void> {
+    const waitMs = this.pacer.delayMs(Date.now(), chars);
+    if (waitMs > 0) {
+      this.logger?.debug?.(`${TAG} pacing ${waitMs}ms (${chars} chars)`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    this.pacer.charge(Date.now(), chars);
   }
 
   /**
@@ -656,9 +769,13 @@ export class OpenAIEmbeddingService implements EmbeddingService {
     };
     // Retry loop: 429 有界重试 + 全局冷却；其余错误一次即抛（保持旧语义）
     let lastError: Error | undefined;
+    // 2026-11-03：本轮请求的字符数（发车节流记账用）
+    const inputChars = texts.reduce((n, t) => n + t.length, 0);
     for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
       // 撞限后所有调用（含 recall/backfill）一起排队等冷却过去，避免继续撞枪口
       await this.waitForCooldown();
+      // 冷却过后再按发车节流补齐间隔/字符预算（缺省关=零开销）
+      await this.awaitPace(inputChars);
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutOverride ?? this.timeoutMs);
@@ -678,9 +795,10 @@ export class OpenAIEmbeddingService implements EmbeddingService {
               resp.status,
             );
             if (resp.status === 429) {
-              // 只对 429 重试：等下一轮循环开头的冷却
+              // 只对 429 重试：等下一轮循环开头的冷却；
+              // 服务端若给 Retry-After，以其为退避下界（2026-11-03）
               lastError = err;
-              this.noteRateLimit(attempt);
+              this.noteRateLimit(attempt, parseRetryAfterMs(resp.headers?.get?.("retry-after") ?? null, Date.now()));
               if (attempt < MAX_429_RETRIES) continue;
             }
             throw err;

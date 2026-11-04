@@ -23,13 +23,15 @@
  * 复杂度（E2.2）：稀疏 Map 邻接表 + pprIterations × 边数 ≈ 万级运算，微秒级；零 LLM 调用。
  */
 
+import { LINK_TYPES } from "../store/types.js";
+
 /** 一条无向语义边（调用方已做租户过滤与 graphMinStrength 门槛）。 */
 export interface PPREdge {
   src: string;
   tgt: string;
   /** 边权 strength ∈ (0,1]（l1_links.strength）。 */
   strength: number;
-  /** 边型（causal/evolve/similar/…），供主导边类型标注。 */
+  /** 边型（受控词表见 store/types.ts 的 LINK_TYPES：derived_from/similar/part_of/conflict/evolve/evolved_from），供主导边类型标注。 */
   kind: string;
 }
 
@@ -49,8 +51,16 @@ export interface PPRDetail {
   kinds: Map<string, string>;
 }
 
-/** 边型优先序（R-A2 同款：causal/evolve 优先）——主导边类型并列时的确定性 tiebreak。 */
-export const pprKindRank = (kind: string): number => (kind === "causal" ? 0 : kind === "evolve" ? 1 : 2);
+/**
+ * 边型优先序（D 项 2026-11-04：按真实词表重排）——主导边类型并列时的确定性 tiebreak。
+ *
+ * 依据（生产 l1_links 实测分布，2026-11-04 两轮独立只读探针）：evolved_from = 同一事实的
+ * 新旧年代链，信号最强 → 最优(0)；conflict = 矛盾双方都保留、召回时最值得解释 → 次之(1)；
+ * 其余（derived_from / similar / part_of / evolve）与未知字面量一律 2。
+ * 历史 causal 特判已删（生产零存量、代码零写点，词表不含该值）。
+ */
+export const pprKindRank = (kind: string): number =>
+  (kind === LINK_TYPES.EVOLVED_FROM ? 0 : kind === LINK_TYPES.CONFLICT ? 1 : 2);
 
 /** PPR 默认参数（E2.1：damping 0.85 / topK 10 / 迭代 30）。 */
 export const PPR_DEFAULTS = { damping: 0.85, topK: 10, maxIterations: 30 } as const;
@@ -162,8 +172,8 @@ export function runPPR(seeds: Map<string, number>, edges: PPREdge[], opts: PPROp
 
 /**
  * runPPRDetail：runPPR + 主导边类型标注（一次迭代同时产出，保证两者来自同一分布）。
- * 主导边类型 = 该节点累积 received 质量最大的边型；并列时 causal < evolve < 其余，
- * 再按字典序（全序确定性，关断矩阵的确定性前提）。
+ * 主导边类型 = 该节点累积 received 质量最大的边型；并列时按 pprKindRank
+ * （evolved_from < conflict < 其余），再按字典序（全序确定性，关断矩阵的确定性前提）。
  */
 export function runPPRDetail(seeds: Map<string, number>, edges: PPREdge[], opts: PPROpts = {}): PPRDetail {
   const damping = typeof opts.damping === "number" && Number.isFinite(opts.damping)

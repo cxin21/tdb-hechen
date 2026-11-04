@@ -119,8 +119,8 @@ describe('directedEdgeType / isDirectedKind', () => {
     expect(isDirectedKind('conflict')).toBe(true);
   });
 
-  it('similar / causal / part_of / 未知类型 → line（颜色通道已承载语义）', () => {
-    for (const kind of ['similar', 'causal', 'part_of', '', 'unknown_x']) {
+  it('similar / derived_from / part_of / evolved_from / 未知类型 → line（颜色通道已承载语义）', () => {
+    for (const kind of ['similar', 'derived_from', 'part_of', 'evolved_from', '', 'unknown_x']) {
       expect(directedEdgeType(kind)).toBe('line');
       expect(isDirectedKind(kind)).toBe(false);
     }

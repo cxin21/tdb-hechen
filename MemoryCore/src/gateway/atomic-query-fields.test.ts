@@ -29,7 +29,10 @@ describe("D-0: /v3/atomic/query 出参补齐 7 字段", () => {
     expect(item.session_key).toBe("sk-1");
     expect(item.session_id).toBe("sess-1");
     expect(item.timestamp_str).toBe("2026-09-21");
-    expect(item.timestamp_start).toBe("2026-09-20");
+    // ADR-0025 C3：l1_records.timestamp_start 列已删（生产 4225/4225 与 timestamp_str 逐位相等）。
+    // 对外字段不能删（Kubb 生成 schema），值恒取 timestamp_str——即便老行残留 timestamp_start
+    // 与之不同（本 fixture 故意留 "2026-09-20"），也不许把它泄漏到 API 出参。
+    expect(item.timestamp_start).toBe("2026-09-21");
     expect(item.timestamp_end).toBe("2026-09-22");
   });
 
@@ -75,5 +78,36 @@ describe("D-0: /v3/atomic/search 出参补 scene_name/priority（搜索行类型
     const item = handleAtomicSearchShape({ id: "r3", content: "c3", type: "t", scene_name: "", priority: 50, score: 0 });
     expect(item.scene_name).toBeUndefined();
     expect(item.priority).toBe(50);
+  });
+});
+// ADR-0025 复核（2026-11-04）：importance 与行级溯源 source_message_ids 此前从未进入出参——
+// 面板属性表因此恒缺这两列（importance 甚至能改却不能看）。以下锁住「查询路/搜索路同口径」，
+// 且脏值/未评分不得伪造：importance NULL→undefined（0 不是「未评分」），坏 JSON→[] 不抛。
+describe("ADR-0025 复核：importance 与 source_message_ids 出参", () => {
+  const row = {
+    record_id: "r9", content: "c", type: "episodic", priority: 50,
+    importance: 7, source_message_ids: '["m1","m2"]',
+    created_time: "2026-11-04T00:00:00.000Z", updated_time: "2026-11-04T00:00:00.000Z",
+  };
+
+  it("查询路：importance 与溯源数组原样透传", () => {
+    const item = handleAtomicQueryShape(row);
+    expect(item.importance).toBe(7);
+    expect(item.source_message_ids).toEqual(["m1", "m2"]);
+  });
+
+  it("查询路：importance NULL→undefined、坏 JSON→[]（宁缺毋滥且不抛）", () => {
+    const item = handleAtomicQueryShape({ ...row, importance: null, source_message_ids: "not-json" });
+    expect(item.importance).toBeUndefined();
+    expect(item.source_message_ids).toEqual([]);
+  });
+
+  it("搜索路：同口径（含缺列老行 → importance undefined / 溯源 []）", () => {
+    const item = handleAtomicSearchShape({ ...row, id: "r9", score: 0.3 });
+    expect(item.importance).toBe(7);
+    expect(item.source_message_ids).toEqual(["m1", "m2"]);
+    const old = handleAtomicSearchShape({ id: "r10", content: "c", type: "t", scene_name: "s", priority: 50, score: 0 });
+    expect(old.importance).toBeUndefined();
+    expect(old.source_message_ids).toEqual([]);
   });
 });

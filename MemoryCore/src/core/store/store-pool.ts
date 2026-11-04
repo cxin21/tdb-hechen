@@ -271,6 +271,9 @@ export class StorePool {
         maxInputChars: embCfg.maxInputChars,
         // F3：单批条数上限随配置走（生产 ark 端点上限 10 → config 必须设 10）
         maxBatchSize: embCfg.maxBatchSize,
+          // 2026-11-03 发车节流（缺省 0 = 关 = 逐位现状）
+          paceMinIntervalMs: embCfg.paceMinIntervalMs,
+          charsPerMinute: embCfg.charsPerMinute,
       }, this.logger as StoreLogger);
     }
 

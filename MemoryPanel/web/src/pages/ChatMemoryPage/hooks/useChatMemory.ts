@@ -496,9 +496,14 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   // 跨 session 召回，返回带 score 的命中项；结果 state 交由 BlockDetail 管理，
   // 这里只提供请求函数（依赖当前选中块）。
   const searchLayer = useCallback(
-    async (targetLayer: 'L0' | 'L1', query: string): Promise<ChatMemorySearchHit[]> => {
+    async (
+      targetLayer: 'L0' | 'L1',
+      query: string,
+      type?: string,
+    ): Promise<ChatMemorySearchHit[]> => {
       if (!selected?.id) return [];
-      const res = await chatMemoryApi.searchLayer(selected.id, targetLayer, query, 30);
+      // type 仅 L1 有意义；undefined = 不过滤（BFF 只在非空时透传 type 条件）
+      const res = await chatMemoryApi.searchLayer(selected.id, targetLayer, query, 30, type);
       return res.items ?? [];
     },
     [selected?.id],

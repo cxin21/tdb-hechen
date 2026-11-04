@@ -22,7 +22,6 @@ export function mapLayerItem(i: ChatMemoryLayerItem) {
     valid_start: i.valid_start,
     valid_end: i.valid_end,
     certainty: i.certainty,
-    source: i.source,
     valence: i.valence,
     arousal: i.arousal,
     significance: i.significance,
@@ -44,6 +43,8 @@ export function mapLayerItem(i: ChatMemoryLayerItem) {
     sensitivity: i.sensitivity,
     // P1-T7：重要度透传（缺省 = 未评分 NULL）
     importance: i.importance,
+    // ADR-0025 复核：行级原话溯源透传（属性表「N 条」+ 查看原话抽屉的数据源）
+    source_message_ids: i.source_message_ids,
     // L1 metadata 透传（价值锚 coreRefs / 回忆统计 recall_count）
     metadata: i.metadata,
   };
