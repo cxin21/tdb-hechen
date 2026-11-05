@@ -297,7 +297,11 @@ export interface RecallConfig {
   maxTotalRecallChars: number;
   /** F-CLUSTER v2（2026-09-26 拍板）：召回注入行折叠（持续态优先+同文；缺省关=golden A/B 通过后拍板开启） */
   foldClusterEnabled?: boolean;
-  /** Minimum score threshold (default: 0.3) */
+  /**
+   * 余弦最低分门槛。缺省 **0 = 只按名次**（docs/optimization-results.md §28，2026-11-05：
+   * LME90 判对 81→83、turn_cov +1.1pp、nDCG +4.3pp、零回归）。语义门槛交给交叉编码器
+   * 精排 + maxResults；0.3 在大语料下会剪掉真证据。要回旧行为就设 0.3。
+   */
   scoreThreshold: number;
   /**
    * P0-2（issue #2 打分刻度错配）：native hybrid（TCVDB 服务端 RRF k=60）最低融合分
@@ -2408,7 +2412,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       })(),
       maxCharsPerMemory: num(recallGroup, "maxCharsPerMemory") ?? 0,
       maxTotalRecallChars: num(recallGroup, "maxTotalRecallChars") ?? 0,
-      scoreThreshold: num(recallGroup, "scoreThreshold") ?? 0.3,
+      // §28（2026-11-05）：缺省 0 = rank-only（余弦 0.3 是任意刻度、会剪证据）；门交给精排 + maxResults
+      scoreThreshold: num(recallGroup, "scoreThreshold") ?? 0,
       // P0-2（issue #2）：native RRF 共识门槛（缺省 undefined=关=逐位现状；负值=关）
       nativeMinRRF: num(recallGroup, "nativeMinRRF"),
       strategy: validateStrategy(str(recallGroup, "strategy")) ?? "hybrid",

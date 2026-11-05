@@ -2682,3 +2682,55 @@ cd MemoryCore && node --import tsx scripts/eval-memory-bench.mjs \
 **边界**：① 不显著，属工程取舍不是「已证明更优」；② `moodBoost` 需 L2 价值锚（`needValues`），沙箱库无锚 ⇒ 该档在 bench 近乎空转，生产效果未测；③ 无判对率/答案质量（`--gen-limit 0`）；④ 未用凭据打生产 `/v3/recall`；⑤ 明细见 [docs/research/2026-11-04-recall-weight-ab.md](research/2026-11-04-recall-weight-ab.md)。
 
 **教训**：复用旧沙箱库（1591 行那次）跑出的 base2 只有 7.8%，是库与数据集口径错配 —— A/B 必须**同一次灌库**的库。
+## §28 scoreThreshold 缺省翻转 0.3 → 0（rank-only，2026-11-05）
+
+**背景**：§25.5 的「无证据键」清单里，`recall.scoreThreshold = 0.3` 一直是余弦刻度上的**任意绝对值**——§19 已证明 rerank floor 的绝对门槛不可校准（改用题内相对尺子），而 0.3 从未在任何语料上验过「它剪掉的到底是噪声还是证据」。精排接上以后（§20/#145），语义门已由交叉编码器 + `maxResults` 承担，0.3 变成一道**静默剪候选**的硬阈值。本轮在同一沙箱库、同一命令下做生成档四臂对照，落值。
+
+**语料与库**：`longmemeval_oracle` 前 90 题 / 1591 轮；复用同一次灌库的沙箱库 `C:/Users/Administrator/AppData/Local/Temp/tdagemem-bench/lme90-fix-deep105`（`--store` 复用 + `--no-write-steps`，查询阶段零写入）。生成档 `--gen-limit 90`、`--prod-data .eval-data/bench/llm-shim-scm`（scm-flash 判分）。**臂间严格串行**，只改已有键（不新增配置项）。
+
+**实测**：
+
+| 臂 | 改动（相对基线） | 判对 | turn_cov@10 | MRR@10 | nDCG@10 | 注入行 | 块字符 | 召回 mean |
+|---|---|---|---|---|---|---|---|---|
+| A 基线 | 0.3 / pack off / time-sort off | 81/90 = 90.0% | 0.9215 | 0.7676 | 0.8299 | 8.02 | 10194 | 784ms |
+| **E（采纳）** | **scoreThreshold 0** | **83/90 = 92.2%** | **0.9326** | **0.7749** | **0.8730** | 8.89 | 11044 | 768ms |
+| C | threshold 0 + `evidencePack.enabled` | 80/90 = 89.9%（1 题未判分） | 0.9307 | — | — | 8.90 | 15737 | — |
+| D（作废） | threshold 0 + `injectTimeSort`（实为 threshold 0 + pack + 时间序） | 81/90 | — | — | — | 8.90 | 15727 | — |
+
+**报告归档**（原始 JSON，`genCorrect`/`gates`/`block` 全字段）：`MemoryCore/.eval-data/bench/rep28/genA-20261105-021929-c3b94031.json`、`genC-20261105-023349-47079f65.json`、`genD-20261105-023020-47079f65.json`（作废臂，留证）、`genE-20261105-024525-c3b94031.json`。
+
+**逐题配对（决定性证据）**：E vs A = **+2 / 0**。两胜：`157a136e`（多会话，pool 5→11 行、5→10 行、拒答→答对）、`gpt4_85da3956`（时间推理，pool 9→12、空答→答对）。零回归。C vs A 逐题 = +3 / −4（同一批题互有胜负 ⇒ 判对率打平），但块字符 +54%。
+
+**机制**：0.3 余弦门在长尾题上把**真证据**剪在融合之前（`pool.active` 被压到 4–9 行），而它剪掉的噪声本来就会被精排压到 `maxResults` 之外——门槛的位置放错了层（剪在召回而不是排在注入）。改成 rank-only 后池子回满（9→12），精排照常把无关行排掉，注入行只 +0.87、块字符 +8%。
+
+**决定**：
+1. `recall.scoreThreshold` 缺省 **0.3 → 0**（rank-only）；语义门交给精排 + `maxResults`。
+2. `evidencePack` 保持缺省关（C 臂：块字符 +54%、判对 −1 题；证据包在 `maxCharsPerMemory=0/maxTotalRecallChars=0` 的字符预算未启用档下只多 0.9 行却付同会话噪声轮代价）。归口 #169，不因本轮改判。
+3. `injectTimeSort` 保持缺省关（D 臂读数被污染、不可用；且 §25 判该分支两条基线等价）。
+
+**改动清单**（代码 3 处 + 配置 4 处 + 契约测试 1 条）：
+- `MemoryCore/src/config.ts:300-306`（类型注释）、`:2411-2412`（`?? 0`）
+- `MemoryCore/src/core/hooks/auto-recall.ts:3344-3345`（`?? 0`）、`:4113-4116`（向量腿过滤注释）
+- `MemoryCore/tdai-gateway.yaml:158` / `deploy/global-images/tdai-gateway.base.yaml:160` / `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml:141` / `config/templates/memorycore.yaml:192`（`scoreThreshold: 0`）
+- `MemoryCore/src/config/__tests__/config.recall-defaults.test.ts` ⑦ 缺省断言（`parseConfig({}).recall.scoreThreshold === 0`）+ 显式 0.3 回滚路径
+- **工具路同源对齐**：`MemoryCore/src/core/tools/memory-search.ts:1103` 函数缺省 0.3→0，并在 `MemoryCore/src/core/tdai-core.ts:505` 与 `MemoryCore/src/gateway/v2-router.ts:2039` 透传 `cfg.recall.scoreThreshold`（此前该路**根本不吃配置** ⇒ 同一份 yaml 在钩子路与工具路给出不同候选池，与 #151「同配置两路分叉」同类）；契约测试 `MemoryCore/src/core/tools/__tests__/memory-search-score-threshold.test.ts`（不传=不剪 / 显式 0.3=回滚）
+
+**回滚**：把 `scoreThreshold` 设回 `0.3`（yaml 或代码），单值一行，无迁移、无 schema 变化。
+
+**复现命令**（生成档，检索档把 `--gen-limit 90` 换 `0` 并去掉 `--prod-data`）：
+```
+cd D:/TDB/td-agemem/MemoryCore && node --import tsx scripts/eval-memory-bench.mjs \
+  --dataset longmemeval --manifest .eval-data/bench/lme-manifest.json \
+  --store C:/Users/Administrator/AppData/Local/Temp/tdagemem-bench/lme90-fix-deep105 \
+  --no-write-steps --gen-limit 90 --recall-max-results 10 --rerank-candidates 32 \
+  --rerank-minscore -10.5 --candidate-k 32 --rerank-on --currency-prompt --pref-prompt \
+  --pace 150 --prod-data .eval-data/bench/llm-shim-scm --out <abs-dir> --report-name <name> --tag <name> --quiet
+```
+
+**边界**：① n=90 单语料、单判分器（scm-flash）：+2.2pp 判对**统计不显著**，证据强度来自「2 胜 0 负 + 全指标同向（turn_cov/MRR/nDCG 齐升）+ 机制可解释」，不是 p 值；② 90 题检索侧已接近饱和（§25：88/90 题 sessionCov@10 == @5），更大的收益要靠扩样本才能显现；③ 未用生产凭据打 `/v3/recall`，生效需按 §26/生产口径另行复核；④ 本轮不开 rerank 子进程（`--rerank-child-proc` 的 RECYCLE_AFTER=4 会让精排静默失效）；⑤ **工具路（`tdai_memory_search` / `/v3/atomic/search`）的对齐没有单独 A/B**——它此前根本不读 `cfg.recall.scoreThreshold`（函数缺省 0.3），本轮为「同一份配置一条算法」把它接到同一键并同步缺省；依据是机制同构（同一余弦门、同一融合前位置），收益**不单独声称**，只以契约测试锁定「不传=不剪 / 显式 0.3=回滚」；⑥ 写侧 `MIN_SIMILAR_STRENGTH = 0.3`（`MemoryCore/src/core/record/l1-dedup.ts:57`）是建边门槛、**不随**本次翻转（已改注释说明无耦合）。
+
+**教训（方法论，务必写进下次跑批的 SOP）**：
+1. **同一 store 的臂必须串行**。bench 的沙箱配置是「每个 store 目录一份 `bench-gateway.yaml`」(`scripts/lib/bench/store.mjs:152/170` 每次运行按 prod yaml + 参数**重写**它，`loadBenchConfig` 再读它)——并发跑两臂时后写者污染先跑者，读数与命令行不符（D 臂即如此作废）。判据：报告里 `gates.evidencePack.enabled` / `injectedLines` 与命令行不一致就是被污染。
+2. `genCorrect` 字段是 **number 1/0**，不是布尔（`Number(r.genCorrect) === 1`）。
+3. 判「命令行是否生效」要看 `gates.*` 与 `lineTypeStats`，不要看命令行本身。
+

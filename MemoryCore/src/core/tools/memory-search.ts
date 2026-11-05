@@ -1100,7 +1100,10 @@ export async function executeMemorySearch(params: {
     type: typeFilter,
     scene: sceneFilter,
     filter: isolationFilter,
-    scoreThreshold = 0.3,
+    // §28（2026-11-05）：余弦门槛缺省 0 = rank-only（与 auto-recall 钩子路同源）。
+    // 两条调用路（tdai-core / v2-router）已透传 cfg.recall.scoreThreshold；未传时回落 0。
+    // 旧缺省 0.3 是余弦刻度上的任意绝对值，会在融合前剪掉真证据（§28 实测 判对 81→83）。
+    scoreThreshold = 0,
     // P0-2（issue #2）：native RRF 共识门槛（缺省 0=关=逐位现状）
     nativeMinRRF = 0,
     vectorStore,

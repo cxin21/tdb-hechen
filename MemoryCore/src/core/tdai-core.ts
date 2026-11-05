@@ -500,6 +500,9 @@ export class TdaiCore {
       vectorStore: this.vectorStore,
       embeddingService: this.embeddingService,
       logger: this.logger,
+      // §28（2026-11-05）：余弦门槛与钩子路**同源**透传（缺省 0 = rank-only）。此前工具路
+      // 用独立函数缺省 0.3 ⇒ 同一份 yaml 在两条召回路给出不同候选池（#151 同类分叉）。
+      scoreThreshold: this.cfg?.recall?.scoreThreshold,
       // C1（灵魂记忆 spec §2.2）：coreRef 排序加成配置透传（缺省由 executeMemorySearch
       // 内部回落 0.05）；价值锚由 executeMemorySearch 从 store.listValues 租户读取
       coreRefBoost: this.cfg?.recall?.coreRefBoost,

@@ -50,7 +50,9 @@ function warnLegacyCountFallbackOnce(logger: Logger | undefined): void {
  * similar 边最低相似度门槛（审查 I-1 修补）。
  * score = 1 - cosine distance，可为负；低于此值（含 clamp 后为 0）的 "similar"
  * 关系是假关系，污染记忆图与邻居扩展——宁缺毋滥，不建边。
- * 与 memory.recall.scoreThreshold 默认 0.3 对齐。
+ * 与 recall.scoreThreshold 的**旧**缺省 0.3 同值（巧合，不是耦合）：§28（2026-11-05）起
+ * recall.scoreThreshold 缺省 0 = rank-only，而本常量是**写侧建边**门槛（假关系不进记忆图），
+ * 语义独立、读数独立，不随召回的 rank-only 翻转而变。
  * S1（T9 裁决待办收口）：常量保留为 DEFAULT——memory.links.minSimilarity 配置化后，
  * batchDedup/attachTopCandidates 经参数消费配置值，缺省回落此常量（行为逐位不变）。
  */

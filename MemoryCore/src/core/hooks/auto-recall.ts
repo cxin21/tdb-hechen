@@ -3341,7 +3341,8 @@ async function searchMemories(
   }
 
   const maxResults = cfg.recall.maxResults ?? 10;
-  const threshold = cfg.recall.scoreThreshold ?? 0.3;
+  // §28（2026-11-05）：缺省 0 = rank-only，与 config.ts 解析缺省保持一致
+  const threshold = cfg.recall.scoreThreshold ?? 0;
 
   const embeddingAvailable = !!vectorStore && !!embeddingService;
 
@@ -4110,8 +4111,9 @@ export async function searchHybrid(
   }
 
   const keywordResults = keywordResult.records;
-  // L1 向量分是 cosine（0–1，绝对可比）：低于阈值（scoreThreshold，默认 0.3）的候选
-  // 不进 RRF 融合——修掉"排名即注入"（原 `_threshold` 被忽略、低相关也进）。宁缺毋滥。
+  // L1 向量分是 cosine（0–1，绝对可比）：低于阈值（scoreThreshold，缺省 0 = 不剪）的候选
+  // 不进 RRF 融合。缺省 0 的依据见 docs/optimization-results.md §28（LME90 上 0.3 剪掉真
+  // 证据：判对 81→83、零回归）；恢复旧行为把 scoreThreshold 设回 0.3 即可。
   const embeddingResults = embeddingResult.results.filter((r) => r.score >= threshold);
   // #137：事实通道候选——余弦下限（缺省回落 scoreThreshold）、类型门（onlyForTypes）、
   // 同 id 去重留最高分（store 已按距离排序，这里只做防御性归并）。

@@ -2036,6 +2036,9 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     fusion: (deps as { config?: { memory?: { recall?: { fusion?: RecallFusionConfig } } } }).config?.memory?.recall?.fusion,
     validitySoftPenalty: (deps as { config?: { memory?: { recall?: { validity?: { softPenalty?: number } } } } }).config?.memory?.recall?.validity?.softPenalty,
     factChannel: (deps as { config?: { memory?: { recall?: { factChannel?: RecallFactChannelConfig } } } }).config?.memory?.recall?.factChannel,
+    // §28（2026-11-05）：余弦门槛同源透传（缺省 0 = rank-only）——此前该路吃函数缺省 0.3，
+    // 与钩子路候选池不一致（#151 同款「同配置两路分叉」）。
+    scoreThreshold: (deps as { config?: { memory?: { recall?: { scoreThreshold?: number } } } }).config?.memory?.recall?.scoreThreshold,
     // A5：time_point 时间旅行（handleRecall 同款语义）
     validityNow,
     // GROW-EVO P3 R10（§3.2）：情感显著度权重（cfg 透传——缺省 0 = 恒等）

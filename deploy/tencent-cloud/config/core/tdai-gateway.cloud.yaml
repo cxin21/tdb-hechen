@@ -138,7 +138,8 @@ memory:
     # 在 k=5 已饱和 ⇒ 收益只在 turn 级。代价：注入块均值 blockChars 3277→5413（+65%，
     # 仍 <14000 上限）、时延与 token 上升；前 5 位排序反而略差（多出的行挤占 top-5）。
     maxResults: 10
-    scoreThreshold: 0.3
+    # §28（2026-11-05）：0 = rank-only（0.3 剪真证据，LME90 判对 81→83 零回归）；回滚=0.3
+    scoreThreshold: 0
     # ── P0-2（issue #2 打分刻度错配，2026-10-13）──
     # native hybrid（TCVDB 服务端 RRF rerank k=60）返回 rank-only 融合分：单通道 top1≈
     # 1/61≈0.0164、双通道 top1≈0.0328（刻度自证 verify-t1.ts:202-203）——scoreThreshold

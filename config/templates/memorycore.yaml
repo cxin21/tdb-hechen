@@ -189,7 +189,7 @@ memory:
       onlyForTypes: null  # list<str> default=unset — 仅这些 memory type 走事实通道（不写=所有类型） [src:config.ts:2131]
     maxCharsPerMemory: 0  # int default=0 — 单条记忆注入字符上限；0=不限制 [src:config.ts:2140]
     maxTotalRecallChars: 0  # int default=0 — 注入块总字符上限；0=不限制 [src:config.ts:2141]
-    scoreThreshold: 0.3  # float default=0.3 — 余弦刻度最低分门槛（native hybrid RRF 路另有 nativeMinRRF） [src:config.ts:2142]
+    scoreThreshold: 0  # float default=0 — 余弦最低分门槛；0=rank-only（§28：0.3 剪真证据，LME90 判对 81→83 零回归；回滚=0.3）。native hybrid RRF 路另有 nativeMinRRF [src:config.ts:2411]
     nativeMinRRF: null  # float default=unset — native 混合检索的 RRF 共识门槛（不写=关；负值=关；只在多路命中时保留） [src:config.ts:2144]
     strategy: "hybrid"  # enum(embedding|keyword|hybrid) default="hybrid" — 召回策略；hybrid=向量+BM25 双路 RRF（embedding 故障自动退化 FTS）；非法值回落 hybrid [src:config.ts:2145]
     timeoutMs: 5000  # ms default=5000 — 单次召回超时毫秒（embedding 专用超时另见 embedding.recallTimeoutMs） [src:config.ts:2146]

@@ -84,4 +84,14 @@ describe("config: recall 缺省档（WP1b）", () => {
     expect(on.enabled).toBe(true);
     expect(on.adjacent).toBe(3);
   });
+
+  it("⑦ scoreThreshold 缺省 0 = rank-only；显式 0.3 可回滚（§28）", () => {
+    // §28（2026-11-05）：LME90 生成档 0.3→0 判对 81→83、turn_cov +1.1pp、零回归；
+    // 余弦 0.3 是任意刻度、会剪掉真证据，门交给精排 + maxResults。
+    expect(parseConfig({}).recall.scoreThreshold).toBe(0);
+    expect(parseConfig({ recall: {} }).recall.scoreThreshold).toBe(0);
+    // 回滚路径仍在：显式 0.3 逐位生效（不改可配性）
+    expect(parseConfig({ recall: { scoreThreshold: 0.3 } }).recall.scoreThreshold).toBe(0.3);
+    expect(parseConfig({ recall: { scoreThreshold: 0.55 } }).recall.scoreThreshold).toBe(0.55);
+  });
 });

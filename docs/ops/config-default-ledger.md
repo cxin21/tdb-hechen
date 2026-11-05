@@ -3,7 +3,7 @@
 - 状态：登记完成（2026-10-31 首版）；**2026-11-01 全表行号与缺省值按工作树重核一遍**（收口记录见 `docs/ops/defaults-drift-closeout.md`）。**本表只登记，不重新裁决**——裁决已有出处，见"证据"列。
 - 上位依据：`docs/audit/2026-10-31-open-issues-first-principles.md` §4.5 #154 行、M5/M6/M9；`docs/optimization-results.md` §21.3 台账、§19.3、§8
 - 配套：回滚动作与演练流程见 `docs/ops/rollback-drill.md`（#149）
-- 覆盖范围：`recall.rerank.*`、`recall.candidateK`、`recall.fusion.mode`、`recall.factChannel.enabled`、`recall.presentTemporal`、`recall.validity.mode`、`recall.smallToBig.*`、`write.factKey.*`、`write.supersession.*`；WP1b 追加 `recall.maxResults`、`recall.injectWrapper`、`recall.evidencePack.*`、`recall.graphDiscount`/`sceneBoost`/`coreRefBoost`
+- 覆盖范围：`recall.rerank.*`、`recall.candidateK`、`recall.fusion.mode`、`recall.factChannel.enabled`、`recall.presentTemporal`、`recall.validity.mode`、`recall.smallToBig.*`、`write.factKey.*`、`write.supersession.*`；WP1b 追加 `recall.maxResults`、`recall.injectWrapper`、`recall.evidencePack.*`、`recall.graphDiscount`/`sceneBoost`/`coreRefBoost`、`recall.scoreThreshold`（2026-11-05 §28 追加）
 
 ## 0. 先说清"谁说了算"：三套真源并存，分别是三件事
 
@@ -59,7 +59,8 @@
 | 7 | `recall.graphDiscount` / `recall.sceneBoost` / `recall.coreRefBoost` | **WP1b 改代码缺省统一 0**（原 0.6 / 0.04 / 0.05）；解析缺省 `MemoryCore/src/config.ts:2226`（graphDiscount）/ `:2227`（sceneBoost）/ `:2187`（coreRefBoost）；消费点 `MemoryCore/src/core/hooks/auto-recall.ts:1722` / `:1724` / `:1683`；三份 yaml 显式 0（本地 `:187-189`、cloud `:194-196`、base `:217-219`） | — | **0 = 关，不得用 delete 关档**：删键会让 0.6/0.04/0.05 复活（旧缺省，`config.ts:230` 明写）；要重开必须显式非 0 + 新读数 |
 | 8 | `recall.maxResults` | 代码缺省 **10**（`MemoryCore/src/config.ts:2138`；依据 `docs/optimization-results.md` §24/§25.6：k=10 判对 +4.5pp、与口径合用 +10.1pp）；**三处已对齐 10**（本地 `:135`、cloud `:140`、base `:159`；2026-10-31 落地，代价 blockChars 3277→5413 仍 <14000） | 线上需重装/重启才吃到新值（**无热加载**） | 代码缺省=生产最优；yaml 钉子与缺省同值 ⇒ 防漂移 |
 | 9 | `recall.injectWrapper` | 代码缺省 **calibrated**（`MemoryCore/src/config.ts:2305` → `MemoryCore/src/core/recall/inject-wrapper.ts:20` 的 `INJECT_WRAPPER_DEFAULT`）；生产两档已显式 `calibrated`（base `:293`、cloud `:178`）= 防漂移钉、不是新行为；本地 yaml 未写（吃缺省） | 回滚：yaml 显式 `injectWrapper: legacy`（bench `--inject-wrapper legacy` 同样生效） | #172-② 口径：不诱导拒答、不写「仅作参考」；legacy 保留为显式回滚档 |
-| 10 | `recall.evidencePack.*` | 代码缺省 **enabled:false**（`MemoryCore/src/config.ts:2307` 起、`MemoryCore/src/core/recall/evidence-pack.ts`）；生产两档已显式 `false`（base `:282`、cloud `:242`）；键、`gates.evidencePack` 观测（`auto-recall.ts:2176`）、四档脚本 `MemoryCore/scripts/run-r169-evidence-pack.sh` 齐备 | run-r169 四档真实读数（本地/深池配对） | **归口 #169**：缺省关 = 等读数，不是否决；读数出来再翻转 |
+| 10 | `recall.evidencePack.*` | 代码缺省 **enabled:false**（`MemoryCore/src/config.ts:2307` 起、`MemoryCore/src/core/recall/evidence-pack.ts`）；生产两档已显式 `false`（base `:282`、cloud `:242`）；键、`gates.evidencePack` 观测（`auto-recall.ts:2176`）、四档脚本 `MemoryCore/scripts/run-r169-evidence-pack.sh` 齐备 | run-r169 四档真实读数（本地/深池配对） | **归口 #169**：缺省关 = 等读数，不是否决；读数出来再翻转。**2026-11-05 追加读数（§28 C 臂）：开启后判对 80/90（基线 81）、块字符 +54% ⇒ 仍不翻转，维持关** |
+| 11 | `recall.scoreThreshold` | **2026-11-05 缺省 0.3 → 0（rank-only）**：解析 `MemoryCore/src/config.ts:2411`（`?? 0`）+ 类型注释 `:300-306`；消费点 `MemoryCore/src/core/hooks/auto-recall.ts:3344`（`?? 0`）与向量腿过滤 `:4113-4116`；四处已显式 `0`（本地 `MemoryCore/tdai-gateway.yaml:158`、base `deploy/global-images/tdai-gateway.base.yaml:160`、cloud `deploy/tencent-cloud/config/core/tdai-gateway.cloud.yaml:141`、模板 `config/templates/memorycore.yaml:192`）；契约测试 `MemoryCore/src/config/__tests__/config.recall-defaults.test.ts` ⑦ | 证据 `docs/optimization-results.md` §28（同库串行四臂：0.3→0 判对 81→83、turn_cov 0.9215→0.9326、nDCG +4.3pp、逐题 +2/0、块字符 +8%） | 回滚 = 代码与三处 yaml 设回 `0.3`（单值、无迁移、无 schema）；**线上需重启才吃到（无热加载）**；n=90 显著不足，属方向性工程取舍 |
 
 ## 4. 复查方式（任何人可复跑）
 

@@ -44,16 +44,20 @@ describe("D-3: sensitivity 不进遗忘打分（sensitivityBias 死乘子已删�
     created_time: new Date(Date.now() - 40 * 86400_000).toISOString(), metadata: {},
   };
   const cfg = { lambda: 0.01, lowThreshold: 0.12, arousalRetention: 0.3 };
+  // 2026-11-05 修 flake：scoreFor 的 now 缺省是 Date.now()（src/core/lifecycle/forgetting/scorer.ts:180），
+  // 两次调用若跨毫秒边界，ageDays 微差经 exp 衰减放大成 1e-11 级差异，toBe 位相等会偶发失败。
+  // 这里钉死 now，使「逐位相同」的断言真正只检验「sensitivity 不进公式」。
+  const NOW = 1_762_300_000_000;
 
   it("sensitivity=none 与 sensitivity=health 的分数逐位相同（属性不参与衰减公式）", () => {
-    const noneRow = scoreFor({ ...base, sensitivity: "none" } as never, cfg as never);
-    const healthRow = scoreFor({ ...base, sensitivity: "health" } as never, cfg as never);
+    const noneRow = scoreFor({ ...base, sensitivity: "none" } as never, cfg as never, NOW);
+    const healthRow = scoreFor({ ...base, sensitivity: "health" } as never, cfg as never, NOW);
     expect(healthRow).toBe(noneRow);
   });
 
   it("遗留 sensitivityBias 配置键不再有任何效果（不降分、不 throw）", () => {
-    const plain = scoreFor({ ...base, sensitivity: "health" } as never, cfg as never);
-    const legacy = scoreFor({ ...base, sensitivity: "health" } as never, { ...cfg, sensitivityBias: 0.5 } as never);
+    const plain = scoreFor({ ...base, sensitivity: "health" } as never, cfg as never, NOW);
+    const legacy = scoreFor({ ...base, sensitivity: "health" } as never, { ...cfg, sensitivityBias: 0.5 } as never, NOW);
     expect(legacy).toBe(plain);
   });
 });
