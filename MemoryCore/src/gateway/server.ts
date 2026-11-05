@@ -2239,7 +2239,10 @@ export class TdaiGateway {
             characterTension: this.config.memory?.coreMemory?.characterTension,
             // P4b（GROW-EVO §4）：evolution 配置接线（config-first：memory.evolution.enabled
             // 缺省 false；LLM runner 缺失时 worker 内部安静跳过，无需在此门控）。
-            evolution: this.config.memory?.evolution } as never,
+            evolution: this.config.memory?.evolution,
+            // 自维护人格层（m00527）：coreMemory.soulMaintenance 接线（FLOW-E 同款教训——
+            // 不接线即死配置）。enabled 缺省 false，缺省逐位现状。
+            soulMaintenance: this.config.memory?.coreMemory?.soulMaintenance } as never,
           // GROW（价值锚自生长）：护栏配置从 memory.coreMemory.anchorDiscovery 接线
           //（解析+clamp+默认在 parseConfig；LLM 缺失时 anchor-growth 内部安静跳过）。
 

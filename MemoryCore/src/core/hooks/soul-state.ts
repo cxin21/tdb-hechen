@@ -74,3 +74,15 @@ export function renderStateLine(state: SoulState | null | undefined): string {
   const top = s.topValue?.trim() || "";
   return top ? `${head}眼下最想推进的是${top}。` : head;
 }
+
+/**
+ * 只渲染「眼下最想推进的是X」这一句（无 topValue → ""）。
+ * 自维护人格层（m00527）上线后，情绪由「与基线比的连续读数」（renderMoodLine）承载；
+ * 此时绝对档位句（此刻心里…状态…）再并列会出现两套互相矛盾的情绪自述
+ *（实测：「近期心境：比基线平稳、更绷紧。」+「此刻心里平稳，状态平稳安定。」），
+ * 而 topValue 是「意图」不是「情绪」，不该跟着一起被压掉。
+ */
+export function renderStateIntent(state: SoulState | null | undefined): string {
+  const top = state?.topValue?.trim() || "";
+  return top ? `眼下最想推进的是${top}。` : "";
+}

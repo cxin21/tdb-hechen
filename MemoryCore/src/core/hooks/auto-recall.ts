@@ -2557,6 +2557,18 @@ export async function performLayeredRecall(params: {
         //（渲染不消费，保留状态时刻）。红线 R-A 同款：state 只进 soul 前缀渲染与进程内 cacheKey，
         // 不参与 soulVersion 指纹（soul-assembler 指纹隔离）与任何召回排序。
         let soulState: SoulState | undefined;
+        let soulMoodState:
+          | {
+              valence: number;
+              arousal: number;
+              baselineValence: number;
+              baselineArousal: number;
+              updatedAt: string;
+              sampleCount: number;
+              // 心境原因（2026-11-05）：对象/标签/衰减后强度，注入侧据此说「因为谁、多强」。
+              emotion?: { object: string; label: string; intensity: number; at: string };
+            }
+          | undefined;
         const stateStore = vectorStore;
         if (stateStore && typeof stateStore.readSoulState === "function") {
           try {
@@ -2572,6 +2584,20 @@ export async function performLayeredRecall(params: {
                 ...(row.topValue != null ? { topValue: row.topValue } : {}),
                 ...(row.turnSeq != null ? { turnSeq: row.turnSeq } : {}),
                 ...(row.updatedAt ? { at: row.updatedAt } : {}),
+              };
+              // m00527 心境：与三档 moodTier 不同，这是「与基线比」的连续读数。旧行无基线列
+              // 时按缺省基线（0/0.3）读——不给虚假偏移，读出来就是「接近基线」。
+              soulMoodState = {
+                valence: row.valence,
+                arousal: row.arousal,
+                baselineValence: typeof row.baselineValence === "number" ? row.baselineValence : 0,
+                baselineArousal: typeof row.baselineArousal === "number" ? row.baselineArousal : 0.3,
+                updatedAt: row.updatedAt ?? new Date().toISOString(),
+                sampleCount: row.sampleCount ?? 0,
+                // 四列齐备才作为原因喂入：缺一行（旧库/旧 worker）就只写偏移，不半截解释。
+                ...(row.emotionObject && row.emotionLabel && typeof row.emotionIntensity === "number" && row.emotionAt
+                  ? { emotion: { object: row.emotionObject, label: row.emotionLabel, intensity: row.emotionIntensity, at: row.emotionAt } }
+                  : {}),
               };
             }
           } catch (err) {
@@ -2625,6 +2651,12 @@ export async function performLayeredRecall(params: {
             // T3（未来性渲染面，T6-F1 接线 2026-10-17）：承诺块渲染门——config 门透传
             //（soulRender.promises.enabled 缺省 false=零渲染零查询=逐位现状）。
             promisesEnabled: cfg.coreMemory?.soulRender?.promises?.enabled === true,
+            // 自维护人格层（m00527）：soul_persona 注入门 + 配置 + 心境读数。
+            // 缺省 false=零查询零渲染=逐位现状（老库无 soul_persona 表也安全）。
+            soulPersonaEnabled: cfg.coreMemory?.soulMaintenance?.enabled === true,
+            soulMaintenance: cfg.coreMemory?.soulMaintenance,
+            // 心境：soul_state 的连续读数（与 moodTier 三档二选一，soulMood 在场时优先）。
+            ...(soulMoodState ? { soulMood: soulMoodState } : {}),
           },
           soulMeta,
         );

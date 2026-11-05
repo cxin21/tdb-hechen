@@ -410,10 +410,14 @@ describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（
       });
       const res = await recallLayered(store, "状态接线探针", "sk-state-1", 1);
       expect(res).toBeDefined();
-      // renderStateLine 逐字合同（呈现层翻修 m00227）：叙事散文，数值留代码层——
-      // 0.592≥0.25 且 <0.6 → 心里偏顺遂；0.2<0.493<0.6 → 状态平稳安定；topValue=定案
-      // → 「眼下最想推进的是定案」子句（全文案 soul-state.ts valencePhrase/arousalPhrase）
-      expect(res?.block ?? "").toContain("此刻心里偏顺遂，状态平稳安定。眼下最想推进的是定案。");
+      // 接线合同：readSoulState → opts.state 必须真的进块。m00527 之后情绪由「与基线比的
+      // 连续心境」（renderMoodLine）承载，绝对档位句（此刻心里…）不再并列——否则模型读到
+      // 两套互相矛盾的情绪自述（实测「比基线更绷紧」+「状态平稳安定」）。topValue 是意图，
+      // 单独保留，所以这里断言「心境行 + 意图子句都在、绝对档位句不在」。
+      const block = res?.block ?? "";
+      expect(block).toContain("眼下最想推进的是定案。");
+      expect(block).toMatch(/近期心境：/);
+      expect(block).not.toContain("此刻心里");
     } finally {
       cleanup(store, dir);
     }

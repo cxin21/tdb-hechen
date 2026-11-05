@@ -17,6 +17,13 @@ import { DEFAULT_RERANK_CANDIDATES, defaultRerankMinScore } from "./core/recall/
 import { parseUnknownPrincipalPolicy } from "./gateway/auth-binding.js";
 import { normalizeTeamOwnershipWhitelist, parseTeamOwnershipMode } from "./gateway/team-ownership.js";
 import { injectWrapperModeOf, type InjectWrapperMode } from "./core/recall/inject-wrapper.js";
+import {
+  DEFAULT_SOUL_MAINTENANCE_CONFIG,
+  resolveSoulConfig,
+  SOUL_LAYERS,
+  type SoulLayer,
+  type SoulMaintenanceConfig,
+} from "./core/soul/types.js";
 import { DEFAULT_IGNORE_SESSION_PATTERNS } from "./utils/session-ignore.js";
 
 // ============================
@@ -1053,6 +1060,9 @@ export interface MemoryCoreMemoryConfig {
      *  escapeXmlTags 同级消毒；宁缺毋滥：零 open 整块省略）。 */
     promises: { enabled: boolean };
   };
+  /** 自维护人格层（2026-11-05）：缺省 enabled=false=逐位现状；开启后以 <soul-persona>
+   *  段注入，且后台整合按判据自动维护（只增不减、账本可回滚）。 */
+  soulMaintenance: SoulMaintenanceConfig;
 }
 
 /** task-73（core wiki 薄转发）团队归属校验档位。 */
@@ -1957,6 +1967,57 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
             ((g as Record<string, unknown>)["promises"] as Record<string, unknown> | undefined)?.["enabled"] === true,
         },
       };
+    })(),
+    // 自维护人格层（2026-11-05）：缺省 enabled=false=逐位现状；显式 true 才注入 <soul-persona>
+    // 并启用后台整合。形状错一律回退缺省（沿 capabilities/promises 解析先例）。
+    soulMaintenance: (() => {
+      const g = obj(coreMemoryGroup, "soulMaintenance");
+      const base = DEFAULT_SOUL_MAINTENANCE_CONFIG;
+      const n = (key: string, dflt: number, lo: number, hi: number) => {
+        const raw = num(g, key);
+        return raw === undefined || !Number.isFinite(raw) ? dflt : Math.min(hi, Math.max(lo, raw));
+      };
+      const perLayer = (
+        group: "budget" | "maxItems" | "maxItemChars",
+        dflt: Record<SoulLayer, number>,
+        lo: number,
+        hi: number,
+      ): Record<SoulLayer, number> => {
+        const sub = obj(g, group);
+        const out = { ...dflt };
+        for (const layer of SOUL_LAYERS) {
+          const raw = num(sub, layer);
+          if (raw !== undefined && Number.isFinite(raw)) out[layer] = Math.min(hi, Math.max(lo, Math.floor(raw)));
+        }
+        return out;
+      };
+      return resolveSoulConfig({
+        enabled: g?.["enabled"] === true,
+        updateIntervalHours: n("updateIntervalHours", base.updateIntervalHours, 1, 168),
+        maxUpdatedPerCycle: n("maxUpdatedPerCycle", base.maxUpdatedPerCycle, 1, 20),
+        alpha: n("alpha", base.alpha, 0, 0.5),
+        windowDays: n("windowDays", base.windowDays, 1, 90),
+        windowRewrites: n("windowRewrites", base.windowRewrites, 1, 10),
+        degradeAfterDays: n("degradeAfterDays", base.degradeAfterDays, 1, 365),
+        freezeAfterDays: n("freezeAfterDays", base.freezeAfterDays, 1, 730),
+        degradeWeightFactor: n("degradeWeightFactor", base.degradeWeightFactor, 0.1, 1),
+        freezeContradictions: n("freezeContradictions", base.freezeContradictions, 1, 10),
+        mergeSimilarity: n("mergeSimilarity", base.mergeSimilarity, 0.5, 1),
+        driftDegrade: n("driftDegrade", base.driftDegrade, 0.3, 1),
+        driftFreeze: n("driftFreeze", base.driftFreeze, 0.1, 1),
+        driftConsecutive: n("driftConsecutive", base.driftConsecutive, 1, 30),
+        minEvidence: n("minEvidence", base.minEvidence, 1, 10),
+        maxSoulEvidenceShare: n("maxSoulEvidenceShare", base.maxSoulEvidenceShare, 0, 1),
+        verbatimMinChars: n("verbatimMinChars", base.verbatimMinChars, 4, 40),
+        redlineMaxChars: n("redlineMaxChars", base.redlineMaxChars, 20, 400),
+        emotionHalfLifeHours: n("emotionHalfLifeHours", base.emotionHalfLifeHours, 0.5, 72),
+        moodHalfLifeHours: n("moodHalfLifeHours", base.moodHalfLifeHours, 1, 24 * 14),
+        moodDeviationThreshold: n("moodDeviationThreshold", base.moodDeviationThreshold, 0.01, 1),
+        personName: str(g, "personName")?.trim() || base.personName,
+        budget: perLayer("budget", base.budget, 0, 4000),
+        maxItems: perLayer("maxItems", base.maxItems, 1, 64),
+        maxItemChars: perLayer("maxItemChars", base.maxItemChars, 20, 1000),
+      });
     })(),
   };
 

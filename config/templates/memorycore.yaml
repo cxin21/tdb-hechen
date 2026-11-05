@@ -436,6 +436,55 @@ memory:
         enabled: false  # bool default=false — 承诺证据迁移门（user 确认话语→refKey 严格相等） [src:config.ts:1764]
       promises:
         enabled: false  # bool default=false — 承诺块渲染门（最新 3 条 open 承诺，零 open 整块省略） [src:config.ts:1769]
+    # 自维护人格层（m00527）：与 core_memory 五槽并存、不替换。append-only + 状态迁移
+    #（active/degraded/frozen/merged），不删除条目；每步落 soul_ledger（before 快照 +
+    # 闸门结果 + 原因），0 人工靠可回放可回滚成立。LLM 只是候选来源之一，无写权。
+    soulMaintenance:
+      enabled: false  # bool default=false — 人格层总门；false=逐位现状（不查询不渲染不写库）；仅布尔 true 开启
+      minEvidence: 3  # int default=3 — 准入最小独立记录数（不同 record id）；clamp [1,10]
+      updateIntervalHours: 6  # int default=6 — 后台整合节拍小时；clamp [1,168]
+      maxUpdatedPerCycle: 3  # int default=3 — 每轮最多改写条数；clamp [1,20]
+      alpha: 0.15  # float default=0.15 — 单条改写允许最大差异比例（1-相似度）；clamp [0.05,0.5]
+      windowDays: 7  # int default=7 — 变更率窗口天；clamp [1,30]
+      windowRewrites: 1  # int default=1 — 同层窗口内最多改写次数；clamp [1,5]
+      degradeAfterDays: 30  # int default=30 — 无新证据降级天数；clamp [1,365]
+      freezeAfterDays: 90  # int default=90 — 无新证据冻结天数（退出注入、可复活）；clamp [1,730]
+      degradeWeightFactor: 0.7  # float default=0.7 — 降级权重乘子；clamp [0.1,0.95]
+      freezeContradictions: 2  # int default=2 — 矛盾累计几次冻结；clamp [1,10]
+      mergeSimilarity: 0.85  # float default=0.85 — 同层合并阈值；clamp [0.6,0.99]
+      driftDegrade: 0.75  # float default=0.75 — 漂移降级阈；clamp [0.5,0.95]
+      driftFreeze: 0.6  # float default=0.6 — 漂移冻结/回滚阈；clamp [0.2,0.9]
+      driftConsecutive: 3  # int default=3 — 连续低分多少次触发；clamp [1,10]
+      maxSoulEvidenceShare: 0.5  # float default=0.5 — 证据中 soul/model 自述占比上限；clamp [0,1]
+      verbatimMinChars: 8  # int default=8 — relationship 层用户原话最短命中长度；clamp [4,40]
+      redlineMaxChars: 120  # int default=120 — 单条红线字数帽；clamp [40,300]
+      emotionHalfLifeHours: 3  # float default=3 — 情绪（有对象）半衰期；clamp [0.5,48]
+      moodHalfLifeHours: 48  # float default=48 — 心境（无对象、有基线）半衰期；clamp [1,720]
+      moodDeviationThreshold: 0.15  # float default=0.15 — 与基线差的报出阈；clamp [0.02,0.5]
+      budget:  # 分层字数帽；超帽逐条记 omitted（不静默砍）
+        voice: 600            # 一条概括+两组逐字原话≈200 字；300 只剩 1 条
+        identity: 400
+        values: 320
+        boundary: 2600            # 红线层免裁剪（不变量集），预算仅作账本读数/delta
+        relationship: 900            # 关系事实（时区/环境/协作习惯/交付合同）实测 8 条≈802 字
+        narrative: 300
+        method: 0  # 方法池不注入
+      maxItems:  # 各层条目上限
+        voice: 7
+        identity: 7
+        values: 7
+        boundary: 40              # 红线是累积的不变量集：实测 29 条，7 条会挤掉历史红线
+        relationship: 12             # 关系事实随协作面增长（时区/环境/交付合同/家人），7 条会挤出稳定事实
+        narrative: 7
+        method: 64
+      maxItemChars:  # 单条字数帽
+        voice: 160
+        identity: 160
+        values: 160
+        boundary: 120
+        relationship: 160
+        narrative: 160
+        method: 160
   lifecycle:
     #   ── 生命周期：memory.lifecycle.enabled 是唯一真总闸（false 则整个 setInterval 不建）──
     enabled: true  # bool default=true — 生命周期调度总闸（真总闸）：false 时 setInterval 根本不建，巩固/遗忘/锚发现/演化/反思/自省/自动采纳全部不起跑 [src:config.ts:1776]

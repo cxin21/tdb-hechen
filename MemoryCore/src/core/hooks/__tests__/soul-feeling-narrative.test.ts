@@ -122,6 +122,31 @@ describe("soul-assembler 感受段终审形态（m00227/m00265）", () => {
     expect(feel).not.toContain("当下状态：");
   });
 
+  it("人格心境在场时不并列绝对档位句（否则模型读到两套互相矛盾的情绪自述），但意图子句保留", async () => {
+    const out = await buildSoulPrefix(
+      makeStore([
+        row({ value_id: "v-top", label: "定案", weight: 0.9, valence: 1, attrs_json: '{"description":"推进关键决策落地。"}' }),
+      ], SLOTS),
+      mkTenant("a2c"),
+      undefined,
+      {
+        state: { valence: 0.6, arousal: 0.5, topValue: "定案" },
+        soulMood: {
+          valence: 0.1,
+          arousal: 0.35,
+          baselineValence: 0.05,
+          baselineArousal: 0.2,
+          updatedAt: "2026-11-05T05:00:00.000Z",
+          sampleCount: 40,
+        },
+      },
+    );
+    const feel = feelBlock(out);
+    expect(feel).toContain("近期心境");
+    expect(feel).not.toContain("此刻心里");
+    expect(feel).toContain("眼下最想推进的是定案");
+  });
+
   it("state.topValue 显式在位 → 「眼下最想推进的是X」子句照常渲染", async () => {
     const out = await buildSoulPrefix(
       makeStore([

@@ -30,12 +30,17 @@ import {
 import type { Logger } from "../types.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { looksLikeEpisode } from "./episode-gate.js";
-import { renderStateLine, type SoulState } from "./soul-state.js";
+import { renderStateIntent, renderStateLine, type SoulState } from "./soul-state.js";
 // #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事组装单一源
 //（模板常量+事实句逐字，无 LLM/随机/时钟；生成闸/写入闸/预算闸三闸内建）。
 import { NARRATIVE_TEMPLATE_VERSION, renderIdentityNarrative } from "./identity-narrative.js";
 // 缺口 A（2026-11-04）：人设版本与漂移审计——slot 图 / 键级 diff / 受控归因（纯函数层同一源）。
 import { buildSoulSlotMap, classifySoulChange, diffSoulSlots, parseSoulSlotMap, type SoulSlotSignals } from "./soul-versioning.js";
+// 自维护人格层（m00527，2026-11-05）：六层人格段渲染单一源（persona.ts）——预算显式省略、
+// 状态排序（active→degraded→frozen/merged 仅记账）与分档预算全在纯函数层；本文件只做读取与拼装。
+import { renderPersonaBlock } from "../soul/persona.js";
+import { renderMoodLine, type SoulMoodState } from "../soul/emotion.js";
+import { DEFAULT_SOUL_MAINTENANCE_CONFIG, type PersonaItem, type SoulBudgetReport, type SoulMaintenanceConfig } from "../soul/types.js";
 
 /**
  * D-1（2026-09-21，用户拍板"全做"）：F17 截断改按行（事实）边界。
@@ -213,6 +218,20 @@ export interface SoulRenderOptions {
    *  「我的承诺：」行渲染最新 SOUL_PROMISE_RENDER_MAX 条（createdAt desc，content
    *  逐字直出）。承诺集参与 soulVersion（-pm 指纹段，承诺变化必重渲染）。 */
   promisesEnabled?: boolean;
+  /** 自维护人格层（m00527，2026-11-05 用户拍板「LLM 全自动维护、0 人工审核」）：
+   *  渲染门。缺省 undefined/false=逐位现状（零查询零渲染零指纹——部署升级不冷启动）。
+   *  true 时经 store.listSoulPersona（可选方法）读 soul_persona 六层条目，按
+   *  renderPersonaBlock 分档预算渲染成 <soul-persona> 独立段（置 soul-identity 之后、
+   *  soul-feeling 之前）。人格集参与 soulVersion（-sp 指纹段：条目/文本/状态/权重
+   *  任一变化即重渲染）。预算被裁条目落 debug 日志（不许静默砍）。 */
+  soulPersonaEnabled?: boolean;
+  /** 自维护人格层的预算/阈值（缺省 DEFAULT_SOUL_MAINTENANCE_CONFIG，enabled 字段在
+   *  渲染面不参与判定——渲染门只看 soulPersonaEnabled，避免同名字段双重语义）。 */
+  soulMaintenance?: SoulMaintenanceConfig;
+  /** 心境（soul_state 积分值，由 soul/worker.ts 写、本层只读渲染）：与三档 moodTier 不同，
+   *  这是「与基线比」的连续读数——一部分一条，绝不写成绝对档位（不伪造当下体验）。
+   *  缺省 undefined=不渲染=逐位现状。参与 soulVersion（-mm 指纹段）。 */
+  soulMood?: SoulMoodState;
   /** 灵魂注入去重轮（2026-10-18，生产实测驱动）：红线近重复行去重门——缺省 undefined/off
    *  =逐位现状（段级选项语义 :117 同款）。开启：renderStrictRuleSectionLines 输出上做独立
    *  后处理 pass（不动单一源文件契约）：归一全同 / char-bigram Jaccard ≥ 阈值（缺省 0.45，
@@ -361,7 +380,7 @@ export async function buildSoulPrefix(
   tenant: CoreTenant,
   logger?: Logger,
   opts?: SoulRenderOptions,
-  metaOut?: { soulVersion?: string },
+  metaOut?: { soulVersion?: string; soulPersonaBudgets?: SoulBudgetReport[] },
 ): Promise<string> {
   const parts: string[] = [];
   let soulVer = '';
@@ -379,6 +398,13 @@ export async function buildSoulPrefix(
     const values = ((await Promise.resolve(store.listValues?.(tenant))) ?? []) as Array<{ value_id?: string; label: string; weight?: number; valence?: number | null; state?: string; node_type?: string; attrs_json?: string }>;
     snapshotSignals = { slots, values };
     const activeAll = values.filter((v) => v.state === undefined || v.state === "active");
+    // 自维护人格层（m00527）：人格条目读取——渲染门缺省关（零查询），开门且 store 支持才读；
+    // 条目集在此处一次读取，指纹与渲染共用同一快照（防读取漂移）。
+    const personaCfg: SoulMaintenanceConfig = opts?.soulMaintenance ?? DEFAULT_SOUL_MAINTENANCE_CONFIG;
+    const personaItems: PersonaItem[] =
+      opts?.soulPersonaEnabled === true && typeof store.listSoulPersona === "function"
+        ? (((await Promise.resolve(store.listSoulPersona(tenant))) ?? []) as PersonaItem[])
+        : [];
     // P2（spec §2.7）：person 锚分流——主题锚渲染不变（undefined → theme 旧库兼容）；
     // 人物锚进「重要的人」行（weight DESC，行数上限 opts.maxRelationLines 缺省 5），不与价值审慎/趋近语义混淆。
     // S-CHAR-2（M2/P5）：渲染门开启时价值锚行排除 character（品格迁「我的品格：」行）；关断=逐位现状。
@@ -403,6 +429,29 @@ export async function buildSoulPrefix(
     // T3：承诺集参与指纹（承诺变化=自我陈述变化=必须重渲染，人格不冻结）。指纹段
     // 仅 gate on 时附加（关断时 sv 字节与现状一致——快照守卫/旧调用点零破坏）；
     // 指纹源=createdAt+content 确定性序列化排序（序稳定，不依赖 store 返回序）。
+    // 人格集参与指纹：条目/文本/状态/权重任一变化都必须重渲染（否则缓存复活旧人格）。
+    if (opts?.soulMood && Number.isFinite(opts.soulMood.valence)) {
+      soulVer = `${soulVer}-mm${Math.round(opts.soulMood.valence * 100)}/${Math.round(opts.soulMood.arousal * 100)}`;
+    }
+    // 接管判定（m00527，2026-11-05）：人格层一旦导入成功，core_memory 的身份/红线槽已被
+    // 整合进人格六层（identity/boundary），再渲染旧槽=同一约束在提示词里出现两三遍，且旧槽
+    // 的 8 行滚动窗会把用户原话静默挤掉。接管只在「人格层确实有该层内容」时生效——worker
+    // 从未跑过时保持逐位现状，绝不因开门而清空身份。
+    const takeoverLayers = new Set(
+      opts?.soulPersonaEnabled === true
+        ? personaItems.filter((p) => p.state === "active" || p.state === "degraded").map((p) => p.layer)
+        : [],
+    );
+    const identityTakenOver = takeoverLayers.has("identity");
+    if (opts?.soulPersonaEnabled === true) {
+      const spFp = fnv1a32Hex(
+        personaItems
+          .map((it) => `${it.layer}\u0000${it.itemId}\u0000${it.text}\u0000${it.state}\u0000${it.weight.toFixed(3)}`)
+          .sort()
+          .join("\n"),
+      );
+      soulVer = `${soulVer}-sp${spFp}`;
+    }
     if (opts?.promisesEnabled === true) {
       const pmFp = fnv1a32Hex(
         promiseRows
@@ -528,7 +577,9 @@ export async function buildSoulPrefix(
       //（identity-discovery 提案门 / version++）不动；strict_rule 红线段照常（不参与叙事化）。
       // 生成闸违例 / 无身份内容 → null → narrLines 空 → 身份两行按逐位现状渲染
       //（条目渲染兜底）。预算=叙事替代两行，取 budgetSelfChars+budgetIdentityChars 之和。
-      const idNarr = dual && opts?.identityNarrative === true;
+      // 接管门同样管叙事段：人格层有 identity 后，旧槽叙事（"我是谁"整块）不再渲染，
+      // 否则同一身份在提示词里出现两遍——一份来自 8 行滚动窗、一份来自人格层。
+      const idNarr = dual && opts?.identityNarrative === true && !identityTakenOver;
       let narrLines: string[] = [];
       if (idNarr) {
         const narr = renderIdentityNarrative(slots, {
@@ -554,6 +605,8 @@ export async function buildSoulPrefix(
         // #67：叙事段已承载身份两槽时跳过条目行（与 perTurnSlots 跳过同层语义；
         // narrLines 为空时本门不开=条目渲染兜底）。
         if (idNarrSkip && (s.slot === "self_identity" || s.slot === "identity")) continue;
+        // 接管门：人格层 identity 有内容时，旧身份两槽不再逐轮重复（人格层已是其超集）。
+        if (identityTakenOver && (s.slot === "self_identity" || s.slot === "identity")) continue;
         const budget = budgetFor(s.slot);
         const content = budget !== undefined ? truncateByLines(s.content, budget) : s.content;
         const label = labelFor(s.slot);
@@ -572,6 +625,9 @@ export async function buildSoulPrefix(
       // maxLines=渲染面治理（红线墙挤占身份段注入预算，生产实拍 10 条 strict_rule 占段 60%；
       // 去重后截断保前 N=单一源输出序；0=不设限=逐位现状）。真实性边界不变：去重/截断均为
       // 整行选择（drop），kept 行体逐字不动，不发生改写。
+      // 操作约束 vs 人格（2026-11-05 用户拍板）：strict_rule 是「不能做什么」的操作约束，
+      // 不是「我是什么样的人」。人格 boundary 只放带代价/来路的自我边界；历史红线永远由
+      // 本段渲染，不因人格层有 boundary 就被接管（接管=用户亲手写的红线从注入面消失）。
       const redlineLinesRaw = dual ? renderStrictRuleSectionLines(ordered) : [];
       let redlineLines = redlineLinesRaw;
       if (opts?.strictRuleDedup?.enabled === true && redlineLinesRaw.length > 1) {
@@ -947,6 +1003,28 @@ export async function buildSoulPrefix(
       }
     }
 
+    // ── 自维护人格段（m00527，2026-11-05）──
+    // 与 soul-identity 并列的独立段：人格六层（说话方式/我是谁/冲突取舍/不做的事/关系/来路）
+    // 由后台整合器（soul/worker.ts）自动维护，本节只读渲染。渲染门缺省关=逐位现状。
+    // 预算被裁条目：debug 日志逐条列（itemId+字符数+原因）——静默截断=人格谎言，必须可见。
+    let personaBudgets: SoulBudgetReport[] = [];
+    if (opts?.soulPersonaEnabled === true && personaItems.length > 0) {
+      try {
+        const rendered = renderPersonaBlock(personaItems, personaCfg);
+        personaBudgets = rendered.reports;
+        if (metaOut) metaOut.soulPersonaBudgets = personaBudgets;
+        if (rendered.text !== "") parts.push(`<soul-persona>\n${rendered.text}\n</soul-persona>`);
+        const omitted = rendered.reports.flatMap((r) =>
+          r.omitted.map((o) => `${r.layer}:${o.itemId}(${o.chars}字,${o.reason})`),
+        );
+        if (omitted.length > 0) {
+          logger?.debug?.(`[soul-persona] budget omitted ${omitted.length}: ${omitted.join(",")}`);
+        }
+      } catch (err) {
+        logger?.warn?.(`[soul-persona] render failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     // ── 感受段：当下的状态（D6 诚实命名，ADR 0003——内容=价值取向 disposition+情绪基线+state，
     // 非第一人称体验；真实性边界=不伪造当下体验）──
     // F-EV12-5（A-5③，spec §2.7「soul-feeling 保持仅主题锚」）：character 锚不入感受段
@@ -958,7 +1036,7 @@ export async function buildSoulPrefix(
     // S-FEEL-1（M1）：mood 行独立于方向锚（无 ±1 锚时 soul-feeling 块仍可只含基调行，宁缺毋滥不造空段）；
     // moodTier 缺省=门控逐位现状。
     // #34：state 也独可撑块（零锚+无 mood 时 state-only 块仍渲染——当下性是独立信号源）
-    if (directional.length > 0 || opts?.moodTier || opts?.state) {
+    if (directional.length > 0 || opts?.moodTier || opts?.soulMood || opts?.state) {
       // 呈现层翻修（2026-10-17 用户 m00227 终审）：驱动/审慎清单行（posLine/negLine）与
       // 首要内联子句（topDetail/feelLine 机制）整体删除——纯去重：identity 价值锚行逐锚
       // 方向标注（趋近/审慎，applyAnchorBudget 消费点保留）已完整承载方向语义。
@@ -973,14 +1051,34 @@ export async function buildSoulPrefix(
       // 灵魂注入质量轮（2026-10-19）：去实现细节括号——「（近 N 条经历的情感聚合）」是管线
       // 元数据（样本量/聚合方式），泄露进 prompt 属实现细节外溢（渲染面调研定案：聚合标签
       // 只留存储/统计层，注入面只写自述语义；样本量观测走 soul-state.ts 聚合侧日志）。
-      if (opts?.moodTier) {
+      if (opts?.soulMood) {
+        // 自维护人格层（m00527）：连续心境读数（与基线比）；与三档基调二选一——同时给两行
+        // 会让模型看到互相矛盾的两套情绪描述（三档是旧口径，连续值是同一信号的更细读法）。
+        // 原因只来自真实情绪对象（readMood 里 object 存在且有效强度≥0.4 才写）；
+        // 无对象/已衰减完 → 只写偏移，不编「因为 X」。
+        feel.push(
+          renderMoodLine(opts.soulMood, {
+            threshold: personaCfg.moodDeviationThreshold,
+            emotion: opts.soulMood.emotion
+              ? {
+                  object: opts.soulMood.emotion.object,
+                  label: opts.soulMood.emotion.label,
+                  effectiveIntensity: opts.soulMood.emotion.intensity,
+                }
+              : undefined,
+          }),
+        );
+      } else if (opts?.moodTier) {
         const tierLabel = opts.moodTier.tier === "positive" ? "偏积极" : opts.moodTier.tier === "strained" ? "偏承压" : "平稳";
         feel.push(`近期基调：${tierLabel}。`);
       }
       // #34（S13/R5）：当下状态行——soul-feeling 尾块（依赖 #37 soul.tail 接口语义；
       // 会话级不落库，状态机数据源归 #28）。无 state=逐位现状（不 push）。
       if (opts?.state) {
-        const stateLine = renderStateLine(opts.state);
+        // 自维护人格层在场时情绪已由 renderMoodLine（与基线比的连续读数）承载：再并列绝对
+        // 档位句会出现两套互相矛盾的情绪自述（生产实测「比基线平稳、更绷紧」+「此刻心里
+        // 平稳，状态平稳安定」）。topValue 是意图不是情绪，单独保留。
+        const stateLine = opts?.soulMood ? renderStateIntent(opts.state) : renderStateLine(opts.state);
         if (stateLine) feel.push(stateLine);
       }
       if (feel.length > 0) parts.push(`<soul-feeling>\n## 当下的状态\n${feel.join("\n")}\n</soul-feeling>`);

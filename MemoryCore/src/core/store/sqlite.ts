@@ -79,6 +79,13 @@ import { normalizeTaskSourceType } from "./task-source-type.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
 import { canTransitionPromise } from "../hooks/soul-promise.js";
+import type {
+  PersonaItem,
+  SoulEpisode,
+  SoulEpisodeQuote,
+  SoulLedgerEntry,
+  SoulRejectionStat,
+} from "../soul/types.js";
 import type { Logger } from "../types.js";
 import type {
   MemoryPromptListFilter,
@@ -1201,6 +1208,108 @@ export class VectorStore implements IMemoryStore {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (team_id, user_id, agent_id)
     )`);
+    // m00527：心境基线列（幂等 ALTER）——旧行无基线时读侧按「当前值即基线」处理（不伪造偏移）。
+    for (const ddl of [
+      "ALTER TABLE soul_state ADD COLUMN baseline_valence REAL",
+      "ALTER TABLE soul_state ADD COLUMN baseline_arousal REAL",
+      "ALTER TABLE soul_state ADD COLUMN sample_count INTEGER",
+      // 2026-11-05：心境原因列（幂等）——旧行无值=只写偏移不写原因，不伪造「因为 X」。
+      "ALTER TABLE soul_state ADD COLUMN emotion_object TEXT",
+      "ALTER TABLE soul_state ADD COLUMN emotion_label TEXT",
+      "ALTER TABLE soul_state ADD COLUMN emotion_intensity REAL",
+      "ALTER TABLE soul_state ADD COLUMN emotion_at TEXT",
+    ]) {
+      try {
+        this.db.exec(ddl);
+      } catch {
+        /* exists */
+      }
+    }
+    // 自维护人格层（2026-11-05）：条目表 + append-only 账本。只增不减——冻结不删除、
+    // 合并留 merged_into 指针，账本 before_json 保留完整快照以支持回滚。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_persona (
+      item_id TEXT NOT NULL,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      layer TEXT NOT NULL,
+      text TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      weight REAL NOT NULL DEFAULT 0.5,
+      evidence_json TEXT,
+      days_json TEXT,
+      origins_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_evidence_at TEXT NOT NULL,
+      merged_into TEXT,
+      aliases_json TEXT,
+      contradictions INTEGER NOT NULL DEFAULT 0,
+      drift_json TEXT,
+      meta_json TEXT,
+      PRIMARY KEY (item_id, team_id, user_id, agent_id)
+    )`);
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_persona_tenant ON soul_persona(team_id, user_id, agent_id, layer, state)",
+    );
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_ledger (
+      entry_id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      at TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      layer TEXT,
+      item_id TEXT,
+      action TEXT NOT NULL,
+      before_hash TEXT,
+      after_hash TEXT,
+      gates_json TEXT,
+      reason TEXT NOT NULL DEFAULT '',
+      evidence_json TEXT,
+      prompt_version TEXT,
+      model TEXT,
+      before_json TEXT
+    )`);
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_ledger_tenant ON soul_ledger(team_id, user_id, agent_id, at)",
+    );
+    // 事件层（2026-11-05）：人格的事实底座。旧管线只从 L1 摘要长人格，摘要把
+    // 「为什么恼火、对谁、放弃了什么」蒸发了；episode 保留逐字摘句与四元上下文。
+    // episode_id 由会话+触发记录决定，重跑幂等；quote_json 与 evidence_json 都带 record_id 可回溯。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_episodes (
+      episode_id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      at TEXT NOT NULL,
+      day TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      object TEXT NOT NULL DEFAULT '',
+      participants_json TEXT,
+      user_stance TEXT NOT NULL DEFAULT '',
+      agent_stance TEXT NOT NULL DEFAULT '',
+      cost TEXT NOT NULL DEFAULT '',
+      outcome TEXT NOT NULL DEFAULT '',
+      valence REAL NOT NULL DEFAULT 0,
+      arousal REAL NOT NULL DEFAULT 0,
+      intensity REAL NOT NULL DEFAULT 0,
+      affect_source TEXT NOT NULL DEFAULT 'lexicon',
+      evidence_json TEXT,
+      session_id TEXT NOT NULL DEFAULT '',
+      quote_json TEXT,
+      signals_json TEXT
+    )`);
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_at ON soul_episodes(team_id, user_id, agent_id, at)",
+    );
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_kind ON soul_episodes(team_id, user_id, agent_id, kind, at)",
+    );
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_object ON soul_episodes(team_id, user_id, agent_id, object)",
+    );
     // #35（R5）：promise 承诺层——义务≠倾向，独立于 core_values 生命周期（排除条款
     // 见 soul-promise.ts）。当前态表 + 事件 append-only 表（双时态留痕，只增不改）。
     this.db.exec(`CREATE TABLE IF NOT EXISTS soul_promises (
@@ -3224,6 +3333,29 @@ private migrateMemoryAuditActionEnum(): void {
   }
 
   /**
+   * 自维护人格（m00527）：枚举有数据的租户。
+   * 并集覆盖两条来源：已写槽的租户（core_memory）与已有人格条目的租户（soul_persona）——
+   * 后者保证「槽被清空但人格已建」的 agent 仍继续跑生命周期与漂移判定。
+   */
+  listCoreTenants(): CoreTenant[] {
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT team_id, user_id, agent_id FROM core_memory " +
+            "UNION SELECT team_id, user_id, agent_id FROM soul_persona " +
+            "ORDER BY team_id, user_id, agent_id",
+        )
+        .all() as unknown as Array<{ team_id: string; user_id: string; agent_id: string }>;
+      return (rows ?? []).map((r) => ({ teamId: r.team_id, userId: r.user_id, agentId: r.agent_id }));
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [core_memory] listCoreTenants failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
    * P2-T12（K1）：按租户 upsert 价值锚。
    * C2（spec §3.1）：增可选 valence（动机方向）。clamp 三值：+1/-1/0（round 后 clamp [-1,1]）。
    * GROW：增可选 origin（seed|manual|auto，来源徽标；缺省 manual=人类/agent 写）。
@@ -3371,7 +3503,7 @@ private migrateMemoryAuditActionEnum(): void {
   recentAffectSignals(
     tenant?: CoreTenant,
     opts?: { windowHours: number; maxSamples: number },
-  ): Array<{ valence: number; arousal: number | null; occurred_at: string }> {
+  ): Array<{ valence: number; arousal: number | null; occurred_at: string; excerpt?: string | null }> {
     const t = normalizeCoreTenant(tenant);
     const windowHours = Number(opts?.windowHours) > 0 ? Number(opts?.windowHours) : 72;
     const maxSamples = Number(opts?.maxSamples) > 0 ? Math.min(500, Math.floor(Number(opts?.maxSamples))) : 20;
@@ -3380,12 +3512,13 @@ private migrateMemoryAuditActionEnum(): void {
       return (
         (this.db
           .prepare(
-            "SELECT valence, arousal, occurred_at FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?",
+            "SELECT valence, arousal, occurred_at, substr(COALESCE(content, ''), 1, 60) AS excerpt FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?",
           )
           .all(t.teamId, t.userId, t.agentId, sinceIso, maxSamples) as unknown as Array<{
           valence: number;
           arousal: number | null;
           occurred_at: string;
+          excerpt: string | null;
         }>) ?? []
       );
     } catch (err) {
@@ -3397,12 +3530,25 @@ private migrateMemoryAuditActionEnum(): void {
    *  抽取扩展门 on 才写——本方法本身不做门判断，门在调用方 l1-extractor）。 */
   writeSoulState(
     tenant: CoreTenant,
-    state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string },
+    state: {
+      valence: number;
+      arousal: number;
+      baselineValence?: number | null;
+      baselineArousal?: number | null;
+      sampleCount?: number | null;
+      topValue?: string | null;
+      turnSeq?: number | null;
+      emotionObject?: string | null;
+      emotionLabel?: string | null;
+      emotionIntensity?: number | null;
+      emotionAt?: string | null;
+      updatedAt: string;
+    },
   ): void {
     const t = normalizeCoreTenant(tenant);
     this.db
       .prepare(
-        "INSERT OR REPLACE INTO soul_state (team_id, user_id, agent_id, valence, arousal, top_value, turn_seq, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO soul_state (team_id, user_id, agent_id, valence, arousal, baseline_valence, baseline_arousal, sample_count, top_value, turn_seq, emotion_object, emotion_label, emotion_intensity, emotion_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         t.teamId,
@@ -3410,30 +3556,283 @@ private migrateMemoryAuditActionEnum(): void {
         t.agentId,
         state.valence,
         state.arousal,
+        state.baselineValence ?? null,
+        state.baselineArousal ?? null,
+        state.sampleCount ?? null,
         state.topValue ?? null,
         state.turnSeq ?? null,
+        state.emotionObject ?? null,
+        state.emotionLabel ?? null,
+        state.emotionIntensity ?? null,
+        state.emotionAt ?? null,
         state.updatedAt,
       );
   }
   readSoulState(
     tenant: CoreTenant,
-  ): { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string } | null {
+  ): {
+    valence: number;
+    arousal: number;
+    baselineValence?: number | null;
+    baselineArousal?: number | null;
+    sampleCount?: number | null;
+    topValue?: string | null;
+    turnSeq?: number | null;
+    emotionObject?: string | null;
+    emotionLabel?: string | null;
+    emotionIntensity?: number | null;
+    emotionAt?: string | null;
+    updatedAt: string;
+  } | null {
     const t = normalizeCoreTenant(tenant);
     const row = this.db
       .prepare(
-        "SELECT valence, arousal, top_value, turn_seq, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+        "SELECT valence, arousal, baseline_valence, baseline_arousal, sample_count, top_value, turn_seq, emotion_object, emotion_label, emotion_intensity, emotion_at, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
       )
       .get(t.teamId, t.userId, t.agentId) as unknown as
-      | { valence: number; arousal: number; top_value: string | null; turn_seq: number | null; updated_at: string }
+      | {
+          valence: number;
+          arousal: number;
+          baseline_valence: number | null;
+          baseline_arousal: number | null;
+          sample_count: number | null;
+          top_value: string | null;
+          turn_seq: number | null;
+          emotion_object: string | null;
+          emotion_label: string | null;
+          emotion_intensity: number | null;
+          emotion_at: string | null;
+          updated_at: string;
+        }
       | undefined;
     if (!row) return null;
     return {
       valence: row.valence,
       arousal: row.arousal,
+      baselineValence: row.baseline_valence,
+      baselineArousal: row.baseline_arousal,
+      sampleCount: row.sample_count,
       topValue: row.top_value,
       turnSeq: row.turn_seq,
+      emotionObject: row.emotion_object,
+      emotionLabel: row.emotion_label,
+      emotionIntensity: row.emotion_intensity,
+      emotionAt: row.emotion_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  /* —— 自维护人格层（2026-11-05）：条目读/事务化提交/账本读 ——
+   * 写面单点 commitSoulPersona：条目 upsert 与账本 append 同事务（半写状态不可接受，
+   * 否则「账本说变了、库却没变」会让漂移与回滚全失真）；账本 INSERT OR IGNORE 幂等。
+   * 读面容忍缺失（返回空数组），与既有 store 容错约定一致。 */
+  listSoulPersona(tenant?: CoreTenant): PersonaItem[] {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const rows = this.db
+        .prepare("SELECT * FROM soul_persona WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY layer, item_id")
+        .all(t.teamId, t.userId, t.agentId) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulPersonaRow);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_persona] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  async commitSoulPersona(
+    tenant: CoreTenant | undefined,
+    plan: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] },
+  ): Promise<{ upserted: number; ledgered: number }> {
+    const t = normalizeCoreTenant(tenant);
+    const upsert = this.db.prepare(`INSERT INTO soul_persona (
+      item_id, team_id, user_id, agent_id, layer, text, state, weight, evidence_json, days_json,
+      origins_json, created_at, updated_at, last_evidence_at, merged_into, aliases_json,
+      contradictions, drift_json, meta_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(item_id, team_id, user_id, agent_id) DO UPDATE SET
+      layer = excluded.layer, text = excluded.text, state = excluded.state,
+      weight = excluded.weight, evidence_json = excluded.evidence_json,
+      days_json = excluded.days_json, origins_json = excluded.origins_json,
+      updated_at = excluded.updated_at, last_evidence_at = excluded.last_evidence_at,
+      merged_into = excluded.merged_into, aliases_json = excluded.aliases_json,
+      contradictions = excluded.contradictions, drift_json = excluded.drift_json,
+      meta_json = excluded.meta_json`);
+    const led = this.db.prepare(`INSERT OR IGNORE INTO soul_ledger (
+      entry_id, team_id, user_id, agent_id, at, trigger, layer, item_id, action,
+      before_hash, after_hash, gates_json, reason, evidence_json, prompt_version, model, before_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const it of plan.upsert) {
+        upsert.run(
+          it.itemId, t.teamId, t.userId, t.agentId, it.layer, it.text, it.state, it.weight,
+          JSON.stringify(it.evidenceIds ?? []), JSON.stringify(it.evidenceDays ?? []),
+          JSON.stringify(it.evidenceOrigins ?? []), it.createdAt, it.updatedAt, it.lastEvidenceAt,
+          it.mergedInto ?? null, it.aliases ? JSON.stringify(it.aliases) : null,
+          it.contradictions ?? 0, it.driftHistory ? JSON.stringify(it.driftHistory) : null,
+          it.meta ? JSON.stringify(it.meta) : null,
+        );
+      }
+      let ledgered = 0;
+      for (const e of plan.ledger) {
+        // 只数真正新落库的行（INSERT OR IGNORE 幂等）：重复 entryId 不算写入，
+        // 否则「账本说写了 N 条」会被重放/重试虚增。
+        const info = led.run(
+          e.entryId, t.teamId, t.userId, t.agentId, e.at, e.trigger, e.layer ?? null, e.itemId ?? null,
+          e.action, e.beforeHash ?? null, e.afterHash ?? null, JSON.stringify(e.gates ?? []),
+          e.reason ?? "", JSON.stringify(e.evidenceIds ?? []), e.promptVersion ?? null,
+          e.model ?? null, e.before ? JSON.stringify(e.before) : null,
+        );
+        ledgered += Number(info.changes ?? 0) > 0 ? 1 : 0;
+      }
+      this.db.exec("COMMIT");
+      return { upserted: plan.upsert.length, ledgered };
+    } catch (err) {
+      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      throw err;
+    }
+  }
+
+  listSoulLedger(tenant?: CoreTenant, limit = 100): SoulLedgerEntry[] {
+    const t = normalizeCoreTenant(tenant);
+    const n = Math.max(1, Math.min(1000, Math.floor(limit)));
+    try {
+      const rows = this.db
+        .prepare("SELECT * FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY at DESC, entry_id DESC LIMIT ?")
+        .all(t.teamId, t.userId, t.agentId, n) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulLedgerRow);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_ledger] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+  /* —— 事件层（soul_episodes，2026-11-05）——
+   * 写幂等（episode_id 主键，重跑同一天不翻倍）；读按时间倒序；检索用 LIKE 覆盖
+   * 标题/对象/双方立场/代价/原话——「上次因为什么恼火、对谁、多强」四问都能碰。
+   * 拒绝统计从 soul_ledger 的 reject 行聚合（不另建计数表：账本是唯一事实源）。 */
+  commitSoulEpisodes(tenant: CoreTenant | undefined, episodes: SoulEpisode[]): { inserted: number } {
+    const t = normalizeCoreTenant(tenant);
+    if (!episodes || episodes.length === 0) return { inserted: 0 };
+    const stmt = this.db.prepare(`INSERT OR IGNORE INTO soul_episodes (
+      episode_id, team_id, user_id, agent_id, at, day, kind, title, object, participants_json,
+      user_stance, agent_stance, cost, outcome, valence, arousal, intensity, affect_source,
+      evidence_json, session_id, quote_json, signals_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    let inserted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const e of episodes) {
+        const info = stmt.run(
+          e.episodeId, t.teamId, t.userId, t.agentId, e.at, e.day, e.kind, e.title ?? "", e.object ?? "",
+          JSON.stringify(e.participants ?? []), e.userStance ?? "", e.agentStance ?? "", e.cost ?? "",
+          e.outcome ?? "", e.valence ?? 0, e.arousal ?? 0, e.intensity ?? 0, e.affectSource ?? "lexicon",
+          JSON.stringify(e.evidenceIds ?? []), e.sessionId ?? "",
+          e.quote ? JSON.stringify(e.quote) : null, JSON.stringify(e.signals ?? []),
+        );
+        inserted += Number(info.changes ?? 0) > 0 ? 1 : 0;
+      }
+      this.db.exec("COMMIT");
+      return { inserted };
+    } catch (err) {
+      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      throw err;
+    }
+  }
+
+  listSoulEpisodes(
+    tenant?: CoreTenant,
+    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"] },
+  ): SoulEpisode[] {
+    const t = normalizeCoreTenant(tenant);
+    const limit = Math.max(1, Math.min(2000, Math.floor(opts?.limit ?? 200)));
+    try {
+      const where = ["team_id = ?", "user_id = ?", "agent_id = ?"];
+      const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+      if (opts?.since) {
+        where.push("at >= ?");
+        args.push(opts.since);
+      }
+      if (opts?.kind) {
+        where.push("kind = ?");
+        args.push(opts.kind);
+      }
+      args.push(limit);
+      const rows = this.db
+        .prepare(`SELECT * FROM soul_episodes WHERE ${where.join(" AND ")} ORDER BY at DESC, episode_id DESC LIMIT ?`)
+        .all(...(args as SQLInputValue[])) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulEpisodeRow);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_episodes] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  searchSoulEpisodes(tenant: CoreTenant | undefined, query: { text?: string; object?: string; kind?: SoulEpisode["kind"]; since?: string; limit?: number }): SoulEpisode[] {
+    const t = normalizeCoreTenant(tenant);
+    const limit = Math.max(1, Math.min(200, Math.floor(query?.limit ?? 20)));
+    try {
+      const where = ["team_id = ?", "user_id = ?", "agent_id = ?"];
+      const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+      if (query?.object) {
+        where.push("object LIKE ?");
+        args.push(`%${query.object}%`);
+      }
+      if (query?.kind) {
+        where.push("kind = ?");
+        args.push(query.kind);
+      }
+      if (query?.since) {
+        where.push("at >= ?");
+        args.push(query.since);
+      }
+      const text = (query?.text ?? "").trim();
+      if (text !== "") {
+        const like = `%${text}%`;
+        where.push("(title LIKE ? OR object LIKE ? OR user_stance LIKE ? OR agent_stance LIKE ? OR cost LIKE ? OR outcome LIKE ? OR quote_json LIKE ?)");
+        args.push(like, like, like, like, like, like, like);
+      }
+      args.push(limit);
+      const rows = this.db
+        .prepare(`SELECT * FROM soul_episodes WHERE ${where.join(" AND ")} ORDER BY at DESC, episode_id DESC LIMIT ?`)
+        .all(...(args as SQLInputValue[])) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulEpisodeRow);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_episodes] search failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  soulRejectionStats(tenant?: CoreTenant, opts?: { sinceDays?: number }): SoulRejectionStat[] {
+    const t = normalizeCoreTenant(tenant);
+    const days = Math.max(1, Math.min(365, Math.floor(opts?.sinceDays ?? 30)));
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT gates_json, at FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? AND action = 'reject' AND at >= ? ORDER BY at DESC LIMIT 5000",
+        )
+        .all(t.teamId, t.userId, t.agentId, since) as unknown as Array<{ gates_json: string | null; at: string }>;
+      const by = new Map<string, SoulRejectionStat>();
+      for (const row of rows ?? []) {
+        let codes: string[] = [];
+        try {
+          const parsed = JSON.parse(row.gates_json ?? "[]");
+          if (Array.isArray(parsed)) codes = parsed.filter((x): x is string => typeof x === "string");
+        } catch {
+          codes = [];
+        }
+        if (codes.length === 0) codes = ["unknown"];
+        for (const code of codes) {
+          const cur = by.get(code);
+          if (cur) cur.count += 1;
+          else by.set(code, { code, count: 1, lastAt: row.at });
+        }
+      }
+      return [...by.values()].sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_ledger] rejection stats failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   /* —— #35（R5）：promise 承诺层四方法 ——
@@ -7409,6 +7808,60 @@ private migrateMemoryAuditActionEnum(): void {
    *
    * Used by L1 runner to replace readConversationMessagesGroupedBySessionId().
    */
+  /** 事件挖掘输入：窗口内原始对话（含 role），按时间正序返回。
+   *  只读、零写库；先取最近 N 条再反转，避免窗口大时全表排序。 */
+  recentL0Messages(
+    tenant?: CoreTenant,
+    opts?: { sinceDays?: number; maxMessages?: number },
+  ): Array<{
+    record_id: string;
+    session_id: string;
+    role: string;
+    message_text: string;
+    recorded_at: string;
+    timestamp?: number;
+  }> {
+    if (this.degraded) return [];
+    const t = normalizeCoreTenant(tenant);
+    const days = Math.max(1, Math.min(365, Math.floor(opts?.sinceDays ?? 30)));
+    const max = Math.max(1, Math.min(20000, Math.floor(opts?.maxMessages ?? 4000)));
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT record_id, session_id, role, message_text, recorded_at, timestamp
+             FROM l0_conversations
+            WHERE team_id = ? AND user_id = ? AND agent_id = ?
+              AND message_text != '' AND recorded_at >= ?
+            ORDER BY recorded_at DESC, record_id DESC
+            LIMIT ?`,
+        )
+        .all(t.teamId, t.userId, t.agentId, since, max) as unknown as Array<{
+        record_id: string;
+        session_id: string | null;
+        role: string | null;
+        message_text: string | null;
+        recorded_at: string | null;
+        timestamp: number | null;
+      }>;
+      return (rows ?? [])
+        .map((r) => ({
+          record_id: String(r.record_id ?? ""),
+          session_id: String(r.session_id ?? ""),
+          role: String(r.role ?? ""),
+          message_text: String(r.message_text ?? ""),
+          recorded_at: String(r.recorded_at ?? ""),
+          timestamp: Number(r.timestamp ?? 0),
+        }))
+        .reverse();
+    } catch (err) {
+      this.logger?.warn(
+        `${TAG} [L0-recent] recentL0Messages failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
   queryL0GroupedBySessionId(
     sessionKey: string,
     afterRecordedAtMs?: number,
@@ -9493,4 +9946,105 @@ private migrateMemoryAuditActionEnum(): void {
       this.logger?.warn?.(`${TAG} Error closing database: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+/* —— 自维护人格层行映射（模块级，避免类方法里重复 JSON 解析） —— */
+function jsonArray<T>(v: unknown): T[] {
+  if (typeof v !== "string" || v.length === 0) return [];
+  try {
+    const parsed = JSON.parse(v) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function jsonObject(v: unknown): Record<string, unknown> | undefined {
+  if (typeof v !== "string" || v.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(v) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function mapSoulPersonaRow(row: Record<string, unknown>): PersonaItem {
+  const state = String(row.state ?? "active");
+  const item: PersonaItem = {
+    itemId: String(row.item_id ?? ""),
+    layer: String(row.layer ?? "identity") as PersonaItem["layer"],
+    text: String(row.text ?? ""),
+    state: (["active", "degraded", "frozen", "merged"].includes(state)
+      ? state
+      : "active") as PersonaItem["state"],
+    weight: Number(row.weight ?? 0.5),
+    evidenceIds: jsonArray<string>(row.evidence_json),
+    evidenceDays: jsonArray<string>(row.days_json),
+    evidenceOrigins: jsonArray<PersonaItem["evidenceOrigins"][number]>(row.origins_json),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+    lastEvidenceAt: String(row.last_evidence_at ?? ""),
+    contradictions: Number(row.contradictions ?? 0),
+  };
+  if (typeof row.merged_into === "string" && row.merged_into.length > 0) item.mergedInto = row.merged_into;
+  const aliases = jsonArray<string>(row.aliases_json);
+  if (aliases.length > 0) item.aliases = aliases;
+  const drift = jsonArray<number>(row.drift_json);
+  if (drift.length > 0) item.driftHistory = drift;
+  const meta = jsonObject(row.meta_json);
+  if (meta) item.meta = meta;
+  return item;
+}
+
+function mapSoulEpisodeRow(row: Record<string, unknown>): SoulEpisode {
+  const quote = jsonObject(row.quote_json) as SoulEpisodeQuote | undefined;
+  const kind = String(row.kind ?? "decision") as SoulEpisode["kind"];
+  const affective = String(row.affect_source ?? "lexicon");
+  return {
+    episodeId: String(row.episode_id ?? ""),
+    at: String(row.at ?? ""),
+    day: String(row.day ?? ""),
+    kind: (["divergence", "correction", "decision", "value_conflict", "affect"].includes(kind)
+      ? kind
+      : "decision") as SoulEpisode["kind"],
+    title: String(row.title ?? ""),
+    object: String(row.object ?? ""),
+    participants: jsonArray<string>(row.participants_json),
+    userStance: String(row.user_stance ?? ""),
+    agentStance: String(row.agent_stance ?? ""),
+    cost: String(row.cost ?? ""),
+    outcome: String(row.outcome ?? ""),
+    valence: Number(row.valence ?? 0),
+    arousal: Number(row.arousal ?? 0),
+    intensity: Number(row.intensity ?? 0),
+    evidenceIds: jsonArray<string>(row.evidence_json),
+    sessionId: String(row.session_id ?? ""),
+    quote: quote && typeof quote.text === "string" ? quote : null,
+    affectSource: affective === "none" ? "none" : "lexicon",
+    signals: jsonArray<string>(row.signals_json),
+  };
+}
+
+function mapSoulLedgerRow(row: Record<string, unknown>): SoulLedgerEntry {
+  const entry: SoulLedgerEntry = {
+    entryId: String(row.entry_id ?? ""),
+    at: String(row.at ?? ""),
+    trigger: String(row.trigger ?? ""),
+    layer: (String(row.layer ?? "all") as SoulLedgerEntry["layer"]),
+    action: String(row.action ?? "admit") as SoulLedgerEntry["action"],
+    gates: jsonArray<string>(row.gates_json),
+    reason: String(row.reason ?? ""),
+    evidenceIds: jsonArray<string>(row.evidence_json),
+  };
+  if (typeof row.item_id === "string" && row.item_id.length > 0) entry.itemId = row.item_id;
+  if (typeof row.before_hash === "string" && row.before_hash.length > 0) entry.beforeHash = row.before_hash;
+  if (typeof row.after_hash === "string" && row.after_hash.length > 0) entry.afterHash = row.after_hash;
+  if (typeof row.prompt_version === "string" && row.prompt_version.length > 0) entry.promptVersion = row.prompt_version;
+  if (typeof row.model === "string" && row.model.length > 0) entry.model = row.model;
+  const before = jsonObject(row.before_json);
+  if (before) entry.before = before as unknown as PersonaItem;
+  return entry;
 }

@@ -23,6 +23,13 @@ import type { IsolationFilter } from "./isolation.js";
 import { DEFAULT_ISOLATION_ID } from "./isolation.js";
 import type { MemoryPromptStore } from "../memory-prompt/types.js";
 import type { MemoryGenerationRefStore } from "../memory-generation-log/types.js";
+import type {
+  PersonaItem,
+  SoulEpisode,
+  SoulEpisodeQuery,
+  SoulLedgerEntry,
+  SoulRejectionStat,
+} from "../soul/types.js";
 
 // Re-export so consumers can import everything from types.ts
 export type { MemoryRecord, EmbeddingProviderInfo };
@@ -986,6 +993,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     tenant?: CoreTenant,
   ): MaybePromise<Array<{ slot: string; content: string; source: string; version: number; updated_at: string }>>;
   /**
+   * 自维护人格（m00527）：枚举有 core/soul 数据的租户三元组。
+   * 后台 worker 无请求上下文，必须按租户逐个跑——否则读 core_memory 只能落在 default 桶（生产全空），
+   * 人格整合永不发生。旧后端可不实现（调用方回退单桶）。
+   */
+  listCoreTenants?(): MaybePromise<CoreTenant[]>;
+  /**
    * GROW：origin（seed|manual|auto，来源徽标；缺省 manual）。冲突路径 state='active'
    * （显式重建=撤销退休/否决；自动管道的 veto 不可重提由自生长去重查全态保证）。
    */
@@ -1160,7 +1173,7 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   recentAffectSignals?(
     tenant?: CoreTenant,
     opts?: { windowHours: number; maxSamples: number },
-  ): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string }>>;
+  ): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string; excerpt?: string | null }>>;
   /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 数据源。可选签名（recentAffectSignals 同位先例）：
    *  缺实现时调用侧静默省略张力候选（宁缺毋滥）。租户三元组硬隔离（F18 同款）；metadata_json coreRefs/identityRefs
    *  键族展开为 {label, valence, ref_kind} 行（identityRefs=20 字切片弱口径，如实透传由消费方匹配）；只读、零写库、零 LLM。 */
@@ -1194,17 +1207,84 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   /** #28（R5）：会话级当下 state 单行 upsert/读（观测旁路；抽取扩展门 on 才写；F18 三元组隔离）。 */
   writeSoulState?(
     tenant: CoreTenant,
-    state: { valence: number; arousal: number; topValue?: string | null; turnSeq?: number | null; updatedAt: string },
+    state: {
+      valence: number;
+      arousal: number;
+      /** m00527：心境基线（与基线比的读数需要它；缺省=调用方未提供基线）。 */
+      baselineValence?: number | null;
+      baselineArousal?: number | null;
+      sampleCount?: number | null;
+      topValue?: string | null;
+      turnSeq?: number | null;
+      /** 心境原因（2026-11-05）：造成当前心境的事件对象/标签/衰减后强度/时刻。
+       *  分开存而不是塞进 topValue——topValue 是意图，情绪对象是解释，混用会出现
+       *  「最想推进的是用户拍板」这种把程序性锚名当情绪的荒谬渲染。 */
+      emotionObject?: string | null;
+      emotionLabel?: string | null;
+      emotionIntensity?: number | null;
+      emotionAt?: string | null;
+      updatedAt: string;
+    },
   ): MaybePromise<void>;
   readSoulState?(
     tenant: CoreTenant,
   ): MaybePromise<{
     valence: number;
     arousal: number;
+    baselineValence?: number | null;
+    baselineArousal?: number | null;
+    sampleCount?: number | null;
     topValue?: string | null;
     turnSeq?: number | null;
+    emotionObject?: string | null;
+    emotionLabel?: string | null;
+    emotionIntensity?: number | null;
+    emotionAt?: string | null;
     updatedAt: string;
   } | null>;
+
+  /* —— 自维护人格层（soul persona，2026-11-05）——
+   * 与 core_memory 并存、不替换：core_memory 仍是人的槽（identity/strict_rule），
+   * soul_persona 是「经过判据筛过的取舍层」。写入只经 commitSoulPersona（事务化：
+   * 条目 upsert + 账本 append 同生共死），账本只增不改，回滚靠 before_json 快照。 */
+  listSoulPersona?(tenant?: CoreTenant): MaybePromise<PersonaItem[]>;
+  commitSoulPersona?(
+    tenant: CoreTenant | undefined,
+    plan: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] },
+  ): MaybePromise<{ upserted: number; ledgered: number }>;
+  listSoulLedger?(tenant?: CoreTenant, limit?: number): MaybePromise<SoulLedgerEntry[]>;
+
+  /* —— 事件层（soul_episodes，2026-11-05）——
+   * 人格的「事实底座」：每次分歧/纠正/拍板/取舍都是一行，userStance/agentStance 是逐字摘句。
+   * identity/values/narrative 必须挂在 ep-* 上才准入；voice 的 few-shot 也从这里取。
+   * 写入幂等（episode_id 主键 + INSERT OR IGNORE）：重跑同一天不会翻倍。 */
+  commitSoulEpisodes?(tenant: CoreTenant | undefined, episodes: SoulEpisode[]): MaybePromise<{ inserted: number }>;
+  listSoulEpisodes?(
+    tenant?: CoreTenant,
+    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"] },
+  ): MaybePromise<SoulEpisode[]>;
+  /** 「上次因为什么恼火、对谁、多强」——确定性 LIKE 检索（标题/对象/双方立场/原话）。 */
+  searchSoulEpisodes?(tenant: CoreTenant | undefined, query: SoulEpisodeQuery): MaybePromise<SoulEpisode[]>;
+  /** 事件挖掘的输入：窗口内 L0 原始对话（user/assistant 都要，按时间正序）。
+   *  单列出来的理由：人格要的是「原话」，不是摘要；queryL1Records 已经损失了声口。 */
+  recentL0Messages?(
+    tenant?: CoreTenant,
+    opts?: { sinceDays?: number; maxMessages?: number },
+  ): MaybePromise<
+    Array<{
+      record_id: string;
+      session_id: string;
+      role: string;
+      message_text: string;
+      recorded_at: string;
+      timestamp?: number;
+    }>
+  >;
+  /** 拒绝原因分布（观测面：判据调得对不对，先看拒的都是什么）。 */
+  soulRejectionStats?(
+    tenant?: CoreTenant,
+    opts?: { sinceDays?: number },
+  ): MaybePromise<SoulRejectionStat[]>;
 
   /* —— #35（R5）：promise 承诺层数据面 ——
    * 义务不是倾向：promise 独立于 core_values 生命周期（无 reweight/decay/similarMerge/
