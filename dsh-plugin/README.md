@@ -519,7 +519,14 @@ bash scripts/drill-patch-layer.sh   # 演练：在一次性 profile 上验「写
 - 目标 profile 缺省 `desktop`（当前 GUI 在跑的 profile；`web` 是出厂模板），可用 `DSH_PROFILE` 覆盖。
 - **重复执行 = 升级**：第二次跑 `deploy.sh` 会替换同一个管理块（新 tarball + 新 config），不会插第二份，
   也不再像旧版那样「已存在就 exit 0」把升级伪装成成功。管理块有显式首尾标记
-  （`# >>> tdb-agemem-dsh managed block`），块内不要手改——改配置用 `--config-extra` 或改脚本参数。
+  （`# >>> tdb-agemem-dsh managed block`）。
+- **升级只重渲 `server.*`，其余键原样保留**（`patch-util.mjs` 的 `upsert-keep`，2026-11-05 起）：
+  Settings 页往块里写的 `services.enabled`、`writeback.*`、`volatile.*` 等会被搬到新块的
+  `config:` 末尾；新渲染自己带了的键以新渲染为准。**事故背景**：此前升级用 `upsert` 整块重渲，
+  只建模 `server.*`，一次不带 `--config-extra` 的部署把 `services: {enabled: true}` 静默抹掉，
+  本机服务栈直接关停（面板显示「本机不托管服务栈」）。已写测试
+  `test/patch-util.test.ts` 的 `operator config knobs survive a re-deploy` 四例；要**故意**清掉旧键，
+  手工编辑或先 `patch-util.mjs strip` 再部署。
 - 备份写在仓库内 `dsh-plugin/.deploy/<stamp>/`，不往 `~/.dsh` 塞额外文件。
 - **失败即回滚**：安装后任何一步（写块 / dump-config / 校验）失败，脚本会剥块 + 还原 package.json 与
   pnpm-lock + 卸包 + 删残留目录再 exit 1，不留孤儿安装；`.deploy/last` 在**校验之前**写，所以失败的

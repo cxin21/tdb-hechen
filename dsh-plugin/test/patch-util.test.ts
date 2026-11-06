@@ -11,6 +11,7 @@ import {
   setIdentityInBlock,
   stripManaged,
   upsertManaged,
+  upsertManagedKeep,
 } from "../scripts/patch-util.mjs";
 
 const BODY = [
@@ -184,6 +185,61 @@ describe("patch-util", () => {
       const res = setIdentityInBlock("- insert:\n    - id: tdb-agemem-dsh", { teamId: "t" });
       expect(res.missingServer).toBe(true);
       expect(res.changed).toBe(false);
+    });
+  });
+
+  // Real incident 2026-11-05: a plain deploy re-rendered the managed block from
+  // render_entry (which models only server.*) and the operator's services block
+  // vanished with it — local service hosting went off without a word.
+  describe("operator config knobs survive a re-deploy", () => {
+    const RENDERED = [
+      "",
+      "- insert:",
+      "    - id: tdb-agemem-dsh",
+      "      name: ./node_modules/@tdb/agemem-dsh/dist/index.js",
+      "      config:",
+      "        server:",
+      '          baseUrl: "http://127.0.0.1:8420"',
+      '          serviceId: "default"',
+      '          apiKeyRef: "TDAI_GATEWAY_APIKEY"',
+      '          userKeyRef: "TDAI_USER_KEY"',
+      "",
+    ].join("\n");
+
+    it("carries services / writeback / volatile over from the old block", () => {
+      const old = managedBlock(RENDERED + "        services:\n          enabled: true\n        writeback:\n          skillFeed: false\n");
+      const res = upsertManagedKeep(old, RENDERED);
+      expect(res.preserved).toEqual(["services", "writeback"]);
+      expect(res.text).toContain("services:\n          enabled: true");
+      expect(res.text).toContain("skillFeed: false");
+      // The rendered server section is still exactly one copy.
+      expect(res.text.match(/server:/g)).toHaveLength(1);
+      expect(res.text.match(/- id: tdb-agemem-dsh/g)).toHaveLength(1);
+    });
+
+    it("does not duplicate a key the new render already carries", () => {
+      const old = managedBlock(RENDERED + "        services:\n          enabled: true\n");
+      const withServices = RENDERED + "        services:\n          enabled: false\n";
+      const res = upsertManagedKeep(old, withServices);
+      expect(res.preserved).toEqual([]);
+      expect(res.text.match(/services:/g)).toHaveLength(1);
+      expect(res.text).toContain("enabled: false");
+    });
+
+    it("leaves a fresh profile (no old block) byte-identical to upsert", () => {
+      const res = upsertManagedKeep("- id: other\n", RENDERED);
+      expect(res.preserved).toEqual([]);
+      expect(res.text).toBe(upsertManaged("- id: other\n", RENDERED));
+    });
+
+    it("keeps nested children, indentation and comments intact", () => {
+      const old = managedBlock(
+        RENDERED + ["        volatile:", "          maxChars: 6000", "          soul:", "            maxChars: 4400", "        # operator note", ""].join("\n"),
+      );
+      const res = upsertManagedKeep(old, RENDERED);
+      expect(res.preserved).toEqual(["volatile"]);
+      expect(res.text).toContain("          soul:\n            maxChars: 4400");
+      expect(res.text).toContain("# operator note");
     });
   });
 

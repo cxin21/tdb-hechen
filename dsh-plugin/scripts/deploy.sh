@@ -536,7 +536,14 @@ else
   # become an unrecoverable orphan).
   printf '%s\n' "$STAMP" > "$STATE_ROOT/last"
   ln -sfn "$STAMP" "$STATE_ROOT/current" 2>/dev/null || true
-  node "$REPO_ROOT/scripts/patch-util.mjs" upsert "$PATCH_FILE" "$STATE_DIR/entry.yml" || abort_deploy "could not write the patch entry"
+  # upsert-keep, not upsert: the block also carries operator knobs that the
+  # Settings page writes there (services.enabled, writeback.skillFeed,
+  # volatile.*). Re-rendering used to drop them silently -- on 2026-11-05 a
+  # plain deploy switched local service hosting off this way. Only server.* is
+  # re-rendered; everything else in the old block is carried over.
+  KEPT_KEYS="$(node "$REPO_ROOT/scripts/patch-util.mjs" upsert-keep "$PATCH_FILE" "$STATE_DIR/entry.yml")" \
+    || abort_deploy "could not write the patch entry"
+  [ -n "$KEPT_KEYS" ] && say "  $KEPT_KEYS"
   if "$DSH_BIN" --profile "$PROFILE" --dump-config > "$STATE_DIR/dump-config.yml" 2> "$STATE_DIR/dump-config.err"; then
     grep -q "$PLUGIN_ID" "$STATE_DIR/dump-config.yml" \
       || abort_deploy "dump-config does not contain $PLUGIN_ID"

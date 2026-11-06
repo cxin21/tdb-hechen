@@ -585,6 +585,49 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     return { kind: 'no', reason: 'answer did not match an option' };
   };
 
+  /**
+   * The proxy's THIRD stage (form.ts:252-274): Task / work item.
+   *
+   * An OPTIONAL scope axis, so every failure mode below degrades to "no task":
+   * it must never sink an association the user already answered for team + agent.
+   * Shared by the ask path AND the preset path -- a preset fixes team/agent but
+   * the work item is per session, so it still gets this one card when the team
+   * actually has running work items (and stays silent when it has none).
+   */
+  const resolveTask = async (
+    team: { teamId: string; name?: string },
+    known: TaskChoice[],
+    userKey: string,
+    agent: unknown,
+    signal: unknown,
+  ): Promise<string | undefined> => {
+    if (!settings.askForTask) return undefined;
+    let tasks = known;
+    if (tasks.length === 0 && team.teamId !== '') {
+      const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
+      if (scoped.kind === 'ok') tasks = scoped.tasks ?? [];
+    }
+    if (tasks.length === 0) return undefined;
+    // The proxy unshifted a virtual "default task" and treated it as "no task
+    // for this session"; the same option is first here, always, so ignoring the
+    // card can never silently attach a work item.
+    const choices: Choice[] = [
+      { label: TASK_NO_TASK_LABEL, id: '' },
+      ...tasks.map((entry) => ({ label: labelOf(entry.title, entry.taskId), id: entry.taskId })),
+    ];
+    const asked = await ask([{
+      id: TASK_QUESTION_ID,
+      header: 'TDB 记忆',
+      question: '「' + (team.name ?? team.teamId) + '」下本次会话关联哪个工作项（Task）？选「' + TASK_NO_TASK_LABEL + '」= 不按任务收窄: ' + SKIP_HINT,
+      options: choices.map((choice) => ({ label: choice.label })),
+      multiSelect: false,
+    }], agent, signal);
+    if (asked.kind !== 'answers') return undefined;
+    const pickedTask = resolveChoice(asked.answers, TASK_QUESTION_ID, choices);
+    // '' is the explicit "no task" option; a skip answer means the same.
+    return pickedTask.kind === 'picked' && pickedTask.id !== '' ? pickedTask.id : undefined;
+  };
+
   const pick = async (sessionId: string, agent: unknown, signal: unknown): Promise<void> => {
     const labelChoices = (entries: Array<{ id: string; name?: string }>): Choice[] =>
       entries.map((entry) => ({ label: labelOf(entry.name, entry.id), id: entry.id }));
@@ -616,9 +659,16 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     if (decision.kind === 'preset') {
       const preset = await resolvePreset(decision, first, userKey);
       if (preset !== undefined) {
+        // Preset fixes team + agent for the account, so those stay silent. The
+        // work item is NOT account-level -- it changes per session -- so it
+        // still gets its one optional card, and only when the team actually has
+        // running work items (an empty list has nothing worth asking).
+        const presetTask = await resolveTask({ teamId: preset.teamId }, first.tasks ?? [], userKey, agent, signal);
         submit(sessionId, {
           teamId: preset.teamId,
           agentId: preset.agentId,
+          // Absent (not empty) when nothing was picked: absence means "no task".
+          ...(presetTask !== undefined ? { taskId: presetTask } : {}),
           // The VERIFIED user id, not server.userId.
           userId: first.userId,
           source: 'user-preset',
@@ -711,37 +761,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       agentId = picked.id;
     }
 
-    // The proxy's THIRD stage (form.ts:252-274): Task / work item. This is an
-    // OPTIONAL scope axis, so every path below degrades to "no task" -- it must
-    // never sink an association the user already answered for team + agent.
-    let taskId: string | undefined;
-    if (settings.askForTask) {
-      if (tasks.length === 0 && team.teamId !== '') {
-        const scoped = await deps.candidates({ userKey, teamId: team.teamId, timeoutMs: deps.timeoutMs });
-        if (scoped.kind === 'ok') tasks = scoped.tasks ?? [];
-      }
-      if (tasks.length > 0) {
-        // The proxy unshifted a virtual "default task" and treated it as "no
-        // task for this session"; the same option is first here, always, so
-        // ignoring the card can never silently attach a work item.
-        const choices: Choice[] = [
-          { label: TASK_NO_TASK_LABEL, id: '' },
-          ...tasks.map((entry) => ({ label: labelOf(entry.title, entry.taskId), id: entry.taskId })),
-        ];
-        const asked = await ask([{
-          id: TASK_QUESTION_ID,
-          header: 'TDB 记忆',
-          question: '「' + (team.name ?? team.teamId) + '」下本次会话关联哪个工作项（Task）？选「' + TASK_NO_TASK_LABEL + '」= 不按任务收窄: ' + SKIP_HINT,
-          options: choices.map((choice) => ({ label: choice.label })),
-          multiSelect: false,
-        }], agent, signal);
-        if (asked.kind === 'answers') {
-          const pickedTask = resolveChoice(asked.answers, TASK_QUESTION_ID, choices);
-          // '' is the explicit "no task" option; a skip answer means the same.
-          if (pickedTask.kind === 'picked' && pickedTask.id !== '') taskId = pickedTask.id;
-        }
-      }
-    }
+    // The proxy's THIRD stage (form.ts:252-274): Task / work item -- optional,
+    // so every failure degrades to "no task" and never sinks team + agent.
+    const taskId = await resolveTask(team, tasks, userKey, agent, signal);
 
     submit(sessionId, {
       teamId: team.teamId,

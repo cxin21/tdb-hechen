@@ -130,6 +130,111 @@ export function restoreArraySeed(text) {
  * after one re-deploy the managed block sat last => deploy's config won and
  * the user's edit vanished from the composed config.
  */
+const CONFIG_KEY = "config:";
+
+/**
+ * Children of `config:` that the deploy script does NOT render, i.e. the
+ * operator's own knobs (services.enabled, writeback.skillFeed, volatile.*, …).
+ *
+ * deploy.sh renders a fresh block on every upgrade and the loader replaces an
+ * entry's config WHOLESALE, so a re-deploy used to silently drop anything the
+ * Settings page had written into the block. Real incident 2026-11-05: a deploy
+ * without --config-extra removed `services: {enabled: true}` and local service
+ * hosting went off ("本机不托管服务栈" in the panel).
+ *
+ * @returns {{key: string, lines: string[]}[]} chunk per config child except server
+ */
+export function operatorConfigBlocks(body) {
+  const lines = String(body ?? "").replace(/\r\n/g, "\n").split("\n");
+  const indentOf = (line) => line.length - line.trimStart().length;
+  const configLine = lines.findIndex((line) => line.trim() === CONFIG_KEY);
+  if (configLine === -1) return [];
+  const configIndent = indentOf(lines[configLine]);
+  let end = lines.length;
+  for (let i = configLine + 1; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (indentOf(lines[i]) <= configIndent) {
+      end = i;
+      break;
+    }
+  }
+  const childIndent = (() => {
+    for (let i = configLine + 1; i < end; i += 1) {
+      if (lines[i].trim() !== "" && !lines[i].trim().startsWith("#")) return indentOf(lines[i]);
+    }
+    return configIndent + 2;
+  })();
+  const blocks = [];
+  let current = undefined;
+  for (let i = configLine + 1; i < end; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "" || line.trim().startsWith("#")) {
+      if (current !== undefined) current.lines.push(line);
+      continue;
+    }
+    if (indentOf(line) === childIndent) {
+      const key = line.trim().replace(/:\s*$/, "").replace(/:\s.*$/, "");
+      current = { key, lines: [line] };
+      blocks.push(current);
+      continue;
+    }
+    if (current !== undefined) current.lines.push(line);
+  }
+  return blocks.filter((block) => block.key !== "server" && block.key !== "");
+}
+
+/**
+ * Insert operator blocks into a freshly rendered body, right after the last
+ * child of its `config:` section. Keys the new body already carries win (a
+ * script parameter beats a stale leftover); everything else is preserved.
+ *
+ * @returns {{body: string, preserved: string[]}}
+ */
+export function mergeOperatorConfig(newBody, oldBody) {
+  const keep = operatorConfigBlocks(oldBody);
+  if (keep.length === 0) return { body: newBody, preserved: [] };
+  const lines = String(newBody).replace(/\r\n/g, "\n").split("\n");
+  const indentOf = (line) => line.length - line.trimStart().length;
+  const configLine = lines.findIndex((line) => line.trim() === CONFIG_KEY);
+  if (configLine === -1) return { body: newBody, preserved: [] };
+  const configIndent = indentOf(lines[configLine]);
+  let end = lines.length;
+  for (let i = configLine + 1; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (indentOf(lines[i]) <= configIndent) {
+      end = i;
+      break;
+    }
+  }
+  const present = new Set(
+    lines
+      .slice(configLine + 1, end)
+      .filter((line) => line.trim() !== "" && !line.trim().startsWith("#") && indentOf(line) === configIndent + 2)
+      .map((line) => line.trim().replace(/:\s*$/, "").replace(/:\s.*$/, "")),
+  );
+  const preserved = [];
+  const additions = [];
+  for (const block of keep) {
+    if (present.has(block.key)) continue;
+    additions.push(...block.lines);
+    preserved.push(block.key);
+  }
+  if (additions.length === 0) return { body: newBody, preserved: [] };
+  // Keep a blank line before appended blocks only when it reads better; the
+  // rendered body already ends the config section with a newline.
+  const out = [...lines.slice(0, end), ...additions, ...lines.slice(end)];
+  return { body: out.join("\n"), preserved };
+}
+
+/** upsertManaged + preservation of the operator's own config knobs. */
+export function upsertManagedKeep(text, body) {
+  const oldBody = extractManagedBody(text);
+  const merged = oldBody === undefined ? { body, preserved: [] } : mergeOperatorConfig(body, oldBody);
+  return { text: upsertManaged(text, merged.body), preserved: merged.preserved };
+}
+
 export function upsertManaged(text, body) {
   const block = managedBlock(body);
   const src = String(text ?? "").replace(/\r\n/g, "\n");
@@ -279,7 +384,17 @@ async function main(argv) {
     await writeFile(file, upsertManaged(text, body));
     return;
   }
-  process.stderr.write("usage: patch-util.mjs <upsert|strip|has> <patchFile> [blockFile]\n");
+  if (cmd === "upsert-keep") {
+    // deploy.sh's mode: re-render the block but keep the operator's config
+    // knobs (services.enabled, writeback.*, volatile.*) from the old block.
+    const text = await readFile(file, "utf8").catch(() => "");
+    const body = await readFile(bodyFile, "utf8");
+    const res = upsertManagedKeep(text, body);
+    await writeFile(file, res.text);
+    if (res.preserved.length > 0) process.stdout.write("kept config keys: " + res.preserved.join(", ") + "\n");
+    return;
+  }
+  process.stderr.write("usage: patch-util.mjs <upsert|upsert-keep|strip|has> <patchFile> [blockFile]\n");
   process.exit(2);
 }
 

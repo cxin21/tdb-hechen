@@ -325,6 +325,56 @@ describe('installSessionIdentity', () => {
     expect(h.installed.status()).toBe('bound(user-preset)');
   });
 
+  // A task is NOT an account-level setting like team/agent: it changes every
+  // session, so the preset path still asks the one optional task question --
+  // but only when the team actually has running work items. Otherwise task_id
+  // would have no producer at all on a preset account.
+  it('asks ONLY the task card on the preset path when the team has running work items', async () => {
+    const h = harness({
+      sessionInit: preset(),
+      tasks: [{ taskId: 'task-0001', title: '燕京 2305' }],
+      answers: (request: any) => ({ answers: [{ id: TASK_QUESTION_ID, selected: [request.questions[0].options[1].label] }] }),
+    });
+
+    await h.step();
+
+    expect(h.askIds()).toEqual([TASK_QUESTION_ID]);
+    expect(h.asks[0].questions[0].options[0].label).toBe(TASK_NO_TASK_LABEL);
+    expect(h.store.get('sess-1')).toMatchObject({
+      teamId: 'team-a',
+      agentId: 'agt-a',
+      taskId: 'task-0001',
+      userId: 'usr-a',
+      source: 'user-preset',
+    });
+    expect(h.installed.status()).toBe('bound(user-preset)');
+  });
+
+  it('binds the preset with no task when the task card answer is 本次不关联任务', async () => {
+    const h = harness({
+      sessionInit: preset(),
+      tasks: [{ taskId: 'task-0001', title: '燕京 2305' }],
+      answers: (request: any) => ({ answers: [{ id: TASK_QUESTION_ID, selected: [request.questions[0].options[0].label] }] }),
+    });
+
+    await h.step();
+
+    expect(h.countAsks(TASK_QUESTION_ID)).toBe(1);
+    const bound = h.store.get('sess-1');
+    expect(bound).toMatchObject({ teamId: 'team-a', agentId: 'agt-a', source: 'user-preset' });
+    expect(bound?.taskId).toBeUndefined();
+  });
+
+  it('stays silent on the preset path when the team has no running work item', async () => {
+    const h = harness({ sessionInit: preset(), tasks: [] });
+
+    await h.step();
+
+    expect(h.ask).not.toHaveBeenCalled();
+    expect(h.countAsks(TASK_QUESTION_ID)).toBe(0);
+    expect(h.store.get('sess-1')?.taskId).toBeUndefined();
+  });
+
   it('uses the team\'s single agent when the preset carries no agent id', async () => {
     const h = harness({
       sessionInit: preset({ default_agent_id: '' }),

@@ -18,7 +18,7 @@
 
 - **触发条件**：本 session 未绑定身份，且**用户级 `session_init` 配置说「问」**。弹不弹卡与候选数量无关——旧实现「1 team 自动选中、1 agent 自动绑定」是错的（proxy 侧不是这个逻辑）。现在的决策来自 `POST /v3/meta/config/user/get {user_id, module:"session_init"}` 的四个生效值（照抄 `MemoryProxy/src/session/user-session-init-preset.ts:20-40`）：
   - `manual_select≠"0"` / 读不到配置 / 缺 `default_team_id` ⇒ **ask**：每会话弹「请确认本次对话是否要关联团队资产？」，答「是」之后才按候选数折叠（1 team 不问 team、1 agent 不问 agent，`source:'picked'`），答「否」⇒ 空三元组 + `source:'skipped'`（不注入）。
-  - `manual_select="0"` + `default_associate="1"` + 有 team ⇒ **preset**：校验 team 属于该用户、agent 在该 team 内（未配 agent 时取该 team 唯一 agent，0/多个视为失效）后静默绑定，`source:'user-preset'`；校验失败 warn 一次并回落 ask。
+  - `manual_select="0"` + `default_associate="1"` + 有 team ⇒ **preset**：校验 team 属于该用户、agent 在该 team 内（未配 agent 时取该 team 唯一 agent，0/多个视为失效）后**静默绑定 team + agent**，`source:'user-preset'`；校验失败 warn 一次并回落 ask。**但 Task 这一问仍会弹**：team/agent 是账户级固定值，工作项（Task）却是每会话变化的作用域，静默不弹就永远产不出 `task_id`。所以 preset 态下若该 team 有 running 任务，仍弹一张可选的 `task_select`（首项恒为「本次不关联任务」，跳过=不按任务收窄）；无 running 任务时保持静默、零弹卡（2026-11-05 追加；证据 `dsh-plugin/src/session-identity.ts` 的 `resolveTask`，用例 `asks ONLY the task card on the preset path when the team has running work items`）。
   - `manual_select="0"` + `default_associate="0"` ⇒ **bypass**：`source:'user-bypass'` + **空三元组**（`missingIdentity()` 报 `teamId`，数据面全部不发请求），不注入也不写回。**决策之前也不读团队数据**：mount 时读一次配置，`HeadPackDeps.allowFetch` 这一个闸门覆盖全部取数路径（mount 刷新、`turn/start` 的 `ensureFresh`、section 渲染里的 `current()`、`onBound`），判定 `bypass` ⇒ 连 `head pack composed` 都不会出现；embedding 预热（`/v3/core/read` + `/v3/recall`）同闸门。读配置失败 **fail-open**（照常预热 + 弹卡），不把 5xx 当成「用户选择退出」。
   - **配置读取次数**：mount 读一次（供上面的门禁用），**首个**会话复用该值，之后每个新会话各读一次 ⇒ 一个会话恰一次往返，改配置不必重启，也不会被进程级缓存钉死（`test/index.test.ts` 两条用例钉住「首会话复用 / 新会话重读」）。
   - **题面**：`asset_confirm` 问「请确认本次对话是否要关联团队资产？」，**不**附 `SKIP_HINT`（这张卡没有「跳过」选项，两个选项自带的说明已经讲清后果）；team / agent 两题仍带 `SKIP_HINT`（那里确实有跳过项）。
@@ -65,7 +65,7 @@ recorder 原文：同一轮 `/v3/recall` 带 `"agent":"agt-2m7buribzz"`（绑定
 
 ## 6. 边界与诚实说明
 
-- **本团队真实数据下不会自己弹卡**：`/v3/meta/user/list` 只有 1 个 user（`hechen`），`/v3/meta/agent/list` 该 team 下也只 owns 1 个 agent。改动前这导致「自动绑定、永不弹卡」（错误行为，已修）；改动后是否弹卡只看用户级 `session_init`——`preset` 态下同样不弹（静默绑定，`source:'user-preset'`），`bypass` 态不弹也不注入，只有 `ask` 态弹。e2e 通过 recorder（`scratch/e2e6/recorder.mjs`，`STUB_SESSION_INIT` stub `config/user/get` 三态、`STUB_AGENTS=1` 把 agent 候选换成 2 个）来验三态；**stub 只伪造这两个端点，其余请求全部透传到 8420**。
+- **本团队真实数据下不会自己弹卡**：`/v3/meta/user/list` 只有 1 个 user（`hechen`），`/v3/meta/agent/list` 该 team 下也只 owns 1 个 agent。改动前这导致「自动绑定、永不弹卡」（错误行为，已修）；改动后是否弹卡只看用户级 `session_init`——`preset` 态下 team/agent 不弹（静默绑定，`source:'user-preset'`），仅当 team 有 running 任务时追加一张可选 `task_select`（2026-11-05 追加，理由见 §2）；`bypass` 态不弹也不注入；`ask` 态弹。**注意**：生产 `entity_tasks` 当前 0 行 ⇒ 即便走 preset 追加的问法也不会弹，`task_id` 需要先建任务才有生产者。e2e 通过 recorder（`scratch/e2e6/recorder.mjs`，`STUB_SESSION_INIT` stub `config/user/get` 三态、`STUB_AGENTS=1` 把 agent 候选换成 2 个）来验三态；**stub 只伪造这两个端点，其余请求全部透传到 8420**。
 - **绑定与卡片竞速**：`session-identity` 的 pre-step 与 volatile 的 pre-step 都 `{prepend:true}`，宿主 prepend 是 unshift ⇒ **先后不保证**。保证的是「最多一张卡」（in-flight 去重）与「选中后下一步已带新身份」；与卡片同批的那一步最多回落 config 一轮。
 - **状态文件上限 200**：超出按 `at` **淘汰最旧**的绑定（不是拒绝新增、不静默留空值）；被淘汰的 session 再来会重新弹一次卡。用例 `evicts the OLDEST binding past 200 sessions`。
 - **`askAtSessionStart=false` 只关「问」不关「记」**：状态文件里已有的绑定继续生效（`identityFor` 直接读 store），否则同 session 会悄悄退回 config 身份——这是按 Lead m05992 的接线要求做的选择，README 已写明。
