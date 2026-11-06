@@ -158,16 +158,49 @@ function episode(over: Partial<SoulEpisode> = {}): SoulEpisode {
 }
 
 describe("soul_episodes / 拒绝统计 / L0 取证窗口", () => {
-  it("episode 幂等入库：重复 episodeId 只留一行，字段与 quote 往返不丢型", async () => {
+  it("episode 幂等入库：重复 episodeId 只留一行；重挖时按当前判据刷新立场与原话", async () => {
     const store = bundle.store;
     expect((await store.commitSoulEpisodes!(TENANT, [episode()])).inserted).toBe(1);
-    expect((await store.commitSoulEpisodes!(TENANT, [episode({ title: "被覆盖？" })])).inserted).toBe(0);
+    // 早期挖掘把助手自己的话写进 user_stance 后不能永远洗不掉：同一 record 重挖即刷新。
+    expect((await store.commitSoulEpisodes!(TENANT, [
+      episode({
+        title: "被覆盖？",
+        userStance: "测试没跑就说修好了？",
+        agentStance: "已按原话重跑全量",
+        quote: { text: "测试没跑就说修好了？", role: "user", recordId: "r1" },
+      }),
+    ])).inserted).toBe(0);
     const rows = await store.listSoulEpisodes!(TENANT);
     expect(rows).toHaveLength(1);
-    expect(rows[0].title).toContain("假绿");
-    expect(rows[0].quote).toEqual({ text: "你亲眼看到它绿了吗", role: "user", recordId: "r1" });
+    expect(rows[0].title).toBe("被覆盖？");
+    expect(rows[0].agentStance).toBe("已按原话重跑全量");
+    expect(rows[0].quote).toEqual({ text: "测试没跑就说修好了？", role: "user", recordId: "r1" });
     expect(rows[0].evidenceIds).toEqual(["r1", "r2"]);
     expect(rows[0].kind).toBe("correction");
+  });
+
+  it("四类新情绪事件读回来仍是原 kind，不会被降级成 decision", async () => {
+    const store = bundle.store;
+    await store.commitSoulEpisodes!(TENANT, [
+      episode({ episodeId: "ep-praise", kind: "praise", object: "复用的组件" }),
+      episode({ episodeId: "ep-complaint", kind: "complaint", object: "菜单和按钮" }),
+      episode({ episodeId: "ep-pressure", kind: "pressure", object: "今晚要" }),
+      episode({ episodeId: "ep-resign", kind: "resignation", object: "随你" }),
+    ]);
+    const kinds = (await store.listSoulEpisodes!(TENANT)).map((e) => e.kind).sort();
+    expect(kinds).toEqual(["complaint", "praise", "pressure", "resignation"]);
+  });
+
+  it("删除噪声事件只删点名的那几条，真实事件与他人租户不受影响", async () => {
+    const store = bundle.store;
+    await store.commitSoulEpisodes!(TENANT, [
+      episode(),
+      episode({ episodeId: "ep-noise", kind: "value_conflict", object: "先A再B", userStance: "# 云文库二期：接口补调研", quote: { text: "# 云文库二期：接口补调研", role: "user", recordId: "r9" } }),
+      episode({ episodeId: "ep-other", kind: "decision", object: "拍板" }),
+    ]);
+    expect((await store.deleteSoulEpisodes!(TENANT, ["ep-noise"])).deleted).toBe(1);
+    expect((await store.listSoulEpisodes!(TENANT)).map((e) => e.episodeId).sort()).toEqual(["ep-a1b2c3", "ep-other"]);
+    expect((await store.deleteSoulEpisodes!(OTHER, ["ep-other"])).deleted).toBe(0);
   });
 
   it("检索：按对象/关键词/kind 都能找回「上次因为什么、对谁」，且三元组隔离", async () => {
@@ -223,5 +256,46 @@ describe("soul_episodes / 拒绝统计 / L0 取证窗口", () => {
     const rows = await store.recentL0Messages!(TENANT, { sinceDays: 1, maxMessages: 10 });
     expect(rows.map((r) => r.record_id)).toEqual(["l0-1", "l0-2"]);
     expect(rows[1].message_text).toBe("第二条");
+  });
+});
+describe("情绪史 soul_emotions（2026-11-06）：按「事件 × 模板版本」留档，可回放", () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    episodeId: "ep-1",
+    at: "2026-11-05T10:00:00.000Z",
+    object: "假绿",
+    label: "愧疚",
+    valence: -0.6,
+    arousal: 0.5,
+    dominance: 0.3,
+    intensity: 0.72,
+    appraisal: { goalRelevance: 0.9, agency: "self" },
+    templateVersion: "et-abcdef12",
+    appraisedAt: "2026-11-05T10:05:00.000Z",
+    ...over,
+  });
+
+  it("写入幂等（同事件同版本只一行），换模板版本会多一行而不是覆盖旧判定", async () => {
+    const store = bundle.store;
+    const first = await store.commitSoulEmotions!(TENANT, [row()]);
+    expect(first.inserted).toBe(1);
+    const dup = await store.commitSoulEmotions!(TENANT, [row()]);
+    expect(dup.inserted).toBe(0);
+    const rejudged = await store.commitSoulEmotions!(TENANT, [row({ label: "委屈", templateVersion: "et-99999999" })]);
+    expect(rejudged.inserted).toBe(1);
+    const rows = await store.listSoulEmotions!(TENANT, { limit: 10 });
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.label))).toEqual(new Set(["愧疚", "委屈"]));
+  });
+
+  it("读回来带对象/强度/支配感/评价向量，且三元组隔离", async () => {
+    const store = bundle.store;
+    await store.commitSoulEmotions!(TENANT, [row()]);
+    const [got] = await store.listSoulEmotions!(TENANT, { object: "假绿" });
+    expect(got.episodeId).toBe("ep-1");
+    expect(got.intensity).toBeCloseTo(0.72, 3);
+    expect(got.dominance).toBeCloseTo(0.3, 3);
+    expect(got.templateVersion).toBe("et-abcdef12");
+    expect(got.appraisal).toMatchObject({ agency: "self" });
+    expect(await store.listSoulEmotions!(OTHER, { limit: 10 })).toHaveLength(0);
   });
 });

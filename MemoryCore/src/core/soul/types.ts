@@ -73,7 +73,21 @@ export interface PersonaItem {
  * 人格不能从「总结」里长出来：总结只剩结论，丢掉「当时谁说了什么、我放弃了什么」。
  * episode 是 L0 原始对话的确定性切片：逐字原话 + 对象 + 双方的立场 + 代价 + 情绪强度，
  * 由零 LLM 的词面标记挖出（episode.ts），LLM 只能「引用」它，不能发明它。 */
-export type SoulEpisodeKind = "divergence" | "correction" | "decision" | "value_conflict" | "affect";
+export const SOUL_EPISODE_KINDS = [
+  "divergence",
+  "correction",
+  "decision",
+  "value_conflict",
+  "affect",
+  // 2026-11-06：生产 L0 里真正带情绪的是这四类短句，此前被当成噪音或误判成纠正。
+  "praise",
+  "complaint",
+  "pressure",
+  "resignation",
+] as const;
+/* 读库时按这张表校验：新增 kind 忘了加进白名单会被静默改写成 decision，
+ * 情绪评价随之被换成 0.8 的正向常态（2026-11-06 生产实证）。 */
+export type SoulEpisodeKind = (typeof SOUL_EPISODE_KINDS)[number];
 
 export interface SoulEpisodeQuote {
   /** 逐字原话（不截断语义的短句，≤160 字）。 */
@@ -120,6 +134,37 @@ export interface SoulEpisode {
   affectSource: "lexicon" | "none";
   /** 事件里显式出现的价值取舍词（若有），审计用。 */
   signals?: string[];
+}
+
+/**
+ * 情绪史一行：某条事件按某一版模板规则判出的情绪。
+ *
+ * 为什么要落表而不是只留 soul_state 一个快照：
+ * 1) soul_state 只记「此刻」，下一次写入就把上一次覆盖掉，情绪史无法回放；
+ * 2) 判据会改（标签扩容、路由调整），同一事件在不同版本下可能判成不同标签——
+ *    所以主键含 templateVersion，旧行不被静默改写，审计能看出当时按哪版规则判的；
+ * 3) 注入侧只说「因为 X 正在消退」，真正要回答「因为什么、对谁、多强、多久消退」
+ *    必须有逐条记录可查。
+ */
+export interface SoulEmotionRecord {
+  /** 来源事件 id（soul_episodes.episode_id）。 */
+  episodeId: string;
+  /** 事件发生时间（ISO）。强度衰减从这一刻起算。 */
+  at: string;
+  object: string;
+  label: string;
+  valence: number;
+  arousal: number;
+  /** 支配感 0..1；旧事件没有这一维时为 undefined（不伪造 0.5）。 */
+  dominance?: number;
+  /** 事件当时的原始强度（不衰减），读侧按标签半衰期重算。 */
+  intensity: number;
+  /** 评价向量（审计用：为什么判成这个标签）。 */
+  appraisal?: unknown;
+  /** 判定所用模板版本（emotion.ts 的 EMOTION_TEMPLATE_VERSION）。 */
+  templateVersion: string;
+  /** 判定时刻（ISO）。 */
+  appraisedAt: string;
 }
 
 export interface SoulEpisodeQuery {
@@ -311,9 +356,10 @@ export const DEFAULT_SOUL_MAINTENANCE_CONFIG: SoulMaintenanceConfig = {
     // 注入面看不到「同一要求换措辞反复重申」这种模式；600 字可渲染 2–3 条。
     voice: 600,
     identity: 400,
-    // 自我模型：不是「我是谁」的重复，而是「我答应过自己什么、我不愿变成什么」。
-    // 300 字约 3 条；再多会把身份层挤掉。
-    self: 300,
+    // 自我模型：不是「我是谁」的重复，而是「我答应过自己什么、我不愿变成什么、
+    // 哪次没守住、后来改成了什么」。300 字只能装下两条承诺 + 一句反悔，失败/复盘永远被挤掉；
+    // 600 字能同时给出代价与去向（2026-11-06 生产注入实拍：失败 10 条、复盘 2 条全在预算外）。
+    self: 600,
     values: 320,
     boundary: 2600,
     // 关系层实测 8 条 802 字（2026-11-05 生产导入：身份槽的用户事实按新口径并入关系层），
@@ -325,14 +371,16 @@ export const DEFAULT_SOUL_MAINTENANCE_CONFIG: SoulMaintenanceConfig = {
   // boundary 是「不变量集」：用户长期累积的红线实测 29 条，7 条会把历史红线挤掉。
   // 其余层仍是 7 条上限（人格要瘦，红线要全）。method 是审计池，64 条。
   // relationship 放宽到 12：关系事实随协作面增长（时区/环境/交付合同/家人），实测已 8 条。
-  maxItems: { ...layerMaxItems(7), self: 5, boundary: 40, relationship: 12, method: 64 },
+  maxItems: { ...layerMaxItems(7), self: 8, boundary: 40, relationship: 12, method: 64 },
   maxItemChars: layerItemChars(160),
   emotionHalfLifeHours: 3,
   moodHalfLifeHours: 48,
   moodDeviationThreshold: 0.15,
   // 事件层：30 天足够覆盖「最近一次为什么恼火」，又不会把半年前的旧立场当现在。
   episodeWindowDays: 30,
-  maxEpisodeMessages: 4000,
+  // 30 天窗口在真实语料里远超 4000 条：hechen 生产库 14383 条 / 24 天，
+  // 4000 条只剩最近一周，团队频道里的公开裁决根本进不来（2026-11-06 实测）。
+  maxEpisodeMessages: 12000,
   maxEpisodesPerRun: 120,
   maxEpisodesForPrompt: 60,
   voiceFewShotPerItem: 2,

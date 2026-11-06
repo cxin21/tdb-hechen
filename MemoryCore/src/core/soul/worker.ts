@@ -28,12 +28,16 @@ import {
   type EvidenceOrigin,
   type PersonaItem,
   type SoulBudgetReport,
+  type SoulEmotionRecord,
   type SoulEpisode,
   type SoulLayer,
   type SoulLedgerEntry,
   type SoulMaintenanceConfig,
+  type SoulRejectionStat,
 } from "./types.js";
-import { episodeDigest, emotionEventFromEpisode, mineEpisodes } from "./episode.js";
+import { episodeDigest, emotionEventFromEpisode, emotionObjectForEpisode, mineEpisodes } from "./episode.js";
+import { chargeCall, openCostBudget, redactSecrets } from "./guard.js";
+import { factsFromEpisode, historyToItems, reversals } from "./history.js";
 import type { MoodState } from "./emotion.js";
 import { allPass, classifyLine, evaluateCandidate, isSelfVoice, normalizeText, stripBullet, textHash, textSimilarity } from "./gates.js";
 import {
@@ -52,8 +56,13 @@ import {
   type ImportSlotSource,
   type SoulSlotSnapshot,
 } from "./consolidator.js";
-import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity } from "./emotion.js";
-import { canSelfReset, measureDrift, pushDrift } from "./drift.js";
+import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION } from "./emotion.js";
+import { canSelfReset, measureDrift, pushDrift, trackOf } from "./drift.js";
+
+/** 修复证据：只认「已经改了」的确定性措辞。「收口」是交付词，不是承认或修复。 */
+// 门用的「修复已落地」判据。故意比 history.ts 的 REPAIR 严：说「重做过」「修好了」不算，
+// 只认「补上了 / 已按…」这种把结果对上原话的说法——否则「我重做了，下轮再跑」也会被当成已修复。
+const REPAIRED_STANCE = /(?:补上了|已按|已对齐|已改|改完|改口)/u;
 
 /** 语料记录（由调用方从 L1 读取；worker 不直接耦合 L1 表结构）。 */
 export interface SoulEvidenceRecord {
@@ -105,6 +114,8 @@ export interface SoulWorkerDeps {
     | "recentAffectSignals"
     | "listSoulLedger"
     | "commitSoulEpisodes"
+    | "commitSoulEmotions"
+    | "deleteSoulEpisodes"
     | "listSoulEpisodes"
     | "recentL0Messages"
     | "soulRejectionStats"
@@ -132,6 +143,8 @@ export interface SoulWorkerDeps {
   importSlots?: boolean;
   /** 向量器（漂移检测用）；缺席=漂移阶段跳过并如实标注，绝不用词面相似伪造分数。 */
   embed?: (text: string) => Promise<number[]>;
+  /** 本轮 LLM 调用上限。缺省 1。0 = 本轮禁止调用。 */
+  llmCallBudget?: number;
 }
 
 /** 单条条目的漂移结果（可审计；分数来自与真实行为锚的比对，不是自比）。 */
@@ -151,6 +164,10 @@ export interface SoulMoodReport {
   activeEmotions: number;
   written: boolean;
   skipped?: string;
+  /** 本轮事件实际触发的情绪分布（label → 条数）：上线后先看这张表，而不是只看一条心境行。 */
+  labels?: Record<string, number>;
+  /** 本轮零触发的模板：语料没给到那种场，或缺对应判据——缺哪种都要说得出来。 */
+  dormant?: string[];
 }
 
 export interface SoulWorkerReport {
@@ -169,6 +186,10 @@ export interface SoulWorkerReport {
   reclassified: number;
   /** 存量槽导入退出人格注入层（冻结，下沉为操作约束；不删除）。 */
   retired?: number;
+  /** 从事件确定性长出的自我/关系史条数（不经 LLM，不计 admitted）。 */
+  historyAdded?: number;
+  /** 规则收紧后不再构成事实、退出注入的旧事件史条数。 */
+  historyRetired?: number;
   merged: number;
   degraded: number;
   frozen: number;
@@ -179,8 +200,10 @@ export interface SoulWorkerReport {
   rejections: Array<{ layer: string; text: string; codes: string[]; detail?: string }>;
   /** 拒绝原因分布（top 在前）：判据调得对不对，先看拒的都是什么。 */
   rejectTop?: Array<{ code: string; count: number }>;
+  /** 近 30 天拒绝原因分布（账本聚合）：本轮 rejectTop 只看得到这一轮，跨轮趋势要读账本。 */
+  rejectHistory?: SoulRejectionStat[];
   /** 事件层本轮实况：挖到多少、新落库多少、可检索池多大、各 kind 分布。 */
-  episodes?: { mined: number; inserted: number; available: number; byKind: Record<string, number> };
+  episodes?: { mined: number; inserted: number; available: number; byKind: Record<string, number>; purged?: number };
   /** 漂移判定（逐条）；无向量器时为空且 driftSkipped 说明原因。 */
   drift: SoulDriftReport[];
   driftSkipped?: string;
@@ -387,6 +410,8 @@ export interface SoulMergeContext {
   voiceRecords?: Map<string, string>;
   /** 本轮事件池：self 层的「我表过态」判定要读 agentStance。 */
   episodesById?: Map<string, SoulEpisode>;
+  /** 情绪决定的生长排期：自我向情绪还挂着未修的对象时，这一轮不重写 identity/values。 */
+  moodGate?: { defer: SoulLayer[]; code: string; reason: string };
 }
 
 /** 拒绝落账本的稳定 id：同一天同层同文只记一次（重跑幂等，不刷屏）。 */
@@ -445,6 +470,11 @@ function mergeCandidates(
   };
   for (const raw of candidates) {
     const existing = [...map.values()];
+    // 情绪不是文案：还在同一个对象上欠着修复时，同一批证据不能当轮升格成「我是谁」。
+    if (opts?.moodGate && opts.moodGate.defer.includes(raw.layer)) {
+      reject(raw.layer, raw.text, [opts.moodGate.code], opts.moodGate.reason, raw.evidenceIds);
+      continue;
+    }
     // 事件证据只认本轮真实存在的事件（LLM 编造的 ep-* 直接丢弃，不参与计数）。
     const episodeIds = opts?.episodeIds
       ? (raw.episodeIds ?? []).filter((id) => opts.episodeIds!.has(id))
@@ -666,17 +696,26 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   if (deps.importSlots !== true && deps.trigger !== "import") {
     for (const it of [...map.values()]) {
       const fromSlot = (it.meta as { source?: unknown } | undefined)?.source === "slot-import";
-      // 只迁 boundary（历史红线下沉操作约束层）。2026-11-05 重启实测缺陷：旧条件把
-      // values/relationship 等 49 条也一起冻结，cadence 又跳过了生成，导致生产注入层
-      // 瞬间清空 6 小时。非 boundary 的存量条目保留，等新证据自然替换/降级。
-      if (!fromSlot || it.layer !== "boundary" || it.state === "frozen") continue;
+      // boundary：历史操作红线下沉 strict_rule。relationship：槽导入是用户档案
+      // （姓名/时区/妻子账号），不是关系史，必须退出「我和他的关系」。
+      // values/identity 等其它层仍保留，等新证据替换——整层冻结会把注入清空。
+      const exitLayer = it.layer === "boundary" || it.layer === "relationship";
+      if (!fromSlot || !exitLayer || it.state === "frozen") continue;
       const retired: PersonaItem = { ...it, state: "frozen", updatedAt: now };
       map.set(retired.itemId, retired);
       report.retired = (report.retired ?? 0) + 1;
       ledger.push(
-        ledgerOf(it, retired, now, deps.trigger, "retire", "历史操作红线退出人格层，下沉为操作约束（strict_rule 段继续渲染）", [
-          "legacy_slot_retired",
-        ]),
+        ledgerOf(
+          it,
+          retired,
+          now,
+          deps.trigger,
+          "retire",
+          it.layer === "relationship"
+            ? "槽导入的用户档案退出关系层；关系史只留有事件证据的生成条目"
+            : "历史操作红线退出人格层，下沉为操作约束（strict_rule 段继续渲染）",
+          ["legacy_slot_retired"],
+        ),
       );
     }
   }
@@ -807,6 +846,9 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   const episodeIds = new Set<string>();
   const voiceRecords = new Map<string, string>();
   let episodePool: SoulEpisode[] = [];
+  // 有旁人的会话（团队频道/群）＝公开场：同一个错在那里被指出是害羞，私聊里是愧疚。
+  // 用会话里真实的 team 消息判定，不要求他的原话自己写出「当众」。
+  const publicSessions = new Set<string>();
   try {
     const l0 = deps.recentL0
       ? await deps.recentL0()
@@ -818,6 +860,11 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             }),
           )) ?? [])
         : [];
+    for (const row of l0 as Array<{ session_id?: string; role?: string; message_text?: string }>) {
+      if (row.role !== "user") continue;
+      if (!/^\s*Team message from/iu.test(String(row.message_text ?? ""))) continue;
+      if (row.session_id) publicSessions.add(row.session_id);
+    }
     const minedEpisodes = mineEpisodes(l0, cfg, { windowDays: cfg.episodeWindowDays });
     let inserted = 0;
     if (minedEpisodes.episodes.length > 0 && typeof store.commitSoulEpisodes === "function") {
@@ -829,6 +876,25 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       typeof store.listSoulEpisodes === "function"
         ? ((await Promise.resolve(store.listSoulEpisodes(deps.tenant, { since, limit: 500 }))) ?? [])
         : minedEpisodes.episodes;
+    // 事件是「按当前判据从语料重算」的派生视图，不是不可变事实（账本才是）。
+    // 旧检测器把注入体/任务书当成他的发言、或把「先A再B」当取舍写下的行，
+    // 必须随判据一起退场，否则它们会长期充当他的情绪对象与心境来源。
+    // 只清理 affect_source=lexicon 且落在本轮窗口内的行；LLM 候选与窗口外历史不动。
+    let purged = 0;
+    if (typeof store.deleteSoulEpisodes === "function") {
+      const windowStart = Date.parse(now) - cfg.episodeWindowDays * 86_400_000;
+      const keep = new Set(minedEpisodes.episodes.map((ep) => ep.episodeId));
+      const stale = episodePool
+        .filter((ep) => (ep.affectSource ?? "lexicon") === "lexicon")
+        .filter((ep) => Date.parse(ep.at) >= windowStart && !keep.has(ep.episodeId))
+        .map((ep) => ep.episodeId);
+      if (stale.length > 0) {
+        const res = await Promise.resolve(store.deleteSoulEpisodes(deps.tenant, stale));
+        purged = res?.deleted ?? 0;
+        const gone = new Set(stale);
+        episodePool = episodePool.filter((ep) => !gone.has(ep.episodeId));
+      }
+    }
     for (const q of minedEpisodes.voiceQuotes) {
       if (q.recordId) voiceRecords.set(q.recordId, q.text);
     }
@@ -840,7 +906,34 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       inserted,
       available: episodePool.length,
       byKind,
+      ...(purged > 0 ? { purged } : {}),
     };
+    // 自我失败/复盘/反悔、关系冲突/修复：从事件确定性长出，不经 LLM。
+    // 已有同 itemId 的不覆盖（重跑幂等）。没有我的表态的事件不会进这里。
+    const facts = episodePool.flatMap(factsFromEpisode);
+    const grown = historyToItems([...facts, ...reversals(facts)], now);
+    let historyAdded = 0;
+    const still = new Set(grown.map((item) => item.itemId));
+    for (const item of grown) {
+      const prev = map.get(item.itemId);
+      // 同文同 id 已 active 时不必重建；但权重是判据的一部分（具体失败/复盘要压过概括性的「改过口」），
+      // 旧权重留在库里会让注入顺序永远停在上一版判据上。
+      if (prev?.state === "active" && prev.weight === item.weight) continue;
+      map.set(item.itemId, prev ? { ...item, createdAt: prev.createdAt } : item);
+      historyAdded += 1;
+      ledger.push(ledgerOf(prev, item, now, deps.trigger, prev ? "update" : "admit", "事件史确定性长出，非模型自评", ["episode_history"]));
+    }
+    let historyRetired = 0;
+    for (const [id, item] of [...map]) {
+      const source = (item.meta as { source?: string } | undefined)?.source;
+      if (source !== "episode-history" || item.state !== "active" || still.has(id)) continue;
+      const frozen: PersonaItem = { ...item, state: "frozen", updatedAt: now };
+      map.set(id, frozen);
+      historyRetired += 1;
+      ledger.push(ledgerOf(item, frozen, now, deps.trigger, "freeze", "事件史规则收紧后不再构成事实，退出注入", ["episode_history"]));
+    }
+    if (historyAdded > 0) report.historyAdded = historyAdded;
+    if (historyRetired > 0) report.historyRetired = historyRetired;
   } catch (err) {
     deps.logger?.warn?.(`[soul-worker] episode mining failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -852,6 +945,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   // 且事后可回放「当时为什么先防着/先信一次」。
   let promptMoodLine: string | undefined;
   let promptMoodBias: string | undefined;
+  // 自我向情绪 + 同一对象反复未修 → 本轮生长排期（不是永久封禁，修复写下即放行）。
+  let moodGate: { defer: SoulLayer[]; code: string; reason: string } | undefined;
   if (typeof store.readSoulState === "function" && typeof store.recentAffectSignals === "function") {
     try {
       const nowMs = Date.parse(now);
@@ -861,8 +956,14 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             arousal?: number;
             baselineValence?: number | null;
             baselineArousal?: number | null;
+            dominance?: number | null;
+            baselineDominance?: number | null;
             sampleCount?: number | null;
             updatedAt?: string;
+            emotionObject?: string | null;
+            emotionLabel?: string | null;
+            emotionIntensity?: number | null;
+            emotionAt?: string | null;
           }
         | null;
       if (prevState && typeof prevState.valence === "number" && typeof prevState.arousal === "number") {
@@ -871,6 +972,9 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           arousal: prevState.arousal,
           baselineValence: typeof prevState.baselineValence === "number" ? prevState.baselineValence : 0,
           baselineArousal: typeof prevState.baselineArousal === "number" ? prevState.baselineArousal : 0.3,
+          // 支配感：旧行没有这列就不带（整合按 0.5 缺省），不把缺列读成「很被动」。
+          ...(typeof prevState.dominance === "number" ? { dominance: prevState.dominance } : {}),
+          ...(typeof prevState.baselineDominance === "number" ? { baselineDominance: prevState.baselineDominance } : {}),
           updatedAt: prevState.updatedAt ?? now,
           sampleCount: prevState.sampleCount ?? 0,
         };
@@ -898,22 +1002,91 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         const mood = integrateMood(prevMood, events, now, cfg);
         const ranked = activeEmotions(events, now);
         const moodSign = Math.sign(mood.valence);
+        // 到期判据：窗口里只要还有一条说得出口的对象就拿它当原因，注入面会永远写
+        // 「因为 X 正在消退」——原因永不到期。所以 top 必须是「还活着」的那条。
+        const live = (e: (typeof ranked)[number]): boolean =>
+          isReusableAffectObject(e.object) && !isEmotionExpired(e, now);
         const top =
-          ranked.find((e) => e.object.length > 0 && e.object.length <= 20 && Math.sign(e.valence) === moodSign) ??
-          ranked.find((e) => e.object.length > 0 && e.object.length <= 20) ??
-          ranked[0];
+          ranked.find((e) => live(e) && Math.sign(e.valence) === moodSign) ??
+          ranked.find(live);
+        // 当前情绪对象：优先本轮活着的情绪，其次落库的 emotion_object（事件几小时后必然
+        // 退出 activeEmotions，但对象史还在——复发计数与判断倾向仍需要它）。
+        const object = (top?.object ?? "").trim() || (prevState?.emotionObject ?? "").trim();
+        // 同一对象的历史：次数/峰值/修复，口径与注入侧 objectRecurrence 同源。
+        // 对象要与 episode 侧同一口径（含 userStance 优先的派生），否则「同一个对象」
+        // 只在心境行里成立、在复发计数里永远是 0；hits 的 object 也必须同源，
+        // 否则 objectRecurrence 会把每条都当空对象滤掉、计数恒 0。
+        const hits = object === ""
+          ? []
+          : episodePool
+              .filter((ep) => emotionObjectForEpisode(ep) === object)
+              .map((ep) => ({
+                episodeId: ep.episodeId,
+                object: emotionObjectForEpisode(ep) || (ep.object ?? ""),
+                intensity: Math.abs(ep.valence ?? 0),
+                valence: ep.valence ?? 0,
+                // 修复证据看我的回复（agentStance）与后续 outcome：只认确定性的改口/重做措辞。
+                repaired: REPAIRED_STANCE.test(ep.agentStance ?? "") || REPAIRED_STANCE.test(ep.outcome ?? ""),
+              }));
+        // 情绪门只对「此刻真有一条在场情绪」生效：没有活着的情绪就没有判断偏移，
+        // 不能拿上一条已经退场的历史标签继续压身份生长。
+        // 「在场」要跨轮算：本轮没有新事件时（6h 节流下很常见），上一轮写下的情绪
+        // 只要还没过到期判据就仍然在场——否则状态明明还在，门却按空穿过。
+        const prevLive =
+          !!prevState?.emotionObject &&
+          !!prevState.emotionLabel &&
+          typeof prevState.emotionIntensity === "number" &&
+          !!prevState.emotionAt &&
+          !isStoredEmotionExpired(
+            {
+              label: prevState.emotionLabel,
+              intensity: prevState.emotionIntensity,
+              at: prevState.emotionAt,
+              asOf: prevState.updatedAt ?? now,
+            },
+            now,
+          );
+        const gateFocus = moodFocusOf(top?.label ?? (prevLive ? prevState?.emotionLabel ?? "" : ""));
+        const gate =
+          gateFocus !== "none" && object !== ""
+            ? moodGrowthGate({
+                focus: gateFocus,
+                object,
+                count: hits.length,
+                repaired: hits.some((h) => h.repaired),
+              })
+            : undefined;
+        if (gate) {
+          moodGate = gate;
+          // 判断被情绪改了就必须留痕：这一轮到底因为什么没长 identity/values。
+          // 日志只活一轮（生产日志还会滚动），账本才是可复核的证据——拒绝/暂缓不留账
+          // 就等于「情绪有没有影响判断」在生产上不可证伪。
+          deps.logger?.info?.(`[soul-worker] mood gate: ${gate.code} → 暂缓 ${gate.defer.join("/")}｜${gate.reason}`);
+          ledger.push({
+            entryId: `mg-${now.slice(0, 10)}-${textHash(gate.code + "|" + object + "|" + (top?.label ?? ""))}`,
+            at: now,
+            trigger: deps.trigger,
+            layer: "all",
+            action: "arbitrate",
+            gates: ["mood_gate", gate.code],
+            reason: `${gate.code}｜object=${object} count=${hits.length} repaired=${hits.some((h) => h.repaired)} label=${top?.label ?? "prev"}｜${gate.reason}`,
+            evidenceIds: hits.map((h) => h.episodeId).slice(0, 8),
+          });
+        }
         const reading = readMood(mood, { emotion: top, threshold: cfg.moodDeviationThreshold * 0.5 });
         promptMoodLine = renderMoodLine(mood, { emotion: top, threshold: cfg.moodDeviationThreshold * 0.5 });
-        const topEpisode = top?.object ? episodePool.find((ep) => ep.object === top.object) : undefined;
+        const topEpisode = object !== "" ? episodePool.find((ep) => ep.object === object) : undefined;
         // 事件来自 L1 摘要时 object 是从首句抽的短语，未必与 episode 池里的 object 逐字相同；
         // 判断倾向只需要「对什么」，没有可回指的 episode 就不编造出处（evidenceIds 留空）。
         const biasEpisode =
           topEpisode ??
-          (top?.object
-            ? ({ episodeId: "", object: top.object } as unknown as SoulEpisode)
-            : undefined);
+          (object !== "" ? ({ episodeId: "", object } as unknown as SoulEpisode) : undefined);
         promptMoodBias =
-          moodBiasLine(mood, { episode: biasEpisode, threshold: cfg.moodDeviationThreshold }) ?? undefined;
+          moodBiasLine(mood, {
+            episode: biasEpisode,
+            threshold: cfg.moodDeviationThreshold,
+            ...(hits.length > 0 ? { hits } : {}),
+          }) ?? undefined;
         if (promptMoodBias) {
           ledger.push({
             entryId: `arb-${now.slice(0, 10)}-${textHash(promptMoodBias)}`,
@@ -950,15 +1123,19 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   const candidates: SoulMergeCandidate[] = mined
     .filter((c) => new Set(c.evidenceIds).size >= cfg.minEvidence)
     .map((c) => ({ ...c, origins: ["l1"] }));
-  if (deps.rewriter && records.length > 0 && !cadenceSkipped) {
+  const llmBudget = openCostBudget(deps.llmCallBudget ?? 1);
+  if (deps.rewriter && records.length > 0 && !cadenceSkipped && !chargeCall(llmBudget)) {
+    report.skipped = [report.skipped, "llm_budget"].filter(Boolean).join(";");
+  } else if (deps.rewriter && records.length > 0 && !cadenceSkipped) {
     try {
       const proposed = await deps.rewriter({
-        existing: [...map.values()].map((i) => ({ layer: i.layer, text: i.text })),
+        existing: [...map.values()].map((i) => ({ layer: i.layer, text: redactSecrets(i.text) })),
         // 「id | 内容」：prompt 要求 evidenceIds 必须来自输入记录，不把 id 给出去等于让它编。
-        records: records.slice(0, 200).map((r) => `${r.id} | ${r.content}`),
+        // 进模型前脱敏：密钥不能进 prompt，也不能进拒绝账本的原文。
+        records: records.slice(0, 200).map((r) => redactSecrets(`${r.id} | ${r.content}`)),
         // 事件是身份主张的唯一合法证据；原话是 voice 的唯一合法素材。
         episodes: episodeDigest(episodePool, { max: cfg.maxEpisodesForPrompt }),
-        voiceQuotes: [...voiceRecords.entries()].slice(0, 120).map(([id, text]) => `「${text}」 | ${id}`),
+        voiceQuotes: [...voiceRecords.entries()].slice(0, 120).map(([id, text]) => redactSecrets(`「${text}」 | ${id}`)),
         moodLine: promptMoodLine,
         moodBias: promptMoodBias,
         personName: cfg.personName,
@@ -1034,6 +1211,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     episodeIds,
     voiceRecords,
     episodesById: new Map(episodePool.map((ep) => [ep.episodeId, ep])),
+    ...(moodGate ? { moodGate } : {}),
   });
   for (const it of grown.items) map.set(it.itemId, it);
   report.admitted += grown.admitted.length;
@@ -1078,15 +1256,16 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   report.merged = mergePlan.merged.length;
 
   // 5b) 漂移：把「当前人格条目」与「真实行为锚（近窗记录）」比，连续低分才降级/冻结。
-  // 关键约束：没有向量器就不跑——词面相似度对短句与长记录的语义漂移没有判别力，
-  // 硬跑只会把「措辞不同」误判成「人格变了」。那是伪证据，比不检测更糟。
-  if (deps.embed && records.length > 0 && !cadenceSkipped) {
+  // 有向量器走语义 cosine；没有则语体轨走 drift.ts 的词面回退（确定性、可离线），
+  // 但判断轨（values/boundary/narrative）没有向量器就不判——措辞不同≠取舍变了，
+  // 拿词面相似度冻结判断轨才是伪证据。降级/冻结的 method 会写进报告，能复核。
+  if (records.length > 0 && !cadenceSkipped) {
     const anchors = records
       .map((r) => r.content)
       .filter((t) => typeof t === "string" && t.trim().length >= 6)
       .slice(-8);
     const cache = new Map<string, number[] | null>();
-    const embed = async (text: string): Promise<number[]> => {
+    const embedIfAvailable = async (text: string): Promise<number[]> => {
       const hit = cache.get(text);
       if (hit !== undefined) {
         if (hit === null) throw new Error("embed failed earlier");
@@ -1102,6 +1281,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       }
     };
     for (const layer of INJECTED) {
+      // 判断轨缺向量器时不判：宁可报 driftSkipped，也不拿「措辞不同」当「取舍变了」。
+      if (!deps.embed && trackOf(layer) === "judgment") continue;
       const layerItems = [...map.values()]
         .filter((i) => i.layer === layer && (i.state === "active" || i.state === "degraded"))
         .sort((a, b) => b.weight - a.weight)
@@ -1112,7 +1293,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             layer,
             anchors,
             text: it.text,
-            embed,
+            ...(deps.embed ? { embed: embedIfAvailable } : {}),
             history: it.driftHistory ?? [],
             config: cfg,
           });
@@ -1160,12 +1341,11 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         }
       }
     }
+    if (!deps.embed) {
+      report.driftSkipped = "判断轨缺向量器（只跑语体轨词面回退，不拿词面相似冻结取舍）";
+    }
   } else {
-    report.driftSkipped = cadenceSkipped
-      ? `节流未到期：${cadenceSkipped}`
-      : deps.embed
-        ? "无近窗记录作行为锚"
-        : "未提供向量器（不伪造漂移分数）";
+    report.driftSkipped = cadenceSkipped ? `节流未到期：${cadenceSkipped}` : "无近窗记录作行为锚";
   }
 
   const items = [...map.values()];
@@ -1180,6 +1360,18 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   report.rejectTop = [...codeCount.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([code, count]) => ({ code, count }));
+  // 跨轮拒绝分布：rejections 只覆盖本轮，判据是否系统性误杀要看账本聚合。
+  // 该聚合此前只有单测调用，生产日志永远只有「这一轮拒了几条」。
+  if (typeof store.soulRejectionStats === "function") {
+    try {
+      report.rejectHistory =
+        (await Promise.resolve(store.soulRejectionStats(deps.tenant, { sinceDays: 30 }))) ?? [];
+    } catch (err) {
+      deps.logger?.warn?.(
+        `[soul-worker] soulRejectionStats failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   for (const layer of INJECTED) {
     report.budgets.push(renderLayerWithBudget(layer, items.filter((i) => i.layer === layer), cfg).report);
   }
@@ -1198,6 +1390,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             arousal?: number;
             baselineValence?: number | null;
             baselineArousal?: number | null;
+            dominance?: number | null;
+            baselineDominance?: number | null;
             sampleCount?: number | null;
             topValue?: string | null;
             turnSeq?: number | null;
@@ -1225,12 +1419,12 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       });
       // 事件优先：episode 带「因为什么、对谁、多强」，L1 信号只有强弱。两者都吸收，
       // 但情绪的解释权归事件——「上次因为假绿恼火」比「valence=-0.4」有用得多。
-      const episodeEvents = episodePool
-        .filter((ep) => {
-          const at = Date.parse(ep.at);
-          return Number.isFinite(at) && at > since;
-        })
-        .map((ep) => emotionEventFromEpisode(ep, cfg));
+      // 信号按「上次积分之后」增量，避免同一批 L1 反复记功。
+      // 事件不走这个窗：事件是原因的来源，昨天被当面指出的错不能因为
+      // 十分钟前刚写过心境就被滤掉。事件窗口由 listSoulEpisodes 的 since 决定。
+      const episodeEvents = episodePool.map((ep) =>
+        emotionEventFromEpisode(ep, cfg, { publicSession: publicSessions.has(ep.sessionId) }),
+      );
       const events = [...fresh.map((s) => emotionFromSignal(s, now, cfg)), ...episodeEvents];
       const prevMood: MoodState | null =
         prevState && typeof prevState.valence === "number" && typeof prevState.arousal === "number"
@@ -1240,6 +1434,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
               // 基线沿用既有行（旧行无基线列时按「缺省基线」计，不把当前值伪装成基线偏移）。
               baselineValence: typeof prevState.baselineValence === "number" ? prevState.baselineValence : 0,
               baselineArousal: typeof prevState.baselineArousal === "number" ? prevState.baselineArousal : 0.3,
+              ...(typeof prevState.dominance === "number" ? { dominance: prevState.dominance } : {}),
+              ...(typeof prevState.baselineDominance === "number" ? { baselineDominance: prevState.baselineDominance } : {}),
               updatedAt: prevState.updatedAt ?? now,
               sampleCount: prevState.sampleCount ?? 0,
             }
@@ -1248,11 +1444,18 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       // 心境原因必须与心境同向、且对象短到能进一句话：否则「整体偏积极」却拿
       // 「被纠正」当原因，判断偏移会自相矛盾；L1 摘要任务句（>20 字）也不能当对象。
       const ranked = activeEmotions(events, now);
-      const moodSign = Math.sign(mood.valence);
-      const top =
-        ranked.find((e) => e.object.length > 0 && e.object.length <= 20 && Math.sign(e.valence) === moodSign) ??
-        ranked.find((e) => e.object.length > 0 && e.object.length <= 20) ??
-        ranked[0];
+      const usable = (e: { object: string }) => isReusableAffectObject(e.object);
+      // 原因按「还在影响」排序，不按心境总符号过滤。
+      // 总基调偏正时，最近一次被当面指出的错仍然是原因，抹掉就又变成空原因。
+      // 半衰期把昨天的事件衰减到阈值下之后，原因不能跟着消失：
+      // 取最近一条仍说得出对象的事件，强度用衰减后的值（可能很小，渲染侧再决定写不写）。
+      const latestCause = [...events]
+        .filter(usable)
+        .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+      // 原因会过期：活着的优先，退场的只在还没到判据时兜底，都过期就不写原因。
+      // 旧实现只要窗口里还有一条说得出口的对象就写「因为 X 正在消退」，
+      // 于是同一句话挂了 24 天、强度千分之七还在当解释。
+      const top = pickCurrentEmotion(ranked, latestCause, now);
       const reading = readMood(mood, { emotion: top, threshold: cfg.moodDeviationThreshold * 0.5 });
       await Promise.resolve(
         store.writeSoulState(deps.tenant, {
@@ -1261,12 +1464,14 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           // 基线也落库：渲染侧（auto-recall → renderMoodLine）要读它才能说「比基线偏低」。
           baselineValence: mood.baselineValence,
           baselineArousal: mood.baselineArousal,
+          ...(typeof mood.dominance === "number" ? { dominance: mood.dominance } : {}),
+          ...(typeof mood.baselineDominance === "number" ? { baselineDominance: mood.baselineDominance } : {}),
           sampleCount: mood.sampleCount,
           topValue: prevState?.topValue ?? undefined,
           turnSeq: (prevState?.turnSeq ?? 0) + 1,
           // 心境原因：写「正在影响我的那条情绪」的对象与衰减后强度，注入侧才说得出
-          // 「因为『假绿』反复出问题」。无在场情绪时四列全空——不沿用上一轮的旧原因，
-          // 否则情绪早就消退了，注入面还在拿旧事件当解释（变成永久抱怨）。
+          // 「因为『假绿』反复出问题」。无在场情绪（或已过到期判据）时四列全空——
+          // 不沿用上一轮的旧原因，否则情绪早就消退了，注入面还在拿旧事件当解释。
           emotionObject: top?.object ?? null,
           emotionLabel: top?.label ?? null,
           emotionIntensity: top ? decayedIntensity(top, now) : null,
@@ -1274,11 +1479,41 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           updatedAt: now,
         }),
       );
+      // 情绪史落表：一条事件 × 一版模板规则一行，注入/审计都能回指「哪条片段、
+      // 按哪版规则、当时判成什么」。只存已判出对象的事件（无对象的只是读数，不是情绪）。
+      const emotionRows: SoulEmotionRecord[] = episodeEvents
+        .filter((e) => e.object !== "" && e.id !== "")
+        .map((e) => ({
+          episodeId: e.id,
+          at: e.at,
+          object: e.object,
+          label: e.label,
+          valence: e.valence,
+          arousal: e.arousal,
+          ...(typeof e.dominance === "number" ? { dominance: e.dominance } : {}),
+          intensity: e.intensity,
+          appraisal: e.appraisal,
+          templateVersion: EMOTION_TEMPLATE_VERSION,
+          appraisedAt: now,
+        }));
+      if (emotionRows.length > 0 && typeof store.commitSoulEmotions === "function") {
+        try {
+          await Promise.resolve(store.commitSoulEmotions(deps.tenant, emotionRows));
+        } catch (err) {
+          deps.logger?.warn?.(
+            `[soul-worker] commitSoulEmotions failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      const labels: Record<string, number> = {};
+      for (const e of episodeEvents) labels[e.label] = (labels[e.label] ?? 0) + 1;
       report.mood = {
         mood,
         line: renderMoodLine(mood, { emotion: top, threshold: cfg.moodDeviationThreshold * 0.5 }),
         activeEmotions: activeEmotions(events, now).length,
         written: true,
+        labels,
+        dormant: EMOTION_LABELS.filter((l) => !labels[l]),
       };
     } catch (err) {
       report.mood = {

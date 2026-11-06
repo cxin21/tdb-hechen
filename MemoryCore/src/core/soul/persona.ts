@@ -252,7 +252,40 @@ export function planContradiction(item: PersonaItem, now: string, cfg: SoulMaint
  *  - values：weight desc（取舍的可信度）
  *  - 其余：weight desc，degrated 排在后
  */
-export function orderForRender(layer: SoulLayer, items: PersonaItem[]): PersonaItem[] {
+export interface RenderAttention {
+  /** 当前情绪对象（可为空：只有方向时也生效）。 */
+  object?: string;
+  focus?: "self" | "conflict" | "repair" | "none";
+}
+
+/** focus 对应的历史条目种类（meta.historyKind）。 */
+const FOCUS_KIND: Record<"self" | "conflict" | "repair", string> = {
+  self: "failure",
+  conflict: "conflict",
+  repair: "repair",
+};
+
+/**
+ * 情绪对渲染序的确定性加权：同方向种类 +0.25、同对象再加 +0.1。
+ * 量级按生产权重间距定：关系层 repair 0.8 / review 0.75 / failure 0.7 / conflict 0.6，
+ * 0.25 足以让「当下情绪指向的那一类」越过一档，但不足以越过两条以上无关条目。
+ * 只改「先看见哪条」，不改条目本身、不改准入、不改存储权重；boundary 红线层不参与。
+ */
+const ATTENTION_KIND_BOOST = 0.25;
+const ATTENTION_OBJECT_BOOST = 0.1;
+
+function attentionBoost(item: PersonaItem, attention?: RenderAttention): number {
+  const focus = attention?.focus ?? "none";
+  if (focus === "none") return 0;
+  let boost = 0;
+  const object = (attention?.object ?? "").trim();
+  if (object !== "" && item.text.includes(object)) boost += ATTENTION_OBJECT_BOOST;
+  const kind = String((item.meta ?? {}).historyKind ?? "");
+  if (kind !== "" && kind === FOCUS_KIND[focus]) boost += ATTENTION_KIND_BOOST;
+  return boost;
+}
+
+export function orderForRender(layer: SoulLayer, items: PersonaItem[], opts?: { attention?: RenderAttention }): PersonaItem[] {
   const visible = items.filter((i) => i.state === "active" || i.state === "degraded");
   const byState = (a: PersonaItem, b: PersonaItem) => stateRank(a.state) - stateRank(b.state);
   if (layer === "boundary") {
@@ -260,7 +293,9 @@ export function orderForRender(layer: SoulLayer, items: PersonaItem[]): PersonaI
       (a, b) => scopeRank(a) - scopeRank(b) || byState(a, b) || b.weight - a.weight,
     );
   }
-  return [...visible].sort((a, b) => byState(a, b) || b.weight - a.weight || a.itemId.localeCompare(b.itemId));
+  const attention = opts?.attention;
+  const score = (i: PersonaItem) => i.weight + attentionBoost(i, attention);
+  return [...visible].sort((a, b) => byState(a, b) || score(b) - score(a) || a.itemId.localeCompare(b.itemId));
 }
 
 function stateRank(s: PersonaItemState): number {
@@ -292,18 +327,25 @@ export function renderLayerWithBudget(
   layer: SoulLayer,
   items: PersonaItem[],
   cfg: SoulMaintenanceConfig,
-  opts?: { header?: string; degradedTail?: boolean },
+  opts?: {
+    header?: string;
+    degradedTail?: boolean;
+    attention?: RenderAttention;
+    /** 情绪放大相关层时显式覆盖预算/条数（缺省=配置值）。 */
+    budgetChars?: number;
+    maxItems?: number;
+  },
 ): { text: string; report: SoulBudgetReport } {
-  const budget = cfg.budget[layer] ?? 0;
+  const budget = opts?.budgetChars ?? cfg.budget[layer] ?? 0;
   // 红线层免裁剪：它是「不变量集」，少渲染一条就是多一次越界的机会；上限由 maxItems 兜住。
   const exempt = BUDGET_EXEMPT_LAYERS.has(layer);
   // 按层过滤放在函数内部：调用方传全量也不会把别的层塞进本段（否则同一批条目会在每个标题下重复一遍）。
   const layerItems = items.filter((i) => i.layer === layer);
-  const ordered = orderForRender(layer, layerItems);
+  const ordered = orderForRender(layer, layerItems, { attention: opts?.attention });
   const omitted: SoulBudgetReport["omitted"] = [];
   const lines: string[] = [];
   // maxItems 是池子上限的渲染侧兜底：免裁剪层（红线）不设预算，但也不允许无界膨胀。
-  const cap = cfg.maxItems[layer] ?? 0;
+  const cap = opts?.maxItems ?? cfg.maxItems[layer] ?? 0;
   let used = 0;
   for (const it of ordered) {
     const line = `- ${it.text}`;
@@ -341,6 +383,16 @@ export function renderLayerWithBudget(
     }
     lines.push(block);
     used += blockChars;
+  }
+  // 承诺保底（2026-11-06）：self 层被失败/复盘占满预算时，「我答应自己」按权重排在最后会被
+  // 静默裁掉——库里长出了承诺，注入里却一个字没有，等于人格没长。承诺是义务不是次要记忆，
+  // 至少渲染一条（权重最高、最新）；越预算也显式计入 used，不做无声的取舍。
+  if (layer === "self" && !lines.some((l) => l.includes("我答应自己"))) {
+    const promise = ordered.find((it) => it.text.startsWith("我答应自己"));
+    if (promise) {
+      lines.push(`- ${promise.text}`);
+      used += promise.text.length + 2;
+    }
   }
   // 非可见态也记账（便于审计「为什么不注入」）。
   for (const it of layerItems) {
@@ -381,15 +433,27 @@ export function layerHeader(layer: SoulLayer): string {
 export function renderPersonaBlock(
   items: PersonaItem[],
   cfg: SoulMaintenanceConfig,
+  opts?: { attention?: RenderAttention },
 ): { text: string; reports: SoulBudgetReport[] } {
   const order: SoulLayer[] = ["voice", "identity", "self", "values", "boundary", "relationship", "narrative"];
   const parts: string[] = [];
   const reports: SoulBudgetReport[] = [];
+  // 情绪不只重排，还放大「它指向的那一层」的注意力预算（FAtiMA/OCC 一类评价模型里情绪本就是
+  // 调度变量）：自我向情绪给 self 层 +50% 预算与条数，关系向情绪给 relationship 层 +50%。
+  // 放大有上限（条数翻倍封顶）且只在该层有条目时生效；无有效对象=不放大。
+  const focus = opts?.attention?.focus ?? "none";
+  const focusLayer: SoulLayer | null = focus === "self" ? "self" : focus === "conflict" || focus === "repair" ? "relationship" : null;
   for (const layer of order) {
     if (!isInjectedLayer(layer)) continue;
     const layerItems = items.filter((i) => i.layer === layer);
     if (layerItems.length === 0) continue;
-    const { text, report } = renderLayerWithBudget(layer, layerItems, cfg);
+    const scale = focusLayer === layer;
+    const scaled = (n: number) => (scale && n > 0 ? Math.min(Math.round(n * 1.5), n * 2) : undefined);
+    const { text, report } = renderLayerWithBudget(layer, layerItems, cfg, {
+      attention: opts?.attention,
+      budgetChars: scaled(cfg.budget[layer] ?? 0),
+      maxItems: scaled(cfg.maxItems[layer] ?? 0),
+    });
     reports.push(report);
     if (text) parts.push(text);
   }

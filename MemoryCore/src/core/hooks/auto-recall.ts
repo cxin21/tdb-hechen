@@ -11,6 +11,14 @@
  */
 
 import type { MemoryTdaiConfig } from "../../config.js";
+import {
+  decayedIntensity,
+  decayedStoredIntensity,
+  isStoredEmotionExpired,
+  objectRecurrence,
+  type ObjectHit,
+} from "../soul/emotion.js";
+import { emotionEventFromEpisode, emotionObjectForEpisode } from "../soul/episode.js";
 import { foldClusterAwareWithMeta } from "./recall-fold-cluster.js";
 import { stripMemoryLineMeta } from "./memory-line-meta.js";
 import { readSceneIndex } from "../scene/scene-index.js";
@@ -2174,8 +2182,13 @@ export async function performLayeredRecall(params: {
         vectorStore &&
         (needValues || signalsActive || graphDiscount > 0 || sceneBoost > 0 || importanceGate !== undefined)
       ) {
+        const soulTenant = normalizeCoreTenant({
+          teamId: params.isolationFilter?.teamId ?? params.profileIsolation?.teamId ?? "",
+          userId: params.isolationFilter?.userId ?? "",
+          agentId: params.isolationFilter?.agentId ?? params.profileIsolation?.agentId ?? "",
+        });
         const { firedLabels, moodSign } = needValues
-          ? await computeRecallValueSignals(sanitizeText(userText), vectorStore, params.profileIsolation, logger)
+          ? await computeRecallValueSignals(sanitizeText(userText), vectorStore, params.profileIsolation, logger, soulTenant)
           : { firedLabels: [] as string[], moodSign: 0 };
         const now = params.validityNow ?? new Date(); // R-A1 确定性锚点（P2.1：time_point 时间旅行时=查询时点）
         rank = {
@@ -2563,10 +2576,15 @@ export async function performLayeredRecall(params: {
               arousal: number;
               baselineValence: number;
               baselineArousal: number;
+              dominance?: number;
+              baselineDominance?: number;
               updatedAt: string;
               sampleCount: number;
               // 心境原因（2026-11-05）：对象/标签/衰减后强度，注入侧据此说「因为谁、多强」。
               emotion?: { object: string; label: string; intensity: number; at: string };
+              historyEmotion?: { object: string; label: string; at: string };
+              objectStance?: string;
+              blend?: { label: string; intensity: number };
             }
           | undefined;
         const stateStore = vectorStore;
@@ -2592,13 +2610,105 @@ export async function performLayeredRecall(params: {
                 arousal: row.arousal,
                 baselineValence: typeof row.baselineValence === "number" ? row.baselineValence : 0,
                 baselineArousal: typeof row.baselineArousal === "number" ? row.baselineArousal : 0.3,
+                // 支配感：库里有这一列才带（旧行缺列 → 不写「撑不撑得住」，不伪造第三维）。
+                ...(typeof (row as { dominance?: number | null }).dominance === "number"
+                  ? { dominance: (row as { dominance?: number }).dominance }
+                  : {}),
+                ...(typeof (row as { baselineDominance?: number | null }).baselineDominance === "number"
+                  ? { baselineDominance: (row as { baselineDominance?: number }).baselineDominance }
+                  : {}),
                 updatedAt: row.updatedAt ?? new Date().toISOString(),
                 sampleCount: row.sampleCount ?? 0,
-                // 四列齐备才作为原因喂入：缺一行（旧库/旧 worker）就只写偏移，不半截解释。
-                ...(row.emotionObject && row.emotionLabel && typeof row.emotionIntensity === "number" && row.emotionAt
-                  ? { emotion: { object: row.emotionObject, label: row.emotionLabel, intensity: row.emotionIntensity, at: row.emotionAt } }
-                  : {}),
               };
+              // 原因会到期（2026-11-06 审计 P0）：库里存的是「写入那一刻」已衰减的强度，
+              // 从 updatedAt 再衰到今天；衰减到 0.05 以下或超过 6 个半衰期就不再当原因。
+              // 旧实现直接把库内数字喂进注入，两次维护（6h 节流）之间数字不动，
+              // 于是一句话挂着「因为 X 正在消退」过了 24 天。
+              const nowIso = new Date().toISOString();
+              const asOf = row.updatedAt ?? nowIso;
+              const storedEmotion =
+                row.emotionObject && row.emotionLabel && typeof row.emotionIntensity === "number" && row.emotionAt
+                  ? { object: row.emotionObject, label: row.emotionLabel, intensity: row.emotionIntensity, at: row.emotionAt, asOf }
+                  : undefined;
+              if (storedEmotion && !isStoredEmotionExpired(storedEmotion, nowIso)) {
+                soulMoodState.emotion = {
+                  object: storedEmotion.object,
+                  label: storedEmotion.label,
+                  intensity: Number(decayedStoredIntensity(storedEmotion, nowIso).toFixed(4)),
+                  at: storedEmotion.at,
+                };
+              }
+              // 同一对象的复发不随半衰期消失。立场句的对象要能独立于「此刻还在场」存在：
+              // 原因到期后「先核对修复是否还在」仍然有用，所以对象优先取活着的情绪，
+              // 其次取库里的旧原因，最后退回事件史里出现次数最多的对象（不编类别词）。
+              type SoulEpisodeLike = { object?: string; valence?: number; arousal?: number; agentStance?: string };
+              const listEp = (vectorStore as { listSoulEpisodes?: (t: unknown, o: unknown) => Promise<SoulEpisodeLike[]> }).listSoulEpisodes;
+              const eps: SoulEpisodeLike[] = typeof listEp === "function"
+                ? ((await Promise.resolve(listEp.call(vectorStore, { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" }, { limit: 200 }))) ?? [])
+                : [];
+              let stanceObject = (soulMoodState.emotion?.object ?? row.emotionObject ?? "").trim();
+              if (stanceObject === "" && eps.length > 0) {
+                const counts = new Map<string, number>();
+                for (const e of eps) {
+                  const o = emotionObjectForEpisode(e as never);
+                  if (o !== "") counts.set(o, (counts.get(o) ?? 0) + 1);
+                }
+                stanceObject = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? "";
+              }
+              // 情绪会过期，但「同一对象还在反复出现」不会。注意力方向因此不能只挂在在场情绪上：
+              // 原因到期后立场句还在（objectStance），先看哪一层却退回默认次序，同一对象就只在
+              // 情绪新鲜的几小时里改变判断。这里从情绪史（soul_emotions）取该对象最近一条标签，
+              // 仅当它 7 天内出现过才补进 historyEmotion——只影响注意力与情绪门，不渲染成因由。
+              if (!soulMoodState.emotion && stanceObject !== "") {
+                const listEmotions = (vectorStore as {
+                  listSoulEmotions?: (
+                    t: unknown,
+                    o: unknown,
+                  ) => Promise<Array<{ object?: string; label?: string; at?: string }>>;
+                }).listSoulEmotions;
+                if (typeof listEmotions === "function") {
+                  try {
+                    const rowsE =
+                      (await Promise.resolve(
+                        listEmotions.call(
+                          vectorStore,
+                          { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
+                          { object: stanceObject, limit: 5 },
+                        ),
+                      )) ?? [];
+                    const latest = rowsE.find((r) => typeof r.label === "string" && r.label.trim() !== "");
+                    if (latest && typeof latest.label === "string" && typeof latest.at === "string") {
+                      const atMs = Date.parse(latest.at);
+                      if (Number.isFinite(atMs) && Date.now() - atMs <= 7 * 24 * 60 * 60 * 1000) {
+                        soulMoodState.historyEmotion = {
+                          object: stanceObject,
+                          label: latest.label.trim(),
+                          at: latest.at,
+                        };
+                      }
+                    }
+                  } catch (err) {
+                    logger?.debug?.(
+                      `[soul] history emotion lookup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+                    );
+                  }
+                }
+              }
+              if (stanceObject !== "" && eps.length > 0) {
+                const same = eps.filter((e) => emotionObjectForEpisode(e as never) === stanceObject);
+                const hits: ObjectHit[] = same.map((e) => ({ object: stanceObject, intensity: Math.abs(e.valence ?? 0), valence: e.valence ?? 0, repaired: /补上了|已按|已对齐|收口/u.test(e.agentStance ?? "") }));
+                if (hits.length > 0) soulMoodState.objectStance = objectRecurrence(hits).stance;
+                // 混合情绪：只有主情绪还在场时才谈「带着什么」——主情绪已退场就没有复合可写。
+                if (soulMoodState.emotion) {
+                  const primary = soulMoodState.emotion.label;
+                  const secondary = same
+                    .map((e) => emotionEventFromEpisode(e as never, { emotionHalfLifeHours: 3 }))
+                    .map((ev) => ({ label: ev.label, intensity: decayedIntensity(ev, nowIso) }))
+                    .filter((x) => x.label !== primary && x.intensity >= 0.3)
+                    .sort((a, b) => b.intensity - a.intensity)[0];
+                  if (secondary) soulMoodState.blend = { label: secondary.label, intensity: Number(secondary.intensity.toFixed(3)) };
+                }
+              }
             }
           } catch (err) {
             logger?.warn?.(`[soul] state read failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -3173,21 +3283,50 @@ async function computeRecallValueSignals(
   vectorStore: IMemoryStore,
   profileIsolation?: ProfileIsolation,
   logger?: Logger,
+  soulTenant?: CoreTenant,
 ): Promise<{ firedLabels: string[]; moodSign: number }> {
   try {
     const listValues = vectorStore.listValues;
-    if (typeof listValues !== "function") return { firedLabels: [], moodSign: 0 };
     const tenant: CoreTenant = normalizeCoreTenant({
       teamId: profileIsolation?.teamId ?? "",
       userId: "",
       agentId: profileIsolation?.agentId ?? "",
     });
-    const rows = await listValues.call(vectorStore, tenant);
-    const ctx = await buildRankContext(userText, [], {
-      readValues: () =>
-        ((rows ?? []) as unknown as ValueRowLike[]).filter((v) => v && typeof v.label === "string" && v.label.trim()),
-    });
-    return { firedLabels: ctx.firedLabels, moodSign: ctx.moodSign };
+    let firedLabels: string[] = [];
+    let moodSign = 0;
+    if (typeof listValues === "function") {
+      const rows = await listValues.call(vectorStore, tenant);
+      const ctx = await buildRankContext(userText, [], {
+        readValues: () =>
+          ((rows ?? []) as unknown as ValueRowLike[]).filter((v) => v && typeof v.label === "string" && v.label.trim()),
+      });
+      firedLabels = ctx.firedLabels;
+      moodSign = ctx.moodSign;
+    }
+    // 心境信号（2026-11-06）：values 没命中时，用「此刻心境相对基线的偏离」定符号。
+    // 这不是新开关——moodBoost 早就是既有配置项（生产 0.03），旧实现只让 moodSign
+    // 来自 values 命中，而价值观在生产里一次没 fired，通路挂着却等于没接。
+    // 读法用「与基线比」的偏离方向，不用绝对档位：低落到基线以下才是负面线索。
+    if (moodSign === 0 && soulTenant) {
+      const readSoulState = (vectorStore as {
+        readSoulState?: (t: unknown) => Promise<{ valence?: number; baselineValence?: number } | null>;
+      }).readSoulState;
+      if (typeof readSoulState === "function") {
+        const st = (await Promise.resolve(readSoulState.call(vectorStore, soulTenant))) ?? null;
+        const v = typeof st?.valence === "number" ? st.valence : 0;
+        const bv = typeof st?.baselineValence === "number" ? st.baselineValence : 0;
+        const dv = v - bv;
+        if (Math.abs(dv) >= 0.05) {
+          moodSign = Math.sign(dv);
+          // 这条信号只影响精确平局组内的次序，肉眼看不出来；不写一行日志，
+          // 生产就只剩「代码里有」这种自述证据。
+          logger?.debug?.(
+            `${TAG} mood sign from soul: valence=${v.toFixed(3)} baseline=${bv.toFixed(3)} → ${moodSign}`,
+          );
+        }
+      }
+    }
+    return { firedLabels, moodSign };
   } catch (err) {
     logger?.warn?.(
       `${TAG} coreRef values unavailable (non-fatal, coreRefBoost skipped): ${err instanceof Error ? err.message : String(err)}`,

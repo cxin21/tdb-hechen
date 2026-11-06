@@ -39,6 +39,7 @@ import { buildSoulSlotMap, classifySoulChange, diffSoulSlots, parseSoulSlotMap, 
 // 自维护人格层（m00527，2026-11-05）：六层人格段渲染单一源（persona.ts）——预算显式省略、
 // 状态排序（active→degraded→frozen/merged 仅记账）与分档预算全在纯函数层；本文件只做读取与拼装。
 import { renderPersonaBlock } from "../soul/persona.js";
+import { moodAttention } from "../soul/emotion.js";
 import { renderMoodLine, type SoulMoodState } from "../soul/emotion.js";
 import { DEFAULT_SOUL_MAINTENANCE_CONFIG, type PersonaItem, type SoulBudgetReport, type SoulMaintenanceConfig } from "../soul/types.js";
 
@@ -1010,7 +1011,11 @@ export async function buildSoulPrefix(
     let personaBudgets: SoulBudgetReport[] = [];
     if (opts?.soulPersonaEnabled === true && personaItems.length > 0) {
       try {
-        const rendered = renderPersonaBlock(personaItems, personaCfg);
+        // 情绪不只写一行心境：它决定人格段里先看见谁。愧疚先看自己哪次没做对，
+        // 恼火先看关系里那次冲突，安心先看补上了什么（persona.orderForRender 的确定性加
+        // 权，只改顺序不改条目）。无有效对象时 focus=none=逐位现状。
+        const attention = opts?.soulMood ? moodAttention(opts.soulMood) : undefined;
+        const rendered = renderPersonaBlock(personaItems, personaCfg, attention ? { attention } : undefined);
         personaBudgets = rendered.reports;
         if (metaOut) metaOut.soulPersonaBudgets = personaBudgets;
         if (rendered.text !== "") parts.push(`<soul-persona>\n${rendered.text}\n</soul-persona>`);
@@ -1056,9 +1061,11 @@ export async function buildSoulPrefix(
         // 会让模型看到互相矛盾的两套情绪描述（三档是旧口径，连续值是同一信号的更细读法）。
         // 原因只来自真实情绪对象（readMood 里 object 存在且有效强度≥0.4 才写）；
         // 无对象/已衰减完 → 只写偏移，不编「因为 X」。
+        // 阈值必须与 worker 生成 prompt/账本那一句时同口径（moodDeviationThreshold*0.5）：
+        // 同一份心境，模型在 prompt 里读到「更能撑住」、注入里却一个字没有，等于两个自我描述。
         feel.push(
           renderMoodLine(opts.soulMood, {
-            threshold: personaCfg.moodDeviationThreshold,
+            threshold: personaCfg.moodDeviationThreshold * 0.5,
             emotion: opts.soulMood.emotion
               ? {
                   object: opts.soulMood.emotion.object,

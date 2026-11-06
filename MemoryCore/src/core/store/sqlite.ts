@@ -79,8 +79,10 @@ import { normalizeTaskSourceType } from "./task-source-type.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
 import { canTransitionPromise } from "../hooks/soul-promise.js";
+import { SOUL_EPISODE_KINDS } from "../soul/types.js";
 import type {
   PersonaItem,
+  SoulEmotionRecord,
   SoulEpisode,
   SoulEpisodeQuote,
   SoulLedgerEntry,
@@ -1214,6 +1216,9 @@ export class VectorStore implements IMemoryStore {
       "ALTER TABLE soul_state ADD COLUMN baseline_arousal REAL",
       "ALTER TABLE soul_state ADD COLUMN sample_count INTEGER",
       // 2026-11-05：心境原因列（幂等）——旧行无值=只写偏移不写原因，不伪造「因为 X」。
+      // 2026-11-06：支配感（PAD 第三维）列（幂等）——旧行无值=不写「撑不撑得住」半句。
+      "ALTER TABLE soul_state ADD COLUMN dominance REAL",
+      "ALTER TABLE soul_state ADD COLUMN baseline_dominance REAL",
       "ALTER TABLE soul_state ADD COLUMN emotion_object TEXT",
       "ALTER TABLE soul_state ADD COLUMN emotion_label TEXT",
       "ALTER TABLE soul_state ADD COLUMN emotion_intensity REAL",
@@ -1303,6 +1308,30 @@ export class VectorStore implements IMemoryStore {
     )`);
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_at ON soul_episodes(team_id, user_id, agent_id, at)",
+    );
+    // 情绪史（2026-11-06）：soul_state 只留「此刻」一个快照，写一次就把上一次覆盖，
+    // 于是「因为什么、对谁、多强、多久消退」无法回放。这里按「事件 × 模板版本」逐行留档：
+    // 判据改了（标签扩容/路由调整）就换 template_version，旧行不被静默改写，审计能看出
+    // 当时按哪版规则判的。intensity 存事件原值，读侧按标签半衰期重算衰减。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_emotions (
+      episode_id TEXT NOT NULL,
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      at TEXT NOT NULL,
+      object TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL,
+      valence REAL NOT NULL DEFAULT 0,
+      arousal REAL NOT NULL DEFAULT 0,
+      dominance REAL,
+      intensity REAL NOT NULL DEFAULT 0,
+      appraisal_json TEXT,
+      template_version TEXT NOT NULL DEFAULT '',
+      appraised_at TEXT NOT NULL,
+      PRIMARY KEY (episode_id, team_id, user_id, agent_id, template_version)
+    )`);
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_emotions_tenant_at ON soul_emotions(team_id, user_id, agent_id, at)",
     );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_kind ON soul_episodes(team_id, user_id, agent_id, kind, at)",
@@ -3535,6 +3564,8 @@ private migrateMemoryAuditActionEnum(): void {
       arousal: number;
       baselineValence?: number | null;
       baselineArousal?: number | null;
+      dominance?: number | null;
+      baselineDominance?: number | null;
       sampleCount?: number | null;
       topValue?: string | null;
       turnSeq?: number | null;
@@ -3546,27 +3577,38 @@ private migrateMemoryAuditActionEnum(): void {
     },
   ): void {
     const t = normalizeCoreTenant(tenant);
+    // 部分更新：undefined=本次不写（保留旧值），null=明确清空。
+    // 旧实现用 INSERT OR REPLACE 把未传列写成 NULL。抽取旁路（l1-extractor，只写
+    // valence/arousal/top_value/turn_seq）因此每轮都会把 emotion_*/baseline_*/
+    // dominance/sample_count 抹掉——心境原因写下去就被另一个写者清空。
+    // 改成单条 UPSERT 只更新调用方点名的列：无读-改-写竞态，也不会误清别人的列。
+    const cols: Array<[string, SQLInputValue]> = [
+      ["valence", state.valence],
+      ["arousal", state.arousal],
+      ["updated_at", state.updatedAt],
+    ];
+    const optional: Array<[string, SQLInputValue | undefined]> = [
+      ["baseline_valence", state.baselineValence],
+      ["baseline_arousal", state.baselineArousal],
+      ["dominance", state.dominance],
+      ["baseline_dominance", state.baselineDominance],
+      ["sample_count", state.sampleCount],
+      ["top_value", state.topValue],
+      ["turn_seq", state.turnSeq],
+      ["emotion_object", state.emotionObject],
+      ["emotion_label", state.emotionLabel],
+      ["emotion_intensity", state.emotionIntensity],
+      ["emotion_at", state.emotionAt],
+    ];
+    for (const [col, v] of optional) if (v !== undefined) cols.push([col, v]);
+    const keys = cols.map(([col]) => col);
+    const marks = keys.map(() => "?").join(", ");
+    const sets = keys.map((col) => `${col} = excluded.${col}`).join(", ");
     this.db
       .prepare(
-        "INSERT OR REPLACE INTO soul_state (team_id, user_id, agent_id, valence, arousal, baseline_valence, baseline_arousal, sample_count, top_value, turn_seq, emotion_object, emotion_label, emotion_intensity, emotion_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO soul_state (team_id, user_id, agent_id, ${keys.join(", ")}) VALUES (?, ?, ?, ${marks}) ON CONFLICT(team_id, user_id, agent_id) DO UPDATE SET ${sets}`,
       )
-      .run(
-        t.teamId,
-        t.userId,
-        t.agentId,
-        state.valence,
-        state.arousal,
-        state.baselineValence ?? null,
-        state.baselineArousal ?? null,
-        state.sampleCount ?? null,
-        state.topValue ?? null,
-        state.turnSeq ?? null,
-        state.emotionObject ?? null,
-        state.emotionLabel ?? null,
-        state.emotionIntensity ?? null,
-        state.emotionAt ?? null,
-        state.updatedAt,
-      );
+      .run(t.teamId, t.userId, t.agentId, ...cols.map(([, v]) => v));
   }
   readSoulState(
     tenant: CoreTenant,
@@ -3575,6 +3617,8 @@ private migrateMemoryAuditActionEnum(): void {
     arousal: number;
     baselineValence?: number | null;
     baselineArousal?: number | null;
+    dominance?: number | null;
+    baselineDominance?: number | null;
     sampleCount?: number | null;
     topValue?: string | null;
     turnSeq?: number | null;
@@ -3587,7 +3631,7 @@ private migrateMemoryAuditActionEnum(): void {
     const t = normalizeCoreTenant(tenant);
     const row = this.db
       .prepare(
-        "SELECT valence, arousal, baseline_valence, baseline_arousal, sample_count, top_value, turn_seq, emotion_object, emotion_label, emotion_intensity, emotion_at, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+        "SELECT valence, arousal, baseline_valence, baseline_arousal, dominance, baseline_dominance, sample_count, top_value, turn_seq, emotion_object, emotion_label, emotion_intensity, emotion_at, updated_at FROM soul_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
       )
       .get(t.teamId, t.userId, t.agentId) as unknown as
       | {
@@ -3595,6 +3639,8 @@ private migrateMemoryAuditActionEnum(): void {
           arousal: number;
           baseline_valence: number | null;
           baseline_arousal: number | null;
+          dominance: number | null;
+          baseline_dominance: number | null;
           sample_count: number | null;
           top_value: string | null;
           turn_seq: number | null;
@@ -3611,6 +3657,8 @@ private migrateMemoryAuditActionEnum(): void {
       arousal: row.arousal,
       baselineValence: row.baseline_valence,
       baselineArousal: row.baseline_arousal,
+      dominance: row.dominance,
+      baselineDominance: row.baseline_dominance,
       sampleCount: row.sample_count,
       topValue: row.top_value,
       turnSeq: row.turn_seq,
@@ -3718,6 +3766,16 @@ private migrateMemoryAuditActionEnum(): void {
       user_stance, agent_stance, cost, outcome, valence, arousal, intensity, affect_source,
       evidence_json, session_id, quote_json, signals_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    // 事件是 L0 的派生缓存：同一条 record 重新挖出来时，立场/原话/强度都应按当前判据刷新。
+    // 旧版本用「不覆盖原话」保历史，结果早期挖掘把助手自己的话写进 user_stance 后永远洗不掉，
+    // 自我史就会把「我怀疑接口有问题」当成「他当面否定我」。只刷新本轮重新挖到的行（不在本轮窗口的行不动）。
+    const refresh = this.db.prepare(
+      "UPDATE soul_episodes SET kind = ?, title = ?, participants_json = ?, user_stance = ?, agent_stance = ?, cost = ?, outcome = ?, valence = ?, arousal = ?, intensity = ?, affect_source = ?, evidence_json = ?, quote_json = ?, signals_json = ? WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+    );
+    // 对象另走一条：只在新对象是稳定原因、旧对象不是时更新，避免把短噪声写回去。
+    const refine = this.db.prepare(
+      "UPDATE soul_episodes SET object = ? WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND object <> ? AND length(object) > 20",
+    );
     let inserted = 0;
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -3730,9 +3788,37 @@ private migrateMemoryAuditActionEnum(): void {
           e.quote ? JSON.stringify(e.quote) : null, JSON.stringify(e.signals ?? []),
         );
         inserted += Number(info.changes ?? 0) > 0 ? 1 : 0;
+        const next = (e.object ?? "").trim();
+        if (Number(info.changes ?? 0) === 0) {
+          refresh.run(
+            e.kind, e.title ?? "", JSON.stringify(e.participants ?? []), e.userStance ?? "",
+            e.agentStance ?? "", e.cost ?? "", e.outcome ?? "", e.valence ?? 0, e.arousal ?? 0,
+            e.intensity ?? 0, e.affectSource ?? "lexicon", JSON.stringify(e.evidenceIds ?? []),
+            e.quote ? JSON.stringify(e.quote) : null, JSON.stringify(e.signals ?? []),
+            e.episodeId, t.teamId, t.userId, t.agentId,
+          );
+          if (next !== "" && next.length <= 20) refine.run(next, e.episodeId, t.teamId, t.userId, t.agentId, next);
+        }
       }
       this.db.exec("COMMIT");
       return { inserted };
+    } catch (err) {
+      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      throw err;
+    }
+  }
+
+  deleteSoulEpisodes(tenant: CoreTenant | undefined, episodeIds: string[]): { deleted: number } {
+    const t = normalizeCoreTenant(tenant);
+    const ids = (episodeIds ?? []).filter((id) => typeof id === "string" && id.startsWith("ep-"));
+    if (ids.length === 0) return { deleted: 0 };
+    const stmt = this.db.prepare("DELETE FROM soul_episodes WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?");
+    let deleted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const id of ids) deleted += Number(stmt.run(id, t.teamId, t.userId, t.agentId).changes ?? 0);
+      this.db.exec("COMMIT");
+      return { deleted };
     } catch (err) {
       try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
       throw err;
@@ -3798,6 +3884,68 @@ private migrateMemoryAuditActionEnum(): void {
       return (rows ?? []).map(mapSoulEpisodeRow);
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_episodes] search failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /* —— 情绪史（soul_emotions，2026-11-06）——
+   * soul_state 每次写入都覆盖「此刻」，情绪本体因此无法回放。这里按「事件 × 模板版本」
+   * 逐行留档：同一事件换判据重判会多一行（不覆盖旧行），审计能看出当时按哪版规则判的。
+   * intensity 存事件原值，读侧按标签半衰期重算衰减——写侧衰减会让「多久消退」不可复算。 */
+  commitSoulEmotions(tenant: CoreTenant | undefined, rows: SoulEmotionRecord[]): { inserted: number } {
+    const t = normalizeCoreTenant(tenant);
+    if (!rows || rows.length === 0) return { inserted: 0 };
+    const stmt = this.db.prepare(`INSERT OR IGNORE INTO soul_emotions (
+      episode_id, team_id, user_id, agent_id, at, object, label, valence, arousal,
+      dominance, intensity, appraisal_json, template_version, appraised_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    let inserted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const r of rows) {
+        const info = stmt.run(
+          r.episodeId, t.teamId, t.userId, t.agentId, r.at, r.object ?? "", r.label,
+          r.valence ?? 0, r.arousal ?? 0, typeof r.dominance === "number" ? r.dominance : null,
+          r.intensity ?? 0, r.appraisal === undefined ? null : JSON.stringify(r.appraisal),
+          r.templateVersion, r.appraisedAt,
+        );
+        // 只数真正新写入的行：同一事件同版本重跑是幂等的，不能虚增「记了多少条情绪」。
+        inserted += Number(info.changes ?? 0) > 0 ? 1 : 0;
+      }
+      this.db.exec("COMMIT");
+      return { inserted };
+    } catch (err) {
+      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      throw err;
+    }
+  }
+
+  listSoulEmotions(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; object?: string; since?: string },
+  ): SoulEmotionRecord[] {
+    const t = normalizeCoreTenant(tenant);
+    const limit = Math.max(1, Math.min(5000, Math.floor(opts?.limit ?? 500)));
+    try {
+      const where = ["team_id = ?", "user_id = ?", "agent_id = ?"];
+      const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+      if (opts?.object) {
+        where.push("object = ?");
+        args.push(opts.object);
+      }
+      if (opts?.since) {
+        where.push("at >= ?");
+        args.push(opts.since);
+      }
+      args.push(limit);
+      const rows = this.db
+        // 同一事件换判据重判会多一行（按 template_version 留档）。读侧先看最新一次判定，
+        // 否则旧模板的行会和当前判据的行混排，注入可能引用已被替换的旧标签。
+        .prepare(`SELECT * FROM soul_emotions WHERE ${where.join(" AND ")} ORDER BY appraised_at DESC, at DESC, episode_id DESC LIMIT ?`)
+        .all(...(args as SQLInputValue[])) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulEmotionRow);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_emotions] list failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
   }
@@ -10007,7 +10155,7 @@ function mapSoulEpisodeRow(row: Record<string, unknown>): SoulEpisode {
     episodeId: String(row.episode_id ?? ""),
     at: String(row.at ?? ""),
     day: String(row.day ?? ""),
-    kind: (["divergence", "correction", "decision", "value_conflict", "affect"].includes(kind)
+    kind: ((SOUL_EPISODE_KINDS as readonly string[]).includes(kind)
       ? kind
       : "decision") as SoulEpisode["kind"],
     title: String(row.title ?? ""),
@@ -10026,6 +10174,25 @@ function mapSoulEpisodeRow(row: Record<string, unknown>): SoulEpisode {
     affectSource: affective === "none" ? "none" : "lexicon",
     signals: jsonArray<string>(row.signals_json),
   };
+}
+
+function mapSoulEmotionRow(row: Record<string, unknown>): SoulEmotionRecord {
+  const rec: SoulEmotionRecord = {
+    episodeId: String(row.episode_id ?? ""),
+    at: String(row.at ?? ""),
+    object: String(row.object ?? ""),
+    label: String(row.label ?? ""),
+    valence: Number(row.valence ?? 0),
+    arousal: Number(row.arousal ?? 0),
+    intensity: Number(row.intensity ?? 0),
+    templateVersion: String(row.template_version ?? ""),
+    appraisedAt: String(row.appraised_at ?? ""),
+  };
+  const dom = Number(row.dominance);
+  if (row.dominance !== null && row.dominance !== undefined && Number.isFinite(dom)) rec.dominance = dom;
+  const appraisal = jsonObject(row.appraisal_json);
+  if (appraisal !== undefined) rec.appraisal = appraisal;
+  return rec;
 }
 
 function mapSoulLedgerRow(row: Record<string, unknown>): SoulLedgerEntry {

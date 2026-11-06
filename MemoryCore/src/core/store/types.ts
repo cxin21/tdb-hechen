@@ -25,6 +25,7 @@ import type { MemoryPromptStore } from "../memory-prompt/types.js";
 import type { MemoryGenerationRefStore } from "../memory-generation-log/types.js";
 import type {
   PersonaItem,
+  SoulEmotionRecord,
   SoulEpisode,
   SoulEpisodeQuery,
   SoulLedgerEntry,
@@ -1259,12 +1260,25 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * identity/values/narrative 必须挂在 ep-* 上才准入；voice 的 few-shot 也从这里取。
    * 写入幂等（episode_id 主键 + INSERT OR IGNORE）：重跑同一天不会翻倍。 */
   commitSoulEpisodes?(tenant: CoreTenant | undefined, episodes: SoulEpisode[]): MaybePromise<{ inserted: number }>;
+  /** 删除「不是他说的话」的事件（注入体/粘贴文档）。返回实际删除行数；清理的是派生缓存，账本不受影响。 */
+  deleteSoulEpisodes?(tenant: CoreTenant | undefined, episodeIds: string[]): MaybePromise<{ deleted: number }>;
   listSoulEpisodes?(
     tenant?: CoreTenant,
     opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"] },
   ): MaybePromise<SoulEpisode[]>;
   /** 「上次因为什么恼火、对谁、多强」——确定性 LIKE 检索（标题/对象/双方立场/原话）。 */
   searchSoulEpisodes?(tenant: CoreTenant | undefined, query: SoulEpisodeQuery): MaybePromise<SoulEpisode[]>;
+  /* —— 情绪史（soul_emotions，2026-11-06）——
+   * soul_state 只留「此刻」一个快照，下一次写入就覆盖；情绪史按「事件 × 模板版本」逐行留档，
+   * 这样「因为什么、对谁、多强、多久消退」有逐条记录可回放，注入侧的心境原因也有出处可查。 */
+  commitSoulEmotions?(
+    tenant: CoreTenant | undefined,
+    rows: SoulEmotionRecord[],
+  ): MaybePromise<{ inserted: number }>;
+  listSoulEmotions?(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; object?: string; since?: string },
+  ): MaybePromise<SoulEmotionRecord[]>;
   /** 事件挖掘的输入：窗口内 L0 原始对话（user/assistant 都要，按时间正序）。
    *  单列出来的理由：人格要的是「原话」，不是摘要；queryL1Records 已经损失了声口。 */
   recentL0Messages?(

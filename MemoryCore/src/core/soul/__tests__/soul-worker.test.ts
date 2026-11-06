@@ -29,8 +29,18 @@ function makeStore(
   } = {},
 ) {
   const items = [...(opts.items ?? [])];
-  const writes: Array<{ valence: number; arousal: number; baselineValence?: number | null; sampleCount?: number | null }> = [];
+  const writes: Array<{
+    valence: number;
+    arousal: number;
+    baselineValence?: number | null;
+    sampleCount?: number | null;
+    emotionObject?: string | null;
+    emotionLabel?: string | null;
+    emotionAt?: string | null;
+  }> = [];
   const commits: Array<{ upsert: PersonaItem[]; ledger: unknown[] }> = [];
+  // 情绪史落表：worker 用可选方法 commitSoulEmotions，测试里收集调用以便断言「真的写了」。
+  const emotionCommits: Array<Array<Record<string, unknown>>> = [];
   const store = {
     readCore: vi.fn(async () => opts.core ?? []),
     listSoulPersona: vi.fn(async () => items.map((i) => ({ ...i }))),
@@ -44,8 +54,20 @@ function makeStore(
       return { upserted: plan.upsert.length, ledgered: plan.ledger.length };
     }),
     readSoulState: vi.fn(async () => opts.state ?? null),
-    writeSoulState: vi.fn(async (_t: unknown, state: { valence: number; arousal: number; baselineValence?: number | null; sampleCount?: number | null }) => {
+    writeSoulState: vi.fn(async (_t: unknown, state: {
+      valence: number;
+      arousal: number;
+      baselineValence?: number | null;
+      sampleCount?: number | null;
+      emotionObject?: string | null;
+      emotionLabel?: string | null;
+      emotionAt?: string | null;
+    }) => {
       writes.push(state);
+    }),
+    commitSoulEmotions: vi.fn(async (_t: unknown, rows: Array<Record<string, unknown>>) => {
+      emotionCommits.push(rows);
+      return { inserted: rows.length };
     }),
     recentAffectSignals: vi.fn(async () => opts.signals ?? []),
     listSoulLedger: vi.fn(async () => opts.ledger ?? []),
@@ -61,7 +83,7 @@ function makeStore(
       })),
     ),
   } as unknown as IMemoryStore;
-  return { store, items, commits, writes };
+  return { store, items, commits, writes, emotionCommits };
 }
 
 const TEST_EPISODES: SoulEpisode[] = [
@@ -319,7 +341,7 @@ describe("runSoulMaintenance 编排", () => {
       now: "2026-11-05T01:30:00.000Z",
       recentRecords: async () => RECORDS,
     });
-    expect(rep1.mood!.line).toContain("因为「何晨指出我把基线失败当通过");
+    expect(rep1.mood!.line).toContain("因为「何晨」");
 
     const blind = makeStore({
       signals: [{ valence: -0.8, arousal: 0.6, occurred_at: "2026-11-05T01:00:00.000Z" }],
@@ -361,8 +383,10 @@ describe("runSoulMaintenance 编排", () => {
     });
     expect(rep.mood!.written).toBe(true);
     expect(writes[0].valence).toBeLessThan(0);
-    // 样本数如实 +1，而不是每 tick 把 2 条旧信号重新累加。
-    expect(writes[0].sampleCount).toBe(8);
+    // 样本数 = 本轮吸收的事件数，不是历史累加：这一轮只进来 1 条新信号。
+    // 旧语义是 base.sampleCount + events.length（7+1=8），生产库因此读到 3823——
+    // 那不是样本数，只是「重跑过多少轮」。
+    expect(writes[0].sampleCount).toBe(1);
   });
 
   it("首次积分（sampleCount=0）回放整个事件窗口：历史 episode 不再被 updatedAt 挡在心境之外", async () => {
@@ -383,6 +407,51 @@ describe("runSoulMaintenance 编排", () => {
     // 11-02/11-03 的纠正与分歧都早于 updatedAt，但首次积分必须吸收它们。
     expect(writes[0].sampleCount).toBeGreaterThanOrEqual(2);
     expect(writes[0].valence).toBeLessThan(0);
+  });
+
+  it("情绪史随心境一起落表：一条事件一行，带来源事件 id 与模板版本", async () => {
+    const { store, emotionCommits } = makeStore({
+      state: { valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, updatedAt: "2026-11-05T10:00:00.000Z", sampleCount: 0 },
+      episodes: TEST_EPISODES,
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true }),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      recentL0: async () => [],
+    });
+    const rows = emotionCommits[0] ?? [];
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    expect(rows.map((r) => r.episodeId)).toEqual(expect.arrayContaining(["ep-a1b2c3"]));
+    expect(rows.every((r) => typeof r.label === "string" && r.label !== "")).toBe(true);
+    expect(rows.every((r) => typeof r.templateVersion === "string" && r.templateVersion.startsWith("et-"))).toBe(true);
+    // 写的是事件原值，读侧才敢按半衰期重算（写侧衰减会让「多久消退」不可复算）。
+    expect(rows[0].intensity).toBeGreaterThan(0);
+  });
+
+  it("原因会过期：窗口里只剩一条早就退场的事件时，不再写原因四列（心境照写）", async () => {
+    const stale: SoulEpisode = { ...TEST_EPISODES[0], at: "2026-10-10T02:00:00.000Z", day: "2026-10-10" };
+    const { store, writes } = makeStore({
+      state: { valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, updatedAt: "2026-11-05T10:00:00.000Z", sampleCount: 0 },
+      episodes: [stale],
+    });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true }),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      recentL0: async () => [],
+    });
+    expect(rep.mood!.written).toBe(true);
+    // 26 天前的愧疚（半衰期 8h，6 个半衰期=48h）早已过期：不能继续拿它解释今天。
+    expect(writes[0].emotionObject ?? null).toBeNull();
+    expect(writes[0].emotionLabel ?? null).toBeNull();
+    expect(rep.mood!.line).not.toContain("因为");
   });
 
   const mkItem = (id: string, layer: PersonaItem["layer"], text: string): PersonaItem => ({
@@ -729,5 +798,51 @@ describe("runSoulMaintenance 编排", () => {
     expect(rep.rejections.some((r) => r.codes.includes("agent_stance_missing"))).toBe(true);
     expect(rep.admitted).toBe(0);
     expect(items.some((i) => i.layer === "identity")).toBe(false);
+  });
+
+  // 情绪改变判断的第二处落点：不是换一句文案，而是决定这一轮「长不长我是谁」。
+  // 同一次判断在两种心境下必须给出两种结果——否则情绪就只是一个读数。
+  it("还在同一个对象上欠着修复时，情绪为自我向 → 这一轮不重写 identity/values（mood_defer_self）", async () => {
+    const owed = (agentStance: string): SoulEpisode[] => [
+      { ...TEST_EPISODES[0], episodeId: "ep-x1", object: "假绿", agentStance, at: "2026-11-05T01:00:00.000Z" },
+      { ...TEST_EPISODES[0], episodeId: "ep-x2", object: "假绿", agentStance, at: "2026-11-05T01:30:00.000Z" },
+    ];
+    const state = {
+      valence: -0.4,
+      arousal: 0.5,
+      baselineValence: 0,
+      baselineArousal: 0.3,
+      updatedAt: "2026-11-05T00:30:00.000Z",
+      sampleCount: 3,
+    };
+    const candidate = async () => [
+      { layer: "identity" as const, text: "我宁可慢一点把账算清，也不拿漂亮的假绿过关。", evidenceIds: ["r1", "r2", "ep-x1", "ep-x2"] },
+    ];
+    const open = makeStore({ state, episodes: owed("直接认领，回头再看") });
+    const repOpen = await runSoulMaintenance({
+      store: open.store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      now: "2026-11-05T02:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      rewriter: candidate,
+    });
+    const deferred = repOpen.rejections.find((r) => r.codes.includes("mood_defer_self"));
+    expect(deferred).toBeTruthy();
+    expect(String(deferred!.detail)).toContain("这一轮先修");
+
+    // 同一句候选、同一批证据：修复已经写在我的回复里 → 不再拦，走正常准入。
+    const done = makeStore({ state, episodes: owed("已按原话重跑，补上了") });
+    const repDone = await runSoulMaintenance({
+      store: done.store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      now: "2026-11-05T02:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      rewriter: candidate,
+    });
+    expect(repDone.rejections.some((r) => r.codes.includes("mood_defer_self"))).toBe(false);
   });
 });

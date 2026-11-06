@@ -114,7 +114,7 @@ describe("soul 每 tick 入口：按租户跑，不退化到 default 桶", () =>
     });
     expect(calls).toHaveLength(1);
     expect(calls[0].tenant).toMatchObject(T1);
-    expect(calls[0].opts).toMatchObject({ sinceDays: 7, maxMessages: 4000 });
+    expect(calls[0].opts).toMatchObject({ sinceDays: 7, maxMessages: 12000 });
     expect(stored.length).toBeGreaterThan(0);
     expect(summary.episodes?.inserted).toBeGreaterThan(0);
     expect(summary.episodes?.available).toBeGreaterThan(0);

@@ -21,6 +21,7 @@ import {
   planUpdate,
   renderLayerWithBudget,
   renderPersonaBlock,
+  orderForRender,
 } from "../persona.js";
 import {
   activeEmotions,
@@ -336,6 +337,80 @@ describe("persona：准入 / 更新 / 合并 / 降级 / 冻结 / 复活 / 预算
     expect(text).not.toContain("情绪数据");
   });
 
+  it("当前情绪改变渲染序：愧疚先看见自己的失败，恼火先看见关系冲突", () => {
+    const mk = (itemId: string, layer: "self" | "relationship", text: string, weight: number, kind: string): PersonaItem => ({
+      itemId,
+      layer,
+      text,
+      state: "active",
+      weight,
+      evidenceIds: [],
+      evidenceDays: [],
+      evidenceOrigins: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastEvidenceAt: NOW,
+      meta: { historyKind: kind },
+    });
+    const failure = mk("self:failure", "self", "我一开始没做对：「按钮状态不对」；后来改成先量再改", 0.7, "failure");
+    const review = mk("self:review", "self", "我复盘过：先取证再动手", 0.75, "review");
+    // 缺省（无情绪）仍按权重：复盘在前
+    expect(orderForRender("self", [failure, review])[0]!.itemId).toBe("self:review");
+    // 愧疚是自我向：失败排到复盘前（同一组条目，只因情绪不同而换序）
+    expect(orderForRender("self", [failure, review], { attention: { object: "", focus: "self" } })[0]!.itemId).toBe("self:failure");
+    // 恼火是向外向：自我段不被情绪带偏
+    expect(orderForRender("self", [failure, review], { attention: { object: "", focus: "conflict" } })[0]!.itemId).toBe("self:review");
+
+    const conflict = mk("relationship:conflict", "relationship", "「按钮组看着还是不对」我当时没修好", 0.6, "conflict");
+    const repair = mk("relationship:repair", "relationship", "我补上了：设置页六页逐项量过", 0.8, "repair");
+    expect(orderForRender("relationship", [conflict, repair])[0]!.itemId).toBe("relationship:repair");
+    expect(orderForRender("relationship", [conflict, repair], { attention: { object: "", focus: "conflict" } })[0]!.itemId).toBe("relationship:conflict");
+  });
+
+  it("情绪放大相关层的注意力预算：愧疚时看见更多自己的失败，不放大无关层", () => {
+    const mk = (i: number): PersonaItem => ({
+      itemId: "self:f" + i,
+      layer: "self",
+      text: "我没守住：「第" + i + "次没做对的地方」；后来改成先量再改，六页逐项量过",
+      state: "active",
+      weight: 0.7,
+      evidenceIds: [],
+      evidenceDays: [],
+      evidenceOrigins: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastEvidenceAt: NOW,
+      meta: { historyKind: "failure" },
+    });
+    const items = Array.from({ length: 12 }, (_, i) => mk(i));
+    const base = renderPersonaBlock(items, CFG);
+    const guilty = renderPersonaBlock(items, CFG, { attention: { object: "", focus: "self" } });
+    const conflict = renderPersonaBlock(items, CFG, { attention: { object: "", focus: "conflict" } });
+    const n = (b: { text: string }) => b.text.split("\n").filter((l) => l.startsWith("- ")).length;
+    expect(n(base)).toBeLessThan(n(guilty));
+    expect(n(conflict)).toBe(n(base));
+  });
+
+  it("承诺保底一条：预算被失败/复盘占满时，「我答应自己」不许被静默裁掉", () => {
+    const mk = (i: number): PersonaItem => ({
+      itemId: "self:f" + i,
+      layer: "self",
+      text: "我没守住：「第" + i + "次没做对的地方」；后来改成先量再改，六页逐项量过并回读确认",
+      state: "active",
+      weight: 0.7,
+      evidenceIds: [],
+      evidenceDays: [],
+      evidenceOrigins: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastEvidenceAt: NOW,
+      meta: { historyKind: "failure" },
+    });
+    const promise: PersonaItem = { ...mk(99), itemId: "self:p", text: "我答应自己：交出去的每一格要么亲手跑过，要么明写未采集", weight: 0.6, meta: {} };
+    const block = renderPersonaBlock([...Array.from({ length: 9 }, (_, i) => mk(i)), promise], CFG);
+    expect(block.text).toContain("我答应自己");
+  });
+
   it("渲染层顺序与段头固定：boundary 按作用域再按权重", () => {
     const universal = { ...admit("绝不把情绪数据喂进召回，任何情况下都不允许", "boundary"), weight: 0.5, meta: { scope: "universal" } };
     const mini = { ...admit("绝不在没有备份的情况下修改生产配置，必须先验证真值", "boundary"), weight: 0.9, meta: { scope: "project" } };
@@ -512,6 +587,50 @@ describe("worker：七阶段一轮跑完并如实记账", () => {
     const payload = committed.at(-1)!;
     expect(payload.upsert.find((i) => i.itemId === "boundary:legacy")?.state).toBe("frozen");
     expect(payload.ledger.some((l) => l.action === "retire" && l.gates.includes("legacy_slot_retired"))).toBe(true);
+  });
+
+  it("slot-import 的用户档案退出「我和他的关系」，生成的关系史留下", async () => {
+    const profile: PersonaItem = {
+      itemId: "relationship:profile",
+      layer: "relationship",
+      text: "用户名叫何晨，时区 Asia/Shanghai",
+      state: "active",
+      weight: 0.7,
+      evidenceIds: ["slot:identity:1"],
+      evidenceDays: ["2026-10-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-10-01T00:00:00.000Z",
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      lastEvidenceAt: "2026-10-01T00:00:00.000Z",
+      meta: { source: "slot-import" },
+    };
+    const history: PersonaItem = {
+      itemId: "relationship:hist",
+      layer: "relationship",
+      text: "我和何晨吵过一次又补上了：ep-abc 他指出我把失败当通过，我改口并重跑。",
+      state: "active",
+      weight: 0.8,
+      evidenceIds: ["ep-abc"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["episode"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+      meta: { source: "l1+model+episode" },
+    };
+    const { store, committed } = fakeStore([]);
+    (store as unknown as { listSoulPersona: () => PersonaItem[] }).listSoulPersona = () => [profile, history];
+    const report = await runSoulMaintenance({
+      store: store as never,
+      tenant: { teamId: "t", userId: "u", agentId: "a" },
+      now: NOW,
+      config: { enabled: true },
+      trigger: "lifecycle",
+    });
+    const payload = committed.at(-1)!;
+    expect(payload.upsert.find((i) => i.itemId === "relationship:profile")?.state).toBe("frozen");
+    expect(payload.upsert.find((i) => i.itemId === "relationship:hist")?.state ?? "active").toBe("active");
+    expect(report.retired).toBeGreaterThanOrEqual(1);
   });
 
   it("enabled=false 且非 import 触发 → 不写库并如实 skipped", async () => {
