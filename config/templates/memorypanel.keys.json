@@ -178,7 +178,7 @@
   "coverage": {
     "sourceKeys": 22,
     "ignoredKeys": 4,
-    "note": "sourceKeys = keys 18 + ignored 4；其中 12 个环境变量（panel-config.ts 现行 62 行）、4 个 metadata-instances.json 字段（无 env）、4 个开发脚本自用变量（进 ignored）。Wave 2A（多 agent 编排三块退场 + 8096 默认值改向 8420）后删除 4 键：knowledge.KNOWLEDGE_LLM_BINDING_SYNC、knowledge.KNOWLEDGE_LLM_PROXY_BASE_URL、runtime.LLM_PROVIDER_PROXY_BASE_URL、metadataInstances.instances[].proxy_endpoint（源码已无对应读取点，instance-registry.ts 仅剩退役注释）⇒ sourceKeys 26→22。",
+    "note": "sourceKeys = keys 18 + ignored 4；其中 12 个环境变量（panel-config.ts 现行 62 行）、4 个 metadata-instances.json 字段（无 env）、4 个开发脚本自用变量（进 ignored）。Wave 2A（多 agent 编排三块退场 + 8096 默认值改向 8420）后删除 4 键：knowledge.KNOWLEDGE_LLM_BINDING_SYNC、knowledge.KNOWLEDGE_LLM_PROXY_BASE_URL、runtime.LLM_PROVIDER_PROXY_BASE_URL、metadataInstances.instances[].proxy_endpoint（源码已无对应读取点，instance-registry.ts 仅剩退役注释）⇒ sourceKeys 26→22。 2026-11-07：行号锚点按源码最近字面量重锚（模板长期漂移），并补登漏登记键 0 个。",
     "templatedKeys": 18,
     "templateKeys": 18
   }

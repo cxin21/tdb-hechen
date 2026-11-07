@@ -27,7 +27,6 @@
 import { clampMaxResponseBytes } from './http-capped.js';
 import {
   CORE_MAX_MESSAGE_CHARS,
-  CORE_MAX_MESSAGES_PER_REQUEST,
   CORE_MAX_REQUEST_BYTES,
   DEFAULT_MAX_REQUEST_BYTES,
 } from './wire-limits.js';
@@ -126,12 +125,9 @@ export interface HeadPackConfig {
    * know which `scene_blocks/` files exist.
    */
   includeScenarioIndex: boolean;
-  /**
-   * Legacy ceiling for `composeHeadPack`'s bare path list. The persona no longer
-   * appends one (task-103: the L2 segment owns the index), so this only bounds
-   * the compose helper's own behaviour.
-   */
-  maxScenarioEntries: number;
+  // maxScenarioEntries 已于 2026-11-07 删除：composeHeadPack 的唯一调用方
+  // （src/segments/persona.ts:30-35）从不传这个选项，生效值恒为 20；
+  // 已写死为 head-pack-compose.ts 的 HEAD_PACK_MAX_SCENARIO_ENTRIES。
   /**
    * Character cap for the L2 scene-index segment. Clamped to [0, 3000]: 3000 is
    * also `L2_MAX_CHARS`, the ceiling that segment registers with, so a larger
@@ -255,12 +251,9 @@ export interface WritebackConfig {
    * to [1, 8192] below — a config typo must not resurrect that failure mode.
    */
   maxMessageChars: number;
-  /**
-   * Messages per request. `/v3/conversation/add` caps a batch at 100
-   * (v2-schemas.ts:120) and rejects the entire turn when exceeded, so longer
-   * turns are sharded in order; clamp keeps it within the core limit.
-   */
-  maxMessagesPerRequest: number;
+  // maxMessagesPerRequest 已于 2026-11-07 删除：分片实际由 wire-limits.ts:208 的
+  // chunkMessages() 用 CORE_MAX_MESSAGES_PER_REQUEST(=100, wire-limits.ts:30) 决定，
+  // memory-client.ts:979 传的也是该常量；本键解析后无人消费，属于「结构齐备、链路断开」。
   /**
    * Byte budget for ONE request body (the JSON actually put on the wire).
    * The core destroys an oversized socket before it can answer with a 413, so
@@ -486,7 +479,6 @@ export const DEFAULT_CONFIG: AgememConfig = {
     refreshMs: 300000,
     fallbackText: '',
     includeScenarioIndex: true,
-    maxScenarioEntries: 20,
     // 3000: the measured 14-scene index renders ~2400 chars with summaries.
     l2Chars: 3000,
   },
@@ -559,7 +551,6 @@ export const DEFAULT_CONFIG: AgememConfig = {
     // blocks, which the core answered with a 400 on every retry until the turn
     // dead-lettered and both sides of the exchange were lost.
     maxMessageChars: 8192,
-    maxMessagesPerRequest: 100,
     // Below the measured 0.9 MB success point, well under the 1 MiB wall.
     maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
     // 500 turns is days of a busy session; 20 MB keeps the JSONL cheap to read
@@ -893,12 +884,6 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     DEFAULT_CONFIG.writeback.maxMessageChars,
     1,
     CORE_MAX_MESSAGE_CHARS,
-  );
-  writeback.maxMessagesPerRequest = pickNumber(
-    writeback.maxMessagesPerRequest,
-    DEFAULT_CONFIG.writeback.maxMessagesPerRequest,
-    1,
-    CORE_MAX_MESSAGES_PER_REQUEST,
   );
   writeback.maxRequestBytes = Math.floor(pickNumber(
     writeback.maxRequestBytes,

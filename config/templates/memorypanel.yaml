@@ -55,13 +55,13 @@ runtime:
 
 # ─── instances / 服务端凭据覆盖 ───────────────────────  [instance-registry.ts:88-97]
 instances:
-  TDAI_GATEWAY_APIKEY: "${TDAI_GATEWAY_APIKEY}"   # str default="" — 一把 key 覆盖注册表里**所有**实例的 api_key；多实例各配不同 key 时设了它就全部失效 [src:78]
+  TDAI_GATEWAY_APIKEY: "${TDAI_GATEWAY_APIKEY}"   # str default="" — 一把 key 覆盖注册表里**所有**实例的 api_key；多实例各配不同 key 时设了它就全部失效 [src:MemoryPanel/src/panel/config/instance-registry.ts:78]
 
 # ─── recallJournal / 召回日志直读（chat-memory 路由）─────  [chat-memory.ts:62-74]
 # 该路由直接读盘（不经 core），所以需要知道 core 的 dataDir。
 recallJournal:
-  TDAI_DATA_DIR: "${TDAI_DATA_DIR}"   # path default=required — 与 MemoryCore 同一 dataDir（单源锚），派生 <dataDir>/logs/recall；缺失则该路由 503 RECALL_JOURNAL_DIR_UNRESOLVED，不是静默读空 [src:66]
-  TDAI_RECALL_JOURNAL_DIR: "${TDAI_RECALL_JOURNAL_DIR}"   # path default="" — 运维显式覆盖目录，优先级高于 dataDir 派生；支持 ~/ 前缀 [src:64]
+  TDAI_DATA_DIR: "${TDAI_DATA_DIR}"   # path default=required — 与 MemoryCore 同一 dataDir（单源锚），派生 <dataDir>/logs/recall；缺失则该路由 503 RECALL_JOURNAL_DIR_UNRESOLVED，不是静默读空 [src:MemoryPanel/src/panel/http/routes/chat-memory.ts:66]
+  TDAI_RECALL_JOURNAL_DIR: "${TDAI_RECALL_JOURNAL_DIR}"   # path default="" — 运维显式覆盖目录，优先级高于 dataDir 派生；支持 ~/ 前缀 [src:MemoryPanel/src/panel/http/routes/chat-memory.ts:64]
 
 # ─── metadataInstances / 实例注册表 JSON 的字段（不是 env）─────────────────
 # 真实文件形状（写进 METADATA_INSTANCES_CONFIG 指向的文件，已 gitignore）：

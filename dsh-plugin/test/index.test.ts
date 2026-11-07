@@ -727,7 +727,6 @@ describe('plugin entry', () => {
     const pack = composeHeadPack(persona, ['scene_blocks/a.md', 'scene_blocks/b.md'], {
       maxChars: 8000,
       includeScenarioIndex: true,
-      maxScenarioEntries: 20,
     });
 
     // The path the persona already lists (with heat and date) is not repeated as
@@ -1529,10 +1528,12 @@ describe('composeHeadPack', () => {
     expect(composeHeadPack('persona', ['a.md'], { maxChars: 4000, includeScenarioIndex: false })).toBe('persona');
     expect(composeHeadPack(PERSONA, [], { maxChars: 4000, includeScenarioIndex: true })).toBe(PERSONA.trim());
     expect(composeHeadPack(undefined, [], { maxChars: 4000 })).toBe('');
-    const capped = composeHeadPack(undefined, ['a.md', 'b.md', 'c.md'], { maxChars: 4000, includeScenarioIndex: true, maxScenarioEntries: 2 });
-    expect(capped).toContain('- a.md');
-    expect(capped).toContain('- b.md');
-    expect(capped).not.toContain('- c.md');
+    // Ceiling is hardcoded at HEAD_PACK_MAX_SCENARIO_ENTRIES = 20 (the old config
+    // knob was never passed by the only caller, so 20 was always the live value).
+    const many = Array.from({ length: 25 }, (_, i) => `s${i}.md`);
+    const capped = composeHeadPack(undefined, many, { maxChars: 4000, includeScenarioIndex: true });
+    expect(capped).toContain('- s19.md');
+    expect(capped).not.toContain('- s20.md');
   });
 
 

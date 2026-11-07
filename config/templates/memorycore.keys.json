@@ -12,7 +12,7 @@
       "path": "deployMode",
       "type": "enum(standalone)",
       "default": "standalone",
-      "source": "MemoryCore/src/gateway/config.ts:440",
+      "source": "MemoryCore/src/gateway/config.ts:455",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -20,7 +20,7 @@
       "path": "stateBackend",
       "type": "enum(local)",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:451",
+      "source": "MemoryCore/src/gateway/config.ts:466",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -28,7 +28,7 @@
       "path": "instanceId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:462",
+      "source": "MemoryCore/src/gateway/config.ts:477",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -36,7 +36,7 @@
       "path": "server.port",
       "type": "int",
       "default": 8420,
-      "source": "MemoryCore/src/gateway/config.ts:255",
+      "source": "MemoryCore/src/gateway/config.ts:256",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -44,7 +44,7 @@
       "path": "server.host",
       "type": "str",
       "default": "127.0.0.1",
-      "source": "MemoryCore/src/gateway/config.ts:256",
+      "source": "MemoryCore/src/gateway/config.ts:257",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -52,7 +52,7 @@
       "path": "server.apiKey",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:266",
+      "source": "MemoryCore/src/gateway/config.ts:267",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -60,7 +60,7 @@
       "path": "server.corsOrigins",
       "type": "list<str>",
       "default": [],
-      "source": "MemoryCore/src/gateway/config.ts:760",
+      "source": "MemoryCore/src/gateway/config.ts:775",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -68,7 +68,7 @@
       "path": "data.baseDir",
       "type": "path",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:271",
+      "source": "MemoryCore/src/gateway/config.ts:272",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -76,7 +76,7 @@
       "path": "llm.baseUrl",
       "type": "str",
       "default": "https://api.openai.com/v1",
-      "source": "MemoryCore/src/gateway/config.ts:286",
+      "source": "MemoryCore/src/gateway/config.ts:287",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -84,7 +84,7 @@
       "path": "llm.apiKey",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/gateway/config.ts:289",
+      "source": "MemoryCore/src/gateway/config.ts:290",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -92,7 +92,7 @@
       "path": "llm.model",
       "type": "str",
       "default": "gpt-4o",
-      "source": "MemoryCore/src/gateway/config.ts:290",
+      "source": "MemoryCore/src/gateway/config.ts:291",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -100,7 +100,7 @@
       "path": "llm.maxTokens",
       "type": "int",
       "default": 4096,
-      "source": "MemoryCore/src/gateway/config.ts:291",
+      "source": "MemoryCore/src/gateway/config.ts:292",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -108,7 +108,7 @@
       "path": "llm.timeoutMs",
       "type": "ms",
       "default": 120000,
-      "source": "MemoryCore/src/gateway/config.ts:292",
+      "source": "MemoryCore/src/gateway/config.ts:293",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -116,7 +116,7 @@
       "path": "llm.provider",
       "type": "enum(openai|proxy)",
       "default": "openai",
-      "source": "MemoryCore/src/gateway/config.ts:293",
+      "source": "MemoryCore/src/gateway/config.ts:382",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -124,7 +124,7 @@
       "path": "llm.stream",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/gateway/config.ts:296",
+      "source": "MemoryCore/src/gateway/config.ts:300",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -132,7 +132,7 @@
       "path": "shark.baseUrl",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:467",
+      "source": "MemoryCore/src/gateway/config.ts:482",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -140,7 +140,7 @@
       "path": "shark.vdbTtlMs",
       "type": "ms",
       "default": 300000,
-      "source": "MemoryCore/src/gateway/config.ts:468",
+      "source": "MemoryCore/src/gateway/config.ts:483",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -148,7 +148,7 @@
       "path": "shark.cosBufferMs",
       "type": "ms",
       "default": 120000,
-      "source": "MemoryCore/src/gateway/config.ts:469",
+      "source": "MemoryCore/src/gateway/config.ts:484",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -156,7 +156,7 @@
       "path": "shark.maxInstances",
       "type": "int",
       "default": 1000,
-      "source": "MemoryCore/src/gateway/config.ts:470",
+      "source": "MemoryCore/src/gateway/config.ts:485",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -164,23 +164,15 @@
       "path": "scanner.instances",
       "type": "str",
       "default": "default",
-      "source": "MemoryCore/src/gateway/config.ts:476",
+      "source": "MemoryCore/src/gateway/config.ts:491",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
-    },
-    {
-      "path": "scanner.instancesSharkUrl",
-      "type": "str",
-      "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:477",
-      "consumed": true,
-      "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
     {
       "path": "scanner.intervalMs",
       "type": "ms",
       "default": 500,
-      "source": "MemoryCore/src/gateway/config.ts:478",
+      "source": "MemoryCore/src/gateway/config.ts:493",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -188,7 +180,7 @@
       "path": "scanner.nodeId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:479",
+      "source": "MemoryCore/src/gateway/config.ts:494",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -196,7 +188,7 @@
       "path": "worker.pollMs",
       "type": "ms",
       "default": 200,
-      "source": "MemoryCore/src/gateway/config.ts:485",
+      "source": "MemoryCore/src/gateway/config.ts:500",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -204,7 +196,7 @@
       "path": "worker.concurrency",
       "type": "int",
       "default": 60,
-      "source": "MemoryCore/src/gateway/config.ts:486",
+      "source": "MemoryCore/src/gateway/config.ts:501",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -212,7 +204,7 @@
       "path": "cos.domain",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:492",
+      "source": "MemoryCore/src/gateway/config.ts:507",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -220,7 +212,7 @@
       "path": "cos.generationLogRetentionDays",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/gateway/config.ts:493",
+      "source": "MemoryCore/src/gateway/config.ts:509",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -228,14 +220,14 @@
       "path": "observability.type",
       "type": "enum(noop|console)",
       "default": "noop",
-      "source": "MemoryCore/src/gateway/config.ts:506",
+      "source": "MemoryCore/src/gateway/config.ts:521",
       "consumed": true
     },
     {
       "path": "metadata.maxUsersPerInstance",
       "type": "int",
       "default": 500,
-      "source": "MemoryCore/src/gateway/config.ts:562",
+      "source": "MemoryCore/src/gateway/config.ts:578",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -243,7 +235,7 @@
       "path": "metadata.maxTeamsPerInstance",
       "type": "int",
       "default": 100,
-      "source": "MemoryCore/src/gateway/config.ts:566",
+      "source": "MemoryCore/src/gateway/config.ts:582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -251,7 +243,7 @@
       "path": "metadata.configParamsFile",
       "type": "path",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:570",
+      "source": "MemoryCore/src/gateway/config.ts:585",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -259,7 +251,7 @@
       "path": "metadata.store.sqliteBaseDir",
       "type": "path",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:551",
+      "source": "MemoryCore/src/gateway/config.ts:566",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -267,7 +259,7 @@
       "path": "metadata.store.storeCacheMaxInstances",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:557",
+      "source": "MemoryCore/src/gateway/config.ts:567",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -275,7 +267,7 @@
       "path": "metadata.store.mongoDbPrefix",
       "type": "str",
       "default": "tdai_metadata",
-      "source": "MemoryCore/src/gateway/config.ts:558",
+      "source": "MemoryCore/src/gateway/config.ts:568",
       "consumed": true,
       "defaultNote": "条件材料化：metadata.store 不写该键时整块 undefined，实际缺省由消费者 src/metadata/store/db-name.ts:7 DEFAULT_METADATA_DB_PREFIX 兜底 = \"tdai_metadata\"（库名 {prefix}_{instance}，normalizeDbPrefix :23-25 空串同样回落）"
     },
@@ -283,7 +275,7 @@
       "path": "metadata.systemUser.memory.userId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:576",
+      "source": "MemoryCore/src/gateway/config.ts:587",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -291,7 +283,7 @@
       "path": "metadata.systemUser.memory.displayName",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:577",
+      "source": "MemoryCore/src/gateway/config.ts:588",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -299,7 +291,7 @@
       "path": "metadata.systemUser.memory.userKey",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/gateway/config.ts:578",
+      "source": "MemoryCore/src/gateway/config.ts:587",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -307,23 +299,15 @@
       "path": "memory.promptMode",
       "type": "enum(chat|code)",
       "default": "chat",
-      "source": "MemoryCore/src/config.ts:1348",
+      "source": "MemoryCore/src/config.ts:1533",
       "consumed": true,
       "defaultNote": "缺省 chat 由取值 helper 兜底，非解析行字面量"
-    },
-    {
-      "path": "memory.capture.enabled",
-      "type": "bool",
-      "default": true,
-      "source": "MemoryCore/src/config.ts:1989",
-      "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
     {
       "path": "memory.capture.excludeAgents",
       "type": "list<str>",
       "default": [],
-      "source": "MemoryCore/src/config.ts:1990",
+      "source": "MemoryCore/src/config.ts:2266",
       "consumed": true,
       "defaultNote": "缺省空数组由 strArray() 兜底"
     },
@@ -331,7 +315,7 @@
       "path": "memory.capture.l0l1RetentionDays",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1991",
+      "source": "MemoryCore/src/config.ts:1539",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -339,7 +323,7 @@
       "path": "memory.capture.allowAggressiveCleanup",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1355",
+      "source": "MemoryCore/src/config.ts:1540",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -347,7 +331,7 @@
       "path": "memory.capture.cleanTime",
       "type": "str",
       "default": "03:00",
-      "source": "MemoryCore/src/config.ts:1451",
+      "source": "MemoryCore/src/config.ts:1634",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -355,15 +339,15 @@
       "path": "memory.extraction.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1995",
+      "source": "MemoryCore/src/config.ts:2271",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原 :1996 落在 soulMaintenance 的 enabled（同名字段互串），真实解析行 :2271"
     },
     {
       "path": "memory.extraction.enableDedup",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1996",
+      "source": "MemoryCore/src/config.ts:2272",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -371,7 +355,7 @@
       "path": "memory.extraction.maxMemoriesPerSession",
       "type": "int",
       "default": 20,
-      "source": "MemoryCore/src/config.ts:1997",
+      "source": "MemoryCore/src/config.ts:2273",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -379,7 +363,7 @@
       "path": "memory.extraction.sessionScope",
       "type": "enum(session|profile)",
       "default": "session",
-      "source": "MemoryCore/src/config.ts:1999",
+      "source": "MemoryCore/src/config.ts:2275",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -387,7 +371,7 @@
       "path": "memory.extraction.durativeEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2001",
+      "source": "MemoryCore/src/config.ts:2277",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -395,7 +379,7 @@
       "path": "memory.extraction.recurrenceEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2003",
+      "source": "MemoryCore/src/config.ts:2279",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -403,7 +387,7 @@
       "path": "memory.extraction.model",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2004",
+      "source": "MemoryCore/src/config.ts:2280",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -411,7 +395,7 @@
       "path": "memory.extraction.promptMode",
       "type": "enum(chat|code)",
       "default": "chat",
-      "source": "MemoryCore/src/config.ts:2005",
+      "source": "MemoryCore/src/config.ts:2281",
       "consumed": true,
       "defaultNote": "缺省 chat 由取值 helper 兜底，非解析行字面量"
     },
@@ -419,7 +403,7 @@
       "path": "memory.extraction.extractionTimeoutMs",
       "type": "ms",
       "default": 300000,
-      "source": "MemoryCore/src/config.ts:2007",
+      "source": "MemoryCore/src/config.ts:2285",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -427,7 +411,7 @@
       "path": "memory.extraction.dedupTimeoutMs",
       "type": "ms",
       "default": 300000,
-      "source": "MemoryCore/src/config.ts:2012",
+      "source": "MemoryCore/src/config.ts:2288",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -438,7 +422,7 @@
         "probe-",
         "session-probe-"
       ],
-      "source": "MemoryCore/src/config.ts:2018",
+      "source": "MemoryCore/src/config.ts:2291",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -446,7 +430,7 @@
       "path": "memory.extraction.scenePoisonSplit",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2020",
+      "source": "MemoryCore/src/config.ts:2293",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -454,7 +438,7 @@
       "path": "memory.extraction.sceneBatchMaxChars",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2021",
+      "source": "MemoryCore/src/config.ts:2294",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -470,7 +454,7 @@
       "path": "memory.extraction.facts.maxFacts",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:2027",
+      "source": "MemoryCore/src/config.ts:2325",
       "consumed": true,
       "defaultNote": "缺省 5 取自 DEFAULT_MAX_FACTS（core/record/fact-key.ts）"
     },
@@ -478,7 +462,7 @@
       "path": "memory.extraction.facts.includeTriples",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2028",
+      "source": "MemoryCore/src/config.ts:2326",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -486,15 +470,15 @@
       "path": "memory.write.factKey.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2040",
+      "source": "MemoryCore/src/config.ts:2338",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2044 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2338"
     },
     {
       "path": "memory.write.factKey.mode",
       "type": "enum(replace|channel)",
       "default": "replace",
-      "source": "MemoryCore/src/config.ts:2042",
+      "source": "MemoryCore/src/config.ts:2340",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -502,7 +486,7 @@
       "path": "memory.write.factKey.separator",
       "type": "str",
       "default": " | ",
-      "source": "MemoryCore/src/config.ts:2045",
+      "source": "MemoryCore/src/config.ts:2344",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -510,7 +494,7 @@
       "path": "memory.write.factKey.maxFactChars",
       "type": "int",
       "default": 240,
-      "source": "MemoryCore/src/config.ts:2049",
+      "source": "MemoryCore/src/config.ts:2347",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -518,23 +502,23 @@
       "path": "memory.write.factKey.maxFacts",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:2050",
+      "source": "MemoryCore/src/config.ts:2348",
       "consumed": true,
-      "defaultNote": "缺省 5 取自 DEFAULT_MAX_FACTS（core/record/fact-key.ts）"
+      "defaultNote": "2026-11-07 重锚：原锚 2325 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2348"
     },
     {
       "path": "memory.write.factKey.includeTriples",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2051",
+      "source": "MemoryCore/src/config.ts:2349",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2326 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2349"
     },
     {
       "path": "memory.write.factKey.onlyForTypes",
       "type": "list<str>",
       "default": [],
-      "source": "MemoryCore/src/config.ts:2052",
+      "source": "MemoryCore/src/config.ts:2350",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -542,7 +526,7 @@
       "path": "memory.write.supersession.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2062",
+      "source": "MemoryCore/src/config.ts:2063",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -550,7 +534,7 @@
       "path": "memory.write.supersession.cardinalityGate",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2063",
+      "source": "MemoryCore/src/config.ts:2361",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -558,7 +542,7 @@
       "path": "memory.write.supersession.cardinalityDefault",
       "type": "enum(single|multi)",
       "default": "single",
-      "source": "MemoryCore/src/config.ts:2064",
+      "source": "MemoryCore/src/config.ts:2358",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -566,7 +550,7 @@
       "path": "memory.write.factRows.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2074",
+      "source": "MemoryCore/src/config.ts:2070",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -574,15 +558,15 @@
       "path": "memory.write.factRows.maxFacts",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2075",
+      "source": "MemoryCore/src/config.ts:2370",
       "consumed": true,
-      "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
+      "defaultNote": "2026-11-07 重锚：原锚 2325 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2370"
     },
     {
       "path": "memory.persona.triggerEveryN",
       "type": "int",
       "default": 50,
-      "source": "MemoryCore/src/config.ts:2081",
+      "source": "MemoryCore/src/config.ts:2379",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -590,7 +574,7 @@
       "path": "memory.persona.maxScenes",
       "type": "int",
       "default": 15,
-      "source": "MemoryCore/src/config.ts:2082",
+      "source": "MemoryCore/src/config.ts:2380",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -598,7 +582,7 @@
       "path": "memory.persona.backupCount",
       "type": "int",
       "default": 3,
-      "source": "MemoryCore/src/config.ts:2083",
+      "source": "MemoryCore/src/config.ts:2381",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -606,7 +590,7 @@
       "path": "memory.persona.sceneBackupCount",
       "type": "int",
       "default": 10,
-      "source": "MemoryCore/src/config.ts:2084",
+      "source": "MemoryCore/src/config.ts:2382",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -614,7 +598,7 @@
       "path": "memory.persona.model",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2085",
+      "source": "MemoryCore/src/config.ts:2280",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -622,7 +606,7 @@
       "path": "memory.persona.promptMode",
       "type": "enum(chat|code)",
       "default": "chat",
-      "source": "MemoryCore/src/config.ts:2086",
+      "source": "MemoryCore/src/config.ts:2281",
       "consumed": true,
       "defaultNote": "缺省 chat 由取值 helper 兜底，非解析行字面量"
     },
@@ -630,7 +614,7 @@
       "path": "memory.persona.reasoningEffort",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2088",
+      "source": "MemoryCore/src/config.ts:2386",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -638,7 +622,7 @@
       "path": "memory.pipeline.everyNConversations",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:2091",
+      "source": "MemoryCore/src/config.ts:2421",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -646,7 +630,7 @@
       "path": "memory.pipeline.enableWarmup",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2092",
+      "source": "MemoryCore/src/config.ts:2422",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -654,7 +638,7 @@
       "path": "memory.pipeline.l1IdleTimeoutSeconds",
       "type": "int",
       "default": 600,
-      "source": "MemoryCore/src/config.ts:2093",
+      "source": "MemoryCore/src/config.ts:2423",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -662,7 +646,7 @@
       "path": "memory.pipeline.l2DelayAfterL1Seconds",
       "type": "int",
       "default": 10,
-      "source": "MemoryCore/src/config.ts:2094",
+      "source": "MemoryCore/src/config.ts:2424",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -670,7 +654,7 @@
       "path": "memory.pipeline.l2MinIntervalSeconds",
       "type": "int",
       "default": 900,
-      "source": "MemoryCore/src/config.ts:2095",
+      "source": "MemoryCore/src/config.ts:2425",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -678,7 +662,7 @@
       "path": "memory.pipeline.l2MaxIntervalSeconds",
       "type": "int",
       "default": 3600,
-      "source": "MemoryCore/src/config.ts:2096",
+      "source": "MemoryCore/src/config.ts:2426",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -686,7 +670,7 @@
       "path": "memory.pipeline.sessionActiveWindowHours",
       "type": "int",
       "default": 24,
-      "source": "MemoryCore/src/config.ts:2097",
+      "source": "MemoryCore/src/config.ts:2427",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -694,7 +678,7 @@
       "path": "memory.storeBackend",
       "type": "enum(sqlite)",
       "default": "sqlite",
-      "source": "MemoryCore/src/config.ts:1460",
+      "source": "MemoryCore/src/config.ts:1643",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -702,7 +686,7 @@
       "path": "memory.recall.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2100",
+      "source": "MemoryCore/src/config.ts:2101",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -710,7 +694,7 @@
       "path": "memory.recall.maxResults",
       "type": "int",
       "default": 10,
-      "source": "MemoryCore/src/config.ts:2103",
+      "source": "MemoryCore/src/config.ts:2433",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -718,7 +702,7 @@
       "path": "memory.recall.candidateK",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2106",
+      "source": "MemoryCore/src/config.ts:2436",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -726,7 +710,7 @@
       "path": "memory.recall.fusion.mode",
       "type": "enum(rrf|weighted|normalized)",
       "default": "rrf",
-      "source": "MemoryCore/src/config.ts:2115",
+      "source": "MemoryCore/src/config.ts:2340",
       "consumed": true,
       "defaultNote": "条件材料化：recall.fusion 整块不写时 cfg.recall.fusion=undefined，实际缺省由消费者 src/core/recall/fusion.ts:89 兜底 = \"rrf\"（权重取 RRF_IDENTITY_WEIGHTS）"
     },
@@ -734,7 +718,7 @@
       "path": "memory.recall.fusion.dense",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2116",
+      "source": "MemoryCore/src/config.ts:2451",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -742,7 +726,7 @@
       "path": "memory.recall.fusion.bm25",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2117",
+      "source": "MemoryCore/src/config.ts:2452",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -750,7 +734,7 @@
       "path": "memory.recall.fusion.fact",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2118",
+      "source": "MemoryCore/src/config.ts:2453",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -758,7 +742,7 @@
       "path": "memory.recall.fusion.recency",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2119",
+      "source": "MemoryCore/src/config.ts:2454",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -766,7 +750,7 @@
       "path": "memory.recall.fusion.validity",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2120",
+      "source": "MemoryCore/src/config.ts:2455",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -774,7 +758,7 @@
       "path": "memory.recall.fusion.recencyHalfLifeDays",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2121",
+      "source": "MemoryCore/src/config.ts:2456",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -782,7 +766,7 @@
       "path": "memory.recall.factChannel.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2133",
+      "source": "MemoryCore/src/config.ts:2131",
       "consumed": true,
       "defaultNote": "条件材料化：recall.factChannel 整块不写时为 undefined，实际缺省由消费者 src/core/hooks/auto-recall.ts:3211 判定（=== true 才启用）兜底 = false"
     },
@@ -790,7 +774,7 @@
       "path": "memory.recall.factChannel.weight",
       "type": "float",
       "default": 0.6,
-      "source": "MemoryCore/src/config.ts:2134",
+      "source": "MemoryCore/src/config.ts:2463",
       "consumed": true,
       "defaultNote": "条件材料化：recall.factChannel 整块不写时为 undefined，实际缺省由消费者 src/core/recall/fusion.ts:76-81 factChannelWeightOf 兜底 = 0.6"
     },
@@ -798,7 +782,7 @@
       "path": "memory.recall.factChannel.candidateK",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2129",
+      "source": "MemoryCore/src/config.ts:2436",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -806,7 +790,7 @@
       "path": "memory.recall.factChannel.minScore",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2130",
+      "source": "MemoryCore/src/config.ts:2225",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -814,7 +798,7 @@
       "path": "memory.recall.factChannel.onlyForTypes",
       "type": "list<str>",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2131",
+      "source": "MemoryCore/src/config.ts:2350",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -822,7 +806,7 @@
       "path": "memory.recall.maxCharsPerMemory",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2140",
+      "source": "MemoryCore/src/config.ts:2475",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -830,7 +814,7 @@
       "path": "memory.recall.maxTotalRecallChars",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2141",
+      "source": "MemoryCore/src/config.ts:2476",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -838,7 +822,7 @@
       "path": "memory.recall.scoreThreshold",
       "type": "float",
       "default": 0.3,
-      "source": "MemoryCore/src/config.ts:2142",
+      "source": "MemoryCore/src/config.ts:2478",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -846,7 +830,7 @@
       "path": "memory.recall.nativeMinRRF",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2144",
+      "source": "MemoryCore/src/config.ts:2480",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -854,7 +838,7 @@
       "path": "memory.recall.strategy",
       "type": "enum(embedding|keyword|hybrid)",
       "default": "hybrid",
-      "source": "MemoryCore/src/config.ts:2145",
+      "source": "MemoryCore/src/config.ts:2481",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -862,7 +846,7 @@
       "path": "memory.recall.timeoutMs",
       "type": "ms",
       "default": 5000,
-      "source": "MemoryCore/src/config.ts:2146",
+      "source": "MemoryCore/src/config.ts:2221",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -870,7 +854,7 @@
       "path": "memory.recall.coreRefBoost",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2152",
+      "source": "MemoryCore/src/config.ts:2489",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -878,7 +862,7 @@
       "path": "memory.recall.timeBoost",
       "type": "float",
       "default": 0.05,
-      "source": "MemoryCore/src/config.ts:2159",
+      "source": "MemoryCore/src/config.ts:2495",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -886,7 +870,7 @@
       "path": "memory.recall.recencyBoost",
       "type": "float",
       "default": 0.03,
-      "source": "MemoryCore/src/config.ts:2160",
+      "source": "MemoryCore/src/config.ts:2496",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -894,7 +878,7 @@
       "path": "memory.recall.sigWeight",
       "type": "float",
       "default": 0.03,
-      "source": "MemoryCore/src/config.ts:2161",
+      "source": "MemoryCore/src/config.ts:2497",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -902,15 +886,7 @@
       "path": "memory.recall.inferredPenalty",
       "type": "float",
       "default": 0.1,
-      "source": "MemoryCore/src/config.ts:2162",
-      "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
-    },
-    {
-      "path": "memory.recall.sensitivityPenalty",
-      "type": "float",
-      "default": 0,
-      "source": "MemoryCore/src/config.ts:2164",
+      "source": "MemoryCore/src/config.ts:2498",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -918,15 +894,15 @@
       "path": "memory.recall.importancePenalty.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2170",
+      "source": "MemoryCore/src/config.ts:2504",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2155 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2504"
     },
     {
       "path": "memory.recall.importancePenalty.penalty",
       "type": "float",
       "default": 0.3,
-      "source": "MemoryCore/src/config.ts:2171",
+      "source": "MemoryCore/src/config.ts:2505",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -934,7 +910,7 @@
       "path": "memory.recall.presentTemporal.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2179",
+      "source": "MemoryCore/src/config.ts:2201",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -942,7 +918,7 @@
       "path": "memory.recall.presentTemporal.boost",
       "type": "float",
       "default": 0.08,
-      "source": "MemoryCore/src/config.ts:2180",
+      "source": "MemoryCore/src/config.ts:2514",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -950,7 +926,7 @@
       "path": "memory.recall.presentTemporal.recentDays",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/config.ts:2181",
+      "source": "MemoryCore/src/config.ts:2511",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -958,7 +934,7 @@
       "path": "memory.recall.reinforcementWeight",
       "type": "float",
       "default": 0.03,
-      "source": "MemoryCore/src/config.ts:2184",
+      "source": "MemoryCore/src/config.ts:2518",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -966,7 +942,7 @@
       "path": "memory.recall.moodBoost",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2185",
+      "source": "MemoryCore/src/config.ts:2519",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -974,7 +950,7 @@
       "path": "memory.recall.graphMinStrength",
       "type": "float",
       "default": 0.5,
-      "source": "MemoryCore/src/config.ts:2187",
+      "source": "MemoryCore/src/config.ts:2521",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -982,7 +958,7 @@
       "path": "memory.recall.graphDiscount",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2191",
+      "source": "MemoryCore/src/config.ts:2525",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -990,7 +966,7 @@
       "path": "memory.recall.sceneBoost",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2192",
+      "source": "MemoryCore/src/config.ts:2526",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -998,7 +974,7 @@
       "path": "memory.recall.queryEmbeddingCacheTtlMs",
       "type": "ms",
       "default": 60000,
-      "source": "MemoryCore/src/config.ts:2194",
+      "source": "MemoryCore/src/config.ts:2528",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1006,7 +982,7 @@
       "path": "memory.recall.valuesCacheTtlMs",
       "type": "ms",
       "default": 60000,
-      "source": "MemoryCore/src/config.ts:2195",
+      "source": "MemoryCore/src/config.ts:2529",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1014,7 +990,7 @@
       "path": "memory.recall.excludeInvalidated",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2197",
+      "source": "MemoryCore/src/config.ts:2531",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1022,7 +998,7 @@
       "path": "memory.recall.validity.mode",
       "type": "enum(hard|soft)",
       "default": "soft",
-      "source": "MemoryCore/src/config.ts:2207",
+      "source": "MemoryCore/src/config.ts:2340",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1030,7 +1006,7 @@
       "path": "memory.recall.validity.softPenalty",
       "type": "float",
       "default": 0.5,
-      "source": "MemoryCore/src/config.ts:2222",
+      "source": "MemoryCore/src/config.ts:2560",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1038,7 +1014,7 @@
       "path": "memory.recall.validity.hardOnPresentIntent",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2223",
+      "source": "MemoryCore/src/config.ts:2561",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1046,7 +1022,7 @@
       "path": "memory.recall.emotionSalienceWeight",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2227",
+      "source": "MemoryCore/src/config.ts:2565",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1054,7 +1030,7 @@
       "path": "memory.recall.sessionReuseTtlMs",
       "type": "ms",
       "default": 300000,
-      "source": "MemoryCore/src/config.ts:2228",
+      "source": "MemoryCore/src/config.ts:2566",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1062,7 +1038,7 @@
       "path": "memory.recall.pprDamping",
       "type": "float",
       "default": 0.85,
-      "source": "MemoryCore/src/config.ts:2231",
+      "source": "MemoryCore/src/config.ts:2569",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1070,7 +1046,7 @@
       "path": "memory.recall.pprTopK",
       "type": "int",
       "default": 10,
-      "source": "MemoryCore/src/config.ts:2232",
+      "source": "MemoryCore/src/config.ts:2570",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1078,7 +1054,7 @@
       "path": "memory.recall.pprIterations",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/config.ts:2233",
+      "source": "MemoryCore/src/config.ts:2571",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1086,15 +1062,15 @@
       "path": "memory.recall.queryExpansion.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2241",
+      "source": "MemoryCore/src/config.ts:2579",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2234 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2579"
     },
     {
       "path": "memory.recall.queryExpansion.maxTerms",
       "type": "int",
       "default": 8,
-      "source": "MemoryCore/src/config.ts:2242",
+      "source": "MemoryCore/src/config.ts:2580",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1102,7 +1078,7 @@
       "path": "memory.recall.queryExpansion.ttlMs",
       "type": "ms",
       "default": 600000,
-      "source": "MemoryCore/src/config.ts:2243",
+      "source": "MemoryCore/src/config.ts:2581",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1110,15 +1086,15 @@
       "path": "memory.recall.queryExpansion.timeoutMs",
       "type": "ms",
       "default": 8000,
-      "source": "MemoryCore/src/config.ts:2244",
+      "source": "MemoryCore/src/config.ts:2582",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2221 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2582"
     },
     {
       "path": "memory.recall.queryExpansion.hotPathTimeoutMs",
       "type": "ms",
       "default": 1500,
-      "source": "MemoryCore/src/config.ts:2245",
+      "source": "MemoryCore/src/config.ts:2583",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1126,7 +1102,7 @@
       "path": "memory.recall.queryExpansion.negativeTtlMs",
       "type": "ms",
       "default": 30000,
-      "source": "MemoryCore/src/config.ts:2246",
+      "source": "MemoryCore/src/config.ts:2584",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1134,7 +1110,7 @@
       "path": "memory.recall.exploreSlot",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2250",
+      "source": "MemoryCore/src/config.ts:2588",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1142,7 +1118,7 @@
       "path": "memory.recall.conclusionRelaxedForAnalytical",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2251",
+      "source": "MemoryCore/src/config.ts:2589",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1150,7 +1126,7 @@
       "path": "memory.recall.ageDecay.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2259",
+      "source": "MemoryCore/src/config.ts:2253",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1158,7 +1134,7 @@
       "path": "memory.recall.ageDecay.halfLifeDays",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/config.ts:2260",
+      "source": "MemoryCore/src/config.ts:2595",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1166,15 +1142,15 @@
       "path": "memory.recall.injectTimeSort.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2266",
+      "source": "MemoryCore/src/config.ts:2604",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2271 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2604"
     },
     {
       "path": "memory.recall.injectWrapper",
       "type": "enum(legacy|neutral|calibrated)",
       "default": "calibrated",
-      "source": "MemoryCore/src/config.ts:2270",
+      "source": "MemoryCore/src/config.ts:2608",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1182,7 +1158,7 @@
       "path": "memory.recall.evidencePack.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2281",
+      "source": "MemoryCore/src/config.ts:2271",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1190,7 +1166,7 @@
       "path": "memory.recall.evidencePack.adjacent",
       "type": "int",
       "default": 1,
-      "source": "MemoryCore/src/config.ts:2282",
+      "source": "MemoryCore/src/config.ts:2612",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1198,7 +1174,7 @@
       "path": "memory.recall.evidencePack.windowMinutes",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/config.ts:2283",
+      "source": "MemoryCore/src/config.ts:2613",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1206,7 +1182,7 @@
       "path": "memory.recall.evidencePack.maxExtraLines",
       "type": "int",
       "default": 6,
-      "source": "MemoryCore/src/config.ts:2284",
+      "source": "MemoryCore/src/config.ts:2614",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1214,7 +1190,7 @@
       "path": "memory.recall.evidencePack.maxSessionRows",
       "type": "int",
       "default": 400,
-      "source": "MemoryCore/src/config.ts:2285",
+      "source": "MemoryCore/src/config.ts:2615",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1222,7 +1198,7 @@
       "path": "memory.recall.timeProxFallbackEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2288",
+      "source": "MemoryCore/src/config.ts:2626",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1230,7 +1206,7 @@
       "path": "memory.recall.foldClusterEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2291",
+      "source": "MemoryCore/src/config.ts:2629",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1238,23 +1214,23 @@
       "path": "memory.recall.conclusionLayer.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2298",
+      "source": "MemoryCore/src/config.ts:2733",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2317 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2733"
     },
     {
       "path": "memory.recall.conclusionLayer.maxCharsPerMemory",
       "type": "int",
       "default": 2000,
-      "source": "MemoryCore/src/config.ts:2299",
+      "source": "MemoryCore/src/config.ts:2734",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2475 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2734"
     },
     {
       "path": "memory.recall.conclusionLayer.truncateMode",
       "type": "enum(chars|sentences)",
       "default": "chars",
-      "source": "MemoryCore/src/config.ts:2304",
+      "source": "MemoryCore/src/config.ts:2739",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1262,7 +1238,7 @@
       "path": "memory.recall.conclusionLayer.maxTotalChars",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2308",
+      "source": "MemoryCore/src/config.ts:2743",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1270,7 +1246,7 @@
       "path": "memory.recall.conclusionLayer.minUniqRatio",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2315",
+      "source": "MemoryCore/src/config.ts:2748",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1278,7 +1254,7 @@
       "path": "memory.recall.conclusionLayer.cacheTtlMs",
       "type": "ms",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2321",
+      "source": "MemoryCore/src/config.ts:2754",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1286,7 +1262,7 @@
       "path": "memory.recall.conclusionLayer.idfWeighted",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2325",
+      "source": "MemoryCore/src/config.ts:2758",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1294,7 +1270,7 @@
       "path": "memory.recall.conclusionLayer.minBm25Rel",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2329",
+      "source": "MemoryCore/src/config.ts:2762",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1302,7 +1278,7 @@
       "path": "memory.recall.conclusionLayer.minBm25RelRatio",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2335",
+      "source": "MemoryCore/src/config.ts:2768",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1310,7 +1286,7 @@
       "path": "memory.recall.conclusionLayer.maxConclusions",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2341",
+      "source": "MemoryCore/src/config.ts:2774",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1318,7 +1294,7 @@
       "path": "memory.recall.conclusionLayer.routing",
       "type": "enum(off|assistantRecall|intent)",
       "default": "off",
-      "source": "MemoryCore/src/config.ts:2346",
+      "source": "MemoryCore/src/config.ts:2780",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1326,7 +1302,7 @@
       "path": "memory.recall.conclusionLayer.pairing",
       "type": "enum(off|require)",
       "default": "off",
-      "source": "MemoryCore/src/config.ts:2351",
+      "source": "MemoryCore/src/config.ts:2784",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1334,7 +1310,7 @@
       "path": "memory.recall.conclusionLayer.slotCost",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2354",
+      "source": "MemoryCore/src/config.ts:2787",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1342,7 +1318,7 @@
       "path": "memory.recall.conclusionLayer.arbitrate",
       "type": "enum(off|redundant)",
       "default": "off",
-      "source": "MemoryCore/src/config.ts:2360",
+      "source": "MemoryCore/src/config.ts:2791",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1350,7 +1326,7 @@
       "path": "memory.recall.conclusionLayer.arbitrateThreshold",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2362",
+      "source": "MemoryCore/src/config.ts:2793",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1358,7 +1334,7 @@
       "path": "memory.recall.conclusionLayer.rerankGate.mode",
       "type": "enum(shadow|enforce|off)",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2372",
+      "source": "MemoryCore/src/config.ts:2340",
       "consumed": true,
       "defaultNote": "条件材料化：conclusionLayer.rerankGate 整块不写时为 undefined，实际缺省由消费者 src/core/hooks/auto-recall.ts:1320 兜底 = \"shadow\"（只记录不过滤）"
     },
@@ -1366,7 +1342,7 @@
       "path": "memory.recall.conclusionLayer.rerankGate.minScore",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2374",
+      "source": "MemoryCore/src/config.ts:2465",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1374,31 +1350,31 @@
       "path": "memory.recall.smallToBig.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2387",
+      "source": "MemoryCore/src/config.ts:2816",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2395 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2816"
     },
     {
       "path": "memory.recall.smallToBig.maxExtraLines",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:2389",
+      "source": "MemoryCore/src/config.ts:2817",
       "consumed": true,
-      "defaultNote": "缺省 2 由该块 IIFE 内联回落（raw===undefined?2:…），解析行无独立字面量"
+      "defaultNote": "2026-11-07 重锚：原锚 2614 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2817"
     },
     {
       "path": "memory.recall.smallToBig.budget",
       "type": "enum(shared|additive|slot)",
       "default": "shared",
-      "source": "MemoryCore/src/config.ts:2393",
+      "source": "MemoryCore/src/config.ts:2822",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2018 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2822"
     },
     {
       "path": "memory.recall.smallToBig.relevanceRanked",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2398",
+      "source": "MemoryCore/src/config.ts:2827",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1406,7 +1382,7 @@
       "path": "memory.recall.ftsOnlyInjectCap",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2403",
+      "source": "MemoryCore/src/config.ts:2832",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1414,7 +1390,7 @@
       "path": "memory.recall.dynamicTopK.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2412",
+      "source": "MemoryCore/src/config.ts:2395",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1422,7 +1398,7 @@
       "path": "memory.recall.dynamicTopK.minTopK",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:2413",
+      "source": "MemoryCore/src/config.ts:2838",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1430,7 +1406,7 @@
       "path": "memory.recall.dynamicTopK.dropRatio",
       "type": "float",
       "default": 0.5,
-      "source": "MemoryCore/src/config.ts:2414",
+      "source": "MemoryCore/src/config.ts:2839",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1438,7 +1414,7 @@
       "path": "memory.recall.rerankWeights.relevance",
       "type": "float",
       "default": 0.7,
-      "source": "MemoryCore/src/config.ts:2422",
+      "source": "MemoryCore/src/config.ts:2851",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1446,7 +1422,7 @@
       "path": "memory.recall.rerankWeights.timeProx",
       "type": "float",
       "default": 0.15,
-      "source": "MemoryCore/src/config.ts:2423",
+      "source": "MemoryCore/src/config.ts:2852",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1454,7 +1430,7 @@
       "path": "memory.recall.rerankWeights.significance",
       "type": "float",
       "default": 0.1,
-      "source": "MemoryCore/src/config.ts:2424",
+      "source": "MemoryCore/src/config.ts:2853",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1462,7 +1438,7 @@
       "path": "memory.recall.rerankWeights.coreRef",
       "type": "float",
       "default": 0.05,
-      "source": "MemoryCore/src/config.ts:2425",
+      "source": "MemoryCore/src/config.ts:2854",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1470,23 +1446,23 @@
       "path": "memory.recall.v3Recall.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2435",
+      "source": "MemoryCore/src/config.ts:2864",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2430 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2864"
     },
     {
       "path": "memory.recall.v3Recall.timeoutMs",
       "type": "ms",
       "default": 5000,
-      "source": "MemoryCore/src/config.ts:2436",
+      "source": "MemoryCore/src/config.ts:2865",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2482 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2865"
     },
     {
       "path": "memory.recall.v3Recall.l1BudgetMs",
       "type": "ms",
       "default": 2000,
-      "source": "MemoryCore/src/config.ts:2440",
+      "source": "MemoryCore/src/config.ts:2870",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1494,7 +1470,7 @@
       "path": "memory.recall.v3Recall.l1Fallback",
       "type": "enum(fts|none)",
       "default": "fts",
-      "source": "MemoryCore/src/config.ts:2447",
+      "source": "MemoryCore/src/config.ts:2876",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1502,7 +1478,7 @@
       "path": "memory.recall.rerank.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2459",
+      "source": "MemoryCore/src/config.ts:2468",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1510,7 +1486,7 @@
       "path": "memory.recall.rerank.provider",
       "type": "enum(siliconflow|dashscope|local|none)",
       "default": "none",
-      "source": "MemoryCore/src/config.ts:2457",
+      "source": "MemoryCore/src/config.ts:2886",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1518,7 +1494,7 @@
       "path": "memory.recall.rerank.apiKey",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2470",
+      "source": "MemoryCore/src/config.ts:2899",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1526,7 +1502,7 @@
       "path": "memory.recall.rerank.baseUrl",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2480",
+      "source": "MemoryCore/src/config.ts:2219",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1534,7 +1510,7 @@
       "path": "memory.recall.rerank.model",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2481",
+      "source": "MemoryCore/src/config.ts:2383",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1550,7 +1526,7 @@
       "path": "memory.recall.rerank.candidates",
       "type": "int",
       "default": 32,
-      "source": "MemoryCore/src/config.ts:2483",
+      "source": "MemoryCore/src/config.ts:2912",
       "consumed": true,
       "defaultNote": "缺省 32 取自 DEFAULT_RERANK_CANDIDATES（core/recall/rerank/defaults.ts:24）"
     },
@@ -1558,7 +1534,7 @@
       "path": "memory.recall.rerank.mode",
       "type": "enum(rerank|filter)",
       "default": "rerank",
-      "source": "MemoryCore/src/config.ts:2485",
+      "source": "MemoryCore/src/config.ts:2443",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1566,7 +1542,7 @@
       "path": "memory.recall.rerank.filterRule",
       "type": "enum(floor|margin|quantile)",
       "default": "floor",
-      "source": "MemoryCore/src/config.ts:2488",
+      "source": "MemoryCore/src/config.ts:2917",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1574,7 +1550,7 @@
       "path": "memory.recall.rerank.filterMarginTop",
       "type": "float",
       "default": 8,
-      "source": "MemoryCore/src/config.ts:2489",
+      "source": "MemoryCore/src/config.ts:2918",
       "consumed": true,
       "defaultNote": "缺省 8 取自 filter-ruler 缺省（core/recall/rerank/filter-ruler.ts:36-40）"
     },
@@ -1582,7 +1558,7 @@
       "path": "memory.recall.rerank.filterKeepRatio",
       "type": "float",
       "default": 0.5,
-      "source": "MemoryCore/src/config.ts:2490",
+      "source": "MemoryCore/src/config.ts:2919",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1590,7 +1566,7 @@
       "path": "memory.recall.rerank.minScore",
       "type": "float",
       "default": -10.5,
-      "source": "MemoryCore/src/config.ts:2493",
+      "source": "MemoryCore/src/config.ts:2465",
       "consumed": true,
       "defaultNote": "缺省 -10.5 取自 DEFAULT_RERANK_MIN_SCORE_LOGIT（core/recall/rerank/defaults.ts:30）"
     },
@@ -1598,7 +1574,7 @@
       "path": "memory.recall.rerank.local.modelDir",
       "type": "path",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2495",
+      "source": "MemoryCore/src/config.ts:2924",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1606,7 +1582,7 @@
       "path": "memory.recall.rerank.local.idleUnloadMs",
       "type": "ms",
       "default": 600000,
-      "source": "MemoryCore/src/config.ts:2496",
+      "source": "MemoryCore/src/config.ts:2925",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1614,7 +1590,7 @@
       "path": "memory.recall.mmr.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2506",
+      "source": "MemoryCore/src/config.ts:2504",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1622,7 +1598,7 @@
       "path": "memory.recall.mmr.lambda",
       "type": "float",
       "default": 0.7,
-      "source": "MemoryCore/src/config.ts:2507",
+      "source": "MemoryCore/src/config.ts:2933",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1630,7 +1606,7 @@
       "path": "memory.recallJournal.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2516",
+      "source": "MemoryCore/src/config.ts:2513",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1638,7 +1614,7 @@
       "path": "memory.recallJournal.rotationSizeMB",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:2517",
+      "source": "MemoryCore/src/config.ts:2945",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1646,7 +1622,7 @@
       "path": "memory.recallJournal.maxFiles",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:2522",
+      "source": "MemoryCore/src/config.ts:2950",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1654,15 +1630,15 @@
       "path": "memory.embedding.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2529",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2534 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 1582"
     },
     {
       "path": "memory.embedding.provider",
       "type": "enum(none|openai_compatible|qclaw|local)",
       "default": "none",
-      "source": "MemoryCore/src/config.ts:2530",
+      "source": "MemoryCore/src/config.ts:2886",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1670,7 +1646,7 @@
       "path": "memory.embedding.baseUrl",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2531",
+      "source": "MemoryCore/src/config.ts:2219",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1678,7 +1654,7 @@
       "path": "memory.embedding.apiKey",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2532",
+      "source": "MemoryCore/src/config.ts:2899",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1686,7 +1662,7 @@
       "path": "memory.embedding.model",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2533",
+      "source": "MemoryCore/src/config.ts:2641",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1694,7 +1670,7 @@
       "path": "memory.embedding.dimensions",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:2534",
+      "source": "MemoryCore/src/config.ts:2961",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1702,7 +1678,7 @@
       "path": "memory.embedding.sendDimensions",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2535",
+      "source": "MemoryCore/src/config.ts:2962",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1710,7 +1686,7 @@
       "path": "memory.embedding.conflictRecallTopK",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:2536",
+      "source": "MemoryCore/src/config.ts:2963",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1718,7 +1694,7 @@
       "path": "memory.embedding.maxInputChars",
       "type": "int",
       "default": 5000,
-      "source": "MemoryCore/src/config.ts:2537",
+      "source": "MemoryCore/src/config.ts:2964",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1726,7 +1702,7 @@
       "path": "memory.embedding.timeoutMs",
       "type": "ms",
       "default": 10000,
-      "source": "MemoryCore/src/config.ts:2538",
+      "source": "MemoryCore/src/config.ts:2582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1734,7 +1710,7 @@
       "path": "memory.embedding.recallTimeoutMs",
       "type": "ms",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2539",
+      "source": "MemoryCore/src/config.ts:2982",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1742,7 +1718,7 @@
       "path": "memory.embedding.captureTimeoutMs",
       "type": "ms",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2540",
+      "source": "MemoryCore/src/config.ts:2983",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1750,7 +1726,7 @@
       "path": "memory.embedding.modelCacheDir",
       "type": "path",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:2541",
+      "source": "MemoryCore/src/config.ts:2984",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -1758,31 +1734,15 @@
       "path": "memory.bm25.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:2546",
+      "source": "MemoryCore/src/config.ts:2989",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2534 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2989"
     },
     {
       "path": "memory.bm25.language",
       "type": "enum(zh|en)",
       "default": "zh",
-      "source": "MemoryCore/src/config.ts:2547",
-      "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
-    },
-    {
-      "path": "memory.report.enabled",
-      "type": "bool",
-      "default": false,
-      "source": "MemoryCore/src/config.ts:2551",
-      "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
-    },
-    {
-      "path": "memory.report.type",
-      "type": "str",
-      "default": "local",
-      "source": "MemoryCore/src/config.ts:2552",
+      "source": "MemoryCore/src/config.ts:2990",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1790,7 +1750,7 @@
       "path": "memory.llm.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2561",
+      "source": "MemoryCore/src/config.ts:2579",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1798,7 +1758,7 @@
       "path": "memory.llm.baseUrl",
       "type": "str",
       "default": "https://api.openai.com/v1",
-      "source": "MemoryCore/src/config.ts:2562",
+      "source": "MemoryCore/src/config.ts:2219",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1806,7 +1766,7 @@
       "path": "memory.llm.apiKey",
       "type": "str",
       "default": "",
-      "source": "MemoryCore/src/config.ts:2563",
+      "source": "MemoryCore/src/config.ts:2899",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1814,7 +1774,7 @@
       "path": "memory.llm.model",
       "type": "str",
       "default": "gpt-4o",
-      "source": "MemoryCore/src/config.ts:2564",
+      "source": "MemoryCore/src/config.ts:2641",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -1822,7 +1782,7 @@
       "path": "memory.llm.maxTokens",
       "type": "int",
       "default": 4096,
-      "source": "MemoryCore/src/config.ts:2565",
+      "source": "MemoryCore/src/config.ts:3005",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1830,7 +1790,7 @@
       "path": "memory.llm.timeoutMs",
       "type": "ms",
       "default": 120000,
-      "source": "MemoryCore/src/config.ts:2566",
+      "source": "MemoryCore/src/config.ts:2582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1838,7 +1798,7 @@
       "path": "memory.llm.maxTokensLimit",
       "type": "int",
       "default": 131072,
-      "source": "MemoryCore/src/config.ts:2568",
+      "source": "MemoryCore/src/config.ts:3008",
       "consumed": true,
       "defaultNote": "解析行有字面量 131072（src/config.ts:2752 用 num(llmGroup,\"maxTokensLimit\") ?? 131072）；位置提醒：生产 MemoryCore/tdai-gateway.yaml:40 把它写在**顶层 llm:** 下，而 gateway 的 llm 组装只透传 maxTokens（src/gateway/config.ts:472）⇒ 现网那条是配了不生效的死键；只有写在 memory.llm 下才被下沉消费"
     },
@@ -1846,7 +1806,7 @@
       "path": "memory.llm.provider",
       "type": "enum(openai|proxy)",
       "default": "openai",
-      "source": "MemoryCore/src/config.ts:2559",
+      "source": "MemoryCore/src/config.ts:2886",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1854,7 +1814,7 @@
       "path": "memory.llm.stream",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2570",
+      "source": "MemoryCore/src/config.ts:3010",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1862,15 +1822,15 @@
       "path": "memory.links.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1486",
+      "source": "MemoryCore/src/config.ts:1669",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 1582 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 1669"
     },
     {
       "path": "memory.links.minSimilarity",
       "type": "float",
       "default": 0.3,
-      "source": "MemoryCore/src/config.ts:1490",
+      "source": "MemoryCore/src/config.ts:1674",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1878,7 +1838,7 @@
       "path": "memory.coreMemory.writeEnabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1511",
+      "source": "MemoryCore/src/config.ts:1694",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1891,7 +1851,7 @@
         "strict_rule",
         "self_identity"
       ],
-      "source": "MemoryCore/src/config.ts:1515",
+      "source": "MemoryCore/src/config.ts:1682",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1899,7 +1859,7 @@
       "path": "memory.coreMemory.maxContentLength",
       "type": "int",
       "default": 2000,
-      "source": "MemoryCore/src/config.ts:1516",
+      "source": "MemoryCore/src/config.ts:1699",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1907,7 +1867,7 @@
       "path": "memory.coreMemory.seedValues",
       "type": "list<map>",
       "default": [],
-      "source": "MemoryCore/src/config.ts:1517",
+      "source": "MemoryCore/src/config.ts:1700",
       "consumed": true,
       "defaultNote": "缺省空数组由 arr() 兜底，解析行不写字面量"
     },
@@ -1915,7 +1875,7 @@
       "path": "memory.coreMemory.anchorDiscovery.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1534",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1923,7 +1883,7 @@
       "path": "memory.coreMemory.anchorDiscovery.minEvidence",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:1535",
+      "source": "MemoryCore/src/config.ts:1718",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1931,7 +1891,7 @@
       "path": "memory.coreMemory.anchorDiscovery.maxPerPass",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1536",
+      "source": "MemoryCore/src/config.ts:1719",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1939,7 +1899,7 @@
       "path": "memory.coreMemory.anchorDiscovery.maxTotal",
       "type": "int",
       "default": 15,
-      "source": "MemoryCore/src/config.ts:1537",
+      "source": "MemoryCore/src/config.ts:1720",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1947,7 +1907,7 @@
       "path": "memory.coreMemory.anchorDiscovery.quotaScope",
       "type": "enum(total|auto)",
       "default": "total",
-      "source": "MemoryCore/src/config.ts:1539",
+      "source": "MemoryCore/src/config.ts:1722",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1955,7 +1915,7 @@
       "path": "memory.coreMemory.anchorDiscovery.intervalHours",
       "type": "int",
       "default": 24,
-      "source": "MemoryCore/src/config.ts:1540",
+      "source": "MemoryCore/src/config.ts:1723",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1963,7 +1923,7 @@
       "path": "memory.coreMemory.anchorDiscovery.maintainIntervalHours",
       "type": "int",
       "default": 6,
-      "source": "MemoryCore/src/config.ts:1541",
+      "source": "MemoryCore/src/config.ts:1724",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1971,7 +1931,7 @@
       "path": "memory.coreMemory.anchorDiscovery.person.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1543",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1979,7 +1939,7 @@
       "path": "memory.coreMemory.anchorDiscovery.person.minEvidence",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:1544",
+      "source": "MemoryCore/src/config.ts:1718",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1987,7 +1947,7 @@
       "path": "memory.coreMemory.anchorDiscovery.person.maxPerPass",
       "type": "int",
       "default": 1,
-      "source": "MemoryCore/src/config.ts:1545",
+      "source": "MemoryCore/src/config.ts:1719",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -1995,7 +1955,7 @@
       "path": "memory.coreMemory.anchorDiscovery.person.maxTotal",
       "type": "int",
       "default": 8,
-      "source": "MemoryCore/src/config.ts:1546",
+      "source": "MemoryCore/src/config.ts:1720",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2003,7 +1963,7 @@
       "path": "memory.coreMemory.anchorDiscovery.identityMaintain.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1549",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2011,7 +1971,7 @@
       "path": "memory.coreMemory.anchorDiscovery.similarMerge.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1555",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2019,7 +1979,7 @@
       "path": "memory.coreMemory.anchorDiscovery.similarMerge.threshold",
       "type": "float",
       "default": 0.5,
-      "source": "MemoryCore/src/config.ts:1557",
+      "source": "MemoryCore/src/config.ts:1736",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2027,7 +1987,7 @@
       "path": "memory.coreMemory.anchorDiscovery.character.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1568",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2035,7 +1995,7 @@
       "path": "memory.coreMemory.anchorDiscovery.character.minEvidence",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1569",
+      "source": "MemoryCore/src/config.ts:1718",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2043,7 +2003,7 @@
       "path": "memory.coreMemory.anchorDiscovery.character.maxPerPass",
       "type": "int",
       "default": 1,
-      "source": "MemoryCore/src/config.ts:1570",
+      "source": "MemoryCore/src/config.ts:1719",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2051,7 +2011,7 @@
       "path": "memory.coreMemory.anchorDiscovery.character.maxTotal",
       "type": "int",
       "default": 8,
-      "source": "MemoryCore/src/config.ts:1571",
+      "source": "MemoryCore/src/config.ts:1720",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2059,7 +2019,7 @@
       "path": "memory.coreMemory.anchorDiscovery.reproposal.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1583",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2067,7 +2027,7 @@
       "path": "memory.coreMemory.anchorDiscovery.reproposal.minEvidenceMultiple",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1584",
+      "source": "MemoryCore/src/config.ts:1767",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2075,7 +2035,7 @@
       "path": "memory.coreMemory.anchorDiscovery.reproposal.maxPerPass",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1585",
+      "source": "MemoryCore/src/config.ts:1719",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2083,7 +2043,7 @@
       "path": "memory.coreMemory.anchorDiscovery.reproposal.maxRejectsBeforeCold",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1586",
+      "source": "MemoryCore/src/config.ts:1769",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2091,7 +2051,7 @@
       "path": "memory.coreMemory.anchorDiscovery.descRefresh.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1598",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2099,7 +2059,7 @@
       "path": "memory.coreMemory.anchorDiscovery.descRefresh.evidenceMultiple",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1599",
+      "source": "MemoryCore/src/config.ts:1782",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2107,7 +2067,7 @@
       "path": "memory.coreMemory.anchorDiscovery.descRefresh.maxPerPass",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1600",
+      "source": "MemoryCore/src/config.ts:1719",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2115,7 +2075,7 @@
       "path": "memory.coreMemory.characterTension.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1614",
+      "source": "MemoryCore/src/config.ts:1582",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2123,7 +2083,7 @@
       "path": "memory.coreMemory.characterTension.minInstances",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1615",
+      "source": "MemoryCore/src/config.ts:1798",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2131,7 +2091,7 @@
       "path": "memory.coreMemory.characterTension.maxCandidatesPerPass",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1616",
+      "source": "MemoryCore/src/config.ts:1799",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2139,7 +2099,7 @@
       "path": "memory.coreMemory.selfIdentity.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1628",
+      "source": "MemoryCore/src/config.ts:1669",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2147,7 +2107,7 @@
       "path": "memory.coreMemory.selfIdentity.maxPerPass",
       "type": "int",
       "default": 2,
-      "source": "MemoryCore/src/config.ts:1629",
+      "source": "MemoryCore/src/config.ts:1719",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2155,7 +2115,7 @@
       "path": "memory.coreMemory.selfIdentity.intervalHours",
       "type": "int",
       "default": 24,
-      "source": "MemoryCore/src/config.ts:1630",
+      "source": "MemoryCore/src/config.ts:1723",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2163,7 +2123,7 @@
       "path": "memory.coreMemory.moodLine.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1643",
+      "source": "MemoryCore/src/config.ts:1669",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2171,7 +2131,7 @@
       "path": "memory.coreMemory.moodLine.windowHours",
       "type": "int",
       "default": 72,
-      "source": "MemoryCore/src/config.ts:1644",
+      "source": "MemoryCore/src/config.ts:1827",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2179,7 +2139,7 @@
       "path": "memory.coreMemory.moodLine.maxSamples",
       "type": "int",
       "default": 20,
-      "source": "MemoryCore/src/config.ts:1645",
+      "source": "MemoryCore/src/config.ts:1828",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2187,7 +2147,7 @@
       "path": "memory.coreMemory.moodLine.minSamples",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:1646",
+      "source": "MemoryCore/src/config.ts:1829",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2195,7 +2155,7 @@
       "path": "memory.coreMemory.moodLine.posThreshold",
       "type": "float",
       "default": 0.15,
-      "source": "MemoryCore/src/config.ts:1647",
+      "source": "MemoryCore/src/config.ts:1830",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2203,7 +2163,7 @@
       "path": "memory.coreMemory.moodLine.negThreshold",
       "type": "float",
       "default": -0.15,
-      "source": "MemoryCore/src/config.ts:1648",
+      "source": "MemoryCore/src/config.ts:1831",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2211,7 +2171,7 @@
       "path": "memory.coreMemory.moodLine.halfLifeHours",
       "type": "float",
       "default": 48,
-      "source": "MemoryCore/src/config.ts:1649",
+      "source": "MemoryCore/src/config.ts:1832",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2219,7 +2179,7 @@
       "path": "memory.coreMemory.soulRender.budgetSelfChars",
       "type": "int",
       "default": 600,
-      "source": "MemoryCore/src/config.ts:1661",
+      "source": "MemoryCore/src/config.ts:1844",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2227,7 +2187,7 @@
       "path": "memory.coreMemory.soulRender.budgetIdentityChars",
       "type": "int",
       "default": 900,
-      "source": "MemoryCore/src/config.ts:1662",
+      "source": "MemoryCore/src/config.ts:1845",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2235,7 +2195,7 @@
       "path": "memory.coreMemory.soulRender.maxRelationLines",
       "type": "int",
       "default": 5,
-      "source": "MemoryCore/src/config.ts:1663",
+      "source": "MemoryCore/src/config.ts:1846",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2243,7 +2203,7 @@
       "path": "memory.coreMemory.soulRender.budgetAnchorChars",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1665",
+      "source": "MemoryCore/src/config.ts:1848",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2251,7 +2211,7 @@
       "path": "memory.coreMemory.soulRender.budgetPersonChars",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1666",
+      "source": "MemoryCore/src/config.ts:1849",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2259,7 +2219,7 @@
       "path": "memory.coreMemory.soulRender.budgetCharacterChars",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1667",
+      "source": "MemoryCore/src/config.ts:1850",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2267,7 +2227,7 @@
       "path": "memory.coreMemory.soulRender.snapshotsEnabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1669",
+      "source": "MemoryCore/src/config.ts:1853",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2275,7 +2235,7 @@
       "path": "memory.coreMemory.soulRender.perTurnSlots",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1675",
+      "source": "MemoryCore/src/config.ts:1860",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2283,7 +2243,7 @@
       "path": "memory.coreMemory.soulRender.identityNarrative.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1681",
+      "source": "MemoryCore/src/config.ts:1669",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2291,7 +2251,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.maxRows",
       "type": "int",
       "default": 999,
-      "source": "MemoryCore/src/config.ts:1687",
+      "source": "MemoryCore/src/config.ts:1877",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2299,7 +2259,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.scorer.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1700",
+      "source": "MemoryCore/src/config.ts:1717",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2307,7 +2267,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.scorer.threshold",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1701",
+      "source": "MemoryCore/src/config.ts:1736",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2315,7 +2275,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.scorer.mmrLambda",
       "type": "float",
       "default": 0.7,
-      "source": "MemoryCore/src/config.ts:1702",
+      "source": "MemoryCore/src/config.ts:1887",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2323,7 +2283,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.scorer.embedBudgetMs",
       "type": "ms",
       "default": 1200,
-      "source": "MemoryCore/src/config.ts:1703",
+      "source": "MemoryCore/src/config.ts:1888",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2331,7 +2291,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.shadowSink.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1715",
+      "source": "MemoryCore/src/config.ts:1717",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2339,7 +2299,7 @@
       "path": "memory.coreMemory.soulRender.anchorSelect.shadowSink.file",
       "type": "path",
       "default": "data/logs/soul-anchor-shadow.jsonl",
-      "source": "MemoryCore/src/config.ts:1716",
+      "source": "MemoryCore/src/config.ts:1903",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2347,7 +2307,7 @@
       "path": "memory.coreMemory.soulRender.strictRuleDedup.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1731",
+      "source": "MemoryCore/src/config.ts:1732",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2355,7 +2315,7 @@
       "path": "memory.coreMemory.soulRender.strictRuleDedup.jaccardThreshold",
       "type": "float",
       "default": 0.45,
-      "source": "MemoryCore/src/config.ts:1732",
+      "source": "MemoryCore/src/config.ts:1918",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2363,7 +2323,7 @@
       "path": "memory.coreMemory.soulRender.strictRuleDedup.maxLines",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1733",
+      "source": "MemoryCore/src/config.ts:1919",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2371,7 +2331,7 @@
       "path": "memory.coreMemory.soulRender.strictRuleDedup.suppressAnchorOverlap",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1734",
+      "source": "MemoryCore/src/config.ts:1924",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2379,7 +2339,7 @@
       "path": "memory.coreMemory.soulRender.anchorDedup.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1741",
+      "source": "MemoryCore/src/config.ts:1738",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2387,7 +2347,7 @@
       "path": "memory.coreMemory.soulRender.anchorDedup.embeddingThreshold",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1742",
+      "source": "MemoryCore/src/config.ts:1929",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2395,7 +2355,7 @@
       "path": "memory.coreMemory.soulRender.introspect.snapshotLimit",
       "type": "int",
       "default": 20,
-      "source": "MemoryCore/src/config.ts:1747",
+      "source": "MemoryCore/src/config.ts:1939",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2403,7 +2363,7 @@
       "path": "memory.coreMemory.soulRender.introspect.evidenceWindowHours",
       "type": "int",
       "default": 168,
-      "source": "MemoryCore/src/config.ts:1751",
+      "source": "MemoryCore/src/config.ts:1945",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2411,7 +2371,7 @@
       "path": "memory.coreMemory.soulRender.capabilities.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1759",
+      "source": "MemoryCore/src/config.ts:1766",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2419,7 +2379,7 @@
       "path": "memory.coreMemory.soulRender.promiseEvidence.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1764",
+      "source": "MemoryCore/src/config.ts:1766",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2427,7 +2387,7 @@
       "path": "memory.coreMemory.soulRender.promises.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1769",
+      "source": "MemoryCore/src/config.ts:1766",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2435,7 +2395,7 @@
       "path": "memory.lifecycle.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1776",
+      "source": "MemoryCore/src/config.ts:1781",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2443,7 +2403,7 @@
       "path": "memory.lifecycle.intervalMs",
       "type": "ms",
       "default": 600000,
-      "source": "MemoryCore/src/config.ts:1777",
+      "source": "MemoryCore/src/config.ts:2027",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2451,7 +2411,7 @@
       "path": "memory.lifecycle.filter.teamId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1783",
+      "source": "MemoryCore/src/config.ts:2033",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2459,7 +2419,7 @@
       "path": "memory.lifecycle.filter.userId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1784",
+      "source": "MemoryCore/src/config.ts:2034",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2467,7 +2427,7 @@
       "path": "memory.lifecycle.filter.agentId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1785",
+      "source": "MemoryCore/src/config.ts:2035",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2475,7 +2435,7 @@
       "path": "memory.lifecycle.filter.taskId",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1786",
+      "source": "MemoryCore/src/config.ts:2036",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2483,7 +2443,7 @@
       "path": "memory.lifecycle.embedBackfill.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1794",
+      "source": "MemoryCore/src/config.ts:1797",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2491,7 +2451,7 @@
       "path": "memory.lifecycle.embedBackfill.intervalMinutes",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/config.ts:1795",
+      "source": "MemoryCore/src/config.ts:2045",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2499,7 +2459,7 @@
       "path": "memory.lifecycle.embedBackfill.batchLimit",
       "type": "int",
       "default": 50,
-      "source": "MemoryCore/src/config.ts:1796",
+      "source": "MemoryCore/src/config.ts:2046",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2507,7 +2467,7 @@
       "path": "memory.lifecycle.consolidation.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1799",
+      "source": "MemoryCore/src/config.ts:1797",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2515,7 +2475,7 @@
       "path": "memory.lifecycle.consolidation.persist",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1800",
+      "source": "MemoryCore/src/config.ts:2050",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2523,7 +2483,7 @@
       "path": "memory.lifecycle.consolidation.minCount",
       "type": "int",
       "default": 3,
-      "source": "MemoryCore/src/config.ts:1801",
+      "source": "MemoryCore/src/config.ts:2051",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2531,7 +2491,7 @@
       "path": "memory.lifecycle.consolidation.minSpanDays",
       "type": "int",
       "default": 1,
-      "source": "MemoryCore/src/config.ts:1802",
+      "source": "MemoryCore/src/config.ts:2052",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2539,7 +2499,7 @@
       "path": "memory.lifecycle.consolidation.subjectStrategy",
       "type": "enum(llm|lexical)",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1805",
+      "source": "MemoryCore/src/config.ts:2055",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2547,7 +2507,7 @@
       "path": "memory.lifecycle.forgetting.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1810",
+      "source": "MemoryCore/src/config.ts:1811",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2555,7 +2515,7 @@
       "path": "memory.lifecycle.forgetting.lambda",
       "type": "float",
       "default": 0.01,
-      "source": "MemoryCore/src/config.ts:1811",
+      "source": "MemoryCore/src/config.ts:2071",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2563,15 +2523,7 @@
       "path": "memory.lifecycle.forgetting.arousalRetention",
       "type": "float",
       "default": 0,
-      "source": "MemoryCore/src/config.ts:1812",
-      "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
-    },
-    {
-      "path": "memory.lifecycle.forgetting.sensitivityBias",
-      "type": "float",
-      "default": 0,
-      "source": "MemoryCore/src/config.ts:1814",
+      "source": "MemoryCore/src/config.ts:2072",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2579,7 +2531,7 @@
       "path": "memory.lifecycle.forgetting.lowThreshold",
       "type": "float",
       "default": 0.12,
-      "source": "MemoryCore/src/config.ts:1815",
+      "source": "MemoryCore/src/config.ts:2073",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2587,7 +2539,7 @@
       "path": "memory.lifecycle.forgetting.minAgeDays",
       "type": "int",
       "default": 30,
-      "source": "MemoryCore/src/config.ts:1816",
+      "source": "MemoryCore/src/config.ts:2074",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2595,7 +2547,7 @@
       "path": "memory.lifecycle.forgetting.refProtection",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1818",
+      "source": "MemoryCore/src/config.ts:2076",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2603,7 +2555,7 @@
       "path": "memory.lifecycle.forgetting.recurrenceProtection",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1819",
+      "source": "MemoryCore/src/config.ts:2080",
       "consumed": true,
       "defaultNote": "缺省由消费侧 gate 缺省给定；解析行仅透传，yaml 显式值优先"
     },
@@ -2611,7 +2563,7 @@
       "path": "memory.lifecycle.reflection.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1823",
+      "source": "MemoryCore/src/config.ts:1826",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2619,7 +2571,7 @@
       "path": "memory.lifecycle.reflection.rRef",
       "type": "int",
       "default": 150,
-      "source": "MemoryCore/src/config.ts:1826",
+      "source": "MemoryCore/src/config.ts:2087",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2627,7 +2579,7 @@
       "path": "memory.lifecycle.reflection.soulProposals.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1842",
+      "source": "MemoryCore/src/config.ts:1826",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2635,15 +2587,15 @@
       "path": "memory.lifecycle.reflection.soulProposals.shadowCalibration.enabled",
       "type": "bool",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1847",
+      "source": "MemoryCore/src/config.ts:2093",
       "consumed": true,
-      "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
+      "defaultNote": "2026-11-07 重锚：原锚 1826 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2093"
     },
     {
       "path": "memory.lifecycle.reflection.soulProposals.shadowCalibration.file",
       "type": "path",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1848",
+      "source": "MemoryCore/src/config.ts:1903",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2651,23 +2603,23 @@
       "path": "memory.lifecycle.reflection.soulProposals.cardContract.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1851",
+      "source": "MemoryCore/src/config.ts:2098",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 1868 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2098"
     },
     {
       "path": "memory.lifecycle.reflection.soulProposals.conclusionContract.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1852",
+      "source": "MemoryCore/src/config.ts:2101",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 1868 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2101"
     },
     {
       "path": "memory.lifecycle.reflection.promiseProposals.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1856",
+      "source": "MemoryCore/src/config.ts:1868",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2675,15 +2627,15 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.enabled",
       "type": "bool",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1909",
+      "source": "MemoryCore/src/config.ts:2125",
       "consumed": true,
-      "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
+      "defaultNote": "2026-11-07 重锚：原锚 1905 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2125"
     },
     {
       "path": "memory.lifecycle.reflection.selfIdentityGate.threshold",
       "type": "float",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1910",
+      "source": "MemoryCore/src/config.ts:1886",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2691,15 +2643,15 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.suppression.enabled",
       "type": "bool",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1913",
+      "source": "MemoryCore/src/config.ts:2128",
       "consumed": true,
-      "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
+      "defaultNote": "2026-11-07 重锚：原锚 1905 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2128"
     },
     {
       "path": "memory.lifecycle.reflection.selfIdentityGate.suppression.maxPending",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1913",
+      "source": "MemoryCore/src/config.ts:2129",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2707,15 +2659,15 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1873",
+      "source": "MemoryCore/src/config.ts:2131",
       "consumed": true,
-      "defaultNote": "条件材料化：selfIdentityGate.recurrence 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/reflection.ts:275 兜底 = false（selfIdentityGate.recurrence.enabled === true）"
+      "defaultNote": "2026-11-07 重锚：原锚 1868 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2131"
     },
     {
       "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.votes",
       "type": "int",
       "default": 3,
-      "source": "MemoryCore/src/config.ts:1874",
+      "source": "MemoryCore/src/config.ts:2132",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.recurrence 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/reflection.ts:276 兜底 = 3（votes ?? 3）"
     },
@@ -2723,7 +2675,7 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.ttlHours",
       "type": "int",
       "default": 24,
-      "source": "MemoryCore/src/config.ts:1875",
+      "source": "MemoryCore/src/config.ts:2133",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.recurrence 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/reflection.ts:277 兜底 = 24（ttlHours ?? 24）"
     },
@@ -2731,7 +2683,7 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.spanHours",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/config.ts:1876",
+      "source": "MemoryCore/src/config.ts:2134",
       "consumed": true,
       "defaultNote": "可选键：源码无缺省字面量，不写=undefined（键不存在），写 null 与不写等价"
     },
@@ -2739,15 +2691,15 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.rateLimit.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1885",
+      "source": "MemoryCore/src/config.ts:2144",
       "consumed": true,
-      "defaultNote": "条件材料化：selfIdentityGate.rateLimit 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/reflection.ts:281 兜底 = false（rateLimit.enabled === true）"
+      "defaultNote": "2026-11-07 重锚：原锚 1885 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2144"
     },
     {
       "path": "memory.lifecycle.reflection.selfIdentityGate.rateLimit.maxNew",
       "type": "int",
       "default": 12,
-      "source": "MemoryCore/src/config.ts:1886",
+      "source": "MemoryCore/src/config.ts:2145",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.rateLimit 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/reflection.ts:282 兜底 = 12（maxNew ?? 12）"
     },
@@ -2755,7 +2707,7 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.rateLimit.windowHours",
       "type": "int",
       "default": 24,
-      "source": "MemoryCore/src/config.ts:1887",
+      "source": "MemoryCore/src/config.ts:1827",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.rateLimit 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/reflection.ts:283 兜底 = 24（windowHours ?? 24）"
     },
@@ -2763,15 +2715,15 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1898",
+      "source": "MemoryCore/src/config.ts:2155",
       "consumed": true,
-      "defaultNote": "条件材料化：selfIdentityGate.autoAdopt 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/auto-adopt-gate.ts:57 兜底 = false（cfg?.enabled !== true 即整门旁路）"
+      "defaultNote": "2026-11-07 重锚：原锚 1905 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2155"
     },
     {
       "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.votes",
       "type": "int",
       "default": 4,
-      "source": "MemoryCore/src/config.ts:1899",
+      "source": "MemoryCore/src/config.ts:2132",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.autoAdopt 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/auto-adopt-gate.ts:61 兜底 = 4（votes ?? 4）"
     },
@@ -2779,7 +2731,7 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.spanHours",
       "type": "int",
       "default": 72,
-      "source": "MemoryCore/src/config.ts:1900",
+      "source": "MemoryCore/src/config.ts:2134",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.autoAdopt 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/auto-adopt-gate.ts:62 兜底 = 72（spanHours ?? 72）"
     },
@@ -2787,7 +2739,7 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.contradictionThreshold",
       "type": "float",
       "default": 0.6,
-      "source": "MemoryCore/src/config.ts:1901",
+      "source": "MemoryCore/src/config.ts:2158",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.autoAdopt 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/auto-adopt-gate.ts:63 兜底 = 0.6（contradictionThreshold 非 number 时 0.6）"
     },
@@ -2795,7 +2747,7 @@
       "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.dupThreshold",
       "type": "float",
       "default": 0.75,
-      "source": "MemoryCore/src/config.ts:1902",
+      "source": "MemoryCore/src/config.ts:2159",
       "consumed": true,
       "defaultNote": "条件材料化：selfIdentityGate.autoAdopt 整块不写时为 undefined，实际缺省由消费者 src/core/lifecycle/auto-adopt-gate.ts:64 兜底 = 0.75（dupThreshold 非 number 时 0.75）"
     },
@@ -2803,15 +2755,15 @@
       "path": "memory.evolution.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1925",
+      "source": "MemoryCore/src/config.ts:2201",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 1921 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2201"
     },
     {
       "path": "memory.evolution.maxRewrites",
       "type": "int",
       "default": 3,
-      "source": "MemoryCore/src/config.ts:1926",
+      "source": "MemoryCore/src/config.ts:2202",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2819,15 +2771,15 @@
       "path": "memory.evolution.intervalMs",
       "type": "ms",
       "default": 3600000,
-      "source": "MemoryCore/src/config.ts:1927",
+      "source": "MemoryCore/src/config.ts:2203",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 2027 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2203"
     },
     {
       "path": "memory.search.neighborExpand.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1958",
+      "source": "MemoryCore/src/config.ts:1961",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2835,7 +2787,7 @@
       "path": "memory.search.neighborExpand.maxHop",
       "type": "int",
       "default": 1,
-      "source": "MemoryCore/src/config.ts:1959",
+      "source": "MemoryCore/src/config.ts:2235",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2843,7 +2795,7 @@
       "path": "memory.search.neighborExpand.maxAdd",
       "type": "int",
       "default": 3,
-      "source": "MemoryCore/src/config.ts:1960",
+      "source": "MemoryCore/src/config.ts:2236",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2851,15 +2803,15 @@
       "path": "memory.sceneGovernance.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:1977",
+      "source": "MemoryCore/src/config.ts:2253",
       "consumed": true,
-      "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
+      "defaultNote": "2026-11-07 重锚：原锚 1968 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 2253"
     },
     {
       "path": "memory.sceneGovernance.maxBlockChars",
       "type": "int",
       "default": 8000,
-      "source": "MemoryCore/src/config.ts:1975",
+      "source": "MemoryCore/src/config.ts:2251",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2867,7 +2819,7 @@
       "path": "memory.sceneGovernance.distillTimeoutMs",
       "type": "ms",
       "default": 60000,
-      "source": "MemoryCore/src/config.ts:1979",
+      "source": "MemoryCore/src/config.ts:2255",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2875,7 +2827,7 @@
       "path": "memory.sceneGovernance.hardCapChars",
       "type": "int",
       "default": 20000,
-      "source": "MemoryCore/src/config.ts:1982",
+      "source": "MemoryCore/src/config.ts:2258",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2883,7 +2835,7 @@
       "path": "memory.wiki.enabled",
       "type": "bool",
       "default": true,
-      "source": "MemoryCore/src/config.ts:1942",
+      "source": "MemoryCore/src/config.ts:1931",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2891,7 +2843,7 @@
       "path": "memory.wiki.baseUrl",
       "type": "str",
       "default": "http://127.0.0.1:8421",
-      "source": "MemoryCore/src/config.ts:1943",
+      "source": "MemoryCore/src/config.ts:2219",
       "consumed": true,
       "defaultNote": "缺省空串由 str()/optStr() 兜底，解析行不写字面量"
     },
@@ -2899,7 +2851,7 @@
       "path": "memory.wiki.serviceId",
       "type": "str",
       "default": "default",
-      "source": "MemoryCore/src/config.ts:1944",
+      "source": "MemoryCore/src/config.ts:2220",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2907,7 +2859,7 @@
       "path": "memory.wiki.timeoutMs",
       "type": "ms",
       "default": 2500,
-      "source": "MemoryCore/src/config.ts:1945",
+      "source": "MemoryCore/src/config.ts:2221",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2915,7 +2867,7 @@
       "path": "memory.wiki.perWikiTimeoutMs",
       "type": "ms",
       "default": 2000,
-      "source": "MemoryCore/src/config.ts:1946",
+      "source": "MemoryCore/src/config.ts:2222",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2923,7 +2875,7 @@
       "path": "memory.wiki.perWikiLimit",
       "type": "int",
       "default": 4,
-      "source": "MemoryCore/src/config.ts:1947",
+      "source": "MemoryCore/src/config.ts:2223",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2931,7 +2883,7 @@
       "path": "memory.wiki.topK",
       "type": "int",
       "default": 6,
-      "source": "MemoryCore/src/config.ts:1948",
+      "source": "MemoryCore/src/config.ts:2224",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2939,7 +2891,7 @@
       "path": "memory.wiki.minScore",
       "type": "float",
       "default": 0.02,
-      "source": "MemoryCore/src/config.ts:1949",
+      "source": "MemoryCore/src/config.ts:2225",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2947,7 +2899,7 @@
       "path": "memory.wiki.maxWikis",
       "type": "int",
       "default": 8,
-      "source": "MemoryCore/src/config.ts:1950",
+      "source": "MemoryCore/src/config.ts:2226",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2955,7 +2907,7 @@
       "path": "memory.wiki.concurrency",
       "type": "int",
       "default": 4,
-      "source": "MemoryCore/src/config.ts:1951",
+      "source": "MemoryCore/src/config.ts:2227",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2963,7 +2915,7 @@
       "path": "memory.wiki.teamVerify",
       "type": "enum(off|warn|enforce)",
       "default": "enforce",
-      "source": "MemoryCore/src/config.ts:1939",
+      "source": "MemoryCore/src/config.ts:2214",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2971,7 +2923,7 @@
       "path": "memory.sensitivity.extractionEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2585",
+      "source": "MemoryCore/src/config.ts:3025",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2979,7 +2931,7 @@
       "path": "memory.worthiness.extractionEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2590",
+      "source": "MemoryCore/src/config.ts:3025",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2987,7 +2939,7 @@
       "path": "memory.extractionExtensions.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2594",
+      "source": "MemoryCore/src/config.ts:2597",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -2995,7 +2947,7 @@
       "path": "memory.auth.requireUserBinding",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2599",
+      "source": "MemoryCore/src/config.ts:3039",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -3003,7 +2955,7 @@
       "path": "memory.auth.unknownPrincipalPolicy",
       "type": "enum(off|warn|reject)",
       "default": "off",
-      "source": "MemoryCore/src/config.ts:2600",
+      "source": "MemoryCore/src/config.ts:3041",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -3011,7 +2963,7 @@
       "path": "memory.auth.adminBypassEnabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/config.ts:2604",
+      "source": "MemoryCore/src/config.ts:3044",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -3019,7 +2971,7 @@
       "path": "memory.auth.requireTeamOwnership",
       "type": "enum(off|warn|enforce)",
       "default": "off",
-      "source": "MemoryCore/src/config.ts:2607",
+      "source": "MemoryCore/src/config.ts:3048",
       "consumed": true,
       "defaultNote": "缺省由取值 helper 或下游常量兜底，解析行无字面量（见该键说明）"
     },
@@ -3027,7 +2979,7 @@
       "path": "memory.auth.teamOwnershipWhitelist",
       "type": "list<str>",
       "default": [],
-      "source": "MemoryCore/src/config.ts:2611",
+      "source": "MemoryCore/src/config.ts:3052",
       "consumed": true,
       "defaultNote": "缺省 [] 由 normalizeTeamOwnershipWhitelist 兜底"
     },
@@ -3035,7 +2987,7 @@
       "path": "skill.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:68",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:137",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:68 兜底 = false（if (!input?.enabled) 即 resolveSkillConfig 直接 return null）"
     },
@@ -3043,7 +2995,7 @@
       "path": "skill.storeBackend",
       "type": "enum(sqlite)",
       "default": "unset",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:76",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:77",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:76 兜底 = undefined（storeBackend ?? probe.outerStoreBackend ?? \"sqlite\"；模板写 null = 键存在但值 undefined，与不写等价）"
     },
@@ -3051,7 +3003,7 @@
       "path": "skill.contentBackend",
       "type": "enum(local|cos)",
       "default": "unset",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:79",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:93",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:121 兜底 = undefined（contentBackend 缺省按 probe.hasCosCredentials 选 cos/local；模板写 null = 键存在但值 undefined，与不写等价）"
     },
@@ -3059,7 +3011,7 @@
       "path": "skill.routing.mode",
       "type": "enum(bm25|embedding|hybrid)",
       "default": "bm25",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:111",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:217",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:125 兜底 = \"bm25\"（input.routing?.mode ?? \"bm25\"（embedding 不可用时降级 bm25 在 :141））"
     },
@@ -3067,7 +3019,7 @@
       "path": "skill.routing.hybridAlpha",
       "type": "float",
       "default": 0.3,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:217",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:218",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:231 兜底 = 0.3（hybridAlpha ?? 0.3）"
     },
@@ -3075,7 +3027,7 @@
       "path": "skill.routing.searchTopK",
       "type": "int",
       "default": 20,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:218",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:219",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:232 兜底 = 20（searchTopK ?? 20）"
     },
@@ -3083,7 +3035,7 @@
       "path": "skill.routing.charBudgetPercent",
       "type": "float",
       "default": 0.01,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:219",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:220",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:233 兜底 = 0.01（charBudgetPercent ?? 0.01）"
     },
@@ -3091,7 +3043,7 @@
       "path": "skill.routing.fastPathMinNameLength",
       "type": "int",
       "default": 4,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:220",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:221",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:234 兜底 = 4（fastPathMinNameLength ?? 4）"
     },
@@ -3099,7 +3051,7 @@
       "path": "skill.extraction.enabled",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:131",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:137",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:145 兜底 = false（extraction.enabled === true 才开）"
     },
@@ -3107,7 +3059,7 @@
       "path": "skill.extraction.toolCallThreshold",
       "type": "int",
       "default": 10,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:224",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:225",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:238 兜底 = 10（toolCallThreshold ?? 10）"
     },
@@ -3115,7 +3067,7 @@
       "path": "skill.extraction.model",
       "type": "str",
       "default": "unset",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:225",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:226",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:239 兜底 = undefined（model 透传，缺省即 undefined（回落调用方默认模型）；模板写 null = 键存在但值 undefined，与不写等价）"
     },
@@ -3123,7 +3075,7 @@
       "path": "skill.extraction.maxIterations",
       "type": "int",
       "default": 16,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:226",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:227",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:240 兜底 = 16（maxIterations ?? 16）"
     },
@@ -3131,7 +3083,7 @@
       "path": "skill.extraction.archiveBytes",
       "type": "int",
       "default": 40960,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:151",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:153",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:164 兜底 = 40960（DEFAULT_ARCHIVE_BYTES = 40 * 1024（:164 定义，:166 使用））"
     },
@@ -3139,7 +3091,7 @@
       "path": "skill.extraction.maxTokens",
       "type": "int",
       "default": "unset",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:228",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:229",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:242 兜底 = undefined（maxTokens 透传，缺省即 undefined（=不限制）；模板写 null = 键存在但值 undefined，与不写等价）"
     },
@@ -3147,7 +3099,7 @@
       "path": "skill.extraction.timeoutMs",
       "type": "ms",
       "default": "unset",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:229",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:230",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:243 兜底 = undefined（timeoutMs 透传，缺省即 undefined（=不设超时）；模板写 null = 键存在但值 undefined，与不写等价）"
     },
@@ -3155,7 +3107,7 @@
       "path": "skill.extraction.prefixSkillsLimit",
       "type": "int",
       "default": 20,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:230",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:231",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:246 兜底 = 20（validPositiveInteger 兜底 20）"
     },
@@ -3163,7 +3115,7 @@
       "path": "skill.compress.toolContentThresholdBytes",
       "type": "int",
       "default": 2048,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:247",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:248",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:261 兜底 = 2048（toolContentThresholdBytes ?? 2048）"
     },
@@ -3171,7 +3123,7 @@
       "path": "skill.compress.headBytes",
       "type": "int",
       "default": 1024,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:248",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:249",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:262 兜底 = 1024（headBytes ?? 1024）"
     },
@@ -3179,7 +3131,7 @@
       "path": "skill.compress.tailBytes",
       "type": "int",
       "default": 1024,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:249",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:250",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:263 兜底 = 1024（tailBytes ?? 1024）"
     },
@@ -3187,7 +3139,7 @@
       "path": "skill.resources.maxResourceSizeBytes",
       "type": "int",
       "default": 5000000,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:252",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:253",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:267 兜底 = 5000000（maxResourceSizeBytes ?? 5_000_000）"
     },
@@ -3195,7 +3147,7 @@
       "path": "skill.resources.downloadDir",
       "type": "path",
       "default": "/tmp/tdai-skill-resources",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:254",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:255",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:268 兜底 = \"/tmp/tdai-skill-resources\"（downloadDir ?? \"/tmp/tdai-skill-resources\"）"
     },
@@ -3203,7 +3155,7 @@
       "path": "skill.resources.allowExecutable",
       "type": "bool",
       "default": false,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:255",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:256",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:269 兜底 = false（allowExecutable === true 才开）"
     },
@@ -3211,7 +3163,7 @@
       "path": "skill.versionTtlDays",
       "type": "int",
       "default": 0,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:257",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:258",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:271 兜底 = 0（(versionTtlDays ?? 0) * 86400）"
     },
@@ -3219,7 +3171,7 @@
       "path": "skill.worker.concurrency",
       "type": "int",
       "default": 60,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:185",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:260",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:185 兜底 = 60（DEFAULT_WORKER_CONCURRENCY = 60（:180 定义，:185 使用））"
     },
@@ -3227,7 +3179,7 @@
       "path": "skill.worker.brpopBlockMs",
       "type": "ms",
       "default": 5000,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:197",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:261",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:211 兜底 = 5000（DEFAULT_WORKER_BRPOP_MS = 5000（:181））"
     },
@@ -3235,7 +3187,7 @@
       "path": "skill.worker.extractLockTtlMs",
       "type": "ms",
       "default": 600000,
-      "source": "MemoryCore/src/core/skill/skill-config.ts:199",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:262",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:212 兜底 = 600000（DEFAULT_EXTRACT_LOCK_TTL_MS = 600_000（:182））"
     },
@@ -3243,9 +3195,345 @@
       "path": "skill.worker.extractLockRenewIntervalMs",
       "type": "ms",
       "default": "unset",
-      "source": "MemoryCore/src/core/skill/skill-config.ts:205",
+      "source": "MemoryCore/src/core/skill/skill-config.ts:263",
       "consumed": true,
       "defaultNote": "条件材料化：skill 块不写时为 undefined/不解析，实际缺省由消费者 src/core/skill/skill-config.ts:218 兜底 = undefined（缺省 = floor(extractLockTtlMs / 4)；模板写 null = 键存在但值 undefined，与不写等价）"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.enabled",
+      "type": "bool",
+      "default": "false",
+      "source": "MemoryCore/src/config.ts:1996",
+      "consumed": true,
+      "defaultNote": "2026-11-07 重锚：原锚 1582 与同名字段互串（enabled/type 等末段不唯一），按分组变量作用域定位到真实解析行 1996"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.minEvidence",
+      "type": "int",
+      "default": "3",
+      "source": "MemoryCore/src/config.ts:1718",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.updateIntervalHours",
+      "type": "int",
+      "default": "6",
+      "source": "MemoryCore/src/config.ts:1997",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxUpdatedPerCycle",
+      "type": "int",
+      "default": "3",
+      "source": "MemoryCore/src/config.ts:1998",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.alpha",
+      "type": "float",
+      "default": "0.15",
+      "source": "MemoryCore/src/config.ts:1999",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.windowDays",
+      "type": "int",
+      "default": "7",
+      "source": "MemoryCore/src/config.ts:2000",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.windowRewrites",
+      "type": "int",
+      "default": "1",
+      "source": "MemoryCore/src/config.ts:2001",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.degradeAfterDays",
+      "type": "int",
+      "default": "30",
+      "source": "MemoryCore/src/config.ts:2002",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.freezeAfterDays",
+      "type": "int",
+      "default": "90",
+      "source": "MemoryCore/src/config.ts:2003",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.degradeWeightFactor",
+      "type": "float",
+      "default": "0.7",
+      "source": "MemoryCore/src/config.ts:2004",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.freezeContradictions",
+      "type": "int",
+      "default": "2",
+      "source": "MemoryCore/src/config.ts:2005",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.mergeSimilarity",
+      "type": "float",
+      "default": "0.85",
+      "source": "MemoryCore/src/config.ts:2006",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.driftDegrade",
+      "type": "float",
+      "default": "0.75",
+      "source": "MemoryCore/src/config.ts:2007",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.driftFreeze",
+      "type": "float",
+      "default": "0.6",
+      "source": "MemoryCore/src/config.ts:2008",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.driftConsecutive",
+      "type": "int",
+      "default": "3",
+      "source": "MemoryCore/src/config.ts:2009",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxSoulEvidenceShare",
+      "type": "float",
+      "default": "0.5",
+      "source": "MemoryCore/src/config.ts:2011",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.verbatimMinChars",
+      "type": "int",
+      "default": "8",
+      "source": "MemoryCore/src/config.ts:2012",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.redlineMaxChars",
+      "type": "int",
+      "default": "120",
+      "source": "MemoryCore/src/config.ts:2013",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.emotionHalfLifeHours",
+      "type": "float",
+      "default": "3",
+      "source": "MemoryCore/src/config.ts:2014",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.moodHalfLifeHours",
+      "type": "float",
+      "default": "48",
+      "source": "MemoryCore/src/config.ts:2015",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.moodDeviationThreshold",
+      "type": "float",
+      "default": "0.15",
+      "source": "MemoryCore/src/config.ts:2016",
+      "consumed": true,
+      "defaultNote": "2026-11-07 机械补登：模板已写、keys.json 曾漏登记；锚点按最近字面量定位"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.identity",
+      "type": "int",
+      "default": "400",
+      "source": "MemoryCore/src/core/soul/types.ts:362",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.values",
+      "type": "int",
+      "default": "320",
+      "source": "MemoryCore/src/core/soul/types.ts:367",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.narrative",
+      "type": "int",
+      "default": "300",
+      "source": "MemoryCore/src/core/soul/types.ts:372",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.identity",
+      "type": "int",
+      "default": "7",
+      "source": "MemoryCore/src/core/soul/types.ts:313",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.values",
+      "type": "int",
+      "default": "7",
+      "source": "MemoryCore/src/core/soul/types.ts:315",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.narrative",
+      "type": "int",
+      "default": "7",
+      "source": "MemoryCore/src/core/soul/types.ts:318",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.identity",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:324",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.values",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:326",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.narrative",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:329",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.voice",
+      "type": "int",
+      "default": "600",
+      "source": "MemoryCore/src/core/soul/types.ts:361",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.boundary",
+      "type": "int",
+      "default": "2600",
+      "source": "MemoryCore/src/core/soul/types.ts:368",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.relationship",
+      "type": "int",
+      "default": "900",
+      "source": "MemoryCore/src/core/soul/types.ts:371",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.budget.method",
+      "type": "int",
+      "default": "0",
+      "source": "MemoryCore/src/core/soul/types.ts:373",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（budget 字面量在 :358-374），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.voice",
+      "type": "int",
+      "default": "7",
+      "source": "MemoryCore/src/core/soul/types.ts:312",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.boundary",
+      "type": "int",
+      "default": "40",
+      "source": "MemoryCore/src/core/soul/types.ts:316",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.relationship",
+      "type": "int",
+      "default": "12",
+      "source": "MemoryCore/src/core/soul/types.ts:317",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItems.method",
+      "type": "int",
+      "default": "64",
+      "source": "MemoryCore/src/core/soul/types.ts:319",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItems 缺省由 layerMaxItems(7) 生成，boundary/relationship/method 在 :378 覆写），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.voice",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:323",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.boundary",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:327",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.relationship",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:328",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
+    },
+    {
+      "path": "memory.coreMemory.soulMaintenance.maxItemChars.method",
+      "type": "int",
+      "default": "160",
+      "source": "MemoryCore/src/core/soul/types.ts:330",
+      "consumed": true,
+      "defaultNote": "缺省由 core/soul/types.ts:337 DEFAULT_SOUL_MAINTENANCE_CONFIG 提供（maxItemChars 缺省由 layerItemChars(160) 生成（:379）；模板 boundary=120 是对齐 redlineMaxChars 的选定值），2026-11-07 补登：模板已写、keys.json 曾漏登记"
     }
   ],
   "ignored": [
@@ -3264,12 +3552,37 @@
     {
       "path": "memory.skill",
       "reason": "别名位置：resolveSkillConfig 优先顶层 skill，缺省才读 memory.skill（core/skill/skill-config.ts:62-68），模板只写顶层 skill。注意 gateway 加载后会把顶层 skill 浅合并并**镜像**到 memory.skill（src/gateway/config.ts:617-624），所以运行时配置里能看到成对的 memory.skill.* 叶子；它们不是独立配置项，不要在 memory.skill 下另配一份（两份并存时顶层覆盖，且镜像叶子会被整块替换）"
+    },
+    {
+      "path": "memory.recall.sensitivityPenalty",
+      "reason": "2026-11-04 源码已删除该 0 值死乘子（MemoryCore/src/core/store/soul-columns.ts:17、core/recall/sensitivity-policy.ts:5-6）；2026-11-07 从模板移除：配了不生效且不报错，属假配置",
+      "removedFromTemplateAt": "2026-11-07"
+    },
+    {
+      "path": "memory.lifecycle.forgetting.sensitivityBias",
+      "reason": "2026-11-04 源码已删除该 0 值死乘子（MemoryCore/src/core/store/soul-columns.ts:17、core/lifecycle/forgetting/scorer.ts:187 注明不再参与打分）；2026-11-07 从模板移除",
+      "removedFromTemplateAt": "2026-11-07"
+    },
+    {
+      "path": "memory.report.enabled",
+      "reason": "2026-11-07 源码已删除 report 配置组：initReporter() 全仓库零调用点（core/report/reporter.ts:19），report() 恒 no-op，配了永远不生效；模板同步移除",
+      "removedFromTemplateAt": "2026-11-07"
+    },
+    {
+      "path": "memory.report.type",
+      "reason": "同上：report 组 2026-11-07 整组删除（IEEE：initReporter 零调用、reporter 单例永不初始化），保留模板行等于教人配一个假开关",
+      "removedFromTemplateAt": "2026-11-07"
+    },
+    {
+      "path": "memory.capture.enabled",
+      "reason": "2026-11-07 源码已删除（CaptureConfig.enabled 与解析行均删，grep capture.enabled 零消费）；模板残留且锚到 soulMaintenance 的 enabled 行，属假开关，随本轮移除",
+      "removedFromTemplateAt": "2026-11-07"
     }
   ],
   "coverage": {
-    "sourceKeys": 408,
-    "templatedKeys": 404,
-    "ignoredKeys": 4,
-    "note": "sourceKeys = templatedKeys + ignoredKeys；ignored 为别名位置与网关段孤儿键（写了不生效），逐条给理由。Wave 1（OpenClaw / hermes / cli / offload 退场）后剔除源码侧整块删除的 offload 配置面 42 键；Wave 2C 重写 gateway/config.ts 与 config.ts 后再删 3 键（llm.proxy.useMemorySystemUserKey、memory.llm.proxy.useMemorySystemUserKey、memory.embedding.proxyUrl）；Wave 3（docs/adr/0021）删 35 键（redis.* 5、observability.{otel 7,clickhouse 5,kafka 3,langfuse 4}、metadata.store.{mongoUri,mongoTransactions} 2、memory.tcvdb.* 9），并把 observability.* 收窄为单键 type（noop|console），ignored 中随块退场的 8 条孤儿记录同步移除 ⇒ sourceKeys 450→408。所有 [src:File:line] 已按现行源码重锚（逐字相等 + 末段命中双校验）。"
+    "sourceKeys": 449,
+    "templatedKeys": 440,
+    "ignoredKeys": 9,
+    "note": "sourceKeys = templatedKeys + ignoredKeys；ignored 为别名位置与网关段孤儿键（写了不生效），逐条给理由。Wave 1（OpenClaw / hermes / cli / offload 退场）后剔除源码侧整块删除的 offload 配置面 42 键；Wave 2C 重写 gateway/config.ts 与 config.ts 后再删 3 键（llm.proxy.useMemorySystemUserKey、memory.llm.proxy.useMemorySystemUserKey、memory.embedding.proxyUrl）；Wave 3（docs/adr/0021）删 35 键（redis.* 5、observability.{otel 7,clickhouse 5,kafka 3,langfuse 4}、metadata.store.{mongoUri,mongoTransactions} 2、memory.tcvdb.* 9），并把 observability.* 收窄为单键 type（noop|console），ignored 中随块退场的 8 条孤儿记录同步移除 ⇒ sourceKeys 450→408。所有 [src:File:line] 已按现行源码重锚（逐字相等 + 末段命中双校验）。 2026-11-07：行号锚点按源码最近字面量重锚（模板长期漂移）；补登 soulMaintenance.budget/maxItems/maxItemChars 的 21 个分层键（原 9 条锚点指向 config.ts 无关行，已改指 core/soul/types.ts）。"
   }
 }

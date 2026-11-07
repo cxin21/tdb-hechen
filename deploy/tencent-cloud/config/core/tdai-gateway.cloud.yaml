@@ -390,7 +390,7 @@ memory:
   worthiness:
     extractionEnabled: true   # LLM 顺带产出 importance 字段（写侧）；与 recall.importancePenalty（读侧消费）配套。
 
-  storeBackend: "sqlite"
+  storeBackend: "sqlite"      # 存储后端唯一取值（TCVDB 已退场，ADR-0021）；消费点 core/store/factory.ts:77 assertStoreBackendSupported，写其它值启动即抛错。缺省同值，属防漂移钉。skill 段已写死 sqlite（skill-config.ts:76），不再读配置。
 
   # ── 场景块治理（DS-SCENE-GOV-001，2026-09-12 生产启用）──
   # ⚠️ 解析层级 = memory.sceneGovernance（与 recall 平级）：解析点 src/config.ts:1701
@@ -630,7 +630,7 @@ memory:
 #  - extraction.enabled: true → 启用 LLM 自动抽取（抽取器+LLM 都在跑才有产出，见官方文档）。
 skill:
   enabled: true
-  storeBackend: "sqlite"
+  # storeBackend 已删除（2026-11-07）：skill 后端写死 sqlite（core/skill/skill-config.ts:76），原键解析后无人消费。
   contentBackend: "local"
   routing:
     mode: "bm25"

@@ -12,6 +12,12 @@
 const SCENARIO_HEADER = '## 长期记忆 · 场景索引（L2）';
 
 /**
+ * 场景索引路径条数上限（写死，配置 maxScenarioEntries 已于 2026-11-07 删除）。
+ * 20 = 原先 `options.maxScenarioEntries ?? 20` 的实际生效值：唯一调用方从不传该选项。
+ */
+const HEAD_PACK_MAX_SCENARIO_ENTRIES = 20;
+
+/**
  * True when the persona already lists this scene path on its own index line.
  * The live `/v3/core/read` persona ends with the same scene index, one
  * `- <path>（热度 N，更新 YYYY-MM-DD）` line per scene; appending our own bare
@@ -38,7 +44,6 @@ export function personaListsPath(personaText: string, path: string): boolean {
 export interface ComposeHeadPackOptions {
   maxChars: number;
   includeScenarioIndex?: boolean;
-  maxScenarioEntries?: number;
 }
 
 /**
@@ -54,7 +59,7 @@ export function composeHeadPack(
   const maxChars = Math.max(0, Math.floor(options.maxChars));
   if (maxChars === 0) return '';
   const personaText = typeof persona === 'string' ? persona.trim() : '';
-  const limit = Math.max(1, Math.floor(options.maxScenarioEntries ?? 20));
+  const limit = HEAD_PACK_MAX_SCENARIO_ENTRIES;
   const paths = (Array.isArray(scenarios) ? scenarios : [])
     .map((path) => (typeof path === 'string' ? path.trim() : ''))
     .filter((path) => path !== '')

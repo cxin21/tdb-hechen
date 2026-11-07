@@ -35,8 +35,9 @@ export type MemoryPromptMode = "chat" | "code";
 
 /** Capture settings — controls L0 conversation recording. */
 export interface CaptureConfig {
-  /** Enable auto-capture (default: true) */
-  enabled: boolean;
+  // `enabled` 已于 2026-11-07 删除：全仓库零读取点（grep `capture.enabled` = 0）。
+  // 采集是写侧主链路，当前没有关掉它的路径——要停采集只能不挂插件；
+  // 若将来要开关，先接 auto-capture.ts 的入口再恢复键，别只把字段加回来。
   /** Glob patterns to exclude agents (e.g. "bench-judge-*"); matched agents are fully ignored */
   excludeAgents: string[];
   /**
@@ -1309,13 +1310,14 @@ export interface BM25Config {
 /** Storage backend type (DSH-only: TCVDB retired, see docs/adr/0021). */
 export type StoreBackend = "sqlite";
 
-/** Report settings — controls metric/event reporting. */
-export interface ReportConfig {
-  /** Enable reporting (default: true) */
-  enabled: boolean;
-  /** Reporter type: "local" logs structured JSON via logger (default: "local") */
-  type: string;
-}
+/**
+ * `report.*` 配置组已删除（2026-11-07）。
+ *
+ * 证据：`initReporter()` 全仓库零调用点（定义见 core/report/reporter.ts:19），
+ * 因此 `report.enabled` / `report.type` 解析出来后永远到不了消费点，reporter
+ * 单例始终未初始化、`report()` 恒为 no-op。删除配置组与「不接线」行为等价；
+ * 若将来要恢复上报，先接 `initReporter()` 再接配置，不要先把键加回来。
+ */
 
 /**
  * Standalone LLM configuration — when set, TDAI uses direct API calls
@@ -1454,7 +1456,6 @@ export interface MemoryTdaiConfig {
   bm25: BM25Config;
   /** Local JSONL cleanup settings */
   memoryCleanup: MemoryCleanupConfig;
-  report: ReportConfig;
   /**
    * Standalone LLM override — when enabled, TDAI bypasses the host's LLM
    * (e.g. OpenClaw's runEmbeddedPiAgent) and uses direct OpenAI-compatible
@@ -2261,7 +2262,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
   return {
     promptMode: globalPromptMode,
     capture: {
-      enabled: bool(captureGroup, "enabled") ?? true,
+      // enabled 不再解析（2026-11-07）：无消费点，见 CaptureConfig 处墓碑注释。
       excludeAgents: strArray(captureGroup, "excludeAgents") ?? [],
       l0l1RetentionDays: retentionDays ?? 0,
       allowAggressiveCleanup,
@@ -2989,10 +2990,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       language: (str(bm25Group, "language") === "en" ? "en" : "zh") as "zh" | "en",
     },
     memoryCleanup,
-    report: {
-      enabled: bool(obj(c, "report"), "enabled") ?? false,
-      type: str(obj(c, "report"), "type") ?? "local",
-    },
+    // report.* 不再解析（2026-11-07）：reporter 从未被 initReporter() 初始化，理由见 ReportConfig 删除处的墓碑注释（:1312）。
     llm: (() => {
       const llmGroup = obj(c, "llm");
       // DSH 特化（2026-11-01，ADR-0020）：provider 唯一取值 "openai"（OpenAI 兼容端点直连）。

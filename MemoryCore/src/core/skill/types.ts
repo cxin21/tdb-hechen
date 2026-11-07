@@ -16,8 +16,8 @@
 export interface SkillConfigInput {
   enabled?: boolean;
 
-  /** Override for skill metadata + vector store backend. Falls back to outer storeBackend, then 'sqlite'. */
-  storeBackend?: "sqlite";
+  // storeBackend 输入已删除（2026-11-07）：skill-config.ts:76 直接写死 "sqlite"，
+  // 该输入解析后无人消费，yaml 里的 skill.storeBackend 一直是死钉。
 
   /** Override for skill content (SKILL.md + resources) backend. Falls back to env probe → 'local'. */
   contentBackend?: "local" | "cos";

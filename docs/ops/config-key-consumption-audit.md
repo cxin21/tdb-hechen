@@ -1,5 +1,10 @@
 # 设置页 25 键「真被消费」审计（task-107）
 
+> **状态（2026-11-07 起）**：本文所列 2 条真孤儿已按「删除并在代码写死」处理 ——
+> `writeback.maxMessagesPerRequest`（写死为 `CORE_MAX_MESSAGES_PER_REQUEST`，`dsh-plugin/src/wire-limits.ts:30`，由 `chunkMessages()` `:208` 使用）与
+> `headPack.maxScenarioEntries`（写死为 `HEAD_PACK_MAX_SCENARIO_ENTRIES = 20`，`dsh-plugin/src/head-pack-compose.ts`）。
+> 改动明细、保留项与门禁见 [config-prune-2026-11-07.md](./config-prune-2026-11-07.md)。下文 §1–§4 保留为**审计当时**的快照，行号与结论均未回改。
+
 静态结论，快照 2026-11-01T03:45 +08:00。`src/index.ts` 正被 task-72 编辑，行号会漂 ⇒ 复跑 `node dsh-plugin/scripts/audit-config-keys.mjs` 取最新。
 
 ## §1 结论

@@ -237,26 +237,26 @@ describe('config', () => {
 
   it('caps writeback at the core wire limits and refuses to exceed them', () => {
     const { config } = normalizeConfig(undefined);
-    // Core schema limits (wire-limits.ts): one message and one batch.
+    // Core schema limit (wire-limits.ts) for one message.
     expect(config.writeback.maxMessageChars).toBe(8192);
-    expect(config.writeback.maxMessagesPerRequest).toBe(100);
+    // Batch size is NOT configurable any more: chunkMessages() uses the wire-limit
+    // constant directly (wire-limits.ts:208), so the old knob is gone.
+    expect('maxMessagesPerRequest' in config.writeback).toBe(false);
     // Byte budget sits below the measured 0.9 MB success point; above the core's
     // 1 MiB socket wall the connection is destroyed without a 413.
     expect(config.writeback.maxRequestBytes).toBe(700000);
 
     // A config typo must not be able to reintroduce the 400-every-retry path.
     const raised = normalizeConfig({
-      writeback: { maxMessageChars: 20000, maxMessagesPerRequest: 500 },
+      writeback: { maxMessageChars: 20000 },
     }).config;
     expect(raised.writeback.maxMessageChars).toBe(8192);
-    expect(raised.writeback.maxMessagesPerRequest).toBe(100);
 
     // Lowering is allowed (a privacy-conscious deployment may clip shorter).
     const lowered = normalizeConfig({
-      writeback: { maxMessageChars: 1000, maxMessagesPerRequest: 20, maxRequestBytes: 300000 },
+      writeback: { maxMessageChars: 1000, maxRequestBytes: 300000 },
     }).config;
     expect(lowered.writeback.maxMessageChars).toBe(1000);
-    expect(lowered.writeback.maxMessagesPerRequest).toBe(20);
     expect(lowered.writeback.maxRequestBytes).toBe(300000);
 
     // …but not below the socket wall either, and never to zero/negative.

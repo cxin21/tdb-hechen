@@ -1,5 +1,5 @@
 {
-  "_comment": "/data/tdai-memory/config-override.json 脱敏示例。优先级高于 TDAI_LLM_* env 与 MemoryCore yaml；仅支持 llm/embedding 两段，勿放 memory 业务配置。apiKey 占位符替换为真实 key；maxTokens 生产现值以服务器文件为准（0 = 不限制）。",
+  "_comment": "/data/tdai-memory/config-override.json 脱敏示例。优先级：Admin settings override > 本文件 > yaml > TDAI_LLM_* env(deprecated)；加载点 MemoryCore/src/gateway/settings-override.ts:132 readSettingsOverride，合并在 src/config.ts parseConfig 之前。支持的段（settings-override.ts:115-127）：llm / embedding / rerank / importancePenalty / worthiness / extraction / layerRuler / injection / recall / persona / lifecycle；未列出的键不会被读取，写进来静默无效。apiKey 占位符替换为真实 key；maxTokens 生产现值以服务器文件为准（0 = 不限制）。",
   "llm": {
     "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1",
     "apiKey": "<REPLACE_WITH_LLM_API_KEY>",

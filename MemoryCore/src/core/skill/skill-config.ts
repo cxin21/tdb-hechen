@@ -9,7 +9,7 @@
  * - Resolution is deterministic given input + probe; no env reads.
  *
  * Defaults (when input.enabled=true and field is unspecified):
- * - storeBackend: inherit probe.outerStoreBackend, fallback "sqlite"
+ * - storeBackend: always "sqlite" (TCVDB retired; input field removed 2026-11-07)
  * - contentBackend: auto-probe: cos if hasCosCredentials else local
  * - routing.mode: "bm25"
  * - routing.hybridAlpha: 0.3
@@ -73,6 +73,7 @@ export function resolveSkillConfig(
 
   // --------------- store ---------------
   // TCVDB retired in the DSH-only build (docs/adr/0021): the only skill backend is sqlite.
+  // 写死而非读 input：input.storeBackend 已于 2026-11-07 删除（解析后无消费者）。
   const storeBackend: "sqlite" = "sqlite";
 
   // --------------- content ---------------

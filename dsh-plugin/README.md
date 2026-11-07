@@ -91,7 +91,7 @@ token 不落提示词、不落配置文件。
                      soul: { enabled: true, maxChars: 4400, includeFeeling: true, oncePerSession: true },
                      recall: true, recallMaxResults: 3, recallTimeoutMs: 2500 }
         writeback: { enabled: true, skillFeed: true, maxAttempts: 8, retryMs: 30000, outboxPath: "",
-                     maxMessageChars: 8192, maxMessagesPerRequest: 100,
+                     maxMessageChars: 8192,          # 单条内容上限（core schema 硬限 8192）
                      maxRequestBytes: 700000,        # 单次请求的 JSON 字节预算（core 1 MiB 硬墙）
                      maxOutboxEntries: 500,          # 队列上限：core 长时间不可达时丢最旧
                      maxOutboxBytes: 20971520 }      # 队列字节上限（20 MiB），死信不计入
@@ -117,7 +117,9 @@ token 不落提示词、不落配置文件。
   - **线路限额**跟 core schema 对齐：单条 content ≤ **8192** 字符、单批 ≤ **100** 条（L0；skill 批 ≤ 500，
     那是 skill schema 的上限）。超长单条在安全字符边界裁断并留 `[truncated: N chars]` 标记（不切 surrogate pair、
     优先段落边界），超长回合按限额**顺序分片**发，任一分片失败只重试该分片，不整轮丢。
-    `maxMessageChars` / `maxMessagesPerRequest` 只能往下配，配超过上限会被钳回。以前单条硬编码 20000 ⇒ 长回合
+    `maxMessageChars` 只能往下配，配超过上限会被钳回；分批条数不再可配——写死 `CORE_MAX_MESSAGES_PER_REQUEST`
+    （100，`src/wire-limits.ts:30`，`src/memory-client.ts:979` 直接用它），原来的 `maxMessagesPerRequest` 键
+    解析后无人消费，已于 2026-11-07 删除。以前单条硬编码 20000 ⇒ 长回合
     400 → 8 次重试 → 死信 → 该轮 user+assistant 全丢。skill 的 8192 是**有意保留的产品选择**（core 侧没有这个上限，
     实测 9000 字符照样 200）——把 L2 抽取的输入控在这个量级，buffer 归档与 extractor 成本才可预测。
   - **字节墙（比条数更早撞）**：core 的 HTTP server 在 1 MiB 处**先 reject 再 `req.destroy()`**
