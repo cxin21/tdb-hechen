@@ -208,16 +208,16 @@ describe("P1 task-3 LocalReranker：合同与状态机", () => {
     expect(await r.rerank("q", ["a"])).toEqual([{ index: 0, score: 0.9 }]);
   });
 
-  it("score 假死超时 → null、terminate（击杀假死）、failed", async () => {
+  it("score 假死超时 → 放弃等待、不 terminate 在途推理（杀 worker 会原生崩溃）", async () => {
     const w = new MockWorker();
     w.reply = (msg) => {
       if (msg.type === "load") setImmediate(() => w.emitLoaded());
-      // score 不应答 = 假死
+      // score 不应答 = 假死；超时后必须保留 worker，绝不能 terminate 在途推理
     };
     const { r } = makeReranker({ spawn: () => w, inferTimeoutMs: 30 });
     expect(await r.rerank("q", ["a"])).toBeNull();
-    expect(r.state).toBe("failed");
-    expect(w.terminated).toBeGreaterThanOrEqual(1);
+    expect(r.state).not.toBe("failed");
+    expect(w.terminated).toBe(0);
   });
 
   it("worker error 事件（崩溃）→ reject pending、null、failed", async () => {
@@ -395,10 +395,10 @@ describe("warmup（滚动预算配套）", () => {
     const { r, workers } = makeReranker();
     await r.warmup();
     expect(workers.length).toBe(1);
-    expect(workers[0].sent.map((m) => m.type)).toEqual(["load"]);
+    expect(workers[0].sent.map((m) => m.type)).toEqual(["load", "score"]);
     await r.rerank("q", ["a"]);
     expect(workers.length).toBe(1);
-    expect(workers[0].sent.map((m) => m.type)).toEqual(["load", "score"]);
+    expect(workers[0].sent.map((m) => m.type)).toEqual(["load", "score", "score"]);
   });
 
   it("模型未就绪时 warmup 是空操作（不 spawn、不抛）", async () => {

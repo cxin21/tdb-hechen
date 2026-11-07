@@ -26,6 +26,8 @@ export interface MemoryReranker {
    * 云 provider 不实现（无加载成本）。
    */
   warmup?(): Promise<void>;
+  /** 2026-11-06（可选）：加载 + 用长预算预热一批真实文档，避开冷态首batch撞运行时4s超时。 */
+  warmupBatch?(query: string, docs: string[]): Promise<RerankResult[] | null>;
   // 2026-11-04：曾设计过 cancelPending()「软超时取消 = 终止 worker 丢掉在途推理」，
   // 实测**不可用**：onnxruntime 推理进行中 terminate worker 会触发原生崩溃带走整个进程
   // （bench 侧 90 题臂 exit 127 / ACCESS_VIOLATION，5 题探针稳定复现；去掉该调用后同参数 exit 0）。

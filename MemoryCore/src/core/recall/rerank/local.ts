@@ -173,8 +173,30 @@ export class LocalReranker implements MemoryReranker {
     if (!isRerankModelReady(this.opts.modelDir, this.opts.modelFiles)) return;
     try {
       await this.ensureLoaded();
+      // 2026-11-06：冷启动只 load 不够——首个 32 文档 batch 在 ORT session 冷态下可能超过
+      // 运行时 4s 推理超时，超时路径 terminate 在途推理会触发 onnxruntime 原生崩溃
+      // （STATUS_STACK_BUFFER_OVERRUN）。这里用 1 条文档、至少 60s 预算做一次打分，
+      // 把 ORT session 真正暖起来；运行时仍保留 4s 超时纪律。
+      await this.postScore("[warmup] 预热", ["预热"], Math.max(this.opts.inferTimeoutMs, 60_000));
     } catch {
       /* 加载失败由 rerank 的降级路径处理，这里只负责「别把加载时间算进预算」 */
+    }
+  }
+
+  /**
+   * 预热一批真实文档（boot warmup 用）：加载 + 用长预算打分一次。
+   * 运行时 4s 推理超时针对的是正常召回批次；冷态首批 32 文档在 ORT session
+   * 尚未暖机时可能超过 4s，走 timeout → terminate 在途推理会触发原生崩溃。
+   * 预热批次单独给 60s，既完成 session 暖机，又不放松运行时的超时纪律。
+   */
+  async warmupBatch(query: string, docs: string[]): Promise<RerankResult[] | null> {
+    if (this.disposed || docs.length === 0) return null;
+    if (!isRerankModelReady(this.opts.modelDir, this.opts.modelFiles)) return null;
+    try {
+      await this.ensureLoaded();
+      return await this.postScore(query, docs, Math.max(this.opts.inferTimeoutMs, 60_000));
+    } catch {
+      return null;
     }
   }
 
@@ -257,6 +279,9 @@ export class LocalReranker implements MemoryReranker {
         this.pendingScores.delete(msg.id);
         entry.resolve(msg.scores);
         this.armIdleUnload();
+      } else {
+        // 超时放弃后晚到的结果：忽略，但把它当作 worker 已空闲的信号重新排卸载。
+        this.armIdleUnload();
       }
       return;
     }
@@ -276,18 +301,24 @@ export class LocalReranker implements MemoryReranker {
 
   /* ---------- 内部：打分 ---------- */
 
-  private postScore(query: string, docs: string[]): Promise<RerankResult[] | null> {
+  private postScore(
+    query: string,
+    docs: string[],
+    timeoutMs: number = this.opts.inferTimeoutMs,
+  ): Promise<RerankResult[] | null> {
     const worker = this.worker;
     if (!worker) return Promise.resolve(null);
     const id = this.nextId++;
     return new Promise<number[] | null>((resolve) => {
       const timer =
-        this.opts.inferTimeoutMs > 0
+        timeoutMs > 0
           ? setTimeout(() => {
+              // 2026-11-06 修正：只放弃等待，不 terminate 在途推理。onnxruntime 推理中
+              // terminate 会触发原生崩溃（0xC0000409）带走整个 gateway；预算由调用方
+              // 的 score-budget 控制，晚到的 scores 由 onWorkerMessage 忽略并重新 arm idle。
               this.pendingScores.delete(id);
-              this.killWorker(`infer timeout after ${this.opts.inferTimeoutMs}ms`);
               resolve(null);
-            }, this.opts.inferTimeoutMs)
+            }, timeoutMs)
           : null;
       timer?.unref?.();
       this.pendingScores.set(id, { resolve, timer });
