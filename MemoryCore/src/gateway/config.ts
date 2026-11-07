@@ -48,7 +48,8 @@ export interface SharkConfig {
 
 export interface ScannerConfig {
   instances: string;
-  instancesSharkUrl?: string;
+  // instancesSharkUrl 已于 2026-11-07 删除：全仓库零消费点，从未覆盖 instances
+  // （见 docs/ops/config-prune-2026-11-07.md 第二轮）。
   intervalMs: number;
   nodeId?: string;
 }
@@ -488,7 +489,7 @@ export function loadGatewayConfig(overrides?: Partial<GatewayConfig>): GatewayCo
   const scannerConfig = obj(fileConfig, "scanner");
   const scanner: ScannerConfig = {
     instances: env("SCANNER_INSTANCES") ?? str(scannerConfig, "instances") ?? "default",
-    instancesSharkUrl: env("SCANNER_INSTANCES_SHARK_URL") ?? str(scannerConfig, "instancesSharkUrl"),
+    // 已删除 instancesSharkUrl — 无消费点，见 ScannerConfig 注释
     intervalMs: envInt("SCANNER_INTERVAL_MS") ?? num(scannerConfig, "intervalMs") ?? 500,
     nodeId: env("SCANNER_NODE_ID") ?? str(scannerConfig, "nodeId"),
   };
