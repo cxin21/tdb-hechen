@@ -75,6 +75,57 @@ describe("applyMemorySectionsOverrideToRaw（recall / persona / lifecycle）", (
   });
 });
 
+describe("applyMemorySectionsOverrideToRaw（2026-11-07 应急开关组）", () => {
+  it("coreMemory.soulMaintenance 深合并：人格总闸真落到 parse 结果，同段其它 coreMemory 键保留", () => {
+    const raw = applyMemorySectionsOverrideToRaw(
+      { coreMemory: { capabilities: { promises: { enabled: true } } } },
+      { coreMemory: { soulMaintenance: { enabled: true } } },
+    );
+    const cm = raw.coreMemory as Record<string, any>;
+    expect(cm.soulMaintenance).toEqual({ enabled: true });
+    expect(cm.capabilities).toEqual({ promises: { enabled: true } });
+    const cfg = parseConfig(raw);
+    expect(cfg.coreMemory.soulMaintenance.enabled).toBe(true);
+  });
+
+  it("extraction.enabled=false 真生效（B 档关 L1 抽取），facts 等子块不动", () => {
+    const cfg = parseConfig(
+      applyExtractionOverrideToRaw(baseRaw(), { enabled: false }),
+    );
+    expect(cfg.extraction.enabled).toBe(false);
+    expect(cfg.extraction.facts).toEqual({ enabled: true, maxFacts: 5, includeTriples: true });
+  });
+
+  it("capture / evolution / sceneGovernance / links / bm25 / search 六组各自深合并，互不串联", () => {
+    const raw = applyMemorySectionsOverrideToRaw(
+      {
+        capture: { excludeAgents: ["a"] },
+        evolution: { enabled: false, intervalMs: 120000 },
+        sceneGovernance: { enabled: true },
+        links: { enabled: false },
+        bm25: { enabled: true },
+        search: { neighborExpand: { enabled: true, maxAdd: 7 } },
+      },
+      {
+        capture: { excludeAgents: ["b"] },
+        evolution: { enabled: true },
+        sceneGovernance: { enabled: false },
+        links: { enabled: true },
+        bm25: { enabled: false },
+        search: { neighborExpand: { enabled: false } },
+      },
+    );
+    const cfg = parseConfig(raw);
+    expect(cfg.capture.excludeAgents).toEqual(["b"]);
+    expect(cfg.evolution.enabled).toBe(true);
+    expect(cfg.evolution.intervalMs).toBe(120000);
+    expect(cfg.sceneGovernance.enabled).toBe(false);
+    expect(cfg.links.enabled).toBe(true);
+    expect(cfg.bm25.enabled).toBe(false);
+    expect(cfg.search.neighborExpand).toEqual({ enabled: false, maxHop: 1, maxAdd: 7 });
+  });
+});
+
 describe("applyExtractionOverrideToRaw 新增键（A3/B4/A2）", () => {
   it("atomicityRewrite / actorTagging 直接生效", () => {
     const raw = applyExtractionOverrideToRaw(baseRaw(), { atomicityRewrite: true, actorTagging: true });

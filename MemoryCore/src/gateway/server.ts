@@ -887,7 +887,15 @@ export class TdaiGateway {
     const t0 = Date.now();
     const reranker = createReranker(rc, { dataDir: this.config.data.baseDir });
     if (!reranker) return; // 工厂 null（provider=none / local 未落地）→ 静默跳过
-    const scores = await reranker.rerank("[warmup] 部署后首次召回预热", docs);
+    // local：warmupBatch 用 60s 预算跑真实档位，把 ORT session 暖起来；否则冷态首个
+    // 32 文档 batch 可能撞上运行时 4s 推理超时。云 provider 无 warmupBatch，走 warmup+rerank。
+    let scores: Awaited<ReturnType<typeof reranker.rerank>>;
+    if (reranker.warmupBatch) {
+      scores = await reranker.warmupBatch("[warmup] 部署后首次召回预热", docs);
+    } else {
+      await reranker.warmup?.();
+      scores = await reranker.rerank("[warmup] 部署后首次召回预热", docs);
+    }
     this.logger.info(
       `[rerank] startup warmup done in ${Date.now() - t0}ms (scores=${scores?.length ?? 0}, docs=${docs.length})`,
     );
@@ -1498,6 +1506,17 @@ export class TdaiGateway {
             // P1 task-7：重要度降权/抽取开关生效值（同为 parse 前合并 → 已是 override 后值）
             importancePenalty: this.config.memory.recall.importancePenalty as unknown as Record<string, unknown>,
             worthiness: this.config.memory.worthiness as unknown as Record<string, unknown>,
+            // 2026-11-07：设置页 B/C 的整组生效值（override 已在 parse 前并入）
+            extraction: this.config.memory.extraction as unknown as Record<string, unknown>,
+            layerRuler: this.config.memory.recall.layerRuler as unknown as Record<string, unknown>,
+            injection: this.config.memory.recall.injection as unknown as Record<string, unknown>,
+            coreMemory: this.config.memory.coreMemory as unknown as Record<string, unknown>,
+            capture: this.config.memory.capture as unknown as Record<string, unknown>,
+            evolution: this.config.memory.evolution as unknown as Record<string, unknown>,
+            sceneGovernance: this.config.memory.sceneGovernance as unknown as Record<string, unknown>,
+            links: this.config.memory.links as unknown as Record<string, unknown>,
+            bm25: this.config.memory.bm25 as unknown as Record<string, unknown>,
+            search: this.config.memory.search as unknown as Record<string, unknown>,
           }),
           getReindexState: () => getReindexState(),
         }),

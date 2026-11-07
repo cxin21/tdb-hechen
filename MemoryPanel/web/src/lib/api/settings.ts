@@ -72,6 +72,19 @@ export interface SettingsView {
   rerank?: SettingsRerank;
   importancePenalty?: SettingsImportancePenalty;
   worthiness?: SettingsWorthiness;
+  // 2026-11-07：设置页 B（应急开关）/ C（校准阈值）读取的整组生效值。
+  // 组内无凭据，后端按普通对象回显（不带 source/apiKeyMasked 元字段）。
+  extraction?: Record<string, unknown>;
+  layerRuler?: Record<string, unknown>;
+  injection?: Record<string, unknown>;
+  coreMemory?: Record<string, unknown>;
+  lifecycle?: Record<string, unknown>;
+  capture?: Record<string, unknown>;
+  evolution?: Record<string, unknown>;
+  sceneGovernance?: Record<string, unknown>;
+  links?: Record<string, unknown>;
+  bm25?: Record<string, unknown>;
+  search?: Record<string, unknown>;
   rebuildStatus?: {
     status: 'idle' | 'running' | 'done' | 'failed';
     reason?: string;

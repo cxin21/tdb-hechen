@@ -28,6 +28,7 @@ import {
 } from '@/lib/api/settings';
 import { useCurrentRole } from '@/services';
 import { tea } from '@/lib/tea-bridge';
+import { EmergencySwitchesPanel, CalibrationPanel, ConstantsPanel } from './ConfigPanels';
 
 type RerankProvider = 'siliconflow' | 'dashscope' | 'local' | 'none';
 
@@ -41,10 +42,6 @@ type Draft = {
   embApiKey: string;
   embModel: string;
   embDimensions: string;
-  // 重要度（P1 task-7，仅 memory 目标）：worthiness.extractionEnabled + recall.importancePenalty
-  wExtractionEnabled: boolean;
-  ipEnabled: boolean;
-  ipPenalty: string;
 };
 
 function fmtBytes(n?: number): string {
@@ -66,18 +63,13 @@ function toDraft(v: SettingsView): Draft {
     embApiKey: '',
     embModel: v.embedding.model ?? '',
     embDimensions: v.embedding.dimensions != null ? String(v.embedding.dimensions) : '',
-    wExtractionEnabled: v.worthiness?.extractionEnabled ?? false,
-    ipEnabled: v.importancePenalty?.enabled ?? false,
-    ipPenalty: v.importancePenalty?.penalty != null ? String(v.importancePenalty.penalty) : '',
   };
 }
 
 function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label: string }) {
-  const { t } = useTranslation();
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
-  const isMemory = target === 'memory';
 
   const load = useCallback(async () => {
     try {
@@ -114,20 +106,8 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
           ...(draft.embApiKey ? { apiKey: draft.embApiKey } : {}),
           ...(draft.embDimensions ? { dimensions: Number(draft.embDimensions) } : {}),
         },
-        // 重要度（P1 task-7）：penalty 留空 = 保留原值（服务端缺省 0.3）；
-        // 形状校验在 validateOverride，[0,0.9] clamp 在 parseConfig。
-        // rerank 段已拆至独立 Rerank 页签（RerankSettingsPanel，只提交 rerank 段）。
-        ...(isMemory
-          ? {
-              importancePenalty: {
-                enabled: draft.ipEnabled,
-                ...(draft.ipPenalty.trim() ? { penalty: Number(draft.ipPenalty) } : {}),
-              },
-              worthiness: {
-                extractionEnabled: draft.wExtractionEnabled,
-              },
-            }
-          : {}),
+        // 重要度/选线尺/注入预算已移至「C 校准阈值」页签（CalibrationPanel），
+        // rerank 段在独立 Rerank 页签（RerankSettingsPanel）；本页只提交部署身份与凭据。
       };
       const res = await settingsApi.set(target, body);
       if (res.embeddingChanged) {
@@ -147,9 +127,6 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
 
   // 数字字段：空 = 不修改；非空必须为纯数字（正整数）
   const num = (v: string) => !v || /^\d+$/.test(v);
-  // P1-T7：penalty 允许小数且 ≤ 0.9（服务端 clamp [0,0.9]；越界直接拦）
-  const ipPenaltyValid =
-    !draft.ipPenalty || (/^\d*\.?\d+$/.test(draft.ipPenalty) && Number(draft.ipPenalty) <= 0.9);
   const valid =
     num(draft.llmMaxTokens) &&
     num(draft.llmTimeoutMs) &&
@@ -157,8 +134,7 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
     /^https?:\/\/.+$/.test(draft.llmBaseUrl) &&
     /^https?:\/\/.+$/.test(draft.embBaseUrl) &&
     draft.llmModel.trim() !== '' &&
-    draft.embModel.trim() !== '' &&
-    (!isMemory || ipPenaltyValid);
+    draft.embModel.trim() !== '';
 
   const triggerRevectorize = () => {
     void settingsApi
@@ -259,61 +235,7 @@ function ServiceSettingsPanel({ target, label }: { target: SettingsTarget; label
         />
       </Form.Item>
 
-      {/* rerank 段已拆至独立 Rerank 页签（RerankSettingsPanel）；此处仅保留 Memory 专属召回参数 */}
-
-      {/* 重要度（P1 task-7）：抽取标注 + 召回降权（shadow-first） */}
-      {isMemory && (
-        <>
-          <Form.Title>{t('settings.importance.title')}</Form.Title>
-          <Form.Item label={t('settings.importance.extraction')}>
-            <div>
-              <Checkbox
-                value={draft.wExtractionEnabled}
-                onChange={(v) => setDraft({ ...draft, wExtractionEnabled: v })}
-                disabled={saving}
-              >
-                {t('settings.importance.extraction.label')}
-              </Checkbox>
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.importance.extraction.hint')}
-              </Text>
-            </div>
-          </Form.Item>
-          <Form.Item label={t('settings.importance.penalty.enabled')}>
-            <div>
-              <Checkbox
-                value={draft.ipEnabled}
-                onChange={(v) => setDraft({ ...draft, ipEnabled: v })}
-                disabled={saving}
-              >
-                {t('settings.importance.penalty.enabled.label')}
-              </Checkbox>
-              <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                {t('settings.importance.penalty.enabled.hint')}
-              </Text>
-            </div>
-          </Form.Item>
-          {draft.ipEnabled && (
-            <>
-              <Form.Item label={t('settings.importance.penalty.value')}>
-                <div>
-                  <Input
-                    size="full"
-                    value={draft.ipPenalty}
-                    onChange={(v) => setDraft({ ...draft, ipPenalty: v })}
-                    placeholder="0.3"
-                    disabled={saving}
-                  />
-                  <Text style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#8a8f99' }}>
-                    {t('settings.importance.penalty.value.hint')}
-                  </Text>
-                </div>
-              </Form.Item>
-            </>
-          )}
-        </>
-      )}
-
+      {/* 重要度 / 选线尺 / 注入预算 → C 校准阈值页签；rerank → Rerank 页签 */}
       <Form.Action>
         <Button
           type="primary"
@@ -722,15 +644,28 @@ export function SettingsPage() {
       <Tabs
         tabs={[
           { id: 'knowledge', label: 'Wiki 设置' },
-          { id: 'memory', label: 'Memory 设置' },
+          { id: 'deploy', label: 'A 部署与凭据' },
+          { id: 'gates', label: 'B 应急开关' },
+          { id: 'calibration', label: 'C 校准阈值' },
+          { id: 'constants', label: 'D 常量清单' },
           { id: 'rerank', label: 'Rerank' },
         ]}
       >
         <TabPanel id="knowledge">
           <ServiceSettingsPanel target="knowledge" label="MemoryKnowledge" />
         </TabPanel>
-        <TabPanel id="memory">
+        {/* A 档：换环境就变、必须由部署方填的值（LLM / Embedding 地址、密钥、模型、维度） */}
+        <TabPanel id="deploy">
           <ServiceSettingsPanel target="memory" label="MemoryCore" />
+        </TabPanel>
+        <TabPanel id="gates">
+          <EmergencySwitchesPanel />
+        </TabPanel>
+        <TabPanel id="calibration">
+          <CalibrationPanel />
+        </TabPanel>
+        <TabPanel id="constants">
+          <ConstantsPanel />
         </TabPanel>
         <TabPanel id="rerank">
           <RerankSettingsPanel />

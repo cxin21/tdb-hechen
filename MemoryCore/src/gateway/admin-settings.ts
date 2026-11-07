@@ -7,7 +7,7 @@
  */
 import { errorEnvelope, successEnvelope } from "./v2-router.js";
 import type { ApiResponseEnvelope, V2AuthContext } from "./v2-schemas.js";
-import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, type SettingsOverride, type RerankSettingsOverride, type ImportancePenaltySettingsOverride, type WorthinessSettingsOverride } from "./settings-override.js";
+import { readSettingsOverride, writeSettingsOverride, maskKey, validateOverride, type SettingsOverride } from "./settings-override.js";
 import type { ReindexState } from "../utils/reindex-state.js";
 
 export interface EffectiveSettings {
@@ -19,6 +19,17 @@ export interface EffectiveSettings {
   importancePenalty?: Record<string, unknown>;
   /** P1 task-7：重要度抽取开关生效值（memory.worthiness.extractionEnabled）。 */
   worthiness?: Record<string, unknown>;
+  /** 2026-11-07：应急回滚开关与校准阈值所在组的生效值（settings 页签 B/C 读取）。 */
+  extraction?: Record<string, unknown>;
+  layerRuler?: Record<string, unknown>;
+  injection?: Record<string, unknown>;
+  coreMemory?: Record<string, unknown>;
+  capture?: Record<string, unknown>;
+  evolution?: Record<string, unknown>;
+  sceneGovernance?: Record<string, unknown>;
+  links?: Record<string, unknown>;
+  bm25?: Record<string, unknown>;
+  search?: Record<string, unknown>;
 }
 export interface AdminSettingsDeps {
   baseDir: string;
@@ -34,37 +45,40 @@ export type AdminSettingsHandler = (
 ) => Promise<ApiResponseEnvelope>;
 
 function deepMerge(existing: SettingsOverride | null, incoming: SettingsOverride): SettingsOverride {
-  return {
-    llm: { ...(existing?.llm ?? {}), ...incoming.llm },
-    embedding: { ...(existing?.embedding ?? {}), ...incoming.embedding },
-    // rerank（P1 task-4）：local 子对象做一层深合并，避免「只改 idleUnloadMs
-    // 时把已保存的 modelDir 整个冲掉」；顶层字段仍按段浅合并（与 llm/embedding 一致）。
-    rerank: mergeRerankOverride(existing?.rerank, incoming.rerank),
-    // P1 task-7：扁平段浅合并（无嵌套子对象——与局部 set 不冲掉已存字段同语义）
-    importancePenalty: mergeFlatOverride<ImportancePenaltySettingsOverride>(existing?.importancePenalty, incoming.importancePenalty),
-    worthiness: mergeFlatOverride<WorthinessSettingsOverride>(existing?.worthiness, incoming.worthiness),
-  };
-}
-
-/** P1 task-7：扁平段（无子对象）浅合并——双方都空 → undefined。 */
-function mergeFlatOverride<T extends object>(
-  existing: T | undefined,
-  incoming: T | undefined,
-): T | undefined {
-  if (!existing && !incoming) return undefined;
-  return { ...(existing ?? ({} as T)), ...(incoming ?? ({} as T)) };
-}
-
-function mergeRerankOverride(
-  existing: RerankSettingsOverride | undefined,
-  incoming: RerankSettingsOverride | undefined,
-): RerankSettingsOverride | undefined {
-  if (!existing && !incoming) return undefined;
-  const merged: RerankSettingsOverride = { ...(existing ?? {}), ...(incoming ?? {}) };
-  if (existing?.local || incoming?.local) {
-    merged.local = { ...(existing?.local ?? {}), ...(incoming?.local ?? {}) };
+  // 逐段深合并：数组/标量整体替换，普通对象递归。旧实现只列了 5 个段，
+  // 导致 extraction / layerRuler / injection / recall / persona / lifecycle
+  // 通过 /set 提交时被静默丢弃（validate 通过但落盘 = 空）——2026-11-07 修复。
+  const out: SettingsOverride = copyDefined(existing);
+  for (const [section, patch] of Object.entries(copyDefined(incoming))) {
+    const cur = (out as Record<string, unknown>)[section];
+    (out as Record<string, unknown>)[section] =
+      isPlainObject(patch) && isPlainObject(cur) ? deepMergePlain(cur, patch) : patch;
   }
-  return merged;
+  return out;
+}
+
+/** 只保留非 undefined 字段（顶层）；不改入参。 */
+function copyDefined(o: SettingsOverride | null | undefined): SettingsOverride {
+  return Object.fromEntries(
+    Object.entries(o ?? {}).filter(([, v]) => v !== undefined),
+  ) as SettingsOverride;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function deepMergePlain(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    const cur = out[k];
+    out[k] = isPlainObject(v) && isPlainObject(cur) ? deepMergePlain(cur, v) : v;
+  }
+  return out;
 }
 
 /** 组装 get 响应单段：合并 effective + override，掩码 key 且绝不明文回显 apiKey。 */
@@ -79,6 +93,21 @@ function maskedSection(section: Record<string, unknown>, override?: Record<strin
     ...maskKey(typeof apiKey === "string" ? apiKey : undefined),
     source: (isOverride ?? override !== undefined) ? "override" : "yaml",
   };
+}
+
+/**
+ * 整组回显：effective 与已落盘 override 深合并（/set 后未重启也能立刻看到新值），
+ * 只剥掉已废弃的 shadowMode，不注入掩码/来源元字段（组内无凭据）。
+ */
+function plainSection(
+  section: Record<string, unknown> | undefined,
+  override?: unknown,
+): Record<string, unknown> {
+  const merged = isPlainObject(override)
+    ? deepMergePlain(section ?? {}, override)
+    : { ...(section ?? {}) };
+  const { shadowMode: _shadowMode, ...rest } = merged;
+  return rest;
 }
 
 export function makeAdminSettingsRouteTable(deps: AdminSettingsDeps): Record<string, AdminSettingsHandler> {
@@ -112,6 +141,19 @@ export function makeAdminSettingsRouteTable(deps: AdminSettingsDeps): Record<str
             eff.worthiness ?? {},
             override?.worthiness as Record<string, unknown> | undefined,
           ),
+          // 2026-11-07：设置页 B（应急开关）/ C（校准阈值）读取的整组生效值。
+          // 这些组的 override 已在 parse 之前并入，eff 即最终值，无需再叠 override；
+          // 组内没有凭据，故不走 maskedSection（否则会混入 source/apiKeyMasked 元字段）。
+          extraction: plainSection(eff.extraction, override?.extraction),
+          layerRuler: plainSection(eff.layerRuler, override?.layerRuler),
+          injection: plainSection(eff.injection, override?.injection),
+          coreMemory: plainSection(eff.coreMemory, override?.coreMemory),
+          capture: plainSection(eff.capture, override?.capture),
+          evolution: plainSection(eff.evolution, override?.evolution),
+          sceneGovernance: plainSection(eff.sceneGovernance, override?.sceneGovernance),
+          links: plainSection(eff.links, override?.links),
+          bm25: plainSection(eff.bm25, override?.bm25),
+          search: plainSection(eff.search, override?.search),
           // 与 KS 侧 /get 的 rebuildStatus 及 Panel Web SettingsView 字段名对齐（终审 F2）。
           rebuildStatus: deps.getReindexState(),
         },

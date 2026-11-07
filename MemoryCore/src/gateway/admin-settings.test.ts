@@ -94,6 +94,64 @@ describe("admin settings rerank 段（P1 task-4）", () => {
   });
 });
 
+// ── 2026-11-07：设置页 B（应急开关）/ C（校准阈值）依赖的整组落盘 ──
+describe("admin settings 整组段（extraction / coreMemory / layerRuler）", () => {
+  it("set 落盘后 get 回显，且二次 set 只改一组不冲掉其它组", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    const r1 = await table["/v3/admin/settings/set"]!(
+      {
+        extraction: { enabled: false },
+        coreMemory: { soulMaintenance: { enabled: true } },
+        layerRuler: { mode: "enforce", keepRatio: 0.5 },
+      },
+      {} as any,
+      "rq-g",
+      {},
+    );
+    expect(r1.code).toBe(0);
+    let o = JSON.parse(readFileSync(join(dir, "config-override.json"), "utf-8"));
+    expect(o.extraction).toEqual({ enabled: false });
+    expect(o.coreMemory).toEqual({ soulMaintenance: { enabled: true } });
+    expect(o.layerRuler).toEqual({ mode: "enforce", keepRatio: 0.5 });
+
+    // 第二次只提交 extraction.enabled=true：其余组必须逐位保留（旧 deepMerge 会丢）
+    const r2 = await table["/v3/admin/settings/set"]!({ extraction: { enabled: true } }, {} as any, "rq-h", {});
+    expect(r2.code).toBe(0);
+    o = JSON.parse(readFileSync(join(dir, "config-override.json"), "utf-8"));
+    expect(o.extraction).toEqual({ enabled: true });
+    expect(o.coreMemory).toEqual({ soulMaintenance: { enabled: true } });
+    expect(o.layerRuler).toEqual({ mode: "enforce", keepRatio: 0.5 });
+
+    const res = await table["/v3/admin/settings/get"]!({}, {} as any, "rq-i", {});
+    const d = res.data as any;
+    expect(d.extraction).toEqual({ enabled: true });
+    expect(d.coreMemory).toEqual({ soulMaintenance: { enabled: true } });
+    expect(d.layerRuler).toEqual({ mode: "enforce", keepRatio: 0.5 });
+  });
+
+  it("embedding.enabled / bm25.enabled 等总闸可落盘（B 档 8 个开关全覆盖）", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    const res = await table["/v3/admin/settings/set"]!(
+      { embedding: { enabled: false }, bm25: { enabled: false }, links: { enabled: false } },
+      {} as any,
+      "rq-k",
+      {},
+    );
+    expect(res.code).toBe(0);
+    const o = JSON.parse(readFileSync(join(dir, "config-override.json"), "utf-8"));
+    expect(o.embedding).toEqual({ enabled: false });
+    expect(o.bm25).toEqual({ enabled: false });
+    expect(o.links).toEqual({ enabled: false });
+  });
+
+  it("非对象组返回 code!=0 且不落盘", async () => {
+    const table = makeAdminSettingsRouteTable(deps());
+    const res = await table["/v3/admin/settings/set"]!({ coreMemory: "yes" }, {} as any, "rq-j", {});
+    expect(res.code).not.toBe(0);
+    expect(readSettingsOverride(dir)?.coreMemory).toBeUndefined();
+  });
+});
+
 describe("admin settings 分发级集成（handleV2Route → extraRouteTable）", () => {
   // Regression: /v3/admin/* 必须经真实 handleV2Route 分发（isV3Extra 白名单 + extraRouteTable 查找），
   // 否则运行时 404（review finding：isV3Extra 缺 /v3/admin/ 前缀导致路由不可达）。

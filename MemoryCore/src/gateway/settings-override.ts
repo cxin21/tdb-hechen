@@ -13,6 +13,8 @@ export interface LlmSettingsOverride {
 export interface EmbeddingSettingsOverride {
   provider?: string; baseUrl?: string; apiKey?: string; model?: string; dimensions?: number;
   sendDimensions?: boolean;
+  /** B 档总闸：false = 关闭向量通道（召回降级纯 FTS/BM25）。 */
+  enabled?: boolean;
 }
 /**
  * rerank 段（P1 task-4，spec §4.3 keys：memory.recall.rerank.*）。字段语义与
@@ -50,6 +52,8 @@ export interface WorthinessSettingsOverride {
  * 这里只做形状校验。
  */
 export interface ExtractionSettingsOverride {
+  /** B 档总闸：L1 抽取开关（缺省 true；false = 停抽取只保留 L0）。 */
+  enabled?: boolean;
   scenePoisonSplit?: boolean;
   sceneBatchMaxChars?: number;
   /** A3：单条记忆目标字符上限（parse 内 clamp 120..2000，缺省 300 = 逐位现状）。 */
@@ -72,6 +76,20 @@ export interface MemorySectionsSettingsOverride {
   recall?: Record<string, unknown>;
   persona?: Record<string, unknown>;
   lifecycle?: Record<string, unknown>;
+  /** 人格维护总闸所在组（memory.coreMemory.soulMaintenance.enabled 等）。 */
+  coreMemory?: Record<string, unknown>;
+  /** L0 捕获组（capture.excludeAgents 等）。 */
+  capture?: Record<string, unknown>;
+  /** 自我演化组（evolution.enabled / intervalMs）。 */
+  evolution?: Record<string, unknown>;
+  /** 场景治理组（sceneGovernance.enabled）。 */
+  sceneGovernance?: Record<string, unknown>;
+  /** 记忆关联边组（links.enabled）。 */
+  links?: Record<string, unknown>;
+  /** BM25 通道组（bm25.enabled）。 */
+  bm25?: Record<string, unknown>;
+  /** 检索杂项组（search.*，含 worker 相关开关）。 */
+  search?: Record<string, unknown>;
 }
 /**
  * layerRuler 段（#179 S5，keys：memory.recall.layerRuler.*）。
@@ -124,6 +142,14 @@ export interface SettingsOverride {
   recall?: Record<string, unknown>;
   persona?: Record<string, unknown>;
   lifecycle?: Record<string, unknown>;
+  /** 人格维护总闸 / 捕获 / 演化 / 场景治理 / 关联边 / BM25 / 检索组（整组深合并）。 */
+  coreMemory?: Record<string, unknown>;
+  capture?: Record<string, unknown>;
+  evolution?: Record<string, unknown>;
+  sceneGovernance?: Record<string, unknown>;
+  links?: Record<string, unknown>;
+  bm25?: Record<string, unknown>;
+  search?: Record<string, unknown>;
 }
 
 const OVERRIDE_FILE = "config-override.json";
@@ -188,6 +214,11 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
   }
   if (b.embedding) {
     const emb: EmbeddingSettingsOverride = {};
+    // 2026-11-07：B 档总闸——关掉即不调 embedding，召回降级纯 FTS/BM25。
+    if (b.embedding.enabled !== undefined) {
+      if (typeof b.embedding.enabled === "boolean") emb.enabled = b.embedding.enabled;
+      else errors.push("embedding.enabled 必须是 boolean");
+    }
     for (const strField of ["provider", "baseUrl", "apiKey", "model"] as const) {
       if (b.embedding[strField] !== undefined) {
         if (typeof b.embedding[strField] === "string") emb[strField] = b.embedding[strField];
@@ -282,6 +313,11 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
   }
   if (b.extraction) {
     const ex: ExtractionSettingsOverride = {};
+    // 2026-11-07：B 档总闸——关掉即停 L1 抽取（parseConfig 读 extraction.enabled）。
+    if (b.extraction.enabled !== undefined) {
+      if (typeof b.extraction.enabled === "boolean") ex.enabled = b.extraction.enabled;
+      else errors.push("extraction.enabled 必须是 boolean");
+    }
     if (b.extraction.scenePoisonSplit !== undefined) {
       if (typeof b.extraction.scenePoisonSplit === "boolean") ex.scenePoisonSplit = b.extraction.scenePoisonSplit;
       else errors.push("extraction.scenePoisonSplit 必须是 boolean");
@@ -293,6 +329,13 @@ export function validateOverride(body: unknown): { ok: true; value: SettingsOver
       else errors.push("extraction.sceneBatchMaxChars 必须是非负整数");
     }
     if (Object.keys(ex).length) out.extraction = ex;
+  }
+  // 整组透传的口子（与 recall/persona/lifecycle 同款）：只校验是普通对象，
+  // 字段语义/clamp 全在 parseConfig；深合并到 raw 见 applyMemorySectionsOverrideToRaw。
+  for (const section of ["coreMemory", "capture", "evolution", "sceneGovernance", "links", "bm25", "search"] as const) {
+    if (b[section] === undefined) continue;
+    if (isPlainObject(b[section])) out[section] = b[section] as Record<string, unknown>;
+    else errors.push(`${section} 必须是对象`);
   }
   if (b.layerRuler) {
     const lr: LayerRulerSettingsOverride = {};
@@ -565,7 +608,18 @@ export function applyMemorySectionsOverrideToRaw(
   override: MemorySectionsSettingsOverride | null | undefined,
 ): Record<string, unknown> {
   if (!override) return memoryCompatRaw;
-  const sections = ["recall", "persona", "lifecycle"] as const;
+  const sections = [
+    "recall",
+    "persona",
+    "lifecycle",
+    "coreMemory",
+    "capture",
+    "evolution",
+    "sceneGovernance",
+    "links",
+    "bm25",
+    "search",
+  ] as const;
   const src = override as MemorySectionsSettingsOverride;
   const patches = sections
     .map((s) => [s, src[s]] as const)
