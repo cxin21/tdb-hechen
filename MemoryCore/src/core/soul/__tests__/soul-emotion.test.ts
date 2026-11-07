@@ -241,6 +241,12 @@ describe("情绪 → 心境", () => {
     expect(again.stance).not.toBe(first.stance);
     expect(repaired.repaired).toBe(true);
     expect(repaired.stance).not.toBe(again.stance);
+    const latestOpen = objectRecurrence([
+      { object: "假绿", intensity: 0.8, valence: -0.7, repaired: true, at: "2026-08-01T00:00:00.000Z" },
+      { object: "假绿", intensity: 0.5, valence: -0.4, repaired: false, at: "2026-11-06T00:00:00.000Z" },
+    ]);
+    expect(latestOpen.repaired).toBe(false);
+    expect(latestOpen.stance).not.toContain("先核对修复");
     const line = renderMoodLine(
       { valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, updatedAt: NOW, sampleCount: 2, objectStance: again.stance },
       { threshold: 0.15 },
@@ -373,6 +379,20 @@ describe("情绪 → 心境", () => {
     expect(hurried.label).toBe("着急");
     expect(resigned.label).toBe("无奈");
     expect(new Set([grateful.label, proud.label, hurried.label, resigned.label]).size).toBe(4);
+    // 回归（2026-11-06 P0）：当众说「算了」必须仍是无奈，不能因为 public+self+violated
+    // 先命中害羞而把「我不争了」写成「我不好意思」。两个标签对应完全不同的行为倾向。
+    const resignedPublic = appraiseEmotion({
+      at: NOW,
+      object: "这个方案",
+      appraisal: {
+        ...bad,
+        agency: "self",
+        selfCause: true,
+        resignation: true,
+        socialExposure: "public",
+      },
+    });
+    expect(resignedPublic.label).toBe("无奈");
   });
 
   it("情绪决定注意力方向：愧疚向内看自己、恼火向外看冲突、安心看修复；无有效对象不偏", () => {

@@ -317,6 +317,8 @@ export interface RecallJournalPerfMs {
   l2: number;
   l1: number;
   soul: number;
+  /** 本轮真正拼进 prompt 的人格注入字符数（A7 注入度量）；旧 journal 条目无此字段。 */
+  soulChars?: number;
 }
 
 /**

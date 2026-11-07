@@ -348,7 +348,14 @@ export function renderLayerWithBudget(
   const cap = opts?.maxItems ?? cfg.maxItems[layer] ?? 0;
   let used = 0;
   for (const it of ordered) {
-    const line = `- ${it.text}`;
+    // 关系史里的信任方向不能只存 meta：注入文本必须让人一眼看出是「更信」还是「更防」，
+    // 否则同一句原话在升/降两侧读起来一样，账本有 direction、人格里却看不出来。
+    const dir = layer === "relationship" ? it.meta?.direction : undefined;
+    const trust = dir === "up" ? "（信任↑）" : dir === "down" ? "（信任↓）" : "";
+    // 承诺兑现不能只留 meta：注入里必须能看出后来做到了还是没做到。
+    const fulfillment = it.meta?.fulfillment;
+    const kept = fulfillment === "kept" ? "（后来做到了）" : fulfillment === "broken" ? "（后来没做到）" : "";
+    const line = `- ${it.text}${trust}${kept}`;
     // voice 的 few-shot 是「我怎么说话」的直接证据：挂在条目下的真实原话，
     // 比任何形容词都更能让模型改口吻。渲染成缩进引用，且计入预算（不能白嫖）。
     const quotes: string[] = [];
@@ -387,11 +394,21 @@ export function renderLayerWithBudget(
   // 承诺保底（2026-11-06）：self 层被失败/复盘占满预算时，「我答应自己」按权重排在最后会被
   // 静默裁掉——库里长出了承诺，注入里却一个字没有，等于人格没长。承诺是义务不是次要记忆，
   // 至少渲染一条（权重最高、最新）；越预算也显式计入 used，不做无声的取舍。
-  if (layer === "self" && !lines.some((l) => l.includes("我答应自己"))) {
-    const promise = ordered.find((it) => it.text.startsWith("我答应自己"));
+  // 事件史的承诺以「我答应过自己」开头，LLM 改写的以「我答应自己」开头。只认后者会把
+  // 已经核对过兑现的那条挤出注入，读的人只看见一条没有 kept/broken 的旧说法。
+  // 不能用「行文本里出现答应」判断已经渲染：失败/复盘的引文里常有这四个字，
+  // 会让保底短路，兑现过的承诺继续被 max_items 裁掉。
+  const isPromise = (it: PersonaItem) => it.meta?.historyKind === "promise" || /^我答应过?自己/.test(it.text);
+  const already = ordered.some((it) => isPromise(it) && lines.some((l) => l.includes(it.text.slice(0, 24))));
+  if (layer === "self" && !already) {
+    const promise = ordered.find((it) => it.meta?.historyKind === "promise" && it.meta?.fulfillment)
+      ?? ordered.find(isPromise);
     if (promise) {
-      lines.push(`- ${promise.text}`);
-      used += promise.text.length + 2;
+      const fulfillment = promise.meta?.fulfillment;
+      const kept = fulfillment === "kept" ? "（后来做到了）" : fulfillment === "broken" ? "（后来没做到）" : "";
+      const line = `- ${promise.text}${kept}`;
+      lines.push(line);
+      used += line.length;
     }
   }
   // 非可见态也记账（便于审计「为什么不注入」）。

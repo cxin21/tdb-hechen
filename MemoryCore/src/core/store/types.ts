@@ -1254,6 +1254,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     plan: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] },
   ): MaybePromise<{ upserted: number; ledgered: number }>;
   listSoulLedger?(tenant?: CoreTenant, limit?: number): MaybePromise<SoulLedgerEntry[]>;
+  /** 条目级回滚（点名、单事务、写 rollback 账本）。回滚演练与事故处置用，不做一键全量。 */
+  rollbackSoulPersona?(
+    tenant: CoreTenant | undefined,
+    itemIds: string[],
+    opts?: { now?: string; reason?: string; gate?: string },
+  ): MaybePromise<{ restored: number; removed: number; skipped: number }>;
 
   /* —— 事件层（soul_episodes，2026-11-05）——
    * 人格的「事实底座」：每次分歧/纠正/拍板/取舍都是一行，userStance/agentStance 是逐字摘句。

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SoulEpisode } from "../types.js";
-import { factsFromEpisode, historyToItems, reversals } from "../history.js";
+import {
+  contradictRepairClaims,
+  factsFromEpisode,
+  historyItemNeedsUpdate,
+  historyToItems,
+  reversals,
+  settlePromises,
+} from "../history.js";
 
 function ep(over: Partial<SoulEpisode>): SoulEpisode {
   return {
@@ -300,6 +307,57 @@ describe("事件 → 自我/关系史", () => {
     expect(facts.some((f) => f.kind === "promise")).toBe(false);
   });
 
+  it("承诺后来同一对象补上了 → kept；又没守住 → broken；没后续 → open 且不写兑现后缀", () => {
+    const said = ep({
+      episodeId: "ep-p",
+      at: "2026-11-05T08:00:00.000Z",
+      outcome: "我答应自己：交出去的每一格都要有实测数字。",
+      valence: 0.2,
+    });
+    const kept = ep({
+      episodeId: "ep-k",
+      at: "2026-11-05T10:00:00.000Z",
+      agentStance: "我漏了，已经补上了。",
+      outcome: "按名单逐条核对，补上了。",
+    });
+    const broken = ep({
+      episodeId: "ep-b",
+      at: "2026-11-05T11:00:00.000Z",
+      agentStance: "我没守住，又漏了。",
+      outcome: "我没守住，又漏了两个人。",
+    });
+    const openItems = historyToItems(settlePromises(factsFromEpisode(said), [said]), "2026-11-05T12:00:00.000Z");
+    const open = openItems.find((i) => i.meta?.historyKind === "promise");
+    expect(open?.meta?.fulfillment).toBeUndefined();
+
+    const keptItems = historyToItems(settlePromises(factsFromEpisode(said), [said, kept]), "2026-11-05T12:00:00.000Z");
+    const keptItem = keptItems.find((i) => i.meta?.historyKind === "promise");
+    expect(keptItem?.meta?.fulfillment).toBe("kept");
+    expect(keptItem?.itemId).toBe(open?.itemId);
+
+    const brokenItems = historyToItems(settlePromises(factsFromEpisode(said), [said, broken]), "2026-11-05T12:00:00.000Z");
+    const brokenItem = brokenItems.find((i) => i.meta?.historyKind === "promise");
+    expect(brokenItem?.meta?.fulfillment).toBe("broken");
+    expect(brokenItem?.itemId).toBe(open?.itemId);
+  });
+
+  it("「修好了」不算兑现：承诺核对只认情绪门那条修复口径", () => {
+    const said = ep({
+      episodeId: "ep-p2",
+      at: "2026-11-05T08:00:00.000Z",
+      outcome: "我答应自己：交出去的每一格都要有实测数字。",
+      valence: 0.2,
+    });
+    const loose = ep({
+      episodeId: "ep-loose",
+      at: "2026-11-05T10:00:00.000Z",
+      agentStance: "导出功能我已经修好了。",
+      outcome: "导出功能我已经修好了。",
+    });
+    const items = historyToItems(settlePromises(factsFromEpisode(said), [said, loose]), "2026-11-05T12:00:00.000Z");
+    expect(items.find((i) => i.meta?.historyKind === "promise")?.meta?.fulfillment).toBeUndefined();
+  });
+
   it("修复行引的是他纠正之后我那条回复，不是他开口前那句（常是后来被推翻的假声明）", () => {
     const facts = factsFromEpisode(ep({
       userStance: "导出还是不对，我一直不敢用",
@@ -332,6 +390,80 @@ describe("事件 → 自我/关系史", () => {
       expect(f.text).not.toContain("<acp");
       expect(f.text).not.toContain("m00777");
     }
+  });
+});
+
+describe("矛盾：后来的失败证伪「我补上了」", () => {
+  const laterEp = (over: Partial<SoulEpisode>) =>
+    ep({
+      episodeId: "ep-late",
+      at: "2026-11-06T09:00:00.000Z",
+      day: "2026-11-06",
+      agentStance: "这个问题我先看一下",
+      ...over,
+    });
+  const repairItems = () =>
+    historyToItems(
+      factsFromEpisode(ep({ agentStance: "我没守住间距，已按原话重做并对齐" })),
+      "2026-11-05T12:00:00.000Z",
+    ).filter((i) => i.meta?.historyKind === "repair" || i.meta?.historyKind === "review");
+
+  it("同对象更晚的未修复失败 → 自我层每条修复主张记一次矛盾；关系层不拿人当主题锚", () => {
+    const selfItems = repairItems().filter((i) => i.layer === "self");
+    const relItems = repairItems().filter((i) => i.layer === "relationship");
+    expect(selfItems.length).toBeGreaterThan(0);
+    expect(relItems.length).toBeGreaterThan(0);
+    const hits = contradictRepairClaims([...selfItems, ...relItems], [ep({}), laterEp({})]);
+    expect(hits.map((h) => h.itemId).sort()).toEqual(selfItems.map((i) => i.itemId).sort());
+    expect(hits[0].episodeId).toBe("ep-late");
+  });
+
+  it("最新一条仍是修复 → 主张成立，不记矛盾", () => {
+    const items = repairItems();
+    expect(contradictRepairClaims(items, [laterEp({ agentStance: "已按原话重做，问题收口" })])).toEqual([]);
+  });
+
+  it("同一天内的反复不算第二次矛盾（证据独立性按自然日计）", () => {
+    const items = repairItems();
+    expect(contradictRepairClaims(items, [laterEp({ at: "2026-11-05T10:00:00.000Z", day: "2026-11-05" })])).toEqual([]);
+  });
+
+  it("同一集事件只记一条：lastContradictionEpisode 已记过就不再 +1", () => {
+    const items = repairItems().map((i) => ({ ...i, meta: { ...(i.meta ?? {}), lastContradictionEpisode: "ep-late" } }));
+    expect(contradictRepairClaims(items, [laterEp({})])).toEqual([]);
+  });
+
+  it("对象抽不出来（这件事）或不是修复主张 → 宁可判不到，也不拿泛指当锚", () => {
+    const items = repairItems().map((i) => ({ ...i, meta: { ...(i.meta ?? {}), object: "这件事" } }));
+    expect(contradictRepairClaims(items, [laterEp({})])).toEqual([]);
+    const failures = historyToItems(
+      factsFromEpisode(ep({ agentStance: "我没守住间距，已按原话重做并对齐" })),
+      "2026-11-05T12:00:00.000Z",
+    ).filter((i) => i.meta?.historyKind === "failure");
+    expect(failures.length).toBeGreaterThan(0);
+    expect(contradictRepairClaims(failures, [laterEp({})])).toEqual([]);
+  });
+});
+
+describe("对象锚要能补到老条目上", () => {
+  const next = historyToItems(
+    factsFromEpisode(ep({ agentStance: "我没守住间距，已按原话重做并对齐" })),
+    "2026-11-06T00:00:00.000Z",
+  ).find((i) => i.meta?.historyKind === "repair");
+
+  it("老条目没有 meta.object → 需要重写，否则矛盾判据永远看不到锚", () => {
+    const legacy = { ...next!, meta: { ...(next!.meta ?? {}), object: undefined } };
+    expect(historyItemNeedsUpdate(legacy, next!)).toBe(true);
+  });
+
+  it("已经锚好的条目不被重复重写", () => {
+    expect(historyItemNeedsUpdate(next!, next!)).toBe(false);
+  });
+
+  it("新一轮没有锚时不重写，不能用无锚快照覆盖已锚定的条目", () => {
+    const anchored = next!;
+    const fresh = { ...next!, meta: { ...(next!.meta ?? {}), object: undefined } };
+    expect(historyItemNeedsUpdate(anchored, fresh)).toBe(false);
   });
 });
 

@@ -122,6 +122,8 @@ export interface SoulTickSummary {
   retired?: number;
   episodes?: { mined?: number; inserted: number; available: number };
   rejectTop?: Array<{ code: string; count: number }>;
+  /** 本轮告警码（语言未覆盖 / 标签长尾）。调度器必须打出来，不能只留在 worker 报告里。 */
+  alerts?: string[];
 }
 
 /**
@@ -148,7 +150,7 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
     // 旧后端无枚举能力：保持旧行为（单桶 + 全局语料）。
     tenants = [{ teamId: "", userId: "", agentId: "" }];
   }
-  const summary: SoulTickSummary = { tenants: 0, stored: 0, imported: 0, admitted: 0, rejected: 0, retired: 0, episodes: { mined: 0, inserted: 0, available: 0 }, rejectTop: [] };
+  const summary: SoulTickSummary = { tenants: 0, stored: 0, imported: 0, admitted: 0, rejected: 0, retired: 0, episodes: { mined: 0, inserted: 0, available: 0 }, rejectTop: [], alerts: [] };
   if (tenants.length === 0) {
     deps.logger?.debug?.("[lifecycle] soul-maintenance skipped: 无带数据的租户（core_memory/soul_persona 均空）");
     return summary;
@@ -234,6 +236,16 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
         summary.rejectTop = [...by].map(([code, count]) => ({ code, count })).sort((a, b) => b.count - a.count);
       }
       const driftBad = res.drift.filter((d) => d.verdict !== "ok").length;
+      // 告警进控制环的最小一步：调度器必须看见，并升级成 warn。不在这里停写——
+      // 停写会把「日文语料」变成「人格冻结」，那是另一项产品决定，不是这次要做的。
+      for (const alert of res.alerts ?? []) {
+        if (!summary.alerts!.includes(alert.code)) summary.alerts!.push(alert.code);
+        const line = `[lifecycle] soul-alert ${alert.code}(${alert.class}) tenant=${tenant.teamId || "default"}/${tenant.userId || "default"}/${tenant.agentId || "default"} | ${alert.detail}`;
+        // diagnostic 类每轮都会触发（情绪标签长尾是这份语料的常态），用 warn 刷屏会把
+        // 真正要人动手的 control 告警淹掉；它进 summary 计数，日志降到 info。
+        if (alert.class === "diagnostic") deps.logger?.info?.(line);
+        else deps.logger?.warn?.(line);
+      }
       deps.logger?.info?.(
         `[lifecycle] soul-maintenance tenant=${tenant.teamId || "default"}/${tenant.userId || "default"}/${tenant.agentId || "default"} stored=${res.stored} imported=${res.imported} admitted=${res.admitted} reclassified=${res.reclassified} retired=${res.retired ?? 0} rejected=${res.rejected} merged=${res.merged} degraded=${res.degraded} frozen=${res.frozen} revived=${res.revived} episodes=${res.episodes ? `${res.episodes.available}(+${res.episodes.inserted})` : "n/a"} drift=${res.drift.length}(${driftBad} 异常) ledger=${res.ledgerEntries} mood=${res.mood?.mood?.valence?.toFixed?.(2) ?? "n/a"} emotions=${res.mood?.labels ? Object.entries(res.mood.labels).map(([k, v]) => k + v).join("/") : "n/a"} dormant=${res.mood?.dormant?.join("/") ?? ""}${res.rejectTop ? ` rejectTop=${res.rejectTop.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.rejectHistory?.length ? ` reject30d=${res.rejectHistory.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.driftSkipped ? ` driftSkipped=${res.driftSkipped}` : ""}${res.skipped ? ` skipped=${res.skipped}` : ""}`,
       );

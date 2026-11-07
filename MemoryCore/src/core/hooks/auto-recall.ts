@@ -18,7 +18,7 @@ import {
   objectRecurrence,
   type ObjectHit,
 } from "../soul/emotion.js";
-import { emotionEventFromEpisode, emotionObjectForEpisode } from "../soul/episode.js";
+import { emotionEventFromEpisode, emotionObjectForEpisode, episodeRepaired } from "../soul/episode.js";
 import { foldClusterAwareWithMeta } from "./recall-fold-cluster.js";
 import { stripMemoryLineMeta } from "./memory-line-meta.js";
 import { readSceneIndex } from "../scene/scene-index.js";
@@ -1220,6 +1220,9 @@ export async function performLayeredRecall(params: {
   let tPerfL2Ms61 = 0;
   let tPerfL1Ms61 = 0;
   let tPerfSoulMs61 = 0;
+  // 注入度量：真正拼进 system prompt 的人格段字符数（不是耗时）。缺它就无法回答
+  // 「这一轮人格到底进了多少字」——A2/A7 的可观测性硬指标。
+  let tPerfSoulChars61 = 0;
 
   // L2/L3 writers scope profile files by team+agent. Recall resolves the same
   // scope and never falls back to the unscoped data root, preventing cross-scope
@@ -2641,7 +2644,7 @@ export async function performLayeredRecall(params: {
               // 同一对象的复发不随半衰期消失。立场句的对象要能独立于「此刻还在场」存在：
               // 原因到期后「先核对修复是否还在」仍然有用，所以对象优先取活着的情绪，
               // 其次取库里的旧原因，最后退回事件史里出现次数最多的对象（不编类别词）。
-              type SoulEpisodeLike = { object?: string; valence?: number; arousal?: number; agentStance?: string };
+              type SoulEpisodeLike = { at?: string; object?: string; valence?: number; arousal?: number; agentStance?: string; outcome?: string };
               const listEp = (vectorStore as { listSoulEpisodes?: (t: unknown, o: unknown) => Promise<SoulEpisodeLike[]> }).listSoulEpisodes;
               const eps: SoulEpisodeLike[] = typeof listEp === "function"
                 ? ((await Promise.resolve(listEp.call(vectorStore, { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" }, { limit: 200 }))) ?? [])
@@ -2696,7 +2699,16 @@ export async function performLayeredRecall(params: {
               }
               if (stanceObject !== "" && eps.length > 0) {
                 const same = eps.filter((e) => emotionObjectForEpisode(e as never) === stanceObject);
-                const hits: ObjectHit[] = same.map((e) => ({ object: stanceObject, intensity: Math.abs(e.valence ?? 0), valence: e.valence ?? 0, repaired: /补上了|已按|已对齐|收口/u.test(e.agentStance ?? "") }));
+                // 与写侧情绪门同一口径：最近一次是否修复，看 agentStance 与 outcome，不把「收口」当已修。
+                const ordered = [...same].sort((a, b) => Date.parse((b as { at?: string }).at ?? "") - Date.parse((a as { at?: string }).at ?? ""));
+                const latest = ordered[0];
+                const hits: ObjectHit[] = same.map((e) => ({
+                  object: stanceObject,
+                  intensity: Math.abs(e.valence ?? 0),
+                  valence: e.valence ?? 0,
+                  at: (e as { at?: string }).at,
+                  repaired: episodeRepaired(e),
+                }));
                 if (hits.length > 0) soulMoodState.objectStance = objectRecurrence(hits).stance;
                 // 混合情绪：只有主情绪还在场时才谈「带着什么」——主情绪已退场就没有复合可写。
                 if (soulMoodState.emotion) {
@@ -2714,7 +2726,7 @@ export async function performLayeredRecall(params: {
             logger?.warn?.(`[soul] state read failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
           }
         }
-        const soulMeta: { soulVersion?: string } = {};
+        const soulMeta: NonNullable<Parameters<typeof buildSoulPrefix>[4]> = {};
         soulPrefix = await buildSoulPrefix(
           vectorStore,
           { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
@@ -2777,6 +2789,7 @@ export async function performLayeredRecall(params: {
       }
     }
     tPerfSoulMs61 = Math.round(performance.now() - tPerfSoulStart61);
+    tPerfSoulChars61 = soulPrefix.length;
     if (memoryLines.length > 0) {
       const degradedNote = recallDegradedFtsOnly
         ? // I-1 复核修补：两义措辞 —— ftsHits>0∧embeddingHits=0 只证明"本轮向量召回无贡献"，
@@ -2971,9 +2984,10 @@ export async function performLayeredRecall(params: {
     l2: tPerfL2Ms61,
     l1: tPerfL1Ms61,
     soul: tPerfSoulMs61,
+    soulChars: tPerfSoulChars61,
   };
   logger?.info?.(
-    `${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} expand=${perfMs61.expand} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}`,
+    `${TAG} [recall-perf] total=${perfMs61.total}ms scene=${perfMs61.scene} expand=${perfMs61.expand} l2=${perfMs61.l2} l1=${perfMs61.l1}(strategy=${effectiveStrategy},hits=${recalledL1Memories.length}) soul=${perfMs61.soul}(chars=${perfMs61.soulChars})`,
   );
 
   // T5（用户 2026-09-22 拍板定案）：召回/灵魂注入日志——采集点单一源（钩子与路由两路

@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createSoulRewriter, runSoulMaintenance, type SoulEvidenceRecord } from "../worker.js";
 import { resolveSoulConfig } from "../types.js";
 import type { PersonaItem, SoulEpisode } from "../types.js";
+import { factsFromEpisode, historyToItems } from "../history.js";
 import type { IMemoryStore } from "../../store/types.js";
 
 const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
@@ -531,6 +532,33 @@ describe("runSoulMaintenance 编排", () => {
     expect(items.find((i) => i.itemId === "values:v")?.text).toBe(oldText);
   });
 
+  it("稀疏情绪告警是 diagnostic：level 走 info，不把每轮常态打成 warn", async () => {
+    // 生产 2026-11-07：scheduler 已按 class 降级成 info，但 worker 自己仍用 warn 打同一件事，
+    // 同一轮里两条日志级别相反——运维看到的仍是「故障」。
+    const infos: string[] = [];
+    const warns: string[] = [];
+    const logger = {
+      debug: () => undefined,
+      info: (m: string) => infos.push(m),
+      warn: (m: string) => warns.push(m),
+      error: () => undefined,
+    };
+    const { store } = makeStore({ episodes: TEST_EPISODES });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-05T10:00:00.000Z",
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      recentRecords: async () => RECORDS,
+      logger: logger as unknown as Parameters<typeof runSoulMaintenance>[0]["logger"],
+    });
+    const sparse = rep.alerts?.find((a) => a.code === "emotion_label_sparse");
+    expect(sparse?.class).toBe("diagnostic");
+    expect(infos.some((m) => m.includes("emotion_label_sparse"))).toBe(true);
+    expect(warns.some((m) => m.includes("emotion_label_sparse"))).toBe(false);
+  });
+
   it("事件证据计入独立证据：只引 ep-* 的候选不再被 insufficient_evidence 误杀", async () => {
     // 生产实拍缺陷（2026-11-05）：生成源已换成事件层，但 minEvidence 只数 L1 证据，
     // 模型按 prompt 只引 ep-* → 每轮 57 条 insufficient_evidence，identity/voice/narrative 恒 0。
@@ -690,6 +718,82 @@ describe("runSoulMaintenance 编排", () => {
     expect(rep.mood?.line).toContain("近期心境");
   });
 
+  it("情绪门看最近一次事件是否修复：旧补丁不能给新欠账永久放行", async () => {
+    const base = {
+      day: "2026-11-05",
+      kind: "complaint" as const,
+      title: "被当面指出不对",
+      object: "被当面指出不对",
+      participants: ["他", "我"],
+      cost: "",
+      outcome: "",
+      valence: -0.5,
+      arousal: 0.6,
+      intensity: 0.6,
+      evidenceIds: ["l0-gate"],
+      sessionId: "s-gate",
+      quote: { recordId: "l0-gate", text: "这处不对", role: "user", at: "2026-11-05T01:00:00.000Z" },
+      affectSource: "lexicon" as const,
+    };
+    const repairedOld: SoulEpisode = {
+      ...base,
+      episodeId: "ep-gate-old-repaired",
+      at: "2026-11-05T01:00:00.000Z",
+      userStance: "这处不对，你改坏了",
+      agentStance: "我漏了，已经补上了",
+    };
+    // 旧账修过，但后来同一对象又漏了一次，且这次没修：最近一次 = 未修复，门必须响。
+    const reopened: SoulEpisode = {
+      ...base,
+      episodeId: "ep-gate-new-open",
+      at: "2026-11-05T03:00:00.000Z",
+      userStance: "这里又不对，你改坏了",
+      agentStance: "我先看一下",
+      quote: { recordId: "l0-gate-2", text: "这里又不对", role: "user", at: "2026-11-05T03:00:00.000Z" },
+    };
+    const state = {
+      valence: -0.5,
+      arousal: 0.6,
+      baselineValence: 0,
+      baselineArousal: 0.3,
+      updatedAt: "2026-11-05T00:00:00.000Z",
+      sampleCount: 4,
+    };
+    const openRun = makeStore({ state, episodes: [repairedOld, reopened] });
+    await runSoulMaintenance({
+      store: openRun.store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 0 }),
+      now: "2026-11-05T04:00:00.000Z",
+      recentRecords: async () => [],
+    });
+    const openLedger = openRun.commits.at(-1)!.ledger as Array<Record<string, unknown>>;
+    const gate = openLedger.find((e) => Array.isArray(e.gates) && (e.gates as string[]).includes("mood_gate"));
+    expect(gate).toBeTruthy();
+    expect(String(gate!.reason)).toContain("mood_defer_self");
+    expect(String(gate!.reason)).toContain("repaired=false");
+    expect(String(gate!.reason)).toContain("latest=2026-11-05T03:00:00.000Z");
+
+    // 反向：旧账没修、但最近一次已经修好 → 最近一次是 repaired，门不响（不永久封禁）。
+    const latestRepaired: SoulEpisode = {
+      ...reopened,
+      episodeId: "ep-gate-new-repaired",
+      agentStance: "我漏了，已经补上了",
+    };
+    const doneRun = makeStore({ state, episodes: [{ ...repairedOld, agentStance: "我先看一下" }, latestRepaired] });
+    await runSoulMaintenance({
+      store: doneRun.store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 0 }),
+      now: "2026-11-05T04:00:00.000Z",
+      recentRecords: async () => [],
+    });
+    const doneLedger = doneRun.commits.at(-1)!.ledger as Array<Record<string, unknown>>;
+    expect(doneLedger.some((e) => Array.isArray(e.gates) && (e.gates as string[]).includes("mood_gate"))).toBe(false);
+  });
+
   it("拒绝落账本 + rejectTop：说不出出处的人格不只被丢弃，还留下可统计的理由", async () => {
     const { store, commits } = makeStore({ episodes: [] });
     const rep = await runSoulMaintenance({
@@ -844,5 +948,129 @@ describe("runSoulMaintenance 编排", () => {
       rewriter: candidate,
     });
     expect(repDone.rejections.some((r) => r.codes.includes("mood_defer_self"))).toBe(false);
+  });
+
+  it("点名回滚在下一轮 tick 执行，没有请求时不碰任何条目", async () => {
+    const target = mkItem("self:hx-owed", "self", "我没守住：导出那一格我漏了。");
+    const rolled: string[][] = [];
+    const { store } = makeStore({
+      items: [target],
+      ledger: [{
+        entryId: "rq-1",
+        at: "2026-11-05T09:00:00.000Z",
+        trigger: "manual",
+        layer: "self",
+        itemId: target.itemId,
+        action: "rollback",
+        gates: ["rollback_requested"],
+        reason: "点名撤销",
+      }],
+    });
+    (store as unknown as { rollbackSoulPersona: ReturnType<typeof vi.fn> }).rollbackSoulPersona = vi.fn(
+      async (_t: unknown, ids: string[], opts: { gate?: string }) => {
+        rolled.push(ids);
+        expect(opts.gate).toBe("lifecycle_rollback");
+        return { restored: 0, removed: 1, skipped: 0 };
+      },
+    );
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true }),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => [],
+      recentL0: async () => [],
+    });
+    expect(rolled).toEqual([[target.itemId]]);
+    expect(rep.alerts?.some((a) => a.code === "rollback_applied")).toBe(true);
+
+    const quiet = makeStore({ items: [target] });
+    (quiet.store as unknown as { rollbackSoulPersona: ReturnType<typeof vi.fn> }).rollbackSoulPersona = vi.fn(async () => {
+      throw new Error("没有请求不该调用回滚");
+    });
+    await runSoulMaintenance({
+      store: quiet.store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true }),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => [],
+      recentL0: async () => [],
+    });
+  });
+
+  it("矛盾进账本：同对象更晚的未修复失败让「我补上了」+1，达阈值冻结", async () => {
+    const mkEp = (over: Partial<SoulEpisode>): SoulEpisode => ({
+      episodeId: "ep-1",
+      at: "2026-11-04T09:00:00.000Z",
+      day: "2026-11-04",
+      kind: "correction",
+      title: "",
+      object: "列表按钮状态",
+      participants: ["何晨"],
+      userStance: "列表按钮状态处理不对",
+      agentStance: "已按原话重做并对齐",
+      cost: "",
+      outcome: "",
+      valence: -0.5,
+      arousal: 0.5,
+      intensity: 0.5,
+      evidenceIds: ["r1"],
+      sessionId: "s1",
+      quote: null,
+      affectSource: "lexicon",
+      signals: [],
+      ...over,
+    });
+    // 条目按生产口径生成：meta.object 与 referent(ep) 是同一口径，测试不自己编锚。
+    const seedEp = mkEp({});
+    const repairItem = historyToItems(factsFromEpisode(seedEp), "2026-11-04T12:00:00.000Z").find(
+      (i) => i.layer === "self" && i.meta?.historyKind === "review",
+    );
+    expect(repairItem).toBeTruthy();
+    const { store, items } = makeStore({
+      items: [repairItem as PersonaItem],
+      episodes: [
+        seedEp,
+        mkEp({ episodeId: "ep-2", at: "2026-11-05T09:00:00.000Z", day: "2026-11-05", agentStance: "这个问题我先看一下", intensity: 0.4 }),
+      ],
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true, freezeContradictions: 1 }),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => [],
+      recentL0: async () => [],
+    });
+    const after = items.find((i) => i.itemId === repairItem!.itemId);
+    expect(after?.contradictions).toBe(1);
+    expect(after?.meta?.lastContradictionEpisode).toBe("ep-2");
+    expect(after?.state).toBe("frozen");
+  });
+
+  it("已经执行过的点名回滚不再执行第二遍", async () => {
+    const target = mkItem("self:hx-owed2", "self", "我没守住：导出那一格我漏了。");
+    const { store } = makeStore({
+      items: [target],
+      ledger: [
+        { entryId: "rq-2", at: "2026-11-05T09:00:00.000Z", trigger: "manual", layer: "self", itemId: target.itemId, action: "rollback", gates: ["rollback_requested"], reason: "点名撤销" },
+        { entryId: "rb-2", at: "2026-11-05T09:10:00.000Z", trigger: "rollback", layer: "self", itemId: target.itemId, action: "rollback", gates: ["lifecycle_rollback"], reason: "已执行" },
+      ],
+    });
+    (store as unknown as { rollbackSoulPersona: ReturnType<typeof vi.fn> }).rollbackSoulPersona = vi.fn(async () => {
+      throw new Error("已执行的请求不该再撤一次");
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({ enabled: true }),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => [],
+      recentL0: async () => [],
+    });
   });
 });

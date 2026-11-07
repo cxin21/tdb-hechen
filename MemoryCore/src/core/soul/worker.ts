@@ -35,14 +35,15 @@ import {
   type SoulMaintenanceConfig,
   type SoulRejectionStat,
 } from "./types.js";
-import { episodeDigest, emotionEventFromEpisode, emotionObjectForEpisode, mineEpisodes } from "./episode.js";
+import { episodeDigest, emotionEventFromEpisode, emotionObjectForEpisode, episodeRepaired, mineEpisodes } from "./episode.js";
 import { chargeCall, openCostBudget, redactSecrets } from "./guard.js";
-import { factsFromEpisode, historyToItems, reversals } from "./history.js";
+import { contradictRepairClaims, factsFromEpisode, historyItemNeedsUpdate, historyToItems, reversals, settlePromises } from "./history.js";
 import type { MoodState } from "./emotion.js";
-import { allPass, classifyLine, evaluateCandidate, isSelfVoice, normalizeText, stripBullet, textHash, textSimilarity } from "./gates.js";
+import { allPass, classifyLine, evaluateCandidate, isSelfVoice, normalizeText, personaLength, stripBullet, textHash, textSimilarity } from "./gates.js";
 import {
   layerUsedChars,
   planAdmit,
+  planContradiction,
   planLifecycle,
   planMerge,
   planRevive,
@@ -58,11 +59,6 @@ import {
 } from "./consolidator.js";
 import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION } from "./emotion.js";
 import { canSelfReset, measureDrift, pushDrift, trackOf } from "./drift.js";
-
-/** 修复证据：只认「已经改了」的确定性措辞。「收口」是交付词，不是承认或修复。 */
-// 门用的「修复已落地」判据。故意比 history.ts 的 REPAIR 严：说「重做过」「修好了」不算，
-// 只认「补上了 / 已按…」这种把结果对上原话的说法——否则「我重做了，下轮再跑」也会被当成已修复。
-const REPAIRED_STANCE = /(?:补上了|已按|已对齐|已改|改完|改口)/u;
 
 /** 语料记录（由调用方从 L1 读取；worker 不直接耦合 L1 表结构）。 */
 export interface SoulEvidenceRecord {
@@ -119,6 +115,7 @@ export interface SoulWorkerDeps {
     | "listSoulEpisodes"
     | "recentL0Messages"
     | "soulRejectionStats"
+    | "rollbackSoulPersona"
   >;
   tenant: CoreTenant;
   now?: string;
@@ -207,6 +204,22 @@ export interface SoulWorkerReport {
   /** 漂移判定（逐条）；无向量器时为空且 driftSkipped 说明原因。 */
   drift: SoulDriftReport[];
   driftSkipped?: string;
+  /** 运行告警：可观测指标，不静默。语言未覆盖 / 情绪标签长尾（零实例标签过多）。 */
+  alerts?: Array<{
+    code: "language_unmapped" | "emotion_label_sparse" | "rollback_applied";
+    /**
+     * control = 有确定性读者，会改变下一轮行为（language_unmapped → 停 LLM 改写；
+     * rollback_applied → 已实际改库）。
+     * diagnostic = 只用来说明判据与语料脱节，没有控制动作：emotion_label_sparse 每轮
+     * 都会触发（24 类里零实例 ≥12 是这份语料的常态），拿它当门会把人格永久冻住。
+     * 分这一类不是为了「看起来闭环」，是为了让「没有读者」是写下来的决定，而不是被忘记。
+     */
+    class: "control" | "diagnostic";
+    detail: string;
+    records: number;
+    admitted: number;
+    updated: number;
+  }>;
   skipped?: string;
 }
 
@@ -221,9 +234,11 @@ export function mineCandidates(
   for (const rec of records) {
     const content = typeof rec.content === "string" ? rec.content : "";
     if (content === "") continue;
-    for (const raw of content.split(/[\n。；;]/)) {
+    // 英文句子以 .!? 断句；中文按原有标点。
+    for (const raw of content.split(/[\n。；;]|(?<=[.!?])\s+/u)) {
       const text = stripBullet(raw).trim();
-      if (text.length < 6 || text.length > cfg.maxItemChars.identity) continue;
+      // 长度按人格单位折算（CJK=1、非 CJK=0.4）：英文长句不再被中文字数上限静默丢掉。
+      if (text.length < 6 || personaLength(text) > cfg.maxItemChars.identity) continue;
       const cls = classifyLine(text);
       if (cls.layer === null || !INJECTED.includes(cls.layer)) continue;
       const key = normalizeText(text);
@@ -667,6 +682,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     mood: null,
     rejections: [],
     drift: [],
+    alerts: [],
   };
   if (!cfg.enabled && deps.trigger !== "import") {
     return { ...report, skipped: "soulMaintenance.enabled=false" };
@@ -828,6 +844,43 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     typeof store.listSoulLedger === "function"
       ? ((await Promise.resolve(store.listSoulLedger(deps.tenant, 200))) ?? [])
       : [];
+  // 回滚是生命周期的一步，不是只给人手工点的库方法。账本里 action=rollback 且
+  // gates 含 rollback_requested 的行，是「点名撤销」的唯一入口：下一轮 tick 看见就执行，
+  // 执行结果另写一条 gates=lifecycle_rollback 的账本（rollbackSoulPersona 自己写）。
+  // 没有请求就不碰任何条目——禁止把「能回滚」做成「每轮自动回滚最近一次写入」。
+  if (typeof store.rollbackSoulPersona === "function") {
+    const requested = recentLedger.filter(
+      (e) => e.action === "rollback" && (e.gates ?? []).includes("rollback_requested") && typeof e.itemId === "string" && e.itemId !== "",
+    );
+    const done = new Set(
+      recentLedger
+        .filter((e) => e.action === "rollback" && (e.gates ?? []).includes("lifecycle_rollback"))
+        .map((e) => e.itemId),
+    );
+    const pending = [...new Set(requested.map((e) => e.itemId as string).filter((id) => !done.has(id)))];
+    if (pending.length > 0) {
+      const rolled = await Promise.resolve(
+        store.rollbackSoulPersona(deps.tenant, pending, { now, reason: "生命周期执行点名回滚", gate: "lifecycle_rollback" }),
+      );
+      report.alerts = [
+        ...(report.alerts ?? []),
+        {
+          code: "rollback_applied",
+          class: "control",
+          detail: `点名回滚 ${pending.length} 条：restored=${rolled?.restored ?? 0} removed=${rolled?.removed ?? 0} skipped=${rolled?.skipped ?? 0}`,
+          records: pending.length,
+          admitted: rolled?.restored ?? 0,
+          updated: rolled?.removed ?? 0,
+        },
+      ];
+      const fresh = typeof store.listSoulPersona === "function" ? ((await store.listSoulPersona(deps.tenant)) ?? []) : [];
+      for (const id of pending) {
+        const next = fresh.find((i) => i.itemId === id);
+        if (next) map.set(id, { ...next });
+        else map.delete(id);
+      }
+    }
+  }
   if (deps.trigger === "lifecycle") {
     const lastRun = recentLedger.find((e) => e.action === "cadence");
     if (lastRun) {
@@ -910,15 +963,16 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     };
     // 自我失败/复盘/反悔、关系冲突/修复：从事件确定性长出，不经 LLM。
     // 已有同 itemId 的不覆盖（重跑幂等）。没有我的表态的事件不会进这里。
-    const facts = episodePool.flatMap(factsFromEpisode);
+    const facts = settlePromises(episodePool.flatMap(factsFromEpisode), episodePool);
     const grown = historyToItems([...facts, ...reversals(facts)], now);
     let historyAdded = 0;
     const still = new Set(grown.map((item) => item.itemId));
     for (const item of grown) {
       const prev = map.get(item.itemId);
-      // 同文同 id 已 active 时不必重建；但权重是判据的一部分（具体失败/复盘要压过概括性的「改过口」），
-      // 旧权重留在库里会让注入顺序永远停在上一版判据上。
-      if (prev?.state === "active" && prev.weight === item.weight) continue;
+      // 同文同 id 已 active 时不必重建；但权重与 direction 都是判据的一部分：
+      // 权重决定注入顺序；direction 是信任升降的语义，旧行缺 direction 时不能因为
+      // 「文本没变、权重没变」就永远不补——那会让生产关系史一直停在无方向的旧快照上。
+      if (!historyItemNeedsUpdate(prev, item)) continue;
       map.set(item.itemId, prev ? { ...item, createdAt: prev.createdAt } : item);
       historyAdded += 1;
       ledger.push(ledgerOf(prev, item, now, deps.trigger, prev ? "update" : "admit", "事件史确定性长出，非模型自评", ["episode_history"]));
@@ -1022,12 +1076,19 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
               .filter((ep) => emotionObjectForEpisode(ep) === object)
               .map((ep) => ({
                 episodeId: ep.episodeId,
+                at: ep.at,
                 object: emotionObjectForEpisode(ep) || (ep.object ?? ""),
                 intensity: Math.abs(ep.valence ?? 0),
                 valence: ep.valence ?? 0,
-                // 修复证据看我的回复（agentStance）与后续 outcome：只认确定性的改口/重做措辞。
-                repaired: REPAIRED_STANCE.test(ep.agentStance ?? "") || REPAIRED_STANCE.test(ep.outcome ?? ""),
+                // 与读侧立场共用 episodeRepaired：只认「补上了/已按/已改/改完/改口」，不认「收口」。
+                repaired: episodeRepaired(ep),
               }));
+        // 修复看「最近一次」而不是「历史上曾经」：早先补过一次、后来又漏，
+        // 旧的 some(repaired) 会把这次新欠账永久放行——门就再也不会响。
+        const latestHit = hits.length > 0
+          ? [...hits].sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0]
+          : undefined;
+        const repaired = latestHit?.repaired === true;
         // 情绪门只对「此刻真有一条在场情绪」生效：没有活着的情绪就没有判断偏移，
         // 不能拿上一条已经退场的历史标签继续压身份生长。
         // 「在场」要跨轮算：本轮没有新事件时（6h 节流下很常见），上一轮写下的情绪
@@ -1053,7 +1114,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
                 focus: gateFocus,
                 object,
                 count: hits.length,
-                repaired: hits.some((h) => h.repaired),
+                repaired,
               })
             : undefined;
         if (gate) {
@@ -1069,7 +1130,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             layer: "all",
             action: "arbitrate",
             gates: ["mood_gate", gate.code],
-            reason: `${gate.code}｜object=${object} count=${hits.length} repaired=${hits.some((h) => h.repaired)} label=${top?.label ?? "prev"}｜${gate.reason}`,
+            reason: `${gate.code}｜object=${object} count=${hits.length} repaired=${repaired} latest=${latestHit?.at ?? "none"} label=${top?.label ?? "prev"}｜${gate.reason}`,
             evidenceIds: hits.map((h) => h.episodeId).slice(0, 8),
           });
         }
@@ -1124,9 +1185,20 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     .filter((c) => new Set(c.evidenceIds).size >= cfg.minEvidence)
     .map((c) => ({ ...c, origins: ["l1"] }));
   const llmBudget = openCostBudget(deps.llmCallBudget ?? 1);
-  if (deps.rewriter && records.length > 0 && !cadenceSkipped && !chargeCall(llmBudget)) {
+  // 告警的读者在下一轮，不在本轮：本轮刚算出 language_unmapped 时改写已经跑完。
+  // 上一轮账本有这条，就跳过 LLM 改写。事件、情绪、承诺核对照跑，不把整个人格冻住。
+  // 时间窗：一条旧告警不能永久停掉改写。窗口取一个整合周期（缺省 6h）；语言没修好时
+  // 每轮 tick 都会重新记一条告警，所以窗口会一直被刷新；修好后最多再挡一个周期就自动解除。
+  const languageHoldMs = Math.max(1, cfg.updateIntervalHours) * 60 * 60 * 1000;
+  const languageHeld = recentLedger.some(
+    (e) => (e.gates ?? []).includes("language_unmapped") && Date.parse(e.at) >= Date.parse(now) - languageHoldMs,
+  );
+  if (languageHeld && deps.rewriter) {
+    report.skipped = [report.skipped, "language_unmapped"].filter(Boolean).join(";");
+  }
+  if (deps.rewriter && records.length > 0 && !cadenceSkipped && !languageHeld && !chargeCall(llmBudget)) {
     report.skipped = [report.skipped, "llm_budget"].filter(Boolean).join(";");
-  } else if (deps.rewriter && records.length > 0 && !cadenceSkipped) {
+  } else if (deps.rewriter && records.length > 0 && !cadenceSkipped && !languageHeld) {
     try {
       const proposed = await deps.rewriter({
         existing: [...map.values()].map((i) => ({ layer: i.layer, text: redactSecrets(i.text) })),
@@ -1218,6 +1290,61 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   report.updated += grown.updated;
   report.rejections.push(...grown.rejections);
   ledger.push(...grown.ledger);
+
+  // 2b) 语言覆盖告警：判据目前只覆盖中英；日文假名/韩文谚文出现时必须告警，
+  // 不能因为日文里夹着汉字就被当成中文放过。没有汉字且零生长也告警（英文路径失效的现场）。
+  // 不能静默：这正是「换个语言就不长人格」的现场，必须有一个可告警的指标，而不是等人发现人格是空的。
+  const joinedText = records.map((r) => String(r.content)).join("\n");
+  // 只需要「有没有汉字」这个布尔值：用 test 短路，不数 35 万个匹配（生产 4707 条语料下
+  // 数 CJK 一次要 ~70ms，而告警只看 0/非0）。假名/谚文仍精确计数，它们通常为 0，代价小。
+  const hasCjk = /[\u3400-\u9fff\uf900-\ufaff]/u.test(joinedText);
+  const countOf = (re: RegExp) => joinedText.match(re)?.length ?? 0;
+  const kanaChars = countOf(/[\u3040-\u30ff]/gu);
+  const hangulChars = countOf(/[\uac00-\ud7af]/gu);
+  const unmappedChars = kanaChars + hangulChars;
+  const noGrowth = grown.admitted.length === 0 && grown.updated === 0;
+  if (records.length >= 20 && (unmappedChars > 0 || (!hasCjk && noGrowth))) {
+    const scripts = [kanaChars > 0 ? `假名 ${kanaChars}` : "", hangulChars > 0 ? `谚文 ${hangulChars}` : ""].filter(Boolean).join("/");
+    const detail = unmappedChars > 0
+      ? `语料 ${records.length} 条、未覆盖文字 ${scripts} 个（mined=${mined.length}, 过门候选=${candidates.length}, admit=${grown.admitted.length}/update=${grown.updated}）：判据语言未覆盖这场语料`
+      : `语料 ${records.length} 条、汉字 0 个，本轮 admit=0/update=0（mined=${mined.length}, 过门候选=${candidates.length}）：判据语言未覆盖这场语料`;
+    report.alerts = [...(report.alerts ?? []), { code: "language_unmapped", class: "control", detail, records: records.length, admitted: grown.admitted.length, updated: grown.updated }];
+    deps.logger?.warn?.(`[soul-alert] language_unmapped | ${detail}`);
+    ledger.push({
+      entryId: `led-alert-lang-${now}-${records.length}`,
+      at: now,
+      trigger: deps.trigger,
+      layer: "all",
+      action: "alert",
+      gates: ["language_unmapped"],
+      reason: detail,
+      evidenceIds: [],
+    });
+  }
+
+  // 3b) 矛盾：同对象更晚的一次未修复失败，证伪了此前「我补上了」的主张。
+  // 这是 contradictions 计数唯一的生产者——没有它，freezeContradictions 永远不可能生效，
+  // 一条被反复推翻的修复主张会一直停在注入里。
+  for (const hit of contradictRepairClaims([...map.values()], episodePool)) {
+    const prev = map.get(hit.itemId);
+    if (!prev) continue;
+    const next = planContradiction(prev, now, cfg, `后来「${hit.object}」又没修好（${hit.episodeId}）`);
+    map.set(hit.itemId, { ...next, meta: { ...(next.meta ?? {}), lastContradictionEpisode: hit.episodeId } });
+    ledger.push(
+      ledgerOf(
+        prev,
+        next,
+        now,
+        deps.trigger,
+        "contradict",
+        `object=${hit.object} episode=${hit.episodeId} at=${hit.at}`,
+        ["contradiction", ...(next.state === "frozen" ? ["frozen_by_contradiction"] : [])],
+      ),
+    );
+    if (next.state === "frozen") {
+      deps.logger?.warn?.(`[soul] contradiction froze ${next.itemId} after ${next.contradictions ?? 0} (${hit.object})`);
+    }
+  }
 
   // 4) 生命周期 + 5) 合并
   const life = planLifecycle([...map.values()], now, cfg);
@@ -1515,6 +1642,27 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         labels,
         dormant: EMOTION_LABELS.filter((l) => !labels[l]),
       };
+      // 情绪标签长尾告警：24 类里零实例 ≥ 一半，说明标签集设计与语料/判据脱节。
+      // 不自动删标签（会改历史口径），但必须让运维看见「这些标签在本租户从未出现过」。
+      const dormantLabels = report.mood.dormant ?? [];
+      if (dormantLabels.length >= EMOTION_LABELS.length / 2) {
+        const detail = `情绪标签零实例 ${dormantLabels.length}/${EMOTION_LABELS.length}：${dormantLabels.join("/")}`;
+        report.alerts = [...(report.alerts ?? []), { code: "emotion_label_sparse", class: "diagnostic", detail, records: episodeEvents.length, admitted: 0, updated: 0 }];
+        // diagnostic 类不走 warn：这条每轮都会触发，用 warn 打等于把常态伪装成故障，
+        // 与调度器按 class 降级成 info 的口径也会自相矛盾。
+        deps.logger?.info?.(`[soul-alert] emotion_label_sparse | ${detail}`);
+        // 与 language_unmapped 同一落点：只打日志会在下一轮日志轮转后消失，账本才是可回放的控制信号。
+        ledger.push({
+          entryId: `led-alert-sparse-${now}-${episodeEvents.length}`,
+          at: now,
+          trigger: deps.trigger,
+          layer: "all",
+          action: "alert",
+          gates: ["emotion_label_sparse"],
+          reason: detail,
+          evidenceIds: [],
+        });
+      }
     } catch (err) {
       report.mood = {
         mood: null as unknown as MoodState,

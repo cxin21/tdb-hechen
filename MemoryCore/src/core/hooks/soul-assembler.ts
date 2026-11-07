@@ -381,7 +381,11 @@ export async function buildSoulPrefix(
   tenant: CoreTenant,
   logger?: Logger,
   opts?: SoulRenderOptions,
-  metaOut?: { soulVersion?: string; soulPersonaBudgets?: SoulBudgetReport[] },
+  metaOut?: {
+    soulVersion?: string;
+    soulPersonaBudgets?: SoulBudgetReport[];
+    soulAttention?: { focus: string; object: string; chars: number };
+  },
 ): Promise<string> {
   const parts: string[] = [];
   let soulVer = '';
@@ -1018,6 +1022,22 @@ export async function buildSoulPrefix(
         const rendered = renderPersonaBlock(personaItems, personaCfg, attention ? { attention } : undefined);
         personaBudgets = rendered.reports;
         if (metaOut) metaOut.soulPersonaBudgets = personaBudgets;
+        if (metaOut) {
+          metaOut.soulAttention = {
+            focus: attention?.focus ?? "none",
+            object: attention?.object ?? "",
+            chars: rendered.text.length,
+          };
+        }
+        // 情绪对判断的影响必须能在生产日志里看见：只改内部排序、不落一行可观测记录，
+        // 等于「代码里有」。focus / 对象 / 被放大层的预算与实渲染条数是 A2 的最小证据。
+        if (attention && attention.focus !== "none") {
+          const focusLayer = attention.focus === "self" ? "self" : "relationship";
+          const r = rendered.reports.find((x) => x.layer === focusLayer);
+          logger?.info?.(
+            `[soul-persona] attention focus=${attention.focus} object=${attention.object ?? ""} layer=${focusLayer} budget=${r?.budgetChars ?? 0} used=${r?.usedChars ?? 0} items=${r?.rendered ?? 0} chars=${rendered.text.length}`,
+          );
+        }
         if (rendered.text !== "") parts.push(`<soul-persona>\n${rendered.text}\n</soul-persona>`);
         const omitted = rendered.reports.flatMap((r) =>
           r.omitted.map((o) => `${r.layer}:${o.itemId}(${o.chars}字,${o.reason})`),

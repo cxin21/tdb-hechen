@@ -411,12 +411,79 @@ describe("persona：准入 / 更新 / 合并 / 降级 / 冻结 / 复活 / 预算
     expect(block.text).toContain("我答应自己");
   });
 
+  it("事件史承诺被预算挤出时仍保底，并带兑现后缀", () => {
+    const mk = (i: number): PersonaItem => ({
+      itemId: "self:f" + i,
+      layer: "self",
+      text: "我没守住：「第" + i + "次没做对的地方」；后来改成先量再改，六页逐项量过并回读确认",
+      state: "active",
+      weight: 0.7,
+      evidenceIds: [],
+      evidenceDays: [],
+      evidenceOrigins: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastEvidenceAt: NOW,
+      meta: { historyKind: "failure" },
+    });
+    const promise: PersonaItem = {
+      ...mk(99),
+      itemId: "self:hx-p",
+      text: "我答应过自己：「以后每次改导出都先用真实数据跑一遍再回你」",
+      weight: 0.6,
+      meta: { historyKind: "promise", fulfillment: "kept" },
+    };
+    const block = renderPersonaBlock([...Array.from({ length: 9 }, (_, i) => mk(i)), promise], CFG);
+    expect(block.text).toContain("我答应过自己");
+    expect(block.text).toContain("（后来做到了）");
+  });
+
   it("渲染层顺序与段头固定：boundary 按作用域再按权重", () => {
     const universal = { ...admit("绝不把情绪数据喂进召回，任何情况下都不允许", "boundary"), weight: 0.5, meta: { scope: "universal" } };
     const mini = { ...admit("绝不在没有备份的情况下修改生产配置，必须先验证真值", "boundary"), weight: 0.9, meta: { scope: "project" } };
     const block = renderPersonaBlock([universal, mini], CFG);
     expect(block.text.startsWith("## 我不做的事")).toBe(true);
     expect(block.text.indexOf("情绪数据")).toBeLessThan(block.text.indexOf("备份"));
+  });
+
+  it("关系史信任方向渲染成可见后缀：up/down 不靠读者猜", () => {
+    const mk = (direction: "up" | "down"): PersonaItem => ({
+      itemId: "relationship:t-" + direction,
+      layer: "relationship",
+      text: direction === "up" ? "何晨把方案权交出来。" : "他开始不太放心。",
+      state: "active",
+      weight: 0.9,
+      evidenceIds: ["ep-1"],
+      evidenceDays: ["2026-11-05"],
+      evidenceOrigins: ["episode"],
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastEvidenceAt: NOW,
+      meta: { historyKind: "trust", direction },
+    });
+    const up = renderPersonaBlock([mk("up")], CFG);
+    const down = renderPersonaBlock([mk("down")], CFG);
+    expect(up.text).toContain("（信任↑）");
+    expect(down.text).toContain("（信任↓）");
+  });
+
+  it("承诺兑现渲染成可见后缀：做到了/没做到不靠读者翻 meta", () => {
+    const mk = (fulfillment: "kept" | "broken"): PersonaItem => ({
+      itemId: "self:p-" + fulfillment,
+      layer: "self",
+      text: "我答应过自己：交出去的每一格都要有实测数字。",
+      state: "active",
+      weight: 0.72,
+      evidenceIds: ["ep-p"],
+      evidenceDays: ["2026-11-05"],
+      evidenceOrigins: ["episode"],
+      createdAt: NOW,
+      updatedAt: NOW,
+      lastEvidenceAt: NOW,
+      meta: { historyKind: "promise", fulfillment },
+    });
+    expect(renderPersonaBlock([mk("kept")], CFG).text).toContain("（后来做到了）");
+    expect(renderPersonaBlock([mk("broken")], CFG).text).toContain("（后来没做到）");
   });
 });
 

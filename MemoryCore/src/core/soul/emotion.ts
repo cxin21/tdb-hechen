@@ -208,7 +208,7 @@ export function templateHalfLifeHours(label: string, fallback = 4): number {
 // 对象变了就不再是纯读数：同一对象复现会进判断门与注入原因，所以必须换版本留档。
 // r4：归因只看「我对这条追责的回复」，不再拿上一轮的表态算这一轮（2026-11-06 第二租户
 // 灌数实测：上一轮「不是我造成的」把这一轮「排序这么乱」也读成委屈，真正的恼火丢失）。
-const APPRAISAL_RULE_REV = "r4-reply-scoped-attribution";
+const APPRAISAL_RULE_REV = "r5-valence-aware-norm-intensity";
 
 /**
  * 情绪模板版本：标签集合 + 评价规则版本（FNV-1a）。任一变了版本就变——
@@ -244,7 +244,12 @@ export function appraiseEmotion(input: {
   const g = clamp01(a.goalRelevance);
   const v = clamp01(a.expectationViolation);
   const exposure = (a.socialExposure ?? "private") === "public" ? 1.12 : 1;
-  const intensity = clamp01((0.55 * g + 0.45 * v) * (0.7 + 0.3 * clamp01(a.normCompatibility)) * exposure);
+  // 规范相容度不是「越合规越强烈」：违反自己的规范（normCompatibility 低）本身就在加码，
+  // 这正是愧疚/害羞该有的力度；正向事件仍按「越合规越真」放大。r4 之前统一乘
+  // normCompatibility，导致自己认账的愧疚恒弱于对外的火（2026-11-06 审计确认）。
+  const norm = clamp01(a.normCompatibility);
+  const normFactor = template.valence < 0 ? 0.7 + 0.3 * (1 - norm) : 0.7 + 0.3 * norm;
+  const intensity = clamp01((0.55 * g + 0.45 * v) * normFactor * exposure);
   return {
     id: input.id ?? `emo-${input.at}-${template.label}`,
     at: input.at,
@@ -274,16 +279,21 @@ export function appraisalFromEpisode(ep: {
   const me = ep.agentStance ?? "";
   const both = `${user} ${me}`;
   // 生产原话不写「我错了」。指出不对之后我补上、对齐、量过，就是认了是自己的问题。
-  const selfCause = /我错了|是我的问题|我没做到|我重做|我改口|补上|已补|已按|已对齐|逐项量过|收口/u.test(me);
+  const exculpated = /不是我造成|不是我的问题|你的问题|你弄错|\b(?:not my fault|not caused by me|your (?:problem|bug)|you got it wrong)\b/iu.test(both);
+  const selfCause =
+    !exculpated &&
+    /我错了|是我的问题|我没做到|我重做|我改口|补上|已补|已按|已对齐|逐项量过|收口|\b(?:my fault|my mistake|i was wrong|i missed|i'll fix|i will fix|fixed|redo|already fixed|aligned|verified)\b/iu.test(me);
   // 对方指出不对、我没有认，归因在对方。不要求原话写出「你的问题」。
-  const pointedOut = /不对|错了|搞错|有问题/u.test(user);
-  const praised = /改得好|做得好|就按这个|不错/u.test(user);
-  const otherCause = /不是我造成|不是我的问题|你的问题|你弄错/u.test(both) || (pointedOut && !selfCause) || praised;
+  const pointedOut = /不对|错了|搞错|有问题|\b(?:wrong|incorrect|broke|broken|problem|bug)\b/iu.test(user);
+  const praised = /改得好|做得好|就按这个|不错|\b(?:well done|good job|nice work|that's right|looks good|great)\b/iu.test(user);
+  const otherCause = exculpated || (pointedOut && !selfCause) || praised;
   // 暴露面不只看原话里有没有「当众」：团队频道/群会话本身就是有旁人的场，
   // 在那里被指出错，和一对一私聊被指出错，不是同一种情绪（害羞 vs 愧疚）。
-  const publicExposure = opts?.publicSession === true || /当着|当众|大家|会议上/u.test(both);
+  const publicExposure =
+    opts?.publicSession === true ||
+    /当着|当众|大家|会议上|\b(?:in front of (?:everyone|the team|the group)|publicly|on the (?:call|meeting)|in the meeting)\b/iu.test(both);
   const exposure = publicExposure ? "public" : "private";
-  const violated = (ep.valence ?? 0) < 0 || /不对|错了|问题/u.test(both);
+  const violated = (ep.valence ?? 0) < 0 || /不对|错了|问题|\b(?:wrong|incorrect|broke|broken|problem|bug)\b/iu.test(both);
   return {
     goalRelevance: violated ? 0.3 : Math.max(0.6, Math.abs(ep.valence ?? 0.5)),
     expectationViolation: violated ? 0.8 : 0.1,
@@ -302,12 +312,14 @@ function pickTemplate(a: AppraisalVector): EmotionTemplate {
   const otherCause = a.otherCause === true;
   const goalHit = a.goalRelevance >= 0.55;
   const violated = a.expectationViolation >= 0.5;
+  // 已经放弃争取：先于当众害羞与愧疚/委屈——它不是「我错了」，也不是「你错怪我了」，
+  // 而是「我不争了」。生产实拍：「当众说算了」曾被判成害羞（因为 public+self+violated
+  // 先命中），把 resigned 的 Exasperated/Withdrawn 状态写成了 embarrassed。
+  if (a.resignation === true && violated) return NEGATIVE_RESIGNED;
   // 当众被看见自己的错，先是害羞，不是愧疚。愧疚要私下、且归因到自己。
   if (exposure === "public" && (selfCause || a.agency === "self") && violated) return NEGATIVE_SHY;
   // 当众把自己做成的事收口，是自豪：和私下的安心不是一个读数（被看见才成立）。
   if (exposure === "public" && selfCause && !violated && goalHit) return POSITIVE_PRIDE;
-  // 已经放弃争取：先于愧疚与委屈——它不是「我错了」，也不是「你错怪我了」。
-  if (a.resignation === true && violated) return NEGATIVE_RESIGNED;
   // 他付出了代价、事情还没成：是同情，不是「谢谢」的感激（感激要求事情成了）。
   if (a.otherCost === true && violated) return NEGATIVE_PITY;
   // 违背后解除了（原本以为要出问题，结果没出）：释然是「松下来」，不是叠加的开心。
@@ -840,6 +852,8 @@ export interface ObjectHit {
   valence: number;
   /** 后来的事件是否把这件事修好了。 */
   repaired?: boolean;
+  /** 有时间才谈「最近一次」。没有时间的旧调用仍按「曾经修过」。 */
+  at?: string;
 }
 
 export interface ObjectRecurrence {
@@ -857,7 +871,12 @@ export function objectRecurrence(hits: ObjectHit[], object?: string): ObjectRecu
   const mine = hits.filter((h) => h.object.trim() === key);
   const count = mine.length;
   const peak = mine.reduce((m, h) => Math.max(m, Math.abs(h.intensity)), 0);
-  const repaired = mine.some((h) => h.repaired === true);
+  // 有时间就只看最近一次：三个月前补过一次，不能让今天的新欠账永远读成「先核对修复」。
+  // 没有时间的调用方（旧测试、反事实）仍按「曾经修过」，避免无 at 时把 repaired 判丢。
+  const dated = mine.filter((h) => typeof h.at === "string" && h.at !== "");
+  const repaired = dated.length > 0
+    ? [...dated].sort((a, b) => Date.parse(b.at ?? "") - Date.parse(a.at ?? ""))[0]?.repaired === true
+    : mine.some((h) => h.repaired === true);
   let stance = "先核对再动";
   if (count === 0) stance = "没有这段史，按事本身判断";
   else if (repaired) stance = "先核对修复是否还在，再决定要不要挡";

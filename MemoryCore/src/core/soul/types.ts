@@ -201,6 +201,8 @@ export interface SoulLedgerEntry {
     | "degrade"
     | "freeze"
     | "revive"
+    /** 同对象更晚的一次未修复失败，证伪了「我补上了」这条修复主张（矛盾计数 +1，达阈值冻结）。 */
+    | "contradict"
     | "rollback"
     | "drift"
     | "budget_omit"
@@ -209,7 +211,9 @@ export interface SoulLedgerEntry {
     /** 存量槽导入条目退出人格注入层（下沉为操作约束，不删除、可回滚）。 */
     | "retire"
     /** 整合周期标记：LLM 改写/漂移到期并实际跑过（节流锚点，无条目变更也记一条）。 */
-    | "cadence";
+    | "cadence"
+    /** 运行告警（如语料语言未覆盖导致零生长）：进账本可查、可告警，不静默。 */
+    | "alert";
   beforeHash?: string;
   afterHash?: string;
   /** 判定码集合（拒收原因 / 闸门结果）。 */

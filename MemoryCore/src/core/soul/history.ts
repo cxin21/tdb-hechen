@@ -4,6 +4,7 @@
  */
 import type { PersonaItem, SoulEpisode, SoulLayer } from "./types.js";
 import { extractAffectReferent } from "./emotion.js";
+import { episodeRepaired } from "./episode.js";
 import { textHash } from "./gates.js";
 
 export type HistoryKind = "failure" | "promise" | "review" | "reversal" | "conflict" | "repair" | "trust";
@@ -17,6 +18,11 @@ export interface HistoryFact {
   at: string;
   /** 仅 trust：关系是变好还是变差。缺失=方向未采集，不按 up 兜底。 */
   direction?: "up" | "down";
+  /**
+   * 仅 promise：后续同一对象的事件是否兑现。
+   * 缺失 = 还没核对（open）；kept = 后来按原话补上了；broken = 同一对象后来又失败，且没有更晚的修复。
+   */
+  fulfillment?: "open" | "kept" | "broken";
 }
 
 const REPAIR = /(?:改口|重做|重跑|按原话重做|补上了|没守住|已按原话|已按同一|已对齐|改完|已改|修好|已修|修复)/u;
@@ -215,6 +221,51 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
   return out;
 }
 
+/**
+ * 承诺兑现核对。承诺本身只在说出那一轮记一次；后来同一对象的失败/修复
+ * 决定它是还在、做到了、还是没做到。没有后续证据保持 open，不编兑现。
+ *
+ * 口径与情绪门同一条：修复只认「补上了/已按/已对齐/已改/改完/改口」，
+ * 不认 history 自己更宽的 REPAIR（「修好了」「重做」不算兑现）。
+ */
+export function settlePromises(facts: HistoryFact[], episodes: SoulEpisode[]): HistoryFact[] {
+  const promises = facts.filter((f) => f.kind === "promise");
+  if (promises.length === 0) return facts;
+  const rest = facts.filter((f) => f.kind !== "promise");
+  const settled = promises.map((p) => {
+    const later = episodes.filter((ep) => ep.at > p.at && referent(ep) === p.object && p.object !== "这件事");
+    const repairAt = later
+      .filter((ep) => episodeRepaired(ep))
+      .map((ep) => ep.at)
+      .sort()
+      .at(-1);
+    // 没做到只认「没守住」，不认一般的负向回复。否则「修好了」这种更宽的修复措辞
+    // 会被失败口径误判成 broken，兑现环和情绪门就不再是同一条线。
+    const failAt = later
+      .filter((ep) => {
+        const said = cleanFix(ep.agentStance ?? "").trim();
+        const aftermath = cleanFix((ep.outcome ?? "").trim() || (ep.agentStance ?? "")).trim();
+        const text = aftermath !== "" ? aftermath : said;
+        return ep.object === p.object && text !== "" && /没守住/u.test(text);
+      })
+      .map((ep) => ep.at)
+      .sort()
+      .at(-1);
+    let fulfillment: HistoryFact["fulfillment"] = "open";
+    if (repairAt && (!failAt || repairAt >= failAt)) fulfillment = "kept";
+    else if (failAt) fulfillment = "broken";
+    const evidence = later
+      .filter((ep) => (fulfillment === "kept" ? episodeRepaired(ep) : fulfillment === "broken" && ep.at === failAt))
+      .map((ep) => ep.episodeId);
+    return {
+      ...p,
+      fulfillment,
+      episodeIds: [...new Set([...p.episodeIds, ...evidence])],
+    };
+  });
+  return [...rest, ...settled];
+}
+
 /** 同一对象先失败后修复，才记反悔。只有失败不编。 */
 export function reversals(facts: HistoryFact[]): HistoryFact[] {
   const fails = facts.filter((f) => f.kind === "failure");
@@ -236,10 +287,71 @@ export function reversals(facts: HistoryFact[]): HistoryFact[] {
   return out;
 }
 
+/**
+ * 矛盾：同对象上更晚的一次「未修复失败」证伪了此前「我补上了/后来改成」这条主张。
+ *
+ * 判据线与情绪门、承诺核对同一条：修复只认 episodeRepaired，比较用 referent(ep)（条目
+ * meta.object 存的就是它），对象抽不出来（「这件事」）时宁可不判，不拿泛指当锚。
+ * 幂等锚是 meta.lastContradictionEpisode：同一集事件只记一条矛盾，否则每 10 分钟
+ * 一轮 tick 会把同一件事重复计到 freezeContradictions，把条目直接冻掉。
+ */
+export interface RepairContradiction {
+  itemId: string;
+  object: string;
+  episodeId: string;
+  at: string;
+}
+
+export function contradictRepairClaims(items: PersonaItem[], episodes: SoulEpisode[]): RepairContradiction[] {
+  const out: RepairContradiction[] = [];
+  for (const it of items) {
+    const meta = it.meta as { historyKind?: string; object?: string; lastContradictionEpisode?: string } | undefined;
+    // 只有「我修好了」这一类主张会被后来的失败证伪；失败事实本身不会。
+    if (meta?.historyKind !== "repair" && meta?.historyKind !== "review") continue;
+    // 只判自我层：自我事实的 object 是「争的是什么事」（referent），能和后来同一件事对上。
+    // 关系事实的 object 是那个人，任何一次后续争执都会命中——那会把关系层「我补上了」
+    // 成批冻掉，是另一项产品决定。这里不拿人当主题锚，明确留给下一版。
+    if (it.layer !== "self") continue;
+    const object = (meta.object ?? "").trim();
+    if (object === "" || object === "这件事") continue;
+    const later = episodes
+      .filter((ep) => ep.at > it.lastEvidenceAt && referent(ep) === object)
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+    const latest = later[0];
+    // 最新一条仍是修复（或查不出结论）：主张还成立，不记矛盾。
+    if (!latest || episodeRepaired(latest)) continue;
+    // 证据独立性按自然日计：同一天里同一件事的多条记录不算第二次矛盾。
+    if (latest.day === it.lastEvidenceAt.slice(0, 10)) continue;
+    if (meta.lastContradictionEpisode === latest.episodeId) continue;
+    out.push({ itemId: it.itemId, object, episodeId: latest.episodeId, at: latest.at });
+  }
+  return out;
+}
+
+/**
+ * 事件史条目是否需要重写：权重和 direction 都是判据的一部分。
+ * 只比文本会把「同一句信任事实、后来补上了 direction」永远挡在更新之外——生产关系史
+ * 于是停在无方向的旧快照上。
+ */
+export function historyItemNeedsUpdate(prev: PersonaItem | undefined, next: PersonaItem): boolean {
+  if (!prev) return true;
+  if (prev.state !== "active" || prev.weight !== next.weight) return true;
+  const prevMeta = prev.meta as { direction?: string; fulfillment?: string; object?: string } | undefined;
+  const nextMeta = next.meta as { direction?: string; fulfillment?: string; object?: string } | undefined;
+  if (prevMeta?.direction !== nextMeta?.direction) return true;
+  // 对象锚是矛盾判据的唯一依据：老条目没有 meta.object，不补锚就永远进不了 contradictRepairClaims，
+  // 生产者等于不存在。只在「新一轮有锚、旧条目没有」时重写，反向不成立（不能用无锚快照覆盖掉已锚定的条目）。
+  if (nextMeta?.object && prevMeta?.object !== nextMeta.object) return true;
+  // 承诺后来兑现或失约，文本没变也必须重写，否则注入永远停在「我答应过自己」。
+  return prevMeta?.fulfillment !== nextMeta?.fulfillment;
+}
+
 export function historyToItems(facts: HistoryFact[], now: string): PersonaItem[] {
   return facts.map((f) => ({
     // 文案进 hash：同一事件换了写法就是新事实，旧文案会退出注入，而不是被幂等更新挡住。
-    itemId: f.layer + ":hx-" + textHash(f.kind + "|" + f.text + "|" + f.episodeIds.join(",")).slice(0, 12),
+    // 承诺的后续证据不进 id：兑现只改 meta，不新开一条。否则旧的「我答应过自己」
+    // 会和「后来做到了」同时停在注入里，兑现环看起来接上了，读的人却看到两条。
+    itemId: f.layer + ":hx-" + textHash(f.kind + "|" + f.text + "|" + (f.kind === "promise" ? f.episodeIds[0] ?? "" : f.episodeIds.join(","))).slice(0, 12),
     layer: f.layer,
     text: f.text,
     state: "active" as const,
@@ -275,7 +387,11 @@ export function historyToItems(facts: HistoryFact[], now: string): PersonaItem[]
     meta: {
       source: "episode-history",
       historyKind: f.kind,
+      // 对象是矛盾判据的锚：没有它就只剩「同一层出现反向主张」这种没法确定性实现的措辞。
+      object: f.object,
       ...(f.direction ? { direction: f.direction } : {}),
+      // 未核对的承诺不写 fulfillment，避免把「还没证据」伪装成已判定。
+      ...(f.fulfillment && f.fulfillment !== "open" ? { fulfillment: f.fulfillment } : {}),
     },
   }));
 }

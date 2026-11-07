@@ -41,6 +41,10 @@ const CORRECTION_MARKERS: RegExp[] = [
   /(?:重做|再来一遍|返工|推倒|重新做|别自作主张|谁让你)/u,
   /(?:我说的是|我的意思是|你理解错|指的是)/u,
   /(?:还是不对|又说|仍然没有|还是没)/u,
+  /\b(?:that's|that is|this is) (?:wrong|incorrect|not right|not what i (?:said|meant))\b/iu,
+  /\b(?:you|u) (?:got it wrong|broke|missed|deleted|removed|forgot|ignored|misread)\b/iu,
+  /\b(?:redo|start over|do it again|don't make (?:things|stuff) up|stop (?:making|inventing) (?:things|stuff) up)\b/iu,
+  /\b(?:i said|i meant|what i meant|you misunderstood)\b/iu,
 ];
 
 /** 分歧/反对：立场冲突（不一定带「错」字）。 */
@@ -49,12 +53,16 @@ const DIVERGENCE_MARKERS: RegExp[] = [
   /(?:不是我要的|不应该是|不应该这样|我不这么|我不同意)/u,
   /(?:我认为应该|我觉得应该|必须是|只能)/u,
   /(?:不要为了|不能为了|别为了)/u,
+  /\b(?:i (?:don't|do not) agree|i disagree|i (?:don't|do not) accept|i (?:don't|do not) buy)\b/iu,
+  /\b(?:it should be|should not be|not what i want|i think it should|must be)\b/iu,
+  /\b(?:don't|do not) (?:do it )?(?:just )?(?:for|to)\b/iu,
 ];
 
 /** 拍板/决定：他做了选择，选择本身携带优先级。 */
 const DECISION_MARKERS: RegExp[] = [
   /(?:拍板|定案|定了|就按|就这个|用这个|采用|采纳|批准|同意)/u,
   /(?:改成|换成|按这个|按我说|按方案|落地|开工|开始做|动手)/u,
+  /\b(?:go with|let's go with|use this|switch to|approved|agreed|ship it|start (?:on )?(?:it|this))\b/iu,
 ];
 
 /** 价值冲突：取舍词一旦出现，这句话就在说「什么比什么重要」。 */
@@ -62,12 +70,14 @@ const VALUE_MARKERS: RegExp[] = [
   /(?:宁可|宁愿|与其|取舍|权衡|放弃|牺牲|代价|底线|原则)/u,
   /(?:不能为了|不要为了|不换|绝不换|不拿.{0,8}换)/u,
   /(?:宁可.{0,12}也不|宁愿要.{0,12}不要|拿.{0,8}换)/u,
+  /\b(?:rather than|instead of|trade-?off|bottom line|principle|give up|sacrifice|prioriti[sz]e)\b/iu,
 ];
 
 /** 肯定：他明确说「这样对」——正向情绪的生产来源，过去全被当成噪音丢掉。 */
 const PRAISE_MARKERS: RegExp[] = [
   /(?:改得好|做得好|干得好|这就对了|就按这个|可以了|不错|很好|漂亮|靠谱)/u,
   /(?:辛苦了|辛苦你|谢谢你|感谢|麻烦你了|费心了)/u,
+  /\b(?:well done|good job|nice work|great work|that's right|looks good|this is good|thanks|thank you|appreciate it)\b/iu,
 ];
 
 /** 追责：他把问题指到我头上，且没有认可是我的自述——对事是对事，对人才有火。 */
@@ -78,16 +88,20 @@ const COMPLAINT_MARKERS: RegExp[] = [
   /(?:太.{1,4}了){2,}/u,
   /(?:又|还)(?:出现|冒出来).{0,6}(?:条|个|问题)/u,
   /(?:不是要求|说好的|不是说好).{0,8}(?:用|按|组件|库)/u,
+  /\b(?:why (?:do|did|does|is|are) you|you (?:again|always|never)|this is broken|it (?:doesn't|does not) work|not working)\b/iu,
+  /\b(?:that's not what (?:i|we) (?:asked|agreed)|you were supposed to)\b/iu,
 ];
 
 /** 催促：时间压力本身就是一种情绪来源，和「你错怪我了」不是一回事。 */
 const PRESSURE_MARKERS: RegExp[] = [
   /(?:尽快|赶紧|马上|立刻|现在就|今晚|今天之内|下班前|等着用|很急|急用)/u,
+  /\b(?:asap|right now|immediately|by (?:end of day|eod|tonight)|urgent|waiting (?:on|for) (?:it|this))\b/iu,
 ];
 
 /** 作罢：放弃争取，情绪是无奈；再判成失望就会把「我不争了」读成「你没给我」。 */
 const RESIGNATION_MARKERS: RegExp[] = [
   /(?:算了|随你|你看着办|不管了|你决定|你定吧)/u,
+  /\b(?:whatever|up to you|you decide|forget it|never mind|i give up)\b/iu,
 ];
 
 /** 强度词：决定情绪强度，不决定方向。 */
@@ -95,11 +109,13 @@ const INTENSITY_MARKERS: RegExp[] = [
   /(?:非常|极其|根本|完全|彻底|太|特别|尤其|简直|离谱|过分|严重)/u,
   /(?:气死|火大|恼火|烦躁|焦虑|担心|失望|难受|崩溃|急|慌)/u,
   /(?:必须|一定要|绝不|千万|务必)/u,
+  /\b(?:very|extremely|completely|totally|really|seriously|absolutely|furious|angry|anxious|worried|disappointed|frustrated)\b/iu,
 ];
 
 /** 代价词：values 层「不为效率服务」的确定性证据。 */
 const COST_MARKERS: RegExp[] = [
   /(?:放弃|牺牲|代价|错过|不换|宁愿不|宁可少|宁可慢|多花|花时间|不省这个)/u,
+  /\b(?:give up|sacrifice|costs?|miss|slower|spend (?:more )?time|give up speed|pay the price)\b/iu,
 ];
 
 export interface EpisodeMineOptions {
@@ -293,24 +309,28 @@ function sortKey(row: EpisodeSourceRow): number {
 /** 助手原话是否值得当 voice few-shot：第一人称、短、无代码/路径/清单。 */
 export function isAssistantQuoteCandidate(text: string, minChars: number): boolean {
   const s = stripBullet(text).replace(/\s+/gu, " ").trim();
-  if (s.length < Math.max(6, minChars) || s.length > 80) return false;
+  const cjk = /[\u4e00-\u9fff]/u.test(s);
+  const maxChars = cjk ? 80 : 200;
+  if (s.length < Math.max(6, minChars) || s.length > maxChars) return false;
   if (/[{}<>`]/u.test(s)) return false;
   if (/(?:https?:\/\/|[A-Za-z]:[\\/]|\/[\w.-]+\/|\.(?:ts|js|json|md|ya?ml)\b)/u.test(s)) return false;
   if (/^#+\s/u.test(s) || /^\|/u.test(s) || /^[-*+·•]\s/u.test(s)) return false;
   if (/^(?:操作|结果|结论|输出|步骤|报错|错误|已|运行|执行|测试|文件|命令|参数|说明)[：:]/u.test(s)) return false;
-  if (!/我/u.test(s)) return false;
+  if (!/(?:我|\bI\b|\bI(?:'m|'ve|'d|'ll)\b)/u.test(s)) return false;
   return true;
 }
 
 /** 一句话是否值得当 few-shot（短、无代码/路径、像人话）。 */
 export function isVoiceQuoteCandidate(text: string, minChars: number): boolean {
   const s = stripBullet(text).replace(/\s+/gu, " ").trim();
-  if (s.length < Math.max(6, minChars) || s.length > 80) return false;
+  const cjk = /[\u4e00-\u9fff]/u.test(s);
+  const maxChars = cjk ? 80 : 200;
+  if (s.length < Math.max(6, minChars) || s.length > maxChars) return false;
   if (/[{}<>`]/u.test(s)) return false;
   if (/(?:https?:\/\/|[A-Za-z]:[\\/]|\/[\w.-]+\/|\.(?:ts|js|json|md|ya?ml)\b)/u.test(s)) return false;
   if (/^#+\s/u.test(s) || /^\|/u.test(s)) return false;
   if (/[了吗呢？?]$/u.test(s) && s.length > 40) return false;
-  return /(?:我|不要|别|必须|先|就|不|可以|按|这个|你|宁可)/u.test(s);
+  return /(?:我|不要|别|必须|先|就|不|可以|按|这个|你|宁可|\bI\b|\bI(?:'m|'ve|'d|'ll)\b|\b(?:would rather|rather than|instead of|never|must|should|won't|don't)\b)/u.test(s);
 }
 
 /**
@@ -318,7 +338,7 @@ export function isVoiceQuoteCandidate(text: string, minChars: number): boolean {
  * 不走 LLM，不做「总结」——只切段与摘句。
  */
 const STANCE_MARKER_RE =
-  /搞错|弄错|写错|改坏|漏了|不对|错了|假绿|谢谢|感谢|辛苦|改得好|做得好|不错|漂亮|靠谱|尽快|赶紧|马上|立刻|今晚|今天之内|等着用|急用|算了|随你|你看着办|不管了|你决定|缺陷|必修|打回|未收口|不通过|中断|太.{0,8}了/u;
+  /搞错|弄错|写错|改坏|漏了|不对|错了|假绿|谢谢|感谢|辛苦|改得好|做得好|不错|漂亮|靠谱|尽快|赶紧|马上|立刻|今晚|今天之内|等着用|急用|算了|随你|你看着办|不管了|你决定|缺陷|必修|打回|未收口|不通过|中断|太.{0,8}了|\b(?:wrong|incorrect|broke|missed|thanks|thank you|good job|well done|asap|urgent|whatever|up to you|you decide|broken|not working|disappointed|furious|angry)\b/iu;
 
 /**
  * 立场切片：长 prompt 里只有带情绪/态度的那一句是他此刻的立场。
@@ -593,7 +613,9 @@ export function episodeAppraisal(
   const hasResponse = ep.agentStance.trim() !== "";
   const both = `${ep.userStance ?? ""} ${ep.agentStance}`;
   const utterance = ep.userStance ?? "";
-  const publicExposure0 = opts?.publicSession === true || /当着|当众|大家|会议上/u.test(both);
+  const publicExposure0 =
+    opts?.publicSession === true ||
+    /当着|当众|大家|会议上|\b(?:in front of (?:everyone|the team|the group)|publicly|on the (?:call|meeting)|in the meeting)\b/iu.test(both);
   const exposure0: "public" | "private" = publicExposure0 ? "public" : "private";
   // 四类短句的情绪方向由句式决定，不再套「纠正」的默认负值——
   // 否则「辛苦你了」会被算成负向事件，「算了」会被算成失望。
@@ -620,18 +642,20 @@ export function episodeAppraisal(
     const mySide = ep.outcome.trim() !== "" ? ep.outcome : ep.agentStance;
     // 「不是我的问题」是明说；拿证据顶回（返回正常/上游缓存/日志/实测）同样是把我这边洗清，
     // 只是没把「不是我的问题」四个字说出来。举证不足就不算——否则每句追责都成了被错怪。
-    const refuted = /返回正常|上游缓存|上游|缓存了旧数据|日志里没|查了日志|实测|真机|截图里|我查到|我核过|复现不出来|旧数据/u.test(mySide);
-    const exculpated = /不是我造成|不是我的问题|你的问题|你弄错/u.test(mySide) || refuted;
-    const admitted = /我错了|是我的问题|我没做到|我重做|我改口|补上|已补|已按|已对齐|逐项量过|收口/u.test(mySide);
+    const refuted = /返回正常|上游缓存|上游|缓存了旧数据|日志里没|查了日志|实测|真机|截图里|我查到|我核过|复现不出来|旧数据|\b(?:not my fault|not caused by me|your (?:problem|bug)|you got it wrong|upstream|cache[ds]?|logs? (?:show|say)|tested|reproduce[ds]?|old data)\b/iu.test(mySide);
+    const exculpated = /不是我造成|不是我的问题|你的问题|你弄错|\b(?:not my fault|not caused by me|your (?:problem|bug)|you got it wrong)\b/iu.test(mySide) || refuted;
+    const admitted = /我错了|是我的问题|我没做到|我重做|我改口|补上|已补|已按|已对齐|逐项量过|收口|\b(?:my fault|my mistake|i was wrong|i missed|i'll fix|i will fix|fixed|redo|already fixed|aligned|verified)\b/iu.test(mySide);
     // 他一边怪我，一边说了自己付出的代价（加班/被客户催/被骂）：这不是单纯的追责，
     // 是他也在为这件事付成本——情绪该是同情，不是恼火。代价只看他的话，不替他说。
-    const otherCost = /(?:我|我们)(?:这边|那边)?(?:也|都)?(?:在)?(?:加班|熬夜|扛着|被客户|被领导|被骂|忙到现在|累)/u.test(utterance);
+    const otherCost =
+      /(?:我|我们)(?:这边|那边)?(?:也|都)?(?:在)?(?:加班|熬夜|扛着|被客户|被领导|被骂|忙到现在|累)/u.test(utterance) ||
+      /\b(?:i|we) (?:also )?(?:worked late|stayed up|got yelled at|got blamed|have been swamped|am exhausted|was up all night)\b/iu.test(utterance);
     return {
       goalRelevance: 0.35,
       expectationViolation: 0.75,
       control: 0.7,
       normCompatibility: 0.25,
-      agency: "other",
+      agency: admitted && !exculpated ? "self" : "other",
       socialExposure: exposure0,
       selfCause: admitted && !exculpated,
       otherCause: true,
@@ -665,18 +689,22 @@ export function episodeAppraisal(
       resignation: true,
     };
   }
-  const followed = /(?:改|已|完成|跑|贴|按|给|重做|补|换成)/u.test(ep.outcome);
+  const followed = /(?:改|已|完成|跑|贴|按|给|重做|补|换成)|\b(?:fixed|done|changed|ran|posted|per your|redid|replaced|updated|aligned)\b/iu.test(ep.outcome);
   // 目标相关度原来写 `0.45 + 0.5 * intensity`，而强度下限是 0.35 —— 任何事件都 ≥0.625，
   // 于是 pickTemplate 里「与目标无关」那半边（平静/意外/失落/失望）成了死代码。
   // 现在 = 强度基线 + 「这句话是不是在指挥方向」：带着就按/必须/批准/改成的要求
   // 一定与目标有关（否则他的要求会被读成「平静」，等于没听见）；纯插话才落回无关那半边。
   // 「先」后面接汉字才是派活（先百度/先review 里的后者是英文，不算）；「先做」已单列。
-  const directive = /(?:就按|按方案|按我说|必须|要求|批准|开工|开始做|动手|改成|换成|落地|优先|先做|重做|务必|绝不|千万|先(?=[\u4e00-\u9fa5]))/u.test(utterance);
+  const directive =
+    /(?:就按|按方案|按我说|必须|要求|批准|开工|开始做|动手|改成|换成|落地|优先|先做|重做|务必|绝不|千万|先(?=[\u4e00-\u9fa5]))/u.test(utterance) ||
+    /\b(?:go with|use this|must|required|approve[ds]?|start|change (?:it )?to|switch to|ship it|priority|redo|make sure|never)\b/iu.test(utterance);
   const goalRelevance = Number(
     Math.max(0.25, Math.min(0.95, 0.25 + 0.55 * ep.intensity + (directive ? 0.2 : 0))).toFixed(3),
   );
   // 「我以为要出问题，结果没出」：他就按原样继续、并明说没影响。这是释然，不是叠加的开心。
-  const relieved = ep.kind === "decision" && /没出问题|没影响|没坏|恢复正常|不影响|还好/u.test(utterance);
+  const relieved =
+    ep.kind === "decision" &&
+    /没出问题|没影响|没坏|恢复正常|不影响|还好|\b(?:no issue|no impact|not broken|back to normal|fine|nothing broke)\b/iu.test(utterance);
   const expectationViolation = relieved
     ? 0.45
     : ep.kind === "correction" ? 0.75 : ep.kind === "divergence" ? 0.65 : ep.kind === "value_conflict" ? 0.6 : ep.kind === "decision" ? 0.25 : 0.5;
@@ -687,21 +715,28 @@ export function episodeAppraisal(
   // 时，这一轮也不能再记成我认了。
   const mySide = ep.outcome.trim() !== "" ? ep.outcome : ep.agentStance;
   // 举证/甩锅可以来自任何一侧（我上一轮已经写明、这一轮只是追问）；认账只看我这条回复。
-  const exculpated = /不是我造成|不是我的问题|你的问题|你弄错/u.test(`${ep.agentStance} ${ep.outcome}`);
-  const selfCause = !exculpated && /我错了|是我的问题|我没做到|我重做|我改口|补上|已补|已按|已对齐|逐项量过|收口/u.test(mySide);
-  const otherCause = /不是我造成|不是我的问题|你的问题|你弄错/u.test(both) || exculpated;
-  const publicExposure = opts?.publicSession === true || /当着|当众|大家|会议上/u.test(both);
+  const exculpated =
+    /不是我造成|不是我的问题|你的问题|你弄错|\b(?:not my fault|not caused by me|your (?:problem|bug)|you got it wrong)\b/iu.test(`${ep.agentStance} ${ep.outcome}`);
+  const selfCause =
+    !exculpated &&
+    /我错了|是我的问题|我没做到|我重做|我改口|补上|已补|已按|已对齐|逐项量过|收口|\b(?:my fault|my mistake|i was wrong|i missed|i'll fix|i will fix|fixed|redo|already fixed|aligned|verified)\b/iu.test(mySide);
+  const otherCause =
+    /不是我造成|不是我的问题|你的问题|你弄错|\b(?:not my fault|not caused by me|your (?:problem|bug)|you got it wrong)\b/iu.test(both) || exculpated;
+  const publicExposure =
+    opts?.publicSession === true ||
+    /当着|当众|大家|会议上|\b(?:in front of (?:everyone|the team|the group)|publicly|on the (?:call|meeting)|in the meeting)\b/iu.test(both);
   // 我事后那条回复里写了交付/通过/改好了，且不是被他指出错的当场——这是我自己把事做成了。
   // decision 是「按我的判断落码」，correction 的 outcome 若只是「已改」不算成就，得有可核结果。
   const achievement =
     followed &&
-    /完成|通过|全绿|交付|收口|改好了|修好|已修|已改|对齐|跑过|闭环/u.test(ep.outcome) &&
+    /完成|通过|全绿|交付|收口|改好了|修好|已修|已改|对齐|跑过|闭环|\b(?:done|passed|all green|delivered|closed|fixed|aligned|ran|closed the loop|shipped)\b/iu.test(ep.outcome) &&
     (ep.kind === "decision" || ep.kind === "correction" || ep.kind === "divergence");
   // 上面算出的 exculpated 直接决定 324/330 两条路由，别在这一层再重新判一次。
   // 我没回应，而这件事卡在外部（上游/接口/网络/环境/第三方）：agency 是 environment，
   // 不是「他造成的」——同样是没做成，可推不动的失落和被他否掉的失望不是同一种情绪。
   const envBlocked =
-    !hasResponse && /上游|接口|网络|环境|服务器|缓存|第三方|平台|依赖/u.test(`${utterance} ${ep.outcome}`);
+    !hasResponse &&
+    /上游|接口|网络|环境|服务器|缓存|第三方|平台|依赖|\b(?:upstream|api|network|environment|server|cache|third[- ]party|platform|dependency)\b/iu.test(`${utterance} ${ep.outcome}`);
   return {
     goalRelevance: Number(goalRelevance.toFixed(3)),
     expectationViolation,
@@ -714,6 +749,18 @@ export function episodeAppraisal(
     selfCause,
     otherCause,
   };
+}
+
+/**
+ * 写侧情绪门与读侧立场必须用同一条「已修复」判据。
+ * 只认把结果对上原话的说法（补上了 / 已按 / 已对齐 / 已改 / 改完 / 改口）。
+ * 「收口」是交付词，不算修复；「重做了 / 修好了」也不算——否则「我重做了，下轮再跑」会永久放行。
+ * 证据看我的回复（agentStance）与他纠正之后的那条 outcome，两列任一命中即已修。
+ */
+export const REPAIRED_STANCE = /(?:补上了|已按|已对齐|已改|改完|改口)/u;
+
+export function episodeRepaired(ep: { agentStance?: string; outcome?: string }): boolean {
+  return REPAIRED_STANCE.test(ep.agentStance ?? "") || REPAIRED_STANCE.test(ep.outcome ?? "");
 }
 
 /**

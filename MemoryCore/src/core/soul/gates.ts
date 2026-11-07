@@ -63,6 +63,7 @@ const ARTIFACT_PATTERNS: RegExp[] = [
   /\d+(?:\.\d+)?\s*%/u,
   /\b(?:grep|vitest|typecheck|tsc|node|gh|git|zip|unzip|ocr|a11y|compress|decompress|sqlite|journal|snapshot|probe|bash|pwsh|stdout|stderr)\b/iu,
   /(?:本次|此例|该任务|本轮|首轮|这一轮|该票|本票|该目录|当次)/u,
+  /\b(?:this|that|current|last)\s+(?:task|ticket|round|sprint|session|pr|issue)\b/iu,
 ];
 
 /** 各人格层的「一句话讲得完」上限（字符）。超出=在讲一段经历，不是一条取舍。 */
@@ -76,6 +77,19 @@ export const PERSONA_SHAPE_MAX_CHARS: Record<SoulLayer, number> = {
   narrative: 160,
   method: Number.POSITIVE_INFINITY,
 };
+
+/**
+ * 人格单位长度：CJK 一字=1，非 CJK 字符=0.4（约 2.5 字符折 1 字）。
+ * 判据原本只按字符串长度，英文人格句会被中文字数上限误杀；折算后中文行为不变，
+ * 英文按「同样信息量」给上限，而不是按 UTF-16 码元个数。
+ */
+export function personaLength(text: string): number {
+  let units = 0;
+  // 中文标点也按 1 字计：只折 ASCII 才能让「122 字符、其中 10 个标点」不被算成 116 字，
+  // 否则红线的 120 字硬帽会被标点悄悄放宽（2026-11-06 回归）。
+  for (const ch of text) units += /[\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/u.test(ch) ? 1 : 0.4;
+  return Math.round(units * 10) / 10;
+}
 
 /** 形态门：短 + 不含任务锚。返回首个命中的证据，便于审计为什么被判叙事。 */
 export function personaShape(
@@ -92,8 +106,9 @@ export function personaShape(
         ? config.maxItemChars[layer]
         : undefined;
   const max = Math.min(base, cfgMax ?? base);
-  if (s.length > max) {
-    return { pass: false, detail: `${s.length} 字 > 形态上限 ${max}（叙事，不是一句话取舍）` };
+  const len = personaLength(s);
+  if (len > max) {
+    return { pass: false, detail: `${s.length} 字符（折算 ${len} 字）> 形态上限 ${max}（叙事，不是一句话取舍）` };
   }
   for (const re of ARTIFACT_PATTERNS) {
     const m = re.exec(s);
@@ -232,6 +247,12 @@ const EVENT_PATTERNS: RegExp[] = [
   /(?:tests?|vitest|typecheck|测试)[^。；]{0,12}(?:全绿|passed|failed|通过|失败)/iu,
   /(?:还剩|剩余|待办|下一步|接下来|尚未|进度)[^。；]{0,20}/u,
   /(?:我|本次)[^。；]{0,10}(?:判定|裁定|裁决)[^。；]{0,10}(?:为|是)[^。；]{0,20}/u,
+  /\b(?:finished|submitted|pushed|merged|closed|fixed|landed|deployed|shipped|completed)\b[^.;]{0,28}\b(?:commit|pr|issue|branch|tests?|version|v\d)/iu,
+  /\b(?:commit|pr|issue|merge request)\s*[#:]?\s*[0-9a-f]{6,}/iu,
+  /\b(?:today|yesterday|just now|this round|last round)\b[^.;]{0,32}\b(?:did|changed|ran|checked|found|fixed|confirmed)\b/iu,
+  /\b(?:tests?|vitest|typecheck)\b[^.;]{0,16}\b(?:passed|failed)\b/iu,
+  /\b(?:next step|remaining|todo|still need|left to do)\b/iu,
+  /\bI\s+(?:judged|ruled|decided)\b[^.;]{0,20}\b(?:as|that|to)\b/iu,
 ];
 
 /** 阶段词：本周项目状态，不构成身份。 */
@@ -239,6 +260,8 @@ const STAGE_PATTERNS: RegExp[] = [
   /(?:当前|目前|现阶段|本阶段|这一阶段|眼下)(?:的)?(?:任务|项目|重点|工作|阶段|目标)/u,
   /(?:正在|刚刚|暂时)(?:做|改|处理|推进|验证|排查)/u,
   /(?:本周|本月|这周|这个月|今天|昨天)(?:的)?(?:计划|安排|进度|待办)/u,
+  /\b(?:currently|right now|at the moment)\b[^.;]{0,20}\b(?:working|doing|fixing|investigating)\b/iu,
+  /\b(?:this|next)\s+(?:week|month|sprint)\b[^.;]{0,16}\b(?:plan|schedule|progress|roadmap)\b/iu,
 ];
 
 /** 项目/工具专名：换项目即不成立。 */
@@ -250,23 +273,31 @@ const METHOD_PATTERNS: RegExp[] = [
   /(?:流程|步骤|顺序|方法论|sop|清单|模板|套路|固定顺序|先[^。；]{0,10}再)/iu,
   /(?:我|我的)[^。；]{0,12}(?:做法|工作流|排障顺序|验证顺序|操作顺序)/u,
   /(?:一律|每次|逐条|逐项|分批|切片|按批)[^。；]{0,16}(?:执行|推进|确认|处理|验证)/u,
+  /\b(?:process|steps?|checklist|workflow|sop|playbook|first\b[^.;]{0,20}\bthen)\b/iu,
+  /\b(?:my|the)\s+(?:approach|method|routine|way of working)\b/iu,
+  /\b(?:always|every time|one by one|batch)\b[^.;]{0,20}\b(?:run|check|confirm|verify|process)\b/iu,
 ];
 
 /** 两难/取舍标记：价值与红线在这里显形。 */
 const DILEMMA_PATTERNS: RegExp[] = [
   /(?:宁可|宁愿|与其|而不是|也不|也要|即使|哪怕|取舍|权衡|冲突时|打架|矛盾时)/u,
   /(?:优先|站在这边|不换|拒绝|放弃|接受不了|不能接受)/u,
+  /\b(?:rather than|instead of|even if|even when|trade-?off|prioriti[sz]e|give up|refuse|won't trade|would rather)\b/iu,
+  /\b(?:would|'d)\s+rather\b[^.;]{0,40}\bthan\b/iu,
 ];
 
 /** 第一人称特质句。 */
 const TRAIT_PATTERNS: RegExp[] = [
   /^我(?:在意的|看重的|信的|相信|倾向|习惯|受不了|不接受|坚持|宁可|不会|从不|始终|更愿意|更喜欢)/u,
   /^我(?:是|就是)(?:一个|那种|个)/u,
+  /^I(?:'m| am)\s+(?:the kind|someone|a person)\b/iu,
+  /^I\s+(?:care about|value|believe|tend to|can't stand|cannot stand|don't accept|do not accept|always|never|prefer|would rather)\b/iu,
 ];
 
 /** 红线/禁令标记。 */
 const BOUNDARY_PATTERNS: RegExp[] = [
   /(?:绝不|不得|严禁|禁止|不允许|不可以|红线|必须先|一律不|永不)/u,
+  /\b(?:never|must not|must never|forbidden|not allowed|red line|under no circumstances)\b/iu,
 ];
 
 export function firstMatch(text: string, patterns: RegExp[]): string | undefined {
@@ -314,16 +345,20 @@ const STANCE_PATTERNS: RegExp[] = [
   /^我(?:认为|觉得|宁可|宁愿|更|只|会|不会|不要|不|要|选|站|倾向|看重|讨厌|喜欢|接受|拒绝)/u,
   /(?:对我来说|我的底线|我看重|我宁可|我宁愿|我不接受|我不做|我选择|我宁愿不|我宁可少)/u,
   /(?:我更在意|我更看重|我宁愿要|我必须先|我绝不)/u,
+  /^I\s+(?:think|believe|would rather|prefer|choose|stand for|value|care about|won't|will not|refuse|accept|don't|do not)\b/iu,
+  /\b(?:to me|my bottom line|what I value|I'd rather|I would rather|I will never|I won't)\b/iu,
 ];
 
 /** 代价词：价值必须点名「为此放弃了什么」；不含代价的价值=便宜的口号。 */
 const COST_TEXT_PATTERNS: RegExp[] = [
   /(?:放弃|牺牲|代价|错过|不换|宁愿不|宁可少|宁可慢|少赚|慢一点|多花|让位|接受损失)/u,
+  /\b(?:give up|sacrifice|costs?|miss|trade|slower|less money|pay the price|let go)\b/iu,
 ];
 
 /** 来路词：narrative 必须讲「从哪来」，否则就是伪装成叙事的自我描述。 */
 const ORIGIN_TEXT_PATTERNS: RegExp[] = [
   /(?:来路|后来|当初|曾经|以前|当时|这些年|过去|早先|从前|一路|之前)/u,
+  /\b(?:used to|back then|at first|over the years|in the past|earlier|before that|along the way)\b/iu,
 ];
 
 export function hasStance(text: string, legacy = false): boolean {
@@ -340,12 +375,15 @@ export function hasCostWording(text: string): boolean {
 const SELF_COMMITMENT_PATTERNS: RegExp[] = [
   /^我(?:承诺|答应|发誓|不愿|不想|害怕|怕|在意|绝不成为|不要成为|要守|选择成为|宁可)/u,
   /(?:我答应过自己|我对我自己|我欠自己|我不愿变成|我不想变成|我怕自己变成)/u,
+  /^I\s+(?:promised|promise|swore|don't want|do not want|fear|care about|will never become|choose to become|would rather)\b/iu,
+  /\bI\s+(?:promised myself|owe it to myself|don't want to become|do not want to become|fear becoming)\b/iu,
 ];
 
 /** 非效率价值：必须能指向一个「没有产出也仍然要守」的东西，否则只是效率的修辞。 */
 const INTRINSIC_VALUE_PATTERNS: RegExp[] = [
   // 「诚实/证据」类必须覆盖它的日常说法，否则模型写「我宁可交回没核实的东西，也不说没问题」会被误杀。
   /(?:体面|尊严|诚实|不骗|好奇|审美|忠诚|不伤害|心安|羞耻|骄傲|干净|交代|对得起|像个人|一手证据|验证|核实|核对|复核|跑过|跑一遍|亲眼看|没看见|未采集|假绿|跑绿|不假设|不假定|不糊弄|不装|降级|删减|半成品|亲读|亲看|原文|二手|转述|把账算清)/u,
+  /\b(?:dignity|honesty|honest|curiosity|integrity|respect|shame|pride|clean|fairness|first-hand|evidence|verify|verified|check|recheck|raw truth|no fake green|not assume|don't assume|do not assume)\b/iu,
 ];
 
 export function hasSelfCommitment(text: string): boolean {
@@ -370,8 +408,12 @@ export function countEpisodeEvidence(ids: string[] | undefined): number {
 export function isSelfVoice(text: string): boolean {
   const s = stripBullet(text);
   if (s === "") return false;
-  if (!/我/u.test(s)) return false;
-  return !/^(?:他|她|用户|对方|这个人|该用户)/u.test(s);
+  // 中文第一人称「我」；英文 /\bI\b/ 及其缩写。只认第一人称，不认「他/用户」画像。
+  const firstPerson = /我/u.test(s) || /\bI(?:'m|'ve|'d|'ll|\b)/u.test(s);
+  if (!firstPerson) return false;
+  if (/^(?:他|她|用户|对方|这个人|该用户)/u.test(s)) return false;
+  if (/^(?:he|she|they|the user|this user|user)\b/iu.test(s)) return false;
+  return true;
 }
 
 /** few-shot 必须逐字出现在合法语料里（recordId 也得真实存在才可信）。 */
@@ -401,7 +443,8 @@ export function verifyVoiceFewShots(
  */
 export function survivesProjectSwap(text: string): boolean {
   if (!isProjectBound(text)) return true;
-  return hasDilemma(text) && /^我/u.test(stripBullet(text));
+  const s = stripBullet(text);
+  return hasDilemma(text) && (/^我/u.test(s) || /^I\b/iu.test(s));
 }
 
 /** 证据独立性：soul/model 自身产出占比上限。 */
@@ -526,8 +569,9 @@ export function evaluateCandidate(text: string, opts: EvaluateOptions): GateRepo
   // 29 条 strict_rule 里有 4 条（124~144 字）被 boundary 120 字上限判 too_long 直接消失，
   // 而红线段此刻已被人格 boundary 接管——等于用户亲手写的四条红线从注入面被抹掉。
   // 丢弃用户原话比注入一行略长的禁令危险得多；长度治理交给渲染层（budget/maxItems 硬上限）。
-  if (!opts.legacy && s.length > maxChars) {
-    out.push({ pass: false, code: "too_long", detail: `${s.length} 字 > 单条上限 ${maxChars}` });
+  const lenUnits = personaLength(s);
+  if (!opts.legacy && lenUnits > maxChars) {
+    out.push({ pass: false, code: "too_long", detail: `${s.length} 字符（折算 ${lenUnits} 字）> 单条上限 ${maxChars}` });
   }
 
   // 事件句/阶段词/专名三针对「会被注入的层」永远是硬门：legacy 只放宽形态（红线字数、两难），
@@ -579,10 +623,11 @@ export function evaluateCandidate(text: string, opts: EvaluateOptions): GateRepo
 
   if (opts.layer === "boundary") {
     const max = opts.legacy ? 200 : cfg.redlineMaxChars;
+    const redlineLen = personaLength(s);
     out.push(
-      s.length <= max
+      redlineLen <= max
         ? { pass: true, code: "ok", detail: "红线长度合规" }
-        : { pass: false, code: "redline_shape", detail: `红线 ${s.length} 字 > ${max}` },
+        : { pass: false, code: "redline_shape", detail: `红线 ${s.length} 字符（折算 ${redlineLen} 字）> ${max}` },
     );
   }
 

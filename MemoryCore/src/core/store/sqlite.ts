@@ -3741,6 +3741,90 @@ private migrateMemoryAuditActionEnum(): void {
     }
   }
 
+  /** 条目级回滚（A7 回滚演练的落点）：只回滚点名的 itemId，每次写一条 action=rollback 账本。
+   *  语义 = 把条目恢复到「最近一次非回滚变更之前」的快照；该变更若原本是新建（before=null），
+   *  回滚即删除该条目。全程单事务；不改其它租户/条目；重复回滚幂等为空操作（无变更可找）。
+   *  不提供「一键全量回滚」：那等于把人格历史整段抹掉，回滚也必须可审计、可点名。 */
+  rollbackSoulPersona(
+    tenant: CoreTenant | undefined,
+    itemIds: string[],
+    opts?: { now?: string; reason?: string; gate?: string },
+  ): { restored: number; removed: number; skipped: number } {
+    const t = normalizeCoreTenant(tenant);
+    const now = opts?.now ?? new Date().toISOString();
+    const ids = [...new Set((itemIds ?? []).map((s) => String(s).trim()).filter(Boolean))];
+    let restored = 0;
+    let removed = 0;
+    let skipped = 0;
+    if (ids.length === 0) return { restored, removed, skipped };
+    const latest = this.db.prepare(
+      `SELECT * FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? AND item_id = ?
+       AND action <> 'rollback' ORDER BY at DESC, entry_id DESC LIMIT 1`,
+    );
+    const current = this.db.prepare(
+      "SELECT * FROM soul_persona WHERE item_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+    );
+    const del = this.db.prepare(
+      "DELETE FROM soul_persona WHERE item_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+    );
+    const upsert = this.db.prepare(`INSERT INTO soul_persona (
+      item_id, team_id, user_id, agent_id, layer, text, state, weight, evidence_json, days_json,
+      origins_json, created_at, updated_at, last_evidence_at, merged_into, aliases_json,
+      contradictions, drift_json, meta_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(item_id, team_id, user_id, agent_id) DO UPDATE SET
+      layer = excluded.layer, text = excluded.text, state = excluded.state,
+      weight = excluded.weight, evidence_json = excluded.evidence_json,
+      days_json = excluded.days_json, origins_json = excluded.origins_json,
+      updated_at = excluded.updated_at, last_evidence_at = excluded.last_evidence_at,
+      merged_into = excluded.merged_into, aliases_json = excluded.aliases_json,
+      contradictions = excluded.contradictions, drift_json = excluded.drift_json,
+      meta_json = excluded.meta_json`);
+    const led = this.db.prepare(`INSERT OR IGNORE INTO soul_ledger (
+      entry_id, team_id, user_id, agent_id, at, trigger, layer, item_id, action,
+      before_hash, after_hash, gates_json, reason, evidence_json, prompt_version, model, before_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const hash = (v: unknown): string => createHash("sha1").update(JSON.stringify(v)).digest("hex").slice(0, 16);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const id of ids) {
+        const row = latest.get(t.teamId, t.userId, t.agentId, id) as Record<string, unknown> | undefined;
+        if (!row) { skipped += 1; continue; }
+        const raw = row.before_json;
+        const before = typeof raw === "string" && raw !== "" ? (JSON.parse(raw) as PersonaItem) : null;
+        const curRow = current.get(id, t.teamId, t.userId, t.agentId) as Record<string, unknown> | undefined;
+        const cur = curRow ? mapSoulPersonaRow(curRow) : null;
+        if (before) {
+          upsert.run(
+            before.itemId, t.teamId, t.userId, t.agentId, before.layer, before.text, before.state, before.weight,
+            JSON.stringify(before.evidenceIds ?? []), JSON.stringify(before.evidenceDays ?? []),
+            JSON.stringify(before.evidenceOrigins ?? []), before.createdAt, now, before.lastEvidenceAt,
+            before.mergedInto ?? null, before.aliases ? JSON.stringify(before.aliases) : null,
+            before.contradictions ?? 0, before.driftHistory ? JSON.stringify(before.driftHistory) : null,
+            before.meta ? JSON.stringify(before.meta) : null,
+          );
+          restored += 1;
+        } else {
+          del.run(id, t.teamId, t.userId, t.agentId);
+          removed += 1;
+        }
+        led.run(
+          `rb-${hash({ id, now, before: before?.itemId ?? null })}`, t.teamId, t.userId, t.agentId, now,
+          "rollback", before?.layer ?? cur?.layer ?? null, id, "rollback",
+          cur ? hash(cur) : null, before ? hash(before) : null,
+          JSON.stringify([opts?.gate ?? "manual_rollback"]), opts?.reason ?? "条目级回滚：恢复到最近一次变更前的快照",
+          JSON.stringify(before?.evidenceIds ?? cur?.evidenceIds ?? []), null, null,
+          cur ? JSON.stringify(cur) : null,
+        );
+      }
+      this.db.exec("COMMIT");
+      return { restored, removed, skipped };
+    } catch (err) {
+      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      throw err;
+    }
+  }
+
   listSoulLedger(tenant?: CoreTenant, limit = 100): SoulLedgerEntry[] {
     const t = normalizeCoreTenant(tenant);
     const n = Math.max(1, Math.min(1000, Math.floor(limit)));
