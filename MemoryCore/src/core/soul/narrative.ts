@@ -94,12 +94,89 @@ function episodeWeight(ep: SoulEpisode): number {
   return kindW * 0.6 + clamp01(ep.intensity) * 0.4 + stanceW;
 }
 
+/**
+ * 引号、说话人前缀这类写入侧残留：摘要只留「话本身」。
+ *
+ * 生产实测（2026-11-10）：事件的 user_stance 里已经带「你说……」，摘要再套一层
+ * 就变成「你说「你说这周要把对外说明改成短句…」」，读起来像口吃，也不是原话。
+ * 这里只剥外壳（前缀 + 成对引号），不动话的内容——摘要不许替人说没说过的话。
+ */
+function speechText(raw: string | null | undefined): string {
+  let s = String(raw ?? "").replace(/\s+/g, " ").trim();
+  for (let i = 0; i < 3; i += 1) {
+    const before = s;
+    // 只认「我/你 + 说回讲问」这类明确前缀。答只认「答道」——「我答应过自己」是正文，
+    // 剥成「应过自己」就成了别的话（生产实测踩过这个坑）。
+    s = s
+      .replace(/^(?:我|你)(?:说|回|讲|问)(?:了|过|道)?[:：]?\s*/, "")
+      .replace(/^(?:我|你)答道[:：]?\s*/, "")
+      .replace(/^(?:说|回)(?:过)?[:：]\s*/, "")
+      .trim();
+    s = s.replace(/^[「『“"'‘《]+/, "").replace(/[」』”"'’》]+$/, "").trim();
+    if (s === before) break;
+  }
+  return s;
+}
+
+/** 两串是否共享一段 ≥size 字的连续内容（中文按字算，10 字基本就是同一句话）。 */
+function sharesChunk(a: string, b: string, size: number): boolean {
+  if (a.length < size || b.length < size) return false;
+  for (let i = 0; i + size <= a.length; i += 1) {
+    if (b.includes(a.slice(i, i + size))) return true;
+  }
+  return false;
+}
+
+/**
+ * 头句已经说过的话不再复述。
+ *
+ * 除了整段包含，还要挡住「标题里已经写过半句」的情况：生产上 title 是
+ * 「拍板：你说这周要把对外说明改成短句」，user_stance 又是同一句，
+ * 只按包含判不出来，摘要就变成两遍同一句话。
+ */
+function repeatsOneOf(text: string, seen: string[]): boolean {
+  const norm = (v: string) =>
+    v.replace(/[\s，。；：、！？,.!?;:「」『』“”"'‘’《》()（）【】…—-]/g, "");
+  const t = norm(text);
+  if (t.length < 6) return false;
+  return seen.some((s) => {
+    const u = norm(s);
+    if (u.length < 6) return false;
+    return t.includes(u) || u.includes(t) || sharesChunk(t, u, 10);
+  });
+}
+
+/**
+ * 原话开头复述了标题里的内容就剪掉那一截：生产上标题是「任务：现在十一点四十」，
+ * 原话是「现在十一点四十。目录在哪……」，摘要会变成「现在十一点四十，你说「现在十一点四十。目录……」」。
+ * 只剪与标题逐字相同的前缀，不补任何字。
+ */
+function trimEcho(head: string, text: string): string {
+  const tail = head.includes("：") ? head.split("：").slice(1).join("：").trim() : "";
+  if (tail.length >= 6 && text.startsWith(tail)) {
+    return text.slice(tail.length).replace(/^[，。；、！？,.!?;：\s]+/, "").trim();
+  }
+  return text;
+}
+
 function sentenceFor(ep: SoulEpisode): string {
   const day = (ep.day && ep.day.length >= 10 ? ep.day : ep.at).slice(5, 10);
-  let s = day + "：" + clip(ep.title || ep.object || "一件事", 60);
-  if (ep.userStance) s += "，你说「" + clip(ep.userStance, 40) + "」";
-  if (ep.agentStance) s += "，我回「" + clip(ep.agentStance, 40) + "」";
-  if (ep.outcome) s += "，后来" + clip(ep.outcome, 40);
+  const head = clip(ep.title || ep.object || "一件事", 60);
+  const seen: string[] = [head];
+  let s = day + "：" + head;
+  // 原话本身已经是第一人称时不再套「我说」——「我回「我改到 util 了」」读起来像复读机。
+  const userSaid = trimEcho(head, speechText(ep.userStance));
+  if (userSaid !== "" && !repeatsOneOf(userSaid, seen)) {
+    s += userSaid.startsWith("你") ? "，" + clip(userSaid, 48) : "，你说「" + clip(userSaid, 48) + "」";
+    seen.push(userSaid);
+  }
+  const agentSaid = trimEcho(head, speechText(ep.agentStance));
+  if (agentSaid !== "" && agentSaid !== userSaid && !repeatsOneOf(agentSaid, seen)) {
+    s += agentSaid.startsWith("我") ? "，" + clip(agentSaid, 48) : "，我回「" + clip(agentSaid, 48) + "」";
+    seen.push(agentSaid);
+  }
+  const after = speechText(ep.outcome);
+  if (after !== "" && !repeatsOneOf(after, seen)) s += "，后来" + clip(after, 48);
   return s;
 }
 
@@ -189,9 +266,19 @@ export interface NarrativeDerivation {
  * 四个租户都算「narr-<period>-v1」时，第二个及之后的 INSERT OR IGNORE 一行都不写，
  * 章与证据被静默丢掉。前缀只解决唯一性，不改变「同租户同周期一条 active」的索引口径。
  */
-export function narrativeTenantTag(tenant: CoreTenant): string {
+export function tenantTagOf(tenant: CoreTenant): string {
   const raw = String(tenant.teamId ?? "") + "|" + String(tenant.userId ?? "") + "|" + String(tenant.agentId ?? "");
   return createHash("sha1").update(raw).digest("hex").slice(0, 8);
+}
+
+/**
+ * 叙事章 id 的租户前缀（语义化别名）。
+ *
+ * 同一把尺也用在其他「id 是全局主键」的 append-only 账本上（如 soul_mood_events），
+ * 那里叫 tenantTagOf——名字不同只是为了让调用点读得懂，值必须一致。
+ */
+export function narrativeTenantTag(tenant: CoreTenant): string {
+  return tenantTagOf(tenant);
 }
 
 /**

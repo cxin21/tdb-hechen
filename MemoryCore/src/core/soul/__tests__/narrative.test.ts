@@ -306,3 +306,76 @@ describe("叙事巩固：显著度衰减、注入门与遗忘", () => {
     expect(line!.evidenceIds).toEqual([]);
   });
 });
+
+describe("章节摘要：原话只写一遍，不套第二层引号", () => {
+  it("事件里已带「你说……」时不出现「你说「你说」」，重复的结果不复述", () => {
+    const m = weekAgo(1);
+    const e = ep({
+      episodeId: "ep-speech",
+      at: m.at,
+      kind: "decision",
+      title: "拍板",
+      userStance: "你说这周要把对外说明改成短句，今天是周五了。",
+      agentStance: "我说过周五前把说明改成短句，一句一件事",
+      outcome: "周五前把说明改成短句，一句一件事",
+    });
+    const out = deriveNarrativeChapters({ episodes: [e], eventIds: new Set(["ep-speech"]), now: NOW });
+    const summary = out.chapters[0]!.chapter.summary;
+    // 话本身在，外壳只剩一层
+    expect(summary).toContain("这周要把对外说明改成短句");
+    expect(summary).not.toContain("你说「你说");
+    expect(summary).not.toContain("「「");
+    // 助手那句与结果说的是同一件事：只出现一次，不当复读机
+    expect(summary.split("一句一件事").length - 1).toBe(1);
+  });
+
+  it("「我答应过自己」是正文，不剥成「应过自己」", () => {
+    const m = weekAgo(1);
+    const e = ep({
+      episodeId: "ep-promise",
+      at: m.at,
+      title: "交目录",
+      userStance: "目录在哪，我要打开看一眼。",
+      agentStance: "我答应过自己，中午前把目录交出去，不空口说在做",
+      outcome: "在共享盘第二层",
+    });
+    const out = deriveNarrativeChapters({ episodes: [e], eventIds: new Set(["ep-promise"]), now: NOW });
+    const summary = out.chapters[0]!.chapter.summary;
+    expect(summary).toContain("我答应过自己");
+    // 剥坏的样子是「我回「应过自己」」：套壳 + 丢字同时出现才判红
+    expect(summary).not.toContain("我回「应过");
+  });
+
+  it("原话开头复述了标题里的内容，只留一次", () => {
+    const m = weekAgo(1);
+    const e = ep({
+      episodeId: "ep-echo",
+      at: m.at,
+      title: "任务：现在十一点四十",
+      userStance: "现在十一点四十。目录在哪，我要打开看一眼。",
+      agentStance: "",
+      outcome: "",
+    });
+    const out = deriveNarrativeChapters({ episodes: [e], eventIds: new Set(["ep-echo"]), now: NOW });
+    const summary = out.chapters[0]!.chapter.summary;
+    expect(summary).toContain("任务：现在十一点四十");
+    expect(summary).toContain("目录在哪，我要打开看一眼。");
+    expect(summary).not.toContain("「现在十一点四十");
+  });
+
+  it("原话本身是第一人称时，不再加「我回」套壳", () => {
+    const m = weekAgo(1);
+    const e = ep({
+      episodeId: "ep-1st",
+      at: m.at,
+      title: "改回 util",
+      userStance: "精度处理应该在 SCOrder 里",
+      agentStance: "我改到 util 了",
+      outcome: "",
+    });
+    const out = deriveNarrativeChapters({ episodes: [e], eventIds: new Set(["ep-1st"]), now: NOW });
+    const summary = out.chapters[0]!.chapter.summary;
+    expect(summary).toContain("我改到 util 了");
+    expect(summary).not.toContain("我回「我");
+  });
+});

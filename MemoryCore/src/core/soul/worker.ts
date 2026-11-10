@@ -66,7 +66,7 @@ import { runPersonStateMaintenance, type PersonStateMaintenanceResult } from "./
 import { runRelationEventBackfill, runRelationEventProvision } from "./relation-backfill.js";
 import { runGoalMaintenance, type GoalMaintenanceResult } from "./goals.js";
 import { runSelfModelMaintenance, type SelfModelMaintenanceResult } from "./self-model-maintenance.js";
-import { runNarrativeMaintenance, type NarrativeMaintenanceResult } from "./narrative.js";
+import { runNarrativeMaintenance, tenantTagOf, type NarrativeMaintenanceResult } from "./narrative.js";
 import { runEpisodeEventProvision } from "./episode-provision.js";
 import { runValueMaintenance, type ValueMaintenanceResult } from "./value-maintenance.js";
 import { SEED_LABELS, TRAIT_PROTOCOL_VERSION, emptyAxisVector, l1Norm, seedStateFromSeeds, type AxisVector } from "./traits.js";
@@ -96,6 +96,18 @@ import {
 import { itemHash as itemHashOf } from "./consolidator.js";
 import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION, rankLabelsByPad, EMOTION_PAD_NEAR_MAX, regulateMood, decayMoodTowardBaseline, normalizeMoodHalfLife } from "./emotion.js";
 import { canSelfReset, measureDrift, pushDrift, trackOf } from "./drift.js";
+
+/**
+ * 心境账本行 id：带上租户前缀。
+ *
+ * soul_mood_events.id 是全局主键（soul-event-ddl.ts:364），旧写法是
+ * `mood-<now>-<kind>`——同一毫秒里两个租户各推一条 appraisal，第二个 INSERT OR IGNORE
+ * 一行不写，账本凭空少一条（与叙事 chapter_id 同一个坑，生产上一度只剩一章）。
+ * 同租户同毫秒同 kind 仍是同一个 id：重试幂等，不重复记账。
+ */
+export function soulMoodEventId(now: string, kind: "appraisal" | "regulation" | "decay", tenant: CoreTenant): string {
+  return `mood-${now}-${kind}-${tenantTagOf(tenant)}`;
+}
 
 /** 语料记录（由调用方从 L1 读取；worker 不直接耦合 L1 表结构）。 */
 export interface SoulEvidenceRecord {
@@ -2623,7 +2635,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         note: string,
       ): void => {
         moodEventRows.push({
-          id: `mood-${now}-${kind}`,
+          id: soulMoodEventId(now, kind, deps.tenant),
           at: now,
           kind,
           label: top?.label ?? null,
@@ -2689,6 +2701,13 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           try {
             const res = await Promise.resolve(store.commitSoulMoodEvents(deps.tenant, moodEventRows));
             moodEventInserted = res?.inserted ?? 0;
+            // 写进 0 行而不是抛错：id 冲突或被拒时账本会静默缺口，而心境已经推进了。
+            // 缺口必须留痕，否则「心境变过、账本上没有」永远查不出来。
+            if (moodEventInserted === 0 && moodEventRows.length > 0) {
+              deps.logger?.warn?.(
+                `[soul-worker] soul_mood_events 本轮 ${moodEventRows.length} 行一条没落库（id 冲突或写入被拒），心境已推进、账本有缺口`,
+              );
+            }
           } catch (err) {
             deps.logger?.warn?.(
               `[soul-worker] commitSoulMoodEvents failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
