@@ -2,7 +2,7 @@
  * identity-utils —— 身份区（U1，DS-SOUL-MEMORY-002 §2.5/§6.5）纯函数：slots 分组与空态判定。
  *
  * identity = 用户身份（我心中的他）；self_identity = agent 自我（我是谁，第一人称）。
- * 渲染顺序沿用 spec §2.7：self 段在前（由 IdentitySection 的渲染顺序保证）。
+ * 渲染顺序沿用 spec §2.7：self 段在前（由 SoulIdentityDual 的渲染顺序保证）。
  * 纯函数、无 DOM 依赖，便于 vitest 直测。
  */
 

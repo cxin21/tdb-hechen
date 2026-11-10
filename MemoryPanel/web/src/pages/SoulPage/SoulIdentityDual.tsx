@@ -1,7 +1,7 @@
 /**
  * SoulIdentityDual —— 身份双槽双栏卡（UI 2.1 P0，2026-09-21；设计师方案 §4.3）。
  *
- * #69（R3 配套，票 ② 两个页面都加叙事小节）：与 IdentitySection 共用 identity-narrative
+ * #69（R3 配套）：复用 identity-narrative
  * 小节组件——绿（叙事生效）→ IdentityNarrativeView「AI 眼中的我」；灰（门关/降级）→
  * NarrativeStatusLine + 存量双栏卡逐位现状；空 → 整段不渲染。数据同源
  * （chatMemoryApi.identityRead）。双栏并排镜像布局 + 长文折叠
@@ -101,7 +101,6 @@ export function SoulIdentityDual({ blockId }: { blockId: string }) {
       <IdentityNarrativeView
         blockId={blockId}
         preview={preview}
-        variant="soul"
         anchorId="_soul-sec-identity"
       />
     );
@@ -119,7 +118,7 @@ export function SoulIdentityDual({ blockId }: { blockId: string }) {
         <span className="_soul-section-title">{t('soul.identity.title')}</span>
         <span className="_soul-chip _soul-chip--person">双槽</span>
       </div>
-      <NarrativeStatusLine variant="soul" />
+      <NarrativeStatusLine />
       <div className="_soul-idgrid">
         {self.length > 0 && (
           <IdentitySlotCard

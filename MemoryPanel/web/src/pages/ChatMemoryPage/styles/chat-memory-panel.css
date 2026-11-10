@@ -1294,7 +1294,7 @@
   color: var(--mem-ink-faint);
   padding: 2px 0;
 }
-/* 邻居属性摘要（P2，2026-11-04）：内核已返回 significance/certainty/valid_*/occurred_at，
+/* 邻居属性摘要（P2，2026-11-04）：内核已返回 significance / certainty / valid_start / occurred_at，
    这里以紧凑 chips 呈现；内容溢出用省略号，完整文本走 title。 */
 ._nb-attrs {
   flex-shrink: 1;
@@ -1682,6 +1682,49 @@
 /* ===== 记忆健康条（Task 3，DS-PANEL-UI-WIKI-SOURCE-001 §2.3）===== */
 ._memory-page-switch {
   margin-bottom: var(--mem-sp-2);
+}
+
+/* ===== T3 重排：三档页签（记忆块 / 图谱 / 回放日志）—— 图谱页签容器 ===== */
+._memory-graph-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mem-sp-3);
+  min-width: 0;
+}
+
+._memory-graph-tab-head {
+  display: flex;
+  align-items: center;
+  gap: var(--mem-sp-3);
+  flex-wrap: wrap;
+  min-height: 32px;
+}
+
+._memory-graph-tab-title {
+  font-size: var(--mem-fs-body);
+  font-weight: 600;
+  color: var(--tea-color-text-primary);
+}
+
+._memory-graph-tab-count {
+  font-size: 12px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-graph-tab-state {
+  padding: 40px 0;
+  text-align: center;
+  font-size: var(--mem-fs-body);
+  color: var(--tea-color-text-tertiary);
+  background: var(--tea-color-bg-secondary-default);
+  border: 1px dashed var(--tea-color-border-level-2, var(--tea-color-border-level-1));
+  border-radius: var(--mem-radius-card);
+}
+
+._memory-graph-tab-canvas {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 ._memory-health-bar {

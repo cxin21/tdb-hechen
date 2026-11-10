@@ -1,14 +1,24 @@
 /**
  * 路由表定义
  *
- * 使用 react-router 的 createHashRouter / RouterProvider。
- * ConsoleLayout 作为父路由，各页面作为子路由。
+ * 单页星图：/ 是常驻画布，/memory /soul /wiki /code /skills /team/* /settings 是六座星门，
+ * 都在 StarmapLayout 里以抽屉形式展开（同一条 hash 路由，刷新/分享不丢）。
  *
- * DSH 特化（Wave 2A）：任务工作台 / LLM Provider 自服务 / 多 agent 接入指引三页已退场，
- * 首页重定向到资产管理（wiki）——不再有"工作台看板"概念。
+ * 旧版 ConsoleLayout 与九个页面整体退到 /legacy/*：新壳成熟前，
+ * 任何被重画漏掉的操作都还能在旧界面里做完，数据与鉴权链完全共用。
  */
-import { createHashRouter, Navigate, type RouteObject } from 'react-router-dom';
+import { createHashRouter, type RouteObject } from 'react-router-dom';
 import { ConsoleLayout } from '@/layouts/ConsoleLayout';
+import StarmapLayout from '@/starmap/StarmapLayout';
+import { StarmapProvider } from '@/starmap/state/StarmapProvider';
+import MemoryStation from '@/starmap/stations/MemoryStation';
+import SoulStation from '@/starmap/stations/SoulStation';
+import WikiStation from '@/starmap/stations/WikiStation';
+import CodeStation from '@/starmap/stations/CodeStation';
+import SkillsStation from '@/starmap/stations/SkillsStation';
+import TeamStation from '@/starmap/stations/TeamStation';
+import SettingsStation from '@/starmap/stations/SettingsStation';
+
 import { WikiPage } from '@/pages/WikiPage';
 import { CodePage } from '@/pages/CodePage';
 import { SkillsPage } from '@/pages/SkillsPage';
@@ -22,9 +32,29 @@ import { SettingsPage } from '@/pages/SettingsPage';
 export const routes: RouteObject[] = [
   {
     path: '/',
+    element: (
+      <StarmapProvider>
+        <StarmapLayout />
+      </StarmapProvider>
+    ),
+    children: [
+      { index: true, element: null },
+      { path: 'memory', element: <MemoryStation /> },
+      { path: 'soul', element: <SoulStation /> },
+      { path: 'wiki', element: <WikiStation /> },
+      { path: 'code', element: <CodeStation /> },
+      { path: 'skills', element: <SkillsStation /> },
+      { path: 'team/members', element: <TeamStation /> },
+      { path: 'team/agents', element: <TeamStation /> },
+      { path: 'team/api-keys', element: <TeamStation /> },
+      { path: 'settings', element: <SettingsStation /> },
+    ],
+  },
+  {
+    path: '/legacy',
     element: <ConsoleLayout />,
     children: [
-      { index: true, element: <Navigate to="/wiki" replace /> },
+      { index: true, element: <WikiPage /> },
       { path: 'wiki', element: <WikiPage /> },
       { path: 'code', element: <CodePage /> },
       { path: 'skills', element: <SkillsPage /> },

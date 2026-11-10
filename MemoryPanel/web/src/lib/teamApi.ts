@@ -63,20 +63,10 @@ export {
 // ── Chat Memory ──
 export {
   chatMemoryApi,
-  classify409Of,
-  conflictOf,
-  promiseConflictOf,
-  rollbackRefusedOf,
   type ChatMemoryBlock,
   type ChatMemoryLayerItem,
   type ChatMemoryLayerMetadata,
   type ChatMemorySearchHit,
-  type PendingDecideConflict,
-  type PromiseDecideConflict,
-  type PendingRollbackRefused,
-  type PendingItem,
-  type ValueAnchor,
-  type ValueProposal,
 } from './api/chat-memory';
 
 // ── 共享类型（从 types.ts 透传） ──

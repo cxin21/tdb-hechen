@@ -20,10 +20,31 @@ export const enUS = {
   'menu.desc.code': 'Repos / index / search / explore',
   'menu.desc.skills': 'All / team pool / agent assets',
   'menu.desc.chat_memory': 'L0–L3 layered memory assets',
-  'menu.desc.soul': 'Dual-slot identity / anchor pools / feeling / pending',
+  'menu.desc.soul': 'Dual-slot identity / feeling / important people / version chain',
   'soul.title': 'Soul',
-  'soul.desc': 'Dual-slot identity / anchor pools / feeling / pending red lines',
   'soul.noAgent': 'No owned agents',
+  'soul.health.ok': 'Injection healthy',
+  'soul.health.degraded': 'Injection degraded',
+  'soul.health.noData': 'No injection data',
+  'soul.health.empty':
+    'Not injected yet (the first turn after a host restart will write it)',
+  'soul.health.last': 'Last {{time}}',
+  'soul.health.card': 'card v{{version}} {{hash}} · {{chars}} chars',
+  'soul.health.fail': '{{count}} failures',
+  'soul.health.noFailReport': 'No failure reports',
+  'soul.health.volatileCounts': 'Injected {{injected}}× · skipped {{skipped}}× as duplicate in 24h',
+  'soul.health.volatileNone': 'Injected {{injected}}× · no dedup in 24h',
+  'soul.emotions.title': 'Emotion detail',
+  'soul.emotions.funnelLine':
+    'Six-stage funnel: candidates {{candidate}} · with object {{objectOk}} · appraised {{appraised}} · label hit {{anchorHit}} · intensity ok {{intensityOk}} · stored {{committed}}',
+  'soul.emotions.empty': 'No emotion stored in this window yet',
+  'soul.emotions.failed': 'Failed to load emotion detail',
+  'soul.emotions.col.time': 'Time',
+  'soul.emotions.col.what': 'Emotion · object',
+  'soul.emotions.col.strength': 'Intensity → decayed',
+  'soul.emotions.col.meta': 'Cause · confidence',
+  'soul.emotions.agencyWords': 'Self|Other|Environment',
+  'soul.emotions.noObject': 'No clear object',
   'soul.identity.title': 'Identity slots',
   // #69: identity narrative preview
   'soul.narrative.title': 'How AI sees me',
@@ -36,22 +57,14 @@ export const enUS = {
   'soul.narrative.details': 'Technical details',
   'soul.narrative.rawFailed': 'Failed to load stored text',
   'soul.narrative.rawEmpty': 'No stored identity entries',
-  'soul.pending.title': 'Pending red-line proposals',
   'soul.feeling.title': 'Current feelings',
-  'soul.feeling.pos': 'Values that drive me',
-  'soul.feeling.neg': 'Values that caution me',
-  'soul.feeling.prime': '; primary {{label}}: {{desc}}',
-  'soul.feeling.primeTag': 'Prime',
-  'soul.feeling.collapse': 'Collapse',
   'memory.badges.core': 'Core fact',
   'memory.badges.verify': 'Verified ×{{n}}',
   'memory.badges.strong': 'Intense',
   'memory.badges.evo': 'Evolved',
   'memory.badges.since': 'Since {{date}}',
   'memory.badges.invalidated': 'Invalidated',
-  'memory.anchors.injectPreview': 'Inject form {{preview}}',
-  'soul.feeling.empty':
-    'No directional value anchors yet (theme anchors with valence ±1 will appear here)',
+  'soul.feeling.empty': 'No recent emotional tone yet (it appears as experiences accumulate)',
   // S-FEEL-1 (M1/S7): recent mood sub-row
   'soul.mood.title': 'Recent mood',
   'soul.mood.positive': 'Positive lean',
@@ -59,12 +72,6 @@ export const enUS = {
   'soul.mood.strained': 'Strained',
   'soul.mood.tooltip':
     'Basis: valence aggregate of {{samples}} experiences within {{window}}h (half-life {{halfLife}}h weighting; thresholds +{{pos}}/−{{neg}}; omitted below {{min}} samples)',
-  'soul.person.title': 'Important people (person anchor view)',
-  'soul.person.expand': 'Evidence chain',
-  'soul.person.collapse': 'Collapse evidence',
-  'soul.person.loading': 'Searching…',
-  'soul.person.empty': 'No personRefs reverse-lookup hits yet (prefer absence)',
-  'soul.person.failed': 'Evidence lookup failed (honest degradation)',
   'menu.desc.team_members': 'Team members / users / roles',
   'menu.desc.team_agents': 'Agent / scope / fixed assets',
   'menu.desc.api_keys': 'Manage your API keys for external clients',
@@ -116,7 +123,6 @@ export const enUS = {
 
   // ===== LoginGate =====
   'login.welcome': 'Memory Hub',
-  'login.subtitle': 'Please select a memory instance and enter your user_key to log in.',
   'login.tagline': 'Centrally manage Agent memory, skills, and knowledge assets',
   'login.field.instance': 'Memory Instance',
   'login.field.userKey': 'User Key',
@@ -137,7 +143,6 @@ export const enUS = {
     'Login response is missing user info (data.user is null). Please contact backend to verify the auth/verify contract.',
 
   // ===== SettingsDialog =====
-  'settings.caption': 'Settings · Permissions',
   'settings.title': 'Resource Module Toggles',
   'settings.desc':
     'Toggles are saved for the current user. When disabled, the plugin will not inject the corresponding capability for that user. Changes take effect immediately for new sessions.',
@@ -180,7 +185,6 @@ export const enUS = {
   'settings.rerank.tabTitle': 'Rerank',
   'settings.rerank.scopeNote':
     'Applies to both memory recall and wiki search (wiki follows this config via Core /v1/rerank).',
-  'settings.rerank.title': 'Rerank ({{label}})',
   'settings.rerank.configError': 'Current config error',
   'settings.rerank.enabled': 'Enable Rerank',
   'settings.rerank.enabled.label': 'Enable live reranking (off = return fused order as-is)',
@@ -223,48 +227,15 @@ export const enUS = {
   'settings.rerank.local.downloading': 'Downloading {{percent}}%',
 
   // ===== Importance (Memory settings · P1 task-7 worthiness) =====
-  'settings.importance.title': 'Importance tagging & recall penalty (P1 task-7)',
-  'settings.importance.extraction': 'Extraction tagging',
-  'settings.importance.extraction.label':
-    'Have the LLM tag importance (1-10) + one-line reason during L1 extraction',
-  'settings.importance.extraction.hint':
-    'Tags ride the single extraction LLM call (no second call); off = exactly current behavior, nothing recorded.',
-  'settings.importance.penalty.enabled': 'Recall penalty',
-  'settings.importance.penalty.enabled.label': 'Penalize low-importance (≤4) memories at recall',
-  'settings.importance.penalty.enabled.hint':
-    'Only importance ≤4 is penalized; unscored (NULL) records are never penalized.',
-  'settings.importance.penalty.value': 'Penalty',
-  'settings.importance.penalty.value.hint':
-    'Multiplier = 1 - penalty; range 0-0.9, default 0.3. The penalty always takes effect; gates.importancePenalty still records raw/penalized components.',
 
   // ===== Common =====
   'common.cancel': 'Cancel',
-  'common.confirm': 'Confirm',
   'common.delete': 'Delete',
-  'common.create': 'Create',
-  'common.save': 'Save',
-  'common.refresh': 'Refresh',
-  'common.close': 'Close',
   'tabbar.close': 'Close {{label}} tab',
-  'common.search': 'Search',
-  'common.loading': 'Loading…',
-  'common.noData': 'No data',
-  'common.all': 'All',
   'common.you': ' (you)',
-  'common.you.short': 'you',
-  'common.owner': 'owner',
   'common.yesterday': 'Yesterday',
   'common.noDescription': 'No description',
-  'common.you2': 'incl. you',
-  'common.allocate': 'Allocate',
-  'common.unbind': 'Unbind',
-  'common.sync': 'Sync',
-  'common.import': 'Import',
-  'common.export': 'Export',
   'common.copy': 'Copy',
-  'common.copied': 'Copied',
-  'common.agent': 'Agent',
-  'common.team': 'Team',
 
   // ===== AdminResourceLock =====
   'adminLock.title': 'Resource Management is Not Available for Admins',
@@ -339,21 +310,17 @@ export const enUS = {
     'Regex matched against file relative paths in the repo; matching docs are pulled. Separate alternatives with |',
   'wiki.create.pathExclude': 'Path exclude regex',
   'wiki.create.pathExcludePlaceholder': 'e.g. (^|/)(node_modules|dist)/ — excluded first',
-  'wiki.source.label': 'Source',
   'wiki.source.upload': 'Upload',
   'wiki.source.git': 'Git Repository',
   'wiki.detail.pages': '{{count}} pages',
   'wiki.detail.add': 'Add',
   'wiki.detail.source': 'Source',
-  'wiki.detail.branch': 'Branch',
   'wiki.detail.pathInclude': 'Path Filter',
   'wiki.detail.pathInclude.default': 'Default (.md/.txt/.markdown)',
   'wiki.detail.pathExclude': 'Exclude Filter',
   'wiki.detail.lastSyncAt': 'Last Sync',
   'wiki.detail.sync': 'Sync',
   'wiki.detail.syncing': 'Syncing…',
-  'wiki.detail.syncHint':
-    'Manual sync is only available for Git-source Wikis. It re-pulls from the remote and rebuilds the index.',
   'wiki.detail.ingest': 'Ingest',
   'wiki.detail.processing': 'Processing',
   'wiki.detail.clear': 'Clear',
@@ -485,8 +452,6 @@ export const enUS = {
   'code.register': 'Register Repo',
   'code.searchPlaceholder': 'Search name / branch / ID',
   'code.filter.allStatus': 'All Status',
-  'code.filter.ready': 'Ready',
-  'code.filter.processing': 'Processing',
   'code.filter.error': 'Error',
   'code.empty.title': 'No Repos Registered',
   'code.empty.desc': 'Click "+ Register Repo" above to register your first one',
@@ -510,14 +475,11 @@ export const enUS = {
   'code.status.missing': 'Missing',
   'code.statusHint.processing': ' · May take several minutes',
   'code.teamPool': 'Team Code Pool',
-  'code.teamPool.short': 'Team Pool',
   'code.fixedAsset': 'Fixed Asset · {{agent}}',
   'code.noAgent': 'No Agent Selected',
   'code.card.id': 'ID: {{id}}',
-  'code.card.branch': 'Branch {{branch}}',
   'code.detail.breadcrumb': 'Code Graph',
   'code.detail.branch': 'Branch {{branch}}',
-  'code.detail.sync': 'Sync',
   'code.detail.files': 'Files',
   'code.detail.nodes': 'Nodes',
   'code.detail.edges': 'Edges',
@@ -533,25 +495,19 @@ export const enUS = {
     'Returns full source code and call relationships of related files in one request, giving AI direct context without manual grep. Best for "how is this feature implemented".',
   'code.detail.explore.placeholder':
     'Describe the feature / flow you want to understand in natural language or symbol names…',
-  'code.noAgentPlaceholder': 'No Agent Available',
   'code.allocateToAgent': 'Allocate to Agent',
   'code.allocate.disabled': 'Please select a code asset first',
   'code.action.unbind': 'Unbind',
   'code.action.allocate': 'Allocate',
   'code.action.sync': 'Sync',
   'code.action.delete': 'Delete',
-  'code.table.select': 'Select',
-  'code.table.selected': 'Selected',
   'code.register.caption': 'Register Repository',
   'code.register.gitUrl': 'Git URL',
   'code.register.gitUrlExtra':
     'After registration, it will automatically clone and build a code index.',
-  'code.register.gitUrlPlaceholder': 'https://gitlab.example.com/namespace/repo.git',
   'code.register.branch': 'Branch',
   'code.register.sshWarning':
     'SSH format repository URLs are not supported in this version. Please use HTTPS format (e.g. https://gitlab.example.com/namespace/repo.git).',
-  'code.register.urlError':
-    'Please enter a valid HTTP(S) Git repository URL ending with .git (e.g. https://gitlab.example.com/namespace/repo.git). No spaces allowed.',
   'code.register.invalidUrl':
     'Please enter a valid HTTPS Git repository URL ending with .git (e.g. https://gitlab.example.com/namespace/repo.git). No spaces allowed.',
   'code.register.submitting': 'Registering…',
@@ -579,7 +535,6 @@ export const enUS = {
   'skills.title': 'Skill Asset Management',
   'skills.scope.team': 'Team Assets',
   'skills.scope.fixed': 'Agent Assets',
-  'skills.scope.personal': 'My Assets',
   'skills.empty.fixed.noAgent': 'Please select an agent.',
   'skills.empty.fixed.hasAgent':
     'Agent "{{agent}}" has no fixed skills. Click "Import Skill" above to import directly, or select a skill in the "Team" view and use "Fork" to distribute it.',
@@ -590,15 +545,12 @@ export const enUS = {
   'skills.fork': 'Fork (writable)',
   'skills.fork.tooltip.fixed': 'Please select a skill in the "Team" or "My Assets" view',
   'skills.fork.tooltip.team.empty': 'Please select a skill first',
-  'skills.fork.tooltip.personal.empty': 'Please select a skill first',
   'skills.import': 'Import Skill',
   'skills.import.tooltip.noAgent': 'No agent in the current team. Please create an agent first.',
   'skills.export': 'Export Skill',
   'skills.export.tooltip.empty': 'Please select a skill first',
   'skills.export.partial': 'Some files failed to export: {warnings}',
   'skills.export.timeout': 'Export timed out, please try again later',
-  'skills.tag.private': 'Private',
-  'skills.tag.shared': 'Shared',
   'skills.delete.own': 'Permanently delete my Skill (irreversible)',
   'skills.delete.admin': 'Permanently delete this Skill as admin (irreversible)',
   'skills.delete.confirm': 'Permanently delete Skill "{{name}}"?',
@@ -608,24 +560,8 @@ export const enUS = {
   'skills.delete.cancelText': 'Cancel',
   'skills.notify.deleted': 'Skill "{{name}}" deleted',
   'skills.notify.loadAgentsFailed': 'Failed to load Agent info',
-  'skills.personal.title': 'My Assets',
-  'skills.personal.desc':
-    'Shows assets you own · Toggle "Shared / Private" to control visibility for team members',
-  'skills.personal.empty':
-    'No {{kind}} assets you own · Import via "Import Skill" in the top right',
-  'skills.personal.kind.skill': 'skill',
-  'skills.personal.kind.memory': 'memory',
   'skills.personal.scope.shared': 'Shared',
   'skills.personal.scope.private': 'Private',
-  'skills.personal.scope.shared.tooltip': 'Team members can read; owner and admin can write',
-  'skills.personal.scope.private.tooltip': 'Only owner and team admin can see',
-  'skills.personal.delete.tooltip': 'Permanently delete this Skill (irreversible)',
-  'skills.personal.delete.confirm': 'Permanently delete Skill "{{name}}"?',
-  'skills.personal.delete.confirm.desc':
-    'The skill will be uninstalled from its Agent and cannot be restored. Independent copies under other Agents are not affected. To temporarily disable, consider setting it to "Private" instead of deleting.',
-  'skills.personal.delete.okText': 'Permanently Delete',
-  'skills.personal.delete.cancelText': 'Cancel',
-  'skills.personal.notify.deleted': 'Skill "{{name}}" deleted',
   'skills.detail.empty': 'Select a skill on the left to view details.',
   'skills.detail.loading': 'Loading…',
   'skills.detail.frontmatter': 'Frontmatter',
@@ -638,7 +574,6 @@ export const enUS = {
   'skills.detail.edit': 'Edit',
   'skills.detail.save': 'Save',
   'skills.detail.cancel': 'Cancel',
-  'skills.detail.saving': 'Saving…',
   'skills.detail.editBodyHint':
     'Edit the full SKILL.md (including frontmatter). Saving bumps the version by 1.',
   'skills.detail.saveSuccess': 'Skill updated',
@@ -661,7 +596,6 @@ export const enUS = {
   'skills.detail.filePathRequired': 'Please enter a file path',
   // —— Version history (listSkillVersions) ——
   'skills.detail.versions': 'Version history',
-  'skills.detail.versionsLoad': 'View version history',
   'skills.detail.versionsEmpty': 'No version history.',
   'skills.detail.versionCurrent': 'Current',
   'skills.detail.versionView': 'View',
@@ -671,12 +605,8 @@ export const enUS = {
   'skills.detail.versionCaption': 'v{{version}} · SKILL.md',
   'skills.ownerTag.title': 'owner user: {{name}} ({{id}})',
   'skills.ownerTag.you': ' (you)',
-  'skills.agentTag.title': 'owner agent: {{name}} ({{id}})',
-  'skills.agentTag.unknown': '(unknown)',
   'skills.subtitle.team': '{{name}} · {{count}} Skills',
   'skills.subtitle.global': '{{count}} Skills',
-  'skills.subtitle.teamPersonal': '{{name}} · My {{count}} Skills',
-  'skills.subtitle.globalPersonal': 'My {{count}} Skills',
 
   // ===== ImportSkillDialog =====
   'importSkill.caption': 'Import Skill',
@@ -771,9 +701,16 @@ export const enUS = {
   'memory.notify.restored': 'Restored; it will reappear in the main timeline on next load',
   'memory.notify.restoreFailed': 'Restore failed',
   'memory.notify.archivedLoadFailed': 'Failed to load archive list',
-  // ---- Value anchors panel (Task 5) ----
+  // ---- Memory tabs (Memory / Graph / Recall Journal) ----
   'memory.view.memory': 'Memory',
-  'memory.view.anchors': 'Value Anchors',
+  'memory.view.graph': 'Graph',
+  'memory.graph.title': 'Memory graph',
+  'memory.graph.l1Count': '{{count}} L1 rows',
+  'memory.graph.noBlock':
+    'No memory block to show yet (import one into team or agent assets first)',
+  'memory.graph.empty':
+    'This block has no L1 memory yet, so the graph has nothing to draw',
+  'memory.graph.loadFailed': 'Failed to load graph data',
   // ---- Recall journal (Task 5 / D-8, approved 2026-09-22) ----
   'memory.view.journal': 'Recall Journal',
   'memory.journal.refresh': 'Refresh',
@@ -785,12 +722,10 @@ export const enUS = {
   'memory.journal.total': '{{total}} rounds in total',
   'memory.journal.soulBlock': 'Soul injection block',
   'memory.journal.memoryLines': 'Recalled memory lines',
-  'memory.journal.strategy': 'Strategy',
   'memory.journal.layered': 'Layered',
   'memory.journal.sessionReused': 'Session reused',
   'memory.journal.conclusion': 'Conclusions {{count}}',
   'memory.journal.experience': 'Experiences {{count}}',
-  'memory.journal.timing': 'FTS {{fts}}ms/{{ftsHits}} · Vector {{emb}}ms/{{embHits}}',
   'memory.journal.filterAll': 'All',
   'memory.journal.filterRecall': 'Real recalls',
   'memory.journal.filterSkipped': 'Skipped',
@@ -800,69 +735,8 @@ export const enUS = {
     'Skip reason: {{reason}} · residual {{residual}} chars · raw {{len}} chars',
   'memory.journal.prev': 'Prev',
   'memory.journal.next': 'Next',
-  'memory.anchors.valence.positive': 'Advance',
-  'memory.anchors.valence.negative': 'Prudence',
-  'memory.anchors.valence.neutral': 'Neutral',
-  'memory.anchors.valence.unjudged': 'Unjudged',
-  'memory.anchors.label': 'Label',
-  'memory.anchors.weight': 'Weight (0~1)',
-  'memory.anchors.save': 'Save',
-  'memory.anchors.cancel': 'Cancel',
-  'memory.anchors.edit': 'Edit',
-  'memory.anchors.delete': 'Delete',
-  'memory.anchors.add': 'Add',
-  'memory.anchors.addPlaceholder': 'New value anchor label',
-  'memory.anchors.addDescPlaceholder':
-    'One sentence: situation + behavioral orientation (<=80 chars, ends with period. e.g. When irreversible data is at stake, verify one extra step rather than do the irreversible.)',
-  'memory.anchors.derive': 'Re-derive directions',
-  'memory.anchors.deriveDone': 'Re-derived: judged {{derived}}, skipped {{skipped}}',
-  // ---- Value anchor discovery (Task DISC, proposal-based) ----
-  'memory.anchors.discover': '🔍 Discover anchors',
-  'memory.anchors.discoverDone': 'Found {{count}} proposal(s); review before adopting',
-  'memory.anchors.discoverEmpty': 'No anchor proposals found (quality over quantity)',
-  'memory.anchors.proposals': 'Proposals (persisted only after adoption)',
-  'memory.anchors.proposalMeta': 'evidence {{evidence}} · suggested weight {{weight}}',
-  'memory.anchors.adopt': 'Adopt',
-  'memory.anchors.ignore': 'Ignore',
-  'memory.anchors.undecidedHint': 'To reset to "Unjudged", use "Re-derive directions" first',
-  'memory.anchors.confirmDelete':
-    'Delete value anchor "{{label}}"? Deletion is a permanent veto — it will never be re-proposed automatically.',
-  // ---- Anchor self-growth (Task GROW: origin badges + pin/displace state machine + retired section) ----
-  'memory.anchors.origin.seed': 'Seed',
-  'memory.anchors.origin.manual': 'Manual',
-  'memory.anchors.origin.auto': 'Auto-grown',
-  'memory.anchors.createdBy': 'Created by {{v}}',
-  'memory.anchors.pinned': 'Pinned (exempt from displacement)',
-  'memory.anchors.pin': 'Pin',
-  'memory.anchors.unpin': 'Unpin',
-  'memory.anchors.retire': 'Retire',
-  'memory.anchors.restore': 'Restore',
-  'memory.anchors.retiredSection': 'Retired ({{count}})',
-  'memory.anchors.retiredTag': 'Retired',
-  'memory.notify.anchorVetoed': 'Permanently vetoed; will not be re-proposed automatically',
-  'memory.notify.anchorRetired': 'Retired; restore it in the retired section',
-  'memory.notify.anchorRestored': 'Restored',
-  'memory.notify.anchorPinFailed': 'Failed to update pin',
-  'memory.notify.anchorRetireFailed': 'Failed to retire anchor',
-  'memory.notify.anchorRestoreFailed': 'Failed to restore anchor',
-  'memory.notify.relatedCount': '{{count}} related memories for {{label}}',
-  'memory.notify.anchorAutoGrown': 'Auto-grown anchor(s): {{labels}}',
-  'memory.anchors.empty':
-    'No value anchors yet; new anchors are auto-judged by LLM and can be fine-tuned manually',
-  'memory.notify.anchorSaved': 'Value anchor saved',
-  'memory.notify.anchorDeleted': 'Value anchor deleted',
-  'memory.notify.relatedFailed': 'Related memories lookup failed',
-  'memory.notify.anchorLoadFailed': 'Failed to load value anchors',
-  'memory.notify.anchorSaveFailed': 'Failed to save value anchor',
-  'memory.notify.anchorDeleteFailed': 'Failed to delete value anchor',
-  'memory.notify.anchorDeriveFailed': 'Failed to re-derive directions',
-  'memory.notify.anchorDiscoverFailed': 'Failed to discover value anchors',
-  'memory.notify.anchorAdoptFailed': 'Failed to adopt value anchor',
-  'memory.scope.all': 'All',
   'memory.scope.team': 'Team Assets',
   'memory.scope.fixed': 'Agent Assets',
-  'memory.scope.scope': 'Allocatable',
-  'memory.scope.personal': 'My Assets',
   'memory.noAgent': 'No Agent Available',
   'memory.allocateToAgent': 'Allocate to Agent',
   'memory.allocate.disabled': 'Please select a memory block first',
@@ -874,12 +748,21 @@ export const enUS = {
   'memory.blockCount': '{{filtered}} items',
   'memory.empty.filtered': 'No matching memory blocks.',
   'memory.detail.empty': 'Select a memory block on the left to view details.',
+  'memory.detail.editTitle': 'Edit {{layer}} content',
+  'memory.detail.save': 'Save',
+  'memory.detail.cancel': 'Cancel',
+  'memory.detail.search': 'Search',
+  'memory.detail.searchPlaceholderL0': "Semantically search this memory's L0 conversation text…",
+  'memory.detail.searchPlaceholderL1': "Semantically search this memory's L1 atomic memories…",
+  'memory.detail.clearSearch': 'Clear',
+  'memory.detail.searchResultCount': '{{count}} matching results',
+  'memory.detail.searchEmpty': 'No related memory found. Try another keyword.',
+  'memory.detail.searchScore': 'Relevance {{score}}',
+  'memory.detail.modeBrowse': 'Browse',
+  'memory.detail.modeSearch': 'Search',
+  'memory.detail.searchPrompt':
+    'Type keywords to semantically search this memory. Results are ranked by relevance and ignore the time range.',
   'memory.list.revoked': 'Set to private by owner',
-  'memory.list.revoked.tooltip':
-    'This memory has been set to private by its owner and cannot be previewed. Click "Unbind" on the right to clean up this binding.',
-  'memory.list.fixedTo': 'Agent Fixed Asset · {{id}}',
-  'memory.list.teamPool': 'Team Memory Pool',
-  'memory.list.teamPoolShort': 'Team Pool',
   'memory.list.uploadedBy': 'Uploaded by: ',
   'memory.unbind': 'Unbind',
   'memory.unbind.tooltip':
@@ -903,13 +786,15 @@ export const enUS = {
   'memory.notify.l2Failed': 'Failed to load L2 content',
   'memory.notify.copied': 'Copied',
   'memory.notify.copyFailed': 'Copy failed',
+  'memory.notify.editSuccess': 'Saved',
+  'memory.notify.editFailed': 'Save failed',
+  'memory.notify.searchFailed': 'Search failed',
   'memory.confirm.private':
     'After setting to private, other Agents will no longer be able to use this memory',
   'memory.confirm.private.desc': 'You can switch back to team-visible at any time.',
   'memory.confirm.private.ok': 'Set Private',
   'memory.detail.fixedTo': 'Fixed to {{name}}',
   'memory.detail.teamPool': 'Team Memory Pool',
-  'memory.detail.uploadedBy': 'Uploaded: {{user}}',
   'memory.detail.updated': 'Updated: {{time}}',
   'memory.detail.refresh': 'Refresh',
   'memory.detail.noL0': 'This memory block has no L0 conversation history.',
@@ -920,15 +805,10 @@ export const enUS = {
   'memory.detail.rangeTooLarge': 'Too many memories. Narrow the time range.',
   'memory.detail.loadMore': 'Load earlier messages',
   'memory.detail.allLoaded': 'All messages loaded',
-  'memory.detail.pageInfo': 'Page {{page}} / {{total}} · {{current}} of {{total2}} items',
-  'memory.detail.prevPage': 'Prev',
-  'memory.detail.nextPage': 'Next',
   'memory.detail.clickToLoad': 'Click to load this layer',
   'memory.detail.emptyLayer':
     'No items in the {{layer}} layer for this memory block. Can be written by curator / higher layers.',
   'memory.detail.loading': 'Loading…',
-  'memory.detail.collapseBody': 'Collapse',
-  'memory.detail.expandBody': 'Expand',
   'memory.detail.noBody': 'No content.',
   'memory.detail.edit': 'Edit',
   'memory.detail.moreActions': 'More actions',
@@ -946,19 +826,8 @@ export const enUS = {
   'memory.layer.L3.desc': 'Distilled core principles / templates / decisions',
 
   // ===== PersonalAssetsTable (Memory) =====
-  'memoryPersonal.title': 'My Assets',
-  'memoryPersonal.desc':
-    'Memories auto-generated when creating an Agent are private by default. Toggle to "Shared" to make them visible to team members (read-only)',
-  'memoryPersonal.empty':
-    'No memory assets · A private memory will be auto-generated when you create an Agent',
-  'memoryPersonal.loading': 'Loading…',
-  'memoryPersonal.updatedAt': 'Updated: {{time}}',
   'memoryPersonal.shared': 'Shared',
   'memoryPersonal.private': 'Private',
-  'memoryPersonal.shared.tooltip': 'Team members can read; owner and admin can write',
-  'memoryPersonal.private.tooltip': 'Only owner and team admin can see',
-  'memoryPersonal.ownerTag.title': 'owner user: {{name}} ({{id}})',
-  'memoryPersonal.ownerTag.you': ' (you)',
 
   // ===== AllocateMemoryDialog =====
   'allocMemory.caption': 'Allocate Memory to Agent',
@@ -1039,14 +908,6 @@ export const enUS = {
   'team.loading': 'Loading…',
   'team.empty.hint': 'Please select a team in the top right, or create a new team to get started.',
   'team.createTeam': 'New Team',
-  'team.editTeam': 'Edit Team',
-  'team.editTeam.tooltip': 'Edit the current team name / description (owner or admin only)',
-  'team.deleteTeam': 'Delete Current Team',
-  'team.deleteTeam.tooltip':
-    'Delete the current team and all its members / agents / tasks / assets (owner or admin only)',
-  'team.deleteTeam.confirm': 'Delete team "{{name}}"?',
-  'team.deleteTeam.desc':
-    'This cascades to {{members}} members, {{agents}} agents, and all tasks and assets under the team. This cannot be undone.',
   'team.memberCount': '{{count}} members',
   'team.emptyTeam.title': "You Don't Belong to Any Team Yet",
   'team.emptyTeam.desc':
@@ -1098,12 +959,6 @@ export const enUS = {
   'createAgent.template.summaryPlaceholder': 'One-line description (optional)',
   'createAgent.template.descLabel': 'One-line Description',
   'createAgent.template.descPlaceholder': 'Template function description (optional)',
-  'createAgent.template.roleLabel': 'Role Prompt',
-  'createAgent.template.rolePlaceholder':
-    'role prompt · what role / responsibility does this agent play (optional)',
-  'createAgent.template.rulesLabel': 'Rules Prompt',
-  'createAgent.template.rulesPlaceholder':
-    'rules prompt · hard constraints, numbered list recommended (optional)\n1. …\n2. …',
   'createAgent.template.cancel': 'Cancel',
   'createAgent.template.saveBtn': 'Save Template',
   'createAgent.name': 'Name *',
@@ -1113,22 +968,10 @@ export const enUS = {
   'createAgent.descLabel': 'One-line Description',
   'createAgent.descHint': 'Optional · Can be left empty. Editable anytime in the detail page.',
   'createAgent.descPlaceholder': 'Brief function description: what does this agent do? (optional)',
-  'createAgent.roleLabel': 'Role Prompt',
-  'createAgent.roleHint':
-    "role prompt · Optional · Describe the agent's role / responsibility. Can be filled in the detail page later.",
-  'createAgent.rolePlaceholder':
-    'e.g. You are a strict PR Reviewer, the last quality gate before code merges into the main branch.',
-  'createAgent.rulesLabel': 'Rules Prompt',
-  'createAgent.rulesHint':
-    'rules prompt · Optional · Hard constraints injected at the beginning of each conversation. Numbered list recommended. Can be filled in the detail page later.',
-  'createAgent.rulesPlaceholder': '1. …\n2. …\n3. …',
   'createAgent.assets.loading': 'Loading team assets…',
   'createAgent.assets.label': 'Capabilities: ',
   'createAgent.assets.selectAll': 'Select All',
   'createAgent.assets.clearAll': 'Clear All',
-  'createAgent.assets.readonly':
-    'Read-only · Configure resource bindings during creation or from the corresponding resource management page',
-  'createAgent.assets.toolbarLabel': 'Capabilities',
   'createAgent.submit': 'Create',
   'createAgent.cancel': 'Cancel',
 
@@ -1136,14 +979,8 @@ export const enUS = {
   'agentEdit.caption': 'Agent Details',
   'agentEdit.name': 'Name',
   'agentEdit.descLabel': 'One-line Description',
-  'agentEdit.roleLabel': 'Role Prompt',
-  'agentEdit.rolePlaceholder': "Describe this agent's role / responsibility...",
-  'agentEdit.rulesLabel': 'Rules Prompt',
-  'agentEdit.rulesPlaceholder': 'Set behavioral rules for the Agent...',
   'agentEdit.assets.loading': 'Loading team assets…',
   'agentEdit.assets.label': 'Capabilities',
-  'agentEdit.assets.hint':
-    'Read-only · Configure resource bindings during creation or from the corresponding resource management page',
   'agentEdit.assets.editHint':
     'Check or uncheck to bind/unbind assets directly, then click "Save" to apply',
   'agentEdit.assets.skillReadonly':
@@ -1164,7 +1001,6 @@ export const enUS = {
   'agentGrid.search': 'Search agent name / description / ID',
   'agentGrid.allOwners': 'All Owners',
   'agentGrid.loading': 'Loading Agents…',
-  'agentGrid.empty.admin': 'No agents in this team yet',
   'agentGrid.empty.member':
     'No agents yet · Click "+ New Agent" in the top left to create your first one',
   'agentGrid.empty.filtered.all': 'No agents match the search or owner filter',
@@ -1418,35 +1254,19 @@ export const enUS = {
     'The last quality gate before code merges into the main branch',
   'agentTemplate.builtin.prReviewer.description':
     'Execute pr-review workflow: check mandatory items + provide actionable comments.',
-  'agentTemplate.builtin.prReviewer.rolePrompt':
-    'You are a strict PR Reviewer, the last quality gate before code merges into the main branch.',
-  'agentTemplate.builtin.prReviewer.rulesPrompt':
-    '1. Read the PR description and linked issue first to understand the intent.\n2. Must check: correctness, boundary conditions, security, test coverage, naming and readability.\n3. Every comment must be actionable, specifying the location and suggested fix.\n4. Separate blocking issues from advisory ones.',
   'agentTemplate.builtin.bugfixEngineer.name': 'Bug-fix Engineer',
   'agentTemplate.builtin.bugfixEngineer.summary': 'Reproduce → locate → fix → self-test loop',
   'agentTemplate.builtin.bugfixEngineer.description':
     'Engineer agent for the bug-fix loop: reproduce → locate → fix → self-test.',
-  'agentTemplate.builtin.bugfixEngineer.rolePrompt':
-    'You are a bug-fix engineer responsible for each defect down to the root cause, pursuing minimal and verifiable fixes.',
-  'agentTemplate.builtin.bugfixEngineer.rulesPrompt':
-    '1. Reproduce stably before acting; if unable to reproduce, gather reproduction info first.\n2. Locate the root cause rather than masking symptoms.\n3. Keep fixes minimal in diff, with regression tests.\n4. Submit only after self-testing passes, explaining the verification method.',
   'agentTemplate.builtin.issueTriage.name': 'Issue Triage',
   'agentTemplate.builtin.issueTriage.summary':
     'First responder for new issues: classify / enrich / assign',
   'agentTemplate.builtin.issueTriage.description':
     'For new issues: determine type, supplement reproduction info, assign owner.',
-  'agentTemplate.builtin.issueTriage.rolePrompt':
-    'You are an issue triage agent, the first responder for new issues, responsible for classification, enrichment, and assignment.',
-  'agentTemplate.builtin.issueTriage.rulesPrompt':
-    '1. Determine type (bug / feature / question / duplicate).\n2. When info is missing, ask the reporter for reproduction steps, environment, and expectations using a template.\n3. Label priority and impact scope.\n4. Assign an appropriate owner and explain the reasoning.',
   'agentTemplate.builtin.docEngineer.name': 'Documentation Engineer',
   'agentTemplate.builtin.docEngineer.summary': 'Sync wiki / changelog with PRs',
   'agentTemplate.builtin.docEngineer.description':
     'Sync wiki / changelog with PRs, keeping the team knowledge base consistent with code.',
-  'agentTemplate.builtin.docEngineer.rolePrompt':
-    'You are a documentation engineer, ensuring the team knowledge base stays in sync with code and remains trustworthy.',
-  'agentTemplate.builtin.docEngineer.rulesPrompt':
-    '1. Assess documentation impact for every PR that affects behavior.\n2. Update changelog with language for users, not implementers.\n3. Take down or mark outdated documentation promptly.\n4. Documentation must be searchable, with necessary links and examples.',
   'agentTemplate.error.nameRequired': 'createAgentTemplate: Template name cannot be empty.',
 
   // ===== backend store =====
@@ -1585,3 +1405,5 @@ export const enUS = {
   'onboarding.guide.asset.memory.desc':
     'Ownership: this page has two tabs — "Team assets" (a shared memory pool) and "Agent assets" (memory bound to a specific Agent, including each Agent\'s built-in private memory). Import: click "Import memory" to bring history in as L0; the system distills L1~L3 layers and attaches them to the chosen Agent. Use: bound Agents remember your preferences and conclusions across sessions; in "Agent assets" you can toggle "Shared / Private" for memory you imported.',
 };
+
+

@@ -27,8 +27,6 @@ export interface AgentCard {
   id: string;
   name: string;
   description: string;
-  rolePrompt: string;
-  rulesPrompt: string;
   icon: string;
   accent: 'blue' | 'purple' | 'orange' | 'emerald' | 'rose' | 'slate';
   skills: string[];

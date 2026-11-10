@@ -73,19 +73,6 @@ interface GateDef {
 
 const GATES: GateDef[] = [
   {
-    path: 'memory.coreMemory.soulMaintenance.enabled',
-    label: '人格维护（soulMaintenance）',
-    offEffect: '关掉：后台不再从对话里更新人格六层，也不注入 <soul-persona>；已有账本保留，注入文本回到「无人格」旧行为。',
-    get: (v) => {
-      const sm = rec(rec(v.coreMemory).soulMaintenance);
-      return typeof sm.enabled === 'boolean' ? sm.enabled : undefined;
-    },
-    set: (b, on) => {
-      b.coreMemory = { ...rec(b.coreMemory), soulMaintenance: { enabled: on } };
-    },
-    dflt: false,
-  },
-  {
     path: 'memory.extraction.enabled',
     label: 'L1 抽取（extraction）',
     offEffect: '关掉：不再把 L0 会话抽成结构化记忆（人物/事实/偏好），检索层逐渐只剩旧数据。',

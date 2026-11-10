@@ -1,9 +1,10 @@
 /**
- * V6-批次二（2026-09-23 用户拍板「做」）：注入徽章派生 + 锚注入形态纯函数（单一源）。
- * 与 /v3/recall 注入行（formatMemoryLine）/soul-assembler 锚行同构——所见即注入。
+ * V6-批次二：注入徽章派生纯函数（单一源）。
+ * 与 /v3/recall 注入行（formatMemoryLine）同构——所见即注入。
  * 阈值与内核 auto-recall.ts 完全一致：arousal≥0.7 / recallCount≥3 / identityRefs 非空 /
  * evolution 存在 / valid_start 非空；宁缺毋滥（零命中返回空数组）。
  * 依据：badge=静态指示、颜色+图标+文字三通道（Eleken/Smart Interface Design Patterns）。
+ * F1（2026-11-07）：价值锚整表删除，锚注入预览/首要锚选取/创建人徽标三个导出随面板下线删除。
  */
 import type { ChatMemoryLayerItem } from '../../../lib/api/chat-memory';
 
@@ -93,86 +94,4 @@ export function deriveAttributeBadges(item: ChatMemoryLayerItem): AttributeBadge
     });
   }
   return out;
-}
-
-function valenceDir(v: number | null | undefined): string {
-  if (v === 1) return '趋近';
-  if (v === -1) return '审慎';
-  if (v === 0) return '中性';
-  return '';
-}
-
-/** 锚注入形态预览：`label(方向)：描述`——与 soul-assembler 锚行逐字同构。
- *  呈现层翻修（2026-10-17 用户拍板「有问题的现在直接优化」）对齐：权重内隐（core ffc33e1
- *  renderAnchor 退役 w 段，weight 只消费于排序/门控/首要选取），本预览同步去 w 段，
- *  中性/空方向语义与内核 valenceDir 一致（0→(中性)、null→裸 label）。 */
-export function anchorInjectPreview(a: {
-  label: string;
-  weight?: number;
-  valence?: number | null;
-  attrs_json?: string;
-}): string | null {
-  const dir = valenceDir(a.valence);
-  let desc = '';
-  try {
-    const p =
-      a.attrs_json && a.attrs_json !== '{}'
-        ? (JSON.parse(a.attrs_json) as { description?: unknown })
-        : null;
-    if (p && typeof p.description === 'string' && p.description.trim() !== '')
-      desc = p.description.trim();
-  } catch {
-    /* 损坏 attrs_json 宁缺毋滥 */
-  }
-  const head = dir ? `(${dir})` : '';
-  if (!head && !desc) return null;
-  return `${a.label}${head}${desc ? `：${desc}` : ''}`;
-}
-
-/** 感受段首要锚（方案B：组内 weight 最高选取，与渲染序解耦；描述 ≤30 字；无描述→null）。 */
-/** V7 方案A：首句提取（句边界截取，预算 80；无完整句则空=宁缺毋滥；与内核 topDescSeg 同构） */
-export function firstSentenceDesc(s: string, budget = 80): string {
-  const t = s.trim();
-  if (!t) return '';
-  const m = /[。！？；!?\n]/.exec(t);
-  if (m) return m.index + 1 <= budget ? t.slice(0, m.index + 1).trim() : '';
-  return t.length <= budget ? t : '';
-}
-
-export function pickPrimeAnchor(
-  rows: Array<{ label: string; value_id?: string; weight?: number; attrs_json?: string }>,
-): { label: string; desc: string } | null {
-  const group = rows.filter((r) => typeof r.weight === 'number' && r.weight > 0);
-  // V7 F-U2：并列 weight 时 value_id 次级键定序（与内核 topDescSeg 同键；输入序不承载语义）
-  const top = group.sort(
-    (a, b) =>
-      (b.weight ?? 0) - (a.weight ?? 0) ||
-      String(a.value_id ?? a.label).localeCompare(String(b.value_id ?? b.label)),
-  )[0];
-  if (!top) return null;
-  let desc = '';
-  try {
-    const p =
-      top.attrs_json && top.attrs_json !== '{}'
-        ? (JSON.parse(top.attrs_json) as { description?: unknown })
-        : null;
-    if (p && typeof p.description === 'string') desc = p.description.trim();
-  } catch {
-    /* 宁缺毋滥 */
-  }
-  if (!desc) return null;
-  // V7 方案A：首句完整呈现（句边界，无完整句则 null=宁缺毋滥；与内核 topDescSeg 同构）
-  const s = firstSentenceDesc(desc);
-  if (!s) return null;
-  return { label: top.label, desc: s };
-}
-
-/**
- * §4.2 core_values.created_by 展示徽标（第二令四链核验 GAP-1：使用链
- * anchor-growth QUOTA/维护豁免在场、展示链缺失）——非空原样返回，
- * 空/空白/undefined -> null 宁缺毋滥。
- */
-export function createdByBadge(createdBy?: string | null): string | null {
-  const v = (createdBy ?? '').trim();
-  return v ? v : null;
 }

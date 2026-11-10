@@ -1,7 +1,7 @@
 /**
  * IdentityNarrativeView / NarrativeStatusLine / useIdentityNarrativeState ——
  * #69（R3 配套，小白优先原则首用票）：Panel 身份区
- * 「AI 眼中的我」叙事预览小节（IdentitySection / SoulIdentityDual 共用）。
+ * 「AI 眼中的我」叙事预览小节（SoulIdentityDual 消费；T3 起 IdentitySection 已删除）。
  *
  * 纯只读；叙事单一源在 MemoryCore（ADR-0005 / renderIdentityNarrative 模板常量），
  * 本组件只消费 /v3/core-memory/read 的响应形态，不复制模板/组装逻辑。
@@ -13,7 +13,8 @@
  *     合一灰态（票 §2 允许）：NarrativeStatusLine 一行人话 + 存量条目视图由宿主渲染
  *     （降级不静默）。
  *   - empty：身份内容全空 → 宿主整段不渲染（宁缺毋滥）。
- * variant 决定类前缀：anchors=_id-*（chat-memory-anchors.css）/ soul=_soul-*（soul-page.css）。
+ * 类前缀固定 _soul-*（soul-page.css）；价值锚面板删除后锚定变体已无消费者，
+ * F1 起变体拆分整条移除。
  */
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -24,8 +25,6 @@ import {
   type CoreSlotRow,
   type NarrativePreview,
 } from './identity-utils';
-
-export type IdentityNarrativeVariant = 'anchors' | 'soul';
 
 interface VariantClasses {
   section: string;
@@ -45,41 +44,22 @@ interface VariantClasses {
   rawSlot: string;
 }
 
-const CLS: Record<IdentityNarrativeVariant, VariantClasses> = {
-  anchors: {
-    section: '_id-section',
-    head: '_id-narr-head',
-    title: '_id-title',
-    chipOn: '_id-badge _id-narr-chip--on',
-    chipOff: '_id-badge _id-narr-chip--off',
-    content: '_id-content',
-    switchWrap: '_id-narr-switch',
-    switchBtn: '_id-narr-switch-btn',
-    switchBtnOn: '_id-narr-switch-btn--on',
-    details: '_id-narr-details',
-    detailsBody: '_id-narr-details-body',
-    status: '_id-narr-status',
-    hint: '_id-narr-hint',
-    rawRow: '_id-narr-raw-row',
-    rawSlot: '_id-narr-raw-slot',
-  },
-  soul: {
-    section: '_soul-section',
-    head: '_soul-section-head',
-    title: '_soul-section-title',
-    chipOn: '_soul-chip _soul-chip--green',
-    chipOff: '_soul-chip _soul-chip--neutral',
-    content: '_soul-narr-content',
-    switchWrap: '_soul-narr-switch',
-    switchBtn: '_soul-narr-switch-btn',
-    switchBtnOn: '_soul-narr-switch-btn--on',
-    details: '_soul-narr-details',
-    detailsBody: '_soul-narr-details-body',
-    status: '_soul-narr-status',
-    hint: '_soul-narr-hint',
-    rawRow: '_soul-narr-raw-row',
-    rawSlot: '_soul-narr-raw-slot',
-  },
+const CLS: VariantClasses = {
+  section: '_soul-section',
+  head: '_soul-section-head',
+  title: '_soul-section-title',
+  chipOn: '_soul-chip _soul-chip--green',
+  chipOff: '_soul-chip _soul-chip--neutral',
+  content: '_soul-narr-content',
+  switchWrap: '_soul-narr-switch',
+  switchBtn: '_soul-narr-switch-btn',
+  switchBtnOn: '_soul-narr-switch-btn--on',
+  details: '_soul-narr-details',
+  detailsBody: '_soul-narr-details-body',
+  status: '_soul-narr-status',
+  hint: '_soul-narr-hint',
+  rawRow: '_soul-narr-raw-row',
+  rawSlot: '_soul-narr-raw-slot',
 };
 
 /** #69 三态数据源（宿主共用）：读 narrative 视图（format='narrative'）+ 失败位。
@@ -114,12 +94,11 @@ export function useIdentityNarrativeState(blockId: string): {
 export function IdentityNarrativeView(props: {
   blockId: string;
   preview: NarrativePreview;
-  variant: IdentityNarrativeVariant;
   /** 宿主页内导航锚（如 soul 页 _soul-sec-identity）：绿态整段换形态时锚不丢。 */
   anchorId?: string;
 }) {
   const { t } = useTranslation();
-  const c = CLS[props.variant];
+  const c = CLS;
   const [view, setView] = useState<'live' | 'raw'>('live');
   const [raw, setRaw] = useState<CoreSlotRow[] | null>(null);
   const [rawFailed, setRawFailed] = useState(false);
@@ -202,9 +181,9 @@ export function IdentityNarrativeView(props: {
 
 /** 灰态状态行（降级不静默）：门关/生成闸降级合一（单次读响应无信号可分），一句人话。
  * 存量条目视图由宿主在其下继续渲染——本行只补状态，不改存量布局。 */
-export function NarrativeStatusLine(props: { variant: IdentityNarrativeVariant }) {
+export function NarrativeStatusLine() {
   const { t } = useTranslation();
-  const c = CLS[props.variant];
+  const c = CLS;
   return (
     <div className={c.status}>
       <span className={c.chipOff}>{t('soul.narrative.state.off')}</span>

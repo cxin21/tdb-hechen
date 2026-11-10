@@ -2,7 +2,7 @@
  * AgentEditDialog —— 编辑/查看 Agent 弹窗。
  *
  * 编辑范围约定：
- *   - 名称、一句话描述、角色 prompt / 规则 prompt 可编辑保存。
+ *   - 名称、一句话描述可编辑保存；人格内容走下方「人格设定」区（agent-persona/save）。
  *   - 资源能力可直接在本弹窗勾选/解绑并保存：
  *     · Wiki 知识库 / CodeGraph → allocate / unbind（引用绑定，增量 diff）
  *     · Chat Memory → setAgentFixed（全量覆盖，天然处理增删；不含 agent 自身 memory）
@@ -17,12 +17,22 @@ import { useState, useMemo, useEffect } from 'react';
 import { Button, Input, Modal } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { ToolsIcon, CodeIcon, BooksIcon, ChatIcon } from 'tea-icons-react';
-import { type Agent as StoreAgent, invalidateBackendCache, writeAgentUiMeta } from '@/services';
+import { type Agent as StoreAgent, invalidateBackendCache } from '@/services';
 import { agentsApi, skillApi, chatMemoryApi } from '@/lib/teamApi';
 import { knowledgeApi } from '@/lib/api/knowledge-api';
 import { tea } from '@/lib/tea-bridge';
 import { useTeamAssets, syncChatMemoryBindings } from './useAgentAssets';
 import { LightField, CollapseGroup, AssetCheckList } from './shared';
+import AgentPersonaSection from './AgentPersonaSection';
+import { fetchAgentPersona, saveAgentPersona } from '@/lib/api/agent-persona';
+import {
+  draftFromPersona,
+  emptyPersonaDraft,
+  retiredRedlinesOf,
+  validatePersonaDraft,
+  type AgentPersonaDraft,
+  type PersonaRedline,
+} from '@/lib/agent-persona-form';
 
 export default function AgentEditDialog({
   agent,
@@ -34,9 +44,20 @@ export default function AgentEditDialog({
   const selfChatMemoryId = `chat_memory-${agent.team_id}-${agent.agent_id}`;
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description);
-  const [rolePrompt, setRolePrompt] = useState(agent.role_prompt);
-  const [rulesPrompt, setRulesPrompt] = useState(agent.rules_prompt);
   const [savingPrompt, setSavingPrompt] = useState(false);
+
+  // 人格设定六项（spec §1）：没有既有设定时以空表单起步（draftFromPersona(null)）。
+  // 初值快照用于变更检测；保存成功后同步快照，弹窗保持打开以便看「它现在」刷新。
+  const [persona, setPersona] = useState<AgentPersonaDraft>(() => emptyPersonaDraft());
+  const [initialPersona, setInitialPersona] = useState<AgentPersonaDraft>(() => emptyPersonaDraft());
+  const [retiredRedlines, setRetiredRedlines] = useState<PersonaRedline[]>([]);
+  const [personaLoadError, setPersonaLoadError] = useState('');
+  const [personaLoaded, setPersonaLoaded] = useState(false);
+  const [traitReload, setTraitReload] = useState(0);
+  const [basicSnapshot, setBasicSnapshot] = useState({
+    name: agent.name,
+    description: agent.description,
+  });
 
   const [codeGraphOpen, setCodeGraphOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
@@ -138,12 +159,10 @@ export default function AgentEditDialog({
     !sameSet(llmWikis, initialWikis) ||
     !sameSet(chatMemories, initialChatMemories);
 
-  const promptChanged =
-    name !== agent.name ||
-    description !== agent.description ||
-    rolePrompt !== agent.role_prompt ||
-    rulesPrompt !== agent.rules_prompt;
-  const agentChanged = promptChanged || assetsChanged;
+  const basicChanged = name !== basicSnapshot.name || description !== basicSnapshot.description;
+  const personaChanged = JSON.stringify(persona) !== JSON.stringify(initialPersona);
+  const personaErrors = validatePersonaDraft(name, persona);
+  const agentChanged = basicChanged || personaChanged || assetsChanged;
   const saving = savingPrompt || savingAssets;
 
   /** 保存资产绑定 diff：wiki / code_graph 走 allocate/unbind，chat_memory 走全量 setAgentFixed。 */
@@ -172,29 +191,48 @@ export default function AgentEditDialog({
     if (!agentChanged || saving) return;
     const nextName = name.trim();
     const nextDescription = description.trim();
-    const nextRolePrompt = rolePrompt.trim();
-    const nextRulesPrompt = rulesPrompt.trim();
     if (!nextName) {
       tea.notify.error(t('agentEdit.notify.nameRequired'));
+      return;
+    }
+    // 人格设定有超限项 / 读取失败时不保存：超限由内核拒（不静默截断），读取失败则避免覆盖读不到的数据。
+    if (personaErrors.length > 0) {
+      tea.notify.error(personaErrors[0]);
+      return;
+    }
+    if (personaLoadError) {
+      tea.notify.error(personaLoadError);
       return;
     }
     setSavingPrompt(true);
     setSavingAssets(true);
     try {
-      // 运行时使用 prompt 完整文本；metadata_json 保留两个字段的拆分，供前端再次编辑时恢复。
-      if (promptChanged) {
+      // spec v3.7 F6：只提交基础字段；人格内容由 agent-persona/save 单独落库。
+      if (basicChanged) {
         await agentsApi.update(agent.agent_id, {
           name: nextName,
           description: nextDescription,
-          prompt: [nextRolePrompt, nextRulesPrompt].filter(Boolean).join('\n\n'),
-          metadata_json: writeAgentUiMeta(agent.metadata_json, {
-            role_prompt: nextRolePrompt,
-            rules_prompt: nextRulesPrompt,
-          }),
         });
       }
       if (assetsChanged) {
         await saveAssetBindings();
+      }
+      // 人格设定单独走 agent-persona/save；成功后同步基线并保持弹窗打开，
+      // 让右侧「它现在」立刻重拉一次（不必等维护 tick）。
+      if (personaChanged) {
+        await saveAgentPersona(agent.agent_id, nextName, persona);
+        setBasicSnapshot({
+          name: nextName,
+          description: nextDescription,
+        });
+        setInitialPersona(persona);
+        setInitialCodeGraphs(codeGraphs);
+        setInitialWikis(llmWikis);
+        setInitialChatMemories(chatMemories);
+        setTraitReload((n) => n + 1);
+        invalidateBackendCache();
+        tea.notify.success(t('agentEdit.notify.saved'));
+        return;
       }
       invalidateBackendCache();
       tea.notify.success(t('agentEdit.notify.saved'));
@@ -210,6 +248,32 @@ export default function AgentEditDialog({
       setSavingAssets(false);
     }
   }
+
+  // 读人格设定六项：内核未设定时返回 null → 空表单起步（不预填名字/形象）。
+  useEffect(() => {
+    let cancelled = false;
+    setPersonaLoaded(false);
+    fetchAgentPersona(agent.agent_id)
+      .then((record) => {
+        if (cancelled) return;
+        const draft = draftFromPersona(record);
+        setPersona(draft);
+        setInitialPersona(draft);
+        setRetiredRedlines(retiredRedlinesOf(record));
+        setPersonaLoadError('');
+        setPersonaLoaded(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPersonaLoadError(
+          `人格设定读取失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+        setPersonaLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.agent_id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,28 +365,22 @@ export default function AgentEditDialog({
             />
           </LightField>
 
-          <LightField label={t('agentEdit.roleLabel')}>
-            <Input.TextArea
-              size="full"
-              value={rolePrompt}
-              onChange={setRolePrompt}
-              rows={3}
-              disabled={saving}
-              placeholder={t('agentEdit.rolePlaceholder')}
+          {!personaLoaded ? (
+            <div className="_memory-persona-loading">人格设定读取中…</div>
+          ) : (
+            <AgentPersonaSection
+              teamId={agent.team_id}
+              agentId={agent.agent_id}
+              name={name}
+              draft={persona}
+              onChange={setPersona}
+              retiredRedlines={retiredRedlines}
+              reloadToken={traitReload}
             />
-          </LightField>
-
-          <LightField label={t('agentEdit.rulesLabel')}>
-            <Input.TextArea
-              size="full"
-              value={rulesPrompt}
-              onChange={setRulesPrompt}
-              rows={4}
-              disabled={saving}
-              className="_memory-mono-textarea"
-              placeholder={t('agentEdit.rulesPlaceholder')}
-            />
-          </LightField>
+          )}
+          {personaLoadError ? (
+            <div className="_memory-form-error">{personaLoadError}</div>
+          ) : null}
 
           <div className="_memory-asset-section">
             {bindingsLoading ? (
@@ -432,7 +490,9 @@ export default function AgentEditDialog({
         <Button
           type="primary"
           onClick={() => void saveAgent()}
-          disabled={!agentChanged || saving}
+          disabled={
+            !agentChanged || saving || personaErrors.length > 0 || !!personaLoadError
+          }
           loading={saving}
         >
           {t('agentEdit.save')}

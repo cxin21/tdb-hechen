@@ -117,15 +117,43 @@ function logRemoteMeta(
   logger.info(msg, fields);
 }
 
+/** 单次内核元数据请求（POST 带 body / GET 带 query，响应信封解析完全一致）。 */
+interface MetaRequestInit {
+  method: 'POST' | 'GET';
+  /** POST body（executeMetaFetch 恒传，保持原 `body ?? {}` 语义）。 */
+  body?: unknown;
+  /** GET query；空值不序列化（不发 `?team=` 这种空参）。 */
+  query?: Record<string, string>;
+}
+
+function buildRequestUrl(
+  base: string,
+  path: string,
+  query: Record<string, string> | undefined,
+): string {
+  if (!query) return `${base}${path}`;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (typeof value === 'string' && value.length > 0) params.set(key, value);
+  }
+  const qs = params.toString();
+  return qs ? `${base}${path}?${qs}` : `${base}${path}`;
+}
+
 /**
- * POST 记忆内核元数据路径，返回完整信封。
+ * 内核元数据请求的公共实现，返回完整信封。
  * - mode=envelope：业务 code≠0 不抛错（透明代理用）
  * - mode=data：code≠0 抛 KernelFetchError
+ *
+ * GET 专属补丁（仅 method=GET 生效，POST 行为不变）：内核 checkAuth 失败时回的是
+ * **纯文本** 401/403（server.ts:1698 sendError），不是信封。这种响应若按「无效信封」
+ * 一律折成 502，会把 401 吞成上游不可用；因此 GET 下把 401/403 原样抛出为
+ * KernelFetchError(401/403)，由调用方按错误码透传。
  */
-export async function executeMetaFetch<T>(
+async function executeMetaRequest<T>(
   cfg: MetaFetchConfig,
   path: string,
-  body: unknown,
+  init: MetaRequestInit,
   mode: 'data' | 'envelope',
 ): Promise<T> {
   const base = cfg.endpoint.replace(/\/+$/, '');
@@ -137,26 +165,48 @@ export async function executeMetaFetch<T>(
     path,
     serviceId: cfg.serviceId,
     request_id: reqId,
-    requestBody: serializeForLog(body ?? {}),
+    ...(init.method === 'POST'
+      ? { requestBody: serializeForLog(init.body ?? {}) }
+      : { requestQuery: init.query ?? {} }),
   });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
       [META_HEADER_SERVICE_ID]: cfg.serviceId,
       [META_HEADER_REQUEST_ID]: reqId,
     };
+    if (init.method === 'POST') headers['Content-Type'] = 'application/json';
     if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
     if (cfg.userKey) headers[META_HEADER_USER_KEY] = cfg.userKey;
-    const resp = await fetch(`${base}${path}`, {
-      method: 'POST',
+    const resp = await fetch(buildRequestUrl(base, path, init.query), {
+      method: init.method,
       headers,
-      body: JSON.stringify(body ?? {}),
+      ...(init.method === 'POST' ? { body: JSON.stringify(init.body ?? {}) } : {}),
       signal: ctrl.signal,
     });
-    const env = (await resp.json().catch(() => null)) as RawEnvelope<unknown> | null;
+    const rawText = await resp.text().catch(() => '');
+    let env: RawEnvelope<unknown> | null = null;
+    try {
+      env = JSON.parse(rawText) as RawEnvelope<unknown>;
+    } catch {
+      env = null;
+    }
     if (!env || typeof env.code !== 'number') {
+      if (init.method === 'GET' && (resp.status === 401 || resp.status === 403)) {
+        const authErr = new KernelFetchError(
+          resp.status,
+          rawText.trim() || `auth rejected from ${path} (http ${resp.status})`,
+        );
+        logRemoteMeta(log, 'error', reqId, {
+          path,
+          request_id: reqId,
+          durationMs: Date.now() - startedAt,
+          httpStatus: resp.status,
+          error: authErr.message,
+        });
+        throw authErr;
+      }
       const err = new KernelFetchError(502, `invalid envelope from ${path} (http ${resp.status})`);
       logRemoteMeta(log, 'error', reqId, {
         path,
@@ -229,4 +279,109 @@ export async function executeMetaFetch<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** POST 记忆内核元数据路径，返回完整信封（既有调用方行为不变）。 */
+export async function executeMetaFetch<T>(
+  cfg: MetaFetchConfig,
+  path: string,
+  body: unknown,
+  mode: 'data' | 'envelope',
+): Promise<T> {
+  return executeMetaRequest<T>(cfg, path, { method: 'POST', body }, mode);
+}
+
+/** 裸响应：上游不套 {code,message,data} 信封时使用（如 GET /v3/soul/trait-state）。 */
+export interface RawMetaResponse {
+  /** 上游 HTTP 状态码（401/403/503 原样带回，由调用方决定怎么透出）。 */
+  status: number;
+  /** 已解析的 JSON body；非 JSON 响应为 null。 */
+  body: unknown;
+  /** 原始响应文本（body 非 JSON 时调用方从这里取 message）。 */
+  text: string;
+}
+
+/**
+ * GET 内核只读路径，**不解析信封**，原样返回 status + body。
+ *
+ * 为什么需要单独一条：GET /v3/soul/trait-state 回的是裸对象（200 {agentId,updatedAt,traits}、
+ * 503 {error}），没有 {code,message,data}。走 executeMetaGet 会被判成 invalid envelope 折成
+ * 502，把 503 soul_trait_state_unavailable 吞掉。这里只做 HTTP 层：
+ *   - 网络/超时仍抛 KernelFetchError(502/504)；
+ *   - 任何 HTTP 状态都正常返回，错误码与错误体交给调用方透传。
+ */
+export async function executeMetaGetRaw(
+  cfg: MetaFetchConfig,
+  path: string,
+  query: Record<string, string>,
+): Promise<RawMetaResponse> {
+  const base = cfg.endpoint.replace(/\/+$/, '');
+  const timeoutMs = cfg.timeoutMs ?? 15_000;
+  const log = cfg.logger;
+  const startedAt = Date.now();
+  const reqId = cfg.requestId ?? randomUUID();
+  logRemoteMeta(log, 'request', reqId, {
+    path,
+    serviceId: cfg.serviceId,
+    request_id: reqId,
+    requestQuery: query,
+  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const headers: Record<string, string> = {
+      [META_HEADER_SERVICE_ID]: cfg.serviceId,
+      [META_HEADER_REQUEST_ID]: reqId,
+    };
+    if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+    if (cfg.userKey) headers[META_HEADER_USER_KEY] = cfg.userKey;
+    const resp = await fetch(buildRequestUrl(base, path, query), {
+      method: 'GET',
+      headers,
+      signal: ctrl.signal,
+    });
+    const rawText = await resp.text().catch(() => '');
+    let body: unknown = null;
+    try {
+      body = JSON.parse(rawText) as unknown;
+    } catch {
+      body = null;
+    }
+    logRemoteMeta(log, resp.ok ? 'response' : 'error', reqId, {
+      path,
+      request_id: reqId,
+      durationMs: Date.now() - startedAt,
+      httpStatus: resp.status,
+      ...(resp.ok
+        ? { responseBody: serializeForLog(body) }
+        : { error: truncateString(rawText.trim() || `http ${resp.status}`) }),
+    });
+    return { status: resp.status, body, text: rawText };
+  } catch (err) {
+    const isTimeout = (err as { name?: string }).name === 'AbortError';
+    const message = isTimeout
+      ? `remote metadata timeout at ${path}`
+      : `remote metadata call failed at ${path}: ${(err as Error).message}`;
+    const code = isTimeout ? 504 : 502;
+    logRemoteMeta(log, 'error', reqId, {
+      path,
+      durationMs: Date.now() - startedAt,
+      request_id: reqId,
+      envelopeCode: code,
+      error: message,
+    });
+    throw new KernelFetchError(code, message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** GET 记忆内核元数据路径（query 进 URL），返回完整信封。 */
+export async function executeMetaGet<T>(
+  cfg: MetaFetchConfig,
+  path: string,
+  query: Record<string, string>,
+  mode: 'data' | 'envelope',
+): Promise<T> {
+  return executeMetaRequest<T>(cfg, path, { method: 'GET', query }, mode);
 }

@@ -14,35 +14,12 @@ import { Button, Input, Modal, Tag } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { BooksIcon, CodeIcon, ToolsIcon } from 'tea-icons-react';
 import { agentsApi, type AgentTemplateConfig } from '@/lib/teamApi';
-import { writeAgentUiMeta } from '@/services';
 import { tea } from '@/lib/tea-bridge';
 import { getErrorMessage } from '@/lib/error-message';
 import { LightField, CollapseGroup, AssetCheckList, selectableAssetKeys } from './shared';
 import { useTeamAssets } from './useAgentAssets';
 
-/** 从模板 metadata_json（JSON 字符串）读取 ui.role_prompt / ui.rules_prompt。 */
-function readTemplatePrompts(tpl: AgentTemplateConfig): {
-  rolePrompt: string;
-  rulesPrompt: string;
-} {
-  let rolePrompt = '';
-  let rulesPrompt = '';
-  if (tpl.metadata_json) {
-    try {
-      const meta = JSON.parse(tpl.metadata_json) as {
-        ui?: { role_prompt?: string; rules_prompt?: string };
-      };
-      rolePrompt = meta?.ui?.role_prompt ?? '';
-      rulesPrompt = meta?.ui?.rules_prompt ?? '';
-    } catch {
-      /* metadata_json 不合法按空处理 */
-    }
-  }
-  // 没有 ui 拆分时回退到整体 prompt（与 Agent 详情展示口径一致）
-  if (!rolePrompt && tpl.prompt) rolePrompt = tpl.prompt;
-  return { rolePrompt, rulesPrompt };
-}
-
+/* 2026-11-07 spec v3.7 F6：模板不再承载角色/规则 prompt，人格内容走人格卡。 */
 export default function DefaultAgentTemplateDialog({
   team,
   initial,
@@ -58,12 +35,6 @@ export default function DefaultAgentTemplateDialog({
   const { t } = useTranslation();
   const [name, setName] = useState(initial?.name ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
-  const [rolePrompt, setRolePrompt] = useState(
-    () => readTemplatePrompts(initial ?? { name: '' }).rolePrompt,
-  );
-  const [rulesPrompt, setRulesPrompt] = useState(
-    () => readTemplatePrompts(initial ?? { name: '' }).rulesPrompt,
-  );
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [codeGraphOpen, setCodeGraphOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
@@ -86,16 +57,10 @@ export default function DefaultAgentTemplateDialog({
     if (!canSubmit) return;
     setBusy(true);
     try {
-      const metadataJson = writeAgentUiMeta(undefined, {
-        role_prompt: rolePrompt.trim(),
-        rules_prompt: rulesPrompt.trim(),
-      });
       const template: AgentTemplateConfig = {
         name: name.trim(),
         description: description.trim() || null,
-        prompt: [rolePrompt.trim(), rulesPrompt.trim()].filter(Boolean).join('\n\n'),
         visibility: 'team',
-        metadata_json: metadataJson,
         asset_ids: { skills, code_graphs: codeGraphs, wikis: llmWikis },
       };
       await agentsApi.setDefaultTemplate(team.team_id, template);
@@ -149,27 +114,6 @@ export default function DefaultAgentTemplateDialog({
               value={description}
               onChange={setDescription}
               placeholder={t('createAgent.descPlaceholder')}
-            />
-          </LightField>
-
-          <LightField label={t('createAgent.roleLabel')} hint={t('createAgent.roleHint')}>
-            <Input.TextArea
-              size="full"
-              value={rolePrompt}
-              onChange={setRolePrompt}
-              rows={3}
-              placeholder={t('createAgent.rolePlaceholder')}
-            />
-          </LightField>
-
-          <LightField label={t('createAgent.rulesLabel')} hint={t('createAgent.rulesHint')}>
-            <Input.TextArea
-              size="full"
-              value={rulesPrompt}
-              onChange={setRulesPrompt}
-              rows={4}
-              placeholder={t('createAgent.rulesPlaceholder')}
-              className="_memory-mono-textarea"
             />
           </LightField>
 

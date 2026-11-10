@@ -48,6 +48,9 @@ export const META_ACTIONS = [
   'agent/delete',
   'agent/list',
   'agent/archive',
+  // 人格层设定六项（§1）：get 未设返回 null，save 服务端校验上限并同事务写回 meta_agents.name。
+  'agent-persona/get',
+  'agent-persona/save',
   'agent/set-default-template',
   'agent/get-default-template',
   'task/create',

@@ -19,6 +19,7 @@ export interface AgentTemplateAssetIds {
 export interface AgentTemplateConfig {
   name: string;
   description?: string | null;
+  /** 旧模板文件里的合并 prompt 字段：仅做读取兼容，新模板不再写入（spec v3.7 F6）。 */
   prompt?: string | null;
   visibility?: string;
   metadata_json?: string;

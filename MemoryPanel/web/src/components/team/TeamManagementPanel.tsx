@@ -53,6 +53,8 @@ import CreateTeamDialog from './CreateTeamDialog';
 import CreateAgentDialog from './CreateAgentDialog';
 import AgentEditDialog from './AgentEditDialog';
 import DefaultAgentTemplateSection from './DefaultAgentTemplateSection';
+import { saveAgentPersona } from '@/lib/api/agent-persona';
+import { isPersonaDraftEmpty, type AgentPersonaDraft } from '@/lib/agent-persona-form';
 
 function errMsg(e: unknown): string {
   return getErrorMessage(e);
@@ -106,7 +108,9 @@ export default function TeamManagementPanel({
     keyValue: string;
   } | null>(null);
 
-  async function handleCreateAgent(card: Omit<AgentCard, 'id' | 'icon' | 'accent'>) {
+  async function handleCreateAgent(
+    card: Omit<AgentCard, 'id' | 'icon' | 'accent'> & { persona?: AgentPersonaDraft },
+  ) {
     if (!activeTeamId || !activeTeam) return;
     if (
       importedChatMemoryIds(activeTeamId, '__new_agent__', card.chatMemories).length >
@@ -124,15 +128,9 @@ export default function TeamManagementPanel({
       const created = await agentsApi.create(activeTeamId, {
         name: card.name,
         description: card.description,
-        prompt: [card.rolePrompt, card.rulesPrompt].filter(Boolean).join('\n\n'),
         visibility: 'team',
       });
-      const metadataJson = writeAgentUiMeta(created.metadata_json, {
-        role_prompt: card.rolePrompt,
-        rules_prompt: card.rulesPrompt,
-        icon,
-        accent,
-      });
+      const metadataJson = writeAgentUiMeta(created.metadata_json, { icon, accent });
       await agentsApi.update(created.agent_id, { metadata_json: metadataJson });
 
       // 资产绑定统一走真实挂载接口（不写 metadata_json.ui）。串行执行，任一失败即抛错，
@@ -151,7 +149,21 @@ export default function TeamManagementPanel({
         await knowledgeApi.wiki.allocate(activeTeamId, id, created.agent_id);
       }
 
+      // 人格设定六项：agent 已建好后再写人设（内核按 agent_id 归属校验）。
+      // 未填任何一项就不写；写失败不吞——agent 已存在，单独提示「已创建，但人格设定保存失败」。
+      let personaError = '';
+      if (card.persona && !isPersonaDraftEmpty(card.persona)) {
+        try {
+          await saveAgentPersona(created.agent_id, card.name, card.persona);
+        } catch (err) {
+          personaError = errMsg(err);
+        }
+      }
+
       invalidateBackendCache();
+      if (personaError) {
+        tea.notify.error(`已创建「${card.name}」，但人格设定保存失败：${personaError}`);
+      }
     } catch (err) {
       tea.notify.error(errMsg(err));
       setBusy(false);

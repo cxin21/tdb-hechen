@@ -1,11 +1,9 @@
 /**
- * V6-批次二：attribute-badges 纯函数单测（阈值边界/宁缺毋滥/首要锚选取/注入预览同构）。
- * RED 先行：deriveAttributeBadges / pickPrimeAnchor / anchorInjectPreview 均为本批新增。
+ * V6-批次二：deriveAttributeBadges 纯函数单测（阈值边界/宁缺毋滥）。
+ * F1（2026-11-07）：价值锚面板删除后，锚注入预览/首要锚选取/创建人徽标用例随导出一并删除。
  */
 import { describe, it, expect } from 'vitest';
-import {
-  deriveAttributeBadges, pickPrimeAnchor, anchorInjectPreview, createdByBadge,
-} from '../web/src/pages/ChatMemoryPage/utils/attribute-badges';
+import { deriveAttributeBadges } from '../web/src/pages/ChatMemoryPage/utils/attribute-badges';
 import type { ChatMemoryLayerItem } from '../web/src/lib/api/chat-memory';
 
 const item = (o: Partial<ChatMemoryLayerItem> & { metadata?: Record<string, unknown> }): ChatMemoryLayerItem =>
@@ -69,79 +67,5 @@ describe('deriveAttributeBadges P1-T8（bi-temporal 补口：已失效徽章）'
       valid_end: '2026-09-14T00:00:00Z',
     }));
     expect(out.map(b => b.key)).toEqual(['since', 'invalidated']);
-  });
-});
-
-describe('pickPrimeAnchor（感受段方案B：weight 选取与渲染序解耦）', () => {
-  it('weight 最高者入选；无描述 → null（不回退次锚）', () => {
-    expect(pickPrimeAnchor([
-      { label: '甲', weight: 0.9, attrs_json: '{"description":"首要描述"}' },
-      { label: '乙', weight: 0.3, attrs_json: '{"description":"次锚描述"}' },
-    ], 1)).toEqual({ label: '甲', desc: '首要描述' });
-    expect(pickPrimeAnchor([{ label: '甲', weight: 0.9 }, { label: '乙', weight: 0.3 }])).toBeNull();
-  });
-  it('V7 方案A：描述无句界且≤80 预算→全量（替换 V6 的 30 字硬截）；weight≤0 视为未测量不入选', () => {
-    const d40 = '一二三四五六七八九十'.repeat(4);
-    expect(pickPrimeAnchor([{ label: '甲', weight: 0.9, attrs_json: `{"description":"${d40}"}` }])!.desc)
-      .toBe(d40);
-    expect(pickPrimeAnchor([{ label: '甲', weight: 0, attrs_json: '{"description":"x"}' }])).toBeNull();
-  });
-});
-
-describe('anchorInjectPreview（与 soul-assembler 锚行逐字同构——呈现层翻修 2026-10-17 对齐：权重内隐）', () => {
-  it('新形态 label(方向)：描述；weight 不再渲染（内隐于排序/门控/首要选取）', () => {
-    expect(anchorInjectPreview({ label: '文档', weight: 0.8, valence: 1, attrs_json: '{"description":"d"}' }))
-      .toBe('文档(趋近)：d');
-    expect(anchorInjectPreview({ label: 'A', weight: 0.33, valence: 1 })).toBe('A(趋近)');
-    const out = anchorInjectPreview({ label: 'A', weight: 0.5, valence: 1 }) ?? '';
-    expect(out).not.toContain('w0.');
-  });
-  it('valence 0 → (中性) 与内核 valenceDir 一致；valence null → 裸 label；损坏 attrs_json → 宁缺毋滥', () => {
-    expect(anchorInjectPreview({ label: '探针', weight: 0.8, valence: 0 })).toBe('探针(中性)');
-    expect(anchorInjectPreview({ label: 'A', valence: null })).toBeNull();
-    expect(anchorInjectPreview({ label: 'A', valence: null, attrs_json: '{"description":"d"}' })).toBe('A：d');
-    expect(anchorInjectPreview({ label: 'A', weight: 0.8, valence: 1, attrs_json: 'not-json' })).toBe('A(趋近)');
-  });
-});
-
-describe('pickPrimeAnchor V7 F-U2（并列 weight 两端序统一）', () => {
-  it('并列 weight：value_id 次级键定序，输入 weight-DESC 序不承载语义（RED）', () => {
-    const rows = [
-      { label: '乙', value_id: 'v-b', weight: 0.8, attrs_json: '{"description":"乙描述"}' },
-      { label: '甲', value_id: 'v-a', weight: 0.8, attrs_json: '{"description":"甲描述"}' },
-    ];
-    expect(pickPrimeAnchor(rows as never)).toEqual({ label: '甲', desc: '甲描述' });
-  });
-  it('守卫：weight 不同时仍按 weight 最高（回归不变）', () => {
-    const rows = [
-      { label: '低', value_id: 'v-a', weight: 0.5, attrs_json: '{"description":"低描述"}' },
-      { label: '高', value_id: 'v-b', weight: 0.9, attrs_json: '{"description":"高描述"}' },
-    ];
-    expect(pickPrimeAnchor(rows as never)).toEqual({ label: '高', desc: '高描述' });
-  });
-});
-
-describe('pickPrimeAnchor V7 方案A（句边界描述）', () => {
-  it('首句在预算内：完整首句（非 30 字硬截）', () => {
-    const d = '用户长期偏好：文本类成果一律在对话框直接输出可复制全文，不得落成文档文件。后续句。';
-    const rows = [{ label: '文档', value_id: 'v-d', weight: 0.8, attrs_json: JSON.stringify({ description: d }) }];
-    expect(pickPrimeAnchor(rows as never)).toEqual({ label: '文档', desc: d.split('。')[0] + '。' });
-  });
-  it('无句边界且超预算：返回 null（宁缺毋滥）', () => {
-    const d = '表层现象与真实根因多次背离：' + '长长长长长'.repeat(30);
-    const rows = [{ label: '根因', value_id: 'v-r', weight: 0.8, attrs_json: JSON.stringify({ description: d }) }];
-    expect(pickPrimeAnchor(rows as never)).toBeNull();
-  });
-});
-
-describe('createdByBadge（§4.2 core_values.created_by 展示徽标 · 第二令 GAP-1）', () => {
-  it('auto-growth / verify 原样返回', () => {
-    expect(createdByBadge('auto-growth')).toBe('auto-growth');
-    expect(createdByBadge('verify')).toBe('verify');
-  });
-  it('空串 / 纯空白 / undefined → null（宁缺毋滥）', () => {
-    expect(createdByBadge('')).toBeNull();
-    expect(createdByBadge('   ')).toBeNull();
-    expect(createdByBadge(undefined)).toBeNull();
   });
 });

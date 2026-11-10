@@ -5,8 +5,8 @@
  *   - Team    走 teamApi.teamsApi + teamApi.membersApi
  *   - Agent   走 teamApi.agentsApi
  *
- * 后端 schema 里没有的 UI 专属字段（icon / accent / role_prompt / rules_prompt /
- * skills / code_graphs / llm_wikis / chat_memories 等）
+ * 后端 schema 里没有的 UI 专属字段（icon / accent / skills / code_graphs /
+ * llm_wikis / chat_memories 等；人格内容走 agent-persona，不在此处）
  * 统一序列化进 agent.metadata_json 的 "ui" namespace，
  * 保证刷新页面后这些字段不丢 —— 等对应的资产/字段在后端落地后，把
  * readXxxUiMeta / writeXxxUiMeta 里的读写目标换成真字段即可，组件层不用改。
@@ -50,8 +50,6 @@ export interface Agent {
   owner_user_id: string;
   name: string;
   description: string;
-  role_prompt: string;
-  rules_prompt: string;
   icon: string;
   accent: 'blue' | 'purple' | 'orange' | 'emerald' | 'rose' | 'slate';
   skills: string[];
@@ -67,8 +65,6 @@ export interface Agent {
 // ========================= metadata_json 兜底读写（"ui" namespace） =========================
 
 interface AgentUiMeta {
-  role_prompt: string;
-  rules_prompt: string;
   icon: string;
   accent: Agent['accent'];
   skills: string[];
@@ -82,8 +78,6 @@ const ICON_CYCLE = ['🤖', '✨', '⚡', '🎯', '🚀', '🧩'];
 
 function defaultAgentUiMeta(index: number): AgentUiMeta {
   return {
-    role_prompt: '',
-    rules_prompt: '',
     icon: ICON_CYCLE[index % ICON_CYCLE.length],
     accent: ACCENT_CYCLE[index % ACCENT_CYCLE.length],
     skills: [],
@@ -151,18 +145,12 @@ export function adaptMember(bm: BackendMember): TeamMember {
 
 export function adaptAgent(ba: BackendAgent, index: number): Agent {
   const ui = readAgentUiMeta(ba.metadata_json, index);
-  // prompt 回退：当 metadata_json 不含 ui.role_prompt 时（agent 可能通过后端 API 直接创建，
-  // 而非前端 UI），从后端 prompt 字段回退。prompt 是 role+rules 合在一起的完整文本，
-  // 没有 ui 拆分时整体放到 role_prompt，rules_prompt 保持空。
-  const rolePrompt = ui.role_prompt || ba.prompt || '';
   return {
     agent_id: ba.agent_id,
     team_id: ba.team_id,
     owner_user_id: ba.owner_user_id,
     name: ba.name,
     description: ba.description ?? '',
-    role_prompt: rolePrompt,
-    rules_prompt: ui.rules_prompt,
     icon: ui.icon,
     accent: ui.accent,
     // 资产绑定不再从 metadata_json.ui 读（.ui 已废弃为资产存储）。

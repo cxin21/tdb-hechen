@@ -16,164 +16,6 @@ export interface MemoryHealthInfo {
   lastVecWriteAt: string | null;
 }
 
-/** 价值锚行（/v3/core-memory/read 的 values；store/types.ts listValues 同形） */
-export interface ValueAnchor {
-  value_id: string;
-  label: string;
-  weight: number;
-  created_by: string;
-  /** 动机方向：-1|0|1；null = 未判定（LLM 未判或新建） */
-  valence: number | null;
-  /** GROW 来源徽标：seed 种子 / manual 手工 / auto 自生长；旧网关缺省 → undefined（前向兼容） */
-  origin?: 'seed' | 'manual' | 'auto';
-  /** GROW 钉住：1 = 永不被自生长挤出 */
-  pinned?: 0 | 1;
-  /** GROW 状态机：active 活跃 / retired 退休（退休区）/ vetoed 永久否决（任何读面不可见） */
-  state?: 'active' | 'retired' | 'vetoed';
-  /** P2（U2）：锚类型（theme 主题 / person 人物双节点）；旧网关缺省 → undefined（前向兼容） */
-  node_type?: 'theme' | 'person' | 'character'; // F-EV13-1 轮：P3 品格锚类型补齐（面板徽标/配额过滤消费）
-  /** P2（U2）：人物锚属性 JSON（{role, aliases}）；主题锚为 '{}' */
-  attrs_json?: string;
-}
-
-/** P2 待办项（O13）：/v3/core-memory/pending/list 的行（core_value/strict_rule 分级提案） */
-export interface PendingItem {
-  pending_id: string;
-  slot: string;
-  content: string;
-  version?: number;
-  state?: string;
-  evidence_count?: number;
-  /** V12-CV：core_value 提案携带的 label/description（采纳预览） */
-  label?: string;
-  description?: string;
-  /** #19 T12：重提提案 attrs（{reproposed,supersedes,generation,...}；坏 JSON/旧行 → null） */
-  attrs_json?: string | null;
-  /** #12 T6：list 预检徽标——提案 label 与 active theme 锚同名 → true */
-  conflict?: boolean;
-}
-
-/** #12 T6：pending 采纳 409 冲突载荷（errorEnvelope data.conflict） */
-export interface PendingDecideConflict {
-  value_id: string;
-  label: string;
-  weight?: number;
-  existing_has_description?: boolean;
-  pending_has_description?: boolean;
-  state?: 'active' | 'retired' | 'vetoed';
-  hint?: string;
-}
-
-/** #102：409 分类结果判别联合——kind 区分三类冲突，载荷随分类携带（形状不符即 null，前向兼容） */
-export type Classified409 =
-  | { kind: 'conflict'; conflict: PendingDecideConflict }
-  | { kind: 'promise-conflict'; conflict: PromiseDecideConflict }
-  | { kind: 'rollback-refused'; reason?: string };
-
-/**
- * #102 统一 409 分类器：三条提取路径（conflict / promiseTransition / rollbackRefused）
- * 共享的单一分类入口。结构化字段优先（网关 409 data.rollbackRefused / data.conflict /
- * data.promiseTransition），message 文案正则仅作旧网关兼容回退——网关文案改动不再
- * 破坏前端识别（#100 评审 Standards 路判断题的收口）。
- */
-export function classify409Of(err: unknown): Classified409 | null {
-  const data = err instanceof ApiError ? err.data : undefined;
-  if (data && typeof data === 'object') {
-    // ① 结构化：conflict / promiseTransition（形状校验与既有提取器逐位一致）
-    const conflict = conflictOf(err);
-    if (conflict) return { kind: 'conflict', conflict };
-    const promise = promiseConflictOf(err);
-    if (promise) return { kind: 'promise-conflict', conflict: promise };
-    // ② 结构化：rollbackRefused detail（#102 网关新载荷；有 detail 即分类，reason 可缺省）
-    const detail = rollbackDetailOf(err);
-    if (detail) return { kind: 'rollback-refused', reason: detail.reason };
-  }
-  // ③ 兼容回退：旧网关无结构化 detail，rollback 拒绝理由只嵌在 message 文案里
-  const legacy = rollbackRefusedOf(err);
-  return legacy ? { kind: 'rollback-refused', reason: legacy.reason } : null;
-}
-
-/** 从 ApiError 提取 409 conflict 载荷；非冲突错误返回 null（前向兼容：形状不符即 null） */
-export function conflictOf(err: unknown): PendingDecideConflict | null {
-  const data = err instanceof ApiError ? err.data : undefined;
-  const conflict = (data as { conflict?: unknown } | undefined)?.conflict;
-  if (
-    conflict &&
-    typeof conflict === 'object' &&
-    typeof (conflict as PendingDecideConflict).value_id === 'string' &&
-    typeof (conflict as PendingDecideConflict).label === 'string'
-  ) {
-    return conflict as PendingDecideConflict;
-  }
-  return null;
-}
-
-/** #100：auto_adopted 回滚 409 载荷（新网关 = data.rollbackRefused detail；旧网关理由嵌在
- *  message：'auto-adopt rollback refused: <reason> — slot changed since auto-adopt; handle manually'） */
-export interface PendingRollbackRefused {
-  /** store 版本守卫给出的原始拒绝理由（如 'slot-version-changed (current=3 != adopt-time=2)'） */
-  reason?: string;
-}
-
-/** #102：data.rollbackRefused detail 形状嗅探——classify409Of 与 rollbackRefusedOf 共享，
- *  消除重复解包；有 detail 即认定 rollback 场景，reason 非 string 归一为 undefined */
-function rollbackDetailOf(err: unknown): PendingRollbackRefused | null {
-  if (!(err instanceof ApiError)) return null;
-  const rb = (err.data as { rollbackRefused?: unknown } | undefined)?.rollbackRefused;
-  if (rb && typeof rb === 'object') {
-    const reason = (rb as { reason?: unknown }).reason;
-    return { reason: typeof reason === 'string' ? reason : undefined };
-  }
-  return null;
-}
-
-/** #100/#102：识别 auto_adopted 回滚 409——结构化 data.rollbackRefused 优先，
- *  旧网关回退到 message 文案正则（业务码 409 ∧ 含 'rollback refused'；形状不符返回 null）。
- *  语义（#92 R5）：auto_adopt 后槽版本漂移 → 拒绝快照回滚，需人工处理。 */
-export function rollbackRefusedOf(err: unknown): PendingRollbackRefused | null {
-  if (!(err instanceof ApiError)) return null;
-  if (err.code !== 409) return null;
-  const detail = rollbackDetailOf(err);
-  if (detail) return detail;
-  const msg = err.rawMessage ?? '';
-  if (!msg.includes('rollback refused')) return null;
-  const m = /rollback refused: (.+?) — /.exec(msg);
-  return { reason: m?.[1] };
-}
-
-/** #50⑤：promise_transition 采纳 409 载荷（core v2-router errorEnvelope detail.promiseTransition） */
-export interface PromiseDecideConflict {
-  promiseId: string;
-  to: string;
-  reason?: string;
-}
-
-/** #50⑤：识别 promise 迁移 409（形状=promiseTransition.ok===false）；非该形状返回 null */
-export function promiseConflictOf(err: unknown): PromiseDecideConflict | null {
-  const data = err instanceof ApiError ? err.data : undefined;
-  const pt = (data as { promiseTransition?: unknown } | undefined)?.promiseTransition;
-  if (
-    pt &&
-    typeof pt === 'object' &&
-    (pt as PromiseDecideConflict & { ok: unknown }).ok === false &&
-    typeof (pt as PromiseDecideConflict).promiseId === 'string' &&
-    typeof (pt as PromiseDecideConflict).to === 'string'
-  ) {
-    const { ok: _ok, ...rest } = pt as PromiseDecideConflict & { ok: unknown };
-    return rest;
-  }
-  return null;
-}
-/** 价值锚提案（Task DISC，提议制）：/v3/core-memory/values/discover 返回，只提议不落库 */
-export interface ValueProposal {
-  label: string;
-  rationale: string;
-  /** 后端按 label 关键词在样本语料实际命中数重算（LLM 报数不采信） */
-  evidenceCount: number;
-  /** 证据密度公式 clamp [0.3, 0.8]；采纳时作为 upsert 的 weight */
-  suggestedWeight: number;
-}
-
 /** 记忆块列表项（team-assets / agent-fixed / my-agents 共用） */
 export interface ChatMemoryBlock {
   id: string;
@@ -325,7 +167,7 @@ async function chatMemoryCall<T>(endpoint: string, body: Record<string, unknown>
       code: envelope.code,
       requestId: envelope.request_id,
       rawMessage: envelope.message,
-      // #12 T6：409 冲突信封的 data.conflict 随错误抛出，供 pending/decide 分流确认弹窗
+      // #12 T6：409 冲突信封的 data.conflict 随错误抛出，供调用方读取冲突详情
       data: (envelope.data ?? undefined) as unknown,
     });
   }
@@ -629,13 +471,6 @@ export const chatMemoryApi = {
       id,
     }),
 
-  /** 价值锚列表（Task 5；复用 /v3/core-memory/read 的 values，丢 slots）。
-   *  GROW：includeRetired=true 附带退休区行（state='retired'；vetoed 任何读面都不可见）。 */
-  valuesList: (blockId: string, opts?: { includeRetired?: boolean }) =>
-    chatMemoryCall<{ values: ValueAnchor[] }>('values/list', {
-      block_id: blockId,
-      ...(opts?.includeRetired ? { include_retired: true } : {}),
-    }),
   /** S-FEEL-1（M1/S7）：近期情绪基调（core /v3/memory/mood 只读透传；tier=null 不渲染=宁缺毋滥）。
    *  windowHours/阈值等判定依据字段随出参回传（信息完整性：tooltip 展示真实配置值）。 */
   moodRead: (blockId: string) =>
@@ -656,7 +491,7 @@ export const chatMemoryApi = {
     }),
 
   /** agent 身份区只读（U1，DS-SOUL-MEMORY-002 P1）：复用 /v3/core-memory/read 的 slots
-   *  （values/list 丢 slots 的既有注释即此缺口；BFF 透传零新端点）。
+   *  （原价值锚读面丢 slots 的既有注释即此缺口；BFF 透传零新端点）。
    *  #69：opts.format='narrative' 透传 /v3/core-memory/read（叙事视图；门关/降级时
    *  内核原样返回条目形态——状态判定交给 narrativePreviewOf，不在 client 判）。 */
   identityRead: (blockId: string, opts?: { format?: 'narrative' }) =>
@@ -673,96 +508,4 @@ export const chatMemoryApi = {
       ...(opts?.format ? { format: opts.format } : {}),
     }),
 
-  /** P2（O13 UI）：待办列表（core_value/strict_rule 分级提案，人工裁决后生效）。
-   *  #100 审计视图：opts.includeDecided=true → BFF 透传 include_decided，已裁决行（含
-   *  auto_adopted 审计态）也返回；缺省与旧调用逐位一致。 */
-  pendingList: (blockId: string, opts?: { includeDecided?: boolean }) =>
-    chatMemoryCall<{ pending: PendingItem[] }>('pending/list', {
-      block_id: blockId,
-      ...(opts?.includeDecided ? { include_decided: true } : {}),
-    }),
-
-  /** 待办决策（Owner-only）：adopted 采纳（落槽）/ rejected 拒绝（O13 单向状态机，复决 404）。
-   *  #12 T6：同名冲突缺省 409（err.data.conflict 载荷）；UI 确认后 allowOverwrite=true 显式覆盖
-   *  （retired 复活允许、vetoed 永久否决不可绕）。返回含 overwritten/merged 结果标记。 */
-  pendingDecide: (
-    blockId: string,
-    pendingId: string,
-    decision: 'adopted' | 'rejected',
-    opts?: { allowOverwrite?: boolean },
-  ) =>
-    chatMemoryCall<{
-      pending_id: string;
-      decision: string;
-      slot?: string;
-      overwritten?: boolean;
-      merged?: boolean;
-    }>('pending/decide', {
-      block_id: blockId,
-      pending_id: pendingId,
-      decision,
-      ...(opts?.allowOverwrite ? { allow_overwrite: true } : {}),
-    }),
-
-  /** 价值锚 upsert：valence 显式传入 = 用户微调；不传 = plain 新建（落 NULL 待 LLM 判）。
-   *  U2：可选 attrs（人物锚 role/aliases 行内编辑；显式传入才更新，theme 锚忽略无害）。 */
-  valuesUpsert: (
-    blockId: string,
-    params: {
-      value_id: string;
-      label: string;
-      weight: number;
-      valence?: number;
-      attrs?: { role?: string; aliases?: string[]; description?: string };
-    },
-  ) =>
-    chatMemoryCall<{ ok: boolean; value_id: string }>('values/upsert', {
-      block_id: blockId,
-      value_id: params.value_id,
-      label: params.label,
-      weight: params.weight,
-      ...(params.valence !== undefined ? { valence: params.valence } : {}),
-      ...(params.attrs !== undefined ? { attrs: params.attrs } : {}),
-    }),
-
-  /** 价值锚删除（Owner-only；不存在/失败 404） */
-  valuesDelete: (blockId: string, valueId: string) =>
-    chatMemoryCall<{ ok: boolean; value_id: string }>('values/delete', {
-      block_id: blockId,
-      value_id: valueId,
-    }),
-
-  /** 重新总结方向（C2 derive）：LLM 重判 NULL 行；后端保证永不覆盖用户微调 */
-  valuesDerive: (blockId: string) =>
-    chatMemoryCall<{ derived: number; skipped: number }>('values/derive', {
-      block_id: blockId,
-    }),
-
-  /** 价值锚发现（Task DISC，提议制）：LLM 蒸馏提案，只提议不落库；采纳走 valuesUpsert */
-  valuesDiscover: (blockId: string) =>
-    chatMemoryCall<{ proposals: ValueProposal[]; sampleSize: number }>('values/discover', {
-      block_id: blockId,
-    }),
-
-  /** GROW（钉住/取消钉住）：pinned=1 永不被自生长挤出 */
-  valuesPin: (blockId: string, valueId: string, pinned: boolean) =>
-    chatMemoryCall<{ ok: boolean; value_id: string; pinned: boolean }>('values/pin', {
-      block_id: blockId,
-      value_id: valueId,
-      pinned,
-    }),
-
-  /** GROW（手动退休）：state → 'retired'（退休区可见，可恢复/可钉住；可逆） */
-  valuesRetire: (blockId: string, valueId: string) =>
-    chatMemoryCall<{ ok: boolean; value_id: string }>('values/retire', {
-      block_id: blockId,
-      value_id: valueId,
-    }),
-
-  /** GROW（恢复）：retired → active（退休区[恢复]） */
-  valuesRestore: (blockId: string, valueId: string) =>
-    chatMemoryCall<{ ok: boolean; value_id: string }>('values/restore', {
-      block_id: blockId,
-      value_id: valueId,
-    }),
 };

@@ -1408,3 +1408,227 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* ===== AgentPersonaSection：人格设定六项 + 特质两栏（spec §1/§5） ===== */
+._memory-persona-section {
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--tea-color-bg-primary-default);
+}
+
+._memory-persona-head {
+  margin-bottom: 12px;
+}
+
+._memory-persona-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tea-color-text-primary);
+}
+
+._memory-persona-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-persona-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  ._memory-persona-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+._memory-persona-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+._memory-persona-counter {
+  margin-top: 2px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-persona-counter--over {
+  color: var(--tea-color-text-error-default);
+}
+
+._memory-persona-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+._memory-persona-chip {
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 9999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: var(--tea-color-bg-primary-default);
+  color: var(--tea-color-text-secondary);
+  cursor: pointer;
+}
+
+._memory-persona-chip:hover:not(:disabled) {
+  border-color: var(--tea-color-border-brand-default);
+  color: var(--tea-color-text-brand-default);
+}
+
+._memory-persona-chip--active {
+  border-color: var(--tea-color-border-brand-default);
+  background: var(--tea-color-bg-brand-lighten-default);
+  color: var(--tea-color-text-brand-default);
+}
+
+._memory-persona-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+._memory-persona-weights {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+._memory-persona-weight-row {
+  display: grid;
+  grid-template-columns: 56px minmax(80px, 1fr) 40px auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+._memory-persona-weight-label {
+  color: var(--tea-color-text-primary);
+}
+
+._memory-persona-weight-value {
+  font-family: var(--font-mono);
+  text-align: right;
+  color: var(--tea-color-text-primary);
+}
+
+._memory-persona-weight-preview {
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-persona-error {
+  margin-top: 6px;
+  line-height: 16px;
+}
+
+._memory-persona-retired {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+._memory-persona-retired-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--tea-color-text-tertiary);
+  word-break: break-word;
+}
+
+._memory-persona-retired-badge {
+  flex-shrink: 0;
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 9999px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--tea-color-text-tertiary);
+}
+
+/* --- 右侧「它现在」 --- */
+._memory-persona-mirror {
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 4px;
+  background: var(--tea-color-bg-secondary-default);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+._memory-persona-mirror-title {
+  font-weight: 600;
+  color: var(--tea-color-text-primary);
+  margin-bottom: 6px;
+}
+
+._memory-persona-mirror-empty {
+  color: var(--tea-color-text-tertiary);
+  line-height: 16px;
+}
+
+._memory-persona-mirror-error {
+  color: var(--tea-color-text-error-default);
+  line-height: 16px;
+  word-break: break-word;
+}
+
+._memory-persona-mirror-head,
+._memory-persona-mirror-row {
+  display: grid;
+  grid-template-columns: minmax(48px, 1fr) 64px 64px 52px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0;
+}
+
+._memory-persona-mirror-head {
+  color: var(--tea-color-text-tertiary);
+  border-bottom: 1px solid var(--tea-color-border-primary-default);
+}
+
+._memory-persona-mirror-row {
+  border-bottom: 1px dashed var(--tea-color-border-primary-default);
+}
+
+._memory-persona-mirror-label {
+  color: var(--tea-color-text-primary);
+}
+
+._memory-persona-mirror-value {
+  font-family: var(--font-mono);
+  color: var(--tea-color-text-secondary);
+}
+
+._memory-persona-mirror-foot {
+  margin-top: 6px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-persona-drift-badge {
+  display: inline-block;
+  border-radius: 9999px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  background: var(--tea-color-bg-warning-lighten-default);
+  color: var(--tea-color-text-warning-default);
+}
+
+/* 读设定中的占位（编辑弹窗打开后先读 agent-persona/get） */
+._memory-persona-loading {
+  border: 1px dashed var(--tea-color-border-primary-default);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--tea-color-text-tertiary);
+}

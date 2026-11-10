@@ -21,12 +21,11 @@ export interface AgentTemplateAssetIds {
  * 注意：
  *   - asset_ids 为团队资产 ID 快照，只允许选 visibility=team 的公共资产；
  *   - 覆盖式写入：set 时需一次回传完整 template；
- *   - metadata_json 为 JSON 字符串，ui.role_prompt / ui.rules_prompt 存拆分 prompt。
+ *   - metadata_json 为 JSON 字符串，只存 icon / accent 等 UI 专属字段（人格内容走人格卡）。
  */
 export interface AgentTemplateConfig {
   name: string;
   description?: string | null;
-  prompt?: string | null;
   /** 'private' | 'team'(默认) | 'restricted' */
   visibility?: string;
   metadata_json?: string;
@@ -55,7 +54,7 @@ export const agentsApi = {
   /** 创建 agent */
   create: async (
     teamId: string,
-    data: { name: string; description?: string; prompt?: string; visibility?: string },
+    data: { name: string; description?: string; visibility?: string },
   ) => {
     const me = await getCurrentUser();
     return metaPost<Agent>('agent/create', {
@@ -63,7 +62,6 @@ export const agentsApi = {
       owner_user_id: me.user_id,
       name: data.name,
       description: data.description,
-      prompt: data.prompt,
       visibility: data.visibility ?? 'team',
     });
   },
@@ -79,7 +77,6 @@ export const agentsApi = {
     data: {
       name?: string;
       description?: string;
-      prompt?: string;
       visibility?: string;
       status?: string;
       metadata_json?: string;

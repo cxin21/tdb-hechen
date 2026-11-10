@@ -232,10 +232,8 @@ export function registerMetaProxyRoutes(api: Hono, deps: PanelDeps): void {
 // 默认 Agent 预置字段（对齐内核 DEFAULT_AGENT_*，无模板时建 default-agent 用）
 const DEFAULT_AGENT_NAME = 'default-agent';
 const DEFAULT_AGENT_DESCRIPTION = '默认助手，可处理通用开发任务与日常协作。';
-const DEFAULT_AGENT_PROMPT = '';
-const DEFAULT_AGENT_METADATA_JSON = JSON.stringify({
-  ui: { role_prompt: '', rules_prompt: '' },
-});
+// 2026-11-07 spec v3.7 F6：Agent 不再承载角色/规则 prompt 文本，模板里的游离字段一律忽略。
+const DEFAULT_AGENT_METADATA_JSON = '{}';
 
 /**
  * 有模板 → 建同名 Agent（owner=新用户）→ 复制模板资产（skill fork / code_graph·wiki allocate）；
@@ -281,7 +279,6 @@ async function cloneDefaultAgentForNewMember(
       owner_user_id: userId,
       name: agentName,
       description: hasTemplate ? template!.description ?? null : DEFAULT_AGENT_DESCRIPTION,
-      prompt: hasTemplate ? template!.prompt ?? '' : DEFAULT_AGENT_PROMPT,
       visibility: hasTemplate ? template!.visibility ?? 'team' : 'team',
       metadata_json: hasTemplate ? template!.metadata_json ?? '{}' : DEFAULT_AGENT_METADATA_JSON,
       status: 'active',

@@ -50,6 +50,60 @@
   padding: 0 24px 40px;
 }
 
+/* ── 注入健康条（P0-D，task-17；页头之下、感受条之上，44px 只读） ── */
+/* 无数据/加载失败刻意用灰字（--soul-text-3），不用红色恐吓：「还没注入」是常态不是故障。 */
+._soul-health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--soul-sp-3);
+  min-height: 44px;
+  padding: 0 var(--soul-sp-4);
+  border: 1px solid var(--soul-border);
+  border-radius: var(--soul-radius-card);
+  background: var(--soul-card-bg);
+  font-size: var(--soul-fz-body);
+  line-height: var(--soul-lh-body);
+  color: var(--soul-text-2);
+}
+
+._soul-health-label {
+  font-size: var(--soul-fz-sub);
+  font-weight: 600;
+  color: var(--soul-text-1);
+}
+
+/* 三态只染标签色：正常=绿、降级=琥珀、无数据/失败/加载=中性灰 */
+._soul-health--ok ._soul-health-label { color: var(--soul-pos); }
+._soul-health--degraded ._soul-health-label { color: var(--soul-cau); }
+._soul-health--noData ._soul-health-label,
+._soul-health--failed ._soul-health-label,
+._soul-health--loading ._soul-health-label { color: var(--soul-text-3); }
+
+._soul-health-meta {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+._soul-health-empty,
+._soul-health--failed ._soul-health-meta { color: var(--soul-text-3); }
+
+._soul-health-skip {
+  padding: 0 6px;
+  border-radius: var(--soul-radius-inset);
+  background: var(--soul-fill-muted);
+  color: var(--soul-text-3);
+  font-size: var(--soul-fz-badge);
+}
+
+/* 失败计数用琥珀而非红色；明细走 title（hover） */
+._soul-health-fail {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-cau);
+  cursor: help;
+}
+
 /* ── 页头（56px flex 居中；副标题升维为锚点 pills——C09 首屏 ≥3 分区可达） ── */
 ._soul-header {
   display: flex;
@@ -123,6 +177,63 @@
   color: var(--soul-text-3);
   padding: 32px 0;
   text-align: center;
+}
+
+/* ── 情绪明细（阶段 3）：等宽数字 + 只用分隔线，不加重卡片 ── */
+._soul-emo-funnel {
+  margin-left: auto;
+  text-align: right;
+}
+._soul-emo-tablewrap {
+  border: 1px solid var(--soul-border);
+  border-radius: var(--soul-radius-card);
+  background: var(--soul-card-bg);
+  overflow-x: auto;
+}
+._soul-emo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--soul-fz-body);
+}
+._soul-emo-table th,
+._soul-emo-table td {
+  padding: 8px var(--soul-sp-3);
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--soul-border-soft);
+}
+._soul-emo-table th {
+  font-size: var(--soul-fz-meta);
+  font-weight: 500;
+  color: var(--soul-text-3);
+  white-space: nowrap;
+}
+._soul-emo-table tr:last-child td {
+  border-bottom: none;
+}
+._soul-emo-th-time,
+._soul-emo-td-time {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--soul-text-3);
+  font-size: var(--soul-fz-meta);
+}
+._soul-emo-th-num,
+._soul-emo-td-num {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--soul-text-2);
+}
+._soul-emo-label {
+  color: var(--soul-text-1);
+  font-weight: 500;
+}
+._soul-emo-object {
+  display: block;
+  color: var(--soul-text-3);
+  font-size: var(--soul-fz-meta);
 }
 
 ._soul-chip {
@@ -259,10 +370,10 @@
   cursor: pointer;
 }
 
-/* ── 12 栅格：主列 8 + 右栏 4 sticky（<1024 降级单列） ── */
+/* ── 两列栅格：主列 7fr（重要的人）+ 侧列 5fr（版本链 / 漂移审计），<1024 降级单列 ── */
 ._soul-grid {
   display: grid;
-  grid-template-columns: 8fr 4fr;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
   gap: var(--soul-sp-4);
   align-items: start;
 }
@@ -272,27 +383,15 @@
   gap: var(--soul-sp-4);
   min-width: 0;
 }
-._soul-rail {
-  position: sticky;
-  top: 64px;
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
+._soul-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-4);
   min-width: 0;
-}
-._soul-railcard {
-  background: var(--soul-card-bg);
-  border: 1px solid var(--soul-border);
-  border-radius: var(--soul-radius-card);
-  padding: var(--soul-sp-4);
 }
 @media (max-width: 1023px) {
   ._soul-grid {
-    grid-template-columns: 1fr;
-  }
-  ._soul-rail {
-    position: static;
-    max-height: none;
-    overflow-y: visible;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -511,201 +610,6 @@
   overflow-wrap: anywhere;
 }
 
-/* ── 待裁决右栏（V-07：分组折叠 + 按钮权重分级 + 红左竖条） ── */
-._spending-group {
-  margin-top: var(--soul-sp-3);
-}
-._spending-group-head {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: none;
-  border: none;
-  padding: 6px 0;
-  cursor: pointer;
-  border-bottom: 1px solid var(--soul-border-soft);
-}
-._spending-group-title {
-  font-size: var(--soul-fz-meta);
-  font-weight: 600;
-  color: var(--soul-text-2);
-}
-._spending-list {
-  list-style: none;
-  margin: var(--soul-sp-2) 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--soul-sp-3);
-}
-._spending-row {
-  border-left: 3px solid var(--soul-avoid);
-  padding: 8px 0 8px 10px;
-  background: var(--soul-card-bg);
-}
-._spending-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--soul-sp-2);
-  margin-bottom: 6px;
-}
-._spending-id {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-  display: inline-block;
-}
-._spending-content {
-  margin: 0;
-  font-family: inherit;
-  font-size: var(--soul-fz-meta);
-  line-height: var(--soul-lh-body);
-  color: var(--soul-text-1);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  white-space: pre-wrap;
-}
-._spending-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--soul-sp-2);
-  margin-top: 6px;
-}
-._spending-error {
-  font-size: var(--soul-fz-meta);
-  color: var(--soul-avoid);
-  margin-top: var(--soul-sp-2);
-}
-
-/* ===== #100 审计视图：auto_adopted 徽标行内审计快照折叠体（chip 复用 _soul-chip--green） ===== */
-._spending-audit {
-  margin-top: 4px;
-}
-._spending-audit summary {
-  font-size: var(--soul-fz-meta);
-  color: var(--soul-text-3);
-  cursor: pointer;
-}
-._spending-audit-body {
-  margin-top: 4px;
-  padding: 6px 8px;
-  border: 1px dashed var(--soul-border);
-  border-radius: var(--soul-radius-btn);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: var(--soul-fz-meta);
-  color: var(--soul-text-3);
-}
-._spending-audit-content {
-  margin: 2px 0 0;
-  font-family: inherit;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--soul-text-2);
-}
-
-/* ── UI 2.1 下一批（2026-09-21）：三池 Tab + kebab 收纳（soul 变体专用类；ChatMemoryPage 不加载本文件） ── */
-._va-vtab {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-._va-vtab-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--soul-border);
-  background: var(--soul-card-bg);
-  color: var(--soul-text-2);
-  font-size: var(--soul-fz-meta);
-  cursor: pointer;
-  transition: 150ms ease;
-}
-._soul-root ._va-vtab-pill:hover {
-  background: var(--soul-fill-hover);
-  color: var(--soul-text-1);
-}
-._soul-root ._va-vtab-pill--active {
-  background: var(--soul-fill-muted);
-  color: var(--soul-text-1);
-  border-color: var(--soul-border);
-  font-weight: 600;
-}
-._va-vtab-count {
-  color: var(--soul-text-3);
-  font-weight: 500;
-}
-._soul-root ._va-kebab {
-  width: 24px;
-  height: 24px;
-  border-radius: var(--soul-radius-btn);
-  border: none;
-  background: none;
-  color: var(--soul-text-3);
-  font-size: 14px;
-  cursor: pointer;
-  line-height: 1;
-}
-._soul-root ._va-kebab:hover {
-  background: var(--soul-fill-hover);
-  color: var(--soul-text-1);
-}
-._va-kebab-menu {
-  display: flex;
-  flex-direction: column;
-  min-width: 96px;
-  padding: 4px;
-  background: #fff;
-  border: 1px solid var(--soul-border);
-  border-radius: var(--soul-radius-inset);
-  box-shadow: 0 4px 12px rgba(23, 26, 31, 0.08);
-}
-._va-kebab-menu > button {
-  background: none;
-  border: none;
-  text-align: left;
-  padding: 6px 10px;
-  font-size: var(--soul-fz-meta);
-  color: var(--soul-text-2);
-  cursor: pointer;
-  border-radius: var(--soul-radius-btn);
-  white-space: nowrap;
-}
-._va-kebab-menu > button:hover {
-  background: var(--soul-fill-hover);
-  color: var(--soul-text-1);
-}
-._va-kebab-menu > ._va-kebab-danger {
-  color: var(--soul-avoid);
-}
-._va-kebab-menu > ._va-kebab-danger:hover {
-  background: var(--soul-avoid-bg);
-  color: var(--soul-avoid);
-}
-
-/* 任务6② P1：待裁决批量操作条（右栏队列） */
-._spending-batch {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 6px 0 10px;
-  flex-wrap: wrap;
-}
-
-._spending-check {
-  margin-right: 6px;
-}
-
 /* ===== V7 方案A：感受段主副结构（首要卡 + 长尾抽屉；信息完整性硬标准②） ===== */
 ._soul-feelbody {
   display: flex;
@@ -921,14 +825,6 @@
   cursor: auto;
 }
 
-/* ===== V10-NOGO-PROPOSAL：待裁决提案卡并入分区卡卡片语言（边框/圆角/内距对齐 _soul-feel-col；2026-09-25） ===== */
-._spending-row {
-  border: 1px solid var(--soul-border);
-  border-left: 3px solid var(--soul-avoid);
-  border-radius: var(--soul-radius-card);
-  padding: 8px 10px 8px 10px;
-}
-
 /* ===== V10-NOGO-NARROW：<768 窄屏长文本换行控制（overflow-wrap=anywhere，禁截断省略；2026-09-25） ===== */
 @media (max-width: 767px) {
   ._soul-feel-cols {
@@ -937,10 +833,6 @@
   ._soul-prime-desc,
   ._soul-mood-text,
   ._soul-meta {
-    overflow-wrap: anywhere;
-  }
-  ._spending-content {
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
 }
@@ -1066,4 +958,421 @@
   max-height: 320px;
   overflow: auto;
 }
+
+/* === 人格卡只读视图（CardView，2026-11-07） =================================
+ * 与版本链共享同一套 token；卡主体用等宽字体，因为它是"注入原文"，
+ * 列宽/缩进本身携带结构（### 区块、[读法] 段），比例字体读不出对齐。 */
+._soul-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-bottom: var(--soul-sp-2);
+}
+
+._soul-card-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--soul-fz-badge);
+  color: var(--soul-text-3);
+  overflow-wrap: anywhere;
+}
+
+._soul-card-pre {
+  margin: 0;
+  padding: 10px;
+  border-radius: var(--soul-radius-inset);
+  background: var(--soul-fill-muted);
+  color: var(--soul-text-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--soul-fz-meta);
+  line-height: var(--soul-lh-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* 卡本体自带预算，这里只做视口保护，不截断内容（滚动即全部可读）。 */
+  max-height: 560px;
+  overflow: auto;
+}
+
+._soul-card-warn {
+  margin-top: var(--soul-sp-2);
+}
+
+._soul-card-warn > div {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-cau);
+  line-height: var(--soul-lh-body);
+  overflow-wrap: anywhere;
+}
+
+._soul-card-sources {
+  margin-top: var(--soul-sp-3);
+}
+
+._soul-card-sources-summary {
+  cursor: pointer;
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-2);
+}
+
+._soul-card-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: var(--soul-sp-2);
+}
+
+._soul-card-legend-item {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-3);
+}
+
+._soul-card-legend-item code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--soul-fz-badge);
+  color: var(--soul-text-2);
+}
+
+._soul-card-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: var(--soul-sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+._soul-card-source-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--soul-fz-meta);
+}
+
+._soul-card-source-title {
+  color: var(--soul-text-2);
+}
+
+._soul-card-source-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--soul-fz-badge);
+  color: var(--soul-text-3);
+}
+
+._soul-card-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--soul-sp-2);
+}
+
+/* ── 人物档案（P2-H 只读读面：左列表 / 右九字段与依据 / 下 SVG 关系图） ── */
+._soul-person-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 4fr) 7fr;
+  gap: var(--soul-sp-4);
+  align-items: start;
+}
+
+@media (max-width: 1023px) {
+  ._soul-person-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+._soul-person-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+._soul-person-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--soul-sp-3);
+  border: 1px solid var(--soul-border);
+  border-radius: var(--soul-radius-inset);
+  background: var(--soul-card-bg);
+  text-align: left;
+  cursor: pointer;
+}
+
+._soul-person-item:hover {
+  background: var(--soul-fill-hover);
+}
+
+._soul-person-item--active {
+  border-color: var(--soul-person);
+  background: var(--soul-person-bg);
+}
+
+._soul-person-name {
+  font-size: var(--soul-fz-sub);
+  font-weight: 600;
+  color: var(--soul-text-1);
+}
+
+._soul-person-counts {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-3);
+}
+
+._soul-person-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-3);
+  padding: var(--soul-sp-4);
+  border: 1px solid var(--soul-border);
+  border-radius: var(--soul-radius-card);
+  background: var(--soul-card-bg);
+}
+
+._soul-person-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--soul-sp-2);
+}
+
+._soul-person-detail-name {
+  font-size: var(--soul-fz-section);
+  font-weight: 600;
+  color: var(--soul-text-1);
+}
+
+._soul-person-blank-note {
+  padding: var(--soul-sp-3);
+  border-radius: var(--soul-radius-inset);
+  background: var(--soul-fill-muted);
+  line-height: var(--soul-lh-body);
+}
+
+._soul-person-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-2);
+  margin: 0;
+}
+
+._soul-person-field {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: var(--soul-sp-2);
+  padding: var(--soul-sp-2) 0;
+  border-top: 1px solid var(--soul-border-soft);
+}
+
+._soul-person-field:first-child {
+  border-top: none;
+}
+
+._soul-person-field-label {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-3);
+  line-height: var(--soul-lh-body);
+}
+
+._soul-person-field-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--soul-sp-2);
+  margin: 0;
+}
+
+._soul-person-field-text {
+  font-size: var(--soul-fz-body);
+  color: var(--soul-text-1);
+  line-height: var(--soul-lh-long);
+}
+
+._soul-person-field-missing {
+  font-size: var(--soul-fz-body);
+  color: var(--soul-text-3);
+}
+
+/* 依据过期是提示，不是错误：琥珀色徽标，不写成报错。 */
+._soul-person-stale {
+  padding: 1px 6px;
+  border-radius: var(--soul-radius-btn);
+  background: var(--soul-gold-bg);
+  color: var(--soul-gold);
+  font-size: var(--soul-fz-badge);
+  line-height: 1.6;
+}
+
+._soul-person-evidence {
+  flex-basis: 100%;
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-2);
+}
+
+._soul-person-evidence summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--soul-text-3);
+}
+
+._soul-person-evidence ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-2);
+  margin: var(--soul-sp-2) 0 0;
+  padding: 0 0 0 var(--soul-sp-4);
+  list-style: none;
+}
+
+._soul-person-quote {
+  margin: 0;
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-2);
+  line-height: var(--soul-lh-body);
+}
+
+._soul-person-subhead {
+  margin-top: var(--soul-sp-2);
+  font-size: var(--soul-fz-sub);
+  font-weight: 600;
+  color: var(--soul-text-1);
+}
+
+._soul-person-relations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+._soul-person-relation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--soul-sp-2);
+  padding: var(--soul-sp-2) 0;
+  border-top: 1px solid var(--soul-border-soft);
+  font-size: var(--soul-fz-body);
+}
+
+._soul-person-relation-dir {
+  color: var(--soul-text-3);
+  font-size: var(--soul-fz-meta);
+}
+
+._soul-person-relation-pred {
+  padding: 0 6px;
+  border-radius: var(--soul-radius-btn);
+  background: var(--soul-fill-muted);
+  color: var(--soul-text-2);
+  font-size: var(--soul-fz-badge);
+}
+
+._soul-person-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--soul-person);
+  font-size: inherit;
+  cursor: pointer;
+}
+
+._soul-person-link:hover {
+  text-decoration: underline;
+}
+
+._soul-person-retry {
+  margin-left: var(--soul-sp-2);
+  padding: 2px 10px;
+  border: 1px solid var(--soul-border);
+  border-radius: var(--soul-radius-btn);
+  background: var(--soul-card-bg);
+  color: var(--soul-text-2);
+  font-size: var(--soul-fz-meta);
+  cursor: pointer;
+}
+
+._soul-person-retry:hover {
+  background: var(--soul-fill-hover);
+}
+
+/* 关系图：纯 SVG，无第三方图库 */
+._soul-persongraph {
+  display: flex;
+  flex-direction: column;
+  gap: var(--soul-sp-2);
+  padding: var(--soul-sp-3);
+  border: 1px solid var(--soul-border);
+  border-radius: var(--soul-radius-card);
+  background: var(--soul-card-bg);
+}
+
+._soul-persongraph-svg {
+  width: 100%;
+  max-height: 400px;
+}
+
+._soul-persongraph-node--clickable {
+  cursor: pointer;
+}
+
+._soul-persongraph-circle {
+  fill: var(--soul-person-bg);
+  stroke: var(--soul-person);
+  stroke-width: 1.4;
+}
+
+._soul-persongraph-node--unnamed ._soul-persongraph-circle {
+  fill: var(--soul-fill-muted);
+  stroke: #c2c6cc;
+  stroke-dasharray: 4 3;
+}
+
+._soul-persongraph-node--selected ._soul-persongraph-circle {
+  stroke-width: 2.4;
+  fill: var(--soul-card-bg);
+}
+
+._soul-persongraph-node--clickable:hover ._soul-persongraph-circle {
+  stroke-width: 2.2;
+}
+
+._soul-persongraph-label {
+  font-size: var(--soul-fz-meta);
+  fill: var(--soul-text-1);
+  pointer-events: none;
+}
+
+._soul-persongraph-node--unnamed ._soul-persongraph-label {
+  fill: var(--soul-text-3);
+}
+
+._soul-persongraph-edge-label {
+  font-size: var(--soul-fz-badge);
+  fill: var(--soul-text-3);
+  pointer-events: none;
+}
+
+._soul-persongraph-note {
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-3);
+  line-height: var(--soul-lh-body);
+}
+
+._soul-persongraph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--soul-sp-3);
+  font-size: var(--soul-fz-meta);
+  color: var(--soul-text-3);
+}
+
+._soul-persongraph-legend-item {
+  white-space: nowrap;
+}
+
 

@@ -1,10 +1,34 @@
 /**
  * configCatalog.ts — 自动生成，勿手改。生成命令见 docs/ops/settings-tabs-2026-11-07.md。
  *
- * 来源：config/templates/memorycore.keys.json（服务配置键 440 条，MemoryCore 实读面）
+ * 来源：config/templates/memorycore.keys.json（服务配置键 390 条，MemoryCore 实读面）
  *   + D:/TDB/.scratch/cfg-inventory/merged-dedup.json（每键大白话）。
  * tier 为「配置面四档」：A 部署身份/凭据、B 应急回滚总闸、C 实测校准阈值、D 结构与协议常量。
- * 生成时间：2026-11-07；计数 A/B/C/D = 48/8/15/369。
+ * 生成时间：2026-11-07；计数 A/B/C/D = 48/7/15/295（共 365 条）。
+ *
+ * T3 手工裁剪（2026-11-07）：删除 26 个已无 loader 的死键（锚发现提案 4 + 承诺提案 1 + 自证门 16 + 灵魂提案 5，
+ * 全在 D 档：369→343）。依据：MemoryCore/src 对这些键路径的全量 grep = 0 命中（loader 已随提案通道删除）。
+ *
+ * T9 手工裁剪（2026-11-07）：再删 25 个 anchor/character 通道退场后的死键（锚发现子组 20：
+ * character 4 + descRefresh 3 + person 4 + similarMerge 2 + identityMaintain 1 + 顶层 intervalHours /
+ * maintainIntervalHours / maxPerPass / maxTotal / minEvidence / quotaScope 6；性格张力阈值 3；
+ * seedValues 1；selfIdentity.intervalHours 1，全在 D 档：343→318）。
+ * 判据不是字符串 grep，而是实跑 MemoryCore parseConfig 做「注入-效果差分」：把候选键按多种类型值注入 raw，
+ * 与基线配置逐叶对比，一个输出叶子都不变的才判死（`lifecycle.filter.*`、`recall.fusion` / `factChannel` /
+ * `rerankGate.*` 这类条件解析键因此被正确判活；`capture.cleanTime` 虽不落在 capture 上，但会改写
+ * memoryCleanup.cleanTime，同样判活保留）。Core 侧配置键清理清单与本次判定在 24 条上一致，
+ * 多出的 seedValues 属 S8 价值锚整表删除时的遗留（MemoryCore/src/config.ts:1609 只剩退场注释）。
+ * T20 手工裁剪（2026-11-07）：Core 退役 /core-memory/write 后，再删 allowedSlots / maxContentLength 两条（D 档）
+ * 与 writeEnabled / seedValues；模板 keys.json 已同步清到 364 条，本 catalog 与之一致。
+ *
+ * T21 手工裁剪（2026-11-07）：Core 配置面最终收敛后，用同一「注入-效果差分」判据复测，再删 24 条已无解析产出的键
+ * （人格维护总闸（S9 起恒开、开关移除）1；灵魂注入面（soul 渲染：锚去重/锚选择/预算/能力/承诺/快照/规则去重）21；
+ * 价值锚缓存 TTL 1；核心写入口总闸 1——写路由与信任边界守卫 task-20 已退役，配置只剩解析、零消费者），
+ * 落 B/D 两档：B 8→7、D 318→295，共 389→365。
+ * 判据修正（关键）：parseConfig(raw) 的 raw 就是 yaml 里 memory: 之下的那一层，注入必须写在 raw.<key>
+ * 而不是 raw.memory.<key>——按后者注入一条都命中不了，会把所有键误判成死键。本轮已按前者复测。
+ * 条件解析键（lifecycle.filter、recall.fusion / factChannel / rerankGate、capture.cleanTime）注入即改输出，判活保留。
+ * 保留说明：仅「有解析产出且有消费者」的键留在目录里；只剩解析、零消费者的键按用户口径（不用的就删掉）一律移除。
  */
 export type ConfigTier = 'A' | 'B' | 'C' | 'D';
 
@@ -428,14 +452,6 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:2989"
   },
   {
-    "path": "memory.coreMemory.soulMaintenance.enabled",
-    "tier": "B",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1996"
-  },
-  {
     "path": "memory.embedding.enabled",
     "tier": "B",
     "type": "bool",
@@ -644,244 +660,12 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:1539"
   },
   {
-    "path": "memory.coreMemory.allowedSlots",
-    "tier": "D",
-    "type": "list<str>",
-    "def": "identity,core_value,strict_rule,self_identity",
-    "meaning": "显式空数组=拒绝全部。未设才用此四槽。 缺省 [\"identity\",\"core_value\",\"strict_rule\",\"self_identity\"]。 空列表或 slot 不在列表内则拒绝 core 写入",
-    "source": "MemoryCore/src/config.ts:1682"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.character.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.character.maxPerPass",
-    "tier": "D",
-    "type": "int",
-    "def": "1",
-    "meaning": "clamp 1..5。",
-    "source": "MemoryCore/src/config.ts:1719"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.character.maxTotal",
-    "tier": "D",
-    "type": "int",
-    "def": "8",
-    "meaning": "clamp 1..50。",
-    "source": "MemoryCore/src/config.ts:1720"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.character.minEvidence",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..50。",
-    "source": "MemoryCore/src/config.ts:1718"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.descRefresh.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.descRefresh.evidenceMultiple",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..10。",
-    "source": "MemoryCore/src/config.ts:1782"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.descRefresh.maxPerPass",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..5。",
-    "source": "MemoryCore/src/config.ts:1719"
-  },
-  {
     "path": "memory.coreMemory.anchorDiscovery.enabled",
     "tier": "D",
     "type": "bool",
     "def": "true",
     "meaning": "总开关。关掉这条能力就不工作。",
     "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.identityMaintain.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.intervalHours",
-    "tier": "D",
-    "type": "int",
-    "def": "24",
-    "meaning": "隔多久跑一轮，单位小时。",
-    "source": "MemoryCore/src/config.ts:1723"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.maintainIntervalHours",
-    "tier": "D",
-    "type": "int",
-    "def": "6",
-    "meaning": "clamp 0..168。",
-    "source": "MemoryCore/src/config.ts:1724"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.maxPerPass",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..10。",
-    "source": "MemoryCore/src/config.ts:1719"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.maxTotal",
-    "tier": "D",
-    "type": "int",
-    "def": "15",
-    "meaning": "clamp 1..100。",
-    "source": "MemoryCore/src/config.ts:1720"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.minEvidence",
-    "tier": "D",
-    "type": "int",
-    "def": "5",
-    "meaning": "clamp 1..50。",
-    "source": "MemoryCore/src/config.ts:1718"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.person.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.person.maxPerPass",
-    "tier": "D",
-    "type": "int",
-    "def": "1",
-    "meaning": "clamp 1..5。",
-    "source": "MemoryCore/src/config.ts:1719"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.person.maxTotal",
-    "tier": "D",
-    "type": "int",
-    "def": "8",
-    "meaning": "clamp 1..50。",
-    "source": "MemoryCore/src/config.ts:1720"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.person.minEvidence",
-    "tier": "D",
-    "type": "int",
-    "def": "5",
-    "meaning": "clamp 1..50。",
-    "source": "MemoryCore/src/config.ts:1718"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.quotaScope",
-    "tier": "D",
-    "type": "enum(total|auto)",
-    "def": "total",
-    "meaning": "仅 auto 被采纳。",
-    "source": "MemoryCore/src/config.ts:1722"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.reproposal.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.reproposal.maxPerPass",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..5。",
-    "source": "MemoryCore/src/config.ts:1719"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.reproposal.maxRejectsBeforeCold",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..10。",
-    "source": "MemoryCore/src/config.ts:1769"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.reproposal.minEvidenceMultiple",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..10。",
-    "source": "MemoryCore/src/config.ts:1767"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.similarMerge.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.anchorDiscovery.similarMerge.threshold",
-    "tier": "D",
-    "type": "float",
-    "def": "0.5",
-    "meaning": "clamp 0.2..0.95。",
-    "source": "MemoryCore/src/config.ts:1736"
-  },
-  {
-    "path": "memory.coreMemory.characterTension.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1582"
-  },
-  {
-    "path": "memory.coreMemory.characterTension.maxCandidatesPerPass",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..10。",
-    "source": "MemoryCore/src/config.ts:1799"
-  },
-  {
-    "path": "memory.coreMemory.characterTension.minInstances",
-    "tier": "D",
-    "type": "int",
-    "def": "2",
-    "meaning": "clamp 1..50。",
-    "source": "MemoryCore/src/config.ts:1798"
-  },
-  {
-    "path": "memory.coreMemory.maxContentLength",
-    "tier": "D",
-    "type": "int",
-    "def": "2000",
-    "meaning": "改这个值会改变这项运行行为。",
-    "source": "MemoryCore/src/config.ts:1699"
   },
   {
     "path": "memory.coreMemory.moodLine.enabled",
@@ -940,28 +724,12 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:1827"
   },
   {
-    "path": "memory.coreMemory.seedValues",
-    "tier": "D",
-    "type": "list<map>",
-    "def": "",
-    "meaning": "元素 id/label/weight/createdBy。空=不自动灌。",
-    "source": "MemoryCore/src/config.ts:1700"
-  },
-  {
     "path": "memory.coreMemory.selfIdentity.enabled",
     "tier": "D",
     "type": "bool",
     "def": "false",
     "meaning": "总开关。关掉这条能力就不工作。",
     "source": "MemoryCore/src/config.ts:1669"
-  },
-  {
-    "path": "memory.coreMemory.selfIdentity.intervalHours",
-    "tier": "D",
-    "type": "int",
-    "def": "24",
-    "meaning": "隔多久跑一轮，单位小时。",
-    "source": "MemoryCore/src/config.ts:1723"
   },
   {
     "path": "memory.coreMemory.selfIdentity.maxPerPass",
@@ -1300,94 +1068,6 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:2001"
   },
   {
-    "path": "memory.coreMemory.soulRender.anchorDedup.embeddingThreshold",
-    "tier": "D",
-    "type": "float",
-    "def": "0",
-    "meaning": "0=关。clamp 0..1。",
-    "source": "MemoryCore/src/config.ts:1929"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorDedup.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1738"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.maxRows",
-    "tier": "D",
-    "type": "int",
-    "def": "999",
-    "meaning": "clamp 1..999。999=全注入。",
-    "source": "MemoryCore/src/config.ts:1877"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.scorer.embedBudgetMs",
-    "tier": "D",
-    "type": "ms",
-    "def": "1200",
-    "meaning": "下限 0。",
-    "source": "MemoryCore/src/config.ts:1888"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.scorer.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1717"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.scorer.mmrLambda",
-    "tier": "D",
-    "type": "float",
-    "def": "0.7",
-    "meaning": "clamp 0..1。",
-    "source": "MemoryCore/src/config.ts:1887"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.scorer.threshold",
-    "tier": "D",
-    "type": "float",
-    "def": "0",
-    "meaning": "clamp 0..1。",
-    "source": "MemoryCore/src/config.ts:1736"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.shadowSink.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1717"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.anchorSelect.shadowSink.file",
-    "tier": "D",
-    "type": "path",
-    "def": "data/logs/soul-anchor-shadow.jsonl",
-    "meaning": "非空 string 才覆盖。",
-    "source": "MemoryCore/src/config.ts:1903"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.budgetAnchorChars",
-    "tier": "D",
-    "type": "int",
-    "def": "0",
-    "meaning": "0=关。clamp 0..4000。",
-    "source": "MemoryCore/src/config.ts:1848"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.budgetCharacterChars",
-    "tier": "D",
-    "type": "int",
-    "def": "0",
-    "meaning": "改这个值会改变这项运行行为。",
-    "source": "MemoryCore/src/config.ts:1850"
-  },
-  {
     "path": "memory.coreMemory.soulRender.budgetIdentityChars",
     "tier": "D",
     "type": "int",
@@ -1396,28 +1076,12 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:1845"
   },
   {
-    "path": "memory.coreMemory.soulRender.budgetPersonChars",
-    "tier": "D",
-    "type": "int",
-    "def": "0",
-    "meaning": "改这个值会改变这项运行行为。",
-    "source": "MemoryCore/src/config.ts:1849"
-  },
-  {
     "path": "memory.coreMemory.soulRender.budgetSelfChars",
     "tier": "D",
     "type": "int",
     "def": "600",
     "meaning": "clamp 100..2000。",
     "source": "MemoryCore/src/config.ts:1844"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.capabilities.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1766"
   },
   {
     "path": "memory.coreMemory.soulRender.identityNarrative.enabled",
@@ -1444,84 +1108,12 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:1939"
   },
   {
-    "path": "memory.coreMemory.soulRender.maxRelationLines",
-    "tier": "D",
-    "type": "int",
-    "def": "5",
-    "meaning": "clamp 1..20。",
-    "source": "MemoryCore/src/config.ts:1846"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.perTurnSlots",
-    "tier": "D",
-    "type": "bool",
-    "def": "true",
-    "meaning": "undefined 也当 true。",
-    "source": "MemoryCore/src/config.ts:1860"
-  },
-  {
     "path": "memory.coreMemory.soulRender.promiseEvidence.enabled",
     "tier": "D",
     "type": "bool",
     "def": "false",
     "meaning": "总开关。关掉这条能力就不工作。",
     "source": "MemoryCore/src/config.ts:1766"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.promises.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1766"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.snapshotsEnabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "true",
-    "meaning": "undefined 也当 true。仅显式 false 关。",
-    "source": "MemoryCore/src/config.ts:1853"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.strictRuleDedup.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1732"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.strictRuleDedup.jaccardThreshold",
-    "tier": "D",
-    "type": "float",
-    "def": "0.45",
-    "meaning": "clamp 0..1。",
-    "source": "MemoryCore/src/config.ts:1918"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.strictRuleDedup.maxLines",
-    "tier": "D",
-    "type": "int",
-    "def": "0",
-    "meaning": "0=关。clamp 0..50。",
-    "source": "MemoryCore/src/config.ts:1919"
-  },
-  {
-    "path": "memory.coreMemory.soulRender.strictRuleDedup.suppressAnchorOverlap",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "仅 === true。",
-    "source": "MemoryCore/src/config.ts:1924"
-  },
-  {
-    "path": "memory.coreMemory.writeEnabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "true",
-    "meaning": "关掉后写路由返回 403。接口没有顶层 enabled。 缺省 true。 false 时 validateCoreWrite 直接拒绝，理由写明该键",
-    "source": "MemoryCore/src/config.ts:1694"
   },
   {
     "path": "memory.evolution.intervalMs",
@@ -1836,188 +1428,12 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "source": "MemoryCore/src/config.ts:1826"
   },
   {
-    "path": "memory.lifecycle.reflection.promiseProposals.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1868"
-  },
-  {
     "path": "memory.lifecycle.reflection.rRef",
     "tier": "D",
     "type": "int",
     "def": "150",
     "meaning": "clamp 1..100000。",
     "source": "MemoryCore/src/config.ts:2087"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.contradictionThreshold",
-    "tier": "D",
-    "type": "float",
-    "def": "0.6",
-    "meaning": "矛盾超过这个值不自动采纳，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2158"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.dupThreshold",
-    "tier": "D",
-    "type": "float",
-    "def": "0.75",
-    "meaning": "和已有条目多像就不采纳，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2159"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "自动采纳开关，不写就不下发，等于关。",
-    "source": "MemoryCore/src/config.ts:2155"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.spanHours",
-    "tier": "D",
-    "type": "int",
-    "def": "72",
-    "meaning": "这些票要跨多少小时，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2134"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.autoAdopt.votes",
-    "tier": "D",
-    "type": "int",
-    "def": "4",
-    "meaning": "自动采纳需要几票，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2132"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "unset",
-    "meaning": "自我提案相似门，整组不写就没有；写了布尔才带。",
-    "source": "MemoryCore/src/config.ts:2125"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.rateLimit.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "速率限制开关，不写就不下发，等于关。",
-    "source": "MemoryCore/src/config.ts:2144"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.rateLimit.maxNew",
-    "tier": "D",
-    "type": "int",
-    "def": "12",
-    "meaning": "窗口内最多几条新提案，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2145"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.rateLimit.windowHours",
-    "tier": "D",
-    "type": "int",
-    "def": "24",
-    "meaning": "速率窗口多少小时，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:1827"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "复发计数开关，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2131"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.spanHours",
-    "tier": "D",
-    "type": "int",
-    "def": "unset",
-    "meaning": "复发要跨多少小时，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2134"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.ttlHours",
-    "tier": "D",
-    "type": "int",
-    "def": "24",
-    "meaning": "复发票的有效小时，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2133"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.recurrence.votes",
-    "tier": "D",
-    "type": "int",
-    "def": "3",
-    "meaning": "复发需要几票，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2132"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.suppression.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "unset",
-    "meaning": "压制开关，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2128"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.suppression.maxPending",
-    "tier": "D",
-    "type": "int",
-    "def": "unset",
-    "meaning": "待处理提案上限，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:2129"
-  },
-  {
-    "path": "memory.lifecycle.reflection.selfIdentityGate.threshold",
-    "tier": "D",
-    "type": "float",
-    "def": "unset",
-    "meaning": "相似门槛，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:1886"
-  },
-  {
-    "path": "memory.lifecycle.reflection.soulProposals.cardContract.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:2098"
-  },
-  {
-    "path": "memory.lifecycle.reflection.soulProposals.conclusionContract.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:2101"
-  },
-  {
-    "path": "memory.lifecycle.reflection.soulProposals.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "false",
-    "meaning": "总开关。关掉这条能力就不工作。",
-    "source": "MemoryCore/src/config.ts:1826"
-  },
-  {
-    "path": "memory.lifecycle.reflection.soulProposals.shadowCalibration.enabled",
-    "tier": "D",
-    "type": "bool",
-    "def": "unset",
-    "meaning": "不写就不带这个键，旁路采集关；显式 true 才落盘。",
-    "source": "MemoryCore/src/config.ts:2093"
-  },
-  {
-    "path": "memory.lifecycle.reflection.soulProposals.shadowCalibration.file",
-    "tier": "D",
-    "type": "path",
-    "def": "unset",
-    "meaning": "旁路文件路径，不写就不下发。",
-    "source": "MemoryCore/src/config.ts:1903"
   },
   {
     "path": "memory.links.minSimilarity",
@@ -2946,14 +2362,6 @@ const ENTRIES: ConfigCatalogEntry[] = [
     "def": "0.5",
     "meaning": "clamp 0..1。",
     "source": "MemoryCore/src/config.ts:2560"
-  },
-  {
-    "path": "memory.recall.valuesCacheTtlMs",
-    "tier": "D",
-    "type": "ms",
-    "def": "60000",
-    "meaning": "改这个值会改变这项运行行为。",
-    "source": "MemoryCore/src/config.ts:2529"
   },
   {
     "path": "memory.recallJournal.enabled",

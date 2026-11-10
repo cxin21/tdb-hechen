@@ -25,6 +25,12 @@ import {
 import type { AgentCard } from './types';
 import { useTeamAssets } from './useAgentAssets';
 import { LightField, CollapseGroup, AssetCheckList, selectableAssetKeys } from './shared';
+import AgentPersonaSection from './AgentPersonaSection';
+import {
+  emptyPersonaDraft,
+  validatePersonaDraft,
+  type AgentPersonaDraft,
+} from '@/lib/agent-persona-form';
 
 export default function CreateAgentDialog({
   team,
@@ -38,13 +44,16 @@ export default function CreateAgentDialog({
   team: { team_id: string; name: string };
   currentUser: string;
   onClose: () => void;
-  onCreated: (card: Omit<AgentCard, 'id' | 'icon' | 'accent'>) => void;
+  /** persona 由父组件在 agent 创建成功后调 agent-persona/save 落库（这里拿不到 agent_id）。 */
+  onCreated: (
+    card: Omit<AgentCard, 'id' | 'icon' | 'accent'> & { persona?: AgentPersonaDraft },
+  ) => void;
   busy: boolean;
 }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [rolePrompt, setRolePrompt] = useState('');
-  const [rulesPrompt, setRulesPrompt] = useState('');
+  // 人格设定六项：没有既有设定时以空表单起步（不预填名称/形象）。
+  const [persona, setPersona] = useState<AgentPersonaDraft>(() => emptyPersonaDraft());
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [codeGraphOpen, setCodeGraphOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
@@ -62,14 +71,14 @@ export default function CreateAgentDialog({
   // 保存模板表单里可编辑的 agent 内容字段：默认取自当前主表单，
   // 展开保存表单时预填，用户可微调后再存入模板（不含 agent 名字）。
   const [tplDescription, setTplDescription] = useState('');
-  const [tplRolePrompt, setTplRolePrompt] = useState('');
-  const [tplRulesPrompt, setTplRulesPrompt] = useState('');
 
   // 从真实 API 拉取团队资产列表
   const assets = useTeamAssets(team.team_id);
   const { t } = useTranslation();
 
-  const canSubmit = name.trim().length > 0 && !busy;
+  // 超上限即时提示并阻止保存（不做静默截断）；最终裁决仍在服务端。
+  const personaErrors = validatePersonaDraft(name, persona);
+  const canSubmit = name.trim().length > 0 && !busy && personaErrors.length === 0;
   const totalSelected = skills.length + codeGraphs.length + llmWikis.length + chatMemories.length;
 
   function toggle(list: string[], setList: (v: string[]) => void, key: string) {
@@ -79,8 +88,6 @@ export default function CreateAgentDialog({
   function applyTemplate(tpl: AgentTemplate) {
     // 模板只承载文本描述，套用时不改动用户已勾选的原子能力。
     setDescription(tpl.description);
-    setRolePrompt(tpl.role_prompt);
-    setRulesPrompt(tpl.rules_prompt);
     setAppliedTemplateId(tpl.template_id);
   }
 
@@ -90,8 +97,6 @@ export default function CreateAgentDialog({
       const next = !v;
       if (next) {
         setTplDescription(description);
-        setTplRolePrompt(rolePrompt);
-        setTplRulesPrompt(rulesPrompt);
       }
       return next;
     });
@@ -103,8 +108,6 @@ export default function CreateAgentDialog({
     setTplName('');
     setTplSummary('');
     setTplDescription('');
-    setTplRolePrompt('');
-    setTplRulesPrompt('');
   }
 
   function handleSaveTemplate() {
@@ -115,8 +118,6 @@ export default function CreateAgentDialog({
       name: nm,
       summary: tplSummary.trim(),
       description: tplDescription.trim(),
-      role_prompt: tplRolePrompt.trim(),
-      rules_prompt: tplRulesPrompt.trim(),
     });
     setTemplates(readAgentTemplates());
     resetSaveTemplateForm();
@@ -223,28 +224,6 @@ export default function CreateAgentDialog({
                   onChange={setTplDescription}
                   placeholder={t('createAgent.template.descPlaceholder')}
                 />
-                <div className="_memory-light-field-label">
-                  {t('createAgent.template.roleLabel')}
-                </div>
-                <Input.TextArea
-                  size="full"
-                  rows={3}
-                  value={tplRolePrompt}
-                  onChange={setTplRolePrompt}
-                  placeholder={t('createAgent.template.rolePlaceholder')}
-                />
-                <div className="_memory-light-field-label">
-                  {t('createAgent.template.rulesLabel')}
-                </div>
-                <Input.TextArea
-                  size="full"
-                  rows={4}
-                  value={tplRulesPrompt}
-                  onChange={setTplRulesPrompt}
-                  placeholder={t('createAgent.template.rulesPlaceholder')}
-                  className="_memory-mono-textarea"
-                />
-
                 <div className="_memory-template-save-actions">
                   <Button onClick={resetSaveTemplateForm}>
                     {t('createAgent.template.cancel')}
@@ -277,26 +256,12 @@ export default function CreateAgentDialog({
             />
           </LightField>
 
-          <LightField label={t('createAgent.roleLabel')} hint={t('createAgent.roleHint')}>
-            <Input.TextArea
-              size="full"
-              value={rolePrompt}
-              onChange={setRolePrompt}
-              rows={3}
-              placeholder={t('createAgent.rolePlaceholder')}
-            />
-          </LightField>
-
-          <LightField label={t('createAgent.rulesLabel')} hint={t('createAgent.rulesHint')}>
-            <Input.TextArea
-              size="full"
-              value={rulesPrompt}
-              onChange={setRulesPrompt}
-              rows={4}
-              placeholder={t('createAgent.rulesPlaceholder')}
-              className="_memory-mono-textarea"
-            />
-          </LightField>
+          <AgentPersonaSection
+            teamId={team.team_id}
+            name={name}
+            draft={persona}
+            onChange={setPersona}
+          />
 
           {assets.loading ? (
             <div className="_memory-asset-loading">{t('createAgent.assets.loading')}</div>
@@ -400,8 +365,7 @@ export default function CreateAgentDialog({
             onCreated({
               name: name.trim(),
               description: description.trim(),
-              rolePrompt: rolePrompt.trim(),
-              rulesPrompt: rulesPrompt.trim(),
+              persona,
               skills,
               codeGraphs,
               llmWikis,

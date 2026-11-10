@@ -4,7 +4,7 @@
  *
  * 覆盖：
  *   - POST /api/v1/chat-memory/identity/read → /v3/core-memory/read（只取 slots，零业务覆写）
- *   - idFields 形状（owner 借用语义）与读 ACL 与 values/list 同款
+ *   - idFields 形状（owner 借用语义）与读 ACL 与身份区只读面同款
  * 另含 identity-utils 纯函数分组/空态判定（宁缺毋滥）。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';

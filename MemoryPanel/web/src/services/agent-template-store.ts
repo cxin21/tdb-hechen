@@ -26,9 +26,8 @@ export interface AgentTemplate {
   /** 内置模板不可删除 */
   builtin: boolean;
   // ===== 预填到新建表单的字段（均为 agent 字段，不含 name —— name 由用户自己填）=====
+  // 2026-11-07 spec v3.7 F6：模板不再承载角色/规则文本，人格内容统一走人格卡。
   description: string;
-  role_prompt: string;
-  rules_prompt: string;
   skills: string[];
   code_graphs: string[];
   llm_wikis: string[];
@@ -45,8 +44,6 @@ function getBuiltinAgentTemplates(): AgentTemplate[] {
       summary: i18n.t('agentTemplate.builtin.prReviewer.summary'),
       builtin: true,
       description: i18n.t('agentTemplate.builtin.prReviewer.description'),
-      role_prompt: i18n.t('agentTemplate.builtin.prReviewer.rolePrompt'),
-      rules_prompt: i18n.t('agentTemplate.builtin.prReviewer.rulesPrompt'),
       skills: [],
       code_graphs: [],
       llm_wikis: [],
@@ -59,8 +56,6 @@ function getBuiltinAgentTemplates(): AgentTemplate[] {
       summary: i18n.t('agentTemplate.builtin.bugfixEngineer.summary'),
       builtin: true,
       description: i18n.t('agentTemplate.builtin.bugfixEngineer.description'),
-      role_prompt: i18n.t('agentTemplate.builtin.bugfixEngineer.rolePrompt'),
-      rules_prompt: i18n.t('agentTemplate.builtin.bugfixEngineer.rulesPrompt'),
       skills: [],
       code_graphs: [],
       llm_wikis: [],
@@ -73,8 +68,6 @@ function getBuiltinAgentTemplates(): AgentTemplate[] {
       summary: i18n.t('agentTemplate.builtin.issueTriage.summary'),
       builtin: true,
       description: i18n.t('agentTemplate.builtin.issueTriage.description'),
-      role_prompt: i18n.t('agentTemplate.builtin.issueTriage.rolePrompt'),
-      rules_prompt: i18n.t('agentTemplate.builtin.issueTriage.rulesPrompt'),
       skills: [],
       code_graphs: [],
       llm_wikis: [],
@@ -87,8 +80,6 @@ function getBuiltinAgentTemplates(): AgentTemplate[] {
       summary: i18n.t('agentTemplate.builtin.docEngineer.summary'),
       builtin: true,
       description: i18n.t('agentTemplate.builtin.docEngineer.description'),
-      role_prompt: i18n.t('agentTemplate.builtin.docEngineer.rolePrompt'),
-      rules_prompt: i18n.t('agentTemplate.builtin.docEngineer.rulesPrompt'),
       skills: [],
       code_graphs: [],
       llm_wikis: [],
@@ -123,8 +114,6 @@ export function createAgentTemplate(input: {
   name: string;
   summary?: string;
   description?: string;
-  role_prompt?: string;
-  rules_prompt?: string;
   skills?: string[];
   code_graphs?: string[];
   llm_wikis?: string[];
@@ -139,8 +128,6 @@ export function createAgentTemplate(input: {
     summary: (input.summary ?? '').trim(),
     builtin: false,
     description: (input.description ?? '').trim(),
-    role_prompt: (input.role_prompt ?? '').trim(),
-    rules_prompt: (input.rules_prompt ?? '').trim(),
     skills: input.skills ?? [],
     code_graphs: input.code_graphs ?? [],
     llm_wikis: input.llm_wikis ?? [],
