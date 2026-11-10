@@ -79,13 +79,13 @@ describe("applyMemorySectionsOverrideToRaw（2026-11-07 应急开关组）", () 
   it("coreMemory.soulMaintenance 深合并：人格总闸真落到 parse 结果，同段其它 coreMemory 键保留", () => {
     const raw = applyMemorySectionsOverrideToRaw(
       { coreMemory: { capabilities: { promises: { enabled: true } } } },
-      { coreMemory: { soulMaintenance: { enabled: true } } },
+      { coreMemory: { soulMaintenance: { updateIntervalHours: 6 } } },
     );
     const cm = raw.coreMemory as Record<string, any>;
-    expect(cm.soulMaintenance).toEqual({ enabled: true });
+    expect(cm.soulMaintenance).toEqual({ updateIntervalHours: 6 });
     expect(cm.capabilities).toEqual({ promises: { enabled: true } });
     const cfg = parseConfig(raw);
-    expect(cfg.coreMemory.soulMaintenance.enabled).toBe(true);
+    expect(cfg.coreMemory.soulMaintenance.updateIntervalHours).toBe(6);
   });
 
   it("extraction.enabled=false 真生效（B 档关 L1 抽取），facts 等子块不动", () => {

@@ -18,7 +18,7 @@ const mkTenant = (n: string) => ({ teamId: "t1", userId: "u1", agentId: `mood-${
 function makeStore(rows: Array<Record<string, unknown>>, slots: Array<Record<string, string>> = []) {
   return {
     readCore: async () => slots,
-    listValues: async () => rows,
+    listValues: async () => [], // S8：core_values 已删，渲染数据面恒空
   } as never;
 }
 
@@ -36,11 +36,10 @@ const SLOTS = [{ slot: "self_identity", content: "我是测试主体" }];
 const ROWS = [row({ value_id: "va", label: "文档" })];
 
 describe("M1-S3 mood 行渲染守卫", () => {
-  it("守卫①：不传 moodTier → 无近期基调行 + 指纹与 computeSoulVersion(slots, values) 逐位一致", async () => {
-    const meta: { soulVersion?: string } = {};
-    const out = await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g1"), undefined, {}, meta);
+  it("守卫①：不传 moodTier → 无近期基调行、返回空串（渲染零写入）", async () => {
+    const out = await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g1"), undefined, {});
+    expect(out).toBe("");
     expect(out).not.toContain("近期基调");
-    expect(meta.soulVersion).toBe(computeSoulVersion(SLOTS, ROWS));
   });
 
   it("守卫②：computeSoulVersion 第三参 undefined → 指纹逐位不变", () => {
@@ -60,17 +59,6 @@ describe("M1-S3 mood 行渲染守卫", () => {
     expect(pos).toContain("近期基调：偏积极。");
     const neu = await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g5"), undefined, { moodTier: { tier: "neutral", sampleCount: 5 } });
     expect(neu).toContain("近期基调：平稳。");
-  });
-
-  it("指纹⑤：传 moodTier（档位）→ 指纹变化；同档位不同样本数 → 指纹不变（三值化控 KV 抖动）", async () => {
-    const metaA: { soulVersion?: string } = {};
-    const metaB: { soulVersion?: string } = {};
-    const metaC: { soulVersion?: string } = {};
-    await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g6"), undefined, {}, metaA);
-    await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g7"), undefined, { moodTier: { tier: "strained", sampleCount: 20 } }, metaB);
-    await buildSoulPrefix(makeStore(ROWS, SLOTS), mkTenant("g8"), undefined, { moodTier: { tier: "strained", sampleCount: 21 } }, metaC);
-    expect(metaA.soulVersion).not.toBe(metaB.soulVersion);
-    expect(metaB.soulVersion).toBe(metaC.soulVersion);
   });
 
   it("渲染⑥：仅 mood（无方向锚）→ soul-feeling 块仍在场且只含基调行（宁缺毋滥不造空段）", async () => {

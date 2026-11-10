@@ -60,6 +60,8 @@ import type {
   MemoryContentClearResult,
   AuditEntry,
   AuditQueryFilter,
+  SoulEventParityDiff,
+  SoulEventParityReport,
 } from "./types.js";
 import {
   DEFAULT_ISOLATION_ID,
@@ -68,6 +70,7 @@ import {
   rowMatchesIsolation,
   type CoreTenant,
   type SoulSnapshotRow,
+  type SoulPersonRelationRow,
   type PromiseTransitionSource,
   type SoulPromiseEvent,
   type SoulPromiseRecord,
@@ -79,16 +82,44 @@ import { normalizeTaskSourceType } from "./task-source-type.js";
 import { SOUL_COLUMNS, SOUL_COL_NAMES, SOUL_SELECT_FRAGMENT, type SoulColumnName } from "./soul-columns.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../skill/skill-store-ddl.js";
 import { canTransitionPromise } from "../hooks/soul-promise.js";
-import { SOUL_EPISODE_KINDS } from "../soul/types.js";
+import { SOUL_EPISODE_KINDS, SOUL_LAYERS } from "../soul/types.js";
+import { SOUL_PERSON_DDL, SOUL_PERSON_MIGRATION_DDL } from "./soul-person-ddl.js";
+// P0-C：事件底座（soul_events）的 DDL 与读写都只从 P0-A/P0-B 的单一事实源来，禁止在本文件手抄列名。
+// DDL 常量与 P0-D 迁移脚本共用同一份；读写函数不 BEGIN（调用方持有事务），见 upsertSoulEventInTransaction。
+import { SOUL_EVENT_DDL, SOUL_EVENT_MIGRATION_DDL } from "./soul-event-ddl.js";
+import {
+  deleteSoulEventInTransaction,
+  getSoulEventDetail as getSoulEventDetailRow,
+  listSoulEventEvidence,
+  listSoulEvents as listSoulEventRows,
+  upsertSoulEventInTransaction,
+  type SoulEventDetail,
+  type SoulEventListFilter,
+  type SoulEventWrite,
+} from "./soul-event-store.js";
+// P1-A：一条消息 → 根事件 + 行动子事件。切分是纯函数，写库仍由本文件的事务负责。
+import { splitChatActionEvents, type SoulActionSourceMessage } from "../soul/event-splitter.js";
+import type {
+  SoulEventChatInsert,
+  SoulEventEvidenceInsert,
+  SoulEventInsert,
+  SoulEventRow,
+} from "./soul-event-types.js";
+import { SOUL_AXES, axisVectorToArray, emptyAxisVector, toAxisVector, type AxisVector } from "../soul/traits.js";
+import type { TraitLabelRow } from "../soul/trait-drift.js";
 import type {
   PersonaItem,
   SoulEmotionRecord,
   SoulEpisode,
   SoulEpisodeQuote,
+  SoulGateStat,
+  SoulGateStatBump,
   SoulLedgerEntry,
   SoulRejectionStat,
+  SoulLayer,
 } from "../soul/types.js";
 import type { Logger } from "../types.js";
+import type { SoulPerson, SoulPersonUpsert } from "../person/types.js";
 import type {
   MemoryPromptListFilter,
   MemoryPromptRecord,
@@ -630,47 +661,7 @@ export class VectorStore implements IMemoryStore {
    */
   private lastVecWriteAt: string | null = null;
 
-  // ── R-A3（E2 性能速赢）：listValues 租户级缓存（GROW 写路径 upsert/delete/pin/
-  // retire/restore/derive/restoreValence/resetValence 八处统一失效；TTL 仅作跨进程写
-  // 漂移防御，默认 60s，0=缓存关）──
-  private valuesCache = new Map<
-    string,
-    {
-      rows: Array<{
-        value_id: string;
-        label: string;
-        weight: number;
-        created_by: string;
-        valence: number | null;
-        origin: "seed" | "manual" | "auto";
-        pinned: 0 | 1;
-        state: "active" | "retired" | "vetoed";
-        node_type: "theme" | "person" | "character";
-        attrs_json: string;
-      }>;
-      at: number;
-    }
-  >();
-  private valuesCacheTtlMs = 60_000;
-  /** E2 观测计数器（miss=真实 DB 查询次数；hit=缓存命中次数）——测试与运维诊断共用。 */
-  valuesCacheHits = 0;
-  valuesCacheMisses = 0;
-
-  /** E2：配置 values 缓存 TTL（毫秒；非正数=关）。factory 按 recall.valuesCacheTtlMs 接线。 */
-  setValuesCacheTtlMs(ms: number): void {
-    this.valuesCacheTtlMs = Number.isFinite(ms) && ms > 0 ? Math.floor(ms) : 0;
-    this.valuesCache.clear();
-  }
-
-  /**
-   * E2 失效钩子（GROW 起为八写路径统一调用）：任何 core_values 写入后清全缓存。
-   * 清全缓存而非单 key 的原因（登记）：PA 移除 S6 读时兜底后，租户桶已严格独立，
-   * 单 key 失效在理论上足够；保留全清是保守选择（写路径低频，全清成本可忽略，
-   * 且天然覆盖 fanout 批量写入这类"一次写多租户桶"的路径）。
-   */
-  private invalidateValuesCache(): void {
-    if (this.valuesCache.size > 0) this.valuesCache.clear();
-  }
+  // S8：core_values 已删除（原 R-A3 listValues 租户级缓存一并移除）。
 
   // Prepared statements — FTS5 L1 (initialized in init())
   private stmtL1FtsInsert!: StatementSync;
@@ -1035,7 +1026,7 @@ export class VectorStore implements IMemoryStore {
     // #146（事实级双时态）：写面按 metadata_json.fact_key 找"同（实体,属性）的旧事实行"。
     // metadata_json 是 UNINDEXED 列，没有表达式索引时每条单值事实写入都全表扫描一次。
     // 两个坑必须一起绕：① 老库可能没有 JSON1（json_extract 不存在）→ 建索引失败不致命，只退化成扫描；
-    // ② 本仓**容忍损坏的 metadata_json**（anchorEvidenceValences 测试⑤ 会写入 '{broken'）——
+    // ② 本仓**容忍损坏的 metadata_json**（历史坏行会留下 '{broken' 这类残值）——
     //    裸 json_extract 在写坏行时会抛 malformed JSON，把"坏行只跳过"变成"坏行写不进"，
     //    所以索引用 json_valid 守卫：坏行索引值为 NULL，不进索引也不抛错。
     try {
@@ -1079,7 +1070,7 @@ export class VectorStore implements IMemoryStore {
     `);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_archive_at ON l1_archive(archived_at)");
     this.migrateArchiveTenantTable();
-    // ── 核心记忆 + 价值锚（K，设计§2/§3：stable 稳定锚定，agent 可维护，信任边界）──
+    // ── 核心记忆（K，设计§2/§3：stable 稳定锚定，agent 可维护，信任边界）──
     // P2-T12（K1）core 租户化：两表带 team_id/user_id/agent_id 三列（default 桶，
     // 与 isolation DEFAULT_ISOLATION_ID 家族一致 —— /v2 匿名读写与拍板⑤回填自洽）。
     // 不设 slot/value_id 单列 PRIMARY KEY（SQLite 无法 ALTER PK，单列 PK 会阻塞
@@ -1096,61 +1087,10 @@ export class VectorStore implements IMemoryStore {
         agent_id TEXT NOT NULL DEFAULT 'default'
       )
     `);
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS core_values (
-        value_id TEXT NOT NULL,
-        label TEXT NOT NULL DEFAULT '',
-        weight REAL NOT NULL DEFAULT 0.5,
-        created_by TEXT NOT NULL DEFAULT '',
-        valence REAL,
-        origin TEXT NOT NULL DEFAULT 'seed',
-        pinned INTEGER NOT NULL DEFAULT 0,
-        state TEXT NOT NULL DEFAULT 'active',
-        team_id TEXT NOT NULL DEFAULT 'default',
-        user_id TEXT NOT NULL DEFAULT 'default',
-        agent_id TEXT NOT NULL DEFAULT 'default'
-      )
-    `);
+    // P2-T12：core_memory 租户化 + 复合唯一索引（idx_core_memory_tenant）。
+    // S8 删 core_values 时这段调用被误删过 → 新库缺唯一索引，commitSoulPersona 的
+    // ON CONFLICT(slot,team,user,agent) 直接抛 "ON CONFLICT clause does not match"。已恢复。
     this.migrateCoreTenantTables();
-    // C2（spec §3.1）：动机方向列（幂等 ALTER，T12 模式）。可空，NULL=未判定。
-    // 位置在 migrateCoreTenantTables 之后：存量库若走 T12 重建，先重建再补列，
-    // 保证 ALTER 不会在建表 DDL 与重建之间被回滚丢失（新库 DDL 已带列，此 ALTER 空转）。
-    // +1=趋近推进、-1=审慎回避、0=中性；NULL=未判定（LLM 未判 / 用户未微调）。
-    try {
-      this.db.exec("ALTER TABLE core_values ADD COLUMN valence REAL");
-    } catch {
-      /* exists */
-    }
-    // GROW（价值锚自生长）：origin/pinned/state 三列（幂等 ALTER，T12 模式）。
-    // 位置在 migrateCoreTenantTables 之后（同 valence 的理由：存量库先重建再补列）。
-    // 存量行默认 seed/0/active —— 存量行全部来自启动种子灌入（B1），origin='seed' 与史实一致。
-    try {
-      this.db.exec("ALTER TABLE core_values ADD COLUMN origin TEXT NOT NULL DEFAULT 'seed'");
-    } catch {
-      /* exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE core_values ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
-    } catch {
-      /* exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE core_values ADD COLUMN state TEXT NOT NULL DEFAULT 'active'");
-    } catch {
-      /* exists */
-    }
-    // DS-SOUL-MEMORY-002 P2（spec §2.6）：人物锚双节点列——幂等 ALTER（T12 模式），
-    // 缺省 'theme'/'{}' = 逐位现状；sqlite 不可删列，回滚策略=列保留无害、缺省值即现状。
-    try {
-      this.db.exec("ALTER TABLE core_values ADD COLUMN node_type TEXT NOT NULL DEFAULT 'theme'");
-    } catch {
-      /* exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE core_values ADD COLUMN attrs_json TEXT NOT NULL DEFAULT '{}'");
-    } catch {
-      /* exists */
-    }
     // #30（S9/R5，2026-10-16）：soul 快照 append-only 账本——双时态状态史（Graphiti bi-temporal
     // 同构；禁删哲学=只追加不更新不删除）。capture point=渲染路径（buildSoulPrefix）：指纹变化后
     // 首次渲染落行（at-least-once），last-hash 去重=指纹不变零落行（防膨胀）。payload_json=soul
@@ -1257,6 +1197,39 @@ export class VectorStore implements IMemoryStore {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_persona_tenant ON soul_persona(team_id, user_id, agent_id, layer, state)",
     );
+    // 人格层 v3.7 特质存储：6 轴状态是漂移唯一载体；标签是「空间里的方向」视图，不存权重。
+    // 轴固定 6 根（加轴必须升 schema/协议版本），故用定长 JSON 数组而非宽表：
+    // axis_json / seed_state_json 均为 6 个 [-1,1] 数值，顺序同 SOUL_AXES。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_trait_state (
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      axis_json TEXT NOT NULL DEFAULT '[0,0,0,0,0,0]',
+      seed_state_json TEXT NOT NULL DEFAULT '[0,0,0,0,0,0]',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (team_id, user_id, agent_id)
+    )`);
+    // 标签表：direction 为六轴单位向量（spec §9 写作 direction[5]，与 §3 的 direction[6] 冲突，
+    // 以 §3 六轴为准）；gloss/anchor 是 §3.2 的读侧/判侧文本，§9 列清单漏列，按判据 8 补齐；
+    // protocol_version 供判据 13 归因。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_trait_label (
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      label TEXT NOT NULL,
+      definition TEXT NOT NULL DEFAULT '',
+      gloss TEXT NOT NULL DEFAULT '',
+      anchor TEXT NOT NULL DEFAULT '',
+      direction_json TEXT NOT NULL DEFAULT '[0,0,0,0,0,0]',
+      evidence INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      first_seen TEXT NOT NULL,
+      last_seen TEXT NOT NULL,
+      aliases_json TEXT NOT NULL DEFAULT '[]',
+      protocol_version TEXT NOT NULL DEFAULT 'v1',
+      PRIMARY KEY (tenant_id, label)
+    )`);
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_soul_trait_label_status ON soul_trait_label(tenant_id, status, last_seen)",
+    );
     this.db.exec(`CREATE TABLE IF NOT EXISTS soul_ledger (
       entry_id TEXT PRIMARY KEY,
       team_id TEXT NOT NULL DEFAULT 'default',
@@ -1274,10 +1247,32 @@ export class VectorStore implements IMemoryStore {
       evidence_json TEXT,
       prompt_version TEXT,
       model TEXT,
-      before_json TEXT
+      before_json TEXT,
+      protocol_version TEXT
+    )`);
+    // S3/判据 13：账本带判定协议版本，漂移与事件史据此可追溯是「哪版规则判的」。
+    try {
+      this.db.exec("ALTER TABLE soul_ledger ADD COLUMN protocol_version TEXT");
+    } catch {
+      /* 列已存在 */
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_ledger_tenant ON soul_ledger(team_id, user_id, agent_id, at)");
+    // P0-2：门拒计数从账本移出。拒绝是判据的统计量（同一候选每 tick 都可能被拒），
+    // 逐条落账本会把 24h 账本推到 785 行、并把同 code 的告警抑制窗口淹没。
+    // 这里按 (day, code, layer) 聚合 +1；账本只留真正的条目变更与告警。
+    this.db.exec(`CREATE TABLE IF NOT EXISTS soul_gate_stats (
+      team_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL DEFAULT 'default',
+      agent_id TEXT NOT NULL DEFAULT 'default',
+      day TEXT NOT NULL,
+      code TEXT NOT NULL,
+      layer TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      last_at TEXT,
+      PRIMARY KEY (team_id, user_id, agent_id, day, code, layer)
     )`);
     this.db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_soul_ledger_tenant ON soul_ledger(team_id, user_id, agent_id, at)",
+      "CREATE INDEX IF NOT EXISTS idx_soul_gate_stats_tenant_day ON soul_gate_stats(team_id, user_id, agent_id, day)",
     );
     // 事件层（2026-11-05）：人格的事实底座。旧管线只从 L1 摘要长人格，摘要把
     // 「为什么恼火、对谁、放弃了什么」蒸发了；episode 保留逐字摘句与四元上下文。
@@ -1304,8 +1299,41 @@ export class VectorStore implements IMemoryStore {
       evidence_json TEXT,
       session_id TEXT NOT NULL DEFAULT '',
       quote_json TEXT,
-      signals_json TEXT
+      signals_json TEXT,
+      layers_json TEXT,
+      archived_at TEXT,
+      mood_integrated_at TEXT,
+      -- P2-E：这条事件里在场的自然人（person_key 数组）。与 participants_json
+      -- （展示名/角色名）分工不同：按人过滤人格行要的是稳定键，不是「何晨」这种会改的串。
+      persons_json TEXT
     )`);
+    // S3：删除改为归档。旧库幂等补列；归档行默认不参与挖掘/注入，派生历史时显式包含。
+    try {
+      this.db.exec("ALTER TABLE soul_episodes ADD COLUMN archived_at TEXT");
+    } catch {
+      /* 列已存在 */
+    }
+    // P0-2：事件落盘带上它自己站住的层（identity/boundary/...），供 report 与审计区分
+    // 「人格候选事件」与「只作上下文的 work 事件」。旧库幂等补列。
+    try {
+      this.db.exec("ALTER TABLE soul_episodes ADD COLUMN layers_json TEXT");
+    } catch {
+      /* 列已存在 */
+    }
+    // 心境积分：按事件打标（见 SoulEpisode.moodIntegratedAt 的注释：水位用处理时刻会
+    // 把迟到事件永久饿死）。旧库幂等补列。
+    try {
+      this.db.exec("ALTER TABLE soul_episodes ADD COLUMN mood_integrated_at TEXT");
+    } catch {
+      /* 列已存在 */
+    }
+    // P2-E：事件挂人。旧库幂等补列；解析不出自然人时写 NULL（不是空数组），
+    // 读回是 undefined——「这条事件没有可识别的人」与「它有一个人都没有的名单」不是一回事。
+    try {
+      this.db.exec("ALTER TABLE soul_episodes ADD COLUMN persons_json TEXT");
+    } catch {
+      /* 列已存在 */
+    }
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_at ON soul_episodes(team_id, user_id, agent_id, at)",
     );
@@ -1333,13 +1361,26 @@ export class VectorStore implements IMemoryStore {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_emotions_tenant_at ON soul_emotions(team_id, user_id, agent_id, at)",
     );
+    // §5 P3-A：归因 / 把握度 / 情绪对象挂在谁身上。旧库幂等补列；旧行读回 null
+    // （null = 当时没这一维，不伪造成 "environment" 或 0）。
+    for (const ddl of [
+      "ALTER TABLE soul_emotions ADD COLUMN agency TEXT",
+      "ALTER TABLE soul_emotions ADD COLUMN confidence REAL",
+      "ALTER TABLE soul_emotions ADD COLUMN object_person TEXT",
+    ]) {
+      try {
+        this.db.exec(ddl);
+      } catch {
+        /* 列已存在 */
+      }
+    }
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_kind ON soul_episodes(team_id, user_id, agent_id, kind, at)",
     );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_soul_episodes_tenant_object ON soul_episodes(team_id, user_id, agent_id, object)",
     );
-    // #35（R5）：promise 承诺层——义务≠倾向，独立于 core_values 生命周期（排除条款
+    // #35（R5）：promise 承诺层——义务≠倾向，独立于倾向层生命周期（排除条款
     // 见 soul-promise.ts）。当前态表 + 事件 append-only 表（双时态留痕，只增不改）。
     this.db.exec(`CREATE TABLE IF NOT EXISTS soul_promises (
       promise_id TEXT PRIMARY KEY,
@@ -1382,61 +1423,47 @@ export class VectorStore implements IMemoryStore {
       /* 列已存在 */
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_soul_promise_events_promise ON soul_promise_events(promise_id, id)");
-    // DS-SOUL-MEMORY-002 P2（spec §7 O13）：core_pending——红线类提案（core_value/strict_rule）
-    // 的人工采纳落点（永不自动写入 core 对象；Panel /v3 pending/decide 采纳）。
-    this.db.exec(`CREATE TABLE IF NOT EXISTS core_pending (
-      pending_id TEXT PRIMARY KEY,
-      slot TEXT NOT NULL,
-      content TEXT NOT NULL,
-      evidence INTEGER NOT NULL DEFAULT 0,
-      state TEXT NOT NULL DEFAULT 'pending',
-      team_id TEXT NOT NULL DEFAULT 'default',
-      user_id TEXT NOT NULL DEFAULT 'default',
-      agent_id TEXT NOT NULL DEFAULT 'default',
-      created_at TEXT NOT NULL,
-      decided_at TEXT,
-      label TEXT,
-      description TEXT
-    )`);
-    // V12-CV（拍板执行⑤）：提案转换层字段——幂等 ALTER（T12 模式），存量库补列；
-    // 缺省 NULL = 旧提案逐位现状，label 门在采纳端（coerceCoreValueAnchor），NULL label 采纳即 422。
-    try {
-      this.db.exec("ALTER TABLE core_pending ADD COLUMN label TEXT");
-    } catch {
-      /* exists */
+    // ── 人物身份层（soul_person，2026-11-08 人格系统 v3 阶段 1 / §3-B）──
+    // 「谁」的稳定主键：L1 只存 {key, role} 引用，昵称变了不会分裂成第二个人。
+    // 主键生成规则见 src/core/person/resolve.ts 的 personKeyOf（p_<sha1…12> / p_name_<sha1…12>）。
+    // DDL 与 scripts/migrate-person-refs.mjs 共用同一份常量（store/soul-person-ddl.ts），禁止手抄第二份。
+    for (const ddl of SOUL_PERSON_DDL) this.db.exec(ddl);
+    // P2-H §5.3：`soul_person.profile_at` 与 `soul_person_relation.evidence_json` 都是后加的列，
+    // `CREATE TABLE IF NOT EXISTS` 对已存在的表不补列，所以必须显式 ALTER 一次。
+    // 只吞「列已存在」这一种（幂等重入）；其它错误要冒泡——把真错当已迁移会让水位静默不落。
+    for (const ddl of SOUL_PERSON_MIGRATION_DDL) {
+      try {
+        this.db.exec(ddl);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(msg)) throw err;
+      }
     }
-    try {
-      this.db.exec("ALTER TABLE core_pending ADD COLUMN description TEXT");
-    } catch {
-      /* exists */
+    // ── 事件底座（soul_events，P0-A §4.1–§4.10，2026-11-10）──
+    // 位置在 soul_person 段落之后：SOUL_EVENT_MIGRATION_DDL 里有 ALTER soul_person_relation 的语句，
+    // 该表由 SOUL_PERSON_DDL 建（上一段），顺序颠倒会报 no such table。
+    // DDL 与 P0-D 迁移脚本共用 store/soul-event-ddl.ts 这一份常量，禁止手抄第二份。
+    // SOUL_EVENT_DDL 全是 CREATE TABLE/INDEX IF NOT EXISTS，逐条 exec 即幂等；
+    // SOUL_EVENT_MIGRATION_DDL 是给既有表补列的 ALTER，重入报 duplicate column name——只吞这一种。
+    for (const ddl of SOUL_EVENT_DDL) this.db.exec(ddl);
+    for (const ddl of SOUL_EVENT_MIGRATION_DDL) {
+      try {
+        this.db.exec(ddl);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/duplicate column name/i.test(msg)) throw err;
+      }
     }
-    // #19 T12（2026-10-14 拍板）：重提溯源字段——reproposal 通道把 {reproposed, supersedes, generation}
-    // 写进 attrs_json；Panel/审计可读。幂等 ALTER，存量库缺省 NULL = 旧提案逐位现状。
-    try {
-      this.db.exec("ALTER TABLE core_pending ADD COLUMN attrs_json TEXT");
-    } catch {
-      /* exists */
-    }
-    // #91（复现即投票 + 默认终局）：复现计票与预嵌向量专列——幂等 ALTER（T12 模式），
-    // 存量库缺省 NULL = 旧提案逐位现状（无计票语义、无向量）；两列不参与 pending_id 派生，
-    // upsertPendingCore 的 INSERT/ON CONFLICT 集合不含它们（A6：重推不碰复现状态）。
-    try {
-      this.db.exec("ALTER TABLE core_pending ADD COLUMN recurrence_json TEXT");
-    } catch {
-      /* exists */
-    }
-    try {
-      this.db.exec("ALTER TABLE core_pending ADD COLUMN embedding_json TEXT");
-    } catch {
-      /* exists */
-    }
-    // GROW：自生长调度状态 kv（last_discovery_at / last_corpus_count）——重启不失忆，
-    // 避免每次重启后 interval 门失效白烧一次发现 LLM 调用。
-    this.db.exec("CREATE TABLE IF NOT EXISTS anchor_growth_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    // 2026-11-07（T1 提案/pending 通道清除）：core_pending 表与其 5 条幂等 ALTER（label/description/
+    // attrs_json/recurrence_json/embedding_json）已删除——提案制与人工采纳通道整体下线，不再有写入者。
+    // 存量生产库中的旧表由数据清理任务（T3）删除，本进程不再创建、不再读写。
+    // GROW 调度状态 kv（anchor_growth_state）的建表已移除（2026-11-07 复验 P1-5）：
+    // get/setIdentityDiscoveryState、get/setSelfObsBaseline 全仓 0 生产调用方（只剩一个 golden
+    // fixture stub 与一个 store 单测），这张表没有写入者；继续建表会让「读空就重启一次发现」的
+    // 死渠道看起来仍然可达。已有库里的旧表不 DROP（历史数据留给数据清理任务）。
     // PA（推翻 spec §5.1 裁决 2）：default 锚扇出迁移（幂等，SEC-1 模式）。
     // 位置在 migrateCoreTenantTables（唯一索引就位）+ origin/pinned/state ALTER 之后，
     // 保证存量库先完成租户化与三列补齐再扇出。
-    this.fanoutDefaultValuesToAgents();
     // Isolation indexes (three-dim tenancy)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_user_agent_session ON l1_records(user_id, agent_id, session_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_user_updated  ON l1_records(user_id, updated_time)");
@@ -3045,29 +3072,28 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
- * A 项（ADR-0025 决定 10）后置迁移：memory_audit.action 的 CHECK 枚举扩容。
- *
- * 为什么必须迁移而不是只改 TS union：CHECK 是**库级**约束，老库（生产 vectors.db 的
- * memory_audit 建于本批之前）里只有 ('update','delete')。写入 'sensitivity' 会被 CHECK
- * 拒绝 → recordAudit 的 catch 只 warn（审计失败不得影响用户写操作）→ 结果是降敏成功但
- * 审计静默丢失。A 项 wire 用例 ① 就是这么抓到的（audit.length === 0）。
- *
- * SQLite 不支持 ALTER CHECK ⇒ 轻量重建（12-step 简化版，本表无外键/触发器）：
- * 建新表 → 整表 INSERT SELECT → DROP 旧表 → RENAME → 重建两个索引。
- * 幂等判据：sqlite_master 里的 DDL 已含 'sensitivity' 就跳过（新库 / 已迁移库）。
- * 失败：warn 后继续（与 T12 迁移同策，不 degrade 整个 store），下次 init 重试；
- * 期间新 action 的审计会被库级 CHECK 拒绝，日志明写后果，不静默。
- */
-private migrateMemoryAuditActionEnum(): void {
-  try {
-    const row = this.db
-      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_audit'")
-      .get() as { sql?: string } | undefined;
-    if (!row?.sql || row.sql.includes("'sensitivity'")) return;
-    let count = 0;
-    this.db.exec("BEGIN");
+   * A 项（ADR-0025 决定 10）后置迁移：memory_audit.action 的 CHECK 枚举扩容。
+   *
+   * 为什么必须迁移而不是只改 TS union：CHECK 是**库级**约束，老库（生产 vectors.db 的
+   * memory_audit 建于本批之前）里只有 ('update','delete')。写入 'sensitivity' 会被 CHECK
+   * 拒绝 → recordAudit 的 catch 只 warn（审计失败不得影响用户写操作）→ 结果是降敏成功但
+   * 审计静默丢失。A 项 wire 用例 ① 就是这么抓到的（audit.length === 0）。
+   *
+   * SQLite 不支持 ALTER CHECK ⇒ 轻量重建（12-step 简化版，本表无外键/触发器）：
+   * 建新表 → 整表 INSERT SELECT → DROP 旧表 → RENAME → 重建两个索引。
+   * 幂等判据：sqlite_master 里的 DDL 已含 'sensitivity' 就跳过（新库 / 已迁移库）。
+   * 失败：warn 后继续（与 T12 迁移同策，不 degrade 整个 store），下次 init 重试；
+   * 期间新 action 的审计会被库级 CHECK 拒绝，日志明写后果，不静默。
+   */
+  private migrateMemoryAuditActionEnum(): void {
     try {
-      this.db.exec(`
+      const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_audit'").get() as
+        { sql?: string } | undefined;
+      if (!row?.sql || row.sql.includes("'sensitivity'")) return;
+      let count = 0;
+      this.db.exec("BEGIN");
+      try {
+        this.db.exec(`
         CREATE TABLE memory_audit_t12 (
           audit_id      TEXT PRIMARY KEY,
           record_id     TEXT NOT NULL,
@@ -3082,32 +3108,34 @@ private migrateMemoryAuditActionEnum(): void {
           request_id    TEXT
         )
       `);
-      this.db.exec(`
+        this.db.exec(`
         INSERT OR REPLACE INTO memory_audit_t12
           (audit_id, record_id, layer, action, team_id, agent_id, user_id, task_id, version, updated_at_ms, request_id)
         SELECT audit_id, record_id, layer, action, team_id, agent_id, user_id, task_id, version, updated_at_ms, request_id
         FROM memory_audit
       `);
-      count = (this.db.prepare("SELECT COUNT(*) AS n FROM memory_audit_t12").get() as { n: number }).n;
-      this.db.exec("DROP TABLE memory_audit");
-      this.db.exec("ALTER TABLE memory_audit_t12 RENAME TO memory_audit");
-      this.db.exec("COMMIT");
-    } catch (e) {
-      this.db.exec("ROLLBACK");
-      throw e;
+        count = (this.db.prepare("SELECT COUNT(*) AS n FROM memory_audit_t12").get() as { n: number }).n;
+        this.db.exec("DROP TABLE memory_audit");
+        this.db.exec("ALTER TABLE memory_audit_t12 RENAME TO memory_audit");
+        this.db.exec("COMMIT");
+      } catch (e) {
+        this.db.exec("ROLLBACK");
+        throw e;
+      }
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_record    ON memory_audit(record_id, updated_at_ms)");
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_memory_audit_isolation ON memory_audit(team_id, agent_id, user_id, task_id)",
+      );
+      this.logger?.warn?.(
+        `${TAG} [audit-action-migrate] memory_audit.action 枚举已扩容至 update/delete/sensitivity：重建保留 ${count} 行。`,
+      );
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [audit-action-migrate] memory_audit.action 枚举扩容失败（幂等，下次 init 重试；` +
+          `期间 action='sensitivity' 的审计会被库级 CHECK 拒绝并丢失）: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_record    ON memory_audit(record_id, updated_at_ms)");
-    this.db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_memory_audit_isolation ON memory_audit(team_id, agent_id, user_id, task_id)",
-    );
-    this.logger?.warn?.(`${TAG} [audit-action-migrate] memory_audit.action 枚举已扩容至 update/delete/sensitivity：重建保留 ${count} 行。`);
-  } catch (err) {
-    this.logger?.warn?.(
-      `${TAG} [audit-action-migrate] memory_audit.action 枚举扩容失败（幂等，下次 init 重试；` +
-        `期间 action='sensitivity' 的审计会被库级 CHECK 拒绝并丢失）: ${err instanceof Error ? err.message : String(err)}`,
-    );
   }
-}
 
   /**
    * P2-T12（K1）core 两表租户化迁移（幂等，init 时自动执行）。
@@ -3116,7 +3144,7 @@ private migrateMemoryAuditActionEnum(): void {
    * - 存量库（缺 team_id 列 或 仍是 slot/value_id 单列 PK）：轻量重建
    *   （CREATE new + INSERT SELECT + DROP + rename，同 FTS 迁移模式）—— 单列 PK
    *   会阻塞"同 slot 不同租户并存"，SQLite 又无法 ALTER PK，必须重建解除；
-   *   生产仅 core_memory 1 行 + core_values 6 行，重建成本可忽略（执行裁决登记：
+   *   生产仅 core_memory 存量行，重建成本可忽略（执行裁决登记：
    *   新库走唯一索引方案，存量库重建只为解除 PK，两表其余结构不变）。
    * - 回填值 = DEFAULT_ISOLATION_ID（"default"，拍板⑤ + 两处裁决对齐：/v2 匿名
    *   读写 default 桶，存量行回填 default 后匿名路径读到原数据，行为连续）。
@@ -3134,13 +3162,6 @@ private migrateMemoryAuditActionEnum(): void {
         index: "idx_core_memory_tenant",
         uniqueCols: "slot, team_id, user_id, agent_id",
       },
-      {
-        table: "core_values",
-        pkCol: "value_id",
-        dataCols: ["value_id", "label", "weight", "created_by"],
-        index: "idx_core_values_tenant",
-        uniqueCols: "value_id, team_id, user_id, agent_id",
-      },
     ];
     for (const spec of specs) {
       try {
@@ -3156,8 +3177,7 @@ private migrateMemoryAuditActionEnum(): void {
         }
         // C2：T12 重建路径保留已判定的 valence（列存在才带上；防御 T12 迁移失败
         // 重试的下次 init——先加过 valence 列的库再走重建时不丢列）。
-        const hasValence = spec.table === "core_values" && names.includes("valence");
-        const dataSel = spec.dataCols.join(", ") + (hasValence ? ", valence" : "");
+        const dataSel = spec.dataCols.join(", ");
         const teamSel = hasTeamId ? "COALESCE(NULLIF(team_id, ''), ?)" : "?";
         this.db.exec("BEGIN");
         try {
@@ -3168,7 +3188,7 @@ private migrateMemoryAuditActionEnum(): void {
                 spec.table === "core_memory"
                   ? "content TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT ''"
                   : "label TEXT NOT NULL DEFAULT '', weight REAL NOT NULL DEFAULT 0.5, created_by TEXT NOT NULL DEFAULT ''"
-              }${hasValence ? ",\n              valence REAL" : ""},
+              },
               team_id TEXT NOT NULL DEFAULT '${DEFAULT_ISOLATION_ID}',
               user_id TEXT NOT NULL DEFAULT '${DEFAULT_ISOLATION_ID}',
               agent_id TEXT NOT NULL DEFAULT '${DEFAULT_ISOLATION_ID}'
@@ -3200,112 +3220,6 @@ private migrateMemoryAuditActionEnum(): void {
             `${err instanceof Error ? err.message : String(err)}`,
         );
       }
-    }
-  }
-
-  /**
-   * PA（推翻 spec §5.1 裁决 2）：default 锚扇出迁移（幂等，init 时自动执行，SEC-1 模式）。
-   *
-   * 背景：价值锚从"实例级 default 单桶 + 空桶读时兜底"改为 per-agent 严格独立后，
-   * 存量 default 桶的锚必须复制到每个**有记忆的** agent 桶，否则各 agent 全部变空桶。
-   *
-   * - 扇出源：default 桶全部锚（全态，含 retired/vetoed——state 沿用，语义连续）。
-   * - 扇出目标：l1_records 中出现的每个 distinct (team_id,user_id,agent_id) 三元组
-   *   （**有记忆的 agent 才扇出**，无记忆 agent 保持空桶；default 三元组自身跳过——
-   *   锚本来就在那里）。l1_records 列有 init 早期的 ''→'default' 归一兜底，再用
-   *   COALESCE(NULLIF(...)) 双保险。
-   * - 复制语义：INSERT OR IGNORE（幂等关键）——已有自己锚的 agent 不受影响（同
-   *   (value_id,team,user,agent) 冲突即忽略，不覆盖 agent 自己的微调）；origin 强制
-   *   'seed'（扇出副本对每个 agent 而言都是启动种子，史实登记），pinned/valence/
-   *   weight/label/created_by/state 全部沿用（created_by 保留源头可追溯性）。
-   * - 前提守卫：幂等依赖复合唯一索引 idx_core_values_tenant；索引缺失（存量重复行
-   *   阻塞建索引的极端库）→ warn + 跳过（宁可下次重试，不做无幂等保障的写入）。
-   * - loud 统计：扇出 agent 数/锚数/新写入行数（仅 inserted>0 时打印，稳态 init 静默）。
-   * - 事务：BEGIN/COMMIT，失败 ROLLBACK + warn（非致命，下次 init 重试，T12 同款）。
-   */
-  private fanoutDefaultValuesToAgents(): void {
-    try {
-      const idx = this.db
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='core_values' AND name='idx_core_values_tenant'",
-        )
-        .get() as { name?: string } | undefined;
-      if (!idx?.name) {
-        this.logger?.warn?.(
-          `${TAG} [values-per-agent-migrate] idx_core_values_tenant 唯一索引缺失，跳过 default 锚扇出（幂等，索引修复后下次 init 重试）`,
-        );
-        return;
-      }
-      const defaultAnchors = this.db
-        .prepare(
-          "SELECT value_id, label, weight, created_by, valence, origin, pinned, state FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?",
-        )
-        .all(DEFAULT_ISOLATION_ID, DEFAULT_ISOLATION_ID, DEFAULT_ISOLATION_ID) as Array<{
-        value_id: string;
-        label: string;
-        weight: number;
-        created_by: string;
-        valence: number | null;
-        origin: string;
-        pinned: number;
-        state: string;
-      }>;
-      if (defaultAnchors.length === 0) return;
-      const tripletRows = this.db
-        .prepare(
-          "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM l1_records",
-        )
-        .all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
-      const targets = tripletRows.filter(
-        (r) =>
-          !(
-            r.team_id === DEFAULT_ISOLATION_ID &&
-            r.user_id === DEFAULT_ISOLATION_ID &&
-            r.agent_id === DEFAULT_ISOLATION_ID
-          ),
-      );
-      if (targets.length === 0) return;
-      this.db.exec("BEGIN");
-      try {
-        let inserted = 0;
-        const insert = this.db.prepare(
-          "INSERT OR IGNORE INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id) " +
-            "VALUES (?, ?, ?, ?, ?, 'seed', ?, ?, ?, ?, ?)",
-        );
-        for (const t of targets) {
-          for (const a of defaultAnchors) {
-            const res = insert.run(
-              a.value_id,
-              a.label,
-              a.weight,
-              a.created_by,
-              a.valence,
-              a.pinned,
-              a.state,
-              t.team_id,
-              t.user_id,
-              t.agent_id,
-            );
-            inserted += Number(res.changes);
-          }
-        }
-        this.db.exec("COMMIT");
-        if (inserted > 0) {
-          this.logger?.warn?.(
-            `${TAG} [values-per-agent-migrate] default 锚扇出：有记忆 agent ${targets.length} 个 × default 锚 ${defaultAnchors.length} 条，` +
-              `新写入 ${inserted} 行（origin='seed'，pinned/valence/state 沿用；无记忆 agent 不扇出；幂等 INSERT OR IGNORE）。` +
-              `生产影响预警：重启后各 agent 锚桶 = default 扇出副本，此后自生长按 agent 分叉演化。`,
-          );
-        }
-      } catch (e) {
-        this.db.exec("ROLLBACK");
-        throw e;
-      }
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [values-per-agent-migrate] default 锚扇出迁移失败（幂等，下次 init 重试）: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      );
     }
   }
 
@@ -3356,7 +3270,9 @@ private migrateMemoryAuditActionEnum(): void {
         }>) ?? []
       );
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [core_memory] readCore failed: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      // 2026-11-07（T1）：数据清除阶段可能 DROP core_memory——表缺失按空结果处理（Panel values/list 不 500）。
+      if (!/no such table/i.test(msg)) this.logger?.warn?.(`${TAG} [core_memory] readCore failed: ${msg}`);
       return [];
     }
   }
@@ -3370,158 +3286,19 @@ private migrateMemoryAuditActionEnum(): void {
     try {
       const rows = this.db
         .prepare(
+          // S10（2026-11-07）：清库后 core_memory / soul_persona 都是空的，若只按这两张表
+          // 枚举租户，人格永远等不到第一个 tick（生产实测：重启后 skipped「无带数据的租户」）。
+          // 有对话就有租户——新对话是重生的唯一入口，必须进枚举。
           "SELECT team_id, user_id, agent_id FROM core_memory " +
             "UNION SELECT team_id, user_id, agent_id FROM soul_persona " +
+            "UNION SELECT team_id, user_id, agent_id FROM l0_conversations " +
             "ORDER BY team_id, user_id, agent_id",
         )
         .all() as unknown as Array<{ team_id: string; user_id: string; agent_id: string }>;
       return (rows ?? []).map((r) => ({ teamId: r.team_id, userId: r.user_id, agentId: r.agent_id }));
     } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_memory] listCoreTenants failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /**
-   * P2-T12（K1）：按租户 upsert 价值锚。
-   * C2（spec §3.1）：增可选 valence（动机方向）。clamp 三值：+1/-1/0（round 后 clamp [-1,1]）。
-   * GROW：增可选 origin（seed|manual|auto，来源徽标；缺省 manual=人类/agent 写）。
-   * 语义（三方优先级）：
-   *   - 显式传 valence → 写入（新建落值；冲突覆盖旧值——用户微调永远优先）；
-   *   - 未传（undefined）→ 新建落 NULL（待 LLM 判）；冲突时**不触碰** valence 列
-   *     （plain upsert 不重置已有方向，LLM/微调值都保留）。
-   *   - 冲突路径 state='active'（GROW 裁定，报告 §0.1）：显式重建 = 明确意图
-   *     （retired → 即恢复；vetoed → 即撤销否决）；自动管道的 veto 不可重提由
-   *     自生长去重查全态保证，与本写路径正交。origin/pinned 冲突不改写（裁定 3）。
-   */
-  upsertValue(
-    valueId: string,
-    label: string,
-    weight: number,
-    createdBy = "manual",
-    tenant?: CoreTenant,
-    valence?: number,
-    origin: "seed" | "manual" | "auto" = "manual",
-    nodeType: "theme" | "person" | "character" = "theme",
-    attrs?: { role?: string; aliases?: string[]; description?: string; source?: string; facts?: string[] },
-  ): boolean {
-    const t = normalizeCoreTenant(tenant);
-    const v = valence === undefined ? null : Math.min(1, Math.max(-1, Math.round(valence)));
-    // P2（spec §2.6）：attrs_json 序列化单点——role/aliases/description/source/facts 可选字段按需并入（F2：品格采纳通道）；
-    // DO UPDATE 不碰 node_type（A8：类型归属写定后不随重写漂移），attrs_json 仅显式传入时更新。
-    // 立项①（2026-09-23 拍板）：rationale 通道——description 并入 attrs_json（锚语义持久化）
-    const attrsJson =
-      attrs === undefined
-        ? "{}"
-        : JSON.stringify({
-            ...(attrs.role === undefined ? {} : { role: attrs.role }),
-            ...(attrs.aliases === undefined ? {} : { aliases: attrs.aliases }),
-            ...(attrs.description === undefined ? {} : { description: attrs.description }),
-            ...(attrs.source === undefined ? {} : { source: attrs.source }),
-            ...(attrs.facts === undefined ? {} : { facts: attrs.facts }),
-          });
-    try {
-      this.db
-        .prepare(
-          "INSERT INTO core_values (value_id, label, weight, created_by, valence, origin, pinned, state, team_id, user_id, agent_id, node_type, attrs_json) VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?) " +
-            "ON CONFLICT(value_id, team_id, user_id, agent_id) DO UPDATE SET label=excluded.label, weight=excluded.weight, state='active'" +
-            (v === null ? "" : ", valence=excluded.valence") +
-            (attrs === undefined ? "" : ", attrs_json=excluded.attrs_json"),
-        )
-        .run(valueId, label, weight, createdBy, v, origin, t.teamId, t.userId, t.agentId, nodeType, attrsJson);
-      this.invalidateValuesCache(); // E2 失效钩子（写路径 1/8）
-      return true;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] upsertValue failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  /** P2-T12（K1）：按租户读价值锚。tenant 缺省 = default 桶（遗忘 worker 价值锚语义不变）。
-   *  C2：返回行携带 valence（number | null，NULL=未判定）。
-   *  GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
-   *  = 预期行为，报告 §0.2）；opts.includeRetired=true → active+retired（Panel 退休区用；
-   *  vetoed 在任何读面都不可见——「永久否决」只活在 any-state 全态读里）。
-   *  PA（推翻 spec §5.1 裁决 2）：**严格无兜底**——listValues 只返回该 agent 桶的内容
-   *  （可为空）。原 S6 第 5 项"非 default 租户空桶 → 读时回退 default 桶锚"分支已移除；
-   *  存量锚经 fanoutDefaultValuesToAgents 扇出到各 agent 桶（有记忆才扇出），空桶 agent
-   *  对 appraisal/R9/价值面板显示空（预期行为）。遗忘侧不受影响：forgetting-worker 无
-   *  tenant 调用（default 桶，实例级语义）。
-   *
-   *  R-A3（E2 性能速赢）：租户级 TTL 缓存——key=租户三元组+includeRetired 变体位
-   *  （GROW：两个读面是独立缓存条目）；全部 core_values 写路径（八处，见类字段注释）
-   *  统一挂 invalidateValuesCache 钩子，TTL 仅作跨进程写漂移防御（默认 60s，0=缓存关）。
-   *  缓存命中返回行克隆（防调用方就地改写缓存）。 */
-  listValues(
-    tenant?: CoreTenant,
-    opts?: { includeRetired?: boolean },
-  ): Array<{
-    value_id: string;
-    label: string;
-    weight: number;
-    created_by: string;
-    valence: number | null;
-    origin: "seed" | "manual" | "auto";
-    pinned: 0 | 1;
-    state: "active" | "retired" | "vetoed";
-    node_type: "theme" | "person" | "character";
-    attrs_json: string;
-  }> {
-    const t = normalizeCoreTenant(tenant);
-    const includeRetired = opts?.includeRetired === true;
-    // S7 第 9 项（批 2 审查 M-6）：JSON.stringify 取代 `|` 裸拼接（沿 S2 模式）——
-    // 三元组段含 `|` 时裸拼接会碰撞（"t1|x"/"u" vs "t1"/"x|u"），命中对方缓存行脏读。
-    // GROW：第 4 位 = includeRetired 变体位（默认读与退休区读互不脏读）。
-    const cacheKey = JSON.stringify([t.teamId, t.userId, t.agentId, includeRetired ? 1 : 0]);
-    if (this.valuesCacheTtlMs > 0) {
-      const hit = this.valuesCache.get(cacheKey);
-      if (hit && Date.now() - hit.at < this.valuesCacheTtlMs) {
-        this.valuesCacheHits++;
-        this.logger?.debug?.(
-          `${TAG} [core_values] listValues cache HIT (age=${Date.now() - hit.at}ms) tenant=${cacheKey}`,
-        );
-        return hit.rows.map((r) => ({ ...r }));
-      }
-      if (hit) this.valuesCache.delete(cacheKey); // 过期条目清除
-    }
-    try {
-      // GROW：state 过滤（active-only 默认 / active+retired 退休区读）。vetoed 永不出现。
-      const stateFilter = includeRetired ? " AND state IN ('active','retired')" : " AND state='active'";
-      const readRows = (teamId: string, userId: string, agentId: string) =>
-        (this.db
-          .prepare(
-            `SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY weight DESC`,
-          )
-          .all(teamId, userId, agentId) as unknown as Array<{
-          value_id: string;
-          label: string;
-          weight: number;
-          created_by: string;
-          valence: number | null;
-          origin: "seed" | "manual" | "auto";
-          pinned: 0 | 1;
-          state: "active" | "retired" | "vetoed";
-          node_type: "theme" | "person" | "character";
-          attrs_json: string;
-        }>) ?? [];
-      const rows = readRows(t.teamId, t.userId, t.agentId);
-      // PA：严格无兜底——空桶返回 []，不再读时回退 default 桶（原 S6 第 5 项分支移除）。
-      // S7 第 9 项（批 2 审查 M-6）：miss 计数移到真实读成功之后——计数器语义是
-      // "valuesCacheMisses = 真实 DB 查询次数"，SQL 异常路径（catch → []）不算查询
-      // （修复前自增在 try 之前，异常路径也 +1，观测失真）。
-      this.valuesCacheMisses++;
-      if (this.valuesCacheTtlMs > 0) {
-        this.valuesCache.set(cacheKey, { rows: rows, at: Date.now() });
-      }
-      return rows;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] listValues failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/no such table/i.test(msg)) this.logger?.warn?.(`${TAG} [core_memory] listCoreTenants failed: ${msg}`);
       return [];
     }
   }
@@ -3610,9 +3387,7 @@ private migrateMemoryAuditActionEnum(): void {
       )
       .run(t.teamId, t.userId, t.agentId, ...cols.map(([, v]) => v));
   }
-  readSoulState(
-    tenant: CoreTenant,
-  ): {
+  readSoulState(tenant: CoreTenant): {
     valence: number;
     arousal: number;
     baselineValence?: number | null;
@@ -3674,13 +3449,20 @@ private migrateMemoryAuditActionEnum(): void {
    * 写面单点 commitSoulPersona：条目 upsert 与账本 append 同事务（半写状态不可接受，
    * 否则「账本说变了、库却没变」会让漂移与回滚全失真）；账本 INSERT OR IGNORE 幂等。
    * 读面容忍缺失（返回空数组），与既有 store 容错约定一致。 */
-  listSoulPersona(tenant?: CoreTenant): PersonaItem[] {
+  listSoulPersona(tenant?: CoreTenant, opts?: { includeSuperseded?: boolean }): PersonaItem[] {
     const t = normalizeCoreTenant(tenant);
     try {
       const rows = this.db
-        .prepare("SELECT * FROM soul_persona WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY layer, item_id")
+        .prepare(
+          "SELECT * FROM soul_persona WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY layer, item_id",
+        )
         .all(t.teamId, t.userId, t.agentId) as unknown as Array<Record<string, unknown>>;
-      return (rows ?? []).map(mapSoulPersonaRow);
+      const items = (rows ?? []).map(mapSoulPersonaRow);
+      // 结论合并（P1-1）取代的行默认不出队：注入/组装/回流都只该看当前有效的结论。
+      // 审计与回放显式要全量（includeSuperseded），不靠猜。
+      // 注意判据带 state：frozen/merged 仍按原口径返回（既有测试与回滚路径都依赖它们可见）。
+      if (opts?.includeSuperseded) return items;
+      return items.filter((it) => !isSupersededItem(it));
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_persona] list failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -3690,7 +3472,8 @@ private migrateMemoryAuditActionEnum(): void {
   async commitSoulPersona(
     tenant: CoreTenant | undefined,
     plan: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] },
-  ): Promise<{ upserted: number; ledgered: number }> {
+    opts?: { strictRule?: string; strictRuleSource?: string },
+  ): Promise<{ upserted: number; ledgered: number; strictRule?: boolean; skippedHuman?: number }> {
     const t = normalizeCoreTenant(tenant);
     const upsert = this.db.prepare(`INSERT INTO soul_persona (
       item_id, team_id, user_id, agent_id, layer, text, state, weight, evidence_json, days_json,
@@ -3707,18 +3490,36 @@ private migrateMemoryAuditActionEnum(): void {
       meta_json = excluded.meta_json`);
     const led = this.db.prepare(`INSERT OR IGNORE INTO soul_ledger (
       entry_id, team_id, user_id, agent_id, at, trigger, layer, item_id, action,
-      before_hash, after_hash, gates_json, reason, evidence_json, prompt_version, model, before_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      before_hash, after_hash, gates_json, reason, evidence_json, prompt_version, model, before_json, protocol_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    // 单写者（2026-11-08）：human 层只能由人物档案提炼器写，而它的每条行都带 meta.person.key。
+    // 这里是最后一道门：没有主人的 human 行一律不落库（跳过而不是抛错，避免一条脏候选毁掉整轮提交），
+    // 计数回给调用方，让「第二个写者又回来了」这件事在报表里可见，而不是静默生效。
+    const ownedUpsert = plan.upsert.filter((it) => it.layer !== "human" || personKeyOfPersonaItem(it) !== "");
+    const skippedHuman = plan.upsert.length - ownedUpsert.length;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      for (const it of plan.upsert) {
+      for (const it of ownedUpsert) {
         upsert.run(
-          it.itemId, t.teamId, t.userId, t.agentId, it.layer, it.text, it.state, it.weight,
-          JSON.stringify(it.evidenceIds ?? []), JSON.stringify(it.evidenceDays ?? []),
-          JSON.stringify(it.evidenceOrigins ?? []), it.createdAt, it.updatedAt, it.lastEvidenceAt,
-          it.mergedInto ?? null, it.aliases ? JSON.stringify(it.aliases) : null,
-          it.contradictions ?? 0, it.driftHistory ? JSON.stringify(it.driftHistory) : null,
-          it.meta ? JSON.stringify(it.meta) : null,
+          it.itemId,
+          t.teamId,
+          t.userId,
+          t.agentId,
+          it.layer,
+          it.text,
+          it.state,
+          it.weight,
+          JSON.stringify(it.evidenceIds ?? []),
+          JSON.stringify(it.evidenceDays ?? []),
+          JSON.stringify(it.evidenceOrigins ?? []),
+          it.createdAt,
+          it.updatedAt,
+          it.lastEvidenceAt,
+          it.mergedInto ?? null,
+          it.aliases ? JSON.stringify(it.aliases) : null,
+          it.contradictions ?? 0,
+          it.driftHistory ? JSON.stringify(it.driftHistory) : null,
+          personaMetaJson(it),
         );
       }
       let ledgered = 0;
@@ -3726,17 +3527,67 @@ private migrateMemoryAuditActionEnum(): void {
         // 只数真正新落库的行（INSERT OR IGNORE 幂等）：重复 entryId 不算写入，
         // 否则「账本说写了 N 条」会被重放/重试虚增。
         const info = led.run(
-          e.entryId, t.teamId, t.userId, t.agentId, e.at, e.trigger, e.layer ?? null, e.itemId ?? null,
-          e.action, e.beforeHash ?? null, e.afterHash ?? null, JSON.stringify(e.gates ?? []),
-          e.reason ?? "", JSON.stringify(e.evidenceIds ?? []), e.promptVersion ?? null,
-          e.model ?? null, e.before ? JSON.stringify(e.before) : null,
+          e.entryId,
+          t.teamId,
+          t.userId,
+          t.agentId,
+          e.at,
+          e.trigger,
+          e.layer ?? null,
+          e.itemId ?? null,
+          e.action,
+          e.beforeHash ?? null,
+          e.afterHash ?? null,
+          JSON.stringify(e.gates ?? []),
+          e.reason ?? "",
+          JSON.stringify(e.evidenceIds ?? []),
+          e.promptVersion ?? null,
+          e.model ?? null,
+          e.before ? JSON.stringify(e.before) : null,
+          // 判据 13：账本必须能追「哪版规则判的」。漂移/准入/冻结等生产方显式给
+          // TRAIT_PROTOCOL_VERSION；cadence/alert 这类运营行不带，落当前协议版本兜底，
+          // 避免 NULL 让「按版本归因」出现空洞（生产实测 18 行 NULL 全是 cadence）。
+          e.protocolVersion ?? "v1",
         );
         ledgered += Number(info.changes ?? 0) > 0 ? 1 : 0;
       }
+      // S6：红线投影（strict_rule）与 persona/账本同事务——要么都落，要么都不落。
+      // 与 upsertCore 同款 SQL（:3321-3341），version 幂等递增；内容逐字（判据 2 要求 100% 覆盖）。
+      let strictRule = false;
+      if (typeof opts?.strictRule === "string") {
+        const prev = this.db
+          .prepare("SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?")
+          .get("strict_rule", t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
+        this.db
+          .prepare(
+            "INSERT INTO core_memory (slot, content, source, version, updated_at, team_id, user_id, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+              "ON CONFLICT(slot, team_id, user_id, agent_id) DO UPDATE SET content=excluded.content, source=excluded.source, version=excluded.version, updated_at=excluded.updated_at",
+          )
+          .run(
+            "strict_rule",
+            opts.strictRule,
+            opts.strictRuleSource ?? "soul-redline",
+            (prev?.version ?? 0) + 1,
+            new Date().toISOString(),
+            t.teamId,
+            t.userId,
+            t.agentId,
+          );
+        strictRule = true;
+      }
       this.db.exec("COMMIT");
-      return { upserted: plan.upsert.length, ledgered };
+      return {
+        upserted: ownedUpsert.length,
+        ledgered,
+        ...(strictRule ? { strictRule } : {}),
+        ...(skippedHuman > 0 ? { skippedHuman } : {}),
+      };
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
       throw err;
     }
   }
@@ -3782,25 +3633,41 @@ private migrateMemoryAuditActionEnum(): void {
       meta_json = excluded.meta_json`);
     const led = this.db.prepare(`INSERT OR IGNORE INTO soul_ledger (
       entry_id, team_id, user_id, agent_id, at, trigger, layer, item_id, action,
-      before_hash, after_hash, gates_json, reason, evidence_json, prompt_version, model, before_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      before_hash, after_hash, gates_json, reason, evidence_json, prompt_version, model, before_json, protocol_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const hash = (v: unknown): string => createHash("sha1").update(JSON.stringify(v)).digest("hex").slice(0, 16);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const id of ids) {
         const row = latest.get(t.teamId, t.userId, t.agentId, id) as Record<string, unknown> | undefined;
-        if (!row) { skipped += 1; continue; }
+        if (!row) {
+          skipped += 1;
+          continue;
+        }
         const raw = row.before_json;
         const before = typeof raw === "string" && raw !== "" ? (JSON.parse(raw) as PersonaItem) : null;
         const curRow = current.get(id, t.teamId, t.userId, t.agentId) as Record<string, unknown> | undefined;
         const cur = curRow ? mapSoulPersonaRow(curRow) : null;
         if (before) {
           upsert.run(
-            before.itemId, t.teamId, t.userId, t.agentId, before.layer, before.text, before.state, before.weight,
-            JSON.stringify(before.evidenceIds ?? []), JSON.stringify(before.evidenceDays ?? []),
-            JSON.stringify(before.evidenceOrigins ?? []), before.createdAt, now, before.lastEvidenceAt,
-            before.mergedInto ?? null, before.aliases ? JSON.stringify(before.aliases) : null,
-            before.contradictions ?? 0, before.driftHistory ? JSON.stringify(before.driftHistory) : null,
+            before.itemId,
+            t.teamId,
+            t.userId,
+            t.agentId,
+            before.layer,
+            before.text,
+            before.state,
+            before.weight,
+            JSON.stringify(before.evidenceIds ?? []),
+            JSON.stringify(before.evidenceDays ?? []),
+            JSON.stringify(before.evidenceOrigins ?? []),
+            before.createdAt,
+            now,
+            before.lastEvidenceAt,
+            before.mergedInto ?? null,
+            before.aliases ? JSON.stringify(before.aliases) : null,
+            before.contradictions ?? 0,
+            before.driftHistory ? JSON.stringify(before.driftHistory) : null,
             before.meta ? JSON.stringify(before.meta) : null,
           );
           restored += 1;
@@ -3809,18 +3676,34 @@ private migrateMemoryAuditActionEnum(): void {
           removed += 1;
         }
         led.run(
-          `rb-${hash({ id, now, before: before?.itemId ?? null })}`, t.teamId, t.userId, t.agentId, now,
-          "rollback", before?.layer ?? cur?.layer ?? null, id, "rollback",
-          cur ? hash(cur) : null, before ? hash(before) : null,
-          JSON.stringify([opts?.gate ?? "manual_rollback"]), opts?.reason ?? "条目级回滚：恢复到最近一次变更前的快照",
-          JSON.stringify(before?.evidenceIds ?? cur?.evidenceIds ?? []), null, null,
+          `rb-${hash({ id, now, before: before?.itemId ?? null })}`,
+          t.teamId,
+          t.userId,
+          t.agentId,
+          now,
+          "rollback",
+          before?.layer ?? cur?.layer ?? null,
+          id,
+          "rollback",
+          cur ? hash(cur) : null,
+          before ? hash(before) : null,
+          JSON.stringify([opts?.gate ?? "manual_rollback"]),
+          opts?.reason ?? "条目级回滚：恢复到最近一次变更前的快照",
+          JSON.stringify(before?.evidenceIds ?? cur?.evidenceIds ?? []),
+          null,
+          null,
           cur ? JSON.stringify(cur) : null,
+          null,
         );
       }
       this.db.exec("COMMIT");
       return { restored, removed, skipped };
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
       throw err;
     }
   }
@@ -3830,7 +3713,9 @@ private migrateMemoryAuditActionEnum(): void {
     const n = Math.max(1, Math.min(1000, Math.floor(limit)));
     try {
       const rows = this.db
-        .prepare("SELECT * FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY at DESC, entry_id DESC LIMIT ?")
+        .prepare(
+          "SELECT * FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY at DESC, entry_id DESC LIMIT ?",
+        )
         .all(t.teamId, t.userId, t.agentId, n) as unknown as Array<Record<string, unknown>>;
       return (rows ?? []).map(mapSoulLedgerRow);
     } catch (err) {
@@ -3838,23 +3723,127 @@ private migrateMemoryAuditActionEnum(): void {
       return [];
     }
   }
+  /* —— 特质层（soul_trait_state / soul_trait_label，2026-11-07 S1/S4）——
+   * 六轴 state 是人格漂移的唯一事实源；标签是方向视图，不存独立权重。
+   * 读面容忍缺失（未初始化=零向量），写面整体覆盖（单行/租户）。 */
+  readSoulTraitState(tenant?: CoreTenant): { state: AxisVector; seedState: AxisVector; updatedAt: string } | null {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const row = this.db
+        .prepare(
+          "SELECT axis_json, seed_state_json, updated_at FROM soul_trait_state WHERE team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .get(t.teamId, t.userId, t.agentId) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        state: toAxisVector(row.axis_json),
+        seedState: toAxisVector(row.seed_state_json),
+        updatedAt: String(row.updated_at ?? ""),
+      };
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_trait_state] read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  writeSoulTraitState(
+    tenant: CoreTenant | undefined,
+    input: { state: AxisVector; seedState?: AxisVector; updatedAt?: string },
+  ): void {
+    const t = normalizeCoreTenant(tenant);
+    const now = input.updatedAt ?? new Date().toISOString();
+    const prev = this.readSoulTraitState(tenant);
+    const seed = input.seedState ?? prev?.seedState ?? emptyAxisVector();
+    this.db
+      .prepare(
+        `INSERT INTO soul_trait_state (team_id, user_id, agent_id, axis_json, seed_state_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(team_id, user_id, agent_id) DO UPDATE SET
+           axis_json = excluded.axis_json, seed_state_json = excluded.seed_state_json, updated_at = excluded.updated_at`,
+      )
+      .run(
+        t.teamId,
+        t.userId,
+        t.agentId,
+        JSON.stringify(axisVectorToArray(input.state)),
+        JSON.stringify(axisVectorToArray(seed)),
+        now,
+      );
+  }
+
+  listSoulTraitLabels(tenant?: CoreTenant): TraitLabelRow[] {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const rows = this.db
+        .prepare("SELECT * FROM soul_trait_label WHERE tenant_id = ? ORDER BY label")
+        .all(t.teamId) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulTraitLabelRow);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_trait_label] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  commitSoulTraitLabels(tenant: CoreTenant | undefined, rows: TraitLabelRow[]): { upserted: number } {
+    const t = normalizeCoreTenant(tenant);
+    if (!rows || rows.length === 0) return { upserted: 0 };
+    const stmt = this.db.prepare(
+      `INSERT INTO soul_trait_label (tenant_id, label, definition, gloss, anchor, direction_json, evidence, status, first_seen, last_seen, aliases_json, protocol_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id, label) DO UPDATE SET
+         definition = excluded.definition, gloss = excluded.gloss, anchor = excluded.anchor,
+         direction_json = excluded.direction_json, evidence = excluded.evidence, status = excluded.status,
+         last_seen = excluded.last_seen, aliases_json = excluded.aliases_json, protocol_version = excluded.protocol_version`,
+    );
+    let upserted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const r of rows) {
+        stmt.run(
+          t.teamId,
+          r.label,
+          r.definition,
+          r.gloss,
+          r.anchor,
+          JSON.stringify(axisVectorToArray(r.direction)),
+          r.evidence,
+          r.status,
+          r.firstSeen,
+          r.lastSeen,
+          JSON.stringify(r.aliases ?? []),
+          r.protocolVersion,
+        );
+        upserted += 1;
+      }
+      this.db.exec("COMMIT");
+      return { upserted };
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
+      throw err;
+    }
+  }
+
   /* —— 事件层（soul_episodes，2026-11-05）——
    * 写幂等（episode_id 主键，重跑同一天不翻倍）；读按时间倒序；检索用 LIKE 覆盖
    * 标题/对象/双方立场/代价/原话——「上次因为什么恼火、对谁、多强」四问都能碰。
-   * 拒绝统计从 soul_ledger 的 reject 行聚合（不另建计数表：账本是唯一事实源）。 */
+   * 拒绝统计自 P0-2 起走 soul_gate_stats（按 day/code/layer 聚合），不再逐条落账本。 */
   commitSoulEpisodes(tenant: CoreTenant | undefined, episodes: SoulEpisode[]): { inserted: number } {
     const t = normalizeCoreTenant(tenant);
     if (!episodes || episodes.length === 0) return { inserted: 0 };
     const stmt = this.db.prepare(`INSERT OR IGNORE INTO soul_episodes (
       episode_id, team_id, user_id, agent_id, at, day, kind, title, object, participants_json,
       user_stance, agent_stance, cost, outcome, valence, arousal, intensity, affect_source,
-      evidence_json, session_id, quote_json, signals_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      evidence_json, session_id, quote_json, signals_json, layers_json, persons_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     // 事件是 L0 的派生缓存：同一条 record 重新挖出来时，立场/原话/强度都应按当前判据刷新。
     // 旧版本用「不覆盖原话」保历史，结果早期挖掘把助手自己的话写进 user_stance 后永远洗不掉，
     // 自我史就会把「我怀疑接口有问题」当成「他当面否定我」。只刷新本轮重新挖到的行（不在本轮窗口的行不动）。
     const refresh = this.db.prepare(
-      "UPDATE soul_episodes SET kind = ?, title = ?, participants_json = ?, user_stance = ?, agent_stance = ?, cost = ?, outcome = ?, valence = ?, arousal = ?, intensity = ?, affect_source = ?, evidence_json = ?, quote_json = ?, signals_json = ? WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+      "UPDATE soul_episodes SET kind = ?, title = ?, participants_json = ?, user_stance = ?, agent_stance = ?, cost = ?, outcome = ?, valence = ?, arousal = ?, intensity = ?, affect_source = ?, evidence_json = ?, quote_json = ?, signals_json = ?, layers_json = ?, persons_json = ?, archived_at = NULL WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
     );
     // 对象另走一条：只在新对象是稳定原因、旧对象不是时更新，避免把短噪声写回去。
     const refine = this.db.prepare(
@@ -3865,59 +3854,207 @@ private migrateMemoryAuditActionEnum(): void {
     try {
       for (const e of episodes) {
         const info = stmt.run(
-          e.episodeId, t.teamId, t.userId, t.agentId, e.at, e.day, e.kind, e.title ?? "", e.object ?? "",
-          JSON.stringify(e.participants ?? []), e.userStance ?? "", e.agentStance ?? "", e.cost ?? "",
-          e.outcome ?? "", e.valence ?? 0, e.arousal ?? 0, e.intensity ?? 0, e.affectSource ?? "lexicon",
-          JSON.stringify(e.evidenceIds ?? []), e.sessionId ?? "",
-          e.quote ? JSON.stringify(e.quote) : null, JSON.stringify(e.signals ?? []),
+          e.episodeId,
+          t.teamId,
+          t.userId,
+          t.agentId,
+          e.at,
+          e.day,
+          e.kind,
+          e.title ?? "",
+          e.object ?? "",
+          JSON.stringify(e.participants ?? []),
+          e.userStance ?? "",
+          e.agentStance ?? "",
+          e.cost ?? "",
+          e.outcome ?? "",
+          e.valence ?? 0,
+          e.arousal ?? 0,
+          e.intensity ?? 0,
+          e.affectSource ?? "lexicon",
+          JSON.stringify(e.evidenceIds ?? []),
+          e.sessionId ?? "",
+          e.quote ? JSON.stringify(e.quote) : null,
+          JSON.stringify(e.signals ?? []),
+          e.layers && e.layers.length > 0 ? JSON.stringify(e.layers) : null,
+          // 空数组写 NULL：读回 undefined（「解析不出人」），而不是 []（「有名单但空」）。
+          e.persons && e.persons.length > 0 ? JSON.stringify(e.persons) : null,
         );
         inserted += Number(info.changes ?? 0) > 0 ? 1 : 0;
         const next = (e.object ?? "").trim();
         if (Number(info.changes ?? 0) === 0) {
           refresh.run(
-            e.kind, e.title ?? "", JSON.stringify(e.participants ?? []), e.userStance ?? "",
-            e.agentStance ?? "", e.cost ?? "", e.outcome ?? "", e.valence ?? 0, e.arousal ?? 0,
-            e.intensity ?? 0, e.affectSource ?? "lexicon", JSON.stringify(e.evidenceIds ?? []),
-            e.quote ? JSON.stringify(e.quote) : null, JSON.stringify(e.signals ?? []),
-            e.episodeId, t.teamId, t.userId, t.agentId,
+            e.kind,
+            e.title ?? "",
+            JSON.stringify(e.participants ?? []),
+            e.userStance ?? "",
+            e.agentStance ?? "",
+            e.cost ?? "",
+            e.outcome ?? "",
+            e.valence ?? 0,
+            e.arousal ?? 0,
+            e.intensity ?? 0,
+            e.affectSource ?? "lexicon",
+            JSON.stringify(e.evidenceIds ?? []),
+            e.quote ? JSON.stringify(e.quote) : null,
+            JSON.stringify(e.signals ?? []),
+            // 层是当前判据的判定结果：本轮判为「无层」（纯上下文）就把旧值清空，不留陈旧层。
+            e.layers && e.layers.length > 0 ? JSON.stringify(e.layers) : null,
+            // 人员名单同理：本轮解析不出人就把旧名单清空，不把上一轮的人留在事件上。
+            e.persons && e.persons.length > 0 ? JSON.stringify(e.persons) : null,
+            e.episodeId,
+            t.teamId,
+            t.userId,
+            t.agentId,
           );
           if (next !== "" && next.length <= 20) refine.run(next, e.episodeId, t.teamId, t.userId, t.agentId, next);
         }
+        // P0-C/P1-A 双写（spec §5.1–§5.2）：同一事务内把这条 episode 落成「根事件 + 行动子事件」。
+        // 用 upsert 不用 insert：refresh 路径（同 episodeId 重挖）要整行覆盖；insert 会撞主键报错。
+        // 这里不 try/catch——双写失败必须让整个 commitSoulEpisodes 回滚，否则旧表会留下单边写入，
+        // 而单边写入正是对账（soulEventParity）要抓的那种不一致。
+        const writes = soulEventWritesFromEpisode(e, this.soulActionSourceMessages(t, e));
+        // 重挖后某个动作可能不再成立（判据收紧/引文改变）：旧子事件不能留成孤儿。
+        // 只删「这次不再产出的」子事件；同 id 的交给 upsert 覆盖，避免无谓删掉已有反思引用。
+        const keepChildIds = new Set(writes.slice(1).map((w) => w.event.event_id));
+        const staleChildren = this.db
+          .prepare(
+            "SELECT event_id FROM soul_events WHERE team_id = ? AND user_id = ? AND agent_id = ? AND parent_event_id = ? AND source_kind IN ('tool','test','commit','rollback')",
+          )
+          .all(t.teamId, t.userId, t.agentId, e.episodeId) as Array<{ event_id?: string }>;
+        for (const row of staleChildren) {
+          const childId = String(row.event_id ?? "");
+          if (childId !== "" && !keepChildIds.has(childId)) {
+            deleteSoulEventInTransaction(this.db, t, childId);
+          }
+        }
+        for (const write of writes) upsertSoulEventInTransaction(this.db, t, write);
       }
       this.db.exec("COMMIT");
       return { inserted };
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
       throw err;
     }
   }
 
-  deleteSoulEpisodes(tenant: CoreTenant | undefined, episodeIds: string[]): { deleted: number } {
+  /**
+   * S3：删除改为归档（archived_at）。事件是派生视图，判据收紧时让行退出使用，
+   * 但保留可回溯——「上次因为什么」的账不能物理消失。返回 archived 计数。
+   */
+  deleteSoulEpisodes(tenant: CoreTenant | undefined, episodeIds: string[]): { deleted: number; archived: number } {
     const t = normalizeCoreTenant(tenant);
     const ids = (episodeIds ?? []).filter((id) => typeof id === "string" && id.startsWith("ep-"));
-    if (ids.length === 0) return { deleted: 0 };
-    const stmt = this.db.prepare("DELETE FROM soul_episodes WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?");
-    let deleted = 0;
+    if (ids.length === 0) return { deleted: 0, archived: 0 };
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(
+      "UPDATE soul_episodes SET archived_at = ? WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND archived_at IS NULL",
+    );
+    // P0-C2：归档只写旧表会让 new 读（soul_events.archived_at）看不见归档——同一条事务里同步新表，
+    // 否则切读那天「删掉的事件」会在新读法里复活。新表没有对应行时 changes=0，不报错（过渡期常见）。
+    const eventStmt = this.db.prepare(
+      "UPDATE soul_events SET archived_at = ? WHERE event_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND archived_at IS NULL",
+    );
+    // P1-A：归档父事件时子事件一起退出使用；否则 new 读虽过滤 chat，listSoulEvents 仍会把子事件
+    // 当活事件返回（查询/对账/未来 UI 都会看见已归档父事件的行动残片）。
+    const childEventStmt = this.db.prepare(
+      "UPDATE soul_events SET archived_at = ? WHERE parent_event_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND archived_at IS NULL",
+    );
+    let archived = 0;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      for (const id of ids) deleted += Number(stmt.run(id, t.teamId, t.userId, t.agentId).changes ?? 0);
+      for (const id of ids) {
+        archived += Number(stmt.run(now, id, t.teamId, t.userId, t.agentId).changes ?? 0);
+        eventStmt.run(now, id, t.teamId, t.userId, t.agentId);
+        childEventStmt.run(now, id, t.teamId, t.userId, t.agentId);
+      }
       this.db.exec("COMMIT");
-      return { deleted };
+      return { deleted: 0, archived };
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 把事件标记为「已积进心境」。只在心境落库成功之后调用，失败就停在未标记态，
+   * 下一 tick 会重试（宁可重复积一次，也不丢事件——重复的代价是权重偏一点）。
+   */
+  markSoulEpisodesMoodIntegrated(
+    tenant: CoreTenant | undefined,
+    episodeIds: string[],
+    at: string,
+  ): { updated: number } {
+    const t = normalizeCoreTenant(tenant);
+    const ids = (episodeIds ?? []).filter((id) => typeof id === "string" && id.length > 0);
+    if (ids.length === 0) return { updated: 0 };
+    const stmt = this.db.prepare(
+      "UPDATE soul_episodes SET mood_integrated_at = ? WHERE episode_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND mood_integrated_at IS NULL",
+    );
+    // P0-C2：同一事务同步 chat 子表（事件级标记在旧表，展示字段在新表 chat）。
+    // 旧表没有任何新行时不报错（过渡期：只有旧表的 episode 也要能正常标记）。
+    const chatStmt = this.db.prepare(
+      "UPDATE soul_event_chat SET mood_integrated_at = ? WHERE event_id = ? AND mood_integrated_at IS NULL",
+    );
+    let updated = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const id of ids) {
+        const info = stmt.run(at, id, t.teamId, t.userId, t.agentId);
+        updated += Number(info.changes ?? 0) > 0 ? 1 : 0;
+        chatStmt.run(at, id);
+      }
+      this.db.exec("COMMIT");
+      return { updated };
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
       throw err;
     }
   }
 
   listSoulEpisodes(
     tenant?: CoreTenant,
-    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"] },
+    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"]; includeArchived?: boolean },
   ): SoulEpisode[] {
     const t = normalizeCoreTenant(tenant);
+    // P0-C 切读开关（只影响读，不影响写）：缺省/legacy 原样走旧表读法——这是默认读面与回滚路径，
+    // 逐字节不改；TDB_SOUL_EVENT_READ_MODE=new 才读 soul_events + chat + evidence。
+    if (currentSoulEventReadMode() === "new") {
+      const viaEvents = this.readSoulEpisodesViaEvents(t, opts);
+      // null = 新表拼不回一条完整的 SoulEpisode（缺 chat 行，或缺 participants 展示名——新表没有
+      // participants 列，展示名只能按 event_id 回旧表 join）。这时整次回落 legacy：
+      // 宁可读旧表，也不用空数组/角色名伪造「谁在场」；等 P2 迁移把展示名搬进新表再全切。
+      if (viaEvents !== null) return viaEvents;
+      this.logger?.warn?.(
+        `${TAG} [soul_episodes] 新表映射不完整（缺 chat 行或 participants 展示名），本次回落 legacy 读`,
+      );
+    }
+    return this.listSoulEpisodesLegacy(t, opts);
+  }
+
+  /** 旧表读法：P0-C 之前 listSoulEpisodes 的原样实现，**逐字节保留**（默认读面 + 回滚路径）。 */
+  private listSoulEpisodesLegacy(
+    t: CoreTenant,
+    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"]; includeArchived?: boolean },
+  ): SoulEpisode[] {
     const limit = Math.max(1, Math.min(2000, Math.floor(opts?.limit ?? 200)));
     try {
       const where = ["team_id = ?", "user_id = ?", "agent_id = ?"];
       const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+      // 归档行默认退出使用；只有派生历史（S3）显式要求 includeArchived 时才读。
+      if (!opts?.includeArchived) where.push("archived_at IS NULL");
       if (opts?.since) {
         where.push("at >= ?");
         args.push(opts.since);
@@ -3937,11 +4074,175 @@ private migrateMemoryAuditActionEnum(): void {
     }
   }
 
-  searchSoulEpisodes(tenant: CoreTenant | undefined, query: { text?: string; object?: string; kind?: SoulEpisode["kind"]; since?: string; limit?: number }): SoulEpisode[] {
+  /**
+   * P0-C 新表读法：soul_events + soul_event_chat + soul_event_evidence 拼回 SoulEpisode。
+   *
+   * 拼装策略是「把新表读成旧表的行形态，再交给同一个 mapSoulEpisodeRow」——不写第二套 mapper，
+   * 所以 kind 白名单回落、affectSource 归一、空数组 vs NULL（signals/layers/persons/quote）这些口径
+   * 与 legacy 读逐条一致。这正是 soul-event-dualwrite 里「new 读与 legacy 深等」能成立的原因。
+   *
+   * 两处**过渡态**限制（P0 阶段新表信息不足以自洽，宁可回落也不编）：
+   *  1. participants（谁在场）新表没有列，只能 join 旧表 participants_json；join 不到返回 null。
+   *  2. evidenceIds 的顺序：旧表保留挖掘时的原数组顺序，新表只能按 evidence 行的
+   *     (at, record_id, role) 读回，即同 at 下按 record_id 升序。两者仅当原顺序本就是
+   *     record_id 升序时逐字节一致；顺序差异不影响成员集合（对账比的是集合）。
+   *
+   * 返回 null = 本次读不出完整事件，调用方回落 legacy。
+   */
+  private readSoulEpisodesViaEvents(
+    t: CoreTenant,
+    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"]; includeArchived?: boolean },
+  ): SoulEpisode[] | null {
+    const limit = Math.max(1, Math.min(2000, Math.floor(opts?.limit ?? 200)));
+    const where = ["e.team_id = ?", "e.user_id = ?", "e.agent_id = ?"];
+    const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+    if (!opts?.includeArchived) where.push("e.archived_at IS NULL");
+    if (opts?.since) {
+      where.push("e.at >= ?");
+      args.push(opts.since);
+    }
+    if (opts?.kind) {
+      where.push("c.kind = ?");
+      args.push(opts.kind);
+    }
+    return this.querySoulEpisodesViaEvents(where, args, limit);
+  }
+
+  /**
+   * 新表读法的共用内核：list 与 search 都走这里，只有 WHERE 不同。
+   * 单独抽出来是为了**不出现第二套 mapper**——两套 mapper 迟早口径分叉，
+   * 而「new 读与 legacy 深等」正是靠共用 mapSoulEpisodeRow 才成立的。
+   *
+   * where 里的列名必须带 e./c. 前缀（join 后同名列会歧义）。返回 null = 本次拼不回完整事件。
+   */
+  private querySoulEpisodesViaEvents(
+    where: string[],
+    args: Array<string | number>,
+    limit: number,
+  ): SoulEpisode[] | null {
+    let rows: Array<Record<string, unknown>>;
+    try {
+      rows = this.db
+        .prepare(
+          `SELECT e.event_id AS event_id, e.at AS at, e.day AS day, e.object AS object, e.outcome AS outcome,
+                  e.session_id AS session_id, e.persons_json AS persons_json, e.archived_at AS archived_at,
+                  c.kind AS chat_kind, c.title AS chat_title, c.user_stance AS user_stance,
+                  c.agent_stance AS agent_stance, c.cost AS cost, c.valence AS valence,
+                  c.arousal AS arousal, c.intensity AS intensity, c.affect_source AS affect_source,
+                  c.quote_json AS quote_json, c.signals_json AS signals_json, c.layers_json AS layers_json,
+                  c.mood_integrated_at AS mood_integrated_at, p.participants_json AS participants_json
+             FROM soul_events e
+             LEFT JOIN soul_event_chat c ON c.event_id = e.event_id
+             LEFT JOIN soul_episodes p
+                    ON p.episode_id = e.event_id
+                   AND p.team_id = e.team_id AND p.user_id = e.user_id AND p.agent_id = e.agent_id
+            WHERE e.source_kind = 'chat' AND ${where.join(" AND ")}
+            ORDER BY e.at DESC, e.event_id DESC
+            LIMIT ?`,
+        )
+        .all(...(args as SQLInputValue[]), limit) as unknown as Array<Record<string, unknown>>;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_events] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+    const episodes: SoulEpisode[] = [];
+    for (const row of rows ?? []) {
+      if (row.chat_kind === null || row.chat_kind === undefined) return null;
+      if (row.participants_json === null || row.participants_json === undefined) return null;
+      const eventId = String(row.event_id ?? "");
+      const evidenceIds = listSoulEventEvidence(this.db, eventId).map((e) => String(e.record_id));
+      episodes.push(
+        mapSoulEpisodeRow({
+          episode_id: eventId,
+          at: row.at,
+          day: row.day,
+          kind: row.chat_kind,
+          title: row.chat_title,
+          object: row.object,
+          participants_json: row.participants_json,
+          user_stance: row.user_stance,
+          agent_stance: row.agent_stance,
+          cost: row.cost,
+          outcome: row.outcome,
+          valence: row.valence,
+          arousal: row.arousal,
+          intensity: row.intensity,
+          affect_source: row.affect_source,
+          evidence_json: JSON.stringify(evidenceIds),
+          session_id: row.session_id,
+          quote_json: row.quote_json,
+          signals_json: row.signals_json,
+          layers_json: row.layers_json,
+          persons_json: row.persons_json,
+          archived_at: row.archived_at,
+          mood_integrated_at: row.mood_integrated_at,
+        }),
+      );
+    }
+    return episodes;
+  }
+
+  /**
+   * 新表搜法：过滤口径与 legacy searchSoulEpisodes 一一对应（text 覆盖 7 个字段、object/kind/since、
+   * archived_at IS NULL、ORDER BY at DESC, episode_id DESC、limit），只是把列换成 e./c. 前缀，
+   * 再交给同一个 querySoulEpisodesViaEvents 拼装——所以结果与 legacy 深等。
+   */
+  private searchSoulEpisodesViaEvents(
+    t: CoreTenant,
+    query: { text?: string; object?: string; kind?: SoulEpisode["kind"]; since?: string; limit?: number },
+    limit: number,
+  ): SoulEpisode[] | null {
+    const where = ["e.team_id = ?", "e.user_id = ?", "e.agent_id = ?", "e.archived_at IS NULL"];
+    const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+    if (query?.object) {
+      where.push("e.object LIKE ?");
+      args.push(`%${query.object}%`);
+    }
+    if (query?.kind) {
+      where.push("c.kind = ?");
+      args.push(query.kind);
+    }
+    if (query?.since) {
+      where.push("e.at >= ?");
+      args.push(query.since);
+    }
+    const text = (query?.text ?? "").trim();
+    if (text !== "") {
+      const like = `%${text}%`;
+      where.push(
+        "(c.title LIKE ? OR e.object LIKE ? OR c.user_stance LIKE ? OR c.agent_stance LIKE ? OR c.cost LIKE ? OR e.outcome LIKE ? OR c.quote_json LIKE ?)",
+      );
+      args.push(like, like, like, like, like, like, like);
+    }
+    return this.querySoulEpisodesViaEvents(where, args, limit);
+  }
+
+  searchSoulEpisodes(
+    tenant: CoreTenant | undefined,
+    query: { text?: string; object?: string; kind?: SoulEpisode["kind"]; since?: string; limit?: number },
+  ): SoulEpisode[] {
     const t = normalizeCoreTenant(tenant);
     const limit = Math.max(1, Math.min(200, Math.floor(query?.limit ?? 20)));
+    // P0-C2：切读开关同样管 search——否则 new 模式下「列表读新表、搜索读旧表」，
+    // 两条读面口径分叉，切读等于没切。
+    if (currentSoulEventReadMode() === "new") {
+      const viaEvents = this.searchSoulEpisodesViaEvents(t, query, limit);
+      if (viaEvents !== null) return viaEvents;
+      this.logger?.warn?.(
+        `${TAG} [soul_episodes] 搜索的新表映射不完整（缺 chat 行或 participants 展示名），本次回落 legacy 搜`,
+      );
+    }
+    return this.searchSoulEpisodesLegacy(t, query, limit);
+  }
+
+  /** 旧表搜法：P0-C2 之前 searchSoulEpisodes 的原样实现，口径逐字节保留（默认读面 + 回滚路径）。 */
+  private searchSoulEpisodesLegacy(
+    t: CoreTenant,
+    query: { text?: string; object?: string; kind?: SoulEpisode["kind"]; since?: string; limit?: number },
+    limit: number,
+  ): SoulEpisode[] {
     try {
-      const where = ["team_id = ?", "user_id = ?", "agent_id = ?"];
+      const where = ["team_id = ?", "user_id = ?", "agent_id = ?", "archived_at IS NULL"];
       const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
       if (query?.object) {
         where.push("object LIKE ?");
@@ -3958,7 +4259,9 @@ private migrateMemoryAuditActionEnum(): void {
       const text = (query?.text ?? "").trim();
       if (text !== "") {
         const like = `%${text}%`;
-        where.push("(title LIKE ? OR object LIKE ? OR user_stance LIKE ? OR agent_stance LIKE ? OR cost LIKE ? OR outcome LIKE ? OR quote_json LIKE ?)");
+        where.push(
+          "(title LIKE ? OR object LIKE ? OR user_stance LIKE ? OR agent_stance LIKE ? OR cost LIKE ? OR outcome LIKE ? OR quote_json LIKE ?)",
+        );
         args.push(like, like, like, like, like, like, like);
       }
       args.push(limit);
@@ -3972,6 +4275,248 @@ private migrateMemoryAuditActionEnum(): void {
     }
   }
 
+  /* —— 事件底座（soul_events，P0-C 2026-11-10）——
+   * 读写都直接转调 P0-B 的纯 store（同一 db 句柄、同一套列清单与校验）。
+   * 这里只做两件事：补上 MemoryCore 的租户归一化（CoreTenant|undefined），以及
+   * 「读失败给空、写失败抛错」的容错口径（与旧表方法一致）。 */
+  listSoulEvents(tenant?: CoreTenant, filter?: SoulEventListFilter): SoulEventRow[] {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      return listSoulEventRows(this.db, t, filter);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_events] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /** 一批事件一个事务：全落或全不落（P1 直接用；refresh 语义走 upsert，不撞主键）。 */
+  commitSoulEvents(tenant: CoreTenant | undefined, writes: SoulEventWrite[]): { upserted: number } {
+    const t = normalizeCoreTenant(tenant);
+    if (!writes || writes.length === 0) return { upserted: 0 };
+    let upserted = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const write of writes) {
+        upsertSoulEventInTransaction(this.db, t, write);
+        upserted += 1;
+      }
+      this.db.exec("COMMIT");
+      return { upserted };
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
+      throw err;
+    }
+  }
+
+  /** 一条事件的完整投影（基表 + 三张子表 + 证据）；读失败返回 null，与其它读面「读空不抛」一致。 */
+  getSoulEventDetail(tenant: CoreTenant | undefined, eventId: string): SoulEventDetail | null {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      return getSoulEventDetailRow(this.db, t, eventId);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_events] detail failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * P1-A：行动切分只认 assistant 原话。episode.quote 在生产里是 user 那一侧（契機句），
+   * 所以从 evidenceIds 回查 L0，按租户过滤，只把 role=assistant 的行交给切分器。
+   *
+   * 这一层不猜 record_id：查不到 assistant 行就返回空，宁可不产行动事件，也不拿用户原话
+   * 冒充「我说过/我做过」的证据。
+   */
+  private soulActionSourceMessages(t: CoreTenant, e: SoulEpisode): SoulActionSourceMessage[] {
+    const ids = Array.from(
+      new Set((e.evidenceIds ?? []).map((id) => String(id ?? "").trim()).filter((id) => id !== "")),
+    );
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(", ");
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT record_id, message_text, recorded_at FROM l0_conversations
+            WHERE record_id IN (${placeholders}) AND team_id = ? AND user_id = ? AND agent_id = ? AND role = 'assistant'`,
+        )
+        .all(...(ids as SQLInputValue[]), t.teamId, t.userId, t.agentId) as Array<{
+        record_id?: string;
+        message_text?: string;
+        recorded_at?: string;
+      }>;
+      return rows
+        .map((row) => ({
+          recordId: String(row.record_id ?? "").trim(),
+          text: String(row.message_text ?? "").trim(),
+          at: String(row.recorded_at ?? "").trim() || e.at,
+          role: "assistant",
+        }))
+        .filter((row) => row.recordId !== "" && row.text !== "");
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_events] 取 assistant 原话失败，本次不切行动子事件: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * 双写对账（spec §5.3）：只读，不修旧行——对不上就报出来，改数据是人的决定。
+   *
+   * 比的是「同一件事在两个表里是否还是同一件事」：event_id 对得上、chat 行在、
+   * 基础字段（at/day/kind/title/object/outcome/session_id/persons/archived）逐个相等、
+   * 每条事件至少一条证据。digests 是两侧按 event_id 排序后的整体摘要，0 差异时必然相等。
+   *
+   * P1-A 起 soul_events 里还有行动子事件（source_kind=tool/test/commit/rollback），它们没有
+   * 旧表对应行。逐字段对账和 missing_episode 只看 source_kind='chat'；counts.events 仍是
+   * 全表总数（含子事件），所以 events > episodes 是正常形态，不是差异。
+   */
+  soulEventParity(tenant?: CoreTenant): SoulEventParityReport {
+    const t = normalizeCoreTenant(tenant);
+    const tenantArgs: SQLInputValue[] = [t.teamId, t.userId, t.agentId];
+    const count = (sql: string): number => {
+      const row = this.db.prepare(sql).get(...tenantArgs) as { n?: number | bigint } | undefined;
+      return Number(row?.n ?? 0);
+    };
+    const legacyRows = this.db
+      .prepare(
+        `SELECT episode_id AS eventId, at, day, kind, title, object, outcome, session_id AS sessionId,
+                persons_json AS personsJson, archived_at AS archivedAt
+           FROM soul_episodes WHERE team_id = ? AND user_id = ? AND agent_id = ?`,
+      )
+      .all(...tenantArgs) as Array<Record<string, unknown>>;
+    const eventRows = this.db
+      .prepare(
+        `SELECT e.event_id AS eventId, e.at, e.day, e.object, e.outcome, e.session_id AS sessionId,
+                e.persons_json AS personsJson, e.archived_at AS archivedAt,
+                c.kind AS chatKind, c.title AS chatTitle
+           FROM soul_events e
+           LEFT JOIN soul_event_chat c ON c.event_id = e.event_id
+          WHERE e.team_id = ? AND e.user_id = ? AND e.agent_id = ? AND e.source_kind = 'chat'`,
+      )
+      .all(...tenantArgs) as Array<Record<string, unknown>>;
+    // 「零证据」不等于「缺证据」：§4.2 允许无 evidenceIds 的事件写 inferred + evidence=[]。
+    // 只有当旧表 evidence_json 有内容、新表一条证据都没有时才是不一致；两侧都空视为一致，
+    // 否则合法的无证据事件会永远对账失败（ok 永远 false）。
+    const missingEvidenceIds = (
+      this.db
+        .prepare(
+          `SELECT e.event_id AS eventId FROM soul_events e
+             JOIN soul_episodes p
+               ON p.episode_id = e.event_id
+              AND p.team_id = e.team_id AND p.user_id = e.user_id AND p.agent_id = e.agent_id
+             LEFT JOIN soul_event_evidence v ON v.event_id = e.event_id
+            WHERE e.team_id = ? AND e.user_id = ? AND e.agent_id = ? AND e.source_kind = 'chat'
+              AND p.evidence_json IS NOT NULL
+              AND TRIM(p.evidence_json) NOT IN ('', '[]')
+            GROUP BY e.event_id HAVING COUNT(v.record_id) = 0`,
+        )
+        .all(...tenantArgs) as Array<{ eventId?: string }>
+    ).map((row) => String(row.eventId ?? ""));
+
+    // 空集合 = 「这个维度当时没有」：旧表写 NULL，新表可能写 NULL 也可能写 '[]'，比较时统一成 null。
+    const norm = (v: unknown): string | null => {
+      if (v === null || v === undefined) return null;
+      const s = String(v);
+      return s === "" || s === "[]" ? null : s;
+    };
+    const FIELDS = [
+      "at",
+      "day",
+      "kind",
+      "title",
+      "object",
+      "outcome",
+      "sessionId",
+      "personsJson",
+      "archivedAt",
+    ] as const;
+    const legacyById = new Map<string, Record<string, unknown>>();
+    for (const row of legacyRows) legacyById.set(String(row.eventId ?? ""), row);
+    const eventById = new Map<string, Record<string, unknown>>();
+    for (const row of eventRows) eventById.set(String(row.eventId ?? ""), row);
+    // 新表一侧的字段名不同（kind/title 在 chat 行上）：映射成与旧表同名的比较视图。
+    const eventView = (row: Record<string, unknown>): Record<string, unknown> => ({
+      at: row.at,
+      day: row.day,
+      kind: row.chatKind,
+      title: row.chatTitle,
+      object: row.object,
+      outcome: row.outcome,
+      sessionId: row.sessionId,
+      personsJson: row.personsJson,
+      archivedAt: row.archivedAt,
+    });
+    // 摘要按 event_id 排序后逐条折叠：id + 每个字段的归一化值，用 \u0001 分隔（避免 concat 碰撞）。
+    const digestOf = (
+      byId: Map<string, Record<string, unknown>>,
+      ids: string[],
+      view: (row: Record<string, unknown>) => Record<string, unknown>,
+    ): string => {
+      const hash = createHash("sha1");
+      for (const id of ids) {
+        hash.update(id).update("\u0001");
+        const row = byId.get(id) ?? {};
+        const fields = view(row);
+        for (const f of FIELDS) hash.update(String(norm(fields[f]) ?? "")).update("\u0001");
+      }
+      return hash.digest("hex");
+    };
+
+    const diffs: SoulEventParityDiff[] = [];
+    for (const [eventId, legacy] of legacyById) {
+      const event = eventById.get(eventId);
+      if (!event) {
+        diffs.push({ eventId, kind: "missing_event", legacy: null, event: null });
+        continue;
+      }
+      if (event.chatKind === null || event.chatKind === undefined) {
+        diffs.push({ eventId, kind: "missing_chat", legacy: null, event: null });
+      }
+      const view = eventView(event);
+      for (const f of FIELDS) {
+        const left = norm(legacy[f]);
+        const right = norm(view[f]);
+        if (left !== right) diffs.push({ eventId, kind: "field_mismatch", field: f, legacy: left, event: right });
+      }
+    }
+    for (const eventId of eventById.keys()) {
+      if (!legacyById.has(eventId)) diffs.push({ eventId, kind: "missing_episode", legacy: null, event: null });
+    }
+    for (const eventId of missingEvidenceIds) {
+      diffs.push({ eventId, kind: "missing_evidence", legacy: null, event: null });
+    }
+
+    const legacyIds = [...legacyById.keys()].sort();
+    const eventIds = [...eventById.keys()].sort();
+    const counts = {
+      episodes: legacyRows.length,
+      events: count("SELECT COUNT(*) AS n FROM soul_events WHERE team_id = ? AND user_id = ? AND agent_id = ?"),
+      chat: count(
+        `SELECT COUNT(*) AS n FROM soul_event_chat c JOIN soul_events e ON e.event_id = c.event_id
+          WHERE e.team_id = ? AND e.user_id = ? AND e.agent_id = ?`,
+      ),
+      evidence: count(
+        `SELECT COUNT(*) AS n FROM soul_event_evidence v JOIN soul_events e ON e.event_id = v.event_id
+          WHERE e.team_id = ? AND e.user_id = ? AND e.agent_id = ?`,
+      ),
+      missingEvidence: missingEvidenceIds.length,
+    };
+    return {
+      ok: diffs.length === 0,
+      tenant: { teamId: t.teamId, userId: t.userId, agentId: t.agentId },
+      counts,
+      digests: {
+        legacy: digestOf(legacyById, legacyIds, (row) => row),
+        event: digestOf(eventById, eventIds, eventView),
+      },
+      diffs,
+    };
+  }
+
   /* —— 情绪史（soul_emotions，2026-11-06）——
    * soul_state 每次写入都覆盖「此刻」，情绪本体因此无法回放。这里按「事件 × 模板版本」
    * 逐行留档：同一事件换判据重判会多一行（不覆盖旧行），审计能看出当时按哪版规则判的。
@@ -3981,17 +4526,32 @@ private migrateMemoryAuditActionEnum(): void {
     if (!rows || rows.length === 0) return { inserted: 0 };
     const stmt = this.db.prepare(`INSERT OR IGNORE INTO soul_emotions (
       episode_id, team_id, user_id, agent_id, at, object, label, valence, arousal,
-      dominance, intensity, appraisal_json, template_version, appraised_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      dominance, intensity, appraisal_json, template_version, appraised_at,
+      agency, confidence, object_person
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     let inserted = 0;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const r of rows) {
         const info = stmt.run(
-          r.episodeId, t.teamId, t.userId, t.agentId, r.at, r.object ?? "", r.label,
-          r.valence ?? 0, r.arousal ?? 0, typeof r.dominance === "number" ? r.dominance : null,
-          r.intensity ?? 0, r.appraisal === undefined ? null : JSON.stringify(r.appraisal),
-          r.templateVersion, r.appraisedAt,
+          r.episodeId,
+          t.teamId,
+          t.userId,
+          t.agentId,
+          r.at,
+          r.object ?? "",
+          r.label,
+          r.valence ?? 0,
+          r.arousal ?? 0,
+          typeof r.dominance === "number" ? r.dominance : null,
+          r.intensity ?? 0,
+          r.appraisal === undefined ? null : JSON.stringify(r.appraisal),
+          r.templateVersion,
+          r.appraisedAt,
+          // §5 P3-A：三列缺省 null——「没算过」不该写成 "environment"/0。
+          r.agency === "self" || r.agency === "other" || r.agency === "environment" ? r.agency : null,
+          typeof r.confidence === "number" && Number.isFinite(r.confidence) ? r.confidence : null,
+          typeof r.objectPerson === "string" && r.objectPerson !== "" ? r.objectPerson : null,
         );
         // 只数真正新写入的行：同一事件同版本重跑是幂等的，不能虚增「记了多少条情绪」。
         inserted += Number(info.changes ?? 0) > 0 ? 1 : 0;
@@ -3999,7 +4559,11 @@ private migrateMemoryAuditActionEnum(): void {
       this.db.exec("COMMIT");
       return { inserted };
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* 已在回滚态 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
       throw err;
     }
   }
@@ -4025,7 +4589,9 @@ private migrateMemoryAuditActionEnum(): void {
       const rows = this.db
         // 同一事件换判据重判会多一行（按 template_version 留档）。读侧先看最新一次判定，
         // 否则旧模板的行会和当前判据的行混排，注入可能引用已被替换的旧标签。
-        .prepare(`SELECT * FROM soul_emotions WHERE ${where.join(" AND ")} ORDER BY appraised_at DESC, at DESC, episode_id DESC LIMIT ?`)
+        .prepare(
+          `SELECT * FROM soul_emotions WHERE ${where.join(" AND ")} ORDER BY appraised_at DESC, at DESC, episode_id DESC LIMIT ?`,
+        )
         .all(...(args as SQLInputValue[])) as unknown as Array<Record<string, unknown>>;
       return (rows ?? []).map(mapSoulEmotionRow);
     } catch (err) {
@@ -4034,36 +4600,633 @@ private migrateMemoryAuditActionEnum(): void {
     }
   }
 
-  soulRejectionStats(tenant?: CoreTenant, opts?: { sinceDays?: number }): SoulRejectionStat[] {
+  /* —— 人物身份层（soul_person，2026-11-08 阶段 1）——
+   * person_key 是「谁」的唯一事实源；判定（平台 id → 归一化名唯一 → 新建）在
+   * src/core/person/resolve.ts，这里只做落库。方法本身吞掉错误返回既有效值：
+   * 挂人失败不许让 L1 写入中断（宁可这一条记忆不挂人，也不能丢记忆）。 */
+
+  /**
+   * 建/更新一个人。
+   *
+   * 语义：**主键优先**。同一 person_key 再来一次只刷新展示面（platform/display_name/
+   * aliases），created_at 与 merged_into 不动——合并是显式操作（mergeSoulPerson），
+   * 不能被一次 upsert 静默撤销。
+   *
+   * aliases 是并集，不是覆盖：调用方每次只带这次看到的称呼，覆盖会把旧昵称丢掉。
+   *
+   * 若插入撞上 partial 唯一索引（同平台 id 已有另一行：并发或改名后重解析），
+   * 返回值挂到既有行上（personKey !== 入参 key），由调用方按返回值落 persons。
+   */
+  upsertSoulPerson(tenant: CoreTenant | undefined, person: SoulPersonUpsert): { personKey: string; created: boolean } {
     const t = normalizeCoreTenant(tenant);
-    const days = Math.max(1, Math.min(365, Math.floor(opts?.sinceDays ?? 30)));
-    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const key = typeof person?.personKey === "string" ? person.personKey.trim() : "";
+    if (key === "") return { personKey: "", created: false };
+    const now = new Date().toISOString();
+    const platform = (person.platform ?? "").trim();
+    const platformId =
+      typeof person.platformId === "string" && person.platformId.trim() !== "" ? person.platformId.trim() : null;
+    const displayName = (person.displayName ?? "").trim();
+    const aliases = Array.isArray(person.aliases)
+      ? person.aliases.filter((a): a is string => typeof a === "string" && a.trim() !== "").map((a) => a.trim())
+      : [];
+    try {
+      const existing = this.db
+        .prepare("SELECT person_key, aliases_json FROM soul_person WHERE person_key = ? AND merged_into IS NULL")
+        .get(key) as unknown as { person_key?: string; aliases_json?: string } | undefined;
+      if (existing) {
+        const nextAliases = mergeAliases(jsonArray<string>(existing.aliases_json), aliases);
+        this.db
+          .prepare(
+            "UPDATE soul_person SET platform = ?, platform_id = ?, display_name = ?, aliases_json = ?, updated_at = ? WHERE person_key = ? AND merged_into IS NULL",
+          )
+          .run(platform, platformId, displayName, JSON.stringify(nextAliases), now, key);
+        return { personKey: key, created: false };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO soul_person
+            (person_key, team_id, user_id, agent_id, platform, platform_id, display_name, aliases_json, merged_into, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        )
+        .run(key, t.teamId, t.userId, t.agentId, platform, platformId, displayName, JSON.stringify(aliases), now, now);
+      return { personKey: key, created: true };
+    } catch (err) {
+      // 撞 partial 唯一索引 = 同一平台身份已有未合并的行：挂过去而不是造第二个人。
+      if (platformId !== null) {
+        const owner = this.db
+          .prepare(
+            `SELECT person_key, aliases_json FROM soul_person
+             WHERE team_id = ? AND user_id = ? AND agent_id = ? AND platform = ? AND platform_id = ?
+               AND merged_into IS NULL LIMIT 1`,
+          )
+          .get(t.teamId, t.userId, t.agentId, platform, platformId) as unknown as
+          { person_key?: string; aliases_json?: string } | undefined;
+        if (owner && typeof owner.person_key === "string") {
+          const nextAliases = mergeAliases(jsonArray<string>(owner.aliases_json), aliases);
+          try {
+            this.db
+              .prepare(
+                "UPDATE soul_person SET display_name = ?, aliases_json = ?, updated_at = ? WHERE person_key = ? AND merged_into IS NULL",
+              )
+              .run(displayName, JSON.stringify(nextAliases), now, owner.person_key);
+          } catch {
+            /* 展示面刷新失败不影响归属结论 */
+          }
+          return { personKey: owner.person_key, created: false };
+        }
+      }
+      this.logger?.warn?.(
+        `${TAG} [soul_person] upsert failed key=${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { personKey: key, created: false };
+    }
+  }
+
+  /** 平台 id 精确查（partial 唯一索引的读面）。platform 参与键，空串按其精确值匹配。 */
+  getSoulPersonByPlatform(
+    tenant: CoreTenant | undefined,
+    hint: { platform: string; platformId: string },
+  ): SoulPerson | null {
+    const t = normalizeCoreTenant(tenant);
+    const platform = (hint?.platform ?? "").trim();
+    const platformId = (hint?.platformId ?? "").trim();
+    if (platformId === "") return null;
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT * FROM soul_person
+           WHERE team_id = ? AND user_id = ? AND agent_id = ? AND platform = ? AND platform_id = ?
+             AND merged_into IS NULL LIMIT 1`,
+        )
+        .get(t.teamId, t.userId, t.agentId, platform, platformId) as unknown as Record<string, unknown> | undefined;
+      return row ? mapSoulPersonRow(row) : null;
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person] getByPlatform failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** 租户内所有未合并的人（按展示名排序）。按名解析的唯一命中判定用它。 */
+  listSoulPersons(tenant?: CoreTenant): SoulPerson[] {
+    const t = normalizeCoreTenant(tenant);
     try {
       const rows = this.db
         .prepare(
-          "SELECT gates_json, at FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? AND action = 'reject' AND at >= ? ORDER BY at DESC LIMIT 5000",
+          "SELECT * FROM soul_person WHERE team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL ORDER BY display_name ASC, person_key ASC",
         )
-        .all(t.teamId, t.userId, t.agentId, since) as unknown as Array<{ gates_json: string | null; at: string }>;
-      const by = new Map<string, SoulRejectionStat>();
-      for (const row of rows ?? []) {
-        let codes: string[] = [];
-        try {
-          const parsed = JSON.parse(row.gates_json ?? "[]");
-          if (Array.isArray(parsed)) codes = parsed.filter((x): x is string => typeof x === "string");
-        } catch {
-          codes = [];
-        }
-        if (codes.length === 0) codes = ["unknown"];
-        for (const code of codes) {
-          const cur = by.get(code);
-          if (cur) cur.count += 1;
-          else by.set(code, { code, count: 1, lastAt: row.at });
-        }
-      }
-      return [...by.values()].sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
+        .all(t.teamId, t.userId, t.agentId) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulPersonRow);
     } catch (err) {
-      this.logger?.warn?.(`${TAG} [soul_ledger] rejection stats failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn?.(`${TAG} [soul_person] list failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
+    }
+  }
+
+  /**
+   * P2-H（A1）：这个人最近被提到/说话的 N 条 L1。
+   *
+   * 过滤在 SQL 里做（`json_each` 展开 `metadata_json.persons`，按 `$.key` 命中），
+   * 不允许把全库行拉进内存再 filter——库里是百万级 L1，那样会把每个 tick 的延迟
+   * 从毫秒级推到秒级，而且租户过滤之外再叠一层内存过滤容易漏掉隔离条件。
+   *
+   * 只回 `role ∈ {subject, speaker}`：`mentioned`（别人提到他）不进档案输入（§1.2），
+   * 在这里就滤掉，免得调用侧再滤一遍、两边判据漂移。
+   */
+  listL1ByPerson(
+    tenant: CoreTenant | undefined,
+    personKey: string,
+    limit: number,
+  ): Array<{
+    recordId: string;
+    at: string;
+    content: string;
+    userId?: string;
+    roleInRecord?: "subject" | "speaker" | "mentioned";
+    /** 这条记忆是从哪几条 L0 原话抽出来的（供提炼器取原话做逐字引文校验）。 */
+    sourceMessageIds?: string[];
+  }> {
+    const t = normalizeCoreTenant(tenant);
+    const key = typeof personKey === "string" ? personKey.trim() : "";
+    const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+    if (key === "" || max <= 0) return [];
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT r.record_id AS record_id,
+                  COALESCE(NULLIF(r.created_time, ''), r.updated_time, '') AS at,
+                  r.content AS content,
+                  r.user_id AS user_id,
+                  r.source_message_ids AS source_message_ids,
+                  json_extract(je.value, '$.role') AS role
+             FROM l1_records r, json_each(json_extract(r.metadata_json, '$.persons')) je
+            WHERE r.team_id = ? AND r.user_id = ? AND r.agent_id = ?
+              AND json_extract(je.value, '$.key') = ?
+              AND COALESCE(json_extract(je.value, '$.role'), '') IN ('subject', 'speaker')
+            ORDER BY at DESC
+            LIMIT ?`,
+        )
+        .all(t.teamId, t.userId, t.agentId, key, max) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map((row) => {
+        const role = String(row.role ?? "");
+        const idsRaw = row.source_message_ids;
+        const ids: string[] = [];
+        if (typeof idsRaw === "string" && idsRaw.trim() !== "") {
+          try {
+            const parsed: unknown = JSON.parse(idsRaw);
+            if (Array.isArray(parsed)) {
+              for (const v of parsed) {
+                const s = typeof v === "string" ? v.trim() : "";
+                if (s !== "") ids.push(s);
+              }
+            }
+          } catch {
+            // 老数据可能是逗号分隔；按逗号再试一次，解析不了就当作没有原话。
+            for (const v of idsRaw.split(",")) {
+              const s = v.trim();
+              if (s !== "") ids.push(s);
+            }
+          }
+        }
+        return {
+          recordId: String(row.record_id ?? ""),
+          at: String(row.at ?? ""),
+          content: String(row.content ?? ""),
+          userId: typeof row.user_id === "string" ? row.user_id : undefined,
+          ...(ids.length > 0 ? { sourceMessageIds: ids } : {}),
+          roleInRecord:
+            role === "subject" || role === "speaker" || role === "mentioned"
+              ? (role as "subject" | "speaker" | "mentioned")
+              : undefined,
+        };
+      });
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person] listL1ByPerson failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * P2-H（A1）：租户内「够格提炼」的人 + 各自记忆数/最新时间。
+   *
+   * 聚合在 SQL 里做（`GROUP BY ... HAVING COUNT(*) >= 3`）：候选筛选不该把全库
+   * `persons` 展开到 JS 再数，那样每个 tick 都要序列化几十万行 JSON。
+   */
+  listPersonProfileStats(tenant: CoreTenant | undefined): Array<{
+    personKey: string;
+    memories: number;
+    lastAt: string;
+  }> {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT json_extract(je.value, '$.key') AS person_key,
+                  COUNT(*) AS memories,
+                  MAX(COALESCE(NULLIF(r.created_time, ''), r.updated_time, '')) AS last_at
+             FROM l1_records r, json_each(json_extract(r.metadata_json, '$.persons')) je
+            WHERE r.team_id = ? AND r.user_id = ? AND r.agent_id = ?
+              AND json_extract(je.value, '$.key') IS NOT NULL
+              AND COALESCE(json_extract(je.value, '$.role'), '') IN ('subject', 'speaker')
+            GROUP BY json_extract(je.value, '$.key')
+           HAVING COUNT(*) >= 3
+            ORDER BY last_at ASC, person_key ASC`,
+        )
+        .all(t.teamId, t.userId, t.agentId) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map((row) => ({
+        personKey: String(row.person_key ?? ""),
+        memories: Number(row.memories ?? 0),
+        lastAt: String(row.last_at ?? ""),
+      }));
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person] listPersonProfileStats failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /** P2-H（A8）：提炼水位（`profile_at` 为 NULL = 从未跑过）。只读两列，不拉整行。 */
+  listSoulPersonProfileWatermarks(tenant?: CoreTenant): Array<{ personKey: string; profileAt: string | null }> {
+    const t = normalizeCoreTenant(tenant);
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT person_key, profile_at FROM soul_person WHERE team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
+        )
+        .all(t.teamId, t.userId, t.agentId) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map((row) => ({
+        personKey: String(row.person_key ?? ""),
+        profileAt: typeof row.profile_at === "string" && row.profile_at !== "" ? row.profile_at : null,
+      }));
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person] listProfileWatermarks failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * P2-H（A8）：写提炼水位。
+   *
+   * 只有提炼**成功**才调（模型报错/解析失败不写 → 下一 tick 重试）。返回值给调用侧
+   * 区分「写了」与「人不存在/已合并」，不要让水位静默丢失。
+   */
+  markSoulPersonProfileAt(tenant: CoreTenant | undefined, personKey: string, at: string): { updated: boolean } {
+    const t = normalizeCoreTenant(tenant);
+    const key = typeof personKey === "string" ? personKey.trim() : "";
+    if (key === "" || typeof at !== "string" || at === "") return { updated: false };
+    try {
+      const info = this.db
+        .prepare(
+          "UPDATE soul_person SET profile_at = ?, updated_at = ? WHERE person_key = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
+        )
+        .run(at, at, key, t.teamId, t.userId, t.agentId);
+      return { updated: Number(info.changes ?? 0) > 0 };
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person] markProfileAt failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { updated: false };
+    }
+  }
+
+  /**
+   * P2-H（A6）：关系边两向可查。
+   *
+   * `subjKey` 与 `objKey` 可同时给（只留两个条件都成立的行）或分别给（出边/入边）。
+   * 缺省只回现行边（`valid_to IS NULL`）；`includeClosed` 给运维/审计看「曾经」。
+   */
+  listSoulPersonRelations(
+    tenant?: CoreTenant,
+    opts?: { subjKey?: string; objKey?: string; includeClosed?: boolean },
+  ): SoulPersonRelationRow[] {
+    const t = normalizeCoreTenant(tenant);
+    const conds = ["team_id = ?", "user_id = ?", "agent_id = ?"];
+    const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+    const subj = typeof opts?.subjKey === "string" ? opts.subjKey.trim() : "";
+    const obj = typeof opts?.objKey === "string" ? opts.objKey.trim() : "";
+    if (subj !== "") {
+      conds.push("subj_key = ?");
+      args.push(subj);
+    }
+    if (obj !== "") {
+      conds.push("obj_key = ?");
+      args.push(obj);
+    }
+    if (!opts?.includeClosed) conds.push("valid_to IS NULL");
+    try {
+      const rows = this.db
+        .prepare(`SELECT * FROM soul_person_relation WHERE ${conds.join(" AND ")} ORDER BY valid_from DESC, rel_id ASC`)
+        .all(...args) as unknown as Array<Record<string, unknown>>;
+      return (rows ?? []).map(mapSoulPersonRelationRow);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person_relation] list failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * P2-H（A4/A5）：一次事务内写关系边——新增 / 追加证据 / 失效。
+   *
+   * 三条语义都在 store 里收口，而不是调用方分别调三个方法：
+   *   - 新增：`INSERT OR IGNORE`（rel_id 带 valid_from，同一 tick 重放幂等）；
+   *   - 合并证据：反向边已存在时不插新行，把 `{recordId,at,quote}` 并进既有边；
+   *   - 失效：`op=outdated` 给旧边写 `valid_to`（行不删，图上看得到「曾经」）。
+   */
+  commitSoulPersonRelations(
+    tenant: CoreTenant | undefined,
+    plan: {
+      insert?: SoulPersonRelationRow[];
+      appendEvidence?: Array<{ relId: string; items: Array<{ recordId: string; at: string; quote: string }> }>;
+      close?: Array<{ relId: string; at: string }>;
+    },
+  ): { inserted: number; merged: number; closed: number } {
+    const t = normalizeCoreTenant(tenant);
+    const insert = plan?.insert ?? [];
+    const append = plan?.appendEvidence ?? [];
+    const close = plan?.close ?? [];
+    if (insert.length === 0 && append.length === 0 && close.length === 0) {
+      return { inserted: 0, merged: 0, closed: 0 };
+    }
+    const stmtInsert = this.db.prepare(`INSERT OR IGNORE INTO soul_person_relation (
+      rel_id, team_id, user_id, agent_id, subj_key, pred, inverse_pred, obj_key, obj_name, direction,
+      quote, record_id, valid_from, valid_to, created_at, updated_at, evidence_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    let inserted = 0;
+    let merged = 0;
+    let closed = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of insert) {
+        const evidence =
+          row.evidence && row.evidence.length > 0
+            ? row.evidence
+            : [{ recordId: row.recordId, at: row.validFrom, quote: row.quote }];
+        // 时间戳缺省补当前时间：少一个字段不该让整批 insert 因 NOT NULL 回滚（静默丢边）。
+        const at = new Date().toISOString();
+        const info = stmtInsert.run(
+          row.relId,
+          t.teamId,
+          t.userId,
+          t.agentId,
+          row.subjKey,
+          row.pred,
+          row.inversePred ?? null,
+          row.objKey ?? null,
+          row.objName ?? null,
+          row.direction ?? "out",
+          row.quote,
+          row.recordId,
+          row.validFrom,
+          row.validTo ?? null,
+          row.createdAt ?? at,
+          row.updatedAt ?? at,
+          JSON.stringify(evidence),
+        );
+        if (Number(info.changes ?? 0) > 0) inserted += 1;
+      }
+      for (const patch of append) {
+        if (patch.items.length === 0) continue;
+        const current = this.db
+          .prepare(
+            "SELECT evidence_json FROM soul_person_relation WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+          )
+          .get(patch.relId, t.teamId, t.userId, t.agentId) as { evidence_json?: string } | undefined;
+        if (!current) continue;
+        const existing = jsonArray<{ recordId: string; at: string; quote: string }>(current.evidence_json);
+        // 同一 recordId+quote 不重复入账：重放同一 tick 不该让证据数虚增。
+        const seen = new Set(existing.map((e) => `${e.recordId}|${e.quote}`));
+        const next = [...existing];
+        for (const item of patch.items) {
+          const k = `${item.recordId}|${item.quote}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          next.push(item);
+        }
+        if (next.length === existing.length) continue;
+        const info = this.db
+          .prepare(
+            "UPDATE soul_person_relation SET evidence_json = ?, updated_at = ? WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+          )
+          .run(JSON.stringify(next), new Date().toISOString(), patch.relId, t.teamId, t.userId, t.agentId);
+        if (Number(info.changes ?? 0) > 0) merged += 1;
+      }
+      for (const patch of close) {
+        const info = this.db
+          .prepare(
+            "UPDATE soul_person_relation SET valid_to = ?, updated_at = ? WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND valid_to IS NULL",
+          )
+          .run(patch.at, patch.at, patch.relId, t.teamId, t.userId, t.agentId);
+        if (Number(info.changes ?? 0) > 0) closed += 1;
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* COMMIT 失败时引擎可能已自动回滚，ROLLBACK 自兜底 */
+      }
+      this.logger?.warn?.(
+        `${TAG} [soul_person_relation] commit failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { inserted: 0, merged: 0, closed: 0 };
+    }
+    return { inserted, merged, closed };
+  }
+
+  /**
+   * 合并（from → into）：只写指针，不搬任何数据，可原地撤销（把 merged_into 置 NULL）。
+   * 拒绝自合并、目标已被合并、以及会形成环的合并（沿 into 的指针最多走 32 跳）。
+   */
+  mergeSoulPerson(
+    tenant: CoreTenant | undefined,
+    fromKey: string,
+    intoKey: string,
+  ): { merged: boolean; reason?: string } {
+    const t = normalizeCoreTenant(tenant);
+    const from = typeof fromKey === "string" ? fromKey.trim() : "";
+    const into = typeof intoKey === "string" ? intoKey.trim() : "";
+    if (from === "" || into === "") return { merged: false, reason: "empty_key" };
+    if (from === into) return { merged: false, reason: "same_key" };
+    const lookup = (key: string): { merged_into?: string | null } | undefined =>
+      this.db
+        .prepare(
+          "SELECT merged_into FROM soul_person WHERE person_key = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+        )
+        .get(key, t.teamId, t.userId, t.agentId) as unknown as { merged_into?: string | null } | undefined;
+    try {
+      const fromRow = lookup(from);
+      if (!fromRow) return { merged: false, reason: "from_not_found" };
+      if (fromRow.merged_into) return { merged: false, reason: "from_already_merged" };
+      const intoRow = lookup(into);
+      if (!intoRow) return { merged: false, reason: "into_not_found" };
+      if (intoRow.merged_into) return { merged: false, reason: "into_merged" };
+      // 环检测：into 一路向上若能走回 from，合并会造出闭环（读面跟随指针会死循环）。
+      let cursor: string | null = intoRow.merged_into ?? null;
+      for (let i = 0; i < 32 && cursor; i += 1) {
+        if (cursor === from) return { merged: false, reason: "cycle" };
+        cursor = lookup(cursor)?.merged_into ?? null;
+      }
+      const res = this.db
+        .prepare(
+          "UPDATE soul_person SET merged_into = ?, updated_at = ? WHERE person_key = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
+        )
+        .run(into, new Date().toISOString(), from, t.teamId, t.userId, t.agentId);
+      return Number(res.changes ?? 0) > 0 ? { merged: true } : { merged: false, reason: "not_updated" };
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person] merge ${from}→${into} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { merged: false, reason: "error" };
+    }
+  }
+
+  /**
+   * P0-2：拒绝统计改读 soul_gate_stats（账本不再写 reject 行）。
+   * 历史 reject 账本行保留可审计，但不并入这里——部署时刻是口径切换点，
+   * 切换后从 0 重新累计，避免「账本历史 + 新计数」两套来源重叠。
+   */
+  soulRejectionStats(tenant?: CoreTenant, opts?: { sinceDays?: number }): SoulRejectionStat[] {
+    const t = normalizeCoreTenant(tenant);
+    const days = Math.max(1, Math.min(365, Math.floor(opts?.sinceDays ?? 30)));
+    const sinceDay = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT code, SUM(count) AS c, MAX(last_at) AS last_at FROM soul_gate_stats WHERE team_id = ? AND user_id = ? AND agent_id = ? AND day >= ? GROUP BY code ORDER BY c DESC, code ASC LIMIT 200",
+        )
+        .all(t.teamId, t.userId, t.agentId, sinceDay) as unknown as Array<{
+        code: string;
+        c: number | null;
+        last_at: string | null;
+      }>;
+      return (rows ?? []).map((row) => ({
+        code: String(row.code),
+        count: Number(row.c ?? 0),
+        ...(typeof row.last_at === "string" && row.last_at !== "" ? { lastAt: row.last_at } : {}),
+      }));
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_gate_stats] rejection stats failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /** P0-2：门拒按 (day, code, layer) 聚合 +1（幂等 upsert）。统计失败不得影响准入。 */
+  bumpSoulGateStats(tenant: CoreTenant | undefined, rows: SoulGateStatBump[]): { bumped: number } {
+    const t = normalizeCoreTenant(tenant);
+    const list = (rows ?? []).filter(
+      (r) =>
+        r &&
+        typeof r.code === "string" &&
+        r.code !== "" &&
+        typeof r.layer === "string" &&
+        r.layer !== "" &&
+        typeof r.day === "string" &&
+        r.day.length >= 10 &&
+        Number.isFinite(r.count) &&
+        r.count > 0,
+    );
+    if (list.length === 0) return { bumped: 0 };
+    const stmt = this.db.prepare(
+      `INSERT INTO soul_gate_stats (team_id, user_id, agent_id, day, code, layer, count, last_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(team_id, user_id, agent_id, day, code, layer)
+       DO UPDATE SET count = count + excluded.count, last_at = excluded.last_at`,
+    );
+    let bumped = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const r of list) {
+        stmt.run(t.teamId, t.userId, t.agentId, r.day.slice(0, 10), r.code, r.layer, Math.floor(r.count), r.at);
+        bumped += 1;
+      }
+      this.db.exec("COMMIT");
+      return { bumped };
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
+      throw err;
+    }
+  }
+
+  listSoulGateStats(tenant?: CoreTenant, opts?: { sinceDay?: string; code?: string; limit?: number }): SoulGateStat[] {
+    const t = normalizeCoreTenant(tenant);
+    const limit = Math.max(1, Math.min(5000, Math.floor(opts?.limit ?? 500)));
+    try {
+      const where = ["team_id = ?", "user_id = ?", "agent_id = ?"];
+      const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+      if (opts?.sinceDay) {
+        where.push("day >= ?");
+        args.push(opts.sinceDay);
+      }
+      if (opts?.code) {
+        where.push("code = ?");
+        args.push(opts.code);
+      }
+      args.push(limit);
+      const rows = this.db
+        .prepare(
+          `SELECT day, code, layer, count, last_at FROM soul_gate_stats WHERE ${where.join(" AND ")} ORDER BY day DESC, count DESC, code ASC LIMIT ?`,
+        )
+        .all(...(args as SQLInputValue[])) as unknown as Array<{
+        day: string;
+        code: string;
+        layer: string;
+        count: number | null;
+        last_at: string | null;
+      }>;
+      return (rows ?? []).map((row) => ({
+        day: String(row.day),
+        code: String(row.code),
+        layer: String(row.layer),
+        count: Number(row.count ?? 0),
+        ...(typeof row.last_at === "string" && row.last_at !== "" ? { lastAt: row.last_at } : {}),
+      }));
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_gate_stats] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /**
+   * 告警抑制的唯一判据：该 code 在 sinceIso 之后是否已有 alert 账本行。
+   * 不再依赖 listSoulLedger(200) 的窗口——200 行只覆盖约 3.6h，短于 6h 抑制窗，
+   * 生产上同一 code 13h 落 14 条。gates_json 在 JS 里解析，避免 LIKE 的转义问题。
+   */
+  hasSoulAlertSince(tenant: CoreTenant | undefined, code: string, sinceIso: string): boolean {
+    const t = normalizeCoreTenant(tenant);
+    if (!code || !sinceIso) return false;
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT gates_json FROM soul_ledger WHERE team_id = ? AND user_id = ? AND agent_id = ? AND action = 'alert' AND at >= ? ORDER BY at DESC LIMIT 200",
+        )
+        .all(t.teamId, t.userId, t.agentId, sinceIso) as unknown as Array<{ gates_json: string | null }>;
+      return (rows ?? []).some((row) => {
+        try {
+          const gates = JSON.parse(row.gates_json ?? "[]");
+          return Array.isArray(gates) && gates.includes(code);
+        } catch {
+          return false;
+        }
+      });
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_ledger] alert lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
     }
   }
 
@@ -4343,372 +5506,6 @@ private migrateMemoryAuditActionEnum(): void {
       return [];
     }
   }
-  /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 证据分裂检测数据源（单一源检测在 character-tension.ts，本方法只做取数）。
-   *  只读零写库；租户三元组硬隔离（F18 同款）；metadata_json 含 coreRefs/identityRefs 键族且 valence IS NOT NULL；
-   *  node 侧 JSON.parse 后按 label 展开（单查询全量+进程内聚合）；损坏 metadata_json 行跳过（宽松解析不造假值，C5 同款）。 */
-  anchorEvidenceValences(
-    tenant?: CoreTenant,
-  ): Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      const rows = this.db
-        .prepare(
-          "SELECT metadata_json, valence FROM l1_records WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL AND (metadata_json LIKE '%coreRefs%' OR metadata_json LIKE '%identityRefs%')",
-        )
-        .all(t.teamId, t.userId, t.agentId) as unknown as Array<{ metadata_json: string | null; valence: number }>;
-      const out: Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }> = [];
-      for (const row of rows) {
-        let meta: unknown;
-        try {
-          meta = row.metadata_json && row.metadata_json !== "{}" ? JSON.parse(row.metadata_json) : {};
-        } catch {
-          continue; // 损坏 metadata_json：跳过该行（宁缺毋滥，不造假值）
-        }
-        if (typeof meta !== "object" || meta === null) continue;
-        const obj = meta as Record<string, unknown>;
-        for (const kind of ["coreRefs", "identityRefs"] as const) {
-          const refs = obj[kind];
-          if (!Array.isArray(refs)) continue;
-          for (const ref of refs) {
-            if (typeof ref !== "string" || ref.length === 0) continue;
-            out.push({ label: ref, valence: row.valence, ref_kind: kind });
-          }
-        }
-      }
-      return out;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [anchorEvidenceValences] failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /**
-   * GROW：全态读（active/retired/vetoed 不过滤、不走缓存、不做 S6 兜底）。
-   * 专用两个调用方：① 自生长去重（veto 永不重提 + 名额计数）；② server 种子判空
-   * （全种子被 veto 后重启不得复活——active-only 判空会误判空桶重灌）。
-   */
-  listValuesAnyState(
-    tenant?: CoreTenant,
-  ): Array<{
-    value_id: string;
-    label: string;
-    weight: number;
-    created_by: string;
-    valence: number | null;
-    origin: "seed" | "manual" | "auto";
-    pinned: 0 | 1;
-    state: "active" | "retired" | "vetoed";
-    node_type: "theme" | "person" | "character";
-    attrs_json: string;
-  }> {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      return (
-        (this.db
-          .prepare(
-            "SELECT value_id, label, weight, created_by, valence, origin, pinned, state, node_type, attrs_json FROM core_values WHERE team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
-          )
-          .all(t.teamId, t.userId, t.agentId) as unknown as Array<{
-          value_id: string;
-          label: string;
-          weight: number;
-          created_by: string;
-          valence: number | null;
-          origin: "seed" | "manual" | "auto";
-          pinned: 0 | 1;
-          state: "active" | "retired" | "vetoed";
-          node_type: "theme" | "person" | "character";
-          attrs_json: string;
-        }>) ?? []
-      );
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] listValuesAnyState failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /**
-   * C2（spec §3.1 v2 / §3.2）：LLM 批量判定本租户 valence IS NULL 的价值锚（总结初值）。
-   *
-   * 语义（三方优先级的实现锚点）：
-   *   - **只判 NULL 行**：fire-and-forget 钩子（启动后 / upsert 新建后）与显式调用共用
-   *     本方法，永不触碰非 NULL 值——用户微调优先，LLM 永不覆盖（R3 前提）。
-   *   - **写回守卫（Critical-1，C2 复审）**：SELECT 出 NULL 清单后、LLM 30s 窗口内，
-   *     用户微调（upsert 带 valence）可能已落库。UPDATE 带 `AND (valence IS NULL)`
-   *     守卫，使微调值不可被 LLM 判定无条件覆盖（命中行 UPDATE 变 no-op）；
-   *     derived 用真实 `changes` 计数，重复 value_id 也不再双计。
-   *   - **重置语义不在本方法**：原 opts.reset（先全租户置 NULL 再判）在 LLM 失败时
-   *     会造成微调值永久丢失（Important-1），已移除；重判入口改用 handler 侧
-   *     apply-after-success（resetValueValences 快照 + 判定后恢复无效行），
-   *     见 v2-router handleCoreMemoryValuesDerive。
-   *   - 三值枚举：只接受 -1/0/1；不确定给 0 由 prompt 约定，非枚举值/幻觉 value_id/
-   *     解析失败 → 该行保持 NULL（R3：降级可见且无害，宁缺毋滥）。
-   *
-   * @returns derived=本次真实写出的行数（changes 口径）；skipped=清单行中未由本方法
-   *          写出的行数（守卫拦截 / 非法枚举 / 幻觉 id 等）。无 runner / 无 NULL 行
-   *          → {0,0}（稳态零成本）。
-   */
-  async deriveValueValences(
-    tenant?: CoreTenant,
-    llmRunner?: {
-      run(params: {
-        prompt: string;
-        systemPrompt?: string;
-        taskId: string;
-        timeoutMs?: number;
-        maxTokens?: number;
-      }): Promise<string>;
-    },
-  ): Promise<{ derived: number; skipped: number }> {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      if (!llmRunner) return { derived: 0, skipped: 0 };
-      const rows = this.db
-        .prepare(
-          "SELECT value_id, label FROM core_values WHERE valence IS NULL AND state='active' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY weight DESC",
-        )
-        .all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; label: string }>;
-      if (rows.length === 0) return { derived: 0, skipped: 0 };
-      // 判定的是该价值的**语义倾向**（如"正确"→趋近类），不是情绪——渲染措辞保持陈述性（spec §3.1）。
-      const systemPrompt =
-        "你是价值方向判定器。判定每个团队价值锚的动机方向：1=趋近类（达成它会推动行动，如正确/可靠/高效）；" +
-        "-1=审慎回避类（它提醒风险需要谨慎，如安全/风险/合规红线）；0=中性或无法判定。" +
-        '只输出 JSON：{"valences":[{"value_id":"<id>","valence":1|-1|0}]}，不要其他文字。' +
-        "不确定给 0；严禁输出清单之外的 value_id；宁缺毋滥，拿不准就给 0。";
-      const prompt =
-        "价值锚清单：\n" +
-        rows.map((r) => `- ${r.value_id}（${r.label}）`).join("\n") +
-        "\n\n判定每个价值锚的动机方向。";
-      const raw = await llmRunner.run({
-        prompt,
-        systemPrompt,
-        taskId: "core-values-valence-derive",
-        timeoutMs: 0,
-        maxTokens: 0,
-      });
-      let parsed: { valences?: unknown };
-      try {
-        parsed = JSON.parse(
-          raw
-            .trim()
-            .replace(/^```(?:json)?\s*\n?/, "")
-            .replace(/\n?```\s*$/, ""),
-        );
-      } catch {
-        return { derived: 0, skipped: rows.length };
-      }
-      const validIds = new Set(rows.map((r) => r.value_id));
-      const items = Array.isArray((parsed as { valences?: unknown }).valences)
-        ? (parsed as { valences: Array<{ value_id?: unknown; valence?: unknown }> }).valences
-        : [];
-      let derived = 0;
-      for (const item of items) {
-        const id = typeof item?.value_id === "string" ? item.value_id : "";
-        const val = item?.valence;
-        // 防御（P-D 同族）：过滤清单之外的 value_id（LLM 幻觉）；三值枚举之外一律拒写。
-        if (!id || !validIds.has(id)) continue;
-        if (val !== -1 && val !== 0 && val !== 1) continue;
-        // Critical-1（C2 复审）：`AND (valence IS NULL)` 守卫——SELECT NULL 清单后、
-        // LLM 窗口内用户微调落库的值不被无条件覆盖（三方语义 1 的写回侧闭环）。
-        // derived 取真实 changes：微调拦截行不计数，重复 value_id 不双计。
-        const res = this.db
-          .prepare(
-            "UPDATE core_values SET valence = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (valence IS NULL)",
-          )
-          .run(val, id, t.teamId, t.userId, t.agentId);
-        derived += Number(res.changes);
-      }
-      if (derived > 0) this.invalidateValuesCache(); // E2 失效钩子（写路径 6/8：有真实写出才失效）
-      return { derived, skipped: rows.length - derived };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] deriveValueValences failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return { derived: 0, skipped: 0 };
-    }
-  }
-
-  /**
-   * Important-1（C2 复审，apply-after-success）：重置本租户 valence（重判入口专用）。
-   * 先快照现有非 NULL (value_id, valence) 对 → 再置 NULL —— 快照由调用方（handler）
-   * 持有，LLM 判定完成后：判定成功 → 新值生效（重置语义已提交）；失败/不可判定 →
-   * 用 restoreValueValences 从快照恢复原值。与 deriveValueValences 一样按租户三元组过滤。
-   *
-   * 注意：reset 后到恢复前，这些行处于 NULL（渲染不输出方向行，宁缺毋滥，无害降级）；
-   * LLM 窗口内用户微调的行 valence 非 NULL，restoreValueValences 的 `valence IS NULL`
-   * 守卫保证其不被快照旧值覆盖（微调优先）。
-   *
-   * C6 清债（裁定）：**快照只含 state='active' 行**——vetoed（软删除）/retired 行不进
-   * 快照、reset 置 NULL 后保持 NULL（否决语义：veto = 用户否决方向，reset/重判
-   * 失败恢复都不复活它，无方向直到重新采纳）。置 NULL 的 UPDATE 不过滤 state
-   * （vetoed/retired 的旧方向一并清掉）；active 行失败可由快照恢复。
-   *
-   * @returns 恢复所需快照 [{value_id, valence}]（仅 state='active' 且非 NULL 行；C6 清债裁定）。
-   *          S6 第 7 项（C2 fix1 复审 Low 2）：SQL 失败不再静默返回 []（会被调用方误读为
-   *          "无值可重置"而以 code=0 假成功放行）——改为抛错，handler catch → 503 明示；
-   *          空快照（无值可重置）仍是合法返回 []（调用方继续 derive 只判 NULL 行）。
-   */
-  resetValueValences(tenant?: CoreTenant): Array<{ value_id: string; valence: number }> {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      const snapshot = (
-        this.db
-          .prepare(
-            "SELECT value_id, valence FROM core_values WHERE valence IS NOT NULL AND state = 'active' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY value_id",
-          )
-          .all(t.teamId, t.userId, t.agentId) as unknown as Array<{ value_id: string; valence: number | null }>
-      )
-        .filter(
-          (r): r is { value_id: string; valence: number } =>
-            typeof r.value_id === "string" && r.value_id !== "" && r.valence !== null,
-        )
-        .map((r) => ({ value_id: r.value_id, valence: r.valence }));
-      if (snapshot.length > 0) {
-        this.db
-          .prepare(
-            "UPDATE core_values SET valence = NULL WHERE team_id = ? AND user_id = ? AND agent_id = ? AND valence IS NOT NULL",
-          )
-          .run(t.teamId, t.userId, t.agentId);
-        this.invalidateValuesCache(); // E2 失效钩子（写路径 7/8）
-      }
-      return snapshot;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] resetValueValences failed (throwing to handler): ${err instanceof Error ? err.message : String(err)}`,
-      );
-      throw err;
-    }
-  }
-
-  /**
-   * Important-1（C2 复审，apply-after-success）：从快照恢复仍为 NULL 的 valence。
-   * 逐行 `AND (valence IS NULL)` 守卫：LLM 判定已生效的行 / LLM 窗口内用户微调的行
-   * 均不恢复（前者已有新值，后者微调优先）；返回真实恢复行数（changes 口径）。
-   * 仅供 v2-router 重判入口的失败恢复路径使用。
-   *
-   * S6 第 6 项（C2 fix1 复审 Low 1）：恢复循环包事务（BEGIN/COMMIT，与文件内既有
-   * 写事务模式一致）——中途抛错时原实现已恢复的首行落库、尾部行保持 NULL（半态）
-   * 且快照静默丢弃；事务化后任一行失败 → ROLLBACK（无半态，全 NULL 可整批重试）
-   * + 重抛，由 handler catch → 503 明示。
-   */
-  restoreValueValences(tenant?: CoreTenant, snapshot?: Array<{ value_id: string; valence: number }>): number {
-    const t = normalizeCoreTenant(tenant);
-    if (!Array.isArray(snapshot) || snapshot.length === 0) return 0;
-    try {
-      this.db.exec("BEGIN");
-      let restored = 0;
-      for (const s of snapshot) {
-        if (typeof s?.value_id !== "string" || s.value_id === "") continue;
-        if (s.valence !== -1 && s.valence !== 0 && s.valence !== 1) continue;
-        const res = this.db
-          .prepare(
-            "UPDATE core_values SET valence = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (valence IS NULL)",
-          )
-          .run(s.valence, s.value_id, t.teamId, t.userId, t.agentId);
-        restored += Number(res.changes);
-      }
-      this.db.exec("COMMIT");
-      this.invalidateValuesCache(); // E2 失效钩子（写路径 8/8）
-      return restored;
-    } catch (err) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-        /* RAISE(ABORT) 等场景下引擎可能已回滚 */
-      }
-      this.logger?.warn?.(
-        `${TAG} [core_values] restoreValueValences failed (rolled back, throwing to handler): ${err instanceof Error ? err.message : String(err)}`,
-      );
-      throw err;
-    }
-  }
-
-  /**
-   * S1（K7/M-5）→ GROW 软删除裁定（报告 §0.1 裁定 1）：按租户否决价值锚。
-   * `UPDATE state='vetoed' WHERE … AND state IN ('active','retired')`——硬删除无法跨
-   * 发现轮次记住"永久否决"（brief 设计裁定）。行保留在库中，退出一切读面
-   * （active-only / includeRetired 均排除 vetoed）；veto 永不重提由自生长去重查全态保证。
-   * 返回是否真否决了一行（再删 vetoed → 0 行变更 → false，与旧"再删 false"观测一致）。
-   */
-  deleteValue(valueId: string, tenant?: CoreTenant): boolean {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      const res = this.db
-        .prepare(
-          "UPDATE core_values SET state='vetoed' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
-        )
-        .run(valueId, t.teamId, t.userId, t.agentId);
-      this.invalidateValuesCache(); // E2 失效钩子（写路径 2/8）
-      return Number(res.changes) > 0;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] deleteValue failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  /** GROW（钉住）：pinned 翻转。只作用 active|retired（vetoed 拒绝——不在任何读面，宁缺毋滥）。 */
-  setValuePinned(valueId: string, pinned: boolean, tenant?: CoreTenant): boolean {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      const res = this.db
-        .prepare(
-          "UPDATE core_values SET pinned = ? WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
-        )
-        .run(pinned ? 1 : 0, valueId, t.teamId, t.userId, t.agentId);
-      this.invalidateValuesCache(); // E2 失效钩子（写路径 3/8）
-      return Number(res.changes) > 0;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] setValuePinned failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  /** GROW（手动退休）：state → 'retired'（面板退休区可见，可恢复/可钉住）。 */
-  retireValue(valueId: string, tenant?: CoreTenant): boolean {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      const res = this.db
-        .prepare(
-          "UPDATE core_values SET state='retired' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state IN ('active','retired')",
-        )
-        .run(valueId, t.teamId, t.userId, t.agentId);
-      this.invalidateValuesCache(); // E2 失效钩子（写路径 4/8）
-      return Number(res.changes) > 0;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] retireValue failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  /** GROW（恢复）：retired → active。vetoed 拒绝（撤销否决须显式重添 upsert，见裁定 2）。 */
-  restoreValue(valueId: string, tenant?: CoreTenant): boolean {
-    const t = normalizeCoreTenant(tenant);
-    try {
-      const res = this.db
-        .prepare(
-          "UPDATE core_values SET state='active' WHERE value_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'retired'",
-        )
-        .run(valueId, t.teamId, t.userId, t.agentId);
-      this.invalidateValuesCache(); // E2 失效钩子（写路径 5/8）
-      return Number(res.changes) > 0;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values] restoreValue failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
   /**
    * GROW：自生长调度状态读（last_discovery_at / last_corpus_count）。未初始化 → null 基线。
    * PA：tenant 可选——default/缺省保持旧键（last_discovery_at / last_corpus_count，旧行为
@@ -4731,7 +5528,7 @@ private migrateMemoryAuditActionEnum(): void {
         evolve: one(`SELECT COUNT(*) AS n FROM l1_links WHERE type = '${LINK_TYPES.EVOLVE}'`),
         similar: one(`SELECT COUNT(*) AS n FROM l1_links WHERE type = '${LINK_TYPES.SIMILAR}'`),
         archived: one("SELECT COUNT(*) AS n FROM l1_archive"),
-        anchors: one("SELECT COUNT(*) AS n FROM core_values WHERE state = 'active'"),
+        anchors: 0, // S8：core_values 已删除，自观测恒 0
       };
     } catch {
       return { l1: 0, conflict: 0, evolve: 0, similar: 0, archived: 0, anchors: 0 };
@@ -4774,955 +5571,21 @@ private migrateMemoryAuditActionEnum(): void {
       return true;
     } catch (err) {
       this.logger?.warn?.(
-        `${TAG} [core_values] backfillMemoryRef failed: ${err instanceof Error ? err.message : String(err)}`,
+        `${TAG} [coreRef] backfillMemoryRef failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       return false;
     }
   }
 
-  // ── O13（P2）：core_pending 三方法（同步——与 upsertCore/listValues 同款 sqlite 语义）────
+  // 2026-11-07（T1 提案/pending 通道清除）：core_pending 的 12 个读写方法一律删除
+  // （写入/列表/裁决/复现计票/到期清扫/流量计数/ready 查询/自动采纳落账/拒绝查询/提交与回滚/状态读）。
+  // 读侧唯一残留：core/soul/replay.ts 的回放集构造（T2 域），删其调用后 types.ts 的读声明可一并删。
 
-  upsertPendingCore(
-    slot: string,
-    content: string,
-    evidence: number,
-    tenant?: CoreTenant,
-    extra?: {
-      label?: string;
-      description?: string;
-      attrs?: Record<string, unknown>;
-      reproposalOf?: string;
-      reproposalGen?: number;
-    },
-  ): boolean {
-    try {
-      const teamId = tenant?.teamId || "default";
-      const userId = tenant?.userId || "default";
-      const agentId = tenant?.agentId || "default";
-      let pid =
-        "pd-" +
-        createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
-      // #19 T12：重提通道——同 slot|content 的 ON CONFLICT 更新被 WHERE state='pending' 挡住
-      // （rejected 行不可复活=V12 语义），重提案须生成新 id：基础 id + 生成代数后缀（确定性、
-      // 同代幂等；不同代并存互不覆盖，supersedes 溯源在 attrs_json）。
-      if (extra?.reproposalOf) {
-        pid = `${pid}-r${Math.max(1, Math.floor(extra.reproposalGen ?? 1))}`;
-      } else if (extra?.attrs && Object.keys(extra.attrs).length > 0) {
-        // #49：attrs 参与派生唯一性——同 slot|content|tenant 而提案属性不同（如不同 promiseId）
-        // 的两条提案各自独立成行，不再被 ON CONFLICT 静默覆盖（先推提案 attrs 丢失）。
-        // 兼容性：不迁移旧行 id，仅影响新派生；attrs 缺省时派生逐位不变（identity 旧路径等）。
-        // 重提通道排除：其唯一性已由 -r<代数> 后缀承载，且该通道 attrs 含非确定性时间戳
-        // （reproposed_at），纳入派生会破坏 #19 T12 同代幂等。规范化=顶层键排序（同键异序等价归一）。
-        const attrs = extra.attrs; // 局部绑定：属性访问窄化不进回调闭包（TS18048），取局部常量
-        const attrKeys = Object.keys(attrs).sort();
-        const canonical = JSON.stringify(Object.fromEntries(attrKeys.map((k) => [k, attrs[k]])));
-        pid += "-" + createHash("sha256").update(canonical).digest("hex").slice(0, 8);
-      }
-      const attrsJson = extra?.attrs && Object.keys(extra.attrs).length > 0 ? JSON.stringify(extra.attrs) : null;
-      this.db
-        .prepare(
-          `INSERT INTO core_pending (pending_id, slot, content, evidence, state, team_id, user_id, agent_id, created_at, label, description, attrs_json)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(pending_id) DO UPDATE SET evidence = excluded.evidence, created_at = excluded.created_at, label = excluded.label, description = excluded.description, attrs_json = excluded.attrs_json
-        WHERE core_pending.state = 'pending'`,
-        )
-        .run(
-          pid,
-          slot,
-          content,
-          Math.max(0, Math.floor(evidence)),
-          teamId,
-          userId,
-          agentId,
-          new Date().toISOString(),
-          extra?.label ?? null,
-          extra?.description ?? null,
-          attrsJson,
-        );
-      return true;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] upsertPendingCore failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  listPendingCore(
-    tenant?: CoreTenant,
-    opts?: { includeDecided?: boolean },
-  ): Array<{
-    pending_id: string;
-    slot: string;
-    content: string;
-    evidence: number;
-    state: string;
-    created_at: string;
-    decided_at: string | null;
-    label?: string | null;
-    description?: string | null;
-    attrs_json?: string | null;
-    recurrence_json?: string | null;
-    embedding_json?: string | null;
-  }> {
-    try {
-      const teamId = tenant?.teamId || "default";
-      const userId = tenant?.userId || "default";
-      const agentId = tenant?.agentId || "default";
-      const stateFilter = opts?.includeDecided ? "" : " AND state = 'pending'";
-      return this.db
-        .prepare(
-          `SELECT pending_id, slot, content, evidence, state, created_at, decided_at, label, description, attrs_json, recurrence_json, embedding_json FROM core_pending WHERE team_id = ? AND user_id = ? AND agent_id = ?${stateFilter} ORDER BY created_at DESC LIMIT 200`,
-        )
-        .all(teamId, userId, agentId) as Array<{
-        pending_id: string;
-        slot: string;
-        content: string;
-        evidence: number;
-        state: string;
-        created_at: string;
-        decided_at: string | null;
-        label?: string | null;
-        description?: string | null;
-        attrs_json?: string | null;
-        recurrence_json?: string | null;
-        embedding_json?: string | null;
-      }>;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] listPendingCore failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  decidePendingCore(
-    pendingId: string,
-    decision: "adopted" | "rejected",
-    tenant?: CoreTenant,
-  ): { slot: string; content: string; label?: string | null; description?: string | null } | null {
-    try {
-      const row = this.db
-        .prepare(
-          "SELECT slot, content, state, team_id, user_id, agent_id, label, description FROM core_pending WHERE pending_id = ?",
-        )
-        .get(pendingId) as
-        | {
-            slot: string;
-            content: string;
-            state: string;
-            team_id: string;
-            user_id: string;
-            agent_id: string;
-            label?: string | null;
-            description?: string | null;
-          }
-        | undefined;
-      if (!row || row.state !== "pending") return null;
-      if (tenant) {
-        if (
-          row.team_id !== (tenant.teamId || "default") ||
-          row.user_id !== (tenant.userId || "default") ||
-          row.agent_id !== (tenant.agentId || "default")
-        )
-          return null;
-      }
-      const r = this.db
-        .prepare("UPDATE core_pending SET state = ?, decided_at = ? WHERE pending_id = ? AND state = 'pending'")
-        .run(decision, new Date().toISOString(), pendingId);
-      return Number(r.changes) > 0
-        ? { slot: row.slot, content: row.content, label: row.label ?? null, description: row.description ?? null }
-        : null;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] decidePendingCore failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return null;
-    }
-  }
-
-  // ── #91（复现即投票 + 默认终局）：core_pending 复现计票三方法（O13 同款同步语义）──────
-  // recurrence_json 形状：{count, first_seen, last_seen, episodes:[{ts,content,evidenceRecordIds?}], evidence_record_ids:string[]}
-  // evidence_record_ids=全局去重并集（插入序）；embedding_json=首写不覆盖；两列不参与 pending_id 派生、
-  // 不在 upsertPendingCore 的 INSERT/ON CONFLICT 集合内（重推不碰复现状态）。
-
-  private parsePendingRecurrence(
-    json: string | null | undefined,
-  ): {
-    count: number;
-    first_seen: string;
-    last_seen: string;
-    episodes: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>;
-    evidence_record_ids: string[];
-  } | null {
-    if (!json) return null;
-    try {
-      const v = JSON.parse(json) as {
-        count?: unknown;
-        first_seen?: string;
-        last_seen?: string;
-        episodes?: Array<{ ts: string; content: string; evidenceRecordIds?: string[] }>;
-        evidence_record_ids?: string[];
-      };
-      if (typeof v.count !== "number") return null;
-      return {
-        count: v.count,
-        first_seen: v.first_seen ?? "",
-        last_seen: v.last_seen ?? "",
-        episodes: Array.isArray(v.episodes) ? v.episodes : [],
-        evidence_record_ids: Array.isArray(v.evidence_record_ids) ? v.evidence_record_ids : [],
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  updatePendingRecurrence(
-    pendingId: string,
-    episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
-    opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant },
-  ): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
-    try {
-      const row = this.db
-        .prepare(
-          "SELECT slot, state, team_id, user_id, agent_id, created_at, recurrence_json, embedding_json FROM core_pending WHERE pending_id = ?",
-        )
-        .get(pendingId) as
-        | {
-            slot: string;
-            state: string;
-            team_id: string;
-            user_id: string;
-            agent_id: string;
-            created_at: string;
-            recurrence_json: string | null;
-            embedding_json: string | null;
-          }
-        | undefined;
-      if (!row || row.slot !== "self_identity") return null;
-      // rejected/adopted 已裁决行不可计票；expired 行可复活（软失效可逆，继承计数）。
-      if (row.state !== "pending" && row.state !== "expired") return null;
-      if (
-        opts?.tenant &&
-        (row.team_id !== (opts.tenant.teamId || "default") ||
-          row.user_id !== (opts.tenant.userId || "default") ||
-          row.agent_id !== (opts.tenant.agentId || "default"))
-      )
-        return null;
-      const now = new Date().toISOString();
-      const ts = episode.ts ?? now;
-      const prev = this.parsePendingRecurrence(row.recurrence_json);
-      const revived = row.state === "expired";
-      const count = (prev?.count ?? 0) + 1; // 复活行在其原 count 上 +1（继承计数）
-      const first_seen = prev?.first_seen || ts;
-      const last_seen = ts;
-      const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = { ts, content: episode.content ?? "" };
-      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0)
-        ep.evidenceRecordIds = [...episode.evidenceRecordIds];
-      const episodes = [...(prev?.episodes ?? []), ep];
-      const union = [...new Set([...(prev?.evidence_record_ids ?? []), ...(episode.evidenceRecordIds ?? [])])];
-      const votesN = Math.max(1, Math.floor(opts?.votesN ?? 3));
-      const spanHours = Math.max(0, opts?.spanHours ?? 24);
-      const from = Date.parse(first_seen);
-      const to = Date.parse(last_seen);
-      const ready =
-        count >= votesN && Number.isFinite(from) && Number.isFinite(to) && to - from >= spanHours * 3_600_000;
-      this.db
-        .prepare("UPDATE core_pending SET recurrence_json = ?, state = 'pending' WHERE pending_id = ?")
-        .run(JSON.stringify({ count, first_seen, last_seen, episodes, evidence_record_ids: union }), pendingId);
-      if (episode.embedding && !row.embedding_json) {
-        // 首写不覆盖
-        this.db
-          .prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?")
-          .run(JSON.stringify(episode.embedding), pendingId);
-      }
-      return { count, first_seen, last_seen, ready, revived };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] updatePendingRecurrence failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return null;
-    }
-  }
-
-  initPendingRecurrenceByContent(
-    slot: string,
-    content: string,
-    tenant: CoreTenant | undefined,
-    episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
-  ): { count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null {
-    try {
-      const teamId = tenant?.teamId || "default";
-      const userId = tenant?.userId || "default";
-      const agentId = tenant?.agentId || "default";
-      const row = this.db
-        .prepare(
-          "SELECT pending_id, recurrence_json, embedding_json FROM core_pending WHERE slot = ? AND content = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND state = 'pending'",
-        )
-        .get(slot, content, teamId, userId, agentId) as
-        { pending_id: string; recurrence_json: string | null; embedding_json: string | null } | undefined;
-      if (!row) return null;
-      if (this.parsePendingRecurrence(row.recurrence_json)) return null; // 重推不双计
-      const ts = episode.ts ?? new Date().toISOString();
-      const ep: { ts: string; content: string; evidenceRecordIds?: string[] } = {
-        ts,
-        content: episode.content ?? content,
-      };
-      if (episode.evidenceRecordIds && episode.evidenceRecordIds.length > 0)
-        ep.evidenceRecordIds = [...episode.evidenceRecordIds];
-      this.db
-        .prepare("UPDATE core_pending SET recurrence_json = ? WHERE pending_id = ?")
-        .run(
-          JSON.stringify({
-            count: 1,
-            first_seen: ts,
-            last_seen: ts,
-            episodes: [ep],
-            evidence_record_ids: [...new Set(episode.evidenceRecordIds ?? [])],
-          }),
-          row.pending_id,
-        );
-      if (episode.embedding && !row.embedding_json) {
-        // 首写不覆盖
-        this.db
-          .prepare("UPDATE core_pending SET embedding_json = ? WHERE pending_id = ?")
-          .run(JSON.stringify(episode.embedding), row.pending_id);
-      }
-      return { count: 1, first_seen: ts, last_seen: ts, ready: false, revived: false };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] initPendingRecurrenceByContent failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return null;
-    }
-  }
-
-  sweepExpiredSelfIdentityPending(
-    tenant?: CoreTenant,
-    opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number },
-  ): Array<{ pending_id: string; content: string }> {
-    try {
-      // #91 R1 返工（2026-10-23）：① tenant 缺省=全租户（终局清理语义；修复原 ||"default" 吞租户
-      // 致生产 0 行静默空转），传值=逐字段精确限定（全部现网调用方传完整三元组，行为不变）；
-      // ② count>=2 未 ready 行按 last_seen 锚过期（复现停止后 TTL 退场，消除永生僵尸）；
-      // ③ ready 行（count>=votesN 且 span>=spanHours）排除——待人工裁决不进默认终局。
-      const conds = ["slot = 'self_identity'", "state = 'pending'"];
-      const params: string[] = [];
-      if (tenant?.teamId) {
-        conds.push("team_id = ?");
-        params.push(tenant.teamId);
-      }
-      if (tenant?.userId) {
-        conds.push("user_id = ?");
-        params.push(tenant.userId);
-      }
-      if (tenant?.agentId) {
-        conds.push("agent_id = ?");
-        params.push(tenant.agentId);
-      }
-      const ttlHours = Math.max(0, opts?.ttlHours ?? 24);
-      const votesN = Math.max(1, Math.floor(opts?.votesN ?? 3));
-      const spanHours = Math.max(0, opts?.spanHours ?? ttlHours);
-      const nowMs = Date.parse(opts?.now ?? new Date().toISOString());
-      const rows = this.db
-        .prepare(
-          `SELECT pending_id, content, recurrence_json, created_at FROM core_pending WHERE ${conds.join(" AND ")}`,
-        )
-        .all(...params) as Array<{
-        pending_id: string;
-        content: string;
-        recurrence_json: string | null;
-        created_at: string;
-      }>;
-      const swept: Array<{ pending_id: string; content: string }> = [];
-      for (const row of rows) {
-        const rec = this.parsePendingRecurrence(row.recurrence_json);
-        const count = rec?.count ?? 1;
-        if (rec) {
-          const from = Date.parse(rec.first_seen);
-          const to = Date.parse(rec.last_seen);
-          if (Number.isFinite(from) && Number.isFinite(to) && count >= votesN && to - from >= spanHours * 3_600_000)
-            continue; // ready：待人工裁决
-        }
-        const anchor =
-          count === 1 ? rec?.first_seen || row.created_at : rec?.last_seen || rec?.first_seen || row.created_at;
-        const t = Date.parse(anchor);
-        if (!Number.isFinite(t) || !Number.isFinite(nowMs)) continue;
-        if (nowMs - t <= ttlHours * 3_600_000) continue; // 严格大于 TTL 才过期
-        const r = this.db
-          .prepare("UPDATE core_pending SET state = 'expired' WHERE pending_id = ? AND state = 'pending'")
-          .run(row.pending_id);
-        if (Number(r.changes) > 0) swept.push({ pending_id: row.pending_id, content: row.content });
-      }
-      return swept;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] sweepExpiredSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /** #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数（含全部后续 state，保护人工带宽口径）。 */
-  countSelfIdentityRecent(tenant?: CoreTenant, windowHours?: number): number {
-    try {
-      const conds = ["slot = 'self_identity'"];
-      const params: string[] = [];
-      if (tenant?.teamId) {
-        conds.push("team_id = ?");
-        params.push(tenant.teamId);
-      }
-      if (tenant?.userId) {
-        conds.push("user_id = ?");
-        params.push(tenant.userId);
-      }
-      if (tenant?.agentId) {
-        conds.push("agent_id = ?");
-        params.push(tenant.agentId);
-      }
-      const wh = Math.max(0, windowHours ?? 24);
-      const since = new Date(Date.now() - wh * 3_600_000).toISOString();
-      conds.push("created_at >= ?");
-      params.push(since);
-      const row = this.db
-        .prepare(`SELECT COUNT(*) AS n FROM core_pending WHERE ${conds.join(" AND ")}`)
-        .get(...params) as { n: number } | undefined;
-      return Number(row?.n ?? 0);
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] countSelfIdentityRecent failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return 0;
-    }
-  }
-
-  // ── #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门三方法 + 单行 state 读 ──────────────
-  // 候选查询：state='pending' ∧ recurrence ready（count≥votesN ∧ 跨度≥spanHours，口径与 sweep 同构）；
-  // tenant 缺省=全租户（R1 先例），行带租户三元组供调度分组；显式传值=逐字段精确过滤。
-
-  listReadySelfIdentityPending(
-    tenant?: CoreTenant,
-    opts?: { votesN?: number; spanHours?: number },
-  ): Array<{
-    pending_id: string;
-    content: string;
-    recurrence_json: string | null;
-    attrs_json: string | null;
-    team_id: string;
-    user_id: string;
-    agent_id: string;
-    created_at: string;
-  }> {
-    try {
-      const conds = ["slot = 'self_identity'", "state = 'pending'"];
-      const params: string[] = [];
-      if (tenant?.teamId) {
-        conds.push("team_id = ?");
-        params.push(tenant.teamId);
-      }
-      if (tenant?.userId) {
-        conds.push("user_id = ?");
-        params.push(tenant.userId);
-      }
-      if (tenant?.agentId) {
-        conds.push("agent_id = ?");
-        params.push(tenant.agentId);
-      }
-      const votesN = Math.max(1, Math.floor(opts?.votesN ?? 4));
-      const spanHours = Math.max(0, opts?.spanHours ?? 72);
-      const nowMs = Date.now();
-      const rows = this.db
-        .prepare(
-          `SELECT pending_id, content, recurrence_json, attrs_json, team_id, user_id, agent_id, created_at FROM core_pending WHERE ${conds.join(" AND ")}`,
-        )
-        .all(...params) as Array<{
-        pending_id: string;
-        content: string;
-        recurrence_json: string | null;
-        attrs_json: string | null;
-        team_id: string;
-        user_id: string;
-        agent_id: string;
-        created_at: string;
-      }>;
-      return rows.filter((row) => {
-        const rec = this.parsePendingRecurrence(row.recurrence_json);
-        if (!rec) return false;
-        const from = Date.parse(rec.first_seen);
-        const to = Date.parse(rec.last_seen);
-        return (
-          rec.count >= votesN &&
-          Number.isFinite(from) &&
-          Number.isFinite(to) &&
-          to - from >= spanHours * 3_600_000 &&
-          nowMs >= to
-        );
-      });
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] listReadySelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /** 自动采纳落账：state='auto_adopted' + attrs_json.auto_adopt 审计（prev 内容/版本/存在性、post 版本、门参数）；仅 pending 行可落，非 pending/租户不符 → false。 */
-  decidePendingCoreAuto(
-    pendingId: string,
-    tenant?: CoreTenant,
-    audit?: {
-      prev_slot_content?: string;
-      prev_slot_version?: number;
-      prev_slot_existed?: boolean;
-      post_slot_version?: number;
-      gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
-    },
-  ): boolean {
-    try {
-      const row = this.db
-        .prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?")
-        .get(pendingId) as
-        { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
-      if (!row || row.state !== "pending") return false;
-      if (
-        tenant &&
-        (row.team_id !== (tenant.teamId || "default") ||
-          row.user_id !== (tenant.userId || "default") ||
-          row.agent_id !== (tenant.agentId || "default"))
-      )
-        return false;
-      let attrs: Record<string, unknown> = {};
-      try {
-        const parsed = JSON.parse(row.attrs_json ?? "{}");
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) attrs = parsed as Record<string, unknown>;
-      } catch {
-        /* 坏 attrs → 以审计对象覆盖（复现证据以 recurrence_json 为准，不受影响） */
-      }
-      attrs.auto_adopt = {
-        adopted_at: new Date().toISOString(),
-        ...(audit?.prev_slot_content !== undefined ? { prev_slot_content: audit.prev_slot_content } : {}),
-        ...(audit?.prev_slot_version !== undefined ? { prev_slot_version: audit.prev_slot_version } : {}),
-        ...(audit?.prev_slot_existed !== undefined ? { prev_slot_existed: audit.prev_slot_existed } : {}),
-        ...(audit?.post_slot_version !== undefined ? { post_slot_version: audit.post_slot_version } : {}),
-        ...(audit?.gate ? { gate: audit.gate } : {}),
-      };
-      const r = this.db
-        .prepare(
-          "UPDATE core_pending SET state = 'auto_adopted', decided_at = ?, attrs_json = ? WHERE pending_id = ? AND state = 'pending'",
-        )
-        .run(new Date().toISOString(), JSON.stringify(attrs), pendingId);
-      return Number(r.changes) > 0;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] decidePendingCoreAuto failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  /**
-   * #92 M1（P0）：门②专用查询——该租户全量 rejected 提案内容，不分页不截断。
-   *
-   * 为什么必须专用：listPendingCore 是面板展示查询（ORDER BY created_at DESC LIMIT 200），
-   * 生产 rejected=385 ⇒ 最早的 185 条人工拒绝对门②不可见。门②语义是「任一 rejected 同主题即拦」，
-   * 看不见的拒绝 = 漏拦 = 早期被否掉的人格提案被自动采纳（人格污染，不可自动修复）。
-   * 故按 (slot,tenant) 单列查询，零 LIMIT；只投影 content（门②只需要文本做相似度）。
-   */
-  listRejectedSelfIdentityPending(
-    tenant?: CoreTenant,
-  ): Array<{ pending_id: string; content: string; created_at: string }> {
-    try {
-      const teamId = tenant?.teamId || "default";
-      const userId = tenant?.userId || "default";
-      const agentId = tenant?.agentId || "default";
-      return (
-        (this.db
-          .prepare(
-            "SELECT pending_id, content, created_at FROM core_pending WHERE slot = 'self_identity' AND state = 'rejected' AND team_id = ? AND user_id = ? AND agent_id = ? ORDER BY created_at ASC",
-          )
-          .all(teamId, userId, agentId) as unknown as Array<{
-          pending_id: string;
-          content: string;
-          created_at: string;
-        }>) ?? []
-      );
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] listRejectedSelfIdentityPending failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /**
-   * #92 M2（P0）：自动采纳事务化落库——槽写 + pending 落账同事务，任一失败整体回滚。
-   *
-   * 旧链（gate 内两段：upsertCore → decidePendingCoreAuto）在落账失败时只 warn ⇒
-   * 人格槽已改但无 auto_adopt 审计快照（无 prev 快照 = 回滚不可达、审计断链）。
-   * 这里合成单事务：decide 失败（行已非 pending/租户不符/写库抛错）→ 回滚槽，槽与审计同存同无。
-   *
-   * 幂等零 version 空转保持：writeSlot=false（合并结果与现行槽相同）→ 不写槽，仅落账，
-   * post_slot_version 取现行 version。
-   *
-   * SAVEPOINT 而非 BEGIN：可安全嵌套（未来若被外层事务包裹不会误回滚外层）；无外层时
-   * SAVEPOINT/RELEASE 自身即一个完整事务。
-   */
-  commitAutoAdoptCore(
-    pendingId: string,
-    tenant: CoreTenant | undefined,
-    opts: {
-      slot: string;
-      content: string;
-      source: string;
-      writeSlot?: boolean;
-      audit?: {
-        prev_slot_content?: string;
-        prev_slot_version?: number;
-        prev_slot_existed?: boolean;
-        post_slot_version?: number;
-        gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
-      };
-    },
-  ): boolean {
-    const t = normalizeCoreTenant(tenant);
-    this.db.exec("SAVEPOINT sp_auto_adopt_commit");
-    try {
-      if (opts.writeSlot !== false) {
-        const written = this.upsertCore(opts.slot, opts.content, opts.source, tenant);
-        if (!written) throw new Error("upsertCore failed");
-      }
-      const cur = this.db
-        .prepare("SELECT version FROM core_memory WHERE slot = ? AND team_id = ? AND user_id = ? AND agent_id = ?")
-        .get(opts.slot, t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
-      const postVersion = cur?.version ?? 0;
-      // post_slot_version 由库内读回（同事务内），不接受调用方传入 —— 防两段路径的版本竞态。
-      const decided = this.decidePendingCoreAuto(pendingId, tenant, {
-        ...(opts.audit ?? {}),
-        post_slot_version: postVersion,
-      });
-      if (!decided) throw new Error("decidePendingCoreAuto rejected (not pending / tenant mismatch)");
-      this.db.exec("RELEASE sp_auto_adopt_commit");
-      return true;
-    } catch (err) {
-      // 审查先例（:2676 / :2908）：COMMIT 失败引擎可能已自动回滚，ROLLBACK 自兜底不掩蔽原始错误。
-      try {
-        this.db.exec("ROLLBACK TO sp_auto_adopt_commit");
-      } catch {
-        /* 保存点已不存在 */
-      }
-      try {
-        this.db.exec("RELEASE sp_auto_adopt_commit");
-      } catch {
-        /* 已释放 */
-      }
-      this.logger?.warn?.(
-        `${TAG} [core_pending] commitAutoAdoptCore rolled back pid=${pendingId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return false;
-    }
-  }
-
-  /** 审计回滚：state='auto_adopted' → 'rejected'；版本守卫（现行槽 version ≠ post_slot_version → 拒绝并提示手工处理）；
-   *  prev_slot_existed=false → 删除采纳时创建的槽行，否则恢复 prev_slot_content（走 upsertCore 单一写路径 bump version）。零删除（recurrence/attrs 证据全留）。 */
-  rollbackAutoAdoptedPending(pendingId: string, tenant?: CoreTenant): { restored: boolean; reason?: string } {
-    try {
-      const row = this.db
-        .prepare("SELECT state, team_id, user_id, agent_id, attrs_json FROM core_pending WHERE pending_id = ?")
-        .get(pendingId) as
-        { state: string; team_id: string; user_id: string; agent_id: string; attrs_json: string | null } | undefined;
-      if (!row || row.state !== "auto_adopted")
-        return { restored: false, reason: row ? "not-auto-adopted" : "not-found" };
-      if (
-        tenant &&
-        (row.team_id !== (tenant.teamId || "default") ||
-          row.user_id !== (tenant.userId || "default") ||
-          row.agent_id !== (tenant.agentId || "default"))
-      )
-        return { restored: false, reason: "tenant-mismatch" };
-      let audit: {
-        prev_slot_content?: unknown;
-        prev_slot_version?: unknown;
-        prev_slot_existed?: unknown;
-        post_slot_version?: unknown;
-      } = {};
-      try {
-        const parsed = JSON.parse(row.attrs_json ?? "{}") as Record<string, unknown>;
-        const aa = parsed && typeof parsed === "object" ? parsed.auto_adopt : undefined;
-        if (aa && typeof aa === "object" && !Array.isArray(aa)) audit = aa as typeof audit;
-      } catch {
-        /* 坏 attrs → 视为缺审计 */
-      }
-      if (typeof audit.post_slot_version !== "number") return { restored: false, reason: "audit-missing-post-version" };
-      const t = normalizeCoreTenant(tenant);
-      const cur = this.db
-        .prepare(
-          "SELECT version FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?",
-        )
-        .get(t.teamId, t.userId, t.agentId) as { version?: number } | undefined;
-      const curVersion = cur?.version ?? 0;
-      if (curVersion !== audit.post_slot_version)
-        return {
-          restored: false,
-          reason: `slot-version-changed (current=${curVersion} != adopt-time=${audit.post_slot_version})`,
-        };
-      const prevExisted = audit.prev_slot_existed !== false; // 缺审计字段按存在处理（宁保守不误删）
-      if (prevExisted) {
-        const prevContent = typeof audit.prev_slot_content === "string" ? audit.prev_slot_content : "";
-        this.upsertCore("self_identity", prevContent, "auto-adopt-rollback", tenant);
-      } else {
-        this.db
-          .prepare(
-            "DELETE FROM core_memory WHERE slot = 'self_identity' AND team_id = ? AND user_id = ? AND agent_id = ?",
-          )
-          .run(t.teamId, t.userId, t.agentId);
-      }
-      const r = this.db
-        .prepare(
-          "UPDATE core_pending SET state = 'rejected', decided_at = ? WHERE pending_id = ? AND state = 'auto_adopted'",
-        )
-        .run(new Date().toISOString(), pendingId);
-      return Number(r.changes) > 0 ? { restored: true } : { restored: false, reason: "state-flip-raced" };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] rollbackAutoAdoptedPending failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return { restored: false, reason: "internal" };
-    }
-  }
-
-  /** 单行 state 读（decide 路由分支用——列表读 LIMIT 面外/已决行不可达）。 */
-  getPendingCoreState(pendingId: string): string | null {
-    try {
-      const row = this.db.prepare("SELECT state FROM core_pending WHERE pending_id = ?").get(pendingId) as
-        { state: string } | undefined;
-      return row?.state ?? null;
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_pending] getPendingCoreState failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return null;
-    }
-  }
-
-  /** SOUL：身份自发现状态读（identity_* 前缀键族——与锚状态独立，防互覆盖）。 */
-  getIdentityDiscoveryState(tenant?: CoreTenant): {
-    lastAttemptAt: string | null;
-    lastCorpusCount: number | null;
-    supportMap?: Record<string, string[]>;
-  } {
-    try {
-      const t = normalizeCoreTenant(tenant);
-      const suffix =
-        t.teamId === "default" && t.userId === "default" && t.agentId === "default"
-          ? ""
-          : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
-      // A-7b：supportMap（事实→支撑 record_ids）随身份状态持久化（第三键 JSON）——此前仅两键，
-      // 写入侧 supportMap 被静默丢弃，GROW-MAINT 确定性重验无从读取（ev15 实证）。
-      const rows = this.db
-        .prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?)")
-        .all(
-          `identity_last_attempt_at${suffix}`,
-          `identity_last_corpus_count${suffix}`,
-          `identity_support_map${suffix}`,
-        ) as unknown as Array<{ k: string; v: string }>;
-      const map = new Map(rows.map((r) => [r.k, r.v]));
-      const countRaw = map.get(`identity_last_corpus_count${suffix}`);
-      const count =
-        countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
-      let supportMap: Record<string, string[]> | undefined;
-      try {
-        const rawSupport = map.get(`identity_support_map${suffix}`);
-        if (rawSupport) supportMap = JSON.parse(rawSupport) as Record<string, string[]>;
-      } catch {
-        /* 损坏 supportMap 视同缺失（宁缺毋滥，回退滑窗） */
-      }
-      return {
-        lastAttemptAt: map.get(`identity_last_attempt_at${suffix}`) ?? null,
-        lastCorpusCount: count,
-        supportMap,
-      };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [identity_discovery] getState failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return { lastAttemptAt: null, lastCorpusCount: null };
-    }
-  }
-
-  /** SOUL：身份自发现状态写（独立键族——与锚状态互不覆盖）。 */
-  setIdentityDiscoveryState(
-    state: { lastAttemptAt: string; lastCorpusCount: number; supportMap?: Record<string, string[]> },
-    tenant?: CoreTenant,
-  ): void {
-    try {
-      const t = normalizeCoreTenant(tenant);
-      const suffix =
-        t.teamId === "default" && t.userId === "default" && t.agentId === "default"
-          ? ""
-          : `:${JSON.stringify([t.teamId, t.userId, t.agentId])}`;
-      const up = "INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
-      this.db.prepare(up).run(`identity_last_attempt_at${suffix}`, state.lastAttemptAt);
-      this.db
-        .prepare(up)
-        .run(`identity_last_corpus_count${suffix}`, String(Math.max(0, Math.floor(state.lastCorpusCount))));
-      if (state.supportMap && Object.keys(state.supportMap).length > 0) {
-        this.db.prepare(up).run(`identity_support_map${suffix}`, JSON.stringify(state.supportMap));
-      }
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [identity_discovery] setState failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
-  getAnchorGrowthState(tenant?: CoreTenant): {
-    lastDiscoveryAt: string | null;
-    lastCorpusCount: number | null;
-    lastAttemptAt?: string | null;
-    lastAdoptedAt?: string | null;
-    lastMaintAt?: string | null;
-  } {
-    try {
-      const keys = this.growthStateKeys(tenant);
-      const rows = this.db
-        .prepare("SELECT k, v FROM anchor_growth_state WHERE k IN (?, ?, ?, ?, ?)")
-        .all(keys.at, keys.count, keys.attempt, keys.adopted, keys.maint) as unknown as Array<{ k: string; v: string }>;
-      const map = new Map(rows.map((r) => [r.k, r.v]));
-      const countRaw = map.get(keys.count);
-      const count =
-        countRaw !== undefined && countRaw !== "" && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
-      return {
-        lastDiscoveryAt: map.get(keys.at) ?? null,
-        lastCorpusCount: count,
-        lastAttemptAt: map.get(keys.attempt) ?? null,
-        lastAdoptedAt: map.get(keys.adopted) ?? null,
-        lastMaintAt: map.get(keys.maint) ?? null,
-      };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [anchor_growth] getAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return { lastDiscoveryAt: null, lastCorpusCount: null };
-    }
-  }
-
-  /** PA：growth state kv 键——default/缺省 = 旧键（兼容存量状态）；非 default 三元组 = per-tenant 后缀键。
-   *  后缀用 JSON.stringify 编码三元组（段内含分隔符也不碰撞，同 listValues cacheKey 的 S7 M-6 教训）。 */
-  private growthStateKeys(tenant?: CoreTenant): {
-    at: string;
-    count: string;
-    attempt: string;
-    adopted: string;
-    maint: string;
-  } {
-    if (!tenant)
-      return {
-        at: "last_discovery_at",
-        count: "last_corpus_count",
-        attempt: "last_attempt_at",
-        adopted: "last_adopted_at",
-        maint: "last_maint_at",
-      };
-    const t = normalizeCoreTenant(tenant);
-    if (t.teamId === "default" && t.userId === "default" && t.agentId === "default") {
-      return {
-        at: "last_discovery_at",
-        count: "last_corpus_count",
-        attempt: "last_attempt_at",
-        adopted: "last_adopted_at",
-        maint: "last_maint_at",
-      };
-    }
-    const suffix = JSON.stringify([t.teamId, t.userId, t.agentId]);
-    return {
-      at: `last_discovery_at:${suffix}`,
-      count: `last_corpus_count:${suffix}`,
-      attempt: `last_attempt_at:${suffix}`,
-      adopted: `last_adopted_at:${suffix}`,
-      maint: `last_maint_at:${suffix}`,
-    };
-  }
-
-  /** GROW：自生长调度状态写（发现轮次完成后调用；失败重抛——由自生长模块整体 catch）。
-   *  PA：tenant 语义同 getAnchorGrowthState（default/缺省旧键，非 default per-tenant 键）。 */
-  setAnchorGrowthState(
-    state: {
-      lastDiscoveryAt: string;
-      lastCorpusCount: number;
-      lastAttemptAt?: string;
-      lastAdoptedAt?: string;
-      lastMaintAt?: string;
-    },
-    tenant?: CoreTenant,
-  ): void {
-    try {
-      const keys = this.growthStateKeys(tenant);
-      this.db
-        .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
-        .run(keys.at, state.lastDiscoveryAt);
-      this.db
-        .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
-        .run(keys.count, String(Math.max(0, Math.floor(state.lastCorpusCount))));
-      if (state.lastAttemptAt !== undefined) {
-        this.db
-          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
-          .run(keys.attempt, state.lastAttemptAt);
-      }
-      if (state.lastAdoptedAt !== undefined) {
-        this.db
-          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
-          .run(keys.adopted, state.lastAdoptedAt);
-      }
-      if (state.lastMaintAt !== undefined) {
-        this.db
-          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
-          .run(keys.maint, state.lastMaintAt);
-      }
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [anchor_growth] setAnchorGrowthState failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      throw err;
-    }
-  }
-
-  /** GROW-MAINT v2（SOP 2026-09-17）：自维护漂移基线 kv——全局单键组（self-obs 统计为
-   *  全局口径，非 per-tenant）。读无行 → null（首轮无基线，drift=0 不误报）。
-   *  与 growth state 四键分立：写入方（self-obs 块）不得 clobber 调度状态。 */
-  getSelfObsBaseline(): { l1: number; archived: number } | null {
-    try {
-      const rows = this.db
-        .prepare("SELECT k, v FROM anchor_growth_state WHERE k IN ('obs_l1_total', 'obs_archive_total')")
-        .all() as unknown as Array<{ k: string; v: string }>;
-      const map = new Map(rows.map((r) => [r.k, r.v]));
-      const l1 = Number(map.get("obs_l1_total"));
-      const archived = Number(map.get("obs_archive_total"));
-      if (!Number.isFinite(l1) || !Number.isFinite(archived)) return null;
-      return { l1, archived };
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [anchor_growth] getSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return null;
-    }
-  }
-
-  setSelfObsBaseline(baseline: { l1: number; archived: number }): void {
-    try {
-      for (const pair of [
-        ["obs_l1_total", baseline.l1],
-        ["obs_archive_total", baseline.archived],
-      ] as const) {
-        this.db
-          .prepare("INSERT INTO anchor_growth_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
-          .run(pair[0], String(Math.max(0, Math.floor(pair[1]))));
-      }
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [anchor_growth] setSelfObsBaseline failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+  // 2026-11-07（复验 P1-5 收尾）：anchor_growth_state 的 4 个读者已删除——
+  // get/setIdentityDiscoveryState（identity_* 三键）与 get/setSelfObsBaseline（obs_* 两键）
+  // 全仓 0 生产调用方（写入方 self-obs / 身份自发现在此前已下线），表也不再创建。
+  // 保留但不建表会让任何一次误调用变成 no such table 的运行时炸弹；直接删干净，
+  // 旧库里的 anchor_growth_state 由数据清理任务 DROP。
 
   /**
    * PA：l1_records 的 distinct (team_id,user_id,agent_id) 三元组——价值锚扇出迁移与
@@ -5741,29 +5604,6 @@ private migrateMemoryAuditActionEnum(): void {
     } catch (err) {
       this.logger?.warn?.(
         `${TAG} [L1-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return [];
-    }
-  }
-
-  /**
-   * REG-REMAINING-003 #1：列出存在 valence IS NULL 活跃锚的租户三元组。
-   * 与 listL1TenantTriplets 同族（degraded → []；SQL COALESCE 归一化空串 → default）；
-   * 仅读：跨租户聚合写不存在——消费方（server boot / anchor-growth）逐三元组回传
-   * deriveValueValences，其 SQL 按同一三元组过滤，无跨租户泄漏。
-   */
-  listNullValenceTenantTriplets(): CoreTenant[] {
-    if (this.degraded) return [];
-    try {
-      const rows = this.db
-        .prepare(
-          "SELECT DISTINCT COALESCE(NULLIF(team_id,''),'default') AS team_id, COALESCE(NULLIF(user_id,''),'default') AS user_id, COALESCE(NULLIF(agent_id,''),'default') AS agent_id FROM core_values WHERE valence IS NULL AND state='active'",
-        )
-        .all() as Array<{ team_id: string; user_id: string; agent_id: string }>;
-      return rows.map((r) => normalizeCoreTenant({ teamId: r.team_id, userId: r.user_id, agentId: r.agent_id }));
-    } catch (err) {
-      this.logger?.warn?.(
-        `${TAG} [core_values-null-tenant-triplets] failed (non-fatal, returning empty): ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
     }
@@ -6011,7 +5851,7 @@ private migrateMemoryAuditActionEnum(): void {
       return out;
     } catch (err) {
       this.logger?.warn?.(
-        `${TAG} [core_values] searchL1ByCoreRefs failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        `${TAG} [coreRef] searchL1ByCoreRefs failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
     }
@@ -6029,11 +5869,7 @@ private migrateMemoryAuditActionEnum(): void {
     limit = 50,
   ): Array<{ record_id: string; source_message_ids: string[] }> {
     const wanted = Array.from(
-      new Set(
-        (Array.isArray(ids) ? ids : []).filter(
-          (id): id is string => typeof id === "string" && id.length > 0,
-        ),
-      ),
+      new Set((Array.isArray(ids) ? ids : []).filter((id): id is string => typeof id === "string" && id.length > 0)),
     ).slice(0, 20);
     if (wanted.length === 0) return [];
     const cap = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 50) : 50;
@@ -6984,7 +6820,11 @@ private migrateMemoryAuditActionEnum(): void {
       this.db.exec("COMMIT");
       return true;
     } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* 事务可能已结束 */ }
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务可能已结束 */
+      }
       this.logger?.warn?.(
         `${TAG} [sensitivity] setL1Sensitivity failed for ${recordId}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -8044,7 +7884,7 @@ private migrateMemoryAuditActionEnum(): void {
    *  只读、零写库；先取最近 N 条再反转，避免窗口大时全表排序。 */
   recentL0Messages(
     tenant?: CoreTenant,
-    opts?: { sinceDays?: number; maxMessages?: number },
+    opts?: { sinceDays?: number; maxMessages?: number; sinceIso?: string },
   ): Array<{
     record_id: string;
     session_id: string;
@@ -8052,16 +7892,24 @@ private migrateMemoryAuditActionEnum(): void {
     message_text: string;
     recorded_at: string;
     timestamp?: number;
+    /** 真实说话人/agent 身份（显式列出，不用 SELECT *）。老行缺失时字段不设。 */
+    user_id?: string;
+    agent_id?: string;
   }> {
     if (this.degraded) return [];
     const t = normalizeCoreTenant(tenant);
     const days = Math.max(1, Math.min(365, Math.floor(opts?.sinceDays ?? 30)));
     const max = Math.max(1, Math.min(20000, Math.floor(opts?.maxMessages ?? 4000)));
-    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    // S10（2026-11-07）：清库重生水位——水位之后的 L0 才参与派生，避免首个 tick 把旧对话
+    // 重抽成事件、当天复活旧人格（spec §8）。sinceIso 早于常规窗口时以窗口为准。
+    const windowSince = new Date(Date.now() - days * 86_400_000).toISOString();
+    const asked = typeof opts?.sinceIso === "string" ? Date.parse(opts.sinceIso) : NaN;
+    const since =
+      Number.isFinite(asked) && asked > Date.parse(windowSince) ? new Date(asked).toISOString() : windowSince;
     try {
       const rows = this.db
         .prepare(
-          `SELECT record_id, session_id, role, message_text, recorded_at, timestamp
+          `SELECT record_id, session_id, role, message_text, recorded_at, timestamp, user_id, agent_id
              FROM l0_conversations
             WHERE team_id = ? AND user_id = ? AND agent_id = ?
               AND message_text != '' AND recorded_at >= ?
@@ -8075,6 +7923,8 @@ private migrateMemoryAuditActionEnum(): void {
         message_text: string | null;
         recorded_at: string | null;
         timestamp: number | null;
+        user_id: string | null;
+        agent_id: string | null;
       }>;
       return (rows ?? [])
         .map((r) => ({
@@ -8084,6 +7934,10 @@ private migrateMemoryAuditActionEnum(): void {
           message_text: String(r.message_text ?? ""),
           recorded_at: String(r.recorded_at ?? ""),
           timestamp: Number(r.timestamp ?? 0),
+          // 空串不设字段：调用侧用「有没有 user_id」决定走平台身份还是展示名回退，
+          // 给一个 "" 会让两条路径都以为自己拿到了身份。
+          ...(String(r.user_id ?? "") !== "" ? { user_id: String(r.user_id) } : {}),
+          ...(String(r.agent_id ?? "") !== "" ? { agent_id: String(r.agent_id) } : {}),
         }))
         .reverse();
     } catch (err) {
@@ -8091,6 +7945,35 @@ private migrateMemoryAuditActionEnum(): void {
         `${TAG} [L0-recent] recentL0Messages failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
+    }
+  }
+
+  /**
+   * S10（2026-11-07）：清库重生水位与其它一次性升级标记。
+   * 复用 embedding_meta（key/value，同库同连接），不新增表、不新增配置——它是「数据」不是「开关」。
+   * 读失败一律返回 undefined（fail-open：宁可多抽一轮，也不能因缺标记崩 tick）。
+   */
+  soulMetaGet(key: string): string | undefined {
+    try {
+      const row = this.db.prepare("SELECT value FROM embedding_meta WHERE key = ?").get(`soul.${key}`) as
+        { value?: string } | undefined;
+      const v = row?.value;
+      return typeof v === "string" && v !== "" ? v : undefined;
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul-meta] read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  soulMetaSet(key: string, value: string): void {
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO embedding_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .run(`soul.${key}`, value);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul-meta] write failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -8522,7 +8405,8 @@ private migrateMemoryAuditActionEnum(): void {
         }>
       ).map((r) => r.record_id);
 
-      if (l0Ids.length === 0 && l1Ids.length === 0) return empty;
+      const derived = this.countAgentDerivedRows(teamId, agentId, userId);
+      if (l0Ids.length === 0 && l1Ids.length === 0 && derived === 0) return empty;
 
       this.db.exec("BEGIN");
       try {
@@ -8574,6 +8458,7 @@ private migrateMemoryAuditActionEnum(): void {
           }
         }
 
+        this.deleteAgentDerivedRows(teamId, agentId, userId);
         this.db.exec("COMMIT");
         return { l0Deleted, l1Deleted, profilesDeleted: 0 };
       } catch (err) {
@@ -8583,6 +8468,148 @@ private migrateMemoryAuditActionEnum(): void {
     } catch (err) {
       this.logger?.warn(`[sqlite] clearMemoryContent failed: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
+    }
+  }
+
+  /** 删 agent 时要一起清的派生表。顺序无关：都按 team+agent 删。 */
+  private agentDerivedTables(): string[] {
+    return [
+      "soul_persona",
+      "soul_episodes",
+      "soul_emotions",
+      "soul_state",
+      "soul_trait_state",
+      "soul_ledger",
+      "soul_gate_stats",
+      "soul_snapshots",
+      "soul_promises",
+      "soul_promise_events",
+      "soul_person",
+      "soul_person_relation",
+      "core_memory",
+      "l1_archive",
+      // P0 事件底座：基表按 team+agent 删；四张子表只有 event_id，先按父查询清。
+      "soul_events",
+      // P0 结构化表：都带 team/user/agent，可直接按租户删；带 goal_id/narrative_id 的子表
+      // 在 deleteSoulStructuredChildren 里按父查询清。
+      "soul_person_state",
+      "soul_person_state_events",
+      "soul_goals",
+      "soul_self_model",
+      "soul_calibration",
+      "soul_mood_state",
+      "soul_mood_events",
+      "soul_narrative",
+      "soul_values",
+      "soul_gate_log",
+      "soul_dilemma",
+      "soul_working_state",
+    ];
+  }
+
+  /**
+   * 这张表能不能按 team+agent 删。缺表或缺列返回 null，调用方跳过。
+   * userId 给了但表没有 user_id 列时也跳过：不能把「收窄不到人」退化成「删整个 agent」。
+   */
+  private agentDerivedScope(
+    table: string,
+    teamId: string,
+    agentId: string,
+    userId: string | undefined,
+  ): { where: string; params: string[] } | null {
+    const cols = this.db.prepare("PRAGMA table_info(" + table + ")").all() as Array<{ name: string }>;
+    if (cols.length === 0) return null;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("agent_id") || !names.has("team_id")) return null;
+    if (userId && !names.has("user_id")) return null;
+    const where = "team_id = ? AND agent_id = ?" + (userId ? " AND user_id = ?" : "");
+    const params = userId ? [teamId, agentId, userId] : [teamId, agentId];
+    return { where, params };
+  }
+
+  /** 这个 agent 还有多少派生行。表缺列就跳过，不把缺列当成别的数。 */
+  private countAgentDerivedRows(teamId: string, agentId: string, userId: string | undefined): number {
+    return this.agentDerivedTables().reduce((sum, table) => {
+      const scope = this.agentDerivedScope(table, teamId, agentId, userId);
+      if (!scope) return sum;
+      const row = this.db
+        .prepare("SELECT count(*) AS c FROM " + table + " WHERE " + scope.where)
+        .get(...scope.params) as { c: number } | undefined;
+      return sum + Number(row?.c ?? 0);
+    }, 0);
+  }
+
+  /**
+   * 删一个 agent 的派生行。只在 clearMemoryContent 的事务里调用，自己不开事务。
+   * 不碰 soul_trait_label：它的键是 tenant_id，写侧只用 teamId，清一个 agent 会误删同队其它人的标签。
+   * 不碰 embedding_meta 的 episodeWatermark：那是全库一份，改它等于让别的 agent 重抽旧对话。
+   */
+  private deleteAgentDerivedRows(teamId: string, agentId: string, userId: string | undefined): void {
+    // 子表先于父表清。store 没有开 PRAGMA foreign_keys，DDL 的 ON DELETE CASCADE 不生效，
+    // 顺序错了就会留下指向已删事件的证据/行动行。
+    this.deleteSoulEventChildren(teamId, agentId, userId);
+    this.deleteSoulStructuredChildren(teamId, agentId, userId);
+    for (const table of this.agentDerivedTables()) {
+      const scope = this.agentDerivedScope(table, teamId, agentId, userId);
+      if (!scope) continue;
+      this.db.prepare("DELETE FROM " + table + " WHERE " + scope.where).run(...scope.params);
+    }
+  }
+
+  /** 事件子表只有 event_id，按父事件租户范围先清四张。 */
+  private deleteSoulEventChildren(teamId: string, agentId: string, userId: string | undefined): void {
+    const scope = this.agentDerivedScope("soul_events", teamId, agentId, userId);
+    if (!scope) return;
+    for (const table of ["soul_event_evidence", "soul_event_chat", "soul_event_action", "soul_event_reflection"]) {
+      try {
+        this.db
+          .prepare(
+            "DELETE FROM " + table + " WHERE event_id IN (SELECT event_id FROM soul_events WHERE " + scope.where + ")",
+          )
+          .run(...scope.params);
+      } catch {
+        /* 表还没建：跳过，不把缺表当清理成功 */
+      }
+    }
+  }
+
+  /** 目标/叙事子表只有 goal_id / chapter_id，按父表租户范围先清。 */
+  private deleteSoulStructuredChildren(teamId: string, agentId: string, userId: string | undefined): void {
+    const goalScope = this.agentDerivedScope("soul_goals", teamId, agentId, userId);
+    if (goalScope) {
+      const goalWhere = "SELECT goal_id FROM soul_goals WHERE " + goalScope.where;
+      try {
+        this.db.prepare("DELETE FROM soul_goal_events WHERE goal_id IN (" + goalWhere + ")").run(...goalScope.params);
+      } catch {
+        /* 表还没建 */
+      }
+      try {
+        this.db
+          .prepare(
+            "DELETE FROM soul_goal_deps WHERE goal_id IN (" +
+              goalWhere +
+              ") OR depends_on_goal_id IN (" +
+              goalWhere +
+              ")",
+          )
+          .run(...goalScope.params, ...goalScope.params);
+      } catch {
+        /* 表还没建 */
+      }
+    }
+    const narrativeScope = this.agentDerivedScope("soul_narrative", teamId, agentId, userId);
+    if (narrativeScope) {
+      try {
+        this.db
+          .prepare(
+            "DELETE FROM soul_narrative_evidence WHERE chapter_id IN (SELECT chapter_id FROM soul_narrative WHERE " +
+              narrativeScope.where +
+              ")",
+          )
+          .run(...narrativeScope.params);
+      } catch {
+        /* 表还没建 */
+      }
     }
   }
 
@@ -10203,15 +10230,42 @@ function jsonObject(v: unknown): Record<string, unknown> | undefined {
   }
 }
 
+/** 结构化层字段的落库口径 + 有效期字段的零 DDL 持久化（判据 4 的可验方式）。
+ *
+ * `validTo`（冻结/失效期末端）与 `supersededBy`（被哪条替代）不是独立列，统一落在
+ * `meta_json` 的保留键里：写侧先剥掉层 meta 里的同名键再按顶层字段回填，读侧
+ * `mapSoulPersonaRow` 复原成顶层字段。这样零 DDL、旧库无需迁移，且能验：
+ *   1) `freezeItem(item, now)` → `commitSoulPersona` → `listSoulPersona`，`validTo === now`；
+ *   2) `planRevive` 删掉 validTo 后再提交，同路径读回 `validTo === undefined`（不许残留旧失效期）。
+ * 保留键必须从层 meta 里剥掉，否则「复活后 meta 里还留着 validTo」会让读侧把旧失效期捡回来。
+ */
+const PERSONA_META_RESERVED_KEYS = ["validTo", "validFrom", "expiredAt", "supersededBy", "supersededReason"] as const;
+
+/** human 行必须有主人：返回 meta.person.key（没有就空串）。单写者守卫与读侧共用同一口径。 */
+function personKeyOfPersonaItem(it: PersonaItem): string {
+  const person = (it.meta as { person?: { key?: unknown } } | undefined)?.person;
+  const key = typeof person?.key === "string" ? person.key.trim() : "";
+  return key;
+}
+function personaMetaJson(it: PersonaItem): string | null {
+  const merged: Record<string, unknown> = { ...(it.meta ?? {}) };
+  for (const k of PERSONA_META_RESERVED_KEYS) delete merged[k];
+  // 顶层字段统一回填：只写有值的（undefined/空串=该字段在本行不存在，不许残留旧失效期）。
+  const top = it as unknown as Record<string, unknown>;
+  for (const k of PERSONA_META_RESERVED_KEYS) {
+    const v = top[k];
+    if (typeof v === "string" && v !== "") merged[k] = v;
+  }
+  return Object.keys(merged).length > 0 ? JSON.stringify(merged) : null;
+}
+
 function mapSoulPersonaRow(row: Record<string, unknown>): PersonaItem {
   const state = String(row.state ?? "active");
   const item: PersonaItem = {
     itemId: String(row.item_id ?? ""),
     layer: String(row.layer ?? "identity") as PersonaItem["layer"],
     text: String(row.text ?? ""),
-    state: (["active", "degraded", "frozen", "merged"].includes(state)
-      ? state
-      : "active") as PersonaItem["state"],
+    state: (["active", "degraded", "frozen", "merged"].includes(state) ? state : "active") as PersonaItem["state"],
     weight: Number(row.weight ?? 0.5),
     evidenceIds: jsonArray<string>(row.evidence_json),
     evidenceDays: jsonArray<string>(row.days_json),
@@ -10227,21 +10281,45 @@ function mapSoulPersonaRow(row: Record<string, unknown>): PersonaItem {
   const drift = jsonArray<number>(row.drift_json);
   if (drift.length > 0) item.driftHistory = drift;
   const meta = jsonObject(row.meta_json);
-  if (meta) item.meta = meta;
+  // 有效期保留键复原到顶层字段（见 personaMetaJson 的可验口径）：读侧只认顶层，
+  // 不把 validTo/supersededBy 混进层 meta，避免注入/渲染把内部字段当层专属字段。
+  const reserved: Partial<Record<(typeof PERSONA_META_RESERVED_KEYS)[number], string>> = {};
+  if (meta) {
+    for (const k of PERSONA_META_RESERVED_KEYS) {
+      const v = (meta as Record<string, unknown>)[k];
+      delete (meta as Record<string, unknown>)[k];
+      if (typeof v === "string" && v !== "") reserved[k] = v;
+    }
+  }
+  const top = item as unknown as Record<string, string | undefined>;
+  if (reserved.validTo) top.validTo = reserved.validTo;
+  if (reserved.supersededBy) top.supersededBy = reserved.supersededBy;
+  if (reserved.supersededReason) top.supersededReason = reserved.supersededReason;
+  if (reserved.expiredAt) top.expiredAt = reserved.expiredAt;
+  // 存量回填（P1-1）：老行没有 validFrom，按 createdAt 补齐；只在读回时补，不改库。
+  if (reserved.validFrom) top.validFrom = reserved.validFrom;
+  else if (item.createdAt !== "") top.validFrom = item.createdAt;
+  if (meta && Object.keys(meta).length > 0) item.meta = meta;
   return item;
+}
+
+/** 结论合并（P1-1）取代的条目：state 仍是 active/degraded，只有 validTo 非空。
+ *  freeze 的 validTo 不算（它的 state 已变 frozen，出队由 state 负责），所以判据必须带 state。 */
+function isSupersededItem(item: PersonaItem): boolean {
+  return (
+    (item.state === "active" || item.state === "degraded") && typeof item.validTo === "string" && item.validTo !== ""
+  );
 }
 
 function mapSoulEpisodeRow(row: Record<string, unknown>): SoulEpisode {
   const quote = jsonObject(row.quote_json) as SoulEpisodeQuote | undefined;
   const kind = String(row.kind ?? "decision") as SoulEpisode["kind"];
   const affective = String(row.affect_source ?? "lexicon");
-  return {
+  const rec: SoulEpisode = {
     episodeId: String(row.episode_id ?? ""),
     at: String(row.at ?? ""),
     day: String(row.day ?? ""),
-    kind: ((SOUL_EPISODE_KINDS as readonly string[]).includes(kind)
-      ? kind
-      : "decision") as SoulEpisode["kind"],
+    kind: ((SOUL_EPISODE_KINDS as readonly string[]).includes(kind) ? kind : "decision") as SoulEpisode["kind"],
     title: String(row.title ?? ""),
     object: String(row.object ?? ""),
     participants: jsonArray<string>(row.participants_json),
@@ -10258,6 +10336,208 @@ function mapSoulEpisodeRow(row: Record<string, unknown>): SoulEpisode {
     affectSource: affective === "none" ? "none" : "lexicon",
     signals: jsonArray<string>(row.signals_json),
   };
+  if (typeof row.archived_at === "string" && row.archived_at.length > 0) rec.archivedAt = row.archived_at;
+  // P2-E：人员名单是可选事实。NULL/空数组一律不设字段——「解析不出人」不该伪装成
+  // 「有名单但空」，否则按人过滤会把两者当成同一件事。
+  const persons = jsonArray<string>(row.persons_json).filter((x): x is string => typeof x === "string" && x !== "");
+  if (persons.length > 0) rec.persons = persons;
+  if (typeof row.mood_integrated_at === "string" && row.mood_integrated_at.length > 0) {
+    rec.moodIntegratedAt = row.mood_integrated_at;
+  }
+  // P0-2：层是可选事实。空数组/缺列一律不设字段（读回是 undefined，不是 []）——
+  // 「这条事件没有站住任何层」和「它的层列表是空的」在语义上不是一回事。
+  const layers = jsonArray<string>(row.layers_json).filter((x): x is SoulLayer =>
+    (SOUL_LAYERS as readonly string[]).includes(x),
+  );
+  if (layers.length > 0) rec.layers = layers;
+  return rec;
+}
+
+/* —— P0-C 事件底座切读开关 ——
+ * 只影响读（listSoulEpisodes），不影响写：写永远双写。
+ * 缺省 legacy = 旧表读面，逐字节保持 P0-C 之前的行为；new = 读 soul_events + chat + evidence。
+ * 回滚方式就是把它改回 legacy（或删掉这个环境变量）并重启。 */
+export type SoulEventReadMode = "legacy" | "new";
+
+export const DEFAULT_SOUL_EVENT_READ_MODE: SoulEventReadMode = "legacy";
+
+/** 解析档位：非法值一律回落缺省（读路径不能因配置笔误抛错，更不能 500）。 */
+export function resolveSoulEventReadMode(raw?: unknown): SoulEventReadMode {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return value === "new" ? "new" : DEFAULT_SOUL_EVENT_READ_MODE;
+}
+
+/** 当前生效档位：每次调用现读环境变量（运行期切换与单测都靠这一点）。 */
+export function currentSoulEventReadMode(): SoulEventReadMode {
+  return resolveSoulEventReadMode(process.env.TDB_SOUL_EVENT_READ_MODE);
+}
+
+/**
+ * P0-C 双写：SoulEpisode → 事件底座写入载荷（spec §5.1 的映射表逐字段落地）。
+ *
+ * 只被 commitSoulEpisodes 调用，且必须在它已开的 BEGIN IMMEDIATE 里执行——上游只用
+ * upsertSoulEventInTransaction（内部不 BEGIN），否则撞 cannot start a transaction。
+ * 改这里的映射判据，必须同步改 soul-event-dualwrite 测试里的期望值（那是唯一防线）。
+ */
+/** 一条 episode 的完整事件写入：1 条消息根事件 + 最多 2 条行动子事件（P1-A）。 */
+function soulEventWritesFromEpisode(
+  e: SoulEpisode,
+  actionMessages: readonly SoulActionSourceMessage[] = [],
+): SoulEventWrite[] {
+  return [soulEventWriteFromEpisode(e), ...splitChatActionEvents(e, actionMessages)];
+}
+
+function soulEventWriteFromEpisode(e: SoulEpisode): SoulEventWrite {
+  const eventId = e.episodeId;
+  const at = e.at;
+  const quote = e.quote;
+  // evidenceIds 去重去空：新表证据主键是 (event_id, record_id, role)，同一 record 两行会在
+  // 一次批量 INSERT 里撞主键；旧表的字符串数组允许重复，这里按首次出现保序保留。
+  const recordIds: string[] = [];
+  for (const id of e.evidenceIds ?? []) {
+    if (typeof id !== "string" || id === "" || recordIds.includes(id)) continue;
+    recordIds.push(id);
+  }
+  const evidence: SoulEventEvidenceInsert[] = recordIds.map((recordId) => {
+    // 只有「逐字引文指向的那条 record」才有确定的 role 与 quote；其余证据只知道「是它」，
+    // role=unknown、quote=''——不知道是谁说的话就不假装知道（spec §4.2）。
+    const fromQuote = quote !== null && quote.recordId === recordId;
+    const role = fromQuote ? (quote.role === "assistant" ? "assistant" : "user") : "unknown";
+    return { event_id: eventId, record_id: recordId, role, quote: fromQuote ? quote.text : "", at, confidence: 1 };
+  });
+  // 观察 vs 推测必须按证据实际内容判，不能恒 observed/0.8：
+  //  - 至少一条证据带非空逐字引文（且说话人明确是 user/assistant）→ observed + 0.8；
+  //  - 只有 record_id、引文全空，或根本没有证据 → inferred + 0.5（§4.2 准入允许无证据的 inferred）。
+  // 恒 observed 会让无引文的 episode 被 §4.2 拒写、整批 ROLLBACK——那是把既有写入拖挂的真回归；
+  // 反过来为了过准入伪造一条 legacy:episode 假证据，更是把「谁说的」写进账本，绝不允许。
+  const observed = evidence.some(
+    (row) => (row.role === "user" || row.role === "assistant") && (row.quote ?? "").trim() !== "",
+  );
+  const event: SoulEventInsert = {
+    event_id: eventId,
+    at,
+    day: e.day,
+    valid_from: at,
+    actor: "user",
+    action: "said",
+    object: e.object ?? "",
+    intent: e.title ?? "",
+    outcome: e.outcome ?? "",
+    status: "unknown",
+    source_kind: "chat",
+    // 引文所在的 record 是最强证据源；没有引文就退到第一条证据；都没有则空串（旧表同样可能为空）。
+    source_ref: quote?.recordId ?? recordIds[0] ?? "",
+    ownership: "theirs",
+    epistemic: observed ? "observed" : "inferred",
+    confidence: observed ? 0.8 : 0.5,
+    visibility: "shared",
+    session_id: e.sessionId ?? "",
+    persons_json: e.persons && e.persons.length > 0 ? JSON.stringify(e.persons) : null,
+    dedupe_key: `soul-episode:${eventId}`,
+    salience: 0.5,
+    created_at: at,
+    archived_at: e.archivedAt ?? null,
+  };
+  const chat: SoulEventChatInsert = {
+    event_id: eventId,
+    kind: e.kind,
+    title: e.title ?? "",
+    user_stance: e.userStance ?? "",
+    agent_stance: e.agentStance ?? "",
+    cost: e.cost ?? "",
+    valence: e.valence ?? 0,
+    arousal: e.arousal ?? 0,
+    intensity: e.intensity ?? 0,
+    affect_source: e.affectSource ?? "lexicon",
+    // 与旧表 quote_json 同一序列化口径（null 表示没有引文，不是 'null' 字符串）。
+    quote_json: quote ? JSON.stringify(quote) : null,
+    // 旧表 signals_json 永远写 JSON.stringify(e.signals ?? [])：「没有信号」= '[]'，不是 NULL。
+    // 新表保持同一口径，切读时才不会一边 [] 一边 undefined。
+    signals_json: JSON.stringify(e.signals ?? []),
+    layers_json: e.layers && e.layers.length > 0 ? JSON.stringify(e.layers) : null,
+    // 过渡态：markSoulEpisodesMoodIntegrated 目前只更新旧表，这一列在 P0 阶段可能落后于旧表。
+    mood_integrated_at: e.moodIntegratedAt ?? null,
+  };
+  return { event, evidence, chat };
+}
+
+function mapSoulTraitLabelRow(row: Record<string, unknown>): TraitLabelRow {
+  return {
+    label: String(row.label ?? ""),
+    definition: String(row.definition ?? ""),
+    gloss: String(row.gloss ?? ""),
+    anchor: String(row.anchor ?? ""),
+    direction: toAxisVector(row.direction_json),
+    evidence: Number(row.evidence ?? 0),
+    status: String(row.status ?? "seed") as TraitLabelRow["status"],
+    firstSeen: String(row.first_seen ?? ""),
+    lastSeen: String(row.last_seen ?? ""),
+    aliases: jsonArray<string>(row.aliases_json),
+    protocolVersion: String(row.protocol_version ?? "v1"),
+  };
+}
+
+function mapSoulPersonRow(row: Record<string, unknown>): SoulPerson {
+  const mergedInto = row.merged_into;
+  return {
+    personKey: String(row.person_key ?? ""),
+    teamId: String(row.team_id ?? ""),
+    userId: String(row.user_id ?? ""),
+    agentId: String(row.agent_id ?? ""),
+    platform: String(row.platform ?? ""),
+    platformId: row.platform_id === null || row.platform_id === undefined ? null : String(row.platform_id),
+    displayName: String(row.display_name ?? ""),
+    aliases: jsonArray<string>(row.aliases_json).filter((a): a is string => typeof a === "string"),
+    mergedInto: mergedInto === null || mergedInto === undefined ? null : String(mergedInto),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+/**
+ * aliases 并集，不是覆盖：upsert 每次只带「这次看到的那几个称呼」，覆盖会把旧昵称丢掉，
+ * 丢掉别名就等于丢解析路径（同一个人下次换个叫法会被当成第二个人）。
+ * 去重按归一化口径（NFKC + 小写 + 空白折叠），否则 "Lead" 与 "lead" 会重复堆在列里。
+ */
+function mergeAliases(existing: string[], incoming: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...existing, ...incoming]) {
+    if (typeof raw !== "string") continue;
+    const value = raw.trim();
+    if (value === "") continue;
+    const norm = value.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(value);
+  }
+  return out;
+}
+
+/** P2-H：关系边读回（`evidence_json` 缺列/脏 JSON 时退回「本条那一份证据」，不造空数组）。 */
+function mapSoulPersonRelationRow(row: Record<string, unknown>): SoulPersonRelationRow {
+  const recordId = String(row.record_id ?? "");
+  const validFrom = String(row.valid_from ?? "");
+  const quote = String(row.quote ?? "");
+  const evidence = jsonArray<{ recordId: string; at: string; quote: string }>(row.evidence_json);
+  const direction = String(row.direction ?? "out") === "mutual" ? "mutual" : "out";
+  const out: SoulPersonRelationRow = {
+    relId: String(row.rel_id ?? ""),
+    subjKey: String(row.subj_key ?? ""),
+    pred: String(row.pred ?? ""),
+    inversePred: typeof row.inverse_pred === "string" && row.inverse_pred !== "" ? row.inverse_pred : null,
+    objKey: typeof row.obj_key === "string" && row.obj_key !== "" ? row.obj_key : null,
+    objName: typeof row.obj_name === "string" && row.obj_name !== "" ? row.obj_name : null,
+    direction,
+    quote,
+    recordId,
+    evidence: evidence.length > 0 ? evidence : [{ recordId, at: validFrom, quote }],
+    validFrom,
+    validTo: typeof row.valid_to === "string" && row.valid_to !== "" ? row.valid_to : null,
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+  return out;
 }
 
 function mapSoulEmotionRow(row: Record<string, unknown>): SoulEmotionRecord {
@@ -10274,6 +10554,13 @@ function mapSoulEmotionRow(row: Record<string, unknown>): SoulEmotionRecord {
   };
   const dom = Number(row.dominance);
   if (row.dominance !== null && row.dominance !== undefined && Number.isFinite(dom)) rec.dominance = dom;
+  // §5 P3-A：三列旧库/旧行读回 null（「当时没这一维」≠ 取缺省值）。
+  const agency = typeof row.agency === "string" ? row.agency.trim() : "";
+  rec.agency = agency === "self" || agency === "other" || agency === "environment" ? agency : null;
+  const conf = Number(row.confidence);
+  rec.confidence = row.confidence !== null && row.confidence !== undefined && Number.isFinite(conf) ? conf : null;
+  const person = typeof row.object_person === "string" ? row.object_person.trim() : "";
+  rec.objectPerson = person === "" ? null : person;
   const appraisal = jsonObject(row.appraisal_json);
   if (appraisal !== undefined) rec.appraisal = appraisal;
   return rec;
@@ -10284,7 +10571,7 @@ function mapSoulLedgerRow(row: Record<string, unknown>): SoulLedgerEntry {
     entryId: String(row.entry_id ?? ""),
     at: String(row.at ?? ""),
     trigger: String(row.trigger ?? ""),
-    layer: (String(row.layer ?? "all") as SoulLedgerEntry["layer"]),
+    layer: String(row.layer ?? "all") as SoulLedgerEntry["layer"],
     action: String(row.action ?? "admit") as SoulLedgerEntry["action"],
     gates: jsonArray<string>(row.gates_json),
     reason: String(row.reason ?? ""),
@@ -10294,6 +10581,8 @@ function mapSoulLedgerRow(row: Record<string, unknown>): SoulLedgerEntry {
   if (typeof row.before_hash === "string" && row.before_hash.length > 0) entry.beforeHash = row.before_hash;
   if (typeof row.after_hash === "string" && row.after_hash.length > 0) entry.afterHash = row.after_hash;
   if (typeof row.prompt_version === "string" && row.prompt_version.length > 0) entry.promptVersion = row.prompt_version;
+  if (typeof row.protocol_version === "string" && row.protocol_version.length > 0)
+    entry.protocolVersion = row.protocol_version;
   if (typeof row.model === "string" && row.model.length > 0) entry.model = row.model;
   const before = jsonObject(row.before_json);
   if (before) entry.before = before as unknown as PersonaItem;

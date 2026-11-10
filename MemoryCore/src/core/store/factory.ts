@@ -103,10 +103,7 @@ export function createStoreBundle(
   const dbPath = path.join(options.dataDir, "vectors.db");
   const store = new VectorStore(dbPath, dims, logger);
 
-  // R-A3（E2）：listValues 租户级缓存 TTL 接线（recall.valuesCacheTtlMs，<=0 = 缓存关）
-  if (typeof (store as VectorStore).setValuesCacheTtlMs === "function") {
-    (store as VectorStore).setValuesCacheTtlMs(config.recall?.valuesCacheTtlMs ?? 60_000);
-  }
+  // S8（2026-11-07）：价值锚整表与其租户级缓存已删除（原 R-A3 接线退场）。
 
   logger?.debug?.(
     `${TAG} Store created: backend=sqlite, dbPath=${dbPath}, dimensions=${dims}, ` +

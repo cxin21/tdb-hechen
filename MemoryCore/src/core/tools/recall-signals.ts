@@ -15,8 +15,8 @@
  *     bumpRecallCount 写入；C1 起召回 item 携带 metadata 读回）——从 metadata 读取；
  *   - occurred_at/valid_start/valid_end/certainty/valence/significance 为顶层 soul 字段
  *     （L1SearchResult/L1FtsResult 均透传，896ee5d 出参）；
- *   - R9 moodSign：core_values 行带 valence（三值枚举 -1/0/1，LLM derive）——当前轮
- *     appraisal fired 值的 valence 均值符号；fired 为空 / 全 null → 0 → 不加成。
+ *   - R9 moodSign：fired 价值的 valence 均值符号（值锚来源已退场，仅当调用方经
+ *     readValues 注入行时才有值）；fired 为空 / 全 null → 0 → 不加成。
  */
 import { parseTimeWindow, type TimeWindow } from "./content-time-window.js";
 import { appraise, DEFAULT_APPRAISAL_CONFIG, type CoreValue } from "../lifecycle/feeling/appraisal.js";
@@ -446,7 +446,7 @@ export function structuralSignalOf(
 // buildRankContext（plan Interfaces 契约：R-A2 复用）
 // ============================
 
-/** appraisal fired 后的当前轮价值（valence 来自 core_values 行，可为 null）。 */
+/** appraisal fired 后的当前轮价值（valence 来自注入的 readValues 行，可为 null）。 */
 export interface FiredValue {
   label: string;
   weight: number;
@@ -475,7 +475,7 @@ export interface RankContext {
   now: Date;
 }
 
-/** 价值锚行最小形状（store.listValues 行的字集；多余字段无碍）。 */
+/** 价值锚行最小形状（readValues 注入行的字集；多余字段无碍）。 */
 export interface ValueRowLike {
   value_id?: string;
   label: string;

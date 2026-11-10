@@ -116,6 +116,37 @@ export interface AgentEntity {
   metadata_json: string;
 }
 
+/** 人格层 v3.7：agent 的「设定」行（meta_agent_persona）。只存设定，不存经历。 */
+export interface AgentPersonaEntity {
+  agent_id: string;
+  team_id: string;
+  name: string;
+  pronoun: string;
+  self_image: string;
+  voice: string;
+  purpose: string;
+  /** [{label, weight}]；方向由 SEED_LABELS 推导，不在表里存第二份。 */
+  traits_json: string;
+  /** [{text, active, created_at, source?}]；逐字保留，退役只置 active=false。 */
+  redlines_json: string;
+  schema_version: number;
+  fingerprint: string;
+  updated_at: string;
+}
+
+export interface SaveAgentPersonaInput {
+  team_id: string;
+  name: string;
+  pronoun?: string;
+  self_image?: string;
+  voice?: string;
+  purpose?: string;
+  traits_json?: string;
+  redlines_json?: string;
+  fingerprint: string;
+  schema_version?: number;
+}
+
 export interface TaskEntity {
   task_id: string;
   team_id: string;

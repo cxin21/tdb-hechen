@@ -29,6 +29,9 @@ import {
   pickCurrentEmotion,
   moodFocusOf,
   templateHalfLifeHours,
+  rankLabelsByPad,
+  EMOTION_HALF_LIFE_SCALE,
+  EMOTION_PAD_NEAR_MAX,
   EMOTION_LABELS,
   EMOTION_TEMPLATE_VERSION,
   EMOTION_EXPIRY_INTENSITY,
@@ -36,6 +39,9 @@ import {
 
 const NOW = "2026-11-05T02:00:00.000Z";
 const CFG = { emotionHalfLifeHours: 3 };
+
+/** 时间推进只靠算 ISO 字符串，不改系统时钟、不 sleep。 */
+const addHours = (iso: string, hours: number): string => new Date(Date.parse(iso) + hours * 3600_000).toISOString();
 
 describe("可复用情境对象（2026-11-06 补全：六情绪都要说得出原因）", () => {
   it.each([
@@ -72,7 +78,27 @@ describe("deriveEmotionObject（情绪对象抽取）", () => {
   });
 
   it("超长原句不截断充数：超过 24 字直接不算对象（不把整段记录搬进 prompt）", () => {
-    expect(deriveEmotionObject("我在云文库窄栏重设计中确立了取舍：先留白再压缩层级，最后再谈动效与配色的细节")).toBe("");
+    // 去掉句内标点，确保测的是「长度上界」而不是「在首个分句被切开」。
+    expect(deriveEmotionObject("我在云文库窄栏重设计中确立了取舍先留白再压缩层级最后再谈动效与配色的细节")).toBe("");
+  });
+
+  it("按首个中文标点截断：逗号/顿号/冒号也算分句边界", () => {
+    expect(deriveEmotionObject("召回链路漏投影，下一轮再修")).toBe("召回链路漏投影");
+    expect(deriveEmotionObject("何晨要求先取证：不许改代码")).toBe("何晨要求先取证");
+    expect(deriveEmotionObject("注入预算、裁剪顺序都重排了")).toBe("注入预算");
+  });
+
+  it("指令式开头剥掉：必须/需要/应该/请… 不是情绪原因", () => {
+    expect(deriveEmotionObject("必须把召回链路修好")).toBe("把召回链路修好");
+    expect(deriveEmotionObject("请你先取证，再改代码")).toBe("你先取证");
+    expect(deriveEmotionObject("应该先看实测数字")).toBe("先看实测数字");
+  });
+
+  it("泛化指代拒绝当锚：这件事/这个问题不是对象", () => {
+    expect(deriveEmotionObject("这件事")).toBe("");
+    expect(deriveEmotionObject("这个问题")).toBe("");
+    expect(isReusableAffectObject("这件事")).toBe(false);
+    expect(isReusableAffectObject("上述问题")).toBe(false);
   });
 
   it("21–24 字的原句不再落进「截断后仍超上界」的死区", () => {
@@ -99,9 +125,11 @@ describe("情绪 → 心境", () => {
     expect(line).toContain("因为「假绿」");
   });
 
-  it("任务标题整段不能当对象，但标题里的人、被指出的错必须抽出来", () => {
+  it("任务标题整段不能当对象，但被指出的错、被要求守住的事必须抽出来", () => {
     expect(extractAffectReferent("列表按钮状态处理不对，选中了为什么派发不可点")).toBe("被当面指出不对");
-    expect(extractAffectReferent("何晨说先取证，否则不许改代码")).toBe("何晨");
+    // task-27/P2-2：姓名硬编码已删。识别人称主语（「X 说/指出/要求…」）后返回代词「他」：
+    // 名字属于数据，代码里不写死；没有可信姓名源时也不凭一句话编一个名字出来。
+    expect(extractAffectReferent("何晨说先取证，否则不许改代码")).toBe("他");
     expect(extractAffectReferent("假绿被当场指出")).toBe("假绿");
     const pointed = emotionFromSignal(
       { valence: -0.8, arousal: 0.6, occurred_at: "2026-11-05T01:00:00.000Z", excerpt: "列表按钮状态处理不对，选中了为什么派发不可点" },
@@ -599,7 +627,7 @@ describe("情绪生命周期（2026-11-06）：原因会到期、落库强度要
     const threeHoursLater = new Date(Date.parse(NOW) + 3 * 3600_000).toISOString();
     const decayed = decayedStoredIntensity(stored, threeHoursLater);
     expect(decayed).toBeLessThan(0.4);
-    expect(decayed).toBeGreaterThan(0.4 * 0.5); // 愧疚 8h 半衰期：3h 后仍 > 一半
+    expect(decayed).toBeGreaterThan(0.4 * 0.5); // 愧疚 4h 半衰期（§5 P3-B 减半后）：3h 后 0.594 > 一半
     // 行到期判据：年龄看 at，强度看 asOf 起的二次衰减
     expect(isStoredEmotionExpired({ label: "愧疚", intensity: 0.4, at: NOW, asOf: NOW }, NOW)).toBe(false);
     expect(
@@ -617,5 +645,74 @@ describe("情绪生命周期（2026-11-06）：原因会到期、落库强度要
     expect(pickCurrentEmotion([{ ...fresh, object: "最近一次否定" }], undefined, NOW)).toBeUndefined();
     // 活跃里没有、但最近一条还活着 → 用最近一条
     expect(pickCurrentEmotion([], fresh, NOW)?.label).toBe("愧疚");
+  });
+});
+
+describe("§5 P3-B：模板半衰期减半，且读侧 scale 只乘一次", () => {
+  it("模板值就是减半后的字面值（不是「旧值 × 0.5」的表达式，也不在读侧再乘一次）", () => {
+    // 旧值 → 新值：2→1、4→2、6→3、8→4、12→6。
+    expect(templateHalfLifeHours("振奋")).toBe(1);
+    expect(templateHalfLifeHours("开心")).toBe(2);
+    expect(templateHalfLifeHours("失望")).toBe(3);
+    expect(templateHalfLifeHours("愧疚")).toBe(4);
+    expect(templateHalfLifeHours("踏实")).toBe(6);
+    expect(EMOTION_HALF_LIFE_SCALE).toBe(1);
+    // 落库行按标签重算衰减时用的就是这张表：0.4 的「开心」过 3 个半衰期（6h）= 0.05。
+    expect(decayedStoredIntensity({ label: "开心", intensity: 0.4, asOf: NOW }, addHours(NOW, 6))).toBeCloseTo(0.05, 3);
+    // 反证：若半衰期没减半（4h），6h 后应是 0.4·2^-1.5 = 0.1414，不该出现。
+    expect(decayedStoredIntensity({ label: "开心", intensity: 0.4, asOf: NOW }, addHours(NOW, 6))).toBeLessThan(0.1);
+  });
+
+  it("高唤醒模板 1h 半衰期：6.5 个半衰期后落到过期线以下（减半前 2h 只衰到 0.105）", () => {
+    const at = NOW;
+    const later = addHours(NOW, 6.5);
+    const e = { label: "振奋", object: "x", intensity: 1, at };
+    expect(decayedIntensity({ intensity: 1, at, halfLifeHours: templateHalfLifeHours("振奋") }, later)).toBeCloseTo(
+      0.011, 3,
+    );
+    expect(decayedIntensity({ intensity: 1, at, halfLifeHours: templateHalfLifeHours("振奋") }, later)).toBeLessThan(
+      EMOTION_EXPIRY_INTENSITY,
+    );
+    expect(isEmotionExpired(e, later)).toBe(true);
+    // 不减半（2h）时同一点是 0.105，仍高于过期线——这条判据能区分「有没有真的减半」。
+    expect(Math.pow(2, -6.5 / 2)).toBeGreaterThan(EMOTION_EXPIRY_INTENSITY);
+  });
+
+  it("scale 是观测旋钮：0.5 = 半衰点提前一半，且只衰一次（不叠乘）", () => {
+    const ev = { intensity: 1, at: NOW, halfLifeHours: 4 };
+    const fourHours = addHours(NOW, 4);
+    expect(decayedIntensity(ev, fourHours)).toBeCloseTo(0.5, 6); // 不缩放：4h = 一个半衰期
+    expect(decayedIntensity(ev, fourHours, 0.5)).toBeCloseTo(0.25, 6); // 缩放后 4h = 两个半衰期
+    expect(decayedIntensity(ev, fourHours, 2)).toBeCloseTo(Math.SQRT1_2, 6); // 反方向同理，不叠加
+    // 落库行同口径：scale 只进 effectiveHalfLife 一次（愧疚 4h → 2h，4h 后 = 两个半衰期）。
+    expect(decayedStoredIntensity({ label: "愧疚", intensity: 1, asOf: NOW }, fourHours, 0.5)).toBeCloseTo(0.25, 6);
+    expect(decayedStoredIntensity({ label: "愧疚", intensity: 1, asOf: NOW }, fourHours)).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe("§5 P3-C：近邻排序（加权欧氏）——只服务读面与漏斗，不给写入的 label", () => {
+  it("同一份 PAD 在余弦下会选错（记录在案的实测）：(0.3,0.4,0.6) 的余弦最近是「自豪」，但它其实是生产里的「平静」", () => {
+    // 这条不让 rankLabelsByPad 承担标签职责，只把它当「离哪个锚点更近」的度量；
+    // 余弦版本的错误结论（自豪 cos 0.974）保留在这里作为「为什么不用余弦」的活证据。
+    const near = rankLabelsByPad({ valence: 0.3, arousal: 0.4, dominance: 0.6 }, 1)[0];
+    expect(near.distance).toBeLessThan(EMOTION_PAD_NEAR_MAX);
+  });
+
+  it("近邻排序：正中距离 0、全零不命中、k=2 升序（并列按字典序）", () => {
+    const joy = rankLabelsByPad({ valence: 0.7, arousal: 0.55, dominance: 0.7 }, 3);
+    expect(joy[0].label).toBe("开心");
+    expect(joy[0].distance).toBe(0);
+
+    const zero = rankLabelsByPad({ valence: 0, arousal: 0, dominance: 0 }, 2);
+    expect(zero).toHaveLength(2);
+    for (const r of zero) {
+      expect(r.distance).toBeGreaterThan(EMOTION_PAD_NEAR_MAX);
+      expect(Number.isFinite(r.distance)).toBe(false); // 没有读数：不是「像谁」，是没有距离
+    }
+
+    const two = rankLabelsByPad({ valence: 0.3, arousal: 0.4, dominance: 0.6 }, 2);
+    expect(two.map((r) => r.label)).toEqual(["欣慰", "笃定"]);
+    expect(two[0].distance).toBeLessThan(two[1].distance);
+    expect(two[0].distance).toBeCloseTo(0.1275, 3);
   });
 });

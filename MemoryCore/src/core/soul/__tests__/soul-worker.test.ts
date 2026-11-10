@@ -11,7 +11,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createSoulRewriter, runSoulMaintenance, type SoulEvidenceRecord } from "../worker.js";
 import { resolveSoulConfig } from "../types.js";
-import type { PersonaItem, SoulEpisode } from "../types.js";
+import type { PersonaItem, SoulEpisode, SoulGateStatBump } from "../types.js";
 import { factsFromEpisode, historyToItems } from "../history.js";
 import type { IMemoryStore } from "../../store/types.js";
 
@@ -19,14 +19,26 @@ const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
 
 function makeStore(
   opts: {
-    core?: Array<{ slot: string; content: string }>;
     items?: PersonaItem[];
     signals?: Array<{ valence: number; arousal: number; occurred_at: string; excerpt?: string | null }>;
     ledger?: Array<Record<string, unknown>>;
-    state?: { valence: number; arousal: number; baselineValence: number; baselineArousal: number; updatedAt: string; sampleCount: number };
+    state?: {
+      valence: number;
+      arousal: number;
+      baselineValence: number;
+      baselineArousal: number;
+      updatedAt: string;
+      sampleCount: number;
+      emotionObject?: string | null;
+      emotionLabel?: string | null;
+      emotionIntensity?: number | null;
+      emotionAt?: string | null;
+    };
     /** 事件池：identity/values 的正向判据必须引用真实 ep-*，测试用固定池代表已挖掘事件。 */
     episodes?: SoulEpisode[];
     l0Messages?: Array<{ recordId: string; role: string; text: string; occurredAt?: string }>;
+    /** S10：清库重生水位（undefined＝从未清库）。 */
+    watermark?: string;
   } = {},
 ) {
   const items = [...(opts.items ?? [])];
@@ -37,13 +49,17 @@ function makeStore(
     sampleCount?: number | null;
     emotionObject?: string | null;
     emotionLabel?: string | null;
+    emotionIntensity?: number | null;
     emotionAt?: string | null;
   }> = [];
   const commits: Array<{ upsert: PersonaItem[]; ledger: unknown[] }> = [];
   // 情绪史落表：worker 用可选方法 commitSoulEmotions，测试里收集调用以便断言「真的写了」。
   const emotionCommits: Array<Array<Record<string, unknown>>> = [];
+  // P0-2：门拒计数落 soul_gate_stats（不再进账本），收集每 tick 的聚合结果。
+  const gateStatCommits: SoulGateStatBump[][] = [];
+  /** S10：recentL0Messages 的实参（断言水位下传）。 */
+  const l0Calls: Array<{ sinceDays?: number; maxMessages?: number; sinceIso?: string } | undefined> = [];
   const store = {
-    readCore: vi.fn(async () => opts.core ?? []),
     listSoulPersona: vi.fn(async () => items.map((i) => ({ ...i }))),
     commitSoulPersona: vi.fn(async (_t: unknown, plan: { upsert: PersonaItem[]; ledger: unknown[] }) => {
       commits.push({ upsert: plan.upsert, ledger: plan.ledger });
@@ -62,6 +78,7 @@ function makeStore(
       sampleCount?: number | null;
       emotionObject?: string | null;
       emotionLabel?: string | null;
+      emotionIntensity?: number | null;
       emotionAt?: string | null;
     }) => {
       writes.push(state);
@@ -72,19 +89,25 @@ function makeStore(
     }),
     recentAffectSignals: vi.fn(async () => opts.signals ?? []),
     listSoulLedger: vi.fn(async () => opts.ledger ?? []),
+    bumpSoulGateStats: vi.fn(async (_t: unknown, rows: SoulGateStatBump[]) => {
+      gateStatCommits.push(rows);
+      return { bumped: rows.length };
+    }),
     commitSoulEpisodes: vi.fn(async () => ({ inserted: 0 })),
     listSoulEpisodes: vi.fn(async () => opts.episodes ?? []),
-    recentL0Messages: vi.fn(async () =>
-      (opts.l0Messages ?? []).map((m) => ({
+    soulMetaGet: vi.fn(async () => opts.watermark),
+    recentL0Messages: vi.fn(async (_t: unknown, o?: { sinceDays?: number; maxMessages?: number; sinceIso?: string }) => {
+      l0Calls.push(o);
+      return (opts.l0Messages ?? []).map((m) => ({
         record_id: m.recordId,
         session_id: "s1",
         role: m.role,
         message_text: m.text,
         recorded_at: m.occurredAt ?? "2026-11-05T09:00:00.000Z",
-      })),
-    ),
+      }));
+    }),
   } as unknown as IMemoryStore;
-  return { store, items, commits, writes, emotionCommits };
+  return { store, items, commits, writes, emotionCommits, l0Calls, gateStatCommits };
 }
 
 const TEST_EPISODES: SoulEpisode[] = [
@@ -137,10 +160,83 @@ const RECORDS: SoulEvidenceRecord[] = [
 ];
 
 describe("runSoulMaintenance 编排", () => {
+  it("S10：清库水位下传给 L0 派生窗口（水位之后才抽事件）", async () => {
+    const { store, l0Calls } = makeStore({
+      watermark: "2026-11-07T05:16:35.000Z",
+      l0Messages: [{ recordId: "l0-1", role: "user", text: "旧对话" }],
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-07T06:00:00.000Z",
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => RECORDS,
+    });
+    // P0-A：tick 末落卡时还会读一次 L0 取 agent 自述名（无 sinceIso），
+    // 所以按「带水位的那个调用」断言，而不是 at(-1)。
+    expect(l0Calls.find((c) => c?.sinceIso)?.sinceIso).toBe("2026-11-07T05:16:35.000Z");
+  });
+
+  // S10 补洞（2026-11-07）：清库水位必须压住「首次积分回看 30 天」。
+  // 生产实测清库重启后首个 tick 把旧 L1 重放成 200 样本、05:47 的旧心境原样复活。
+  it("S10：水位之前的 L1 信号不得在首次积分里回放，心境保持空", async () => {
+    const { store, writes } = makeStore({
+      watermark: "2026-11-07T06:28:13.834Z",
+      signals: [
+        { valence: 0.9, arousal: 0.8, occurred_at: "2026-11-07T05:47:33.000Z" },
+        { valence: 0.7, arousal: 0.6, occurred_at: "2026-11-07T05:00:00.000Z" },
+      ],
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-07T06:30:00.000Z",
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => [],
+    });
+    const w = writes.at(-1);
+    expect(w?.valence).toBe(0);
+    expect(w?.sampleCount ?? 0).toBe(0);
+  });
+
+  it("S10：水位之后的新 L1 信号照常进心境", async () => {
+    const { store, writes } = makeStore({
+      watermark: "2026-11-07T06:28:13.834Z",
+      signals: [{ valence: 0.9, arousal: 0.8, occurred_at: "2026-11-07T06:29:00.000Z" }],
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-07T06:30:00.000Z",
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => [],
+    });
+    const w = writes.at(-1);
+    expect(w?.valence ?? 0).toBeGreaterThan(0);
+    expect(w?.sampleCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it("S10：未清库时不传 sinceIso（沿用常规窗口）", async () => {
+    const { store, l0Calls } = makeStore({
+      l0Messages: [{ recordId: "l0-1", role: "user", text: "对话" }],
+    });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-07T06:00:00.000Z",
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => RECORDS,
+    });
+    expect(l0Calls.at(-1)?.sinceIso).toBeUndefined();
+  });
+
   it("节流：未到 updateIntervalHours 不调 LLM/漂移，并如实标注（配置不是死配置）", async () => {
     const rewriter = vi.fn(async () => []);
     const { store, commits } = makeStore({
-      core: [{ slot: "strict_rule", content: "- 绝不删除生产数据" }],
       ledger: [{ action: "cadence", at: "2026-11-05T09:00:00.000Z" }],
     });
     const rep = await runSoulMaintenance({
@@ -148,7 +244,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 6 }),
+      config: resolveSoulConfig({ updateIntervalHours: 6 }),
       recentRecords: async () => RECORDS,
       rewriter,
       embed: async () => [1, 0],
@@ -164,7 +260,6 @@ describe("runSoulMaintenance 编排", () => {
   it("到期待整合：跑 LLM 并落一条 cadence 锚点，下轮据此节流", async () => {
     const rewriter = vi.fn(async () => []);
     const { store, commits } = makeStore({
-      core: [{ slot: "strict_rule", content: "- 绝不删除生产数据" }],
       ledger: [{ action: "cadence", at: "2026-11-05T02:00:00.000Z" }],
     });
     const rep = await runSoulMaintenance({
@@ -172,7 +267,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 6 }),
+      config: resolveSoulConfig({ updateIntervalHours: 6 }),
       recentRecords: async () => RECORDS,
       rewriter,
     });
@@ -182,55 +277,16 @@ describe("runSoulMaintenance 编排", () => {
     expect(led.filter((e) => e.action === "cadence")).toHaveLength(1);
   });
 
-  it("enabled=false 且非 import：不写库，如实给 skipped", async () => {
-    const { store, commits } = makeStore({ core: [{ slot: "strict_rule", content: "- 绝不删除生产数据" }] });
+  it("S9：总闸删除后 lifecycle 触发恒跑（不再有 skipped 早退）", async () => {
+    const { store, commits } = makeStore();
     const rep = await runSoulMaintenance({ store, tenant: TENANT, trigger: "lifecycle", config: resolveSoulConfig({}) });
-    expect(rep.skipped).toBe("soulMaintenance.enabled=false");
-    expect(commits).toHaveLength(0);
-  });
-
-  it("首次导入：红线行进 boundary，事件句/方法论进 method 或拒绝（不进注入层）", async () => {
-    const core = [
-      { slot: "strict_rule", content: "- 绝不把测试数据写进生产库\n- 我完成 commit b8ba3e0 并推送" },
-      { slot: "self_identity", content: "- 我是个先取证再下结论的人" },
-    ];
-    const { store, items } = makeStore({ core });
-    const rep = await runSoulMaintenance({
-      store,
-      tenant: TENANT,
-      trigger: "import",
-      config: resolveSoulConfig({ enabled: true }),
-      now: "2026-11-05T00:00:00.000Z",
-    });
-    expect(rep.imported).toBeGreaterThanOrEqual(3);
-    const boundary = items.filter((i) => i.layer === "boundary");
-    expect(boundary.some((i) => i.text.includes("绝不把测试数据写进生产库"))).toBe(true);
-    // 事件句不得进注入层
-    for (const it of items.filter((i) => i.layer !== "method")) {
-      expect(it.text).not.toContain("b8ba3e0");
-    }
+    expect(rep.skipped).toBeUndefined();
     expect(rep.stored).toBe(true);
+    expect(commits.length).toBeGreaterThan(0);
   });
 
-  it("跨层同文：分类口径更新后换层而不是并存两份（不新增条目、不计变更率）", async () => {
-    const text = "何晨是我锚定的「重要的人」，我对他保留完整上下文而不是每次重新自我介绍";
-    const legacy = { ...mkItem("values:v", "values", text), evidenceIds: ["slot:identity"] };
-    const { store: s2, items } = makeStore({
-      items: [legacy],
-      core: [{ slot: "identity", content: `- ${text}` }],
-    });
-    const rep = await runSoulMaintenance({
-      store: s2,
-      tenant: TENANT,
-      trigger: "import",
-      config: resolveSoulConfig({ enabled: true }),
-      now: "2026-11-05T00:00:00.000Z",
-    });
-    expect(rep.reclassified).toBe(1);
-    expect(items).toHaveLength(1);
-    expect(items[0]?.layer).toBe("relationship");
-    expect(rep.admitted).toBe(0);
-  });
+  // 2026-11-07（P0-0）：随 core_memory 槽位通道移除，两条「槽导入/换层」用例一并删除——
+  // 它们锁的是已不存在的通道（imported/reclassified）；人格来源只剩事件史与证据。
 
   it("漂移：无向量器 → driftSkipped，且绝不伪造分数", async () => {
     const { store } = makeStore({
@@ -254,7 +310,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       recentRecords: async () => RECORDS,
     });
     expect(rep.drift).toEqual([]);
@@ -284,7 +340,7 @@ describe("runSoulMaintenance 编排", () => {
         store: judge.store,
         tenant: TENANT,
         trigger: "lifecycle",
-        config: resolveSoulConfig({ enabled: true }),
+        config: resolveSoulConfig({}),
         recentRecords: async () => RECORDS,
         embed,
         now: `2026-11-0${i + 1}T00:00:00.000Z`,
@@ -298,7 +354,7 @@ describe("runSoulMaintenance 编排", () => {
         store: voice.store,
         tenant: TENANT,
         trigger: "lifecycle",
-        config: resolveSoulConfig({ enabled: true }),
+        config: resolveSoulConfig({}),
         recentRecords: async () => RECORDS,
         embed,
         now: `2026-11-0${i + 1}T00:00:00.000Z`,
@@ -306,6 +362,59 @@ describe("runSoulMaintenance 编排", () => {
     }
     const v = voice.items.find((i) => i.itemId === "voice:v")!;
     expect(v.state).not.toBe("frozen"); // 语体可自我复位，不允许冻结
+  });
+
+  // P1-1 残留（P1-2 顺带修）：validTo 非空的行既不进注入，也不该再占漂移预算。
+  // 修前只按 state 取候选，被结论合并取代的行仍是 active → 照常被判漂移、降级/冻结并多写账本，
+  // 而读侧（orderForRender）根本看不到它：一次读侧看不见的迁移。
+  it("漂移：validTo 非空的行不进 drift 候选（不占预算、不写迁移账本）", async () => {
+    const mk = (id: string, text: string, over: Partial<PersonaItem> = {}): PersonaItem => ({
+      itemId: id,
+      layer: "voice",
+      text,
+      state: "active",
+      weight: 0.8,
+      evidenceIds: ["r1"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+      ...over,
+    });
+    const { store, items, commits } = makeStore({
+      items: [
+        // 两句措辞不同（否则会先被 planMerge 并成一句，轮不到漂移段）。
+        // 被取代这条权重更高：修前一定排在被保留那条前面（漂移按权重降序取前 6）。
+        mk("voice:expired", "我说话习惯先给结论，再补一句为什么", {
+          weight: 0.9,
+          validTo: "2026-11-05T00:00:00.000Z",
+          supersededBy: "voice:keep",
+          supersededReason: "结论合并",
+        }),
+        mk("voice:keep", "我宁可慢交付，也不交付没验证过的结论", { weight: 0.5 }),
+      ],
+    });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => RECORDS,
+      now: "2026-11-06T00:00:00.000Z",
+    });
+    // 只有未失效那条被测量（修前这里会是 ["voice:expired", "voice:keep"]）。
+    expect(rep.drift.map((d) => d.itemId)).toEqual(["voice:keep"]);
+    // 被取代的行一字未动：状态、权重、漂移史都不该被这次 tick 改写。
+    const expired = items.find((i) => i.itemId === "voice:expired")!;
+    expect(expired.state).toBe("active");
+    expect(expired.weight).toBe(0.9);
+    expect(expired.driftHistory).toBeUndefined();
+    // 也不该为它写 drift/rollback 账本。
+    const ledgerRows = commits.flatMap((c) => c.ledger as Array<Record<string, unknown>>);
+    expect(ledgerRows.filter((l) => l.itemId === "voice:expired" && (l.layer === "voice" || l.action === "rollback"))).toEqual(
+      [],
+    );
   });
 
   it("心境：负向信号 → soul_state 写入带基线，line 描述偏移而非绝对档", async () => {
@@ -319,7 +428,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T02:00:00.000Z",
       recentRecords: async () => RECORDS,
     });
@@ -338,11 +447,12 @@ describe("runSoulMaintenance 编排", () => {
       store: withObject.store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T01:30:00.000Z",
       recentRecords: async () => RECORDS,
     });
-    expect(rep1.mood!.line).toContain("因为「何晨」");
+    // P2-2 之后同一句话的情绪对象是人称「他」（不再把姓名写进判据）。
+    expect(rep1.mood!.line).toContain("因为「他」");
 
     const blind = makeStore({
       signals: [{ valence: -0.8, arousal: 0.6, occurred_at: "2026-11-05T01:00:00.000Z" }],
@@ -351,7 +461,7 @@ describe("runSoulMaintenance 编排", () => {
       store: blind.store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T01:30:00.000Z",
       recentRecords: async () => RECORDS,
     });
@@ -378,7 +488,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T02:00:00.000Z",
       recentRecords: async () => RECORDS,
     });
@@ -399,7 +509,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => RECORDS,
       recentL0: async () => [],
@@ -419,7 +529,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => RECORDS,
       recentL0: async () => [],
@@ -443,7 +553,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => RECORDS,
       recentL0: async () => [],
@@ -477,7 +587,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       recentRecords: async () => RECORDS,
       rewriter: async () => [{ layer: "values", text: newText, evidenceIds: ["r1", "r2", "r3", ...EP_IDS] }],
     });
@@ -496,7 +606,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       recentRecords: async () => RECORDS,
       rewriter: async () => [
         // 相似度够格走「同一 itemId 改写」（≈0.71），但改动幅度 ≈0.26 > α=0.15
@@ -522,7 +632,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T03:00:00.000Z",
       recentRecords: async () => RECORDS,
       rewriter: async () => [{ layer: "values", text: "宁可慢交付，也不交付没过验证的结论", evidenceIds: ["r1", "r2", "r3", ...EP_IDS] }],
@@ -549,7 +659,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2 }),
       recentRecords: async () => RECORDS,
       logger: logger as unknown as Parameters<typeof runSoulMaintenance>[0]["logger"],
     });
@@ -571,7 +681,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2 }),
       recentRecords: async () => RECORDS,
       rewriter,
     });
@@ -602,7 +712,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2, minEpisodeEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2, minEpisodeEvidence: 2 }),
       recentRecords: async () => RECORDS,
       rewriter,
     });
@@ -702,7 +812,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 0, personName: "何晨" }),
+      config: resolveSoulConfig({ updateIntervalHours: 0, personName: "何晨" }),
       now: "2026-11-05T02:00:00.000Z",
       recentRecords: async () => RECORDS,
       rewriter,
@@ -764,7 +874,7 @@ describe("runSoulMaintenance 编排", () => {
       store: openRun.store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 0 }),
+      config: resolveSoulConfig({ updateIntervalHours: 0 }),
       now: "2026-11-05T04:00:00.000Z",
       recentRecords: async () => [],
     });
@@ -786,7 +896,7 @@ describe("runSoulMaintenance 编排", () => {
       store: doneRun.store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, updateIntervalHours: 0 }),
+      config: resolveSoulConfig({ updateIntervalHours: 0 }),
       now: "2026-11-05T04:00:00.000Z",
       recentRecords: async () => [],
     });
@@ -794,13 +904,13 @@ describe("runSoulMaintenance 编排", () => {
     expect(doneLedger.some((e) => Array.isArray(e.gates) && (e.gates as string[]).includes("mood_gate"))).toBe(false);
   });
 
-  it("拒绝落账本 + rejectTop：说不出出处的人格不只被丢弃，还留下可统计的理由", async () => {
-    const { store, commits } = makeStore({ episodes: [] });
+  it("拒绝进 soul_gate_stats、不进账本：说不出出处的人格留下可统计的理由", async () => {
+    const { store, commits, gateStatCommits } = makeStore({ episodes: [] });
     const rep = await runSoulMaintenance({
       store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       recentRecords: async () => RECORDS,
       // 有立场（我认为），但没有任何 ep-* 出处 → 正向判据必须拦下。
       rewriter: async () => [{ layer: "identity", text: "我认为证据比速度重要", evidenceIds: ["r1", "r2", "r3"] }],
@@ -809,11 +919,15 @@ describe("runSoulMaintenance 编排", () => {
     const rej = rep.rejections.find((r) => r.codes.includes("episode_missing"));
     expect(rej).toBeTruthy();
     expect(rej!.detail).toBeTruthy();
+    // P0-2：拒绝不再占账本行。
     const ledger = commits.at(-1)!.ledger as Array<Record<string, unknown>>;
-    const entry = ledger.find((e) => e.action === "reject" && Array.isArray(e.gates) && (e.gates as string[]).includes("episode_missing"));
-    expect(entry).toBeTruthy();
-    expect(String(entry!.entryId)).toMatch(/^rej-identity-/);
-    expect(String(entry!.itemId)).toMatch(/^cand:/);
+    expect(ledger.some((e) => e.action === "reject")).toBe(false);
+    // 但仍按 (day, code, layer) 聚合落 soul_gate_stats。
+    const stats = gateStatCommits.at(-1) ?? [];
+    const hit = stats.find((s) => s.code === "episode_missing" && s.layer === "identity");
+    expect(hit).toBeTruthy();
+    expect(hit!.count).toBeGreaterThan(0);
+    expect(hit!.day).toBe(rep.at.slice(0, 10));
     expect(rep.rejectTop?.find((r) => r.code === "episode_missing")?.count).toBeGreaterThan(0);
   });
 
@@ -837,7 +951,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       recentRecords: async () => RECORDS,
       rewriter: async () => [],
     });
@@ -870,7 +984,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2 }),
       recentRecords: async () => RECORDS,
       rewriter,
     });
@@ -895,7 +1009,7 @@ describe("runSoulMaintenance 编排", () => {
       tenant: TENANT,
       now: "2026-11-05T10:00:00.000Z",
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2 }),
       recentRecords: async () => RECORDS,
       rewriter,
     });
@@ -904,9 +1018,9 @@ describe("runSoulMaintenance 编排", () => {
     expect(items.some((i) => i.layer === "identity")).toBe(false);
   });
 
-  // 情绪改变判断的第二处落点：不是换一句文案，而是决定这一轮「长不长我是谁」。
-  // 同一次判断在两种心境下必须给出两种结果——否则情绪就只是一个读数。
-  it("还在同一个对象上欠着修复时，情绪为自我向 → 这一轮不重写 identity/values（mood_defer_self）", async () => {
+  // S5：情绪不再有否决权（mood_gate defer 退场）。同一对象欠账时门仍可观测，
+  // 但不能把有证据的候选整轮挡在门外——两种心境下准入结果必须一致。
+  it("同一对象欠着修复时情绪门只观测不否决（observed_only）", async () => {
     const owed = (agentStance: string): SoulEpisode[] => [
       { ...TEST_EPISODES[0], episodeId: "ep-x1", object: "假绿", agentStance, at: "2026-11-05T01:00:00.000Z" },
       { ...TEST_EPISODES[0], episodeId: "ep-x2", object: "假绿", agentStance, at: "2026-11-05T01:30:00.000Z" },
@@ -927,27 +1041,60 @@ describe("runSoulMaintenance 编排", () => {
       store: open.store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2 }),
       now: "2026-11-05T02:00:00.000Z",
       recentRecords: async () => RECORDS,
       rewriter: candidate,
     });
-    const deferred = repOpen.rejections.find((r) => r.codes.includes("mood_defer_self"));
-    expect(deferred).toBeTruthy();
-    expect(String(deferred!.detail)).toContain("这一轮先修");
+    expect(repOpen.rejections.some((r) => r.codes.includes("mood_defer_self"))).toBe(false);
+    expect(repOpen.mood?.gate?.opened).toBe(true);
+    expect(repOpen.mood?.gate?.focus).toBe("self");
 
-    // 同一句候选、同一批证据：修复已经写在我的回复里 → 不再拦，走正常准入。
+    // 同一句候选、同一批证据：修复已写在回复里 → 门本就不响；两轮准入结果一致。
     const done = makeStore({ state, episodes: owed("已按原话重跑，补上了") });
     const repDone = await runSoulMaintenance({
       store: done.store,
       tenant: TENANT,
       trigger: "manual",
-      config: resolveSoulConfig({ enabled: true, minEvidence: 2 }),
+      config: resolveSoulConfig({ minEvidence: 2 }),
       now: "2026-11-05T02:00:00.000Z",
       recentRecords: async () => RECORDS,
       rewriter: candidate,
     });
     expect(repDone.rejections.some((r) => r.codes.includes("mood_defer_self"))).toBe(false);
+    expect(repDone.admitted).toBe(repOpen.admitted);
+    expect(repDone.rejected).toBe(repOpen.rejected);
+  });
+
+  it("情绪强度过期后仍保留对象锚，只把强度置空（S5）", async () => {
+    const state = {
+      valence: -0.2,
+      arousal: 0.3,
+      baselineValence: 0,
+      baselineArousal: 0.3,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+      sampleCount: 3,
+      emotionObject: "假绿",
+      emotionLabel: "恼火",
+      emotionIntensity: 0.8,
+      emotionAt: "2026-11-01T00:00:00.000Z",
+    };
+    const { store, writes } = makeStore({ state, episodes: [], signals: [] });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-05T10:00:00.000Z",
+      trigger: "manual",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => [],
+      rewriter: async () => [],
+    });
+    expect(writes.length).toBeGreaterThan(0);
+    const last = writes[writes.length - 1]!;
+    expect(last.emotionObject).toBe("假绿");
+    expect(last.emotionLabel).toBe("恼火");
+    expect(last.emotionAt).toBe("2026-11-01T00:00:00.000Z");
+    expect(last.emotionIntensity ?? null).toBeNull();
   });
 
   it("点名回滚在下一轮 tick 执行，没有请求时不碰任何条目", async () => {
@@ -977,7 +1124,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => [],
       recentL0: async () => [],
@@ -993,7 +1140,7 @@ describe("runSoulMaintenance 编排", () => {
       store: quiet.store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => [],
       recentL0: async () => [],
@@ -1040,7 +1187,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true, freezeContradictions: 1 }),
+      config: resolveSoulConfig({ freezeContradictions: 1 }),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => [],
       recentL0: async () => [],
@@ -1067,7 +1214,7 @@ describe("runSoulMaintenance 编排", () => {
       store,
       tenant: TENANT,
       trigger: "lifecycle",
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
       now: "2026-11-05T10:00:00.000Z",
       recentRecords: async () => [],
       recentL0: async () => [],

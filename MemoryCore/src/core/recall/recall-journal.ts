@@ -484,6 +484,59 @@ export interface RecallJournalEntry {
   fold?: RecallJournalFold;
   /** #179：候选池观测（≤40 条，单轮新增 <4KB）。 */
   candidates?: RecallJournalCandidates;
+  /** S8 D10：人格两通道/漂移观测（缺字段 = 旧条目或本轮无卡）。 */
+  soul?: RecallJournalSoul;
+}
+
+/** S8（2026-11-07）D10：soul 注入观测——与 core/soul/observation.ts 的 SoulJournalFields 同形。 */
+export interface RecallJournalSoul {
+  /** 新会话首次召回：这次会话冻结的卡 version/hash/chars。 */
+  sessionInit?: { version: number; hash: string; chars: number };
+  /** 通道 B 本轮渲染字符数（≤PERSONA_TURN_MAX_CHARS）。 */
+  turnChars?: number;
+  /** 最近一次 worker tick：changed=位移轴数、rejected=被拒票数。 */
+  drift?: { changed: number; rejected: number };
+  /** G2：取卡/渲染失败原因（区分「没设定」与「取卡失败」）。 */
+  failReason?: "turn-error";
+  /**
+   * 这个 soul 段的权威来源（2026-11-07 R1）：
+   * - `server-render` = Core 侧现场重渲染 + 读库快照得到的**估算**；
+   * - `plugin` = 插件回传的**实际注入量**（见 RecallJournalInjection）。
+   * 两者并存才可判「日志是否严格等于真实注入」；缺字段 = 旧条目。
+   */
+  source?: "plugin" | "server-render";
+}
+
+/**
+ * R1（2026-11-07）：插件回传的实际注入记录。
+ *
+ * 单开一种行而不并进 RecallJournalEntry，是因为两侧知道的不是同一件事：
+ * 召回行在 prompt 装配时写出，**早于**插件 append（volatile）与取卡（section），
+ * 此刻还不知实际注入多少；插件只知道「我注入了什么」，不知召回的 gates/candidates。
+ * 两者用 `sessionKey + turn` 关联，journal 消费者按 `kind` 区分（无 kind = 召回视图）。
+ *
+ * 隐私约束：只记长度与指纹，绝不上送卡正文/注入正文/token。
+ */
+export interface RecallJournalInjection {
+  kind: "injection";
+  ts: string;
+  teamId: string;
+  userId?: string;
+  agentId?: string;
+  sessionKey?: string;
+  turn: number | null;
+  /** 通道 A：插件实际拉取并冻结的那一版卡。 */
+  card?: { version: number; hash: string; chars: number };
+  /** 通道 B：本轮 volatile 块；skipped=true 表示去重跳过，chars=0。 */
+  volatile?: { chars: number; hash: string; skipped: boolean };
+  /**
+   * 这一行属于哪条通道（2026-11-07 补）。
+   *
+   * 插件一次注入会 POST 两次（取卡一次、volatile 一次），只靠「哪个字段在场」
+   * 也能区分，但下游对账要按通道各算各的：卡应冻结后每会话只变一次，volatile
+   * 每轮一行且可能 skip。显式 phase 让 stats 不必猜；旧行缺字段时按在场字段推断。
+   */
+  phase?: "card" | "volatile" | "mixed";
 }
 
 export interface RecallJournalTenant {
@@ -521,10 +574,10 @@ function rotateOldFiles(basePath: string, maxFiles: number): void {
   }
 }
 
-export function appendRecallJournal(
+function appendJournalLine(
   journalDir: string,
   tenant: RecallJournalTenant,
-  entry: RecallJournalEntry,
+  entry: unknown,
   opts: RecallJournalOpts,
 ): void {
   try {
@@ -546,4 +599,28 @@ export function appendRecallJournal(
   } catch {
     // best-effort（拍板定案）：日志失败零影响主链路，绝不抛出。
   }
+}
+
+export function appendRecallJournal(
+  journalDir: string,
+  tenant: RecallJournalTenant,
+  entry: RecallJournalEntry,
+  opts: RecallJournalOpts,
+): void {
+  appendJournalLine(journalDir, tenant, entry, opts);
+}
+
+/**
+ * R1（2026-11-07）：写一条「实际注入」行（插件回传）。
+ *
+ * 与召回行同文件、同轮转；用 `kind:"injection"` 区分。best-effort：调用方
+ * （HTTP handler）不因写日志失败而报错。
+ */
+export function appendRecallJournalInjection(
+  journalDir: string,
+  tenant: RecallJournalTenant,
+  entry: RecallJournalInjection,
+  opts: RecallJournalOpts,
+): void {
+  appendJournalLine(journalDir, tenant, entry, opts);
 }

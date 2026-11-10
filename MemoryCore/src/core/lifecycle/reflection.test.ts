@@ -141,37 +141,10 @@ describe("Batch D D-a：结论卡确定性校验门 + few-shot（#77 · survey F
     expect(res.cardsWritten).toBe(1);
   });
 
-  it("few-shot gate on：conclusionContract.enabled=true → prompt 含「一句话一件事」拆条引导", async () => {
-    const store = makeStore();
-    const llmRunner = { run: vi.fn(async () => "[]") };
-    await runReflection({
-      queryL1: async () => triggerRows() as never,
-      config: { enabled: true, rRef: 2, soulProposals: { conclusionContract: { enabled: true } } },
-      store, llmRunner, logger: LOG,
-    });
-    const prompt = ((llmRunner.run.mock.calls[0] as unknown[])[0] as { prompt?: string }).prompt ?? "";
-    expect(prompt).toContain("一句话一件事");
-  });
-
-  it("few-shot gate off（缺省）：prompt 逐位现状不含拆条引导", async () => {
-    const store = makeStore();
-    const llmRunner = { run: vi.fn(async () => "[]") };
-    await runReflection({
-      queryL1: async () => triggerRows() as never,
-      config: { enabled: true, rRef: 2 },
-      store, llmRunner, logger: LOG,
-    });
-    const prompt = ((llmRunner.run.mock.calls[0] as unknown[])[0] as { prompt?: string }).prompt ?? "";
-    expect(prompt).not.toContain("一句话一件事");
-  });
-});
-
-describe("parseReflectionProposals", () => {
   it("宽松 JSON 提取 + 非法输入空数组", () => {
-    // #44：parse 契约扩展 promiseTransitions（缺省 []，可选提议面）——非 promise 字段逐位不变。
-    // D8 创建通道：parse 契约同式扩展 promiseCreations（缺省 []，可选提议面）。
-    // #91 返工（M-marker 路由）：parse 契约同式扩展 echoKey（缺省 ""，产卡 echo_key 指认；缺失/非法 → 空串）。
-    expect(parseReflectionProposals('[{"question":"q","conclusion":"c","evidence":["r1"]}]')).toEqual([{ question: "q", conclusion: "c", evidence: ["r1"], echoKey: "", promiseTransitions: [], promiseCreations: [] }]);
+    // 2026-11-07（T1）：parse 契约回到纯结论卡三字段（question/conclusion/evidence）——
+    // promiseTransitions / promiseCreations / echoKey 随提案通道删除。
+    expect(parseReflectionProposals('[{"question":"q","conclusion":"c","evidence":["r1"]}]')).toEqual([{ question: "q", conclusion: "c", evidence: ["r1"] }]);
     expect(parseReflectionProposals("not json")).toEqual([]);
   });
 });

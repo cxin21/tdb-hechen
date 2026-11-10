@@ -504,7 +504,7 @@ export class TdaiCore {
       // 用独立函数缺省 0.3 ⇒ 同一份 yaml 在两条召回路给出不同候选池（#151 同类分叉）。
       scoreThreshold: this.cfg?.recall?.scoreThreshold,
       // C1（灵魂记忆 spec §2.2）：coreRef 排序加成配置透传（缺省由 executeMemorySearch
-      // 内部回落 0.05）；价值锚由 executeMemorySearch 从 store.listValues 租户读取
+      // 内部回落 0.05）；价值锚来源已退场（S8），该加成不再有候选可命中
       coreRefBoost: this.cfg?.recall?.coreRefBoost,
       // P0-2（issue #2）：native RRF 共识门槛透传（缺省 undefined → executeMemorySearch 0=关）
       nativeMinRRF: this.cfg?.recall?.nativeMinRRF,

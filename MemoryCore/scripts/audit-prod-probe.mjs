@@ -20,7 +20,6 @@ q("l1_records", "SELECT COUNT(*) c FROM l1_records");
 q("l1_archive", "SELECT COUNT(*) c FROM l1_archive");
 q("l1_links", "SELECT COUNT(*) c FROM l1_links");
 q("core_memory", "SELECT COUNT(*) c FROM core_memory");
-q("core_values", "SELECT COUNT(*) c FROM core_values");
 q("soul_fields", "SELECT COUNT(*) total, SUM(CASE WHEN occurred_at IS NOT NULL AND occurred_at != '' THEN 1 ELSE 0 END) has_occurred, SUM(CASE WHEN certainty IS NOT NULL AND certainty != '' THEN 1 ELSE 0 END) has_certainty, SUM(CASE WHEN valence IS NOT NULL THEN 1 ELSE 0 END) has_valence, SUM(CASE WHEN significance IS NOT NULL THEN 1 ELSE 0 END) has_sig FROM l1_records");
 q("archive_by_reason", "SELECT COALESCE(reason,'') reason, COUNT(*) c FROM l1_archive GROUP BY reason");
 q("links_by_type", "SELECT COALESCE(type,'') type, COUNT(*) c FROM l1_links GROUP BY type");

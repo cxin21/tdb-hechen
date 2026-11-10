@@ -64,7 +64,9 @@ describe("事件 → 自我/关系史", () => {
     }));
     const conflict = facts.find((f) => f.kind === "conflict");
     expect(conflict?.layer).toBe("relationship");
-    expect(conflict?.text).toContain("只回了");
+    // 关系行记「他的要求 + 我做到没有」，不再复述我这轮的回复。
+    expect(conflict?.text).toContain("对我的要求");
+    expect(conflict?.text).toContain("这条我还没做到");
     expect(facts.some((f) => f.kind === "repair")).toBe(false);
   });
 
@@ -104,7 +106,7 @@ describe("事件 → 自我/关系史", () => {
       outcome: "",
     }));
     const rel = facts.find((f) => f.layer === "relationship");
-    expect(rel?.text.startsWith("Lead 指出")).toBe(true);
+    expect(rel?.text.startsWith("Lead 对我的要求")).toBe(true);
   });
 
   it("他指出来时我还没修好、也没认，也是冲突；说「你说的对」就不算", () => {
@@ -173,8 +175,10 @@ describe("事件 → 自我/关系史", () => {
   });
 
   it("交付体不当复盘：后来改成不能写成「任务…完成，交付如下」", () => {
+    // 修复判据统一到 episode.ts 的 REPAIRED_STANCE（补上了/已按/已改/改完…）：
+    // 这里把「这就补上」换成窄口径措辞，测的仍是「交付体不能当复盘的引用来源」。
     const facts = factsFromEpisode(ep({
-      agentStance: "我漏了这一步，这就补上",
+      agentStance: "我漏了这一步，已经补上了",
       outcome: "任务六三缺陷修复完成，交付如下：",
     }));
     const review = facts.find((f) => f.kind === "review");
@@ -183,9 +187,11 @@ describe("事件 → 自我/关系史", () => {
   });
 
   it("两边都只有交付体时，复盘只写「后来补上了」，不搬验证链和提交号", () => {
+    // 修复判据已统一到 episode.ts 的 REPAIRED_STANCE：这里改用窄口径措辞（已按…），
+    // 「已修复」这类交付体措辞不再单独充当修复证据。测的仍是「两边都只有交付体」。
     const facts = factsFromEpisode(ep({
       agentStance: "验证链闭环，问题已处理",
-      outcome: "三处缺陷已修复交付（m02325）",
+      outcome: "三处缺陷已按原话重做，交付如下（m02325）",
     }));
     const review = facts.find((f) => f.kind === "review");
     expect(review?.text).toContain("后来补上了");
@@ -264,7 +270,7 @@ describe("事件 → 自我/关系史", () => {
       valence: -0.4,
     }));
     const conflict = facts.find((f) => f.kind === "conflict");
-    expect(conflict?.text).toContain("我当时回的是");
+    expect(conflict?.text).toContain("我只回了话");
     expect(conflict?.text).not.toContain("顶了回去");
     expect(conflict?.text).not.toContain("还没修好");
   });
@@ -467,3 +473,28 @@ describe("对象锚要能补到老条目上", () => {
   });
 });
 
+
+describe("关系层行文（2026-11-08 改造）", () => {
+  it("链接不进行文：截断后只剩「http…」的残片不能进卡", () => {
+    const facts = factsFromEpisode(ep({
+      userStance: "这不对吧，人物档案应该是大模型自己提炼的，你看看https://github.com/memodb-io/memobase/blob/main/x.py 再给方案",
+      agentStance: "看懂它怎么做的了，档案是模型提炼的",
+      valence: -0.4,
+    }));
+    const rel = facts.find((f) => f.layer === "relationship");
+    expect(rel?.text).not.toContain("http");
+    expect(rel?.text).not.toContain("memobase");
+    expect(rel?.text).toContain("对我的要求");
+  });
+
+  it("行文是「他的要求 + 我做到没有」，不再复述我这轮的回复", () => {
+    const facts = factsFromEpisode(ep({
+      userStance: "这就是你设计的UI？怎么还有很多原始样式的地方",
+      agentStance: "好，键 extras 会被透传，我把样式表补上",
+      valence: -0.4,
+    }));
+    const rel = facts.find((f) => f.layer === "relationship");
+    expect(rel?.text).toMatch(/^.+对我的要求：「.+」——/u);
+    expect(rel?.text).not.toContain("透传");
+  });
+});

@@ -18,6 +18,8 @@ import type {
   TeamMemberEntity,
   TeamMemberView,
   AgentEntity,
+  AgentPersonaEntity,
+  SaveAgentPersonaInput,
   TaskEntity,
   TaskAgentEntity,
   ParticipationLogEntity,
@@ -128,6 +130,10 @@ export interface IMetadataStore {
   deleteAgents(agentIds: string[]): MaybePromise<BatchDeleteResult>;
   listAgentsByTeam(teamId: string, pagination?: PaginationParams | null, filter?: AgentFilter): MaybePromise<ListPage<AgentEntity>>;
   listAgentsByOwner(userId: string, pagination?: PaginationParams | null, filter?: AgentFilter): MaybePromise<ListPage<AgentEntity>>;
+
+  // ── AgentPersona（人格层设定；与 meta_agents 同事务写回 name，F7） ──
+  getAgentPersona(agentId: string): MaybePromise<AgentPersonaEntity | null>;
+  saveAgentPersona(agentId: string, input: SaveAgentPersonaInput): MaybePromise<AgentPersonaEntity | null>;
 
   // ── Task ──（createTask 可同时 linkAgents）
   createTask(input: CreateTaskInput): MaybePromise<TaskEntity>;

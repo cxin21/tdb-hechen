@@ -2,7 +2,7 @@
  * P3 终测缺陷修复（TDD）：D-R5-3 门两形态 + D-R5-4 existing 行清洗。
  */
 import { describe, it, expect, vi } from "vitest";
-import { runIdentityDiscovery, isIdentityImposition, mergeIdentityFacts } from "./identity-discovery.js";
+import { isIdentityImposition, mergeIdentityFacts } from "./identity-discovery.js";
 
 describe("D-R5-3 门两形态（ev11 实证绕过）", () => {
   it("agent 自述复述形态「我以X的身份与用户交流」→ true", () => {

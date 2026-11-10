@@ -61,7 +61,7 @@ describe("第二租户长出自己的人格", () => {
       for (const r of l0(T1, one.map((x) => x.content))) store.upsertL0(r, undefined);
       for (const r of l0(T2, two.map((x) => x.content))) store.upsertL0(r, undefined);
       const base = { store, now: NOW, trigger: "manual" as const, llmCallBudget: 0 };
-      const cfg = { enabled: true, episodeWindowDays: 30, updateIntervalHours: 0 };
+      const cfg = { episodeWindowDays: 30, updateIntervalHours: 0 };
       await runSoulMaintenance({ ...base, tenant: T1, config: cfg, recentRecords: async () => one });
       await runSoulMaintenance({ ...base, tenant: T2, config: cfg, recentRecords: async () => two });
 

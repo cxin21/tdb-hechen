@@ -18,8 +18,12 @@
 
 import crypto from "node:crypto";
 import { patchSoulFromContent } from "../lifecycle/consolidation/content-soul.js";
-import { DEFAULT_ISOLATION_ID, type IMemoryStore, type L1RecordRow } from "../store/types.js";
+import { DEFAULT_ISOLATION_ID, type CoreTenant, type IMemoryStore, type L1RecordRow } from "../store/types.js";
+import { EPISODE_SPEAKER_PLATFORM } from "../soul/episode.js";
+import { linkMemoryToPersons } from "../person/link.js";
+import type { PersonHint } from "../person/types.js";
 import { parseSourceMessageIds } from "../store/l1-column-coerce.js";
+import { PERSON_ROLE_TOKENS, normalizePersonNameCandidate } from "./person-hints.js";
 import { ensureL1FactVec } from "../store/capability-guard.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
@@ -420,6 +424,24 @@ export async function writeMemory(params: {
   if (record.arousal == null) record.arousal = 0;
   if (record.significance == null) record.significance = 0.5;
 
+  // ── 人物挂接（人格系统 v3 阶段 1 / §3-B2）：抽取之后、落库之前 ──
+  // 放在这里是因为它是 L1 的唯一 choke point：整行与事实行两条落库路径都从 record.metadata
+  // 出发（事实行 `...record.metadata` 自动继承 persons），不会出现「事实行忘了挂人」。
+  // 线索只来自 metadata —— 写侧没有第二来源：personRefs 在 src 内无生产者，只被读侧消费。
+  // 失败一律 fail-open：宁可这条记忆不挂人，也不能因为挂人失败丢掉记忆。
+  const linkedPersonCount = await attachPersons(record, {
+    tenant: {
+      teamId: record.teamId || DEFAULT_ISOLATION_ID,
+      userId: record.userId || DEFAULT_ISOLATION_ID,
+      agentId: record.agentId || DEFAULT_ISOLATION_ID,
+    },
+    store: vectorStore,
+    logger,
+  });
+  if (linkedPersonCount > 0) {
+    logger?.debug?.(`${TAG} [persons] ${record.id} → ${linkedPersonCount} person(s)`);
+  }
+
   // #146（W2b 事实级双时态，方案 A）：memory.write.factRows.enabled 且本记忆抽出了可用三元组时，
   // 一条事实一行（content = 单条事实陈述，metadata 带 subject/predicate/cardinality/fact_key）。
   // 无可用三元组 → hasFacts=false → 逐位现状（一个记忆一行，零行为变化）。
@@ -733,6 +755,113 @@ export async function writeMemory(params: {
 // ============================
 // Helpers
 // ============================
+
+/**
+ * 从 metadata 里的一条人线索构造 PersonHint；非法/角色标记返回 null。
+ * 角色词表与抽取侧共用 `person-hints.ts`（单一写者）——原本这里只认 8 个英文词，
+ * 抽取侧会把「用户/助手/对方」这些中文角色词也挡掉。
+ */
+function personHintFromRaw(raw: unknown): PersonHint | null {
+  const pick = (...values: unknown[]): string => {
+    for (const v of values) {
+      if (typeof v === "string" && v.trim() !== "") return v.trim();
+    }
+    return "";
+  };
+  if (typeof raw === "string") {
+    const name = normalizePersonNameCandidate(raw);
+    if (!name) return null;
+    return { displayName: name };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const displayName = pick(obj.displayName, obj.display_name, obj.name, obj.nickname);
+  // 只认明确的平台身份字段：裸 `id` 可能是一条记录 id，拿它当 platform_id 会造出假的人。
+  const platformId = pick(obj.platformId, obj.platform_id, obj.uid, obj.unionid);
+  const platform = pick(obj.platform, obj.channel);
+  if (displayName === "" && platformId === "") return null;
+  if (displayName !== "" && platformId === "" && PERSON_ROLE_TOKENS.has(displayName.toLowerCase())) return null;
+  return {
+    displayName: displayName === "" ? undefined : displayName,
+    platformId: platformId === "" ? null : platformId,
+    platform,
+  };
+}
+
+/** 一条线索可以是单值或数组；非法项逐个丢弃（一条坏线索不该污染整组）。 */
+function personHintsFromRaw(raw: unknown): PersonHint[] {
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out: PersonHint[] = [];
+  for (const item of list) {
+    const hint = personHintFromRaw(item);
+    if (hint) out.push(hint);
+  }
+  return out;
+}
+
+/**
+ * 把 metadata 里已有的人线索解析成 `metadata.persons`（§3-B2）。
+ *
+ * 线索来源（优先级从强到弱，全部来自抽取结果，不做文本推断）：
+ *   participants（在场者）/ speaker（说话人）/ mentioned ?? personRefs（被提到的人）。
+ *
+ * 三条不写的规则：
+ *   ① store 没有 soul_person 能力（主键落不了库）→ 不写。写一串查不到人的 key
+ *      比不写更糟：读侧会把它们当成有效归属。
+ *   ② 解析不出任何有效人 → 不写该键（否则每行都多一个 `persons: []` 的噪声键）。
+ *   ③ 解析抛错 → 不写（fail-open）。
+ */
+async function attachPersons(
+  record: MemoryRecord,
+  ctx: { tenant: CoreTenant; store?: IMemoryStore; logger?: Logger },
+): Promise<number> {
+  if (!ctx.store || typeof ctx.store.upsertSoulPerson !== "function") return 0;
+  const bag =
+    record.metadata && typeof record.metadata === "object"
+      ? (record.metadata as Record<string, unknown>)
+      : ({} as Record<string, unknown>);
+
+  const participants = personHintsFromRaw(bag.participants);
+  const speakerHints = personHintsFromRaw(bag.speaker);
+  // §17：抽取侧校验过的说话人名字（`speaker_name`）。它是「谁在说话」的文本证据，
+  // 与下一段的 authorUserId（谁的身份）是同一个人，合成一条线索才能既建出人又带上名字。
+  const speakerNameRaw = normalizePersonNameCandidate(bag.speaker_name) ?? "";
+  if (speakerHints.length === 0 && speakerNameRaw !== "") speakerHints.push({ displayName: speakerNameRaw });
+  // personRefs 是历史写侧留下的「提到了谁」，本阶段没有生产者，只在没有显式 mentioned 时兜底。
+  const mentioned = personHintsFromRaw(bag.mentioned ?? bag.personRefs ?? bag.person_refs);
+  // P2-G：说话人身份兜底。抽取提示词不保证吐 participants/speaker（实测新记忆 metadata 里
+  // 三个线索键全为空 → 挂人恒 0）。但每条记忆本身就带真实身份列（user_id / agent_id）：
+  // 这条记忆是「谁」说的，写侧知道，不需要模型再猜一遍。只在三个线索全空时兜底，
+  // 不覆盖模型给出的更强线索（显式 uid/unionid 仍然优先）。
+  const authorHints: PersonHint[] = [];
+  const authorUserId = typeof record.userId === "string" ? record.userId.trim() : "";
+  if (authorUserId !== "" && authorUserId !== DEFAULT_ISOLATION_ID && !PERSON_ROLE_TOKENS.has(authorUserId.toLowerCase())) {
+    authorHints.push({
+      platform: EPISODE_SPEAKER_PLATFORM,
+      platformId: authorUserId,
+      ...(speakerNameRaw !== "" ? { displayName: speakerNameRaw } : {}),
+    });
+  }
+  if (participants.length === 0 && speakerHints.length === 0 && mentioned.length === 0 && authorHints.length === 0) return 0;
+
+  try {
+    const { persons } = await linkMemoryToPersons(ctx.store, ctx.tenant, {
+      recordId: record.id,
+      participants: participants.length > 0 ? participants : authorHints,
+      speaker: speakerHints[0],
+      mentioned,
+    });
+    if (persons.length === 0) return 0;
+    bag.persons = persons;
+    record.metadata = bag as unknown as MemoryRecord["metadata"];
+    return persons.length;
+  } catch (err) {
+    ctx.logger?.warn?.(
+      `${TAG} [persons] link failed (non-fatal, record kept) id=${record.id}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 0;
+  }
+}
 
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();

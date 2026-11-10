@@ -43,12 +43,12 @@ export function hasFired(appraisal: Array<{ fired: boolean }>): boolean {
 
 /**
  * 审计修复 B1：把"当前感受/价值参照"真正接入遗忘打分（feeling §3「价值命中→显著性/遗忘加权」）。
- * 给定一条记忆的 content 与团队的 core_values 参照系，返回一个显著性 boost（0..maxBoost）：
+ * 给定一条记忆的 content 与调用方提供的价值参照系（values 入参），返回显著性 boost（0..maxBoost）：
  *   - 命中 1 个价值 label（weight ≥ firedThreshold）→ +0.1
  *   - 每多命中一个，再按命中价值平均权重递增
  *   - 无命中 → 0（零影响，宁缺毋滥）
- * 这样 MemoryCore 的 appraise()（原本的死代码）经 salienceBoost 复用到 I 遗忘打分，
- * 使 core_values 表成为"看重程度"的真实参照系（单一源），而非只存在于 config 与死代码。
+ * 这样 MemoryCore 的 appraise() 经 salienceBoost 复用到 I 遗忘打分；参照系只能由调用方
+ * 显式注入（价值锚表已退场，不再有任何表可作为"看重程度"的默认单一源）。
  */
 export function salienceBoost(
   content: string,

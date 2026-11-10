@@ -186,6 +186,70 @@ export function planMerge(
   return { survivors, merged };
 }
 
+export interface ConsolidateResult {
+  /** 全量条目（原顺序不变）：被取代的行仍是原对象，只多了 validTo/supersededBy。 */
+  items: PersonaItem[];
+  /** 本轮新被取代的行：itemId、保留者 itemId、判定码。 */
+  superseded: Array<{ itemId: string; by: string; reason: string }>;
+}
+
+/**
+ * 结论合并（P1-1）：同 (layer, meta.object) 的活跃结论上限 maxPerObject，超出者标失效。
+ *
+ * 与 planMerge 的分工（两者不能并成一步）：
+ *  - planMerge 治「同一句话换了措辞」：按文本相似度聚类，state→merged、留 mergedInto，可拆回；
+ *  - 这里治「同一对象堆了太多不同结论」：按结构分桶，state 不变、只写 validTo——
+ *    每句原话都必须留在库里可回放（被取代 ≠ 被吞并）。
+ *
+ * 判定口径：
+ *  - 只对 state=active/degraded 且 validTo 为空的行分组：已失效行不再当候选，所以同一批数据
+ *    重跑一次不会产生新的取代与账本行（幂等）。
+ *  - object 为空整组跳过：voice 这类正常多行层没有对象锚，按层合并会把该说的说话方式砍掉。
+ *  - 保留序 weight desc → lastEvidenceAt desc → itemId asc：确定性，且与渲染序同向。
+ */
+export function consolidatePersona(
+  items: PersonaItem[],
+  opts: { now: string; maxPerObject?: number },
+): ConsolidateResult {
+  const now = opts.now;
+  const maxPerObject = Math.max(1, Math.floor(opts.maxPerObject ?? 3));
+  const groups = new Map<string, PersonaItem[]>();
+  for (const it of items) {
+    if (it.state !== "active" && it.state !== "degraded") continue;
+    if (hasValidTo(it)) continue;
+    const object = String((it.meta ?? {}).object ?? "").trim();
+    if (object === "") continue;
+    const key = it.layer + "\u0000" + object;
+    const list = groups.get(key) ?? [];
+    list.push(it);
+    groups.set(key, list);
+  }
+  const superseded: ConsolidateResult["superseded"] = [];
+  const replaced = new Map<string, PersonaItem>();
+  for (const [, list] of groups) {
+    if (list.length <= maxPerObject) continue;
+    const ordered = [...list].sort(
+      (a, b) =>
+        b.weight - a.weight
+        || Date.parse(b.lastEvidenceAt) - Date.parse(a.lastEvidenceAt)
+        || a.itemId.localeCompare(b.itemId),
+    );
+    const keep = ordered[0]!;
+    for (const it of ordered.slice(maxPerObject)) {
+      replaced.set(it.itemId, {
+        ...it,
+        validTo: now,
+        supersededBy: keep.itemId,
+        supersededReason: "consolidate:cap",
+        updatedAt: now,
+      });
+      superseded.push({ itemId: it.itemId, by: keep.itemId, reason: "consolidate:cap" });
+    }
+  }
+  if (replaced.size === 0) return { items, superseded };
+  return { items: items.map((it) => replaced.get(it.itemId) ?? it), superseded };
+}
+
 export interface LifecyclePlan {
   items: PersonaItem[];
   degraded: string[];
@@ -202,7 +266,7 @@ export function planLifecycle(items: PersonaItem[], now: string, cfg: SoulMainte
     const contradictions = it.contradictions ?? 0;
     if (contradictions >= cfg.freezeContradictions || days > cfg.freezeAfterDays) {
       frozen.push(it.itemId);
-      return { ...it, state: "frozen" as PersonaItemState, updatedAt: now };
+      return freezeItem(it, now);
     }
     if (days > cfg.degradeAfterDays) {
       degraded.push(it.itemId);
@@ -218,9 +282,18 @@ export function planLifecycle(items: PersonaItem[], now: string, cfg: SoulMainte
   return { items: out, degraded, frozen };
 }
 
+/**
+ * 冻结（S3）：状态迁移 + 权重×0.5 + validTo=此刻，不删除。
+ * validTo 让读侧能判断「这行从什么时候起不再参与注入」，而不必靠 state 猜。
+ * 权重折半是「退出前的分量」计入后续质量分配，避免冻结行的历史权重继续占额。
+ */
+export function freezeItem(item: PersonaItem, now: string, factor = 0.5): PersonaItem {
+  return { ...item, state: "frozen", weight: round3(item.weight * factor), validTo: now, updatedAt: now };
+}
+
 /** 复活：出现新证据即回到 active，权重回到至少 0.5（但不继承冻结前的虚高）。 */
 export function planRevive(item: PersonaItem, now: string, evidenceIds: string[]): PersonaItem {
-  return {
+  const revived: PersonaItem = {
     ...item,
     state: "active",
     weight: Math.max(item.weight, 0.5),
@@ -229,16 +302,19 @@ export function planRevive(item: PersonaItem, now: string, evidenceIds: string[]
     evidenceIds: Array.from(new Set([...item.evidenceIds, ...evidenceIds])),
     contradictions: 0,
   };
+  // 复活即重新参与注入：失效期末端必须清掉，否则读侧仍按「已过期」处理。
+  delete revived.validTo;
+  return revived;
 }
 
 /** 矛盾：计数 +1，达阈值冻结；由「同一层出现反向主张」或用户明确否定触发。 */
 export function planContradiction(item: PersonaItem, now: string, cfg: SoulMaintenanceConfig, note?: string): PersonaItem {
   const contradictions = (item.contradictions ?? 0) + 1;
   const freeze = contradictions >= cfg.freezeContradictions;
+  const base = freeze ? freezeItem(item, now) : item;
   return {
-    ...item,
+    ...base,
     contradictions,
-    state: freeze ? "frozen" : item.state,
     updatedAt: now,
     meta: { ...(item.meta ?? {}), lastContradiction: note ?? "", lastContradictionAt: now },
   };
@@ -285,8 +361,20 @@ function attentionBoost(item: PersonaItem, attention?: RenderAttention): number 
   return boost;
 }
 
+/**
+ * 已失效（validTo 非空）：state 语义之外的第二个判据。
+ * 冻结也写 validTo，但冻结同时改了 state，所以判定顺序必须是「先 state、后 validTo」——
+ * 先按 state 过滤（frozen/merged 天然不渲染），再按 validTo 过滤（结论合并取代的行 state 仍是 active）。
+ *
+ * 导出供 worker 漂移段复用（P1-2 残留）：渲染序与漂移候选必须是同一套失效判据，
+ * 否则被取代的行仍在漂移预算里被降级/冻结并多写账本，读侧却看不到它。
+ */
+export function hasValidTo(item: PersonaItem): boolean {
+  return typeof item.validTo === "string" && item.validTo !== "";
+}
+
 export function orderForRender(layer: SoulLayer, items: PersonaItem[], opts?: { attention?: RenderAttention }): PersonaItem[] {
-  const visible = items.filter((i) => i.state === "active" || i.state === "degraded");
+  const visible = items.filter((i) => (i.state === "active" || i.state === "degraded") && !hasValidTo(i));
   const byState = (a: PersonaItem, b: PersonaItem) => stateRank(a.state) - stateRank(b.state);
   if (layer === "boundary") {
     return [...visible].sort(
@@ -415,6 +503,9 @@ export function renderLayerWithBudget(
   for (const it of layerItems) {
     if (it.state === "frozen" || it.state === "merged") {
       omitted.push({ itemId: it.itemId, text: it.text, chars: it.text.length, reason: it.state });
+    } else if (hasValidTo(it)) {
+      // 结论合并取代的行：state 仍是 active，只有 validTo 说明它不再进注入。
+      omitted.push({ itemId: it.itemId, text: it.text, chars: it.text.length, reason: "superseded" });
     }
   }
   const header = opts?.header ?? layerHeader(layer);
@@ -439,6 +530,8 @@ export function layerHeader(layer: SoulLayer): string {
       return "## 我不做的事";
     case "relationship":
       return "## 我和他的关系";
+    case "human":
+      return "## 关于你";
     case "narrative":
       return "## 我的来路";
     default:
@@ -452,7 +545,7 @@ export function renderPersonaBlock(
   cfg: SoulMaintenanceConfig,
   opts?: { attention?: RenderAttention },
 ): { text: string; reports: SoulBudgetReport[] } {
-  const order: SoulLayer[] = ["voice", "identity", "self", "values", "boundary", "relationship", "narrative"];
+  const order: SoulLayer[] = ["voice", "identity", "self", "values", "boundary", "relationship", "narrative", "human"];
   const parts: string[] = [];
   const reports: SoulBudgetReport[] = [];
   // 情绪不只重排，还放大「它指向的那一层」的注意力预算（FAtiMA/OCC 一类评价模型里情绪本就是

@@ -76,7 +76,7 @@ export interface MemorySectionsSettingsOverride {
   recall?: Record<string, unknown>;
   persona?: Record<string, unknown>;
   lifecycle?: Record<string, unknown>;
-  /** 人格维护总闸所在组（memory.coreMemory.soulMaintenance.enabled 等）。 */
+  /** 人格维护参数组（memory.coreMemory.soulMaintenance.*，总闸 enabled 已于 S9 删除）。 */
   coreMemory?: Record<string, unknown>;
   /** L0 捕获组（capture.excludeAgents 等）。 */
   capture?: Record<string, unknown>;

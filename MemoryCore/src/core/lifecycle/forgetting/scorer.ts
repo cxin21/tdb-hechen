@@ -200,7 +200,7 @@ export function classify(m: MemoryRecord, cfg: ForgettingConfig = DEFAULT_FORGET
 }
 
 /**
- * 审计修复 B1/C：classify 的"价值参照"版——把 core_values 的命中作为显著性 boost
+ * 审计修复 B1/C：classify 的"价值参照"版——把调用方 values 的命中作为显著性 boost
  * 参与遗忘判定（feeling §3：价值命中 → 更难被遗忘）。values 为空/未启用时零影响，
  * 行为退化为 classify（宁缺毋滥；boost 只会让分数更高 → 更倾向 keep，不会多删）。
  */

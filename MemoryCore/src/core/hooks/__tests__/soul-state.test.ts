@@ -28,7 +28,9 @@ import {
 import type { IMemoryStore, CoreTenant } from "../../../core/store/types.js";
 import type { Logger } from "../../../core/types.js";
 
-const CT = { selfIdentityEnabled: true, budgetSelfChars: 600, budgetIdentityChars: 900 };
+// 2026-11-07 task-12：两槽预算键已从 SoulRenderOptions 删除（assembler 只读 moodTier/state/
+// soulMaintenance/soulMood 四项），这里不再需要公共 opts 片段。
+const CT = {};
 
 function row(over: Partial<Record<string, unknown>> & { value_id: string; label: string; weight: number; valence: number }): Record<string, unknown> {
   return {
@@ -84,14 +86,10 @@ describe("#34 soul-assembler state 通道", () => {
     row({ value_id: "v2", label: "风险锚", weight: 0.6, valence: -1 }),
   ];
 
-  it("state 更新不改变 soulVersion（指纹隔离，R5 修正 2），但尾块字节变化", async () => {
+  it("state 更新改变尾块字节（指纹已改由 soul-introspect 现算，assembler 不产出）", async () => {
     const t = { teamId: "st1", userId: "u1", agentId: "a1" };
-    const metaA: { soulVersion?: string } = {};
-    const metaB: { soulVersion?: string } = {};
-    const outA = await buildSoulPrefix(makeStore(rows()), t, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6, topValue: "根因" } }, metaA);
-    const outB = await buildSoulPrefix(makeStore(rows()), t, LOG, { ...CT, state: { valence: 0.8, arousal: 0.2, topValue: "根因" } }, metaB);
-    expect(metaA.soulVersion).toBeTruthy();
-    expect(metaA.soulVersion).toBe(metaB.soulVersion); // 指纹不含 state
+    const outA = await buildSoulPrefix(makeStore(rows()), t, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6, topValue: "根因" } });
+    const outB = await buildSoulPrefix(makeStore(rows()), t, LOG, { ...CT, state: { valence: 0.8, arousal: 0.2, topValue: "根因" } });
     expect(outA).not.toBe(outB); // 尾块字节随 state 变化
     expect(outA).toContain("有点受阻，心里偏紧"); // #52 P2 去 taxonomy 黑话
     expect(outB).toContain("心里明亮，劲头正足");
@@ -103,15 +101,12 @@ describe("#34 soul-assembler state 通道", () => {
     expect(out).not.toContain("<soul-feeling>"); // 清单行退役+无基调无状态 → 宁缺毋滥整段省略
   });
 
-  it("同 sv 下 state 变化必须重渲染（state 入 cacheKey 不入 sv）", async () => {
+  it("state 变化必须体现到渲染（无前缀缓存，每次都现算）", async () => {
     const store = makeStore(rows());
     const t = { teamId: "st3", userId: "u1", agentId: "a1" };
-    const metaA: { soulVersion?: string } = {};
-    const outA = await buildSoulPrefix(store, t, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6, topValue: "根因" } }, metaA);
-    const metaB: { soulVersion?: string } = {};
-    const outB = await buildSoulPrefix(store, t, LOG, { ...CT, state: { valence: 0.8, arousal: 0.2, topValue: "根因" } }, metaB);
-    expect(metaA.soulVersion).toBe(metaB.soulVersion);
-    expect(outB).toContain("心里明亮，劲头正足"); // 缓存未吞掉新 state
+    const outA = await buildSoulPrefix(store, t, LOG, { ...CT, state: { valence: -0.4, arousal: 0.6, topValue: "根因" } });
+    const outB = await buildSoulPrefix(store, t, LOG, { ...CT, state: { valence: 0.8, arousal: 0.2, topValue: "根因" } });
+    expect(outB).toContain("心里明亮，劲头正足"); // 无缓存吞掉新 state
     expect(outA).toContain("有点受阻，心里偏紧");
   });
 

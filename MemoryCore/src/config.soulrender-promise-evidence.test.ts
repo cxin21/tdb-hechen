@@ -3,7 +3,7 @@
  *
  * 合同（#41 票面 + ADR0003 D8）：promise 证据门总开关——缺省 false=逐位现状
  * （抽取管线零 promise 读零 promise 写）；显式 true 才开启；非法形状/值回退 false
- * （宁缺毋滥，沿 capabilities/anchorSelect 解析先例）。
+ * （宁缺毋滥，沿布尔门解析先例）。
  */
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "./config.js";

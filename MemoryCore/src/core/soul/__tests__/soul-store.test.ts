@@ -191,16 +191,22 @@ describe("soul_episodes / 拒绝统计 / L0 取证窗口", () => {
     expect(kinds).toEqual(["complaint", "praise", "pressure", "resignation"]);
   });
 
-  it("删除噪声事件只删点名的那几条，真实事件与他人租户不受影响", async () => {
+  it("噪声事件只归档点名的那几条：默认不可见、可显式读回，他人租户不受影响", async () => {
     const store = bundle.store;
     await store.commitSoulEpisodes!(TENANT, [
       episode(),
       episode({ episodeId: "ep-noise", kind: "value_conflict", object: "先A再B", userStance: "# 云文库二期：接口补调研", quote: { text: "# 云文库二期：接口补调研", role: "user", recordId: "r9" } }),
       episode({ episodeId: "ep-other", kind: "decision", object: "拍板" }),
     ]);
-    expect((await store.deleteSoulEpisodes!(TENANT, ["ep-noise"])).deleted).toBe(1);
+    // S3：删除语义改为归档（archived），历史派生可读回，物理行不消失。
+    expect((await store.deleteSoulEpisodes!(TENANT, ["ep-noise"])).archived).toBe(1);
     expect((await store.listSoulEpisodes!(TENANT)).map((e) => e.episodeId).sort()).toEqual(["ep-a1b2c3", "ep-other"]);
-    expect((await store.deleteSoulEpisodes!(OTHER, ["ep-other"])).deleted).toBe(0);
+    expect((await store.listSoulEpisodes!(TENANT, { includeArchived: true })).map((e) => e.episodeId).sort()).toEqual([
+      "ep-a1b2c3",
+      "ep-noise",
+      "ep-other",
+    ]);
+    expect((await store.deleteSoulEpisodes!(OTHER, ["ep-other"])).archived).toBe(0);
   });
 
   it("检索：按对象/关键词/kind 都能找回「上次因为什么、对谁」，且三元组隔离", async () => {
@@ -216,21 +222,61 @@ describe("soul_episodes / 拒绝统计 / L0 取证窗口", () => {
     expect(await store.searchSoulEpisodes!(OTHER, { text: "现场" })).toEqual([]);
   });
 
-  it("拒绝可观测：soulRejectionStats 聚合近 N 天 reject 账本的 gates", async () => {
+  it("layers 落盘 roundtrip：有 layers 原样读回，无 layers 读回 undefined（不是 []）", async () => {
+    const store = bundle.store;
+    await store.commitSoulEpisodes!(TENANT, [
+      episode({ episodeId: "ep-a1b2c3", layers: ["identity", "boundary"] }),
+      episode({ episodeId: "ep-d4e5f6", at: "2026-11-04T08:00:00.000Z", day: "2026-11-04" }),
+    ]);
+    const got = await store.listSoulEpisodes!(TENANT);
+    expect(got.find((e) => e.episodeId === "ep-a1b2c3")!.layers).toEqual(["identity", "boundary"]);
+    const plain = got.find((e) => e.episodeId === "ep-d4e5f6")!;
+    expect(plain.layers).toBeUndefined();
+    expect("layers" in plain).toBe(false);
+    // 幂等重跑（同 episodeId，INSERT OR IGNORE 走 refresh）也要保住 layers。
+    await store.commitSoulEpisodes!(TENANT, [episode({ episodeId: "ep-a1b2c3", title: "刷新后的标题", layers: ["identity", "boundary"] })]);
+    expect((await store.listSoulEpisodes!(TENANT)).find((e) => e.episodeId === "ep-a1b2c3")!.layers).toEqual([
+      "identity",
+      "boundary",
+    ]);
+  });
+
+  it("DDL 幂等：连续两次 init 不抛错、不降级，新表可写", async () => {
+    const store = bundle.store as unknown as { init?: () => unknown; isDegraded?: () => boolean };
+    expect(() => store.init?.()).not.toThrow();
+    // init 内部把 schema 错误降级成 degraded 而不抛：真正要断言的是「没有降级」，
+    // 否则「不抛错」会被 catch-all 掩盖。
+    expect(store.isDegraded?.() ?? false).toBe(false);
+    // 第二次 init 之后新表仍可用（证明不是「重跑删表重建」）。
+    await bundle.store.bumpSoulGateStats!(TENANT, [
+      { day: "2026-11-08", code: "episode_missing", layer: "identity", count: 1, at: "2026-11-08T00:00:00.000Z" },
+    ]);
+    expect(await bundle.store.listSoulGateStats!(TENANT)).toHaveLength(1);
+  });
+
+  it("拒绝可观测：soulRejectionStats 聚合 soul_gate_stats，不再依赖 reject 账本", async () => {
     const store = bundle.store;
     const now = new Date().toISOString();
+    const day = now.slice(0, 10);
+    await store.bumpSoulGateStats!(TENANT, [
+      { day, code: "cost_missing", layer: "identity", count: 1, at: now },
+      { day, code: "episode_missing", layer: "identity", count: 2, at: now },
+    ]);
+    // 同 code 不同 layer 也要合并成一行（观测面按 code 看，不按层拆）。
+    await store.bumpSoulGateStats!(TENANT, [
+      { day, code: "episode_missing", layer: "self", count: 3, at: now },
+    ]);
+    // 口径切换点：历史 reject 账本行保留可审计，但不再进这个聚合（否则两套来源重叠）。
     await store.commitSoulPersona!(TENANT, {
       upsert: [],
-      ledger: [
-        ledger("rej-1", { action: "reject", at: now, gates: ["cost_missing", "episode_missing"] }),
-        ledger("rej-2", { action: "reject", at: now, gates: ["episode_missing"] }),
-        ledger("adm-1", { action: "admit", at: now, gates: ["cost_missing"] }),
-      ],
+      ledger: [ledger("rej-1", { action: "reject", at: now, gates: ["legacy_code"] })],
     });
     const stats = await store.soulRejectionStats!(TENANT, { sinceDays: 7 });
-    expect(stats[0]).toMatchObject({ code: "episode_missing", count: 2 });
+    expect(stats[0]).toMatchObject({ code: "episode_missing", count: 5 });
     expect(stats.find((s) => s.code === "cost_missing")!.count).toBe(1);
+    expect(stats.find((s) => s.code === "legacy_code")).toBeUndefined();
     expect(await store.soulRejectionStats!(OTHER, { sinceDays: 7 })).toEqual([]);
+    expect((await store.listSoulGateStats!(TENANT, { code: "episode_missing" })).length).toBe(2);
   });
 
   it("recentL0Messages：窗口内按时间正序、只取本租户、空文本不返回", async () => {

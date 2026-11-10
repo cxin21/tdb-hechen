@@ -188,6 +188,9 @@ const routeTable: Record<string, Handler> = {
     return s.listAgentsByOwner(ownerId, pagination, Object.keys(filter2).length ? filter2 : undefined);
   }),
   [`${V3_PREFIX}/agent/archive`]: bind(S.agentArchiveSchema, (d, c, s) => s.archiveAgentForCaller(d.agent_id, c)),
+  // 人格设定（§1）：get 返回 null 表示未设（前端走默认值），save 走 owner 鉴权 + 服务端上限。
+  [`${V3_PREFIX}/agent-persona/get`]: bind(S.agentPersonaGetSchema, (d, _c, s) => s.getAgentPersona(d.agent_id)),
+  [`${V3_PREFIX}/agent-persona/save`]: bind(S.agentPersonaSaveSchema, (d, c, s) => s.saveAgentPersonaForCaller(d, c)),
 
   // Task
   [`${V3_PREFIX}/task/create`]: bind(S.taskCreateSchema, (d, c, s) => s.createTaskForCaller(d, c)),

@@ -87,8 +87,6 @@ export const INJECTED_BLOCK_MARKERS: readonly string[] = [
   "【agemem 记忆提示】",
   "【币值判定规则",
   "【建议类问题口径",
-  "<soul-identity>",
-  "<soul-feeling>",
   "<relevant-memories>",
   "<team-wiki>",
   "<available_skills>",

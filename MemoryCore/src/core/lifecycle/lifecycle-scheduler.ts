@@ -7,10 +7,12 @@ import type { LLMRunner, Logger } from "../types.js";
 import { runConsolidation, type ConsolidationConfigX } from "./consolidation/consolidation-worker.js";
 import { runForgetting, type ForgettingConfig } from "./forgetting/forgetting-worker.js";
 import { runReflection, type ReflectionConfig } from "./reflection.js";
-import { runAnchorGrowth, type AnchorDiscoveryConfig } from "./anchor-growth.js";
 import { runEvolution, type EvolutionWorkerConfig } from "./evolution-worker.js";
-import type { SoulMaintenanceConfig } from "../soul/types.js";
+import { resolveSoulConfig, type SoulMaintenanceConfig } from "../soul/types.js";
+import type { AgentProfileLike } from "../soul/agent-profile.js";
 import { createSoulRewriter, runSoulMaintenance, type SoulEvidenceRecord } from "../soul/worker.js";
+import { createTraitJudge } from "../soul/trait-judge.js";
+import { createPersonProfiler, type PersonProfileReport } from "../person/profile-distiller.js";
 
 export interface LifecycleConfig {
   enabled: boolean;
@@ -19,19 +21,12 @@ export interface LifecycleConfig {
   forgetting?: ForgettingConfig;
   /** P3-F13：反思触发（Generative Agents 对标；缺省 undefined=关）。 */
   reflection?: ReflectionConfig;
-  /**
-   * GROW（价值锚自生长）：巩固周期后挂钩的自发现+自动采纳。
-   * 缺省 undefined → 默认开（DEFAULT_ANCHOR_DISCOVERY_CONFIG，enabled=true）——
-   * 与 consolidation/forgetting 同款"缺省开"语义；LLM runner 缺失时安静跳过。
-   * PA：自生长 per-agent 化——遍历有记忆的 distinct agent 三元组（anchor-growth 内部
-   * 枚举，不受本 filter 影响；旧 store 无枚举能力时回退 default 单桶）。
-   */
-  anchorDiscovery?: AnchorDiscoveryConfig;
+  /** 身份取数开关键（gateway 接线自 coreMemory.anchorDiscovery，缺省 undefined=开）：
+   *  S8 起价值锚自生长已删，本键只剩「soul 单产线是否调 LLM 产身份事实」一个用途。 */
+  anchorDiscovery?: { enabled?: boolean };
   /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角（gateway 接线自 coreMemory.selfIdentity，缺省 undefined=关）。
-   *  intervalHours：enabled=true 时覆盖 identity worker 冷却（F15 分池节奏）。 */
-  selfIdentity?: { enabled: boolean; maxPerPass: number; intervalHours?: number };
-  /** S-CHAR-2（M2/P3+P4）：品格张力检测配置（gateway 接线自 coreMemory.characterTension，缺省 undefined=关）。 */
-  characterTension?: { enabled: boolean; minInstances: number; maxCandidatesPerPass: number };
+   *  冷却节拍恒取 worker 缺省（F15 分池节奏；配置面已收缩到 enabled/maxPerPass 两键）。 */
+  selfIdentity?: { enabled: boolean; maxPerPass: number };
   /**
    * P4b（GROW-EVO §4，REG-REMAINING-005 #1）：受控正文演化 worker 配置。
    * 缺省 undefined → 关（config-first：memory.evolution.enabled 缺省 false = 逐位现状；
@@ -109,6 +104,11 @@ export interface SoulTickDeps {
   llmRunner?: LLMRunner;
   embeddingService?: { embed(t: string): Promise<Float32Array> } | null;
   logger?: Logger;
+  /** S6：表单红线的 metadata 读取接缝（gateway 注入；worker 不碰 metadata 库）。 */
+  readAgentProfile?: (agentId: string) => Promise<AgentProfileLike | null>;
+  /** S6：identity 取数与红线的开关键/上限（原在 LifecycleConfig，tick 不读整份 config）。 */
+  anchorDiscovery?: { enabled?: boolean };
+  selfIdentity?: { enabled: boolean; maxPerPass: number };
 }
 
 export interface SoulTickSummary {
@@ -121,9 +121,60 @@ export interface SoulTickSummary {
   /** 存量槽导入退出人格注入层（冻结）的条数。 */
   retired?: number;
   episodes?: { mined?: number; inserted: number; available: number };
+  /**
+   * S4 特质实况（跨租户求和）：movedAxes=本轮真正位移的轴数，votes/rejectedVotes=判侧计票，
+   * labels=准入+合并的新标签数，skipped=未跑原因去重（no_trait_judge / no_new_episode / trait_failed: …）。
+   * 没有这张表，生产上「特质永不漂移」只能靠猜——它必须和 drift 一样被 tick 打出来。
+   */
+  trait?: { movedAxes: number; votes: number; rejectedVotes: number; labels: number; skipped: string[] };
   rejectTop?: Array<{ code: string; count: number }>;
+  /**
+   * P2-H 人物档案通道（跨租户求和）：候选/实际/推迟/成败与字段+关系条数。
+   * `undefined` = 本轮没接线（没 runner），与「接了线但 0 人可跑」用 attempted=0 区分。
+   */
+  personProfile?: {
+    candidates: number;
+    attempted: number;
+    deferred: number;
+    completed: number;
+    failed: number;
+    fields: number;
+    relations: number;
+    outdated: number;
+    dropped: number;
+  };
   /** 本轮告警码（语言未覆盖 / 标签长尾）。调度器必须打出来，不能只留在 worker 报告里。 */
   alerts?: string[];
+}
+
+/**
+ * 把一个人的档案账并进整轮 summary（跨租户求和；byReason 明细留在 worker 报告里，
+ * 汇总层只留计数，避免日志被模型丢弃原因撑爆）。
+ */
+function aggregatePersonProfile(summary: SoulTickSummary, report: PersonProfileReport): void {
+  if (!summary.personProfile) {
+    summary.personProfile = {
+      candidates: 0,
+      attempted: 0,
+      deferred: 0,
+      completed: 0,
+      failed: 0,
+      fields: 0,
+      relations: 0,
+      outdated: 0,
+      dropped: 0,
+    };
+  }
+  const agg = summary.personProfile;
+  agg.candidates += report.candidates;
+  agg.attempted += report.attempted;
+  agg.deferred += report.deferred;
+  agg.completed += report.completed;
+  agg.failed += report.failed;
+  agg.fields += report.fields;
+  agg.relations += report.relations;
+  agg.outdated += report.outdated;
+  agg.dropped += report.dropped;
 }
 
 /**
@@ -157,6 +208,13 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
   }
   for (const tenant of tenants) {
     try {
+      // S10 补洞（2026-11-07）：清库水位只挡 L0 不够——identity 取数与 L1 证据语料都直读历史行，
+      // 清库后首个 tick 仍会拿旧 L1 重新产事实/候选（生产实测 06:31 一批 identity reject 引用旧消息）。
+      // 水位在这里读一次，recentRecords / recentL0 / identityFacts 三处共用。
+      const watermark =
+        typeof deps.store.soulMetaGet === "function"
+          ? await Promise.resolve(deps.store.soulMetaGet("episodeWatermark"))
+          : undefined;
       const recentRecords = async (): Promise<SoulEvidenceRecord[]> => {
         const l1Filter = tenant.teamId || tenant.userId || tenant.agentId ? { ...tenant } : undefined;
         const rows = (await deps.store.queryL1Records?.(l1Filter)) ?? [];
@@ -188,19 +246,45 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
               arousal: typeof meta.arousal === "number" ? meta.arousal : null,
             };
           })
-          .filter((r) => r.id !== "" && r.content !== "");
+          .filter((r) => r.id !== "" && r.content !== "")
+          // 清库前的 L1 行不再进证据池（occurred_at 缺失的行无法判定，保留）。
+          .filter((r) => !watermark || !r.occurredAt || r.occurredAt >= watermark);
       };
       // 事件挖掘输入：L0 原始对话（保留 role 与原话）。窗口与条数走 soulMaintenance 配置，
       // 不在这里写死——否则「配置项真接线」又一次变成死配置。
       const recentL0 = typeof deps.store.recentL0Messages === "function"
-        ? async () =>
-            (await Promise.resolve(
-              deps.store.recentL0Messages!(tenant, {
-                sinceDays: deps.config.episodeWindowDays ?? 30,
-                maxMessages: deps.config.maxEpisodeMessages ?? 4000,
-              }),
-            )) ?? []
+        ? async () => {
+            // S10（2026-11-07）：水位必须在这里也生效。worker 侧那条 sinceIso 分支只在
+            // recentL0 缺省时才走；lifecycle 一直注入 recentL0，导致清库后首个 tick 把
+            // 旧对话重抽成 86 条事件、当天复活旧人格（生产实测 2026-11-07T14:08:44Z）。
+            return (
+              (await Promise.resolve(
+                deps.store.recentL0Messages!(tenant, {
+                  sinceDays: deps.config.episodeWindowDays ?? 30,
+                  maxMessages: deps.config.maxEpisodeMessages ?? 4000,
+                  ...(watermark ? { sinceIso: watermark } : {}),
+                }),
+              )) ?? []
+            );
+          }
         : undefined;
+      // S6 单产线：identity 取数只产事实，不写库；事实由 worker 当候选并入同一准入与事务。
+      // 与旧 identity-discovery 同一个开关键（anchorDiscovery.enabled），不再有第二条写径。
+      const identityFacts =
+        deps.anchorDiscovery?.enabled !== false && deps.llmRunner && typeof deps.store.queryL1Records === "function"
+          ? async () => {
+              const { collectIdentityFacts } = await import("./identity-discovery.js");
+              const facts = await collectIdentityFacts({
+                store: deps.store,
+                tenant,
+                llmRunner: deps.llmRunner,
+                selfIdentity: deps.selfIdentity,
+                logger: deps.logger,
+                ...(watermark ? { sinceIso: watermark } : {}),
+              });
+              return facts.facts;
+            }
+          : undefined;
       const res = await runSoulMaintenance({
         store: deps.store,
         tenant: tenant as never,
@@ -208,8 +292,16 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
         trigger: "lifecycle",
         recentRecords,
         recentL0,
+        identityFacts,
+        readAgentProfile: deps.readAgentProfile,
         // LLM 只是候选来源之一：runner 缺失时传 undefined（worker 侧跳过，不报错）。
         rewriter: deps.llmRunner ? createSoulRewriter(deps.llmRunner, { taskId: "memory.soul-maintenance" }) : undefined,
+        // S4 判侧：与改写器共用同一个 runner；缺省=undefined，worker 如实标 no_trait_judge，
+        // 不再让「没人提供 traitJudge」静默成「特质永不漂移」。
+        traitJudge: deps.llmRunner ? createTraitJudge(deps.llmRunner) : undefined,
+        // P2-H：人物档案通道与 soul 共用同一个 runner，但有自己的调用节奏（一人一次、
+        // 每 tick ≤ min(8, maxUpdatedPerCycle*2) 人，A12）。runner 缺失时整条通道缺席。
+        personProfiler: deps.llmRunner ? createPersonProfiler(deps.llmRunner, { logger: deps.logger }) : undefined,
         // 漂移检测要向量器；缺省时 worker 如实标注 driftSkipped，不用词面相似伪造分数。
         embed: deps.embeddingService
           ? async (text: string) => Array.from(await deps.embeddingService!.embed(text))
@@ -229,6 +321,22 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
           available: (summary.episodes?.available ?? 0) + res.episodes.available,
         };
       }
+      // P2-H：档案通道的账也要出 tick（「跑了几个人、谁被推迟」不能只留在 worker 里）。
+      if (res.personProfile) aggregatePersonProfile(summary, res.personProfile);
+      // S4：特质漂移是本轮唯一会改「我是谁」的写径，必须进 summary 而不是只留在日志里。
+      if (res.trait || res.traitSkipped) {
+        if (!summary.trait) {
+          summary.trait = { movedAxes: 0, votes: 0, rejectedVotes: 0, labels: 0, skipped: [] };
+        }
+        const trait = summary.trait;
+        if (res.trait) {
+          trait.movedAxes += res.trait.axes.filter((a) => a.delta !== 0).length;
+          trait.votes += res.trait.votes;
+          trait.rejectedVotes += res.trait.rejectedVotes;
+          trait.labels += res.trait.labels.admitted + res.trait.labels.merged;
+        }
+        if (res.traitSkipped && !trait.skipped.includes(res.traitSkipped)) trait.skipped.push(res.traitSkipped);
+      }
       // 拒绝原因跨租户聚合：同一句话被判死的理由，比「rejected=97」一个总数更能指导修判据。
       if (res.rejectTop) {
         const by = new Map((summary.rejectTop ?? []).map((r) => [r.code, r.count]));
@@ -247,7 +355,7 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
         else deps.logger?.warn?.(line);
       }
       deps.logger?.info?.(
-        `[lifecycle] soul-maintenance tenant=${tenant.teamId || "default"}/${tenant.userId || "default"}/${tenant.agentId || "default"} stored=${res.stored} imported=${res.imported} admitted=${res.admitted} reclassified=${res.reclassified} retired=${res.retired ?? 0} rejected=${res.rejected} merged=${res.merged} degraded=${res.degraded} frozen=${res.frozen} revived=${res.revived} episodes=${res.episodes ? `${res.episodes.available}(+${res.episodes.inserted})` : "n/a"} drift=${res.drift.length}(${driftBad} 异常) ledger=${res.ledgerEntries} mood=${res.mood?.mood?.valence?.toFixed?.(2) ?? "n/a"} emotions=${res.mood?.labels ? Object.entries(res.mood.labels).map(([k, v]) => k + v).join("/") : "n/a"} dormant=${res.mood?.dormant?.join("/") ?? ""}${res.rejectTop ? ` rejectTop=${res.rejectTop.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.rejectHistory?.length ? ` reject30d=${res.rejectHistory.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.driftSkipped ? ` driftSkipped=${res.driftSkipped}` : ""}${res.skipped ? ` skipped=${res.skipped}` : ""}`,
+        `[lifecycle] soul-maintenance tenant=${tenant.teamId || "default"}/${tenant.userId || "default"}/${tenant.agentId || "default"} stored=${res.stored} imported=${res.imported} admitted=${res.admitted} reclassified=${res.reclassified} retired=${res.retired ?? 0} rejected=${res.rejected} merged=${res.merged} degraded=${res.degraded} frozen=${res.frozen} revived=${res.revived} episodes=${res.episodes ? `${res.episodes.available}(+${res.episodes.inserted})` : "n/a"} drift=${res.drift.length}(${driftBad} 异常) ledger=${res.ledgerEntries} mood=${res.mood?.mood?.valence?.toFixed?.(2) ?? "n/a"} emotions=${res.mood?.labels ? Object.entries(res.mood.labels).map(([k, v]) => k + v).join("/") : "n/a"} dormant=${res.mood?.dormant?.join("/") ?? ""}${res.rejectTop ? ` rejectTop=${res.rejectTop.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.rejectHistory?.length ? ` reject30d=${res.rejectHistory.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.trait ? ` trait=${res.trait.axes.filter((a) => a.delta !== 0).length}轴/${res.trait.votes}票${res.trait.rejectedVotes ? `(拒${res.trait.rejectedVotes})` : ""}/${res.trait.labels.admitted + res.trait.labels.merged}标签` : ""}${res.traitSkipped ? ` traitSkipped=${res.traitSkipped}` : ""}${res.driftSkipped ? ` driftSkipped=${res.driftSkipped}` : ""}${res.skipped ? ` skipped=${res.skipped}` : ""}`,
       );
     } catch (err) {
       deps.logger?.warn?.(
@@ -257,13 +365,16 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
   }
   if (tenants.length > 1) {
     deps.logger?.info?.(
-      `[lifecycle] soul-maintenance summary tenants=${summary.tenants}/${tenants.length} imported=${summary.imported} admitted=${summary.admitted}`,
+      `[lifecycle] soul-maintenance summary tenants=${summary.tenants}/${tenants.length} imported=${summary.imported} admitted=${summary.admitted}` +
+        (summary.personProfile
+          ? ` profile.attempted=${summary.personProfile.attempted} profile.fields=${summary.personProfile.fields} profile.relations=${summary.personProfile.relations} profile.deferred=${summary.personProfile.deferred} profile.failed=${summary.personProfile.failed}`
+          : ""),
     );
   }
   return summary;
 }
 
-async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config: LifecycleConfig; logger?: Logger; embeddingService?: { embed(t: string): Promise<Float32Array> } | null }): Promise<void> {
+async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config: LifecycleConfig; logger?: Logger; embeddingService?: { embed(t: string): Promise<Float32Array> } | null; readAgentProfile?: (agentId: string) => Promise<AgentProfileLike | null> }): Promise<void> {
   const now = new Date().toISOString();
   deps.logger?.info?.(`[lifecycle] tick ${now}`);
   const queryL1 = async () => {
@@ -298,67 +409,32 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
       deps.logger?.warn?.(`[lifecycle] consolidation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  // SOUL（身份自发现）：anchor-growth 同款模式——扫描对话→LLM 提案→分级门→core_memory slots。
-  // GROW-EVO P2.1：与价值锚共用 llmRunner；identity slot 自动采纳，core_value/strict_rule pending。
-  if (deps.config.anchorDiscovery?.enabled !== false) {
-    try {
-      const { runIdentityDiscovery } = await import("./identity-discovery.js");
-      const res = await runIdentityDiscovery({
-        store: deps.store,
-        llmRunner: deps.llmRunner,
-        config: deps.config.anchorDiscovery,
-        selfIdentity: deps.config.selfIdentity,
-        // S-CHAR-2（M2/P4）：品格张力检测接线（FLOW-E 同款教训——不接线即死配置）。
-        characterTension: deps.config.characterTension,
-        characterPool: deps.config.anchorDiscovery?.character,
-        logger: deps.logger,
-      });
-      if (res.ran) {
-        deps.logger?.info?.(`[lifecycle] identity-discovery adopted=${res.adopted} pending=${res.pending}`);
-      }
-    } catch (err) {
-      deps.logger?.warn?.(`[lifecycle] identity-discovery failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  // S6 单产线：旧 identity-discovery 的「直写 core_memory 槽」调用已删除——
+  // 取数改由 runSoulMaintenanceTick 内的 collectIdentityFacts 提供，落库只有
+  // soul-maintenance 的 commitSoulPersona 一条事务（不再有第二条写径）。
   // 自维护人格层（m00527）：槽导入 → 语料生长 → 生命周期 → 合并 → 心境 → 账本。
   // 与 identity-discovery 同轮但互不依赖：后者仍在写 core_memory 槽（旧路径保留可回滚），
   // 本 worker 读槽做一次性导入并把后续变更全部记进 soul_persona / soul_ledger。
-  // enabled 缺省 false = 逐位现状；单轮异常只 warn（不得拖垮整条生命周期）。
-  if (deps.config.soulMaintenance?.enabled === true) {
+  // S9（2026-11-07）：总闸 enabled 已删除——写入侧恒开；单轮异常只 warn（不得拖垮整条生命周期）。
+  {
     try {
       await runSoulMaintenanceTick({
         store: deps.store,
         filter: deps.config.filter,
-        config: deps.config.soulMaintenance,
+        config: deps.config.soulMaintenance ?? resolveSoulConfig(),
         llmRunner: deps.llmRunner,
         embeddingService: deps.embeddingService,
         logger: deps.logger,
+        readAgentProfile: deps.readAgentProfile,
+        anchorDiscovery: deps.config.anchorDiscovery,
+        selfIdentity: deps.config.selfIdentity,
       });
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] soul-maintenance failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  // GROW（价值锚自生长）：巩固周期后挂钩。触发双门（interval 24h + 语料新增）在
-  // runAnchorGrowth 内部短路——未到点零 LLM 调用零额外语料查询；LLM runner 缺失
-  // （consolidation 同款门）安静跳过。PA：per-agent 化——逐有记忆 agent 三元组跑发现
-  // 循环（LLM 成本 = agent 数 × 发现轮；旧 store 无枚举能力回退 default 单桶）。
-  if (deps.config.anchorDiscovery?.enabled !== false) {
-    try {
-      const res = await runAnchorGrowth({
-        store: deps.store,
-        llmRunner: deps.llmRunner,
-        config: deps.config.anchorDiscovery,
-        // S-CHAR-2（M2/P3）：T2 挂点接线（缺省 undefined=关）。
-        characterTension: deps.config.characterTension,
-        logger: deps.logger,
-      });
-      if (res.ran) {
-        deps.logger?.info?.(`[lifecycle] anchor-growth adopted=${res.adopted} retired=${res.retired} reweighted=${res.reweighted} displaced=${res.displaced} skipped=${res.skipped}`);
-      }
-    } catch (err) {
-      deps.logger?.warn?.(`[lifecycle] anchor-growth failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  // S8（2026-11-07）：价值锚自生长（anchor-growth）整段删除——core_values 表已不存在，
+  // 身份取数改由 soul 单产线（collectIdentityFacts → worker 同一候选数组/同一事务）承担。
   // P4b（GROW-EVO §4）：受控正文演化——conflict 边扫描 → 五条件门 → LLM 单次重写 + evolved_from 审计边。
   // 间隔节流与幂等（evolved_from 边）在 worker 内部；config-first：enabled 缺省 false = 逐位现状。
   if (deps.config.evolution?.enabled === true) {
@@ -388,41 +464,13 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
   if (deps.config.reflection?.enabled) {
     try {
       const res = await runReflection({ queryL1: async () => (await queryL1()) as never, config: deps.config.reflection, store: deps.store, llmRunner: deps.llmRunner, logger: deps.logger, filter: deps.config.filter, embeddingService: deps.embeddingService });
-      // #91 返工观测夹带（2026-10-23 拍板③）：sim-gated/计票/echo 路由关键点进拍级汇总行。
-      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} proposals=${res.proposalsPushed ?? 0} simGated=${res.simGated ?? 0} recVotes=${res.recurrenceVotes ?? 0} echoVotes=${res.echoVotes ?? 0} echoSkipped=${res.echoSkipped ?? 0} rateLimitSkipped=${res.rateLimitSkipped ?? 0} gateDegraded=${res.gateDegraded ?? 0}`);
+      deps.logger?.info?.(`[lifecycle] reflection triggered=${res.triggered} cards=${res.cardsWritten} skipped=${res.skipped}`);
     } catch (err) {
       deps.logger?.warn?.(`[lifecycle] reflection failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  // #91：self_identity pending TTL sweep（复现即投票·默认终局）——recurrence 开才跑
-  // （golden 缺省关=零调用逐位）；仿 reflection 块独立 try/catch warn 非致命。
-  {
-    const recCfg = deps.config.reflection?.selfIdentityGate?.recurrence;
-    if (recCfg?.enabled === true) {
-      try {
-        const swept = await Promise.resolve(deps.store.sweepExpiredSelfIdentityPending?.(deps.config.filter, { ttlHours: recCfg.ttlHours }));
-        // #91 返工观测夹带：swept 无条件打（空扫也打，证明 sweep 节拍活着——消除空转无声盲区）。
-        deps.logger?.info?.(`[lifecycle] self_identity pending TTL swept=${swept?.length ?? 0}`);
-      } catch (err) {
-        deps.logger?.warn?.(`[lifecycle] self_identity pending sweep failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
-  // #92 stage 2：self_identity 确定性自动采纳门（三重门高置信自动采纳；缺省 off=逐位现状；2026-10-25 拍板四项）。
-  // 独立 try/catch warn 非致命（同 sweep 先例）；动态 import 保持模块懒加载（同 identity-discovery 先例）。
-  {
-    const aaCfg = deps.config.reflection?.selfIdentityGate?.autoAdopt;
-    if (aaCfg?.enabled === true) {
-      try {
-        const { runSelfIdentityAutoAdopt } = await import("./auto-adopt-gate.js");
-        const res = await runSelfIdentityAutoAdopt({ store: deps.store, config: aaCfg, logger: deps.logger });
-        // #92 观测夹带：拍级计数行（adopted/blocked/skipped），同 #91 口径——空拍也打，节拍在场可证。
-        deps.logger?.info?.(`[lifecycle] self_identity auto-adopt adopted=${res.adopted} blocked=${res.blocked} skipped=${res.skipped}`);
-      } catch (err) {
-        deps.logger?.warn?.(`[lifecycle] self_identity auto-adopt failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
+  // 2026-11-07（T1 提案/pending 通道清除）：self_identity pending TTL sweep 与 #92 自动采纳门
+  // 已删除——core_pending 表与人工采纳通道不存在，人格/边界由 soul-maintenance worker 自维护。
   if (deps.config.forgetting?.enabled !== false) {
     try {
       const res = await runForgetting({ queryL1: async () => (await queryL1()) as never, config: deps.config.forgetting, logger: deps.logger, store: deps.store, tenant: deps.config.filter });
@@ -434,7 +482,7 @@ async function runOnce(deps: { store: IMemoryStore; llmRunner: LLMRunner; config
 }
 
 /** 启动周期调度（幂等）。返回 stop 函数。 */
-export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: LLMRunner; config?: Partial<LifecycleConfig>; logger?: Logger; embeddingService?: { embed(t: string): Promise<Float32Array> } | null }): () => void {
+export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: LLMRunner; config?: Partial<LifecycleConfig>; logger?: Logger; embeddingService?: { embed(t: string): Promise<Float32Array> } | null; readAgentProfile?: (agentId: string) => Promise<AgentProfileLike | null> }): () => void {
   const cfg = { ...DEFAULT_LIFECYCLE_CONFIG, ...(deps.config ?? {}) };
   if (!cfg.enabled) return () => {};
   if (timer) clearInterval(timer);
@@ -447,7 +495,7 @@ export function startLifecycleScheduler(deps: { store: IMemoryStore; llmRunner: 
       return;
     }
     runOnceInFlight = true;
-    void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger, embeddingService: deps.embeddingService })
+    void runOnce({ store: deps.store, llmRunner: deps.llmRunner, config: cfg, logger: deps.logger, embeddingService: deps.embeddingService, readAgentProfile: deps.readAgentProfile })
       .catch(() => {})
       .finally(() => { runOnceInFlight = false; stallSkips = 0; });
   };

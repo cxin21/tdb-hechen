@@ -66,7 +66,7 @@ async function runOnce(): Promise<{ hash: string; counts: Record<string, number>
       store,
       tenant: T,
       now: NOW,
-      config: { enabled: true, episodeWindowDays: 30, updateIntervalHours: 0, minEvidence: 2 },
+      config: { episodeWindowDays: 30, updateIntervalHours: 0, minEvidence: 2 },
       trigger: "manual",
       llmCallBudget: 0,
     });

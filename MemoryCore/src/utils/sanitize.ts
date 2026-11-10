@@ -488,14 +488,15 @@ export function pickRecentUnique(texts: string[], max: number): string[] {
 export function escapeXmlTags(text: string): string {
   // Escape closing tags that match our injection section boundaries.
   // P2-T11：追加 core_memory 系身份块边界（core_memory/identity/strict_rule/core_value）
-  // 与 user —— 这些块由 /v3/core-memory/write 写入，写入路径已在咽喉处统一消毒，
-  // 此名单是防线本体（含注入端等其他消费方）；毒化内容不得越块逃逸。
+  // 与 user —— 这些块历史上由 /v3/core-memory/write 写入（该写入口已于 2026-11-07
+  // 退役，core_memory 槽现无进程内写者，存量行仍进注入区）；此名单是防线本体
+  // （含注入端等其他消费方），毒化内容不得越块逃逸。
   // I-2（P2-T11+13 复核修补）：追加 l3_core_memory 与 agent —— L3 persona 文件
   //（/v3/core/write）注入时的块边界 `<l3_core_memory>…</l3_core_memory>` 与
   // `<agent …>…</agent>` 同为越块逃逸面，写入路径 handleCoreWrite 已接线消毒。
-  // #31（R5 探针 P09，2026-10-16）：追加 soul-identity/soul-feeling —— soul-assembler
-  // 渲染的块边界同为越块逃逸面（core_values desc/label 可携带 `</soul-identity>`
-  // 越块），渲染路径 renderAnchor/重要的人/品格行/感受段均经本函数消毒。
+  // #31（R5 探针 P09，2026-10-16）：追加 soul-identity/soul-feeling —— soul 注入块
+  // 边界同为越块逃逸面（渲染侧收集的任意文本都可能携带 `</soul-identity>` 越块），
+  // 渲染路径各段均经本函数消毒。
   return text.replace(
     /<\/?(?:user-persona|relevant-memories|scene-navigation|relevant-scenes|memory-tools-guide|core_memory|identity|strict_rule|core_value|l3_core_memory|agent|user|system|assistant|soul-identity|soul-feeling)>/gi,
     (match) => match.replace(/</g, "&lt;").replace(/>/g, "&gt;"),

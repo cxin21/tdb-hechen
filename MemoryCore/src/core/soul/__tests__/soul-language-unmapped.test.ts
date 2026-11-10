@@ -38,7 +38,7 @@ async function run(lines: string[]) {
       store,
       tenant: T,
       now: NOW,
-      config: { enabled: true, episodeWindowDays: 30, updateIntervalHours: 0 },
+      config: { episodeWindowDays: 30, updateIntervalHours: 0 },
       trigger: "manual",
       llmCallBudget: 0,
       recentRecords: async () => rows(lines).map((r) => ({ id: r.id, content: r.messageText, occurredAt: r.recordedAt })),

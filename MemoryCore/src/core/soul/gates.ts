@@ -37,7 +37,9 @@ export type GateCode =
   | "voice_quote_missing"
   /** voice 是「我」的语体，不是第三人称给用户做的画像（2026-11-05 生产实拍：整层写成「他开口像下工单」）。 */
   | "voice_self_missing"
-  | "narrative_method"
+  | "narrative_method"
+  /** 2026-11-08 单写者：human 层只由 core/person/profile-distiller.ts 写，人格改写产线一律拒收。 */
+  | "human_writer_removed"
   | "self_missing"
   | "self_not_owned"
   | "agent_stance_missing"
@@ -47,7 +49,7 @@ export type GateCode =
   | "insufficient_evidence";
 
 /* —— 人格形态门（task_specific）——
- * 判据来自 2026-11-05 生产回放（582 条 core_pending，405 rejected）：判成「人格」的
+ * 判据来自 2026-11-05 生产回放（582 条候选提案，405 rejected）：判成「人格」的
  * 70 条漏网几乎全是「用具体任务证据讲我怎么做事」的叙事——带 issue 号、commit、
  * 行号、文件名、工具名、比例数字，或长到一句话讲不完。
  * 真正的取舍句是短、且不含任务锚的：它换一个项目、换一套工具依然成立。
@@ -75,6 +77,7 @@ export const PERSONA_SHAPE_MAX_CHARS: Record<SoulLayer, number> = {
   boundary: 120,
   relationship: 110,
   narrative: 160,
+  human: 120,
   method: Number.POSITIVE_INFINITY,
 };
 
@@ -577,7 +580,9 @@ export function evaluateCandidate(text: string, opts: EvaluateOptions): GateRepo
   // 事件句/阶段词/专名三针对「会被注入的层」永远是硬门：legacy 只放宽形态（红线字数、两难），
   // 绝不放宽「会过期」——否则存量导入就是把污染原样搬进人格层。
   // method 池按定义就是收这些被拒内容的审计池（不注入），对它不设这三针。
-  const injecting = opts.layer !== "method";
+  // human 层按定义就是「关于他的事实」：允许项目名/职责/时间这类会被 project_bound 判死的内容，
+  // 但它必须逐字有原话（见下方 human 分支）。method 池不注入，也不设形态门。
+  const injecting = opts.layer !== "method" && opts.layer !== "human";
   if (injecting) {
     if (!opts.legacy) {
       const shape = personaShape(s, opts.layer, opts.config);
@@ -631,11 +636,20 @@ export function evaluateCandidate(text: string, opts: EvaluateOptions): GateRepo
     );
   }
 
+  if (opts.layer === "human") {
+    // 单写者（2026-11-08）：human 层只由人物档案提炼器（core/person/profile-distiller.ts）写。
+    // 只有它知道「这条属于哪个人」（meta.person.key）、字段带 TTL、正文过主语判据；
+    // 人格改写产线再写 human 就是第二个写者——两边判据不同、配额不同，同字段谁覆盖谁没有规则。
+    // 保留成硬门而不是删掉分支：万一 rewriter 仍吐出 human，要能在 soul_gate_stats 里看见它被拒。
+    out.push({ pass: false, code: "human_writer_removed", detail: "human 层由人物档案提炼器独写，人格改写产线不再写这一层" });
+    return out;
+  }
+
   if (opts.layer === "relationship") {
     out.push(
       opts.legacy || hasVerbatimSupport(s, opts.userCorpus, cfg.verbatimMinChars)
         ? { pass: true, code: "ok", detail: opts.legacy ? "存量导入：槽内原文即来源" : "有用户原话逐字支撑" }
-        : { pass: false, code: "verbatim_missing", detail: "关于「他」的判断缺逐字原话支撑" },
+        : { pass: false, code: "verbatim_missing", detail: "关于「他」的判断缺用户原话逐字支撑" },
     );
   }
 

@@ -364,127 +364,75 @@ describe("审查修补 Important④-3 · metric scores 前插对齐（结论 0 �
   });
 });
 
-// ═══════════════ #28→#34 生产断层接线：soul_state 行 → opts.state（TDD RED 先行） ═══════════════
+// ═══════════════ task-6（2026-11-07）：人格注入单一路径——旧 soul 前缀已退出召回块 ═══════════════
 //
-// 断层（2026-10-17）：#28 状态机已生产写 soul_state 表（真实租户行在库），#34 渲染通道
-//（soul-assembler opts.state → renderStateLine，soul-feeling 尾块）已实现，但 auto-recall
-// 组装 opts 时从不读取喂入 → 状态行永不渲染。本组用例钉住接线合同：
-//   ① store 有 readSoulState 且行非 null → 注入块含 renderStateLine 逐字文案（soul-state.ts:52-58）；
-//   ② store 无该方法 / 行为 null（两条数据缺席路径）→ 输出逐位一致（#34 opt-in 语义：零新配置）；
-//   ③ readSoulState 抛错 → "[soul] state read failed (non-fatal)" warn 且注入块不受影响。
-describe("#28→#34 接线 · auto-recall 读取 soul_state 喂入 opts.state（当下状态行）", () => {
-  /** 每用例独立租户（soulPrefixCache 进程内缓存按租户键，避免跨用例串味）。 */
-  const tenantFor = (n: number) => ({ teamId: `team-state-${n}`, userId: "u-state", agentId: "a-state" });
+// 背景：人格注入移交 DSH 插件两段（persona-card systemPrompt section + 每轮 ≤400 字符 volatile），
+// Core 只提供 GET /v3/soul/card 与 /v3/soul/turn。本组用例钉住回收后的合同：
+// 即便 store 里身份槽 / 红线 / 人格条目 / 承诺齐备，召回注入块也只允许 <relevant-memories>，
+// 不得再出现旧人格四段（identity / persona / 红线 / 我的承诺）。
+describe("task-6 · 注入块不含旧人格段（人格已移交 DSH 插件）", () => {
+  /** slot 写入用的租户（与召回路径的 isolationFilter 分开：这里只证明「输入面真的在库」）。 */
+  const tenant = { teamId: "team-task6", userId: "usr-r7fix", agentId: "a-task6" };
+  const NP_Q = "请帮我分析一下人格注入探针的改进方向";
 
-  async function recallLayered(
-    store: VectorStore,
-    userText: string,
-    sessionKey: string,
-    n: number,
-    warnings?: string[],
-    cfgOverrides?: Record<string, unknown>,
-  ): Promise<Awaited<ReturnType<typeof performLayeredRecall>>> {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "r7fix-state-profile-"));
+  it("身份槽 + 红线 + 人格条目 + 承诺齐备 → 注入块只有 relevant-memories，零人格标签", async () => {
+    const { store, dir } = makeStore([
+      mk("np-anchor", { content: "此前关于请帮我分析一下人格注入探针的讨论记录" }),
+    ]);
     try {
-      return await performLayeredRecall({
-        userText,
-        sessionKey,
-        cfg: testCfg({ recall: { strategy: "keyword" }, ...(cfgOverrides ?? {}) }),
-        pluginDataDir: dataDir,
-        vectorStore: store as unknown as IMemoryStore,
-        isolationFilter: tenantFor(n),
-        ...(warnings
-          ? { logger: { warn: (m: string) => { warnings.push(m); } } as Parameters<typeof performLayeredRecall>[0]["logger"] }
-          : {}),
+      // 旧链的四类输入面全部就位，并先用 readCore / listSoulPersona 反证它们真的落库——
+      // 否则下面的「不含」可能只是输入面为空导致的空转。
+      expect(store.upsertCore("self_identity", "我是测试主体，只认亲跑证据。", "manual", tenant)).toBe(true);
+      expect(store.upsertCore("identity", "对端是系统维护者。", "manual", tenant)).toBe(true);
+      expect(store.upsertCore("strict_rule", "绝不可删除记忆。", "manual", tenant)).toBe(true);
+      expect(store.readCore(tenant).map((s) => s.slot).sort()).toEqual(["identity", "self_identity", "strict_rule"]);
+      await store.commitSoulPersona!(tenant, {
+        upsert: [{
+          itemId: "persona:np-1",
+          layer: "identity",
+          text: "先取证再改代码",
+          state: "active",
+          weight: 0.8,
+          evidenceIds: ["ep-np"],
+          evidenceDays: ["2026-11-01"],
+          evidenceOrigins: ["episode"],
+          createdAt: "2026-11-01T00:00:00.000Z",
+          updatedAt: "2026-11-01T00:00:00.000Z",
+          lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+          contradictions: 0,
+          meta: { scope: "global" },
+        }],
+        ledger: [],
       });
-    } finally {
-      try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* 无害 */ }
-    }
-  }
-
-  it("① store.readSoulState 返回状态行 → 注入块含 renderStateLine 逐字文案（喂入断层修复）", async () => {
-    const { store, dir } = makeStore([]);
-    try {
-      store.writeSoulState(tenantFor(1), {
-        valence: 0.592, arousal: 0.493, topValue: "定案", turnSeq: 168, updatedAt: "2026-10-17T06:00:00.000Z",
-      });
-      const res = await recallLayered(store, "状态接线探针", "sk-state-1", 1);
-      expect(res).toBeDefined();
-      // 接线合同：readSoulState → opts.state 必须真的进块。m00527 之后情绪由「与基线比的
-      // 连续心境」（renderMoodLine）承载，绝对档位句（此刻心里…）不再并列——否则模型读到
-      // 两套互相矛盾的情绪自述（实测「比基线更绷紧」+「状态平稳安定」）。topValue 是意图，
-      // 单独保留，所以这里断言「心境行 + 意图子句都在、绝对档位句不在」。
-      const block = res?.block ?? "";
-      expect(block).toContain("眼下最想推进的是定案。");
-      expect(block).toMatch(/近期心境：/);
-      expect(block).not.toContain("此刻心里");
-    } finally {
-      cleanup(store, dir);
-    }
-  });
-
-  it("② store 无 readSoulState 方法 → 输出与「有方法但零状态行」逐位一致（数据缺席=现状）", async () => {
-    const { store, dir } = makeStore([]);
-    try {
-      const hidden = new Proxy(store, {
-        get(t, p, r) {
-          if (p === "readSoulState") return undefined; // 模拟未实现可选方法的 store
-          return Reflect.get(t, p, r);
-        },
-      }) as unknown as VectorStore;
-      const absentMethod = await recallLayered(hidden, "状态接线探针", "sk-state-2a", 2);
-      const nullRow = await recallLayered(store, "状态接线探针", "sk-state-2b", 2); // 有方法、零行 → null
-      expect(absentMethod).toBeDefined();
-      expect(nullRow).toBeDefined();
-      expect(absentMethod?.block ?? "").not.toContain("当下状态");
-      expect(nullRow?.block ?? "").not.toContain("当下状态");
-      // 两条「数据缺席」路径必须逐位一致（接线不得在无数据时改变任何输出字节）
-      expect(absentMethod?.block ?? "").toBe(nullRow?.block ?? "");
-    } finally {
-      cleanup(store, dir);
-    }
-  });
-
-  it("③ readSoulState 抛错 → [soul] state read failed (non-fatal) warn 且注入块不受影响", async () => {
-    const { store, dir } = makeStore([]);
-    try {
-      const warnings: string[] = [];
-      const throwing = new Proxy(store, {
-        get(t, p, r) {
-          if (p === "readSoulState") return () => { throw new Error("boom-state"); };
-          return Reflect.get(t, p, r);
-        },
-      }) as unknown as VectorStore;
-      const res = await recallLayered(throwing, "状态接线探针", "sk-state-3", 3, warnings);
-      expect(res).toBeDefined();
-      expect(res?.block ?? "").not.toContain("当下状态");
-      expect(warnings.some((w) => w.includes("[soul] state read failed (non-fatal)") && w.includes("boom-state"))).toBe(true);
-    } finally {
-      cleanup(store, dir);
-    }
-  });
-
-  it("④ T6-F1 接线：soulRender.promises.enabled=true → 承诺块经生产链路渲染；缺省 cfg 不渲染（config-first）", async () => {
-    const { store, dir } = makeStore([]);
-    try {
-      await store.upsertSoulPromise!(tenantFor(4), {
+      expect(store.listSoulPersona!(tenant)).toHaveLength(1);
+      await store.upsertSoulPromise!(tenant, {
         content: "执行关票等永久性动作前，必须先亲跑测试门。",
         source: "user",
       });
-      const gateOn = await recallLayered(
-        store, "承诺接线探针", "sk-promise-4a", 4, undefined,
-        { coreMemory: { soulRender: { promises: { enabled: true } } } },
-      );
-      expect(gateOn?.block ?? "").toContain("我的承诺：");
-      expect(gateOn?.block ?? "").toContain("执行关票等永久性动作前，必须先亲跑测试门。");
-      // 缺省 cfg（gate off）——同数据零渲染（零行为变化；独立租户避缓存串味）
-      const gateOff = await recallLayered(store, "承诺接线探针", "sk-promise-4b", 5);
-      expect(gateOff?.block ?? "").not.toContain("我的承诺：");
+      expect(await store.listSoulPromises!(tenant)).toHaveLength(1);
+
+      const res = await recall(store, NP_Q, "sk-task6-nopersona");
+      const block = res?.prependContext ?? "";
+      // 非空反证：这一轮确实注入了内容，否则「不含」是在空串上空转。
+      expect(block).toContain("<relevant-memories>");
+      expect(block).toContain("讨论记录");
+      // 人格四段全不得出现：标签与内容都断，防「标签没了内容还在」。
+      expect(block).not.toContain("<soul-persona>");
+      expect(block).not.toContain("<soul-identity>");
+      expect(block).not.toContain("<soul-feeling>");
+      expect(block).not.toContain("## 不可逾越（红线）");
+      expect(block).not.toContain("绝不可删除记忆。");
+      expect(block).not.toContain("我是测试主体");
+      expect(block).not.toContain("先取证再改代码");
+      expect(block).not.toContain("我的承诺：");
+      expect(block.includes("<soul-")).toBe(false);
     } finally {
       cleanup(store, dir);
     }
   });
 });
+
+
 // ═══════════════ #166 度量归属：RecalledMemory.turnId（遮蔽后 content 反查不出父 turn） ═══════════════
 // 现场：present-intent 值级遮蔽把注入文本换成事实短语，bench 的「文本 → turn」反查必定失配
 // （实测 3 题 knowledge-update 的 turnCov 0.5→0，纯度量假摔）。故召回层要显式透传父 turn：

@@ -37,8 +37,6 @@ describe("isRefProtected 判定（F14 refs 重验）", () => {
 describe("worker 集成（refProtection）", () => {
   function makeRows() {
     return [
-      rec("prot-core", { coreRefs: ["数据隐私"] }),
-      rec("prot-person", { personRefs: ["闺女"] }),
       rec("prot-identity", { identityRefs: ["用户每周日陪女儿去图书馆"] }),
       rec("dangling-core", { coreRefs: ["已退休锚"] }),
       rec("dangling-identity", { identityRefs: ["已被替换的旧事实"] }),
@@ -47,17 +45,12 @@ describe("worker 集成（refProtection）", () => {
   }
   function makeStore() {
     return {
-      listValues: async () => [
-        // listValues 契约=仅 active（已退休锚不在保护名集 → 悬空 refs 不保护）
-        { value_id: "v1", label: "数据隐私", weight: 0.5, node_type: "theme", attrs_json: "{}" },
-        { value_id: "v2", label: "女儿", weight: 0.6, node_type: "person", attrs_json: '{"role":"家人","aliases":["闺女"]}' },
-      ],
       archiveL1: vi.fn(() => true),
       readCore: async () => [{ slot: "identity", content: "- 用户每周日陪女儿去图书馆" }],
     };
   }
 
-  it("refProtection=true：受保护记录不归档；悬空/无 refs 照常归档", async () => {
+  it("refProtection=true：identityRefs 受保护不归档；悬空/无 refs 照常归档（S8：锚/人物 refs 数据面已删）", async () => {
     const store = makeStore();
     const res = await runForgetting({
       queryL1: () => makeRows(),
@@ -75,45 +68,7 @@ describe("worker 集成（refProtection）", () => {
       queryL1: () => makeRows(),
       store: store as never,
     });
-    expect(res.candidates.length).toBe(6);
+    expect(res.candidates.length).toBe(4);
   });
 });
 
-describe("F14 租户作用域（SOP 实证修正）", () => {
-  it("worker 把租户传给 listValues（非默认租户锚可见，保护名集不恒空）", async () => {
-    const listValues = vi.fn(async () => [{ value_id: "v1", label: "数据隐私", weight: 0.5, node_type: "theme", attrs_json: "{}" }]);
-    const archiveL1 = vi.fn(() => true);
-    const TENANT = { teamId: "teamA", userId: "userA", agentId: "agentA" };
-    await runForgetting({
-      queryL1: () => [rec("prot-core", { coreRefs: ["数据隐私"] })],
-      config: { ...DEFAULT_FORGETTING_CONFIG, refProtection: true },
-      store: { listValues, archiveL1 } as never,
-      identitySlices: [],
-      tenant: TENANT,
-    });
-    expect(listValues).toHaveBeenCalledWith(TENANT);
-    expect(res_candidates_empty(archiveL1));
-  });
-  function res_candidates_empty(archiveL1: ReturnType<typeof vi.fn>): boolean {
-    expect(archiveL1).not.toHaveBeenCalled();
-    return true;
-  }
-});
-
-describe("对抗审查A3：无 deps.tenant 的批内单租户批按批内租户取锚", () => {
-  it("listValues 以批内租户调用（不用 default 锚）", async () => {
-    const listValues = vi.fn(async () => [{ value_id: "v1", label: "数据隐私", weight: 0.5, node_type: "theme", attrs_json: "{}" }]);
-    const archiveL1 = vi.fn(() => true);
-    const r = rec("prot-a3", { coreRefs: ["数据隐私"] });
-    (r as unknown as { teamId?: string }).teamId = "teamX";
-    await runForgetting({
-      queryL1: () => [r],
-      config: { ...DEFAULT_FORGETTING_CONFIG, refProtection: true },
-      store: { listValues, archiveL1 } as never,
-      identitySlices: [],
-      // 不传 tenant
-    });
-    expect(listValues).toHaveBeenCalledWith({ teamId: "teamX", userId: "default", agentId: "default" });
-    expect(archiveL1).not.toHaveBeenCalled();
-  });
-});

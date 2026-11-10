@@ -13,6 +13,7 @@
  * ① 情绪必须带对象与强度衰减；② 心境必须与基线比较并给出可解释原因。
  */
 import { cosine, survivesProjectSwap } from "./gates.js";
+import { BASELINE_EMA_ALPHA } from "./traits.js";
 import type { SoulEpisode, SoulMaintenanceConfig } from "./types.js";
 
 export interface AppraisalVector {
@@ -53,7 +54,7 @@ export interface AppraisalVector {
 export interface EmotionEvent {
   id: string;
   at: string;
-  /** 情绪对象：「何晨」「memory 召回」「这次部署」——没有对象就不是情绪。 */
+  /** 情绪对象：「他」「memory 召回」「这次部署」——没有对象就不是情绪。 */
   object: string;
   label: string;
   valence: number;
@@ -62,6 +63,16 @@ export interface EmotionEvent {
   intensity: number;
   /** 支配感 0..1（PAD 第三维）；旧事件没这一列时按 0.5 读，不假装知道。 */
   dominance?: number;
+  /**
+   * 归因（谁造成的）：self / other / environment。写入侧只在有 appraisal 时才有值，
+   * 读面缺列不伪造（undefined ≠ "other"）。
+   */
+  agency?: AppraisalVector["agency"];
+  /**
+   * 这条情绪判定的把握度 0..1（由 appraisal 的 control × normCompatibility 折算）。
+   * 缺省 undefined = 这一路没有算过，不写成 0 冒充「完全没把握」。
+   */
+  confidence?: number;
   appraisal: AppraisalVector;
   halfLifeHours: number;
 }
@@ -130,35 +141,35 @@ interface EmotionTemplate {
   halfLifeHours: number;
 }
 
-const POSITIVE_HIGH: EmotionTemplate = { label: "振奋", valence: 0.7, arousal: 0.7, dominance: 0.75, halfLifeHours: 2 };
-const POSITIVE_CALM: EmotionTemplate = { label: "踏实", valence: 0.35, arousal: 0.2, dominance: 0.55, halfLifeHours: 12 };
-const POSITIVE_SURE: EmotionTemplate = { label: "笃定", valence: 0.5, arousal: 0.3, dominance: 0.7, halfLifeHours: 8 };
-const NEGATIVE_ANXIOUS: EmotionTemplate = { label: "悬着", valence: -0.4, arousal: 0.6, dominance: 0.3, halfLifeHours: 4 };
-const NEGATIVE_ANGRY: EmotionTemplate = { label: "恼火", valence: -0.6, arousal: 0.7, dominance: 0.6, halfLifeHours: 2 };
-const NEGATIVE_DISAPPOINTED: EmotionTemplate = { label: "失望", valence: -0.5, arousal: 0.3, dominance: 0.25, halfLifeHours: 6 };
-const NEGATIVE_UNEASY: EmotionTemplate = { label: "不安", valence: -0.4, arousal: 0.55, dominance: 0.3, halfLifeHours: 4 };
-const NEGATIVE_GUILT: EmotionTemplate = { label: "愧疚", valence: -0.5, arousal: 0.4, dominance: 0.25, halfLifeHours: 8 };
-const NEGATIVE_SHY: EmotionTemplate = { label: "害羞", valence: -0.3, arousal: 0.6, dominance: 0.2, halfLifeHours: 8 };
-const NEGATIVE_WRONGED: EmotionTemplate = { label: "委屈", valence: -0.45, arousal: 0.45, dominance: 0.35, halfLifeHours: 6 };
-const POSITIVE_JOY: EmotionTemplate = { label: "开心", valence: 0.7, arousal: 0.55, dominance: 0.7, halfLifeHours: 4 };
-const POSITIVE_RELIEF: EmotionTemplate = { label: "安心", valence: 0.4, arousal: 0.15, dominance: 0.6, halfLifeHours: 12 };
-const POSITIVE_GRATEFUL: EmotionTemplate = { label: "感激", valence: 0.55, arousal: 0.35, dominance: 0.45, halfLifeHours: 6 };
-const POSITIVE_PRIDE: EmotionTemplate = { label: "自豪", valence: 0.65, arousal: 0.5, dominance: 0.75, halfLifeHours: 6 };
-const NEGATIVE_URGENT: EmotionTemplate = { label: "着急", valence: -0.35, arousal: 0.75, dominance: 0.3, halfLifeHours: 2 };
-const NEGATIVE_RESIGNED: EmotionTemplate = { label: "无奈", valence: -0.3, arousal: 0.2, dominance: 0.2, halfLifeHours: 6 };
-const NEUTRAL_SURPRISE: EmotionTemplate = { label: "意外", valence: 0, arousal: 0.5, dominance: 0.45, halfLifeHours: 2 };
-const NEUTRAL_CALM: EmotionTemplate = { label: "平静", valence: 0, arousal: 0.1, dominance: 0.6, halfLifeHours: 12 };
+const POSITIVE_HIGH: EmotionTemplate = { label: "振奋", valence: 0.7, arousal: 0.7, dominance: 0.75, halfLifeHours: 1 };
+const POSITIVE_CALM: EmotionTemplate = { label: "踏实", valence: 0.35, arousal: 0.2, dominance: 0.55, halfLifeHours: 6 };
+const POSITIVE_SURE: EmotionTemplate = { label: "笃定", valence: 0.5, arousal: 0.3, dominance: 0.7, halfLifeHours: 4 };
+const NEGATIVE_ANXIOUS: EmotionTemplate = { label: "悬着", valence: -0.4, arousal: 0.6, dominance: 0.3, halfLifeHours: 2 };
+const NEGATIVE_ANGRY: EmotionTemplate = { label: "恼火", valence: -0.6, arousal: 0.7, dominance: 0.6, halfLifeHours: 1 };
+const NEGATIVE_DISAPPOINTED: EmotionTemplate = { label: "失望", valence: -0.5, arousal: 0.3, dominance: 0.25, halfLifeHours: 3 };
+const NEGATIVE_UNEASY: EmotionTemplate = { label: "不安", valence: -0.4, arousal: 0.55, dominance: 0.3, halfLifeHours: 2 };
+const NEGATIVE_GUILT: EmotionTemplate = { label: "愧疚", valence: -0.5, arousal: 0.4, dominance: 0.25, halfLifeHours: 4 };
+const NEGATIVE_SHY: EmotionTemplate = { label: "害羞", valence: -0.3, arousal: 0.6, dominance: 0.2, halfLifeHours: 4 };
+const NEGATIVE_WRONGED: EmotionTemplate = { label: "委屈", valence: -0.45, arousal: 0.45, dominance: 0.35, halfLifeHours: 3 };
+const POSITIVE_JOY: EmotionTemplate = { label: "开心", valence: 0.7, arousal: 0.55, dominance: 0.7, halfLifeHours: 2 };
+const POSITIVE_RELIEF: EmotionTemplate = { label: "安心", valence: 0.4, arousal: 0.15, dominance: 0.6, halfLifeHours: 6 };
+const POSITIVE_GRATEFUL: EmotionTemplate = { label: "感激", valence: 0.55, arousal: 0.35, dominance: 0.45, halfLifeHours: 3 };
+const POSITIVE_PRIDE: EmotionTemplate = { label: "自豪", valence: 0.65, arousal: 0.5, dominance: 0.75, halfLifeHours: 3 };
+const NEGATIVE_URGENT: EmotionTemplate = { label: "着急", valence: -0.35, arousal: 0.75, dominance: 0.3, halfLifeHours: 1 };
+const NEGATIVE_RESIGNED: EmotionTemplate = { label: "无奈", valence: -0.3, arousal: 0.2, dominance: 0.2, halfLifeHours: 3 };
+const NEUTRAL_SURPRISE: EmotionTemplate = { label: "意外", valence: 0, arousal: 0.5, dominance: 0.45, halfLifeHours: 1 };
+const NEUTRAL_CALM: EmotionTemplate = { label: "平静", valence: 0, arousal: 0.1, dominance: 0.6, halfLifeHours: 6 };
 // ── 2026-11-06 情绪扩充：从「正负 × 唤醒」的 18 个模板补到 24 个。
 // 新增的六个都不是同义词替换，各自有独立的触发条件（见 pickTemplate）：
 // 释然要「违背后解除」，尴尬要「当众 + 不是我造成 + 场面失序」，
 // 失落要「非我可控 + 没做成」，烦躁要「他造成 + 我还拿得住 + 没到被错怪」，
 // 欣慰要「我做成 + 强烈目标相关」，同情要「他付出了代价 + 事情没成」。
-const POSITIVE_RELIEVED: EmotionTemplate = { label: "释然", valence: 0.45, arousal: 0.2, dominance: 0.65, halfLifeHours: 6 };
-const NEGATIVE_AWKWARD: EmotionTemplate = { label: "尴尬", valence: -0.35, arousal: 0.65, dominance: 0.25, halfLifeHours: 8 };
-const NEGATIVE_LOST: EmotionTemplate = { label: "失落", valence: -0.45, arousal: 0.25, dominance: 0.25, halfLifeHours: 8 };
-const NEGATIVE_IRRITATED: EmotionTemplate = { label: "烦躁", valence: -0.4, arousal: 0.5, dominance: 0.4, halfLifeHours: 4 };
-const POSITIVE_WARM: EmotionTemplate = { label: "欣慰", valence: 0.55, arousal: 0.4, dominance: 0.65, halfLifeHours: 8 };
-const NEGATIVE_PITY: EmotionTemplate = { label: "同情", valence: -0.3, arousal: 0.35, dominance: 0.4, halfLifeHours: 6 };
+const POSITIVE_RELIEVED: EmotionTemplate = { label: "释然", valence: 0.45, arousal: 0.2, dominance: 0.65, halfLifeHours: 3 };
+const NEGATIVE_AWKWARD: EmotionTemplate = { label: "尴尬", valence: -0.35, arousal: 0.65, dominance: 0.25, halfLifeHours: 4 };
+const NEGATIVE_LOST: EmotionTemplate = { label: "失落", valence: -0.45, arousal: 0.25, dominance: 0.25, halfLifeHours: 4 };
+const NEGATIVE_IRRITATED: EmotionTemplate = { label: "烦躁", valence: -0.4, arousal: 0.5, dominance: 0.4, halfLifeHours: 2 };
+const POSITIVE_WARM: EmotionTemplate = { label: "欣慰", valence: 0.55, arousal: 0.4, dominance: 0.65, halfLifeHours: 4 };
+const NEGATIVE_PITY: EmotionTemplate = { label: "同情", valence: -0.3, arousal: 0.35, dominance: 0.4, halfLifeHours: 3 };
 
 const EMOTION_TEMPLATES: readonly EmotionTemplate[] = [
   POSITIVE_HIGH,
@@ -194,9 +205,100 @@ const TEMPLATE_BY_LABEL: ReadonlyMap<string, EmotionTemplate> = new Map(
   EMOTION_TEMPLATES.map((t) => [t.label, t] as const),
 );
 
+/**
+ * 只读取模板（观测/面板/测试用）：拿到某标签的 valence/arousal/dominance 与半衰期。
+ * 写入路径不通过它选标签——label 只能由 appraisal 规则表决定（见 §P3-A），
+ * 这里只是一种「按标签读回定义」的入口，避免调用方各抄一份常量。
+ */
+export function emotionTemplateOf(label: string): EmotionTemplate | undefined {
+  return TEMPLATE_BY_LABEL.get((label ?? "").trim());
+}
+
 /** 某类标签的默认半衰期（小时）；未知标签（旧库历史标签）回落到调用方给的缺省。 */
 export function templateHalfLifeHours(label: string, fallback = 4): number {
   return TEMPLATE_BY_LABEL.get((label ?? "").trim())?.halfLifeHours ?? fallback;
+}
+
+/**
+ * 半衰期倍率（§5 P3-B）：模板里的 halfLifeHours 已经是「最终值」，
+ * 这个倍率只作为读侧/实验的旋钮——1 = 不缩放，改它是为了让「同一批历史行」
+ * 在不改表、不改标签的前提下按另一种消退速度重算（观测/回归用）。
+ * 注意：它**不**参与模板定义，模板值不再乘任何 scale（否则双重重缩）。
+ */
+export const EMOTION_HALF_LIFE_SCALE = 1;
+
+
+/**
+ * 判定「这个 PAD 读数像哪个模板」的距离上界（加权欧氏，见 rankLabelsByPad）。
+ * ≤ 它就认为落在某锚点附近；读面只把它当展示与统计，**不覆盖写入的 label**。
+ */
+export const EMOTION_PAD_NEAR_MAX = 0.35;
+
+/** PAD 读数（只取三维，缺 dominance 按中立 0.5 读，不假装知道）。 */
+export interface PadReading {
+  valence: number;
+  arousal: number;
+  dominance?: number;
+}
+
+function padTriple(pad: PadReading): [number, number, number] {
+  const v = Number.isFinite(pad.valence) ? pad.valence : 0;
+  const a = Number.isFinite(pad.arousal) ? pad.arousal : 0;
+  const d = typeof pad.dominance === "number" && Number.isFinite(pad.dominance) ? pad.dominance : 0.5;
+  return [v, a, d];
+}
+
+/**
+ * 是不是一份「读到的」PAD：NaN/Infinity 是取数坏了，不是 0，也不是「中立」。
+ * 不设这道闸，坏读数会被 padTriple 兜成 (0,0,0.5)，然后安安静静返回「平静」。
+ */
+function padIsReading(pad: PadReading): boolean {
+  return (
+    Number.isFinite(pad.valence) &&
+    Number.isFinite(pad.arousal) &&
+    (pad.dominance === undefined || Number.isFinite(pad.dominance))
+  );
+}
+
+/** 各轴折算到 0..1：valence 是 -1..1，arousal/dominance 本来就是 0..1。 */
+function padUnit(pad: PadReading): [number, number, number] {
+  const [v, a, d] = padTriple(pad);
+  return [(clamp(v, -1, 1) + 1) / 2, clamp01(a), clamp01(d)];
+}
+
+/**
+ * PAD → 最近的 k 个模板标签（加权欧氏：v/a 权重 1、d 权重 0.5，各轴先折算到 0..1）。
+ *
+ * 为什么不是余弦：模板的 PAD 各维普遍偏正，归一后方向几乎一致，实测
+ * 生产 9 条真实行的余弦全落在 0.97–0.998——那不是一个能区分标签的度量。
+ * 欧氏距离在同一轴的偏移上不会被「整体朝正」抵消掉，才看得出「差多远」。
+ * 本函数只服务读面与漏斗统计（emotion:anchor_hit），绝不覆盖写入的 label。
+ */
+export function rankLabelsByPad(pad: PadReading, k = 2): Array<{ label: string; distance: number }> {
+  const want = Math.max(1, Math.floor(k));
+  const [rv, ra, rd] = padTriple(pad);
+  // 全零向量 = 没有读数，不是「中立读数」：三轴全 0 在单位空间里落在角落，
+  // 硬算会「最近」到某个极端模板（无奈/失落一类），那是算出来的假命中。
+  // 坏读数（NaN/Infinity）同理：宁可返回「没有距离」，也不要编一个最近的标签。
+  if (!padIsReading(pad) || !(Math.hypot(rv, ra, rd) > 1e-9)) {
+    return [...EMOTION_TEMPLATES]
+      .map((t) => t.label)
+      .sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+      .slice(0, want)
+      .map((label) => ({ label, distance: Number.POSITIVE_INFINITY }));
+  }
+  const [pv, pa, pd] = padUnit(pad);
+  const scored = EMOTION_TEMPLATES.map((t) => {
+    const [tv, ta, td] = padUnit(t);
+    const dv = pv - tv;
+    const da = pa - ta;
+    const dd = pd - td;
+    return { label: t.label, distance: Math.sqrt(dv * dv + da * da + 0.25 * dd * dd) };
+  });
+  scored.sort((x, y) =>
+    x.distance !== y.distance ? x.distance - y.distance : x.label < y.label ? -1 : x.label > y.label ? 1 : 0,
+  );
+  return scored.slice(0, want);
 }
 
 /**
@@ -214,7 +316,7 @@ const APPRAISAL_RULE_REV = "r5-valence-aware-norm-intensity";
  * 情绪模板版本：标签集合 + 评价规则版本（FNV-1a）。任一变了版本就变——
  * 情绪史按「事件 × 版本」落行，旧行不被静默改写，审计能看出当时按哪版规则判的。
  */
-export const EMOTION_TEMPLATE_VERSION = `et-${fnv1a(`${EMOTION_LABELS.join("|")}|${APPRAISAL_RULE_REV}`)}`;
+export const EMOTION_TEMPLATE_VERSION = `et-${fnv1a(`${EMOTION_LABELS.join("|")}|${APPRAISAL_RULE_REV}|hl-0.5|scale-1`)}`;
 
 function fnv1a(text: string): string {
   let h = 0x811c9dc5;
@@ -366,15 +468,18 @@ function pickTemplate(a: AppraisalVector): EmotionTemplate {
   return NEUTRAL_SURPRISE;
 }
 
-/** 情绪强度按半衰期衰减（返回 0..1）。 */
+/** 情绪强度按半衰期衰减（返回 0..1）。`scale` 见 EMOTION_HALF_LIFE_SCALE（1 = 不缩放）。 */
 export function decayedIntensity(
   event: Pick<EmotionEvent, "intensity" | "at" | "halfLifeHours">,
   now: string,
+  scale: number = EMOTION_HALF_LIFE_SCALE,
 ): number {
   const dtHours = (Date.parse(now) - Date.parse(event.at)) / 3_600_000;
   if (!Number.isFinite(dtHours)) return 0;
   if (dtHours <= 0) return clamp01(event.intensity);
-  return clamp01(event.intensity * Math.pow(2, -dtHours / Math.max(0.1, event.halfLifeHours)));
+  const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const effectiveHalfLife = Math.max(0.1, event.halfLifeHours * s);
+  return clamp01(event.intensity * Math.pow(2, -dtHours / effectiveHalfLife));
 }
 
 /**
@@ -385,9 +490,11 @@ export function decayedIntensity(
 export function decayedStoredIntensity(
   e: { label: string; intensity: number; asOf: string },
   now: string,
+  scale: number = EMOTION_HALF_LIFE_SCALE,
 ): number {
+  const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
   return decayedIntensity(
-    { intensity: e.intensity, at: e.asOf, halfLifeHours: templateHalfLifeHours(e.label) },
+    { intensity: e.intensity, at: e.asOf, halfLifeHours: templateHalfLifeHours(e.label) * s },
     now,
   );
 }
@@ -505,15 +612,21 @@ export function integrateMood(
     aSum += e.arousal * w;
     dSum += (e.dominance ?? 0.5) * w;
   }
-  const bv = base.baselineValence;
+    const bv = base.baselineValence;
   const ba = base.baselineArousal;
+  const nextValence = clamp(wSum > 0 ? vSum / wSum : bv, -1, 1);
+  const nextArousal = clamp(wSum > 0 ? aSum / wSum : ba, 0, 1);
+  const nextDominance = clamp(wSum > 0 ? dSum / wSum : baseDom, 0, 1);
+  // 判据 10 / §6：基线不是常量而是慢速 EMA（α=0.02）——一次事件不改变底子，
+  // 长期偏在哪边，底子就往哪边挪。不回写基线的「基线」只是另一个瞬间读数。
+  const ema = (prev: number, next: number): number => prev + BASELINE_EMA_ALPHA * (next - prev);
   return {
-    valence: clamp(wSum > 0 ? vSum / wSum : bv, -1, 1),
-    arousal: clamp(wSum > 0 ? aSum / wSum : ba, 0, 1),
-    dominance: clamp(wSum > 0 ? dSum / wSum : baseDom, 0, 1),
-    baselineValence: bv,
-    baselineArousal: ba,
-    baselineDominance: baseDom,
+    valence: nextValence,
+    arousal: nextArousal,
+    dominance: nextDominance,
+    baselineValence: clamp(ema(bv, nextValence), -1, 1),
+    baselineArousal: clamp(ema(ba, nextArousal), 0, 1),
+    baselineDominance: clamp(ema(baseDom, nextDominance), 0, 1),
     updatedAt: now,
     // 样本数 = 本轮真正吸收的事件条数，不是历史累加。旧实现 base.sampleCount + events.length
     // 每轮 +86，生产库读到 3823 时它既不是样本数也不是轮数，只是「重跑过多少次」。
@@ -524,7 +637,7 @@ export function integrateMood(
 
 /**
  * 情绪对象抽取（确定性，零 LLM）：L1 只有 content 摘要，没有结构化 object 字段，
- * 所以从记录正文首句里取一个「话题短语」当对象（如「何晨指出假绿」）。
+ * 所以从记录正文首句里取一个「话题短语」当对象（如「被指出假绿」）。
  * 取不到（空/纯代词/超短）就返回空串——空对象时 readMood 不写原因（不编造对象）。
  */
 export function deriveEmotionObject(raw?: string | null): string {
@@ -532,11 +645,22 @@ export function deriveEmotionObject(raw?: string | null): string {
   let s = raw.replace(/\s+/g, " ").trim();
   // 去弹头与引用包装
   s = s.replace(/^[-*+·•]\s*/, "").replace(/^\[(?:strict_rule|identity|self_identity)\]\s*/, "").replace(/^[「"'（(]+/, "");
-  // 取首句（情绪对象是「这次什么事」，不是整段记录）
-  const cut = s.split(/[。；;！!？?\n]/)[0] ?? "";
+  // 指令式开头是「这次要做什么」，不是「因为什么」：剥掉后再判断，
+  // 否则「必须把召回链路修好」会被当成一个可复用情境锚。
+  for (let i = 0; i < 3; i += 1) {
+    const stripped = s.replace(/^(?:必须|需要|应该|应当|请|务必|记得|一定要)[，,、：:]?\s*/u, "");
+    if (stripped === s) break;
+    s = stripped;
+  }
+  // 取首个句子/分句（情绪对象是「这次什么事」，不是整段记录）。
+  // 中文逗号、顿号、冒号也算分句边界：生产里 episode.object 常是整句，
+  // 不切开就永远超过 24 字上限，对象锚恒为空、心境门恒不可达。
+  const cut = s.split(/[。；;！!？?\n，,、：]/)[0] ?? "";
   s = cut.trim().replace(/[，,：:、\s]+$/, "");
   if (s.length < 2) return "";
   if (/^(?:用户|他|她|我|对方|记录|内容)$/.test(s)) return "";
+  // 泛化指代不是对象：拿「这件事」当锚会和任何后续事件误配。
+  if (/^(?:这件事|这事|此事|这次的事|这个问题|那个问题|上述问题)$/u.test(s)) return "";
   // 上限必须与 isReusableAffectObject 一致：旧实现截到 24+「…」=25 字，21–24 字原句原样返回
   // 又被 20 字上界整句拒掉——这一段长度成了永远进不了判断的死区；超过上限的长句也不再
   // 截断充数（「【任务】把 GitHub issue …」这种前缀不是可复用情境），直接不算对象。
@@ -551,10 +675,28 @@ export function emotionFromSignal(
 ): EmotionEvent {
   const v = clamp(signal.valence, -1, 1);
   const arousal = clamp(signal.arousal, 0, 1);
-  const label = v >= 0.25 ? (arousal >= 0.5 ? "振奋" : "踏实") : v <= -0.25 ? (arousal >= 0.5 ? "不安" : "失望") : "平静";
+  // label 由规则决定（§5 P3-C）：和 emotionEventFromEpisode 走同一个 appraiseEmotion，
+  // 全仓只有一个标签来源。不用 PAD 反推——余弦在这套数据上会把「平静」读成「自豪」（实测 0.9736）。
+  const template = appraiseEmotion({
+    at: signal.occurred_at,
+    object: "",
+    appraisal: { goalRelevance: Math.abs(v), expectationViolation: 0, control: 0.5, normCompatibility: 1, agency: "self" },
+  });
+  const label = template.label;
   const rawObject = typeof (signal.object ?? signal.excerpt) === "string" ? (signal.object ?? signal.excerpt)!.trim() : "";
   // 整段标题不能直接当对象，但标题里的人/错/要求可以。抽不到才留空。
   const object = rawObject === "" ? "" : extractAffectReferent(rawObject);
+  const appraisal: AppraisalVector = {
+    goalRelevance: Math.abs(v),
+    expectationViolation: 0,
+    control: 0.5,
+    normCompatibility: 1,
+    agency: "self",
+  };
+  // §5 P3-C：归因随 appraisal 走（缺省 other——「不知道是谁造成的」不等于「我造成的」）；
+  // 把握度 = control × normCompatibility 折回 0..1，两者都低就是「这条读数靠不住」。
+  const agency = appraisal.agency ?? "other";
+  const confidence = clamp01((appraisal.control ?? 0.5) * (appraisal.normCompatibility ?? 0.5) * 2);
   return {
     id: `sig-${signal.occurred_at}-${label}`,
     at: signal.occurred_at,
@@ -563,14 +705,10 @@ export function emotionFromSignal(
     valence: v,
     arousal,
     intensity: clamp01(Math.abs(v) * (0.5 + 0.5 * arousal)),
-    appraisal: {
-      goalRelevance: Math.abs(v),
-      expectationViolation: 0,
-      control: 0.5,
-      normCompatibility: 1,
-      agency: "self",
-    },
-    halfLifeHours: cfg.emotionHalfLifeHours,
+    agency,
+    confidence,
+    appraisal,
+    halfLifeHours: template.halfLifeHours || cfg.emotionHalfLifeHours,
   };
 }
 
@@ -738,11 +876,30 @@ export function moodGrowthGate(input: {
   return null;
 }
 
+/**
+ * 判据 10 / §6 G4：没有存活情绪时也要有一行「底子」（否则静默 30h 后注入面空白，
+ * 读侧无法区分「平静」与「没跑」）。三档按相对基线的偏离绝对值，阈值 0.15 / 0.4。
+ */
+export function baselineToneOf(mood: Pick<SoulMoodState, "valence" | "baselineValence">): {
+  tier: "calm" | "lean" | "strong";
+  text: string;
+} {
+  const dv = mood.valence - mood.baselineValence;
+  const abs = Math.abs(dv);
+  if (abs <= 0.15) return { tier: "calm", text: "底子平静" };
+  if (abs <= 0.4) return { tier: "lean", text: dv > 0 ? "底子偏积极" : "底子偏沉" };
+  return { tier: "strong", text: dv > 0 ? "底子很积极" : "底子很沉" };
+}
+
 export function renderMoodLine(mood: SoulMoodState, opts?: Parameters<typeof readMood>[1]): string {
   const emotion = opts?.emotion ?? (mood.emotion ? { object: mood.emotion.object, label: mood.emotion.label, effectiveIntensity: mood.emotion.intensity } : undefined);
   const r = readMood(mood, { ...opts, emotion });
-  // 混合：主情绪之外还压着一条（强度 ≥ 0.3）。只报一个标签会把「恼火里带着着急」说成「恼火」。
+  // 判据 10：没有存活情绪（或对象不可复用）时输出「底子行」，不留空白；
+  // 但立场/提示句仍要保留——它们是可复核的事实，不是情绪的附属品。
+  const liveObject = typeof emotion?.object === "string" && isReusableAffectObject(emotion.object);
   const primary = (emotion?.label ?? "").trim();
+  const noLiveEmotion = !liveObject || primary === "";
+  // 混合：主情绪之外还压着一条（强度 ≥ 0.3）。只报一个标签会把「恼火里带着着急」说成「恼火」。
   const second = mood.blend && mood.blend.intensity >= 0.3 ? mood.blend.label.trim() : "";
   const compound = primary !== "" && second !== "" ? compoundMoodName(primary, second) : "";
   const mix =
@@ -752,7 +909,11 @@ export function renderMoodLine(mood: SoulMoodState, opts?: Parameters<typeof rea
         ? second
         : `${primary}里带着${second}${compound !== "" ? `（${compound}）` : ""}`;
   const body = mix === "" ? r.phrase : `${r.phrase}，${mix}`;
-  const head = r.reason ? `近期心境：${body}，${r.reason}。` : `近期心境：${body}。`;
+  const head = noLiveEmotion
+    ? `近期心境：${baselineToneOf(mood).text}。`
+    : r.reason
+      ? `近期心境：${body}，${r.reason}。`
+      : `近期心境：${body}。`;
   // 复发判断不看半衰期。同一对象出现过几次，是事实，不因情绪消退而消失。
   const stance = mood.objectStance ?? "";
   // 情绪还要给出一个当场做得到的动作。没有可复用对象时不写——否则就成了无来由的行为指令。
@@ -946,7 +1107,11 @@ export function extractAffectReferent(raw: string | null | undefined): string {
   if (typeof raw !== "string") return "";
   const s = raw.replace(/\s+/gu, " ").trim();
   if (s === "") return "";
-  if (/何晨/u.test(s)) return "何晨";
+  // 2026-11-07（task-27/P2-2）：这里原来写死了一条「主理人姓名命中就返回该姓名」的正则——
+  // 把某个租户的人名焊进判据，换一个人用同一套代码就永远抽不到对象。
+  // 姓名属于数据：只识别人称主语（`X说/指出/要求…`）并返回可复用的「他」。
+  // 返回代词而不是猜那个名字——上下文里没有可信的姓名源时，不凭一句话编造身份。
+  if (/^(?!(?:我|你|他|她|它|咱|用户))[一-龥]{1,4}(?:说|指出|要求|问|觉得|认为|批评|夸|让|叫|催)/u.test(s)) return "他";
   const quoted = /[「"']([^」"']{2,12})[」"']/u.exec(s);
   if (quoted && isReusableAffectObject(quoted[1]!)) return quoted[1]!;
   if (/(?:假绿|自欺|编造)/u.test(s)) return "假绿";
@@ -973,8 +1138,14 @@ export function extractAffectReferent(raw: string | null | undefined): string {
  */
 export function isReusableAffectObject(raw: string): boolean {
   const s = raw.trim();
+  // 人称代词是**指针**不是填充词：它指向对话里的那个人，换任务/换项目都还成立。
+  // 因为在 task-27/P2-2 删掉姓名硬编码之后，「因为他」就是最稳的可复用对象——
+  // 若这里继续按 2 字下限拒掉，心境行会永远写不出原因（只剩读数）。
+  if (s === "他" || s === "她") return true;
   // 与 deriveEmotionObject 的 24 字上限对齐：21–24 字的完整情境短语可当对象，超长一律不算。
   if (s.length < 2 || s.length > 24) return false;
+  // 与 deriveEmotionObject 同一条：泛化指代不算可复用情境（会和任何后续事件误配）。
+  if (/^(?:这件事|这事|此事|这次的事|这个问题|那个问题|上述问题)$/u.test(s)) return false;
   if (/最近一次(?:肯定|否定)/u.test(s)) return false;
   if (/\[Compressed|system-reminder|Open objectives|TASK AS OF/iu.test(s)) return false;
   if (/[<>{}\[\]`]/u.test(s)) return false;
@@ -984,7 +1155,9 @@ export function isReusableAffectObject(raw: string): boolean {
   if (/(?:是不是|是否|为什么|怎么|怎么办|要不要|能否|可不可以|有没有|行不行|你说呢)/u.test(s)) return false;
   if (/(?:[A-Za-z]:[\\/]|\/(?:[\w.-]+\/)+|https?:)/u.test(s)) return false;
   if (/(?:\d{4}-\d{2}-\d{2}|#\d+|\b[0-9a-f]{7,}\b)/iu.test(s)) return false;
-  if (/(?:完成|修复|回归|验证|切换|重构|落地|推进|实现|工单|票)/u.test(s) && !/何晨|他|她/u.test(s)) return false;
+  // 人事相关的话题才有「因为谁」；纯任务词（完成/修复/落地…）不配当长期原因。
+  // 判据是人称/角色词，不是某个具体姓名——姓名属于数据，不属于代码。
+  if (/(?:完成|修复|回归|验证|切换|重构|落地|推进|实现|工单|票)/u.test(s) && !/他|她|你|用户/u.test(s)) return false;
   return survivesProjectSwap(s);
 }
 

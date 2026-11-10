@@ -430,42 +430,21 @@ function applyCoreRefTiebreak(
 }
 
 /**
- * C1/R-A1：读当前租户价值锚行（每次搜索至多一次；R-A1 起 valence 一并透传，
- * 供 buildRankContext 算 R9 moodSign）。
- * best-effort：store 无 listValues / 读失败 → []（coreRef/mood 消费静默关闭，
- * 全链旧路径零影响——R3 降级可见降级无害）。租户三元组从 isolationFilter 派生
- * （缺维度 → default 桶，P2-T12 同形，不允许"缺省=跨租户读"）。
- * fired 判定与 timeWindow/moodSign 组装统一走 recall-signals.buildRankContext
- * （plan Interfaces 契约：R-A2 复用同一上下文组装器）。
+ * C1/R-A1：价值锚行读取点。2026-11-07（S8）起价值锚来源整表退场 → 本函数恒返回空数组
+ * （显式"无此来源"，不是读失败降级）：coreRef 加成与 R9 moodSign 因此不再触发，
+ * 现行 moodSign 供料在 auto-recall（此刻心境相对基线的偏离）。
+ * 保留签名供既有调用方与测试零改动（旧租户推导契约已无数据可读）。
  */
 async function readTenantValues(
   vectorStore: IMemoryStore,
   isolationFilter: IsolationFilter | undefined,
   logger: Logger | undefined,
 ): Promise<Array<{ value_id: string; label: string; weight: number; valence: number | null }>> {
-  try {
-    const listValues = vectorStore.listValues;
-    if (typeof listValues !== "function") return [];
-    const tenant: CoreTenant = normalizeCoreTenant({
-      teamId: isolationFilter?.teamId,
-      userId: isolationFilter?.userId,
-      agentId: isolationFilter?.agentId,
-    });
-    const rows = await listValues.call(vectorStore, tenant);
-    return (rows ?? [])
-      .filter((v) => v && typeof v.label === "string" && v.label.trim())
-      .map((v) => ({
-        value_id: String(v.value_id ?? ""),
-        label: v.label.trim(),
-        weight: typeof v.weight === "number" ? v.weight : 0,
-        valence: typeof v.valence === "number" ? v.valence : null,
-      }));
-  } catch (err) {
-    logger?.warn?.(
-      `${TAG} coreRef values unavailable (non-fatal, coreRefBoost skipped): ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return [];
-  }
+  // S8（2026-11-07）：价值锚整表已退场，coreRefBoost/moodSign 数据面恒空。
+  // 保留签名供既有调用方零改动；显式记一行，不留静默降级。
+  void vectorStore; void isolationFilter;
+  logger?.debug?.("[memory-search] value-anchor rows skipped: source retired (S8)");
+  return [];
 }
 
 // ============================
@@ -1003,7 +982,7 @@ export async function executeMemorySearch(params: {
   /**
    * C1（灵魂记忆 spec §2.2）：coreRef 排序加成幅度（memory.recall.coreRefBoost，
    * 默认 0.05，0=关闭）。只在排序 tiebreak 处生效——不参与检索打分、不越过绝对门槛。
-   * 价值锚由本函数内部从 store.listValues(租户) 读取（best-effort，读不到=零影响）。
+   * 价值锚来源已退场（S8）：内部恒无候选，coreRefBoost 不产生实际加成。
    */
   coreRefBoost?: number;
   /**

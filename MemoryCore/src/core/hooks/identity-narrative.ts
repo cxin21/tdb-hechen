@@ -21,9 +21,10 @@
  * /v3/core-memory/read format=narrative API 透传消费叙事文本，不复制组装逻辑
  * （两包无跨包依赖，禁双份实现）。
  *
- * 消毒说明：core_memory 写入路径单点消毒（v2-router handleCoreMemoryWrite
- * escapeXmlTags，P2-T11 咽喉位）已保证落库内容无裸 XML 边界；读端（含本渲染器）
- * 逐字直出即安全，不二次消毒（二次转义反而破坏「原文子串」溯源不变量）。
+ * 消毒说明：/v3/core-memory/write 写入口已于 2026-11-07 退役（task-20），core_memory
+ * 槽现无任何进程内写者，存量行是旧写入路径经 escapeXmlTags 单点消毒的产物；
+ * 读端（含本渲染器）逐字直出即安全，不二次消毒（二次转义反而破坏「原文子串」
+ * 溯源不变量）。
  */
 
 /** 叙事模板指纹：模板/文案任何变更必须一次性更新本常量（ADR-0003 §5 批次纪律：
@@ -54,7 +55,7 @@ export interface IdentityNarrativeOptions {
 }
 
 /** 事实行提取：按行（事实）边界切分、trim（删字符保子串性）、滤空——与 truncateByLines /
- *  renderStrictRuleSectionLines 的行级事实边界同哲学（D-1：截断按行不截半句）。 */
+ *  历史红线渲染器的行级事实边界同哲学（D-1：截断按行不截半句）。 */
 function factsOf(content: string): string[] {
   return String(content ?? "")
     .split(/\r?\n/)

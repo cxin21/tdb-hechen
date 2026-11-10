@@ -1,8 +1,8 @@
 /**
  * #35（R5）：promise 承诺层——义务不是倾向（R4 立票、R5 对抗审查定稿）。
  *
- * 排除条款（防复用泛化，评审锚）：promise 不进 core_values 生命周期——
- * 无 reweight / decay / similarMerge / anchor-growth / 感受段渲染参与；
+ * 排除条款（防复用泛化，评审锚）：promise 不参与价值锚生命周期（该层已退场）——
+ * 无 reweight / decay / 价值锚生长 / 感受段渲染参与；
  * 承诺创设义务，锚描述倾向，二者不可互相替代。
  *
  * 状态机单向：open → kept | broken | withdrawn；终态无出边，同态迁移拒绝。

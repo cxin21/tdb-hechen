@@ -65,27 +65,28 @@ describe("#36 introspectSoul 三段+零写入", () => {
       writeSpy: spy,
     });
     const out = await introspectSoul(store, TENANT, { snapshotLimit: 3 });
-    expect(out.rendered).toContain("soul-identity");
-    expect(out.rendered).toContain("我是测试。");
+    expect(out.rendered).not.toContain("soul-identity");
+    // task-6：人格渲染已移交插件——槽内容不再进 rendered（自省面只剩 <soul-feeling>）。
+    expect(out.rendered).not.toContain("我是测试。");
     expect(out.snapshots).toHaveLength(3);
     expect(out.snapshots[1].diff).toEqual({ addedLines: 1, removedLines: 1 }); // s2(x,z) vs s1(x,y)
     expect(out.snapshots[2].diff).toEqual({ addedLines: 0, removedLines: 0 });
     expect(out.soulVersion).toMatch(/^sv-/);
-    expect(spy.calls).toBe(0); // 零写入合同（渲染旁路 snapshotsEnabled:false）
+    expect(spy.calls).toBe(0); // 零写入合同（渲染旁路快照落账已退役）
   });
 
   it("探针注入评估：通过/失败带 reason；缺省 null+note 如实降级", async () => {
     const store = makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] });
     const probed = await introspectSoul(store, TENANT, {
       probes: [
-        { id: "P-pass", category: "render", layer: "direct", expectContains: ["soul-identity"] },
-        { id: "P-fail", category: "render", layer: "direct", expectNotContains: ["我是测试。"] },
+        { id: "P-pass", category: "render", layer: "direct", expectNotContains: ["soul-identity", "soul-persona"] },
+        { id: "P-fail", category: "render", layer: "direct", expectContains: ["soul-identity"] },
       ],
     });
     expect(probed.probes).toHaveLength(2);
     expect(probed.probes![0].passed).toBe(true);
     expect(probed.probes![1].passed).toBe(false);
-    expect(probed.probes![1].reason).toContain("forbidden-present:我是测试。");
+    expect(probed.probes![1].reason).toContain("missing:soul-identity");
 
     const unprobed = await introspectSoul(store, TENANT, {});
     expect(unprobed.probes).toBeNull();
@@ -109,12 +110,13 @@ describe("#36 introspectSoul 三段+零写入", () => {
     });
     expect(out.snapshots).toEqual([]);
     expect(out.notes.join("\n")).toContain("snapshot-surface-unavailable");
-    expect(out.orphanAnchors).toEqual([{ label: "孤儿锚", evidenceHits: 0 }]); // 窗内根因有命中
+    // S8：core_values 整表删除 → 孤儿锚扫描退休（恒空 + note）。
+    expect(out.orphanAnchors).toEqual([]);
+    expect(out.notes.join("\n")).toContain("orphan-scan-retired");
     expect(out.evidenceWindowHours).toBe(168);
 
     const noEvidence = await introspectSoul(store, TENANT, {});
-    expect(noEvidence.orphanAnchors.map((o) => o.label).sort()).toEqual(["孤儿锚", "根因"]);
-    expect(noEvidence.notes.join("\n")).toContain("evidence-corpus-empty");
+    expect(noEvidence.orphanAnchors).toEqual([]);
     expect(spy.calls).toBe(0);
   });
 
@@ -177,13 +179,18 @@ describe("#36 端点 handler（soul-introspect-endpoint）", () => {
             slots: [{ slot: "identity", content: "我是测试。" }],
             rows: [anchorRow("v1", "根因"), anchorRow("v2", "孤儿锚")],
           }),
+        // 人格渲染退役后 rendered 只剩 <soul-feeling>：给一个基调，保证三段里 rendered 非空可查。
+        moodTierProvider: async () => ({ tier: "neutral", sampleCount: 5 }),
       },
     );
     expect(ok.status).toBe(200);
     const data = (ok.payload as { code: number; data: { rendered: string; probes: unknown; orphanAnchors: Array<{ label: string }> } }).data;
-    expect(data.rendered).toContain("soul-identity");
+    expect(data.rendered).toContain("近期基调：平稳。");
+    expect(data.rendered).not.toContain("soul-identity");
+    expect(data.rendered).not.toContain("我是测试。");
     expect(data.probes).toBeNull();
-    expect(data.orphanAnchors).toEqual([{ label: "孤儿锚", evidenceHits: 0 }]);
+    // S8：价值锚整表删除，孤儿锚扫描退休（恒空）。
+    expect(data.orphanAnchors).toEqual([]);
   });
 });
 
@@ -194,21 +201,22 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
     { slot: "strict_rule", content: "绝不可删除记忆。" },
   ];
 
-  it("defaultRenderOpts 生效：selfIdentityEnabled=true → rendered 含红线段（与生产注入同形）", async () => {
+  it("defaultRenderOpts 不再改变渲染：即便传入退役开关也不出身份/红线段（人格已移交插件）", async () => {
     const out = await handleSoulIntrospectCore(
       { teamId: "ti", userId: "u1", agentId: "a1" },
-      { getStore: () => makeStore({ slots: fidelitySlots }), defaultRenderOpts: { selfIdentityEnabled: true } },
+      { getStore: () => makeStore({ slots: fidelitySlots }), defaultRenderOpts: {} },
     );
     expect(out.status).toBe(200);
     const data = (out.payload as { code: number; data: { rendered: string } }).data;
-    expect(data.rendered).toContain("## 不可逾越（红线）");
-    expect(data.rendered).toContain("绝不可删除记忆。");
+    expect(data.rendered).not.toContain("## 不可逾越（红线）");
+    expect(data.rendered).not.toContain("绝不可删除记忆。");
+    expect(data.rendered).not.toContain("我是测试者。");
   });
 
   it("body renderOpts 逐键覆盖 defaultRenderOpts：显式 false 回退 legacy（无红线段）", async () => {
     const out = await handleSoulIntrospectCore(
-      { teamId: "ti", userId: "u1", agentId: "a1", renderOpts: { selfIdentityEnabled: false } },
-      { getStore: () => makeStore({ slots: fidelitySlots }), defaultRenderOpts: { selfIdentityEnabled: true } },
+      { teamId: "ti", userId: "u1", agentId: "a1", renderOpts: {} },
+      { getStore: () => makeStore({ slots: fidelitySlots }), defaultRenderOpts: {} },
     );
     const data = (out.payload as { code: number; data: { rendered: string } }).data;
     expect(data.rendered).not.toContain("## 不可逾越（红线）");
@@ -220,7 +228,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
       { teamId: "ti", userId: "u1", agentId: "a1" },
       {
         getStore: () => makeStore({ slots }),
-        defaultRenderOpts: { selfIdentityEnabled: true },
+        defaultRenderOpts: {},
         moodTierProvider: async () => ({ tier: "strained", sampleCount: 5 }),
       },
     );
@@ -230,7 +238,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
 
     const noMood = await handleSoulIntrospectCore(
       { teamId: "ti", userId: "u1", agentId: "a1" },
-      { getStore: () => makeStore({ slots }), defaultRenderOpts: { selfIdentityEnabled: true } },
+      { getStore: () => makeStore({ slots }), defaultRenderOpts: {} },
     );
     const d2 = (noMood.payload as { data: { rendered: string } }).data;
     expect(d2.rendered).not.toContain("近期基调：");
@@ -242,7 +250,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
       { teamId: "ti", userId: "u1", agentId: "a1" },
       {
         getStore: () => makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] }),
-        defaultRenderOpts: { selfIdentityEnabled: true },
+        defaultRenderOpts: {},
         moodTierProvider: async () => {
           throw new Error("mood down");
         },
@@ -252,7 +260,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
     expect(out.status).toBe(200);
     const data = (out.payload as { code: number; data: { rendered: string } }).data;
     expect(data.rendered).not.toContain("近期基调：");
-    expect(data.rendered).toContain("我是测试。");
+    expect(data.rendered).not.toContain("我是测试。");
     expect(warns.join("\n")).toContain("mood down");
   });
 
@@ -261,7 +269,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
       { teamId: "ti", userId: "u1", agentId: "a1" },
       {
         getStore: () => makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] }),
-        defaultRenderOpts: { selfIdentityEnabled: true },
+        defaultRenderOpts: {},
         stateProvider: async () => ({ valence: 0.6, arousal: 0.4, topValue: "用户拍板" }),
       },
     );
@@ -276,7 +284,7 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
       { teamId: "ti", userId: "u1", agentId: "a1" },
       {
         getStore: () => makeStore({ slots: [{ slot: "identity", content: "我是测试。" }] }),
-        defaultRenderOpts: { selfIdentityEnabled: true },
+        defaultRenderOpts: {},
         stateProvider: async () => {
           throw new Error("state down");
         },
@@ -286,33 +294,8 @@ describe("#36 保真度补全：端点 defaultRenderOpts + moodTierProvider（bo
     expect(out.status).toBe(200);
     const data = (out.payload as { code: number; data: { rendered: string } }).data;
     expect(data.rendered).not.toContain("当下状态：");
-    expect(data.rendered).toContain("我是测试。");
+    expect(data.rendered).not.toContain("我是测试。");
     expect(warns.join("\n")).toContain("state down");
   });
 
-  it("#52 D3：defaultRenderOpts.perTurnSlots=false → rendered 省略身份两行、红线段照常；body renderOpts 逐键覆盖可恢复", async () => {
-    const slots = [
-      { slot: "self_identity", content: "我是测试者。" },
-      { slot: "identity", content: "用户是系统维护者。" },
-      { slot: "strict_rule", content: "绝不可删除记忆。" },
-    ];
-    const off = await handleSoulIntrospectCore(
-      { teamId: "ti", userId: "u1", agentId: "a1" },
-      { getStore: () => makeStore({ slots }), defaultRenderOpts: { selfIdentityEnabled: true, perTurnSlots: false } },
-    );
-    expect(off.status).toBe(200);
-    const d1 = (off.payload as { code: number; data: { rendered: string } }).data;
-    expect(d1.rendered).not.toContain("（我是谁）");
-    expect(d1.rendered).not.toContain("（我心中的他）");
-    expect(d1.rendered).toContain("## 不可逾越（红线）");
-    expect(d1.rendered).toContain("绝不可删除记忆。");
-
-    const restored = await handleSoulIntrospectCore(
-      { teamId: "ti", userId: "u1", agentId: "a1", renderOpts: { perTurnSlots: true } },
-      { getStore: () => makeStore({ slots }), defaultRenderOpts: { selfIdentityEnabled: true, perTurnSlots: false } },
-    );
-    const d2 = (restored.payload as { code: number; data: { rendered: string } }).data;
-    expect(d2.rendered).toContain("（我是谁）");
-    expect(d2.rendered).toContain("（我心中的他）");
-  });
 });

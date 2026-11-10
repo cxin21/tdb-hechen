@@ -7,9 +7,9 @@ const T1 = { teamId: "team-a", userId: "usr-1", agentId: "agt-1" };
 const T2 = { teamId: "team-a", userId: "usr-2", agentId: "agt-2" };
 
 /**
- * 生产实证修正（m00527）：后台 worker 没有请求上下文，若 tenant 退化为空三元组，
- * readCore 读的是 default 桶（生产全空）→ imported=0，人格整合永不发生。
- * 本测锁死「枚举租户、逐个跑、互不串味」。
+ * 生产实证修正（m00527）：后台 worker 没有请求上下文，tenant 若退化为空三元组就会串桶。
+ * 本测锁死「枚举租户、逐个跑、互不串味」。2026-11-07（P0-0）起 soul 侧不再读 core_memory
+ * 槽位（无 readCore 调用），这里的存量条目直接以 soul_persona 行注入，验证一次清退。
  */
 function makeStore(): { store: IMemoryStore; commits: Array<{ tenant: unknown; items: PersonaItem[] }> } {
   const commits: Array<{ tenant: unknown; items: PersonaItem[] }> = [];
@@ -37,9 +37,6 @@ function makeStore(): { store: IMemoryStore; commits: Array<{ tenant: unknown; i
       }));
   const store = {
     listCoreTenants: () => [T1, T2],
-    readCore: (tenant?: { agentId?: string }) => [
-      { slot: "strict_rule", content: slots[tenant?.agentId ?? ""] ?? "", source: "panel-adopt", version: 1, updated_at: "2026-11-01T00:00:00.000Z" },
-    ],
     listSoulPersona: (tenant?: { agentId?: string }) => legacy(tenant?.agentId ?? ""),
     listSoulLedger: () => [],
     commitSoulPersona: (tenant: unknown, payload: { upsert: PersonaItem[] }) => {
@@ -55,7 +52,7 @@ describe("soul 每 tick 入口：按租户跑，不退化到 default 桶", () =>
     const { store, commits } = makeStore();
     const summary = await runSoulMaintenanceTick({
       store,
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
     });
     expect(summary.tenants).toBe(2);
     // 2026-11-05 用户拍板：lifecycle 轮次不再导槽进人格层，改为冻结存量导入 + 账本 retire。
@@ -80,7 +77,7 @@ describe("soul 每 tick 入口：按租户跑，不退化到 default 桶", () =>
     const summary = await runSoulMaintenanceTick({
       store,
       filter: T2,
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
     });
     expect(summary.tenants).toBe(1);
     expect(commits).toHaveLength(1);
@@ -110,11 +107,14 @@ describe("soul 每 tick 入口：按租户跑，不退化到 default 桶", () =>
     const summary = await runSoulMaintenanceTick({
       store,
       filter: T1,
-      config: resolveSoulConfig({ enabled: true, episodeWindowDays: 7 }),
+      config: resolveSoulConfig({ episodeWindowDays: 7 }),
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].tenant).toMatchObject(T1);
-    expect(calls[0].opts).toMatchObject({ sinceDays: 7, maxMessages: 12000 });
+    // P0-A：tick 末落卡时还会读一次 L0 找 agent 自述名（opts 只有 maxMessages，没有 sinceDays）。
+    // 这里只断言「事件层那次读」——窗口参数才是本用例的判据。
+    const eventCalls = calls.filter((c) => "sinceDays" in c.opts);
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]!.tenant).toMatchObject(T1);
+    expect(eventCalls[0]!.opts).toMatchObject({ sinceDays: 7, maxMessages: 12000 });
     expect(stored.length).toBeGreaterThan(0);
     expect(summary.episodes?.inserted).toBeGreaterThan(0);
     expect(summary.episodes?.available).toBeGreaterThan(0);
@@ -125,9 +125,34 @@ describe("soul 每 tick 入口：按租户跑，不退化到 default 桶", () =>
     (store as unknown as { listCoreTenants: () => unknown[] }).listCoreTenants = () => [];
     const summary = await runSoulMaintenanceTick({
       store,
-      config: resolveSoulConfig({ enabled: true }),
+      config: resolveSoulConfig({}),
     });
     expect(summary.tenants).toBe(0);
     expect(commits).toHaveLength(0);
+  });
+});
+
+
+describe("S10：lifecycle 注入的 recentL0 必须带清库水位", () => {
+  it("soulMetaGet 有水位时，recentL0Messages 收到 sinceIso（否则清库后首个 tick 重抽旧对话）", async () => {
+    const WATERMARK = "2026-11-07T06:04:30.931Z";
+    const calls: Array<Record<string, unknown> | undefined> = [];
+    const store = {
+      listCoreTenants: () => [T1],
+      listSoulPersona: () => [],
+      listSoulLedger: () => [],
+      commitSoulPersona: () => ({ upserted: 0, ledgered: 0 }),
+      soulMetaGet: (key: string) => (key === "episodeWatermark" ? WATERMARK : undefined),
+      recentL0Messages: (_tenant: unknown, opts?: Record<string, unknown>) => {
+        calls.push(opts);
+        return [];
+      },
+    } as unknown as IMemoryStore;
+    const summary = await runSoulMaintenanceTick({ store, config: resolveSoulConfig({}) });
+    expect(summary.tenants).toBe(1);
+    // P0-A：落卡时还会读一次 L0 取自述名（无 sinceIso），只数事件层那一次。
+    const eventCalls = calls.filter((c) => c !== undefined && "sinceIso" in c);
+    expect(eventCalls).toHaveLength(1);
+    expect(eventCalls[0]?.sinceIso).toBe(WATERMARK);
   });
 });

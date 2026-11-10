@@ -293,10 +293,8 @@ export async function batchDedup(params: {
 
   // Phase 2: Batch LLM judgment（结果统一补 store 决策的 top-1 候选，供记忆图建边；
   // 仅向量召回携带真实 cosine，FTS-only 不附候选不建假强度边）
-  // C1（灵魂记忆 spec §2.1）：dedup LLM 顺带标注 coreRefs——prompt 注入当前租户
-  // 价值锚候选清单（store.listValues(tenant)，identity 从 traceContext 派生），
-  // prompt 候选与解析过滤用同一份（防幻觉 id，P-D）。读取失败 → 空清单（LLM 回 []，
-  // 宁缺毋滥降级，绝不阻塞写入）。
+  // 2026-11-07（S8）：价值锚整表已退场，coreRefs 候选恒空——此调用不再从任何表读取，
+  // 也就不存在"读失败降级"（无来源可读）。prompt 与解析仍用同一份空清单（防幻觉 id，P-D）。
   const valueCandidates = await loadValueCandidates(vectorStore, traceContext, logger);
 
   // B4：前置门槛——cos < minCos 的候选对不必问 LLM（判"不重复"）。
@@ -343,8 +341,8 @@ export async function batchDedup(params: {
 }
 
 /**
- * C1（spec §2.1）：读当前租户价值锚候选（id+label）。best-effort：store 无 listValues
- * / 读失败 → 空数组（LLM 收到空清单回 []，coreRefs 静默降级为不标注——R3 同款）。
+ * C1（spec §2.1）：价值锚候选（id+label）。2026-11-07（S8）起价值锚来源整表退场，
+ * 本函数恒返回空数组——这是"无此来源"的显式语义，不是读失败降级。
  *
  * BACKFILL（甲路线）：存量回填脚本按记录自身三元组构造 traceContext 调用同源复用
  * （PA 起严格无兜底——无锚 agent 候选为空；P-A 单一实现，禁第二份手写）。
@@ -354,25 +352,11 @@ export async function loadValueCandidates(
   traceContext: TraceContext | undefined,
   logger?: Logger,
 ): Promise<CoreValueCandidate[]> {
-  try {
-    const listValues = vectorStore?.listValues;
-    if (typeof listValues !== "function") return [];
-    // core 租户三元组（P2-T12 同形）：缺维度 → default 桶（不允许"缺省=跨租户读"）
-    const tenant: CoreTenant = normalizeCoreTenant({
-      teamId: traceContext?.teamId ?? "",
-      userId: traceContext?.userId ?? "",
-      agentId: traceContext?.agentId ?? "",
-    });
-    const rows = await listValues.call(vectorStore, tenant);
-    return (rows ?? [])
-      .filter((r) => r && typeof r.value_id === "string" && typeof r.label === "string" && r.label.trim())
-      .map((r) => ({ id: r.value_id, label: r.label.trim() }));
-  } catch (err) {
-    logger?.warn?.(
-      `${TAG} listValues failed, coreRefs candidates unavailable (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return [];
-  }
+  // S8（2026-11-07）：价值锚整表已退场，coreRefs 候选恒空（LLM 收到空清单回 []）。
+  // 保留函数签名供既有调用方与测试零改动；此处显式记一行，避免"静默降级"。
+  void vectorStore; void traceContext;
+  logger?.debug?.(`${TAG} coreRef candidates skipped: value-anchor source retired (S8)`);
+  return [];
 }
 
 /**

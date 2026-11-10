@@ -159,26 +159,6 @@ describe("R-A1 咽喉排序点：R8 强化闭环", () => {
   });
 });
 
-describe("R-A1 咽喉排序点：R9 mood 对称偏置（默认关）", () => {
-  const VALUES_POS = [{ value_id: "v1", label: "正确性", weight: 0.8, valence: 1 }];
-  const VALUES_NEG = [{ value_id: "v1", label: "正确性", weight: 0.8, valence: -1 }];
-
-  it("moodSign>0（fired valence 均值正）→ 正 valence 记忆前移；默认 0 → 基线", async () => {
-    const rows = [ftsRow("a"), ftsRow("b", { valence: 0.6 })];
-    expect((await order(mockStore(rows, VALUES_POS), { query: `${KW} 正确性`, moodBoost: 0.03 }))[0]).toBe("b");
-    // 默认关（moodBoost 缺省 0）→ 基线
-    expect(await order(mockStore(rows, VALUES_POS), { query: `${KW} 正确性` })).toEqual(["a", "b"]);
-  });
-  it("moodSign<0 → 负 valence 记忆前移（对称加权）", async () => {
-    const rows = [ftsRow("a"), ftsRow("b", { valence: -0.6 })];
-    expect((await order(mockStore(rows, VALUES_NEG), { query: `${KW} 正确性`, moodBoost: 0.03 }))[0]).toBe("b");
-  });
-  it("fired 为空（query 不含 label）→ 无信号", async () => {
-    const rows = [ftsRow("a"), ftsRow("b", { valence: 0.6 })];
-    expect(await order(mockStore(rows, VALUES_POS), { moodBoost: 0.03 })).toEqual(["a", "b"]);
-  });
-});
-
 describe("R-A1 咽喉排序点：全开", () => {
   it("多通道叠加：命中条目稳定居首", async () => {
     const win = parseTimeWindow(`${KW} 上周`, NOW)!;

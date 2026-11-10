@@ -382,12 +382,6 @@ export interface RecallConfig {
    */
   queryEmbeddingCacheTtlMs: number;
   /**
-   * R-A3（E2）：listValues 价值锚租户级缓存 TTL 毫秒（默认 60_000，<=0 关）。
-   * 进程内全部写路径（upsert/delete/derive/restore/reset 五处穷举）即时失效；
-   * TTL 仅作跨进程写漂移防御。由 factory 接线到 VectorStore.setValuesCacheTtlMs。
-   */
-  valuesCacheTtlMs: number;
-  /**
    * R-A3（E3）：同 session 同 query 注入块复用 TTL 毫秒（默认 300_000 = 5min，<=0 关）。
    * 确定性：上轮 query 与本轮**全等**才复用（不做模糊匹配）。
    */
@@ -905,64 +899,21 @@ export interface MemoryLinksConfig {
   minSimilarity: number;
 }
 
-/** K 核心记忆写入口信任边界（第三轮审计 F2：防投毒覆盖身份层红线）。 */
+/**
+ * 核心记忆块（moodLine / anchorDiscovery / selfIdentity / soulRender / soulMaintenance）。
+ * 2026-11-07（task-20）：写入口信任边界整组退役 —— writeEnabled / allowedSlots /
+ * maxContentLength 三键与其校验器（core/core-memory/guard.ts）一并删除，原因是零消费方：
+ * 写路由已删，core_memory 槽现无任何进程内写者，读面（/v3/core-memory/read）不受影响。
+ */
 export interface MemoryCoreMemoryConfig {
-  /** 写入口开关（默认 true = 允许经 /v3/core-memory/write 写）。关掉后写路由返回 403。 */
-  writeEnabled: boolean;
-  /** 允许写入的 slot 白名单。空数组 = 拒绝所有写入（宁缺毋滥）。 */
-  allowedSlots: string[];
-  /** 单条 content 最大长度（默认 2000 字符，core 是"自我"小块，不是记忆堆）。 */
-  maxContentLength: number;
   /**
-   * 价值锚种子（B1 单一源落地）：core_values 表空时用本配置灌种子值。
-   * 格式 [{ id, label, weight, created_by }]。缺省空 = 不自动灌。
-   */
-  seedValues?: Array<{ id: string; label: string; weight: number; createdBy?: string }>;
-  /**
-   * GROW（价值锚自生长）：调度器挂钩的自发现+自动采纳护栏。
-   * 解析+clamp+默认（缺省 = DEFAULT_ANCHOR_DISCOVERY_CONFIG：开/5/2/15/24h）。
+   * GROW（价值锚自生长）：调度器挂钩的开关（缺省 true=逐位现状）。
+   * 2026-11-07：anchor-growth 模块删除后，护栏子树（证据阈值/单轮配额/总量/配额口径/节奏/
+   * 人格/身份维持/相似合并/品格/描述刷新等）全仓已无读取方（唯一读点是 scheduler 的 .enabled），
+   * 已整体删除。
    */
   anchorDiscovery: {
     enabled: boolean;
-    minEvidence: number;
-    maxPerPass: number;
-    maxTotal: number;
-    /** #94（拍板①）：名额口径——"total"=池内 active 总数（auto+manual+seed 全算，pinned 计入总数，逐出豁免 pinned）；"auto"=旧口径（origin=auto 非钉 + 钉住）。缺省 "total"。 */
-    quotaScope: "auto" | "total";
-    intervalHours: number;
-    /** V10-MAINT-DECOUPLE：维护面独立调度节奏小时数（0=每 tick；clamp 0..168，缺省 6）。 */
-    maintainIntervalHours: number;
-
-    /** DS-SOUL-MEMORY-002 P2：人物锚池（spec §2.6 双池；enabled 缺省 false=逐位现状）。 */
-    person: {
-      enabled: boolean;
-      minEvidence: number;
-      maxPerPass: number;
-      maxTotal: number;
-    };
-    /** P2：GROW-MAINT 身份分支（F15 身份分支/F20 只警告；enabled 缺省 false=逐位现状）。 */
-    identityMaintain: {
-      enabled: boolean;
-    };
-    /** P3：品格锚池（聚合源=self_identity 槽事实；enabled 缺省 false=逐位现状）。 */
-    character: {
-      enabled: boolean;
-      minEvidence: number;
-      maxPerPass: number;
-      maxTotal: number;
-    };
-    /** G-SIMMERGE：采纳前字面相似门（enabled 缺省 false=逐位现状；threshold bigram Jaccard）。 */
-    similarMerge: {
-      enabled: boolean;
-      threshold: number;
-    };
-  };
-  /** S-CHAR-2（M2/P3，DS-SOUL-EVOLUTION-001 §2）：品格张力检测。enabled 缺省 false=逐位现状；
-   *  检测器确定性（character-tension.ts 单一源）；提案落库走既有 F19/F15 门族（R-D 不新造门）。 */
-  characterTension: {
-    enabled: boolean;
-    minInstances: number;
-    maxCandidatesPerPass: number;
   };
   /**
    * S-FEEL-1（M1/DS-SOUL-EVOLUTION-001 §1.4）：近期情绪基调行。enabled 缺省 false=逐位现状；
@@ -979,88 +930,34 @@ export interface MemoryCoreMemoryConfig {
   };
   /**
    * DS-SOUL-MEMORY-002 P1：agent 自我层双视角（enabled 缺省 false=逐位现状，
-   * 含 LLM prompt 行为）。maxPerPass clamp 1..10；intervalHours clamp 1..168。
+   * 含 LLM prompt 行为）。maxPerPass clamp 1..10。
    */
   selfIdentity: {
     enabled: boolean;
     maxPerPass: number;
-    intervalHours: number;
   };
-  /** F17 段级注入预算（chars 为 token 粗粒度近似；clamp 100..2000）。 */
+  /** 灵魂注入面配置（soulRender）——2026-11-07 task-12 收口后只剩三处仍有行为消费者：
+   *  ① 身份叙事化门与两槽预算（/v3/core-memory/read format=narrative 的渲染预算）；
+   *  ② soul_introspect 只读自省面参数；
+   *  ③ 承诺确定性证据迁移门（l1-extractor 的抽取管线）。
+   *  其余各段预算、快照落账、按轮次槽位、锚选取与打分配置、跨段去重门、能力清单与
+   *  承诺块渲染门，均随人格渲染退役一并删除（零读取方）。 */
   soulRender: {
+    /** 身份两槽渲染预算（chars 粗粒度近似；clamp 100..2000）；与 budgetIdentityChars 相加
+     *  构成叙事段的合并预算（叙事替代两行）。 */
     budgetSelfChars: number;
+    /** 身份段渲染预算（clamp 100..2000）。 */
     budgetIdentityChars: number;
-    /** F17（审计补齐）：重要的人 行数上限（1..20，缺省 5）。 */
-    maxRelationLines: number;
-    /** #10 T4：价值锚行总长预算（整锚粒度从尾丢；0=关（缺省，逐位现状），开则建议 480）。 */
-    budgetAnchorChars: number;
-    /** #10 T4：重要的人 行总长预算（整人粒度从尾丢；0=关（缺省），开则建议 400）。 */
-    budgetPersonChars: number;
-    /** #10 T4：品格行总长预算（整锚粒度从尾丢；0=关（缺省），开则建议 300）。 */
-    budgetCharacterChars: number;
-    /** #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写；
-     *  零注入影响——只写 soul_snapshots 观测表）。 */
-    snapshotsEnabled: boolean;
-    /** #52 D3（双通道 slots 去重）：per-turn 身份两行省略门——缺省 true=逐位现状；
-     *  显式 false=双通道（selfIdentity.enabled=true）路径跳过（我是谁）[self_identity] 与
-     *  （我心中的他）[identity] 两行 slots 行（会话头时机已承载，逐轮省略）；红线段/
-     *  价值锚行/重要的人/品格行/感受段/capabilities 段照常。legacy 路径不适用
-     *  （身份行是 legacy 唯一身份载体）。布局级渲染门：不翻 soulVersion（批次纪律）。 */
-    perTurnSlots: boolean;
-    /** #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事化门——
-     *  缺省 false=逐位现状；显式 true：soul dual 路径身份两行由 renderIdentityNarrative
-     *  叙事段替代，且 /v3/core-memory/read 支持 format=narrative（身份两槽折叠为
-     *  identity_narrative 合成槽，proxy 经 API 透传消费）。模板常量+事实句逐字，
-     *  无 LLM/随机/时钟；生成闸违例或无身份内容→null→条目渲染兜底。Park 2411.10109
-     *  口径：条目存储+叙事渲染并存（渲染侧派生不回写存储）；strict_rule/价值锚不动。
-     *  布局级渲染门：不翻 soulVersion（批次纪律，ADR-0003 §5：模板指纹 nv 随门声明）。 */
+    /** #67（R3 身份叙事层）：/v3/core-memory/read 的 format=narrative 叙事化门。 */
     identityNarrative: { enabled: boolean };
-    /** #29（R5）+#42（票 D / D9）：情境锚选择触发门——仅 价值锚行数 > maxRows 才启用
-     *  （缺省 999=现状全注入）。scorer=相似度打分器 config 门（D9：确定性 cosine、shadow-first）：
-     *  enabled 缺省 false=shadow 只报告不裁剪（渲染逐位现状）；true=转正（threshold 硬门+top-K
-     *  重排渲染行）；threshold clamp 0..1 缺省 0（=不设语义硬门：0 只滤除负相关锚行，仅 top-K
-     *  生效；>0 才是硬门）。mmrLambda=MMR 多样性 λ（灵魂注入质量轮 2026-10-19：λ<1 时对
-     *  发生裁剪的池贪心去扎堆，val=λ·rel−(1−λ)·maxSim；clamp 0..1 缺省 0.7；λ≥1 退化纯 top-K）。
-     *  embedBudgetMs=锚 desc 预嵌软预算 ms（灵魂注入质量轮 2026-10-19：E2E 实证冷进程 20 锚
-     *  并行 embed 仍 ~3s 顶穿 5000ms v3 召回预算；超预算→scorer 回退声明序+降级渲染不入缓存，
-     *  in-flight embed 后台落缓存下一请求即完整渲染。缺省 1200；0=关（无预算，旧行为）。
-     *  embedder/queryEmbedding 运行时注入，不入 config。 */
-    anchorSelect: {
-      maxRows: number;
-      scorer: { enabled: boolean; threshold: number; mmrLambda: number; embedBudgetMs: number };
-      shadowSink: { enabled: boolean; file: string };
-    };
-    /** soul 去重门（soul-dedupe，2026-10-19）：strictRuleDedup=红线段近重复行收敛
-     *  （exact / Jaccard≥阈值 / containment；阈值 clamp 0..1 缺省 0.45，与 soul-dedupe.ts
-     *  DEFAULT_RULE_JACCARD_THRESHOLD 标定一致）；anchorDedup=价值锚近重复对收敛
-     *  （label 全同或双向包含且短侧≥2 字）。enabled 缺省 false=逐位现状（不去重）；
-     *  开启属布局级渲染变更（遵循批次纪律：不翻 soulVersion；dropped 走 debug 日志可审计）。
-     *  strictRuleDedup.maxLines=红线段行数上限（0=关缺省，1..50）：去重后从头部保留 N 条
-     *  （slots 声明序=重要性序），生产红线墙治理（10 条占 60% 字数）；
-     *  suppressAnchorOverlap=true：价值锚 desc 与红线行近重复时锚行让位（红线是硬约束
-     *  优先级更高，软取向原则不重复占注入字数）。
-     *  anchorDedup.embeddingThreshold（0..1，缺省 0=关）：label 包含对之外的 embedding
-     *  语义近重复去重（desc cosine≥阈值保留首现代表锚；生产「取证」六锚同质扎堆治理）。 */
-    strictRuleDedup: { enabled: boolean; jaccardThreshold: number; maxLines: number; suppressAnchorOverlap: boolean };
-    anchorDedup: { enabled: boolean; embeddingThreshold: number };
     /** #36（R5）：soul_introspect 只读自省面参数——快照取尾条数（1..200 缺省 20）与
      *  孤儿锚证据窗小时数（1..2160 缺省 168=7d）；端点 body 可逐次覆盖。 */
     introspect: { snapshotLimit: number; evidenceWindowHours: number };
-    /** #40（ADR0003-P3 接线票 B）：capabilities 数据源门——/v3/recall body 携带策展清单
-     *  时是否渲染进 soul 前缀「## 我能做什么」段。缺省 false=现状（不渲染、请求体字段
-     *  被忽略）；显式 true 才消费（config-first；渲染行=传入清单 1:1，#32 一致性合同）。 */
-    capabilities: { enabled: boolean };
     /** #41（ADR0003-P3 实施票 C，D8 证据门）：promise 确定性证据迁移总开关——缺省
-     *  false=逐位现状（抽取管线零 promise 读零 promise 写）；显式 true 才开启：
-     *  确认话语白名单（soul-promise-evidence 单一源）→ refKey 严格相等的 open promise
-     *  迁移（source=evidence 全链溯源）。 */
+     *  false=逐位现状；显式 true 才开启（l1-extractor → soul-promise-evidence）。 */
     promiseEvidence: { enabled: boolean };
-    /** T3（2026-10-17 未来性渲染面，T6-F1 接线）：承诺块渲染门——「我的承诺：」注入
-     *  soul-identity（品格后红线前）。缺省 false=逐位现状（零渲染零查询：listSoulPromises
-     *  不被调用）；显式 true 才消费（config-first；渲染=最新 3 条 open 承诺原文逐字，
-     *  escapeXmlTags 同级消毒；宁缺毋滥：零 open 整块省略）。 */
-    promises: { enabled: boolean };
   };
+
   /** 自维护人格层（2026-11-05）：缺省 enabled=false=逐位现状；开启后以 <soul-persona>
    *  段注入，且后台整合按判据自动维护（只增不减、账本可回滚）。 */
   soulMaintenance: SoulMaintenanceConfig;
@@ -1191,42 +1088,11 @@ export interface MemoryLifecycleConfig {
     /** D-4（2026-09-22 拍板）：周期性事实遗忘保护（缺省 false = 逐位现状）。 */
     recurrenceProtection: boolean;
   };
-  /** P3-F13：反思触发（Generative Agents 对标；enabled 缺省 false=逐位现状）。 */
+  /** P3-F13：反思触发（Generative Agents 对标；enabled 缺省 false=逐位现状）。
+   *  2026-11-07（T1）：反思产提案的三组桥接门（身份提案/承诺提案/相似门与自动采纳门）已随提案制删除。 */
   reflection: {
     enabled: boolean;
     rRef: number;
-    /** #27（R5）：反思结论 → 身份层提案（O13 rail）桥接门；缺省 false=逐位现状。 */
-    soulProposals: {
-      enabled: boolean;
-      /** #ε-定标（ADR0003 D7）：shadow 旁路采集（行为零变化）；缺省 false=零旁路。 */
-      shadowCalibration?: { enabled?: boolean; file?: string };
-      /** #60（S22，2026-10-18）：反思产物契约门（D6 禁伪造当下体验+第一人称+价值锚
-       *  引用，确定性机械校验；通过 → attrs.anchor_refs）；缺省 false=逐位现状。 */
-      cardContract?: { enabled?: boolean };
-      /** #77 Batch D（survey F1）：结论卡原子性契约门（一句话一件事拆条引导）。
-       *  拒收门无条件生效，本键只控制 few-shot prompt 附加；缺省 false=逐位现状。 */
-      conclusionContract?: { enabled?: boolean };
-    };
-    /** #44（D8-(c)）：反思周期 → promise 迁移提案桥接门；缺省 false=逐位现状。 */
-    promiseProposals: { enabled: boolean };
-    /** #81/#91：self_identity 提案相似门——yaml 显式写的键才材料化（parse 白名单接线，FLOW-E「不接线即死配置」教训）；
-     *  不写=缺省行为逐位（闸门/抑制缺省开、recurrence 复现计票缺省关）。 */
-    selfIdentityGate?: {
-      enabled?: boolean;
-      threshold?: number;
-      suppression?: { enabled?: boolean; maxPending?: number };
-      recurrence?: { enabled?: boolean; votes?: number; ttlHours?: number; spanHours?: number };
-      /** #91 K 阀（2026-10-24）：源头硬闸缺省 off=逐位现状；窗口内该租户 self_identity 新落库 >= maxNew → push 支路跳过。maxNew 标定 12、窗口缺省 24h。 */
-      rateLimit?: { enabled?: boolean; maxNew?: number; windowHours?: number };
-      /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门缺省 off=逐位现状；N₂/T₂ 缺省 4/72、矛盾线 0.60（宁拦勿收）、重复线 0.75（单一源标准）。生产启用由部署面显式写 yaml（人格写入终审权变更的最后一道闸）。 */
-      autoAdopt?: {
-        enabled?: boolean;
-        votes?: number;
-        spanHours?: number;
-        contradictionThreshold?: number;
-        dupThreshold?: number;
-      };
-    };
   };
 }
 
@@ -1677,128 +1543,15 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     })(),
   };
 
-  // K 核心记忆写入口信任边界（审计 F2）：slot 白名单 + 长度上限 + 总开关。
   const coreMemoryGroup = obj(c, "coreMemory");
-  const coreMemoryAllowedSlots = strArray(coreMemoryGroup, "allowedSlots");
-  // B1：价值锚种子（core_values 表空时灌入；单一源落地）。
-  const seedValuesRaw = Array.isArray(coreMemoryGroup.seedValues) ? coreMemoryGroup.seedValues : undefined;
-  const coreMemorySeedValues = seedValuesRaw?.flatMap((v) => {
-    const o = (v ?? {}) as Record<string, unknown>;
-    const id = typeof o.id === "string" ? o.id.trim() : "";
-    const label = typeof o.label === "string" ? o.label.trim() : "";
-    const weight = typeof o.weight === "number" ? Math.min(Math.max(o.weight, 0), 1) : NaN;
-    if (!id || !label || !Number.isFinite(weight)) return [];
-    return [{ id, label, weight, createdBy: typeof o.createdBy === "string" ? o.createdBy : "config-seed" }];
-  });
+  // S8（2026-11-07）：价值锚整表已删除，种子配置（seedValues）随之退场。
   const coreMemory: MemoryCoreMemoryConfig = {
-    writeEnabled: bool(coreMemoryGroup, "writeEnabled") ?? true,
-    // K 设计 §2 默认三槽；空数组=拒绝全部（宁缺毋滥）
-    // P1（DS-SOUL-MEMORY-002）：+self_identity（agent 自我层）。信任边界扩展无害——
-    // 实际写入仍由 selfIdentity.enabled 门控；显式配置 allowedSlots 时不注入（用户白名单权威）。
-    allowedSlots: coreMemoryAllowedSlots ?? ["identity", "core_value", "strict_rule", "self_identity"],
-    maxContentLength: num(coreMemoryGroup, "maxContentLength") ?? 2000,
-    seedValues: coreMemorySeedValues ?? [],
-    // GROW（价值锚自生长）：解析+clamp+默认。clamp 上界防配置手滑（宁缺毋滥）；
-    // enabled 缺省 true（与 lifecycle/consolidation/forgetting 同款"缺省开"）。
-    anchorDiscovery: (() => {
-      const g = obj(coreMemoryGroup, "anchorDiscovery");
-      const clamp = (key: string, dflt: number, lo: number, hi: number) => {
-        const raw = num(g, key);
-        if (raw === undefined || !Number.isFinite(raw)) return dflt;
-        return Math.min(hi, Math.max(lo, Math.floor(raw)));
-      };
-      const pg = obj(g, "person");
-      const clampP = (key: string, dflt: number, lo: number, hi: number) => {
-        const rawP = num(pg, key);
-        if (rawP === undefined || !Number.isFinite(rawP)) return dflt;
-        return Math.min(hi, Math.max(lo, Math.floor(rawP)));
-      };
-      return {
-        enabled: bool(g, "enabled") ?? true,
-        minEvidence: clamp("minEvidence", 5, 1, 50),
-        maxPerPass: clamp("maxPerPass", 2, 1, 10),
-        maxTotal: clamp("maxTotal", 15, 1, 100),
-        // #94（拍板①）：total=总预算口径（缺省，拍板即行为）；auto=旧口径回滚档。
-        quotaScope: str(g, "quotaScope") === "auto" ? ("auto" as const) : ("total" as const),
-        intervalHours: clamp("intervalHours", 24, 1, 24 * 30),
-        maintainIntervalHours: clamp("maintainIntervalHours", 6, 0, 24 * 7),
-        person: {
-          enabled: bool(pg, "enabled") ?? false,
-          minEvidence: clampP("minEvidence", 5, 1, 50),
-          maxPerPass: clampP("maxPerPass", 1, 1, 5),
-          maxTotal: clampP("maxTotal", 8, 1, 50),
-        },
-        identityMaintain: {
-          enabled: bool(obj(g, "identityMaintain"), "enabled") ?? false,
-        },
-        similarMerge: (() => {
-          const sg = obj(g, "similarMerge");
-          const rawTh = num(sg, "threshold");
-          return {
-            enabled: bool(sg, "enabled") ?? false,
-            // G-SIMMERGE bigram Jaccard 阈值：0.2~0.95 clamp（过低误并无关锚、过高形同虚设）。
-            threshold: rawTh !== undefined && Number.isFinite(rawTh) ? Math.min(0.95, Math.max(0.2, rawTh)) : 0.5,
-          };
-        })(),
-        character: (() => {
-          const cg = obj(g, "character");
-          const clampC = (key: string, dflt: number, lo: number, hi: number) => {
-            const rawC = num(cg, key);
-            if (rawC === undefined || !Number.isFinite(rawC)) return dflt;
-            return Math.min(hi, Math.max(lo, Math.floor(rawC)));
-          };
-          return {
-            enabled: bool(cg, "enabled") ?? false,
-            minEvidence: clampC("minEvidence", 2, 1, 50),
-            maxPerPass: clampC("maxPerPass", 1, 1, 5),
-            maxTotal: clampC("maxTotal", 8, 1, 50),
-          };
-        })(),
-        // #19 T12：rejected 域证据升级重提通道（缺省 false=V12-REPRO 逐位现状；config-first）。
-        reproposal: (() => {
-          const rg = obj(g, "reproposal");
-          const clampR = (key: string, dflt: number, lo: number, hi: number) => {
-            const rawR = num(rg, key);
-            if (rawR === undefined || !Number.isFinite(rawR)) return dflt;
-            return Math.min(hi, Math.max(lo, Math.floor(rawR)));
-          };
-          return {
-            enabled: bool(rg, "enabled") ?? false,
-            minEvidenceMultiple: clampR("minEvidenceMultiple", 2, 1, 10),
-            maxPerPass: clampR("maxPerPass", 2, 1, 5),
-            maxRejectsBeforeCold: clampR("maxRejectsBeforeCold", 2, 1, 10),
-          };
-        })(),
-        // #11 T5：desc 维护环（缺省 false=逐位现状；evidenceMultiple=≥N× 基线触发）。
-        descRefresh: (() => {
-          const dg = obj(g, "descRefresh");
-          const clampD = (key: string, dflt: number, lo: number, hi: number) => {
-            const rawD = num(dg, key);
-            if (rawD === undefined || !Number.isFinite(rawD)) return dflt;
-            return Math.min(hi, Math.max(lo, Math.floor(rawD)));
-          };
-          return {
-            enabled: bool(dg, "enabled") ?? false,
-            evidenceMultiple: clampD("evidenceMultiple", 2, 1, 10),
-            maxPerPass: clampD("maxPerPass", 2, 1, 5),
-          };
-        })(),
-      };
-    })(),
-    // S-CHAR-2（M2/P3）：品格张力检测（enabled 缺省 false=逐位现状；clamp 同族防手滑）。
-    characterTension: (() => {
-      const ct = obj(coreMemoryGroup, "characterTension");
-      const clampT = (key: string, dflt: number, lo: number, hi: number) => {
-        const rawT = num(ct, key);
-        if (rawT === undefined || !Number.isFinite(rawT)) return dflt;
-        return Math.min(hi, Math.max(lo, Math.floor(rawT)));
-      };
-      return {
-        enabled: bool(ct, "enabled") ?? false,
-        minInstances: clampT("minInstances", 2, 1, 50),
-        maxCandidatesPerPass: clampT("maxCandidatesPerPass", 2, 1, 10),
-      };
-    })(),
+    // GROW（价值锚自生长）：只剩调度开关。2026-11-07：护栏子树随 anchor-growth 模块删除而
+    // 失去全部读取方（全仓仅读 .enabled），解析段整体删除；yaml 同名段同步收缩。
+    anchorDiscovery: {
+      enabled: bool(obj(coreMemoryGroup, "anchorDiscovery"), "enabled") ?? true,
+    },
+
     // DS-SOUL-MEMORY-002 P1：agent 自我层（enabled 缺省 false=逐位现状；yaml 值真实生效+clamp）。
     selfIdentity: (() => {
       const g = obj(coreMemoryGroup, "selfIdentity");
@@ -1810,7 +1563,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       return {
         enabled: bool(g, "enabled") ?? false,
         maxPerPass: clamp("maxPerPass", 2, 1, 10),
-        intervalHours: clamp("intervalHours", 24, 1, 168),
       };
     })(),
     // S-FEEL-1（M1/DS-SOUL-EVOLUTION-001 §1.4）：近期情绪基调（enabled 缺省 false=逐位现状；
@@ -1832,7 +1584,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         halfLifeHours: clampM("halfLifeHours", 48, 0.5, 24 * 30),
       };
     })(),
-    // F17 段级注入预算（chars 为 token 粗粒度近似；超限截断，宁缺毋滥）。
+    // 灵魂注入面解析（2026-11-07 task-12）：只保留仍有行为消费者的三项；其余死键已删。
     soulRender: (() => {
       const g = obj(coreMemoryGroup, "soulRender");
       const clamp = (key: string, dflt: number, lo: number, hi: number) => {
@@ -1840,137 +1592,35 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         if (raw === undefined || !Number.isFinite(raw)) return dflt;
         return Math.min(hi, Math.max(lo, Math.floor(raw)));
       };
+      const gr = g as Record<string, unknown>;
       return {
         budgetSelfChars: clamp("budgetSelfChars", 600, 100, 2000),
         budgetIdentityChars: clamp("budgetIdentityChars", 900, 100, 2000),
-        maxRelationLines: clamp("maxRelationLines", 5, 1, 20),
-        // #10 T4：三行锚列表预算（0=关=缺省逐位现状；clamp 上界防手滑写爆）
-        budgetAnchorChars: clamp("budgetAnchorChars", 0, 0, 4000),
-        budgetPersonChars: clamp("budgetPersonChars", 0, 0, 4000),
-        budgetCharacterChars: clamp("budgetCharacterChars", 0, 0, 4000),
-        // #30（R5-F1 接线）：快照旁路开关——缺省 true=随新功能上线；显式 false 才关闭。
-        snapshotsEnabled:
-          (g as Record<string, unknown>)["snapshotsEnabled"] === undefined
-            ? true
-            : (g as Record<string, unknown>)["snapshotsEnabled"] === true,
-        // #52 D3（双通道 slots 去重）：per-turn 身份两行省略门——缺省 true=逐位现状；
-        // 显式 false 才跳过（我是谁）/（我心中的他）slots 行（非布尔值回退缺省，
-        // snapshotsEnabled ===true 解析先例）。
-        perTurnSlots:
-          (g as Record<string, unknown>)["perTurnSlots"] === undefined
-            ? true
-            : (g as Record<string, unknown>)["perTurnSlots"] === true,
         // #67（R3 身份叙事层）：身份叙事化门——缺省 false=逐位现状；显式 true 才开启
-        //（非布尔值回退缺省，沿 perTurnSlots/snapshotsEnabled 解析先例：形状错不炸配置）。
+        //（非布尔值回退缺省：形状错不炸配置）。
         identityNarrative: {
-          enabled:
-            ((g as Record<string, unknown>)["identityNarrative"] as Record<string, unknown> | undefined)?.[
-              "enabled"
-            ] === true,
+          enabled: (gr["identityNarrative"] as Record<string, unknown> | undefined)?.["enabled"] === true,
         },
-        // #29（R5）：情境锚选择门——缺省 999=现状全注入（当前锚基数个位数，无收益不启动）；
-        // clamp 1..999 防手滑 0/负数。#42（票 D / D9）：scorer 门——enabled 缺省 false（shadow）；
-        // threshold clamp 0..1 缺省 0；形状错一律回退缺省（宁缺毋滥，沿 capabilities 解析先例）。
-        anchorSelect: {
-          maxRows: (() => {
-            const v = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.[
-              "maxRows"
-            ];
-            return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 999)) : 999;
-          })(),
-          scorer: (() => {
-            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.[
-              "scorer"
-            ] as Record<string, unknown> | undefined;
-            const en = s?.["enabled"];
-            const th = s?.["threshold"];
-            const ml = s?.["mmrLambda"];
-            const eb = s?.["embedBudgetMs"];
-            return {
-              enabled: en === undefined ? false : en === true,
-              threshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0,
-              mmrLambda: typeof ml === "number" && Number.isFinite(ml) ? Math.max(0, Math.min(ml, 1)) : 0.7,
-              embedBudgetMs: typeof eb === "number" && Number.isFinite(eb) ? Math.max(0, Math.floor(eb)) : 1200,
-            };
-          })(),
-          // T4（方案 Task 4，2026-10-17）：shadow 定标落盘门——缺省关（零写盘零采集）；
-          // enabled 仅布尔 true 采纳；file 仅非空 string 采纳，否则缺省
-          // data/logs/soul-anchor-shadow.jsonl（reflection shadow sink 同路径惯例）。
-          shadowSink: (() => {
-            const s = ((g as Record<string, unknown>)["anchorSelect"] as Record<string, unknown> | undefined)?.[
-              "shadowSink"
-            ] as Record<string, unknown> | undefined;
-            const f = s?.["file"];
-            return {
-              enabled: s?.["enabled"] === true,
-              file: typeof f === "string" && f.trim() !== "" ? f : "data/logs/soul-anchor-shadow.jsonl",
-            };
-          })(),
-        },
-        // soul 去重门（soul-dedupe，2026-10-19）：enabled 缺省 false=逐位现状；
-        // jaccardThreshold clamp 0..1 缺省 0.45（soul-dedupe.ts 标定值）；
-        // maxLines clamp 0..50 缺省 0=关（红线段行数上限，生产红线墙治理）；
-        // suppressAnchorOverlap 缺省 false（价值锚 desc vs 红线行跨段抑制）；
-        // anchorDedup.embeddingThreshold clamp 0..1 缺省 0=关（embedding 语义近重复去重）。
-        // 形状错一律回退缺省（宁缺毋滥，沿 anchorSelect.scorer 解析先例）。
-        strictRuleDedup: (() => {
-          const s = (g as Record<string, unknown>)["strictRuleDedup"] as Record<string, unknown> | undefined;
-          const th = s?.["jaccardThreshold"];
-          const ml = s?.["maxLines"];
-          return {
-            enabled: s?.["enabled"] === true,
-            jaccardThreshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0.45,
-            maxLines: typeof ml === "number" && Number.isFinite(ml) ? Math.max(0, Math.min(Math.floor(ml), 50)) : 0,
-            suppressAnchorOverlap: s?.["suppressAnchorOverlap"] === true,
-          };
-        })(),
-        anchorDedup: (() => {
-          const s = (g as Record<string, unknown>)["anchorDedup"] as Record<string, unknown> | undefined;
-          const th = s?.["embeddingThreshold"];
-          return {
-            enabled: s?.["enabled"] === true,
-            embeddingThreshold: typeof th === "number" && Number.isFinite(th) ? Math.max(0, Math.min(th, 1)) : 0,
-          };
-        })(),
         // #36（R5）：soul_introspect 自省面参数（只读；快照条数 1..200 缺省 20，证据窗 1..2160h 缺省 168）。
         introspect: {
           snapshotLimit: (() => {
-            const v = ((g as Record<string, unknown>)["introspect"] as Record<string, unknown> | undefined)?.[
-              "snapshotLimit"
-            ];
+            const v = (gr["introspect"] as Record<string, unknown> | undefined)?.["snapshotLimit"];
             return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 200)) : 20;
           })(),
           evidenceWindowHours: (() => {
-            const v = ((g as Record<string, unknown>)["introspect"] as Record<string, unknown> | undefined)?.[
-              "evidenceWindowHours"
-            ];
+            const v = (gr["introspect"] as Record<string, unknown> | undefined)?.["evidenceWindowHours"];
             return typeof v === "number" && Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v), 2160)) : 168;
           })(),
         },
-        // #40（ADR0003-P3 接线票 B）：capabilities 渲染门——缺省 false=逐位现状；
-        // 非布尔/形状错一律回退 false（宁缺毋滥）。
-        capabilities: {
-          enabled:
-            ((g as Record<string, unknown>)["capabilities"] as Record<string, unknown> | undefined)?.["enabled"] ===
-            true,
-        },
         // #41（ADR0003-P3 实施票 C，D8 证据门）：promise 证据迁移总开关——缺省 false=
-        // 逐位现状；非布尔/形状错一律回退 false（宁缺毋滥，沿 capabilities 解析先例）。
+        // 逐位现状；非布尔/形状错一律回退 false（宁缺毋滥）。
         promiseEvidence: {
-          enabled:
-            ((g as Record<string, unknown>)["promiseEvidence"] as Record<string, unknown> | undefined)?.["enabled"] ===
-            true,
-        },
-        // T3（未来性渲染面，T6-F1 接线 2026-10-17）：承诺块渲染门——缺省 false=逐位现状；
-        // 非布尔/形状错一律回退 false（宁缺毋滥，沿 promiseEvidence 解析先例）。
-        promises: {
-          enabled:
-            ((g as Record<string, unknown>)["promises"] as Record<string, unknown> | undefined)?.["enabled"] === true,
+          enabled: (gr["promiseEvidence"] as Record<string, unknown> | undefined)?.["enabled"] === true,
         },
       };
     })(),
     // 自维护人格层（2026-11-05）：缺省 enabled=false=逐位现状；显式 true 才注入 <soul-persona>
-    // 并启用后台整合。形状错一律回退缺省（沿 capabilities/promises 解析先例）。
+    // 并启用后台整合。形状错一律回退缺省（沿布尔门解析先例）。
     soulMaintenance: (() => {
       const g = obj(coreMemoryGroup, "soulMaintenance");
       const base = DEFAULT_SOUL_MAINTENANCE_CONFIG;
@@ -1993,7 +1643,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         return out;
       };
       return resolveSoulConfig({
-        enabled: g?.["enabled"] === true,
         updateIntervalHours: n("updateIntervalHours", base.updateIntervalHours, 1, 168),
         maxUpdatedPerCycle: n("maxUpdatedPerCycle", base.maxUpdatedPerCycle, 1, 20),
         alpha: n("alpha", base.alpha, 0, 0.5),
@@ -2085,113 +1734,9 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       // F-EV12-4（REG-REMAINING-006 A-4）：下限 10→1——yaml rRef: 2（2.0≈3 条高显著）
       // 曾被旧下限 10 静默钳到 10（配置值与生效值背离）。significance [0,1] 刻度下 1~2 均为合法意图值。
       rRef: Math.min(100000, Math.max(1, Math.floor(num(obj(lifecycleGroup, "reflection"), "rRef") ?? 150))),
-      // #27（R5）：memory.lifecycle.reflection.soulProposals.enabled；缺省 false=零提案=逐位现状
-      // #ε-定标（ADR0003 D7）：shadowCalibration.shadow（旁路 JSONL 采集）缺省 false=零旁路
-      soulProposals: (() => {
-        const soulProposalsGroup = obj(obj(lifecycleGroup, "reflection"), "soulProposals");
-        const shadowGroup = obj(soulProposalsGroup, "shadowCalibration");
-        const shadowEnabled = bool(shadowGroup, "enabled");
-        const shadowFile = str(shadowGroup, "file");
-        // #60（S22，2026-10-18）：cardContract 条件材料化——对象且 enabled===true 才带键
-        // （显式关/非对象/缺键 = 不带键 = 缺省 off 逐位现状）。
-        const cardContractGroup = obj(soulProposalsGroup, "cardContract");
-        const cardContractEnabled = bool(cardContractGroup, "enabled");
-        // #77 Batch D（survey F1）：conclusionContract 条件材料化——同 cardContract 形态。
-        const conclusionContractGroup = obj(soulProposalsGroup, "conclusionContract");
-        const conclusionContractEnabled = bool(conclusionContractGroup, "enabled");
-        return {
-          enabled: bool(soulProposalsGroup, "enabled") ?? false,
-          ...(shadowEnabled === undefined && shadowFile === undefined
-            ? {}
-            : {
-                shadowCalibration: {
-                  ...(shadowEnabled === undefined ? {} : { enabled: shadowEnabled }),
-                  ...(shadowFile === undefined ? {} : { file: shadowFile }),
-                },
-              }),
-          ...(cardContractEnabled === true ? { cardContract: { enabled: true } } : {}),
-          ...(conclusionContractEnabled === true ? { conclusionContract: { enabled: true } } : {}),
-        };
-      })(),
-      // #44（D8-(c)）：memory.lifecycle.reflection.promiseProposals.enabled；缺省 false=零提案=逐位现状
-      promiseProposals: {
-        enabled: bool(obj(obj(lifecycleGroup, "reflection"), "promiseProposals"), "enabled") ?? false,
-      },
-      // #81/#91：self_identity 提案相似门——条件材料化（FLOW-E「不接线即死配置」修复，2026-10-24 实证
-      // yaml 写了 selfIdentityGate 但 parse 白名单剥离 → recOn 恒 false → #91 机制生产全旁路）。
-      // 语义：yaml 显式写的键才带（undefined 省略=消费侧缺省逐位）；整键未写=undefined=现状。
-      selfIdentityGate: (() => {
-        const sigGroup = obj(obj(lifecycleGroup, "reflection"), "selfIdentityGate");
-        const sigEnabled = bool(sigGroup, "enabled");
-        const threshold = num(sigGroup, "threshold");
-        const supGroup = obj(sigGroup, "suppression");
-        const supEnabled = bool(supGroup, "enabled");
-        const supMax = num(supGroup, "maxPending");
-        const recGroup = obj(sigGroup, "recurrence");
-        const recEnabled = bool(recGroup, "enabled");
-        const recVotes = num(recGroup, "votes");
-        const recTtl = num(recGroup, "ttlHours");
-        const recSpan = num(recGroup, "spanHours");
-        const rec = {
-          ...(recEnabled === undefined ? {} : { enabled: recEnabled }),
-          ...(recVotes === undefined ? {} : { votes: recVotes }),
-          ...(recTtl === undefined ? {} : { ttlHours: recTtl }),
-          ...(recSpan === undefined ? {} : { spanHours: recSpan }),
-        };
-        const hasRec = Object.keys(rec).length > 0;
-        // #91 K 阀（2026-10-24）：rateLimit 子键条件材料化（同 recurrence 形态；不写=不带键=缺省 off 逐位）。
-        const rlGroup = obj(sigGroup, "rateLimit");
-        const rlEnabled = bool(rlGroup, "enabled");
-        const rlMax = num(rlGroup, "maxNew");
-        const rlWin = num(rlGroup, "windowHours");
-        const rl = {
-          ...(rlEnabled === undefined ? {} : { enabled: rlEnabled }),
-          ...(rlMax === undefined ? {} : { maxNew: rlMax }),
-          ...(rlWin === undefined ? {} : { windowHours: rlWin }),
-        };
-        const hasRl = Object.keys(rl).length > 0;
-        // #92 stage 2（2026-10-25 拍板四项）：autoAdopt 子键条件材料化（同 rateLimit 形态；不写=不带键=缺省 off 逐位）。
-        const aaGroup = obj(sigGroup, "autoAdopt");
-        const aaEnabled = bool(aaGroup, "enabled");
-        const aaVotes = num(aaGroup, "votes");
-        const aaSpan = num(aaGroup, "spanHours");
-        const aaContra = num(aaGroup, "contradictionThreshold");
-        const aaDup = num(aaGroup, "dupThreshold");
-        const aa = {
-          ...(aaEnabled === undefined ? {} : { enabled: aaEnabled }),
-          ...(aaVotes === undefined ? {} : { votes: aaVotes }),
-          ...(aaSpan === undefined ? {} : { spanHours: aaSpan }),
-          ...(aaContra === undefined ? {} : { contradictionThreshold: aaContra }),
-          ...(aaDup === undefined ? {} : { dupThreshold: aaDup }),
-        };
-        const hasAa = Object.keys(aa).length > 0;
-        if (
-          sigEnabled === undefined &&
-          threshold === undefined &&
-          supEnabled === undefined &&
-          supMax === undefined &&
-          !hasRec &&
-          !hasRl &&
-          !hasAa
-        ) {
-          return undefined;
-        }
-        return {
-          ...(sigEnabled === undefined ? {} : { enabled: sigEnabled }),
-          ...(threshold === undefined ? {} : { threshold }),
-          ...(supEnabled === undefined && supMax === undefined
-            ? {}
-            : {
-                suppression: {
-                  ...(supEnabled === undefined ? {} : { enabled: supEnabled }),
-                  ...(supMax === undefined ? {} : { maxPending: supMax }),
-                },
-              }),
-          ...(hasRec ? { recurrence: rec } : {}),
-          ...(hasRl ? { rateLimit: rl } : {}),
-          ...(hasAa ? { autoAdopt: aa } : {}),
-        };
-      })(),
+      // 2026-11-07（T1 提案/pending 通道清除）：身份提案桥接门 / 承诺提案桥接门 / 提案相似门
+      // （含复现计票、源头限流、自动采纳门）整组解析器已删除——反思不再产提案、无相似门/自动采纳门；
+      // 人格与承诺改由 core/soul worker 自维护（T2）。yaml 同名段同步删除，写回=死配置。
     },
   };
 
@@ -2526,7 +2071,6 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       sceneBoost: recallSignalBoost(recallGroup, "sceneBoost", 0),
       // R-A3（性能速赢 E1/E2/E3）：TTL 缓存开关（毫秒，缺省默认开；<=0 = 关；负值 clamp 0）
       queryEmbeddingCacheTtlMs: recallSignalBoost(recallGroup, "queryEmbeddingCacheTtlMs", 60_000),
-      valuesCacheTtlMs: recallSignalBoost(recallGroup, "valuesCacheTtlMs", 60_000),
       // GROW-EVO P2（§2.3）：失效排除总开关（缺省 true = spec 拍板①）
       excludeInvalidated: bool(recallGroup, "excludeInvalidated") ?? true,
       // A3（P1，2026-11-02）：agent 自述行注入面过滤（缺省 false = 逐位现状）

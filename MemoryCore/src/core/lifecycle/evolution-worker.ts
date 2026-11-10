@@ -1,7 +1,7 @@
 /**
  * P4b 受控正文演化 · worker（GROW-EVO §4，REG-REMAINING-005 #1）。
  *
- * 形态：离线 worker，挂 lifecycle tick（与 consolidation/forgetting/anchor-growth 同款）；
+ * 形态：离线 worker，挂 lifecycle tick（与 consolidation/forgetting 同款）；
  * ingestion 路径逐位不变。这是全系统唯一允许改写已固化正文的路径，门必须最严
  * （错误不对称：门严=不触发，良性；门松=错误改写正文，污染难恢复——spec §7.1 拍板③）。
  *
@@ -13,7 +13,7 @@
  *  2. 门①（spec：dedup LLM 给了 rationale）降级为"conflict 边存在"——rationale 从未落盘
  *     （全库 grep 零命中，存量边亦无），再验证职责移交本 worker 单次 LLM 调用的 skip 分支
  *     （spec §4.3"低置信→只留 conflict 边"本就预留该分支，语义等价）。spec 偏差已登记 CHANGELOG。
- *  3. 门⑤ pin/veto：L1 记录无 pin/veto 机制（仅 core_values 锚有）——实现为
+ *  3. 门⑤ pin/veto：L1 记录无 pin/veto 机制——实现为
  *     metadata.pinned/vetoed 真值检查（前瞻协议位，当前恒过）。
  *  4. 合并/失效边界（v5 硬要求）：LLM prompt 内置反例指令——新记忆已叙事化包含旧值
  *     （如 session-h"从 CMAS 改学 PADI"）= 归纳合并，不是待消解矛盾 → skip，
@@ -148,7 +148,7 @@ export async function runEvolution(deps: EvolutionWorkerDeps): Promise<Evolution
   if (!store?.getLinksByType || !store.upsertL1 || !store.addLink || !store.invalidateL1) {
     return { ran: false, scanned: 0, candidates: 0, rewrites: 0, skipped: "store-missing-primitives" };
   }
-  // 进程内节流：未到间隔不消费本轮（与 anchor-growth 消费语义一致：到点即消费，0 候选也记时间）。
+  // 进程内节流：未到间隔不消费本轮（到点即消费，0 候选也记时间）。
   const nowMs = Date.now();
   if (lastRunAtMs > 0 && nowMs - lastRunAtMs < cfg.intervalMs) {
     return { ran: false, scanned: 0, candidates: 0, rewrites: 0, skipped: "interval" };

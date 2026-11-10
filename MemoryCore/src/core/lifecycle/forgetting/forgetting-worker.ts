@@ -1,10 +1,12 @@
 /**
  * I 遗忘 · worker：读 L1 → 打分 → 挑出应归档的候选（软删，宁漏勿多）。
  * 幂等 + 审计 C：支持租户 filter（默认不过滤保持兼容，显式传入才生效）；
- * 审计 B1：提供 store 时自动从 core_values 表读价值锚，价值命中 → 显著性 boost → 更难被遗忘。
+ * 审计 B1：价值锚命中 → 显著性 boost → 更难被遗忘。价值锚来源已退场（2026-11-07）：
+ * 只有调用方显式传入 deps.values 才生效，本 worker 不从任何表读取。
  */
 import type { IMemoryStore } from "../../store/types.js";
 import type { Logger } from "../../types.js";
+import type { SoulLedgerEntry } from "../../soul/types.js";
 import { classify, classifyWithValues, DEFAULT_FORGETTING_CONFIG, isRefProtected } from "./scorer.js";
 import { identityFactSlice } from "../identity-discovery.js";
 import { isRecurrenceMeta } from "../../record/l1-extractor.js";
@@ -20,7 +22,7 @@ export interface ForgettingWorkerDeps {
   logger?: Logger;
   /** 提供则把候选真正归档到 l1_archive（软删可恢复，仅 observed 自动归档——红线） */
   store?: IMemoryStore;
-  /** 审计 B1：价值锚（缺省从 store.listValues() 读 core_values 表；读不到则退化为无 boost）。 */
+  /** 审计 B1：价值锚清单——只能由调用方显式提供（价值锚表已退场，本 worker 不读任何表）；未传=无 boost。 */
   /** P2（F14）：现行身份事实切片集（identityRefs 重验基准）。runForgettingOnStore 自动从
    *  store.readCore(filter) 的 identity 槽提取；直连 runForgetting 的调用方需显式传入。 */
   identitySlices?: string[];
@@ -41,23 +43,12 @@ export interface ForgettingRunResult {
 /** 运行一轮遗忘：判出候选，并在提供 store 时真正软删归档（仅 observed；宁漏勿多 + 可恢复）。 */
 export async function runForgetting(deps: ForgettingWorkerDeps): Promise<ForgettingRunResult> {
   const cfg = { ...DEFAULT_FORGETTING_CONFIG, ...(deps.config ?? {}) };
-  // P2（F14）：原始值行（含 attrs_json，提供 person alias 保护维度）；显式 deps.values 时无 attrs（仅 label 维度）
-  let rawRows: Array<{ value_id: string; label: string; weight: number; attrs_json?: string }> = [];
   const candidates: string[] = [];
-
-  // 审计 B1：单一价值锚源 = core_values 表（store.listValues）。显式传入 deps.values 优先。
-  let values = deps.values;
-  if (values === undefined && deps.store?.listValues) {
-    try {
-      const t = deps.tenant;
-      const rows = await deps.store.listValues(t ? { teamId: t.teamId || "default", userId: t.userId || "default", agentId: t.agentId || "default" } : undefined);
-      rawRows = (rows ?? []) as Array<{ value_id: string; label: string; weight: number; attrs_json?: string }>;
-      values = rawRows.map((r) => ({ id: r.value_id, label: r.label, weight: r.weight }));
-    } catch {
-      values = [];
-    }
-  }
-  values = values ?? [];
+  // S8（2026-11-07）：价值锚整表已删除，锚名保护维度随数据面退场；仅保留显式 deps.values
+  // （调用方自备清单/测试）与身份切片保护。
+  // P0-C（2026-11-07）：既然 values 来源已不可用，就不能再静默报 valuesAnchor=0——
+  // 保护源改成 soul_persona 的引用对象（personaAnchor），一个都取不到时明确告警一次。
+  const explicitAnchors = deps.values ?? [];
 
   const records = typeof deps.queryL1 === "function" ? await deps.queryL1() : (deps.queryL1 as unknown as Array<unknown>);
   let scanned = 0;
@@ -68,6 +59,7 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
   // D-4（2026-09-22 拍板）：周期性事实遗忘保护（缺省 false=逐位现状）。
   const recurrenceProtectionOn = cfg.recurrenceProtection === true;
   const anchorNames = new Set<string>();
+  let personaAnchorCount = 0;
   const identitySliceSet = new Set<string>(refProtectionOn ? (deps.identitySlices ?? []) : []);
   if (refProtectionOn) {
     type TenantTriple = { teamId: string; userId: string; agentId: string };
@@ -84,18 +76,6 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
     }
     const readCoreOf = deps.store as unknown as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> | Promise<Array<{ slot: string; content: string }>> } | undefined;
     for (const t of tenants.values()) {
-      // 对抗审查A3：rawRows 来自 listValues(deps.tenant)——仅显式单租户路径可复用；
-      // 无 deps.tenant 的批内单租户批也必须按批内租户取锚（rawRows=default 锚=取错）。
-      const rowsForTenant = deps.tenant && tenants.size === 1 && rawRows.length > 0
-        ? (rawRows as unknown as Array<{ label?: string; attrs_json?: string }>)
-        : (((await Promise.resolve(deps.store?.listValues?.(t)).catch(() => [])) ?? []) as Array<{ label?: string; attrs_json?: string }>);
-      for (const v of rowsForTenant) {
-        if (typeof v.label === "string" && v.label) anchorNames.add(v.label);
-        try {
-          const p = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : {};
-          if (Array.isArray(p?.aliases)) for (const a of p.aliases.map(String)) if (a) anchorNames.add(a);
-        } catch { /* 宽松解析：损坏 attrs 只损失 alias 维度保护 */ }
-      }
       try {
         const core = ((await Promise.resolve(readCoreOf?.readCore?.(t))) ?? []) as Array<{ slot: string; content: string }>;
         const identity = core.find((s) => s.slot === "identity");
@@ -107,11 +87,20 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
         }
       } catch { /* 身份切片缺失只损失 identityRefs 保护维度 */ }
     }
+    // P0-C：锚名保护源的替代——core_values 删表后 valuesAnchor 恒 0，改用 soul_persona
+    // 条目的对象名（meta.object）作为 personaAnchor；调用方显式传入的 deps.values 仍然生效。
+    const personaAnchorNames = await readPersonaAnchorNames(deps.store, deps.tenant);
+    for (const n of personaAnchorNames) anchorNames.add(n);
+    for (const v of explicitAnchors) if (v?.label) anchorNames.add(v.label);
+    personaAnchorCount = personaAnchorNames.size;
+    if (anchorNames.size === 0) {
+      await reportAnchorUnavailable(deps, personaAnchorCount);
+    }
   }
   for (const m of (records as Array<{ id?: string; record_id?: string; priority: number; metadata?: unknown; timestamps?: string[]; certainty?: string; content?: string }>)) {
     const rec = m as unknown as Parameters<typeof classify>[0] & { content?: string };
-    const action = values.length > 0
-      ? classifyWithValues(rec, values, cfg, Date.now(), deps.appraisalConfig)
+    const action = explicitAnchors.length > 0
+      ? classifyWithValues(rec, explicitAnchors, cfg, Date.now(), deps.appraisalConfig)
       : classify(rec, cfg);
     if (action === "archive") {
       // 红线：仅 observed 自动归档；inferred 需人工/更高阈值
@@ -136,8 +125,89 @@ export async function runForgetting(deps: ForgettingWorkerDeps): Promise<Forgett
       }
     }
   }
-  deps.logger?.info?.(`[forgetting] ran: scanned=${scanned}, archiveCandidates=${candidates.length}, archived=${archived}, valuesAnchor=${values.length}`);
+  // P0-C：字段从 valuesAnchor 改成 personaAnchor——values 数据面已删，再报 valuesAnchor=0
+  // 会让人以为「价值锚保护在工作、只是命中 0」，实际是来源不存在。
+  deps.logger?.info?.(
+    `[forgetting] ran: scanned=${scanned}, archiveCandidates=${candidates.length}, archived=${archived}, personaAnchor=${personaAnchorCount}`,
+  );
   return { candidates, archived, counts: { scanned, archive: candidates.length } };
+}
+
+/** P0-C 告警码：锚保护源不可用（core_values 已删、soul_persona 也没给出可用的对象名）。 */
+export const FORGETTING_ANCHOR_ALERT = "forgetting_values_protection_unavailable";
+/** 与 soul worker 的 alert 同口径：同一 code 6 小时内只留一条账本，不每 tick 刷。 */
+const ANCHOR_ALERT_SUPPRESS_MS = 6 * 3_600_000;
+
+type ForgettingTenant = { teamId?: string; userId?: string; agentId?: string } | undefined;
+
+/**
+ * 锚名来源（P0-C）：soul_persona 条目的对象名（meta.object）。
+ * 取 2–24 字：太短是「他/她」这类代词，太长是整句任务标题——都不是 refs 里会出现的名字。
+ */
+async function readPersonaAnchorNames(store: IMemoryStore | undefined, tenant: ForgettingTenant): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (typeof store?.listSoulPersona !== "function") return out;
+  try {
+    const rows = (await Promise.resolve(store.listSoulPersona(tenant as never))) ?? [];
+    for (const item of rows) {
+      const meta = (item?.meta ?? {}) as Record<string, unknown>;
+      const object = typeof meta.object === "string" ? meta.object.trim() : "";
+      if (object.length >= 2 && object.length <= 24) out.add(object);
+    }
+  } catch {
+    // 读不到 persona 只损失锚名保护维度，告警走同一个 unavailable 事件。
+  }
+  return out;
+}
+
+/** 6h 抑制：近 6 小时内已有同 code 的 alert 账本 → true。 */
+async function anchorAlertRecentlyLogged(
+  store: IMemoryStore | undefined,
+  tenant: ForgettingTenant,
+  nowMs: number,
+): Promise<boolean> {
+  if (typeof store?.listSoulLedger !== "function") return false;
+  try {
+    const rows = (await Promise.resolve(store.listSoulLedger(tenant as never, 200))) ?? [];
+    return rows.some((e) => {
+      if (e.action !== "alert" || !(e.gates ?? []).includes(FORGETTING_ANCHOR_ALERT)) return false;
+      const at = Date.parse(e.at);
+      return Number.isFinite(at) && at > nowMs - ANCHOR_ALERT_SUPPRESS_MS;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 显式报告「锚保护源不可用」（P0-C）：一次 warn + 一条 soul_ledger alert（6h 抑制）。
+ * 此前这件事完全没有信号——生产日志只有 `valuesAnchor=0`，看上去像「保护正常、命中 0」。
+ */
+async function reportAnchorUnavailable(deps: ForgettingWorkerDeps, personaAnchor: number): Promise<void> {
+  const nowMs = Date.now();
+  if (await anchorAlertRecentlyLogged(deps.store, deps.tenant, nowMs)) return;
+  const at = new Date(nowMs).toISOString();
+  deps.logger?.warn?.(
+    `[forgetting] 锚保护源不可用：core_values 已删、soul_persona 也没给出对象名（personaAnchor=${personaAnchor}）；` +
+      `refs 保护只剩 identityRefs，coreRefs/personRefs 不会挡住任何归档`,
+  );
+  if (typeof deps.store?.commitSoulPersona !== "function") return;
+  const entry: SoulLedgerEntry = {
+    // 6h 一个桶：同一窗口内重复调用落同一条（soul_ledger 主键幂等）。
+    entryId: `alert-forgetting-anchor-${Math.floor(nowMs / ANCHOR_ALERT_SUPPRESS_MS)}`,
+    at,
+    trigger: "forgetting",
+    layer: "all",
+    action: "alert",
+    gates: [FORGETTING_ANCHOR_ALERT],
+    reason: `锚保护源不可用：personaAnchor=${personaAnchor}（core_values 已删）`,
+    evidenceIds: [],
+  };
+  try {
+    await Promise.resolve(deps.store.commitSoulPersona(deps.tenant as never, { upsert: [], ledger: [entry] }));
+  } catch (err) {
+    deps.logger?.warn?.(`[forgetting] alert ledger write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** 便捷封装：从 store 读 L1 后判定并归档（隔离过滤可选；租户 filter 透传——审计 C）。 */

@@ -128,13 +128,13 @@ describe("端到端注入：24 个情绪标签全部能从对话挖出来，且�
         store,
         tenant: T,
         now: NOW,
-        config: { enabled: true, episodeWindowDays: 30, updateIntervalHours: 0, emotionHalfLifeHours: 3 },
+        config: { episodeWindowDays: 30, updateIntervalHours: 0, emotionHalfLifeHours: 3 },
         trigger: "manual",
         llmCallBudget: 0,
       });
       expect(report.episodes?.mined ?? 0).toBeGreaterThanOrEqual(20);
 
-      const cfg = resolveSoulConfig({ enabled: true, emotionHalfLifeHours: 3 });
+      const cfg = resolveSoulConfig({ emotionHalfLifeHours: 3 });
       const eps = await store.listSoulEpisodes(T, { since: "2026-10-01T00:00:00.000Z", limit: 200 });
       const events = eps.map((e) =>
         emotionEventFromEpisode(e, cfg, { publicSession: publicSessions.has(e.sessionId) }),

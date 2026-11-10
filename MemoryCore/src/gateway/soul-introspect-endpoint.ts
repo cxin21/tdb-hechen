@@ -2,7 +2,7 @@
  * #36（R5）：POST /v3/soul/introspect —— 只读自省端点（soul-introspect.ts 的 HTTP 薄适配，
  * 与 rerank-endpoint.ts 同构）。Bearer 门禁由 server.ts dispatch 层先行；本函数不做鉴权。
  * Body：{ teamId?, userId?, agentId?, snapshotLimit?, evidenceWindowHours?, renderOpts?, probes?, evidence? }。
- * 零写入合同：handler 只调 introspectSoul（其内部 buildSoulPrefix 强制 snapshotsEnabled:false）。
+ * 零写入合同：handler 只调 introspectSoul（其内部 buildSoulPrefix 只做纯读渲染）。
  * #36 保真度补全：renderOpts 合并序 = defaultRenderOpts（server 侧生产配置镜像）
  *   ← moodTier（moodTierProvider 现算，抛错非致命降级=省略基调行）
  *   ← state（stateProvider 现读，抛错非致命降级=省略状态行）← body.renderOpts（逐键最后覆盖）——
@@ -18,7 +18,7 @@ export interface SoulIntrospectRouteDeps {
   getStore: () => IMemoryStore | null;
   defaults?: { snapshotLimit?: number; evidenceWindowHours?: number };
   /** #36 保真度补全：生产 soul 渲染配置镜像（server 侧组装），探针评估同形文本的基座。 */
-  defaultRenderOpts?: Omit<SoulRenderOptions, "snapshotsEnabled">;
+  defaultRenderOpts?: SoulRenderOptions;
   /** #36 保真度补全：现算近期基调（与 auto-recall 同源 computeMoodTierFromStore）；抛错由 handler 降级。 */
   moodTierProvider?: (tenant: CoreTenant) => Promise<{ tier: MoodTier; sampleCount: number } | null>;
   /** #36 保真度补全：现读当下状态（与 auto-recall.ts:989 接线同源 readSoulState，字段映射 updatedAt→at）；抛错由 handler 降级。 */

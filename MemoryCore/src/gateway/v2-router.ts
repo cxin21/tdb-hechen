@@ -42,8 +42,6 @@ import { DEFAULT_ISOLATION_ID, type CoreTenant } from "../core/store/types.js";
 import type { EmbeddingService } from "../core/store/embedding.js";
 // S-FEEL-1（M1）：近期情绪基调聚合单一源（mood-line.ts；R-A：mood 不参与召回排序）。
 import { computeMoodTier } from "../core/hooks/mood-line.js";
-import { applyAdoptedPromiseTransition, type PromiseTerminalTarget } from "../core/hooks/soul-promise-proposal.js";
-import { PROMISE_TERMINAL_STATUSES } from "../core/hooks/soul-promise.js";
 // #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事组装单一源
 //（/v3/core-memory/read format=narrative 主路；模板常量+事实句逐字，无 LLM/随机/时钟）。
 import { IDENTITY_NARRATIVE_SLOT, renderIdentityNarrative } from "../core/hooks/identity-narrative.js";
@@ -56,19 +54,8 @@ import { executeMemorySearch } from "../core/tools/memory-search.js";
 import { excludeInvalidatedFor } from "../core/recall/validity-policy.js";
 import type { RecallFactChannelConfig, RecallFusionConfig } from "../core/recall/fusion.js";
 import { executeConversationSearch } from "../core/tools/conversation-search.js";
-import { validateCoreWrite } from "../core/core-memory/guard.js";
-// Task DISC（提议制）：价值锚发现纯函数集（证据重算/weight 公式/去重/宽松解析/prompt 形状）
-import {
-  DISCOVER_MIN_EVIDENCE,
-  DISCOVER_SAMPLE_CAP,
-  DISCOVER_SYSTEM_PROMPT,
-  buildDiscoverPrompt,
-  dedupProposalsWithVariants,
-  parseProposalsJson,
-  recountEvidence,
-  selectSampleRows,
-  suggestAnchorWeight,
-} from "./core-values-discover.js";
+// 2026-11-07：价值锚写 API（upsert/delete/pin/retire/restore/derive/discover）与其数据表一并退场，
+// 现无任何进程内写者；Panel 的 values/list 只读面仍消费 /v3/core-memory/read（本文件 handler 保留）。
 import type { MemoryRecord } from "../core/record/l1-writer.js";
 import { reportRecallMetrics } from "../core/report/metric-tracking-recall.js";
 import {
@@ -148,18 +135,15 @@ import { handleAtomicByIds } from "./atomic-by-ids.js";
 // ADR-0025 行级溯源：L1.source_message_ids → L0 原话批量回读（面板「查看原话」数据端）。
 import { handleConversationByIds } from "./conversation-by-ids.js";
 import { escapeXmlTags } from "../utils/sanitize.js";
-import { mergeStrictRuleContent, coerceCoreValueAnchor } from "./pending-adopt-merge.js";
 // #82：self_identity 采纳落槽（merge-on-adopt）唯一合并源——与 worker 演化语义同构，互不复制。
 import { mergeIdentityFacts } from "../core/lifecycle/identity-discovery.js";
-// #52 P4（2026-10-18）：采纳侧 pending 清扫——同族提案自动 rejected（best-effort 非致命）。
-import { sweepPendingDuplicatesAfterAdopt, type PendingAdoptSweepRow } from "../core/lifecycle/pending-adopt-sweep.js";
 // P0-1A（issue #1）：description 质量门单一源（core/hooks，gateway→core 引用方向合法）
 import { anchorDescriptionAttr, existingDescription } from "../core/hooks/anchor-desc.js";
-import { growthValueId } from "../core/lifecycle/anchor-growth.js";
 import { buildProfileIsolationScope, buildProfileStableId, DEFAULT_PROFILE_SCOPE } from "../core/profile/profile-sync.js";
 // DS-RECALL-MERGE-001（合并召回 · 核心单点）：/v3/recall 与 auto-recall 钩子共用的分层组装路径
 import { performLayeredRecall } from "../core/hooks/auto-recall.js";
 import { appendRecallJournal, type RecallJournalPerfMs } from "../core/recall/recall-journal.js";
+import { collectSoulJournalFields } from "../core/soul/observation.js";
 // #74（Batch A，2026-10-20）：端点路查询两级剥噪（sanitizeText/sanitizeRecallQuery 单一源在 utils/sanitize.ts）。
 import { sanitizeRecallQuery } from "../utils/sanitize.js";
 
@@ -251,23 +235,9 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/atomic/archive/list",
   "/atomic/archive/restore",
   "/core-memory/read",
-  "/core-memory/write",
   // S-FEEL-1（M1/S6）：近期情绪基调只读端点（Panel BFF /chat-memory/mood 上游；enabled=false 返回 tier:null）
   "/memory/mood",
-  // S1（K7/M-5）：core_values 写 API —— agent 可维护价值锚（照抄 core-memory read|write 模式）
-  "/core-memory/values/upsert",
-  "/core-memory/values/delete",
-  // GROW：钉住/退休/恢复（价值锚状态机写入口；报告 §0.1 转换表）
-  "/core-memory/values/pin",
-  "/core-memory/values/retire",
-  "/core-memory/values/restore",
-  // C2（spec §3.1.3）：动机方向重判入口（重置 + 重判；无 body）
-  "/core-memory/values/derive",
-  // DISC（提议制）：价值锚发现（LLM 蒸馏提案，只提议不落库；无 body）
-  "/core-memory/values/discover",
   // O13（P2）：红线类提案人工采纳落点（v3-only；422/401 由 v3 dispatch 层统一执行）
-  "/core-memory/pending/list",
-  "/core-memory/pending/decide",
   "/atomic/delete",
   "/atomic/count",
   "/scenario/ls",
@@ -591,21 +561,7 @@ const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/atomic/archive/list": handleArchiveList,
   "/atomic/archive/restore": handleArchiveRestore,
   "/core-memory/read": handleCoreMemoryRead,
-  "/core-memory/write": handleCoreMemoryWrite,
-  // S1（K7/M-5）：core_values 写 API
-  "/core-memory/values/upsert": handleCoreMemoryValuesUpsert,
-  "/core-memory/values/delete": handleCoreMemoryValuesDelete,
-  // GROW：钉住/退休/恢复
-  // O13（P2）：pending 人工采纳
-  "/core-memory/pending/list": handleCoreMemoryPendingList,
-  "/core-memory/pending/decide": handleCoreMemoryPendingDecide,
-  "/core-memory/values/pin": handleCoreMemoryValuesPin,
-  "/core-memory/values/retire": handleCoreMemoryValuesRetire,
-  "/core-memory/values/restore": handleCoreMemoryValuesRestore,
-  // C2（spec §3.1.3）：动机方向重判入口
-  "/core-memory/values/derive": handleCoreMemoryValuesDerive,
-  // DISC（提议制）：价值锚发现
-  "/core-memory/values/discover": handleCoreMemoryValuesDiscover,
+  // S1（K7/M-5）：原子记忆读写路由
   "/atomic/delete": handleAtomicDelete,
   "/atomic/count": handleAtomicCount,
   "/scenario/ls": handleScenarioLs,
@@ -2051,7 +2007,7 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     timeProxFallbackEnabled: (deps as { config?: { memory?: { recall?: { timeProxFallbackEnabled?: boolean } } } }).config?.memory?.recall?.timeProxFallbackEnabled === true,
     // 重构式回忆（J 设计§3）：query 时间锚自动解析（今天/上周/N天前等→时间窗过滤；解析不出不过滤）
     // C1 + R-A1：coreRef 与排序层结构信号配置透传（缺省由 executeMemorySearch 内部
-    // 回落 spec §2 默认值；价值锚由其内部从 store.listValues 租户读取——两路咽喉同生效）
+    // 回落 spec §2 默认值；价值锚来源已退场，coreRef 加成不再有候选可命中）
     ...(() => {
       // V2 批 2（I2 修补）：cast 扩到 exploreSlot/rerankWeights/queryExpansion + 顶层 llm
       //（gateway config.memory 经 parseConfig 全量解析，queryExpansion 默认在；llm 为
@@ -2197,7 +2153,6 @@ async function handleMemoryMood(_body: unknown, _auth: V2AuthContext, requestId:
   }
 }
 
-
 // task-100：embedding 进程内缓存是**累计**计数器（MemoryCore/src/core/store/embedding.ts:558
 // getCacheStats），指标要的是增量 ⇒ 这里保留上次快照，只上报 delta。首轮快照为 undefined
 // ⇒ 不报（不把「进程启动至今」的累计值当成一次召回的量）。
@@ -2214,22 +2169,9 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       requestId,
     );
   }
-  const b = (body ?? {}) as { query?: unknown; maxResults?: unknown; time_point?: unknown; capabilities?: unknown };
+  const b = (body ?? {}) as { query?: unknown; maxResults?: unknown; time_point?: unknown };
   if (typeof b.query !== "string" || b.query.trim().length === 0) {
     return errorEnvelope(400, "query (non-empty string) required", requestId);
-  }
-  // #40（ADR0003-P3 接线票 B）：capabilities（代理侧工具面策展清单，可选）——清洗后
-  // 透传渲染层；是否渲染由 coreMemory.soulRender.capabilities.enabled 门决定（缺省
-  // false=现状）。清洗规则：仅 string、折叠内部换行（审查 M-1：渲染逐行直出，内嵌
-  // \n 会破行且与 ["a","b"] 指纹碰撞）、trim 非空、上限 10（代理侧已策展 ≤5，此处仅防御）。
-  let capabilities: string[] | undefined;
-  if (Array.isArray(b.capabilities)) {
-    const cleaned = b.capabilities
-      .filter((c): c is string => typeof c === "string")
-      .map((c) => c.replace(/\r?\n+/g, " ").trim())
-      .filter((c) => c.length > 0)
-      .slice(0, 10);
-    if (cleaned.length > 0) capabilities = cleaned;
   }
   let maxResultsOverride: number | undefined;
   if (b.maxResults !== undefined && b.maxResults !== null) {
@@ -2321,6 +2263,16 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
     try {
       const journalCfg = cfg.recallJournal ?? { enabled: false, rotationSizeMB: 5, maxFiles: 5 };
       if (journalCfg.enabled) {
+        // S8 D10：skip 行也带 soul 观测（新会话首次调用即可回答「用的哪版卡」）。
+        const soulFields = await collectSoulJournalFields(
+          store,
+          {
+            teamId: searchFilter?.teamId ?? profileIsolation.teamId ?? "default",
+            userId: searchFilter?.userId ?? profileIsolation.userId ?? "default",
+            agentId: searchFilter?.agentId ?? profileIsolation.agentId ?? "default",
+          },
+          { sessionReused: false },
+        );
         appendRecallJournal(
           path.join(dataDir, "logs", "recall"),
           {
@@ -2348,6 +2300,7 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
             residualChars: sq.residualChars,
             memoryLines: [],
             perfMs: skipPerfMs,
+            ...(soulFields ? { soul: soulFields } : {}),
           },
           journalCfg,
         );
@@ -2387,7 +2340,6 @@ async function handleRecall(body: unknown, auth: V2AuthContext, requestId: strin
       profileIsolation,
       isolationFilter: searchFilter,
       validityNow,
-      capabilities,
       l1Budget,
     }).finally(() => {
       if (timer) clearTimeout(timer);
@@ -2572,323 +2524,16 @@ function coreTenantFromIsolation(iso?: { teamId?: string; userId?: string; agent
   };
 }
 
-// ── O13（P2）：pending 人工采纳落点（spec §7；租户隔离同 core-memory read/write）────
-
-async function handleCoreMemoryPendingList(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.listPendingCore) return errorEnvelope(503, "core_pending not supported", requestId);
-  const b = (body ?? {}) as { include_decided?: unknown };
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  const pending = (await Promise.resolve(store.listPendingCore(tenant, { includeDecided: b.include_decided === true }))) ?? [];
-  // #12 T6：conflict 徽标数据源——core_value 提案 label 与既有 theme 锚同名时标记
-  // conflict:true，Panel 决策页可先呈现冲突再裁决（数据源仅标记，不改裁决语义）。
-  // 评审 C1 口径统一：冲突域=全态（active/retired/vetoed）与 decide 预检同域——
-  // retired/vetoed 同名同样构成决策前须知悉的冲突（采纳它们另有显式门槛）。
-  // 特性探测：store 缺 listValuesAnyState → conflict 全 false（旧实现/测试桩兼容）。
-  let activeThemeLabels: Set<string> | null = null;
-  if (typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
-    const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string }>;
-    activeThemeLabels = new Set(anyRows.filter((r) => (r.node_type ?? "theme") === "theme").map((r) => String(r.label ?? "").trim().toLowerCase()));
-  }
-  const enriched = (pending as Array<{ pending_id?: string; slot?: string; label?: unknown; [key: string]: unknown }>).map((p) => ({
-    ...p,
-    conflict: activeThemeLabels !== null && p.slot === "core_value" && activeThemeLabels.has(String(p.label ?? "").trim().toLowerCase()),
-  }));
-  return successEnvelope<{ pending: typeof enriched }>({ pending: enriched }, requestId);
-}
-
-async function handleCoreMemoryPendingDecide(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { pending_id?: unknown; decision?: unknown; allow_overwrite?: unknown };
-  if (typeof b.pending_id !== "string" || !b.pending_id.trim()) return errorEnvelope(400, "pending_id required", requestId);
-  if (b.decision !== "adopted" && b.decision !== "rejected") return errorEnvelope(400, "decision must be 'adopted' | 'rejected'", requestId);
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.decidePendingCore) return errorEnvelope(503, "core_pending not supported", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-
-  // ── #92 stage 2（2026-10-25 拍板四项）：auto_adopted 行的 rejected = 审计回滚（快照+版本守卫）──
-  // 语义：reject 打在 auto_adopted 行上不是普通裁决，而是「人转审计员」的回滚动作——
-  // rollbackAutoAdoptedPending 在 store 侧做版本守卫（槽 version ≠ 采纳时 post 版本 → 拒绝 409
-  // 提示手工处理），恢复 prev_slot_content（或删除采纳时创建的槽行）+ state='rejected'，零删除。
-  // 面板零 API 变更（reject 按钮即回滚入口）；getPendingCoreState 缺实现（旧 store）→ 旁路走常规裁决逐位。
-  if (b.decision === "rejected" && typeof (store as { getPendingCoreState?: unknown }).getPendingCoreState === "function") {
-    const rowState = await Promise.resolve((store as { getPendingCoreState: (pid: string) => unknown }).getPendingCoreState(b.pending_id));
-    if (rowState === "auto_adopted") {
-      if (typeof (store as { rollbackAutoAdoptedPending?: unknown }).rollbackAutoAdoptedPending !== "function") return errorEnvelope(503, "auto-adopt rollback not supported by store", requestId);
-      const rb = (await Promise.resolve((store as { rollbackAutoAdoptedPending: (pid: string, t?: unknown) => unknown }).rollbackAutoAdoptedPending(b.pending_id, tenant))) as { restored?: boolean; reason?: string } | null;
-      // #102：409 附带结构化 detail（data.rollbackRefused），前端统一 409 分类器优先按此识别；
-      // message 文案保留旧形状供旧版前端兼容回退（文案不再是识别依据）。
-      if (!rb?.restored)
-        return errorEnvelope(409, `auto-adopt rollback refused: ${rb?.reason ?? "unknown"} — slot changed since auto-adopt; handle manually`, requestId, {
-          rollbackRefused: { reason: rb?.reason ?? "unknown" },
-        });
-      return successEnvelope<{ pending_id: string; decision: string; slot: string; rolled_back: boolean }>({ pending_id: b.pending_id, decision: "rejected", slot: "self_identity", rolled_back: true }, requestId);
-    }
-  }
-
-  // ── #12 T6：同名冲突预检（在任何裁决写之前）─────────────────────────────────────
-  // 语义：core_value 采纳遇同 label active theme 锚时缺省不静默覆盖（旧行为会新建一条
-  // 0.5 的同 label 锚、同 label 双行并存/覆盖语义不明）。三分流：
-  //   ① existing 无 desc 且 pending 有 desc → 安全合并（保 weight/valence/pinned/node_type，只补 desc）；
-  //   ② existing 已有 desc 或 pending 无 desc → 409 + conflict 明细（decide 不发生，
-  //     pending 保持 pending，裁决权归还用户）；
-  //   ③ allow_overwrite:true → 显式覆盖 = 旧直采行为（新 id + weight 0.5 + pending desc）。
-  // strict_rule / rejected / store 缺 listPendingCore（特性探测）→ 原行为逐位不变。
-  let conflictPrior: { value_id: string; label: string; weight: number; valence?: number | null; pinned?: number; node_type?: string; attrs_json?: string | null; state?: string; created_by?: string | null } | undefined;
-  let overwrite = false;
-  // #44（D8-(c) 提案通道）：promise 采纳载荷——预检（listPendingCore 特性探测）通过才置位；
-  // 预检不可用时（store 缺 listPendingCore）post-decide 分支防御性 422（与 core_value 先例同语义边界）。
-  let promisePayload: { promiseId: string; to: string } | undefined;
-  // D8 创建通道：promise_create 采纳载荷（与 promisePayload 同语义——预检通过才置位）。
-  let promiseCreatePayload: { content: string } | undefined;
-  if (b.decision === "adopted" && typeof (store as { listPendingCore?: unknown }).listPendingCore === "function") {
-    const pendingRows = ((await Promise.resolve((store as { listPendingCore: (t: unknown, o?: unknown) => unknown }).listPendingCore(tenant, { includeDecided: false }))) ?? []) as Array<{ pending_id?: string; slot?: string; label?: unknown; description?: unknown; content?: unknown; attrs_json?: string | null }>;
-    const row = pendingRows.find((p) => p.pending_id === b.pending_id);
-    // #44（D8-(c) 提案通道）：promise_transition 提案预检——任何裁决写之前（decide 在 :2174 之后的
-    // 分支才执行，此处 return 则 pending 保持 pending）。store 无 transitionSoulPromise → 503；
-    // attrs_json 缺失/坏/promiseId 缺/目标非 terminal → 422（不暗箱替用户裁决，走 rejected 或重出提案）。
-    // 通过预检 → promisePayload 带入 post-decide 采纳分支。
-    if (row?.slot === "promise_transition") {
-      if (typeof store.transitionSoulPromise !== "function") return errorEnvelope(503, "soul promise transitions not supported by store", requestId);
-      let attrs0: { promiseId?: unknown; to?: unknown } = {};
-      try {
-        const parsed0: unknown = JSON.parse(String(row.attrs_json ?? "{}"));
-        if (parsed0 && typeof parsed0 === "object" && !Array.isArray(parsed0)) attrs0 = parsed0 as { promiseId?: unknown; to?: unknown };
-      } catch { /* 坏 JSON → 校验失败 422 */ }
-      if (typeof attrs0.promiseId !== "string" || !attrs0.promiseId.trim() || !(PROMISE_TERMINAL_STATUSES as readonly string[]).includes(String(attrs0.to))) {
-        return errorEnvelope(422, "promise proposal payload invalid (promise_id/target missing) — reject or regenerate the proposal", requestId);
-      }
-      promisePayload = { promiseId: attrs0.promiseId.trim(), to: String(attrs0.to) };
-    }
-    // D8 创建通道：promise_create 提案预检（镜像 promise_transition 双分支）——任何裁决写之前。
-    // store 无 upsertSoulPromise → 503；content 校验双源：attrs_json.content 优先、回退行 content
-    // （reflection 桥真实形状：content 落行 content 列，attrs 仅 origin），均缺失 → 422（不暗箱裁决）。
-    if (row?.slot === "promise_create") {
-      if (typeof store.upsertSoulPromise !== "function") return errorEnvelope(503, "soul promise creation not supported by store", requestId);
-      let attrsC: { content?: unknown } = {};
-      try {
-        const parsedC: unknown = JSON.parse(String(row.attrs_json ?? "{}"));
-        if (parsedC && typeof parsedC === "object" && !Array.isArray(parsedC)) attrsC = parsedC as { content?: unknown };
-      } catch { /* 坏 JSON → 回退行 content 判定 */ }
-      const contentC = typeof attrsC.content === "string" && attrsC.content.trim() ? attrsC.content.trim() : String(row.content ?? "").trim();
-      if (!contentC) {
-        return errorEnvelope(422, "promise creation payload invalid (content missing) — reject or regenerate the proposal", requestId);
-      }
-      promiseCreatePayload = { content: contentC };
-    }
-    if (row && row.slot === "core_value" && typeof store.upsertValue === "function") {
-      const anchor0 = coerceCoreValueAnchor({ label: String(row.label ?? ""), description: (row.description as string | null | undefined) ?? null, content: String(row.content ?? "") });
-      if (anchor0 && typeof (store as { listValuesAnyState?: unknown }).listValuesAnyState === "function") {
-        const anyRows = ((await Promise.resolve((store as { listValuesAnyState: (t: unknown) => unknown }).listValuesAnyState(tenant))) ?? []) as Array<{ state?: string; node_type?: string; label?: string; value_id: string; weight: number; valence?: number | null; pinned?: number; attrs_json?: string | null; created_by?: string | null }>;
-        const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
-        // #12 T6 + 评审 C1：冲突域 = 同 label 全态行（active/retired/vetoed）——sqlite upsertValue
-        // ON CONFLICT 会把 state 无条件复位 active，任何态同名行都不得被采纳静默改写：
-        //   active  → 三分流（安全合并 / 409 / allow_overwrite 显式覆盖，原语义）；
-        //   retired → 409 带 state 明细（allow_overwrite:true = 显式复活采纳）；
-        //   vetoed  → 永久否决：allow_overwrite 也不得直采（先显式恢复/撤销否决）。
-        conflictPrior = anyRows.find((r) => (r.node_type ?? "theme") === "theme" && norm(r.label) === norm(anchor0.label)) as typeof conflictPrior;
-        overwrite = b.allow_overwrite === true;
-        if (conflictPrior && conflictPrior.state === "vetoed") {
-          return errorEnvelope(409, "core_value adopt conflicts with a vetoed anchor of the same label (veto is never silently revived)", requestId, {
-            conflict: {
-              value_id: conflictPrior.value_id,
-              label: conflictPrior.label,
-              weight: conflictPrior.weight,
-              state: "vetoed",
-              hint: "this label was vetoed; restore or remove the veto first, then adopt",
-            },
-          });
-        }
-        if (conflictPrior && conflictPrior.state === "retired" && !overwrite) {
-          return errorEnvelope(409, "core_value adopt conflicts with a retired anchor of the same label (no silent revive)", requestId, {
-            conflict: {
-              value_id: conflictPrior.value_id,
-              label: conflictPrior.label,
-              weight: conflictPrior.weight,
-              state: "retired",
-              hint: "this label was retired by the evidence gate; pass allow_overwrite:true to explicitly revive-and-overwrite, or reject the pending proposal",
-            },
-          });
-        }
-        if (conflictPrior && !overwrite) {
-          const existingDesc0 = existingDescription(conflictPrior.attrs_json ?? undefined);
-          const pendingDesc0 = anchor0.description ? escapeXmlTags(anchor0.description) : "";
-          if (existingDesc0 || !pendingDesc0) {
-            return errorEnvelope(409, "core_value adopt conflicts with an existing active anchor of the same label (default: no silent overwrite)", requestId, {
-              conflict: {
-                value_id: conflictPrior.value_id,
-                label: conflictPrior.label,
-                weight: conflictPrior.weight,
-                state: "active",
-                existing_has_description: Boolean(existingDesc0),
-                pending_has_description: Boolean(pendingDesc0),
-                hint: "pass allow_overwrite:true to overwrite, or reject the pending proposal",
-              },
-            });
-          }
-          // 可安全合并 → 继续走 decide（裁决翻转仍发生），在 core_value 分支内合并写。
-        }
-      }
-    }
-  }
-
-  // ══ #94（拍板①）：core_value 采纳容量门（total 预算口径，decide 之前预检）════════
-  // 采纳即落锚（V12-CV 转换层 upsertValue），但 GROW-QUOTA 守卫只在 anchor-growth 周期跑——
-  // 面板直采可绕过名额持续膨胀（生产实证：限额 15 实际 22）。此处对齐守卫口径：
-  // quotaScope=total（缺省）且 store 支持 listValues 时，theme 池 active 总数 ≥ maxTotal
-  // → 422（pending 保持 pending，不暗箱替用户裁决；先在面板退休锚或上调 maxTotal 再采纳）。
-  // quotaScope=auto（回滚档）不设门；旧 store 缺 listValues（特性探测）→ 放行不阻塞人工裁决。
-  if (
-    b.decision === "adopted" &&
-    typeof store.upsertValue === "function" &&
-    typeof (store as { listPendingCore?: unknown }).listPendingCore === "function"
-  ) {
-    const adCfg = deps.config?.memory?.coreMemory?.anchorDiscovery;
-    const quotaScope = adCfg?.quotaScope ?? "total";
-    if (quotaScope !== "auto" && typeof (store as { listValues?: unknown }).listValues === "function") {
-      const maxTotal = adCfg?.maxTotal ?? 15; // 缺省对齐 DEFAULT_ANCHOR_DISCOVERY_CONFIG.maxTotal
-      // 门自包含定位本条 pending（`row` 作用域在上方预检块内，此处不可引用——#94 取证教训）。
-      const gateRow = (((await Promise.resolve((store as { listPendingCore: (t?: unknown) => unknown }).listPendingCore(tenant))) ?? []) as Array<{ pending_id?: string; slot?: string }>)
-        .find((r) => r.pending_id === b.pending_id);
-      if (gateRow?.slot === "core_value") {
-        const activeTheme = (((await Promise.resolve((store as { listValues: (t?: unknown, o?: unknown) => unknown }).listValues(tenant, { includeRetired: false }))) ?? []) as Array<{ state?: string; node_type?: string }>)
-          .filter((r) => r.state === "active" && (r.node_type ?? "theme") === "theme");
-        if (activeTheme.length >= maxTotal) {
-          return errorEnvelope(422, `core_value adopt blocked: anchorDiscovery.maxTotal=${maxTotal} reached (total-budget scope) — retire an anchor in the panel or raise the limit, then retry`, requestId);
-        }
-      }
-    }
-  }
-
-  const decided = await Promise.resolve(store.decidePendingCore(b.pending_id, b.decision, tenant));
-  if (!decided) return errorEnvelope(404, "pending item not found or already decided", requestId);
-  // O13 采纳语义：strict_rule → validateCoreWrite + escapeXmlTags + upsertCore('strict_rule',…,'panel-adopt')
-  //               core_value（V12-CV 转换层）→ coerceCoreValueAnchor 确定性门 → upsertValue(growthValueId(label,'theme'), label, 0.5, 'panel-adopt', tenant, undefined, 'manual','theme',{description})
-  // #52 P4：采纳侧清扫结果（strict_rule 直采/直采 core_value 落穿公共 return 时随
-  // envelope 透出；overwrite/merge 分支各自内联透出）。空数组=零清扫（幂等无害）。
-  let adoptSwept: PendingAdoptSweepRow[] = [];
-  if (b.decision === "adopted") {
-    if (decided.slot === "strict_rule") {
-      const cfg = deps.config?.memory?.coreMemory;
-      if (!cfg) return errorEnvelope(503, "coreMemory config not available", requestId);
-      const decision = validateCoreWrite({ slot: "strict_rule", content: decided.content, source: "panel-adopt" }, cfg);
-      if (!decision.ok) return errorEnvelope(400, decision.reason ?? "invalid", requestId);
-      if (!store.upsertCore) return errorEnvelope(503, "core_memory not supported", requestId);
-      // V12-ADJ（拍板执行④续）：合并语义——原整槽替换会把既有红线挤出槽（P0 缺陷：5 次采纳
-      // 使 strict_rule 槽仅剩最后一条、原 3 条红线丢失）。既有行全保留+采纳行追加+行体去重；
-      // 消毒保持 P-B 咽喉语义（escape 仅作用于新采纳行，由 merge 输出保证既有行原样）。
-      const existingStrict = ((store as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> }).readCore?.(tenant) ?? []).find((s) => s.slot === "strict_rule")?.content;
-      const merged = mergeStrictRuleContent(existingStrict, escapeXmlTags(decided.content));
-      const ok = await Promise.resolve(store.upsertCore("strict_rule", merged, "panel-adopt", tenant));
-      if (!ok) return errorEnvelope(503, "strict_rule adopt failed", requestId);
-      // #52 P4：同族 strict_rule 提案自动 rejected（行级 Jaccard 对合并后槽全文，best-effort）。
-      adoptSwept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "strict_rule", mergedContent: merged, adoptedPendingId: b.pending_id, logger: deps.logger });
-    } else if (decided.slot === "core_value") {
-      if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);
-      // V12-CV（拍板执行⑤）：转换层——旧路径以整段 content 当锚 label（锚行灾难性污染，29 条
-      // core_value 提案因此全拒）。现语义：生成端 label/description（identity-discovery 双视角
-      // 调用顺带产出）+ 采纳端 coerceCoreValueAnchor 确定性门；门不过 → 422（pending 保持
-      // pending，不暗箱替用户裁决）。label/description 经 escapeXmlTags 消毒（对齐 core_values
-      // 写 API P-B 咽喉语义）。
-      const anchor = coerceCoreValueAnchor({ label: decided.label, description: decided.description, content: decided.content });
-      if (!anchor) return errorEnvelope(422, "core_value adopt blocked: proposal lacks a valid short label (regenerate or reject the proposal)", requestId);
-      if (conflictPrior) {
-        // #12 T6：预检命中同名 active 锚（见函数头三分流注释）。
-        if (overwrite) {
-          // 显式覆盖 = 旧直采行为：新 id + weight 0.5 + pending desc。
-          const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
-          if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
-          // #52 P4：同 label 同族提案自动 rejected（label 归一相等判重，best-effort）。
-          const swept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "core_value", adoptedLabel: anchor.label, adoptedPendingId: b.pending_id, logger: deps.logger });
-          return successEnvelope<{ pending_id: string; decision: string; slot: string; overwritten: boolean; swept: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, overwritten: true, swept }, requestId);
-        }
-        // 安全合并：既有行原样保留（id/weight/valence/pinned/node_type），pending desc 只补空
-        // （预检已保证 existing 无 desc 且 pending 有 desc 才走到这里）。
-        // 评审 I1：attrs 先读后合并（F1 教训）——existing 的 aliases/descSource/lastDescRefreshEvidence/
-        // role/facts 不得被 {description} 全量替换冲掉；评审 I2：created_by 沿用既有行
-        // （auto-growth 行并入后仍参与 GROW-MAINT reweight/retire/维护环，不退出自动管理）。
-        let priorAttrs: Record<string, unknown> = {};
-        try {
-          const parsed0: unknown = JSON.parse(conflictPrior.attrs_json ?? "{}");
-          if (parsed0 && typeof parsed0 === "object" && !Array.isArray(parsed0)) priorAttrs = parsed0 as Record<string, unknown>;
-        } catch { /* 坏 JSON → 视作空 attrs，desc 补写语义不变 */ }
-        const mergedAttrs = { ...priorAttrs, description: escapeXmlTags(anchor.description) };
-        const ok = await Promise.resolve(store.upsertValue(conflictPrior.value_id, conflictPrior.label, conflictPrior.weight, conflictPrior.created_by ?? "panel-adopt", tenant, conflictPrior.valence ?? undefined, "manual", (conflictPrior.node_type as "theme" | "person" | "character" | undefined) ?? "theme", mergedAttrs));
-        if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
-        // #52 P4：同 label 同族提案自动 rejected（合并后锚身份不变，label 域判重）。
-        const swept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "core_value", adoptedLabel: anchor.label, adoptedPendingId: b.pending_id, logger: deps.logger });
-        return successEnvelope<{ pending_id: string; decision: string; slot: string; merged: boolean; swept: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, merged: true, swept }, requestId);
-      }
-      const ok = await Promise.resolve(store.upsertValue(growthValueId(anchor.valueIdSeed, "theme"), escapeXmlTags(anchor.label), 0.5, "panel-adopt", tenant, undefined, "manual", "theme", { description: escapeXmlTags(anchor.description) }));
-      if (!ok) return errorEnvelope(503, "core_value adopt failed", requestId);
-      // #52 P4：同 label 同族提案自动 rejected（label 归一相等判重，best-effort）。
-      adoptSwept = await sweepPendingDuplicatesAfterAdopt({ store, tenant, slot: "core_value", adoptedLabel: anchor.label, adoptedPendingId: b.pending_id, logger: deps.logger });
-    } else if (decided.slot === "promise_transition") {
-      // #44（D8-(c) 提案通道采纳侧）：唯一写入口=applyAdoptedPromiseTransition（#41 单一源：
-      // source="proposal"、note="[proposal] ${reason}"、恒可审计）。预检未产出载荷（store 缺
-      // listPendingCore 特性探测面）→ 防御性 422（pending 已裁决，采纳需经 API 重放——
-      // 与 core_value 422 post-decide 先例同语义边界）；store 竞态 {ok:false} → 409 幂等收尾。
-      if (!promisePayload) return errorEnvelope(422, "promise proposal payload unavailable (store lacks listPendingCore) — adopt again via API", requestId);
-      const applied = await applyAdoptedPromiseTransition(store, tenant, {
-        promiseId: promisePayload.promiseId,
-        to: promisePayload.to as PromiseTerminalTarget,
-        reason: String(decided.content ?? ""),
-        attrs: { origin: "proposal" },
-      });
-      if (!applied.ok) {
-        return errorEnvelope(409, `promise transition rejected: ${applied.reason ?? "transition-rejected"}`, requestId, {
-          promiseTransition: { ok: false, promiseId: applied.promiseId, to: applied.to, reason: applied.reason },
-        });
-      }
-      return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseTransition: { ok: boolean; promiseId: string; to: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseTransition: { ok: true, promiseId: applied.promiseId, to: applied.to } }, requestId);
-    } else if (decided.slot === "promise_create") {
-      // D8 创建通道采纳侧（唯一写入口=upsertSoulPromise source="reflection"）。预检未产出载荷
-      // （store 缺 listPendingCore 特性探测面）→ 防御性 422（同 transition post-decide 先例）；
-      // store 业务拒绝（缺 promiseId / {ok:false}）→ 409 幂等收尾（镜像 transition 409 形状）；
-      // sqlite DB 级失败抛错 → 直接传播（R5-F5：不静默吞 DB 错误，镜像 transition applier 语义）。
-      if (!promiseCreatePayload) return errorEnvelope(422, "promise creation payload unavailable (store lacks listPendingCore) — adopt again via API", requestId);
-      const created = (await Promise.resolve(
-        store.upsertSoulPromise?.(tenant, { content: promiseCreatePayload.content, source: "reflection" }),
-      )) as { promiseId?: string; reason?: string } | undefined;
-      if (!created || typeof created.promiseId !== "string" || !created.promiseId) {
-        const reason = created?.reason ?? "creation-failed";
-        return errorEnvelope(409, `promise creation rejected: ${reason}`, requestId, {
-          promiseCreate: { ok: false, reason },
-        });
-      }
-      return successEnvelope<{ pending_id: string; decision: string; slot: string; promiseCreate: { ok: boolean; promiseId: string } }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, promiseCreate: { ok: true, promiseId: created.promiseId } }, requestId);
-    } else if (decided.slot === "self_identity") {
-      // #82（2026-10-25 拍板）：self_identity 采纳落槽（merge-on-adopt）——旧行为纯状态翻转
-      // （decidePendingCore 仅 UPDATE state），槽内容零变化 → adopted 69 条 vs 槽 8 行长期脱节。
-      // 语义（单一源=mergeIdentityFacts，与 worker 演化同构；采纳路径零 embedding/cosine——
-      // 提案层判重已由 #81 0.65 相似门承载，采纳权在用户）：新行 escapeXmlTags 消毒+按行拆分
-      // （mergeIdentityFacts 约定每元素=一行、调用方消毒）；槽满 IDENTITY_MAX_FACTS=8
-      // slice(-8) 淘汰最旧；合并输出与槽逐字节相同 → 跳过写槽（幂等采纳零 version 空转）；
-      // source="panel-adopt" 对齐 strict_rule 采纳先例、与 worker source="identity-discovery" 区分。
-      if (!store.upsertCore) return errorEnvelope(503, "core_memory not supported", requestId);
-      const existingIdentity = ((store as { readCore?: (t?: unknown) => Array<{ slot: string; content: string }> }).readCore?.(tenant) ?? []).find((s) => s.slot === "self_identity")?.content;
-      const adoptedLines = String(decided.content ?? "").split("\n").map((l) => escapeXmlTags(l.trim())).filter((l) => l.length > 0);
-      const mergedIdentity = mergeIdentityFacts(existingIdentity, adoptedLines);
-      if (mergedIdentity !== (existingIdentity ?? "")) {
-        const ok = await Promise.resolve(store.upsertCore("self_identity", mergedIdentity, "panel-adopt", tenant));
-        if (!ok) return errorEnvelope(503, "self_identity adopt failed", requestId);
-      }
-    }
-  }
-  return successEnvelope<{ pending_id: string; decision: string; slot: string; swept?: PendingAdoptSweepRow[] }>({ pending_id: b.pending_id, decision: b.decision, slot: decided.slot, swept: adoptSwept }, requestId);
-}
-
 async function handleCoreMemoryRead(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
   // GROW：可选 include_retired（Panel 退休区用；默认 false = active-only 匹配面不变）
   const b = (_body ?? {}) as { include_retired?: unknown; format?: unknown };
   const includeRetired = b.include_retired === true;
-  // P2-T12（K1）：core 按租户过滤（slots 与 values 同一租户范围）
+  // P2-T12（K1）：core 按租户过滤。S8（2026-11-07）：价值锚整表已删除，响应不再带 values。
   const tenant = coreTenantFromIsolation(deps.requestIsolation);
   const core = (await store.readCore?.(tenant)) ?? [];
-  const values = (await Promise.resolve(store.listValues?.(tenant, { includeRetired }))) ?? [];
+  void includeRetired;
   // #67（R3 身份叙事层，2026-10-19）：format="narrative"（且 config 门开）——identity /
   // self_identity 两槽折叠为一条 identity_narrative 叙事槽（renderIdentityNarrative 单一源：
   // 模板常量+事实句逐字，无 LLM/随机/时钟；soul 会话头辅路同源双路）。Park 2411.10109
@@ -2927,380 +2572,13 @@ async function handleCoreMemoryRead(_body: unknown, _auth: V2AuthContext, reques
       }
     }
   }
-  return successEnvelope<{ slots: typeof core; values: typeof values }>({ slots: slotsOut, values }, requestId);
+  return successEnvelope<{ slots: typeof core }>({ slots: slotsOut }, requestId);
 }
 
-async function handleCoreMemoryWrite(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { slot?: string; content?: string; source?: string };
-  const cfg = deps.config?.memory?.coreMemory;
-  if (!cfg) return errorEnvelope(503, "coreMemory config not available", requestId);
-  const decision = validateCoreWrite({ slot: b.slot ?? "", content: b.content ?? "", source: b.source ?? "" }, cfg);
-  if (!decision.ok) return errorEnvelope(400, decision.reason ?? "invalid", requestId);
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.upsertCore) return errorEnvelope(503, "core_memory not supported", requestId);
-  // P2-T11 写入路径单点消毒（守卫在咽喉）：guard（validateCoreWrite）校验通过后、
-  // 落库前对 content 做 XML 边界转义 —— 含 `</core_memory>` / `</system>` 的毒化内容
-  // 从此无法越块逃逸进 system 注入区；所有读端（注入端/面板/SDK）读到的都是已转义
-  // 内容，天然安全，不再各自消毒。escape 名单见 sanitize.ts escapeXmlTags。
-  const sanitizedContent = escapeXmlTags(decision.content as string);
-  // P2-T12（K1）：租户化落库 —— guard → escape → upsertCore(tenant) 顺序保持
-  // （消毒仍在租户化改动之后生效，T11 语义不回归）。
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  store.upsertCore(decision.slot as string, sanitizedContent, decision.source as string, tenant);
-  // 审计留痕（防投毒覆盖身份层：改了什么、谁改的、几版）。失败不阻塞。
-  // P2-T12 顺手修（K9）：审计 version 取**刚写槽**的 version（按租户定位该 slot），
-  // 此前取 readCore()[0] 是排序后首行 —— 与刚写槽不是同一行时版本号失真。
-  const written = (await store.readCore?.(tenant)) ?? [];
-  const writtenVersion = written.find((s) => s.slot === decision.slot)?.version ?? 0;
-  void recordAudit(store, {
-    record_id: `core:${decision.slot}`,
-    layer: "L3" as const,
-    action: "update" as const,
-    version: writtenVersion,
-    requestId,
-    logger: deps.logger,
-    iso: deps.requestIsolation,
-  });
-  return successEnvelope<{ ok: boolean; slot: string }>({ ok: true, slot: decision.slot as string }, requestId);
-}
-
-// ── S1（K7 + T12 审计 M-5）：core_values 写 API ─────────────────────
-// agent 可维护价值锚（core-values 设计 §1）：此前 core_values 只有启动种子写入
-// （server.ts 直调 upsertValue，default 桶），非 default 租户 values 恒空，
-// appraisal 永远走 config.yaml fallback。本组 handler 照抄 core-memory read|write
-// 的既有模式：guard → escapeXmlTags（P-B 咽喉原则，label 进注入块）→
-// upsertValue/deleteValue(tenant) → recordAudit；handler 检查返回值，失败不伪成功（M-1）。
-
-/** S1：value_id 规范化为 slug 风格小写（参照 seed id 风格 correctness/reliability…）。 */
-function normalizeValueId(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "");
-}
-
-async function handleCoreMemoryValuesUpsert(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { value_id?: unknown; label?: unknown; weight?: unknown; valence?: unknown; attrs?: unknown };
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.upsertValue) return errorEnvelope(503, "core_values not supported", requestId);
-  const valueId = normalizeValueId(typeof b.value_id === "string" ? b.value_id : "");
-  if (!valueId) return errorEnvelope(400, "value_id required (normalized to slug [a-z0-9_-])", requestId);
-  if (typeof b.label !== "string" || !b.label.trim()) return errorEnvelope(400, "label must be a non-empty string", requestId);
-  if (typeof b.weight !== "number" || !Number.isFinite(b.weight)) return errorEnvelope(400, "weight must be a finite number", requestId);
-  // C2（spec §3.1）：可选 valence（动机方向，用户微调）。显式传入必须是有穷数字
-  // （store 侧 clamp 三值 -1/0/1）；未传 = plain upsert（新建落 NULL 待 LLM 判，冲突不触碰原值）。
-  let valence: number | undefined;
-  if (b.valence !== undefined) {
-    if (typeof b.valence !== "number" || !Number.isFinite(b.valence)) {
-      return errorEnvelope(400, "valence must be a finite number (clamped to -1|0|1)", requestId);
-    }
-    valence = b.valence;
-  }
-  const weight = Math.min(Math.max(b.weight, 0), 1);
-  // P-B 咽喉消毒：core_values.label 会进注入块，落库前转义（同 handleCoreMemoryWrite content）
-  const label = escapeXmlTags(b.label.trim());
-  // U2（spec §6.5）：可选 attrs（人物锚 role/aliases 行内编辑）——显式传入才更新
-  // （store ON CONFLICT "attrs_json 仅显式传入时更新"语义），theme 锚传入忽略为无害；
-  // 逐项校验（role 非空字符串；aliases 字符串数组逐项非空），非法 → 400 不静默丢。
-  // 立项①（2026-09-23 拍板）：attrs.description 通道——提案 rationale 落库为锚语义
-  // （≤80 字，P-B 咽喉消毒同款 escape；注入行「label(方向)：描述」渲染的数据源）。
-  let attrs: { role?: string; aliases?: string[]; description?: string } | undefined;
-  if (b.attrs !== undefined) {
-    if (b.attrs === null || typeof b.attrs !== "object" || Array.isArray(b.attrs)) {
-      return errorEnvelope(400, "attrs must be an object {role?, aliases?, description?}", requestId);
-    }
-    const a = b.attrs as { role?: unknown; aliases?: unknown; description?: unknown };
-    const role = typeof a.role === "string" && a.role.trim() ? escapeXmlTags(a.role.trim()) : undefined;
-    const aliases = Array.isArray(a.aliases)
-      ? a.aliases.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => escapeXmlTags(x.trim()))
-      : undefined;
-    const rawDescription = typeof a.description === "string" ? a.description.trim() : undefined;
-    // P0-1A（issue #1，Spec 审查 c1 修正）：description 走单一源 sanitizer 质量门——
-    // 直连 API 不再能绕过清洗落脏描述。合同保持：非空 ≤80；episode 特征/断尾/超长
-    // 无句读 → 显式 400（不静默清空），通过后按句边界截取（≤60 窗口）再 P-B 消毒。
-    // Standards 终审 #2 豁免记录（2026-10-13）：本门常开、无 yaml 开关，系对
-    // CONTRIBUTING config-first 铁律的显式偏离——定性为 issue #1 缺陷修复（与
-    // 2026-10-04 灵魂注入质量轮「禁止无意义不明确内容」同一合同收口），且 400 是
-    // loud 失败（面板 notify 展示），非静默行为变更；如需兼容旧直连写法，走
-    // attrs 缺省（不传 description）即可完全绕开，无存量调用破坏面。
-    const description =
-      rawDescription && rawDescription.length <= 80 ? anchorDescriptionAttr(rawDescription)?.description : undefined;
-    if (a.role !== undefined && role === undefined) return errorEnvelope(400, "attrs.role must be a non-empty string", requestId);
-    if (a.aliases !== undefined && !Array.isArray(a.aliases)) return errorEnvelope(400, "attrs.aliases must be an array of strings", requestId);
-    if (a.description !== undefined && description === undefined)
-      return errorEnvelope(400, "attrs.description must be a non-empty sentence (<=80 chars, passes quality gate)", requestId);
-    const storedDescription = description !== undefined ? escapeXmlTags(description) : undefined;
-    if (role === undefined && aliases === undefined && description === undefined)
-      return errorEnvelope(400, "attrs requires role or aliases or description", requestId);
-    attrs = {
-      ...(role !== undefined ? { role } : {}),
-      ...(aliases !== undefined ? { aliases } : {}),
-      ...(storedDescription !== undefined ? { description: storedDescription } : {}),
-    };
-  }
-  // 租户（照抄 handleCoreMemoryWrite 的 coreTenantFromIsolation 模式）
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  // M-1 教训：不吞失败——upsertValue false（SQL 失败）必须 5xx，不伪成功
-  const ok = await store.upsertValue(valueId, label, weight, "agent", tenant, valence, undefined, undefined, attrs);
-  if (!ok) return errorEnvelope(503, "core_values upsert failed", requestId);
-  // C2（spec §3.2）：新建/更新 value 后 fire-and-forget 判一次方向（仅 plain upsert 触发；
-  // 显式 valence 的微调不需要判）。deriveValueValences 只判 valence IS NULL 行 →
-  // 微调值与已判定值天然不被覆盖（三方语义 1）；LLM 不可用安静跳过（R3）。
-  if (b.valence === undefined && deps.getValueValenceLlmRunner && store.deriveValueValences) {
-    const derive = store.deriveValueValences.bind(store);
-    const getRunner = deps.getValueValenceLlmRunner;
-    void Promise.resolve(getRunner())
-      .then((runner) => (runner ? Promise.resolve(derive(tenant, runner as never)) : undefined))
-      .then((r) => {
-        if (r) deps.logger?.info?.(`[core-memory] valence derive (post-upsert): derived=${r.derived} skipped=${r.skipped}`);
-      })
-      .catch((err: unknown) => {
-        deps.logger?.warn?.(`[core-memory] valence derive (post-upsert) skipped: ${err instanceof Error ? err.message : String(err)}`);
-      });
-  }
-  // 审计留痕（失败不阻塞，照抄 core-memory write；core_values 无 version 列 → 0）
-  void recordAudit(store, {
-    record_id: `core_value:${valueId}`,
-    layer: "L3" as const,
-    action: "update" as const,
-    version: 0,
-    requestId,
-    logger: deps.logger,
-    iso: deps.requestIsolation,
-  });
-  return successEnvelope<{ ok: boolean; value_id: string }>({ ok: true, value_id: valueId }, requestId);
-}
-
-async function handleCoreMemoryValuesDelete(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { value_id?: unknown };
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.deleteValue) return errorEnvelope(503, "core_values delete not supported", requestId);
-  const valueId = normalizeValueId(typeof b.value_id === "string" ? b.value_id : "");
-  if (!valueId) return errorEnvelope(400, "value_id required (normalized to slug [a-z0-9_-])", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  const ok = await store.deleteValue(valueId, tenant);
-  // false = 该租户下不存在，或 SQL 失败（store 侧已 warn 留痕）——boolean 返回下二者不可
-  // 区分，一律按"未删"回报 404，不伪成功（M-1：不吞失败）。
-  if (!ok) return errorEnvelope(404, `core_values value not found: ${valueId}`, requestId);
-  void recordAudit(store, {
-    record_id: `core_value:${valueId}`,
-    layer: "L3" as const,
-    action: "delete" as const,
-    version: 0,
-    requestId,
-    logger: deps.logger,
-    iso: deps.requestIsolation,
-  });
-  return successEnvelope<{ ok: boolean; value_id: string }>({ ok: true, value_id: valueId }, requestId);
-}
-
-// ── GROW（钉住/退休/恢复 API）：价值锚状态机写入口 ───────────────────
-// 形态照抄 S1 values/delete：guard → normalizeValueId → store(tenant) →
-// false = 不存在/vetoed/SQL 失败，一律 404 不伪成功（M-1）；审计留痕失败不阻塞。
-
-/** GROW（钉住/取消钉住）：pinned=1 永不被自生长挤出。 */
-async function handleCoreMemoryValuesPin(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { value_id?: unknown; pinned?: unknown };
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.setValuePinned) return errorEnvelope(503, "core_values pin not supported", requestId);
-  const valueId = normalizeValueId(typeof b.value_id === "string" ? b.value_id : "");
-  if (!valueId) return errorEnvelope(400, "value_id required (normalized to slug [a-z0-9_-])", requestId);
-  if (typeof b.pinned !== "boolean") return errorEnvelope(400, "pinned must be a boolean", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  const ok = await Promise.resolve(store.setValuePinned(valueId, b.pinned, tenant));
-  if (!ok) return errorEnvelope(404, `core_values value not found or vetoed: ${valueId}`, requestId);
-  void recordAudit(store, {
-    record_id: `core_value:${valueId}`,
-    layer: "L3" as const,
-    action: "update" as const,
-    version: 0,
-    requestId,
-    logger: deps.logger,
-    iso: deps.requestIsolation,
-  });
-  return successEnvelope<{ ok: boolean; value_id: string; pinned: boolean }>({ ok: true, value_id: valueId, pinned: b.pinned }, requestId);
-}
-
-/** GROW（手动退休）：state → 'retired'（退休区可见，可恢复/可钉住；可逆）。 */
-async function handleCoreMemoryValuesRetire(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { value_id?: unknown };
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.retireValue) return errorEnvelope(503, "core_values retire not supported", requestId);
-  const valueId = normalizeValueId(typeof b.value_id === "string" ? b.value_id : "");
-  if (!valueId) return errorEnvelope(400, "value_id required (normalized to slug [a-z0-9_-])", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  const ok = await Promise.resolve(store.retireValue(valueId, tenant));
-  if (!ok) return errorEnvelope(404, `core_values value not found or vetoed: ${valueId}`, requestId);
-  void recordAudit(store, {
-    record_id: `core_value:${valueId}`,
-    layer: "L3" as const,
-    action: "update" as const,
-    version: 0,
-    requestId,
-    logger: deps.logger,
-    iso: deps.requestIsolation,
-  });
-  return successEnvelope<{ ok: boolean; value_id: string }>({ ok: true, value_id: valueId }, requestId);
-}
-
-/** GROW（恢复）：retired → active（退休区[恢复]；vetoed 拒绝——撤销否决走显式 upsert 重添）。 */
-async function handleCoreMemoryValuesRestore(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const b = (body ?? {}) as { value_id?: unknown };
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.restoreValue) return errorEnvelope(503, "core_values restore not supported", requestId);
-  const valueId = normalizeValueId(typeof b.value_id === "string" ? b.value_id : "");
-  if (!valueId) return errorEnvelope(400, "value_id required (normalized to slug [a-z0-9_-])", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  const ok = await Promise.resolve(store.restoreValue(valueId, tenant));
-  if (!ok) return errorEnvelope(404, `core_values value not found (not retired) or vetoed: ${valueId}`, requestId);
-  void recordAudit(store, {
-    record_id: `core_value:${valueId}`,
-    layer: "L3" as const,
-    action: "update" as const,
-    version: 0,
-    requestId,
-    logger: deps.logger,
-    iso: deps.requestIsolation,
-  });
-  return successEnvelope<{ ok: boolean; value_id: string }>({ ok: true, value_id: valueId }, requestId);
-}
-
-/**
- * C2（spec §3.1.3）：动机方向重判入口（POST，无 body，返回 {derived, skipped}）。
- *
- * 语义 = 重置 + 重判（Important-1 修补后为 apply-after-success 变体）：
- *   1. resetValueValences：先快照本租户现有非 NULL (value_id, valence) 对 → 再置 NULL
- *      （用户显式动作，允许覆盖微调——"微调错了想重置"的闭环）。快照由本 handler 持有，
- *      重置语义此时**尚未提交**。
- *   2. deriveValueValences：LLM 批量判 NULL 行（写回带 `valence IS NULL` 守卫）。
- *   3. 判定完成后才提交重置语义：
- *      - LLM 全部成功 → 新值生效，快照作废；
- *      - LLM 抛错 / 输出全不可用（derived=0）→ 全部从快照恢复原值 + warn 明示"已恢复，请重试"
- *        （修补前：先置 NULL 再判，LLM 失败 → 微调值永久丢失）；
- *      - 部分成功 → 有效行应用新值，无效行（仍 NULL）从快照恢复原值；
- *      - LLM 窗口内用户微调的行（valence 非 NULL）不在恢复范围（微调优先，
- *        restore 侧 `valence IS NULL` 守卫保证）。
- * 与 upsert 后 fire-and-forget 钩子的差异：钩子只判 NULL、永不触碰非 NULL（三方语义 1：
- * 用户微调优先）；本入口是用户显式要求重判，reset 语义在此受控开放。
- */
-async function handleCoreMemoryValuesDerive(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.deriveValueValences) return errorEnvelope(503, "core_values valence derive not supported", requestId);
-  const resetValueValences = store.resetValueValences?.bind(store);
-  const restoreValueValences = store.restoreValueValences?.bind(store);
-  if (!resetValueValences || !restoreValueValences) return errorEnvelope(503, "core_values valence reset not supported", requestId);
-  const runner = deps.getValueValenceLlmRunner ? await deps.getValueValenceLlmRunner() : undefined;
-  if (!runner) return errorEnvelope(503, "LLM runner not available for valence derive (R3: values stay unjudged)", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  // apply-after-success：快照 → 置 NULL（未提交）→ 判定 → 失败行恢复
-  // S6 第 7 项（C2 fix1 复审 Low 2）：reset SQL 失败 → store 抛错（不再静默 []）→
-  // 此处 catch → 503 明示（此时未置 NULL 任何行，无数据丢失面）。
-  let snapshot: Array<{ value_id: string; valence: number }>;
-  try {
-    snapshot = await Promise.resolve(resetValueValences(tenant));
-  } catch (err) {
-    deps.logger?.warn?.(`[core-values] valence reset failed (requestId=${requestId}): ${err instanceof Error ? err.message : String(err)} — 未置 NULL 任何行`);
-    return errorEnvelope(503, "core_values valence reset failed (nothing was NULLed) — retry later", requestId);
-  }
-  const result = await Promise.resolve(store.deriveValueValences(tenant, runner as never));
-  // S6 第 6 项（C2 fix1 复审 Low 1）：restore 循环事务化后失败重抛 → catch → 503
-  // （事务已 ROLLBACK，快照行全部保持 NULL，可整批重试）。
-  let restored: number;
-  try {
-    restored = await Promise.resolve(restoreValueValences(tenant, snapshot));
-  } catch (err) {
-    deps.logger?.warn?.(`[core-values] valence restore failed (requestId=${requestId}): ${err instanceof Error ? err.message : String(err)} — 事务已回滚，行保持 NULL，请重试 derive`);
-    return errorEnvelope(503, "core_values valence restore failed (rolled back, rows remain NULL) — retry derive", requestId);
-  }
-  if (snapshot.length > 0 && restored > 0) {
-    if (result.derived === 0) {
-      // 全不可用：重置语义已回滚——明示可重试，不静默（防降级掩盖无声失败）
-      deps.logger?.warn?.(`[core-values] valence derive failed after reset (requestId=${requestId}); ${restored}/${snapshot.length} value(s) restored from snapshot — 已恢复，请重试`);
-    } else {
-      deps.logger?.info?.(`[core-values] valence derive partial (requestId=${requestId}): derived=${result.derived}, ${restored}/${snapshot.length} unjudged value(s) restored from snapshot`);
-    }
-  }
-  return successEnvelope<{ derived: number; skipped: number }>(result, requestId);
-}
-
-/**
- * DISC（提议制）：价值锚发现入口（POST，无 body，返回 { proposals, sampleSize }）。
- *
- * 流程：语料样本（租户过滤 → 高 significance 优先 + 最近补齐，硬上限 50 条 × 200 字）
- *   + 已有锚（listValues(tenant)）→ LLM 蒸馏提案（JSON 数组）→ 宽松解析 →
- *   去重（已有锚不再提 + 内部去重）→ **evidenceCount 重算**（LLM 报数不采信）→
- *   证据 < 3 丢弃（宁缺毋滥）→ weight 公式 → 返回提案。**全程只读，零落库**（K1
- *   信任边界：LLM 只提议；持久化只能经人点「采纳」走既有 values/upsert 消毒审计通道）。
- *
- * maxTokens：ark-code-latest 为推理模型，thinking 占输出预算，config 默认 4096 可能
- * 截断 JSON → 本路由内部覆写 8192（runner 链 params.maxTokens 优先；日志报告覆写值）。
- * LLM runner 复用 C2/T17 的 getValueValenceLlmRunner（server.ts 惰性构造 + 进程级缓存，
- * env/config 同源）；无 runner → 503（R3 降级可见，不静默空数组伪装"无提议"）。
- */
-async function handleCoreMemoryValuesDiscover(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const store = deps.getStore();
-  if (!store) return errorEnvelope(503, "Store not available", requestId);
-  if (!store.listValues) return errorEnvelope(503, "core_values not supported", requestId);
-  const runner = deps.getValueValenceLlmRunner ? await deps.getValueValenceLlmRunner() : undefined;
-  if (!runner) return errorEnvelope(503, "LLM runner not available for value discovery (R3: degrade visibly)", requestId);
-  const tenant = coreTenantFromIsolation(deps.requestIsolation);
-  const isoFilter = { teamId: tenant.teamId, userId: tenant.userId, agentId: tenant.agentId };
-  const rows = (await Promise.resolve(store.queryL1Records(isoFilter))) ?? [];
-  const sample = selectSampleRows(rows as never, DISCOVER_SAMPLE_CAP);
-  const values = (await Promise.resolve(store.listValues(tenant))) ?? [];
-  const existingLabels = values.map((v) => v.label);
-  // LLM prompt 语料 = 50 采样窗（GROW-EVO 预算内：updated 降序 + 高显著优先）。
-  const promptCorpus = sample.map((r) => String((r as { content?: string }).content ?? ""));
-  // #17 T10（2026-10-14）：证据重算语料 = **全量行**——与 anchor-growth GROW-MAINT 同刻度
-  //（anchor-growth.ts:392 起「证据重算语料 = 全量语料（非 50 采样窗）」单一语义）。
-  // 此前本路由 recount 吃 50 采样窗：沉底老行（updated 老但证据真）被窗口截掉 → 提议门
-  // 受采样顺序支配（幸运门/漏真提案）。修复后采样只用于 prompt，门判定全量口径。
-  const corpus = rows.map((r) => String((r as { content?: string }).content ?? ""));
-  deps.logger?.info?.(
-    `[core-values] discover (requestId=${requestId}): sample=${sample.length}, corpus=${corpus.length}, existing=${existingLabels.length}, ` +
-    `maxTokens: unrestricted (GROW-EVO P2.1 user decision)`,
-  );
-  const raw = await Promise.resolve(
-    runner.run({
-      prompt: buildDiscoverPrompt(promptCorpus, existingLabels),
-      systemPrompt: DISCOVER_SYSTEM_PROMPT,
-      taskId: "core-values-discover",
-      timeoutMs: 0,
-      maxTokens: 0,
-    } as never),
-  );
-  // 证据重算在 parse + dedup 之后：sampleSize = 样本条数（weight 公式分母）
-  const sampleSize = sample.length;
-  // #18 T11：去重升级集合级（label + attrs.aliases 全变体），证据计数同刻度（OR 口径）。
-  const existingVariants = (values as Array<{ label: string; attrs_json?: string | null }>).map((v) => {
-    let aliases: string[] = [];
-    try {
-      const a = v.attrs_json && v.attrs_json !== "{}" ? JSON.parse(v.attrs_json) : null;
-      if (Array.isArray(a?.aliases)) aliases = a.aliases.map(String).filter((s: string) => s.length > 0);
-    } catch {
-      // attrs_json 损坏 → 空别名（宁缺毋滥）
-    }
-    return { label: v.label, aliases };
-  });
-  const candidates = dedupProposalsWithVariants(parseProposalsJson(String(raw ?? "")), existingVariants, { containmentGate: true });
-  const proposals = candidates
-    .map((c) => ({ ...c, evidenceCount: recountEvidence(c.label, corpus, c.aliases) }))
-    .filter((p) => p.evidenceCount >= DISCOVER_MIN_EVIDENCE)
-    .map((p) => ({
-      label: p.label,
-      rationale: p.rationale,
-      aliases: p.aliases,
-      evidenceCount: p.evidenceCount,
-      suggestedWeight: suggestAnchorWeight(p.evidenceCount, sampleSize),
-    }))
-    .sort((a, b) => b.evidenceCount - a.evidenceCount);
-  // 宁缺毋滥：无提议 → 空数组，不造。提案只存在于响应，不落库（零 schema 变更）。
-  return successEnvelope<{ proposals: typeof proposals; sampleSize: number }>({ proposals, sampleSize }, requestId);
-}
+// 2026-11-07（task-20）：core-memory 写入口已退役 —— 该 handler 与 trust-boundary guard
+// （src/core/core-memory/guard.ts，validateCoreWrite）一并删除，理由是零调用方：Panel 只读
+// /v3/core-memory/read，插件不写核心槽；core_memory 槽现无任何进程内写者，读面（含
+// format=narrative 叙事渲染）原样保留。
 
 async function handleAtomicDelete(body: unknown, auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = atomicDeleteRequestSchema.safeParse(body);
@@ -3906,8 +3184,8 @@ async function handleCoreWrite(body: unknown, _auth: V2AuthContext, requestId: s
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
   const storage = scopedProfileStorage(baseStorage, deps.requestIsolation);
 
-  // I-2（P2-T11+13 复核修补）：落盘前对 content 调 escapeXmlTags（与
-  // handleCoreMemoryWrite 同模式，写入路径单点消毒，所有读端天然安全）。
+  // I-2（P2-T11+13 复核修补）：落盘前对 content 调 escapeXmlTags（写入路径单点消毒，
+  // 所有读端天然安全）。
   // L3 persona 注入边界 `<l3_core_memory>` / `<agent …>` 已在 escape 名单，
   // 毒化内容无法越块逃逸进 system 注入区。
   // Normalize before persistence: persona body must NOT contain Scene Navigation
@@ -3945,7 +3223,6 @@ async function handleCoreWrite(body: unknown, _auth: V2AuthContext, requestId: s
   }, requestId);
 }
 
-
 // ============================
 // Helpers
 // ============================
@@ -3978,23 +3255,10 @@ export {
   handleAtomicNeighbors,
   handleAtomicDelete,
   handleAtomicCount,
-  // P2-T12：core-memory handler 导出（同形 verify 脚本直调；与 T14 neighbors 同惯例）
+  // 核心记忆唯一对外面：只读 handler（Panel 的 core-memory 只读视图消费；写入口已退役）
   handleCoreMemoryRead,
-  // O13（P2）：pending 人工采纳 handler 导出（pending-routes.test 直调）
-  handleCoreMemoryPendingList,
-  handleCoreMemoryPendingDecide,
-  handleCoreMemoryWrite,
-  // S1：core_values 写 API handler 导出（verify-s1 直调）
-  handleCoreMemoryValuesUpsert,
-  handleCoreMemoryValuesDelete,
-  // GROW：钉住/退休/恢复 handler 导出（vitest / verify-grow 直调）
-  handleCoreMemoryValuesPin,
-  handleCoreMemoryValuesRetire,
-  handleCoreMemoryValuesRestore,
-  // C2：动机方向重判入口 handler 导出（verify-c2 直调）
-  handleCoreMemoryValuesDerive,
-  // DISC：价值锚发现 handler 导出（vitest 直调）
-  handleCoreMemoryValuesDiscover,
+  // 2026-11-07（task-20）：core-memory 写 handler 导出已删（写路由退役，原 handler 位置留有墓碑说明）。
+  // 2026-11-07（T1）：core_values 写 API handler 已删（见文件头注释），读面 handleCoreMemoryRead 保留。
   handleScenarioLs,
   handleScenarioRead,
   handleScenarioWrite,

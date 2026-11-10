@@ -49,6 +49,7 @@ import type {
   TeamMemberEntity,
   TeamMemberView,
   AgentEntity,
+  AgentPersonaEntity,
   TaskEntity,
   TaskAgentEntity,
   ParticipationLogEntity,
@@ -87,6 +88,13 @@ import type {
   InstanceUserListFilter,
   UserListFilter,
 } from "../types.js";
+// 人格层设定：校验 + 权重归一 + 指纹都复用 core/soul 的纯函数（单一真源，避免 Panel/服务两端各写一份上限）。
+import {
+  computeProfileFingerprint,
+  normalizeSeedWeights,
+  validateAgentPersonaInput,
+  type AgentProfileTrait,
+} from "../../core/soul/agent-profile.js";
 import { formatListResult, paginateArray, resolvePagination, wrapPaginated, DEFAULT_PAGINATION } from "../pagination.js";
 import { generateId, ID_PREFIX } from "../utils/id-generator.js";
 import { buildChatMemoryAssetId, resolveChatMemoryAgentId } from "../utils/chat-memory-asset.js";
@@ -101,21 +109,12 @@ const DEFAULT_AGENT_DESCRIPTION = "默认助手，可处理通用开发任务与
 
 // prompt 拼接格式与前端手动创建 Agent 完全一致：
 // [card.rolePrompt, card.rulesPrompt].filter(Boolean).join('\n\n')
-const DEFAULT_AGENT_ROLE_PROMPT = "";
-const DEFAULT_AGENT_RULES_PROMPT = "";
-const DEFAULT_AGENT_PROMPT = [DEFAULT_AGENT_ROLE_PROMPT, DEFAULT_AGENT_RULES_PROMPT]
-  .filter(Boolean)
-  .join("\n\n");
+// 2026-11-07：Core 不再往 metadata_json.ui 写「角色提示词 / 规则提示词」这两类键
+//（此前写的也只是空串）。空键留在库里会让「有没有配置过角色提示词」永远为真，
+// 也让 UI namespace 多出一对无人写入的墓碑键。新 agent 不写；老行不做兼容读取（读侧按缺失处理）。
+const DEFAULT_AGENT_PROMPT = "";
 
-// metadata_json 存储拆分后的 role_prompt / rules_prompt，
-// 与前端 writeAgentUiMeta / readAgentUiMeta 的 "ui" namespace 格式一致，
-// 保证 Agent 详情页「角色定位 prompt」和「规则固定 prompt」分开显示。
-const DEFAULT_AGENT_METADATA_JSON = JSON.stringify({
-  ui: {
-    role_prompt: DEFAULT_AGENT_ROLE_PROMPT,
-    rules_prompt: DEFAULT_AGENT_RULES_PROMPT,
-  },
-});
+const DEFAULT_AGENT_METADATA_JSON = JSON.stringify({ ui: {} });
 
 /** 业务校验错误，带可映射到 HTTP 状态的 code。 */
 export class MetadataError extends Error {
@@ -916,6 +915,18 @@ export class MetadataService {
   }
 
   async deleteAgents(agentIds: string[]): Promise<BatchDeleteResult> {
+    // 硬删必须走和归档同一条内容清理。store.deleteAgents 只清 meta 行，
+    // 不清 soul_* / l0 / l1；漏了的话已删 agent 的人格和情绪还在库里。
+    if (this._chatMemoryContentCleaner) {
+      for (const agentId of agentIds) {
+        const agent = await this.store.getAgentById(agentId);
+        if (!agent) continue;
+        await this._chatMemoryContentCleaner({
+          teamId: agent.team_id,
+          agentId: agent.agent_id,
+        });
+      }
+    }
     return this.store.deleteAgents(agentIds);
   }
 
@@ -937,6 +948,84 @@ export class MetadataService {
     const page = await this.store.listAgentsByOwner(userId, pagination, filter);
     const items = page.items;
     return formatListResult({ items, total: page.total }, pagination);
+  }
+
+  // ── AgentPersona（人格层设定，§1）──
+
+  async getAgentPersona(agentId: string): Promise<AgentPersonaEntity | null> {
+    return this.store.getAgentPersona(agentId);
+  }
+
+  /**
+   * 保存设定六项：
+   *   1. 只允许 agent owner（与 agent/update 同一条鉴权：assertCallerIsAgentOwner）；
+   *   2. 服务端强制上限（core/soul/agent-profile.validateAgentPersonaInput），越界即报错不截断；
+   *   3. 特质权重归一到 Σ=1（F4），指纹按「进 prompt 的设定」重算；
+   *   4. 存储层同事务写回 meta_agents.name（F7），这里不二次写。
+   */
+  async saveAgentPersonaForCaller(
+    input: {
+      agent_id: string;
+      name: string;
+      pronoun?: string;
+      self_image?: string;
+      voice?: string;
+      purpose?: string;
+      traits?: AgentProfileTrait[];
+      redlines?: Array<{ text: string; active?: boolean; createdAt?: string }>;
+    },
+    ctx: V3AuthContext,
+  ): Promise<AgentPersonaEntity> {
+    await this.assertCallerIsAgentOwner(ctx, input.agent_id);
+    const agent = await this.getAgentById(input.agent_id);
+    if (!agent) throw new MetadataError("agent_not_found", `agent not found: ${input.agent_id}`);
+
+    const traits = normalizeSeedWeights(input.traits ?? []);
+    const redlines = (input.redlines ?? [])
+      .map((r) => ({
+        text: (r.text ?? "").trim(),
+        active: r.active !== false,
+        createdAt: r.createdAt ?? new Date().toISOString(),
+      }))
+      .filter((r) => r.text.length > 0 || r.active);
+
+    const verdict = validateAgentPersonaInput({
+      name: input.name,
+      pronoun: input.pronoun,
+      selfImage: input.self_image,
+      voice: input.voice,
+      purpose: input.purpose,
+      traits,
+      redlines,
+    });
+    if (!verdict.ok) {
+      throw new MetadataError("agent_persona_invalid", verdict.errors.join("; "));
+    }
+
+    const fingerprint = computeProfileFingerprint({
+      name: input.name.trim(),
+      pronoun: (input.pronoun ?? "").trim(),
+      selfImage: input.self_image ?? "",
+      voice: input.voice ?? "",
+      purpose: input.purpose ?? "",
+      traits,
+      redlines,
+    });
+
+    const saved = await this.store.saveAgentPersona(input.agent_id, {
+      team_id: agent.team_id,
+      name: input.name.trim(),
+      pronoun: (input.pronoun ?? "").trim(),
+      self_image: input.self_image ?? "",
+      voice: input.voice ?? "",
+      purpose: input.purpose ?? "",
+      traits_json: JSON.stringify(traits),
+      redlines_json: JSON.stringify(redlines),
+      fingerprint,
+      schema_version: 1,
+    });
+    if (!saved) throw new MetadataError("agent_not_found", `agent not found: ${input.agent_id}`);
+    return saved;
   }
 
   /**

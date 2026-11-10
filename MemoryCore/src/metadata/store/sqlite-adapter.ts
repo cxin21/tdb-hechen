@@ -27,6 +27,8 @@ import type {
   TeamMemberEntity,
   TeamMemberView,
   AgentEntity,
+  AgentPersonaEntity,
+  SaveAgentPersonaInput,
   TaskEntity,
   TaskAgentEntity,
   ParticipationLogEntity,
@@ -192,6 +194,20 @@ export class SqliteMetadataStore implements IMetadataStore {
         metadata_json TEXT NOT NULL DEFAULT '{}'
       );
       CREATE INDEX IF NOT EXISTS idx_meta_agents_team_status ON meta_agents(team_id, status, created_at DESC);
+      CREATE TABLE IF NOT EXISTS meta_agent_persona (
+        agent_id         TEXT PRIMARY KEY,
+        team_id          TEXT NOT NULL,
+        name             TEXT NOT NULL DEFAULT '',
+        pronoun          TEXT NOT NULL DEFAULT '',
+        self_image       TEXT NOT NULL DEFAULT '',
+        voice            TEXT NOT NULL DEFAULT '',
+        purpose          TEXT NOT NULL DEFAULT '',
+        traits_json      TEXT NOT NULL DEFAULT '[]',
+        redlines_json    TEXT NOT NULL DEFAULT '[]',
+        schema_version   INTEGER NOT NULL DEFAULT 1,
+        fingerprint      TEXT NOT NULL DEFAULT '',
+        updated_at       TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS meta_tasks (
         task_id TEXT PRIMARY KEY,
         team_id TEXT NOT NULL,
@@ -943,6 +959,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       const ph = result.deleted_ids.map(() => "?").join(",");
       this.run(`DELETE FROM meta_task_agents WHERE agent_id IN (${ph})`, ...result.deleted_ids);
       this.run(`DELETE FROM meta_agent_fixed_assets WHERE agent_id IN (${ph})`, ...result.deleted_ids);
+      this.run(`DELETE FROM meta_agent_persona WHERE agent_id IN (${ph})`, ...result.deleted_ids);
       const selfMemoryAssetIds = result.deleted_ids
         .map((agentId) => selfMemoryByAgent.get(agentId))
         .filter((assetId): assetId is string => !!assetId);
@@ -978,6 +995,57 @@ export class SqliteMetadataStore implements IMetadataStore {
     );
   }
 
+  // ── AgentPersona（人格层设定）──
+  getAgentPersona(agentId: string): AgentPersonaEntity | null {
+    const row = this.get("SELECT * FROM meta_agent_persona WHERE agent_id = ?", agentId);
+    return this.mapAgentPersona(row);
+  }
+
+  /**
+   * 保存设定：同事务 upsert persona + 写回 meta_agents.name（F7 单向，meta_agents.name 不作输入）。
+   * agent 不存在时返回 null（调用方转 agent_not_found），绝不静默建孤儿行。
+   */
+  saveAgentPersona(agentId: string, input: SaveAgentPersonaInput): AgentPersonaEntity | null {
+    if (!this.getAgentById(agentId)) return null;
+    const now = nowIso();
+    const name = (input.name ?? "").trim();
+    this.tx(() => {
+      this.run(
+        `INSERT INTO meta_agent_persona
+          (agent_id, team_id, name, pronoun, self_image, voice, purpose,
+           traits_json, redlines_json, schema_version, fingerprint, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(agent_id) DO UPDATE SET
+           team_id = excluded.team_id,
+           name = excluded.name,
+           pronoun = excluded.pronoun,
+           self_image = excluded.self_image,
+           voice = excluded.voice,
+           purpose = excluded.purpose,
+           traits_json = excluded.traits_json,
+           redlines_json = excluded.redlines_json,
+           schema_version = excluded.schema_version,
+           fingerprint = excluded.fingerprint,
+           updated_at = excluded.updated_at`,
+        agentId,
+        input.team_id,
+        name,
+        input.pronoun ?? "",
+        input.self_image ?? "",
+        input.voice ?? "",
+        input.purpose ?? "",
+        input.traits_json ?? "[]",
+        input.redlines_json ?? "[]",
+        input.schema_version ?? 1,
+        input.fingerprint,
+        now,
+      );
+      if (name) {
+        this.run("UPDATE meta_agents SET name = ?, updated_at = ? WHERE agent_id = ?", name, now, agentId);
+      }
+    });
+    return this.getAgentPersona(agentId);
+  }
   listAgentsByOwner(userId: string, pagination?: PaginationParams | null, filter?: AgentFilter): ListPage<AgentEntity> {
     let where = "WHERE owner_user_id = ?";
     const params: SQLInputValue[] = [userId];
@@ -1652,6 +1720,24 @@ export class SqliteMetadataStore implements IMetadataStore {
       created_at: String(r.created_at),
       updated_at: String(r.updated_at),
       metadata_json: String(r.metadata_json ?? "{}"),
+    };
+  }
+
+  private mapAgentPersona(row: Row | null): AgentPersonaEntity | null {
+    if (!row) return null;
+    return {
+      agent_id: String(row.agent_id),
+      team_id: String(row.team_id),
+      name: String(row.name ?? ""),
+      pronoun: String(row.pronoun ?? ""),
+      self_image: String(row.self_image ?? ""),
+      voice: String(row.voice ?? ""),
+      purpose: String(row.purpose ?? ""),
+      traits_json: String(row.traits_json ?? "[]"),
+      redlines_json: String(row.redlines_json ?? "[]"),
+      schema_version: Number(row.schema_version ?? 1),
+      fingerprint: String(row.fingerprint ?? ""),
+      updated_at: String(row.updated_at),
     };
   }
 

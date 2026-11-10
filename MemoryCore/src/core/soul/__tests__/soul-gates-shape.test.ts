@@ -5,11 +5,10 @@
  *  1) 带任务锚的长叙事（commit/issue/路径/工具名/比例/枚举）即便含「宁可…也不…」也只进 method；
  *  2) 长度按层分档（identity 90、values/relationship 110、boundary 120、narrative 160…），超档即 task_specific；
  *  3) 存量导入（legacy=true）豁免形态门——用户写进槽里的原话就是最高级证据；
- *  4) replayCalibration 能把「事件报告」判非人格、把「取舍句」判人格，并给出可核对的证据率。
+ *  4) 红线段字数闸可收紧（redlineMaxChars），形态门先于「像不像」。
  */
 import { describe, expect, it } from "vitest";
 import { classifyLine, evaluateCandidate, personaShape, PERSONA_SHAPE_MAX_CHARS } from "../gates.js";
-import { replayCalibration, summarizeReplay } from "../replay.js";
 import { DEFAULT_SOUL_MAINTENANCE_CONFIG } from "../types.js";
 
 describe("personaShape：分层长度档", () => {
@@ -114,46 +113,45 @@ describe("evaluateCandidate：字数门只约束新候选，不吞存量原话",
   });
 });
 
-describe("replayCalibration：回放判据", () => {
-  const cases = [
-    { id: "a", text: "我完成 commit b8ba3e0 并推送，tests 全绿", state: "rejected" as const },
-    { id: "b", text: "数据完整优先红线：删除/提交/转单等写操作一律改挂自建单据执行，确保存量真实单据零接触；case 标注与单据实际状态不符时，以核实后的实际状态为准", state: "rejected" as const },
-    { id: "c", text: "宁可慢交付，也不交付没验证过的结论", state: "adopted" as const },
-    { id: "d", text: "绝不把情绪数据喂进召回排序", state: "adopted" as const },
-  ];
-
-  it("事件句判非人格、取舍/禁令句判人格，并给出 catchRate", () => {
-    const r = replayCalibration(cases);
-    expect(r.total).toBe(4);
-    expect(r.cases.find((c) => c.id === "a")!.verdict).toBe("non_persona");
-    expect(r.cases.find((c) => c.id === "c")!.verdict).toBe("persona");
-    expect(r.cases.find((c) => c.id === "d")!.verdict).toBe("persona");
-    expect(r.rejectionCatchRate).toBeGreaterThan(0);
-    expect(r.falseAdmits.map((c) => c.id)).toContain("b");
-    expect(summarizeReplay(r)).toContain("catchRate=");
-  });
-
-  it("同一条判定可重复（确定性：无时间/无随机）", () => {
-    const a = replayCalibration(cases).cases.map((c) => c.verdict);
-    const b = replayCalibration(cases).cases.map((c) => c.verdict);
-    expect(a).toEqual(b);
-  });
-
-  it("空输入不抛错、不给假分数", () => {
-    const r = replayCalibration([]);
-    expect(r.total).toBe(0);
-    expect(Number.isFinite(r.rejectionCatchRate)).toBe(true);
-  });
-
-  it("配置可收紧形态门（redlineMaxChars 是收紧旋钮，不是放宽旋钮）", () => {
+describe("红线段字数闸：redlineMaxChars 是收紧旋钮，不是放宽旋钮", () => {
+  it("同一句红线：缺省配置通过，收紧到 60 字即判 task_specific", () => {
     const text = "绝不" + "把未经核实的东西当成结论".repeat(6); // 80 字红线
-    const dflt = replayCalibration([{ id: "x", text, state: "rejected" }], DEFAULT_SOUL_MAINTENANCE_CONFIG);
-    const tight = replayCalibration([{ id: "x", text, state: "rejected" }], {
-      ...DEFAULT_SOUL_MAINTENANCE_CONFIG,
-      redlineMaxChars: 60,
+    const dflt = evaluateCandidate(text, { layer: "boundary", now: "2026-11-07T00:00:00.000Z", existing: [], config: DEFAULT_SOUL_MAINTENANCE_CONFIG });
+    const tight = evaluateCandidate(text, {
+      layer: "boundary",
+      now: "2026-11-07T00:00:00.000Z",
+      existing: [],
+      config: { ...DEFAULT_SOUL_MAINTENANCE_CONFIG, redlineMaxChars: 60 },
     });
-    expect(dflt.cases[0]!.verdict).toBe("persona");
-    expect(tight.cases[0]!.verdict).toBe("non_persona");
-    expect(tight.cases[0]!.codes).toContain("task_specific");
+    expect(dflt.some((g) => g.code === "task_specific")).toBe(false);
+    expect(tight.some((g) => !g.pass && g.code === "task_specific")).toBe(true);
+  });
+});
+
+describe("human 层单写者（2026-11-08）", () => {
+  const cfg = DEFAULT_SOUL_MAINTENANCE_CONFIG;
+
+  it("human 一律被拒：code=human_writer_removed，与文本像不像人格无关", () => {
+    // 这段话即便带了逐字原话、形态也合规，也不许进——这一层只由人物档案提炼器写。
+    const reports = evaluateCandidate("他叫何晨，同事都叫他老何", {
+      layer: "human",
+      config: cfg,
+      userCorpus: ["他叫何晨，同事都叫他老何"],
+      existing: [],
+      now: "2026-11-08T00:00:00.000Z",
+    });
+    expect(reports).toHaveLength(1);
+    expect(reports[0].pass).toBe(false);
+    expect(reports[0].code).toBe("human_writer_removed");
+  });
+
+  it("relationship 仍按原判据走（有逐字原话才通过），说明收紧只针对 human", () => {
+    const text = "他信我盯着回归，把发布窗口交给我";
+    const ok = evaluateCandidate(text, { layer: "relationship", config: cfg, userCorpus: [text], existing: [], now: "2026-11-08T00:00:00.000Z" });
+    // 只断言「没有 human 那道拒」：relationship 还有别的门（形态/事件句/预算…）会独立给结果，
+    // 这里要证明的是收紧范围只到 human，不是替 relationship 背书。
+    expect(ok.some((r) => r.code === "human_writer_removed")).toBe(false);
+    const bad = evaluateCandidate(text, { layer: "relationship", config: cfg, userCorpus: ["别的话"], existing: [], now: "2026-11-08T00:00:00.000Z" });
+    expect(bad.some((r) => r.code === "verbatim_missing")).toBe(true);
   });
 });

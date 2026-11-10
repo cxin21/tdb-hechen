@@ -28,9 +28,18 @@ import type {
   SoulEmotionRecord,
   SoulEpisode,
   SoulEpisodeQuery,
+  SoulGateStat,
+  SoulGateStatBump,
   SoulLedgerEntry,
   SoulRejectionStat,
 } from "../soul/types.js";
+import type { AxisVector } from "../soul/traits.js";
+import type { TraitLabelRow } from "../soul/trait-drift.js";
+import type { SoulPerson, SoulPersonUpsert } from "../person/types.js";
+// P0-C：事件底座（soul_events）的类型只在 store 契约里出现一次，实现侧（sqlite.ts）与
+// 迁移脚本共用 store 模块导出的同一份定义——这里 type-only 引入，避免运行期循环依赖。
+import type { SoulEventListFilter, SoulEventWrite } from "./soul-event-store.js";
+import type { SoulEventRow } from "./soul-event-types.js";
 
 // Re-export so consumers can import everything from types.ts
 export type { MemoryRecord, EmbeddingProviderInfo };
@@ -48,7 +57,7 @@ export {
 } from "./isolation.js";
 
 /**
- * P2-T12（K1）：core_memory / core_values 的租户归属三元组（全必填，无"不筛"语义）。
+ * P2-T12（K1）：core_memory 系的租户归属三元组（全必填，无"不筛"语义）。
  * core 是身份层信任边界 —— 不允许像 L1 filter 那样"缺维度=跨租户读"。
  */
 export interface CoreTenant {
@@ -674,7 +683,7 @@ export interface KnowledgeListResult {
 export type MaybePromise<T> = T | Promise<T>;
 
 // ============================
-// #35（R5）Soul Promise 承诺层（义务≠倾向，独立于 core_values 生命周期）
+// #35（R5）Soul Promise 承诺层（义务≠倾向，不参与价值锚生命周期）
 // ============================
 
 export type SoulPromiseStatus = "open" | "kept" | "broken" | "withdrawn";
@@ -800,6 +809,30 @@ export interface AuditQueryFilter {
   offset?: number;
 }
 
+/**
+ * P2-H §5.2：人物关系边一行（`soul_person_relation`）。
+ *
+ * `subjKey/pred/objKey` 是「谁—什么关系—谁」的三段；`objName` 只在绑不到 person_key 时
+ * 兜底（「我老婆」）。`evidence` 是 A5 的合并结果：同一对 (A,B) 只留一条边，多份原话都进证据。
+ */
+export interface SoulPersonRelationRow {
+  relId: string;
+  subjKey: string;
+  pred: string;
+  /** 模型给的逆词（对称关系为 null）；判「两条边说同一件事」用，不参与渲染。 */
+  inversePred?: string | null;
+  objKey: string | null;
+  objName: string | null;
+  direction: "out" | "mutual";
+  quote: string;
+  recordId: string;
+  evidence: Array<{ recordId: string; at: string; quote: string }>;
+  validFrom: string;
+  validTo: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** 缺口 A：soul 快照行（append-only 账本）。version 单调递增（迁移前旧行缺省 0）、 */
 /** parent_hash 指向上一版 content_hash（首版 null）、trigger=受控原因枚举、slots_json=slot 图。 */
 export interface SoulSnapshotRow {
@@ -811,6 +844,33 @@ export interface SoulSnapshotRow {
   parent_hash?: string | null;
   reason_detail?: string;
   slots_json?: string;
+}
+
+/** P0-C 双写对账的一条差异：能点名到「哪条事件、哪个字段、两边各是什么」。 */
+export interface SoulEventParityDiff {
+  eventId: string;
+  /**
+   * missing_event：旧表有、新表没有；
+   * missing_chat：新表有基表行但没有 chat 行（映射回 SoulEpisode 会缺 kind/title）；
+   * missing_episode：新表有、旧表没有（P1 独写或孤儿 event_id）；
+   * missing_evidence：事件一条证据都没有（违反 spec §4.2 准入）；
+   * field_mismatch：两边都有，但基础字段对不上。
+   */
+  kind: "missing_event" | "missing_chat" | "missing_episode" | "missing_evidence" | "field_mismatch";
+  field?: string;
+  legacy?: string | null;
+  event?: string | null;
+}
+
+/** P0-C 双写对账报告：只读，不修旧行；ok=true 才允许把读面切到新表。 */
+export interface SoulEventParityReport {
+  ok: boolean;
+  tenant: { teamId: string; userId: string; agentId: string };
+  /** episodes=旧表行数；events/chat/evidence=新表三张表的行数；missingEvidence=零证据事件数。 */
+  counts: { episodes: number; events: number; chat: number; evidence: number; missingEvidence: number };
+  /** 两侧基础字段按 event_id 排序后的整体摘要（sha1）；逐字段 0 差异时两者相等。 */
+  digests: { legacy: string; event: string };
+  diffs: SoulEventParityDiff[];
 }
 
 export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStore {
@@ -999,21 +1059,6 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * 人格整合永不发生。旧后端可不实现（调用方回退单桶）。
    */
   listCoreTenants?(): MaybePromise<CoreTenant[]>;
-  /**
-   * GROW：origin（seed|manual|auto，来源徽标；缺省 manual）。冲突路径 state='active'
-   * （显式重建=撤销退休/否决；自动管道的 veto 不可重提由自生长去重查全态保证）。
-   */
-  upsertValue?(
-    valueId: string,
-    label: string,
-    weight: number,
-    createdBy?: string,
-    tenant?: CoreTenant,
-    valence?: number,
-    origin?: "seed" | "manual" | "auto",
-    nodeType?: "theme" | "person" | "character",
-    attrs?: { role?: string; aliases?: string[]; source?: string; facts?: string[]; description?: string },
-  ): MaybePromise<boolean>;
   /** P2：通用 refs 回填键族（coreRefs/personRefs/identityRefs 单源；旧后端可缺省）。 */
   backfillMemoryRef?(
     recordId: string,
@@ -1021,167 +1066,16 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     label: string,
     tenant?: CoreTenant,
   ): MaybePromise<boolean>;
-  /** O13（P2）：core_pending——红线类提案人工采纳落点（三方法，缺省=store 不支持时调用方安静跳过）。 */
-  upsertPendingCore?(
-    slot: string,
-    content: string,
-    evidence: number,
-    tenant?: CoreTenant,
-    extra?: {
-      label?: string;
-      description?: string;
-      attrs?: Record<string, unknown>;
-      reproposalOf?: string;
-      reproposalGen?: number;
-    },
-  ): MaybePromise<boolean>;
-  listPendingCore?(
-    tenant?: CoreTenant,
-    opts?: { includeDecided?: boolean },
-  ): MaybePromise<
-    Array<{
-      pending_id: string;
-      slot: string;
-      content: string;
-      evidence: number;
-      state: string;
-      created_at: string;
-      decided_at: string | null;
-      label?: string | null;
-      description?: string | null;
-      attrs_json?: string | null;
-      recurrence_json?: string | null;
-      embedding_json?: string | null;
-    }>
-  >;
-  decidePendingCore?(
-    pendingId: string,
-    decision: "adopted" | "rejected",
-    tenant?: CoreTenant,
-  ): MaybePromise<{ slot: string; content: string; label?: string | null; description?: string | null } | null>;
-  /** #91（复现即投票）：命中已登记 pending 行时计票——episodes 独立 episode 追加、evidence 联合并集、
-   *  复活继承计数（expired→pending）；count>=votesN 且跨度>=spanHours → ready。行缺/slot 不符/状态不符 → null。 */
-  updatePendingRecurrence?(
-    pendingId: string,
-    episode: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
-    opts?: { votesN?: number; spanHours?: number; tenant?: CoreTenant },
-  ): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
-  /** #91：push 支路落库后按 (slot,content,tenant,state=pending) 初始化复现账本；行 recurrence_json 已存在 → null（重推不双计）。 */
-  initPendingRecurrenceByContent?(
-    slot: string,
-    content: string,
-    tenant?: CoreTenant,
-    episode?: { ts?: string; content?: string; evidenceRecordIds?: string[]; embedding?: number[] },
-  ): MaybePromise<{ count: number; first_seen: string; last_seen: string; ready: boolean; revived: boolean } | null>;
-  /** #91（默认终局；2026-10-23 R1 返工）：TTL sweep——self_identity 且 state=pending；ready 行
-   *  （count>=votesN 且 span>=spanHours）排除（待人工裁决不进终局）；其余锚=count=1 → first_seen??created_at、
-   *  count>=2 → last_seen（复现停止后 TTL 退场，消除 count>=2 永生僵尸）；age 严格大于 ttlHours →
-   *  state=expired（软失效可逆，行保留在匹配语料与计数图谱）。tenant 缺省=全租户（终局清理语义，
-   *  修复原 ||"default" 吞租户空转）；传值=逐字段精确限定。 */
-  sweepExpiredSelfIdentityPending?(
-    tenant?: { teamId?: string; userId?: string; agentId?: string },
-    opts?: { ttlHours?: number; now?: string; votesN?: number; spanHours?: number },
-  ): MaybePromise<Array<{ pending_id: string; content: string }>>;
-  /** #91 K 阀（2026-10-24）：窗口内该租户 self_identity 新落库行数（含全部后续 state——保护人工带宽
-   *  口径）；created_at >= now−windowHours（ISO 字典序比较）。tenant 传值=逐字段精确限定（拍级调用方
-   *  传真实三元组）；缺实现=调用方旁路（宽容降级=现状逐位）。 */
-  countSelfIdentityRecent?(
-    tenant?: { teamId?: string; userId?: string; agentId?: string },
-    windowHours?: number,
-  ): MaybePromise<number>;
-  /** #92 stage 2（2026-10-25 拍板四项）：确定性自动采纳门可选面（缺实现 → 门整体旁路=现状逐位）。
-   *  候选=state='pending' ∧ recurrence ready（count≥votesN ∧ 跨度≥spanHours，口径与 sweep 同构）；
-   *  tenant 缺省=全租户（#91 R1 先例），行带租户三元组供调度分组；显式传值=逐字段精确过滤。
-   *  auto_adopted 落账带审计快照（prev 内容/版本/存在性、post 版本、门参数）——回滚（rejected 打在
-   *  auto_adopted 行）按 post 版本守卫恢复 prev_slot_content（或删除采纳时创建的槽行），零删除。 */
-  listReadySelfIdentityPending?(
-    tenant?: CoreTenant,
-    opts?: { votesN?: number; spanHours?: number },
-  ): MaybePromise<
-    Array<{
-      pending_id: string;
-      content: string;
-      recurrence_json: string | null;
-      attrs_json: string | null;
-      team_id: string;
-      user_id: string;
-      agent_id: string;
-      created_at: string;
-    }>
-  >;
-  decidePendingCoreAuto?(
-    pendingId: string,
-    tenant?: CoreTenant,
-    audit?: {
-      prev_slot_content?: string;
-      prev_slot_version?: number;
-      prev_slot_existed?: boolean;
-      post_slot_version?: number;
-      gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
-    },
-  ): MaybePromise<boolean>;
-  /** #92 M1（P0）：门②专用全量 rejected 查询——不分页不截断（listPendingCore 的 LIMIT 200 会让
-   *  更早的人工拒绝对门②不可见）。缺实现 → 门回落 listPendingCore 并 WARN（不静默）。 */
-  listRejectedSelfIdentityPending?(
-    tenant?: CoreTenant,
-  ): MaybePromise<Array<{ pending_id: string; content: string; created_at: string }>>;
-  /** #92 M2（P0）：采纳事务化——槽写 + pending 落账同事务（decide 失败 → 回滚槽）。
-   *  writeSlot=false 保留「合并结果与槽相同 → 幂等零 version 空转」；post_slot_version 由库内读回。
-   *  缺实现 → 门回落两段写并 WARN（旧后端不能保证原子）。 */
-  commitAutoAdoptCore?(
-    pendingId: string,
-    tenant?: CoreTenant,
-    opts?: {
-      slot: string;
-      content: string;
-      source: string;
-      writeSlot?: boolean;
-      audit?: {
-        prev_slot_content?: string;
-        prev_slot_version?: number;
-        prev_slot_existed?: boolean;
-        post_slot_version?: number;
-        gate?: { votes: number; spanHours: number; contradictionThreshold: number; dupThreshold: number };
-      };
-    },
-  ): MaybePromise<boolean>;
-  rollbackAutoAdoptedPending?(
-    pendingId: string,
-    tenant?: CoreTenant,
-  ): MaybePromise<{ restored: boolean; reason?: string }>;
-  getPendingCoreState?(pendingId: string): MaybePromise<string | null>;
-  /**
-   * GROW：出参带 origin/pinned/state；默认只回 state='active'（退休/否决锚退出匹配面
-   * =预期行为）；opts.includeRetired=true → active+retired（Panel 退休区；vetoed 永不出现在读面）。
-   */
-  listValues?(
-    tenant?: CoreTenant,
-    opts?: { includeRetired?: boolean },
-  ): MaybePromise<
-    Array<{
-      value_id: string;
-      label: string;
-      weight: number;
-      created_by: string;
-      valence: number | null;
-      origin: "seed" | "manual" | "auto";
-      pinned: 0 | 1;
-      state: "active" | "retired" | "vetoed";
-    }>
-  >; /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源。可选签名（ILogBackend debug? 先例）：
+  /** 2026-11-07（T1 提案/pending 通道清除）：core_pending 的 upsert/decide/复现计票/自动采纳门/
+   *  审计回滚/状态读共 12 个可选方法声明已全部删除——提案制与人工采纳通道整体下线，store 侧
+   *  已无 core_pending 实现亦无声明（最后残留的 pending 读声明随死代码一并删除）。 */
+  /** S-FEEL-1（M1/IF-1）：近期情感信号只读查询——M1 近期基调行数据源。可选签名（ILogBackend debug? 先例）：
    *  缺实现时调用侧静默省略基调行（宁缺毋滥）。租户三元组硬隔离（F18 同款）；样本窗=occurred_at ≥ now−windowHours
    *  （UTC ISO 字典序比较），occurred_at DESC 取 ≤maxSamples；valence IS NOT NULL。只读、零写库、零 LLM。 */
   recentAffectSignals?(
     tenant?: CoreTenant,
     opts?: { windowHours: number; maxSamples: number },
   ): MaybePromise<Array<{ valence: number; arousal: number | null; occurred_at: string; excerpt?: string | null }>>;
-  /** S-CHAR-2（M2/P1/IF-1 同族）：锚证据 valence 只读查询——品格张力 T2 数据源。可选签名（recentAffectSignals 同位先例）：
-   *  缺实现时调用侧静默省略张力候选（宁缺毋滥）。租户三元组硬隔离（F18 同款）；metadata_json coreRefs/identityRefs
-   *  键族展开为 {label, valence, ref_kind} 行（identityRefs=20 字切片弱口径，如实透传由消费方匹配）；只读、零写库、零 LLM。 */
-  anchorEvidenceValences?(
-    tenant?: CoreTenant,
-  ): MaybePromise<Array<{ label: string; valence: number; ref_kind: "coreRefs" | "identityRefs" }>>;
-
   /** #30（S9/R5，2026-10-16）：soul 快照 append-only 账本（三方法可选签名，缺实现=调用侧静默跳过）。
    *  只追加不更新不删除（禁删红线同构）；payload_json=soul 渲染全文，时间旅行可重建任一时点；
    *  capture point=渲染路径，指纹变化后首次渲染落行（at-least-once），last-hash 去重零落行防膨胀。 */
@@ -1248,11 +1142,15 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * 与 core_memory 并存、不替换：core_memory 仍是人的槽（identity/strict_rule），
    * soul_persona 是「经过判据筛过的取舍层」。写入只经 commitSoulPersona（事务化：
    * 条目 upsert + 账本 append 同生共死），账本只增不改，回滚靠 before_json 快照。 */
-  listSoulPersona?(tenant?: CoreTenant): MaybePromise<PersonaItem[]>;
+  /** 默认只返回「当前有效」的条目（state ∈ active/degraded 且 validTo 为空）；
+   *  `includeSuperseded: true` 才带上被结论合并取代的行（审计/回放用）。frozen/merged 不受影响。 */
+  listSoulPersona?(tenant?: CoreTenant, opts?: { includeSuperseded?: boolean }): MaybePromise<PersonaItem[]>;
   commitSoulPersona?(
     tenant: CoreTenant | undefined,
     plan: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] },
-  ): MaybePromise<{ upserted: number; ledgered: number }>;
+    /** S6：strict_rule 投影与 persona upsert/账本同一事务（判据 2 的「≤1 tick 逐字覆盖」）。 */
+    opts?: { strictRule?: string; strictRuleSource?: string },
+  ): MaybePromise<{ upserted: number; ledgered: number; strictRule?: boolean }>;
   listSoulLedger?(tenant?: CoreTenant, limit?: number): MaybePromise<SoulLedgerEntry[]>;
   /** 条目级回滚（点名、单事务、写 rollback 账本）。回滚演练与事故处置用，不做一键全量。 */
   rollbackSoulPersona?(
@@ -1266,14 +1164,44 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * identity/values/narrative 必须挂在 ep-* 上才准入；voice 的 few-shot 也从这里取。
    * 写入幂等（episode_id 主键 + INSERT OR IGNORE）：重跑同一天不会翻倍。 */
   commitSoulEpisodes?(tenant: CoreTenant | undefined, episodes: SoulEpisode[]): MaybePromise<{ inserted: number }>;
-  /** 删除「不是他说的话」的事件（注入体/粘贴文档）。返回实际删除行数；清理的是派生缓存，账本不受影响。 */
-  deleteSoulEpisodes?(tenant: CoreTenant | undefined, episodeIds: string[]): MaybePromise<{ deleted: number }>;
+  /** 归档「不是他说的话」的事件（注入体/粘贴文档）。S3 起为归档而非物理删除：返回 archived 行数，
+   *  历史派生仍可读回；清理的是派生视图，账本不受影响。 */
+  deleteSoulEpisodes?(
+    tenant: CoreTenant | undefined,
+    episodeIds: string[],
+  ): MaybePromise<{ deleted: number; archived?: number }>;
   listSoulEpisodes?(
     tenant?: CoreTenant,
-    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"] },
+    opts?: { since?: string; limit?: number; kind?: SoulEpisode["kind"]; includeArchived?: boolean },
   ): MaybePromise<SoulEpisode[]>;
+  /** 把事件标记为「已积进心境」（幂等；写侧以此替代按时间水位过滤，避免迟到事件被永久跳过）。 */
+  markSoulEpisodesMoodIntegrated?(
+    tenant: CoreTenant | undefined,
+    episodeIds: string[],
+    at: string,
+  ): MaybePromise<{ updated: number }>;
   /** 「上次因为什么恼火、对谁、多强」——确定性 LIKE 检索（标题/对象/双方立场/原话）。 */
   searchSoulEpisodes?(tenant: CoreTenant | undefined, query: SoulEpisodeQuery): MaybePromise<SoulEpisode[]>;
+
+  /* —— 事件底座读面（soul_events，P0-C 2026-11-10）——
+   * P0 阶段 soul_episodes 仍是读面真源：双写让两表同源，切读由环境变量
+   * TDB_SOUL_EVENT_READ_MODE 控制（缺省 legacy，回滚=写回 legacy 并重启）。
+   * 这三个方法是新表的第一等入口，供 P1 与对账脚本复用，不经旧表。 */
+  /** 新表读面（租户 + 过滤条件），排序与 soul_episodes 的 at DESC, event_id DESC 对齐。 */
+  listSoulEvents?(tenant?: CoreTenant, filter?: SoulEventListFilter): MaybePromise<SoulEventRow[]>;
+  /** 新表写面：一批事件一个事务，全落或全不落（P1 直接用，不经过 soul_episodes）。 */
+  commitSoulEvents?(tenant: CoreTenant | undefined, writes: SoulEventWrite[]): MaybePromise<{ upserted: number }>;
+  /** 双写对账：旧 episode 数 vs 新表 events/chat/evidence 数 + 基础字段差异。只读，不修旧行。 */
+  soulEventParity?(tenant?: CoreTenant): MaybePromise<SoulEventParityReport>;
+  /* —— 特质层（六轴 state + 标签，2026-11-07）——
+   * state 是漂移唯一事实源；标签是方向视图（不存独立权重）。读面缺省=零向量/空表。 */
+  readSoulTraitState?(tenant?: CoreTenant): MaybePromise<{ state: AxisVector; seedState: AxisVector; updatedAt: string } | null>;
+  writeSoulTraitState?(
+    tenant: CoreTenant | undefined,
+    input: { state: AxisVector; seedState?: AxisVector; updatedAt?: string },
+  ): MaybePromise<void>;
+  listSoulTraitLabels?(tenant?: CoreTenant): MaybePromise<TraitLabelRow[]>;
+  commitSoulTraitLabels?(tenant: CoreTenant | undefined, rows: TraitLabelRow[]): MaybePromise<{ upserted: number }>;
   /* —— 情绪史（soul_emotions，2026-11-06）——
    * soul_state 只留「此刻」一个快照，下一次写入就覆盖；情绪史按「事件 × 模板版本」逐行留档，
    * 这样「因为什么、对谁、多强、多久消退」有逐条记录可回放，注入侧的心境原因也有出处可查。 */
@@ -1285,11 +1213,77 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     tenant?: CoreTenant,
     opts?: { limit?: number; object?: string; since?: string },
   ): MaybePromise<SoulEmotionRecord[]>;
+  /* —— 人物身份层（soul_person，2026-11-08 阶段 1）——
+   * 「谁」的稳定主键：L1 只存 {key, role} 引用，昵称变了不会分裂成第二个人。
+   * 全部可选，兼容既有测试替身；缺失时 resolvePerson 降级为「只算 key、不落库」。 */
+  upsertSoulPerson?(
+    tenant: CoreTenant | undefined,
+    person: SoulPersonUpsert,
+  ): MaybePromise<{ personKey: string; created: boolean }>;
+  getSoulPersonByPlatform?(
+    tenant: CoreTenant | undefined,
+    hint: { platform: string; platformId: string },
+  ): MaybePromise<SoulPerson | null>;
+  listSoulPersons?(tenant?: CoreTenant): MaybePromise<SoulPerson[]>;
+  /** 合并只写 merged_into 指针（不搬数据），可原地撤销；拒绝自合并与成环。 */
+  mergeSoulPerson?(
+    tenant: CoreTenant | undefined,
+    fromKey: string,
+    intoKey: string,
+  ): MaybePromise<{ merged: boolean; reason?: string }>;
+  /* —— 人物档案（P2-H，2026-11-08 spec §5/§6/§13-A1/A4/A5/A6/A8）——
+   * 档案字段写复用 commitSoulPersona（human 层行），这里只补「按人取记忆 / 候选统计 /
+   * 水位 / 关系边」四类能力。全部可选：缺方法时提炼通道整体跳过（fail-open），
+   * 不让旧替身因为多一个可选方法就编译不过。 */
+  /** A1：最近 N 条把这个 person_key 记为 subject|speaker 的 L1（`mentioned` 不进档案输入）。 */
+  listL1ByPerson?(
+    tenant: CoreTenant,
+    personKey: string,
+    limit: number,
+  ): MaybePromise<
+    Array<{
+      recordId: string;
+      at: string;
+      content: string;
+      userId?: string;
+      roleInRecord?: "subject" | "speaker" | "mentioned";
+      /** 这条记忆是从哪几条 L0 原话抽出来的（提炼器取原话做逐字引文校验）。 */
+      sourceMessageIds?: string[];
+    }>
+  >;
+  /** A1：租户内每人被挂了几条记忆 + 最新时间（`HAVING COUNT >= 3` 在 SQL 里做）。 */
+  listPersonProfileStats?(
+    tenant: CoreTenant,
+  ): MaybePromise<Array<{ personKey: string; memories: number; lastAt: string }>>;
+  /** A8：提炼水位。`profileAt: null` = 从未跑过。 */
+  listSoulPersonProfileWatermarks?(
+    tenant?: CoreTenant,
+  ): MaybePromise<Array<{ personKey: string; profileAt: string | null }>>;
+  /** A8：提炼成功后写水位（失败不调 → 下一 tick 重试）。 */
+  markSoulPersonProfileAt?(
+    tenant: CoreTenant | undefined,
+    personKey: string,
+    at: string,
+  ): MaybePromise<{ updated: boolean }>;
+  /** A6：关系边按 subj/obj 两向查；缺省只回现行边（`valid_to IS NULL`）。 */
+  listSoulPersonRelations?(
+    tenant?: CoreTenant,
+    opts?: { subjKey?: string; objKey?: string; includeClosed?: boolean },
+  ): MaybePromise<SoulPersonRelationRow[]>;
+  /** A4/A5：关系边一次事务写（新增幂等 / 反向边并证据 / outdated 置 valid_to）。 */
+  commitSoulPersonRelations?(
+    tenant: CoreTenant | undefined,
+    plan: {
+      insert?: SoulPersonRelationRow[];
+      appendEvidence?: Array<{ relId: string; items: Array<{ recordId: string; at: string; quote: string }> }>;
+      close?: Array<{ relId: string; at: string }>;
+    },
+  ): MaybePromise<{ inserted: number; merged: number; closed: number }>;
   /** 事件挖掘的输入：窗口内 L0 原始对话（user/assistant 都要，按时间正序）。
    *  单列出来的理由：人格要的是「原话」，不是摘要；queryL1Records 已经损失了声口。 */
   recentL0Messages?(
     tenant?: CoreTenant,
-    opts?: { sinceDays?: number; maxMessages?: number },
+    opts?: { sinceDays?: number; maxMessages?: number; sinceIso?: string },
   ): MaybePromise<
     Array<{
       record_id: string;
@@ -1298,17 +1292,34 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
       message_text: string;
       recorded_at: string;
       timestamp?: number;
+      /** 真实说话人/agent 身份（L0 的真列）。缺列/老行时为空 → 调用侧走展示名回退。 */
+      user_id?: string;
+      agent_id?: string;
     }>
   >;
-  /** 拒绝原因分布（观测面：判据调得对不对，先看拒的都是什么）。 */
+  /** S10：清库重生水位等一次性升级标记（key/value，落在 embedding_meta）。 */
+  soulMetaGet?(key: string): MaybePromise<string | undefined>;
+  soulMetaSet?(key: string, value: string): MaybePromise<void>;
+  /** 拒绝原因分布（观测面：判据调得对不对，先看拒的都是什么）。P0-2 起读 soul_gate_stats。 */
   soulRejectionStats?(
     tenant?: CoreTenant,
     opts?: { sinceDays?: number },
   ): MaybePromise<SoulRejectionStat[]>;
+  /** P0-2：门拒计数（按 day/code/layer 聚合 +1），替代逐条 reject 账本。 */
+  bumpSoulGateStats?(
+    tenant: CoreTenant | undefined,
+    rows: SoulGateStatBump[],
+  ): MaybePromise<{ bumped: number }>;
+  listSoulGateStats?(
+    tenant?: CoreTenant,
+    opts?: { sinceDay?: string; code?: string; limit?: number },
+  ): MaybePromise<SoulGateStat[]>;
+  /** P0-2：告警抑制按 code 直查库（sinceIso 之后是否有同 code 的 alert 账本）。 */
+  hasSoulAlertSince?(tenant: CoreTenant | undefined, code: string, sinceIso: string): MaybePromise<boolean>;
 
   /* —— #35（R5）：promise 承诺层数据面 ——
-   * 义务不是倾向：promise 独立于 core_values 生命周期（无 reweight/decay/similarMerge/
-   * anchor-growth 参与，见 soul-promise.ts 头注释排除条款）。
+   * 义务不是倾向：promise 不参与价值锚生命周期（无 reweight/decay/形态合并，
+   * 见 soul-promise.ts 头注释排除条款）。
    * 状态机单向：open → kept | broken | withdrawn（终态不可再迁，同态迁移亦拒绝）。
    * 双时态留痕：soul_promise_events 逐迁移 append（含创建事件 ∅→open），只增不改。 */
   upsertSoulPromise?(
@@ -1329,61 +1340,8 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   ): MaybePromise<SoulPromiseRecord[]>;
   readSoulPromiseEvents?(tenant: CoreTenant, promiseId: string): MaybePromise<SoulPromiseEvent[]>;
 
-  /** GROW：全态读（自生长去重「veto 永不重提」+ server 种子判空专用；无缓存/无兜底）。 */
-  listValuesAnyState?(
-    tenant?: CoreTenant,
-  ): MaybePromise<
-    Array<{
-      value_id: string;
-      label: string;
-      weight: number;
-      created_by: string;
-      valence: number | null;
-      origin: "seed" | "manual" | "auto";
-      pinned: 0 | 1;
-      state: "active" | "retired" | "vetoed";
-    }>
-  >;
-  /** GROW（钉住）：pinned 翻转；只作用 active|retired（vetoed 拒绝）。 */
-  setValuePinned?(valueId: string, pinned: boolean, tenant?: CoreTenant): MaybePromise<boolean>;
-  /** GROW（手动退休）：state → 'retired'（退休区可见，可恢复/可钉住）。 */
-  retireValue?(valueId: string, tenant?: CoreTenant): MaybePromise<boolean>;
-  /** GROW（恢复）：retired → active；vetoed 拒绝。 */
-  restoreValue?(valueId: string, tenant?: CoreTenant): MaybePromise<boolean>;
-  /**
-   * PA：自生长调度状态读（interval/语料基线；重启不失忆）。
-   * tenant 缺省/default 桶 = 旧键旧行为；非 default 三元组 = per-agent 独立基线。
-   */
-  getAnchorGrowthState?(
-    tenant?: CoreTenant,
-  ): MaybePromise<{
-    lastDiscoveryAt: string | null;
-    lastCorpusCount: number | null;
-    lastAttemptAt?: string | null;
-    lastAdoptedAt?: string | null;
-    lastMaintAt?: string | null;
-  }>;
-  /** GROW：自生长调度状态写（发现轮次完成后调用）。PA：tenant 语义同 getAnchorGrowthState。
-   *  GROW-MAINT：lastAttemptAt/lastAdoptedAt 可选——冷却分级（0 采纳 1h 短冷却 / 有采纳 intervalHours）。 */
-  setAnchorGrowthState?(
-    state: {
-      lastDiscoveryAt: string;
-      lastCorpusCount: number;
-      lastAttemptAt?: string;
-      lastAdoptedAt?: string;
-      lastMaintAt?: string;
-    },
-    tenant?: CoreTenant,
-  ): MaybePromise<void>;
-  /** SOUL：身份自发现状态（identity_* 前缀键族，与锚状态独立） */
-  getIdentityDiscoveryState?(
-    tenant?: CoreTenant,
-  ): MaybePromise<{ lastAttemptAt: string | null; lastCorpusCount: number | null }>;
-  setIdentityDiscoveryState?(
-    state: { lastAttemptAt: string; lastCorpusCount: number },
-    tenant?: CoreTenant,
-  ): MaybePromise<void>;
-  /** 自维护观测（REG-REMAINING-001 D8）：系统自计数（conflict 边/归档/锚/语料）。 */
+  // 2026-11-07：getIdentityDiscoveryState / setIdentityDiscoveryState 随 anchor_growth_state 下线删除，
+  // 接口不再提供这两个可选方法（调用方归零）。
   getSelfObsStats?(): MaybePromise<{
     l1: number;
     conflict: number;

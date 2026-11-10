@@ -4,7 +4,7 @@
  */
 import type { PersonaItem, SoulEpisode, SoulLayer } from "./types.js";
 import { extractAffectReferent } from "./emotion.js";
-import { episodeRepaired } from "./episode.js";
+import { episodeRepaired, REPAIRED_STANCE } from "./episode.js";
 import { textHash } from "./gates.js";
 
 export type HistoryKind = "failure" | "promise" | "review" | "reversal" | "conflict" | "repair" | "trust";
@@ -25,7 +25,11 @@ export interface HistoryFact {
   fulfillment?: "open" | "kept" | "broken";
 }
 
-const REPAIR = /(?:改口|重做|重跑|按原话重做|补上了|没守住|已按原话|已按同一|已对齐|改完|已改|修好|已修|修复)/u;
+// 修复判据单一真源：与情绪门、承诺兑现核对共用 episode.ts 的 REPAIRED_STANCE。
+// 有意收窄（原先这里另有一套宽口径，含「修好/修复/重做/重跑」）：那些词在交付体里
+// 常是被推翻的假声明，按宽口径会先长出一条修复事实、再被同一事件判成矛盾。
+// 收窄后「只看修复措辞」三处（事实/门/核）才指向同一条线。
+const REPAIR = REPAIRED_STANCE;
 // 认下方向 ≠ 已修复，但对关系来说已经不是冲突。只认直接认同的措辞，不认泛泛的「收到」。
 // 「收到/遵守/理解纠正」也是认了：这类回复不是顶回去，冲突不该记成对峙。
 /** 他把「这不对」说给我听时才会用到的词；只用于关系层，不用于自我失败判定。 */
@@ -53,8 +57,14 @@ function promiseBody(s: string): string {
   return s.replace(/^我(?:答应(?:过)?自己|向自己(?:承诺|保证)|承诺|保证|发誓|给自己定|下次一定)[：:，,]?\s*/u, "").trim();
 }
 
+/**
+ * 人格行里不写载体：链接截断后只剩「http…」，读者拿不到任何信息，却先吃掉半行预算
+ * （生产实拍：「你看看http…」直接进了卡）。
+ */
+const CARRIER_URL = /https?:\/\/\S+/gu;
+
 function clip(s: string, n: number): string {
-  const t = s.replace(/\s+/gu, " ").trim();
+  const t = s.replace(CARRIER_URL, " ").replace(/\s+/gu, " ").trim();
   return t.length <= n ? t : t.slice(0, n) + "…";
 }
 
@@ -84,12 +94,11 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
   if (!trusted && (REPORT.test(he) || REPORT.test(ep.object ?? ""))) return [];
   const who = referent(ep);
   // 关系史的双方是「我和他」：对象固定是这个人，具体争的是什么用他的原话，不用主题词。
-  // 团队频道的裁决是 Lead 说的，不是何晨说的。按「何晨」记会把公开评审写成他的私下批评，
-  // 关系史从此对着一个没发生过的对话。只认明确的裁决措辞，不猜。
+  // 团队频道的裁决是 Lead 说的，不是对话里的这个人说的。写成「他」会把公开评审
+  // 记成私下批评，关系史从此对着一个没发生过的对话。只认明确的裁决措辞，不猜。
   const fromLead = /(?:^Team message from\s+lead\b|Lead 定夺|裁决 PASS-WITH-CONCERNS)/u.test(he);
-  const person = fromLead
-    ? "Lead"
-    : ((ep.participants ?? []).find((p) => p === "何晨") ?? (ep.participants ?? [])[0] ?? "对方");
+  // 人名从参与者里来（episode 挖掘时按租户配置写入），代码里不写死任何姓名。
+  const person = fromLead ? "Lead" : ((ep.participants ?? [])[0] ?? "对方");
   // 中文名直接接动词，拉丁名留一个空格，注入里才不是「Lead指出」。
   const speaker = /^[A-Za-z]/u.test(person) ? person + " " : person;
   // 我这一侧去掉代码块/JSON 后才是「我说了什么」。只剩空白的回复不是顶回去，也不是补上了：
@@ -108,7 +117,7 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
   // 只有他明确说「不对/错了/漏了」才算我失败；派活、催进度不算。他原话缺失时宁可记不到，也不能拿我自己的话冒充他的纠正。
   const blamed = ep.kind === "correction" || ep.kind === "complaint";
   // 关系层记的是「他对我说这不对」。派活（「按 R1 出修复方案」）、转发缺陷单（「C1·MEDIUM·语义缺陷」）、
-  // 续接交办（「builder 续接：t13 你中断于收尾」）都带「你」也不是冲突，原来被写成「何晨指出…我当场顶了回去」。
+  // 续接交办（「builder 续接：t13 你中断于收尾」）都带「你」也不是冲突，原来被写成「他指出…我当场顶了回去」。
   // 团队频道的公开裁决是另一回事：它本来就冲着我这条交付来的，照样算关系事件。
   // 槽位判出来的 complaint（「不管用」+我回「已修」）也是冲着我的交付来的；
   // 只留 BLAME_TIGHT 会把这类事件挡在关系史外（见 soul/slots.ts）。
@@ -169,7 +178,7 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
     out.push({
       kind: "trust",
       layer: "relationship",
-      text: speaker + "把方案权交出来：「" + clip(he, 48) + "」",
+      text: speaker + "把判断权交给我：「" + clip(he, 48) + "」",
       object: person,
       episodeIds: [ep.episodeId],
       at: ep.at,
@@ -180,7 +189,7 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
     out.push({
       kind: "trust",
       layer: "relationship",
-      text: "他开始不太放心：「" + clip(he, 48) + "」",
+      text: speaker + "开始不太放心我：「" + clip(he, 48) + "」",
       object: person,
       episodeIds: [ep.episodeId],
       at: ep.at,
@@ -192,16 +201,15 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
   const unresolved = addressed && blamed && he !== "" && replyText !== "" && !repaired && !CONCEDE.test(replyText) && ep.valence < 0;
   // 认了才叫「还没修好」；没认的也别一律写成「顶了回去」——生产里「好，键 extras 会被透传」
   // 「红线复诵完毕」这类照办/复述都被记成对峙。只有回复里真带取证或反驳才算顶回去，其余中性记。
-  const retort = admitted || CONCEDE.test(replyText)
-    ? "我当时还没修好，只回了："
-    : PUSHBACK.test(replyText)
-      ? "我当场顶了回去，回的是："
-      : "我当时回的是：";
+  // 关系层写的是「他对我的要求，我做到没有」，不是这一来一回的逐句转述。
+  // 原先写成「他（指出）：「…」；我当时回的是：<我那轮回复>」，读进卡里像一段聊天记录：
+  // 我的原话属于自我史，在这儿重复一遍只会把关系这一格挤满。
+  const demand = speaker + "对我的要求：「" + clip(he, 56) + "」——";
   if (addressed && he !== "" && replyText !== "" && !REPORT.test(replyText) && !repaired && unresolved) {
     out.push({
       kind: "conflict",
       layer: "relationship",
-      text: speaker + "指出：「" + clip(he, 56) + "」；" + retort + clip(replyText, 48),
+      text: demand + (admitted || CONCEDE.test(replyText) ? "这条我还没做到" : PUSHBACK.test(replyText) ? "我当场顶了回去" : "我只回了话，没改"),
       object: person,
       episodeIds: [ep.episodeId],
       at: ep.at,
@@ -210,9 +218,7 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
     out.push({
       kind: repaired ? "repair" : "conflict",
       layer: "relationship",
-      text: repaired
-        ? speaker + "指出：「" + clip(he, 56) + "」；我补上了：" + clip(repairQuote, 48)
-        : speaker + "指出：「" + clip(he, 56) + "」；我当时只回了：" + clip(replyText, 48),
+      text: repaired ? demand + "后来补上了：" + clip(repairQuote, 48) : demand + "我只回了话，没做到",
       object: person,
       episodeIds: [ep.episodeId],
       at: ep.at,
@@ -225,8 +231,9 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
  * 承诺兑现核对。承诺本身只在说出那一轮记一次；后来同一对象的失败/修复
  * 决定它是还在、做到了、还是没做到。没有后续证据保持 open，不编兑现。
  *
- * 口径与情绪门同一条：修复只认「补上了/已按/已对齐/已改/改完/改口」，
- * 不认 history 自己更宽的 REPAIR（「修好了」「重做」不算兑现）。
+ * 口径与情绪门同一条：修复只认 episode.ts 的 REPAIRED_STANCE
+ * （「补上了/已按/已对齐/已改/改完/改口」）。history 里的 REPAIR 已改为引用同一常量，
+ * 不再有自己的宽口径——「修好了/修复/重做」不生成修复事实，也不参与兑现核对。
  */
 export function settlePromises(facts: HistoryFact[], episodes: SoulEpisode[]): HistoryFact[] {
   const promises = facts.filter((f) => f.kind === "promise");

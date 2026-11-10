@@ -1,9 +1,8 @@
 /**
  * anchor-desc.ts — 锚点 description 写入口 sanitizer 单一源（P0-1A，issue #1，2026-10-13）。
  *
- * 问题：sanitizeDescription 原居 gateway/pending-adopt-merge.ts——core/lifecycle 的
- * auto-growth 采纳端（anchor-growth.ts）按引用方向（core→core 合法，core→gateway 非法）
- * 无法复用，导致 LLM 自生长采纳时 attrs_json 落 "{}"、rationale 丢弃（issue #1 根因）。
+ * 问题：sanitizeDescription 原居 gateway 侧——core 层按引用方向（core→core 合法，
+ * core→gateway 非法）无法复用它，导致写入口 attrs_json 落 "{}"、rationale 丢弃（issue #1 根因）。
  * 本文件把 sanitizer 搬进 core/hooks（soul-assembler/episode-gate 同族），gateway 改为
  * re-export 保持公共 API 不变。
  *

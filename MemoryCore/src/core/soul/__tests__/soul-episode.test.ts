@@ -20,7 +20,7 @@ import {
 } from "../episode.js";
 import { resolveSoulConfig } from "../types.js";
 
-const CFG = resolveSoulConfig({ enabled: true });
+const CFG = resolveSoulConfig({});
 
 const ROWS: EpisodeSourceRow[] = [
   {
@@ -438,7 +438,12 @@ describe("追责槽位接进事件层", () => {
       },
     ];
     const out = mineEpisodes(rows, CFG, { windowDays: 3650, maxMessages: 100 });
-    expect(out.episodes.find((e) => e.sessionId === "s-inst")).toBeUndefined();
+    // P0-B 之前这类派活句一条事件都不产（episodes=0 的根因之一）；现在它产 work，
+    // 但仍然**不能**被槽位抬成追责——「有没有问题」是让我去查，不是在裁决我的交付。
+    const ep = out.episodes.find((e) => e.sessionId === "s-inst");
+    expect(ep?.kind).toBe("work");
+    expect(ep?.signals).toContain("task_instruction");
+    expect((ep?.signals ?? []).some((s) => s.startsWith("slot:") && s !== "slot:instruction")).toBe(false);
   });
 
   it("带「怎么/为什么」的派活句（「你再检查一下逻辑是否正确」）是 decision，不是冲突", () => {

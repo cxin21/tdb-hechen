@@ -148,6 +148,29 @@ export const agentUpdateSchema = z.object({
   metadata_json: z.string().optional(),
 });
 export const agentDeleteSchema = z.object({ agent_ids: idList });
+/** 人格设定读取：只认 agent_id（team 从 agent 行取，不接受客户端指定）。 */
+export const agentPersonaGetSchema = z.object({ agent_id: nonEmpty });
+/** 人格设定保存六项：上限由服务端 core/soul/agent-profile 校验，这里只收形状。 */
+export const agentPersonaSaveSchema = z.object({
+  agent_id: nonEmpty,
+  name: nonEmpty,
+  pronoun: z.string().optional(),
+  self_image: z.string().optional(),
+  voice: z.string().optional(),
+  purpose: z.string().optional(),
+  traits: z
+    .array(z.object({ label: nonEmpty, weight: z.number() }))
+    .optional(),
+  redlines: z
+    .array(
+      z.object({
+        text: z.string(),
+        active: z.boolean().optional(),
+        createdAt: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
 const agentListFields = z.object({
   team_id: z.string().optional(),
   owner_user_id: z.string().optional(),
@@ -428,6 +451,8 @@ export const V3_SCHEMAS = {
   "/v3/meta/agent/delete": agentDeleteSchema,
   "/v3/meta/agent/list": agentListSchema,
   "/v3/meta/agent/archive": agentArchiveSchema,
+  "/v3/meta/agent-persona/get": agentPersonaGetSchema,
+  "/v3/meta/agent-persona/save": agentPersonaSaveSchema,
   "/v3/meta/task/create": taskCreateSchema,
   "/v3/meta/task/get": taskGetSchema,
   "/v3/meta/task/update": taskUpdateSchema,

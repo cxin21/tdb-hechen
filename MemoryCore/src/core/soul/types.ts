@@ -19,6 +19,9 @@ export const SOUL_LAYERS = [
   "boundary",
   "relationship",
   "narrative",
+  /* S7「关于你」：只放从他原话可直接核对的关于他的事实（称呼/职责/偏好/雷区/当前项目）。
+   * 与 relationship 不同：那里是「我们之间发生了什么」，这里是「他是谁」。 */
+  "human",
   "method",
 ] as const;
 export type SoulLayer = (typeof SOUL_LAYERS)[number];
@@ -32,6 +35,7 @@ export const INJECTED_LAYERS: readonly SoulLayer[] = [
   "boundary",
   "relationship",
   "narrative",
+  "human",
 ];
 
 export type PersonaItemState = "active" | "degraded" | "frozen" | "merged";
@@ -65,6 +69,19 @@ export interface PersonaItem {
   driftHistory?: number[];
   /** 矛盾计数（与自身或用户原话冲突次数）。 */
   contradictions?: number;
+  /** 有效期末端（ISO）：冻结=此刻；结论合并取代=合并时刻。读侧据此判断条目是否还能进注入。 */
+  validTo?: string;
+  /** 有效期起点（ISO）：存量行没有这个字段时由 store 读回按 createdAt 回填，不改库。 */
+  validFrom?: string;
+  /** 实际过期时刻（ISO）：与 validTo 分开——validTo 是「判定失效的时刻」，expiredAt 是「真被回收的时刻」。 */
+  expiredAt?: string;
+  /**
+   * 被哪一条取代（结论合并 P1-1 的生产者）。state 仍是 active，语义只由 validTo 承担：
+   * 不引入第五个 state 是想让「合并取代」可被单一字段判定，且能原地 revive（删 validTo 即可）。
+   */
+  supersededBy?: string;
+  /** 取代判定码：当前只有 consolidate:cap（同 (layer, object) 活跃行超过上限）。 */
+  supersededReason?: string;
   /** 结构化的层专属字段：boundary 的 scope/triggerExample、values 的 dilemma、voice 的 fewShot。 */
   meta?: Record<string, unknown>;
 }
@@ -84,6 +101,10 @@ export const SOUL_EPISODE_KINDS = [
   "complaint",
   "pressure",
   "resignation",
+  // 2026-11-07（P0-B）：最小任务通道。生产 L0 水位之后 37 行全是「跑下全量测试」这类派活，
+  // 八类情绪/裁决标记一个都不命中 → episodes=0、特质 0 票、人格永不长大。
+  // work 只给特质漂移与自我史供料，**不代表他有情绪**（emotionObjectForEpisode 对它返回空）。
+  "work",
 ] as const;
 /* 读库时按这张表校验：新增 kind 忘了加进白名单会被静默改写成 decision，
  * 情绪评价随之被换成 0.8 的正向常态（2026-11-06 生产实证）。 */
@@ -113,6 +134,21 @@ export interface SoulEpisode {
   object: string;
   /** 参与方（user / assistant 的稳定称呼）。 */
   participants: string[];
+  /**
+   * 这条事件真实说话人的平台身份（L0 的 user_id / agent_id）+ 展示标签。
+   *
+   * 与 `participants` 的分工：participants 是展示层（「何晨」「assistant」，里面还有角色词），
+   * 身份只认这里。缺省 = 老行/老库没带出真列（此时挂人只能按展示名回退）。
+   * 不落盘：只有本次 tick 内解析 person_key 时用得到，落库的是 `persons`。
+   */
+  speaker?: { userId?: string; agentId?: string; displayName?: string };
+  /**
+   * P2-E：这条事件里在场的自然人（person_key 数组）。
+   * 与 `participants` 分工明确：那边是展示名/角色名（「何晨」「assistant」），
+   * 这边是 soul_person 的稳定键，按人过滤人格行要的是后者。
+   * 空数组/缺列一律不设字段（undefined）——「解析不出人」与「没有参与方」不共用 []。
+   */
+  persons?: string[];
   /** 用户当时的立场/要求（逐字摘句）。 */
   userStance: string;
   /** 我当时的立场/做法（逐字摘句）。 */
@@ -134,6 +170,40 @@ export interface SoulEpisode {
   affectSource: "lexicon" | "none";
   /** 事件里显式出现的价值取舍词（若有），审计用。 */
   signals?: string[];
+  /**
+   * P0-1：这条事件对哪些人格层有信息量（identity / values / boundary / relationship）。
+   * 缺省 `undefined` = **未标注**（旧行，或读库回来时该列不存在）；
+   * 「判定过但对人格层没有信息量」（如纯派活）同样不写空数组——两种状态由 undefined 一个值承载。
+   * 当前不落盘：`soul_episodes` 还没有这一列，P0-2 接线时随 store 一起补。
+   */
+  layers?: SoulLayer[];
+  /** 归档时刻：事件不再参与挖掘/注入，但保留可回溯（删除改为归档，S3）。 */
+  archivedAt?: string;
+  /**
+   * 这条事件被积进心境的时刻（ISO）。缺省 = 还没积过。
+   *
+   * 为什么按事件打标而不是按时间水位：水位若取「处理时刻」，而事件的 `at` 是
+   * 消息时间，那么凡是「上一 tick 之后才被挖出来的旧消息」都满足 at < 水位，
+   * 会被永久跳过（生产实测：48 条事件里 11 条非 work，soul_emotions 却 0 行）。
+   * 按事件 id 打标只回答「这条积过没有」，与两个时钟无关。
+   */
+  moodIntegratedAt?: string;
+}
+
+/**
+ * P0-1：一条「对某层有信息量」的信号。
+ *
+ * 为什么要独立结构而不复用 `SoulEpisode.signals: string[]`：
+ * 旧 signals 只记「命中了哪个词」，回答不了「这条词指向哪一层」；而人格落表要的正是后者。
+ * 同一句里可以同时存在多条信号（纠正在前、认可在后），每条各自带层，互不遮蔽。
+ */
+export interface SoulEpisodeSignal {
+  /** 命中的词面标记（原文字面片段，可回查；不含合成措辞）。 */
+  signal: string;
+  /** 由哪类标记命中：九类裁决/情绪 kind 之一（语气词按其最接近的一类记）。 */
+  kind: SoulEpisodeKind;
+  /** 这条信号指向的人格层。 */
+  layer: SoulLayer;
 }
 
 /**
@@ -159,6 +229,18 @@ export interface SoulEmotionRecord {
   dominance?: number;
   /** 事件当时的原始强度（不衰减），读侧按标签半衰期重算。 */
   intensity: number;
+  /**
+   * 归因（§5 P3-A）：这条情绪的「因为谁」是 self / other / environment。
+   * null = 判定时没有归因（不是「环境」）；旧行补列后同样是 null。
+   */
+  agency?: "self" | "other" | "environment" | null;
+  /** 这条判定的把握度 0..1；null = 没算过（旧行），不是 0。 */
+  confidence?: number | null;
+  /**
+   * 情绪对象挂在谁身上（§5 P3-A）：person_key，与 soul_person 的键同口径。
+   * null = 对象不是某个人（如「召回的排序」），或判不出是谁。
+   */
+  objectPerson?: string | null;
   /** 评价向量（审计用：为什么判成这个标签）。 */
   appraisal?: unknown;
   /** 判定所用模板版本（emotion.ts 的 EMOTION_TEMPLATE_VERSION）。 */
@@ -185,6 +267,30 @@ export interface SoulRejectionStat {
   lastAt?: string;
 }
 
+/**
+ * 门拒计数（P0-2）：拒绝不再逐条进 soul_ledger，改按 (day, code, layer) 聚合。
+ * 拒绝是「判据的统计量」而不是「人格的变更」——它不该占账本行，但必须仍可按 code 聚合。
+ */
+export interface SoulGateStatBump {
+  /** UTC 日期 YYYY-MM-DD（tick 的 now.slice(0, 10)）。 */
+  day: string;
+  code: string;
+  layer: string;
+  /** 本批次该 (day, code, layer) 的增量。 */
+  count: number;
+  /** 最近一次发生时刻（ISO）。 */
+  at: string;
+}
+
+export interface SoulGateStat {
+  day: string;
+  code: string;
+  layer: string;
+  count: number;
+  /** 最近一次发生时刻（ISO）。 */
+  lastAt?: string;
+}
+
 export interface SoulLedgerEntry {
   entryId: string;
   at: string;
@@ -193,6 +299,7 @@ export interface SoulLedgerEntry {
   itemId?: string;
   action:
     | "admit"
+    /** @deprecated P0-2 起 worker 不再写 reject 行（改 soul_gate_stats）；仅用于读回历史账本。 */
     | "reject"
     | "update"
     | "merge"
@@ -206,6 +313,11 @@ export interface SoulLedgerEntry {
     | "rollback"
     | "drift"
     | "budget_omit"
+    /**
+     * 结论合并（P1-1）：同 (layer, meta.object) 活跃行超过上限，超出者标失效（validTo 非空）。
+     * 不是删除、也不是 freeze：state 不变，回滚/复活只需清 validTo。
+     */
+    | "invalidate"
     /** 情绪进入判断：本轮心境对候选/立场排序的实际影响（可回放）。 */
     | "arbitrate"
     /** 存量槽导入条目退出人格注入层（下沉为操作约束，不删除、可回滚）。 */
@@ -221,6 +333,8 @@ export interface SoulLedgerEntry {
   reason: string;
   evidenceIds: string[];
   promptVersion?: string;
+  /** 判定协议版本（TRAIT_PROTOCOL_VERSION 等），漂移/事件史账本据此刻源。 */
+  protocolVersion?: string;
   model?: string;
   /** 回滚载荷：该条目变更前的完整快照。 */
   before?: PersonaItem | null;
@@ -235,12 +349,11 @@ export interface SoulBudgetReport {
     itemId: string;
     text: string;
     chars: number;
-    reason: "budget" | "frozen" | "merged" | "degraded_tail" | "max_items";
+    reason: "budget" | "frozen" | "merged" | "degraded_tail" | "max_items" | "superseded";
   }>;
 }
 
 export interface SoulMaintenanceConfig {
-  enabled: boolean;
   /** 后台整合最小间隔（小时）。 */
   updateIntervalHours: number;
   /** 单轮最多改写条目数（防止一次翻修）。 */
@@ -305,6 +418,7 @@ const layerBudget = (n: number): Record<SoulLayer, number> => ({
   boundary: n,
   relationship: n,
   narrative: n,
+  human: n,
   method: 0,
 });
 
@@ -316,6 +430,7 @@ const layerMaxItems = (n: number): Record<SoulLayer, number> => ({
   boundary: n,
   relationship: n,
   narrative: n,
+  human: 12,
   method: 64,
 });
 
@@ -327,15 +442,15 @@ const layerItemChars = (n: number): Record<SoulLayer, number> => ({
   boundary: n,
   relationship: n,
   narrative: n,
+  human: n,
   method: n,
 });
 
 /**
- * 缺省档：安全侧（enabled=false）。生产若要开启必须显式在 tdai-gateway.yaml 打开
- * memory.soulMaintenance.enabled——与既有 soulRender 各开关同一纪律：缺省逐位现状。
+ * S9（2026-11-07）：总闸 `soulMaintenance.enabled` 已删除——人格维护恒开，注入侧由插件
+ * 按自身配置拉取；本对象只剩节拍/预算/阈值。
  */
 export const DEFAULT_SOUL_MAINTENANCE_CONFIG: SoulMaintenanceConfig = {
-  enabled: false,
   updateIntervalHours: 6,
   maxUpdatedPerCycle: 3,
   alpha: 0.15,
@@ -370,12 +485,14 @@ export const DEFAULT_SOUL_MAINTENANCE_CONFIG: SoulMaintenanceConfig = {
     // 500 字会把时区/环境/协作合同这类稳定事实静默挤出。
     relationship: 900,
     narrative: 300,
+    // 关于你：称呼/职责/偏好/雷区/当前项目，≤12 行（HUMAN_MAX_LINES），每行短句。
+    human: 600,
     method: 0,
   },
   // boundary 是「不变量集」：用户长期累积的红线实测 29 条，7 条会把历史红线挤掉。
   // 其余层仍是 7 条上限（人格要瘦，红线要全）。method 是审计池，64 条。
   // relationship 放宽到 12：关系事实随协作面增长（时区/环境/交付合同/家人），实测已 8 条。
-  maxItems: { ...layerMaxItems(7), self: 8, boundary: 40, relationship: 12, method: 64 },
+  maxItems: { ...layerMaxItems(7), self: 8, boundary: 40, relationship: 12, human: 12, method: 64 },
   maxItemChars: layerItemChars(160),
   emotionHalfLifeHours: 3,
   moodHalfLifeHours: 48,
@@ -390,7 +507,10 @@ export const DEFAULT_SOUL_MAINTENANCE_CONFIG: SoulMaintenanceConfig = {
   voiceFewShotPerItem: 2,
   // 一条身份/价值至少要能在两次不同的具体事件里成立，否则它只是「昨天一次情绪」。
   minEpisodeEvidence: 2,
-  personName: "何晨",
+  // 关系层要指名的人。默认给中性指向（「用户」），代码里不写死任何真实姓名：
+  // 具体人名属于部署配置，写死会让所有租户的人格层都指向同一个人。
+  // 关系层指名门（gates.ts）另有「他/她/你」代词通路，不依赖这个默认值。
+  personName: "用户",
 };
 
 export function resolveSoulConfig(

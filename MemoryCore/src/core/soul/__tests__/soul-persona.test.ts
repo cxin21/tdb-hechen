@@ -34,9 +34,8 @@ import {
 } from "../emotion.js";
 import { measureDrift, pushDrift, trackOf } from "../drift.js";
 import { mineCandidates, parseSoulRewriteOutput, runSoulMaintenance, createSoulRewriter } from "../worker.js";
-import { planConsolidation } from "../consolidator.js";
 
-const CFG = resolveSoulConfig({ enabled: true });
+const CFG = resolveSoulConfig({});
 const NOW = "2026-11-05T12:00:00.000Z";
 
 // ───────────────────────────── 判定器
@@ -308,7 +307,7 @@ describe("persona：准入 / 更新 / 合并 / 降级 / 冻结 / 复活 / 预算
     const { report } = renderLayerWithBudget(
       "values",
       items,
-      resolveSoulConfig({ enabled: true, budget: { ...DEFAULT_SOUL_MAINTENANCE_CONFIG.budget, values: 20 } }),
+      resolveSoulConfig({ budget: { ...DEFAULT_SOUL_MAINTENANCE_CONFIG.budget, values: 20 } }),
     );
     expect(report.rendered).toBeLessThanOrEqual(1);
     expect(report.omitted.length).toBeGreaterThanOrEqual(1);
@@ -322,7 +321,7 @@ describe("persona：准入 / 更新 / 合并 / 降级 / 冻结 / 复活 / 预算
     const { text, report } = renderLayerWithBudget(
       "boundary",
       items,
-      resolveSoulConfig({ enabled: true, maxItems: { ...DEFAULT_SOUL_MAINTENANCE_CONFIG.maxItems, boundary: 2 } }),
+      resolveSoulConfig({ maxItems: { ...DEFAULT_SOUL_MAINTENANCE_CONFIG.maxItems, boundary: 2 } }),
     );
     expect(report.rendered).toBe(2);
     expect(report.omitted.filter((o) => o.reason === "max_items")).toHaveLength(1);
@@ -525,8 +524,13 @@ describe("emotion：情绪有对象并衰减，心境无对象有基线", () => 
 
   it("渲染给的是「与基线比」的读数，并只在有对象、够强时才给理由", () => {
     const mood = { valence: -0.4, arousal: 0.3, baselineValence: 0.1, baselineArousal: 0.3, updatedAt: NOW, sampleCount: 5 };
-    const line = renderMoodLine(mood, { threshold: CFG.moodDeviationThreshold });
+    // S5：有存活情绪 → 仍给「与基线比」的读数；无情绪 → 底子行（判据 10）。
+    const line = renderMoodLine(mood, {
+      threshold: CFG.moodDeviationThreshold,
+      emotion: { object: "召回精度", label: "恼火", effectiveIntensity: 0.6 },
+    });
     expect(line).toContain("比基线");
+    expect(renderMoodLine(mood, { threshold: CFG.moodDeviationThreshold })).toContain("底子很沉");
     const reading = readMood(mood, { threshold: CFG.moodDeviationThreshold });
     expect(reading.deltaValence).toBeLessThan(0);
     expect(reading.phrase).toBeTruthy();
@@ -569,12 +573,11 @@ describe("drift：连续低分才降级/冻结，判断轨禁止自我复位", (
 
 // ───────────────────────────── 工作者（fake store）
 
-function fakeStore(coreRows: Array<{ slot: string; content: string }>) {
+function fakeStore() {
   const committed: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] }[] = [];
   const state: Record<string, unknown> | null = null;
   let moodRow: Record<string, unknown> | null = state as never;
   const store = {
-    readCore: () => coreRows,
     listSoulPersona: () => [] as PersonaItem[],
     commitSoulPersona: (_t: unknown, p: { upsert: PersonaItem[]; ledger: SoulLedgerEntry[] }) => {
       committed.push(p);
@@ -594,40 +597,11 @@ function fakeStore(coreRows: Array<{ slot: string; content: string }>) {
 }
 
 describe("worker：七阶段一轮跑完并如实记账", () => {
-  const coreRows = [
-    { slot: "identity", content: "- 用户何晨是 TDB 的设计者\n- 用户只接受完整版交付" },
-    { slot: "self_identity", content: "- 我在云文库窄栏重设计中完成 commit b8ba3e0 并推送\n- 我宁可慢一点，也要一手证据，而不是听别人转述" },
-    { slot: "strict_rule", content: "- 绝不把情绪（mood）数据喂进召回，任何情况下都不允许\n- 测试一律走临时目录，绝不触碰生产数据" },
-    { slot: "core_value", content: "- 一手证据：先自己跑一遍再说" },
-  ];
-
-  it("事件句与方法论进 method 池不注入；红线/两难句各自落层；账本逐条可读", async () => {
-    const { store, committed } = fakeStore(coreRows);
-    const report = await runSoulMaintenance({
-      store: store as never,
-      tenant: { teamId: "t", userId: "u", agentId: "a" },
-      now: NOW,
-      config: { enabled: true },
-      // 2026-11-05 起 lifecycle/manual 不再把存量槽导入人格层（见下方 retire 用例）；
-      // 本用例锁的是「显式导入」这条路径的分层与记账仍然正确。
-      trigger: "import",
-    });
-    expect(report.stored).toBe(true);
-    const items = committed.at(-1)!.upsert;
-    const layers = new Set(items.map((i) => i.layer));
-    expect(layers.has("boundary")).toBe(true);
-    expect(layers.has("values")).toBe(true);
-    // commit 事件句留在 method 审计池，绝不进任何注入层
-    const injected = items.filter((i) => i.layer !== "method");
-    expect(injected.some((i) => i.text.includes("b8ba3e0"))).toBe(false);
-    expect(items.some((i) => i.layer === "method" && i.text.includes("b8ba3e0"))).toBe(true);
-    expect(report.ledgerEntries).toBeGreaterThan(0);
-    // 只要写成功，报告里 imported 数必须等于真实贡献条目的槽行数来源（不虚报）
-    expect(report.imported).toBeGreaterThan(0);
-  });
+  // 2026-11-07（P0-0）：槽导入用例随 core_memory 通道移除删除；本组剩下的用例锁
+  // 「冻结存量槽条目 / voice 纠偏 / 心境写库」等不依赖槽读取的行为。
 
   it("存量槽导入条目在 lifecycle 轮次退出注入层（冻结+账本），不再伪装成「我不做的事」", async () => {
-    const { store, committed } = fakeStore([]);
+    const { store, committed } = fakeStore();
     const slotItem: PersonaItem = {
       itemId: "boundary:legacy",
       layer: "boundary",
@@ -647,7 +621,7 @@ describe("worker：七阶段一轮跑完并如实记账", () => {
       store: store as never,
       tenant: { teamId: "t", userId: "u", agentId: "a" },
       now: NOW,
-      config: { enabled: true },
+      config: {},
       trigger: "lifecycle",
     });
     expect(report.retired).toBe(1);
@@ -685,13 +659,13 @@ describe("worker：七阶段一轮跑完并如实记账", () => {
       lastEvidenceAt: "2026-11-01T00:00:00.000Z",
       meta: { source: "l1+model+episode" },
     };
-    const { store, committed } = fakeStore([]);
+    const { store, committed } = fakeStore();
     (store as unknown as { listSoulPersona: () => PersonaItem[] }).listSoulPersona = () => [profile, history];
     const report = await runSoulMaintenance({
       store: store as never,
       tenant: { teamId: "t", userId: "u", agentId: "a" },
       now: NOW,
-      config: { enabled: true },
+      config: {},
       trigger: "lifecycle",
     });
     const payload = committed.at(-1)!;
@@ -700,27 +674,14 @@ describe("worker：七阶段一轮跑完并如实记账", () => {
     expect(report.retired).toBeGreaterThanOrEqual(1);
   });
 
-  it("enabled=false 且非 import 触发 → 不写库并如实 skipped", async () => {
-    const { store, committed } = fakeStore(coreRows);
-    const report = await runSoulMaintenance({
-      store: store as never,
-      tenant: { teamId: "t", userId: "u", agentId: "a" },
-      now: NOW,
-      config: { enabled: false },
-      trigger: "lifecycle",
-    });
-    expect(report.stored).toBe(false);
-    expect(report.skipped).toContain("enabled=false");
-    expect(committed).toHaveLength(0);
-  });
 
   it("心境写 soul_state 时带基线与样本数（渲染侧要靠它算偏移）", async () => {
-    const { store, mood } = fakeStore(coreRows);
+    const { store, mood } = fakeStore();
     await runSoulMaintenance({
       store: store as never,
       tenant: { teamId: "t", userId: "u", agentId: "a" },
       now: NOW,
-      config: { enabled: true },
+      config: {},
       trigger: "test",
     });
     const row = mood()!;
@@ -755,53 +716,5 @@ describe("worker：七阶段一轮跑完并如实记账", () => {
     });
     const out = await rw({ existing: [], records: ["r1 | x"], maxCandidates: 2 });
     expect(out).toHaveLength(2);
-  });
-});
-
-// ───────────────────────────── 存量回放
-
-describe("consolidator：存量槽回放把方法论与事件挡在注入层外", () => {
-  it("存量槽回放：红线进 boundary、方法论进 method、用户事实进 relationship，且不静默丢行", () => {
-    const plan = planConsolidation({
-      slots: {
-        identity: "- 用户何晨是 TDB 的设计者",
-        selfIdentity: "- 我在接口取证中并行推进静态与动态双线\n- 我宁可慢一点，也要一手证据，而不是听别人转述",
-        strictRule: "- 绝不把情绪（mood）数据喂进召回，任何情况下都不允许\n- 测试一律走临时目录，绝不触碰生产数据",
-        coreValue: "- 一手证据：先自己跑一遍再说",
-      },
-      existing: [],
-      now: NOW,
-      config: { enabled: true },
-    });
-    const injected = plan.items.filter((i) => i.layer !== "method");
-    expect(injected.every((i) => ["identity", "values", "boundary", "relationship", "voice", "narrative"].includes(i.layer))).toBe(true);
-    expect(plan.items.some((i) => i.layer === "method" && i.text.includes("并行推进"))).toBe(true);
-    // 红线是「不变量集」：逐字进边界层，一条都不能少（2026-11-05 前预算门曾让 18/29 条静默丢失）。
-    expect(plan.items.filter((i) => i.layer === "boundary").map((i) => i.text)).toEqual([
-      "绝不把情绪（mood）数据喂进召回，任何情况下都不允许",
-      "测试一律走临时目录，绝不触碰生产数据",
-    ]);
-    // 用户事实不是我的特质，但也不是该丢的噪音——按原文进关系层。
-    expect(plan.items.some((i) => i.layer === "relationship" && i.text.includes("TDB 的设计者"))).toBe(true);
-    // 存量导入的原则是「每条都有归属」，不做静默丢弃；真正的裁决在渲染与判据侧。
-    expect(plan.rejected.length).toBe(0);
-  });
-
-  it("identity 槽里点名他的句子归 relationship，不进 values（关系事实不是价值取舍）", () => {
-    // 生产实测：「何晨是我锚定的『重要的人』…」含「而不是/取舍」式措辞被判 values，
-    // 于是渲染在「我在冲突里站哪边」下面——把关系事实当成了价值取向。
-    const plan = planConsolidation({
-      slots: {
-        identity: "- 何晨是我锚定的「重要的人」，我对他保留完整上下文而不是每次重新自我介绍",
-        selfIdentity: "",
-        strictRule: "",
-        coreValue: "",
-      },
-      existing: [],
-      now: NOW,
-      config: { enabled: true },
-    });
-    const hit = plan.items.find((i) => i.text.includes("锚定"));
-    expect(hit?.layer).toBe("relationship");
   });
 });

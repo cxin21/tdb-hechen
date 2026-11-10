@@ -24,7 +24,6 @@ import { stripMemoryLineMeta } from "./memory-line-meta.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { isIdentityImposition, stripIdentityStateResidue } from "../lifecycle/identity-discovery.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
-import { computeMoodTierFromStore } from "./mood-line.js";
 // #54（2026-10-19）：召回注入动态 topK——分数分布 elbow 确定性纯函数（recall-dynamic-topk.ts）
 import { dynamicTopKCount } from "./recall-dynamic-topk.js";
 import { RecallErrors, toRecallFailure, type RecallError } from "./recall-errors.js";
@@ -116,6 +115,7 @@ import {
 } from "../recall/query-intent.js";
 import { arbitrateConclusions, computeSlotBudget } from "../recall/layered-budget.js";
 import { appendRecallJournal, type RecallJournalGates, type RecallJournalPerfMs } from "../recall/recall-journal.js";
+import { collectSoulJournalFields } from "../soul/observation.js";
 import { filterSelfNarrationLines, loadActorByIds } from "../recall/self-narration-filter.js";
 import { createReranker } from "../recall/rerank/factory.js";
 import {
@@ -175,8 +175,6 @@ import {
   type ProfileIsolation,
 } from "../profile/profile-sync.js";
 import type { Logger } from "../types.js";
-import type { SoulRenderOptions } from "./soul-assembler.js";
-import type { SoulState } from "./soul-state.js";
 import { isRecurrenceMeta, recurrenceLabel } from "../record/l1-extractor.js";
 import {
   cosineNormOf,
@@ -633,9 +631,11 @@ export interface LayeredRecallOutcome {
   experienceCount: number;
   /** R7 meta：本轮是否命中复用（幂等结论层复用 ∨ 同 session 同 query 检索复用）。 */
   sessionReused: boolean;
-  /** 立项③：灵魂指纹（双槽∪锚集合 hash；未变化=消费端可复用上轮 soul 字节）。 */
+  /** @deprecated 2026-11-07 task-6：人格注入已移交 DSH 插件，本函数不再产出 soul 指纹；
+   *  字段仅为 gateway/v2-router 的 journal 读取兼容保留，恒 undefined（不删是对外类型面）。 */
   soulVersion?: string;
-  /** S-FEEL-1（M1）：近期情绪基调档位（positive/neutral/strained；enabled=false 时不出键）。 */
+  /** @deprecated 2026-11-07 task-6：情绪基调随 soul 前缀一起退役（在 /v3/soul/turn 里出）；
+   *  字段仅为 journal 读取兼容保留，恒 undefined。 */
   mood?: string;
   /** R7 meta：分层组装是否生效（结论层非空）。 */
   layered: boolean;
@@ -1123,43 +1123,6 @@ async function applyRecallRerank(
   if (searchResult.lineSessions) searchResult.lineSessions = presentIdxs.map((i) => searchResult.lineSessions![i]);
 }
 
-/**
- * #42 审查加固（F1/C-1 生产接线）：soul 渲染 anchorSelect 运行时组装——config 门透传 +
- * embedder/queryEmbeddingProvider 运行时注入（config 不携带向量）。provider=懒解析闭包：
- * cachedQueryEmbedding（与 L1 检索路共享 TTL 去重，TTL=cfg.recall.queryEmbeddingCacheTtlMs，
- * 缺省 60_000）；embed 失败→undefined（宁缺毋滥回退现状，不抛错）。queryText=cacheKey
- * 指纹源（query 变→签名键变，防旧选择串复活）。向量仅在 scorer 真正需要时（转正选择/
- * shadow 报告）才解析——缺省配置零 embed。导出仅为单测可见。
- */
-export function buildSoulAnchorSelectRuntime(
-  cfg: MemoryTdaiConfig,
-  io: { embeddingService?: EmbeddingService; userText: string; logger?: Logger },
-): SoulRenderOptions["anchorSelect"] {
-  const anchorSelectCfg = cfg.coreMemory?.soulRender?.anchorSelect;
-  if (!anchorSelectCfg) return undefined;
-  return {
-    ...anchorSelectCfg,
-    scorer: {
-      ...anchorSelectCfg.scorer,
-      embedder: io.embeddingService ? (t: string) => io.embeddingService!.embed(t) : undefined,
-      queryEmbeddingProvider: io.embeddingService
-        ? async () => {
-            try {
-              return await cachedQueryEmbedding(
-                io.embeddingService!,
-                io.userText,
-                cfg.recall?.queryEmbeddingCacheTtlMs ?? 60_000,
-                io.logger,
-              );
-            } catch {
-              return undefined;
-            }
-          }
-        : undefined,
-      queryText: io.userText,
-    },
-  };
-}
 
 export async function performLayeredRecall(params: {
   userText: string;
@@ -1183,10 +1146,6 @@ export async function performLayeredRecall(params: {
     breaker?: RerankBreaker;
     fetchImpl?: typeof fetch;
   };
-  /** #40（ADR0003-P3 接线票 B）：工具面策展清单（代理侧 /v3/recall body 透传，可选）——
-   *  仅在 coreMemory.soulRender.capabilities.enabled 门开时渲染进 soul 前缀
-   *  「## 我能做什么」（渲染行=清单 1:1，#32 合同）；门关或未传=现状零渲染。 */
-  capabilities?: string[];
   /**
    * task-100（预算内降级）：L1 向量腿预算（缺省 undefined = 逐位旧行为）。
    * 只有 /v3/recall 端点传（钩子路不传——钩子没有外部调用方的延迟合同）。
@@ -1212,16 +1171,15 @@ export async function performLayeredRecall(params: {
   // journal 时间线只显示 L1 hybrid ~70ms、soul ~130ms，其后 ~3.2s 完全静默——黑洞
   // 无从定位。分段口径：scene=scene index 读取；l2=结论层候选收集+选择+放宽+截断
   // （conclusionLayer.enabled=false 恒 0）；l1=L1 检索（FTS/向量/混合+精排+复用缓存）
-  // 含 R7 经验行组装（slice/动态 topK/budget，同步微秒级）；soul=mood+state+soul-prefix
-  // 渲染全链（含动态 import）。l1/l2/soul 打点在 else 分支内赋值，空 userText 走 if
+  // 含 R7 经验行组装（slice/动态 topK/budget，同步微秒级）；soul 段恒 0（人格注入已移交
+  // DSH 插件，本函数不再渲染 soul 前缀）。l1/l2 打点在 else 分支内赋值，空 userText 走 if
   // 分支时恒 0（perfMs 仍出，零分支例外）。
   const tPerfStart61 = performance.now();
   let tPerfSceneMs61 = 0;
   let tPerfL2Ms61 = 0;
   let tPerfL1Ms61 = 0;
   let tPerfSoulMs61 = 0;
-  // 注入度量：真正拼进 system prompt 的人格段字符数（不是耗时）。缺它就无法回答
-  // 「这一轮人格到底进了多少字」——A2/A7 的可观测性硬指标。
+  // 注入度量：人格段字符数——人格已移交 DSH 插件，恒 0（字段保留见 recall-journal.ts 的类型面）。
   let tPerfSoulChars61 = 0;
 
   // L2/L3 writers scope profile files by team+agent. Recall resolves the same
@@ -1262,10 +1220,8 @@ export async function performLayeredRecall(params: {
   let layered = false;
   /** 缺口 B 观测：本轮 L2 场景块触发词命中（undefined = 无命中，journal 不写字段）。 */
   let layeredKeywordHits: { blocks: number; keywords: string[] } | undefined;
-  // 立项③：灵魂指纹（函数级——hook/端点双路共享）
-  let soulVersion: string | undefined;
-  /** S-FEEL-1（M1）：近期情绪基调档位（enabled=false 或样本不足=undefined=meta 不出键）。 */
-  let mood: string | undefined;
+  // 人格注入已移交 DSH 插件：本函数不再产出 soulVersion / mood 观测值。
+  // RecallOutcome 上这两个可选字段保留，只为 gateway/v2-router 的读取兼容（恒 undefined）。
   let block: string | undefined;
   let searchCacheHit = false;
   if (!userText || userText.length === 0) {
@@ -2542,254 +2498,12 @@ export async function performLayeredRecall(params: {
     layered = r7InjectedConclusions > 0;
     // #61：l1 段终点（tSearchStart 起含检索+精排+复用缓存+R7 经验行组装）；soul 段起点。
     tPerfL1Ms61 = Math.round(performance.now() - tSearchStart);
-    const tPerfSoulStart61 = performance.now();
-    // SOUL C3（REG-REMAINING-001）：身份段常驻——soul 前缀组装与记忆有无解耦。
-    let soulPrefix = "";
-    if (params.isolationFilter && vectorStore?.readCore) {
-      try {
-        const { buildSoulPrefix } = await import("./soul-assembler.js");
-        const it = params.isolationFilter;
-        // S-FEEL-1（M1）：近期情绪基调——enabled=false 时完全跳过（零行为差异=逐位现状）。
-        // #36 保真度补全：store→三档封装下沉 mood-line.computeMoodTierFromStore（消费侧单一入口，
-        // 禁第二份内联实现）；store 可选方法缺实现 → null（宁缺毋滥）。
-        // 红线 R-A：mood 只进 soul 前缀与 meta.mood，不参与任何召回排序/加权（情绪不得喂自身）。
-        let moodTierResult: { tier: "positive" | "neutral" | "strained"; sampleCount: number } | null = null;
-        try {
-          moodTierResult = await computeMoodTierFromStore(
-            vectorStore,
-            { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
-            cfg.coreMemory?.moodLine,
-          );
-        } catch (err) {
-          logger?.warn?.(`[soul] mood compute failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-        }
-        // #28→#34 生产断层接线（2026-10-17）：#28 状态机已生产写 soul_state（真实租户行在库），
-        // #34 渲染通道（opts.state → soul-assembler renderStateLine，soul-feeling 尾块）无人喂入
-        // → 状态行永不渲染。此处单一接线点：store 实现可选方法 readSoulState（IMemoryStore
-        // types.ts:802，返回 MaybePromise）才读；返回 null/undefined=无状态行 → 不传 opts.state
-        //（#34 opt-in 语义：数据在=渲染，无数据=逐位现状，零新配置）。字段映射（store 行
-        // camelCase 直接兼容 SoulState，仅 null→缺省归一）：topValue/turnSeq 为 null → 省略
-        //（topValue 缺省由 soul-assembler directional 兜底，勿在此重算）；updatedAt → at
-        //（渲染不消费，保留状态时刻）。红线 R-A 同款：state 只进 soul 前缀渲染与进程内 cacheKey，
-        // 不参与 soulVersion 指纹（soul-assembler 指纹隔离）与任何召回排序。
-        let soulState: SoulState | undefined;
-        let soulMoodState:
-          | {
-              valence: number;
-              arousal: number;
-              baselineValence: number;
-              baselineArousal: number;
-              dominance?: number;
-              baselineDominance?: number;
-              updatedAt: string;
-              sampleCount: number;
-              // 心境原因（2026-11-05）：对象/标签/衰减后强度，注入侧据此说「因为谁、多强」。
-              emotion?: { object: string; label: string; intensity: number; at: string };
-              historyEmotion?: { object: string; label: string; at: string };
-              objectStance?: string;
-              blend?: { label: string; intensity: number };
-            }
-          | undefined;
-        const stateStore = vectorStore;
-        if (stateStore && typeof stateStore.readSoulState === "function") {
-          try {
-            const row = await stateStore.readSoulState?.({
-              teamId: it.teamId ?? "default",
-              userId: it.userId ?? "default",
-              agentId: it.agentId ?? "default",
-            });
-            if (row) {
-              soulState = {
-                valence: row.valence,
-                arousal: row.arousal,
-                ...(row.topValue != null ? { topValue: row.topValue } : {}),
-                ...(row.turnSeq != null ? { turnSeq: row.turnSeq } : {}),
-                ...(row.updatedAt ? { at: row.updatedAt } : {}),
-              };
-              // m00527 心境：与三档 moodTier 不同，这是「与基线比」的连续读数。旧行无基线列
-              // 时按缺省基线（0/0.3）读——不给虚假偏移，读出来就是「接近基线」。
-              soulMoodState = {
-                valence: row.valence,
-                arousal: row.arousal,
-                baselineValence: typeof row.baselineValence === "number" ? row.baselineValence : 0,
-                baselineArousal: typeof row.baselineArousal === "number" ? row.baselineArousal : 0.3,
-                // 支配感：库里有这一列才带（旧行缺列 → 不写「撑不撑得住」，不伪造第三维）。
-                ...(typeof (row as { dominance?: number | null }).dominance === "number"
-                  ? { dominance: (row as { dominance?: number }).dominance }
-                  : {}),
-                ...(typeof (row as { baselineDominance?: number | null }).baselineDominance === "number"
-                  ? { baselineDominance: (row as { baselineDominance?: number }).baselineDominance }
-                  : {}),
-                updatedAt: row.updatedAt ?? new Date().toISOString(),
-                sampleCount: row.sampleCount ?? 0,
-              };
-              // 原因会到期（2026-11-06 审计 P0）：库里存的是「写入那一刻」已衰减的强度，
-              // 从 updatedAt 再衰到今天；衰减到 0.05 以下或超过 6 个半衰期就不再当原因。
-              // 旧实现直接把库内数字喂进注入，两次维护（6h 节流）之间数字不动，
-              // 于是一句话挂着「因为 X 正在消退」过了 24 天。
-              const nowIso = new Date().toISOString();
-              const asOf = row.updatedAt ?? nowIso;
-              const storedEmotion =
-                row.emotionObject && row.emotionLabel && typeof row.emotionIntensity === "number" && row.emotionAt
-                  ? { object: row.emotionObject, label: row.emotionLabel, intensity: row.emotionIntensity, at: row.emotionAt, asOf }
-                  : undefined;
-              if (storedEmotion && !isStoredEmotionExpired(storedEmotion, nowIso)) {
-                soulMoodState.emotion = {
-                  object: storedEmotion.object,
-                  label: storedEmotion.label,
-                  intensity: Number(decayedStoredIntensity(storedEmotion, nowIso).toFixed(4)),
-                  at: storedEmotion.at,
-                };
-              }
-              // 同一对象的复发不随半衰期消失。立场句的对象要能独立于「此刻还在场」存在：
-              // 原因到期后「先核对修复是否还在」仍然有用，所以对象优先取活着的情绪，
-              // 其次取库里的旧原因，最后退回事件史里出现次数最多的对象（不编类别词）。
-              type SoulEpisodeLike = { at?: string; object?: string; valence?: number; arousal?: number; agentStance?: string; outcome?: string };
-              const listEp = (vectorStore as { listSoulEpisodes?: (t: unknown, o: unknown) => Promise<SoulEpisodeLike[]> }).listSoulEpisodes;
-              const eps: SoulEpisodeLike[] = typeof listEp === "function"
-                ? ((await Promise.resolve(listEp.call(vectorStore, { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" }, { limit: 200 }))) ?? [])
-                : [];
-              let stanceObject = (soulMoodState.emotion?.object ?? row.emotionObject ?? "").trim();
-              if (stanceObject === "" && eps.length > 0) {
-                const counts = new Map<string, number>();
-                for (const e of eps) {
-                  const o = emotionObjectForEpisode(e as never);
-                  if (o !== "") counts.set(o, (counts.get(o) ?? 0) + 1);
-                }
-                stanceObject = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? "";
-              }
-              // 情绪会过期，但「同一对象还在反复出现」不会。注意力方向因此不能只挂在在场情绪上：
-              // 原因到期后立场句还在（objectStance），先看哪一层却退回默认次序，同一对象就只在
-              // 情绪新鲜的几小时里改变判断。这里从情绪史（soul_emotions）取该对象最近一条标签，
-              // 仅当它 7 天内出现过才补进 historyEmotion——只影响注意力与情绪门，不渲染成因由。
-              if (!soulMoodState.emotion && stanceObject !== "") {
-                const listEmotions = (vectorStore as {
-                  listSoulEmotions?: (
-                    t: unknown,
-                    o: unknown,
-                  ) => Promise<Array<{ object?: string; label?: string; at?: string }>>;
-                }).listSoulEmotions;
-                if (typeof listEmotions === "function") {
-                  try {
-                    const rowsE =
-                      (await Promise.resolve(
-                        listEmotions.call(
-                          vectorStore,
-                          { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
-                          { object: stanceObject, limit: 5 },
-                        ),
-                      )) ?? [];
-                    const latest = rowsE.find((r) => typeof r.label === "string" && r.label.trim() !== "");
-                    if (latest && typeof latest.label === "string" && typeof latest.at === "string") {
-                      const atMs = Date.parse(latest.at);
-                      if (Number.isFinite(atMs) && Date.now() - atMs <= 7 * 24 * 60 * 60 * 1000) {
-                        soulMoodState.historyEmotion = {
-                          object: stanceObject,
-                          label: latest.label.trim(),
-                          at: latest.at,
-                        };
-                      }
-                    }
-                  } catch (err) {
-                    logger?.debug?.(
-                      `[soul] history emotion lookup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-                    );
-                  }
-                }
-              }
-              if (stanceObject !== "" && eps.length > 0) {
-                const same = eps.filter((e) => emotionObjectForEpisode(e as never) === stanceObject);
-                // 与写侧情绪门同一口径：最近一次是否修复，看 agentStance 与 outcome，不把「收口」当已修。
-                const ordered = [...same].sort((a, b) => Date.parse((b as { at?: string }).at ?? "") - Date.parse((a as { at?: string }).at ?? ""));
-                const latest = ordered[0];
-                const hits: ObjectHit[] = same.map((e) => ({
-                  object: stanceObject,
-                  intensity: Math.abs(e.valence ?? 0),
-                  valence: e.valence ?? 0,
-                  at: (e as { at?: string }).at,
-                  repaired: episodeRepaired(e),
-                }));
-                if (hits.length > 0) soulMoodState.objectStance = objectRecurrence(hits).stance;
-                // 混合情绪：只有主情绪还在场时才谈「带着什么」——主情绪已退场就没有复合可写。
-                if (soulMoodState.emotion) {
-                  const primary = soulMoodState.emotion.label;
-                  const secondary = same
-                    .map((e) => emotionEventFromEpisode(e as never, { emotionHalfLifeHours: 3 }))
-                    .map((ev) => ({ label: ev.label, intensity: decayedIntensity(ev, nowIso) }))
-                    .filter((x) => x.label !== primary && x.intensity >= 0.3)
-                    .sort((a, b) => b.intensity - a.intensity)[0];
-                  if (secondary) soulMoodState.blend = { label: secondary.label, intensity: Number(secondary.intensity.toFixed(3)) };
-                }
-              }
-            }
-          } catch (err) {
-            logger?.warn?.(`[soul] state read failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-        const soulMeta: NonNullable<Parameters<typeof buildSoulPrefix>[4]> = {};
-        soulPrefix = await buildSoulPrefix(
-          vectorStore,
-          { teamId: it.teamId ?? "default", userId: it.userId ?? "default", agentId: it.agentId ?? "default" },
-          logger,
-          {
-            // DS-SOUL-MEMORY-002 P1（F17）：四段渲染开关与段级预算（缺省 undefined=逐位现状）。
-            selfIdentityEnabled: cfg.coreMemory?.selfIdentity?.enabled === true,
-            budgetSelfChars: cfg.coreMemory?.soulRender?.budgetSelfChars,
-            budgetIdentityChars: cfg.coreMemory?.soulRender?.budgetIdentityChars,
-            maxRelationLines: cfg.coreMemory?.soulRender?.maxRelationLines,
-            // #10 T4：三行锚列表预算（0=关=逐位现状，config-first）
-            budgetAnchorChars: cfg.coreMemory?.soulRender?.budgetAnchorChars,
-            budgetPersonChars: cfg.coreMemory?.soulRender?.budgetPersonChars,
-            budgetCharacterChars: cfg.coreMemory?.soulRender?.budgetCharacterChars,
-            // S-FEEL-1（M1）：近期基调行（null/undefined=不渲染=逐位现状）。
-            moodTier: moodTierResult, // S-CHAR-2（M2/P5）：品格行渲染门（缺省 false=逐位现状：品格锚仍混渲染于价值锚行）。
-            // #28→#34（2026-10-17 接线）：当下状态行——soul_state 行非 null 才传（读取点见上，
-            // mood 计算后）；缺省 undefined=不渲染=逐位现状；指纹隔离由 soul-assembler 保证
-            //（state 只进进程内 cacheKey，不进 soulVersion）。
-            ...(soulState ? { state: soulState } : {}),
-            characterTensionEnabled: cfg.coreMemory?.characterTension?.enabled === true,
-            // #30（R5-F1 接线）：soul 快照旁路落账开关（缺省 true=开；false=运维关闭持久化写）。
-            snapshotsEnabled: cfg.coreMemory?.soulRender?.snapshotsEnabled,
-            // #52 D3（双通道 slots 去重）：per-turn 身份两行省略门（缺省 true=逐位现状；
-            // false=dual 路径跳过（我是谁）/（我心中的他）slots 行——会话头已承载）。
-            perTurnSlots: cfg.coreMemory?.soulRender?.perTurnSlots,
-            // #67（R3 身份叙事层，2026-10-19）：身份叙事化门——config 门透传（缺省 false=
-            // 逐位现状；true=dual 路径身份两行由 renderIdentityNarrative 叙事段替代，
-            // cacheKey nv 段隔离，不翻 soulVersion；Park 2411.10109 条目存储+叙事渲染并存）。
-            identityNarrative: cfg.coreMemory?.soulRender?.identityNarrative?.enabled === true,
-            // #29（R5）+#42（票 D / D9）：情境锚选择门——config 门透传 + 运行时注入
-            //（embedder/queryEmbeddingProvider/queryText；F1 生产接线，组装见
-            // buildSoulAnchorSelectRuntime：向量缺席=shadow 报告回退原形态/转正回退现状——宁缺毋滥）。
-            anchorSelect: buildSoulAnchorSelectRuntime(cfg, { embeddingService, userText: params.userText, logger }),
-            // soul 去重门（soul-dedupe，2026-10-19）：config 门透传（缺省 off=逐位现状；
-            // dropped 走 buildSoulPrefix 内 debug 日志；cacheKey srd/ad 隔离，不翻 soulVersion）。
-            strictRuleDedup: cfg.coreMemory?.soulRender?.strictRuleDedup,
-            anchorDedup: cfg.coreMemory?.soulRender?.anchorDedup,
-            // #40（ADR0003-P3 接线票 B）：capabilities 渲染门——config 门开且 body 携带
-            // 非空清单才传（渲染行=清单 1:1，#32 一致性合同）；门关整链丢弃=逐位现状。
-            ...(cfg.coreMemory?.soulRender?.capabilities?.enabled === true && params.capabilities?.length
-              ? { capabilities: params.capabilities }
-              : {}),
-            // T3（未来性渲染面，T6-F1 接线 2026-10-17）：承诺块渲染门——config 门透传
-            //（soulRender.promises.enabled 缺省 false=零渲染零查询=逐位现状）。
-            promisesEnabled: cfg.coreMemory?.soulRender?.promises?.enabled === true,
-            // 自维护人格层（m00527）：soul_persona 注入门 + 配置 + 心境读数。
-            // 缺省 false=零查询零渲染=逐位现状（老库无 soul_persona 表也安全）。
-            soulPersonaEnabled: cfg.coreMemory?.soulMaintenance?.enabled === true,
-            soulMaintenance: cfg.coreMemory?.soulMaintenance,
-            // 心境：soul_state 的连续读数（与 moodTier 三档二选一，soulMood 在场时优先）。
-            ...(soulMoodState ? { soulMood: soulMoodState } : {}),
-          },
-          soulMeta,
-        );
-        soulVersion = soulMeta.soulVersion;
-        mood = moodTierResult?.tier;
-      } catch (err) {
-        logger?.warn?.(`[soul] prefix failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    tPerfSoulMs61 = Math.round(performance.now() - tPerfSoulStart61);
-    tPerfSoulChars61 = soulPrefix.length;
+    // 人格注入已移交 DSH 插件（2026-11-07 task-6）：本函数不再组装 soul 前缀——稳定人格卡在
+    // 插件侧（`dsh-plugin/src/persona-card.ts` 的 persona-card section），每轮 volatile 段走
+    // Core 的 GET /v3/soul/card 与 /v3/soul/turn（card-service 组装）。旧链（core_memory 槽身份段、
+    // 红线、soul persona 段、价值锚/承诺/capabilities、soulPrefixCache、渲染旁路快照落账）一并删除，
+    // 注入块里不可能再出现人格段。perfMs 的 soul/soulChars 因此恒 0（字段保留是因为
+    // RecallJournalPerfMs 定义在 recall/recall-journal.ts，不在本次改动面）。
     if (memoryLines.length > 0) {
       const degradedNote = recallDegradedFtsOnly
         ? // I-1 复核修补：两义措辞 —— ftsHits>0∧embeddingHits=0 只证明"本轮向量召回无贡献"，
@@ -2960,17 +2674,14 @@ export async function performLayeredRecall(params: {
       // 两段（币值判定 + 建议类）缺省全开；要配置化再挂 recall.answerGuidance.*，不先做。
       const answerGuidance = buildAnswerGuidance({ currency: true, preference: true });
       const guidanceSeg = answerGuidance ? `\n\n${answerGuidance}` : "";
-      // v3 零行纪律：选线可以把整轮判空（全低于地板 / 同回合折叠 / 意图预算 0）。
-      // 此时**不输出空壳段**——"`<relevant-memories>` + 空格 + `</relevant-memories>`"
-      // 等于对模型说「有相关记忆」却一行不给，比不注入更差。只留身份段。
+      // 零行纪律（v3）：选线可以把整轮判空（全低于地板 / 同回合折叠 / 意图预算 0）。此时
+      // **不输出空壳段**——"`<relevant-memories>` + 空格 + `</relevant-memories>`" 等于对模型
+      // 说「有相关记忆」却一行不给，比不注入更差；整轮无行则 block 留 undefined（不注入）。
+      // 人格段已移交 DSH 插件（persona-card section + /v3/soul/card、/v3/soul/turn），本块不再拼 soul 前缀。
       block =
         injectedLines.length > 0
-          ? soulPrefix +
-            `<relevant-memories>\n${degradedNote}${wrapperHead}${guidanceSeg}\n\n${injectedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`
-          : soulPrefix;
-    } else if (soulPrefix) {
-      // C3：无记忆轮次——身份段常驻（"此刻的我"不因零召回而缺席）
-      block = soulPrefix;
+          ? `<relevant-memories>\n${degradedNote}${wrapperHead}${guidanceSeg}\n\n${injectedLines.join(RECALL_LINE_SEPARATOR)}\n</relevant-memories>`
+          : undefined;
     }
   }
 
@@ -2995,6 +2706,16 @@ export async function performLayeredRecall(params: {
   try {
     const journalCfg = cfg.recallJournal ?? { enabled: false, rotationSizeMB: 5, maxFiles: 5 };
     if (journalCfg.enabled) {
+      // S8 D10：soul 三字段（sessionInit/turnChars/drift）——纯读、best-effort，失败不影响召回。
+      const soulFields = await collectSoulJournalFields(
+        vectorStore,
+        {
+          teamId: params.isolationFilter?.teamId ?? profileIsolation.teamId ?? "default",
+          userId: params.isolationFilter?.userId ?? profileIsolation.userId ?? "default",
+          agentId: params.isolationFilter?.agentId ?? profileIsolation.agentId ?? "default",
+        },
+        { sessionReused },
+      );
       appendRecallJournal(
         path.join(pluginDataDir, "logs", "recall"),
         {
@@ -3019,6 +2740,7 @@ export async function performLayeredRecall(params: {
           perfMs: perfMs61,
           block,
           memoryLines,
+          ...(soulFields ? { soul: soulFields } : {}),
           // #179 选线观测面（mode:off 也记；字段见 recall-journal.ts 的 RecallJournal*）
           ...(injectionObservation
             ? {
@@ -3065,8 +2787,6 @@ export async function performLayeredRecall(params: {
     experienceCount,
     sessionReused,
     layered,
-    soulVersion,
-    mood,
     sceneIndexEntries,
     profileDataDir,
     profileStorage,
@@ -3283,14 +3003,9 @@ async function performAutoRecallInner(params: {
 // ============================
 
 /**
- * C5/R-A1：读当前租户价值锚并算本轮 query 的 appraisal fired labels + moodSign
- *（每次 recall 至多一次）。与工具侧 executeMemorySearch 同形（R-A1 起统一走
- * recall-signals.buildRankContext——fired 判定/valence 并入/moodSign 单一源）；
- * 租户上下文差异：auto-recall 无 requestIsolation /
- * IsolationFilter（L1 召回本就是全局路径），仅有 L2/L3 profileIsolation {teamId,
- * agentId}——生产调用方（tdai-core.handleBeforeRecall）不传 → default 桶，与
- * 工具侧 isolationFilter 缺省（→ default 桶）自洽。best-effort：store 无 listValues /
- * 读失败 → 空 labels + moodSign 0（coreRefBoost/mood 静默关闭，零影响）。
+ * C5/R-A1：算本轮 recall 的价值信号（fired labels + moodSign）。
+ * 价值锚来源已退场（S8 2026-11-07）：firedLabels 恒空，本函数只保留「此刻心境相对
+ * 基线的偏离」这一路 moodSign 供料；读取失败 → 空 labels + moodSign 0（显式告警）。
  */
 async function computeRecallValueSignals(
   userText: string,
@@ -3300,23 +3015,10 @@ async function computeRecallValueSignals(
   soulTenant?: CoreTenant,
 ): Promise<{ firedLabels: string[]; moodSign: number }> {
   try {
-    const listValues = vectorStore.listValues;
-    const tenant: CoreTenant = normalizeCoreTenant({
-      teamId: profileIsolation?.teamId ?? "",
-      userId: "",
-      agentId: profileIsolation?.agentId ?? "",
-    });
-    let firedLabels: string[] = [];
+    // S8（2026-11-07）：价值锚整表已删除，firedLabels 数据面恒空（coreRefBoost 静默关闭）；
+    // moodSign 仍由下方「此刻心境相对基线的偏离」供料。
+    const firedLabels: string[] = [];
     let moodSign = 0;
-    if (typeof listValues === "function") {
-      const rows = await listValues.call(vectorStore, tenant);
-      const ctx = await buildRankContext(userText, [], {
-        readValues: () =>
-          ((rows ?? []) as unknown as ValueRowLike[]).filter((v) => v && typeof v.label === "string" && v.label.trim()),
-      });
-      firedLabels = ctx.firedLabels;
-      moodSign = ctx.moodSign;
-    }
     // 心境信号（2026-11-06）：values 没命中时，用「此刻心境相对基线的偏离」定符号。
     // 这不是新开关——moodBoost 早就是既有配置项（生产 0.03），旧实现只让 moodSign
     // 来自 values 命中，而价值观在生产里一次没 fired，通路挂着却等于没接。
@@ -3343,7 +3045,7 @@ async function computeRecallValueSignals(
     return { firedLabels, moodSign };
   } catch (err) {
     logger?.warn?.(
-      `${TAG} coreRef values unavailable (non-fatal, coreRefBoost skipped): ${err instanceof Error ? err.message : String(err)}`,
+      `${TAG} soul mood signal unavailable (non-fatal, moodSign skipped): ${err instanceof Error ? err.message : String(err)}`,
     );
     return { firedLabels: [], moodSign: 0 };
   }

@@ -15,12 +15,15 @@ import type {
   SoulEpisode,
   SoulEpisodeKind,
   SoulEpisodeQuote,
+  SoulEpisodeSignal,
+  SoulLayer,
   SoulMaintenanceConfig,
 } from "./types.js";
 import type { AppraisalVector, EmotionEvent } from "./emotion.js";
 import { normalizeText, stripBullet, survivesProjectSwap, textHash } from "./gates.js";
 import { appraiseEmotion, deriveEmotionObject, extractAffectReferent } from "./emotion.js";
 import { appraiseBlameSlots, claimOfFix } from "./slots.js";
+import { normalizePersonNameCandidate } from "../record/person-hints.js";
 
 /** L0 读面最小形状（只依赖列，不依赖 store 实现）。 */
 export interface EpisodeSourceRow {
@@ -31,6 +34,13 @@ export interface EpisodeSourceRow {
   /** ISO；缺省时用 timestamp 兜底。 */
   recorded_at?: string;
   timestamp?: number;
+  /**
+   * 真实说话人的平台身份（`l0_conversations.user_id`，形如 `usr-2m7b1144d9`）。
+   * 可选：老库/老行没带出这列时为空，此时事件照常落库，挂人只能按展示名回退。
+   */
+  user_id?: string;
+  /** 这一轮的 agent 身份（`l0_conversations.agent_id`，形如 `agt-bbr29z58s2`）。 */
+  agent_id?: string;
 }
 
 /** 用户消息里的「纠正/否定」标记：这是人格最值钱的时刻——他明确说不要什么。 */
@@ -118,6 +128,18 @@ const COST_MARKERS: RegExp[] = [
   /\b(?:give up|sacrifice|costs?|miss|slower|spend (?:more )?time|give up speed|pay the price)\b/iu,
 ];
 
+/**
+ * 每会话「每 tick 最多新增」配额（B1）：由 worker 在 commit 前对「本轮新增」执行。
+ * 扫描期不再按它截断——否则最早入账的几条会永久占住名额，后面的合格消息永远进不来。
+ */
+export const EPISODE_PER_SESSION_PER_TICK = 5;
+
+/**
+ * 每会话扫描候选的防爆上限（B1）：只为防止单个会话把整窗刷满，
+ * 与 tick 配额无关；缺省 200，远高于任何真实会话的候选量。
+ */
+export const EPISODE_SESSION_CANDIDATE_CEILING = 200;
+
 export interface EpisodeMineOptions {
   /** 回看窗口（天），缺省取 config.episodeWindowDays。 */
   windowDays?: number;
@@ -125,14 +147,41 @@ export interface EpisodeMineOptions {
   maxMessages?: number;
   /** 单轮最多产出 episode 数。 */
   maxEpisodes?: number;
-  /** 每个会话最多几条（防止一次长吵把窗口刷满）。 */
+  /** 每个会话的候选防爆上限（缺省 EPISODE_SESSION_CANDIDATE_CEILING=200）。
+   *  注意：这不是「每 tick 入库上限」——那个在 worker 的 commit 前执行。 */
   perSessionCap?: number;
+}
+
+/**
+ * P0-1：本 tick 的可观测读数。
+ *
+ * 为什么要它：D1 的判据是「非 work 事件 ≥20/日、候选 ≥5/轮」，过去这两个数字只能靠
+ * `soul_episodes` 落表行数推断，而落表还受水位、cap、nearDup 与准入门影响，分不清
+ * 「没挖到」和「挖到了没落表」。把挖掘侧的原始产出摊在返回值里，判据才可断言。
+ */
+export interface EpisodeMineStats {
+  /** 本 tick 产出的事件候选数（排序/截断后真正返回的条数）。 */
+  candidates: number;
+  /** 本 tick 产出按 kind 的计数（只含出现过的 kind）。 */
+  byKind: Partial<Record<SoulEpisodeKind, number>>;
+  /** 其中「对人格层有信息量」的候选数：kind ≠ work 且 layers 非空（P0-1 判据 ≥5/轮）。 */
+  personaCandidates: number;
+  /** 带 layers 但 kind=work 的条数：只作判侧上下文，永不计入人格候选。 */
+  contextOnly: number;
 }
 
 export interface EpisodeMineResult {
   episodes: SoulEpisode[];
   /** 可被 voice few-shot 引用的真实助手原话。voice 是「我」的语体，不是用户画像。 */
   voiceQuotes: SoulEpisodeQuote[];
+  /**
+   * P0-1：`kind=work` 但带 layers 的事件（只可能是同句附带语气词）。
+   * work 永不进人格候选；这一路只给判侧当**上下文**看（「他派这个活时顺带纠正了什么」），
+   * 由 P0-2 决定怎么消费——本文件不替它做准入决定。
+   */
+  contextEpisodes: SoulEpisode[];
+  /** P0-1：本 tick 挖掘的原始读数（候选数 / 按 kind 计数 / 人格候选 / 仅上下文）。 */
+  stats: EpisodeMineStats;
 }
 
 const KIND_ZH: Record<SoulEpisodeKind, string> = {
@@ -145,6 +194,7 @@ const KIND_ZH: Record<SoulEpisodeKind, string> = {
   complaint: "追责",
   pressure: "催促",
   resignation: "作罢",
+  work: "任务",
 };
 
 const KIND_BASE_VALENCE: Record<SoulEpisodeKind, number> = {
@@ -157,6 +207,8 @@ const KIND_BASE_VALENCE: Record<SoulEpisodeKind, number> = {
   complaint: -0.5,
   pressure: -0.25,
   resignation: -0.2,
+  // work 不代表他有情绪：方向恒 0，强度由 scoreAffect 单独给固定小值。
+  work: 0,
 };
 
 const KIND_WEIGHT: Record<SoulEpisodeKind, number> = {
@@ -169,7 +221,44 @@ const KIND_WEIGHT: Record<SoulEpisodeKind, number> = {
   pressure: 2,
   resignation: 1,
   affect: 1,
+  // 最低权重：派活是背景信息，不该盖过任何一条真有态度的短句（排序用）。
+  work: 0,
 };
+
+/**
+ * P0-1：kind → 「它对哪些人格层有信息量」的显式映射（这是判据，不是渲染配置）。
+ *
+ * 为什么要有这张表：`kind` 只回答「这是哪类事」，人格落表要回答「这条能证明哪一层」。
+ * 过去两者绑在 worker 的「非 work」过滤里——work 之外的 kind 一股脑进同一条候选流，
+ * 于是「纠正 vs 追责 vs 拍板」对哪一层有价值全靠 LLM 自己猜：判据不可断言、统计不出来。
+ *
+ * 绑定口径（v4 §3 P0-1）：
+ *  - correction / praise → identity：他说「我该怎么做才对」「这样对了」，说的是我是谁；
+ *  - decision / value_conflict → values：拍板与取舍暴露「什么比什么重要」；
+ *  - divergence → values + boundary：不认同既标价值观分歧，也标他能接受的边界；
+ *  - complaint → boundary + relationship：追责既划红线，也记「我们之间」的账；
+ *  - pressure / affect → relationship：催促与情绪是此刻关系的温度，不构成身份判断；
+ *  - resignation → boundary + relationship：「算了 / 随你」是从此不再坚持的边界；
+ *  - work → 空：派活本身不是人格证据（P0-1 保持「work 永不进候选」）。
+ *
+ * 只允许 identity / values / boundary / relationship：self / narrative / voice / human
+ * 分别由自我史、摘要、语体语料与画像通道供料，事件层不得越权推断。
+ */
+export const EPISODE_KIND_LAYERS: Readonly<Record<SoulEpisodeKind, readonly SoulLayer[]>> = {
+  correction: ["identity"],
+  praise: ["identity"],
+  decision: ["values"],
+  value_conflict: ["values"],
+  divergence: ["values", "boundary"],
+  complaint: ["boundary", "relationship"],
+  pressure: ["relationship"],
+  affect: ["relationship"],
+  resignation: ["boundary", "relationship"],
+  work: [],
+};
+
+/** layers 的输出次序：固定成注入层序的子集，保证同一批信号每次算出同一个数组（可回放）。 */
+const EPISODE_LAYER_ORDER: readonly SoulLayer[] = ["identity", "values", "boundary", "relationship"];
 
 function hitCount(text: string, patterns: RegExp[]): number {
   let n = 0;
@@ -189,6 +278,9 @@ function truncate(text: string, max: number): string {
   const s = text.trim();
   return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
+
+/** 纯指代/泛称：换个人、换件事都成立，不能当「这次因为什么」的锚。 */
+const PRONOUN_OBJECT = /^(?:用户|他|她|它|我|你|对方|他们|她们|它们|你们|我们|这个|那个|这件|那件|这件事|那件事|这事|那事|此事|这次|那次|上述|以上)$/u;
 
 /** 去掉句首的纠正语气词，留下「关于什么」。 */
 export function cleanObjectPhrase(text: string): string {
@@ -235,7 +327,47 @@ const TEAM_VERDICT_MARKERS: RegExp[] = [
   /(?:未过|打回|未收口|中断于|没守住)/u,
 ];
 
-function classifyUserMessage(text: string): { kind: SoulEpisodeKind; signals: string[] } | null {
+/**
+ * P0-1 附带信号（side-only）：**只加 layers，不改主 kind，也不参与情绪打分**。
+ *
+ * 为什么单开一张表：主分类器（`classifyMainKind`）的九类标记都要求「这句话的主立场就是它」，
+ * 而「跑下全量测试，别再只贴总结」的主立场是派活，纠正只是修饰语。把它们塞进
+ * `CORRECTION_MARKERS` 会让所有带「别再」的派活变成情绪事件（连带污染情绪对象与心境）；
+ * 整句丢掉又等于「他纠正我怎么做」这句话从没发生过——人格永远学不到。
+ * 所以这里只收「同一句里确实表明了立场」的窄语气词：命中就挂到层上，主 kind 照旧。
+ */
+interface ToneMarker {
+  /** 信号名：进 layerSignals，审计时能回答「凭什么给这条 episode 标了这一层」。 */
+  label: string;
+  re: RegExp;
+  /** 语气最接近的 kind（只用于 layerSignals 的归类，不参与主 kind 判定）。 */
+  kind: SoulEpisodeKind;
+  /** 指向的层。 */
+  layers: readonly SoulLayer[];
+}
+
+const TONE_MARKERS: readonly ToneMarker[] = [
+  // 纠正做法：「别再只贴总结」= 他不接受这种交付形态 → 红线。
+  { label: "tone:stop-doing", re: /(?:别再只|不要再只|别只|不要只|别光|不要光|别再|不要再|以后别|下次别)/u, kind: "correction", layers: ["boundary"] },
+  // 重复纠正：「跟你说过多少次」= 这条要求早该是我的行为准则 → 身份与红线。
+  { label: "tone:repeat-correction", re: /(?:说过(?:多少)?次|跟你说过|提醒过|讲过(?:多少)?次)/u, kind: "correction", layers: ["identity", "boundary"] },
+  // 认可做法：「照上次那样」= 他认这条路 → 身份的正向证据。
+  { label: "tone:keep-doing", re: /(?:照上次|按上次|跟上次一样|就按刚才|保持这样|这样就对)/u, kind: "praise", layers: ["identity"] },
+  // 重复抱怨：「又来了 / 老毛病」= 同一处红线被再次触碰 → 红线与欠账。
+  { label: "tone:repeat-complaint", re: /(?:又来了|又犯|老毛病|屡教不改|又忘了)/u, kind: "complaint", layers: ["boundary", "relationship"] },
+];
+
+/** 主分类结果：主 kind 决定 episode.kind；附带信号只挂 layers，互不遮蔽。 */
+interface UserMessageClassification {
+  kind: SoulEpisodeKind;
+  /** 落进 `soul_episodes.signals` 的词面标记（保持旧语义：主命中 + 槽位理由）。 */
+  signals: string[];
+  /** P0-1：本句全部「对某层有信息量」的信号（主 kind 的命中 + 附带信号 + 语气词）。 */
+  layerSignals: SoulEpisodeSignal[];
+}
+
+/** 主分类：按固定优先序取**一个** kind（这是 episode 的身份，不因附带信号改变）。 */
+function classifyMainKind(text: string): { kind: SoulEpisodeKind; signals: string[] } | null {
   // 只认 Lead 的裁决：builder 自己的完工回报里也写「必修」，那是转述不是被纠正。
   if (/^Team message from\s+lead\b/iu.test(text)) {
     const verdict = firstHit(text, TEAM_VERDICT_MARKERS);
@@ -262,7 +394,106 @@ function classifyUserMessage(text: string): { kind: SoulEpisodeKind; signals: st
   if (dec) return { kind: "decision", signals: [dec] };
   const strong = hitCount(text, INTENSITY_MARKERS);
   if (strong > 0 && /[！!]/u.test(text)) return { kind: "affect", signals: ["intensity"] };
+  // 2026-11-07（P0-B）：最小任务通道。
+  // 生产 L0 水位之后全是「跑下全量测试」「把这个删掉」这类派活，八类标记一个都不命中，
+  // 于是 episodes=0、特质 0 票、人格永远长不出来。这里只补最窄的一条：**有动作词的陈述句**。
+  // work 是给特质漂移与自我史供料，不代表他有情绪——emotionObjectForEpisode 对它返回空，
+  // scoreAffect 也给固定的小强度（不参与心境门）。
+  if (isTaskInstruction(text)) return { kind: "work", signals: ["task_instruction"] };
   return null;
+}
+
+/**
+ * P0-1：本句命中的全部主分类信号（**不短路**）。
+ * 主 kind 只取一个（优先序不变），但同句里其它类别的命中不该被丢掉——
+ * 「不对，先把测试跑完」既是纠正，也带派活语境；「不错，但这里又错了」既有认可也有纠正。
+ */
+function collectKindHits(text: string): Array<{ kind: SoulEpisodeKind; signal: string }> {
+  const tables: ReadonlyArray<{ kind: SoulEpisodeKind; patterns: RegExp[] }> = [
+    { kind: "value_conflict", patterns: VALUE_MARKERS },
+    { kind: "complaint", patterns: COMPLAINT_MARKERS },
+    { kind: "correction", patterns: CORRECTION_MARKERS },
+    { kind: "divergence", patterns: DIVERGENCE_MARKERS },
+    { kind: "resignation", patterns: RESIGNATION_MARKERS },
+    { kind: "pressure", patterns: PRESSURE_MARKERS },
+    { kind: "decision", patterns: DECISION_MARKERS },
+    { kind: "praise", patterns: PRAISE_MARKERS },
+  ];
+  const hits: Array<{ kind: SoulEpisodeKind; signal: string }> = [];
+  for (const t of tables) {
+    const signal = firstHit(text, t.patterns);
+    if (signal) hits.push({ kind: t.kind, signal });
+  }
+  if (hitCount(text, INTENSITY_MARKERS) > 0 && /[！!]/u.test(text)) {
+    hits.push({ kind: "affect", signal: "intensity" });
+  }
+  return hits;
+}
+
+/**
+ * P0-1：把本句的所有信号摊成 (signal, kind, layer) 三元组。
+ * 主 kind 自己的层由 `EPISODE_KIND_LAYERS` 另算（见 layersOf），这里负责
+ * 「同一句里的其它信号」以及主分类器刻意不认的语气词。
+ */
+function collectLayerSignals(text: string): SoulEpisodeSignal[] {
+  const out: SoulEpisodeSignal[] = [];
+  const seen = new Set<string>();
+  const push = (signal: string, kind: SoulEpisodeKind, layer: SoulLayer): void => {
+    const key = `${signal}|${kind}|${layer}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ signal, kind, layer });
+  };
+  for (const hit of collectKindHits(text)) {
+    for (const layer of EPISODE_KIND_LAYERS[hit.kind] ?? []) push(hit.signal, hit.kind, layer);
+  }
+  for (const tone of TONE_MARKERS) {
+    const m = tone.re.exec(text);
+    if (!m) continue;
+    for (const layer of tone.layers) push(m[0], tone.kind, layer);
+  }
+  return out;
+}
+
+/**
+ * 事件最终标注的层 = 主 kind 的层 ∪ 附带信号的层。
+ * 空集返回 undefined（未标注），不写 []：两种状态在类型上不可区分，就别造第三种。
+ */
+function layersOf(
+  kind: SoulEpisodeKind,
+  signals: readonly SoulEpisodeSignal[],
+): SoulLayer[] | undefined {
+  const want = new Set<SoulLayer>(EPISODE_KIND_LAYERS[kind] ?? []);
+  for (const s of signals) want.add(s.layer);
+  if (want.size === 0) return undefined;
+  return EPISODE_LAYER_ORDER.filter((l) => want.has(l));
+}
+
+/** 主 kind 决定 episode.kind；附带信号只挂 layers——work 仍是 work，但纠正/抱怨不再被丢。 */
+function classifyUserMessage(text: string): UserMessageClassification | null {
+  const main = classifyMainKind(text);
+  if (!main) return null;
+  return { kind: main.kind, signals: main.signals, layerSignals: collectLayerSignals(text) };
+}
+
+/** 任务指令的动作动词表（P0-B）：只认「让我去做事」的这一小撮，宁窄勿宽。
+ *  「合」要排除「合法/合理/合适/合同」这类名词/形容词——「参数不合法」是报障，不是派活。 */
+const TASK_ACTION_VERBS = /(?:跑|改|看|验|加|删|写|读|查|测|装|起|停|合(?!法|理|适|同|约)|补|换)/u;
+
+/**
+ * 派活句判定（P0-B）：
+ *   - 必须通过语料卫生（注入体/回执/长 prompt 不算）；
+ *   - 长度 ≥12（「跑一下」这种太短，当噪音）；
+ *   - 命中动作动词；
+ *   - 问句不产：以 ？/? 结尾，或含「吗/呢」——问句是在问，不是在派活。
+ */
+function isTaskInstruction(text: string): boolean {
+  const t = text.trim();
+  if (!isUtteranceLike(t)) return false;
+  if (t.length < 12) return false;
+  if (/[?？]\s*$/u.test(t)) return false;
+  if (/(?:吗|呢)[?？]?\s*$/u.test(t)) return false;
+  return TASK_ACTION_VERBS.test(t);
 }
 
 function scoreAffect(
@@ -270,6 +501,9 @@ function scoreAffect(
   userText: string,
   decision: { signals: string[] },
 ): { valence: number; arousal: number; intensity: number; source: "lexicon" | "none" } {
+  // 2026-11-07（P0-B）：work 不评分——派活句里出现「必须/完全」是任务要求，不是他的情绪。
+  // 固定 0 / 0.25 / 0.15：够进事件史与特质投票，够不到心境门的强度阈值。
+  if (kind === "work") return { valence: 0, arousal: 0.25, intensity: 0.15, source: "lexicon" };
   const strong = hitCount(userText, INTENSITY_MARKERS);
   const excl = (userText.match(/[！!]/gu) ?? []).length;
   let valence = KIND_BASE_VALENCE[kind];
@@ -379,7 +613,7 @@ export function mineEpisodes(
   const windowDays = opts?.windowDays ?? cfg?.episodeWindowDays ?? 30;
   const maxMessages = opts?.maxMessages ?? cfg?.maxEpisodeMessages ?? 4000;
   const maxEpisodes = opts?.maxEpisodes ?? cfg?.maxEpisodesPerRun ?? 120;
-  const perSessionCap = opts?.perSessionCap ?? 5;
+  const perSessionCap = opts?.perSessionCap ?? EPISODE_SESSION_CANDIDATE_CEILING;
   const minChars = cfg?.verbatimMinChars ?? 8;
 
   const sorted = [...(rows ?? [])]
@@ -453,18 +687,23 @@ export function mineEpisodes(
         const tag = `slot:${blameSlots.reason}`;
         if (!cls) {
           // 词表里一个标记都没有（「搜索框搜索报错参数不合法」）——槽位补齐，事件不再整条消失。
-          cls = { kind: "complaint", signals: [tag] };
+          cls = { kind: "complaint", signals: [tag], layerSignals: collectLayerSignals(raw) };
         } else if (
           cls.kind === "decision" ||
           cls.kind === "pressure" ||
           cls.kind === "affect" ||
-          cls.kind === "divergence"
+          cls.kind === "divergence" ||
+          // P0-B：work 只是「有动作词」的兜底分类，一旦槽位判定这是冲我来的，
+          // 它必须让位给 complaint——派活不追责，追责不派活。
+          cls.kind === "work"
         ) {
-          cls = { kind: "complaint", signals: [...cls.signals, tag] };
+          // P0-1：改的是 kind（身份），附带信号整批保留——work 升格成追责时，
+          // 「他说过多少次」这类 identity/boundary 证据不该跟着一起消失。
+          cls = { ...cls, kind: "complaint", signals: [...cls.signals, tag] };
         } else {
           // correction 本身已经是「他说我不对」，不硬改成追责；但把槽位理由留在 signals 里，
           // 关系史据此认「这话是冲我的交付来的」（BLAME_TIGHT 漏掉的措辞）。
-          cls = { kind: cls.kind, signals: [...cls.signals, tag] };
+          cls = { ...cls, signals: [...cls.signals, tag] };
         }
       }
       // 派活/引述句里带「怎么/为什么」会被词表读成 complaint，但落点是让我去做事，不是挑我的错。
@@ -474,7 +713,7 @@ export function mineEpisodes(
         (blameSlots.taskLike || blameSlots.quoted) &&
         !blameSlots.blame
       ) {
-        cls = { kind: "decision", signals: [...cls.signals, "slot:instruction"] };
+        cls = { ...cls, kind: "decision", signals: [...cls.signals, "slot:instruction"] };
       }
       if (raw.length > 800) {
         // 长派单里偶尔也带「错/不对」字样，但只有裁决句才算纠正。
@@ -491,7 +730,14 @@ export function mineEpisodes(
       const stanceSource = teamLead ? raw.replace(/^Team message from\s+lead\s*[:：]\s*/iu, "") : raw;
       const stanceText = stanceSnippet(stanceSource);
       // 同一会话里重复的抱怨只留一条（词面近似即视为同一次）。
-      const object = extractAffectReferent(stanceText) || cleanObjectPhrase(stanceText) || truncate(stanceText, 24);
+      // 对象「关于什么」：抽不到就留空，绝不退回「原文前 24 字」——那条兜底会把
+      // 「他」「例会」这类指代/场地当对象（90 天回放实测 4 条可疑里 1 条是纯代词），
+      // 而空对象在展示侧本来就有「未定位」，不缺这一句。
+      const objectRaw = extractAffectReferent(stanceText) || cleanObjectPhrase(stanceText);
+      // 抽出来的是纯代词也不算对象：`extractAffectReferent` 会先命中「他」，
+      // 生产实测出现过 `任务：他`（11-07T17:30:45）。这类短语换个人、换件事都成立，
+      // 留着只会让「上次因为什么」检索误配。
+      const object = PRONOUN_OBJECT.test(objectRaw.trim()) ? "" : objectRaw;
       const key = normalizeText(raw);
       const nearDup = episodes.some(
         (e) =>
@@ -505,10 +751,20 @@ export function mineEpisodes(
       const firstSentence = (s: string): string => s.split(/[。；;！!？?\n]/u)[0] ?? s;
       const affect = scoreAffect(cls.kind, raw, cls);
       const cost = extractCost(`${raw} ${prevAssistant}`);
-      const title = `${KIND_ZH[cls.kind]}：${object}`.slice(0, 80);
+      const title = (object === "" ? KIND_ZH[cls.kind] : `${KIND_ZH[cls.kind]}：${object}`).slice(0, 80);
       const evidenceIds = Array.from(
         new Set([String(row.record_id ?? ""), prevId, nextId].filter((x) => x.length > 0)),
       );
+      const layers = layersOf(cls.kind, cls.layerSignals);
+      // 身份来源换成 L0 的真列（user_id/agent_id），不再拿配置里的展示名冒充说话人：
+      // cfg.personName 只是标签，默认值「用户」还是角色词 → 按它建人只会得到空名单
+      // （生产 57 条 episode 里 50 条 persons 为空就是这么来的）。
+      // 只有真带出平台身份时才写 speaker；老行/老库留空 → worker 走展示名回退。
+      const speakerUserId = String(row.user_id ?? "").trim();
+      const speakerAgentId = String(row.agent_id ?? "").trim();
+      // 角色词/代词不是人名：cfg.personName 默认值是「用户」，直接写进 speaker 会让
+      // worker 按平台 id 建出一行叫「用户」的人（生产实测 p_5bafd183df38）。
+      const speakerName = normalizePersonNameCandidate(cfg?.personName) ?? "";
       const episode: SoulEpisode = {
         episodeId: `ep-${textHash(`${sessionId}|${row.record_id}`)}`,
         at,
@@ -517,6 +773,16 @@ export function mineEpisodes(
         title,
         object: truncate(object, 48),
         participants: [cfg?.personName || "user", "assistant"],
+        // 展示层仍然是 participants（里面有角色词、有标签）；身份只认这一份。
+        ...(speakerUserId || speakerAgentId
+          ? {
+              speaker: {
+                ...(speakerUserId ? { userId: speakerUserId } : {}),
+                ...(speakerAgentId ? { agentId: speakerAgentId } : {}),
+                ...(speakerName ? { displayName: speakerName } : {}),
+              },
+            }
+          : {}),
         userStance: truncate(stanceText, 160),
         agentStance: prevAssistant ? truncate(firstSentence(prevAssistant), 120) : "",
         cost,
@@ -529,6 +795,8 @@ export function mineEpisodes(
         quote: { text: truncate(stanceText, 160), role: "user", recordId: String(row.record_id ?? ""), at },
         affectSource: affect.source,
         signals: cls.signals,
+        // P0-1：只在这一条真对某层有信息量时才写字段；空集保持 undefined（= 未标注，见 layersOf）。
+        ...(layers ? { layers } : {}),
       };
       episodes.push(episode);
       sessionEpisodes += 1;
@@ -560,10 +828,26 @@ export function mineEpisodes(
     if (voiceQuotes.length >= 200) break;
   }
 
-  episodes.sort(
-    (a, b) => KIND_WEIGHT[b.kind] - KIND_WEIGHT[a.kind] || Date.parse(b.at) - Date.parse(a.at),
-  );
-  return { episodes: episodes.slice(0, maxEpisodes), voiceQuotes };
+  // 截断按「新→旧」：cap 是防爆，不是质量筛选。按 kind 权重截断会让新消息永远排在
+  // 高权重旧事件之后，被 slice 掉（B1 的同族饿死）。
+  const capped =
+    episodes.length > maxEpisodes
+      ? [...episodes].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, maxEpisodes)
+      : episodes;
+  // 返回顺序仍按 kind 权重（判据/摘要消费侧依赖这个次序）。
+  capped.sort((a, b) => KIND_WEIGHT[b.kind] - KIND_WEIGHT[a.kind] || Date.parse(b.at) - Date.parse(a.at));
+  // P0-1：判据读数从「挖掘产出」这一层就给出来——落表行数受水位/cap/nearDup/准入门影响，
+  // 分不清「没挖到」和「挖到了没落表」；这两个数字必须能在返回结构里被测试与生产同时读到。
+  const byKind: Partial<Record<SoulEpisodeKind, number>> = {};
+  for (const ep of capped) byKind[ep.kind] = (byKind[ep.kind] ?? 0) + 1;
+  const contextEpisodes = capped.filter((ep) => ep.kind === "work" && (ep.layers?.length ?? 0) > 0);
+  const stats: EpisodeMineStats = {
+    candidates: capped.length,
+    byKind,
+    personaCandidates: capped.filter((ep) => ep.kind !== "work" && (ep.layers?.length ?? 0) > 0).length,
+    contextOnly: contextEpisodes.length,
+  };
+  return { episodes: capped, voiceQuotes, contextEpisodes, stats };
 }
 
 /**
@@ -769,6 +1053,9 @@ export function episodeRepaired(ep: { agentStance?: string; outcome?: string }):
  * 又不把一次性任务写成长期偏见。moodBiasLine 只接受 ≤20 字且换项目仍成立的对象。
  */
 export function emotionObjectForEpisode(ep: Pick<SoulEpisode, "kind" | "object"> & { userStance?: string }): string {
+  // 2026-11-07（P0-B）：work 只喂特质投票与自我史，不进情绪对象/心境——
+  // 把「跑下全量测试」当情绪对象，等于说他对着测试用例有态度。
+  if (ep.kind === "work") return "";
   const fromStance = extractAffectReferent(ep.userStance);
   if (fromStance !== "") return fromStance;
   const raw = typeof ep.object === "string" ? ep.object.trim() : "";
@@ -797,6 +1084,51 @@ export function emotionEventFromEpisode(
     // 模板半衰期优先（自我意识类 8h / 高唤醒类 2h），取不到才回落到全局配置。
     halfLifeHours: template.halfLifeHours || cfg.emotionHalfLifeHours,
   };
+}
+
+/**
+ * P2-E：不算「人」的参与方词。`participants` 里既有展示名，也有双方角色名
+ * （`mineEpisodes` 写的是 `cfg.personName || "user"` 与 `"assistant"`），
+ * 角色名不是自然人，不能拿去建 `soul_person`。
+ */
+export const EPISODE_ROLE_PARTICIPANTS: readonly string[] = ["assistant", "user", "system", "助手", "用户", "系统"];
+
+/**
+ * 事件的说话人平台名（`soul_person.platform` 的取值）。运行时与存量补齐脚本共用一份，
+ * 写成两处常量就会分成两个身份域：同一人被解析成两个 person_key。
+ */
+export const EPISODE_SPEAKER_PLATFORM = "tdai";
+
+/**
+ * P2-E：从一条事件的参与者名单里挑出「可能是自然人」的名字。
+ *
+ * 纯函数：不读库、不解析 person_key（那是调用方在写库前做的事），只做剔除与去重。
+ * 剔除角色词/空串，保留原始大小写与顺序（展示名要原样进 resolvePerson）；
+ * 去重按小写归一，避免同一人被写两次。
+ *
+ * 第二入参 `speaker` 只回答一件事：这条事件有没有真实平台身份（L0 的 user_id）。
+ * 有就返回 `platformId`，调用方据此走「平台 id → 人」的强证据路径；
+ * 没有就只给 `names`，调用方回退到展示名（历史数据只有名字可查）。
+ * 这里不判断该走哪条路径、也不碰 store——那两件事都在调用侧。
+ */
+export function personsForEpisode(
+  participants: readonly string[] | undefined,
+  speaker?: { userId?: string; agentId?: string },
+): { names: string[]; platformId?: string } {
+  const roles = new Set(EPISODE_ROLE_PARTICIPANTS.map((r) => r.toLowerCase()));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of participants ?? []) {
+    const name = String(raw ?? "").trim();
+    if (name === "") continue;
+    const key = name.toLowerCase();
+    if (roles.has(key) || roles.has(name)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  const platformId = String(speaker?.userId ?? "").trim();
+  return platformId === "" ? { names } : { names, platformId };
 }
 
 /** 「给一个 query 能召回」：确定性检索（标题/对象/双方立场/原话）。 */

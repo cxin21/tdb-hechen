@@ -17,7 +17,7 @@
  */
 import type { Logger } from "../types.js";
 
-/** LLM runner 最小面（与 store.deriveValueValences / anchor-growth 的 llmRunner 同形）。 */
+/** LLM runner 最小面（与 store 推断类能力、lifecycle worker 的 llmRunner 同形）。 */
 export interface ExpansionRunner {
   run(params: {
     prompt: string;

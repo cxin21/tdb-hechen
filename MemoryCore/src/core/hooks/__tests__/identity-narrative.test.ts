@@ -8,11 +8,10 @@
  * - 真实性守门三闸（全部可测试）：生成闸=叙事输出 ⊆ 模板常量 ∪ slots 原文子串
  *   （verifyNarrativeProvenance，违例整段丢弃退回条目渲染）；写入闸=纯函数零副作用
  *   （结构保证：本文件任何测试断言无写路径）；预算闸=超预算整句 drop、保留句逐字。
- * - soul 集成：identityNarrative=true 时 dual 路径身份两行由叙事段替代（同上单一源）；
- *   布局级渲染门进 prefix cacheKey（nv=模板指纹段）不翻 soulVersion（ADR-0003 §5）。
+ * - soul 集成（2026-11-07 task-6 退役）：人格注入移交 DSH 插件，soul-assembler 不再渲染
+ *   身份两行，故本文件只保留叙事组装器本身的用例；集成段随旧渲染链一并删除。
  */
 import { describe, expect, it } from "vitest";
-import { buildSoulPrefix } from "../soul-assembler.js";
 import {
   IDENTITY_NARRATIVE_SLOT,
   NARRATIVE_TEMPLATE_VERSION,
@@ -129,121 +128,5 @@ describe("#67 renderIdentityNarrative：确定性叙事组装（A 案）", () =>
     const narr = renderIdentityNarrative(real);
     expect(narr).not.toBeNull();
     expect(verifyNarrativeProvenance(narr!, real)).toBe(true);
-  });
-});
-
-// ── soul-assembler 集成（identityNarrative 门）─────────────────────────────
-
-const TENANT = { teamId: "tsh", userId: "u1", agentId: "a1" };
-
-function makeStore(slotsArg: Array<Record<string, string>>, rows: Array<Record<string, unknown>>) {
-  return {
-    readCore: async () => slotsArg,
-    listValues: async () => rows,
-  } as never;
-}
-
-const baseOpts = {
-  selfIdentityEnabled: true,
-  moodTier: { tier: "positive", sampleCount: 5 } as const,
-  characterTensionEnabled: true,
-};
-
-describe("#67 soul-assembler 集成：identityNarrative 门", () => {
-  it("true：dual 路径身份两行由叙事段替代（双路同源单一源），strict_rule 红线段照常", async () => {
-    const out = await buildSoulPrefix(
-      makeStore(slots, []),
-      { ...TENANT, userId: "u-narr" },
-      undefined,
-      { ...baseOpts, identityNarrative: true },
-    );
-    // 叙事段在（模板常量逐字）
-    expect(out).toContain(NARR_HEAD);
-    expect(out).toContain("- 我是谁：我是测试者。");
-    expect(out).toContain("- 我心中的他：用户是系统维护者。");
-    expect(out).toContain(NARR_TAIL);
-    // 条目形态的身份两行不在（（label）前缀与 [slot] 标记均消失；Park 口径：存储不动，仅渲染替代）
-    expect(out).not.toContain("（我是谁）");
-    expect(out).not.toContain("（我心中的他）");
-    expect(out).not.toContain("[self_identity]");
-    expect(out).not.toContain("[identity]");
-    // strict_rule 不参与叙事化：红线段照常（不变量语义）
-    expect(out).toContain("## 不可逾越（红线）");
-    expect(out).toContain("- [strict_rule] 绝不可删除记忆。");
-    expect(out).toContain("绝不可删除记忆。");
-  });
-
-  it("缺省（undefined）与显式 false 渲染逐位一致（现状字节不变），身份两行在", async () => {
-    const legacy = await buildSoulPrefix(makeStore(slots, []), { ...TENANT, userId: "u-def" }, undefined, baseOpts);
-    const off = await buildSoulPrefix(
-      makeStore(slots, []),
-      { ...TENANT, userId: "u-def" },
-      undefined,
-      { ...baseOpts, identityNarrative: false },
-    );
-    expect(legacy).toBe(off);
-    expect(legacy).toContain("（我是谁）");
-    expect(legacy).toContain("（我心中的他）");
-    expect(legacy).not.toContain(NARR_HEAD);
-  });
-
-  it("legacy（dual=false）不适用：identityNarrative=true 身份行照旧（唯一身份载体不静默丢失）", async () => {
-    const out = await buildSoulPrefix(
-      makeStore(slots, []),
-      { ...TENANT, userId: "u-lg" },
-      undefined,
-      { ...baseOpts, selfIdentityEnabled: undefined, identityNarrative: true },
-    );
-    expect(out).not.toContain(NARR_HEAD);
-    expect(out).toContain("我是测试者。");
-    expect(out).toContain("用户是系统维护者。");
-  });
-
-  it("cacheKey nv 隔离：identityNarrative=true 与缺省同租户互不串缓存（布局门进键）", async () => {
-    const def1 = await buildSoulPrefix(makeStore(slots, []), { ...TENANT, userId: "u-ck" }, undefined, baseOpts);
-    const narr1 = await buildSoulPrefix(
-      makeStore(slots, []),
-      { ...TENANT, userId: "u-ck" },
-      undefined,
-      { ...baseOpts, identityNarrative: true },
-    );
-    const def2 = await buildSoulPrefix(makeStore(slots, []), { ...TENANT, userId: "u-ck" }, undefined, baseOpts);
-    const narr2 = await buildSoulPrefix(
-      makeStore(slots, []),
-      { ...TENANT, userId: "u-ck" },
-      undefined,
-      { ...baseOpts, identityNarrative: true },
-    );
-    expect(def1).toBe(def2);
-    expect(narr1).toBe(narr2);
-    expect(def1).toContain("（我是谁）");
-    expect(narr1).toContain(NARR_HEAD);
-    expect(narr1).not.toContain("（我是谁）");
-  });
-
-  it("soulVersion 不变：identityNarrative=true 与缺省同数据同 sv（布局/模板变更不翻 sv 批次纪律）", async () => {
-    const meta1: { soulVersion?: string } = {};
-    await buildSoulPrefix(makeStore(slots, []), { ...TENANT, userId: "u-sv" }, undefined, baseOpts, meta1);
-    const meta2: { soulVersion?: string } = {};
-    await buildSoulPrefix(
-      makeStore(slots, []),
-      { ...TENANT, userId: "u-sv" },
-      undefined,
-      { ...baseOpts, identityNarrative: true },
-      meta2,
-    );
-    expect(meta1.soulVersion).toBeTruthy();
-    expect(meta2.soulVersion).toBe(meta1.soulVersion);
-  });
-
-  it("兜底：idNarr=true 但无身份内容 → 叙事 null → 无身份行亦无叙事头（宁缺毋滥不空转）", async () => {
-    const out = await buildSoulPrefix(
-      makeStore([{ slot: "strict_rule", content: "绝不可删除记忆。" }], []),
-      { ...TENANT, userId: "u-fb" },
-      undefined,
-      { ...baseOpts, identityNarrative: true },
-    );
-    expect(out).not.toContain(NARR_HEAD);
-    expect(out).toContain("## 不可逾越（红线）");
   });
 });

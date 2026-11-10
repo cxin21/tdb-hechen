@@ -1,100 +1,57 @@
 /**
  * identity-discovery —— 身份自发现（SOUL-PIPELINE §2.2，GROW 模式复用）。
  *
- * 灵魂公式"此刻的你"的材料源：LLM 从对话中自发现身份事实（我是谁/我的职责/我的红线），
- * 提案制 + 分级门采纳后写入 core_memory slots。
+ * 灵魂公式"此刻的你"的材料源：LLM 从对话中自发现身份事实（我是谁/我的职责/我的风格），
+ * 经确定性门（多源一致 ≥ minEvidence + observed）直写 core_memory 的 identity / self_identity 槽。
  *
- * 分级门（用户拍板 2026-09-15）：
- *   - identity（描述类）：多源一致 ≥ minEvidence + observed → 高置信自动采纳
- *   - core_value / strict_rule（红线类）：→ pending 列表（永不自动写入——Panel 人工采纳）
- *
- * 与 anchor-growth 的关系：同构不同对象——锚=价值参照系（core_values），身份=自我认知（core_memory slots）。
- * 共享：采样/冷却/状态机/证据重算模式；差异：slot 白名单/分级门/无 weight。
+ * 2026-11-07（S8）：提案制 + 人工采纳通道整体删除——core_value / strict_rule 提案不再有落点
+ * （core_pending 与 core_values 写链已删），collectIdentityFacts 只保留 identity / self_identity
+ * 两槽生长；红线由表单 strict_rule 投影维护，价值锚由 core/soul worker 自维护。
  */
 import type { IMemoryStore, CoreTenant } from "../store/types.js";
 import type { Logger } from "../types.js";
-import { createHash } from "node:crypto";
 import { escapeXmlTags } from "../../utils/sanitize.js";
-import { selectSampleRows, DISCOVER_SAMPLE_CAP, DISCOVER_TRUNCATE_CHARS } from "../../gateway/core-values-discover.js";
-import { findDuplicateProposal } from "./proposal-dedup.js";
-// S-CHAR-2（M2/P3+P4）：张力检测单一源（T1 对照纯函数+内存注册表；enabled 门控零行为差异）。
-// 注：不静态 import anchor-growth（它静态 import 本模块——环）；采纳门内动态 import 复用其导出。
-import { detectEvolutionReversal, recordTensionCandidates, drainTensionCandidates } from "../hooks/character-tension.js";
+// S8（2026-11-07）：core-values-discover 已随价值锚整表删除，样本选取口径内联到此
+// （高 significance ≥0.8 优先 + updated_time 倒序补齐 + 硬上限 50 / 单条截断 200 字）。
+const DISCOVER_SAMPLE_CAP = 50;
+const DISCOVER_TRUNCATE_CHARS = 200;
+const DISCOVER_HIGH_SIG_THRESHOLD = 0.8;
 
-export interface IdentityDiscoveryReproposalConfig {
-  /** #19 T12：重提通道开关——缺省 false = V12-REPRO 逐位现状（rejected 域静默拦截）。 */
-  enabled: boolean;
-  /** 证据相对门槛：重提需 ≥ minEvidenceMultiple × minEvidence（证据没涨不复活）。 */
-  minEvidenceMultiple: number;
-  /** 每轮重提上限（按证据降序截断）。 */
-  maxPerPass: number;
-  /** 同内容重提被拒达此次数 → 长冷（自动通道关闭，人工通道不受限）。 */
-  maxRejectsBeforeCold: number;
-}
-
-export const DEFAULT_IDENTITY_REPROPOSAL_CONFIG: IdentityDiscoveryReproposalConfig = {
-  enabled: false,
-  minEvidenceMultiple: 2,
-  maxPerPass: 2,
-  maxRejectsBeforeCold: 2,
-};
-
-/**
- * #19 T12：pending 基础 id（与 store upsertPendingCore 的确定性哈希同式——sqlite.ts 契约）。
- * 重提案 id = 基础 id + `-r<代数>` 后缀；base id 用于 supersedes 溯源（rejected 行不可复活）。
- */
-export function pendingBaseId(slot: string, content: string, tenant?: CoreTenant): string {
-  const teamId = tenant?.teamId || "default";
-  const userId = tenant?.userId || "default";
-  const agentId = tenant?.agentId || "default";
-  return "pd-" + createHash("sha256").update(`${slot}|${content}|${teamId}|${userId}|${agentId}`).digest("hex").slice(0, 16);
-}
-
-/** #19 T12：pending 行重提溯源 attrs 安全解析（坏 JSON/非对象 → {}）。 */
-export function pendingReproposalAttrs(row: { attrs_json?: string | null }): { reproposed?: boolean; supersedes?: string; generation?: number; [key: string]: unknown } {
-  if (!row.attrs_json) return {};
+function significanceOf(row: { metadata_json?: string; priority?: number }): number {
   try {
-    const a = JSON.parse(row.attrs_json) as unknown;
-    return a && typeof a === "object" && !Array.isArray(a) ? (a as { reproposed?: boolean; supersedes?: string; generation?: number }) : {};
+    const m = JSON.parse(row.metadata_json || "{}") as { significance?: unknown };
+    if (typeof m?.significance === "number" && Number.isFinite(m.significance)) return m.significance;
   } catch {
-    return {};
+    // metadata 非法 → 退 priority
   }
+  return typeof row.priority === "number" && Number.isFinite(row.priority) ? row.priority : 0;
 }
 
-export interface IdentityDiscoveryConfig {
-  enabled: boolean;
-  minEvidence: number;
-  maxPerPass: number;
-  intervalHours: number;
-  /** #19 T12：rejected 域证据升级重提通道（缺省缺省=false=V12-REPRO 现状；config-first）。 */
-  reproposal?: IdentityDiscoveryReproposalConfig;
+function byUpdatedDesc(a: { updated_time?: string }, b: { updated_time?: string }): number {
+  return String(b.updated_time ?? "").localeCompare(String(a.updated_time ?? ""));
 }
 
-export const DEFAULT_IDENTITY_DISCOVERY_CONFIG: IdentityDiscoveryConfig = {
-  enabled: true,
-  minEvidence: 3,
-  maxPerPass: 2,
-  intervalHours: 24,
-};
-
-export interface IdentityDiscoveryResult {
-  ran: boolean;
-  adopted: number;
-  pending: number;
-  reason?: "disabled" | "no-llm" | "store-unsupported" | "interval" | "no-new-corpus" | "no-corpus" | "error";
+export function selectSampleRows<T extends { metadata_json?: string; priority?: number; updated_time?: string }>(rows: T[], cap: number): T[] {
+  if (!cap || cap <= 0 || !Array.isArray(rows) || rows.length === 0) return [];
+  const sorted = [...rows].sort(byUpdatedDesc);
+  const high = sorted.filter((r) => significanceOf(r) >= DISCOVER_HIGH_SIG_THRESHOLD);
+  const rest = sorted.filter((r) => significanceOf(r) < DISCOVER_HIGH_SIG_THRESHOLD);
+  return [...high, ...rest].slice(0, cap);
 }
+// 2026-11-07（T1 提案/pending 通道清除）：提案去重与重提通道已删除——
+// core_value/strict_rule 提案不再有落点（core_pending 已删），本 worker 只保留 identity /
+// self_identity 槽生长（确定性门下的自维护直写）。
+// S-CHAR-2（M2/P3+P4）：张力检测单一源（T1 对照纯函数+内存注册表；enabled 门控零行为差异）。
 
 export const DISCOVERY_SYSTEM_PROMPT = [
   "你是团队身份提炼顾问。从样本记忆中提炼\"这个 agent/团队是谁\"的身份事实。",
   "你只提案，不落库：你的输出只是候选提案。",
   "",
   "每个提案包含：",
-  '- slot: "identity"（描述类：我是谁/我的职责/我的角色）或 "core_value"（价值观：什么是对的/什么最重要）或 "strict_rule"（红线：绝不做的事/必须遵守的规则）',
+  '- slot: "identity"（描述类：我是谁/我的职责/我的风格）或 "self_identity"（agent 自我：我反复承担的职责/我的工作风格）',
   "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
   "- support: [样本行号,…]（可选：支撑该事实的样本行号，1..N；只列真实支撑的 1-3 行，宁缺毋滥，不确定不给）",
   "- rationale: 提炼理由",
-  '- core_value 提案额外必带两个字段：label（≤8 字核心词，如"取证先行"；不要 JSON/结构符号残留）与 description（≤60 字价值观一句话说明）。其他 slot 不需要这两个字段。',
-  '- description 必须是笼统的价值观/工作纪律说明，绝不能是具体某一件事的记忆叙述：禁止出现 commit 哈希、任务或条目编号（如 A-3/D-4/REG-xxx）、日期时间、HTTP 状态码、文件名等具体事件细节。正确示例：「先取证再下结论的工作纪律」「解决问题必须从第一性原理出发，先定位根本原因并从根源根治」。',
   "",
   "硬约束：",
   "1. 只提炼身份层面的持续事实（我是谁/我信什么/我绝不做什么），不提一次性任务或事件。",
@@ -103,7 +60,7 @@ export const DISCOVERY_SYSTEM_PROMPT = [
   "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——",
   "   content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
   "3. 宁缺毋滥：证据不足的主题不要提。",
-  "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"},{\"slot\":\"core_value\",\"content\":\"…\",\"label\":\"…\",\"description\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
+  "4. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"}]，无提议输出 []。",
 ].join("\n");
 
 // DS-SOUL-MEMORY-002 P1 双视角：user prompt 主语修正（O15：「他是谁」）+ agent 自我层
@@ -114,395 +71,96 @@ const DISCOVERY_SYSTEM_PROMPT_DUAL = [
   "你只提案，不落库：你的输出只是候选提案。",
   "",
   "每个提案包含：",
-  '- slot: "identity"（用户身份：他是谁/他的职责/他的角色）或 "self_identity"（agent 自我：我反复承担的职责/我做出的承诺/我执行过的红线/我稳定的工作风格）或 "core_value"（价值观：什么是对的/什么最重要）或 "strict_rule"（红线：绝不做的事/必须遵守的规则）',
+  '- slot: "identity"（用户身份：他是谁/他的职责/他的角色）或 "self_identity"（agent 自我：我反复承担的职责/我做出的承诺/我执行过的红线/我稳定的工作风格）',
   "- content: 身份事实正文（≤200 字，必须是样本记忆中的原文短语或直接改写）",
   "- support: [样本行号,…]（可选：支撑该事实的样本行号，1..N；只列真实支撑的 1-3 行，宁缺毋滥，不确定不给）",
   "- rationale: 提炼理由",
-  '- core_value 提案额外必带两个字段：label（≤8 字核心词，如"取证先行"；不要 JSON/结构符号残留）与 description（≤60 字价值观一句话说明）。其他 slot 不需要这两个字段。',
-  '- description 必须是笼统的价值观/工作纪律说明，绝不能是具体某一件事的记忆叙述：禁止出现 commit 哈希、任务或条目编号（如 A-3/D-4/REG-xxx）、日期时间、HTTP 状态码、文件名等具体事件细节。正确示例：「先取证再下结论的工作纪律」「解决问题必须从第一性原理出发，先定位根本原因并从根源根治」。',
   "",
   "硬约束：",
   "1. identity 只提炼用户身份层面的持续事实（他是谁/他信什么/他的纪律）；self_identity 只提炼 agent 自我的持续事实，第一人称产出（我……），且必须能在样本中找到 agent 侧行为或对话文本支撑——纯用户侧事实不要写成 self_identity。",
   "2. 【身份判据】会随任务完成/阶段推进而过时的内容（项目进度、阶段状态、当前待办）不是身份——不要写入；只提炼跨状态持续的事实（角色、职责、关系、工作纪律）。",
   "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
   "4. 宁缺毋滥：证据不足的主题不要提。",
-  "5. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"},{\"slot\":\"core_value\",\"content\":\"…\",\"label\":\"…\",\"description\":\"…\",\"rationale\":\"…\"},…]（slot 取 identity/self_identity/core_value/strict_rule），无提议输出 []。",
+  "5. 只输出一个 JSON 数组：[{\"slot\":\"identity\",\"content\":\"…\",\"rationale\":\"…\"}]（slot 取 identity/self_identity），无提议输出 []。",
 ].join("\n");
 
-// 采样/截断常量与采样器复用 core-values-discover 导出（GROW-IDENT v2，禁第二份）。
 
-/** 身份事实演化状态键（per-agent） */
-function stateKey(tenant: CoreTenant | undefined, kind: string): string {
-  if (!tenant || (tenant.teamId === "default" && tenant.userId === "default" && tenant.agentId === "default")) {
-    return `identity_${kind}`;
-  }
-  return `identity_${kind}:${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])}`;
+
+export interface IdentityFact {
+  layer: "identity" | "self_identity";
+  text: string;
+  evidenceIds: string[];
+  rationale?: string;
 }
 
-export async function runIdentityDiscovery(deps: {
+export interface IdentityFactsResult {
+  facts: IdentityFact[];
+  proposals: number;
+  reason?: "no-llm" | "store-unsupported" | "no-corpus";
+}
+
+/**
+ * S6：identity-discovery 收敛为**纯取数**——读完语料 + LLM 提案 + 确定性过滤后返回事实，
+ * 不写任何表。落库由 runSoulMaintenance 收进同一候选数组、走同一准入判据、同一事务。
+ * 旧槽直写（upsertCore identity/self_identity）已退休。
+ */
+export async function collectIdentityFacts(deps: {
   store: IMemoryStore;
+  tenant: CoreTenant;
   llmRunner?: { run(params: { prompt: string; systemPrompt?: string; taskId: string; timeoutMs?: number; maxTokens?: number }): Promise<string> };
-  config?: Partial<IdentityDiscoveryConfig>;
-  /** DS-SOUL-MEMORY-002 P1：agent 自我层双视角开关（scheduler 传 coreMemory.selfIdentity）。
-   *  intervalHours：enabled=true 时覆盖本 worker 冷却（灵魂节奏独立于锚发现节奏，F15 分池；
-   *  enabled=false 时绝不读取——逐位现状）。 */
-  selfIdentity?: { enabled: boolean; maxPerPass: number; intervalHours?: number };
-  /** S-CHAR-2（M2/P4）：品格张力检测配置（coreMemory.characterTension 接线；缺省 undefined=关=逐位现状）。 */
-  characterTension?: { enabled: boolean; minInstances: number; maxCandidatesPerPass: number };
-  /** S-CHAR-2（M2/P4）：character 池护栏（F19/F15，接线自 anchorDiscovery.character；缺省 undefined=门不启用）。 */
-  characterPool?: { enabled: boolean; minEvidence: number; maxPerPass: number; maxTotal: number };
+  selfIdentity?: { enabled: boolean; maxPerPass: number };
   logger?: Logger;
-  now?: () => Date;
-}): Promise<IdentityDiscoveryResult> {
-  const cfg: IdentityDiscoveryConfig = { ...DEFAULT_IDENTITY_DISCOVERY_CONFIG, ...(deps.config ?? {}) };
-  if (cfg.enabled === false) {
-    return { ran: false, adopted: 0, pending: 0, reason: "disabled" };
+  /** S10 补洞：清库水位（ISO）。给定时只用该时刻之后写下的 L1 行，避免拿清库前的语料重产 identity。 */
+  sinceIso?: string;
+}): Promise<IdentityFactsResult> {
+  if (!deps.llmRunner) return { facts: [], proposals: 0, reason: "no-llm" };
+  if (!deps.store.queryL1Records) return { facts: [], proposals: 0, reason: "store-unsupported" };
+  type L1Row = { content?: string; metadata_json?: string; priority?: number; updated_time?: string; occurred_at?: string; record_id?: string };
+  const allRows = (deps.store.queryL1Records(deps.tenant) ?? []) as unknown as L1Row[];
+  const rows = deps.sinceIso
+    ? allRows.filter((r) => {
+        const at = r.updated_time ?? r.occurred_at;
+        return typeof at !== "string" || at >= deps.sinceIso!;
+      })
+    : allRows;
+  if (rows.length === 0) return { facts: [], proposals: 0, reason: "no-corpus" };
+  const sampleRows = selectSampleRows(rows, DISCOVER_SAMPLE_CAP);
+  const sample = sampleRows.map((r) => String(r.content ?? "").slice(0, DISCOVER_TRUNCATE_CHARS));
+  const sampleIds = sampleRows.map((r) => String((r as { record_id?: string }).record_id ?? ""));
+  const dual = deps.selfIdentity?.enabled === true;
+  const existing = ((deps.store.readCore?.(deps.tenant) ?? []) as Array<{ slot: string; content: string }>)
+    .filter((s) => s.slot === "identity" || (dual && s.slot === "self_identity"))
+    .map((s) => "[" + s.slot + "] " + s.content);
+  const raw = await deps.llmRunner.run({
+    prompt: buildIdentityPrompt(sample, existing),
+    systemPrompt: dual ? DISCOVERY_SYSTEM_PROMPT_DUAL : DISCOVERY_SYSTEM_PROMPT,
+    taskId: "identity-discovery",
+    timeoutMs: 0,
+    maxTokens: 0,
+  });
+  const proposals = parseProposals(String(raw ?? ""));
+  const maxPerLayer = Math.max(1, deps.selfIdentity?.maxPerPass ?? 2);
+  const facts: IdentityFact[] = [];
+  const countByLayer: Record<string, number> = {};
+  for (const p of proposals) {
+    if (p.slot !== "identity" && p.slot !== "self_identity") continue; // 双槽之外（含历史 core_value/strict_rule/character）一律丢弃
+    if (p.slot === "self_identity" && !dual) continue;
+    const cleaned = escapeXmlTags(stripIdentityStateResidue(String(p.content ?? "")));
+    if (cleaned === "" || isIdentityImposition(cleaned)) continue;
+    if ((countByLayer[p.slot] ?? 0) >= maxPerLayer) continue;
+    countByLayer[p.slot] = (countByLayer[p.slot] ?? 0) + 1;
+    const support = sanitizeSupportIndices(p.support, sampleIds.length);
+    const ids = support.map((i) => sampleIds[i]).filter((id): id is string => Boolean(id));
+    const fallback = sampleIds.filter(Boolean).slice(0, IDENTITY_SUPPORT_MAX);
+    facts.push({
+      layer: p.slot,
+      text: cleaned,
+      evidenceIds: ids.length > 0 ? ids : fallback,
+      rationale: String(p.rationale ?? "").slice(0, 200),
+    });
   }
-  // DS-SOUL-MEMORY-002 P1：灵魂自发现节奏独立于锚发现（F15 分池）——enabled=true 时
-  // selfIdentity.intervalHours 覆盖冷却；enabled=false 不读（逐位现状）。
-  if (deps.selfIdentity?.enabled === true && deps.selfIdentity.intervalHours !== undefined) {
-    cfg.intervalHours = deps.selfIdentity.intervalHours;
-  }
-  const store = deps.store;
-  const logger = deps.logger;
-  if (!deps.llmRunner) {
-    return { ran: false, adopted: 0, pending: 0, reason: "no-llm" };
-  }
-  if (!store.queryL1Records || !store.upsertCore || !store.readCore) {
-    return { ran: false, adopted: 0, pending: 0, reason: "store-unsupported" };
-  }
-
-  const now = deps.now ?? (() => new Date());
-  try {
-    let tenants: CoreTenant[];
-    if (typeof store.listL1TenantTriplets === "function") {
-      tenants = ((await Promise.resolve(store.listL1TenantTriplets())) ?? []).map((t: unknown) => {
-        const r = t as { teamId: string; userId: string; agentId: string };
-        return { teamId: r.teamId || "default", userId: r.userId || "default", agentId: r.agentId || "default" };
-      });
-    } else {
-      tenants = [{ teamId: "default", userId: "default", agentId: "default" }];
-    }
-    if (tenants.length === 0) return { ran: false, adopted: 0, pending: 0, reason: "no-corpus" };
-
-    let ranAny = false;
-    let adopted = 0;
-    let pending = 0;
-
-    for (const tenant of tenants) {
-      try {
-        const state = readState(store, tenant);
-        const nowMs = now().getTime();
-        // 冷却：距上次尝试 ≥ intervalHours
-        if (state.lastAttemptAt) {
-          const last = Date.parse(state.lastAttemptAt);
-          if (Number.isFinite(last) && nowMs - last < cfg.intervalHours * 3600_000) continue;
-        }
-        // 语料基线：无新增 → 跳过
-        const corpusCount = typeof store.countL1 === "function" ? Number(store.countL1(tenant)) || 0 : 0;
-        if (corpusCount === 0 || (state.lastCorpusCount !== null && state.lastCorpusCount !== undefined && corpusCount <= state.lastCorpusCount)) continue;
-
-        // GROW-IDENT v2（SOP 2026-09-17 修复）：采样复用 selectSampleRows——此前裸
-        // slice(0,50) 建立在无过滤查询 ASC 序上，取的是最旧 50 条：语料超上限后新记忆
-        // 永远进不了样本窗（身份自生长对新语料失明，违背自生长原则）。采样器语义 =
-        // updated 降序 + 高显著（≥0.8）优先 + cap 截断；证据重算语料仍走全量不变。
-        const rows = (store.queryL1Records(tenant) ?? []) as Parameters<typeof selectSampleRows>[0];
-        const sampleRows = selectSampleRows(rows, DISCOVER_SAMPLE_CAP);
-        const sample = sampleRows
-          .map((r) => String(r.content ?? "").slice(0, DISCOVER_TRUNCATE_CHARS));
-        // A-7b：样本编号→record_id 确定性映射（与 buildIdentityPrompt 的 1..N 编号同序）。
-        const sampleIds = sampleRows.map((r) => String((r as { record_id?: string }).record_id ?? ""));
-        const corpus = rows.map((r) => String(r.content ?? ""));
-
-        // 已有 slots（去重）
-        const existing = (store.readCore(tenant) ?? []) as Array<{ slot: string; content: string }>;
-        // S-CHAR-2（M2/P3，T1 挂点）：identity/self_identity 采纳（version++）时对「旧槽内容 vs
-        // 本轮新事实」做价值域极性对照（character-tension.ts 单一源）；命中 → 张力候选入内存
-        // 注册表（下一轮 worker drain 消费），不落表（O14）。enabled=false 时零调用=逐位现状。
-        const recordT1 = (beforeContent: string | undefined, newFacts: string[]): void => {
-          if (deps.characterTension?.enabled !== true || !beforeContent) return;
-          const valueLabels = ((store as unknown as { listValues?: (t?: unknown) => Array<{ label?: string; state?: string; node_type?: string }> | undefined }).listValues?.(tenant) ?? [])
-            .filter((v) => (v.state ?? "active") === "active" && (v.node_type ?? "theme") !== "person")
-            .map((v) => String(v.label ?? ""))
-            .filter((s) => s.length > 0);
-          if (valueLabels.length === 0) return;
-          for (const fact of newFacts) {
-            const rev = detectEvolutionReversal(beforeContent, fact, valueLabels);
-            if (rev.tension && rev.reversed) {
-              recordTensionCandidates(tenant, rev.reversed.map((label) => ({
-                source: "T1" as const,
-                label,
-                rationale: `演化反向：身份修订极性翻转（→ ${fact.slice(0, 30)}）`,
-                tensionRefs: [{ at: now().toISOString() }],
-                detectedAt: now().toISOString(),
-              })));
-              logger?.info?.(`[identity-discovery] T1 evolution reversal candidates: ${rev.reversed.join("、")}`);
-            }
-          }
-        };
-        const existingSummaries = existing.map((s) => `[${s.slot}] ${s.content}`);
-        // V6-任务8 P2：上下文注入——LLM 看到已有 pending 列表，从生成层避免换措辞重复
-        //（P1 闸门是执行层兜底，两层互补；feature-detect，无方法 store 逐位现状）。
-        const pendingRowsForPrompt = ((store as { listPendingCore?: (t?: unknown) => Array<{ slot: string; content: string; state: string }> }).listPendingCore?.(tenant) ?? []).filter((r) => r.state === "pending");
-        const pendingSummaries = pendingRowsForPrompt.slice(0, 30).map((r) => `[${r.slot}] ${r.content.slice(0, 60)}`);
-
-        // S-CHAR-2（M2/P4）：张力候选 drain（enabled 门控；一次性消费）→ prompt 张力段（无候选=逐位现状字节）。
-        const tensionCandidates = deps.characterTension?.enabled === true ? drainTensionCandidates(tenant) : [];
-        const tensionBlock = buildTensionPromptBlock(tensionCandidates);
-        const prompt = buildIdentityPrompt(sample, existingSummaries, pendingSummaries, tensionBlock);
-        const dual = deps.selfIdentity?.enabled === true;
-        const raw = await deps.llmRunner.run({
-          prompt,
-          systemPrompt: dual ? DISCOVERY_SYSTEM_PROMPT_DUAL : DISCOVERY_SYSTEM_PROMPT,
-          taskId: "identity-discovery",
-          // GROW-EVO P2.1（用户裁定）对齐（SOP 2026-09-17）：0 = 不限制 maxTokens/超时
-          //（llm-runner 语义）——此前 16384 + 缺省 120s 超时是 O8 同款确定性失败病。
-          timeoutMs: 0,
-          maxTokens: 0,
-        });
-
-        const proposals = parseProposals(String(raw ?? ""));
-        let adoptedThis = 0;
-        let pendingThis = 0;
-        const identitySupportBatch: Record<string, string[]> = {};
-
-        // 分级门（用户裁定 A 2026-09-15）：identity 描述类跳过证据重算——综合提炼 content
-        // 无法逐字匹配语料（与锚的 label 不同形态）；escapeXmlTags 消毒在写入路径，
-        // GROW-MAINT 类重验证为后续纠偏层。core_value/strict_rule（红线类）→ pending 永不自动写入。
-        const identityProps: Array<{ content: string; support?: number[] }> = [];        const charProps: Array<{ slot: string; content: string; rationale: string; label?: string; tensionRefs?: string[] }> = [];
-        const selfProps: Array<{ content: string; support?: number[] }> = [];
-        // #19 T12：重提通道配置 + 本轮重提候选（flush 在提案循环后统一按证据降序截断落库）。
-        const reproCfg = { ...DEFAULT_IDENTITY_REPROPOSAL_CONFIG, ...(cfg.reproposal ?? {}) };
-        const reproCandidates: Array<{ slot: string; content: string; evidence: number; label?: string; description?: string; supersedes: string; generation: number; threshold: number }> = [];
-        const maxSelf = dual ? Math.max(1, deps.selfIdentity?.maxPerPass ?? 2) : 0;
-        for (const p of proposals) {
-          if (p.slot === "identity") {
-            // 身份采纳门（硬约束执行）：状态模式剥离——prompt 软判据三轮复发后升级为
-            // 代码执行（第一轮枚举式 + 第二轮结构式，stripIdentityStateResidue 单一源）。
-            const cleaned = stripIdentityStateResidue(p.content);
-            if (!cleaned) {
-              // 整条提案全是状态陈述 → 整体拒收（不静默，留痕）
-              logger?.info?.(`[identity-discovery] identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
-            } else if (isIdentityImposition(cleaned)) {
-              // P2 SOP（B）：强加身份/人设注入 → 拒收留痕
-              logger?.info?.(`[identity-discovery] identity proposal rejected (identity imposition): ${p.content.slice(0, 60)}`);
-            } else {
-              identityProps.push({ content: cleaned, support: sanitizeSupportIndices(p.support, sampleIds.length) });
-            }
-          } else if (p.slot === "self_identity" && dual) {
-            // P1（DS-SOUL-MEMORY-002）：agent 自我层——同一 strip 门（单一源）；
-            // 「行为可证」为双视角 prompt 硬约束，确定性侧只做状态剥离弱校验。
-            const cleaned = stripIdentityStateResidue(p.content);
-            if (!cleaned) {
-              logger?.info?.(`[identity-discovery] self_identity proposal rejected (state residue only): ${p.content.slice(0, 60)}`);
-            } else if (isIdentityImposition(cleaned)) {
-              // P2 SOP（B）：用户口播人设（"AI 是女儿"类）→ 拒收留痕
-              logger?.info?.(`[identity-discovery] self_identity proposal rejected (identity imposition): ${p.content.slice(0, 60)}`);
-            } else {
-              selfProps.push({ content: cleaned, support: sanitizeSupportIndices(p.support, sampleIds.length) });
-            }
-          } else if (p.slot === "core_value" || p.slot === "strict_rule") {
-            // O13（P2）：pending 落点——红线类提案永不自动写入，持久化到 core_pending 供
-            // Panel 人工采纳/拒绝（feature-detect：无方法的 store 保持纯计数现状）。
-            // P0-F1：pending 证据展示单一源化——identityFactMatchesCorpus 同源口径
-            // （旧本地 recountEvidence=20 字前缀逐字，提炼措辞 vs 语料结构性假 0，违铁律 2）。
-            // V6-任务8 P1：提案语义去重闸门——换措辞重复不再入队（store 层精确守卫挡不住
-            // 语义重复；阈值 0.75 生产全行标定，宁漏勿错杀——误杀=真实规则静默丢失，
-            // 漏放由 Panel 人工采纳兜底；跳过留痕不计数）。P0 存量清理属数据面另行拍板。
-            // V12-REPRO（2026-09-25 何晨拍板「在当前会话处理完」）：比对域纳入 rejected——被拒红线
-            // 同义复提同样拦截（实证 1 例 TDAI 环境铁律变体 ≥0.75 复提；被拒内容留库可查，
-            // 真有新证据走 core-memory/write 人工通道；低相似仍放行=宁漏勿错杀不变）。
-            const pendingRowsForGate = ((store as { listPendingCore?: (t?: unknown, o?: { includeDecided?: boolean }) => Array<{ slot: string; content: string; state: string; attrs_json?: string | null }> }).listPendingCore?.(tenant, { includeDecided: true }) ?? []).filter((r) => r.state === "pending" || r.state === "rejected");
-            const redlineExisting = existing.filter((s) => s.slot === "core_value" || s.slot === "strict_rule");
-            // #19 T12：三分域去重——①在裁 pending 域（静默跳过，等人工裁决）②已采红线域
-            // （静默跳过）③rejected 域（重提通道：enabled + 证据 ≥2×minEvidence + 未长冷 →
-            // 生成带溯源的重提案；disabled = V12-REPRO 逐位现状静默拦截）。
-            const activePendingRows = pendingRowsForGate.filter((r) => r.state === "pending");
-            const rejectedPendingRows = pendingRowsForGate.filter((r) => r.state === "rejected");
-            const dupPending = findDuplicateProposal(p.content, p.slot, activePendingRows);
-            const dupAdopted = dupPending ? undefined : findDuplicateProposal(p.content, p.slot, redlineExisting);
-            if (dupPending || dupAdopted) {
-              const hit = (dupPending ?? dupAdopted)!;
-              logger?.info?.(`[identity-discovery] pending skipped (duplicate ${hit.similarity.toFixed(2)} vs: ${hit.content.slice(0, 50)}): ${p.content.slice(0, 60)}`);
-              continue;
-            }
-            const dupRejected = findDuplicateProposal(p.content, p.slot, rejectedPendingRows);
-            if (dupRejected) {
-              if (!reproCfg.enabled) {
-                // V12-REPRO 基线语义（拍板「被拒红线同义复提同样拦截」）。
-                logger?.info?.(`[identity-discovery] pending skipped (rejected-domain duplicate ${dupRejected.similarity.toFixed(2)} vs: ${dupRejected.content.slice(0, 50)}): ${p.content.slice(0, 60)}`);
-                continue;
-              }
-              const evR = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
-              const threshold = Math.ceil(reproCfg.minEvidenceMultiple * cfg.minEvidence);
-              if (evR < threshold) {
-                logger?.info?.(`[identity-discovery] reproposal withheld (evidence ${evR} < ${threshold}, V12-REPRO keeps blocking): ${p.content.slice(0, 60)}`);
-                continue;
-              }
-              const baseId = pendingBaseId(p.slot, p.content, tenant);
-              // 溯源自派生（core_pending 表自身即状态）：重提被拒次数 = supersedes 指向 base 的 rejected 行数。
-              const rejectCount = rejectedPendingRows.filter((r) => pendingReproposalAttrs(r).supersedes === baseId).length;
-              if (rejectCount >= reproCfg.maxRejectsBeforeCold) {
-                logger?.info?.(`[identity-discovery] reproposal long-cold (rejected ${rejectCount}×; manual channel still open): ${p.content.slice(0, 60)}`);
-                continue;
-              }
-              reproCandidates.push({ slot: p.slot, content: p.content, evidence: evR, label: p.label, description: p.description, supersedes: baseId, generation: rejectCount + 1, threshold });
-              continue;
-            }
-            const ev = corpus.filter((c) => identityFactMatchesCorpus(p.content, c)).length;
-            const persisted = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string }) => boolean }).upsertPendingCore?.(p.slot, p.content, ev, tenant, { label: p.label, description: p.description });
-            pendingThis++;
-            logger?.info?.(`[identity-discovery] pending ${p.slot}: ${p.content.slice(0, 60)} (evidence=${ev}${persisted ? ", persisted" : ""})`);
-          } else if (p.slot === "character") {
-            // S-CHAR-2（M2/P4）：品格张力提案收集——确定性门在采纳段统一裁决；
-            // enabled=false 时静默丢弃（宽松读取不改变现状计数=逐位现状）。
-            if (deps.characterTension?.enabled === true) charProps.push(p);
-          } else {
-            pendingThis++;
-          }
-        }
-        // #19 T12：重提案 flush——按证据降序取 maxPerPass，写入带溯源 attrs 的新 pending 行
-        // （store 层 pending_id 后缀 -rN；rejected 行不可复活=V12 语义保持，supersedes 可回溯）。
-        if (reproCandidates.length > 0) {
-          const ordered = [...reproCandidates].sort((a, b) => b.evidence - a.evidence).slice(0, Math.max(1, reproCfg.maxPerPass));
-          for (const rc of ordered) {
-            const persistedR = (store as { upsertPendingCore?: (slot: string, content: string, evidence: number, tenant?: unknown, extra?: { label?: string; description?: string; attrs?: Record<string, unknown>; reproposalOf?: string; reproposalGen?: number }) => boolean }).upsertPendingCore?.(rc.slot, rc.content, rc.evidence, tenant, {
-              label: rc.label,
-              description: rc.description,
-              attrs: { reproposed: true, supersedes: rc.supersedes, generation: rc.generation, reproposed_at: new Date().toISOString(), evidence_threshold: rc.threshold },
-              reproposalOf: rc.supersedes,
-              reproposalGen: rc.generation,
-            });
-            pendingThis++;
-            logger?.info?.(`[identity-discovery] reproposed ${rc.slot} (gen=${rc.generation}, evidence=${rc.evidence} >= ${rc.threshold}): ${rc.content.slice(0, 60)}${persistedR ? ", persisted" : ""}`);
-          }
-          if (ordered.length < reproCandidates.length) {
-            logger?.info?.(`[identity-discovery] reproposal per-pass cap: ${reproCandidates.length - ordered.length} withheld (maxPerPass=${reproCfg.maxPerPass})`);
-          }
-        }
-        // identity slot 单行语义：多提案合并为 bulleted 身份描述，version++ 演化
-        if (identityProps.length > 0) {
-          // P2 SOP（A）：演化合并——existing ∪ 本轮新事实（新事实消毒后入列，existing 行不二次转义）
-          const existingIdentity = existing.find((s) => s.slot === "identity")?.content;
-          const merged = mergeIdentityFacts(existingIdentity, identityProps.map((c) => escapeXmlTags(c.content)));
-          const ok = store.upsertCore("identity", merged, "identity-discovery", tenant);
-          if (ok) {
-            logReplacing("identity", existing, logger);
-            adoptedThis = 1;
-            logger?.info?.(`[identity-discovery] adopted identity (${identityProps.length} facts)`);            recordT1(existingIdentity, identityProps.map((f) => f.content));
-            // P2：identityRefs 回填（20 字切片弱口径；F14 遗忘保护/GROW-MAINT 重验证的数据前提）
-            // A-7b：支撑指针优先（确定性精确回填——摘要式改写不再依赖滑窗）；无指针/指针落空 →
-            // 滑窗兜底（F-EV13-1 修复保留，向后兼容）。supportMap 供 GROW-MAINT 确定性重验。
-            for (const fact of identityProps) {
-              const slice = identityFactSlice(fact.content);
-              if (!slice) continue;
-              const supportIds = (fact.support ?? []).map((i) => sampleIds[i - 1] ?? "").filter((s) => s !== "");
-              if (supportIds.length > 0) {
-                for (const rid of supportIds) {
-                  (store as { backfillMemoryRef?: (rid: string, key: "identityRefs", label: string, t?: unknown) => boolean }).backfillMemoryRef?.(rid, "identityRefs", slice, tenant);
-                }
-                identitySupportBatch[fact.content.replace(/^-/, "").trim()] = supportIds;
-                continue;
-              }
-              for (const r of rows) {
-                if (identityFactMatchesCorpus(fact.content, String((r as { content?: string }).content ?? ""))) {
-                  const rid = String((r as { record_id?: string }).record_id ?? "");
-                  if (rid) (store as { backfillMemoryRef?: (rid: string, key: "identityRefs", label: string, t?: unknown) => boolean }).backfillMemoryRef?.(rid, "identityRefs", slice, tenant);
-                }
-              }
-            }
-          }
-        }
-        // self_identity slot 单行语义与 identity 同构：bulleted 合并、version++ 演化
-        if (selfProps.length > 0) {
-          // P2 SOP（A）：演化合并（同 identity；先截断本轮 maxPerPass 再并入）
-          const existingSelf = existing.find((s) => s.slot === "self_identity")?.content;
-          const mergedSelf = mergeIdentityFacts(existingSelf, selfProps.slice(0, maxSelf).map((c) => escapeXmlTags(c.content)));
-          const okSelf = store.upsertCore("self_identity", mergedSelf, "identity-discovery", tenant);
-          if (okSelf) {
-            logReplacing("self_identity", existing, logger);
-            adoptedThis += 1;
-            logger?.info?.(`[identity-discovery] adopted self_identity (${Math.min(selfProps.length, maxSelf)} facts)`);            recordT1(existingSelf, selfProps.slice(0, maxSelf).map((f) => f.content));
-          }
-        }
-        // ── S-CHAR-2（M2/P4）：characterProposal 确定性门（F19 四件 + F15 池配额；R-D 不新造门）──
-        // IF-4：本门不调用 findDuplicateProposal——character 提案不入 proposal-dedup 比对域
-        // （品格提案与身份事实去重是两个语义，混入会误拦）。
-        if (deps.characterTension?.enabled === true && charProps.length > 0) {
-          const ctCfg = deps.characterTension;
-          const poolCfg = deps.characterPool;
-          const storeEx = store as unknown as { upsertValue?: (...a: unknown[]) => boolean | Promise<boolean>; listValuesAnyState?: (t?: unknown) => Array<{ label: string; state?: string; node_type?: string; pinned?: number; origin?: string }> };
-          if (poolCfg && typeof storeEx.upsertValue === "function" && typeof storeEx.listValuesAnyState === "function") {
-            // 真实候选 ref 集合（recordId ?? at）——LLM 引用必须命中真实检测实例，编造 id 门即拒
-            const known = new Map<string, Set<string>>();
-            for (const c of tensionCandidates) {
-              if (!known.has(c.label)) known.set(c.label, new Set());
-              const refSet = known.get(c.label)!;
-              for (const r of c.tensionRefs) { const k = r.recordId ?? r.at; if (k) refSet.add(k); }
-            }
-            const anyStateRows = ((await Promise.resolve(storeEx.listValuesAnyState(tenant))) ?? []) as Array<{ label: string; state?: string; node_type?: string; pinned?: number; origin?: string }>;
-            const charAll = anyStateRows.filter((r) => (r.node_type ?? "theme") === "character");
-            const charNames = charAll.map((r) => String(r.label).trim().toLowerCase()).filter((s) => s.length > 0);
-            // ev 门：character 池证据口径 = self_identity 槽事实 × 语料（与池维护同刻度；单一源复用 anchor-growth 导出）
-            const selfFacts = (existing.find((s) => s.slot === "self_identity")?.content ?? "")
-              .split("\n").map((l) => l.trim()).filter((l) => l.startsWith("-") && l.length > 1)
-              .map((l) => l.replace(/^-\s*/, "")).filter((s) => s.length > 0);
-            const ag = await import("./anchor-growth.js");
-            const ev = selfFacts.length > 0 ? ag.characterEvidenceCount(selfFacts, corpus) : 0;
-            if (ev < poolCfg.minEvidence) {
-              logger?.info?.(`[identity-discovery] character proposals rejected (ev=${ev} < minEvidence=${poolCfg.minEvidence})`);
-            } else {
-              const charActive = charAll.filter((r) => (r.state ?? "active") === "active");
-              const pinnedNow = charActive.filter((r) => r.pinned === 1).length;
-              const autoNonPinned = charActive.filter((r) => r.origin === "auto" && r.pinned !== 1).length;
-              let free = Math.max(0, poolCfg.maxTotal - pinnedNow - autoNonPinned);
-              let adoptedChar = 0;
-              for (const p of charProps) {
-                const label = (p.label ?? "").trim();
-                if (!label || label.length > 12) { logger?.info?.(`[identity-discovery] character proposal rejected (label invalid): ${label.slice(0, 12)}`); continue; }
-                if (adoptedChar >= ctCfg.maxCandidatesPerPass) { logger?.info?.(`[identity-discovery] character proposal skipped (per-pass cap=${ctCfg.maxCandidatesPerPass}): ${label}`); break; }
-                if (free <= 0) { logger?.info?.(`[identity-discovery] character proposal skipped (pool quota full): ${label}`); break; }
-                if (charNames.includes(label.toLowerCase())) { logger?.info?.(`[identity-discovery] character proposal rejected (duplicate ${label})`); continue; }
-                const seen = new Set<string>();
-                const validRefs = (p.tensionRefs ?? []).filter((r) => { if (seen.has(r)) return false; seen.add(r); return known.get(label)?.has(r) ?? false; });
-                if (validRefs.length < ctCfg.minInstances) { logger?.info?.(`[identity-discovery] character proposal rejected (tensionRefs ${validRefs.length} < minInstances=${ctCfg.minInstances} or unknown ref): ${label}`); continue; }
-                const cvd = await import("../../gateway/core-values-discover.js");
-                const ok = await Promise.resolve(storeEx.upsertValue!(
-                  ag.growthValueId(label, "character"), label, cvd.suggestAnchorWeight(ev, corpus.length), "auto-growth", tenant, undefined, "auto", "character",
-                  { source: "character_tension", tensionRefs: validRefs.slice(0, 10) },
-                ));
-                if (ok) {
-                  adoptedChar++;
-                  charNames.push(label.toLowerCase());
-                  logger?.info?.(`[identity-discovery] adopted character anchor (tension): ${label} refs=${validRefs.length} ev=${ev}`);
-                } else {
-                  logger?.warn?.(`[identity-discovery] character anchor upsert failed: ${label}`);
-                }
-              }
-            }
-          }
-        }
-        adopted += adoptedThis;
-        pending += pendingThis;
-
-        // A-7b：支撑映射并入身份状态 kv（上限 64 键防膨胀；GROW-MAINT 确定性重验的数据前提）。
-        const prevState = readState(store, tenant);
-        const mergedSupport: Record<string, string[]> = { ...(prevState.supportMap ?? {}), ...identitySupportBatch };
-        const supportKeys = Object.keys(mergedSupport);
-        if (supportKeys.length > 64) for (const k of supportKeys.slice(0, supportKeys.length - 64)) delete mergedSupport[k];
-        writeState(store, tenant, { lastAttemptAt: now().toISOString(), lastCorpusCount: corpusCount, ...(Object.keys(mergedSupport).length > 0 ? { supportMap: mergedSupport } : {}) });
-        ranAny = true;
-        logger?.info?.(`[identity-discovery] agent=${JSON.stringify([tenant.teamId, tenant.userId, tenant.agentId])} corpus=${corpusCount} proposals=${proposals.length} adopted=${adoptedThis}`);
-      } catch (err) {
-        logger?.warn?.(`[identity-discovery] agent error: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    logger?.info?.(`[identity-discovery] ran: agents=${tenants.length} adopted=${adopted} pending=${pending}`);
-    return { ran: ranAny, adopted, pending };
-  } catch (err) {
-    logger?.warn?.(`[identity-discovery] failed: ${err instanceof Error ? err.message : String(err)}`);
-    return { ran: false, adopted: 0, pending: 0, reason: "error" };
-  }
+  deps.logger?.info?.("[identity-discovery] collected facts=" + facts.length + " proposals=" + proposals.length);
+  return { facts, proposals: proposals.length };
 }
 
 // ── 身份采纳门：状态残留剥离（单一源，导出供测试） ──
@@ -520,17 +178,6 @@ const STATE_PHRASE_RES = [
 const STATE_DATE_RE = /\d{4}[-年]\d{0,2}/;
 const STATE_PHASE_RE = /P\d/;
 
-// DS-SOUL-MEMORY-002 P1（O14）：身份修订旧文留痕——merge 成功后打一行 replacing 日志。
-// 非结构化、诚实低成本：旧文仅在日志层可回溯（upsertCore 自带 version++ 演化）；
-// 截断 200 字防日志膨胀；旧槽为空（首次写入）不打。
-function logReplacing(
-  slot: string,
-  existing: Array<{ slot: string; content: string }>,
-  logger?: Logger,
-): void {
-  const old = existing.find((s) => s.slot === slot);
-  if (old?.content) logger?.info?.(`[identity-discovery] replacing ${slot} (old content): ${old.content.slice(0, 200)}`);
-}
 
 export function stripIdentityStateResidue(content: string): string {
   const s = String(content ?? "");
@@ -553,17 +200,13 @@ export function stripIdentityStateResidue(content: string): string {
 
 // ── helpers ──
 
-function buildIdentityPrompt(samples: string[], existing: string[], pendingList: string[] = [], tensionBlock: string = ""): string {
+function buildIdentityPrompt(samples: string[], existing: string[], tensionBlock: string = ""): string {
   const sampleText = samples.map((s, i) => `${i + 1}. ${s}`).join("\n");
   const existingText = existing.length > 0 ? existing.map((e) => `- ${e}`).join("\n") : "（空，无已有身份事实）";
-  // V6-任务8 P2：pending 列表注入（30 条 × 60 字预算；空列表逐位现状）。
-  const pendingText = pendingList.length > 0
-    ? `\n\n## 已有待拍板提案（语义相近者不要再提——换措辞重复是噪声，不是新发现）\n\n${pendingList.slice(0, 30).map((e) => `- ${e}`).join("\n")}`
-    : "";
-  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}${pendingText}${tensionBlock}\n\n请提炼身份事实提案。`;
+  return `## 样本记忆（最近 ${samples.length} 条；行号 1..${samples.length} 可作为提案 support 字段引用）\n\n${sampleText}\n\n## 已有身份事实（不得重复）\n\n${existingText}${tensionBlock}\n\n请提炼身份事实提案。`;
 }
 
-function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[]; label?: string; description?: string; tensionRefs?: string[] }> {
+function parseProposals(raw: string): Array<{ slot: string; content: string; rationale: string; support?: number[] }> {
   let cleaned = (raw ?? "").trim();
   if (!cleaned) return [];
   if (cleaned.startsWith("```")) cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
@@ -572,41 +215,21 @@ function parseProposals(raw: string): Array<{ slot: string; content: string; rat
   let parsed: unknown;
   try { parsed = JSON.parse(match[0]); } catch { return []; }
   if (!Array.isArray(parsed)) return [];
-  // P1（DS-SOUL-MEMORY-002）：+self_identity。enabled=false 时幻觉提案落 else→pending（无害且诚实）。
-  const valid = new Set(["identity", "core_value", "strict_rule", "self_identity"]);
-  const out: Array<{ slot: string; content: string; rationale: string; label?: string; description?: string; tensionRefs?: string[] }> = [];
+  // 2026-11-07（S8）：core_value / strict_rule / character 提案通道已删——只剩 identity / self_identity
+  // 两槽（core_pending 与 core_values 写链均已移除，其余 slot 的提案不再有落点）。
+  const valid = new Set(["identity", "self_identity"]);
+  const out: Array<{ slot: string; content: string; rationale: string; support?: number[] }> = [];
   for (const item of parsed) {
     if (!item || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
     const slot = typeof o.slot === "string" ? o.slot : "";
-    // S-CHAR-2（M2/P4/IF-3 宽松读取）：第三产出字段 characterProposal（slot=character）——
-    // 旧 LLM 输出无此 slot 时逐位现状；解析层不做门裁决（门在采纳段）。
-    if (slot === "character") {
-      const label = typeof o.label === "string" ? o.label.trim() : "";
-      if (!label) continue;
-      const refs = Array.isArray(o.tensionRefs)
-        ? (o.tensionRefs as unknown[]).map((r): string => {
-            if (typeof r === "string") return r;
-            if (r && typeof r === "object") {
-              const rid = (r as { recordId?: unknown }).recordId;
-              return typeof rid === "string" ? rid : "";
-            }
-            return "";
-          }).filter((s: string) => s !== "")
-        : [];
-      out.push({ slot, content: label, rationale: typeof o.rationale === "string" ? o.rationale : "", label, ...(refs.length > 0 ? { tensionRefs: refs } : {}) });
-      continue;
-    }
     const content = typeof o.content === "string" ? o.content.trim() : "";
     if (!slot || !content || !valid.has(slot)) continue;
     // A-7b：支撑样本指针（可选；整数保留，范围校验在消费侧按样本窗做）。
     const support = Array.isArray(o.support)
       ? o.support.map((n) => (typeof n === "number" && Number.isInteger(n) ? n : NaN)).filter((n) => !Number.isNaN(n))
       : undefined;
-    // V12-CV：core_value 提案 label/description 透传（生成端产出、采纳端确定性门消费）。
-    const cvLabel = typeof o.label === "string" ? o.label.trim() : "";
-    const cvDesc = typeof o.description === "string" ? o.description.trim() : "";
-    out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "", ...(support && support.length > 0 ? { support } : {}), ...(cvLabel ? { label: cvLabel } : {}), ...(cvDesc ? { description: cvDesc } : {}) });
+    out.push({ slot, content, rationale: typeof o.rationale === "string" ? o.rationale : "", ...(support && support.length > 0 ? { support } : {}) });
   }
   return out;
 }
@@ -627,21 +250,6 @@ export function sanitizeSupportIndices(raw: unknown, sampleCount: number): numbe
   return [...seen];
 }
 
-// ── state helpers ──
-// GROW-EVO：独立键族（identity_* 前缀）——与 anchor-growth 的状态互不覆盖
-// （共用 getAnchorGrowthState 会让身份写入清掉锚的 lastAdoptedAt → 锚 24h 冷却失效）。
-function readState(store: IMemoryStore, tenant: CoreTenant): { lastAttemptAt?: string; lastCorpusCount?: number; supportMap?: Record<string, string[]> } {
-  try {
-    const raw = (store as unknown as { getIdentityDiscoveryState?: (t?: CoreTenant) => unknown }).getIdentityDiscoveryState?.(tenant);
-    if (raw && typeof raw === "object") return raw as { lastAttemptAt?: string; lastCorpusCount?: number; supportMap?: Record<string, string[]> };
-  } catch { /* fall through */ }
-  return {};
-}
-function writeState(store: IMemoryStore, tenant: CoreTenant | undefined, state: { lastAttemptAt: string; lastCorpusCount: number; supportMap?: Record<string, string[]> }): void {
-  try {
-    (store as unknown as { setIdentityDiscoveryState?: (s: unknown, t?: CoreTenant) => void }).setIdentityDiscoveryState?.(state, tenant);
-  } catch { /* best-effort */ }
-}
 
 
 /**
@@ -741,15 +349,3 @@ export function mergeIdentityFacts(existingContent: string | undefined, newFacts
 }
 
 // ── S-CHAR-2（M2/P4）：张力候选 prompt 段（确定性检测器产出 → LLM 只提炼不裁决；空候选=空串=逐位现状字节）──
-function buildTensionPromptBlock(candidates: Array<{ source: string; label: string; rationale: string; tensionRefs: Array<{ recordId?: string; valence?: number; at?: string }>; detectedAt: string }>): string {
-  if (candidates.length === 0) return "";
-  const lines = candidates.slice(0, 10).map((c) => {
-    const refs = c.tensionRefs.slice(0, 10).map((r) => {
-      const rid = r.recordId ?? r.at ?? "";
-      const v = typeof r.valence === "number" ? `(${r.valence > 0 ? "+" : ""}${r.valence})` : "";
-      return `${rid}${v}`;
-    }).join("、");
-    return `- [${c.source}] ${c.label}：${c.rationale}；refs: ${refs}`;
-  });
-  return `\n\n## 品格张力候选（确定性检测器产出，非事实——仅当样本中有 agent 行为可证时，才输出品格提案 {"slot":"character","label":"候选label","rationale":"…","tensionRefs":[引用上方 ref id]}；无把握输出 []）\n\n${lines.join("\n")}`;
-}

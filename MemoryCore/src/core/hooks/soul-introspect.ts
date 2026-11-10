@@ -2,8 +2,10 @@
  * #36（R5）：soul_introspect——只读自省面（自省常驻注入=自我指涉噪声，故按需取用）。
  *
  * 三返回段（r5-36）：
- *  ① rendered——当前 soul 全量渲染文本（buildSoulPrefix 强制 snapshotsEnabled:false，
- *     零写入；soulVersion 经 metaOut 带出）。
+ *  ① rendered——当前「仍在 Core 侧渲染」的 soul 片段：**只有 `<soul-feeling>`
+ *     （近期基调 + 当下状态）**。人格段已移交 DSH 插件（2026-11-07 task-6），本面不再
+ *     产出身份/红线/人格/价值锚文本；soulVersion 由双槽内容+基档次就地重算（纯读）。
+ *     渲染零写入（渲染旁路快照落账已退役）。
  *  ② snapshots——最近 N 次快照 + 相邻行级 diff（added/removed；listSoulSnapshots
  *     ASC 取尾 N；store 未实现快照面 → 空段+note 如实降级）。
  *  ③ probes——调用方可注入 IdentityProbe 形状清单（默认不注入 → null + note 如实
@@ -18,7 +20,7 @@
  */
 import type { CoreTenant, IMemoryStore } from "../store/types.js";
 import type { Logger } from "../types.js";
-import { buildSoulPrefix, type SoulRenderOptions } from "./soul-assembler.js";
+import { buildSoulPrefix, computeSoulVersion, type SoulRenderOptions } from "./soul-assembler.js";
 import { SOUL_CHANGE_REASONS, diffSoulSlots, parseSoulSlotMap, summarizeSoulDiff } from "./soul-versioning.js";
 
 export interface IntrospectProbe {
@@ -69,7 +71,7 @@ export async function introspectSoul(
   tenant: CoreTenant,
   opts?: {
     logger?: Logger;
-    renderOpts?: Omit<SoulRenderOptions, "snapshotsEnabled">;
+    renderOpts?: SoulRenderOptions;
     snapshotLimit?: number;
     evidenceWindowHours?: number;
     probes?: IntrospectProbe[];
@@ -80,15 +82,24 @@ export async function introspectSoul(
   const snapshotLimit = clampInt(opts?.snapshotLimit, 1, 200, 20);
   const evidenceWindowHours = clampInt(opts?.evidenceWindowHours, 1, 2160, 168);
 
-  // —— ① 渲染全文（零写入：snapshotsEnabled 强制 false，旁路快照尾写+缓存补账）——
-  const metaOut: { soulVersion?: string } = {};
-  const rendered = await buildSoulPrefix(
-    store,
-    tenant,
-    opts?.logger,
-    { ...(opts?.renderOpts ?? {}), snapshotsEnabled: false },
-    metaOut,
-  );
+  // —— ① 渲染全文（只剩 <soul-feeling>；渲染旁路快照落账已退役，唯一写者=card-service tick 末）——
+  const rendered = await buildSoulPrefix(store, tenant, opts?.logger, opts?.renderOpts);
+  // 人格渲染退役（2026-11-07 task-6/12）：buildSoulPrefix 不产出指纹，但自省面仍需一个
+  // 「当前数据版本」供面板比对 → 就地按双槽内容 + 基调档位重算（纯读、零写入）。读槽失败
+  // 只降级指纹，不阻塞自省。
+  let soulVersion: string | undefined;
+  {
+    try {
+      const slots = (await store.readCore?.(tenant)) ?? [];
+      soulVersion = computeSoulVersion(
+        slots.map((s) => ({ slot: String(s.slot ?? ""), content: String(s.content ?? "") })),
+        [],
+        opts?.renderOpts?.moodTier?.tier,
+      );
+    } catch {
+      notes.push("soul-version-unavailable: readCore 失败，指纹降级为空");
+    }
+  }
 
   // —— ② 快照 + 相邻 diff ——
   const snapshots: SoulIntrospectResult["snapshots"] = [];
@@ -162,33 +173,13 @@ export async function introspectSoul(
   }
 
   // —— 孤儿锚（低活性指标；#22 后悬空已无渲染对象，此项只读呈现）——
+  // S8（2026-11-07）：价值锚整表已删除，孤儿锚检测随之退场（无渲染对象即无需低活性提示）。
   const orphanAnchors: SoulIntrospectResult["orphanAnchors"] = [];
-  try {
-    const values = (await store.listValues?.(tenant)) ?? [];
-    const active = values.filter((v) => v.state === "active" || v.state === undefined);
-    const now = Date.now();
-    const win = evidenceWindowHours * 3_600_000;
-    let corpus = opts?.evidence ?? [];
-    if (!opts?.evidence || opts.evidence.length === 0) {
-      notes.push("evidence-corpus-empty: 无证据语料，孤儿检测全列（仅供低活性参考，非删除建议）");
-    }
-    corpus = corpus.filter((e) => {
-      if (e.at === undefined) return true; // 无时间戳证据按窗内处理（保守）
-      const t = Date.parse(e.at);
-      if (Number.isNaN(t)) return true;
-      return now - t <= win;
-    });
-    for (const v of active) {
-      const hits = corpus.filter((e) => e.content.includes(v.label)).length;
-      if (hits === 0) orphanAnchors.push({ label: v.label, evidenceHits: 0 });
-    }
-  } catch (err) {
-    notes.push(`orphan-scan-failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  notes.push("orphan-scan-retired: S8 已删除价值锚，孤儿锚指标不再适用");
 
   return {
     rendered,
-    soulVersion: metaOut.soulVersion,
+    soulVersion,
     snapshots,
     probes,
     orphanAnchors,

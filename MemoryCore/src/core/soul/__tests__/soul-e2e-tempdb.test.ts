@@ -30,6 +30,22 @@ function l0(id: string, role: string, text: string, at: string): L0Record {
   };
 }
 
+describe("S10：重生后租户枚举以对话为准", () => {
+  it("core_memory / soul_persona 都空时，只有 L0 的租户仍会被枚举", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "soul-tenant-"));
+    const store = new VectorStore(path.join(dir, "vectors.db"), 0);
+    try {
+      store.init();
+      expect(store.listCoreTenants()).toEqual([]);
+      store.upsertL0(l0("u1", "user", "清库之后的第一句话", "2026-11-07T06:10:00.000Z"), undefined);
+      expect(store.listCoreTenants()).toEqual([T]);
+    } finally {
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("端到端：临时库跑一轮维护，长出被错怪的委屈与关系史", () => {
   it("同一轮里：挖掘事件 → 委屈（不是我造成）→ 信任下降 → 修复/冲突落人格", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "soul-e2e-"));
@@ -51,13 +67,13 @@ describe("端到端：临时库跑一轮维护，长出被错怪的委屈与关�
         store,
         tenant: T,
         now: NOW,
-        config: { enabled: true, episodeWindowDays: 30, updateIntervalHours: 0 },
+        config: { episodeWindowDays: 30, updateIntervalHours: 0 },
         trigger: "manual",
         llmCallBudget: 0,
       });
       expect(report.episodes?.mined ?? 0).toBeGreaterThanOrEqual(2);
 
-      const cfg = resolveSoulConfig({ enabled: true });
+      const cfg = resolveSoulConfig({});
       const eps = await store.listSoulEpisodes(T, { since: "2026-10-01T00:00:00.000Z", limit: 50 });
       const labels = eps.map((e) => emotionEventFromEpisode(e, cfg).label);
       expect(labels).toContain("委屈");
@@ -100,7 +116,7 @@ describe("端到端：LLM 候选走真实事件准入，情绪欠账把 identity
       const base = {
         store,
         tenant: T,
-        config: { enabled: true, episodeWindowDays: 30, updateIntervalHours: 0, minEvidence: 2 },
+        config: { episodeWindowDays: 30, updateIntervalHours: 0, minEvidence: 2 },
         trigger: "manual" as const,
         llmCallBudget: 1,
         recentRecords: async () =>
@@ -130,15 +146,15 @@ describe("端到端：LLM 候选走真实事件准入，情绪欠账把 identity
     }
   }
 
-  it("两次同一对象欠着修复 → 真实事件把 identity 候选挡在门外（mood_defer_self）", async () => {
+  it("两次同一对象欠着修复 → 情绪门只观测，不再把 identity 候选挡在门外（S5）", async () => {
     const out = await run("我重做了这块，下一轮再跑");
     expect(out.epIds.length).toBeGreaterThanOrEqual(2);
-    const deferred = out.report.rejections.find((r) => r.codes.includes("mood_defer_self"));
-    expect(deferred).toBeTruthy();
-    expect(out.items.some((i) => i.layer === "identity" && i.text.includes("假绿"))).toBe(false);
+    expect(out.report.rejections.some((r) => r.codes.includes("mood_defer_self"))).toBe(false);
+    expect(out.report.mood?.gate?.opened).toBe(true);
+    expect(out.report.mood?.gate?.focus).toBe("self");
   });
 
-  it("同一条候选、同一批事件，修复已经写进我的回复 → 放行准入", async () => {
+  it("同一条候选、同一批事件，修复已写进回复 → 仍正常准入（与上一例同一路径）", async () => {
     const out = await run("已按原话重做，补上了");
     expect(out.report.rejections.some((r) => r.codes.includes("mood_defer_self"))).toBe(false);
     expect(out.items.some((i) => i.layer === "identity" && i.text.includes("假绿"))).toBe(true);
