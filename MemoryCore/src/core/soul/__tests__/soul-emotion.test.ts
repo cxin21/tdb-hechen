@@ -489,6 +489,13 @@ describe("情绪 → 心境", () => {
     expect(isReusableAffectObject("这个是否重复")).toBe(false);
   });
 
+  it("只有说话框的对象不算原因：「你说」指的是对话本身，换一句就失效", () => {
+    for (const s of ["你说", "我说过", "他刚才讲", "你回答道"]) expect(isReusableAffectObject(s)).toBe(false);
+    // 真对象照旧放行，别为了这一条把正常短语也挡了
+    expect(isReusableAffectObject("导出报错")).toBe(true);
+    expect(isReusableAffectObject("他")).toBe(true);
+  });
+
   it("空心境基线：zero valence、arousal 0.3，不与「当前值」混同", () => {
     const m = emptyMood(NOW);
     expect(m.baselineValence).toBe(0);

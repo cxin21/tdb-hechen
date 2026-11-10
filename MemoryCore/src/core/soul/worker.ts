@@ -2564,6 +2564,11 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       // 旧实现只要窗口里还有一条说得出口的对象就写「因为 X 正在消退」，
       // 于是同一句话挂了 24 天、强度千分之七还在当解释。
       const top = pickCurrentEmotion(ranked, latestCause, now);
+      // 写入侧门：情绪表里的 object 可能是历史脏值（修复前的「你说」），
+      // 读成原因前按可复用对象再筛一遍，不合格宁可不写原因。
+      const topObject = top && isReusableAffectObject(top.object) ? top.object : null;
+      const prevObject =
+        prevState?.emotionObject && isReusableAffectObject(prevState.emotionObject) ? prevState.emotionObject : null;
       const reading = readMood(mood, { emotion: top, threshold: cfg.moodDeviationThreshold * 0.5 });
       // 落库失败不能连累整轮：情绪表与打标都要以「心境确实写进去了」为前提，
       // 所以先把成败记下来，后面按它决定打不打标（不打标 = 下一 tick 重试这批事件）。
@@ -2585,7 +2590,10 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           // 「因为『假绿』反复出问题」。S5：强度过期（半衰期×6）后对象锚保留——
           // 情绪退了，但「上次因为什么」仍是可回指的事实；intensity 置空才是过期信号，
           // 读侧据此不再说「正在影响」，也不会把对象史一起抹掉。
-          emotionObject: top?.object ?? prevState?.emotionObject ?? null,
+          // 落库前再门一次：库里可能还有修复前写进去的空对象（「你说」「我在对话中说明…」），
+          // 直接照抄会让心境行长期挂着一条没有内容的理由。对象不合格就当没有原因，
+          // 标签/强度保留（它们是读数，不冒充原因）。
+          emotionObject: topObject ?? prevObject,
           emotionLabel: top?.label ?? prevState?.emotionLabel ?? null,
           emotionIntensity: top ? decayedIntensity(top, now) : null,
           emotionAt: top?.at ?? prevState?.emotionAt ?? null,
@@ -2604,6 +2612,10 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       // 落库失败只降级，不连累情绪表——绝不假装写成功。
       let moodStateWritten = false;
       let moodEventInserted = 0;
+      // 本轮账本「有着落」的行数 = 新写进去的 + 本来就在的（重试 / 同毫秒重放）。
+      // 只看 inserted 分不清「上一轮已写过」与「被拒」，两种错判都真发生过：
+      // 前者让人以为账本永远缺行，后者让缺口被当成写完了。
+      let moodEventAccounted = 0;
       const moodCauseIds = episodeEvents.map((e) => e.id).filter((id) => id !== "");
       // 强度 = 本轮仍在影响我的情绪的平均衰减强度；没有情绪就是 0（不是基线偏移的绝对值）。
       const moodIntensityNow =
@@ -2701,11 +2713,12 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           try {
             const res = await Promise.resolve(store.commitSoulMoodEvents(deps.tenant, moodEventRows));
             moodEventInserted = res?.inserted ?? 0;
-            // 写进 0 行而不是抛错：id 冲突或被拒时账本会静默缺口，而心境已经推进了。
+            moodEventAccounted = moodEventInserted + (res?.present ?? 0);
+            // 写进 0 行而不是抛错：被拒时账本会静默缺口，而心境已经推进了。
             // 缺口必须留痕，否则「心境变过、账本上没有」永远查不出来。
-            if (moodEventInserted === 0 && moodEventRows.length > 0) {
+            if (moodEventAccounted < moodEventRows.length) {
               deps.logger?.warn?.(
-                `[soul-worker] soul_mood_events 本轮 ${moodEventRows.length} 行一条没落库（id 冲突或写入被拒），心境已推进、账本有缺口`,
+                `[soul-worker] soul_mood_events 本轮 ${moodEventRows.length} 行只落 ${moodEventAccounted} 行（id 冲突或写入被拒），心境已推进、账本有缺口`,
               );
             }
           } catch (err) {
@@ -2715,12 +2728,23 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           }
         }
       }
-      // 本轮真正积进心境的事件条数（未打标、非 work，且心境确实落库）；写失败记 0。
-      report.moodEpisodesIntegrated = moodPersisted ? episodeEvents.length : 0;
+      // 账本没着落（被拒 / 只落了一部分）就不打标：这批事件下一 tick 重试，缺口不会被
+      // 「已积过」永久掩掉。没有账本实现的旧 store 退回旧口径，不能因为缺能力就永远不推进。
+      const ledgerSupported = typeof store.commitSoulMoodEvents === "function";
+      const ledgerOk =
+        !ledgerSupported || moodEventRows.length === 0 || moodEventAccounted >= moodEventRows.length;
+      const moodIntegrated = moodPersisted && ledgerOk;
+      if (moodPersisted && !ledgerOk) {
+        deps.logger?.warn?.(
+          `[soul-worker] 心境账本未着落（${moodEventAccounted}/${moodEventRows.length}），${episodeEvents.length} 条事件保持未打标，下一 tick 重试`,
+        );
+      }
+      // 本轮真正积进心境的事件条数（未打标、非 work，心境与账本都落库）；写失败记 0。
+      report.moodEpisodesIntegrated = moodIntegrated ? episodeEvents.length : 0;
       // 打标只在心境落库成功之后做：写失败就停在未打标态，下一 tick 重试，不丢事件
       // （重复积一次的代价是权重偏一点，漏一条是永久缺）。
       const integratedIds = unintegratedEpisodes.map((ep) => ep.episodeId).filter((id) => id !== "");
-      if (moodPersisted && integratedIds.length > 0 && typeof store.markSoulEpisodesMoodIntegrated === "function") {
+      if (moodIntegrated && integratedIds.length > 0 && typeof store.markSoulEpisodesMoodIntegrated === "function") {
         try {
           await Promise.resolve(store.markSoulEpisodesMoodIntegrated(deps.tenant, integratedIds, now));
         } catch (err) {

@@ -107,7 +107,8 @@ describe("soul_mood_events：append-only、按 id 幂等", () => {
       },
     ];
     expect(store.commitSoulMoodEvents(TENANT, rows).inserted).toBe(2);
-    expect(store.commitSoulMoodEvents(TENANT, rows).inserted).toBe(0);
+    // 第二遍一行没写，但两行本来就在：inserted=0 不等于「没着落」，present 给出真相
+    expect(store.commitSoulMoodEvents(TENANT, rows)).toEqual({ inserted: 0, present: 2 });
 
     const listed = store.listSoulMoodEvents(TENANT);
     expect(listed.map((r) => r.id)).toEqual(["mood-b", "mood-a"]);

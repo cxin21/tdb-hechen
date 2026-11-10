@@ -1409,6 +1409,9 @@ export function isReusableAffectObject(raw: string): boolean {
   if (/(?:在|于)[^，。；]{0,10}(?:坚持|要求|指出|强调|表示|认为|觉得|希望|批评|责问|催)/u.test(s)) return false;
   // 占位名（「用户（姓名未提供）」）不是人：拿它当对象，等于把渠道的缺省值写进心境。
   if (/(?:姓名未提供|名称未提供|未知用户|（未知）|\(unknown\))/iu.test(s)) return false;
+  // 只有说话框、没有说话内容：「你说」「我说过」「他刚才讲」不是原因——它指的是对话本身，
+  // 换一句对话就失效（生产实测心境行写成「因为「你说」正在消退」，原因是空的）。
+  if (/^(?:我|你|他|她|咱|咱们|用户|对方)(?:刚才|刚刚|先前)?(?:回答|说|讲|问|回|答)(?:过|了|道)?$/u.test(s)) return false;
   return survivesProjectSwap(s);
 }
 

@@ -300,4 +300,88 @@ describe("P5 端到端：调度器真实 tick 也落心境行（不是只有手�
     expect(row!.event_id).toBe("ep-tick");
     expect(String(row!.label).length).toBeGreaterThan(0);
   });
+
+  it("账本写不进去就不打标：这批事件留给下一 tick，缺口不被「已积过」掩掉", async () => {
+    const store = makeStore();
+    const db = dbOf(store);
+    store.commitSoulEpisodes(TENANT, [
+      ep({
+        episodeId: "ep-ledger-gap",
+        at: "2026-11-09T22:00:00.000Z",
+        kind: "correction",
+        object: "账本缺口",
+        valence: -0.2,
+        arousal: 0.5,
+        intensity: 0.5,
+      }),
+    ]);
+    const marks: string[][] = [];
+    const realMark = store.markSoulEpisodesMoodIntegrated.bind(store);
+    store.markSoulEpisodesMoodIntegrated = (t, ids, at) => {
+      marks.push(ids);
+      return realMark(t, ids, at);
+    };
+    // 账本被拒：一行没写、也没有一行本来就在
+    store.commitSoulMoodEvents = () => ({ inserted: 0, present: 0 });
+
+    const report = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-10T00:00:00.000Z",
+      config: resolveSoulConfig({}),
+      trigger: "manual",
+      llmCallBudget: 0,
+    });
+    // 心境本身写进去了，但账本没着落 → 不打标，事件留待重试
+    expect(report.mood?.written).toBe(true);
+    expect(report.moodEpisodesIntegrated).toBe(0);
+    expect(marks).toEqual([]);
+    const row = db
+      .prepare("SELECT mood_integrated_at FROM soul_episodes WHERE episode_id = ?")
+      .get("ep-ledger-gap") as { mood_integrated_at: string | null };
+    expect(row.mood_integrated_at).toBeNull();
+  });
+
+  it("心境原因写入前过滤历史脏对象：「你说」不会被当成原因一直挂在心境上", async () => {
+    const store = makeStore();
+    const db = dbOf(store);
+    store.commitSoulEpisodes(TENANT, [
+      ep({
+        episodeId: "ep-dirty-object",
+        at: "2026-11-09T22:00:00.000Z",
+        kind: "correction",
+        object: "账本缺口",
+        valence: -0.2,
+        arousal: 0.5,
+        intensity: 0.5,
+      }),
+    ]);
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-10T00:00:00.000Z",
+      config: resolveSoulConfig({}),
+      trigger: "manual",
+      llmCallBudget: 0,
+    });
+    // 修复前的情绪表里可能存着空对象；模拟成上一轮写进 soul_state 的历史值
+    db.prepare("DELETE FROM soul_emotions").run();
+    db.prepare("UPDATE soul_state SET emotion_object = ?, emotion_label = ?").run("你说", "意外");
+
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-10T01:00:00.000Z",
+      config: resolveSoulConfig({}),
+      trigger: "manual",
+      llmCallBudget: 0,
+    });
+    const row = db.prepare("SELECT emotion_object, emotion_label FROM soul_state").get() as {
+      emotion_object: string | null;
+      emotion_label: string | null;
+    };
+    // 原因被门掉；标签是读数，允许留着
+    expect(row.emotion_object).toBeNull();
+    expect(row.emotion_label).toBe("意外");
+  });
 });

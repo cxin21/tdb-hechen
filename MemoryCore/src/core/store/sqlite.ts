@@ -4818,12 +4818,15 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
-  commitSoulMoodEvents(tenant: CoreTenant | undefined, rows: SoulMoodEventInsert[]): { inserted: number } {
+  commitSoulMoodEvents(
+    tenant: CoreTenant | undefined,
+    rows: SoulMoodEventInsert[],
+  ): { inserted: number; present: number } {
     try {
       return commitSoulMoodEventsImpl(this.db, tenant, rows);
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_mood_events] commit failed: ${err instanceof Error ? err.message : String(err)}`);
-      return { inserted: 0 };
+      return { inserted: 0, present: 0 };
     }
   }
 

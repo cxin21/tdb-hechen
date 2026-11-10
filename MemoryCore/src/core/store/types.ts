@@ -1337,7 +1337,7 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   commitSoulMoodEvents?(
     tenant: CoreTenant | undefined,
     rows: SoulMoodEventInsert[],
-  ): MaybePromise<{ inserted: number }>;
+  ): MaybePromise<{ inserted: number; present?: number }>;
   listSoulMoodEvents?(
     tenant?: CoreTenant,
     opts?: { limit?: number; kind?: string },

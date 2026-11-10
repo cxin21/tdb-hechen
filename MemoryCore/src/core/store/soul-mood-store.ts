@@ -130,15 +130,23 @@ export function upsertSoulMoodState(
 /**
  * 追加心境变化账本。同一 id 再来一次算重复（INSERT OR IGNORE），
  * 返回真正写进去的行数——「跑过」与「写过」是两件事。
+ *
+ * present 是「这批 id 本来就在库里」的行数。调用方要判断「这一批有没有着落」，
+ * 必须看 inserted + present：写 0 行可能是上一轮已写过（重试），也可能是被拒（真缺口），
+ * 只看 inserted 会把两者混成一件事——前者会让人永远以为账本缺行，后者会让缺口被当成完成。
  */
 export function commitSoulMoodEvents(
   db: DatabaseSync,
   tenant: CoreTenant | undefined,
   rows: SoulMoodEventInsert[],
-): { inserted: number } {
+): { inserted: number; present: number } {
   const t = normalizeCoreTenant(tenant);
-  if (rows.length === 0) return { inserted: 0 };
+  if (rows.length === 0) return { inserted: 0, present: 0 };
   let inserted = 0;
+  let present = 0;
+  const exists = db.prepare(
+    "SELECT 1 AS hit FROM soul_mood_events WHERE id = ? AND team_id = ? AND user_id = ? AND agent_id = ?",
+  );
   const stmt = db.prepare(
     `INSERT OR IGNORE INTO soul_mood_events
       (id, team_id, user_id, agent_id, at, kind, label, delta_valence, delta_arousal, delta_intensity, cause_event_ids_json, note)
@@ -147,6 +155,10 @@ export function commitSoulMoodEvents(
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const row of rows) {
+      if (exists.get(row.id, t.teamId, t.userId, t.agentId)) {
+        present += 1;
+        continue;
+      }
       const res = stmt.run(
         row.id,
         t.teamId,
@@ -172,7 +184,7 @@ export function commitSoulMoodEvents(
     }
     throw err;
   }
-  return { inserted };
+  return { inserted, present };
 }
 
 /** 按时间倒序回放心境变化（面板曲线 / 校准用）。 */
