@@ -17,6 +17,8 @@ import { createHash } from "node:crypto";
 import { clampRedlines } from "./card.js";
 import type { CardRedline, CardSegment } from "./card.js";
 import { isReusableAffectObject } from "./emotion.js";
+import { outcomeScore } from "../store/soul-self-store.js";
+import type { SoulCalibrationRow } from "../store/soul-event-types.js";
 import { CARD_READER_NOTE } from "./traits.js";
 
 /** v13 版本号：卡尾注释与 payload 都写它，读侧据此区分两套渲染器。 */
@@ -203,6 +205,12 @@ export interface SoulCardV13Input {
   structured?: CardV13Structured;
   /** 底色标签（只做 seeded 判据与报告，不进 v13 正文——数值留在后台）。 */
   labels?: Array<{ label: string; act: number; gloss?: string }>;
+  /**
+   * P4：soul_calibration 的原始行（只读）。卡面「记得」块按域写出把握度与实际结果，
+   * 句中的次数/均值必须能由这些行复算——所以收原始行，不收调用方算好的一句结论。
+   * 缺省 = 没有校准数据：不渲染校准句，也不把块的 confidence 写死成 high/medium。
+   */
+  calibration?: ReadonlyArray<SoulCalibrationRow>;
   version: number;
 }
 
@@ -244,17 +252,40 @@ interface BuiltV13Block {
   protectedTail: number;
 }
 
-const BLOCK_SOURCE: Record<CardV13BlockKey, { source: CardV13Source; confidence: CardV13Confidence }> = {
-  firstLook: { source: "declared", confidence: "high" },
-  life: { source: "declared", confidence: "high" },
-  character: { source: "observed", confidence: "medium" },
-  voice: { source: "declared", confidence: "high" },
-  us: { source: "observed", confidence: "medium" },
-  now: { source: "derived", confidence: "low" },
-  memory: { source: "observed", confidence: "medium" },
-  boundaries: { source: "declared", confidence: "high" },
-  recent: { source: "observed", confidence: "medium" },
+/**
+ * 只有声明层块保留固定来源：设定是用户自己写的，没有「被证据证伪」这回事。
+ * 其余块的 confidence 在 `blockOf` 里按这一块实际留下的行有没有证据回指来推（P4），
+ * 不再整块写死 high/medium——没有证据的观察行不该顶着 medium 进模型。
+ */
+const DECLARED_BLOCK_SOURCE: Partial<Record<CardV13BlockKey, CardV13Source>> = {
+  firstLook: "declared",
+  life: "declared",
+  voice: "declared",
+  boundaries: "declared",
 };
+
+/** 由数据推 confidence：声明层没有可证伪问题；推算层最低；其余看这一块有没有证据回指。 */
+function confidenceFromData(
+  source: CardV13Source,
+  lineEvidence: ReadonlyArray<ReadonlyArray<string>>,
+): CardV13Confidence {
+  if (source === "absent") return "absent";
+  if (source === "declared") return "high";
+  if (source === "derived") return "low";
+  return lineEvidence.some((ids) => ids.length > 0) ? "medium" : "low";
+}
+
+/** 「记得」块最多写两个域：再多会退化成校准报表（与 spec §4.5 同一取舍）。 */
+export const CARD_V13_CALIBRATION_MAX_DOMAINS = 2;
+
+/** 把握度措辞：只落档位、不写百分数；阈值固定，数字仍可从 soul_calibration 复算。 */
+const CONFIDENCE_WORD_STEPS: ReadonlyArray<{ min: number; word: string }> = [
+  { min: 0.8, word: "八成" },
+  { min: 0.65, word: "六成" },
+  { min: 0.45, word: "半成" },
+  { min: 0.25, word: "三成" },
+  { min: 0, word: "一成" },
+];
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -325,6 +356,157 @@ function evidenceOf(lineEvidence: ReadonlyArray<ReadonlyArray<string>>): string[
 }
 
 /**
+ * 一个域的校准读数。计数与均值都从原始行算：卡面上每个数字（几次成功/几次没成/
+ * 报得差多少）都必须能被 soul_calibration 复算，不能由调用方先算好再喂一句结论。
+ */
+interface DomainCalibrationView {
+  domain: string;
+  /** 可算误差的样本数（unknown 不算）。 */
+  samples: number;
+  success: number;
+  fail: number;
+  partial: number;
+  unknown: number;
+  meanPredicted: number;
+  /** 正 = 报得比实际高（过度自信）。 */
+  bias: number;
+  mae: number;
+  eventIds: string[];
+}
+
+function calibrationViews(rows: ReadonlyArray<SoulCalibrationRow>): DomainCalibrationView[] {
+  const byDomain = new Map<
+    string,
+    {
+      predicted: number[];
+      actual: number[];
+      success: number;
+      fail: number;
+      partial: number;
+      unknown: number;
+      ids: string[];
+    }
+  >();
+  for (const row of rows) {
+    const domain = oneLine(String(row.domain ?? "")) || "通用";
+    const bucket =
+      byDomain.get(domain) ??
+      { predicted: [], actual: [], success: 0, fail: 0, partial: 0, unknown: 0, ids: [] };
+    if (row.actual_outcome === "success") bucket.success += 1;
+    else if (row.actual_outcome === "fail") bucket.fail += 1;
+    else if (row.actual_outcome === "partial") bucket.partial += 1;
+    else bucket.unknown += 1;
+    const actual = outcomeScore(row.actual_outcome);
+    const predicted = Number(row.predicted_confidence);
+    if (actual !== null && Number.isFinite(predicted)) {
+      bucket.predicted.push(Math.min(1, Math.max(0, predicted)));
+      bucket.actual.push(actual);
+    }
+    if (row.event_id) bucket.ids.push(row.event_id);
+    byDomain.set(domain, bucket);
+  }
+  const out: DomainCalibrationView[] = [];
+  for (const [domain, bucket] of byDomain) {
+    const n = bucket.predicted.length;
+    let meanPredicted = 0;
+    let bias = 0;
+    let mae = 0;
+    if (n > 0) {
+      let sumPredicted = 0;
+      let sumActual = 0;
+      let sumAbs = 0;
+      for (let i = 0; i < n; i += 1) {
+        const diff = bucket.predicted[i] - bucket.actual[i];
+        sumPredicted += bucket.predicted[i];
+        sumActual += bucket.actual[i];
+        sumAbs += Math.abs(diff);
+      }
+      meanPredicted = sumPredicted / n;
+      bias = (sumPredicted - sumActual) / n;
+      mae = sumAbs / n;
+    }
+    out.push({
+      domain,
+      samples: n,
+      success: bucket.success,
+      fail: bucket.fail,
+      partial: bucket.partial,
+      unknown: bucket.unknown,
+      meanPredicted,
+      bias,
+      mae,
+      eventIds: bucket.ids.slice(0, 3),
+    });
+  }
+  // 样本多的域先写；同一样本数按域名排，保证同一批行两次渲染顺序一致。
+  out.sort((a, b) => b.samples - a.samples || (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
+  return out;
+}
+
+/** meanPredicted → 档位词；不留小数字，但档位边界写死，便于复核。 */
+function confidenceWord(meanPredicted: number): string {
+  for (const step of CONFIDENCE_WORD_STEPS) {
+    if (meanPredicted >= step.min) return step.word;
+  }
+  return "一成";
+}
+
+/** 一个域一句：把握档位 + 实际结果计数；偏差够大才补一句「报高了/报低了」。 */
+function calibrationLine(view: DomainCalibrationView): string {
+  if (view.samples === 0) {
+    return `在${view.domain}上，我报过 ${view.unknown} 次把握，还没验过。`;
+  }
+  const outcomes: string[] = [];
+  if (view.success > 0) outcomes.push(`成了 ${view.success} 次`);
+  if (view.fail > 0) outcomes.push(`没成 ${view.fail} 次`);
+  if (view.partial > 0) outcomes.push(`${view.partial} 次只算一半`);
+  const detail = outcomes.length > 0 ? outcomes.join("、") : `记了 ${view.samples} 次`;
+  let text = `在${view.domain}上，我给自己${confidenceWord(view.meanPredicted)}把握，${view.samples} 次里${detail}。`;
+  if (view.samples >= 2 && view.bias >= 0.2) text += `报得比实际高约 ${view.bias.toFixed(2)}。`;
+  else if (view.samples >= 2 && view.bias <= -0.2) text += `报得比实际低约 ${Math.abs(view.bias).toFixed(2)}。`;
+  return text;
+}
+
+/**
+ * 校准句（导出给通道 B 的 turn 复用）：只给有数据的域，最多 `maxDomains` 个；
+ * 没有任何校准行返回空数组——调用方据此整块省略，不补「暂无校准」这种占位。
+ */
+export function calibrationLinesFromRows(
+  rows: ReadonlyArray<SoulCalibrationRow>,
+  opts: { maxDomains?: number; warnings?: string[] } = {},
+): CardV13Line[] {
+  if (rows.length === 0) return [];
+  const views = calibrationViews(rows);
+  if (views.length === 0) return [];
+  const max = opts.maxDomains ?? CARD_V13_CALIBRATION_MAX_DOMAINS;
+  if (views.length > max) {
+    opts.warnings?.push(`calibration_domains_truncated:校准只写前 ${max} 个域`);
+  }
+  return views.slice(0, max).map((view) => {
+    const line: CardV13Line = { text: speakerSafe(calibrationLine(view)) };
+    if (view.eventIds.length > 0) line.evidenceIds = view.eventIds;
+    return line;
+  });
+}
+
+/** 校准把「记得」块的 confidence 往下拉：MAE 越小越可信；没验过（samples=0）只算 low。 */
+function calibrationConfidence(rows: ReadonlyArray<SoulCalibrationRow>): CardV13Confidence | null {
+  if (rows.length === 0) return null;
+  const views = calibrationViews(rows);
+  let samples = 0;
+  let absSum = 0;
+  for (const view of views) {
+    samples += view.samples;
+    absSum += view.mae * view.samples;
+  }
+  if (samples === 0) return "low";
+  const mae = absSum / samples;
+  if (samples >= 2 && mae <= 0.15) return "high";
+  if (mae <= 0.35) return "medium";
+  return "low";
+}
+
+/**
  * 单块裁剪：先丢受保护行之前的尾行，仍超就截最后一条非保护行；红线一行不丢。
  * 每次裁剪都留 `truncated:<块名>`，不静默削。
  */
@@ -366,7 +548,7 @@ function blockOf(
   lines: CardV13Line[],
   warnings: string[],
   protectedTail = 0,
-  sourceOverride?: { source: CardV13Source; confidence: CardV13Confidence },
+  sourceOverride?: { source?: CardV13Source; confidence?: CardV13Confidence },
 ): BuiltV13Block | null {
   const clean = uniqLines(lines);
   if (clean.length === 0) return null;
@@ -383,11 +565,12 @@ function blockOf(
     .map((i) => clean[i])
     .filter((line): line is CardV13Line => line !== undefined);
   const lineEvidence = keptLines.map((line) => line.evidenceIds ?? []);
+  const source = sourceOverride?.source ?? DECLARED_BLOCK_SOURCE[id] ?? "observed";
   return {
     id,
     lines: capped.texts,
-    source: sourceOverride?.source ?? BLOCK_SOURCE[id].source,
-    confidence: sourceOverride?.confidence ?? BLOCK_SOURCE[id].confidence,
+    source,
+    confidence: sourceOverride?.confidence ?? confidenceFromData(source, lineEvidence),
     evidenceIds: evidenceOf(lineEvidence),
     lineEvidence,
     warnings,
@@ -434,7 +617,7 @@ function lifeBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block |
   }
   const lines = [...declared, ...human.slice(0, 2)];
   if (lines.length === 0) return null;
-  const override = declared.length === 0 ? { source: "observed" as const, confidence: "medium" as const } : undefined;
+  const override = declared.length === 0 ? { source: "observed" as const } : undefined;
   return blockOf("life", lines, warnings, 0, override);
 }
 
@@ -474,7 +657,8 @@ function characterBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Bl
 function voiceBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block | null {
   const declared = sentences(input.profile.voice ?? "").slice(0, 3);
   if (declared.length > 0) return blockOf("voice", declared.map((text) => ({ text })), warnings);
-  return blockOf("voice", (input.lines?.voice ?? []).slice(0, 2), warnings);
+  // 没有声明就走观察层原句：来源跟着实际取材走，不能再标 declared/high。
+  return blockOf("voice", (input.lines?.voice ?? []).slice(0, 2), warnings, 0, { source: "observed" });
 }
 
 /**
@@ -666,9 +850,16 @@ function nowBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block | 
   );
 }
 
-/** 记得：self 层最多三个场景（「我答应自己/我没守住/我一开始没做对」原句）。 */
+/**
+ * 记得：校准句在前（按域给出可证伪的把握度），self 层场景在后。
+ * 有校准时自我场景只留两条——校准句要占位，否则 300 字先裁掉的恰好是它；
+ * 没有校准就是原来的三条自我行（旧输出一个字不变）。
+ */
 function memoryBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block | null {
-  return blockOf("memory", (input.lines?.self ?? []).slice(0, 3), warnings);
+  const calibration = calibrationLinesFromRows(input.calibration ?? [], { warnings });
+  const selfLines = (input.lines?.self ?? []).slice(0, calibration.length > 0 ? 2 : 3);
+  const confidence = calibrationConfidence(input.calibration ?? []);
+  return blockOf("memory", [...calibration, ...selfLines], warnings, 0, confidence ? { confidence } : undefined);
 }
 
 /** 边界：boundary 层原句（≤2 条）+ 红线逐条 verbatim（受保护，永不丢）。 */

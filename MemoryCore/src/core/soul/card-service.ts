@@ -15,12 +15,12 @@ import {
 } from "./card-v13.js";
 import { renderMoodLine, type SoulMoodState } from "./emotion.js";
 import { selfModelCardLines } from "./self-model.js";
+import { renderSoulTurnState } from "./turn-state.js";
 import { NARRATIVE_INJECT_MAX_LINES, NARRATIVE_MAX_EVIDENCE, narrativeInjectionLines } from "./narrative.js";
 import type { TraitLabelRow } from "./trait-drift.js";
 import {
   HUMAN_MAX_LINES,
   OPEN_LOOPS_MAX,
-  PERSONA_TURN_MAX_CHARS,
   TRAIT_TOP_N,
   emptyAxisVector,
   projectLabels,
@@ -114,6 +114,8 @@ export interface SoulCardStorePort {
   listSoulGoals?: IMemoryStore["listSoulGoals"];
   /** P4：自我模型；低置信度行进 memory 块并自带「（推测）/（没验过）」。 */
   listSoulSelfModel?: IMemoryStore["listSoulSelfModel"];
+  /** P4：校准原始行；卡面与每轮尾巴按域写把握度（数字可由这些行复算）。 */
+  listSoulCalibration?: IMemoryStore["listSoulCalibration"];
   /** P6：自传章节（只取 active 且过显著度门；低显著章仍可按 chapterId 查到，只是不注入）。 */
   listSoulNarrativeChapters?: IMemoryStore["listSoulNarrativeChapters"];
   /** P6：章节 → 事件 id，卡面据此把自传指回 soul_events。 */
@@ -549,6 +551,15 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
       : { text: entry.text },
   );
 
+  // P4 §4.5：校准行只给「记得」块用（按域写把握度），不新开第十块；
+  // 传原始行而不是 aggregate，句中的次数/均值必须能被读侧复算；
+  // 读满 store 上限（5000）而不是默认 500，避免某个域的次数被窗口截断后
+  // 卡上写「3 次里成了 3 次」而库里其实有更多次。
+  const calibrationRows =
+    typeof store.listSoulCalibration === "function"
+      ? ((await Promise.resolve(store.listSoulCalibration(tenant, { limit: 5000 }))) ?? [])
+      : [];
+
   const v13Input: SoulCardV13Input = {
     profile: {
       name: cardName,
@@ -580,6 +591,7 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
     mood,
     structured: structuredInput,
     labels: projected,
+    calibration: calibrationRows,
     version: persistedVersion,
   };
 
@@ -645,13 +657,7 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
   };
 }
 
-function clampTurn(text: string, max = PERSONA_TURN_MAX_CHARS): string {
-  const t = text.trim();
-  if (t.length <= max) return t;
-  return t.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
-}
-
-/** 通道 B：心境一行 + 未完的事（≤3 条），整体 ≤400 字符。 */
+/** 通道 B：心境一行 + 未完的事（≤3 条）+ 校准句（有数据才写），整体 ≤400 字符。 */
 export async function assembleSoulTurn(opts: {
   store: SoulCardStorePort;
   tenant: CoreTenant;
@@ -689,8 +695,12 @@ export async function assembleSoulTurn(opts: {
     .filter((t) => t !== "")
     .slice(0, OPEN_LOOPS_MAX);
 
-  const pending = openLoops.length > 0 ? `未完的事：${openLoops.join("；")}` : "";
-  return { text: clampTurn([moodLine, pending].filter((s) => s !== "").join("\n")), openLoops };
+  const calibrationRows =
+    typeof store.listSoulCalibration === "function"
+      ? ((await Promise.resolve(store.listSoulCalibration(tenant, { limit: 5000 }))) ?? [])
+      : [];
+
+  return renderSoulTurnState({ moodLine, openLoops, calibration: calibrationRows });
 }
 
 /** 供观测日志/接口复述的卡标识（判据 14：注入端能报出用了哪版）。 */

@@ -18,6 +18,7 @@ import { textHash } from "./gates.js";
 import { factsFromEpisode, settlePromises, type HistoryFact } from "./history.js";
 import type { SoulEpisode } from "./types.js";
 import type {
+  SoulGoalDepInsert,
   SoulGoalDepRow,
   SoulGoalEventInsert,
   SoulGoalInsert,
@@ -136,13 +137,116 @@ export function goalIdFor(args: { kind: SoulGoalKind; owner: SoulGoalOwner; titl
   return "g-" + textHash(args.kind + "|" + args.owner + "|" + normalizeTitle(args.title)).slice(0, 16);
 }
 
-/** 从承诺事实的包装里取正文（不是承诺事实就原样返回）。 */
-export function unwrapPromiseFact(text: string): string {
+/**
+ * 承诺 → 目标 id：spec §5.1「goal_id 由 promise_id 派生（可反查、重跑不变）」。
+ * 与 P0-D 迁移（scripts/lib/soul-event-migration.mjs:432 的 goal-<promise_id>）逐字一致：
+ * 迁移建过的目标，写者重跑时必须命中同一行，而不是再长一条 g- 哈希目标。
+ */
+export function goalIdForPromise(promiseId: string): string {
+  const id = String(promiseId ?? "").trim();
+  return id === "" ? "" : "goal-" + id;
+}
+
+/** 承诺包装的原文（不截断）：id 归一与标题归一都从它出发。 */
+function unwrapPromiseBody(text: string): string {
   const s = normalizeSpace(text);
   if (s === "") return "";
   const m = PROMISE_FACT_WRAP.exec(s);
-  const body = m ? (m[1] ?? "") : s;
-  return clip(stripQuotes(body), GOAL_TITLE_MAX);
+  return stripQuotes(m ? (m[1] ?? "") : s);
+}
+
+/**
+ * 等价口径的文本键：剥掉承诺包装与引号、折叠空白、去掉句末标点、转小写。
+ * 只做确定性归一（「我答应过自己：「X」」与「X」是同一句），不做模糊相似——
+ * 相似度阈值会把「改说明」和「改文档」判成一条，那是另一种错账。
+ */
+export function goalTitleKey(title: string): string {
+  return normalizeTitle(unwrapPromiseBody(title)).replace(/[。！？!?.,，、;；\s]+$/u, "");
+}
+
+export interface GoalIdentityHit {
+  goalId: string;
+  /** promise = 命中 promise_id 派生的确定性 id；title = 命中同文本活目标；candidate = 没有可复用的。 */
+  reason: "promise" | "title" | "candidate";
+}
+
+function liveGoalRows(rows: SoulGoalRow[]): SoulGoalRow[] {
+  return rows.filter((row) => !TERMINAL_GOAL_STATUSES.includes(row.status));
+}
+
+function earliest(rows: SoulGoalRow[]): SoulGoalRow {
+  return [...rows].sort((a, b) => {
+    if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+    return a.goal_id < b.goal_id ? -1 : a.goal_id > b.goal_id ? 1 : 0;
+  })[0]!;
+}
+
+/**
+ * 复用判定（同租户由 listSoulGoals 的租户边界保证；只复用 active/blocked，终态不复活）：
+ *  1) 候选来自承诺且 promise_id 派生的 goal 还活着 → 用它（承诺与目标的对应关系可反查）；
+ *  2) 存在同文本键的活目标 → 用最早那一条（worker 派生与 promise 派生撞同一句话时收敛到一条）；
+ *  3) 都没有 → 用候选自己的 id（承诺候选仍是 goal-<promise_id>，其余是 g-<hash>）。
+ * 判据是「同文本」或「同 promise_id」，没有相似度。
+ */
+export function resolveGoalIdentity(args: {
+  candidate: GoalCandidate;
+  existing: SoulGoalRow[];
+  promiseId?: string;
+}): GoalIdentityHit {
+  const live = liveGoalRows(args.existing);
+  const promised = args.promiseId ? goalIdForPromise(args.promiseId) : "";
+  if (promised !== "") {
+    const hit = live.find((row) => row.goal_id === promised);
+    if (hit) return { goalId: hit.goal_id, reason: "promise" };
+  }
+  const key = goalTitleKey(args.candidate.goal.title);
+  if (key !== "") {
+    const same = live.filter((row) => goalTitleKey(row.title) === key);
+    if (same.length > 0) {
+      const row = earliest(same);
+      return { goalId: row.goal_id, reason: row.goal_id === promised ? "promise" : "title" };
+    }
+  }
+  if (promised !== "") return { goalId: promised, reason: "promise" };
+  return { goalId: String(args.candidate.goal.goal_id ?? ""), reason: "candidate" };
+}
+
+/** 按同文本键找活目标（承诺兑现/没守住的跃迁要用：id 可能已被复用改写成 goal-<promise_id>）。 */
+export function findLiveGoalByTitle(rows: SoulGoalRow[], title: string): SoulGoalRow | null {
+  const key = goalTitleKey(title);
+  if (key === "") return null;
+  const same = liveGoalRows(rows).filter((row) => goalTitleKey(row.title) === key);
+  return same.length > 0 ? earliest(same) : null;
+}
+
+/**
+ * 依赖边只从结构化的 parent_goal_id 落：父必须在这批目标里、且不能是自己。
+ * 没有父就没有边——不按「同事件」「同对象」猜依赖，假边会让无辜目标被卡住。
+ */
+export function collectGoalDepEdges(goals: SoulGoalRow[]): GoalDepEdge[] {
+  const ids = new Set(goals.map((row) => row.goal_id));
+  const seen = new Set<string>();
+  const out: GoalDepEdge[] = [];
+  for (const row of goals) {
+    const parent = String(row.parent_goal_id ?? "").trim();
+    if (parent === "" || parent === row.goal_id || !ids.has(parent)) continue;
+    const key = row.goal_id + "\u0000" + parent;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ goal_id: row.goal_id, depends_on_goal_id: parent, kind: "blocks" });
+  }
+  return out;
+}
+
+export interface GoalDepEdge {
+  goal_id: string;
+  depends_on_goal_id: string;
+  kind: string;
+}
+
+/** 从承诺事实的包装里取正文（不是承诺事实就原样返回）。 */
+export function unwrapPromiseFact(text: string): string {
+  return clip(unwrapPromiseBody(text), GOAL_TITLE_MAX);
 }
 
 /**
@@ -446,6 +550,10 @@ export interface GoalStorePort {
     opts?: GoalTransitionOptions,
   ) => GoalTransitionResult | Promise<GoalTransitionResult>;
   listSoulGoalDeps?: (tenant?: CoreTenant, opts?: { goalId?: string }) => SoulGoalDepRow[] | Promise<SoulGoalDepRow[]>;
+  insertSoulGoalDep?: (
+    tenant: CoreTenant | undefined,
+    row: SoulGoalDepInsert,
+  ) => { inserted: number } | Promise<{ inserted: number }>;
   listSoulPromises?: (
     tenant: CoreTenant,
     opts?: { limit?: number; status?: SoulPromiseStatus },
@@ -475,6 +583,10 @@ export interface GoalMaintenanceResult {
   skipped: number;
   /** 成功挂上 goal_id 的承诺行数。 */
   linked: number;
+  /** 命中已有等价目标（同文本/同 promise_id）而复用 goal_id 的候选数——这些不是新行。 */
+  reused?: number;
+  /** 本次新落的依赖边数（只来自 parent_goal_id，没父就是 0）。 */
+  deps?: number;
   /** 实际发生的状态跃迁次数（兑现/放弃/过期/解阻/依赖）。 */
   transitions: number;
   /** 本 tick 是否写了 working 锚。 */
@@ -504,6 +616,8 @@ export async function runGoalMaintenance(args: {
     reasserted: 0,
     skipped: 0,
     linked: 0,
+    reused: 0,
+    deps: 0,
     transitions: 0,
     working: false,
     focusChars: 0,
@@ -523,19 +637,55 @@ export async function runGoalMaintenance(args: {
 
   const existing = (await Promise.resolve(listGoals.call(store, tenant, { limit: SOUL_GOAL_LIST_DEFAULT_LIMIT }))) ?? [];
   const byId = new Map(existing.map((row) => [row.goal_id, row]));
+  /** 这一轮看得到的活目标（含刚写的）：同文本复用要以它为准，不然一轮里两个候选会各建一条。 */
+  const liveRows: SoulGoalRow[] = [...existing];
   const ledger: SoulGoalEventInsert[] = [];
 
+  // 承诺先读：promise_id → goal_id 是可反查的确定性对应，等价判定要用它。
+  const promiseByKey = new Map<
+    string,
+    { promiseId: string; content: string; status: string; refKey: string }
+  >();
+  if (typeof store.listSoulPromises === "function") {
+    try {
+      const rows = (await Promise.resolve(store.listSoulPromises.call(store, tenant, { limit: 500 }))) ?? [];
+      for (const row of rows) {
+        promiseByKey.set(String(row.refKey ?? "") + "\u0000" + String(row.content ?? ""), row);
+      }
+    } catch (err) {
+      warn("读承诺失败：" + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  /** 候选 → 实际落库的 goal_id（承诺挂靠必须用它，不能用候选自己的 id）。 */
+  const resolvedGoalIds = new Map<GoalCandidate, string>();
+
   for (const candidate of candidates) {
-    const goalId = String(candidate.goal.goal_id ?? "");
+    const ref = candidate.promiseRef;
+    const promise = ref ? promiseByKey.get(ref.refKey + "\u0000" + ref.content) : undefined;
+    const hit = resolveGoalIdentity({
+      candidate,
+      existing: liveRows,
+      ...(promise ? { promiseId: promise.promiseId } : {}),
+    });
+    const goalId = hit.goalId;
     try {
       const before = byId.get(goalId);
       if (before && TERMINAL_GOAL_STATUSES.includes(before.status)) {
         result.skipped += 1;
         continue;
       }
-      const written = await Promise.resolve(upsert.call(store, tenant, candidate.goal));
+      const insert: SoulGoalInsert =
+        goalId === String(candidate.goal.goal_id ?? "") ? candidate.goal : { ...candidate.goal, goal_id: goalId };
+      const written = await Promise.resolve(upsert.call(store, tenant, insert));
       byId.set(written.row.goal_id, written.row);
+      const pos = liveRows.findIndex((row) => row.goal_id === written.row.goal_id);
+      if (pos >= 0) liveRows[pos] = written.row;
+      else liveRows.push(written.row);
+      resolvedGoalIds.set(candidate, written.row.goal_id);
       if (written.created) result.created += 1;
+      // 复用 = 命中了已有等价目标（同 promise_id 或同文本），这一候选没有新增行。
+      else if (hit.reason !== "candidate") result.reused = (result.reused ?? 0) + 1;
       ledger.push({
         goal_id: written.row.goal_id,
         event_id: "ep:" + (candidate.episodeId !== "" ? candidate.episodeId : candidate.goal.valid_from),
@@ -560,25 +710,35 @@ export async function runGoalMaintenance(args: {
     }
   }
 
-  if (typeof store.listSoulPromises === "function" && typeof store.setSoulPromiseGoal === "function") {
+  if (typeof store.setSoulPromiseGoal === "function" && promiseByKey.size > 0) {
     try {
-      const promises =
-        (await Promise.resolve(store.listSoulPromises.call(store, tenant, { limit: 500 }))) ?? [];
-      const byKey = new Map(
-        promises.map((p) => [String(p.refKey ?? "") + "\u0000" + String(p.content ?? ""), p] as const),
-      );
       for (const candidate of candidates) {
         const ref = candidate.promiseRef;
         if (!ref) continue;
-        const hit = byKey.get(ref.refKey + "\u0000" + ref.content);
+        const hit = promiseByKey.get(ref.refKey + "\u0000" + ref.content);
         if (!hit) continue;
+        const goalId = resolvedGoalIds.get(candidate);
+        if (!goalId) continue;
         const written = await Promise.resolve(
-          store.setSoulPromiseGoal.call(store, tenant, hit.promiseId, String(candidate.goal.goal_id)),
+          store.setSoulPromiseGoal.call(store, tenant, hit.promiseId, goalId),
         );
         if (written?.updated) result.linked += 1;
       }
     } catch (err) {
       warn("承诺挂靠失败：" + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  // 依赖边：只从 parent_goal_id 落（父在库、不是自己）。没父就 0 行，不按事件/对象猜边。
+  if (typeof store.insertSoulGoalDep === "function") {
+    const edges = collectGoalDepEdges(Array.from(byId.values()));
+    for (const edge of edges) {
+      try {
+        const written = await Promise.resolve(store.insertSoulGoalDep.call(store, tenant, edge));
+        if ((written?.inserted ?? 0) > 0) result.deps = (result.deps ?? 0) + 1;
+      } catch (err) {
+        warn("依赖边写入失败（" + edge.goal_id + " -> " + edge.depends_on_goal_id + "）：" + (err instanceof Error ? err.message : String(err)));
+      }
     }
   }
 
@@ -610,9 +770,10 @@ export async function runGoalMaintenance(args: {
     if (fact.kind !== "promise" || fact.fulfillment === undefined || fact.fulfillment === "open") continue;
     const body = unwrapPromiseFact(fact.text);
     if (body === "") continue;
-    const goalId = goalIdFor({ kind: "commitment", owner: "self", title: body });
-    const row = byId.get(goalId);
+    // id 可能已被复用改写成 goal-<promise_id>，所以按同文本键找活目标，不按派生 id 找。
+    const row = findLiveGoalByTitle(liveRows, body);
     if (!row || TERMINAL_GOAL_STATUSES.includes(row.status)) continue;
+    const goalId = row.goal_id;
     const kept = fact.fulfillment === "kept";
     await doTransition(goalId, kept ? "done" : "abandoned", {
       at: now,

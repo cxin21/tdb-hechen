@@ -39,6 +39,8 @@ import type { AgememContext, LoggerLike, ToolDefinitionShape, ToolsService } fro
 import { extractTurnClaim, formatVolatileBlock, installVolatile, type VolatileTurnContext } from './volatile.js';
 import { computeScene, formatSceneLine } from './scene.js';
 import { toToolEvents } from './tool-events.js';
+// P7 输出侧（shadow）：把助手输出送 /v3/soul/gate。只记不拦，见 gate-report.ts 的模块说明。
+import { SOUL_GATE_PATH, createSoulGateOnce, soulGateDedupeKey, toSoulGateReport, type SoulGateReportPayload } from './gate-report.js';
 import { installWriteback, type SkillWritebackPayload } from './writeback.js';
 /**
  * dsh native memory plugin (@tdb/agemem-dsh).
@@ -385,6 +387,8 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     'outbox.dead': false,
     // P1-B W3 观测面：一条工具事件被 Core 拒（形状/置信度/鉴权）时只报一次。
     'soul.event.failed': false,
+    // P7 输出侧：gate 判定被拒/超时只报一次（shadow 期它本来就不该影响回合）。
+    'soul.gate.failed': false,
     identity: false,
   };
   const warnOnce = (flag: keyof typeof warned, message: string, context?: unknown): void => {
@@ -522,6 +526,61 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
             + 'would only be answered as a duplicate',
           );
         }
+      }
+    })();
+  };
+
+  /**
+   * P7 输出侧（shadow）：把这一轮助手真正落地的输出送 /v3/soul/gate，只记不拦。
+   *
+   * 与 reportToolEvents 同一条纪律（L0 写回成功之后才发、fire-and-forget、不进 Outbox），
+   * 另加两条自己的：
+   *  1. 一回合一次：gateSeen 用 <sessionId>:<turnId> 去重。宿主重复发 turn-stopping、
+   *     或进程在「投递成功但没来得及落盘」处崩掉重放时，都不会让 Core 多记一条判定；
+   *  2. 判定结果不外溢：Core 回什么都只写一行 debug，**不改本轮输出**、不回灌模型。
+   *     shadow 期 decision 恒为 allow（soul-gate-endpoint.ts:269），拿它当闸门等于编了
+   *     一个并不存在的开关。
+   */
+  const gateSeen = createSoulGateOnce();
+  const reportSoulGate = (payload: TurnEndPayload): void => {
+    let report: SoulGateReportPayload | undefined;
+    try {
+      report = toSoulGateReport(payload);
+    } catch (error) {
+      // 纯函数不该抛；真抛了也只是少一条判定，不影响回合。
+      log?.debug?.('agemem: soul gate report not built', error);
+      return;
+    }
+    if (report === undefined) return;
+    const key = soulGateDedupeKey(payload);
+    if (key !== undefined && !gateSeen(key)) {
+      log?.debug?.('agemem: soul gate already reported for this turn');
+      return;
+    }
+    void (async () => {
+      try {
+        const outcome = await client.reportSoulGate(report, payload.sessionId);
+        if (outcome.ok) {
+          // 只记事实、不带正文：这行日志会被复制进 issue 报告。
+          log?.debug?.('agemem: soul gate shadow', {
+            decision: outcome.decision,
+            shadow: outcome.shadow,
+            logged: outcome.logged,
+          });
+          return;
+        }
+        warnOnce(
+          'soul.gate.failed',
+          'agemem: soul gate report failed (' + (outcome.reason ?? 'no response') + ' on ' + SOUL_GATE_PATH
+          + '); not retried and not queued — the output gate is shadow-only and must never block or alter the turn',
+        );
+      } catch (error) {
+        warnOnce(
+          'soul.gate.failed',
+          'agemem: soul gate report threw (' + (error instanceof Error ? error.message : String(error)) + ' on '
+          + SOUL_GATE_PATH + '); not retried and not queued — the output gate is shadow-only and must never '
+          + 'block or alter the turn',
+        );
       }
     })();
   };
@@ -1505,6 +1564,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
                 // P1-B W3：对话正文落地之后，同一轮的工具调用才作为独立事件上报。
                 // 不 await：事件面失败绝不影响 outbox 的投递结果与后面的 turn。
                 reportToolEvents(payload);
+                // P7 输出侧（shadow）：正文落地之后才判「这一轮说了什么」。
+                // 同样不 await、不进 Outbox —— 判定失败绝不能让投递结果或 turn 变形。
+                reportSoulGate(payload);
                 return { ok: true } as const;
               }
               // 200 + code!==0 is a rejection: the core maps some validation

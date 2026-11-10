@@ -146,6 +146,24 @@ export function coreFixture(options: CoreFixtureOptions = {}): { fetchImpl: type
     if (path.endsWith('/v3/soul/turn')) {
       return envelope(options.turn ?? { text: '', openLoops: [] });
     }
+    if (path.endsWith('/v3/soul/gate')) {
+      // P7 输出侧（soul-gate-endpoint.ts:294-314）：shadow 期 decision 恒 allow；
+      // logged.inserted 对应 soul_gate_log 的一次新插行（Core 是 INSERT OR IGNORE，
+      // 同一 digest 重放时为 false）。stage 原样回显，便于断言 body 确实带了它。
+      const stage = typeof body?.stage === 'string' ? body.stage : 'output';
+      return envelope({
+        stage,
+        decision: 'allow',
+        shadow: true,
+        wouldDecision: 'allow',
+        matched: [],
+        hits: [],
+        conflict: false,
+        digest: 'd'.repeat(64),
+        logged: { inserted: true },
+        dilemmaId: null,
+      });
+    }
     if (path.endsWith('/v3/scenario/ls')) {
       return envelope({ entries: options.scenarios ?? SCENARIO_ENTRIES });
     }

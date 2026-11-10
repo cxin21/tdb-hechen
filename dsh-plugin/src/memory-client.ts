@@ -2,6 +2,13 @@ import type { AgememPaths } from './config.js';
 import { classifyL2Failure, parseL2Outcome, type L2FetchOutcome } from './head-pack.js';
 import type { LoggerLike } from './types.js';
 import type { PersonaCardFailureReason } from './persona-card.js';
+// P7 输出侧（shadow）：路径与限长以 gate-report.ts 为单一事实源，这里只负责传输。
+import {
+  SOUL_GATE_PATH,
+  loggedFromCoreResult,
+  type SoulGateOutcome,
+  type SoulGateReportPayload,
+} from './gate-report.js';
 import {
   DEFAULT_MAX_RESPONSE_BYTES,
   clampMaxResponseBytes,
@@ -1730,6 +1737,59 @@ export class MemoryClient {
     }
     const eventId = typeof result.data?.event_id === 'string' ? result.data.event_id : undefined;
     return { eventId, duplicate: result.data?.duplicate === true };
+  }
+
+  /**
+   * POST /v3/soul/gate —— P7 输出侧判定（stage=output）。
+   *
+   * 与另外两条 soul 写路由的差别：
+   *  - reportSoulInjection 是纯记账（全吞、返回值 void）；postSoulEvent 是事实来源（失败抛）。
+   *    这条是**观测面**：失败折成 ok:false 交给调用方 warnOnce 一次，不抛、不重投、不进 Outbox。
+   *  - body 只有 text / stage（+ 有则带上的 sessionId / eventId）；租户三元组仍只走 x-tdai-* 头。
+   *    所以 echoIsolationInBody: false —— 默认路径会把 team_id/agent_id/user_id 再往 body 里插
+   *    一份（其他 v3 路由的既有口径），而 gate 路由只从头里取身份。
+   *
+   * 返回值可以被日志读，但**不得**用来改写本轮输出：shadow 期 Core 恒回 allow
+   * （soul-gate-endpoint.ts:269），拿它当「放行/拦截」判断等于伪造了一个没有的闸门。
+   */
+  async reportSoulGate(
+    report: SoulGateReportPayload,
+    sessionId?: string,
+  ): Promise<SoulGateOutcome> {
+    try {
+      const body: Record<string, unknown> = {
+        text: report.text,
+        stage: report.stage,
+      };
+      // 「有则带、无则省略」：未知字段 Core 不读，空串却会让审计侧以为「带了个空会话」。
+      if (report.sessionId !== undefined) body.sessionId = report.sessionId;
+      if (report.eventId !== undefined) body.eventId = report.eventId;
+      // 会话标识还走规范头（x-tdai-service-id 之外唯一被全网关认识的会话键，
+      // recallBlock 同款）：gate 路由当前不读它，但代理/日志侧认这个头。
+      const session = sessionId ?? report.sessionId;
+      const result = await this.call<Record<string, unknown>>(SOUL_GATE_PATH, body, {
+        timeoutMs: 3000,
+        sessionId: session,
+        ...(session === undefined ? {} : { extraHeaders: { 'x-tdai-session-id': session } }),
+        echoIsolationInBody: false,
+      });
+      if (!result.ok) {
+        // 失败折成结果而不是抛出：调用方只负责「报一次」，不需要 try/catch 两种形态。
+        return { ok: false, status: result.status, reason: result.reason };
+      }
+      const data = result.data ?? {};
+      // Core 的 logged 是 { inserted: <行数> }，不是布尔：按数值判（t30 F1）。
+      const logged = loggedFromCoreResult(data.logged);
+      return {
+        ok: true,
+        decision: typeof data.decision === 'string' ? data.decision : undefined,
+        shadow: data.shadow === true,
+        logged,
+      };
+    } catch (error) {
+      // call() 声称不抛，但传输层的意外不能把一个观测面变成 turn 的故障点。
+      return { ok: false, reason: 'threw: ' + (error instanceof Error ? error.message : String(error)) };
+    }
   }
 
   /** Liveness probe; `true` when the core answers with a zero-code envelope. */

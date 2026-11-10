@@ -1843,6 +1843,105 @@ describe('soul tool events (P1-B W3)', () => {
     expect(eventWarnings[0]).not.toContain('46 passed');
   });
 });
+/**
+ * P7 输出侧（shadow）：L0 写回成功 → 把这一轮助手输出送 POST /v3/soul/gate。
+ * 三条纪律在这里被钉住：一回合只发一次；失败只 warn 一次、不重投、不进 Outbox；
+ * 判定结果不回灌模型、日志里不落正文。
+ */
+describe('soul output gate (P7 shadow)', () => {
+  /** 驱动一个成功回合：用户消息 → 工具调用/回执 → 助手正文 → 收口。 */
+  function driveTurn(fake: FakeContext): void {
+    fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn: 1, message: userMessage('跑一下测试', 'u1') } });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId: 'c1', name: 'ops_bash', arguments: { command: 'npx vitest run' } },
+    });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'tool/result',
+      data: { turn: 1, step: 1, message: toolMessage('Tests  46 passed (46)') },
+    });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '全绿。' }] } },
+    });
+    fake.emit('agent/turn-stopping', { turn: 1, agent: { session: { id: 's1' } } });
+  }
+
+  it('成功回合发且只发一次，带 text/stage/会话标识，且在正文落地之后', async () => {
+    const fixture = installFetch();
+    const outboxPath = tempOutbox();
+    const fake = await startApp({ writeback: { outboxPath } });
+
+    driveTurn(fake);
+
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/gate')).toHaveLength(1));
+    const gate = callsTo(fixture.calls, '/v3/soul/gate')[0];
+    expect(gate.method).toBe('POST');
+    // body：Core 只读 text/stage/eventId（soul-gate-endpoint.ts:218/:231/:243）。
+    expect(gate.body).toMatchObject({ text: '全绿。', stage: 'output', sessionId: 's1' });
+    expect(Object.keys(gate.body)).not.toContain('team_id');
+    // 会话标识：body 一份 + x-tdai-session-id（规范会话头）一份。
+    expect(gate.headers['x-tdai-session-id']).toBe('s1');
+    // 形状先跑一次：gate 是 shadow 观测面，不能因为它让别的调用变少。
+    expect(callsTo(fixture.calls, '/v3/soul/gate').length).toBe(1);
+    // 身份仍走三元组头（Core 缺一 422）。
+    expect(gate.headers['x-tdai-team-id']).toBe('team-test');
+    expect(gate.headers['x-tdai-agent-id']).toBe('agt-test');
+    expect(gate.headers['x-tdai-user-id']).toBe('usr-test');
+
+    // 顺序：正文先落地，判定后到（「我说过什么」不该晚于「我判了什么」）。
+    const addIndex = fixture.calls.findIndex((call) => call.path.endsWith('/v3/conversation/add'));
+    const gateIndex = fixture.calls.findIndex((call) => call.path.endsWith('/v3/soul/gate'));
+    expect(gateIndex).toBeGreaterThan(addIndex);
+
+    // 不进 Outbox：gate 失败不该留下可重投的行，也不该把正文写进死信文件。
+    expect(readFileSync(outboxPath, 'utf8').trim().split(LF).filter((line) => line !== '')).toHaveLength(0);
+    // 判定结果不回灌：写回正文里没有任何 gate 字段，日志里不带助手正文。
+    expect(JSON.stringify(callsTo(fixture.calls, '/v3/conversation/add')[0].body)).not.toContain('wouldDecision');
+    expect(fake.logs.filter((line) => line.includes('soul gate') && line.includes('全绿'))).toHaveLength(0);
+  });
+
+  it('同一轮重复收口只判一次（不重投）', async () => {
+    const fixture = installFetch();
+    const fake = await startApp({ writeback: { outboxPath: tempOutbox() } });
+
+    driveTurn(fake);
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/gate')).toHaveLength(1));
+
+    // 宿主重复发收口（重连/重放）：不允许多记一条判定。
+    fake.emit('agent/turn-stopping', { turn: 1, agent: { session: { id: 's1' } } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(callsTo(fixture.calls, '/v3/soul/gate')).toHaveLength(1);
+    expect(callsTo(fixture.calls, '/v3/conversation/add')).toHaveLength(1);
+  });
+
+  it('判定失败只 warn 一次：turn 与 L0 写回照常，不重投、不进 Outbox、日志不落正文', async () => {
+    const fixture = installFetch({
+      fail: (path) => (path.endsWith('/v3/soul/gate') ? new Response('boom', { status: 500 }) : undefined),
+    });
+    const outboxPath = tempOutbox();
+    const fake = await startApp({ writeback: { outboxPath } });
+
+    driveTurn(fake);
+
+    await vi.waitFor(() =>
+      expect(fake.logs.filter((line) => line.startsWith('warn') && line.includes('/v3/soul/gate'))).toHaveLength(1),
+    );
+    // 只发一次：失败不重投。
+    expect(callsTo(fixture.calls, '/v3/soul/gate')).toHaveLength(1);
+    // L0 写回不受影响（gate 在它之后、且与之无关）。
+    expect(callsTo(fixture.calls, '/v3/conversation/add')).toHaveLength(1);
+    const entries = readFileSync(outboxPath, 'utf8').trim().split(LF).filter((line) => line !== '');
+    expect(entries).toHaveLength(0);
+
+    const gateWarnings = fake.logs.filter((line) => line.startsWith('warn') && line.includes('/v3/soul/gate'));
+    expect(gateWarnings[0]).toContain('HTTP 500');
+    // 不落正文：warn 行里没有这一轮的助手输出。
+    expect(gateWarnings[0]).not.toContain('全绿');
+    expect(fake.logs.filter((line) => line.includes('全绿'))).toHaveLength(0);
+  });
+});
 describe('persona card bind target', () => {
   // 2026-11-08 02:14 现场：切换人设时先绑空三元组（候选/弹窗没成），旧实现把它
   // 当成「不关联」清卡，02:14:15.990 清 → 02:14:23.491 才绑上，中间那次拼提示

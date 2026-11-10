@@ -8,10 +8,16 @@ import {
   GOAL_OVERDUE_REASON_PREFIX,
   GOAL_WORKING_MAX_CHARS,
   buildWorkingState,
+  collectGoalDepEdges,
   commitmentAnswer,
   deriveGoals,
+  goalIdForPromise,
+  goalTitleKey,
   parseGoalDueAt,
+  resolveGoalIdentity,
+  runGoalMaintenance,
   unwrapPromiseFact,
+  type GoalStorePort,
 } from "../goals.js";
 import type { HistoryFact } from "../history.js";
 import type { SoulEpisode } from "../types.js";
@@ -246,3 +252,297 @@ describe("承诺问答：跨三天仍答得出", () => {
     expect(commitmentAnswer([goalRow({ goal_id: "g-x", kind: "plan" })], { now: NOW })).toBeNull();
   });
 });
+
+
+/**
+ * 目标重复账的口径（t28）：同租户 +（同文本键 或 同 promise_id）+ status∈active/blocked 才复用同一个 goal_id。
+ * 判据是确定性归一后的「同文本」，没有相似度阈值。
+ */
+function fakeGoalStore(seed: {
+  goals?: SoulGoalRow[];
+  promises?: Array<{ promiseId: string; content: string; status: string; refKey: string; goal_id?: string | null }>;
+} = {}) {
+  const goals = new Map<string, SoulGoalRow>((seed.goals ?? []).map((row) => [row.goal_id, row]));
+  type FakePromise = { promiseId: string; content: string; status: string; refKey: string; goal_id?: string | null };
+  const promises = new Map<string, FakePromise>(
+    (seed.promises ?? []).map((row) => [row.promiseId, { ...row }] as [string, FakePromise]),
+  );
+  const deps: Array<{ goal_id: string; depends_on_goal_id: string; kind: string }> = [];
+  const upserted: string[] = [];
+  const store: GoalStorePort = {
+    listSoulGoals: () => Array.from(goals.values()),
+    listSoulPromises: () => Array.from(promises.values()),
+    upsertSoulGoal: (_tenant, insert) => {
+      upserted.push(insert.goal_id);
+      const existing = goals.get(insert.goal_id);
+      if (existing) {
+        const row: SoulGoalRow = {
+          ...existing,
+          title: insert.title,
+          why: insert.why ?? existing.why,
+          updated_at: insert.updated_at ?? existing.updated_at,
+        };
+        goals.set(row.goal_id, row);
+        return { row, created: false };
+      }
+      const row: SoulGoalRow = {
+        goal_id: insert.goal_id,
+        team_id: insert.team_id ?? "t1",
+        user_id: insert.user_id ?? "u1",
+        agent_id: insert.agent_id ?? "a1",
+        owner: insert.owner,
+        kind: insert.kind,
+        title: insert.title,
+        why: insert.why ?? "",
+        status: insert.status ?? "active",
+        priority: insert.priority ?? 0.5,
+        progress: insert.progress ?? 0,
+        due_at: insert.due_at ?? null,
+        parent_goal_id: insert.parent_goal_id ?? null,
+        source_event_id: insert.source_event_id ?? null,
+        success_criteria: insert.success_criteria ?? "",
+        blocked_reason: insert.blocked_reason ?? "",
+        abandon_reason: insert.abandon_reason ?? "",
+        valid_from: insert.valid_from,
+        valid_to: insert.valid_to ?? null,
+        confidence: insert.confidence ?? 0.5,
+        created_at: insert.created_at ?? insert.valid_from,
+        updated_at: insert.updated_at ?? insert.valid_from,
+      };
+      goals.set(row.goal_id, row);
+      return { row, created: true };
+    },
+    insertSoulGoalEvents: () => ({ inserted: 0 }),
+    setSoulPromiseGoal: (_tenant, promiseId, goalId) => {
+      const row = promises.get(promiseId);
+      if (!row) return { updated: false };
+      if (row.goal_id === goalId) return { updated: false };
+      row.goal_id = goalId;
+      return { updated: true };
+    },
+    insertSoulGoalDep: (_tenant, row) => {
+      if (deps.some((d) => d.goal_id === row.goal_id && d.depends_on_goal_id === row.depends_on_goal_id)) {
+        return { inserted: 0 };
+      }
+      deps.push({ goal_id: row.goal_id, depends_on_goal_id: row.depends_on_goal_id, kind: row.kind ?? "blocks" });
+      return { inserted: 1 };
+    },
+    listSoulGoalDeps: () => deps,
+    upsertSoulWorkingState: () => undefined,
+    clearSoulWorkingState: () => ({ deleted: 0 }),
+  };
+  return { store, goals, promises, deps, upserted };
+}
+
+const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
+
+describe("目标去重：同一句承诺只长一个 goal", () => {
+  it("文本键把承诺包装与裸句归一成同一句，句末标点不算差异", () => {
+    expect(goalTitleKey("我答应过自己：「周五前把说明改成短句」")).toBe(
+      goalTitleKey("周五前把说明改成短句。"),
+    );
+    expect(goalTitleKey("周五前把说明改成短句")).not.toBe(goalTitleKey("周五前把文档改成短句"));
+  });
+
+  it("promise_id 派生的 id 与 P0-D 迁移逐字一致（可反查、重跑不变）", () => {
+    expect(goalIdForPromise("pm_1")).toBe("goal-pm_1");
+    expect(goalIdForPromise("")).toBe("");
+  });
+
+  it("promise 派生与 worker 派生撞同一句话：只建一条，另一条复用它的 goal_id", async () => {
+    const facts = [promiseFact("我答应过自己：「周五前把说明改成短句，一句一件事」", "你说这周要把对外说明改成短句")];
+    const episodes = [
+      ep({
+        episodeId: "ep-p1",
+        at: AT,
+        object: "把说明改成短句",
+        outcome: "我答应你周五前把说明改成短句，一句一件事",
+      }),
+    ];
+    const fake = fakeGoalStore({
+      promises: [
+        {
+          promiseId: "pm_1",
+          content: "我答应过自己：「周五前把说明改成短句，一句一件事」",
+          status: "open",
+          refKey: "你说这周要把对外说明改成短句",
+        },
+      ],
+    });
+    const first = await runGoalMaintenance({
+      store: fake.store,
+      tenant: TENANT,
+      episodes,
+      facts,
+      now: NOW,
+    });
+    expect(first.candidates).toBe(2);
+    expect(first.created).toBe(1);
+    expect(first.reused).toBe(1);
+    expect(fake.goals.size).toBe(1);
+    expect(Array.from(fake.goals.keys())).toEqual(["goal-pm_1"]);
+    expect(fake.promises.get("pm_1")?.goal_id).toBe("goal-pm_1");
+
+    const second = await runGoalMaintenance({
+      store: fake.store,
+      tenant: TENANT,
+      episodes,
+      facts,
+      now: NOW,
+    });
+    expect(second.created).toBe(0);
+    expect(fake.goals.size).toBe(1);
+  });
+
+  it("库里已有等价活目标时复用它，不因 id 不同再建一条", async () => {
+    const legacy = goalRow({
+      goal_id: "g-legacy",
+      title: "周五前把说明改成短句，一句一件事",
+      status: "active",
+    });
+    const fake = fakeGoalStore({
+      goals: [legacy],
+      promises: [
+        {
+          promiseId: "pm_1",
+          content: "我答应过自己：「周五前把说明改成短句，一句一件事」",
+          status: "open",
+          refKey: "",
+        },
+      ],
+    });
+    const got = await runGoalMaintenance({
+      store: fake.store,
+      tenant: TENANT,
+      episodes: [],
+      facts: [promiseFact("我答应过自己：「周五前把说明改成短句，一句一件事」", "这件事")],
+      now: NOW,
+    });
+    expect(got.created).toBe(0);
+    expect(fake.goals.size).toBe(1);
+    expect(fake.upserted).toEqual(["g-legacy"]);
+    expect(fake.promises.get("pm_1")?.goal_id).toBe("g-legacy");
+  });
+
+  it("库里的历史重复行不新建第三条：复用 promise 派生那条，另一条留给人工清理", async () => {
+    const migrated = goalRow({
+      goal_id: "goal-pm_1",
+      title: "我答应过自己：「周五前把说明改成短句，一句一件事」",
+      status: "active",
+    });
+    const legacy = goalRow({
+      goal_id: "g-dup",
+      title: "周五前把说明改成短句，一句一件事",
+      status: "active",
+    });
+    const fake = fakeGoalStore({
+      goals: [migrated, legacy],
+      promises: [
+        {
+          promiseId: "pm_1",
+          content: "我答应过自己：「周五前把说明改成短句，一句一件事」",
+          status: "open",
+          refKey: "",
+          goal_id: "g-dup",
+        },
+      ],
+    });
+    const got = await runGoalMaintenance({
+      store: fake.store,
+      tenant: TENANT,
+      episodes: [],
+      facts: [promiseFact("我答应过自己：「周五前把说明改成短句，一句一件事」", "这件事")],
+      now: NOW,
+    });
+    expect(got.created).toBe(0);
+    expect(fake.goals.size).toBe(2);
+    expect(fake.upserted).toEqual(["goal-pm_1"]);
+    expect(fake.promises.get("pm_1")?.goal_id).toBe("goal-pm_1");
+  });
+
+  it("终态目标不复活：同文本只跳过一次，不因复用又改回 active", async () => {
+    const done = goalRow({ goal_id: "goal-pm_1", title: "周五前把说明改成短句", status: "done" });
+    const fake = fakeGoalStore({
+      goals: [done],
+      promises: [
+        {
+          promiseId: "pm_1",
+          content: "我答应过自己：「周五前把说明改成短句」",
+          status: "open",
+          refKey: "",
+        },
+      ],
+    });
+    const got = await runGoalMaintenance({
+      store: fake.store,
+      tenant: TENANT,
+      episodes: [],
+      facts: [promiseFact("我答应过自己：「周五前把说明改成短句」", "这件事")],
+      now: NOW,
+    });
+    expect(got.created).toBe(0);
+    expect(got.skipped).toBe(1);
+    expect(fake.goals.get("goal-pm_1")?.status).toBe("done");
+  });
+});
+
+describe("goal_deps：有父才落边，没父 0 行", () => {
+  it("parent_goal_id 指向本批目标时落一条 blocks 边（重跑幂等不翻倍）", async () => {
+    const parent = goalRow({ goal_id: "g-parent", title: "先把说明定稿", status: "active" });
+    const child = goalRow({
+      goal_id: "g-child",
+      title: "再把说明改成短句",
+      status: "active",
+      parent_goal_id: "g-parent",
+    });
+    const fake = fakeGoalStore({ goals: [parent, child] });
+    const first = await runGoalMaintenance({ store: fake.store, tenant: TENANT, episodes: [], facts: [], now: NOW });
+    expect(first.deps).toBe(1);
+    expect(fake.deps).toEqual([{ goal_id: "g-child", depends_on_goal_id: "g-parent", kind: "blocks" }]);
+
+    const second = await runGoalMaintenance({ store: fake.store, tenant: TENANT, episodes: [], facts: [], now: NOW });
+    expect(second.deps).toBe(0);
+    expect(fake.deps).toHaveLength(1);
+  });
+
+  it("没有父目标就是 0 行；父不在库里也不猜边", async () => {
+    const orphan = goalRow({ goal_id: "g-orphan", title: "等着不存在的东西", parent_goal_id: "g-missing" });
+    const plain = goalRow({ goal_id: "g-plain", title: "独立的目标" });
+    const fake = fakeGoalStore({ goals: [orphan, plain] });
+    const got = await runGoalMaintenance({ store: fake.store, tenant: TENANT, episodes: [], facts: [], now: NOW });
+    expect(got.deps).toBe(0);
+    expect(fake.deps).toEqual([]);
+  });
+
+  it("collectGoalDepEdges 是纯函数：丢自依赖、丢跨批缺失父、带去重", () => {
+    const rows = [
+      goalRow({ goal_id: "g-a", parent_goal_id: "g-b" }),
+      goalRow({ goal_id: "g-b", parent_goal_id: "g-a" }),
+      goalRow({ goal_id: "g-c", parent_goal_id: "g-c" }),
+      goalRow({ goal_id: "g-d", parent_goal_id: "g-missing" }),
+      goalRow({ goal_id: "g-a", parent_goal_id: "g-b" }),
+    ];
+    expect(collectGoalDepEdges(rows)).toEqual([
+      { goal_id: "g-a", depends_on_goal_id: "g-b", kind: "blocks" },
+      { goal_id: "g-b", depends_on_goal_id: "g-a", kind: "blocks" },
+    ]);
+  });
+
+  it("resolveGoalIdentity 的口径：只复用 active/blocked，终态不复用", () => {
+    const active = goalRow({ goal_id: "g-live", title: "周五前把说明改成短句", status: "active" });
+    const done = goalRow({ goal_id: "g-done", title: "周五前把说明改成短句", status: "done" });
+    const candidate = deriveGoals({
+      episodes: [],
+      facts: [promiseFact("我答应过自己：「周五前把说明改成短句」", "这件事")],
+    })[0]!;
+    expect(resolveGoalIdentity({ candidate, existing: [done], promiseId: "pm_1" })).toEqual({
+      goalId: "goal-pm_1",
+      reason: "promise",
+    });
+    expect(resolveGoalIdentity({ candidate, existing: [active, done] })).toEqual({
+      goalId: "g-live",
+      reason: "title",
+    });
+  });
+});
+
