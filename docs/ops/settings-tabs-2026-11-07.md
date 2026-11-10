@@ -20,9 +20,10 @@ MemoryPanel 管理员的设置页由 3 个页签扩为 6 个，按「谁能改�
 - D 的数据：`MemoryPanel/web/src/pages/SettingsPage/configCatalog.ts`（自动生成）
 - 类型：`MemoryPanel/web/src/lib/api/settings.ts`（`SettingsView` 新增 extraction/layerRuler/injection/coreMemory/lifecycle/capture/evolution/sceneGovernance/links/bm25/search）
 
-B 档 8 个开关（写进 Core override，重启后生效）：
+B 档 7 个开关（写进 Core override，重启后生效）：
 
-1. `memory.coreMemory.soulMaintenance.enabled` — 人格维护总闸（关 = 不再更新/注入人格六层）
+> 2026-11-07 移出：`memory.coreMemory.soulMaintenance.enabled` 已随人格卡 v3 删除（人格恒开，注入由 DSH 插件两段完成，见 ADR-0028）；下面 7 项为当前 B 档。
+
 2. `memory.extraction.enabled` — L1 抽取（关 = 不再把会话抽成结构化记忆）
 3. `memory.lifecycle.consolidation.enabled` — L1→L2 固化/合并
 4. `memory.evolution.enabled` — 自我演化（唯一允许改写已固化正文的路径）

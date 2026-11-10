@@ -1,6 +1,6 @@
 # ADR-0027 人格的事件层：从原始对话长出「有出处的判断」
 
-- 状态：已实施（2026-11-05）
+- 状态：已实施（2026-11-05）；**已被 [ADR-0028](0028-persona-card-v3-declared-observed.md) 取代（2026-11-07）**，本文保留为历史决策记录
 - 决策者：何晨（拍板 A：新增 `soul_episode` 层，生成源改为 L0 原始对话；只接受完整版）
 - 相关：ADR-0026（六层 + 判据 + 账本）、`docs/soul-self-maintenance.md`、`MemoryCore/src/core/soul/episode.ts`
 
