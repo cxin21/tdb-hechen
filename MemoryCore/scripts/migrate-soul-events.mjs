@@ -12,6 +12,7 @@
  *   node scripts/migrate-soul-events.mjs --db <path> --apply             # 建表 → 逐租户事务写入 → 对账
  *   node scripts/migrate-soul-events.mjs --db <path> --apply --tenant t/u/a   # 只迁一个租户（可重复）
  *   node scripts/migrate-soul-events.mjs --db <path> --apply --allow-production
+ *   node scripts/migrate-soul-events.mjs --db <path> --apply --repair   # 修早期映射写错的派生行
  *
  * 安全边界：
  *   - --db 必填，没有「默认库」这种东西（误连生产是本任务的第一号风险）；
@@ -46,10 +47,11 @@ const lib = await import("./lib/soul-event-migration.mjs");
 
 const TAG = lib.TAG;
 const USAGE = [
-  "用法：node scripts/migrate-soul-events.mjs --db <path> [--apply] [--tenant team/user/agent] [--allow-production] [--json]",
+  "用法：node scripts/migrate-soul-events.mjs --db <path> [--apply] [--repair] [--tenant team/user/agent] [--allow-production] [--json]",
   "  --db <path>          必填：要迁移的 sqlite 库（D:/TDB/data/vectors.db 需额外 --allow-production）",
   "  --apply              真正写入；缺省是只读 dry-run",
   "  --tenant t/u/a       只迁该租户（team_id/user_id/agent_id），可重复",
+  "  --repair             修「早期映射写错」的派生行（只修真 mismatch；必须配 --apply）",
   "  --allow-production   允许碰生产库 D:/TDB/data/vectors.db（会先打印备份/字节/sha256 提示）",
   "  --json               末尾额外打印一行机器可读 JSON",
 ].join("\n");
@@ -60,7 +62,7 @@ function die(code, message) {
 }
 
 function parseArgs(argv) {
-  const opts = { db: null, apply: false, tenants: [], allowProduction: false, json: false, help: false };
+  const opts = { db: null, apply: false, repair: false, tenants: [], allowProduction: false, json: false, help: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--db") opts.db = argv[++i] ?? null;
@@ -68,6 +70,7 @@ function parseArgs(argv) {
     else if (a === "--apply") opts.apply = true;
     else if (a === "--tenant") opts.tenants.push(argv[++i] ?? "");
     else if (a.startsWith("--tenant=")) opts.tenants.push(a.slice(9));
+    else if (a === "--repair") opts.repair = true;
     else if (a === "--allow-production") opts.allowProduction = true;
     else if (a === "--json") opts.json = true;
     else if (a === "--help" || a === "-h") opts.help = true;
@@ -119,6 +122,10 @@ if (production) {
   if (opts.apply) {
     console.log(TAG + " ⚠ 这次是 --apply：上面的备份没有由本脚本创建，确认备份可回滚后再继续。");
   }
+}
+
+if (opts.repair && !opts.apply) {
+  die(2, "--repair 必须配 --apply：它要写库，dry-run 下没有可修的东西");
 }
 
 const mode = opts.apply ? "apply" : "dry-run";
@@ -179,6 +186,26 @@ try {
     if (applied.failed.length > 0) {
       for (const f of applied.failed) console.error(TAG + " 失败租户 " + f.tenant + "：" + f.error);
       exitCode = 3;
+    }
+
+    if (opts.repair) {
+      const repaired = lib.repairDerivedDrift(db);
+      const cols = Object.entries(repaired.totals.byColumn)
+        .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+        .map(([col, n]) => col + " " + n)
+        .join("、");
+      console.log(
+        TAG + " 漂移修复：事件 " + repaired.totals.events + " 条 · 字段 " + repaired.totals.columns +
+          " 个" + (cols ? "（" + cols + "）" : "") +
+          (repaired.totals.skippedOutOfScope > 0 ? " · 跳过非 chat 事件 " + repaired.totals.skippedOutOfScope + " 条" : ""),
+      );
+      for (const item of repaired.repaired) {
+        console.log(TAG + "   修回 " + item.eventId + "：" + item.fields.join(", "));
+      }
+      if (repaired.failed.length > 0) {
+        for (const f of repaired.failed) console.error(TAG + " 修复失败租户 " + f.tenant + "：" + f.error);
+        exitCode = 3;
+      }
     }
   }
 

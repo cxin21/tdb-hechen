@@ -1,9 +1,36 @@
 # 同名人物两行合并方案（soul_person / 关系边 / 状态层）
 
-- 状态：方案（**不实现**；t2 只交付本文档）
+- 状态：方案（**不实现自动合并**；只读检测已落地：`MemoryCore/scripts/detect-soul-person-dupes.mjs` + `MemoryCore/src/core/person/dupes.ts`，合并仍按 §4 人工执行）
 - 日期：2026-11-10
 - 关联：`docs/specs/2026-11-10-soul-event-model-full-optimization.md` §4.4 / §10.8；`docs/specs/2026-11-08-person-profile-distill-spec.md` §5.2/§5.3
 - 适用范围：同一租户三元组（team_id, user_id, agent_id）内，同一个自然人被建成了两行 `soul_person`
+
+## 0. 现状核对（2026-11-10 实测，只读）
+
+对生产库做 `VACUUM INTO` 副本后扫描（`node scripts/detect-soul-person-dupes.mjs --db <副本>`）：
+
+- `soul_person` 共 29 行：存活 27，墓碑 2（`p_name_5cf1675acf0e -> p_9014f2235ec1`、`p_name_2a6ce2084161 -> p_b38a137ab63b`）。
+- **同租户同名候选组 0，别名候选 0** —— 当前生产没有待合并的两行。
+- 墓碑残留 0：关系出边/入边、`soul_person_state`、`soul_person_state_events`、`soul_persona` human 行、
+  `soul_episodes.persons_json` 归属全为 0，说明已有两次合并是「立指针前就改过键/尚未产生数据」，
+  不是 §1 描述的「只立指针不搬数据」形态。
+
+§1 里「display_name='何晨' 6 行」是**跨租户**的既有事实（5 个 agent 各认识一个人），按 §2.1 永不合并，
+所以它不是本方案的执行对象，只是解释「为什么必须按租户三元组判重」。
+
+检测口径（只读，不写库，判据与代码同源）：
+
+```bash
+cd MemoryCore
+node scripts/detect-soul-person-dupes.mjs --db <path> [--tenant team/user/agent] [--json]
+```
+
+- 分级 A/B/C 与 §2.2 一致；A 级也要求执行前重跑一次；
+- 别名候选单列（一方 `aliases_json` 登记了另一存活行的 `display_name`，即使两边 display_name 不同）；
+- 墓碑残留非 0 会逐键打印并在结论行提示「只立了指针没改键」，直接对应 §4 S3–S6。
+- 实现：`MemoryCore/src/core/person/dupes.ts`（纯只读，吃最小 db 句柄）；单测
+  `MemoryCore/src/core/person/__tests__/dupes.test.ts` 7 条。
+
 
 ## 1. 为什么要单独定方案
 
@@ -11,15 +38,15 @@
 分属 5 个不同 agent 租户；另有「何辰」错字行与「何晨的默认助手」这种**不同人**）。
 这些行大多数是**跨租户**的，按既有设计不能合并；真正需要处理的只是同一租户内被拆开的两行。
 
-现有 `mergeSoulPerson(tenant, fromKey, intoKey)`（MemoryCore/src/core/store/sqlite.ts:5302）
+现有 `mergeSoulPerson(tenant, fromKey, intoKey)`（MemoryCore/src/core/store/sqlite.ts:6097-6138）
 **只写 `merged_into` 指针，不搬任何数据**，所以直接调用它会把数据留在旧键上，读面立刻坏掉：
 
 | 数据 | 合并后的实际后果（按当前代码） |
 | --- | --- |
-| `soul_person_relation.subj_key/obj_key` | 仍指向旧键。`readStructuredRelationship` 用 `listSoulPersons`（只返回 `merged_into IS NULL`，sqlite.ts:4786）建名字表 → 旧键解析不到名字 → 该行被省略并给 `person_unresolved:<key>` 警告（card-service.ts:791）。关系**从卡上消失**。 |
+| `soul_person_relation.subj_key/obj_key` | 仍指向旧键。`readStructuredRelationship` 用 `listSoulPersons`（只返回 `merged_into IS NULL`，sqlite.ts:5207）建名字表（card-service.ts:825 与 :874 两处 `filter((p) => !p.mergedInto)`）→ 旧键解析不到名字 → 该行被省略并给 `person_unresolved:<key>`（card-service.ts:781 / :786）。关系**从卡上消失**。 |
 | `soul_person_state` | 主键是 `person_key` + 三租户列；旧键的状态行变成孤儿，新键从 0.5 重新长，历史数值丢失。 |
 | `soul_person_state_events` | `person_key` 仍为旧键，按人查审计断掉。 |
-| `soul_persona` human 行 | `meta_json.person.key` 是旧键，`buildCardInput` 的按人过滤（card-service.ts:229）会把它们过滤掉 → 「关于你」段变空。 |
+| `soul_persona` human 行 | `meta_json.person.key` 是旧键，`buildCardInput` 的按人过滤（card-service.ts:285-321、`personKeyOfItem` 在 :719）会把它们过滤掉 → 「关于你」段变空。 |
 | `soul_episodes.persons_json` | 旧键留在数组里，事件归属不再匹配新键。 |
 | `soul_person.profile_at` | 留在墓碑行上，提炼水位随墓碑一起失效。 |
 | 证据（quote / record_id / event_id / evidence_json） | 不受影响——合并**不动**证据列，这是本方案能「保留事实」的基础。 |

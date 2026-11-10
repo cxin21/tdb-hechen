@@ -1337,6 +1337,124 @@ export function collectParity(db, { tenants = [] } = {}) {
 }
 
 /**
+ * 迁移派生事件的漂移修复（CLI --repair）。
+ *
+ * 为什么需要它：applyPlan 只做 INSERT OR IGNORE，早期映射把 title 冒充 object 写进
+ * soul_events 的行，之后再怎么重跑 migration 都不会被覆盖——对账能报出来，却修不掉。
+ * 这里按「旧行是唯一事实源」把**写错的值**改回期望值：
+ *  - 只碰 event_id 恰好等于旧 episode_id、且 source_kind='chat' 的迁移派生行；
+ *    事件模型自产的行（tool/test/rollback）没有旧行可比，一律跳过并计数；
+ *  - 只修 classifyStoredDiff === 'mismatch' 的字段（库里有值但写错）；
+ *    「库里有空、期望有值」的缺口是 backfillGaps，属于另一件事，这里不填；
+ *  - 每次运行幂等：修好之后第二轮 columns 必为 0；
+ *  - 每租户一个事务，失败只回滚该租户。
+ */
+export function repairDerivedDrift(db, { tenants = [], logger = console } = {}) {
+  const result = {
+    ok: true,
+    tenants: [],
+    totals: { events: 0, columns: 0, byColumn: {}, skippedOutOfScope: 0 },
+    repaired: [],
+    failed: [],
+  };
+  if (!tableExists(db, "soul_events")) return result;
+  const legacy = readLegacyEpisodes(db, tenants);
+  if (legacy.length === 0) return result;
+
+  const resolver = buildLegacyRecordResolver(db);
+  const eventStmt = db.prepare("SELECT * FROM soul_events WHERE event_id = ?");
+  const chatStmt = tableExists(db, "soul_event_chat")
+    ? db.prepare("SELECT * FROM soul_event_chat WHERE event_id = ?")
+    : null;
+
+  const groups = new Map();
+  for (const row of legacy) {
+    const t = tenantOf(row);
+    const key = tenantKey(t);
+    const group = groups.get(key) ?? { label: formatTenant(t), rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    const counts = { tenant: group.label, events: 0, columns: 0, skippedOutOfScope: 0 };
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of group.rows) {
+        const eventId = text(row.episode_id);
+        if (eventId === "") continue;
+        const stored = eventStmt.get(eventId);
+        if (!stored) continue;
+        if (String(stored.source_kind ?? "") !== "chat") {
+          counts.skippedOutOfScope += 1;
+          continue;
+        }
+        const expected = mapEpisodeRow(row, resolver);
+        const fixed = [];
+
+        const eventAssign = [];
+        const eventValues = [];
+        for (const c of EVENT_COLUMNS) {
+          if (c === "event_id") continue;
+          if (classifyStoredDiff(expected.event[c], stored[c]) !== "mismatch") continue;
+          eventAssign.push(c + " = ?");
+          eventValues.push(expected.event[c]);
+          fixed.push("event." + c);
+        }
+        if (eventAssign.length > 0) {
+          db.prepare("UPDATE soul_events SET " + eventAssign.join(", ") + " WHERE event_id = ?").run(
+            ...eventValues,
+            eventId,
+          );
+        }
+
+        const storedChat = chatStmt ? chatStmt.get(eventId) : undefined;
+        if (storedChat) {
+          const chatAssign = [];
+          const chatValues = [];
+          for (const c of CHAT_COLUMNS) {
+            if (c === "event_id") continue;
+            if (classifyStoredDiff(expected.chat[c], storedChat[c]) !== "mismatch") continue;
+            chatAssign.push(c + " = ?");
+            chatValues.push(expected.chat[c]);
+            fixed.push("chat." + c);
+          }
+          if (chatAssign.length > 0) {
+            db.prepare("UPDATE soul_event_chat SET " + chatAssign.join(", ") + " WHERE event_id = ?").run(
+              ...chatValues,
+              eventId,
+            );
+          }
+        }
+
+        if (fixed.length === 0) continue;
+        counts.events += 1;
+        counts.columns += fixed.length;
+        for (const field of fixed) result.totals.byColumn[field] = (result.totals.byColumn[field] ?? 0) + 1;
+        if (result.repaired.length < 20) result.repaired.push({ eventId, fields: fixed });
+      }
+      db.exec("COMMIT");
+    } catch (err) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* 事务已不存在 */
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(TAG + " 租户 " + counts.tenant + " 漂移修复失败，已回滚该租户：" + msg);
+      result.failed.push({ tenant: counts.tenant, error: msg });
+      result.ok = false;
+      continue;
+    }
+    result.totals.events += counts.events;
+    result.totals.columns += counts.columns;
+    result.totals.skippedOutOfScope += counts.skippedOutOfScope;
+    result.tenants.push(counts);
+  }
+  return result;
+}
+
+/**
  * 库里还剩多少条占位证据（role='unknown' 且 quote 为空）。
  * 只读；表不存在时返回 0。
  */

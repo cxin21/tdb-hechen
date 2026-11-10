@@ -16,6 +16,7 @@ import {
   mapEpisodeRow,
   migrationExitCode,
   planMigration,
+  repairDerivedDrift,
   summarizeMigrationRun,
 } from "./soul-event-migration.mjs";
 
@@ -319,3 +320,57 @@ test("占位修复同时报行数与事件数（2 行 / 1 事件）", () => {
   assert.match(summary.lines[1], /还剩 0 行（涉 0 事件）/u);
 });
 
+
+// ───────────── --repair：把早期映射写错的值修回期望值 ─────────────
+
+test("早期映射把 title 冒充 object：--repair 修回，第二轮幂等", () => {
+  const db = migrationDb();
+  migrate(db);
+  // 复现 90 天库里那一行：episode.object 是空，旧映射拿 title 兜底把'拍板'写进了事件 object。
+  db.exec("UPDATE soul_episodes SET object = '' WHERE episode_id = 'ep-1'");
+  db.exec("UPDATE soul_events SET object = '拍板' WHERE event_id = 'ep-1'");
+
+  const before = collectParity(db);
+  assert.equal(before.ok, false, "写错的值必须让对账变红");
+  assert.ok(before.tenants[0].mismatches[0].fields.includes("event.object"));
+
+  const repaired = repairDerivedDrift(db);
+  assert.equal(repaired.ok, true);
+  assert.equal(repaired.totals.events, 1);
+  assert.equal(repaired.totals.columns, 1);
+  assert.deepEqual(repaired.totals.byColumn, { "event.object": 1 });
+  assert.deepEqual(repaired.repaired, [{ eventId: "ep-1", fields: ["event.object"] }]);
+
+  const after = collectParity(db);
+  assert.equal(after.ok, true, "修完对账必须回到一致：" + JSON.stringify(after.tenants[0].diffs));
+  assert.equal(migrationExitCode({ apply: true, applied: null, parity: after }), 0);
+
+  const second = repairDerivedDrift(db);
+  assert.equal(second.totals.columns, 0, "修好之后第二轮必须 0 列");
+  assert.equal(second.totals.events, 0);
+});
+
+test("--repair 只修 mismatch，不填存量缺口（库空、期望有值）", () => {
+  const db = migrationDb();
+  migrate(db);
+  db.exec("UPDATE soul_events SET intent = '' WHERE event_id = 'ep-1'");
+
+  const repaired = repairDerivedDrift(db);
+  assert.equal(repaired.totals.columns, 0, "缺口不是写错值，--repair 不该动它");
+
+  const parity = collectParity(db);
+  assert.equal(parity.totals.backfillGaps["event.intent"], 1, "缺口仍在，由人决定是否回填");
+  assert.equal(migrationExitCode({ apply: true, applied: null, parity }), 0);
+});
+
+test("--repair 跳过非 chat 事件：事件模型自产的行没有旧行可比", () => {
+  const db = migrationDb();
+  migrate(db);
+  // 同 id 但 source_kind=tool：不管是历史脏数据还是 id 撞车，都不许按旧行覆盖。
+  db.exec("UPDATE soul_events SET source_kind = 'tool', object = '自产' WHERE event_id = 'ep-1'");
+  const repaired = repairDerivedDrift(db);
+  assert.equal(repaired.totals.skippedOutOfScope, 1);
+  assert.equal(repaired.totals.events, 0);
+  const stored = db.prepare("SELECT object FROM soul_events WHERE event_id = 'ep-1'").get();
+  assert.equal(stored.object, "自产");
+});
