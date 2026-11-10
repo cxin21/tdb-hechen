@@ -1,0 +1,7 @@
+chore: 清掉 .scratch 里误入库的 triage 草稿与跑测日志，并忽略该目录
+
+这 34 个文件不是项目代码：24 份 2026-10-16/18 triage 草稿（已转成 GitHub issue）、
+4 份 issue 正文副本（m1-reranker / m2-wiki-jit / m3-worthiness / m4-bitemporal，已发到 issue）、
+6 份 t6/task2 的 diff 与测试、typecheck 输出（历史跑测留档，无引用）。
+代码与脚本都不读它们；全仓对 .scratch 的引用只有文档里的文字说明。
+清掉的同时把 .scratch/ 加进 .gitignore：这个目录只用来放一次性草稿与探针，用完即删，不该再入库。

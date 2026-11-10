@@ -239,3 +239,6 @@ MemoryCore/__distilled_block__
 .tmp-review/
 .tmp-*
 
+
+# ── 一次性草稿与探针（2026-11-10 收口追加，用完即删）──
+.scratch/
