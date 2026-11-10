@@ -58,6 +58,7 @@ import { handleSoulEmotionsRoute } from "./soul-emotions-endpoint.js";
 import { handleSoulPersonRoute, handleSoulPersonsRoute } from "./soul-person-endpoint.js";
 import { handleSoulInjectionRoute } from "./soul-injection-endpoint.js";
 import { SOUL_EVENT_PATH, handleSoulEventRoute } from "./soul-event-endpoint.js";
+import { SOUL_GATE_PATH, handleSoulGateRoute } from "./soul-gate-endpoint.js";
 import {
   SOUL_INJECTION_STATS_PATH,
   handleSoulInjectionStatsRoute,
@@ -1340,6 +1341,20 @@ export class TdaiGateway {
       if (method === "POST" && pathname === SOUL_EVENT_PATH) {
         if (!this.checkAuth(req, res)) return;
         await handleSoulEventRoute(req, res, pathname, method, parseJsonBody, sendJson, {
+          getStore: () => this.core.getStoreForIntrospect(),
+          isAuthorized: (r) => this.verifyAuth(r) === "ok",
+          logger: this.logger,
+        });
+        return;
+      }
+
+      // ── P7（2026-11-10）：/v3/soul/gate —— 输出侧红线判定（shadow）+ 判定审计读面 ──
+      // 合同见 soul-gate-endpoint.ts 文件头：POST 的 decision 恒为 allow（判了不改输出，改行为要换
+      // 代码路径而不是翻配置键），wouldDecision 只给面板/抽检看；租户只认三个头（缺一 422，
+      // 不回退 default 桶）；命中原文（密钥/引文）不落库、不回显。GET 给抽检清单 + 误杀口径（语料真值）。
+      if (pathname === SOUL_GATE_PATH) {
+        if (!this.checkAuth(req, res)) return;
+        await handleSoulGateRoute(req, res, pathname, method, parseJsonBody, sendJson, {
           getStore: () => this.core.getStoreForIntrospect(),
           isAuthorized: (r) => this.verifyAuth(r) === "ok",
           logger: this.logger,

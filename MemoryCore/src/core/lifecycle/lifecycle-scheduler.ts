@@ -2,7 +2,7 @@
  * H+I 接线：网关侧周期调度器 —— 定期跑巩固(consolidation, 可持久化持续态) + 遗忘判定(forgetting)。
  * best-effort、配置门(memory.lifecycle)、可整体关停；失败只记日志不抛。
  */
-import type { IMemoryStore } from "../store/types.js";
+import type { IMemoryStore, SoulEpisodeProvisionResult } from "../store/types.js";
 import type { LLMRunner, Logger } from "../types.js";
 import { runConsolidation, type ConsolidationConfigX } from "./consolidation/consolidation-worker.js";
 import { runForgetting, type ForgettingConfig } from "./forgetting/forgetting-worker.js";
@@ -11,6 +11,10 @@ import { runEvolution, type EvolutionWorkerConfig } from "./evolution-worker.js"
 import { resolveSoulConfig, type SoulMaintenanceConfig } from "../soul/types.js";
 import type { AgentProfileLike } from "../soul/agent-profile.js";
 import { createSoulRewriter, runSoulMaintenance, type SoulEvidenceRecord } from "../soul/worker.js";
+import type { GoalMaintenanceResult } from "../soul/goals.js";
+import type { SelfModelMaintenanceResult } from "../soul/self-model-maintenance.js";
+import type { NarrativeMaintenanceResult } from "../soul/narrative.js";
+import type { ValueMaintenanceResult } from "../soul/value-maintenance.js";
 import { createTraitJudge } from "../soul/trait-judge.js";
 import { createPersonProfiler, type PersonProfileReport } from "../person/profile-distiller.js";
 
@@ -143,6 +147,61 @@ export interface SoulTickSummary {
     outdated: number;
     dropped: number;
   };
+  /**
+   * P2 §4.4 关系状态层（跨租户求和）：观察到的 person 数 / upsert 行数 / 新增审计行数。
+   * `undefined` = 本轮 store 没有写面（没接线），与「跑了但 0 条」可区分。
+   */
+  personState?: { persons: number; updated: number; events: number };
+  /**
+   * P2 §10.8 关系边 event_id 回指账（跨租户求和）：扫描/唯一命中/标不可验证。
+   * `undefined` = 本轮 store 没有回指写面（没接线），与「跑了但 0 条」可区分。
+   */
+  relationBackfill?: { scanned: number; linked: number; unverifiable: number };
+  /**
+   * P2 §10.8 / t13 补事件账（跨租户求和）：扫描/新建/多命中/跳过。
+   * `undefined` = 本轮 store 没有补事件写面（没接线），与「跑了但 0 条」可区分。
+   */
+  relationProvision?: { scanned: number; created: number; ambiguous: number; skipped: number };
+  /**
+   * P3 §4.5 目标层账（跨租户求和）：候选/新建/再确认/跳过/承诺挂靠/状态迁移 + working 锚是否写出。
+   * `undefined` = 本轮 store 没有目标写面（没接线），与「跑了但 0 条」可区分。
+   */
+  goals?: GoalMaintenanceResult;
+  /**
+   * P5 §4.7 心境账（跨租户求和，读数取最后一轮）：soul_mood_state 落没落、append-only 账本写了多少、
+   * 半衰期、是否真的调节过、衰减后的效价。`undefined` = 本轮没跑心境阶段（与「跑了但 0 条」可区分）。
+   */
+  mood?: {
+    tenants: number;
+    stateWritten: number;
+    events: number;
+    halfLifeHours: number;
+    regulated: number;
+    valence: number;
+    decayedValence: number;
+  };
+  /**
+   * P4 §4.5/§4.6 自我模型账（跨租户求和）：写了多少行、其中多少处于 probation/retired、
+   * 校准样本与反思条数。`undefined` = 本轮 store 没有自我模型写面（没接线）。
+   */
+  selfModel?: SelfModelMaintenanceResult;
+  /**
+   * P6 / t20 episode 补事件账（跨租户求和）：老库里无事件的 episode 补了几条、多少条补不了、
+   * 第一条补不了的示例与原因。计数求和，示例取第一个非空、limitReached 取或。
+   * `undefined` = 本轮 store 没有该写面（没接线）。
+   */
+  episodeProvision?: SoulEpisodeProvisionResult;
+  /**
+   * P6 §4.8 叙事账（跨租户求和）：巩固了几个月、成章/升版/再确认几篇、跳过的月份
+   * （无证据 / 未走完）。`undefined` = 本轮 store 没有叙事读写面（没接线）。
+   */
+  narrative?: NarrativeMaintenanceResult;
+  /**
+   * P7 §4.9 价值账（跨租户求和）：价值候选/写了几条、写入侧 shadow gate 判了几条命中几条、
+   * 两难几条。undefined = 本轮 store 没有价值写面（没接线）。
+   * 注意 gateHits 是「判了会拦」不是「拦了」——shadow 期输出一个字符都没改。
+   */
+  values?: ValueMaintenanceResult;
   /** 本轮告警码（语言未覆盖 / 标签长尾）。调度器必须打出来，不能只留在 worker 报告里。 */
   alerts?: string[];
 }
@@ -323,6 +382,191 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
       }
       // P2-H：档案通道的账也要出 tick（「跑了几个人、谁被推迟」不能只留在 worker 里）。
       if (res.personProfile) aggregatePersonProfile(summary, res.personProfile);
+      // P2 §4.4：关系状态层同样要出 tick——表里有没有行，必须能从 summary 读出来。
+      if (res.personState) {
+        if (!summary.personState) summary.personState = { persons: 0, updated: 0, events: 0 };
+        summary.personState.persons += res.personState.persons;
+        summary.personState.updated += res.personState.updated;
+        summary.personState.events += res.personState.events;
+      }
+      // P2 §10.8 / t13：补事件账也要出 tick——「补了几条、多少因为多命中/零命中没补」必须能读出来。
+      if (res.relationProvision) {
+        if (!summary.relationProvision) {
+          summary.relationProvision = { scanned: 0, created: 0, ambiguous: 0, skipped: 0 };
+        }
+        summary.relationProvision.scanned += res.relationProvision.scanned;
+        summary.relationProvision.created += res.relationProvision.created;
+        summary.relationProvision.ambiguous += res.relationProvision.ambiguous;
+        summary.relationProvision.skipped += res.relationProvision.skipped;
+      }
+      // P2 §10.8：回指账也要出 tick——「多少边验证了、多少标了不可验证」必须能从 summary 读出来。
+      if (res.relationBackfill) {
+        if (!summary.relationBackfill) summary.relationBackfill = { scanned: 0, linked: 0, unverifiable: 0 };
+        summary.relationBackfill.scanned += res.relationBackfill.scanned;
+        summary.relationBackfill.linked += res.relationBackfill.linked;
+        summary.relationBackfill.unverifiable += res.relationBackfill.unverifiable;
+      }
+      // P3 §4.5：目标层账也要出 tick——「立了几条、迁移了几条、working 锚有没有写」必须能从 summary 读出来。
+      if (res.goals) {
+        if (!summary.goals) {
+          summary.goals = {
+            candidates: 0,
+            created: 0,
+            reasserted: 0,
+            skipped: 0,
+            linked: 0,
+            transitions: 0,
+            working: false,
+            focusChars: 0,
+          };
+        }
+        const goals = summary.goals;
+        goals.candidates += res.goals.candidates;
+        goals.created += res.goals.created;
+        goals.reasserted += res.goals.reasserted;
+        goals.skipped += res.goals.skipped;
+        goals.linked += res.goals.linked;
+        goals.transitions += res.goals.transitions;
+        goals.working = goals.working || res.goals.working;
+        // focusChars 是「单条 working 锚的长度」，跨租户取最大值（求和会造出一个不存在的长度）。
+        goals.focusChars = Math.max(goals.focusChars, res.goals.focusChars);
+      }
+      // P5 §4.7：心境落表实况也要出 tick——「心境记住了没有」不许只留在 worker 报告里。
+      if (res.mood?.moodState) {
+        const state = res.mood.moodState;
+        if (!summary.mood) {
+          summary.mood = {
+            tenants: 0,
+            stateWritten: 0,
+            events: 0,
+            halfLifeHours: 0,
+            regulated: 0,
+            valence: 0,
+            decayedValence: 0,
+          };
+        }
+        const mood = summary.mood;
+        mood.tenants += 1;
+        if (state.written) mood.stateWritten += 1;
+        mood.events += state.events;
+        if (state.regulated) mood.regulated += 1;
+        // 半衰期与读数都是「当前态」：跨租户求和没有意义，取最后一轮（配置一致时即同一个值）。
+        mood.halfLifeHours = state.halfLifeHours;
+        mood.valence = state.valence;
+        mood.decayedValence = state.decayedValence;
+      }
+      // P4 §4.5/§4.6：自我模型账出 tick——「有没有从失败里学到东西」必须能读出来。
+      if (res.selfModel) {
+        if (!summary.selfModel) {
+          summary.selfModel = {
+            scanned: 0,
+            written: 0,
+            patterns: 0,
+            capabilities: 0,
+            calibrationInsights: 0,
+            calibrationRows: 0,
+            reflections: 0,
+            probation: 0,
+            retired: 0,
+          };
+        }
+        const selfModel = summary.selfModel;
+        selfModel.scanned += res.selfModel.scanned;
+        selfModel.written += res.selfModel.written;
+        selfModel.patterns += res.selfModel.patterns;
+        selfModel.capabilities += res.selfModel.capabilities;
+        selfModel.calibrationInsights += res.selfModel.calibrationInsights;
+        selfModel.calibrationRows += res.selfModel.calibrationRows;
+        selfModel.reflections += res.selfModel.reflections;
+        selfModel.probation += res.selfModel.probation;
+        selfModel.retired += res.selfModel.retired;
+      }
+      // P6 / t20：补事件账出 tick——「0 章是因为老库没事件」必须能从汇总里直接读出来，
+      // 不能只留在某一条 warn 里。计数求和；示例取第一个非空（哪个租户的都行，它只是日志锚点）。
+      if (res.episodeProvision) {
+        if (!summary.episodeProvision) {
+          summary.episodeProvision = {
+            scanned: 0,
+            created: 0,
+            ambiguous: 0,
+            notFound: 0,
+            noSource: 0,
+            skippedWork: 0,
+            skippedUnprovisionable: 0,
+            skippedExisting: 0,
+            failed: 0,
+            exampleEpisodeId: null,
+            exampleReason: null,
+            limitReached: false,
+          };
+        }
+        const provision = summary.episodeProvision;
+        provision.scanned += res.episodeProvision.scanned;
+        provision.created += res.episodeProvision.created;
+        provision.ambiguous += res.episodeProvision.ambiguous;
+        provision.notFound += res.episodeProvision.notFound;
+        provision.noSource += res.episodeProvision.noSource;
+        provision.skippedWork += res.episodeProvision.skippedWork;
+        provision.skippedUnprovisionable += res.episodeProvision.skippedUnprovisionable;
+        provision.skippedExisting += res.episodeProvision.skippedExisting;
+        provision.failed += res.episodeProvision.failed;
+        if (provision.exampleEpisodeId === null && res.episodeProvision.exampleEpisodeId !== null) {
+          provision.exampleEpisodeId = res.episodeProvision.exampleEpisodeId;
+          provision.exampleReason = res.episodeProvision.exampleReason;
+        }
+        provision.limitReached = provision.limitReached || res.episodeProvision.limitReached;
+      }
+      // P6 §4.8：叙事账出 tick——「自传有没有长出来、为什么没长」必须能读出来。
+      if (res.narrative) {
+        if (!summary.narrative) {
+          summary.narrative = {
+            months: 0,
+            created: 0,
+            superseded: 0,
+            reasserted: 0,
+            skippedNoEvidence: 0,
+            skippedUnclosed: 0,
+            evidence: 0,
+          };
+        }
+        const narrative = summary.narrative;
+        narrative.months += res.narrative.months;
+        narrative.created += res.narrative.created;
+        narrative.superseded += res.narrative.superseded;
+        narrative.reasserted += res.narrative.reasserted;
+        narrative.skippedNoEvidence += res.narrative.skippedNoEvidence;
+        narrative.skippedUnclosed += res.narrative.skippedUnclosed;
+        narrative.evidence += res.narrative.evidence;
+      }
+      // P7 §4.9：价值账出 tick——「有没有长出价值、写入侧红线判了几条、有没有两难」必须能读出来。
+      // gateLogged 与 gateHits 分开：命中未必落库（store 缺写面时只判不记），两个数不可互推。
+      if (res.values) {
+        if (!summary.values) {
+          summary.values = {
+            candidates: 0,
+            declared: 0,
+            observed: 0,
+            written: 0,
+            unchanged: 0,
+            skippedNoEvidence: 0,
+            gateEvaluated: 0,
+            gateHits: 0,
+            gateLogged: 0,
+            dilemmas: 0,
+          };
+        }
+        const values = summary.values;
+        values.candidates += res.values.candidates;
+        values.declared += res.values.declared;
+        values.observed += res.values.observed;
+        values.written += res.values.written;
+        values.unchanged += res.values.unchanged;
+        values.skippedNoEvidence += res.values.skippedNoEvidence;
+        values.gateEvaluated += res.values.gateEvaluated;
+        values.gateHits += res.values.gateHits;
+        values.gateLogged += res.values.gateLogged;
+        values.dilemmas += res.values.dilemmas;
+      }
       // S4：特质漂移是本轮唯一会改「我是谁」的写径，必须进 summary 而不是只留在日志里。
       if (res.trait || res.traitSkipped) {
         if (!summary.trait) {
@@ -355,7 +599,7 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
         else deps.logger?.warn?.(line);
       }
       deps.logger?.info?.(
-        `[lifecycle] soul-maintenance tenant=${tenant.teamId || "default"}/${tenant.userId || "default"}/${tenant.agentId || "default"} stored=${res.stored} imported=${res.imported} admitted=${res.admitted} reclassified=${res.reclassified} retired=${res.retired ?? 0} rejected=${res.rejected} merged=${res.merged} degraded=${res.degraded} frozen=${res.frozen} revived=${res.revived} episodes=${res.episodes ? `${res.episodes.available}(+${res.episodes.inserted})` : "n/a"} drift=${res.drift.length}(${driftBad} 异常) ledger=${res.ledgerEntries} mood=${res.mood?.mood?.valence?.toFixed?.(2) ?? "n/a"} emotions=${res.mood?.labels ? Object.entries(res.mood.labels).map(([k, v]) => k + v).join("/") : "n/a"} dormant=${res.mood?.dormant?.join("/") ?? ""}${res.rejectTop ? ` rejectTop=${res.rejectTop.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.rejectHistory?.length ? ` reject30d=${res.rejectHistory.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.trait ? ` trait=${res.trait.axes.filter((a) => a.delta !== 0).length}轴/${res.trait.votes}票${res.trait.rejectedVotes ? `(拒${res.trait.rejectedVotes})` : ""}/${res.trait.labels.admitted + res.trait.labels.merged}标签` : ""}${res.traitSkipped ? ` traitSkipped=${res.traitSkipped}` : ""}${res.driftSkipped ? ` driftSkipped=${res.driftSkipped}` : ""}${res.skipped ? ` skipped=${res.skipped}` : ""}`,
+        `[lifecycle] soul-maintenance tenant=${tenant.teamId || "default"}/${tenant.userId || "default"}/${tenant.agentId || "default"} stored=${res.stored} imported=${res.imported} admitted=${res.admitted} reclassified=${res.reclassified} retired=${res.retired ?? 0} rejected=${res.rejected} merged=${res.merged} degraded=${res.degraded} frozen=${res.frozen} revived=${res.revived} episodes=${res.episodes ? `${res.episodes.available}(+${res.episodes.inserted})` : "n/a"} drift=${res.drift.length}(${driftBad} 异常) ledger=${res.ledgerEntries} mood=${res.mood?.mood?.valence?.toFixed?.(2) ?? "n/a"} emotions=${res.mood?.labels ? Object.entries(res.mood.labels).map(([k, v]) => k + v).join("/") : "n/a"} dormant=${res.mood?.dormant?.join("/") ?? ""}${res.rejectTop ? ` rejectTop=${res.rejectTop.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.rejectHistory?.length ? ` reject30d=${res.rejectHistory.slice(0, 5).map((r) => `${r.code}:${r.count}`).join(",")}` : ""}${res.trait ? ` trait=${res.trait.axes.filter((a) => a.delta !== 0).length}轴/${res.trait.votes}票${res.trait.rejectedVotes ? `(拒${res.trait.rejectedVotes})` : ""}/${res.trait.labels.admitted + res.trait.labels.merged}标签` : ""}${res.traitSkipped ? ` traitSkipped=${res.traitSkipped}` : ""}${res.driftSkipped ? ` driftSkipped=${res.driftSkipped}` : ""}${res.relationProvision ? ` relProv=${res.relationProvision.created}/${res.relationProvision.scanned}` : ""}${res.relationBackfill ? ` relLinked=${res.relationBackfill.linked}/${res.relationBackfill.scanned}` : ""}${res.skipped ? ` skipped=${res.skipped}` : ""}`,
       );
     } catch (err) {
       deps.logger?.warn?.(

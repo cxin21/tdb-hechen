@@ -343,7 +343,7 @@ export const SOUL_CALIBRATION_TABLE_DDL = `CREATE TABLE IF NOT EXISTS soul_calib
 /**
  * 慢心境：当前状态一行（按租户）。快情绪仍按事件一行在 soul_emotions；
  * 心境影响召回和判断，但不改写事实——重评要留原事件和重评事件两条。
- * half_life_hours 默认 72：三天左右回到基线，读侧按它算衰减，不在写侧改 intensity。
+ * half_life_hours 默认 48（ADR 口径）：两天回到基线一半，读侧按它算衰减，不在写侧改 intensity。
  */
 export const SOUL_MOOD_STATE_TABLE_DDL = `CREATE TABLE IF NOT EXISTS soul_mood_state (
   team_id TEXT NOT NULL DEFAULT 'default',
@@ -353,7 +353,7 @@ export const SOUL_MOOD_STATE_TABLE_DDL = `CREATE TABLE IF NOT EXISTS soul_mood_s
   valence REAL NOT NULL DEFAULT 0,
   arousal REAL NOT NULL DEFAULT 0,
   intensity REAL NOT NULL DEFAULT 0,
-  half_life_hours REAL NOT NULL DEFAULT 72,
+  half_life_hours REAL NOT NULL DEFAULT 48,
   cause_event_ids_json TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL,
   PRIMARY KEY (team_id, user_id, agent_id)
@@ -402,7 +402,13 @@ export const SOUL_NARRATIVE_TABLE_DDL = `CREATE TABLE IF NOT EXISTS soul_narrati
   supersedes_id TEXT,
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active','superseded')),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- P6（2026-11-10）：显著度是写侧按证据算的底分，衰减在读侧按 period_end 算；
+  -- access 只记「被注入取用过几次」，是唯一的记忆强化信号（没有强化就只有遗忘）。
+  salience REAL NOT NULL DEFAULT 0.3,
+  access_count INTEGER NOT NULL DEFAULT 0,
+  last_accessed_at TEXT,
+  updated_at TEXT
 )`;
 
 /** 章节的证据关系。role 默认 'evidence'（可扩 counter_evidence 等）。 */
@@ -412,6 +418,19 @@ export const SOUL_NARRATIVE_EVIDENCE_TABLE_DDL = `CREATE TABLE IF NOT EXISTS sou
   role TEXT NOT NULL DEFAULT 'evidence',
   PRIMARY KEY (chapter_id, event_id, role)
 )`;
+
+/**
+ * 同一租户同一时段最多一条 active 章节（P6 验收的「同一时段不出现互相矛盾的 active 章节」）。
+ *
+ * 为什么不是只靠写入层：写入层的事务能保证同一次 tick 内不写两版，但挡不住重放/并发/手写
+ * INSERT。这里用部分唯一索引把「同一时段两条 active」变成数据库层不可能——冲突时抛
+ * UNIQUE constraint failed，写者再把旧版标 superseded 后重试。
+ *
+ * 存量库可能有重复 active（P6 之前没人写过这些行，生产实测 0 行）：建索引放在
+ * VectorStore.init() 的 try/catch 里，失败只 warn，不让一条历史脏行搞崩进程。
+ */
+export const SOUL_NARRATIVE_ACTIVE_PERIOD_UNIQUE_INDEX_DDL =
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_soul_narrative_active_period ON soul_narrative(team_id, user_id, agent_id, period_start) WHERE status = 'active'";
 
 // ─────────────────────────────── §4.9 价值与 gate ───────────────────────────────
 
@@ -563,7 +582,9 @@ export const SOUL_EVENT_DDL: readonly string[] = [
 export const SOUL_EVENT_MIGRATION_DDL: readonly string[] = [
   // §4.4 关系事实：谁—谓词—谁，带有效期和证据。event_id 指向产生这条边的那个事件。
   "ALTER TABLE soul_person_relation ADD COLUMN event_id TEXT",
-  "ALTER TABLE soul_person_relation ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended','disputed'))",
+  // P2（spec §10.8）：回指零命中/不唯一要标 unverifiable——四值。存量库的 CHECK 由
+  // VectorStore.init() 里的 migrateSoulPersonRelationStatusEnum() 轻量重建扩容（SQLite 不能 ALTER CHECK）。
+  "ALTER TABLE soul_person_relation ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','ended','disputed','unverifiable'))",
   "ALTER TABLE soul_person_relation ADD COLUMN tense TEXT NOT NULL DEFAULT 'present' CHECK (tense IN ('present','past'))",
   "ALTER TABLE soul_person_relation ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5",
   "ALTER TABLE soul_person_relation ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'",
@@ -581,4 +602,10 @@ export const SOUL_EVENT_MIGRATION_DDL: readonly string[] = [
   "ALTER TABLE soul_persona ADD COLUMN projection_version TEXT",
   "ALTER TABLE soul_persona ADD COLUMN valid_from TEXT",
   "ALTER TABLE soul_persona ADD COLUMN valid_to TEXT",
+  // §4.8 叙事：P6 补显著度/取用/更新时间。存量行 salience 取默认 0.3（低于注入门 0.35），
+  // 即「老章不自动进注入口」——要进得靠新写的一版把证据与显著度一起算出来。
+  "ALTER TABLE soul_narrative ADD COLUMN salience REAL NOT NULL DEFAULT 0.3",
+  "ALTER TABLE soul_narrative ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE soul_narrative ADD COLUMN last_accessed_at TEXT",
+  "ALTER TABLE soul_narrative ADD COLUMN updated_at TEXT",
 ];

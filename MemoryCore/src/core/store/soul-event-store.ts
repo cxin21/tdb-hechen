@@ -37,6 +37,7 @@ import type {
   SoulEventRow,
   SoulEventSourceKind,
   SoulEventStatus,
+  SoulEventVisibility,
 } from "./soul-event-types.js";
 import type { CoreTenant } from "./types.js";
 import { normalizeCoreTenant } from "./types.js";
@@ -925,4 +926,67 @@ export function listSoulEventEvidence(
     return db.prepare(base).all(eventId) as unknown as SoulEventEvidenceRow[];
   }
   return db.prepare(`${base} LIMIT ?`).all(eventId, clampLimit(opts.limit)) as unknown as SoulEventEvidenceRow[];
+}
+
+/** 带边界的事件引文（P7 隐私 gate 的读面：判断「这句话能不能对这个听众说」）。 */
+export interface SoulPrivateQuoteRow {
+  event_id: string;
+  /** private = 只对他本人；relationship = 只在参与这段关系的人之间。 */
+  visibility: SoulEventVisibility;
+  /** 在场自然人 person_key 数组（解析失败给空数组 = 没有可共享的边界）。 */
+  persons: string[];
+  quote: string;
+  at: string;
+}
+
+/**
+ * 取「有边界」的事件引文：visibility ∈ {private, relationship} 且引文非空。
+ *
+ * 只做确定性取数，不判断该不该说——判定在 core/soul/value-gate.ts。
+ * 引文是逐字原话，长度 < minChars 的不取（「嗯」「好的」这类片段命中率全是噪声）。
+ */
+export function listSoulPrivateEventQuotes(
+  db: DatabaseSync,
+  tenant: CoreTenant | undefined,
+  opts?: { limit?: number; minChars?: number },
+): SoulPrivateQuoteRow[] {
+  const t = normalizeCoreTenant(tenant);
+  const limit = clampLimit(opts?.limit ?? 500);
+  const minChars = Math.max(4, Math.floor(opts?.minChars ?? 8));
+  const rows = db
+    .prepare(
+      `SELECT e.event_id AS event_id, e.visibility AS visibility, e.persons_json AS persons_json,
+              ev.quote AS quote, e.at AS at
+         FROM soul_events e
+         JOIN soul_event_evidence ev ON ev.event_id = e.event_id
+        WHERE e.team_id = ? AND e.user_id = ? AND e.agent_id = ?
+          AND e.visibility IN ('private', 'relationship')
+          AND ev.quote IS NOT NULL
+          AND length(trim(ev.quote)) >= ?
+        ORDER BY e.at DESC, e.event_id DESC`,
+    )
+    .all(t.teamId, t.userId, t.agentId, minChars) as unknown as Array<{
+    event_id?: string;
+    visibility?: string;
+    persons_json?: string | null;
+    quote?: string;
+    at?: string;
+  }>;
+  return (rows ?? []).map((row) => ({
+    event_id: String(row.event_id ?? ""),
+    visibility: String(row.visibility ?? "private") as SoulEventVisibility,
+    persons: parsePersonsJson(row.persons_json),
+    quote: String(row.quote ?? ""),
+    at: String(row.at ?? ""),
+  }));
+}
+
+function parsePersonsJson(json: unknown): string[] {
+  if (typeof json !== "string" || json.trim() === "") return [];
+  try {
+    const arr = JSON.parse(json) as unknown;
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
 }

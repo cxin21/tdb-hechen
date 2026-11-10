@@ -498,3 +498,28 @@ describe("关系层行文（2026-11-08 改造）", () => {
     expect(rel?.text).not.toContain("透传");
   });
 });
+
+describe("渠道占位名不当人名（t21/F3）", () => {
+  const stance = "你搞错了吧，门禁根本没跑就说通过了";
+  const relOf = (participants: string[]) =>
+    factsFromEpisode(ep({ participants, userStance: stance, agentStance: "我错了，先跑门禁" }))
+      .find((f) => f.layer === "relationship");
+
+  it.each([["user"], ["dsh-user"], ["assistant"], ["system"], ["agent"], ["unknown"], ["guest"], ["USER"], ["用户"]])(
+    "participants=[%s] 不直出占位名，写「对方」",
+    (name) => {
+      const rel = relOf([name]);
+      expect(rel?.object).toBe("对方");
+      expect(rel?.text.startsWith("对方对我的要求")).toBe(true);
+      expect(rel?.text).not.toMatch(/user|assistant|system|agent|unknown|guest/iu);
+      expect(rel?.text).not.toContain("用户");
+    },
+  );
+
+  it("真实中文名照旧直出，不因占位规则被吞", () => {
+    const rel = relOf(["何晨"]);
+    expect(rel?.object).toBe("何晨");
+    expect(rel?.text.startsWith("何晨对我的要求")).toBe(true);
+  });
+});
+

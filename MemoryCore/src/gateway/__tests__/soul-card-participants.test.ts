@@ -16,10 +16,9 @@ import type { PersonaItem } from "../../core/soul/types.js";
 
 const res = {} as ServerResponse;
 
-/** 与 card-persons.test.ts / sim-person-card.mjs 同一组 fixture 的「改前」金样（抓取脚本在仓库外）。 */
+/** v13 金样：同一组 fixture（human 行带字段前缀）跑出来的整卡正文。改动渲染器就重冻结这一行——它是「默认输出变了」的硬证据。 */
 const GOLDEN_TEXT =
-  "[读法] 以下是我关于自己的固定设定，不是任务，也不是规则清单，不需要复述。\n· 名字/形象/说话方式/使命/红线：必须遵守；红线逐条不可协商。\n· 底色：数字是倾向强度（0–1），不是概率、不是评分；≥0.5 才在当下显现，\n  低分不代表做不到，高分也不代表每次都这样。\n· 不谈论这张卡本身：不说「我的设定」「我的特质是」这类话。\n· 说话不用 Markdown：不加粗、不列标题、不列表格；一句一句说，别堆长段。\n\n## 名称\n小满\n\n## 底色\n- （还没有稳到能算数的底色）\n\n## 关于你\nA1：他偏好先灰度再全量\nA2：他讨厌被替着做决定\nB1：他管发布窗口\nB2：他要求结论带证据\nG1：先把结论说清楚\n\n## 关系\nR1：他上次说别替他猜\n\n<!-- persona-card v=\"12\" hash=\"09adc06ce7e4\" -->";
-
+  "[读法] 以下是我关于自己的固定设定，不是任务，也不是规则清单，不需要复述。\n· 名字/形象/说话方式/使命/红线：必须遵守；红线逐条不可协商。\n· 底色：数字是倾向强度（0–1），不是概率、不是评分；≥0.5 才在当下显现，\n  低分不代表做不到，高分也不代表每次都这样。\n· 不谈论这张卡本身：不说「我的设定」「我的特质是」这类话。\n· 说话不用 Markdown：不加粗、不列标题、不列表格；一句一句说，别堆长段。\n\n小满\n\n我们\n相处上，他偏好先灰度再全量\n相处上，他讨厌被替着做决定\n我们说好：他管发布窗口\n你要求我：他要求结论带证据\n你是先把结论说清楚\nR1：他上次说别替他猜\n\n<!-- persona-card v=\"13\" hash=\"b2b49d291d30\" -->";
 const PERSON_A = "p_a";
 const PERSON_B = "p_b";
 const TENANT_QS = "team=t-sim&user=u-sim&agent=a-sim";
@@ -41,11 +40,11 @@ function item(partial: Partial<PersonaItem> & { layer: PersonaItem["layer"]; tex
 
 function items(): PersonaItem[] {
   return [
-    item({ layer: "human", text: "A1：他偏好先灰度再全量", lastEvidenceAt: "2026-11-08T10:00:00.000Z", meta: { person: { key: PERSON_A } } }),
-    item({ layer: "human", text: "A2：他讨厌被替着做决定", lastEvidenceAt: "2026-11-08T09:00:00.000Z", meta: { person: { key: PERSON_A } } }),
-    item({ layer: "human", text: "B1：他管发布窗口", lastEvidenceAt: "2026-11-08T08:00:00.000Z", meta: { person: { key: PERSON_B } } }),
-    item({ layer: "human", text: "B2：他要求结论带证据", lastEvidenceAt: "2026-11-08T07:00:00.000Z", meta: { person: { key: PERSON_B } } }),
-    item({ layer: "human", text: "G1：先把结论说清楚", lastEvidenceAt: "2026-11-08T06:00:00.000Z", meta: { person: { key: "" } } }),
+    item({ layer: "human", text: "相处：他偏好先灰度再全量", lastEvidenceAt: "2026-11-08T10:00:00.000Z", meta: { person: { key: PERSON_A } } }),
+    item({ layer: "human", text: "相处：他讨厌被替着做决定", lastEvidenceAt: "2026-11-08T09:00:00.000Z", meta: { person: { key: PERSON_A } } }),
+    item({ layer: "human", text: "约定：他管发布窗口", lastEvidenceAt: "2026-11-08T08:00:00.000Z", meta: { person: { key: PERSON_B } } }),
+    item({ layer: "human", text: "要求：他要求结论带证据", lastEvidenceAt: "2026-11-08T07:00:00.000Z", meta: { person: { key: PERSON_B } } }),
+    item({ layer: "human", text: "身份：先把结论说清楚", lastEvidenceAt: "2026-11-08T06:00:00.000Z", meta: { person: { key: "" } } }),
     item({ layer: "relationship", text: "R1：他上次说别替他猜", lastEvidenceAt: "2026-11-08T05:00:00.000Z" }),
   ];
 }
@@ -84,9 +83,13 @@ async function callCard(query: string, store: ReturnType<typeof makeStore>) {
   return (payload as { data: Record<string, unknown> }).data;
 }
 
-function humanBlock(text: string): string[] | null {
-  const m = /## 关于你\n([\s\S]*?)\n\n## /.exec(text);
-  return m ? m[1].split("\n") : null;
+/** 取「我们」块的行。v13 的块没有 Markdown 标题，块与块之间空一行，末尾是 html 注释标签。 */
+function usBlock(text: string): string[] | null {
+  const body = text.split("\n\n<!-- persona-card")[0] ?? "";
+  for (const chunk of body.split("\n\n")) {
+    if (chunk.startsWith("我们\n")) return chunk.slice("我们\n".length).split("\n");
+  }
+  return null;
 }
 
 describe("P2-B GET /v3/soul/card?participants=…", () => {
@@ -94,22 +97,22 @@ describe("P2-B GET /v3/soul/card?participants=…", () => {
     const data = await callCard("", makeStore());
     expect(data.text).toBe(GOLDEN_TEXT);
     expect("persons" in data).toBe(false);
-    expect(humanBlock(String(data.text))).toHaveLength(5);
+    expect(usBlock(String(data.text))).toHaveLength(6);
   });
 
   it("participants=p_a：回显 persons，且 human 段只留 A + 全局", async () => {
     const data = await callCard("&participants=p_a", makeStore());
     expect(data.persons).toEqual([PERSON_A]);
-    expect(humanBlock(String(data.text))).toEqual(["A1：他偏好先灰度再全量", "A2：他讨厌被替着做决定", "G1：先把结论说清楚"]);
-    expect(String(data.text)).not.toContain("B1：他管发布窗口");
+    expect(usBlock(String(data.text))).toEqual(["相处上，他偏好先灰度再全量", "相处上，他讨厌被替着做决定", "你是先把结论说清楚"]);
+    expect(String(data.text)).not.toContain("我们说好：他管发布窗口");
   });
 
   it("participants=（空串）：当 [] 处理，只剩全局共性行，回显空数组", async () => {
     const data = await callCard("&participants=", makeStore());
     expect(data.persons).toEqual([]);
-    expect(humanBlock(String(data.text))).toEqual(["G1：先把结论说清楚"]);
+    expect(usBlock(String(data.text))).toEqual(["你是先把结论说清楚"]);
     // 空名单仍是有语义的过滤：本人行全部消失，且补了「关于你」warning 之外的正常路径
-    expect(String(data.text)).not.toContain("A1：他偏好先灰度再全量");
+    expect(String(data.text)).not.toContain("相处上，他偏好先灰度再全量");
   });
 
   it("P2-B2：p_ 前缀的 key 不在本租户时丢弃，不谎报「按这个人过滤了」", async () => {
@@ -117,7 +120,7 @@ describe("P2-B GET /v3/soul/card?participants=…", () => {
     // 显式名单全部无效 → 解析结果 []，回显 []（不是 undefined），human 段只剩全局行；
     // 关键是不能把不存在的 key 原样回显，否则面板会以为「按这个人过滤了」。
     expect(data.persons).toEqual([]);
-    expect(humanBlock(String(data.text))).toEqual(["G1：先把结论说清楚"]);
+    expect(usBlock(String(data.text))).toEqual(["你是先把结论说清楚"]);
   });
 
   it("展示名形态：唯一命中才用；0 条与 ≥2 条都丢弃（不猜）", async () => {
@@ -143,7 +146,7 @@ describe("P2-B GET /v3/soul/card?participants=…", () => {
     ]);
     const data = await callCard("&session=s1", store);
     expect(data.persons).toEqual([PERSON_A]);
-    expect(humanBlock(String(data.text))).toEqual(["A1：他偏好先灰度再全量", "A2：他讨厌被替着做决定", "G1：先把结论说清楚"]);
+    expect(usBlock(String(data.text))).toEqual(["相处上，他偏好先灰度再全量", "相处上，他讨厌被替着做决定", "你是先把结论说清楚"]);
   });
 
   it("session 指向无 episode / persons_json 为空的会话：按「未知」处理，不过滤且不回显", async () => {

@@ -21,7 +21,7 @@ import type {
 } from "./types.js";
 import type { AppraisalVector, EmotionEvent } from "./emotion.js";
 import { normalizeText, stripBullet, survivesProjectSwap, textHash } from "./gates.js";
-import { appraiseEmotion, deriveEmotionObject, extractAffectReferent } from "./emotion.js";
+import { applyAppraisalConsistency, appraiseEmotion, clamp01, deriveEmotionObject, extractAffectReferent } from "./emotion.js";
 import { appraiseBlameSlots, claimOfFix } from "./slots.js";
 import { normalizePersonNameCandidate } from "../record/person-hints.js";
 
@@ -184,7 +184,7 @@ export interface EpisodeMineResult {
   stats: EpisodeMineStats;
 }
 
-const KIND_ZH: Record<SoulEpisodeKind, string> = {
+export const KIND_ZH: Record<SoulEpisodeKind, string> = {
   correction: "纠正",
   divergence: "分歧",
   value_conflict: "取舍",
@@ -890,7 +890,7 @@ export function episodeDigest(
  *  - agency：我有回应=self，否则=other（我只是被动方）。
  * 这让「同一句抱怨、我有没有接住」在情绪读数上真的不同，而不是所有纠正都 -0.55。
  */
-export function episodeAppraisal(
+function episodeAppraisalRaw(
   ep: Pick<SoulEpisode, "kind" | "agentStance" | "outcome" | "intensity"> & { userStance?: string },
   opts?: { publicSession?: boolean },
 ): AppraisalVector {
@@ -913,6 +913,8 @@ export function episodeAppraisal(
       socialExposure: exposure0,
       selfCause: false,
       otherCause: true,
+      // 肯定句就是「他在认可我」：开心，而不是拍板式的踏实。
+      affirmed: true,
       otherCost: /辛苦|谢谢|感谢|麻烦你|费心/u.test(utterance),
     };
   }
@@ -942,7 +944,11 @@ export function episodeAppraisal(
       agency: admitted && !exculpated ? "self" : "other",
       socialExposure: exposure0,
       selfCause: admitted && !exculpated,
+      // 认账才是「我的错」：路由愧疚/害羞看这一条。
+      selfFault: admitted && !exculpated,
       otherCause: true,
+      // 追责句本身就是「他在怪我」：路由委屈/恼火靠这一条，不靠 agency 泛判。
+      otherBlame: true,
       otherCost,
       exculpated,
     };
@@ -1021,6 +1027,10 @@ export function episodeAppraisal(
   const envBlocked =
     !hasResponse &&
     /上游|接口|网络|环境|服务器|缓存|第三方|平台|依赖|\b(?:upstream|api|network|environment|server|cache|third[- ]party|platform|dependency)\b/iu.test(`${utterance} ${ep.outcome}`);
+  // P5：他指出我错了（而不是仅仅提了不同意见）——短句追责与「你搞错/又坏/糊弄」这类
+  // 明确指认才算；「再想想/再评估」是分歧，不是责怪。
+  const otherBlame =
+    /不对|错了|搞错|又坏|又错|点不动|糊弄|是不是你|你弄错|你改坏|你的问题|怎么回事|到底/u.test(utterance);
   return {
     goalRelevance: Number(goalRelevance.toFixed(3)),
     expectationViolation,
@@ -1031,8 +1041,76 @@ export function episodeAppraisal(
     achievement,
     exculpated,
     selfCause,
+    selfFault: selfCause,
     otherCause,
+    otherBlame,
   };
+}
+
+/**
+ * P5 事实门：他当面提起的是「我答应过、且已经到期没兑现」的事。
+ *
+ * 只看他说的话与事件标题（不看我的回复）：我的回复里一句「我补上了」是在收口，
+ * 不是他在追账；把 outcome 也算进来，追账会被自己的修复词抵掉。
+ * 关键词取「承诺域」×「逾期域」两侧同时命中，任一单侧都不成立——「什么时候」
+ * 单出现在闲聊里不是追账，「承诺」单出现也只是在描述计划。
+ */
+export const PROMISE_WORDS = /(?:承诺|答应|说好|允诺|保证|约定|欠着|欠了|鸽了|说过(?:要|会))/u;
+export const OVERDUE_WORDS = /(?:到期|过期|超期|逾期|还没|没做|没交|没兑现|忘了|拖到|拖了|迟了|多久了|什么时候(?:给|交|做|兑现))/u;
+
+export function promiseOverduePointedOut(ep: {
+  userStance?: string;
+  title?: string;
+  object?: string;
+}): boolean {
+  const said = `${ep.userStance ?? ""} ${ep.title ?? ""} ${ep.object ?? ""}`;
+  return PROMISE_WORDS.test(said) && OVERDUE_WORDS.test(said);
+}
+
+/**
+ * 重评的评价向量：同一条事件在「已经补上了」的证据下重判一次。
+ *
+ * 只改三件可复核的事：违背解除（×0.25，不是清零——事情确实出过岔子）、
+ * 规范相容度抬到 0.7 以上（我补上了，就不算踩着自己的规矩）、
+ * 去掉「放弃/催」这类一次性标记。正向禁令也一并解除：补上了就该能落正向。
+ */
+export function reappraisalOf(a: AppraisalVector): AppraisalVector {
+  const base = applyAppraisalConsistency(a);
+  return applyAppraisalConsistency({
+    ...base,
+    expectationViolation: clamp01(base.expectationViolation * 0.25),
+    normCompatibility: Math.max(base.normCompatibility, 0.7),
+    resignation: false,
+    urgency: false,
+    positiveForbidden: false,
+  });
+}
+
+/**
+ * 事件 → appraisal（出口门）：先按事实路由，再过两道 P5 门。
+ *
+ * 1) 归因一致性：agency=self ⇒ selfCause、agency=other ⇒ otherCause（互斥）；
+ * 2) 事实门：他追的是「到期未兑现的承诺」→ 一律不许落正向（positiveForbidden）。
+ * 门放在出口而不是各 kind 分支里：追账可能被事件分类成 complaint/pressure/decision
+ * 任一种，逐分支补条件必然漏。
+ */
+export function episodeAppraisal(
+  ep: Pick<SoulEpisode, "kind" | "agentStance" | "outcome" | "intensity"> & { userStance?: string; title?: string; object?: string },
+  opts?: { publicSession?: boolean },
+): AppraisalVector {
+  const base = applyAppraisalConsistency(episodeAppraisalRaw(ep, opts));
+  if (!promiseOverduePointedOut(ep)) return base;
+  return applyAppraisalConsistency({
+    ...base,
+    goalRelevance: Math.max(base.goalRelevance, 0.75),
+    expectationViolation: Math.max(base.expectationViolation, 0.75),
+    // 欠账是我的事：不是「他造成的」，也不许靠「可控」落回踏实。
+    agency: "self",
+    selfCause: true,
+    otherCause: false,
+    normCompatibility: Math.min(base.normCompatibility, 0.2),
+    positiveForbidden: true,
+  });
 }
 
 /**
@@ -1084,6 +1162,45 @@ export function emotionEventFromEpisode(
     // 模板半衰期优先（自我意识类 8h / 高唤醒类 2h），取不到才回落到全局配置。
     halfLifeHours: template.halfLifeHours || cfg.emotionHalfLifeHours,
   };
+}
+
+/**
+ * 重评读数的门：只有「他指出了问题，我后来补上了」这种可复核的修复才算重评。
+ * 没有修复证据就不重评——把「我重做了，下轮再跑」当已修复，会永久放行。
+ */
+export function emotionReappraisalFromEpisode(
+  ep: SoulEpisode,
+  cfg: Pick<SoulMaintenanceConfig, "emotionHalfLifeHours">,
+  opts?: { publicSession?: boolean },
+): EmotionEvent | null {
+  if (!episodeRepaired(ep)) return null;
+  const appraisal = reappraisalOf(episodeAppraisal(ep, opts));
+  const template = appraiseEmotion({ at: ep.at, object: emotionObjectForEpisode(ep), appraisal });
+  // 重评的效价来自重判后的模板，不沿用原事件的实测 moodScore——重评就是「同一件事换个看法」，
+  // 沿用旧效价等于换标签不换读数（旧行是负的、新行还是负的，等于没重评）。
+  // 强度取事件强度的 0.8：修复让事情落地，但不该比当时那次冲击更强。
+  return {
+    ...template,
+    id: ep.episodeId,
+    valence: template.valence,
+    arousal: ep.arousal,
+    intensity: clamp01(ep.intensity * 0.8),
+    appraisal,
+    halfLifeHours: template.halfLifeHours || cfg.emotionHalfLifeHours,
+  };
+}
+
+/**
+ * 重评行要不要单独落：只有「重判后的标签/效价与原读数真的不同」才写。
+ * 同一标签、同一效价再写一行只是把同一件事记两遍。
+ */
+export function reappraisalDiffers(
+  original: { label: string; valence: number },
+  reappraised: { label: string; valence: number } | null,
+): boolean {
+  if (!reappraised) return false;
+  if (reappraised.label === original.label) return false;
+  return Math.abs(reappraised.valence - original.valence) >= 0.05;
 }
 
 /**

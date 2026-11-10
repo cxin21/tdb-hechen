@@ -1661,7 +1661,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         verbatimMinChars: n("verbatimMinChars", base.verbatimMinChars, 4, 40),
         redlineMaxChars: n("redlineMaxChars", base.redlineMaxChars, 20, 400),
         emotionHalfLifeHours: n("emotionHalfLifeHours", base.emotionHalfLifeHours, 0.5, 72),
-        moodHalfLifeHours: n("moodHalfLifeHours", base.moodHalfLifeHours, 1, 24 * 14),
+        // P5：慢心境半衰期 36–168h，默认 48h（恢复 ADR-0026/0027 的 48h 口径）。
+        // 下限 36h 是最小的慢层（24h 时周一的事周三就查无此事）；上限 168h 是
+        // 「再久就不是心境、是人格」的分界。旧实现抬到 72–168 未回写 ADR，此处收回。
+        moodHalfLifeHours: n("moodHalfLifeHours", base.moodHalfLifeHours, 36, 168),
         moodDeviationThreshold: n("moodDeviationThreshold", base.moodDeviationThreshold, 0.01, 1),
         personName: str(g, "personName")?.trim() || base.personName,
         budget: perLayer("budget", base.budget, 0, 4000),

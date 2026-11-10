@@ -60,6 +60,35 @@ describe("可复用情境对象（2026-11-06 补全：六情绪都要说得出�
   });
 });
 
+
+describe("整句关系陈述不能当情绪原因（t21/F4）", () => {
+  it.each([
+    ["他是林夏的师父"],
+    ["她就是隔壁组的负责人"],
+    ["我和他吵了一架"],
+    ["你跟他只是同事"],
+    ["用户（姓名未提供）在评审中坚持门禁必须亲手执行"],
+    ["我在评审中坚持门禁必须亲手执行"],
+  ])("%s → 不是可复用对象", (object) => {
+    expect(isReusableAffectObject(object)).toBe(false);
+  });
+
+  it.each([["导出报错"], ["这个报错堆栈"], ["公开裁决"], ["生产级标准"], ["他对我的信任"]])(
+    "%s → 仍可复用（不许误伤正常短语）",
+    (object) => {
+      expect(isReusableAffectObject(object)).toBe(true);
+    },
+  );
+
+  it("命中时 readMood 不写原因，只报读数——整句陈述不再被永久写进心境", () => {
+    const mood = { valence: -0.15, arousal: 0.2, baselineValence: 0, baselineArousal: 0.3, updatedAt: NOW, sampleCount: 10 };
+    const hit = readMood(mood, { emotion: { object: "他是林夏的师父", label: "失望", effectiveIntensity: 0.2 } });
+    expect(hit.reason).toBeUndefined();
+    const keep = readMood(mood, { emotion: { object: "导出报错", label: "失望", effectiveIntensity: 0.2 } });
+    expect(keep.reason).toContain("导出报错");
+  });
+});
+
 describe("deriveEmotionObject（情绪对象抽取）", () => {
   it("取首句、去弹头与引用符、去尾标点", () => {
     const out = deriveEmotionObject("- [strict_rule] 「何晨要求先取证」，否则不许改代码。第二句忽略");

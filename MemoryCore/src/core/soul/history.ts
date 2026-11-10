@@ -79,6 +79,23 @@ function cleanFix(s: string): string {
   return flat.split(/```|[。；;\n]/u)[0]?.trim() ?? "";
 }
 
+/**
+ * participants 里的角色占位名，不是人名。
+ *
+ * 生产里 episode 的 participants[0] 是对话渠道写的「用户」或 DSH 侧写的 user/assistant；
+ * 直接当名字用，卡上就会出现「user 对我的要求」「assistant 说…」——一个不是人的主语。
+ * 命中就当「没有名字」，退回「对方」（人称明确时由渲染侧换「你」）；
+ * 真实姓名（何晨、林夏…）一律原样直出，绝不把占位名映射成某个具体的人。
+ */
+const PLACEHOLDER_PERSON = /^(?:dsh[-_])?(?:user|assistant|system|agent|unknown|guest|bot|ai|model|human|其他|用户|助手|系统|智能体|机器人|未知|访客)$/iu;
+
+/** 取这条事件的对谈人名；占位名与空值都读作「对方」。 */
+function personFromParticipants(participants: string[] | undefined): string {
+  const raw = (participants ?? [])[0];
+  const name = (raw ?? "").trim();
+  return name === "" || PLACEHOLDER_PERSON.test(name) ? "对方" : name;
+}
+
 function referent(ep: SoulEpisode): string {
   return extractAffectReferent(ep.userStance) || extractAffectReferent(ep.object) || "这件事";
 }
@@ -98,7 +115,7 @@ export function factsFromEpisode(ep: SoulEpisode): HistoryFact[] {
   // 记成私下批评，关系史从此对着一个没发生过的对话。只认明确的裁决措辞，不猜。
   const fromLead = /(?:^Team message from\s+lead\b|Lead 定夺|裁决 PASS-WITH-CONCERNS)/u.test(he);
   // 人名从参与者里来（episode 挖掘时按租户配置写入），代码里不写死任何姓名。
-  const person = fromLead ? "Lead" : ((ep.participants ?? [])[0] ?? "对方");
+  const person = fromLead ? "Lead" : personFromParticipants(ep.participants);
   // 中文名直接接动词，拉丁名留一个空格，注入里才不是「Lead指出」。
   const speaker = /^[A-Za-z]/u.test(person) ? person + " " : person;
   // 我这一侧去掉代码块/JSON 后才是「我说了什么」。只剩空白的回复不是顶回去，也不是补上了：

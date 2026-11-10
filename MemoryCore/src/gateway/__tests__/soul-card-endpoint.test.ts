@@ -47,7 +47,21 @@ describe("GET /v3/soul/card · /v3/soul/turn（S2 注入数据源）", () => {
     expect(typeof data.version).toBe("number");
     expect(typeof data.hash).toBe("string");
     expect(String(data.text)).toContain("读法");
-    expect(data.sources).toMatchObject({ name: "declared", human: "observed" });
+    // v13：来源是九块的键。这个 fixture 没有观察层行，所以只有第一眼是有源的，其余如实记 absent。
+    expect(data.schema).toBe("13");
+    expect(data.sources).toMatchObject({ firstLook: "declared", character: "absent", us: "absent" });
+    const blocks = data.blocks as Array<{ id: string; chars: number }>;
+    expect(blocks.map((b) => b.id)).toEqual([
+      "firstLook",
+      "life",
+      "character",
+      "voice",
+      "us",
+      "now",
+      "memory",
+      "boundaries",
+      "recent",
+    ]);
     expect(writeSoulSnapshot).not.toHaveBeenCalled();
   });
 

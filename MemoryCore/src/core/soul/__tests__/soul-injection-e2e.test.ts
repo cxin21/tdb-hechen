@@ -20,6 +20,7 @@ import { runSoulMaintenance } from "../worker.js";
 import { emotionEventFromEpisode } from "../episode.js";
 import {
   EMOTION_LABELS,
+  EMOTION_TEMPLATE_VERSION,
   moodAttention,
   moodFocusOf,
   moodGrowthGate,
@@ -170,7 +171,15 @@ describe("端到端注入：24 个情绪标签全部能从对话挖出来，且�
       const history = (await store.listSoulEmotions?.(T, { limit: 200 })) ?? [];
       const withObject = events.filter((e) => e.object !== "");
       expect(withObject.length).toBeGreaterThanOrEqual(15);
-      expect(history.length).toBe(withObject.length);
+      // 首判行：每条「说得出对象」的事件按当前模板版本各一行。
+      const firstJudgement = history.filter((h) => h.templateVersion === EMOTION_TEMPLATE_VERSION);
+      expect(firstJudgement.length).toBe(withObject.length);
+      // 重评行：已修复的事件追加 +reappraise 一行、原判行原样保留（P5 重评口径，不是重复计数）。
+      const reappraised = history.filter(
+        (h) => h.templateVersion === `${EMOTION_TEMPLATE_VERSION}+reappraise`,
+      );
+      expect(reappraised.length).toBeGreaterThan(0);
+      expect(history.length).toBe(firstJudgement.length + reappraised.length);
       expect(new Set(history.map((h) => h.label)).size).toBeGreaterThanOrEqual(12);
       const attention = moodAttention(mood);
       expect(attention.object).not.toBe("");

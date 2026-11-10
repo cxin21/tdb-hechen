@@ -34,8 +34,32 @@ export interface AppraisalVector {
   socialExposure?: "public" | "private";
   /** 这件事是不是我造成的。缺省由 agency 推断。 */
   selfCause?: boolean;
+  /**
+   * P5：我认了「这是我的错/这是我做的」（认账、补上、对齐）。
+   *
+   * 与 selfCause 分开：agency=self 只说明这事由我发起（我回了话、我动手改），
+   * 不等于我认了错。路由里愧疚/害羞/欣慰/安心要的是后者；混成一个字段，
+   * 「他说按这个做，我回好、开始改」就会被读成「我认错了」。
+   */
+  selfFault?: boolean;
+  /**
+   * P5：他这句话是不是在「明确肯定我」（改得好/不错/辛苦了/谢谢）。
+   *
+   * 与 otherCause 分开：otherCause 只说好事是他带来的；「就按方案做，务必到位」
+   * 是拍板决定，不是肯定我。开心要前者，踏实要后者——不分开，踏实就永远被开心吃掉。
+   */
+  affirmed?: boolean;
   /** 这件事是不是对方造成的。缺省由 agency 推断。 */
   otherCause?: boolean;
+  /**
+   * P5：他这句话是不是在「怪我」（追责/指认我错了）。
+   *
+   * 与 otherCause 分开：agency=other 只说明这件事由他发起（他提了不同意见、他催了进度），
+   * 不等于他在指责我。路由里「委屈/烦躁/恼火」要的是后者；把两者混成一个字段，
+   * 就会把「他让我再想想」读成「他错怪我」，把分歧读成火气。
+   * 缺省 undefined（旧调用点按「没有责怪」处理，不猜）。
+   */
+  otherBlame?: boolean;
   /** 我摆出了「不是我造成」的证据（被错怪）→ 委屈，不去记成对他的火气。 */
   exculpated?: boolean;
   /** 对方为这件事付出了代价（道谢/辛苦）→ 感激，不是泛泛的开心。 */
@@ -49,6 +73,12 @@ export interface AppraisalVector {
    * 私下是开心，当众是自豪——两种正向不是同一个读数。
    */
   achievement?: boolean;
+  /**
+   * P5 一致性门：这件事按事实只能是负向（承诺到期被指出、目标受阻被当面追）。
+   * 置 true 后 pickTemplate 不许给正向模板——「他追我欠的账，我还踏实」是最典型的
+   * 自相矛盾读数，且会直接把心境推向正向、影响召回。缺省 false（旧调用点不受影响）。
+   */
+  positiveForbidden?: boolean;
 }
 
 export interface EmotionEvent {
@@ -310,7 +340,9 @@ export function rankLabelsByPad(pad: PadReading, k = 2): Array<{ label: string; 
 // 对象变了就不再是纯读数：同一对象复现会进判断门与注入原因，所以必须换版本留档。
 // r4：归因只看「我对这条追责的回复」，不再拿上一轮的表态算这一轮（2026-11-06 第二租户
 // 灌数实测：上一轮「不是我造成的」把这一轮「排序这么乱」也读成委屈，真正的恼火丢失）。
-const APPRAISAL_RULE_REV = "r5-valence-aware-norm-intensity";
+// r6：P5 一致性门——agency=self ⇒ selfCause、agency=other ⇒ otherCause（两侧互斥），
+// 且「承诺到期/目标受阻被指出」置 positiveForbidden，不许落正向标签。规则变了，版本必须换。
+const APPRAISAL_RULE_REV = "r6-agency-consistency";
 
 /**
  * 情绪模板版本：标签集合 + 评价规则版本（FNV-1a）。任一变了版本就变——
@@ -328,6 +360,37 @@ function fnv1a(text: string): string {
 }
 
 /**
+ * P5 归因一致性门：agency 与 selfCause/otherCause 必须同侧且互斥。
+ *
+ * 为什么需要它：模板路由同时读 agency 与 selfCause/otherCause（害羞/自豪/尴尬/烦躁/
+ * 委屈/愧疚各读其中一两个），只要有一个调用点少填一边，「他造成的」事件就会走进
+ * 「我造成的」分支（或两边都不成立、掉到兜底的平静）。门放在 appraisal 出口，
+ * 而不是每个调用点各补一遍——那正是这类矛盾反复出现的原因。
+ *
+ * 规则：agency=self ⇒ selfCause=true 且 otherCause=false；agency=other ⇒ 反之；
+ * agency=environment ⇒ 两侧都 false（环境不归任何人）。已经两侧都 true 的，保留与
+ * agency 同侧的那个（另一侧是上一版判据的残留）。
+ */
+export function applyAppraisalConsistency(a: AppraisalVector): AppraisalVector {
+  let selfCause = a.selfCause === true;
+  let otherCause = a.otherCause === true;
+  if (a.agency === "self") {
+    selfCause = true;
+    otherCause = false;
+  } else if (a.agency === "other") {
+    otherCause = true;
+    selfCause = false;
+  } else if (a.agency === "environment") {
+    selfCause = false;
+    otherCause = false;
+  } else if (selfCause && otherCause) {
+    // 没有 agency（旧调用点）却两侧都成立：认账的证据强于「他造成的」推断。
+    otherCause = false;
+  }
+  return { ...a, selfCause, otherCause };
+}
+
+/**
  * OCC/Scherer 风格的结构化评估 → 情绪。规则是显式的，不做「关键词猜情绪」：
  * 同一个词在不同目标/可控性下会是不同情绪（「又失败了」在可控时=恼火，不可控时=不安）。
  */
@@ -338,7 +401,18 @@ export function appraiseEmotion(input: {
   appraisal: AppraisalVector;
   halfLifeHours?: number;
 }): EmotionEvent {
-  const a = input.appraisal;
+  // 入口即过一致性门：模板路由只认 selfCause/otherCause 与 agency 同侧的那一版。
+  // 兼容旧调用点：显式写 selfCause=true 且 agency=self 的向量，语义上就是「我认账」，
+  // 补一个 selfFault（门之后 selfCause 只表示「我造成的」，不再承担认账语义）。
+  const rawPatch: AppraisalVector = { ...input.appraisal };
+  if (rawPatch.selfFault === undefined && rawPatch.selfCause === true && rawPatch.agency === "self") {
+    rawPatch.selfFault = true;
+  }
+  if (rawPatch.otherBlame === undefined && rawPatch.otherCause === true && rawPatch.agency === "other") {
+    rawPatch.otherBlame = true;
+  }
+  const raw = rawPatch;
+  const a = applyAppraisalConsistency(raw);
   const template = pickTemplate(a);
   // 强度不再只取「目标相关」与「违背」的最大值：两件事同时成立才最疼
   // （他当面指出的是我最在意的东西）。出行权重 0.55/0.45；公开场合略放大——
@@ -405,10 +479,12 @@ export function appraisalFromEpisode(ep: {
     socialExposure: exposure,
     selfCause,
     otherCause,
+    // 肯定只认夸我的词；「就按这个」这类拍板词不算肯定（拍板落踏实，见 pickTemplateRaw）。
+    affirmed: /改得好|做得好|干得好|不错|很好|漂亮|靠谱|辛苦了|辛苦你|谢谢你|感谢|麻烦你了|费心了|\b(?:well done|good job|nice work|great work|thanks|thank you|appreciate it)\b/iu.test(user),
   };
 }
 
-function pickTemplate(a: AppraisalVector): EmotionTemplate {
+function pickTemplateRaw(a: AppraisalVector): EmotionTemplate {
   const exposure = a.socialExposure ?? "private";
   const selfCause = a.selfCause === true;
   const otherCause = a.otherCause === true;
@@ -419,9 +495,9 @@ function pickTemplate(a: AppraisalVector): EmotionTemplate {
   // 先命中），把 resigned 的 Exasperated/Withdrawn 状态写成了 embarrassed。
   if (a.resignation === true && violated) return NEGATIVE_RESIGNED;
   // 当众被看见自己的错，先是害羞，不是愧疚。愧疚要私下、且归因到自己。
-  if (exposure === "public" && (selfCause || a.agency === "self") && violated) return NEGATIVE_SHY;
+  if (exposure === "public" && (a.selfFault === true || a.agency === "self") && violated) return NEGATIVE_SHY;
   // 当众把自己做成的事收口，是自豪：和私下的安心不是一个读数（被看见才成立）。
-  if (exposure === "public" && selfCause && !violated && goalHit) return POSITIVE_PRIDE;
+  if (exposure === "public" && a.selfFault === true && !violated && goalHit) return POSITIVE_PRIDE;
   // 他付出了代价、事情还没成：是同情，不是「谢谢」的感激（感激要求事情成了）。
   if (a.otherCost === true && violated) return NEGATIVE_PITY;
   // 违背后解除了（原本以为要出问题，结果没出）：释然是「松下来」，不是叠加的开心。
@@ -429,32 +505,43 @@ function pickTemplate(a: AppraisalVector): EmotionTemplate {
   // 当众出了岔子、但不是我的锅：是尴尬（场面上的失序），不是委屈（我被错怪）。
   if (exposure === "public" && violated && !selfCause && !a.exculpated && otherCause) return NEGATIVE_AWKWARD;
   // 私下归因自己：我造成的，是愧疚，不是「还没收口」的悬着。
-  if (selfCause && violated && exposure === "private") return NEGATIVE_GUILT;
+  if (a.selfFault === true && violated && exposure === "private") return NEGATIVE_GUILT;
   // 被催着要结果：时间压力先于归因判定，不能被读成「你错怪我了」。
   if (a.urgency === true && violated) return NEGATIVE_URGENT;
   // 对方为我付了代价（道谢/辛苦）：是感激，不是泛泛的开心。
   if (a.otherCost === true && !violated) return POSITIVE_GRATEFUL;
   // 我被错怪并摆出了证据：先于恼火——这是委屈，不是对他的火气。
-  if (a.exculpated === true && !selfCause && violated) return NEGATIVE_WRONGED;
+  // 判据用 selfFault（我认了账）而不是 selfCause（事由我发起）：我回了话、甚至动过手，
+  // 都不等于这件事该记在我头上；举证成立就该是委屈。
+  if (a.exculpated === true && a.selfFault !== true && violated) return NEGATIVE_WRONGED;
+  // 注意：这三条用 otherBlame（他在追责）而不是 otherCause（这事由他发起）。
+  // agency=other 的「分歧/再想想」也满足 otherCause，但它不是错怪——落回下面的不安。
   // 他造成的、但没到「被错怪」、我还拿得住：是烦躁（低强度、可处理），不是委屈。
-  if (otherCause && !selfCause && violated && !a.exculpated && a.normCompatibility >= 0.3 && a.control >= 0.6) {
+  // 同样用 selfFault 而不是 selfCause：回了一句「我看看」只说明我接了话，不说明这是我的错；
+  // 用 agency 代理会把「他怪过来、我没认、还拿得住」的烦躁全挡成失望/不安。
+  if (a.otherBlame === true && a.selfFault !== true && violated && !a.exculpated && a.normCompatibility >= 0.3 && a.control >= 0.6) {
     return NEGATIVE_IRRITATED;
   }
   // 对方造成、踩了我的规矩、且我还能处理：是恼火，不是「没办法」的不安。
-  if (otherCause && !selfCause && violated && a.normCompatibility < 0.3) return NEGATIVE_ANGRY;
+  if (a.otherBlame === true && !selfCause && violated && a.normCompatibility < 0.3) return NEGATIVE_ANGRY;
   // 对方造成、我没有做错，是委屈，不是对事的恼火。
-  if (otherCause && !selfCause && violated && a.normCompatibility >= 0.3) return NEGATIVE_WRONGED;
+  if (a.otherBlame === true && !selfCause && violated && a.normCompatibility >= 0.3) return NEGATIVE_WRONGED;
   // 自己把事做成、私下里没人看见，是开心；同样的事当众收口是自豪（上面那条）。
   if (a.achievement === true && !violated && goalHit && exposure === "private") return POSITIVE_JOY;
   // 对方肯定是开心，不要求当众；我自己把一件事收口是安心。两者不是同一个正向读数。
+  // 事情已经在轨道上、我没出手也没失手：是踏实（稳），不是「对方肯定我」的开心。
+  // 开心要求他明确肯定；同一条拍板句若先落 开心，踏实就再没有入口（24 模板必须有生产路径）。
+  // 肯定才是开心；拍板（没有肯定的拍板句）落在轨道上没人夸的那一侧 = 踏实。
+  // 我自己收口（selfCause）走后面的安心/欣慰，不抢这条：那是我做成的，不是「稳了」。
+  if (goalHit && !violated && a.control < 0.6 && a.affirmed !== true && !selfCause) return POSITIVE_CALM;
   if (goalHit && !violated && otherCause) return POSITIVE_JOY;
   // 我自己把一件很在意的事做成了：是欣慰（带温度的自我肯定），比「安心」更主动。
-  if (goalHit && !violated && selfCause && exposure === "private" && clamp01(a.goalRelevance) >= 0.75) {
+  if (goalHit && !violated && a.selfFault === true && exposure === "private" && clamp01(a.goalRelevance) >= 0.75) {
     return POSITIVE_WARM;
   }
-  if (goalHit && !violated && selfCause && exposure === "private") return POSITIVE_RELIEF;
+  if (goalHit && !violated && a.selfFault === true && exposure === "private") return POSITIVE_RELIEF;
   if (a.normCompatibility < 0.3) {
-    return selfCause ? NEGATIVE_GUILT : NEGATIVE_UNEASY;
+    return a.selfFault === true ? NEGATIVE_GUILT : NEGATIVE_UNEASY;
   }
   if (goalHit && !violated) return a.control >= 0.6 ? POSITIVE_SURE : POSITIVE_CALM;
   if (goalHit && violated) return a.control >= 0.6 ? POSITIVE_HIGH : NEGATIVE_ANXIOUS;
@@ -466,6 +553,21 @@ function pickTemplate(a: AppraisalVector): EmotionTemplate {
   }
   if (!goalHit && !violated) return a.control >= 0.6 ? NEUTRAL_CALM : NEUTRAL_SURPRISE;
   return NEUTRAL_SURPRISE;
+}
+
+/**
+ * 模板路由出口：先按原规则选，再挡 P5 的正向禁令。
+ *
+ * 为什么不是「在每条正向分支前各加一个条件」：正向出口有六条（自豪/释然/感激/开心/
+ * 欣慰/安心/笃定/踏实），逐条加条件必然漏一条——生产里「承诺到期被指出还落踏实」就是
+ * 从兜底那两条漏出去的。挡在出口只认一个事实：这件事按事实只能是负向。
+ */
+function pickTemplate(a: AppraisalVector): EmotionTemplate {
+  const t = pickTemplateRaw(a);
+  if (a.positiveForbidden === true && t.valence > 0) {
+    return a.selfCause === true ? NEGATIVE_GUILT : NEGATIVE_UNEASY;
+  }
+  return t;
 }
 
 /** 情绪强度按半衰期衰减（返回 0..1）。`scale` 见 EMOTION_HALF_LIFE_SCALE（1 = 不缩放）。 */
@@ -632,6 +734,143 @@ export function integrateMood(
     // 每轮 +86，生产库读到 3823 时它既不是样本数也不是轮数，只是「重跑过多少次」。
     // 现在空的 0 只表示「这一轮没有可积分的事件」（首轮回放判据仍用它）。
     sampleCount: events.length,
+  };
+}
+
+
+/* ───────────────────────────── P5 心境动力学（慢心境） ───────────────────────────── */
+
+/**
+ * 心境半衰期的合法区间（恢复 ADR 口径：48h 半衰期的积分态）。
+ *
+ * 默认 48h 不是新决定，是 ADR 原本写定的数
+ * （docs/adr/0026-soul-self-maintenance-six-layers.md:54、
+ * docs/adr/0027-soul-episode-layer.md:48）。P5 实现曾把区间抬到 72–168、缺省 72
+ * 却没回写 ADR，这里按 ADR 收回。
+ *
+ * 下限 36h 是「最小的慢层」：24h 时周一被追账、周三就查无此事，等于没有慢层；
+ * 上限 168h 是「再久就不是心境、是人格」的分界。
+ */
+export const MOOD_HALF_LIFE_MIN_HOURS = 36;
+export const MOOD_HALF_LIFE_MAX_HOURS = 168;
+export const MOOD_HALF_LIFE_DEFAULT_HOURS = 48;
+
+/** 把任意来源的半衰期夹进 36–168（配置/旧行/参数都过这一道，写读两侧同口径）。 */
+export function normalizeMoodHalfLife(hours: number | undefined | null): number {
+  const h = typeof hours === "number" && Number.isFinite(hours) ? hours : MOOD_HALF_LIFE_DEFAULT_HOURS;
+  return Math.min(MOOD_HALF_LIFE_MAX_HOURS, Math.max(MOOD_HALF_LIFE_MIN_HOURS, h));
+}
+
+/** 半衰期衰减因子 2^(-Δt/halfLife)；时间不可解析或未前进时返回 1（不虚构衰减）。 */
+export function moodDecayFactor(halfLifeHours: number | undefined, from: string, now: string): number {
+  const dtHours = (Date.parse(now) - Date.parse(from)) / 3_600_000;
+  if (!Number.isFinite(dtHours) || dtHours <= 0) return 1;
+  return Math.pow(2, -dtHours / Math.max(0.1, normalizeMoodHalfLife(halfLifeHours)));
+}
+
+export interface DecayedMood {
+  valence: number;
+  arousal: number;
+  dominance: number;
+  /** 偏离基线还剩多少（0..1）；48h 半衰期下两天 = 0.5、三天 ≈ 0.354。 */
+  factor: number;
+  /** 衰减后的效价偏离（valence - baselineValence）。 */
+  deviationValence: number;
+}
+
+/**
+ * 只按时间衰减心境：偏离量向基线回落，**不改**库里的现值。
+ *
+ * 读侧（召回/注入/面板）用它算「此刻还有多少」；写侧仍由 integrateMood 负责积分。
+ * 两者分开的理由：衰减是纯函数、可回放，写侧一次 UPDATE 就再也算不出「三天前是多少」。
+ */
+export function decayMoodTowardBaseline(
+  mood: Pick<MoodState, "valence" | "arousal" | "baselineValence" | "baselineArousal"> &
+    Partial<Pick<MoodState, "dominance" | "baselineDominance" | "updatedAt">>,
+  now: string,
+  halfLifeHours?: number,
+): DecayedMood {
+  const factor = moodDecayFactor(halfLifeHours, mood.updatedAt ?? now, now);
+  const bv = mood.baselineValence ?? 0;
+  const ba = mood.baselineArousal ?? 0.3;
+  const bd = mood.baselineDominance ?? 0.5;
+  const valence = clamp(bv + (mood.valence - bv) * factor, -1, 1);
+  const arousal = clamp(ba + (mood.arousal - ba) * factor, 0, 1);
+  const dominance = clamp(bd + ((mood.dominance ?? bd) - bd) * factor, 0, 1);
+  return { valence, arousal, dominance, factor, deviationValence: valence - bv };
+}
+
+/** 偏离超过这个幅度才谈「调节」：±0.35 以内是正常起伏，不该被抹平。 */
+export const MOOD_REGULATION_TRIGGER = 0.35;
+/** 每次调节把偏离往基线拉回 20%：一次抹平是失真，不拉是开环。 */
+export const MOOD_REGULATION_PULL = 0.2;
+
+/**
+ * 心境自我调节：偏离基线太远时，把偏离量往回收一档（不是清零）。
+ *
+ * 这是「调节」与「衰减」的区别：衰减是时间的事，调节是此刻的事——同一小时内被连续
+ * 三次追账，心境不该线性冲到 -1；但也不能压回基线，那等于没听见。
+ */
+export function regulateMood(
+  mood: MoodState,
+  opts?: { trigger?: number; pull?: number },
+): { mood: MoodState; deltaValence: number; deltaArousal: number; applied: boolean } {
+  const trigger = clamp01(opts?.trigger ?? MOOD_REGULATION_TRIGGER);
+  const pull = clamp01(opts?.pull ?? MOOD_REGULATION_PULL);
+  const dv = mood.valence - mood.baselineValence;
+  const da = mood.arousal - mood.baselineArousal;
+  if (Math.abs(dv) < trigger && Math.abs(da) < trigger) {
+    return { mood, deltaValence: 0, deltaArousal: 0, applied: false };
+  }
+  // 只回收超过阈值的部分（超出多少收多少），阈值内的自然起伏保留。
+  const cutV = Math.sign(dv) * Math.max(0, Math.abs(dv) - trigger) * pull;
+  const cutA = Math.sign(da) * Math.max(0, Math.abs(da) - trigger) * pull;
+  return {
+    mood: {
+      ...mood,
+      valence: clamp(mood.valence - cutV, -1, 1),
+      arousal: clamp(mood.arousal - cutA, 0, 1),
+    },
+    deltaValence: -cutV,
+    deltaArousal: -cutA,
+    applied: cutV !== 0 || cutA !== 0,
+  };
+}
+
+/** 「此刻心境相对基线偏哪边」的符号阈值：小于它只是噪声，不供召回使用。 */
+export const MOOD_SIGN_MIN_DEVIATION = 0.05;
+
+/**
+ * 召回侧读的心境符号：把存下来的心境按半衰期衰减后再判方向。
+ *
+ * 旧实现直接拿 soul_state 的现值减基线：没有新事件的几天里，心境一辈子不衰减，
+ * 召回就被同一次事件永久偏置。这里先衰减再取符号，且阈值内归 0（宁缺毋滥）。
+ */
+export function moodSignAt(
+  mood: Pick<MoodState, "valence" | "baselineValence"> & { updatedAt?: string },
+  now: string,
+  halfLifeHours?: number,
+  minDeviation = MOOD_SIGN_MIN_DEVIATION,
+): number {
+  const dv = decayMoodTowardBaseline(
+    { valence: mood.valence, arousal: 0, baselineValence: mood.baselineValence, baselineArousal: 0, updatedAt: mood.updatedAt ?? now },
+    now,
+    halfLifeHours,
+  ).deviationValence;
+  return Math.abs(dv) >= minDeviation ? Math.sign(dv) : 0;
+}
+
+/** 重评：同一件事按新证据重判一次。原事件保留（调用方 append 新行），这里只给新读数。 */
+export function reappraiseEmotion(
+  previous: Pick<EmotionEvent, "id" | "at" | "object">,
+  next: EmotionEvent,
+): EmotionEvent {
+  return {
+    ...next,
+    id: previous.id,
+    at: previous.at,
+    // 对象不因重评漂移：重评是「同一件事换个看法」，不是新事件。
+    object: previous.object !== "" ? previous.object : next.object,
   };
 }
 
@@ -1094,7 +1333,7 @@ function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
   return Math.min(hi, Math.max(lo, n));
 }
-function clamp01(n: number): number {
+export function clamp01(n: number): number {
   return clamp(n, 0, 1);
 }
 
@@ -1158,6 +1397,18 @@ export function isReusableAffectObject(raw: string): boolean {
   // 人事相关的话题才有「因为谁」；纯任务词（完成/修复/落地…）不配当长期原因。
   // 判据是人称/角色词，不是某个具体姓名——姓名属于数据，不属于代码。
   if (/(?:完成|修复|回归|验证|切换|重构|落地|推进|实现|工单|票)/u.test(s) && !/他|她|你|用户/u.test(s)) return false;
+  // 整句关系陈述不算原因（t21/F4）。原因要短、要指向**一个可复用的对象**；而
+  // 「他是林夏的师父」「我和他吵了一架」是一次对话里的整个断言——把它当对象，
+  // 一次对话就会被永久写进心境行（"因为「他是林夏的师父」正在消退"），
+  // 而且关系本身另有 soul_person_relation 这个一等公民，不该从情绪对象这里侧写。
+  // 只挡断言式关系句，正常短语（导出报错、这个报错堆栈）必须放行。
+  if (/^(?:我|你)(?:和|跟|与)(?:他|她|对方|您|你)/u.test(s)) return false;
+  if (/(?:是|就是|做为|作为).{1,12}的(?:师父|师傅|徒弟|同事|上级|下级|下属|领导|客户|朋友|伙伴|搭档|负责人|对接人|老师|学生|对手|邻居|队友)/u.test(s)) return false;
+  // 「在评审中坚持门禁必须亲手执行」这类「场景 + 主语 + 谓语」的整句陈述同理：
+  // 句子越长越像事件描述，不是对象。带「在/于…坚持/要求/指出」的就是陈述句。
+  if (/(?:在|于)[^，。；]{0,10}(?:坚持|要求|指出|强调|表示|认为|觉得|希望|批评|责问|催)/u.test(s)) return false;
+  // 占位名（「用户（姓名未提供）」）不是人：拿它当对象，等于把渠道的缺省值写进心境。
+  if (/(?:姓名未提供|名称未提供|未知用户|（未知）|\(unknown\))/iu.test(s)) return false;
   return survivesProjectSwap(s);
 }
 

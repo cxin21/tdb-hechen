@@ -38,8 +38,47 @@ import type { TraitLabelRow } from "../soul/trait-drift.js";
 import type { SoulPerson, SoulPersonUpsert } from "../person/types.js";
 // P0-C：事件底座（soul_events）的类型只在 store 契约里出现一次，实现侧（sqlite.ts）与
 // 迁移脚本共用 store 模块导出的同一份定义——这里 type-only 引入，避免运行期循环依赖。
-import type { SoulEventListFilter, SoulEventWrite } from "./soul-event-store.js";
-import type { SoulEventRow } from "./soul-event-types.js";
+import type { SoulEventListFilter, SoulEventWrite, SoulPrivateQuoteRow } from "./soul-event-store.js";
+import type {
+  SoulEventRow,
+  SoulMoodEventInsert,
+  SoulMoodEventRow,
+  SoulMoodStateInsert,
+  SoulMoodStateRow,
+  SoulCalibrationInsert,
+  SoulCalibrationRow,
+  SoulEventReflectionInsert,
+  SoulSelfModelInsert,
+  SoulSelfModelRow,
+  SoulGoalDepRow,
+  SoulGoalEventInsert,
+  SoulGoalEventRow,
+  SoulGoalInsert,
+  SoulGoalRow,
+  SoulGoalStatus,
+  SoulPersonStateEventInsert,
+  SoulPersonStateEventRow,
+  SoulPersonStateInsert,
+  SoulPersonStateRow,
+  SoulWorkingStateRow,
+  SoulWorkingStateUpsert,
+  SoulNarrativeEvidenceInsert,
+  SoulNarrativeEvidenceRow,
+  SoulNarrativeInsert,
+  SoulNarrativeRow,
+  SoulDilemmaInsert,
+  SoulDilemmaRow,
+  SoulGateDecision,
+  SoulGateLogInsert,
+  SoulGateLogRow,
+  SoulGateStage,
+  SoulValueInsert,
+  SoulValueRow,
+  SoulValueSource,
+  SoulValueStatus,
+} from "./soul-event-types.js";
+import type { SoulNarrativeCommitInput, SoulNarrativeCommitResult, SoulNarrativeListFilter } from "./soul-narrative-store.js";
+import type { SoulGateLogStats } from "./soul-value-store.js";
 
 // Re-export so consumers can import everything from types.ts
 export type { MemoryRecord, EmbeddingProviderInfo };
@@ -829,8 +868,81 @@ export interface SoulPersonRelationRow {
   evidence: Array<{ recordId: string; at: string; quote: string }>;
   validFrom: string;
   validTo: string | null;
+  /** P2 §4.4：产生这条边的 soul_event id（NULL = 旧数据还没有回指，不算孤儿）。 */
+  eventId?: string | null;
+  /**
+   * active=现在成立 / ended=有效期结束 / disputed=有反证 /
+   * unverifiable=按 quote 回指 L0 时零命中或不唯一（保留事实，不进卡）。旧行读回默认 active。
+   */
+  status?: "active" | "ended" | "disputed" | "unverifiable";
+  /** present=现在还成立 / past=曾经。 */
+  tense?: "present" | "past";
+  confidence?: number;
+  /** shared=可在卡上展示（当前唯一取值）；更细的可见性留给后续。 */
+  visibility?: string;
+  /** 让这条关系结束的事件 id。 */
+  endedByEventId?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * P2（spec §10.8）：关系边 event_id 确定性回指的一轮账。
+ * 三态口径：linked=唯一命中并写入 event_id；unverifiable=零命中或多命中（status 标 unverifiable）；
+ * scanned 只数本轮参与判定的边（已有 event_id 或已 unverifiable 的不重复扫）。
+ */
+export interface SoulPersonRelationBackfillResult {
+  scanned: number;
+  linked: number;
+  unverifiable: number;
+}
+
+/**
+ * P6 / t20：给「一条 soul_events 都没有」的 episode 确定性补一条 chat 事件的一轮账。
+ *
+ * 口径：created = 引文在 L0 **唯一**命中的记录上建了事件；其余四个计数都是「不建」的原因，
+ * 汇总在 skippedUnprovisionable 里。老库（episode 有、事件没有）成 0 章时，调用方必须能从
+ * 这里读到「为什么」和「哪一条」——沉默的 0 章与「没有内容」在观测面上无法区分。
+ *
+ * exampleEpisodeId/exampleReason 取本轮扫描顺序（at 升序）里第一条没补成的 episode。
+ */
+export interface SoulEpisodeProvisionResult {
+  /** 本轮扫到的「没有任何 soul_events 行」的 episode 数（含被上限截掉的候选）。 */
+  scanned: number;
+  /** 本次新建的事件数（幂等：已有事件的 episode 不再扫，重放 created=0）。 */
+  created: number;
+  /** 引文在 L0（含 episode 自己的证据记录）命中多条 = 不唯一，不猜、不建。 */
+  ambiguous: number;
+  /** 有可匹配原文，但 L0 里一条都没命中。 */
+  notFound: number;
+  /** 没有可匹配的原文（无 quote.text、user_stance 也空）——不是「没匹配上」，是「无从匹配」。 */
+  noSource: number;
+  /** work 类 episode 不强行造 chat 事件（它只给特质/自我史供料，不是「他说了什么」）。 */
+  skippedWork: number;
+  /** 以上全部「不建」之和；0 章时必须能在这里看到原因（不是静默）。 */
+  skippedUnprovisionable: number;
+  /** 第一条没补成的 episode id（给 summary / warn 当日志锚点）。 */
+  exampleEpisodeId: string | null;
+  /** 对应的原因。 */
+  exampleReason: "ambiguous" | "not_found" | "no_source" | "work" | null;
+  /** soul_events 里已有同 dedupe_key、但 event_id 不是 episodeId（历史双写异常）：不重复建。 */
+  skippedExisting: number;
+  /** 建事件抛错（本轮没补成，下轮重试）；与「不建」分开，避免把故障读成规则。 */
+  failed: number;
+  /** true = 本轮撞到每 tick 上限，剩余的下轮再补（不是失败）。 */
+  limitReached: boolean;
+}
+
+/** P2 §10.8 补事件（t13）：给缺事件的关系按引文在 L0 唯一命中处补一条 chat 事件。 */
+export interface SoulPersonRelationProvisionResult {
+  /** 扫到的「event_id IS NULL 且 status=active」关系数。 */
+  scanned: number;
+  /** 本次新建的事件数（幂等：已有事件跳过）。 */
+  created: number;
+  /** 引文在 L0 命中多条 = 不唯一，不猜、不建。 */
+  ambiguous: number;
+  /** 引文在 L0 零命中，或事件已存在（留给回指去链）。 */
+  skipped: number;
 }
 
 /** 缺口 A：soul 快照行（append-only 账本）。version 单调递增（迁移前旧行缺省 0）、 */
@@ -1213,6 +1325,119 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     tenant?: CoreTenant,
     opts?: { limit?: number; object?: string; since?: string },
   ): MaybePromise<SoulEmotionRecord[]>;
+  /* —— P5 心境层（soul_mood_state / soul_mood_events，2026-11-10 §4.7）——
+   * 心境是「按租户一行」的当前态 + append-only 变化账本（appraisal/regulation/decay）。
+   * 读侧按 half_life_hours（36–168，默认 48）算衰减；写侧不改 intensity。全部可选：缺实现时
+   * 调用侧静默跳过（不伪造心境），但召回与注入就只剩 soul_state 的即时读数。 */
+  readSoulMoodState?(tenant?: CoreTenant): MaybePromise<SoulMoodStateRow | null>;
+  writeSoulMoodState?(
+    tenant: CoreTenant | undefined,
+    insert: SoulMoodStateInsert,
+  ): MaybePromise<SoulMoodStateRow | null>;
+  commitSoulMoodEvents?(
+    tenant: CoreTenant | undefined,
+    rows: SoulMoodEventInsert[],
+  ): MaybePromise<{ inserted: number }>;
+  listSoulMoodEvents?(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; kind?: string },
+  ): MaybePromise<SoulMoodEventRow[]>;
+  /* —— P4 自我模型与校准（soul_self_model / soul_calibration / soul_event_reflection，2026-11-10 §4.5/§4.6）——
+   * 自我模型是「我对自己做事方式的判断」，每条带证据与反例、可被 probation/retired 推翻；
+   * 校准只入账有预测有结果的事件，误差由读侧算（bias 正 = 过度自信）。全部可选：
+   * 缺实现时派生整体跳过，不伪造自我认识。 */
+  getSoulSelfModel?(tenant: CoreTenant | undefined, id: string): MaybePromise<SoulSelfModelRow | null>;
+  listSoulSelfModel?(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; kinds?: SoulSelfModelRow["kind"][]; statuses?: SoulSelfModelRow["status"][] },
+  ): MaybePromise<SoulSelfModelRow[]>;
+  upsertSoulSelfModel?(
+    tenant: CoreTenant | undefined,
+    insert: SoulSelfModelInsert,
+  ): MaybePromise<SoulSelfModelRow | null>;
+  commitSoulCalibration?(
+    tenant: CoreTenant | undefined,
+    rows: SoulCalibrationInsert[],
+  ): MaybePromise<{ inserted: number }>;
+  listSoulCalibration?(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; domain?: string },
+  ): MaybePromise<SoulCalibrationRow[]>;
+  /** 反思子表：只在重复失败或已有修复成功时写，verified_at 为 null 就是「还没验过」。 */
+  upsertSoulEventReflection?(
+    tenant: CoreTenant | undefined,
+    reflection: SoulEventReflectionInsert,
+  ): MaybePromise<{ upserted: number }>;  /* —— P7 价值层（soul_values / soul_gate_log / soul_dilemma，2026-11-10 §4.9）——
+   * 价值是「我按什么做取舍」，每条可回指证据、可退休不删；gate_log 是判定审计（decision = 判了什么），
+   * shadow 期实际一律放行（reason 带 [shadow] 前缀），两难是「两条轴同时被要求」时留下的当时理由，
+   * 一周后回看记后悔度。全部可选：缺实现时价值维护整体跳过，绝不伪造价值；gate 降级为不记录、不改输出。 */
+  upsertSoulValue?(
+    tenant: CoreTenant | undefined,
+    insert: SoulValueInsert,
+  ): MaybePromise<SoulValueRow | null>;
+  retireSoulValue?(tenant: CoreTenant | undefined, valueId: string, at?: string): MaybePromise<boolean>;
+  listSoulValues?(
+    tenant?: CoreTenant,
+    opts?: { status?: SoulValueStatus; source?: SoulValueSource; limit?: number },
+  ): MaybePromise<SoulValueRow[]>;
+  insertSoulGateLog?(
+    tenant: CoreTenant | undefined,
+    rows: SoulGateLogInsert[],
+  ): MaybePromise<{ inserted: number }>;
+  listSoulGateLog?(
+    tenant?: CoreTenant,
+    opts?: {
+      decision?: SoulGateDecision;
+      stage?: SoulGateStage;
+      ruleId?: string;
+      sinceIso?: string;
+      shadowOnly?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+  ): MaybePromise<SoulGateLogRow[]>;
+  summarizeSoulGateLog?(tenant?: CoreTenant, opts?: { sinceIso?: string }): MaybePromise<SoulGateLogStats>;
+  insertSoulDilemma?(
+    tenant: CoreTenant | undefined,
+    insert: SoulDilemmaInsert,
+  ): MaybePromise<SoulDilemmaRow | null>;
+  listSoulDilemmas?(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; dueBefore?: string },
+  ): MaybePromise<SoulDilemmaRow[]>;
+  /** 事后回看：只改后悔度与后果事件，当时的两侧理由不许改写。 */
+  reviewSoulDilemma?(
+    tenant: CoreTenant | undefined,
+    id: string,
+    patch: { regret?: number; outcomeEventId?: string | null; reviewAt?: string },
+  ): MaybePromise<SoulDilemmaRow | null>;
+  /** 有边界的原话（privacy 规则判「隔墙有耳」时用）。缺实现 = privacy 规则无从判定，只跑其余三条。 */
+  listSoulPrivateEventQuotes?(
+    tenant?: CoreTenant,
+    opts?: { limit?: number; minChars?: number },
+  ): MaybePromise<SoulPrivateQuoteRow[]>;
+  /* —— P6 叙事层（soul_narrative / soul_narrative_evidence，2026-11-10 §4.8）——
+   * 自传是「章节」不是事件列表：每章必须有 1–3 条证据回指 soul_events，同一时段只许一条 active。
+   * 遗忘 = 显著度衰减后停止注入，不删行（list 不过滤）。全部可选：缺实现时维护整体跳过，不伪造自传。 */
+  listSoulNarrativeChapters?(
+    tenant?: CoreTenant,
+    filter?: SoulNarrativeListFilter,
+  ): MaybePromise<SoulNarrativeRow[]>;
+  getSoulNarrativeChapter?(tenant: CoreTenant | undefined, chapterId: string): MaybePromise<SoulNarrativeRow | null>;
+  listSoulNarrativeEvidence?(
+    tenant: CoreTenant | undefined,
+    chapterId: string,
+  ): MaybePromise<SoulNarrativeEvidenceRow[]>;
+  commitSoulNarrativeChapter?(
+    tenant: CoreTenant | undefined,
+    input: SoulNarrativeCommitInput,
+  ): MaybePromise<SoulNarrativeCommitResult>;
+  /** 注入后记一次访问：只影响显著度的 access 加成，不改内容。 */
+  touchSoulNarrativeAccess?(
+    tenant: CoreTenant | undefined,
+    chapterIds: string[],
+    opts?: { now?: string },
+  ): MaybePromise<{ updated: number }>;
   /* —— 人物身份层（soul_person，2026-11-08 阶段 1）——
    * 「谁」的稳定主键：L1 只存 {key, role} 引用，昵称变了不会分裂成第二个人。
    * 全部可选，兼容既有测试替身；缺失时 resolvePerson 降级为「只算 key、不落库」。 */
@@ -1279,6 +1504,58 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
       close?: Array<{ relId: string; at: string }>;
     },
   ): MaybePromise<{ inserted: number; merged: number; closed: number }>;
+  /**
+   * P2（spec §10.8）：给 event_id 为 NULL 的关系边做确定性回指。
+   * 只认「唯一命中」：record_id 是 L1 id → source_message_ids → 事件证据，或用 quote 在 L0 精确/唯一子串
+   * 匹配 → 事件证据；恰好 1 个事件才写 event_id，零命中或多命中写 status='unverifiable'
+   * （保留事实、不进卡），不猜、不回退姓名/谓词。幂等：已有 event_id 或已 unverifiable 的不再扫。
+   */
+  backfillSoulPersonRelationEventIds?(
+    tenant?: CoreTenant,
+    opts?: { now?: string },
+  ): MaybePromise<SoulPersonRelationBackfillResult>;
+  /**
+   * P2 §10.8 补事件（t13）：给「event_id 为 NULL 且 status=active」的关系，按 quote 在 L0
+   * 同租户里唯一命中的那条原话补一条 chat 事件（source_kind=chat，证据 = 该 L0 record_id +
+   * 逐字 quote），让回指能把它认成唯一事件。零命中/多命中一律不建（保持 unverifiable 语义）。
+   * 幂等：dedupe_key = relation-backfill:<rel_id>，已建过的跳过；不生成任何 L0 之外的内容。
+   */
+  provisionSoulRelationEvents?(
+    tenant?: CoreTenant,
+    opts?: { now?: string },
+  ): MaybePromise<SoulPersonRelationProvisionResult>;
+  /**
+   * P6 / t20：给「没有任何事件」的 episode 确定性补一条 chat 事件（老库 / 迁移库的健壮性）。
+   *
+   * 规则一个字不动：证据必须回指真实 soul_events；这里只是把「老库当时没建事件」这件事补上。
+   * 只认唯一命中：引文（quote.text，缺省用 user_stance）先在 episode 自己的证据记录里精确/逐字
+   * 子串匹配（恰好一条才算），再回落到全租户 L0。零命中/多命中/work 类/没有原文一律不建，
+   * 计入 skippedUnprovisionable 并带 exampleEpisodeId——不允许再静默 0 章。
+   * 幂等：event_id = episodeId、dedupe_key = soul-episode:<episodeId>（与双写同形），
+   * 已存在 soul_events 行的 episode 不再扫；每 tick 最多 limit 条（缺省 50）。
+   */
+  provisionSoulEpisodeEvents?(
+    tenant?: CoreTenant,
+    opts?: { now?: string; limit?: number },
+  ): MaybePromise<SoulEpisodeProvisionResult>;
+  /* —— 关系状态层（P2 §4.4，2026-11-10）——
+   * 事实（谁—谓词—谁）在 soul_person_relation；连续状态（信任/亲近/尊重/亏欠）在这里。
+   * 写者只由维护 tick 调用；读面缺省=没有行（不编默认值假行）。全部可选，兼容既有替身。 */
+  getSoulPersonState?(tenant: CoreTenant | undefined, personKey: string): MaybePromise<SoulPersonStateRow | null>;
+  listSoulPersonStates?(tenant?: CoreTenant, opts?: { limit?: number }): MaybePromise<SoulPersonStateRow[]>;
+  upsertSoulPersonState?(
+    tenant: CoreTenant | undefined,
+    insert: SoulPersonStateInsert,
+  ): MaybePromise<SoulPersonStateRow>;
+  /** 变化审计：id 幂等（同一事件重放不翻倍）。 */
+  insertSoulPersonStateEvents?(
+    tenant: CoreTenant | undefined,
+    events: SoulPersonStateEventInsert[],
+  ): MaybePromise<{ inserted: number }>;
+  listSoulPersonStateEvents?(
+    tenant?: CoreTenant,
+    opts?: { personKey?: string; limit?: number },
+  ): MaybePromise<SoulPersonStateEventRow[]>;
   /** 事件挖掘的输入：窗口内 L0 原始对话（user/assistant 都要，按时间正序）。
    *  单列出来的理由：人格要的是「原话」，不是摘要；queryL1Records 已经损失了声口。 */
   recentL0Messages?(
@@ -1339,6 +1616,61 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     opts?: { status?: SoulPromiseStatus; limit?: number },
   ): MaybePromise<SoulPromiseRecord[]>;
   readSoulPromiseEvents?(tenant: CoreTenant, promiseId: string): MaybePromise<SoulPromiseEvent[]>;
+  /** P3：把 soul_promises.goal_id 挂到目标上（幂等；已挂同一目标返回 updated:false）。 */
+  setSoulPromiseGoal?(
+    tenant: CoreTenant | undefined,
+    promiseId: string,
+    goalId: string,
+  ): MaybePromise<{ updated: boolean }>;
+
+  /* —— 目标层（P3 §4.5，2026-11-10）——
+   * 目标不是待办：soul_goals 记「我要/我答应/我计划」的一条，状态机 active→blocked→done|abandoned
+   * 单向终态；soul_goal_events 是 append-only 账本（无租户列，读写都按 goal 归属校验）；
+   * soul_goal_deps 记「等着谁」；soul_working_state 是每次注入都要读的那 300 字。
+   * 写者只由维护 tick 调用；读面缺省=没有行（不写「暂无目标」占位）。全部可选，兼容既有替身。 */
+  getSoulGoal?(tenant: CoreTenant | undefined, goalId: string): MaybePromise<SoulGoalRow | null>;
+  listSoulGoals?(
+    tenant?: CoreTenant,
+    opts?: {
+      status?: SoulGoalStatus;
+      kind?: SoulGoalRow["kind"];
+      owner?: SoulGoalRow["owner"];
+      dueBefore?: string;
+      limit?: number;
+    },
+  ): MaybePromise<SoulGoalRow[]>;
+  upsertSoulGoal?(
+    tenant: CoreTenant | undefined,
+    insert: SoulGoalInsert,
+  ): MaybePromise<{ row: SoulGoalRow; created: boolean }>;
+  transitionSoulGoal?(
+    tenant: CoreTenant | undefined,
+    goalId: string,
+    to: SoulGoalStatus,
+    opts?: { at?: string; reason?: string; eventId?: string; note?: string },
+  ): MaybePromise<{ ok: true; goal: SoulGoalRow; changed: boolean } | { ok: false; reason: string }>;
+  insertSoulGoalEvents?(
+    tenant: CoreTenant | undefined,
+    events: SoulGoalEventInsert[],
+  ): MaybePromise<{ inserted: number }>;
+  listSoulGoalEvents?(
+    tenant?: CoreTenant,
+    opts?: { goalId?: string; limit?: number },
+  ): MaybePromise<SoulGoalEventRow[]>;
+  insertSoulGoalDep?(
+    tenant: CoreTenant | undefined,
+    dep: { goal_id: string; depends_on_goal_id: string; kind?: string },
+  ): MaybePromise<{ inserted: number }>;
+  listSoulGoalDeps?(tenant?: CoreTenant, opts?: { goalId?: string }): MaybePromise<SoulGoalDepRow[]>;
+  upsertSoulWorkingState?(
+    tenant: CoreTenant | undefined,
+    row: SoulWorkingStateUpsert,
+  ): MaybePromise<SoulWorkingStateRow>;
+  getSoulWorkingState?(
+    tenant?: CoreTenant,
+    opts?: { sessionId?: string; now?: string },
+  ): MaybePromise<SoulWorkingStateRow | null>;
+  clearSoulWorkingState?(tenant?: CoreTenant, opts?: { sessionId?: string }): MaybePromise<{ deleted: number }>;
 
   // 2026-11-07：getIdentityDiscoveryState / setIdentityDiscoveryState 随 anchor_growth_state 下线删除，
   // 接口不再提供这两个可选方法（调用方归零）。

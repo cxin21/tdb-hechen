@@ -5,7 +5,7 @@
  *   - 纯读：只调用 assembleSoulCard({persist:false}) 与 assembleSoulTurn，不写任何表。
  *   - 失败即降级：store 未就绪 → 503 soul_card_unavailable；渲染异常 → 503 soul_card_failed。
  *     插件侧对此一律 fail-open（拿不到就当没有这段注入），绝不因此阻断会话。
- *   - 不返回权重/算法名/轴名：卡文本由 renderPersonaCard 决定，这里只加版本标识。
+ *   - 不返回权重/算法名/轴名：卡文本由 v13 渲染器（card-v13.ts）决定，这里只加版本标识与九块元数据。
  */
 import { createHash } from "node:crypto";
 import type { URL } from "node:url";
@@ -204,6 +204,9 @@ export async function handleSoulCardRoute(
           labels: card.labels,
           warnings: card.warnings,
           sources: card.sources,
+          // v13：九块的元数据（id/标题/字数/来源/置信/证据回指/块级警告）。v12 路径没有这一项。
+          ...(card.schema ? { schema: card.schema } : {}),
+          ...(card.blocks ? { blocks: card.blocks } : {}),
           dirty: card.dirty,
           seeded: card.seeded,
           // P2-B：回显这次真正用于过滤的 person_key；未过滤（没传 participants/session）时不出现

@@ -243,6 +243,12 @@ export interface SoulEmotionRecord {
   objectPerson?: string | null;
   /** 评价向量（审计用：为什么判成这个标签）。 */
   appraisal?: unknown;
+  /** P5：回指的底座事件 id（= soul_episodes.episode_id = soul_events.event_id）；null = 没接上。 */
+  eventId?: string | null;
+  /** P5：这条情绪牵动的目标（soul_goals.goal_id）；null = 与目标无关或没匹配上。 */
+  goalId?: string | null;
+  /** P5：评价五维 + 一致性门后的标记（audit 用；与 appraisal 同源，读面只需其一）。 */
+  dimensions?: Record<string, number | string | boolean | undefined> | null;
   /** 判定所用模板版本（emotion.ts 的 EMOTION_TEMPLATE_VERSION）。 */
   templateVersion: string;
   /** 判定时刻（ISO）。 */

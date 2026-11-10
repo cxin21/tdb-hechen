@@ -15,6 +15,7 @@ import {
   decayedIntensity,
   decayedStoredIntensity,
   isStoredEmotionExpired,
+  moodSignAt,
   objectRecurrence,
   type ObjectHit,
 } from "../soul/emotion.js";
@@ -3024,22 +3025,57 @@ async function computeRecallValueSignals(
     // 来自 values 命中，而价值观在生产里一次没 fired，通路挂着却等于没接。
     // 读法用「与基线比」的偏离方向，不用绝对档位：低落到基线以下才是负面线索。
     if (moodSign === 0 && soulTenant) {
+      // P5：优先读 soul_mood_state（带 half_life_hours + updated_at 的慢心境），
+      // 用 moodSignAt 先按 36–168h（默认 48h）半衰期衰减再取符号。旧 soul_state 路径没有半衰期，
+      // 三天没新事件也把同一次偏离当「此刻」——召回被一次旧事件永久偏置。
+      const readMoodRow = (vectorStore as {
+        readSoulMoodState?: (t: unknown) => Promise<
+          { valence?: number; baselineValence?: number; updated_at?: string; half_life_hours?: number } | null
+        >;
+      }).readSoulMoodState;
       const readSoulState = (vectorStore as {
         readSoulState?: (t: unknown) => Promise<{ valence?: number; baselineValence?: number } | null>;
       }).readSoulState;
-      if (typeof readSoulState === "function") {
+      let sign = 0;
+      let source = "";
+      if (typeof readMoodRow === "function") {
+        const row = (await Promise.resolve(readMoodRow.call(vectorStore, soulTenant))) ?? null;
+        if (row && typeof row.valence === "number") {
+          // soul_mood_state 只存当前态，不存基线（spec §4.7 的列里没有 baseline）：
+          // 基线仍以同 tick 写下的 soul_state 为准，取不到才退 0——不把「没有基线」
+          // 伪装成「基线是 0」，否则长期偏正的人会被判成「一直低于基线」。
+          let baselineValence = typeof row.baselineValence === "number" ? row.baselineValence : undefined;
+          if (baselineValence === undefined && typeof readSoulState === "function") {
+            const st = (await Promise.resolve(readSoulState.call(vectorStore, soulTenant))) ?? null;
+            if (typeof st?.baselineValence === "number") baselineValence = st.baselineValence;
+          }
+          sign = moodSignAt(
+            {
+              valence: row.valence,
+              baselineValence: baselineValence ?? 0,
+              updatedAt: row.updated_at ?? undefined,
+            },
+            new Date().toISOString(),
+            row.half_life_hours,
+          );
+          source = "mood_state";
+        }
+      }
+      if (source === "" && typeof readSoulState === "function") {
         const st = (await Promise.resolve(readSoulState.call(vectorStore, soulTenant))) ?? null;
         const v = typeof st?.valence === "number" ? st.valence : 0;
         const bv = typeof st?.baselineValence === "number" ? st.baselineValence : 0;
         const dv = v - bv;
         if (Math.abs(dv) >= 0.05) {
-          moodSign = Math.sign(dv);
-          // 这条信号只影响精确平局组内的次序，肉眼看不出来；不写一行日志，
-          // 生产就只剩「代码里有」这种自述证据。
-          logger?.debug?.(
-            `${TAG} mood sign from soul: valence=${v.toFixed(3)} baseline=${bv.toFixed(3)} → ${moodSign}`,
-          );
+          sign = Math.sign(dv);
+          source = "soul_state";
         }
+      }
+      if (sign !== 0) {
+        moodSign = sign;
+        // 这条信号只影响精确平局组内的次序，肉眼看不出来；不写一行日志，
+        // 生产就只剩「代码里有」这种自述证据。
+        logger?.debug?.(`${TAG} mood sign from ${source}: → ${moodSign}`);
       }
     }
     return { firedLabels, moodSign };

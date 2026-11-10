@@ -21,7 +21,8 @@
  *
  * 一切外部依赖都可缺席：缺 store 方法=该阶段跳过并如实标注 skipped（不假装成功）。
  */
-import type { CoreTenant, IMemoryStore } from "../store/types.js";
+import type { CoreTenant, IMemoryStore, SoulEpisodeProvisionResult } from "../store/types.js";
+import type { SoulMoodEventInsert } from "../store/soul-event-types.js";
 import type { Logger } from "../types.js";
 import {
   personProfileMaxPerTick,
@@ -45,6 +46,8 @@ import {
 import {
   episodeDigest,
   emotionEventFromEpisode,
+  emotionReappraisalFromEpisode,
+  reappraisalDiffers,
   emotionObjectForEpisode,
   episodeRepaired,
   EPISODE_PER_SESSION_PER_TICK,
@@ -59,6 +62,13 @@ import type { SoulPerson } from "../person/types.js";
 import { clampRedlines, mergeDuplicateRedlines } from "./card.js";
 import { chargeCall, openCostBudget, redactSecrets } from "./guard.js";
 import { contradictRepairClaims, factsFromEpisode, historyItemNeedsUpdate, historyToItems, reversals, settlePromises } from "./history.js";
+import { runPersonStateMaintenance, type PersonStateMaintenanceResult } from "./person-state.js";
+import { runRelationEventBackfill, runRelationEventProvision } from "./relation-backfill.js";
+import { runGoalMaintenance, type GoalMaintenanceResult } from "./goals.js";
+import { runSelfModelMaintenance, type SelfModelMaintenanceResult } from "./self-model-maintenance.js";
+import { runNarrativeMaintenance, type NarrativeMaintenanceResult } from "./narrative.js";
+import { runEpisodeEventProvision } from "./episode-provision.js";
+import { runValueMaintenance, type ValueMaintenanceResult } from "./value-maintenance.js";
 import { SEED_LABELS, TRAIT_PROTOCOL_VERSION, emptyAxisVector, l1Norm, seedStateFromSeeds, type AxisVector } from "./traits.js";
 import { assembleSoulCard } from "./card-service.js";
 import { recordSoulDrift } from "./observation.js";
@@ -84,7 +94,7 @@ import {
   renderLayerWithBudget,
 } from "./persona.js";
 import { itemHash as itemHashOf } from "./consolidator.js";
-import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION, rankLabelsByPad, EMOTION_PAD_NEAR_MAX } from "./emotion.js";
+import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION, rankLabelsByPad, EMOTION_PAD_NEAR_MAX, regulateMood, decayMoodTowardBaseline, normalizeMoodHalfLife } from "./emotion.js";
 import { canSelfReset, measureDrift, pushDrift, trackOf } from "./drift.js";
 
 /** 语料记录（由调用方从 L1 读取；worker 不直接耦合 L1 表结构）。 */
@@ -159,6 +169,49 @@ export interface SoulWorkerDeps {
     | "upsertSoulPerson"
     | "getSoulPersonByPlatform"
     | "listSoulPersons"
+    /* P2：关系状态层（写者只在 tick 内跑；读面在卡/面板） */
+    | "listSoulPersonStates"
+    | "upsertSoulPersonState"
+    | "insertSoulPersonStateEvents"
+    /* P2 §10.8：关系边 event_id 的确定性回指（每一 tick 扫一遍 NULL 边） */
+    | "backfillSoulPersonRelationEventIds"
+    /* P2 §10.8 / t13：确定性补事件（引文在 L0 唯一命中才建，回指前先跑） */
+    | "provisionSoulRelationEvents"
+    /* P3 §4.5：目标层（三表 + working 锚；写者只在 tick 内跑） */
+    | "getSoulGoal"
+    | "listSoulGoals"
+    | "readSoulMoodState"
+    | "writeSoulMoodState"
+    | "commitSoulMoodEvents"
+    | "listSoulMoodEvents"
+    | "upsertSoulGoal"
+    | "transitionSoulGoal"
+    | "insertSoulGoalEvents"
+    | "listSoulGoalEvents"
+    | "insertSoulGoalDep"
+    | "listSoulGoalDeps"
+    | "setSoulPromiseGoal"
+    | "upsertSoulWorkingState"
+    | "getSoulWorkingState"
+    | "clearSoulWorkingState"
+    /* P4 §4.5/§4.6：自我模型与校准（写者只在 tick 内跑；读面在卡/面板） */
+    | "listSoulEvents"
+    | "listSoulSelfModel"
+    | "upsertSoulSelfModel"
+    | "commitSoulCalibration"
+    | "listSoulCalibration"
+    | "upsertSoulEventReflection"
+    /* P6 / t20：老库 episode 没有事件时按引文确定性补事件（不静默 0 章） */
+    | "provisionSoulEpisodeEvents"
+    /* P6 §4.8：叙事层（章节 + 证据；写者只在 tick 内跑，读面在卡/面板） */
+    | "listSoulNarrativeChapters"
+    | "listSoulNarrativeEvidence"
+    | "commitSoulNarrativeChapter"
+    /* P7 §4.9：价值层（soul_values + 写入侧 shadow gate + 两难；写者只在 tick 内跑） */
+    | "upsertSoulValue"
+    | "listSoulValues"
+    | "insertSoulGateLog"
+    | "insertSoulDilemma"
   >;
   tenant: CoreTenant;
   now?: string;
@@ -236,6 +289,23 @@ export interface SoulMoodReport {
    * 心境门可观测性：门开没开、没开是因为什么。只报告不参与判断——
    * 生产上「门到底会不会响」必须能从 report 里读出来，不能只靠事后猜。
    */
+  /**
+   * P5：慢心境落表实况。soul_state 只留「这一轮」的读数，mood_state 才是带半衰期的
+   * 慢变量——两块都写才算「心境被记住了」，只写一块必须在 report 里看得出来。
+   */
+  moodState?: {
+    written: boolean;
+    valence: number;
+    arousal: number;
+    /** 落库用的半衰期（已夹到 36–168，默认 48）。 */
+    halfLifeHours: number;
+    /** 本轮真正写进 soul_mood_events 的行数（INSERT OR IGNORE 去重后的实数）。 */
+    events: number;
+    /** 旧心境按半衰期衰减到此刻的效价（无旧行时 = 基线）。 */
+    decayedValence: number;
+    /** 调节是否真的动过（偏离不到阈值就是 false，不伪造「我调节了自己」）。 */
+    regulated: boolean;
+  };
   gate?: {
     focus: string;
     object: string;
@@ -335,6 +405,43 @@ export interface SoulWorkerReport {
    * 只有注入了 `personProfiler` 才出现——没接线时保持 undefined，让「没跑」与「跑了但 0 条」可区分。
    */
   personProfile?: PersonProfileReport;
+  /**
+   * P2 §4.4：关系状态层本轮账（观察到的 person 数 / upsert 行数 / 新增审计行数）。
+   * 只有 store 提供写面时才出现——没接线保持 undefined，与「跑了但 0 条」可区分。
+   */
+  personState?: PersonStateMaintenanceResult;
+  /**
+   * P2 §10.8：关系边 event_id 回指本轮账（扫描/唯一命中/标不可验证）。
+   * 只有 store 提供回指写面时才出现——没接线保持 undefined，与「跑了但 0 条」可区分。
+   */
+  relationBackfill?: { scanned: number; linked: number; unverifiable: number };
+  /**
+   * P2 §10.8 / t13：确定性补事件本轮账（扫描/新建/多命中/跳过）。
+   * 只有 store 提供补事件写面时才出现——没接线保持 undefined。
+   */
+  relationProvision?: { scanned: number; created: number; ambiguous: number; skipped: number };
+  /**
+   * P3 §4.5：目标层本轮账（候选/新建/再确认/跳过/承诺挂靠/状态迁移/working 锚）。
+   * 只有 store 提供目标写面时才出现——没接线保持 undefined，与「跑了但 0 条」可区分。
+   */
+  goals?: GoalMaintenanceResult;
+  /** P4：自我模型/校准/反思本轮落库实况（写了几条、多少处于可被推翻的状态）。 */
+  selfModel?: SelfModelMaintenanceResult;
+  /**
+   * P6 / t20：episode 的确定性补事件本轮账（扫到多少无事件 episode、补了几条、为什么没补）。
+   * 只有 store 提供该写面时才出现——没接线保持 undefined，与「跑了但 0 条」可区分。
+   */
+  episodeProvision?: SoulEpisodeProvisionResult;
+  /**
+   * P6 §4.8：叙事层本轮账（巩固了几个月、成章几篇、跳过无证据/未走完的月份）。
+   * 只有 store 提供叙事读写面时才出现——没接线保持 undefined，与「跑了但 0 章」可区分。
+   */
+  narrative?: NarrativeMaintenanceResult;
+  /**
+   * P7 §4.9：价值层本轮账（价值候选/写了几条、写入侧 shadow gate 判了几条命中几条、两难几条）。
+   * 只有 store 提供价值写面时才出现——没接线保持 undefined，与「跑了但 0 条」可区分。
+   */
+  values?: ValueMaintenanceResult;
   /** 运行告警：可观测指标，不静默。语言未覆盖 / 情绪标签长尾（零实例标签过多）。 */
   alerts?: Array<{
     code: "language_unmapped" | "emotion_label_sparse" | "rollback_applied";
@@ -1281,6 +1388,63 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       byKind,
       ...(purged > 0 ? { purged } : {}),
     };
+    // P2 §4.4：关系状态写者。输入就是本 tick 的 episodePool（不再查一次库）；
+    // 只对「恰好涉及一个人」的事件归属，同一事件重放不重复累加（evidence 幂等）。
+    // 这是真实维护路径：runSoulMaintenanceTick → runSoulMaintenance → 这里。
+    // 失败只 warn 不阻断本轮人格/卡落库——状态层是派生视图，下一 tick 会重算；
+    // 但必须留 warn，让「表里没有行」能区分「没跑」与「跑失败」。
+    if (typeof store.upsertSoulPersonState === "function") {
+      try {
+        report.personState = await runPersonStateMaintenance({
+          store,
+          tenant: deps.tenant,
+          episodes: episodePool,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] person-state 写入失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // P2 §10.8 / t13：确定性补事件。旧关系行（distiller 只带 quote+record_id）里有一批引文
+    // 在 L0 是逐字原话、只是当时没建事件——补一条 chat 事件（证据 = 该 L0 行，quote 逐字）后，
+    // 同一 tick 的回指就能链上。只建 L0 已有的原话，不调模型；多命中/零命中一律不建。
+    // 放在回指之前、关系状态写者之后：本 tick 新写的关系边也进同一轮判定。
+    if (typeof store.provisionSoulRelationEvents === "function") {
+      try {
+        const provision = await runRelationEventProvision({
+          store,
+          tenant: deps.tenant,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+        if (provision) report.relationProvision = provision;
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] relation-provision 失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // P2 §10.8：关系边 event_id 回指。旧关系行只有 quote+record_id，不猜；唯一命中才写
+    // event_id，零命中/多命中标 unverifiable（保留事实、不进卡）。放在关系状态写者之后：
+    // 本 tick 由 distiller 新写的关系边也一并进入判定。幂等（已判定的行不再扫）。
+    if (typeof store.backfillSoulPersonRelationEventIds === "function") {
+      try {
+        const backfill = await runRelationEventBackfill({
+          store,
+          tenant: deps.tenant,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+        if (backfill) report.relationBackfill = backfill;
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] relation-backfill 失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     // P0-1 stats 接线：挖掘侧口径（落库前）与库内口径（episodes.byKind）分开报，
     // 否则「挖到 12 条只落 3 条」在观测面上会被合并成同一个数字。
     report.episodeCandidates = minedEpisodes.stats.candidates;
@@ -1482,6 +1646,103 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       }
     }
     if (promiseStat) report.promises = promiseStat;
+    // P3 §4.5：目标层写者（soul_goals + 账本 + deps + working 锚）。放在承诺同步之后：
+    // 本 tick 新落的承诺行在同一轮就能挂上 goal_id，「跨三天再问同一件事」时
+    // 承诺行与目标行已经是一件事，而不是两张互不相认的表。
+    // 只从显式承诺与计划长（goals.ts 的 PROMISE/PLAN 白名单），愿望句不立目标。
+    // 失败只 warn 不阻断本轮人格/卡落库：目标层是派生视图，下一 tick 会重算；
+    // 但必须留 warn，让「表里没有行」能区分「没跑」与「跑失败」。
+    if (typeof store.upsertSoulGoal === "function") {
+      try {
+        report.goals = await runGoalMaintenance({
+          store,
+          tenant: deps.tenant,
+          episodes: historySource,
+          facts,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] goals 写入失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // P4 §4.5/§4.6：自我模型与校准（soul_self_model + soul_calibration + 反思子表）。
+    // 顺序在目标层之后：目标/承诺已经是结构化事实，自我模型才谈得上「哪类活我容易漏哪步」。
+    // 只从可核对的事实长（工具失败、后续成功、重复失败、用户当场纠正），不从一句批评推性格；
+    // 每条认识都带反例与 probation/retired 两个可被推翻的状态。失败只 warn 不阻断本轮。
+    if (typeof store.upsertSoulSelfModel === "function" && typeof store.listSoulEvents === "function") {
+      try {
+        report.selfModel = await runSelfModelMaintenance({
+          store,
+          tenant: deps.tenant,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] self-model 写入失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // P6 / t20：先给「老库里没有事件」的 episode 补事件，再让叙事去读。
+    // 证据必须回指真实 soul_events 的规则一个字不动；这里补的是「当时没建事件」这件事本身。
+    // 只补 L0 里已经存在的原话（唯一命中），不调模型、不生成内容；每 tick 有上限、重放幂等。
+    // 失败只 warn 不阻断本轮：下 tick 会在同一条上重试。
+    if (typeof store.provisionSoulEpisodeEvents === "function") {
+      try {
+        report.episodeProvision = await runEpisodeEventProvision({
+          store,
+          tenant: deps.tenant,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] episode 补事件失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // P6 §4.8：叙事层（soul_narrative + 证据）。顺序在自我模型之后：章节的「转折/教训」
+    // 读的是 episode 的 kind 变化与代价，不是情绪标签；同一时段只留一条 active（内容变才升版）。
+    // 只巩固已结束的自然月——月份没走完就写会边写边改，幂等与「同期唯一」都没了。
+    // 失败只 warn 不阻断本轮：自传是派生视图，下一 tick 会在同一窗口重算。
+    if (typeof store.commitSoulNarrativeChapter === "function" && typeof store.listSoulNarrativeChapters === "function") {
+      try {
+        report.narrative = await runNarrativeMaintenance({
+          store,
+          tenant: deps.tenant,
+          episodes: historySource,
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] narrative 写入失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    // P7 §4.9：价值层（soul_values + 写入侧 shadow gate + 两难）。放在最后：价值读的是
+    // 「我选了什么、付出了什么」，这要求 episode、目标、自我模型、章节都已经是结构化事实。
+    // 写入侧 gate 是 shadow：命中只落 soul_gate_log，**不拦写入**（现在拦它只会让记忆比现实干净）。
+    // 失败只 warn 不阻断本轮：价值是派生视图，下一 tick 会在同一批证据上重算。
+    if (typeof store.upsertSoulValue === "function") {
+      try {
+        report.values = await runValueMaintenance({
+          store,
+          tenant: deps.tenant,
+          episodes: historySource,
+          persona: [...map.values()],
+          now,
+          ...(deps.logger ? { logger: deps.logger } : {}),
+        });
+      } catch (err) {
+        deps.logger?.warn?.(
+          `[soul-worker] values 写入失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     const grown = historyToItems([...facts, ...reversals(facts)], now);
     let historyAdded = 0;
     const still = new Set(grown.map((item) => item.itemId));
@@ -2268,7 +2529,14 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
               sampleCount: prevState.sampleCount ?? 0,
             }
           : null;
-      const mood = integrateMood(prevMood, events, now, cfg);
+      // P5：心境动力学——先积分（快情绪 → 慢心境），再做「自我调节」：偏离基线超过阈值时
+      // 只回收超出部分的一档（不是清零，也不是不拉）。调节幅度单独记账，读面看得见
+      // 「今天的心境被拉回过一次」，而不是一个说不清来源的现值。
+      const integrated = integrateMood(prevMood, events, now, cfg);
+      const regulation = regulateMood(integrated);
+      const mood = regulation.mood;
+      // 半衰期口径 36–168h、默认 48h：写库前夹一次，读侧用同一函数复算（两边同一把尺）。
+      const moodHalfLifeHours = normalizeMoodHalfLife(cfg.moodHalfLifeHours);
       // 心境原因必须与心境同向、且对象短到能进一句话：否则「整体偏积极」却拿
       // 「被纠正」当原因，判断偏移会自相矛盾；L1 摘要任务句（>20 字）也不能当对象。
       const ranked = activeEmotions(events, now);
@@ -2318,6 +2586,116 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           `[soul-worker] writeSoulState failed (non-fatal, episodes stay unmarked): ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      // P5：慢心境落表——soul_mood_state（按租户一行当前态）+ soul_mood_events（append-only 账本）。
+      // soul_state 回答「这一轮什么心境」，mood_state 回答「这几天什么心境」：带 half_life_hours
+      // 与原因事件 id，衰减在读取时复算（写一次 UPDATE 就再也算不出「三天前是多少」）。
+      // 落库失败只降级，不连累情绪表——绝不假装写成功。
+      let moodStateWritten = false;
+      let moodEventInserted = 0;
+      const moodCauseIds = episodeEvents.map((e) => e.id).filter((id) => id !== "");
+      // 强度 = 本轮仍在影响我的情绪的平均衰减强度；没有情绪就是 0（不是基线偏移的绝对值）。
+      const moodIntensityNow =
+        ranked.length === 0
+          ? 0
+          : Math.min(1, ranked.reduce((sum, e) => sum + decayedIntensity(e, now), 0) / ranked.length);
+      // 旧心境到 now 的自然衰减：用来区分「我变了」与「它本来就会退」。
+      const prevDecayed =
+        prevState && typeof prevState.valence === "number" && typeof prevState.arousal === "number"
+          ? decayMoodTowardBaseline(
+              {
+                valence: prevState.valence,
+                arousal: prevState.arousal,
+                baselineValence: mood.baselineValence,
+                baselineArousal: mood.baselineArousal,
+                updatedAt: prevState.updatedAt ?? now,
+              },
+              now,
+              moodHalfLifeHours,
+            )
+          : null;
+      const moodEventRows: SoulMoodEventInsert[] = [];
+      const pushMoodEvent = (
+        kind: "appraisal" | "regulation" | "decay",
+        deltaValence: number,
+        deltaArousal: number,
+        deltaIntensity: number,
+        causeIds: string[],
+        note: string,
+      ): void => {
+        moodEventRows.push({
+          id: `mood-${now}-${kind}`,
+          at: now,
+          kind,
+          label: top?.label ?? null,
+          delta_valence: Number(deltaValence.toFixed(6)),
+          delta_arousal: Number(deltaArousal.toFixed(6)),
+          delta_intensity: Number(deltaIntensity.toFixed(6)),
+          cause_event_ids_json: JSON.stringify(causeIds),
+          note,
+        });
+      };
+      if (moodPersisted) {
+        const fromValence = prevDecayed?.valence ?? mood.baselineValence;
+        const fromArousal = prevDecayed?.arousal ?? mood.baselineArousal;
+        if (episodeEvents.length > 0) {
+          pushMoodEvent(
+            "appraisal",
+            mood.valence - fromValence,
+            mood.arousal - fromArousal,
+            moodIntensityNow,
+            moodCauseIds,
+            `按 ${episodeEvents.length} 条事件积分（评价→心境）`,
+          );
+        } else if (prevDecayed && prevState && Math.abs(prevDecayed.valence - (prevState.valence ?? 0)) >= 0.005) {
+          // 没有新事件也会退：这条账本行让「三天没动静、心境自己降了一半」在表里看得见。
+          pushMoodEvent(
+            "decay",
+            prevDecayed.valence - (prevState.valence ?? 0),
+            prevDecayed.arousal - (prevState.arousal ?? 0),
+            0,
+            [],
+            `无新事件，按半衰期 ${Math.round(moodHalfLifeHours)}h 衰减（偏离保留 ${prevDecayed.factor.toFixed(2)}）`,
+          );
+        }
+        if (regulation.applied) {
+          pushMoodEvent(
+            "regulation",
+            regulation.deltaValence,
+            regulation.deltaArousal,
+            0,
+            moodCauseIds,
+            "偏离基线超阈：只回收超出部分（约 20%），不归零",
+          );
+        }
+        try {
+          await Promise.resolve(
+            store.writeSoulMoodState?.(deps.tenant, {
+              label: top?.label ?? "平静",
+              valence: mood.valence,
+              arousal: mood.arousal,
+              intensity: moodIntensityNow,
+              half_life_hours: moodHalfLifeHours,
+              cause_event_ids_json: JSON.stringify(moodCauseIds),
+              updated_at: now,
+            }) ?? null,
+          );
+          moodStateWritten = true;
+        } catch (err) {
+          deps.logger?.warn?.(
+            `[soul-worker] writeSoulMoodState failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (moodStateWritten && moodEventRows.length > 0 && typeof store.commitSoulMoodEvents === "function") {
+          try {
+            const res = await Promise.resolve(store.commitSoulMoodEvents(deps.tenant, moodEventRows));
+            moodEventInserted = res?.inserted ?? 0;
+          } catch (err) {
+            deps.logger?.warn?.(
+              `[soul-worker] commitSoulMoodEvents failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
       // 本轮真正积进心境的事件条数（未打标、非 work，且心境确实落库）；写失败记 0。
       report.moodEpisodesIntegrated = moodPersisted ? episodeEvents.length : 0;
       // 打标只在心境落库成功之后做：写失败就停在未打标态，下一 tick 重试，不丢事件
@@ -2334,6 +2712,26 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       }
       // 情绪史落表：一条事件 × 一版模板规则一行，注入/审计都能回指「哪条片段、
       // 按哪版规则、当时判成什么」。只存已判出对象的事件（无对象的只是读数，不是情绪）。
+      // P5：把情绪挂到目标上（唯一命中才挂）。soul_goals 没有 object 列，只能按 title/why
+      // 文本是否包含对象判断；命中 0 个或多个一律留 null——宁可「这次没挂上」，
+      // 也不猜「大概是那个目标」，否则「承诺到期被指出」会挂到无关的完成目标上。
+      let activeGoals: Array<{ goal_id: string; title: string; why?: string | null; status?: string }> = [];
+      if (typeof store.listSoulGoals === "function") {
+        try {
+          activeGoals = ((await Promise.resolve(store.listSoulGoals(deps.tenant))) ?? []) as typeof activeGoals;
+        } catch (err) {
+          deps.logger?.warn?.(
+            `[soul-worker] listSoulGoals failed (non-fatal, emotions keep goalId=null): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      const goalIdForObject = (object: string): string | null => {
+        if (object === "") return null;
+        const hits = activeGoals.filter(
+          (g) => (g.status ?? "active") === "active" && (g.title.includes(object) || (g.why ?? "").includes(object)),
+        );
+        return hits.length === 1 ? hits[0].goal_id : null;
+      };
       const emotionRows: SoulEmotionRecord[] = episodeEvents
         .filter((e) => e.object !== "" && e.id !== "")
         .map((e) => {
@@ -2363,15 +2761,54 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             // 唯一命中才填；0 个或多个都留 null（多人事件不猜「冲谁」）。
             objectPerson: e.persons?.length === 1 ? e.persons[0] : null,
             appraisal: e.appraisal,
+            // P5：事件 id 落位（= soul_episodes.episode_id = soul_events.event_id），
+            // 情绪从此可回指「哪条事件、哪条目标」；挂不上就 null，不编外键。
+            eventId: e.id,
+            goalId: goalIdForObject(e.object),
+            dimensions: e.appraisal as unknown as Record<string, number | string | boolean | undefined>,
             templateVersion: EMOTION_TEMPLATE_VERSION,
             appraisedAt: now,
           };
         });
-      if (!moodPersisted) emotionRows.length = 0;
+      // P5 重评：事件后来被补上/改好（episodeRepaired）时，按重评后的评价再判一次情绪。
+      // 原行不动（append-only），重评行用 template_version 后缀区分——同一事件两条都在，
+      // 审计看得见「先判成什么、后来改判成什么」，而不是把历史覆盖掉。
+      const reappraisalRows: SoulEmotionRecord[] = [];
+      for (const ep of unintegratedEpisodes) {
+        const base = episodeEvents.find((e) => e.id === ep.episodeId);
+        if (!base) continue;
+        const next = emotionReappraisalFromEpisode(ep, cfg, { publicSession: publicSessions.has(ep.sessionId) });
+        if (!next || !reappraisalDiffers(base, next)) continue;
+        reappraisalRows.push({
+          episodeId: next.id,
+          at: next.at,
+          object: next.object,
+          label: next.label,
+          valence: next.valence,
+          arousal: next.arousal,
+          ...(typeof next.dominance === "number" ? { dominance: next.dominance } : {}),
+          intensity: next.intensity,
+          // 重评是「我自己改判」：归因落在 self，把握度沿用重评后的评价向量。
+          agency: "self",
+          confidence: Number.isFinite(next.confidence) ? next.confidence : 0.5,
+          objectPerson: null,
+          appraisal: next.appraisal,
+          eventId: next.id,
+          goalId: goalIdForObject(next.object),
+          dimensions: next.appraisal as unknown as Record<string, number | string | boolean | undefined>,
+          templateVersion: `${EMOTION_TEMPLATE_VERSION}+reappraise`,
+          appraisedAt: now,
+        });
+      }
+      if (!moodPersisted) {
+        emotionRows.length = 0;
+        reappraisalRows.length = 0;
+      }
+      const emotionRowsToCommit: SoulEmotionRecord[] = [...emotionRows, ...reappraisalRows];
       let committed = 0;
-      if (emotionRows.length > 0 && typeof store.commitSoulEmotions === "function") {
+      if (emotionRowsToCommit.length > 0 && typeof store.commitSoulEmotions === "function") {
         try {
-          const res = await Promise.resolve(store.commitSoulEmotions(deps.tenant, emotionRows));
+          const res = await Promise.resolve(store.commitSoulEmotions(deps.tenant, emotionRowsToCommit));
           committed = res?.inserted ?? 0;
         } catch (err) {
           deps.logger?.warn?.(
@@ -2391,6 +2828,15 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         labels,
         dormant: EMOTION_LABELS.filter((l) => !labels[l]),
         ...(moodGateObs ? { gate: moodGateObs } : {}),
+        moodState: {
+          written: moodStateWritten,
+          valence: mood.valence,
+          arousal: mood.arousal,
+          halfLifeHours: moodHalfLifeHours,
+          events: moodEventInserted,
+          decayedValence: prevDecayed?.valence ?? mood.baselineValence,
+          regulated: regulation.applied,
+        },
       };
       // 情绪标签长尾告警：24 类里零实例 ≥ 一半，说明标签集设计与语料/判据脱节。
       // 不自动删标签（会改历史口径），但必须让运维看见「这些标签在本租户从未出现过」。

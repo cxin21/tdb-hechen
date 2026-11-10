@@ -71,6 +71,9 @@ import {
   type CoreTenant,
   type SoulSnapshotRow,
   type SoulPersonRelationRow,
+  type SoulPersonRelationBackfillResult,
+  type SoulPersonRelationProvisionResult,
+  type SoulEpisodeProvisionResult,
   type PromiseTransitionSource,
   type SoulPromiseEvent,
   type SoulPromiseRecord,
@@ -86,24 +89,139 @@ import { SOUL_EPISODE_KINDS, SOUL_LAYERS } from "../soul/types.js";
 import { SOUL_PERSON_DDL, SOUL_PERSON_MIGRATION_DDL } from "./soul-person-ddl.js";
 // P0-C：事件底座（soul_events）的 DDL 与读写都只从 P0-A/P0-B 的单一事实源来，禁止在本文件手抄列名。
 // DDL 常量与 P0-D 迁移脚本共用同一份；读写函数不 BEGIN（调用方持有事务），见 upsertSoulEventInTransaction。
-import { SOUL_EVENT_DDL, SOUL_EVENT_MIGRATION_DDL } from "./soul-event-ddl.js";
 import {
+  SOUL_EVENT_DDL,
+  SOUL_EVENT_MIGRATION_DDL,
+  SOUL_NARRATIVE_ACTIVE_PERIOD_UNIQUE_INDEX_DDL,
+} from "./soul-event-ddl.js";
+// P6 §4.8：叙事的读写收口在 soul-narrative-store.ts；本文件只委派 + 降级（读空、写失败不阻断 tick）。
+import {
+  commitSoulNarrativeChapter as commitSoulNarrativeChapterImpl,
+  getSoulNarrativeChapter as getSoulNarrativeChapterRow,
+  listSoulNarrativeChapters as listSoulNarrativeChapterRows,
+  listSoulNarrativeEvidenceRows,
+  touchSoulNarrativeAccess as touchSoulNarrativeAccessImpl,
+  type SoulNarrativeCommitInput,
+  type SoulNarrativeCommitResult,
+  type SoulNarrativeListFilter,
+} from "./soul-narrative-store.js";
+import {
+  composeSoulEventDedupeKey,
   deleteSoulEventInTransaction,
+  findSoulEventIdByDedupeKey,
   getSoulEventDetail as getSoulEventDetailRow,
+  insertSoulEvent,
   listSoulEventEvidence,
   listSoulEvents as listSoulEventRows,
+  listSoulPrivateEventQuotes,
   upsertSoulEventInTransaction,
+  upsertSoulEventReflection as upsertSoulEventReflectionRow,
   type SoulEventDetail,
   type SoulEventListFilter,
   type SoulEventWrite,
+  type SoulPrivateQuoteRow,
 } from "./soul-event-store.js";
 // P1-A：一条消息 → 根事件 + 行动子事件。切分是纯函数，写库仍由本文件的事务负责。
 import { splitChatActionEvents, type SoulActionSourceMessage } from "../soul/event-splitter.js";
+// P6 / t20：老库 episode 没有对应事件时，按引文在 L0 唯一命中补一条 chat 事件（与关系线同一套确定性判定）。
+import { EPISODE_PROVISION_MAX_PER_TICK } from "../soul/episode-provision.js";
+// P2 §4.4：关系状态层（soul_person_state / soul_person_state_events）的读写同样是纯 store 函数，
+// 本文件只做实例方法委派，不手抄第二份 SQL。
+import {
+  getSoulPersonState as getSoulPersonStateRow,
+  insertSoulPersonStateEvents as insertSoulPersonStateEventRows,
+  listSoulPersonStateEvents as listSoulPersonStateEventRows,
+  listSoulPersonStates as listSoulPersonStateRows,
+  upsertSoulPersonState as upsertSoulPersonStateRow,
+} from "./soul-person-state-store.js";
+// P3 §4.5：目标层（soul_goals / goal_events / goal_deps）与 working 锚同样是纯 store 函数，
+// 本文件只做实例委派——目标状态机的规则不许在 SQL 层与派生层各写一份。
+import {
+  clearSoulWorkingState as clearSoulWorkingStateRow,
+  getSoulGoal as getSoulGoalRow,
+  getSoulWorkingState as getSoulWorkingStateRow,
+  insertSoulGoalDep as insertSoulGoalDepRow,
+  insertSoulGoalEvents as insertSoulGoalEventRows,
+  listSoulGoalDeps as listSoulGoalDepRows,
+  listSoulGoalEvents as listSoulGoalEventRows,
+  listSoulGoals as listSoulGoalRows,
+  transitionSoulGoal as transitionSoulGoalRow,
+  upsertSoulGoal as upsertSoulGoalRow,
+  upsertSoulWorkingState as upsertSoulWorkingStateRow,
+  type GoalTransitionOptions,
+  type GoalTransitionResult,
+} from "./soul-goal-store.js";
+import {
+  commitSoulMoodEvents as commitSoulMoodEventsImpl,
+  getSoulMoodState,
+  listSoulMoodEvents as listSoulMoodEventsImpl,
+  upsertSoulMoodState,
+} from "./soul-mood-store.js";
+// P7 §4.9：价值（soul_values）、红线审计（soul_gate_log）、两难（soul_dilemma）的读写收口在
+// soul-value-store.ts；判定本身在 core/soul/value-gate.ts，SQL 里不许再写一份「什么算命中」。
+import {
+  insertSoulDilemma as insertSoulDilemmaRow,
+  insertSoulGateLog as insertSoulGateLogRows,
+  listSoulDilemmas as listSoulDilemmaRows,
+  listSoulGateLog as listSoulGateLogRows,
+  listSoulValues as listSoulValueRows,
+  retireSoulValue as retireSoulValueRow,
+  reviewSoulDilemma as reviewSoulDilemmaRow,
+  summarizeSoulGateLog as summarizeSoulGateLogRows,
+  upsertSoulValue as upsertSoulValueRow,
+  type SoulGateLogStats,
+  type SoulGateRuleStat,
+} from "./soul-value-store.js";
+// P4 §4.6：自我模型（soul_self_model）与校准（soul_calibration）同样是纯 store 函数，
+// 本文件只做实例方法委派与错误降级——「什么算一次没成、误差怎么算」不许在 SQL 层再写一份。
+import {
+  commitSoulCalibration as commitSoulCalibrationImpl,
+  getSoulSelfModel as getSoulSelfModelRow,
+  listSoulCalibration as listSoulCalibrationRows,
+  listSoulSelfModel as listSoulSelfModelRows,
+  upsertSoulSelfModel as upsertSoulSelfModelRow,
+} from "./soul-self-store.js";
 import type {
   SoulEventChatInsert,
   SoulEventEvidenceInsert,
   SoulEventInsert,
   SoulEventRow,
+  SoulPersonStateEventInsert,
+  SoulPersonStateEventRow,
+  SoulPersonStateInsert,
+  SoulPersonStateRow,
+  SoulGoalDepInsert,
+  SoulGoalDepRow,
+  SoulGoalEventInsert,
+  SoulGoalEventRow,
+  SoulGoalInsert,
+  SoulGoalRow,
+  SoulGoalStatus,
+  SoulWorkingStateRow,
+  SoulWorkingStateUpsert,
+  SoulMoodEventInsert,
+  SoulMoodEventRow,
+  SoulMoodStateInsert,
+  SoulMoodStateRow,
+  SoulCalibrationInsert,
+  SoulCalibrationRow,
+  SoulEventReflectionInsert,
+  SoulSelfModelInsert,
+  SoulSelfModelRow,
+  SoulNarrativeEvidenceInsert,
+  SoulNarrativeEvidenceRow,
+  SoulNarrativeInsert,
+  SoulNarrativeRow,
+  SoulDilemmaInsert,
+  SoulDilemmaRow,
+  SoulGateDecision,
+  SoulGateLogInsert,
+  SoulGateLogRow,
+  SoulGateStage,
+  SoulValueInsert,
+  SoulValueRow,
+  SoulValueSource,
+  SoulValueStatus,
 } from "./soul-event-types.js";
 import { SOUL_AXES, axisVectorToArray, emptyAxisVector, toAxisVector, type AxisVector } from "../soul/traits.js";
 import type { TraitLabelRow } from "../soul/trait-drift.js";
@@ -1367,6 +1485,11 @@ export class VectorStore implements IMemoryStore {
       "ALTER TABLE soul_emotions ADD COLUMN agency TEXT",
       "ALTER TABLE soul_emotions ADD COLUMN confidence REAL",
       "ALTER TABLE soul_emotions ADD COLUMN object_person TEXT",
+      // P5：情绪回指底座事件与目标。SOUL_EVENT_MIGRATION_DDL 里也有同样三条；
+      // 放在建表旁边是为了让「新库也一定有这三列」与建表语句同屏，不依赖迁移顺序。
+      "ALTER TABLE soul_emotions ADD COLUMN event_id TEXT",
+      "ALTER TABLE soul_emotions ADD COLUMN goal_id TEXT",
+      "ALTER TABLE soul_emotions ADD COLUMN dimensions_json TEXT",
     ]) {
       try {
         this.db.exec(ddl);
@@ -1453,6 +1576,17 @@ export class VectorStore implements IMemoryStore {
         const msg = err instanceof Error ? err.message : String(err);
         if (!/duplicate column name/i.test(msg)) throw err;
       }
+    }
+    // P2 §10.8：status 四值（含 unverifiable）——ALTER 加列带不了这个值，存量库要重建一次 CHECK。
+    this.migrateSoulPersonRelationStatusEnum();
+    // P6 §4.8：同一时段只许一条 active 章节（部分唯一索引）。放在这里而不是 SOUL_EVENT_DDL 里，
+    // 是因为存量库可能有 P6 之前的重复 active：建索引失败只 warn，不让一条历史脏行搞崩进程。
+    try {
+      this.db.exec(SOUL_NARRATIVE_ACTIVE_PERIOD_UNIQUE_INDEX_DDL);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_narrative] active-period unique index skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     // 2026-11-07（T1 提案/pending 通道清除）：core_pending 表与其 5 条幂等 ALTER（label/description/
     // attrs_json/recurrence_json/embedding_json）已删除——提案制与人工采纳通道整体下线，不再有写入者。
@@ -3138,6 +3272,64 @@ export class VectorStore implements IMemoryStore {
   }
 
   /**
+   * P2（spec §10.8）：soul_person_relation.status 需要第 4 个值 'unverifiable'——回指零命中或不唯一时
+   * 保留事实、但不让未验证的边进卡。SQLite 不能 ALTER CHECK，只能轻量重建（同
+   * migrateMemoryAuditActionEnum 的 12-step 简化版）：
+   *   从 sqlite_master 取当前 DDL（列顺序/默认值/其它约束原样保留）→ 只把 status 的 CHECK 扩成四值
+   *   → 建 soul_person_relation_p2 → INSERT SELECT（行内容不变）→ DROP → RENAME → 重建原索引。
+   * 幂等判据：DDL 已含 'unverifiable' 就跳过（新库 / 已迁移库）。
+   * 失败：warn 后继续（下次 init 重试）；期间回指任务写不进去只会保持 event_id=NULL，不猜、不进卡。
+   */
+  private migrateSoulPersonRelationStatusEnum(): void {
+    try {
+      const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='soul_person_relation'").get() as
+        { sql?: string } | undefined;
+      if (!row?.sql || row.sql.includes("'unverifiable'")) return;
+      const oldCheck = "CHECK (status IN ('active','ended','disputed'))";
+      if (!row.sql.includes(oldCheck)) {
+        this.logger?.warn?.(
+          `${TAG} [soul-relation-status-migrate] 关系表 DDL 里找不到预期 status CHECK，跳过重建（不猜结构）。`,
+        );
+        return;
+      }
+      const newSql = row.sql
+        .replace(oldCheck, "CHECK (status IN ('active','ended','disputed','unverifiable'))")
+        .replace(/^CREATE TABLE\s+soul_person_relation/i, "CREATE TABLE soul_person_relation_p2");
+      const indexSql = (
+        this.db
+          .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='soul_person_relation' AND sql IS NOT NULL")
+          .all() as Array<{ sql: string }>
+      ).map((r) => r.sql);
+      let count = 0;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec(newSql);
+        this.db.exec("INSERT INTO soul_person_relation_p2 SELECT * FROM soul_person_relation");
+        count = (this.db.prepare("SELECT COUNT(*) AS n FROM soul_person_relation_p2").get() as { n: number }).n;
+        this.db.exec("DROP TABLE soul_person_relation");
+        this.db.exec("ALTER TABLE soul_person_relation_p2 RENAME TO soul_person_relation");
+        this.db.exec("COMMIT");
+      } catch (e) {
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+          /* COMMIT 失败时引擎可能已自动回滚 */
+        }
+        throw e;
+      }
+      for (const sql of indexSql) this.db.exec(sql);
+      this.logger?.warn?.(
+        `${TAG} [soul-relation-status-migrate] soul_person_relation.status 枚举已扩容至 active/ended/disputed/unverifiable：重建保留 ${count} 行。`,
+      );
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul-relation-status-migrate] status 枚举扩容失败（幂等，下次 init 重试；期间回指失败的边保持 event_id=NULL，不进卡）: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
    * P2-T12（K1）core 两表租户化迁移（幂等，init 时自动执行）。
    *
    * - 新库：DDL 已带租户列且无单列 PK → 本方法只补建复合唯一索引（IF NOT EXISTS）。
@@ -4527,8 +4719,8 @@ export class VectorStore implements IMemoryStore {
     const stmt = this.db.prepare(`INSERT OR IGNORE INTO soul_emotions (
       episode_id, team_id, user_id, agent_id, at, object, label, valence, arousal,
       dominance, intensity, appraisal_json, template_version, appraised_at,
-      agency, confidence, object_person
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      agency, confidence, object_person, event_id, goal_id, dimensions_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     let inserted = 0;
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -4552,6 +4744,11 @@ export class VectorStore implements IMemoryStore {
           r.agency === "self" || r.agency === "other" || r.agency === "environment" ? r.agency : null,
           typeof r.confidence === "number" && Number.isFinite(r.confidence) ? r.confidence : null,
           typeof r.objectPerson === "string" && r.objectPerson !== "" ? r.objectPerson : null,
+          // P5：回指底座事件（soul_events.event_id = episode_id）与被这件事牵动的目标。
+          // 缺省 null——「没接上」与「接上了空串」不是一回事，读侧按 null 跳过。
+          typeof r.eventId === "string" && r.eventId !== "" ? r.eventId : null,
+          typeof r.goalId === "string" && r.goalId !== "" ? r.goalId : null,
+          r.dimensions === undefined ? null : JSON.stringify(r.dimensions),
         );
         // 只数真正新写入的行：同一事件同版本重跑是幂等的，不能虚增「记了多少条情绪」。
         inserted += Number(info.changes ?? 0) > 0 ? 1 : 0;
@@ -4597,6 +4794,299 @@ export class VectorStore implements IMemoryStore {
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_emotions] list failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
+    }
+  }
+
+  /* —— P5 心境层（soul_mood_state / soul_mood_events）——
+   * 读写收口在 soul-mood-store.ts 的纯函数里；本类只做实例委派与错误降级，
+   * 与 person-state / goal-store 同款。心境写失败不许让整轮 tick 失败。 */
+  readSoulMoodState(tenant: CoreTenant | undefined): SoulMoodStateRow | null {
+    try {
+      return getSoulMoodState(this.db, tenant);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_mood_state] read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  writeSoulMoodState(tenant: CoreTenant | undefined, insert: SoulMoodStateInsert): SoulMoodStateRow | null {
+    try {
+      return upsertSoulMoodState(this.db, tenant, insert);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_mood_state] write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  commitSoulMoodEvents(tenant: CoreTenant | undefined, rows: SoulMoodEventInsert[]): { inserted: number } {
+    try {
+      return commitSoulMoodEventsImpl(this.db, tenant, rows);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_mood_events] commit failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { inserted: 0 };
+    }
+  }
+
+  listSoulMoodEvents(
+    tenant: CoreTenant | undefined,
+    opts?: { limit?: number; kind?: SoulMoodEventRow["kind"] },
+  ): SoulMoodEventRow[] {
+    try {
+      return listSoulMoodEventsImpl(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_mood_events] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+  /* —— P7 价值层（soul_values / soul_gate_log / soul_dilemma）——
+   * 判定在 core/soul/value-gate.ts，本类只做实例委派与降级。
+   * 教训沿用 P5/P6：写判定日志失败不许让整轮 tick 失败（红线是记录，不是地雷）。 */
+  upsertSoulValue(tenant: CoreTenant | undefined, insert: SoulValueInsert): SoulValueRow | null {
+    try {
+      return upsertSoulValueRow(this.db, tenant, insert);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_values] write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  retireSoulValue(tenant: CoreTenant | undefined, valueId: string, at?: string): boolean {
+    try {
+      return retireSoulValueRow(this.db, tenant, valueId, at);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_values] retire failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  listSoulValues(
+    tenant: CoreTenant | undefined,
+    opts?: { status?: SoulValueStatus; source?: SoulValueSource; limit?: number },
+  ): SoulValueRow[] {
+    try {
+      return listSoulValueRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_values] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  insertSoulGateLog(tenant: CoreTenant | undefined, rows: SoulGateLogInsert[]): { inserted: number } {
+    try {
+      return insertSoulGateLogRows(this.db, tenant, rows);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_gate_log] insert failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { inserted: 0 };
+    }
+  }
+
+  listSoulGateLog(
+    tenant: CoreTenant | undefined,
+    opts?: {
+      decision?: SoulGateDecision;
+      stage?: SoulGateStage;
+      ruleId?: string;
+      sinceIso?: string;
+      shadowOnly?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+  ): SoulGateLogRow[] {
+    try {
+      return listSoulGateLogRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_gate_log] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  summarizeSoulGateLog(tenant: CoreTenant | undefined, opts?: { sinceIso?: string }): SoulGateLogStats {
+    try {
+      return summarizeSoulGateLogRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_gate_log] summarize failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        total: 0,
+        shadow: 0,
+        enforced: 0,
+        wouldBlock: 0,
+        wouldBlockRate: 0,
+        byDecision: { allow: 0, deny: 0, rewrite: 0, ask: 0 },
+        byRule: [] as SoulGateRuleStat[],
+        hitRows: 0,
+      };
+    }
+  }
+
+  insertSoulDilemma(tenant: CoreTenant | undefined, insert: SoulDilemmaInsert): SoulDilemmaRow | null {
+    try {
+      return insertSoulDilemmaRow(this.db, tenant, insert);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_dilemma] insert failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  listSoulDilemmas(tenant: CoreTenant | undefined, opts?: { limit?: number; dueBefore?: string }): SoulDilemmaRow[] {
+    try {
+      return listSoulDilemmaRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_dilemma] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  reviewSoulDilemma(
+    tenant: CoreTenant | undefined,
+    id: string,
+    patch: { regret?: number; outcomeEventId?: string | null; reviewAt?: string },
+  ): SoulDilemmaRow | null {
+    try {
+      return reviewSoulDilemmaRow(this.db, tenant, id, patch);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_dilemma] review failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /** 有边界的原话（privacy 规则判「隔墙有耳」时用）。读不到就给空——宁可少拦，不可让 gate 抛死。 */
+  listSoulPrivateEventQuotes(
+    tenant: CoreTenant | undefined,
+    opts?: { limit?: number; minChars?: number },
+  ): SoulPrivateQuoteRow[] {
+    try {
+      return listSoulPrivateEventQuotes(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_event_evidence] private quotes failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  /* —— P6 叙事层（soul_narrative / soul_narrative_evidence）——
+   * 派生与衰减在 core/soul/narrative.ts；这里只存事实。
+   * 写章失败降级成「这章没写」（inserted:false），读失败给空——自传没长出来不许让整轮 tick 失败。 */
+  listSoulNarrativeChapters(tenant: CoreTenant | undefined, filter?: SoulNarrativeListFilter): SoulNarrativeRow[] {
+    try {
+      return listSoulNarrativeChapterRows(this.db, tenant, filter);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_narrative] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  getSoulNarrativeChapter(tenant: CoreTenant | undefined, chapterId: string): SoulNarrativeRow | null {
+    try {
+      return getSoulNarrativeChapterRow(this.db, tenant, chapterId);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_narrative] get failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  listSoulNarrativeEvidence(tenant: CoreTenant | undefined, chapterId: string): SoulNarrativeEvidenceRow[] {
+    try {
+      return listSoulNarrativeEvidenceRows(this.db, tenant, chapterId);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_narrative_evidence] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  commitSoulNarrativeChapter(
+    tenant: CoreTenant | undefined,
+    input: SoulNarrativeCommitInput,
+  ): SoulNarrativeCommitResult {
+    try {
+      return commitSoulNarrativeChapterImpl(this.db, tenant, input);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_narrative] commit failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { inserted: false, superseded: 0 };
+    }
+  }
+
+  touchSoulNarrativeAccess(
+    tenant: CoreTenant | undefined,
+    chapterIds: string[],
+    opts?: { now?: string },
+  ): { updated: number } {
+    try {
+      return touchSoulNarrativeAccessImpl(this.db, tenant, chapterIds, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_narrative] access touch failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { updated: 0 };
+    }
+  }
+
+  /* —— P4 自我模型与校准（soul_self_model / soul_calibration / soul_event_reflection）——
+   * 与 mood 同款：写失败只降级（null / {inserted:0}），自我认识没更新不许让整轮 tick 失败。
+   * 反例合并、probation/retired 的判定都在 core/soul/self-model.ts；这里只存事实。 */
+  getSoulSelfModel(tenant: CoreTenant | undefined, id: string): SoulSelfModelRow | null {
+    try {
+      return getSoulSelfModelRow(this.db, tenant, id);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_self_model] read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  listSoulSelfModel(
+    tenant: CoreTenant | undefined,
+    opts?: { limit?: number; kinds?: SoulSelfModelRow["kind"][]; statuses?: SoulSelfModelRow["status"][] },
+  ): SoulSelfModelRow[] {
+    try {
+      return listSoulSelfModelRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_self_model] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  upsertSoulSelfModel(tenant: CoreTenant | undefined, insert: SoulSelfModelInsert): SoulSelfModelRow | null {
+    try {
+      return upsertSoulSelfModelRow(this.db, tenant, insert);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_self_model] write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  commitSoulCalibration(
+    tenant: CoreTenant | undefined,
+    rows: SoulCalibrationInsert[],
+  ): { inserted: number } {
+    try {
+      return commitSoulCalibrationImpl(this.db, tenant, rows);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_calibration] commit failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { inserted: 0 };
+    }
+  }
+
+  listSoulCalibration(
+    tenant: CoreTenant | undefined,
+    opts?: { limit?: number; domain?: string },
+  ): SoulCalibrationRow[] {
+    try {
+      return listSoulCalibrationRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_calibration] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  upsertSoulEventReflection(
+    tenant: CoreTenant | undefined,
+    reflection: SoulEventReflectionInsert,
+  ): { upserted: number } {
+    try {
+      return upsertSoulEventReflectionRow(this.db, reflection, tenant);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_event_reflection] upsert failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { upserted: 0 };
     }
   }
 
@@ -4932,6 +5422,64 @@ export class VectorStore implements IMemoryStore {
     }
   }
 
+  /* —— P2 §4.4：关系状态层（soul_person_state / state_events）——
+   * 读写都在 soul-person-state-store.ts 的纯函数里收口，本类只做实例委派。
+   * 读失败返回空/null（卡与面板不该因为状态层读失败整页消失）；
+   * upsert 不吞错：CHECK/主键冲突要让写者看见（维护 tick 按人 catch 并 warn）。 */
+
+  getSoulPersonState(tenant: CoreTenant | undefined, personKey: string): SoulPersonStateRow | null {
+    try {
+      return getSoulPersonStateRow(this.db, tenant, personKey);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person_state] get failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  listSoulPersonStates(tenant?: CoreTenant, opts?: { limit?: number }): SoulPersonStateRow[] {
+    try {
+      return listSoulPersonStateRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person_state] list failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  upsertSoulPersonState(tenant: CoreTenant | undefined, insert: SoulPersonStateInsert): SoulPersonStateRow {
+    return upsertSoulPersonStateRow(this.db, tenant, insert);
+  }
+
+  insertSoulPersonStateEvents(
+    tenant: CoreTenant | undefined,
+    events: SoulPersonStateEventInsert[],
+  ): { inserted: number } {
+    try {
+      return insertSoulPersonStateEventRows(this.db, tenant, events);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person_state_events] insert failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { inserted: 0 };
+    }
+  }
+
+  listSoulPersonStateEvents(
+    tenant?: CoreTenant,
+    opts?: { personKey?: string; limit?: number },
+  ): SoulPersonStateEventRow[] {
+    try {
+      return listSoulPersonStateEventRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_person_state_events] list failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
   /**
    * P2-H（A4/A5）：一次事务内写关系边——新增 / 追加证据 / 失效。
    *
@@ -5019,9 +5567,12 @@ export class VectorStore implements IMemoryStore {
         if (Number(info.changes ?? 0) > 0) merged += 1;
       }
       for (const patch of close) {
+        // P2 §4.4：失效的三件事必须一起写——valid_to（时间）、status=ended（语义）、
+        // tense=past（「曾经」）。只写 valid_to 会让读面在 includeClosed 时把一条已经结束的
+        // 关系当 active；S13d 的验收要求就是「结束的关系有 valid_to 且不再进卡」。
         const info = this.db
           .prepare(
-            "UPDATE soul_person_relation SET valid_to = ?, updated_at = ? WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND valid_to IS NULL",
+            "UPDATE soul_person_relation SET valid_to = ?, status = 'ended', tense = 'past', updated_at = ? WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND valid_to IS NULL",
           )
           .run(patch.at, patch.at, patch.relId, t.teamId, t.userId, t.agentId);
         if (Number(info.changes ?? 0) > 0) closed += 1;
@@ -5039,6 +5590,504 @@ export class VectorStore implements IMemoryStore {
       return { inserted: 0, merged: 0, closed: 0 };
     }
     return { inserted, merged, closed };
+  }
+
+  /**
+   * 关系引文 → L0 唯一命中行（P2 §10.8 回指与 t13 补事件的同一份判定）。
+   * 精确匹配 message_text 唯一 → 命中；精确也多条 → ambiguous；否则唯一子串匹配 → 命中；
+   * 子串也多条 → ambiguous（不猜）。零命中返回 recordId=null、ambiguous=false。
+   */
+  private resolveRelationQuoteRecord(
+    t: CoreTenant,
+    quote: string,
+  ): { recordId: string | null; ambiguous: boolean } {
+    const q = typeof quote === "string" ? quote.trim() : "";
+    if (q === "") return { recordId: null, ambiguous: false };
+    const exact = this.db
+      .prepare(
+        "SELECT record_id FROM l0_conversations WHERE team_id=? AND user_id=? AND agent_id=? AND message_text = ?",
+      )
+      .all(t.teamId, t.userId, t.agentId, q) as Array<{ record_id: string }>;
+    if (exact.length === 1) return { recordId: exact[0].record_id, ambiguous: false };
+    if (exact.length > 1) return { recordId: null, ambiguous: true };
+    const sub = this.db
+      .prepare(
+        "SELECT record_id FROM l0_conversations WHERE team_id=? AND user_id=? AND agent_id=? AND instr(message_text, ?) > 0 LIMIT 2",
+      )
+      .all(t.teamId, t.userId, t.agentId, q) as Array<{ record_id: string }>;
+    if (sub.length === 1) return { recordId: sub[0].record_id, ambiguous: false };
+    return { recordId: null, ambiguous: sub.length > 1 };
+  }
+
+  /**
+   * P6 / t20：episode 的逐字引文 → L0 唯一命中行。
+   *
+   * 与关系线（resolveRelationQuoteRecord）共用最后一段「全租户精确 → 唯一子串」判定，
+   * 但多一层次序：episode 自己记了证据记录（quote.recordId / evidenceIds），先在这批记录里判。
+   *  - 候选行里精确命中恰好一条 → 用它；
+   *  - 精确命中多条但引文自带 recordId → 用 recordId 消歧（episode 当时就是从这条抽的，不是猜）；
+   *  - 候选行里逐字子串唯一 → 用它；多条 → 多命中（不猜）；
+   *  - 候选记录都没中（被删除/引文漂移）→ 回落到全租户唯一命中。
+   * 返回 candidates 供证据落库：只含真实存在的 L0 行，不写悬空 record_id。
+   */
+  private resolveEpisodeQuoteRecord(
+    t: CoreTenant,
+    text: string,
+    quoteRecordId: string | null,
+    evidenceIds: readonly string[],
+  ): {
+    recordId: string | null;
+    ambiguous: boolean;
+    candidates: Array<{ record_id: string; role: string; recorded_at: string | null }>;
+  } {
+    const q = typeof text === "string" ? text.trim() : "";
+    if (q === "") return { recordId: null, ambiguous: false, candidates: [] };
+    const ids: string[] = [];
+    for (const id of [quoteRecordId ?? "", ...(evidenceIds ?? [])]) {
+      if (typeof id !== "string" || id === "" || ids.includes(id)) continue;
+      ids.push(id);
+    }
+    const rows =
+      ids.length === 0
+        ? []
+        : (this.db
+            .prepare(
+              `SELECT record_id, role, recorded_at, message_text FROM l0_conversations
+                WHERE team_id=? AND user_id=? AND agent_id=? AND record_id IN (${ids.map(() => "?").join(",")})`,
+            )
+            .all(t.teamId, t.userId, t.agentId, ...ids) as Array<{
+            record_id: string;
+            role: string;
+            recorded_at: string | null;
+            message_text: string;
+          }>);
+    const candidates = rows.map((r) => ({
+      record_id: String(r.record_id),
+      role: String(r.role ?? ""),
+      recorded_at: typeof r.recorded_at === "string" ? r.recorded_at : null,
+      text: String(r.message_text ?? ""),
+    }));
+    const exact = candidates.filter((c) => c.text.trim() === q);
+    if (exact.length === 1) {
+      return { recordId: exact[0].record_id, ambiguous: false, candidates: candidates.map(stripEpisodeCandidate) };
+    }
+    if (exact.length > 1) {
+      const pinned = quoteRecordId ? exact.find((c) => c.record_id === quoteRecordId) : undefined;
+      if (pinned) {
+        return { recordId: pinned.record_id, ambiguous: false, candidates: candidates.map(stripEpisodeCandidate) };
+      }
+      return { recordId: null, ambiguous: true, candidates: candidates.map(stripEpisodeCandidate) };
+    }
+    const pinnedRow = quoteRecordId ? candidates.find((c) => c.record_id === quoteRecordId) : undefined;
+    if (pinnedRow && pinnedRow.text.includes(q)) {
+      return { recordId: pinnedRow.record_id, ambiguous: false, candidates: candidates.map(stripEpisodeCandidate) };
+    }
+    const sub = candidates.filter((c) => c.text.includes(q));
+    if (sub.length === 1) {
+      return { recordId: sub[0].record_id, ambiguous: false, candidates: candidates.map(stripEpisodeCandidate) };
+    }
+    if (sub.length > 1) {
+      return { recordId: null, ambiguous: true, candidates: candidates.map(stripEpisodeCandidate) };
+    }
+    const resolved = this.resolveRelationQuoteRecord(t, q);
+    return { ...resolved, candidates: candidates.map(stripEpisodeCandidate) };
+  }
+
+  /**
+   * P2（spec §10.8）：给 event_id 为 NULL 的关系边做**确定性**回指，唯一命中才写，不猜。
+   *
+   * 判定顺序（任一命中即停，两条路径都要收敛到「恰好 1 个事件」）：
+   *  ① record_id 当 L1 id：l1_records.source_message_ids → 每条 L0 原话 → soul_event_evidence → 事件；
+   *  ② 否则用 quote 在 L0 同租户里「精确匹配 message_text」→「唯一子串匹配」→ 同一条证据链。
+   * 恰好 1 个事件写 event_id（status 保持 active）；0 个或 >1 个写 status='unverifiable'
+   * （保留事实、不进卡）。已有 event_id 或已 unverifiable 的边不再扫（幂等）。
+   * 失败只 warn 返空账——回指是派生修复，不该阻断 tick。
+   */
+  backfillSoulPersonRelationEventIds(
+    tenant?: CoreTenant,
+    opts?: { now?: string },
+  ): SoulPersonRelationBackfillResult {
+    const t = normalizeCoreTenant(tenant);
+    const at = opts?.now ?? new Date().toISOString();
+    const empty: SoulPersonRelationBackfillResult = { scanned: 0, linked: 0, unverifiable: 0 };
+    const eventsForRecord = (recordId: string): Set<string> => {
+      const rows = this.db
+        .prepare(
+          `SELECT DISTINCT e.event_id AS id FROM soul_event_evidence e
+             JOIN soul_events ev ON ev.event_id = e.event_id
+            WHERE e.record_id = ? AND ev.team_id = ? AND ev.user_id = ? AND ev.agent_id = ?`,
+        )
+        .all(recordId, t.teamId, t.userId, t.agentId) as Array<{ id: string }>;
+      return new Set(rows.map((r) => r.id));
+    };
+    const resolveQuoteRecord = (quote: string): { recordId: string | null; ambiguous: boolean } =>
+      this.resolveRelationQuoteRecord(t, quote);
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT rel_id, quote, record_id FROM soul_person_relation
+            WHERE team_id=? AND user_id=? AND agent_id=? AND event_id IS NULL AND status='active'`,
+        )
+        .all(t.teamId, t.userId, t.agentId) as Array<{ rel_id: string; quote: string; record_id: string }>;
+      if (rows.length === 0) return empty;
+      const decisions: Array<{ relId: string; eventId: string | null }> = [];
+      for (const row of rows) {
+        const events = new Set<string>();
+        const l1 = this.db
+          .prepare(
+            "SELECT source_message_ids FROM l1_records WHERE record_id=? AND team_id=? AND user_id=? AND agent_id=?",
+          )
+          .get(row.record_id, t.teamId, t.userId, t.agentId) as { source_message_ids?: string } | undefined;
+        if (l1) {
+          for (const msgId of jsonArray<string>(l1.source_message_ids)) {
+            for (const id of eventsForRecord(msgId)) events.add(id);
+          }
+        }
+        if (events.size === 0) {
+          const record = resolveQuoteRecord(row.quote).recordId;
+          if (record) for (const id of eventsForRecord(record)) events.add(id);
+        }
+        decisions.push({ relId: row.rel_id, eventId: events.size === 1 ? [...events][0] : null });
+      }
+      const updLink = this.db.prepare(
+        `UPDATE soul_person_relation SET event_id=?, updated_at=?
+          WHERE rel_id=? AND team_id=? AND user_id=? AND agent_id=? AND event_id IS NULL AND status='active'`,
+      );
+      const updUnverifiable = this.db.prepare(
+        `UPDATE soul_person_relation SET status='unverifiable', updated_at=?
+          WHERE rel_id=? AND team_id=? AND user_id=? AND agent_id=? AND event_id IS NULL AND status='active'`,
+      );
+      let linked = 0;
+      let unverifiable = 0;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const d of decisions) {
+          if (d.eventId) {
+            const info = updLink.run(d.eventId, at, d.relId, t.teamId, t.userId, t.agentId);
+            if (Number(info.changes ?? 0) > 0) linked += 1;
+            continue;
+          }
+          try {
+            const info = updUnverifiable.run(at, d.relId, t.teamId, t.userId, t.agentId);
+            if (Number(info.changes ?? 0) > 0) unverifiable += 1;
+          } catch (err) {
+            // CHECK 还没扩容（迁移失败/旧库）：这一条保持 event_id=NULL——不猜、不进卡，下次 init 重试。
+            this.logger?.warn?.(
+              `${TAG} [soul-relation-backfill] 标记 unverifiable 被库约束拒绝（保持 NULL）: ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        this.db.exec("COMMIT");
+      } catch (err) {
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+          /* COMMIT 失败时引擎可能已自动回滚 */
+        }
+        throw err;
+      }
+      return { scanned: rows.length, linked, unverifiable };
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul-relation-backfill] 回指失败（本轮跳过，下 tick 重试）: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return empty;
+    }
+  }
+
+
+  /**
+   * P6 / t20：episode 的确定性补事件——让「引文在 L0 能回到原话、但当时没建事件」的 episode 重新可成章。
+   *
+   * 为什么不放宽章节准入：narrative 的证据必须回指真实 soul_events（narrative.ts:218-230）。
+   * 老库（90 天全量库）里 87 条 episode 一条事件都没有，章节因此恒为 0——规则本身对，
+   * 缺的是「当时没建事件」这件事的补偿。与关系线（provisionSoulRelationEvents）同构：
+   *  ① 只扫「还没有同 episode_id 事件」的 episode；
+   *  ② 用 episode 的逐字引文（quote.text，缺则 user_stance）回到 L0：
+   *     引文自带的 recordId / evidenceIds 里逐字命中优先，回不到再按全租户唯一命中；
+   *  ③ 命中唯一才建一条 chat 事件：event_id = episodeId（与双写同口径，天然幂等），
+   *     dedupe_key = soul-episode:<episodeId>，证据 = 命中记录 + 该 episode 现存证据记录；
+   *  ④ 零命中/多命中/没有可匹配原文/work 类一律不建，计入 skippedUnprovisionable 并留示例。
+   * 不调模型、不生成 L0 之外的内容、不改 narrative 的成章判据。
+   */
+  provisionSoulEpisodeEvents(
+    tenant?: CoreTenant,
+    opts?: { now?: string; limit?: number },
+  ): SoulEpisodeProvisionResult {
+    const t = normalizeCoreTenant(tenant);
+    const limit = Math.max(1, Math.min(500, Math.trunc(opts?.limit ?? EPISODE_PROVISION_MAX_PER_TICK)));
+    const empty: SoulEpisodeProvisionResult = {
+      scanned: 0,
+      created: 0,
+      ambiguous: 0,
+      notFound: 0,
+      noSource: 0,
+      skippedWork: 0,
+      skippedUnprovisionable: 0,
+      skippedExisting: 0,
+      failed: 0,
+      exampleEpisodeId: null,
+      exampleReason: null,
+      limitReached: false,
+    };
+    try {
+      // 判据只看「这条 episode 有没有自己的事件行」：双写、补写都用 event_id = episodeId。
+      const where =
+        "e.team_id = ? AND e.user_id = ? AND e.agent_id = ? AND NOT EXISTS (" +
+        "SELECT 1 FROM soul_events v WHERE v.event_id = e.episode_id " +
+        "AND v.team_id = e.team_id AND v.user_id = e.user_id AND v.agent_id = e.agent_id)";
+      const args: Array<string | number> = [t.teamId, t.userId, t.agentId];
+      const totalRow = this.db
+        .prepare("SELECT COUNT(*) AS n FROM soul_episodes e WHERE " + where)
+        .get(...args) as { n?: number } | undefined;
+      const scanned = Number(totalRow?.n ?? 0);
+      if (scanned === 0) return empty;
+      const rows = this.db
+        .prepare(
+          "SELECT e.* FROM soul_episodes e WHERE " + where + " ORDER BY e.at ASC, e.episode_id ASC LIMIT ?",
+        )
+        .all(...args, limit) as Array<Record<string, unknown>>;
+      let created = 0;
+      let ambiguous = 0;
+      let notFound = 0;
+      let noSource = 0;
+      let skippedWork = 0;
+      let skippedExisting = 0;
+      let failed = 0;
+      let exampleEpisodeId: string | null = null;
+      let exampleReason: SoulEpisodeProvisionResult["exampleReason"] = null;
+      const note = (id: string, reason: NonNullable<SoulEpisodeProvisionResult["exampleReason"]>): void => {
+        if (exampleEpisodeId === null) {
+          exampleEpisodeId = id;
+          exampleReason = reason;
+        }
+      };
+      for (const row of rows) {
+        const episode = mapSoulEpisodeRow(row);
+        const episodeId = episode.episodeId;
+        if (episodeId === "") continue;
+        // work 只给特质/自我史供料，不伪造「他说了什么」的 chat 事件。
+        if (episode.kind === "work") {
+          skippedWork += 1;
+          note(episodeId, "work");
+          continue;
+        }
+        const quoteText = (episode.quote?.text ?? "").trim() !== "" ? episode.quote?.text ?? "" : episode.userStance;
+        const text = typeof quoteText === "string" ? quoteText.trim() : "";
+        if (text === "") {
+          noSource += 1;
+          note(episodeId, "no_source");
+          continue;
+        }
+        const resolved = this.resolveEpisodeQuoteRecord(
+          t,
+          text,
+          episode.quote?.recordId ?? null,
+          episode.evidenceIds ?? [],
+        );
+        if (!resolved.recordId) {
+          if (resolved.ambiguous) {
+            ambiguous += 1;
+            note(episodeId, "ambiguous");
+          } else {
+            notFound += 1;
+            note(episodeId, "not_found");
+          }
+          continue;
+        }
+        const matched = resolved.candidates.find((c) => c.record_id === resolved.recordId);
+        const role = matched?.role === "assistant" ? "assistant" : matched?.role === "user" ? "user" : "";
+        // 不知道是谁说的话，就不假装知道（spec §4.2）：没有确定角色等于回不到这条引文。
+        if (role === "") {
+          notFound += 1;
+          note(episodeId, "not_found");
+          continue;
+        }
+        // 证据只收真实存在的 L0 行：candidates 已经过存在性过滤，不再回填证据串里的悬空 id。
+        const memberIds: string[] = [];
+        for (const candidate of [resolved.recordId, ...resolved.candidates.map((c) => c.record_id)]) {
+          if (typeof candidate === "string" && candidate !== "" && !memberIds.includes(candidate)) {
+            memberIds.push(candidate);
+          }
+        }
+        const dedupeKey = composeSoulEventDedupeKey(t, "soul-episode:" + episodeId);
+        if (findSoulEventIdByDedupeKey(this.db, t, dedupeKey)) {
+          skippedExisting += 1;
+          continue;
+        }
+        const writable: SoulEpisode = {
+          ...episode,
+          quote: { text, role, recordId: resolved.recordId, at: matched?.recorded_at ?? episode.at },
+          evidenceIds: memberIds,
+        };
+        try {
+          insertSoulEvent(this.db, t, soulEventWriteFromEpisode(writable));
+          created += 1;
+        } catch (err) {
+          failed += 1;
+          this.logger?.warn?.(
+            TAG + " [soul-episode-provision] 补事件失败（下 tick 重试）：" + episodeId + " → " +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }
+      }
+      return {
+        scanned,
+        created,
+        ambiguous,
+        notFound,
+        noSource,
+        skippedWork,
+        skippedUnprovisionable: ambiguous + notFound + noSource + skippedWork,
+        skippedExisting,
+        failed,
+        exampleEpisodeId,
+        exampleReason,
+        limitReached: scanned > rows.length,
+      };
+    } catch (err) {
+      this.logger?.warn?.(
+        TAG + " [soul-episode-provision] 本轮跳过（下 tick 重试）：" +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      return empty;
+    }
+  }
+
+  /**
+   * P2 §10.8 / t13：确定性补事件——让「引文在 L0 唯一命中、但当时没有对应事件」的关系重新可验证。
+   *
+   * 只做三件事，不调模型、不生成 L0 之外的内容：
+   *  ① 扫 event_id IS NULL 且 status=active 的关系边；
+   *  ② 用 quote 在同租户 L0 里找唯一命中行（精确优先、再唯一子串；多命中=不猜）；
+   *  ③ 唯一命中才建一条 chat 事件：source_ref/证据 record_id = 该 L0 行，证据 quote = 关系引文逐字，
+   *     role 取 L0 行的 role；dedupe_key = relation-backfill:<rel_id>（重复执行不产生第二行）。
+   * 零命中/多命中一律不建——由回指把它标 unverifiable，语义与 t2 一致。
+   * 该 L0 行已经有事件时不补：回指会按「唯一证据 → 恰好 1 个事件」直接链上，补第二条会把唯一变多命中。
+   * event_id = ev-rel-<rel_id>：由关系主键确定性派生，重复执行撞同一条（且 dedupe 先跳过）。
+   */
+  provisionSoulRelationEvents(
+    tenant?: CoreTenant,
+    opts?: { now?: string },
+  ): SoulPersonRelationProvisionResult {
+    const t = normalizeCoreTenant(tenant);
+    const now = opts?.now ?? new Date().toISOString();
+    const empty: SoulPersonRelationProvisionResult = { scanned: 0, created: 0, ambiguous: 0, skipped: 0 };
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT rel_id, subj_key, obj_key, pred, quote FROM soul_person_relation
+            WHERE team_id=? AND user_id=? AND agent_id=? AND event_id IS NULL AND status='active'`,
+        )
+        .all(t.teamId, t.userId, t.agentId) as Array<{
+        rel_id: string;
+        subj_key: string;
+        obj_key: string | null;
+        pred: string;
+        quote: string;
+      }>;
+      if (rows.length === 0) return empty;
+      let created = 0;
+      let ambiguous = 0;
+      let skipped = 0;
+      for (const row of rows) {
+        const resolved = this.resolveRelationQuoteRecord(t, row.quote);
+        if (!resolved.recordId) {
+          if (resolved.ambiguous) ambiguous += 1;
+          else skipped += 1;
+          continue;
+        }
+        // 该 L0 行已经有事件（本 tick 挖出来的 episode 事件，或更早的双写）时不再补：
+        // 回指会按「证据 → 恰好 1 个事件」直接链上；补第二条反而把本来唯一的边变成多命中。
+        const existing = this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM soul_event_evidence e
+               JOIN soul_events v ON v.event_id = e.event_id
+              WHERE e.record_id=? AND v.team_id=? AND v.user_id=? AND v.agent_id=?`,
+          )
+          .get(resolved.recordId, t.teamId, t.userId, t.agentId) as { n: number } | undefined;
+        if (Number(existing?.n ?? 0) > 0) {
+          skipped += 1;
+          continue;
+        }
+        const dedupeKey = composeSoulEventDedupeKey(t, `relation-backfill:${row.rel_id}`);
+        if (findSoulEventIdByDedupeKey(this.db, t, dedupeKey)) {
+          // 事件已建过（上次崩在「建事件」与「回指」之间）：不重复建，留给回指去链。
+          skipped += 1;
+          continue;
+        }
+        const l0 = this.db
+          .prepare(
+            "SELECT role, session_id, recorded_at FROM l0_conversations WHERE record_id=? AND team_id=? AND user_id=? AND agent_id=?",
+          )
+          .get(resolved.recordId, t.teamId, t.userId, t.agentId) as
+          | { role?: string; session_id?: string; recorded_at?: string }
+          | undefined;
+        const role: "user" | "assistant" = l0?.role === "assistant" ? "assistant" : "user";
+        const saidAt =
+          typeof l0?.recorded_at === "string" && l0.recorded_at.trim() !== "" ? l0.recorded_at : now;
+        const eventId = `ev-rel-${row.rel_id}`;
+        try {
+          insertSoulEvent(this.db, t, {
+            event: {
+              event_id: eventId,
+              at: saidAt,
+              day: saidAt.slice(0, 10),
+              valid_from: saidAt,
+              actor: role === "assistant" ? "self" : "user",
+              action: "said",
+              object: row.obj_key ?? "",
+              intent: row.pred,
+              outcome: "",
+              status: "unknown",
+              source_kind: "chat",
+              source_ref: resolved.recordId,
+              ownership: "theirs",
+              epistemic: "observed",
+              confidence: 0.8,
+              visibility: "shared",
+              session_id: l0?.session_id ?? "",
+              persons_json: row.subj_key ? JSON.stringify([row.subj_key]) : null,
+              dedupe_key: dedupeKey,
+              salience: 0.5,
+              created_at: now,
+            },
+            evidence: [
+              {
+                event_id: eventId,
+                record_id: resolved.recordId,
+                role,
+                quote: row.quote,
+                at: saidAt,
+                confidence: 1,
+              },
+            ],
+            chat: {
+              event_id: eventId,
+              kind: "relation",
+              title: row.pred,
+              quote_json: JSON.stringify({ text: row.quote, role, recordId: resolved.recordId, at: saidAt }),
+            },
+          });
+          created += 1;
+        } catch (err) {
+          skipped += 1;
+          this.logger?.warn?.(
+            `${TAG} [soul-relation-provision] 建事件失败（关系 ${row.rel_id} 保持 NULL，下 tick 重试）: ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      return { scanned: rows.length, created, ambiguous, skipped };
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul-relation-provision] 补事件失败（本轮跳过，下 tick 重试）: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return empty;
+    }
   }
 
   /**
@@ -5380,6 +6429,130 @@ export class VectorStore implements IMemoryStore {
         `${TAG} [soul_promise_events] read failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
+    }
+  }
+
+  /* —— P3 §4.5：目标层（soul_goals / goal_events / goal_deps）+ working 锚 ——
+   * 读写都在 soul-goal-store.ts 的纯函数里收口，本类只做实例委派（person-state 同款）。
+   * 读失败返回空/null（卡与面板不该因为目标层读失败整页消失）；写面不吞错
+   * （维护 tick 逐条 catch+warn——CHECK/主键问题必须看得见）。 */
+
+  getSoulGoal(tenant: CoreTenant | undefined, goalId: string): SoulGoalRow | null {
+    try {
+      return getSoulGoalRow(this.db, tenant, goalId);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_goals] get failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  listSoulGoals(
+    tenant?: CoreTenant,
+    opts?: { status?: SoulGoalStatus; kind?: SoulGoalRow["kind"]; owner?: SoulGoalRow["owner"]; dueBefore?: string; limit?: number },
+  ): SoulGoalRow[] {
+    try {
+      return listSoulGoalRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_goals] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  upsertSoulGoal(tenant: CoreTenant | undefined, insert: SoulGoalInsert): { row: SoulGoalRow; created: boolean } {
+    return upsertSoulGoalRow(this.db, tenant, insert);
+  }
+
+  transitionSoulGoal(
+    tenant: CoreTenant | undefined,
+    goalId: string,
+    to: SoulGoalStatus,
+    opts?: GoalTransitionOptions,
+  ): GoalTransitionResult {
+    return transitionSoulGoalRow(this.db, tenant, goalId, to, opts);
+  }
+
+  insertSoulGoalEvents(tenant: CoreTenant | undefined, events: SoulGoalEventInsert[]): { inserted: number } {
+    try {
+      return insertSoulGoalEventRows(this.db, tenant, events);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_goal_events] insert failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { inserted: 0 };
+    }
+  }
+
+  listSoulGoalEvents(
+    tenant?: CoreTenant,
+    opts?: { goalId?: string; limit?: number },
+  ): SoulGoalEventRow[] {
+    try {
+      return listSoulGoalEventRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(
+        `${TAG} [soul_goal_events] list failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
+  }
+
+  insertSoulGoalDep(tenant: CoreTenant | undefined, dep: SoulGoalDepInsert): { inserted: number } {
+    try {
+      return insertSoulGoalDepRow(this.db, tenant, dep);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_goal_deps] insert failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { inserted: 0 };
+    }
+  }
+
+  listSoulGoalDeps(tenant?: CoreTenant, opts?: { goalId?: string }): SoulGoalDepRow[] {
+    try {
+      return listSoulGoalDepRows(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_goal_deps] list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /** 承诺 ↔ 目标：把 soul_promises.goal_id 挂上（P0 迁移已加列）。幂等——已挂同一目标返回 updated:false。 */
+  setSoulPromiseGoal(tenant: CoreTenant | undefined, promiseId: string, goalId: string): { updated: boolean } {
+    const t = normalizeCoreTenant(tenant);
+    const pid = String(promiseId ?? "").trim();
+    const gid = String(goalId ?? "").trim();
+    if (pid === "" || gid === "") return { updated: false };
+    const info = this.db
+      .prepare(
+        "UPDATE soul_promises SET goal_id = ?, updated_at = ? WHERE promise_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND (goal_id IS NULL OR goal_id <> ?)",
+      )
+      .run(gid, new Date().toISOString(), pid, t.teamId, t.userId, t.agentId, gid);
+    return { updated: Number(info.changes ?? 0) > 0 };
+  }
+
+  upsertSoulWorkingState(
+    tenant: CoreTenant | undefined,
+    row: SoulWorkingStateUpsert,
+  ): SoulWorkingStateRow {
+    return upsertSoulWorkingStateRow(this.db, tenant, row);
+  }
+
+  getSoulWorkingState(
+    tenant?: CoreTenant,
+    opts?: { sessionId?: string; now?: string },
+  ): SoulWorkingStateRow | null {
+    try {
+      return getSoulWorkingStateRow(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_working_state] get failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  clearSoulWorkingState(tenant?: CoreTenant, opts?: { sessionId?: string }): { deleted: number } {
+    try {
+      return clearSoulWorkingStateRow(this.db, tenant, opts);
+    } catch (err) {
+      this.logger?.warn?.(`${TAG} [soul_working_state] clear failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { deleted: 0 };
     }
   }
 
@@ -10311,6 +11484,16 @@ function isSupersededItem(item: PersonaItem): boolean {
   );
 }
 
+/** P6 / t20：resolver 的候选行去掉 message_text——证据落库只认 record_id / role / at。 */
+function stripEpisodeCandidate(c: {
+  record_id: string;
+  role: string;
+  recorded_at: string | null;
+  text: string;
+}): { record_id: string; role: string; recorded_at: string | null } {
+  return { record_id: c.record_id, role: c.role, recorded_at: c.recorded_at };
+}
+
 function mapSoulEpisodeRow(row: Record<string, unknown>): SoulEpisode {
   const quote = jsonObject(row.quote_json) as SoulEpisodeQuote | undefined;
   const kind = String(row.kind ?? "decision") as SoulEpisode["kind"];
@@ -10534,6 +11717,19 @@ function mapSoulPersonRelationRow(row: Record<string, unknown>): SoulPersonRelat
     evidence: evidence.length > 0 ? evidence : [{ recordId, at: validFrom, quote }],
     validFrom,
     validTo: typeof row.valid_to === "string" && row.valid_to !== "" ? row.valid_to : null,
+    // P2 §4.4 新列：旧行读到的是 ALTER 的默认值（NULL/'active'/'present'/0.5/'shared'），
+    // 这里逐列兜底，不把 undefined 泄给卡/面板。
+    eventId: typeof row.event_id === "string" && row.event_id !== "" ? row.event_id : null,
+    // 四态：unverifiable（回指零命中/不唯一）必须原样读回——否则卡读面会把它当 active 渲染出来。
+    status:
+      row.status === "ended" || row.status === "disputed" || row.status === "unverifiable"
+        ? row.status
+        : "active",
+    tense: row.tense === "past" ? "past" : "present",
+    confidence: Number(row.confidence ?? 0.5),
+    visibility: typeof row.visibility === "string" && row.visibility !== "" ? row.visibility : "shared",
+    endedByEventId:
+      typeof row.ended_by_event_id === "string" && row.ended_by_event_id !== "" ? row.ended_by_event_id : null,
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };

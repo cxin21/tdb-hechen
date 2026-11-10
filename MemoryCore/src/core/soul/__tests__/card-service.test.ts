@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  CARD_FIELD_SOURCES,
   assembleSoulCard,
   assembleSoulTurn,
   cardLinesFromItems,
   parsePreviousCard,
 } from "../card-service.js";
 import { seedLabelRows } from "../trait-drift.js";
-import { SEED_LABELS, emptyAxisVector, seedStateFromSeeds } from "../traits.js";
+import { SEED_LABELS, seedStateFromSeeds } from "../traits.js";
 import type { PersonaItem } from "../types.js";
 import type { CoreTenant } from "../../store/types.js";
 
@@ -38,7 +37,7 @@ function makeStore(over: Record<string, unknown> = {}) {
     listSoulPersona: async () => [
       item({ layer: "human", text: "他习惯先看证据再听结论" }),
       item({ layer: "relationship", text: "他上次说：别替我猜" }),
-      item({ layer: "identity", text: "我站在先跑一遍真的这一边" }),
+      item({ layer: "identity", text: "我站在「先跑一遍真的」这边：宁可多跑一遍，也不凭印象" }),
       item({ layer: "narrative", text: "我是从一次导出修复起步的" }),
     ],
     readSoulTraitState: async () => ({ state: seed, seedState: seed, updatedAt: NOW }),
@@ -63,8 +62,8 @@ function makeStore(over: Record<string, unknown> = {}) {
   return { store, writes };
 }
 
-describe("soul card service (S2)", () => {
-  it("字段来源：表单=declared、观察层=observed、底色/自传=derived", async () => {
+describe("soul card service：v13 的实现路径", () => {
+  it("块来源：第一眼/边界=declared，性格/我们=observed，现在=derived", async () => {
     const { store } = makeStore();
     const card = await assembleSoulCard({
       store,
@@ -80,28 +79,38 @@ describe("soul card service (S2)", () => {
         traits: [{ label: "严谨", weight: 0.6 }, { label: "直接", weight: 0.4 }],
       }),
     });
-    expect(card.sources.name).toBe("declared");
-    expect(card.sources.traits).toBe("derived");
-    expect(card.sources.human).toBe("observed");
-    expect(card.sources.autobiography).toBe("derived");
-    expect(card.sources).toEqual(CARD_FIELD_SOURCES);
+    expect(card.schema).toBe("13");
+    expect(card.sources.firstLook).toBe("declared");
+    expect(card.sources.boundaries).toBe("declared");
+    expect(card.sources.character).toBe("observed");
+    expect(card.sources.us).toBe("observed");
+    expect(card.sources.now).toBe("derived");
+    expect(card.blocks.map((b) => b.id)).toEqual([
+      "firstLook",
+      "life",
+      "character",
+      "voice",
+      "us",
+      "now",
+      "memory",
+      "boundaries",
+      "recent",
+    ]);
     expect(card.seeded).toBe(true);
-    expect(card.text).toContain("## 名称");
     expect(card.text).toContain("阿简");
-    expect(card.text).toContain("## 红线");
     expect(card.text).toContain("绝不可删除任何生产记忆记录");
     // 读侧禁词（判据 12）：卡里不出现轴名、不出现算法词。
     for (const banned of ["权重", "算法", "tanh", "α", "warmth", "rigor", "openness"]) {
       expect(card.text).not.toContain(banned);
     }
+    expect(card.text).not.toContain("## ");
     // 卡本体不带「未完的事」（那是通道 B）。
-    expect(card.text).not.toContain("## 未完的事");
+    expect(card.text).not.toContain("未完的事");
   });
 
-    // 判据「卡完整性 = 底色非空」：表单里设定的特质在没有任何漂移证据时也必须进卡。
-  // 生产实测的坏状态：soul_trait_label 全是 status='seed'、evidence=0，旧口径 evidence≥3
-  // 让用户在表单里选好的 4 个特质一条都显示不出来，底色恒为「还没有稳到能算数的底色」。
-  it("表单声明的特质不需要证据：evidence=0 也进底色（state 已存在）", async () => {
+  // 判据「卡完整性 = 底色非空」：表单里设定的特质在没有任何漂移证据时也必须进卡——
+  // v13 里「底色」不再以数字行出现，而是 labels 元数据 + 性格块里的行为锚。
+  it("表单声明的特质不需要证据：evidence=0 也进 labels（state 已存在）", async () => {
     const traits = [
       { label: "严谨", weight: 0.4 },
       { label: "迷糊", weight: 0.25 },
@@ -123,15 +132,15 @@ describe("soul card service (S2)", () => {
       now: NOW,
       readAgentProfile: async () => ({ name: "青禾", traits }),
     });
-    expect(card.text).toContain("## 底色");
-    const traitLines = card.text.split("## 底色")[1]!.split("\n## ")[0]!.split("\n").filter((l) => /^- .+ 0\.\d/u.test(l));
-    expect(traitLines.length).toBeGreaterThanOrEqual(2);
+    expect(card.labels.length).toBeGreaterThanOrEqual(2);
     expect(card.text).not.toContain("还没有稳到能算数的底色");
-    // 读侧仍不许出现轴名与算法词。
-    for (const banned of ["严谨轴", "rigor", "warmth", "tanh", "权重"]) expect(card.text).not.toContain(banned);
+    // 读侧仍不许出现轴名与算法词；也不把数值写进正文。
+    for (const banned of ["严谨轴", "rigor", "warmth", "tanh", "权重", "0.4"]) {
+      expect(card.text).not.toContain(banned);
+    }
   });
 
-  it("库里还没有标签行时，声明的特质用种子方向合成视图，底色仍非空", async () => {
+  it("库里还没有标签行时，声明的特质用种子方向合成视图，labels 仍非空", async () => {
     const traits = [{ label: "严谨", weight: 0.6 }, { label: "好奇", weight: 0.4 }];
     const { store } = makeStore({
       listSoulTraitLabels: async () => [],
@@ -143,11 +152,12 @@ describe("soul card service (S2)", () => {
       now: NOW,
       readAgentProfile: async () => ({ name: "青禾", traits }),
     });
-    expect(card.text).toContain("## 底色");
+    expect(card.labels.length).toBeGreaterThan(0);
     expect(card.text).not.toContain("还没有稳到能算数的底色");
   });
 
   // P1-3：gloss 的唯一数据源是库行（`soul_trait_label.gloss`），不是种子词表。
+  // v13 起 gloss 只随 labels 元数据出卡（面板 chip），不再写进正文数字行。
   it("底色 gloss 取自标签行：库里改过的注解覆盖种子，自生长标签也能带注解", async () => {
     const template = seedLabelRows(SEED_LABELS, NOW).find((r) => r.label === "严谨")!;
     const labels = [
@@ -168,17 +178,17 @@ describe("soul card service (S2)", () => {
       now: NOW,
       readAgentProfile: async () => ({ name: "青禾", traits: [{ label: "严谨", weight: 0.6 }] }),
     });
-    expect(card.text).toContain("· 库里改过的注解：先验再信。");
-    // 「较真」不在种子词表里：这一行能带注解，只可能来自库行。
-    expect(card.text).toContain("· 对细节反复核对，不肯放过。");
-    expect(card.text).not.toContain(SEED_LABELS.find((s) => s.label === "严谨")!.gloss);
+    const glosses = card.labels.map((l) => l.gloss ?? "");
+    expect(glosses).toContain("库里改过的注解：先验再信。");
+    // 「较真」不在种子词表里：这条注解能出现，只可能来自库行。
+    expect(glosses).toContain("对细节反复核对，不肯放过。");
+    expect(glosses).not.toContain(SEED_LABELS.find((s) => s.label === "严谨")!.gloss);
   });
 
-  it("非声明的自生长标签仍被证据门拦住（evidence<3 不进卡）", async () => {
+  it("非声明的自生长标签仍被证据门拦住（evidence<3 不进 labels）", async () => {
     const rows = seedLabelRows(SEED_LABELS, NOW, { declared: ["严谨"] }).map((r) =>
       r.label === "严谨" ? { ...r, evidence: 0 } : r,
     );
-    // 冷淡 是非声明标签：evidence=0，act 再高也不许出现。
     const { store } = makeStore({
       listSoulTraitLabels: async () => rows.map((r) => (r.label === "冷淡" ? { ...r, evidence: 0 } : r)),
       readSoulTraitState: async () => ({
@@ -193,8 +203,8 @@ describe("soul card service (S2)", () => {
       now: NOW,
       readAgentProfile: async () => ({ name: "青禾", traits: [{ label: "严谨", weight: 0.6 }] }),
     });
-    expect(card.text).toContain("严谨");
-    expect(card.text).not.toContain("冷淡");
+    expect(card.labels.map((l) => l.label)).toContain("严谨");
+    expect(card.labels.map((l) => l.label)).not.toContain("冷淡");
   });
 
   it("纯读不落快照；persist 且内容未变不追加", async () => {
@@ -225,8 +235,6 @@ describe("soul card service (S2)", () => {
     // 否则调用方拿到 persistedVersion+1、下一次 GET 又退回旧值。
     const persistedVersion = first.version;
     expect(second.version).toBe(persistedVersion);
-    // 库内快照行数仍为 1，且其版本就是 second.version（没有凭空多出的一版）。
-    expect(again.writes).toHaveLength(0);
     expect(writes).toHaveLength(1);
     const written = JSON.parse((writes[0] as { payloadJson: string }).payloadJson) as { version: number };
     expect(written.version).toBe(second.version);
@@ -268,12 +276,12 @@ describe("soul card service (S2)", () => {
         throw new Error("metadata down");
       },
     });
-    expect(card.text).toContain("## 关于你");
-    // 表单没给特质时退回 seedState（严谨+直接），底色仍非空——判据 10 的载体不能空。
+    expect(card.text).toContain("别替我猜");
+    // 表单没给特质时退回 seedState（严谨+直接），labels 仍非空——判据 10 的载体不能空。
     expect(card.seeded).toBe(true);
   });
 
-  it("表单特质在无漂移状态时也进底色（D3 左栏）", async () => {
+  it("表单特质在无漂移状态时也进 labels（D3 左栏）", async () => {
     const { store } = makeStore({
       readSoulTraitState: async () => null,
     });

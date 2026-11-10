@@ -229,7 +229,7 @@ export type SoulEventReflectionInsert = InsertOf<
 // ─────────────────────────────── §4.4 关系 ───────────────────────────────
 
 /** 关系事实状态：active / ended（有效期结束）/ disputed（有反证）。 */
-export const SOUL_RELATION_STATUSES = ["active", "ended", "disputed"] as const;
+export const SOUL_RELATION_STATUSES = ["active", "ended", "disputed", "unverifiable"] as const;
 export type SoulRelationStatus = (typeof SOUL_RELATION_STATUSES)[number];
 
 /** 关系事实时态：present=现在还成立，past=曾经。 */
@@ -299,10 +299,12 @@ export interface SoulPersonStateEventRow {
   at: string;
 }
 
-export type SoulPersonStateEventInsert = InsertOf<
+// 租户三列不在写入入参里：state_events 的 team/user/agent 只从调用参数来（与 soul-event-store
+// 的「租户只从参数来」同一约定），载荷里带这三列会被忽略而不是悄悄写成第二个租户。
+export type SoulPersonStateEventInsert = Omit<
   SoulPersonStateEventRow,
-  "event_id" | "old_value" | "new_value" | "reason"
->;
+  "team_id" | "user_id" | "agent_id"
+> & Partial<Pick<SoulPersonStateEventRow, "event_id" | "old_value" | "new_value" | "reason">>;
 
 // ─────────────────────────────── §4.5 目标 ───────────────────────────────
 
@@ -555,11 +557,28 @@ export interface SoulNarrativeRow {
   supersedes_id: string | null;
   status: SoulNarrativeStatus;
   created_at: string;
+  /** 写侧按证据算出的底分（0..1）；注入门 0.35，衰减在读侧按 period_end 算。 */
+  salience: number;
+  /** 被注入取用过的次数（唯一的强化信号）。 */
+  access_count: number;
+  last_accessed_at: string | null;
+  updated_at: string | null;
 }
 
 export type SoulNarrativeInsert = InsertOf<
   SoulNarrativeRow,
-  "team_id" | "user_id" | "agent_id" | "turning_points_json" | "lessons_json" | "version" | "supersedes_id" | "status"
+  | "team_id"
+  | "user_id"
+  | "agent_id"
+  | "turning_points_json"
+  | "lessons_json"
+  | "version"
+  | "supersedes_id"
+  | "status"
+  | "salience"
+  | "access_count"
+  | "last_accessed_at"
+  | "updated_at"
 >;
 
 /** 表 soul_narrative_evidence：章节的证据关系。 */

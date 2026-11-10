@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { runSoulMaintenance, trustMetaFromEpisodes } from "../worker.js";
 import { resolveSoulConfig, type PersonaItem, type SoulEpisode } from "../types.js";
-import { renderPersonaCard } from "../card.js";
+import { renderPersonaCardV13 } from "../card-v13.js";
 import type { IMemoryStore } from "../../store/types.js";
 
 const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
@@ -85,14 +85,15 @@ describe("S7 human 层与关系对象化", () => {
     const rejected = rep.rejections.filter((r) => r.layer === "human");
     expect(rejected.length).toBeGreaterThan(0);
     expect(rejected.every((r) => r.codes.includes("human_writer_removed"))).toBe(true);
-    // 卡侧不受影响：human 段由提炼器写入的行填充，这里给空数组时该段消失而不报错。
-    const card = renderPersonaCard({
+    // 卡侧不受影响：human 行由提炼器写入，这里给空数组时「我们」整块省略而不报错。
+    const card = renderPersonaCardV13({
       profile: { name: "小纪" },
       labels: [],
-      human: [],
+      lines: { human: [], relationship: [] },
       version: 1,
     });
-    expect(card.text).not.toContain("## 关于你");
+    expect(card.text).not.toContain("关于你");
+    expect(card.blocks.find((b) => b.id === "us")?.source).toBe("absent");
   });
 
   it("关系层按人 ≤3 行：已有 3 行时第 4 条被拒且写出理由", async () => {
