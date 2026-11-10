@@ -183,6 +183,18 @@ export interface NarrativeDerivation {
 }
 
 /**
+ * 租户前缀：sha1(team|user|agent) 前 8 位。
+ *
+ * chapter_id 是 soul_narrative 的全局主键（soul-event-ddl.ts:390），不区分租户；同一周
+ * 四个租户都算「narr-<period>-v1」时，第二个及之后的 INSERT OR IGNORE 一行都不写，
+ * 章与证据被静默丢掉。前缀只解决唯一性，不改变「同租户同周期一条 active」的索引口径。
+ */
+export function narrativeTenantTag(tenant: CoreTenant): string {
+  const raw = String(tenant.teamId ?? "") + "|" + String(tenant.userId ?? "") + "|" + String(tenant.agentId ?? "");
+  return createHash("sha1").update(raw).digest("hex").slice(0, 8);
+}
+
+/**
  * 事件 → 章节计划（纯函数，不碰库）。
  *
  * previous 只需传同期的 active 行：同 hash 计 reasserted，不同 hash 升版本并取代它。
@@ -193,6 +205,11 @@ export function deriveNarrativeChapters(args: {
   eventIds: ReadonlySet<string>;
   previous?: SoulNarrativeRow[];
   now?: string;
+  /**
+   * 租户前缀（见 narrativeTenantTag）——chapter_id 在库里是**全局主键**，不带租户就会被
+   * 后一个租户的 INSERT OR IGNORE 静默吞掉（生产实测：四个租户同一周只有一章落库）。
+   */
+  tenantTag?: string;
 }): NarrativeDerivation {
   const now = args.now ?? new Date().toISOString();
   const nowMs = Date.parse(now);
@@ -219,6 +236,7 @@ export function deriveNarrativeChapters(args: {
   out.periods = periods.length;
 
   const previous = args.previous ?? [];
+  const tag = args.tenantTag ? String(args.tenantTag) + "-" : "";
   for (const period of periods) {
     // 同一 episode 被重复挖出来（refresh）只算一条证据：证据是「这件事」，不是「这条记录」。
     const seen = new Set<string>();
@@ -258,7 +276,7 @@ export function deriveNarrativeChapters(args: {
     const version = prevActive.length > 0 ? Math.max(...prevActive.map((row) => row.version)) + 1 : 1;
     const plan: NarrativeChapterPlan = {
       chapter: {
-        chapter_id: "narr-" + periodKey + "-v" + version,
+        chapter_id: "narr-" + tag + periodKey + "-v" + version,
         period_start: period.start,
         period_end: period.end,
         title,
@@ -272,7 +290,7 @@ export function deriveNarrativeChapters(args: {
         created_at: now,
         salience: chapterSalience(picked, hasTurning),
       },
-      evidence: picked.map((ep) => ({ chapter_id: "narr-" + periodKey + "-v" + version, event_id: ep.episodeId })),
+      evidence: picked.map((ep) => ({ chapter_id: "narr-" + tag + periodKey + "-v" + version, event_id: ep.episodeId })),
       supersedesIds: prevActive.map((row) => row.chapter_id),
     };
     out.chapters.push(plan);
@@ -422,12 +440,14 @@ export async function runNarrativeMaintenance(args: {
   const windowStart = narrativeWindowStart(now);
   const eventIds = await collectEventIds(store, tenant, windowStart);
   const previous = (await Promise.resolve(listChapters.call(store, tenant, { status: "active", limit: 50 }))) ?? [];
-  const derived = deriveNarrativeChapters({ episodes, eventIds, previous, now });
+  const tenantTag = narrativeTenantTag(tenant);
+  const derived = deriveNarrativeChapters({ episodes, eventIds, previous, now, tenantTag });
   result.periods = derived.periods;
   result.reasserted = derived.reasserted;
   result.skippedNoEvidence = derived.skippedNoEvidence;
   result.skippedUnclosed = derived.skippedUnclosed;
 
+  let planIgnored = 0;
   for (const plan of derived.chapters) {
     try {
       const written = await Promise.resolve(
@@ -442,9 +462,15 @@ export async function runNarrativeMaintenance(args: {
         result.evidence += plan.evidence.length;
       }
       result.superseded += Number(written?.superseded ?? 0);
+      if (written && !written.inserted) planIgnored += 1;
     } catch (err) {
       warn(String(plan.chapter.chapter_id) + " 写入失败：" + (err instanceof Error ? err.message : String(err)));
     }
+  }
+  // 全被「已存在」吞掉、且没有一章是重放（reasserted=0）→ 大概率是 chapter_id 跨租户撞主键。
+  // 这条 warn 是那类静默丢章的唯一线索：inserted=false 本身分不清「重放」和「被忽略」。
+  if (derived.chapters.length > 0 && result.created === 0 && result.superseded === 0 && planIgnored > 0 && result.reasserted === 0) {
+    warn("本轮 " + planIgnored + " 章全部未写入（inserted=false 且非重放），检查 chapter_id 是否跨租户冲突");
   }
   return result;
 }

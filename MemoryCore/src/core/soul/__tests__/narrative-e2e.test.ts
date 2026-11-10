@@ -73,8 +73,8 @@ function ep(partial: Partial<SoulEpisode> & { episodeId: string; at: string }): 
   };
 }
 
-function tick(store: VectorStore) {
-  return runSoulMaintenanceTick({ store, filter: TENANT, config: resolveSoulConfig({}) });
+function tick(store: VectorStore, tenant: { teamId: string; userId: string; agentId: string } = TENANT) {
+  return runSoulMaintenanceTick({ store, filter: tenant, config: resolveSoulConfig({}) });
 }
 describe("P6 端到端：叙事章节落到真实 tick", () => {
   it("自传有章节且证据回指事件；低显著旧章不注入但可查；同周期只留一条 active", async () => {
@@ -172,5 +172,36 @@ describe("P6 端到端：叙事章节落到真实 tick", () => {
     expect(rows(db, "soul_narrative_evidence")).toHaveLength(evidenceRowsBefore);
     expect(summary3.narrative?.created).toBe(0);
     expect(summary3.narrative?.reasserted ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  it("同一周的两个租户各成一章：chapter_id 带租户前缀，不被全局主键吞掉", async () => {
+    // chapter_id 是 soul_narrative 的全局主键。不带租户前缀时，第一个租户写成功后
+    // 其余租户的 INSERT OR IGNORE 一行都不写——生产实测四种租户同一周只落一章。
+    const store = makeStore();
+    const db = dbOf(store);
+    const week = weekAgo(1);
+    const other = { teamId: TENANT.teamId, userId: TENANT.userId, agentId: "a2" };
+
+    store.commitSoulEpisodes(TENANT, [
+      ep({ episodeId: "ep-a1", at: week.at(1), kind: "correction", title: "甲租户的错位", intensity: 0.8 }),
+    ]);
+    store.commitSoulEpisodes(other, [
+      ep({ episodeId: "ep-a2", at: week.at(3), kind: "decision", title: "乙租户的拍板", intensity: 0.7 }),
+    ]);
+
+    const s1 = await tick(store);
+    const s2 = await tick(store, other);
+    expect(s1.narrative?.created).toBe(1);
+    expect(s2.narrative?.created).toBe(1);
+
+    const mine = store.listSoulNarrativeChapters!(TENANT, { status: "active" });
+    const theirs = store.listSoulNarrativeChapters!(other, { status: "active" });
+    expect(mine).toHaveLength(1);
+    expect(theirs).toHaveLength(1);
+    expect(String(mine[0].chapter_id)).toMatch(/^narr-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}-v1$/);
+    expect(mine[0].chapter_id).not.toBe(theirs[0].chapter_id);
+    expect(rows(db, "soul_narrative")).toHaveLength(2);
+    expect(store.listSoulNarrativeEvidence!(TENANT, mine[0].chapter_id).map((e) => String(e.event_id))).toEqual(["ep-a1"]);
+    expect(store.listSoulNarrativeEvidence!(other, theirs[0].chapter_id).map((e) => String(e.event_id))).toEqual(["ep-a2"]);
   });
 });

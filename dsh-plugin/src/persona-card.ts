@@ -192,7 +192,7 @@ export interface PersonaCardDeps {
    * task-13：卡进了前缀之后回报 Core（POST /v3/soul/injection 的 card 段）。
    * 只发 version/hash/chars，不发卡正文；fire-and-forget，抛错也吞掉。
    */
-  reportInjection?: (payload: { card: { version: number; hash: string; chars: number } }) => void;
+  reportInjection?: (payload: { card: { version: number; hash: string; chars: number }; sessionId?: string }) => void;
   /**
    * 端到端证据日志（injection-log.ts）。由 section getter 在**宿主真正取文本时**
    * 触发，因此 hash 等于 Core 的 textHash 即证明这段卡文本进了该会话的提示词。
@@ -365,7 +365,7 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
    * hash（= GET /v3/soul/card 的 textHash），便于对回 Core 的快照；两段各自的
    * hash 走 section-read 行（sha256(段文本)），不在这里报。
    */
-  const reportCard = (card: PersonaCardSnapshot, identityText: string, anchorText: string): void => {
+  const reportCard = (card: PersonaCardSnapshot, identityText: string, anchorText: string, sessionId?: string): void => {
     try {
       deps.reportInjection?.({
         card: {
@@ -373,6 +373,9 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
           hash: card.textHash,
           chars: identityText.length + anchorText.length,
         },
+        // 会话键一起带出去：Core 的 /v3/soul/injection 是从请求头取身份三元组的，
+        // 少了 sessionId 就退到挂载三元组（桌面端常常是空），整条回报被 422 吞掉。
+        ...(sessionId === undefined ? {} : { sessionId }),
       });
     } catch {
       deps.log?.debug?.('agemem: card injection report threw; ignored (fail-open)');
@@ -476,7 +479,7 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
       hash: card.textHash,
       chars: injectedChars,
     });
-    reportCard(card, segments.identityText, segments.anchorText);
+    reportCard(card, segments.identityText, segments.anchorText, sessionId);
     // persons 只在这张卡真的按人过滤过时回传；不过滤时整个字段不出现（老形状不变）。
     return persons === undefined ? { ok: true } : { ok: true, persons };
   };

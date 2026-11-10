@@ -387,6 +387,8 @@ export const SOUL_MOOD_EVENTS_TENANT_AT_INDEX_DDL =
  * hash 供「同一批重跑不产生新版本」的幂等判定。
  */
 export const SOUL_NARRATIVE_TABLE_DDL = `CREATE TABLE IF NOT EXISTS soul_narrative (
+  -- chapter_id 是全局主键（不是 per-tenant）：写侧必须带租户前缀（narrativeTenantTag），
+  -- 否则同一周第二个租户的 INSERT OR IGNORE 会静默丢章，证据跟着一起丢。
   chapter_id TEXT PRIMARY KEY,
   team_id TEXT NOT NULL DEFAULT 'default',
   user_id TEXT NOT NULL DEFAULT 'default',

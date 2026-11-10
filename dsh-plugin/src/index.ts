@@ -966,7 +966,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     // task-13：卡真进了前缀才回报（只带 version/hash/chars）。不 await——
     // 回报是观测面，不能拖慢会话初始化，也不能因失败影响注入。
     reportInjection: (payload) => {
-      void client.reportSoulInjection({ ...payload, phase: 'card' });
+      // sessionId 必须一起交给 client：Core 的 /v3/soul/injection 只从 x-tdai-* 头取
+      // 身份，缺 sessionId 时会退到挂载三元组（桌面端为空），整条记账被 422 静默吞掉。
+      void client.reportSoulInjection({ ...payload, phase: 'card' }, payload.sessionId);
     },
     injectionLog,
     // task-32：section getter 靠它把卡落到**当前**会话上（宿主拼提示词时
@@ -1336,7 +1338,8 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         // task-13：把本 step 真实 append 的字符数回报给 Core（跳过 = chars 0）。
         // fire-and-forget：catch 在 memory-client 内侧吞掉，这里不 await，不拖慢 pre-step。
         reportInjection: (payload) => {
-          void client.reportSoulInjection({ ...payload, phase: 'volatile' });
+          // volatile 的 sessionKey 就是会话键（agentKey(agent)），拿它解析身份三元组。
+          void client.reportSoulInjection({ ...payload, phase: 'volatile' }, payload.sessionKey);
         },
         injectionLog,
         // Second line of defence (task-117): the picker listener is registered

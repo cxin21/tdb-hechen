@@ -1403,6 +1403,9 @@ describe('plugin entry', () => {
         expect(body.card).toEqual({ version: CARD.version, hash: sha256(CARD.text), chars: CARD.text.length });
         expect(body.card.hash).toMatch(/^[0-9a-f]{64}$/);
         expect(JSON.stringify(body)).not.toContain('何晨');
+        // 回归：回报必须带**本会话**绑定的身份三元组。缺 sessionId 时会退回挂载三元组
+        // （桌面端常为空），Core 直接 422 且错误被 fail-open 吞掉，注入记账静默丢失。
+        expect(cardCalls[0].headers['x-tdai-agent-id']).toBeDefined();
       });
       expect(cardText(fake)).toBe(CARD.text);
 

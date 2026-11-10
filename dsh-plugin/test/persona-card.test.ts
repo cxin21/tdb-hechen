@@ -444,17 +444,19 @@ describe('人格卡 · 两段注入（P1-2）', () => {
     expect(fake.sections).toHaveLength(0);
   });
 
-  it('⑥ 回报 chars = 两段实际注入量之和，hash 仍是整卡 hash', async () => {
-    const reports: Array<{ version: number; hash: string; chars: number } | undefined> = [];
+  it('⑥ 回报 chars = 两段实际注入量之和，hash 仍是整卡 hash，且带上会话键', async () => {
+    const reports: Array<{ card: { version: number; hash: string; chars: number }; sessionId?: string }> = [];
     const handle = createPersonaCard({
       enabled: true,
       fetchCard: async () => segmented('身份段', '锚段'),
       fetchTurn: async () => ({ text: '', openLoops: [] }),
       timeoutMs: 50,
-      reportInjection: (payload) => { reports.push(payload.card); },
+      reportInjection: (payload) => { reports.push(payload); },
     });
     await handle.bind('a1', 'team/user/agentA');
-    expect(reports).toEqual([{ version: 1, hash: 'x'.repeat(64), chars: 3 + 2 }]);
+    // 会话键必须一起报：Core 的 /v3/soul/injection 只从请求头取身份三元组，
+    // 少了它就会退回挂载三元组（桌面端为空），整条记账被 422 静默吞掉。
+    expect(reports).toEqual([{ card: { version: 1, hash: 'x'.repeat(64), chars: 3 + 2 }, sessionId: 'a1' }]);
   });
 });
 /**
