@@ -1,4 +1,5 @@
 import { agentKey, turnId } from './ids.js';
+import { recordInjection, type InjectionLog } from './injection-log.js';
 import type { RecallHit } from './memory-client.js';
 import { clampBlockByLines, VOLATILE_HEADER } from './recall-source.js';
 import type { AgememContext, HostMessage, LoggerLike, PreStepDecision } from './types.js';
@@ -53,12 +54,30 @@ export interface VolatileTurnContext {
   sessionId: string;
 }
 
+/** 注入量回报载荷（task-13）：只带字符数与哈希，绝不含块正文。 */
+export interface VolatileInjectionReport {
+  sessionKey: string;
+  turn: number | null;
+  volatile: { chars: number; hash: string; skipped: boolean };
+}
+
 export interface VolatileDeps {
   enabled: boolean;
   /** 缺省 DEFAULT_VOLATILE_MAX_CHARS（1200）；显式传入仍生效（index.ts 传 config 值）。 */
   maxChars?: number;
   timeoutMs: number;
   getBlock: (turnText: string, context: VolatileTurnContext) => Promise<string | undefined>;
+  /**
+   * task-13：把「本轮实际注入了多少」回报给 Core（POST /v3/soul/injection）。
+   * 契约是 fire-and-forget——本模块不 await，抛错也吞掉（观测面不得影响注入）。
+   */
+  reportInjection?: (payload: VolatileInjectionReport) => void;
+  /**
+   * 端到端证据日志（persona-injection.jsonl）：与 reportInjection 并行，但写本地文件。
+   * 区别在于「证明谁读到了什么」：reportInjection 只证明插件上报了，本地日志证明
+   * 这一轮到底 append 了多少字符、跳过时是 0。fail-open，本模块不关心它是否写成功。
+   */
+  injectionLog?: InjectionLog;
   /**
    * Bind the session's identity before the block is fetched (task-117). The
    * install order already puts the picker first, so in practice this is a map
@@ -139,6 +158,18 @@ function textTurnKey(text: string): string {
   return 'text-' + hash.toString(16);
 }
 
+/** 注入量回报用的短哈希（FNV-1a 32bit → 8 位十六进制）。
+ *  与 textTurnKey 同算法但**必须补齐 8 位**：那是会话内的去重键（改宽度会漂移旧 id），
+ *  这里只是日志指纹，宽度固定便于 Core 对账。 */
+export function fnv1aHex(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
 function alreadyInjected(messages: HostMessage[] | undefined, turn: unknown): boolean {
   if (!Array.isArray(messages)) return false;
   const id = volatileMessageId(turn);
@@ -208,6 +239,19 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
     }
   };
 
+  /**
+   * 回报「本轮注入量」（task-13）。跳过的轮次也要报（chars=0, skipped=true）：
+   * 旧日志把「跳过了」记成整块字符数，Core 侧对账时等于每轮都注入。
+   * 上报是纯观测面：不 await、抛错只降 debug，绝不影响 append。
+   */
+  const report = (payload: VolatileInjectionReport): void => {
+    try {
+      deps.reportInjection?.(payload);
+    } catch {
+      deps.log?.debug?.('agemem: injection report threw; ignored (fail-open)');
+    }
+  };
+
   return ctx.on(
     'agent/pre-step',
     async (payload: { agent?: unknown; turn?: unknown; step?: unknown; signal?: unknown; messages?: HostMessage[] }, next: () => Promise<PreStepDecision>) => {
@@ -245,6 +289,7 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
         // Line-aware clamp: never cut a memory entry in the middle of its text.
         const clamped = clampBlockByLines(text, maxChars);
         if (clamped === '') return decision;
+        const blockHash = fnv1aHex(clamped);
 
         if (turnNumber === undefined) {
           deps.log?.debug?.('agemem: turn number missing; using a pseudo key for the volatile dedupe', {
@@ -254,6 +299,21 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
         }
         if (turnNumber !== undefined && seenRecently(scope, turnNumber, clamped)) {
           remember(key);
+          // 这一轮没有 append：chars 必须是 0。旧日志在此仍记 clamped.length，
+          // 于是「跳过」在 Core 侧看起来和注入一模一样（task-13 修的就是这条）。
+          report({
+            sessionKey: scope,
+            turn: turnNumber ?? null,
+            volatile: { chars: 0, hash: blockHash, skipped: true },
+          });
+          // Local evidence: 0 on purpose — a skip must never look like an injection.
+          recordInjection(deps.injectionLog, {
+            event: 'turn-skip',
+            sessionId: scope,
+            turn: turnNumber ?? null,
+            hash: blockHash,
+            chars: 0,
+          });
           deps.log?.debug?.('agemem: volatile block identical within recent turns; skipping injection', {
             turn: turnNumber,
             chars: clamped.length,
@@ -271,6 +331,19 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
         };
         remember(key);
         if (turnNumber !== undefined) recordBlock(scope, turnNumber, clamped);
+        // 真 append：上报的就是这次 append 的字节数（clamped，不是 raw text）。
+        report({
+          sessionKey: scope,
+          turn: turnNumber ?? null,
+          volatile: { chars: clamped.length, hash: blockHash, skipped: false },
+        });
+        recordInjection(deps.injectionLog, {
+          event: 'turn-append',
+          sessionId: scope,
+          turn: turnNumber ?? null,
+          hash: blockHash,
+          chars: clamped.length,
+        });
         return { ...decision, messages: [...messages, message] };
       } catch (error) {
         deps.log?.warn?.('agemem: volatile block skipped', error);

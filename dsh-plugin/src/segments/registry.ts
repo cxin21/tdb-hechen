@@ -294,7 +294,7 @@ export async function runHeadPackSegments(
 /**
  * Render the extra volatile segments (registered by capability modules) and
  * join them. `capChars` is what is left of the volatile budget after the core
- * block (soul + memories), so a new segment can never push those out.
+ * block (memories), so a new segment can never push those out.
  */
 export async function runVolatileSegments(
   deps: SegmentDeps,

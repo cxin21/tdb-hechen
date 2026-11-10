@@ -10,7 +10,13 @@ import {
 import { createFakeContext, runPreStep } from './helpers/fake-ctx.js';
 import { userMessage } from './helpers/messages.js';
 
-function setup(overrides?: { getBlock?: (text: string, context?: any) => Promise<string | undefined>; maxChars?: number; timeoutMs?: number }) {
+function setup(overrides?: {
+  getBlock?: (text: string, context?: any) => Promise<string | undefined>;
+  maxChars?: number;
+  timeoutMs?: number;
+  reportInjection?: (payload: any) => void;
+  injectionLog?: { path: string; record: (event: any) => void; failed: () => boolean };
+}) {
   const fake = createFakeContext();
   const getBlock = overrides?.getBlock ?? vi.fn(async () => 'BLOCK');
   installVolatile(fake.ctx, {
@@ -18,6 +24,8 @@ function setup(overrides?: { getBlock?: (text: string, context?: any) => Promise
     maxChars: overrides?.maxChars,
     timeoutMs: overrides?.timeoutMs ?? 50,
     getBlock,
+    ...(overrides?.reportInjection === undefined ? {} : { reportInjection: overrides.reportInjection }),
+    ...(overrides?.injectionLog === undefined ? {} : { injectionLog: overrides.injectionLog }),
     log: fake.ctx.logger,
   });
   const listener = fake.firstListener('agent/pre-step');
@@ -249,5 +257,123 @@ describe('volatile block', () => {
     const fake = createFakeContext();
     installVolatile(fake.ctx, { enabled: false, maxChars: 10, timeoutMs: 10, getBlock: async () => 'x' });
     expect(fake.listenerCount('agent/pre-step')).toBe(0);
+  });
+});
+
+/**
+ * task-13：把「实际注入量」回报给 Core（POST /v3/soul/injection 的 volatile 段）。
+ * 这三件事以前是日志里的谎言：跳过的一轮仍按整块字符数记账、上报载荷没有契约、
+ * 上报失败会不会拖垮注入没人验过。
+ */
+describe('volatile injection reporting (task-13)', () => {
+  it('append 分支上报真实字节数：chars === clamped.length 且 skipped:false', async () => {
+    const reports: any[] = [];
+    const { listener } = setup({ maxChars: 1200, reportInjection: (payload) => reports.push(payload) });
+    const decision = await preStep(listener, 3, [userMessage('how do I deploy?')]);
+
+    expect(decision.messages).toHaveLength(2);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      sessionKey: 's1',
+      turn: 3,
+      volatile: { chars: 'BLOCK'.length, skipped: false },
+    });
+    // hash 是注入块的指纹（8 位十六进制），不是正文。
+    expect(reports[0].volatile.hash).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('连续两轮同文本：第二轮上报 skipped:true、chars:0，hash 与首轮一致', async () => {
+    const reports: any[] = [];
+    const { listener } = setup({ maxChars: 1200, reportInjection: (payload) => reports.push(payload) });
+    await preStep(listener, 1, [userMessage('q1')]);
+    const second = await preStep(listener, 2, [userMessage('q2')]);
+
+    // 第二轮被近 3 轮同文本抑制：没有 append，但必须如实报「跳过」。
+    expect(second.messages).toHaveLength(1);
+    expect(reports).toHaveLength(2);
+    expect(reports[1]).toMatchObject({ turn: 2, volatile: { chars: 0, skipped: true } });
+    expect(reports[1].volatile.hash).toBe(reports[0].volatile.hash);
+  });
+
+  it('上报载荷只有 sessionKey/turn/volatile，且不含任何正文', async () => {
+    const reports: any[] = [];
+    const { listener } = setup({ maxChars: 1200, reportInjection: (payload) => reports.push(payload) });
+    await preStep(listener, 3, [userMessage('secret-question')]);
+
+    const payload = reports[0];
+    expect(Object.keys(payload).sort()).toEqual(['sessionKey', 'turn', 'volatile']);
+    expect(Object.keys(payload.volatile).sort()).toEqual(['chars', 'hash', 'skipped']);
+    // 正文（块文本、用户问题）绝不上送。
+    expect(JSON.stringify(payload)).not.toContain('BLOCK');
+    expect(JSON.stringify(payload)).not.toContain('secret-question');
+    expect(payload.volatile).not.toHaveProperty('text');
+    expect(payload.volatile).not.toHaveProperty('content');
+  });
+
+  it('上报抛错时 pre-step 仍返回已追加的消息（fail-open）', async () => {
+    const { listener } = setup({
+      maxChars: 1200,
+      reportInjection: () => {
+        throw new Error('report endpoint exploded');
+      },
+    });
+    const decision = await preStep(listener, 3, [userMessage('hi')]);
+    expect(decision.messages).toHaveLength(2);
+    expect(decision.messages[1]).toMatchObject({ id: volatileMessageId(3), source: { kind: VOLATILE_SOURCE_KIND } });
+  });
+
+  it('空块（没注入）不上报：没注入就是没注入', async () => {
+    const reports: any[] = [];
+    const { listener } = setup({ maxChars: 1200, getBlock: async () => '', reportInjection: (payload) => reports.push(payload) });
+    const decision = await preStep(listener, 3, [userMessage('hi')]);
+    expect(decision.messages).toHaveLength(1);
+    expect(reports).toHaveLength(0);
+  });
+});
+
+describe('volatile 本地证据日志（injection-log）', () => {
+  it('append 记 turn-append 且 chars 等于实际追加长度', async () => {
+    const events: any[] = [];
+    const { listener } = setup({
+      maxChars: 1200,
+      injectionLog: { path: 'mem.jsonl', record: (e) => events.push(e), failed: () => false },
+    });
+    const decision = await preStep(listener, 5, [userMessage('deploy?')]);
+
+    expect(decision.messages).toHaveLength(2);
+    expect(events).toHaveLength(1);
+    const appended = (decision.messages[1]!.content as Array<{ text: string }>)[0]!.text;
+    expect(events[0]).toMatchObject({ event: 'turn-append', sessionId: 's1', turn: 5, chars: appended.length });
+    expect(events[0].hash).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('去重跳过记 turn-skip 且 chars=0（跳过不能看起来像注入）', async () => {
+    const events: any[] = [];
+    const { listener } = setup({
+      maxChars: 1200,
+      injectionLog: { path: 'mem.jsonl', record: (e) => events.push(e), failed: () => false },
+    });
+    await preStep(listener, 1, [userMessage('q1')]);
+    const second = await preStep(listener, 2, [userMessage('q2')]);
+
+    expect(second.messages).toHaveLength(1);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ event: 'turn-skip', turn: 2, chars: 0 });
+    expect(events[1].hash).toBe(events[0].hash);
+  });
+
+  it('日志抛错不影响注入（fail-open）', async () => {
+    const { listener } = setup({
+      maxChars: 1200,
+      injectionLog: {
+        path: 'mem.jsonl',
+        record: () => {
+          throw new Error('disk full');
+        },
+        failed: () => false,
+      },
+    });
+    const decision = await preStep(listener, 3, [userMessage('hi')]);
+    expect(decision.messages).toHaveLength(2);
   });
 });

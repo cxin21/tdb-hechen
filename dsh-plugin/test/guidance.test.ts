@@ -153,7 +153,10 @@ describe('guidance: 注入位置（system prompt section，不是 volatile user 
     expect(guidance?.interpolate).toBe(false);
     expect(guidance?.text).toBe(GUIDANCE_TEXT);
     // 渲染顺序由 order 决定（host 排序），与注册顺序无关；head pack 仍是最后注册的段。
-    expect(fake.sections.map((section) => section.order).sort()).toEqual([10300, 10301]);
+    // S2：人格卡段也注册进同一前缀（order = head pack + 2），所以这里有第三段；
+    // P1-2：人格卡拆成两段两个 section —— 身份段固定 order 1（紧跟 harness:identity 与 persona-prefix）、末尾锚
+    // 仍是 head pack + 2，故一共四段。断言按 order 排序，仍与注册顺序无关。
+    expect(fake.sections.map((section) => section.order).sort((a, b) => a - b)).toEqual([1, 10300, 10301, 10302]);
     expect(fake.sections[fake.sections.length - 1]?.name).toBe('tdb-agemem:head-pack');
   });
 

@@ -137,34 +137,10 @@ export interface HeadPackConfig {
   l2Chars: number;
 }
 
-/** The distilled persona fragments (/v3/recall `<soul-*>` tags). */
-export interface VolatileSoulConfig {
-  /** Inject the soul fragments ahead of the memory entries. */
-  enabled: boolean;
-  /** Ceiling for the rendered soul block (tags included), clamped to [100, 5000]. */
-  maxChars: number;
-  /** Keep `<soul-feeling>` (the mood line) alongside `<soul-identity>`. */
-  includeFeeling: boolean;
-  /**
-   * Inject the WHOLE soul on the first block of a session and then leave it
-   * alone (the block is append-only, so the earlier copy stays in history).
-   *
-   * Why: the identity is 3384 chars with the `## 不可逾越（红线）` section in the
-   * MIDDLE. Slicing it to a per-turn budget cut at 536 chars, i.e. before the
-   * red line ever started — the persona's hard rules never reached the prompt.
-   * Full injection per turn would append ~3.5K chars every turn, so the soul
-   * goes in once per session (and again when the core's soulVersion changes),
-   * while the per-turn memory slice stays at its historical size.
-   */
-  oncePerSession: boolean;
-}
-
 export interface VolatileConfig {
   enabled: boolean;
-  /** Per-turn ceiling for the injected block (chars), soul included. */
+  /** Per-turn ceiling for the injected block (chars). */
   maxChars: number;
-  /** Soul (persona) part of that ceiling. */
-  soul: VolatileSoulConfig;
   /** Wall-clock budget for the whole block fetch (fallback legs included). */
   timeoutMs: number;
   /** Use /v3/recall first; false forces the atomic/search path. */
@@ -360,52 +336,6 @@ export interface SkillConfig {
   timeoutMs: number;
 }
 
-/**
- * 服务栈生命周期（Wave 4）：插件自己拉起/看护 core、knowledge、panel。
- *
- * 为什么进插件：原先由独立 bundle `tdb-lifecycle` 起一个 PowerShell 看护进程，
- * 三层进程、两份服务表。删 proxy 那次就是教训——磁盘上的表改成三服务，正在跑
- * 的看护进程内存里还是四服务，于是它继续把刚删掉的 proxy 拉回来。
- *
- * 缺省 **关**：打开等于换掉「谁拉起服务栈」，属于部署决策，不该由一次插件
- * 升级替用户决定。关着时本插件不 spawn 进程、不读 env 文件、不开控制端口。
- */
-export interface ServicesConfig {
-  enabled: boolean;
-  /**
-   * 只托管哪些服务（逗号分隔，空=三个都托管）：
-   * `tdai-core,tdai-knowledge,tdai-panel` 中取子集。
-   * 用途是混合部署——core 在本机、knowledge 在另一台机器时，把 knowledge 去掉。
-   * 注意：`server.baseUrl` 不是回环时，enabled 打开也不会 spawn 任何进程
-   * （跨机时本地栈拿不到流量，只会白占端口），见 services/scope.ts。
-   */
-  include: string;
-  /** 仓库根：三服务包 = <repoRoot>/MemoryCore|MemoryKnowledge|MemoryPanel。 */
-  repoRoot: string;
-  /** KEY=VALUE 的服务环境变量文件（含密钥）；空=只用宿主环境。 */
-  envFile: string;
-  /**
-   * 跑服务的 node；空=先找 PATH 上的 `node`/`node.exe`，PATH 上没有才回落到
-   * `process.execPath` + `ELECTRON_RUN_AS_NODE=1`（宿主是 Electron，直接用它的
-   * 二进制会再开一个 GUI，不是跑服务）。
-   */
-  nodePath: string;
-  /** logtee 预载模块 URL；空=不预载。 */
-  logteeModule: string;
-  logDir: string;
-  runDir: string;
-  /** 所有权状态文件；空=runDir/tdb-services.state.json。 */
-  statePath: string;
-  /** 回环控制面端口；0=不起。 */
-  controlPort: number;
-  /** 单服务健康门预算。 */
-  healthTimeoutMs: number;
-  /** 看护期的重启预算（本进程生命周期内累计）。 */
-  maxRestarts: number;
-  autoRestart: boolean;
-  /** 宿主收尾时停掉自己拉起的服务（非自己拉起的绝不碰）。 */
-  stopOnDispose: boolean;
-}
 
 export interface AgememConfig {
   enabled: boolean;
@@ -416,7 +346,6 @@ export interface AgememConfig {
   writeback: WritebackConfig;
   tools: ToolsConfig;
   identity: IdentityConfig;
-  services: ServicesConfig;
   skill: SkillConfig;
   assetReflection: AssetReflectionConfig;
   debug: boolean;
@@ -484,32 +413,9 @@ export const DEFAULT_CONFIG: AgememConfig = {
   },
   volatile: {
     enabled: true,
-    // 6000 chars per turn = 4400 soul + ~900 memory + ~700 segments. Measured
-    // recall payloads: 1 entry = 450 chars, 2 entries = 1214 chars; entries are
-    // clipped to 360 chars before budgeting.
-    //
-    // Why the soul slice jumped from 600 to 4400 (2026-11-01): the core renders
-    // a 3384-char identity — `## 此刻的我` / `## 不可逾越（红线）` /
-    // `## 当下的状态` — and the old 600-char slice cut it at 536 chars,
-    // mid-sentence and BEFORE the red line, so the persona's hard rules never
-    // entered the prompt (verified against the real injection events in the
-    // session archive). The red line is also what `clipSoulIdentity` now keeps
-    // first when a budget forces a cut.
+    // 6000 chars per turn = ~900 memory + ~700 segments, with headroom for a
+    // long memory turn; entries are clipped to 360 chars before budgeting.
     maxChars: 6000,
-    soul: {
-      enabled: true,
-      // 4400 = the measured identity once ALL red-line rules render (8 rules ->
-      // 3384 chars; the core cap went 8 -> 16, so 16 rules -> ~4200) + tag
-      // overhead + the mood line.
-      // Slicing it smaller is what silently dropped the red line. 100 floor /
-      // 5000 ceiling.
-      maxChars: 4400,
-      includeFeeling: true,
-      // Full soul once per session, not every turn: the volatile block is
-      // append-only (`user/message` history), so the first copy stays visible
-      // while later turns keep paying only for memories.
-      oncePerSession: true,
-    },
     // Deliberately below the core's cold-start cost: the volatile block rides in
     // pre-step, so losing one turn's injection beats stalling the step.
     timeoutMs: 3000,
@@ -581,35 +487,6 @@ export const DEFAULT_CONFIG: AgememConfig = {
     askForTask: true,
     statePath: '',
   },
-  services: {
-    // Off by default: this decides WHO spawns the stack, which is a deployment
-    // decision. A fresh install must never start three node processes because a
-    // plugin was upgraded.
-    enabled: false,
-    // Empty = all three. Narrow it for a mixed deployment (core here, wiki box
-    // elsewhere). A remote server.baseUrl turns the whole thing off anyway.
-    include: '',
-    repoRoot: 'D:/TDB/td-agemem',
-    // One file, KEY=VALUE, so the plugin and the manual PowerShell path read the
-    // same secrets (etc/env.ps1 loads this file; see its header).
-    envFile: 'D:/TDB/etc/services.env',
-    // Empty = the host's own node. The services run through `--import tsx`, so
-    // the executable only has to be a Node that tsx supports.
-    nodePath: '',
-    // Application-level log mirror: cmd/redirect alone dropped writes on long
-    // detached runs (see tdb-services.common.ps1 history).
-    logteeModule: 'file:///D:/TDB/etc/logtee.mjs',
-    logDir: 'D:/TDB/data/logs',
-    runDir: 'D:/TDB/data/run',
-    // Empty = runDir/tdb-services.state.json. Deliberately NOT the retired
-    // supervisor's file name: that process may still be alive and mid-rewrite.
-    statePath: '',
-    controlPort: 8444,
-    healthTimeoutMs: 90000,
-    maxRestarts: 3,
-    autoRestart: true,
-    stopOnDispose: true,
-  },
   skill: {
     enabled: true,
     // Destructive (create/patch/delete on shared team skills): opt-in.
@@ -659,11 +536,6 @@ function pickBool(value: unknown, fallback: boolean): boolean {
  * instead of showing up as an error.
  */
 const TIME_FLOOR_MS = 100;
-/** Soul slot bounds: below 100 the tag overhead alone eats it; 5000 is above
- * the full 16-rule identity (+tags/feeling, ~4300), so the default 4400
- * can carry the WHOLE persona including its red-line section. */
-const SOUL_MIN_CHARS = 100;
-const SOUL_MAX_CHARS = 6000;
 /** Total volatile block bounds: below 200 no tag pair plus one entry fits, and
  * 20000 already exceeds any sane per-turn prompt budget. */
 const VOLATILE_MIN_CHARS = 200;
@@ -718,14 +590,12 @@ function cloneDefaults(): AgememConfig {
     headPack: { ...DEFAULT_CONFIG.headPack },
     volatile: {
       ...DEFAULT_CONFIG.volatile,
-      soul: { ...DEFAULT_CONFIG.volatile.soul },
       wiki: { ...DEFAULT_CONFIG.volatile.wiki },
       knowledge: { ...DEFAULT_CONFIG.volatile.knowledge },
     },
     writeback: { ...DEFAULT_CONFIG.writeback },
     tools: { ...DEFAULT_CONFIG.tools },
     identity: { ...DEFAULT_CONFIG.identity },
-    services: { ...DEFAULT_CONFIG.services },
     skill: { ...DEFAULT_CONFIG.skill },
     assetReflection: { ...DEFAULT_CONFIG.assetReflection },
   };
@@ -785,23 +655,14 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
   headPack.l2Chars = Math.floor(pickNumber(headPack.l2Chars, DEFAULT_CONFIG.headPack.l2Chars, 0, 3000));
   volatile.timeoutMs = Math.max(TIME_FLOOR_MS, Math.floor(volatile.timeoutMs));
   volatile.recallTimeoutMs = Math.max(TIME_FLOOR_MS, Math.floor(volatile.recallTimeoutMs));
-  // The total cap carries the soul slot, the memory slice and the capability
-  // segments, so it needs a floor above the soul default and a ceiling that a
-  // typo cannot turn into a whole-prompt flood.
+  // The total cap carries the memory slice and the capability segments, so it
+  // needs a floor above the memory ceiling and a ceiling that a typo cannot
+  // turn into a whole-prompt flood.
   volatile.maxChars = Math.floor(pickNumber(
     volatile.maxChars,
     DEFAULT_CONFIG.volatile.maxChars,
     VOLATILE_MIN_CHARS,
     VOLATILE_MAX_CHARS,
-  ));
-  // The soul slot is a SLICE of volatile.maxChars, not an addition: clamping it
-  // to [100, 5000] keeps a typo (0 or 100000) from erasing the memories or the
-  // whole turn budget.
-  volatile.soul.maxChars = Math.floor(pickNumber(
-    volatile.soul.maxChars,
-    DEFAULT_CONFIG.volatile.soul.maxChars,
-    SOUL_MIN_CHARS,
-    SOUL_MAX_CHARS,
   ));
   // Wiki/knowledge segment ceilings: clamped so a typo cannot starve the memory
   // block (both share `volatile.maxChars` through the remainder).
@@ -838,39 +699,6 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     300000,
   ));
   identity.statePath = typeof identity.statePath === 'string' ? identity.statePath.trim() : '';
-  const services = mergeSection(DEFAULT_CONFIG.services, raw.services, warnings, 'services.');
-  for (const key of ['include', 'repoRoot', 'envFile', 'nodePath', 'logteeModule', 'logDir', 'runDir', 'statePath'] as const) {
-    services[key] = typeof services[key] === 'string' ? services[key].trim() : '';
-  }
-  // 0 disables the control port; everything else is a real port. A negative or
-  // fractional value is a typo, and silently clamping it to 0 would look like a
-  // deliberate "no control plane".
-  services.controlPort = Math.floor(pickNumber(
-    services.controlPort,
-    DEFAULT_CONFIG.services.controlPort,
-    0,
-    65535,
-  ));
-  // 5s is below every cold-start measurement on this machine (core needs ~25s
-  // with a cold embedding cache); 10 minutes is the ceiling where a broken
-  // service would look like a hung host.
-  services.healthTimeoutMs = Math.floor(pickNumber(
-    services.healthTimeoutMs,
-    DEFAULT_CONFIG.services.healthTimeoutMs,
-    5000,
-    600000,
-  ));
-  services.maxRestarts = Math.floor(pickNumber(
-    services.maxRestarts,
-    DEFAULT_CONFIG.services.maxRestarts,
-    0,
-    50,
-  ));
-  // An enabled supervisor with a blank repo root would spawn nothing and report
-  // "up": refuse the combination loudly instead of pretending.
-  if (services.enabled && services.repoRoot === '') {
-    warnings.push('services.enabled is on but services.repoRoot is empty; the service stack will not start');
-  }
   const skill = mergeSection(DEFAULT_CONFIG.skill, raw.skill, warnings, 'skill.');
   skill.headPackChars = Math.floor(pickNumber(skill.headPackChars, DEFAULT_CONFIG.skill.headPackChars, 0, 64000));
   skill.searchTopK = Math.floor(pickNumber(skill.searchTopK, DEFAULT_CONFIG.skill.searchTopK, 1, 50));
@@ -914,7 +742,6 @@ export function normalizeConfig(raw: unknown, env: Record<string, string | undef
     writeback,
     tools: mergeSection(DEFAULT_CONFIG.tools, raw.tools, warnings, 'tools.'),
     identity,
-    services,
     skill,
     assetReflection,
     // Explicit config wins; otherwise AGEMEM_DEBUG decides.

@@ -446,80 +446,66 @@ window.__ModuleLoader__.load({
 	const servicesZh = {
 		"servicesNav": "TDB 服务",
 		"servicesTitle": "TDB 服务栈",
-		"servicesDesc": "三个 TDB 服务（记忆核心、知识库、管理面板）由本插件随 DSH 启动与看护：健康检查通过才算起来，子服务挂了自己重拉。",
-		"servicesNoStack": "本机不托管服务栈",
-		"servicesReasonRemote": "记忆核心在另一台机器上（{host}），本地再起三个服务只会白占端口——请在那台机器上用 systemd / Windows 服务 / 启动脚本自行拉起。",
-		"servicesReasonOff": "本机托管已关闭（services.enabled=false）。要由本插件拉起 core / knowledge / panel，请在插件配置里打开。",
-		"servicesReasonNone": "services.include 里没有本插件认识的服务名；空值代表三个全都托管。",
-		"servicesCoreHost": "记忆核心地址",
-		"servicesSupervisor": "看护状态",
+		"servicesDesc": "由 dsh-tdb-lifecycle 看护：启停、健康检查与自动重启都在那个 bundle 里，本插件只把页面请求转发到它的控制面。",
+		"servicesRefresh": "刷新",
 		"servicesRunning": "运行中",
-		"servicesStopped": "已停止",
-		"servicesAdopted": "（由另一个 DSH 窗口看护）",
+		"servicesStopped": "未运行",
 		"servicesAutoRestart": "自动重启",
-		"servicesBudget": "重启预算",
+		"servicesBudget": "累计重启",
+		"servicesBudgetPer": "每服务上限",
 		"servicesStartedAt": "启动于",
 		"servicesService": "服务",
 		"servicesPort": "端口",
 		"servicesStatus": "状态",
 		"servicesPid": "PID",
+		"servicesOrigin": "来源",
+		"servicesOriginOwned": "自身",
+		"servicesOriginAdopted": "接管",
 		"servicesActions": "操作",
 		"servicesHealthy": "运行",
 		"servicesDown": "停止",
-		"servicesNotOwned": "非本插件拉起",
 		"servicesStartAll": "启动全部",
 		"servicesStopAll": "停止全部",
 		"servicesRestart": "重启",
 		"servicesBusy": "处理中…",
-		"servicesLoadFailed": "控制服务不可达（插件未启用、刚启动，或端口被占用）",
+		"servicesEmpty": "看护进程在跑，但没有托管中的服务。",
+		"servicesUnreachable": "控制面不可达：dsh-tdb-lifecycle 未运行，或 127.0.0.1:8446 不通。",
 		"servicesConfirmStop": "停止会同时关闭三个 TDB 服务。确定停止？",
-		"servicesNoteRestarting": "已请求重启，自动重启会在数秒内拉起该服务。",
+		"servicesNoteRestarting": "已请求重启，看护进程会在数秒内拉起该服务。",
 		"servicesNoteStarted": "已请求启动，健康检查最长需要 90 秒。",
-		"servicesNoteStopped": "已请求停止。",
-		"servicesErrAlreadyRunning": "服务栈已在运行",
-		"servicesErrNotRunning": "看护未运行",
-		"servicesErrAutoRestartDisabled": "自动重启已关闭，无法单服务重启",
-		"servicesErrNotOwned": "该服务不是本插件拉起的",
-		"servicesErrWatchdogPending": "服务已停止，自动重启会拉起它"
+		"servicesNoteStopped": "已请求停止。"
 };
 	const servicesEn = {
 		"servicesNav": "TDB services",
 		"servicesTitle": "TDB service stack",
-		"servicesDesc": "The three TDB services (memory core, knowledge, panel) start and are watched by this plugin: a service counts as up only once /health passes, and a crashed child is respawned.",
-		"servicesNoStack": "This host does not run the stack",
-		"servicesReasonRemote": "The memory core lives on another machine ({host}); a local stack would only hold three ports hostage. Start it there (systemd / Windows service / a plain script).",
-		"servicesReasonOff": "Local hosting is switched off (services.enabled=false). Turn it on in the plugin config to have this plugin start core / knowledge / panel.",
-		"servicesReasonNone": "services.include names no service this plugin knows; empty means all three.",
-		"servicesCoreHost": "Memory core address",
-		"servicesSupervisor": "Supervisor",
+		"servicesDesc": "Watched by dsh-tdb-lifecycle: starting, health checks and auto-restart all live in that bundle; this plugin only forwards the page's requests to its control plane.",
+		"servicesRefresh": "Refresh",
 		"servicesRunning": "Running",
-		"servicesStopped": "Stopped",
-		"servicesAdopted": "(supervised by another DSH window)",
+		"servicesStopped": "Not running",
 		"servicesAutoRestart": "Auto-restart",
-		"servicesBudget": "Restart budget",
+		"servicesBudget": "Restarts so far",
+		"servicesBudgetPer": "per-service cap",
 		"servicesStartedAt": "Started at",
 		"servicesService": "Service",
 		"servicesPort": "Port",
 		"servicesStatus": "Status",
 		"servicesPid": "PID",
+		"servicesOrigin": "Origin",
+		"servicesOriginOwned": "Owned",
+		"servicesOriginAdopted": "Adopted",
 		"servicesActions": "Actions",
 		"servicesHealthy": "Up",
 		"servicesDown": "Down",
-		"servicesNotOwned": "Not started by this plugin",
 		"servicesStartAll": "Start all",
 		"servicesStopAll": "Stop all",
 		"servicesRestart": "Restart",
 		"servicesBusy": "Working…",
-		"servicesLoadFailed": "Control service unreachable (plugin off, still starting, or the port is taken)",
+		"servicesEmpty": "The control plane is up but manages no services.",
+		"servicesUnreachable": "Control plane unreachable: dsh-tdb-lifecycle is not running, or 127.0.0.1:8446 does not answer.",
 		"servicesConfirmStop": "Stopping also shuts down the three TDB services. Stop now?",
-		"servicesNoteRestarting": "Restart requested; auto-restart brings the service back within seconds.",
+		"servicesNoteRestarting": "Restart requested; the lifecycle bundle brings the service back within seconds.",
 		"servicesNoteStarted": "Start requested; health checks can take up to 90 seconds.",
-		"servicesNoteStopped": "Stop requested.",
-		"servicesErrAlreadyRunning": "The stack is already running",
-		"servicesErrNotRunning": "Supervisor is not running",
-		"servicesErrAutoRestartDisabled": "Auto-restart is off; cannot restart a single service",
-		"servicesErrNotOwned": "That service is not owned by this plugin",
-		"servicesErrWatchdogPending": "Service already down; auto-restart will bring it back"
+		"servicesNoteStopped": "Stop requested."
 };
 
 		/** The form frame's copy, read from this page's dictionary. */
@@ -701,87 +687,61 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The service stack page. Same-origin first: the host web server serves
-		 * /tdb-lifecycle/*, so no CORS and no loopback assumption. A 404/405 means the
-		 * host has no route registration, and the loopback control server takes over.
+		 * The TDB service stack page (task-26). It renders the answer of
+		 * `dsh-tdb-lifecycle`'s control plane verbatim: this plugin neither starts
+		 * nor watches a service any more. Everything comes from one /status payload,
+		 * so an unreachable control plane is one hint line — never an empty table.
 		 */
 		function ServicesSection(props) {
 			const t = props.t;
 			const { useCallback, useEffect, useRef, useState } = require("react");
 			const [status, setStatus] = useState(null);
-			const [loadFailed, setLoadFailed] = useState(false);
+			const [failed, setFailed] = useState(false);
 			const [busy, setBusy] = useState("");
 			const [note, setNote] = useState("");
 			const [noteError, setNoteError] = useState(false);
 			const mounted = useRef(true);
-			const base = useRef("/tdb-lifecycle");
 
 			useEffect(() => () => {
 				mounted.current = false;
 			}, []);
 
-			const call = useCallback(async (subPath, init) => {
-				const send = (prefix) => fetch(prefix + subPath, init);
-				let response = await send(base.current);
-				if (base.current === "/tdb-lifecycle" && (response.status === 404 || response.status === 405)) {
-					// No same-origin routes on this host build: use the loopback server.
-					base.current = "http://127.0.0.1:8444";
-					response = await send(base.current);
-				}
-				return response;
-			}, []);
-
-			// A remote core is a normal deployment, not a fault: say which one it is
-			// instead of showing an empty table with dead buttons.
-			const unmanagedText = status !== null && status.managed === false
-				? t("servicesNoStack") + " — " + (
-					status.reason === "remote-core"
-						? t("servicesReasonRemote").replace("{host}", String(status.coreHost || "?"))
-						: status.reason === "no-services"
-						? t("servicesReasonNone")
-						: t("servicesReasonOff")
-				)
-				: "";
-
 			const refresh = useCallback(async () => {
 				try {
-					const response = await call("/status");
-					if (!response.ok) throw new Error("HTTP " + response.status);
-					const data = await response.json();
-					if (mounted.current) {
-						setStatus(data);
-						setLoadFailed(false);
-					}
+					const response = await fetch("/tdb-lifecycle/status", { headers: { Accept: "application/json" } });
+					const payload = await response.json().catch(() => null);
+					const data = payload && payload.ok === true && payload.data ? payload.data : null;
+					if (data === null) throw new Error("HTTP " + response.status);
+					if (!mounted.current) return;
+					setStatus(data);
+					setFailed(false);
 				} catch {
-					if (mounted.current) setLoadFailed(true);
+					if (!mounted.current) return;
+					setStatus(null);
+					setFailed(true);
 				}
-			}, [call]);
+			}, []);
 
 			useEffect(() => {
 				refresh();
-				const timer = setInterval(refresh, 5000);
+				// One minute: the lifecycle bundle's own heartbeat is faster, and the page is
+				// a read-only view — a tighter loop would only add traffic.
+				const timer = setInterval(refresh, 60000);
 				return () => clearInterval(timer);
 			}, [refresh]);
 
-			const act = useCallback(async (subPath, body, key, noteKey) => {
+			const act = useCallback(async (path, body, key, noteKey) => {
 				setBusy(key);
 				try {
-					const response = await call(subPath, {
+					const response = await fetch("/tdb-lifecycle" + path, {
 						method: "POST",
-						headers: { "Content-Type": "application/json", "X-Tdb-Control": "1" },
+						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify(body === undefined ? {} : body)
 					});
-					const data = await response.json().catch(() => ({}));
+					const payload = await response.json().catch(() => null);
 					if (!response.ok) {
-						const known = {
-							"already-running": "servicesErrAlreadyRunning",
-							"supervisor-not-running": "servicesErrNotRunning",
-							"auto-restart-disabled": "servicesErrAutoRestartDisabled",
-							"service-not-owned": "servicesErrNotOwned",
-							"service-already-down-watchdog-will-restart": "servicesErrWatchdogPending"
-						};
 						setNoteError(true);
-						setNote(known[data && data.error] ? t(known[data.error]) : String((data && data.error) || ("HTTP " + response.status)));
+						setNote(String((payload && payload.error) || ("HTTP " + response.status)));
 					} else {
 						setNoteError(false);
 						setNote(noteKey ? t(noteKey) : "");
@@ -789,109 +749,151 @@ window.__ModuleLoader__.load({
 					await refresh();
 				} catch {
 					setNoteError(true);
-					setNote(t("servicesLoadFailed"));
+					setNote(t("servicesUnreachable"));
 				} finally {
 					if (mounted.current) setBusy("");
 				}
-			}, [call, refresh, t]);
+			}, [refresh, t]);
 
-			const services = status && Array.isArray(status.services) ? status.services : [];
-			const row = (svc) => pxs("tr", {
-				key: svc.name,
-				children: [
-					px("td", { className: "_tdbAgemem_cell", children: svc.name }),
-					px("td", { className: "_tdbAgemem_cell", children: String(svc.port) }),
-					px("td", {
-						className: "_tdbAgemem_cell",
-						children: [
-							statusDot(svc.healthy === true),
-							px("span", { children: svc.healthy ? t("servicesHealthy") : t("servicesDown") }),
-							svc.healthy && !svc.owned
-								? px("span", { className: "_tdbAgemem_hint", children: " " + t("servicesNotOwned") })
-								: null
-						]
-					}),
-					px("td", { className: "_tdbAgemem_cell", children: svc.pid && svc.pidAlive ? String(svc.pid) : "—" }),
-					px("td", {
-						className: "_tdbAgemem_cell",
-						children: px("button", {
-							type: "button",
-							className: "_tdbAgemem_button",
-							id: "tdb-agemem-restart-" + svc.name,
-							disabled: busy !== "" || svc.owned !== true || status.running !== true || status.autoRestart !== true,
-							onClick: () => act("/restart", { name: svc.name }, "restart:" + svc.name, "servicesNoteRestarting"),
-							children: busy === "restart:" + svc.name ? t("servicesBusy") : t("servicesRestart")
+			const reachable = status !== null && failed === false;
+			const managed = reachable && status.managed && typeof status.managed === "object" ? status.managed : {};
+			const names = Object.keys(managed).sort();
+			const localTime = (value) => {
+				if (!value) return "—";
+				const parsed = new Date(value);
+				return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+			};
+			const summary = status === null ? "" : [
+				status.supervisorPid > 0 ? t("servicesRunning") : t("servicesStopped"),
+				t("servicesAutoRestart") + " " + (status.autoRestart === true ? "✓" : "✗"),
+				// restartsUsed 是跨服务的累计值，而预算本身是「每服务 N 次」；
+				// 写成 n/m 会被读成「用尽」，所以把两个口径分开写。
+				t("servicesBudget") + " " + String(status.restartsUsed || 0) +
+					"（" + t("servicesBudgetPer") + " " + String(status.maxRestarts || 0) + "）",
+				t("servicesStartedAt") + " " + localTime(status.startedAt)
+			].join(" · ");
+
+			const row = (name) => {
+				const svc = managed[name] || {};
+				const pid = Number(svc.pid) || 0;
+				return pxs("tr", {
+					key: name,
+					children: [
+						px("td", { className: "_tdbAgemem_cell", children: name }),
+						px("td", { className: "_tdbAgemem_cell", children: svc.port === undefined ? "—" : String(svc.port) }),
+						px("td", {
+							className: "_tdbAgemem_cell",
+							children: [
+								statusDot(svc.healthy === true),
+								px("span", { children: svc.healthy === true ? t("servicesHealthy") : t("servicesDown") })
+							]
+						}),
+						px("td", { className: "_tdbAgemem_cell", children: pid > 0 ? String(pid) : "—" }),
+						px("td", {
+							className: "_tdbAgemem_cell",
+							children: svc.origin === "adopted" ? t("servicesOriginAdopted") : t("servicesOriginOwned")
+						}),
+						px("td", {
+							className: "_tdbAgemem_cell",
+							children: px("button", {
+								type: "button",
+								className: "_tdbAgemem_button",
+								id: "tdb-agemem-restart-" + name,
+								// The pid decides: a row without one has nothing to restart, and a
+								// dead control plane cannot carry the request anyway.
+								disabled: busy !== "" || !reachable || pid <= 0,
+								onClick: () => act("/restart", { name: name }, "restart:" + name, "servicesNoteRestarting"),
+								children: busy === "restart:" + name ? t("servicesBusy") : t("servicesRestart")
+							})
 						})
-					})
-				]
-			});
+					]
+				});
+			};
 
 			return pxs("div", {
 				className: "_tdbAgemem_page",
 				children: [
-					px("h2", { className: "_tdbAgemem_heading", children: t("servicesTitle") }),
-					px("p", { className: "_tdbAgemem_hint", children: t("servicesDesc") }),
-					px("p", {
-						className: "_tdbAgemem_hint",
-						id: "tdb-agemem-services-summary",
-						children: loadFailed || status === null
-							? t("servicesLoadFailed")
-							: status.managed === false
-							? unmanagedText
-							: t("servicesSupervisor") + ": " + (status.running ? t("servicesRunning") : t("servicesStopped"))
-								+ " · " + t("servicesAutoRestart") + ": " + (status.autoRestart ? "✓" : "✕")
-								+ " · " + t("servicesBudget") + ": " + String(status.restartsUsed) + "/" + String(status.maxRestarts)
-								+ (status.startedAt ? " · " + t("servicesStartedAt") + ": " + status.startedAt : "")
-					}),
 					pxs("div", {
-						className: "_tdbAgemem_section",
+						className: "_tdbAgemem_toggleRow",
 						children: [
-							px("button", {
-								type: "button",
-								className: "_tdbAgemem_button _tdbAgemem_buttonPrimary",
-								id: "tdb-agemem-services-start",
-								disabled: busy !== "" || status === null || status.managed === false || status.running === true,
-								onClick: () => act("/start", undefined, "start", "servicesNoteStarted"),
-								children: busy === "start" ? t("servicesBusy") : t("servicesStartAll")
+							pxs("div", {
+								children: [
+									px("h2", { className: "_tdbAgemem_heading", children: t("servicesTitle") }),
+									px("p", { className: "_tdbAgemem_hint", children: t("servicesDesc") })
+								]
 							}),
 							px("button", {
 								type: "button",
-								className: "_tdbAgemem_button _tdbAgemem_buttonDanger",
-								id: "tdb-agemem-services-stop",
-								disabled: busy !== "" || status === null || status.managed === false || status.running !== true,
+								className: "_tdbAgemem_button",
+								id: "tdb-agemem-services-refresh",
+								disabled: busy !== "",
 								onClick: () => {
-									if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(t("servicesConfirmStop"))) return;
-									act("/stop", undefined, "stop", "servicesNoteStopped");
+									refresh();
 								},
-								children: busy === "stop" ? t("servicesBusy") : t("servicesStopAll")
+								children: t("servicesRefresh")
 							})
 						]
 					}),
-					status !== null && status.managed !== false
-						? pxs("table", {
-						className: "_tdbAgemem_table",
-						id: "tdb-agemem-services-table",
-						children: [
-							px("thead", {
-								children: pxs("tr", {
-									children: [
-										px("th", { className: "_tdbAgemem_th", children: t("servicesService") }),
-										px("th", { className: "_tdbAgemem_th", children: t("servicesPort") }),
-										px("th", { className: "_tdbAgemem_th", children: t("servicesStatus") }),
-										px("th", { className: "_tdbAgemem_th", children: t("servicesPid") }),
-										px("th", { className: "_tdbAgemem_th", children: t("servicesActions") })
-									]
-								})
-							}),
-							px("tbody", { children: services.map(row) })
-						]
-					})
+					px("p", {
+						className: failed ? "_tdbAgemem_hint _tdbAgemem_error" : "_tdbAgemem_hint",
+						id: "tdb-agemem-services-summary",
+						children: reachable ? summary : t("servicesUnreachable")
+					}),
+					reachable && names.length === 0
+						? px("p", { className: "_tdbAgemem_hint", id: "tdb-agemem-services-empty", children: t("servicesEmpty") })
 						: null,
-					note !== "" || loadFailed
+					reachable && names.length > 0
+						? pxs("table", {
+							className: "_tdbAgemem_table",
+							id: "tdb-agemem-services-table",
+							children: [
+								px("thead", {
+									children: pxs("tr", {
+										children: [
+											px("th", { className: "_tdbAgemem_th", children: t("servicesService") }),
+											px("th", { className: "_tdbAgemem_th", children: t("servicesPort") }),
+											px("th", { className: "_tdbAgemem_th", children: t("servicesStatus") }),
+											px("th", { className: "_tdbAgemem_th", children: t("servicesPid") }),
+											px("th", { className: "_tdbAgemem_th", children: t("servicesOrigin") }),
+											px("th", { className: "_tdbAgemem_th", children: t("servicesActions") })
+										]
+									})
+								}),
+								px("tbody", { children: names.map(row) })
+							]
+						})
+						: null,
+					reachable
+						? pxs("div", {
+							className: "_tdbAgemem_section",
+							children: [
+								px("button", {
+									type: "button",
+									className: "_tdbAgemem_button _tdbAgemem_buttonPrimary",
+									id: "tdb-agemem-services-start",
+									disabled: busy !== "",
+									onClick: () => act("/start", undefined, "start", "servicesNoteStarted"),
+									children: busy === "start" ? t("servicesBusy") : t("servicesStartAll")
+								}),
+								px("button", {
+									type: "button",
+									className: "_tdbAgemem_button _tdbAgemem_buttonDanger",
+									id: "tdb-agemem-services-stop",
+									disabled: busy !== "",
+									onClick: () => {
+										if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(t("servicesConfirmStop"))) return;
+										act("/stop", undefined, "stop", "servicesNoteStopped");
+									},
+									children: busy === "stop" ? t("servicesBusy") : t("servicesStopAll")
+								})
+							]
+						})
+						: null,
+					note !== ""
 						? px("p", {
 							className: noteError ? "_tdbAgemem_hint _tdbAgemem_error" : "_tdbAgemem_hint",
 							id: "tdb-agemem-services-note",
-							children: loadFailed ? t("servicesLoadFailed") : note
+							children: note
 						})
 						: null
 				]
@@ -948,7 +950,7 @@ window.__ModuleLoader__.load({
 			/*
 			 * Wave 4: the service stack page. It renders even when the config form is
 			 * unavailable (a host that serves no form still serves live status), which is
-			 * the whole point of a supervisor page.
+			 * the whole point of a lifecycle page.
 			 */
 			const dropServices = ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",

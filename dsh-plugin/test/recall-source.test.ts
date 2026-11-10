@@ -1,22 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   ENTRY_MAX_CHARS,
-  SOUL_FEELING_CLOSE,
-  SOUL_FEELING_OPEN,
-  SOUL_IDENTITY_CLOSE,
-  SOUL_IDENTITY_OPEN,
   VOLATILE_HEADER,
   clampBlockByLines,
   clipEntry,
-  clipSoulIdentity,
   dedupeEntries,
   extractRelevantMemories,
-  extractSoul,
-  measureSoul,
   memoryLines,
   recallBlockText,
   renderMemoryBlock,
-  renderSoulBlock,
 } from '../src/recall-source.js';
 
 const NL = String.fromCharCode(10);
@@ -70,92 +62,18 @@ describe('per-entry clipping and budget filling', () => {
 });
 
 /**
- * Shapes below mirror the live /v3/recall block captured on 2026-11-01: soul
- * wrappers around a <relevant-memories> section whose first entries are the
- * same guidance text we already inject as the answer-guidance section.
+ * Shapes below mirror the live /v3/recall block: a <relevant-memories> section
+ * whose first entries are the same guidance text we already inject as the
+ * answer-guidance section.
  */
 
 const BLOCK = [
-  '<soul-identity>你是记忆助手</soul-identity>',
-  '<soul-feeling>简洁</soul-feeling>',
   '<relevant-memories>',
   '【币值判定规则】',
   '- [L1][work_fact] 偏好 pnpm workspace。（热度 3）',
   '- [L1][work_fact] 结论先行。（热度 2）',
   '</relevant-memories>',
 ].join(String.fromCharCode(10));
-
-/**
- * The soul fragments are a WINDOW into the distilled persona, not a copy of it:
- * the live core sends 3343-3388 chars of <soul-identity>, and everything the
- * old path did was keep the `- [` memory lines and drop the persona entirely.
- */
-describe('soul fragments', () => {
-  it('extracts both fragments and ignores anything outside the tags', () => {
-    expect(extractSoul(BLOCK)).toEqual({ identity: '你是记忆助手', feeling: '简洁' });
-    expect(extractSoul(undefined)).toEqual({});
-    expect(extractSoul('no tags')).toEqual({});
-    // Empty bodies are absent, not empty strings: an empty pair must never be injected.
-    expect(extractSoul('<soul-identity>   </soul-identity>')).toEqual({});
-    // An unclosed tag is not a fragment (fail open, never guess where it ends).
-    expect(extractSoul('<soul-identity>未闭合</soul-identity')).toEqual({});
-  });
-
-  it('renders identity first, feeling second, inside its own tags', () => {
-    const soul = renderSoulBlock({ identity: '何晨', feeling: '平静' }, { maxChars: 600 });
-    expect(soul).toBe(
-      SOUL_IDENTITY_OPEN + '何晨' + SOUL_IDENTITY_CLOSE + String.fromCharCode(10)
-      + SOUL_FEELING_OPEN + '平静' + SOUL_FEELING_CLOSE,
-    );
-  });
-
-  it('drops the feeling line when includeFeeling is false or it does not fit', () => {
-    const disabled = renderSoulBlock({ identity: '何晨', feeling: '平静' }, { maxChars: 600, includeFeeling: false });
-    expect(disabled).toBe(SOUL_IDENTITY_OPEN + '何晨' + SOUL_IDENTITY_CLOSE);
-    expect(disabled).not.toContain('soul-feeling');
-    // Identity alone, no feeling present: same shape.
-    expect(renderSoulBlock({ identity: '何晨' }, { maxChars: 600 })).toBe(disabled);
-  });
-
-  it('returns nothing when the block carries no soul at all (atomic fallback)', () => {
-    expect(renderSoulBlock({}, { maxChars: 600 })).toBe('');
-    expect(renderSoulBlock({ identity: '   ' }, { maxChars: 600 })).toBe('');
-    expect(renderSoulBlock({ identity: 'x' }, { maxChars: 0 })).toBe('');
-  });
-
-  it('clips a long identity to the budget without splitting a surrogate pair', () => {
-    const identity = '身'.repeat(200) + '😀'.repeat(50);
-    const soul = renderSoulBlock({ identity }, { maxChars: 300 });
-    const inner = soul.slice(SOUL_IDENTITY_OPEN.length, soul.length - SOUL_IDENTITY_CLOSE.length);
-    expect(soul.length).toBeLessThanOrEqual(300);
-    expect(inner.endsWith('…')).toBe(true);
-    expect(inner.isWellFormed()).toBe(true);
-  });
-
-  it('gives identity the budget and keeps feeling inside the same cap', () => {
-    const identity = '身'.repeat(1000);
-    const feeling = '情'.repeat(200);
-    const soul = renderSoulBlock({ identity, feeling }, { maxChars: 200 });
-    expect(soul.length).toBeLessThanOrEqual(200);
-    expect(soul.startsWith(SOUL_IDENTITY_OPEN)).toBe(true);
-    // Whatever comes after identity is the feeling pair, still inside the cap.
-    if (soul.includes(SOUL_FEELING_OPEN)) {
-      expect(soul.endsWith(SOUL_FEELING_CLOSE)).toBe(true);
-      expect(soul.indexOf(SOUL_FEELING_OPEN)).toBeGreaterThan(soul.indexOf(SOUL_IDENTITY_CLOSE));
-    }
-  });
-
-  it('measures the soul prefix of a composed block for cache-hit logging', () => {
-    const soul = renderSoulBlock({ identity: '何晨', feeling: '平静' }, { maxChars: 600 });
-    const block = soul + String.fromCharCode(10) + '【agemem 记忆提示】' + String.fromCharCode(10) + '- [L1] x';
-    expect(measureSoul(block)).toBe(soul.length);
-    expect(measureSoul('【agemem 记忆提示】' + String.fromCharCode(10) + '- [L1] x')).toBe(0);
-    expect(measureSoul('')).toBe(0);
-    // Identity-only block (feeling off) also measures correctly.
-    const identityOnly = SOUL_IDENTITY_OPEN + '何晨' + SOUL_IDENTITY_CLOSE;
-    expect(measureSoul(identityOnly + String.fromCharCode(10) + '- [L1] x')).toBe(identityOnly.length);
-  });
-});
 
 describe('recall block -> volatile lines', () => {
   it('keeps only the "- [" entries inside <relevant-memories>', () => {
@@ -214,88 +132,3 @@ describe('recall block -> volatile lines', () => {
   });
 });
 
-/**
- * The 2026-11-01 incident: the live identity is 3384 chars laid out as
- *
- *   ## 此刻的我        (2509)
- *   ## 不可逾越（红线） (815, 8 of 16 rules — the core capped the rest)
- *   ## 当下的状态      (42)
- *
- * and the 600-char soul budget cut it at 536 chars — mid-sentence, BEFORE the
- * red-line section. The persona's hard rules therefore never reached a prompt.
- * A budget cut must now keep the whole red-line section and never slice a line.
- */
-describe('soul clipping keeps the red line (clipSoulIdentity)', () => {
-  const persona = [
-    '## 此刻的我',
-    '我是何晨的数字分身，负责把决定落地成证据。',
-    '我坚持先取证再拍板，不假手于人的审查。',
-    '## 不可逾越（红线）',
-    '- [strict_rule] 零自行 commit/push。',
-    '- [strict_rule] 记忆零删零注入。',
-    '- [strict_rule] 测试数据不注入生产。',
-    '## 当下的状态',
-    '刚跑完四域取证，正在收口。',
-  ].join(NL);
-  const redline = [
-    '## 不可逾越（红线）',
-    '- [strict_rule] 零自行 commit/push。',
-    '- [strict_rule] 记忆零删零注入。',
-    '- [strict_rule] 测试数据不注入生产。',
-  ].join(NL);
-
-  it('keeps the whole persona when the budget allows it', () => {
-    expect(clipSoulIdentity(persona, 5000)).toBe(persona);
-    expect(clipSoulIdentity(persona, persona.length)).toBe(persona);
-  });
-
-  it('keeps the red-line section when the budget cannot hold the persona', () => {
-    // The old head slice returned only the first 536 chars — this budget is
-    // smaller than the preamble, so ONLY a red-line-first clip can pass.
-    const clipped = clipSoulIdentity(persona, 120);
-    expect(clipped).toContain('## 不可逾越（红线）');
-    expect(clipped).toContain('零自行 commit/push');
-    expect(clipped.length).toBeLessThanOrEqual(120);
-    expect(clipped).not.toContain('## 当下的状态');
-  });
-
-  it('never slices a line in half: every kept line is an original line', () => {
-    const originals = new Set(persona.split(NL));
-    for (const budget of [60, 90, 120, 160, 200, 260]) {
-      const clipped = clipSoulIdentity(persona, budget);
-      expect(clipped.length).toBeLessThanOrEqual(budget);
-      for (const line of clipped.split(NL)) {
-        // Either a complete original line, or one that only lost a trailing ellipsis.
-        const bare = line.endsWith('…') ? line.slice(0, -1) : line;
-        expect(originals.has(bare)).toBe(true);
-      }
-    }
-  });
-
-  it('fills the remaining room with whole lines from the other sections', () => {
-    // Room for the red-line section plus two preamble lines.
-    const budget = redline.length + 60;
-    const clipped = clipSoulIdentity(persona, budget);
-    expect(clipped.startsWith('## 此刻的我')).toBe(true);
-    expect(clipped).toContain(redline);
-    expect(clipped.length).toBeLessThanOrEqual(budget);
-  });
-
-  it('falls back to a head slice when the persona carries no red line', () => {
-    const plain = '第一行' + NL + '第二行' + NL + '第三行';
-    expect(clipSoulIdentity(plain, 100)).toBe(plain);
-    // Whole lines only: at 8 chars the two 3-char lines fit and the third is
-    // dropped with the ellipsis; at 5 only the first line survives.
-    expect(clipSoulIdentity(plain, 8)).toBe('第一行' + NL + '第二行…');
-    expect(clipSoulIdentity(plain, 5)).toBe('第一行…');
-    expect(clipSoulIdentity('', 100)).toBe('');
-    expect(clipSoulIdentity(plain, 0)).toBe('');
-  });
-
-  it('keeps the red line through renderSoulBlock when the budget forces a cut', () => {
-    const soul = renderSoulBlock({ identity: persona, feeling: '平静' }, { maxChars: 200 });
-    expect(soul.length).toBeLessThanOrEqual(200);
-    expect(soul.startsWith(SOUL_IDENTITY_OPEN)).toBe(true);
-    expect(soul).toContain('## 不可逾越（红线）');
-  });
-});

@@ -44,7 +44,7 @@ const QUOTED_MID_BODY = [
   '第五，typecheck 门禁按基线比对，不许重锁；',
   '第六，测试只跑相关文件，全量留给 lead。',
   '',
-  '<soul-identity> 这一段是我贴出来给你看格式的，不是注入',
+  '<core_memory> 这一段是我贴出来给你看格式的，不是注入',
   '',
   '继续：第七，报告只给可验收事实，不写长篇分析；',
   '第八，未拍板的事写进「没做/风险」，不要自己决定。',
@@ -60,14 +60,18 @@ describe('task-91 · 与 core 同源（常量 / 标记表 / 归一化）', () =>
     expect(LEADING_INVISIBLE_CHARS_RE.flags).toBe(CORE_LEADING_RE.flags);
   });
 
-  it('标记集合与 core 逐项一致（9 条，含插件新增三类块）', () => {
-    expect(INJECTION_TEXT_MARKERS).toHaveLength(9);
+  it('标记集合与 core 完全一致（两侧同表，避免写回自污染）', () => {
+    // 2026-11-07：人格注入只剩插件人格卡 section，core 也不再产出 soul 片断，
+    // 所以 `<soul-identity>` / `<soul-feeling>` 两条已从 core injection-guard 与
+    // 插件清单同时删除；两侧必须完全相等，否则一段 payload 会被一侧当注入、
+    // 另一侧当真实消息写回 L0。
+    expect(INJECTION_TEXT_MARKERS).toHaveLength(7);
     expect([...INJECTION_TEXT_MARKERS].sort()).toEqual([...CORE_MARKERS].sort());
   });
 
   it('normalizeInjectionLines 与 core 对拍（CRLF/CR/tab/NBSP/全角空格/ZWSP 链/空行）', () => {
     const payloads = [
-      '\r\n\t  <soul-identity>\r\n\u3000\u3000正文\r尾行',
+      '\r\n\t  <core_memory>\r\n\u3000\u3000正文\r尾行',
       'a\n\n  b  c\n',
       '\u200b\u200c\u2060\u3000<team-wiki>\n正文',
       '\ufeff\u00a0\t【agemem 记忆提示】\n- 片段',
@@ -81,9 +85,9 @@ describe('task-91 · 与 core 同源（常量 / 标记表 / 归一化）', () =>
 
 describe('task-91 · 放宽后必须命中的形态（旧实现全部逃逸）', () => {
   it('行首空格缩进（首行前缀 + 第二行缩进标记）', () => {
-    const text = '前缀一句，下面是系统上下文：\n   <soul-identity>\n我是何晨的数字分身……\n</soul-identity>\n以上。';
-    expect(detectInjectedBlock(text)).toBe('<soul-identity>');
-    expect(coreDetect(text)).toBe('<soul-identity>');
+    const text = '前缀一句，下面是系统上下文：\n   <team-wiki>\n团队 wiki 正文……\n</team-wiki>\n以上。';
+    expect(detectInjectedBlock(text)).toBe('<team-wiki>');
+    expect(coreDetect(text)).toBe('<team-wiki>');
   });
 
   it('tab 缩进', () => {
@@ -106,7 +110,7 @@ describe('task-91 · 放宽后必须命中的形态（旧实现全部逃逸）',
   });
 
   it('行首 ZWNJ(U+200C)', () => {
-    expect(detectInjectedBlock('\u200c<soul-identity>\n我是何晨的数字分身……\n</soul-identity>')).toBe('<soul-identity>');
+    expect(detectInjectedBlock('\u200c<team-wiki>\n团队 wiki 正文……\n</team-wiki>')).toBe('<team-wiki>');
   });
 
   it('行首 WORD JOINER(U+2060)', () => {
@@ -139,8 +143,8 @@ describe('task-91 · 放宽不越界（负例优先于正例）', () => {
     expect(looksLikeInjectedBlock(text)).toBe(false);
   });
 
-  it('标记内部插零宽（<soul\u200b-identity>）⇒ 不认（Lead 终局裁决：只剥行首，标记内部不归一化）', () => {
-    const text = '<soul\u200b-identity>\n我是何晨的数字分身……';
+  it('标记内部插零宽（<relevant\u200b-memories>）⇒ 不认（Lead 终局裁决：只剥行首，标记内部不归一化）', () => {
+    const text = '<relevant\u200b-memories>\n我是何晨的数字分身……';
     expect(detectInjectedBlock(text)).toBeUndefined();
     expect(coreDetect(text)).toBeUndefined();
   });
@@ -178,7 +182,7 @@ describe('task-91 · 判定结论与 core 逐一相等（22 例 fixture 对拍�
   const ZWSP = '\u200b';
   const FIXTURES: string[] = [
     // 正例（core 套件 task-85/task-92 的原样 fixture）
-    '前缀一句，下面是系统上下文：\n   <soul-identity>\n我是何晨的数字分身……\n</soul-identity>\n以上。',
+    '前缀一句，下面是系统上下文：\n   <team-wiki>\n团队 wiki 正文……\n</team-wiki>\n以上。',
     '系统提示：\n\t<relevant-memories>\n- 记忆 1\n- 记忆 2\n</relevant-memories>',
     '前缀\r\n  【币值判定规则】\r\n1 元 = 1 元……',
     '\n\n\n【agemem 记忆提示】\n以下是召回块……',
@@ -188,19 +192,19 @@ describe('task-91 · 判定结论与 core 逐一相等（22 例 fixture 对拍�
     ['一句前缀', '二句前缀', '三句前缀', '四句前缀'].join('\n') +
       '\n<relevant-memories>\n- 很长的一段召回内容很长的一段召回内容\n- 更长更长更长更长更长更长更长更长\n</relevant-memories>',
     ['prefix line', ZWSP + '<relevant-memories>', '- 记忆 1', '</relevant-memories>'].join('\n'),
-    ZWSP + '<soul-identity>\n我是何晨的数字分身……\n</soul-identity>',
+    ZWSP + '<core_memory>\n- 核心记忆……\n</core_memory>',
     '系统提示：\n\u2060【币值判定规则】\n1 元 = 1 元……',
     ['前缀一句：', '  ' + ZWSP + '\t【agemem 记忆提示】', '以下是召回块……'].join('\n'),
     // 负例
     QUOTED_MID_BODY,
     QUOTED_MID_BODY.replace(
-      '<soul-identity> 这一段是我贴出来给你看格式的，不是注入',
-      ZWSP + '<soul-identity> 这一段是我贴出来给你看格式的，不是注入',
+      '<core_memory> 这一段是我贴出来给你看格式的，不是注入',
+      ZWSP + '<core_memory> 这一段是我贴出来给你看格式的，不是注入',
     ),
     '我在日志里看到这段：【agemem 记忆提示】下面的内容是不是注入？',
     '我在日志里看到这段：' + ZWSP + '【agemem 记忆提示】下面的内容是不是注入？',
     '真实提问：为什么 L1 游标不动？',
-    '<soul\u200b-identity>\n我是何晨的数字分身……',
+    '<relevant\u200b-memories>\n我是何晨的数字分身……',
     '',
     '   \n\t\n',
   ];

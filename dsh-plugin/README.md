@@ -88,7 +88,6 @@ token 不落提示词、不落配置文件。
           health: /health
         headPack:  { enabled: true, orderOffset: 100, maxChars: 20000, refreshMs: 300000, timeoutMs: 10000 }
         volatile:  { enabled: true, maxChars: 6000, timeoutMs: 3000,
-                     soul: { enabled: true, maxChars: 4400, includeFeeling: true, oncePerSession: true },
                      recall: true, recallMaxResults: 3, recallTimeoutMs: 2500 }
         writeback: { enabled: true, skillFeed: true, maxAttempts: 8, retryMs: 30000, outboxPath: "",
                      maxMessageChars: 8192,          # 单条内容上限（core schema 硬限 8192）
@@ -159,27 +158,16 @@ token 不落提示词、不落配置文件。
   outbox 不能无限长。超限丢**最旧**的排队条目（保留最新一条，哪怕它自己就超字节），只 warn 一次并带 `dropped` 计数，
   之后降级成 debug。死信文件不受这个上限约束——它本来就是只追加的运维记录。
 - volatile 取料：先打 `/v3/recall`（服务端 `v3Recall.enabled`，本机已开；关掉会 404），
-  从返回块里取两样东西：
-  1. **soul 段**（`<soul-identity>` / `<soul-feeling>`）——蒸馏人格与本轮情绪，按闭合标签切出、按 code point
-     安全裁剪后放在块首。实测 identity 3343–3388 字符、feeling 36–40 字符；旧版只取 `- [` 行，**整段人格被丢掉**，
-     于是插件注入的是「没有性格的记忆」。
-  2. `<relevant-memories>` 内的 `- [` 行——块头部那 ~300 字符的【币值判定规则】【建议类问题口径】
-     与已注入的 answer-guidance 段重复，丢掉不重注。
-  404/504/超时/无条目一律退回 `/v3/atomic/search` 摘要（**atomic 路没有 soul 段，也不许编造**），全失败就不注入。
-  - **预算怎么分**：`volatile.maxChars` 6000 = soul 最多 4400 + 记忆约 900 + 能力段约 700。soul 是**从总预算里切走的**，不是额外叠加：
-    先渲染 soul（`volatile.soul.maxChars` 4400，clamp [100,6000]），其余才给记忆装填。
-    `volatile.soul.enabled: false` 时记忆退回到 `min(maxChars, 1500)`（旧口径）。
-  - **全量注入（2026-11-01 事故修）**：旧预算 600 把 3384 字符的人格在第 536 字符处硬切——**切在句子中间、而且在
-    `## 不可逾越（红线）` 之前**，所以人格的硬约束从来没进过 prompt（用 3 个真实注入事件核对过：soulLen 均 536、
-    含红线段=false）。现在 soul 预算 4400 装得下整段人格（红线规则全开时约 4200），并且：
-    ① `clipSoulIdentity` 改成**红线优先 + 整行**裁剪（预算不够时先把 `## 不可逾越（红线）` 整段留下，再按文档顺序补其它段；
-    遇到被截的段落结尾加 `…`，绝不把一行切成两半，也不会把半段读成完整人格）；
-    ② `volatile.soul.oncePerSession`（缺省 **true**）——每会话第一次注入**完整人格**，之后每轮只带记忆。
-    块是追加进会话历史的 `user/message`，第一次那份还在上下文里，所以不必每轮重付 4200 字符；core 的 `soulVersion` 变了
-    （人格被重新蒸馏）才会再注入一次。关掉此开关=回到「每轮都带人格」。
-  - **人格缺失是可降级的**：块里没有 soul 标签、核心超时、`includeFeeling: false` 都只是少一段，不影响记忆注入；
-    每轮 debug 行带 `soulChars` / `soulVersion`（只版本串，不打正文），mount 行带 `soul=on(4400,feeling,once)|off`。
-  - **隔离三轴是 header，不是 body**：core 的 v2 层对所有 `/v3/*` 强制 `x-tdai-team-id` / `x-tdai-agent-id` /
+  从返回块里只取 `<relevant-memories>` 内的 `- [` 行——块头部那 ~300 字符的【币值判定规则】【建议类问题口径】
+  与已注入的 answer-guidance 段重复，丢掉不重注。
+  **人格不走这条路**（2026-11-07 task-19）：人格只由稳定前缀里的人格卡 section 承担；旧 core 若还在块里带
+  soul 片断，插件一律丢弃。404/504/超时/无条目一律退回 `/v3/atomic/search` 摘要，全失败就不注入。
+  - **预算怎么分**：`volatile.maxChars` 6000 是整块上限；记忆段自己封顶在 1500（`MEMORY_CEILING_CHARS`），
+    剩下的额度留给能力段（wiki / knowledge）与本轮人格尾块（≤400）。删掉 soul 支路后记忆**不会**悄悄长进那块空间，
+    否则每轮注入只会变大。
+  - **记忆缺失是可降级的**：块里没有 `- [` 行、核心超时都只是不注入，不影响本轮对话；mount 行只剩
+    `volatile=recall|atomic|off`，不再有 soul 开关——人格卡是否在位由 `persona-card` section 决定。
+- **隔离三轴是 header，不是 body**：core 的 v2 层对所有 `/v3/*` 强制 `x-tdai-team-id` / `x-tdai-agent-id` /
     `x-tdai-user-id`（+`x-tdai-service-id`），缺一个就是 **422 `missing team_id, agent_id, user_id`**；
     `session` 不强制（header 或 body 给一个就行）。插件里这些头由唯一一处 `headers()` 统一附加，
     `recallBlock` 只是不在 body 里重复 echo 三轴——**不是**不发头。
@@ -192,7 +180,7 @@ token 不落提示词、不落配置文件。
   超预算才裁——不会切在一条记忆中间。同一次查询里前缀相同的重复条目只留一条。
   **单条上限固定 360，不随可用预算放大**：只有 1 条可选时预算还剩 ~840 字符也不再放宽——
   token 成本可预测、测试面小，比「池子薄时临时放宽到 720」值。
-  `volatile.maxChars` 6000（soul ≤4400 + 记忆 ≈900 + 能力段 ≈700）；`recallMaxResults` 3（多要一条不多花 embedding：l1 只 embed 一次 query）。
+  `volatile.maxChars` 6000（记忆 ≤1500 + 能力段 ≈700 + 人格尾块 ≤400）；`recallMaxResults` 3（多要一条不多花 embedding：l1 只 embed 一次 query）。
 - **每轮的时间预算**（pre-step 里是同步 await，所以每一档都要能 fail-open）：
 
   | 档位 | 缺省 | 作用 |
@@ -231,6 +219,15 @@ token 不落提示词、不落配置文件。
   其余失败仍按类各 warn 一次（auth 401/403、recall 404/504、L0/skill 写入被拒、outbox 死信），
   每条带 endpoint + status + 一句怎么修。
 - `AGEMEM_DEBUG=1` 打开详细日志（等价 `debug: true`；配置里显式写的 `debug` 优先于环境变量）。
+- **注入证据日志（常驻，不吃 debug 开关）**：`D:/TDB/data/logs/persona-injection.jsonl`，一行一个 JSON，2 MB 轮转到 `.1`。
+  - `{"event":"section-read","sessionId","identity","version","hash","chars","sidSource","sidField"}`：宿主真的取走了该会话的 system prompt section，
+    `chars`/`hash`（SHA-256，64 hex）是**交出去的字节**；把这个 `hash` 与 `GET /v3/soul/card` 返回的 `textHash` 比对，
+    相等即证明人格卡进了提示词。`identity` 是这次注入用的 `team/user/agent`；`sidSource` 说明会话键来自
+    宿主 context（`context-agent`）还是根本没拿到（`none`）。
+  - `{"event":"turn-append","sessionId","turn","hash","chars"}` / `{"event":"turn-skip",…,"chars":0}`：每轮尾巴真实追加量 / 去重跳过（跳过恒 0）。
+  - `{"event":"card-bound","sessionId","identity","version","hash","chars"}` / `{"event":"card-bound-failed",…,"reason","keptVersion"}`：
+    绑定取卡的成败留因；`identity` 是**这次尝试**的身份，`keptVersion` 是失败后**实际保留**的那份。
+  - 路径可用 `TDB_PERSONA_LOG` 覆盖，根目录可用 `TDB_DATA_DIR` 改；写失败只让它自己静默（fail-open），绝不影响注入。
 - 未知配置键只 warn 不报错；数字越界会被 clamp。
 
 ## 设置入口（设置 → TDB 记忆）
@@ -379,6 +376,24 @@ bypass 还要管住**决策之前**的那次读：mount 期会做 embedding 预�
 为什么不能按 `refreshMs` 重注：`agent/pre-step` 追加的消息是 append-only 进历史的，会话一长就会变成
 每 5 分钟往上下文里灌 20000 字符。分段预算因此按「一次/会话」定档（见下表），`persona` 拿剩余量。
 
+## 人格卡 section 的注入时机（绑定那一刻，每会话一份）
+
+人格不走 head pack、也不走每轮尾部，而是单独的 `tdb-agemem:persona-card` section。
+它的内容是**按会话**持有的一份卡，写入时刻只有这几个：
+
+| 时机 | 行为 |
+| --- | --- |
+| 会话第一次出现（`agent/pre-step` 的 `ensureBound`） | 用当前解析到的身份（会话绑定，缺省挂载三元组）调一次 `GET /v3/soul/card` |
+| 用户改绑 agent（picker 确认后的 `onBound`） | **覆盖**该会话的卡：重新调接口取，失败保留上一份并记 `card-bound-failed` |
+| `compaction/start` / `compaction/end` | 按同一身份重取一次（上下文刚被裁，卡可能已漂移） |
+| 代码升级 / 进程重启 | 不落盘、不读旧副本：会话下次出现时现取 |
+
+没有缓存层：不存在「上次抓到的卡」文件或内存副本可读，`bind` 每次都真的打接口
+（同一会话并发触发会折成一次在途请求，这不是缓存）。会话键取自宿主 context：
+`text(context)` 收到的是 `{agent, scope, signal}`，而宿主的 `AgentRegistry.enter()` 强制
+`agent.id === agent.session.id`，所以 `agent.id` 就是 sessionId；取不到就返回空串
+（**没有**「最近绑定会话」兜底 —— 那会把 A 的卡塞进 B 的提示词），并记 `sidSource:"none"` + warn 一次。
+
 **系统提示词里（head pack，一次/会话）**
 
 | 段 | 上限（字符） | 失败时的行为 |
@@ -523,10 +538,12 @@ bash scripts/drill-patch-layer.sh   # 演练：在一次性 profile 上验「写
   也不再像旧版那样「已存在就 exit 0」把升级伪装成成功。管理块有显式首尾标记
   （`# >>> tdb-agemem-dsh managed block`）。
 - **升级只重渲 `server.*`，其余键原样保留**（`patch-util.mjs` 的 `upsert-keep`，2026-11-05 起）：
-  Settings 页往块里写的 `services.enabled`、`writeback.*`、`volatile.*` 等会被搬到新块的
+  Settings 页往块里写的 `writeback.*`、`volatile.*` 等会被搬到新块的
   `config:` 末尾；新渲染自己带了的键以新渲染为准。**事故背景**：此前升级用 `upsert` 整块重渲，
-  只建模 `server.*`，一次不带 `--config-extra` 的部署把 `services: {enabled: true}` 静默抹掉，
-  本机服务栈直接关停（面板显示「本机不托管服务栈」）。已写测试
+  只建模 `server.*`，一次不带 `--config-extra` 的部署会把运维手写的键静默抹掉。
+  2026-11-07 起 `services.*` 已从插件里删除（服务启停只由 `dsh-tdb-lifecycle` 管，
+  控制面 `127.0.0.1:8446`，插件只留 `/tdb-lifecycle/*` 代理），旧块里的
+  `services.enabled` 是废弃键，删掉即可。已写测试
   `test/patch-util.test.ts` 的 `operator config knobs survive a re-deploy` 四例；要**故意**清掉旧键，
   手工编辑或先 `patch-util.mjs strip` 再部署。
 - 备份写在仓库内 `dsh-plugin/.deploy/<stamp>/`，不往 `~/.dsh` 塞额外文件。
@@ -603,56 +620,25 @@ DSH_PROFILE=desktop bash scripts/deploy.sh \
   bash scripts/deploy.sh --identity team-x,agt-y,usr-z --config-extra=/tmp/agemem-extra.yml
   ```
 
-## 服务栈看护（插件自己拉起 core / knowledge / panel）
+## 服务栈看护（交给 dsh-tdb-lifecycle）
 
-**跨机部署：只有 core 在本机时才会拉起栈。** 判断依据是 `server.baseUrl` 的 host 是否回环
-（`src/services/scope.ts`）：core 在另一台机器上时，插件不 spawn 任何进程、不开控制端口、不读 env 文件——
-本地栈拿不到流量，只会白占三个端口并造成「本地栈活着但没人用」的 split-brain。远端栈在那台机器上自己起
-（systemd / Windows 服务 / 启动脚本）。混合部署（core 本机、knowledge 在 wiki 机）用 `services.include`
-只挑本机要托管的那几个；此时设置页显示「本机不托管服务栈」+ 原因，而不是一张空表。
+2026-11-07（task-26）起，本插件**不再启动或看护任何 TDB 服务**：重复实现（`src/services/**`、`services.*`
+13 个配置键、自带控制面 8444）整条删除。服务启停、健康门、崩溃重拉、接管已存在进程，全部由宿主同装的
+`dsh-tdb-lifecycle` bundle 负责；插件只留一个瘦代理，把设置页的请求转给它的控制面。
 
-ADR-0022：原来由外部 bundle `tdb-lifecycle` 起的 PowerShell 看护进程（`start-tdb-supervised.ps1`）已经整条退役，
-改由本插件自己拉起并看护三服务。原因是**服务表必须只有一个真源**——那次改了三服务表，磁盘上的表是对的，
-但正在跑的看护进程内存里还是四服务表，于是它把已经退场的 proxy 反复拉回来，还占着 `MemoryProxy/` 目录不放。
-
-**缺省关**（`services.enabled: false`）：谁启动服务栈是部署决定，装/升级插件不该顺带起三个 node 进程。
-本机在 patch 里显式打开：
-
-```yaml
-      config:
-        services:
-          enabled: true
-```
-
-打开后插件在 `apply()` 里做四件事，全部可观测、全部 fail-open（拉不起来只 warn，绝不让插件挂载失败）：
-
-1. **按表启动**：`tdai-core` 8420 → `tdai-knowledge` 8421 → `tdai-panel` 8123（顺序即健康门顺序）；
-   已经健康的服务直接跳过并且**不记 owned**（别人的进程我不碰）。
-2. **健康门**：每个服务 spawn 后等 `/health` 200，预算 `healthTimeoutMs`（缺省 90s，core 冷启要跑 jieba/embedding 预热）。
-   超时就杀掉、记 `failed[]` 并抛出「<name> did not answer /health on port …」，与旧看护进程的 abort 语义一致。
-3. **崩溃重拉**：子进程 exit 后按 `maxRestarts`（缺省 3）重拉，用尽后写 `failed[]` 停手；`autoRestart: false` 则只启动不重拉。
-4. **状态留痕**：`<runDir>/tdb-services.state.json` 记 `hostPid` 与 `owned{name:pid}`。
-   - 再次启动时若 `hostPid` 还活着且不是自己 ⇒ **adopt**（不 spawn，避免两个 DSH 窗口抢端口）；
-   - 若 `hostPid` 已死 ⇒ 先 `reapOrphans()` 杀掉上次留下的孤儿；
-   - `stopOnDispose: false` ⇒ detach（把 `hostPid: 0` 写进状态后走人，下次不回收也不 kill）。
-
-**环境变量**只认一个文件：`services.envFile`（缺省 `D:/TDB/etc/services.env`，KEY=VALUE，支持 `${VAR}`，
-先查本文件已定义再查宿主环境）。`D:/TDB/etc/env.ps1` 现在也只是读这份文件再导出，两条启动路径读到的是同一组值；
-每次 spawn 都重读，换 key 下次重启即生效。**展开失败只报变量名，绝不回显值**。
-
-**控制面**（`services.controlPort`，缺省 8444，只绑 127.0.0.1）：
+- **控制面**：`127.0.0.1:${TDB_LIFECYCLE_CONTROL_PORT:-8446}`（只绑回环）。端口从宿主进程环境读，**不设配置键**。
+- **同源路由**：页面请求 `/tdb-lifecycle/*`，插件原样转发，POST 自动补 `X-Tdb-Control: 1`，超时 3s；
+  控制面不可达时返回 `503 {"ok":false,"error":"control-plane-unreachable"}`，页面因此只显示一行提示而不是空表。
 
 | 请求 | 语义 |
 | --- | --- |
-| `GET /status` | supervisor 状态 + 三服务表（healthy / pid / owned / dir） |
-| `POST /start` · `POST /stop` | 起/停自己 owned 的服务，202 |
-| `POST /restart` `{"name":"tdai-core"}` | 只 kill，由看门狗复拉（与崩溃同一路径） |
+| `GET /status` | 看护进程 + 三服务表：`supervisorPid` / `hostPid` / `restartsUsed`（**跨服务累计**，每服务预算是 `maxRestarts`）/ `managed{name:{pid,port,origin,healthy,restarts}}`，`origin` 是 `owned`（自己拉起）或 `adopted`（接管既有进程） |
+| `GET /events?limit=N` | 事件日志尾部 N 行 |
+| `POST /start` · `POST /stop` · `POST /restart` | body `{name?}`，202；`name` 缺省表示作用于全部 |
 
-POST 一律要 `X-Tdb-Control: 1` 头（缺了 403），浏览器同源路由是 `/tdb-lifecycle/*`，设置页「TDB 服务」直接用它。
-设置页那块**不依赖配置表单可用**：表单挂掉时仍要看得到服务死活。
-
-配置键全表见 `config/templates/dsh-plugin.yaml` 的 `services:` 段（13 个键），这里只列会改变行为的三个：
-`enabled`（谁启动栈）、`healthTimeoutMs`（冷启预算）、`stopOnDispose`（退出时是否连带停服务）。
+设置页「TDB 服务」只读 `/status`：状态行给运行中/未运行、自动重启、累计重启次数（并注明每服务上限）、启动时间；表格给服务名、端口、
+健康、**真实 PID**、来源（自身/接管）与行内重启。PID 来自控制面，所以「接管来的进程显示 —、重启点不了」这条
+历史问题没有了；行内重启在控制面可达且 `pid > 0` 时才可点。页面 60s 自动刷新，右上角也能手动刷新。
 
 ## 跨机部署（插件在 A 机，core 在 B 机）
 

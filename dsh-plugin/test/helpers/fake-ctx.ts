@@ -110,10 +110,12 @@ export function createFakeContext(options?: {
         return step();
       };
     },
-    sectionText() {
+    sectionText(context?: unknown) {
       const last = sections[sections.length - 1];
       if (!last) return '';
-      return typeof last.text === 'function' ? last.text() : last.text;
+      // task-32: the host calls the getter with `{ agent, scope, signal }`, so
+      // tests must be able to pass that context through verbatim.
+      return typeof last.text === 'function' ? (last.text as (c?: unknown) => string)(context) : last.text;
     },
     dispose() {
       listeners.clear();

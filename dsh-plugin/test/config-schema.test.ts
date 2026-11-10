@@ -89,8 +89,6 @@ describeGroup('Config schema shape', () => {
   it('exposes the agreed volatile paths and marks no other field volatile', () => {
     const volatile = leaves.filter((row) => row.node.meta.volatile === true).map((row) => row.path).sort();
     expect(volatile).toEqual([...VOLATILE_PATHS].sort());
-    // 15 -> 18: the soul slice (volatile.soul.enabled / maxChars / includeFeeling)
-    // joined the form when the persona fragments became injectable (task-61).
     // 18 -> 21: the skill surface (skill.enabled / allowLlmWrite / headPackChars)
     // joined when the skill listing and its ten tools shipped (task-72).
     // 21 -> 25: the wiki/knowledge segments' enable+ceiling pairs.
@@ -102,18 +100,17 @@ describeGroup('Config schema shape', () => {
     // form — it is resolved from the user key at mount and from the user's own
     // session_init config on every session, so a form field could only make the
     // host disagree with the core. It stays patch-only (deploy.sh --identity).
-    // 27 -> 28: volatile.soul.oncePerSession, the "full persona once per session"
-    // switch that let the soul budget grow to the whole identity.
-    // 28 -> 35: the service stack (services.enabled / repoRoot / controlPort /
-    // healthTimeoutMs / maxRestarts / autoRestart / stopOnDispose). The plugin
-    // spawns and supervises the three services itself now, so the knobs that
-    // decide *who* starts them belong in the form.
-    // 35 -> 36: services.include, for the mixed deployment where core runs here
-    // but the wiki box is somewhere else. (A remote server.baseUrl turns the
-    // whole stack off, so this is about which services *this* host owns.)
+    // 27 -> 28 → 37: the service-stack knobs joined the form in Wave 4 and left
+    // again in task-26 — `dsh-tdb-lifecycle` owns the stack now, so this plugin
+    // exposes no services.* field at all.
     // 36 -> 37: identity.askForTask, the third session-start question (the
     // proxy's task_select stage): the answer becomes the optional task scope.
-    expect(volatile).toHaveLength(37);
+
+    // 2026-11-07 task-19: the four volatile soul keys left the form with the
+    // retired fallback chain — the persona card owns injection now.
+    // 2026-11-07 task-26: the eight services.* keys left with the in-plugin
+    // dsh-tdb-lifecycle; the page is a thin proxy to its control plane.
+    expect(volatile).toHaveLength(25);
   });
 
   it('keeps the two secrets out of the form: role=secret and NOT volatile', () => {

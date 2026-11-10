@@ -184,15 +184,6 @@ describe('config', () => {
     // the prompt (verified against real injection events).
     expect(config.volatile.maxChars).toBe(6000);
     expect(DEFAULT_CONFIG.volatile.maxChars).toBe(6000);
-    // The soul slice: on by default, 4400 chars (the WHOLE persona once the core
-    // renders all 16 red-line rules), feeling included, injected once per
-    // session instead of every turn.
-    expect(config.volatile.soul).toEqual({
-      enabled: true,
-      maxChars: 4400,
-      includeFeeling: true,
-      oncePerSession: true,
-    });
     // /v3/recall is session-aware and measured at 5.0s cold / 1.25-2.26s warm with
     // a fresh turn text: keep its own budget inside pre-step instead of the read
     // budget. 2500ms covers that distribution to ~p90 and still leaves 500ms of

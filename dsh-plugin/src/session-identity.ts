@@ -83,6 +83,8 @@ export type IdentitySource =
   /** The user's session_init says default_associate=0: associate nothing. */
   | 'user-bypass'
   | 'picked'
+  /** 分支（fork/压缩）从父会话继承的身份：同一段对话，同一套三元组。 */
+  | 'inherited'
   | 'skipped'
   | 'delegated';
 
@@ -98,6 +100,22 @@ export interface SessionBinding {
   source: IdentitySource;
   /** Why it was skipped/resolved; free text, never a secret. */
   reason?: string;
+  /**
+   * 明确的「本次不关联」。只有它允许清掉该会话已注入的人格卡。
+   *
+   * 缺省（undefined）= 有意向关联、但这次没绑成（候选接口超时、弹窗被打断、
+   * 没有可退回的三元组）。此时必须**保留**已有卡：把它当成「不关联」会在切换
+   * 人设的那一轮造成无卡窗口（2026-11-08 02:14 现场：先清卡、9 秒后才绑上）。
+   */
+  associate?: boolean;
+  /**
+   * P2-C：这个会话绑定的**自然人**（Core 的 `person_key`，`p_` 前缀）。
+   *
+   * 只来自 Core 的回答，不在插件里推导：绑卡时 `/v3/soul/card` 若按人过滤且
+   * 过滤结果恰好是一个人，`persons` 就带一个 key，这里照抄；0 个或多于 1 个
+   * 都留空（多人同场时归到谁身上都是猜 —— 与 Core 侧 human 行的裁决同一口径）。
+   */
+  personKey?: string;
   /** Epoch ms. */
   at: number;
 }
@@ -416,7 +434,7 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
    * exactly what "本次不关联" and `default_associate=0` mean.
    */
   const bindNothing = (sessionId: string, source: IdentitySource, reason: string): void => {
-    submit(sessionId, { teamId: '', agentId: '', userId: '', source, reason, at: now() });
+    submit(sessionId, { teamId: '', agentId: '', userId: '', source, reason, associate: false, at: now() });
   };
 
   const ask = async (
@@ -781,6 +799,19 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     });
   };
 
+  /**
+   * 分支会话的父键（fork/压缩产生）。规则：**分支静默继承，绝不在分支里弹窗**。
+   *
+   * 理由（2026-11-08 现场 session-d8e40819）：分支共享父会话历史，历史里已有
+   * 「我是 X」这类自述；即使换一张卡也压不住，只会多一次「组装早于取卡」的竞态。
+   * 身份属于「这条对话」，所以父会话绑什么，分支就用什么；想换人设请新开会话。
+   */
+  const parentSessionOf = (agent: unknown): string | undefined => {
+    const session = (agent as { session?: { header?: { parentSession?: unknown } } } | undefined)?.session;
+    const parent = session?.header?.parentSession;
+    return typeof parent === 'string' && parent !== '' ? parent : undefined;
+  };
+
   const ensureBound = async (agent: unknown, signal?: unknown): Promise<void> => {
     const sessionId = agentKey(agent as any);
     // Record BEFORE both early returns: with the card switched off (or the
@@ -790,7 +821,12 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     // bound one, i.e. two identities inside one turn.
     deps.onSessionSeen?.(sessionId);
     if (!settings.askAtSessionStart) return;
-    if (deps.store.get(sessionId) !== undefined) return;
+    if (deps.store.get(sessionId) !== undefined) return;    // 分支：父会话绑什么就用什么（绑定已在 agent/created 写进 store）。走到这里
+    // 说明父会话本身没绑成 —— 仍不问人，记一条 skipped 并把无身份暴露给调用方。
+    if (parentSessionOf(agent) !== undefined) {
+      bindSkipped(sessionId, 'branch inherits parent identity (no picker in a branch)');
+      return;
+    }
     const running = inFlight.get(sessionId);
     if (running !== undefined) {
       // Second (third, ...) step of the same turn: never a second card.

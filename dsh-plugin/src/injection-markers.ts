@@ -25,8 +25,6 @@
  */
 export const INJECTION_TEXT_MARKERS = [
   '【agemem 记忆提示】',
-  '<soul-identity>',
-  '<soul-feeling>',
   '<relevant-memories>',
   '<team-wiki>',
   '<available_skills>',
@@ -76,7 +74,7 @@ export const LEADING_INVISIBLE_CHARS_RE = /^[\s\u00a0\u3000\u200b-\u200f\u2060\u
  * Mirror of MemoryCore/src/gateway/injection-guard.ts:131-136.
  *
  * Deliberate non-goal (final call by Lead, 2026-11-01): fill is stripped only at
- * line start, never inside a marker. `<soul\u200b-identity>` is not recognised:
+ * line start, never inside a marker. `<zero-width soul marker>` is not recognised:
  * such text is no longer our block, and accepting it would mean treating a user
  * who discusses the literal string as injected.
  */

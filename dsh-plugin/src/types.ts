@@ -21,7 +21,13 @@ export interface HostMessage {
 export interface PromptSectionOptions {
   name: string;
   order: number;
-  text: string | (() => string);
+  /**
+   * The host calls a function section as `text({ agent, scope, signal })`
+   * (dsh-agent: `assembleContextFor`), and `agent.id === agent.session.id` is
+   * enforced by `AgentRegistry.enter()` — that throw is the reason a section can
+   * resolve its own session (task-32).
+   */
+  text: string | ((context?: unknown) => string);
   interpolate?: boolean;
   complete?: boolean;
 }

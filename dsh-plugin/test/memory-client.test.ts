@@ -927,3 +927,85 @@ describe('user-key identity header (task-69)', () => {
     expect(calls[0].headers['x-tdai-user-key']).toBe('explicit-key');
   });
 });
+
+/**
+ * task-13：POST /v3/soul/injection 的载荷契约。Core 只记账，所以这里也必须
+ * 只发身份 + 作用域 + 字符数/哈希——正文留在 Core，一个字节都不上送。
+ */
+describe('soul injection reporting (task-13)', () => {
+  it('只带 team/user/agent/sessionKey/turn/card|volatile，没有任何正文', async () => {
+    const { fetchImpl, calls } = coreFixture();
+    const client = createClient(fetchImpl);
+    await client.reportSoulInjection({
+      sessionKey: 'sess-9',
+      turn: 12,
+      card: { version: 3, hash: 'abc12345', chars: 1200 },
+      volatile: { chars: 321, hash: 'deadbeef', skipped: false },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://core.local:8420/v3/soul/injection');
+    expect(calls[0].method).toBe('POST');
+    expect(Object.keys(calls[0].body as Record<string, unknown>).sort()).toEqual([
+      'agent', 'card', 'sessionKey', 'team', 'turn', 'user', 'volatile',
+    ]);
+    expect(calls[0].body).toMatchObject({
+      team: 'team-1',
+      user: 'usr-1',
+      agent: 'agt-1',
+      sessionKey: 'sess-9',
+      turn: 12,
+      card: { version: 3, hash: 'abc12345', chars: 1200 },
+      volatile: { chars: 321, hash: 'deadbeef', skipped: false },
+    });
+    const sent = JSON.stringify(calls[0].body);
+    expect(sent).not.toContain('text');
+    expect(sent).not.toContain('<soul-');
+    expect(calls[0].headers.authorization).toBe('Bearer secret-key');
+  });
+
+  it('turn 缺省上送 null，且 card/volatile 缺省时不出现在请求体', async () => {
+    const { fetchImpl, calls } = coreFixture();
+    const client = createClient(fetchImpl);
+    await client.reportSoulInjection({ sessionKey: 'sess-1' });
+
+    expect(Object.keys(calls[0].body as Record<string, unknown>).sort()).toEqual([
+      'agent', 'sessionKey', 'team', 'turn', 'user',
+    ]);
+    expect((calls[0].body as Record<string, unknown>).turn).toBeNull();
+  });
+
+  it('上报失败吞掉：网络异常不抛到调用方（fail-open）', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    const client = createClient(fetchImpl as unknown as typeof fetch);
+    await expect(
+      client.reportSoulInjection({ volatile: { chars: 1, hash: 'deadbeef', skipped: true } }),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * task-30 A3：卡正文的 SHA-256 走 `textHash`，与旧快照 `hash` 并存。
+ * 插件读卡时两者都要拿全，否则 section-read 的 64 hex 没法跟 GET 对账。
+ */
+describe('card textHash (task-30 A3)', () => {
+  it('soulCard 与 soulCardDetailed 都透传 textHash；旧 Core 缺该字段时回落空串', async () => {
+    const textHash = 'b'.repeat(64);
+    const { fetchImpl } = coreFixture({
+      card: { version: 4, hash: 'old-hash', textHash, text: '### 名称\\n何晨' },
+    });
+    const client = createClient(fetchImpl);
+    const card = await client.soulCard({ sessionId: 's1' });
+    expect(card?.hash).toBe('old-hash');
+    expect(card?.textHash).toBe(textHash);
+    const detailed = await client.soulCardDetailed({ sessionId: 's1' });
+    expect(detailed).toEqual({ ok: true, card: expect.objectContaining({ version: 4, textHash }) });
+
+    const legacy = coreFixture({ card: { version: 1, hash: 'h1', text: 'x' } });
+    const legacyCard = await createClient(legacy.fetchImpl).soulCard({ sessionId: 's1' });
+    expect(legacyCard?.textHash).toBe('');
+  });
+});

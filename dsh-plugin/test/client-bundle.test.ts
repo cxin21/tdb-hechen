@@ -327,7 +327,7 @@ describe("client half: mounting", () => {
     const fake = fakeContext({}, { serve: false });
     loaded.exports.apply(fake.ctx);
     expect(fake.served).toEqual([["tdb-agemem-dsh"]]);
-    // No config form without a served namespace... but the supervisor page is
+    // No config form without a served namespace... but the lifecycle page is
     // independent of it: a stack that is down must still be visible.
     expect(fake.registrations.map((entry) => entry.options.id)).toEqual(["tdb-services"]);
   });

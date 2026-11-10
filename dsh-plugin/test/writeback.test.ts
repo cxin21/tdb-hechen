@@ -172,7 +172,7 @@ describe('turn writeback', () => {
     });
     fake.emit('session/event', { id: 's1' }, {
       type: 'user/message',
-      data: { turn: 2, message: { id: 'agemem-volatile-3', role: 'user', content: [{ type: 'text', text: '<soul-identity>何晨</soul-identity>' }] } },
+      data: { turn: 2, message: { id: 'agemem-volatile-3', role: 'user', content: [{ type: 'text', text: '<core_memory>何晨</core_memory>' }] } },
     });
     fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn: 2, message: userMessage('真问题问一句') } });
     fake.emit('session/event', { id: 's1' }, { type: 'assistant/message', data: { turn: 2, step: 1, message: assistantMessage('答') } });

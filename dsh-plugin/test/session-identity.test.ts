@@ -211,6 +211,22 @@ describe('installSessionIdentity', () => {
     expect(h.store.get('sess-1')).toMatchObject({ teamId: 'team-b', agentId: 'agt-x', userId: 'usr-a', source: 'picked' });
   });
 
+  it('分支会话从不弹窗：父会话绑什么，它就用什么', async () => {
+    const h = harness();
+    // 父会话：正常走弹窗，绑定 team-a/agt-a。
+    await h.step('parent-1');
+    expect(h.asks.length).toBeGreaterThan(0);
+    expect(h.store.get('parent-1')).toBeDefined();
+
+    // 分支会话：带 parentSession 的 agent 永远不该再弹一次窗。
+    const childAgent = { session: { id: 'child-1', header: { parentSession: 'parent-1' } } };
+    const before = h.asks.length;
+    await h.installed.ensureBound(childAgent);
+    expect(h.asks.length).toBe(before);
+    // 仍给出一条显式的 skipped 绑定（父会话没绑成时不静默用挂载三元组）。
+    expect(h.store.get('child-1')?.source).toBe('skipped');
+  });
+
   it('asks only the agent question when the team is unambiguous and two agents exist', async () => {
     const h = harness({
       teams: [{ teamId: 'team-a', name: '北方团队' }],

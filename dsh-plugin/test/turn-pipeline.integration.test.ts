@@ -129,8 +129,13 @@ describe('turn pipeline (integration)', () => {
       .split(String.fromCharCode(10))
       .slice(1)
       .filter((line) => line !== '' && !line.startsWith('【agemem 记忆提示】'));
+    // 阶段 4 起块尾还可能有「场合：…」一行（≤60 字、按轮变化、只在块已有内容时附加）。
     expect(bodyLines.filter((line) => line.startsWith('- [')).length).toBeGreaterThan(0);
-    expect(bodyLines.every((line) => line.startsWith('- [') || line.startsWith('<soul-'))).toBe(true);
+    expect(
+      bodyLines.every(
+        (line) => line.startsWith('- [') || line.startsWith('<soul-') || line.startsWith('场合：'),
+      ),
+    ).toBe(true);
     expect(blockText).not.toContain('【币值判定规则】');
     expect(blockText).not.toContain('<relevant-memories>');
     expect(callsTo(fixture.calls, '/v3/atomic/search')).toHaveLength(0);
