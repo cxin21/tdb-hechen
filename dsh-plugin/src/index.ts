@@ -7,13 +7,15 @@ import { resolvePluginConfig } from './config-schema.js';
 import { combineLoggers, createDebugLog, resolveDebugLogPath } from './debug-log.js';
 // 答案口径段（task-15）：把 MemoryCore 单一源的作答纪律接到 system prompt。
 import { GUIDANCE_TEXT, GUIDANCE_VERSION } from './guidance.js';
-import { sessionKey } from './ids.js';
+import { agentKey, sessionKey } from './ids.js';
 import { compressHeadPack, HeadPack } from './head-pack.js';
 import { applyIdentity, identityStateOf, listCandidates, resolveIdentityFromUserKey } from './identity.js';
 import { MemoryClient, type ConversationMessage, type MemoryIdentity, type RecallBlockResult, type TurnEndPayload } from './memory-client.js';
 import { defaultOutboxPath, Outbox } from './outbox.js';
+import { createInjectionLog, recordInjection } from './injection-log.js';
+import { createPersonaCard, type PersonaCardHandle } from './persona-card.js';
 import { recallKey, RECALL_INFLIGHT_MAX_ENTRIES, RecallCache, RecallInflight } from './recall-cache.js';
-import { extractSoul, measureSoul, recallBlockText, renderSoulBlock } from './recall-source.js';
+import { clampBlockByLines, recallBlockText } from './recall-source.js';
 // One runner for the head pack and one for the volatile block: every segment
 // lives in src/segments/*.ts and self-registers (see src/segments/index.ts), so
 // this file does not grow when a new data source is added.
@@ -25,9 +27,9 @@ import { l2StatusForDebug, l2StatusSummary } from './segments/l2.js';
 // Session-start identity (task-117 v3): the host's own question card, asked from
 // agent/pre-step, bound per session and used by every later v3 call.
 import { installSessionIdentity, SessionIdentityStore, type UserQuestionsLike } from './session-identity.js';
-// Service stack lifecycle (Wave 4): the plugin supervises core/knowledge/panel
-// itself instead of relying on an out-of-tree bundle plus a PowerShell keeper.
-import { installServices } from './services/install.js';
+// TDB service stack: `dsh-tdb-lifecycle` is the only thing that starts/stops it
+// (task-26). This plugin keeps a thin same-origin proxy for the settings page.
+import { registerLifecycleControl } from './lifecycle-control.js';
 import { SESSION_INIT_MODULE, resolveUserSessionInitDecision } from './user-session-init.js';
 import { SkillClient } from './skill-client.js';
 // Tool surfaces are modules too: src/tools/*.ts self-register, and the loop in
@@ -35,6 +37,8 @@ import { SkillClient } from './skill-client.js';
 import { enabledToolModules } from './tools/index.js';
 import type { AgememContext, LoggerLike, ToolDefinitionShape, ToolsService } from './types.js';
 import { extractTurnClaim, formatVolatileBlock, installVolatile, type VolatileTurnContext } from './volatile.js';
+import { computeScene, formatSceneLine } from './scene.js';
+import { toToolEvents } from './tool-events.js';
 import { installWriteback, type SkillWritebackPayload } from './writeback.js';
 /**
  * dsh native memory plugin (@tdb/agemem-dsh).
@@ -92,10 +96,6 @@ interface VolatileBlock {
   text: string;
   source: 'recall' | 'atomic' | 'none';
   entriesKept: number;
-  /** Chars of `<soul-*>` block inside `text` (0 = no soul this turn). */
-  soulChars: number;
-  /** Opaque core version of the soul, when the core sent one. */
-  soulVersion?: string;
   /** Characters contributed by the capability segments (wiki / knowledge). */
   extrasChars?: number;
 }
@@ -121,13 +121,6 @@ async function withDeadlineMs<T>(promise: Promise<T>, timeoutMs: number): Promis
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-/** The core's soul version (`meta.soulVersion`), verbatim, never the soul text. */
-function soulVersionOf(meta: Record<string, unknown> | undefined): string | undefined {
-  const raw = meta?.soulVersion;
-  if (typeof raw === 'string') return raw.trim() === '' ? undefined : raw.trim();
-  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
-  return undefined;
 }
 /** Text blocks in a host message (blocks or a plain string). */
 export function textOfContent(content: unknown): string {
@@ -174,6 +167,28 @@ export function unboundIdentityMessage(hasConfiguredTriple: boolean): string {
   return hasConfiguredTriple
     ? 'agemem: session identity not bound yet; using the configured triple for this call'
     : 'agemem: session identity not bound yet and no configured triple; this call carries no isolation identity while the user key resolves';
+}
+
+/**
+ * 绑定的三元组 → 人格卡的取卡目标。
+ *
+ * - 返回 identity 字符串：按它调接口取卡，成功后原子覆盖该会话的卡；
+ * - 返回 `null`：「明确不关联」，清掉该会话的卡；
+ * - 返回 `undefined`：这次没绑成，但也没有「不关联」的意思——保留现状。
+ *
+ * 三者必须分开。把「没绑成」并在「不关联」里，就会在切换人设的那一轮先清卡、
+ * 等下一次绑定才补上，那一轮提示词里没有任何人格（2026-11-08 02:14 现场：
+ * 02:14:15.990 清卡、02:14:23.491 才绑上 374 字符）。
+ */
+export function personaBindTarget(binding: {
+  teamId: string;
+  userId?: string;
+  agentId?: string;
+  associate?: boolean;
+}): string | undefined | null {
+  if (binding.associate === false) return null;
+  if (binding.teamId === '') return undefined;
+  return binding.teamId + '/' + (binding.userId ?? '') + '/' + (binding.agentId ?? '');
 }
 
 function questionService(ctx: AgememContext): UserQuestionsLike | undefined {
@@ -281,6 +296,12 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     ? createDebugLog({ filePath: resolveDebugLogPath(config.debugLogFile, process.env) })
     : undefined;
   const log: LoggerLike | undefined = combineLoggers(ctx.logger, debugLog?.logger);
+  // 端到端证据日志：常驻（不吃 config.debug）。记录「卡/轮次块到底注入了多少字节」，
+  // 是 L2 证据；写失败只会让它自己静默，不影响注入（fail-open）。
+  const injectionLog = createInjectionLog({
+    onError: (error) => log?.warn?.('agemem: injection log disabled after a write failure', error),
+  });
+  log?.debug?.('agemem: persona injection log -> ' + injectionLog.path);
   for (const warning of warnings) log?.warn?.('agemem: config ' + warning);
   if (debugLog !== undefined) log?.debug?.('agemem: debug log mirror -> ' + debugLog.path);
   if (!config.enabled) {
@@ -362,6 +383,8 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     'write.l0': false,
     'write.skill': false,
     'outbox.dead': false,
+    // P1-B W3 观测面：一条工具事件被 Core 拒（形状/置信度/鉴权）时只报一次。
+    'soul.event.failed': false,
     identity: false,
   };
   const warnOnce = (flag: keyof typeof warned, message: string, context?: unknown): void => {
@@ -385,6 +408,18 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   // Session bindings live here (not in the box above): a binding overrides the
   // configured triple for ONE session and must never leak into the fallback
   // every other session relies on.
+  /**
+   * 这一次取卡该用哪个身份（task-32）。会话已有绑定就用绑定，否则退回挂载三元组
+   * ——与 `identityFor` 完全同一口径，避免「记忆按 A 队取、卡按 B 队取」。
+   * 空 teamId（显式「不关联」）返回 undefined，调用方据此清卡。
+   */
+  const cardIdentityOf = (sessionId: string): string | undefined => {
+    const bound = identityStore.get(sessionId);
+    const triple = bound ?? identity;
+    if (triple.teamId === '') return undefined;
+    return triple.teamId + '/' + (triple.userId ?? '') + '/' + (triple.agentId ?? '');
+  };
+
   const identityStore = new SessionIdentityStore({
     statePath: config.identity.rememberSession ? sessionStatePathFor(config.identity.statePath, config.writeback.outboxPath) : undefined,
     log,
@@ -450,6 +485,47 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     },
     log,
   });
+  /**
+   * P1-B W3：把这一轮的工具调用逐条写成 soul 事件（tool / test / commit / rollback）。
+   *
+   * 三条纪律：
+   *  1. 只在这一轮的 L0 写回**成功之后**发（见下面 Outbox deliver）：对话正文都没落地时，
+   *     「我跑过这条命令」单独出现在记忆里会前后不搭。
+   *  2. fire-and-forget：不 await、不重投、不塞 Outbox。事件自带 dedupe_key，重复投递
+   *     只会被判 duplicate；而观测面的失败绝不该让 turn 变慢或失败。
+   *  3. 单条 try/catch + warnOnce('soul.event.failed')：一轮几十次工具调用全被拒时只报一行。
+   */
+  const reportToolEvents = (payload: TurnEndPayload): void => {
+    let batch: ReturnType<typeof toToolEvents>;
+    try {
+      batch = toToolEvents(payload.toolCalls, payload.sessionId);
+    } catch (error) {
+      // 纯函数不该抛；真抛了也只是少一批事件，不影响回合。
+      log?.debug?.('agemem: tool events not built', error);
+      return;
+    }
+    if (batch.skipped > 0) {
+      // 只计数不发：没有 result 的调用没有证据（见 tool-events.ts 的跳过说明）。
+      log?.debug?.('agemem: tool calls not reported (no result / callId / sessionId)', { skipped: batch.skipped });
+    }
+    if (batch.events.length === 0) return;
+    void (async () => {
+      for (const event of batch.events) {
+        try {
+          await client.postSoulEvent(event, payload.sessionId);
+        } catch (error) {
+          warnOnce(
+            'soul.event.failed',
+            'agemem: soul tool event rejected by the core ('
+            + (error instanceof Error ? error.message : String(error))
+            + ' on /v3/soul/event); not retried — the payload carries a dedupe_key, so a replay '
+            + 'would only be answered as a duplicate',
+          );
+        }
+      }
+    })();
+  };
+
   // 3b. Identity from one user key (task-51 v2). Mount-time only: a profile with
   //     an explicit triple never makes a metadata round-trip, and a profile that
   //     cannot resolve stays inert (it must not fall back to SOME team — writing
@@ -559,6 +635,76 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   //     the block of the step that follows a pick already carries the new
   //     identity; a step that raced the card falls back to the configured
   //     triple for that one step only.
+  /**
+   * 人格卡（task-32）：每会话一份，绑定即取卡，不落盘、不预热。
+   *
+   * 会话键必须是 picker 绑定时用的那一个（ids.ts 的 agentKey 取
+   * `agent.session.id`）——这里先查 pre-step 登记过的映射，再依次探测
+   * agent.session.id / agent.sessionId / agent.id，并把命中的字段写进
+   * section-read 的 sidField，第一轮真实运行就能看出宿主给的是哪个。
+   * 拿不到 agent 就返回 undefined：persona-card 会记 sidSource:'none' 并注入空串。
+   * 这里没有、也不允许有「最近绑定会话」的兜底——并发会话下那就是串卡的来源。
+   */
+  /**
+   * 会话键（task-32）。宿主自己强制了这个不变量，不是猜的：
+   * `@deepseek-ai/dsh-agent/lib/types/index.js:242-245` 的 AgentRegistry.enter() 里
+   *   `const id = agent.id; if (id !== agent.session.id) throw ...`；
+   * 且 section 的 text 由 `assembleContextFor(agent, signal)` 以
+   * `{ agent, scope: agent, signal }` 调用，所以 `context.agent` 就是那个
+   * Agent，`agent.id === sessionId`。取不到只可能是宿主换了 API：记 none。
+   */
+  const sessionIdOf = (agent: unknown): string | undefined => {
+    const candidate = agent as { id?: unknown; session?: { id?: unknown } } | undefined;
+    const byAgent = typeof candidate?.id === 'string' && candidate.id !== '' ? candidate.id : undefined;
+    if (byAgent !== undefined) return byAgent;
+    const bySession = typeof candidate?.session?.id === 'string' && candidate.session.id !== '' ? candidate.session.id : undefined;
+    return bySession;
+  };
+  const resolveSession = (context: unknown): { sessionId: string; source: 'context-agent'; field: string } | undefined => {
+    const agent = (context as { agent?: unknown } | undefined)?.agent;
+    const sessionId = sessionIdOf(agent);
+    if (sessionId === undefined) return undefined;
+    const field = (agent as { id?: unknown } | undefined)?.id === sessionId ? 'agent.id' : 'agent.session.id';
+    return { sessionId, source: 'context-agent', field };
+  };
+  /** 绑定触发的取卡：onBound 只登记，这里等它完成（失败也算完成）。 */
+  const pendingBinds = new Map<string, Promise<void>>();
+  /**
+   * P2-C：把 Core 说的「这张卡过滤到谁」记进会话绑定。
+   *
+   * 只在**恰好一个人**时写：0 个（不过滤/只剩全局行）或多于 1 个（多人同场）
+   * 都清空 —— 与 Core 侧 human 行的裁决同一口径，不猜。写的是 Core 回显的
+   * person_key，不是插件推导的名字。
+   */
+  const recordPersonKey = (sessionId: string, persons: readonly string[] | undefined): void => {
+    const binding = identityStore.get(sessionId);
+    if (binding === undefined) return;
+    const key = persons !== undefined && persons.length === 1 ? persons[0] : undefined;
+    if (binding.personKey === key) return;
+    try {
+      identityStore.set(sessionId, { ...binding, ...(key === undefined ? { personKey: undefined } : { personKey: key }) });
+    } catch {
+      // 会话绑定的持久化是 fail-open 的：写盘失败不能影响这一轮对话。
+    }
+  };
+  /**
+   * 触发一次取卡并登记，供 ensureIdentity 等待（task-32）。
+   *
+   * bind() 自己 fail-open；这里 `catch` 只是不让意外异常冒到 picker 上。
+   * 同一会话只保留最后一次的 promise（新的覆盖旧的），等待方拿到的永远是最新一次。
+   */
+  const trackBind = (sessionId: string, identity: string | undefined): Promise<void> => {
+    const task = personaCard.bind(sessionId, identity).then((outcome) => {
+      // P2-C：绑定成功才有「这张卡过滤到谁」这个事实；失败保留旧绑定不动。
+      if (outcome.ok) recordPersonKey(sessionId, outcome.persons);
+    }, () => {});
+    pendingBinds.set(sessionId, task);
+    void task.finally(() => {
+      if (pendingBinds.get(sessionId) === task) pendingBinds.delete(sessionId);
+    });
+    return task;
+  };
+
   const sessionIdentity = installSessionIdentity(ctx, {
     settings: {
       askAtSessionStart: config.identity.askAtSessionStart,
@@ -588,43 +734,40 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     // Same budget the mount-time resolution uses: three metadata calls, bounded.
     timeoutMs: Math.min(config.server.requestTimeoutMs, IDENTITY_RESOLUTION_BUDGET_MS),
     log,
-    onSessionSeen: (sessionId) => { latestSessionId = sessionId; },
-    onBound: (_sessionId, binding) => {
-      // A "no association" binding (user said 否 / default_associate=0) carries an
-      // empty triple on purpose. Nothing to fetch, and fetching would be the very
-      // team-scoped read that binding opted out of.
-      if (binding.teamId === '') return;
+    onSessionSeen: (sessionId) => {
+      latestSessionId = sessionId;
+      // 会话第一次出现就取一次卡（task-32）。picker 未配置 userKey 时是惰性的
+      // ——ensureBound 直接返回、onBound 永远不触发；没有这一支，这类部署的
+      // 每个会话都会没有卡。已经有卡的会话不再重取（覆盖只发生在重新绑定）。
+      if (personaCard.snapshot(sessionId) === undefined && !pendingBinds.has(sessionId)) {
+        trackBind(sessionId, cardIdentityOf(sessionId));
+      }
+    },
+    onBound: (sessionId, binding) => {
       // The head pack is frozen once fetched; it was built with the mount triple,
       // so a session that just got bound must refetch instead of serving the
       // wrong team's persona/scene index for the rest of the session.
       headPack.invalidate();
       void headPack.refresh();
+      // 人格卡（task-32）：绑定完成的这一刻取卡，并**覆盖**该会话上一份。
+      // 三种结果见 personaBindTarget 的注释：取卡 / 清卡 / 保留现状。
+      const target = personaBindTarget(binding);
+      if (target === undefined) {
+        log?.debug?.('agemem: binding skipped, keeping the session card', {
+          sessionId,
+          source: binding.source,
+          reason: binding.reason,
+        });
+        return;
+      }
+      trackBind(sessionId, target ?? undefined);
     },
   });
   disposers.push(() => sessionIdentity.dispose());
-  // 服务栈生命周期（Wave 4）：插件自己拉起/看护 core + knowledge + panel。
-  // 缺省关；打开后由本插件直接 spawn（不再有外部 bundle + PowerShell 看护进程
-  // 那三层结构）。fail-open：栈起不来只 warn，插件的记忆能力照常工作。
-  const installedServices = installServices({
-    // Decides whether a local stack makes sense at all: a remote core means
-    // somebody else owns the three services (services/scope.ts).
-    coreBaseUrl: config.server.baseUrl,
-    config: config.services,
-    ctx,
-    log,
-    disposers,
-  });
-  if (!installedServices.managed) {
-    // Not a failure: a remote core (or a switched-off stack) is a normal
-    // deployment. One debug line; the settings page carries the explanation.
-    log?.debug?.(
-      'agemem: service stack is not managed here (' + installedServices.reason + '): ' + installedServices.detail,
-    );
-  } else {
-    log?.debug?.(
-      'agemem: service stack owns ' + installedServices.specs.map((spec) => spec.name + ':' + spec.port).join(','),
-    );
-  }
+  // The settings page's "TDB 服务栈" reads `/tdb-lifecycle/*` on this origin; the
+  // proxy forwards it to the lifecycle bundle's loopback control plane. Nothing
+  // here spawns, probes or stops a service.
+  registerLifecycleControl(ctx, log);
   // Transport for the skill surface (src/skill-client.ts): the same v3 seam as
   // every other call, so identity headers, envelope unwrapping and the API key
   // have exactly one implementation.
@@ -783,6 +926,151 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   } catch (error) {
     log?.debug?.('agemem: prewarm watch unavailable', error);
   }
+  // 2a. 人格卡（spec v3.7 §2，S2）：通道 A 整卡进稳定前缀，通道 B 每轮尾部
+  // 追加心境 + 未完的事。两条都是只读、fail-open：Core 读不到时保持上一版文本
+  // （冷启动就是空串），不阻断会话。
+  //
+  // 冻结语义（task-32）：每个会话各自一份卡，写入时刻只有两个——会话绑定
+  // agent（onBound）与压缩后重取；其余时间 section getter 只读那一份，所以
+  // 同一会话内 system prompt 的前缀字节不变（判据 3）。不同会话各自的卡互不
+  // 影响，也互不共用。
+  const personaCard: PersonaCardHandle = createPersonaCard({
+    enabled: true,
+    // task-11：走留因版读卡——失败要能区分「Core 没设定人格卡」（empty）与
+    // 「取卡坏了」（http_status/timeout/parse），否则排障时两者是同一条日志。
+    fetchCard: async (sessionId?: string) => {
+      const result = await client.soulCardDetailed({
+        timeoutMs: Math.min(2000, config.server.requestTimeoutMs),
+        sessionId,
+      });
+      if (!result.ok) return { reason: result.reason, status: result.status };
+      return result.card;
+    },
+    // P2-C：带会话键取卡 —— Core 用 session 反查该会话最近一条事件的
+    // `persons_json`，把 `human` 层过滤到真正在场的人。participants 不传：
+    // 插件没有可靠的 person_key 来源，猜名字的代价是把卡切错或清空。
+    fetchCardWithParams: async (params: { sessionId?: string; participants?: string[] }) => {
+      const result = await client.soulCardDetailed({
+        timeoutMs: Math.min(2000, config.server.requestTimeoutMs),
+        sessionId: params.sessionId,
+        participants: params.participants,
+      });
+      if (!result.ok) return { reason: result.reason, status: result.status };
+      return result.card;
+    },
+    fetchTurn: (sessionId?: string) => client.soulTurn({
+      timeoutMs: Math.min(800, config.server.requestTimeoutMs),
+      sessionId,
+    }),
+    timeoutMs: Math.min(2000, config.server.requestTimeoutMs),
+    // task-13：卡真进了前缀才回报（只带 version/hash/chars）。不 await——
+    // 回报是观测面，不能拖慢会话初始化，也不能因失败影响注入。
+    reportInjection: (payload) => {
+      void client.reportSoulInjection({ ...payload, phase: 'card' });
+    },
+    injectionLog,
+    // task-32：section getter 靠它把卡落到**当前**会话上（宿主拼提示词时
+    // 传进来的 agent）。取不到会话键就注入空串——没有「最近绑定会话」兜底。
+    resolveSession,
+    log,
+  });
+  try {
+    const base = ctx.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_SUFFIX') ?? DEPLOYMENT_PERSONA_SUFFIX_ORDER;
+    // P1-2：installSection 内部注册**两个** section —— 身份段固定 order 110
+    // （PERSONA_IDENTITY_ORDER，靠前），末尾锚沿用这里的尾部 order
+    // （base + orderOffset + 2，历史之后仍要保留的提醒）。返回值是组合 disposer。
+    disposers.push(personaCard.installSection(ctx, base + config.headPack.orderOffset + 2));
+    // task-32：这里**不**取卡。取卡的唯一时机是「会话选好 agent、绑定完成」，
+    // 由 onBound 触发；启动时预热会拿到上一次会话/挂载三元组的卡，正是串卡来源。
+  } catch (error) {
+    log?.warn?.('agemem: persona card section registration failed; continuing without it', error);
+  }
+  /**
+   * 会话身份与卡的唯一解析时机：`agent/created`（task-34，规范形态）。
+   *
+   * 宿主的 system prompt 是「先同步求值每个 section，再进 waterfall」
+   * （@deepseek-ai/dsh-system-prompt/lib/index.js:384-398）。选 agent 的弹窗原先挂在
+   * `agent/pre-step`，那是 step1 的提示词已经定稿之后 —— 2026-11-08 18:14 的证据：
+   * `section-read chars=0 reason=no-card boundCount=0`，31ms 后才 `card-bound`。
+   *
+   * `agent/created` 在 turn 之前触发（@deepseek-ai/dsh-agent/lib/index.js:581
+   * `announce()`），且实测能在 turn 之外弹窗并等到人的选择（18:35:04 那条
+   * `bind-probe ms=12127`）。卡因此在**第一次 assemble 之前**就进了 map，section
+   * getter 成为唯一渲染者 —— 不再需要任何「事后补写提示词」的路径。
+   *
+   * 四种走法，都是现取、都不读缓存：
+   *   - 已经有卡：不动（同一会话的后续 turn 不会二次取卡）；
+   *   - 已有绑定（重启后恢复的会话）：按绑定取卡，不再问人；
+   *   - 子会话（fork/压缩产生，`parentSession`）：继承父会话的绑定，不问人；
+   *   - 其余（真正的用户新会话）：走 ensureBound 弹窗，取卡由 onBound → trackBind 完成。
+   */
+  const bindAtCreated = async (agent: unknown, signal: unknown): Promise<string> => {
+    const sid = sessionIdOf(agent);
+    if (sid === undefined) return 'no-session-id';
+    if (personaCard.currentFor(sid) !== '') return 'already-held';
+    const header = (agent as { session?: { header?: { parentSession?: unknown } } } | undefined)?.session?.header;
+    const parentSid = typeof header?.parentSession === 'string' ? header.parentSession : undefined;
+    if (parentSid !== undefined) {
+      // 分支（fork/压缩）：静默继承父会话 —— 不弹窗、也不重取一张别的卡。
+      //
+      // 1) 身份：把父绑定原样写进子会话，记忆捕获与召回因此仍落在同一个
+      //    team/user/agent 池里（同一段对话，同一套身份）。父绑定若带
+      //    associate:false，子会话跟着不捕获 —— 与父会话保持一致。
+      // 2) 卡：优先直接复制父会话那份冻结字节（零网络、逐字节相同）；父会话
+      //    这份卡不在内存时（父会话来自上一次进程）按父身份重取一张，仍是
+      //    「继承身份」，只是补字节，不问人。
+      const parentBinding = identityStore.get(parentSid);
+      if (parentBinding !== undefined) {
+        identityStore.set(sid, { ...parentBinding, source: 'inherited', reason: 'branch of ' + parentSid, at: Date.now() });
+      }
+      if (personaCard.inheritFrom(parentSid, sid)) return `inherited-bytes`;
+      const inherited = cardIdentityOf(parentSid);
+      if (inherited === undefined) return 'child-without-identity';
+      const outcome = await personaCard.bind(sid, inherited);
+      if (outcome.ok) recordPersonKey(sid, outcome.persons);
+      return outcome.ok ? 'inherited-from-parent' : 'inherited-failed:' + outcome.reason;
+    }
+    if (identityStore.get(sid) !== undefined) {
+      const outcome = await personaCard.bind(sid, cardIdentityOf(sid));
+      if (outcome.ok) recordPersonKey(sid, outcome.persons);
+      return outcome.ok ? 'restored' : 'restored-failed:' + outcome.reason;
+    }
+    await sessionIdentity.ensureBound(agent, signal);
+    const pending = pendingBinds.get(sid);
+    if (pending !== undefined) await settleWithin(pending, config.server.requestTimeoutMs);
+    return 'picked';
+  };
+  try {
+    disposers.push(ctx.on('agent/created', (payload: { agent?: unknown; signal?: unknown } | undefined) => {
+      const agent = payload?.agent;
+      if (agent === undefined || agent === null) return;
+      const sid = sessionIdOf(agent);
+      const startedAt = Date.now();
+      void (async () => {
+        let reason: string;
+        try {
+          reason = await bindAtCreated(agent, payload?.signal);
+        } catch (error) {
+          reason = 'threw:' + (error instanceof Error ? error.message : String(error));
+        }
+        let chars = 0;
+        try {
+          chars = sid === undefined ? 0 : personaCard.currentFor(sid).length;
+        } catch {
+          // 只是诊断读数，读失败不影响绑定结果。
+        }
+        recordInjection(injectionLog, {
+          event: 'bind-probe',
+          sessionId: sid,
+          chars,
+          reason,
+          ms: Date.now() - startedAt,
+        });
+      })();
+    }));
+  } catch (error) {
+    log?.warn?.('agemem: agent/created bind unavailable; personas will only bind at pre-step', error);
+  }
   // 1. Answer-guidance section (task-15): the memory answer discipline the
   // MemoryCore read path already injects (answer-guidance + memory-tools-guide).
   //
@@ -831,6 +1119,7 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       log?.warn?.('agemem: head pack section registration failed; continuing without it', error);
     }
   }
+
   // 2. Per-turn volatile block (appended at the tail, once per turn).
   //
   // Latency, measured against the local core with one NEW turn text per round:
@@ -852,21 +1141,10 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   //     minutes would freeze the fallback in place.
   const recallCache = new RecallCache();
   const inflight = new RecallInflight<VolatileBlock>(RECALL_INFLIGHT_MAX_ENTRIES, log);
-  /**
-   * sessionId -> the soul version already injected into that session.
-   *
-   * `volatile.soul.oncePerSession` (default) puts the WHOLE persona in on the
-   * first block only: the block is appended as durable `user/message` history,
-   * so the first copy stays visible while later turns pay only for memories.
-   * A new `soulVersion` from the core (the persona was re-distilled) puts it
-   * back in, which is the one case where paying twice is correct.
-   */
-  const soulGate = new Map<string, string>();
-  const SOUL_GATE_MAX_ENTRIES = 200;
-  /** Memory slice when the soul leg is OFF: the historical 1500 budget. The
-   * total cap now carries a 3.6K persona slot that does not exist in that mode,
-   * so the memory-only block must not silently grow into it. */
-  const MEMORY_ONLY_CEILING_CHARS = 1500;
+  /** Per-turn ceiling for the memory slice. The 6000 total also pays for the
+   * capability segments and the persona turn block, so the memories keep their
+   * historical 1500 budget instead of silently growing into that space. */
+  const MEMORY_CEILING_CHARS = 1500;
   const countEntries = (text: string): number =>
     text === '' ? 0 : text.split('\n').filter((line) => line.startsWith('- [')).length;
   /**
@@ -914,9 +1192,52 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       extrasChars: text.length,
     };
   };
+  /**
+   * 阶段 4 / P4-B：场合氛围的接线（按轮变化，所以进 volatile 尾部，不进稳定前缀）。
+   *
+   * 为什么不用 `systemPrompt.context`：插件侧 SDK 里它的签名是
+   * `context?(options: {name, order, text: string})`（`src/types.ts:38`），只有静态
+   * 文本、没有按轮求值的入口；而 volatile 本来就是「每轮追加在尾部」的通道，
+   * 还带预算、去重与注入量回报。把这一行放进 volatile 不用新开通道，也不动前缀。
+   *
+   * TTL 600s：同一会话 10 分钟内话术不变（spec §6 P4-B），避免每轮重算与日志噪音；
+   * 超过 TTL 或本轮明显更「收」/更「松」时才重算——重算判据只看档位，不看分数。
+   */
+  const sceneMemo = new Map<string, { at: number; tone: string; line: string }>();
+  const sceneRecent = new Map<string, { at: number; texts: string[] }>();
+  const SCENE_MEMO_TTL_MS = 600_000;
+
+  const sceneLineFor = (sessionId: string, turnText: string): string => {
+    try {
+      const now = Date.now();
+      const prev = sceneRecent.get(sessionId);
+      const gapMs = prev === undefined ? undefined : now - prev.at;
+      const recentUserTexts = prev?.texts ?? [];
+      const result = computeScene({ lastUserText: turnText, recentUserTexts, gapMs });
+      const texts = [...recentUserTexts, turnText].slice(-5);
+      sceneRecent.set(sessionId, { at: now, texts });
+      const memo = sceneMemo.get(sessionId);
+      if (memo !== undefined && now - memo.at < SCENE_MEMO_TTL_MS && memo.tone === result.tone) {
+        return memo.line;
+      }
+      sceneMemo.set(sessionId, { at: now, tone: result.tone, line: formatSceneLine(result) });
+      log?.debug?.('agemem: scene', { tone: result.tone, chars: result.line.length, score: result.signals.score });
+      return formatSceneLine(result);
+    } catch {
+      // 场合行是锦上添花：算不出来就不注入，绝不影响本轮。
+      return '';
+    }
+  };
+
   const fetchBlock = async (turnText: string, context: VolatileTurnContext): Promise<VolatileBlock> => {
     const started = Date.now();
-    let base: VolatileBlock = { text: '', source: 'none', entriesKept: 0, soulChars: 0 };
+    let base: VolatileBlock = { text: '', source: 'none', entriesKept: 0 };
+    // 通道 B（spec §2 / 判据 4）：心境 + 未完的事，≤400 字符，追加在块尾。
+    // 先取它才能给记忆留出预算，否则一段长记忆会把这一轮的心境挤掉。
+    const personaTurn = await personaCard.turnText(context.sessionId);
+    // 阶段 4：场合行同样要在预算里先占位（它是固定 ≤60 字的一道指令）。
+    const sceneLine = sceneLineFor(context.sessionId, turnText);
+    const turnSlot = (personaTurn === '' ? 0 : personaTurn.length + 2) + (sceneLine === '' ? 0 : sceneLine.length + 2);
     if (config.volatile.recall && Date.now() >= recallUnavailableUntil) {
       const result = await client.recallBlock(turnText, {
         maxResults: config.volatile.recallMaxResults,
@@ -924,51 +1245,17 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         timeoutMs: config.volatile.recallTimeoutMs,
       });
       if (result.ok) {
-        // The soul is a SLICE of the turn budget, taken before the entries so a
-        // long persona can never push memories out of the block; when soul is
-        // absent/empty/disabled the memory budget is exactly today's.
-        //
-        // Full persona (2026-11-01): at 600 chars the slice cut the 3384-char
-        // identity mid-sentence and the `## 不可逾越（红线）` section — which
-        // sits in the MIDDLE of it — never reached the prompt. The budget is now
-        // 4400 (the whole persona) and, with `oncePerSession`, it is paid once
-        // per session instead of every turn.
-        const soulVersion = soulVersionOf(result.meta) ?? '';
-        const soulDue = config.volatile.soul.enabled
-          && (!config.volatile.soul.oncePerSession || soulGate.get(context.sessionId) !== soulVersion);
-        const soulText = soulDue
-          ? renderSoulBlock(extractSoul(result.block), {
-            maxChars: config.volatile.soul.maxChars,
-            includeFeeling: config.volatile.soul.includeFeeling,
-          })
-          : '';
-        if (soulText !== '') {
-          soulGate.delete(context.sessionId);
-          soulGate.set(context.sessionId, soulVersion);
-          if (soulGate.size > SOUL_GATE_MAX_ENTRIES) {
-            const oldest = soulGate.keys().next();
-            if (!oldest.done) soulGate.delete(oldest.value);
-          }
-        }
-        const soulChars = soulText === '' ? 0 : soulText.length;
-        // The slot stays RESERVED on turns that skip the persona: the earlier
-        // copy is still in history, and memories must not expand into space the
-        // persona would have used — that would make later turns bigger, not
-        // smaller.
-        const soulSlot = config.volatile.soul.enabled ? config.volatile.soul.maxChars : 0;
-        const memoryCeiling = soulSlot > 0
-          ? config.volatile.maxChars
-          : Math.min(config.volatile.maxChars, MEMORY_ONLY_CEILING_CHARS);
-        const memoryBudget = Math.max(0, memoryCeiling - (soulChars === 0 ? soulSlot : soulChars + 1));
+        // Memories keep their own ceiling: the persona card rides in the system
+        // prompt, so the volatile block is memories and segments only.
+        const memoryCeiling = Math.min(config.volatile.maxChars, MEMORY_CEILING_CHARS);
+        const memoryBudget = Math.max(0, memoryCeiling - turnSlot);
         const memories = recallBlockText(result.block, memoryBudget);
-        const text = soulText === '' ? memories : (memories === '' ? soulText : soulText + String.fromCharCode(10) + memories);
+        const text = memories;
         if (text !== '') {
           base = {
             text,
             source: 'recall',
             entriesKept: countEntries(memories),
-            soulChars,
-            soulVersion: soulVersionOf(result.meta),
           };
         } else {
           log?.debug?.('agemem: /v3/recall block carried no memory entries; using atomic/search');
@@ -991,12 +1278,25 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         remaining,
         context.sessionId,
       );
-      const text = formatVolatileBlock(recalled.hits, config.volatile.maxChars);
-      // The atomic fallback has no soul leg by design: a degraded path must not
-      // invent persona text, so soulChars stays 0 and the debug line says so.
-      base = { text, source: text === '' ? 'none' : 'atomic', entriesKept: countEntries(text), soulChars: 0 };
+      const text = formatVolatileBlock(recalled.hits, Math.max(0, config.volatile.maxChars - turnSlot));
+      base = { text, source: text === '' ? 'none' : 'atomic', entriesKept: countEntries(text) };
     }
-    return appendCapabilitySegments(base, turnText, started);
+    const composed = await appendCapabilitySegments(base, turnText, started);
+    // 阶段 4：场合行紧贴 persona 行之前（先定「怎么接」，再说「此刻心境」）。
+    // 只在块里已经有东西时才附上：单独一条「场合」指令既没用（没有可接的内容），
+    // 又会让 bypass 用户在本该零注入的回合收到一条消息（task-51 的判据）。
+    const withScene =
+      sceneLine === '' || composed.text === ''
+        ? composed
+        : {
+            ...composed,
+            text: composed.text + String.fromCharCode(10, 10) + sceneLine,
+          };
+    if (personaTurn === '') return withScene;
+    // append-only：只在尾部加，绝不改写已有内容（判据 4）。整块仍受 volatile.maxChars
+    // 约束，所以极端情况下裁掉的只会是尾部（最后一条记忆/片段），不会切断前缀。
+    const joined = withScene.text === '' ? personaTurn : withScene.text + String.fromCharCode(10, 10) + personaTurn;
+    return { ...withScene, text: clampBlockByLines(joined, config.volatile.maxChars) };
   };
   /**
    * Fire-and-forget prefetch for one turn's user text. Keyed exactly like the
@@ -1033,9 +1333,23 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         maxChars: config.volatile.maxChars,
         timeoutMs: config.volatile.timeoutMs,
         log,
+        // task-13：把本 step 真实 append 的字符数回报给 Core（跳过 = chars 0）。
+        // fire-and-forget：catch 在 memory-client 内侧吞掉，这里不 await，不拖慢 pre-step。
+        reportInjection: (payload) => {
+          void client.reportSoulInjection({ ...payload, phase: 'volatile' });
+        },
+        injectionLog,
         // Second line of defence (task-117): the picker listener is registered
         // first, but a step that raced it must not recall with the mount triple.
-        ensureIdentity: (agent, signal) => sessionIdentity.ensureBound(agent, signal),
+        // task-32：绑定完成之后，人格卡要先就位——本会话第一个 turn 的
+        // system prompt 必须已经是这张卡。ensureBound 之后等这次 bind 结束
+        // （失败也算结束），最多等到 requestTimeoutMs，绝不退回启动时预热。
+        ensureIdentity: async (agent, signal) => {
+          const sid = sessionIdOf(agent);
+          await sessionIdentity.ensureBound(agent, signal);
+          const pending = sid === undefined ? undefined : pendingBinds.get(sid);
+          if (pending !== undefined) await settleWithin(pending, config.server.requestTimeoutMs);
+        },
         getBlock: async (turnText: string, context: VolatileTurnContext) => {
           const key = recallKey(context.sessionId, context.turn, turnText);
           const cached = recallCache.get(key);
@@ -1046,10 +1360,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
               source: 'recall',
               injectedChars: cached.length,
               entriesKept: countEntries(cached),
-              // The cache stores text only, so the soul size is measured out of
-              // the block itself; soulVersion is not cached (it never changes
-              // within the cache TTL in practice).
-              soulChars: measureSoul(cached),
             });
             return cached;
           }
@@ -1063,9 +1373,7 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
             source: block.source,
             injectedChars: block.text.length,
             entriesKept: block.entriesKept,
-            soulChars: block.soulChars,
             ...(block.extrasChars === undefined ? {} : { extrasChars: block.extrasChars }),
-            ...(block.soulVersion === undefined ? {} : { soulVersion: block.soulVersion }),
           });
           if (block.text === '') return undefined;
           recallCache.set(key, block.text);
@@ -1191,6 +1499,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
                 if ((result.chunks ?? 1) > 1 || (result.truncated ?? 0) > 0) {
                   log?.debug?.('agemem: conversation write ok', { chunks: result.chunks, truncated: result.truncated });
                 }
+                // P1-B W3：对话正文落地之后，同一轮的工具调用才作为独立事件上报。
+                // 不 await：事件面失败绝不影响 outbox 的投递结果与后面的 turn。
+                reportToolEvents(payload);
                 return { ok: true } as const;
               }
               // 200 + code!==0 is a rejection: the core maps some validation
@@ -1387,6 +1698,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         ctx.on(event, () => {
           headPack.invalidate();
           void headPack.refresh();
+          // 压缩会重建上下文：卡在这个点之后按**同一会话**重取（不换身份），
+          // 新版本才可能进下一段前缀。
+          if (latestSessionId !== undefined) void personaCard.refresh(latestSessionId);
         }),
       );
     } catch (error) {
@@ -1406,13 +1720,6 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       ? (l2StatusSummary() ?? 'pending')
       : 'off'),
     'volatile=' + (config.volatile.enabled ? (config.volatile.recall ? 'recall' : 'atomic') : 'off'),
-    // Soul is a slice of the volatile budget, so the mount line has to say
-    // whether that slice is on and how big it is — otherwise 'the persona is
-    // missing' is indistinguishable from 'soul is off'. Never the text itself;
-    // the per-turn debug line reports the core's soulVersion instead.
-    'soul=' + (config.volatile.enabled && config.volatile.soul.enabled
-      ? 'on(' + config.volatile.soul.maxChars + (config.volatile.soul.includeFeeling ? ',feeling' : '') + ')'
-      : 'off'),
     'writeback=' + (config.writeback.enabled ? 'on' : 'off'),
     'skillFeed=' + (config.writeback.enabled && config.writeback.skillFeed ? 'on' : 'off'),
     'tools=' + (config.tools.enabled && config.tools.recall ? 'on' : 'off'),

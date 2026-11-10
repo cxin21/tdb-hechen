@@ -1,6 +1,7 @@
 import type { AgememPaths } from './config.js';
 import { classifyL2Failure, parseL2Outcome, type L2FetchOutcome } from './head-pack.js';
 import type { LoggerLike } from './types.js';
+import type { PersonaCardFailureReason } from './persona-card.js';
 import {
   DEFAULT_MAX_RESPONSE_BYTES,
   clampMaxResponseBytes,
@@ -127,8 +128,8 @@ export interface SkillWriteResult {
 }
 
 /**
- * One /v3/recall answer. `block` is the rendered prompt fragment (soul-identity /
- * soul-feeling / relevant-memories); `status`/\`reason\` keep the failure
+ * One /v3/recall answer. `block` is the rendered prompt fragment (the
+ * relevant-memories section); `status`/\`reason\` keep the failure
  * diagnosable (404 = endpoint disabled, 504 = gateway timeout).
  */
 export interface RecallBlockResult {
@@ -142,6 +143,152 @@ export interface RecallBlockResult {
    */
   aborted?: boolean;
   meta?: Record<string, unknown>;
+}
+
+/** GET /v3/soul/card 的应答（通道 A 的整卡元数据 + 文本）。 */
+export interface PersonaCardRead {
+  version: number;
+  /** Core 的快照口径（旧 hash），保持向后兼容。 */
+  hash: string;
+  /** SHA-256(hex) of `text`（A3）；Core 是旧版本时为空串。 */
+  textHash: string;
+  text: string;
+  chars: number;
+  dirty: boolean;
+  /**
+   * P1-2 两段（新版 Core 才有）。缺省 = 旧 Core：插件退化成「整卡进 identity、
+   * anchor 空」，老行为不变。
+   */
+  identity?: SoulCardSegment;
+  anchor?: SoulCardSegment;
+  /**
+   * P2-C：Core 本次实际用于按人过滤的 person_key。三态：字段不存在 = 不过滤；
+   * `[]` = 只剩全局共性行；非空 = 过滤到这些人。
+   */
+  persons?: string[];
+}
+
+/** 一段的文本（P1-2）。只带 `text`，原样不裁。 */
+export interface SoulCardSegment {
+  text: string;
+}
+
+/**
+ * 段的宽松映射（P1-2）：形状不对、非字符串、纯空白都算「这段没有」→ undefined。
+ *
+ * **不 trim**：Core 段 hash 是 `sha256(段文本)`，这里 trim 过就和它对不上账了。
+ * 旧 Core 不带这两个字段，这里返回 undefined，插件侧走整卡退化路径。
+ */
+function soulCardSegment(value: unknown): SoulCardSegment | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const text = (value as { text?: unknown }).text;
+  if (typeof text !== 'string' || text.trim() === '') return undefined;
+  return { text };
+}
+
+/**
+ * `/v3/soul/card` 的 `persons`（P2-C）：Core 本次实际用于过滤的 person_key。
+ *
+ * 三态必须保住，不能压成 `[]`：
+ *  - 字段不存在（不过滤）→ `undefined`；
+ *  - `[]`（Core 明确按空名单过滤，只剩全局行）→ `[]`；
+ *  - 非字符串项一律丢掉（坏形状不该抛，也不该被当成一个人）。
+ */
+function soulCardPersons(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === 'string' && item !== '');
+}
+
+/**
+ * POST /v3/soul/injection 的上报载荷（task-13）。只含元数据：字符数与哈希，
+ * 没有正文——正文留在 Core，插件只证「实际注入了多少」。
+ */
+export interface SoulInjectionReportPayload {
+  /** 会话作用域名（= agentKey），与召回请求同一口径。 */
+  sessionKey?: string;
+  /** 宿主轮号；缺省/未知时上送 null（Core 侧按 sessionKey 归并）。 */
+  turn?: number | null;
+  /** 稳定段：哪一版人格卡进了 system prompt。 */
+  card?: { version: number; hash: string; chars: number };
+  /** 每轮段：真正 append 的字符数（跳过时 chars=0, skipped=true）。 */
+  volatile?: { chars: number; hash: string; skipped: boolean };
+  /**
+   * 通道标记：插件一次注入会 POST 两次（取卡 / 每轮），Core 侧对账要按通道
+   * 各算各的（卡冻结后每会话只变一次；volatile 每轮一行且可能 skip）。
+   */
+  phase?: 'card' | 'volatile';
+}
+
+/**
+ * POST /v3/soul/event 的证据行（P1-B W2 写面）。
+ * 工具事件填 role='tool'，record_id 记 **tool_call_id**（不是 L0 record_id）。
+ */
+export interface SoulEventEvidencePayload {
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'unknown';
+  /** 证据原文；Core 侧上限 400 字符（超长截断，不拒）。 */
+  quote?: string;
+  /** 证据指向，<=200。 */
+  record_id: string;
+}
+
+/** POST /v3/soul/event 的行动段（只有工具类事件才有）。 */
+export interface SoulEventActionPayload {
+  /** 工具名，<=200。 */
+  tool: string;
+  tool_call_id?: string;
+  /** sha256(JSON.stringify(arguments))：只留指纹，不上送命令正文。 */
+  args_digest?: string;
+  /**
+   * 口径是 Core 的 SOUL_ACTION_STATUSES：success | fail | partial | unknown。
+   * **不是 failure**——写 failure 会被整条 400。
+   */
+  result_status?: 'success' | 'fail' | 'partial' | 'unknown';
+  duration_ms?: number;
+  error_code?: string;
+}
+
+/**
+ * POST /v3/soul/event 的一条事件。字段与
+ * MemoryCore/src/gateway/soul-event-endpoint.ts 逐条对齐：租户三元组**不在 body 里**
+ * （走 x-tdai-* 头，见 call(..., { echoIsolationInBody: false })）。
+ */
+export interface SoulEventPayload {
+  /** 幂等键，<=200；重复投递返回 duplicate=true 而不是再写一行。 */
+  dedupe_key: string;
+  source_kind: 'chat' | 'tool' | 'test' | 'commit' | 'rollback' | 'observation' | 'reflection' | 'system';
+  /** 一句话摘要，<=400。 */
+  summary: string;
+  session_id?: string;
+  occurred_at?: string;
+  persons?: string[];
+  evidence?: SoulEventEvidencePayload[];
+  action?: SoulEventActionPayload;
+  epistemic?: 'observed' | 'inferred' | 'assumed';
+  /** [0,1]；工具类事件 observed 的上限是 0.9（§4.2 第 4 条）。 */
+  confidence?: number;
+  actor?: 'self' | 'user' | 'third' | 'tool' | 'system';
+  /** 缺省由 action.result_status 派生（success→done / fail→failed / unknown→unknown）。 */
+  status?: 'open' | 'done' | 'failed' | 'partial' | 'unknown';
+}
+
+/**
+ * 取卡失败的归类（task-11）。`read()` 把失败折成 reason 字符串，这里翻译成
+ * 插件日志用的四类：http_status（回错码 / 根本没到 Core）、timeout、empty
+ * （Core 正常但没有卡正文）、parse（应答不是可用信封/JSON）。
+ */
+export function classifySoulCardFailure(result: {
+  status?: number;
+  reason?: string;
+}): { reason: PersonaCardFailureReason; status?: number } {
+  if (typeof result.status === 'number') return { reason: 'http_status', status: result.status };
+  const reason = String(result.reason ?? '');
+  if (reason === 'timeout') return { reason: 'timeout' };
+  // 没绑定身份 = 没可读的卡，不是故障。
+  if (reason === 'identity missing') return { reason: 'empty' };
+  // 信封 code!=0：Core 明确拒绝了这个读。
+  if (reason.startsWith('code ')) return { reason: 'http_status' };
+  // bad_json / too_large / 非信封 / transport failure：应答不可用。
+  return { reason: 'parse' };
 }
 
 /** Outbox payload shape, owned by writeback.ts; the client only consumes it. */
@@ -1325,6 +1472,264 @@ export class MemoryClient {
     }
     const total = typeof result.data?.total === 'number' ? result.data.total : undefined;
     return { ok: true, items, total };
+  }
+
+
+  /**
+   * GET one v3 route and unwrap the envelope. Same headers / identity gate /
+   * capped read as call(), but with a query string instead of a body — the two
+   * soul read routes (GET /v3/soul/card, GET /v3/soul/turn) are pure reads and
+   * address the tenant through query params. Never throws.
+   */
+  private async read<T>(
+    path: string,
+    query: Record<string, string | undefined>,
+    options: { timeoutMs?: number; sessionId?: string; reportAuthFailure?: boolean } = {},
+  ): Promise<{ ok: boolean; status?: number; reason?: string; data?: T }> {
+    if (this.missingIdentity(options.sessionId) !== undefined) {
+      return { ok: false, reason: 'identity missing' };
+    }
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === 'string' && value !== '') params.set(key, value);
+    }
+    const qs = params.toString();
+    const url = this.url(path) + (qs === '' ? '' : '?' + qs);
+    const timeout = this.timeoutOf(options.timeoutMs);
+    try {
+      const result = await fetchJsonCapped<Envelope<T>>(
+        url,
+        { method: 'GET', headers: await this.headers(undefined, options.sessionId), signal: AbortSignal.timeout(timeout) },
+        { maxBytes: this.maxResponseBytes(), timeoutMs: 0, fetchImpl: this.fetchImpl },
+      );
+      if (result.kind === 'http') {
+        if ((result.status === 401 || result.status === 403) && options.reportAuthFailure !== false) {
+          try {
+            this.deps.onAuthFailure?.({ path, status: result.status });
+          } catch {
+            // The hook is best-effort; a throwing hook must not break the read.
+          }
+        }
+        this.deps.log?.debug?.('agemem: ' + path + ' -> HTTP ' + String(result.status));
+        return { ok: false, status: result.status, reason: 'HTTP ' + String(result.status) };
+      }
+      if (result.kind !== 'ok') {
+        this.deps.log?.debug?.('agemem: ' + path + ' read failed (' + result.kind + ')');
+        return { ok: false, reason: result.kind };
+      }
+      const envelope = result.json as Envelope<T> | undefined;
+      if (!envelope || typeof envelope !== 'object') return { ok: false, reason: 'response was not an envelope' };
+      if (envelope.code !== 0) {
+        const summary = typeof envelope.message === 'string' ? envelope.message.trim().slice(0, 200) : '';
+        return { ok: false, reason: 'code ' + String(envelope.code) + (summary === '' ? '' : ': ' + summary) };
+      }
+      const data = envelope.data;
+      return { ok: true, data: (data !== null && typeof data === 'object' ? data : {}) as T };
+    } catch (error) {
+      const name = (error as { name?: string } | undefined)?.name;
+      this.deps.log?.debug?.(
+        name === 'TimeoutError' || name === 'AbortError'
+          ? 'agemem: ' + path + ' timed out after ' + String(timeout) + 'ms'
+          : 'agemem: ' + path + ' read failed',
+        error,
+      );
+      return { ok: false, reason: 'transport failure' };
+    }
+  }
+
+  /**
+   * `/v3/soul/card` 的 query（P2-C）。
+   *
+   * 两个新参数的分工，别混：
+   *  - `session`：会话键。Core 拿它反查该会话最近一条事件的 `persons_json`
+   *    （person_key 数组），这是**唯一**由插件驱动按人取卡的路径 —— 插件不猜人名；
+   *  - `participants`：显式名单，只在调用方真的拿到 person_key（`p_` 前缀）时才传。
+   *    传展示名的后果是 Core 里查不到就丢弃，而「显式 `participants=`（空串）」
+   *    在 Core 的语义是「只剩全局共性行」—— 会把本人 `human` 行静默清空。
+   *    所以空数组**不传**（等于不过滤），绝不发一个空串出去。
+   */
+  private soulCardQuery(options: {
+    sessionId?: string;
+    participants?: string[];
+  }): Record<string, string | undefined> {
+    const { teamId, agentId, userId } = this.identityOf(options.sessionId);
+    const explicit =
+      options.participants !== undefined && options.participants.length > 0
+        ? options.participants.join(',')
+        : undefined;
+    return {
+      team: nonEmpty(teamId),
+      user: nonEmpty(userId),
+      agent: nonEmpty(agentId),
+      session: nonEmpty(options.sessionId),
+      participants: explicit,
+    };
+  }
+
+  /**
+   * GET /v3/soul/card — 通道 A 的整卡（version/hash/text）。纯读、无副作用。
+   * 失败一律 undefined，调用方 fail-open 保留上一版。
+   *
+   * P2-C：带 `sessionId` 时把会话键交给 Core，由它决定这张卡要过滤到谁；
+   * 返回的 `persons` 是 Core 本次**实际用于过滤**的 person_key（不过滤时没有该字段）。
+   */
+  async soulCard(
+    options: { timeoutMs?: number; sessionId?: string; participants?: string[] } = {},
+  ): Promise<PersonaCardRead | undefined> {
+    const result = await this.read<Record<string, unknown>>(
+      '/v3/soul/card',
+      this.soulCardQuery(options),
+      options,
+    );
+    if (!result.ok) return undefined;
+    const data = result.data;
+    if (data === undefined) return undefined;
+    const text = nonEmpty(data.text);
+    if (text === undefined) return undefined;
+    return {
+      version: typeof data.version === 'number' ? data.version : 0,
+      hash: nonEmpty(data.hash) ?? '',
+      textHash: nonEmpty(data.textHash) ?? '',
+      text,
+      chars: typeof data.chars === 'number' ? data.chars : text.length,
+      dirty: data.dirty === true,
+      // P1-2：两段原样透传（不 trim），插件侧按段注入。
+      identity: soulCardSegment(data.identity),
+      anchor: soulCardSegment(data.anchor),
+      // P2-C：Core 本次实际用于过滤的 person_key（不过滤时整个字段不出现）。
+      persons: soulCardPersons(data.persons),
+    };
+  }
+
+  /**
+   * GET /v3/soul/card 的留因版（task-11）：失败折成四类之一，供插件日志区分
+   * 「Core 还没设定人格卡」（empty）与「取卡失败」（http_status/timeout/parse）。
+   * 纯读、无副作用、不抛。
+   */
+  async soulCardDetailed(
+    options: { timeoutMs?: number; sessionId?: string; participants?: string[] } = {},
+  ): Promise<{ ok: true; card: PersonaCardRead } | { ok: false; reason: PersonaCardFailureReason; status?: number }> {
+    const result = await this.read<Record<string, unknown>>(
+      '/v3/soul/card',
+      this.soulCardQuery(options),
+      options,
+    );
+    if (!result.ok) return { ok: false, ...classifySoulCardFailure(result) };
+    const data = result.data;
+    if (data === undefined) return { ok: false, reason: 'empty' };
+    const text = nonEmpty(data.text);
+    if (text === undefined) return { ok: false, reason: 'empty' };
+    return {
+      ok: true,
+      card: {
+        version: typeof data.version === 'number' ? data.version : 0,
+        hash: nonEmpty(data.hash) ?? '',
+        textHash: nonEmpty(data.textHash) ?? '',
+        text,
+        chars: typeof data.chars === 'number' ? data.chars : text.length,
+        dirty: data.dirty === true,
+        // P1-2：两段原样透传（不 trim），插件侧按段注入。
+        identity: soulCardSegment(data.identity),
+        anchor: soulCardSegment(data.anchor),
+        // P2-C：同 soulCard（留因版也要带，否则 session-identity 拿不到 person_key）。
+        persons: soulCardPersons(data.persons),
+      },
+    };
+  }
+
+  /**
+   * GET /v3/soul/turn — 通道 B：本轮心境 + 未完的事（≤400 字符，Core 已裁）。
+   * 失败一律 undefined；空文本意味着本轮没有可说的。
+   */
+  async soulTurn(
+    options: { timeoutMs?: number; sessionId?: string } = {},
+  ): Promise<{ text: string; openLoops: string[] } | undefined> {
+    const { teamId, agentId, userId } = this.identityOf(options.sessionId);
+    const result = await this.read<{ text?: unknown; openLoops?: unknown }>('/v3/soul/turn', {
+      team: nonEmpty(teamId),
+      user: nonEmpty(userId),
+      agent: nonEmpty(agentId),
+      session: options.sessionId,
+    }, options);
+    if (!result.ok || result.data === undefined) return undefined;
+    const text = typeof result.data.text === 'string' ? result.data.text : '';
+    const raw = result.data.openLoops;
+    const openLoops = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
+    return { text, openLoops };
+  }
+
+  /**
+   * POST /v3/soul/injection —— 把「这一轮实际注入的元数据」回报给 Core（task-13），
+   * 让召回日志里的注入量等于真实注入，而不是「召回了多少」。
+   *
+   * 契约：只发身份三元组 + sessionKey + turn + 字符数/哈希。
+   * **绝不上送卡正文或注入正文**（Core 只需记账，正文在 Core 侧本来就有）。
+   * fire-and-forget：任何失败吞掉、不抛；调用方不需要 await，回报失败不影响回合。
+   */
+  async reportSoulInjection(
+    payload: SoulInjectionReportPayload,
+    sessionId?: string,
+  ): Promise<void> {
+    try {
+      const { teamId, agentId, userId } = this.identityOf(sessionId);
+      const body: Record<string, unknown> = {
+        team: nonEmpty(teamId),
+        user: nonEmpty(userId),
+        agent: nonEmpty(agentId),
+        sessionKey: nonEmpty(payload.sessionKey),
+        turn: payload.turn ?? null,
+      };
+      if (payload.card !== undefined) {
+        body.card = {
+          version: payload.card.version,
+          hash: payload.card.hash,
+          chars: payload.card.chars,
+        };
+      }
+      if (payload.phase !== undefined) body.phase = payload.phase;
+      if (payload.volatile !== undefined) {
+        body.volatile = {
+          chars: payload.volatile.chars,
+          hash: payload.volatile.hash,
+          skipped: payload.volatile.skipped,
+        };
+      }
+      // 契约要求 body 只有 team/user/agent/sessionKey/turn/card|volatile：
+      // 全局 echoIsolationInBody 会把 team_id/agent_id/user_id 再插一份（其他
+      // v3 路由的既有口径），这条记账路由用不到——身份已由 x-tdai-* 头带上。
+      await this.call('/v3/soul/injection', body, {
+        timeoutMs: 3000,
+        sessionId,
+        echoIsolationInBody: false,
+      });
+    } catch {
+      // best-effort 观测面：回报失败绝不外溢到对话回合。
+    }
+  }
+
+  /**
+   * POST /v3/soul/event —— P1-B W3：把一次工具调用写成一条 soul 事件。
+   *
+   * 与 reportSoulInjection 的差别在错误语义：那条是纯记账（全吞），这条是事实来源
+   * （「我跑过这条命令」要能被 dedupe 判重、被人工验收），所以信封 code!==0 必须
+   * 抛给调用方，由 index.ts 的 warnOnce 只报一次；duplicate=true 是正常返回，不抛。
+   *
+   * 租户三元组只走 x-tdai-* 头（core 侧从 header 取，body 里带了反而多一份口径）。
+   */
+  async postSoulEvent(
+    payload: SoulEventPayload,
+    sessionId?: string,
+  ): Promise<{ eventId?: string; duplicate: boolean }> {
+    const result = await this.call<{ event_id?: unknown; duplicate?: unknown }>(
+      '/v3/soul/event',
+      payload as unknown as Record<string, unknown>,
+      { timeoutMs: 3000, sessionId, echoIsolationInBody: false },
+    );
+    if (!result.ok) {
+      throw new Error('soul event rejected: ' + (result.reason ?? 'no response'));
+    }
+    const eventId = typeof result.data?.event_id === 'string' ? result.data.event_id : undefined;
+    return { eventId, duplicate: result.data?.duplicate === true };
   }
 
   /** Liveness probe; `true` when the core answers with a zero-code envelope. */

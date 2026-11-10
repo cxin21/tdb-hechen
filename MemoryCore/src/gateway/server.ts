@@ -53,6 +53,16 @@ import { StorePool } from "../core/store/store-pool.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
 import { handleRerankRoute } from "./rerank-endpoint.js";
 import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
+import { handleSoulCardRoute, handleSoulTraitStateRoute } from "./soul-card-endpoint.js";
+import { handleSoulEmotionsRoute } from "./soul-emotions-endpoint.js";
+import { handleSoulPersonRoute, handleSoulPersonsRoute } from "./soul-person-endpoint.js";
+import { handleSoulInjectionRoute } from "./soul-injection-endpoint.js";
+import { SOUL_EVENT_PATH, handleSoulEventRoute } from "./soul-event-endpoint.js";
+import {
+  SOUL_INJECTION_STATS_PATH,
+  handleSoulInjectionStatsRoute,
+} from "./soul-injection-stats-endpoint.js";
+import type { AgentProfile } from "../core/soul/agent-profile.js";
 import { computeMoodTierFromStore, type MoodLineConfig } from "../core/hooks/mood-line.js";
 import { createReranker } from "../core/recall/rerank/factory.js";
 import type { RecallRerankConfig } from "../config.js";
@@ -1186,6 +1196,31 @@ export class TdaiGateway {
   // Request router
   // ============================
 
+  /**
+   * S2/S6：表单人格的唯一跨库读接缝（metadata 库 → core 只读端口）。
+   * worker 的 seedState/红线投影与 /v3/soul/card 共用同一份实现，避免「卡里读到 A、槽里读到 B」。
+   */
+  private async readAgentProfileFromMetadata(agentId: string): Promise<AgentProfile | null> {
+    const svc = await this.ensureMetadataService(((this as { instanceId?: string }).instanceId) ?? "default");
+    const row = await svc.getAgentPersona(agentId);
+    if (!row) return null;
+    const { normalizeAgentPersona } = await import("../core/soul/agent-profile.js");
+    return normalizeAgentPersona({
+      agentId: row.agent_id,
+      teamId: row.team_id,
+      name: row.name,
+      pronoun: row.pronoun,
+      selfImage: row.self_image,
+      voice: row.voice,
+      purpose: row.purpose,
+      traitsJson: row.traits_json,
+      redlinesJson: row.redlines_json,
+      schemaVersion: row.schema_version,
+      fingerprint: row.fingerprint,
+      updatedAt: row.updated_at,
+    });
+  }
+
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const method = req.method?.toUpperCase() ?? "GET";
@@ -1215,8 +1250,8 @@ export class TdaiGateway {
       }
 
       // ── /v3/soul/introspect —— soul 只读自省端点（#36，R5）。
-      //    Bearer 门禁与 /v1/rerank 同级；只读合同：introspectSoul 强制
-      //    snapshotsEnabled:false，零写入；store 未就绪 → 503。
+      //    Bearer 门禁与 /v1/rerank 同级；只读合同：introspectSoul 渲染零写入
+      //    （快照落账已退役）；store 未就绪 → 503。
       //    #36 保真度补全：defaultRenderOpts=生产 soul 渲染配置镜像 + moodTierProvider=
       //    现算近期基调（与 auto-recall 同源 computeMoodTierFromStore）+ stateProvider=
       //    现读当下状态（同源 readSoulState）——探针评估与生产注入同形文本。
@@ -1224,31 +1259,9 @@ export class TdaiGateway {
         if (!this.checkAuth(req, res)) return;
         const memCfg = this.config.memory as {
           coreMemory?: {
-            selfIdentity?: { enabled?: boolean };
-            characterTension?: { enabled?: boolean };
             moodLine?: MoodLineConfig;
+            /** #36（R5）：soul_introspect 只读自省面参数（快照尾条数 / 孤儿锚证据窗）。 */
             soulRender?: {
-              budgetSelfChars?: number;
-              budgetIdentityChars?: number;
-              maxRelationLines?: number;
-              budgetAnchorChars?: number;
-              budgetPersonChars?: number;
-              budgetCharacterChars?: number;
-              /** #52 D3：per-turn 身份两行省略门（缺省 true=逐位现状）。 */
-              perTurnSlots?: boolean;
-              /** #67（R3 身份叙事层）：身份叙事化门（缺省 false=逐位现状）。 */
-              identityNarrative?: { enabled?: boolean };
-              /** T3（T6-F1 接线）：承诺块渲染门（缺省 false=逐位现状）。 */
-              promises?: { enabled?: boolean };
-              /** soul 去重门（soul-dedupe，2026-10-19；质量轮扩 maxLines/suppressAnchorOverlap/
-               *  embeddingThreshold）：与 auto-recall 同源 soulRender 配置镜像。 */
-              strictRuleDedup?: {
-                enabled?: boolean;
-                jaccardThreshold?: number;
-                maxLines?: number;
-                suppressAnchorOverlap?: boolean;
-              };
-              anchorDedup?: { enabled?: boolean; embeddingThreshold?: number };
               introspect?: { snapshotLimit?: number; evidenceWindowHours?: number };
             };
           };
@@ -1257,25 +1270,6 @@ export class TdaiGateway {
         await handleSoulIntrospectRoute(req, res, pathname, method, parseJsonBody, sendJson, {
           getStore: () => this.core.getStoreForIntrospect(),
           defaults: coreMem?.soulRender?.introspect,
-          defaultRenderOpts: {
-            selfIdentityEnabled: coreMem?.selfIdentity?.enabled === true,
-            budgetSelfChars: coreMem?.soulRender?.budgetSelfChars,
-            budgetIdentityChars: coreMem?.soulRender?.budgetIdentityChars,
-            maxRelationLines: coreMem?.soulRender?.maxRelationLines,
-            budgetAnchorChars: coreMem?.soulRender?.budgetAnchorChars,
-            budgetPersonChars: coreMem?.soulRender?.budgetPersonChars,
-            budgetCharacterChars: coreMem?.soulRender?.budgetCharacterChars,
-            // #52 D3：per-turn 身份两行省略门镜像（与 auto-recall 同源 soulRender 配置）。
-            perTurnSlots: coreMem?.soulRender?.perTurnSlots,
-            // #67（R3 身份叙事层）：身份叙事化门镜像（与 auto-recall 同源 soulRender 配置）。
-            identityNarrative: coreMem?.soulRender?.identityNarrative?.enabled === true,
-            // T3（T6-F1 接线）：承诺块渲染门镜像（与 auto-recall 同源 soulRender 配置）。
-            promisesEnabled: coreMem?.soulRender?.promises?.enabled === true,
-            characterTensionEnabled: coreMem?.characterTension?.enabled === true,
-            // soul 去重门（soul-dedupe，2026-10-19）：镜像（与 auto-recall 同源 soulRender 配置）。
-            strictRuleDedup: coreMem?.soulRender?.strictRuleDedup,
-            anchorDedup: coreMem?.soulRender?.anchorDedup,
-          },
           moodTierProvider: async (tenant) => {
             const st = this.core.getStoreForIntrospect();
             return st ? computeMoodTierFromStore(st, tenant, coreMem?.moodLine) : null;
@@ -1294,6 +1288,78 @@ export class TdaiGateway {
               ...(row.updatedAt ? { at: row.updatedAt } : {}),
             };
           },
+          logger: this.logger,
+        });
+        return;
+      }
+
+      // ── /v3/soul/card · /v3/soul/turn · /v3/soul/trait-state · /v3/soul/emotions
+      //    · /v3/soul/person · /v3/soul/persons —— soul 层的只读面（GET）。
+      //    情绪明细 + 漏斗见 soul-emotions-endpoint.ts；人物单读/列表见 soul-person-endpoint.ts。
+      if (
+        method === "GET" &&
+        (pathname === "/v3/soul/card" ||
+          pathname === "/v3/soul/turn" ||
+          pathname === "/v3/soul/trait-state" ||
+          pathname === "/v3/soul/emotions" ||
+          pathname === "/v3/soul/person" ||
+          pathname === "/v3/soul/persons")
+      ) {
+        if (!this.checkAuth(req, res)) return;
+        const deps = {
+          getStore: () => this.core.getStoreForIntrospect(),
+          getReadAgentProfile: () => (agentId: string) => this.readAgentProfileFromMetadata(agentId),
+          logger: this.logger,
+        };
+        if (await handleSoulTraitStateRoute(url, method, sendJson, res, deps)) return;
+        if (await handleSoulEmotionsRoute(url, method, sendJson, res, deps)) return;
+        if (await handleSoulPersonRoute(url, method, sendJson, res, deps)) return;
+        if (await handleSoulPersonsRoute(url, method, sendJson, res, deps)) return;
+        await handleSoulCardRoute(url, method, sendJson, res, deps);
+        return;
+      }
+
+      // ── R1（2026-11-07）：插件回传「实际注入量」 ──
+      // 与召回行同文件（<dataDir>/logs/recall），kind:"injection"；
+      // 只存 hash 与字符数，绝不接收正文。best-effort：写日志失败不影响回合。
+      if (method === "POST" && pathname === "/v3/soul/injection") {
+        if (!this.checkAuth(req, res)) return;
+        const journalCfg = this.config.memory?.recallJournal ?? { enabled: false, rotationSizeMB: 5, maxFiles: 5 };
+        await handleSoulInjectionRoute(req, res, pathname, method, parseJsonBody, sendJson, {
+          journalDir: join(this.config.data.baseDir, "logs", "recall"),
+          journalOpts: journalCfg,
+          logger: this.logger,
+        });
+        return;
+      }
+
+      // ── P1-B（2026-11-10）：POST /v3/soul/event —— 外部（DSH 插件）上报灵魂事件，幂等落库 ──
+      // 合同见 soul-event-endpoint.ts 文件头：租户只认三个头（缺一 422，不回退 default 桶），
+      // dedupe_key 幂等（命中/并发唯一冲突都回 duplicate:true，不 500）。鉴权沿用 Core key：
+      // 先 checkAuth（真实流量仍是历史纯文本 401），handler 内再兜一层信封 401 供直接调用方使用。
+      if (method === "POST" && pathname === SOUL_EVENT_PATH) {
+        if (!this.checkAuth(req, res)) return;
+        await handleSoulEventRoute(req, res, pathname, method, parseJsonBody, sendJson, {
+          getStore: () => this.core.getStoreForIntrospect(),
+          isAuthorized: (r) => this.verifyAuth(r) === "ok",
+          logger: this.logger,
+        });
+        return;
+      }
+
+      // ── P0-D（2026-11-07）：GET /v3/soul/injection/stats —— 注入健康面（只读）──
+      // 从 journal 目录聚合（不新表、不新增配置）：最近一次注入、两条通道的元数据、
+      // 失败分类与「只有服务端估算、插件没回报」的轮次数。journal 关闭 → 200 + 全零 + note。
+      if (pathname === SOUL_INJECTION_STATS_PATH) {
+        if (!this.checkAuth(req, res)) return;
+        const statsJournalCfg = this.config.memory?.recallJournal ?? {
+          enabled: false,
+          rotationSizeMB: 5,
+          maxFiles: 5,
+        };
+        await handleSoulInjectionStatsRoute(url, method, sendJson, res, {
+          journalDir: join(this.config.data.baseDir, "logs", "recall"),
+          journalOpts: statsJournalCfg,
           logger: this.logger,
         });
         return;
@@ -2246,28 +2312,26 @@ export class TdaiGateway {
           llmRunner: runner as never,
           // R1（09-27 源头嵌入）：生命周期产物写入即嵌入；失败回退 metadata-only（补偿器兜底）。
           embeddingService: this.core.getEmbeddingService(),
+          // S6（D1 读接缝）：表单设定存在 metadata 库，worker 不跨库——由 gateway 注入只读端口。
+          // agent 不存在 / 从未保存设定 → null（worker 侧跳过投影，不伪造空红线）。
+          readAgentProfile: (agentId: string) => this.readAgentProfileFromMetadata(agentId),
           // P2-T14（H-B2）：租户 filter 接线——config 显式解析的 memory.lifecycle.filter
           // （缺省 undefined = 不传 = 兼容单机）。巩固/遗忘读侧按此收窄，
           // 数据级组校验由 grouping 的组内租户一致性检查兜底。
           config: { ...lifecycle, filter: lifecycle.filter, consolidation: runner ? (lifecycle.consolidation ?? {}) : { enabled: false },
-            // GROW 接线修复（FLOW-E 实证）：anchorDiscovery 必须并入 config——原作为兄弟键传入，
-            // 调度器只读 deps.config.anchorDiscovery，yaml 段全程死配置（产线恒跑缺省 24h/5/2）。
+            // 身份取数开关键：必须并入 config——调度器只读 deps.config.anchorDiscovery
+            //（S8 后它只剩「soul 单产线是否调 LLM 产身份事实」一个用途）。
             anchorDiscovery: this.config.memory?.coreMemory?.anchorDiscovery,
             // DS-SOUL-MEMORY-002 P1：双视角开关接线（FLOW-E 同款教训——不接线即死配置）。
-            selfIdentity: this.config.memory?.coreMemory?.selfIdentity,            // S-CHAR-2（M2/P3）：品格张力检测接线（FLOW-E 同款教训——不接线即死配置）。
-            characterTension: this.config.memory?.coreMemory?.characterTension,
-            // P4b（GROW-EVO §4）：evolution 配置接线（config-first：memory.evolution.enabled
+            selfIdentity: this.config.memory?.coreMemory?.selfIdentity,            // P4b（GROW-EVO §4）：evolution 配置接线（config-first：memory.evolution.enabled
             // 缺省 false；LLM runner 缺失时 worker 内部安静跳过，无需在此门控）。
             evolution: this.config.memory?.evolution,
             // 自维护人格层（m00527）：coreMemory.soulMaintenance 接线（FLOW-E 同款教训——
             // 不接线即死配置）。enabled 缺省 false，缺省逐位现状。
             soulMaintenance: this.config.memory?.coreMemory?.soulMaintenance } as never,
-          // GROW（价值锚自生长）：护栏配置从 memory.coreMemory.anchorDiscovery 接线
-          //（解析+clamp+默认在 parseConfig；LLM 缺失时 anchor-growth 内部安静跳过）。
-
           logger: this.logger,
         });
-        this.logger.info(`Lifecycle scheduler (H+I) started (forgetting active; consolidation ${runner ? "active" : "gated off (no LLM)"}; anchor-growth ${this.config.memory?.coreMemory?.anchorDiscovery?.enabled !== false ? "active" : "off"})`);
+        this.logger.info(`Lifecycle scheduler (H+I) started (forgetting active; consolidation ${runner ? "active" : "gated off (no LLM)"})`);
       }
         // EMBED-BACKFILL R2（09-27 根治）：向量缺口补偿器——周期补嵌 metadata-only 行。
         // 根因：reflection/consolidation/evolution 写链结构性不传 embedding（缺口 380 行全 rf_）。
@@ -2300,32 +2364,7 @@ export class TdaiGateway {
       this.logger.warn?.("[lifecycle] scheduler start skipped/failed: " + (err instanceof Error ? err.message : String(err)));
     }
 
-    // K/B1：价值锚种子（core_values 单一源落地）——表空且有配置种子时才灌，幂等。
-    try {
-      const coreMemoryCfg = this.config.memory?.coreMemory;
-      if (coreMemoryCfg?.seedValues?.length && this.core.getVectorStore?.()) {
-        const store = this.core.getVectorStore();
-        if (store?.listValues && store?.upsertValue) {
-          // GROW：判空改用全态读——若仍用 active-only，全种子被 veto 后重启会误判空桶
-          // 重灌种子（upsert 冲突 → state='active'），复活用户明确否决的锚（报告 §0.2）。
-          const anyStore = store as typeof store & { listValuesAnyState?: () => unknown };
-          const existing = anyStore.listValuesAnyState
-            ? await (anyStore.listValuesAnyState as () => Promise<unknown[]>).call(store)
-            : await (store.listValues as () => Promise<unknown[]>).call(store);
-          if (!existing || existing.length === 0) {
-            let seeded = 0;
-            for (const v of coreMemoryCfg.seedValues) {
-              try { (store.upsertValue as (id: string, label: string, w: number, by?: string, origin?: string) => unknown).call(store, v.id, v.label, v.weight, v.createdBy, undefined, undefined, "seed"); seeded++; }
-              catch { /* best-effort */ }
-            }
-            this.logger.info(`[core-memory] seeded ${seeded} value anchor(s) into core_values (B1 单一源)`);
-          }
-        }
-      }
-    } catch (err) {
-      this.logger.warn?.("[core-memory] value seed skipped/failed: " + (err instanceof Error ? err.message : String(err)));
-    }
-
+    // S8（2026-11-07）：价值锚整表已删除，种子灌注随之退场（无表可灌、无渲染对象）。
     // C2（spec §3.2）：种子灌入后 fire-and-forget 判一次动机方向（生产 6 值首次获得方向）。
     // 放在种子块之外每次启动跑：deriveValueValences 先查 NULL 行——全部已判定时零 LLM
     // 调用直接返回 {0,0}（稳态启动零成本）；首启或存在未判定值时才判一次。

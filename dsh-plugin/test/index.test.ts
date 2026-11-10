@@ -2,12 +2,20 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { apply, composeHeadPack, inject, name, unboundIdentityMessage } from '../src/index.js';
+import { apply, composeHeadPack, inject, name, personaBindTarget, unboundIdentityMessage } from '../src/index.js';
 import { ATOMIC_ITEMS, PERSONA, SCENARIO_ENTRIES, callsTo, coreFixture, envelope } from './helpers/core-fixtures.js';
 import { createFakeContext, runPreStep, type FakeContext } from './helpers/fake-ctx.js';
-import { userMessage } from './helpers/messages.js';
+import { toolMessage, userMessage } from './helpers/messages.js';
 import { VOLATILE_SOURCE_KIND } from '../src/volatile.js';
+import {
+  PERSONA_ANCHOR_SECTION_NAME,
+  PERSONA_IDENTITY_SECTION_NAME,
+  PERSONA_TURN_MAX_CHARS,
+} from '../src/persona-card.js';
 import { VOLATILE_HEADER } from '../src/recall-source.js';
+import { createHash } from 'node:crypto';
+
+const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 import { resetSkillsSegmentHealthForTests } from '../src/segments/skills.js';
 
 
@@ -111,8 +119,8 @@ describe('plugin entry', () => {
     installFetch();
     const fake = await startApp();
 
-    // task-15：答案口径段也注册为独立 section，故条数是 2（按 name 取，不依赖注册顺序）
-    expect(fake.sections).toHaveLength(2);
+    // task-15：答案口径段也是独立 section；S2 又加了人格卡段，故条数是 3（按 name 取，不依赖注册顺序）
+    expect(fake.sections).toHaveLength(4); // P1-2: 口径 + head pack + identity + anchor
     const section = fake.sections.find((candidate) => candidate.name === 'tdb-agemem:head-pack')!;
     expect(section.name).toBe('tdb-agemem:head-pack');
     expect(section.order).toBe(10300);
@@ -767,7 +775,7 @@ describe('plugin entry', () => {
     const fixture = installFetch();
     const fake = await startApp({ server: { teamId: '', agentId: '', userId: '' } });
     // Section and listeners still register (fail-open), but nothing leaves the process.
-    expect(fake.sections).toHaveLength(2);
+    expect(fake.sections).toHaveLength(4); // P1-2: 口径 + head pack + identity + anchor
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fixture.calls).toHaveLength(0);
     expect(fake.sectionText()).toBe('');
@@ -778,7 +786,7 @@ describe('plugin entry', () => {
     const fake = await startApp();
     await expect(apply(fake.ctx, { enabled: false })).resolves.toBeUndefined();
     expect(fake.sectionText()).toBe('');
-    expect(fake.sections).toHaveLength(2);
+    expect(fake.sections).toHaveLength(4); // P1-2: 口径 + head pack + identity + anchor
   });
 
   it('registers nothing when disabled', async () => {
@@ -833,7 +841,7 @@ describe('plugin entry', () => {
     });
     const fake = await startApp({}, { tools: { register } });
     // Still loads, and the log carries the actual rule instead of a bare object.
-    expect(fake.sections).toHaveLength(2);
+    expect(fake.sections).toHaveLength(4); // P1-2: 口径 + head pack + identity + anchor
     const warning = fake.logs.find((line) => line.startsWith('warn') && line.includes('memory_recall registration failed'));
     expect(warning).toBeDefined();
     expect(warning).toContain('UNSUPPORTED_SCHEMA');
@@ -866,7 +874,7 @@ describe('plugin entry', () => {
   it('keeps loading when no tool service is mounted', async () => {
     installFetch();
     const fake = await startApp();
-    expect(fake.sections).toHaveLength(2);
+    expect(fake.sections).toHaveLength(4); // P1-2: 口径 + head pack + identity + anchor
   });
 
   it('warms the core once on agent/created without blocking the turn', async () => {
@@ -888,6 +896,53 @@ describe('plugin entry', () => {
     expect(callsTo(fixture.calls, '/v3/recall')).toHaveLength(1);
   });
 
+  it('分支会话静默继承父会话的人设卡与身份：零新增取卡、字节相同', async () => {
+    const fixture = installFetch({ card: { version: 7, hash: 'h7', text: 'NAME:审墨|VOICE:短句。' } });
+    const fake = await startApp();
+    const parent = { id: 'session-parent', session: { id: 'session-parent' } };
+    fake.emit('agent/created', { agent: parent });
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/card').length).toBe(1));
+
+    const identitySection = fake.sections.find((candidate) => candidate.name === 'tdb-agemem:persona-identity')!;
+    const parentText = (identitySection.text as (c?: unknown) => string)({ agent: parent });
+    expect(parentText).toContain('审墨');
+
+    const child = { id: 'session-child', session: { id: 'session-child', header: { parentSession: 'session-parent' } } };
+    fake.emit('agent/created', { agent: child });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // 一次都不再取：分支复制父会话那份冻结字节。
+    expect(callsTo(fixture.calls, '/v3/soul/card').length).toBe(1);
+    const childText = (identitySection.text as (c?: unknown) => string)({ agent: child });
+    expect(childText).toBe(parentText);
+  });
+
+  it('P2-C：取卡带会话键（Core 据此按在场者过滤），且不猜 participants', async () => {
+    const fixture = installFetch({ card: { version: 3, hash: 'h3', text: 'NAME:审墨|VOICE:短句。' } });
+    const fake = await startApp();
+    const agent = { id: 'session-p2c', session: { id: 'session-p2c' } };
+    fake.emit('agent/created', { agent });
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/card').length).toBe(1));
+    const call = callsTo(fixture.calls, '/v3/soul/card')[0];
+    // 会话键必须原样送到 Core：按人过滤的唯一入口。
+    expect(call.url).toContain('session=session-p2c');
+    // 插件不传 participants：传展示名会被 Core 丢弃，传空串等于「只剩全局行」。
+    expect(call.url).not.toContain('participants=');
+  });
+
+  it('父会话没有卡时，分支按父身份补一次字节，仍不弹窗', async () => {
+    const fixture = installFetch({ card: null });
+    const fake = await startApp();
+    const parent = { id: 'session-p2', session: { id: 'session-p2' } };
+    fake.emit('agent/created', { agent: parent });
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/card').length).toBe(1));
+
+    const child = { id: 'session-c2', session: { id: 'session-c2', header: { parentSession: 'session-p2' } } };
+    fake.emit('agent/created', { agent: child });
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/card').length).toBe(2));
+    // 没有任何用户提问往返（弹窗会打到 userQuestions 服务；这里没注入该服务）。
+    expect(fake.listenerCount('agent/created')).toBeGreaterThan(0);
+  });
   it('resolves the API key through the credentials ref, not from config', async () => {
     const fixture = installFetch();
     const resolve = vi.fn(async () => ({ value: 'secret-from-store' }));
@@ -958,8 +1013,10 @@ describe('plugin entry', () => {
     // The only other warning is the missing tools service (this fake context has none).
     const other = fake.logs.filter((line) => line.startsWith('warn') && line.includes('tools service unavailable'));
     expect(other).toHaveLength(1);
-    // One warn per failure class, never per request: auth, recall, L0, skill, dead, tools.
-    expect(fake.logs.filter((line) => line.startsWith('warn'))).toHaveLength(6);
+    // One warn per failure class, never per request: auth, recall, L0, skill,
+    // dead, tools — plus the persona-card read (channel A), which is its own
+    // class since task-11 (a 401 there is still reported once, never per retry).
+    expect(fake.logs.filter((line) => line.startsWith('warn'))).toHaveLength(7);
 
     // Nothing is left queued for retry: both rows were answered with 401.
     const entries = readFileSync(outboxPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line !== '');
@@ -1204,97 +1261,239 @@ describe('plugin entry', () => {
     expect(text).toContain(ATOMIC_ITEMS[0].content);
     expect(decision.messages[1].source.kind).toBe(VOLATILE_SOURCE_KIND);
   });
-  it('leads the volatile block with the soul fragments inside the char budget', async () => {
+  /**
+   * 2026-11-07 task-19：插件侧旧的 soul 兜底全链退役。召回块
+   * 只剩记忆段——旧 core 的 soul 片断（若还出现在 /v3/recall 的 block 里）一律
+   * 丢弃，人格只从插件的人格卡 section 进提示词。
+   */
+  it('volatile 块只有记忆段：不出现任何旧 soul 片断，预算仍是 1500', async () => {
     installFetch();
     const fake = await startApp();
     const listener = fake.firstListener('agent/pre-step');
     if (!listener) throw new Error('pre-step listener not installed');
-    const decision = await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
-
+    const decision = await runPreStep(
+      listener,
+      { agent: { session: { id: 's1' } }, turn: 1, step: 1 },
+      { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+    );
     const text = decision.messages[1].content[0].text;
-    // The proxy path injected the persona; the plugin path used to drop it.
-    expect(text.startsWith('<soul-identity>')).toBe(true);
-    expect(text).toContain('<soul-feeling>保持简洁。</soul-feeling>');
-    expect(text).toContain('【agemem 记忆提示】');
+    expect(text.startsWith(VOLATILE_HEADER)).toBe(true);
+    expect(text).not.toContain('<soul');
     expect(text).toContain(ATOMIC_ITEMS[0].content);
-    expect(text.indexOf('<soul-identity>')).toBeLessThan(text.indexOf('【agemem 记忆提示】'));
-    // soul (whole persona) + memories, both under the one ceiling the caller configured.
-    expect(text.length).toBeLessThanOrEqual(6000);
-    // soulChars/soulVersion ride in the debug payload; the soul body never does.
+    expect(text.length).toBeLessThanOrEqual(1500);
     const payload = fake.rawLogs
       .filter((entry) => entry.level === 'debug' && entry.parts[0] === 'agemem: volatile block ready')
       .map((entry) => entry.parts[1] as Record<string, unknown>)
       .pop();
     expect(payload).toBeDefined();
-    expect(payload!.soulChars).toBeGreaterThan(0);
-    expect(payload!.soulVersion).toBe('1');
-    expect(JSON.stringify(payload)).not.toContain('你是用户的记忆助手');
+    expect(payload!.soulChars).toBeUndefined();
+    expect(payload!.soulVersion).toBeUndefined();
   });
 
   /**
-   * Full persona = ~4400 chars (the 3384-char identity once every red-line rule
-   * renders + tags + the mood line). Paying that on EVERY turn would append a
-   * second and a half of tokens per turn to durable history, so the persona goes
-   * in on the session's first block and the later turns carry memories only —
-   * the earlier block is still in the conversation.
+   * task-11：通道 A（插件人格卡 section）在位时，volatile 里的旧 soul 支路必须
+   * 关闭——同一份人格不能既进稳定前缀又进每轮消息（双注入 = 双倍 token，且两处
+   * 口径可能不同）。判据 3/4 的字节约束也钉在这里。
    */
-  it('injects the persona once per session, and only memories after that', async () => {
-    installFetch();
-    const fake = await startApp();
-    const listener = fake.firstListener('agent/pre-step');
-    if (!listener) throw new Error('pre-step listener not installed');
-    const first = await runPreStep(
-      listener,
-      { agent: { session: { id: 's1' } }, turn: 1, step: 1 },
-      { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
-    );
-    expect(first.messages[1].content[0].text.startsWith('<soul-identity>')).toBe(true);
+  describe('人格卡接管后 volatile 不再重复注入人格（task-11）', () => {
+    const CARD = {
+      version: 9,
+      hash: 'cardhash-9',
+      text: '### 名称' + LF + '何晨' + LF + LF + '### 风格' + LF + '- 先结论，后证据。',
+    };
 
-    const second = await runPreStep(
-      listener,
-      { agent: { session: { id: 's1' } }, turn: 2, step: 1 },
-      { kind: 'enter', messages: [userMessage('tsconfig 怎么配?')] },
-    );
-    const secondText = second.messages[1].content[0].text;
-    expect(secondText).not.toContain('<soul-identity>');
-    expect(secondText).toContain('【agemem 记忆提示】');
+    function sectionOf(fake: FakeContext) {
+      return fake.sections.find((candidate) => candidate.name === PERSONA_IDENTITY_SECTION_NAME);
+    }
 
-    // Another session is a fresh audience: it gets the persona again.
-    const other = await runPreStep(
-      listener,
-      { agent: { session: { id: 's2' } }, turn: 1, step: 1 },
-      { kind: 'enter', messages: [userMessage('帮我看看召回')] },
-    );
-    expect(other.messages[1].content[0].text.startsWith('<soul-identity>')).toBe(true);
-  });
+    function anchorSectionOf(fake: FakeContext) {
+      return fake.sections.find((candidate) => candidate.name === PERSONA_ANCHOR_SECTION_NAME);
+    }
 
-  it('returns to the memory-only block when the soul switch is off', async () => {
-    installFetch();
-    const fake = await startApp({ volatile: { soul: { enabled: false } } });
-    const listener = fake.firstListener('agent/pre-step');
-    if (!listener) throw new Error('pre-step listener not installed');
-    const decision = await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
+    /** 宿主给 section getter 的 context：agent.id === session.id 由宿主强制。 */
+    const agentOf = (id: string) => ({ id, session: { id } });
 
-    const text = decision.messages[1].content[0].text;
-    // Bit-for-bit the pre-soul shape: memory header first, no soul tags at all.
-    expect(text.startsWith(VOLATILE_HEADER)).toBe(true);
-    expect(text).not.toContain('<soul-');
-    expect(text).toContain(ATOMIC_ITEMS[0].content);
-    expect(text.length).toBeLessThanOrEqual(1500);
-  });
+    function cardText(fake: FakeContext, sessionId = 's1'): string {
+      const section = sectionOf(fake);
+      if (!section) throw new Error('persona identity section not registered');
+      const getter = section.text as (context?: unknown) => string;
+      return getter({ agent: agentOf(sessionId) });
+    }
 
-  it('keeps injecting memories when the core sends no soul at all', async () => {
-    installFetch({ recallBlock: '<relevant-memories>' + LF + '- [L1][work_fact] 偏好 pnpm workspace，不喜欢 npm install。（热度 3，更新 2026-10-21）' + LF + '</relevant-memories>' });
-    const fake = await startApp();
-    const listener = fake.firstListener('agent/pre-step');
-    if (!listener) throw new Error('pre-step listener not installed');
-    const decision = await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: [userMessage('pnpm 用什么?')] });
+    /** 末尾锚段（P1-2）：旧 Core 的 fixture 没有 anchor，应为空串。 */
+    function anchorText(fake: FakeContext, sessionId = 's1'): string {
+      const section = anchorSectionOf(fake);
+      if (!section) throw new Error('persona anchor section not registered');
+      const getter = section.text as (context?: unknown) => string;
+      return getter({ agent: agentOf(sessionId) });
+    }
 
-    const text = decision.messages[1].content[0].text;
-    // A missing soul degrades to one less section, never to an empty tag pair.
-    expect(text).not.toContain('<soul-');
-    expect(text).toContain('【agemem 记忆提示】');
-    expect(text).toContain('偏好 pnpm workspace');
+    /**
+     * task-32：卡不再在挂载时取，而是在「会话第一次绑定 agent」那一刻取
+     * （sessionIdentity.ensureBound → onBound → personaCard.bind）。这里用一次
+     * pre-step 触发绑定，返回这次 pre-step 的 decision 供断言。
+     */
+    async function bindCard(fake: FakeContext, sessionId = 's1', turn = 1) {
+      const listener = fake.firstListener('agent/pre-step');
+      if (!listener) throw new Error('pre-step listener not installed');
+      const decision = await runPreStep(
+        listener,
+        { agent: agentOf(sessionId), turn, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+      await vi.waitFor(() => expect(cardText(fake, sessionId)).toContain('何晨'));
+      return decision;
+    }
+
+    it('卡非空时：两个 section（identity order 1 / anchor 尾部 10302），volatile 里没有任何 <soul- 段', async () => {
+      installFetch({ card: CARD });
+      const fake = await startApp();
+      // P1-2：身份段固定前置 1（紧跟 harness:identity −1000 与 persona-prefix 0，早于 WORKING_DIRECTORY 100；
+      // 110 是宿主的 SANDBOX_POLICY，撞号会与沙箱策略同级）。
+      const section = sectionOf(fake);
+      expect(section).toBeDefined();
+      expect(section!.order).toBe(1);
+      expect(section!.interpolate).toBe(false);
+      expect(typeof section!.text).toBe('function');
+      // 末尾锚沿用尾部 order（base 10200 + orderOffset 0 + 2 = 10302）。
+      const anchor = anchorSectionOf(fake);
+      expect(anchor).toBeDefined();
+      expect(anchor!.order).toBe(10302);
+      expect(anchor!.interpolate).toBe(false);
+      // 拆分后旧名单不再注册：不会既注入整卡 section、又注入两段。
+      expect(fake.sections.some((candidate) => candidate.name === 'tdb-agemem:persona-card')).toBe(false);
+      // 绑定之前：没有会话上下文就没有卡（不预热、不兜底）。
+      expect(cardText(fake, 's-not-bound')).toBe('');
+      expect(anchorText(fake, 's-not-bound')).toBe('');
+
+      const decision = await bindCard(fake);
+      expect(cardText(fake)).toBe(CARD.text);
+      // 旧 Core 的卡只有 text：身份段退化成整卡，末尾锚为空串（不注入占位）。
+      expect(anchorText(fake)).toBe('');
+
+      const text = decision.messages[1].content[0].text;
+      // 人格只走卡 section；volatile 块里不允许再出现人格片断。
+      expect(text).not.toContain('<soul');
+      expect(text).toContain('【agemem 记忆提示】');
+      expect(text).toContain('偏好 pnpm workspace');
+    });
+
+    it('把实际注入量回报给 Core：card 元数据 + volatile 真实字节数，均无正文', async () => {
+      const fixture = installFetch({ card: CARD });
+      const fake = await startApp();
+      const listener = fake.firstListener('agent/pre-step');
+      if (!listener) throw new Error('pre-step listener not installed');
+
+      // 第一次 pre-step 就是绑定时机：卡在这时取到并回报。
+      const first = await runPreStep(
+        listener,
+        { agent: agentOf('s1'), turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+      const injected = first.messages[1].content[0].text as string;
+
+      // 通道 A：卡真进了前缀才报，且只报 version/hash/chars。
+      await vi.waitFor(() => {
+        const cardCalls = callsTo(fixture.calls, '/v3/soul/injection').filter(
+          (call) => (call.body as any)?.card !== undefined,
+        );
+        expect(cardCalls).toHaveLength(1);
+        const body = cardCalls[0].body as any;
+        // A3：回报的 hash 是卡正文 SHA-256（64 hex），不再是 Core 的旧快照 hash。
+        expect(body.card).toEqual({ version: CARD.version, hash: sha256(CARD.text), chars: CARD.text.length });
+        expect(body.card.hash).toMatch(/^[0-9a-f]{64}$/);
+        expect(JSON.stringify(body)).not.toContain('何晨');
+      });
+      expect(cardText(fake)).toBe(CARD.text);
+
+      // 通道 B：chars 必须等于真实 append 的字节数（clamped），不是召回量。
+      await vi.waitFor(() => {
+        const volatileCalls = callsTo(fixture.calls, '/v3/soul/injection').filter(
+          (call) => (call.body as any)?.volatile !== undefined,
+        );
+        expect(volatileCalls).toHaveLength(1);
+        const body = volatileCalls[0].body as any;
+        expect(body.volatile).toMatchObject({ chars: injected.length, skipped: false });
+        expect(body.sessionKey).toBe('s1');
+        expect(body.turn).toBe(1);
+        expect(JSON.stringify(body)).not.toContain('偏好 pnpm workspace');
+      });
+
+      // 同文本的第二轮被近 3 轮去重跳过：必须报 skipped:true + chars:0。
+      const second = await runPreStep(
+        listener,
+        { agent: agentOf('s1'), turn: 2, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+      expect(second.messages).toHaveLength(1);
+      await vi.waitFor(() => {
+        const volatileCalls = callsTo(fixture.calls, '/v3/soul/injection').filter(
+          (call) => (call.body as any)?.volatile !== undefined,
+        );
+        expect(volatileCalls).toHaveLength(2);
+        expect((volatileCalls[1].body as any).volatile).toMatchObject({ chars: 0, skipped: true });
+      });
+    });
+
+    it('逐轮段裁到 400 字符并追加在块尾，记忆仍在前', async () => {
+      const longMood = '心境'.repeat(320); // 640 字符，必然被裁
+      installFetch({ card: CARD, turn: { text: longMood, openLoops: ['还要取证'] } });
+      const fake = await startApp();
+      const decision = await bindCard(fake);
+      const text = decision.messages[1].content[0].text;
+      expect(text).toContain('【agemem 记忆提示】');
+      // 通道 B 在块尾：恰好 PERSONA_TURN_MAX_CHARS 个字符，不切在中间。
+      expect(text.endsWith('心境'.repeat(PERSONA_TURN_MAX_CHARS / 2))).toBe(true);
+      expect(text.includes('心境'.repeat(PERSONA_TURN_MAX_CHARS / 2 + 1))).toBe(false);
+      expect(text).not.toContain('<soul-');
+    });
+
+    it('取卡 401：fail-open（section 空、回合照常），warn 留 http_status + 401', async () => {
+      installFetch({
+        fail: (path) => (path.endsWith('/v3/soul/card') ? new Response('', { status: 401 }) : undefined),
+      });
+      const fake = await startApp();
+      const listener = fake.firstListener('agent/pre-step');
+      if (!listener) throw new Error('pre-step listener not installed');
+      const decision = await runPreStep(
+        listener,
+        { agent: agentOf('s1'), turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+      await vi.waitFor(() => {
+        const warn = fake.rawLogs
+          .filter((entry) => entry.level === 'warn' && String(entry.parts[0]).includes('persona card bind failed'))
+          .pop();
+        expect(warn?.parts[1]).toMatchObject({ reason: 'http_status', status: 401 });
+      });
+      // 该会话没有卡：section 空，但回合照常拿到记忆。
+      expect(cardText(fake)).toBe('');
+      expect(decision.messages[1].content[0].text).toContain('偏好 pnpm workspace');
+    });
+
+    it('取卡超时：fail-open，warn 留 reason=timeout', async () => {
+      const fixture = coreFixture();
+      vi.stubGlobal('fetch', vi.fn((input: any, init?: any) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith('/v3/soul/card')) return new Promise<Response>(() => {});
+        return fixture.fetchImpl(input, init);
+      }));
+      const fake = await startApp({ server: { requestTimeoutMs: 100 } });
+      const listener = fake.firstListener('agent/pre-step');
+      if (!listener) throw new Error('pre-step listener not installed');
+      await runPreStep(
+        listener,
+        { agent: agentOf('s1'), turn: 1, step: 1 },
+        { kind: 'enter', messages: [userMessage('pnpm 用什么?')] },
+      );
+      await vi.waitFor(() => {
+        const warn = fake.rawLogs
+          .filter((entry) => entry.level === 'warn' && String(entry.parts[0]).includes('persona card bind failed'))
+          .pop();
+        expect(warn?.parts[1]).toMatchObject({ reason: 'timeout' });
+      });
+      expect(cardText(fake)).toBe('');
+    });
   });
 
 
@@ -1550,5 +1749,114 @@ describe('unbound session diagnostics', () => {
     expect(unboundIdentityMessage(true)).toContain('using the configured triple');
     expect(unboundIdentityMessage(false)).toContain('no configured triple');
     expect(unboundIdentityMessage(false)).toContain('no isolation identity');
+  });
+});
+
+
+/**
+ * P1-B W3：turn 收口 → L0 写回成功 → 逐条投递工具事件（fire-and-forget）。
+ * 两条纪律在这里被钉住：事件必须带齐分类/证据/去重键；事件面失败绝不影响
+ * turn 本身与对话正文的写回。
+ */
+describe('soul tool events (P1-B W3)', () => {
+  it('L0 写回之后按 tool/test/commit/rollback 投递事件，带证据与去重键', async () => {
+    const fixture = installFetch();
+    const fake = await startApp({ writeback: { outboxPath: tempOutbox() } });
+
+    fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn: 1, message: userMessage('跑一下测试', 'u1') } });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId: 'c1', name: 'ops_bash', arguments: { command: 'npx vitest run' } },
+    });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'tool/result',
+      data: { turn: 1, step: 1, message: toolMessage('Tests  46 passed (46)') },
+    });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '全绿。' }] } },
+    });
+    fake.emit('agent/turn-stopping', { turn: 1, agent: { session: { id: 's1' } } });
+
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/conversation/add')).toHaveLength(1));
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/event')).toHaveLength(1));
+
+    // 顺序：正文先落地，工具事件后到（「我跑过」不该早于「我说过」）。
+    const addIndex = fixture.calls.findIndex((call) => call.path.endsWith('/v3/conversation/add'));
+    const eventIndex = fixture.calls.findIndex((call) => call.path.endsWith('/v3/soul/event'));
+    expect(eventIndex).toBeGreaterThan(addIndex);
+
+    const body = callsTo(fixture.calls, '/v3/soul/event')[0].body as Record<string, any>;
+    expect(body.source_kind).toBe('test');
+    expect(body.dedupe_key).toBe('dsh:s1:c1');
+    expect(body.session_id).toBe('s1');
+    expect(body.summary).toBe('test: ops_bash npx vitest run');
+    expect(body.epistemic).toBe('observed');
+    expect(body.confidence).toBe(0.9);
+    expect(body.evidence).toEqual([{ role: 'tool', quote: 'Tests  46 passed (46)', record_id: 'c1' }]);
+    expect(body.action).toMatchObject({ tool: 'ops_bash', tool_call_id: 'c1', result_status: 'success' });
+    // 头：租户三元组只走 header，body 里不带（Core 从 header 取，缺一 422）。
+    const headers = callsTo(fixture.calls, '/v3/soul/event')[0].headers;
+    expect(headers['x-tdai-team-id']).toBe('team-test');
+    expect(headers['x-tdai-agent-id']).toBe('agt-test');
+    expect(headers['x-tdai-user-id']).toBe('usr-test');
+    expect(Object.keys(body)).not.toContain('team_id');
+  });
+
+  it('事件被拒只 warn 一次，turn 与 L0 写回照常完成（不重投、不进 Outbox）', async () => {
+    const fixture = installFetch({
+      fail: (path) => (path.endsWith('/v3/soul/event') ? new Response('boom', { status: 500 }) : undefined),
+    });
+    const outboxPath = tempOutbox();
+    const fake = await startApp({ writeback: { outboxPath } });
+
+    fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn: 1, message: userMessage('跑一下测试', 'u1') } });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId: 'c1', name: 'ops_bash', arguments: { command: 'npx vitest run' } },
+    });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'tool/result',
+      data: { turn: 1, step: 1, message: toolMessage('Tests 46 passed (46)') },
+    });
+    fake.emit('session/event', { id: 's1' }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '全绿。' }] } },
+    });
+    fake.emit('agent/turn-stopping', { turn: 1, agent: { session: { id: 's1' } } });
+
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/event')).toHaveLength(1));
+    // 正文照样写回：事件是观测面，不是写回的前置条件。
+    expect(callsTo(fixture.calls, '/v3/conversation/add')).toHaveLength(1);
+    // 不重投（只有那次失败的投递），也不留下待重试的行。
+    expect(callsTo(fixture.calls, '/v3/soul/event')).toHaveLength(1);
+    const entries = readFileSync(outboxPath, 'utf8').trim().split(LF).filter((line) => line !== '');
+    expect(entries).toHaveLength(0);
+    // 失败类别只报一次，且指向事件路由。
+    const eventWarnings = fake.logs.filter((line) => line.startsWith('warn') && line.includes('/v3/soul/event'));
+    expect(eventWarnings).toHaveLength(1);
+    expect(eventWarnings[0]).toContain('HTTP 500');
+    // 不留事件正文：warn 行里没有工具输出。
+    expect(eventWarnings[0]).not.toContain('46 passed');
+  });
+});
+describe('persona card bind target', () => {
+  // 2026-11-08 02:14 现场：切换人设时先绑空三元组（候选/弹窗没成），旧实现把它
+  // 当成「不关联」清卡，02:14:15.990 清 → 02:14:23.491 才绑上，中间那次拼提示
+  // 词没有卡。三种结果必须分开。
+  it('binds the picked agent', () => {
+    expect(personaBindTarget({ teamId: 't1', userId: 'u1', agentId: 'a1' }))
+      .toBe('t1/u1/a1');
+  });
+
+  it('clears only on an explicit "do not associate"', () => {
+    expect(personaBindTarget({ teamId: '', associate: false })).toBeNull();
+    expect(personaBindTarget({ teamId: '', agentId: '', userId: '', associate: false })).toBeNull();
+  });
+
+  it('keeps the current card when a binding attempt did not succeed', () => {
+    // 空三元组、但没有「不关联」的意思：候选接口超时 / 弹窗被打断 / 无退回三元组。
+    expect(personaBindTarget({ teamId: '' })).toBeUndefined();
+    expect(personaBindTarget({ teamId: '', userId: '', agentId: '', associate: true })).toBeUndefined();
   });
 });

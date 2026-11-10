@@ -41,8 +41,6 @@ export interface RecordedCall {
  * ~300 chars duplicate the answer-guidance section instead of carrying memory.
  */
 export const RECALL_BLOCK = [
-  '<soul-identity>你是用户的记忆助手。</soul-identity>',
-  '<soul-feeling>保持简洁。</soul-feeling>',
   '<relevant-memories>',
   '【币值判定规则】',
   '【建议类问题口径】',
@@ -64,6 +62,14 @@ export interface CoreFixtureOptions {
   /** /v3/recall payload; defaults to RECALL_BLOCK. */
   recallBlock?: string;
   /**
+   * GET /v3/soul/card payload (persona card channel A). Omitted = an empty card,
+   * i.e. "this Core has not set a persona layer" — the legacy soul path then
+   * stays active, which is the pre-task-11 default every older test relies on.
+   */
+  card?: { version: number; hash: string; text: string; textHash?: string; chars?: number; dirty?: boolean } | null;
+  /** GET /v3/soul/turn payload (per-turn mood + open loops). */
+  turn?: { text: string; openLoops?: string[] } | null;
+  /**
    * Per-user session_init params served by /v3/meta/config/user/get.
    * Omitted = empty item list = "not configured" = the plugin asks.
    */
@@ -79,6 +85,8 @@ export function envelope(data: unknown, code = 0, message = 'ok'): Response {
 
 export function coreFixture(options: CoreFixtureOptions = {}): { fetchImpl: typeof fetch; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
+  /** /v3/soul/event 的幂等状态：dedupe_key → event_id（设备一次性，跨 case 不共享）。 */
+  const soulEventIds = new Map<string, string>();
   const fetchImpl = (async (input: any, init: any = {}) => {
     const url = String(input);
     const path = new URL(url).pathname;
@@ -120,11 +128,40 @@ export function coreFixture(options: CoreFixtureOptions = {}): { fetchImpl: type
         meta: { conclusionCount: 1, experienceCount: 1, sessionReused: false, layered: 'L1', soulVersion: 1, perfMs: 170 },
       });
     }
+    if (path.endsWith('/v3/soul/card')) {
+      const card = options.card ?? null;
+      return envelope(
+        card === null
+          ? { version: 0, hash: '', text: '', chars: 0, dirty: false }
+          : {
+            version: card.version,
+            hash: card.hash,
+            ...(card.textHash === undefined ? {} : { textHash: card.textHash }),
+            text: card.text,
+            chars: card.chars ?? card.text.length,
+            dirty: card.dirty === true,
+          },
+      );
+    }
+    if (path.endsWith('/v3/soul/turn')) {
+      return envelope(options.turn ?? { text: '', openLoops: [] });
+    }
     if (path.endsWith('/v3/scenario/ls')) {
       return envelope({ entries: options.scenarios ?? SCENARIO_ENTRIES });
     }
     if (path.endsWith('/v3/atomic/search')) {
       return envelope({ items: options.items ?? ATOMIC_ITEMS });
+    }
+    if (path.endsWith('/v3/soul/event')) {
+      // P1-B W3: POST /v3/soul/event 按 dedupe_key 幂等 —— Core 先查后插，UNIQUE
+      // 冲突也按 duplicate 应答。fixture 记住「键 → event_id」，第二次起
+      // duplicate=true 且回同一个 id，测试才能断言「重投不新增一行」。
+      const key = typeof body?.dedupe_key === 'string' ? body.dedupe_key : '';
+      const known = soulEventIds.get(key);
+      if (known !== undefined) return envelope({ event_id: known, duplicate: true });
+      const eventId = 'evt-' + String(soulEventIds.size + 1);
+      soulEventIds.set(key, eventId);
+      return envelope({ event_id: eventId, duplicate: false });
     }
     if (path.endsWith('/v3/skill/conversation/add')) {
       // L2 buffer: 'ok' until the threshold archives the buffer.

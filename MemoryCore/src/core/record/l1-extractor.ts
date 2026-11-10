@@ -92,6 +92,7 @@ export function recurrenceLabel(rec: unknown): string | undefined {
 
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { annotateAgentNarration, reconcileAgentNarrationMetadata } from "./agent-narration.js";
+import { nameCandidatesFromContent, sanitizePersonHints } from "./person-hints.js";
 import { clampMaxFacts, normalizeFacts, type NormalizedFacts } from "./fact-key.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
 import { writeMemory, generateMemoryId } from "./l1-writer.js";
@@ -551,6 +552,12 @@ export async function extractL1Memories(params: {
     ...m,
     record_id: generateMemoryId(),
   }));
+  // §17 人名线索校验要能拿到原文：source_message_ids → 消息文本与角色。
+  // 角色是必需的：说话人名字必须出现在**用户自己说的话**里，只出现在 assistant
+  // 侧的名字（例如 AI 自己的名字）不是说话人的名字。
+  const sourceMessagesById = new Map(
+    newMessages.map((m) => [String(m.id), { content: String(m.content ?? ""), role: String(m.role ?? "") }]),
+  );
 
   // Step 2: Batch Conflict Detection + Write
   let storedRecords: MemoryRecord[];
@@ -654,6 +661,8 @@ export async function extractL1Memories(params: {
         enableMemoryLinks: options.enableMemoryLinks !== false,
         writePolicy: options.writePolicy,
         memoryConfig,
+        // §17：人名线索校验要拿原文，把「消息 id → 文本」一并交给写侧门
+        sourceMessagesById,
       });
 
     } catch (err) {
@@ -844,7 +853,7 @@ async function callLlmExtraction(params: {
   memoryPrompt?: ResolvedMemoryPrompt;
   /** Host-injected LLM runner — required, see `requireLlmRunner`. */
   llmRunner?: LLMRunner;
-  /** A8：锚候选加载需要 vectorStore（listValues 按租户读锚） */
+  /** A8：锚候选加载的 store 上下文（价值锚来源已退场，候选恒空，此字段仅为签名兼容保留）。 */
   vectorStore?: IMemoryStore;
   /** 思考开关 config-first（2026-10-14）：undefined = 不带 reasoning_effort（端点默认）。 */
   reasoningEffort?: string;
@@ -1010,6 +1019,134 @@ function isNonArrayJson(text: string): boolean {
 }
 
 /**
+ * P1-B W1（2026-11-10）：候选序列解析——把「一次性贪婪锚 /\[[\s\S]*\]/」拆成候选集。
+ *
+ * 实测两类 parse_fail 都源于贪心锚把多段/断尾文本拼成一个不可解析片段：
+ *  - rawLen=19 的双 fenced 空数组（"[]\n\n```json\n[]\n\n```"）：锚从首个 '[' 跨到末个 ']'，中间夹围栏文本；
+ *  - rawLen=3943 的截断尾：锚把字符串里的 ']' 当数组结尾，截取错位后整批丢。
+ * 候选生成两步（顺序即优先级）：
+ *  1) 围栏段优先：```lang ... ``` 的内容各自成候选（模型爱在围栏里放真 JSON）；
+ *  2) 每段做括号平衡扫描（跳过字符串字面量）取顶层数组；顶层数组未闭合（截断）时
+ *     把该段尾巴整体作为候选，交给 salvageTruncatedJsonArray 抢救。
+ */
+export function makeJsonCandidates(stripped: string): string[] {
+  const fenceRe = /```[^\n`]*\n?([\s\S]*?)```/g;
+  const segments: string[] = [];
+  for (const m of stripped.matchAll(fenceRe)) {
+    const inner = m[1];
+    if (inner && inner.trim() !== "") segments.push(inner);
+  }
+  // 围栏剥掉后的正文：旧行为（正文里直接给数组、无围栏）不能丢
+  const unfolded = stripped.replace(fenceRe, "\n");
+  if (unfolded.trim() !== "") segments.push(unfolded);
+
+  const candidates: string[] = [];
+  for (const segment of segments) {
+    for (const candidate of scanTopLevelArrays(segment)) {
+      if (!candidates.includes(candidate)) candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+/** 括号平衡扫描：只认 '[' / ']'（'{}' 不参与深度），字符串字面量内的括号不计数。 */
+function scanTopLevelArrays(segment: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i]!;
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+      continue;
+    }
+    if (c === "[") {
+      if (depth === 0) start = i;
+      depth++;
+      continue;
+    }
+    if (c === "]") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          out.push(segment.slice(start, i + 1));
+          start = -1;
+        }
+      }
+      continue;
+    }
+  }
+  // 断尾：顶层数组没闭合，把尾巴整段交给 salvage
+  if (depth > 0 && start >= 0) out.push(segment.slice(start));
+  return out;
+}
+
+export interface JsonCandidateParse {
+  parsed: unknown[];
+  /** 真正 parse 成功的文本（修复/抢救后可能与候选原文不同） */
+  source: string;
+  /** 是否经 salvageTruncatedJsonArray 抢救 */
+  salvaged: boolean;
+}
+
+/**
+ * 逐个候选走 sanitize → JSON.parse → repairExtractionJson → salvage：返回第一个解析成功
+ * 且满足 accept（缺省=非空数组，即"有场景"）的候选；都满足不了时退化返回第一个解析成功的
+ * 数组（→ empty_scenes，`[1,2]`/`[]` 这类真 0 条不再冒报 parse_fail）；
+ * 一个都解析不了返回 null（调用方报 parse_fail，与旧口径一致）。
+ */
+export function tryParseCandidates(
+  candidates: string[],
+  accept: (parsed: unknown[]) => boolean = (parsed) => parsed.length > 0,
+): JsonCandidateParse | null {
+  let fallback: JsonCandidateParse | null = null;
+  for (const candidate of candidates) {
+    const parsed = parseJsonCandidate(candidate);
+    if (!parsed) continue;
+    if (accept(parsed.parsed)) return parsed;
+    if (!fallback) fallback = parsed;
+  }
+  return fallback;
+}
+
+function parseJsonCandidate(candidate: string): JsonCandidateParse | null {
+  const sanitized = sanitizeJsonForParse(candidate);
+  const direct = tryParseJsonArray(sanitized);
+  if (direct) return { parsed: direct, source: sanitized, salvaged: false };
+
+  const repaired = repairExtractionJson(sanitized);
+  if (repaired !== sanitized) {
+    const fixed = tryParseJsonArray(repaired);
+    if (fixed) return { parsed: fixed, source: repaired, salvaged: false };
+  }
+
+  // P0-1 截断抢救：整段不可解析（常见于字符串含 ']' 或断尾）→ 前缀抢救
+  const salvaged = salvageTruncatedJsonArray(candidate);
+  if (salvaged) {
+    const fromSalvage = tryParseJsonArray(sanitizeJsonForParse(salvaged));
+    if (fromSalvage) return { parsed: fromSalvage, source: salvaged, salvaged: true };
+  }
+  return null;
+}
+
+function tryParseJsonArray(text: string): unknown[] | null {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parse the LLM's JSON response into SceneSegment array.
  * Expected format: [{scene_name, message_ids, memories: [...]}]
  * #122：返回 `{scenes, emptyReason?}`——0 条时必须说明是哪一类 0 条。
@@ -1039,10 +1176,10 @@ export function parseExtractionResult(
     // raw 保持原样：NO_JSON/PARSE_FAIL dump 与 llmRaw.rawOutput 要留给排查口径。
     const stripped = stripInlineThink(cleaned);
 
-    // Try to extract JSON array；抠不到 = 输出被 maxTokens 砍尾时先走截断抢救（P0-1）
-    const arrayMatch = stripped.match(/\[[\s\S]*\]/);
-    const jsonSource = arrayMatch ? arrayMatch[0] : salvageTruncatedJsonArray(stripped);
-    if (!jsonSource) {
+    // P1-B W1（2026-11-10）：候选序列解析取代单次贪婪锚——先按围栏切段、再逐段取顶层数组，
+    // 断尾段仍交截断抢救（P0-1）；候选逐个试，取第一个解析成功且非空的。
+    const candidates = makeJsonCandidates(stripped);
+    if (candidates.length === 0) {
       // #122：区分「压根没有 JSON」与「有 JSON 但不是数组」——后者此前一律误报 no_json
       const reason: L1EmptyReason = isNonArrayJson(stripped) ? "not_array" : "no_json";
       logger?.warn?.(
@@ -1055,39 +1192,23 @@ export function parseExtractionResult(
       );
       return { scenes: [], emptyReason: reason };
     }
-    if (!arrayMatch) {
-      logger?.warn?.(`${TAG} Truncated extraction output salvaged: ${jsonSource.length} chars recovered from prefix`);
+    // "scenes 非空" = 数组里至少一个对象项（场景只能由对象物化）；纯标量数组不算命中。
+    const picked = tryParseCandidates(candidates, (parsed) =>
+      parsed.some((item) => item !== null && typeof item === "object"),
+    );
+    if (!picked) {
+      // 候选全不可解析（含无从抢救的断尾）→ 与旧实现同口径报 parse_fail
+      logger?.warn?.(`${TAG} Failed to parse extraction result: all ${candidates.length} JSON candidate(s) unparseable`);
+      const rawPreview = raw.slice(0, 2048);
+      logger?.warn?.(
+        `${TAG} [l1-debug] PARSE_FAIL rawLen=${raw.length}, rawFull=${JSON.stringify(rawPreview)}${raw.length > 2048 ? `…(+${raw.length - 2048})` : ""}`,
+      );
+      return { scenes: [], emptyReason: "parse_fail" };
     }
-
-    // Sanitize control characters inside JSON string literals that LLM may produce.
-    // Some weaker OpenAI-compatible models occasionally emit bare identifiers for
-    // numeric fields (e.g. `"priority": sheet`). Repair only known safe fields and
-    // retry once so one bad scalar does not drop the whole extraction result.
-    const sanitized = sanitizeJsonForParse(jsonSource);
-    let parsed: unknown[];
-    try {
-      parsed = JSON.parse(sanitized) as unknown[];
-    } catch (err) {
-      const repaired = repairExtractionJson(sanitized);
-      try {
-        parsed = JSON.parse(repaired) as unknown[];
-        if (repaired !== sanitized) {
-          logger?.warn?.(`${TAG} Repaired non-strict extraction JSON: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } catch {
-        // P0-1：正则片段整体不可解析（常见于截断输出里字符串含 ']' 致截取错位）→ 再走前缀抢救
-        const salvaged = arrayMatch ? salvageTruncatedJsonArray(stripped) : null;
-        if (!salvaged || salvaged === jsonSource) throw err;
-        parsed = JSON.parse(sanitizeJsonForParse(salvaged)) as unknown[];
-        logger?.warn?.(`${TAG} Salvaged truncated extraction JSON from prefix: ${salvaged.length} chars`);
-      }
+    if (picked.salvaged) {
+      logger?.warn?.(`${TAG} Truncated extraction output salvaged: ${picked.source.length} chars recovered from prefix`);
     }
-
-    if (!Array.isArray(parsed)) {
-      // 防御：jsonSource 以 `[` 起头，正常不可达；保留以免将来换锚法后静默吞掉非数组响应。
-      logger?.warn?.(`${TAG} Extraction response is not an array`);
-      return { scenes: [], emptyReason: "not_array" };
-    }
+    const parsed = picked.parsed;
 
     const scenes: SceneSegment[] = [];
     for (const item of parsed) {
@@ -1405,6 +1526,8 @@ async function applyDecisions(params: {
   writePolicy?: WritePolicy;
   /** 抽取配置（A4：actorTagging 门 —— 复判标签时只看这一位）。 */
   memoryConfig?: unknown;
+  /** §17：`source_message_ids` → 原文与角色，用于逐字核对人名线索。 */
+  sourceMessagesById?: Map<string, { content: string; role: string }>;
 }): Promise<MemoryRecord[]> {
   const {
     memoriesWithIds,
@@ -1423,6 +1546,7 @@ async function applyDecisions(params: {
     enableMemoryLinks = true,
     writePolicy,
     memoryConfig,
+    sourceMessagesById,
   } = params;
   const storedRecords: MemoryRecord[] = [];
 
@@ -1482,6 +1606,48 @@ async function applyDecisions(params: {
           ...memoryToWrite,
           metadata: reconciledMetadata,
         } as typeof memoryToWrite;
+      }
+      // §17 人名线索确定性门：模型给的 speaker_name / mentioned 必须被这条记忆的原文证实
+      // （逐字出现在 source_message_ids 对应的消息里），证不实的一个都不留——人名会写进
+      // 档案、注入到对方面前，猜错的代价比缺名更大。
+      //
+      // 两处口径与引文校验一致：① **不用 content 当证据**——那是模型自己改写的，
+      // 拿它证明自己给的名字等于自证（「用户名叫何晨」这种句子就是模型写的）；
+      // 原话全缺时才退回 content，那是降级路径，不是默认路径。
+      // ② 模型不肯给键时不放弃：从 content 的「自述句式」抽候选，仍旧要过原话门。
+      {
+        const rawMeta = (memoryToPersist.metadata ?? {}) as Record<string, unknown>;
+        const sourceIds = Array.isArray(memoryToPersist.source_message_ids) ? memoryToPersist.source_message_ids : [];
+        const sourceMsgs = sourceIds
+          .map((sid) => sourceMessagesById?.get(String(sid)))
+          .filter((m): m is { content: string; role: string } => m !== undefined && m.content !== "");
+        const originalText = sourceMsgs.map((m) => m.content).join("\n");
+        // 说话人名字的证据面只取 user 侧原话：只出现在 assistant 侧的名字
+        // （典型是 AI 自己的名字）不是「跟我说话的人」的名字。
+        const userSideText = sourceMsgs
+          .filter((m) => m.role.toLowerCase() === "user")
+          .map((m) => m.content)
+          .join("\n");
+        const sourceText = originalText !== "" ? originalText : String(memoryToPersist.content ?? "");
+        const modelSpeaker = typeof rawMeta.speaker_name === "string" ? rawMeta.speaker_name.trim() : "";
+        const candidates = modelSpeaker === "" ? nameCandidatesFromContent(String(memoryToPersist.content ?? "")) : [];
+        const hasModelHint = "speaker_name" in rawMeta || "mentioned" in rawMeta;
+        if (hasModelHint || candidates.length > 0) {
+          const input: Record<string, unknown> = { ...rawMeta };
+          if (modelSpeaker === "" && candidates.length > 0) input.speaker_name = candidates[0];
+          const hints = sanitizePersonHints(input, sourceText, { speakerSourceText: userSideText });
+          const nextMeta = { ...rawMeta };
+          delete nextMeta.speaker_name;
+          delete nextMeta.mentioned;
+          if (hints.speakerName) nextMeta.speaker_name = hints.speakerName;
+          if (hints.mentioned && hints.mentioned.length > 0) nextMeta.mentioned = hints.mentioned;
+          if (hints.dropped > 0) {
+            logger?.warn?.(
+              `${TAG} [person-hints] 丢弃 ${hints.dropped} 个无法被原文证实的人名（record=${memoryWithId.record_id}）`,
+            );
+          }
+          memoryToPersist = { ...memoryToPersist, metadata: nextMeta } as typeof memoryToWrite;
+        }
       }
       const record = await writeMemory({
         memory: memoryToPersist as never,
