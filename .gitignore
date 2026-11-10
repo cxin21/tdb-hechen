@@ -234,3 +234,8 @@ MemoryCore/.distill_len_check.md
 MemoryCore/__distilled_block__/
 MemoryCore/.tmp-v3-*.mjs
 MemoryCore/__distilled_block__
+# ── AgentTeams 运行态与一次性产物（2026-11-10 收口追加）──
+.agent-teams/
+.tmp-review/
+.tmp-*
+

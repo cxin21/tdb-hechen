@@ -209,7 +209,6 @@ memory:
     graphDiscount: 0  # float default=0 — R4 图一跳候选的相关度折扣；0=关（缺省 0；删键仍为 0，不会反向打开） [src:2525]
     sceneBoost: 0  # float default=0 — R6 场景路由加成；0=关（缺省 0） [src:2526]
     queryEmbeddingCacheTtlMs: 60000  # ms default=60000 — 同 query 文本的向量复用 TTL；0=关 [src:2528]
-    valuesCacheTtlMs: 60000  # ms default=60000 — 价值锚缓存 TTL（写路径有失效钩子，跨进程漂移窗口=TTL）；0=关 [src:2529]
     excludeInvalidated: true  # bool default=true — 失效行排除总开关；false=失效行照常参与（观察用） [src:2531]
     validity:
       mode: "soft"  # enum(hard|soft) default="soft" — 效期判定：hard=失效/未来生效行直接排除（旧行为）；soft=降权保留、仅"现在/最新"且存在更新有效行时才硬丢；非法值→soft+告警 [src:2340]
@@ -340,50 +339,11 @@ memory:
     enabled: true  # bool default=true — 记忆图：merge→similar / update→evolve 建边（l1_links） [src:1582]
     minSimilarity: 0.3  # float default=0.3 — similar 边最低相似度；clamp [0,1]，非法值回落 0.3 [src:1674]
   coreMemory:
-    writeEnabled: true  # bool default=true — 允许 /v3/core-memory/write 写核心记忆（仍受 slot 白名单与各层门控） [src:1694]
-    allowedSlots: ["identity","core_value","strict_rule","self_identity"]  # list<str> default=["identity","core_value","strict_rule","self_identity"] — 允许写入的槽白名单；[]=拒绝全部；显式配置时不再自动补 self_identity（用户白名单权威） [src:1682]
-    maxContentLength: 2000  # int default=2000 — 单条核心记忆内容长度上限（字符） [src:1699]
-    seedValues: []  # list<map> default=[] — 价值锚种子（core_values 空时灌入）；元素 {id,label,weight(0..1),createdBy}，畸形项被丢弃 [src:1700]
     anchorDiscovery:
       enabled: true  # bool default=true — 价值锚自发现（GROW）：缺省开 [src:1582]
-      minEvidence: 5  # int default=5 — 提议成锚所需最少证据条数；clamp [1,50] [src:1718]
-      maxPerPass: 2  # int default=2 — 单轮最多新建锚数；clamp [1,10] [src:1719]
-      maxTotal: 15  # int default=15 — 主题锚总量配额；clamp [1,100] [src:1720]
-      quotaScope: "total"  # enum(total|auto) default="total" — 配额口径：total=总预算（拍板默认）；auto=旧口径回滚档；其余值落 total [src:1722]
-      intervalHours: 24  # int default=24 — 发现轮间隔小时；clamp [1,720] [src:1723]
-      maintainIntervalHours: 6  # int default=6 — 维护面（低证据退场/权重演化）独立节奏小时；0=每 tick；clamp [0,168] [src:1724]
-      person:
-        enabled: false  # bool default=false — 人物锚分池开关 [src:1582]
-        minEvidence: 5  # int default=5 — 人物锚最少证据；clamp [1,50] [src:1718]
-        maxPerPass: 1  # int default=1 — 人物锚单轮上限；clamp [1,5] [src:1719]
-        maxTotal: 8  # int default=8 — 人物锚总量配额；clamp [1,50] [src:1720]
-      identityMaintain:
-        enabled: false  # bool default=false — 身份分支维护（仅警告、永不自动退场） [src:1582]
-      similarMerge:
-        enabled: false  # bool default=false — 相似锚合并（bigram Jaccard≥threshold 时并入既有锚，不删锚） [src:1582]
-        threshold: 0.5  # float default=0.5 — 合并阈值；clamp [0.2,0.95] [src:1736]
-      character:
-        enabled: false  # bool default=false — 品格锚池（源=self_identity 事实） [src:1582]
-        minEvidence: 2  # int default=2 — 品格锚最少证据；clamp [1,50] [src:1718]
-        maxPerPass: 1  # int default=1 — 品格锚单轮上限；clamp [1,5] [src:1719]
-        maxTotal: 8  # int default=8 — 品格锚总量配额；clamp [1,50] [src:1720]
-      reproposal:
-        enabled: false  # bool default=false — rejected 域证据升级重提案通道（仅提案，不直改 active） [src:1582]
-        minEvidenceMultiple: 2  # int default=2 — 重提案所需证据倍数（相对基线）；clamp [1,10] [src:1767]
-        maxPerPass: 2  # int default=2 — 单轮重提案上限；clamp [1,5] [src:1719]
-        maxRejectsBeforeCold: 2  # int default=2 — 累计拒绝多少次后冷却；clamp [1,10] [src:1769]
-      descRefresh:
-        enabled: false  # bool default=false — 锚描述重述环（LLM 重述+守卫门通过才落库） [src:1582]
-        evidenceMultiple: 2  # int default=2 — 证据达基线 N 倍才触发重述；clamp [1,10] [src:1782]
-        maxPerPass: 2  # int default=2 — 单轮重述上限；clamp [1,5] [src:1719]
-    characterTension:
-      enabled: false  # bool default=false — 品格张力检测（缺省关=逐位现状） [src:1582]
-      minInstances: 2  # int default=2 — 判定张力所需最少实例数；clamp [1,50] [src:1798]
-      maxCandidatesPerPass: 2  # int default=2 — 单轮候选上限；clamp [1,10] [src:1799]
     selfIdentity:
-      enabled: false  # bool default=false — agent 自我层（灵魂双槽）自发现；写入仍受 allowedSlots 门控 [src:1669]
+      enabled: false  # bool default=false — agent 自我层（灵魂双槽）自发现；写入由自维护侧承担 [src:1669]
       maxPerPass: 2  # int default=2 — 单轮自我层提案上限；clamp [1,10] [src:1719]
-      intervalHours: 24  # int default=24 — 自我层发现间隔小时；clamp [1,168] [src:1723]
     moodLine:
       enabled: false  # bool default=false — 近期情绪基调行（红线 R-A：mood 不参与召回排序） [src:1669]
       windowHours: 72  # int default=72 — 情绪统计窗口小时；clamp [1,720] [src:1827]
@@ -395,41 +355,14 @@ memory:
     soulRender:
       budgetSelfChars: 600  # int default=600 — 自我层渲染预算字符；clamp [100,2000] [src:1844]
       budgetIdentityChars: 900  # int default=900 — 身份段渲染预算字符；clamp [100,2000] [src:1845]
-      maxRelationLines: 5  # int default=5 — "重要的人"行数上限；clamp [1,20] [src:1846]
-      budgetAnchorChars: 0  # int default=0 — 价值锚行预算字符；0=关（缺省逐位现状）；clamp [0,4000] [src:1848]
-      budgetPersonChars: 0  # int default=0 — "重要的人"行预算；0=关；clamp [0,4000] [src:1849]
-      budgetCharacterChars: 0  # int default=0 — 品格行预算；0=关；clamp [0,4000] [src:1850]
       snapshotsEnabled: true  # bool default=true — soul 快照旁路开关；显式 false 才关闭（非布尔回退缺省 true） [src:1853]
-      perTurnSlots: true  # bool default=true — 每轮渲染身份两行（我是谁/我心中的他）；false 时省略（由 core_memory 块承载）；仅布尔 true 采纳 [src:1860]
       identityNarrative:
         enabled: false  # bool default=false — 身份叙事化渲染门（两槽折叠为叙事段）；仅布尔 true 开启 [src:1669]
-      anchorSelect:
-        maxRows: 999  # int default=999 — 情境锚最多渲染几行；999=现状全注入；clamp [1,999] [src:1877]
-        scorer:
-          enabled: false  # bool default=false — 锚相似度打分门（shadow 起步）；非布尔回退 false [src:1717]
-          threshold: 0  # float default=0 — 打分硬门阈值；0=无硬门；clamp [0,1] [src:1736]
-          mmrLambda: 0.7  # float default=0.7 — MMR 多样性 λ；clamp [0,1]；≥1 退化纯 top-K [src:1887]
-          embedBudgetMs: 1200  # ms default=1200 — 锚 desc 预嵌软预算；超预算回退声明序；0=关 [src:1888]
-        shadowSink:
-          enabled: false  # bool default=false — 锚分布 shadow 采集落盘门（零写盘为缺省） [src:1717]
-          file: "data/logs/soul-anchor-shadow.jsonl"  # path default="data/logs/soul-anchor-shadow.jsonl" — shadow JSONL 路径；空串回落缺省 [src:1903]
-      strictRuleDedup:
-        enabled: false  # bool default=false — 红线段近重复去重门（exact/jaccard/containment，保长原位替换） [src:1732]
-        jaccardThreshold: 0.45  # float default=0.45 — Jaccard 判重阈值；clamp [0,1] [src:1918]
-        maxLines: 0  # int default=0 — 红线段行数上限（从头部保留 N 条）；0=不设限；clamp [0,50] [src:1919]
-        suppressAnchorOverlap: false  # bool default=false — 价值锚 desc 与红线行近重复时锚行让位 [src:1924]
-      anchorDedup:
-        enabled: false  # bool default=false — 价值锚标签双向包含去重门（短侧≥2 字护栏） [src:1738]
-        embeddingThreshold: 0  # float default=0 — desc 向量 cosine 判近重复阈值；0=关；clamp [0,1] [src:1929]
       introspect:
         snapshotLimit: 20  # int default=20 — soul_introspect 返回快照条数；clamp [1,200] [src:1939]
         evidenceWindowHours: 168  # int default=168 — 自省证据窗小时；clamp [1,2160] [src:1945]
-      capabilities:
-        enabled: false  # bool default=false — "我能做什么"段渲染门（清单由代理侧传入） [src:1766]
       promiseEvidence:
         enabled: false  # bool default=false — 承诺证据迁移门（user 确认话语→refKey 严格相等） [src:1766]
-      promises:
-        enabled: false  # bool default=false — 承诺块渲染门（最新 3 条 open 承诺，零 open 整块省略） [src:1766]
     # 自维护人格层（m00527）：与 core_memory 五槽并存、不替换。append-only + 状态迁移
     #（active/degraded/frozen/merged），不删除条目；每步落 soul_ledger（before 快照 +
     # 闸门结果 + 原因），0 人工靠可回放可回滚成立。LLM 只是候选来源之一，无写权。
@@ -509,38 +442,6 @@ memory:
     reflection:
       enabled: false  # bool default=false — 反思触发（Generative Agents 对标）；false=零反思 [src:1826]
       rRef: 150  # int default=150 — 显著度阈值（[0,1] 刻度，yaml 常写 2≈取 2.0 强度）；clamp [1,100000]，旧下限 10 已修正 [src:2087]
-      soulProposals:
-        enabled: false  # bool default=false — 反思结论→身份/自我层提案（slot 白名单+verbatim≥12 逐字拒绝+人工采纳；strict_rule 不可提案） [src:1826]
-        shadowCalibration:
-          enabled: null  # bool default=unset — 提案 shadow 定标旁路（JSONL 采集，行为零变化）；yaml 显式写才带键 [src:1826]
-          file: null  # path default=unset — shadow JSONL 路径；显式写才带键 [src:1903]
-        cardContract:
-          enabled: false  # bool default=false — 反思产物契约门（第一人称叙事、禁伪造当下体验、≤200 字、锚引用校验）；仅 true 带键 [src:1868]
-        conclusionContract:
-          enabled: false  # bool default=false — 结论卡拆条引导（一句话一件事/≤300 码点）；仅 true 带键 [src:1868]
-      promiseProposals:
-        enabled: false  # bool default=false — 承诺迁移提案通道（LLM 只提议，人工 decide 后唯一写入口落库） [src:1868]
-      selfIdentityGate:
-        enabled: null  # bool default=unset — self_identity 提案相似门总开关；整块不写=undefined=消费侧缺省 [src:1905]
-        threshold: null  # float default=unset — 提案相似度阈值；不写=消费侧缺省 [src:1886]
-        suppression:
-          enabled: null  # bool default=unset — 生成端抑制门；不写=缺省 [src:1905]
-          maxPending: null  # int default=unset — 抑制门上限：同主题 pending 达 N 条不再推提案 [src:2129]
-        recurrence:
-          enabled: false  # bool default=false — 复现即投票门（===true 才开）；配合 votes/ttlHours/spanHours [src:1868]
-          votes: 3  # int default=3 — ready 晋升所需票数（票面标定 3） [src:2132]
-          ttlHours: 24  # int default=24 — 票 TTL 小时（C1 单键联动：spanHours 缺省跟随它） [src:2133]
-          spanHours: null  # int default=unset — 投票跨度小时；不写=跟随 ttlHours [src:2134]
-        rateLimit:
-          enabled: false  # bool default=false — 源头硬闸：窗口内该租户 self_identity 新落库达 maxNew 即跳过落库（LLM 反思照常） [src:1885]
-          maxNew: 12  # int default=12 — 窗口内最多新落库条数 [src:2145]
-          windowHours: 24  # int default=24 — 限流窗口小时 [src:1827]
-        autoAdopt:
-          enabled: false  # bool default=false — 确定性自动采纳门（count≥votes ∧ 跨 spanHours ∧ 无同主题 rejected 矛盾 ∧ 非槽内重复）→ 自动落槽；删块=回到人工裁决 [src:1905]
-          votes: 4  # int default=4 — N₂ 采纳票数（比 stage-1 ready 的 3 严一票） [src:2132]
-          spanHours: 72  # int default=72 — T₂ 投票跨度小时（慢变量口径） [src:2134]
-          contradictionThreshold: 0.6  # float default=0.6 — 同主题 rejected 矛盾线（宁拦勿收） [src:2158]
-          dupThreshold: 0.75  # float default=0.75 — 槽内重复线（proposal-dedup 单一源标准） [src:2159]
   evolution:
     enabled: false  # bool default=false — 受控正文演化（全系统唯一允许改写已固化正文的路径）；缺省关 [src:1921]
     maxRewrites: 3  # int default=3 — 单条正文最多改写次数；clamp [1,20] [src:2202]

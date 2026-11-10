@@ -197,7 +197,6 @@ memory:
     sceneBoost: 0              # R6 场景路由（关断）
     # 性能速赢（TTL 置 0 = 关闭）
     queryEmbeddingCacheTtlMs: 60000   # E1：同 query 文本 60s 内复用向量（免重复外呼）
-    valuesCacheTtlMs: 60000           # E2：价值锚缓存（五个写路径挂失效钩子；跨进程写漂移窗口=TTL）
     sessionReuseTtlMs: 300000         # E3：同 session 同 query 复用上轮注入块（5 分钟，空结果不缓存）
     # ── RV2-2 精排重设计（2026-09-11）→ P5 重锚裁决关断（2026-09-12，DS-P5-REANCHOR-001）──
     # compositeScore = wRel×relevanceNorm + wTime×timeProx + wSig×sigNorm + wCore×coreRefHit。
@@ -429,94 +428,17 @@ memory:
     # S-FEEL-1（M1，2026-09-24 何晨拍板启用；A/B 13/13 全过）
     moodLine:
       enabled: true
-    # S-CHAR-2（M2，2026-09-24 何晨整句授权自定最优启用；A/B 10 组全过+生产快照 17 租户实证）
-    characterTension:
-      enabled: true
-      minInstances: 2
-      maxCandidatesPerPass: 2
-    writeEnabled: true # 允许经 /v3/core-memory/write 写（slot 白名单内）
-    allowedSlots: [identity, core_value, strict_rule, self_identity] # P1(DS-SOUL-MEMORY-002): +agent 自我层(写入仍由 selfIdentity.enabled 门控)
-    maxContentLength: 2000
     # GROW-MAINT（2026-09-15 拍板）：不再灌种子；价值锚 = LLM 自发现（提议制+护栏）+ 自维护
-    # （低证据退场 / 权重随语料演化）。minEvidence 显式 3（小语料期可达；提案区下限对齐）。
+    # （低证据退场 / 权重随语料演化）；本键只留调度面总开关，其余子门与提案通道均已于 2026-11-07 退役。
     anchorDiscovery:
       enabled: true
-      minEvidence: 3
-      maxPerPass: 2 # P3 散项回切（2026-09-24 整句授权）：FLOW-TEST 演示值 3→登记值 2
-      maxTotal: 15
-      intervalHours: 24
-      maintainIntervalHours: 6 # V10-MAINT-DECOUPLE（2026-09-25 何晨拍板「全部按建议」）：维护面独立节奏小时数（0=每 tick；缺省 6）
-      # DS-SOUL-MEMORY-002 P2（spec §2.6/§5）：人物锚分池（同一 worker 策略化分叉）——
-      # p- 前缀独立命名空间 / 别名维度去重 / QUOTA 分池（人物 maxTotal=6 独立于主题 15（2026-10-04 拍板 character 8→6 回归设计值 §7.2））。
-      person:
-        enabled: true
-        minEvidence: 3 # 与 theme 对齐（小语料期可达；T9 实证：缺省 5 挡掉 3 条女儿语料）
-        maxPerPass: 2
-        maxTotal: 6
-      # P2：GROW-MAINT 身份分支（F15 身份分支）——失撑身份事实只警告永不自动退场（F20 红线）。
-      identityMaintain:
-        enabled: true
-
-      # P3：品格锚池（聚合源=self_identity 槽事实，spike 定案）
-      character:
-        enabled: true
-        minEvidence: 3
-        maxPerPass: 2
-        maxTotal: 6
-      # ── 锚发现增强三门（2026-10-19 用户授权自决开；解析点 src/config.ts:1281-1364，均 clamp 防手滑）──
-      # 2026-10-26 配置审计：三门代码缺省 false，生产已开 → 模板显式落盘防漂移。
-      # similarMerge（G-SIMMERGE）：候选锚 label 与既有 active 锚 bigram Jaccard≥threshold → 不新建、
-      #   证据增量并入命中锚（不删除任何既有锚，仅防锚碎片化）；threshold clamp [0.2,0.95] 缺省 0.5。
-      # reproposal（#19 T12 / V12-REPRO）：rejected 域提案证据≥minEvidenceMultiple×基线时重提案
-      #   （落 pending 提案池 upsertPendingCore 含 Gen 溯源；纯提案制不直改 active）；maxRejectsBeforeCold 后冷却。
-      # descRefresh（#11 T5）：锚描述重述环——LLM 重述+守卫门通过才落库，maxPerPass 节流。
-      similarMerge:
-        enabled: true
-        threshold: 0.5
-      reproposal:
-        enabled: true
-        minEvidenceMultiple: 2
-        maxPerPass: 2
-        maxRejectsBeforeCold: 2
-      descRefresh:
-        enabled: true
-        evidenceMultiple: 2
-        maxPerPass: 2
     # DS-SOUL-MEMORY-002 P1: agent 自我层(灵魂双槽)——双视角自发现 + 四段渲染
     selfIdentity:
       enabled: true
       maxPerPass: 2
-      intervalHours: 24 # P3 散项回切（2026-09-24 整句授权）：验收期冷却 1→登记值 24
     soulRender:
       budgetSelfChars: 600
       budgetIdentityChars: 900
-      maxRelationLines: 5 # F17（审计补齐）：重要的人 行数上限；5=原行为显式落盘
-      # #10 T4：三行锚列表总长预算（整锚粒度从尾丢，不截半句）。0=关（代码缺省逐位现状）。
-      # 2026-10-26 配置审计：生产已放量 480/400/300，模板此前仍 0/0/0 → 重装即静默回退，现对齐。
-      budgetAnchorChars: 480    # 价值锚行预算（≈10 锚当量；消费点 soul-assembler.ts:535）
-      budgetPersonChars: 400    # 重要的人行预算
-      budgetCharacterChars: 300 # 品格行预算
-      # #42（D9 情境锚选择器，确定性 embedding 相似度，不上 LLM 打分）：
-      # scorer.enabled=true 打分链路通电（embedding=共享 EmbeddingService）；threshold=0 无硬门；
-      # shadowSink 每轮渲染都采集锚分分布（#52 P3 已与裁剪报告门解耦，渲染字节零变化），
-      # 数据供 D9 定标：#57 analyze:anchor-shadow 实测 0.2 为无损收紧带、0.3 断崖。
-      anchorSelect:
-        maxRows: 12
-        scorer:
-          enabled: true
-          threshold: 0
-          # 灵魂注入质量轮（2026-10-19）：MMR 多样性 λ + desc 预嵌软预算 ms（生产已开；代码缺省 0.7/1200）。
-          mmrLambda: 0.7
-          embedBudgetMs: 1200
-        shadowSink:
-          enabled: true
-          file: "/data/tdai-memory/logs/soul-anchor-shadow.jsonl"  # 云端路径；本地为 D:/TDB/data/logs/…
-      # #40（ADR0003 票 B）：capabilities 渲染门——「## 我能做什么」段；清单由 proxy /v3/recall body 传入
-      capabilities:
-        enabled: true
-      # #52 D3：per-turn soul 块省略（我是谁）/（我心中的他）两行（system 侧 core_memory 块已承载同内容）；
-      # false = 省略模式（生产现状）；缺省 true = 每轮渲染（旧行为）；legacy（dual=false）路径不受影响
-      perTurnSlots: false
       # #67（R3 身份叙事层，2026-10-19）：identity/self_identity 两槽确定性叙事化门——
       # true=soul dual 路径身份两行由 renderIdentityNarrative 叙事段替代（模板常量+事实句
       # 逐字，无 LLM/随机/时钟；生成闸违例或无身份内容→条目渲染兜底），且 /v3/core-memory/read
@@ -528,21 +450,6 @@ memory:
       # 承诺创建通道由 lifecycle.reflection.promiseProposals→人工采纳承载（LLM 无直改路径）
       promiseEvidence:
         enabled: true
-      # T3（未来性渲染面）：「我的承诺：」块注入 soul-identity（品格后红线前）；
-      # 最新 3 条 open 承诺逐字渲染（零 open 整块省略=宁缺毋滥，不伪造）
-      promises:
-        enabled: true
-      # #55（S17，2026-10-19）：soul 渲染近重复去重门（config-first 缺省关，布局级变更不翻 soulVersion）——
-      # strictRuleDedup：红线段近重复行收敛（exact/jaccard≥0.45/containment≥0.9，保长=归一后更长，
-      # winner 原位替换）；anchorDedup：价值锚 label 双向包含且短侧 ≥2 字护栏（完整句优先）。
-      # 生产 A/B 实证：14→13 红线（R03 环境铁律短变体并入 R08）、根因→根因优先。
-      strictRuleDedup:
-        enabled: true             # jaccardThreshold 缺省 0.45
-        maxLines: 8               # 红线段行数上限：去重后从头部保留 N 条（0=不设限；红线墙挤占身份段预算治理）
-        suppressAnchorOverlap: true # 价值锚 desc 与红线行近重复时锚行让位（红线=硬约束承载面优先）
-      anchorDedup:
-        enabled: true             # 价值锚/人物/品格近重复锚对择优（完整句胜，winner 原位替换）
-        embeddingThreshold: 0.85  # label 包含对之外的第二通道：desc 向量 cosine≥0.85 判近重复（0=关缺省）
   lifecycle:
     enabled: true # H+I：巩固 + 遗忘的周期调度（每 10 分钟一轮，best-effort）
     intervalMs: 600000
@@ -563,51 +470,6 @@ memory:
     reflection:
       enabled: true
       rRef: 2 # 刻度换算：Generative Agents 0-100 刻度的 150 ≈ 本库 significance [0,1] 刻度的 1.5；取 2.0≈3 条高显著记录
-      # #44（D8-(c) 提案通道）：reflection 同调用产 promiseTransitions→vet（verbatim≥12 等）→
-      # dedup→pending 轨（slot=promise_transition）；人工 Panel/API decide adopted→唯一写入口。
-      promiseProposals:
-        enabled: true
-      # #27（S6 反思结论→身份层提案安全门）：slot 白名单 [identity,self_identity]、verbatim≥12 逐字拒绝、
-      # O13 pending→人工采纳；strict_rule 不可提案。缺省 false=零提案。
-      soulProposals:
-        enabled: true
-        # D7 ε shadow 定标：行为零变化，仅旁路记录 bestLen 分布至 data/logs/soul-reflection-shadow.jsonl。
-        # 注意嵌套层级：config.ts 从 soulProposals 组内解析（与 soulProposals 平级=不生效）。
-        shadowCalibration:
-          enabled: true
-        # #60（S22 反思产物契约门，2026-10-19）：LLM 仅提议+确定性校验（第一人称叙事、禁伪造当下体验
-        # /我(现在|此刻|当下)(的)?(感到|觉得|感觉|情绪)/、≤200 字、价值锚引用校验锚集来自 core_value 行）——
-        # 契约不通过拒绝推提案；通过时 anchor_refs 并入提案 attrs。缺省 false=现状。
-        cardContract:
-          enabled: true       # 生产已开
-        # #77 Batch D（survey F1，2026-10-20 拍板开启）：结论卡拆条引导——反思 LLM prompt 附加
-        # 「一句话一件事/≤300 码点/多事拆条/宁缺毋滥」few-shot；≤300 码点机械拒收门已无条件生效
-        # （validateConclusionCard，拒收记 skipped 警告日志），本键只加引导降拒收率。缺省 false=逐位现状。
-        conclusionContract:
-          enabled: true
-      # ── #91/#92 身份提案裁决门（2026-10-23/24/25 用户拍板；解析点 src/config.ts:1621-1679）──
-      # 2026-10-26 配置审计：本段是**条件材料化**——不写=不带键=消费侧缺省全关，生产已开而模板
-      # 整段缺失（重装即人格写入终审权静默回退人工裁决），现按生产现值显式落盘。
-      # recurrence：复现即投票（===true 才开；ttlHours 缺省 24，生产 72 与 spanHours 共用）。
-      # rateLimit（#91 K 阀）：源头硬闸——窗口内该租户 self_identity 新落库 ≥ maxNew → push 支路跳过
-      #   落库（LLM 反思照常、echo/计票路径不受影响；fail 方向=少落库）。maxNew=12 人工带宽口径，窗口 24h。
-      # autoAdopt（#92 stage 2）：确定性自动采纳门——三重门（count≥votes ∧ 跨≥spanHours ∧ 无同主题
-      #   rejected 矛盾 ∧ 非槽内重复）→ 自动采纳落槽（source=auto-adopt-gate），人转审计员；
-      #   回滚=Panel 对 auto_adopted 行 reject。显式开 = 人格写入终审权变更生效（ADR-0007）。
-      selfIdentityGate:
-        recurrence:
-          enabled: true
-          ttlHours: 72
-        rateLimit:
-          enabled: true
-          maxNew: 12
-          windowHours: 24
-        autoAdopt:
-          enabled: true
-          votes: 4                    # N₂（比 stage-1 ready 的 votes=3 严一票）
-          spanHours: 72               # T₂（跨 3 天持续复现才够格，慢变量口径）
-          contradictionThreshold: 0.6 # 同主题 rejected 矛盾线（宁拦勿收：误拦=退回人审）
-          dupThreshold: 0.75          # 槽内重复线（proposal-dedup 单一源标准）
     # ── embedding 回填（2026-10-26 配置审计：代码缺省已开 true/30/50，显式落盘防翻转）──
     embedBackfill:
       enabled: true       # 为缺向量/向量过期的记录批量重算 embedding
