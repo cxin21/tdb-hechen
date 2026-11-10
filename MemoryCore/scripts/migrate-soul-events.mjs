@@ -184,22 +184,49 @@ try {
 
   const parity = lib.collectParity(db, { tenants });
   console.log(TAG + " 对账：" + (parity.ok ? "一致" : "有 diff") +
-    "   旧 episode " + parity.totals.legacyEpisodes + " → 事件 " + parity.totals.events +
+    "   旧 episode " + parity.totals.legacyEpisodes + " → 迁移派生事件 " + parity.totals.events +
     " · chat " + parity.totals.chat + " · evidence " + parity.totals.evidence + " · goals " + parity.totals.goals);
+  // 迁移范围外的行要单独报出来，否则操作者会以为「事件比 episode 多」是迁移多写了。
+  if (parity.outOfScope.total > 0) {
+    const kinds = Object.entries(parity.outOfScope.bySourceKind)
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([kind, n]) => kind + " " + n)
+      .join("/");
+    console.log(TAG + " 迁移范围外事件 " + parity.outOfScope.total + " 条（" + kinds + "），不计入对账");
+  }
   for (const b of parity.tenants) {
     console.log(
       TAG + "   租户 " + b.label + "：字段 hash " + (b.field.hash ?? "-") + "（比对 " + b.field.compared +
-        " 条，不一致 " + b.field.mismatchEvents + " 条）" +
+        " 条，不一致 " + b.field.mismatchEvents + " 条" +
+        (b.field.backfillGapEvents > 0 ? "，存量缺口 " + b.field.backfillGapEvents + " 条事件" : "") + "）" +
         (b.diffs.length ? " DIFF: " + b.diffs.join("；") : " OK"),
     );
     for (const m of b.mismatches) {
       console.log(TAG + "     不一致事件 " + m.eventId + "：" + m.fields.join(", "));
     }
+    for (const issue of b.issues) console.log(TAG + "     其它：" + issue);
   }
   for (const issue of parity.issues) console.log(TAG + "   全局：" + issue);
 
-  if (opts.apply && applied && applied.ok && !parity.ok) exitCode = exitCode === 3 ? 3 : 1;
-  if (!opts.apply && !parity.ok && parity.hasTarget) exitCode = 1;
+  // 存量回填缺口单独一段：它是「库里是空、期望有值」，INSERT OR IGNORE 不会覆盖已有行，
+  // 属于要单独决定的缺口，不是写错值。和真 mismatch 分开列，避免操作者看混。
+  const gapColumns = Object.entries(parity.totals.backfillGaps).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  const gapTotal = gapColumns.reduce((sum, [, n]) => sum + n, 0);
+  if (gapTotal > 0) {
+    console.log(TAG + " 存量回填缺口（库里有空、期望有值；INSERT OR IGNORE 不覆盖已有行，需另行决定是否回填）：");
+    for (const [col, n] of gapColumns) console.log(TAG + "   " + col + "：" + n + " 条");
+    console.log(TAG + "   涉及事件 " + parity.totals.backfillGapEvents + " 条；这些字段当前不影响退出码。");
+  }
+
+  exitCode = lib.migrationExitCode({ apply: opts.apply, applied, parity });
+
+  const summary = lib.summarizeMigrationRun({
+    applied,
+    parity,
+    placeholderStats: lib.countPlaceholderEvidence(db),
+  });
+  console.log(TAG + " ── 结论 ──");
+  for (const line of summary.lines) console.log(TAG + " " + line);
 
   report = {
     db: DB_PATH,
@@ -213,14 +240,18 @@ try {
       hasTarget: parity.hasTarget,
       totals: parity.totals,
       issues: parity.issues,
+      backfillGaps: parity.totals.backfillGaps,
+      outOfScope: parity.outOfScope,
       tenants: parity.tenants.map((b) => ({
         tenant: b.label,
         legacy: b.legacy,
         target: b.target,
         field: b.field,
+        backfillGaps: b.backfillGaps,
         diffs: b.diffs,
       })),
     },
+    summary: summary.lines,
     exitCode,
   };
   console.log(TAG + " 退出码 " + exitCode + (opts.apply ? "（--apply 已执行）" : "（dry-run，未写任何字节）"));

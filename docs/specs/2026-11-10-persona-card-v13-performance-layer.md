@@ -208,19 +208,21 @@ warnings 至少支持：missing_person_state、missing_mood_state、missing_work
 
 证据映射：每块给 evidenceIds；正文行不嵌 ID。没有证据的行不渲染。
 
-hash 规则不变：hash = sha256(CARD_READER_NOTE + 正文)，textHash = sha256(正文)。v13 的 CARD_SCHEMA_VERSION 改为 13；正文变化时 hash 必须变化，底色变化小于 0.05 不触发重渲染的规则保留。
+hash 规则不变：hash = sha256(CARD_READER_NOTE + 正文)，textHash = sha256(正文)。v13 的 CARD_SCHEMA_VERSION 改为 13；正文变化时 hash 必须变化。底色不进正文（实锚：`MemoryCore/src/core/soul/card-service.ts:41` 写明 v13 没有「权重变化 < 0.05 复用上一版」的旁路），所以底色变化不改动 hash，也没有 0.05 判据——同一份输入重复渲染 hash 必相同，正文任一行变了 hash 才变。
 
 ## 10. API 与兼容
 
-第一阶段默认仍返回 v12；加 query 参数 v=13 预览，或环境变量 TDB_SOUL_CARD_VERSION=13 切默认。
+没有版本开关：`GET /v3/soul/card` 只有一条渲染路径 `assembleSoulCard`（v13，正文由 `MemoryCore/src/core/soul/card-v13.ts` 渲染），不接受 `v=13` 这类 query 参数，也没有 `TDB_SOUL_CARD_VERSION` 环境变量。
+
+v12 的 11 块渲染器已在阶段 4 删除，`card.ts` 只剩红线截断/去重与 CardSegment 形状；代码里不存在可切换的 v12 实现，也没有 `assembleSoulCardV12` 这样的对照入口——要对比旧卡只能从 git 历史取。
 
 v13 响应保留现有字段，新增 blocks；旧消费者忽略新字段即可。
 
-GET /v3/soul/turn 暂不改；末尾锚继续用 v12 选择逻辑。等 v13 正文稳定后再切锚。
+GET /v3/soul/turn 的接口与内容不变（心境一行 + 未完的事）；末尾锚已由 v13 的 `buildCardSegmentsV13` 产出，随 `/v3/soul/card` 的 `anchor` 字段下发（`MemoryCore/src/core/soul/card-service.ts:598` 起），不再走 v12 的选择逻辑。
 
 传 persons 时，关系块只渲染这些人；解析不到 person_key 就省略关系块并给 warning。
 
-回滚：TDB_SOUL_CARD_VERSION=12 或去掉 v=13，立即回旧渲染；不改库，不需要迁移。
+回滚：只能 git revert 到阶段 4 之前的提交；不改库，不需要迁移。
 
 ## 11. 实施阶段
 
@@ -231,8 +233,11 @@ GET /v3/soul/turn 暂不改；末尾锚继续用 v12 选择逻辑。等 v13 正�
 阶段 2：接结构化层。读 soul_person_state、soul_mood_state、soul_goals、soul_working_state、soul_person_relation；缺数据先省略，不在卡里补。对应 P2/P3/P5 的数据生产。
 
 阶段 3：默认切 v13，面板加卡预览和 evidence 展开；观察一个发布周期。
+已完成：默认切 v13（单一渲染入口 `assembleSoulCard`）；`blocks` 元数据经 BFF 透传到面板；CardView 按块列出来源、置信度、字数。
+未做到：evidence 只到「条数」（`MemoryPanel/web/src/pages/SoulPage/CardView.tsx:75-84` 里 `evidence: b.evidenceIds.length`），不列具体 evidence ID、点不开证据原文、也不能跳回事件；证据链回看仍是缺口。
 
 阶段 4：末尾锚切 v13；删除旧渲染器。
+已完成：末尾锚由 `buildCardSegmentsV13` 产出；v12 的 `renderPersonaCard`/`buildCardSegments` 与 `assembleSoulCardV12` 均已删除，`card.ts` 只剩红线截断/去重与 `CardSegment` 形状。
 
 ## 12. 验收
 
@@ -241,7 +246,7 @@ GET /v3/soul/turn 暂不改；末尾锚继续用 v12 选择逻辑。等 v13 正�
 3. 具体性：至少三个场景带原话和时间；至少两个关系维度；至少一句心境。
 4. 证据：每个正文事实能回指 evidenceIds；没有无标记的编造；缺数据要么省略要么标未采集。
 5. 预算：整卡不超过 2400 字；超限按第 8 节顺序丢块；身份段 1000、锚 460 不超。
-6. 稳定：同一份输入连续渲染，hash 不变；底色变化小于 0.05 不重渲染。
+6. 稳定：同一份输入连续渲染，hash 不变；底色不进正文、不参与 hash，改动正文才换 hash。
 7. 隐私：传 A 的 persons 不出现 B 的关系；未解析 person_key 不给展示名回退。
 8. 回归：现有 card 测试、soul-persons 端点测试、P0 双写测试全绿；P0 读模式不受影响。
 

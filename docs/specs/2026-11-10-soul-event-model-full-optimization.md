@@ -557,7 +557,7 @@ soul_episodes -> soul_events + soul_event_chat + soul_event_evidence：
 ### P5 情绪动力学
 
 交付：emotions.event_id/goal_id、mood_state、mood_events、appraisal 一致性门、重评/调节、心境对召回的影响。
-规则：agency=self => selfCause=true；agency=other => otherCause=true；目标受阻/承诺到期不能落正向；心境半衰期 72–168h。
+规则：agency=self => selfCause=true；agency=other => otherCause=true；目标受阻/承诺到期不能落正向；心境半衰期 36–168h，默认 48h（ADR-0026/0027 口径）。
 验收：承诺到期被指出不再落「踏实」；三天后心境有衰减；重评保留原事件；情绪对象是人/事/目标，不是空。
 风险：情绪标签膨胀；不扩标签，只修 appraisal 和动力学。
 

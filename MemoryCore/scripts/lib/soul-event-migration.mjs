@@ -43,6 +43,14 @@ export const CHAT_COLUMNS = [
 
 export const EVIDENCE_COLUMNS = ["event_id", "record_id", "role", "quote", "at", "confidence"];
 
+/**
+ * 旧迁移写下的占位证据（role='unknown' 且 quote=''）在解析出真实 role/quote 后要原位替换：
+ * 主键是 (event_id, record_id, role)，role 变了 INSERT OR IGNORE 不会覆盖，会多留一行。
+ * 只删这一种精确形态——带引文、或已解析出 role 的行一行不碰；重跑幂等。
+ */
+export const LEGACY_EVIDENCE_PLACEHOLDER_DELETE =
+  "DELETE FROM soul_event_evidence WHERE event_id = ? AND record_id = ? AND role = 'unknown' AND quote = ''";
+
 export const GOAL_COLUMNS = [
   "goal_id", "team_id", "user_id", "agent_id", "owner", "kind", "title", "why",
   "status", "priority", "progress", "due_at", "parent_goal_id", "source_event_id",
@@ -128,6 +136,47 @@ export function parseTenantSpec(spec) {
  */
 export async function loadSoulEventDdl() {
   return await import("../../src/core/store/soul-event-ddl.ts");
+}
+
+/**
+ * 旧 episode 证据的 record_id → L0 原话解析器（F5）。
+ *
+ * 为什么需要：\`soul_episodes.evidence_json\` 只存 record_id 数组，迁移时没有 role/quote，
+ * 于是 248 条证据被写成 role='unknown' + quote=''。这不是「历史脏数据」——record_id
+ * 本身就能回查 l0_conversations；不补，这些证据在 observed 判据里永远不算观察，
+ * 事件也就永远停在 inferred。
+ *
+ * 只读：SELECT 一行，不写任何东西；表不存在或行查不到都返回 null（调用方退回 unknown）。
+ */
+export function buildLegacyRecordResolver(db) {
+  if (!tableExists(db, "l0_conversations")) return null;
+  const stmt = db.prepare(
+    "SELECT role, message_text, recorded_at FROM l0_conversations WHERE record_id = ? LIMIT 1",
+  );
+  const cache = new Map();
+  // 引文只用于「谁说了什么」的定位，不需要整段 L0（压缩段会有几万字）。
+  const QUOTE_MAX = 300;
+  return (recordId) => {
+    if (typeof recordId !== "string" || recordId.trim() === "") return null;
+    const key = recordId.trim();
+    if (cache.has(key)) return cache.get(key);
+    let resolved = null;
+    try {
+      const row = stmt.get(key);
+      if (row) {
+        const messageText = text(row.message_text).replace(/\s+/gu, " ").trim();
+        resolved = {
+          role: text(row.role).trim(),
+          quote: messageText.length > QUOTE_MAX ? messageText.slice(0, QUOTE_MAX) + "…" : messageText,
+          at: text(row.recorded_at).trim(),
+        };
+      }
+    } catch {
+      resolved = null;
+    }
+    cache.set(key, resolved);
+    return resolved;
+  };
 }
 
 export function tableExists(db, name) {
@@ -255,7 +304,7 @@ function dayOf(row) {
  *    否则每跑一次 created_at 都变，对账 hash 永远不稳。
  *  - actor_person_key 留 NULL：从 persons_json 里挑「谁是 user」是推断，不在迁移里猜。
  */
-export function mapEpisodeRow(row) {
+export function mapEpisodeRow(row, resolveRecord = null) {
   const tenant = tenantOf(row);
   const episodeId = text(row.episode_id);
   const at = text(row.at);
@@ -333,7 +382,21 @@ export function mapEpisodeRow(row) {
   }
   for (const recordId of parseStringArray(row.evidence_json)) {
     if (recordId === quoteRecordId) continue;
-    pushEvidence({ event_id: episodeId, record_id: recordId, role: "unknown", quote: "", at, confidence: 0.5 });
+    // 旧 episode 的 evidence_json 只有 record_id，谁说的、说了什么都在 L0 里。
+    // 早先这里一律写 role='unknown' + quote=''（生产 248 条），把「能回查的证据」
+    // 写成了「没有引文的证据」。调用方给出解析器时按 L0 原话补齐；
+    // 取不到才退回 unknown/''（仍按 inferred 计，不假装观察到）。
+    const resolved = typeof resolveRecord === "function" ? resolveRecord(recordId) : null;
+    const role = resolved ? roleOf(resolved.role) : "unknown";
+    const quoteText = resolved && typeof resolved.quote === "string" ? resolved.quote : "";
+    pushEvidence({
+      event_id: episodeId,
+      record_id: recordId,
+      role,
+      quote: quoteText,
+      at: resolved && text(resolved.at) !== "" ? text(resolved.at) : at,
+      confidence: quoteText !== "" ? 1 : 0.5,
+    });
   }
   return { tenant, event, chat, evidence };
 }
@@ -587,9 +650,11 @@ export function planMigration(db, { tenants = [] } = {}) {
     return group;
   };
 
+  // 证据的 role/quote 从 L0 回查（F5）：旧 evidence_json 只有 record_id。
+  const resolveRecord = buildLegacyRecordResolver(db);
   const plannedEvidence = [];
   for (const row of episodes) {
-    const mapped = mapEpisodeRow(row);
+    const mapped = mapEpisodeRow(row, resolveRecord);
     const group = groupOf(mapped.tenant);
     group.eventIds.add(mapped.event.event_id);
     group.events.push(mapped.event);
@@ -737,6 +802,8 @@ export function applyPlan(db, plan, { now = new Date().toISOString(), logger = c
       goals: 0,
       goalSourceUpdates: 0,
       promiseUpdates: 0,
+      placeholderEvidenceFixed: 0,
+      placeholderEvidenceFixedEvents: 0,
       skippedByConflict: 0,
     },
     failed: [],
@@ -763,6 +830,8 @@ export function applyPlan(db, plan, { now = new Date().toISOString(), logger = c
       goals: 0,
       goalSourceUpdates: 0,
       promiseUpdates: 0,
+      placeholderEvidenceFixed: 0,
+      placeholderEvidenceFixedEvents: 0,
       skippedByConflict: 0,
     };
 
@@ -771,13 +840,28 @@ export function applyPlan(db, plan, { now = new Date().toISOString(), logger = c
       const dedupeUpd = db.prepare(
         "UPDATE soul_events SET dedupe_key = ? WHERE event_id = ? AND (dedupe_key IS NULL OR dedupe_key = '')",
       );
+      const dropLegacyPlaceholder = db.prepare(LEGACY_EVIDENCE_PLACEHOLDER_DELETE);
+      // 行数与涉及事件数分开记：一条事件常有多条占位证据（生产 250 行 / 135 事件）。
+      const fixedEventIds = new Set();
       for (const row of rows.events) {
         counts.events += runInsert(db, "soul_events", EVENT_COLUMNS, row);
         // 旧迁移写过 NULL 的行在这里补成与双写一致的 dedupe_key；只填空，不覆盖已有非空值。
         counts.dedupeKeys += Number(dedupeUpd.run(row.dedupe_key, row.event_id).changes ?? 0);
       }
       for (const row of rows.chat) counts.chat += runInsert(db, "soul_event_chat", CHAT_COLUMNS, row);
-      for (const row of rows.evidence) counts.evidence += runInsert(db, "soul_event_evidence", EVIDENCE_COLUMNS, row);
+      for (const row of rows.evidence) {
+        // 主键是 (event_id, record_id, role)：解析出真实 role 后，旧迁移写下的占位行
+        // （role='unknown' 且 quote=''）必须原位删掉，否则重跑会多留一条重复证据。
+        // 只删这个精确占位形态，带引文或已解析 role 的行一行不碰。
+        if (row.role !== "unknown" || row.quote !== "") {
+          // 删掉的正是「上一轮写下的占位」才算修好一条（重跑时这里是 0）。
+          const removed = Number(dropLegacyPlaceholder.run(row.event_id, row.record_id).changes ?? 0);
+          counts.placeholderEvidenceFixed += removed;
+          if (removed > 0) fixedEventIds.add(String(row.event_id));
+        }
+        counts.evidence += runInsert(db, "soul_event_evidence", EVIDENCE_COLUMNS, row);
+      }
+      counts.placeholderEvidenceFixedEvents = fixedEventIds.size;
       for (const row of rows.goals) counts.goals += runInsert(db, "soul_goals", GOAL_COLUMNS, row);
 
       const t = rows.tenant;
@@ -837,7 +921,8 @@ export function applyPlan(db, plan, { now = new Date().toISOString(), logger = c
 
     const keys = [
       "events", "chat", "evidence", "dedupeKeys", "emotionUpdates", "relationUpdates", "goals",
-      "goalSourceUpdates", "promiseUpdates", "skippedByConflict",
+      "goalSourceUpdates", "promiseUpdates", "placeholderEvidenceFixed", "placeholderEvidenceFixedEvents",
+      "skippedByConflict",
     ];
     for (const k of keys) result.totals[k] += counts[k];
     result.tenants.push(counts);
@@ -883,6 +968,38 @@ function hashLine(prefix, row, columns) {
     parts.push(prefix + "." + c + "=" + s);
   }
   return parts.join("&");
+}
+
+/**
+ * 「库里是空、期望有值」与「库里写了别的值」必须分开（t22 口径）。
+ *
+ * 为什么：迁移是 INSERT OR IGNORE——已经存在的 soul_events 行一个字都不会被覆盖
+ * （runInsert 只看 changes）。存量行写在前、字段后加（例如 intent 后补），
+ * 它的空值在这套 insert-only 迁移下永远收敛不了；对账把这种「待回填」按写错值
+ * 报红，操作者只会看到一堆 exit 1，分不清「证据修好了」和「值写错了」。
+ *
+ * 空判定要窄，避免把真实值误判成空：只有 null/undefined 与纯空白字符串算空；
+ * '0'、'false'、'unknown' 都是值，照旧按真 mismatch 处理。
+ */
+export function isEmptyStoredValue(v) {
+  if (v === null || v === undefined) return true;
+  return typeof v === "string" && v.trim() === "";
+}
+
+function hasStoredValue(v) {
+  if (v === null || v === undefined) return false;
+  if (typeof v === "string") return v.trim() !== "";
+  // 数字（含 0）与布尔（含 false）都是「有值」。
+  return true;
+}
+
+/**
+ * 单个字段的判定：equal（一致）/ backfill（库空、期望有值）/ mismatch（库里有值但不是这个值）。
+ */
+export function classifyStoredDiff(expected, stored) {
+  if (sameValue(expected, stored)) return "equal";
+  if (isEmptyStoredValue(stored) && hasStoredValue(expected)) return "backfill";
+  return "mismatch";
 }
 
 /**
@@ -945,6 +1062,8 @@ export function collectParity(db, { tenants = [] } = {}) {
         legacy: { episodes: 0, emotions: 0, relations: 0, promises: 0 },
         target: {
           events: 0,
+          // 迁移范围外的事件（事件模型自身产出：:tool/:test/:rollback 等），只报数不参与对账。
+          outOfScopeEvents: 0,
           chat: 0,
           evidence: 0,
           goals: 0,
@@ -960,7 +1079,11 @@ export function collectParity(db, { tenants = [] } = {}) {
           orphanEvidenceEventIds: 0,
           orphanChatEventIds: 0,
         },
-        field: { compared: 0, mismatchEvents: 0, hash: null },
+        field: { compared: 0, mismatchEvents: 0, backfillGapEvents: 0, hash: null },
+        // 列名 → 条数：存量行是空、期望有值的字段（INSERT OR IGNORE 不会覆盖，需单独决定是否回填）。
+        backfillGaps: {},
+        backfillSamples: [],
+        outOfScopeByKind: {},
         mismatches: [],
         issues: [],
       };
@@ -987,18 +1110,35 @@ export function collectParity(db, { tenants = [] } = {}) {
     episodeTenant.set(eventId, tenantKey(tenant));
   }
 
+  // 对账范围固定为「迁移派生事件」：event_id 恰好等于某个 legacy episode_id 且 source_kind='chat'。
+  // 事件模型自己产出的事件（event_id 形如 ep-xxx:tool / :test:2 / :rollback，source_kind 非 chat）
+  // 不是迁移对象，算进「事件数 vs episode 数」会让这条对账永远不等（t23 实测生产 144 = 136 chat + 8 自产）。
+  const derivedEventIds = new Set();
   if (hasEvents) {
-    for (const r of db.prepare("SELECT event_id, team_id, user_id, agent_id FROM soul_events").all()) {
+    for (const r of db.prepare("SELECT event_id, source_kind, team_id, user_id, agent_id FROM soul_events").all()) {
+      const id = String(r.event_id);
       const key = tenantKey(tenantOf(r));
-      if (buckets.has(key)) buckets.get(key).target.events += 1;
+      const derived = episodeTenant.has(id) && String(r.source_kind ?? "") === "chat";
+      if (derived) {
+        derivedEventIds.add(id);
+        if (buckets.has(key)) buckets.get(key).target.events += 1;
+        continue;
+      }
+      if (buckets.has(key)) {
+        const b = buckets.get(key);
+        b.target.outOfScopeEvents += 1;
+        const kind = String(r.source_kind ?? "") || "unknown";
+        b.outOfScopeByKind[kind] = (b.outOfScopeByKind[kind] ?? 0) + 1;
+      }
     }
   }
   let orphanChat = 0;
   if (hasChat) {
     for (const r of db.prepare("SELECT event_id FROM soul_event_chat").all()) {
       const id = String(r.event_id);
+      // chat 行的对比基数同样是「迁移派生事件数」，不是全部事件数。
       const key = episodeTenant.get(id);
-      if (key && buckets.has(key)) buckets.get(key).target.chat += 1;
+      if (derivedEventIds.has(id) && key && buckets.has(key)) buckets.get(key).target.chat += 1;
       if (!globalEvents.has(id)) orphanChat += 1;
     }
   }
@@ -1019,12 +1159,14 @@ export function collectParity(db, { tenants = [] } = {}) {
   }
 
   // 逐条：存在性 + 逐字段比对 + 字段 hash
+  // 期望值与 apply 走同一个解析器：证据的 role/quote 来自 L0 回查，不是旧占位写法。
+  const verifyResolveRecord = buildLegacyRecordResolver(db);
   for (const row of legacyEpisodes) {
     const tenant = tenantOf(row);
     const b = bucketOf(tenant);
     const eventId = text(row.episode_id);
     if (eventId === "") continue;
-    const expected = mapEpisodeRow(row);
+    const expected = mapEpisodeRow(row, verifyResolveRecord);
     const lines = [];
 
     const storedEvent = eventStmt ? eventStmt.get(eventId) : undefined;
@@ -1045,17 +1187,24 @@ export function collectParity(db, { tenants = [] } = {}) {
 
     b.field.compared += 1;
     const diff = [];
-    for (const c of EVENT_COLUMNS) {
-      if (!sameValue(expected.event[c], storedEvent[c])) diff.push("event." + c);
-    }
-    if (storedChat) {
-      for (const c of CHAT_COLUMNS) {
-        if (!sameValue(expected.chat[c], storedChat[c])) diff.push("chat." + c);
+    const gaps = [];
+    const classify = (prefix, expectedRow, storedRow) => {
+      for (const c of prefix === "event" ? EVENT_COLUMNS : CHAT_COLUMNS) {
+        const verdict = classifyStoredDiff(expectedRow[c], storedRow[c]);
+        if (verdict === "equal") continue;
+        (verdict === "backfill" ? gaps : diff).push(prefix + "." + c);
       }
-    }
+    };
+    classify("event", expected.event, storedEvent);
+    if (storedChat) classify("chat", expected.chat, storedChat);
     if (diff.length > 0) {
       b.field.mismatchEvents += 1;
       if (b.mismatches.length < 20) b.mismatches.push({ eventId, fields: diff });
+    }
+    if (gaps.length > 0) {
+      b.field.backfillGapEvents += 1;
+      for (const col of gaps) b.backfillGaps[col] = (b.backfillGaps[col] ?? 0) + 1;
+      if (b.backfillSamples.length < 10) b.backfillSamples.push({ eventId, fields: gaps });
     }
     b.eventHashes = b.eventHashes || [];
     b.eventHashes.push(sha256Text(lines.join("\n")));
@@ -1071,9 +1220,14 @@ export function collectParity(db, { tenants = [] } = {}) {
       continue;
     }
     const episodeId = nullableText(row.episode_id);
-    // 旧行还没回填：只有当它指向的事件确实存在时才算 diff（指向已归档 episode 的不算）。
+    // 旧行还没回填：指向的事件存在时，这是「库里是空、期望有值」——和字段缺口同类，
+    // 记进 backfillGaps（apply 会补；补不掉也仍是缺口，不是写错值）。
+    // 指向已归档/未迁移 episode 的，计划里根本不进迁移，不记。
     if (episodeId !== null && globalEvents.has(episodeId)) {
-      b.issues.push("emotion 未回填 event_id（episode " + episodeId + "）");
+      const col = "soul_emotions.event_id";
+      b.backfillGaps[col] = (b.backfillGaps[col] ?? 0) + 1;
+      b.field.backfillGapEvents += 1;
+      if (b.backfillSamples.length < 10) b.backfillSamples.push({ eventId: episodeId, fields: [col] });
     }
   }
   for (const row of legacyRelations) {
@@ -1109,6 +1263,12 @@ export function collectParity(db, { tenants = [] } = {}) {
       missingChat: 0,
       missingEvidence: 0,
       fieldMismatchEvents: 0,
+      // 存量回填缺口：库空、期望有值的字段条数（按列见 tenants[].backfillGaps）。
+      // 它不进 ok/退出码——INSERT OR IGNORE 本来就不覆盖已有行，这是缺口，不是写错值。
+      backfillGapEvents: 0,
+      backfillGaps: {},
+      outOfScopeEvents: 0,
+      outOfScopeByKind: {},
       orphanEventIds: 0,
     },
     issues,
@@ -1123,8 +1283,10 @@ export function collectParity(db, { tenants = [] } = {}) {
     const t = b.target;
     t.orphanEventIds = t.orphanEmotionEventIds + t.orphanRelationEventIds + t.orphanEvidenceEventIds;
     const diffs = [];
-    if (t.events !== b.legacy.episodes) diffs.push("事件数 " + t.events + " ≠ 旧 episode 数 " + b.legacy.episodes);
-    if (t.chat !== t.events) diffs.push("chat 行 " + t.chat + " ≠ 事件数 " + t.events);
+    if (t.events !== b.legacy.episodes) {
+      diffs.push("迁移派生事件数 " + t.events + " ≠ 旧 episode 数 " + b.legacy.episodes);
+    }
+    if (t.chat !== t.events) diffs.push("chat 行 " + t.chat + " ≠ 迁移派生事件数 " + t.events);
     if (t.missingEvents > 0) diffs.push("缺事件 " + t.missingEvents + " 条");
     if (t.missingChat > 0) diffs.push("缺 chat 行 " + t.missingChat + " 条");
     if (t.missingEvidence > 0) diffs.push("缺证据 " + t.missingEvidence + " 条事件");
@@ -1143,10 +1305,23 @@ export function collectParity(db, { tenants = [] } = {}) {
     result.totals.missingChat += t.missingChat;
     result.totals.missingEvidence += t.missingEvidence;
     result.totals.fieldMismatchEvents += b.field.mismatchEvents;
+    result.totals.backfillGapEvents += b.field.backfillGapEvents;
+    result.totals.outOfScopeEvents += t.outOfScopeEvents;
+    for (const [kind, n] of Object.entries(b.outOfScopeByKind)) {
+      result.totals.outOfScopeByKind[kind] = (result.totals.outOfScopeByKind[kind] ?? 0) + n;
+    }
+    b.backfillGapEvents = b.field.backfillGapEvents;
+    for (const [col, n] of Object.entries(b.backfillGaps)) {
+      result.totals.backfillGaps[col] = (result.totals.backfillGaps[col] ?? 0) + n;
+    }
     result.totals.orphanEventIds += t.orphanEventIds;
     result.tenants.push(b);
   }
 
+  result.outOfScope = {
+    total: result.totals.outOfScopeEvents,
+    bySourceKind: result.totals.outOfScopeByKind,
+  };
   result.totals.orphanChatEventIds = orphanChat;
   result.totals.orphanEvidenceEventIds = orphanEvidence;
   if (orphanChat > 0) {
@@ -1159,6 +1334,76 @@ export function collectParity(db, { tenants = [] } = {}) {
   }
   if (!result.hasTarget) result.ok = false;
   return result;
+}
+
+/**
+ * 库里还剩多少条占位证据（role='unknown' 且 quote 为空）。
+ * 只读；表不存在时返回 0。
+ */
+export function countPlaceholderEvidence(db) {
+  if (!tableExists(db, "soul_event_evidence")) return { rows: 0, events: 0 };
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS rows, COUNT(DISTINCT event_id) AS events FROM soul_event_evidence" +
+        " WHERE role = 'unknown' AND quote = ''",
+    )
+    .get();
+  return { rows: Number(row?.rows ?? 0), events: Number(row?.events ?? 0) };
+}
+
+/**
+ * 把一次 run 的结果压成三行结论（t22）。
+ *
+ * 为什么单独做：生产迁移的日志有几百行，操作者看完只知道「exit 1」，
+ * 分不清「248 条证据到底修好没有」和「存量字段缺口要不要处理」。
+ * 所以结论必须自己成段，且退出码要能表达「本次做到了，但存量缺口仍在」。
+ */
+export function summarizeMigrationRun({ applied = null, parity, placeholderStats = { rows: 0, events: 0 } } = {}) {
+  const gapColumns = Object.entries(parity?.totals?.backfillGaps ?? {}).sort((a, b) =>
+    a[0] === b[0] ? 0 : a[0] < b[0] ? -1 : 1,
+  );
+  const gapTotal = gapColumns.reduce((sum, [, n]) => sum + n, 0);
+
+  const line1 = applied
+    ? "本次写入：事件 +" + applied.totals.events + " 行 · 聊天 +" + applied.totals.chat +
+      " 行 · 证据 +" + applied.totals.evidence + " 行"
+    : "本次未写入（dry-run 只读，一个字节都没写）";
+
+  // 行数与涉及事件数必须同时给：250 行只落在 135 条事件上，只看行数会高估「多少条事件被修好」。
+  const fixedRows = applied ? applied.totals.placeholderEvidenceFixed ?? 0 : 0;
+  const fixedEvents = applied ? applied.totals.placeholderEvidenceFixedEvents ?? 0 : 0;
+  const remainingRows = Number(placeholderStats?.rows ?? 0);
+  const remainingEvents = Number(placeholderStats?.events ?? 0);
+  const line2 = "占位证据：本次修复 " + fixedRows + " 行（涉 " + fixedEvents + " 事件）；库里还剩 " +
+    remainingRows + " 行（涉 " + remainingEvents + " 事件）";
+
+  const line3 = gapTotal === 0
+    ? "存量回填缺口：无"
+    : "存量回填缺口：" + gapColumns.map(([col, n]) => col + " " + n + " 条").join("、") +
+      "（合计 " + gapTotal + " 条；INSERT OR IGNORE 不覆盖已有行，需另行决定是否回填）";
+
+  return {
+    lines: [line1, line2, line3],
+    hasBackfillGaps: gapTotal > 0,
+    backfillGaps: parity?.totals?.backfillGaps ?? {},
+    hasMismatch: !(parity ? parity.ok : false),
+    exitCode: migrationExitCode({ apply: applied !== null, applied, parity }),
+  };
+}
+
+/**
+ * 退出码语义（t22）：
+ *  0 = 本次 run 做到了（写入成功、没有写错值）；存量回填缺口存在也不算失败；
+ *  1 = 有真 mismatch / 结构缺行 / 孤儿——写错了值必须红；
+ *  3 = 写入本身失败（某租户回滚 / 执行异常）。
+ * dry-run 在目标表还不存在时不算失败（没写，谈不上不一致）。
+ */
+export function migrationExitCode({ apply = false, applied = null, parity } = {}) {
+  if (applied && applied.ok === false) return 3;
+  if (!parity) return 3;
+  if (parity.ok) return 0;
+  if (!apply && !parity.hasTarget) return 0;
+  return 1;
 }
 
 

@@ -91,6 +91,20 @@ export interface SoulCardLabel {
 }
 
 /**
+ * 卡的一块（v13 九块元数据）。source/confidence 是"这块内容哪儿来的、有多确定"，
+ * evidenceIds 是支撑它的事实条数（前端只显示条数，不显示 id）。
+ */
+export interface SoulCardBlock {
+  id: string;
+  title: string;
+  chars: number;
+  source: string;
+  confidence: string;
+  evidenceIds: string[];
+  warnings: string[];
+}
+
+/**
  * 人格卡只读视图（task-6）。字段与内核 SoulCardAssembly 一一对应，
  * 由 BFF 收窄后原样转发；text 是渲染好的卡全文，前端**不得改写/截断**。
  */
@@ -112,6 +126,10 @@ export interface SoulCardPayload {
   dirty: boolean;
   /** 该 tenant 是否已有种子卡 */
   seeded: boolean;
+  /** 卡的结构版本；v13 为 "13"（旧上游缺省不带） */
+  schema?: '13';
+  /** 九块元数据；旧上游/异常时为缺失，前端按 legacy 来源行降级 */
+  blocks?: SoulCardBlock[];
 }
 
 export interface SoulCardQuery {

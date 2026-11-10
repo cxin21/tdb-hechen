@@ -5,8 +5,9 @@
  * （内核 assembleSoulCard({persist:false})，见 MemoryCore/src/gateway/soul-card-endpoint.ts:40）。
  *
  * 三条显示纪律（判据 12 / 验收口径）：
- *   1. 卡文本**原样**进 <pre>：卡自带 [读法] 段与 ### 区块标题，前端不改写、不截断、
- *      不把轴名/区块名当高亮锚点，也不补任何"更友好"的措辞——读者看到的必须是模型看到的。
+ *   1. 卡文本**原样**进 <pre>：v13 卡自带 [读法] 段与纯文本块标题（第一眼/生活/性格/…，
+ *      没有 Markdown 标记），前端不改写、不截断、不把轴名/块标题当高亮锚点，
+ *      也不补任何"更友好"的措辞——读者看到的必须是模型看到的。
  *   2. 读侧不出现六轴英文名，也不出现取值方式一类字眼；底色只在折叠区以中文特质词
  *      （labels[].label）列示，act 保留一位小数，不解释它是怎么算出来的。
  *   3. 内核 warnings 原样列示（如"底色为空：没有达阈值的标签"），不做无声降级——
@@ -19,7 +20,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchSoulCard, type SoulCardPayload } from '@/lib/api/chat-memory-soul';
 import { getErrorMessage } from '@/lib/error-message';
 
-/** 区块键 → 中文块名（内核 CARD_BLOCK_TITLES 的只读镜像；未知键丢弃，避免英文泄漏到读侧）。 */
+/**
+ * legacy 兜底：v12 时代的 11 块键 → 中文名。
+ * v13 起块名与顺序随 blocks 元数据一起下发（内核 CARD_V13_BLOCK_TITLES/ORDER），
+ * 这里只在旧上游没给 blocks 时用于 sources 行，避免英文键泄漏到读侧。
+ */
 const BLOCK_TITLES: Record<string, string> = {
   name: '名称',
   image: '形象',
@@ -52,9 +57,32 @@ const BLOCK_ORDER = [
 /** 三方来源图例：这是"这条内容是哪儿来的"的读侧解释，不是取值方式的说明。 */
 const SOURCE_LEGEND: Array<{ key: string; text: string }> = [
   { key: 'declared', text: '你设定的' },
-  { key: 'derived', text: '推出来的' },
   { key: 'observed', text: '经历里长出来的' },
+  { key: 'derived', text: '推出来的' },
+  { key: 'structured', text: '从状态里读出来的' },
+  { key: 'absent', text: '这块还没有' },
 ];
+
+interface SourceRow {
+  key: string;
+  title: string;
+  source: string;
+  confidence?: string;
+  chars?: number;
+  evidence?: number;
+}
+
+/** v13：九块元数据即来源行（顺序就是卡里的块顺序）。 */
+function blockRows(blocks: NonNullable<SoulCardPayload['blocks']>): SourceRow[] {
+  return blocks.map((b) => ({
+    key: b.id,
+    title: b.title,
+    source: b.source,
+    confidence: b.confidence,
+    chars: b.chars,
+    evidence: b.evidenceIds.length,
+  }));
+}
 
 function sourceRows(sources: Record<string, string>): Array<{ key: string; title: string; source: string }> {
   const rows: Array<{ key: string; title: string; source: string }> = [];
@@ -101,7 +129,13 @@ export function CardView(props: { teamId: string; agentId: string; userId?: stri
     };
   }, [teamId, agentId, userId]);
 
-  const sources = useMemo(() => sourceRows(payload?.sources ?? {}), [payload]);
+  const sources = useMemo<SourceRow[]>(
+    () =>
+      payload?.blocks && payload.blocks.length > 0
+        ? blockRows(payload.blocks)
+        : sourceRows(payload?.sources ?? {}),
+    [payload],
+  );
 
   if (loading) {
     return (
@@ -170,7 +204,17 @@ export function CardView(props: { teamId: string; agentId: string; userId?: stri
                 {sources.map((r) => (
                   <li key={r.key} className="_soul-card-source-row">
                     <span className="_soul-card-source-title">{r.title}</span>
-                    <span className="_soul-card-source-value">{r.source}</span>
+                    <span className="_soul-card-source-value">
+                      {r.source}
+                      {r.confidence ? ` · ${r.confidence}` : ''}
+                    </span>
+                    {(r.chars !== undefined || (r.evidence ?? 0) > 0) && (
+                      <span className="_soul-meta">
+                        {r.chars !== undefined ? `${r.chars} 字` : ''}
+                        {r.chars !== undefined && (r.evidence ?? 0) > 0 ? ' · ' : ''}
+                        {(r.evidence ?? 0) > 0 ? `${r.evidence} 条证据` : ''}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>

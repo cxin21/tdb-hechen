@@ -9,6 +9,8 @@
  *   ④ 内核 checkAuth 的纯文本 401 → HTTP 401 原码透传（GET 通道辨认，不折 502）。
  *   ⑤ 上游 code=0 但没有 text → 503 soul_card_failed（不伪造成空卡）。
  *   ⑥ chars 缺失时用 text.length 兜底。
+ *   ⑦ v13 元数据：schema="13" 与 blocks 九块（缺 id 的半截块丢弃）原样透传；
+ *      旧上游没有 blocks 时回空数组、schema 不出现（前端按 legacy 来源行降级）。
  *
  * 构造方式照抄 tests/chat-memory-soul-versions.test.ts（真实 FetchKernelHttpAdapter +
  * mock globalThis.fetch）。注意本读面**不**做 team 成员门控，故 metaKernel.invoke 不会被触达。
@@ -132,6 +134,29 @@ describe('GET /chat-memory/soul-card', () => {
           },
           dirty: true,
           seeded: true,
+          schema: '13',
+          blocks: [
+            {
+              id: 'firstLook',
+              title: '第一眼',
+              chars: 24,
+              source: 'declared',
+              confidence: 'high',
+              evidenceIds: [],
+              warnings: [],
+            },
+            {
+              id: 'us',
+              title: '我们',
+              chars: 88,
+              source: 'structured',
+              confidence: 'medium',
+              evidenceIds: ['rel-1', 'ps-1'],
+              warnings: ['person_unresolved:p_x'],
+            },
+            // 缺 id 的半截块必须被丢掉
+            { title: '现在', source: 'absent' },
+          ],
         },
       },
     });
@@ -167,6 +192,37 @@ describe('GET /chat-memory/soul-card', () => {
       { label: '直接', act: 0.4, gloss: '用户说过喜欢把话说透' },
     ]);
     expect(data.sources).toEqual({ name: 'declared', traits: 'derived', human: 'observed' });
+    expect(data.schema).toBe('13');
+    expect(data.blocks).toEqual([
+      {
+        id: 'firstLook',
+        title: '第一眼',
+        chars: 24,
+        source: 'declared',
+        confidence: 'high',
+        evidenceIds: [],
+        warnings: [],
+      },
+      {
+        id: 'us',
+        title: '我们',
+        chars: 88,
+        source: 'structured',
+        confidence: 'medium',
+        evidenceIds: ['rel-1', 'ps-1'],
+        warnings: ['person_unresolved:p_x'],
+      },
+    ]);
+  });
+
+  it('旧上游没有 schema/blocks 时降级：blocks 为空数组、schema 不出现', async () => {
+    const deps = makeDeps();
+    mockKernelFetch({ body: { code: 0, message: 'ok', data: { text: '卡', version: 3, hash: 'h', sources: { name: 'declared' } } } });
+    const res = await call(deps, { team: 't1', agent: 'agt-1' });
+    const data = ((await res.json()) as Envelope).data as Record<string, unknown>;
+    expect(data.blocks).toEqual([]);
+    expect('schema' in data).toBe(false);
+    expect(data.sources).toEqual({ name: 'declared' });
   });
 
   it('长卡不截断：4500 字原样返回（与 soul-versions 的 4000 字截断策略不同）', async () => {

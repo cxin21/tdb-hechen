@@ -182,6 +182,39 @@ function narrowCardLabels(raw: unknown): SoulCardLabelRow[] {
   return rows;
 }
 
+/** 卡的一块：v13 的九块元数据（内核 card-v13.ts 的 CardV13BlockMeta）。 */
+export interface SoulCardBlockRow {
+  id: string;
+  title: string;
+  chars: number;
+  source: string;
+  confidence: string;
+  evidenceIds: string[];
+  warnings: string[];
+}
+
+/** 块的收窄：id 缺失即丢；其余字段缺省填零值，绝不补造来源。 */
+function narrowCardBlocks(raw: unknown): SoulCardBlockRow[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: SoulCardBlockRow[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    const id = nonEmptyString(r.id);
+    if (!id) continue;
+    rows.push({
+      id,
+      title: nonEmptyString(r.title) ?? id,
+      chars: typeof r.chars === "number" && Number.isFinite(r.chars) ? Math.floor(r.chars) : 0,
+      source: nonEmptyString(r.source) ?? "absent",
+      confidence: nonEmptyString(r.confidence) ?? "absent",
+      evidenceIds: narrowNotes(r.evidenceIds),
+      warnings: narrowNotes(r.warnings),
+    });
+  }
+  return rows;
+}
+
 /** sources = {blockKey: "declared"|"derived"|"observed"}；只收非空字符串值。 */
 function narrowCardSources(raw: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -572,6 +605,8 @@ export function registerChatMemorySoulRoutes(api: Hono, deps: PanelDeps): void {
         sources: narrowCardSources(data.sources),
         dirty: data.dirty === true,
         seeded: data.seeded === true,
+        ...(data.schema === "13" ? { schema: "13" as const } : {}),
+        blocks: narrowCardBlocks(data.blocks),
       }));
     },
   );
