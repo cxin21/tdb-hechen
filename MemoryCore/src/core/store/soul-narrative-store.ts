@@ -5,7 +5,7 @@
  * 入参出参一律用 soul-event-types.ts 的 Row/InsertOf，不定义第二份字段表，租户只从参数来。
  *
  * 三条硬约定：
- *  - 章节是「按月一版」的：同一租户同一 period_start 最多一条 active（部分唯一索引兜底），
+ *  - 章节是「按周期（自然周）一版」的：同一租户同一 period_start 最多一条 active（部分唯一索引兜底），
  *    换版本走 supersedes_id 链，旧行 status=superseded 保留，绝不覆盖。
  *  - 章节与证据同一个事务：章进去了证据没进去 = 自传在补心理戏，宁可整章不落。
  *  - 遗忘是读侧的事（salience 按 period_end 衰减 + 注入门），这里不删行、不改 status。

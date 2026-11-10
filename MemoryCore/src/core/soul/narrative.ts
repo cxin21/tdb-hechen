@@ -1,9 +1,10 @@
 /**
  * P6 叙事 / 巩固 / 遗忘（spec §4.8）。
  *
- * 自传不是事件列表，是章节：一个月一章，每章必须有 1–3 条能回到 soul_events 的证据。
+ * 自传不是事件列表，是章节：一周一章，每章必须有 1–3 条能回到 soul_events 的证据。
  * 三条口径都是可断言的：
- *  - 只巩固「已结束的自然月」：月份没走完就写，等于边写边改同一章，幂等也就没了。
+ *  - 只巩固「已结束的自然周」（UTC 周一 00:00 起算）：周期没走完就写，等于边写边改同一章，
+ *    幂等也就没了。按月等太久——活跃的租户要等一整月才看见第一行自传，故改按周。
  *  - 同一 period 只有一条 active：内容变了才升版本（version + supersedes_id），旧行留给审计。
  *  - 遗忘是停止注入、不删行：salience 按 period_end 衰减，低于注入门的章仍可查。
  *
@@ -23,8 +24,10 @@ import type { SoulEventRow } from "../store/soul-event-types.js";
 import type { CoreTenant } from "../store/types.js";
 import type { SoulEpisode } from "./types.js";
 
-/** 一次最多巩固 7 个已结束月份（「月度 3–7 章」的上限口径）。 */
-export const NARRATIVE_MAX_CHAPTERS = 7;
+/** 一个章节周期 = 一个自然周（UTC 周一 00:00:00 起，到下一个周一 00:00:00 止）。 */
+export const NARRATIVE_PERIOD_DAYS = 7;
+/** 一次最多巩固 26 个已结束周（约半年，接近旧的「最多 7 个月」自传视野）。 */
+export const NARRATIVE_MAX_CHAPTERS = 26;
 /** 每章证据上限；下限由「没有证据就不成章」保证。 */
 export const NARRATIVE_MAX_EVIDENCE = 3;
 /** 显著度半衰期：半年减半。旧章不是立刻消失，是慢慢淡出注入口。 */
@@ -50,23 +53,25 @@ function clamp01(n: number): number {
   return n < 0 ? 0 : n > 1 ? 1 : n;
 }
 
-function monthStartOf(iso: string): string | null {
+/** 所在自然周的周一 00:00:00.000Z（章节周期起点，确定性、与运行时刻无关）。 */
+function weekStartOf(iso: string): string | null {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return null;
   const d = new Date(ms);
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
+  const dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  return new Date(dayStart - sinceMonday * DAY_MS).toISOString();
 }
 
-function nextMonthStart(monthStart: string): string {
-  const d = new Date(Date.parse(monthStart));
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString();
+function nextWeekStart(weekStart: string): string {
+  return new Date(Date.parse(weekStart) + NARRATIVE_PERIOD_DAYS * DAY_MS).toISOString();
 }
 
-/** 相对 now 往前推 n 个自然月的月初（巩固窗口起点）。 */
-export function narrativeWindowStart(now: string, months = NARRATIVE_MAX_CHAPTERS): string {
-  const d = new Date(Date.parse(now));
-  if (!Number.isFinite(d.getTime())) return new Date(0).toISOString();
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - months, 1)).toISOString();
+/** 相对 now 往前推 n 个自然周（巩固窗口起点）。 */
+export function narrativeWindowStart(now: string, periods = NARRATIVE_MAX_CHAPTERS): string {
+  const start = weekStartOf(now);
+  if (start === null) return new Date(0).toISOString();
+  return new Date(Date.parse(start) - periods * NARRATIVE_PERIOD_DAYS * DAY_MS).toISOString();
 }
 
 /** 事件在章节里的排序权重：情绪/冲突类比日常任务更值得被记住。kind 权重只做排序，不做评价。 */
@@ -109,12 +114,12 @@ function buildSummary(evidenceChronological: SoulEpisode[]): string {
   return clip(out, NARRATIVE_SUMMARY_MAX_CHARS);
 }
 
-function buildTitle(monthKey: string, evidence: SoulEpisode[]): string {
+function buildTitle(periodLabel: string, evidence: SoulEpisode[]): string {
   const counts = new Map<string, number>();
   for (const ep of evidence) counts.set(ep.kind, (counts.get(ep.kind) ?? 0) + 1);
   const ranked = Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   const parts = ranked.slice(0, 2).map(([kind, n]) => (KIND_ZH[kind as keyof typeof KIND_ZH] ?? kind) + " " + n);
-  return monthKey + "：" + parts.join(" · ");
+  return periodLabel + "：" + parts.join(" · ");
 }
 
 function buildTurningPoints(evidenceChronological: SoulEpisode[]): string {
@@ -146,7 +151,7 @@ function buildLessons(evidenceChronological: SoulEpisode[]): string {
 }
 
 /**
- * 显著度：证据多、情绪强、有转折的月份底分更高。
+ * 显著度：证据多、情绪强、有转折的周期底分更高。
  * 0.25 起步；每条证据 +0.12；平均强度最多 +0.30；有转折 +0.08。
  */
 function chapterSalience(evidence: SoulEpisode[], hasTurning: boolean): number {
@@ -158,21 +163,21 @@ export interface NarrativeChapterPlan {
   chapter: SoulNarrativeInsert;
   /** 证据按显著度降序（与 chapter.summary 的时间顺序不同：排序是「记住哪条」，摘要读起来要按天）。 */
   evidence: SoulNarrativeEvidenceInsert[];
-  /** 这一版要标 superseded 的旧 active 章节（同月，可能不止一条脏数据）。 */
+  /** 这一版要标 superseded 的旧 active 章节（同周期，可能不止一条脏数据）。 */
   supersedesIds: string[];
 }
 
 export interface NarrativeDerivation {
-  /** 实际考虑过的已结束月份数（≤7）。 */
-  months: number;
-  /** 有事件但回不到 soul_events、因此没成章的月份数。 */
+  /** 实际考虑过的已结束周期数（≤26 周）。 */
+  periods: number;
+  /** 有事件但回不到 soul_events、因此没成章的周期数。 */
   skippedNoEvidence: number;
   /**
-   * 落在未结束月份的 episode 条数（按 episode 计，不是月份数）：
-   * 月份由 episode 的 at 归属，该月还没走完（nextMonthStart > now）就整条跳过，等下个月再巩固。
+   * 落在未结束周期的 episode 条数（按 episode 计，不是周期数）：
+   * 周期由 episode 的 at 归属，该周还没走完（nextWeekStart > now）就整条跳过，等下周再巩固。
    */
   skippedUnclosed: number;
-  /** 内容 hash 与旧 active 相同、不需要重写的月份数。 */
+  /** 内容 hash 与旧 active 相同、不需要重写的周期数。 */
   reasserted: number;
   chapters: NarrativeChapterPlan[];
 }
@@ -191,14 +196,14 @@ export function deriveNarrativeChapters(args: {
 }): NarrativeDerivation {
   const now = args.now ?? new Date().toISOString();
   const nowMs = Date.parse(now);
-  const out: NarrativeDerivation = { months: 0, skippedNoEvidence: 0, skippedUnclosed: 0, reasserted: 0, chapters: [] };
+  const out: NarrativeDerivation = { periods: 0, skippedNoEvidence: 0, skippedUnclosed: 0, reasserted: 0, chapters: [] };
 
   const groups = new Map<string, { start: string; end: string; episodes: SoulEpisode[] }>();
   for (const ep of args.episodes ?? []) {
     if (!ep || typeof ep.episodeId !== "string" || ep.episodeId === "") continue;
-    const start = monthStartOf(ep.at);
+    const start = weekStartOf(ep.at);
     if (start === null) continue;
-    const end = nextMonthStart(start);
+    const end = nextWeekStart(start);
     if (Date.parse(end) > nowMs) {
       out.skippedUnclosed += 1;
       continue;
@@ -208,17 +213,17 @@ export function deriveNarrativeChapters(args: {
     else groups.set(start, { start, end, episodes: [ep] });
   }
 
-  const months = Array.from(groups.values())
+  const periods = Array.from(groups.values())
     .sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0))
     .slice(0, NARRATIVE_MAX_CHAPTERS);
-  out.months = months.length;
+  out.periods = periods.length;
 
   const previous = args.previous ?? [];
-  for (const month of months) {
+  for (const period of periods) {
     // 同一 episode 被重复挖出来（refresh）只算一条证据：证据是「这件事」，不是「这条记录」。
     const seen = new Set<string>();
     const eligible: SoulEpisode[] = [];
-    for (const ep of month.episodes) {
+    for (const ep of period.episodes) {
       if (seen.has(ep.episodeId)) continue;
       seen.add(ep.episodeId);
       if (!args.eventIds.has(ep.episodeId)) continue;
@@ -232,18 +237,19 @@ export function deriveNarrativeChapters(args: {
     const ranked = eligible.slice().sort((a, b) => episodeWeight(b) - episodeWeight(a));
     const picked = ranked.slice(0, NARRATIVE_MAX_EVIDENCE);
     const chronological = picked.slice().sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-    const monthKey = month.start.slice(0, 7);
+    const periodKey = period.start.slice(0, 10);
+    const periodLabel = periodKey + " 那周";
     const summary = buildSummary(chronological);
-    const title = buildTitle(monthKey, picked);
+    const title = buildTitle(periodLabel, picked);
     const turningPoints = buildTurningPoints(chronological);
     const hasTurning = JSON.parse(turningPoints).length > 0;
     const hash = createHash("sha1")
-      .update(month.start + "|" + title + "|" + summary + "|" + picked.map((e) => e.episodeId).join(","))
+      .update(period.start + "|" + title + "|" + summary + "|" + picked.map((e) => e.episodeId).join(","))
       .digest("hex")
       .slice(0, 16);
 
     const prevActive = previous
-      .filter((row) => row.period_start === month.start && row.status === "active")
+      .filter((row) => row.period_start === period.start && row.status === "active")
       .sort((a, b) => b.version - a.version);
     if (prevActive.some((row) => row.hash === hash)) {
       out.reasserted += 1;
@@ -252,9 +258,9 @@ export function deriveNarrativeChapters(args: {
     const version = prevActive.length > 0 ? Math.max(...prevActive.map((row) => row.version)) + 1 : 1;
     const plan: NarrativeChapterPlan = {
       chapter: {
-        chapter_id: "narr-" + monthKey + "-v" + version,
-        period_start: month.start,
-        period_end: month.end,
+        chapter_id: "narr-" + periodKey + "-v" + version,
+        period_start: period.start,
+        period_end: period.end,
         title,
         summary,
         turning_points_json: turningPoints,
@@ -266,7 +272,7 @@ export function deriveNarrativeChapters(args: {
         created_at: now,
         salience: chapterSalience(picked, hasTurning),
       },
-      evidence: picked.map((ep) => ({ chapter_id: "narr-" + monthKey + "-v" + version, event_id: ep.episodeId })),
+      evidence: picked.map((ep) => ({ chapter_id: "narr-" + periodKey + "-v" + version, event_id: ep.episodeId })),
       supersedesIds: prevActive.map((row) => row.chapter_id),
     };
     out.chapters.push(plan);
@@ -277,7 +283,7 @@ export function deriveNarrativeChapters(args: {
 /**
  * 有效显著度 = 底分 × 半衰期衰减 × access 强化。
  *
- * 锚是 period_end 而不是 created_at：否则旧月份刚写出来就满显著，而它其实已经过去很久了。
+ * 锚是 period_end 而不是 created_at：否则旧周期刚写出来就满显著，而它其实已经过去很久了。
  * access 加成有上限（1.4 倍），被反复想起也不会把旧章顶成新章。
  */
 export function narrativeDecayedSalience(row: SoulNarrativeRow, nowIso?: string): number {
@@ -333,17 +339,17 @@ export interface NarrativeStorePort {
 }
 
 export interface NarrativeMaintenanceResult {
-  /** 考虑过的已结束月份数。 */
-  months: number;
+  /** 考虑过的已结束周期数（周）。 */
+  periods: number;
   /** 新写的章节数。 */
   created: number;
   /** 被新版本取代的旧章节数。 */
   superseded: number;
-  /** 同 hash 重放、不需要重写的月份数。 */
+  /** 同 hash 重放、不需要重写的周期数。 */
   reasserted: number;
-  /** 有事件但回不到 soul_events 的月份数。 */
+  /** 有事件但回不到 soul_events 的周期数。 */
   skippedNoEvidence: number;
-  /** 落在未结束月份、本轮不巩固的 episode 条数（按 episode 计，不是月份数；划分依据是 episode 的 at 所在月有没有走完）。 */
+  /** 落在未结束周期、本轮不巩固的 episode 条数（按 episode 计，不是周期数；划分依据是 episode 的 at 所在周有没有走完）。 */
   skippedUnclosed: number;
   /** 落入证据关系的行数。 */
   evidence: number;
@@ -395,7 +401,7 @@ export async function runNarrativeMaintenance(args: {
   const now = args.now ?? new Date().toISOString();
   const warn = (msg: string): void => args.logger?.warn?.("[soul-narrative] " + msg);
   const result: NarrativeMaintenanceResult = {
-    months: 0,
+    periods: 0,
     created: 0,
     superseded: 0,
     reasserted: 0,
@@ -417,7 +423,7 @@ export async function runNarrativeMaintenance(args: {
   const eventIds = await collectEventIds(store, tenant, windowStart);
   const previous = (await Promise.resolve(listChapters.call(store, tenant, { status: "active", limit: 50 }))) ?? [];
   const derived = deriveNarrativeChapters({ episodes, eventIds, previous, now });
-  result.months = derived.months;
+  result.periods = derived.periods;
   result.reasserted = derived.reasserted;
   result.skippedNoEvidence = derived.skippedNoEvidence;
   result.skippedUnclosed = derived.skippedUnclosed;

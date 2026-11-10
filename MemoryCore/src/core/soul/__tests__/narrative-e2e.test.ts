@@ -40,13 +40,15 @@ function rows(db: ReturnType<typeof dbOf>, table: string): Row[] {
   return db.prepare(`SELECT * FROM ${table}`).all() as unknown as Row[];
 }
 
-/** n 个月前那个已结束的自然月：[月初, 次月初, 月中事件时刻, YYYY-MM]。 */
-function monthAgo(n: number) {
+/** n 周前那个已结束的自然周：[周一 00:00Z, 下周一 00:00Z, 周内第 day 天 03:00 的事件时刻, 周期标签]。 */
+function weekAgo(n: number) {
   const base = new Date();
-  const start = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - n, 1, 0, 0, 0));
-  const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1, 0, 0, 0));
-  const at = (day: number) => new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), day, 3, 0, 0)).toISOString();
-  return { start: start.toISOString(), end: end.toISOString(), at, month: start.toISOString().slice(0, 7) };
+  const dayStart = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate());
+  const sinceMonday = (base.getUTCDay() + 6) % 7;
+  const start = dayStart - sinceMonday * 86_400_000 - n * 7 * 86_400_000;
+  const end = start + 7 * 86_400_000;
+  const at = (day: number) => new Date(start + day * 86_400_000 + 3 * 3_600_000).toISOString();
+  return { start: new Date(start).toISOString(), end: new Date(end).toISOString(), at, label: new Date(start).toISOString().slice(0, 10) + " 那周" };
 }
 
 function ep(partial: Partial<SoulEpisode> & { episodeId: string; at: string }): SoulEpisode {
@@ -75,22 +77,22 @@ function tick(store: VectorStore) {
   return runSoulMaintenanceTick({ store, filter: TENANT, config: resolveSoulConfig({}) });
 }
 describe("P6 端到端：叙事章节落到真实 tick", () => {
-  it("自传有章节且证据回指事件；低显著旧章不注入但可查；同月只留一条 active", async () => {
+  it("自传有章节且证据回指事件；低显著旧章不注入但可查；同周期只留一条 active", async () => {
     const store = makeStore();
     const db = dbOf(store);
-    const recent = monthAgo(1);
-    const old = monthAgo(3);
+    const recent = weekAgo(1);
+    const old = weekAgo(12);
 
     store.commitSoulEpisodes(TENANT, [
-      ep({ episodeId: "ep-fix", at: recent.at(10), kind: "correction", title: "召回排序的错位被指出来", userStance: "这里不对", agentStance: "改完重排了", outcome: "改完重跑全绿", intensity: 0.9 }),
-      ep({ episodeId: "ep-work", at: recent.at(12), kind: "work", title: "把注入预算压到两百字", userStance: "先按这个走", outcome: "预算落地", intensity: 0.6 }),
-      ep({ episodeId: "ep-decide", at: recent.at(15), kind: "decision", title: "拍板不做全量回灌", userStance: "不做全量回灌", intensity: 0.7 }),
-      ep({ episodeId: "ep-old", at: old.at(10), kind: "work", title: "一次很轻的日常推进", intensity: 0.2 }),
+      ep({ episodeId: "ep-fix", at: recent.at(1), kind: "correction", title: "召回排序的错位被指出来", userStance: "这里不对", agentStance: "改完重排了", outcome: "改完重跑全绿", intensity: 0.9 }),
+      ep({ episodeId: "ep-work", at: recent.at(3), kind: "work", title: "把注入预算压到两百字", userStance: "先按这个走", outcome: "预算落地", intensity: 0.6 }),
+      ep({ episodeId: "ep-decide", at: recent.at(5), kind: "decision", title: "拍板不做全量回灌", userStance: "不做全量回灌", intensity: 0.7 }),
+      ep({ episodeId: "ep-old", at: old.at(2), kind: "work", title: "一次很轻的日常推进", intensity: 0.2 }),
     ]);
 
     const summary = await tick(store);
 
-    // 1) 两个已结束月份各成一章；只有一条 active。
+    // 1) 两个已结束周期各成一章；只有一条 active。
     const chapters = store.listSoulNarrativeChapters!(TENANT, { status: "active" });
     expect(chapters).toHaveLength(2);
     const recentChapter = chapters.find((c) => c.period_start === recent.start)!;
@@ -99,7 +101,7 @@ describe("P6 端到端：叙事章节落到真实 tick", () => {
     expect(oldChapter).toBeTruthy();
     expect(recentChapter.status).toBe("active");
     expect(recentChapter.version).toBe(1);
-    expect(String(recentChapter.title)).toContain(recent.month + "：");
+    expect(String(recentChapter.title)).toContain(recent.label + "：");
     expect(String(recentChapter.summary)).toContain("你说「");
 
     // 2) 每章 1–3 条证据，且每条都能回到 soul_events 的真实事件。
@@ -112,12 +114,12 @@ describe("P6 端到端：叙事章节落到真实 tick", () => {
     expect(oldEvidence).toHaveLength(1);
     expect(String(oldEvidence[0].event_id)).toBe("ep-old");
 
-    // 3) 回执：巩固了两个月、成章 2、证据 4，不是静默。
-    expect(summary.narrative?.months ?? 0).toBeGreaterThanOrEqual(2);
+    // 3) 回执：巩固了两个周期、成章 2、证据 4，不是静默。
+    expect(summary.narrative?.periods ?? 0).toBeGreaterThanOrEqual(2);
     expect(summary.narrative?.created).toBe(2);
     expect(summary.narrative?.evidence).toBe(4);
 
-    // 4) 卡面：新章进「最近」块并带事件 id；三个月前的轻事件衰减到注入门下，不注入。
+    // 4) 卡面：新章进「最近」块并带事件 id；十二周前的轻事件衰减到注入门下，不注入。
     expect(narrativeDecayedSalience(oldChapter)).toBeLessThan(NARRATIVE_INJECT_MIN_SALIENCE);
     const card = await assembleSoulCard({ store, tenant: TENANT, persist: false });
     expect(card.text).toContain(String(recentChapter.title));
@@ -135,7 +137,7 @@ describe("P6 端到端：叙事章节落到真实 tick", () => {
     db.prepare("UPDATE soul_events SET archived_at = ?").run(new Date().toISOString());
     expect(Number((db.prepare("SELECT COUNT(*) AS n FROM soul_events WHERE archived_at IS NOT NULL").get() as { n?: number }).n)).toBeGreaterThanOrEqual(4);
     store.commitSoulEpisodes(TENANT, [
-      ep({ episodeId: "ep-fix", at: recent.at(10), kind: "correction", title: "召回排序的错位被指出来", userStance: "这里不对，我又核了一遍", agentStance: "改完重排了", outcome: "改完重跑全绿", intensity: 0.9 }),
+      ep({ episodeId: "ep-fix", at: recent.at(1), kind: "correction", title: "召回排序的错位被指出来", userStance: "这里不对，我又核了一遍", agentStance: "改完重排了", outcome: "改完重跑全绿", intensity: 0.9 }),
     ]);
     const summary2 = await tick(store);
     const versions = rows(db, "soul_narrative").filter(

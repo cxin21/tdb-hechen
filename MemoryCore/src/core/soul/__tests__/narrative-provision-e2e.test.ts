@@ -38,12 +38,13 @@ function rows(store: VectorStore, table: string): Row[] {
   return dbOf(store).prepare("SELECT * FROM " + table).all() as unknown as Row[];
 }
 
-function monthAgo(n: number) {
+function weekAgo(n: number) {
   const base = new Date();
-  const start = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - n, 1, 0, 0, 0));
-  const at = (day: number) =>
-    new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), day, 3, 0, 0)).toISOString();
-  return { start: start.toISOString(), at, month: start.toISOString().slice(0, 7) };
+  const dayStart = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate());
+  const sinceMonday = (base.getUTCDay() + 6) % 7;
+  const start = dayStart - sinceMonday * 86_400_000 - n * 7 * 86_400_000;
+  const at = (day: number) => new Date(start + day * 86_400_000 + 3 * 3_600_000).toISOString();
+  return { start: new Date(start).toISOString(), at };
 }
 
 function seedL0(store: VectorStore, id: string, text: string, recordedAt: string): void {
@@ -102,26 +103,26 @@ function tick(store: VectorStore) {
 describe("P6 / t20 端到端：老库 0 章 → 补事件 → 成章", () => {
   it("补事件后自传成章且证据回到事件；多命中/work 不编造但账上有原因；重放幂等", async () => {
     const store = makeStore();
-    const recent = monthAgo(3);
-    const ambMonth = monthAgo(4);
-    // 两个 L0 都刻意放到 3 个月前的已结束月份：本 tick 的事件挖掘窗口读不到它们，
+    const recent = weekAgo(10);
+    const ambWeek = weekAgo(11);
+    // 两个 L0 都刻意放到 10 周前的已结束周期：本 tick 的事件挖掘窗口（默认 30 天）读不到它们，
     // 这样「成章」只可能来自补事件，不会和挖掘出来的新 episode 混在一起。
 
-    seedL0(store, "l0-fix", "召回排序这里不对，你改一下", recent.at(10));
-    seedL0(store, "l0-decide", "不做全量回灌，先跑小样本", recent.at(15));
-    seedL0(store, "l0-work", "跑下全量测试", recent.at(18));
-    seedL0(store, "l0-lead-a", "独立评审后由 Lead 验收。", ambMonth.at(5));
-    seedL0(store, "l0-lead-b", "上次也是独立评审后由 Lead 验收的", ambMonth.at(6));
+    seedL0(store, "l0-fix", "召回排序这里不对，你改一下", recent.at(1));
+    seedL0(store, "l0-decide", "不做全量回灌，先跑小样本", recent.at(3));
+    seedL0(store, "l0-work", "跑下全量测试", recent.at(5));
+    seedL0(store, "l0-lead-a", "独立评审后由 Lead 验收。", ambWeek.at(2));
+    seedL0(store, "l0-lead-b", "上次也是独立评审后由 Lead 验收的", ambWeek.at(3));
 
     seedOldEpisode(
       store,
       ep({
         episodeId: "ep-fix",
-        at: recent.at(10),
+        at: recent.at(1),
         kind: "correction",
         title: "召回排序的错位被指出来",
         userStance: "召回排序这里不对，你改一下",
-        quote: { text: "召回排序这里不对，你改一下", role: "user", recordId: "l0-fix", at: recent.at(10) },
+        quote: { text: "召回排序这里不对，你改一下", role: "user", recordId: "l0-fix", at: recent.at(1) },
         evidenceIds: ["l0-fix"],
         intensity: 0.9,
       }),
@@ -130,11 +131,11 @@ describe("P6 / t20 端到端：老库 0 章 → 补事件 → 成章", () => {
       store,
       ep({
         episodeId: "ep-decide",
-        at: recent.at(15),
+        at: recent.at(3),
         kind: "decision",
         title: "拍板不做全量回灌",
         userStance: "不做全量回灌，先跑小样本",
-        quote: { text: "不做全量回灌，先跑小样本", role: "user", recordId: "l0-decide", at: recent.at(15) },
+        quote: { text: "不做全量回灌，先跑小样本", role: "user", recordId: "l0-decide", at: recent.at(3) },
         evidenceIds: ["l0-decide"],
         intensity: 0.7,
       }),
@@ -143,11 +144,11 @@ describe("P6 / t20 端到端：老库 0 章 → 补事件 → 成章", () => {
       store,
       ep({
         episodeId: "ep-work",
-        at: recent.at(18),
+        at: recent.at(5),
         kind: "work",
         title: "跑全量测试",
         userStance: "跑下全量测试",
-        quote: { text: "跑下全量测试", role: "user", recordId: "l0-work", at: recent.at(18) },
+        quote: { text: "跑下全量测试", role: "user", recordId: "l0-work", at: recent.at(5) },
         evidenceIds: ["l0-work"],
       }),
     );
@@ -155,12 +156,12 @@ describe("P6 / t20 端到端：老库 0 章 → 补事件 → 成章", () => {
       store,
       ep({
         episodeId: "ep-amb",
-        at: ambMonth.at(5),
+        at: ambWeek.at(2),
         kind: "correction",
         title: "验收的事又提了一次",
         userStance: "独立评审后由 Lead 验收",
         // 引文不带 recordId：两条 L0 都含这句话 → 多命中，必须不猜。
-        quote: { text: "独立评审后由 Lead 验收", role: "user", recordId: "", at: ambMonth.at(5) },
+        quote: { text: "独立评审后由 Lead 验收", role: "user", recordId: "", at: ambWeek.at(2) },
         evidenceIds: [],
       }),
     );
@@ -182,7 +183,7 @@ describe("P6 / t20 端到端：老库 0 章 → 补事件 → 成章", () => {
     const eventIds = new Set(rows(store, "soul_events").map((r) => String(r.event_id)));
     expect([...eventIds].sort()).toEqual(["ep-decide", "ep-fix"]);
 
-    // 2) 叙事按原规则成章：只有证据能回指事件的那个月成章。
+    // 2) 叙事按原规则成章：只有证据能回指事件的那个周期成章。
     const chapters = store.listSoulNarrativeChapters!(TENANT, { status: "active" });
     expect(chapters).toHaveLength(1);
     const chapter = chapters[0];
@@ -192,7 +193,7 @@ describe("P6 / t20 端到端：老库 0 章 → 补事件 → 成章", () => {
     for (const ev of evidence) expect(eventIds.has(String(ev.event_id))).toBe(true);
     expect(evidence.map((ev) => String(ev.event_id)).sort()).toEqual(["ep-decide", "ep-fix"]);
 
-    // 3) 回执不静默：成章 1，另一个月无证据被记下来（不是「没有内容」而是「回不到事件」）。
+    // 3) 回执不静默：成章 1，另一个周期无证据被记下来（不是「没有内容」而是「回不到事件」）。
     expect(summary.narrative?.created).toBe(1);
     expect(summary.narrative?.skippedNoEvidence ?? 0).toBeGreaterThanOrEqual(1);
     expect(summary.narrative?.evidence).toBe(2);

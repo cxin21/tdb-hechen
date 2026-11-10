@@ -520,7 +520,7 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
       if (res.narrative) {
         if (!summary.narrative) {
           summary.narrative = {
-            months: 0,
+            periods: 0,
             created: 0,
             superseded: 0,
             reasserted: 0,
@@ -530,7 +530,7 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
           };
         }
         const narrative = summary.narrative;
-        narrative.months += res.narrative.months;
+        narrative.periods += res.narrative.periods;
         narrative.created += res.narrative.created;
         narrative.superseded += res.narrative.superseded;
         narrative.reasserted += res.narrative.reasserted;

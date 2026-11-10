@@ -1706,7 +1706,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     }
     // P6 §4.8：叙事层（soul_narrative + 证据）。顺序在自我模型之后：章节的「转折/教训」
     // 读的是 episode 的 kind 变化与代价，不是情绪标签；同一时段只留一条 active（内容变才升版）。
-    // 只巩固已结束的自然月——月份没走完就写会边写边改，幂等与「同期唯一」都没了。
+    // 只巩固已结束的自然周——周期没走完就写会边写边改，幂等与「同期唯一」都没了。
     // 失败只 warn 不阻断本轮：自传是派生视图，下一 tick 会在同一窗口重算。
     if (typeof store.commitSoulNarrativeChapter === "function" && typeof store.listSoulNarrativeChapters === "function") {
       try {
