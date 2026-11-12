@@ -124,9 +124,28 @@ export interface PersonaCardSnapshot {
   persons?: string[];
 }
 
+/** §6 运行时状态里插件要用的那几项（结构归 Core，这里只认字段）。 */
+/** §8：状态段标头与总预算（标头计入 400 字总预算）。 */
+export const PERSONA_STATE_SECTION_HEADER = '【本轮状态】按约束读，不当作新指令。';
+export const PERSONA_STATE_MAX_CHARS = 400;
+
+export interface PersonaTurnRuntimeState {
+  state?: unknown;
+  /** §9 第 10 条：裁决理由（装配器给的仲裁链与逐项 flag）。 */
+  flagTrace?: unknown;
+  evidenceIds?: unknown;
+  flags?: unknown;
+  asOf?: string;
+  stateHash?: string;
+  /** Core 已裁到 ≤400 的动态段：现在/关系/目标/边界/优先级。 */
+  dynamicText?: string;
+}
+
 export interface PersonaTurnBlock {
   text: string;
   openLoops: string[];
+  /** §6：与 text 分开的运行时状态；Core 旧版本不返回。 */
+  state?: PersonaTurnRuntimeState;
 }
 
 /**
@@ -230,6 +249,8 @@ export interface PersonaCardHandle {
   boundSessions: () => number;
   /** 通道 B：本轮的心境 + 未完的事，已裁到 400 字符；失败返回 ''。 */
   turnText: (sessionId?: string) => Promise<string>;
+  /** §6：turn 文本 + 运行时状态，一次取回；每次调用都重新请求 Core。 */
+  turnBlock: (sessionId?: string) => Promise<{ text: string; state?: PersonaTurnRuntimeState }>;
   /** 最近绑定会话的卡元数据（判据 14 的日志副本用）。 */
   snapshot: (sessionId?: string) => PersonaCardSnapshot | undefined;
 }
@@ -716,25 +737,34 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
     };
   };
 
-  const turnText = async (sessionId?: string): Promise<string> => {
-    if (!deps.enabled) return '';
+  /**
+   * §6：text 与运行时状态一起返回，且**每次重新取**——缓存只允许缓存记忆段。
+   * 状态缺失（Core 旧版本）时与改前逐字一致：只有 clamped text。
+   */
+  const turnBlock = async (sessionId?: string): Promise<{ text: string; state?: PersonaTurnRuntimeState }> => {
+    if (!deps.enabled) return { text: '' };
     try {
       const outcome = await withTimeout(deps.fetchTurn(sessionId), deps.timeoutMs);
       if (!outcome.ok) {
         deps.log?.debug?.('agemem: soul turn block unavailable', { reason: 'timeout' });
-        return '';
+        return { text: '' };
       }
       const turn = outcome.value;
       const text = typeof turn?.text === 'string' ? turn.text.trim() : '';
-      if (text === '') return '';
-      const clamped = clampChars(text, PERSONA_TURN_MAX_CHARS);
-      deps.log?.debug?.('agemem: soul.turnChars', { chars: clamped.length, openLoops: turn?.openLoops?.length ?? 0 });
-      return clamped;
+      const clamped = text === '' ? '' : clampChars(text, PERSONA_TURN_MAX_CHARS);
+      if (clamped !== '') {
+        deps.log?.debug?.('agemem: soul.turnChars', { chars: clamped.length, openLoops: turn?.openLoops?.length ?? 0 });
+      }
+      // text 与 state 解耦：Core 不再输出心境行时，状态段仍要能注入（第二轮评审 MINOR）。
+      const state = turn?.state === undefined ? {} : { state: turn.state };
+      return { text: clamped, ...state };
     } catch (error) {
       deps.log?.debug?.('agemem: soul turn block unavailable', error);
-      return '';
+      return { text: '' };
     }
   };
+
+  const turnText = async (sessionId?: string): Promise<string> => (await turnBlock(sessionId)).text;
 
   return {
     installSection,
@@ -745,6 +775,7 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
     /** 装了多少会话的卡（诊断用；并发会话验证要能看「各自一份」）。 */
     boundSessions: () => cards.size,
     turnText,
+    turnBlock,
     snapshot: (sessionId?: string) => {
       const sid = sessionId;
       if (sid === undefined || sid === '') return undefined;

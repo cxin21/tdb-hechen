@@ -7,10 +7,11 @@ import { seedLabelRows } from "../../core/soul/trait-drift.js";
 
 const res = {} as ServerResponse;
 
-function call(url: string, method = "GET", store: unknown = {}) {
+function call(url: string, method = "GET", store: unknown = {}, deps: Record<string, unknown> = {}) {
   const sendJson = vi.fn();
   return handleSoulCardRoute(new URL(url, "http://localhost"), method, sendJson, res, {
     getStore: () => store as never,
+    ...deps,
   }).then((handled) => ({ handled, sendJson }));
 }
 
@@ -112,6 +113,86 @@ describe("GET /v3/soul/card · /v3/soul/turn（S2 注入数据源）", () => {
     expect(data.openLoops).toEqual(["把这步收口"]);
     expect(data.chars).toBe(data.text.length);
     expect(data.chars).toBeLessThanOrEqual(400);
+  });
+  it("§6：GET turn 默认带上运行时状态 state，旧 text 逐字不变", async () => {
+    const store = {
+      readSoulState: async () => ({ valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, sampleCount: 3, updatedAt: "2026-11-11T00:00:00.000Z" }),
+      readSoulMoodState: async () => ({ label: "平稳", valence: 0.5, arousal: 0.3, half_life_hours: 36, updated_at: "2026-11-11T12:00:00.000Z", cause_event_ids_json: "[]" }),
+      listSoulPromises: async () => [],
+      listSoulCalibration: async () => [],
+      listSoulGoals: async () => [],
+      listSoulPersons: async () => [],
+      listSoulPersonRelations: async () => [],
+      getSoulWorkingState: async () => null,
+    };
+    const on = await call("/v3/soul/turn?team=t&user=u&agent=a", "GET", store);
+    const onData = (on.sendJson.mock.calls[0]![2] as { data: Record<string, unknown> }).data;
+    expect(onData.state).toBeDefined();
+    const st = onData.state as Record<string, unknown>;
+    for (const k of ["mood", "relation", "goals", "working", "flags", "warnings", "asOf", "evidenceIds", "stateHash", "dynamicText"]) {
+      expect(st).toHaveProperty(k);
+    }
+    expect((st.dynamicText as string).length).toBeLessThanOrEqual(400);
+    // flag off 走旧路径：text 逐字一致，且响应不带 state 字段。
+    const off = await call("/v3/soul/turn?team=t&user=u&agent=a", "GET", store, { runtimeStateEnabled: false });
+    const offData = (off.sendJson.mock.calls[0]![2] as { data: Record<string, unknown> }).data;
+    expect(offData.state).toBeUndefined();
+    expect(offData.text).toBe(onData.text);
+    expect(Object.keys(offData).sort()).toEqual(["chars", "openLoops", "text"]);
+  });
+
+  it("§6：动态段带上表单红线（边界段），失效红线不进", async () => {
+    const store = {
+      readSoulState: async () => ({ valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, sampleCount: 3, updatedAt: "2026-11-11T00:00:00.000Z" }),
+      readSoulMoodState: async () => null,
+      listSoulPromises: async () => [],
+      listSoulCalibration: async () => [],
+      listSoulGoals: async () => [],
+      getSoulWorkingState: async () => null,
+    };
+    const getReadAgentProfile = () => async () => ({
+      redlines: [
+        { text: "不虚报进度", active: true },
+        { text: "旧红线已撤销", active: false },
+      ],
+    });
+    const { sendJson } = await call("/v3/soul/turn?team=t&user=u&agent=a", "GET", store, { getReadAgentProfile });
+    const st = (sendJson.mock.calls[0]![2] as { data: { state: { dynamicText: string } } }).data.state;
+    expect(st.dynamicText).toContain("红线：不虚报进度");
+    expect(st.dynamicText).not.toContain("旧红线已撤销");
+    expect(st.dynamicText.startsWith("红线：")).toBe(true);
+  });
+  it("§6/§8：stateBudget 参数被采纳（插件扣掉标头后的正文预算）", async () => {
+    const store = {
+      readSoulState: async () => ({ valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, sampleCount: 3, updatedAt: "2026-11-11T00:00:00.000Z" }),
+      readSoulMoodState: async () => null,
+      listSoulPromises: async () => [],
+      listSoulCalibration: async () => [],
+      listSoulGoals: async () => [],
+      getSoulWorkingState: async () => null,
+    };
+    // 用一条长红线把默认预算的正文撑过 12 字（装不下时 Core 会退成占位行）。
+    const getReadAgentProfile = () => async () => ({ redlines: [{ text: "红".repeat(600), active: true }] });
+    const wide = await call("/v3/soul/turn?team=t&user=u&agent=a", "GET", store, { getReadAgentProfile });
+    const wideText = ((wide.sendJson.mock.calls[0]![2] as { data: { state: { dynamicText: string } } }).data.state.dynamicText) ?? "";
+    expect(wideText.length).toBeGreaterThan(12);
+    const narrow = await call("/v3/soul/turn?team=t&user=u&agent=a&stateBudget=12", "GET", store, { getReadAgentProfile });
+    const narrowState = (narrow.sendJson.mock.calls[0]![2] as { data: { state: { dynamicText: string; warnings: string[] } } }).data.state;
+    expect(narrowState.dynamicText.length).toBeLessThanOrEqual(12);
+    expect(narrowState.warnings.some((w) => w.startsWith("budget_dropped:"))).toBe(true);
+  });
+
+  it("§6：状态读失败不拖垮 turn（fail-open），warnings 标 absent", async () => {
+    const store = {
+      readSoulState: async () => ({ valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3, sampleCount: 3, updatedAt: "2026-11-11T00:00:00.000Z" }),
+      readSoulMoodState: async () => { throw new Error("db locked"); },
+      listSoulPromises: async () => [],
+      listSoulCalibration: async () => [],
+    };
+    const { sendJson } = await call("/v3/soul/turn?team=t&user=u&agent=a", "GET", store);
+    expect(sendJson.mock.calls[0]?.[1]).toBe(200);
+    const st = (sendJson.mock.calls[0]![2] as { data: { state: { warnings: string[] } } }).data.state;
+    expect(st.warnings).toContain("absent");
   });
 });
 

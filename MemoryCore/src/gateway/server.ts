@@ -55,7 +55,7 @@ import { handleRerankRoute } from "./rerank-endpoint.js";
 import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
 import { handleSoulCardRoute, handleSoulTraitStateRoute } from "./soul-card-endpoint.js";
 import { handleSoulEmotionsRoute } from "./soul-emotions-endpoint.js";
-import { handleSoulPersonRoute, handleSoulPersonsRoute } from "./soul-person-endpoint.js";
+import { handleSoulPersonRoute, handleSoulPersonSearchRoute, handleSoulPersonsRoute } from "./soul-person-endpoint.js";
 import { handleSoulInjectionRoute } from "./soul-injection-endpoint.js";
 import { SOUL_EVENT_PATH, handleSoulEventRoute } from "./soul-event-endpoint.js";
 import { SOUL_GATE_PATH, handleSoulGateRoute } from "./soul-gate-endpoint.js";
@@ -1303,19 +1303,24 @@ export class TdaiGateway {
           pathname === "/v3/soul/turn" ||
           pathname === "/v3/soul/trait-state" ||
           pathname === "/v3/soul/emotions" ||
-          pathname === "/v3/soul/person" ||
-          pathname === "/v3/soul/persons")
+          // 按前缀放行 /v3/soul/person 家族：新增子路径（如 person/search）不必再回来改白名单，
+          // 漏改一次的表现是 404「Not found」，而不是路由明确拒绝——很难从日志看出是被吞掉的。
+          pathname.startsWith("/v3/soul/person"))
       ) {
         if (!this.checkAuth(req, res)) return;
         const deps = {
           getStore: () => this.core.getStoreForIntrospect(),
           getReadAgentProfile: () => (agentId: string) => this.readAgentProfileFromMetadata(agentId),
+          // §6/§9 回退通道：设 TDB_SOUL_RUNTIME_STATE=off 即让 /v3/soul/turn 逐字回到
+          // 只有 text/openLoops/chars 的旧形（不用改代码重发版，A/B 与回退都能真跑）。
+          runtimeStateEnabled: process.env.TDB_SOUL_RUNTIME_STATE !== "off",
           logger: this.logger,
         };
         if (await handleSoulTraitStateRoute(url, method, sendJson, res, deps)) return;
         if (await handleSoulEmotionsRoute(url, method, sendJson, res, deps)) return;
         if (await handleSoulPersonRoute(url, method, sendJson, res, deps)) return;
         if (await handleSoulPersonsRoute(url, method, sendJson, res, deps)) return;
+        if (await handleSoulPersonSearchRoute(url, method, sendJson, res, deps)) return;
         await handleSoulCardRoute(url, method, sendJson, res, deps);
         return;
       }

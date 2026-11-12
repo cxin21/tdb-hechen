@@ -52,3 +52,6 @@ export function renderSoulTurnState(input: SoulTurnStateInput): SoulTurnStateRes
     openLoops,
   };
 }
+
+export { assembleTurnState } from "./turn-state-assembler.js";
+

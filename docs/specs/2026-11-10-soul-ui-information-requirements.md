@@ -26,6 +26,7 @@
 | GET /v3/soul/emotions | `MemoryCore/src/gateway/soul-emotions-endpoint.ts:59` | soul_emotions |
 | GET /v3/soul/persons | `MemoryCore/src/gateway/soul-person-endpoint.ts:161` | soul_person + soul_person_relation |
 | GET /v3/soul/person | `MemoryCore/src/gateway/soul-person-endpoint.ts:262` | soul_person + soul_person_relation + soul_persona(human 层) |
+| GET /v3/soul/person/search | `MemoryCore/src/gateway/soul-person-endpoint.ts`（handleSoulPersonSearchRoute） | soul_person + soul_person_relation + soul_persona(human 层)：按 q 归一化后匹配 key/显示名/别名，返回 match/matchedOn |
 | GET /v3/soul/injection/stats | `MemoryCore/src/gateway/soul-injection-stats-endpoint.ts:31` | 不读表，聚合 recall journal |
 | POST /v3/soul/introspect | `MemoryCore/src/gateway/soul-introspect-endpoint.ts:104` | soul_snapshots（零写入，强制 snapshotsEnabled=false） |
 

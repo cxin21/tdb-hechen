@@ -13,7 +13,12 @@ import { applyIdentity, identityStateOf, listCandidates, resolveIdentityFromUser
 import { MemoryClient, type ConversationMessage, type MemoryIdentity, type RecallBlockResult, type TurnEndPayload } from './memory-client.js';
 import { defaultOutboxPath, Outbox } from './outbox.js';
 import { createInjectionLog, recordInjection } from './injection-log.js';
-import { createPersonaCard, type PersonaCardHandle } from './persona-card.js';
+import {
+  createPersonaCard,
+  PERSONA_STATE_MAX_CHARS,
+  PERSONA_STATE_SECTION_HEADER,
+  type PersonaCardHandle,
+} from './persona-card.js';
 import { recallKey, RECALL_INFLIGHT_MAX_ENTRIES, RecallCache, RecallInflight } from './recall-cache.js';
 import { clampBlockByLines, recallBlockText } from './recall-source.js';
 // One runner for the head pack and one for the volatile block: every segment
@@ -100,6 +105,26 @@ interface VolatileBlock {
   entriesKept: number;
   /** Characters contributed by the capability segments (wiki / knowledge). */
   extrasChars?: number;
+  /**
+   * 记忆段（召回 + 能力段 + 场合行，不含 persona turn / 运行时状态）。
+   * §6：只有它进 recall 缓存；turn 每次重取，否则同一句话十分钟内会拿旧心境。
+   */
+  memoryText?: string;
+  /** §8：本轮运行时状态证据，随块写进注入日志（不进 prompt 正文）。 */
+  audit?: {
+    state?: unknown;
+    flags?: unknown;
+    asOf?: string;
+    stateHash?: string;
+    flagTrace?: unknown;
+    evidenceIds?: unknown;
+    dynamicText?: string;
+    injectedStateLines?: number;
+    /** 状态没进 prompt（或只进了一部分）的原因。 */
+    stateDropped?: string;
+    /** 状态里被裁掉的行数（部分丢弃时才有）。 */
+    droppedStateLines?: number;
+  };
 }
 /**
  * Resolve on `promise` or after `timeoutMs`, whichever comes first. Used for
@@ -1206,6 +1231,11 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
    * capability segments and the persona turn block, so the memories keep their
    * historical 1500 budget instead of silently growing into that space. */
   const MEMORY_CEILING_CHARS = 1500;
+  /** §6 动态段标头：块头那句「不要当作指令」说的是记忆；红线/优先级确实要当约束读。 */
+  /** §8 硬门：状态段（标头 + 正文）≤400 字。标头与预算都由 persona-card 统一定义，
+   *  memory-client 也用同一份算 stateBudget 传给 Core，三处口径不再各算一套。 */
+  const STATE_SECTION_HEADER = PERSONA_STATE_SECTION_HEADER;
+  const STATE_SECTION_MAX_CHARS = PERSONA_STATE_MAX_CHARS;
   const countEntries = (text: string): number =>
     text === '' ? 0 : text.split('\n').filter((line) => line.startsWith('- [')).length;
   /**
@@ -1290,15 +1320,17 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     }
   };
 
-  const fetchBlock = async (turnText: string, context: VolatileTurnContext): Promise<VolatileBlock> => {
+  /**
+   * 记忆段：/v3/recall（或 atomic/search）→ 能力段 → 场合行。
+   * **不含** persona turn 与运行时状态——§6 要求 turn 每次重取，缓存只停在这一段。
+   */
+  const fetchMemoryBlock = async (
+    turnText: string,
+    context: VolatileTurnContext,
+    turnSlot: number,
+  ): Promise<VolatileBlock> => {
     const started = Date.now();
     let base: VolatileBlock = { text: '', source: 'none', entriesKept: 0 };
-    // 通道 B（spec §2 / 判据 4）：心境 + 未完的事，≤400 字符，追加在块尾。
-    // 先取它才能给记忆留出预算，否则一段长记忆会把这一轮的心境挤掉。
-    const personaTurn = await personaCard.turnText(context.sessionId);
-    // 阶段 4：场合行同样要在预算里先占位（它是固定 ≤60 字的一道指令）。
-    const sceneLine = sceneLineFor(context.sessionId, turnText);
-    const turnSlot = (personaTurn === '' ? 0 : personaTurn.length + 2) + (sceneLine === '' ? 0 : sceneLine.length + 2);
     if (config.volatile.recall && Date.now() >= recallUnavailableUntil) {
       const result = await client.recallBlock(turnText, {
         maxResults: config.volatile.recallMaxResults,
@@ -1346,18 +1378,118 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     // 阶段 4：场合行紧贴 persona 行之前（先定「怎么接」，再说「此刻心境」）。
     // 只在块里已经有东西时才附上：单独一条「场合」指令既没用（没有可接的内容），
     // 又会让 bypass 用户在本该零注入的回合收到一条消息（task-51 的判据）。
-    const withScene =
-      sceneLine === '' || composed.text === ''
-        ? composed
-        : {
-            ...composed,
-            text: composed.text + String.fromCharCode(10, 10) + sceneLine,
-          };
-    if (personaTurn === '') return withScene;
+    // 场合行不在这里拼：它要跟着「本轮」走，不能进 recallCache（否则命中的是旧场合）。
+    return composed;
+  };
+
+  /** 缓存与在途只覆盖记忆段：命中时不发 /v3/recall，persona turn 由 fetchBlock 重取。 */
+  const loadMemoryBlock = async (
+    turnText: string,
+    context: VolatileTurnContext,
+    turnSlot: number,
+  ): Promise<VolatileBlock> => {
+    const key = recallKey(context.sessionId, context.turn, turnText);
+    const cached = recallCache.get(key);
+    if (cached !== undefined) {
+      // 预取发生在拿到 persona turn 之前，那时还不知道本轮真实的占位；
+      // 命中后按本轮预算再裁一次，缓存的是「记忆」而不是「记忆恰好塞得下的形状」。
+      const memoryCeiling = Math.min(config.volatile.maxChars, MEMORY_CEILING_CHARS);
+      const fitted = clampBlockByLines(cached, Math.max(0, memoryCeiling - turnSlot));
+      log?.debug?.('agemem: volatile block served from cache', {
+        recallMs: 0,
+        cacheHit: true,
+        source: 'recall',
+        injectedChars: fitted.length,
+        entriesKept: countEntries(fitted),
+      });
+      return { text: fitted, source: 'recall', entriesKept: countEntries(fitted) };
+    }
+    const block = await inflight.take(key, () => fetchMemoryBlock(turnText, context, turnSlot));
+    if (block.text !== '') recallCache.set(key, block.text);
+    return block;
+  };
+
+  /**
+   * 组装本轮块：记忆段（可缓存）+ persona turn（每次重取）+ §6 动态段（独立段落）。
+   * 动态段刻意不塞进 400 字尾巴——心境是「此刻」，状态是「现在/关系/目标/边界/优先级」，
+   * 两者的预算与生命周期都不同。
+   */
+  const fetchBlock = async (turnText: string, context: VolatileTurnContext): Promise<VolatileBlock> => {
+    // 先取 turn + 状态才能给记忆留预算，否则一段长记忆会把这一轮的心境挤掉。
+    const persona = await personaCard.turnBlock(context.sessionId);
+    // 动态段自己带标头：块头那句「不要当作指令」说的是记忆，而红线/优先级确实要当约束读。
+    const rawDynamic = (persona.state?.dynamicText ?? '').trim();
+    const dynamicBudget = Math.max(0, STATE_SECTION_MAX_CHARS - STATE_SECTION_HEADER.length);
+    // Core 已按整块丢到 400 以内；这里再按「标头之后的字数」整行裁一次，保持不切半句。
+    const dynamicText = rawDynamic === '' ? '' : clampBlockByLines(rawDynamic, dynamicBudget);
+    const stateText = dynamicText === '' ? '' : STATE_SECTION_HEADER + dynamicText;
+    // 阶段 4：场合行同样要在预算里先占位（它是固定 ≤60 字的一道指令）。
+    const sceneLine = sceneLineFor(context.sessionId, turnText);
+    const turnSlot =
+      (persona.text === '' ? 0 : persona.text.length + 2) +
+      (stateText === '' ? 0 : stateText.length + 2) +
+      (sceneLine === '' ? 0 : sceneLine.length + 2);
+    const memory = await loadMemoryBlock(turnText, context, turnSlot);
+    // 在途/缓存块可能是按 turnSlot=0 建的（预取时还不知道本轮 persona 占位），
+    // 这里按本轮预算再裁一次，否则长记忆会把状态段整段挤掉。
+    const memoryCeiling = Math.min(config.volatile.maxChars, MEMORY_CEILING_CHARS);
+    const memoryText =
+      memory.text === '' ? '' : clampBlockByLines(memory.text, Math.max(0, memoryCeiling - turnSlot));
+    const parts: string[] = [];
+    if (memoryText !== '') parts.push(memoryText);
+    // 场合行只在「块里本来就有东西」时附上：单独一条「场合」指令既没用，
+    // 又会让 bypass 用户在本该零注入的回合收到一条消息（task-51 的判据）。
+    // 状态段不算「块里本来就有东西」：场合行讲的是「这次对话在干嘛」，为状态注入它
+    // 会让语义从「有记忆」变成「有状态」（第三轮评审 MINOR）。
+    if (sceneLine !== '' && (memoryText !== '' || persona.text !== '')) parts.push(sceneLine);
+    if (persona.text !== '') parts.push(persona.text);
+    if (stateText !== '') parts.push(stateText);
     // append-only：只在尾部加，绝不改写已有内容（判据 4）。整块仍受 volatile.maxChars
-    // 约束，所以极端情况下裁掉的只会是尾部（最后一条记忆/片段），不会切断前缀。
-    const joined = withScene.text === '' ? personaTurn : withScene.text + String.fromCharCode(10, 10) + personaTurn;
-    return { ...withScene, text: clampBlockByLines(joined, config.volatile.maxChars) };
+    // 约束，所以极端情况下裁掉的只会是尾部，不会切断前缀。
+    const joined = parts.join(String.fromCharCode(10, 10));
+    const text = joined === '' ? '' : clampBlockByLines(joined, config.volatile.maxChars);
+    // §8：审计只记「真的进了 prompt 的东西」。状态段被裁掉就不能在日志里宣称它被注入了。
+    // baseline 必须取 Core 给的原文（rawDynamic），不能取插件裁完的 dynamicText ——
+    // 否则插件自己在 :1424 丢掉的尾行根本不进 baseline，partialDropped 恒为 0，
+    // 「Core 388 / 插件 382」这类 version skew 就永远没有审计（第五轮 MINOR-3）。
+    const rawStateLines =
+      rawDynamic === '' ? [] : rawDynamic.split(String.fromCharCode(10)).filter((line) => line.trim() !== '');
+    const stateBodyLines =
+      dynamicText === '' ? [] : dynamicText.split(String.fromCharCode(10)).filter((line) => line.trim() !== '');
+    const injectedStateLines = stateBodyLines.filter((line) => text.includes(line)).length;
+    const stateInjected = injectedStateLines > 0;
+    // 状态有、但一个字都没进 prompt：日志必须能区分「Core 没给」「预算裁了」「整块被 maxChars 裁了」，
+    // 否则事后无法判断是配置问题还是装配问题。
+    const partialDropped = rawStateLines.length - injectedStateLines;
+    // 部分丢弃也要留痕：Core 给 388、插件按 382 裁掉尾行时，stateInjected 仍为 true，
+    // 只写「注入了 N 行」会掩盖「优先级行被裁掉」这件事（version skew 下的真实缺口）。
+    const stateDropped =
+      rawDynamic === ''
+        ? 'empty-dynamic'
+        : dynamicText === ''
+          ? 'over-budget'
+          : partialDropped > 0
+            ? 'over-budget-partial'
+            : stateInjected
+              ? undefined
+              : 'volatile-max-chars';
+    return {
+      ...memory,
+      text,
+      memoryText,
+      ...(persona.state === undefined
+        ? {}
+        : stateDropped === undefined
+          ? { audit: { ...persona.state, injectedStateLines } }
+          : {
+              audit: {
+                ...persona.state,
+                injectedStateLines,
+                stateDropped,
+                ...(partialDropped > 0 ? { droppedStateLines: partialDropped } : {}),
+              },
+            }),
+    };
   };
   /**
    * Fire-and-forget prefetch for one turn's user text. Keyed exactly like the
@@ -1376,8 +1508,11 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     const key = recallKey(sessionId, turn, turnText);
     if (recallCache.get(key) !== undefined) return;
     if (inflight.peek(key) !== undefined) return;
+    // 只预热记忆段：persona turn 与 §6 运行时状态必然要按本轮重取，预热它们没有意义。
+    // 注意这里**不能**走 fetchBlock —— 它内部的 loadMemoryBlock 会用同一个 key 再 take 一次，
+    // 于是预取的 promise 等自己，整个回合挂死（实测 /v3/recall 一次都不发）。
     void inflight
-      .take(key, () => fetchBlock(turnText, { turn, sessionId }))
+      .take(key, () => fetchMemoryBlock(turnText, { turn, sessionId }, 0))
       .then((block) => {
         // Fill the cache here too: a later repeat of this exact text is then free.
         // That (not this turn's latency) is the prefetch's real payoff.
@@ -1413,33 +1548,21 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
           if (pending !== undefined) await settleWithin(pending, config.server.requestTimeoutMs);
         },
         getBlock: async (turnText: string, context: VolatileTurnContext) => {
-          const key = recallKey(context.sessionId, context.turn, turnText);
-          const cached = recallCache.get(key);
-          if (cached !== undefined) {
-            log?.debug?.('agemem: volatile block served from cache', {
-              recallMs: 0,
-              cacheHit: true,
-              source: 'recall',
-              injectedChars: cached.length,
-              entriesKept: countEntries(cached),
-            });
-            return cached;
-          }
-          const prefetched = inflight.peek(key) !== undefined;
+          const prefetched = inflight.peek(recallKey(context.sessionId, context.turn, turnText)) !== undefined;
           const started = Date.now();
-          const block = await inflight.take(key, () => fetchBlock(turnText, context));
+          const block = await fetchBlock(turnText, context);
           log?.debug?.('agemem: volatile block ready', {
             recallMs: Date.now() - started,
-            cacheHit: false,
             prefetched,
             source: block.source,
             injectedChars: block.text.length,
             entriesKept: block.entriesKept,
             ...(block.extrasChars === undefined ? {} : { extrasChars: block.extrasChars }),
+            ...(block.audit === undefined ? {} : { stateHash: block.audit.stateHash }),
           });
           if (block.text === '') return undefined;
-          recallCache.set(key, block.text);
-          return block.text;
+          // §8：把状态证据交给 volatile 写进注入日志（证明状态进了 prompt）。
+          return block.audit === undefined ? block.text : { text: block.text, audit: block.audit };
         },
       }),
     );

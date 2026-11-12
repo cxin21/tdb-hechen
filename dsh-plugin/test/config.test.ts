@@ -71,6 +71,10 @@ describe('config', () => {
       // DS-RECALL-MERGE-001: merged soul + layered memory block; opt-in on the
       // server (v3Recall.enabled), so the client must tolerate a 404 here.
       recall: '/v3/recall',
+      // Which person a name refers to: the read side of /v3/soul/person, which
+      // needs a person_key the model usually does not have yet.
+      soulPerson: '/v3/soul/person',
+      soulPersonSearch: '/v3/soul/person/search',
       health: '/health',
       // Identity resolution (task-51): public metadata reads, no new core routes.
       metaAuthVerify: '/v3/meta/auth/verify',

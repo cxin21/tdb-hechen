@@ -15,6 +15,8 @@
 import type { URL } from "node:url";
 import type { ServerResponse } from "node:http";
 import type { CoreTenant, IMemoryStore, SoulPersonRelationRow } from "../core/store/types.js";
+import type { SoulPerson } from "../core/person/types.js";
+import { normalizePersonName } from "../core/person/resolve.js";
 import {
   PERSON_PROFILE_FIELD_ORDER,
   PERSON_PROFILE_FIELDS,
@@ -71,6 +73,11 @@ export interface SoulPersonRelationView {
   direction: "out" | "in" | "mutual";
   /** 相对「这个人」的另一端（A6）：out 边 = objKey，in 边 = subjKey。 */
   counterpartKey: string | null;
+  /**
+   * 「对方」的名字，按 counterpartKey 解析（与 /v3/soul/persons 同一把尺子）。
+   * 不用 objName 顶替：in 边的 objName 指的是「这个人自己」，拿它当对方名字会把关系读反。
+   */
+  counterpartName: string | null;
   quote: string;
   recordId: string;
   validFrom: string;
@@ -93,18 +100,48 @@ function evidenceOf(meta: ProfileMetaView | null): Array<{ recordId: string; at:
   return out;
 }
 
-function relationView(row: SoulPersonRelationRow, personKey: string): SoulPersonRelationView {
+function relationView(
+  row: SoulPersonRelationRow,
+  personKey: string,
+  displayNameOf: (key: string | null) => string | null,
+): SoulPersonRelationView {
   const isOut = row.subjKey === personKey;
+  const counterpartKey = isOut ? row.objKey : row.subjKey;
   return {
     relId: row.relId,
     pred: row.pred,
     objKey: row.objKey,
-    objName: row.objName,
+    // 档案提炼在有 obj.key 时只写 key 不写 obj_name；这里与 /v3/soul/persons 走同一个解析器补齐，
+    // 否则单人读面的关系只剩裸 person_key（2026-11-12 实测：soul_person_profile 回「上级 → p_name_…」）。
+    objName: row.objName ?? displayNameOf(row.objKey),
     direction: row.direction === "mutual" ? "mutual" : isOut ? "out" : "in",
-    counterpartKey: isOut ? row.objKey : row.subjKey,
+    counterpartKey,
+    // 优先按 key 解析登记名；对方还没登记成人、但边上记了名字时用那个名字；都没有就 null（不编）。
+    counterpartName: displayNameOf(counterpartKey) ?? (isOut ? row.objName : null),
     quote: row.quote,
     recordId: row.recordId,
     validFrom: row.validFrom,
+  };
+}
+
+/**
+ * 两个人的读面共用同一把「名字尺子」：墓碑行顺着 mergedInto 找到活着的那一行；
+ * 找不到返回 null（前端自己有「某人」兜底，读面不替它编名字）。
+ * 抽出来是为了让 /v3/soul/person 与 /v3/soul/persons 对同一条边给出同一个名字。
+ */
+function makeDisplayNameOf(persons: SoulPerson[]): (key: string | null) => string | null {
+  const byKey = new Map(persons.map((p) => [p.personKey, p]));
+  return (key: string | null): string | null => {
+    let cur = key;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      const row = byKey.get(cur);
+      if (!row) return null;
+      if (row.mergedInto === null) return row.displayName;
+      seen.add(cur);
+      cur = row.mergedInto;
+    }
+    return null;
   };
 }
 
@@ -145,6 +182,47 @@ export interface SoulPersonGraphEdgeView {
   validFrom: string;
 }
 
+/**
+ * 两个读面（/persons 列表、/person/search 按名字查）共用同一把尺子：
+ *   - 活人 = mergedInto 为空的行；
+ *   - 字段数 = human 层 + PROFILE_SOURCE + 未作废 + 九字段之一（与 /v3/soul/person 同源）；
+ *   - 度数 = 现行关系边出入两端都算。
+ * 抽出来是为了让「列表里的 fieldCount」与「搜出来的 fieldCount」永远不会各算一套。
+ */
+interface PersonReadModel {
+  rawPersons: SoulPerson[];
+  alive: SoulPerson[];
+  fieldsByKey: Map<string, Set<string>>;
+  degree: Map<string, number>;
+  relations: SoulPersonRelationRow[];
+}
+
+async function loadPersonReadModel(store: IMemoryStore, tenant: CoreTenant): Promise<PersonReadModel> {
+  const rawPersons = typeof store.listSoulPersons === "function" ? ((await store.listSoulPersons(tenant)) ?? []) : [];
+  const alive = rawPersons.filter((p) => p.mergedInto === null);
+  const items = typeof store.listSoulPersona === "function" ? ((await store.listSoulPersona(tenant)) ?? []) : [];
+  const fieldsByKey = new Map<string, Set<string>>();
+  for (const item of items) {
+    if (item.layer !== "human" || item.validTo) continue;
+    const meta = (item.meta ?? null) as ProfileMetaView | null;
+    if (!meta || meta.source !== PROFILE_SOURCE) continue;
+    if (typeof meta.person?.key !== "string" || !isPersonProfileField(meta.profileField)) continue;
+    const key = meta.person.key;
+    const set = fieldsByKey.get(key) ?? new Set<string>();
+    set.add(meta.profileField);
+    fieldsByKey.set(key, set);
+  }
+  const relations =
+    typeof store.listSoulPersonRelations === "function" ? ((await store.listSoulPersonRelations(tenant)) ?? []) : [];
+  const degree = new Map<string, number>();
+  for (const row of relations) {
+    if (row.validTo) continue;
+    degree.set(row.subjKey, (degree.get(row.subjKey) ?? 0) + 1);
+    if (row.objKey) degree.set(row.objKey, (degree.get(row.objKey) ?? 0) + 1);
+  }
+  return { rawPersons, alive, fieldsByKey, degree, relations };
+}
+
 export interface SoulPersonsView {
   persons: SoulPersonSummaryView[];
   edges: SoulPersonGraphEdgeView[];
@@ -170,45 +248,13 @@ export async function handleSoulPersonsRoute(
   }
   const tenant = tenantOf(url);
   try {
-    const rawPersons = typeof store.listSoulPersons === "function" ? ((await store.listSoulPersons(tenant)) ?? []) : [];
-    const alive = rawPersons.filter((p) => p.mergedInto === null);
-    const byKey = new Map(rawPersons.map((p) => [p.personKey, p]));
-    /** 名字解析：墓碑行顺着 mergedInto 找到活着的那一行；找不到返回 null（前端自己有「某人」兜底）。 */
-    const displayNameOf = (key: string | null): string | null => {
-      let cur = key;
-      const seen = new Set<string>();
-      while (cur && !seen.has(cur)) {
-        const row = byKey.get(cur);
-        if (!row) return null;
-        if (row.mergedInto === null) return row.displayName;
-        seen.add(cur);
-        cur = row.mergedInto;
-      }
-      return null;
-    };
+    const { rawPersons, alive, fieldsByKey, degree, relations } = await loadPersonReadModel(store, tenant);
+    const displayNameOf = makeDisplayNameOf(rawPersons);
 
-    // 字段数：与 /v3/soul/person 同一把尺子（human 层、PROFILE_SOURCE、未作废、九字段之一）。
-    const items = typeof store.listSoulPersona === "function" ? ((await store.listSoulPersona(tenant)) ?? []) : [];
-    const fieldsByKey = new Map<string, Set<string>>();
-    for (const item of items) {
-      if (item.layer !== "human" || item.validTo) continue;
-      const meta = (item.meta ?? null) as ProfileMetaView | null;
-      if (!meta || meta.source !== PROFILE_SOURCE) continue;
-      if (typeof meta.person?.key !== "string" || !isPersonProfileField(meta.profileField)) continue;
-      const key = meta.person.key;
-      const set = fieldsByKey.get(key) ?? new Set<string>();
-      set.add(meta.profileField);
-      fieldsByKey.set(key, set);
-    }
-
-    const relations =
-      typeof store.listSoulPersonRelations === "function" ? ((await store.listSoulPersonRelations(tenant)) ?? []) : [];
-    const degree = new Map<string, number>();
+    // 字段数 / 度数：与 /v3/soul/person 同一把尺子（见 loadPersonReadModel）。
     const edges: SoulPersonGraphEdgeView[] = [];
     for (const row of relations) {
       if (row.validTo) continue;
-      degree.set(row.subjKey, (degree.get(row.subjKey) ?? 0) + 1);
-      if (row.objKey) degree.set(row.objKey, (degree.get(row.objKey) ?? 0) + 1);
       edges.push({
         relId: row.relId,
         subjKey: row.subjKey,
@@ -316,6 +362,7 @@ export async function handleSoulPersonRoute(
 
     const fields = PERSON_PROFILE_FIELD_ORDER.filter((f) => byField.has(f)).map((f) => byField.get(f)!);
 
+    const displayNameOf = makeDisplayNameOf(persons);
     const relations: SoulPersonRelationView[] = [];
     const seen = new Set<string>();
     if (typeof store.listSoulPersonRelations === "function") {
@@ -325,7 +372,7 @@ export async function handleSoulPersonRoute(
       for (const row of [...out, ...inbound]) {
         if (seen.has(row.relId)) continue;
         seen.add(row.relId);
-        relations.push(relationView(row, key));
+        relations.push(relationView(row, key, displayNameOf));
       }
     }
 
@@ -347,6 +394,142 @@ export async function handleSoulPersonRoute(
       `[soul-person-endpoint] read failed key=${key}: ${err instanceof Error ? err.message : String(err)}`,
     );
     sendJson(res, 503, { code: 503, message: "soul_person_failed" });
+    return true;
+  }
+}
+
+/** 搜索名的匹配档位：person_key 精确 > 名字精确 > 前缀 > 包含。 */
+export type SoulPersonMatch = "key" | "exact" | "prefix" | "contains";
+
+export interface SoulPersonSearchHit extends SoulPersonSummaryView {
+  match: SoulPersonMatch;
+  /** 命中的是 key、显示名还是别名——调用方据此解释「为什么它算这个人」。 */
+  matchedOn: "key" | "display_name" | "alias";
+}
+
+const SEARCH_LIMIT_DEFAULT = 10;
+const SEARCH_LIMIT_MAX = 20;
+
+const MATCH_RANK: Record<SoulPersonMatch, number> = { key: 4, exact: 3, prefix: 2, contains: 1 };
+
+/**
+ * 一行人对一个查询的最佳命中（没有命中返回 null）。
+ * 归一化与 person 解析同源（normalizePersonName），所以「张 三」「张三」「ZhangSan」的
+ * 空白/大小写差异不会让同一个人搜不到；刻意不做拼音与去标点（与 resolve.ts 同一理由：
+ * 这类判断交给人，猜错会把两个人的档案混一起）。
+ */
+function matchPerson(
+  person: SoulPerson,
+  rawQuery: string,
+  normalizedQuery: string,
+): { match: SoulPersonMatch; matchedOn: "key" | "display_name" | "alias" } | null {
+  if (person.personKey === rawQuery) return { match: "key", matchedOn: "key" };
+  const candidates: Array<{ value: string; on: "display_name" | "alias" }> = [
+    { value: person.displayName, on: "display_name" },
+    ...(person.aliases ?? []).map((alias) => ({ value: alias, on: "alias" as const })),
+  ];
+  let best: { match: SoulPersonMatch; matchedOn: "key" | "display_name" | "alias" } | null = null;
+  for (const candidate of candidates) {
+    const name = normalizePersonName(candidate.value);
+    if (name === "" || normalizedQuery === "") continue;
+    const match: SoulPersonMatch | null =
+      name === normalizedQuery
+        ? "exact"
+        : name.startsWith(normalizedQuery)
+          ? "prefix"
+          : name.includes(normalizedQuery)
+            ? "contains"
+            : null;
+    if (match === null) continue;
+    if (
+      best === null ||
+      MATCH_RANK[match] > MATCH_RANK[best.match] ||
+      (MATCH_RANK[match] === MATCH_RANK[best.match] && candidate.on === "display_name" && best.matchedOn === "alias")
+    ) {
+      best = { match, matchedOn: candidate.on };
+    }
+  }
+  return best;
+}
+
+/**
+ * 人物「按名字查」读面（2026-11-12）：`GET /v3/soul/person/search?team&user&agent&q=&limit=`。
+ *
+ * 为什么需要它：/v3/soul/person 只认 person_key，而人和 agent 手里只有名字；
+ * 缺这一步，人物档案在实际对话里就只能靠别处碰巧拿到 key 才读得到。
+ *
+ * 合同（与 /persons 同一纪律）：
+ *   - 纯读，只调 listSoulPersons / listSoulPersona / listSoulPersonRelations；
+ *   - 缺 team → 400 team_required；缺 q 或纯空白 → 400 person_query_required；
+ *   - store 未就绪 → 503；读失败 → 503 soul_person_search_failed（不假装空结果）；
+ *   - 墓碑行不返回；limit 夹在 [1,20]，缺省 10。
+ * 刻意只回摘要（不回字段正文/关系）：名字查是入口，正文留给 /v3/soul/person。
+ */
+export async function handleSoulPersonSearchRoute(
+  url: URL,
+  method: string,
+  sendJson: (res: ServerResponse, status: number, payload: unknown) => void,
+  res: ServerResponse,
+  deps: SoulPersonRouteDeps,
+): Promise<boolean> {
+  if (method !== "GET") return false;
+  if (url.pathname !== "/v3/soul/person/search") return false;
+  if (!hasTeam(url)) {
+    sendJson(res, 400, { code: 400, message: "team_required" });
+    return true;
+  }
+  const rawQuery = (url.searchParams.get("q") ?? "").trim();
+  if (rawQuery === "" || normalizePersonName(rawQuery) === "") {
+    sendJson(res, 400, { code: 400, message: "person_query_required" });
+    return true;
+  }
+  const store = deps.getStore();
+  if (!store) {
+    sendJson(res, 503, { code: 503, message: "soul_person_unavailable" });
+    return true;
+  }
+  const requested = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+  const limit = Number.isFinite(requested) ? Math.min(SEARCH_LIMIT_MAX, Math.max(1, requested)) : SEARCH_LIMIT_DEFAULT;
+  const normalizedQuery = normalizePersonName(rawQuery);
+  const tenant = tenantOf(url);
+
+  try {
+    const { alive, fieldsByKey, degree } = await loadPersonReadModel(store, tenant);
+    const hits: SoulPersonSearchHit[] = [];
+    for (const person of alive) {
+      const matched = matchPerson(person, rawQuery, normalizedQuery);
+      if (matched === null) continue;
+      hits.push({
+        key: person.personKey,
+        displayName: person.displayName,
+        aliases: person.aliases,
+        platform: person.platform,
+        platformId: person.platformId,
+        fieldCount: fieldsByKey.get(person.personKey)?.size ?? 0,
+        relationCount: degree.get(person.personKey) ?? 0,
+        updatedAt: person.updatedAt,
+        match: matched.match,
+        matchedOn: matched.matchedOn,
+      });
+    }
+    hits.sort(
+      (a, b) =>
+        MATCH_RANK[b.match] - MATCH_RANK[a.match] ||
+        b.fieldCount - a.fieldCount ||
+        b.relationCount - a.relationCount ||
+        a.displayName.localeCompare(b.displayName, "zh-CN"),
+    );
+    const persons = hits.slice(0, limit);
+    sendJson(res, 200, {
+      ok: true,
+      data: { query: rawQuery, count: persons.length, persons },
+    });
+    return true;
+  } catch (err) {
+    deps.logger?.warn?.(
+      `[soul-person-endpoint] search failed q=${rawQuery}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    sendJson(res, 503, { code: 503, message: "soul_person_search_failed" });
     return true;
   }
 }

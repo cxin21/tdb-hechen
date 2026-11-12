@@ -4,6 +4,7 @@
  * them. Adding a tool = one new file + one import line here.
  */
 import './recall.js';
+import './person-search.js';
 import './skills.js';
 import './knowledge.js';
 

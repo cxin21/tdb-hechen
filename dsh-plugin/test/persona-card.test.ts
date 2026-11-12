@@ -326,6 +326,20 @@ describe('人格卡 · 按会话绑定（task-32）', () => {
     expect(text).toHaveLength(400);
     expect(text).toBe(long.slice(0, 400));
   });
+
+  it('§6：turn 文本为空时状态仍返回（text 与 state 解耦）', async () => {
+    const fake = createFakeContext();
+    const handle = createPersonaCard({
+      enabled: true,
+      fetchCard: async () => snapshot('卡A'),
+      fetchTurn: async () => ({ text: '', openLoops: [], state: { dynamicText: '现在：接线' } } as any),
+      timeoutMs: 50,
+    });
+    handle.installSection(fake.ctx, 10303);
+    const block = await handle.turnBlock('a1');
+    expect(block.text).toBe('');
+    expect(block.state?.dynamicText).toBe('现在：接线');
+  });
 });
 
 /**

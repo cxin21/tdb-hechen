@@ -67,8 +67,8 @@ export interface CoreFixtureOptions {
    * stays active, which is the pre-task-11 default every older test relies on.
    */
   card?: { version: number; hash: string; text: string; textHash?: string; chars?: number; dirty?: boolean } | null;
-  /** GET /v3/soul/turn payload (per-turn mood + open loops). */
-  turn?: { text: string; openLoops?: string[] } | null;
+  /** GET /v3/soul/turn payload (per-turn mood + open loops + §6 运行时状态). */
+  turn?: { text: string; openLoops?: string[]; state?: Record<string, unknown> } | null;
   /**
    * Per-user session_init params served by /v3/meta/config/user/get.
    * Omitted = empty item list = "not configured" = the plugin asks.

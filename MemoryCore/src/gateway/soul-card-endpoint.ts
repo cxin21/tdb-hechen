@@ -13,11 +13,17 @@ import type { ServerResponse } from "node:http";
 import type { CoreTenant, IMemoryStore } from "../core/store/types.js";
 import type { AgentProfile } from "../core/soul/agent-profile.js";
 import { assembleSoulCard, assembleSoulTurn } from "../core/soul/card-service.js";
+import { assembleTurnState, type TurnStateAssembly } from "../core/soul/turn-state-assembler.js";
 import { normalizePersonName } from "../core/person/resolve.js";
 import { SEED_LABELS, SOUL_AXES, activationOf, normalizeDirection, seedStateFromSeeds } from "../core/soul/traits.js";
 
 export interface SoulCardRouteDeps {
   getStore: () => IMemoryStore | null;
+  /**
+   * §6 运行时状态装配开关。缺省开启；传 false 时 turn 响应与本会话前逐字一致
+   * （只有 text/openLoops/chars），供 A/B 回放与回退取证。
+   */
+  runtimeStateEnabled?: boolean;
   /** metadata 侧读表单人格（与 worker 同一端口）；缺席时卡里只有表单缺省。 */
   getReadAgentProfile?: () => ((agentId: string) => Promise<AgentProfile | null>) | null;
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
@@ -217,13 +223,88 @@ export async function handleSoulCardRoute(
       return true;
     }
     const turn = await assembleSoulTurn({ store, tenant });
-    sendJson(res, 200, { code: 0, data: { text: turn.text, openLoops: turn.openLoops, chars: turn.text.length } });
+    const data: Record<string, unknown> = { text: turn.text, openLoops: turn.openLoops, chars: turn.text.length };
+    // §6：运行时状态与 400 字尾巴分开给——插件用独立字段注入，旧 text 逐字不变，
+    // 缓存也能按 stateHash 分辨「同一句话、不同心境」。装配自身 fail-open：出错就不带 state，
+    // 绝不让一次 SQLite 失败把整条注入打掉。
+    if (deps.runtimeStateEnabled !== false) {
+      const state = await readTurnStateSafely(store, tenant, url, deps);
+      if (state) data.state = state;
+    }
+    sendJson(res, 200, { code: 0, data });
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     deps.logger?.warn?.(`[soul-card-endpoint] ${isCard ? "card" : "turn"} failed: ${message}`);
     sendJson(res, 503, { code: 503, message: isCard ? "soul_card_failed" : "soul_turn_failed" });
     return true;
+  }
+}
+
+/**
+ * §6：turn 侧运行时状态读取。personKey 只认显式 `person` 参数或唯一 participant；
+ * 解析不出来就不带关系段（装配器里 fail-closed），session 用来取 working_state。
+ * 这里再包一层 try/catch：装配器内部已逐读降级，外层只兜它自己也想不到的错。
+ */
+async function readTurnStateSafely(
+  store: IMemoryStore,
+  tenant: CoreTenant,
+  url: URL,
+  deps: SoulCardRouteDeps,
+): Promise<TurnStateAssembly | undefined> {
+  try {
+    const explicit = (url.searchParams.get("person") ?? "").trim();
+    const persons = personsOf(url);
+    const personKey = explicit !== "" ? explicit : persons && persons.length === 1 ? persons[0] : undefined;
+    const sessionId = (url.searchParams.get("session") ?? "").trim();
+    // §6「边界」段：红线属于表单人格（metadata 侧），不是灵魂表的一部分，
+    // 所以由端点读出来交给装配器——否则动态段永远缺这一段（票面五段只落地四段）。
+    const redlines = await readRedlines(deps, tenant, url);
+    // §8 的 400 是「标头 + 正文」总预算；插件把标头占位通过 stateBudget 传进来，
+    // 端点只负责夹住上限，正文就不会顶穿总预算、也不会被插件二次裁掉尾行。
+    const requestedBudget = Number(url.searchParams.get("stateBudget") ?? "");
+    const dynamicMaxChars =
+      Number.isFinite(requestedBudget) && requestedBudget > 0 ? Math.floor(requestedBudget) : undefined;
+    return await assembleTurnState({
+      store,
+      tenant,
+      ...(personKey ? { personKey } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(redlines.length > 0 ? { redlines } : {}),
+      ...(dynamicMaxChars === undefined ? {} : { dynamicMaxChars }),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.logger?.warn?.(`[soul-card-endpoint] turn state skipped: ${message}`);
+    return undefined;
+  }
+}
+
+/**
+ * 表单红线里当前仍生效的那几条（active 不为 false）。读不到就返回空数组：
+ * 缺边界段比拿失效红线去约束此刻更安全。
+ */
+async function readRedlines(
+  deps: SoulCardRouteDeps,
+  tenant: CoreTenant,
+  url: URL,
+): Promise<string[]> {
+  try {
+    const read = deps.getReadAgentProfile?.();
+    if (typeof read !== "function") return [];
+    const agentId = (url.searchParams.get("agent") ?? tenant.agentId ?? "").trim();
+    if (agentId === "") return [];
+    const profile = await read(agentId);
+    const list = profile?.redlines ?? [];
+    const out: string[] = [];
+    for (const item of list) {
+      if (item.active === false) continue;
+      const text = String(item.text ?? "").trim();
+      if (text !== "") out.push(text);
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

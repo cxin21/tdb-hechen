@@ -1,7 +1,12 @@
 import type { AgememPaths } from './config.js';
 import { classifyL2Failure, parseL2Outcome, type L2FetchOutcome } from './head-pack.js';
 import type { LoggerLike } from './types.js';
-import type { PersonaCardFailureReason } from './persona-card.js';
+import {
+  PERSONA_STATE_MAX_CHARS,
+  PERSONA_STATE_SECTION_HEADER,
+  type PersonaCardFailureReason,
+  type PersonaTurnRuntimeState,
+} from './persona-card.js';
 // P7 输出侧（shadow）：路径与限长以 gate-report.ts 为单一事实源，这里只负责传输。
 import {
   SOUL_GATE_PATH,
@@ -485,6 +490,12 @@ interface Envelope<T> {
   code?: number;
   message?: string;
   request_id?: string;
+  /**
+   * 人物读面（/v3/soul/person、/v3/soul/person/search）不发 code 信封，而是
+   * `{ ok: true, data }`——Panel 的人物档案读面从一开始就是这么约定的。两套信封
+   * 都出现在同一张 v3 路由表上，所以这里两种都声明，由 get() 统一收敛。
+   */
+  ok?: boolean;
   data?: T;
 }
 
@@ -506,6 +517,24 @@ const DEFAULT_HEADERS = { 'content-type': 'application/json' };
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+/**
+ * 身份三元组 → query 参数（soul 层读面用）。
+ *
+ * Core 的 tenantOf 只读 URL 参数、不读标头；而 undefined 会被 URLSearchParams
+ * 序列化成字面量 "undefined"，变成「看起来有 team、其实查不到」的假租户。
+ * 所以这里逐项丢弃空值，宁可少一个参数（Core 回 400 team_required，错得明显）。
+ */
+function identityQuery(identity: { teamId?: string; userId?: string; agentId?: string }): Record<string, string> {
+  const out: Record<string, string> = {};
+  const team = nonEmpty(identity.teamId);
+  const user = nonEmpty(identity.userId);
+  const agent = nonEmpty(identity.agentId);
+  if (team !== undefined) out.team = team;
+  if (user !== undefined) out.user = user;
+  if (agent !== undefined) out.agent = agent;
+  return out;
 }
 
 const SKILL_ROLES = new Set<string>(['user', 'assistant', 'tool_call', 'tool_result', 'system']);
@@ -613,11 +642,121 @@ function scenarioFailureReason(result: {
   return classifyL2Failure(new Error(result.reason ?? 'error'));
 }
 
+/**
+ * §6：只挑插件真正要用的几个字段。状态结构归 Core 所有，插件不复制它的形状——
+ * 这样 Core 加字段不用改插件，插件也永远不会把整团状态写进 prompt。
+ */
+function soulTurnState(raw: unknown): PersonaTurnRuntimeState | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const record = raw as Record<string, unknown>;
+  // GET /v3/soul/turn 的 data 就是装配体本身（mood/relation/goals/working/flags/asOf/...），
+  // 没有嵌套的 state 键；若调用方/旧版本把整组塞进 state，则以内层为准、外层兜底。
+  const nested = record.state;
+  const nestedRecord =
+    nested !== null && typeof nested === 'object' ? (nested as Record<string, unknown>) : undefined;
+  const pick = (key: string): unknown =>
+    nestedRecord?.[key] !== undefined ? nestedRecord[key] : record[key];
+  const state =
+    nested !== null && typeof nested === 'object'
+      ? nested
+      : {
+          ...(pick('mood') === undefined ? {} : { mood: pick('mood') }),
+          ...(pick('relation') === undefined ? {} : { relation: pick('relation') }),
+          ...(pick('goals') === undefined ? {} : { goals: pick('goals') }),
+          ...(pick('working') === undefined ? {} : { working: pick('working') }),
+        };
+  const hasState = Object.keys(state as Record<string, unknown>).length > 0;
+  const asOfValue = pick('asOf');
+  const hashValue = pick('stateHash');
+  const dynamicValue = pick('dynamicText');
+  const asOf = typeof asOfValue === 'string' ? asOfValue : undefined;
+  const stateHash = typeof hashValue === 'string' ? hashValue : undefined;
+  const dynamicText = typeof dynamicValue === 'string' ? dynamicValue : undefined;
+  return {
+    ...(hasState ? { state } : {}),
+    ...(pick('flags') === undefined ? {} : { flags: pick('flags') }),
+    ...(pick('flagTrace') === undefined ? {} : { flagTrace: pick('flagTrace') }),
+    ...(pick('evidenceIds') === undefined ? {} : { evidenceIds: pick('evidenceIds') }),
+    ...(asOf === undefined ? {} : { asOf }),
+    ...(stateHash === undefined ? {} : { stateHash }),
+    ...(dynamicText === undefined ? {} : { dynamicText }),
+  };
+}
+
+
+/** 人物按名字查的一行结果（与 MemoryCore /v3/soul/person/search 的摘要一一对应）。 */
+export interface SoulPersonHit {
+  key: string;
+  displayName: string;
+  aliases: string[];
+  platform: string;
+  platformId: string | null;
+  fieldCount: number;
+  relationCount: number;
+  updatedAt: string;
+  match: 'key' | 'exact' | 'prefix' | 'contains';
+  matchedOn: 'key' | 'display_name' | 'alias';
+}
+
+
+/** 九字段档案的一行（与 /v3/soul/person 的 fields[] 同形）。 */
+export interface SoulPersonField {
+  field: string;
+  label: string;
+  text: string;
+  updatedAt: string;
+  stale: boolean;
+}
+
+/** 一条关系边：out = 他指向别人，in = 别人指向他，mutual = 双向。 */
+export interface SoulPersonRelation {
+  relId: string;
+  pred: string;
+  direction: 'out' | 'in' | 'mutual';
+  counterpartKey: string | null;
+  /**
+   * 「对方」的名字：core 从 2026-11-12 起对两个方向都按 counterpartKey 解析（in 边同样有），
+   * 老 core 只在 out 边回 objName，所以下面映射时保留 objName 兜底。
+   */
+  counterpartName: string | null;
+  quote: string;
+  validFrom: string;
+}
+
+export interface SoulPersonProfile {
+  key: string;
+  displayName: string;
+  aliases: string[];
+  fields: SoulPersonField[];
+  relations: SoulPersonRelation[];
+}
+
+type SoulPersonProfileOutcome =
+  | { ok: true; profile: SoulPersonProfile }
+  | { ok: false; status?: number; reason: string };
+
+interface SoulPersonProfileData {
+  person?: { key?: unknown; displayName?: unknown; aliases?: unknown };
+  fields?: unknown;
+  relations?: unknown;
+}
+
+/** 名字查的结果：要么命中列表，要么一个可诊断的原因（不把失败折成空列表）。 */
+export type SoulPersonSearchOutcome =
+  | { ok: true; hits: SoulPersonHit[] }
+  | { ok: false; status?: number; reason: string };
+
+interface SoulPersonSearchData {
+  persons?: unknown;
+}
+
 export class MemoryClient {
   private readonly fetchImpl: typeof fetch;
   /** One-shot latch for resolveUserKeyOnce() (see there for why it never retries). */
   private userKeyResolved = false;
   private userKeyValue: string | undefined;
+  /** §6：卡里给出的 person_key（Core 实际过滤用的那个），按会话记住给 /v3/soul/turn 用。 */
+  private readonly personBySession = new Map<string, string>();
 
   constructor(private readonly deps: MemoryClientDeps) {
     this.fetchImpl = deps.fetchImpl ?? fetch;
@@ -928,6 +1067,87 @@ export class MemoryClient {
     return result.ok ? result.data : undefined;
   }
 
+
+  /**
+   * GET one v3 read route and unwrap the envelope — same identity gate, same
+   * headers, same capped read as call(); only the verb differs.
+   *
+   * GET is not a style choice here: /v3/soul/person/search is a pure read with
+   * a name in the URL, and keeping it GET means Panel/curl/the agent all use
+   * the same address without a body contract.
+   */
+  private async get<T>(
+    path: string,
+    query: Record<string, string>,
+    options: V3CallOptions = {},
+  ): Promise<{ ok: boolean; status?: number; reason?: string; data?: T; aborted?: boolean; code?: number; message?: string }> {
+    const missing = this.missingIdentity(options.sessionId);
+    if (missing !== undefined) {
+      this.deps.log?.debug?.(`agemem: ${path} skipped, identity missing (${missing})`);
+      return { ok: false, reason: `identity missing (${missing})` };
+    }
+    const timeout = this.timeoutOf(options.timeoutMs);
+    const controller = new AbortController();
+    let abortedByUs = false;
+    const timer = setTimeout(() => {
+      abortedByUs = true;
+      controller.abort();
+    }, timeout);
+    const search = new URLSearchParams(query).toString();
+    const target = this.url(search === '' ? path : `${path}?${search}`);
+    try {
+      const result = await fetchJsonCapped<Envelope<T>>(
+        target,
+        {
+          method: 'GET',
+          headers: await this.headers(options.extraHeaders, options.sessionId),
+          signal: controller.signal,
+        },
+        { maxBytes: this.maxResponseBytes(), timeoutMs: 0, fetchImpl: this.fetchImpl },
+      );
+      if (result.kind === 'http') {
+        const status = result.status;
+        if ((status === 401 || status === 403) && options.reportAuthFailure !== false) {
+          try {
+            this.deps.onAuthFailure?.({ path, status });
+          } catch (error) {
+            this.deps.log?.debug?.('agemem: auth-failure hook threw', error);
+          }
+        }
+        this.deps.log?.debug?.(`agemem: ${path} -> HTTP ${status}`);
+        return { ok: false, status, reason: `HTTP ${status}` };
+      }
+      if (result.kind === 'too_large') return { ok: false, reason: 'response too_large' };
+      if (result.kind === 'bad_json') return { ok: false, reason: 'response was not JSON' };
+      if (result.kind !== 'ok') {
+        if (result.kind === 'timeout') {
+          return { ok: false, reason: `timed out after ${timeout}ms`, aborted: abortedByUs };
+        }
+        return { ok: false, reason: 'transport failure: ' + result.reason };
+      }
+      const envelope = result.json as Envelope<T> | undefined;
+      if (!envelope || typeof envelope !== 'object') return { ok: false, reason: 'response was not an envelope' };
+      // 两套信封并存（见 Envelope）：读面回 { ok: true, data } 且没有 code；
+      // 其它 v3 路由回 { code: 0, data }。只认「成功」的那两种，其余一律拒绝——
+      // 宽松到「有 data 就算成功」会把 { ok: false } 的失败体当成空结果。
+      if (envelope.code === undefined && envelope.ok === true) {
+        return { ok: true, data: envelope.data as T };
+      }
+      if (envelope.code !== 0) {
+        const businessCode = typeof envelope.code === 'number' ? envelope.code : Number(envelope.code);
+        const message = typeof envelope.message === 'string' ? envelope.message.slice(0, 200) : undefined;
+        return { ok: false, status: 200, reason: `business code ${String(envelope.code)}`, code: businessCode, message };
+      }
+      return { ok: true, data: envelope.data as T };
+    } catch (error) {
+      this.deps.log?.debug?.(`agemem: ${path} request failed`, error);
+      const detail = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: 'transport failure: ' + detail };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** L3 persona (head pack body). Missing persona reads as an empty string. */
   async readCore(timeoutMs?: number, sessionId?: string): Promise<CoreReadResult | undefined> {
     const data = await this.post<CoreReadData>(this.deps.paths.coreRead, {}, timeoutMs, sessionId);
@@ -1051,6 +1271,125 @@ export class MemoryClient {
    */
   async recall(query: string, topK: number, timeoutMs?: number, sessionId?: string): Promise<RecallHit[]> {
     return this.searchAtomic(query, topK, timeoutMs, sessionId);
+  }
+
+
+  /**
+   * 人物「按名字查」：把用户嘴里的名字变成 person_key。
+   *
+   * 失败与「没人叫这个名字」必须分开：前者可诊断（status/reason），后者是
+   * 正常的空结果——工具层据此决定说「没找到」还是「查不了」。
+   */
+
+  /**
+   * 单人档案读面。key 必须是 person_key（端点自己会拒绝别的形状），
+   * 所以这里不做「猜一个」的兜底：查不到就如实说 404。
+   */
+  async readSoulPerson(
+    key: string,
+    timeoutMs?: number,
+    sessionId?: string,
+  ): Promise<SoulPersonProfileOutcome> {
+    const trimmed = key.trim();
+    if (trimmed === '') return { ok: false, reason: 'empty person key' };
+    // 身份三元组必须进 query：Core 侧 tenantOf 只读 URL 参数（不读标头），
+    // 少了 team 就是 400 team_required，少了 user/agent 就会退到 "default" 租户查空。
+    const { teamId, agentId, userId } = this.identityOf(sessionId);
+    const result = await this.get<SoulPersonProfileData>(
+      this.deps.paths.soulPerson ?? '/v3/soul/person',
+      { ...identityQuery({ teamId, userId, agentId }), key: trimmed },
+      { timeoutMs, sessionId },
+    );
+    if (!result.ok) return { ok: false, status: result.status, reason: result.reason ?? 'request failed' };
+    const person = result.data?.person;
+    if (!person || typeof person.key !== 'string' || typeof person.displayName !== 'string') {
+      return { ok: false, reason: 'response had no person' };
+    }
+    const fields: SoulPersonField[] = [];
+    for (const entry of Array.isArray(result.data?.fields) ? result.data!.fields! : []) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      if (typeof row.field !== 'string' || typeof row.text !== 'string') continue;
+      fields.push({
+        field: row.field,
+        label: typeof row.label === 'string' ? row.label : row.field,
+        text: row.text,
+        updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : '',
+        stale: row.stale === true,
+      });
+    }
+    const relations: SoulPersonRelation[] = [];
+    for (const entry of Array.isArray(result.data?.relations) ? result.data!.relations! : []) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      if (typeof row.pred !== 'string') continue;
+      const direction = row.direction === 'in' || row.direction === 'mutual' ? row.direction : 'out';
+      relations.push({
+        relId: typeof row.relId === 'string' ? row.relId : '',
+        pred: row.pred,
+        direction,
+        counterpartKey: typeof row.counterpartKey === 'string' ? row.counterpartKey : null,
+        // in 边的 objName 是「这个人自己」，不能当对方名字用；优先用 core 的 counterpartName。
+        counterpartName: typeof row.counterpartName === 'string'
+          ? row.counterpartName
+          : typeof row.objName === 'string' ? row.objName : null,
+        quote: typeof row.quote === 'string' ? row.quote : '',
+        validFrom: typeof row.validFrom === 'string' ? row.validFrom : '',
+      });
+    }
+    return {
+      ok: true,
+      profile: {
+        key: person.key,
+        displayName: person.displayName,
+        aliases: Array.isArray(person.aliases) ? person.aliases.filter((a): a is string => typeof a === 'string') : [],
+        fields,
+        relations,
+      },
+    };
+  }
+
+  async searchSoulPersons(
+    query: string,
+    limit: number,
+    timeoutMs?: number,
+    sessionId?: string,
+  ): Promise<SoulPersonSearchOutcome> {
+    const trimmed = query.trim();
+    if (trimmed === '') return { ok: true, hits: [] };
+    const safeLimit = Math.min(20, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 10)));
+    const { teamId, agentId, userId } = this.identityOf(sessionId);
+    const result = await this.get<SoulPersonSearchData>(
+      this.deps.paths.soulPersonSearch,
+      { ...identityQuery({ teamId, userId, agentId }), q: trimmed, limit: String(safeLimit) },
+      { timeoutMs, sessionId },
+    );
+    if (!result.ok) return { ok: false, status: result.status, reason: result.reason ?? 'request failed' };
+    const raw = Array.isArray(result.data?.persons) ? result.data!.persons! : [];
+    const hits: SoulPersonHit[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      const key = typeof row.key === 'string' ? row.key : '';
+      const displayName = typeof row.displayName === 'string' ? row.displayName : '';
+      if (key === '' || displayName === '') continue;
+      const aliases = Array.isArray(row.aliases) ? row.aliases.filter((a): a is string => typeof a === 'string') : [];
+      const match = row.match === 'key' || row.match === 'exact' || row.match === 'prefix' || row.match === 'contains' ? row.match : 'contains';
+      const matchedOn = row.matchedOn === 'key' || row.matchedOn === 'alias' ? row.matchedOn : 'display_name';
+      hits.push({
+        key,
+        displayName,
+        aliases,
+        platform: typeof row.platform === 'string' ? row.platform : '',
+        platformId: typeof row.platformId === 'string' ? row.platformId : null,
+        fieldCount: typeof row.fieldCount === 'number' ? row.fieldCount : 0,
+        relationCount: typeof row.relationCount === 'number' ? row.relationCount : 0,
+        updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : '',
+        match,
+        matchedOn,
+      });
+    }
+    return { ok: true, hits: hits.slice(0, safeLimit) };
   }
 
   /**
@@ -1574,6 +1913,27 @@ export class MemoryClient {
   }
 
   /**
+   * §6：记住 Core 本次实际过滤用的 person_key，供该会话的 /v3/soul/turn 关系段使用。
+   * 关系段的口径是「这个人的事」，没有 person 就整段省略（fail-closed），所以这一步决定
+   * 生产上关系段到底存不存在。
+   */
+  private rememberPersons(sessionId: string | undefined, persons: string[] | undefined): void {
+    if (sessionId === undefined || persons === undefined) return;
+    // persons 为空 = 卡已按「只有全局行」过滤：旧 person 必须清掉，否则尾巴继续讲旧关系。
+    if (persons.length === 0) {
+      this.personBySession.delete(sessionId);
+      return;
+    }
+    // 多人卡不挑第一个当唯一 person：那等于绕开端点「只有唯一参与者」的 fail-closed，
+    // 让整张卡的多个人的关系混给当前这一轮。宁可不带，端点会整段省略。
+    if (persons.length !== 1) {
+      this.personBySession.delete(sessionId);
+      return;
+    }
+    this.personBySession.set(sessionId, persons[0]!);
+  }
+
+  /**
    * GET /v3/soul/card — 通道 A 的整卡（version/hash/text）。纯读、无副作用。
    * 失败一律 undefined，调用方 fail-open 保留上一版。
    *
@@ -1593,6 +1953,8 @@ export class MemoryClient {
     if (data === undefined) return undefined;
     const text = nonEmpty(data.text);
     if (text === undefined) return undefined;
+    const persons = soulCardPersons(data.persons);
+    this.rememberPersons(options.sessionId, persons);
     return {
       version: typeof data.version === 'number' ? data.version : 0,
       hash: nonEmpty(data.hash) ?? '',
@@ -1626,6 +1988,7 @@ export class MemoryClient {
     if (data === undefined) return { ok: false, reason: 'empty' };
     const text = nonEmpty(data.text);
     if (text === undefined) return { ok: false, reason: 'empty' };
+    this.rememberPersons(options.sessionId, soulCardPersons(data.persons));
     return {
       ok: true,
       card: {
@@ -1652,17 +2015,27 @@ export class MemoryClient {
     options: { timeoutMs?: number; sessionId?: string } = {},
   ): Promise<{ text: string; openLoops: string[] } | undefined> {
     const { teamId, agentId, userId } = this.identityOf(options.sessionId);
-    const result = await this.read<{ text?: unknown; openLoops?: unknown }>('/v3/soul/turn', {
+    // §6：把卡里定下的 person 带上，端点才有关系段可读（不带 = 生产恒空）。
+    const person = options.sessionId === undefined ? undefined : this.personBySession.get(options.sessionId);
+    const result = await this.read<{ text?: unknown; openLoops?: unknown; state?: unknown }>('/v3/soul/turn', {
       team: nonEmpty(teamId),
       user: nonEmpty(userId),
       agent: nonEmpty(agentId),
       session: options.sessionId,
+      person: nonEmpty(person),
+      // §8：400 是「标头 + 正文」总预算。把标头占位交给 Core，Core 按这个预算排版，
+      // 插件端就不再二次裁掉尾行「优先级：先做」（第三轮评审 MAJOR-1）。
+      stateBudget: String(Math.max(0, PERSONA_STATE_MAX_CHARS - PERSONA_STATE_SECTION_HEADER.length)),
     }, options);
     if (!result.ok || result.data === undefined) return undefined;
     const text = typeof result.data.text === 'string' ? result.data.text : '';
     const raw = result.data.openLoops;
     const openLoops = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
-    return { text, openLoops };
+    // §6：运行时状态（mood/relation/goals/flags/asOf/stateHash/dynamicText）与 400 字
+    // 尾巴分开给。Core 旧版本没有这个字段 → undefined，插件逐字走旧路径。
+    // 扁平装配体：状态字段就长在 data 上，不是 data.state（Core 侧没有那层包装）。
+    const state = soulTurnState(result.data);
+    return { text, openLoops, ...(state === undefined ? {} : { state }) };
   }
 
   /**

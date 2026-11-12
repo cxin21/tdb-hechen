@@ -220,6 +220,70 @@ describe("GET /v3/soul/person（§8）", () => {
     expect(data.relations.find((x) => x.relId === "rel-mutual")!.direction).toBe("mutual");
   });
 
+  it("关系边的对方名字按 key 回填（与 /v3/soul/persons 同一把尺子）", async () => {
+    const { store } = makeStore({
+      persons: [person(ME, "何辰", ["hechen"]), person("p_boss", "张总")],
+      out: [
+        // 档案提炼在有 obj.key 时只写 key 不写 obj_name
+        edge({ relId: "rel-out", subjKey: ME, pred: "上级", objKey: "p_boss", objName: null }),
+        // 库里已有名字 → 以库里的为准，不被回填覆盖
+        edge({ relId: "rel-out-2", subjKey: ME, pred: "同事", objKey: "p_boss", objName: "张总（老张）" }),
+        // 对方还不是登记过的人 → 不猜名字
+        edge({ relId: "rel-out-3", subjKey: ME, pred: "客户", objKey: "p_ghost", objName: null }),
+      ],
+    });
+    const r = await call("/v3/soul/person?team=t&key=p_me", { store });
+    expect(r.status).toBe(200);
+    const rels = (r.payload.data as unknown as { relations: Array<{ relId: string; objName: string | null }> })
+      .relations;
+    const byId = new Map(rels.map((x) => [x.relId, x.objName]));
+    expect(byId.get("rel-out")).toBe("张总");
+    expect(byId.get("rel-out-2")).toBe("张总（老张）");
+    expect(byId.get("rel-out-3")).toBe(null);
+  });
+
+  it("关系边的对方名字统一回在 counterpartName 上（in 边的 objName 是本人，不得充数）", async () => {
+    const { store } = makeStore({
+      persons: [person(ME, "何辰", ["hechen"]), person("p_boss", "张总"), person("p_boss2", "张二")],
+      out: [
+        // out：对方登记过 → 回登记名
+        edge({ relId: "rel-out", subjKey: ME, pred: "上级", objKey: "p_boss", objName: null }),
+        // out：对方没登记，但库里记了名字 → 用库里的名字
+        edge({ relId: "rel-wild", subjKey: ME, pred: "客户", objKey: "p_ghost", objName: "野生客户" }),
+        // out：对方完全没线索 → null，不编
+        edge({ relId: "rel-ghost", subjKey: ME, pred: "客户", objKey: "p_ghost2", objName: null }),
+      ],
+      inbound: [
+        // in：obj_name 写的是本人（何辰），对方名字只能从 subj_key 解析
+        // 边本身不带 "in"：direction 是读面按 subj/obj 判出来的，库里只存 out|mutual
+        edge({ relId: "rel-in", subjKey: "p_boss2", pred: "下属", objKey: ME, objName: "何辰" }),
+      ],
+    });
+    const r = await call("/v3/soul/person?team=t&key=p_me", { store });
+    expect(r.status).toBe(200);
+    const rels = (r.payload.data as unknown as {
+      relations: Array<{ relId: string; counterpartKey: string | null; counterpartName: string | null }>;
+    }).relations;
+    const byId = new Map(rels.map((x) => [x.relId, x]));
+    expect(byId.get("rel-out")!.counterpartName).toBe("张总");
+    expect(byId.get("rel-wild")!.counterpartName).toBe("野生客户");
+    expect(byId.get("rel-ghost")!.counterpartName).toBe(null);
+    // in 边：对方是 subj（张二），不是 obj 指回的本人
+    expect(byId.get("rel-in")!.counterpartKey).toBe("p_boss2");
+    expect(byId.get("rel-in")!.counterpartName).toBe("张二");
+  });
+
+  it("关系边对方已合并（墓碑）→ 顺着 mergedInto 回活人的名字", async () => {
+    const { store } = makeStore({
+      persons: [person(ME, "何辰"), person("p_boss", "张总"), { ...person("p_old", "旧张总"), mergedInto: "p_boss" }],
+      out: [edge({ relId: "rel-old", subjKey: ME, pred: "上级", objKey: "p_old", objName: null })],
+    });
+    const r = await call("/v3/soul/person?team=t&key=p_me", { store });
+    const rels = (r.payload.data as unknown as { relations: Array<{ relId: string; objName: string | null }> })
+      .relations;
+    expect(rels.find((x) => x.relId === "rel-old")!.objName).toBe("张总");
+  });
+
   it("store 抛错 → 503 soul_person_failed（不是 500、不把栈回给调用方）", async () => {
     const { store } = makeStore({ throws: true });
     const r = await call("/v3/soul/person?team=t&key=p_me", { store });

@@ -11,7 +11,7 @@ import { createFakeContext, runPreStep } from './helpers/fake-ctx.js';
 import { userMessage } from './helpers/messages.js';
 
 function setup(overrides?: {
-  getBlock?: (text: string, context?: any) => Promise<string | undefined>;
+  getBlock?: (text: string, context?: any) => Promise<string | undefined | { text: string; audit?: any }>;
   maxChars?: number;
   timeoutMs?: number;
   reportInjection?: (payload: any) => void;
@@ -360,6 +360,66 @@ describe('volatile 本地证据日志（injection-log）', () => {
     expect(events).toHaveLength(2);
     expect(events[1]).toMatchObject({ event: 'turn-skip', turn: 2, chars: 0 });
     expect(events[1].hash).toBe(events[0].hash);
+  });
+
+  it('§8：turn-append 行记下 state/flags/asOf —— 证明状态进了 prompt，不是只进了卡', async () => {
+    const events: any[] = [];
+    const { listener } = setup({
+      maxChars: 1200,
+      getBlock: async () => ({
+        text: 'BLOCK',
+        audit: {
+          state: { mood: { valence: 0.2 }, flags: { tone: 'neutral', initiative: 'act' } },
+          flags: { tone: 'neutral', initiative: 'act' },
+          asOf: '2026-11-12T00:00:00.000Z',
+          stateHash: 's1a2b3c4',
+        },
+      }),
+      injectionLog: { path: 'mem.jsonl', record: (e) => events.push(e), failed: () => false },
+    });
+    const decision = await preStep(listener, 7, [userMessage('deploy?')]);
+
+    expect(decision.messages).toHaveLength(2);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event: 'turn-append',
+      turn: 7,
+      asOf: '2026-11-12T00:00:00.000Z',
+      stateHash: 's1a2b3c4',
+      flags: { tone: 'neutral', initiative: 'act' },
+    });
+    expect(events[0].state).toMatchObject({ mood: { valence: 0.2 } });
+  });
+
+  it('§8：part 丢弃的 stateDropped/droppedStateLines 原样落日志', async () => {
+    const events: any[] = [];
+    const { listener } = setup({
+      maxChars: 1200,
+      getBlock: async () => ({
+        text: 'BLOCK',
+        audit: { stateHash: 's111', injectedStateLines: 3, stateDropped: 'over-budget-partial', droppedStateLines: 2 },
+      }),
+      injectionLog: { path: 'mem.jsonl', record: (e) => events.push(e), failed: () => false },
+    });
+    await preStep(listener, 9, [userMessage('q9')]);
+    expect(events[0]).toMatchObject({
+      event: 'turn-append',
+      injectedStateLines: 3,
+      stateDropped: 'over-budget-partial',
+      droppedStateLines: 2,
+    });
+  });
+
+  it('§8：turn-skip 强制 injectedStateLines=0 并标 turn-skip（跳过不算注入）', async () => {
+    const events: any[] = [];
+    const { listener } = setup({
+      maxChars: 1200,
+      getBlock: async () => ({ text: 'BLOCK', audit: { stateHash: 's222', injectedStateLines: 4 } }),
+      injectionLog: { path: 'mem.jsonl', record: (e) => events.push(e), failed: () => false },
+    });
+    await preStep(listener, 10, [userMessage('q10')]);
+    await preStep(listener, 11, [userMessage('q11')]);
+    expect(events[1]).toMatchObject({ event: 'turn-skip', chars: 0, injectedStateLines: 0, stateDropped: 'turn-skip' });
   });
 
   it('日志抛错不影响注入（fail-open）', async () => {

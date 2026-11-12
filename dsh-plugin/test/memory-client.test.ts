@@ -1009,3 +1009,77 @@ describe('card textHash (task-30 A3)', () => {
     expect(legacyCard?.textHash).toBe('');
   });
 });
+
+describe('#180 §6：/v3/soul/turn 的运行时状态（扁平装配体）', () => {
+  const assembly = {
+    mood: { valence: 0.2, arousal: 0.3, derived: false, stale: false },
+    relation: { facts: ['你与 张三 一起修过登录'] },
+    goals: { lines: ['承诺：本周交稿'], chars: 7 },
+    working: { focus: '接线' },
+    flags: { tone: 'neutral', initiative: 'act' },
+    warnings: [],
+    asOf: '2026-11-12T00:00:00.000Z',
+    stateHash: 'h1',
+    flagTrace: ['仲裁：红线'],
+    evidenceIds: ['ev-1'],
+    dynamicText: '现在：接线',
+  };
+
+  it('Core 回的是扁平装配体（没有嵌套 state 键），插件仍要拿到 mood/relation/goals', async () => {
+    const { fetchImpl } = coreFixture({ turn: { text: '心境', openLoops: [], ...assembly } as any });
+    const turn = await createClient(fetchImpl).soulTurn({ sessionId: 's1' });
+
+    expect(turn?.text).toBe('心境');
+    expect(turn?.state?.state).toMatchObject({
+      mood: assembly.mood,
+      relation: assembly.relation,
+      goals: assembly.goals,
+      working: assembly.working,
+    });
+    expect(turn?.state?.flags).toEqual(assembly.flags);
+    expect(turn?.state?.asOf).toBe(assembly.asOf);
+    expect(turn?.state?.stateHash).toBe('h1');
+    expect(turn?.state?.dynamicText).toBe('现在：接线');
+  });
+
+  it('卡里给了 person_key，turn 请求就带上 person —— 否则关系段在生产永远为空', async () => {
+    const seen: URL[] = [];
+    const fetchImpl = (async (input: any) => {
+      const url = new URL(String(input));
+      seen.push(url);
+      if (url.pathname.endsWith('/v3/soul/card')) {
+        return envelope({ version: 1, hash: 'h', text: '卡', chars: 1, dirty: false, persons: ['p_zhang'] });
+      }
+      return envelope({ text: '心境', openLoops: [] });
+    }) as unknown as typeof fetch;
+
+    const client = createClient(fetchImpl);
+    await client.soulCard({ sessionId: 's1' });
+    await client.soulTurn({ sessionId: 's1' });
+
+    const turnCall = seen.find((u) => u.pathname.endsWith('/v3/soul/turn'));
+    expect(turnCall?.searchParams.get('person')).toBe('p_zhang');
+  });
+
+  it('卡改回「只有全局行」时旧 person 必须清掉', async () => {
+    const seen: URL[] = [];
+    let cardPersons: string[] = ['p_zhang'];
+    const fetchImpl = (async (input: any) => {
+      const url = new URL(String(input));
+      seen.push(url);
+      if (url.pathname.endsWith('/v3/soul/card')) {
+        return envelope({ version: 1, hash: 'h', text: '卡', chars: 1, dirty: false, persons: cardPersons });
+      }
+      return envelope({ text: '心境', openLoops: [] });
+    }) as unknown as typeof fetch;
+
+    const client = createClient(fetchImpl);
+    await client.soulCard({ sessionId: 's1' });
+    cardPersons = [];
+    await client.soulCard({ sessionId: 's1' });
+    await client.soulTurn({ sessionId: 's1' });
+
+    const turns = seen.filter((u) => u.pathname.endsWith('/v3/soul/turn'));
+    expect(turns[turns.length - 1]!.searchParams.get('person')).toBeNull();
+  });
+});

@@ -10,7 +10,7 @@ dsh 原生记忆插件 v0。把 TDB 长期记忆接进 dsh 宿主的三条缝隙
 | 会话级 head pack | `ctx.inject(['systemPrompt'])` + `section()` | 身份/红线/记忆检索指引，取一次后在会话内冻结，compaction 后重取 |
 | 每步 volatile 块 | `agent/pre-step` 瀑布 | 只在本轮消息**尾部追加一条**记忆提示（`/v3/recall` 供料，失败退回 `atomic/search`），不改历史前缀（KV cache 不碎） |
 | 回合回写 | `session/event` + `agent/turn-stopping` | 收集本轮 user/assistant 文本/工具调用/usage，落本地 outbox，fire-and-forget 推给 core |
-| 工具 | `ctx.tools.register` | `memory_recall`：按 query 检索长期记忆（走 core `/v3/atomic/search`） |
+| 工具 | `ctx.tools.register` | `memory_recall`：按 query 检索长期记忆（走 core `/v3/atomic/search`）；`soul_person_search`：把人说出口的名字/别名解析成 person_key（`/v3/soul/person/search`）；`soul_person_profile`：按名字或 key 读九字段 + 关系边（`/v3/soul/person`，同名多人时只列候选不猜） |
 
 宿主侧的三条硬事实（实测证据见 [docs/ops/dsh-plugin-probe-report.md](../docs/ops/dsh-plugin-probe-report.md)）：
 
@@ -735,6 +735,7 @@ agemem: ready (endpoint=…, serviceId=default, identity=configured, keySource=c
   缓解：同轮去重 + 近 3 轮同文本跳过 + 无命中就不注入；确实嫌吵就把 `volatile.enabled` 关掉，只靠 head pack 与工具；
 - 回写只看 turn 级（assistant 文本 + 工具调用 + usage），不解析文件级编辑事件；
 - `memory_recall` 走 core 的 `/v3/atomic/search`，core 不可用时返回可读的降级文案而不是抛错。
+- `soul_person_search` / `soul_person_profile` 是「按名字查人」的两步：前者名字→`person_key`（精确/前缀/包含，命中档位随行返回），后者 key→九字段+关系边。两者都纯读；core 不可用时同样给可读文案，且「没人叫这个名字」与「查不了」是两句不同的话——空结果不会被伪装成失败，失败也不会被伪装成空结果。
 - L0 的 `session_id` 在 core schema 里其实是**可选**、也不校验 `|`（只有 skill 队列要求 id 不含分隔符）；
   插件仍然每条都带 `session_id`——会话维度对 L1 检索有用，是主动保留而不是 schema 强制。
 - 死信没有自动 TTL 清理：`outbox.dead.jsonl` 只追加不删，堆积靠人工 `requeueDead()` 或按 `reasonClass` 归档。

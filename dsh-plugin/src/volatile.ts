@@ -61,12 +61,36 @@ export interface VolatileInjectionReport {
   volatile: { chars: number; hash: string; skipped: boolean };
 }
 
+/**
+ * getBlock 的结构化返回：文本 + 本轮运行时状态证据（§8）。
+ * 纯字符串返回仍然合法——注入日志只是少几列，绝不因此不打日志。
+ */
+export interface VolatileBlockResult {
+  text: string;
+  audit?: {
+    state?: unknown;
+    flags?: unknown;
+    asOf?: string;
+    stateHash?: string;
+    flagTrace?: unknown;
+    evidenceIds?: unknown;
+    /** §9 第 10 条：日志要能复现「为什么这么写」，所以动态段原文也要落。 */
+    dynamicText?: string;
+    /** 状态段实际进了 prompt 的行数（部分注入时不再是布尔）。 */
+    injectedStateLines?: number;
+    /** 状态没进 prompt（或只进了一部分）的原因。 */
+    stateDropped?: string;
+    /** 状态里被裁掉的行数（部分丢弃时才有）。 */
+    droppedStateLines?: number;
+  };
+}
+
 export interface VolatileDeps {
   enabled: boolean;
   /** 缺省 DEFAULT_VOLATILE_MAX_CHARS（1200）；显式传入仍生效（index.ts 传 config 值）。 */
   maxChars?: number;
   timeoutMs: number;
-  getBlock: (turnText: string, context: VolatileTurnContext) => Promise<string | undefined>;
+  getBlock: (turnText: string, context: VolatileTurnContext) => Promise<string | VolatileBlockResult | undefined>;
   /**
    * task-13：把「本轮实际注入了多少」回报给 Core（POST /v3/soul/injection）。
    * 契约是 fire-and-forget——本模块不 await，抛错也吞掉（观测面不得影响注入）。
@@ -284,7 +308,24 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
           await withTimeout(deps.ensureIdentity(payload?.agent, payload?.signal), deps.timeoutMs);
         }
         const block = await withTimeout(deps.getBlock(turnText, { turn: payload?.turn, sessionId: scope }), deps.timeoutMs);
-        const text = typeof block === 'string' ? block.trim() : '';
+        const text = typeof block === 'string' ? block.trim() : (block?.text ?? '').trim();
+        // §8：把状态证据带进注入日志——跳过与追加都记，否则「这轮到底带没带状态」无据可查。
+        const audit = typeof block === 'string' ? undefined : block?.audit;
+        const auditFields =
+          audit === undefined
+            ? {}
+            : {
+                ...(audit.state === undefined ? {} : { state: audit.state }),
+                ...(audit.flags === undefined ? {} : { flags: audit.flags }),
+                ...(audit.asOf === undefined ? {} : { asOf: audit.asOf }),
+                ...(audit.stateHash === undefined ? {} : { stateHash: audit.stateHash }),
+                ...(audit.flagTrace === undefined ? {} : { flagTrace: audit.flagTrace }),
+                ...(audit.evidenceIds === undefined ? {} : { evidenceIds: audit.evidenceIds }),
+                ...(audit.dynamicText === undefined ? {} : { dynamicText: audit.dynamicText }),
+                ...(audit.injectedStateLines === undefined ? {} : { injectedStateLines: audit.injectedStateLines }),
+                ...(audit.stateDropped === undefined ? {} : { stateDropped: audit.stateDropped }),
+                ...(audit.droppedStateLines === undefined ? {} : { droppedStateLines: audit.droppedStateLines }),
+              };
         if (text === '') return decision;
         // Line-aware clamp: never cut a memory entry in the middle of its text.
         const clamped = clampBlockByLines(text, maxChars);
@@ -313,6 +354,11 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
             turn: turnNumber ?? null,
             hash: blockHash,
             chars: 0,
+            ...auditFields,
+            // 跳过 = 这一轮什么都没追加。状态行数必须归零，否则日志里
+            // 「跳过」带着 injectedStateLines>0，和真注入分不开。
+            injectedStateLines: 0,
+            stateDropped: 'turn-skip',
           });
           deps.log?.debug?.('agemem: volatile block identical within recent turns; skipping injection', {
             turn: turnNumber,
@@ -343,6 +389,7 @@ export function installVolatile(ctx: AgememContext, deps: VolatileDeps): () => v
           turn: turnNumber ?? null,
           hash: blockHash,
           chars: clamped.length,
+          ...auditFields,
         });
         return { ...decision, messages: [...messages, message] };
       } catch (error) {

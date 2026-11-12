@@ -81,6 +81,25 @@ export interface InjectionLogEvent {
   keptVersion?: number;
   /** Characters actually injected (0 for `turn-skip` / cleared card). */
   chars: number;
+  /**
+   * §8：`turn-append`/`turn-skip` 才有的运行时状态证据 —— 证明这一轮的状态真的进了
+   * prompt（不是只进了卡）。只记结构与时刻，不记正文。
+   */
+  state?: unknown;
+  flags?: unknown;
+  asOf?: string;
+  stateHash?: string;
+  /** 动态段原文与实注入行数（§9 第 10 条）。 */
+  dynamicText?: string;
+  injectedStateLines?: number;
+  /** 状态没进 prompt（或只进了一部分）的原因。 */
+  stateDropped?: string;
+  /** 状态里被裁掉的行数（部分丢弃时才有）。 */
+  droppedStateLines?: number;
+  /** §9 第 10 条：为什么这么裁决（仲裁链 + 逐项 flag），有就记，不猜。 */
+  flagTrace?: unknown;
+  /** 这一轮状态引用的证据 id（只记 id，不记正文）。 */
+  evidenceIds?: unknown;
   /** Failure reason for `card-bound-failed` (http_status / timeout / empty / parse). */
   reason?: string;
   /**

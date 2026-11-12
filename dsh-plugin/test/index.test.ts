@@ -1521,6 +1521,133 @@ describe('plugin entry', () => {
     expect(fake.logs.some((line) => line.includes('volatile block served from cache'))).toBe(true);
   });
 
+  it('§6：缓存命中时 persona turn 仍每次重取 —— 同一句话不返回旧心境', async () => {
+    const turnPayload: { text: string; openLoops: string[]; state?: Record<string, unknown> } = {
+      text: '心境：旧',
+      openLoops: [],
+      state: {
+        flags: { tone: 'neutral', initiative: 'act' },
+        asOf: '2026-11-12T00:00:00.000Z',
+        stateHash: 'hash-old',
+        dynamicText: '现在：旧的一步',
+      },
+    };
+    const fixture = coreFixture({ turn: turnPayload as any });
+    vi.stubGlobal('fetch', vi.fn(fixture.fetchImpl));
+    const fake = await startApp();
+    const listener = fake.firstListener('agent/pre-step');
+    if (!listener) throw new Error('pre-step listener not installed');
+
+    const claimed = [userMessage('pnpm 用什么?', 'u1')];
+    fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn: 1, message: claimed[0] } });
+    await vi.waitFor(() => {
+      expect(callsTo(fixture.calls, '/v3/recall')).toHaveLength(1);
+    });
+
+    // 预取之后心境与运行时状态都变了：缓存只该缓存记忆，turn 必须重取。
+    turnPayload.text = '心境：新';
+    turnPayload.state = {
+      flags: { tone: 'terse', initiative: 'ask' },
+      asOf: '2026-11-12T00:05:00.000Z',
+      stateHash: 'hash-new',
+      dynamicText: '现在：新的一步',
+    };
+
+    const decision = await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: claimed });
+    expect(callsTo(fixture.calls, '/v3/recall')).toHaveLength(1);
+    expect(decision.messages).toHaveLength(2);
+    const text = (decision.messages[1]!.content as Array<{ text: string }>)[0]!.text;
+    expect(text).toContain('【agemem 记忆提示】');
+    expect(text).toContain('心境：新');
+    expect(text).not.toContain('心境：旧');
+    // §6：动态段作为独立段落进块，不塞进 400 字尾巴。
+    expect(text).toContain('现在：新的一步');
+  });
+
+  it('§8 预算：状态段含标头不超过 400 字，且只整行裁（不切半句）', async () => {
+    const stateLines = Array.from({ length: 40 }, (_, i) => '现在：第' + i + '步要做的事');
+    installFetch({
+      turn: {
+        text: '心境：稳',
+        openLoops: [],
+        state: { flags: { tone: 'neutral', initiative: 'act' }, asOf: '2026-11-12T00:00:00.000Z', stateHash: 'h1', dynamicText: stateLines.join(LF) },
+      },
+    });
+    const fake = await startApp();
+    const listener = fake.firstListener('agent/pre-step');
+    if (!listener) throw new Error('pre-step listener not installed');
+    const claimed = [userMessage('今天做什么?', 'u1')];
+    const decision = await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: claimed });
+    const text = (decision.messages[1]!.content as Array<{ text: string }>)[0]!.text;
+    const at = text.indexOf('【本轮状态】');
+    expect(at).toBeGreaterThanOrEqual(0);
+    const statePart = text.slice(at);
+    expect(statePart.length).toBeLessThanOrEqual(400);
+    for (const line of statePart.split(LF).slice(1)) {
+      expect(stateLines).toContain(line);
+    }
+  });
+
+  it('§8 预算：Core 已扣标头排版时，优先级行不被二次裁掉（第三轮评审 MAJOR-1）', async () => {
+    // Core 收到 stateBudget=382，会保证正文 ≤382；插件若再按 382 裁一次，
+    // 边界值（正文正好 382）会丢掉尾行「优先级」。这里钉住这个边界。
+    const body = '现在：' + 'x'.repeat(372);
+    const dynamicText = body + LF + '优先级：先做';
+    expect(dynamicText.length).toBe(382);
+    installFetch({
+      turn: {
+        text: '心境：稳',
+        openLoops: [],
+        state: { flags: { tone: 'neutral', initiative: 'act' }, asOf: '2026-11-12T00:00:00.000Z', stateHash: 'h2', dynamicText },
+      },
+    });
+    const fake = await startApp();
+    const listener = fake.firstListener('agent/pre-step');
+    if (!listener) throw new Error('pre-step listener not installed');
+    const claimed = [userMessage('今天做什么?', 'u1')];
+    const decision = await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: claimed });
+    const text = (decision.messages[1]!.content as Array<{ text: string }>)[0]!.text;
+    const at = text.indexOf('【本轮状态】');
+    expect(at).toBeGreaterThanOrEqual(0);
+    const statePart = text.slice(at);
+    expect(statePart.length).toBeLessThanOrEqual(400);
+    expect(statePart).toContain('优先级：先做');
+  });
+
+  it('§8 审计：Core 给 388、插件按 382 裁掉尾行时，日志记 stateDropped/droppedStateLines（第五轮 MINOR-3）', async () => {
+    const logDir = mkdtempSync(path.join(tmpdir(), 'agemem-audit-'));
+    tempDirs.push(logDir);
+    const logPath = path.join(logDir, 'persona-injection.jsonl');
+    const prev = process.env.TDB_PERSONA_LOG;
+    process.env.TDB_PERSONA_LOG = logPath;
+    try {
+      const body = '现在：' + 'x'.repeat(378);
+      const dynamicText = body + LF + '优先级：先做';
+      expect(dynamicText.length).toBe(388);
+      installFetch({
+        turn: {
+          text: '心境：稳',
+          openLoops: [],
+          state: { flags: { tone: 'neutral', initiative: 'act' }, asOf: '2026-11-12T00:00:00.000Z', stateHash: 'h3', dynamicText },
+        },
+      });
+      const fake = await startApp();
+      const listener = fake.firstListener('agent/pre-step');
+      if (!listener) throw new Error('pre-step listener not installed');
+      const claimed = [userMessage('今天做什么?', 'u1')];
+      await runPreStep(listener, { agent: { session: { id: 's1' } }, turn: 1, step: 1 }, { kind: 'enter', messages: claimed });
+      const lines = readFileSync(logPath, 'utf8').trim().split(LF).map((line) => JSON.parse(line));
+      const appended = lines.find((row) => row.event === 'turn-append');
+      expect(appended).toBeDefined();
+      // 尾部优先级行被整行裁掉：仍是部分注入，但必须留痕。
+      expect(appended.stateDropped).toBe('over-budget-partial');
+      expect(appended.droppedStateLines).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.TDB_PERSONA_LOG;
+      else process.env.TDB_PERSONA_LOG = prev;
+    }
+  });
+
   it('shares ONE recall request between the user-message prefetch and the pre-step await', async () => {
     const fixture = installFetch();
     const fake = await startApp();

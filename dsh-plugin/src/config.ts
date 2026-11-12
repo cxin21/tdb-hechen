@@ -69,6 +69,13 @@ export interface AgememPaths {
    * proxy's own init flow.
    */
   metaUserConfig: string;
+  /** 单人档案读面：要 person_key，回九字段 + 关系边。 */
+  soulPerson: string;
+  /**
+   * 人物「按名字查」（2026-11-12）：名字 → person_key 的服务端读面。
+   * 与 /v3/soul/person 成对：那个要 key，这个给 key。
+   */
+  soulPersonSearch: string;
 }
 
 export interface ServerConfig {
@@ -395,6 +402,8 @@ export const DEFAULT_CONFIG: AgememConfig = {
     metaAgentList: '/v3/meta/agent/list',
     metaTaskList: '/v3/meta/task/list',
     metaUserConfig: '/v3/meta/config/user/get',
+    soulPerson: '/v3/soul/person',
+    soulPersonSearch: '/v3/soul/person/search',
   },
   headPack: {
     enabled: true,
