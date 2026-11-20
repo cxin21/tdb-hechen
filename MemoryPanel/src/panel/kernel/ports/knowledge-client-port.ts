@@ -143,6 +143,48 @@ export interface WikiGraphData {
   nodes: any[];
   edges: any[];
   communities?: any[];
+  total?: number;
+  truncated?: boolean;
+}
+
+export interface WikiGraphQuery {
+  community?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CodeGraphStructureNode {
+  id: string;
+  kind: string;
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+  language: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+  isExported: boolean;
+}
+
+export interface CodeGraphStructureEdge {
+  source: string;
+  target: string;
+  kind: string;
+  line: number;
+}
+
+export interface CodeGraphStructure {
+  nodes: CodeGraphStructureNode[];
+  edges: CodeGraphStructureEdge[];
+  total: number;
+  truncated: boolean;
+}
+
+export interface CodeGraphStructureQuery {
+  kinds?: string[];
+  edgeKinds?: string[];
+  limit?: number;
+  offset?: number;
 }
 
 export interface WikiSearchResult {
@@ -221,7 +263,7 @@ export interface KnowledgeClientPort {
   wikiPageRm(teamId: string, wikiId: string, refs: string[], userId?: string): Promise<WikiPageRmResult>;
 
   // Wiki — 派生视图（仅资产 id 寻址）
-  wikiGraph(wikiId: string): Promise<WikiGraphData>;
+  wikiGraph(wikiId: string, query?: WikiGraphQuery): Promise<WikiGraphData>;
   wikiSearch(wikiId: string, query: string, limit?: number, graph?: { hop?: number; decay?: number; minScore?: number }): Promise<WikiSearchResult>;
 
   // Code-Graph（create/list 带 IdFields；get/sync/delete/查询 仅资产 id 寻址）
@@ -232,4 +274,5 @@ export interface KnowledgeClientPort {
   codeGraphDelete(codeGraphIds: string[]): Promise<BatchDeleteResult>;
   codeGraphUpdateMeta(codeGraphId: string, patch: { repo_name?: string; summary?: string | null }): Promise<CodeGraphDetail>;
   codeGraphQuery(codeGraphId: string, tool: string, params: Record<string, unknown>): Promise<CodeGraphToolResult>;
+  codeGraphStructure(codeGraphId: string, query?: CodeGraphStructureQuery): Promise<CodeGraphStructure>;
 }

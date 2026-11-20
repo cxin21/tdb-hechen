@@ -176,6 +176,25 @@ export function registerKnowledgeCodeGraphRoutes(api: Hono, deps: PanelDeps): vo
     });
   });
 
+  // C6 graph — id-only structure read (same gate as search)
+  api.post('/knowledge/code-graph/graph', mw, async (c) => {
+    const ctx = buildCtx(c);
+    const body = await readJson(c);
+    const cgId = str(body, 'code_graph_id');
+    if (!cgId) return respondControlError(c, 400, 'MISSING_CODE_GRAPH_ID');
+    const gate = await requireKnowledgeRead(deps, c, ctx, cgId);
+    if ('error' in gate) return gate.error;
+    const query: { kinds?: string[]; edgeKinds?: string[]; limit?: number; offset?: number } = {};
+    const kinds = strArray(body, 'kinds');
+    const edgeKinds = strArray(body, 'edgeKinds');
+    if (kinds.length > 0) query.kinds = kinds;
+    if (edgeKinds.length > 0) query.edgeKinds = edgeKinds;
+    if (typeof body.limit === 'number') query.limit = body.limit;
+    if (typeof body.offset === 'number') query.offset = body.offset;
+    const kc = deps.knowledgeClientFactory(ctx.instanceId);
+    return runKs(c, () => kc.codeGraphStructure(cgId, query));
+  });
+
   // C7 search — id-only
   api.post('/knowledge/code-graph/search', mw, async (c) => {
     const ctx = buildCtx(c);

@@ -49,7 +49,7 @@ export const READONLY_POST_PATHS: ReadonlySet<string> = new Set([
   "/tools/list", "/tools/call",
   "/wiki/get", "/wiki/list", "/wiki/raw/ls", "/wiki/raw/read",
   "/wiki/page/ls", "/wiki/page/read", "/wiki/graph", "/wiki/search",
-  "/code-graph/list", "/code-graph/get",
+  "/code-graph/list", "/code-graph/get", "/code-graph/graph",
   // code-graph 动态注册的只读查询端点（与路由注册同源，避免两边漂移）
   ...CODEGRAPH_QUERY_TOOL_NAMES.map((name) => `/code-graph/${name}`),
 ]);

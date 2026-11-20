@@ -240,8 +240,13 @@ export function registerKnowledgeWikiRoutes(api: Hono, deps: PanelDeps): void {
     if (!wikiId) return respondControlError(c, 400, 'MISSING_WIKI_ID');
     const gate = await requireKnowledgeRead(deps, c, ctx, wikiId);
     if ('error' in gate) return gate.error;
+    const query: { community?: string; limit?: number; offset?: number } = {};
+    const community = str(body, 'community');
+    if (community) query.community = community;
+    if (typeof body.limit === 'number') query.limit = body.limit;
+    if (typeof body.offset === 'number') query.offset = body.offset;
     const kc = deps.knowledgeClientFactory(ctx.instanceId);
-    return runKs(c, () => kc.wikiGraph(wikiId));
+    return runKs(c, () => kc.wikiGraph(wikiId, query));
   });
 
   // W11 page/ls — id-only

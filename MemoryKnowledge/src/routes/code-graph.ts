@@ -2,7 +2,7 @@
  * Code-Graph Routes — 13 endpoints (Hono rewrite).
  *
  * Management (5): create / list / get / sync / delete
- * Query (8): search / explore / callers / callees / impact / node / status / files
+ * Query (9): graph / search / explore / callers / callees / impact / node / status / files
  *
  * Query endpoints delegate to engines/code executeTool, return {text, isError}.
  * Routes are defined WITHOUT /v2 prefix — prefix applied at server.ts mount level.
@@ -16,7 +16,7 @@ import { Hono } from "hono";
 
 import type { CodeGraphService } from "../store/index.js";
 import type { SyncStatus } from "../store/index.js";
-import { executeTool as executeCodeTool } from "../engines/code/index.js";
+import { executeTool as executeCodeTool, listGraph } from "../engines/code/index.js";
 import { toCodeGraphToolName } from "./tools.js";
 import { CODEGRAPH_QUERY_TOOL_NAMES } from "../codegraph-tool-names.js";
 import {
@@ -105,6 +105,53 @@ const QUERY_SPECS: Record<string, QuerySpec> = {
     },
   },
 };
+
+function parseStringArray(body: Record<string, unknown>, name: string): { value?: string[] } | { error: string } {
+  const raw = body[name];
+  if (raw === undefined || raw === null) return {};
+  if (!Array.isArray(raw) || raw.some((v) => typeof v !== "string" || !v)) {
+    return { error: `${name} must be string[]` };
+  }
+  return { value: raw };
+}
+
+function parseBoundInt(
+  body: Record<string, unknown>,
+  name: string,
+  opts: { min: number; max?: number; fallback: number },
+): { value: number } | { error: string } {
+  const raw = body[name];
+  if (raw === undefined || raw === null) return { value: opts.fallback };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+    return { error: `${name} must be integer` };
+  }
+  if (raw < opts.min) return { error: `${name} must be >= ${opts.min}` };
+  if (opts.max !== undefined && raw > opts.max) return { error: `${name} must be <= ${opts.max}` };
+  return { value: raw };
+}
+
+/** Body parser for POST /graph. Defaults: edgeKinds calls/imports/contains, limit 80, offset 0. */
+export function parseStructureGraphBody(body: Record<string, unknown>): {
+  kinds?: string[];
+  edgeKinds: string[];
+  limit: number;
+  offset: number;
+} | { error: string } {
+  const kinds = parseStringArray(body, "kinds");
+  if ("error" in kinds) return kinds;
+  const edgeKinds = parseStringArray(body, "edgeKinds");
+  if ("error" in edgeKinds) return edgeKinds;
+  const limit = parseBoundInt(body, "limit", { min: 1, max: 200, fallback: 80 });
+  if ("error" in limit) return limit;
+  const offset = parseBoundInt(body, "offset", { min: 0, fallback: 0 });
+  if ("error" in offset) return offset;
+  return {
+    kinds: kinds.value,
+    edgeKinds: edgeKinds.value ?? ["calls", "imports", "contains"],
+    limit: limit.value,
+    offset: offset.value,
+  };
+}
 
 /** Validate query params against spec whitelist + defaults. Returns toolParams or error string. */
 function buildToolParams(
@@ -315,6 +362,37 @@ export function createCodeGraphRoutes(deps: CodeGraphRouteDeps): Hono {
       }
     }
     return c.json(wrapOk(result));
+  });
+
+  // ═══════════════════ Structure graph (read-only, paged; not a tool) ═══════════════════
+
+  app.post("/graph", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>();
+    const serviceId = c.req.header("x-tdai-service-id");
+    if (!isValidIdSegment(serviceId)) return c.json(wrapError(400, "x-tdai-service-id header is required"), 400);
+    const cgId = body.code_graph_id;
+    if (!isValidIdSegment(cgId)) return c.json(wrapError(400, "code_graph_id is required"), 400);
+
+    const row = cgService.getById(serviceId, cgId);
+    if (!row) return c.json(wrapError(404, "code graph not found"), 404);
+    if (row.status !== "ready") {
+      return c.json(wrapOk({ nodes: [], edges: [], total: 0, truncated: false }));
+    }
+
+    let instance = instancePool.get(cgId);
+    if (!instance && instancePool.loadIfMissing) {
+      const dir = cgService.dirFor(serviceId, row.team_id, cgId);
+      instance = await instancePool.loadIfMissing(cgId, dir);
+    }
+    if (!instance) {
+      return c.json(wrapError(503, "code graph instance not loaded"), 503);
+    }
+
+    const parsed = parseStructureGraphBody(body);
+    if ("error" in parsed) return c.json(wrapError(400, parsed.error), 400);
+
+    const graph = listGraph(instance, parsed);
+    return c.json(wrapOk(graph));
   });
 
   // ═══════════════════ Query (8 codegraph tools, all id-only) ═══════════════════

@@ -18,6 +18,7 @@ import type {
   WikiSourceProbeResult,
   WikiRefetchResult,
   WikiGraphData,
+  WikiGraphQuery,
   WikiSearchResult,
   BatchDeleteResult,
   RawFileEntry,
@@ -34,6 +35,8 @@ import type {
   CodeGraphListResult,
   CodeGraphSyncResult,
   CodeGraphToolResult,
+  CodeGraphStructure,
+  CodeGraphStructureQuery,
 } from '../ports/knowledge-client-port.js';
 
 export interface KnowledgeClientConfig {
@@ -177,8 +180,12 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
 
   // ═══════════════ Wiki · 派生视图 ═══════════════
 
-  async wikiGraph(wikiId: string): Promise<WikiGraphData> {
-    return this.post('/v3/wiki/graph', { wiki_id: wikiId });
+  async wikiGraph(wikiId: string, query?: WikiGraphQuery): Promise<WikiGraphData> {
+    const body: Record<string, unknown> = { wiki_id: wikiId };
+    if (query?.community) body.community = query.community;
+    if (typeof query?.limit === 'number') body.limit = query.limit;
+    if (typeof query?.offset === 'number') body.offset = query.offset;
+    return this.post('/v3/wiki/graph', body);
   }
 
   async wikiSearch(wikiId: string, query: string, limit?: number, graph?: { hop?: number; decay?: number; minScore?: number }): Promise<WikiSearchResult> {
@@ -223,5 +230,14 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
 
   async codeGraphQuery(codeGraphId: string, tool: string, params: Record<string, unknown>): Promise<CodeGraphToolResult> {
     return this.post(`/v3/code-graph/${tool}`, { code_graph_id: codeGraphId, ...params });
+  }
+
+  async codeGraphStructure(codeGraphId: string, query?: CodeGraphStructureQuery): Promise<CodeGraphStructure> {
+    const body: Record<string, unknown> = { code_graph_id: codeGraphId };
+    if (query?.kinds) body.kinds = query.kinds;
+    if (query?.edgeKinds) body.edgeKinds = query.edgeKinds;
+    if (typeof query?.limit === 'number') body.limit = query.limit;
+    if (typeof query?.offset === 'number') body.offset = query.offset;
+    return this.post('/v3/code-graph/graph', body);
   }
 }

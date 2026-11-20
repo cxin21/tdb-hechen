@@ -83,6 +83,138 @@ export interface CodeGraphInstance {
   projectRoot: string;
 }
 
+export interface CodeGraphStructureNode {
+  id: string;
+  kind: string;
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+  language: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+  isExported: boolean;
+}
+
+export interface CodeGraphStructureEdge {
+  source: string;
+  target: string;
+  kind: string;
+  line: number;
+}
+
+export interface ListGraphOptions {
+  kinds?: string[];
+  edgeKinds?: string[];
+  limit?: number;
+  offset?: number;
+}
+
+export interface ListGraphResult {
+  nodes: CodeGraphStructureNode[];
+  edges: CodeGraphStructureEdge[];
+  total: number;
+  truncated: boolean;
+}
+
+const DEFAULT_GRAPH_KINDS = ["file", "class", "function"];
+const DEFAULT_GRAPH_EDGE_KINDS = ["calls", "imports", "contains"];
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function asNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function asBool(value: unknown): boolean {
+  return value === true;
+}
+
+function nodeIdOf(node: Record<string, unknown>, index: number): string {
+  const id = node.id ?? node.nodeId ?? node.node_id;
+  return id == null ? `n${index}` : String(id);
+}
+
+function mapStructureNode(node: unknown, index: number): CodeGraphStructureNode {
+  const n = (node && typeof node === "object" ? node : {}) as Record<string, unknown>;
+  return {
+    id: nodeIdOf(n, index),
+    kind: asString(n.kind ?? n.type),
+    name: asString(n.name ?? n.label),
+    qualifiedName: asString(n.qualifiedName ?? n.qualified_name ?? n.fqn),
+    filePath: asString(n.filePath ?? n.file_path ?? n.file ?? n.path),
+    language: asString(n.language ?? n.lang),
+    startLine: asNumber(n.startLine ?? n.start_line ?? n.line),
+    endLine: asNumber(n.endLine ?? n.end_line),
+    signature: asString(n.signature),
+    isExported: asBool(n.isExported ?? n.is_exported ?? n.exported),
+  };
+}
+
+function collectNodesByKind(cg: any, kind: string): unknown[] {
+  if (typeof cg?.iterateNodesByKind === "function") {
+    const iter = cg.iterateNodesByKind(kind);
+    if (iter && typeof iter[Symbol.iterator] === "function") return [...iter];
+    if (Array.isArray(iter)) return iter;
+  }
+  if (typeof cg?.getNodesByKind === "function") {
+    const rows = cg.getNodesByKind(kind);
+    return Array.isArray(rows) ? rows : [];
+  }
+  return [];
+}
+
+/**
+ * Read a paged structure graph. Never calls getAllNodes().
+ * Nodes are collected per kind, then sliced [offset, offset+limit].
+ * Edges come from getOutgoingEdgesFrom(pageIds, edgeKinds) and drop targets outside the page.
+ */
+export function listGraph(instance: CodeGraphInstance, opts: ListGraphOptions = {}): ListGraphResult {
+  const kinds = opts.kinds && opts.kinds.length > 0 ? opts.kinds : DEFAULT_GRAPH_KINDS;
+  const edgeKinds = opts.edgeKinds && opts.edgeKinds.length > 0 ? opts.edgeKinds : DEFAULT_GRAPH_EDGE_KINDS;
+  const limit = opts.limit ?? 80;
+  const offset = opts.offset ?? 0;
+  const cg = instance.cg;
+
+  const collected: unknown[] = [];
+  for (const kind of kinds) {
+    collected.push(...collectNodesByKind(cg, kind));
+  }
+  const total = collected.length;
+  const pageRaw = collected.slice(offset, offset + limit);
+  const nodes = pageRaw.map((node, i) => mapStructureNode(node, offset + i));
+  const pageIds = nodes.map((n) => n.id);
+  const idSet = new Set(pageIds);
+
+  let rawEdges: unknown[] = [];
+  if (pageIds.length > 0 && typeof cg?.getOutgoingEdgesFrom === "function") {
+    const edges = cg.getOutgoingEdgesFrom(pageIds, edgeKinds);
+    rawEdges = Array.isArray(edges) ? edges : [];
+  }
+  const edges: CodeGraphStructureEdge[] = [];
+  for (const edge of rawEdges) {
+    const e = (edge && typeof edge === "object" ? edge : {}) as Record<string, unknown>;
+    const source = asString(e.source ?? e.from ?? e.sourceId ?? e.source_id);
+    const target = asString(e.target ?? e.to ?? e.targetId ?? e.target_id);
+    if (!idSet.has(source) || !idSet.has(target)) continue;
+    edges.push({
+      source,
+      target,
+      kind: asString(e.kind ?? e.type),
+      line: asNumber(e.line ?? e.startLine ?? e.start_line),
+    });
+  }
+
+  return {
+    nodes,
+    edges,
+    total,
+    truncated: offset + nodes.length < total,
+  };
+}
+
 /**
  * 打开一个已存在的 codegraph 索引。
  */

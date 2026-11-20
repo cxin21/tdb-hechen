@@ -41,6 +41,67 @@ export interface WikiRouteDeps {
   fetcherRegistry?: SourceFetcherRegistry;
 }
 
+const WIKI_GRAPH_FULL_MAX = 200;
+
+function readOptionalInt(
+  body: Record<string, unknown>,
+  name: string,
+  opts: { min: number; max?: number },
+): { value?: number } | { error: string } {
+  const raw = body[name];
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+    return { error: `${name} must be integer` };
+  }
+  if (raw < opts.min) return { error: `${name} must be >= ${opts.min}` };
+  if (opts.max !== undefined && raw > opts.max) return { error: `${name} must be <= ${opts.max}` };
+  return { value: raw };
+}
+
+/**
+ * Page a wiki graph without changing manager.graph().
+ * Omit limit AND node count <= 200 → full graph (existing callers).
+ * community filters first. Edges keep only endpoints present in the returned node set.
+ */
+export function pageWikiGraph(
+  graphData: { nodes: Array<{ community?: unknown }>; edges: Array<{ source: string; target: string }>; communities?: unknown[] },
+  body: Record<string, unknown>,
+): { nodes: unknown[]; edges: unknown[]; communities: unknown[]; total: number; truncated: boolean } | { error: string } {
+  const limitRead = readOptionalInt(body, "limit", { min: 1, max: 200 });
+  if ("error" in limitRead) return limitRead;
+  const offsetRead = readOptionalInt(body, "offset", { min: 0 });
+  if ("error" in offsetRead) return offsetRead;
+
+  let community: string | undefined;
+  if (body.community !== undefined && body.community !== null) {
+    if (typeof body.community !== "string" || !body.community) {
+      return { error: "community must be a non-empty string" };
+    }
+    community = body.community;
+  }
+
+  const allNodes = graphData.nodes ?? [];
+  const filtered = community === undefined
+    ? allNodes
+    : allNodes.filter((n) => String(n.community ?? "") === community);
+  const total = filtered.length;
+
+  const limitOmitted = limitRead.value === undefined;
+  const serveFull = limitOmitted && total <= WIKI_GRAPH_FULL_MAX;
+  const limit = serveFull ? total : (limitRead.value ?? 80);
+  const offset = offsetRead.value ?? 0;
+  const nodes = serveFull ? filtered : filtered.slice(offset, offset + limit);
+  const ids = new Set(nodes.map((n) => String((n as { id?: unknown }).id ?? "")));
+  const edges = (graphData.edges ?? []).filter((e) => ids.has(e.source) && ids.has(e.target));
+  return {
+    nodes,
+    edges,
+    communities: graphData.communities ?? [],
+    total,
+    truncated: !serveFull && offset + nodes.length < total,
+  };
+}
+
 /** Handle WriteOutcome error codes → HTTP response. Returns Response if handled, null otherwise. */
 function maybeWriteError(outcome: unknown): Response | null {
   if (outcome === null) return Response.json(wrapError(404, "wiki not found"), { status: 404 });
@@ -703,10 +764,12 @@ export function createWikiRoutes(deps: WikiRouteDeps): Hono {
     if (!row) return c.json(wrapError(404, "wiki not found"), 404);
 
     if (!wikiCanServeReads(row)) {
-      return c.json(wrapOk({ nodes: [], edges: [], communities: [] }));
+      return c.json(wrapOk({ nodes: [], edges: [], communities: [], total: 0, truncated: false }));
     }
     const graphData = wikiMgr.graph(wikiId);
-    return c.json(wrapOk(graphData));
+    const paged = pageWikiGraph(graphData, body);
+    if ("error" in paged) return c.json(wrapError(400, paged.error), 400);
+    return c.json(wrapOk(paged));
   });
 
   app.post("/search", async (c) => {
