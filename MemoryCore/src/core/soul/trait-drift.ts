@@ -24,6 +24,7 @@ import {
   type AxisVector,
   type SoulAxis,
 } from "./traits.js";
+import type { SoulGateStatBump } from "./types.js";
 
 export interface TraitVote {
   episodeId: string;
@@ -45,7 +46,22 @@ export interface TraitProtocolOutput {
   votes: TraitVote[];
   labelProposals: TraitLabelProposal[];
   invalid: number;
+  /**
+   * P1（2026-11-20）：判侧产出的「标签提案」里被确定性校验丢掉了几条。
+   *
+   * 单列的理由：`invalid` 把坏票和坏提案混成一个数，生产上「标签没长」就分不清是判侧没产提案、
+   * 还是产了被丢（静默丢掉=不可观测）。这项单独计数，由 worker 用
+   * `traitProtocolGateBumps()` 以 code `label_proposal_invalid` 写进 soul_gate_stats。
+   * 语义不变：它仍是 `invalid` 的一部分（invalid = 坏票 + 坏提案）。
+   *
+   * 可选且为 0 时不出现：老实现（判侧早退只给 invalid）与既有逐字段断言保持原样，
+   * 读侧一律按 `?? 0`（见 `traitProtocolGateBumps`）。
+   */
+  invalidLabelProposals?: number;
 }
+
+/** P1：判侧标签提案被丢弃的门统计 code（soul_gate_stats 按 day/code/layer 聚合，与候选拒收同口径）。 */
+export const LABEL_PROPOSAL_INVALID_CODE = "label_proposal_invalid";
 
 export interface TraitAxisDrift {
   axis: SoulAxis;
@@ -206,11 +222,18 @@ function toAxisVector(raw: unknown): AxisVector | null {
   return any ? normalizeDirection(v) : null;
 }
 
-/** [TRAIT-PROTOCOL v1] 输出解析：所有字段都过确定性校验，坏行丢弃并计数。 */
+/**
+ * [TRAIT-PROTOCOL v1] 输出解析：所有字段都过确定性校验，坏行丢弃并计数。
+ *
+ * P1（2026-11-20）：坏票与坏提案分别计数（`invalid` 仍是两者之和，投票/标签语义不变），
+ * 坏提案额外出 `invalidLabelProposals`，供 `traitProtocolGateBumps()` 进 soul_gate_stats——
+ * 否则「判侧产了提案但被判据丢掉」在生产上完全看不见。
+ */
 export function parseTraitProtocolOutput(raw: string): TraitProtocolOutput {
   const json = extractJson(raw) as { votes?: unknown; label_proposals?: unknown; labelProposals?: unknown } | null;
   if (!json || typeof json !== "object") return { votes: [], labelProposals: [], invalid: 1 };
   let invalid = 0;
+  let invalidLabelProposals = 0;
   const votes: TraitVote[] = [];
   for (const item of Array.isArray(json.votes) ? json.votes : []) {
     const v = item as Record<string, unknown>;
@@ -241,6 +264,7 @@ export function parseTraitProtocolOutput(raw: string): TraitProtocolOutput {
       : [];
     if (label === "" || label.length > 8 || definition === "" || !direction || evidenceIds.length === 0) {
       invalid += 1;
+      invalidLabelProposals += 1;
       continue;
     }
     labelProposals.push({
@@ -251,7 +275,39 @@ export function parseTraitProtocolOutput(raw: string): TraitProtocolOutput {
       gloss: typeof p.gloss === "string" ? p.gloss.slice(0, 40) : undefined,
     });
   }
-  return { votes, labelProposals, invalid };
+  return {
+    votes,
+    labelProposals,
+    invalid,
+    // 为 0 时不出现：老断言按逐字段 toEqual 比较，缺字段即 0（见接口注释）。
+    ...(invalidLabelProposals > 0 ? { invalidLabelProposals } : {}),
+  };
+}
+
+/**
+ * P1：把判侧解析结果折算成 soul_gate_stats 的增量行（与 worker 里 mergeCandidates 的
+ * `gateStats` 同一形状 / 同一个计数器工具 `store.bumpSoulGateStats`，不另开通道）。
+ *
+ * 纯函数：只决定「该 +1 哪个 code」，写库由调用方做（store 不在本模块的依赖里）。
+ * 用法（worker 侧）：
+ *   const bumps = traitProtocolGateBumps(judged, { day: now.slice(0, 10), at: now });
+ *   if (bumps.length > 0) await store.bumpSoulGateStats(deps.tenant, bumps);
+ */
+export function traitProtocolGateBumps(
+  out: Pick<TraitProtocolOutput, "invalidLabelProposals">,
+  opts: { day: string; at: string; layer?: string },
+): SoulGateStatBump[] {
+  const count = out.invalidLabelProposals ?? 0;
+  if (!Number.isFinite(count) || count <= 0) return [];
+  return [
+    {
+      day: opts.day,
+      code: LABEL_PROPOSAL_INVALID_CODE,
+      layer: opts.layer ?? "identity",
+      count: Math.floor(count),
+      at: opts.at,
+    },
+  ];
 }
 
 export interface TraitLabelRow {

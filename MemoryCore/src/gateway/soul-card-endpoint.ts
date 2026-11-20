@@ -250,7 +250,10 @@ export async function handleSoulCardRoute(
         store,
         tenant,
         ...(readAgentProfile ? { readAgentProfile } : {}),
-        persist: false,
+        // 默认 persist:false —— GET 无副作用是对外契约（card-service.ts:39-40）；卡正文含随时钟衰减的心境行，
+        // 所以快照正文来自 tick、未必等于这一刻取到的正文（v1221 日志 hash 因此无法复算）。
+        // ?audit=1 是显式审计开关：只有它会把「本次真正返回的正文」落一行快照，供事后按 hash 复算。
+        persist: url.searchParams.get("audit") === "1",
         ...(persons === undefined ? {} : { persons }),
       });
       sendJson(res, 200, {

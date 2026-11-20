@@ -4,10 +4,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  LABEL_PROPOSAL_INVALID_CODE,
   driftTraits,
   parseTraitProtocolOutput,
   resolveLabelProposals,
   seedLabelRows,
+  traitProtocolGateBumps,
   type TraitLabelProposal,
   type TraitVote,
 } from "../trait-drift.js";
@@ -159,7 +161,12 @@ describe("parseTraitProtocolOutput：[TRAIT-PROTOCOL v1]", () => {
   });
 
   it("非 JSON 输入返回空且 invalid=1", () => {
-    expect(parseTraitProtocolOutput("模型跑飞了")).toEqual({ votes: [], labelProposals: [], invalid: 1 });
+    // P1：解析层面就失败时没有「提案被丢」的信息，坏提案计数不出现（缺字段即 0，同老断言）。
+    expect(parseTraitProtocolOutput("模型跑飞了")).toEqual({
+      votes: [],
+      labelProposals: [],
+      invalid: 1,
+    });
   });
 });
 
@@ -231,3 +238,56 @@ describe("resolveLabelProposals：余弦去重（判据 7）", () => {
     expect(res.admitted.map((r) => r.gloss)).toEqual(["笑".repeat(40)]);
   });
 });
+
+describe("P1：判侧标签提案被丢弃要可观测（soul_gate_stats code=label_proposal_invalid）", () => {
+  const day = "2026-11-20";
+  const at = "2026-11-20T10:00:00.000Z";
+  const good = {
+    label: "较真",
+    definition: "对细节反复核对，不肯放过",
+    direction: { warmth: 0, agency: 0, rigor: 1, openness: 0, stability: 0, boundary: 0 },
+    evidence_ids: ["ep-1", "ep-2", "ep-3"],
+  };
+  /** 只差证据（evidence_ids 为空）→ 确定性校验必拒。 */
+  const bad = { ...good, evidence_ids: [] as string[] };
+
+  it("一个坏提案：invalid 与 invalidLabelProposals 各 +1，坏提案不落进 proposals", () => {
+    const out = parseTraitProtocolOutput(JSON.stringify({ votes: [], label_proposals: [bad] }));
+    expect(out.labelProposals).toEqual([]);
+    expect(out.invalid).toBe(1);
+    expect(out.invalidLabelProposals).toBe(1);
+  });
+
+  it("好提案不进门统计：invalidLabelProposals=0，也产不出 bump 行", () => {
+    const out = parseTraitProtocolOutput(JSON.stringify({ votes: [], label_proposals: [good] }));
+    expect(out.labelProposals).toHaveLength(1);
+    expect(out.invalid).toBe(0);
+    // 为 0 时字段不出现（老断言逐字段 toEqual 兼容）；缺字段即 0。
+    expect(out.invalidLabelProposals).toBeUndefined();
+    expect(traitProtocolGateBumps(out, { day, at })).toEqual([]);
+  });
+
+  it("bump 行就是 soul_gate_stats 的计数形状：day/code/layer/count/at，code=label_proposal_invalid", () => {
+    const out = parseTraitProtocolOutput(JSON.stringify({ votes: [], label_proposals: [bad, bad, good] }));
+    expect(out.invalidLabelProposals).toBe(2);
+    expect(traitProtocolGateBumps(out, { day, at })).toEqual([
+      { day, code: LABEL_PROPOSAL_INVALID_CODE, layer: "identity", count: 2, at },
+    ]);
+    expect(LABEL_PROPOSAL_INVALID_CODE).toBe("label_proposal_invalid");
+  });
+
+  it("坏票不算坏提案：票被丢只走 invalid，label 门统计保持 0（不改投票语义）", () => {
+    const out = parseTraitProtocolOutput(
+      JSON.stringify({ votes: [{ episode_id: "ep-1", axis: "rigor", delta: 3 }], label_proposals: [good] }),
+    );
+    expect(out.votes).toEqual([]);
+    expect(out.invalid).toBe(1);
+    expect(out.invalidLabelProposals).toBeUndefined();
+    expect(traitProtocolGateBumps(out, { day, at })).toEqual([]);
+  });
+
+  it("缺字段的老实现（判侧早退只给 invalid）按 0 处理，不抛错", () => {
+    expect(traitProtocolGateBumps({}, { day, at })).toEqual([]);
+  });
+});
+

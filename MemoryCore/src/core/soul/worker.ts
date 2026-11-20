@@ -73,6 +73,7 @@ import { runValueMaintenance, type ValueMaintenanceResult } from "./value-mainte
 import { SEED_LABELS, TRAIT_LABEL_RETIRE_DAYS, TRAIT_PROTOCOL_VERSION, emptyAxisVector, l1Norm, planStaleLabels, seedStateFromSeeds, type AxisVector } from "./traits.js";
 import { assembleSoulCard } from "./card-service.js";
 import { recordSoulDrift } from "./observation.js";
+import { traitProtocolGateBumps } from "./trait-drift.js";
 import {
   driftTraits,
   resolveLabelProposals,
@@ -1706,6 +1707,12 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             { changed: drift.axes.filter((a) => a.delta !== 0).length, rejected: drift.rejected },
             now,
           );
+          // 坏提案（解析器里静默 invalid += 1）要有可查计数：否则「标签没长」分不清是判侧没产票还是产了被挡。
+          // 与候选拒收、label_* 同口径（同一天/码/层聚合，落 soul_gate_stats），不逐条写账本。
+          const proposalBumps = traitProtocolGateBumps(judged, { day: now.slice(0, 10), at: now, layer: "identity" });
+          if (proposalBumps.length > 0 && typeof store.bumpSoulGateStats === "function") {
+            await Promise.resolve(store.bumpSoulGateStats(deps.tenant, proposalBumps));
+          }
           const lab = resolveLabelProposals(judged.labelProposals, labels, { now });
           // 标签提案被拒要有可查记录：否则「标签没长」分不清是判侧没产票还是产了被挡。
           // 与候选拒收同口径（P0-2）——按 (day, code, layer) 聚合，不逐条写账本。

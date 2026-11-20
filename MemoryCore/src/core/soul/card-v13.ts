@@ -24,8 +24,12 @@ import { CARD_READER_NOTE } from "./traits.js";
 /** v13 版本号：卡尾注释与 payload 都写它，读侧据此区分两套渲染器。 */
 export const CARD_V13_SCHEMA_VERSION = "13";
 
-/** 整卡硬顶（spec §8）：目标 1900–2250，硬顶 2400。 */
-export const CARD_V13_MAX_CHARS = 2400;
+/**
+ * 整卡硬顶（spec §8 原为 2400；P2 扩容见下）：目标 1900–2250，硬顶 2480。
+ * 预算口径：单块上限之和（见 CARD_V13_BLOCK_MAX_CHARS）= 2400，块标题与块间空行 ≤ 80，2400 + 80 = 2480。
+ * 加块上限时必须同步加这里，否则「各块上限之和 + 标题开销 > 总上限」会让整卡硬顶失真。
+ */
+export const CARD_V13_MAX_CHARS = 2480;
 /** 身份段硬顶（注入在最前面的稳定段）。 */
 export const CARD_V13_IDENTITY_MAX_CHARS = 1000;
 /** 末尾锚硬顶（每轮末尾的极短复述）。 */
@@ -62,18 +66,22 @@ export const CARD_V13_BLOCK_TITLES: Record<CardV13BlockKey, string> = {
 };
 
 /**
- * 单块上限（spec §8，合计 2180，留 220 字给块标题与过渡）。
+ * 单块上限（spec §8，合计 2400，留 80 字给块标题与块间空行；2400 + 80 ≤ CARD_V13_MAX_CHARS）。
  * 注意这是「超过就先丢这一块的后几行」，不是硬截断：红线类行受保护，见 `capBlockLines`。
+ *
+ * P2（2026-11-20）：character 300→400、boundaries 180→230。原值下 identity 层原句组成的
+ * 行为锚只能落 3 行（「21 条只渲染 3 条」），边界块也只能装 2 条（boundary 层上限 2 条 × 单条上限）。
+ * 各 +100/+50 后分别多放 1–2 行 / 1 行；总上限同步 2400→2480，保证「各块上限之和 ≤ 总上限」。
  */
 export const CARD_V13_BLOCK_MAX_CHARS: Record<CardV13BlockKey, number> = {
   firstLook: 220,
   life: 260,
-  character: 300,
+  character: 400,
   voice: 220,
   us: 320,
   now: 220,
   memory: 300,
-  boundaries: 180,
+  boundaries: 230,
   recent: 230,
 };
 
@@ -955,7 +963,10 @@ function memoryBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block
   return blockOf("memory", [...calibration, ...selfLines], warnings, 0, confidence ? { confidence } : undefined);
 }
 
-/** 边界：boundary 层原句（≤2 条）+ 红线逐条 verbatim（受保护，永不丢）。 */
+/**
+ * 边界：boundary 层原句（≤3 条，P2 由 2 提到 3：边界是最该完整的块）+
+ * 红线逐条 verbatim（受保护，永不丢）。
+ */
 function boundariesBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block | null {
   const redlineWarnings: string[] = [];
   const redlines = clampRedlines(
@@ -964,7 +975,7 @@ function boundariesBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13B
   );
   warnings.push(...redlineWarnings);
   const boundaryLines = (input.lines?.boundary ?? [])
-    .slice(0, 2)
+    .slice(0, 3)
     .map((line) => ({ text: speakerSafe(line.text), ...(line.evidenceIds?.length ? { evidenceIds: line.evidenceIds } : {}) }));
   const redlineLines = redlines.map((text) => ({ text }));
   return blockOf("boundaries", [...boundaryLines, ...redlineLines], warnings, redlineLines.length);
@@ -1016,7 +1027,7 @@ function renderV13Body(blocks: ReadonlyArray<BuiltV13Block>): string {
 /**
  * 渲染 v13 卡。纯函数、无配置、无 I/O：
  *  - hash = sha256(读法常量 + 正文)，沿用 v12 口径；
- *  - 正文超 2400 按 CARD_V13_BUDGET_STEPS 让位（先丢块，再把记得/性格减行），红线永不丢；
+ *  - 正文超 CARD_V13_MAX_CHARS（2480）按 CARD_V13_BUDGET_STEPS 让位（先丢块，再把记得/性格减行），红线永不丢；
  *  - 同一输入两次调用必须逐字节一致（测试锁）。
  */
 export function renderPersonaCardV13(input: SoulCardV13Input): PersonaCardV13Snapshot {

@@ -66,6 +66,26 @@ describe("GET /v3/soul/card · /v3/soul/turn（S2 注入数据源）", () => {
     expect(writeSoulSnapshot).not.toHaveBeenCalled();
   });
 
+  it("?audit=1：显式审计才把本次真正返回的正文落一行快照（正文/hash 与响应逐字一致）", async () => {
+    const writeSoulSnapshot = vi.fn(async () => {});
+    const store = {
+      readLastSoulSnapshot: async () => null,
+      listSoulPersona: async () => [],
+      readSoulTraitState: async () => null,
+      listSoulTraitLabels: async () => [],
+      writeSoulSnapshot,
+    };
+    const { sendJson } = await call("/v3/soul/card?team=t&user=u&agent=a&audit=1", "GET", store);
+    const [, status, payload] = sendJson.mock.calls[0]!;
+    expect(status).toBe(200);
+    const data = (payload as { data: Record<string, unknown> }).data;
+    expect(writeSoulSnapshot).toHaveBeenCalledTimes(1);
+    const [, snap] = writeSoulSnapshot.mock.calls[0]! as unknown as [unknown, { contentHash: string; payloadJson: string }];
+    // 快照必须记这一次渲染的结果，否则事后无法按 hash 复算（P1-7）。
+    expect(snap.contentHash).toBe(data.hash);
+    expect(JSON.parse(snap.payloadJson).text).toBe(data.text);
+  });
+
   it("textHash：卡正文的 SHA-256（64 hex），两次调用稳定，旧 hash 口径不变", async () => {
     const store = {
       readLastSoulSnapshot: async () => null,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CARD_V13_ANCHOR_MAX_CHARS,
+  CARD_V13_BLOCK_MAX_CHARS,
   CARD_V13_BLOCK_ORDER,
   CARD_V13_IDENTITY_MAX_CHARS,
   CARD_V13_MAX_CHARS,
@@ -319,3 +320,62 @@ describe("hash 与预算", () => {
     expect(card.blocks.map((block) => block.id)).toEqual([...CARD_V13_BLOCK_ORDER]);
   });
 });
+
+describe("P2：块容量（边界 3 条 / 性格多 1–2 行 / 各块上限之和 ≤ 整卡上限）", () => {
+  it("边界块放得下 3 条 boundary 原句（红线仍 verbatim），第 4 条仍被裁掉", () => {
+    const boundary = Array.from({ length: 4 }, (_, i) => ({
+      text: `边界第${i + 1}条：不属于我写域的模块就不动手，只报断点`,
+    }));
+    const card = renderPersonaCardV13(baseInput({ lines: { ...baseInput().lines, boundary } }));
+    for (let i = 1; i <= 3; i += 1) expect(card.text).toContain(`边界第${i}条：`);
+    expect(card.text).not.toContain("边界第4条：");
+    // 红线与边界同块且受保护：不能因为多放一条边界就把红线挤掉。
+    expect(card.text).toContain("不假装知道没验证过的事实");
+    expect(blockById(card, "boundaries")!.chars).toBeLessThanOrEqual(CARD_V13_BLOCK_MAX_CHARS.boundaries);
+  });
+
+  it("identity 原句组成的性格块从 3 行放宽到 4 行（单块上限 300→400）", () => {
+    const identity = Array.from({ length: 6 }, (_, i) => ({
+      text: `行为锚第${i + 1}条：` + "先复验再改口不解释".repeat(10).slice(0, 90),
+    }));
+    const card = renderPersonaCardV13(
+      baseInput({ lines: { ...baseInput().lines, identity, values: [], voice: [] } }),
+    );
+    for (let i = 1; i <= 4; i += 1) expect(card.text).toContain(`行为锚第${i}条：`);
+    expect(card.text).not.toContain("行为锚第5条：");
+    const character = blockById(card, "character")!;
+    expect(character.chars).toBeGreaterThan(300); // 旧上限放不下的那行现在进得来
+    expect(character.chars).toBeLessThanOrEqual(CARD_V13_BLOCK_MAX_CHARS.character);
+  });
+
+  it("预算自洽：各块上限之和 + 标题开销 ≤ 整卡上限", () => {
+    const sum = Object.values(CARD_V13_BLOCK_MAX_CHARS).reduce((s, n) => s + n, 0);
+    expect(sum).toBe(2400);
+    expect(sum).toBeLessThanOrEqual(CARD_V13_MAX_CHARS);
+    // 9 个块标题最长的「最近的变化」5 字，加标题换行与块间空行，80 字足够。
+    expect(CARD_V13_MAX_CHARS - sum).toBeGreaterThanOrEqual(80);
+  });
+
+  it("扩容后整卡仍受硬顶约束：中长内容不越界，越界仍按让位顺序丢块", () => {
+    const mid = (n: number) => "先复验再改口，不解释".repeat(30).slice(0, n);
+    const card = renderPersonaCardV13(
+      baseInput({
+        profile: {
+          ...baseInput().profile,
+          selfImage: "我是小满。" + mid(240) + "。" + mid(240) + "。",
+        },
+        lines: {
+          ...baseInput().lines,
+          identity: Array.from({ length: 5 }, (_, i) => ({ text: `行为锚第${i + 1}条：` + mid(90) })),
+          boundary: Array.from({ length: 3 }, (_, i) => ({ text: `边界第${i + 1}条：` + mid(60) })),
+          self: Array.from({ length: 3 }, (_, i) => ({ text: `我没守住第${i + 1}件：` + mid(90) })),
+          narrative: Array.from({ length: 2 }, (_, i) => ({ text: `我放弃的是第${i + 1}件：` + mid(90) })),
+        },
+      }),
+    );
+    expect(bodyOf(card.text).length).toBeLessThanOrEqual(CARD_V13_MAX_CHARS);
+    // 边界是红线侧：无论怎么让位，3 条边界都还在。
+    for (let i = 1; i <= 3; i += 1) expect(card.text).toContain(`边界第${i}条：`);
+  });
+});
+
