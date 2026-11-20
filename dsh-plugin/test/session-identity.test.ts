@@ -846,6 +846,62 @@ describe('P0-2 self-heal: transport skip + empty inherited branch', () => {
     expect(h.store.get('sess-1')).toMatchObject({ source: 'skipped', reason: TRANSPORT_SKIP, at: NOW });
   });
 
+  it('an AMBIGUOUS candidates result falls back to the one triple this host already picked', async () => {
+    const h = harness({
+      now: () => NOW,
+      // Two teams, neither matching BASE.teamId -> unambiguousTriple gives up.
+      candidates: async () => ({
+        kind: 'ok',
+        userId: 'usr-a',
+        teams: [{ teamId: 'team-a' }, { teamId: 'team-b' }],
+        agents: [{ agentId: 'agt-a' }, { agentId: 'agt-b' }],
+      }),
+    });
+    // What the user actually chose on this machine, long before the skip.
+    h.store.set('sess-picked', {
+      teamId: 'team-b', agentId: 'agt-b', userId: 'usr-a', source: 'picked', at: NOW - 1000,
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: TEN_MIN_AGO,
+    });
+
+    await h.step();
+
+    // Honouring the user's earlier pick is not guessing; the skip becomes a binding.
+    expect(h.store.get('sess-1')).toMatchObject({
+      teamId: 'team-b', agentId: 'agt-b', userId: 'usr-a', source: 'recovered', at: NOW,
+    });
+    expect(h.ask).not.toHaveBeenCalled();
+  });
+
+  it('two DIFFERENT picked triples keep the skip and record the ambiguity', async () => {
+    const h = harness({
+      now: () => NOW,
+      candidates: async () => ({
+        kind: 'ok',
+        userId: 'usr-a',
+        teams: [{ teamId: 'team-a' }, { teamId: 'team-b' }],
+        agents: [{ agentId: 'agt-a' }, { agentId: 'agt-b' }],
+      }),
+    });
+    h.store.set('sess-picked-1', {
+      teamId: 'team-a', agentId: 'agt-a', userId: 'usr-a', source: 'picked', at: NOW - 2000,
+    });
+    h.store.set('sess-picked-2', {
+      teamId: 'team-b', agentId: 'agt-b', userId: 'usr-a', source: 'picked', at: NOW - 1000,
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: TEN_MIN_AGO,
+    });
+
+    await h.step();
+
+    // Two real user decisions cannot be merged by the plugin.
+    expect(h.store.get('sess-1')).toMatchObject({
+      source: 'skipped', lastHealProbe: 'candidates are ambiguous',
+    });
+  });
+
   it('a FAILED retry keeps skipped and only pushes at (no network on every tick)', async () => {
     let calls = 0;
     const h = harness({

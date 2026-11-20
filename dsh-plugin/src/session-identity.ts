@@ -304,6 +304,14 @@ export class SessionIdentityStore {
     return this.sessions.size;
   }
 
+  /**
+   * Every remembered binding (P0-2 收口：歧义兜底要看得到「本机历史上用户选过什么」)。
+   * Returns the live objects; callers must not mutate them.
+   */
+  values(): SessionBinding[] {
+    return [...this.sessions.values()];
+  }
+
   private evict(): void {
     if (this.sessions.size <= MAX_STORED_SESSIONS) return;
     const ordered = [...this.sessions.entries()].sort((a, b) => a[1].at - b[1].at);
@@ -803,6 +811,30 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
   };
 
   /**
+   * P0-2 收口：歧义时的兜底 —— 用**本机历史上用户亲手选过**的三元组。
+   *
+   * 只在 unambiguousTriple 给不出答案、而本机同 user 恰好只有一个 picked/recovered
+   * 三元组时使用：那是用户在这台机器上已经做过的决定，不是替他猜。选过两个以上
+   * （不同会话要不同 agent）就继续 stays skipped —— 合并它们才是真的编造。
+   */
+  const previouslyChosenTriple = (
+    userId: string,
+  ): { teamId: string; agentId: string; userId: string } | undefined => {
+    const seen = new Map<string, { teamId: string; agentId: string; userId: string }>();
+    for (const binding of deps.store.values()) {
+      if (binding.userId !== userId) continue;
+      if (binding.source !== 'picked' && binding.source !== 'recovered') continue;
+      seen.set(`${binding.teamId}|${binding.agentId}`, {
+        teamId: binding.teamId,
+        agentId: binding.agentId,
+        userId: binding.userId,
+      });
+    }
+    if (seen.size !== 1) return undefined;
+    return [...seen.values()][0];
+  };
+
+  /**
    * P0-2：把一个「因传输层失败被永久跳过」的会话重新绑上。
    *
    * 只走 candidates（复用 candidatesWithOneRetry 的那一次重试），不弹窗：会话已经
@@ -817,7 +849,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     // Headless composition: no key to list teams with, so no probe at all.
     if (userKey === undefined) return;
     const first = await candidatesWithOneRetry({ userKey, timeoutMs: HEAL_PROBE_TIMEOUT_MS });
-    const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
+    const resolved = first.kind === 'ok'
+      ? (await unambiguousTriple(first, userKey)) ?? previouslyChosenTriple(first.userId)
+      : undefined;
     if (resolved === undefined) {
       const probe = first.kind === 'ok' ? 'candidates are ambiguous' : first.reason;
       deps.store.set(sessionId, { ...existing, at: now(), lastHealAt: now(), lastHealProbe: probe });
@@ -837,7 +871,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     const userKey = await deps.resolveUserKey();
     if (userKey === undefined) return;
     const first = await candidatesWithOneRetry({ userKey, timeoutMs: HEAL_PROBE_TIMEOUT_MS });
-    const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
+    const resolved = first.kind === 'ok'
+      ? (await unambiguousTriple(first, userKey)) ?? previouslyChosenTriple(first.userId)
+      : undefined;
     if (resolved === undefined) {
       const probe = first.kind === 'ok' ? 'candidates are ambiguous' : first.reason;
       deps.store.set(sessionId, { ...existing, at: now(), lastHealAt: now(), lastHealProbe: probe });

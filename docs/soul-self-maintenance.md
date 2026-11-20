@@ -2041,6 +2041,7 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 | R33-7 | `start-tdb-supervised.ps1` 内 clamp `if ($MaxRestarts -lt 10) { $MaxRestarts = 10 }`（运行环境，不进 git） | 删该行；注意 `D:/TDB/etc/RESTART-SOP.md:17` 规定预算是调用方传参（DSH bundle 传 3），脚本默认值不足以覆盖 |
 | R33-9 | `memory-client.ts` GET 面的 catch 也带 `error.cause`（verifyUserKey/listTeams/listAgents 走这条，之前只有 POST 面带） | 删该段 cause 拼接，恢复单行 detail |
 | R33-10 | `session-identity.ts` 增 `lastHealAt`/`lastHealProbe`（type + load 透传 + 两条自愈失败分支写入） | 删两个字段与三处写入 |
+| R33-11 | `session-identity.ts` 增 `SessionIdentityStore.values()` 与 `previouslyChosenTriple()`：`unambiguousTriple` 判歧义时，若本机同 user 恰好只有一个 `picked`/`recovered` 三元组就用它（+2 测试） | 删 `values()`/`previouslyChosenTriple()` 与两处 `?? previouslyChosenTriple(...)` |
 
 ### 5.51.8 仍未闭环（如实）
 
@@ -2049,7 +2050,7 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 3. **P2-10**：41 矩阵 8 条未验证（A4/B5/B6/B8/B9/B10/B12/E2）。B 组缺 fixture（承诺三态、断联人、标签生长语料），E2 的 `valid_to` 语义是产品决策（当前失效靠 `state=degraded`，`planLifecycle` 不写 `valid_to`）。
 4. **identity 默认绑定**：产品决策（用户 2026-11-19 明确选择「按需绑定」），本节的三条自愈只在「曾经尝试过、被传输层挡掉」的场景补位，不改变默认。
 5. **历史快照不可复算**：v1221 及更早的取卡正文没有留档，`?audit=1` 只对之后的取卡有效。
-6. **P0-2 自愈仍未观测到成功**：重启后 `recovered` 0 条，但**传输层已排除**——Core 日志 `D:/TDB/data/logs/tdai-core-20261120-110734.out.log.tee.log` 计到 36 次 `/v3/meta/auth/verify`，并在 11:22:32 连续出现 `/v3/meta/team/list`、`/v3/meta/agent/list user=usr-2m7b1144d9` 的 200 响应（`success:true`，`v3-meta-router.ts`），说明自愈探针走到了第三段。剩下两种可能：①`unambiguousTriple()` 因账号下多 team/多 agent 返回 undefined —— 宿主配置只有 `userKeyRef: "TDAI_USER_KEY"`（`C:/Users/Administrator/.dsh/profiles/desktop/cordis.patch.yml:215`），没有 base `teamId`/`agentId` 可收敛；②运行中的宿主仍挂旧模块，`recovered` 分支没跑到。两者靠 `lastHealProbe`（R33-10）区分，**需要一次宿主重启**。若确认是歧义，两条路：在 profile 里写死 base `teamId`/`agentId`（产品决策，不擅自改），或让自愈收敛到「本机历史上唯一 pick 过的三元组」（本轮未做）。身份库当刻 200 条 = inherited 173 / skipped 19 / picked 3 / user-declined 5，历史绑定过的三元组只有一个：`team-2k12lgb650|usr-2m7b1144d9|agt-2m7buribzz`（3 条 picked）。
+6. **P0-2 自愈：歧义已定性，兜底已实现，待一次宿主重启观测**（11:49 重启后读数）。传输层彻底排除：本轮 Core 日志计到 36 次 `/v3/meta/auth/verify`、并记下 11:22:32 的 `/v3/meta/team/list`、`/v3/meta/agent/list user=usr-2m7b1144d9` 均 200；身份库里 `lastHealProbe` 现为 **3 条 `candidates are ambiguous`、0 条 transport failure** —— 自愈探针成功走到 agent 段，卡在 `unambiguousTriple()`：宿主只配了 `userKeyRef: "TDAI_USER_KEY"`（`C:/Users/Administrator/.dsh/profiles/desktop/cordis.patch.yml:215`），没有 base `teamId`/`agentId`，多 team/多 agent 账号永远收敛不了。**处置（R33-11）**：歧义时改用本机同 user 唯一 `picked`/`recovered` 三元组（那是用户在这台机器上做过的决定，不是猜；两个以上不同三元组仍保持 skipped 并记 `lastHealProbe`）。**现状**：`recovered` 仍 0（本机历史唯一三元组 `team-2k12lgb650|usr-2m7b1144d9|agt-2m7buribzz` 已可用于兜底，但要等宿主重启加载 11:52:26 的 dist 才会跑）。另：`skipped` 19 条里只有 3 条被探过，其余因 `SKIP_RETRY_MIN_AGE_MS` 与「会话未被再次打开」还没轮到。
 7. **supervisor 预算**：R33-7 的 clamp 已在 `D:/TDB/etc/start-tdb-supervised.ps1` 生效；当刻 `GET :8446/status` 读到 `restartsUsed 0 / maxRestarts 10`（supervisorPid 20460、hostPid 33916、startedAt 2026-11-20T11:07:34.673+08，三服务 healthy）。注意 `D:/TDB/etc` 不在 git 仓库内，属本机配置，换机要重做。
 
 ## 6. 排查清单
