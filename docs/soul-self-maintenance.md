@@ -2049,9 +2049,26 @@ merge 脚本另加 fail-closed：`l1_archive` 主键是 `record_id` 且原用 `I
 2. **P2-9**：`stats.proof.shape` 与 `snapshot.provenanceEvidence` 仍是「待部署」——前者需要已绑定身份的会话段读（本会话树 176 条继承空身份）、后者需要 >5 出处的真实条目。
 3. **P2-10**：41 矩阵 8 条未验证（A4/B5/B6/B8/B9/B10/B12/E2）。B 组缺 fixture（承诺三态、断联人、标签生长语料），E2 的 `valid_to` 语义是产品决策（当前失效靠 `state=degraded`，`planLifecycle` 不写 `valid_to`）。
 4. **identity 默认绑定**：产品决策（用户 2026-11-19 明确选择「按需绑定」），本节的三条自愈只在「曾经尝试过、被传输层挡掉」的场景补位，不改变默认。
-5. **历史快照不可复算**：v1221 及更早的取卡正文没有留档，`?audit=1` 只对之后的取卡有效。
+6. **P0-2 自愈：已闭环**（11:54 生产读数）。定性过程：Core 日志 36 次 `/v3/meta/auth/verify` + 11:22:32 的 `team/list`/`agent/list` 均 200 → `lastHealProbe` 出现 3 条 `candidates are ambiguous`、0 条 transport → 真因是多 team/多 agent 而宿主无 base `teamId`/`agentId`（只配 `userKeyRef: "TDAI_USER_KEY"`，`C:/Users/Administrator/.dsh/profiles/desktop/cordis.patch.yml:215`）。处置 R33-11：歧义时改用本机同 user 唯一 `picked`/`recovered` 三元组。**结果：`recovered` 已出现 2 条**（session-9b40 @11:53:07Z、session-cbe6 @11:54:05Z，均 `team-2k12lgb650|usr-2m7b1144d9|agt-2m7buribzz`），`skipped` 19 → 17，`transportFailures` 0；`lastHealProbe` 只剩 1 条 `candidates are ambiguous`，时间戳 11:45:46 —— 属**兜底上线前的旧探针**，下次 stale 重试即会走兜底。验收命令见 §5.51.9。
 6. **P0-2 自愈：歧义已定性，兜底已实现，待一次宿主重启观测**（11:49 重启后读数）。传输层彻底排除：本轮 Core 日志计到 36 次 `/v3/meta/auth/verify`、并记下 11:22:32 的 `/v3/meta/team/list`、`/v3/meta/agent/list user=usr-2m7b1144d9` 均 200；身份库里 `lastHealProbe` 现为 **3 条 `candidates are ambiguous`、0 条 transport failure** —— 自愈探针成功走到 agent 段，卡在 `unambiguousTriple()`：宿主只配了 `userKeyRef: "TDAI_USER_KEY"`（`C:/Users/Administrator/.dsh/profiles/desktop/cordis.patch.yml:215`），没有 base `teamId`/`agentId`，多 team/多 agent 账号永远收敛不了。**处置（R33-11）**：歧义时改用本机同 user 唯一 `picked`/`recovered` 三元组（那是用户在这台机器上做过的决定，不是猜；两个以上不同三元组仍保持 skipped 并记 `lastHealProbe`）。**现状**：`recovered` 仍 0（本机历史唯一三元组 `team-2k12lgb650|usr-2m7b1144d9|agt-2m7buribzz` 已可用于兜底，但要等宿主重启加载 11:52:26 的 dist 才会跑）。另：`skipped` 19 条里只有 3 条被探过，其余因 `SKIP_RETRY_MIN_AGE_MS` 与「会话未被再次打开」还没轮到。
 7. **supervisor 预算**：R33-7 的 clamp 已在 `D:/TDB/etc/start-tdb-supervised.ps1` 生效；当刻 `GET :8446/status` 读到 `restartsUsed 0 / maxRestarts 10`（supervisorPid 20460、hostPid 33916、startedAt 2026-11-20T11:07:34.673+08，三服务 healthy）。注意 `D:/TDB/etc` 不在 git 仓库内，属本机配置，换机要重做。
+
+### 5.51.9 身份自愈验收（一条命令，不需要任何会话上下文）
+
+```bash
+# 只报告（退出码 0）
+node dsh-plugin/scripts/check-identity-heal.mjs
+# 要求至少 N 条 recovered，否则退出码 1（CI / 交付验收用）
+node dsh-plugin/scripts/check-identity-heal.mjs --expect-recovered 1
+```
+
+读的是插件持久化状态 `C:/Users/Administrator/.dsh/agemem/session-identity.json`（可用 `--state` 换路径），输出：`bySource`（inherited/skipped/picked/user-declined/recovered）、`lastHealProbe` 分布、`recovered` 明细、`chosenTriples`（兜底可用的唯一三元组）、`transportFailures`、`verdict`。
+
+判读：
+
+- `transportFailures` 必须为 0（R33-8/9 之后仍 >0 = 传输层回归）；
+- `recovered` 出现即证明自愈打通；长期停在 0 且 `lastHealProbe` 全是 `candidates are ambiguous` = 兜底未生效或账号确有多个不同三元组（此时保持 skipped 是正确行为）；
+- 2026-11-20 11:54 基线：total 200、inherited 173 / skipped 17 / picked 3 / user-declined 5 / **recovered 2**、ambiguity 1（11:45:46 旧探针）、transport 0、chosenTriples 唯一。
 
 ## 6. 排查清单
 
