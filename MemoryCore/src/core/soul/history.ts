@@ -370,6 +370,11 @@ export function historyItemNeedsUpdate(prev: PersonaItem | undefined, next: Pers
   return prevMeta?.fulfillment !== nextMeta?.fulfillment;
 }
 
+export function isNewEvidenceDay(prev: PersonaItem, next: PersonaItem): boolean {
+  const seen = new Set(prev.evidenceDays ?? []);
+  return (next.evidenceDays ?? []).some((day) => !seen.has(day));
+}
+
 export function historyToItems(facts: HistoryFact[], now: string): PersonaItem[] {
   return facts.map((f) => ({
     // 文案进 hash：同一事件换了写法就是新事实，旧文案会退出注入，而不是被幂等更新挡住。

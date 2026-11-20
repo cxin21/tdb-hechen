@@ -13,7 +13,7 @@ import {
   type CardV13Structured,
   type SoulCardV13Input,
 } from "./card-v13.js";
-import { renderMoodLine, type SoulMoodState } from "./emotion.js";
+import { isStoredEmotionExpired, renderMoodLine, type SoulMoodState } from "./emotion.js";
 import { selfModelCardLines } from "./self-model.js";
 import { renderSoulTurnState } from "./turn-state.js";
 import { NARRATIVE_INJECT_MAX_LINES, NARRATIVE_MAX_EVIDENCE, narrativeInjectionLines } from "./narrative.js";
@@ -132,10 +132,69 @@ export interface AssembleSoulCardOptions {
   /** true = tick 末落快照；false = 纯读（HTTP GET）。 */
   persist?: boolean;
   /**
-   * 在场者 person_key 列表（阶段 2 / P2-A）：只保留这些人的「关于你」行 + 全局共性行。
-   * `undefined` = 不按人过滤（旧行为，逐字节不变）；`[]` = 只留全局共性行。
+   * 在场者 person_key 列表（阶段 2 / P2-A）：只保留这些人的「关于你」行。
+   * `undefined` = 不按人过滤（旧行为，逐字节不变）；`[]` = 不留任何人的档案行。
+   *
+   * 跨人共性（collective）**未实现**（2026-11-18 收敛）：写侧 human 层是单写者
+   * （人物档案提炼器），每行必须带 meta.person.key，`sqlite.ts` 的 ownedUpsert 与
+   * `gates.ts` 的 human_writer_removed 都硬拒无主人的行。所以读侧不再假装
+   * 「空 person_key = 恒在场的全局共性行」：按人过滤时无主行一律丢弃（fail-closed，
+   * 避免把某个具体人的事实漏给另一个人）；不传 persons 时旧行仍照常渲染（向后兼容）。
    */
   persons?: string[];
+}
+
+/**
+ * 两行是否近同义（Round7 A1 复核）。
+ *
+ * 旧实现只去「完全相同的字符串」，生产卡里因此同时出现「自己跑过才算数 / 亲跑出来的才算数 /
+ * 他点的每一处我都亲手跑过才算数」三条同族句，以及两条近同义 voice 同进「说话」块。
+ * 这里用字符二元组 Jaccard 做确定性去重：同一件事换个说法会被折叠，用词相近但语义不同的句子
+ * （阈值以下）仍然保留。纯函数、无模型调用。
+ */
+export function nearDuplicateText(a: string, b: string, threshold = 0.72): boolean {
+  const grams = (s: string): Set<string> => {
+    const clean = s.replace(/[\s\p{P}\p{S}]+/gu, "");
+    const out = new Set<string>();
+    for (let i = 0; i + 1 < clean.length; i += 1) out.add(clean.slice(i, i + 2));
+    if (out.size === 0 && clean !== "") out.add(clean);
+    return out;
+  };
+  const clean = (s: string): string => s.replace(/[\s\p{P}\p{S}]+/gu, "");
+  const ga = grams(a);
+  const gb = grams(b);
+  if (ga.size === 0 || gb.size === 0) return false;
+  let inter = 0;
+  for (const g of ga) if (gb.has(g)) inter += 1;
+  const jaccard = inter / (ga.size + gb.size - inter);
+  // A1 Round19 复核：近同义折叠曾把「不替人承诺」与「替人承诺」判成同一句（LCS 4/5），
+  // 否定词被当成普通字面重合。否定是语义翻转，不是措辞差异：两侧否定标记数不同时，
+  // 只接受几乎逐字相同（Jaccard ≥ 0.92），否则一律不折叠。
+  const negations = (s: string): number => (s.match(/[不别勿没未无非]|禁止|避免|拒绝|杜绝/gu) ?? []).length;
+  if (negations(a) !== negations(b) && jaccard < 0.92) return false;
+  if (jaccard >= threshold) return true;
+  // A1 Round7 复核：改写留下的同族句常常只换开头几个字（「自己跑过才算数」/「亲跑出来的才算数」/
+  // 「他点的每一处我都亲手跑过才算数」），Jaccard 只有 0.19–0.40，0.72 一条都挡不住。
+  // 再加一条「较短句有多大比例按顺序出现在较长句里」（LCS 比）的护栏：≥0.6 且两句都不短于 8 字、
+  // Jaccard ≥0.18 才算近同义。仍是词面判据，不是语义判据——阈值与局限写在 docs §5.9。
+  const ca = clean(a);
+  const cb = clean(b);
+  const shorter = ca.length <= cb.length ? ca : cb;
+  const longer = ca.length <= cb.length ? cb : ca;
+  if (shorter.length < 8 || jaccard < 0.18) return false;
+  const lcs = (s: string, t: string): number => {
+    const prev = new Array<number>(t.length + 1).fill(0);
+    for (let i = 1; i <= s.length; i += 1) {
+      let diag = 0;
+      for (let j = 1; j <= t.length; j += 1) {
+        const keep = prev[j] ?? 0;
+        prev[j] = s[i - 1] === t[j - 1] ? diag + 1 : Math.max(keep, prev[j - 1] ?? 0);
+        diag = keep;
+      }
+    }
+    return prev[t.length] ?? 0;
+  };
+  return lcs(shorter, longer) / shorter.length >= 0.6;
 }
 
 /** 层条目 → 卡行：只取还能进注入的状态，最近的在前，去重、截断、单行化。 */
@@ -147,13 +206,34 @@ export function cardLinesFromItems(
   const wanted = new Set<string>(layers);
   const rows = items
     .filter((i) => wanted.has(i.layer))
-    .filter((i) => i.state === "active" || i.state === "degraded")
-    .sort((a, b) => (a.lastEvidenceAt < b.lastEvidenceAt ? 1 : a.lastEvidenceAt > b.lastEvidenceAt ? -1 : 0));
+    // 边界层是红线声明，仅仅是"冻住不再刷新"也照常注入：冻结（persona.ts 的 freezeItem）会顺手写
+    // validTo=此刻，若只按 validTo 拦，boundary 4 行全被拦掉、卡上只剩 block_omitted:边界（A1 Round7 起多次复现，
+    // R32 实测定论：库里 4 行 frozen 且 validTo 均为冻结时刻、无 supersededBy）。
+    .filter((i) => i.state === "active" || i.state === "degraded" || (i.state === "frozen" && i.layer === "boundary" && typeof i.supersededBy !== "string"))
+    // A1 Round20/21：validTo 是「判定失效的时刻」，读侧 soul-person-endpoint.ts 已跳过它；
+    // 卡侧过去只按 state 注入（2026-11-19 复核 human active 5 条里 0 条带 validTo，此过滤是防回归）。
+    // 空白/空串视为没有失效期（复活分支 delete 字段，历史行可能留空），与读侧 trim 后同判。
+    // 边界例外只放行"仅冻结"（无 supersededBy）：被结论合并/超量取代的红线有替补，必须继续按失效期出局。
+    .filter((i) => typeof i.validTo !== "string" || i.validTo.trim() === "" || (i.layer === "boundary" && i.state === "frozen" && typeof i.supersededBy !== "string"))
+    // A1 Round7：原来纯按 lastEvidenceAt 排序，一条新铸的 identity 句（1 条证据）会把 4 条证据的
+    // 老准则挤出 300 字窗口——71 分钟里「性格」三行整窗换了两套。改成「证据条数 → 权重 → 最近」，
+    // 新句要攒够证据才能进窗（stickiness 优先于 novelty）。
+    .sort((a, b) => {
+      const ea = a.evidenceIds?.length ?? 0;
+      const eb = b.evidenceIds?.length ?? 0;
+      if (ea !== eb) return eb - ea;
+      const wa = Number(a.weight ?? 0);
+      const wb = Number(b.weight ?? 0);
+      if (wa !== wb) return wb - wa;
+      return a.lastEvidenceAt < b.lastEvidenceAt ? 1 : a.lastEvidenceAt > b.lastEvidenceAt ? -1 : 0;
+    });
   const out: string[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
     const text = String(row.text ?? "").replace(/\s+/gu, " ").trim();
     if (text === "" || seen.has(text)) continue;
+    // A1 Round7：完全同文之外，近同义句也不重复占位（每层都可能有改写/合并留下的同族行）。
+    if (out.some((kept) => nearDuplicateText(kept, text))) continue;
     seen.add(text);
     out.push(text);
     if (out.length >= maxLines) break;
@@ -193,6 +273,21 @@ export interface ParsedCardSnapshot {
 }
 
 /** 上一版卡的 payload 解析；不是卡快照（旧 slot 快照）就当没有上一版。 */
+const ANCHOR_LINE = /比基线(偏沉|偏轻|还算稳)[，,]\s*([^。]+?)。/u;
+
+/**
+ * R26-2：从上一张卡正文里取出锚段档位，供 card-v13.pickBand 做滞回。
+ * 只认完整锚句；旧快照没有锚句时返回 undefined（首张语义，不做假状态）。
+ */
+export function previousAnchorOf(text: string | null | undefined): { tone?: string; energy?: string } | undefined {
+  const raw = typeof text === "string" ? text : "";
+  const m = ANCHOR_LINE.exec(raw);
+  if (!m) return undefined;
+  const tone = m[1];
+  const energy = m[2];
+  return { tone, ...(energy !== "" ? { energy } : {}) };
+}
+
 export function parsePreviousCard(row: SoulSnapshotRow | null | undefined): ParsedCardSnapshot | null {
   if (!row?.payload_json) return null;
   try {
@@ -278,14 +373,15 @@ export function buildCardInput(args: {
   const { profile, labels, items, version, state, persons } = args;
   const nowIso = args.now ?? new Date().toISOString();
   const narrative = cardLinesFromItems(items, ["narrative"], HUMAN_MAX_LINES);
-  // per-person 过滤（P2-A）：
+  // per-person 过滤（P2-A，2026-11-18 收敛为 fail-closed）：
   //   - persons === undefined → 不过滤（旧行为，输出必须逐字节不变）；
-  //   - meta.person.key === ""（或读不到）→ 全局共性行，恒在场；
-  //   - 其它行只有 person_key 在 persons 里才在场。
+  //   - 按人过滤时，只有 person_key 在 persons 里的行在场；
+  //   - 无主行（旧合并行 / meta 缺失）不再被当成「恒在场的全局共性行」——
+  //     跨人共性未实现，读侧不能用兜底把无主行漏给任意一个人。
   const personFilter = (it: PersonaItem): boolean => {
     if (persons === undefined) return true;
     const key = personKeyOfItem(it);
-    if (key === "") return true;
+    if (key === "") return false;
     return persons.includes(key);
   };
 
@@ -353,6 +449,42 @@ export function buildCardInput(args: {
  * 说「你」不说「用户」、不写 Markdown、不造样品台词、缺来源的块整块省略。
  * 没有 v12 兜底、没有开关：这里返回什么，注入出去的就是什么。
  */
+/**
+ * R24-1：把 meta.lastDrift 收窄成可落盘的形状——只认显式字段，不原样透传 meta
+ * （meta 里还有 object/validTo 等生命周期键，透传等于把内部结构泄进快照）。
+ */
+function driftProvenance(it: PersonaItem): Record<string, unknown> | undefined {
+  const raw = (it.meta as { lastDrift?: Record<string, unknown> } | undefined)?.lastDrift;
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of ["score", "track", "verdict", "at", "method", "anchorKey"] as const) {
+    const v = raw[key];
+    if (typeof v === "string" || typeof v === "number") out[key] = v;
+  }
+  const ids = raw.anchorIds;
+  if (Array.isArray(ids)) {
+    const kept = ids.filter((x): x is string => typeof x === "string" && x !== "").slice(0, 8);
+    if (kept.length > 0) out.anchorIds = kept;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** R24-1：provenance.items 只收会进注入渲染的层，且每条只留归因必需字段（上限 60 条）。 */
+const PROVENANCE_LAYERS = new Set<SoulLayer>([
+  "voice",
+  "identity",
+  "self",
+  "values",
+  "boundary",
+  "relationship",
+  "narrative",
+  "human",
+]);
+/** 快照里每条事实最多留几个出处；超出的用 evidenceTotal 标出总数（R29）。 */
+const PROVENANCE_EVIDENCE_MAX = 5;
+
+const PROVENANCE_MAX_ITEMS = 60;
+
 export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<SoulCardAssembly> {
   const { store, tenant, readAgentProfile, now = new Date().toISOString(), persist = false, persons } = opts;
 
@@ -361,6 +493,9 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
       ? ((await Promise.resolve(store.readLastSoulSnapshot(tenant))) ?? null)
       : null;
   const previous = parsePreviousCard(persisted);
+  // R26-2：锚句滞回要上一档。快照正文是唯一持久化的渲染态，从上一张卡里解析出档位，
+  // 不新开列也不信任内存（重启后照样成立）。
+  const previousAnchor = previousAnchorOf(previous?.text);
   const persistedVersion = typeof persisted?.version === "number" ? persisted.version : 0;
 
   // 表单读不到不该让整张卡消失（fail-open 的一层）：降级为 null，正文只剩观察层与红线。
@@ -376,10 +511,16 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
     typeof store.listSoulPersona === "function" ? ((await Promise.resolve(store.listSoulPersona(tenant))) ?? []) : [];
   const traitState =
     typeof store.readSoulTraitState === "function" ? await Promise.resolve(store.readSoulTraitState(tenant)) : null;
-  const labelRows =
-    typeof store.listSoulTraitLabels === "function"
-      ? ((await Promise.resolve(store.listSoulTraitLabels(tenant))) ?? [])
-      : [];
+  // 标签面板读失败与档案同口径：fail-open（降级为空表），不让 /card 与 /turn 变 503。
+  // /v3/soul/labels 仍然透出 503（那里读失败就是答案），两条读路径的语义要分开（A2 Round20）。
+  let labelRows: Awaited<ReturnType<NonNullable<typeof store.listSoulTraitLabels>>> = [];
+  if (typeof store.listSoulTraitLabels === "function") {
+    try {
+      labelRows = ((await Promise.resolve(store.listSoulTraitLabels(tenant))) ?? []) as typeof labelRows;
+    } catch {
+      labelRows = [];
+    }
+  }
 
   // 底色仍按 v12 的口径投影（声明标签豁免证据门 + 种子兜底）：v13 正文不写数值，
   // 但 labels/seeded 还要如实上报给面板与 trait-state 屏。
@@ -465,6 +606,24 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
   const stateRow =
     typeof store.readSoulState === "function" ? await Promise.resolve(store.readSoulState(tenant)) : null;
   const sampleCount = Number(stateRow?.sampleCount ?? 0);
+  // A2（2026-11-18 复核）：过期情绪 ≠「还在」。worker 在 top 过期时只把 intensity 清空、
+  // 保留 label/object（worker.ts:2695-2698）；读面若照样渲染，10-20 的「不安」衰减到 1e-71
+  // 仍会永久写成「心里那点不安还在」。这里要求「有强度 + 未过期」才让 label/object 进卡。
+  const cardEmotion =
+    stateRow?.emotionLabel && Number(stateRow.emotionIntensity ?? 0) > 0.01
+      ? {
+          label: String(stateRow.emotionLabel),
+          intensity: Number(stateRow.emotionIntensity ?? 0),
+          at: String(stateRow.emotionAt ?? ""),
+        }
+      : null;
+  const cardEmotionLive =
+    cardEmotion !== null &&
+    !isStoredEmotionExpired(
+      // 落库强度=写入时已衰减值：起算点用 soul_state.updated_at，拿事件时刻会二次衰减（A2）。
+      { label: cardEmotion.label, intensity: cardEmotion.intensity, at: String(stateRow?.updatedAt ?? cardEmotion.at), asOf: String(stateRow?.updatedAt ?? cardEmotion.at) },
+      now,
+    );
   const mood: CardV13Mood | null =
     stateRow && sampleCount > 0
       ? {
@@ -472,8 +631,15 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
           arousal: Number(stateRow.arousal ?? 0.3),
           baselineValence: Number(stateRow.baselineValence ?? 0),
           baselineArousal: Number(stateRow.baselineArousal ?? 0.3),
-          ...(stateRow.emotionLabel ? { emotionLabel: String(stateRow.emotionLabel) } : {}),
-          ...(stateRow.emotionObject ? { emotionObject: String(stateRow.emotionObject) } : {}),
+          ...(cardEmotionLive
+            ? {
+                emotionLabel: cardEmotion!.label,
+                emotionIntensity: cardEmotion!.intensity,
+                emotionAt: cardEmotion!.at,
+                ...(stateRow?.updatedAt ? { emotionWrittenAt: String(stateRow.updatedAt) } : {}),
+                ...(stateRow.emotionObject ? { emotionObject: String(stateRow.emotionObject) } : {}),
+              }
+            : {}),
         }
       : null;
 
@@ -518,13 +684,17 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
         }
       : null;
 
-  const moodState = moodRow
+  // A2 Round25（r25b-a2 CP4）：结构化心境也要吃「样本数为 0 就不造句」这条门。
+  // 尾巴侧（下方 mood）早有该门，卡侧 structured mood 却没有，于是同一轮里
+  // 卡说「比基线还算稳」、尾巴说「还没有形成可说的底子」——两条通道互相打脸。
+  const moodState = moodRow && sampleCount > 0
     ? {
         label: String(moodRow.label ?? ""),
         valence: Number(moodRow.valence ?? 0),
         arousal: Number(moodRow.arousal ?? 0.3),
         intensity: Number(moodRow.intensity ?? 0),
         causeEventIds: parseIdList(moodRow.cause_event_ids_json),
+        ...(moodRow.updated_at ? { updatedAt: String(moodRow.updated_at) } : {}),
       }
     : null;
 
@@ -537,6 +707,7 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
     ...(moodState ? { mood: moodState } : {}),
     ...(working ? { working } : {}),
     ...(structuredGoals.length > 0 ? { goals: structuredGoals } : {}),
+    ...(previousAnchor ? { previousAnchor } : {}),
   };
 
   // P4 §4.5：自我模型行进 memory（lines.self 的最前面）——低置信度的行自带「（推测）/（没验过）」，
@@ -593,6 +764,7 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
     labels: projected,
     calibration: calibrationRows,
     version: persistedVersion,
+    now,
   };
 
   const rendered = renderPersonaCardV13(v13Input);
@@ -603,7 +775,8 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
       return key !== "" && persons.includes(key);
     });
     if (scoped.length === 0) {
-      warnings.push("关于你：participants（" + persons.join("、") + "）在 human 层没有可用的档案行，本卡只含全局共性行");
+      // 不再宣称「只含全局共性行」：无主行已被过滤掉，这句话必须与读侧行为一致。
+      warnings.push("关于你：participants（" + persons.join("、") + "）在 human 层没有可用的档案行（跨人共性未实现，不做全局行兜底）");
     }
   }
 
@@ -626,6 +799,37 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
       identity: segments.identity,
       anchor: segments.anchor,
       meta: { nameSource },
+      // 版本链要能归因到「哪次漂移/哪条输入」：6 轴当前值与本轮投影标签必须落盘。
+      traits: state,
+      traitLabels: projected.map((p) => ({ label: p.label, act: p.act, evidence: p.evidence, status: p.status })),
+      // R24-1：版本链要能追到「哪条输入导致哪次漂移」——逐条出处 + 最近一次漂移锚一起落盘。
+      // 只落渲染用到的层、每条只留 itemId/state/evidenceIds/lastEvidenceAt/drift，避免快照膨胀。
+      provenance: {
+        render: { at: now, version, hash: rendered.hash, schema: CARD_V13_SCHEMA_VERSION },
+        items: items
+          .filter((it) => PROVENANCE_LAYERS.has(it.layer))
+          .slice(0, PROVENANCE_MAX_ITEMS)
+          .map((it) => {
+            const drift = driftProvenance(it);
+            return {
+              layer: it.layer,
+              itemId: it.itemId,
+              state: it.state,
+              // R29：截断要看得见——超出 PROVENANCE_EVIDENCE_MAX 时保留前 N 条并标出总条数，
+              // 否则读快照的人只看到 5 条，会以为这条事实只有 5 个出处（r28c-a1 的 63/128 条就属此类）。
+              ...(it.evidenceIds && it.evidenceIds.length > 0
+                ? it.evidenceIds.length > PROVENANCE_EVIDENCE_MAX
+                  ? {
+                      evidenceIds: it.evidenceIds.slice(0, PROVENANCE_EVIDENCE_MAX),
+                      evidenceTotal: it.evidenceIds.length,
+                    }
+                  : { evidenceIds: it.evidenceIds }
+                : {}),
+              ...(it.lastEvidenceAt ? { lastEvidenceAt: it.lastEvidenceAt } : {}),
+              ...(drift ? { drift } : {}),
+            };
+          }),
+      },
       ...(persons === undefined ? {} : { persons }),
     });
     await Promise.resolve(
@@ -633,7 +837,15 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
         ts: now,
         contentHash: rendered.hash,
         payloadJson,
-        reasonCode: "card",
+        reasonCode: "render",
+        reasonDetail: "soul tick 末组装：卡文本变化才落行（含 6 轴与标签投影）",
+        slotsJson: JSON.stringify({
+          kind: "persona-card",
+          version,
+          hash: rendered.hash,
+          traits: state,
+          labels: projected.map((p) => ({ label: p.label, act: p.act, status: p.status })),
+        }),
         trigger: "soul_tick",
       }),
     );
@@ -661,11 +873,28 @@ export async function assembleSoulCard(opts: AssembleSoulCardOptions): Promise<S
 export async function assembleSoulTurn(opts: {
   store: SoulCardStorePort;
   tenant: CoreTenant;
+  /** 观测时钟（缺省读真实时钟）：过期判据要用「此刻」，不能用行上的旧时间。 */
+  now?: string;
 }): Promise<SoulTurnAssembly> {
   const { store, tenant } = opts;
   const row =
     typeof store.readSoulState === "function" ? await Promise.resolve(store.readSoulState(tenant)) : null;
 
+  // A2（2026-11-18 复核）：与卡片侧同一条判据——强度归零/过了 6 个半衰期的情绪不再进尾巴，
+  // 否则「因为「X」正在消退」会永久挂在每轮注入里。
+  // 年龄起算用情绪自己的时刻（emotionAt）；强度门用「落库时刻」的衰减值（updatedAt 每 tick 写 now）：
+  // 拿 emotionAt 当 asOf 会二次衰减（worker 落库强度已是 now 时刻的值），把还活着的情绪提前判死
+  // （A2 Round7 复核 CP5 残留）。
+  const at = String(row?.emotionAt ?? row?.updatedAt ?? "");
+  const asOf = String(row?.updatedAt ?? row?.emotionAt ?? "");
+  const turnNow = typeof opts.now === "string" && opts.now !== "" ? opts.now : new Date().toISOString();
+  const emotionLive =
+    row?.emotionLabel &&
+    Number(row?.emotionIntensity ?? 0) > 0.01 &&
+    !isStoredEmotionExpired(
+      { label: String(row.emotionLabel), intensity: Number(row.emotionIntensity ?? 0), at, asOf },
+      turnNow,
+    );
   const mood: SoulMoodState = {
     valence: Number(row?.valence ?? 0),
     arousal: Number(row?.arousal ?? 0.3),
@@ -673,13 +902,13 @@ export async function assembleSoulTurn(opts: {
     baselineArousal: Number(row?.baselineArousal ?? 0.3),
     updatedAt: row?.updatedAt ?? new Date(0).toISOString(),
     sampleCount: Number(row?.sampleCount ?? 0),
-    ...(row?.emotionLabel
+    ...(emotionLive
       ? {
           emotion: {
             object: row?.emotionObject ?? "",
-            label: row.emotionLabel,
+            label: String(row!.emotionLabel),
             intensity: Number(row?.emotionIntensity ?? 0),
-            at: row?.emotionAt ?? row.updatedAt,
+            at,
           },
         }
       : {}),
@@ -724,7 +953,8 @@ export function filterPersonaItems(
 
 /**
  * 从 meta.person.key 读 person_key。读不到（阶段 1 之前的旧行、meta 缺失、形状不对）
- * 一律当 `""`——也就是「全局共性行」，恒在场。
+ * 一律当 `""`。`""` 只表示「无主」，**不再表示恒在场的全局共性行**：
+ * 按人过滤时它会被丢弃（见 buildCardInput 的 personFilter）。
  */
 function personKeyOfItem(item: PersonaItem): string {
   const person = item.meta?.["person"];

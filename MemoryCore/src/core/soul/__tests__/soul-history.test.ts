@@ -5,6 +5,7 @@ import {
   factsFromEpisode,
   historyItemNeedsUpdate,
   historyToItems,
+  isNewEvidenceDay,
   reversals,
   settlePromises,
 } from "../history.js";
@@ -520,6 +521,23 @@ describe("渠道占位名不当人名（t21/F3）", () => {
     const rel = relOf(["何晨"]);
     expect(rel?.object).toBe("何晨");
     expect(rel?.text.startsWith("何晨对我的要求")).toBe(true);
+  });
+});
+
+describe("isNewEvidenceDay：降级/冻结的复活必须带新自然日的证据", () => {
+  const item = (days: string[]) => ({ evidenceDays: days }) as never;
+
+  it("新证据日出现 → true（允许复活）", () => {
+    expect(isNewEvidenceDay(item(["2026-10-01", "2026-10-02"]), item(["2026-10-01", "2026-10-02", "2026-11-05"]))).toBe(true);
+  });
+
+  it("只在同一批旧日上刷新（时间戳前移）→ false（不复活）", () => {
+    expect(isNewEvidenceDay(item(["2026-10-01", "2026-10-02"]), item(["2026-10-01", "2026-10-02"]))).toBe(false);
+  });
+
+  it("证据日被改写但没有新增 → false", () => {
+    expect(isNewEvidenceDay(item(["2026-10-01"]), item(["2026-10-02"]))).toBe(true);
+    expect(isNewEvidenceDay(item(["2026-10-01", "2026-10-02"]), item(["2026-10-02"]))).toBe(false);
   });
 });
 

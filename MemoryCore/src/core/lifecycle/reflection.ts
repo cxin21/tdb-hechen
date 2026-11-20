@@ -9,6 +9,7 @@
  * 租户：批内记录租户去重聚合（与 forgetting 同式——全表扫描路径无单租户概念）；
  * work_fact 不入触发累计（防"反思的反思"自我 reinforce，与 consolidation 分组同原则）。
  */
+import { createHash } from "node:crypto";
 import { embedForLifecycle } from "./embed-helpers.js";
 import { bindSoulAtWrite } from "./consolidation/content-soul.js";
 import { withEvidenceIds } from "./evidence-ids.js";
@@ -93,9 +94,9 @@ export const REFLECTION_SYSTEM_PROMPT = [
   "你是团队记忆的反思引擎。给定近期高显著度记忆样本，执行 Generative Agents 三问式反思：",
   "1. 从样本中提炼 1-3 个最显著的高层问题（跨记录的模式，不复述单条事实）；",
   "2. 为每个问题指出支撑证据（逐字引用给出的 record_id）；",
-  "3. 合成一张结论卡（100 字内，跳出对话依然成立，引用证据指针）。",
+  "3. 合成一张结论卡（300 字内，跳出对话依然成立，引用证据指针）。",
   "硬约束：结论必须由所给证据支撑，不得引入样本之外的新事实；宁缺毋滥。",
-  "只输出 JSON 数组：[\"question\":\"…\",\"conclusion\":\"…\",\"evidence\":[\"record_id\",…]]，无合格结论输出 []。",
+  "只输出 JSON 数组：[{\"question\":\"…\",\"conclusion\":\"…\",\"evidence\":[\"record_id\"]}]，无合格结论输出 []。",
 ].join("\n");
 
 /** 解析反思产出（宽松 JSON 提取，与 person/character 解析同风格）。 */
@@ -214,8 +215,15 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
       // 终测实证（D-R5-6 续）：真实 store.upsertL1 静默返回 false——MemoryRecord 必填
       // 会话/版本/确信度字段缺位（probe 的 mock store 掩盖）。补齐与 consolidation
       // 持续态同形（work_fact/observed 先例）：sessionKey/sessionId/version/certainty。
+      // Round28（r28c-a3）：结论卡原来是随机 id + 时间戳会话号，同一条结论每轮反思都新写一行
+      // （复现：runReflection 两轮同结论 → 2 行、distinct 1）。改成内容寻址：同一结论同一 id，
+      // upsertL1 覆盖写，天然幂等；不同结论仍然各占一行。
+      const conclusionKey = createHash("sha256")
+        .update(String(pr.conclusion).trim().replace(/\s+/gu, " "))
+        .digest("hex")
+        .slice(0, 16);
       const rec = {
-        id: `rf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: `rf_${conclusionKey}`,
         content: pr.conclusion,
         type: "work_fact",
         priority: 80,
@@ -235,7 +243,7 @@ export async function runReflection(deps: ReflectionDeps): Promise<{ triggered: 
         userId: triple.userId,
         agentId: triple.agentId,
         sessionKey: `reflection:${triple.teamId}:${triple.userId}:${triple.agentId}`,
-        sessionId: `reflection-${Date.now()}`,
+        sessionId: `reflection-${conclusionKey}`,
         taskId: "",
         version: 1,
         certainty: "observed",

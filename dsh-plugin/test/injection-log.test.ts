@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import {
   createInjectionLog,
   NOOP_INJECTION_LOG,
@@ -166,5 +168,21 @@ describe('createInjectionLog', () => {
     expect(parsed.reason).toBe('threw:no active turn');
     expect(parsed.chars).toBe(0);
     expect(parsed.ms).toBe(3);
+  });
+});
+
+/**
+ * Round26：生产证据日志只能由显式 env 指定，测试绝不许往默认路径写。
+ * 事故形态：index.test.ts 的夹具会话（s-card / s-bypass …）走真实 recordInjection，
+ * 把 card-bound / card-cleared 行写进 D:/TDB/data/logs/persona-injection.jsonl，
+ * 于是在 stats 的 noIdentityRows 里混进测试数据（24h 内 card-bound 4980 行有 4713 行 chars=0，
+ * 其中 357 行来自 5 个测试会话，10 条 card-cleared 全是夹具行）。
+ * 隔离靠 test/setup-env.ts 把整轮 TDB_PERSONA_LOG 钉到系统临时目录。
+ */
+describe('测试日志隔离（Round26）', () => {
+  it('整轮测试的 TDB_PERSONA_LOG 指向系统临时目录，不是生产数据目录', () => {
+    const p = resolveInjectionLogPath(process.env);
+    expect(p).toContain('persona-injection.jsonl');
+    expect(resolve(p).startsWith(resolve(tmpdir()))).toBe(true);
   });
 });

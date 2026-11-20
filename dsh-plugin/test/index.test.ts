@@ -1977,21 +1977,21 @@ describe('soul tool events (P1-B W3)', () => {
  */
 describe('soul output gate (P7 shadow)', () => {
   /** 驱动一个成功回合：用户消息 → 工具调用/回执 → 助手正文 → 收口。 */
-  function driveTurn(fake: FakeContext): void {
-    fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn: 1, message: userMessage('跑一下测试', 'u1') } });
+  function driveTurn(fake: FakeContext, turn = 1): void {
+    fake.emit('session/event', { id: 's1' }, { type: 'user/message', data: { turn, message: userMessage('跑一下测试', 'u1') } });
     fake.emit('session/event', { id: 's1' }, {
       type: 'tool/call',
-      data: { turn: 1, step: 1, callId: 'c1', name: 'ops_bash', arguments: { command: 'npx vitest run' } },
+      data: { turn, step: 1, callId: 'c1', name: 'ops_bash', arguments: { command: 'npx vitest run' } },
     });
     fake.emit('session/event', { id: 's1' }, {
       type: 'tool/result',
-      data: { turn: 1, step: 1, message: toolMessage('Tests  46 passed (46)') },
+      data: { turn, step: 1, message: toolMessage('Tests  46 passed (46)') },
     });
     fake.emit('session/event', { id: 's1' }, {
       type: 'assistant/message',
-      data: { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '全绿。' }] } },
+      data: { turn, message: { role: 'assistant', content: [{ type: 'text', text: '全绿。' }] } },
     });
-    fake.emit('agent/turn-stopping', { turn: 1, agent: { session: { id: 's1' } } });
+    fake.emit('agent/turn-stopping', { turn, agent: { session: { id: 's1' } } });
   }
 
   it('成功回合发且只发一次，带 text/stage/会话标识，且在正文落地之后', async () => {
@@ -2043,6 +2043,32 @@ describe('soul output gate (P7 shadow)', () => {
     expect(callsTo(fixture.calls, '/v3/conversation/add')).toHaveLength(1);
   });
 
+  it('A4 Round15：usage 失败进补投队列，下一回合收口先补发一条（不丢、不风暴、有上限）', async () => {
+    let injectionCalls = 0;
+    const fixture = installFetch({
+      fail: (p0) => {
+        if (!p0.endsWith('/v3/soul/injection')) return undefined;
+        injectionCalls += 1;
+        return injectionCalls === 1 ? new Response('boom', { status: 500 }) : undefined;
+      },
+    });
+    const fake = await startApp({ writeback: { outboxPath: tempOutbox() } });
+
+    driveTurn(fake, 1);
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/injection')).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // 第 2 回合：先补投第 1 回合的失败记录，再发第 2 回合自己的写照。
+    driveTurn(fake, 2);
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/injection')).toHaveLength(3));
+    const usageTurns = callsTo(fixture.calls, '/v3/soul/injection').map((call) => call.body.turn);
+    expect(usageTurns).toEqual([1, 1, 2]);
+
+    // 补投成功即出队：第 3 回合只有自己一条。
+    driveTurn(fake, 3);
+    await vi.waitFor(() => expect(callsTo(fixture.calls, '/v3/soul/injection')).toHaveLength(4));
+    expect(callsTo(fixture.calls, '/v3/soul/injection').map((call) => call.body.turn)).toEqual([1, 1, 2, 3]);
+  });
   it('判定失败只 warn 一次：turn 与 L0 写回照常，不重投、不进 Outbox、日志不落正文', async () => {
     const fixture = installFetch({
       fail: (path) => (path.endsWith('/v3/soul/gate') ? new Response('boom', { status: 500 }) : undefined),

@@ -8,8 +8,8 @@ import type { CoreTenant } from "../../store/types.js";
  *
  * 断言口径与 spec §4 P2-A 一致：
  *   - `persons === undefined` → 不过滤（所有人的行都在候选里）；
- *   - `meta.person.key === ""`（或读不到）→ 全局共性行，恒在场；
- *   - 其它行只有 person_key 在 `persons` 里才在场；
+ *   - 按人过滤时只有 person_key 在 `persons` 里才在场；无主行（`key === ""`）一律丢弃
+ *     （2026-11-18 收敛：跨人共性未实现，读侧不再拿无主行做全局兜底）；
  *   - `persons` 里有谁都没有的行 → warnings 里留一条「关于你」。
  * P2（t1）起 relationship 也按人过滤：带 persons 时只认 soul_person_relation 的结构化行，
  * 旧的 persona relationship 行不再漏进按人过滤的卡（见 card-relations.test.ts）。
@@ -80,11 +80,12 @@ describe("P2-A per-person 卡（assembleSoulCard 的 persons）", () => {
     expect(card.hash).toBe((await assemble()).hash);
   });
 
-  it("persons:[A]：B 的行消失，A 的身份/相处与全局喜好都在", async () => {
+  it("persons:[A]：B 的行与无主行都消失，A 的身份/相处在场", async () => {
     const card = await assemble({ persons: [PERSON_A] });
     expect(card.text).toContain("偏好在灰度之后全量");
     expect(card.text).toContain("讨厌被替着做决定");
-    expect(card.text).toContain("先把结论说清楚");
+    // 无主行不再是「恒在场」：fail-closed 只留 person_key 命中的行。
+    expect(card.text).not.toContain("先把结论说清楚");
     expect(card.text).not.toContain("发布窗口归他管");
     expect(card.text).not.toContain("结论必须带证据");
     // P2：按人过滤时 relationship 只来自结构化关系边；store 没有关系边 → 关系行不进卡，
@@ -94,16 +95,16 @@ describe("P2-A per-person 卡（assembleSoulCard 的 persons）", () => {
     expect(card.warnings.some((w) => w.includes("关于你"))).toBe(false);
   });
 
-  it("persons:[]：只剩全局共性行", async () => {
+  it("persons:[]：不留任何人的档案行（无主行也不兜底）", async () => {
     const card = await assemble({ persons: [] });
-    expect(card.text).toContain("先把结论说清楚");
+    expect(card.text).not.toContain("先把结论说清楚");
     expect(card.text).not.toContain("偏好在灰度之后全量");
     expect(card.text).not.toContain("发布窗口归他管");
   });
 
-  it("persons:[C] 而库里没有 C 的行：只剩全局共性行，且 warnings 含「关于你」", async () => {
+  it("persons:[C] 而库里没有 C 的行：无档案行，且 warnings 含「关于你」", async () => {
     const card = await assemble({ persons: ["p_c"] });
-    expect(card.text).toContain("先把结论说清楚");
+    expect(card.text).not.toContain("先把结论说清楚");
     expect(card.text).not.toContain("偏好在灰度之后全量");
     expect(card.text).not.toContain("发布窗口归他管");
     expect(card.warnings.some((w) => w.includes("关于你"))).toBe(true);

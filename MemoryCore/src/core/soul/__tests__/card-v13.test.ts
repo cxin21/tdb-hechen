@@ -103,6 +103,44 @@ function blockById(card: ReturnType<typeof renderPersonaCardV13>, id: string) {
   return card.blocks.find((block) => block.id === id);
 }
 
+describe("A2 Round16：写入时刻未知时不按事件时刻二次衰减", () => {
+  it("事件在很久以前、强度 0.5、没有 emotionWrittenAt → 仍写「心里那点不安还在」", () => {
+    const card = renderPersonaCardV13(
+      baseInput({
+        mood: {
+          valence: -0.3,
+          arousal: 0.5,
+          baselineValence: 0,
+          baselineArousal: 0.3,
+          emotionLabel: "不安",
+          emotionObject: "上线",
+          emotionIntensity: 0.5,
+          emotionAt: "2020-01-01T00:00:00.000Z",
+        },
+      }),
+    );
+    expect(card.text).toContain("不安");
+  });
+
+  it("强度已归零时即使没有 emotionWrittenAt 也不写", () => {
+    const card = renderPersonaCardV13(
+      baseInput({
+        mood: {
+          valence: -0.3,
+          arousal: 0.5,
+          baselineValence: 0,
+          baselineArousal: 0.3,
+          emotionLabel: "不安",
+          emotionObject: "上线",
+          emotionIntensity: 0.005,
+          emotionAt: "2020-01-01T00:00:00.000Z",
+        },
+      }),
+    );
+    expect(card.text).not.toContain("不安");
+  });
+});
+
 describe("有校准数据：按域写可复算的把握与次数", () => {
   it("测试域 3 次成功、predicted 0.5 → 半成把握 + 3 次成了 3 次，confidence=low", () => {
     const card = renderPersonaCardV13(baseInput({ calibration: calRows("测试", 0.5, "success", 3) }));
@@ -115,11 +153,21 @@ describe("有校准数据：按域写可复算的把握与次数", () => {
     expect(blockById(card, "memory")?.evidenceIds).toEqual(["ev-1", "ev-2", "ev-3"]);
   });
 
-  it("predicted 0.9 且 3 次成功 → 八成把握、残差小，confidence=high", () => {
+  it("predicted 0.9 且 3 次成功 → 九成把握、残差小，confidence=high", () => {
     const card = renderPersonaCardV13(baseInput({ calibration: calRows("测试", 0.9, "success", 3) }));
-    // 把握度只落五档（0.8 起就是「八成」），不写百分数；0.9 与 0.8 同档，靠结果与残差区分。
-    expect(blockText(card.text, "记得") ?? "").toContain("在测试上，我给自己八成把握，3 次里成了 3 次。");
+    // r32-a1：0.9 原来落进「八成」档（最高档从 0.8 起），核 soul_calibration 的 0.90 对不上；
+    // 补 0.9 → 九成，其余档位不动，仍只落档位、不写百分数。
+    expect(blockText(card.text, "记得") ?? "").toContain("在测试上，我给自己九成把握，3 次里成了 3 次。");
     expect(blockById(card, "memory")?.confidence).toBe("high");
+  });
+
+  it("668 条 0.9 也不许掉档：浮点累加 0.8999999999999887 要归整回九成（R32）", () => {
+    // 生产 run_code 域 668 行全 0.9，顺序累加得 601.1999999999924，除以 668 是 0.8999999999999887，
+    // 直接比 0.9 档会回落「八成」。只喂 3 条时累加恰好 ≥0.9，所以旧用例没抓到。
+    const card = renderPersonaCardV13(baseInput({ calibration: calRows("run_code", 0.9, "success", 668) }));
+    const line = blockText(card.text, "记得") ?? "";
+    expect(line).toContain("在run_code上，我给自己九成把握，668 次里成了 668 次。");
+    expect(line).not.toContain("八成");
   });
 
   it("同一域内多于两个域时只写前两个（按样本数、再按域名），并给出截断告警", () => {
@@ -264,6 +312,7 @@ describe("hash 与预算", () => {
     expect(card.warnings.some((w) => w.includes("丢掉块：最近的变化"))).toBe(true);
     expect(card.warnings.some((w) => w.includes("丢掉块：生活"))).toBe(true);
     // 永不丢：第一眼、性格、边界。
+    for (let i = 1; i <= 13; i += 1) expect(card.text).toContain(`红线${i}：`);
     expect(blockById(card, "firstLook")?.chars).toBeGreaterThan(0);
     expect(blockById(card, "character")?.chars).toBeGreaterThan(0);
     expect(blockById(card, "boundaries")?.chars).toBeGreaterThan(0);

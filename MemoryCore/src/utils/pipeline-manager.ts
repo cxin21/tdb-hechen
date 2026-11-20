@@ -199,6 +199,11 @@ export type L1Runner = (params: {
 export interface L2RunnerResult {
   /** The latest `updated_at` cursor from the processed batch. */
   latestCursor?: string;
+  /**
+   * True = 本轮读到了 records，但至少一组抽取失败（A3 Round20）。
+   * 消费方必须按「未成功」处理：不刷新 l2_last_extraction_time、不清 pending、不触发 L3。
+   */
+  hadFailure?: boolean;
   /** True if no new records were found and extraction was skipped. */
   skipped?: boolean;
   /**
@@ -1100,6 +1105,12 @@ export class MemoryPipelineManager {
         this.logger?.debug?.(
           `${TAG} [${sessionKey}] L2 gate-skip: keep l2_last_extraction_time unchanged ` +
             `(pending=${state.l2_pending_l1_count})`,
+        );
+      } else if (result?.hadFailure === true) {
+        // 半失败：cursor 已钉在旧值，时间戳与 pending 都不动；下一轮会重读同一窗口。
+        this.logger?.warn?.(
+          `${TAG} [${sessionKey}] L2 partial failure: keep cursor/l2_last_extraction_time, ` +
+            `pending=${state.l2_pending_l1_count} (some extract groups failed)`,
         );
       } else {
         this.logger?.info?.(

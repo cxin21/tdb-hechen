@@ -197,13 +197,15 @@ export async function assembleTurnState(options: AssembleTurnStateOptions): Prom
       ? Math.max(0, (nowMs - updatedMs) / 3600000)
       : 0;
     const halfLife = finiteOr(moodRow.half_life_hours, 36);
-    stale = dtHours > TURN_STATE_STALE_HOURS;
+    // 与 emotion.ts 的「2 指数 + 6 个半衰期即过期」同一口径：尾巴与状态段不能对同一心境给出两个答案。
+    const staleAfterHours = 6 * (halfLife > 0 ? halfLife : 36);
+    stale = dtHours > staleAfterHours;
     if (stale) {
       // 过期只给中性底色，不把旧情绪装成「现在」。
       valence = baselineValence;
       arousal = baselineArousal;
     } else {
-      const decay = Math.exp(-dtHours / (halfLife > 0 ? halfLife : 36));
+      const decay = Math.pow(2, -dtHours / (halfLife > 0 ? halfLife : 36));
       valence = baselineValence + (finiteOr(moodRow.valence, baselineValence) - baselineValence) * decay;
       arousal = baselineArousal + (finiteOr(moodRow.arousal, baselineArousal) - baselineArousal) * decay;
     }

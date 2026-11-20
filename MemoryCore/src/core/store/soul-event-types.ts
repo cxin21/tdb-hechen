@@ -479,6 +479,12 @@ export interface SoulMoodStateRow {
   intensity: number;
   /** 半衰期（小时），读侧按它算衰减，不在写侧改 intensity。 */
   half_life_hours: number;
+  /** 累计未记账的纯衰减量（valence 一侧，非负）。null = 还没起算。 */
+  decay_pending_valence: number | null;
+  /** 同上，arousal 那一侧。 */
+  decay_pending_arousal: number | null;
+  /** 本次累计的起算时刻（只用于账本 note 的时长）。 */
+  decay_pending_since: string | null;
   cause_event_ids_json: string;
   updated_at: string;
 }
@@ -493,6 +499,9 @@ export type SoulMoodStateInsert = InsertOf<
   | "arousal"
   | "intensity"
   | "half_life_hours"
+  | "decay_pending_valence"
+  | "decay_pending_arousal"
+  | "decay_pending_since"
   | "cause_event_ids_json"
   | "updated_at"
 >;

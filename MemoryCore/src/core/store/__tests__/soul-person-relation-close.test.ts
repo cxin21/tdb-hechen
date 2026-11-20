@@ -81,4 +81,74 @@ describe("S13d：关系失效写 valid_to 且退出卡", () => {
     // 再关一次不重复计数（幂等：只关 valid_to IS NULL 的行）。
     expect(store.commitSoulPersonRelations(TENANT, { close: [{ relId: "r-ex", at: "2026-11-06T00:00:00.000Z" }] }).closed).toBe(0);
   });
+
+  it("证据时间早于 valid_from：valid_to 夹到 valid_from，不写反向区间（S9 复审 major-1）", () => {
+    const store = makeStore(tmpDb());
+    store.upsertSoulPerson(TENANT, { personKey: HE, displayName: "何晨" });
+    store.upsertSoulPerson(TENANT, { personKey: EX, displayName: "前合作方" });
+    store.commitSoulPersonRelations(TENANT, {
+      insert: [
+        {
+          relId: "r-new",
+          subjKey: HE,
+          pred: "合作方",
+          inversePred: null,
+          objKey: EX,
+          objName: null,
+          direction: "out",
+          quote: "三月份还在一起做项目",
+          recordId: "l1-1",
+          evidence: [],
+          validFrom: "2026-03-01T00:00:00.000Z",
+          validTo: null,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    // 模型拿一条更早的 L1（2026-02）去 outdated 这条更晚建的边。
+    const res = store.commitSoulPersonRelations(TENANT, {
+      close: [{ relId: "r-new", at: "2026-02-01T00:00:00.000Z" }],
+    });
+    expect(res.closed).toBe(1);
+    const all = store.listSoulPersonRelations(TENANT, { subjKey: HE, includeClosed: true });
+    expect(all[0]!.validTo).toBe("2026-03-01T00:00:00.000Z");
+    expect(all[0]!.validTo! >= all[0]!.validFrom).toBe(true);
+  });
+
+  it("close 带 subjKey 时不会改别人主体的边（S9 复审 P1：跨人写）", () => {
+    const store = makeStore(tmpDb());
+    store.upsertSoulPerson(TENANT, { personKey: HE, displayName: "何晨" });
+    store.upsertSoulPerson(TENANT, { personKey: EX, displayName: "前合作方" });
+    store.commitSoulPersonRelations(TENANT, {
+      insert: [
+        {
+          relId: "r-he-owns",
+          subjKey: HE,
+          pred: "合作方",
+          inversePred: null,
+          objKey: EX,
+          objName: null,
+          direction: "out",
+          quote: "三月份还在一起做项目",
+          recordId: "l1-1",
+          evidence: [],
+          validFrom: "2026-03-01T00:00:00.000Z",
+          validTo: null,
+          createdAt: "2026-03-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    // 以「另一个人」为主体去关何晨的边：必须 no-op。
+    const res = store.commitSoulPersonRelations(TENANT, {
+      close: [{ relId: "r-he-owns", at: "2026-11-05T00:00:00.000Z", subjKey: EX }],
+    });
+    expect(res.closed).toBe(0);
+    const all = store.listSoulPersonRelations(TENANT, { subjKey: HE, includeClosed: true });
+    expect(all[0]!.validTo).toBeNull();
+  });
 });
+

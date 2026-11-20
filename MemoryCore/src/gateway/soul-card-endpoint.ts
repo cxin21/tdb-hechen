@@ -42,10 +42,67 @@ const MAX_PARTICIPANTS = 8;
 /** person_key 前缀（personKeyOf 两种分支：`p_<hash>` 与 `p_name_<hash>`）。 */
 const PERSON_KEY_PREFIX = "p_";
 
+
+/**
+ * GET /v3/soul/labels —— 标签读面（Round19 契约新增）。
+ *
+ * 为什么单独开：`soul_trait_label` 是「会学习」的唯一净增长证据，但此前没有只读出口，
+ * 退役后只能查库或翻 worker 日志。契约（新，无向后兼容要求）：
+ *   - 200 { code: 0, data: { labels: [{label,status,definition,evidence,firstSeen,lastSeen}], counts:{seed,admitted,dormant}, includeDormant } }
+ *   - 缺省过滤 dormant；`?includeDormant=1|true` 才带出来（退役的行仍可审计）。
+ *   - store 未就绪 → 503 soul_labels_unavailable；读失败 → 503 soul_labels_failed。
+ */
+export async function handleSoulLabelsRoute(
+  url: URL,
+  method: string,
+  sendJson: (res: ServerResponse, status: number, payload: unknown) => void,
+  res: ServerResponse,
+  deps: SoulCardRouteDeps,
+): Promise<boolean> {
+  if (method !== "GET" || url.pathname !== "/v3/soul/labels") return false;
+  const store = deps.getStore();
+  if (!store) {
+    sendJson(res, 503, { code: 503, message: "soul_labels_unavailable" });
+    return true;
+  }
+  const tenant = tenantOf(url);
+  const flag = (url.searchParams.get("includeDormant") ?? "").toLowerCase();
+  const includeDormant = flag === "1" || flag === "true";
+  try {
+    const all =
+      typeof store.listSoulTraitLabels === "function"
+        ? ((await Promise.resolve(store.listSoulTraitLabels(tenant))) ?? [])
+        : [];
+    // 已知三态固定给 0，其余状态（如将来新增 proposed）也计数：否则会出现在 labels 里、
+    // 但 counts 里查不到的「隐身行」——读面看着比实际更健康（A1 Round19）。
+    const counts: Record<string, number> = { seed: 0, admitted: 0, dormant: 0 };
+    for (const row of all) {
+      const key = String(row.status ?? "");
+      if (key === "") continue;
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    const labels = all
+      .filter((row) => includeDormant || row.status !== "dormant")
+      .map((row) => ({
+        label: row.label,
+        status: row.status,
+        definition: row.definition,
+        evidence: row.evidence,
+        firstSeen: row.firstSeen,
+        lastSeen: row.lastSeen,
+      }));
+    sendJson(res, 200, { code: 0, data: { labels, counts, includeDormant } });
+    return true;
+  } catch (err) {
+    deps.logger?.warn?.(`[soul-labels-endpoint] labels failed: ${err instanceof Error ? err.message : String(err)}`);
+    sendJson(res, 503, { code: 503, message: "soul_labels_failed" });
+    return true;
+  }
+}
 /**
  * `?participants=` → 请求的在场者名单（阶段 2 / P2-B）。
  *   - 没传 → `undefined`（不过滤，旧行为）；
- *   - `participants=` 空串 → `[]`（只剩全局共性行）；
+ *   - `participants=` 空串 → `[]`（不留任何人的档案行；跨人共性未实现，没有「全局共性行」可留）；
  *   - 逗号分隔，去空白、去空项、最多 8 个。
  * 这里只做切分，不解析名字——解析在 resolveParticipants（要读库）。
  */
@@ -77,7 +134,8 @@ export interface ResolveParticipantsOptions {
  *   - 只给 session 且该会话最近一条 `persons_json` 非空 → 事件里那组 person_key；
  *   - 只给 session 但没事件 / 事件的 persons_json 为空 → `undefined`；
  *   - 什么都没给 → `undefined`。
- * 为什么 session 查不到不是 `[]`：`[]` 的语义是「只剩全局共性行」，会把该会话本人的
+ * 为什么 session 查不到不是 `[]`：`[]` 的语义是「按人过滤且不留任何人」（跨人共性未实现，
+ * 不存在「只剩全局行」这一档），会把该会话本人的
  * `layer='human'` 行静默清空；未知≠没有，宁可不过滤。
  * session 路径读 `persons_json`（person_key 数组），不读 `participants_json`（展示名）。
  */
@@ -178,7 +236,7 @@ export async function handleSoulCardRoute(
       const readAgentProfile = deps.getReadAgentProfile?.() ?? undefined;
       // P2-B：显式 participants 优先；只有 session 时按该会话最近一条事件反查在场者。
       // 两者都没给 → undefined（不过滤，与改前逐字节一致）；解析结果即使是空数组也照传
-      // （`participants=` 的语义就是「只剩全局共性行」）。
+      // （`participants=` 的语义就是「按人过滤，且不留任何人」——跨人共性未实现）。
       const explicit = personsOf(url);
       const session = (url.searchParams.get("session") ?? "").trim();
       const persons =

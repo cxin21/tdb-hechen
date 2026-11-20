@@ -354,6 +354,9 @@ export const SOUL_MOOD_STATE_TABLE_DDL = `CREATE TABLE IF NOT EXISTS soul_mood_s
   arousal REAL NOT NULL DEFAULT 0,
   intensity REAL NOT NULL DEFAULT 0,
   half_life_hours REAL NOT NULL DEFAULT 48,
+  decay_pending_valence REAL,
+  decay_pending_arousal REAL,
+  decay_pending_since TEXT,
   cause_event_ids_json TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL,
   PRIMARY KEY (team_id, user_id, agent_id)
@@ -597,6 +600,10 @@ export const SOUL_EVENT_MIGRATION_DDL: readonly string[] = [
   "ALTER TABLE soul_emotions ADD COLUMN event_id TEXT",
   "ALTER TABLE soul_emotions ADD COLUMN goal_id TEXT",
   "ALTER TABLE soul_emotions ADD COLUMN dimensions_json TEXT",
+  // §4.7 心境衰减记账锚（A2 Round28）：按 tick 增量记账永远跨不过档位，锚必须是「上次记账时」。
+  "ALTER TABLE soul_mood_state ADD COLUMN decay_pending_valence REAL",
+  "ALTER TABLE soul_mood_state ADD COLUMN decay_pending_arousal REAL",
+  "ALTER TABLE soul_mood_state ADD COLUMN decay_pending_since TEXT",
   // §4.10 soul_persona 退成只读投影：带置信度、认知来源、源事件与有效期。
   "ALTER TABLE soul_persona ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5",
   "ALTER TABLE soul_persona ADD COLUMN epistemic TEXT NOT NULL DEFAULT 'inferred'",

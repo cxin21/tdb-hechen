@@ -78,6 +78,18 @@ describe("decideL2PostRun · 门拦下不得刷新“上次成功 L2”", () => 
     expect(isL2ThrottleSkip({ skipped: true })).toBe(false);
   });
 
+  it("T6 半失败（hadFailure=true）→ 与门拦下同语义：不记成功、不清 pending", () => {
+    expect(decideL2PostRun({ latestCursor: "2026-11-02T00:00:00Z", hadFailure: true })).toEqual({
+      recordSuccess: false,
+      resetPending: false,
+    });
+    // 半失败与冷启动标志无关：不管第几轮，失败那批都不能被「上次成功」推后。
+    expect(decideL2PostRun({ hadFailure: true }, { isFirstRun: true })).toEqual({
+      recordSuccess: false,
+      resetPending: false,
+    });
+  });
+
   it("T4 正常跑完 / 无返回 → 记成功并清 pending", () => {
     expect(decideL2PostRun({ latestCursor: "2026-11-02T00:00:00Z" })).toEqual({
       recordSuccess: true,

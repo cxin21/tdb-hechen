@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
  *    `card-bound-failed`（失败、保留上一份），两者都只带元数据。
  *
  * P1-2（本文件当前形态）—— 通道 A 由「一个 section」拆成**两段两个 section**：
- *  - 身份段 `tdb-agemem:persona-identity`，order 固定 130（见
+ *  - 身份段 `tdb-agemem:persona-identity`，order 固定 1（见
  *    PERSONA_IDENTITY_ORDER）：读法常量 + 名称/形象/说话方式/使命/红线；
  *  - 末尾锚 `tdb-agemem:persona-anchor`，沿用调用方的尾部 order：底色 + 未完
  *    的事 + 关系 + 自我史，对应 character-card-spec-v2 的 post_history_instructions。
@@ -87,6 +87,15 @@ export const PERSONA_IDENTITY_ORDER = 1;
 
 /** 通道 B 单轮上限（spec 判据 4 的 400；Core 侧 PERSONA_TURN_MAX_CHARS 同值）。 */
 export const PERSONA_TURN_MAX_CHARS = 400;
+
+/**
+ * 会话内卡的自动刷新间隔（Round7 A4 复核）。
+ *
+ * 卡的稳定段是冻结的（保前缀 KV cache），但生产实测长会话跨 26.9h 仍用同一版卡，
+ * 而同窗口 Core 已出新 160 版（v905→v1064）——「人格连续性」在长会话里退化成「老卡一直念」。
+ * 6h 是折中：一天最多 4 次前缀失效，仍能跟上 Core 的演化。
+ */
+export const PERSONA_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 /** section-read 证据日志的同会话心跳间隔（毫秒）。 */
 const SECTION_READ_HEARTBEAT_MS = 300_000;
@@ -211,10 +220,18 @@ export interface PersonaCardDeps {
    * task-13：卡进了前缀之后回报 Core（POST /v3/soul/injection 的 card 段）。
    * 只发 version/hash/chars，不发卡正文；fire-and-forget，抛错也吞掉。
    */
-  reportInjection?: (payload: { card: { version: number; hash: string; chars: number }; sessionId?: string }) => void;
+  reportInjection?: (payload: {
+    card?: { version: number; hash: string; chars: number };
+    /** A4：取卡失败也回报一行（只带原因），否则 Core 的 failReasons 永远是 null。 */
+    failReason?: 'http_status' | 'timeout' | 'empty' | 'parse' | 'section_install_failed';
+    failStatus?: number;
+    sessionId?: string;
+  }) => void;
   /**
    * 端到端证据日志（injection-log.ts）。由 section getter 在**宿主真正取文本时**
-   * 触发，因此 hash 等于 Core 的 textHash 即证明这段卡文本进了该会话的提示词。
+   * 触发。注意 `hash` 是**这一段**的 sha256，与整卡 `textHash` 不同；要证明「Core 渲染的
+   * 这张卡被取走并注入」，看同行带上的 `cardHash`（= 整卡 textHash），它与同会话绑定行的
+   * `card.hash` 同定义、可直接对账（Round28 / r28c-a4 纠正了这里旧的错误说法）。
    */
   injectionLog?: InjectionLog;
   /** 会话解析：从宿主传给 section getter 的 context 里取会话键（task-32）。 */
@@ -230,9 +247,19 @@ export interface PersonaCardHandle {
    * identity 为空 = 绑定到「不关联」，清空该会话的卡。
    */
   /** 绑定结果：ok=false 时调用方可以判「上游没准备好」并重试（empty 除外）。 */
-  bind: (sessionId: string | undefined, identity?: string) => Promise<PersonaCardBindOutcome>;
+  bind: (
+    sessionId: string | undefined,
+    identity?: string,
+    /** 清卡归因：declined=用户选了否；unconfigured=没有可用身份（配置缺口）。 */
+    clearedSource?: 'declined' | 'unconfigured',
+  ) => Promise<PersonaCardBindOutcome>;
   /** 重取某个会话（缺省 = 最近绑定的会话），压缩后调用；走 bind 的同一路径。 */
   refresh: (sessionId?: string) => Promise<PersonaCardBindOutcome>;
+  /**
+   * 卡超过 maxAgeMs 就重新绑定（Round7 A4）：返回是否真的换了卡。
+   * 没有卡/会话键/未到期一律 false；刷新失败保留旧卡（fail-open）。
+   */
+  refreshIfStale: (sessionId?: string, maxAgeMs?: number, now?: number) => Promise<boolean>;
   /**
    * 分支继承：把父会话那一份冻结卡**原样复制**给子会话（同一对象、字节相同、零网络）。
    *
@@ -253,6 +280,11 @@ export interface PersonaCardHandle {
   turnBlock: (sessionId?: string) => Promise<{ text: string; state?: PersonaTurnRuntimeState }>;
   /** 最近绑定会话的卡元数据（判据 14 的日志副本用）。 */
   snapshot: (sessionId?: string) => PersonaCardSnapshot | undefined;
+  /**
+   * A4（Round5）：回复侧写照——本轮助手输出里有多少行人格原文被 4-gram 覆盖 ≥50%。
+   * 只上送计数，不证明因果；没有卡的会话返回全零。
+   */
+  usageProbe: (sessionId: string, text: string) => { matchedLines: number; totalLines: number; overlapPct: number };
 }
 
 type Timed<T> = { ok: true; value: T } | { ok: false };
@@ -377,6 +409,21 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
   };
 
   /**
+   * A4 Round10（CP1）：段是否真的注册进了系统提示词。
+   *
+   * 旧实现里 install 失败只 warn，而 reportCard 无条件按「两段都进」上报 chars，
+   * 于是「人格根本没进 prompt」在 stats 里被记成「注入成功」（生产 session-p2c /
+   * session-67dc6a54 就是 card-bound chars>0 而 section-read 恒 0）。这里记下
+   * 每段的注册结果，报告时按真实注册情况算 chars，并在全失败时改报 failReason。
+   */
+  const registeredSections = new Set<string>();
+  const failedSections = new Set<string>();
+  // installSection 从未被调用时（单测、或宿主没装）保持旧行为：视为「没有注册信息」，
+  // 不把 chars 打成 0，否则会把「没装 section」误报成「装了但失败」。
+  let sectionsInstalled = false;
+  const sectionRegistered = (name: string): boolean => !sectionsInstalled || registeredSections.has(name);
+
+  /**
    * 回报「哪版卡进了前缀」（task-13）。纯观测面：抛错只降 debug。
    *
    * P1-2 口径变化：`chars` 是**实际注入的字符数** = identityText.length +
@@ -386,13 +433,31 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
    * hash（= GET /v3/soul/card 的 textHash），便于对回 Core 的快照；两段各自的
    * hash 走 section-read 行（sha256(段文本)），不在这里报。
    */
+  /** 这一份卡真正会进提示词的字符数：只算注册成功的段（没注册信息时按全部算）。 */
+  const injectedCharsOf = (identityText: string, anchorText: string): number =>
+    (sectionRegistered(PERSONA_IDENTITY_SECTION_NAME) ? identityText.length : 0) +
+    (sectionRegistered(PERSONA_ANCHOR_SECTION_NAME) ? anchorText.length : 0);
+
   const reportCard = (card: PersonaCardSnapshot, identityText: string, anchorText: string, sessionId?: string): void => {
+    const chars = injectedCharsOf(identityText, anchorText);
     try {
+      // 零字节绑定不是「注入成功」。
+      //
+      // A4 Round13 复核：生产 3543 条 card-bound 里有 3343 条 chars=0（Core 回空串/卡字段缺失），
+      // 过去一律记成 card-bound，stats 的 cardBound 因此把「什么都没进提示词」算成成功。
+      // 现在统一改报 failReason：段注册失败 → section_install_failed；其余（空卡/空段）→ empty。
+      if (chars === 0) {
+        deps.reportInjection?.({
+          failReason: failedSections.size > 0 ? 'section_install_failed' : 'empty',
+          ...(sessionId === undefined ? {} : { sessionId }),
+        });
+        return;
+      }
       deps.reportInjection?.({
         card: {
           version: card.version,
           hash: card.textHash,
-          chars: identityText.length + anchorText.length,
+          chars,
         },
         // 会话键一起带出去：Core 的 /v3/soul/injection 是从请求头取身份三元组的，
         // 少了 sessionId 就退到挂载三元组（桌面端常常是空），整条回报被 422 吞掉。
@@ -407,18 +472,35 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
     sessionId: string,
     identity: string | undefined,
     previous: FrozenCard | undefined,
+    // 清卡原因（r26d-a1）：调用方分得清「用户在会话开始选了否」（declined）与
+    // 「这套部署没装配身份 / 三元组为空」（unconfigured）。两者都清卡，但归因不同：
+    // 前者是用户的决定，后者是配置缺口的症状。旧实现把 null 与 undefined 塌成一个事件，
+    // 面板会把「没配身份」说成「用户主动不关联」。
+    clearedSource?: 'declined' | 'unconfigured',
   ): Promise<PersonaCardBindOutcome> => {
     const started = Date.now();
     // 绑定到「不关联」：清掉该会话的卡，后面的 turn 不再注入人格。
     if (identity === undefined || identity === '') {
+      // Round26（按用户指正重判）：空三元组不是「拿不到身份」——它是会话开始时用户选的
+      // 「否，本次不关联」（session-identity 写入空绑定）。这是**决定**，不是取卡失败。
+      //
+      // 旧实现每次都记一行 `card-bound chars:0`，而没卡的会话每个 pre-step 都会再绑一次：
+      // 生产 2026-11-19 单个不关联会话刷了 1010 行，stats 的 cardBoundEmpty 因此被「主动退出」
+      // 灌满，看起来像注入坏了。现在只在状态真的从「有卡/未知」变「不关联」时记一行
+      // card-cleared，重复绑定静默返回。
+      const alreadyUnbound = identities.get(sessionId) === '';
       cards.delete(sessionId);
-      identities.delete(sessionId);
-      recordInjection(deps.injectionLog, {
-        event: 'card-bound',
-        sessionId,
-        chars: 0,
-      });
-      deps.log?.info?.('agemem: persona card cleared (session unbound)', { sessionId });
+      identities.set(sessionId, '');
+      if (!alreadyUnbound) {
+        recordInjection(deps.injectionLog, {
+          event: 'card-cleared',
+          sessionId,
+          chars: 0,
+          reason: clearedSource === 'unconfigured' ? 'unconfigured' : 'unassociated',
+          ...(clearedSource === undefined ? {} : { source: clearedSource }),
+        });
+        deps.log?.info?.('agemem: persona card cleared (session unassociated)', { sessionId });
+      }
       return { ok: true };
     }
     // P2-C：有带参版本就用它（把会话键交给 Core，由 Core 反查在场者）。
@@ -454,11 +536,18 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
       // 把上一个 agent 的人格塞给这个会话（串卡）。所以这里清空。
       cards.delete(sessionId);
       identities.set(sessionId, identity);
+      // A4 Round13（CP1）：零字节绑定不能再记成 card-bound。生产 3543 条 card-bound 里
+      // 3343 条是这条路径写出来的（Core 回空卡/只剩中段块），stats 的 cardBound 因此
+      // 把「什么都没进提示词」算成注入成功。改成独立事件 + 上报 failReason=empty。
       recordInjection(deps.injectionLog, {
-        event: 'card-bound',
+        event: 'card-empty',
         sessionId,
         identity,
         chars: 0,
+      });
+      deps.reportInjection?.({
+        failReason: 'empty',
+        ...(sessionId === undefined ? {} : { sessionId }),
       });
       deps.log?.info?.('agemem: persona card empty for this agent; session cleared', { sessionId, identity });
       return { ok: true };
@@ -479,7 +568,7 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
       at: Date.now(),
     }));
     identities.set(sessionId, identity);
-    const injectedChars = segments.identityText.length + segments.anchorText.length;
+    const injectedChars = injectedCharsOf(segments.identityText, segments.anchorText);
     // 判据 14：Core 与插件日志各一份「哪版卡 version/hash」。只记元数据。
     // `chars` 仍是整卡长度（快照大小）；`injected` 才是两段实际进提示词的字符数。
     deps.log?.info?.('agemem: soul.sessionInit', {
@@ -522,13 +611,22 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
       hash: previous?.textHash,
       chars: previous?.text.length ?? 0,
       reason: failure.reason,
+      ...(failure.status === undefined ? {} : { failStatus: failure.status }),
       keptVersion: previous?.version,
+    });
+    // A4：同一个原因再回报 Core 一份（只带元数据），让 /v3/soul/injection/stats
+    // 的 failReasons 能看到「这一轮取卡失败了」，而不是只能读插件本地 jsonl。
+    deps.reportInjection?.({
+      failReason: failure.reason,
+      ...(failure.status === undefined ? {} : { failStatus: failure.status }),
+      sessionId,
     });
   };
 
   const bind = async (
     sessionId: string | undefined,
     identity?: string,
+    clearedSource?: 'declined' | 'unconfigured',
   ): Promise<PersonaCardBindOutcome> => {
     if (!deps.enabled) return { ok: true };
     if (sessionId === undefined || sessionId === '') {
@@ -544,7 +642,7 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
     const previous = cards.get(sessionId);
     const task = (async (): Promise<PersonaCardBindOutcome> => {
       try {
-        return await bindOnce(sessionId, identity, previous);
+        return await bindOnce(sessionId, identity, previous, clearedSource);
       } catch (error) {
         // fetchCard 的契约是「不抛」（memory-client 把失败折成留因）。真抛了
         // 说明是接线/协议问题：归 http_status（无 status）。**不打印 error 本体**。
@@ -596,7 +694,24 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
   const refresh = async (sessionId?: string): Promise<PersonaCardBindOutcome> => {
     // 没有显式会话键就没有对象可刷新：不拿「最近一个会话」顶替（会串卡）。
     if (sessionId === undefined || sessionId === '') return { ok: true };
+    // r26e-a5：生产 08:16:13Z 有一条 card-cleared 没有 source —— 它不是「旧 bundle 还在跑」，
+    // 而是这条 refresh 路径只传 identity、不传归因，于是 alreadyUnbound 为假时落了一行
+    // reason=unassociated 却无从知道为什么。修法是让 refresh 根本走不到清卡分支：
+    // 没有卡、身份也为空/未知时，这里没有可刷新的东西，直接返回（不复用「上次归因」——
+    // 那条路实测是死代码：cards 与 identity==='' 互斥，refresh 能进 bind 时 alreadyUnbound 必为真）。
+    const knownIdentity = identities.get(sessionId);
+    if ((knownIdentity === undefined || knownIdentity === '') && cards.get(sessionId) === undefined) return { ok: true };
     return bind(sessionId, identities.get(sessionId));
+  };
+
+  const refreshIfStale = async (sessionId?: string, maxAgeMs = PERSONA_REFRESH_MS, now = Date.now()): Promise<boolean> => {
+    if (sessionId === undefined || sessionId === '') return false;
+    const card = cards.get(sessionId);
+    if (card === undefined) return false;
+    const age = now - card.at;
+    if (!(maxAgeMs > 0) || age < maxAgeMs) return false;
+    const outcome = await refresh(sessionId);
+    return outcome.ok;
   };
 
   /**
@@ -698,7 +813,9 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
         identity: card.identity,
         version: card.version,
         hash: segmentHash,
+        // Round28（r28c-a4）：整卡 hash 与段 hash 一起记，proof 才有同定义可比的对象。
         chars: text.length,
+        cardHash: card.textHash,
         sidSource,
         sidField,
         // task-34：卡在 agent/created 就位，宿主来取时必然已在手。
@@ -710,22 +827,38 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
 
   const installSection = (ctx: AgememContext, order: number): (() => void) => {
     if (!deps.enabled) return () => {};
+    sectionsInstalled = true;
     const installed: Array<() => void> = [];
     const install = (name: string, sectionOrder: number, text: (context?: unknown) => string): void => {
       try {
         installed.push(ctx.systemPrompt.section({ name, order: sectionOrder, interpolate: false, text }));
+        registeredSections.add(name);
       } catch (error) {
+        // A4 Round10（CP1）：注册失败必须留下可查的痕迹——本地日志一行 + 回报 Core
+        // 一次 failReason。宿主拒绝装 section 时，「人格在提示词里吗」的答案是「不在」，
+        // 这个答案不能只靠人去看 warn。
+        failedSections.add(name);
+        recordInjection(deps.injectionLog, {
+          event: 'section-install-failed',
+          section: name === PERSONA_ANCHOR_SECTION_NAME ? 'anchor' : 'identity',
+          chars: 0,
+          reason: 'section_install_failed',
+        });
         deps.log?.warn?.(`agemem: persona section ${name} registration failed; continuing without it`, error);
       }
     };
-    // 身份段：**固定 130**（不是配置键）。Letta 把 persona 块前置、Instruction
-    // Hierarchy 认为越靠前优先级越高；宿主 harness:identity 在 −1000、团队角色
-    // TEAM_IDENTITY 在 125；100/110/115/120 已被工作目录/沙箱/审批/子代委派占住
-    // （110 就是 SANDBOX_POLICY），故取 130 —— 仍在 PLAN_POLICY 500 之前。
+    // 身份段：**固定 1**（PERSONA_IDENTITY_ORDER，不是配置键）。Letta 把 persona
+    // 块前置、Instruction Hierarchy 认为越靠前优先级越高；宿主 harness:identity 在
+    // −1000、部署人格前缀 DEPLOYMENT_PERSONA_PREFIX 在 0，故取 1 —— 紧跟部署人格、
+    // 早于 WORKING_DIRECTORY=100 / SANDBOX_POLICY=110 / APPROVAL_POLICY=115 /
+    // SUBAGENT_DELEGATION=120 / TEAM_IDENTITY=125，远早于 PLAN_POLICY=500。
     install(PERSONA_IDENTITY_SECTION_NAME, PERSONA_IDENTITY_ORDER, sectionTextOf('identity', (card) => card.identityText));
     // 末尾锚：沿用调用方给的尾部 order（base + orderOffset + 2）—— 这是「历史
     // 之后仍要保留的提醒」，对应 character-card-spec-v2 的 post_history_instructions。
     install(PERSONA_ANCHOR_SECTION_NAME, order, sectionTextOf('anchor', (card) => card.anchorText));
+    // 每个 installSection 调用最多回报一次：两段都失败时没必要发两行同样的原因，
+    // 逐段证据在本地 jsonl 的 section-install-failed 行里。
+    if (failedSections.size > 0) deps.reportInjection?.({ failReason: 'section_install_failed' });
     return () => {
       for (const dispose of installed) {
         try {
@@ -746,6 +879,7 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
     try {
       const outcome = await withTimeout(deps.fetchTurn(sessionId), deps.timeoutMs);
       if (!outcome.ok) {
+        recordInjection(deps.injectionLog, { event: 'turn-skip', sessionId, chars: 0, reason: 'turn-timeout' });
         deps.log?.debug?.('agemem: soul turn block unavailable', { reason: 'timeout' });
         return { text: '' };
       }
@@ -759,9 +893,43 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
       const state = turn?.state === undefined ? {} : { state: turn.state };
       return { text: clamped, ...state };
     } catch (error) {
+      recordInjection(deps.injectionLog, { event: 'turn-skip', sessionId, chars: 0, reason: 'turn-error' });
       deps.log?.debug?.('agemem: soul turn block unavailable', error);
       return { text: '' };
     }
+  };
+
+  const shingles = (s: string, n: number): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i + n <= s.length; i += 1) out.push(s.slice(i, i + n));
+    return out;
+  };
+
+  /**
+   * A4（Round5）：回复侧词面写照——本轮助手输出里，有多少行人格原文被 4-gram 覆盖 ≥50%。
+   * 只用来回答「注入了却完全没人用」的最坏情况；不证明因果，也不参与任何注入决策。
+   */
+  const usageProbe = (sessionId: string, text: string): { matchedLines: number; totalLines: number; overlapPct: number } => {
+    const card = cards.get(sessionId);
+    if (card === undefined || text.trim() === '') return { matchedLines: 0, totalLines: 0, overlapPct: 0 };
+    const lines = `${card.identityText}\n${card.anchorText}`
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^[\s>*#\-–—·\d.、)（(]+/u, '').trim())
+      .filter((line) => line.length >= 6 && !line.startsWith('<') && !line.startsWith('/'));
+    const hay = text.replace(/\s+/gu, '');
+    let matchedLines = 0;
+    for (const line of lines) {
+      const grams = shingles(line.replace(/\s+/gu, ''), 4);
+      if (grams.length === 0) continue;
+      const hit = grams.filter((gram) => hay.includes(gram)).length;
+      if (hit / grams.length >= 0.5) matchedLines += 1;
+    }
+    const totalLines = lines.length;
+    return {
+      matchedLines,
+      totalLines,
+      overlapPct: totalLines === 0 ? 0 : Math.round((matchedLines / totalLines) * 1000) / 10,
+    };
   };
 
   const turnText = async (sessionId?: string): Promise<string> => (await turnBlock(sessionId)).text;
@@ -771,11 +939,13 @@ export function createPersonaCard(deps: PersonaCardDeps): PersonaCardHandle {
     bind,
     inheritFrom,
     refresh,
+    refreshIfStale,
     currentFor: (sessionId?: string) => sessionId === undefined || sessionId === '' ? '' : (cards.get(sessionId)?.text ?? ''),
     /** 装了多少会话的卡（诊断用；并发会话验证要能看「各自一份」）。 */
     boundSessions: () => cards.size,
     turnText,
     turnBlock,
+    usageProbe,
     snapshot: (sessionId?: string) => {
       const sid = sessionId;
       if (sid === undefined || sid === '') return undefined;

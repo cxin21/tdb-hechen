@@ -12,6 +12,12 @@
 /** 变更原因的受控闭集（写入即枚举；自由文本只允许进 detail）。 */
 export const SOUL_CHANGE_REASONS = [
   "first-version",
+  // 快照渲染触发（card-service 写 trigger="render"）；列进来是为了 introspection
+  // 不再把它当自由文本丢弃（A1 Round20）。
+  "render",
+  // 历史快照的 trigger="card"（2026-11-19 生产实测 3028 行，主 team 3025；全表 3045）：与 render
+  // 同义，列进来是为了 introspection 对旧行也能给出 reasonCode（a1 Round21 CP3）。新写入仍用 render。
+  "card",
   "identity-discovery",
   "core-values",
   "promise",

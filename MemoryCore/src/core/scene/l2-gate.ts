@@ -114,6 +114,12 @@ export interface L2RunnerResultLike {
   skipped?: boolean;
   reason?: string;
   latestCursor?: string;
+  /**
+   * true = records 已经读进来、但至少有一组抽取失败（A3 Round20）。
+   * 语义上属于「本轮不算成功」：cursor 已按失败即停的规则钉在旧值，
+   * l2_last_extraction_time 也不得刷新，否则下一轮的时间门会被这次半失败推后。
+   */
+  hadFailure?: boolean;
 }
 
 /** 本轮结果是否「被 F2 全局速率门拦下」（与 A1 门区分，便于观测/归因）。 */
@@ -160,6 +166,9 @@ export function decideL2PostRun(
   opts?: { isFirstRun?: boolean },
 ): L2PostRunState {
   if (isL2GateSkip(result)) return { recordSuccess: false, resetPending: false };
+  // 半失败（有组抽取失败、也有组成功）：records 只消费了一部分，cursor 已钉在旧值，
+  // 这里再记成功就会让 l2_last_extraction_time 把时间门推后，失败那批更难被重读到。
+  if (result?.hadFailure === true) return { recordSuccess: false, resetPending: false };
   const skipped = result?.skipped === true;
   if (skipped && opts?.isFirstRun === true) return { recordSuccess: false, resetPending: true };
   return { recordSuccess: true, resetPending: true };

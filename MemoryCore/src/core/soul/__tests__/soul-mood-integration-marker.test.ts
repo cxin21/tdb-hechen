@@ -88,7 +88,7 @@ function tick(store: IMemoryStore, now: string) {
 }
 
 describe("心境积分：按事件打标增量", () => {
-  it("2 条事件两轮 → 第一轮积 2、第二轮积 0；补 1 条 → 第三轮积 1", async () => {
+  it("2 条事件两轮 → 第一轮积 2、第二轮仍 2（累计）；补 1 条 → 第三轮积 3", async () => {
     const { store, episodes, readState } = makeStore([
       ep("e1", "complaint", "2026-11-07T08:00:00.000Z", -0.6),
       ep("e2", "correction", "2026-11-07T09:00:00.000Z", -0.5),
@@ -107,13 +107,16 @@ describe("心境积分：按事件打标增量", () => {
     const r2 = await tick(store, T2);
     expect(r2.moodEpisodesIntegrated).toBe(0);
     expect(r2.mood?.mood.valence ?? 0).toBeGreaterThanOrEqual(v1);
-    expect(readState()?.sampleCount).toBe(0);
+    // A2 Round24：样本数是累计量，不随「这一轮没事件」清零。
+    // 清零会让「底子」行读成「还没有形成可说的底子」（r24-a2 CP1）；
+    // 事件是否被重复积分由事件上的 moodIntegratedAt 打标保证，与样本数无关。
+    expect(readState()?.sampleCount).toBe(2);
 
     // 补一条新事件：只有它被积进第三轮。
     episodes.push(ep("e3", "complaint", "2026-11-07T11:30:00.000Z", -0.9));
     const r3 = await tick(store, T3);
     expect(r3.moodEpisodesIntegrated).toBe(1);
-    expect(readState()?.sampleCount).toBe(1);
+    expect(readState()?.sampleCount).toBe(3);
     expect(episodes.find((e) => e.episodeId === "e3")?.moodIntegratedAt).toBe(T3);
   });
 

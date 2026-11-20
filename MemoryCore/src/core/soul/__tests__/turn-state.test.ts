@@ -142,12 +142,12 @@ function rtStore(overrides: Record<string, unknown> = {}) {
 }
 
 describe("assembleTurnState（issue #180 §6：只读运行时状态装配）", () => {
-  it("衰减公式：effective = baseline + (stored - baseline) * exp(-dt / half_life)", async () => {
+  it("衰减公式：effective = baseline + (stored - baseline) * 2^(-dt / half_life)（与 emotion.ts 同口径）", async () => {
     const store = rtStore({
       readSoulMoodState: async () => rtMood({ valence: 0.8, half_life_hours: 36, updated_at: "2026-11-10T12:00:00.000Z" }),
     });
     const s = await assembleTurnState({ store, tenant: RT_TENANT, now: RT_NOW });
-    expect(s.mood.valence).toBeCloseTo(0 + (0.8 - 0) * Math.exp(-36 / 36), 6);
+    expect(s.mood.valence).toBeCloseTo(0 + (0.8 - 0) * Math.pow(2, -36 / 36), 6);
     expect(s.mood.derived).toBe(false);
     expect(s.mood.stale).toBe(false);
     expect(s.asOf).toBe(RT_NOW);
@@ -165,9 +165,9 @@ describe("assembleTurnState（issue #180 §6：只读运行时状态装配）", 
     expect(s.mood.valence).toBe(-0.2);
   });
 
-  it("超过 72 小时标 stale，只给中性底色", async () => {
+  it("超过 6 个半衰期标 stale，只给中性底色", async () => {
     const store = rtStore({
-      readSoulMoodState: async () => rtMood({ valence: 0.9, updated_at: "2026-11-08T00:00:00.000Z" }),
+      readSoulMoodState: async () => rtMood({ valence: 0.9, half_life_hours: 12, updated_at: "2026-11-08T00:00:00.000Z" }),
       readSoulState: async () => ({ valence: 0, arousal: 0.3, baselineValence: 0.1, baselineArousal: 0.3, sampleCount: 5, updatedAt: RT_NOW }),
     });
     const s = await assembleTurnState({ store, tenant: RT_TENANT, now: RT_NOW });

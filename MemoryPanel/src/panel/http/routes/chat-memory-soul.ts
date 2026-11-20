@@ -272,11 +272,51 @@ export interface SoulInjectionStatsPayload {
   window: { hours: number; from: string; to: string };
   rows: number;
   lastAt: string | null;
-  lastCard: { version: number; hash: string; chars: number } | null;
+  lastCard: { version: number; textHash: string; chars: number } | null;
   lastVolatile: { chars: number; hash: string; skipped: boolean } | null;
-  failReasons: { http_status: number; timeout: number; empty: number; parse: number } | null;
+  /** Round11 起 Core 有第五桶 section_install_failed（人格段没进系统提示词）；旧 Core 缺该键时按 0。 */
+  failReasons: { http_status: number; timeout: number; empty: number; parse: number; section_install_failed: number } | null;
   serverRenderOnly: number;
   pairs: { matched: number; charMismatch: number };
+  /** Round28（r28c-a4）：端到端证明——段行 cardHash 与同会话绑定行 card.hash 同定义逐字比对。
+   *  旧 Core 没有这一段；缺失时出参不出键（不补 0）。 */
+  proof?: { sectionReadCount: number; textHashMatched: number; sessionsWithProof: number; sectionCardHashCount: number };
+  /** Round28：默认排除 *-test/*-key 身份，这里报被排除的 journal 行数（includeTest=1 时仍照报）。 */
+  excluded?: { testRows: number };
+  /**
+   * 插件侧分组计数：byReason 是「有身份的失败按原因分桶」，unattributed 是「没有身份、
+   * 不能摊到任何租户」的集群级桶。**可选**：旧 Core 不返回 plugin 时整段不出现（不补 0）。
+   */
+  plugin?: {
+    rows: number;
+    cardBound: number;
+    cardBoundEmpty: number;
+    /** Round20：插件报的 card-empty（已并入 cardBoundEmpty，这里单列）。 */
+    cardEmpty?: number;
+    /** Round20：带身份但不进 rows 的非计账事件行。 */
+    otherRows?: number;
+  /** Round26：用户主动「本次不关联」的清卡行（card-cleared），租户级；缺键不出键。 */
+  unassociated?: number;
+  /** Round26（r26e-a1）：清卡的另一半——身份没配上，不是用户的决定。 */
+  unconfigured?: number;
+    cardBoundFailed: number;
+    noIdentityRows: number;
+    sectionRead: number;
+    sectionReadNoCard: number;
+    sectionReadEmptySegment: number;
+    sectionReadNoSession: number;
+    byReason: { http_status: number; timeout: number; empty: number; parse: number; other: number };
+    // Round25：真实插件行不带 identity，绑定/失败只能从集群口径读。
+    // cardBound/cardBoundEmpty/cardBoundFailed/byReason 是 Core 新增键；lastFailureAt 可为 null。
+    unattributed: {
+      sectionRead: number; noCard: number; emptySegment: number; noSession: number;
+      cardBound?: number; cardBoundEmpty?: number; cardBoundFailed?: number;
+      byReason?: { http_status: number; timeout: number; empty: number; parse: number; other: number };
+      lastFailureAt?: string | null;
+      /** Round28：无身份清卡（集群级）与「不属任何已知类别」的行——恒等式的落点。 */
+      cleared?: number; unconfiguredCleared?: number; other?: number;
+    };
+  };
   /**
    * 窗口内每轮块（volatile）计数：injected = 真追加进提示词，skipped = 因「近 3 轮同文本」
    * 被去重跳过。**可选**：旧 Core 不返回该字段——缺失即不出现在出参里，
@@ -363,12 +403,13 @@ function narrowStats(data: Record<string, unknown>): SoulInjectionStatsPayload {
 
   const card = asRecord(data.lastCard);
   const cardVersion = intOf(card.version);
-  const cardHash = strOrNull(card.hash);
+  // R29：Core 把该字段改名 textHash（sha256(卡正文)，与 /v3/soul/card 的 material hash 不同义）。
+  const cardHash = strOrNull(card.textHash);
   const cardChars = intOf(card.chars);
   const lastCard =
     cardVersion === null || cardHash === null || cardChars === null
       ? null
-      : { version: cardVersion, hash: cardHash, chars: cardChars };
+      : { version: cardVersion, textHash: cardHash, chars: cardChars };
 
   const vol = asRecord(data.lastVolatile);
   const volChars = intOf(vol.chars);
@@ -387,6 +428,8 @@ function narrowStats(data: Record<string, unknown>): SoulInjectionStatsPayload {
       timeout: intOf(fr.timeout) ?? 0,
       empty: intOf(fr.empty) ?? 0,
       parse: intOf(fr.parse) ?? 0,
+      // 不能只透传四桶：少这一桶会让「人格段没进提示词」在面板上永远显示为正常。
+      section_install_failed: intOf(fr.section_install_failed) ?? 0,
     };
   }
 
@@ -410,6 +453,72 @@ function narrowStats(data: Record<string, unknown>): SoulInjectionStatsPayload {
   if (injected !== null && volatileSkipped !== null) {
     out.volatileCounts = { injected, skipped: volatileSkipped };
   }
+  // 插件侧：byReason 与 unattributed 分开透传。旧 Core 没有 plugin 就整段不出现——
+  // 「没统计」和「统计出 0」在面板上必须长得不一样（后者才说明插件确实在跑）。
+  const pluginRaw = asRecord(data.plugin);
+  if (Object.keys(pluginRaw).length > 0) {
+    const br = asRecord(pluginRaw.byReason);
+    const un = asRecord(pluginRaw.unattributed);
+    out.plugin = {
+      rows: intOf(pluginRaw.rows) ?? 0,
+      cardBound: intOf(pluginRaw.cardBound) ?? 0,
+      cardBoundEmpty: intOf(pluginRaw.cardBoundEmpty) ?? 0,
+      // Round21 a4：plugin 在但缺这两键（旧 Core 中间版本）时不补 0——补 0 会让「没上报」和「上报了 0」在面板上不可区分。
+      ...(intOf(pluginRaw.cardEmpty) === null ? {} : { cardEmpty: intOf(pluginRaw.cardEmpty) as number }),
+      ...(intOf(pluginRaw.otherRows) === null ? {} : { otherRows: intOf(pluginRaw.otherRows) as number }),
+    ...(intOf(pluginRaw.unassociated) === null ? {} : { unassociated: intOf(pluginRaw.unassociated) as number }),
+    ...(intOf(pluginRaw.unconfigured) === null ? {} : { unconfigured: intOf(pluginRaw.unconfigured) as number }),
+      cardBoundFailed: intOf(pluginRaw.cardBoundFailed) ?? 0,
+      noIdentityRows: intOf(pluginRaw.noIdentityRows) ?? 0,
+      sectionRead: intOf(pluginRaw.sectionRead) ?? 0,
+      sectionReadNoCard: intOf(pluginRaw.sectionReadNoCard) ?? 0,
+      sectionReadEmptySegment: intOf(pluginRaw.sectionReadEmptySegment) ?? 0,
+      sectionReadNoSession: intOf(pluginRaw.sectionReadNoSession) ?? 0,
+      byReason: {
+        http_status: intOf(br.http_status) ?? 0,
+        timeout: intOf(br.timeout) ?? 0,
+        empty: intOf(br.empty) ?? 0,
+        parse: intOf(br.parse) ?? 0,
+        // 未知原因在 Core 归 other：面板要能看见，否则「有失败但四桶全 0」无法解释。
+        other: intOf(br.other) ?? 0,
+      },
+      // Round25：集群口径的绑定/失败。Core 新键缺席（旧 Core）时不补 0——「没上报」和「上报 0」要能区分。
+      unattributed: {
+        sectionRead: intOf(un.sectionRead) ?? 0,
+        noCard: intOf(un.noCard) ?? 0,
+        emptySegment: intOf(un.emptySegment) ?? 0,
+        noSession: intOf(un.noSession) ?? 0,
+        ...(intOf(un.cardBound) === null ? {} : { cardBound: intOf(un.cardBound) as number }),
+        ...(intOf(un.cardBoundEmpty) === null ? {} : { cardBoundEmpty: intOf(un.cardBoundEmpty) as number }),
+        ...(intOf(un.cardBoundFailed) === null ? {} : { cardBoundFailed: intOf(un.cardBoundFailed) as number }),
+        ...(un.byReason === undefined ? {} : {
+          byReason: {
+            http_status: intOf(asRecord(un.byReason).http_status) ?? 0,
+            timeout: intOf(asRecord(un.byReason).timeout) ?? 0,
+            empty: intOf(asRecord(un.byReason).empty) ?? 0,
+            parse: intOf(asRecord(un.byReason).parse) ?? 0,
+            other: intOf(asRecord(un.byReason).other) ?? 0,
+          },
+        }),
+        ...(un.lastFailureAt === undefined ? {} : { lastFailureAt: typeof un.lastFailureAt === "string" ? un.lastFailureAt : null }),
+        ...(intOf(un.cleared) === null ? {} : { cleared: intOf(un.cleared) as number }),
+        ...(intOf(un.unconfiguredCleared) === null ? {} : { unconfiguredCleared: intOf(un.unconfiguredCleared) as number }),
+        ...(intOf(un.other) === null ? {} : { other: intOf(un.other) as number }),
+      },
+    };
+  }
+  // Round28：proof / excluded 只在 Core 给出时才出键——旧 Core 缺这两段时页面显示「无数据」而不是 0。
+  const proofRaw = asRecord(data.proof);
+  if (Object.keys(proofRaw).length > 0) {
+    out.proof = {
+      sectionReadCount: intOf(proofRaw.sectionReadCount) ?? 0,
+      textHashMatched: intOf(proofRaw.textHashMatched) ?? 0,
+      sessionsWithProof: intOf(proofRaw.sessionsWithProof) ?? 0,
+      sectionCardHashCount: intOf(proofRaw.sectionCardHashCount) ?? 0,
+    };
+  }
+  const excludedRaw = asRecord(data.excluded);
+  if (intOf(excludedRaw.testRows) !== null) out.excluded = { testRows: intOf(excludedRaw.testRows) as number };
   if (data.note === "journal_disabled") out.note = "journal_disabled";
   return out;
 }
@@ -730,6 +839,10 @@ export function registerChatMemorySoulRoutes(api: Hono, deps: PanelDeps): void {
         }
         query.hours = String(Math.floor(hours));
       }
+
+      // Round28（r28c-a4⑥）：面板要能显式捞回测试行，否则「排除得对不对」永远没法在页面上核对。
+      const includeTestRaw = c.req.query("includeTest")?.trim();
+      if (includeTestRaw === "1" || includeTestRaw === "true") query.includeTest = "1";
 
       const cred = toKernelCredentials(ctx, { timeoutMs: SOUL_INJECTION_STATS_TIMEOUT_MS });
       let env: MetaEnvelope<Record<string, unknown>>;

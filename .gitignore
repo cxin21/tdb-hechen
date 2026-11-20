@@ -27,6 +27,7 @@ dist/
 node_modules/
 benchmark-runs/
 .codebuddy
+.workbuddy/
 .ai_assets
 
 # Dev-only scripts & lockfile (not shipped in MR)

@@ -52,7 +52,8 @@ describe("R1 提示词改稿契约", () => {
     });
 
     it("硬规则组：type 枚举门 / 取值范围 / 来源边界 / message_ids 可选", () => {
-      expect(chat).toContain("【硬规则——违反任何一条即整批作废】");
+      // 2026-11-18：措辞对齐代码——违反单项只丢该条（clamp/drop），不是整批作废。
+    expect(chat).toContain("【硬规则——违反哪一条，那一条就不合格");
       expect(chat).toContain("type 枚举门");
       expect(chat).toContain("persona / episodic / instruction 三者之一");
       expect(chat).toContain("priority ∈ [-1, 100]");
@@ -86,7 +87,7 @@ describe("R1 提示词改稿契约", () => {
     });
 
     it("硬规则组 + 骨架含灵魂字段", () => {
-      expect(code).toContain("【硬规则——违反任何一条即整批作废】");
+      expect(code).toContain("【硬规则——违反哪一条，那一条就不合格");
       expect(code).toContain("work_fact / work_task / work_method / work_artifact 四者之一");
       expect(code).toContain("priority ∈ [0, 100]");
       expect(code).toContain("\"certainty\": \"observed\"");

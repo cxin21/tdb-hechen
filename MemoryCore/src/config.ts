@@ -1619,8 +1619,8 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         },
       };
     })(),
-    // 自维护人格层（2026-11-05）：缺省 enabled=false=逐位现状；显式 true 才注入 <soul-persona>
-    // 并启用后台整合。形状错一律回退缺省（沿布尔门解析先例）。
+    // 自维护人格层（2026-11-05）：人格维护恒开（总闸 soulMaintenance.enabled 已于 S9 删除）。
+    // 本块只解析节拍/预算/阈值；形状错一律回退缺省（沿布尔门解析先例）。
     soulMaintenance: (() => {
       const g = obj(coreMemoryGroup, "soulMaintenance");
       const base = DEFAULT_SOUL_MAINTENANCE_CONFIG;
@@ -1642,7 +1642,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         }
         return out;
       };
-      return resolveSoulConfig({
+      const soul = resolveSoulConfig({
         updateIntervalHours: n("updateIntervalHours", base.updateIntervalHours, 1, 168),
         maxUpdatedPerCycle: n("maxUpdatedPerCycle", base.maxUpdatedPerCycle, 1, 20),
         alpha: n("alpha", base.alpha, 0, 0.5),
@@ -1656,11 +1656,17 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         driftDegrade: n("driftDegrade", base.driftDegrade, 0.3, 1),
         driftFreeze: n("driftFreeze", base.driftFreeze, 0.1, 1),
         driftConsecutive: n("driftConsecutive", base.driftConsecutive, 1, 30),
+        driftHistorySize: n("driftHistorySize", base.driftHistorySize, 1, 50),
         minEvidence: n("minEvidence", base.minEvidence, 1, 10),
+        minEpisodeEvidence: n("minEpisodeEvidence", base.minEpisodeEvidence, 1, 10),
+        episodeWindowDays: n("episodeWindowDays", base.episodeWindowDays, 1, 365),
+        maxEpisodeMessages: n("maxEpisodeMessages", base.maxEpisodeMessages, 100, 200000),
+        maxEpisodesPerRun: n("maxEpisodesPerRun", base.maxEpisodesPerRun, 1, 2000),
+        maxEpisodesForPrompt: n("maxEpisodesForPrompt", base.maxEpisodesForPrompt, 1, 500),
+        voiceFewShotPerItem: n("voiceFewShotPerItem", base.voiceFewShotPerItem, 1, 10),
         maxSoulEvidenceShare: n("maxSoulEvidenceShare", base.maxSoulEvidenceShare, 0, 1),
         verbatimMinChars: n("verbatimMinChars", base.verbatimMinChars, 4, 40),
         redlineMaxChars: n("redlineMaxChars", base.redlineMaxChars, 20, 400),
-        emotionHalfLifeHours: n("emotionHalfLifeHours", base.emotionHalfLifeHours, 0.5, 72),
         // P5：慢心境半衰期 36–168h，默认 48h（恢复 ADR-0026/0027 的 48h 口径）。
         // 下限 36h 是最小的慢层（24h 时周一的事周三就查无此事）；上限 168h 是
         // 「再久就不是心境、是人格」的分界。旧实现抬到 72–168 未回写 ADR，此处收回。
@@ -1671,6 +1677,12 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
         maxItems: perLayer("maxItems", base.maxItems, 1, 64),
         maxItemChars: perLayer("maxItemChars", base.maxItemChars, 20, 1000),
       });
+      // 不变式：freeze 阈值必须低于 degrade（drift.ts 先判 freeze，倒挂会让 degrade 永远不可达）。
+      // 解析层直接夹到安全区，而不是让一份写反的 yaml 静默改掉状态机。
+      if (soul.driftFreeze >= soul.driftDegrade) {
+        soul.driftFreeze = Math.max(0.1, Number((soul.driftDegrade - 0.01).toFixed(4)));
+      }
+      return soul;
     })(),
   };
 

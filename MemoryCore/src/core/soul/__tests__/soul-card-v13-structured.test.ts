@@ -175,6 +175,50 @@ describe("v13 结构化层：现在", () => {
     expect(now?.evidenceIds).toEqual(["ev-m1"]);
   });
 
+  it("A1 Round7：能量偏离在死区里就说「差不多」，跨过 ±0.15 才换档", () => {
+    const near = renderPersonaCardV13(
+      baseInput({
+        mood: { valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3 },
+        structured: {
+          mood: { label: "踏实", valence: 0, arousal: 0.35, intensity: 0.6, causeEventIds: ["ev-d1"] },
+        },
+      }),
+    );
+    expect(blockText(near.text, "现在") ?? "").toContain("松紧和平时差不多");
+    const far = renderPersonaCardV13(
+      baseInput({
+        mood: { valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3 },
+        structured: {
+          mood: { label: "踏实", valence: 0, arousal: 0.46, intensity: 0.6, causeEventIds: ["ev-d2"] },
+        },
+      }),
+    );
+    expect(blockText(far.text, "现在") ?? "").toContain("更活一点");
+  });
+
+  it("A1 Round26：锚段带上一档时做滞回，带边抖动不再每 tick 翻面", () => {
+    const mk = (valence: number, previousAnchor?: { tone?: string; energy?: string }, arousal = 0.3) =>
+      baseInput({
+        mood: { valence: 0, arousal: 0.3, baselineValence: 0, baselineArousal: 0.3 },
+        structured: {
+          ...(previousAnchor ? { previousAnchor } : {}),
+          mood: { label: "踏实", valence, arousal, intensity: 0.6, causeEventIds: ["ev-r26"] },
+        },
+      });
+    const at = (valence: number, previousAnchor?: { tone?: string; energy?: string }, arousal = 0.3) =>
+      blockText(renderPersonaCardV13(mk(valence, previousAnchor, arousal)).text, "现在") ?? "";
+    expect(at(0.1, { tone: "偏轻" })).toContain("比基线偏轻");
+    expect(at(0.1)).toContain("比基线还算稳");
+    expect(at(0.06, { tone: "偏轻" })).toContain("比基线偏轻");
+    // Round28（r28c-a1）：带内回摆不换档。旧实现在这里回「还算稳」，于是 0.16↔0.04 抖动每 tick 翻面。
+    expect(at(-0.1, { tone: "偏轻" })).toContain("比基线偏轻");
+    expect([0.16, 0.04, 0.16, 0.04, 0.16, 0.04].map((v) => at(v, { tone: "偏轻" })).every((text) => text.includes("比基线偏轻"))).toBe(true);
+    expect(at(-0.2, { tone: "偏轻" })).toContain("比基线偏沉");
+    expect(at(0.2, { tone: "偏沉" })).toContain("比基线偏轻");
+    expect(at(0.1, { energy: "更活一点" }, 0.36)).toContain("更活一点");
+    expect(at(0.1, undefined, 0.36)).toContain("松紧和平时差不多");
+  });
+
   it("工作锚写「在做/欠着/下一步」，卡住的目标带原因", () => {
     const card = renderPersonaCardV13(
       baseInput({
@@ -482,5 +526,34 @@ describe("结构化事实读取", () => {
     );
     expect(read?.personStates.map((s) => s.personKey)).toEqual(["p_x"]);
     expect(read?.personStates[0]?.name).toBe("");
+  });
+});
+
+describe("v13 结构化心境：过期不渲染（A2 复核）", () => {
+  it("structured.mood 的 intensity 归零或 updatedAt 过期时，不再写那句心境", () => {
+    const stale = renderPersonaCardV13(
+      baseInput({
+        structured: {
+          mood: { label: "平静", valence: 0, arousal: 0.3, intensity: 0, updatedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      }),
+    );
+    expect(stale.text).not.toContain("平静");
+    const aged = renderPersonaCardV13(
+      baseInput({
+        structured: {
+          mood: { label: "不安", valence: -0.2, arousal: 0.5, intensity: 0.6, updatedAt: "2026-10-01T00:00:00.000Z" },
+        },
+      }),
+    );
+    expect(aged.text).not.toContain("不安");
+    const fresh = renderPersonaCardV13(
+      baseInput({
+        structured: {
+          mood: { label: "平静", valence: 0, arousal: 0.3, intensity: 0.6, updatedAt: new Date().toISOString() },
+        },
+      }),
+    );
+    expect(fresh.text).toContain("平静");
   });
 });

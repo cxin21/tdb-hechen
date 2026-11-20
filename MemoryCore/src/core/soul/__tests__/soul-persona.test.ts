@@ -13,6 +13,7 @@ import {
 } from "../types.js";
 import { churnGate, classifyLine, evaluateCandidate, allPass, failedCodes, hasVerbatimSupport, textHash } from "../gates.js";
 import {
+  freezeItem,
   planAdmit,
   planContradiction,
   planLifecycle,
@@ -72,6 +73,14 @@ describe("gates：人格 vs 方法论 vs 事件", () => {
     });
     expect(failedCodes(g)).toContain("project_bound");
     expect(allPass(g)).toBe(false);
+  });
+
+  it("分类与准入同口径：没有取舍结构的「我倾向…」不归 identity（否则每 tick 必被闸门拒一次）", () => {
+    const c = classifyLine("我相信慢一点没关系，先把事情做对");
+    expect(c.layer).toBe("method");
+    expect(c.reports.some((r) => r.code === "dilemma_missing")).toBe(true);
+    // 存量导入仍豁免：用户亲手写进身份槽的话不能被形态门吞掉。
+    expect(classifyLine("我相信慢一点没关系，先把事情做对", true).layer).toBe("identity");
   });
 
   it("红线字数帽与两难门都是硬门（不是提示）", () => {
@@ -174,6 +183,45 @@ describe("gates：人格 vs 方法论 vs 事件", () => {
     });
     expect(allPass(g)).toBe(true);
   });
+
+  it("Round27：identity/self 单事件要有代价，且点到的东西必须出现在被引事件里（values 不放松）", () => {
+    const base = { now: NOW, existing: [], config: CFG, evidenceOrigins: ["tool" as const] };
+    // 证据原文：真实 rewriter 引到的那条 episode（title/立场/原话会被 worker 拼成 evidenceTexts）。
+    const EP_TEXT = ["安装新包前先跑一遍验证：先跑一遍再下结论，宁可慢一点"];
+    const one = (text: string, layer: "identity" | "values" = "identity", evidenceTexts = EP_TEXT) =>
+      evaluateCandidate(text, { ...base, layer, evidenceEpisodeIds: ["ep-a1b2c3"], evidenceTexts });
+    // 一个事件 + 立场 + 代价 + 指称能在证据里对上 → identity 全绿。
+    expect(allPass(one("我站在「先跑一遍再下结论」这一边，宁可慢一点，放弃一部分速度"))).toBe(true);
+    // 一个事件但没代价 → cost_missing（不再与 0 事件共用 episode_missing）。
+    expect(failedCodes(one("我认为自己是个严谨的人，做事先想清楚"))).toContain("cost_missing");
+    // 反证（r27g-a1）：只有模态词、指称不落地 → referent_missing。
+    expect(failedCodes(one("我宁可放弃这次机会"))).toContain("referent_missing");
+    expect(failedCodes(one("我宁愿多花点时间，也要自己动手"))).toContain("referent_missing");
+    // 反证（r27h-a1）：上一版按「有数字/有引号/够长」放行，这三种假指称全部漏过。
+    expect(failedCodes(one("我宁可放弃这次机会3"))).toContain("referent_missing");
+    expect(failedCodes(one("我站在「不装懂」这一边，宁可少说，也不装"))).toContain("referent_missing");
+    expect(failedCodes(one("我宁可慢一点，也要把每一件事都想清楚，把事情做到位再往下走一步"))).toContain("referent_missing");
+    // 反向：句子里点的数字若真在证据里出现，就应当放行（不是把数字一刀切禁掉）。
+    expect(allPass(one("我宁可多花时间，也要先跑完 37 个用例", "identity", ["这次改动跑了 37 个用例，先跑一遍再提交"]))).toBe(true);
+    // 反证（r27i-a1）：三条绕过——数字子串、2 字引号、6 字套话，全部必须被拒。
+    // ① 证据里的 2026-11-19 含字符 2，候选只写「机会2」不算点到了日期。
+    expect(failedCodes(one("我宁可放弃这次机会2", "identity", ["2026-11-19 完成 37 个用例"]))).toContain("referent_missing");
+    // ①b r27j-a1：日期整段是一个 token，截段（19 / 2026）也不算点到了日期。
+    expect(failedCodes(one("我宁可放弃这次机会19", "identity", ["2026-11-19 完成 37 个用例"]))).toContain("referent_missing");
+    expect(failedCodes(one("我宁可放弃这次机会2026", "identity", ["2026-11-19 完成 37 个用例"]))).toContain("referent_missing");
+    // 候选侧也按 token 切：`机会37-19` 不能拆出真的 37 去过门（r27k-a1 残留）。
+    expect(failedCodes(one("我宁可放弃这次机会37-19", "identity", ["2026-11-19 完成 37 个用例"]))).toContain("referent_missing");
+    // ② 「跑一」确实在原文里出现，但 2 字引号是随手可捡的碎片，不算指称。
+    expect(failedCodes(one("我站在「跑一」这一边，宁可慢一点，放弃速度"))).toContain("referent_missing");
+    // ③ 「把事情做到位」与原文共享 6 字，仍是客套模板，阈值是 8。
+    expect(failedCodes(one("我宁可放弃这次机会，把事情做到位再走", "identity", ["把事情做到位的标准是先跑一遍再下结论"]))).toContain("referent_missing");
+    // 没有证据原文可对 → 判 false（fail-closed），不能把「说不出」当成「具体」。
+    expect(failedCodes(one("我宁可放弃这次机会", "identity", []))).toContain("referent_missing");
+    // values 仍要求 ≥2：同一个句子只给 1 个事件必须被拒（判据没被整体放宽）。
+    expect(failedCodes(one("宁可慢一点，也要一手证据，放弃一部分速度", "values"))).toContain("episode_missing");
+    // 配置把 minEpisodeEvidence 调到 1 也不能放松 values（r27i-a3：只靠默认值当门槛太脆）。
+    expect(failedCodes(evaluateCandidate("宁可慢一点，也要一手证据，放弃一部分速度", { now: NOW, existing: [], config: { ...CFG, minEpisodeEvidence: 1 }, evidenceOrigins: ["tool" as const], layer: "values", evidenceEpisodeIds: ["ep-a1b2c3"], evidenceTexts: EP_TEXT }))).toContain("episode_missing");
+  });
 });
 
 // ───────────────────────────── 条目生命周期
@@ -267,6 +315,22 @@ describe("persona：准入 / 更新 / 合并 / 降级 / 冻结 / 复活 / 预算
     expect(second.merged).toHaveLength(0);
   });
 
+  it("已被取代（validTo 非空）的行不参与合并，历史行不被写 mergedInto（A1 Round20）", () => {
+    const live = admit("宁可慢一点，也要一手证据，而不是听别人转述");
+    const stale: PersonaItem = { ...admit("宁可慢一点，也要一手证据，而不是听他人转述"), weight: 0.4, validTo: "2026-11-04T00:00:00.000Z" };
+    const plan = planMerge([live, stale], 0.6, NOW);
+    expect(plan.merged).toHaveLength(0);
+    expect(plan.survivors.map((s) => s.itemId)).toEqual([live.itemId]);
+  });
+
+  it("冻结一条已有 validTo 的历史行时保留原失效时刻，不改写成 now（A1 Round19/20）", () => {
+    const live = admit("宁可慢一点，也要一手证据，而不是听别人转述");
+    const stale: PersonaItem = { ...live, state: "degraded", validTo: "2026-11-01T00:00:00.000Z" };
+    const frozen = freezeItem(stale, NOW);
+    expect(frozen.state).toBe("frozen");
+    expect(frozen.validTo).toBe("2026-11-01T00:00:00.000Z");
+  });
+
   it("30 天无证据降级（weight×0.7）、90 天或矛盾 2 次冻结，均不删除", () => {
     const fresh = admit("宁可少交付一个功能，也不交付一个自己没验证过的结论");
     const stale: PersonaItem = { ...fresh, lastEvidenceAt: "2026-09-20T12:00:00.000Z" };
@@ -284,11 +348,45 @@ describe("persona：准入 / 更新 / 合并 / 降级 / 冻结 / 复活 / 预算
     expect(conflicted.state).toBe("frozen");
   });
 
+
+  it("已取代（validTo 非空）的行不参与生命周期，validTo 不被 freeze 改写（A1 Round19 CP3）", () => {
+    const fresh = admit("宁可慢一点，也要一手证据，而不是听别人转述");
+    const superseded: PersonaItem = {
+      ...fresh,
+      lastEvidenceAt: "2026-01-01T00:00:00.000Z",
+      validTo: "2026-11-01T00:00:00.000Z",
+    };
+    const plan = planLifecycle([superseded], NOW, CFG);
+    expect(plan.frozen).toHaveLength(0);
+    expect(plan.degraded).toHaveLength(0);
+    expect(plan.items[0].validTo).toBe("2026-11-01T00:00:00.000Z");
+    expect(plan.items[0].state).toBe(fresh.state);
+    expect(plan.items[0].weight).toBe(fresh.weight);
+  });
+
   it("生命周期状态迁移不占 7 天改写额度，只有正文改写才占", () => {
     const item: PersonaItem = { ...admit("宁可慢一点，也要一手证据"), createdAt: "2026-10-01T12:00:00.000Z", updatedAt: NOW, state: "degraded" };
     expect(churnGate("values", [item], NOW, CFG).pass).toBe(true);
     const rewritten: PersonaItem = { ...item, meta: { lastRewriteAt: NOW } };
     expect(churnGate("values", [rewritten], NOW, CFG).pass).toBe(false);
+  });
+
+  it("复活不把证据时间改写成现在（老化钟只认事件时间）", () => {
+    const old: PersonaItem = {
+      ...admit("宁可慢一点，也要一手证据，而不是听别人转述"),
+      state: "degraded",
+      lastEvidenceAt: "2026-01-10T00:00:00.000Z",
+    };
+    const revived = planRevive(old, NOW, ["ep-old"]);
+    expect(revived.lastEvidenceAt).toBe("2026-01-10T00:00:00.000Z");
+    expect(revived.updatedAt).toBe(NOW);
+  });
+
+  it("冻结已被取代的行不改写原 validTo", () => {
+    const item: PersonaItem = { ...admit("先验证再承诺"), state: "active", validTo: "2026-11-01T00:00:00.000Z" };
+    const frozen = freezeItem(item, NOW);
+    expect(frozen.state).toBe("frozen");
+    expect(frozen.validTo).toBe("2026-11-01T00:00:00.000Z");
   });
 
   it("复活回到 active，权重不低于 0.5，矛盾清零", () => {
@@ -560,6 +658,37 @@ describe("drift：连续低分才降级/冻结，判断轨禁止自我复位", (
       if (i < CFG.driftConsecutive - 1) expect(r.verdict).not.toBe("freeze");
       else expect(r.verdict).toBe("freeze");
     }
+  });
+
+  it("A1 Round24：复活清掉漂移史——旧史还在的话，复活后第一轮就被冻回去", async () => {
+    const far = "完全无关的一段话：今天吃了面条，天气不错，适合出门散步和晒太阳直到傍晚";
+    let history: number[] = [];
+    for (let i = 0; i < CFG.driftConsecutive - 1; i++) {
+      const r = await measureDrift({ layer: "identity", anchors, text: far, history, config: CFG });
+      history = pushDrift(history, r.score, CFG.driftHistorySize);
+    }
+    const item: PersonaItem = {
+      itemId: "it1",
+      layer: "identity",
+      text: "我在意工程质量",
+      state: "frozen",
+      weight: 0.5,
+      evidenceIds: ["ep-1"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["episode"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: NOW,
+      lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+      driftHistory: history,
+      validTo: "2026-11-01T00:00:00.000Z",
+    };
+    const revived = planRevive(item, NOW, ["ep-2"]);
+    expect(revived.state).toBe("active");
+    expect(revived.driftHistory).toBeUndefined();
+    const withOld = await measureDrift({ layer: "identity", anchors, text: far, history: item.driftHistory, config: CFG });
+    const afterRevive = await measureDrift({ layer: "identity", anchors, text: far, history: revived.driftHistory, config: CFG });
+    expect(withOld.verdict).toBe("freeze");
+    expect(afterRevive.verdict).not.toBe("freeze");
   });
 
   it("判断轨（values/boundary）永不自我复位；语体轨可以", () => {

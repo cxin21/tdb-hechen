@@ -74,6 +74,8 @@ export function planAdmit(input: MakeItemInput & {
   evidenceEpisodeIds?: string[];
   /** voice 引用的逐字原话（准入时校验可回溯；通过后写进 meta.fewShot 供渲染）。 */
   voiceFewShots?: { quote: string; recordId: string }[];
+  /** 被引用 episode 的原文（单事件准入要在里面找到具体指称，见 gates.hasConcreteReferent）。 */
+  evidenceTexts?: string[];
 }): AdmitResult {
   const text = stripBullet(input.text).trim();
   const used = layerUsedChars(input.layer, input.existing);
@@ -86,6 +88,7 @@ export function planAdmit(input: MakeItemInput & {
     userCorpus: input.userCorpus,
     evidenceOrigins: input.evidenceOrigins,
     evidenceEpisodeIds: input.evidenceEpisodeIds,
+    evidenceTexts: input.evidenceTexts,
     voiceFewShots: input.voiceFewShots,
     legacy: input.legacy,
     personName: input.config.personName,
@@ -160,6 +163,8 @@ export function planMerge(
     // merged 已经是「并入别人的那条」：再当候选会让它每轮被重新合并一次（同一 itemId 反复重写
     // updatedAt、账本每 tick 追加 merge 行）。合并只对仍在场上的条目做。
     if (it.state === "frozen" || it.state === "merged") continue;
+    // 已被取代的行不再参与合并：它可能正被读侧按 validTo 过滤，不能把 mergedInto 写到历史行上。
+    if (typeof it.validTo === "string" && it.validTo !== "") continue;
     const list = byLayer.get(it.layer) ?? [];
     list.push(it);
     byLayer.set(it.layer, list);
@@ -262,6 +267,9 @@ export function planLifecycle(items: PersonaItem[], now: string, cfg: SoulMainte
   const frozen: string[] = [];
   const out = items.map((it) => {
     if (it.state === "frozen" || it.state === "merged") return it;
+    // 已被结论合并取代的行（validTo 非空、state 仍是 active/degraded）不参与生命周期：
+    // 否则冻结会把 validTo 改写成此刻，复活又把它删掉，取代结论被状态机悄悄撤销（A1 Round19）。
+    if (typeof it.validTo === "string" && it.validTo !== "") return it;
     const days = daysSince(it.lastEvidenceAt, now);
     const contradictions = it.contradictions ?? 0;
     if (contradictions >= cfg.freezeContradictions || days > cfg.freezeAfterDays) {
@@ -273,7 +281,9 @@ export function planLifecycle(items: PersonaItem[], now: string, cfg: SoulMainte
       return {
         ...it,
         state: "degraded" as PersonaItemState,
-        weight: round3(it.weight * cfg.degradeWeightFactor),
+        // 降级是「状态迁移」，不是每 tick 再打一次折：已 degraded 的行保持权重。
+        // 否则每次维护都 ×degradeWeightFactor，权重会单调塌向 0，分数永远回不到稳态。
+        weight: it.state === "degraded" ? it.weight : round3(it.weight * cfg.degradeWeightFactor),
         updatedAt: now,
       };
     }
@@ -288,7 +298,10 @@ export function planLifecycle(items: PersonaItem[], now: string, cfg: SoulMainte
  * 权重折半是「退出前的分量」计入后续质量分配，避免冻结行的历史权重继续占额。
  */
 export function freezeItem(item: PersonaItem, now: string, factor = 0.5): PersonaItem {
-  return { ...item, state: "frozen", weight: round3(item.weight * factor), validTo: now, updatedAt: now };
+  // 已经被取代过的行保留原来的失效时刻：冻结是「从现在起不再注入」，
+  // 不是「把历史上的失效时间改写成今天」——审计面靠 validTo 排序（A1 Round19）。
+  const validTo = typeof item.validTo === "string" && item.validTo !== "" ? item.validTo : now;
+  return { ...item, state: "frozen", weight: round3(item.weight * factor), validTo, updatedAt: now };
 }
 
 /** 复活：出现新证据即回到 active，权重回到至少 0.5（但不继承冻结前的虚高）。 */
@@ -297,13 +310,17 @@ export function planRevive(item: PersonaItem, now: string, evidenceIds: string[]
     ...item,
     state: "active",
     weight: Math.max(item.weight, 0.5),
-    lastEvidenceAt: now,
+    // 证据时间由调用方用 advanceEvidenceClock 推进：复活是状态变化，不是「现在又有了新证据」。
     updatedAt: now,
     evidenceIds: Array.from(new Set([...item.evidenceIds, ...evidenceIds])),
     contradictions: 0,
   };
   // 复活即重新参与注入：失效期末端必须清掉，否则读侧仍按「已过期」处理。
   delete revived.validTo;
+  // A1 Round24：复活必须同时清掉漂移史。否则同一次 measureDrift 立刻拿旧史判「连续 8 次低于阈值 →
+  // freeze」，复活与冻结在相邻 tick 内互相抵消（复核复现 5 轮 5/5 freeze）；漂移史是「这一次判断之前
+  // 的证据」的历史，证据门已经换了（有新的 ep-* 支撑），旧漂移史对它不再成立。
+  delete revived.driftHistory;
   return revived;
 }
 

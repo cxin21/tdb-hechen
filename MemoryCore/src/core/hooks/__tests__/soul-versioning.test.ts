@@ -91,6 +91,8 @@ describe("A · 变更归因（受控枚举，不自由文本）", () => {
   it("枚举闭集导出（消费方可断言）", () => {
     expect([...SOUL_CHANGE_REASONS]).toEqual([
       "first-version",
+      "render",
+      "card",
       "identity-discovery",
       "core-values",
       "promise",

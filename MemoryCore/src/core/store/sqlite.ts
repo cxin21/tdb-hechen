@@ -1679,6 +1679,8 @@ export class VectorStore implements IMemoryStore {
         END,
         importance=excluded.importance,
         -- 同 task_id：溯源只增不减。空数组视为"本次没带"，而不是"清空证据"。
+        -- A3 Round8 复核：显式给出新证据时仍按 ADR-0025「粘性不是只读」整列覆盖；
+        -- 内容派生 id 让同一事实重复写入落到同一行，因此这里会丢上一批 evidence id——已知取舍，见 docs §5.11。
         source_message_ids=COALESCE(NULLIF(excluded.source_message_ids, '[]'), source_message_ids)
     `);
 
@@ -3860,7 +3862,9 @@ export class VectorStore implements IMemoryStore {
             before.aliases ? JSON.stringify(before.aliases) : null,
             before.contradictions ?? 0,
             before.driftHistory ? JSON.stringify(before.driftHistory) : null,
-            before.meta ? JSON.stringify(before.meta) : null,
+            // 保留键（validTo/supersededBy/supersededReason/validFrom）在行内不在 meta 里：
+            // 直接 JSON.stringify(before.meta) 会把它们丢掉，回滚后已取代的行会以 active 复活。
+            personaMetaJson(before),
           );
           restored += 1;
         } else {
@@ -3972,7 +3976,9 @@ export class VectorStore implements IMemoryStore {
       return (rows ?? []).map(mapSoulTraitLabelRow);
     } catch (err) {
       this.logger?.warn?.(`${TAG} [soul_trait_label] list failed: ${err instanceof Error ? err.message : String(err)}`);
-      return [];
+      // 不要把读失败伪装成空表（A5 Round19）：/v3/soul/labels 只有拿到异常才能回 503
+      // soul_labels_failed；吞成 [] 会让「表读不了」与「真的没有标签」在响应上无法区分。
+      throw err;
     }
   }
 
@@ -4009,6 +4015,46 @@ export class VectorStore implements IMemoryStore {
       }
       this.db.exec("COMMIT");
       return { upserted };
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 已在回滚态 */
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 标签退役（Round18）：只改 status，不整行覆盖。
+   * soul_trait_label 按 (tenant_id, label) 存、同队多 agent 共享；整行 upsert 会把别的 agent
+   * 刚复活的 status 改回 dormant，并把它写的 last_seen 倒退回去。条件写只命中仍然 admitted
+   * 且 last_seen 早于 cutoff 的行，返回值是真正改了几行（幂等：第二次调用得 0）。
+   */
+  dormantSoulTraitLabels(
+    tenant: CoreTenant | undefined,
+    labels: string[],
+    opts: { now: string; idleDays?: number },
+  ): { retired: number } {
+    const t = normalizeCoreTenant(tenant);
+    const names = (labels ?? []).filter((x) => typeof x === "string" && x !== "");
+    if (names.length === 0) return { retired: 0 };
+    const nowMs = Date.parse(opts?.now ?? "");
+    if (!Number.isFinite(nowMs)) return { retired: 0 };
+    const idleDays = Number.isFinite(opts?.idleDays) && Number(opts.idleDays) > 0 ? Number(opts.idleDays) : 60;
+    const cutoff = new Date(nowMs - idleDays * 86_400_000).toISOString();
+    const stmt = this.db.prepare(
+      `UPDATE soul_trait_label SET status = 'dormant'
+       WHERE tenant_id = ? AND label = ? AND status = 'admitted' AND last_seen < ?`,
+    );
+    let retired = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const label of names) {
+        retired += Number(stmt.run(t.teamId, label, cutoff).changes ?? 0);
+      }
+      this.db.exec("COMMIT");
+      return { retired };
     } catch (err) {
       try {
         this.db.exec("ROLLBACK");
@@ -5231,6 +5277,7 @@ export class VectorStore implements IMemoryStore {
     tenant: CoreTenant | undefined,
     personKey: string,
     limit: number,
+    opts?: { updatedAfter?: string; afterRecordId?: string },
   ): Array<{
     recordId: string;
     at: string;
@@ -5239,16 +5286,32 @@ export class VectorStore implements IMemoryStore {
     roleInRecord?: "subject" | "speaker" | "mentioned";
     /** 这条记忆是从哪几条 L0 原话抽出来的（供提炼器取原话做逐字引文校验）。 */
     sourceMessageIds?: string[];
+    /** 修订时间（updated_time，缺失回退 created_time）。 */
+    updatedAt?: string;
   }> {
     const t = normalizeCoreTenant(tenant);
     const key = typeof personKey === "string" ? personKey.trim() : "";
     const max = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
     if (key === "" || max <= 0) return [];
+    // A3（2026-11-18 复核）：水位口径 = 「修订时间」，不是证据时间。同一条记忆被编辑/合并时
+    // 只有 updated_time 变、created_time 不变；用证据时间做水位，这类证据永久进不了候选。
+    // 带 updatedAfter 时按修订时间升序取（旧→新），被 LIMIT 截断后下一 tick 还能接上，
+    // 不会像「固定取最新 40 条」那样把 40 条之外的旧证据永久跳过。
+    // 游标模式（opts 给了 updatedAfter，含空串）：按修订时间升序当游标推进；
+    // 空串 = 从最早一条开始（首次提炼也能把 40 条之外的旧证据排进后续 tick）。
+    const cursorMode = opts !== undefined && typeof opts.updatedAfter === "string";
+    const after = cursorMode ? opts!.updatedAfter!.trim() : "";
+    // A3 Round7（C5）：水位是复合游标 (rev, record_id)。只有 rev 时，同 updated_time 的行会被
+    // LIMIT 从中间切开，后半截用「rev > 游标」永远读不到（生产实测丢行 m_1794966219567_4f3590e2）。
+    const afterRecordId =
+      cursorMode && typeof opts!.afterRecordId === "string" ? opts!.afterRecordId!.trim() : "";
     try {
+      const rev = "COALESCE(NULLIF(r.updated_time, ''), NULLIF(r.created_time, ''), '')";
       const rows = this.db
         .prepare(
           `SELECT r.record_id AS record_id,
                   COALESCE(NULLIF(r.created_time, ''), r.updated_time, '') AS at,
+                  ${rev} AS updated_at,
                   r.content AS content,
                   r.user_id AS user_id,
                   r.source_message_ids AS source_message_ids,
@@ -5257,10 +5320,23 @@ export class VectorStore implements IMemoryStore {
             WHERE r.team_id = ? AND r.user_id = ? AND r.agent_id = ?
               AND json_extract(je.value, '$.key') = ?
               AND COALESCE(json_extract(je.value, '$.role'), '') IN ('subject', 'speaker')
-            ORDER BY at DESC
+              ${
+                after !== ""
+                  ? afterRecordId !== ""
+                    ? `AND (${rev} > ? OR (${rev} = ? AND r.record_id > ?))`
+                    : `AND ${rev} > ?`
+                  : ""
+              }
+            ORDER BY ${cursorMode ? "updated_at ASC, r.record_id ASC" : "at DESC, r.record_id ASC"}
             LIMIT ?`,
         )
-        .all(t.teamId, t.userId, t.agentId, key, max) as unknown as Array<Record<string, unknown>>;
+        .all(
+          ...(after !== ""
+            ? afterRecordId !== ""
+              ? [t.teamId, t.userId, t.agentId, key, after, after, afterRecordId, max]
+              : [t.teamId, t.userId, t.agentId, key, after, max]
+            : [t.teamId, t.userId, t.agentId, key, max]),
+        ) as unknown as Array<Record<string, unknown>>;
       return (rows ?? []).map((row) => {
         const role = String(row.role ?? "");
         const idsRaw = row.source_message_ids;
@@ -5292,6 +5368,9 @@ export class VectorStore implements IMemoryStore {
             role === "subject" || role === "speaker" || role === "mentioned"
               ? (role as "subject" | "speaker" | "mentioned")
               : undefined,
+          ...(typeof row.updated_at === "string" && row.updated_at !== ""
+            ? { updatedAt: String(row.updated_at) }
+            : {}),
         };
       });
     } catch (err) {
@@ -5319,7 +5398,8 @@ export class VectorStore implements IMemoryStore {
         .prepare(
           `SELECT json_extract(je.value, '$.key') AS person_key,
                   COUNT(*) AS memories,
-                  MAX(COALESCE(NULLIF(r.created_time, ''), r.updated_time, '')) AS last_at
+                  -- A3：修订时间优先（created_time 只在 updated_time 缺失时兜底），编辑/合并也推水位。
+                  MAX(COALESCE(NULLIF(r.updated_time, ''), NULLIF(r.created_time, ''), '')) AS last_at
              FROM l1_records r, json_each(json_extract(r.metadata_json, '$.persons')) je
             WHERE r.team_id = ? AND r.user_id = ? AND r.agent_id = ?
               AND json_extract(je.value, '$.key') IS NOT NULL
@@ -5348,12 +5428,14 @@ export class VectorStore implements IMemoryStore {
     try {
       const rows = this.db
         .prepare(
-          "SELECT person_key, profile_at FROM soul_person WHERE team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
+          "SELECT person_key, profile_at, profile_record_id FROM soul_person WHERE team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
         )
         .all(t.teamId, t.userId, t.agentId) as unknown as Array<Record<string, unknown>>;
       return (rows ?? []).map((row) => ({
         personKey: String(row.person_key ?? ""),
         profileAt: typeof row.profile_at === "string" && row.profile_at !== "" ? row.profile_at : null,
+        profileRecordId:
+          typeof row.profile_record_id === "string" && row.profile_record_id !== "" ? row.profile_record_id : null,
       }));
     } catch (err) {
       this.logger?.warn?.(
@@ -5369,16 +5451,29 @@ export class VectorStore implements IMemoryStore {
    * 只有提炼**成功**才调（模型报错/解析失败不写 → 下一 tick 重试）。返回值给调用侧
    * 区分「写了」与「人不存在/已合并」，不要让水位静默丢失。
    */
-  markSoulPersonProfileAt(tenant: CoreTenant | undefined, personKey: string, at: string): { updated: boolean } {
+  markSoulPersonProfileAt(
+    tenant: CoreTenant | undefined,
+    personKey: string,
+    at: string,
+    recordId?: string,
+  ): { updated: boolean } {
     const t = normalizeCoreTenant(tenant);
     const key = typeof personKey === "string" ? personKey.trim() : "";
     if (key === "" || typeof at !== "string" || at === "") return { updated: false };
     try {
       const info = this.db
         .prepare(
-          "UPDATE soul_person SET profile_at = ?, updated_at = ? WHERE person_key = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
+          "UPDATE soul_person SET profile_at = ?, profile_record_id = ?, updated_at = ? WHERE person_key = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND merged_into IS NULL",
         )
-        .run(at, at, key, t.teamId, t.userId, t.agentId);
+        .run(
+          at,
+          typeof recordId === "string" && recordId !== "" ? recordId : null,
+          at,
+          key,
+          t.teamId,
+          t.userId,
+          t.agentId,
+        );
       return { updated: Number(info.changes ?? 0) > 0 };
     } catch (err) {
       this.logger?.warn?.(
@@ -5496,7 +5591,7 @@ export class VectorStore implements IMemoryStore {
     plan: {
       insert?: SoulPersonRelationRow[];
       appendEvidence?: Array<{ relId: string; items: Array<{ recordId: string; at: string; quote: string }> }>;
-      close?: Array<{ relId: string; at: string }>;
+      close?: Array<{ relId: string; at: string; subjKey?: string }>;
     },
   ): { inserted: number; merged: number; closed: number } {
     const t = normalizeCoreTenant(tenant);
@@ -5573,11 +5668,18 @@ export class VectorStore implements IMemoryStore {
         // P2 §4.4：失效的三件事必须一起写——valid_to（时间）、status=ended（语义）、
         // tense=past（「曾经」）。只写 valid_to 会让读面在 includeClosed 时把一条已经结束的
         // 关系当 active；S13d 的验收要求就是「结束的关系有 valid_to 且不再进卡」。
+        //
+        // S9 复审两处兜底：
+        //   1. valid_to 不得早于 valid_from——模型可能拿一条更早的 L1 去 outdated 一条由更晚
+        //      证据建的边，直接写会得到反向区间；夹到 valid_from（零长度区间）比写坏时间轴好。
+        //   2. patch.subjKey 给了就只允许关本人主体的边——档案轮次会把「别人指向他」的入边
+        //      也带进提示词（A5 归并需要），若不设防，A 的提炼能把 B→A 的边标成 ended。
+        const subjKey = patch.subjKey ?? null;
         const info = this.db
           .prepare(
-            "UPDATE soul_person_relation SET valid_to = ?, status = 'ended', tense = 'past', updated_at = ? WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND valid_to IS NULL",
+            "UPDATE soul_person_relation SET valid_to = CASE WHEN ? < valid_from THEN valid_from ELSE ? END, status = 'ended', tense = 'past', updated_at = ? WHERE rel_id = ? AND team_id = ? AND user_id = ? AND agent_id = ? AND valid_to IS NULL AND (? IS NULL OR subj_key = ?)",
           )
-          .run(patch.at, patch.at, patch.relId, t.teamId, t.userId, t.agentId);
+          .run(patch.at, patch.at, patch.at, patch.relId, t.teamId, t.userId, t.agentId, subjKey, subjKey);
         if (Number(info.changes ?? 0) > 0) closed += 1;
       }
       this.db.exec("COMMIT");
@@ -5590,7 +5692,9 @@ export class VectorStore implements IMemoryStore {
       this.logger?.warn?.(
         `${TAG} [soul_person_relation] commit failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return { inserted: 0, merged: 0, closed: 0 };
+      // S9 复审 major-2：不能吞掉失败——调用方（profile-distiller）看到 0 会当成成功并推进
+      // profile_at 水位，这一轮的关系写入就永久丢了。抛出去让上层走 catch、不写水位。
+      throw err instanceof Error ? err : new Error(String(err));
     }
     return { inserted, merged, closed };
   }
@@ -6898,6 +7002,9 @@ export class VectorStore implements IMemoryStore {
           user_id: String(d.user_id ?? ""),
           agent_id: String(d.agent_id ?? ""),
           metadata_json: String(d.metadata_json ?? "{}"),
+          // Round23（R23-3）：归档是整行存 JSON，原话溯源也带着——漏映射会让「已被软删的
+          // 旧证据」在身份事实第二跳（m_* → msg-* → ep-*）永远解析不到出处。
+          source_message_ids: parseSourceMessageIds(d.source_message_ids),
           occurred_at: (d.occurred_at as string) || undefined,
           valid_start: (d.valid_start as string) || undefined,
           valid_end: (d.valid_end as string) || undefined,

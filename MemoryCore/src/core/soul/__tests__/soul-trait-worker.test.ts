@@ -12,7 +12,7 @@ import type { IMemoryStore } from "../../store/types.js";
 
 const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
 
-function makeStore(opts: { labels?: TraitLabelRow[]; axis?: number[]; l0?: unknown[] } = {}) {
+function makeStore(opts: { labels?: TraitLabelRow[]; axis?: number[]; l0?: unknown[]; conditional?: boolean } = {}) {
   const state = { state: emptyAxisVector(), seedState: emptyAxisVector(), updatedAt: "2026-11-07T00:00:00.000Z" };
   if (opts.axis) {
     state.state.rigor = opts.axis[0] ?? 0;
@@ -20,6 +20,8 @@ function makeStore(opts: { labels?: TraitLabelRow[]; axis?: number[]; l0?: unkno
   }
   const writes: Array<{ state: Record<string, number> }> = [];
   const labelCommits: TraitLabelRow[][] = [];
+  const gateBumps: Array<Array<{ code: string; count: number }>> = [];
+  const dormantCalls: string[][] = [];
   const store = {
     listSoulPersona: vi.fn(async () => []),
     commitSoulPersona: vi.fn(async () => ({ upserted: 0, ledgered: 0 })),
@@ -53,12 +55,24 @@ function makeStore(opts: { labels?: TraitLabelRow[]; axis?: number[]; l0?: unkno
       Object.assign(state.state, input.state);
     }),
     listSoulTraitLabels: vi.fn(async () => opts.labels ?? []),
+    bumpSoulGateStats: vi.fn(async (_t: unknown, rows: Array<{ code: string; count: number }>) => {
+      gateBumps.push(rows);
+      return { bumped: rows.length };
+    }),
     commitSoulTraitLabels: vi.fn(async (_t: unknown, rows: TraitLabelRow[]) => {
       labelCommits.push(rows);
       return { upserted: rows.length };
     }),
+    ...(opts.conditional
+      ? {
+          dormantSoulTraitLabels: vi.fn(async (_t: unknown, labels: string[]) => {
+            dormantCalls.push(labels);
+            return { retired: labels.length };
+          }),
+        }
+      : {}),
   } as unknown as IMemoryStore;
-  return { store, writes, labelCommits, state };
+  return { store, writes, labelCommits, gateBumps, state, dormantCalls };
 }
 
 describe("runSoulMaintenance × 特质漂移（S4）", () => {
@@ -103,8 +117,8 @@ describe("runSoulMaintenance × 特质漂移（S4）", () => {
     expect(rep.trait?.labels.merged).toBe(1);
   });
 
-  it("净票 ≥2 → 单轴位移 ≤0.05 并写回 state；标签提案证据不足被拒", async () => {
-    const { store, writes } = makeStore();
+  it("净票 ≥2 → 单轴位移 ≤0.05 并写回 state；标签提案证据不足被拒并留下门拒计数", async () => {
+    const { store, writes, gateBumps } = makeStore();
     const judge = vi.fn(async (episodes: Array<{ episodeId: string }>) => ({
       invalid: 0,
       votes: [
@@ -133,6 +147,65 @@ describe("runSoulMaintenance × 特质漂移（S4）", () => {
     expect(Math.abs(writes[0].state.rigor)).toBeLessThanOrEqual(0.05);
     expect(rep.trait?.changed).toBe(true);
     expect(rep.trait?.labels.rejected).toBe(1);
+    // 拒收不是静默：按 (day,code,layer) 聚合进 soul_gate_stats，生产可查「产了但被挡」
+    expect(gateBumps).toHaveLength(1);
+    expect(gateBumps[0]).toEqual([
+      { day: expect.any(String), code: "label_insufficient_evidence", layer: "identity", count: 1, at: expect.any(String) },
+    ]);
+  });
+
+  it("长期没被提案命中的标签在维护轮里退役（Round18）", async () => {
+    const base = {
+      definition: "旧标签",
+      gloss: "",
+      anchor: "",
+      direction: emptyAxisVector(),
+      evidence: 4,
+      status: "admitted" as const,
+      firstSeen: "2026-01-01T00:00:00.000Z",
+      aliases: [],
+      protocolVersion: "v1",
+    };
+    const stale = { ...base, label: "旧习惯", lastSeen: "2026-01-01T00:00:00.000Z" };
+    const fresh = { ...base, label: "新习惯", lastSeen: new Date().toISOString() };
+    const { store, labelCommits } = makeStore({ labels: [stale, fresh] });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: { ...resolveSoulConfig({}) },
+    });
+    const retired = labelCommits.flat().filter((r) => r.status === "dormant").map((r) => r.label);
+    expect(retired).toEqual(["旧习惯"]);
+    // 只退役不删行：同一次提交里仍带方向载荷与证据
+    const retiredRow = labelCommits.flat().find((r) => r.label === "旧习惯");
+    expect(retiredRow?.evidence).toBe(4);
+  });
+  it("走条件写分支：只退过期标签，并回报 labelsRetired（Round18）", async () => {
+    const stale: TraitLabelRow = {
+      label: "旧习惯",
+      definition: "旧标签",
+      gloss: "",
+      anchor: "",
+      direction: emptyAxisVector(),
+      evidence: 4,
+      status: "admitted",
+      firstSeen: "2026-01-01T00:00:00.000Z",
+      lastSeen: "2026-01-01T00:00:00.000Z",
+      aliases: [],
+      protocolVersion: "v1",
+    };
+    const { store, dormantCalls, labelCommits } = makeStore({ labels: [stale], conditional: true });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: { ...resolveSoulConfig({}) },
+    });
+    expect(dormantCalls).toEqual([["旧习惯"]]);
+    expect(rep.labelsRetired).toBe(1);
+    // 条件写不整行覆盖：退役行不再走 commitSoulTraitLabels
+    expect(labelCommits.flat().some((r) => r.status === "dormant")).toBe(false);
   });
 
   it("判侧缺席 → traitSkipped=no_trait_judge，state 不写", async () => {

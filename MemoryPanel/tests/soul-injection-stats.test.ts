@@ -92,7 +92,7 @@ const FULL_STATS = {
   window: { hours: 24, from: '2026-11-06T12:00:00.000Z', to: '2026-11-07T12:00:00.000Z' },
   rows: 12,
   lastAt: '2026-11-07T11:59:00.000Z',
-  lastCard: { version: 7, hash: 'a1b2c3d4', chars: 1832 },
+  lastCard: { version: 7, textHash: 'a1b2c3d4', chars: 1832 },
   lastVolatile: { chars: 640, hash: 'ff00ee11', skipped: true },
   failReasons: null,
   serverRenderOnly: 2,
@@ -126,7 +126,7 @@ describe('GET /soul/injection-stats', () => {
     expect(body.data.window).toEqual(FULL_STATS.window);
     expect(body.data.rows).toBe(12);
     expect(body.data.lastAt).toBe(FULL_STATS.lastAt);
-    expect(body.data.lastCard).toEqual({ version: 7, hash: 'a1b2c3d4', chars: 1832 });
+    expect(body.data.lastCard).toEqual({ version: 7, textHash: 'a1b2c3d4', chars: 1832 });
     expect(body.data.lastVolatile).toEqual({ chars: 640, hash: 'ff00ee11', skipped: true });
     expect(body.data.failReasons).toBeNull();
     expect(body.data.serverRenderOnly).toBe(2);
@@ -151,7 +151,103 @@ describe('GET /soul/injection-stats', () => {
     const body = (await (await call(deps, { team: 'team-1' })).json()) as {
       data: { failReasons: Record<string, number> | null };
     };
-    expect(body.data.failReasons).toEqual({ http_status: 2, timeout: 0, empty: 1, parse: 0 });
+    expect(body.data.failReasons).toEqual({ http_status: 2, timeout: 0, empty: 1, parse: 0, section_install_failed: 0 });
+  });
+
+  it('上游给了 segment 安装失败计数就原样透传（不是补 0 把失败洗掉）', async () => {
+    const deps = makeDeps();
+    mockKernelFetch({
+      body: {
+        code: 0,
+        message: 'ok',
+        request_id: 'r2b',
+        data: {
+          ...FULL_STATS,
+          failReasons: { http_status: 0, timeout: 0, empty: 0, parse: 0, section_install_failed: 3 },
+        },
+      },
+    });
+
+    const body = (await (await call(deps, { team: 'team-1' })).json()) as {
+      data: { failReasons: Record<string, number> | null };
+    };
+    expect(body.data.failReasons?.section_install_failed).toBe(3);
+  });
+
+  it('插件侧计数原样透出：byReason.other 与 unattributed 分桶，不合并成一个数（Round12）', async () => {
+    const deps = makeDeps();
+    mockKernelFetch({
+      body: {
+        code: 0,
+        message: 'ok',
+        request_id: 'r2c',
+        data: {
+          ...FULL_STATS,
+          plugin: {
+            rows: 12,
+            cardBound: 9,
+            cardBoundEmpty: 1,
+            cardBoundFailed: 2,
+            noIdentityRows: 4,
+            sectionRead: 7,
+            sectionReadNoCard: 2,
+            sectionReadEmptySegment: 1,
+            sectionReadNoSession: 1,
+            byReason: { http_status: 0, timeout: 1, empty: 0, parse: 0, other: 6 },
+            unattributed: { sectionRead: 30, noCard: 12, emptySegment: 2, noSession: 9 },
+          },
+        },
+      },
+    });
+
+    const body = (await (await call(deps, { team: 'team-1' })).json()) as {
+      data: { plugin?: Record<string, unknown> };
+    };
+    expect(body.data.plugin?.byReason).toEqual({ http_status: 0, timeout: 1, empty: 0, parse: 0, other: 6 });
+    expect(body.data.plugin?.unattributed).toEqual({ sectionRead: 30, noCard: 12, emptySegment: 2, noSession: 9 });
+    expect(body.data.plugin?.sectionReadEmptySegment).toBe(1);
+  });
+
+  it('plugin 在但缺 cardEmpty/otherRows（旧 Core 中间版本）：两键不出现，不补 0', async () => {
+    const deps = makeDeps();
+    mockKernelFetch({
+      body: {
+        code: 0,
+        message: 'ok',
+        request_id: 'r2e',
+        data: {
+          ...FULL_STATS,
+          plugin: {
+            rows: 3,
+            cardBound: 2,
+            cardBoundEmpty: 1,
+            cardBoundFailed: 0,
+            noIdentityRows: 0,
+            sectionRead: 1,
+            sectionReadNoCard: 0,
+            sectionReadEmptySegment: 0,
+            sectionReadNoSession: 0,
+            byReason: { http_status: 0, timeout: 0, empty: 0, parse: 0, other: 0 },
+            unattributed: { sectionRead: 0, noCard: 0, emptySegment: 0, noSession: 0 },
+          },
+        },
+      },
+    });
+    const body = (await (await call(deps, { team: 'team-1' })).json()) as {
+      data: { plugin?: Record<string, unknown> };
+    };
+    expect(body.data.plugin?.rows).toBe(3);
+    expect('cardEmpty' in (body.data.plugin ?? {})).toBe(false);
+    expect('otherRows' in (body.data.plugin ?? {})).toBe(false);
+  });
+
+  it('旧 Core 不返回 plugin：出参里就没有这个键（不补一串 0 冒充统计）', async () => {
+    const deps = makeDeps();
+    mockKernelFetch({ body: { code: 0, message: 'ok', request_id: 'r2d', data: { ...FULL_STATS } } });
+    const body = (await (await call(deps, { team: 'team-1' })).json()) as {
+      data: { plugin?: unknown };
+    };
+    expect('plugin' in body.data).toBe(false);
   });
 
   it('journal_disabled：200 + note 透出（不是 500，也不伪造失败原因）', async () => {

@@ -607,6 +607,119 @@ export const EMOTION_EXPIRY_INTENSITY = 0.05;
 export const EMOTION_EXPIRY_HALF_LIVES = 6;
 
 /**
+ * 已删除的 MOOD_DECAY_EPSILON（Round7 A2 的按节拍阈值）留档说明。
+ *
+ * 旧值 0.005 与 10 分钟 tick 互相矛盾；0.0003 又让 |dev|≥0.125 时每 tick 都过门（6 tick 6 条 decay）。
+ * 两次都是在「调阈值」而不是「换判据」，所以 Round12 起改用与节拍无关的三条腿。
+ * 生产 88 行 mood_event 只有 2 条 decay 且都靠 4~5h 空档，正是旧阈值的形状。
+ */
+// Round13：MOOD_DECAY_EPSILON 已删除——判据换成 shouldRecordMoodDecay 的三条腿（越线/大幅单步/跨档），不再需要按节拍标定的常数。
+
+/** 一次「大幅单步」衰减的差值门（Round12）：长空档下一次退掉这么多就该留痕。 */
+export const MOOD_DECAY_EVENT_DELTA = 0.02;
+
+/**
+ * 衰减留痕的量化粒度（Round12 A2 复核后改写）。
+ *
+ * 判据换过三次，每次都是「把阈值调到能落地」而没有换判据：
+ * ① 固定 0.005：10 分钟 tick 下最大单步 0.0048 < 0.005，decay 行数学上落不了账；
+ * ② 按 dt 缩放的 0.0003：能落地，但 |dev| ≥ 0.125 时**每个 tick 都过门**——
+ *    临时库实测 1 小时 6 个 tick 写出 6 条 decay + 6 条 regulation，与注释「不会刷屏」相反；
+ * ③ 按 dt 线性放大：72h 空档要求退 0.13，真实只有 0.07，最该记的那次反而被挡。
+ *
+ * 结论：判据不该问「本 tick 差多少」，而该问「可见值跨档了吗」。偏离每跨过 0.01 记一条，
+ * 与节拍无关（60s 与 10min 同判），一次衰减过程最多 1/MOOD_DECAY_BUCKET = 100 条。
+ */
+export const MOOD_DECAY_BUCKET = 0.01;
+
+/**
+ * 三条腿里任一条成立就留痕（Round12）：
+ * ① 越线：从「偏着」（|dev| ≥ 注入阈值）退到「不偏了」——整个衰减过程最多一次；
+ * ② 大幅单步：一次退掉 ≥ MOOD_DECAY_EVENT_DELTA（长空档/大偏离看得见）；
+ * ③ 跨档：偏离的可见值（0.01 一档）变了——每 tick 只退一点点时不会每 tick 写一行。
+ * 三条都不看 dt：节拍变密只会让「跨档」来得更晚，不会静默，也不会按 tick 刷账本。
+ */
+export function shouldRecordMoodDecay(
+  prevDeviation: number,
+  nextDeviation: number,
+  logThreshold: number,
+): boolean {
+  const before = Math.abs(prevDeviation);
+  const after = Math.abs(nextDeviation);
+  const drop = before - after;
+  if (!(drop > 0)) return false;
+  const gate = Number.isFinite(logThreshold) && logThreshold > 0 ? logThreshold : 0.05;
+  if (before >= gate && after < gate) return true;
+  // 0.2 - 0.02 在浮点里是 0.18000000000000002：边界值必须容差，否则「恰好退 0.02」永远不算。
+  if (drop + 1e-9 >= MOOD_DECAY_EVENT_DELTA) return true;
+  return Math.floor(before / MOOD_DECAY_BUCKET) > Math.floor(after / MOOD_DECAY_BUCKET);
+}
+
+/**
+ * A2 Round28：衰减记账的最小累计落差。
+ *
+ * 旧写法拿「上一 tick 落库值」当锚，10 分钟一 tick 时单步只退约 7e-4（48h 半衰期），
+ * 而旧档位是 0.01 —— 生产 70.6 小时空档、417 张快照、0 条 decay。
+ * 现在累「纯衰减量」：每 tick 只加上本 tick 被半衰期退掉的那部分，攒够 minDrop 才落一行。
+ */
+export const MOOD_DECAY_LEDGER_MIN_DROP = 0.02;
+
+/** 累计未记账的纯衰减量（非负）+ 起算时刻；null 表示还没起算。 */
+export interface MoodDecayPendingState {
+  pendingValence: number | null;
+  pendingArousal: number | null;
+  since: string | null;
+}
+
+export interface MoodDecayLedgerStep extends MoodDecayPendingState {
+  /** 本次够格记一行时给出累计衰减（负号 = 向基线退）；不够格为 null。 */
+  decay: { deltaValence: number; deltaArousal: number; hours: number; from: string | null } | null;
+}
+
+/**
+ * 推进一步衰减账本（纯函数，worker 只负责读旧账、写新账）。
+ *
+ * 只累「纯衰减量」（decayMoodTowardBaseline 本 tick 退掉的那部分），不拿落库值差当衰减：
+ * 自我调节会一次性拉回超出部分的 20%，那不是时间造成的退；记进账本会让「三天没动静
+ * 自己降了一半」变成假账（24 tick 用例实测 8 条假 decay）。
+ * 攒够 minDrop 落一行并把累计清零；没攒够就继续累，起算时刻不变。
+ */
+export function stepMoodDecayLedger(input: {
+  previous: MoodDecayPendingState;
+  perTickValence: number;
+  perTickArousal: number;
+  directionValence: number;
+  directionArousal: number;
+  now: string;
+  minDrop?: number;
+}): MoodDecayLedgerStep {
+  const minDrop =
+    Number.isFinite(input.minDrop) && (input.minDrop as number) > 0 ? (input.minDrop as number) : MOOD_DECAY_LEDGER_MIN_DROP;
+  const since = typeof input.previous.since === "string" ? input.previous.since : input.now;
+  const pendingValence = Math.max(0, (input.previous.pendingValence ?? 0) + Math.max(0, input.perTickValence));
+  const pendingArousal = Math.max(0, (input.previous.pendingArousal ?? 0) + Math.max(0, input.perTickArousal));
+  if (!(Math.max(pendingValence, pendingArousal) + 1e-12 >= minDrop)) {
+    return { pendingValence, pendingArousal, since, decay: null };
+  }
+  const signV = input.directionValence < 0 ? -1 : 1;
+  const signA = input.directionArousal < 0 ? -1 : 1;
+  const fromMs = Date.parse(since);
+  const nowMs = Date.parse(input.now);
+  const hours = Number.isFinite(fromMs) && Number.isFinite(nowMs) ? Math.max(0, (nowMs - fromMs) / 3_600_000) : 0;
+  return {
+    pendingValence: 0,
+    pendingArousal: 0,
+    since: input.now,
+    decay: {
+      deltaValence: -signV * pendingValence,
+      deltaArousal: -signA * pendingArousal,
+      hours,
+      from: since,
+    },
+  };
+}
+
+/**
  * 情绪是否已经到期（事件原值口径）。到期 = 衰减后 < 0.05，或年龄 > 6 个半衰期。
  * 这是「原因会过期」的判据：只要窗口里还有一条说得出口的对象就拿它当原因，
  * 注入面会永远写「因为 X 正在消退」——那不是记忆，是卡住的解释。
@@ -684,6 +797,18 @@ export function emptyMood(
  * 心境积分：先前心境按半衰期衰减后作为先验，再与在场情绪做强度加权平均。
  * 无对象、无事件时也成立（回归基线）——这正是心境与情绪的区别。
  */
+/** 基线 EMA 的参考节拍：10 分钟（旧实现把 α=0.02 当「每 tick」，这里钉在参考节拍上）。 */
+export const BASELINE_EMA_REF_HOURS = 1 / 6;
+
+/**
+ * 把「每参考节拍 α」折算成「本段 dt 的等效 α」（Round13 A2）。
+ * 用 1-(1-α)^(dt/ref) 而不是 α·dt/ref：前者对任意 dt 都落在 [0,1)，多次小步累乘等于一次大步。
+ */
+export function baselineEmaAlpha(dtHours: number): number {
+  if (!(dtHours > 0)) return 0;
+  return 1 - Math.pow(1 - BASELINE_EMA_ALPHA, dtHours / BASELINE_EMA_REF_HOURS);
+}
+
 export function integrateMood(
   prev: MoodState | null,
   events: EmotionEvent[],
@@ -719,9 +844,23 @@ export function integrateMood(
   const nextValence = clamp(wSum > 0 ? vSum / wSum : bv, -1, 1);
   const nextArousal = clamp(wSum > 0 ? aSum / wSum : ba, 0, 1);
   const nextDominance = clamp(wSum > 0 ? dSum / wSum : baseDom, 0, 1);
-  // 判据 10 / §6：基线不是常量而是慢速 EMA（α=0.02）——一次事件不改变底子，
+  // 判据 10 / §6：基线不是常量而是慢速 EMA（参考节拍下 α=0.02）——一次事件不改变底子，
   // 长期偏在哪边，底子就往哪边挪。不回写基线的「基线」只是另一个瞬间读数。
-  const ema = (prev: number, next: number): number => prev + BASELINE_EMA_ALPHA * (next - prev);
+  //
+  // Round13 A2 复核：旧实现按**调用次数**推进（每 tick 都 ×0.02），60s 节拍 60 次与 10min 节拍 6 次
+  // 得到两条不同曲线——同一段输入换个 tick 就是另一条，「生产 10 分钟节拍 ×72h」里基线 8 小时就
+  // 追平心境、偏离归零，48h 半衰期名不副实。改成按 dt 折算：参考节拍（10 分钟）仍等价 α=0.02，
+  // 更密的 tick 按比例取小步，同一段墙钟时间结果一致。
+  // Round28（r28c-a1/a2）：基线只能被**证据**推动，不能被墙钟推动。旧实现每个 tick 都按
+  // dt 折算推进 α，于是没有新情绪证据的静默期里底子仍在漂：锚段档位（valence − baseline）
+  // 由这个 EMA 决定，生产 18 行严格 A/B 翻面期间 mood 事件是 0 条。
+  // 现在只有本轮真的吸收了事件才推进；推进量与「事件分几批」无关（见下）。
+  //
+  // Round28（二修）：推进量必须与「事件被拆成几批」无关。把 dt 平摊到每条事件、再按条数复合
+  // （1-(1-α(dt/n))^n），与「同一批事件分成 n 个 tick 各推一次」在数学上等价；直接乘 n 会让
+  // 10 条事件一次到账比 10 个 tick 各 1 条快得多，节拍再次变成曲线的一部分。
+  const emaAlpha = events.length === 0 ? 0 : 1 - Math.pow(1 - baselineEmaAlpha(dtHours / events.length), events.length);
+  const ema = (prev: number, next: number): number => prev + emaAlpha * (next - prev);
   return {
     valence: nextValence,
     arousal: nextArousal,
@@ -730,10 +869,12 @@ export function integrateMood(
     baselineArousal: clamp(ema(ba, nextArousal), 0, 1),
     baselineDominance: clamp(ema(baseDom, nextDominance), 0, 1),
     updatedAt: now,
-    // 样本数 = 本轮真正吸收的事件条数，不是历史累加。旧实现 base.sampleCount + events.length
-    // 每轮 +86，生产库读到 3823 时它既不是样本数也不是轮数，只是「重跑过多少次」。
-    // 现在空的 0 只表示「这一轮没有可积分的事件」（首轮回放判据仍用它）。
-    sampleCount: events.length,
+    // A2 Round24：样本数是**累计**吸收过的真实事件条数（不是本轮条数）。
+    // 旧写法按轮覆盖成 events.length，于是「这一轮没事件」被读成「从来没有过样本」：
+    // 底子行在「底子偏沉」与「还没有形成可说的底子」之间每 tick 翻面，卡上的心境句也是同一症状。
+    // 旧的错误是另一个极端（base.sampleCount + 86 每轮无脑累加，生产读到 3823 毫无意义）——
+    // 这里累加的是真实事件条数，eventCount 才是它的定义，重跑同一批事件不会重复计数（幂等由调用侧去重）。
+    sampleCount: (base.sampleCount ?? 0) + events.length,
   };
 }
 
@@ -804,6 +945,31 @@ export function decayMoodTowardBaseline(
 export const MOOD_REGULATION_TRIGGER = 0.35;
 /** 每次调节把偏离往基线拉回 20%：一次抹平是失真，不拉是开环。 */
 export const MOOD_REGULATION_PULL = 0.2;
+/**
+ * 回滞带宽：只有「上一 tick 的偏离已经低于 trigger - 0.05」时，这一轮再越线才算重新进入调节。
+ *
+ * 没有回滞时，偏离在 0.35 附近抖动会让「进入调节」反复成立（a2 Round21 实测 36 tick 里落 6 条），
+ * 账本读起来像每十分钟调节一次；加回滞后，持续调节不再刷行。
+ *
+ * 为什么不用「回落到 0.25 以下」当上一轮下限（Round21 第一版，已被 r73-a2b 的保真仿真推翻）：
+ * 真实 integrateMood 的先验权重约 0.998，单 tick 增量不到 0.05，渐进升温从 0.293 一步跨到 0.435 时
+ * 上一 tick 仍在带内 —— 于是「进入」全程一次不记，从「每一 tick 都记」错到「永远不记」。
+ * 带宽钉在 trigger 附近（0.30）才能同时满足：真跨线要记、贴着阈值抖不记。
+ */
+export const MOOD_REGULATION_HYSTERESIS = 0.05;
+
+/** 是否算「重新进入调节」：上一轮确实低于 trigger 的带宽下限、这一轮又越过 trigger。 */
+export function isMoodRegulationEntry(
+  prevDeviation: number,
+  nextDeviation: number,
+  opts?: { trigger?: number; hysteresis?: number },
+): boolean {
+  const trigger = clamp01(opts?.trigger ?? MOOD_REGULATION_TRIGGER);
+  const band = clamp01(opts?.hysteresis ?? MOOD_REGULATION_HYSTERESIS);
+  const prev = Number.isFinite(prevDeviation) ? Math.abs(prevDeviation) : 0;
+  const next = Number.isFinite(nextDeviation) ? Math.abs(nextDeviation) : 0;
+  return next >= trigger && prev < Math.max(0, trigger - band);
+}
 
 /**
  * 心境自我调节：偏离基线太远时，把偏离量往回收一档（不是清零）。
@@ -1117,16 +1283,26 @@ export function moodGrowthGate(input: {
 
 /**
  * 判据 10 / §6 G4：没有存活情绪时也要有一行「底子」（否则静默 30h 后注入面空白，
- * 读侧无法区分「平静」与「没跑」）。三档按相对基线的偏离绝对值，阈值 0.15 / 0.4。
+ * 读侧无法区分「平静」与「没跑」）。四档按相对基线的偏离绝对值，阈值 0.10 / 0.25 / 0.45。
+ * R28（r28f-a2 CP1）：原三档 0.15 / 0.4 在 181 个 valence 采样点上只产出 5 种文本，
+ * 读侧看不出「偏沉 0.2」与「偏沉 0.4」的差别；加一档不改变闭集性质（仍是确定性模板，
+ * 不引入第二模型端点），只把可判读的粒度从 3 档提到 4 档（含正负共 7 句 + 无样本 1 句）。
  */
-export function baselineToneOf(mood: Pick<SoulMoodState, "valence" | "baselineValence">): {
-  tier: "calm" | "lean" | "strong";
+export function baselineToneOf(
+  mood: Pick<SoulMoodState, "valence" | "baselineValence"> & { sampleCount?: number },
+): {
+  tier: "calm" | "slight" | "lean" | "strong";
   text: string;
 } {
+  // A2 Round9 复核：sampleCount=0 表示「还没有任何心境样本」（新租户 / 事件窗口为空）。
+  // 旧实现只看 |valence - baselineValence|，此时两值都是 0，于是输出「底子平静」——把
+  // 「没跑过」说成「平静」，正是本函数注释与 card-service.ts:605 的 sampleCount>0 门要避免的。
+  if ((mood.sampleCount ?? 0) <= 0) return { tier: "calm", text: "还没有形成可说的底子" };
   const dv = mood.valence - mood.baselineValence;
   const abs = Math.abs(dv);
-  if (abs <= 0.15) return { tier: "calm", text: "底子平静" };
-  if (abs <= 0.4) return { tier: "lean", text: dv > 0 ? "底子偏积极" : "底子偏沉" };
+  if (abs <= 0.1) return { tier: "calm", text: "底子平静" };
+  if (abs <= 0.25) return { tier: "slight", text: dv > 0 ? "底子略偏积极" : "底子略偏沉" };
+  if (abs <= 0.45) return { tier: "lean", text: dv > 0 ? "底子偏积极" : "底子偏沉" };
   return { tier: "strong", text: dv > 0 ? "底子很积极" : "底子很沉" };
 }
 

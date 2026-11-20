@@ -5,6 +5,9 @@ import type { MemoryIdentity } from './memory-client.js';
 import type { AgememContext, LoggerLike, PreStepDecision } from './types.js';
 import { resolveUserSessionInitDecision, type UserInitDecision } from './user-session-init.js';
 
+/** 会话开始时候选拉取的一次重试间隔：只用来跨过宿主机/核心的瞬时不可达。 */
+const CANDIDATES_RETRY_DELAY_MS = 700;
+
 /**
  * Session-start identity picker (task-117 v3).
  *
@@ -82,6 +85,11 @@ export type IdentitySource =
   | 'user-preset'
   /** The user's session_init says default_associate=0: associate nothing. */
   | 'user-bypass'
+  /**
+   * 用户在会话开始的那张卡上选了「否，本次不关联」。与 user-bypass 的区别只在归因：
+   * 一个是配置，一个是本次会话的当场决定；两者都写空三元组、都不注入。
+   */
+  | 'user-declined'
   | 'picked'
   /** 分支（fork/压缩）从父会话继承的身份：同一段对话，同一套三元组。 */
   | 'inherited'
@@ -336,6 +344,22 @@ function labelOf(name: string | undefined, id: string): string {
  * CJK phrases match ANYWHERE in the box ('本次跳过' is what a human types),
  * while the ASCII 'skip' keeps a word boundary so 'skipper' stays a name.
  */
+/**
+ * Round26（r26e-a1）：清卡归因。declined=用户明确选了「本次不关联」；
+ * unconfigured=会话没有可用身份（配置缺口，不是用户的决定）。
+ */
+export type CardClearedSource = 'declined' | 'unconfigured';
+
+/**
+ * 从会话绑定推出「为什么这张卡被清掉」。
+ *
+ * 旧实现里「没有绑定」与「绑定被清空」都落到同一句 reason=unassociated，面板于是把
+ * 配置缺口说成用户的决定（r26e-a1 判据1 FAIL）。这里把判据收在一处，三个调用点共用。
+ */
+export function cardClearedSource(bound: { associate?: boolean } | undefined): CardClearedSource {
+  return bound !== undefined && bound.associate === false ? 'declined' : 'unconfigured';
+}
+
 export function isSkipAnswer(text: string): boolean {
   const value = text.trim();
   if (value === '') return false;
@@ -646,6 +670,27 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     return pickedTask.kind === 'picked' && pickedTask.id !== '' ? pickedTask.id : undefined;
   };
 
+  /**
+   * Candidates, with ONE bounded retry for a transient transport failure.
+   *
+   * Measured 2026-11-19: a session whose first candidates call landed inside a Core
+   * restart window got 'transport failure: fetch failed' and was recorded as
+   * skipped for good -- and every branch session inherited the empty triple, so the
+   * whole tree ran with no card and logged section-read reason 'no-card'. A retry
+   * is still bounded (one extra call, ~0.7s) and only fires for transport/timeout,
+   * so a real 4xx/5xx still records the skip exactly as before.
+   */
+  const candidatesWithOneRetry = async (input: { userKey: string; teamId?: string; timeoutMs?: number }): Promise<CandidatesResult> => {
+    const firstAttempt = await deps.candidates(input);
+    if (firstAttempt.kind === 'ok') return firstAttempt;
+    const transient = firstAttempt.reason.startsWith('transport failure') || firstAttempt.reason.startsWith('timed out');
+    if (!transient) return firstAttempt;
+    await new Promise<void>((resolve) => { setTimeout(resolve, CANDIDATES_RETRY_DELAY_MS); });
+    const secondAttempt = await deps.candidates(input);
+    debug('agemem: identity candidates retried after a transient failure', firstAttempt.reason, secondAttempt.kind);
+    return secondAttempt;
+  };
+
   const pick = async (sessionId: string, agent: unknown, signal: unknown): Promise<void> => {
     const labelChoices = (entries: Array<{ id: string; name?: string }>): Choice[] =>
       entries.map((entry) => ({ label: labelOf(entry.name, entry.id), id: entry.id }));
@@ -660,7 +705,7 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       statusLabel = 'inert(no-key)';
       return;
     }
-    const first = await deps.candidates({ userKey, timeoutMs: deps.timeoutMs });
+    const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
     if (first.kind !== 'ok') {
       bindSkipped(sessionId, 'candidates failed: ' + first.reason);
       return;
@@ -710,7 +755,9 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
       return;
     }
     if (confirmed.kind === 'no') {
-      bindNothing(sessionId, 'skipped', confirmed.reason);
+      // 这是用户的明确决定（「否，本次不关联」），不是「没绑成」——归因必须能分开，
+      // 否则审计里 skipped 既表示超时/失败、又表示用户主动退出。
+      bindNothing(sessionId, 'user-declined', confirmed.reason);
       return;
     }
 

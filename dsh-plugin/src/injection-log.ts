@@ -47,6 +47,20 @@ export type InjectionEventKind =
   /** 绑定取卡失败，该会话保留上一份（冷启动就是没有卡）。 */
   | 'card-bound-failed'
   /**
+   * A4 Round10（CP1）：两段 system prompt section 注册失败（宿主拒绝）。
+   * 这一行是「人格根本没进提示词」的独立证据——没有它，段注册失败会被
+   * card-bound 的 chars>0 记成注入成功。
+   */
+  | 'section-install-failed'
+  // A4 Round13：Core 回空卡/空段时单独记一条，不再写 card-bound chars=0。
+  | 'card-empty'
+  /**
+   * 会话开始时用户选了「本次不关联」（绑定三元组为空）——清卡是一次**决定**，不是故障。
+   * 只在状态从「有卡/未知」变「不关联」时记一行；重复绑定不再写（否则一个不关联的会话
+   * 每 pre-step 刷一行 chars=0 的 card-bound，stats 的 cardBoundEmpty 会被灌满）。
+   */
+  | 'card-cleared'
+  /**
    * 分支（fork/压缩）继承了父会话的冻结卡：同一对象、字节相同、零网络。
    * `parentSessionId` 记父会话键，`hash`/`chars` 与父会话第一次 section-read 相等即证明
    * 「同一段对话只有一个人设」。
@@ -73,7 +87,13 @@ export interface InjectionLogEvent {
   turn?: number | null;
   /** Card version, `section-read` only. */
   version?: number;
-  /** Content hash of the exact injected bytes (fnv1a, same as the report). */
+  /**
+   * `section-read` only（Round28 / r28c-a4）：这一行所属**整卡**的 sha256，
+   * 与 Core 快照的 content_hash / 插件绑定回写的 card.hash 同定义。
+   * `hash` 是段口径，两者不要混用。旧行没有这个字段。
+   */
+  cardHash?: string;
+  /** Content hash of the exact injected bytes (SHA-256, same as the report; fnv1a is only used for volatile blocks). */
   hash?: string;
   /** Bound identity triple team/user/agent (task-32). */
   identity?: string;
@@ -100,8 +120,10 @@ export interface InjectionLogEvent {
   flagTrace?: unknown;
   /** 这一轮状态引用的证据 id（只记 id，不记正文）。 */
   evidenceIds?: unknown;
-  /** Failure reason for `card-bound-failed` (http_status / timeout / empty / parse). */
+  /** Failure reason for `card-bound-failed` / `turn-skip` (http_status / timeout / empty / parse). */
   reason?: string;
+  /** `card-bound-failed` only: HTTP status when the failure was an HTTP response (401/500…), so local logs can tell them apart. */
+  failStatus?: number;
   /**
    * `section-read` only: where the session key came from — the host's agent
    * context, the last completed bind, or nothing at all (section returned '').

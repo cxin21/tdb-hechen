@@ -77,12 +77,16 @@ export const SOUL_REL_OBJ_INDEX_DDL =
  * 其它错误仍要冒泡（不许把真错当已迁移）。
  *
  * - `soul_person.profile_at`：A8，提炼成功水位（`profile_token_budget` 已按 A8 删除，不入表）。
+ * - `soul_person.profile_record_id`：A3 Round7，复合游标的第二段（同一修订时间内的次级键）。
  * - `soul_person_relation.inverse_pred`：关系谓词由模型给（开放集合，不再用固定词表），
  *   逆词也由模型给，用来判定「两条边说的是同一件事」，所以必须落库。
  * - `soul_person_relation.evidence_json`：A5，反向边合并时把多条证据并到既有边。
  */
 export const SOUL_PERSON_MIGRATION_DDL: readonly string[] = [
   "ALTER TABLE soul_person ADD COLUMN profile_at TEXT",
+  // A3 Round7（C5）：水位是复合游标 (profile_at, profile_record_id)。只存时间戳时，同 updated_time
+  // 的行被 LIMIT 从中间切开，后半截用「rev > 游标」永远读不到（生产实测丢过行）。
+  "ALTER TABLE soul_person ADD COLUMN profile_record_id TEXT",
   "ALTER TABLE soul_person_relation ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '[]'",
   "ALTER TABLE soul_person_relation ADD COLUMN inverse_pred TEXT",
 ];

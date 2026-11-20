@@ -197,13 +197,18 @@ interface PersonReadModel {
   relations: SoulPersonRelationRow[];
 }
 
+function isRetired(validTo: unknown): boolean {
+  return typeof validTo === "string" && validTo.trim() !== "";
+}
+
 async function loadPersonReadModel(store: IMemoryStore, tenant: CoreTenant): Promise<PersonReadModel> {
   const rawPersons = typeof store.listSoulPersons === "function" ? ((await store.listSoulPersons(tenant)) ?? []) : [];
   const alive = rawPersons.filter((p) => p.mergedInto === null);
   const items = typeof store.listSoulPersona === "function" ? ((await store.listSoulPersona(tenant)) ?? []) : [];
   const fieldsByKey = new Map<string, Set<string>>();
   for (const item of items) {
-    if (item.layer !== "human" || item.validTo) continue;
+    if (item.layer !== "human") continue;
+    if (isRetired(item.validTo)) continue;
     const meta = (item.meta ?? null) as ProfileMetaView | null;
     if (!meta || meta.source !== PROFILE_SOURCE) continue;
     if (typeof meta.person?.key !== "string" || !isPersonProfileField(meta.profileField)) continue;
@@ -216,7 +221,7 @@ async function loadPersonReadModel(store: IMemoryStore, tenant: CoreTenant): Pro
     typeof store.listSoulPersonRelations === "function" ? ((await store.listSoulPersonRelations(tenant)) ?? []) : [];
   const degree = new Map<string, number>();
   for (const row of relations) {
-    if (row.validTo) continue;
+    if (isRetired(row.validTo)) continue;
     degree.set(row.subjKey, (degree.get(row.subjKey) ?? 0) + 1);
     if (row.objKey) degree.set(row.objKey, (degree.get(row.objKey) ?? 0) + 1);
   }
@@ -254,7 +259,7 @@ export async function handleSoulPersonsRoute(
     // 字段数 / 度数：与 /v3/soul/person 同一把尺子（见 loadPersonReadModel）。
     const edges: SoulPersonGraphEdgeView[] = [];
     for (const row of relations) {
-      if (row.validTo) continue;
+      if (isRetired(row.validTo)) continue;
       edges.push({
         relId: row.relId,
         subjKey: row.subjKey,
@@ -339,7 +344,7 @@ export async function handleSoulPersonRoute(
     for (const item of items) {
       if (item.layer !== "human") continue;
       // 已作废的行不进读面（validTo 非空 = 被 supersede 的旧版本），但它们仍在库里可审计。
-      if (item.validTo) continue;
+      if (isRetired(item.validTo)) continue;
       const meta = (item.meta ?? null) as ProfileMetaView | null;
       if (!meta || meta.source !== PROFILE_SOURCE) continue;
       if (typeof meta.person?.key !== "string" || meta.person.key !== key) continue;

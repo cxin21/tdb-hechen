@@ -181,6 +181,12 @@ export function coreFixture(options: CoreFixtureOptions = {}): { fetchImpl: type
       soulEventIds.set(key, eventId);
       return envelope({ event_id: eventId, duplicate: false });
     }
+    if (path.endsWith('/v3/soul/injection')) {
+      // POST /v3/soul/injection 只记账（soul-injection-endpoint.ts）。没有这一分支时
+      // fallback 回 text 'ok'，客户端 JSON 解析失败 → reportSoulInjection 永远 ok=false，
+      // 于是「失败补投」永远测不出成功的一半。
+      return envelope({ ok: true });
+    }
     if (path.endsWith('/v3/skill/conversation/add')) {
       // L2 buffer: 'ok' until the threshold archives the buffer.
       return envelope({ status: 'ok' });

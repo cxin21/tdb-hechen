@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import { clampRedlines } from "./card.js";
 import type { CardRedline, CardSegment } from "./card.js";
-import { isReusableAffectObject } from "./emotion.js";
+import { isReusableAffectObject, isStoredEmotionExpired } from "./emotion.js";
 import { outcomeScore } from "../store/soul-self-store.js";
 import type { SoulCalibrationRow } from "../store/soul-event-types.js";
 import { CARD_READER_NOTE } from "./traits.js";
@@ -74,7 +74,7 @@ export const CARD_V13_BLOCK_MAX_CHARS: Record<CardV13BlockKey, number> = {
   now: 220,
   memory: 300,
   boundaries: 180,
-  recent: 160,
+  recent: 230,
 };
 
 /** 块来源：声明层 / 观察层 / 推算 / 结构化（阶段 2 才有）/ 缺席。 */
@@ -113,6 +113,12 @@ export interface CardV13Mood {
   baselineArousal: number;
   emotionLabel?: string;
   emotionObject?: string;
+  /** A2（2026-11-18）：强度与发生时刻。缺省=未知（老调用方），仍按原样渲染；
+   *  两个都有时按 emotion.ts 的到期判据门一次，过期就不写「心里那点X还在」。 */
+  emotionIntensity?: number;
+  emotionAt?: string;
+  /** A2：落库时刻（写入时强度已按半衰期衰减），过期判据必须从这一刻起算，不能拿事件时刻二次衰减。 */
+  emotionWrittenAt?: string;
 }
 
 /** soul_mood_state 的一行：慢心境现值（不是 soul_state 的即时情绪）。 */
@@ -123,6 +129,8 @@ export interface CardV13MoodState {
   intensity: number;
   /** 造成这次心境的事件 id（卡上只做证据回指，不进正文）。 */
   causeEventIds?: string[];
+  /** A2：soul_mood_state.updated_at。过期判据的起算点（强度已是写入时衰减值）。 */
+  updatedAt?: string;
 }
 
 /** soul_person_state 的一行：四轴连续状态（默认 0.5，只有偏离足够大才写进卡）。 */
@@ -177,9 +185,17 @@ export interface CardV13Structured {
   mood?: CardV13MoodState | null;
   working?: CardV13WorkingState | null;
   goals?: CardV13Goal[];
+  /**
+   * R26-2：上一张卡锚段的档位（由 card-service 从上一份快照正文解析）。
+   * 锚句是「比基线X，Y。」的单点比较，10 分钟 tick 会让处在带边的值每 tick 翻面；
+   * 带上上一档才能做滞回——Round28 起只有反向跨过 ±0.15 才换档，档内抖动一律留在原档。
+   */
+  previousAnchor?: { tone?: string; energy?: string };
 }
 
 export interface SoulCardV13Input {
+  /** 渲染用的「现在」（过期判据用）；缺省取真实时钟。可注入才能让过期断言与时钟无关。 */
+  now?: string;
   profile: {
     name: string;
     nameSource?: "declared" | "skeleton";
@@ -279,7 +295,10 @@ function confidenceFromData(
 export const CARD_V13_CALIBRATION_MAX_DOMAINS = 2;
 
 /** 把握度措辞：只落档位、不写百分数；阈值固定，数字仍可从 soul_calibration 复算。 */
+// r32-a1：原来最高档从 0.8 起就是「八成」，0.90 也被读成八成（与 soul_calibration 的
+// avg(predicted)=0.90 差一档）。补 0.9 → 「九成」，只加一档、不动其余阈值。
 const CONFIDENCE_WORD_STEPS: ReadonlyArray<{ min: number; word: string }> = [
+  { min: 0.9, word: "九成" },
   { min: 0.8, word: "八成" },
   { min: 0.65, word: "六成" },
   { min: 0.45, word: "半成" },
@@ -421,8 +440,10 @@ function calibrationViews(rows: ReadonlyArray<SoulCalibrationRow>): DomainCalibr
         sumActual += bucket.actual[i];
         sumAbs += Math.abs(diff);
       }
-      meanPredicted = sumPredicted / n;
-      bias = (sumPredicted - sumActual) / n;
+      // R32：668 个 0.9 顺序累加得 601.1999999999924，除下来 0.8999999999999887，
+      // 直接和 0.9 档比会掉回「八成」（生产实测）。取档是有语义的十分位读法，先按 1e-4 归整。
+      meanPredicted = Math.round((sumPredicted / n) * 10000) / 10000;
+      bias = Math.round(((sumPredicted - sumActual) / n) * 10000) / 10000;
       mae = sumAbs / n;
     }
     out.push({
@@ -776,6 +797,27 @@ function doingText(raw: string): string {
   return text;
 }
 
+const BAND_ENTER = 0.15;
+
+/**
+ * R26-2：带滞回的三档判别。
+ * 上一档为空 = 首张卡，按 ±BAND_ENTER 单点；已在某一档时**只有反向越过 BAND_ENTER 才换档**（粘性），
+ * 只有反方向越过 BAND_ENTER 才换档，其余回到中间档。这样「0.10 / 0.16 / 0.11」这种带边抖动
+ * 不会每 tick 翻面，而真实的持续下滑（0.10 → -0.20）仍会被说出来。
+ */
+function pickBand(
+  delta: number,
+  previous: string | undefined,
+  labels: { up: string; down: string; mid: string },
+): string {
+  const prev = previous === labels.up ? labels.up : previous === labels.down ? labels.down : "";
+  // Round28（r28c-a1）：带内抖动曾经每 tick 翻面（dv 0.16↔0.04 链式 6 tick 翻 6 次）。
+  // 现在只有反向越过进入阈值才换档，否则保持上一档——中间档只作为首张卡的初值。
+  if (prev === labels.up) return delta <= -BAND_ENTER ? labels.down : labels.up;
+  if (prev === labels.down) return delta >= BAND_ENTER ? labels.up : labels.down;
+  return delta <= -BAND_ENTER ? labels.down : delta >= BAND_ENTER ? labels.up : labels.mid;
+}
+
 function nowBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block | null {
   const working = input.structured?.working ?? null;
   const goals = (input.structured?.goals ?? []).filter((g) => g.status === "active" || g.status === "blocked");
@@ -792,14 +834,65 @@ function nowBlock(input: SoulCardV13Input, warnings: string[]): BuiltV13Block | 
     const baselineArousal = input.mood?.baselineArousal ?? 0.3;
     const dv = mood.valence - baselineValence;
     const da = mood.arousal - baselineArousal;
-    const tone = dv <= -0.1 ? "偏沉" : dv >= 0.1 ? "偏轻" : "还算稳";
-    const energy = da <= -0.1 ? "更收着一点" : da >= 0.1 ? "更活一点" : "松紧和平时差不多";
+    // A1 Round7：原来 ±0.1 单点比较 + 10 分钟 tick 的衰减/加料，让「更活一点 / 松紧和平时差不多」
+    // 在阈值附近周期翻面（生产 12 张快照严格 A/B 交替）。这里把中性带拉宽到 ±0.15：
+    // 单张卡只能按 ±0.15 判初值；真正的滞回由上一档承担（见下一段）。
+    // 单次渲染拿不到——这条只降低翻面频率，不消除（见 docs §5.9 局限）。
+    // R28：滞回改为粘性——上一档存在时，只有反向跨过 0.15 才换到对面档，
+    // 档内（含回到 0 附近）一律留在原档；没有上一档（首张卡/旧快照无锚句）按 ±0.15 单点判定。
+    const tone = pickBand(dv, input.structured?.previousAnchor?.tone, { up: "偏轻", down: "偏沉", mid: "还算稳" });
+    const energy = pickBand(da, input.structured?.previousAnchor?.energy, {
+      up: "更活一点",
+      down: "更收着一点",
+      mid: "松紧和平时差不多",
+    });
     const evidence = structuredMood?.causeEventIds?.length
       ? { evidenceIds: structuredMood.causeEventIds.slice(0, 3) }
       : {};
     lines.push({ text: `比基线${tone}，${energy}。`, ...evidence });
     const label = oneLine(structuredMood?.label ?? input.mood?.emotionLabel ?? "");
-    if (label !== "") {
+    // A2：结构化心境行本身带强度（soul_mood_state）；回退的即时情绪看 emotionIntensity/emotionAt。
+    // 过期或强度归零一律不写——「正在消退」不能变成永久状态。
+    // A2 Round11：过期判据要用调用方给的「现在」（assembleSoulCard 的 now），否则卡侧
+    // 过期断言无法被 now 钉住，同一输入在不同时刻渲染结果不同。
+    const renderNow = typeof input.now === "string" && input.now !== "" ? input.now : new Date().toISOString();
+    // A2：结构化慢心境同样会过期。旧实现只在 structuredMood === null 时判，
+    // 于是 soul_mood_state 里 intensity=0 / 19 天前的「平静」仍会写「心里那点平静还在」。
+    const structuredStale =
+      structuredMood !== null &&
+      ((structuredMood.intensity !== undefined && structuredMood.intensity <= 0.01) ||
+        (structuredMood.updatedAt !== undefined &&
+          structuredMood.updatedAt !== "" &&
+          isStoredEmotionExpired(
+            {
+              label,
+              intensity: Number(structuredMood.intensity ?? 0),
+              at: structuredMood.updatedAt,
+              asOf: structuredMood.updatedAt,
+            },
+            renderNow,
+          )));
+    // A2 Round16：旧实现在缺 emotionWrittenAt 时把 asOf 退成 emotionAt，等于把「落库时已经衰减过的强度」
+    // 再从事件时刻衰减一遍（二次衰减），把还活着的情绪提前判死。写入时刻未知时只信强度门，
+    // 不再做年龄/衰减推算——宁可多留一条低强度情绪，也不把「他刚说过的话」判成过期。
+    const fallbackWrittenAt = String(input.mood?.emotionWrittenAt ?? "");
+    const fallbackStale =
+      structuredMood === null &&
+      input.mood?.emotionAt !== undefined &&
+      input.mood?.emotionIntensity !== undefined &&
+      (Number(input.mood.emotionIntensity) <= 0.01 ||
+        (fallbackWrittenAt !== "" &&
+          isStoredEmotionExpired(
+            {
+              label,
+              intensity: Number(input.mood.emotionIntensity),
+              at: String(input.mood.emotionAt),
+              asOf: fallbackWrittenAt,
+            },
+            renderNow,
+          )));
+    const staleEmotion = structuredMood !== null ? structuredStale : fallbackStale;
+    if (label !== "" && !staleEmotion) {
       // t25/F1：这是 soul_state.emotion_object 最后一个直拼入口。历史脏值
       // （「用户（姓名未提供）是林夏的师父」）与写入侧共用 emotion.ts 的同一把尺子，
       // 不在卡面抄判断；挡掉后只写「心里那点X还在。」，不改写、不解释、不补别的句子。

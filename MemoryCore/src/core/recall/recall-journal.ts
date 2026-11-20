@@ -530,13 +530,26 @@ export interface RecallJournalInjection {
   /** 通道 B：本轮 volatile 块；skipped=true 表示去重跳过，chars=0。 */
   volatile?: { chars: number; hash: string; skipped: boolean };
   /**
+   * A4（Round5）：回复侧写照。本轮助手输出里，有多少行人格原文被 4-gram 覆盖 ≥50%。
+   * 词面重合探针（proxy），不证明因果；由 stats 单独聚合成 usage 块。
+   */
+  usage?: { matchedLines: number; totalLines: number; overlapPct: number };
+  /**
    * 这一行属于哪条通道（2026-11-07 补）。
    *
    * 插件一次注入会 POST 两次（取卡一次、volatile 一次），只靠「哪个字段在场」
    * 也能区分，但下游对账要按通道各算各的：卡应冻结后每会话只变一次，volatile
    * 每轮一行且可能 skip。显式 phase 让 stats 不必猜；旧行缺字段时按在场字段推断。
    */
-  phase?: "card" | "volatile" | "mixed";
+  phase?: "card" | "volatile" | "mixed" | "usage";
+  /**
+   * A4（2026-11-18 复核）：注入失败原因。插件取卡失败时也回一行（phase=card、无 card 段），
+   * 让 `/v3/soul/injection/stats` 的 failReasons 不再是死字段——在那之前它只能读到
+   * `<dataDir>/logs/recall` 里的召回行，插件的 card-bound-failed 一条也看不到。
+   */
+  failReason?: "http_status" | "timeout" | "empty" | "parse" | "section_install_failed";
+  /** reason=http_status 时的状态码。 */
+  failStatus?: number;
 }
 
 export interface RecallJournalTenant {

@@ -137,4 +137,37 @@ describe("soul_mood_events：append-only、按 id 幂等", () => {
     expect(res.inserted).toBe(0);
     expect(store.listSoulMoodEvents(TENANT)).toHaveLength(0);
   });
+
+  it("衰减累计随当前态一起落库：没写过读回 null，写过读回累计量与起算时刻（A2 Round28）", () => {
+    const store = makeStore();
+    store.writeSoulMoodState(TENANT, {
+      label: "平静",
+      valence: -0.4,
+      arousal: 0,
+      intensity: 0,
+      half_life_hours: 48,
+      cause_event_ids_json: "[]",
+      updated_at: "2026-11-13T03:53:00.000Z",
+    });
+    // 老写法没有锚：null 表示「还没起锚」，不是 0 —— 0 会被当成「上次偏离就是 0」，凭空记一笔。
+    expect(moodState(store)?.decay_pending_valence).toBeNull();
+    expect(moodState(store)?.decay_pending_since).toBeNull();
+
+    store.writeSoulMoodState(TENANT, {
+      label: "平静",
+      valence: -0.28,
+      arousal: 0.1,
+      intensity: 0,
+      half_life_hours: 48,
+      cause_event_ids_json: "[]",
+      decay_pending_valence: 0.021,
+      decay_pending_arousal: 0.004,
+      decay_pending_since: "2026-11-16T02:31:00.000Z",
+      updated_at: "2026-11-16T02:31:00.000Z",
+    });
+    const row = moodState(store);
+    expect(row?.decay_pending_valence).toBeCloseTo(0.021, 6);
+    expect(row?.decay_pending_arousal).toBeCloseTo(0.004, 6);
+    expect(row?.decay_pending_since).toBe("2026-11-16T02:31:00.000Z");
+  });
 });

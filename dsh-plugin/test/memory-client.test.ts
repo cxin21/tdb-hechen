@@ -964,6 +964,22 @@ describe('soul injection reporting (task-13)', () => {
     expect(calls[0].headers.authorization).toBe('Bearer secret-key');
   });
 
+  it('A4：usage 上送带 phase 与 sessionKey（否则 stats.usage.sessions 恒 0）', async () => {
+    const { fetchImpl, calls } = coreFixture();
+    const client = createClient(fetchImpl);
+    await client.reportSoulInjection({
+      phase: 'usage',
+      sessionKey: 'sess-usage-1',
+      turn: 7,
+      usage: { matchedLines: 2, totalLines: 8, overlapPct: 25 },
+    });
+    const body = calls[0].body as Record<string, unknown>;
+    expect(body.phase).toBe('usage');
+    expect(body.sessionKey).toBe('sess-usage-1');
+    expect(body.usage).toEqual({ matchedLines: 2, totalLines: 8, overlapPct: 25 });
+    expect(JSON.stringify(body)).not.toContain('text');
+  });
+
   it('turn 缺省上送 null，且 card/volatile 缺省时不出现在请求体', async () => {
     const { fetchImpl, calls } = coreFixture();
     const client = createClient(fetchImpl);
@@ -980,9 +996,11 @@ describe('soul injection reporting (task-13)', () => {
       throw new Error('ECONNREFUSED');
     });
     const client = createClient(fetchImpl as unknown as typeof fetch);
+    // fail-open：不抛、不外溢；但要把「没送到」如实交回调用方（A4 Round7：旧实现返回 void，
+    // 上层 .then 会在失败时也把 usage 记成已上报）。
     await expect(
       client.reportSoulInjection({ volatile: { chars: 1, hash: 'deadbeef', skipped: true } }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

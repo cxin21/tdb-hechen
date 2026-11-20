@@ -283,6 +283,40 @@ export function generateMemoryId(): string {
 }
 
 /**
+ * 内容归一：去空白、去标点符号、小写——只用来算去重键，不改变落库正文。
+ * R23-2：数字之间的小数点先护住再一起换回，否则 \u300c版本 13.5\u300d与\u300c版本 135\u300d会算出同一个 id（0.5 与 05 同理）。
+ */
+function normalizeForId(content: string): string {
+  const guarded = content.replace(/(?<=\d)[.\uff0e](?=\d)/gu, "\u0001");
+  // A3 Round24：只去空白与标点，**保留符号**（\p{S}）。旧写法连 ≥ ≤ ± × 一起删掉，于是
+  // 「预算以≥100万为上限」与「预算以100万为上限」算出同一个内容键，后者把前者覆盖掉（语义反了）。
+  // 一次性影响：正文里带符号的既有行仍用旧 id，不重写；同一句再被抽取一次会算出新 id（可能多一行），
+  // 交给 l1-dedup 与 scripts/merge-legacy-l1-duplicates.mjs 收口。
+  return guarded.replace(/[\s\p{P}]+/gu, "").toLowerCase().replace(/\u0001/gu, ".");
+}
+
+/**
+ * 确定性记忆 ID（A3 Round7 CP1）：同一租户内「同一条事实」重复写入必须落到同一行，
+ * 而不是靠 `ON CONFLICT(record_id)` 去拦一个每次都不一样的随机 id。
+ *
+ * 键 = 租户三元组 + 归一化正文。这样重跑抽取、同毫秒两条同内容、跨会话复述同一句话，
+ * 都会走 upsert（合并 / 覆盖），不会再各留一行。正文变了就是另一条事实，id 也随之改变。
+ * 局限：只按字面归一，不做语义判重——换一种说法「同一事实」仍要靠 l1-dedup 的向量/LLM 路径。
+ */
+export function contentMemoryId(
+  content: string,
+  tenant?: { teamId?: string; userId?: string; agentId?: string },
+): string {
+  const key = [
+    tenant?.teamId ?? "",
+    tenant?.userId ?? "",
+    tenant?.agentId ?? "",
+    normalizeForId(content),
+  ].join("\u0000");
+  return `m_${crypto.createHash("sha1").update(key).digest("hex").slice(0, 24)}`;
+}
+
+/**
  * Write a memory record according to the dedup decision.
  *
  * - store: append new record
@@ -359,8 +393,30 @@ export async function writeMemory(params: {
     finalTimestamps = [now];
   }
 
+  // 内容幂等键：store 一律用它（同内容重复写入落到同一行）。
+  const derivedId = contentMemoryId(finalContent, { teamId, userId, agentId });
+  // A3 Round19 CP1：抽取侧给每条记忆都塞了内容派生 id（l1-extractor.ts:562），
+  // 而旧逻辑 decision.record_id 优先 → update/merge 会拿这个「新内容 id」当旧行 id，
+  // 在 INSERT OR REPLACE 下把被取代的那行原地覆盖（created_time 归零、历史丢失）。
+  // 抽取侧占位有两种：原文内容键（update 未改正文）与 merged 后内容键（改过正文），
+  // 两个都不指向既有行，命中任一都必须另铸随机 id。
+  const placeholderId = contentMemoryId(memory.content, { teamId, userId, agentId });
+  // store 保留显式 record_id（老调用方按它命名新行）；只有它恰好是本轮抽取侧占位时才回落到内容键。
+  // A3 Round21 CP2：曾经试过「update/merge 只要新内容键不撞 target 就复用内容键」，
+  // 想顺手消掉「合并后的同一句事实各留一行」。r73-a3b 反例证明它会**丢活性**：
+  // 被取代那一行仍占着内容键且 valid_end 非空，后续同内容写入 upsert 到它上面
+  // 被 COALESCE(NULLIF(excluded.valid_end,''),valid_end) 钉死，两条都失效、活性集归零。
+  // 因此这里退回「update/merge 一律另铸随机 id」：宁可留重复（已知 P1），不许丢历史。
+  const id =
+    decision.record_id && decision.record_id !== placeholderId
+      ? decision.record_id
+      : decision.action === "store"
+        ? derivedId
+        : generateMemoryId();
   const record: MemoryRecord = {
-    id: decision.record_id || generateMemoryId(),
+    // store = 新事实：id 由内容派生，同内容重复写入落到同一行（upsert 合并）。
+    // update/merge 是「取代旧行」，id 必须新（否则会覆盖掉被取代的那行），仍用随机 id。
+    id,
     content: finalContent,
     type: finalType,
     priority: finalPriority,

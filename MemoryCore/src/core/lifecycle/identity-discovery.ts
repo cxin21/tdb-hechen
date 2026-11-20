@@ -55,6 +55,10 @@ export const DISCOVERY_SYSTEM_PROMPT = [
   "",
   "硬约束：",
   "1. 只提炼身份层面的持续事实（我是谁/我信什么/我绝不做什么），不提一次性任务或事件。",
+  // Round31（R31-1）：准入判据要求 identity 带第一人称立场/取舍（gates.ts:745-751 hasStance），
+  // 而旧 prompt 只要「描述类」，生产实测 2026-11-19 stance_missing 761 + dilemma_missing 763 + episode_missing 522
+  // 三码近乎相等——同一批描述句被三个门连续拒。这里只改产出形态，不放宽任何门。
+  "1b. 【形态】身份事实必须带取舍或立场（我宁可X也不Y / 我拒绝… / 我坚持…，并给出代价或例外）；纯职务描述（「我是某角色」「我负责某模块」）没有立场，不要提案。",
   "2. 【身份判据】会随任务完成/阶段推进而过时的内容（项目进度、阶段状态、当前待办）不是身份——不要写入 identity；",
   "   只提炼跨状态持续的事实（角色、职责、关系、工作纪律）。",
   "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——",
@@ -78,6 +82,7 @@ const DISCOVERY_SYSTEM_PROMPT_DUAL = [
   "",
   "硬约束：",
   "1. identity 只提炼用户身份层面的持续事实（他是谁/他信什么/他的纪律）；self_identity 只提炼 agent 自我的持续事实，第一人称产出（我……），且必须能在样本中找到 agent 侧行为或对话文本支撑——纯用户侧事实不要写成 self_identity。",
+  "1b. 【形态】self_identity 必须写成带取舍或立场的自我约束（我宁可X也不Y / 我拒绝… / 我坚持…，并给出代价或例外）；纯职务描述没有立场，不要提案。identity 槽只写用户身份描述，不要把 agent 自我写进去。",
   "2. 【身份判据】会随任务完成/阶段推进而过时的内容（项目进度、阶段状态、当前待办）不是身份——不要写入；只提炼跨状态持续的事实（角色、职责、关系、工作纪律）。",
   "3. 已有身份事实如果仍然准确，不要重复提交；如果已经过时/不准确/有重要更新（如角色演化、关系变化），提出修订版——content 给出修订后全文，rationale 说明变化原因。修订会以新版本替换旧内容（旧版本留痕）。",
   "4. 宁缺毋滥：证据不足的主题不要提。",
@@ -91,6 +96,12 @@ export interface IdentityFact {
   text: string;
   evidenceIds: string[];
   rationale?: string;
+  /**
+   * R31-1：这条事实在说谁。"user" = 双槽 prompt 下 slot identity 是用户身份（他是谁/他的职责），
+   * 不是 agent 自我；"agent" = legacy slot identity 与双槽 self_identity。
+   * worker 按此分流：user 事实不进人格候选（否则必然撞 identity 的 stance/dilemma 门）。
+   */
+  subject?: "agent" | "user";
 }
 
 export interface IdentityFactsResult {
@@ -154,6 +165,8 @@ export async function collectIdentityFacts(deps: {
     const fallback = sampleIds.filter(Boolean).slice(0, IDENTITY_SUPPORT_MAX);
     facts.push({
       layer: p.slot,
+      // R31-1：双槽下 slot identity 的主语是「他」（用户身份），legacy 下是「我」。
+      subject: dual && p.slot === "identity" ? "user" : "agent",
       text: cleaned,
       evidenceIds: ids.length > 0 ? ids : fallback,
       rationale: String(p.rationale ?? "").slice(0, 200),

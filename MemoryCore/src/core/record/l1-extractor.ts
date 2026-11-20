@@ -95,7 +95,7 @@ import { annotateAgentNarration, reconcileAgentNarrationMetadata } from "./agent
 import { nameCandidatesFromContent, sanitizePersonHints } from "./person-hints.js";
 import { clampMaxFacts, normalizeFacts, type NormalizedFacts } from "./fact-key.js";
 import { batchDedup, MIN_SIMILAR_STRENGTH, loadValueCandidates, parseCoreRefs } from "./l1-dedup.js";
-import { writeMemory, generateMemoryId } from "./l1-writer.js";
+import { writeMemory, contentMemoryId } from "./l1-writer.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
 import { factRowsEnabled, supersessionEligibleForContent, type WritePolicy } from "./write-policy.js";
 
@@ -540,17 +540,28 @@ export async function extractL1Memories(params: {
     };
   }
 
-  // Limit per session
+  // Limit per session。按 priority 从高到低挑保留集合（不是截掉尾部）：
+  // prompt 要求「超限时保留 priority 最高」，模型不保证有序，截断会丢掉最该留的那条。
   let extracted = allExtracted;
   if (extracted.length > maxMemoriesPerSession) {
-    logger?.debug?.(`${TAG} Limiting from ${extracted.length} to ${maxMemoriesPerSession} memories per session`);
-    extracted = extracted.slice(0, maxMemoriesPerSession);
+    const keep = new Set(
+      [...extracted]
+        .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+        .slice(0, maxMemoriesPerSession),
+    );
+    logger?.debug?.(
+      `${TAG} Limiting from ${extracted.length} to ${maxMemoriesPerSession} memories per session (by priority)`,
+    );
+    extracted = extracted.filter((m) => keep.has(m));
   }
 
-  // Assign temporary IDs to extracted memories (needed for batch dedup)
+  // Assign IDs to extracted memories (needed for batch dedup).
+  // A3 Round8：这里必须用「内容派生 id」，不能用随机 id——writer 里 decision.record_id 优先于
+  // contentMemoryId，随机 id 会一路短路掉内容幂等键，让同内容重复写入仍然追加新行。
+  // 同批两条同内容拿到同一个 id，writer 的 upsert 会把它们并成一行（批内去重原本是刻意跳过的）。
   const memoriesWithIds = extracted.map((m) => ({
     ...m,
-    record_id: generateMemoryId(),
+    record_id: contentMemoryId(m.content, { teamId, userId, agentId }),
   }));
   // §17 人名线索校验要能拿到原文：source_message_ids → 消息文本与角色。
   // 角色是必需的：说话人名字必须出现在**用户自己说的话**里，只出现在 assistant

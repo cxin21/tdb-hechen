@@ -743,6 +743,16 @@ export class PipelineWorker {
     }
 
     if (task.type === "L2") {
+      // R24-a3：L2 有 extract 组失败时，这一轮既不能写 l2_last_extraction_time，
+      // 也不能入队 L3 —— cursor 已由 pipeline-factory 钉在失败前的值，下一 tick 重试。
+      // 否则半失败轮被当作成功：失败批永久落在 cursor 后面。
+      if ((task as any)._l2HadFailure) {
+        this.logger?.warn?.(
+          `${TAG} [${task.instanceId}/${task.sessionId}] L2 had failed groups, cursor kept, L3 not enqueued`,
+        );
+        return;
+      }
+
       // If L2 was skipped (no new L1 records), don't cascade to L3 or arm timer
       if ((task as any)._l2Skipped) {
         this.logger?.debug?.(

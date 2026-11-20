@@ -3,7 +3,9 @@ import {
   assembleSoulCard,
   assembleSoulTurn,
   cardLinesFromItems,
+  nearDuplicateText,
   parsePreviousCard,
+  previousAnchorOf,
 } from "../card-service.js";
 import { seedLabelRows } from "../trait-drift.js";
 import { SEED_LABELS, seedStateFromSeeds } from "../traits.js";
@@ -323,6 +325,67 @@ describe("soul card service：v13 的实现路径", () => {
     expect(turn.text).not.toContain("未完的事");
   });
 
+  it("通道 B：情绪强度归零/已过期，不再写「正在消退」（A2）", async () => {
+    const { store } = makeStore({
+      readSoulState: async () => ({
+        valence: 0,
+        arousal: 0.3,
+        baselineValence: 0,
+        baselineArousal: 0.3,
+        sampleCount: 12,
+        updatedAt: "2026-10-20T00:00:00.000Z",
+        emotionLabel: "不安",
+        emotionObject: "上线",
+        emotionIntensity: null,
+        emotionAt: "2026-10-20T00:00:00.000Z",
+      }),
+      listSoulPromises: async () => [],
+    });
+    const turn = await assembleSoulTurn({ store, tenant: TENANT, now: NOW });
+    expect(turn.text).not.toContain("不安");
+    expect(turn.text).not.toContain("正在消退");
+  });
+
+  it("通道 B：活着的新情绪仍然进尾巴（A2 的反面）", async () => {
+    const { store } = makeStore({
+      readSoulState: async () => ({
+        valence: 0,
+        arousal: 0.3,
+        baselineValence: 0,
+        baselineArousal: 0.3,
+        sampleCount: 12,
+        updatedAt: "2026-11-07T11:50:00.000Z",
+        emotionLabel: "不安",
+        emotionObject: "上线",
+        emotionIntensity: 0.8,
+        emotionAt: "2026-11-07T11:50:00.000Z",
+      }),
+      listSoulPromises: async () => [],
+    });
+    const turn = await assembleSoulTurn({ store, tenant: TENANT, now: NOW });
+    // 活着的情绪渲染成「因为「上线」…」，标签只作投影（emotion.ts 的 suffix 规则）。
+    expect(turn.text).toContain("上线");
+  });
+
+  it("卡：过期即时情绪不进卡（A2）", async () => {
+    const { store } = makeStore({
+      readSoulState: async () => ({
+        valence: 0,
+        arousal: 0.3,
+        baselineValence: 0,
+        baselineArousal: 0.3,
+        sampleCount: 12,
+        updatedAt: "2026-10-20T00:00:00.000Z",
+        emotionLabel: "不安",
+        emotionObject: "上线",
+        emotionIntensity: 0.8,
+        emotionAt: "2026-10-20T00:00:00.000Z",
+      }),
+    });
+    const card = await assembleSoulCard({ store, tenant: TENANT, now: NOW });
+    expect(card.text).not.toContain("不安");
+  });
+
   it("层条目：只取 active/degraded，最近的在前，去重并截断 12 行", () => {
     const items: PersonaItem[] = [
       item({ layer: "human", text: "旧偏好", lastEvidenceAt: "2026-11-01T00:00:00.000Z" }),
@@ -335,7 +398,10 @@ describe("soul card service：v13 的实现路径", () => {
   });
 
   it("上一版 payload 不是 persona-card 时当作没有上一版", () => {
-    expect(parsePreviousCard({ ts: NOW, content_hash: "h", payload_json: JSON.stringify({ slots: [] }), trigger: "layout" })).toBeNull();
+    expect(previousAnchorOf("随便一段没有锚句的正文")).toBeUndefined();
+  expect(previousAnchorOf("比基线偏轻，更活一点。")).toEqual({ tone: "偏轻", energy: "更活一点" });
+  expect(previousAnchorOf("比基线还算稳，松紧和平时差不多。")).toEqual({ tone: "还算稳", energy: "松紧和平时差不多" });
+  expect(parsePreviousCard({ ts: NOW, content_hash: "h", payload_json: JSON.stringify({ slots: [] }), trigger: "layout" })).toBeNull();
     expect(
       parsePreviousCard({
         ts: NOW,
@@ -402,3 +468,169 @@ describe("名字只认声明（task-27/A1）", () => {
     expect(payload.text).not.toContain("nameSource");
   });
 });
+describe("soul card service：快照要能归因到漂移输入", () => {
+  it("persist 落行带 6 轴、标签投影与受控 reasonCode（不是只有卡文本）", async () => {
+    const { store, writes } = makeStore();
+    await assembleSoulCard({ store, tenant: TENANT, now: NOW, persist: true });
+    const snap = writes[0] as { reasonCode?: string; payloadJson?: string; slotsJson?: string };
+    expect(snap.reasonCode).toBe("render");
+    const payload = JSON.parse(String(snap.payloadJson)) as { traits?: Record<string, number>; traitLabels?: unknown[] };
+    expect(Object.keys(payload.traits ?? {}).length).toBeGreaterThan(0);
+    expect(Array.isArray(payload.traitLabels)).toBe(true);
+    const slots = JSON.parse(String(snap.slotsJson)) as { traits?: Record<string, number>; labels?: unknown[] };
+    expect(Object.keys(slots.traits ?? {}).length).toBeGreaterThan(0);
+    expect(Array.isArray(slots.labels)).toBe(true);
+  });
+
+  // R24-1：快照要能指回「哪条输入」。旧 payload 只有 traits/标签投影与按块的 evidenceIds，
+  // 追不到「本轮渲染用了哪些人格条目、最近一次漂移拿什么锚投的票」。
+  it("payload.provenance 逐条给出 itemId/evidenceIds，并带 lastDrift 的锚 id", async () => {
+    const { store, writes } = makeStore({
+      listSoulPersona: async () => [
+        item({
+          layer: "identity",
+          text: "我站在「先跑一遍真的」这边：宁可多跑一遍，也不凭印象",
+          evidenceIds: ["ep-1", "ep-2"],
+          meta: {
+            lastDrift: {
+              score: 0.42,
+              track: "judgment",
+              verdict: "watch",
+              at: NOW,
+              method: "embedding",
+              anchorKey: "abc123",
+              anchorIds: ["l1-a", "l1-b"],
+            },
+          },
+        }),
+        item({ layer: "human", text: "他习惯先看证据再听结论" }),
+      ],
+    });
+    await assembleSoulCard({ store, tenant: TENANT, now: NOW, persist: true });
+    const payload = JSON.parse(String((writes[0] as { payloadJson: string }).payloadJson)) as {
+      provenance?: { render?: Record<string, unknown>; items?: Array<Record<string, unknown>> };
+    };
+    const prov = payload.provenance;
+    expect(typeof prov?.render?.hash).toBe("string");
+    expect(prov?.render?.version).toBe(1);
+    const rows = prov?.items ?? [];
+    const identity = rows.find((r) => r.layer === "identity");
+    expect(String(identity?.itemId ?? "")).toMatch(/^identity:|^i-identity-/);
+    expect(identity?.evidenceIds).toEqual(["ep-1", "ep-2"]);
+    expect((identity?.drift as { anchorIds?: string[] } | undefined)?.anchorIds).toEqual(["l1-a", "l1-b"]);
+    // 没有 lastDrift 的行不带 drift 键：不留一个空对象冒充「漂移过」。
+    const human = rows.find((r) => r.layer === "human");
+    expect(human).toBeTruthy();
+    expect(human && "drift" in human).toBe(false);
+  });
+
+  // R29：出处超过 5 条时旧代码静默 slice(0,5)，读快照的人会以为这条事实只有 5 个出处
+  // （r28c-a1 报「128 条 persona 里 63 条 evidenceIds>5 被静默截断」）。现在把总数显式写出来。
+  it("payload.provenance 截断出处时标出总数（不多不少，未截断则不出键）", async () => {
+    const many = Array.from({ length: 8 }, (_, i) => `ep-${i + 1}`);
+    const { store, writes } = makeStore({
+      listSoulPersona: async () => [
+        item({ layer: "identity", text: "我站在「先跑一遍真的」这边：宁可多跑一遍，也不凭印象", evidenceIds: many }),
+        item({ layer: "human", text: "他习惯先看证据再听结论", evidenceIds: ["ep-a", "ep-b"] }),
+      ],
+    });
+    await assembleSoulCard({ store, tenant: TENANT, now: NOW, persist: true });
+    const payload = JSON.parse(String((writes[0] as { payloadJson: string }).payloadJson)) as {
+      provenance?: { items?: Array<Record<string, unknown>> };
+    };
+    const rows = payload.provenance?.items ?? [];
+    const identity = rows.find((r) => r.layer === "identity");
+    expect((identity?.evidenceIds as string[] | undefined)?.length).toBe(5);
+    expect(identity?.evidenceTotal).toBe(8);
+    const human = rows.find((r) => r.layer === "human");
+    expect(human?.evidenceIds).toEqual(["ep-a", "ep-b"]);
+    expect(human && "evidenceTotal" in human).toBe(false);
+  });
+});
+
+describe("A1 Round7：同族句折叠与窗口稳定（复核 CP4/CP2）", () => {
+  it("只换开头几个字的同族句被折叠，不相干的准则不折", () => {
+    // 实测（.scratch/metric-probe.mjs）：Jaccard 0.50 / LCS 0.79
+    expect(nearDuplicateText("自己跑过才算数，别人的转述不算", "亲跑出来的才算数，别人的转述不算")).toBe(true);
+    // Jaccard 0.43 / LCS 0.82：句式改了、后半句照抄
+    expect(
+      nearDuplicateText("我先给结论或先说边界，把决定权递回去", "我句子短、先摆结论或边界，把决定权递回去"),
+    ).toBe(true);
+    // Jaccard 0.21 / LCS 0.80 / 10 字：短句靠 LCS 兜住
+    expect(nearDuplicateText("不确定就说不确定，别猜", "不确定的事直接说不确定，不猜")).toBe(true);
+    // 整体改写（Jaccard 0.08 / LCS 0.33）与不相干句子不折：词面判据抓不到重度改述，写进 docs §5.9 局限
+    expect(nearDuplicateText("亲跑出来的才算数，别人的转述不算", "他点的每一处我都亲手跑过才算数")).toBe(false);
+    expect(nearDuplicateText("生产库只读，不写", "客户那份文件一行不动")).toBe(false);
+    expect(nearDuplicateText("短句", "短句改")).toBe(false);
+  });
+
+  it("否定翻转不算近同义：不替人承诺 ≠ 替人承诺（A1 Round19 CP5）", () => {
+    expect(nearDuplicateText("不替人承诺", "替人承诺")).toBe(false);
+    expect(nearDuplicateText("不替人承诺，不装作已确认", "替人承诺，装作已确认")).toBe(false);
+    // 两侧否定标记数相同、只是换说法 → 仍应折叠（否则去重失效）
+    expect(nearDuplicateText("不确定就说不确定，别猜", "不确定的事直接说不确定，不猜")).toBe(true);
+  });
+
+  it("frozen 的边界行照样进卡：红线不能因为冻结而消失", () => {
+    const lines = cardLinesFromItems([item({ layer: "boundary", text: "不替人承诺，不装作已确认", state: "frozen" })], ["boundary"]);
+    expect(lines).toEqual(["不替人承诺，不装作已确认"]);
+  });
+
+  it("冻结顺手写的 validTo 不能把红线拦掉：仅冻结（无 supersededBy）照样进卡（R32）", () => {
+    // 生产实测：boundary 4 行全 state=frozen 且 validTo=冻结时刻（persona.ts 的 freezeItem 会写），
+    // 只按 validTo 拦会让 blocks.boundaries 恒为 chars:0 / block_omitted:边界。
+    const lines = cardLinesFromItems(
+      [
+        item({ layer: "boundary", text: "不碰没被点名的原文件", state: "frozen", validTo: "2026-11-11T18:40:53.819Z" }),
+        item({ layer: "boundary", text: "不删我看不懂用途的东西", state: "frozen", validTo: "2026-11-17T11:02:45.319Z" }),
+      ],
+      ["boundary"],
+    );
+    expect(lines).toEqual(["不碰没被点名的原文件", "不删我看不懂用途的东西"]);
+  });
+
+  it("被结论合并取代的红线不进卡：有 supersededBy 就按失效期出局（替补已在卡上）", () => {
+    const lines = cardLinesFromItems(
+      [
+        item({
+          layer: "boundary",
+          text: "旧红线（已被合并）",
+          state: "frozen",
+          validTo: "2026-11-11T18:40:53.819Z",
+          supersededBy: "boundary:new",
+        }),
+        item({ layer: "boundary", text: "现行红线" }),
+      ],
+      ["boundary"],
+    );
+    expect(lines).toEqual(["现行红线"]);
+  });
+
+  it("带 validTo 的历史行不进卡：与 /v3/soul/person 的读侧同口径（A1 Round20）", () => {
+    const lines = cardLinesFromItems(
+      [
+        item({ layer: "human", text: "已失效的近况", validTo: "2026-11-06T00:00:00.000Z" }),
+        item({ layer: "human", text: "空失效期当没有", validTo: "  " }),
+        item({ layer: "human", text: "现行近况" }),
+      ],
+      ["human"],
+    );
+    expect(lines).toEqual(["空失效期当没有", "现行近况"]);
+  });
+
+  it("窗口按证据条数排序：新铸一句挤不掉 4 条证据的老准则", () => {
+    const lines = cardLinesFromItems(
+      [
+        item({ layer: "identity", text: "我宁可先跑一遍验证，也不把没验过的写成已验证", evidenceIds: ["e1"], lastEvidenceAt: "2026-11-07T11:00:00.000Z" }),
+        item({ layer: "identity", text: "自己跑过才算数，转述不算", evidenceIds: ["e1", "e2", "e3", "e4"], lastEvidenceAt: "2026-10-01T00:00:00.000Z" }),
+        item({ layer: "identity", text: "不确定就说不确定，别猜", evidenceIds: ["e1", "e2"], lastEvidenceAt: "2026-11-06T00:00:00.000Z" }),
+      ],
+      ["identity"],
+    );
+    expect(lines[0]).toBe("自己跑过才算数，转述不算");
+    expect(lines[1]).toBe("不确定就说不确定，别猜");
+    expect(lines[2]).toBe("我宁可先跑一遍验证，也不把没验过的写成已验证");
+  });
+});
+
+

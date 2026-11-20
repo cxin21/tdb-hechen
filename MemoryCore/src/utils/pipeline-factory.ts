@@ -994,6 +994,24 @@ export function createPersister(
  *
  * Used by both `index.ts` (live runtime) and `seed-runtime.ts` (seed CLI).
  */
+/**
+ * L2 增量游标：只用「本轮抽成功」的记录推进；成功集为空才退回全窗口。
+ * 失败组 continue 后若仍取全窗口最大值，那批行会永久落在 updated_time > cursor 之外（A3 Round19）。
+ */
+export function l2NextCursor(params: {
+  cursor?: string;
+  successRows: Array<{ updatedAt: string }>;
+  fallbackRows: Array<{ updatedAt: string }>;
+  hadFailure: boolean;
+}): string {
+  const { cursor, successRows, fallbackRows, hadFailure } = params;
+  // 只要有一组失败，就停在旧游标：跨组时间戳是交错的，取任何「成功组最大值」
+  // 都可能跨过失败组里更早的行，下一轮 updated_time > cursor 永远读不到它们（A3 Round19）。
+  if (hadFailure) return cursor ?? "";
+  const basis = successRows.length > 0 ? successRows : fallbackRows;
+  return basis.reduce((latest, r) => (r.updatedAt > latest ? r.updatedAt : latest), "");
+}
+
 export function createL2Runner(opts: {
   pluginDataDir: string;
   cfg: MemoryTdaiConfig;
@@ -1127,6 +1145,10 @@ export function createL2Runner(opts: {
       layer: "l2" as const,
     }));
     const l2Prompts = await resolveMemoryPrompts(vectorStore, l2PromptTargets);
+    // 只有「真正抽成功」的组才能推进游标：失败组 continue 后若仍用全窗口最大值，
+    // 下一轮 updated_time > cursor 就再也读不到这批行（A3 Round19）。
+    const cursorRecords: typeof records = [];
+    let hadFailure = false;
     for (const groupRecords of grouped.values()) {
       const ctx = groupRecords[0];
       const groupStorage = scopedStorage(storage, ctx);
@@ -1169,8 +1191,8 @@ export function createL2Runner(opts: {
 
       // P4a-2 修正（REG-REMAINING-002 #1 审查发现）：失效排除此前只挡"全失效早退"，
       // 混合窗口（失效+活跃并存）时失效记录仍混入提取 prompt——scene_blocks 会重新
-      // 吸收已失效内容。此处按组过滤，对齐上方注释块自述语义；cursor 仍取全窗口
-      // （失效记录 bump 推进游标，不会造成重查询循环）。
+      // 吸收已失效内容。此处按组过滤，对齐上方注释块自述语义；cursor 只取本轮成功组的记录
+      // （失败组的行必须能在下一轮重新进入增量窗口；A3 Round19）。
       // P0-2（2026-11-04 L1 属性复核）：推断行（certainty=inferred）不进 L2 蒸馏输入。
       // L2 写的是长期场景块（会被注入层原文引用），把"提取器猜的"与"实际发生的"同等
       // 蒸馏，等于把猜测固化成事实；L3 duratives 早已有同款门（:1454 certainty!=='inferred'），
@@ -1213,7 +1235,10 @@ export function createL2Runner(opts: {
         poisonSplit: cfg.extraction.scenePoisonSplit === true,
         warnLog: (message) => logger.warn(message),
       });
-      if (!(extractResult.success && extractResult.memoriesProcessed > 0)) continue;
+      if (!(extractResult.success && extractResult.memoriesProcessed > 0)) {
+        hadFailure = true;
+        continue;
+      }
       if (extractResult.emptyExtraction) {
         anyEmptyExtraction = true;
         logger.warn(`${TAG} [L2] Extraction produced no file changes (empty run), skipping checkpoint increment`);
@@ -1251,6 +1276,9 @@ export function createL2Runner(opts: {
       }
       if (changedProfiles.length === 0) {
         logger.debug?.(`${TAG} [L2] No changed Scene profiles, skipping generation provenance`);
+        // A3 Round21 CP4：抽取成功但无文件变化也要把这批行记进「成功集」，否则
+        // cursor 只取别组的 max 会跨过这批更早的时间戳，下一轮 read 不到它们。
+        cursorRecords.push(...groupRecords);
         await checkpoint.incrementScenesProcessed();
         processedTotal += extractResult.memoriesProcessed;
         continue;
@@ -1323,14 +1351,16 @@ export function createL2Runner(opts: {
       });
       await checkpoint.incrementScenesProcessed();
       processedTotal += extractResult.memoriesProcessed;
+      cursorRecords.push(...groupRecords);
     }
 
     if (processedTotal > 0) {
-      const latestCursor = records.reduce((latest, r) => r.updatedAt > latest ? r.updatedAt : latest, "");
+      const latestCursor = l2NextCursor({ cursor, successRows: cursorRecords, fallbackRows: records, hadFailure });
       logger.debug?.(`${TAG} [L2] Extraction complete: processed=${processedTotal}, latestCursor=${latestCursor}`);
       // A1：记录本轮成功抽取时刻（既有键 l2_last_extraction_time，保持 ISO 格式），
       // 触发门用它判时间阈值；只在门开启时写，缺省路径不动 checkpoint。
-      if (cfg.persona.l2Gate?.enabled === true) {
+      // 半失败轮不得刷新（A3 Round20）：cursor 已钉在旧值，再刷新时间门会把失败批次推得更远。
+      if (cfg.persona.l2Gate?.enabled === true && !hadFailure) {
         try {
           await new CheckpointManager(pluginDataDir, logger, storage, checkpointLock).mergePipelineStates({
             [sessionKey]: {
@@ -1343,8 +1373,11 @@ export function createL2Runner(opts: {
           );
         }
       }
-      return { latestCursor: latestCursor || undefined };
+      return { latestCursor: latestCursor || undefined, ...(hadFailure ? { hadFailure: true } : {}) };
     }
+    // 全部组都失败时 processedTotal 仍是 0，会落到这里：必须把 hadFailure 带出去，
+    // 否则 manager 按 undefined 当成功轮，清 pending、刷时间戳、触发 L3（A3 Round20 D1）。
+    if (hadFailure) return { hadFailure: true };
     if (anyEmptyExtraction) return { skipped: true };
   };
 }

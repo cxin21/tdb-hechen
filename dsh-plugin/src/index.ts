@@ -13,6 +13,7 @@ import { applyIdentity, identityStateOf, listCandidates, resolveIdentityFromUser
 import { MemoryClient, type ConversationMessage, type MemoryIdentity, type RecallBlockResult, type TurnEndPayload } from './memory-client.js';
 import { defaultOutboxPath, Outbox } from './outbox.js';
 import { createInjectionLog, recordInjection } from './injection-log.js';
+import { UsageRetryQueue } from './usage-retry.js';
 import {
   createPersonaCard,
   PERSONA_STATE_MAX_CHARS,
@@ -31,7 +32,7 @@ import { runHeadPackSegments, runVolatileSegments, segmentSummary, type SegmentD
 import { l2StatusForDebug, l2StatusSummary } from './segments/l2.js';
 // Session-start identity (task-117 v3): the host's own question card, asked from
 // agent/pre-step, bound per session and used by every later v3 call.
-import { installSessionIdentity, SessionIdentityStore, type UserQuestionsLike } from './session-identity.js';
+import { installSessionIdentity, SessionIdentityStore, cardClearedSource, type UserQuestionsLike } from './session-identity.js';
 // TDB service stack: `dsh-tdb-lifecycle` is the only thing that starts/stops it
 // (task-26). This plugin keeps a thin same-origin proxy for the settings page.
 import { registerLifecycleControl } from './lifecycle-control.js';
@@ -567,6 +568,87 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
    *     一个并不存在的开关。
    */
   const gateSeen = createSoulGateOnce();
+/** 已成功上报过的 turn（失败不入此集，允许重放）。 */
+const gateReported = new Set<string>();
+/** 正在发送的 turn：并发重复触发只让一个走。 */
+const gatePending = new Set<string>();
+  // usage 写照同样一回合一次：L0 成功但 outbox 未删行时重放，不应把 rows/avg 抬高。
+  // A4 Round7（CP2）：改成「pending 占位 + 发送成功才落 seen」，发送失败允许重放
+  // （原实现先消费 seen 再发送，一次失败就永久丢这一回合的写照）。
+  const usageReported = new Set<string>();
+  const usagePending = new Set<string>();
+  type UsageProbe = ReturnType<typeof personaCard.usageProbe>;
+  type UsageReport = { usage: UsageProbe; sessionKey: string; turn?: number };
+  /** 有界补投队列：坏 Core 连续拒绝时不能无界增长，也不能拖住当前回合。 */
+  const USAGE_RETRY_MAX = 32;
+  const usageRetry = new UsageRetryQueue<UsageReport & { sid: string }>(USAGE_RETRY_MAX);
+  const queueUsageRetry = (key: string, report: UsageReport, sid: string): void => {
+    usageRetry.enqueue(key, { ...report, sid });
+  };
+  const sendUsage = (key: string, report: UsageReport, sid: string): void => {
+    usagePending.add(key);
+    // sessionKey 必须显式上送：Core 只从 body 读它（不读 x-tdai-session-id 头），
+    // 缺了它 stats.usage.sessions 恒为 0。这里用会话 id（usage 行只在自己内部聚合）。
+    void client
+      .reportSoulInjection({ phase: 'usage', usage: report.usage, sessionKey: report.sessionKey, turn: report.turn }, sid)
+      .then((ok) => {
+        if (ok) {
+          usageReported.add(key);
+          usageRetry.delete(key);
+          return;
+        }
+        // 只有 Core 真的收下才记「已上报」；拒绝的进补投队列，下一次收口补发。
+        queueUsageRetry(key, report, sid);
+        log?.debug?.('agemem: persona usage report rejected; queued for retry', { phase: 'usage' });
+      })
+      .catch((error: unknown) => {
+        queueUsageRetry(key, report, sid);
+        log?.debug?.('agemem: persona usage report failed; queued for retry', error);
+      })
+      .finally(() => {
+        usagePending.delete(key);
+      });
+  };
+  /**
+   * A4（Round5）：回复侧写照。人格注入是否「被用上」在单模型下无法证明因果，
+   * 这里只上送可复算的近似证：本轮助手可见输出里，有多少行人格原文被 4-gram 覆盖 ≥50%。
+   * 只上送计数（不送正文），fire-and-forget。
+   *
+   * A4 Round14（CP2）：失败不再「没有第二次机会」。同一 turnId 的收口会被 writeback
+   * 去重，所以补投放在**任意回合**的收口里：每次收口最多补投一条最旧的失败记录。
+   */
+  const reportPersonaUsage = (payload: TurnEndPayload): void => {
+    try {
+      const sid = payload.sessionId;
+      if (typeof sid !== 'string' || sid === '') return;
+      const assistantText = (Array.isArray(payload.messages) ? payload.messages : [])
+        .filter((message) => message.role === 'assistant')
+        .map((message) => (typeof message.content === 'string' ? message.content : ''))
+        .join('\n');
+      if (assistantText.trim() === '') return;
+      const usageKey = `${sid}:${payload.turnId}`;
+      // 本回合还没发过：先补投一条历史失败，再发本回合。补投最多一条，
+      // 避免一个坏 Core 让每个回合都变成 N 次请求（队列上限 32）。
+      const nextRetry = usageRetry.oldest();
+      if (nextRetry !== undefined) {
+        const [retryKey, retry] = nextRetry;
+        if (retryKey === usageKey || usageReported.has(retryKey)) usageRetry.delete(retryKey);
+        else if (!usagePending.has(retryKey)) {
+          // 先出队再发：失败会由 sendUsage 重新入队（否则成功后旧条目还留在队里，
+          // 下一回合又补投一次同一轮 —— 实测会出现 [1,1,2,1,3] 的重复）。
+          usageRetry.delete(retryKey);
+          sendUsage(retryKey, retry, retry.sid);
+        }
+      }
+      if (usagePending.has(usageKey) || usageReported.has(usageKey)) return;
+      const usage = personaCard.usageProbe(sid, assistantText);
+      // totalLines===0 也上报：那是「探针跑了、没有可比行」，不能和「没跑」共用一个零形状。
+      sendUsage(usageKey, { usage, sessionKey: sid, turn: payload.turn }, sid);
+    } catch (error) {
+      log?.debug?.('agemem: persona usage probe failed', error);
+    }
+  };
+
   const reportSoulGate = (payload: TurnEndPayload): void => {
     let report: SoulGateReportPayload | undefined;
     try {
@@ -578,14 +660,25 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
     }
     if (report === undefined) return;
     const key = soulGateDedupeKey(payload);
-    if (key !== undefined && !gateSeen(key)) {
-      log?.debug?.('agemem: soul gate already reported for this turn');
-      return;
+    if (key !== undefined) {
+      if (gatePending.has(key) || gateReported.has(key)) {
+        log?.debug?.('agemem: soul gate already reported for this turn');
+        return;
+      }
+      // Round7 A4 复核：去重键不能先消费再发送——旧实现发送失败时把这个 turn 永久吞掉。
+      gatePending.add(key);
     }
     void (async () => {
       try {
         const outcome = await client.reportSoulGate(report, payload.sessionId);
         if (outcome.ok) {
+          if (key !== undefined) {
+            gateReported.add(key);
+            if (gateReported.size > 256) {
+              const oldest = gateReported.values().next().value;
+              if (oldest !== undefined) gateReported.delete(oldest);
+            }
+          }
           // 只记事实、不带正文：这行日志会被复制进 issue 报告。
           log?.debug?.('agemem: soul gate shadow', {
             decision: outcome.decision,
@@ -607,7 +700,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
           + 'block or alter the turn',
         );
       }
-    })();
+    })().finally(() => {
+      if (key !== undefined) gatePending.delete(key);
+    });
   };
 
   // 3b. Identity from one user key (task-51 v2). Mount-time only: a profile with
@@ -777,8 +872,13 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
    * bind() 自己 fail-open；这里 `catch` 只是不让意外异常冒到 picker 上。
    * 同一会话只保留最后一次的 promise（新的覆盖旧的），等待方拿到的永远是最新一次。
    */
-  const trackBind = (sessionId: string, identity: string | undefined): Promise<void> => {
-    const task = personaCard.bind(sessionId, identity).then((outcome) => {
+  const trackBind = (
+    sessionId: string,
+    identity: string | undefined,
+    // 清卡归因（r26d-a1）：null=用户选了「否」，undefined=没有可用身份（未装配/三元组空）。
+    clearedSource?: 'declined' | 'unconfigured',
+  ): Promise<void> => {
+    const task = personaCard.bind(sessionId, identity, clearedSource).then((outcome) => {
       // P2-C：绑定成功才有「这张卡过滤到谁」这个事实；失败保留旧绑定不动。
       if (outcome.ok) recordPersonKey(sessionId, outcome.persons);
     }, () => {});
@@ -823,8 +923,14 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       // 会话第一次出现就取一次卡（task-32）。picker 未配置 userKey 时是惰性的
       // ——ensureBound 直接返回、onBound 永远不触发；没有这一支，这类部署的
       // 每个会话都会没有卡。已经有卡的会话不再重取（覆盖只发生在重新绑定）。
+      // 明确不关联的会话（用户在会话开始选了「否」/ 配置 bypass）不再每次 pre-step 重试：
+      // 没有卡是结论，不是待办。否则一次不关联会刷出成百上千条 chars=0 的清卡记录。
+      const bound = identityStore.get(sessionId);
+      if (bound !== undefined && bound.teamId === '') return;
       if (personaCard.snapshot(sessionId) === undefined && !pendingBinds.has(sessionId)) {
-        trackBind(sessionId, cardIdentityOf(sessionId));
+        // 已有绑定但三元组为空：associate=false 是用户拒绝，否则是配置缺口。
+        // Round26（r26e-a1）：判据收在 cardClearedSource 里，三个调用点共用一份。
+        trackBind(sessionId, cardIdentityOf(sessionId), cardClearedSource(bound));
       }
     },
     onBound: (sessionId, binding) => {
@@ -844,7 +950,7 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
         });
         return;
       }
-      trackBind(sessionId, target ?? undefined);
+      trackBind(sessionId, target ?? undefined, target === null ? cardClearedSource(binding) : 'unconfigured');
     },
   });
   disposers.push(() => sessionIdentity.dispose());
@@ -1062,8 +1168,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
   });
   try {
     const base = ctx.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_SUFFIX') ?? DEPLOYMENT_PERSONA_SUFFIX_ORDER;
-    // P1-2：installSection 内部注册**两个** section —— 身份段固定 order 110
-    // （PERSONA_IDENTITY_ORDER，靠前），末尾锚沿用这里的尾部 order
+    // P1-2：installSection 内部注册**两个** section —— 身份段固定 order 1
+    // （PERSONA_IDENTITY_ORDER，紧跟 DEPLOYMENT_PERSONA_PREFIX=0、早于
+    // WORKING_DIRECTORY=100/SANDBOX_POLICY=110 等宿主段），末尾锚沿用这里的尾部 order
     // （base + orderOffset + 2，历史之后仍要保留的提醒）。返回值是组合 disposer。
     disposers.push(personaCard.installSection(ctx, base + config.headPack.orderOffset + 2));
     // task-32：这里**不**取卡。取卡的唯一时机是「会话选好 agent、绑定完成」，
@@ -1117,7 +1224,9 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
       return outcome.ok ? 'inherited-from-parent' : 'inherited-failed:' + outcome.reason;
     }
     if (identityStore.get(sid) !== undefined) {
-      const outcome = await personaCard.bind(sid, cardIdentityOf(sid));
+      // Round26（r26e-a1）：restored 分支原来不带归因，空三元组会被记成「用户不关联」。
+      const restoredIdentity = cardIdentityOf(sid);
+      const outcome = await personaCard.bind(sid, restoredIdentity, restoredIdentity === undefined ? 'unconfigured' : undefined);
       if (outcome.ok) recordPersonKey(sid, outcome.persons);
       return outcome.ok ? 'restored' : 'restored-failed:' + outcome.reason;
     }
@@ -1416,6 +1525,13 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
    */
   const fetchBlock = async (turnText: string, context: VolatileTurnContext): Promise<VolatileBlock> => {
     // 先取 turn + 状态才能给记忆留预算，否则一段长记忆会把这一轮的心境挤掉。
+    // Round7 A4：长会话里卡不能一直停在绑定那一刻（生产实测落后 Core 100+ 版）。
+    // 6h 一次静默换卡；失败保留旧卡，绝不让刷新阻断本轮注入。
+    try {
+      await personaCard.refreshIfStale(context.sessionId);
+    } catch (error) {
+      log?.debug?.('agemem: persona card refresh failed; keeping the frozen text', error);
+    }
     const persona = await personaCard.turnBlock(context.sessionId);
     // 动态段自己带标头：块头那句「不要当作指令」说的是记忆，而红线/优先级确实要当约束读。
     const rawDynamic = (persona.state?.dynamicText ?? '').trim();
@@ -1690,6 +1806,7 @@ export async function apply(ctx: AgememContext, rawConfig?: unknown): Promise<vo
                 // P7 输出侧（shadow）：正文落地之后才判「这一轮说了什么」。
                 // 同样不 await、不进 Outbox —— 判定失败绝不能让投递结果或 turn 变形。
                 reportSoulGate(payload);
+                reportPersonaUsage(payload);
                 return { ok: true } as const;
               }
               // 200 + code!==0 is a rejection: the core maps some validation

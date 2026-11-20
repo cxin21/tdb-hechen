@@ -290,6 +290,15 @@ describe("叙事巩固：显著度衰减、注入门与遗忘", () => {
     expect(oldWeak.status).toBe("active");
   });
 
+  it("最近一章必进：旧章显著度再高也不挤掉最新章（recency-first，A1 复核）", () => {
+    const newestLow = row({ chapter_id: "n-new", salience: 0.4, period_end: weekAgo(1).end });
+    const oldHigh = row({ chapter_id: "n-old-high", salience: 0.95, period_end: weekAgo(9).end });
+    const mid = row({ chapter_id: "n-mid", salience: 0.6, period_end: weekAgo(2).end });
+    const lines = narrativeInjectionLines([oldHigh, mid, newestLow], { now: NOW });
+    expect(lines[0]!.chapterId).toBe("n-new");
+  });
+
+
   it("注入行带章节标题与首句，且不超过单行上限（不含换行）", () => {
     const r = row({
       chapter_id: "n1",

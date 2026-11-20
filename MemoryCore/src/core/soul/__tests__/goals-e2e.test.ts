@@ -17,6 +17,32 @@ import { resolveSoulConfig, type SoulEpisode } from "../types.js";
 
 const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
 
+const DAY_MS = 86_400_000;
+
+/**
+ * 时钟无关的 fixture 时间：一律相对「现在」算 n 天前。
+ * 回归背景（issue #180 审计）：本文件原先写死 2026-11-05 / due_at 2026-11-15，
+ * tick 走真实时钟，墙钟一旦越过 2026-11-15，目标创建即判过期 → status=blocked，
+ * 用例从「创建即 active」变成确定性失败。日期必须相对 now 生成。
+ */
+function atDaysAgo(n: number, hour = 2): string {
+  const d = new Date(Date.now() - n * DAY_MS);
+  d.setUTCHours(hour, 0, 0, 0);
+  return d.toISOString();
+}
+
+/** 承诺句里的「十天后」所在的 fixture 事件时间（相对 now，恒定 5 天前 UTC 02:00）。 */
+const SELF_AT = atDaysAgo(5, 2);
+
+/** 「十天后」落到那天 23:59:59.999Z：断言日期差为 10 天，而不是钉死某个日期。 */
+function expectDueTenDaysAfter(dueAt: string | null, from: string): void {
+  expect(dueAt).not.toBeNull();
+  expect(dueAt!.endsWith("T23:59:59.999Z")).toBe(true);
+  // 到期日是「那天 23:59:59.999Z」，与事件时刻（02:00Z）不是整数天，按日历日比。
+  const dayDiff = Math.round((Date.parse(dueAt!.slice(0, 10)) - Date.parse(from.slice(0, 10))) / DAY_MS);
+  expect(dayDiff).toBe(10);
+}
+
 function tmpDb(): string {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "soul-goals-e2e-")), "vectors.db");
 }
@@ -72,25 +98,25 @@ describe("P3 端到端：tick 长目标、挂承诺、写一条锚", () => {
     store.commitSoulEpisodes(TENANT, [
       ep({
         episodeId: "ep-promise-self",
-        at: "2026-11-05T02:00:00.000Z",
+        at: SELF_AT,
         object: "目标写者",
         userStance: "先取证再改",
         outcome: "我答应过自己：「十天后把目标写者接上」",
       }),
       ep({
         episodeId: "ep-plan",
-        at: "2026-11-05T03:00:00.000Z",
+        at: atDaysAgo(5, 3),
         object: "mood 层",
         agentStance: "我计划把 mood 层的写者补上",
       }),
       ep({
         episodeId: "ep-wish",
-        at: "2026-11-05T04:00:00.000Z",
+        at: atDaysAgo(5, 4),
         outcome: "我希望以后都能早点睡",
       }),
       ep({
         episodeId: "ep-promise-you",
-        at: "2026-11-05T05:00:00.000Z",
+        at: atDaysAgo(5, 5),
         userStance: "你什么时候把账对完？",
         outcome: "我答应你十天后把账对完",
       }),
@@ -108,7 +134,7 @@ describe("P3 端到端：tick 长目标、挂承诺、写一条锚", () => {
     const selfPromise = goals.find((g) => g.kind === "commitment" && g.owner === "self" && g.title.includes("目标写者"));
     expect(selfPromise).toBeDefined();
     expect(selfPromise!.status).toBe("active");
-    expect(selfPromise!.due_at).toBe("2026-11-15T23:59:59.999Z");
+    expectDueTenDaysAfter(selfPromise!.due_at, SELF_AT);
     expect(selfPromise!.why).toBe("这是我对自己立的约束");
     expect(goals.some((g) => g.kind === "plan" && g.title.includes("mood"))).toBe(true);
     expect(goals.some((g) => g.kind === "commitment" && g.owner === "joint")).toBe(true);
@@ -148,7 +174,7 @@ describe("P3 端到端：tick 长目标、挂承诺、写一条锚", () => {
     store.commitSoulEpisodes(TENANT, [
       ep({
         episodeId: "ep-due",
-        at: "2026-11-05T02:00:00.000Z",
+        at: SELF_AT,
         userStance: "先取证再改",
         outcome: "我答应过自己：「十天后把目标写者接上」",
       }),
@@ -156,7 +182,7 @@ describe("P3 端到端：tick 长目标、挂承诺、写一条锚", () => {
     const first = await tick(store);
     expect(first.goals!.created).toBe(1);
     const dueAt = store.listSoulGoals(TENANT)[0]!.due_at!;
-    expect(dueAt).toBe("2026-11-15T23:59:59.999Z");
+    expectDueTenDaysAfter(dueAt, SELF_AT);
 
     // 「三天后」用注入时钟表达：到期日 +3 天（不靠机器时间）
     const advanced = new Date(Date.parse(dueAt) + 3 * 86400_000).toISOString();
@@ -173,7 +199,7 @@ describe("P3 端到端：tick 长目标、挂承诺、写一条锚", () => {
 
     const answer = commitmentAnswer(store.listSoulGoals(TENANT), { now: advanced });
     expect(answer).not.toBeNull();
-    expect(answer).toContain("已经过期（2026-11-15）");
+    expect(answer).toContain("已经过期（" + dueAt.slice(0, 10) + "）");
     expect(answer).toContain("把目标写者接上");
 
     // 状态跃迁也落了账本

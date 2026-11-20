@@ -219,6 +219,14 @@ describe("worker 接线：tick 内合并一次并落 invalidate 账本", () => {
       });
       expect(rep2.consolidated).toBeUndefined();
       expect(store.listSoulLedger(T, 300).filter((e) => e.action === "invalidate")).toHaveLength(1);
+      // A1 Round10（CP3）：被取代的行不许在后续 tick 里被重新 admit 回来。
+      // 生产实测 3 天 admit 9846 / 107 ids 而 invalidate 9784——说明读侧看不见的
+      // 取代行仍被事件史反复入库（同一 item_id 的账本行数 541）。
+      const admits = store.listSoulLedger(T, 500).filter((e) => e.itemId === "relationship:r4" && e.action === "admit");
+      expect(admits).toHaveLength(0);
+      const allRows = store.listSoulPersona(T, { includeSuperseded: true });
+      const r4 = allRows.find((i) => i.itemId === "relationship:r4")!;
+      expect(r4.validTo).toBeTruthy();
     } finally {
       try {
         store.close();

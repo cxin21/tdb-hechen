@@ -126,4 +126,22 @@ describe("A1 · 门拦下不刷新「上次成功 L2」", () => {
     expect(st.last_extraction_updated_time).toBe("2026-11-02T02:00:00.000Z");
     expect(st.l2_pending_l1_count).toBe(0);
   });
+
+  it("T4 半失败：时间戳/cursor/pending 全不动，下一轮重读同一窗口", async () => {
+    const { pm, runL2, swap } = mkManager();
+    await runL2(SK);
+    const st = pm.getSessionState(SK)!;
+    const beforeTime = st.l2_last_extraction_time;
+    const beforeCursor = st.last_extraction_updated_time;
+    setPending(pm, 9);
+    await tick();
+
+    swap(async () => ({ latestCursor: "2026-11-02T03:00:00.000Z", hadFailure: true }));
+    await runL2(SK);
+
+    const after = pm.getSessionState(SK)!;
+    expect(after.l2_last_extraction_time).toBe(beforeTime);
+    expect(after.last_extraction_updated_time).toBe(beforeCursor);
+    expect(after.l2_pending_l1_count).toBe(9);
+  });
 });

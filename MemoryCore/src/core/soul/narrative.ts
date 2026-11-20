@@ -418,12 +418,21 @@ export function narrativeInjectionLines(
   const now = opts.now ?? new Date().toISOString();
   const min = opts.minSalience ?? NARRATIVE_INJECT_MIN_SALIENCE;
   const limit = Math.max(1, Math.trunc(opts.limit ?? NARRATIVE_INJECT_MAX_LINES));
-  return (rows ?? [])
+  const scored = (rows ?? [])
     .filter((row) => row.status === "active")
     .map((row) => ({ row, salience: narrativeDecayedSalience(row, now) }))
-    .filter((x) => x.salience >= min)
-    .sort((a, b) => b.salience - a.salience)
-    .slice(0, limit)
+    .filter((x) => x.salience >= min);
+  if (scored.length === 0) return [];
+  // A1（2026-11-18 复核）：注入排序不能只看显著度。access 每次注入都 +1，老章会因「被注入过」
+  // 越来越显著，形成「越旧越显眼」的自增强：回放里最新章从未进卡，卡面挂的是 08-17 的老章。
+  // 口径改为「最新一章必进，剩余名额按显著度补」——最近的变化先保证是最近的。
+  const newest = [...scored].sort((a, b) =>
+    String(b.row.period_end ?? "").localeCompare(String(a.row.period_end ?? "")),
+  )[0];
+  const rest = scored
+    .filter((x) => x.row.chapter_id !== newest.row.chapter_id)
+    .sort((a, b) => b.salience - a.salience);
+  return [newest, ...rest].slice(0, limit)
     .map((x) => ({
       chapterId: x.row.chapter_id,
       text: clip(x.row.title + "｜" + (x.row.summary.split("；")[0] ?? ""), NARRATIVE_LINE_MAX_CHARS),

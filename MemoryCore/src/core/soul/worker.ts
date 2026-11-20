@@ -21,6 +21,7 @@
  *
  * 一切外部依赖都可缺席：缺 store 方法=该阶段跳过并如实标注 skipped（不假装成功）。
  */
+import { createHash } from "node:crypto";
 import type { CoreTenant, IMemoryStore, SoulEpisodeProvisionResult } from "../store/types.js";
 import type { SoulMoodEventInsert } from "../store/soul-event-types.js";
 import type { Logger } from "../types.js";
@@ -61,7 +62,7 @@ import type { AgentProfileLike } from "./agent-profile.js";
 import type { SoulPerson } from "../person/types.js";
 import { clampRedlines, mergeDuplicateRedlines } from "./card.js";
 import { chargeCall, openCostBudget, redactSecrets } from "./guard.js";
-import { contradictRepairClaims, factsFromEpisode, historyItemNeedsUpdate, historyToItems, reversals, settlePromises } from "./history.js";
+import { contradictRepairClaims, factsFromEpisode, historyItemNeedsUpdate, historyToItems, isNewEvidenceDay, reversals, settlePromises } from "./history.js";
 import { runPersonStateMaintenance, type PersonStateMaintenanceResult } from "./person-state.js";
 import { runRelationEventBackfill, runRelationEventProvision } from "./relation-backfill.js";
 import { runGoalMaintenance, type GoalMaintenanceResult } from "./goals.js";
@@ -69,7 +70,7 @@ import { runSelfModelMaintenance, type SelfModelMaintenanceResult } from "./self
 import { runNarrativeMaintenance, tenantTagOf, type NarrativeMaintenanceResult } from "./narrative.js";
 import { runEpisodeEventProvision } from "./episode-provision.js";
 import { runValueMaintenance, type ValueMaintenanceResult } from "./value-maintenance.js";
-import { SEED_LABELS, TRAIT_PROTOCOL_VERSION, emptyAxisVector, l1Norm, seedStateFromSeeds, type AxisVector } from "./traits.js";
+import { SEED_LABELS, TRAIT_LABEL_RETIRE_DAYS, TRAIT_PROTOCOL_VERSION, emptyAxisVector, l1Norm, planStaleLabels, seedStateFromSeeds, type AxisVector } from "./traits.js";
 import { assembleSoulCard } from "./card-service.js";
 import { recordSoulDrift } from "./observation.js";
 import {
@@ -79,6 +80,7 @@ import {
   type TraitProtocolOutput,
 } from "./trait-drift.js";
 import type { MoodState } from "./emotion.js";
+import { isMoodRegulationEntry } from "./emotion.js";
 import { allPass, classifyLine, evaluateCandidate, isSelfVoice, normalizeText, personaLength, stripBullet, textHash, textSimilarity } from "./gates.js";
 import {
   consolidatePersona,
@@ -94,7 +96,7 @@ import {
   renderLayerWithBudget,
 } from "./persona.js";
 import { itemHash as itemHashOf } from "./consolidator.js";
-import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION, rankLabelsByPad, EMOTION_PAD_NEAR_MAX, regulateMood, decayMoodTowardBaseline, normalizeMoodHalfLife } from "./emotion.js";
+import { integrateMood, emotionFromSignal, activeEmotions, readMood, renderMoodLine, moodBiasLine, decayedIntensity, isReusableAffectObject, isEmotionExpired, isStoredEmotionExpired, pickCurrentEmotion, moodFocusOf, moodGrowthGate, EMOTION_LABELS, EMOTION_TEMPLATE_VERSION, rankLabelsByPad, EMOTION_PAD_NEAR_MAX, stepMoodDecayLedger, MOOD_DECAY_LEDGER_MIN_DROP, regulateMood, decayMoodTowardBaseline, normalizeMoodHalfLife } from "./emotion.js";
 import { canSelfReset, measureDrift, pushDrift, trackOf } from "./drift.js";
 
 /**
@@ -120,7 +122,7 @@ export interface SoulEvidenceRecord {
 
 /** LLM 候选（可选来源；返回值仍要过全部确定性门）。 */
 export interface SoulRewriteRequest {
-  existing: Array<{ layer: SoulLayer; text: string }>;
+  existing: Array<{ layer: SoulLayer; text: string; state?: string }>;
   records: string[];
   maxCandidates: number;
   /** 本轮独立证据下限（与 cfg.minEvidence 对齐，避免 prompt 说 2、门要 3 的自相矛盾）。 */
@@ -177,6 +179,7 @@ export interface SoulWorkerDeps {
     | "writeSoulTraitState"
     | "listSoulTraitLabels"
     | "commitSoulTraitLabels"
+    | "dormantSoulTraitLabels"
     /* P2-E：事件挂人（resolvePerson 只用到三个可选方法） */
     | "upsertSoulPerson"
     | "getSoulPersonByPlatform"
@@ -251,7 +254,7 @@ export interface SoulWorkerDeps {
    * worker 只把返回的事实当作**候选**，与语料/rewriter 走同一 mergeCandidates、同一准入判据、
    * 同一 commitSoulPersona 事务——不另开写径。缺席=该来源不参与（如实不假装）。
    */
-  identityFacts?: () => Promise<Array<{ layer: "identity" | "self_identity"; text: string; evidenceIds: string[] }>>;
+  identityFacts?: () => Promise<Array<{ layer: "identity" | "self_identity"; text: string; evidenceIds: string[]; subject?: "agent" | "user" }>>;
   /**
    * S6 红线投影接缝：每 tick 读一次 meta_agent_persona 的 active 红线，投影进 core_memory.strict_rule，
    * 与 persona upsert / 账本同一事务（判据 2：表单保存后 ≤1 tick 覆盖 100%）。
@@ -345,10 +348,17 @@ export interface SoulWorkerReport {
   reclassified: number;
   /** 存量槽导入退出人格注入层（冻结，下沉为操作约束；不删除）。 */
   retired?: number;
+  /** 本轮退役的标签条数（只改 status=dormant，不删行；Round18）。 */
+  labelsRetired?: number;
   /** 从事件确定性长出的自我/关系史条数（不经 LLM，不计 admitted）。 */
   historyAdded?: number;
   /** 规则收紧后不再构成事实、退出注入的旧事件史条数。 */
   historyRetired?: number;
+  /**
+   * 结构上不可能过门的确定性候选（L1 逐句挖出、缺 ep-* 事件或 voice 原话）：
+   * 不进闸门、按 (layer, code) 单独计数，落 soul_gate_stats 的 prefilter_* 码。
+   */
+  prefiltered?: Array<{ layer: string; code: string; count: number }>;
   /** 承诺层：本轮从事件史建/核的承诺（open 新建、kept/broken 迁移）；失败只跳过不阻断。 */
   promises?: { created: number; kept: number; broken: number; skipped: number };
   merged: number;
@@ -380,7 +390,13 @@ export interface SoulWorkerReport {
   /** 本轮真正积进心境的事件条数（未打标、非 work；2026-11-08 起按事件打标，不再用时间水位）。 */
   moodEpisodesIntegrated?: number;
   /** S6 单产线：identity 取数本轮产出（proposed=取数条数，candidates=真正进候选数组的条数）。 */
-  identity?: { proposed: number; candidates: number; skipped?: string };
+  identity?: {
+    proposed: number;
+    candidates: number;
+    /** Round23：出处解析不到任何 ep-* 而挡在闸门外的条数（另计 prefilter_no_episode）。 */
+    prefiltered?: number;
+    skipped?: string;
+  };
   /** S6 红线投影：active=表单侧仍有效条数，projected=真正写进 strict_rule 的行数。 */
   redlines?: { active: number; projected: number; merged?: number; retired?: number; skipped?: string };
   /** 漂移判定（逐条）；无向量器时为空且 driftSkipped 说明原因。 */
@@ -538,11 +554,14 @@ export const SOUL_REWRITE_SYSTEM_PROMPT = [
   "16. 不抽关于我自身能力的元叙述：「我是一个由某某驱动的模型」「我可以帮你做…」「我擅长…」这类自我介绍与能力宣称，是包装不是事实。",
   "17. 但我说出的可核对事实仍要抽：「我把它改成 Arco 组件库了」「这行代码在 a.ts:42」能回到原话逐字核对，属于事实，不许因为出自我的口就当成噪声；写成条目时仍要过第 9 条（不带路径/项目名），必要时改写成不含路径的说法。",
   "18. 每条事实都必须能指回某条具体消息：evidenceIds 里的 ep-* 与 fewShot 的 recordId，必须是输入里真实存在、且能在该条消息原文里找到这句话的那一条；指不回去的宁可不写，不要拿别的 id 凑数。",
+  "19. 「已有条目」里标了 degraded / frozen 的，是被时间判为「很久没被印证」的旧人格：只要本轮事件里确实还有证据支持它，就**原样重提同一句文本**（一个字都不要改），它会因此回到 active；这类复活优先于新增层，且不占改写额度。没有新证据就别提——不要为了复活而编证据。",
 ].join("\n");
 
 export function buildSoulRewritePrompt(req: SoulRewriteRequest): string {
   const existing = req.existing.length
-    ? req.existing.map((e) => `- [${e.layer}] ${e.text}`).join("\n")
+    ? req.existing
+        .map((e) => `- [${e.layer}${e.state && e.state !== "active" ? ` | ${e.state}` : ""}] ${e.text}`)
+        .join("\n")
     : "（无）";
   // 每行带 id：prompt 要求 evidenceIds 来自输入，不把 id 给出去等于让它编。
   // 不要加「1.」序号——行首就是 id，模型直接抄；加序号会让它把序号当 id。
@@ -674,14 +693,57 @@ export interface SoulMergeCandidate {
   text: string;
   evidenceIds: string[];
   origins: ("l1" | "model" | "episode")[];
-  /** 事件层证据（ep-*）；identity/values 需 ≥minEpisodeEvidence，narrative ≥1。 */
+  /** 事件层证据（ep-*）；values 需 ≥minEpisodeEvidence，identity/self 需 ≥1 且带代价措辞（Round27），narrative ≥1。 */
   episodeIds?: string[];
   /** voice 专属：逐字原话 + 来源记录 id。 */
   fewShots?: Array<{ quote: string; recordId: string }>;
 }
 
+/**
+ * Round23（R23-1）：把本轮事件池的**事件出处键**反查成「键 → ep-* 列表」。
+ * 这个键是 `soul_episodes.quote.recordId`，实测是 L0 消息 id（生产 317 条里 305 条 msg-*、
+ * 12 条 ft-*，没有一条是 L1 record_id）——所以它不能直接喂 L1 id，必须走第二跳
+ * （`resolveEpisodeIds` + `l1_records.source_message_ids`）。
+ * 空 recordId 跳过；同一键命中多条事件时保留全部（去重、保序）。
+ */
+export function episodeIdsByRecordId(pool: SoulEpisode[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const ep of pool) {
+    const rid = typeof ep.quote?.recordId === "string" ? ep.quote.recordId : "";
+    if (rid === "") continue;
+    const list = out.get(rid);
+    if (list) {
+      if (!list.includes(ep.episodeId)) list.push(ep.episodeId);
+    } else out.set(rid, [ep.episodeId]);
+  }
+  return out;
+}
+
+/**
+ * Round23（R23-1）：把候选的 L1 出处解析成 ep-*。两跳——
+ * ① 直接命中：出处本身就是事件池的键（voiceQuotes 等与事件同键的情况）；
+ * ② 过消息 id：L1 行（m_*）的 source_message_ids 才是事件池的真键（生产 317 条事件里
+ *    305 条 quote.recordId 是 msg-*、12 条是 ft-*，L1 id 一条都没有），先换成消息 id 再命中。
+ * 保序去重；解析不到返回空数组（调用方据此挡在闸门外）。
+ */
+export function resolveEpisodeIds(
+  ids: string[],
+  epByRecordId: Map<string, string[]>,
+  msgByL1: Map<string, string[]> = new Map(),
+): string[] {
+  const out: string[] = [];
+  const push = (epId: string) => { if (!out.includes(epId)) out.push(epId); };
+  for (const id of ids) {
+    for (const epId of epByRecordId.get(id) ?? []) push(epId);
+    for (const msgId of msgByL1.get(id) ?? []) for (const epId of epByRecordId.get(msgId) ?? []) push(epId);
+  }
+  return out;
+}
+
 export interface SoulMergeContext {
   updatesInWindow?: Partial<Record<SoulLayer, number>>;
+  /** A1：被 consolidate 取代（validTo 非空）的 itemId，不允许当改写目标。 */
+  superseded?: Set<string>;
   /** 本轮可引用的事件 id 池；给定时候选里的 ep-* 会被过滤到池内（治 LLM 编 id）。 */
   episodeIds?: Set<string>;
   /** voice few-shot 的合法原话池：recordId → 原文。 */
@@ -763,6 +825,22 @@ function mergeCandidates(
     const key = [...keys][0]!;
     const displayName = opts?.personNamesByKey?.get(key) ?? "";
     return { key, ...(displayName === "" ? {} : { displayName }) };
+  };
+  /**
+   * Round27：单事件准入要能指着「这件事里的东西」说话。
+   * 只把被引 episode 的原文拼起来交给门，判断在 gates.hasConcreteReferent（不在这里重复判）。
+   */
+  const evidenceTextsOf = (ids: string[] | undefined): string[] | undefined => {
+    if (!ids || ids.length === 0 || !opts?.episodesById) return undefined;
+    const texts: string[] = [];
+    for (const id of ids) {
+      const ep = opts.episodesById.get(id);
+      if (!ep) continue;
+      const parts = [ep.title, ep.object, ep.userStance, ep.agentStance, ep.cost, ep.outcome, ep.quote?.text ?? ""];
+      const joined = parts.filter((t) => typeof t === "string" && t.trim() !== "").join(" ");
+      if (joined !== "") texts.push(joined);
+    }
+    return texts.length > 0 ? texts : undefined;
   };
   for (const raw of candidates) {
     const existing = [...map.values()];
@@ -859,6 +937,10 @@ function mergeCandidates(
       }
     }
     if (target && bestSim >= UPDATE_MATCH_SIMILARITY) {
+      if (opts?.superseded?.has(target.itemId)) {
+        reject(cand.layer, cand.text, ["superseded"], "目标已被结论合并取代，不再改写（等新结论）", cand.evidenceIds);
+        continue;
+      }
       const upd = planUpdate(target, cand.text, now, cfg);
       if (!upd.ok) {
         reject(cand.layer, cand.text, ["alpha_exceeded"], upd.reason ?? "改写幅度超 α", cand.evidenceIds);
@@ -874,6 +956,7 @@ function mergeCandidates(
         userCorpus: voiceCorpus,
         evidenceOrigins: cand.origins,
         evidenceEpisodeIds: cand.episodeIds,
+        evidenceTexts: evidenceTextsOf(cand.episodeIds),
         voiceFewShots: cand.fewShots,
         personName: cfg.personName,
         checkDuplicate: false,
@@ -895,23 +978,64 @@ function mergeCandidates(
       }
       const day = now.slice(0, 10);
       const sameText = upd.diff === 0;
+      // A1 Round7 复核：同一批老记录每 tick 复现时，候选的 evidenceIds 与既有条目完全重合，
+      // 但旧代码照样把「今天」塞进 evidenceDays 并按 planRevive 复活 —— 等于自己造了一个新证据日，
+      // frozen/degraded 被老证据无限拉回 active。只有真的带来没见过的证据 id 才允许续命/记新日期。
+      const hasNewEvidence = cand.evidenceIds.some((id) => !target.evidenceIds.includes(id));
+      // A1 Round10（CP1）：α 有界改写也是「正文变了」。若候选没带来任何新证据，
+      // 仅凭模型复述同一批旧证据就允许改字，等于「无新证据也能漂移」——生产已在
+      // 2026-11-18T12:42 发生过一次 identity alpha_update。这里直接拒绝改写，
+      // 保留原文；同文刷新证据 / 续命 / 复活仍走下面的路径。
+      if (!sameText && !hasNewEvidence) {
+        reject(
+          cand.layer,
+          cand.text,
+          ["no_new_evidence"],
+          "候选没有带来新证据：只允许刷新证据，不允许改正文（A1 Round10）",
+          cand.evidenceIds,
+        );
+        continue;
+      }
+      // A1 Round13（CP1）：同一段文本 + 同一批证据的「重谈」不该写成一次 update。
+      // 生产 self:hx-faab7d70a9ca 有 27 条同文 update 与 28 条 drift 交替：文本 len=114 一个字没变、
+      // evidence 恒为同一个 ep-*，账本却看起来一直在动。只有正文变化或真带来新证据才落一行，
+      // 否则整轮跳过（不写账本、不占 churn 额度、不刷新 lastEvidenceAt）。
+      if (sameText && !hasNewEvidence) {
+        continue;
+      }
       // P2-E：唯一在场人 → 改写后的 human 条目保住/补上 meta.person；没有唯一人时**不动**
       // 既有 meta（旧绑定可能是对的，凭空抹掉比留着更像污染）。
       let nextMeta = sameText ? target.meta : { ...(target.meta ?? {}), lastRewriteAt: now };
       if (person) nextMeta = { ...(nextMeta ?? {}), person };
+      // A1 Round24（r24b-a1 CP1）：复活要拿 planRevive 的**整个**返回值，不能只取 .state。
+      // 旧写法 `...target` 把旧 driftHistory / validTo 原样带进新行，只补删了 validTo：
+      // frozen 条目复活后下一次 measureDrift 仍读旧漂移史，立刻又 freeze（复活与冻结在相邻 tick 抵消）。
+      const revivePlan =
+        (target.state === "frozen" || target.state === "degraded") && hasNewEvidence
+          ? planRevive(target, now, cand.evidenceIds)
+          : null;
       const next: PersonaItem = {
-        ...target,
+        ...(revivePlan ?? target),
         text: upd.item.text,
-        lastEvidenceAt: now,
+        // A1 Round8 复核：lastEvidenceAt 是「最后一次出现**新**证据的时间」，不是「最后一次被重谈」。
+        // 旧代码无条件写 now，于是每 tick 复现的老主张把年龄刷成 0：degraded 既不能按 30 天继续老化，
+        // 也不会冻到 90 天，永久停在 degraded（生产 voice 13/13 degraded、last_evidence_at 却是当天）。
+        lastEvidenceAt: hasNewEvidence ? now : target.lastEvidenceAt,
         updatedAt: now,
         evidenceIds: Array.from(new Set([...target.evidenceIds, ...cand.evidenceIds])),
         // evidenceDays 记「证据出现的自然日」——陈旧/复现判定要的是日期，不是记录 id。
-        evidenceDays: Array.from(new Set([...target.evidenceDays, day])),
+        // 没有新证据就不写今天，否则今天恒在集合里，生命周期判定永远看不到「陈旧」。
+        evidenceDays: hasNewEvidence ? Array.from(new Set([...target.evidenceDays, day])) : target.evidenceDays,
         evidenceOrigins: Array.from(new Set<EvidenceOrigin>([...target.evidenceOrigins, ...cand.origins])),
         // 只有正文真的变了才记「改写时间」；同文刷新证据/复活不占 churn 额度。
         meta: nextMeta,
-        state: target.state === "frozen" ? planRevive(target, now, cand.evidenceIds).state : target.state,
       };
+      // 复活即重新参与注入：失效期末端必须清掉，否则读侧仍按「已过期」处理。
+      // （planRevive 已经在返回值里删过 validTo，这里再删一次是防 `...target` 路径回归。）
+      if (next.state === "active" && target.state !== "active") {
+        delete (next as { validTo?: string }).validTo;
+        delete (next as { driftHistory?: number[] }).driftHistory;
+      }
       map.set(next.itemId, next);
       if (!sameText) {
         updated += 1;
@@ -924,8 +1048,12 @@ function mergeCandidates(
           now,
           trigger,
           "update",
-          sameText ? "新证据刷新" : `α 有界改写（差异 ${upd.diff.toFixed(2)} ≤ ${cfg.alpha}）`,
-          sameText ? ["evidence"] : ["alpha_update"],
+          sameText
+            ? target.state === "frozen" || target.state === "degraded"
+              ? `新证据刷新（${target.state} → active）`
+              : "新证据刷新"
+            : `α 有界改写（差异 ${upd.diff.toFixed(2)} ≤ ${cfg.alpha}）`,
+          sameText ? (target.state === "frozen" || target.state === "degraded" ? ["evidence", "revive"] : ["evidence"]) : ["alpha_update"],
         ),
       );
       continue;
@@ -943,6 +1071,7 @@ function mergeCandidates(
       evidenceIds: cand.evidenceIds,
       evidenceDays: [now.slice(0, 10)],
       evidenceEpisodeIds: cand.episodeIds,
+      evidenceTexts: evidenceTextsOf(cand.episodeIds),
       voiceFewShots: cand.fewShots,
       weight: cand.layer === "boundary" ? 0.9 : 0.6,
       meta: { source: cand.origins.join("+"), minedAt: now, ...(person ? { person } : {}) },
@@ -1029,6 +1158,17 @@ function traitReportOf(
   };
 }
 
+// 证据时钟（A1 Round19）：lastEvidenceAt 只前进到「最新一条证据本身的时间」，不写 tick 时刻。
+// 回填旧事件（ep.at 早于现有证据）既不能把老化钟归零，也不能让时钟倒退。
+export function advanceEvidenceClock(prevLast: string | undefined, evidenceAts: readonly string[]): string {
+  let newest = String(prevLast ?? "");
+  for (const at of evidenceAts) {
+    const v = String(at ?? "");
+    if (v !== "" && v > newest) newest = v;
+  }
+  return newest;
+}
+
 export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWorkerReport> {
   const cfg = resolveSoulConfig(deps.config);
   const now = deps.now ?? new Date().toISOString();
@@ -1059,9 +1199,23 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   // 1) 生命周期基线
   // 2026-11-07（P0-0）：core_memory 槽位通道整体移除——soul 侧不再读槽（readCore 调用点归零），
   // 人格来源只剩 episode-history 与 l1+model+episode 两条。槽位行由 core-proposal 侧删除。
-  const existing = typeof store.listSoulPersona === "function" ? ((await store.listSoulPersona(deps.tenant)) ?? []) : [];
+  const existing = typeof store.listSoulPersona === "function" ? ((await store.listSoulPersona(deps.tenant, { includeSuperseded: true })) ?? []) : [];
   const ledger: SoulLedgerEntry[] = [];
   const map = new Map(existing.map((i) => [i.itemId, { ...i }]));
+  // A1（2026-11-18 复核）：结论合并取代的行仍在库里（state 仍 active/degraded、只有 validTo 非空）。
+  // 旧实现 listSoulPersona 默认把这些行过滤掉，于是事件史 map.get 取不到 → 每 tick 重新 admit
+  // 并 upsert（不写回 meta.validTo），把 consolidate 的决定撤销（回放实测 239 条 admit 发生在
+  // invalidate 之后）。取代是结论，不是待复活的降级：本 tick 一律跳过这些 id。
+  const supersededIds = new Set(
+    existing
+      .filter(
+        (it) =>
+          (it.state === "active" || it.state === "degraded") &&
+          typeof it.validTo === "string" &&
+          it.validTo !== "",
+      )
+      .map((it) => it.itemId),
+  );
 
   // 1-0) 历史槽导入退出人格注入层（2026-11-05 用户拍板「我允许，你做完吧」）。
   // 旧实现把 strict_rule/identity 逐行导入 boundary/identity，导致「补货查询流程」「TDB git
@@ -1219,6 +1373,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   const episodeIds = new Set<string>();
   const voiceRecords = new Map<string, string>();
   let episodePool: SoulEpisode[] = [];
+  /** 本 tick 真正新入库的事件（3c 事件史续命用；不能拿整个窗口，否则旧事件会每 tick 续一次命）。 */
+  let tickFreshEpisodes: SoulEpisode[] = [];
   // P2-E：person_key → 展示名。human 层条目挂人时写进 meta.person.displayName（回显/审计用），
   // 由事件解析与本轮 store.listSoulPersons 共同填充；拿不到就只写 key。
   const personNamesByKey = new Map<string, string>();
@@ -1385,6 +1541,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       }
     }
     // fresh 已在本 tick 入库（只含选中的那批）；未入选的留给下一 tick，不投票。
+    tickFreshEpisodes = fresh;
     const freshEpisodes = fresh;
     const repeatEpisodes = minedEpisodes.episodes.length - freshAll.length;
     for (const q of minedEpisodes.voiceQuotes) {
@@ -1490,6 +1647,35 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           labels = seedLabelRows(SEED_LABELS, now, { declared: seedTraits.map((s) => s.label) });
           await Promise.resolve(store.commitSoulTraitLabels(deps.tenant, labels));
         }
+        // 标签退役：只在有写入器时跑；幂等（已 dormant 的行不会被重复选中）。
+        // 优先有条件写：标签按 team 存、同队多 agent 共享，整行 upsert 会把别的 agent
+        // 刚复活的 status 改回 dormant 并倒退 last_seen（复核 r40-a1 攻 attacked ②）。
+        const staleLabels = planStaleLabels(labels, now);
+        if (staleLabels.length > 0) {
+          let retiredCount = 0;
+          if (typeof store.dormantSoulTraitLabels === "function") {
+            const res = await Promise.resolve(
+              store.dormantSoulTraitLabels(deps.tenant, staleLabels.map((r) => r.label), {
+                now,
+                idleDays: TRAIT_LABEL_RETIRE_DAYS,
+              }),
+            );
+            retiredCount = Number(res?.retired ?? 0);
+          } else if (typeof store.commitSoulTraitLabels === "function") {
+            await Promise.resolve(store.commitSoulTraitLabels(deps.tenant, staleLabels));
+            retiredCount = staleLabels.length;
+          }
+          for (const row of staleLabels) {
+            const cur = labels.find((l) => l.label === row.label);
+            if (cur) cur.status = row.status;
+          }
+          report.labelsRetired = retiredCount;
+          if (retiredCount > 0) {
+            deps.logger?.info?.(
+              `[soul-trait] retired ${retiredCount} stale label(s) for ${deps.tenant.teamId}/${deps.tenant.agentId}: ${staleLabels.map((r) => r.label).join("/")}`,
+            );
+          }
+        }
         // 只喂本轮真正新入库的事件（G3 同源），窗口内已投过的只记 skipped_repeat：
         // 票是一次性证据，同一事件不该每 tick 重投一次。
         const newEpisodes = freshEpisodes;
@@ -1521,6 +1707,17 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             now,
           );
           const lab = resolveLabelProposals(judged.labelProposals, labels, { now });
+          // 标签提案被拒要有可查记录：否则「标签没长」分不清是判侧没产票还是产了被挡。
+          // 与候选拒收同口径（P0-2）——按 (day, code, layer) 聚合，不逐条写账本。
+          if (lab.rejected.length > 0 && typeof store.bumpSoulGateStats === "function") {
+            const day = now.slice(0, 10);
+            await Promise.resolve(
+              store.bumpSoulGateStats(
+                deps.tenant,
+                lab.rejected.map((r) => ({ day, code: `label_${r.reason}`, layer: "identity" as const, count: 1, at: now })),
+              ),
+            );
+          }
           const labelRows = [...lab.admitted, ...lab.updated];
           if (labelRows.length > 0 && typeof store.commitSoulTraitLabels === "function") {
             await Promise.resolve(store.commitSoulTraitLabels(deps.tenant, labelRows));
@@ -1760,9 +1957,14 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     const still = new Set(grown.map((item) => item.itemId));
     for (const item of grown) {
       const prev = map.get(item.itemId);
+      if (prev && supersededIds.has(prev.itemId)) continue;
       // 同文同 id 已 active 时不必重建；但权重与 direction 都是判据的一部分：
       // 权重决定注入顺序；direction 是信任升降的语义，旧行缺 direction 时不能因为
       // 「文本没变、权重没变」就永远不补——那会让生产关系史一直停在无方向的旧快照上。
+      // 降级/冻结的事实只有拿到**新的证据日**才允许复活：同一批老事件每 tick 重挖一遍，
+      // 若每 tick 都把降级条目重建成 active，就会「降级→重建」无限空转（90 天回放：
+      // relationship 15 条每 tick 各降级一次、degrade 174 次而 last_evidence_at 停在 8 月）。
+      if (prev && prev.state !== "active" && !isNewEvidenceDay(prev, item)) continue;
       if (!historyItemNeedsUpdate(prev, item)) continue;
       map.set(item.itemId, prev ? { ...item, createdAt: prev.createdAt } : item);
       historyAdded += 1;
@@ -1832,11 +2034,12 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         )) as Array<{ valence: number; arousal: number; occurred_at: string; excerpt?: string | null }>;
         const prevUpdatedAt = prevState.updatedAt ? Date.parse(prevState.updatedAt) : Number.NaN;
         const since = Number.isFinite(prevUpdatedAt)
-          ? prevUpdatedAt - 5 * 60_000
+          ? prevUpdatedAt // A2 Round24 r24c-a2：判断轨同理，不再放宽 5 分钟——同一信号会被相邻两轮各喂一次
           : nowMs - Math.max(24, cfg.moodHalfLifeHours * 2) * 3_600_000;
         const fresh = (signals ?? []).filter((s) => {
           const at = Date.parse(s.occurred_at);
-          return Number.isFinite(at) && at > since;
+          // 上界同样要钉住：未来时刻的信号不能被提前当成「此刻的心情」。
+          return Number.isFinite(at) && at > since && at <= nowMs;
         });
         const episodeEvents = episodePool
           .filter((ep) => {
@@ -1844,7 +2047,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             // 「跑下全量测试」这种任务当成他此刻的态度来源。
             if (ep.kind === "work") return false;
             const at = Date.parse(ep.at);
-            return Number.isFinite(at) && at > since;
+            // 事件侧同口径：只收「上次积分之后、且不晚于此刻」的，未来事件不许提前入账（r24d-a2）。
+            return Number.isFinite(at) && at > since && at <= nowMs;
           })
           .map((ep) => emotionEventFromEpisode(ep, cfg));
         const events = [...fresh.map((s) => emotionFromSignal(s, now, cfg)), ...episodeEvents];
@@ -2001,24 +2205,119 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   const mined = mineCandidates(records, cfg);
   // 单条 L1 记录就能抽出的候选，天然过不了 minEvidence：不送门、不落拒绝账本，
   // 否则每轮几百条结构性 insufficient_evidence 会把真实 LLM 拒绝原因淹掉。
-  const candidates: SoulMergeCandidate[] = mined
-    .filter((c) => new Set(c.evidenceIds).size >= cfg.minEvidence)
-    .map((c) => ({ ...c, origins: ["l1"] }));
+  // 结构上不可能过门的确定性候选不进闸门：identity/values/self/narrative 的闸门要求挂真实
+  // ep-* 事件证据，voice 要求 ≥2 条逐字原话；L1 逐句挖出来的候选两样都没有。以前它们每 tick
+  // 都送进闸门被拒一遍（生产 stance_missing/dilemma_missing/episode_missing 三位数/日几乎全
+  // 是它），把真实模型候选的拒绝原因淹掉。改为按结构预过滤，并单独落 soul_gate_stats
+  // （prefilter_* 计数），数字仍可见，只是不再冒充「模型提案被拒」。
+  const STRUCTURAL_LAYERS = new Set<SoulLayer>(["identity", "values", "self", "narrative", "voice", "human"]);
+  const prefiltered: Array<{ layer: string; code: string; count: number }> = [];
+  const bumpPrefilter = (layer: string, code: string) => {
+    const row = prefiltered.find((r) => r.layer === layer && r.code === code);
+    if (row) row.count += 1;
+    else prefiltered.push({ layer, code, count: 1 });
+  };
+  const candidates: SoulMergeCandidate[] = [];
+  // Round23（R23-1）：identity 事实的出处是 L1 record_id（m_* 等），而闸门的 episode 门只认 ep-*
+  // （gates.ts countEpisodeEvidence）。先把本轮 episodePool 反查成 record_id → ep-* 映射：
+  // 能解析的补进候选（事件出处成立），解析不到的在闸门外挡下并计数。
+  const epByRecordId = episodeIdsByRecordId(episodePool);
+  // R26-1：第二跳映射（L1 record_id → L0 消息 id）必须对**两条候选来源**都可用。
+  // 模型侧 prompt 的 records 行给的是 m_* 记录 id，事件池的键却是 msg-*（生产 317 条事件里
+  // 305 条 msg-*、12 条 ft-*，没有一条是 L1 id）；旧代码只在 identity 事实分支里建这张映射，
+  // 模型候选直接 `ids.filter(id => episodeIds.has(id))`——引用 m_* 的候选事件证据当场归零，
+  // 于是必然 episode_missing。这里把映射提到外面按需分两批补齐。
+  const msgByL1 = new Map<string, string[]>();
+  const readWithArchive = (store as {
+    getL1ByIdsWithArchive?: (ids: string[]) =>
+      | Promise<Array<{ record_id?: string; source_message_ids?: string[] }>>
+      | Array<{ record_id?: string; source_message_ids?: string[] }>;
+  }).getL1ByIdsWithArchive;
+  const primeMsgByL1 = async (ids: string[]): Promise<void> => {
+    const need = [...new Set(ids.filter((id) => id !== "" && !epByRecordId.has(id) && !msgByL1.has(id)))];
+    if (need.length === 0 || typeof readWithArchive !== "function") return;
+    try {
+      const rows = (await Promise.resolve(readWithArchive.call(store, need))) ?? [];
+      for (const row of rows) {
+        const rid = typeof row?.record_id === "string" ? row.record_id : "";
+        const msgs = Array.isArray(row?.source_message_ids)
+          ? row.source_message_ids.filter((m): m is string => typeof m === "string" && m !== "")
+          : [];
+        if (rid !== "" && msgs.length > 0) msgByL1.set(rid, msgs);
+      }
+    } catch (err) {
+      // 溯源是增益不是前提：查不到就退回「没有事件出处」，不影响本轮其它写入。
+      deps.logger?.warn?.(`[soul-worker] evidence provenance lookup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  for (const c of mined) {
+    if (new Set(c.evidenceIds).size < cfg.minEvidence) continue;
+    if (STRUCTURAL_LAYERS.has(c.layer)) {
+      const eps = (c as { episodeIds?: string[] }).episodeIds?.length ?? 0;
+      if (eps === 0) {
+        bumpPrefilter(c.layer, c.layer === "voice" ? "prefilter_no_quotes" : "prefilter_no_episode");
+        continue;
+      }
+    }
+    candidates.push({ ...c, origins: ["l1"] });
+  }
   // S6 单产线：identity 事实与语料/LLM 候选同数组——不在这里单独落库。
   // 两处来源都只是「候选」，准入门与事务在 7) 统一收口。
   if (deps.identityFacts) {
     try {
       const facts = (await deps.identityFacts()) ?? [];
       let accepted = 0;
+      let prefilteredIdentity = 0;
+      // 第二跳的输入：本批出处里第一跳解析不到的 L1 id。只查这一批，不扫全窗。
+      const unresolvedIds = [
+        ...new Set(
+          facts.flatMap((f) =>
+            Array.isArray(f?.evidenceIds)
+              ? f.evidenceIds.filter((x): x is string => typeof x === "string" && x !== "" && !epByRecordId.has(x))
+              : [],
+          ),
+        ),
+      ];
+      await primeMsgByL1(unresolvedIds);
       for (const f of facts) {
         const text = typeof f?.text === "string" ? f.text.trim() : "";
         const ids = Array.isArray(f?.evidenceIds) ? f.evidenceIds.filter((x): x is string => typeof x === "string" && x !== "") : [];
         if (!text || ids.length === 0) continue;
+        // R31-1：双槽 prompt 的 slot identity 是**用户身份**（他是谁/他的职责），不是 agent 自我。
+        // 此前这条信息在 producer 里被丢掉、worker 一律当 identity 候选送审，于是描述句必然连挂
+        // dilemma_missing + stance_missing（生产 2026-11-19 三码 763/761/522 近乎相等）。
+        // 用户身份事实不属于人格层，挡在闸门外并单独计数，不冒充「模型提案被拒」。
+        if (f.subject === "user") {
+          bumpPrefilter("identity", "prefilter_user_identity");
+          prefilteredIdentity += 1;
+          continue;
+        }
         // self_identity 是旧槽名，人格层里没有这一层：统一落到 identity（D2）。
-        candidates.push({ layer: "identity", text, evidenceIds: ids, origins: ["l1", "model"] });
+        // Round23（R23-1）：把 L1 出处解析成 ep-* 一起挂上。此前直接把 m_* 当 evidenceIds 送进闸门，
+        // 而 episode 门只数 ep-*，于是每条身份事实必然连挂 episode_missing + dilemma_missing + stance_missing
+        // （生产三码计数近乎相等就是这么来的）。
+        const epIds = resolveEpisodeIds(ids, epByRecordId, msgByL1);
+        if (epIds.length === 0) {
+          // 采到的行不是任何事件的出处：结构上过不了 identity 的 ≥N 事件门。
+          // 挡在闸门外并按 prefilter_* 计数，不让它冒充「模型提案被拒」。
+          bumpPrefilter("identity", "prefilter_no_episode");
+          prefilteredIdentity += 1;
+          continue;
+        }
+        candidates.push({
+          layer: "identity",
+          text,
+          evidenceIds: [...new Set([...ids, ...epIds])],
+          episodeIds: epIds,
+          origins: ["l1", "model", "episode"],
+        });
         accepted += 1;
       }
-      report.identity = { proposed: facts.length, candidates: accepted };
+      report.identity = {
+        proposed: facts.length,
+        candidates: accepted,
+        ...(prefilteredIdentity > 0 ? { prefiltered: prefilteredIdentity } : {}),
+      };
     } catch (err) {
       deps.logger?.warn?.(`[soul-worker] identityFacts failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       report.identity = { proposed: 0, candidates: 0, skipped: err instanceof Error ? err.message : String(err) };
@@ -2026,6 +2325,8 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   } else {
     report.identity = { proposed: 0, candidates: 0, skipped: "no_identity_source" };
   }
+  // 快照放在 identity 事实之后：它们的结构预过滤也要出现在 report.prefiltered 里。
+  if (prefiltered.length > 0) report.prefiltered = prefiltered;
   const llmBudget = openCostBudget(deps.llmCallBudget ?? 1);
   // 告警的读者在下一轮，不在本轮：本轮刚算出 language_unmapped 时改写已经跑完。
   // 上一轮账本有这条，就跳过 LLM 改写。事件、情绪、承诺核对照跑，不把整个人格冻住。
@@ -2043,7 +2344,9 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   } else if (deps.rewriter && records.length > 0 && !cadenceSkipped && !languageHeld) {
     try {
       const proposed = await deps.rewriter({
-        existing: [...map.values()].map((i) => ({ layer: i.layer, text: redactSecrets(i.text) })),
+        // state 要一起给模型：degraded/frozen 的旧条目只有「被原样重提 + 新证据」才能复活，
+        // 模型看不到状态就永远不知道该救谁（旧 prompt 只给 layer+text）。
+        existing: [...map.values()].map((i) => ({ layer: i.layer, text: redactSecrets(i.text), state: i.state })),
         // 「id | 内容」：prompt 要求 evidenceIds 必须来自输入记录，不把 id 给出去等于让它编。
         // 进模型前脱敏：密钥不能进 prompt，也不能进拒绝账本的原文。
         records: records.slice(0, 200).map((r) => redactSecrets(`${r.id} | ${r.content}`)),
@@ -2070,7 +2373,11 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           : records.slice(0, 3).map((r) => r.id);
         // 事件 id 与 few-shot 一律过滤到本轮真实池内：模型编 id 就当场失去证据，
         // 而不是靠「prompt 里求它别编」。
-        const epIds = ids.filter((id) => episodeIds.has(id));
+        // R26-1：直连 ep-* 之外，再把 m_* / msg-* 出处走两跳解析成事件；只认本轮池内的 id。
+        // 映射按这一条候选引用的 id 现补（不能只用 records 的 id：模型可以引用更早的记录）。
+        await primeMsgByL1(ids);
+        const resolvedEpIds = resolveEpisodeIds(ids, epByRecordId, msgByL1).filter((id) => episodeIds.has(id));
+        const epIds = [...new Set([...ids.filter((id) => episodeIds.has(id)), ...resolvedEpIds])];
         // 条目出处要能一路回查到 L0 原文：ep-* 是真事件，但 soul_persona.evidence 里
         // 只有 ep-* 时，审计者还得再跳一层。把被引事件的 quote.recordId（msg-*）一并写入，
         // ep → soul_episodes.quote.recordId 的链仍在 meta.episodeIds/quote 里保留。
@@ -2122,6 +2429,7 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   ];
   const grown = mergeCandidates([...map.values()], candidates, now, cfg, verbatimCorpus, {
     updatesInWindow,
+    superseded: supersededIds,
     episodeIds,
     voiceRecords,
     episodesById: new Map(episodePool.map((ep) => [ep.episodeId, ep])),
@@ -2139,6 +2447,19 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       await Promise.resolve(store.bumpSoulGateStats(deps.tenant, grown.gateStats));
     } catch (err) {
       deps.logger?.warn?.(`[soul-worker] gate stats failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  // 预过滤同样要可观测：它替代的是「被闸门拒」，不是「消失」。
+  if (prefiltered.length > 0 && typeof store.bumpSoulGateStats === "function") {
+    try {
+      await Promise.resolve(
+        store.bumpSoulGateStats(
+          deps.tenant,
+          prefiltered.map((r) => ({ day: now.slice(0, 10), code: r.code, layer: r.layer, count: r.count, at: now })),
+        ),
+      );
+    } catch (err) {
+      deps.logger?.warn?.(`[soul-worker] prefilter stats failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -2197,6 +2518,55 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     );
     if (next.state === "frozen") {
       deps.logger?.warn?.(`[soul] contradiction froze ${next.itemId} after ${next.contradictions ?? 0} (${hit.object})`);
+    }
+  }
+
+  // 3c) 事件史续命（确定性）：本轮新事件若对该层有信息量，就把这条人格的证据时钟推进。
+  // 为什么不能只靠 rewriter：候选名额 maxUpdatedPerCycle（缺省 3）永远小于八层，90 天回放实拍
+  // identity/values/self 反复被生命周期降级——不是「没有新证据」，而是模型没抢到名额重提同一句。
+  // 这里用事件自带的 layers（episode.ts:247 EPISODE_KIND_LAYERS）做确定性对账，续命不占 LLM 名额。
+  // 边界：不碰 human（单写者=人物档案提炼器，gates.human_writer_removed）；不救 frozen（矛盾裁决必须等新候选过门）。
+  {
+    const freshByLayer = new Map<SoulLayer, SoulEpisode[]>();
+    for (const ep of tickFreshEpisodes) {
+      for (const layer of ep.layers ?? []) {
+        if (layer === "human") continue;
+        const list = freshByLayer.get(layer) ?? [];
+        list.push(ep);
+        freshByLayer.set(layer, list);
+      }
+    }
+    for (const prev of [...map.values()]) {
+      if (supersededIds.has(prev.itemId)) continue;
+      const eps = freshByLayer.get(prev.layer);
+      if (!eps || eps.length === 0 || prev.state === "frozen") continue;
+      const unseen = eps.filter((ep) => !prev.evidenceIds.includes(ep.episodeId));
+      if (unseen.length === 0) continue;
+      const revived = prev.state === "degraded" ? planRevive(prev, now, unseen.map((ep) => ep.episodeId)) : prev;
+      // lastEvidenceAt 是「证据本身的时间」，不是这一 tick 的时刻：回填的旧事件不能让老化钟归零，
+      // 也不能把已有更新的证据时间倒退（A1 Round19；老化只看这一列，见 persona.ts:265）。
+      const next: PersonaItem = {
+        ...revived,
+        lastEvidenceAt: advanceEvidenceClock(prev.lastEvidenceAt, unseen.map((ep) => ep.at)),
+        updatedAt: now,
+        evidenceIds: Array.from(new Set([...prev.evidenceIds, ...unseen.map((ep) => ep.episodeId)])),
+        evidenceDays: Array.from(new Set([...prev.evidenceDays, ...unseen.map((ep) => ep.at.slice(0, 10))])),
+      };
+      if (prev.state === "degraded") delete (next as { validTo?: string }).validTo;
+      map.set(next.itemId, next);
+      ledger.push(
+        ledgerOf(
+          prev,
+          next,
+          now,
+          deps.trigger,
+          "update",
+          prev.state === "degraded"
+            ? `事件史续命（degraded → active，${unseen.length} 条新事件覆盖该层）`
+            : `事件史续命（${unseen.length} 条新事件覆盖该层）`,
+          ["evidence", "episode_refresh", ...(prev.state === "degraded" ? ["revive"] : [])],
+        ),
+      );
     }
   }
 
@@ -2269,10 +2639,22 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
   // 但判断轨（values/boundary/narrative）没有向量器就不判——措辞不同≠取舍变了，
   // 拿词面相似度冻结判断轨才是伪证据。降级/冻结的 method 会写进报告，能复核。
   if (records.length > 0 && !cadenceSkipped) {
-    const anchors = records
-      .map((r) => r.content)
-      .filter((t) => typeof t === "string" && t.trim().length >= 6)
-      .slice(-8);
+    // 判断轨的锚 = 近窗记录（真实行为）；语体轨的锚 = **我自己说过的话**（voiceRecords 来自
+    // assistant 原话）。旧实现两种轨共用近窗记录，而记录里绝大多数是用户台词：人格文本与
+    // 用户措辞天然不相似，lexical 分会稳定贴地（回放实测 0.017），连续低分就把刚续命的条目
+    // 重新降级——identity 每 3 天「degraded → active → degraded」空转，八层只剩 1–2 条 active。
+    // R24-1：锚既要参与打分，也要能落盘回指「哪条输入」——所以按 (id, text) 成对取，
+    // 不要只取 text 再从文本反查（同文本可能对应多条记录，反查会指错）。
+    const recordAnchorPairs = records
+      .filter((r) => typeof r.content === "string" && r.content.trim().length >= 6)
+      .slice(-8)
+      .map((r) => ({ id: String(r.id ?? ""), text: r.content }));
+    const recordAnchors = recordAnchorPairs.map((p) => p.text);
+    const voiceAnchorPairs = [...voiceRecords.entries()]
+      .map(([id, t]) => ({ id, text: String(t).trim() }))
+      .filter((p) => p.text.length >= 6)
+      .slice(-24);
+    const voiceAnchors = voiceAnchorPairs.map((p) => p.text);
     const cache = new Map<string, number[] | null>();
     const embedIfAvailable = async (text: string): Promise<number[]> => {
       const hit = cache.get(text);
@@ -2289,9 +2671,31 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         throw err;
       }
     };
+    let voiceAnchorMissing = false;
+    let lexicalOnly = 0;
+    let driftRepeatSkipped = 0;
     for (const layer of INJECTED) {
+      const track = trackOf(layer);
       // 判断轨缺向量器时不判：宁可报 driftSkipped，也不拿「措辞不同」当「取舍变了」。
-      if (!deps.embed && trackOf(layer) === "judgment") continue;
+      if (!deps.embed && track === "judgment") continue;
+      // 语体轨没有「我的原话」就不判：拿用户台词当语体锚等于用别人的措辞量刑，
+      // 与判断轨缺向量器不判同一条原则（不伪造证据）。回放里 assistant 语料为空时
+      // 语体轨本就没有可比对象，报 driftSkipped 比给一个假低分更诚实。
+      const anchors = track === "judgment" ? recordAnchors : voiceAnchors;
+      // R24-1：同一批锚的证据 id（判断轨=近窗记录 record_id，语体轨=我说过的话的 recordId），
+      // 跟 anchorKey 一起落进 meta.lastDrift，快照据此能指回具体输入。
+      const anchorIds = (track === "judgment" ? recordAnchorPairs : voiceAnchorPairs)
+        .map((p) => p.id)
+        .filter((id) => id !== "");
+      if (anchors.length === 0) {
+        voiceAnchorMissing = true;
+        continue;
+      }
+      // A1 Round9 CP5：同一批锚重复投票不算新观测。旧实现每 tick 都重新打分并 push 进
+      // driftHistory——输入一字未变，分数自然一字不变，却能把 trailingBelow 堆到阈值，
+      // 于是「零新证据」也会让卡文本/版本变化（降级甚至冻结）。这里按锚集合指纹去重：
+      // 锚没换就跳过该层，只有行为窗口真的变了才继续计分。
+      const anchorKey = createHash("sha1").update(anchors.join("\u0000")).digest("hex").slice(0, 16);
       // P1-1 残留（P1-2 顺带修）：已被取代（validTo 非空）的行不再当漂移候选。
       // 否则它们明明不进注入，却仍占 drift 预算、被降级/冻结并多写账本——读侧看不见的迁移。
       // 失效判据与 orderForRender 共用 persona.ts 的 hasValidTo，不复制第二份判断。
@@ -2300,6 +2704,11 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         .sort((a, b) => b.weight - a.weight)
         .slice(0, 6);
       for (const it of layerItems) {
+        const lastDrift = (it.meta as { lastDrift?: { anchorKey?: string } } | undefined)?.lastDrift;
+        if (lastDrift?.anchorKey === anchorKey) {
+          driftRepeatSkipped += 1;
+          continue;
+        }
         try {
           const v = await measureDrift({
             layer,
@@ -2314,13 +2723,26 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             driftHistory: pushDrift(it.driftHistory, v.score, cfg.driftHistorySize),
             meta: {
               ...(it.meta ?? {}),
-              lastDrift: { score: Number(v.score.toFixed(4)), track: v.track, verdict: v.verdict, at: now, method: v.method },
+              lastDrift: {
+                score: Number(v.score.toFixed(4)),
+                track: v.track,
+                verdict: v.verdict,
+                at: now,
+                method: v.method,
+                anchorKey,
+                ...(anchorIds.length > 0 ? { anchorIds: anchorIds.slice(0, 8) } : {}),
+              },
             },
           };
+          // 词面分只观测、不改状态：没有人格向量时，蒸馏句与原始台词的 lexical 相似度恒贴地
+          // （回放实测 0.017–0.025），拿它降级/冻结就是伪证据——与「判断轨缺向量器不判」同一条原则。
+          // 有 embedding（语义 cosine）时才允许迁移；meta.lastDrift 与 report.drift 照记，可复核。
+          const act = v.method === "embedding";
+          if (!act) lexicalOnly += 1;
           // 判断轨冻结；语体轨允许自我复位，只降不冻（drift.ts 的 canSelfReset 是单一事实源）。
           // 冻结统一走 freezeItem：状态 + 权重×0.5 + validTo 一起落，避免「状态已冻结但权重/有效期没变」的半迁移。
-          if (v.verdict === "freeze" && !canSelfReset(v.track)) Object.assign(next, freezeItem(next, now));
-          else if (v.verdict !== "ok" && next.state === "active") {
+          if (act && v.verdict === "freeze" && !canSelfReset(v.track)) Object.assign(next, freezeItem(next, now));
+          else if (act && v.verdict !== "ok" && next.state === "active") {
             next.state = "degraded";
             next.weight = Number((next.weight * cfg.degradeWeightFactor).toFixed(3));
           }
@@ -2351,7 +2773,11 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           // 永远是 0 条，消费者空转。幂等锚 = itemId + 变更前快照哈希：同一处漂移反复判
           // freeze/degrade 时 entryId 相同（soul_ledger 是 INSERT OR IGNORE），不会每 tick
           // 重复排一次；消费者只按 itemId 单条回滚，不做全量回滚。
-          if (next.state === "frozen" || next.state === "degraded") {
+          // 只有**本轮真迁移**（method=embedding 且状态/权重变了）才排回滚请求。
+          // 旧实现只看 next.state：词面分只观测时条目可能已被 lifecycle 降级，
+          // 这里仍写「漂移 lexical → degrade」并点名回滚——账本把降级误记到漂移账上。
+          const migrated = act && (next.state !== it.state || next.weight !== it.weight);
+          if (migrated && (next.state === "frozen" || next.state === "degraded")) {
             const beforeHash = itemHashOf(it);
             ledger.push({
               entryId: `rbq-${it.layer}-${it.itemId}-${beforeHash}`,
@@ -2380,6 +2806,21 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
     }
     if (!deps.embed) {
       report.driftSkipped = "判断轨缺向量器（只跑语体轨词面回退，不拿词面相似冻结取舍）";
+    }
+    if (voiceAnchorMissing) {
+      report.driftSkipped = [report.driftSkipped, "语体轨缺「我的原话」（assistant 语料为空，不拿用户台词当语体锚）"]
+        .filter(Boolean)
+        .join("；");
+    }
+    if (lexicalOnly > 0) {
+      report.driftSkipped = [report.driftSkipped, `词面分只观测（无向量器，${lexicalOnly} 条计入报告但不迁移状态）`]
+        .filter(Boolean)
+        .join("；");
+    }
+    if (driftRepeatSkipped > 0) {
+      report.driftSkipped = [report.driftSkipped, `同一批锚重复投票（${driftRepeatSkipped} 条，无新行为不重复计分）`]
+        .filter(Boolean)
+        .join("；");
     }
   } else {
     report.driftSkipped = cadenceSkipped ? `节流未到期：${cadenceSkipped}` : "无近窗记录作行为锚";
@@ -2444,7 +2885,12 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       )) as Array<{ valence: number; arousal: number; occurred_at: string; excerpt?: string | null }>;
       // 增量积分：只吸收「上次积分之后」的新信号。否则每小时 tick 都会把同一批 4 天信号重新加权一遍，
       // sampleCount 无限膨胀、旧事件被反复记功——情绪变成只进不出的积分器，正是要避免的开环。
-      // 留 5 分钟重叠，容忍落库与调度的时间抖动（重复吸收同一秒的代价远小于漏掉）。
+      // A2 Round24（r24b-a2 CP2）：这里过去留了 5 分钟重叠（"重复吸收同一秒的代价远小于漏掉"），
+      // 但代价并不小：上一轮 updatedAt=10:00 时下界是 09:55，09:58 的信号在 10:00 与 11:00 两轮
+      // 各被吸一次，sampleCount 从 1 涨到 2——样本数说"见过两条证据"，实际只有一条。
+      // 现在下界就是上一次积分时刻（不留重叠），上界是本轮 now（见下方 filter）；漏掉的是
+      // "上一轮之后才落库、但 at 早于上一轮积分时刻"的信号，这类信号由事件通道和下一次
+      // 全窗口回放（sampleCount=0 / 清库水位）兜底。
       const prevUpdatedAt = prevState?.updatedAt ? Date.parse(prevState.updatedAt) : Number.NaN;
       // 首次积分（或旧行 sampleCount=0）必须回看整个事件窗口：生产重启时 soul_state 的
       // updatedAt 是「刚刚」，若仍按 prevUpdatedAt 过滤，120 条历史事件全部 at<since，
@@ -2459,12 +2905,16 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
           ? Date.parse(String((await Promise.resolve(store.soulMetaGet("episodeWatermark"))) ?? ""))
           : Number.NaN;
       const since = Math.max(
-        firstMood ? nowMs - lookbackHours * 3_600_000 : prevUpdatedAt - 5 * 60_000,
+        firstMood ? nowMs - lookbackHours * 3_600_000 : prevUpdatedAt,
         Number.isFinite(moodWatermarkMs) ? moodWatermarkMs : Number.NEGATIVE_INFINITY,
       );
       const fresh = (signals ?? []).filter((s) => {
         const at = Date.parse(s.occurred_at);
-        return Number.isFinite(at) && at > since;
+        // A2 Round24（r24b-a2 CP2）：上界必须是「本轮 now」。取窗为了容忍落库/调度抖动把下界
+        // 放宽了 5 分钟，没有上界时同一信号会被相邻两轮各吸一次（实测 occurred_at 09:58 的信号
+        // 在 10:00 与 11:00 两轮把 sampleCount 从 1 抬到 2）；未来时刻的信号（10:30 的 at 在
+        // 10:00 那轮）也会被提前计入。事件侧另有 moodIntegratedAt 打标，两侧语义不同。
+        return Number.isFinite(at) && at > since && at <= nowMs;
       });
       // 事件优先：episode 带「因为什么、对谁、多强」，L1 信号只有强弱。两者都吸收，
       // 但情绪的解释权归事件——「上次因为假绿恼火」比「valence=-0.4」有用得多。
@@ -2478,10 +2928,15 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       // 水位 → 永久跳过（生产实测：48 条事件、11 条非 work，soul_emotions 却是 0 行）。
       // 现在改按事件打标（soul_episodes.mood_integrated_at）：只回答「这条积过没有」，
       // 与处理时刻/消息时刻两个时钟无关，也天然幂等（每 tick 只积未打标的）。
+      // A2 Round25（r25b-a2 CP2）：事件通道也要有 now 上界。emotion.ts 对 dt<=0 返满强度，
+      // 于是「未来时间」的事件（时钟漂移/补采的预约消息）会在落库当轮就被积分，且 ttl 从未来起算。
+      // 判断轨与信号轨早已按 at<=nowMs 过滤，这里补齐同一条边界。
       const unintegratedEpisodes = episodePool.filter((ep) => {
         // P0-B：work 只喂特质投票与自我史，不进心境积分（同上一处）。
         if (ep.kind === "work") return false;
-        return !ep.moodIntegratedAt;
+        if (ep.moodIntegratedAt) return false;
+        const at = Date.parse(String((ep as { at?: string }).at ?? ""));
+        return !Number.isFinite(at) || at <= nowMs;
       });
       const episodeEvents = unintegratedEpisodes.map((ep) => ({
         ...emotionEventFromEpisode(ep, cfg, { publicSession: publicSessions.has(ep.sessionId) }),
@@ -2515,17 +2970,21 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
         unintegratedEpisodes.filter((ep) => emotionObjectForEpisode(ep) !== "").length,
       );
       // ③ 判过评价的（= 走到事件成型的）。
-      await bumpFunnel("emotion:appraised", episodeEvents.length);
+      // A2（2026-11-18 复核）：原本数 episodeEvents.length，而对象门在它前面——抽不出对象
+      // 的事件也会被算成「已评价」，回放里 appraised 29 > object_ok 26，漏斗②→③不单调。
+      // 判过评价的必须是过了对象门的那批。
+      const appraisedEvents = episodeEvents.filter((e) => String(e.object ?? "").trim() !== "");
+      await bumpFunnel("emotion:appraised", appraisedEvents.length);
       // ④ 锚点命中：PAD 离某个模板足够近（按加权欧氏距离；不覆盖写入的 label）。
       await bumpFunnel(
         "emotion:anchor_hit",
-        episodeEvents.filter((e) => {
+        appraisedEvents.filter((e) => {
           const near = rankLabelsByPad({ valence: e.valence, arousal: e.arousal, dominance: e.dominance }, 1)[0];
           return (near?.distance ?? Number.POSITIVE_INFINITY) <= EMOTION_PAD_NEAR_MAX;
         }).length,
       );
       // ⑤ 强度门：现有条件是「强度 > 0」（0 强度的事件不成为情绪）。
-      await bumpFunnel("emotion:intensity_ok", episodeEvents.filter((e) => e.intensity > 0).length);
+      await bumpFunnel("emotion:intensity_ok", appraisedEvents.filter((e) => e.intensity > 0).length);
       const events = [...fresh.map((s) => emotionFromSignal(s, now, cfg)), ...episodeEvents];
       const prevMood: MoodState | null =
         prevState && typeof prevState.valence === "number" && typeof prevState.arousal === "number"
@@ -2545,8 +3004,22 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       // 只回收超出部分的一档（不是清零，也不是不拉）。调节幅度单独记账，读面看得见
       // 「今天的心境被拉回过一次」，而不是一个说不清来源的现值。
       const integrated = integrateMood(prevMood, events, now, cfg);
+      // 进入调节的判定要在拉回之前算：curRegDev 是本 tick 尚未被回收的偏离。
+      const curRegDev = Math.max(
+        Math.abs(integrated.valence - integrated.baselineValence),
+        Math.abs(integrated.arousal - integrated.baselineArousal),
+      );
       const regulation = regulateMood(integrated);
       const mood = regulation.mood;
+      // A2 Round13 复核：regulateMood 在 |dev|≥0.35 期间每个 tick 都 applied，旧条件
+      // 于是每 10 分钟写一条 regulation（生产 1 小时 6 条）。调节是「进入调节」这个事件，
+      // 不是每个 tick 的状态：只在上一轮还没越线、这一轮越线时记一笔；继续调节不再刷行。
+      const prevRegDev = prevState
+        ? Math.max(
+            Math.abs((prevState.valence ?? 0) - (prevState.baselineValence ?? 0)),
+            Math.abs((prevState.arousal ?? 0) - (prevState.baselineArousal ?? 0)),
+          )
+        : 0;
       // 半衰期口径 36–168h、默认 48h：写库前夹一次，读侧用同一函数复算（两边同一把尺）。
       const moodHalfLifeHours = normalizeMoodHalfLife(cfg.moodHalfLifeHours);
       // 心境原因必须与心境同向、且对象短到能进一句话：否则「整体偏积极」却拿
@@ -2637,6 +3110,17 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
               moodHalfLifeHours,
             )
           : null;
+      // A2 Round28：衰减记账锚要读「上次记账时的偏离」，不能拿上一 tick 的落库值当锚——
+      // 10 分钟一 tick 时单步只退约 7e-4，永远跨不过 0.01 档（生产 70.6h 空档、decay 0 条）。
+      // 读失败只记 warn：锚丢了会多记一行「重新起锚」，不会伪造衰减。
+      const prevMoodRow = store.readSoulMoodState
+        ? await Promise.resolve(store.readSoulMoodState(deps.tenant)).catch((err: unknown) => {
+            deps.logger?.warn?.(
+              `[soul-worker] readSoulMoodState failed (non-fatal, decay anchor restarts): ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return null;
+          })
+        : null;
       const moodEventRows: SoulMoodEventInsert[] = [];
       const pushMoodEvent = (
         kind: "appraisal" | "regulation" | "decay",
@@ -2661,6 +3145,12 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
       if (moodPersisted) {
         const fromValence = prevDecayed?.valence ?? mood.baselineValence;
         const fromArousal = prevDecayed?.arousal ?? mood.baselineArousal;
+        // Round12：阈值按「距上次落库的真实小时数」缩放。常量写法只在 10min tick 下成立，
+        // 节拍改成 60s 就会永远不落账；时间戳缺失或回拨时按一个 tick 计（不拿不确定的间隔造账）。
+        const prevMoodMs = Date.parse(String(prevState?.updatedAt ?? ""));
+        const nowMoodMs = Date.parse(now);
+        const moodElapsedHours =
+          Number.isFinite(prevMoodMs) && Number.isFinite(nowMoodMs) ? (nowMoodMs - prevMoodMs) / 3_600_000 : 1 / 6;
         if (episodeEvents.length > 0) {
           pushMoodEvent(
             "appraisal",
@@ -2670,18 +3160,40 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
             moodCauseIds,
             `按 ${episodeEvents.length} 条事件积分（评价→心境）`,
           );
-        } else if (prevDecayed && prevState && Math.abs(prevDecayed.valence - (prevState.valence ?? 0)) >= 0.005) {
+        }
+        // A2 Round28：衰减账本按「累计未记账的纯衰减量」记，不按单 tick 落差，也不按落库值差。
+        // 单 tick 只退约 7e-4，永远跨不过 0.01 档；而落库值差会把自我调节的拉回算成衰减。
+        const tickDecayValence =
+          prevState && prevDecayed ? Math.abs((prevState.valence ?? 0) - prevDecayed.valence) : 0;
+        const tickDecayArousal =
+          prevState && prevDecayed ? Math.abs((prevState.arousal ?? 0) - prevDecayed.arousal) : 0;
+        const decayStep = stepMoodDecayLedger({
+          previous: {
+            pendingValence: typeof prevMoodRow?.decay_pending_valence === "number" ? prevMoodRow.decay_pending_valence : null,
+            pendingArousal: typeof prevMoodRow?.decay_pending_arousal === "number" ? prevMoodRow.decay_pending_arousal : null,
+            since: typeof prevMoodRow?.decay_pending_since === "string" ? prevMoodRow.decay_pending_since : null,
+          },
+          perTickValence: tickDecayValence,
+          perTickArousal: tickDecayArousal,
+          directionValence: (prevState?.valence ?? mood.valence) - mood.baselineValence,
+          directionArousal: (prevState?.arousal ?? mood.arousal) - mood.baselineArousal,
+          now,
+          minDrop: MOOD_DECAY_LEDGER_MIN_DROP,
+        });
+        if (decayStep.decay) {
           // 没有新事件也会退：这条账本行让「三天没动静、心境自己降了一半」在表里看得见。
           pushMoodEvent(
             "decay",
-            prevDecayed.valence - (prevState.valence ?? 0),
-            prevDecayed.arousal - (prevState.arousal ?? 0),
+            decayStep.decay.deltaValence,
+            decayStep.decay.deltaArousal,
             0,
             [],
-            `无新事件，按半衰期 ${Math.round(moodHalfLifeHours)}h 衰减（偏离保留 ${prevDecayed.factor.toFixed(2)}）`,
+            `无新事件，${Math.max(0.1, Math.round(decayStep.decay.hours * 10) / 10)}h 内按半衰期 ${Math.round(moodHalfLifeHours)}h 累计衰减（累计 ${Math.abs(decayStep.decay.deltaValence).toFixed(3)}，偏离 ${((prevState?.valence ?? mood.valence) - mood.baselineValence).toFixed(2)} → ${(mood.valence - mood.baselineValence).toFixed(2)}）`,
           );
         }
-        if (regulation.applied) {
+        // A2 Round21：单看「上一 tick 没越线」在阈值附近会反复成立，改带回滞；
+        // 下限钉在 trigger 的带宽上（0.30），不是回落到 0.25 —— 后者的真实穿越点是 0.293，会一次都不记。
+        if (regulation.applied && isMoodRegulationEntry(prevRegDev, curRegDev)) {
           pushMoodEvent(
             "regulation",
             regulation.deltaValence,
@@ -2700,6 +3212,9 @@ export async function runSoulMaintenance(deps: SoulWorkerDeps): Promise<SoulWork
               intensity: moodIntensityNow,
               half_life_hours: moodHalfLifeHours,
               cause_event_ids_json: JSON.stringify(moodCauseIds),
+              decay_pending_valence: decayStep.pendingValence,
+              decay_pending_arousal: decayStep.pendingArousal,
+              decay_pending_since: decayStep.since,
               updated_at: now,
             }) ?? null,
           );

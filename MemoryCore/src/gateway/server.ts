@@ -1,3 +1,4 @@
+import { markL2Outcome } from "../services/l2-outcome.js";
 /**
  * TDAI Gateway — HTTP server for the Hermes sidecar.
  *
@@ -53,11 +54,12 @@ import { StorePool } from "../core/store/store-pool.js";
 import { handleV2Route, errorEnvelope, makeRequestId } from "./v2-router.js";
 import { handleRerankRoute } from "./rerank-endpoint.js";
 import { handleSoulIntrospectRoute } from "./soul-introspect-endpoint.js";
-import { handleSoulCardRoute, handleSoulTraitStateRoute } from "./soul-card-endpoint.js";
+import { handleSoulCardRoute, handleSoulLabelsRoute, handleSoulTraitStateRoute } from "./soul-card-endpoint.js";
 import { handleSoulEmotionsRoute } from "./soul-emotions-endpoint.js";
 import { handleSoulPersonRoute, handleSoulPersonSearchRoute, handleSoulPersonsRoute } from "./soul-person-endpoint.js";
 import { handleSoulInjectionRoute } from "./soul-injection-endpoint.js";
 import { SOUL_EVENT_PATH, handleSoulEventRoute } from "./soul-event-endpoint.js";
+import { isLoopbackAddress, soulInternalChannelEnabled } from "./soul-internal-channel.js";
 import { SOUL_GATE_PATH, handleSoulGateRoute } from "./soul-gate-endpoint.js";
 import {
   SOUL_INJECTION_STATS_PATH,
@@ -1303,11 +1305,12 @@ export class TdaiGateway {
           pathname === "/v3/soul/turn" ||
           pathname === "/v3/soul/trait-state" ||
           pathname === "/v3/soul/emotions" ||
+          pathname === "/v3/soul/labels" ||
           // 按前缀放行 /v3/soul/person 家族：新增子路径（如 person/search）不必再回来改白名单，
           // 漏改一次的表现是 404「Not found」，而不是路由明确拒绝——很难从日志看出是被吞掉的。
           pathname.startsWith("/v3/soul/person"))
       ) {
-        if (!this.checkAuth(req, res)) return;
+        if (!this.checkSoulReadAuth(req, res)) return;
         const deps = {
           getStore: () => this.core.getStoreForIntrospect(),
           getReadAgentProfile: () => (agentId: string) => this.readAgentProfileFromMetadata(agentId),
@@ -1321,6 +1324,7 @@ export class TdaiGateway {
         if (await handleSoulPersonRoute(url, method, sendJson, res, deps)) return;
         if (await handleSoulPersonsRoute(url, method, sendJson, res, deps)) return;
         if (await handleSoulPersonSearchRoute(url, method, sendJson, res, deps)) return;
+        if (await handleSoulLabelsRoute(url, method, sendJson, res, deps)) return;
         await handleSoulCardRoute(url, method, sendJson, res, deps);
         return;
       }
@@ -1371,7 +1375,7 @@ export class TdaiGateway {
       // 从 journal 目录聚合（不新表、不新增配置）：最近一次注入、两条通道的元数据、
       // 失败分类与「只有服务端估算、插件没回报」的轮次数。journal 关闭 → 200 + 全零 + note。
       if (pathname === SOUL_INJECTION_STATS_PATH) {
-        if (!this.checkAuth(req, res)) return;
+        if (!this.checkSoulReadAuth(req, res)) return;
         const statsJournalCfg = this.config.memory?.recallJournal ?? {
           enabled: false,
           rotationSizeMB: 5,
@@ -1380,6 +1384,11 @@ export class TdaiGateway {
         await handleSoulInjectionStatsRoute(url, method, sendJson, res, {
           journalDir: join(this.config.data.baseDir, "logs", "recall"),
           journalOpts: statsJournalCfg,
+          // 插件可用 TDB_PERSONA_LOG 改路径；未设时插件与 Core 同落 <dataDir>/logs。
+          pluginLogPath:
+            typeof process.env.TDB_PERSONA_LOG === "string" && process.env.TDB_PERSONA_LOG.trim() !== ""
+              ? process.env.TDB_PERSONA_LOG.trim()
+              : join(this.config.data.baseDir, "logs", "persona-injection.jsonl"),
           logger: this.logger,
         });
         return;
@@ -1740,6 +1749,17 @@ export class TdaiGateway {
    * preserved so existing curl-based callers keep working). Returns `false`
    * when the request must be short-circuited.
    */
+  /**
+   * Round30 内部通道：只读 soul 面在「显式开启 + 回环对端」时免 Bearer；其余一律走 checkAuth。
+   * 只读路由的判定留在调用点（这里是 GET 分支），写入路由继续用 checkAuth。
+   */
+  private checkSoulReadAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    if (soulInternalChannelEnabled() && isLoopbackAddress(req.socket?.remoteAddress)) {
+      return true;
+    }
+    return this.checkAuth(req, res);
+  }
+
   private checkAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
     const result = this.verifyAuth(req);
     if (result === "ok") return true;
@@ -3326,10 +3346,9 @@ export class TdaiGateway {
 
         const result = await core.runL2WithStore(task.sessionId, store, storage ?? undefined, cursor);
 
-        // Mark task as skipped if L2 had no new records to process
-        if (result.skipped) {
-          (task as any)._l2Skipped = true;
-        }
+        // R24-a3：有 extract 组失败的轮次不能当成功轮（不写墙钟、不入队 L3），否则失败批被
+        // cursor 永久跳过。R29：标记逻辑抽到 services/l2-outcome.ts，使生产者这一半可被单测覆盖。
+        markL2Outcome(task as unknown as Record<string, unknown>, result);
 
         // Report credit + new scenes as memory
         if (gateway.quotaManager && !result.skipped) {

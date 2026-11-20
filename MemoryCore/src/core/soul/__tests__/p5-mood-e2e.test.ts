@@ -19,6 +19,7 @@ import { runSoulMaintenance } from "../worker.js";
 import { moodSignAt } from "../emotion.js";
 import { moodSignalOf } from "../../tools/recall-signals.js";
 import { resolveSoulConfig, type SoulEpisode } from "../types.js";
+import { assembleSoulTurn } from "../card-service.js";
 
 const TENANT = { teamId: "t1", userId: "u1", agentId: "a1" };
 
@@ -264,6 +265,55 @@ describe("P5 端到端：情绪落位 → 心境账本 → 衰减 → 重评", (
   });
 });
 
+describe("P5 端到端：负面刺激下拉、正面刺激回升（情绪惯性不是随机数）", () => {
+  it("同租户先三条负面再三条正面：心境偏离由负转升，<soul-feeling> 文本随之改变", async () => {
+    const store = makeStore();
+    const db = dbOf(store);
+    const NEG = "2026-11-10T00:00:00.000Z";
+    store.commitSoulEpisodes(TENANT, [
+      ep({ episodeId: "ep-neg-1", at: "2026-11-09T23:10:00.000Z", kind: "correction", object: "召回链路", valence: -0.45, arousal: 0.6, intensity: 0.7 }),
+      ep({ episodeId: "ep-neg-2", at: "2026-11-09T23:25:00.000Z", kind: "correction", object: "召回链路", valence: -0.5, arousal: 0.6, intensity: 0.7 }),
+      ep({ episodeId: "ep-neg-3", at: "2026-11-09T23:40:00.000Z", kind: "correction", object: "召回链路", valence: -0.4, arousal: 0.5, intensity: 0.6 }),
+    ]);
+    const downRun = await runSoulMaintenance({
+      store, tenant: TENANT, now: NEG, config: resolveSoulConfig({}), trigger: "manual", llmCallBudget: 0,
+    });
+    expect(downRun.mood?.written).toBe(true);
+    const down = moodStateRow(db)!;
+    expect(Number(down.valence)).toBeLessThan(-0.02);
+    const turnDown = await assembleSoulTurn({ store, tenant: TENANT, now: NEG });
+
+    const POS = "2026-11-10T00:40:00.000Z";
+    store.commitSoulEpisodes(TENANT, [
+      ep({ episodeId: "ep-pos-1", at: "2026-11-10T00:15:00.000Z", kind: "praise", object: "召回链路", valence: 0.5, arousal: 0.45, intensity: 0.6 }),
+      ep({ episodeId: "ep-pos-2", at: "2026-11-10T00:25:00.000Z", kind: "praise", object: "召回链路", valence: 0.55, arousal: 0.45, intensity: 0.6 }),
+      ep({ episodeId: "ep-pos-3", at: "2026-11-10T00:35:00.000Z", kind: "praise", object: "召回链路", valence: 0.45, arousal: 0.4, intensity: 0.55 }),
+    ]);
+    const upRun = await runSoulMaintenance({
+      store, tenant: TENANT, now: POS, config: resolveSoulConfig({}), trigger: "manual", llmCallBudget: 0,
+    });
+    expect(upRun.mood?.written).toBe(true);
+    const up = moodStateRow(db)!;
+    expect(Number(up.valence)).toBeGreaterThan(Number(down.valence));
+    // Round7 A2 复核：只证「不比刚才更差」不够——把正面刺激换成 0 权重也能过。
+    // 要求回升幅度真的可见（≥0.1），否则这条用例抓不住「正面通路失效」。
+    expect(Number(up.valence) - Number(down.valence)).toBeGreaterThan(0.1);
+    // Round13 A2 复核：只比「差不差 0.1」挡不住「把正面事件的效价置 0、权重照留」——
+    // 差值仍有 0.17（up 变 -0.106）也能过。回升必须是**真的越过中性线**（正效价）。
+    expect(Number(up.valence)).toBeGreaterThan(0);
+    const turnUp = await assembleSoulTurn({ store, tenant: TENANT, now: POS });
+    expect(turnUp.text).not.toBe(turnDown.text);
+
+    // 账本可追：两次评价都能指回各自事件，且第一次是下拉、第二次是回升
+    const appraisals = moodEvents(db).filter((e) => e.kind === "appraisal");
+    expect(appraisals.length).toBeGreaterThanOrEqual(2);
+    const allCauses = appraisals.flatMap((e) => JSON.parse(String(e.cause_event_ids_json ?? "[]")) as string[]);
+    expect(allCauses).toEqual(expect.arrayContaining(["ep-neg-1", "ep-pos-1"]));
+    expect(Number(appraisals[0]!.delta_valence)).toBeLessThan(0);
+    expect(Number(appraisals[appraisals.length - 1]!.delta_valence)).toBeGreaterThan(0);
+  });
+});
+
 describe("P5 端到端：调度器真实 tick 也落心境行（不是只有手动 worker 路径）", () => {
   it("runSoulMaintenanceTick 一轮之后 mood_state / mood_events / emotions.event_id 都在", async () => {
     const store = makeStore();
@@ -383,5 +433,38 @@ describe("P5 端到端：调度器真实 tick 也落心境行（不是只有手�
     // 原因被门掉；标签是读数，允许留着
     expect(row.emotion_object).toBeNull();
     expect(row.emotion_label).toBe("意外");
+  });
+});
+
+
+describe("P5 Round7/13：10 分钟节拍下自然衰减要落账，但不是每 tick 一条（A2 复核）", () => {
+  it("连续 24 个无事件 tick：decay 行 ≥1 且远少于 tick 数", async () => {
+    // Round13 A2 复核的反例：旧阈值按 tick 落账，1 小时 6 条 decay + 6 条 regulation。
+    // 现在按「可见值跨 0.01 一档」记，4 小时 24 个 tick 应只有个位数条。
+    const store = makeStore();
+    const db = dbOf(store);
+    const T1 = "2026-11-10T00:00:00.000Z";
+    store.commitSoulEpisodes(TENANT, [
+      ep({ episodeId: "ep-d1", at: "2026-11-09T23:10:00.000Z", kind: "correction", object: "召回链路", valence: -1, arousal: 0.7, intensity: 1 }),
+      ep({ episodeId: "ep-d2", at: "2026-11-09T23:25:00.000Z", kind: "correction", object: "召回链路", valence: -1, arousal: 0.7, intensity: 1 }),
+      ep({ episodeId: "ep-d3", at: "2026-11-09T23:40:00.000Z", kind: "correction", object: "召回链路", valence: -1, arousal: 0.7, intensity: 1 }),
+    ]);
+    await runSoulMaintenance({ store, tenant: TENANT, now: T1, config: resolveSoulConfig({}), trigger: "manual", llmCallBudget: 0 });
+    const ticks = 24;
+    for (let i = 1; i <= ticks; i += 1) {
+      const at = new Date(Date.parse(T1) + i * 10 * 60_000).toISOString();
+      await runSoulMaintenance({ store, tenant: TENANT, now: at, config: resolveSoulConfig({}), trigger: "manual", llmCallBudget: 0 });
+    }
+    const rows = db.prepare("SELECT kind, delta_valence FROM soul_mood_events ORDER BY at ASC").all() as Array<{ kind: string; delta_valence: number }>;
+    const decays = rows.filter((r) => r.kind === "decay");
+    expect(decays.length).toBeGreaterThanOrEqual(1);
+    // 24 个 tick 里最多 6 条（4h 自然衰减约 0.055，跨 5~6 档）；关键是「不是每 tick 一条」。
+    expect(decays.length).toBeLessThanOrEqual(6);
+    expect(Math.abs(Number(decays[decays.length - 1]!.delta_valence))).toBeGreaterThan(0);
+    // A2 Round13 复核 d：|dev|≥0.35 期间旧实现每 tick 写一条 regulation。调节是「进入调节」
+    // 这个事件，不是状态：整段只该记一次。
+    const regs = rows.filter((r) => r.kind === "regulation");
+    expect(regs.length).toBeGreaterThanOrEqual(1);
+    expect(regs.length).toBeLessThanOrEqual(1);
   });
 });

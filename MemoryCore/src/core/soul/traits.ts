@@ -12,6 +12,8 @@
  * 本模块纯函数、无 IO：漂移算子与投影都可单测（Testing Decisions 的算子 seam）。
  */
 
+import type { TraitLabelRow } from "./trait-drift.js";
+
 /** 六轴（顺序即 trait_state 向量的列顺序，禁止重排；加轴必须升 AXIS_VERSION）。 */
 export const SOUL_AXES = ["warmth", "agency", "rigor", "openness", "stability", "boundary"] as const;
 export type SoulAxis = (typeof SOUL_AXES)[number];
@@ -30,8 +32,9 @@ export const TRAIT_MAX_STEP = 0.05;
 export const TRAIT_L1_MAX = 0.5;
 export const TRAIT_LABEL_MERGE_SIM = 0.85;
 export const TRAIT_LABEL_SHOW = 0.5;
-export const TRAIT_LABEL_DORMANT_ACT = 0.3;
-export const TRAIT_LABEL_DORMANT_DAYS = 7;
+/** 标签退役阈值：60 天没被任何提案命中的自生长标签转 dormant（读侧已不出卡）。旧 DORMANT_ACT/DORMANT_DAYS（0.3/7）从未接线，本轮删除。 */
+export const TRAIT_LABEL_RETIRE_DAYS = 60;
+
 /** 卡内底色固定 top-5（长度固定，标签集再涨也不吃注入预算）。 */
 export const TRAIT_TOP_N = 5;
 /** 表单「特质」最多 5 个种子标签。 */
@@ -465,3 +468,26 @@ function safeJson(text: string): unknown {
     return null;
   }
 }
+/**
+ * 标签退役计划：把长期没被提案命中的 admitted 标签算成 dormant，交给调用方一次 upsert。
+ * 不删行、不动方向载荷：复活只需再被提案命中（resolveLabelProposals 会改回 admitted）。
+ */
+export function planStaleLabels(
+  labels: ReadonlyArray<TraitLabelRow>,
+  now: string,
+  opts: { idleDays?: number } = {},
+): TraitLabelRow[] {
+  const idleDays = opts.idleDays ?? TRAIT_LABEL_RETIRE_DAYS;
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(nowMs) || idleDays <= 0) return [];
+  const idleMs = idleDays * 86_400_000;
+  const out: TraitLabelRow[] = [];
+  for (const row of labels) {
+    if (row.status !== "admitted") continue;
+    const seenMs = Date.parse(row.lastSeen);
+    if (!Number.isFinite(seenMs)) continue;
+    if (nowMs - seenMs > idleMs) out.push({ ...row, status: "dormant" });
+  }
+  return out;
+}
+

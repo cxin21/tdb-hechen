@@ -228,7 +228,19 @@ export interface SoulInjectionReportPayload {
    * 通道标记：插件一次注入会 POST 两次（取卡 / 每轮），Core 侧对账要按通道
    * 各算各的（卡冻结后每会话只变一次；volatile 每轮一行且可能 skip）。
    */
-  phase?: 'card' | 'volatile';
+  phase?: 'card' | 'volatile' | 'usage';
+  /**
+   * A4（Round5）：回复侧写照。本轮助手可见输出里，有多少行人格原文被 4-gram 覆盖 ≥50%。
+   * 只是词面重合探针（proxy），不证明因果；Core 侧单独聚合成 usage 块。
+   */
+  usage?: { matchedLines: number; totalLines: number; overlapPct: number };
+  /**
+   * A4（2026-11-18 复核）：取卡失败原因。插件本地的 card-bound-failed 只写自己那份
+   * jsonl，Core 的 /v3/soul/injection/stats 读不到；把 reason 一起回传，健康面才有数据。
+   */
+  failReason?: 'http_status' | 'timeout' | 'empty' | 'parse' | 'section_install_failed';
+  /** reason=http_status 时的状态码。 */
+  failStatus?: number;
 }
 
 /**
@@ -2049,7 +2061,7 @@ export class MemoryClient {
   async reportSoulInjection(
     payload: SoulInjectionReportPayload,
     sessionId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const { teamId, agentId, userId } = this.identityOf(sessionId);
       const body: Record<string, unknown> = {
@@ -2067,6 +2079,16 @@ export class MemoryClient {
         };
       }
       if (payload.phase !== undefined) body.phase = payload.phase;
+      // A4：失败行只带原因（没有 card/volatile），Core 侧允许这种行入账。
+      if (payload.failReason !== undefined) body.failReason = payload.failReason;
+      if (payload.failStatus !== undefined) body.failStatus = payload.failStatus;
+      if (payload.usage !== undefined) {
+        body.usage = {
+          matchedLines: payload.usage.matchedLines,
+          totalLines: payload.usage.totalLines,
+          overlapPct: payload.usage.overlapPct,
+        };
+      }
       if (payload.volatile !== undefined) {
         body.volatile = {
           chars: payload.volatile.chars,
@@ -2077,13 +2099,17 @@ export class MemoryClient {
       // 契约要求 body 只有 team/user/agent/sessionKey/turn/card|volatile：
       // 全局 echoIsolationInBody 会把 team_id/agent_id/user_id 再插一份（其他
       // v3 路由的既有口径），这条记账路由用不到——身份已由 x-tdai-* 头带上。
-      await this.call('/v3/soul/injection', body, {
+      const result = await this.call('/v3/soul/injection', body, {
         timeoutMs: 3000,
         sessionId,
         echoIsolationInBody: false,
       });
+      // A4 Round7 复核：call() 对 4xx/5xx/信封 code!==0 只返回 ok:false 而不抛，
+      // 原来 .then 会在失败时也被调用，把本回合记进「已上报」。这里把结果交回调用方。
+      return result.ok;
     } catch {
       // best-effort 观测面：回报失败绝不外溢到对话回合。
+      return false;
     }
   }
 

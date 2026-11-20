@@ -9,7 +9,7 @@
  *  4) 心境：负向信号积分后写 soul_state（含基线），line 说明偏移而不报绝对值。
  */
 import { describe, expect, it, vi } from "vitest";
-import { createSoulRewriter, runSoulMaintenance, type SoulEvidenceRecord } from "../worker.js";
+import { advanceEvidenceClock, createSoulRewriter, runSoulMaintenance, type SoulEvidenceRecord } from "../worker.js";
 import { resolveSoulConfig } from "../types.js";
 import type { PersonaItem, SoulEpisode, SoulGateStatBump } from "../types.js";
 import { factsFromEpisode, historyToItems } from "../history.js";
@@ -159,6 +159,16 @@ const RECORDS: SoulEvidenceRecord[] = [
   { id: "r2", content: "评审被打回时我没有辩解，直接认领笔误并重跑门禁。", valence: -0.3, arousal: 0.3 },
 ];
 
+
+  it("A1 Round19：证据时钟只前进到最新证据时间，回填旧事件不重置年龄", () => {
+    expect(advanceEvidenceClock("2026-11-10T00:00:00.000Z", ["2026-11-02T00:00:00.000Z", "2026-11-03T05:00:00.000Z"])).toBe(
+      "2026-11-10T00:00:00.000Z",
+    );
+    expect(advanceEvidenceClock("2026-11-10T00:00:00.000Z", ["2026-11-12T00:00:00.000Z"])).toBe("2026-11-12T00:00:00.000Z");
+    expect(advanceEvidenceClock("", ["2026-11-02T00:00:00.000Z"])).toBe("2026-11-02T00:00:00.000Z");
+    expect(advanceEvidenceClock(undefined, [])).toBe("");
+  });
+
 describe("runSoulMaintenance 编排", () => {
   it("S10：清库水位下传给 L0 派生窗口（水位之后才抽事件）", async () => {
     const { store, l0Calls } = makeStore({
@@ -217,6 +227,29 @@ describe("runSoulMaintenance 编排", () => {
     const w = writes.at(-1);
     expect(w?.valence ?? 0).toBeGreaterThan(0);
     expect(w?.sampleCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it("结构上不可能过门的确定性候选按 prefilter 计数，不再冒充闸门拒绝", async () => {
+    const { store, gateStatCommits } = makeStore({});
+    const repeated = "宁可慢一点，也要一手证据，而不是听别人转述";
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-07T06:30:00.000Z",
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => [
+        { id: "r1", content: repeated },
+        { id: "r2", content: repeated },
+        { id: "r3", content: repeated },
+      ],
+    });
+    // values 候选缺 ep-* 事件证据：结构上过不了闸门 → 预过滤，单独计数。
+    expect(rep.prefiltered).toEqual([{ layer: "values", code: "prefilter_no_episode", count: 1 }]);
+    expect(rep.admitted).toBe(0);
+    const bumpRows = gateStatCommits.flat();
+    expect(bumpRows.some((b) => b.code === "prefilter_no_episode" && b.layer === "values")).toBe(true);
+    expect(bumpRows.some((b) => b.code === "dilemma_missing")).toBe(false);
   });
 
   it("S10：未清库时不传 sinceIso（沿用常规窗口）", async () => {
@@ -299,7 +332,7 @@ describe("runSoulMaintenance 编排", () => {
           weight: 0.8,
           evidenceIds: ["r1"],
           evidenceDays: ["2026-11-01"],
-          evidenceOrigins: ["l1"],
+          evidenceOrigins: ["l1"] as PersonaItem["evidenceOrigins"],
           createdAt: "2026-11-01T00:00:00.000Z",
           updatedAt: "2026-11-01T00:00:00.000Z",
           lastEvidenceAt: "2026-11-01T00:00:00.000Z",
@@ -341,7 +374,8 @@ describe("runSoulMaintenance 编排", () => {
         tenant: TENANT,
         trigger: "lifecycle",
         config: resolveSoulConfig({}),
-        recentRecords: async () => RECORDS,
+        // A1 Round9 CP5 修好后：同一批锚不再重复计分，所以每轮必须真的换行为窗口。
+        recentRecords: async () => [...RECORDS, { id: `drift-${i}`, content: `第 ${i + 1} 轮复查：召回链路的空结果又核了一遍，先取证再改代码。`, valence: -0.2, arousal: 0.4 }],
         embed,
         now: `2026-11-0${i + 1}T00:00:00.000Z`,
       });
@@ -355,13 +389,90 @@ describe("runSoulMaintenance 编排", () => {
         tenant: TENANT,
         trigger: "lifecycle",
         config: resolveSoulConfig({}),
-        recentRecords: async () => RECORDS,
+        // A1 Round9 CP5 修好后：同一批锚不再重复计分，所以每轮必须真的换行为窗口。
+        recentRecords: async () => [...RECORDS, { id: `drift-${i}`, content: `第 ${i + 1} 轮复查：召回链路的空结果又核了一遍，先取证再改代码。`, valence: -0.2, arousal: 0.4 }],
         embed,
         now: `2026-11-0${i + 1}T00:00:00.000Z`,
       });
     }
     const v = voice.items.find((i) => i.itemId === "voice:v")!;
     expect(v.state).not.toBe("frozen"); // 语体可自我复位，不允许冻结
+  });
+  // A1 Round9 CP5：零新行为时不重复计分。旧实现每 tick 都对同一批锚重新打分并 push，
+  // 分数一字未变却能把 trailingBelow 堆到阈值——没有任何新证据，卡也会降级/冻结。
+  it("A1 Round9：同一批锚重复投票不再追加分数（无新证据不漂移）", async () => {
+    const item: PersonaItem = {
+      itemId: "values:repeat",
+      layer: "values",
+      text: "宁可慢交付，也不交付没验证过的结论",
+      state: "active",
+      weight: 0.8,
+      evidenceIds: ["r1"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+      driftHistory: [0.9, 0.9],
+    };
+    const { store, items } = makeStore({ items: [item] });
+    // 与行为锚同向 → 高分，第一 tick 不迁移（这样第二 tick 才测得到「重复投票被跳过」）。
+    const embed = async () => [1, 0];
+    const tick = (now: string) =>
+      runSoulMaintenance({
+        store,
+        tenant: TENANT,
+        trigger: "lifecycle",
+        config: resolveSoulConfig({}),
+        recentRecords: async () => RECORDS,
+        embed,
+        now,
+      });
+    await tick("2026-11-02T00:00:00.000Z");
+    const after1 = items.find((i) => i.itemId === "values:repeat")!;
+    const hist1 = [...(after1.driftHistory ?? [])];
+    // 第一 tick 是「真有新观测」：0.9/0.9 + 这次高分 → 正常记一笔，不迁移。
+    expect(hist1.length).toBe(3);
+    const stateAfter1 = after1.state;
+    const rep2 = await tick("2026-11-03T00:00:00.000Z");
+    const after2 = items.find((i) => i.itemId === "values:repeat")!;
+    // 第二 tick 锚没换：不再打分、不再 push、状态不动。
+    expect(after2.driftHistory?.length).toBe(3);
+    expect(after2.state).toBe(stateAfter1);
+    expect(rep2.drift).toEqual([]);
+    expect(String(rep2.driftSkipped)).toContain("同一批锚");
+  });
+
+  // R24-1：快照 provenance 要能指回「哪条输入」。旧 lastDrift 只有 anchorKey（哈希指纹），
+  // 拿不到具体记录；这里要求连同锚的 id 一起落盘（顺序与打分时一致）。
+  it("A1 Round24：lastDrift 带上锚的记录 id（快照可回指输入）", async () => {
+    const item: PersonaItem = {
+      itemId: "values:anchors",
+      layer: "values",
+      text: "先把证据找齐再动手，不靠印象下判断",
+      state: "active",
+      weight: 0.8,
+      evidenceIds: ["r1"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+    };
+    const { store, items } = makeStore({ items: [item] });
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => RECORDS,
+      embed: async () => [1, 0],
+      now: "2026-11-02T00:00:00.000Z",
+    });
+    const after = items.find((i) => i.itemId === "values:anchors")!;
+    const drift = (after.meta as { lastDrift?: { anchorIds?: string[]; anchorKey?: string } } | undefined)?.lastDrift;
+    expect(drift?.anchorKey).toMatch(/^[0-9a-f]{16}$/);
+    expect(drift?.anchorIds).toEqual(RECORDS.map((r) => r.id));
   });
 
   // P1-1 残留（P1-2 顺带修）：validTo 非空的行既不进注入，也不该再占漂移预算。
@@ -394,6 +505,9 @@ describe("runSoulMaintenance 编排", () => {
         }),
         mk("voice:keep", "我宁可慢交付，也不交付没验证过的结论", { weight: 0.5 }),
       ],
+      // 语体轨的锚 = 我自己说过的话（assistant 原话）。没有这行时语体轨按设计不判，
+      // 这条用例就测不到「validTo 行不占漂移预算」。
+      l0Messages: [{ recordId: "l0-a1", role: "assistant", text: "我先给结论，再补一句为什么" }],
     });
     const rep = await runSoulMaintenance({
       store,
@@ -494,10 +608,54 @@ describe("runSoulMaintenance 编排", () => {
     });
     expect(rep.mood!.written).toBe(true);
     expect(writes[0].valence).toBeLessThan(0);
-    // 样本数 = 本轮吸收的事件数，不是历史累加：这一轮只进来 1 条新信号。
-    // 旧语义是 base.sampleCount + events.length（7+1=8），生产库因此读到 3823——
-    // 那不是样本数，只是「重跑过多少轮」。
-    expect(writes[0].sampleCount).toBe(1);
+    // A2 Round24：样本数是**累计**吸收过的事件数（7 + 本轮新增 1 = 8）。
+    // 生产读到 3823 的旧bug不是「累加」本身，而是每轮把整个事件窗口再放一遍（同一批事件被重复计数）；
+    // 现在积分只吸收上次 updatedAt 之后的新信号，所以累加值就是真实事件数。
+    // 反过来把样本数写成 events.length 会让「这一轮没事件」被读成「从来没有过样本」，
+    // 底子行在「偏沉」与「还没有形成可说的底子」之间每 tick 翻面（r24-a2 CP1）。
+    expect(writes[0].sampleCount).toBe(8);
+  });
+
+  it("A2 Round24：同一条 L1 信号不会被相邻两轮各吸一次（信号取窗有 now 上界）", async () => {
+    const signals = [{ valence: -0.6, arousal: 0.6, occurred_at: "2026-11-05T09:58:00.000Z" }];
+    const { store, writes } = makeStore({ signals });
+    // makeStore 的 readSoulState 恒返 null（每轮都算「首次积分」），这里让上一轮写下的状态能被读回，
+    // 否则根本走不到「增量」分支。
+    let persisted: Record<string, unknown> | null = null;
+    const writeState = (store as unknown as { writeSoulState: (t: unknown, s: Record<string, unknown>) => Promise<void> }).writeSoulState;
+    (store as unknown as { readSoulState: () => Promise<Record<string, unknown> | null> }).readSoulState = async () => persisted;
+    (store as unknown as { writeSoulState: (t: unknown, s: Record<string, unknown>) => Promise<void> }).writeSoulState = async (t, s) => {
+      persisted = s;
+      await writeState(t, s);
+    };
+    const runAt = (now: string) =>
+      runSoulMaintenance({
+        store,
+        tenant: TENANT,
+        trigger: "lifecycle",
+        config: resolveSoulConfig({}),
+        now,
+        recentRecords: async () => RECORDS,
+      });
+
+    await runAt("2026-11-05T10:00:00.000Z");
+    expect(writes.at(-1)?.sampleCount).toBe(1);
+
+    // 下一轮：同一条信号已经积过（now 上界把它挡在窗口外），样本数不能涨。
+    await runAt("2026-11-05T11:00:00.000Z");
+    expect(writes.at(-1)?.sampleCount).toBe(1);
+
+    // 未来时刻的信号（at 晚于本轮 now）不提前计入。
+    const future = makeStore({ signals: [{ valence: -0.9, arousal: 0.9, occurred_at: "2026-11-05T10:30:00.000Z" }] });
+    await runSoulMaintenance({
+      store: future.store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      now: "2026-11-05T10:00:00.000Z",
+      recentRecords: async () => RECORDS,
+    });
+    expect(future.writes.at(-1)?.sampleCount ?? 0).toBe(0);
   });
 
   it("首次积分（sampleCount=0）回放整个事件窗口：历史 episode 不再被 updatedAt 挡在心境之外", async () => {
@@ -599,6 +757,141 @@ describe("runSoulMaintenance 编排", () => {
     expect(items.filter((i) => i.layer === "values")).toHaveLength(1);
   });
 
+  it("A1 Round8：复现不带新证据时不刷 lastEvidenceAt（degraded 才能按 30/90 天正常老化）", async () => {
+    const before = "我答应自己：没亲手跑过的步骤，不写成已验证";
+    const text = "我答应自己：没亲手跑过的步骤，不写成已验证过";
+    const degraded: PersonaItem = {
+      itemId: "self:v",
+      layer: "self",
+      text: before,
+      state: "degraded",
+      weight: 0.42,
+      // 含 cited 事件 quote.recordId：候选会把 ep→原话的 recordId 一起并进证据（worker.ts:2156）
+      evidenceIds: ["r1", "r2", "r3", "ep-a1b2c3", "ep-d4e5f6", "l0-1", "l0-2"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-05T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-05T00:00:00.000Z",
+    };
+    // affectSource 不能是 lexicon：本轮 recentL0 为空 → mined 为空，window 内的 lexicon 事件会被 purge 掉
+    const { store, items } = makeStore({
+      items: [degraded],
+      episodes: TEST_EPISODES.map((ep) => ({ ...ep, affectSource: "none" as const })),
+    });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({}),
+      now: "2026-11-10T00:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      // ep-a1b2c3 带 agentStance（我当时的表态），否则 self 门会判 self_not_owned
+      // ep-* 必须先出现在 evidenceIds 里才会被过滤进 episodeIds 池（worker.ts:2152）
+      rewriter: async () => [
+        {
+          layer: "self",
+          text,
+          // self 层要求 ≥2 个出处事件，且每条都要带 agentStance（我当时的表态）
+          evidenceIds: ["r1", "r2", "r3", "ep-a1b2c3", "ep-d4e5f6"],
+          episodeIds: ["ep-a1b2c3", "ep-d4e5f6"],
+        },
+      ],
+    });
+    // A1 Round10（CP1）：改写正文必须有新证据。候选只换了措辞、证据全是旧的 →
+    // 拒绝这次改写（no_new_evidence），正文保持原样、年龄也不刷新。
+    expect(rep.rejections).toHaveLength(1);
+    expect(rep.rejections[0]).toMatchObject({ layer: "self", codes: ["no_new_evidence"] });
+    expect(rep.updated).toBe(0);
+    const after = items.find((i) => i.itemId === "self:v")!;
+    expect(after.text).toBe(before);
+    expect(after.lastEvidenceAt).toBe("2026-11-05T00:00:00.000Z");
+    expect(after.state).toBe("degraded");
+  });
+
+  it("A1 Round13：同文同证据的重谈不写账本（不再 update/drift 交替翻状态）", async () => {
+    const text = "我答应自己：没亲手跑过的步骤，不写成已验证";
+    const same: PersonaItem = {
+      itemId: "self:same",
+      layer: "self",
+      text,
+      state: "degraded",
+      weight: 0.42,
+      evidenceIds: ["r1", "r2", "ep-a1b2c3", "ep-d4e5f6", "l0-1"],
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-05T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-05T00:00:00.000Z",
+    };
+    const { store, items } = makeStore({
+      items: [same],
+      episodes: TEST_EPISODES.map((ep) => ({ ...ep, affectSource: "none" as const })),
+    });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({}),
+      now: "2026-11-10T00:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      rewriter: async () => [
+        {
+          layer: "self",
+          text,
+          evidenceIds: ["r1", "r2", "ep-a1b2c3", "ep-d4e5f6"],
+          episodeIds: ["ep-a1b2c3", "ep-d4e5f6"],
+        },
+      ],
+    });
+    // 旧实现会写一条 update（reason=事件史确定性长出）+ 一次 drift 候选，状态在 degraded/active 之间反复；
+    // 现在同文同证据直接跳过：updated=0，账本里没有这一条的 update 行（updatedAt 可能被别的
+    // 记账路径碰一下，不能作为「有没有落一行」的判据）。
+    expect(rep.updated).toBe(0);
+    const after = items.find((i) => i.itemId === "self:same")!;
+    expect(after.text).toBe(text);
+    // state 另有一条 reconcile 路径（本轮未修，见报告 P1）：这里只钉本次修好的不变量——
+    // 不再写 update 行，也不再把「重谈」算成一次改写。
+    const ledger = (await store.listSoulLedger?.(TENANT, 200)) ?? [];
+    expect(ledger.filter((row) => row.itemId === "self:same" && row.action === "update")).toHaveLength(0);
+  });
+  it("A1 Round9：旧主张每 tick 被重提也挡不住 30/90 天老化（95 天后冻结）", async () => {
+    const text = "我答应自己：没亲手跑过的步骤，不写成已验证";
+    const aged: PersonaItem = {
+      itemId: "self:aged",
+      layer: "self",
+      text,
+      state: "degraded",
+      weight: 0.42,
+      evidenceIds: ["r1", "r2", "ep-a1b2c3", "l0-1"],
+      evidenceDays: ["2026-01-08"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-01-08T00:00:00.000Z",
+      updatedAt: "2026-01-10T00:00:00.000Z",
+      lastEvidenceAt: "2026-01-10T00:00:00.000Z",
+    };
+    const { store, items } = makeStore({
+      items: [aged],
+      episodes: TEST_EPISODES.map((ep) => ({ ...ep, affectSource: "none" as const })),
+    });
+    // 95 天后，同一批老证据被原样重提：旧代码这里会把 lastEvidenceAt 刷成 now，
+    // 于是年龄永为 0，degraded 永远不会冻到 90 天（生产 voice 13/13 degraded 的成因）。
+    await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({}),
+      now: "2026-04-15T00:00:00.000Z",
+      recentRecords: async () => RECORDS,
+      rewriter: async () => [
+        { layer: "self", text, evidenceIds: ["r1", "r2", "ep-a1b2c3", "l0-1"], episodeIds: ["ep-a1b2c3"] },
+      ],
+    });
+    const after = items.find((i) => i.itemId === "self:aged")!;
+    expect(after.state).toBe("frozen");
+    expect(after.lastEvidenceAt).toBe("2026-01-10T00:00:00.000Z");
+  });
+
   it("α 上限：改写幅度超过 alpha → 拒绝 alpha_exceeded，旧文本原样保留", async () => {
     const oldText = "宁可慢交付，也不交付没验证过的结论";
     const { store, items } = makeStore({ items: [mkItem("values:v", "values", oldText)], episodes: TEST_EPISODES });
@@ -693,6 +986,50 @@ describe("runSoulMaintenance 编排", () => {
     // 出处要能一路回查到 L0：被引事件的 quote.recordId 也写进 evidenceIds。
     expect(item.evidenceIds).toEqual(expect.arrayContaining(["l0-1", "l0-2"]));
     expect(item.meta?.episodeIds).toEqual(EP_IDS);
+  });
+
+  it("A3 Round27：单事件 identity 的指称门必须拿到证据原文（接线回归）", async () => {
+    // r27i-a3 反证：把 worker.ts 里任一处 evidenceTexts 传参删掉，80 files / 768 tests 全绿——
+    // 因为 identity 候选大多引 2 个事件（have≥2 时指称门不启用），单事件路径只在 gates 单测里覆盖。
+    // 这条用例走真实 worker：只引 1 个事件 + 代价 + 引号短语，删掉任一接线都会变成 referent_missing。
+    const rewriter = vi.fn(async () => [
+      { layer: "identity", text: "我宁可慢一点，也不接受「没真跑就报绿」这种事，放弃速度", evidenceIds: ["ep-a1b2c3"] },
+    ]);
+    const { store, items } = makeStore({ episodes: TEST_EPISODES });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-05T10:00:00.000Z",
+      trigger: "manual",
+      config: resolveSoulConfig({ minEvidence: 1, minEpisodeEvidence: 1 }),
+      recentRecords: async () => RECORDS,
+      rewriter,
+    });
+    expect(rep.admitted).toBe(1);
+    expect(items.find((i) => i.layer === "identity")?.text).toContain("没真跑就报绿");
+  });
+
+  it("A3 Round27：更新路径的单事件 identity 也要拿到证据原文（:959 接线）", async () => {
+    // r27j-a3 反证：把 worker.ts 更新路径那处 evidenceTexts 删掉，全量用例仍全绿。
+    // 这里先落一条 identity，再让重写器把同一句改长（同文本会被 sameText 静默跳过，不能当断言）。
+    const seedText = "我宁可慢一点，也不接受「没真跑就报绿」这种事；每次都要先跑一遍再说，报告里写清楚哪条过了、哪条没过。";
+    const seed = mkItem("identity:r27-upd", "identity", seedText);
+    const rewriter = vi.fn(async () => [
+      { layer: "identity", text: `${seedText.slice(0, -1)}，放弃速度。`, evidenceIds: ["ep-a1b2c3"] },
+    ]);
+    const { store, items } = makeStore({ items: [seed], episodes: TEST_EPISODES });
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      now: "2026-11-05T10:00:00.000Z",
+      trigger: "manual",
+      config: resolveSoulConfig({ minEvidence: 1, minEpisodeEvidence: 1 }),
+      recentRecords: async () => RECORDS,
+      rewriter,
+    });
+    expect(rep.rejections).toEqual([]);
+    expect(rep.updated).toBe(1);
+    expect(items.find((i) => i.layer === "identity" && i.itemId === "identity:r27-upd")?.text).toContain("放弃速度");
   });
 
   it("关系必须是史：只引 1 个能说原话的事件，被 relationship_history_missing 拒", async () => {
@@ -802,7 +1139,8 @@ describe("runSoulMaintenance 编排", () => {
         arousal: 0.6,
         baselineValence: 0,
         baselineArousal: 0.3,
-        updatedAt: "2026-11-05T02:00:00.000Z",
+        // A2 Round24 r24c-a2：判断轨取窗不再放宽 5 分钟，信号要真的晚于上次积分时刻才作数。
+        updatedAt: "2026-11-05T01:30:00.000Z",
         sampleCount: 4,
       },
       signals: [{ valence: -0.8, arousal: 0.7, occurred_at: "2026-11-05T02:00:00.000Z", excerpt: "门禁又红了" }],
@@ -826,6 +1164,51 @@ describe("runSoulMaintenance 编排", () => {
     expect(arb).toBeTruthy();
     expect(String(arb!.reason)).toContain("门禁");
     expect(rep.mood?.line).toContain("近期心境");
+  });
+
+  // A2 Round24（r24d-a2）：判断轨的心境取窗要和主路径同口径——只收「上次积分之后、且不晚于此刻」的
+  // 信号。旧代码留着 5 分钟重叠带、也没有上界，同一条信号会被相邻两轮各喂一次，未来的信号还会被提前算进来。
+  it("A2 Round24：判断轨只喂上次积分之后的信号，未来信号不提前入账", async () => {
+    const run = async (occurredAt: string) => {
+      let prompt = "";
+      const rewriter = createSoulRewriter(
+        {
+          run: async (req: { prompt: string }) => {
+            prompt = req.prompt;
+            return "[]";
+          },
+        },
+        { taskId: "t" },
+      );
+      const { store } = makeStore({
+        state: {
+          valence: -0.6,
+          arousal: 0.6,
+          baselineValence: 0,
+          baselineArousal: 0.3,
+          updatedAt: "2026-11-05T02:00:00.000Z",
+          sampleCount: 4,
+        },
+        signals: [{ valence: -0.8, arousal: 0.7, occurred_at: occurredAt, excerpt: "门禁又红了" }],
+        episodes: TEST_EPISODES,
+      });
+      await runSoulMaintenance({
+        store,
+        tenant: TENANT,
+        trigger: "manual",
+        config: resolveSoulConfig({ updateIntervalHours: 0, personName: "何晨" }),
+        now: "2026-11-05T02:10:00.000Z",
+        recentRecords: async () => RECORDS,
+        rewriter,
+      });
+      return prompt;
+    };
+    // 上次积分在 02:00，这条 01:58 的信号已经在上一轮被吸收过：不能再喂一次。
+    expect(await run("2026-11-05T01:58:00.000Z")).not.toContain("门禁又红了");
+    // 02:05 的信号晚于 now（02:10 前就入账？此处 now=02:10，故该条应计入）——用来证明窗口没有把正常信号也挡掉。
+    expect(await run("2026-11-05T02:05:00.000Z")).toContain("门禁又红了");
+    // 02:20 晚于 now：未来信号不许提前当成「此刻的心情」。
+    expect(await run("2026-11-05T02:20:00.000Z")).not.toContain("门禁又红了");
   });
 
   it("情绪门看最近一次事件是否修复：旧补丁不能给新欠账永久放行", async () => {
@@ -929,6 +1312,33 @@ describe("runSoulMaintenance 编排", () => {
     expect(hit!.count).toBeGreaterThan(0);
     expect(hit!.day).toBe(rep.at.slice(0, 10));
     expect(rep.rejectTop?.find((r) => r.code === "episode_missing")?.count).toBeGreaterThan(0);
+  });
+
+  it("A1 Round26：模型引用 L1 记录 id 时走两跳解析，不再因 m_* 被清空事件证据", async () => {
+    const eps: SoulEpisode[] = [
+      { ...TEST_EPISODES[0], episodeId: "ep-r26a", quote: { recordId: "msg-r26", text: "先取证再动手", role: "user" } },
+      { ...TEST_EPISODES[1], episodeId: "ep-r26b", quote: { recordId: "msg-r26", text: "先取证再动手", role: "user" } },
+    ];
+    const { store, commits } = makeStore({ episodes: eps });
+    (store as unknown as { getL1ByIdsWithArchive: (ids: string[]) => Promise<Array<{ record_id: string; source_message_ids: string[] }>> })
+      .getL1ByIdsWithArchive = async (ids) => (ids.includes("m_r26") ? [{ record_id: "m_r26", source_message_ids: ["msg-r26"] }] : []);
+    const rep = await runSoulMaintenance({
+      store,
+      tenant: TENANT,
+      trigger: "manual",
+      config: resolveSoulConfig({ updateIntervalHours: 0 }),
+      recentRecords: async () => RECORDS,
+      rewriter: async () => [{ layer: "identity", text: "我宁可先跑一遍验证，也不把没验过的写成已验证", evidenceIds: ["m_r26"] }],
+    });
+    expect(rep.admitted).toBeGreaterThan(0);
+    const ledger = commits.at(-1)!.ledger as Array<Record<string, unknown>>;
+    const admit = ledger.find((e) => e.action === "admit" && e.layer === "identity");
+    expect(admit).toBeTruthy();
+    // 事件出处落在条目 meta.episodeIds 上（账本只记 L1/消息出处），两条 ep-* 都要在。
+    const item = commits.at(-1)!.upsert.find((i) => i.layer === "identity");
+    const meta = JSON.stringify(item?.meta ?? {});
+    expect(meta).toContain("ep-r26a");
+    expect(meta).toContain("ep-r26b");
   });
 
   it("旧 voice 是第三人称用户画像 → 冻结并让位，不再注入「我的说话方式」", async () => {
@@ -1219,5 +1629,46 @@ describe("runSoulMaintenance 编排", () => {
       recentRecords: async () => [],
       recentL0: async () => [],
     });
+  });
+
+  // A1 Round24（r24d-a1）：复活必须在 worker 层被覆盖。纯函数 planRevive 已经有用例，
+  // 但 worker 分支若仍写 `...target`，persona 里的 delete 在运行时等于没生效——复活后
+  // 下一次 measureDrift 立刻读旧漂移史，相邻 tick 里冻回去。
+  it("A1 Round24：复活清掉漂移史，不会在下一 tick 被旧史冻回去", async () => {
+    const mkFrozen = (evidenceIds: string[]): PersonaItem => ({
+      itemId: "values:revive",
+      layer: "values",
+      text: "宁可慢交付，也不交付没验证过的结论",
+      state: "frozen",
+      weight: 0.4,
+      evidenceIds,
+      evidenceDays: ["2026-11-01"],
+      evidenceOrigins: ["l1"],
+      createdAt: "2026-11-01T00:00:00.000Z",
+      updatedAt: "2026-11-01T00:00:00.000Z",
+      lastEvidenceAt: "2026-11-01T00:00:00.000Z",
+      validTo: "2026-11-01T00:00:00.000Z",
+      driftHistory: [0.02, 0.03, 0.01],
+      meta: { lastDrift: { score: 0.02, verdict: "freeze", anchorKey: "stale-anchor" } },
+    });
+    const cand = { layer: "values" as const, text: "宁可慢交付，也不交付没验证过的结论", evidenceIds: ["r1", "r2", ...EP_IDS] };
+
+    // 情况 A：候选带来没见过的新证据 → 复活，且旧漂移史/失效期都不带进新行。
+    const a = makeStore({ items: [mkFrozen(["r-old"])], episodes: TEST_EPISODES });
+    await runSoulMaintenance({
+      store: a.store,
+      tenant: TENANT,
+      trigger: "lifecycle",
+      config: resolveSoulConfig({}),
+      recentRecords: async () => RECORDS,
+      rewriter: async () => [cand],
+      now: "2026-11-05T00:00:00.000Z",
+    });
+    const revived = a.items.find((i) => i.itemId === "values:revive")!;
+    expect(revived.state).toBe("active");
+    expect(revived.driftHistory).toBeUndefined();
+    expect(revived.validTo).toBeUndefined();
+    expect(a.items.filter((i) => i.itemId === "values:revive")).toHaveLength(1);
+
   });
 });

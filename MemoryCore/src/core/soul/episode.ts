@@ -611,7 +611,8 @@ export function mineEpisodes(
   opts?: EpisodeMineOptions,
 ): EpisodeMineResult {
   const windowDays = opts?.windowDays ?? cfg?.episodeWindowDays ?? 30;
-  const maxMessages = opts?.maxMessages ?? cfg?.maxEpisodeMessages ?? 4000;
+  // 回退值与 types.ts 的 DEFAULT_SOUL_MAINTENANCE_CONFIG.maxEpisodeMessages 保持一致（12000）。
+  const maxMessages = opts?.maxMessages ?? cfg?.maxEpisodeMessages ?? 12000;
   const maxEpisodes = opts?.maxEpisodes ?? cfg?.maxEpisodesPerRun ?? 120;
   const perSessionCap = opts?.perSessionCap ?? EPISODE_SESSION_CANDIDATE_CEILING;
   const minChars = cfg?.verbatimMinChars ?? 8;
@@ -645,6 +646,9 @@ export function mineEpisodes(
     let sessionEpisodes = 0;
     for (let i = 0; i < list.length; i += 1) {
       const row = list[i];
+      // 事件源只取用户台词（Round3 阶段0 决策，2026-11-18）：episode 建模的是「他做了什么 + 我怎么反应」，
+      // 我自己的输出已经通过 agent_stance / voiceQuotes / 关系证据进入人格层；把它也当事件会让
+      // 「我自己说的话」反复触发情绪与关系抽取。放开 assistant 事件属于产品级语义变更，需另立 ADR。
       if (String(row.role) !== "user") continue;
       const raw = stripBullet(row.message_text).replace(/\s+/gu, " ").trim();
       if (raw.length < Math.max(6, minChars)) continue;

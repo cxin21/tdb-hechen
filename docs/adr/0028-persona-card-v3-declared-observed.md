@@ -21,13 +21,20 @@
 
 ADD / UPDATE / INVALIDATE / NOOP。滑出窗口不再 `freeze`，改写 `validTo`（`meta_json`）+ 权重×0.5；被取代写 `supersededBy`；渲染只取未失效。事件层改归档（`soul_episodes.archived_at`），事实从全量史派生，不再硬删。
 
+**D2 补注（2026-11-18，90 天回放 + 五路复核后）**：
+
+1. **降级可复活，但有门**：`degraded`/`frozen` 条目只有出现**新的证据日**才允许回到 `active`（`history.ts:isNewEvidenceDay`；`worker.ts` 候选循环用它挡「降级 → 每 tick 重建」的空转），复活同时清 `validTo`；只重复旧证据不算。
+2. **事件史续命（3c）**：本轮新事件落在某层时，即使 rewriter 没重提该层，也刷新 `lastEvidenceAt`/`evidenceIds` 并写 `gates=['evidence','episode_refresh']` 的 `update` 账本——候选名额（`maxUpdatedPerCycle` 缺省 3）不够分八层，不让「没抢到名额」等于「遗忘」。
+3. **漂移（D3 的执行口径）**：判断轨没有向量器就不判；语体轨的锚是**我自己说过的话**（assistant 语料），拿不到整轨跳过；词面分（`method='lexical'`）只观测、不迁移状态，迁移只发生在 `method='embedding'`。
+4. **注入失败也是注入事实**：插件取卡失败会把 `failReason`（`http_status|timeout|empty|parse`）+ `failStatus` 回传 `POST /v3/soul/injection`，落 journal 的 `kind=injection` 行（无 `card` 段），`/v3/soul/injection/stats` 的 `failReasons` 据此聚合——在那之前它读不到插件的 `card-bound-failed`。
+
 ### D3 特质：轴承载状态，标签是视图
 
 6 轴（亲和/主导/严谨/开放/稳定/守界）承载漂移，`α=0.02`、单 tick 每轴 ≤0.05、`Σ|state|≤0.5`；标签是空间里的方向向量，由判侧提议、四闸准入（结构/去重/证据≥3/显示阈值），名字与注解冻结不重算。理由：`Σ=1` 的词表归一会让「加一个新特质」稀释全部旧特质；词表越长标签越互相关（16→5 的教训）。
 
 ### D4 注入两段，都在插件
 
-稳定段 = `systemPrompt.section` 的人格卡（getter、冻结、后台刷新）；每轮段 = `agent/pre-step` 尾部 volatile（≤400 字符、append-only、producer-owned、两级去重）。Core 只提供只读接口；失败 fail-open 并留因。
+稳定段 = `systemPrompt.section` 的人格卡（getter、冻结、后台刷新）；每轮段 = `agent/pre-step` 尾部 volatile（≤400 字符、append-only、producer-owned、两级去重）。Core 提供只读读面（card/turn/trait-state/emotions/person/persons/injection-stats）与受控写入面（injection/introspect/event/gate）；失败 fail-open 并留因。
 
 ### D5 人物设定是外生的，人格是内生的
 

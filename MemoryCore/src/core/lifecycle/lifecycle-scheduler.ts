@@ -320,7 +320,7 @@ export async function runSoulMaintenanceTick(deps: SoulTickDeps): Promise<SoulTi
               (await Promise.resolve(
                 deps.store.recentL0Messages!(tenant, {
                   sinceDays: deps.config.episodeWindowDays ?? 30,
-                  maxMessages: deps.config.maxEpisodeMessages ?? 4000,
+                  maxMessages: deps.config.maxEpisodeMessages,
                   ...(watermark ? { sinceIso: watermark } : {}),
                 }),
               )) ?? []

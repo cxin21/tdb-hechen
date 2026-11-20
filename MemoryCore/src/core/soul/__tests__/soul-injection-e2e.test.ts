@@ -30,7 +30,10 @@ import {
 import { resolveSoulConfig } from "../types.js";
 
 const T = { teamId: "t-inj", userId: "u-inj", agentId: "a-inj" };
-const NOW = "2026-11-01T00:40:00.000Z";
+// A2 Round25：worker 现在拒收 at > now 的事件（未来戳不提前积分），而本用例的 L0 行从
+// 00:00 起按 60s 递增、最晚到 ~01:00，所以 tick 时刻必须晚于所有行——否则测的是
+// 「未来事件被丢弃」而不是「24 个标签可达」。
+const NOW = "2026-11-01T02:00:00.000Z";
 
 type Turn = [role: "user" | "assistant", text: string];
 

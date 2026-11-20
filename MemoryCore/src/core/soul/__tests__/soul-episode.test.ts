@@ -82,6 +82,26 @@ describe("episode：团队频道的公开纠正", () => {
   });
 });
 
+describe("episode：事件源只取用户台词（Round21 决策固化）", () => {
+  const pair = (role: "user" | "assistant"): EpisodeSourceRow[] => [
+    { record_id: `m-${role}`, session_id: "s9", role, message_text: "不对，这不是我要的：先给我一手证据，不要听转述。", recorded_at: "2026-11-05T10:00:00.000Z" },
+  ];
+
+  it("同一句话：user 角色产出事件，assistant 角色一条都不产（放开要另立 ADR）", () => {
+    expect(mineEpisodes(pair("user"), CFG).episodes).toHaveLength(1);
+    expect(mineEpisodes(pair("assistant"), CFG).episodes).toHaveLength(0);
+  });
+
+  it("assistant 的输出仍从 voiceQuotes 进入人格层：不是丢弃，是换通道", () => {
+    const rows: EpisodeSourceRow[] = [
+      { record_id: "v1", session_id: "s9", role: "assistant", message_text: "我直接去现场跑一遍，把真实错误贴回来。", recorded_at: "2026-11-05T10:01:00.000Z" },
+    ];
+    const res = mineEpisodes(rows, CFG);
+    expect(res.episodes).toHaveLength(0);
+    expect(res.voiceQuotes.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("episode：L0 原始对话的确定性切片", () => {
   it("从真实对话挖出事件，id 由会话+记录决定（重跑逐字相同）", () => {
     const a = mineEpisodes(ROWS, CFG);

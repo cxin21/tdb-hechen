@@ -53,6 +53,24 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
+/**
+ * fetch 的 413 读取在「服务端先回包、再关连接」时偶发 ECONNRESET：客户端 body 还没写完，
+ * 连接已被服务端关掉，undici 把已经收到的 413 报成 TypeError: fetch failed。
+ * 这是传输层竞态（5 个并发审查者抢 CPU 时出现过），不是产品行为差异。
+ * 只重试一次：真回不出 413 时重试后仍然红。
+ */
+async function fetchBounded(url: string, init: RequestInit, attempts = 2): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
 /** 1.2 MiB 的合法 JSON（略大于缺省 1 MiB 上限）。 */
 function oversizeJson(bytes = 1_200_000): string {
   return JSON.stringify({ blob: "x".repeat(bytes) });
@@ -63,7 +81,7 @@ describe("parseJsonBody: 超限体回 413 而非断连（task-36 / CR-7）", () 
     const body = oversizeJson();
     expect(Buffer.byteLength(body)).toBeGreaterThan(DEFAULT_MAX_BODY_BYTES);
 
-    const res = await fetch(`${baseUrl}/upload`, {
+    const res = await fetchBounded(`${baseUrl}/upload`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
@@ -112,7 +130,7 @@ describe("parseJsonBody: 超限体回 413 而非断连（task-36 / CR-7）", () 
     expect(gz.byteLength).toBeLessThan(DEFAULT_MAX_BODY_BYTES);
     expect(Buffer.byteLength(plain)).toBeGreaterThan(DEFAULT_MAX_BODY_BYTES);
 
-    const res = await fetch(`${baseUrl}/gzip`, {
+    const res = await fetchBounded(`${baseUrl}/gzip`, {
       method: "POST",
       headers: { "content-type": "application/json", "content-encoding": "gzip" },
       body: gz,

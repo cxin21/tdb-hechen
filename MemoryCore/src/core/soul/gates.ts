@@ -34,11 +34,12 @@ export type GateCode =
   | "stance_missing"
   | "cost_missing"
   | "episode_missing"
+  | "referent_missing"
   | "voice_quote_missing"
   /** voice 是「我」的语体，不是第三人称给用户做的画像（2026-11-05 生产实拍：整层写成「他开口像下工单」）。 */
   | "voice_self_missing"
-  | "narrative_method"
-  /** 2026-11-08 单写者：human 层只由 core/person/profile-distiller.ts 写，人格改写产线一律拒收。 */
+  | "narrative_method"
+  /** 2026-11-08 单写者：human 层只由 core/person/profile-distiller.ts 写，人格改写产线一律拒收。 */
   | "human_writer_removed"
   | "self_missing"
   | "self_not_owned"
@@ -140,6 +141,12 @@ export interface GateContext {
   evidenceOrigins?: EvidenceOrigin[];
   /** 本条候选引用的事件层 id（ep-*）。identity/values/narrative 必须真的挂在事件上。 */
   evidenceEpisodeIds?: string[];
+  /**
+   * 被引用 episode 的原文（title/object/双方立场/原话拼成）。
+   * Round27 反证（r27h-a1）：只判「句子里有数字/引号/够长」能被 `机会3`、`「不装懂」` 绕过，
+   * 具体指称必须能在证据原文里找到，否则就是自说自话。
+   */
+  evidenceTexts?: string[];
   /** voice 层引用到的真实用户原话（逐字，带 recordId）。 */
   voiceFewShots?: { quote: string; recordId: string }[];
   /** 存量导入/人工钉住的白名单放宽（只放宽形态与两难，不放宽事件句）。 */
@@ -364,6 +371,76 @@ const ORIGIN_TEXT_PATTERNS: RegExp[] = [
   /\b(?:used to|back then|at first|over the years|in the past|earlier|before that|along the way)\b/iu,
 ];
 
+/**
+ * 具体指称：单事件准入时，光有「宁可/放弃」这类模态词不算内容。
+ * 2026-11-19 反证（r27g-a1）：`我宁可放弃这次机会`/`我宁愿慢一点` 能同时命中
+ * STANCE + DILEMMA + COST 三张词表（宁可/放弃 都在里面），一句空话就能进身份层。
+ * Round27 反证（r27h-a1）：第一版只要求「句子里有数字/引号/≥24 字」，于是
+ * `我宁可放弃这次机会3`、`…守住「不装懂」`、28 字废话全部 pass —— 换个标点就绕过。
+ * 现在改成对证据原文：句子里点到的东西必须真的在它引用的那条 episode 里出现过
+ * （引号里的说法 / 数字 / 与原文共享的长片段）。没有证据原文可对时判 false：
+ * `说不出具体的事` 不能被当成 `具体` 放行。
+ *
+ * Round27 第二次反证（r27i-a1）三条绕过，全部堵掉：
+ * ① 数字按子串匹配：证据里有 `2026-11-19`，候选写 `机会2` 就命中 —— 现在只认「独立整数 token」：
+ *    含 `[./-]` 的整段（`2026-11-19`、`v1.2`、`0.01`）算一个 token 且不入候选集，候选侧 `\d+`
+ *    还必须 ≥2 位且命中集合（r27j-a1 的 `机会19`/`机会2026` 就是这样被判死的）；
+ * ② 2 字引号：`我站在「跑一」这一边` 里的 `跑一` 恰好在原文出现 —— 现在引号短语至少 4 字；
+ * ③ 6 字套话：`把事情做到位` 与原文共享 6 字 —— 阈值提到 8 字（短于 8 字多半是客套模板）。
+ */
+// Round28（r28c-a1）：4 字时「我站在「采购订单」这一边，宁可慢，也不松口。」能过——只抄了
+// 证据里的一个 4 字名词。抬到 6 字要求引号里是短语而不是词。
+export const REFERENT_MIN_QUOTE_CHARS = 6;
+export const REFERENT_MIN_RUN = 8;
+export const REFERENT_MIN_NUMBER_DIGITS = 2;
+
+export function hasConcreteReferent(text: string, evidenceTexts?: readonly string[]): boolean {
+  const raw = (evidenceTexts ?? []).map((t) => String(t ?? "")).filter((t) => t.trim() !== "");
+  if (raw.length === 0) return false;
+  const evidence = raw.map((t) => normalizeText(t)).filter((t) => t !== "");
+  const pool = evidence.join("\n");
+  const rawPool = raw.join("\n");
+  for (const m of text.matchAll(/[「『“"]([^」』”"]{2,})[」』”"]/gu)) {
+    const quoted = normalizeText(m[1] ?? "");
+    if (Array.from(quoted).length < REFERENT_MIN_QUOTE_CHARS) continue;
+    if (pool.includes(quoted)) return true;
+  }
+  // 数字指称只认「独立整数 token」：日期/版本/小数（2026-11-19、v1.2、0.01）整段算一个 token，
+  // 不许把其中任一截段（19、2026）当成候选点到的数字（r27j-a1：机会19 / 机会2026 都因此漏过）。
+  const numberTokens = new Set<string>();
+  for (const m of rawPool.matchAll(/(?<![0-9])(\d+(?:[./-]\d+)*)(?![0-9])/gu)) {
+    const token = m[1] ?? "";
+    if (!/[./-]/u.test(token)) numberTokens.add(token);
+  }
+  // 候选侧同样按 token 切：`机会37-19` 不能被拆出 37 再拿去过门（r27k-a1 的残留绕过）。
+  for (const m of text.matchAll(/(?<![0-9])(\d+(?:[./-]\d+)*)(?![0-9])/gu)) {
+    const token = m[1] ?? "";
+    if (/[./-]/u.test(token)) continue;
+    if (token.length < REFERENT_MIN_NUMBER_DIGITS) continue;
+    if (numberTokens.has(token)) return true;
+  }
+  const cand = normalizeText(text);
+  // 与原文共享的连续片段 ≥8 字才算「点到了同一件事」。4–7 字常是「宁可慢一点」「把事情做到位」
+  // 这种模板词（r27h-a1 的 28 字废话、r27i-a1 的 B3 都靠它混过去），不能当指称。
+  return longestSharedRun(cand, pool) >= REFERENT_MIN_RUN;
+}
+
+/** 最长公共连续片段长度：用于判断两句话是否在说「同一个东西」。两侧都已 normalize。 */
+function longestSharedRun(a: string, b: string): number {
+  let best = 0;
+  const prev = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diag = 0;
+    for (let j = 1; j <= b.length; j += 1) {
+      const keep = prev[j]!;
+      prev[j] = a[i - 1] === b[j - 1] ? diag + 1 : 0;
+      diag = keep;
+      if (prev[j]! > best) best = prev[j]!;
+    }
+  }
+  return best;
+}
+
 export function hasStance(text: string, legacy = false): boolean {
   if (legacy) return true;
   if (hasDilemma(text)) return true;
@@ -548,7 +625,15 @@ export function classifyLine(text: string, legacy = false, config?: SoulMaintena
   if (isTraitSentence(s)) {
     const bad = shapeFor("identity");
     if (bad) return { layer: "method", reports: [...reports, bad] };
-    reports.push({ pass: true, code: "ok", detail: "第一人称特质句" });
+    // 分类与准入必须同一口径：identity 的闸门要求「两难结构 + 第一人称立场」（evaluateCandidate），
+    // 而这里若把「我很严谨」这类描述句标成 identity 且 pass，mineCandidates 就会把它送进闸门，
+    // 每 tick 必然被 dilemma_missing/stance_missing 拒一次（2026-11-18 生产三位数/日，几乎全是这种句子）。
+    // 描述句没有「我站在哪边」，本就不该进人格层——归 method 并给出准确理由。
+    if (!legacy) {
+      reports.push({ pass: false, code: "dilemma_missing", detail: "第一人称描述，但没有取舍结构：identity 只收立场句（我宁可…也不…）" });
+      return { layer: "method", reports };
+    }
+    reports.push({ pass: true, code: "ok", detail: "第一人称特质句（存量导入豁免形态门）" });
     return { layer: "identity", reports };
   }
   reports.push({ pass: false, code: "dilemma_missing", detail: "既非红线、又无取舍结构、也非特质句" });
@@ -698,13 +783,30 @@ export function evaluateCandidate(text: string, opts: EvaluateOptions): GateRepo
   }
 
   if (!opts.legacy && (opts.layer === "identity" || opts.layer === "values" || opts.layer === "self" || opts.layer === "narrative")) {
-    const need = opts.layer === "narrative" ? 1 : Math.max(1, cfg.minEpisodeEvidence ?? 2);
+    const staircase = opts.layer === "identity" || opts.layer === "self";
+    // values 的下限是 2，不受配置影响：minEpisodeEvidence 允许配 1..10，配成 1 就等于
+    // 把「一条事件撑起一条价值观」放进来（r27i-a3 反证：cfg=1 时 values 单事件 allPass）。
+    const need = opts.layer === "narrative" || staircase ? 1 : Math.max(2, cfg.minEpisodeEvidence ?? 2);
     const have = countEpisodeEvidence(opts.evidenceEpisodeIds);
-    out.push(
-      have >= need
-        ? { pass: true, code: "ok", detail: `挂在 ${have} 个真实 episode 上` }
-        : { pass: false, code: "episode_missing", detail: `只挂 ${have} 个 episode（该层需 ≥${need}）：没有出处的判断是臆造` },
-    );
+    // Round27：identity/self 的 episode 门从「≥2 个事件」改为「≥1 个事件 + 说出代价」。
+    // 依据：生产 rewriter 基本只引 1 个事件（identity 层 episode_missing 长期 ~1.2/min），
+    // 门槛定 2 等于把模型正常行为判死；但只放松数量会把「一句话立场」放进来，
+    // 所以补一条独立约束 hasCostWording（放弃/代价），两条同时成立才算有出处。
+    // values 层不放松：价值本来就该由「两件具体的事」支撑，且它还另有 intrinsic/cost 两道门。
+    const needsCostForOne = staircase && have === 1;
+    // 拒绝理由分桶（r27h-a1）：0 个事件、1 个事件但没代价、1 个事件但指称不落地，
+    // 原来三种情况共用 episode_missing，gate_stats 看不出准入变化到底被哪一条挡住。
+    const costOk = !needsCostForOne || hasCostWording(s);
+    const referentOk = !needsCostForOne || hasConcreteReferent(s, opts.evidenceTexts);
+    if (have < need) {
+      out.push({ pass: false, code: "episode_missing", detail: `只挂 ${have} 个 episode（该层需 ≥${need}）：没有出处的判断是臆造` });
+    } else if (!costOk) {
+      out.push({ pass: false, code: "cost_missing", detail: "只挂 1 个 episode：单事件准入还要求说出代价（放弃/牺牲/慢一点…）" });
+    } else if (!referentOk) {
+      out.push({ pass: false, code: "referent_missing", detail: "只挂 1 个 episode：句子里点到的说法/数字必须在被引事件原文里出现过（说不出具体的事=口号）" });
+    } else {
+      out.push({ pass: true, code: "ok", detail: `挂在 ${have} 个真实 episode 上${needsCostForOne ? "（单事件另有代价与具体指称）" : ""}` });
+    }
   }
 
   if (!opts.legacy && opts.layer === "voice") {

@@ -10,7 +10,8 @@ import type { PersonaItem } from "../../core/soul/types.js";
  *   1) 不传 participants：响应 text 与改前基线逐字节相同，且**不出现** `data.persons`
  *      字段（未过滤不是空数组）；
  *   2) `participants=p_a,p_b`：`data.persons` 回显解析后的 person_key，且 human 段按人过滤；
- *   3) `participants=`（空串）：当 `[]` 处理——只剩全局共性行，`data.persons` 回显 `[]`。
+ *   3) `participants=`（空串）：当 `[]` 处理——不留任何人的档案行，`data.persons` 回显 `[]`。
+ *      2026-11-18 收敛：无主行（key===""）不再当全局共性行兜底，跨人共性未实现。
  * 另加一条：展示名形态（唯一命中才用，0 条/≥2 条丢弃），这是 spec 里 ② 的核心。
  */
 
@@ -100,27 +101,29 @@ describe("P2-B GET /v3/soul/card?participants=…", () => {
     expect(usBlock(String(data.text))).toHaveLength(6);
   });
 
-  it("participants=p_a：回显 persons，且 human 段只留 A + 全局", async () => {
+  it("participants=p_a：回显 persons，且 human 段只留 A（无主行不兜底）", async () => {
     const data = await callCard("&participants=p_a", makeStore());
     expect(data.persons).toEqual([PERSON_A]);
-    expect(usBlock(String(data.text))).toEqual(["相处上，他偏好先灰度再全量", "相处上，他讨厌被替着做决定", "你是先把结论说清楚"]);
+    expect(usBlock(String(data.text))).toEqual(["相处上，他偏好先灰度再全量", "相处上，他讨厌被替着做决定"]);
     expect(String(data.text)).not.toContain("我们说好：他管发布窗口");
   });
 
-  it("participants=（空串）：当 [] 处理，只剩全局共性行，回显空数组", async () => {
+  it("participants=（空串）：当 [] 处理，不留任何人的档案行，回显空数组", async () => {
     const data = await callCard("&participants=", makeStore());
     expect(data.persons).toEqual([]);
-    expect(usBlock(String(data.text))).toEqual(["你是先把结论说清楚"]);
-    // 空名单仍是有语义的过滤：本人行全部消失，且补了「关于你」warning 之外的正常路径
+    expect(usBlock(String(data.text)) ?? []).toEqual([]);
+    // 空名单仍是有语义的过滤：A 的行与无主行都消失。
     expect(String(data.text)).not.toContain("相处上，他偏好先灰度再全量");
+    expect(String(data.text)).not.toContain("你是先把结论说清楚");
   });
 
   it("P2-B2：p_ 前缀的 key 不在本租户时丢弃，不谎报「按这个人过滤了」", async () => {
     const data = await callCard("&participants=p_does_not_exist", makeStore());
-    // 显式名单全部无效 → 解析结果 []，回显 []（不是 undefined），human 段只剩全局行；
+    // 显式名单全部无效 → 解析结果 []，回显 []（不是 undefined），human 段为空；
     // 关键是不能把不存在的 key 原样回显，否则面板会以为「按这个人过滤了」。
     expect(data.persons).toEqual([]);
-    expect(usBlock(String(data.text))).toEqual(["你是先把结论说清楚"]);
+    expect(usBlock(String(data.text)) ?? []).toEqual([]);
+    expect(String(data.text)).not.toContain("你是先把结论说清楚");
   });
 
   it("展示名形态：唯一命中才用；0 条与 ≥2 条都丢弃（不猜）", async () => {
@@ -146,7 +149,7 @@ describe("P2-B GET /v3/soul/card?participants=…", () => {
     ]);
     const data = await callCard("&session=s1", store);
     expect(data.persons).toEqual([PERSON_A]);
-    expect(usBlock(String(data.text))).toEqual(["相处上，他偏好先灰度再全量", "相处上，他讨厌被替着做决定", "你是先把结论说清楚"]);
+    expect(usBlock(String(data.text))).toEqual(["相处上，他偏好先灰度再全量", "相处上，他讨厌被替着做决定"]);
   });
 
   it("session 指向无 episode / persons_json 为空的会话：按「未知」处理，不过滤且不回显", async () => {

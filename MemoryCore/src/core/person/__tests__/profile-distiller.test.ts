@@ -221,6 +221,18 @@ describe("§9-3 一次提炼：写 human 行 + 关系边，证据原话留在 me
     expect(fresh.itemId.startsWith(`${oldRole.itemId}-`)).toBe(true);
     expect(fresh.validTo).toBeUndefined();
     expect(fresh.text).toBe("身份：负责发布与回归");
+
+    // A3 Round11（CP4 测试缺口）：账本要能还原被取代那一代的正文，不能只留 hash。
+    const ledger = (store.listSoulLedger!(TENANT, 200) ?? []) as Array<{
+      action: string;
+      itemId: string;
+      before?: PersonaItem;
+      beforeHash?: string;
+    }>;
+    const closedEntry = ledger.find((e) => e.action === "invalidate" && e.itemId === oldRole.itemId);
+    expect(closedEntry).toBeTruthy();
+    expect(closedEntry!.before?.text).toBe(closed.text);
+    expect(closedEntry!.beforeHash).toBeTruthy();
   });
 });
 
@@ -294,9 +306,142 @@ describe("§9-7 水位只在成功时写", () => {
       trigger: "test",
     });
     expect(retry.completed).toBe(1);
-    expect(store.listSoulPersonProfileWatermarks!(TENANT).find((m) => m.personKey === meKey)?.profileAt).toBe(NOW);
+    // A3（2026-11-18）：水位不再是 tick 的 now，而是「本轮真正读到的最大修订时间」——
+    // 写 now 会把修订时间早于 now 的旧证据永久挡在门外。
+    const newest = store
+      .listL1ByPerson!(TENANT, meKey, 40)
+      .reduce((max, r) => ((r.updatedAt ?? r.at) > max ? (r.updatedAt ?? r.at) : max), "");
+    expect(store.listSoulPersonProfileWatermarks!(TENANT).find((m) => m.personKey === meKey)?.profileAt).toBe(newest);
+    expect(newest < NOW).toBe(true);
   });
 
+  it("编辑/合并只刷 updated_time 也进候选；水位只推到读到的最新修订时间（A3）", async () => {
+    const { store, meKey, bossKey } = await setupPair();
+    const first = await runPersonProfileDistill(stubRunner(goodOutput(bossKey)), {
+      store,
+      tenant: TENANT,
+      now: NOW,
+      maxPersons: 6,
+      trigger: "test",
+    });
+    expect(first.completed).toBe(1);
+    const wm1 = store.listSoulPersonProfileWatermarks!(TENANT).find((m) => m.personKey === meKey)?.profileAt ?? null;
+    expect(wm1).not.toBeNull();
+
+    // 合并式改写：同一个 record_id、证据时间（created_time）不动，只有修订时间跳到未来。
+    const later = "2027-01-02T00:00:00.000Z";
+    store.upsertL1!(
+      {
+        id: "m1",
+        content: "我负责发布流程，现在也盯回滚",
+        type: "episodic",
+        priority: 3,
+        scene_name: "t",
+        source_message_ids: ["msg-m1"],
+        metadata: { persons: [{ key: meKey, role: "speaker" }] } as never,
+        timestamps: ["2026-09-01T00:00:00Z"],
+        createdAt: "2026-09-01T00:00:00Z",
+        updatedAt: later,
+        version: 2,
+        sessionKey: "sess-pp",
+        sessionId: "sess-pp",
+        teamId: TENANT.teamId,
+        userId: TENANT.userId,
+        agentId: TENANT.agentId,
+      } as never,
+      undefined,
+    );
+    const stats = store.listPersonProfileStats!(TENANT).find((s) => s.personKey === meKey)!;
+    expect(stats.lastAt).toBe(later);
+    expect(stats.lastAt > wm1!).toBe(true);
+
+    const again = await runPersonProfileDistill(stubRunner(goodOutput(bossKey)), {
+      store,
+      tenant: TENANT,
+      now: "2027-01-03T00:00:00.000Z",
+      maxPersons: 6,
+      trigger: "test",
+    });
+    expect(again.attempted).toBe(1);
+    expect(again.persons[0]?.error).toBeUndefined();
+    const wm2 = store.listSoulPersonProfileWatermarks!(TENANT).find((m) => m.personKey === meKey)?.profileAt ?? null;
+    expect(wm2).toBe(later);
+
+    // 水位下界生效：比 wm1 新的只有被改写的那条。
+    const since = store.listL1ByPerson!(TENANT, meKey, 40, { updatedAfter: wm1! });
+    expect(since.map((r) => r.recordId)).toEqual(["m1"]);
+  });
+
+  it("整页取满时水位不推过页尾并列时间（A3 Round7 C5：并列行不能被 LIMIT 静默跳过）", async () => {
+    const { store } = makeStore();
+    const me = await resolvePerson(store, TENANT, ME_HINT);
+    const meKey = me.personKey;
+    const tie = "2027-02-01T00:00:00.000Z";
+    const put = (i: number, rev: string): void => {
+      store.upsertL1!(
+        {
+          id: `t${i}`,
+          content: `证据第${i}条`,
+          type: "episodic",
+          priority: 3,
+          scene_name: "t",
+          source_message_ids: [`msg-t${i}`],
+          metadata: { persons: [{ key: meKey, role: "speaker" }] } as never,
+          timestamps: ["2027-01-01T00:00:00Z"],
+          createdAt: "2027-01-01T00:00:00Z",
+          updatedAt: rev,
+          version: 1,
+          sessionKey: "sess-pp",
+          sessionId: "sess-pp",
+          teamId: TENANT.teamId,
+          userId: TENANT.userId,
+          agentId: TENANT.agentId,
+        } as never,
+        undefined,
+      );
+    };
+    // 前 39 条递增，第 40、41 条并列同一时间戳：整页 40 条正好在第 40 条处切断并列组。
+    for (let i = 1; i <= 39; i += 1) put(i, `2027-01-${String(i).padStart(2, "0")}T00:00:00.000Z`);
+    put(40, tie);
+    put(41, tie);
+
+    const first = await runPersonProfileDistill(stubRunner(goodOutput("p_none")), {
+      store,
+      tenant: TENANT,
+      now: "2027-03-01T00:00:00.000Z",
+      maxPersons: 6,
+      trigger: "test",
+    });
+    expect(first.attempted).toBe(1);
+    const wmRow = store.listSoulPersonProfileWatermarks!(TENANT).find((m) => m.personKey === meKey);
+    const wm1 = wmRow?.profileAt ?? "";
+    // 二阶游标：时间水位可以推到并列时间（页尾那行），靠 record_id 区分左右，
+    // 不再需要「页尾整组排除」那种会把整页同一时间戳卡死的写法。
+    expect(wm1).toBe(tie);
+    const wmRec = (wmRow as { profileRecordId?: string | null } | undefined)?.profileRecordId ?? "";
+    expect(wmRec).toBe("t40");
+    // 直接验读谓词：以 (tie, t40) 为游标只该读到被页界切掉的第 41 条，既不漏也不重。
+    const rest = store.listL1ByPerson!(TENANT, meKey, 40, { updatedAfter: wm1, afterRecordId: wmRec });
+    expect(rest.map((r) => r.recordId)).toEqual(["t41"]);
+
+    const runner = stubRunner(goodOutput("p_none"));
+    const second = await runPersonProfileDistill(runner, {
+      store,
+      tenant: TENANT,
+      now: "2027-03-02T00:00:00.000Z",
+      maxPersons: 6,
+      trigger: "test",
+    });
+    expect(second.attempted).toBe(1);
+    // 并列组整组被重读到（含此前被页界切掉的第 41 条），水位在这一轮才推到并列时间。
+    const prompt = String(runner.calls[0]?.prompt ?? "");
+    // 第二轮只读新行（第 41 条）；上下文批仍会带上最近 40 条，所以 40 条也仍在提示词里。
+    expect(prompt).toContain("证据第41条");
+    expect(prompt).toContain("证据第40条");
+    const wmRow2 = store.listSoulPersonProfileWatermarks!(TENANT).find((m) => m.personKey === meKey);
+    expect(wmRow2?.profileAt ?? "").toBe(tie);
+    expect((wmRow2 as { profileRecordId?: string | null } | undefined)?.profileRecordId ?? "").toBe("t41");
+  });
   it("解析失败（不是 JSON）也只记失败，不写水位", async () => {
     const { store, meKey } = await setupPair();
     const report = await runPersonProfileDistill(stubRunner("模型今天不想说话"), {
@@ -500,6 +645,179 @@ describe("A12 每 tick 人数与 deferred", () => {
     expect(noNew.selected).toHaveLength(0);
   });
 });
+
+describe("关系时间取证据时间（issue #180 §S9）", () => {
+  it("新建边的 valid_from = 那条 L1 的时间，不是 tick 的 now；created_at 仍是本轮", async () => {
+    const { store, meKey, bossKey } = await setupPair();
+    await runPersonProfileDistill(stubRunner(goodOutput(bossKey)), {
+      store,
+      tenant: TENANT,
+      now: NOW,
+      maxPersons: 6,
+      trigger: "test",
+    });
+    const m3At = store.listL1ByPerson!(TENANT, meKey, 40).find((r) => r.recordId === "m3")!.at;
+    expect(m3At).toBeTruthy();
+    expect(m3At).not.toBe(NOW);
+
+    const rows = store.listSoulPersonRelations!(TENANT, { subjKey: meKey });
+    expect(rows).toHaveLength(1);
+    // 边从「这句话是什么时候说的」开始生效，不是从这一轮 tick 开始。
+    expect(rows[0]!.validFrom).toBe(m3At);
+    // 记账时间仍是本轮：改的是语义时间，不是写入时间。
+    expect(rows[0]!.createdAt).toBe(NOW);
+  });
+
+  it("结束边的 valid_to 也取证据时间（不是 tick 的 now）", async () => {
+    const { store, meKey, bossKey } = await setupPair();
+    await store.commitSoulPersonRelations!(TENANT, {
+      insert: [
+        {
+          relId: "rel-old-boss",
+          subjKey: meKey,
+          pred: "上级",
+          inversePred: "下属",
+          objKey: bossKey,
+          objName: null,
+          direction: "out",
+          quote: "老板是我的上级",
+          recordId: "m3",
+          evidence: [{ recordId: "m3", at: "2026-10-01T00:00:00.000Z", quote: "老板是我的上级" }],
+          validFrom: "2026-10-01T00:00:00.000Z",
+          validTo: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const report = await runPersonProfileDistill(
+      stubRunner({
+        fields: [],
+        relations: [
+          {
+            pred: "上级",
+            inverse: "下属",
+            obj: { key: bossKey },
+            recordId: "m3",
+            quote: "老板是我的上级",
+            op: "outdated",
+            targetRelId: "rel-old-boss",
+          },
+        ],
+      }),
+      { store, tenant: TENANT, now: NOW, maxPersons: 6, trigger: "test" },
+    );
+    // 契约（PersonProfilePersonReport）：relations=落库的边行数（新增/并证据），
+    // outdated=被置 validTo 的旧行数。纯 outdated 一条边不该再冒充「写了 1 条边」。
+    expect(report.relations).toBe(0);
+    expect(report.outdated).toBe(1);
+
+    const m3At = store.listL1ByPerson!(TENANT, meKey, 40).find((r) => r.recordId === "m3")!.at;
+    const all = store.listSoulPersonRelations!(TENANT, { subjKey: meKey, includeClosed: true });
+    expect(all).toHaveLength(1);
+    expect(all[0]!.validTo).toBe(m3At);
+    expect(all[0]!.validTo).not.toBe(NOW);
+  });
+
+  it("入边不能被本轮当成 outdated 目标（不跨人写：只关本人主体的边）", async () => {
+    const { store, meKey, bossKey } = await setupPair();
+    await store.commitSoulPersonRelations!(TENANT, {
+      insert: [
+        {
+          relId: "rel-boss-in",
+          subjKey: bossKey,
+          pred: "下属",
+          inversePred: "上级",
+          objKey: meKey,
+          objName: null,
+          direction: "out",
+          quote: "何晨是我下属",
+          recordId: "m3",
+          evidence: [{ recordId: "m3", at: "2026-10-01T00:00:00.000Z", quote: "何晨是我下属" }],
+          validFrom: "2026-10-01T00:00:00.000Z",
+          validTo: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const report = await runPersonProfileDistill(
+      stubRunner({
+        fields: [],
+        relations: [
+          {
+            pred: "上级",
+            inverse: "下属",
+            obj: { key: bossKey },
+            recordId: "m3",
+            quote: "老板是我的上级",
+            op: "outdated",
+            targetRelId: "rel-boss-in",
+          },
+        ],
+      }),
+      { store, tenant: TENANT, now: NOW, maxPersons: 6, trigger: "test" },
+    );
+
+    expect(report.outdated).toBe(0);
+    const theirs = store.listSoulPersonRelations!(TENANT, { objKey: meKey, includeClosed: true });
+    expect(theirs).toHaveLength(1);
+    expect(theirs[0]!.validTo).toBeNull();
+    // 何晨自己名下没有新增/被关闭的边。
+    expect(store.listSoulPersonRelations!(TENANT, { subjKey: meKey, includeClosed: true })).toHaveLength(0);
+  });
+
+  it("证据早于目标边 valid_from：valid_to 夹到 valid_from，不写反向区间", async () => {
+    const { store, meKey, bossKey } = await setupPair();
+    await store.commitSoulPersonRelations!(TENANT, {
+      insert: [
+        {
+          relId: "rel-future",
+          subjKey: meKey,
+          pred: "上级",
+          inversePred: "下属",
+          objKey: bossKey,
+          objName: null,
+          direction: "out",
+          quote: "老板是我的上级",
+          recordId: "m3",
+          evidence: [{ recordId: "m3", at: "2026-10-01T00:00:00.000Z", quote: "老板是我的上级" }],
+          validFrom: "2027-02-01T00:00:00.000Z",
+          validTo: null,
+          createdAt: "2027-02-01T00:00:00.000Z",
+          updatedAt: "2027-02-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const report = await runPersonProfileDistill(
+      stubRunner({
+        fields: [],
+        relations: [
+          {
+            pred: "上级",
+            inverse: "下属",
+            obj: { key: bossKey },
+            recordId: "m3",
+            quote: "老板是我的上级",
+            op: "outdated",
+            targetRelId: "rel-future",
+          },
+        ],
+      }),
+      { store, tenant: TENANT, now: NOW, maxPersons: 6, trigger: "test" },
+    );
+
+    expect(report.outdated).toBe(1);
+    const all = store.listSoulPersonRelations!(TENANT, { subjKey: meKey, includeClosed: true });
+    expect(all).toHaveLength(1);
+    expect(all[0]!.validTo).toBe("2027-02-01T00:00:00.000Z");
+    expect(all[0]!.validTo! >= all[0]!.validFrom).toBe(true);
+  });
+});
+
 
 describe("报告形状（§6.5）", () => {
   it("没有候选时不抛、计数全 0", async () => {

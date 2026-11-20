@@ -79,7 +79,7 @@ export const PROFILE_REFRESH_MIN_HOURS = 6;
  * messages/maxTokens/timeout 等），所以这里不给温度；要调节采样温度必须先扩接口，
  * 别在本文件里再挂一个没人读的常量。
  */
-export const PROFILE_MAX_TOKENS = 32768;
+export const PROFILE_MAX_TOKENS = 4096;
 
 /** 九个字段（名字是 API 契约，中文标签只用于 text 前缀；relation 不在其中——由边表渲染）。 */
 /** §7：dislikes「逐字，需 ≥2 条证据」——证据不足不落库。 */
@@ -442,7 +442,7 @@ function schemaDoc(): string {
   return [
     '只输出一个 JSON 对象：{"fields":[...],"relations":[...]}。不要解释、不要 Markdown、不要代码块标记。',
     `fields 每项：{"field":"alias|role|style|likes|dislikes|focus|story|promise|handle","text":"≤${PROFILE_TEXT_MAX} 字的自包含陈述，不要写「他说」","recordId":"记忆里的 recordId","quote":"该记忆里逐字出现的一句原话","op":"add|update|outdated","targetRowId":"update/outdated 时必填，必须是现有档案里的 rowId"}`,
-    `字段中文标签：${fields}。每个 field 最多一条；text 总长（含标签）不超过 ${PROFILE_TEXT_MAX} 字。`,
+    `字段中文标签：${fields}。每个 field 最多一条、去重后整份档案至多 ${PROFILE_MAX_FIELDS_PER_PERSON} 条字段（超出的会被系统丢弃）；text 总长（含标签）不超过 ${PROFILE_TEXT_MAX} 字。`,
     `relations 每项：{"pred":"≤${PERSON_RELATION_PRED_MAX} 字的自由词","inverse":"pred 的逆词，≤${PERSON_RELATION_PRED_MAX} 字；对称关系留空","obj":{"key":"p_xxx"},"objName":"obj.key 缺失时必填，≤${PROFILE_OBJ_NAME_MAX} 字（如「我老婆」）","direction":"out|mutual","recordId":"...","quote":"...","op":"add|update|outdated","targetRelId":"update/outdated 时必填"}`,
     "relations 的 subj 恒为当前这个人，不要输出；obj.key 只能取「本租户已知人物」里的 key。",
     `pred 由你按这段关系的实际叫法起名，不要往固定几个词上凑；例词仅供体会用词粒度，不是白名单：${PERSON_RELATION_PRED_EXAMPLES.join("、")}。`,

@@ -49,6 +49,28 @@ describe("collectIdentityFacts（S6 纯取数）", () => {
     expect(res.facts.some((f) => f.text.includes("绝不可删除"))).toBe(false);
   });
 
+  // R31-1（Round31）：双槽 prompt 的 slot identity 说的是「他」（用户身份），不是 agent 自我。
+  // 之前这个信息在 producer 侧被丢掉，worker 一律当 identity 候选送审 → 描述句必然撞 stance/dilemma 门。
+  it("R31-1：双槽开启时 slot identity 标 user、self_identity 标 agent；legacy 一律 agent", async () => {
+    const store = makeStore(ROWS);
+    const dual = await collectIdentityFacts({
+      store,
+      tenant: TENANT,
+      llmRunner: LLM as never,
+      selfIdentity: { enabled: true, maxPerPass: 3 },
+    });
+    const userFacts = dual.facts.filter((f) => f.layer === "identity");
+    const selfFacts = dual.facts.filter((f) => f.layer === "self_identity");
+    expect(userFacts.length).toBeGreaterThan(0);
+    expect(userFacts.every((f) => f.subject === "user")).toBe(true);
+    expect(selfFacts.length).toBeGreaterThan(0);
+    expect(selfFacts.every((f) => f.subject === "agent")).toBe(true);
+    // legacy（双槽关闭）：slot identity 就是 agent 自己的身份，不能被误标成 user。
+    const legacy = await collectIdentityFacts({ store, tenant: TENANT, llmRunner: LLM as never });
+    expect(legacy.facts.length).toBeGreaterThan(0);
+    expect(legacy.facts.every((f) => f.subject === "agent")).toBe(true);
+  });
+
   it("双视角关闭 → self_identity 提案被丢弃；每层 ≤ maxPerPass", async () => {
     const store = makeStore(ROWS);
     const res = await collectIdentityFacts({

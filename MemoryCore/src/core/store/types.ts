@@ -1314,6 +1314,17 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   ): MaybePromise<void>;
   listSoulTraitLabels?(tenant?: CoreTenant): MaybePromise<TraitLabelRow[]>;
   commitSoulTraitLabels?(tenant: CoreTenant | undefined, rows: TraitLabelRow[]): MaybePromise<{ upserted: number }>;
+  /**
+   * 标签退役（Round18）：只把「仍 admitted 且 last_seen 早于 now - idleDays」的行改成 dormant。
+   * 为什么不用 commitSoulTraitLabels 整行 upsert：标签按 (tenant_id, label) 存、同队多 agent 共享，
+   * 整行写会把别的 agent 刚复活的 status 改回 dormant，并把它写的 last_seen 倒退回去。
+   * 返回值是真正改了 status 的行数（不是入参条数）。
+   */
+  dormantSoulTraitLabels?(
+    tenant: CoreTenant | undefined,
+    labels: string[],
+    opts: { now: string; idleDays?: number },
+  ): MaybePromise<{ retired: number }>;
   /* —— 情绪史（soul_emotions，2026-11-06）——
    * soul_state 只留「此刻」一个快照，下一次写入就覆盖；情绪史按「事件 × 模板版本」逐行留档，
    * 这样「因为什么、对谁、多强、多久消退」有逐条记录可回放，注入侧的心境原因也有出处可查。 */
@@ -1465,6 +1476,12 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     tenant: CoreTenant,
     personKey: string,
     limit: number,
+    opts?: {
+      /** 只看「修订时间」晚于这个时刻的行（提炼水位口径：编辑/合并也刷新修订时间）。 */
+      updatedAfter?: string;
+      /** 复合游标第二段：修订时间等于 updatedAfter 的行里，只取 record_id 更大的（防页界并列漏读）。 */
+      afterRecordId?: string;
+    },
   ): MaybePromise<
     Array<{
       recordId: string;
@@ -1474,6 +1491,8 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
       roleInRecord?: "subject" | "speaker" | "mentioned";
       /** 这条记忆是从哪几条 L0 原话抽出来的（提炼器取原话做逐字引文校验）。 */
       sourceMessageIds?: string[];
+      /** 修订时间（updated_time，缺失回退 created_time）。水位推进用它，不用证据时间。 */
+      updatedAt?: string;
     }>
   >;
   /** A1：租户内每人被挂了几条记忆 + 最新时间（`HAVING COUNT >= 3` 在 SQL 里做）。 */
@@ -1483,12 +1502,16 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
   /** A8：提炼水位。`profileAt: null` = 从未跑过。 */
   listSoulPersonProfileWatermarks?(
     tenant?: CoreTenant,
-  ): MaybePromise<Array<{ personKey: string; profileAt: string | null }>>;
+  ): MaybePromise<
+    Array<{ personKey: string; profileAt: string | null; profileRecordId?: string | null }>
+  >;
   /** A8：提炼成功后写水位（失败不调 → 下一 tick 重试）。 */
   markSoulPersonProfileAt?(
     tenant: CoreTenant | undefined,
     personKey: string,
     at: string,
+    /** 复合游标第二段：与 at 同一修订时间内的 record_id（缺省 = 只用时间游标，旧行为）。 */
+    recordId?: string,
   ): MaybePromise<{ updated: boolean }>;
   /** A6：关系边按 subj/obj 两向查；缺省只回现行边（`valid_to IS NULL`）。 */
   listSoulPersonRelations?(
@@ -1501,7 +1524,7 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
     plan: {
       insert?: SoulPersonRelationRow[];
       appendEvidence?: Array<{ relId: string; items: Array<{ recordId: string; at: string; quote: string }> }>;
-      close?: Array<{ relId: string; at: string }>;
+      close?: Array<{ relId: string; at: string; subjKey?: string }>;
     },
   ): MaybePromise<{ inserted: number; merged: number; closed: number }>;
   /**

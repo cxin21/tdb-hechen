@@ -195,6 +195,17 @@ describe("GET /v3/soul/person（§8）", () => {
     expect(data.fields.find((f) => f.field === "role")!.stale).toBe(false);
   });
 
+  it("空白 validTo 视为没有失效期：与卡侧 trim 同判，不把活行读成已作废（a1 Round21 CP2）", async () => {
+    const { store } = makeStore({
+      items: [humanRow("role", "负责发布流程"), humanRow("focus", "空白失效期仍现行", { validTo: "  " })],
+    });
+    const r = await call("/v3/soul/person?team=t&key=p_me", { store });
+    expect(r.status).toBe(200);
+    const data = r.payload.data as unknown as { fields: Array<{ field: string; text: string }> };
+    expect(data.fields.map((f) => f.field)).toEqual(["role", "focus"]);
+    expect(data.fields.find((f) => f.field === "focus")!.text).toBe("空白失效期仍现行");
+  });
+
   it("A6：out/in 双查，in 边 direction=in 且 counterpartKey 是对方", async () => {
     const { store, calls } = makeStore({
       out: [edge({ relId: "rel-out", subjKey: ME, pred: "上级", objKey: "p_boss", objName: "张总" })],

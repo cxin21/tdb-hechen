@@ -166,6 +166,28 @@ describe('人格卡 · 按会话绑定（task-32）', () => {
     expect(h.getter(SESSION('a2'))).toBe('原卡');
   });
 
+  it('⑥b 卡 TTL：超过 PERSONA_REFRESH_MS 才重取，失败保留旧卡（A4 Round7）', async () => {
+    let text = '旧卡';
+    let fail = false;
+    const h = harness(async () => {
+      if (fail) throw new Error('boom');
+      return snapshot(text, 2);
+    });
+    await h.handle.bind('s1', 'team/user/agentA');
+    expect(h.calls).toEqual(['s1']);
+    // 未到期：不取卡，返回 false。
+    expect(await h.handle.refreshIfStale('s1', 6 * 60 * 60 * 1000, Date.now())).toBe(false);
+    expect(h.calls).toEqual(['s1']);
+    // 到期：重取一次，段文本换成新卡。
+    text = '新卡';
+    expect(await h.handle.refreshIfStale('s1', 1000, Date.now() + 5000)).toBe(true);
+    expect(h.calls).toEqual(['s1', 's1']);
+    expect(h.getter(SESSION('s1'))).toBe('新卡');
+    // 取卡失败：返回 false，旧卡继续服务（fail-open 不回退成空段）。
+    fail = true;
+    expect(await h.handle.refreshIfStale('s1', 1000, Date.now() + 10_000)).toBe(false);
+    expect(h.getter(SESSION('s1'))).toBe('新卡');
+  });
   it('⑥ 会话恢复（进程内无绑定）：不读缓存，仍调 fetchCard 并覆盖', async () => {
     const h = harness(async () => snapshot('从 Core 现取'));
     expect(h.handle.boundSessions()).toBe(0);
@@ -208,15 +230,63 @@ describe('人格卡 · 按会话绑定（task-32）', () => {
     expect(h.handle.boundSessions()).toBe(1);
   });
 
-  it('⑨「不关联」绑定：只清该会话的卡，其他会话不受影响', async () => {
+  it('⑨「本次不关联」绑定：只清该会话的卡，记 card-cleared 而不是零字节 card-bound', async () => {
     const h = harness(async () => snapshot('卡A'));
     await h.handle.bind('a1', 'team/user/agentA');
     await h.handle.bind('a2', 'team/user/agentA');
     await h.handle.bind('a1', undefined);
     expect(h.getter(SESSION('a1'))).toBe('');
     expect(h.getter(SESSION('a2'))).toBe('卡A');
-    const cleared = h.events.filter((e) => e.event === 'card-bound' && e.chars === 0);
+    // Round26：用户主动「不关联」是决定，不是取卡失败——旧实现记 card-bound chars 0，
+    // 于是 stats 的 cardBoundEmpty 把主动退出算成注入故障。
+    const cleared = h.events.filter((e) => e.event === 'card-cleared');
     expect(cleared.map((e) => e.sessionId)).toEqual(['a1']);
+    expect(cleared[0]).toMatchObject({ chars: 0, reason: 'unassociated' });
+    expect(h.events.filter((e) => e.event === 'card-bound' && e.chars === 0)).toHaveLength(0);
+  });
+
+  it('⑨c 清卡归因：用户拒绝与被清空身份分开记（r26d-a1）', async () => {
+    const h = harness(async () => snapshot('卡A'));
+    await h.handle.bind('declined1', undefined, 'declined');
+    await h.handle.bind('unconf1', undefined, 'unconfigured');
+    // 旧实现把 null（用户选否）与 undefined（没装配身份）塌成同一个事件，
+    // 面板于是把「配置缺口」说成「用户主动不关联」。
+    const cleared = h.events.filter((e) => e.event === 'card-cleared');
+    expect(cleared.map((e) => [e.sessionId, e.reason, e.source])).toEqual([
+      ['declined1', 'unassociated', 'declined'],
+      ['unconf1', 'unconfigured', 'unconfigured'],
+    ]);
+  });
+
+  it('⑨d 刷新路径不再凭空造清卡记录（r26e-a5；有牙的只有第 ① 条）', async () => {
+    const h = harness(async () => snapshot('卡A'));
+    // 生产 08:16:13Z 那一条没有 source 的 card-cleared 就是这条路径造出来的：
+    // refresh 只传 identity、不传归因，alreadyUnbound 为假时落一行「不知道为什么」。
+    // ① 有牙：没卡也没身份的会话被 refresh 时，什么都不该发生。删掉 refresh 里的早退
+    //    （persona-card.ts 的 knownIdentity/cards 判空）这条立刻红——round26 复核实测
+    //    旧写法在这里产出 ["card-cleared","never-bound","unassociated",null]。
+    await h.handle.refresh('never-bound');
+    expect(h.events.filter((e) => e.event === 'card-cleared')).toHaveLength(0);
+    // ② 观测性断言（不是保护）：已按用户拒绝清卡的会话再 refresh，不会多出事件——
+    //    这条在删掉早退后仍然绿（alreadyUnbound 为真），只用来固定「清卡是一次性的」。
+    await h.handle.bind('declined2', undefined, 'declined');
+    await h.handle.refresh('declined2');
+    expect(h.events.filter((e) => e.event === 'card-cleared').map((e) => [e.sessionId, e.reason, e.source]))
+      .toEqual([['declined2', 'unassociated', 'declined']]);
+    // ③ 观测性断言：身份回来后旧归因不残留，再清一次由调用方重新给原因。
+    await h.handle.bind('declined2', 'team/user/agentX');
+    await h.handle.bind('declined2', undefined, 'unconfigured');
+    expect(h.events.filter((e) => e.event === 'card-cleared' && e.sessionId === 'declined2').map((e) => [e.reason, e.source]))
+      .toEqual([['unassociated', 'declined'], ['unconfigured', 'unconfigured']]);
+  });
+
+  it('⑨b 不关联会话被反复绑定：只记一行 card-cleared（旧实现每 pre-step 刷一行）', async () => {
+    const h = harness(async () => snapshot('卡A'));
+    // 没有卡的会话每个 pre-step 都会再 bind 一次；这里模拟 50 步。
+    for (let i = 0; i < 50; i += 1) await h.handle.bind('a1', undefined);
+    const cleared = h.events.filter((e) => e.event === 'card-cleared');
+    expect(cleared).toHaveLength(1);
+    expect(h.events.filter((e) => e.event === 'card-bound')).toHaveLength(0);
   });
 
   it('⑩ 并发 assemble：两个会话交替取文本，中途 rebind 不影响另一会话', async () => {
@@ -458,6 +528,21 @@ describe('人格卡 · 两段注入（P1-2）', () => {
     expect(fake.sections).toHaveLength(0);
   });
 
+  it('⑥b 取卡失败时把 failReason 回报 Core（A4：stats 才看得到取卡失败）', async () => {
+    const reports: Array<{ failReason?: string; failStatus?: number; sessionId?: string }> = [];
+    const handle = createPersonaCard({
+      enabled: true,
+      fetchCard: async () => ({ reason: 'http_status', status: 503 }),
+      fetchTurn: async () => ({ text: '', openLoops: [] }),
+      timeoutMs: 50,
+      reportInjection: (payload) => { reports.push(payload); },
+    });
+    const outcome = await handle.bind('a1', 'team/user/agentA');
+    expect(outcome.ok).toBe(false);
+    // 只带原因与会话键，不带卡正文；Core 侧据此写一行 phase=card 的失败行。
+    expect(reports).toEqual([{ failReason: 'http_status', failStatus: 503, sessionId: 'a1' }]);
+  });
+
   it('⑥ 回报 chars = 两段实际注入量之和，hash 仍是整卡 hash，且带上会话键', async () => {
     const reports: Array<{ card: { version: number; hash: string; chars: number }; sessionId?: string }> = [];
     const handle = createPersonaCard({
@@ -471,6 +556,78 @@ describe('人格卡 · 两段注入（P1-2）', () => {
     // 会话键必须一起报：Core 的 /v3/soul/injection 只从请求头取身份三元组，
     // 少了它就会退回挂载三元组（桌面端为空），整条记账被 422 静默吞掉。
     expect(reports).toEqual([{ card: { version: 1, hash: 'x'.repeat(64), chars: 3 + 2 }, sessionId: 'a1' }]);
+  });
+
+  it('⑥c 段注册失败不冒充注入：报 section_install_failed，chars 只算注册成功的段（A4 Round10）', async () => {
+    const reports: Array<{ card?: { chars: number }; failReason?: string; sessionId?: string }> = [];
+    const events: InjectionLogEvent[] = [];
+    const fake = createFakeContext();
+    const real = fake.ctx.systemPrompt.section.bind(fake.ctx.systemPrompt);
+    fake.ctx.systemPrompt.section = ((options: Parameters<typeof real>[0]) => {
+      if (options.name === PERSONA_IDENTITY_SECTION_NAME) throw new Error('host refused');
+      return real(options);
+    }) as typeof fake.ctx.systemPrompt.section;
+    const handle = createPersonaCard({
+      enabled: true,
+      fetchCard: async () => segmented('身份段', '锚段'),
+      fetchTurn: async () => ({ text: '', openLoops: [] }),
+      timeoutMs: 50,
+      injectionLog: memoryLog(events),
+      reportInjection: (payload) => { reports.push(payload); },
+    });
+    handle.installSection(fake.ctx, ANCHOR_ORDER);
+    await handle.bind('a1', 'team/user/agentA');
+    // 本地日志：一行独立的注册失败证据。
+    expect(events.some((e) => e.event === 'section-install-failed' && e.section === 'identity')).toBe(true);
+    // 回报 Core：仍报卡（锚段确实进了），但 chars 只算锚段——不再是 3+2；
+    // 另有一条段注册失败的 failReason（installSection 时上报，无会话键）。
+    expect(reports).toContainEqual({ card: { version: 1, hash: 'x'.repeat(64), chars: 2 }, sessionId: 'a1' });
+    expect(reports).toContainEqual({ failReason: 'section_install_failed' });
+    const bound = events.find((e) => e.event === 'card-bound');
+    expect(bound?.chars).toBe(2);
+  });
+
+  it('⑥d 两段都注册失败：不报 card，改报 failReason（否则 stats 会把「没注入」记成「注入成功」）', async () => {
+    const reports: Array<{ card?: unknown; failReason?: string; sessionId?: string }> = [];
+    const events: InjectionLogEvent[] = [];
+    const fake = createFakeContext();
+    fake.ctx.systemPrompt.section = (() => { throw new Error('host refused'); }) as typeof fake.ctx.systemPrompt.section;
+    const handle = createPersonaCard({
+      enabled: true,
+      fetchCard: async () => segmented('身份段', '锚段'),
+      fetchTurn: async () => ({ text: '', openLoops: [] }),
+      timeoutMs: 50,
+      injectionLog: memoryLog(events),
+      reportInjection: (payload) => { reports.push(payload); },
+    });
+    handle.installSection(fake.ctx, ANCHOR_ORDER);
+    await handle.bind('a1', 'team/user/agentA');
+    expect(reports).toEqual([
+      { failReason: 'section_install_failed' },
+      { failReason: 'section_install_failed', sessionId: 'a1' },
+    ]);
+    expect(events.find((e) => e.event === 'card-bound')?.chars).toBe(0);
+  });
+
+  it('⑥e 空卡/空段：零字节绑定不再记成 card-bound，改报 failReason=empty（A4 Round13）', async () => {
+    // 生产 3543 条 card-bound 里 3343 条 chars=0：Core 回空串时旧实现仍上报「绑定成功」，
+    // stats 的 cardBound 因此把「什么都没进提示词」算成注入成功。
+    const reports: Array<{ card?: unknown; failReason?: string; sessionId?: string }> = [];
+    const events: InjectionLogEvent[] = [];
+    const fake = createFakeContext();
+    const handle = createPersonaCard({
+      enabled: true,
+      fetchCard: async () => segmented('', '', ''),
+      fetchTurn: async () => ({ text: '', openLoops: [] }),
+      timeoutMs: 50,
+      injectionLog: memoryLog(events),
+      reportInjection: (payload) => { reports.push(payload); },
+    });
+    handle.installSection(fake.ctx, ANCHOR_ORDER);
+    await handle.bind('a1', 'team/user/agentA');
+    expect(reports).toEqual([{ failReason: 'empty', sessionId: 'a1' }]);
+    expect(events.some((e) => e.event === 'card-empty')).toBe(true);
+    expect(events.some((e) => e.event === 'card-bound')).toBe(false);
   });
 });
 /**
@@ -541,7 +698,9 @@ describe('人格卡 · 绑定结果（重试的判据来源）', () => {
     const h = harness(async () => undefined);
     expect(await h.handle.bind('s1', 'team/user/agentA')).toEqual({ ok: true });
     expect(h.getter(SESSION('s1'))).toBe('');
-    expect(h.events.filter((e) => e.event === 'card-bound')).toHaveLength(1);
+    // A4 Round13：空卡不再写 card-bound（那会把「什么都没注入」记成成功），改记 card-empty。
+    expect(h.events.filter((e) => e.event === 'card-empty')).toHaveLength(1);
+    expect(h.events.filter((e) => e.event === 'card-bound')).toHaveLength(0);
   });
 
   it('绑定到「不关联」也算成功（清卡不是故障）', async () => {
@@ -549,5 +708,19 @@ describe('人格卡 · 绑定结果（重试的判据来源）', () => {
     await h.handle.bind('s1', 'team/user/agentA');
     expect(await h.handle.bind('s1', undefined)).toEqual({ ok: true });
     expect(h.getter(SESSION('s1'))).toBe('');
+  });
+
+  it('A4（Round5）：usageProbe 用 4-gram 覆盖测「注入的人格原文有没有出现在回复里」', async () => {
+    const h = harness(async () => segmented('身份：我宁可慢一点，也不交付没验证过的东西。\n说话直接，先给结论。', '底色：遇到分歧先核对证据。'));
+    await h.handle.bind('s1', 'team/user/agentA');
+    const hit = h.handle.usageProbe('s1', '先给结论：我宁可慢一点，也不交付没验证过的东西。遇到分歧先核对证据。');
+    expect(hit.totalLines).toBeGreaterThan(0);
+    expect(hit.matchedLines).toBeGreaterThan(0);
+    expect(hit.overlapPct).toBeGreaterThan(0);
+    const miss = h.handle.usageProbe('s1', '今天上海有雨，记得带伞。');
+    expect(miss.matchedLines).toBe(0);
+    expect(miss.overlapPct).toBe(0);
+    // 没有卡的会话：不编造写照。
+    expect(h.handle.usageProbe('unknown', '我宁可慢一点，也不交付没验证过的东西。')).toEqual({ matchedLines: 0, totalLines: 0, overlapPct: 0 });
   });
 });

@@ -10,6 +10,7 @@ import { readSceneIndex } from "../scene/scene-index.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
 import { buildPersonaPrompt } from "../prompts/persona-generation.js";
 import { BackupManager } from "../../utils/backup.js";
+import { clampPersonaSections } from "./persona-limits.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { report } from "../report/reporter.js";
 import { reportL3LatencyMetrics } from "../report/metric-tracking-l3-latency.js";
@@ -250,6 +251,15 @@ export class PersonaGenerator {
 
     // 10. Strip any navigation the LLM might have added + sanitize for safe injection
     personaText = escapeXmlTags(stripSceneNavigation(personaText).trim());
+    // Round13 A3 复核 CP2：提示词写着「核心特征 ≤100 / 核心叙事 ≤400 是硬约束」，
+    // 写出侧此前没有任何校验。截断在这里做，并如实记日志，不静默。
+    const clamp = clampPersonaSections(personaText);
+    if (clamp.clamped.length > 0) {
+      this.logger?.warn?.(
+        `${TAG} 段落超长已按硬约束截断：${clamp.clamped.map((c) => `${c.heading} ${c.before}→${c.after} 字`).join("；")}`,
+      );
+      personaText = clamp.text;
+    }
 
     if (!personaText) {
       this.logger?.error(`${TAG} LLM wrote empty ${targetFile} — skipping`);

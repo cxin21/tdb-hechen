@@ -310,6 +310,8 @@ export function resolveLabelProposals(
       row.aliases = Array.from(new Set([...row.aliases, p.label])).filter((a) => a !== row.label);
       row.evidence = Math.max(row.evidence, evidence.size);
       row.lastSeen = opts.now;
+      // 退役不是墓碑：被新提案命中就恢复 admitted（不新增行，只把状态挪回来）。
+      if (row.status === "dormant") row.status = "admitted";
       merged.push({ label: p.label, into: row.label, similarity: Number(best.sim.toFixed(3)) });
       if (!updated.includes(row)) updated.push(row);
       continue;

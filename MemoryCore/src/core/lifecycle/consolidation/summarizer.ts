@@ -48,9 +48,11 @@ export interface SummarizerConfig {
 /** 单次摘要超时缺省值：覆盖实测最大属性组（44 成员，≈90–120s）。 */
 export const DEFAULT_SUMMARIZE_TIMEOUT_MS = 180_000;
 
-const DEFAULT_PROMPT_PREFIX =
-  "你是记忆巩固器。把同一主题的多条点状记忆合并成一条【持续态摘要】——概括稳定现状、变化轨迹与当前结论，" +
-  "不要编造组内没有的事实。只输出JSON：{content, certainty:'observed'}，不要其他文字。";
+export const DEFAULT_PROMPT_PREFIX =
+  "你是记忆巩固器。把同一主题的多条点状记忆合并成一条【持续态摘要】——概括稳定现状、变化轨迹与当前结论。" +
+  "硬约束：① 只能使用组内出现过的事实，不得新增人名、数字、日期或因果；② 摘要正文不超过 1200 字，" +
+  "超出会被系统丢弃（与代码硬门同一个数字）；③ certainty 只能是 observed 或 inferred：组内每条都能直接支持用 observed，" +
+  "需要跨条推断才用 inferred——写 inferred 的摘要会被直接丢弃，不会降级成 observed。只输出JSON：{content, certainty}，不要其他文字。";
 
 /**
  * 摘要实现版本（B，2026-11-03）：并入 source_fingerprint，使"摘要实现变了"也能触发重算。
@@ -107,6 +109,22 @@ export async function buildDurativeSummary(
     try { parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "")); }
     catch { return null; }
     if (!parsed?.content?.trim()) return null;
+    // A3 Round7（C3）：提示词只能约束，不能保证。这里做硬校验：
+    // ① 正文上限 1200 字（生产旧卡最长 4115 字，等于没有上限；超过上限的摘要一律丢弃，
+    //    宁可不巩固，也不写进一条没人会读完的卡）；② certainty 只认 observed|inferred。
+    const summarized = parsed.content.trim();
+    if (summarized.length > 1200) {
+      deps.logger?.warn?.(`[consolidation] summary too long (${summarized.length} chars), dropped`);
+      return null;
+    }
+    // A3 Round10（P0-1）：模型自述 inferred = 这条摘要需要跨条推断才成立，而持续态卡只允许
+    // observed（延续态红线）。旧实现把 inferred 洗成 observed，等于让推断冒充观测；
+    // 现在直接丢弃并留日志——宁可不巩固，也不写一条没人能分辨真假的卡。
+    if (parsed.certainty === "inferred") {
+      deps.logger?.warn?.(`[consolidation] summary declared inferred, dropped (${group.subject})`);
+      return null;
+    }
+    const certainty = "observed" as const;
     const latest = new Date(group.latestTs).toISOString();
     const earliest = new Date(group.earliestTs).toISOString();
     // H-B8：读组内顶层 significance 真实 max（P2a 权威字段），不再用 priority/100 伪造；
@@ -133,17 +151,15 @@ export async function buildDurativeSummary(
       ? Math.max(...sigs)
       : 0.5;
     return {
-      content: parsed.content.trim(),
+      content: summarized,
       occurred_at: latest,
       valid_start: earliest,
       // F1：不写 valid_end（开区间），窗口末只走 activity_end_at → metadata。
       activity_end_at: latest,
       significance,
-      // 防御断言（登记，不加代码）：此处 certainty 恒 "observed" 的前提是上游
-      // consolidation-worker 的 sourceMemories 已过滤 inferred（P0-T1 守卫）。
-      // 若上游回归（inferred 混进组），这里会把推断内容洗成 observed——届时须在
-      // 本层补 isObservable 门，而不是依赖上游单点。
-      certainty: "observed",
+      // certainty 只有 "observed"（类型约束，见延续态红线）。模型写 inferred 的摘要已在上面
+      // 直接丢弃，因此到达这里的卡一定是组内每条都能直接支持的观测（A3 Round10）。
+      certainty,
       observedCount: group.memories.length,
     };
   } catch (err) {

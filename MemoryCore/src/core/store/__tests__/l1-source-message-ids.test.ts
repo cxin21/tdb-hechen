@@ -122,6 +122,15 @@ describe("source_message_ids 写读往返（writer → SQLite → queryMemoryRec
 });
 
 describe("归档→恢复 roundtrip 保值", () => {
+  it("归档期间 getL1ByIdsWithArchive 也读得回（Round23 R23-3：归档行整行存 JSON，漏映射=旧证据在身份事实第二跳解析不到）", () => {
+    const store = makeStore();
+    store.upsertL1(mkRecord("arc2", { source_message_ids: ["m9", "m10"] }), undefined);
+    expect(store.archiveL1("arc2", "unit-test")).toBe(true);
+    const rows = store.getL1ByIdsWithArchive(["arc2"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source_message_ids).toEqual(["m9", "m10"]);
+  });
+
   it("archiveL1 → restoreL1 后 source_message_ids 不丢（restore 是 INSERT OR REPLACE 整行覆盖）", async () => {
     const store = makeStore();
     store.upsertL1(mkRecord("arc1", { source_message_ids: ["m7", "m8"] }), undefined);

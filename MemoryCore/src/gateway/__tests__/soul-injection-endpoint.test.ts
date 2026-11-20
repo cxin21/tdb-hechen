@@ -105,6 +105,69 @@ describe("POST /v3/soul/injection（R1 实际注入回传）", () => {
     }
   });
 
+  it("取卡失败也入账：只带 failReason/failStatus，stats 才有聚合数据（A4）", async () => {
+    const dir = tmp();
+    try {
+      const r = await call(
+        "/v3/soul/injection",
+        "POST",
+        {
+          team: "team-2k12lgb650",
+          agent: "agt-a",
+          sessionKey: "sess-1",
+          phase: "card",
+          failReason: "http_status",
+          failStatus: 503,
+        },
+        dir,
+      );
+      expect(r.sendJson.mock.calls[0]?.[1]).toBe(200);
+      const row = journalLines(dir)[0];
+      expect(row).toMatchObject({ kind: "injection", phase: "card", failReason: "http_status", failStatus: 503 });
+      // 失败行没有 card 段：只证「这一轮没拿到卡」，不冒充注入了某一版。
+      expect(row).not.toHaveProperty("card");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("段注册失败也能入账：section_install_failed 是独立失败原因，不带 card（A4 Round10）", async () => {
+    const dir = tmp();
+    try {
+      const r = await call(
+        "/v3/soul/injection",
+        "POST",
+        {
+          team: "team-2k12lgb650",
+          agent: "agt-a",
+          sessionKey: "sess-seg",
+          failReason: "section_install_failed",
+        },
+        dir,
+      );
+      expect(r.sendJson.mock.calls[0]?.[1]).toBe(200);
+      const row = journalLines(dir)[0];
+      expect(row).toMatchObject({ kind: "injection", failReason: "section_install_failed" });
+      // 段没注册上 = 人格没进提示词：绝不能同时报一个「已注入的卡版本」。
+      expect(row).not.toHaveProperty("card");
+      // 不是 HTTP 失败，没有状态码可记。
+      expect(row).not.toHaveProperty("failStatus");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("未知 failReason 不算失败行：仍按 empty_injection 400（不写入脏分类）", async () => {
+    const dir = tmp();
+    try {
+      const r = await call("/v3/soul/injection", "POST", { team: "t", failReason: "nope" }, dir);
+      expect(r.sendJson.mock.calls[0]?.[1]).toBe(400);
+      expect(journalLines(dir)).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("skipped=true 时 chars 强制归零（去重跳过 = 0 字符真注入）", async () => {
     const dir = tmp();
     try {
@@ -175,4 +238,25 @@ describe("POST /v3/soul/injection（R1 实际注入回传）", () => {
     }
   });
 
+  it("A4（Round5）：usage 行单独入账（没有 card/volatile/failReason 也应接受）", async () => {
+    const dir = tmp();
+    try {
+      const r = await call("/v3/soul/injection", "POST", {
+        team: "team-2k12lgb650",
+        agent: "agt-a",
+        sessionKey: "s1",
+        usage: { matchedLines: 2, totalLines: 8, overlapPct: 25 },
+      }, dir);
+      expect(r.sendJson.mock.calls[0]?.[1]).toBe(200);
+      const lines = journalLines(dir);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.usage).toEqual({ matchedLines: 2, totalLines: 8, overlapPct: 25 });
+      expect(lines[0]!.phase).toBe("usage");
+      // 全空行仍要 400：usage 不允许把「什么都没上报」洗成合法行。
+      const empty = await call("/v3/soul/injection", "POST", { team: "team-2k12lgb650" }, dir);
+      expect(empty.sendJson.mock.calls[0]?.[1]).toBe(400);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

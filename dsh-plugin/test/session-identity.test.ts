@@ -7,6 +7,7 @@ import {
   ASSET_CONFIRM_NO,
   ASSET_CONFIRM_QUESTION_ID,
   ASSET_CONFIRM_YES,
+  cardClearedSource,
   installSessionIdentity,
   isSkipAnswer,
   SessionIdentityStore,
@@ -17,6 +18,19 @@ import {
   type SessionIdentityDeps,
 } from '../src/session-identity.js';
 import { createFakeContext, runPreStep } from './helpers/fake-ctx.js';
+
+describe('cardClearedSource（r26e-a1：清卡归因只在一处判）', () => {
+  it('associate=false 才是用户的决定', () => {
+    expect(cardClearedSource({ associate: false })).toBe('declined');
+  });
+  it('有绑定但三元组为空 = 配置缺口，不是用户拒绝', () => {
+    expect(cardClearedSource({ associate: true })).toBe('unconfigured');
+    expect(cardClearedSource({})).toBe('unconfigured');
+  });
+  it('根本没有绑定 = 配置缺口（旧实现记成「用户不关联」）', () => {
+    expect(cardClearedSource(undefined)).toBe('unconfigured');
+  });
+});
 
 const tempDirs: string[] = [];
 
@@ -451,16 +465,18 @@ describe('installSessionIdentity', () => {
     expect(h.installed.status()).toBe('bound(user-bypass)');
   });
 
-  it('associates nothing when the user answers 否 (skipped, empty triple)', async () => {
+  it('associates nothing when the user answers 否 (user-declined, empty triple)', async () => {
     const h = harness({ assetConfirm: false });
 
     await h.step();
     await h.step();
 
     expect(h.ask).toHaveBeenCalledTimes(1);
-    expect(h.store.get('sess-1')).toMatchObject({ teamId: '', agentId: '', userId: '', source: 'skipped' });
+    // Round26：把「用户的决定」和「没绑成」分开记。skipped 只表示超时/取候选失败，
+    // 用户当场选「否」记 user-declined——审计上才分得清「主动退出」与「真故障」。
+    expect(h.store.get('sess-1')).toMatchObject({ teamId: '', agentId: '', userId: '', source: 'user-declined' });
     expect(h.store.get('sess-1')?.reason).toContain('不关联');
-    expect(h.installed.status()).toBe('bound(skipped)');
+    expect(h.installed.status()).toBe('bound(user-declined)');
   });
 
   it('reads the user config ONCE per session (and not at all when the card is off)', async () => {
@@ -623,6 +639,26 @@ describe('installSessionIdentity', () => {
     await h.step();
 
     expect(h.store.get('sess-1')).toMatchObject({ source: 'skipped', reason: 'candidates failed: core said 503' });
+  });
+
+  it('retries one transient transport failure before it gives the card up', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const h = harness({
+      candidates: async () => {
+        calls += 1;
+        if (calls === 1) return { kind: 'failed', reason: 'transport failure: fetch failed' };
+        return { kind: 'ok', userId: 'usr-a', teams: [{ teamId: 'team-a', name: 'A' }], agents: [{ agentId: 'agt-a', name: 'a' }], tasks: [] };
+      },
+      sessionInit: { manual_select: '0', default_associate: '1', default_team_id: 'team-a', default_agent_id: 'agt-a' },
+    });
+    const pending = h.step();
+    await vi.advanceTimersByTimeAsync(2000);
+    await pending;
+    // ≥2：第一次是传输失败、第二次是重试后的成功；后续 scoped 调用（团队/工作项）会再增加计数。
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(h.store.get('sess-1')).toMatchObject({ teamId: 'team-a', agentId: 'agt-a', source: 'user-preset' });
+    vi.useRealTimers();
   });
 
   it('still reports the session id when the card is off (one identity per turn)', async () => {

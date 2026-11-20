@@ -1155,7 +1155,12 @@ export class TdaiCore {
   /**
    * Run L2 scene extraction using an externally provided Store.
    */
-  async runL2WithStore(sessionKey: string, store: IMemoryStore, storage?: StorageAdapter, cursor?: string): Promise<{ creditUsed: number; skipped: boolean }> {
+  async runL2WithStore(
+    sessionKey: string,
+    store: IMemoryStore,
+    storage?: StorageAdapter,
+    cursor?: string,
+  ): Promise<{ creditUsed: number; skipped: boolean; hadFailure?: boolean }> {
     // DSH 特化后只剩一种宿主：LLM runner 恒由本仓构造（StandaloneLLMRunnerFactory）。
     // 原先 `cfg.llm.enabled || hostType !== "openclaw"` 的双条件已退化——
     // OpenClaw 宿主与其 embedded runner 已删除，hostType 永远不是 openclaw。
@@ -1177,7 +1182,11 @@ export class TdaiCore {
     const creditUsed: number = (llmRunner as any)?.accumulatedCredit ?? 0;
     // L2 runner returns undefined when no new L1 records, or { skipped: true } on empty extraction
     const skipped = (runnerResult === undefined && creditUsed === 0) || (runnerResult?.skipped === true);
-    return { creditUsed, skipped };
+    // R24-a3：组级失败必须往上传。pipeline-factory 的 l2NextCursor 已把 cursor 钉在失败前的值，
+    // 但调用方（gateway executor → pipeline-worker）过去只看 skipped，于是半失败轮仍被当成成功：
+    // 写墙钟 l2_last_extraction_time、入队 L3、把失败批永久跳过。
+    const hadFailure = (runnerResult as { hadFailure?: boolean } | undefined)?.hadFailure === true;
+    return { creditUsed, skipped, ...(hadFailure ? { hadFailure: true } : {}) };
   }
 
   /**

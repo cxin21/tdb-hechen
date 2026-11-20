@@ -240,6 +240,8 @@ export interface ProfileCandidate {
   memories: number;
   lastAt: string;
   profileAt: string | null;
+  /** 复合游标第二段（A3 Round7 C5）：与 profileAt 同一修订时间内的 record_id。 */
+  profileRecordId: string | null;
 }
 
 /**
@@ -251,12 +253,13 @@ export interface ProfileCandidate {
 export function pickPersonProfileTargets(input: {
   persons: ReadonlyArray<SoulPerson>;
   stats: ReadonlyArray<{ personKey: string; memories: number; lastAt: string }>;
-  watermarks: ReadonlyArray<{ personKey: string; profileAt: string | null }>;
+  watermarks: ReadonlyArray<{ personKey: string; profileAt: string | null; profileRecordId?: string | null }>;
   now: string;
   maxPersons: number;
 }): { selected: ProfileCandidate[]; deferred: number; candidates: number } {
   const byKey = new Map(input.persons.map((p) => [p.personKey, p]));
   const watermarkOf = new Map(input.watermarks.map((w) => [w.personKey, w.profileAt]));
+  const watermarkRecordOf = new Map(input.watermarks.map((w) => [w.personKey, w.profileRecordId ?? null]));
   const nowMs = Date.parse(input.now);
   const minGapMs = PROFILE_REFRESH_MIN_HOURS * 60 * 60 * 1000;
 
@@ -273,7 +276,9 @@ export function pickPersonProfileTargets(input: {
       const lastMs = Date.parse(stat.lastAt);
       if (Number.isFinite(profileMs)) {
         // 没有新记忆 → 不跑；有新记忆但距上次不足 6h → 也不跑（防抖，A8）。
-        if (!Number.isFinite(lastMs) || lastMs <= profileMs) continue;
+        // 复合游标：lastMs === profileMs 时同一修订时间里仍可能留有没有游标读过的行
+        // （页界把这个并列组切开），不能判「没有新记忆」；真正有没有新行由下面的游标批决定。
+        if (!Number.isFinite(lastMs) || lastMs < profileMs) continue;
         if (Number.isFinite(nowMs) && nowMs - profileMs < minGapMs) continue;
       }
     }
@@ -283,12 +288,19 @@ export function pickPersonProfileTargets(input: {
       memories: stat.memories,
       lastAt: stat.lastAt,
       profileAt: profileAt === "" ? null : profileAt,
+      profileRecordId: watermarkRecordOf.get(stat.personKey) ?? null,
     });
   }
 
   // profile_at 升序（null 优先：从没跑过的人先跑）；同水位按 key 稳定排序。
   eligible.sort((a, b) => {
-    if (a.profileAt === b.profileAt) return a.personKey < b.personKey ? -1 : 1;
+    if (a.profileAt === b.profileAt) {
+      // 同一修订时间再按 record_id 排（复合游标意义上的「更早」），最后按 key 稳定。
+      const ra = a.profileRecordId ?? "";
+      const rb = b.profileRecordId ?? "";
+      if (ra !== rb) return ra < rb ? -1 : 1;
+      return a.personKey < b.personKey ? -1 : 1;
+    }
     if (a.profileAt === null) return -1;
     if (b.profileAt === null) return 1;
     return a.profileAt < b.profileAt ? -1 : 1;
@@ -450,7 +462,9 @@ function buildFieldWrites(input: {
       layer: item.layer as SoulLayer,
       itemId: item.itemId,
       action,
-      ...(before ? { beforeHash: contentHash(before) } : {}),
+      // A3 Round7（C4）：账本要能还原「上一代正文」，不能只留 hash（生产 before_json 全 NULL，
+      // 第 4 代以前正文不可恢复）。before 由 commitSoulPersona 落 before_json。
+      ...(before ? { beforeHash: contentHash(before), before } : {}),
       afterHash: contentHash(item),
       gates: ["person_profile", "deterministic_validate"],
       reason: `${PROFILE_SOURCE} field=${String((item.meta as { profileField?: unknown } | undefined)?.profileField ?? "")} action=${action}`,
@@ -577,7 +591,7 @@ function buildFieldWrites(input: {
 interface RelationWrite {
   insert: SoulPersonRelationRow[];
   appendEvidence: Array<{ relId: string; items: Array<{ recordId: string; at: string; quote: string }> }>;
-  close: Array<{ relId: string; at: string }>;
+  close: Array<{ relId: string; at: string; subjKey?: string }>;
 }
 
 /**
@@ -637,7 +651,7 @@ function buildRelationWrites(input: {
 }): RelationWrite {
   const insert: SoulPersonRelationRow[] = [];
   const appendMap = new Map<string, Array<{ recordId: string; at: string; quote: string }>>();
-  const close: Array<{ relId: string; at: string }> = [];
+  const close: Array<{ relId: string; at: string; subjKey?: string }> = [];
 
   const appendTo = (relId: string, ev: { recordId: string; at: string; quote: string }): void => {
     const list = appendMap.get(relId) ?? [];
@@ -647,7 +661,14 @@ function buildRelationWrites(input: {
 
   for (const rel of input.relations) {
     const ev = { recordId: rel.recordId, at: atOf(input.memoryAt.get(rel.recordId) ?? ""), quote: rel.quote };
-    if (rel.op !== "add" && rel.targetRelId) close.push({ relId: rel.targetRelId, at: input.now });
+    // 关系时间取证据自身的时间（issue #180 §S9）：这条 L1 什么时候说的，边就从什么时候生效/失效。
+    // 缺证据时间（该 recordId 不在本批记忆里）才回落到 tick 的 now，避免写空串。
+    const edgeAt = ev.at !== "" ? ev.at : input.now;
+    // subjKey 让 store 只关本人主体的边：入边（别人指向他）进提示词是为了归并判据，
+    // 不能被这一轮当成可作废目标，否则 A 的提炼会改到 B 的行。
+    if (rel.op !== "add" && rel.targetRelId) {
+      close.push({ relId: rel.targetRelId, at: edgeAt, subjKey: input.personKey });
+    }
     if (rel.mergeRelId) {
       appendTo(rel.mergeRelId, ev);
       continue;
@@ -672,7 +693,7 @@ function buildRelationWrites(input: {
       subjKey: input.personKey,
       pred: rel.pred,
       obj: rel.objKey ?? rel.objName ?? "",
-      validFrom: input.now,
+      validFrom: edgeAt,
     });
     insert.push({
       relId,
@@ -685,7 +706,7 @@ function buildRelationWrites(input: {
       quote: rel.quote,
       recordId: rel.recordId,
       evidence: [ev],
-      validFrom: input.now,
+      validFrom: edgeAt,
       validTo: null,
       createdAt: input.now,
       updatedAt: input.now,
@@ -803,7 +824,37 @@ async function runOnePerson(
     byReason: {},
   };
 
-  const l1 = (await store.listL1ByPerson?.(tenant, candidate.personKey, PROFILE_RECENT_PER_PERSON)) ?? [];
+  // A3（2026-11-18 复核）：证据分两批取。
+  //  1) 游标批：修订时间 > 水位、升序（旧→新）——被 LIMIT 截断时下一 tick 接着推，
+  //     40 条之外的旧证据不会再被永久跳过；首次提炼（水位空）也从最早一条开始。
+  //  2) 上下文批：最近 40 条——游标批常常只有 1–2 条新证据，档案改写需要近期语料当上下文。
+  // 水位只按游标批推进（上下文批里的旧行不推），否则一跳就把没读过的行跨过去了。
+  const cursor = candidate.profileAt ?? "";
+  // 复合游标：同等修订时间的行靠 record_id 继续向后读，页界并列既不会漏也不会死循环。
+  const cursorRecordId = candidate.profileRecordId ?? "";
+  const batch =
+    (await store.listL1ByPerson?.(tenant, candidate.personKey, PROFILE_RECENT_PER_PERSON, {
+      updatedAfter: cursor,
+      ...(cursorRecordId !== "" ? { afterRecordId: cursorRecordId } : {}),
+    })) ?? [];
+  // 游标批空且已有水位 = 这一修订时间之后确实没有新行（上面允许 lastAt === profileAt 进来做这次探测）。
+  // 直接收工：不调模型、不推水位，避免每个 tick 对同一个并列组重复提炼。
+  if (batch.length === 0 && cursor !== "") {
+    report.byReason.noNewEvidence = 1;
+    return report;
+  }
+  const context =
+    batch.length >= PROFILE_RECENT_PER_PERSON
+      ? []
+      : ((await store.listL1ByPerson?.(tenant, candidate.personKey, PROFILE_RECENT_PER_PERSON)) ?? []);
+  const seenIds = new Set<string>();
+  const l1 = [...batch, ...context]
+    .filter((row) => {
+      if (seenIds.has(row.recordId)) return false;
+      seenIds.add(row.recordId);
+      return true;
+    })
+    .slice(0, PROFILE_RECENT_PER_PERSON);
   const originalById = await loadOriginalTexts(store, tenant, l1);
   const memories: ProfileMemoryInput[] = [];
   const memoryAt = new Map<string, string>();
@@ -946,6 +997,9 @@ async function runOnePerson(
     memoryAt,
   });
 
+  // S9 复审 minor-1：计数取 store 实际写入数（INSERT OR IGNORE / 越权 close 都可能 no-op），
+  // 不能用「计划条数」冒充成功。
+  let relStats = { inserted: 0, merged: 0, closed: 0 };
   try {
     if (fieldWrite.items.length > 0) {
       if (!store.commitSoulPersona) throw new Error("commitSoulPersona unavailable");
@@ -957,7 +1011,7 @@ async function runOnePerson(
       relationWrite.close.length > 0
     ) {
       if (!store.commitSoulPersonRelations) throw new Error("commitSoulPersonRelations unavailable");
-      await store.commitSoulPersonRelations(tenant, {
+      relStats = await store.commitSoulPersonRelations(tenant, {
         insert: relationWrite.insert,
         appendEvidence: relationWrite.appendEvidence,
         close: relationWrite.close,
@@ -970,12 +1024,26 @@ async function runOnePerson(
   }
 
   report.fields = fieldWrite.written;
-  report.relations = relationWrite.insert.length + relationWrite.appendEvidence.length;
-  report.outdated = fieldWrite.outdated + relationWrite.close.length;
+  report.relations = relStats.inserted + relStats.merged;
+  report.outdated = fieldWrite.outdated + relStats.closed;
 
   // A8：落库成功才写水位；失败路径在上面 return 掉，所以这里写就是「成功」的定义。
+  // A3（2026-11-18）：水位 = 本轮真正读到的最大「修订时间」，不是 tick 的 now ——
+  // 写 now 会把「这一轮没读到的旧证据」（修订时间早于 now）永久挡在门外。
+  // A3 Round7 复核（C5）：水位是复合游标 (rev, record_id)。store 侧谓词已改成
+  // 「rev > ? OR (rev = ? AND record_id > ?)」，所以这里可以直接把页尾那一行的二元组写进水位：
+  //  • 页尾同 rev 的并列行排在它后面的，下一 tick 用 record_id > 页尾继续读到，不漏；
+  //  • 每页至少推进一行 record_id，不会像「整页并列保留旧水位」那样活锁。
+  const revOf = (row: { updatedAt?: string; at: string }): string => row.updatedAt ?? row.at;
+  const lastRow = batch[batch.length - 1];
+  const lastRev = lastRow === undefined ? "" : revOf(lastRow);
+  const lastRecordId = lastRow?.recordId ?? "";
   try {
-    await store.markSoulPersonProfileAt?.(tenant, candidate.personKey, now);
+    const prevCursor = candidate.profileAt;
+    const nextCursor =
+      lastRev !== "" ? lastRev : typeof prevCursor === "string" && prevCursor !== "" ? prevCursor : now;
+    const nextRecordId = lastRev !== "" ? lastRecordId : (candidate.profileRecordId ?? "");
+    await store.markSoulPersonProfileAt?.(tenant, candidate.personKey, nextCursor, nextRecordId);
   } catch (err) {
     // 水位写失败不回滚已写入的档案（档案本身是对的），下一 tick 最多重复提炼一次。
     opts.logger?.warn?.(
@@ -1019,6 +1087,8 @@ export async function runPersonProfileDistill(
       if (!person) continue;
       report.attempted += 1;
       const one = await runOnePerson(runner, input, candidate, person, knownPersons, opts);
+      // 并列时间的探测：游标批为空说明没有新行，这一次只花了查询、没调模型，不算「跑过一次」。
+      if (one.byReason.noNewEvidence === 1 && one.fields === 0) report.attempted -= 1;
       report.persons.push(one);
       report.fields += one.fields;
       report.relations += one.relations;

@@ -67,4 +67,27 @@ describe("P0-3 人格改写提示词 × 禁抽清单", () => {
       buildSoulRewritePrompt({ existing: [], records: [], maxCandidates: 1 }),
     ).toContain("已有条目（不要重复，可以提出更准确的改写）");
   });
+
+  /**
+   * 复现即续命的提示词侧契约。
+   *
+   * 90 天回放实拍：生命周期把层降到 degraded 后，模型看不到状态、也不会主动重提旧条目，
+   * 于是「有证据也救不回来」——worker 的复活分支永远不会被触发。
+   * 这里盯两件事：条目行必须带 degraded/frozen 标记；系统提示词必须写清「原样重提可复活」。
+   */
+  it("已有条目标注 degraded/frozen，并写明原样重提可复活", () => {
+    const prompt = buildSoulRewritePrompt({
+      existing: [
+        { layer: "identity", text: "我宁可慢一点把账算清。", state: "degraded" },
+        { layer: "values", text: "宁可少赚也要说清风险。", state: "active" },
+      ],
+      records: [],
+      maxCandidates: 3,
+    });
+    expect(prompt).toContain("- [identity | degraded] 我宁可慢一点把账算清。");
+    // active 条目不加噪声标记，行格式与旧契约逐字一致。
+    expect(prompt).toContain("- [values] 宁可少赚也要说清风险。");
+    expect(SOUL_REWRITE_SYSTEM_PROMPT).toContain("原样重提同一句文本");
+    expect(SOUL_REWRITE_SYSTEM_PROMPT).toContain("复活优先于新增层");
+  });
 });

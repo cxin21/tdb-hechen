@@ -377,7 +377,7 @@ export interface SoulMaintenanceConfig {
   freezeContradictions: number;
   /** 合并的相似度阈值（embedding 或词面回退）。 */
   mergeSimilarity: number;
-  /** 漂移阈值与连续天数。 */
+  /** 漂移阈值与「连续低于降级阈值的采样次数」（drift.ts 的 trailingBelow 按样本计数，不是自然日）。 */
   driftDegrade: number;
   driftFreeze: number;
   driftConsecutive: number;
@@ -395,8 +395,13 @@ export interface SoulMaintenanceConfig {
   maxItems: Record<SoulLayer, number>;
   /** 单条最大字数。 */
   maxItemChars: Record<SoulLayer, number>;
-  /** 情绪半衰期（小时）与心境半衰期（小时）。 */
+  /**
+   * @deprecated fallback-only：24 个 EmotionTemplate 全部自带 halfLifeHours（emotion.ts:174-229），
+   * 消费点都是 `template.halfLifeHours || cfg.emotionHalfLifeHours`，本键实际永不命中。
+   * 不要把它当生效旋钮；要调半衰期请改模板。
+   */
   emotionHalfLifeHours: number;
+  /** 心境半衰期（小时）。 */
   moodHalfLifeHours: number;
   /** 心境偏离基线的渲染阈值。 */
   moodDeviationThreshold: number;

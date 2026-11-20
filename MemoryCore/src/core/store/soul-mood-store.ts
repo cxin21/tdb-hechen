@@ -41,12 +41,17 @@ export function mapSoulMoodStateRow(row: Record<string, unknown>): SoulMoodState
     team_id: String(row.team_id ?? "default"),
     user_id: String(row.user_id ?? "default"),
     agent_id: String(row.agent_id ?? "default"),
-    label: String(row.label ?? "平静"),
+    // A2：没有 label 就是「没有情绪」，不要静默变成「心境=平静」——否则卡面无法区分两者。
+    label: row.label === null || row.label === undefined ? "" : String(row.label),
     valence: Number(row.valence ?? 0),
     arousal: Number(row.arousal ?? 0),
     intensity: Number(row.intensity ?? 0),
     // 旧行/手改行可能绕过写侧夹取，读侧再夹一次（读出来的半衰期必须落在 36–168）。
     half_life_hours: normalizeMoodHalfLife(Number(row.half_life_hours ?? 48)),
+    // 旧行没有这三列（ALTER 之后读到 null）：null 表示「还没起算」，不是 0。
+    decay_pending_valence: row.decay_pending_valence === null || row.decay_pending_valence === undefined ? null : Number(row.decay_pending_valence),
+    decay_pending_arousal: row.decay_pending_arousal === null || row.decay_pending_arousal === undefined ? null : Number(row.decay_pending_arousal),
+    decay_pending_since: row.decay_pending_since === null || row.decay_pending_since === undefined ? null : String(row.decay_pending_since),
     cause_event_ids_json: String(row.cause_event_ids_json ?? "[]"),
     updated_at: String(row.updated_at ?? ""),
   };
@@ -97,19 +102,26 @@ export function upsertSoulMoodState(
     arousal: insert.arousal ?? 0,
     intensity: insert.intensity ?? 0,
     half_life_hours: normalizeMoodHalfLife(insert.half_life_hours),
+    decay_pending_valence: typeof insert.decay_pending_valence === "number" ? insert.decay_pending_valence : null,
+    decay_pending_arousal: typeof insert.decay_pending_arousal === "number" ? insert.decay_pending_arousal : null,
+    decay_pending_since: typeof insert.decay_pending_since === "string" ? insert.decay_pending_since : null,
     cause_event_ids_json: JSON.stringify(parseEventIds(insert.cause_event_ids_json)),
     updated_at: insert.updated_at ?? new Date().toISOString(),
   };
   db.prepare(
     `INSERT INTO soul_mood_state
-      (team_id, user_id, agent_id, label, valence, arousal, intensity, half_life_hours, cause_event_ids_json, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (team_id, user_id, agent_id, label, valence, arousal, intensity, half_life_hours,
+       decay_pending_valence, decay_pending_arousal, decay_pending_since, cause_event_ids_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(team_id, user_id, agent_id) DO UPDATE SET
        label = excluded.label,
        valence = excluded.valence,
        arousal = excluded.arousal,
        intensity = excluded.intensity,
        half_life_hours = excluded.half_life_hours,
+       decay_pending_valence = excluded.decay_pending_valence,
+       decay_pending_arousal = excluded.decay_pending_arousal,
+       decay_pending_since = excluded.decay_pending_since,
        cause_event_ids_json = excluded.cause_event_ids_json,
        updated_at = excluded.updated_at`,
   ).run(
@@ -121,6 +133,9 @@ export function upsertSoulMoodState(
     state.arousal,
     state.intensity,
     state.half_life_hours,
+    state.decay_pending_valence,
+    state.decay_pending_arousal,
+    state.decay_pending_since,
     state.cause_event_ids_json,
     state.updated_at,
   );

@@ -149,7 +149,8 @@ describe("#36 introspectSoul 三段+零写入", () => {
           slots_json: JSON.stringify(v2Slots),
         },
         // 老行（迁移前）：无 version/slots_json，trigger 是自由文本 ⇒ 不冒充受控原因
-        { ts: iso(NOW - 500), content_hash: "h3", payload_json: "p3", trigger: "render" },
+        // render 自 Round20 起是受控枚举（卡渲染触发），本行要的是「未知自由文本」。
+        { ts: iso(NOW - 500), content_hash: "h3", payload_json: "p3", trigger: "legacy-free-text" },
       ],
     });
     const out = await introspectSoul(store, TENANT, { snapshotLimit: 5 });
