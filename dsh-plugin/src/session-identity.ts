@@ -9,6 +9,58 @@ import { resolveUserSessionInitDecision, type UserInitDecision } from './user-se
 const CANDIDATES_RETRY_DELAY_MS = 700;
 
 /**
+ * P0-2：陈旧「跳过」的重试门槛。
+ *
+ * 2026-11-19 现场：Core 重启窗口里那一次 candidates 拉取以
+ * 'transport failure: fetch failed' 收尾，会话就被永久记成 skipped —— 之后
+ * 每个 tick 读到这条记录就直接返回，176 个分支又都 inherited 了它的空三元组，
+ * 于是整棵树永远取不到卡（段读一律 no-card，注入无法对账）。
+ *
+ * 为什么是 2 分钟：观测到的 Core 重启窗口是 10–60s，2 分钟足以跨过它；而同一个
+ * turn 的多个 pre-step 相隔只有毫秒到秒级，年龄门槛保证「本轮刚失败」不会在同一
+ * 轮里被反复重试。重试失败只推 at，等于每个会话最多每 2 分钟一次探测（单次
+ * 开销最多一次 candidates 往返 + 0.7s 退避）。at=0（旧文件/损坏值）视为足够旧。
+ */
+export const SKIP_RETRY_MIN_AGE_MS = 2 * 60 * 1000;
+
+/** pick() 写失败原因时加的前缀：reason 形如 'candidates failed: transport failure: fetch failed'。 */
+const CANDIDATES_FAILED_PREFIX = 'candidates failed: ';
+
+/**
+ * 这条 reason 是不是「候选拉取的传输层失败」——只有这两类才值得自愈重试。
+ * 4xx/5xx（'core said 503' 之类）是 Core 真在拒绝，重试只是多打一次网络。
+ */
+export function isCandidatesTransportSkip(reason: string | undefined): boolean {
+  if (typeof reason !== 'string' || reason === '') return false;
+  const detail = reason.startsWith(CANDIDATES_FAILED_PREFIX)
+    ? reason.slice(CANDIDATES_FAILED_PREFIX.length)
+    : reason;
+  return detail.startsWith('transport failure') || detail.startsWith('timed out');
+}
+
+/** 记录是否旧到可以再试一次（口径见 SKIP_RETRY_MIN_AGE_MS）。 */
+export function isStaleForRetry(
+  binding: { at?: number },
+  now: number,
+  minAgeMs: number = SKIP_RETRY_MIN_AGE_MS,
+): boolean {
+  const at = typeof binding.at === 'number' && Number.isFinite(binding.at) ? binding.at : 0;
+  return now - at >= minAgeMs;
+}
+
+/** 分支绑定 reason 里的父会话 id（'branch of <sessionId>'）；不是分支绑定则 undefined。 */
+export function branchParentOf(reason: string | undefined): string | undefined {
+  if (typeof reason !== 'string') return undefined;
+  const match = /^branch of ([^\s]+)$/.exec(reason.trim());
+  return match === null ? undefined : match[1];
+}
+
+/** 空三元组 = 什么身份都没绑上（inherited 分支从失败父会话复制出来的那种）。 */
+export function isEmptyTriple(binding: { teamId: string; agentId: string; userId: string }): boolean {
+  return binding.teamId === '' && binding.agentId === '' && binding.userId === '';
+}
+
+/**
  * Session-start identity picker (task-117 v3).
  *
  * The remembered flow is the proxy's, not ours: at the START of a session the
@@ -94,6 +146,12 @@ export type IdentitySource =
   /** 分支（fork/压缩）从父会话继承的身份：同一段对话，同一套三元组。 */
   | 'inherited'
   | 'skipped'
+  /**
+   * P0-2：这条会话曾被传输层失败记成 skipped，之后一次陈旧重试把 candidates
+   * 拉回来了并静默绑上。与 'picked' 分开只为一件事：审计能看出「没弹过窗、是
+   * 自愈补上的」，而不是把一次恢复说成用户的选择。
+   */
+  | 'recovered'
   | 'delegated';
 
 export interface SessionBinding {
@@ -408,6 +466,8 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
   const now = deps.now ?? Date.now;
   /** sessionId -> the ask that is already running (hard requirement C). */
   const inFlight = new Map<string, Promise<void>>();
+  /** sessionId -> the P0-2 self-heal already running (one candidates probe per session). */
+  const healInFlight = new Map<string, Promise<void>>();
   let warnedDelegated = false;
   let warnedNoService = false;
   let warnedPresetMismatch = false;
@@ -691,6 +751,164 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     return secondAttempt;
   };
 
+  /**
+   * P0-2：把 candidates 的成功结果收成一个**无歧义**的三元组；有歧义就返回
+   * undefined（保持 skipped，等用户下一次真的开会话）。
+   *
+   * 歧义的判据与 pick() 里的折叠一致：多于一个 team 只有 base 配置指向其中一个
+   * 时才不用问人；多于一个 agent 只有 base 配置指向其中一个时同理。这里绝不能
+   * 弹窗 —— 会话已经在跑了。
+   */
+  const unambiguousTriple = async (
+    first: Extract<CandidatesResult, { kind: 'ok' }>,
+    userKey: string,
+  ): Promise<{ teamId: string; agentId: string; userId: string } | undefined> => {
+    if (first.teams.length === 0) return undefined;
+    let teamId: string;
+    if (first.teams.length === 1) {
+      teamId = first.teams[0].teamId;
+    } else {
+      const configured = first.teams.find((entry) => entry.teamId === deps.base.teamId);
+      if (configured === undefined) return undefined;
+      teamId = configured.teamId;
+    }
+    // The unscoped payload only carries agents when the team is unambiguous; for a
+    // multi-team account they must be fetched for the chosen team.
+    let agents = first.teams.length === 1 ? first.agents ?? [] : [];
+    if (agents.length === 0) {
+      const scoped = await candidatesWithOneRetry({ userKey, teamId, timeoutMs: deps.timeoutMs });
+      if (scoped.kind !== 'ok') return undefined;
+      agents = scoped.agents ?? [];
+    }
+    if (agents.length === 1) return { teamId, agentId: agents[0].agentId, userId: first.userId };
+    const configuredAgent = agents.find((entry) => entry.agentId === deps.base.agentId);
+    if (configuredAgent === undefined) return undefined;
+    return { teamId, agentId: configuredAgent.agentId, userId: first.userId };
+  };
+
+  /**
+   * P0-2：把一个「因传输层失败被永久跳过」的会话重新绑上。
+   *
+   * 只走 candidates（复用 candidatesWithOneRetry 的那一次重试），不弹窗：会话已经
+   * 开始了，这时再弹卡是打扰；而且第一次失败时用户的 session_init 决策
+   * （preset/ask/bypass）根本没读到，重走 pick() 会把一次恢复变成一张新卡。
+   *
+   * 失败或有歧义都只推 at、保持 skipped —— 否则同一个会话的每个 tick 都会重打一
+   * 轮网络，回到这条缺陷要解决的「每 tick 都打网络」的另一面。
+   */
+  const healSkipped = async (sessionId: string, existing: SessionBinding): Promise<void> => {
+    const userKey = await deps.resolveUserKey();
+    // Headless composition: no key to list teams with, so no probe at all.
+    if (userKey === undefined) return;
+    const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
+    const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
+    if (resolved === undefined) {
+      deps.store.set(sessionId, { ...existing, at: now() });
+      debug(
+        'agemem: identity skip not healed yet',
+        first.kind === 'ok' ? 'candidates are ambiguous' : first.reason,
+      );
+      return;
+    }
+    // reason 不带：绑定态就该没有失败原因。
+    submit(sessionId, { ...resolved, source: 'recovered', at: now() });
+  };
+
+  /**
+   * 空三元组分支的父会话自己就卡在传输层失败里（父可能再也不被调用，没人会去自愈它）。
+   * 这时分支用**自己的** userKey 探一次，成功就记 recovered；失败只推 at、保持原 source/reason，
+   * 不把「继承来的空身份」改写成别的语义。
+   */
+  const healBranch = async (sessionId: string, existing: SessionBinding): Promise<void> => {
+    const userKey = await deps.resolveUserKey();
+    if (userKey === undefined) return;
+    const first = await candidatesWithOneRetry({ userKey, timeoutMs: deps.timeoutMs });
+    const resolved = first.kind === 'ok' ? await unambiguousTriple(first, userKey) : undefined;
+    if (resolved === undefined) {
+      deps.store.set(sessionId, { ...existing, at: now() });
+      debug('agemem: inherited branch not healed yet', first.kind === 'ok' ? 'candidates are ambiguous' : first.reason);
+      return;
+    }
+    submit(sessionId, { ...resolved, source: 'recovered', at: now() });
+  };
+
+  /**
+   * 已有记录的两条自愈路径（P0-2）。两条都不弹窗、也都不问人。
+   */
+  const reconcileExisting = async (sessionId: string, existing: SessionBinding): Promise<void> => {
+    // (1) 传输层失败留下的 skipped：记录够旧就再试一次 candidates。
+    if (existing.source === 'skipped' && isCandidatesTransportSkip(existing.reason)) {
+      if (!isStaleForRetry(existing, now())) return;
+      const running = healInFlight.get(sessionId);
+      if (running !== undefined) {
+        // Same session, another step of the same turn: one probe, not one per step.
+        await running;
+        return;
+      }
+      const started = (async () => {
+        try {
+          await healSkipped(sessionId, existing);
+        } catch (error) {
+          // A probe must never reject a step; push at so the next tick is quiet.
+          debug('agemem: identity skip heal failed', error);
+          deps.store.set(sessionId, { ...existing, at: now() });
+        } finally {
+          healInFlight.delete(sessionId);
+        }
+      })();
+      healInFlight.set(sessionId, started);
+      await started;
+      return;
+    }
+    // (2) 空三元组的 inherited 分支：父会话现在绑上了，就继承父三元组。
+    //
+    // 绝不为分支单独发网络请求：分支在 fork 时就已经决定「不问人」，它自己的
+    // candidates 拉取在父会话的历史里已有自述的前提下只会多一次网络。
+    if (existing.source === 'inherited' && isEmptyTriple(existing)) {
+      const parentSid = branchParentOf(existing.reason);
+      if (parentSid === undefined) return;
+      const parent = deps.store.get(parentSid);
+      // 父会话的 skipped 不是绑定：抄它的三元组只会在审计里把「没身份」写成
+      // 「继承来的身份」。父仍未绑定 -> 原样返回，等父会话自己先自愈。
+      if (parent === undefined) return;
+      // 父被传输层失败卡住时分支没有可抄的身份；这里补一次探针（同一套陈旧门/歧义门）。
+      if (parent.source === 'skipped' && isEmptyTriple(parent)) {
+        if (!isCandidatesTransportSkip(parent.reason) || !isStaleForRetry(existing, now())) return;
+        const pending = healInFlight.get(sessionId);
+        if (pending !== undefined) {
+          await pending;
+          return;
+        }
+        const work = (async () => {
+          try {
+            await healBranch(sessionId, existing);
+          } catch (error) {
+            debug('agemem: inherited branch heal failed', error);
+            deps.store.set(sessionId, { ...existing, at: now() });
+          } finally {
+            healInFlight.delete(sessionId);
+          }
+        })();
+        healInFlight.set(sessionId, work);
+        await work;
+        return;
+      }
+      // 父自己没身份、又不是「被传输层卡住」：没有可抄的，也没有该替它发的探针。
+      if (parent.source === 'skipped' || isEmptyTriple(parent)) return;
+      submit(sessionId, {
+        teamId: parent.teamId,
+        agentId: parent.agentId,
+        userId: parent.userId,
+        // 同一段对话，同一套作用域：任务轴跟着父会话走。
+        ...(parent.taskId !== undefined ? { taskId: parent.taskId } : {}),
+        // 保持语义：这条身份是继承来的，不是本会话弹窗选的。
+        source: 'inherited',
+        reason: existing.reason,
+        at: now(),
+      });
+    }
+  };
+
   const pick = async (sessionId: string, agent: unknown, signal: unknown): Promise<void> => {
     const labelChoices = (entries: Array<{ id: string; name?: string }>): Choice[] =>
       entries.map((entry) => ({ label: labelOf(entry.name, entry.id), id: entry.id }));
@@ -868,8 +1086,15 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     // bound one, i.e. two identities inside one turn.
     deps.onSessionSeen?.(sessionId);
     if (!settings.askAtSessionStart) return;
-    if (deps.store.get(sessionId) !== undefined) return;    // 分支：父会话绑什么就用什么（绑定已在 agent/created 写进 store）。走到这里
-    // 说明父会话本身没绑成 —— 仍不问人，记一条 skipped 并把无身份暴露给调用方。
+    const existing = deps.store.get(sessionId);
+    if (existing !== undefined) {
+      // 分支/恢复的会话：父会话绑什么就用什么（绑定已在 agent/created 或上一次
+      // pre-step 写进 store），不再问人、也不重复取卡。P0-2 的两条自愈路径在
+      // reconcileExisting 里，它们同样不弹窗。
+      await reconcileExisting(sessionId, existing);
+      return;
+    }
+    // 走到这里说明父会话本身没绑成 —— 仍不问人，记一条 skipped 并把无身份暴露给调用方。
     if (parentSessionOf(agent) !== undefined) {
       bindSkipped(sessionId, 'branch inherits parent identity (no picker in a branch)');
       return;
@@ -924,6 +1149,7 @@ export function installSessionIdentity(ctx: AgememContext, deps: SessionIdentity
     dispose: () => {
       off();
       inFlight.clear();
+      healInFlight.clear();
     },
   };
 }

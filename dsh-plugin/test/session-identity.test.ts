@@ -7,11 +7,15 @@ import {
   ASSET_CONFIRM_NO,
   ASSET_CONFIRM_QUESTION_ID,
   ASSET_CONFIRM_YES,
+  branchParentOf,
   cardClearedSource,
   installSessionIdentity,
+  isCandidatesTransportSkip,
   isSkipAnswer,
+  isStaleForRetry,
   SessionIdentityStore,
   SKIP_LABEL,
+  SKIP_RETRY_MIN_AGE_MS,
   TASK_NO_TASK_LABEL,
   TASK_QUESTION_ID,
   TEAM_QUESTION_ID,
@@ -69,6 +73,8 @@ interface HarnessOptions {
   getQuestions?: () => any;
   statePath?: string;
   candidates?: SessionIdentityDeps['candidates'];
+  /** Fixed clock (P0-2 tests drive the skip-retry threshold deterministically). */
+  now?: () => number;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -112,6 +118,7 @@ function harness(options: HarnessOptions = {}) {
     getQuestions: options.getQuestions ?? (() => ({ ask })),
     timeoutMs: 500,
     log: fake.ctx.logger,
+    now: options.now,
   };
   const installed = installSessionIdentity(fake.ctx, deps);
   const agent = { session: { id: 'sess-1' } };
@@ -757,5 +764,202 @@ describe('installSessionIdentity', () => {
     const teamQuestion = asks.find((request) => request.questions[0]?.id === TEAM_QUESTION_ID);
     expect(teamQuestion).toBeDefined();
     expect(teamQuestion.questions[0].options[0].label).toBe(SKIP_LABEL);
+  });
+});
+
+/**
+ * P0-2：让「因传输层失败被永久跳过」的会话自愈。
+ *
+ * 2026-11-19 现场：根会话 session-9b404d96 记的是 skipped +
+ * 'candidates failed: transport failure: fetch failed'，176 个分支全部
+ * inherited 了它的空三元组 —— 这些会话永远取不到人格卡，段读一律 no-card。
+ */
+describe('P0-2 self-heal: transport skip + empty inherited branch', () => {
+  const NOW = 1_800_000_000_000;
+  const TEN_MIN_AGO = NOW - 10 * 60 * 1000;
+  const TRANSPORT_SKIP = 'candidates failed: transport failure: fetch failed';
+
+  it('isCandidatesTransportSkip 只认传输层前缀（含 candidates failed: 包装）', () => {
+    expect(isCandidatesTransportSkip(TRANSPORT_SKIP)).toBe(true);
+    expect(isCandidatesTransportSkip('candidates failed: timed out after 500ms')).toBe(true);
+    expect(isCandidatesTransportSkip('transport failure: fetch failed')).toBe(true);
+    // A rejected 4xx/5xx is Core refusing, not a transient window: no retry.
+    expect(isCandidatesTransportSkip('candidates failed: core said 503')).toBe(false);
+    expect(isCandidatesTransportSkip('candidates failed: the user belongs to no team')).toBe(false);
+    expect(isCandidatesTransportSkip(undefined)).toBe(false);
+    expect(isCandidatesTransportSkip('')).toBe(false);
+  });
+
+  it('isStaleForRetry 以 SKIP_RETRY_MIN_AGE_MS 为门槛，at=0 视为足够旧', () => {
+    expect(isStaleForRetry({ at: NOW - SKIP_RETRY_MIN_AGE_MS }, NOW)).toBe(true);
+    expect(isStaleForRetry({ at: NOW - SKIP_RETRY_MIN_AGE_MS + 1 }, NOW)).toBe(false);
+    expect(isStaleForRetry({ at: NOW }, NOW)).toBe(false);
+    expect(isStaleForRetry({}, NOW)).toBe(true);
+  });
+
+  it('branchParentOf 只从 branch of 里取父会话 id', () => {
+    expect(branchParentOf('branch of parent-1')).toBe('parent-1');
+    expect(branchParentOf(TRANSPORT_SKIP)).toBeUndefined();
+    expect(branchParentOf(undefined)).toBeUndefined();
+  });
+
+  it('a STALE transport skip is healed by one candidates probe (no card)', async () => {
+    let calls = 0;
+    const h = harness({
+      now: () => NOW,
+      candidates: async () => {
+        calls += 1;
+        return { kind: 'ok', userId: 'usr-a', teams: [{ teamId: 'team-a' }], agents: [{ agentId: 'agt-a' }] };
+      },
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: TEN_MIN_AGO,
+    });
+
+    await h.step();
+
+    expect(calls).toBe(1);
+    // Never a card this late in the session: the heal is candidates-only.
+    expect(h.ask).not.toHaveBeenCalled();
+    const healed = h.store.get('sess-1');
+    expect(healed).toMatchObject({ teamId: 'team-a', agentId: 'agt-a', userId: 'usr-a', source: 'recovered', at: NOW });
+    // The failure reason is gone: a bound record must not claim it failed.
+    expect(healed?.reason).toBeUndefined();
+  });
+
+  it('a FRESH transport skip is not retried (one turn, ms-apart steps)', async () => {
+    let calls = 0;
+    const h = harness({
+      now: () => NOW,
+      candidates: async () => {
+        calls += 1;
+        return { kind: 'ok', userId: 'usr-a', teams: [{ teamId: 'team-a' }], agents: [{ agentId: 'agt-a' }] };
+      },
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: NOW,
+    });
+
+    await h.step();
+
+    expect(calls).toBe(0);
+    expect(h.store.get('sess-1')).toMatchObject({ source: 'skipped', reason: TRANSPORT_SKIP, at: NOW });
+  });
+
+  it('a FAILED retry keeps skipped and only pushes at (no network on every tick)', async () => {
+    let calls = 0;
+    const h = harness({
+      now: () => NOW,
+      candidates: async () => {
+        calls += 1;
+        return { kind: 'failed', reason: 'core said 503' };
+      },
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: TEN_MIN_AGO,
+    });
+
+    await h.step();
+
+    // 'core said 503' is not transport: exactly one probe, no candidatesWithOneRetry retry.
+    expect(calls).toBe(1);
+    expect(h.store.get('sess-1')).toMatchObject({ source: 'skipped', reason: TRANSPORT_SKIP, at: NOW });
+
+    // The very next step of the same turn is silent: at is no longer stale.
+    await h.step();
+    expect(calls).toBe(1);
+    expect(h.ask).not.toHaveBeenCalled();
+  });
+
+  it('ambiguous candidates (several teams, base not among them) stay skipped instead of guessing', async () => {
+    const h = harness({
+      now: () => NOW,
+      teams: [{ teamId: 'team-a' }, { teamId: 'team-b' }],
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: TEN_MIN_AGO,
+    });
+
+    await h.step();
+
+    expect(h.ask).not.toHaveBeenCalled();
+    expect(h.store.get('sess-1')).toMatchObject({
+      teamId: '', agentId: '', userId: '', source: 'skipped', at: NOW,
+    });
+  });
+
+  it('an empty inherited branch copies the BOUND parent triple without any network call', async () => {
+    let calls = 0;
+    const h = harness({
+      now: () => NOW,
+      candidates: async () => {
+        calls += 1;
+        return { kind: 'ok', userId: 'usr-a', teams: [{ teamId: 'team-a' }], agents: [{ agentId: 'agt-a' }] };
+      },
+    });
+    h.store.set('parent-1', {
+      teamId: 'team-a', agentId: 'agt-a', userId: 'usr-a', taskId: 'task-1', source: 'picked', at: TEN_MIN_AGO,
+    });
+    h.store.set('sess-1', {
+      teamId: '', agentId: '', userId: '', source: 'inherited', reason: 'branch of parent-1', at: TEN_MIN_AGO,
+    });
+
+    await h.step();
+
+    // No card, no candidates: a branch never gets its own network request.
+    expect(calls).toBe(0);
+    expect(h.ask).not.toHaveBeenCalled();
+    expect(h.store.get('sess-1')).toMatchObject({
+      teamId: 'team-a',
+      agentId: 'agt-a',
+      userId: 'usr-a',
+      taskId: 'task-1',
+      source: 'inherited',
+      reason: 'branch of parent-1',
+      at: NOW,
+    });
+  });
+
+  it('an empty inherited branch whose parent is stuck on a transport skip probes once and recovers', async () => {
+    let calls = 0;
+    const h = harness({
+      now: () => NOW,
+      candidates: async () => {
+        calls += 1;
+        return { kind: 'ok', userId: 'usr-a', teams: [{ teamId: 'team-a' }], agents: [{ agentId: 'agt-a' }] };
+      },
+    });
+    h.store.set('parent-1', {
+      teamId: '', agentId: '', userId: '', source: 'skipped', reason: TRANSPORT_SKIP, at: TEN_MIN_AGO,
+    });
+    const child = {
+      teamId: '', agentId: '', userId: '', source: 'inherited' as const, reason: 'branch of parent-1', at: TEN_MIN_AGO,
+    };
+    h.store.set('sess-1', child);
+
+    await h.step();
+
+    // 父会话被传输层失败卡住时没人会去自愈它（父可能再也不被调用），所以分支自己探一次；
+    // 探到就是 recovered（不是 inherited —— 这条身份不是从父抄来的）。
+    expect(calls).toBe(1);
+    expect(h.ask).not.toHaveBeenCalled();
+    expect(h.store.get('sess-1')).toMatchObject({
+      teamId: 'team-a', agentId: 'agt-a', userId: 'usr-a', source: 'recovered', at: NOW,
+    });
+  });
+
+  it('an inherited record that already has a triple is left alone', async () => {
+    const h = harness({ now: () => NOW });
+    h.store.set('parent-1', {
+      teamId: 'team-a', agentId: 'agt-a', userId: 'usr-a', source: 'picked', at: TEN_MIN_AGO,
+    });
+    const child = {
+      teamId: 'team-x', agentId: 'agt-x', userId: 'usr-x', source: 'inherited' as const, reason: 'branch of parent-1', at: TEN_MIN_AGO,
+    };
+    h.store.set('sess-1', child);
+
+    await h.step();
+
+    expect(h.store.get('sess-1')).toEqual(child);
   });
 });
